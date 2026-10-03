@@ -1,0 +1,17 @@
+[package]
+name = "mwtool"
+description = "Command-line tool for inspecting and extracting NFS Most Wanted (2012) assets"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mw-gamedir.workspace = true
+mw-bundle.workspace = true
+mw-formats.workspace = true
+mw-assets.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
+d3dasm = "0.1"
+anyhow.workspace = true
+clap.workspace = true
+rayon.workspace = true

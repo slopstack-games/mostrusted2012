@@ -1,0 +1,27 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/Toemmsen96/mostrusted2012"
+
+[workspace.dependencies]
+mw-gamedir = { path = "crates/mw-gamedir" }
+mw-bundle = { path = "crates/mw-bundle" }
+mw-formats = { path = "crates/mw-formats" }
+mw-assets = { path = "crates/mw-assets" }
+mw-audio = { path = "crates/mw-audio" }
+anyhow = "1"
+thiserror = "2"
+flate2 = "1"
+clap = { version = "4", features = ["derive"] }
+rayon = "1"
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+debug = 1

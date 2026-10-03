@@ -1,0 +1,10 @@
+[package]
+name = "mw-formats"
+description = "Parsers for NFS Most Wanted (2012) resource types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mw-bundle.workspace = true
+thiserror.workspace = true

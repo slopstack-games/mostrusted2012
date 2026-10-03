@@ -1,0 +1,78 @@
+//! Conversion of decoded game resources into Bevy assets.
+
+use bevy::asset::RenderAssetUsages;
+use bevy::image::{Image, ImageAddressMode, ImageSampler, ImageSamplerDescriptor};
+use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use mw_formats::{DxgiFormat, Texture};
+
+/// Build a Bevy mesh from a decoded game mesh. Game TEXCOORD0 becomes UV_0
+/// and `uv_b` (if any) selects the game TEXCOORD that becomes UV_1. Normals
+/// are taken from the vertex data when present, otherwise computed.
+pub fn mesh(m: &mw_formats::DecodedMesh, uv_b: Option<u8>) -> Option<Mesh> {
+    if m.indices.is_empty() {
+        return None;
+    }
+    let positions: Vec<[f32; 3]> = m.positions.iter().map(|p| [p[0], p[1], p[2]]).collect();
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+        .with_inserted_indices(Indices::U32(m.indices.clone()));
+    let uv2 = |uv: &[[f32; 4]]| uv.iter().map(|t| [t[0], t[1]]).collect::<Vec<_>>();
+    if let Some(uv) = m.texcoord(0) {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv2(uv));
+    }
+    if let Some(uv) = uv_b.and_then(|i| m.texcoord(i as usize)) {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, uv2(uv));
+    }
+    match &m.normals {
+        Some(n) => {
+            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, n.iter().map(|v| [v[0], v[1], v[2]]).collect::<Vec<_>>())
+        }
+        None => mesh.compute_smooth_normals(),
+    }
+    Some(mesh)
+}
+
+/// Build a GPU image. Block-compressed textures are uploaded as-is when the
+/// device supports BC formats; everything else is decoded to RGBA8.
+pub fn image(tex: &Texture, srgb: bool, bc_supported: bool) -> Option<Image> {
+    let block_aligned = tex.width.is_multiple_of(4) && tex.height.is_multiple_of(4);
+    let bc = match tex.format {
+        DxgiFormat::Bc1Unorm => Some(if srgb { TextureFormat::Bc1RgbaUnormSrgb } else { TextureFormat::Bc1RgbaUnorm }),
+        DxgiFormat::Bc2Unorm => Some(if srgb { TextureFormat::Bc2RgbaUnormSrgb } else { TextureFormat::Bc2RgbaUnorm }),
+        DxgiFormat::Bc3Unorm => Some(if srgb { TextureFormat::Bc3RgbaUnormSrgb } else { TextureFormat::Bc3RgbaUnorm }),
+        _ => None,
+    };
+    let is_2d = tex.dimension == mw_formats::Dimension::D2;
+    let mut image = match bc {
+        Some(format) if bc_supported && block_aligned && is_2d => {
+            let mut img = Image::new(
+                Extent3d { width: tex.width, height: tex.height, depth_or_array_layers: 1 },
+                TextureDimension::D2,
+                tex.data[..tex.slice_size().min(tex.data.len())].to_vec(),
+                format,
+                RenderAssetUsages::RENDER_WORLD,
+            );
+            img.texture_descriptor.mip_level_count = tex.mip_count;
+            img
+        }
+        _ => {
+            let (w, h, rgba) = tex.decode_rgba8(0)?;
+            Image::new(
+                Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                TextureDimension::D2,
+                rgba,
+                if srgb { TextureFormat::Rgba8UnormSrgb } else { TextureFormat::Rgba8Unorm },
+                RenderAssetUsages::RENDER_WORLD,
+            )
+        }
+    };
+    image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
+        address_mode_u: ImageAddressMode::Repeat,
+        address_mode_v: ImageAddressMode::Repeat,
+        address_mode_w: ImageAddressMode::Repeat,
+        anisotropy_clamp: 8,
+        ..ImageSamplerDescriptor::linear()
+    });
+    Some(image)
+}

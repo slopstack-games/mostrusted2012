@@ -1,0 +1,8 @@
+/target
+# Ghidra databases and anything extracted from the game are derived from
+# copyrighted data and must never be committed.
+/re/ghidra_project
+/re/*.log
+/re/out
+/extracted
+*.dds

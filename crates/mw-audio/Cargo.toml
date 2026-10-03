@@ -1,0 +1,10 @@
+[package]
+name = "mw-audio"
+description = "Decoders for NFS Most Wanted (2012) audio: EA SPS/SNR (EALayer3), Ginsu engine sounds (EA-XAS)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+nanomp3 = "0.2"

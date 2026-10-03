@@ -1,0 +1,10 @@
+[package]
+name = "mw-bundle"
+description = "Reader for Criterion BundleV2 (bnd2 v5) archives used by NFS Most Wanted (2012)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+flate2.workspace = true
+thiserror.workspace = true

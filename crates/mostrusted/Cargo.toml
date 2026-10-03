@@ -1,0 +1,17 @@
+[package]
+name = "mostrusted"
+description = "Most Rusted: an open-source runtime for NFS Most Wanted (2012), built on Bevy"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mw-gamedir.workspace = true
+mw-bundle.workspace = true
+mw-formats.workspace = true
+mw-assets.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+rayon.workspace = true
+bevy = { version = "0.19", features = ["free_camera"] }
+avian3d = "0.7"

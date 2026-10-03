@@ -1,0 +1,9 @@
+[package]
+name = "mw-gamedir"
+description = "Locates and validates an installed copy of NFS Most Wanted (2012)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true

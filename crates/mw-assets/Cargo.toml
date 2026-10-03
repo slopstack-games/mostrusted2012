@@ -1,0 +1,13 @@
+[package]
+name = "mw-assets"
+description = "Game-wide resource index and loader for NFS Most Wanted (2012)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mw-gamedir.workspace = true
+mw-bundle.workspace = true
+mw-formats.workspace = true
+rayon.workspace = true
+thiserror.workspace = true
