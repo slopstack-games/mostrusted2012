@@ -5,6 +5,7 @@ use std::sync::Mutex;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
+mod crack;
 mod preview;
 mod survey;
 
@@ -60,7 +61,7 @@ enum Cmd {
         #[arg(long)]
         verbose: bool,
     },
-    /// Dump GeneSys objects (a bundle's, or one by ID); fields are shown by name hash.
+    /// Dump GeneSys objects (a bundle's, or one by ID); fields show their name when known, else the hash.
     Genesys {
         /// Bundle path, GenesysObject resource ID, or `all` (scan every bundle; use with --type).
         target: String,
@@ -70,6 +71,40 @@ enum Cmd {
         /// Maximum array elements to print.
         #[arg(long, default_value_t = 16)]
         max_items: usize,
+    },
+    /// Every GenesysType in the install as TSV: type id, type name, kind, size, then one row per field
+    /// (field index, name hash, offset, size, count, flags, field type name).
+    GenesysTypes,
+    /// Search word lists for GeneSys field names (see crates/mwtool/src/crack.rs). Prints
+    /// `hash, candidates, types`; check hits against values before trusting them.
+    GenesysCrack {
+        /// Word list for each word position (the last one repeats), one word per line.
+        #[arg(long = "words", required = true)]
+        words: Vec<PathBuf>,
+        #[arg(long, default_value_t = 3)]
+        max_words: usize,
+        #[arg(long = "style", value_enum, default_values_t = [crack::Style::Snake, crack::Style::TitleSnake, crack::Style::Camel])]
+        styles: Vec<crack::Style>,
+        /// Only fields of types whose name contains this.
+        #[arg(long)]
+        r#type: Option<String>,
+        /// Also search fields that already have a name.
+        #[arg(long)]
+        include_named: bool,
+    },
+    /// Decode game audio to .wav: an .SPS file, or a bundle's Ginsu/Wave resources.
+    Audio {
+        /// `.SPS` path (relative to the game dir) or bundle path.
+        source: String,
+        out: PathBuf,
+    },
+    /// Render a simulated rev-up/coast through the engine-sound synth to a .wav.
+    EngineSound {
+        car: String,
+        out: PathBuf,
+        /// Drive the synth from a recorded trace instead of a sweep: lines of `seconds rpm throttle`.
+        #[arg(long)]
+        trace: Option<PathBuf>,
     },
     /// Count world triangles per shader (all track units), to prioritise ports.
     ShaderUsage,
@@ -283,6 +318,143 @@ fn main() -> Result<()> {
                 }
             }
         }
+        Cmd::GenesysCrack { words, max_words, styles, r#type, include_named } => {
+            let store = AssetStore::new(game)?;
+            let opt = crack::Options { words, max_words, styles, type_filter: r#type, include_named };
+            crack::run(&store, &opt)?;
+        }
+        Cmd::GenesysTypes => {
+            let store = AssetStore::new(game)?;
+            let mut seen = std::collections::HashSet::new();
+            for rel in store.bundle_paths().to_vec() {
+                let Some(b) = store.bundle(&rel) else { continue };
+                for e in b.entries_of_type(ResourceType::GenesysType) {
+                    if !seen.insert(e.id) {
+                        continue;
+                    }
+                    let Some(t) = store.genesys_type(e.id) else { continue };
+                    println!("T\t{}\t{}\t{:?}\t{}", t.id, t.name, t.kind, t.size);
+                    for (i, f) in t.fields.iter().enumerate() {
+                        let ty = f.ty.and_then(|id| store.genesys_type(id)).map_or_else(|| "?".into(), |t| t.name);
+                        println!(
+                            "F\t{i}\t{:08x}\t{}\t{}\t{}\t{:x}\t{ty}",
+                            f.name_hash, f.offset, f.size, f.count, f.flags
+                        );
+                    }
+                }
+                store.evict_all();
+            }
+        }
+        Cmd::Audio { source, out } => {
+            std::fs::create_dir_all(&out)?;
+            let report = |name: &str, pcm: &mw_audio::Pcm| {
+                let rms = (pcm.samples.iter().map(|&s| (s as f64).powi(2)).sum::<f64>()
+                    / pcm.samples.len().max(1) as f64)
+                    .sqrt();
+                println!(
+                    "{name}: {} ch, {} Hz, {:.2} s, rms {rms:.0}",
+                    pcm.channels,
+                    pcm.sample_rate,
+                    pcm.duration_secs()
+                );
+            };
+            if source.to_ascii_uppercase().ends_with(".SPS") {
+                let path = game.path(&source).with_context(|| format!("not found: {source}"))?;
+                let pcm = mw_audio::sps::decode(&std::fs::read(&path)?)?;
+                report(&source, &pcm);
+                let name = Path::new(&source).file_stem().unwrap_or_default().to_string_lossy().into_owned();
+                std::fs::write(out.join(format!("{name}.wav")), pcm.to_wav())?;
+            } else {
+                let b = open_bundle(&game, &source)?;
+                for e in b.entries_of_type(ResourceType::Ginsu) {
+                    match mw_audio::ginsu::Ginsu::parse(b.load(e)?.header()) {
+                        Ok(g) => {
+                            report(
+                                &format!(
+                                    "{} ginsu {:.0}-{:.0} rpm ({}), {} grains",
+                                    e.id,
+                                    g.min_rpm,
+                                    g.max_rpm,
+                                    if g.rising() { "rising" } else { "falling" },
+                                    g.grains.len()
+                                ),
+                                &g.pcm,
+                            );
+                            std::fs::write(out.join(format!("{}_ginsu.wav", e.id)), g.pcm.to_wav())?;
+                        }
+                        Err(err) => println!("{} ginsu: {err}", e.id),
+                    }
+                }
+                for e in b.entries_of_type(ResourceType::Wave) {
+                    let res = b.load(e)?;
+                    match res.header().get(0x80..).map(mw_audio::sps::decode) {
+                        Some(Ok(pcm)) => {
+                            report(&format!("{} wave", e.id), &pcm);
+                            std::fs::write(out.join(format!("{}_wave.wav", e.id)), pcm.to_wav())?;
+                        }
+                        Some(Err(err)) => println!("{} wave: {err}", e.id),
+                        None => println!("{} wave: too short", e.id),
+                    }
+                }
+            }
+        }
+        Cmd::EngineSound { car, out, trace } => {
+            let store = AssetStore::new(game)?;
+            let v = store.find_vehicle(&car)?.with_context(|| format!("no car matches {car}"))?;
+            let b = store.bundle(v.hi_bundle.as_deref().context("no bundle")?).context("bundle")?;
+            let ginsus = b
+                .entries_of_type(ResourceType::Ginsu)
+                .filter_map(|e| mw_audio::ginsu::Ginsu::parse(b.load(e).ok()?.header()).ok())
+                .collect();
+            let (on, off) = mw_audio::ginsu::pick_engine(ginsus).context("no engine sound")?;
+            let rate = on.pcm.sample_rate as usize;
+            let (lo, hi) = (on.min_rpm, on.max_rpm);
+            let mut mixer = mw_audio::ginsu::EngineMixer::new(on.clone(), off.clone());
+            // A recorded trace (stepwise, as the game updates it), or a 4 s rev
+            // up on throttle and a 4 s coast down.
+            let points: Vec<[f32; 3]> = match &trace {
+                Some(p) => std::fs::read_to_string(p)?
+                    .lines()
+                    .filter_map(|l| {
+                        let v: Vec<f32> = l.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+                        (v.len() >= 3).then(|| [v[0], v[1], v[2]])
+                    })
+                    .collect(),
+                None => vec![],
+            };
+            let duration = points.last().map_or(8.0, |p| p[0]);
+            let mut samples = Vec::new();
+            let mut k = 0;
+            for i in 0..(rate as f32 * duration) as usize {
+                let t = i as f32 / rate as f32;
+                let (rpm, load) = if !points.is_empty() {
+                    while k + 1 < points.len() && points[k + 1][0] <= t {
+                        k += 1;
+                    }
+                    (points[k][1], points[k][2])
+                } else if t < 4.0 {
+                    (lo + (hi - lo) * t / 4.0, 1.0)
+                } else {
+                    (hi - (hi - lo) * (t - 4.0) / 4.0, 0.0)
+                };
+                let v = mixer.next_sample(rpm, load);
+                samples.push((v * 32767.0).clamp(-32768.0, 32767.0) as i16);
+            }
+            let pcm = mw_audio::Pcm { channels: 1, sample_rate: rate as u32, samples };
+            std::fs::write(&out, pcm.to_wav())?;
+            println!(
+                "{}: on load {lo:.0}-{hi:.0} rpm ({} grains), off load {}",
+                v.name,
+                on.grains.len(),
+                off.as_ref().map_or("none".into(), |o| format!(
+                    "{:.0}-{:.0} rpm ({} grains, {})",
+                    o.min_rpm,
+                    o.max_rpm,
+                    o.grains.len(),
+                    if o.rising() { "rising" } else { "falling" }
+                ))
+            );
+        }
         Cmd::ShaderUsage => {
             let store = AssetStore::new(game)?;
             let mut usage: std::collections::HashMap<String, (usize, usize, usize)> = Default::default();
@@ -312,7 +484,7 @@ fn main() -> Result<()> {
                 store.evict_all();
             }
             let mut rows: Vec<_> = usage.into_iter().collect();
-            rows.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+            rows.sort_by_key(|a| std::cmp::Reverse(a.1.0));
             for (name, (tris, meshes, untextured)) in rows {
                 println!("{tris:>9} tris {meshes:>6} meshes {untextured:>6} without diffuse  {name}");
             }
@@ -405,10 +577,29 @@ fn export_world(store: &AssetStore, bundles: &[String], out: &Path, size: u32, o
     } else {
         bundles.to_vec()
     };
+    let mut layers = mw_assets::WorldLayers::default();
     for name in &names {
         let b = store.bundle(name).with_context(|| format!("bundle not found: {name}"))?;
-        placements.extend(store.bundle_placements(&b)?);
+        layers.add(store.bundle_layers(&b)?);
     }
+    println!(
+        "layers: {} instances, {} props, {} compounds, {} dynamics ({} unresolved), {} lights (not drawn)",
+        layers.instances.len(),
+        layers.props.len(),
+        layers.compounds.len(),
+        layers.dynamics.len(),
+        layers.unresolved,
+        layers.lights
+    );
+    {
+        let unique: std::collections::HashMap<_, _> = layers.groundcover.iter().copied().collect();
+        println!(
+            "groundcover: {} collections, {} sprites (not in the placement count; the runtime draws them)",
+            unique.len(),
+            unique.values().map(|&n| n as u64).sum::<u64>()
+        );
+    }
+    placements.extend(layers.into_placements());
     let total = placements.len();
     placements.retain(|p| match which {
         "main" => !p.backdrop,
@@ -642,15 +833,17 @@ fn print_genesys(obj: &fmt::genesys::Object, depth: usize, max_items: usize) {
             _ => return None,
         })
     }
-    for (h, v) in &obj.fields {
+    for (hash, v) in &obj.fields {
+        // Known names print as-is, unknown ones as their hash.
+        let h = fmt::genesys::field_name(*hash).map_or_else(|| format!("{hash:08x}"), str::to_string);
         match v {
             Value::Struct(o) => {
-                println!("{pad}{h:08x}: {} {{", o.type_name.trim_start_matches("Genesys.Gen."));
+                println!("{pad}{h}: {} {{", o.type_name.trim_start_matches("Genesys.Gen."));
                 print_genesys(o, depth + 1, max_items);
                 println!("{pad}}}");
             }
             Value::Array(items) => {
-                println!("{pad}{h:08x}: [{} items]", items.len());
+                println!("{pad}{h}: [{} items]", items.len());
                 for (i, it) in items.iter().take(max_items).enumerate() {
                     match it {
                         Value::Struct(o) => {
@@ -662,7 +855,7 @@ fn print_genesys(obj: &fmt::genesys::Object, depth: usize, max_items: usize) {
                     }
                 }
             }
-            other => println!("{pad}{h:08x}: {}", scalar(other).unwrap_or_default()),
+            other => println!("{pad}{h}: {}", scalar(other).unwrap_or_default()),
         }
     }
 }

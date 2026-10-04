@@ -1,0 +1,24 @@
+mw-audio reimplements EA audio formats based on knowledge from vgmstream
+(https://github.com/vgmstream/vgmstream): the EA-XAS decoder
+(ea_xas_decoder.c), the Ginsu header (meta/gin.c), the EAAudioCore/SPS
+block layout (meta/ea_eaac.c, meta/ea_eaac_streamfile.h) and the EALayer3
+frame layout and MPEG frame rebuild (mpeg_custom_utils_ealayer3.c, after
+reverse engineering by Zench).
+
+vgmstream licence:
+
+Copyright (c) 2008-2025 Adam Gashlin, Fastelbja, Ronny Elfert, bnnm,
+                        Christopher Snowhill, NicknineTheEagle, bxaimc,
+                        Thealexbarney, CyberBotX, EdnessP, et al
+
+Permission to use, copy, modify, and distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.

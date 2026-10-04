@@ -3,9 +3,9 @@
 //!
 //! Most of the game's configuration lives here: vehicle physics
 //! (`RaceCarPhysicalDefinition`, `Engine`, `Gearbox`, `Tyre`...), gameplay
-//! rules, traffic, audio. Type names are stored as strings, but field names
-//! only as 32-bit hashes whose function is still unknown (see
-//! docs/research-log.md), so fields are identified by hash.
+//! rules, traffic, audio. Type names are stored as strings, field names only
+//! as 32-bit hashes ([`field_hash`]). Names recovered by dictionary attack are
+//! listed in `genesys_names.txt` ([`field_name`]).
 //!
 //! Type (chunk 0):
 //!
@@ -32,6 +32,115 @@
 use mw_bundle::{ImportKind, Reader, Resource, ResourceId};
 
 use crate::{Error, Result};
+
+const CRC_POLY: u32 = 0x04c1_1db7;
+
+const fn crc_table() -> [u32; 256] {
+    let mut t = [0u32; 256];
+    let mut i = 0;
+    while i < 256 {
+        let mut c = (i as u32) << 24;
+        let mut k = 0;
+        while k < 8 {
+            c = if c & 0x8000_0000 != 0 { (c << 1) ^ CRC_POLY } else { c << 1 };
+            k += 1;
+        }
+        t[i] = c;
+        i += 1;
+    }
+    t
+}
+
+const CRC_TABLE: [u32; 256] = crc_table();
+
+/// Hash of a GeneSys field name.
+///
+/// CRC-32 (polynomial 0x04C11DB7, MSB first, not reflected) computed with
+/// the shift-register ("non-augmented") algorithm: the register starts as the
+/// complement of the first four bytes, each further byte is shifted in at the
+/// bottom while the byte shifted out is reduced through the table, and the
+/// result is complemented. Names of four bytes therefore hash to themselves
+/// (`Mass` = 0x4d617373). Found from nested type names (`Engine.Sound` is held
+/// in a field named `Sound`), see docs/research-log.md (2026-10-04).
+pub const fn field_hash(name: &str) -> u32 {
+    let b = name.as_bytes();
+    let mut h = FieldHasher::new();
+    let mut i = 0;
+    while i < b.len() {
+        h = h.push(b[i]);
+        i += 1;
+    }
+    h.finish()
+}
+
+/// Incremental [`field_hash`]: a hasher can be cloned after a common prefix
+/// (used by `mwtool genesys-crack` to search name candidates quickly).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FieldHasher {
+    reg: u32,
+    len: usize,
+}
+
+impl FieldHasher {
+    pub const fn new() -> Self {
+        Self { reg: 0, len: 0 }
+    }
+
+    #[inline]
+    pub const fn push(self, byte: u8) -> Self {
+        let reg = if self.len < 4 {
+            (self.reg << 8) | (byte ^ 0xff) as u32
+        } else {
+            ((self.reg << 8) | byte as u32) ^ CRC_TABLE[(self.reg >> 24) as usize]
+        };
+        Self { reg, len: self.len + 1 }
+    }
+
+    #[inline]
+    pub fn push_all(mut self, bytes: &[u8]) -> Self {
+        for &b in bytes {
+            self = self.push(b);
+        }
+        self
+    }
+
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    #[inline]
+    pub const fn finish(&self) -> u32 {
+        if self.len < 4 {
+            // Shorter names: unverified (none occur in the install); packed like four-byte names.
+            return !self.reg & (u32::MAX >> (8 * (4 - self.len)));
+        }
+        !self.reg
+    }
+}
+
+/// Field names recovered from their hashes (one per line).
+const NAMES: &str = include_str!("genesys_names.txt");
+
+/// The name of a field hash, if it is known.
+pub fn field_name(hash: u32) -> Option<&'static str> {
+    use std::collections::HashMap;
+    use std::sync::OnceLock;
+    static MAP: OnceLock<HashMap<u32, &'static str>> = OnceLock::new();
+    MAP.get_or_init(|| {
+        NAMES
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(|n| (field_hash(n), n))
+            .collect()
+    })
+    .get(&hash)
+    .copied()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -339,4 +448,30 @@ impl<'a> Decoder<'a> {
 
 fn align(v: usize, a: usize) -> usize {
     v.div_ceil(a) * a
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn field_hashes() {
+        // Pairs observed in the install (types and objects).
+        assert_eq!(field_hash("Mass"), 0x4d617373);
+        assert_eq!(field_hash("Sound"), 0xab56a3f1);
+        assert_eq!(field_hash("Power_curve"), 0xa1a3b0a2);
+        assert_eq!(field_hash("Take_off_behaviour"), 0xc63c4447);
+        assert_eq!(field_hash("Normal_quality_engine"), 0xbf36eecf);
+    }
+
+    #[test]
+    fn names_table_has_no_collisions() {
+        let mut seen = std::collections::HashMap::new();
+        for n in NAMES.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+            if let Some(prev) = seen.insert(field_hash(n), n) {
+                panic!("{n} and {prev} share a hash");
+            }
+        }
+        assert_eq!(field_name(0xab56a3f1), Some("Sound"));
+    }
 }

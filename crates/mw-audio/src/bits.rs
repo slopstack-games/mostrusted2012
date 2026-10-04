@@ -48,10 +48,6 @@ pub struct BitWriter {
 }
 
 impl BitWriter {
-    pub fn pos(&self) -> usize {
-        self.pos
-    }
-
     pub fn put(&mut self, n: u32, v: u32) {
         for i in (0..n).rev() {
             if self.pos / 8 >= self.data.len() {
@@ -76,7 +72,7 @@ impl BitWriter {
     }
 
     pub fn align(&mut self) {
-        if self.pos % 8 != 0 {
+        if !self.pos.is_multiple_of(8) {
             self.put(8 - (self.pos % 8) as u32, 0);
         }
     }

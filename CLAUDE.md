@@ -9,6 +9,7 @@ user's install (IW4L-style). Read these before starting work:
 - [docs/formats.md](docs/formats.md): settled format knowledge.
 - [docs/reverse-engineering.md](docs/reverse-engineering.md): why the exe can't be statically analysed.
 - [docs/handling.md](docs/handling.md): GeneSys handling field mappings, model constants, test results.
+- [docs/next-session.md](docs/next-session.md): handoff from the last session (if present): start there.
 
 ## Hard rules
 
@@ -23,6 +24,7 @@ user's install (IW4L-style). Read these before starting work:
 crates/mw-gamedir   install detection, case-insensitive paths      (no deps on other crates)
 crates/mw-bundle    bnd2 v5 reader, ResourceId, ResourceType, Reader
 crates/mw-formats   per-type parsers; take &mw_bundle::Resource     (never depends on Bevy)
+crates/mw-audio     EA audio decoders (SPS/EALayer3, Ginsu/XAS) and the engine-sound synth
 crates/mw-assets    AssetStore: index over all bundles, cross-bundle loads, scene helpers
 crates/mwtool       CLI for inspection / extraction / previews
 crates/mostrusted   Bevy 0.19 runtime (loader thread → channel → ECS), avian3d 0.7 physics (drive.rs)
@@ -51,12 +53,19 @@ cargo fmt                                    # rustfmt.toml: max_width 120
 ./target/release/mwtool texture <id> out.png
 ./target/release/mwtool genesys VEHICLES/VEH_1085007_HI.BNDL --type HandlingBehaviour   # or: genesys all --type X
 ./target/release/mwtool handling 911                # typed handling parameters (docs/handling.md)
+./target/release/mwtool genesys-types > types.tsv    # every GeneSys type and field (hash, offset, type)
+./target/release/mwtool genesys-crack --words a.txt --max-words 4 --type Steering   # guess field names (check hits!)
+./target/release/mwtool shader-usage               # world triangles per shader (prioritise ports)
+./target/release/mwtool audio UI/SONGS/116502.SPS <dir>   # or a bundle: its Ginsu/Wave resources -> .wav
+./target/release/mwtool engine-sound 911 out.wav   # rev sweep through the engine synth (--trace: `seconds rpm load` lines)
 
 # Visual check without a human: renders, saves, exits
 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,1720 --screenshot <scratch>/road.png   # see docs/viewpoints.md
 ./target/release/mostrusted --vehicle "911" --camera 4.5,1.4,4.0,0,0.4,0 --screenshot <scratch>/car.png
 # Handling tests on a flat track (4x real time), prints TEST RESULT lines and exits
-./target/release/mostrusted --drive 911 --test accel     # or --test brake
+./target/release/mostrusted --drive 911 --test accel     # or brake, corner (skidpad g), handbrake, drift, engine
+# Engine RPM every physics tick, for `mwtool engine-sound --trace` (use with --test engine)
+MW_ENGINE_TRACE=<scratch>/rpm.trace ./target/release/mostrusted --drive 911 --test engine
 # Driving without a human: fixed throttle, logs "car at x y z, speed, compression" once a second
 ./target/release/mostrusted --drive 911 --units 12 --auto-throttle 0.4 --screenshot <scratch>/drive.png --screenshot-delay 400
 ```
@@ -83,6 +92,12 @@ The game's shaders are DXBC: port the real maths instead of guessing. Run `mwtoo
 samplers, parameters and vertex layout, and `mwtool shader-asm <name>` for the pixel and vertex programs (the
 longest `ps_4_0` is usually the main G-buffer pass; render target 1 holds `sqrt(albedo)`). Ported families live
 in `crates/mostrusted/src/layered.wgsl`, selected by `materials::Look`.
+
+## Audio work
+
+I can't listen to audio, so verify decoders numerically (see the research log): spectral flatness against
+white noise, sample-to-sample smoothness (diff/RMS), discontinuities at codec frame or grain boundaries, and
+spectral centroid against RPM for engine sounds. Export with `mwtool audio` and analyse the `.wav` in Python.
 
 ## Conventions
 

@@ -13,7 +13,7 @@ mod scene;
 
 pub use catalog::{DEFAULT_LANGUAGE, VehicleInfo};
 
-pub use scene::{IDENTITY, Placement, SceneMesh, trs_matrix};
+pub use scene::{Groundcover, GroundcoverMaterial, IDENTITY, Placement, SceneMesh, WorldLayers, trs_matrix};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

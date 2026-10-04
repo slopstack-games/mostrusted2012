@@ -23,7 +23,10 @@
 //!
 //! A vertex is `u16 * 500/32768 + multiplier * 500` (metres, world space).
 //! Polygon: `u16 collision tag[2]`, `u8 vertex indices[4]` (4th = 0xFF for
-//! triangles), `u8 edge cosines[4]`.
+//! triangles), `u8 edge cosines[4]`. Quads are in triangle-strip order: the
+//! fourth vertex is opposite the first, so they split into (a, b, c) and
+//! (b, d, c). (A fan split makes every quad a bow-tie with a hole in it;
+//! checked on every quad in the install.)
 
 use mw_bundle::{Reader, Resource};
 
@@ -105,16 +108,19 @@ impl PolygonSoupList {
             verts.extend_from_slice(&soup.vertices);
             let n = soup.vertices.len() as u8;
             for p in &soup.polygons {
-                let [a, b, c, d] = p.indices;
-                if a >= n || b >= n || c >= n {
-                    continue;
-                }
-                tris.push([base + a as u32, base + b as u32, base + c as u32]);
-                if p.is_quad && d < n {
-                    tris.push([base + a as u32, base + c as u32, base + d as u32]);
+                for t in p.triangles().filter(|t| t.iter().all(|&i| i < n)) {
+                    tris.push(t.map(|i| base + i as u32));
                 }
             }
         }
         (verts, tris)
+    }
+}
+
+impl SoupPolygon {
+    /// The polygon's triangles as vertex indices (quads split strip-wise).
+    pub fn triangles(&self) -> impl Iterator<Item = [u8; 3]> {
+        let [a, b, c, d] = self.indices;
+        std::iter::once([a, b, c]).chain(self.is_quad.then_some([b, d, c]))
     }
 }

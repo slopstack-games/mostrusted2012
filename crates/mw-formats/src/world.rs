@@ -68,3 +68,96 @@ impl InstanceList {
         Ok(Self { instances })
     }
 }
+
+/// One placed object in a `PropInstanceList`, `CompoundInstanceList`,
+/// `DynamicInstanceList` or `LightInstanceList`. All four share one layout:
+///
+/// | off  | type    | field |
+/// |------|---------|-------|
+/// | 0x00 | f32×4×4 | transform: x/y/z axis rows then translation (same convention as `InstanceList`); column 3 is not 0/0/0/1 and is ignored (translation-row w is often 0.94, probably a packed tint/AO byte) |
+/// | 0x40 | ptr     | object (import): `PropObject`, `CompoundObject`, `WorldObject`, or (lights) a GeneSys handle |
+/// | 0x48/0x4C | u32 | instance id (prop/dynamic at 0x48, compound/light at 0x4C), then f32 1.0 or 0 |
+/// | 0x50 | ptr     | extra per-instance data in the second half of the chunk (props: a `InstanceAdditiveAndAO` block); not decoded |
+///
+/// List header (0x10 bytes): `u32 version` (prop 2, compound 2, dynamic 3, light 1), `ptr` to the
+/// instances (0x10), `u32 count`, `u32 0`. Empty lists have a 0x10-byte chunk with a null pointer.
+#[derive(Debug, Clone)]
+pub struct ObjectInstance {
+    pub object: Option<ResourceId>,
+    /// Row-major with column 3 forced to (0, 0, 0, 1); row 3 is the translation.
+    pub transform: [[f32; 4]; 4],
+}
+
+#[derive(Debug, Clone)]
+pub struct ObjectInstanceList {
+    pub version: u32,
+    pub instances: Vec<ObjectInstance>,
+}
+
+/// Size of one [`ObjectInstance`] record.
+const OBJECT_INSTANCE_SIZE: usize = 0x60;
+/// Sanity limit so a corrupt count cannot trigger a huge allocation.
+const MAX_OBJECT_INSTANCES: usize = 1 << 20;
+
+impl ObjectInstanceList {
+    pub fn parse(res: &Resource) -> Result<Self> {
+        let r = Reader(res.header());
+        let version = r.u32(0x00)?;
+        let base = r.u32(0x04)? as usize;
+        let count = r.u32(0x08)? as usize;
+        if count > MAX_OBJECT_INSTANCES {
+            return Err(crate::Error::Malformed(format!("object instance count {count}")));
+        }
+        let mut instances = Vec::with_capacity(count);
+        for i in 0..count {
+            let o = base + i * OBJECT_INSTANCE_SIZE;
+            let mut transform = [[0.0; 4]; 4];
+            for (row, t) in transform.iter_mut().enumerate() {
+                let [x, y, z, _] = r.f32_array(o + row * 16)?;
+                *t = [x, y, z, if row == 3 { 1.0 } else { 0.0 }];
+            }
+            instances.push(ObjectInstance { object: res.import_at(o as u32 + 0x40), transform });
+        }
+        Ok(Self { version, instances })
+    }
+}
+
+/// Which models an object definition (`PropObject`, `CompoundObject`, `WorldObject`) draws.
+///
+/// `PropObject` (0x70-0x80 bytes): `u32 1`; model imports at 0x04 and 0x08 (usually the same model),
+/// GeneSys handles at 0x0C/0x14/0x1C, f32 600000 at 0x24, low 32 bits of the model ids at 0x30/0x40.
+///
+/// `CompoundObject` (0x240-0x1150 bytes): model imports at 0x04 (main), 0x24 (second variant, possibly
+/// damaged/LOD) and sometimes 0x28; GeneSys handle at 0x08/0x1C; the rest (part transforms, bounding
+/// boxes, per-part tables at 0x14/0x18/0x30/0x34) is not decoded.
+///
+/// `WorldObject` (0x40-0x4A0 bytes): model import at 0x04, GeneSys handles at 0x1C, 0x30, 0x44.
+#[derive(Debug, Clone)]
+pub struct ObjectDef {
+    pub id: ResourceId,
+    /// Model imports in slot order (see the layout above); `None` for an empty slot.
+    pub models: Vec<Option<ResourceId>>,
+}
+
+impl ObjectDef {
+    fn parse_slots(res: &Resource, slots: &[u32]) -> Result<Self> {
+        // The header must at least reach the first slot.
+        Reader(res.header()).u32(slots[0] as usize)?;
+        Ok(Self { id: res.id, models: slots.iter().map(|&o| res.import_at(o)).collect() })
+    }
+
+    pub fn parse_prop(res: &Resource) -> Result<Self> {
+        Self::parse_slots(res, &[0x04, 0x08])
+    }
+    pub fn parse_compound(res: &Resource) -> Result<Self> {
+        Self::parse_slots(res, &[0x04, 0x24, 0x28])
+    }
+    pub fn parse_world_object(res: &Resource) -> Result<Self> {
+        Self::parse_slots(res, &[0x04])
+    }
+
+    /// The model to draw: the first populated slot.
+    pub fn model(&self) -> Option<ResourceId> {
+        self.models.iter().flatten().next().copied()
+    }
+}

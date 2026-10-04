@@ -41,7 +41,7 @@ fn decode_group(header: u32, nibbles: impl Iterator<Item = u8>, out: &mut Vec<i1
 /// Decode XAS v0 (mono, 0x13-byte frames of 32 samples), as used by Ginsu.
 pub fn decode_v0(data: &[u8], max_samples: usize) -> Vec<i16> {
     let mut out = Vec::with_capacity(max_samples.min(data.len() / V0_FRAME_BYTES * V0_FRAME_SAMPLES));
-    for frame in data.chunks_exact(V0_FRAME_BYTES) {
+    for frame in data.as_chunks::<V0_FRAME_BYTES>().0 {
         if out.len() >= max_samples {
             break;
         }

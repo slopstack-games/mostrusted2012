@@ -10,59 +10,130 @@ Inspect a car's data with:
 
 ```sh
 mwtool handling "911"                                      # extracted, typed parameters
-mwtool genesys VEHICLES/VEH_1085007_HI.BNDL --type HandlingBehaviour   # everything, by field hash
+mwtool genesys VEHICLES/VEH_1085007_HI.BNDL --type HandlingBehaviour   # everything, by field name
 ```
 
-## Field mappings
+## Field names
 
-GeneSys stores field names as 32-bit hashes (names of four characters or fewer appear verbatim, e.g. `Mass` =
-`0x4d617373`). The meanings below were inferred by comparing cars with known real-world specs.
+GeneSys stores field names only as hashes. The hash function is known (`mw_formats::genesys::field_hash`, see
+the research log, 2026-10-04), so names can be confirmed by guessing: `mwtool genesys-crack` searches word
+lists. Recovered names live in `crates/mw-formats/src/genesys_names.txt`, and `mwtool genesys` prints them.
+In code, `VehicleHandling::param("Drift.Yaw_torque.Maximum_yaw_torque")` reads any `HandlingBehaviour` field by
+dotted path (unnamed fields as their 8-digit hex hash).
+A 32-bit hash also matches wrong guesses now and then (`High_race_angle_efficiency` hashes like `Mass`), so a
+name is trusted only when it reads naturally, fits its neighbours (`Low_speed_steer_rate` /
+`High_speed_steer_rate` / `Reverse_steer_rate`) and fits the values.
 
-| Hash | Where | Meaning | Evidence | Confidence |
-|------|-------|---------|----------|------------|
-| `4d617373` | RigidBody | mass (kg) | ASCII "Mass"; 911 1295, Veyron 1728 | high |
-| `0d0c29b4` | RigidBody | body transform (translation used as centre of mass) | rear-biased on the 911 (z −0.27) | medium |
-| `98e902ed` | RigidBody | half extents; for wheels (radius, radius, half width) | wheel radius 0.34 = arch size | high |
-| `fd4709e4` | Engine.Power_curve | torque curve points (rpm, Nm) + Hermite tangents | 911: 440 Nm at 5600 rpm (real: 440 at 5600); Veyron 1500 Nm | high |
-| `cc887670` / `1cdde238` | Power_curve | idle / limiter rpm | 1000 / 7800 (911), 6750 (Veyron) | high |
-| `f2368dfe` | Engine | top speed in mph | 911 189 (real 188), Veyron SS 268 (real 268) | high |
-| `4623dd88` | Engine | engine braking torque (Nm, negative) | −370 / −319 | medium |
-| `bef03791` | Engine.Differentials | front torque share | 0 on RWD 911, 0.37 on AWD Veyron | medium |
-| `e8ce7d74` | Gearbox.Gear | gear ratio | 911 3.91, 2.29 … (real PDK 3.91, 2.29) | high |
-| `c80f787a` / `8f085ebd` | Gearbox.Gear | upshift / downshift rpm | 7700 vs 7800 limiter | medium |
-| `ad14f0ff` | Gearbox | final drive | 911 3.44 (real PDK 3.44) | high |
-| `2b64bdcf` vs `fd49acb2` | Engine | two gearboxes; the second shifts near the limiter and is used | — | low |
-| `6ade4bb6` / `66251131` | BrakeBehaviour | brake torque per front / rear wheel (Nm) | 100–0 km/h ≈ 35 m when per wheel | medium |
-| `4af55f8a` | HandbrakeAbility | handbrake torque | 1200 | low |
-| `0c5f89b3` / `87e422a9` / `41543f85` | WheelSuspensionSpringConstraint | spring natural frequency (Hz) / damping ratio / travel (m) | 2.0 / 0.35 / 0.08 front on the 911 | medium |
-| `66676f77` | Tyre.Long_Grip_Curve | longitudinal grip "peak" | 1.3–1.6; not a plain friction coefficient | low |
+## Data used by the physics model
 
-Not yet used: drift, donut, steering tables (`SteeringBehaviour`: lock angles in degrees by speed?), body
-movement, aerodynamics (192 / 229 look like speeds in mph), tyre lateral curves and slip factors,
-`SteeringWheelPhysics`, nitrous.
+| Name | Where | Meaning | Evidence |
+|------|-------|---------|----------|
+| `Mass`, `Inertia_Scale` | RigidBody (first = body, then wheels) | kg; per-axis multiplier on the box inertia | 911 1295 kg, Veyron 1728 kg |
+| `0d0c29b4` | RigidBody | body transform; translation = centre of mass | rear-biased on the 911 (z −0.27). The neighbouring vector `62dbd683` is the bounding-box centre |
+| `98e902ed` | RigidBody | half extents; for wheels (radius, radius, half width) | wheel radius 0.34 = arch size |
+| `TorqueCurve` (`TangentIn`/`TangentOut`) | Engine.Power_curve | torque points (rpm, Nm) with Hermite tangents | 911: 440 Nm at 5600 rpm (real: 440 at 5600) |
+| `Idle_RPM`, `Max_RPM` | Power_curve | idle and limiter rpm | 1000 / 7800 (911) |
+| `Top_speed_MPH` | Engine | top speed, mph | 911 189 (real 188), Veyron SS 268 (real 268) |
+| `Engine_resistance` | Engine | engine braking torque (Nm, negative) | −370 / −319 |
+| `Power_To_Front` | Engine.Differentials | front torque share | 0 on the RWD 911, 0.37 on the AWD Veyron |
+| `RaceGearbox` / `CruisingGearbox` | Engine | the player's gearbox / an early-shifting one | race shifts near the limiter |
+| `Gear_ratio`, `Gear_up_RPM`, `Gear_down_RPM`, `Differential` | Gearbox | ratios, shift points, final drive | 911 3.91, 2.29 … × 3.44 (real PDK) |
+| `Gear_change_time` | Gearbox | time without drive per shift | 0.15 s race, 0.9 s cruising |
+| `6ade4bb6` / `66251131` | BrakeBehaviour | brake torque per front / rear wheel (Nm) | 100–0 km/h ≈ 35 m |
+| `4af55f8a` | HandbrakeAbility | handbrake torque | 1200 |
+| `0c5f89b3` / `Damping_Ratio` / `41543f85` | WheelSuspensionSpringConstraint | spring frequency (Hz) / damping ratio / travel (m) | 2.0 / 0.35 / 0.08 front on the 911 |
+| `In_air_gravity_coefficient` | Aerodynamics | gravity multiplier while airborne | 1.4 |
+| `Engine_inertia` | Engine | engine rotating inertia (kg m²): limits how fast the revs rise (torque / inertia) and fall (resistance / inertia) | 0.293 on the 911 |
+| tyre curves, steering | see below | | |
+
+### Tyres
+
+`Tyres.Tyres` holds `Front_tyres` and `Rear_tyres`, each with seven grip curves, plus per-axle
+`Front/Rear_lateral_scale` and `_longitudinal_scale` (1.0 on the cars checked):
+
+- **Lateral** (`Pure_Lateral_Grip`, `Brake_Slip_Lateral_Grip`, `Traction_Slip_Lateral_Grip`): `Gradient`,
+  `Peak_Force_Coefficient`, `Peak_Slip_Angle` (degrees), and a fourth field that is 0.5 on every car. "Pure"
+  applies with no longitudinal slip; the other two while the wheel brakes or spins up.
+- **Longitudinal** (`Brake_Pure_Long_Grip`, `Traction_Pure_Long_Grip`, `Brake_Slip_Long_Grip`,
+  `Traction_Slip_Long_Grip`): `Peak_Force_Coefficient` at `Peak_Slip_Ratio`, then
+  `Max_Slip_Force_Coefficient` at `Max_Slip_Ratio`. "Slip" applies while the tyre also slides sideways.
+
+Shape of the lateral curve: across all 197 handling objects, `Gradient × Peak_Slip_Angle / Peak` is 3.0 for
+most pure-lateral curves. That is the initial slope of a cubic Hermite from (0, 0) to the peak with a flat
+tangent there, so the curve is modelled that way (the ratio varies from 1.5 to 6 elsewhere, and the same
+Hermite covers those). Grip stays at the peak beyond the peak angle.
+
+The 911's front pure curve peaks at 25° of slip and its rear at 10° with a stiff gradient. The rear
+`Brake_Slip_Lateral_Grip` (gradient 0.069, peak at 50°) gives a locked rear almost no grip at small angles,
+which is what makes a handbrake turn rotate the car. Steering ranges are large (35° at low speed) to suit
+these peak angles.
+
+Not used yet: `Lateral/Long_Slip_Factors` (probably how slip blends the pure and slip curves), `Grip_factor`
+and `Sliding_grip_factor` (3.1 front / 4.5 rear on the 911), `Available_grip` (28000 / 35000).
+
+### Steering
+
+`SteeringBehaviour`: `Medium_speed` 65 and `High_speed` 135 (mph) split two speed bands. Each band has a
+`*_steering_range` (wheel angle in degrees: 35 low, 20 high, 35 reverse) and three rates in degrees per
+second: `*_steer_rate` (32 / 22) to steer further, `*_counter_steer_rate` (90 / 42) to steer across, and
+`*_center_steer_rate` (42 / 10) to return to centre. `Counter_steer_rate_in_drift` (120),
+`Maximum_steering_angle` (35) and a `Steering_angle_curve` sub-object are not used yet.
+
+## Chase camera
+
+`VehicleCameraContainer` holds `Bonnet`, `Bumper` and `External` cameras. The runtime uses `External`:
+
+| Field | 911 | Meaning |
+|-------|-----|---------|
+| `6e08f788` | (0, 1.6, −4.6) | eye in car space; the bonnet (0, 1.05, 0.8) and bumper (0, 0.425, 1.5) cameras use the same field for their in-car positions |
+| `006e1686` | (0, 1.2, 0.75) | look-at point |
+| `MinFieldOfView` / `MaxFieldOfView` | 70 / 95 | FOV at rest and at top speed. Read as vertical: as horizontal, 70° crops the car much tighter than the original's chase view |
+| `Camera_Roll.Maximum_Roll_Angle` | 4.7 | roll into corners (degrees, per g of lateral acceleration) |
+| `Deceleration_pitch_change.Maximum_Pitch_Change` | 4.5 | nose-down tilt under braking (degrees per g) |
+| `Speed_based_movement.High_Speed_Shake` | `Amplitude` 1.2, `Frequency` 1, `Power` 1.5 | shake grows with (speed / top speed)^Power |
+
+The `Acceleration_movement`, `Yaw_spring_modification` and `Speed_based_height_change` blocks are not named
+yet. The pull-back under acceleration and the yaw lag are model choices until they are.
 
 ## Model decisions (not from data)
 
 | Constant | Value | Why |
 |----------|-------|-----|
+| `LONG_SCALE` | 0.6 | longitudinal force coefficient → μ; calibrated on 0–100 km/h and 100–0 km/h |
+| `LAT_SCALE` | 0.44 | lateral force coefficient → μ; the 911 holds 1.0 g on the skidpad (the data's lateral coefficients are ~1.6× its longitudinal ones on the same tyre, so the two need separate scales) |
+| curve blend | — | lateral curve: pure → brake/traction-slip by (longitudinal force / limit)²; longitudinal: pure → slip by slip angle / pure peak angle |
+| driver aids | — | ABS on the service brakes, traction control unless the handbrake is pulled or the car already slides (the real cars have both; the game's launch times need them) |
+| steering bands | — | low-speed values below `Medium_speed`, high-speed above `High_speed`, linear between |
+| clutch | — | at launch the revs start at 55% of the limiter and rise linearly with wheel speed until the clutch locks at 1.3× that (`CLUTCH_LOCK`); holding them flat made the engine note stall for 1.5 s; only in 1st and reverse (in other gears every throttle tap jumped the revs) |
+| downshifts | — | the race gearbox's `Gear_down_RPM` are kick-down points; off throttle the cruising gearbox's are used, blended by pedal (otherwise coasting jumps the revs ~1800 rpm per downshift) |
 | `DRIVETRAIN_EFFICIENCY` | 0.85 | typical; not found in the data |
-| `GRIP_SCALE` | 0.72 | maps the grip-curve peak to μ; calibrated so 0–100 km/h matches real cars |
-| `SHIFT_TIME` | 0.15 s | the second gearbox has a 0.15 field |
-| `PEAK_SLIP_ANGLE` | 0.12 rad | generic tyre |
-| drag | fitted | quadratic drag chosen so the car tops out at the game's top-speed field |
+| drag | fitted | quadratic drag chosen so the car tops out at `Top_speed_MPH` (the aero block has `*_drag_coefficient` fields whose units are unclear) |
 | wheel axle/side | by position | some specs label wheels the other way round (the Veyron's "Front" wheels are at the back) |
 
 ## Measurements
 
-Run on the flat test track with `mostrusted --drive <car> --test accel|brake` (4× real time, logs `TEST RESULT`).
+Run on the flat test track with `mostrusted --drive <car> --test accel|brake|corner|handbrake` (4× real time,
+logs `TEST RESULT`). `corner` holds 80 km/h and winds the steering in over 15 s; `handbrake` taps the
+handbrake for 0.4 s with half steering at 80 km/h; `drift` does the game's brake-tap drift at 110 km/h (steer 0.8,
+0.3 s brake tap, then 0.6 throttle) and reports how long body slip stays above 10°; `engine` runs a pedal
+sequence for engine-sound checks.
 
-| Car | 0–100 km/h | ¼ mile | top speed | 100–0 km/h |
-|-----|-----------|--------|-----------|------------|
-| Porsche 911 Carrera S | 4.04 s | 11.84 s | 296.6 km/h (data 304) | 37.0 m |
-| Bugatti Veyron SS | 2.53 s | 9.41 s | 423.1 km/h (data 431) | 34.8 m |
-| McLaren MP4-12C | 4.36 s | 11.69 s | 316.4 km/h | 36.0 m |
+Results vary a little between runs (0–100 km/h 3.93 vs 4.33 s on the 911) because the scripted input runs
+in `Update` at 4× real time, not per physics tick. Move it to `FixedUpdate` before fine calibration.
+Brake-tap drift on the 911 (no drift model yet): peak slip 10–14°, above 10° for at most 1.3 s; the original
+holds the drift for as long as you steer.
 
-Real-world references: 911 Carrera S PDK ≈ 4.3 s / 304 km/h; Veyron SS ≈ 2.5 s / 431 km/h; MP4-12C ≈ 3.3 s.
+| Car | 0–100 km/h | ¼ mile | top speed | 100–0 km/h | skidpad (80 km/h) |
+|-----|-----------|--------|-----------|------------|-------------------|
+| Porsche 911 Carrera S | 4.00 s | 11.79 s | 296.6 km/h (data 304) | 38.3 m | 1.01 g at 60% steering, 2.5° body slip |
+| Bugatti Veyron SS | 2.58 s | 9.61 s | 423.2 km/h (data 431) | 34.2 m | 0.99 g |
+| McLaren MP4-12C | 3.56 s | 10.94 s | 316.5 km/h | 37.6 m | 0.93 g |
+
+Real-world references: 911 Carrera S PDK ≈ 3.9–4.3 s / 304 km/h; Veyron SS ≈ 2.5 s / 431 km/h; MP4-12C ≈ 3.3 s.
+
+Handbrake tap (911): body slip peaks at about 5° and the car grips again; a full one-second pull spins it
+(84°). The game holds drifts with `DriftBehaviour` (yaw torque, side force, drift scale, entry and exit
+rules), which is not implemented yet. That is the next step for drifting.
 
 ## Matching the original game
 
@@ -75,5 +146,5 @@ Real-world specs are only a proxy. To tune towards the actual game, measure the 
 3. **Steady-state cornering:** the speed at which a car holds a known-radius roundabout or curve.
 4. **Drift:** the handbrake entry speed and how long a drift holds (the game has explicit drift tuning).
 
-Then adjust the model-decision constants (or decode more fields) until `--test` matches, and record the change
+Then adjust the model-decision constants (or use more fields) until `--test` matches, and record the change
 with its evidence in this file.
