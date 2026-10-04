@@ -12,11 +12,21 @@ use mw_formats::genesys::{Object, Value, field_hash};
 
 use crate::{AssetStore, Error, Result};
 
-/// The timeline free roam most plausibly uses: the lowest-numbered one, with the most common fog variant
-/// (what selects a timeline in game is not found yet).
+/// The lowest-numbered timeline, entry 1 of the timeline paint map (which covers the north-west of the
+/// map with it). Used where nothing is painted.
 pub const DEFAULT_TIMELINE: ResourceId = ResourceId(0x0100_0000_0006_9cbb);
 /// The `EnvironmentSettings` object (sun / moon path, rear-view mirror, car-select lighting).
 pub const SETTINGS: ResourceId = ResourceId(0x0100_0000_0006_9cad);
+/// The `WorldPaintMap` that paints the 25 timelines over the world (`EnvironmentSettings` field
+/// `409f546f` holds its ID's low bits): which timeline lights each place.
+pub const TIMELINE_PAINT_MAP: ResourceId = ResourceId(0x0100_0000_0002_823d);
+/// The `WorldPaintMap` of the 19 `LayerFog` objects (`EnvironmentSettings` field `ae067627`).
+pub const LAYER_FOG_PAINT_MAP: ResourceId = ResourceId(0x0100_0000_0002_85cb);
+/// The road shader's `puddleMapSampler` (bound by the engine, not by any material): a 256² tiling map in
+/// `GLOBALTEXTUREDICTIONARY.BNDL`. x = how much of the road normal survives (low in puddles), y =
+/// roughness scale (≈ 0.07, ≈ 0 in puddles), z = albedo darkening (0.45 in puddles, ≈ 0.8 around), w = wet
+/// amount (1 in puddles, ≈ 0.55 around). Identified by its channels matching the shader's use of them.
+pub const PUDDLE_MAP: ResourceId = ResourceId(0x0100_0000_0000_7811);
 
 /// Sub-structure field hashes whose names are not cracked.
 const SKY: u32 = 0x7dfab0cc;
@@ -58,6 +68,29 @@ pub struct Clouds {
     pub opacity: f32,
     pub feathering: f32,
     pub intensity: f32,
+    /// `Scale` (3.5 at noon, 5 on the noon Alternate) and `Speed` (5): the NewSky layers' uv scale and
+    /// scroll speed are set from these on the CPU (mapping not decoded).
+    pub scale: f32,
+    pub speed: f32,
+}
+
+/// `EnvironmentKeyframe.Weather`. There is no precipitation anywhere in the data (no rain field, texture,
+/// shader or effect): weather is wind, a night-time thunderstorm intensity, the Alternate keyframes and
+/// the static road wetness (research log "weather").
+#[derive(Debug, Clone, Default)]
+pub struct Weather {
+    /// Degrees (130 on every keyframe), `WindBearingVariability` ±25°.
+    pub wind_bearing: f32,
+    pub wind_bearing_variability: f32,
+    /// 1 and 3.5 on every keyframe (m/s, assumed).
+    pub wind_speed_min: f32,
+    pub wind_speed_max: f32,
+    /// `Thunderstorm_Intensity`: 0.23 on the 42 night keyframes (00:00–04:00), else 0. How the game
+    /// shows it is not in the data (no lightning shader or texture found).
+    pub thunderstorm_intensity: f32,
+    /// `0141d842`: 0.25 on daytime keyframes (05:00–15:00), 0.15 in the evening, at night and on every
+    /// Alternate (unnamed).
+    pub unknown_0141d842: f32,
 }
 
 /// The keyframe's tonemap / auto-exposure settings (`EnvironmentKeyframe.Camera`), in the order the game's
@@ -100,6 +133,13 @@ pub struct EnvironmentKeyframe {
     pub fog: Fog,
     pub colour_cube: Option<ResourceId>,
     pub exposure: CameraExposure,
+    /// The keyframe's bad-weather twin. 154 of the 175 keyframes name one of only 7 Alternates, one per
+    /// time-of-day band (night, dawn ×2, morning, noon, evening, plus one for the front-end timeline
+    /// `…9efca`): hazier versions (fog far 550–1200 m instead of 1500+, key light ×0.6–0.8, brighter
+    /// shadow fill, thinner sun glow). No timeline lists an Alternate directly; what switches to them
+    /// is not in the data.
+    pub alternate: Option<ResourceId>,
+    pub weather: Weather,
 }
 
 fn get(o: &Object, hash: u32) -> Option<&Value> {
@@ -163,7 +203,22 @@ impl EnvironmentKeyframe {
             ))));
         }
         let h = field_hash;
-        let mut out = Self { id, colour_cube: handle(o, h("ColourCube")), ..Default::default() };
+        let mut out = Self {
+            id,
+            colour_cube: handle(o, h("ColourCube")),
+            alternate: handle(o, h("Alternate")),
+            ..Default::default()
+        };
+        if let Some(w) = sub(o, h("Weather")) {
+            out.weather = Weather {
+                wind_bearing: float(w, h("WindBearing")),
+                wind_bearing_variability: float(w, h("WindBearingVariability")),
+                wind_speed_min: float(w, h("WindSpeedMin")),
+                wind_speed_max: float(w, h("WindSpeedMax")),
+                thunderstorm_intensity: float(w, h("Thunderstorm_Intensity")),
+                unknown_0141d842: float(w, 0x0141d842),
+            };
+        }
         if let Some(rig) = sub(o, h("LightRig")) {
             out.key_light = rgb(rig, h("KeyLightColour"));
             out.ambient = AmbientRig {
@@ -207,6 +262,8 @@ impl EnvironmentKeyframe {
             out.clouds.light = rgb(c, h("LightColour"));
             out.clouds.opacity = float(c, h("Opacity"));
             out.clouds.feathering = float(c, h("Feathering"));
+            out.clouds.scale = float(c, h("Scale"));
+            out.clouds.speed = float(c, h("Speed"));
         }
         if let Some(f) = sub(o, FOG) {
             let sc = floats(f, h("ScatteringColour"));
@@ -303,36 +360,181 @@ impl SunMoonPath {
     }
 }
 
+fn mix(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
+
+fn mix3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    [0, 1, 2].map(|i| mix(a[i], b[i], t))
+}
+
+impl EnvironmentKeyframe {
+    /// A keyframe between `self` (t = 0) and `other` (t = 1): every value interpolated linearly, the sky
+    /// gradient resampled at the union of both keyframes' stops, the cloud texture, colour cube and
+    /// handles taken from the nearer keyframe.
+    pub fn lerp(&self, other: &Self, t: f32) -> Self {
+        let t = t.clamp(0.0, 1.0);
+        let near = if t < 0.5 { self } else { other };
+        let mut positions: Vec<f32> = self.sky_gradient.iter().chain(&other.sky_gradient).map(|s| s.0).collect();
+        positions.sort_by(f32::total_cmp);
+        positions.dedup_by(|a, b| (*a - *b).abs() < 1e-4);
+        let sky_gradient =
+            positions.iter().map(|&p| (p, mix3(self.sky_gradient_at(p), other.sky_gradient_at(p), t))).collect();
+        let (a, b) = (&self.ambient, &other.ambient);
+        let (fa, fb) = (&self.fog, &other.fog);
+        let (ea, eb) = (&self.exposure, &other.exposure);
+        let (wa, wb) = (&self.weather, &other.weather);
+        let (ca, cb) = (&self.clouds, &other.clouds);
+        Self {
+            id: near.id,
+            key_light: mix3(self.key_light, other.key_light, t),
+            ambient: AmbientRig {
+                key: mix3(a.key, b.key, t),
+                shadow: mix3(a.shadow, b.shadow, t),
+                up: mix3(a.up, b.up, t),
+                down: mix3(a.down, b.down, t),
+                left: mix3(a.left, b.left, t),
+                right: mix3(a.right, b.right, t),
+                scale: mix(a.scale, b.scale, t),
+            },
+            sun_colour: [0, 1, 2, 3].map(|i| mix(self.sun_colour[i], other.sun_colour[i], t)),
+            sky_gradient,
+            sky_reflection_colour: mix3(self.sky_reflection_colour, other.sky_reflection_colour, t),
+            sky_reflection_light: mix3(self.sky_reflection_light, other.sky_reflection_light, t),
+            clouds: Clouds {
+                texture: near.clouds.texture,
+                dark: mix3(ca.dark, cb.dark, t),
+                light: mix3(ca.light, cb.light, t),
+                opacity: mix(ca.opacity, cb.opacity, t),
+                feathering: mix(ca.feathering, cb.feathering, t),
+                intensity: mix(ca.intensity, cb.intensity, t),
+                scale: mix(ca.scale, cb.scale, t),
+                speed: mix(ca.speed, cb.speed, t),
+            },
+            fog: Fog {
+                colour: mix3(fa.colour, fb.colour, t),
+                colour_sun: (0..fa.colour_sun.len().max(fb.colour_sun.len()))
+                    .map(|i| {
+                        let g = |v: &[f32]| v.get(i).copied().unwrap_or(0.0);
+                        mix(g(&fa.colour_sun), g(&fb.colour_sun), t)
+                    })
+                    .collect(),
+                near: mix(fa.near, fb.near, t),
+                far: mix(fa.far, fb.far, t),
+                power: mix(fa.power, fb.power, t),
+                scattering_colour: mix3(fa.scattering_colour, fb.scattering_colour, t),
+                scattering_phase: mix(fa.scattering_phase, fb.scattering_phase, t),
+                scattering_strength: mix(fa.scattering_strength, fb.scattering_strength, t),
+            },
+            colour_cube: near.colour_cube,
+            exposure: CameraExposure {
+                min: mix(ea.min, eb.min, t),
+                max: mix(ea.max, eb.max, t),
+                bias: mix(ea.bias, eb.bias, t),
+                luminance_low: mix(ea.luminance_low, eb.luminance_low, t),
+                luminance_high: mix(ea.luminance_high, eb.luminance_high, t),
+                target_low: mix(ea.target_low, eb.target_low, t),
+                target_high: mix(ea.target_high, eb.target_high, t),
+                tolerance: mix(ea.tolerance, eb.tolerance, t),
+                speed: mix(ea.speed, eb.speed, t),
+            },
+            alternate: near.alternate,
+            weather: Weather {
+                wind_bearing: mix(wa.wind_bearing, wb.wind_bearing, t),
+                wind_bearing_variability: mix(wa.wind_bearing_variability, wb.wind_bearing_variability, t),
+                wind_speed_min: mix(wa.wind_speed_min, wb.wind_speed_min, t),
+                wind_speed_max: mix(wa.wind_speed_max, wb.wind_speed_max, t),
+                thunderstorm_intensity: mix(wa.thunderstorm_intensity, wb.thunderstorm_intensity, t),
+                unknown_0141d842: mix(wa.unknown_0141d842, wb.unknown_0141d842, t),
+            },
+        }
+    }
+}
+
+/// Where the environment at an hour comes from: the two timeline keyframes around it and the blend.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TimelinePosition {
+    pub from: ResourceId,
+    pub to: ResourceId,
+    /// 0 = `from`, 1 = `to`.
+    pub t: f32,
+}
+
 impl AssetStore {
     pub fn sun_moon_path(&self) -> Result<SunMoonPath> {
         Ok(SunMoonPath::from_settings(&self.decode_genesys(&self.load(SETTINGS)?)?))
     }
 
-    /// The keyframe a timeline uses at an hour (0–23): the entry for that hour, else the latest earlier
-    /// one.
-    pub fn environment_keyframe_at(&self, timeline: ResourceId, hour: u32) -> Result<EnvironmentKeyframe> {
+    /// A timeline's `(hour, keyframe)` entries in hour order.
+    pub fn timeline_entries(&self, timeline: ResourceId) -> Result<Vec<(f32, ResourceId)>> {
         let tl = self.decode_genesys(&self.load(timeline)?)?;
-        let entries: Vec<(i64, ResourceId)> = match tl.get(TIMELINE_ENTRIES) {
+        let mut entries: Vec<(f32, ResourceId)> = match tl.get(TIMELINE_ENTRIES) {
             Some(Value::Array(a)) => a
                 .iter()
                 .filter_map(|e| match e {
-                    Value::Struct(s) => {
-                        let hour = float(s, ENTRY_HOUR) as i64;
-                        Some((hour, handle(s, field_hash("Keyframe"))?))
-                    }
+                    Value::Struct(s) => Some((float(s, ENTRY_HOUR), handle(s, field_hash("Keyframe"))?)),
                     _ => None,
                 })
                 .collect(),
             _ => Vec::new(),
         };
+        entries.sort_by(|a, b| a.0.total_cmp(&b.0));
+        if entries.is_empty() {
+            return Err(Error::Missing(timeline));
+        }
+        Ok(entries)
+    }
+
+    /// The keyframe a timeline uses at an hour (0–23): the entry for that hour, else the latest earlier
+    /// one.
+    pub fn environment_keyframe_at(&self, timeline: ResourceId, hour: u32) -> Result<EnvironmentKeyframe> {
+        let entries = self.timeline_entries(timeline)?;
         let id = entries
             .iter()
-            .filter(|(h, _)| *h <= hour as i64)
-            .max_by_key(|(h, _)| *h)
+            .rfind(|(h, _)| *h <= hour as f32)
             .or_else(|| entries.first())
             .map(|(_, id)| *id)
             .ok_or(Error::Missing(timeline))?;
         self.environment_keyframe(id)
+    }
+
+    /// The two entries around an hour (0–24, wrapping) and how far between them it lies. Timelines hold
+    /// a keyframe over several hours by repeating it (00–03, 05–06, 07–08, ...), which only makes sense
+    /// if the game interpolates between entries, so the blend is linear in time (provisional).
+    pub fn timeline_position(&self, timeline: ResourceId, hour: f32) -> Result<TimelinePosition> {
+        let entries = self.timeline_entries(timeline)?;
+        let hour = hour.rem_euclid(24.0);
+        let i = entries.iter().rposition(|(h, _)| *h <= hour).unwrap_or(entries.len() - 1);
+        let (h0, from) = entries[i];
+        let (h1, to) = entries[(i + 1) % entries.len()];
+        let span = (h1 - h0).rem_euclid(24.0);
+        let t = if span > 0.0 { (hour - h0).rem_euclid(24.0) / span } else { 0.0 };
+        Ok(TimelinePosition { from, to, t })
+    }
+
+    /// The environment of a timeline at an hour, blended between its keyframes; with `alternate`, from
+    /// the keyframes' Alternate (bad-weather) twins where they have one.
+    pub fn environment_at(&self, timeline: ResourceId, hour: f32, alternate: bool) -> Result<EnvironmentKeyframe> {
+        let p = self.timeline_position(timeline, hour)?;
+        let load = |id: ResourceId| -> Result<EnvironmentKeyframe> {
+            let k = self.environment_keyframe(id)?;
+            match k.alternate.filter(|_| alternate) {
+                Some(alt) => self.environment_keyframe(alt),
+                None => Ok(k),
+            }
+        };
+        let from = load(p.from)?;
+        if p.from == p.to || p.t <= 0.0 {
+            return Ok(from);
+        }
+        Ok(from.lerp(&load(p.to)?, p.t))
+    }
+
+    /// The timeline painted at a world position (`TIMELINE_PAINT_MAP`), or [`DEFAULT_TIMELINE`] where
+    /// nothing is painted.
+    pub fn environment_timeline_at(&self, x: f32, z: f32) -> Result<ResourceId> {
+        let map = mw_formats::WorldPaintMap::parse(&self.load(TIMELINE_PAINT_MAP)?)?;
+        Ok(map.entry_at(x, z).map_or(DEFAULT_TIMELINE, |e| ResourceId(0x0100_0000_0000_0000 | e as u64)))
     }
 
     pub fn environment_keyframe(&self, id: ResourceId) -> Result<EnvironmentKeyframe> {

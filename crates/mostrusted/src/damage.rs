@@ -343,7 +343,7 @@ fn run_crash_test(
 fn crash_camera(
     test: Res<CrashTest>,
     cars: Query<&GlobalTransform, With<CarDamage>>,
-    mut camera: Query<&mut Transform, With<Camera3d>>,
+    mut camera: Query<&mut Transform, crate::MainCamera>,
 ) {
     let (Ok(car), Ok(mut cam)) = (cars.single(), camera.single_mut()) else { return };
     let (target, eye) = if test.angle == 0.0 {

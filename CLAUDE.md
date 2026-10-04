@@ -67,6 +67,11 @@ cargo fmt                                    # rustfmt.toml: max_width 120
 # Visual check without a human: renders, saves, exits
 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,1720 --screenshot <scratch>/road.png   # see docs/viewpoints.md
 ./target/release/mostrusted --vehicle "911" --camera 4.5,1.4,4.0,0,0.4,0 --screenshot <scratch>/car.png
+# Time of day and weather (weather.rs; interactive: F5/F6 hour, F7 weather). The timeline is the one painted
+# under the camera (--timeline <id|default> overrides); --weather = the Alternate (bad-weather) keyframes.
+# Roads are always wet as in the game (--road-wetness 0 dries them); --planar-reflection mirrors the scene in them
+./target/release/mostrusted --camera=-1131,27,1627,-1190,15,1720 --units 20 --hour 1.5 --weather --planar-reflection --screenshot <scratch>/wet.png
+./target/release/mwtool paint-map 010000000002823d --png <scratch>/timelines.png --at=-1158,1700   # WorldPaintMap + zone outlines
 # Handling tests on a flat track (4x real time), prints TEST RESULT lines and exits
 ./target/release/mostrusted --drive 911 --test accel     # or brake, corner (skidpad g), handbrake, drift, engine
 # Engine RPM every physics tick, for `mwtool engine-sound --trace` (use with --test engine)

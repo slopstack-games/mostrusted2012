@@ -2,7 +2,9 @@
 
 Fixed camera poses for visual checks with `--camera x,y,z,look_x,look_y,look_z --screenshot out.png`.
 Screenshots contain game content, so keep them local (session scratchpad), never in the repo.
-Use `--camera=` when the first value is negative. `--hour N` (0–23, default 13) picks the time of day.
+Use `--camera=` when the first value is negative. `--hour N` (0–24, fractions blend keyframes, default 13) picks
+the time of day; `--weather` uses the Alternate (bad-weather) keyframes; the timeline is the one painted under
+the camera unless `--timeline <id|default>` is given (screenshots taken before 2026-10-04 used `default`).
 
 | name | args | shows |
 |------|------|-------|
@@ -19,3 +21,5 @@ Use `--camera=` when the first value is negative. `--hour N` (0–23, default 13
 | lamp-post | `--camera=-1112,24,1640,-1130,20,1630 --mute` | compound-object street lamp upright next to a tree |
 | grass-tufts | `--camera=-1130,26.5,1599,-1135.5,24.5,1608 --mute` | groundcover: dark grass tufts on a lawn next to a wall (full map; `--no-groundcover` to compare) |
 | airfield-arch | `--camera=600,400,-600,300,0,-2000 --mute` | southern mountains; known seam: the mountain north of the airfield is cut into an arch where zones 46/55 do not list it |
+| road-wet | `--camera=-1131,27,1627,-1190,15,1720 --units 20 --mute` (+ `--road-wetness 0` for dry, `--planar-reflection`) | road-cliff with the wet path: puddles (puddle map), damp sheen; with `--planar-reflection` the trees reflect in the road |
+| road-wet-night | `--camera=-1131,27,1627,-1190,15,1720 --units 20 --mute --hour 1 --planar-reflection` | wet night road reflecting the trees; add `--weather` for the night Alternate (fog far 7500 m) |

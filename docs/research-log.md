@@ -59,6 +59,22 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
   (400, 1000, 2) are unnamed.
 - VehicleList entry fields beyond ID / names / year (floats look like stats; u16 near 0x6A may be RPM).
 
+### Environment and weather
+- What switches to the `Alternate` keyframes (7 hazy twins, one per time-of-day band; no timeline lists
+  them). A gameplay state (events, pursuit), a random weather roll, or a menu option? Nothing in GeneSys
+  references them except the keyframes.
+- `Weather.Thunderstorm_Intensity` (0.23 on night keyframes): how the game shows it (no lightning shader,
+  texture, effect or sound was found). `Weather` `0141d842` (0.25 day / 0.15 evening, night and Alternates)
+  and `e8eb5d48` (0 everywhere) are unnamed.
+- Who reads the wind (`WindBearing` 130° ± `WindBearingVariability` 25°, `WindSpeedMin/Max` 1 / 3.5)? The
+  tree shader's sway is per material and only time-driven; cloud offsets are CPU-side (`Clouds.Speed` 5).
+- `WetScaleParams` values (puddle tiling, reflection distortion, reflection blur): CPU-set; ours are guesses
+  (`materials::WET_SCALE_PARAMS`). The planar reflection plane height and its "Modified" projection.
+- When surfaces use `SurfaceType.Wet_Conditions` (wet tyre marks, spray, sounds) instead of `Dry_Conditions`.
+- `EnvironmentSettings.DayNightTransition` (`1ab46d30` 8.5, `0e2be130` 20, two (1, 0) pairs) and the
+  `Rendering` block (sky material handle, `MoonDiscAlpha`, `SunDiscAlpha`, `31c63004` 180, 3.5 × 2).
+- `WorldPaintMap` header u32 at 0x24 (4878 / 1926 / 94).
+
 ### Vehicle damage
 - How the game turns an impact into zone damage: which `ImpactDamageGraphs` curve (two of them; the second
   has its low point the other way round, `(0, 6 %)`?), what units (mph assumed), how damage is split between
@@ -81,6 +97,77 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 ---
 
 ## Findings
+
+### 2026-10-04 (weather): status / next steps
+- Works: runtime environment (`weather.rs`: painted timeline under the camera, fractional hours, F5/F6/F7,
+  `--weather`, `--timeline`), road wet path (`--road-wetness`), opt-in planar reflection
+  (`--planar-reflection`), `mwtool paint-map`. fmt / clippy (0 warnings) / tests / `mwtool verify` (0
+  failures) pass.
+- Integration note: the planar reflection adds a second `Camera3d`; every main-camera query must use
+  `crate::MainCamera` (done in main, drive, garage, damage, weather). New queries (e.g. the camera agent's
+  `camera.rs`) need it too before the reflection can be on by default.
+- Pre-existing, not from this work: the daytime sky renders black in the main view (the mirrored view,
+  which skips the game tonemap, shows it blue), so the game tonemap / grade likely crushes it.
+- Next: make the planar reflection default once camera queries are merged; give it a mip chain; tune
+  `WetScaleParams`; port `PlotPBR_AO_StandingWater` and `WorldPBR_Horizontal_PlanarReflection`; tree sway
+  (needs a `Layered` vertex shader); blend when the painted timeline changes; LayerFog from its paint map.
+
+### 2026-10-04 (weather): what the data has for weather, timeline paint map, wet roads
+- **No rain.** No precipitation exists in the PC data: no GeneSys type or field with rain / precipitation /
+  wetness vocabulary (12,410 type rows searched), no rain / drop / splash / lightning shader (`mwtool shaders`),
+  no such texture in `ENVIRONMENT.BNDL`, `GLOBALEFFECTS.BNDL`, `GLOBALTEXTUREDICTIONARY.BNDL`,
+  `HAWAII/GLOBALRESOURCES.BNDL`, no rain string in `GLOBALEFFECTS` effects, and the `Weather` block holds only
+  floats (no effect or texture handle). A rain effect would be an invention, so none is drawn.
+- **`Weather` block** (cracked with weather vocabularies + `/usr/share/dict` words, accepted only where the
+  values fit): `WindBearing` 130, `WindBearingVariability` 25, `WindSpeedMin` 1, `WindSpeedMax` 3.5 (all
+  175 keyframes), `Thunderstorm_Intensity` (0.23 on the 42 night keyframes, 00:00–04:00, else 0), `0141d842`
+  (0.25 on daytime keyframes, 0.15 in the evening, at night and on every Alternate), `e8eb5d48` (0).
+  Also cracked: `SparkExposure` (Vfx: −3 night, 0 morning / evening, 0.75 noon), `DistanceBlend` (HeatHaze,
+  100), and five array counts that equal their arrays' lengths (`ColourSunCount` 5, `SkyColorGradientCount`
+  30, `ScatteringColourCount` 3, `TintColourCount` 4, `LensFlareColourCount` 5). Rejected as flukes
+  (two-word hits that don't read as names or don't fit): `NearPlane`, `CapSun`, `AnimateSpeed`,
+  `ExposureDefault`, `IntensityStandard`, `BrightnessAdjustment`, `BrightnessOverride`.
+  `655d3f5f` (`CgsCore.UniqueId`) is the object's own ID low bits at top level and 0 in sub-structs.
+- **Alternate keyframes**: 154 of 175 keyframes name one of only 7 Alternates (the earlier "seven keyframes
+  have Alternates" was the other way round): night 00–04 (`…124683`), dawn 05–06 (`…1d3c66`, `…12466e`),
+  morning 07–10 (`…1d3c62`), noon 12–15 (`…1d3c65`), evening 17–23 (`…1d3c63`), and `…f083a` for the
+  front-end timeline `…9efca`. Hour 04 keyframes have none. No timeline lists an Alternate. They are hazier:
+  fog far 550–1200 m (vs 1500+), key light ×0.6–0.8, brighter shadow fill, their own colour cube, cloud
+  `LightColour` 1.72 → 1.0. Nothing in the data selects them; `--weather` / F7 switch to them.
+- **Which timeline lights a place: `WorldPaintMap` (0x91).** `EnvironmentSettings` fields `409f546f` /
+  `ae067627` hold the low bits of `…2823d` / `…285cb` in `ENVIRONMENT.BNDL`: quadtree maps over 1 km cells
+  painting the 25 timelines and the 19 `LayerFog` objects (formats.md). `VfxGlobals` `5e608031` names a third
+  (`GLOBALEFFECTS.BNDL` `…285cc`, one `ParticleLighting`). Cell = floor(x / 1000) + 3, floor(z / 1000) + 5 for
+  the timeline map: checked by drawing the 169 zone outlines over it (`mwtool paint-map … --png`): region
+  borders follow zone edges and the river, and every zone is painted. The drive spawn is under `…1245c8`,
+  downtown under `…1245c6`, the north-west under the default `…69cbb`. Timelines repeat a keyframe over
+  consecutive hours (00–03, 05–06, ...), which only makes sense with interpolation, so hours now blend
+  linearly between entries (provisional).
+- **Wet roads are always on.** `DriveableSurface` main pass decoded: t5 = RoadDepth (material), t6 =
+  `puddleMapSampler` (engine-bound), t7 = planar reflection, t8 = env-BRDF LUT; `WetScaleParams` (global CB)
+  x = puddle tiling of world xz, y = reflection distortion by (N − N_vertex).xz, z = reflection mip per
+  roughness. wet = puddle.w × saturate(TEXCOORD5.x); k = lerp(1, (RoadDepth.y × puddle.x, puddle.y, puddle.z),
+  wet); N = N_v + k.x (N − N_v); roughness × k.y; albedo × k.z; F0 = lerp(0.02, F0, k.x); indirect = albedo ×
+  baked vertex light + planar(mirrored projection + distortion, mip) × envBRDF(N·V, roughness, F0) × wet. There
+  is no global wetness input, so roads are as wet as the puddle map says, day and night. TEXCOORD5.x is a
+  per-vertex mask: 0 on 22 % of TRK_UNIT1's road vertices, ≥ 1 on 78 % (max 3.9, saturated).
+- **The puddle map** is `GLOBALTEXTUREDICTIONARY.BNDL` `…7811` (256², no material binds it): x ≈ 0.9 around /
+  low in puddles (normal kept), y ≈ 0.07 / 0 (roughness scale), z ≈ 0.8 / 0.45 (darkening), w ≈ 0.55 / 1
+  (wet amount): identified by these channels matching the shader's use (it is the only texture with them).
+- `PlotPBR_AO_StandingWater` (28 meshes) runs the same wet maths with its own `PuddleTextureSampler` at
+  TEXCOORD1 and no RoadDepth (not ported).
+- **`SurfaceType`** has `Dry_Conditions` / `Wet_Conditions` blocks (cracked): 57 of 65 surface types give the
+  wet one other tyre-mark materials, `Surface_vfx`, sounds or `VehicleEffects`. What makes a surface wet is
+  unknown.
+- Implemented: `weather.rs` (environment rebuilt at runtime on a background thread: F5 / F6 hour, F7
+  Alternate, timeline from the paint map under the camera, `--hour` fractions, `--timeline`), the road wet
+  path in `layered.wgsl` (puddle map, RoadDepth, vertex wetness mask in COLOR, vertex AO), and an optional
+  planar reflection (`reflection.rs`, `--planar-reflection`: a mirrored camera through the same deferred
+  pipeline, clipped below the plane; the sky cube stands in without it). Not done: rain (not in the data),
+  tree sway (decoded, needs a vertex shader for the Layered material), cloud scroll, thunderstorms.
+- Dead end: the first keyframe survey script overwrote entries and reported 7 keyframes *with* Alternates;
+  `mwtool genesys` truncates arrays at 16 items by default, which hid timeline hours 19–23 (use
+  `--max-items 40`).
 
 ### 2026-10-04 (session 2): NewSky shader read
 - Main PS (`…79648d36`): glow = pow(saturate(dir · KeyLightDir), SunColour.w) × SunColour.rgb (exponent 0.65 at
@@ -379,7 +466,8 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
   layout): 25 timelines × 21 hourly keyframes; default timeline `…69cbb`, noon keyframe `…124619` (key light
   (11, 7.95, 5.21), ambient scale 2.6, fog near 80 / far 1525 / power 1.5, cloud texture `…3f46`). 29 names
   added to `genesys_names.txt`, each checked against its hash. Seven `Alternate` keyframes are bad-weather
-  twins (dimmer key light, nearer fog); nothing found yet selects a timeline for free roam.
+  twins (dimmer key light, nearer fog); nothing found yet selects a timeline for free roam. (Superseded on
+  2026-10-04, weather entry: 154 keyframes share 7 Alternates; a WorldPaintMap selects the timeline.)
 - The renderer now takes key light, ambient rig (→ irradiance cube), sky gradient + sun colour + cloud layer
   (→ skybox and reflection cube) and fog from the keyframe at `--hour` (default 13). Game HDR units × 1200 =
   cd/m² / lux (`GAME_UNIT`) until the game's exposure is ported.

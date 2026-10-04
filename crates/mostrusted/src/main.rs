@@ -13,8 +13,10 @@ mod garage;
 mod loader;
 mod materials;
 mod menu;
+mod reflection;
 mod sky;
 mod tonemap;
+mod weather;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -23,7 +25,6 @@ use std::time::{Duration, Instant};
 
 use bevy::camera_controller::free_camera::{FreeCamera, FreeCameraPlugin};
 use bevy::image::{CompressedImageFormatSupport, CompressedImageFormats};
-use bevy::light::{GeneratedEnvironmentMapLight, Skybox};
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 use clap::Parser;
@@ -113,9 +114,22 @@ struct Cli {
     /// Save a screenshot once loading has finished, then exit.
     #[arg(long)]
     screenshot: Option<PathBuf>,
-    /// Hour of the day (0–23) on the environment timeline.
-    #[arg(long, default_value_t = 13)]
-    hour: u32,
+    /// Hour of the day (0–24, fractions blend between the timeline's keyframes). F5 / F6 change it.
+    #[arg(long, default_value_t = 13.0)]
+    hour: f32,
+    /// Bad weather: use the keyframes' Alternate twins (hazier, dimmer). F7 toggles it.
+    #[arg(long)]
+    weather: bool,
+    /// Environment timeline (resource ID, or `default`) instead of the one painted under the camera.
+    #[arg(long)]
+    timeline: Option<String>,
+    /// Scale the roads' wet amount (1 = the game; 0 = dry roads, for comparison).
+    #[arg(long, default_value_t = 1.0)]
+    road_wetness: f32,
+    /// Render the wet roads' planar reflection with a second, mirrored camera (doubles the scene's
+    /// rendering; without it wet roads reflect the sky cube).
+    #[arg(long)]
+    planar_reflection: bool,
     /// Vehicle light state `brake,headlights,reverse,tail` (0–1 each; the game's
     /// `g_selfIlluminationMask`). Driving switches brake and reverse with the pedals.
     #[arg(long, value_delimiter = ',', default_value = "0,1,0,1")]
@@ -135,7 +149,12 @@ struct Cli {
 
 #[derive(Resource)]
 pub struct Game {
-    hour: u32,
+    environment: weather::EnvironmentKey,
+    /// `--timeline` given: don't follow the timeline paint map.
+    fixed_timeline: bool,
+    road_wetness: f32,
+    /// Bake environment changes on the main thread (deterministic screenshot / test runs).
+    sync_environment: bool,
     pub store: Arc<AssetStore>,
     request: Request,
     camera: Option<Transform>,
@@ -146,18 +165,21 @@ pub struct Game {
     mute: bool,
 }
 
+/// The player's view: every `Camera3d` except the planar reflection's mirrored camera (`reflection.rs`).
+pub type MainCamera = (With<Camera3d>, Without<reflection::PlanarReflectionCamera>);
+
 /// GPU meshes and materials making up one game Model.
 pub type ModelParts = Vec<(Handle<Mesh>, Handle<GameMaterial>)>;
 
 /// Bevy-side caches keyed by game resource IDs.
 #[derive(Resource, Default)]
-struct Loaded {
+pub(crate) struct Loaded {
     textures: HashMap<TexKey, Handle<Image>>,
     models: HashMap<ResourceId, ModelParts>,
     materials: HashMap<Look, Handle<GameMaterial>>,
     instances: usize,
     status: String,
-    done: bool,
+    pub(crate) done: bool,
     started: Option<Instant>,
 }
 
@@ -291,7 +313,31 @@ fn main() -> anyhow::Result<()> {
     if cli.gamepad_debug {
         app.add_systems(Update, drive::log_gamepad_events);
     }
-    app.add_plugins(FreeCameraPlugin)
+    // The environment timeline: `--timeline`, else the one painted where the view starts (the camera
+    // pose or the drive spawn; the default timeline until the world view has a focus).
+    let fixed_timeline =
+        cli.timeline.is_some() || !matches!(request, Request::World { .. } | Request::Drive { world: true, .. });
+    let start_timeline = match cli.timeline.as_deref() {
+        Some("default") | None if fixed_timeline => mw_assets::environment::DEFAULT_TIMELINE,
+        Some(s) => ResourceId::parse(s).ok_or_else(|| anyhow::anyhow!("bad --timeline {s}"))?,
+        None => {
+            let focus = match &request {
+                Request::Drive { spawn, .. } => Some(*spawn),
+                _ => camera.map(|c| c.translation),
+            };
+            focus.map_or(mw_assets::environment::DEFAULT_TIMELINE, |p| {
+                store.environment_timeline_at(p.x, p.z).unwrap_or(mw_assets::environment::DEFAULT_TIMELINE)
+            })
+        }
+    };
+    let sync_environment = screenshot.is_some() || test.is_some() || crash;
+    // The wet roads' planar reflection: a mirrored camera, only where there is a world to reflect.
+    let reflection = cli.planar_reflection
+        && cli.road_wetness > 0.0
+        && matches!(request, Request::World { .. } | Request::Drive { world: true, .. });
+    app.add_plugins(weather::WeatherPlugin { hud: menu_enabled })
+        .add_plugins(reflection::PlanarReflectionPlugin { enabled: reflection })
+        .add_plugins(FreeCameraPlugin)
         .add_plugins(MaterialPlugin::<GameMaterial>::default())
         .add_plugins(deferred::GameLightingPlugin)
         .add_plugins(tonemap::GameTonemapPlugin)
@@ -309,7 +355,14 @@ fn main() -> anyhow::Result<()> {
             camera,
             screenshot,
             screenshot_delay: cli.screenshot_delay,
-            hour: cli.hour.min(23),
+            environment: weather::EnvironmentKey {
+                timeline: start_timeline,
+                hour: cli.hour.rem_euclid(24.0),
+                alternate: cli.weather,
+            },
+            fixed_timeline,
+            road_wetness: cli.road_wetness.max(0.0),
+            sync_environment,
             paint,
             filter,
             mute: cli.mute || test.is_some() || crash,
@@ -323,22 +376,9 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// cd/m² (and lux, for the key light) per unit of the game's HDR values (environment keyframes, sky).
-/// The camera's exposure divides it out again, so the HDR target holds game units for the game's tonemap
-/// (`tonemap.rs`); the scale only matters to Bevy's forward lighting (translucent materials).
-const GAME_UNIT: f32 = 1200.0;
+use weather::GAME_UNIT;
 
 fn setup(mut commands: Commands, game: Res<Game>, mut images: ResMut<Assets<Image>>) {
-    // The key light's direction from the environment's sun / moon path at this hour.
-    let to_sun = match game.store.sun_moon_path() {
-        Ok(path) => Vec3::from(path.key_light_direction(game.hour as f32)),
-        Err(e) => {
-            warn!("no sun path ({e})");
-            Vec3::new(0.45, 0.78, 0.43)
-        }
-    };
-    info!("key light from {to_sun:.3}");
-    let sun = Transform::IDENTITY.looking_to(-to_sun, Vec3::Y);
     // The game renders deferred: the camera keeps a depth + deferred G-buffer prepass (which the game
     // materials fill with the game's G-buffer) and renders in HDR.
     let camera = commands
@@ -356,76 +396,19 @@ fn setup(mut commands: Commands, game: Res<Game>, mut images: ResMut<Assets<Imag
             Projection::Perspective(PerspectiveProjection { far: 20_000.0, ..default() }),
         ))
         .id();
-    // Time of day from the environment timeline: key light, ambient rig, sky and fog. The sky becomes
-    // the skybox, the reflection cube the material passes read, and a Bevy environment light for the
-    // forward (translucent) materials; the rig becomes the lighting pass's irradiance cube.
-    let sun_dir = sun.back().as_vec3();
-    let keyframe = game.store.environment_keyframe_at(mw_assets::environment::DEFAULT_TIMELINE, game.hour);
-    let mut key_illuminance = 9_000.0;
-    match keyframe {
-        Ok(k) => {
-            info!("environment: hour {} keyframe {} exposure {:?}", game.hour, k.id, k.exposure);
-            let colour_cube = k.colour_cube.and_then(|id| match game.store.load(id) {
-                Ok(res) => mw_formats::ColourCube::parse(&res).ok(),
-                Err(_) => None,
-            });
-            commands.insert_resource(tonemap::GameTonemap {
-                settings: k.exposure.clone(),
-                dt: 0.0,
-                reset: true,
-                colour_cube: colour_cube.map(|c| images.add(tonemap::colour_cube_image(&c))),
-            });
-            let to_bevy = |c: [f32; 3]| Vec3::from(c) * GAME_UNIT;
-            let key_colour = to_bevy(k.key_light);
-            key_illuminance = key_colour.dot(Vec3::new(0.2126, 0.7152, 0.0722));
-            let sky = sky::Sky::new(&game.store, &k, sun_dir);
-            commands.insert_resource(GameEnvironment {
-                reflection: Some(images.add(sky::reflection_cube(&sky))),
-                reflection_mips: sky::REFLECTION_MIPS,
-                sky_brightness: GAME_UNIT,
-            });
-            let f = &k.fog;
-            let cs = |i: usize| f.colour_sun.get(i).copied().unwrap_or(0.0);
-            commands.insert_resource(deferred::GameLighting {
-                key_colour,
-                key_direction: sun.forward().as_vec3(),
-                sky_brightness: GAME_UNIT,
-                irradiance: images.add(sky::irradiance_cube(&k, sun_dir)),
-                fog: deferred::FogSettings {
-                    colour: to_bevy(f.colour),
-                    colour_sun: to_bevy([cs(0), cs(1), cs(2)]),
-                    near: f.near,
-                    far: f.far,
-                    power: f.power,
-                    scattering_colour: to_bevy(f.scattering_colour),
-                    scattering_phase: f.scattering_phase,
-                    scattering_strength: f.scattering_strength,
-                },
-            });
-            let skybox = images.add(sky::sky_cube(&sky));
-            commands.entity(camera).insert((
-                Skybox { image: Some(skybox.clone()), brightness: GAME_UNIT, ..default() },
-                GeneratedEnvironmentMapLight { environment_map: skybox, intensity: GAME_UNIT, ..default() },
-            ));
-        }
-        Err(e) => {
-            warn!("no environment keyframe ({e}); flat ambient");
-            commands.insert_resource(GlobalAmbientLight { brightness: 600.0, ..default() });
-        }
-    }
+    // Time of day and weather from the environment timeline (`weather.rs`): key light, ambient rig, sky,
+    // fog and colour grade; rebuilt when the hour, the weather or the painted timeline changes.
+    let state = weather::EnvironmentState::new(
+        game.store.clone(),
+        game.environment,
+        !game.fixed_timeline,
+        game.sync_environment,
+    );
+    weather::spawn_environment(&mut commands, &mut images, state, camera, game.road_wetness);
     // Screenshot runs must be deterministic: no input (gamepad drift moves the camera).
     if game.screenshot.is_none() && !matches!(game.request, Request::Drive { .. }) {
         commands.entity(camera).insert(FreeCamera { walk_speed: 30.0, run_speed: 150.0, ..default() });
     }
-    // Lights the forward (translucent) materials; the game's lighting pass takes the key light from
-    // `GameLighting`.
-    // Its cascaded shadow maps are rendered by Bevy and sampled by the game's lighting pass (`deferred.rs`).
-    commands.insert_resource(bevy::light::DirectionalLightShadowMap { size: deferred::SHADOW_MAP_SIZE });
-    commands.spawn((
-        DirectionalLight { illuminance: key_illuminance, shadow_maps_enabled: true, ..default() },
-        deferred::shadow_cascades(),
-        sun,
-    ));
     commands.spawn((
         Text::new("Most Rusted"),
         TextFont { font_size: FontSize::Px(16.0), ..default() },
@@ -462,7 +445,7 @@ fn receive_assets(
     mut images: ResMut<Assets<Image>>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<GameMaterial>>,
-    mut camera: Query<&mut Transform, With<Camera3d>>,
+    mut camera: Query<&mut Transform, MainCamera>,
     game: Res<Game>,
     env: Res<GameEnvironment>,
     lights: Res<materials::VehicleLights>,
@@ -548,7 +531,7 @@ fn receive_assets(
 fn update_status(
     loaded: Res<Loaded>,
     mut text: Query<&mut Text, With<StatusText>>,
-    cam: Query<&Transform, With<Camera3d>>,
+    cam: Query<&Transform, MainCamera>,
     car: Query<&drive::Car>,
 ) {
     let Ok(mut text) = text.single_mut() else { return };

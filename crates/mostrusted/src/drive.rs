@@ -334,7 +334,7 @@ fn spawn_car(
     mut commands: Commands,
     pending: Option<Res<PendingCar>>,
     spatial: SpatialQuery,
-    mut camera: Query<&mut Transform, With<Camera3d>>,
+    mut camera: Query<&mut Transform, crate::MainCamera>,
 ) {
     let Some(pending) = pending else { return };
     // Wait until the collision under the spawn point has streamed in.
@@ -954,7 +954,7 @@ fn chase_camera(
     time: Res<Time>,
     mut state: Local<ChaseState>,
     cars: Query<(Entity, &Transform, &LinearVelocity, &Car), Without<Camera3d>>,
-    mut camera: Query<(&mut Transform, &mut Projection), With<Camera3d>>,
+    mut camera: Query<(&mut Transform, &mut Projection), crate::MainCamera>,
 ) {
     let (Ok((entity, car_t, vel, car)), Ok((mut cam, mut projection))) = (cars.single(), camera.single_mut()) else {
         return;

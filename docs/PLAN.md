@@ -85,8 +85,11 @@ Make a static frame look like the game.
       macro normal, per-layer roughness / F0, AO = 2·mask.g. Open: the TangentSpaceNormal macro frame.
    2. `[x]` DriveableSurface: albedo, slope-space normal blend (road + world-space detail + vertex), roughness =
       Normal.a × Detail.a, F0 = SpecColour.g, no cube reflection when dry. Line variants: line albedo, normal,
-      roughness / F0. Open: wetness (puddle map, RoadDepth), planar reflection, vertex-alpha AO, retroreflective
-      headlight glow, decal variants.
+      roughness / F0. Done (2026-10-04): the wet path (global puddle map `…7811`, RoadDepth, vertex wetness mask
+      TEXCOORD5.x: flatter normals, smoother, darker, F0 0.02 in puddles, planar reflection × env-BRDF × wet;
+      always on, as in the game), vertex-alpha AO, planar reflection (`--planar-reflection`; sky cube
+      otherwise). Open: `WetScaleParams` values, the reflection's mip chain, retroreflective headlight glow,
+      decal variants, `PlotPBR_AO_StandingWater` (same wet maths, 28 meshes).
    3. `[x]` PlotPBR: albedo, blended tiling normals, roughness through the decal, per-instance AO map.
    4. `[x]` WorldPBR (every variant) and World_Diffuse_Specular: normal map, roughness = spec.y, F0 =
       cubic(spec.x) or SpecularColour × MaterialDiffuse, AO map (material Overlay or per-instance
@@ -103,7 +106,9 @@ Make a static frame look like the game.
       / scuffs (runtime `GenericVector4_A/B/C`), cracked glass, tyre textures (bound at runtime?), the glass
       shader's own key light + irradiance (uses Bevy's lighting), light coronas / beams (VFX).
    6. `[~]` Trees: premultiplied albedo `(rgb/a)²`, vertex AO, alpha test 129/255. Open: wind
-      (`amplitude`/`speed`). Water: scrolling wave normals, algae albedo, near-mirror reflection. Open: river
+      (`amplitude`/`speed`: object-space x, z += sin(Time × speed + uv.y) × amplitude × uv.x; per material and
+      time-driven only, the keyframe wind does not reach it; needs a vertex shader for `Layered`). Water:
+      scrolling wave normals, algae albedo, near-mirror reflection. Open: river
       floor (TEXCOORD2), foam, caustics.
    7. `[ ]` Lightmaps: the lightmap shaders read `LightMapTextureSampler` (TEXCOORD1) but neither the material
       nor the instance overrides bind it; find the source. Lit windows (night emissive) not drawn.
@@ -111,9 +116,12 @@ Make a static frame look like the game.
      does for SM3, instead of hand-porting each family.
 5. `[~]` **Environment**: the timeline is GeneSys (`EnvironmentTimeline` / `EnvironmentKeyframe`,
    `mw_assets::environment`). Key light, ambient rig, sky gradient / sun colour / cloud layer and fog come
-   from the keyframe at `--hour`. Open: sun direction (SunMoonPath), the `NewSky` dome mapping and its second
-   gradient, fog in-scattering and layer fog, bloom,
-   weather (`Alternate` keyframes), which timeline free roam uses.
+   from the keyframe at `--hour`. Done (2026-10-04, `weather.rs`): the timeline painted under the camera
+   (`WorldPaintMap`), hours blended between keyframes, rebuilt at runtime (F5 / F6 hour, F7 weather), the
+   `Alternate` (bad-weather) keyframes (`--weather`). The data has no rain. Open: sun direction
+   (SunMoonPath), the `NewSky` dome mapping and its second gradient, fog in-scattering and layer fog (the
+   `LayerFog` paint map is decoded), bloom, what selects Alternates, wind (cloud scroll; no consumer found),
+   `Thunderstorm_Intensity`, blending when the painted timeline changes.
 6. `[x]` **Vertex data**: packed tangent-frame quaternions (world RGBA8 `TEXCOORD1/2/3`, vehicle SNORM16
    `TEXCOORD4`) decode to normals + tangents (`mw_formats::tangent_frame`, checked against face normals);
    vertex colour is decoded.
@@ -122,7 +130,8 @@ Make a static frame look like the game.
    Fog pass (`deferred.rs`, `game_lighting.wgsl`), the game's 3-cascade shadow lookup on Bevy-rendered cascades.
    The game's auto exposure, tonemap and ColourCube grade (`tonemap.rs`).
    Open: the game's cascade fit / split distances, shadow-only proxy casters (`WorldShadow_*`), the irradiance quadric / second
-   irradiance cube, point / spot / cop lights (`LightBuffer_*`, `TiledLighting_*`), planar reflection,
+   irradiance cube, point / spot / cop lights (`LightBuffer_*`, `TiledLighting_*`), planar reflection
+   (`[~]` opt-in mirrored camera for wet roads; not yet for `WorldPBR_Horizontal_PlanarReflection`),
    bloom and the composite tint in `GBufferComposite`, motion blur, `PostAA`.
 
 ### M2: Game data layer `[ ]`

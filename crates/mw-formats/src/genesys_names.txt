@@ -1304,3 +1304,15 @@ High_speed_mph
 Minimum_handbrake_time
 Front_wheel_grip_factor
 Rear_wheel_grip_factor
+# Environment keyframe (weather session 2026-10-04): array counts match their arrays' lengths
+ColourSunCount
+SkyColorGradientCount
+ScatteringColourCount
+TintColourCount
+LensFlareColourCount
+WindBearingVariability
+Thunderstorm_Intensity
+SparkExposure
+DistanceBlend
+Dry_Conditions
+Wet_Conditions

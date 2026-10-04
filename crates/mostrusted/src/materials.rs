@@ -218,6 +218,11 @@ impl Look {
         let normal_map = linear("Normal_Sampler").filter(|_| framed);
         let detail_normal = linear("DetailMap_Normal_Sampler").filter(|_| framed);
         let spec_colour = linear("SpecColour_Sampler");
+        // The wet path: the material's RoadDepth map and the engine's global puddle map (slots 7, 8),
+        // WetScaleParams (p4), the vertex wetness mask (TEXCOORD5.x, `convert::add_road_wetness`).
+        let road_depth = linear("RoadDepth_Sampler");
+        let puddle = Some((mw_assets::environment::PUDDLE_MAP, false));
+        let wet_scale = [WET_SCALE_PARAMS[0], WET_SCALE_PARAMS[1], WET_SCALE_PARAMS[2], 0.0];
         // Line / decal / paint variants draw their own texture on top of the road.
         let road_overlay = ["line", "decal", "retroreflective"].iter().any(|k| name.contains(k));
         if name.starts_with("driveablesurface")
@@ -226,8 +231,18 @@ impl Look {
         {
             let s = sm.parameter("DetailMapUvScale").unwrap_or([1.0, 1.0, 0.0, 0.0]);
             look.mode = Mode::Road;
-            look.textures = slots(&[Some(colour), Some(detail), None, normal_map, detail_normal, spec_colour]);
-            look.vals = pack(&[[0.0; 4], [s[0], s[1], 0.0, 0.0]]);
+            look.textures = slots(&[
+                Some(colour),
+                Some(detail),
+                None,
+                normal_map,
+                detail_normal,
+                spec_colour,
+                None,
+                road_depth,
+                puddle,
+            ]);
+            look.vals = pack(&[[0.0; 4], [s[0], s[1], 0.0, 0.0], [0.0; 4], [0.0; 4], wet_scale]);
         } else if name.starts_with("driveablesurface")
             && name.contains("line")
             && let (Some(colour), Some(detail), Some(line)) =
@@ -247,9 +262,11 @@ impl Look {
                 detail_normal,
                 spec_colour,
                 linear("Line_NormalPlusSpec_Sampler"),
+                road_depth,
+                puddle,
             ]);
             look.uv_b = Some(2);
-            look.vals = pack(&[[0.0; 4], [s[0], s[1], 0.0, 0.0], tint, rsf]);
+            look.vals = pack(&[[0.0; 4], [s[0], s[1], 0.0, 0.0], tint, rsf, wet_scale]);
         } else if name.starts_with("plotpbr")
             && let (Some(mask), Some(l1)) = (linear("MaskTextureSampler"), srgb("Tiling1TextureSampler"))
         {
@@ -582,6 +599,9 @@ impl Look {
                 self.vals[0] = qi(flag(self.textures[3].is_some() && self.textures[4].is_some()));
                 self.vals[1] = qi(has(5));
                 self.vals[2] = qi(has(6));
+                // p0.w: 0 = no wet path (no puddle map), 1 = puddle map only (a missing RoadDepth map
+                // reads 0 in the game: no flattening), 2 = both.
+                self.vals[3] = qi(has(8) * (1.0 + has(7)));
             }
             Mode::Terrain => {
                 self.vals[20] = qi(has(5));
@@ -698,6 +718,11 @@ impl Look {
         if c < 0.02 { 0.0 } else { c.min(1.0) }
     }
 
+    /// Whether the mesh needs the road wetness mask (`convert::add_road_wetness`).
+    pub fn wet_road(&self) -> bool {
+        matches!(self.mode, Mode::Road | Mode::RoadLine)
+    }
+
     /// Whether the material reads the vehicle light state.
     pub fn uses_lights(&self) -> bool {
         match self.mode {
@@ -764,11 +789,17 @@ impl Look {
                 params: LayeredParams {
                     mode: self.mode as u32,
                     p,
-                    env: Vec4::new(env.sky_brightness, env.reflection_mips as f32, 0.0, 0.0),
+                    env: Vec4::new(
+                        env.sky_brightness,
+                        env.reflection_mips as f32,
+                        env.road_wetness,
+                        flag(env.planar.is_some()),
+                    ),
                     lights: lights.mask,
                     ..default()
                 },
                 sky: env.reflection.clone(),
+                planar: env.planar.clone(),
                 tex0: tex(self.textures[0]),
                 tex1: tex(self.textures[1]),
                 tex2: tex(self.textures[2]),
@@ -837,6 +868,10 @@ pub struct Layered {
     #[texture(121, dimension = "cube")]
     #[sampler(122)]
     pub sky: Option<Handle<Image>>,
+    /// The planar reflection (`reflection.rs`), read by the roads' wet path.
+    #[texture(123)]
+    #[sampler(124)]
+    pub planar: Option<Handle<Image>>,
 }
 
 impl MaterialExtension for Layered {
@@ -846,6 +881,22 @@ impl MaterialExtension for Layered {
 
     fn deferred_fragment_shader() -> ShaderRef {
         "embedded://mostrusted/layered.wgsl".into()
+    }
+
+    /// The planar reflection camera is the only view with a normal prepass: its pipelines discard what
+    /// lies below the reflection plane (`reflection.rs`).
+    fn specialize(
+        _pipeline: &bevy::pbr::MaterialExtensionPipeline,
+        descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
+        _layout: &bevy::mesh::MeshVertexBufferLayoutRef,
+        key: bevy::pbr::MaterialExtensionKey<Self>,
+    ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
+        if key.mesh_key.contains(bevy::pbr::MeshPipelineKey::NORMAL_PREPASS)
+            && let Some(fragment) = descriptor.fragment.as_mut()
+        {
+            fragment.shader_defs.push("PLANAR_REFLECTION_VIEW".into());
+        }
+        Ok(())
     }
 }
 
@@ -873,9 +924,26 @@ impl Default for VehicleLights {
 }
 
 /// Scene-wide inputs of the game's material passes: the sky reflection cube and its brightness.
-#[derive(Resource, Clone, Default)]
+#[derive(Resource, Clone)]
 pub struct GameEnvironment {
     pub reflection: Option<Handle<Image>>,
     pub reflection_mips: usize,
     pub sky_brightness: f32,
+    /// Scales the road shader's wet amount (puddle map w × TEXCOORD5.x). 1 is the game (whose road
+    /// shader has no global wetness input: roads are always as wet as the puddle map says); 0 dries the
+    /// roads, for comparison (`--road-wetness`).
+    pub road_wetness: f32,
+    /// The planar reflection image (`reflection.rs`); without it the wet roads reflect the sky cube.
+    pub planar: Option<Handle<Image>>,
 }
+
+impl Default for GameEnvironment {
+    fn default() -> Self {
+        Self { reflection: None, reflection_mips: 0, sky_brightness: 0.0, road_wetness: 1.0, planar: None }
+    }
+}
+
+/// The road shader's `WetScaleParams` (global, set by the engine; values provisional): x = puddle map
+/// tiling (world xz × x), y = how far the normal's deviation shifts the planar reflection lookup, z =
+/// reflection blur (mip = roughness × z).
+pub const WET_SCALE_PARAMS: [f32; 3] = [1.0 / 24.0, 0.08, 7.0];

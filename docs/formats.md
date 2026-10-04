@@ -193,6 +193,15 @@ Height), Camera (bloom, exposure, tint), HeatHaze, Mini_DOF, Vfx, Weather, a Col
 `Alternate` (bad-weather twin) handle. The keyframe has no sun direction (EnvironmentSettings' SunMoonPath is
 only partly named). `mw_assets::environment`; values are game HDR units.
 
+**Which timeline**: the `WorldPaintMap` `…2823d` (below) paints the 25 timelines over the map;
+`EnvironmentSettings` field `409f546f` holds its ID's low bits. Timelines repeat a keyframe over consecutive
+hours, so the environment at an hour is a blend of the two entries around it (interpolation assumed).
+**Alternates**: 154 keyframes name one of 7 `Alternate` keyframes, one per time-of-day band (night, dawn,
+morning, noon, evening, front end): hazier twins (fog far 550–1200 m, key light ×0.6–0.8, own colour cube).
+No timeline lists them; what selects them is not in the data. **Weather** block: `WindBearing` (130°),
+`WindBearingVariability` (25°), `WindSpeedMin` / `WindSpeedMax` (1 / 3.5), `Thunderstorm_Intensity` (0.23 at
+night), unnamed `0141d842` (0.25 / 0.15) and `e8eb5d48` (0). There is no rain anywhere in the data.
+
 `HAWAII/ENVIRONMENT.BNDL` also holds HDR panoramas (256×64 RGBA16F, equirectangular upper hemisphere,
 horizon at row ~58) and cloud layers (2048×512 / 2048×256 BC3, alpha = coverage, each with a 256×64 copy) for
 the `NewSky` dome shader (two 1-D gradients, four cloud layers, sun glow). The panoramas are a sunrise capture
@@ -206,6 +215,31 @@ roughness), (n+1)/8π, visibility 1/(max(N·L, N·V)·V·H + 0.0013), Schlick Fr
 AO × (1 − F0) × albedo; plus RT3² × exposure. The Fog pass: amount pow(saturate(d/(far − near) −
 near/(far − near)), Power) × gradient alpha, height-layer fog, sun-corona in-scattering
 strength/(1 + phase·cosθ)², sky pixels only get the layer fog.
+
+## WorldPaintMap (0x91)
+
+A value painted over the world, one quadtree per 1 km cell (`mw_formats::WorldPaintMap`, `mwtool paint-map`).
+Three in the install: `ENVIRONMENT.BNDL` `…2823d` (the 25 environment timelines), `…285cb` (the 19
+`LayerFog` objects), `GLOBALEFFECTS.BNDL` `…285cc` (one `ParticleLighting`). Header: version 1, entry count,
+offset of the entry list (u32 low bits of resource IDs; entry 0 = nothing), grid width and height in cells,
+grid origin in cells (i32 x, z), cell size (1000.0) and its inverse, an unknown u32, offset of the cell table
+(`u32 offset, u32 size` per cell, row-major; size 0 = unpainted). A cell's block is a quadtree of 8-byte
+nodes, root first: four child bytes then four offset bytes, children ordered (x0 z0, x1 z0, x0 z1, x1 z1);
+a child byte < 0x80 is a leaf holding an entry index, else the child node sits at block offset
+`(byte & 0x7F) << 8 | offset byte`. World → cell: `floor(x / 1000) + origin.x`, `floor(z / 1000) + origin.z`
+(the zone outlines line up with the painted regions).
+
+## Road wetness
+
+The `DriveableSurface` wet path (ported in `layered.wgsl`): wet = puddle.w × saturate(TEXCOORD5.x), where the
+puddle map is the engine-bound `puddleMapSampler` = `GLOBALTEXTUREDICTIONARY.BNDL` `…7811` (256², tiled over
+world xz × `WetScaleParams.x`) and TEXCOORD5.x a per-vertex mask (0 or ≥ 1). k = lerp(1, (RoadDepth.y ×
+puddle.x, puddle.y, puddle.z), wet): the normal falls back towards the vertex normal by k.x, roughness × k.y,
+albedo × k.z, F0 = lerp(0.02, F0, k.x). The road's only indirect specular is the planar reflection, read at
+the mirrored projection shifted by (N − N_vertex).xz × `WetScaleParams.y`, at mip roughness ×
+`WetScaleParams.z`, × env-BRDF × wet. No global wetness input exists: roads always carry the puddle map's
+wetness. `PlotPBR_AO_StandingWater` does the same with its own `PuddleTextureSampler` (TEXCOORD1).
+`SurfaceType` objects have `Dry_Conditions` and `Wet_Conditions` blocks (physics, rumble, sounds, vfx).
 
 ## Diffuse sampler names
 
