@@ -6,8 +6,12 @@
 //! material passes read (the game renders its reflection cubes at runtime), and the irradiance cube of
 //! the lighting pass, built from the keyframe's six-direction ambient rig.
 //!
-//! Provisional (not decoded): the sun direction, the glow exponent and scale, how Opacity / Feathering
-//! map to the cloud threshold, and the cloud layer's dome mapping. The two HDR panoramas in the bundle
+//! From the `NewSky` shader: the glow is pow(saturate(dir · L), SunColour.w) × SunColour.rgb; the shader
+//! blends two 1-D gradients (A towards the sun, B away, by saturate(dot(sun.xz, dir.xz) + DomeRanges.w))
+//! sampled at |dome y|, scaled by BaseCloudColour.w, under four cloud layers.
+//! Provisional (not decoded): gradient B and the gradient scale (both CPU-side; only SkyColorGradient is
+//! named, so it serves both sides at scale 1), how Opacity / Feathering map to the cloud threshold, the
+//! cloud layers' dome mapping. The two HDR panoramas in the bundle
 //! (`…3f35`, `…3f39`) are a sunrise capture that no keyframe references; they are not used.
 
 use bevy::asset::RenderAssetUsages;
@@ -19,11 +23,6 @@ use bevy::render::render_resource::{
 use mw_assets::AssetStore;
 use mw_assets::environment::EnvironmentKeyframe;
 use mw_bundle::ResourceId;
-
-/// Sun glow `pow(cos, power) × SunColour × scale`: the keyframe's unnamed sky fields `2ec8df83` (500) and
-/// `2ec8df82` (1.067) read as power and scale (unconfirmed).
-const SUN_GLOW_POWER: f32 = 500.0;
-const SUN_GLOW_SCALE: f32 = 1.067;
 
 /// An RGBA float image sampled bilinearly, wrapping in u and clamping in v.
 struct Panorama {
@@ -111,7 +110,9 @@ impl Sky {
             return [0, 1, 2].map(|i| h[i] * (1.0 - 0.8 * f));
         }
         let mut c = k.sky_gradient_at(d.y);
-        let glow = d.dot(self.sun).max(0.0).powf(SUN_GLOW_POWER) * SUN_GLOW_SCALE;
+        // NewSky: pow(saturate(dir · L), SunColour.w) × SunColour.rgb, a broad glow over the sun's side of
+        // the dome (the exponent is 0.65 at noon). The sun disc is a separate draw (not done).
+        let glow = d.dot(self.sun).max(0.0).powf(k.sun_colour[3].max(0.01));
         for (c, sun) in c.iter_mut().zip(k.sun_colour) {
             *c += sun * glow;
         }
