@@ -108,6 +108,21 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-04 (session 2): "everything is yellow": skylight in the ambient
+- User report: the frame looks yellow. Causes: the noon key light is warm (11.0, 7.95, 5.21), the ambient rig
+  is small (up fill 0.065 × 2.6), and the noon ColourCube warms shadows and mid-tones (grey 102 → (116, 112,
+  99), 68 → (61, 55, 49); highlights stay neutral). With no blue skylight in the shade, the grade turns it
+  olive (the car's shadow on the grey test track).
+- The data's own balance: SkyReflectionAverageColour (1.12, 1.69, 2.44) is strongly blue. Warm sun + that sky
+  on a horizontal surface sums to about neutral white, which looks like how the keyframe is meant to balance.
+- Change (provisional, `sky::irradiance_cube`): the irradiance cube = the rig's fills + the upper hemisphere
+  at SkyReflectionAverageColour, cosine-weighted ((1 + n.y)/2). Shade is now blue-grey, white stone white.
+- Found on the way: the `Diffuse_1Bit_*` forward pass lights with `IrradianceQuadric` (7 × vec4 in
+  gGlobalCB: second-order SH as a quadric), the CPU-built ambient; its G-buffer pass writes only RT0 / RT1
+  (albedo = texture × materialDiffuse, roughness 1). The golden foliage is the textures' own colour
+  (Fairhaven's autumn trees), not a shading error.
+- To settle the ambient: a reference screenshot from the original (shade colour next to sunlit grey).
+
 ### 2026-10-04 (session 2): wheel layout, the Venom's front axle
 - User report: wheels off on some cars (Hennessey Venom GT Spyder). Survey over every car
   (`cargo test --release -p mw-assets --test wheel_survey -- --ignored --nocapture`): body z extent vs spec

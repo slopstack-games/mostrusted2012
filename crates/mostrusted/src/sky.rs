@@ -221,6 +221,9 @@ pub fn reflection_cube(sky: &Sky) -> Image {
     })
 }
 
+/// Weight of the skylight term in [`irradiance_cube`] (provisional).
+const SKY_FILL: f32 = 1.0;
+
 /// Irradiance cube for the ambient term, from the keyframe's six-direction light rig: an ambient cube
 /// oriented to the key light's azimuth (key fill towards it, shadow fill away, left / right across, up,
 /// down), weighted by the squared cosine to each axis, × `AmbientIrradianceScale`. Multiply by albedo.
@@ -229,6 +232,7 @@ pub fn irradiance_cube(key: &EnvironmentKeyframe, sun: Vec3) -> Image {
     let side = Vec3::Y.cross(fwd);
     let r = &key.ambient;
     let axes = [(fwd, r.key), (-fwd, r.shadow), (Vec3::Y, r.up), (-Vec3::Y, r.down), (side, r.left), (-side, r.right)];
+    let sky = key.sky_reflection_colour;
     cube_image(16, 1, |d, _| {
         let mut c = [0.0f32; 3];
         for (axis, fill) in axes {
@@ -236,6 +240,14 @@ pub fn irradiance_cube(key: &EnvironmentKeyframe, sun: Vec3) -> Image {
             for i in 0..3 {
                 c[i] += fill[i] * w * r.scale;
             }
+        }
+        // Skylight: the upper hemisphere at the keyframe's average sky colour, cosine-weighted
+        // ((1 + n.y) / 2 of it reaches a surface facing n). Provisional: the game builds this cube on the
+        // CPU; without a sky term the warm key light leaves shade neutral and the grade turns it yellow,
+        // while the data's warm sun + blue SkyReflectionAverageColour balance to white.
+        let w = 0.5 * (1.0 + d.y) * SKY_FILL;
+        for i in 0..3 {
+            c[i] += sky[i] * w;
         }
         c
     })
