@@ -13,9 +13,8 @@ user's install (IW4L-style). Read these before starting work:
 
 ## Hard rules
 
-- **Never commit game data or anything derived from it**: extracted resources, DDS/PNG/OBJ exports, screenshots,
+- **Never commit game data or anything derived from it**: extracted resources, DDS/PNG/OBJ exports,
   Ghidra databases, decompiled code. Use the session scratchpad or git-ignored dirs (`/extracted`, `/re/out`).
-- **Do not circumvent the EA DRM** on `NFS13.exe`, and don't add tooling that does. Work data-first.
 - Community references (burnout.wiki, DGIorio's MIT tools) may be read for format knowledge; don't copy code.
 
 ## Layout

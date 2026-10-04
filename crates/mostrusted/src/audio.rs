@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use bevy::audio::{AddAudioSource, Decodable, Sample, Source, Volume};
 use bevy::prelude::*;
 use mw_audio::Pcm;
-use mw_audio::ginsu::{EngineMixer, Ginsu};
+use mw_audio::ginsu::{EngineLayer, EngineMixer};
 
 pub struct GameAudioPlugin {
     pub music: bool,
@@ -89,12 +89,12 @@ impl EngineParams {
     }
 }
 
-/// A car's engine: Ginsu recordings on throttle (rising sweep) and off
-/// throttle (falling sweep), resynthesised at the current RPM.
+/// A car's engine: its Ginsu layers (from the car's `EngineSound2` data), resynthesised at the current
+/// RPM and mixed by engine load.
 #[derive(Asset, TypePath, Clone)]
 pub struct EngineAudio {
-    pub on_load: Arc<Ginsu>,
-    pub off_load: Option<Arc<Ginsu>>,
+    pub layers: Vec<EngineLayer>,
+    pub master_gain: f32,
     pub params: Arc<EngineParams>,
 }
 
@@ -136,10 +136,10 @@ impl Decodable for EngineAudio {
     type Decoder = EngineSource;
     fn decoder(&self) -> EngineSource {
         EngineSource {
-            mixer: EngineMixer::new(self.on_load.clone(), self.off_load.clone()),
+            mixer: EngineMixer::new(self.layers.clone(), self.master_gain),
             params: self.params.clone(),
             counter: 0,
-            target: (self.on_load.min_rpm, 0.0),
+            target: (self.layers.first().map_or(1000.0, |l| l.ginsu.min_rpm), 0.0),
         }
     }
 }

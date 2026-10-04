@@ -22,18 +22,15 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 - Is the SNORM position scale always 10.0, or does it ever vary per mesh/renderable?
 
 ### Vertex data
-- Vehicles: `TexCoord(4)` / `TexCoord(5)` as `R16G16B16A16_SNORM` look like packed tangent-frame quaternions
-  (the exporter writes normals through `normal_to_quaternion`). Derive normals from them.
-- `Color` (RGBA8) on world and vehicle meshes: on roads it is baked lighting (VS: `rgb² × lightmap intensity ×
-  0.318`). Check the other families.
-- World layouts often have Tangent + Binormal but no Normal: is the normal `cross(T, B)`, and with which sign?
-- RGBA8 `TEXCOORD2` (terrain) / `TEXCOORD3` (roads) is a packed tangent frame: the VS decodes it as
-  `v * 2.828427 - 1.414214` (smallest-three quaternion style). Port the decode for proper normals.
+- `Color` (RGBA8): roads = baked light (rgb² × GlobalLightMapIntensities.x × 0.318) + AO (a); vehicles = AO (x)
+  and specular occlusion (y); trees = AO (y). (Answered 2026-10-04 for these families.)
+- World layouts often have Tangent + Binormal but no Normal (cables): is the normal `cross(T, B)`, and with which
+  sign?
 
 ### Materials / shaders
-- Which UV set and texture does each lightmap shader use? (Answer with `mwtool shader-asm`.)
-- Why does Bevy's `clearcoat` make vehicle paint meshes vanish? (Probably missing tangents.)
-- Tyres render too light. Check the wheel shader's albedo maths.
+- Lightmap shaders sample `LightMapTextureSampler` at TEXCOORD1, but no material or instance override binds it.
+  Where does the texture come from (a separate resource per track unit, GeneSys, runtime)?
+- Bevy's clear coat now renders on vehicles (they have tangents since 2026-10-04).
 
 ### World
 - InstanceList instance `unknown_04` (f32) and `unknown_08` (u32).
@@ -55,6 +52,134 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 ---
 
 ## Findings
+
+### 2026-10-04 (evening): engine sound rewritten from the game's audio data
+- User report after the resampling fix: the engine "still plays snippets in full and isn't blending them".
+  Cause: grains (whole engine cycles, up to 77 ms) were butt-joined with a 2 ms cross-fade while
+  alternating between two grains, and only two of a car's six recordings played.
+- **The game's mix is data** (`Genesys.Gen.EngineSound2` in the vehicle bundle, `mw_assets::engine_sound`):
+  `Sequences` → `Sequence` objects. Two hold three `GinsuSequenceItem`s each (Ginsu + `MixerChannel` +
+  RPM range 1790–7500 on the 911), all playing at once: per microphone set a full-load rev-up, a part-load
+  rev-up and an off-load fall. A third sequence (0..1 binding: engine load) has `MixerChannelSequenceItem`s
+  whose gain curves (`AnimPoints`: x `12d3a8aa`, y `12d3a8ab`, four tangent fields not decoded) crossfade
+  the channels. 911 set A: full 0 → 1 from load 0.53 to 1, part a triangle peaking at 0.47, off 0.86 → 0 by
+  0.5; set B similar. Channel `Gain` 0.709 / 0.709 / 1.0; `MasterGain` 1.25. Bus channels carry EQ /
+  distortion / sub-harmoniser / filter curves (not used yet). A second `EngineSound2` with one sequence uses
+  the short Ginsu copies (probably distant / low quality). Veyron, GT-R, Mustang and Focus also give six
+  layers.
+- The two microphone sets are one recording run: equal grain counts (506 / 506), boundaries offset by a
+  constant trim (~1,200 samples), cross-correlation 0.2. Independent synths put them out of phase (sweep
+  pitch-tracking p90 150 cents vs ~65 for one layer); a shared period schedule and shared randomness fixed
+  that (p90 63 cents).
+- **New synth** (`mw_audio::ginsu`): overlap-add of engine cycles. Each output period blends the current
+  cycle out and the next grain's preceding cycle in with cos² / sin² windows, both resampled to the period
+  of the current RPM (pitch follows RPM continuously). Consecutive grains share samples, so straight playback
+  is seamless; the walk takes the next cycle 7 periods in 8 within ±2 grains of the RPM's grain, else a
+  random grain in that window. All layers share one schedule (the first layer sets the period) and one random
+  stream. Load is smoothed over 50 ms, RPM over 10 ms; the sum goes through `tanh`.
+- Measurements (911, `mwtool engine-sound`): 2,000 → 7,500 rpm sweep p90 pitch error 63 cents (tracker floor
+  ~65 for a single layer), worst discontinuity ratio 0.71 (was 0.82); 2-20 Hz envelope modulation on steady
+  holds 0.008–0.038 for most rpm / load cells, close to the raw recordings' 0.04–0.05; exceptions full load
+  at 2,500 rpm (0.098: long low-rpm cycles make any small window loop at a few Hz) and off load at 4,500 rpm
+  (0.082; the off-load recording has only ~41 grains per 1,000 rpm). Strategies compared: strict walk with
+  jump-back (loops), random grain every period (more modulation), wider windows (more modulation).
+- Assumed / not decoded: the load binding is fed with throttle (reverse: brake); the sequences' binding raw
+  values, curve tangents, whether RPM is clamped to the items' 1790–7500 range, the bus effects, engine
+  states (Burnout / Drift / In_air / Reversing lists).
+
+### 2026-10-04 (later): the game's deferred pipeline in Bevy, environment timeline
+- **Pipeline**: opaque game materials now run in Bevy's deferred prepass and write the game's four G-buffer
+  targets (RGBA8 each, packed into Bevy's 128-bit deferred texel) with deferred-lighting ID 2. A full-screen
+  system in the `Core3d` schedule (`deferred.rs`, `game_lighting.wgsl`) ports `LightBuffer_KeylightAndAmbient`
+  and the `Fog` pass and lights those pixels; it runs before Bevy's own deferred lighting (which only touches
+  ID 1) and stores the ID depth, because Bevy's pass discards it. RT3 (indirect) is computed in the G-buffer
+  pass as the game does: sky reflection cube at mip = roughness × 5.5 × env-BRDF (Karis' analytic fit stands
+  in for the game's 3-D LUT) × AO², plus the vehicle clear coat's sharp reflection. Translucent materials stay
+  forward with Bevy lighting. Verified: tinting the pass output shows it draws every opaque pixel.
+- **Environment timeline decoded** (a Sonnet agent surveyed and cracked the names; formats.md has the
+  layout): 25 timelines × 21 hourly keyframes; default timeline `…69cbb`, noon keyframe `…124619` (key light
+  (11, 7.95, 5.21), ambient scale 2.6, fog near 80 / far 1525 / power 1.5, cloud texture `…3f46`). 29 names
+  added to `genesys_names.txt`, each checked against its hash. Seven `Alternate` keyframes are bad-weather
+  twins (dimmer key light, nearer fog); nothing found yet selects a timeline for free roam.
+- The renderer now takes key light, ambient rig (→ irradiance cube), sky gradient + sun colour + cloud layer
+  (→ skybox and reflection cube) and fog from the keyframe at `--hour` (default 13). Game HDR units × 1200 =
+  cd/m² / lux (`GAME_UNIT`) until the game's exposure is ported.
+- **Dead end / correction**: the two HDR panoramas used earlier this session are a sunrise capture (glow 3°
+  above the horizon) that no keyframe references; no longer used.
+- Provisional (marked in code): sun direction (hand-picked; SunMoonPath fields mostly unnamed), sun glow
+  exponent 500 and scale 1.067 (unnamed sky fields `2ec8df83` / `2ec8df82`), cloud threshold = 1 − Opacity
+  and sharpness = 1 / Feathering, cloud dome mapping, gradient position = sin(elevation), the fog colour's sun
+  gradient (pow 4 of the azimuth cosine), no height-layer fog, in-scattering disabled (the raw phase 0.971
+  in strength/(1 + phase·cosθ)² floods the view; the CPU-side mapping to ScatteringSettings is unknown).
+- Remaining Bevy stand-ins: Bevy's tonemapping and default exposure (the game has auto exposure, a tonemap
+  pass and a ColourCube grade), `GeneratedEnvironmentMapLight` for forward materials, no shadows (the game
+  uses a cascaded shadow map), the env-BRDF fit.
+
+### 2026-10-04 (later): engine rev-up staircase fixed
+- `GinsuSynth` now resamples every grain by `rpm / recorded rpm` (Catmull-Rom read position, clamped to
+  0.7–1.4) and fades into the old grain's continuation at the same rate. Each grain's recorded rpm comes from
+  inverting the RPM table at its centre (`Ginsu::rpm_at_position`); on the 911 it matches the grain-length
+  estimate `120 · sr / len` within 1 % from 3,000 rpm up (1.7 % on the first grain).
+- The mixer's RPM smoothing went from 30 ms to 10 ms: with resampled grains the 30 ms filter was the main
+  remaining lag (20–40 cents on a 2,200 rpm/s sweep). 10 ms still bridges the 64 Hz updates.
+- Measured on a 2,000 → 7,500 rpm sweep in 2.5 s, 30 ms windows, harmonic-sum f0 at rpm/20 (±25 %), scored
+  against the rpm delayed by each version's control latency: median −30 → −5 cents, p90 |error| 84 → 59
+  cents, p95 window-to-window step 131 → 91 cents. Discontinuities (peak |diff| / local RMS per 2 ms block):
+  max 0.88 → 0.76. Steady holds: envelope modulation unchanged (0.020 / 0.035 / 0.003 at 2,500 / 4,500 /
+  6,500 rpm off load); on-load holds sit within 3 cents of the expected pitch.
+- Metric caveats (dead ends): below ~3,000 rpm an engine cycle (48 ms at 2,500) is longer than the window, so
+  per-window errors there are tracker noise; around 4,900–5,300 rpm the 911's recording has partials that
+  pull a 5-harmonic comb to −200 cents on steady holds with both synths; the off-load recording has little
+  energy at the firing frequency at 4,500 rpm (the tracker hits its bound). A comb on the engine-cycle
+  fundamental (rpm/120, 30 harmonics, ±10 %) failed even on a clean synthetic sweep.
+
+### 2026-10-04 (shaders): G-buffer decodes, tangent frames, instance overrides, paint, sky
+- **G-buffer semantics** (from the main pass of each family; t-registers mapped through sampler slots of the
+  programs that keep RDEF names): RT0 normal + roughness, RT1 sqrt(albedo) + AO, RT2 F0 + Fresnel strength,
+  RT3 sqrt(indirect × exposure). Reflection = cube.rgb × SkyReflectionAverageLight + cube.a ×
+  SkyReflectionAverageColour, times an env-BRDF LUT sampled at (N·V, roughness, F0) × 0.9375 + 0.03125.
+  Exposure = Tonemap(0.5, 0.5).w × HDRConstants.x. A full per-family write-up (13 groups, ~330 lines) was made
+  in the session scratchpad; the ported maths is in `layered.wgsl` with comments. Highlights:
+  - WorldPBR: F0 = cubic(spec.x) (sRGB→linear approximation), roughness = spec.y, AO = AO map(uv1).y ×
+    instance w. ColouredSpecular: F0 = SpecularColour(uv0).rgb × MaterialDiffuse, no cubic. PersistentLightmap
+    = Lightmap without the `DynamicLighting_GlobalLightMapIntensities` factor. Lit windows: emissive =
+    spec.w² × AOMap.w × LitWindowColour × AdditiveIntensities.y × albedo (night only, not drawn).
+  - Terrain: tiling normals hold x, y and roughness (w), z reconstructed; the `Normal` variant's macro normal
+    map is world space (texel swizzled x, z, −y); AO = 2·mask.g; F0 / roughness / Fresnel per layer from
+    `Layer{1,2,3}_Roughness_Specular_Fresnel`.
+  - Roads: normals blended in slope space (road map + world-space detail map + vertex normal, then
+    normalize(p.x, 1, p.y)); roughness = Normal.a × Detail.a; F0 = SpecColour.g; wetness from a puddle map,
+    RoadDepth and vertex TEXCOORD5.x; reflection only planar × wet mask, so dry roads have no indirect
+    specular. Road vertex colour: rgb = baked light, a = AO.
+  - Plots: blended tiling normals (rgb), roughness = lerp(decal.z, 1, layer.x × normal.a), F0 = layer.y.
+  - Trees: G-buffer albedo = (texel / alpha)² (premultiplied, gamma space), AO = vertex colour.y × instance w,
+    wind = sin(time·speed + uv.y) × amplitude × uv.x on x and z, no specular.
+  - Water: two wave normal maps scrolling by time / waveAnimationSpeeds; the reflection's Fresnel lookup uses
+    dot(−V, N), negative on visible water, so it always takes the grazing value (near-mirror water).
+  - Vehicles: textured parts F0 = spec rgb, roughness = normal-map alpha, AO / specular occlusion = vertex
+    colour x / y; clear coat F0 = PbrMaterialClearcoatSpecular rising to 1 at grazing angles by
+    PbrMaterialClearcoatFresnel; base scaled by (1 − coat). The tyre material binds no diffuse / spec / normal
+    textures although its pass reads them (D3D11 unbound = 0): black rubber plus the dust layer.
+- **Packed tangent frames decoded** (world RGBA8, vehicle SNORM16): see formats.md. Test
+  `mw-assets/tests/tangent_frames.rs`: normals agree with face normals on 98.8 % (TRK_UNIT1) / 97.3 % (911)
+  of triangles; tangents follow +U on 82 % / 68 % (vehicle normal maps also use other UV sets).
+- **InstanceList per-instance overrides** (+0x10) and the world matrix's w column (tint / AO): formats.md.
+  Prop / compound instances have a similar block at +0x50 (`InstanceAdditiveAndAO`), not decoded; their tint is
+  treated as 1.
+- **VehiclePaint field names** cracked with the paint shader's constant names as vocabulary (14 names, in
+  `genesys_names.txt`). `a1d177bd` (0.019–0.05) is read as the coat F0 by range and position; unconfirmed.
+- **Sky**: `ENVIRONMENT.BNDL` panoramas and cloud layers (formats.md). One daytime pair (`…3f39` HDR,
+  `…3f3a` clouds) is used as skybox and environment-light source until the timeline is decoded.
+- **Bevy stand-ins** at the time (superseded by the deferred pipeline entry above): `StandardMaterial`
+  lighting fed with the ported G-buffer values; `GeneratedEnvironmentMapLight` from the sky cube instead of the
+  game's reflection cubes + LUT + irradiance quadric (needs Bevy features `dfg_lut` and `bluenoise_texture`;
+  without `dfg_lut` the environment specular silently does nothing); `DistanceFog`; Bevy's clear coat (F0
+  fixed at 0.04, strength set to the coat's grazing reflectance); water near-mirror approximated with F0 0.6;
+  directional light at a hand-picked angle (sun azimuth aligned with the panorama's glow); no shadows.
+- Open: lightmap texture source (the lightmap shaders read `LightMapTextureSampler`, which neither the
+  material nor the instance overrides bind); road vertex AO and baked light; water river floor (third UV set),
+  foam, caustics; paint flakes / pearlescent / livery; vehicle glass and lights; TerrainPBR TangentSpaceNormal
+  macro frame.
 
 ### 2026-10-04 (late night): jumpy engine sound
 - **Ginsu RPM tables are signed.** The short recordings start at about -2832 samples, so as u32 their tables

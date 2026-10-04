@@ -170,10 +170,25 @@ impl Renderable {
                 p[3] = 1.0;
             }
         }
-        let normals = layout.read_attribute(Semantic::Normal, vb);
-        let tangents = layout.read_attribute(Semantic::Tangent, vb);
+        let mut normals = layout.read_attribute(Semantic::Normal, vb);
+        let mut tangents = layout.read_attribute(Semantic::Tangent, vb);
         let binormals = layout.read_attribute(Semantic::Binormal, vb);
-        let texcoords = (0..8).map(|i| layout.read_attribute(Semantic::TexCoord(i), vb)).collect();
+        let colors = layout.read_attribute(Semantic::Color, vb);
+        let texcoords: Vec<_> = (0..8).map(|i| layout.read_attribute(Semantic::TexCoord(i), vb)).collect();
+        // Layouts without a NORMAL carry the tangent frame as a packed quaternion in the lowest
+        // four-component RGBA8 / SNORM16 TEXCOORD (world: 2 or 3, trees: 1, vehicles: 4).
+        if normals.is_none()
+            && let Some((i, scale, bias)) = (0..8).find_map(|i| match layout.find(Semantic::TexCoord(i))?.format {
+                crate::DxgiFormat::R8G8B8A8Unorm => Some((i, 2.0, -1.0)),
+                crate::DxgiFormat::R16G16B16A16Snorm => Some((i, 1.0, 0.0)),
+                _ => None,
+            })
+            && let Some(q) = &texcoords[i as usize]
+        {
+            let (n, t) = q.iter().map(|q| tangent_frame(q.map(|c| c * scale + bias))).unzip();
+            normals = Some(n);
+            tangents = Some(t);
+        }
         let n = positions.len() as u32;
         // Drop triangles that reference vertices outside the buffer.
         let indices: Vec<u32> = self
@@ -185,16 +200,37 @@ impl Renderable {
             .flatten()
             .copied()
             .collect();
-        Ok(DecodedMesh { positions, normals, tangents, binormals, texcoords, indices })
+        Ok(DecodedMesh { positions, normals, tangents, binormals, colors, texcoords, indices })
     }
+}
+
+/// Decode a packed tangent frame (a quaternion with components in -1..1; the shaders scale it by sqrt 2
+/// and read the bitangent sign from `q.w < 0`) into `(normal, tangent)`, with the bitangent sign in the
+/// tangent's w: bitangent = w * cross(normal, tangent). Ported from the world and vehicle vertex shaders:
+/// the tangent is the quaternion's rotated X axis, the normal the cross product of the rotated X and Y axes.
+pub fn tangent_frame(q: [f32; 4]) -> ([f32; 4], [f32; 4]) {
+    let len = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]).sqrt();
+    let sign = if q[3] < 0.0 { -1.0 } else { 1.0 };
+    if len < 1e-6 {
+        return ([0.0, 1.0, 0.0, 0.0], [1.0, 0.0, 0.0, sign]);
+    }
+    let [x, y, z, w] = q.map(|c| c / len);
+    let t = [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y + z * w), 2.0 * (x * z - y * w)];
+    let b = [2.0 * (x * y - z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z + x * w)];
+    let n = [t[1] * b[2] - t[2] * b[1], t[2] * b[0] - t[0] * b[2], t[0] * b[1] - t[1] * b[0]];
+    ([n[0] * sign, n[1] * sign, n[2] * sign, 0.0], [t[0], t[1], t[2], sign])
 }
 
 #[derive(Debug, Clone)]
 pub struct DecodedMesh {
     pub positions: Vec<[f32; 4]>,
     pub normals: Option<Vec<[f32; 4]>>,
+    /// Tangents; w is the bitangent sign when decoded from a packed frame, else whatever the layout
+    /// stored (often 0 or 1).
     pub tangents: Option<Vec<[f32; 4]>>,
     pub binormals: Option<Vec<[f32; 4]>>,
+    /// `COLOR` (RGBA8). Roads: baked light; vehicles: x = AO, y = specular occlusion.
+    pub colors: Option<Vec<[f32; 4]>>,
     /// `TEXCOORD0..7` (HLSL numbering; the game's semantic 5 is TEXCOORD0).
     pub texcoords: Vec<Option<Vec<[f32; 4]>>>,
     pub indices: Vec<u32>,
@@ -203,5 +239,34 @@ pub struct DecodedMesh {
 impl DecodedMesh {
     pub fn texcoord(&self, index: usize) -> Option<&[[f32; 4]]> {
         self.texcoords.get(index)?.as_deref()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tangent_frame;
+
+    fn close(a: [f32; 4], b: [f32; 4]) -> bool {
+        a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5)
+    }
+
+    #[test]
+    fn identity_frame_is_z_normal_x_tangent() {
+        let (n, t) = tangent_frame([0.0, 0.0, 0.0, 1.0]);
+        assert!(close(n, [0.0, 0.0, 1.0, 0.0]));
+        assert!(close(t, [1.0, 0.0, 0.0, 1.0]));
+        // A negative w flips the normal and the bitangent sign; -q is the same rotation.
+        let (n, t) = tangent_frame([0.0, 0.0, 0.0, -1.0]);
+        assert!(close(n, [0.0, 0.0, -1.0, 0.0]));
+        assert!(close(t, [1.0, 0.0, 0.0, -1.0]));
+    }
+
+    #[test]
+    fn quarter_turn_about_x_turns_normal_down() {
+        // 90° about +X maps Y to Z and Z to -Y: tangent stays X, normal = cross(X, Z) = -Y.
+        let h = std::f32::consts::FRAC_1_SQRT_2;
+        let (n, t) = tangent_frame([h, 0.0, 0.0, h]);
+        assert!(close(t, [1.0, 0.0, 0.0, 1.0]));
+        assert!(close(n, [0.0, -1.0, 0.0, 0.0]), "{n:?}");
     }
 }

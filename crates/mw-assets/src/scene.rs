@@ -58,6 +58,8 @@ pub struct Placement {
     pub transform: [[f32; 4]; 4],
     /// InstanceList entries past the "always loaded" count are backdrop.
     pub backdrop: bool,
+    /// Per-instance material overrides (`InstanceList` only): tint constants, AO maps, lightmaps.
+    pub overrides: Option<std::sync::Arc<fmt::InstanceOverrides>>,
 }
 
 impl AssetStore {
@@ -132,7 +134,9 @@ impl AssetStore {
         for e in bundle.entries_of_type(ResourceType::InstanceList) {
             let list = fmt::InstanceList::parse(&bundle.load(e)?)?;
             out.instances.extend(list.instances.into_iter().filter_map(|i| {
-                Some(Placement { model: i.model?, transform: i.transform, backdrop: !i.always_loaded })
+                let overrides = (!i.overrides.constants.is_empty() || !i.overrides.textures.is_empty())
+                    .then(|| std::sync::Arc::new(i.overrides));
+                Some(Placement { model: i.model?, transform: i.transform, backdrop: !i.always_loaded, overrides })
             }));
         }
         type ParseDef = fn(&mw_bundle::Resource) -> fmt::Result<fmt::ObjectDef>;
@@ -153,7 +157,9 @@ impl AssetStore {
                         parse_def(&res).ok()?.model()
                     });
                     match model {
-                        Some(model) => dest.push(Placement { model, transform: inst.transform, backdrop: false }),
+                        Some(model) => {
+                            dest.push(Placement { model, transform: inst.transform, backdrop: false, overrides: None })
+                        }
                         None => unresolved += 1,
                     }
                 }
@@ -285,7 +291,7 @@ impl AssetStore {
             .parts
             .iter()
             .flatten()
-            .map(|&model| Placement { model, transform: IDENTITY, backdrop: false })
+            .map(|&model| Placement { model, transform: IDENTITY, backdrop: false, overrides: None })
             .collect();
         for wheel in &spec.wheels {
             // Wheel models are authored for the left side (+X); right wheels
@@ -297,7 +303,10 @@ impl AssetStore {
             }
             let transform = trs_matrix(wheel.position, wheel.rotation, scale);
             out.extend(
-                wheel.parts.iter().filter_map(|p| Some(Placement { model: p.model?, transform, backdrop: false })),
+                wheel
+                    .parts
+                    .iter()
+                    .filter_map(|p| Some(Placement { model: p.model?, transform, backdrop: false, overrides: None })),
             );
         }
         Ok(Some(out))

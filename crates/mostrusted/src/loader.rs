@@ -14,7 +14,7 @@ use mw_assets::AssetStore;
 use mw_bundle::{ResourceId, ResourceType};
 
 use crate::convert;
-use crate::materials::{Look, TexKey};
+use crate::materials::{InstanceLook, Look, TexKey};
 
 /// What to load.
 #[derive(Debug, Clone)]
@@ -47,8 +47,8 @@ pub struct CarSpec {
     pub wheels: Vec<WheelSpec>,
     /// Handling parameters from the car's GeneSys data.
     pub handling: mw_assets::handling::VehicleHandling,
-    /// Ginsu engine recordings (on load, off load).
-    pub engine: Option<(Arc<mw_audio::ginsu::Ginsu>, Option<Arc<mw_audio::ginsu::Ginsu>>)>,
+    /// Engine sound layers and master gain (`AssetStore::engine_voice`).
+    pub engine: Option<(Vec<mw_audio::ginsu::EngineLayer>, f32)>,
 }
 
 pub struct Part {
@@ -83,6 +83,8 @@ pub struct WorldFilter {
     pub exclude: HashSet<ResourceId>,
     /// Keep backdrop LOD2 stand-ins even though detailed geometry is loaded.
     pub keep_lod_proxies: bool,
+    /// Which of the car's `VehiclePaint` options to paint it with.
+    pub paint_index: usize,
 }
 
 #[derive(Resource)]
@@ -103,6 +105,7 @@ pub fn spawn(store: Arc<AssetStore>, request: Request, bc_supported: bool, filte
                 filter,
                 empty_models: HashSet::new(),
                 groundcover_done: HashSet::new(),
+                paint: None,
             };
             if let Err(e) = w.run(request) {
                 let _ = w.tx.send(Msg::Progress(format!("loader error: {e:#}")));
@@ -125,6 +128,8 @@ struct Worker {
     empty_models: HashSet<ResourceId>,
     /// Groundcover collections already sent (they are shared between track units).
     groundcover_done: HashSet<ResourceId>,
+    /// Paint of the car being loaded, applied to its body-paint meshes.
+    paint: Option<mw_assets::paint::VehiclePaint>,
 }
 
 impl Worker {
@@ -136,12 +141,18 @@ impl Worker {
         match request {
             Request::Vehicle { bundle } => {
                 let b = self.store.bundle(&bundle).ok_or_else(|| anyhow::anyhow!("bundle not found: {bundle}"))?;
+                self.select_paint(&b);
                 self.send(Msg::Focus(Vec3::ZERO))?;
                 let placements = match self.store.vehicle_placements(&b)? {
                     Some(p) => p,
                     None => b
                         .entries_of_type(ResourceType::Model)
-                        .map(|e| mw_assets::Placement { model: e.id, transform: mw_assets::IDENTITY, backdrop: false })
+                        .map(|e| mw_assets::Placement {
+                            model: e.id,
+                            transform: mw_assets::IDENTITY,
+                            backdrop: false,
+                            overrides: None,
+                        })
                         .collect(),
                 };
                 for p in placements {
@@ -162,19 +173,28 @@ impl Worker {
         Ok(())
     }
 
+    fn select_paint(&mut self, b: &mw_bundle::Bundle) {
+        let paints = self.store.vehicle_paints(b).unwrap_or_default();
+        self.paint = paints.get(self.filter.paint_index.min(paints.len().saturating_sub(1))).copied();
+        if !paints.is_empty() {
+            let _ = self.send(Msg::Progress(format!(
+                "paint {} of {} (--paint-index)",
+                self.filter.paint_index.min(paints.len() - 1),
+                paints.len()
+            )));
+        }
+    }
+
     fn car(&mut self, bundle: &str) -> anyhow::Result<()> {
         let b = self.store.bundle(bundle).ok_or_else(|| anyhow::anyhow!("bundle not found: {bundle}"))?;
+        self.select_paint(&b);
         let e = b
             .entries_of_type(ResourceType::VehicleGraphicsSpec)
             .next()
             .ok_or_else(|| anyhow::anyhow!("{bundle} has no VehicleGraphicsSpec"))?;
         let spec = mw_formats::VehicleGraphicsSpec::parse(&b.load(e)?)?;
         let handling = mw_assets::handling::VehicleHandling::from_bundle(&self.store, &b).unwrap_or_default();
-        let ginsus = b
-            .entries_of_type(ResourceType::Ginsu)
-            .filter_map(|e| mw_audio::ginsu::Ginsu::parse(b.load(e).ok()?.header()).ok())
-            .collect();
-        let engine = mw_audio::ginsu::pick_engine(ginsus);
+        let engine = self.store.engine_voice(&b).unwrap_or_default();
         let mut car = CarSpec { body: Vec::new(), wheels: Vec::new(), handling, engine };
         for &m in spec.parts.iter().flatten() {
             if self.model(m)? {
@@ -268,7 +288,7 @@ impl Worker {
                 // detailed versions are also loaded; drawing both overlaps, so
                 // backdrop placements use a variant without the LOD2 meshes.
                 let strip = p.backdrop && !self.filter.keep_lod_proxies;
-                if let Some(model) = self.model_variant(p.model, strip)? {
+                if let Some(model) = self.model_variant(p.model, strip, InstanceLook::from_placement(&p))? {
                     self.send(Msg::Instance { model, transform: game_matrix(&p.transform) })?;
                 }
             }
@@ -306,12 +326,13 @@ impl Worker {
                         normals: None,
                         tangents: None,
                         binormals: None,
+                        colors: None,
                         texcoords: Vec::new(),
                         indices: Vec::new(),
                     },
                 };
                 let mut look = Look::from_scene_mesh(&sm);
-                for key in look.textures.into_iter().flatten() {
+                for key in look.all_textures().collect::<Vec<_>>() {
                     self.texture(key)?;
                 }
                 look.retain_textures(|k| self.textures.contains(k));
@@ -326,14 +347,26 @@ impl Worker {
     /// Ensure a model (and its textures) has been sent. Returns false if the
     /// model has nothing drawable.
     fn model(&mut self, id: ResourceId) -> anyhow::Result<bool> {
-        Ok(self.model_variant(id, false)?.is_some())
+        Ok(self.model_variant(id, false, InstanceLook::default())?.is_some())
     }
 
-    /// Load a model, optionally without its LOD2 stand-in meshes. Returns the
-    /// key the main thread knows it by (the stripped variant gets a synthetic
-    /// ID with bit 62 set), or `None` if nothing is drawable.
-    fn model_variant(&mut self, id: ResourceId, strip_lod2: bool) -> anyhow::Result<Option<ResourceId>> {
-        let key = if strip_lod2 { ResourceId(id.0 | 1 << 62) } else { id };
+    /// Load a model, optionally without its LOD2 stand-in meshes and with a
+    /// placement's tint / AO. Returns the key the main thread knows it by (the
+    /// stripped variant gets a synthetic ID with bit 62 set, per-instance
+    /// variants a hash with bit 61 set), or `None` if nothing is drawable.
+    fn model_variant(
+        &mut self,
+        id: ResourceId,
+        strip_lod2: bool,
+        inst: InstanceLook,
+    ) -> anyhow::Result<Option<ResourceId>> {
+        let mut key = if strip_lod2 { ResourceId(id.0 | 1 << 62) } else { id };
+        if !inst.is_default() {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (key, inst).hash(&mut h);
+            key = ResourceId(h.finish() & !(3 << 62) | 1 << 61);
+        }
         if self.models.contains(&key) {
             return Ok(Some(key));
         }
@@ -356,8 +389,8 @@ impl Worker {
             if skip_shader(&name) {
                 continue;
             }
-            let mut look = Look::from_scene_mesh(&sm);
-            for key in look.textures.into_iter().flatten() {
+            let mut look = Look::from_scene_mesh(&sm).with_instance(&inst).with_paint(self.paint.as_ref());
+            for key in look.all_textures().collect::<Vec<_>>() {
                 self.texture(key)?;
             }
             look.retain_textures(|k| self.textures.contains(k));

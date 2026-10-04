@@ -3851,6 +3851,7 @@ dependencies = [
 name = "mw-assets"
 version = "0.1.0"
 dependencies = [
+ "mw-audio",
  "mw-bundle",
  "mw-formats",
  "mw-gamedir",

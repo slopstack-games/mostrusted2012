@@ -8,7 +8,10 @@
 //! demand.
 
 mod catalog;
+pub mod engine_sound;
+pub mod environment;
 pub mod handling;
+pub mod paint;
 mod scene;
 
 pub use catalog::{DEFAULT_LANGUAGE, VehicleInfo};

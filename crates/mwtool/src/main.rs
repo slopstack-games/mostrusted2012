@@ -402,14 +402,18 @@ fn main() -> Result<()> {
             let store = AssetStore::new(game)?;
             let v = store.find_vehicle(&car)?.with_context(|| format!("no car matches {car}"))?;
             let b = store.bundle(v.hi_bundle.as_deref().context("no bundle")?).context("bundle")?;
-            let ginsus = b
-                .entries_of_type(ResourceType::Ginsu)
-                .filter_map(|e| mw_audio::ginsu::Ginsu::parse(b.load(e).ok()?.header()).ok())
-                .collect();
-            let (on, off) = mw_audio::ginsu::pick_engine(ginsus).context("no engine sound")?;
+            let (layers, master) = store.engine_voice(&b)?.context("no engine sound")?;
+            let on = layers[0].ginsu.clone();
             let rate = on.pcm.sample_rate as usize;
             let (lo, hi) = (on.min_rpm, on.max_rpm);
-            let mut mixer = mw_audio::ginsu::EngineMixer::new(on.clone(), off.clone());
+            for l in &layers {
+                let dir = if l.ginsu.rising() { "rising" } else { "falling" };
+                println!(
+                    "layer {:.0}-{:.0} rpm ({dir}), gain {:.3}, load curve {:?}",
+                    l.ginsu.min_rpm, l.ginsu.max_rpm, l.gain, l.load_curve
+                );
+            }
+            let mut mixer = mw_audio::ginsu::EngineMixer::new(layers, master);
             // A recorded trace (stepwise, as the game updates it), or a 4 s rev
             // up on throttle and a 4 s coast down.
             let points: Vec<[f32; 3]> = match &trace {
@@ -442,18 +446,7 @@ fn main() -> Result<()> {
             }
             let pcm = mw_audio::Pcm { channels: 1, sample_rate: rate as u32, samples };
             std::fs::write(&out, pcm.to_wav())?;
-            println!(
-                "{}: on load {lo:.0}-{hi:.0} rpm ({} grains), off load {}",
-                v.name,
-                on.grains.len(),
-                off.as_ref().map_or("none".into(), |o| format!(
-                    "{:.0}-{:.0} rpm ({} grains, {})",
-                    o.min_rpm,
-                    o.max_rpm,
-                    o.grains.len(),
-                    if o.rising() { "rising" } else { "falling" }
-                ))
-            );
+            println!("{}: {:.1} s -> {}", v.name, duration, out.display());
         }
         Cmd::ShaderUsage => {
             let store = AssetStore::new(game)?;
@@ -559,7 +552,12 @@ fn export_models(store: &AssetStore, b: &Bundle, out: &Path, verbose: bool) -> R
         Some(p) => p,
         None => b
             .entries_of_type(ResourceType::Model)
-            .map(|e| mw_assets::Placement { model: e.id, transform: mw_assets::IDENTITY, backdrop: false })
+            .map(|e| mw_assets::Placement {
+                model: e.id,
+                transform: mw_assets::IDENTITY,
+                backdrop: false,
+                overrides: None,
+            })
             .collect(),
     };
     export_scene(store, &placements, out, verbose, 512, true)
@@ -598,6 +596,14 @@ fn export_world(store: &AssetStore, bundles: &[String], out: &Path, size: u32, o
             unique.len(),
             unique.values().map(|&n| n as u64).sum::<u64>()
         );
+        let mut names: std::collections::BTreeMap<&str, usize> = Default::default();
+        for o in layers.instances.iter().filter_map(|p| p.overrides.as_deref()) {
+            for n in o.constants.iter().map(|c| &c.0).chain(o.textures.iter().map(|t| &t.0)) {
+                *names.entry(n.as_str()).or_default() += 1;
+            }
+        }
+        let overridden = layers.instances.iter().filter(|p| p.overrides.is_some()).count();
+        println!("instance overrides: {overridden} instances {names:?}");
     }
     placements.extend(layers.into_placements());
     let total = placements.len();

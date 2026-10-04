@@ -6,6 +6,10 @@ use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use mw_formats::{DxgiFormat, Texture};
 
+/// `uv_b` value that routes the vertex colour's xy into UV_1 instead of a TEXCOORD (Bevy would multiply
+/// a COLOR attribute into the base colour; vehicles keep AO and specular occlusion there).
+pub const UV_FROM_COLOUR: u8 = 0xC0;
+
 /// Build a Bevy mesh from a decoded game mesh. Game TEXCOORD0 becomes UV_0
 /// and `uv_b` (if any) selects the game TEXCOORD that becomes UV_1. Normals
 /// are taken from the vertex data when present, otherwise computed.
@@ -21,7 +25,9 @@ pub fn mesh(m: &mw_formats::DecodedMesh, uv_b: Option<u8>) -> Option<Mesh> {
     if let Some(uv) = m.texcoord(0) {
         mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv2(uv));
     }
-    if let Some(uv) = uv_b.and_then(|i| m.texcoord(i as usize)) {
+    let uv_b =
+        if uv_b == Some(UV_FROM_COLOUR) { m.colors.as_deref() } else { uv_b.and_then(|i| m.texcoord(i as usize)) };
+    if let Some(uv) = uv_b {
         mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, uv2(uv));
     }
     match &m.normals {
@@ -29,6 +35,12 @@ pub fn mesh(m: &mw_formats::DecodedMesh, uv_b: Option<u8>) -> Option<Mesh> {
             mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, n.iter().map(|v| [v[0], v[1], v[2]]).collect::<Vec<_>>())
         }
         None => mesh.compute_smooth_normals(),
+    }
+    // Tangents feed the normal maps. Packed frames carry the bitangent sign in w; stored float
+    // tangents (terrain) have none, so they get +1.
+    if let (Some(t), Some(_)) = (&m.tangents, &m.normals) {
+        let t: Vec<[f32; 4]> = t.iter().map(|v| [v[0], v[1], v[2], if v[3] < 0.0 { -1.0 } else { 1.0 }]).collect();
+        mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, t);
     }
     Some(mesh)
 }

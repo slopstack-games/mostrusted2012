@@ -13,6 +13,6 @@ mw-assets.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 rayon.workspace = true
-bevy = { version = "0.19", features = ["free_camera"] }
+bevy = { version = "0.19", features = ["free_camera", "dfg_lut", "bluenoise_texture"] }
 avian3d = "0.7"
 mw-audio.workspace = true

@@ -38,6 +38,12 @@ InstanceList ──> Model ──(LOD state)──> Renderable ──(per mesh)�
 - **VertexDescriptor (0x3)**: D3D11 input layout. Attribute `format` values are plain `DXGI_FORMAT` codes.
   Semantics: 1 POSITION, 3 NORMAL, 4 COLOR, 5–12 TEXCOORD0–7, 13 BLENDINDICES, 14 BLENDWEIGHT, 15 TANGENT,
   16 BINORMAL.
+- **Packed tangent frames**: layouts without a NORMAL carry a quaternion in the lowest four-component
+  RGBA8 / SNORM16 TEXCOORD (world 2 or 3, trees 1, vehicles 4; wheels also have 5 for the mirrored technique).
+  RGBA8 decodes as `v·2√2 − √2`, SNORM16 as `v·√2`; tangent = the rotated X axis, normal = rotated X × rotated
+  Y, negated (and the bitangent sign flipped) when `q.w < 0`; bitangent = sign · (N × T).
+  `mw_formats::tangent_frame`, checked against face normals (98.8 % world / 97.3 % 911 agree within 45°, and
+  all point to the counter-clockwise side).
 - **Renderable (0x5, version 12)**: mesh list; topology 5 (triangle strip, restart index 0xFFFF) is the norm.
   Vehicle and character positions are `R16G16B16A16_SNORM` scaled by **10.0**, which was confirmed by the
   Porsche 911 decoding to its real 4.49 × 1.97 × 1.30 m. World geometry uses `R32G32B32_FLOAT`.
@@ -47,7 +53,13 @@ InstanceList ──> Model ──(LOD state)──> Renderable ──(per mesh)�
   373 shaders).
 - **Model (0x51)**: renderable imports and an 8-entry state table (LOD0–5, shadow, occlusion).
 - **InstanceList (0x50)**: 0x60-byte instances, each a model import plus a row-major D3D matrix at +0x20
-  (`v * M`, translation in row 3; some rows carry `w = 1.0`, which must be ignored).
+  (`v * M`, translation in row 3). The matrix's w column is per-instance data: the world vertex shaders pass it
+  to the pixel shader, which multiplies albedo by its xyz (tint) and the AO map by its w (AO scale,
+  0.90–1.0). +0x10 points to a per-instance **material override** block (11,974 of 35,431 instances): named
+  constants (`diffuseTintColour` 10,100×, `AdditiveIntensities`, `InstanceAdditiveAndAO`) and named samplers
+  (`AOMapTextureSampler` 781×, a SamplerState + Texture import each). `diffuseTintColour` is not a shader
+  parameter; the engine folds it into the instance tint. Layout in `mw-formats/src/world.rs`
+  (`InstanceOverrides`).
 - **Prop/Compound/Dynamic/LightInstanceList (0x218 / 0x216 / 0x204 / 0x213)**: header `u32 version`
   (2/2/3/1), `ptr` 0x10, `u32 count`, 0; then 0x60-byte records: a 3x4 row-major matrix at +0x00 (axis rows,
   translation row 3; column 3 ignored, row 3 w is often 0.94, maybe a packed tint byte), an object import at
@@ -106,6 +118,46 @@ reflection data. `mwtool shader-asm <ShaderName>` disassembles a shader's pixel 
 reference for porting a shader family to WGSL (see `crates/mostrusted/src/layered.wgsl`).
 
 World space is metres, Y up. Signage renders unmirrored without flipping any axis.
+
+The renderer is deferred. G-buffer pass outputs (common to every family decoded so far): RT0 = world normal
+·0.5+0.5 and **roughness** (not gloss; the reflection cube mip is roughness × 5.5), RT1 = sqrt(linear albedo)
+and AO, RT2 = F0 and a Fresnel strength, RT3 = sqrt(indirect × exposure) (cube reflection × env-BRDF LUT ×
+AO², lightmap, vertex light). Specular maps: WorldPBR `spec.x` → F0 through the cubic
+`((0.307841 s + 0.686033) s + 0.006163) s + 0.001527`, `spec.y` = roughness; ColouredSpecular takes F0 from
+`SpecularColourTextureSampler` × MaterialDiffuse. Normal maps are rgb ×2−1 in the vertex tangent frame (terrain
+tiling normals: xy + roughness in w, z reconstructed). Dry roads and plots have no cube reflection (only a
+planar reflection scaled by the wet mask). Alpha-tested shaders discard below 129/255. Per-family details:
+research log 2026-10-04 (shaders) and the comments in `layered.wgsl`.
+
+Car paint is not in the material: `VehicleNFS13_BodyPaint` reads `PbrPaint*` object constants that come from the
+car's `Genesys.Gen.VehiclePaint` objects (`PbrDiffuseColour`, `PbrSpecularColour`, `PbrSpecularRoughness`,
+`PbrClearcoatFresnel`, `PbrClearcoatRoughness`, `PbrClearcoatEnabled`, `PbrPearlescentColour`, ...; 9 per car
+for the 911). `mw_assets::paint`.
+
+**Environment / time of day** is GeneSys in `HAWAII/ENVIRONMENT.BNDL` (no 0x112–0x114 resources exist):
+`EnvironmentTimeline` (25) lists `{Keyframe handle, hour}` (field `ccdbc945`, hour `da6ac384`; 21 entries,
+hours 11/15/16 absent). `EnvironmentKeyframe` (175) holds `LightRig` (KeyLightColour; Key/Shadow/Up/Down/Left/
+Right fill colours; AmbientIrradianceScale), Sky (`7dfab0cc`: SunColour, SkyReflectionAverageColour/Light,
+SkyColorGradient = 6 unsorted stops of (position 0 horizon .. 1 zenith, r, g, b, 1)), Clouds (BaseCloudTexture
+= low bits of a Texture ID, DarkColour, LightColour, Opacity, Feathering, Scale, Speed), Fog (`6ada1ed8`:
+Colour, ColourSun (5 floats), NearDistance, FarDistance, Power, ScatteringColour/Phase/Strength, LayerBase/
+Height), Camera (bloom, exposure, tint), HeatHaze, Mini_DOF, Vfx, Weather, a ColourCube handle and an
+`Alternate` (bad-weather twin) handle. The keyframe has no sun direction (EnvironmentSettings' SunMoonPath is
+only partly named). `mw_assets::environment`; values are game HDR units.
+
+`HAWAII/ENVIRONMENT.BNDL` also holds HDR panoramas (256×64 RGBA16F, equirectangular upper hemisphere,
+horizon at row ~58) and cloud layers (2048×512 / 2048×256 BC3, alpha = coverage, each with a 256×64 copy) for
+the `NewSky` dome shader (two 1-D gradients, four cloud layers, sun glow). The panoramas are a sunrise capture
+(glow ~3° above the horizon) that no keyframe references.
+
+The deferred lighting pass `LightBuffer_KeylightAndAmbient`: key light = KeyLightColour × CSM shadow ×
+(1 − 0.8(1 − AO)); diffuse Lambert × (1 − F0), or for RT3.w > 0.992 (vehicles) the Ashikhmin-Shirley term
+28/(23π)(1 − F0)(1 − (1 − N·L/2)⁵)(1 − (1 − N·V/2)⁵); specular normalised Blinn-Phong, power exp(11 − 11·
+roughness), (n+1)/8π, visibility 1/(max(N·L, N·V)·V·H + 0.0013), Schlick Fresnel with RT2.w scaling the
+(1 − F0) part; ambient = irradiance cube(N) (stored sqrt(x/4); vehicles blend a second cube by distance) ×
+AO × (1 − F0) × albedo; plus RT3² × exposure. The Fog pass: amount pow(saturate(d/(far − near) −
+near/(far − near)), Power) × gradient alpha, height-layer fog, sun-corona in-scattering
+strength/(1 + phase·cosθ)², sky pixels only get the layer fog.
 
 ## Diffuse sampler names
 

@@ -201,3 +201,41 @@ fn diag_gc_ground() {
         eprintln!("cluster {} at {:.1?} size {:?} quads {}", s.0, s.1, s.2, s.3);
     }
 }
+
+/// The default timeline's noon keyframe decodes with the values the environment survey found.
+#[test]
+fn environment_noon_keyframe() {
+    let Some(store) = store() else { return };
+    let k = store.environment_keyframe_at(mw_assets::environment::DEFAULT_TIMELINE, 13).unwrap();
+    assert_eq!(k.id.0, 0x0100_0000_0012_4619);
+    assert_eq!(k.key_light, [11.0, 7.953, 5.214]);
+    assert_eq!(k.sky_gradient.len(), 6);
+    assert!(k.sky_gradient.windows(2).all(|w| w[0].0 <= w[1].0));
+    assert_eq!(k.clouds.texture.map(|t| t.0), Some(0x0100_0000_0000_3f46));
+    assert_eq!((k.fog.near, k.fog.far, k.fog.power), (80.0, 1525.0, 1.5));
+    assert!((k.ambient.scale - 2.6).abs() < 1e-6);
+    // Every timeline hour resolves.
+    for hour in 0..24 {
+        store.environment_keyframe_at(mw_assets::environment::DEFAULT_TIMELINE, hour).unwrap();
+    }
+}
+
+/// The 911's engine voice: six Ginsu layers (two sets of full / part / off load) with load curves.
+#[test]
+fn engine_sound_layers() {
+    let Some(store) = store() else { return };
+    let b = store.bundle("VEHICLES/VEH_1085007_HI.BNDL").unwrap();
+    let spec = store.engine_sound(&b).unwrap().expect("EngineSound2");
+    for l in &spec.layers {
+        eprintln!("{} gain {:.3} rpm {:?} curve {:?}", l.ginsu, l.gain, l.rpm_range, l.load_curve);
+    }
+    assert_eq!(spec.layers.len(), 6);
+    assert!(spec.layers.iter().all(|l| !l.load_curve.is_empty()));
+    // Off-load layer (…7e) is loud at zero load and silent at full load; the main rev-up the opposite.
+    let layer = |id: u64| spec.layers.iter().find(|l| l.ginsu.0 == id).unwrap();
+    let curve = mw_assets::engine_sound::EngineSoundSpec::curve_at;
+    assert!(curve(&layer(0x0100_0000_001d_1c7e).load_curve, 0.0) > 0.8);
+    assert!(curve(&layer(0x0100_0000_001d_1c7e).load_curve, 1.0) < 0.01);
+    assert!(curve(&layer(0x0100_0000_001d_1c7c).load_curve, 0.0) < 0.01);
+    assert!(curve(&layer(0x0100_0000_001d_1c7c).load_curve, 1.0) > 0.99);
+}

@@ -21,12 +21,12 @@ pub use collision::{PolygonSoup, PolygonSoupList, SOUP_GRANULARITY, SOUP_OFFSET_
 pub use dxgi::{DxgiFormat, f16_to_f32};
 pub use groundcover::{GroundcoverCollection, GroundcoverInstance, GroundcoverInstances, GroundcoverLayer, Group};
 pub use material::{Material, MaterialParameter, MaterialSampler, Model, Shader, ShaderParameter, ShaderSampler};
-pub use renderable::{DecodedMesh, Mesh, Renderable, SNORM_POSITION_SCALE, Topology};
+pub use renderable::{DecodedMesh, Mesh, Renderable, SNORM_POSITION_SCALE, Topology, tangent_frame};
 pub use text::{Language, VehicleEntry, VehicleList};
 pub use texture::{Dimension, Texture};
 pub use vehicle::{VehicleGraphicsSpec, Wheel, WheelPart};
 pub use vertex::{Semantic, VertexAttribute, VertexDescriptor};
-pub use world::{Instance, InstanceList, ObjectDef, ObjectInstance, ObjectInstanceList};
+pub use world::{Instance, InstanceList, InstanceOverrides, ObjectDef, ObjectInstance, ObjectInstanceList};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

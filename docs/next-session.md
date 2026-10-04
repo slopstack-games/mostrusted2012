@@ -1,41 +1,48 @@
 # Handoff: state at the end of the 2026-10-04 session
 
-Read this first when you pick the work up again, then delete or trim it once it's done. Nothing from this session
+Read this first when you pick the work up again, then delete or trim it once it's done. Section 0 is from the
+later shader session; sections 1–3 are from before it and still open. Nothing from this session
 is committed yet (`git status` shows it all). Scratch files from the session (traces, wavs, dumps) were in the
 session scratchpad and are gone; regenerate them with the commands below.
 
-## 1. Engine sound: rev-up is a staircase (next task, diagnosed, not fixed)
+## 0. Shaders and textures (shader session, same day)
 
-User report: "the engine audio still doesn't smoothly transition up the rev range".
+The user's direction (now in PLAN.md): recreate the game's architecture, so the rendering pipeline should work
+like the original's deferred renderer instead of Bevy PBR. Done this session, all in the ported-G-buffer style
+so it carries over:
 
-**Cause (measured):** `GinsuSynth` (`crates/mw-audio/src/ginsu.rs`) plays every grain (one engine cycle = two
-crank turns, 911: 3684 samples at 1575 rpm, 734 at 7814 rpm) at its *recorded* pitch, and only picks a new
-grain when the current one ends. Under acceleration the target moves 10–20 grains per grain length, so pitch
-rises in steps. On a 2000→7500 rpm sweep over 2.5 s, the synth's firing frequency (flat-six: rpm / 20 Hz) lags
-by up to 118 cents (p90), with steps of up to 370 cents between 5 ms windows.
+- Packed tangent frames → normals + tangents (`mw_formats::tangent_frame`), vertex colours decoded.
+- `layered.wgsl` modes: roads (slope-space normals, roughness, F0, no dry reflection), terrain (tiling normals,
+  macro normal, per-layer roughness / F0, AO), plots (tiling normals, AO map), WorldPBR + World_Diffuse_Specular
+  (normal / spec / AO / ColouredSpecular), vehicles (mode 6), trees (mode 7), water (mode 8). 10 texture slots,
+  12 constant vec4s.
+- InstanceList per-instance overrides (tint, AO map) → per-instance model variants (`InstanceLook`, bit 61 keys).
+- Car paint from `VehiclePaint` (`--paint-index N`, `--paint r,g,b` still overrides the colour).
+- Sky cube from `ENVIRONMENT.BNDL` (`sky.rs`) as `Skybox` + `GeneratedEnvironmentMapLight`.
 
-**Planned fix:** resample each grain continuously: playback rate = smoothed rpm / recorded rpm of the grain
-(the recorded rpm comes from inverting `rpm_table` at the grain's centre, or from the grain length:
-`120 × sample_rate / len` matched within 1% on the 911). Use a fractional read position with linear (or cubic)
-interpolation, clamp the rate to about 0.7–1.4, and keep the cross-fade with the old grain's continuation and
-the target/target+1 alternation. Then re-measure:
+Later the same day the deferred pipeline and the environment timeline landed (research log "the game's
+deferred pipeline in Bevy"). Next, in order:
+1. **Exposure, tonemap, colour cube**: the scene uses Bevy's tonemapping and a fixed `GAME_UNIT` scale. Port
+   `Blit2d_GeneratePCTonemapConstants_*`, `ToneMapSetConstants`, the keyframe's Camera exposure fields and the
+   `ColourCube` (0x52) grade; then `GBufferComposite`, bloom and `PostAA`.
+2. **Shadows**: the key light's cascaded shadow map (`ShadowMap_*` constants in the lighting pass); render a
+   depth cascade from the sun and sample it as `sample_c_lz` does.
+3. **Sun direction**: name the SunMoonPath fields in EnvironmentSettings (`…69cad`); compare with the sky.
+4. Sky dome details (`NewSky` gradient B, dome mapping, four cloud layers), fog in-scattering mapping.
+5. Lightmap source; road vertex light + AO; water river floor / foam; vehicle glass, lights, flakes; point /
+   spot lights at night.
 
-```sh
-# 1. a dense sweep trace (lines: seconds rpm load), 64 Hz like the game
-python3 -c "import numpy as np; print('\n'.join('%.4f %.1f 1'%(t,2000+5500*min(t,2.5)/2.5) for t in np.arange(0,3,1/64)))" > fast.tr
-./target/release/mwtool engine-sound 911 fast.wav --trace fast.tr
-# 2. pitch tracking: per 30 ms window, take the harmonic-sum f0 within ±25% of rpm/20 and compare it with the
-#    expected value (median error in cents, p90 |error|, and the 5 ms step jitter after removing the expected slope)
-```
+Visual checks: `docs/viewpoints.md`. Vehicle-only shots need `--screenshot-delay 60` so the environment
+prefilter has run.
 
-Goal: p90 error well under 25 cents and no step above about 30 cents. Also check that steady holds don't get
-worse (2-20 Hz envelope modulation at 2500/4500/6500 rpm; baseline 0.018 / 0.034 / 0.005 off load).
+## 1. Engine sound (rewritten, evening)
 
-Already fixed this session (in the research log, "2026-10-04 (late night): jumpy engine sound"): the
-on/off-load recording pairing (signed RPM tables), the clutch slip in every gear, coasting kick-downs, and the
-equal-power on/off fade. Tools: `--test engine` (human-like pedal script), `MW_ENGINE_TRACE=<file>` (RPM every
-physics tick), `mwtool engine-sound <car> out.wav --trace <file>`, and `mwtool audio <bundle>` now prints
-whether each Ginsu sweep rises or falls.
+The engine now plays all six Ginsu layers from the car's `EngineSound2` data with the game's load curves,
+through a new overlap-add synth in lockstep (research log "engine sound rewritten from the game's audio
+data"). Ask the user how it sounds; if something is still off, likely candidates: the load parameter (now
+throttle, smoothed 50 ms), RPM below the items' 1790 rpm range (idle is pitched down from the lowest grain),
+the missing bus effects, and the engine states. Measurement scripts (pitch tracking, clicks, hold modulation,
+throttle-step levels) were in the session scratchpad; the research log describes each metric.
 
 ## 2. Handling: make it work like the original (user's main request, in progress)
 

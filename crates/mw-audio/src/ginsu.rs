@@ -95,6 +95,23 @@ impl Ginsu {
         (a + (b - a) * f).max(0.0)
     }
 
+    /// RPM at which a recording position was recorded: the inverse of [`Ginsu::position_for_rpm`] (the
+    /// table is monotonic, rising or falling).
+    pub fn rpm_at_position(&self, pos: f32) -> f32 {
+        let n = self.rpm_table.len();
+        if n < 2 {
+            return self.min_rpm;
+        }
+        let at = |i: usize| self.rpm_table[i] as i32 as f32;
+        let rising = self.rising();
+        // First entry past `pos` in sweep order.
+        let k = (1..n).find(|&i| if rising { at(i) >= pos } else { at(i) <= pos }).unwrap_or(n - 1);
+        let (a, b) = (at(k - 1), at(k));
+        let f = if (b - a).abs() > f32::EPSILON { ((pos - a) / (b - a)).clamp(0.0, 1.0) } else { 0.0 };
+        let step = (self.max_rpm - self.min_rpm) / (n - 1) as f32;
+        self.min_rpm + ((k - 1) as f32 + f) * step
+    }
+
     /// Grain containing the recording position for an RPM.
     pub fn grain_for_rpm(&self, rpm: f32) -> usize {
         let pos = self.position_for_rpm(rpm) as u32;
@@ -110,91 +127,224 @@ impl Ginsu {
     }
 }
 
-/// Real-time granular resynthesis: plays grains chosen by the current RPM,
-/// cross-fading between them.
+/// Granular resynthesis of one Ginsu recording by overlap-add of engine cycles. [`EngineMixer`] drives it.
+///
+/// Grains are engine cycles: grain boundaries mark cycle starts, and a grain's length matches the cycle
+/// period at the RPM it was recorded at (`120 · sample_rate / rpm` for these four-stroke recordings,
+/// research log 2026-10-04). Output is a stream of periods set by the mixer. During each period the
+/// current grain's cycle fades out while the next grain's preceding cycle fades in, with complementary
+/// windows (cos² + sin² = 1). Both are resampled so that one source cycle fills exactly one output period,
+/// so the pitch follows the RPM continuously.
+///
+/// The next grain is usually the recording's following cycle, so mostly the recording plays straight
+/// through: consecutive grains share their samples and the blend is seamless. Now and then, and when the
+/// walk leaves a window of a few cycles around the RPM's position, it jumps to a random cycle near the
+/// target. This replaced concatenating whole grains with a 2 ms cross-fade while alternating between two of
+/// them, which sounded like looped snippets.
 pub struct GinsuSynth {
     pub ginsu: std::sync::Arc<Ginsu>,
-    grain: usize,
-    pos: usize,
-    end: usize,
-    /// Continuation of the previous grain, faded out under the new one.
-    fade: Vec<f32>,
-    fade_pos: usize,
-    /// Alternate up/down around the target grain to avoid a buzz from
-    /// repeating one grain.
-    flip: bool,
+    /// RPM each grain was recorded at (at its centre).
+    grain_rpm: Vec<f32>,
+    /// Grain whose cycle fades out, and grain whose preceding cycle fades in, during this period.
+    current: usize,
+    next: usize,
 }
 
-const FADE: usize = 96;
+/// The walk stays within this many grains of the RPM's position in the recording.
+const WINDOW: usize = 2;
+
+/// Catmull-Rom interpolation of the recording at a fractional position.
+fn sample_at(samples: &[i16], pos: f32) -> f32 {
+    let i = pos.floor() as isize;
+    let t = pos - pos.floor();
+    let s = |k: isize| samples.get((i + k).max(0) as usize).copied().unwrap_or(0) as f32;
+    let (p0, p1, p2, p3) = (s(-1), s(0), s(1), s(2));
+    p1 + 0.5 * t * (p2 - p0 + t * (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3 + t * (3.0 * (p1 - p2) + p3 - p0)))
+}
 
 impl GinsuSynth {
     pub fn new(ginsu: std::sync::Arc<Ginsu>) -> Self {
-        let (pos, end) = ginsu.grain(0);
-        Self { ginsu, grain: 0, pos, end, fade: Vec::new(), fade_pos: 0, flip: false }
+        let grain_rpm: Vec<f32> = (0..ginsu.grains.len().saturating_sub(1))
+            .map(|i| {
+                let (a, b) = ginsu.grain(i);
+                ginsu.rpm_at_position((a + b) as f32 * 0.5)
+            })
+            .collect();
+        let start = ginsu.grain_for_rpm(ginsu.min_rpm);
+        Self { ginsu, grain_rpm, current: start, next: start + 1 }
     }
 
-    /// Next mono sample in -1..1 for the given RPM.
-    pub fn next_sample(&mut self, rpm: f32) -> f32 {
+    fn grains(&self) -> usize {
+        self.grain_rpm.len()
+    }
+
+    /// Start the next output period: the incoming grain becomes current and a new one is picked. `rnd` is
+    /// shared by all layers of an engine, so layers recorded together (same grain table) pick the same
+    /// cycle and stay coherent.
+    pub fn start_period(&mut self, rpm: f32, rnd: u32) {
+        self.current = self.next;
+        self.next = self.pick_next(self.current, rpm, rnd);
+    }
+
+    /// The grain after `from` for this RPM: the next cycle of the recording seven periods in eight while it
+    /// stays within ±2 grains of the RPM's grain, else a random grain in that window. Tuned on steady holds
+    /// (2-20 Hz loudness modulation, research log): a strict walk with jump-backs made a short loop, and
+    /// wider windows or more frequent jumps modulate more.
+    fn pick_next(&self, from: usize, rpm: f32, rnd: u32) -> usize {
+        let n = self.grains();
+        if n < 2 {
+            return 0;
+        }
+        let target = self.ginsu.grain_for_rpm(rpm).min(n - 1);
+        let following = from + 1;
+        if following < n && following.abs_diff(target) <= WINDOW && !rnd.is_multiple_of(8) {
+            return following;
+        }
+        let r = ((rnd >> 8) % (2 * WINDOW as u32 + 1)) as usize;
+        (target + r).saturating_sub(WINDOW).min(n - 2)
+    }
+
+    /// Output period (samples) for this RPM: the current grain's length scaled by its recorded RPM over
+    /// the RPM.
+    pub fn period_for(&self, rpm: f32) -> f32 {
+        let (a, b) = self.ginsu.grain(self.current);
+        let recorded = self.grain_rpm.get(self.current).copied().unwrap_or(rpm).max(1.0);
+        ((b - a).max(1) as f32 * recorded / rpm.max(1.0)).clamp(16.0, 16384.0)
+    }
+
+    /// Sample at phase `x` (0..1) of the current period, in -1..1.
+    pub fn sample(&self, x: f32) -> f32 {
+        if self.grains() == 0 {
+            return 0.0;
+        }
         let samples = &self.ginsu.pcm.samples;
-        if self.pos >= self.end || self.pos >= samples.len() {
-            // Cross-fade the new grain with the old grain's natural
-            // continuation in the recording (what would have played next).
-            let cont = self.end.min(samples.len());
-            self.fade = samples[cont..(cont + FADE).min(samples.len())].iter().map(|&s| s as f32).collect();
-            self.fade_pos = 0;
-            let target = self.ginsu.grain_for_rpm(rpm);
-            self.flip = !self.flip;
-            let next = if self.flip { target } else { (target + 1).min(self.ginsu.grains.len().saturating_sub(2)) };
-            self.grain = next;
-            let (a, b) = self.ginsu.grain(next);
-            self.pos = a;
-            self.end = b.max(a + 1);
-        }
-        let mut v = samples.get(self.pos).copied().unwrap_or(0) as f32;
-        self.pos += 1;
-        if self.fade_pos < self.fade.len() {
-            let t = self.fade_pos as f32 / self.fade.len() as f32;
-            v = v * t + self.fade[self.fade_pos] * (1.0 - t);
-            self.fade_pos += 1;
-        }
-        v / 32768.0
+        let (a, b) = self.ginsu.grain(self.current);
+        let out = sample_at(samples, a as f32 + x * (b - a) as f32);
+        let (c, _) = self.ginsu.grain(self.next);
+        let (p, _) = self.ginsu.grain(self.next.saturating_sub(1));
+        let inc = sample_at(samples, p as f32 + x * (c - p) as f32);
+        let w = (x * std::f32::consts::FRAC_PI_2).sin().powi(2);
+        (out * (1.0 - w) + inc * w) / 32768.0
     }
 }
 
-/// A car's engine voice: on-load and off-load synths mixed by throttle, with
-/// the RPM and load smoothed per sample (the game updates them at 64 Hz).
-/// Shared by the runtime and `mwtool engine-sound`, so offline renders match
-/// what is heard in game.
+/// One recording in an engine mix: a Ginsu, its mixer channel gain and its gain curve against engine
+/// load (`(load, gain)` points, piecewise linear; empty = 1).
+#[derive(Debug, Clone)]
+pub struct EngineLayer {
+    pub ginsu: std::sync::Arc<Ginsu>,
+    pub gain: f32,
+    pub load_curve: Vec<(f32, f32)>,
+}
+
+fn curve_at(curve: &[(f32, f32)], x: f32) -> f32 {
+    let Some(first) = curve.first() else { return 1.0 };
+    if x <= first.0 {
+        return first.1.max(0.0);
+    }
+    for w in curve.windows(2) {
+        let ((a, ya), (b, yb)) = (w[0], w[1]);
+        if x <= b {
+            let f = if b > a { (x - a) / (b - a) } else { 0.0 };
+            return (ya + (yb - ya) * f).max(0.0);
+        }
+    }
+    curve.last().map_or(1.0, |l| l.1.max(0.0))
+}
+
+/// A car's engine voice as the game mixes it: every layer plays at once through its own granular synth,
+/// weighted by its channel gain and its load curve (the 911: two microphone sets of full-load, part-load
+/// and off-load recordings, crossfaded by load). RPM and load are smoothed per sample (the game updates
+/// them at 64 Hz). Shared by the runtime and `mwtool engine-sound`, so offline renders match what is
+/// heard in game.
+/// A layer's synth with its channel gain and load curve.
+struct Voice {
+    synth: GinsuSynth,
+    gain: f32,
+    load_curve: Vec<(f32, f32)>,
+}
+
 pub struct EngineMixer {
-    on: GinsuSynth,
-    off: Option<GinsuSynth>,
+    voices: Vec<Voice>,
+    master: f32,
     pub sample_rate: u32,
     rpm: f32,
     load: f32,
+    /// Shared period schedule: every layer starts its cycles together, so the firing pulses of layers
+    /// recorded in the same run (two microphones) and of the load layers line up.
+    t: f32,
+    period: f32,
+    seed: u32,
 }
 
+/// Overall output scale before the soft limiter: the layers sum to roughly twice one recording's level.
+const MIX_SCALE: f32 = 0.6;
+
 impl EngineMixer {
-    pub fn new(on: std::sync::Arc<Ginsu>, off: Option<std::sync::Arc<Ginsu>>) -> Self {
-        let rpm = on.min_rpm;
-        Self { sample_rate: on.pcm.sample_rate, on: GinsuSynth::new(on), off: off.map(GinsuSynth::new), rpm, load: 0.0 }
+    pub fn new(layers: Vec<EngineLayer>, master_gain: f32) -> Self {
+        let sample_rate = layers.first().map_or(48_000, |l| l.ginsu.pcm.sample_rate);
+        let rpm = layers.iter().map(|l| l.ginsu.min_rpm).fold(f32::MAX, f32::min);
+        let voices: Vec<Voice> = layers
+            .into_iter()
+            .map(|l| Voice { synth: GinsuSynth::new(l.ginsu), gain: l.gain, load_curve: l.load_curve })
+            .collect();
+        let rpm = if rpm.is_finite() { rpm } else { 1000.0 };
+        let period = voices.first().map_or(1000.0, |v| v.synth.period_for(rpm));
+        Self { voices, master: master_gain, sample_rate, rpm, load: 0.0, t: 0.0, period, seed: 0x9e37_79b9 }
+    }
+
+    /// Fallback for cars without engine-sound data: an on-load and an off-load recording with
+    /// equal-power load curves.
+    pub fn on_off_layers(on: std::sync::Arc<Ginsu>, off: Option<std::sync::Arc<Ginsu>>) -> Vec<EngineLayer> {
+        let pts = |f: fn(f32) -> f32| (0..=8).map(|i| i as f32 / 8.0).map(|x| (x, f(x))).collect::<Vec<_>>();
+        let mut layers = vec![EngineLayer {
+            ginsu: on,
+            gain: 1.0,
+            load_curve: if off.is_some() {
+                pts(|x| (x * std::f32::consts::FRAC_PI_2).sin())
+            } else {
+                vec![(0.0, 0.4), (1.0, 1.0)]
+            },
+        }];
+        if let Some(off) = off {
+            layers.push(EngineLayer {
+                ginsu: off,
+                gain: 1.0,
+                load_curve: pts(|x| (x * std::f32::consts::FRAC_PI_2).cos()),
+            });
+        }
+        layers
     }
 
     /// Next sample in -1..1 towards the target RPM and load (0..1).
     pub fn next_sample(&mut self, rpm: f32, load: f32) -> f32 {
-        let k = 1.0 / (0.03 * self.sample_rate.max(1) as f32);
-        self.rpm += (rpm - self.rpm) * k;
-        self.load += (load - self.load) * k * 0.5;
-        let on = self.on.next_sample(self.rpm);
-        match &mut self.off {
-            Some(off) => {
-                let off = off.next_sample(self.rpm);
-                // Equal-power cross-fade: the two recordings are uncorrelated,
-                // so a linear one dips by 3 dB halfway through.
-                let a = self.load.clamp(0.0, 1.0) * std::f32::consts::FRAC_PI_2;
-                on * a.sin() + off * a.cos()
+        let sr = self.sample_rate.max(1) as f32;
+        // 10 ms bridges the 64 Hz RPM updates without zipper noise; load moves over 50 ms so throttle
+        // taps crossfade the layers instead of switching them.
+        self.rpm += (rpm - self.rpm) / (0.01 * sr);
+        self.load += (load.clamp(0.0, 1.0) - self.load) / (0.05 * sr);
+        if self.t >= self.period {
+            self.t -= self.period;
+            self.seed ^= self.seed << 13;
+            self.seed ^= self.seed >> 17;
+            self.seed ^= self.seed << 5;
+            for v in &mut self.voices {
+                v.synth.start_period(self.rpm, self.seed);
             }
-            None => on * (0.4 + 0.6 * self.load),
+            // The first layer (the main rev-up) sets the period.
+            self.period = self.voices.first().map_or(self.period, |v| v.synth.period_for(self.rpm));
         }
+        let x = (self.t / self.period).min(1.0);
+        self.t += 1.0;
+        let mut sum = 0.0;
+        for v in &self.voices {
+            // Silent layers keep their place so they come back in step.
+            let w = v.gain * curve_at(&v.load_curve, self.load);
+            if w > 0.0 {
+                sum += v.synth.sample(x) * w;
+            }
+        }
+        (sum * self.master * MIX_SCALE).tanh()
     }
 }
 
@@ -243,6 +393,17 @@ mod tests {
             grains: (0..=grains as u32).map(|g| g * 100).collect(),
             pcm: Pcm { channels: 1, sample_rate: 48000, samples: vec![0; grains * 100] },
         }
+    }
+
+    #[test]
+    fn rpm_at_position_inverts_the_table() {
+        let up = ginsu(1000.0, 3000.0, vec![0, 100, 400], 3);
+        assert_eq!(up.rpm_at_position(0.0), 1000.0);
+        assert_eq!(up.rpm_at_position(100.0), 2000.0);
+        assert_eq!(up.rpm_at_position(250.0), 2500.0);
+        let down = ginsu(1000.0, 3000.0, vec![400, 100, 0], 3);
+        assert_eq!(down.rpm_at_position(400.0), 1000.0);
+        assert_eq!(down.rpm_at_position(50.0), 2500.0);
     }
 
     #[test]

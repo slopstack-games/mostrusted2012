@@ -5,9 +5,11 @@
 
 mod audio;
 mod convert;
+mod deferred;
 mod drive;
 mod loader;
 mod materials;
+mod sky;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -16,6 +18,7 @@ use std::time::{Duration, Instant};
 
 use bevy::camera_controller::free_camera::{FreeCamera, FreeCameraPlugin};
 use bevy::image::{CompressedImageFormatSupport, CompressedImageFormats};
+use bevy::light::{GeneratedEnvironmentMapLight, Skybox};
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
 use clap::Parser;
@@ -24,7 +27,7 @@ use mw_bundle::ResourceId;
 use mw_gamedir::GameDir;
 
 use loader::{LoaderChannel, Msg, Request};
-use materials::{GameMaterial, Look, TexKey};
+use materials::{GameEnvironment, GameMaterial, Look, TexKey};
 
 #[derive(Parser, Debug)]
 #[command(version, about = "Most Rusted: NFS Most Wanted (2012) runtime")]
@@ -81,22 +84,29 @@ struct Cli {
     /// Camera pose as `x,y,z,look_x,look_y,look_z` (overrides the default view).
     #[arg(long, value_delimiter = ',', allow_hyphen_values = true)]
     camera: Option<Vec<f32>>,
-    /// Body paint colour as `r,g,b` in 0–255 sRGB.
-    #[arg(long, value_delimiter = ',', default_value = "170,20,24")]
-    paint: Vec<u8>,
+    /// Body paint colour as `r,g,b` in 0–255 sRGB, overriding the car's own paint colour.
+    #[arg(long, value_delimiter = ',')]
+    paint: Option<Vec<u8>>,
+    /// Which of the car's paint options (`VehiclePaint` objects, in ID order) to use.
+    #[arg(long, default_value_t = 0)]
+    paint_index: usize,
     /// Save a screenshot once loading has finished, then exit.
     #[arg(long)]
     screenshot: Option<PathBuf>,
+    /// Hour of the day (0–23) on the environment timeline.
+    #[arg(long, default_value_t = 13)]
+    hour: u32,
 }
 
 #[derive(Resource)]
 pub struct Game {
+    hour: u32,
     pub store: Arc<AssetStore>,
     request: Request,
     camera: Option<Transform>,
     screenshot: Option<PathBuf>,
     screenshot_delay: u32,
-    paint: Color,
+    paint: Option<Color>,
     filter: loader::WorldFilter,
     mute: bool,
 }
@@ -131,8 +141,11 @@ fn main() -> anyhow::Result<()> {
     if cli.camera.as_ref().is_some_and(|c| c.len() != 6) {
         anyhow::bail!("--camera expects 6 comma-separated values: x,y,z,look_x,look_y,look_z");
     }
-    let [r, g, b] = cli.paint[..] else { anyhow::bail!("--paint expects r,g,b") };
-    let paint = Color::srgb_u8(r, g, b);
+    let paint = match cli.paint.as_deref() {
+        None => None,
+        Some(&[r, g, b]) => Some(Color::srgb_u8(r, g, b)),
+        Some(_) => anyhow::bail!("--paint expects r,g,b"),
+    };
     let camera =
         cli.camera.map(|c| Transform::from_xyz(c[0], c[1], c[2]).looking_at(Vec3::new(c[3], c[4], c[5]), Vec3::Y));
     let resolve = |q: &str| -> anyhow::Result<String> {
@@ -177,6 +190,7 @@ fn main() -> anyhow::Result<()> {
         no_backdrop: cli.no_backdrop,
         no_groundcover: cli.no_groundcover,
         keep_lod_proxies: cli.keep_lod_proxies,
+        paint_index: cli.paint_index,
         exclude: cli
             .exclude_models
             .iter()
@@ -204,6 +218,8 @@ fn main() -> anyhow::Result<()> {
     }
     app.add_plugins(FreeCameraPlugin)
         .add_plugins(MaterialPlugin::<GameMaterial>::default())
+        .add_plugins(deferred::GameLightingPlugin)
+        .init_resource::<GameEnvironment>()
         .add_plugins((avian3d::PhysicsPlugins::default(), drive::DrivePlugin))
         .add_plugins(audio::GameAudioPlugin {
             music: !cli.no_music && !cli.mute && cli.screenshot.is_none() && test.is_none(),
@@ -215,6 +231,7 @@ fn main() -> anyhow::Result<()> {
             camera,
             screenshot: cli.screenshot,
             screenshot_delay: cli.screenshot_delay,
+            hour: cli.hour.min(23),
             paint,
             filter,
             mute: cli.mute || test.is_some(),
@@ -227,28 +244,80 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn setup(mut commands: Commands, game: Res<Game>) {
+/// cd/m² (and lux, for the key light) per unit of the game's HDR values (environment keyframes, sky).
+/// The game's own exposure (auto exposure from the keyframe's camera settings) is not ported; this
+/// scale makes the noon key light (~8.6 units) about 10,000 lux under Bevy's default exposure.
+const GAME_UNIT: f32 = 1200.0;
+
+fn setup(mut commands: Commands, game: Res<Game>, mut images: ResMut<Assets<Image>>) {
+    let sun = Transform::from_rotation(Quat::from_euler(EulerRot::YXZ, 0.8, -0.9, 0.0));
+    // The game renders deferred: the camera keeps a depth + deferred G-buffer prepass (which the game
+    // materials fill with the game's G-buffer) and renders in HDR.
     let camera = commands
         .spawn((
             Camera3d::default(),
+            bevy::core_pipeline::prepass::DepthPrepass,
+            bevy::core_pipeline::prepass::DeferredPrepass,
+            bevy::camera::Hdr,
+            Msaa::Off,
             Transform::from_xyz(6.0, 2.5, 6.0).looking_at(Vec3::new(0.0, 0.6, 0.0), Vec3::Y),
             Projection::Perspective(PerspectiveProjection { far: 20_000.0, ..default() }),
-            DistanceFog {
-                color: Color::srgb(0.55, 0.68, 0.85),
-                falloff: FogFalloff::Linear { start: 1500.0, end: 6000.0 },
-                ..default()
-            },
         ))
         .id();
+    // Time of day from the environment timeline: key light, ambient rig, sky and fog. The sky becomes
+    // the skybox, the reflection cube the material passes read, and a Bevy environment light for the
+    // forward (translucent) materials; the rig becomes the lighting pass's irradiance cube.
+    let sun_dir = sun.back().as_vec3();
+    let keyframe = game.store.environment_keyframe_at(mw_assets::environment::DEFAULT_TIMELINE, game.hour);
+    let mut key_illuminance = 9_000.0;
+    match keyframe {
+        Ok(k) => {
+            info!("environment: hour {} keyframe {}", game.hour, k.id);
+            let to_bevy = |c: [f32; 3]| Vec3::from(c) * GAME_UNIT;
+            let key_colour = to_bevy(k.key_light);
+            key_illuminance = key_colour.dot(Vec3::new(0.2126, 0.7152, 0.0722));
+            let sky = sky::Sky::new(&game.store, &k, sun_dir);
+            commands.insert_resource(GameEnvironment {
+                reflection: Some(images.add(sky::reflection_cube(&sky))),
+                reflection_mips: sky::REFLECTION_MIPS,
+                sky_brightness: GAME_UNIT,
+            });
+            let f = &k.fog;
+            let cs = |i: usize| f.colour_sun.get(i).copied().unwrap_or(0.0);
+            commands.insert_resource(deferred::GameLighting {
+                key_colour,
+                key_direction: sun.forward().as_vec3(),
+                sky_brightness: GAME_UNIT,
+                irradiance: images.add(sky::irradiance_cube(&k, sun_dir)),
+                fog: deferred::FogSettings {
+                    colour: to_bevy(f.colour),
+                    colour_sun: to_bevy([cs(0), cs(1), cs(2)]),
+                    near: f.near,
+                    far: f.far,
+                    power: f.power,
+                    scattering_colour: to_bevy(f.scattering_colour),
+                    scattering_phase: f.scattering_phase,
+                    scattering_strength: f.scattering_strength,
+                },
+            });
+            let skybox = images.add(sky::sky_cube(&sky));
+            commands.entity(camera).insert((
+                Skybox { image: Some(skybox.clone()), brightness: GAME_UNIT, ..default() },
+                GeneratedEnvironmentMapLight { environment_map: skybox, intensity: GAME_UNIT, ..default() },
+            ));
+        }
+        Err(e) => {
+            warn!("no environment keyframe ({e}); flat ambient");
+            commands.insert_resource(GlobalAmbientLight { brightness: 600.0, ..default() });
+        }
+    }
     // Screenshot runs must be deterministic: no input (gamepad drift moves the camera).
     if game.screenshot.is_none() && !matches!(game.request, Request::Drive { .. }) {
         commands.entity(camera).insert(FreeCamera { walk_speed: 30.0, run_speed: 150.0, ..default() });
     }
-    commands.spawn((
-        DirectionalLight { illuminance: 9_000.0, shadow_maps_enabled: false, ..default() },
-        Transform::from_rotation(Quat::from_euler(EulerRot::YXZ, 0.8, -0.9, 0.0)),
-    ));
-    commands.insert_resource(GlobalAmbientLight { brightness: 600.0, ..default() });
+    // Lights the forward (translucent) materials; the game's lighting pass takes the key light from
+    // `GameLighting`.
+    commands.spawn((DirectionalLight { illuminance: key_illuminance, shadow_maps_enabled: false, ..default() }, sun));
     commands.spawn((
         Text::new("Most Rusted"),
         TextFont { font_size: FontSize::Px(16.0), ..default() },
@@ -285,6 +354,7 @@ fn receive_assets(
     mut materials: ResMut<Assets<GameMaterial>>,
     mut camera: Query<&mut Transform, With<Camera3d>>,
     game: Res<Game>,
+    env: Res<GameEnvironment>,
 ) {
     let Some(channel) = channel else { return };
     let rx = channel.0.lock().unwrap();
@@ -312,7 +382,7 @@ fn receive_assets(
                         Some(m) => m.clone(),
                         None => {
                             let tex = |k: Option<TexKey>| k.and_then(|k| loaded.textures.get(&k).cloned());
-                            let m = materials.add(part.look.material(tex, game.paint));
+                            let m = materials.add(part.look.material(tex, game.paint, &env));
                             loaded.materials.insert(part.look, m.clone());
                             m
                         }
@@ -342,11 +412,11 @@ fn receive_assets(
                     .collect();
                 let Request::Drive { spawn, heading, .. } = game.request else { continue };
                 if !game.mute
-                    && let Some((on_load, off_load)) = spec.engine.clone()
+                    && let Some((layers, master_gain)) = spec.engine.clone()
                 {
                     commands.insert_resource(audio::PendingEngine(Some(audio::EngineAudio {
-                        on_load,
-                        off_load,
+                        layers,
+                        master_gain,
                         params: Default::default(),
                     })));
                 }

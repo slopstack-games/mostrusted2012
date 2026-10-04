@@ -2,13 +2,14 @@
 
 Fixed camera poses for visual checks with `--camera x,y,z,look_x,look_y,look_z --screenshot out.png`.
 Screenshots contain game content, so keep them local (session scratchpad), never in the repo.
-Use `--camera=` when the first value is negative.
+Use `--camera=` when the first value is negative. `--hour N` (0–23, default 13) picks the time of day.
 
 | name | args | shows |
 |------|------|-------|
-| road-cliff | `--camera=-1131,27,1627,-1190,15,1720` | road (colour + detail map, lane lines), terrain splat, trees, cliff, bridge, water |
+| road-cliff | `--camera=-1131,27,1627,-1190,15,1720` | road (colour + detail map + normals, lane lines), terrain splat, trees, cliff, bridge, water, sky |
 | city-overview | *(default, no `--camera`)* | camera 250 m from the median of all placements, looking at downtown |
-| car-front-left | `--vehicle 911 --camera 4.5,1.4,4.0,0,0.4,0` | paint, wheels (left side, unmirrored) |
+| car-front-left | `--vehicle 911 --camera 4.5,1.4,4.0,0,0.4,0 --screenshot-delay 60` | paint (`--paint-index`), clear coat, wheels (left side, unmirrored); the delay lets the sky reflections build |
+| wheel-close | `--vehicle 911 --camera 2.2,0.6,1.9,0.8,0.35,1.2 --screenshot-delay 60` | rim normal map, caliper logo, black tyre |
 | car-right | `--vehicle 911 --camera=-4.0,1.0,2.5,0,0.4,0` | mirrored right-hand wheels |
 | drive-911 | `--drive 911 --units 12 --auto-throttle 0.4 --screenshot-delay 400` | car drives straight from the default spawn along the gravel shoulder beside the fence (before the 2026-10-04 collision fix it snagged on a phantom bow-tie triangle at z ≈ 1716) |
 | city-lod-check | `--camera=-650,260,1850,-1000,60,2150` | lake, terrain, buildings; compare with `--keep-lod-proxies` to see the LOD2 overlap fix |

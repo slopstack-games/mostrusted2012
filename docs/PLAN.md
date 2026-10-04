@@ -4,6 +4,25 @@ Goal: a native Rust reimplementation of Need for Speed: Most Wanted (2012) that 
 assets, read at runtime from the user's install. The guiding milestone is **"drive a car through Fairhaven"**.
 Everything is ordered to reach that first, then grow toward the full game.
 
+**End target: the game works exactly the same and looks exactly the same as the original.** Approximations
+(Bevy PBR standing in for the game's deferred lighting, a handling model tuned by feel) are stepping stones, not
+the goal. Each one is recorded as a divergence and is replaced by the game's real behaviour (ported shader maths,
+data-driven rules, measured references from the original) as it becomes understood.
+
+**Recreate the game's architecture, not a Bevy game that resembles it.** Systems are rebuilt as closely as
+possible to how the original works, with Bevy as the host (windowing, ECS, GPU access, render graph) rather
+than as the design:
+- **Rendering**: the original is a deferred renderer. The target pipeline is the game's: its G-buffer layout
+  (RT0 normal + roughness, RT1 sqrt(albedo) + AO, RT2 F0 + Fresnel strength, RT3 sqrt(indirect: reflection,
+  lightmap, vertex light) × exposure), its deferred lighting (key light with cascaded shadows, irradiance
+  quadric, sky reflection cubes with the env-BRDF LUT), sky dome, planar reflections for wet roads, its
+  post-processing and tonemap, driven by the environment timeline. Shaders are ported from the DXBC (by hand
+  now, later by DXBC → WGSL translation) as custom render-graph passes, not mapped onto `StandardMaterial`.
+- **Game logic**: the same split the data implies (GeneSys types, HSM state machines, triggers, AI data) rather
+  than ad-hoc Bevy systems.
+- Bevy features stand in only temporarily (today: `StandardMaterial` lighting, `GeneratedEnvironmentMapLight`,
+  `DistanceFog`); list each stand-in in [research-log.md](research-log.md) so it can be replaced.
+
 Status legend: `[x]` done · `[~]` in progress · `[ ]` not started. Update the checkboxes as work lands; record
 findings in [research-log.md](research-log.md).
 
@@ -54,26 +73,44 @@ Make a static frame look like the game.
      sub-parts / LOD slot choice.
    - Done when: street furniture, props and grass appear, and the count of `mwtool world` placements grows
      accordingly.
-4. **Shader families as custom Bevy materials** (WGSL), largest visual payoff first. The game's compiled
-   shaders are standard DXBC, and `mwtool shader-asm <name>` disassembles them, so port the real maths:
-   1. `[x]` TerrainPBR splat (mask + noise overlay weights, three tiling layers): `layered.wgsl` mode 2
-   2. `[x]` DriveableSurface base (colour map × world-space detail × 2): mode 1. Still open: lines/decals as
-      overlays, wetness, planar reflection
-   3. `[x]` PlotPBR (mask-weighted tinted layers + decal): `layered.wgsl` mode 3; road line variants
-      (TEXCOORD2 line texture over the road): mode 4
-   4. `[ ]` Lightmaps (identify lightmap UV set and texture source; `PersistentLightmap`); road vertex colour is
-      baked light (`colour² × intensity × 0.318`)
-   5. `[~]` Vehicle paint: `--paint` colour; untextured parts use `PbrMaterialDiffuseColour`. Still open: the real
-      paint shader, glass, lights/emissive, and tyres rendering too light
-   6. `[ ]` Water (placeholder colour now), trees (translucency, `InstanceTint`), lit windows
+4. **Shader families: G-buffer inputs** `[~]` (WGSL in `layered.wgsl`, selected by `materials::Look`). Each
+   family computes exactly what the game's G-buffer pass writes (normal, roughness, sqrt albedo, AO, F0,
+   Fresnel); today these feed Bevy's PBR lighting, later the ported deferred pipeline (item 7). Per-family
+   decodes: research log 2026-10-04 (shaders).
+   1. `[x]` TerrainPBR: splat albedo, three tiling normal maps (z reconstructed, roughness in w), world-space
+      macro normal, per-layer roughness / F0, AO = 2·mask.g. Open: the TangentSpaceNormal macro frame.
+   2. `[x]` DriveableSurface: albedo, slope-space normal blend (road + world-space detail + vertex), roughness =
+      Normal.a × Detail.a, F0 = SpecColour.g, no cube reflection when dry. Line variants: line albedo, normal,
+      roughness / F0. Open: wetness (puddle map, RoadDepth), planar reflection, vertex-alpha AO, retroreflective
+      headlight glow, decal variants.
+   3. `[x]` PlotPBR: albedo, blended tiling normals, roughness through the decal, per-instance AO map.
+   4. `[x]` WorldPBR (every variant) and World_Diffuse_Specular: normal map, roughness = spec.y, F0 =
+      cubic(spec.x) or SpecularColour × MaterialDiffuse, AO map (material Overlay or per-instance
+      `AOMapTextureSampler`), instance tint and AO from the InstanceList w column / `diffuseTintColour`.
+   5. `[~]` Vehicles: textured parts (F0 = spec rgb, roughness = normal alpha, vertex AO / specular occlusion),
+      solid parts from `PbrMaterial*` constants, black tyres (their texture slots are unbound), paint from the
+      car's `VehiclePaint` (`--paint-index`) with a clear coat. Open: metallic flakes / pearlescent, livery and
+      two-paint masks, glass (`VehicleNFS13_Glass`), lights (`Refraction`, emissive lightmaps), dirt / dust.
+   6. `[~]` Trees: premultiplied albedo `(rgb/a)²`, vertex AO, alpha test 129/255. Open: wind
+      (`amplitude`/`speed`). Water: scrolling wave normals, algae albedo, near-mirror reflection. Open: river
+      floor (TEXCOORD2), foam, caustics.
+   7. `[ ]` Lightmaps: the lightmap shaders read `LightMapTextureSampler` (TEXCOORD1) but neither the material
+      nor the instance overrides bind it; find the source. Lit windows (night emissive) not drawn.
    - Longer term: translate DXBC to WGSL automatically (DXBC → SPIR-V via dxil-spirv/vkd3d, then naga), as IW4L
      does for SM3, instead of hand-porting each family.
-   - Material parameter name hashes must be mapped to names (Shader parameter tables have names). Build that
-     map once and log unknowns.
-5. **Environment**: `EnvironmentDictionary/TimeLine/Keyframe` (0x112–0x114) for sun, fog and ambient;
-   `ColourCube` (0x52) for grading; a sky.
-6. **Vertex data gaps**: packed tangent-frame quaternions in vehicle `TexCoord(4/5)` (SNORM16) → real
-   normals; vertex colour (AO / blend weights).
+5. `[~]` **Environment**: the timeline is GeneSys (`EnvironmentTimeline` / `EnvironmentKeyframe`,
+   `mw_assets::environment`). Key light, ambient rig, sky gradient / sun colour / cloud layer and fog come
+   from the keyframe at `--hour`. Open: sun direction (SunMoonPath), the `NewSky` dome mapping and its second
+   gradient, fog in-scattering and layer fog, exposure / tonemap / `ColourCube` (0x52) grading, bloom,
+   weather (`Alternate` keyframes), which timeline free roam uses.
+6. `[x]` **Vertex data**: packed tangent-frame quaternions (world RGBA8 `TEXCOORD1/2/3`, vehicle SNORM16
+   `TEXCOORD4`) decode to normals + tangents (`mw_formats::tangent_frame`, checked against face normals);
+   vertex colour is decoded.
+7. `[~]` **The game's deferred pipeline** (see "Recreate the game's architecture"): done: the G-buffer pass
+   writes the game's four targets (Bevy's deferred prepass as host), the ported key light + ambient pass and
+   Fog pass (`deferred.rs`, `game_lighting.wgsl`). Open: CSM shadows, the irradiance quadric / second
+   irradiance cube, point / spot / cop lights (`LightBuffer_*`, `TiledLighting_*`), planar reflection,
+   `GBufferComposite`, the game's tonemap / auto exposure, colour cube, bloom, `PostAA`.
 
 ### M2: Game data layer `[ ]`
 Unlocks names, tuning and rules. Can run in parallel with M1.
@@ -121,10 +158,10 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
 ### M5: Audio `[~]`
 1. `[x]` EA audio decoders (`crates/mw-audio`): Ginsu (EA-XAS v0) and SPS / `Wave` (EALayer3 → MPEG frames →
    nanomp3). `mwtool audio`, `mwtool engine-sound`.
-2. `[~]` Engine sound: Ginsu granular resynthesis driven by RPM and throttle (on-load / off-load recordings).
-   Recordings per car are known (two sets of rev-up / low sweep / off-load sweep, plus short copies; research
-   log 2026-10-04) and the matched on/off pair is used. Still open: the rev-up pitch steps at grain boundaries
-   under acceleration (fix planned: resample grains, see next-session.md), which set is engine vs exhaust,
+2. `[~]` Engine sound: the car's `EngineSound2` data drives it (`mw_assets::engine_sound`): six Ginsu layers
+   (two microphone sets × full / part / off load) crossfaded by load curves, played by an overlap-add
+   granular synth in lockstep (research log "engine sound rewritten"). Still open: the bus effects (EQ,
+   distortion, sub-harmoniser), engine states (Burnout / Drift / In_air / Reversing), what the bindings are,
    `EngineSound2` / `VehicleSound` data, mixing layers, surface/tyre/wind sounds, reverb.
 3. `[x]` Music: shuffled `UI/SONGS/*.SPS` playlist. Still open: radio/track names, ducking.
 4. `[ ]` One-shot effects from `Wave` resources (collisions, gear shifts, nitrous), speech.
@@ -175,15 +212,16 @@ SNORM ×10 scale).
 
 ## Suggested next sessions
 
-**Start with [next-session.md](next-session.md)** (handoff from 2026-10-04: engine pitch staircase, drift model, groundcover).
+**Start with [next-session.md](next-session.md)** (handoff from 2026-10-04: engine pitch staircase, drift model, shaders).
 
 0. Engine sound mixing from `EngineSound2` data; collision/skid sound effects from `Wave` resources.
 
 1. Drift assist from `DriftBehaviour` (names mostly recovered: `Maximum_yaw_torque`, `Side_force_multiplier`,
    `Drift_scale_from_braking`, ...); then collect reference measurements from the original game (procedure in
    [handling.md](handling.md)) and calibrate.
-2. Name more GeneSys fields with `mwtool genesys-crack` (camera: `VehicleCameraContainer`; paint:
-   `VehiclePaint`); fix the remaining GeneSys decode failures.
-3. World-layer loose ends (M1.3): light rendering, groundcover tint/billboarding/wind, stray tree leaf cards.
-4. Lightmaps / PlotPBR / vertex-colour lighting (M1.4).
+2. Name more GeneSys fields with `mwtool genesys-crack` (camera: `VehicleCameraContainer`; the environment
+   timeline types); fix the remaining GeneSys decode failures.
+3. World-layer loose ends (M1.3): light rendering, groundcover tint/billboarding/wind.
+4. The game's deferred pipeline (M1.4 item 7), starting with the G-buffer pass and the key-light pass; decode
+   the environment timeline (M1.5) so sun, sky and exposure come from data. Lightmap source (M1.4.7).
 5. Streaming that follows the car (M4).
