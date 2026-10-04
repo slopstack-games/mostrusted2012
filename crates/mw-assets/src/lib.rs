@@ -15,6 +15,7 @@ pub mod environment;
 pub mod handling;
 pub mod paint;
 mod scene;
+pub mod wheel_arches;
 
 pub use catalog::{DEFAULT_LANGUAGE, VehicleInfo};
 

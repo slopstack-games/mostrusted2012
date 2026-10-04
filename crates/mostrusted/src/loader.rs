@@ -289,8 +289,16 @@ impl Worker {
             .entries_of_type(ResourceType::VehicleGraphicsSpec)
             .next()
             .ok_or_else(|| anyhow::anyhow!("{bundle} has no VehicleGraphicsSpec"))?;
-        let spec = mw_formats::VehicleGraphicsSpec::parse(&b.load(e)?)?;
-        let handling = mw_assets::handling::VehicleHandling::from_bundle(&self.store, &b).unwrap_or_default();
+        let mut spec = mw_formats::VehicleGraphicsSpec::parse(&b.load(e)?)?;
+        let mut handling = mw_assets::handling::VehicleHandling::from_bundle(&self.store, &b).unwrap_or_default();
+        // Broken wheel data (the Venom's front axle): move the axle onto the body's arches, for the
+        // physics wheels as well (`mw_assets::wheel_arches`).
+        for (old, new) in self.store.repair_wheel_layout(&mut spec) {
+            self.send(Msg::Progress(format!("{bundle}: axle at z {old:.3} moved to the body's arch at z {new:.3}")))?;
+            for w in handling.wheels.iter_mut().filter(|w| (w.position[2] - old).abs() < 0.05) {
+                w.position[2] += new - old;
+            }
+        }
         let engine = self.store.engine_voice(&b).unwrap_or_default();
         let damage = match self.store.vehicle_damage(&b) {
             Ok(d) => d.map(Arc::new),

@@ -292,7 +292,8 @@ impl AssetStore {
         let Some(entry) = bundle.entries_of_type(ResourceType::VehicleGraphicsSpec).next() else {
             return Ok(None);
         };
-        let spec = fmt::VehicleGraphicsSpec::parse(&bundle.load(entry)?)?;
+        let mut spec = fmt::VehicleGraphicsSpec::parse(&bundle.load(entry)?)?;
+        self.repair_wheel_layout(&mut spec);
         let mut out: Vec<Placement> = spec
             .parts
             .iter()

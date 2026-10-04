@@ -82,6 +82,25 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-04 (session 2): wheel layout, the Venom's front axle
+- User report: wheels off on some cars (Hennessey Venom GT Spyder). Survey over every car
+  (`cargo test --release -p mw-assets --test wheel_survey -- --ignored --nocapture`): body z extent vs spec
+  axle positions. Every car has front / rear overhangs of 0.46–1.36 m except the Venom: front axle at z = 0.125
+  (2.20 m overhang, 1.63 m wheelbase on a 4.66 m body). The Veyron and one Caterham entry have swapped
+  Front / Rear labels (already handled: the loader classifies axles by position).
+- The 0.125 is in every source: VehicleGraphicsSpec wheels, the physics `RigidBody` transforms (`0d0c29b4`),
+  `SuspensionWheel`, and the LO bundle. No other vector in the car's GeneSys data sits at a front-axle
+  position. The Venom is Ultimate Speed Pack DLC. How the original shows it correctly is unknown (dead end:
+  no override found in the bundles).
+- Arches from the mesh: along z, the lowest point of the outer 25 % of the body's half-width jumps from the
+  sill (~0.1–0.2 m) to ~0.55–0.73 m over each wheel. 911: arches centred at +1.25 / −1.25 (data +1.24 /
+  −1.21); Venom: front arch +1.05…+1.55 (centre +1.30), rear around −1.5 (data −1.505).
+- Fix (`mw_assets::wheel_arches`): an axle whose overhang exceeds 1.6 m moves to the arch nearest to a
+  0.95 m overhang (within 0.6 m); applied to the spec wheels (viewer and drive) and the physics wheels. Only
+  the Venom triggers it.
+- Unrelated: the dark rectangle near the horizon in `--vehicle` shots is in the sky / cloud panorama (it
+  shows behind the 911 too).
+
 ### 2026-10-04 (session 2): NewSky shader read
 - Main PS (`…79648d36`): glow = pow(saturate(dir · KeyLightDir), SunColour.w) × SunColour.rgb (exponent 0.65 at
   noon: a broad glow over the sun's half, not a disc); gradient = lerp(B(|y|), A(|y|), w) × BaseCloudColour.w
