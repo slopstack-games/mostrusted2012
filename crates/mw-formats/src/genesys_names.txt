@@ -1304,3 +1304,23 @@ High_speed_mph
 Minimum_handbrake_time
 Front_wheel_grip_factor
 Rear_wheel_grip_factor
+# VFX (2026-10-04): SurfaceVfx / VfxGlobals / VfxMisc / VfxWheelEffects handles; vocabulary of directions,
+# surfaces and effect words. Every one is a resource handle to a BearEffect, Material or VfxWheelEffects.
+AIWheelEffects
+BottomImpactEffect
+BurstTyreWheelEffects
+FrontImpactEffect
+FrontLeftImpactEffect
+FrontRightImpactEffect
+LeftImpactEffect
+OnRims
+PlayerWheelEffects
+RearImpactEffect
+RearLeftImpactEffect
+RearRightImpactEffect
+RightImpactEffect
+RimMarksMaterial
+SpikeStripSparks
+TopImpactEffect
+VehicleImpacts
+VehicleScrapes

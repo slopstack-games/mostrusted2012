@@ -19,3 +19,6 @@ Use `--camera=` when the first value is negative. `--hour N` (0–23, default 13
 | lamp-post | `--camera=-1112,24,1640,-1130,20,1630 --mute` | compound-object street lamp upright next to a tree |
 | grass-tufts | `--camera=-1130,26.5,1599,-1135.5,24.5,1608 --mute` | groundcover: dark grass tufts on a lawn next to a wall (full map; `--no-groundcover` to compare) |
 | airfield-arch | `--camera=600,400,-600,300,0,-2000 --mute` | southern mountains; known seam: the mountain north of the airfield is cut into an arch where zones 46/55 do not list it |
+| tyre-smoke-drift | `--drive 911 --test drift --screenshot-time 9` | tyre smoke clouds behind the sliding car on the test track (`--test handbrake --screenshot-time 7.5` for the handbrake tap) |
+| crash-sparks | `--drive 911 --units 12 --auto-throttle 1 --screenshot-after-impact 0.04` | the car hits the guard rail west of downtown at ~80 km/h: spark spray and wheel dust |
+| spark-demo | `MW_VFX_DEMO=010000000007bd97,0.25,15` with `--camera=-1145,20.5,1712,-1157.5,19,1728 --units 6 --mute --screenshot-delay 150` | any effect by ID (here the scrape sparks) played 8 m ahead of the camera every 0.25 s |

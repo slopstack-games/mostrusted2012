@@ -230,6 +230,27 @@ See `crates/mw-audio` (decoders reimplemented from vgmstream's documentation of 
   a u32 at 0x20, an RPM → recording-position table, grain boundaries, then EA-XAS v0 (19-byte frames, 32 mono
   samples).
 
+## Particle effects (`BearEffect` 0x301)
+
+All 214 effects are in `GLOBALEFFECTS.BNDL`. An effect has named parameters the game sets per instance
+(`Transform`, `Velocity`, `Intensity`, `IsEmitting`, `WheelParams`, `CollisionMeshParams`, ...) and layers;
+a layer is a particle pool with named channels (`Position`, `Velocity`, `Age`, `RecipLifetime`, `Radius`,
+`Colour`, `SubUV`, ...) and typed actions that read and write them, run in four action groups (0 = update:
+controller, per-particle updates, spawners whose secondaries initialise new particles; 1 = render). Action
+payloads are 4-byte words: floats, channel / parameter / engine operands (`u16 offset, u16 4·channel |
+0x40 + 2·param | 0xEB4x`) and, in renderers, material or model imports. 5-key curves are `u8 values[5],
+u8 times[5]`. Layout tables, operand decoding and the decoded action kinds: `mw-formats/src/bear.rs`
+(`mwtool effect <id>` prints one, `mwtool effect all` / `library` list them).
+
+Which effect plays where is GeneSys: `HAWAII/SURFACELIST.BNDL` `Surfaces.Surfaces` → `SurfaceType` (dry /
+wet) → `SurfaceVfx` (`WheelVfx` kick-up, `PlayerWheelEffects` / `AIWheelEffects` → `VfxWheelEffects`
+`DefaultTyre` smoke / `OnRims` sparks, ten `*ImpactEffect` by direction); `GLOBALEFFECTS.BNDL` `VfxGlobals`
+(`VehicleImpacts`, `VehicleScrapes`, `Misc`). `mw_assets::vfx`.
+
+Shaders: `VfxParticles_Diffuse*` draw CPU-expanded, per-vertex-lit quads with premultiplied output (atlas
+frames from `NumTiles` / `EnableLooping`); `VfxParticles_MotionBlurSpriteUntex` draws sparks as moving discs
+with analytic coverage, additive. Ports: `crates/mostrusted/src/particles.wgsl`, `sparks.wgsl`.
+
 ## ColourCube (0x52)
 
 16-byte header: u32 edge N (16 everywhere), u32 N, 8 zero bytes; then N³ RGB8 entries, blue fastest (entry

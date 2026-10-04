@@ -203,6 +203,14 @@ enum Cmd {
         #[arg(long, default_value = "all")]
         instances: String,
     },
+    /// Decode a particle effect (`BearEffect`) by resource ID: parameters, layers, channels, actions
+    /// and action groups. `all` prints a one-line summary of every effect.
+    Effect {
+        id: String,
+        /// Also print every action's raw payload words.
+        #[arg(long)]
+        raw: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -226,6 +234,7 @@ fn main() -> Result<()> {
         Cmd::List { bundle } => list(&open_bundle(&game, &bundle)?),
         Cmd::Extract { bundle, out, r#type } => extract(&open_bundle(&game, &bundle)?, &out, r#type.as_deref())?,
         Cmd::Verify => verify(&game)?,
+        Cmd::Effect { id, raw } => effect(&AssetStore::new(game)?, &id, raw)?,
         Cmd::Find { id } => {
             let id = ResourceId::parse(&id).context("invalid resource id")?;
             for rel in game.files_with_extension("BNDL") {
@@ -847,6 +856,12 @@ fn verify(game: &GameDir) -> Result<()> {
             for e in &b.entries {
                 match b.load(e) {
                     Ok(r) => {
+                        // Typed parsers that must accept every instance.
+                        if e.resource_type() == ResourceType::BearEffect
+                            && let Err(err) = fmt::BearEffect::parse(&r)
+                        {
+                            errs.push(format!("{}: {} {err}", rel.display(), e.id));
+                        }
                         let mut s = stats.lock().unwrap();
                         let t = s.entry(e.resource_type()).or_default();
                         t.count += 1;
@@ -871,6 +886,103 @@ fn verify(game: &GameDir) -> Result<()> {
     }
     if !failures.is_empty() {
         bail!("verification failed");
+    }
+    Ok(())
+}
+
+fn effect(store: &AssetStore, id: &str, raw: bool) -> Result<()> {
+    use fmt::bear::Op;
+    if id == "library" {
+        let lib = store.vfx_library()?;
+        let show = |o: Option<ResourceId>| o.map(|i| i.to_string()).unwrap_or_else(|| "-".into());
+        for (i, s) in lib.surfaces.iter().enumerate() {
+            for (cond, e) in [("dry", &s.dry), ("wet", &s.wet)] {
+                println!(
+                    "surface {i:2} {cond}: wheel {} tyre {} rims {} impacts front {} left {} rear {} bottom {}",
+                    show(e.wheel),
+                    show(e.player_wheels.default_tyre),
+                    show(e.player_wheels.on_rims),
+                    show(e.impacts[0]),
+                    show(e.impacts[6]),
+                    show(e.impacts[3]),
+                    show(e.impacts[9]),
+                );
+            }
+        }
+        let list = |v: &[Option<ResourceId>]| v.iter().map(|&o| show(o)).collect::<Vec<_>>().join(" ");
+        println!("vehicle impacts: {}", list(&lib.vehicle_impacts));
+        println!("vehicle scrapes: {}", list(&lib.vehicle_scrapes));
+        return Ok(());
+    }
+    if id == "all" {
+        let b = store.bundle("GLOBALEFFECTS.BNDL").context("GLOBALEFFECTS.BNDL")?;
+        for e in b.entries_of_type(ResourceType::BearEffect) {
+            let fx = fmt::BearEffect::parse(&b.load(e)?)?;
+            let layers: Vec<String> = fx
+                .layers
+                .iter()
+                .map(|l| {
+                    let r = l.renderer().map(|r| format!("{:02x}", r.kind)).unwrap_or_else(|| "-".into());
+                    let s = l.spawner().map(|s| format!("{:02x}", s.kind)).unwrap_or_else(|| "-".into());
+                    format!("{}(max {}, spawn {s}, render {r})", l.name, l.max_particles)
+                })
+                .collect();
+            println!("{} {} layers: {}", e.id, fx.layers.len(), layers.join(" "));
+        }
+        return Ok(());
+    }
+    let rid = ResourceId::parse(id).context("invalid resource id")?;
+    let fx = fmt::BearEffect::parse(&store.load(rid)?)?;
+    println!("effect {}: {} layers", fx.id, fx.layers.len());
+    for (i, p) in fx.params.iter().enumerate() {
+        println!("  param {i}: {} kind {:#04x} offset {:#x} id {:#06x}", p.name, p.kind, p.offset, p.id);
+    }
+    for l in &fx.layers {
+        println!(
+            "  layer {} max {} flags {} sort {} bucket {} pre-roll {}",
+            l.name, l.max_particles, l.flags, l.sort_group, l.particles_per_bucket, l.pre_roll
+        );
+        let ch: Vec<String> = l.channels.iter().map(|c| format!("{}:{}", c.name, c.kind)).collect();
+        println!("    channels {}", ch.join(" "));
+        for (k, a) in l.actions.iter().enumerate() {
+            let desc = match &a.op {
+                Op::Other => String::new(),
+                op => format!("{op:?}"),
+            };
+            println!("    a{k:02} {:#04x} {desc}", a.kind);
+            if raw {
+                let words: Vec<String> = a
+                    .data
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|w| {
+                        let v = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+                        let f = f32::from_bits(v);
+                        if v != 0 && (1e-5..1e7).contains(&f.abs()) { format!("{f}") } else { format!("{v:#x}") }
+                    })
+                    .collect();
+                println!("        {}", words.join(" "));
+            }
+        }
+        for (g, group) in l.groups.iter().enumerate() {
+            let Some(group) = group else { continue };
+            for s in &group.sequences {
+                let steps: Vec<String> = s
+                    .steps
+                    .iter()
+                    .map(|st| {
+                        if st.secondaries.is_empty() {
+                            format!("a{:02}", st.action)
+                        } else {
+                            let sec: Vec<String> = st.secondaries.iter().map(|a| format!("a{a:02}")).collect();
+                            format!("a{:02}[{}]", st.action, sec.join(" "))
+                        }
+                    })
+                    .collect();
+                println!("    group {g}{}: {}", if s.per_bucket { " per bucket" } else { "" }, steps.join(" "));
+            }
+        }
     }
     Ok(())
 }

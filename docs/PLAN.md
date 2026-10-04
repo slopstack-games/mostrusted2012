@@ -177,6 +177,20 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    landing damage), the crumple normal map (damage volume grid in the vehicle shaders), hinged body parts
    swinging and detaching as physics debris (`Bodypart`), `WheelDamage` alignment, damage sounds / sparks
    (`DamageSequence`), handling effects, car-vs-car (the detection is generic; needs a second car).
+7. `[~]` **Particle effects (VFX)**: the game's `BearEffect`s (`mw_formats::bear`, all 214 parse) and the
+   GeneSys tables that place them (`mw_assets::vfx`), run by a CPU runtime that executes each layer's action
+   groups (`particles.rs`) and drawn with ports of `VfxParticles_Diffuse*` (lit, premultiplied, atlas frames)
+   and `VfxParticles_MotionBlurSpriteUntex` (analytic motion-blurred sparks). Done: tyre smoke from sliding
+   tyres, kick-up behind rolling wheels, impact spark bursts and scrape sparks from the car body's contacts
+   (`ImpactEvent`). Open: what the game feeds `WheelParams` / `Intensity` (code) and the controllers' input
+   selectors; surface ids from collision tags (dirt / grass dust; everything is tarmac now) and wet surfaces;
+   mesh debris renderers (0x1E/0x1F/0x22/0x23 with the bundle's debris models), light particles (0x0F/0x30),
+   splatter (0x4D), super-emitters (0x2B); `OnRims`, burst tyres, spike strips, `VehicleImpacts` /
+   `VehicleScrapes` for car-to-car contacts; tyre marks (`Vfx_TyreMarksNew`, `TyreMarksMaterials`); smoke
+   colour (`Vehicles.SmokeColour`); world effects: 2,302 `WCVfxBehaviour` objects in the track units list
+   `Spot_effects` (effect + `Locator_group`) and 1,095 an `ImpactEffect` (prop smashes), placement through
+   the locator groups not decoded; soft-particle depth fade check;
+   `gVfxSparkBrightness` and the exposure term; sort groups.
 - Done when: you can pick a car from the catalogue, spawn on a road and drive around the city with collision.
   **Basic version reached on 2026-10-03; in-game car picking since 2026-10-04 (item 5).** Remaining: handling feel, real tuning data, spawn points on roads
   (from `RoadData` / AI data rather than hand-picked coordinates).

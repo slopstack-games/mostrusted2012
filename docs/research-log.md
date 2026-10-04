@@ -77,6 +77,32 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
   alignment, not applied yet.
 - Damage volume grid (3 × 5 crumple values per car) for the crumple normal map: the shader side is known;
   how the game fills it from the zone levels is not.
+### Particles (BearEffect)
+- The emission controllers (0x33 / 0x34 / 0x42) hold four curves, four scales and selector bytes
+  (`14 03 00 18 | 01 05 05 01 | 02 03 06 04` on the tyre smoke): which input drives which curve and how the
+  curves combine is not decoded; the runtime uses curve 0 over `Intensity`.
+- What the game writes into `WheelParams` (0x40 bytes), `VehicleParams` (0x30), `CollisionMeshParams` and
+  `WheelContact`, and what it means by `Velocity` / `Intensity` for each effect (code).
+- Spawner fields: the three angle ranges of the wheel spawner (0x05: `180,180 | 0,180 | 0,360`), its
+  `0.9..1.2` range, the 0x07 `0.25 ×3` triple, the u32 flags at the end of every spawner.
+- `Bounce` / `Integrate` drag (0–0.999) and the two trailing floats; how bounce planes come from
+  `VehicleParams` / `WheelContact`.
+- `ViewFade` (0x38): its 12 leading floats (all 1 but one 0.6462) and the `20 51` / `20 40` pair.
+- Renderer words: the first float (0.01–4, read as a soft-particle fade distance), the rgb(a) after it,
+  the trailing u32 flags; the mesh renderers (0x1E/0x1F/0x22/0x23) and their Model imports; 0x4D
+  (`VfxSplatter_Dynamic`).
+- `VfxVehicleCollisions` (36 handles: 2 empty + 16 effects, twice) field names, and which collision picks
+  which slot. `SurfaceType` weather conditions `f395b019` / `7348be25` (dry / wet by their contents), the
+  `VfxWheelEffects` fields `61ac1863` / `e7a7150c`, and the rest of `SurfaceVfx`.
+- `gVfxSparkBrightness` (spark shader global) and the particle VS's exposure term
+  (`lerp(1, exposure.w, gVfxConstants.x)`): `VfxGlobals.Rendering` has `ExposureScale` 0.4,
+  `ExposureScaleCoronas` 0.4, `ExposureGamma` 2.2 (cracked) and unnamed `dacaf024` 0.4, `a77107f8` 10.
+- Collision surface ids (`PolygonSoupList` tags) → `Surfaces.Surfaces` index, so dirt / grass get their dust.
+- World effects: `mwtool genesys all --type WCVfxBehaviour` finds 3,931 objects (3,911 in `TRK_UNIT*`): 2,302
+  have `Spot_effects` (`Spot_effect` handle + `Locator_group` id; e.g. `…24f3d`, `…eee1b`, `…af136`), 1,095 an
+  `ImpactEffect` (`…24f3d` 613×, `…1621e7` 410×: prop smashes), most have `Lights` (`LightDefinition`) or
+  `Coronas`. How a locator group resolves to positions (compound / world object parts?) is open. No
+  exhaust / backfire / nitrous flame effect or type was found (`NitrousParameters` is gameplay tuning).
 
 ---
 
@@ -100,6 +126,85 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
   the Venom triggers it.
 - Unrelated: the dark rectangle near the horizon in `--vehicle` shots is in the sky / cloud panorama (it
   shows behind the 911 too).
+### 2026-10-04 (particles): BearEffect decoded, tyre smoke, kick-up and sparks
+- **Where**: all 214 `BearEffect` (0x301) resources are in `GLOBALEFFECTS.BNDL` (26 are empty 0x30-byte
+  placeholders), with 102 materials, 129 textures, 12 models (debris meshes) and one `BearGlobalParameters`.
+  No other bundle has any; the vehicle and world bundles reference effects only through GeneSys handles.
+- **Format** (layout tables in `mw-formats/src/bear.rs`, burnout.wiki "Bear Effect/NFS Most Wanted" for the
+  layer header): effect header (version `0x269987a1`, layer count, action-group mask 3), a parameter table at
+  0x20 (`u8 n, 0, u16 size, u32, u8 kind[n]`, then names; the wiki's table offset field points at a copy) with
+  a handle array `{u16 offset | 1, u16 global id}`; per layer a 0x20 header, a name (`<number>_Test`), a
+  channel table (`u8 n, u8 external, u16 bucket bytes, u8 kind[n]`, names), an action table (`u16 offset[n]`
+  then `u8 kind[n]`) and four action-group offsets. A group is `u8 sequences, primaries, secondaries, pad`,
+  `{u8 primaries, u8 per-bucket}` per sequence, `{u8 action, u8 secondaries}` per primary, `u8 action` per
+  secondary: verified on all 1,113 groups (counts add up, indices in range). Group 0 = update (spawners are
+  primaries whose secondaries initialise new particles), group 1 = render; 2 and 3 never occur.
+- **Operands**: action payloads are 4-byte words; channel references are `u16 lo = bucket offset | scratch
+  bit, u16 hi = 4 × channel index` (the scratch copy holds `Radius*`, `Colour*`, unpacked `Velocity*`),
+  parameter references `hi = 0x40 + 2 × index`, engine references `hi = 0xEB40` (layer state; `.1` written by
+  the controllers), `0xEB42` (view, `.a0` in every renderer), `0xEB44` once. Material / model imports sit
+  inside the renderers (0x24 +72, 0x25 / 0x29 +32, 0x27 +80, 0x28 +112, 0x1F +56, 0x22 / 0x23 +24).
+- **Action kinds** (52 seen; by which channels they touch, which group / role they have and their value
+  ranges): spawners 0x00 (transform: box extent, LOD distance range, angle ranges, speed range, rate /s at
+  +0x60, per metre +0x64, burst count u32 +0x6C; rate × lifetime ≈ max particles across layers), 0x01
+  (collision mesh: speed, two angle ranges, LOD, rate u32 +0x54 (2000 while scraping), burst u32 +0x58
+  (128)), 0x05 (wheel: LOD, speed, three angle ranges, lateral −1..1, height, per metre? +0x70, rate +0x74),
+  0x07 (wheel contact), 0x06 (contact list), 0x2B (super-emitter), 0x4C (splatter); initialisers 0x0C
+  lifetime (age = 0, 1 / rand(min, max)), 0x12 radius, 0x0A sprite rotation (turns) + spin, 0x0B 3-D
+  rotation, 0x0D alpha, 0x13 bounce plane, 0x14 / 0x15 place in the emitter frame (quaternion + offset), 0x16
+  inherit a velocity parameter × rand(min, max), 0x47 seed, 0x0F / 0x11 light / collision radius; updates 0x2F
+  age (normalised), 0x3D integrate (gravity −9.8 for debris, +0.4 for smoke, drag), 0x3E integrate + bounce
+  (restitution and friction ranges), 0x2C / 0x2D rotation, 0x40 rigid debris, 0x44 bounds, 0x49 / 0x4A / 0x4B
+  velocity pack / unpack (`PackedVelocity`); render group 0x3C radius curve (four Bézier control points over
+  age), 0x1C colour (rows 0–4 = polynomial coefficients in age for r, g, b and a brightness/alpha column;
+  a 5-key u8 alpha curve at +144 with a scale at +156; sparks: `1 − t²`, `0.41 + 0.14t − 0.54t²`, … orange
+  to black, column 3 = 12 − 4t − 7t²; smoke: blue-grey, alpha curve peaking at 0.31), 0x17 alpha × colour,
+  0x48 seeded brightness, 0x38 camera fades (near fade 1–10 m), 0x1D atlas frame from age, 0x45 view;
+  renderers 0x24 quads, 0x27 quads with atlas frames, 0x28 seeded quads, 0x25 / 0x29 motion-blurred sprites,
+  0x1E / 0x1F / 0x22 / 0x23 meshes, 0x4D splatter, 0x30 lights. 5-key curves: `u8 values[5], u8 times[5]`
+  (`ff ff ff ff ff | 00 fc fd fe ff` = 1).
+- **Which effect where**: `HAWAII/SURFACELIST.BNDL` → `Surfaces.Surfaces` (65 `SurfaceType`, 0 = default
+  tarmac) → two weather conditions (dry / wet) → `Surface_vfx` → `SurfaceVfx`: `WheelVfx` (kick-up, 0x07
+  spawner on `WheelContact`), `PlayerWheelEffects` / `AIWheelEffects` → `VfxWheelEffects` (`DefaultTyre` =
+  tyre smoke `…49247`, 7 layers, `WheelParams` input; `OnRims` = rim sparks), ten directional impact effects,
+  tyre-mark materials, `RimMarksMaterial`. Tarmac: impacts front / rear / bottom = `…a394b` (two spark bursts
+  of 128), left / right = `…7bd97` (continuous sparks at 2000/s: scraping). `VfxGlobals` →
+  `VehicleImpacts` / `VehicleScrapes` (`VfxVehicleCollisions`), `Misc` → `BurstTyreWheelEffects`,
+  `SpikeStripSparks`. Names cracked with direction / surface / effect vocabularies (added to
+  `genesys_names.txt`). Dead ends: no hits for the 36 `VfxVehicleCollisions` fields with 4-word direction ×
+  severity × impact vocabularies; `PuddlePuncturedBurnoutHit`, `RoofWheelsHeavyDebris`,
+  `ContinuousCarCrashTrails`, `TrailsMeshVfxGlancing` were false positives on float fields.
+- **Shaders**: `VfxParticles_Diffuse*` take CPU-expanded quads (world positions, COLOR, TEXCOORD.xy corner /
+  .z age, TEXCOORD1.zw translucency / key-as-ambient, TEXCOORD3 lighting normal + wrap); the VS lights per
+  vertex (irradiance quadric × 1.3 + wrap-lit key light), picks two atlas frames from `NumTiles` /
+  `EnableLooping` (row index from frame / tiles.y), the PS blends them, alpha-tests at 1/255 and writes
+  premultiplied colour with alpha × `gVfxConstants.z` (one blend state for normal and additive);
+  `_SoftParticles` variants fade by scene depth. `VfxParticles_MotionBlurSpriteUntex` integrates a moving
+  disc's (1 − r²) profile over the time each pixel is covered (analytic coverage from the two roots), colour
+  × `Overbright` (6) × `gVfxSparkBrightness`, additive.
+- **Implemented** (`crates/mostrusted/src/particles.rs`, `particles.wgsl`, `sparks.wgsl`): a CPU runtime that
+  runs each layer's groups in stored order with the decoded actions, batches per material, and draws with the
+  two ported shaders (forward, premultiplied / additive). Tyre smoke per wheel from the contact patch's
+  sliding speed (`drive::WheelContact`, minimal read-only addition to `drive.rs`), kick-up per rolling wheel,
+  impact bursts and scrape sparks from avian contacts of the car body (`ImpactEvent`). `--screenshot-time`,
+  `--screenshot-after-impact`, `MW_VFX_DEMO`, `MW_VFX_DEBUG` for checks.
+- **Stand-ins / guesses** (each marked in the code): emission = spawner rate × controller curve 0 over
+  `Intensity` (sliding speed / 15 m/s) × camera-distance LOD + per metre of sliding; quadratic drag
+  (`v /= 1 + drag·|v|·dt`: smoke stops within metres; a linear reading carried it 25 m with the car); spawn
+  directions as azimuth / elevation from the first two angle ranges; collision sparks spread over ±0.3 m
+  (the game spreads them over the collision mesh); `SPARK_BRIGHTNESS` 0.15 for `gVfxSparkBrightness`
+  (without it sparks tonemap to flat white); streaks over 1/30 s; the irradiance cube for the quadric;
+  always the dry tarmac surface.
+- **Pitfalls**: avian reports one contact pair per track-unit trimesh that stays touching (speculative), so
+  `collision_started` never fires on impact; impacts are detected by closing speed (> 3 m/s, 0.25 s cooldown).
+  The spark quads are built in y-down pixel space and were back-face culled (culling is off for particles).
+  Empty meshes upset Bevy's mesh allocator ("Use-after-free … unallocated key"): batches keep one invisible
+  quad.
+- **Verification**: every effect parses (`mwtool verify`, corpus test `bear_effects_decode`: 214 effects, 572
+  layers, 415 quad / spark renderers); `mw-assets` resolves every table entry and material. Screenshots:
+  handbrake and drift tests on the test track (smoke clouds behind the rear tyres), a crash into the guard rail
+  west of downtown (`--auto-throttle 1 --screenshot-after-impact 0.04`: spark spray and dust),
+  `MW_VFX_DEMO=010000000007bd97,0.25,15` at street level (orange specks and a white-hot streak).
 
 ### 2026-10-04 (session 2): NewSky shader read
 - Main PS (`…79648d36`): glow = pow(saturate(dir · KeyLightDir), SunColour.w) × SunColour.rgb (exponent 0.65 at

@@ -13,6 +13,7 @@ mod garage;
 mod loader;
 mod materials;
 mod menu;
+mod particles;
 mod sky;
 mod tonemap;
 
@@ -98,6 +99,14 @@ struct Cli {
     /// Frames to wait after loading before `--screenshot` captures.
     #[arg(long, default_value_t = 30)]
     screenshot_delay: u32,
+    /// Capture `--screenshot` once this much game time (seconds, as simulated: 4x real time during
+    /// `--test`) has passed since startup, instead of after `--screenshot-delay` frames.
+    #[arg(long)]
+    screenshot_time: Option<f32>,
+    /// Capture `--screenshot` this many seconds of game time after the first hard impact (closing at over
+    /// 12 m/s), for checking collision effects.
+    #[arg(long)]
+    screenshot_after_impact: Option<f32>,
     /// Limit the number of streamed track units (nearest first).
     #[arg(long)]
     units: Option<usize>,
@@ -141,6 +150,8 @@ pub struct Game {
     camera: Option<Transform>,
     screenshot: Option<PathBuf>,
     screenshot_delay: u32,
+    screenshot_time: Option<f32>,
+    screenshot_after_impact: Option<f32>,
     paint: Option<Color>,
     filter: loader::WorldFilter,
     mute: bool,
@@ -297,7 +308,12 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(tonemap::GameTonemapPlugin)
         .init_resource::<GameEnvironment>()
         .insert_resource(materials::VehicleLights::from_slice(&cli.lights))
-        .add_plugins((avian3d::PhysicsPlugins::default(), drive::DrivePlugin, damage::DamagePlugin))
+        .add_plugins((
+            avian3d::PhysicsPlugins::default(),
+            drive::DrivePlugin,
+            damage::DamagePlugin,
+            particles::ParticlesPlugin,
+        ))
         .add_plugins((garage::GaragePlugin { script }, menu::MenuPlugin { enabled: menu_enabled, open: cli.show_menu }))
         .add_plugins(audio::GameAudioPlugin {
             music: !cli.no_music && !cli.mute && screenshot.is_none() && test.is_none() && !crash,
@@ -309,6 +325,8 @@ fn main() -> anyhow::Result<()> {
             camera,
             screenshot,
             screenshot_delay: cli.screenshot_delay,
+            screenshot_time: cli.screenshot_time,
+            screenshot_after_impact: cli.screenshot_after_impact,
             hour: cli.hour.min(23),
             paint,
             filter,
@@ -609,17 +627,44 @@ fn apply_vehicle_lights(
 
 /// `--screenshot`: wait for loading plus a few frames for GPU uploads, capture,
 /// then exit.
+#[allow(clippy::too_many_arguments)]
 fn auto_screenshot(
     mut commands: Commands,
     game: Res<Game>,
     loaded: Res<Loaded>,
     script: Option<Res<garage::SwapScript>>,
+    time: Res<Time<Virtual>>,
+    impact: Option<Res<particles::FirstImpact>>,
     mut frames_after_done: Local<u32>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Some(path) = &game.screenshot else { return };
     // With `--swap-to`, capture after the last swap.
     if !loaded.done || script.is_some_and(|s| !s.finished()) {
+        return;
+    }
+    let at = match (game.screenshot_time, game.screenshot_after_impact) {
+        (_, Some(after)) => Some(impact.map_or(f32::MAX, |i| i.0 + after)),
+        (at, None) => at,
+    };
+    if let Some(at) = at {
+        if *frames_after_done == 0 && time.elapsed_secs() >= at {
+            *frames_after_done = game.screenshot_delay.max(1);
+        } else if *frames_after_done == 0 {
+            return;
+        } else {
+            *frames_after_done += 1;
+        }
+        match *frames_after_done {
+            n if n == game.screenshot_delay.max(1) => {
+                info!("screenshot at {:.2} s game time", time.elapsed_secs());
+                commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path.clone()));
+            }
+            n if n == game.screenshot_delay.max(1) + 30 => {
+                exit.write(AppExit::Success);
+            }
+            _ => {}
+        }
         return;
     }
     *frames_after_done += 1;

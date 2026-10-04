@@ -5,6 +5,7 @@
 //! resolved through the resource's import table.
 
 mod animation;
+pub mod bear;
 mod collision;
 mod colour_cube;
 mod decode;
@@ -21,6 +22,7 @@ mod world;
 mod zone;
 
 pub use animation::{Animation, AnimationList, Bone, BoneKey, Skeleton, decode_quat32};
+pub use bear::BearEffect;
 pub use collision::{PolygonSoup, PolygonSoupList, SOUP_GRANULARITY, SOUP_OFFSET_UNIT, SoupPolygon};
 pub use colour_cube::ColourCube;
 pub use dxgi::{DxgiFormat, f16_to_f32};
