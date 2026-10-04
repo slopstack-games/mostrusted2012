@@ -1,0 +1,535 @@
+#!/usr/bin/env python3
+"""orig: run and drive the original NFS Most Wanted (2012) automatically, for research.
+
+The game runs inside gamescope (a nested display, headless by default): it always has focus, input goes in
+through that display only (never the desktop), and screenshots come from gamescope. Car state is read from the
+game's memory with the same watch file as `mwtool telemetry` (read-only).
+
+One-time setup:  tools/orig/orig setup        (prints the Steam launch option to set)
+Typical use:
+    tools/orig/orig launch                     # start the game in headless gamescope, wait for its window
+    tools/orig/orig shot menu.png              # screenshot (look at it, decide the next input)
+    tools/orig/orig key Return                 # tap a key; also: hold w 3, type, click x y
+    tools/orig/orig read speed_mph gear        # values from handling.watch
+    tools/orig/orig run script.orig            # a script of steps (see `orig run --help`)
+    tools/orig/orig quit
+`orig run-in -- <command>` runs any program the same way (used to test the tool on Most Rusted itself).
+
+Everything is read-only towards the game's files and code: inputs are synthetic key / pad events, memory is
+only read. Keep the game offline.
+"""
+
+import argparse
+import os
+import shlex
+import signal
+import struct
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+APP_ID = "1262560"
+REPO = Path(__file__).resolve().parents[2]
+STATE = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "mostrusted-orig"
+WRAP = Path(__file__).resolve().parent / "orig-wrap"
+WATCH = REPO / "handling.watch"
+MWTOOL = REPO / "target" / "release" / "mwtool"
+
+
+def log(msg):
+    print(f"[orig {time.strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
+# --- the nested display -------------------------------------------------------------------------------
+
+
+def state_env():
+    f = STATE / "state.env"
+    if not f.exists():
+        sys.exit("no managed game: run `orig launch` first (or `orig run-in -- <cmd>`)")
+    env = dict(line.split("=", 1) for line in f.read_text().split() if "=" in line)
+    return env
+
+
+_display = None
+
+
+def display():
+    global _display
+    if _display is None:
+        from Xlib import display as xdisplay
+
+        _display = xdisplay.Display(state_env()["DISPLAY"])
+    return _display
+
+
+KEY_ALIASES = {
+    "enter": "Return", "return": "Return", "esc": "Escape", "escape": "Escape", "space": "space",
+    "up": "Up", "down": "Down", "left": "Left", "right": "Right", "tab": "Tab", "backspace": "BackSpace",
+    "shift": "Shift_L", "ctrl": "Control_L", "alt": "Alt_L", "pageup": "Prior", "pagedown": "Next",
+}
+
+
+def keycode(name):
+    from Xlib import XK
+
+    sym = XK.string_to_keysym(KEY_ALIASES.get(name.lower(), name))
+    if sym == 0:
+        sys.exit(f"unknown key {name!r} (X keysym names: Return, Escape, Up, F1, w, ...)")
+    return display().keysym_to_keycode(sym)
+
+
+def key_event(name, down):
+    from Xlib import X
+    from Xlib.ext import xtest
+
+    xtest.fake_input(display(), X.KeyPress if down else X.KeyRelease, keycode(name))
+    display().sync()
+
+
+def tap(name, seconds=0.08):
+    key_event(name, True)
+    time.sleep(seconds)
+    key_event(name, False)
+
+
+def click(x, y, button=1):
+    from Xlib import X
+    from Xlib.ext import xtest
+
+    d = display()
+    xtest.fake_input(d, X.MotionNotify, x=int(x), y=int(y))
+    d.sync()
+    time.sleep(0.05)
+    xtest.fake_input(d, X.ButtonPress, button)
+    d.sync()
+    time.sleep(0.08)
+    xtest.fake_input(d, X.ButtonRelease, button)
+    d.sync()
+
+
+def screenshot(path):
+    path = Path(path).resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        path.unlink()
+    env = dict(os.environ, GAMESCOPE_WAYLAND_DISPLAY=state_env()["GAMESCOPE_WAYLAND_DISPLAY"])
+    subprocess.run(["gamescopectl", "screenshot", str(path)], env=env, capture_output=True)
+    for _ in range(50):
+        if path.exists() and path.stat().st_size > 0:
+            time.sleep(0.1)
+            return path
+        time.sleep(0.1)
+    sys.exit(f"screenshot failed ({path})")
+
+
+# --- virtual gamepad (analog inputs) ---------------------------------------------------------------------
+
+
+class Pad:
+    """A virtual Xbox 360 pad through /dev/uinput (needs the `input` group). Lives as long as this process."""
+
+    BUTTONS = {"a": "BTN_SOUTH", "b": "BTN_EAST", "x": "BTN_NORTH", "y": "BTN_WEST", "lb": "BTN_TL",
+               "rb": "BTN_TR", "select": "BTN_SELECT", "start": "BTN_START", "l3": "BTN_THUMBL", "r3": "BTN_THUMBR"}
+
+    def __init__(self):
+        from evdev import AbsInfo, UInput, ecodes as e
+
+        self.e = e
+        stick = AbsInfo(0, -32768, 32767, 16, 128, 0)
+        trigger = AbsInfo(0, 0, 255, 0, 0, 0)
+        hat = AbsInfo(0, -1, 1, 0, 0, 0)
+        caps = {
+            e.EV_KEY: [getattr(e, b) for b in self.BUTTONS.values()] + [e.BTN_MODE],
+            e.EV_ABS: [(e.ABS_X, stick), (e.ABS_Y, stick), (e.ABS_RX, stick), (e.ABS_RY, stick),
+                       (e.ABS_Z, trigger), (e.ABS_RZ, trigger), (e.ABS_HAT0X, hat), (e.ABS_HAT0Y, hat)],
+        }
+        self.ui = UInput(caps, name="Microsoft X-Box 360 pad", vendor=0x045E, product=0x028E, version=0x110,
+                         bustype=e.BUS_USB)
+        log(f"virtual pad: {self.ui.device.path}")
+        time.sleep(1.0)  # let SDL / Wine notice the new device
+
+    def set(self, **v):
+        e = self.e
+        axes = {
+            "steer": (e.ABS_X, lambda x: int(-x * 32767)),  # + = left, as in Most Rusted
+            "lx": (e.ABS_X, lambda x: int(x * 32767)), "ly": (e.ABS_Y, lambda x: int(x * 32767)),
+            "rx": (e.ABS_RX, lambda x: int(x * 32767)), "ry": (e.ABS_RY, lambda x: int(x * 32767)),
+            "throttle": (e.ABS_RZ, lambda x: int(x * 255)), "brake": (e.ABS_Z, lambda x: int(x * 255)),
+            "hatx": (e.ABS_HAT0X, int), "haty": (e.ABS_HAT0Y, int),
+        }
+        for k, x in v.items():
+            if k in axes:
+                code, f = axes[k]
+                self.ui.write(e.EV_ABS, code, f(max(-1.0, min(1.0, float(x)))))
+            elif k in self.BUTTONS:
+                self.ui.write(e.EV_KEY, getattr(e, self.BUTTONS[k]), int(float(x) > 0.5))
+            else:
+                sys.exit(f"unknown pad control {k} (steer, throttle, brake, lx, ly, rx, ry, hatx, haty, "
+                         f"{', '.join(self.BUTTONS)})")
+        self.ui.syn()
+
+    def off(self):
+        self.set(steer=0, ly=0, rx=0, ry=0, throttle=0, brake=0, hatx=0, haty=0,
+                 **{b: 0 for b in self.BUTTONS})
+
+    def close(self):
+        self.off()
+        self.ui.close()
+
+
+# --- memory (read-only), the watch file ------------------------------------------------------------------
+
+
+def game_pid():
+    for p in Path("/proc").iterdir():
+        if not p.name.isdigit():
+            continue
+        try:
+            argv0 = (p / "cmdline").read_bytes().split(b"\0")[0].decode(errors="replace")
+        except OSError:
+            continue
+        if argv0.lower().endswith("nfs13.exe"):
+            return int(p.name)
+    return None
+
+
+class Memory:
+    def __init__(self, pid):
+        self.pid = pid
+        try:
+            self.mem = open(f"/proc/{pid}/mem", "rb")
+        except PermissionError:
+            sys.exit("cannot read the game's memory: run `sudo sysctl kernel.yama.ptrace_scope=0` (once per boot)")
+        self.bases = {}
+
+    def module_base(self, name):
+        if name not in self.bases:
+            base = None
+            for line in open(f"/proc/{self.pid}/maps"):
+                parts = line.split(None, 5)
+                path = parts[5].strip() if len(parts) > 5 else ""
+                if path.replace("\\", "/").rsplit("/", 1)[-1].lower() == name.lower():
+                    start = int(parts[0].split("-")[0], 16)
+                    base = start if base is None else min(base, start)
+            if base is None:
+                sys.exit(f"module {name} not mapped in pid {self.pid}")
+            self.bases[name] = base
+        return self.bases[name]
+
+    def read(self, addr, n):
+        try:
+            self.mem.seek(addr)
+            return self.mem.read(n)
+        except (OSError, ValueError):
+            return None
+
+    def resolve(self, base, offsets):
+        if "+" in base:
+            mod, off = base.split("+", 1)
+            addr = self.module_base(mod) + int(off, 0)
+        else:
+            addr = int(base, 0)
+        for off in offsets:
+            raw = self.read(addr, 4)
+            if raw is None or len(raw) < 4:
+                return None
+            addr = struct.unpack("<I", raw)[0] + off
+        return addr
+
+    def value(self, ty, addr):
+        fmt = {"f32": "<f", "i32": "<i", "u8": "<B"}[ty]
+        raw = self.read(addr, struct.calcsize(fmt))
+        return None if raw is None or len(raw) < struct.calcsize(fmt) else struct.unpack(fmt, raw)[0]
+
+
+def load_watch(path=WATCH):
+    watches = {}
+    for line in Path(path).read_text().splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        name, ty, base, *offs = line.split()
+        watches[name] = (ty, base, [int(o, 0) for o in offs])
+    return watches
+
+
+class Reader:
+    def __init__(self):
+        pid = game_pid()
+        if pid is None:
+            sys.exit("the game is not running")
+        self.mem = Memory(pid)
+        self.watches = load_watch()
+
+    def get(self, name):
+        if name not in self.watches:
+            sys.exit(f"{name} is not in {WATCH}")
+        ty, base, offs = self.watches[name]
+        addr = self.mem.resolve(base, offs)
+        return None if addr is None else self.mem.value(ty, addr)
+
+
+OPS = {">": lambda a, b: a > b, "<": lambda a, b: a < b, ">=": lambda a, b: a >= b, "<=": lambda a, b: a <= b,
+       "==": lambda a, b: a == b, "!=": lambda a, b: a != b}
+
+
+# --- launching -----------------------------------------------------------------------------------------
+
+
+def wait_for_display(timeout):
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        if (STATE / "state.env").exists():
+            try:
+                display()
+                return True
+            except Exception:
+                pass
+        time.sleep(1)
+    return False
+
+
+def write_request(args):
+    STATE.mkdir(parents=True, exist_ok=True)
+    w, h = args.size.lower().split("x")
+    (STATE / "request").write_text(f"W={int(w)}\nH={int(h)}\nBACKEND={'wayland' if args.visible else 'headless'}\n")
+    (STATE / "state.env").unlink(missing_ok=True)
+
+
+def cmd_setup(_):
+    log(f"set this as the game's Launch Options in Steam (Properties -> General):\n\n    {WRAP} %command%\n")
+    ok = True
+    for tool in ["gamescope", "gamescopectl"]:
+        if subprocess.run(["which", tool], capture_output=True).returncode != 0:
+            log(f"missing: {tool}")
+            ok = False
+    for mod in ["Xlib", "evdev"]:
+        try:
+            __import__(mod)
+        except ImportError:
+            log(f"missing python module: {mod} (python-xlib / python-evdev)")
+            ok = False
+    if not os.access("/dev/uinput", os.W_OK):
+        log("/dev/uinput is not writable: the virtual pad needs the `input` group (keyboard works without)")
+    scope = Path("/proc/sys/kernel/yama/ptrace_scope")
+    if scope.exists() and scope.read_text().strip() != "0":
+        log("memory reads need `sudo sysctl kernel.yama.ptrace_scope=0` (once per boot)")
+    if not MWTOOL.exists():
+        log("build mwtool for captures: cargo build --release -p mwtool")
+    log("ready" if ok else "fix the above first")
+
+
+def cmd_launch(args):
+    if game_pid():
+        sys.exit("the game is already running; quit it first (a normal launch is not controllable)")
+    write_request(args)
+    log(f"launching app {APP_ID} through Steam into gamescope ({args.size}, "
+        f"{'visible window' if args.visible else 'headless'})")
+    subprocess.Popen(["steam", f"steam://rungameid/{APP_ID}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if not wait_for_display(args.timeout):
+        (STATE / "request").unlink(missing_ok=True)
+        sys.exit("gamescope did not come up: is the launch option set (`orig setup`)? Steam may also be asking "
+                 "something (EA app login, cloud sync): run with --visible to see it")
+    log(f"display up: {state_env()}")
+    t0 = time.time()
+    while time.time() - t0 < args.timeout and not game_pid():
+        time.sleep(1)
+    log(f"game pid {game_pid()}" if game_pid() else "gamescope is up but NFS13.exe has not started yet")
+
+
+def cmd_run_in(args):
+    if not args.command:
+        sys.exit("usage: orig run-in -- <command ...>")
+    STATE.mkdir(parents=True, exist_ok=True)
+    (STATE / "state.env").unlink(missing_ok=True)
+    w, h = args.size.lower().split("x")
+    backend = "wayland" if args.visible else "headless"
+    proc = subprocess.Popen(
+        ["gamescope", "--backend", backend, "-W", w, "-H", h, "-w", w, "-h", h, "--", "sh", "-c",
+         'env | grep -E "^(DISPLAY|GAMESCOPE_WAYLAND_DISPLAY)=" > "$0/state.env"; exec "$@"', str(STATE),
+         *args.command],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+    (STATE / "gamescope.pid").write_text(str(proc.pid))
+    if not wait_for_display(60):
+        sys.exit("gamescope did not come up")
+    log(f"running in gamescope pid {proc.pid}: {state_env()}")
+
+
+def cmd_status(_):
+    pid = game_pid()
+    log(f"game: {'pid ' + str(pid) if pid else 'not running'}")
+    if (STATE / "state.env").exists():
+        log(f"managed display: {state_env()}")
+    else:
+        log("no managed display (launch with `orig launch`)")
+
+
+def cmd_quit(_):
+    f = STATE / "gamescope.pid"
+    if f.exists():
+        pid = int(f.read_text().strip() or 0)
+        try:
+            os.kill(pid, signal.SIGTERM)
+            log(f"stopped gamescope {pid}")
+        except ProcessLookupError:
+            log("gamescope already gone")
+        f.unlink()
+    (STATE / "state.env").unlink(missing_ok=True)
+
+
+# --- steps (single commands and scripts) -------------------------------------------------------------------
+
+
+class Session:
+    def __init__(self):
+        self.pad = None
+        self.reader = None
+        self.held = set()
+        self.children = []
+
+    def read(self, name):
+        if self.reader is None:
+            self.reader = Reader()
+        return self.reader.get(name)
+
+    def step(self, words):
+        cmd, args = words[0].lower(), words[1:]
+        if cmd == "key":
+            for k in args:
+                tap(k)
+                time.sleep(0.12)
+        elif cmd == "press":
+            for k in args:
+                key_event(k, True)
+                self.held.add(k)
+        elif cmd == "release":
+            for k in args:
+                key_event(k, False)
+                self.held.discard(k)
+        elif cmd == "hold":
+            *keys, secs = args
+            for k in keys:
+                key_event(k, True)
+            time.sleep(float(secs))
+            for k in keys:
+                key_event(k, False)
+        elif cmd == "type":
+            for ch in " ".join(args):
+                tap("space" if ch == " " else ch, 0.04)
+                time.sleep(0.04)
+        elif cmd == "click":
+            click(*args[:2], *(int(b) for b in args[2:3]))
+        elif cmd == "wait":
+            time.sleep(float(args[0]))
+        elif cmd == "shot":
+            log(f"screenshot {screenshot(args[0])}")
+        elif cmd == "pad":
+            if self.pad is None:
+                self.pad = Pad()
+            if args == ["off"]:
+                self.pad.off()
+            else:
+                self.pad.set(**dict(a.split("=", 1) for a in args))
+        elif cmd == "read":
+            print(" ".join(f"{n}={self.read(n)}" for n in args), flush=True)
+        elif cmd == "waitfor":
+            name, op, value, *rest = args
+            timeout = float(rest[0]) if rest else 30.0
+            t0 = time.time()
+            while True:
+                v = self.read(name)
+                if v is not None and OPS[op](v, float(value)):
+                    log(f"waitfor {name} {op} {value}: {v} after {time.time() - t0:.1f} s")
+                    break
+                if time.time() - t0 > timeout:
+                    raise TimeoutError(f"waitfor {name} {op} {value}: still {v} after {timeout} s")
+                time.sleep(0.05)
+        elif cmd == "capture":
+            name, *rest = args
+            argv = [str(MWTOOL), "capture", name] + (["--seconds", rest[0]] if rest else [])
+            log(f"capture: {' '.join(argv)} (in the background)")
+            self.children.append(subprocess.Popen(argv, cwd=REPO, stdin=subprocess.DEVNULL))
+        elif cmd == "exec":
+            subprocess.run(" ".join(args), shell=True, cwd=REPO)
+        else:
+            raise ValueError(f"unknown step {cmd!r}")
+
+    def close(self):
+        for k in list(self.held):
+            key_event(k, False)
+        if self.pad:
+            self.pad.close()
+        for c in self.children:
+            c.wait()
+
+
+SCRIPT_HELP = """script steps (one per line, # comments):
+  key K [K ...]          tap keys (X keysym names: Return, Escape, Up, F1, w; aliases enter, esc, space)
+  press K / release K    key down / up (held keys are released at the end)
+  hold K [K ...] SECONDS hold keys for a time
+  type TEXT              type text
+  click X Y [BUTTON]     click at pixel X Y of the game display
+  wait SECONDS
+  shot PATH              screenshot (PNG)
+  pad steer=0.5 throttle=1 brake=0 a=1 ...   set the virtual pad (persists); `pad off` centres it
+  read NAME [NAME ...]   print values from handling.watch
+  waitfor NAME OP VALUE [TIMEOUT]            wait until e.g. `speed_mph > 60` (OP: > < >= <= == !=)
+  capture NAME [SECONDS] record ref/NAME (mwtool capture) in the background
+  exec SHELL COMMAND     run a command in the repo
+"""
+
+
+def cmd_run(args):
+    s = Session()
+    try:
+        for n, line in enumerate(Path(args.script).read_text().splitlines(), 1):
+            line = line.split("#", 1)[0].strip()
+            if not line:
+                continue
+            log(f"{args.script}:{n}: {line}")
+            s.step(shlex.split(line))
+    finally:
+        s.close()
+
+
+def single(words):
+    s = Session()
+    try:
+        s.step(words)
+    finally:
+        s.close()
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("setup", help="check requirements, print the Steam launch option").set_defaults(f=cmd_setup)
+    for name, f in [("launch", cmd_launch), ("run-in", cmd_run_in)]:
+        p = sub.add_parser(name, help="start the game through Steam in gamescope" if name == "launch"
+                           else "run any command in gamescope (to test the tool)")
+        p.add_argument("--size", default="1280x720")
+        p.add_argument("--visible", action="store_true", help="a gamescope window on the desktop instead of headless")
+        p.add_argument("--timeout", type=float, default=180)
+        if name == "run-in":
+            p.add_argument("command", nargs=argparse.REMAINDER)
+        p.set_defaults(f=f)
+    sub.add_parser("status").set_defaults(f=cmd_status)
+    sub.add_parser("quit", help="stop the managed gamescope (and the game in it)").set_defaults(f=cmd_quit)
+    p = sub.add_parser("run", help="run a script of steps", description=SCRIPT_HELP,
+                       formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("script")
+    p.set_defaults(f=cmd_run)
+    for step in ["key", "press", "release", "hold", "type", "click", "wait", "shot", "read", "waitfor", "capture"]:
+        p = sub.add_parser(step, help=f"one `{step}` step (see `orig run --help`)")
+        p.add_argument("args", nargs=argparse.REMAINDER)
+        p.set_defaults(f=lambda a, step=step: single([step] + a.args))
+    args = ap.parse_args()
+    if args.cmd == "run-in" and args.command and args.command[0] == "--":
+        args.command = args.command[1:]
+    args.f(args)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,19 @@
+#!/bin/sh
+# Steam launch wrapper for NFS Most Wanted (2012), used by `tools/orig/orig`.
+#
+# Set once in Steam: Need for Speed Most Wanted -> Properties -> General -> Launch Options:
+#     /path/to/mostrusted2012/tools/orig/orig-wrap %command%
+#
+# Normal launches are untouched. When `orig launch` has left a request file, the game starts inside gamescope
+# (its own nested display: always focused, keyboard / mouse injection and screenshots without touching the
+# desktop), and the nested display's environment is written to the state directory for `orig`.
+DIR="${XDG_RUNTIME_DIR:-/tmp}/mostrusted-orig"
+if [ -f "$DIR/request" ]; then
+    # shellcheck disable=SC1091
+    . "$DIR/request"
+    rm -f "$DIR/request" "$DIR/state.env"
+    echo $$ > "$DIR/gamescope.pid"
+    exec gamescope --backend "${BACKEND:-headless}" -W "${W:-1280}" -H "${H:-720}" -w "${W:-1280}" -h "${H:-720}" \
+        -- sh -c 'env | grep -E "^(DISPLAY|GAMESCOPE_WAYLAND_DISPLAY)=" > "$0/state.env"; exec "$@"' "$DIR" "$@"
+fi
+exec "$@"

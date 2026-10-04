@@ -77,6 +77,14 @@ cargo fmt                                    # rustfmt.toml: max_width 120
 # Measuring the original game (read-only, Linux/Proton; docs/handling.md "Measuring the original")
 ./target/release/mwtool memscan --watch handling.watch        # interactive value scanner; `help`
 ./target/release/mwtool telemetry handling.watch -o run.csv --hz 120
+# Drive the original yourself (tools/orig/orig --help): it runs headless in gamescope (always focused, input
+# only through gamescope's display, screenshots via gamescopectl); one-time: `tools/orig/orig setup` and set the
+# printed Steam launch option. Look at each screenshot before choosing the next input.
+tools/orig/orig launch                 # start the game through Steam inside headless gamescope
+tools/orig/orig shot <scratch>/o.png   # screenshot; key Return / hold w 3 / click x y / read speed_mph gear
+tools/orig/orig run script.orig        # steps: key, hold, pad steer=0.5 throttle=1, waitfor speed_mph > 60, capture
+tools/orig/orig quit
+tools/orig/orig run-in -- ./target/release/mostrusted --drive 911 --test-track   # same harness on our game
 # Reference runs: record the original (car state + its own audio, Enter stops), replay the inputs, compare
 ./target/release/mwtool capture corner1                     # -> ref/corner1/{telemetry.csv,audio.wav}
 ./target/release/mostrusted --drive 911 --replay ref/corner1/telemetry.csv   # -> telemetry.ours.csv

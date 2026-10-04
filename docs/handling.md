@@ -297,7 +297,10 @@ The handling is judged against the original, run for run:
    speed, yaw rate, lateral g, body slip, rpm, gear, drift state and the path (in each run's start frame) side by
    side, and RMS differences.
 
-Start each capture driving straight on a flat road (the replay starts straight), same car as the replay.
+Captures can also be driven without a person: `tools/orig/orig` runs the original headless in gamescope and
+scripts its inputs (keys or a virtual pad with analog steering and pedals), waits on values from the watch file
+(`waitfor speed_mph > 60`) and starts `capture` in the background, so a manoeuvre is repeatable to the tick of
+the script. Start each capture driving straight on a flat road (the replay starts straight), same car as the replay.
 Useful runs: a launch, full braking from speed, a steady fast corner, a handbrake turn, a brake-tap drift, a
 power-on drift, a full-lock donut from rest, slaloms. The world differs (our test track is flat), so compare the
 car's response, not where it ends up on the map.
