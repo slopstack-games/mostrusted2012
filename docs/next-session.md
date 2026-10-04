@@ -23,19 +23,26 @@ Read this first when resuming. Details: [decomp.md](decomp.md) (what the game's 
 - **Earlier branches**: weather (finished), prop collisions (opt-in `--prop-physics`: the car can wedge against
   knocked lamps / barrels), game UI / HUD (on by default; speed digits faint, odometer ".0 KM").
 
-## 2. Open, in priority order
+## 2. Open, in priority order (user review at the end of session 3)
 
-1. **Record the original with `handling.watch`** (the user has the game running with an 8BitDo pad):
-   `./target/release/mwtool telemetry handling.watch -o <name>.csv --hz 60` for: a steady fast corner (absolute
-   grip scale: our `LAT_GRIP` 0.4 / `LONG_GRIP` 0.7 are calibrations), full braking (lock?), a launch, a
-   handbrake turn (rear `w2_omega` / `w3_omega` → 0?), a brake-tap drift (`drift_side_f*`, `drift_boost`,
-   `drift_scale`: with the game's side-force cap of 5 our side force reaches ~3 g, so our reading of its size or
-   direction is wrong; the model caps it at 1), a full-lock full-throttle donut from rest, and normal driving
-   with slides (`steer_q`, the steering neutral offset's input).
-2. **Handbrake test** gives 4° with the game's steering threshold (0.99: partial inputs steer at the raw
-   high-speed rate); compare with the recording before changing anything.
-3. Props wedging the car (`--prop-physics`), HUD polish, the black daytime sky, groundcover blobs, the bonnet
-   camera position.
+The user's verdict: it does not play like the original yet. Gap list with details in PLAN.md "Where it stands".
+
+1. **Handling still not like the game.** Record the original with `handling.watch` (the user has it running with
+   an 8BitDo pad; `./target/release/mwtool telemetry handling.watch -o <name>.csv --hz 60`): a steady fast
+   corner (grip scales: `LAT_GRIP` 0.4 / `LONG_GRIP` 0.7 are calibrations), full braking, a launch, a handbrake
+   turn, a brake-tap drift (`drift_side_f*`, `drift_boost`, `drift_scale`: with the game's side-force cap of 5
+   ours reaches ~3 g, so its size or direction is misread; the model caps it at 1), a full-lock donut, slides
+   (`steer_q`). Fit `--test` runs with the same inputs against them.
+2. **Tyre screech sounds like a horn held at the same time** (`sfx.rs`, `mw_assets::sfx`): find the tonal
+   layer (wrong sequence, wave or pitch binding).
+3. **Yellow tint over the whole image**: ColourCube grade, exposure, ambient; compare with a screenshot of the
+   original at a known place and hour.
+4. **Inputs like the original** (bindings not found yet) and the **crash camera** (`Physics.CrashingRules`,
+   `CameraSequenceItem` sequences).
+5. **UI**: Easydrive (`EasyDrive_ScreenScript`, `Widget_EasyDrive*`), the game's front end, HUD polish.
+6. **Animations**: driver, steering wheel, `PhysicsDrivenVehicleAnimationBehaviour` body parts, world animations.
+7. **Prop collisions** usable by default (`--prop-physics` wedges the car), then **AI vehicles** (traffic,
+   racers, cops) and **game logic** (events, pursuits, Most Wanted list).
 
 ## Before committing
 

@@ -32,16 +32,41 @@ findings in [research-log.md](research-log.md).
 
 1. **No game data in the repo.** Code reads the install at runtime. Extracted files, screenshots of game
    content, Ghidra databases and decompiled code stay local and git-ignored.
-2. **The executable is encrypted (EA DRM)**, so static analysis of the code is not available
-   ([reverse-engineering.md](reverse-engineering.md)). The plan is therefore **data-first**:
+2. **The executable is encrypted (EA DRM) on disk**, so the file itself can't be analysed
+   ([reverse-engineering.md](reverse-engineering.md)). Since 2026-10-04 the user has supplied a decompilation of
+   a memory dump of the running game (`re/NFS13_dump/`, git-ignored). The plan stays **data-first**, with the
+   code as a reference for behaviour:
    - Formats are worked out from the data itself (surveying every instance of a resource type) plus community
      documentation (burnout.wiki, DGIorio's tools).
    - Game *behaviour* comes from data wherever possible. Most tuning and rules live in GeneSys objects
      (≈190k GenesysType/GenesysObject resources), so reading GeneSys is the key to game logic.
-   - Where behaviour is code-only (handling model, AI decisions, shaders), we **reimplement and approximate**,
-     parameterised by the game's data, and document where we diverge.
+   - Where behaviour is code (handling, AI decisions, game rules), read what the code does (GeneSys fields are
+     read in place, so `mwtool genesys-types` offsets locate the code that uses them), write it down in prose in
+     [decomp.md](decomp.md) and reimplement it. Never copy decompiled code into the repo.
+   - Check against the running original: `mwtool memscan` / `telemetry` read its live state and missing
+     constants (`handling.watch`; handling.md "Measuring the original").
 3. **Bevy moves fast.** It is pinned to one minor version (currently 0.19). Engine-specific code stays inside
    `crates/mostrusted`; format crates never depend on Bevy. Upgrade Bevy deliberately, in its own change.
+
+---
+
+## Where it stands against the original (user review, 2026-10-04)
+
+The game runs, streams Fairhaven and lets you drive any car, but it does not yet play like Most Wanted. The
+user's review after session 3, with where each gap is tracked:
+
+| Gap | State | Item |
+|-----|-------|------|
+| Handling does not feel like the game | the model follows the game's code since session 3, but grip scales, the drift side force and the handbrake are unmeasured; needs recordings of the original | M3.2 |
+| Tyre screech sounds as if a horn is held at the same time | a tonal layer plays with the screech; not investigated | M5.4 |
+| Shading has a yellow tint over everything | the tonemap / ColourCube grade / ambient are suspects; compare against screenshots of the original at the same place and hour | M1.5, M1.7 |
+| Animations are missing | none play: driver, steering wheel, animated body parts (`PhysicsDrivenVehicleAnimationBehaviour`), world animations (`TriggerAnimationBehaviour`, `AnimatedDynamicEntityBehaviour`), tree wind | M3.8 |
+| Inputs are not mapped like the original | our own keyboard / pad layout; the game's bindings not found yet | M3.9 |
+| UI incomplete, no Easydrive | HUD (speed, nitrous, odometer, minimap) and our own menus; the game's front end and Easydrive (`EasyDrive_ScreenScript`, `Widget_EasyDrive*`) not built | M7 |
+| No crash camera | crash damage works, but no crash cam (`Physics.CrashingRules`, `CameraSequenceItem` / `CameraShakeSequenceItem` sequences) | M3.3 |
+| No AI vehicles | no traffic, racers or cops | M6.1, M6.4 |
+| Prop collisions | decoded and simulated but opt-in (`--prop-physics`): the car wedges against knocked props | M3.1 |
+| Game logic in general | no events, pursuits, Most Wanted list, jack spots, progression | M6 |
 
 ---
 
@@ -122,7 +147,9 @@ Make a static frame look like the game.
    (SunMoonPath), the `NewSky` dome mapping and its second gradient, fog in-scattering and layer fog (the
    `LayerFog` paint map is decoded), bloom, what selects Alternates, wind (cloud scroll; no consumer found),
    `Thunderstorm_Intensity`, blending when the painted timeline changes, the upper daytime sky rendering
-   near-black in the main view (also on master before the weather merge).
+   near-black in the main view (also on master before the weather merge). **User review (2026-10-04): a yellow
+   tint lies over the whole image**; check the ColourCube grade, exposure and ambient against screenshots of the
+   original at the same place and hour.
 6. `[x]` **Vertex data**: packed tangent-frame quaternions (world RGBA8 `TEXCOORD1/2/3`, vehicle SNORM16
    `TEXCOORD4`) decode to normals + tangents (`mw_formats::tangent_frame`, checked against face normals);
    vertex colour is decoded.
@@ -154,9 +181,10 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
 1. `[x]` **Collision**: `PolygonSoupList` (0x60) per track unit → static avian3d trimesh colliders (built on the
    loader thread; quads split strip-wise since 2026-10-04, which closed the holes). Collision tags decoded (surface index into
    `SURFACELIST.BNDL`, flags; `CarSurface`), and props / compounds / dynamic objects collide and break free
-   from their `PhysicalDefinition` data (`props.rs`, `--test smash`, 2026-10-04). Opt-in (`--prop-physics`)
-   while the car can still wedge against knocked lamps / crash barrels (research log). Still open: that,
-   compound parts as separate pieces, surface grip in the tyre model, a clean perf A/B.
+   from their `PhysicalDefinition` data (`props.rs`, `--test smash`, 2026-10-04). **Not usable yet**: opt-in
+   (`--prop-physics`) because the car wedges against knocked lamps / crash barrels and stops dead (research
+   log). Still open: that, the game's smash rules (`CollisionResponses_*`), compound parts as separate pieces,
+   surface grip in the tyre model, a clean perf A/B.
 2. `[~]` **Vehicle physics**: since 2026-10-04 (session 3) the model follows the game's own code, read from the
    user's decompiled dump ([decomp.md](decomp.md), [handling.md](handling.md) "The model"): 60 Hz tick; engine
    inertia, friction curve, clutch, shift on rpm and speed, top-gear lock (`drivetrain.rs`); per-wheel spin with
@@ -166,15 +194,17 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    `--test accel|brake|corner|handbrake|drift|donut` measures it on a flat track, tick-exact. Still open: the
    absolute grip scale (model 0.4 / 0.7) and the other missing `.bss` constants (memscan, or the original memory
    dump), the handbrake lock condition, the steering neutral offset, wheels as bodies instead of rays, and
-   calibration against the original game.
-   Original plan: a raycast-wheel vehicle (suspension, tyre slip curves, drivetrain, gearbox) tuned
-   from `VehiclePhysicsSpec` (0x107) and GeneSys physics config (`PHYSICS/PHYSICSCONFIG.BNDL`). The original
-   model's code is unavailable, so feel is matched by comparing against the real game, not by porting it.
+   calibration against the original game. **User review (2026-10-04): it still does not drive like the
+   original.** Next: record the original with `handling.watch` (corner, braking, launch, handbrake turn,
+   brake-tap drift, donut, slides) and fit against `--test` runs with the same inputs; resolve the drift side
+   force (with the game's cap of 5 ours reaches ~3 g, so its size or direction is misread).
 3. `[~]` Cameras from each car's `VehicleCameraContainer` (`camera.rs`, 2026-10-04): chase, bonnet and bumper
    modes (C / gamepad Y, `--camera-mode`); the chase camera's yaw spring (speed band, drift spring), speed
    movement, acceleration spring, roll and pitch from the named thresholds, high-speed and impact shake, world
    collision, look-back (B / right stick back) and look-around (right stick, right mouse drag) that springs
-   back; the free camera looks with the right stick. Still open: the in-car cameras' unnamed fields (rigid now),
+   back; the free camera looks with the right stick. **Missing: the crash camera** (cut-away replay of a crash /
+   takedown; look for it in the crash sequences: `Physics.CrashingRules`, `CameraSequenceItem`,
+   `CameraShakeSequenceItem`, the decomp's crash path). Still open: the in-car cameras' unnamed fields (rigid now),
    the remaining acceleration / yaw-spring / gradient / height fields, FOV convention and calibration against
    the original (handling.md, "Cameras").
 4. `[~]` The world streams nearest-first from the spawn point (or the `--camera` pose). Still open: streaming that
@@ -209,6 +239,15 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    `Spot_effects` (effect + `Locator_group`) and 1,095 an `ImpactEffect` (prop smashes), placement through
    the locator groups not decoded; soft-particle depth fade check;
    `gVfxSparkBrightness` and the exposure term; sort groups.
+8. `[ ]` **Animations**: nothing animates yet besides wheels and damage poses. Car: the driver and steering
+   wheel, animated body parts (`PhysicsDrivenVehicleAnimationBehaviour` / `.AnimatedBodyPart`: spoilers, flaps,
+   suspension parts), `Genesys.Vehicles.AnimationStateBehaviour`, `AnimatedRaceCarBehaviour` (scripted cars).
+   World: `TriggerAnimationBehaviour`, `AnimatedDynamicEntityBehaviour` (gates, barriers), tree and flag wind.
+   Needs the `Animation` / `AnimationList` decoding that damage already uses.
+9. `[ ]` **Input mapping like the original**: today our own layout (W/S/A/D, space handbrake, Tab / F1 menu, C
+   camera, F2 volume; pad triggers, stick, A handbrake, Y camera, Start menu). The original's keyboard and pad
+   bindings (nitrous, handbrake, camera, look back, Easydrive, horn, ...) are not found in the data yet; find
+   them (GeneSys / UI data, or the decomp's input code) and match them, including remapping.
 - Done when: you can pick a car from the catalogue, spawn on a road and drive around the city with collision.
   **Basic version reached on 2026-10-03; in-game car picking since 2026-10-04 (item 5).** Remaining: handling feel, real tuning data, spawn points on roads
   (from `RoadData` / AI data rather than hand-picked coordinates).
@@ -245,11 +284,15 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
 4. `[~]` Vehicle sound effects from the sound data (`mw_assets::sfx`, `crates/mostrusted/src/sfx.rs`): tyre
    screech (the default surface's Drift / Spin / Brake sequences driven by wheel slip), road noise, wind,
    impacts and scrapes from the `CollisionSoundSet`, landings (research log "tyre screech, road, wind,
-   impacts"). Open: per-surface sounds (collision tags), bumps, ambience, wall reflections, horn, nitrous,
-   speech.
+   impacts"). **Bug (user, 2026-10-04): the tyre screech sounds as if a horn were held at the same time**:
+   a tonal layer (wrong sequence, wave or pitch binding) plays with it. Open: that, per-surface sounds
+   (collision tags), bumps, ambience, wall reflections, horn, nitrous, speech.
+5. `[x]` Volume settings (F2 / gamepad Select overlay, `--volume`, `~/.config/mostrusted/settings.cfg`) and the
+   live sources play with `ONCE` (LOOP buffered them 0.74 s at a time: the engine held each rpm, then jumped).
 
 ### M6: Gameplay `[ ]`
-Roughly in dependency order:
+Nothing of the game's logic runs yet: no AI vehicles, events, pursuits, progression. The decomp now shows the
+code side (game modes, HSMs, AI) next to the data. Roughly in dependency order:
 1. Traffic: `TrafficLaneData` (0x701), `TrafficGraphicsStub`, traffic vehicle attribs.
 2. Road network and AI paths: `RoadData`, `RoadMapData`, `AIData`, `NavigationMesh`.
 3. Triggers and events: `TriggerData`, `GAMELOGIC/GAMEMODES.BNDL`, `GAMEPLAY.BNDL`, Jack spots, Most Wanted list.
@@ -265,8 +308,10 @@ Roughly in dependency order:
   folded to ASCII ("Coupe"). Done (2026-10-04, paused WIP): the UI data (GeneSys screens / layouts / bindings,
   `mw_formats::ui`, `mwtool ui screens|show|render|font`), the game's bitmap fonts (`UI/FONTS`, `game_text.rs`)
   and a free-roam driving HUD (`hud.rs`: speedometer, nitrous gauge (full: no nitrous yet), odometer, minimap
-  from the map tiles; `--mph`, `--no-hud`, F3 = debug text). Open: the car menu in the game font, the game's
-  own front-end layout, widget adapters (which layouts show when), settings, save data.
+  from the map tiles; `--mph`, `--no-hud`, F3 = debug text). Done: volume settings (F2). **Missing: Easydrive**
+  (the in-game d-pad menu: `EasyDrive_ScreenScript`, `EasyDriveSpeech_ScreenScript`, `Widget_EasyDrive*` type /
+  tier / link / hook definitions) and the game's front end. Open: those, the car menu in the game font, widget
+  adapters (which layouts show when), HUD polish (faint speed digits, odometer ".0 KM"), save data.
 - Movies: `UI/MOVIES/*.VP6` (EA `MVhd` container, VP6). Decode through ffmpeg or skip.
 - Packaging for Linux and Windows; CI with build + lint + game-less tests.
 
@@ -302,17 +347,13 @@ SNORM ×10 scale).
 
 ## Suggested next sessions
 
-**Start with [next-session.md](next-session.md)** (handoff from 2026-10-04: engine pitch staircase, drift model, shaders).
+**Start with [next-session.md](next-session.md).** Priorities from the user's review (2026-10-04):
 
-0. Engine sound mixing from `EngineSound2` data; collision/skid sound effects from `Wave` resources.
-
-1. Drift assist from `DriftBehaviour` (names mostly recovered: `Maximum_yaw_torque`, `Side_force_multiplier`,
-   `Drift_scale_from_braking`, ...); then collect reference measurements from the original game (procedure in
-   [handling.md](handling.md)) and calibrate.
-2. Name more GeneSys fields with `mwtool genesys-crack` (camera: the in-car cameras and the remaining
-   `Acceleration_movement` / `Yaw_spring_modification` fields; the environment timeline types); fix the
-   remaining GeneSys decode failures.
-3. World-layer loose ends (M1.3): light rendering, groundcover tint/billboarding/wind.
-4. The game's deferred pipeline (M1.4 item 7), starting with the G-buffer pass and the key-light pass; decode
-   the environment timeline (M1.5) so sun, sky and exposure come from data. Lightmap source (M1.4.7).
-5. Streaming that follows the car (M4).
+1. **Handling against the original**: record it with `handling.watch` and fit (M3.2); the drift side force.
+2. **Tyre screech "horn"** (M5.4) and the **yellow tint** (M1.5 / M1.7): both are visible / audible every
+   second of play.
+3. **Input mapping** like the original (M3.9) and the **crash camera** (M3.3).
+4. **Easydrive** and the game's HUD / front end (M7).
+5. **Animations** (M3.8): driver, steering wheel, animated body parts.
+6. **Prop collisions** usable by default (M3.1).
+7. **AI vehicles**: traffic first (M6.1), then racers and cops; game logic (M6).
