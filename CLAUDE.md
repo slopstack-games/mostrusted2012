@@ -54,6 +54,7 @@ cargo fmt                                    # rustfmt.toml: max_width 120
 ./target/release/mwtool handling 911                # typed handling parameters (docs/handling.md)
 ./target/release/mwtool genesys-types > types.tsv    # every GeneSys type and field (hash, offset, type)
 ./target/release/mwtool genesys-crack --words a.txt --max-words 4 --type Steering   # guess field names (check hits!)
+#   fields are stored sorted by size then name: a real hit sorts between its neighbours (formats.md, GeneSys)
 ./target/release/mwtool shader-usage               # world triangles per shader (prioritise ports)
 ./target/release/mwtool audio UI/SONGS/116502.SPS <dir>   # or a bundle: its Ginsu/Wave resources -> .wav
 ./target/release/mwtool engine-sound 911 out.wav   # rev sweep through the engine synth (--trace: `seconds rpm load` lines)
@@ -67,6 +68,11 @@ cargo fmt                                    # rustfmt.toml: max_width 120
 # Visual check without a human: renders, saves, exits
 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,1720 --screenshot <scratch>/road.png   # see docs/viewpoints.md
 ./target/release/mostrusted --vehicle "911" --camera 4.5,1.4,4.0,0,0.4,0 --screenshot <scratch>/car.png
+# Driving cameras: --camera-mode chase|bonnet|bumper|lookback (C / gamepad Y cycles; B, right stick click or
+# stick fully back looks back; right stick / right mouse drag looks around; the free camera looks with the
+# right stick too). MW_CAMERA_TRACE=<file> logs the camera every frame
+MW_CAMERA_TRACE=<scratch>/cam.trace ./target/release/mostrusted --drive 911 --test drift
+./target/release/mostrusted --drive 911 --units 12 --auto-throttle 0.6 --camera-mode bonnet --screenshot <scratch>/bonnet.png --screenshot-delay 400
 # Handling tests on a flat track (4x real time), prints TEST RESULT lines and exits
 ./target/release/mostrusted --drive 911 --test accel     # or brake, corner (skidpad g), handbrake, drift, engine
 # Engine RPM every physics tick, for `mwtool engine-sound --trace` (use with --test engine)

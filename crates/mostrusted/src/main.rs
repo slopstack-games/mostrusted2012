@@ -4,6 +4,7 @@
 //! installed copy of the game (see `mw-gamedir` for how it is located).
 
 mod audio;
+mod camera;
 mod convert;
 mod damage;
 mod deferred;
@@ -131,6 +132,10 @@ struct Cli {
     /// Open the car menu at startup (also in `--screenshot` runs, to capture it).
     #[arg(long)]
     show_menu: bool,
+    /// Driving camera at startup: chase, bonnet, bumper, or lookback (the chase camera looking back).
+    /// C / gamepad Y cycles the modes the car's data defines.
+    #[arg(long, default_value = "chase")]
+    camera_mode: String,
 }
 
 #[derive(Resource)]
@@ -209,6 +214,9 @@ fn main() -> anyhow::Result<()> {
     };
 
     let crash = cli.test.as_deref() == Some("crash");
+    let Some((camera_mode, look_back)) = camera::CameraMode::parse(&cli.camera_mode) else {
+        anyhow::bail!("unknown --camera-mode {} (chase, bonnet, bumper, lookback)", cli.camera_mode);
+    };
     let test = match cli.test.as_deref() {
         None | Some("crash") => None,
         Some("accel") => Some(drive::TestKind::Accel),
@@ -298,6 +306,7 @@ fn main() -> anyhow::Result<()> {
         .init_resource::<GameEnvironment>()
         .insert_resource(materials::VehicleLights::from_slice(&cli.lights))
         .add_plugins((avian3d::PhysicsPlugins::default(), drive::DrivePlugin, damage::DamagePlugin))
+        .add_plugins(camera::CameraPlugin { mode: camera_mode, look_back })
         .add_plugins((garage::GaragePlugin { script }, menu::MenuPlugin { enabled: menu_enabled, open: cli.show_menu }))
         .add_plugins(audio::GameAudioPlugin {
             music: !cli.no_music && !cli.mute && screenshot.is_none() && test.is_none() && !crash,
@@ -555,10 +564,10 @@ fn update_status(
     let pos = cam.single().map(|t| t.translation).unwrap_or_default();
     let controls = match car.single() {
         Ok(car) => format!(
-            "{:.0} km/h\nW/S throttle/brake, A/D steer, space handbrake, R reset (or gamepad triggers + stick)",
+            "{:.0} km/h\nW/S throttle/brake, A/D steer, space handbrake, R reset (or gamepad triggers + stick)\nC / Y: camera, B / right stick back or click: look back, right stick or right mouse drag: look around",
             car.speed.abs() * 3.6
         ),
-        Err(_) => "WASD/QE move, right mouse look, shift run, scroll speed".to_string(),
+        Err(_) => "WASD/QE move, right mouse or right stick look, shift run, scroll speed".to_string(),
     };
     let controls = format!("{controls}\nTab / F1 / gamepad Start: car menu");
     text.0 = format!(

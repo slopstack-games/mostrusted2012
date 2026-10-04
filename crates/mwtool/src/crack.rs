@@ -24,6 +24,9 @@ pub enum Style {
     Snake,
     /// `First_Second_Third`.
     TitleSnake,
+    /// `First_Second_for_Third`: Title_Snake with short function words in lower case
+    /// (`Minimum_Lateral_Acceleration_for_Roll`).
+    TitleSmall,
     /// `FirstSecondThird` (code-facing fields).
     Camel,
 }
@@ -133,6 +136,10 @@ fn search(
     }
 }
 
+/// Words `Style::TitleSmall` keeps in lower case.
+const SMALL_WORDS: &[&str] =
+    &["a", "and", "at", "by", "for", "from", "in", "is", "of", "on", "per", "the", "to", "when", "with"];
+
 /// A word as it appears at a position in a name. Words containing capitals
 /// (acronyms like `RPM`) are kept as written.
 fn styled(word: &str, first: bool, style: Style) -> String {
@@ -145,6 +152,8 @@ fn styled(word: &str, first: bool, style: Style) -> String {
         (_, true) => cap(&w),
         (Style::Snake, false) => format!("_{w}"),
         (Style::TitleSnake, false) => format!("_{}", cap(&w)),
+        (Style::TitleSmall, false) if SMALL_WORDS.contains(&w.as_str()) => format!("_{w}"),
+        (Style::TitleSmall, false) => format!("_{}", cap(&w)),
         (Style::Camel, false) => cap(&w),
     }
 }

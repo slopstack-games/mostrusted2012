@@ -86,7 +86,7 @@ enum Cmd {
         words: Vec<PathBuf>,
         #[arg(long, default_value_t = 3)]
         max_words: usize,
-        #[arg(long = "style", value_enum, default_values_t = [crack::Style::Snake, crack::Style::TitleSnake, crack::Style::Camel])]
+        #[arg(long = "style", value_enum, default_values_t = [crack::Style::Snake, crack::Style::TitleSnake, crack::Style::TitleSmall, crack::Style::Camel])]
         styles: Vec<crack::Style>,
         /// Only fields of types whose name contains this.
         #[arg(long)]

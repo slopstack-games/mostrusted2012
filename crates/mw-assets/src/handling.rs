@@ -9,6 +9,7 @@ use mw_bundle::{Bundle, ResourceId, ResourceType};
 use mw_formats::genesys::field_hash;
 use mw_formats::genesys::{Object, Value};
 
+use crate::camera::VehicleCameras;
 use crate::{AssetStore, Result};
 
 /// Field name hashes. Names come from [`field_hash`]; fields whose name is
@@ -92,21 +93,6 @@ mod h {
     pub const LOW_CENTER: u32 = field_hash("Low_speed_center_steer_rate");
     pub const HIGH_CENTER: u32 = field_hash("High_speed_center_steer_rate");
     pub const REVERSE_CENTER: u32 = field_hash("Reverse_center_steer_rate");
-    // VehicleCameraContainer (external chase camera)
-    pub const CAM_EXTERNAL: u32 = field_hash("External");
-    pub const CAM_EYE: u32 = 0x6e08f788;
-    pub const CAM_LOOK_AT: u32 = 0x006e1686;
-    pub const CAM_MIN_FOV: u32 = field_hash("MinFieldOfView");
-    pub const CAM_MAX_FOV: u32 = field_hash("MaxFieldOfView");
-    pub const CAM_ROLL: u32 = field_hash("Camera_Roll");
-    pub const CAM_MAX_ROLL: u32 = field_hash("Maximum_Roll_Angle");
-    pub const CAM_DECEL_PITCH: u32 = field_hash("Deceleration_pitch_change");
-    pub const CAM_MAX_PITCH: u32 = field_hash("Maximum_Pitch_Change");
-    pub const CAM_SPEED_MOVEMENT: u32 = 0x7540a8a7;
-    pub const CAM_SHAKE: u32 = field_hash("High_Speed_Shake");
-    pub const SHAKE_AMPLITUDE: u32 = field_hash("Amplitude");
-    pub const SHAKE_FREQUENCY: u32 = field_hash("Frequency");
-    pub const SHAKE_POWER: u32 = field_hash("Power");
     // WheelSuspensionSpringConstraint
     pub const SPRING_DAMPING: u32 = field_hash("Damping_Ratio");
     pub const SPRING_FREQUENCY: u32 = 0x0c5f89b3;
@@ -218,27 +204,6 @@ pub struct Steering {
     pub center_rate: [f32; 3],
 }
 
-/// The external (chase) camera from `VehicleCameraContainer.External`.
-/// Positions are in car space (+Z forward). Meanings of the unnamed fields
-/// are inferred from their values; see docs/handling.md.
-#[derive(Debug, Clone, Copy)]
-pub struct ChaseCamera {
-    /// Eye position: (0, 1.6, -4.6) on the 911. The bonnet and bumper
-    /// cameras use the same field for their in-car positions.
-    pub eye: [f32; 3],
-    pub look_at: [f32; 3],
-    /// Field of view at rest and at speed (degrees; vertical judging by the framing).
-    pub min_fov: f32,
-    pub max_fov: f32,
-    /// Camera roll into corners (degrees).
-    pub max_roll: f32,
-    /// Pitch change under braking (degrees).
-    pub max_pitch_change: f32,
-    pub shake_amplitude: f32,
-    pub shake_frequency: f32,
-    pub shake_power: f32,
-}
-
 /// Everything the physics model takes from the game. Fields are `None` when
 /// a car lacks the data (and the model falls back to defaults).
 #[derive(Debug, Clone, Default)]
@@ -271,7 +236,8 @@ pub struct VehicleHandling {
     pub gear_change_time: Option<f32>,
     /// Gravity multiplier while airborne.
     pub in_air_gravity: Option<f32>,
-    pub camera: Option<ChaseCamera>,
+    /// The car's gameplay cameras (`VehicleCameraContainer`).
+    pub camera: Option<VehicleCameras>,
     /// Front, rear.
     pub springs: Vec<Spring>,
     /// Every numeric field of `HandlingBehaviour`, by path of field hashes
@@ -319,7 +285,7 @@ impl VehicleHandling {
             match obj.type_name.as_str() {
                 "Genesys.Gen.RaceCarPhysicalDefinition" => out.read_bodies(&obj),
                 "Genesys.Gen.HandlingBehaviour" => out.read_handling(&obj),
-                "Genesys.Gen.VehicleCameraContainer" => out.camera = sub(&obj, h::CAM_EXTERNAL).and_then(read_camera),
+                "Genesys.Gen.VehicleCameraContainer" => out.camera = VehicleCameras::from_container(&obj),
                 "Genesys.Gen.WheelSuspensionSpringConstraint" => {
                     if let (Some(frequency), Some(damping_ratio), Some(travel)) = (
                         float(&obj, h::SPRING_FREQUENCY),
@@ -541,26 +507,6 @@ fn read_tyres(tyres: &Object) -> Option<[TyreAxle; 2]> {
         axle(h::FRONT_TYRES, h::FRONT_LAT_SCALE, h::FRONT_LONG_SCALE)?,
         axle(h::REAR_TYRES, h::REAR_LAT_SCALE, h::REAR_LONG_SCALE)?,
     ])
-}
-
-fn read_camera(c: &Object) -> Option<ChaseCamera> {
-    let vec3 = |o: &Object, hash| match items(o, hash) {
-        [Value::Float(x), Value::Float(y), Value::Float(z)] => Some([*x, *y, *z]),
-        _ => None,
-    };
-    let shake = sub(c, h::CAM_SPEED_MOVEMENT).and_then(|m| sub(m, h::CAM_SHAKE));
-    let shake_f = |hash, default| shake.and_then(|s| float(s, hash)).unwrap_or(default);
-    Some(ChaseCamera {
-        eye: vec3(c, h::CAM_EYE)?,
-        look_at: vec3(c, h::CAM_LOOK_AT).unwrap_or([0.0, 1.0, 0.0]),
-        min_fov: float(c, h::CAM_MIN_FOV)?,
-        max_fov: float(c, h::CAM_MAX_FOV)?,
-        max_roll: sub(c, h::CAM_ROLL).and_then(|r| float(r, h::CAM_MAX_ROLL)).unwrap_or(0.0),
-        max_pitch_change: sub(c, h::CAM_DECEL_PITCH).and_then(|p| float(p, h::CAM_MAX_PITCH)).unwrap_or(0.0),
-        shake_amplitude: shake_f(h::SHAKE_AMPLITUDE, 0.0),
-        shake_frequency: shake_f(h::SHAKE_FREQUENCY, 1.0),
-        shake_power: shake_f(h::SHAKE_POWER, 1.0),
-    })
 }
 
 fn read_steering(s: &Object) -> Option<Steering> {

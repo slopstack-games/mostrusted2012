@@ -8,6 +8,7 @@
 //! demand.
 
 pub mod backdrop;
+pub mod camera;
 mod catalog;
 pub mod damage;
 pub mod engine_sound;

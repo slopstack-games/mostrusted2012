@@ -146,21 +146,86 @@ uses.
 × mph (0.025, capped at 1; *hyp.*: without it the car pirouettes on the spot at 200°/s). The drift damping
 applies. `Donut_grip_values` (eight unnamed fields) is unused.
 
-## Chase camera
+## Cameras (`VehicleCameraContainer`, `crates/mostrusted/src/camera.rs`)
 
-`VehicleCameraContainer` holds `Bonnet`, `Bumper` and `External` cameras. The runtime uses `External`:
+Every vehicle bundle has one `VehicleCameraContainer` (79 in the install) with four cameras: `External`
+(`CameraGameplayExternal`, the chase camera), `Bonnet` and `Bumper` (`CameraGameplayBonnet` / `Bumper`, the
+same layout) and `Rear_view` (`CameraRearView`, the mirror: `Horizontal_FOV` 60, `Aspect_ratio` 3.33,
+`Near_clip_plane` 0.2, `Far_clip_plane` 400). Reader: `mw_assets::camera::VehicleCameras`. The runtime offers
+the modes the data defines: chase, bonnet, bumper (C or gamepad Y cycles them; `--camera-mode`
+picks one at startup). Units are mph and mph per second, like the handling data. Struct fields are stored
+sorted by size and then by name, which places each unnamed field alphabetically between its named
+neighbours (formats.md, "GeneSys").
 
-| Field | 911 | Meaning |
-|-------|-----|---------|
-| `6e08f788` | (0, 1.6, −4.6) | eye in car space; the bonnet (0, 1.05, 0.8) and bumper (0, 0.425, 1.5) cameras use the same field for their in-car positions |
-| `006e1686` | (0, 1.2, 0.75) | look-at point |
-| `MinFieldOfView` / `MaxFieldOfView` | 70 / 95 | FOV at rest and at top speed. Read as vertical: as horizontal, 70° crops the car much tighter than the original's chase view |
-| `Camera_Roll.Maximum_Roll_Angle` | 4.7 | roll into corners (degrees, per g of lateral acceleration) |
-| `Deceleration_pitch_change.Maximum_Pitch_Change` | 4.5 | nose-down tilt under braking (degrees per g) |
-| `Speed_based_movement.High_Speed_Shake` | `Amplitude` 1.2, `Frequency` 1, `Power` 1.5 | shake grows with (speed / top speed)^Power |
+`External` fields and what the runtime does with them (**data** = name and use both settled; *hyp.* = the
+meaning is read from values or position; values are the 911's, ranges are across all cars):
 
-The `Acceleration_movement`, `Yaw_spring_modification` and `Speed_based_height_change` blocks are not named
-yet. The pull-back under acceleration and the yaw lag are model choices until they are.
+| Field | 911 (range) | Use |
+|-------|-------------|-----|
+| `6e08f788` | (0, 1.6, −4.6) | **data** eye in car space (also the bonnet / bumper eye) |
+| `006e1686` | (0, 1.2, 0.75) | **data** look-at point |
+| `d68bbc59` | (0, 0, 0.75) | *hyp.* pivot: always (0, 0, look-at z); the yaw and look-around orbit turn around it |
+| `MinFieldOfView` / `MaxFieldOfView` | 70 / 95 | **data** FOV, blended by (speed / top speed)²; read as vertical (see below) |
+| `Speed_based_movement.0a78c15f` | −1 (−1.2…0) | *hyp.* eye z change at full speed (pulls the eye back 1 m) |
+| `….7d4ec535` | 1.7 (1.45…4.4) | *hyp.* eye height at full speed (tracks the eye height on every car) |
+| `….b028673b` | 1.5 (1.35…3.1) | *hyp.* look-at height at full speed (≈ look-at height + 0.25) |
+| `….53e4b4f9` | 50 (50/75/100) | *hyp.* speed (mph) where the three changes above are complete |
+| `High_Speed_Shake.Amplitude`, `Frequency`, `Power` | 1.2, 1, 1.5 | **data** shake = Amplitude × f^Power |
+| `….Minimum_Speed_for_Shake` / `Maximum_Speed_for_Shake` | 0 / 180 (125…208) | **data** f = speed fraction between them (mph) |
+| `Acceleration_movement.bd3a7cfc` | −2 (−2.5…−1.9) | *hyp.* furthest the eye falls back under acceleration (m) |
+| `….8e1310f6` | 1.5 | *hyp.* furthest the eye closes in under braking (m) |
+| `….285f2260` | 2.5 | *hyp.* angular frequency (rad/s) of the critically damped spring the eye hangs on: it trails by a / ω², ≈ 1 m at a 911 launch |
+| `Camera_Roll.Minimum_Lateral_Acceleration_for_Roll`, `3f8ced67` | 10, 30 (30…40) | **data** / *hyp.* (the maximum, by its place and values) lateral range, mph/s |
+| `….Minimum_Angular_Velocity_for_Roll`, `02dd11bc` | 0.2, 2.5 (2.5…3) | **data** / *hyp.* yaw-rate range, rad/s |
+| `….Maximum_Roll_Angle` | 4.7 (3…6) | **data** roll = sign × max × max(f_lat, f_yaw)^`Camera_Roll_Factor_Power` (2.5) |
+| `….Roll_Angle_Change_Intensity` | 2 (2…2.5) | *hyp.* rate (1/s) the roll follows its target |
+| `Deceleration_pitch_change.Minimum_` / `Maximum_deceleration_for_pitch_change` | 2 / 12 (11…12) | **data** deceleration range, mph/s |
+| `….Maximum_Pitch_Change`, `Pitch_change_curve_power` | 4.5 (2.5…6), 2.25 | **data** pitch = max × f^power (nose down) |
+| `….Pitch_change_intensity` | 2 (1.75…2) | *hyp.* rate (1/s) the pitch follows its target |
+| `Yaw_spring_modification.Low_speed` / `High_speed` | 0 / 100 | **data** speed band (mph) |
+| `….5a74d44d` / `63fb2207` | 0.075 / 0.05 | *hyp.* yaw spring at low / high speed, a fraction per 60 Hz tick (sorted after `Low_speed` / `High_speed`): 4.7/s at rest, 3.1/s at 100 mph |
+| `YawDriftSpring` | 0.055 (0.045…0.07) | **data** name; *hyp.* the yaw spring while drifting (3.4/s) |
+| `Global_params.f50dccb9` (`CameraGameplayShakeEffect`) | see below | **data** impact shake springs |
+| `Global_params.Impact_shake.Maximum_amplitude` | 2 | **data** cap on an impact's strength |
+
+Impact shake (`CameraGameplayShakeEffect`, the same on every car): per axis a damped spring with
+`Amplitude`, `Damping` (translation: `00fd0a79`, *hyp.*), `Spring_Coefficient` and limits (`Minimum_` /
+`Maximum_Angle` in degrees, `Lower_` / `Upper_Translation_Limit` in metres). Only two axes are active: rotation
+`Pitch` (250, 0.4, 450, ±20°) and the third translation axis (100, 0.5, 100, −0.2…0.2 m; taken as fore-aft).
+An impact kicks each spring's velocity by Amplitude × strength; with k = 450 and ζ = 0.4 it rings at 3.4 Hz and
+dies in ~0.4 s. A 115 km/h wall hit (`--test crash`, strength capped at 2) peaks at 13° of pitch.
+
+Bonnet / bumper (`CameraGameplayBonnet` / `Bumper`): eye `6e08f788` ((0, 1.05, 0.8) / (0, 0.425, 1.5)), FOV
+95→105 / 95→120 (by speed², like the chase camera), and `3f017c6b` ((0, 1.32, 0.21) on the roof / (0, 0.6, −1.5)
+at the tail), *hyp.* the eye of the look-back view. 19 other floats are unnamed (one candidate name,
+`AccelerationResponse` = 0.05, fits but has no sibling to confirm it); they are not used yet, so the in-car
+views are rigid. The bumper eye sits inside the body's nose, so the car is hidden in that view.
+
+Unused and unnamed: the other 9 `Acceleration_movement` floats (0.5, 0, 50, −1.2, 2, 0/−0.9, 1.75, 2.5),
+`Yaw_spring_modification.78527964` / `397fce82` (10 / 10) and `Decay_rate` (0.01),
+`Speed_based_movement.b6010ee1` (0), `Speed_based_height_change` (1.59 / 1.973; heights, but they do not
+track the eye as closely as `7d4ec535`), `Gradient_Adjustments` (`Downwards` 0.5 / 1.5, `Upwards` 0.5 / 4,
+`Maximum_Gradient` 10°), the top-level `c6ca2dc7` (5 / 10), `6d906d74` (4) and `67660e20` ((0.55, 0.09, 1)),
+`Lens_Properties` (`FocalDistance` 90, 1.4, false: depth of field, off), and the rest of `Impact_shake`
+(`ShakeMagnitude` / `WobbleMagnitude` vectors, frequencies).
+
+Model decisions (not data): the FOV is vertical (as horizontal the chase view is far tighter than the
+original's; the bonnet and bumper views look very wide this way); acceleration is measured from the car's
+speed between physics ticks; the drift lean (`DRIFT_LEAN` 0.5 of the slip angle) and the yaw-lag cap (0.6 rad);
+the high-speed shake's scale (0.012 m per unit of Amplitude, 1.4 Hz at Frequency 1); impact strength =
+approach speed / 10 m/s; camera collision (a ray from the look-at point to the eye, 0.25 m margin, at least
+0.8 m from the look-at point, eases back out at 3/s); look-around (right stick: ±110° yaw, −10…30° pitch, 20%
+dead zone, follows at 10/s, springs back at 4/s; right mouse drag; stick fully back, the stick's button or B looks back, a cut to
+the view turned 180° round the pivot). No look-around fields were found in the camera types (searched Look,
+Free, Orbit, Return, Recentre, Yaw, Pitch, Limit, Speed templates).
+
+Trace: `MW_CAMERA_TRACE=<file>` writes one line per frame (speed, acceleration, yaw rate, lateral
+acceleration, slip, the eye in car space, yaw lag, FOV, roll, pitch, acceleration offset, impact pitch).
+911 results (2026-10-04): `--test accel` pulls the eye back 1.2 m at launch (eye z −4.6 → −6.7 by 75 km/h with
+the speed term), easing to −0.35 m at 200 km/h; FOV 70 → 88.6° at 265 km/h. `--test brake` from 100 km/h: the
+eye closes 1.5 m in and pitches 4.5° nose down at 1.1 g. `--test drift`: the camera's yaw sits 15.5° off the
+car's in a 19.7° drift (half the slip angle plus 6° of spring lag), the eye 1.5 m to the side; roll peaks at
+3.4° at the 1 g entry.
 
 ## Model decisions (not from data)
 
