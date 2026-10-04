@@ -113,6 +113,15 @@ every interpretation in `docs/handling.md` (data vs model decision).
   - Lights are parsed but not drawn.
   - The stray leaf-card quads in tree canopies **predate** this work (a tree shader or alpha issue).
 
+## 4. Backdrop composition (map "loaded wrong": buildings on streets, mountains)
+
+- Cause: every unit's InstanceList backdrop (a per-unit LOD view of the rest of the map) was drawn at once, so
+  every LOD tier stacked. `ZoneList` (`HAWAII/PVS.BNDL`) is decoded; `mw_assets::backdrop::BackdropSelector`
+  keeps per place what the owning zone lists (research log 2026-10-04, night). Debug: `--all-backdrops`
+  (old union), `--backdrop-zone N` (one unit, as the game), `--no-backdrop`.
+- Loose ends: cut faces where zone views meet (viewpoint `airfield-arch`), near water in city rivers, a
+  streaming world should draw only the current zone's backdrop (M4).
+
 ## Before committing
 
 `cargo fmt`, `cargo clippy --release --workspace` (0 warnings), `cargo test --release --workspace`,

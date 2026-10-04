@@ -60,6 +60,18 @@ InstanceList ──> Model ──(LOD state)──> Renderable ──(per mesh)�
   (`AOMapTextureSampler` 781×, a SamplerState + Texture import each). `diffuseTintColour` is not a shader
   parameter; the engine folds it into the instance tint. Layout in `mw-formats/src/world.rs`
   (`InstanceOverrides`).
+- **InstanceList backdrop**: entries past the always-loaded count are the unit's backdrop, the world-space
+  geometry the game draws while the player is *in that unit* (terrain tiles, building blocks, water planes,
+  horizon) at the LOD that suits the distance; other units list other tiers of the same tiles. Drawing every
+  unit's backdrop stacks the tiers. `mw_assets::backdrop` composes one backdrop per place from the zone that
+  owns it (research log 2026-10-04, night).
+- **ZoneList (0x90)**, the only resource in `HAWAII/PVS.BNDL`: one zone per track unit. Header: ptr points
+  (16 bytes each: x, z, 0, 0), ptr zones (0x50 each), ptr per-zone first-point index (u32), ptr per-zone
+  point count (u16), u32 zone count (169), u32 point count (941), u32 3. Zone: ptr points, bounds min/max at
+  0x10/0x20 as (x, ∓FLT_MAX, z, 0), ptr neighbours (`ptr zone, u32 flags`: 3 shared edge, 1 nearby) at 0x30,
+  zone ID = track unit number at 0x34, district ID at 0x38 (`DISTRICT_<id>.BNDL`), arena ID or 0 at 0x3C
+  (`ARENA_<id>.BNDL`), u8 flag at 0x40, point count at 0x42, neighbour count at 0x43.
+  `mw_formats::ZoneList`.
 - **Prop/Compound/Dynamic/LightInstanceList (0x218 / 0x216 / 0x204 / 0x213)**: header `u32 version`
   (2/2/3/1), `ptr` 0x10, `u32 count`, 0; then 0x60-byte records: a 3x4 row-major matrix at +0x00 (axis rows,
   translation row 3; column 3 ignored, row 3 w is often 0.94, maybe a packed tint byte), an object import at

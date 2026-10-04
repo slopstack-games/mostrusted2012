@@ -7,6 +7,7 @@
 //! tables of contents (cheap: no resource data is read) and loads bundles on
 //! demand.
 
+pub mod backdrop;
 mod catalog;
 pub mod engine_sound;
 pub mod environment;
@@ -16,7 +17,9 @@ mod scene;
 
 pub use catalog::{DEFAULT_LANGUAGE, VehicleInfo};
 
-pub use scene::{Groundcover, GroundcoverMaterial, IDENTITY, Placement, SceneMesh, WorldLayers, trs_matrix};
+pub use scene::{
+    Groundcover, GroundcoverMaterial, IDENTITY, Placement, SceneMesh, WorldLayers, is_hidden_shader, trs_matrix,
+};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

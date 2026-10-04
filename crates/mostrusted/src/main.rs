@@ -60,7 +60,15 @@ struct Cli {
     /// Debug: skip groundcover (grass and plant sprites).
     #[arg(long)]
     no_groundcover: bool,
-    /// Debug: also draw backdrop LOD2 stand-ins (they overlap the detailed buildings).
+    /// Debug: draw the backdrop of every track unit unfiltered (all LOD tiers stacked: coarse terrain and
+    /// building stand-ins overlap the detailed world). The default composes one backdrop per place from the
+    /// zone that owns it.
+    #[arg(long, conflicts_with_all = ["no_backdrop", "backdrop_zone"])]
+    all_backdrops: bool,
+    /// Debug: draw only this track unit's backdrop, as the game does while the player is in that unit.
+    #[arg(long, conflicts_with = "no_backdrop")]
+    backdrop_zone: Option<u32>,
+    /// Debug: with --all-backdrops or --backdrop-zone, also draw backdrop LOD2 stand-ins.
     #[arg(long)]
     keep_lod_proxies: bool,
     /// Debug: skip these model resource IDs (comma separated).
@@ -187,7 +195,12 @@ fn main() -> anyhow::Result<()> {
     }
     let test_track = matches!(request, Request::Drive { world: false, .. });
     let filter = loader::WorldFilter {
-        no_backdrop: cli.no_backdrop,
+        backdrop: match (cli.no_backdrop, cli.all_backdrops, cli.backdrop_zone) {
+            (true, _, _) => loader::BackdropMode::None,
+            (_, true, _) => loader::BackdropMode::All,
+            (_, _, Some(unit)) => loader::BackdropMode::Zone(unit),
+            _ => loader::BackdropMode::Composed,
+        },
         no_groundcover: cli.no_groundcover,
         keep_lod_proxies: cli.keep_lod_proxies,
         paint_index: cli.paint_index,

@@ -16,6 +16,7 @@ mod texture;
 mod vehicle;
 mod vertex;
 mod world;
+mod zone;
 
 pub use collision::{PolygonSoup, PolygonSoupList, SOUP_GRANULARITY, SOUP_OFFSET_UNIT, SoupPolygon};
 pub use dxgi::{DxgiFormat, f16_to_f32};
@@ -27,6 +28,7 @@ pub use texture::{Dimension, Texture};
 pub use vehicle::{VehicleGraphicsSpec, Wheel, WheelPart};
 pub use vertex::{Semantic, VertexAttribute, VertexDescriptor};
 pub use world::{Instance, InstanceList, InstanceOverrides, ObjectDef, ObjectInstance, ObjectInstanceList};
+pub use zone::{Zone, ZoneList};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

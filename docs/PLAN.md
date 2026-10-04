@@ -73,6 +73,10 @@ Make a static frame look like the game.
      sub-parts / LOD slot choice.
    - Done when: street furniture, props and grass appear, and the count of `mwtool world` placements grows
      accordingly.
+   - `[x]` **Backdrop composition** (2026-10-04): InstanceList backdrops are per-unit LOD views; drawing all
+     169 stacked every tier ("buildings on streets, mountains"). `ZoneList` (PVS.BNDL) is decoded and
+     `mw_assets::backdrop` keeps, per place, what the owning zone lists. Still open: cut faces where zone
+     views meet, near water (rivers) that no instance list draws.
 4. **Shader families: G-buffer inputs** `[~]` (WGSL in `layered.wgsl`, selected by `materials::Look`). Each
    family computes exactly what the game's G-buffer pass writes (normal, roughness, sqrt albedo, AO, F0,
    Fresnel); today these feed Bevy's PBR lighting, later the ported deferred pipeline (item 7). Per-family
@@ -150,7 +154,10 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
 ### M4: Streaming and performance `[ ]`
 1. Load and *unload* track units by distance; budget memory (bundles are dropped after decode already).
 2. Partial bundle reads: load only needed resources instead of whole files (offsets are in the TOC).
-3. Model LOD distances (`Model.lod_distances`) and `HAWAII/PVS.BNDL` visibility.
+3. Model LOD distances (`Model.lod_distances`) and `HAWAII/PVS.BNDL` visibility. The ZoneList is decoded
+   (zones = track units, polygons, neighbours); a streaming world would load the current zone and its
+   neighbours and draw only the current zone's backdrop (`--backdrop-zone N` shows one), instead of the
+   static composition used while everything is loaded.
 4. GPU instancing for repeated models; profile with Tracy (`bevy/trace_tracy`).
 - Target: steady 60 fps at 1080p while driving through downtown on mid-range hardware; startup to first frame
   under 3 s.
