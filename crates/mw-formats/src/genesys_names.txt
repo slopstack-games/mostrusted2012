@@ -1400,3 +1400,10 @@ SparkExposure
 DistanceBlend
 Dry_Conditions
 Wet_Conditions
+
+# Prop physics (2026-10-04, props session): PhysicalDefinition and *AdditionalInfo
+HalfLength
+BoundingConvexHull
+ComOffset
+ForceToDamage
+ForceToSmash

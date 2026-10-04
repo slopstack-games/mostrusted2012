@@ -17,6 +17,7 @@ mod menu;
 mod particles;
 mod sfx;
 mod reflection;
+mod props;
 mod sky;
 mod tonemap;
 mod weather;
@@ -57,10 +58,23 @@ struct Cli {
     /// Drive on an empty flat test track instead of the city (with --drive).
     #[arg(long)]
     test_track: bool,
-    /// Run a scripted test and exit: accel, brake, corner, handbrake, drift, donut, engine, or crash (drive into a
-    /// wall; with --screenshot, saves `<name>-before` / `<name>-after` images). Implies --test-track.
+    /// Run a scripted test and exit: accel, brake, corner, handbrake, drift, donut, engine, crash (drive into a
+    /// wall; with --screenshot, saves `<name>-before` / `<name>-after` images), or smash (drive through a cone,
+    /// a street lamp and a fence into an immovable wall made of the game's props, at --smash-speed; before /
+    /// after screenshots like crash). Implies --test-track.
     #[arg(long)]
     test: Option<String>,
+    /// Smash test: speed (km/h) the car holds through the props.
+    #[arg(long, default_value_t = 60.0)]
+    smash_speed: f32,
+    /// Give props, compound and dynamic objects collision (smashable street furniture; `props.rs`).
+    /// Off by default while it is work in progress: knocked lamps and crash barrels can still wedge the
+    /// car (research log, props session). `--test smash` turns it on.
+    #[arg(long)]
+    prop_physics: bool,
+    /// Log the mean and worst frame time every 5 s once loading has finished (turns vsync off).
+    #[arg(long)]
+    frame_stats: bool,
     /// Crash test: wall angle in degrees (0 = head-on, 30 = the front-left corner hits first).
     #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
     crash_angle: f32,
@@ -113,7 +127,8 @@ struct Cli {
     /// Limit the number of streamed track units (nearest first).
     #[arg(long)]
     units: Option<usize>,
-    /// Camera pose as `x,y,z,look_x,look_y,look_z` (overrides the default view).
+    /// Camera pose as `x,y,z,look_x,look_y,look_z` (overrides the default view; with --drive in the world, a
+    /// fixed camera instead of the chase camera).
     #[arg(long, value_delimiter = ',', allow_hyphen_values = true)]
     camera: Option<Vec<f32>>,
     /// Body paint colour as `r,g,b` in 0–255 sRGB, overriding the car's own paint colour.
@@ -195,6 +210,8 @@ pub(crate) struct Loaded {
     models: HashMap<ResourceId, ModelParts>,
     materials: HashMap<Look, Handle<GameMaterial>>,
     instances: usize,
+    /// Placements with physics (`props.rs`).
+    props: usize,
     status: String,
     pub(crate) done: bool,
     started: Option<Instant>,
@@ -239,7 +256,8 @@ fn main() -> anyhow::Result<()> {
         };
         let track = cli.test_track || cli.test.is_some();
         let spawn = if track { Vec3::new(0.0, 1.0, 0.0) } else { spawn };
-        Request::Drive { bundle: resolve(q)?, spawn, heading, max_units: cli.units, world: !track }
+        let props = if cli.test.as_deref() == Some("smash") { props::smash_test_props() } else { Vec::new() };
+        Request::Drive { bundle: resolve(q)?, spawn, heading, max_units: cli.units, world: !track, props }
     } else if let Some(q) = &cli.vehicle {
         Request::Vehicle { bundle: resolve(q)? }
     } else {
@@ -251,8 +269,9 @@ fn main() -> anyhow::Result<()> {
     let Some((camera_mode, look_back)) = camera::CameraMode::parse(&cli.camera_mode) else {
         anyhow::bail!("unknown --camera-mode {} (chase, bonnet, bumper, lookback)", cli.camera_mode);
     };
+    let smash = cli.test.as_deref() == Some("smash");
     let test = match cli.test.as_deref() {
-        None | Some("crash") => None,
+        None | Some("crash") | Some("smash") => None,
         Some("accel") => Some(drive::TestKind::Accel),
         Some("brake") => Some(drive::TestKind::Brake),
         Some("corner") => Some(drive::TestKind::Corner),
@@ -261,7 +280,9 @@ fn main() -> anyhow::Result<()> {
         Some("donut") => Some(drive::TestKind::Donut),
         Some("engine") => Some(drive::TestKind::Engine),
         Some(other) => {
-            anyhow::bail!("unknown --test {other} (accel, brake, corner, handbrake, drift, donut, engine, crash)")
+            anyhow::bail!(
+                "unknown --test {other} (accel, brake, corner, handbrake, drift, donut, engine, crash, smash)"
+            )
         }
     };
     if cli.test.is_some() && cli.drive.is_none() {
@@ -301,6 +322,7 @@ fn main() -> anyhow::Result<()> {
         no_groundcover: cli.no_groundcover,
         keep_lod_proxies: cli.keep_lod_proxies,
         paint_index: cli.paint_index,
+        no_prop_physics: !(cli.prop_physics || smash),
         exclude: cli
             .exclude_models
             .iter()
@@ -308,12 +330,19 @@ fn main() -> anyhow::Result<()> {
             .collect::<anyhow::Result<_>>()?,
     };
     let mut app = App::new();
-    app.add_plugins(
-        DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window { title: "Most Rusted".into(), ..default() }),
+    app.add_plugins(DefaultPlugins.set(WindowPlugin {
+        primary_window: Some(Window {
+            title: "Most Rusted".into(),
+            // Unthrottled frames for `--frame-stats`.
+            present_mode: if cli.frame_stats {
+                bevy::window::PresentMode::AutoNoVsync
+            } else {
+                bevy::window::PresentMode::default()
+            },
             ..default()
         }),
-    );
+        ..default()
+    }));
     bevy::asset::embedded_asset!(app, "layered.wgsl");
     if let Some(kind) = test {
         app.insert_resource(drive::DriveTest::new(kind));
@@ -323,13 +352,26 @@ fn main() -> anyhow::Result<()> {
     if test_track {
         app.add_systems(Startup, spawn_test_track);
     }
-    // The crash test takes its own before / after screenshots.
+    // The crash and smash tests take their own before / after screenshots.
     let screenshot = if crash {
         app.insert_resource(damage::CrashTest::new(cli.screenshot.clone(), cli.crash_angle, cli.crash_distance));
+        None
+    } else if smash {
+        app.insert_resource(props::SmashTest::new(cli.screenshot.clone(), cli.smash_speed / 3.6));
+        app.add_plugins(props::SmashTestPlugin);
+        app.add_systems(Startup, |mut t: ResMut<Time<Virtual>>| t.set_relative_speed(2.0));
         None
     } else {
         cli.screenshot
     };
+    // `--camera` with `--drive`: a fixed camera instead of the chase camera.
+    if let (Some(c), Request::Drive { world: true, .. }) = (camera, &request) {
+        app.insert_resource(props::FixedCamera(c))
+            .add_systems(PostUpdate, props::apply_fixed_camera.before(bevy::transform::TransformSystems::Propagate));
+    }
+    if cli.frame_stats {
+        app.add_systems(Update, log_frame_stats);
+    }
     if cli.gamepad_debug {
         app.add_systems(Update, drive::log_gamepad_events);
     }
@@ -364,16 +406,17 @@ fn main() -> anyhow::Result<()> {
         .init_resource::<GameEnvironment>()
         .insert_resource(materials::VehicleLights::from_slice(&cli.lights))
         .add_plugins((
-            avian3d::PhysicsPlugins::default(),
+            avian3d::PhysicsPlugins::default().with_collision_hooks::<props::PropHooks>(),
             drive::DrivePlugin,
             damage::DamagePlugin,
+            props::PropsPlugin,
             particles::ParticlesPlugin,
             sfx::SfxPlugin,
         ))
         .add_plugins(camera::CameraPlugin { mode: camera_mode, look_back })
         .add_plugins((garage::GaragePlugin { script }, menu::MenuPlugin { enabled: menu_enabled, open: cli.show_menu }))
         .add_plugins(audio::GameAudioPlugin {
-            music: !cli.no_music && !cli.mute && screenshot.is_none() && test.is_none() && !crash,
+            music: !cli.no_music && !cli.mute && screenshot.is_none() && test.is_none() && !crash && !smash,
         })
         .insert_resource(drive::CarInput { auto_throttle: cli.auto_throttle, ..default() })
         .insert_resource(Game {
@@ -394,7 +437,7 @@ fn main() -> anyhow::Result<()> {
             sync_environment,
             paint,
             filter,
-            mute: cli.mute || test.is_some() || crash,
+            mute: cli.mute || test.is_some() || crash || smash,
         })
         .insert_resource(ClearColor(Color::srgb(0.55, 0.68, 0.85)))
         .init_resource::<Loaded>()
@@ -479,6 +522,7 @@ fn receive_assets(
     env: Res<GameEnvironment>,
     lights: Res<materials::VehicleLights>,
     mut garage: ResMut<garage::Garage>,
+    mut surfaces: ResMut<props::WorldSurfaces>,
 ) {
     let Some(channel) = channel else { return };
     let rx = channel.0.lock().unwrap();
@@ -529,9 +573,16 @@ fn receive_assets(
                 });
                 loaded.instances += 1;
             }
-            Msg::Collider(c) => {
-                commands.spawn((avian3d::prelude::RigidBody::Static, c));
+            Msg::Prop { model, transform, physics } => {
+                let Some(parts) = loaded.models.get(&model) else { continue };
+                props::spawn_prop(&mut commands, physics, Transform::from_matrix(transform), parts);
+                loaded.instances += 1;
+                loaded.props += 1;
             }
+            Msg::Collider(c, tags) => {
+                commands.spawn((avian3d::prelude::RigidBody::Static, c, props::SurfaceTags(tags)));
+            }
+            Msg::Surfaces(list) => surfaces.list = list,
             Msg::Car(spec) => {
                 let parts = spec
                     .body
@@ -550,7 +601,12 @@ fn receive_assets(
             Msg::Done => {
                 loaded.done = true;
                 if let Some(t) = loaded.started {
-                    info!("loading finished in {:.1?}", t.elapsed());
+                    info!(
+                        "loading finished in {:.1?}: {} instances, {} with physics",
+                        t.elapsed(),
+                        loaded.instances,
+                        loaded.props
+                    );
                 }
             }
         }
@@ -694,5 +750,33 @@ fn spawn_test_track(
             MeshMaterial3d(white.clone()),
             Transform::from_xyz(0.0, 0.01, i as f32 * 100.0),
         ));
+    }
+}
+
+/// `--frame-stats`: mean and worst frame time over 5 s windows after loading.
+fn log_frame_stats(
+    time: Res<Time<Real>>,
+    loaded: Res<Loaded>,
+    props: Res<props::PropStats>,
+    mut acc: Local<(f32, f32, u32)>,
+) {
+    if !loaded.done {
+        return;
+    }
+    let dt = time.delta_secs();
+    acc.0 += dt;
+    acc.1 = acc.1.max(dt);
+    acc.2 += 1;
+    if acc.0 >= 5.0 {
+        info!(
+            "frame stats: {:.2} ms mean, {:.2} ms worst over {} frames ({} instances, {} with physics, {} active)",
+            acc.0 * 1000.0 / acc.2 as f32,
+            acc.1 * 1000.0,
+            acc.2,
+            loaded.instances,
+            loaded.props,
+            props.active
+        );
+        *acc = (0.0, 0.0, 0);
     }
 }

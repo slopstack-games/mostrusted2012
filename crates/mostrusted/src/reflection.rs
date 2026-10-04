@@ -126,9 +126,10 @@ fn follow(
     let Some(mut state) = state else { return };
     let Some((cam, projection, mut grading)) = main.iter_mut().next() else { return };
     let eye = cam.translation();
-    // The ground under the camera: the plane the game would mirror in.
+    // The ground under the camera: the plane the game would mirror in (not the car or a prop).
+    let ground = avian3d::prelude::SpatialQueryFilter::default().with_mask(crate::props::GameLayer::World);
     let hit = spatial
-        .cast_ray(eye, Dir3::NEG_Y, 500.0, true, &avian3d::prelude::SpatialQueryFilter::default())
+        .cast_ray(eye, Dir3::NEG_Y, 500.0, true, &ground)
         .map(|h| eye.y - h.distance);
     let target = hit.or(state.height).unwrap_or(eye.y - 1.5);
     let h = match state.height {

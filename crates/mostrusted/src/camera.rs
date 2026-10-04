@@ -425,7 +425,8 @@ fn follow_car(
     if in_car.is_none() {
         let to_eye = pos - target;
         let full = to_eye.length();
-        let filter = SpatialQueryFilter::from_excluded_entities([entity, car.body_collider]);
+        let filter = SpatialQueryFilter::from_excluded_entities([entity, car.body_collider])
+            .with_mask(crate::props::GameLayer::World);
         let allowed = Dir3::new(to_eye).ok().map_or(full, |dir| {
             spatial
                 .cast_ray(target, dir, full + CLIP_MARGIN, true, &filter)

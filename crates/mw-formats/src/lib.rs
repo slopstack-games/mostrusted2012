@@ -24,7 +24,7 @@ mod zone;
 
 pub use animation::{Animation, AnimationList, Bone, BoneKey, Skeleton, decode_quat32};
 pub use bear::BearEffect;
-pub use collision::{PolygonSoup, PolygonSoupList, SOUP_GRANULARITY, SOUP_OFFSET_UNIT, SoupPolygon};
+pub use collision::{CollisionTag, PolygonSoup, PolygonSoupList, SOUP_GRANULARITY, SOUP_OFFSET_UNIT, SoupPolygon};
 pub use colour_cube::ColourCube;
 pub use dxgi::{DxgiFormat, f16_to_f32};
 pub use groundcover::{GroundcoverCollection, GroundcoverInstance, GroundcoverInstances, GroundcoverLayer, Group};

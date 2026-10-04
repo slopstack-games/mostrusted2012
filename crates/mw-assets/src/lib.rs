@@ -16,6 +16,7 @@ pub mod engine_sound;
 pub mod environment;
 pub mod handling;
 pub mod paint;
+pub mod props;
 mod scene;
 pub mod sfx;
 mod sfx_loader;
@@ -23,6 +24,7 @@ pub mod sound;
 pub mod vehicle_driver;
 pub mod vfx;
 pub mod wheel_arches;
+pub mod surfaces;
 
 pub use catalog::{DEFAULT_LANGUAGE, VehicleInfo};
 

@@ -6,7 +6,9 @@
 //! level of the zones facing the contact point, and the joints are re-posed from the clips.
 //!
 //! Impact strength: the approach speed along the contact normal (avian's pre-solve `normal_speed`)
-//! through the game's `ImpactDamageGraphs` curve. Which curve and units the game uses for which kind
+//! through the game's `ImpactDamageGraphs` curve. Against a loose prop (`props.rs`) only the car's
+//! own change of speed counts, `m_prop / (m_car + m_prop)` of the approach speed, so a cone does no
+//! damage and a pinned lamp post that holds counts like a wall. Which curve and units the game uses for which kind
 //! of impact is not known yet (research log, "vehicle damage").
 
 use std::path::PathBuf;
@@ -129,19 +131,34 @@ fn attach_damage(
 }
 
 /// Turn contact impacts on the body collider into zone damage.
-fn detect_impacts(time: Res<Time>, collisions: Collisions, mut cars: Query<(&mut CarDamage, &Position, &Rotation)>) {
-    for (mut dmg, pos, rot) in &mut cars {
+fn detect_impacts(
+    time: Res<Time>,
+    collisions: Collisions,
+    mut cars: Query<(&mut CarDamage, &Position, &Rotation, &ComputedMass)>,
+    props: Query<&crate::props::PropBody>,
+) {
+    for (mut dmg, pos, rot, car_mass) in &mut cars {
         dmg.event_quiet += time.delta_secs();
         // Approaching contact points this step. A box face against a wall gives a point per corner, so
         // the impact point is their centroid (weighted by approach speed) and the speed the fastest.
         // Contacts with near-vertical normals are the body landing on the ground; the game has separate
         // landing damage rules (`Physics.LandingDamage`, not decoded), so they don't count here.
+        let collider = dmg.collider;
         let points: Vec<(f32, Vec3)> = collisions
-            .collisions_with(dmg.collider)
-            .flat_map(|pair| pair.manifolds.iter())
-            .filter(|m| m.normal.y.abs() < 0.7)
-            .flat_map(|m| m.points.iter())
-            .map(|p| (-p.normal_speed, p.point))
+            .collisions_with(collider)
+            .flat_map(|pair| {
+                let other = if pair.collider1 == collider { pair.collider2 } else { pair.collider1 };
+                let scale = match props.get(other) {
+                    Ok(p) if !p.pinned => {
+                        let m = p.physics.mass.max(1.0);
+                        m / (car_mass.value() + m)
+                    }
+                    _ => 1.0,
+                };
+                pair.manifolds.iter().map(move |m| (m, scale))
+            })
+            .filter(|(m, _)| m.normal.y.abs() < 0.7)
+            .flat_map(|(m, scale)| m.points.iter().map(move |p| (-p.normal_speed * scale, p.point)))
             .filter(|(s, _)| *s > 0.0)
             .collect();
         let speed = points.iter().map(|p| p.0).fold(0.0, f32::max);

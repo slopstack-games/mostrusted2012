@@ -188,38 +188,90 @@ impl ObjectInstanceList {
     }
 }
 
-/// Which models an object definition (`PropObject`, `CompoundObject`, `WorldObject`) draws.
+/// What an object definition (`PropObject`, `CompoundObject`, `WorldObject`) draws and how it behaves
+/// physically. Field names in backticks are from burnout.wiki (2012-09-14 Hawaii debug symbols).
 ///
-/// `PropObject` (0x70-0x80 bytes): `u32 1`; model imports at 0x04 and 0x08 (usually the same model),
-/// GeneSys handles at 0x0C/0x14/0x1C, f32 600000 at 0x24, low 32 bits of the model ids at 0x30/0x40.
+/// `PropObject` (`Game::World::PropObject`, 0x70-0x80 bytes):
 ///
-/// `CompoundObject` (0x240-0x1150 bytes): model imports at 0x04 (main), 0x24 (second variant, possibly
-/// damaged/LOD) and sometimes 0x28; GeneSys handle at 0x08/0x1C; the rest (part transforms, bounding
-/// boxes, per-part tables at 0x14/0x18/0x30/0x34) is not decoded.
+/// | off  | type   | field |
+/// |------|--------|-------|
+/// | 0x00 | u32    | `muVersionNumber` (1) |
+/// | 0x04 | ptr    | `mpModel` (import) |
+/// | 0x08 | ptr    | `mpDamagedModel` (import; the same model in every instance seen) |
+/// | 0x0C | handle | `mPhysicalDefinitionHandle`: GeneSys `PhysicalDefinition` |
+/// | 0x14 | handle | `mImpactEffectHandle` (GeneSys, VFX) |
+/// | 0x1C | handle | `mImpactSoundHandle` (GeneSys, audio) |
+/// | 0x24 | f32    | `mfResetDistanceSquared` (10000 = 100 m) |
+/// | 0x28 | bool   | `mbRemoveInsteadOfReset` |
 ///
-/// `WorldObject` (0x40-0x4A0 bytes): model import at 0x04, GeneSys handles at 0x1C, 0x30, 0x44.
+/// `WorldObject` (`Game::World::WorldObject`, 0x40-0x4A0 bytes): u8 version (8) at 0x00, u8
+/// `muNumBehaviours` at 0x01, bool `mbIsStack` at 0x02, `mpModel` at 0x04, `mpSkeleton` at 0x08,
+/// `maBehaviourSpecs` ptr at 0x0C (0x14-byte entries: GeneSys behaviour handle, u32 type, u32 hash),
+/// `mLocators` at 0x10 (u32 count, ptr ids, ptr locator lists), `mPhysicalDefinitionHandle` at 0x1C
+/// (absent on trigger-like objects without collision).
+///
+/// `CompoundObject` (0x240-0x1150 bytes) starts like a `WorldObject` (version 8, behaviour count at
+/// 0x01, model at 0x04, physical definition at 0x1C, locators at 0x10), plus a GeneSys handle at 0x08,
+/// a second model at 0x24 (lower-poly twin of 0x04, same bbox) and sometimes 0x28, and at 0x30 a
+/// pointer to `u32` part count at 0x38 parts. A part is 0x70 bytes: an embedded `WorldObject` (no model
+/// of its own, its own physical definition at +0x1C, behaviours, locators), `(1,1,1,1)` at +0x4C, a u32
+/// part number at +0x60 and four u8 links at +0x64 (other part numbers, 0xFF = none; probably what each
+/// part hangs from). 0x34 points to one u32 hash per part.
 #[derive(Debug, Clone)]
 pub struct ObjectDef {
     pub id: ResourceId,
     /// Model imports in slot order (see the layout above); `None` for an empty slot.
     pub models: Vec<Option<ResourceId>>,
+    /// The `PhysicalDefinition` GeneSys object (collision volumes, mass).
+    pub physics: Option<ResourceId>,
+    /// Compound objects: the physical definition of each part.
+    pub parts: Vec<Option<ResourceId>>,
+    /// Props: `mfResetDistanceSquared` (m²).
+    pub reset_distance_sq: Option<f32>,
+    /// Props: `mbRemoveInsteadOfReset`.
+    pub remove_instead_of_reset: bool,
 }
 
+/// Size of one `CompoundObject` part record.
+const COMPOUND_PART_SIZE: usize = 0x70;
+
 impl ObjectDef {
-    fn parse_slots(res: &Resource, slots: &[u32]) -> Result<Self> {
+    fn parse_slots(res: &Resource, slots: &[u32], physics: u32) -> Result<Self> {
         // The header must at least reach the first slot.
         Reader(res.header()).u32(slots[0] as usize)?;
-        Ok(Self { id: res.id, models: slots.iter().map(|&o| res.import_at(o)).collect() })
+        Ok(Self {
+            id: res.id,
+            models: slots.iter().map(|&o| res.import_at(o)).collect(),
+            physics: res.import_at(physics),
+            parts: Vec::new(),
+            reset_distance_sq: None,
+            remove_instead_of_reset: false,
+        })
     }
 
     pub fn parse_prop(res: &Resource) -> Result<Self> {
-        Self::parse_slots(res, &[0x04, 0x08])
+        let mut def = Self::parse_slots(res, &[0x04, 0x08], 0x0C)?;
+        let r = Reader(res.header());
+        def.reset_distance_sq = r.f32(0x24).ok();
+        def.remove_instead_of_reset = r.u8(0x28).is_ok_and(|b| b != 0);
+        Ok(def)
     }
     pub fn parse_compound(res: &Resource) -> Result<Self> {
-        Self::parse_slots(res, &[0x04, 0x24, 0x28])
+        let mut def = Self::parse_slots(res, &[0x04, 0x24, 0x28], 0x1C)?;
+        let r = Reader(res.header());
+        let (base, count) = (r.u32(0x30)? as usize, r.u32(0x38)? as usize);
+        if count > 256 {
+            return Err(crate::Error::Malformed(format!("compound part count {count}")));
+        }
+        for i in 0..count {
+            let o = base + i * COMPOUND_PART_SIZE;
+            r.u32(o + COMPOUND_PART_SIZE - 4)?;
+            def.parts.push(res.import_at((o + 0x1C) as u32));
+        }
+        Ok(def)
     }
     pub fn parse_world_object(res: &Resource) -> Result<Self> {
-        Self::parse_slots(res, &[0x04])
+        Self::parse_slots(res, &[0x04], 0x1C)
     }
 
     /// The model to draw: the first populated slot.

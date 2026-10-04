@@ -151,8 +151,10 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
 
 ### M3: Drivable prototype `[~]` (north star)
 1. `[x]` **Collision**: `PolygonSoupList` (0x60) per track unit → static avian3d trimesh colliders (built on the
-   loader thread; quads split strip-wise since 2026-10-04, which closed the holes). Still open: surface types via collision tags (DGIorio's exporter documents
-   `mu16CollisionTag`), and prop/dynamic collision.
+   loader thread; quads split strip-wise since 2026-10-04, which closed the holes). Collision tags decoded (surface index into
+   `SURFACELIST.BNDL`, flags; `CarSurface`), and props / compounds / dynamic objects collide and break free
+   from their `PhysicalDefinition` data (`props.rs`, `--test smash`, 2026-10-04). Still open: compound parts
+   as separate pieces, surface grip in the tyre model.
 2. `[~]` **Vehicle physics**: driven by the game's handling data (mass, CoM, wheels, springs, torque curve, gears,
    brakes, top speed, the tyres' lateral/longitudinal grip curves, speed-banded steering); see
    [handling.md](handling.md). `--test accel|brake|corner|handbrake|drift|donut` measures it on a flat track,

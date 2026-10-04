@@ -66,6 +66,8 @@ pub struct Placement {
     pub backdrop: bool,
     /// Per-instance material overrides (`InstanceList` only): tint constants, AO maps, lightmaps.
     pub overrides: Option<std::sync::Arc<fmt::InstanceOverrides>>,
+    /// Prop / compound / dynamic placements: the object definition (physics, `crate::props`).
+    pub object: Option<(ResourceId, crate::props::ObjectKind)>,
 }
 
 impl AssetStore {
@@ -142,18 +144,35 @@ impl AssetStore {
             out.instances.extend(list.instances.into_iter().filter_map(|i| {
                 let overrides = (!i.overrides.constants.is_empty() || !i.overrides.textures.is_empty())
                     .then(|| std::sync::Arc::new(i.overrides));
-                Some(Placement { model: i.model?, transform: i.transform, backdrop: !i.always_loaded, overrides })
+                Some(Placement {
+                    model: i.model?,
+                    transform: i.transform,
+                    backdrop: !i.always_loaded,
+                    overrides,
+                    object: None,
+                })
             }));
         }
         type ParseDef = fn(&mw_bundle::Resource) -> fmt::Result<fmt::ObjectDef>;
         let mut defs: HashMap<ResourceId, Option<ResourceId>> = HashMap::new();
         let mut unresolved = 0;
-        let layers: [(ResourceType, ParseDef, &mut Vec<Placement>); 3] = [
-            (ResourceType::PropInstanceList, fmt::ObjectDef::parse_prop, &mut out.props),
-            (ResourceType::CompoundInstanceList, fmt::ObjectDef::parse_compound, &mut out.compounds),
-            (ResourceType::DynamicInstanceList, fmt::ObjectDef::parse_world_object, &mut out.dynamics),
+        use crate::props::ObjectKind;
+        let layers: [(ResourceType, ParseDef, ObjectKind, &mut Vec<Placement>); 3] = [
+            (ResourceType::PropInstanceList, fmt::ObjectDef::parse_prop, ObjectKind::Prop, &mut out.props),
+            (
+                ResourceType::CompoundInstanceList,
+                fmt::ObjectDef::parse_compound,
+                ObjectKind::Compound,
+                &mut out.compounds,
+            ),
+            (
+                ResourceType::DynamicInstanceList,
+                fmt::ObjectDef::parse_world_object,
+                ObjectKind::Dynamic,
+                &mut out.dynamics,
+            ),
         ];
-        for (ty, parse_def, dest) in layers {
+        for (ty, parse_def, kind, dest) in layers {
             for e in bundle.entries_of_type(ty) {
                 let list = fmt::ObjectInstanceList::parse(&bundle.load(e)?)?;
                 for inst in list.instances {
@@ -163,9 +182,13 @@ impl AssetStore {
                         parse_def(&res).ok()?.model()
                     });
                     match model {
-                        Some(model) => {
-                            dest.push(Placement { model, transform: inst.transform, backdrop: false, overrides: None })
-                        }
+                        Some(model) => dest.push(Placement {
+                            model,
+                            transform: inst.transform,
+                            backdrop: false,
+                            overrides: None,
+                            object: Some((obj, kind)),
+                        }),
                         None => unresolved += 1,
                     }
                 }
@@ -298,7 +321,7 @@ impl AssetStore {
             .parts
             .iter()
             .flatten()
-            .map(|&model| Placement { model, transform: IDENTITY, backdrop: false, overrides: None })
+            .map(|&model| Placement { model, transform: IDENTITY, backdrop: false, overrides: None, object: None })
             .collect();
         for wheel in &spec.wheels {
             // Wheel models are authored for the left side (+X); right wheels
@@ -309,12 +332,9 @@ impl AssetStore {
                 scale[0] = -scale[0];
             }
             let transform = trs_matrix(wheel.position, wheel.rotation, scale);
-            out.extend(
-                wheel
-                    .parts
-                    .iter()
-                    .filter_map(|p| Some(Placement { model: p.model?, transform, backdrop: false, overrides: None })),
-            );
+            out.extend(wheel.parts.iter().filter_map(|p| {
+                Some(Placement { model: p.model?, transform, backdrop: false, overrides: None, object: None })
+            }));
         }
         Ok(Some(out))
     }

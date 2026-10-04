@@ -372,7 +372,8 @@ fn place_arrived_car(
                 (t.translation, fwd.x.atan2(fwd.z), 1.5, v.0)
             } else {
                 let Ok((_, cam)) = camera.single() else { return };
-                let down = spatial.cast_ray(cam.translation, Dir3::NEG_Y, 5000.0, true, &SpatialQueryFilter::default());
+                let ground = SpatialQueryFilter::default().with_mask(crate::props::GameLayer::World);
+                let down = spatial.cast_ray(cam.translation, Dir3::NEG_Y, 5000.0, true, &ground);
                 let Some(hit) = down else {
                     garage.set_status(format!("no ground below the camera for {name}"), now);
                     return;

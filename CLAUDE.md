@@ -80,6 +80,10 @@ MW_CAMERA_TRACE=<scratch>/cam.trace ./target/release/mostrusted --drive 911 --te
 ./target/release/mwtool paint-map 010000000002823d --png <scratch>/timelines.png --at=-1158,1700   # WorldPaintMap + zone outlines
 # Handling tests on a flat track (4x real time), prints TEST RESULT lines and exits
 ./target/release/mostrusted --drive 911 --test accel     # or brake, corner (skidpad g), handbrake, drift, engine
+./target/release/mostrusted --drive 911 --test smash --smash-speed 60 --screenshot <scratch>/smash.png   # props: cone, lamp, fence, wall
+./target/release/mostrusted --drive 911 --units 12 --auto-throttle 0.4 --prop-physics   # props collide in the world (opt-in, WIP)
+./target/release/mwtool props -v                    # physics of every prop / compound / dynamic object
+./target/release/mwtool surfaces                    # collision surface list with triangle counts
 # Engine RPM every physics tick, for `mwtool engine-sound --trace` (use with --test engine)
 MW_ENGINE_TRACE=<scratch>/rpm.trace ./target/release/mostrusted --drive 911 --test engine
 # Driving without a human: fixed throttle, logs "car at x y z, speed, compression" once a second
