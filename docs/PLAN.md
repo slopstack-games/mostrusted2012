@@ -217,7 +217,9 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    (`mw_audio::sequence`, built by `mw_assets::sound`, driven by `mw_assets::engine_driver`): all six always-on
    sequences (Ginsu layers, idle loops, load crossfades, bus automation), the mixer graph with its EQ /
    distortion / sub-harmoniser / sends, pops, backfires, ignition, rev limiter, gear-change clunks; per-car
-   loudness normalised (research log "the engine plays the car's whole sound bank"). Still open: the state
+   loudness normalised (research log "the engine plays the car's whole sound bank"). Ground truth checked
+   against the raw recordings (research log "engine ground truth": decoder clean, grains are phase-aligned
+   cycles, single-layer resynthesis at the recording's own floor; audible RPM = engine RPM). Still open: the state
    lists (Burnout / Drift / In_air / Reversing), per-car DspParam overrides, bus / LFO items, the game's own
    audible-RPM and load rules, reverb.
 3. `[x]` Music: shuffled `UI/SONGS/*.SPS` playlist. Still open: radio/track names, ducking.
