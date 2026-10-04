@@ -57,6 +57,9 @@ cargo fmt                                    # rustfmt.toml: max_width 120
 ./target/release/mwtool shader-usage               # world triangles per shader (prioritise ports)
 ./target/release/mwtool audio UI/SONGS/116502.SPS <dir>   # or a bundle: its Ginsu/Wave resources -> .wav
 ./target/release/mwtool engine-sound 911 out.wav   # rev sweep through the engine synth (--trace: `seconds rpm load` lines)
+# Crash damage (skeletal damage clips): inspect / preview a car, or drive into a wall and save before/after shots
+./target/release/mwtool damage 911 --level front=0.5 --preview <scratch>/dmg.png
+./target/release/mostrusted --drive 911 --test crash --screenshot <scratch>/crash.png
 # Measuring the original game (read-only, Linux/Proton; docs/handling.md "Measuring the original")
 ./target/release/mwtool memscan --watch handling.watch        # interactive value scanner; `help`
 ./target/release/mwtool telemetry handling.watch -o run.csv --hz 120
