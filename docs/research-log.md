@@ -44,6 +44,9 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
   it may also be a layout fingerprint.
 - GeneSys: three objects per vehicle bundle still fail to decode (pointers read as huge offsets).
 - AttribSys: no `AttribSysSchema` / `AttribSysVault` resources exist in the install (checked 2026-10-04).
+- Drift data still guessed (2026-10-04): the yaw-curve breakpoints (`2ef426dd`, `70528afa`, `a5c9496f`),
+  triggers `8f151151` / `0dce38f7` / `b5290695`, `Default_steering`, the side force's unit, the per-tick time
+  base, and the handbrake's `35e18207` / `6ce0fda7`. See handling.md, Drift.
 - Tyre data not yet understood: `Lateral/Long_Slip_Factors`, `Grip_factor` / `Sliding_grip_factor`,
   `Available_grip`, and the lateral curve's fourth field (0.5 everywhere). Five more `Tyres` floats per axle
   (400, 1000, 2) are unnamed.
@@ -52,6 +55,54 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 ---
 
 ## Findings
+
+### 2026-10-04 (drift session): tick-exact tests, drift model from `DriftBehaviour`
+- **Handling tests are now deterministic.** `--test` scripting ran in `Update` at 4× time, so the input changed
+  on frame boundaries, not physics ticks: 0–100 km/h on the 911 measured 3.93, 4.33 and 4.91 s on different
+  runs. The script now runs in `FixedUpdate` before `car_physics`, counts physics ticks from the car's first one,
+  and `car_physics` applies the scripted input itself. Two runs of every test print identical `TEST RESULT`
+  lines (accel 3.92 s, brake 37.1 m, corner 1.01 g, drift, handbrake, donut).
+- **Field names cracked** (one-word templates, prefix × subject × suffix, ~155k candidates against the 44
+  unnamed `DriftBehaviour` hashes, so about 10⁻³ false hits expected): `Slip_angle_to_enter_drift` (8e4032c0),
+  `Minimum_speed_to_enter_drift` (d71a857c), `Drift_angle_to_exit_drift` (4971b7ae), `Drift_angle_for_side_force`
+  (3ca074df), `Minimum_drift_angle_for_side_force` (f6c50d59), `Drift_scale_for_maximum_side_force` (aadfc7b1),
+  `Speed_for_maximum_side_force` (9e6f2943), `Drift_scale_from_counter_steering` (005c9352),
+  `Low_slip_angle_for_counter_steering` (0e2a4c75), and `Mid_yaw_torque` (e324fa82, confirmed). Handbrake:
+  `Brake_strength_at_low_speed` (b0bb7eaa), `Brake_strength_at_high_speed` (4af55f8a, formerly "handbrake
+  torque"), `Low_speed_mph`, `High_speed_mph`, `Minimum_handbrake_time`, and the unused
+  `Handbrake_grip_values.{Front,Rear}_wheel_grip_factor`. Free 5- and 6-word searches over the same vocabulary
+  gave only nonsense beyond these (as expected from their false-hit rates); still unnamed: the yaw-curve
+  breakpoints `2ef426dd` / `70528afa` / `a5c9496f`, trigger `8f151151` / `0dce38f7` / `b5290695`, and
+  most of `Other`.
+- **Survey facts** (79 `Drift` blocks): `Slip_angle_to_enter_drift` ≥ `8f151151` on every car; drift-happy cars
+  have the lowest entry angles (Lancia 5.5°, 350Z 6°, M3 6.25°), AWD supercars the highest (8.5–9°). The two
+  Ford Police Interceptors have `Maximum_drift_angle` 180, `0dce38f7` 90, `b5290695` 100 and `35e937b8` 50:
+  thresholds pushed out of reach, i.e. drifting off. `Max_yaw_torque` relative to weight varies 3× (911 high,
+  F-150 low).
+- **Drift model** (`crates/mostrusted/src/drift.rs`, details and per-field status in handling.md): Off →
+  Entering (drift scale over `0dce38f7`, or handbrake, while steering) → Drifting (slip over `8f151151`, or
+  directly over `Slip_angle_to_enter_drift`) → Off (under `Drift_angle_to_exit_drift`). Yaw torque from the
+  Min/Mid/Max curve against steering, faded towards `Maximum_drift_angle`; `Drift_angular_damping` on the yaw
+  rate; inward side force; automatic counter-steer; a drift level that decays below `Drift_angle_for_decay`.
+  Donuts from `Donut_yaw_torque`, scaled by `Speed_influence` × mph.
+- **Dead ends while calibrating** (911 unless noted, steering 0.8 after a brake tap at 110 km/h):
+  - Torque and damping only (no fade): the car spins at once (82°, down to 10 km/h). The data's damping read at
+    60 Hz (3.1 /s) gives ω ≈ τ / (3.1 I) ≈ 2 rad/s at 0.8 steering; at 120 Hz it holds 20–33° but still drifts
+    up slowly, at 240 Hz the car stays under the side-force decay angle and never really drifts.
+  - The tyre moment hardly changes with the drift angle once the rear saturates, so something must make the
+    torque depend on the angle; a linear fade to `Maximum_drift_angle` worked except on full lock and throttle
+    (spin), power 2 is stable everywhere but shallow (12–28°), 1.5 gives 14–30°.
+  - Damping the yaw rate relative to the path's turn rate instead of the absolute yaw rate: spins at 0.8.
+  - Front wheels following the player's lock in a drift: everything over-rotates and scrubs speed (911 down to
+    24 km/h) but the heavy cars drift; blending the lock in below `Low_slip_angle_for_counter_steering` + 10°
+    lets the F-150 and Veyron hold 11–14°, but the 911 spins on full lock and throttle and the F-150 crabs
+    sideways with no yaw. Kept the full counter-steer.
+  - Side force pointing outward instead of inward changes the angles by only 2–4°.
+  - Donut torque without a speed factor: the car pirouettes at 200–270°/s on the spot.
+- Open: the yaw-curve breakpoints, what `Default_steering` (0.2–0.4) does, the side force's units, the
+  per-tick time base, and the heavy cars (they barely drift here; if they drift in the original, its rear
+  grip in a drift is lower than this model's). Measuring drift angles in the original game would settle most of
+  these (handling.md, "Matching the original game").
 
 ### 2026-10-04 (evening): engine sound rewritten from the game's audio data
 - User report after the resampling fix: the engine "still plays snippets in full and isn't blending them".

@@ -6,6 +6,7 @@
 mod audio;
 mod convert;
 mod deferred;
+mod drift;
 mod drive;
 mod loader;
 mod materials;
@@ -48,7 +49,7 @@ struct Cli {
     /// Drive on an empty flat test track instead of the city (with --drive).
     #[arg(long)]
     test_track: bool,
-    /// Run a scripted handling test and exit: accel, brake, corner, handbrake, drift or engine (implies --test-track).
+    /// Run a scripted handling test and exit: accel, brake, corner, handbrake, drift, donut or engine (implies --test-track).
     #[arg(long)]
     test: Option<String>,
     /// Hold the throttle at this value (0–1), for automated driving tests.
@@ -179,8 +180,9 @@ fn main() -> anyhow::Result<()> {
         Some("corner") => Some(drive::TestKind::Corner),
         Some("handbrake") => Some(drive::TestKind::Handbrake),
         Some("drift") => Some(drive::TestKind::Drift),
+        Some("donut") => Some(drive::TestKind::Donut),
         Some("engine") => Some(drive::TestKind::Engine),
-        Some(other) => anyhow::bail!("unknown --test {other} (accel, brake, corner, handbrake, drift, engine)"),
+        Some(other) => anyhow::bail!("unknown --test {other} (accel, brake, corner, handbrake, drift, donut, engine)"),
     };
     if test.is_some() && cli.drive.is_none() {
         anyhow::bail!("--test needs --drive <car>");
