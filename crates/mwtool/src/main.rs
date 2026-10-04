@@ -10,6 +10,7 @@ mod damage;
 #[cfg(target_os = "linux")]
 mod memscan;
 mod preview;
+mod props;
 mod survey;
 
 use mw_assets::AssetStore;
@@ -166,6 +167,17 @@ enum Cmd {
         /// Car name, vehicle ID or bundle path.
         car: String,
     },
+    /// The collision surface list (`HAWAII/SURFACELIST.BNDL`) with each surface's triangle count and
+    /// collision flags over the track units.
+    Surfaces,
+    /// Physics of the world's props, compound and dynamic objects (`PhysicalDefinition`): volume kinds,
+    /// masses and break forces over the track units (or the given bundles).
+    Props {
+        bundles: Vec<String>,
+        /// One line per object definition.
+        #[arg(long, short)]
+        verbose: bool,
+    },
     /// Disassemble the compiled D3D11 programs (DXBC) a shader uses.
     ShaderAsm {
         /// Exact shader name, e.g. `DriveableSurface`.
@@ -306,6 +318,8 @@ fn main() -> Result<()> {
                 println!("torque (rpm:Nm): {}", samples.join("  "));
             }
         }
+        Cmd::Surfaces => props::surfaces(&AssetStore::new(game)?)?,
+        Cmd::Props { bundles, verbose } => props::run(&AssetStore::new(game)?, &bundles, verbose)?,
         Cmd::Vehicles => {
             let store = AssetStore::new(game)?;
             let lang = store.language(mw_assets::DEFAULT_LANGUAGE)?;
@@ -619,6 +633,7 @@ fn export_models(store: &AssetStore, b: &Bundle, out: &Path, verbose: bool) -> R
                 transform: mw_assets::IDENTITY,
                 backdrop: false,
                 overrides: None,
+                object: None,
             })
             .collect(),
     };

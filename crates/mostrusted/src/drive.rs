@@ -339,7 +339,8 @@ fn spawn_car(
     let Some(pending) = pending else { return };
     // Wait until the collision under the spawn point has streamed in.
     let origin = pending.spawn + Vec3::Y * pending.probe;
-    let Some(hit) = spatial.cast_ray(origin, Dir3::NEG_Y, 200.0, true, &SpatialQueryFilter::default()) else {
+    let ground_only = SpatialQueryFilter::default().with_mask(crate::props::GameLayer::World);
+    let Some(hit) = spatial.cast_ray(origin, Dir3::NEG_Y, 200.0, true, &ground_only) else {
         return;
     };
     let ground = origin - Vec3::Y * hit.distance;
@@ -388,8 +389,22 @@ fn spawn_car(
         ))
         .id();
     // Body collider: a box around the cabin, raised so the wheels do the work.
-    let body_collider =
-        commands.spawn((Collider::cuboid(1.8, 0.75, 4.2), Transform::from_xyz(0.0, 0.85, 0.0), ChildOf(car))).id();
+    let body_collider = commands
+        .spawn((
+            Collider::cuboid(1.8, 0.75, 4.2),
+            Transform::from_xyz(0.0, 0.85, 0.0),
+            crate::props::GameLayer::car(),
+            ChildOf(car),
+        ))
+        .id();
+    // Low bumper box that only meets props (cones would pass under the body box). Its bottom is at
+    // 0.2 m so the car can roll over a fallen lamp post.
+    commands.spawn((
+        Collider::cuboid(1.7, 0.35, 4.1),
+        Transform::from_xyz(0.0, 0.375, 0.0),
+        crate::props::GameLayer::car_bumper(),
+        ChildOf(car),
+    ));
     for m in &pending.spec.body {
         for (mesh, mat) in pending.parts.get(m).into_iter().flatten() {
             commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat.clone()), ChildOf(car)));
@@ -566,7 +581,7 @@ pub fn log_gamepad_events(mut events: MessageReader<RawGamepadEvent>) {
     }
 }
 
-fn car_physics(
+pub(crate) fn car_physics(
     time: Res<Time>,
     mut input: ResMut<CarInput>,
     spatial: SpatialQuery,
@@ -689,7 +704,9 @@ fn car_physics(
         };
         let steer = car.steer;
 
-        let filter = SpatialQueryFilter::from_excluded_entities([entity, car.body_collider]);
+        // Wheels only stand on the world (props are pushed by the body and bumper boxes).
+        let filter = SpatialQueryFilter::from_excluded_entities([entity, car.body_collider])
+            .with_mask(crate::props::GameLayer::World);
         let corner_mass = p.mass / car.wheels.len().max(1) as f32;
         let front_share = p.front_share;
         // A pull lasts at least `Minimum_handbrake_time`.

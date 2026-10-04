@@ -1304,3 +1304,10 @@ High_speed_mph
 Minimum_handbrake_time
 Front_wheel_grip_factor
 Rear_wheel_grip_factor
+
+# Prop physics (2026-10-04, props session): PhysicalDefinition and *AdditionalInfo
+HalfLength
+BoundingConvexHull
+ComOffset
+ForceToDamage
+ForceToSmash

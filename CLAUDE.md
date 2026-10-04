@@ -69,6 +69,9 @@ cargo fmt                                    # rustfmt.toml: max_width 120
 ./target/release/mostrusted --vehicle "911" --camera 4.5,1.4,4.0,0,0.4,0 --screenshot <scratch>/car.png
 # Handling tests on a flat track (4x real time), prints TEST RESULT lines and exits
 ./target/release/mostrusted --drive 911 --test accel     # or brake, corner (skidpad g), handbrake, drift, engine
+./target/release/mostrusted --drive 911 --test smash --smash-speed 60 --screenshot <scratch>/smash.png   # props: cone, lamp, fence, wall
+./target/release/mwtool props -v                    # physics of every prop / compound / dynamic object
+./target/release/mwtool surfaces                    # collision surface list with triangle counts
 # Engine RPM every physics tick, for `mwtool engine-sound --trace` (use with --test engine)
 MW_ENGINE_TRACE=<scratch>/rpm.trace ./target/release/mostrusted --drive 911 --test engine
 # Driving without a human: fixed throttle, logs "car at x y z, speed, compression" once a second

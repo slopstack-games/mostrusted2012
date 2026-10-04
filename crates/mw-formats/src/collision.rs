@@ -27,6 +27,12 @@
 //! fourth vertex is opposite the first, so they split into (a, b, c) and
 //! (b, d, c). (A fan split makes every quad a bow-tie with a hole in it;
 //! checked on every quad in the install.)
+//!
+//! The collision tag, read as one little-endian `u32` (`tag[0] | tag[1] << 16`, burnout.wiki's
+//! `muCollisionTag`), packs flags (bits 0-9), 3 unused bits, an index into the global surface list
+//! (bits 13-19; `Genesys.Gen.Surfaces` in `HAWAII/SURFACELIST.BNDL`, 65 entries) and the track unit
+//! (bits 20-31). The wiki lists the same fields from bit 0 = most significant (PS3 bitfield
+//! order). See [`CollisionTag`].
 
 use mw_bundle::{Reader, Resource};
 
@@ -55,8 +61,46 @@ pub struct SoupPolygon {
     /// Indices into the soup's vertices; triangles have 3.
     pub indices: [u8; 4],
     pub is_quad: bool,
-    /// Surface / material tags (meaning not decoded yet).
+    /// Collision tag halves; [`SoupPolygon::tag`] decodes them.
     pub collision_tag: [u16; 2],
+}
+
+/// A decoded polygon collision tag (fields and flag names from burnout.wiki, "Polygon Soup
+/// List/Need for Speed"; bit positions checked on the PC data: the unit field holds the track unit's
+/// own number on every triangle).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct CollisionTag {
+    /// Track unit the polygon belongs to (bits 20-31).
+    pub unit: u16,
+    /// Index into the `Surfaces` list (bits 13-19).
+    pub surface: u8,
+    /// `CollisionTag::DRIVABLE` etc. (bits 0-9).
+    pub flags: u16,
+}
+
+impl CollisionTag {
+    pub const DRIVABLE: u16 = 0x1;
+    pub const ROAD: u16 = 0x2;
+    pub const KERB: u16 = 0x4;
+    pub const DECAL: u16 = 0x8;
+    pub const SOLID_DECAL: u16 = 0x10;
+    pub const REMOVABLE: u16 = 0x20;
+    pub const FATAL: u16 = 0x40;
+    pub const SUPER_FATAL: u16 = 0x80;
+    pub const FATAL_FIELD: u16 = 0x100;
+    pub const LOCAL_PLAYER_ONLY: u16 = 0x200;
+
+    pub fn from_u32(v: u32) -> Self {
+        Self { unit: (v >> 20) as u16, surface: ((v >> 13) & 0x7F) as u8, flags: (v & 0x3FF) as u16 }
+    }
+
+    pub fn to_u32(self) -> u32 {
+        (self.unit as u32 & 0xFFF) << 20 | (self.surface as u32 & 0x7F) << 13 | self.flags as u32 & 0x3FF
+    }
+
+    pub fn has(self, flag: u16) -> bool {
+        self.flags & flag != 0
+    }
 }
 
 impl PolygonSoupList {
@@ -115,9 +159,27 @@ impl PolygonSoupList {
         }
         (verts, tris)
     }
+
+    /// The raw collision tag of every triangle [`PolygonSoupList::triangles`] returns, in the same
+    /// order (decode with [`CollisionTag::from_u32`]).
+    pub fn triangle_tags(&self) -> Vec<u32> {
+        let mut tags = Vec::new();
+        for soup in &self.soups {
+            let n = soup.vertices.len() as u8;
+            for p in &soup.polygons {
+                let tag = p.tag().to_u32();
+                tags.extend(p.triangles().filter(|t| t.iter().all(|&i| i < n)).map(|_| tag));
+            }
+        }
+        tags
+    }
 }
 
 impl SoupPolygon {
+    pub fn tag(&self) -> CollisionTag {
+        CollisionTag::from_u32(self.collision_tag[0] as u32 | (self.collision_tag[1] as u32) << 16)
+    }
+
     /// The polygon's triangles as vertex indices (quads split strip-wise).
     pub fn triangles(&self) -> impl Iterator<Item = [u8; 3]> {
         let [a, b, c, d] = self.indices;

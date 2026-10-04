@@ -26,8 +26,18 @@ pub enum Request {
     /// Load every model of a vehicle bundle at the origin.
     Vehicle { bundle: String },
     /// Load a drivable car, then stream the world around `spawn`.
-    /// `world: false` loads only the car (for the test track).
-    Drive { bundle: String, spawn: Vec3, heading: f32, max_units: Option<usize>, world: bool },
+    /// `world: false` loads only the car (for the test track), plus `props` placed on it.
+    Drive { bundle: String, spawn: Vec3, heading: f32, max_units: Option<usize>, world: bool, props: Vec<TestProp> },
+}
+
+/// A world object placed by hand (the `--test smash` track).
+#[derive(Debug, Clone)]
+pub struct TestProp {
+    pub object: ResourceId,
+    pub kind: mw_assets::props::ObjectKind,
+    pub position: Vec3,
+    /// Yaw in radians.
+    pub yaw: f32,
 }
 
 /// A car to load while the session runs (the in-game car menu, `--swap-to`). The world is not
@@ -86,8 +96,16 @@ pub enum Msg {
         model: ResourceId,
         transform: Mat4,
     },
-    /// Static world collision (one per track unit).
-    Collider(avian3d::prelude::Collider),
+    /// A prop / compound / dynamic object with physics (`props.rs`).
+    Prop {
+        model: ResourceId,
+        transform: Mat4,
+        physics: Arc<crate::props::PropPhysics>,
+    },
+    /// Static world collision (one per `PolygonSoupList`) and the collision tag of each of its triangles.
+    Collider(avian3d::prelude::Collider, Arc<Vec<u32>>),
+    /// The game's collision surface list (`mw_assets::surfaces`).
+    Surfaces(Vec<mw_assets::surfaces::SurfaceInfo>),
     Car(Box<CarSpec>),
     /// A runtime [`CarRequest`] could not be loaded.
     CarFailed(String),
@@ -123,6 +141,8 @@ pub struct WorldFilter {
     pub keep_lod_proxies: bool,
     /// Which of the car's `VehiclePaint` options to paint it with.
     pub paint_index: usize,
+    /// Draw props, compounds and dynamic objects without collision (`--no-prop-physics`).
+    pub no_prop_physics: bool,
 }
 
 #[derive(Resource)]
@@ -156,6 +176,7 @@ pub fn spawn(
                 skin_bones: None,
                 backdrop: None,
                 backdrop_sent: HashSet::new(),
+                prop_physics: HashMap::new(),
             };
             if let Err(e) = w.run(request) {
                 let _ = w.tx.send(Msg::Progress(format!("loader error: {e:#}")));
@@ -197,6 +218,8 @@ struct Worker {
     backdrop: Option<BackdropSelector>,
     /// Backdrop instances already sent (the same backdrop model is listed by many units).
     backdrop_sent: HashSet<(ResourceId, [u32; 16])>,
+    /// Physics per object definition (shared by its placements).
+    prop_physics: HashMap<(ResourceId, mw_assets::props::ObjectKind), Option<Arc<crate::props::PropPhysics>>>,
 }
 
 /// How a model is turned into drawable parts.
@@ -228,6 +251,7 @@ impl Worker {
                             transform: mw_assets::IDENTITY,
                             backdrop: false,
                             overrides: None,
+                            object: None,
                         })
                         .collect(),
                 };
@@ -238,9 +262,16 @@ impl Worker {
                 }
                 self.send(Msg::Progress(format!("loaded {bundle}")))?;
             }
-            Request::World { max_units, focus } => self.world(max_units, focus)?,
-            Request::Drive { bundle, spawn, max_units, world, .. } => {
+            Request::World { max_units, focus } => {
+                self.surfaces()?;
+                self.world(max_units, focus)?
+            }
+            Request::Drive { bundle, spawn, max_units, world, props, .. } => {
                 self.car(&bundle)?;
+                self.surfaces()?;
+                for p in props {
+                    self.test_prop(&p)?;
+                }
                 if world {
                     self.world(max_units, Some(spawn))?;
                 }
@@ -355,8 +386,65 @@ impl Worker {
             if tris.is_empty() {
                 continue;
             }
+            let tags = Arc::new(list.triangle_tags());
             let verts = verts.into_iter().map(Vec3::from).collect();
-            self.send(Msg::Collider(Collider::trimesh_with_config(verts, tris, TrimeshFlags::FIX_INTERNAL_EDGES)))?;
+            let collider = Collider::trimesh_with_config(verts, tris, TrimeshFlags::FIX_INTERNAL_EDGES);
+            self.send(Msg::Collider(collider, tags))?;
+        }
+        Ok(())
+    }
+
+    fn surfaces(&self) -> anyhow::Result<()> {
+        match self.store.surfaces() {
+            Ok(list) => self.send(Msg::Surfaces(list)),
+            Err(e) => self.send(Msg::Progress(format!("no surface list: {e}"))),
+        }
+    }
+
+    /// Physics of an object definition, decoded once per definition.
+    fn prop_physics(
+        &mut self,
+        object: ResourceId,
+        kind: mw_assets::props::ObjectKind,
+    ) -> Option<Arc<crate::props::PropPhysics>> {
+        if self.filter.no_prop_physics {
+            return None;
+        }
+        self.prop_physics
+            .entry((object, kind))
+            .or_insert_with(|| {
+                let p = self.store.object_physics(object, kind).ok()?;
+                crate::props::PropPhysics::new(&p).map(Arc::new)
+            })
+            .clone()
+    }
+
+    /// Send a placement: with physics when it is a world object that has some.
+    fn send_placement(&mut self, model: ResourceId, p: &mw_assets::Placement) -> anyhow::Result<()> {
+        let transform = game_matrix(&p.transform);
+        match p.object.and_then(|(object, kind)| self.prop_physics(object, kind)) {
+            Some(physics) => self.send(Msg::Prop { model, transform, physics }),
+            None => self.send(Msg::Instance { model, transform }),
+        }
+    }
+
+    /// Place one world object by hand (test track).
+    fn test_prop(&mut self, t: &TestProp) -> anyhow::Result<()> {
+        let def = self.store.object_def(t.object, t.kind)?;
+        let model = def.model().ok_or_else(|| anyhow::anyhow!("object {} has no model", t.object))?;
+        let rot = Mat4::from_rotation_y(t.yaw);
+        let m = Mat4::from_translation(t.position) * rot;
+        // Back to the game's row-major layout (rows = axes, row 3 = translation).
+        let cols = m.to_cols_array_2d();
+        let placement = mw_assets::Placement {
+            model,
+            transform: cols,
+            backdrop: false,
+            overrides: None,
+            object: Some((t.object, t.kind)),
+        };
+        if let Some(key) = self.model_variant(model, Variant::default(), InstanceLook::default())? {
+            self.send_placement(key, &placement)?;
         }
         Ok(())
     }
@@ -440,7 +528,7 @@ impl Worker {
                     }
                 }
                 if let Some(model) = self.model_variant(p.model, variant, InstanceLook::from_placement(&p))? {
-                    self.send(Msg::Instance { model, transform: game_matrix(&p.transform) })?;
+                    self.send_placement(model, &p)?;
                 }
             }
             self.store.evict_all();

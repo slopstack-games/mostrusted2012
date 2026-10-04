@@ -82,6 +82,50 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-04 (props session): prop physics, collision surface tags — status / next steps
+- **Prop physics data**: `PropObject` matches burnout.wiki's `Game::World::PropObject`: 0x0C
+  `mPhysicalDefinitionHandle`, 0x14 impact effect, 0x1C impact sound, 0x24 `mfResetDistanceSquared`
+  (10000), 0x28 `mbRemoveInsteadOfReset`. `WorldObject` / `CompoundObject` have the physical definition at
+  0x1C; compound parts (ptr 0x30, count 0x38, 0x70 bytes each) are embedded WorldObjects with their own
+  physical definitions (+0x1C) and part links at +0x64. All in `ObjectDef` (world.rs).
+- GeneSys `PhysicalDefinition`: bounds (`62dbd683` centre, `98e902ed` half extents), `AdditionalInfo`,
+  `RigidBodies` (transform `0d0c29b4`, `ComOffset`, `Inertia_Scale`, `Mass`, `Friction`, `44ac37c1` probably
+  restitution, `LinearDrag`, `AngularDrag`, `BoxVolumes` (transform `d084ac7c`, half extents `3727fead`),
+  `CylinderVolumes` (`Radius`, `HalfLength`, axis = local Z), capsule / sphere / convex-hull lists).
+  New names (genesys-crack, single candidates): `HalfLength`, `BoundingConvexHull`, `ComOffset`,
+  `ForceToDamage`, `ForceToSmash`. World objects use only boxes (422) and cylinders (12). `mwtool props`.
+- `DynamicAdditionalInfo` / `CompoundAdditionalInfo`: `ForceToDamage`, `67f0233c` (unnamed; 0 cones/bins,
+  500–2500 signs/fences, 5000 street lamps, 20000 gantries, 100000 on mass-0 objects), `Strength`, `Score`,
+  compound `ForceToSmash` (10000 on street lamps). Read `67f0233c` as the break-free threshold, units
+  assumed impulse N s (m_hitter × approach speed: lamps break above ~12 km/h for a 1.5 t car). Hypothesis.
+  Dead end: guessing `ForceToMove/Break/Detach/Topple/...` for `67f0233c` (no hit with ~150-word lists).
+- 112 prop, 52 compound, 271 dynamic definitions (55 dynamics with physics; 3120 dynamic placements have
+  none). Mass 0 objects have default-looking values (friction 0.1, drag 0.1) → treated as immovable.
+- **Collision tags** (burnout.wiki `muCollisionTag`, but the PC bit order is reversed vs the wiki's PS3
+  table): as LE u32, flags bits 0–9 (DRIVABLE 1, ROAD 2, KERB 4, ..., FATAL 0x40), surface index bits 13–19,
+  track unit bits 20–31 (all 1,652,030 triangles carry their own unit number). Surface index → the
+  65-entry `Surfaces` list in `HAWAII/SURFACELIST.BNDL` (`SurfaceType`: debug `Colour`, per-contact
+  `Surface_Physics` with `Surface_Grip` 1.0 asphalt / 0.75 dirt / 0.7 grass, sounds, vfx). No surface
+  names in the data. First read the wiki's order literally: surface indices up to 90 (dead end).
+  `mwtool surfaces`, `mw_assets::surfaces`, test `crates/mw-assets/tests/props.rs`.
+- **Runtime** (`crates/mostrusted/src/props.rs`): props/compounds/dynamics with physics get a compound
+  collider (loader thread), pinned static until a contact hook sees impulse ≥ break force, then dynamic with
+  the inelastic momentum exchange; reset at 100 m. Layers: World / Car / CarBumper (low box that only meets
+  props) / Prop; wheel rays see only the world. Damage scales loose-prop contacts by m_prop/(m_car+m_prop).
+  Colliders are streamed: only props within 120 m of the car carry a body (removed past 160 m).
+  `CarSurface` component = surface under the car (via `WorldSurfaces::surface_at`).
+- Verified: `--test smash` at 60 km/h knocks cone, street lamp and fence, car stops at the immovable wall
+  (z 167.8 vs wall 170); at 8 km/h the lamp holds and the car stops against it. World drive from the
+  default spawn knocks a street lamp and the roadside crash barrels / tyres; screenshots looked at.
+- Measurements (noisy, shared machine, load average 5–14): full map 17,948 placements with physics; load
+  24.6 s vs 18.5 s with `--no-prop-physics` (the decode is per definition, so most of the gap is probably
+  noise, re-measure); frame time with all 18k static bodies ~27–29 ms vs 13–27 ms without — streaming (50
+  active) did not clearly change it under that load. Needs a clean A/B (`--frame-stats`), ideally timing the
+  physics schedule alone.
+- Next: clean perf A/B; compound parts as separate breakable bodies (need part→mesh mapping, maybe the
+  skeleton / locators); `67f0233c` name; use `ForceToDamage` / damaged model; hook surface grip into the
+  tyre model and skid audio; a knocked lamp leaning on a slope can wedge the car (realistic, but check).
+
 ### 2026-10-04 (session 2): NewSky shader read
 - Main PS (`…79648d36`): glow = pow(saturate(dir · KeyLightDir), SunColour.w) × SunColour.rgb (exponent 0.65 at
   noon: a broad glow over the sun's half, not a disc); gradient = lerp(B(|y|), A(|y|), w) × BaseCloudColour.w
