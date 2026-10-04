@@ -212,6 +212,31 @@ impl GinsuSynth {
         ((b - a).max(1) as f32 * recorded / rpm.max(1.0)).clamp(16.0, 16384.0)
     }
 
+    /// Render `n` samples at the recording's rate, driving the synth with `rpm_at(sample index)` directly
+    /// (no smoothing, limiting or mixing): the period schedule the mixers use, on one voice. For analysis
+    /// (`mwtool ginsu-resynth`) and tests: driven with the recording's own RPM curve the output should
+    /// reproduce the recording.
+    pub fn render(&mut self, rpm_at: impl Fn(usize) -> f32, n: usize) -> Vec<f32> {
+        let mut out = Vec::with_capacity(n);
+        let mut seed = 0x9e37_79b9u32;
+        let mut t = 0.0f32;
+        let mut period = self.period_for(rpm_at(0));
+        for i in 0..n {
+            if t >= period {
+                t -= period;
+                seed ^= seed << 13;
+                seed ^= seed >> 17;
+                seed ^= seed << 5;
+                let rpm = rpm_at(i);
+                self.start_period(rpm, seed);
+                period = self.period_for(rpm);
+            }
+            out.push(self.sample((t / period).min(1.0)));
+            t += 1.0;
+        }
+        out
+    }
+
     /// Sample at phase `x` (0..1) of the current period, in -1..1.
     pub fn sample(&self, x: f32) -> f32 {
         if self.grains() == 0 {

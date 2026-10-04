@@ -75,7 +75,6 @@ const SHIFT_SECONDS: f32 = 0.25;
 pub struct EngineDriver {
     params: Arc<Params>,
     slots: Vec<(usize, Kind)>,
-    rpm_range: (f32, f32),
     order: f32,
     prev_throttle: f32,
     prev_gear: i32,
@@ -108,7 +107,6 @@ impl EngineDriver {
         let mut d = Self {
             params,
             slots,
-            rpm_range: bank.rpm_range,
             order: bank.harmonic_order,
             prev_throttle: 0.0,
             prev_gear: 1,
@@ -141,12 +139,13 @@ impl EngineDriver {
         (self.rng >> 8) as f32 / (1u32 << 24) as f32
     }
 
-    /// The physics RPM mapped onto the sound's RPM axis: idle → the axis start (where the idle loop plays),
-    /// redline → its end. Assumed; "audible RPM" suggests such a remap.
+    /// The engine RPM as the sound sequences see it: the physics RPM itself. The sequences clamp it to their
+    /// axis (1790..7500 on the 911), so below the axis only the recorded idle loop plays. Evidence that the
+    /// axis is real engine RPM and not a remapped idle..redline range (research log 2026-10-04, "engine
+    /// sound ground truth"): the 911's idle loop has the periodicity and harmonics of the Ginsu sweep's first
+    /// grains (~1580 rpm), and the sweep's top (7814 rpm) is the handling's `Max_RPM` (7800).
     pub fn audible_rpm(&self, i: &EngineInput) -> f32 {
-        let (lo, hi) = self.rpm_range;
-        let t = (i.rpm - i.idle_rpm) / (i.redline_rpm - i.idle_rpm).max(1.0);
-        lo + (hi - lo) * t.clamp(0.0, 1.05)
+        i.rpm
     }
 
     /// Advance by `dt` seconds with this tick's engine state.

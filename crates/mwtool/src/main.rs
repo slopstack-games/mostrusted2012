@@ -133,6 +133,20 @@ enum Cmd {
         source: String,
         out: PathBuf,
     },
+    /// Re-synthesise one Ginsu recording of a bundle through the granular synth: driven by the recording's
+    /// own RPM curve (the output should match the recording), or held at a fixed RPM.
+    GinsuResynth {
+        bundle: String,
+        /// Index of the Ginsu resource in the bundle (bundle order, as `audio` lists them).
+        index: usize,
+        out: PathBuf,
+        /// Hold this RPM instead of following the recording.
+        #[arg(long)]
+        hold: Option<f32>,
+        /// Seconds to render when holding (default 3).
+        #[arg(long, default_value_t = 3.0)]
+        seconds: f32,
+    },
     /// Render a simulated rev-up/coast through the engine-sound synth to a .wav.
     EngineSound {
         car: String,
@@ -459,6 +473,24 @@ fn main() -> Result<()> {
                                 &g.pcm,
                             );
                             std::fs::write(out.join(format!("{}_ginsu.wav", e.id)), g.pcm.to_wav())?;
+                            // Tables alongside, for analysis: header line, then the RPM table (recording
+                            // position per evenly spaced RPM, signed) and the grain boundaries.
+                            let mut tables = format!(
+                                "min_rpm {} max_rpm {} sample_rate {} samples {}\nrpm_table",
+                                g.min_rpm,
+                                g.max_rpm,
+                                g.pcm.sample_rate,
+                                g.pcm.samples.len()
+                            );
+                            for v in &g.rpm_table {
+                                tables += &format!(" {}", *v as i32);
+                            }
+                            tables += "\ngrains";
+                            for v in &g.grains {
+                                tables += &format!(" {v}");
+                            }
+                            tables.push('\n');
+                            std::fs::write(out.join(format!("{}_ginsu.txt", e.id)), tables)?;
                         }
                         Err(err) => println!("{} ginsu: {err}", e.id),
                     }
@@ -475,6 +507,23 @@ fn main() -> Result<()> {
                     }
                 }
             }
+        }
+        Cmd::GinsuResynth { bundle, index, out, hold, seconds } => {
+            let b = open_bundle(&game, &bundle)?;
+            let e = b.entries_of_type(ResourceType::Ginsu).nth(index).context("no such Ginsu")?;
+            let g = std::sync::Arc::new(mw_audio::ginsu::Ginsu::parse(b.load(e)?.header())?);
+            let sr = g.pcm.sample_rate;
+            let mut synth = mw_audio::ginsu::GinsuSynth::new(g.clone());
+            let samples = match hold {
+                Some(rpm) => synth.render(|_| rpm, (seconds * sr as f32) as usize),
+                None => {
+                    let n = g.pcm.samples.len();
+                    synth.render(|i| g.rpm_at_position(i as f32), n)
+                }
+            };
+            let samples = samples.iter().map(|s| (s * 32767.0).clamp(-32768.0, 32767.0) as i16).collect();
+            std::fs::write(&out, mw_audio::Pcm { channels: 1, sample_rate: sr, samples }.to_wav())?;
+            println!("{} {:.0}-{:.0} rpm -> {}", e.id, g.min_rpm, g.max_rpm, out.display());
         }
         Cmd::EngineSound { car, out, trace, legacy, dry } => {
             let store = AssetStore::new(game)?;

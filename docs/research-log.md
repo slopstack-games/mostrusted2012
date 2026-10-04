@@ -108,6 +108,58 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-04 (engine ground truth): what the recordings say, status and next steps
+
+Session cut short (user paused). The user hears the engine as "still wrong"; this session measured the synth
+against the raw recordings instead of against its own metrics. Scripts are in the session scratch dir
+(`/tmp/claude-1000/engine-scratch/*.py`: `ana.py` helpers, `grains.py`, `grain_phase.py`, `hold.py`,
+`resynth_compare.py`, `graph.py`, `compare_bands.py`); regenerate the wavs with the commands below.
+
+- **Decoder is clean** (911 main rev-up `01000000001d1c7c`): spectral flatness 0.0035 (tonal, no hiss), |diff|
+  at XAS frame boundaries / inside frames 0.99, no DC, no clipping. Not the problem.
+- **Grains are phase-aligned engine cycles.** Grain length = `120 · sr / rpm` within 0.2 % of the RPM table
+  (median ratio 0.9985) on every recording, and the cross-correlation of consecutive grains (time-normalised)
+  peaks at lag 0 for 95 % of pairs (p90 0.005 cycle; the off-load sweep 78 %). So concatenating grains at their
+  boundaries is phase-continuous and jumps between nearby grains need no phase alignment. Consecutive cycles
+  correlate only 0.74 (median): the engine itself varies cycle to cycle.
+- **The single-layer synth is faithful.** New `mwtool ginsu-resynth <bundle> <index> out.wav [--hold rpm]`
+  (`GinsuSynth::render`) drives one recording with its own RPM curve. Against the original: level within
+  ±0.8 dB (p10/p90), per-50 ms spectral distance over 1/6-octave bands median 3.5 dB, p90 5.3, which equals
+  the recording's own cycle-to-cycle floor (next cycle: median 3.6 dB, p90 5.0). Steady holds at 2,500 and
+  4,000 rpm match the raw grains at that RPM within ~2 dB per order (order 3 dominant, order 6 +4 dB high at
+  4,000). Only blemish: pitch spread p90 71 cents vs 45 for the original (the 1-in-8 random jumps).
+- **The RPM axis is real engine RPM** (changed: `EngineDriver::audible_rpm` now passes the physics RPM
+  through; the sequences clamp it to 1790..7500). Evidence: the idle loop `01000000001d1c7a` has its
+  autocorrelation peak at 40.0 Hz and spectral peaks at 119 / 159 Hz, exactly the first grains of the Ginsu
+  sweep (~1580 rpm: lag len/3 = 40.5 Hz, orders 4.5 / 6 = 119 / 159 Hz), and the sweep ends at 7814 rpm = the
+  handling's `Max_RPM` 7800. The old remap (idle 1000 → 1790, redline → 7500) compressed the pitch range to
+  0.84× and made 4,000 rpm sound like 4,300. Below 1790 rpm the car now plays the idle loop only, as the data
+  says. Not verified by ear.
+- **Mix findings, unchanged** (steady 4,000 rpm hold, `hold.py`): the dry six-layer bank is close to the sum of
+  both microphone sets' recordings (harmonic / total energy 0.99, order 3 dominant). The wet chain adds +5 dB
+  at 60 Hz and +11 dB at 20–60 Hz over the recordings (full load) and +11/+13/+10 dB at 60/120/250 Hz off load,
+  and drops the harmonic ratio to 0.87 (added inharmonic content). Channel meter on the hold: bus B `0b381c`
+  input +5.3 dB RMS (Peaking 100 Hz ×4 Q2 and ×5 Q0.5 are +12/+14 dB), the set-A strain path `073483` fed at
+  −16.5 dB RMS into `tanh(4·x)`, i.e. a near-square wave about as loud as the clean path. These stand-ins are
+  the prime suspects for "wrong"; the data cannot settle the distortion law or the sub-harmoniser level.
+- **Data details**: plug-in field `2a740b25` is the output channel count (1 until the `Pan2D`, then 6). The
+  911's `DspParam` overrides: Peaking 472213 / 472218 param 1 = 400 / 1000 (reads as Frequency: the global
+  6.5 kHz EQs become 400 Hz / 1 kHz for this car), Delay 472308 param 4 = 0.2 (Feedback) and its Send 472306
+  param 0 = 0 (the delay path is muted), HighPass 472227 param 1 = 6810 (does not read as a frequency before a
+  sub-harmoniser), BandPass 750019 param 5 = 40 (bandwidth?). Field order in the types does not give these
+  indices; still not applied. `GinsuDspPlugIn` carries no playback parameters (`a4831678` 1 / 0 only).
+- **A/B wavs** (scratch dir, regenerate): `911/01000000001d1c7c_ginsu.wav` raw on-load sweep vs
+  `resynth_on.wav` (same sweep through the synth), `resynth_hold4000.wav` vs the raw at 4,000 rpm,
+  `hold4000_on.wav` / `hold4000_on_dry.wav` (bank wet / dry at 4,000 rpm full load, old RPM mapping),
+  `synth_wet.wav` / `synth_dry.wav` / `synth_legacy.wav` (default rev-up and coast, old mapping),
+  `game.trace` (in-game RPM from `--test engine`).
+- **Next**: (1) listen to raw vs `resynth_hold4000` vs `hold4000_on_dry` vs `hold4000_on` to place the fault
+  (synth, mix or effects); (2) if the wet chain is at fault, scale the unknown effects so they never dominate
+  the recorded signal (distortion drive relative to the input level, sub-harmoniser at the band's level, EQ
+  gains as given); (3) the 1-in-8 random jump: test following the recording strictly with jumps only when the
+  walk leaves the window; (4) decode the `DspParam` index ↔ runtime parameter mapping; (5) check the audio
+  callback cost (rodio underruns after the SFX merge).
+
 ### 2026-10-04 (session 2): wheel layout, the Venom's front axle
 - User report: wheels off on some cars (Hennessey Venom GT Spyder). Survey over every car
   (`cargo test --release -p mw-assets --test wheel_survey -- --ignored --nocapture`): body z extent vs spec
