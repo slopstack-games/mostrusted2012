@@ -597,6 +597,7 @@ fn main() -> Result<()> {
                     let mut driver = mw_assets::engine_driver::EngineDriver::new(&eb, params.clone());
                     let mut player = mw_audio::sequence::Player::new(eb.bank.clone(), params);
                     player.dry = dry;
+                    player.bypass = mw_audio::sequence::Bypass::from_env();
                     player.enable_meter();
                     // The game updates the engine at its physics rate; 64 Hz here.
                     let tick = rate / 64;
@@ -611,6 +612,7 @@ fn main() -> Result<()> {
                                 speed_mph: speed.abs() / 0.447_04,
                                 idle_rpm: idle,
                                 redline_rpm: redline,
+                                top_speed_mph: h.top_speed_mph.unwrap_or(180.0),
                             };
                             driver.update(tick as f32 / rate as f32, &input);
                         }
@@ -619,7 +621,27 @@ fn main() -> Result<()> {
                     if std::env::var_os("MW_AUDIO_METER").is_some() {
                         let n = samples.len().max(1) as f64;
                         for (id, e) in player.meter() {
-                            println!("  channel {id:016x}: {:.1} dB", 10.0 * (e / n + 1e-12).log10());
+                            let chain: Vec<String> = eb
+                                .bank
+                                .channels
+                                .iter()
+                                .find(|c| c.id == id)
+                                .map(|c| {
+                                    c.plugins
+                                        .iter()
+                                        .map(|p| {
+                                            let f: Vec<String> =
+                                                p.fields.iter().map(|(h, v)| format!("{h:08x}={v}")).collect();
+                                            format!("{:?}[{}]({})", p.kind, p.uid, f.join(","))
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+                            println!(
+                                "  channel {id:016x}: {:.1} dB  {}",
+                                10.0 * (e / n + 1e-12).log10(),
+                                chain.join(" > ")
+                            );
                         }
                     }
                     let pcm = mw_audio::Pcm { channels: 1, sample_rate: rate as u32, samples };

@@ -46,6 +46,7 @@ fn every_engine_bank_renders() {
                     speed_mph: 0.0,
                     idle_rpm: 1000.0,
                     redline_rpm: 7000.0,
+                    top_speed_mph: 180.0,
                 };
                 driver.update(1.0 / 64.0, &input);
             }

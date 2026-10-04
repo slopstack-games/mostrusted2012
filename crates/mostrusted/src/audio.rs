@@ -161,8 +161,9 @@ impl Decodable for EngineAudio {
         match (&self.voice, &self.bank_params) {
             (EngineVoice::Bank(b), Some(params)) => {
                 let mut player = Player::new(b.bank.clone(), params.clone());
-                // `MW_AUDIO_DRY=1`: bypass the mixer plug-ins, for A/B listening.
+                // `MW_AUDIO_DRY=1`: bypass the mixer plug-ins, for A/B listening (`Bypass` for one family).
                 player.dry = std::env::var_os("MW_AUDIO_DRY").is_some();
+                player.bypass = mw_audio::sequence::Bypass::from_env();
                 EngineSource {
                     synth: EngineSynth::Bank(Box::new(player)),
                     sample_rate: mw_audio::sequence::OUTPUT_RATE,
@@ -243,6 +244,7 @@ fn update_engine_params(
                 speed_mph: car.speed.abs() / 0.447_04,
                 idle_rpm: car.params.idle_rpm,
                 redline_rpm: car.params.redline_rpm,
+                top_speed_mph: car.params.top_speed / 0.447_04,
             };
             d.update(time.delta_secs(), &i);
         }
