@@ -12,6 +12,8 @@ mod bits;
 pub mod dsp;
 pub mod ginsu;
 pub mod sequence;
+pub mod sfx_dsp;
+pub mod sfx_player;
 pub mod sps;
 pub mod xas;
 

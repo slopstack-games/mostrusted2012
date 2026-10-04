@@ -258,6 +258,14 @@ See `crates/mw-audio` (decoders reimplemented from vgmstream's documentation of 
   Reversing and six unnamed sequence lists (gear changes), Backfire_Sequence, Gurgle_Sequence (bound to
   GetPopProbability), Pop_Sequence, Ignition_Sequence, c62d11ac (rev limiter), mixer channel list, DspParam
   lists (per-car plug-in overrides), Gains (per-car channel trims), MasterGain }`.
+- **Surface and collision sounds**: `Surfaces { Default_surface, Chevron_surface, Surfaces }` →
+  `SurfaceType { two condition sets (dry / wet) { Flats, Normal, Offroad, Rims, Track: { Surface_Physics,
+  Surface_Rumble, Surface_Sounds } } }` → `SurfaceSounds { Brake, Drift, Spin (+ _Competitor), Reflection, two
+  speed-bound road sequences, Bumps, Transitions, TyreParams }` (`HAWAII/SURFACELIST.BNDL`). Skid sequences
+  bind `RaceCars.Entities["Id"].{LatSlip,Spin,SpinBraking}IntensityForSkidSound` (0..1). `Vehicle_Sound
+  { Collision_Sounds, Horn (UniqueIds) }` → `CollisionSoundSet` (`SOUND/METALCAR.BNDL`): 31 unnamed timeline
+  sequence slots and 24 wave pools (`Scratch`, `Sparks`, `Landing`). `TyreSound` in `VEHICLES/WAVES.BNDL`
+  holds only the silent placeholder wave `…79ff`.
 
 ## Particle effects (`BearEffect` 0x301)
 

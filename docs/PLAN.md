@@ -221,7 +221,11 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    lists (Burnout / Drift / In_air / Reversing), per-car DspParam overrides, bus / LFO items, the game's own
    audible-RPM and load rules, reverb.
 3. `[x]` Music: shuffled `UI/SONGS/*.SPS` playlist. Still open: radio/track names, ducking.
-4. `[ ]` One-shot effects from `Wave` resources (collisions, gear shifts, nitrous), speech.
+4. `[~]` Vehicle sound effects from the sound data (`mw_assets::sfx`, `crates/mostrusted/src/sfx.rs`): tyre
+   screech (the default surface's Drift / Spin / Brake sequences driven by wheel slip), road noise, wind,
+   impacts and scrapes from the `CollisionSoundSet`, landings (research log "tyre screech, road, wind,
+   impacts"). Open: per-surface sounds (collision tags), bumps, ambience, wall reflections, horn, nitrous,
+   speech.
 
 ### M6: Gameplay `[ ]`
 Roughly in dependency order:

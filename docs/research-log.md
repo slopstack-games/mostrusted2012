@@ -123,6 +123,51 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
   (Fairhaven's autumn trees), not a shading error.
 - To settle the ambient: a reference screenshot from the original (shade colour next to sunlit grey).
 
+### 2026-10-04 (audio session, later): tyre screech, road, wind, impacts and scrapes from the sound data
+- **Tyres** come from the surface data, not from `TyreSound` (its waves in `VEHICLES/WAVES.BNDL` are all the
+  silent 0.1 s placeholder `…79ff`). `HAWAII/SURFACELIST.BNDL`: `Surfaces { Default_surface, Chevron_surface,
+  Surfaces [65] }` → `SurfaceType { two condition sets (f395b019 / 7348be25, read as dry / wet) { Flats, Normal,
+  Offroad, Rims, Track: { Surface_Physics, Surface_Rumble, Surface_Sounds } } }` → `SurfaceSounds { Brake,
+  Drift, Spin (+ _Competitor), Reflection, two speed-bound road-noise sequences (4648873a, 1376f03b), Bumps,
+  Transitions, TyreParams }`. Default surface, dry, Normal → `…3d399`. The skid sequences bind
+  `RaceCars.Entities["Id"].LatSlipIntensityForSkidSound` / `SpinIntensityForSkidSound` /
+  `SpinBrakingIntensityForSkidSound` (0..1) and layer loops and one-shots across that range (the drift: 15
+  items; it swaps layers rather than getting louder). The game computes the intensities from `TyreSoundParams`
+  (fields unnamed; Lateral 0.4 / 1.3 / 25 / 20 / 18 / 80 mph...). Ours (assumed): lateral = slip angle 4° → 12°
+  (= 0.4 → 1.3 × a ~9° peak angle) faded in from 2 to 8 m/s; spin = a wheel spinning under power; braking =
+  a locked / sliding wheel, or 0.45 × pedal under hard ABS braking. Inputs from `Car::wheel_contacts()` (slip
+  split along the car's heading).
+- **Wind**: `VehicleSound.Player_Sequences` (`SOUND/GLOBAL.BNDL`; 12 entries once the handle-array fix
+  applies) has a speed-bound sequence (`…87ea6`, 0–180 mph) with wind layers crossfaded 45–90 / 70–138 /
+  100–250 and 19 mixer items (bus ducking by speed: those target the engine's buses, which live in the other
+  player, so they do nothing here). The other player sequences are wall reflections (`WallTracker...`), cop
+  distance, dust clouds and damage; not played.
+- **Impacts**: every car's `Vehicle_Sound.Collision_Sounds` (UniqueId 140990) is the `CollisionSoundSet` in
+  `SOUND/METALCAR.BNDL` (`…226be`): 31 unnamed sequence slots (timelines of crunch and debris waves, random
+  pick per item) and 24 wave pools (named: `Scratch`, `Sparks`, `Landing` (empty)). Bindings inside: 
+  `RaceCars.GetMostRecentPlayerImpactClosingVelocity` (ranges 2–60, read as mph), `GetMassForLastCrash`,
+  `MostWantedCarInLastCrash`. Which slot is which collision type is unknown: the 21 timeline slots are sorted
+  by loudness into light / medium / heavy cues (closing speed < 4, < 12, ≥ 12 m/s) at 0.4 / 0.8 / 1.4 of the
+  impact level. `Scratch` (two 3 s one-shots) becomes a loop (crossfaded seam) bound to the body's sliding
+  speed; `Sparks` a cue on hard hits and scrape starts. Landings after ≥ 0.25 s airborne use the impact cue at
+  the touchdown speed. Body contacts come from `particles::ImpactEvent` (closing and sliding speed).
+- **Playback**: one more sequence player (`crates/mostrusted/src/sfx.rs`), separate from the engine's; it uses
+  copies of the engine's player and loader (`mw_audio::sfx_player`, `sfx_dsp`, `mw_assets::sfx_loader`, no
+  Ginsu) while the engine path is reworked, with a 20 ms release on stopped voices. Our mix (the bank ends in
+  buses outside the bundles, like the engine's): master 1.4, skid sequences ×4 / ×3.5 / ×2.5, impacts ×3,
+  scrape ×2.5 (applied to the items' gain values).
+- **Measurements** (`mwtool vehicle-sound`, scripted 12 s; `tests/vehicle_sfx.rs`): road + wind at 50–60 mph
+  −24 to −26 dBFS, drift −16, locked brakes −15 to −16, wheelspin −17, heavy impact −6, scrape −21, wind at
+  120–160 mph −22; no limiter hits. Drift spectral flatness 0.000 (a tonal squeal, peak ≈ 950 Hz, centroid
+  820 Hz), locked brakes 0.05 (centroid 1.3 kHz), scrape 0.30 (noisy, centroid 3.7 kHz), road and wind < 0.01
+  (rumble, centroid 170–290 Hz). Discontinuity peaks (3.0) are in the scrape and match the raw `Scratch` wave's
+  own (3.0). In game (`MW_SFX_TRACE`): `--test drift` lateral intensity above 0.3 for 5.9 s of the 5.8 s drift,
+  braking only during the 0.36 s brake tap; `--test handbrake` locked 3.8 s; `--test brake` ABS squeal 1.9 s;
+  `--test crash` one heavy impact at 31.9 m/s; `--test accel` no wheelspin (traction control).
+- Open: surface types (collision tags) to pick other surfaces' sounds and their bumps / transitions; which
+  collision slot is which (car vs wall vs traffic, front / side / rear?); `TyreSoundParams` field names;
+  ambience (`AmbienceSequences` loop with `JumpTimelineController`s, not implemented), wall reflections, horn
+  (`Vehicle_Sound.Horn` UniqueId 143356, no input), turbo / blow-off (EngineSound2 bindings, engine path).
 ### 2026-10-04 (session 2): wheel layout, the Venom's front axle
 - User report: wheels off on some cars (Hennessey Venom GT Spyder). Survey over every car
   (`cargo test --release -p mw-assets --test wheel_survey -- --ignored --nocapture`): body z extent vs spec
