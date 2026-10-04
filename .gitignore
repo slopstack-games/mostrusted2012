@@ -11,3 +11,8 @@
 *.watch
 *.csv
 .claude/
+
+# Decompiled dumps and notes about them: never commit (docs/reverse-engineering.md)
+/re/*.tar
+/re/*.md
+/re/NFS13_dump/
