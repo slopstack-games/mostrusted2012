@@ -53,6 +53,26 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-04 (session 2): key-light shadows (CSM lookup ported)
+- `LightBuffer_KeylightAndAmbient` shadow lookup decoded (`gGlobalCB`: `ShadowMap_Constants{,2}`,
+  `ShadowMap_ScaleOffset[3]`, `ShadowMap_WorldToLight0`, comparison sampler s15 on `shadowMap0` t15):
+  - One atlas, three cascades stacked vertically: cascade i at uv = ls.xy × (0.5, −1/6) + (0.5, (2i + 1)/6).
+  - Cascade 0 is `WorldToLight0`; cascades 1 and 2 reuse it with an xy scale + offset (`ScaleOffset[0].xy` /
+    `.zw`, `[1].xy` / `[2].xy`) and a z offset only (`[1].z`, `[2].z`): same orientation and depth scale.
+  - Selection: the first cascade with max(|x|, |y|) < 0.99; outside all three the reference depth is 0 (lit).
+  - One `sample_c_lz` tap (2×2 hardware PCF), then lerp(C2.y, s, fade) with fade = saturate(C.w − view depth ×
+    C2.w)², then squared, then × saturate(1 − 0.8 (1 − AO)).
+  - Casters: `WorldShadow_Opaque_{Single,Double}sided` (white PS, position-only VS with
+    `ViewProjectionModified`) are shadow-only proxy meshes; the loader still skips them (`skip_shader`). Vehicle
+    and character shaders carry a `MaterialShadowMapBias` parameter (caster-side bias).
+- Implemented: Bevy renders three directional cascades (2048², splits 20 m / … / 180 m, fade over the last 30 m:
+  provisional, the game sets them from code) and `game_lighting.wgsl::game_shadow` samples them with the game's
+  selection, single tap, fade and square. Bevy's receiver normal / depth bias stands in for the caster bias.
+  Groundcover casts no shadows.
+- Observation: shaded areas are much darker than in the game. Noon rig: key 11 units vs up fill 0.065 × 2.6;
+  with only the rig cube as ambient the ratio is ~20:1. The game's RT3 indirect term also carries lightmaps and
+  vertex light, which are not bound yet (M1.4.7): probably the missing sky light in shade.
+
 ### 2026-10-04 (evening): engine sound rewritten from the game's audio data
 - User report after the resampling fix: the engine "still plays snippets in full and isn't blending them".
   Cause: grains (whole engine cycles, up to 77 ms) were butt-joined with a 2 ms cross-fade while

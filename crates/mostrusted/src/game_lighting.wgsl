@@ -4,12 +4,17 @@
 //   RT0 = (N * 0.5 + 0.5, roughness)  RT1 = (sqrt(albedo), AO)  RT2 = (F0, Fresnel strength)
 //   RT3 = (sqrt(indirect × exposure), vehicle flag)
 // It also applies the game's Fog pass (`mwtool shader-asm Fog`) to the lit geometry.
-// Divergences from the game, for now: no cascaded shadow map (shadow = 1); one irradiance cube for both
+// Divergences from the game, for now: the shadow cascades are Bevy's (fit, split distances, caster bias
+// differ from the game's CPU-side setup; see `game_shadow`); one irradiance cube for both
 // of the game's (it blends a second, local one for vehicles by distance); no height-layer fog; the fog
 // colour's sun gradient is approximated.
 
 #import bevy_pbr::{
-    mesh_view_bindings::{view, deferred_prepass_texture},
+    mesh_view_bindings::{
+        view, deferred_prepass_texture, lights, directional_shadow_textures,
+        directional_shadow_textures_comparison_sampler,
+    },
+    mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT,
     prepass_utils,
     view_transformations::{position_ndc_to_world, frag_coord_to_ndc},
 }
@@ -18,7 +23,8 @@ struct GameLighting {
     // Key light colour × illuminance (lux), and the direction it travels.
     key_colour: vec4<f32>,
     key_direction: vec4<f32>,
-    // x = sky brightness (cd/m² per irradiance-cube unit)
+    // x = sky brightness (cd/m² per irradiance-cube unit); shadow fade: y = 1 / fade length,
+    // z = shadow distance / fade length, w = shadow term beyond the fade
     params: vec4<f32>,
     fog_colour: vec4<f32>,
     fog_colour_sun: vec4<f32>,
@@ -73,9 +79,9 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let car = select(0.0, 1.0, rt3.w > 0.992157);
     let one_minus_f0 = 1.0 - f0;
 
-    // Key light, dimmed in occluded areas: the CSM term (1 here) × (1 - 0.8 × (1 - AO)).
+    // Key light, dimmed in occluded areas: the CSM term × (1 - 0.8 × (1 - AO)).
     let l = -lighting.key_direction.xyz;
-    let shadow = 1.0;
+    let shadow = game_shadow(world, n, l);
     let key = lighting.key_colour.rgb * view.exposure * shadow * saturate(1.0 - 0.8 * (1.0 - ao));
     let nl_raw = dot(n, l);
     let nl = saturate(nl_raw);
@@ -127,4 +133,41 @@ fn apply_fog(colour: vec3<f32>, world: vec3<f32>, to_sun: vec3<f32>) -> vec3<f32
     let phase = lighting.scattering.w / pow(1.0 + lighting.scattering_params.x * cos_corona, 2.0);
     let scatter = t * min(phase, 64.0) * lighting.scattering.rgb * view.exposure;
     return colour * (1.0 - t) + fog * t + scatter;
+}
+
+// The game's cascaded shadow lookup (`LightBuffer_KeylightAndAmbient`): the first cascade whose light-space
+// xy lies inside ±0.99 is sampled with one hardware 2×2 PCF tap (`sample_c_lz`); points outside every
+// cascade compare against depth 0 and are lit. The result fades to `params.w` with view depth as
+// saturate(C.w - depth × C2.w)², then the blended value is squared.
+// Bevy renders the cascades (one array layer each instead of the game's vertical atlas). The game biases
+// casters per material (`MaterialShadowMapBias`); Bevy's normal and depth bias on the receiver stand in.
+fn game_shadow(world: vec3<f32>, n: vec3<f32>, to_light: vec3<f32>) -> f32 {
+    if lights.n_directional_lights == 0u {
+        return 1.0;
+    }
+    let light = &lights.directional_lights[0];
+    if ((*light).flags & DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT) == 0u {
+        return 1.0;
+    }
+    var s = 1.0;
+    for (var i = 0u; i < (*light).num_cascades; i += 1u) {
+        let cascade = &(*light).cascades[i];
+        let offset = (*light).shadow_normal_bias * (*cascade).texel_size * n + (*light).shadow_depth_bias * to_light;
+        let clip = (*cascade).clip_from_world * vec4(world + offset, 1.0);
+        let ndc = clip.xyz / clip.w;
+        if max(abs(ndc.x), abs(ndc.y)) < 0.99 && ndc.z >= 0.0 && ndc.z <= 1.0 {
+            let uv = ndc.xy * vec2(0.5, -0.5) + 0.5;
+            let layer = i32((*light).depth_texture_base_index + i);
+            s = textureSampleCompareLevel(
+                directional_shadow_textures, directional_shadow_textures_comparison_sampler, uv, layer, ndc.z
+            );
+            break;
+        }
+    }
+    let forward = -view.world_from_view[2].xyz;
+    let depth = dot(world - view.world_position.xyz, forward);
+    var fade = saturate(lighting.params.z - depth * lighting.params.y);
+    fade *= fade;
+    let blended = mix(lighting.params.w, s, fade);
+    return blended * blended;
 }

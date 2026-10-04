@@ -317,7 +317,13 @@ fn setup(mut commands: Commands, game: Res<Game>, mut images: ResMut<Assets<Imag
     }
     // Lights the forward (translucent) materials; the game's lighting pass takes the key light from
     // `GameLighting`.
-    commands.spawn((DirectionalLight { illuminance: key_illuminance, shadow_maps_enabled: false, ..default() }, sun));
+    // Its cascaded shadow maps are rendered by Bevy and sampled by the game's lighting pass (`deferred.rs`).
+    commands.insert_resource(bevy::light::DirectionalLightShadowMap { size: deferred::SHADOW_MAP_SIZE });
+    commands.spawn((
+        DirectionalLight { illuminance: key_illuminance, shadow_maps_enabled: true, ..default() },
+        deferred::shadow_cascades(),
+        sun,
+    ));
     commands.spawn((
         Text::new("Most Rusted"),
         TextFont { font_size: FontSize::Px(16.0), ..default() },
@@ -393,9 +399,14 @@ fn receive_assets(
             }
             Msg::Instance { model, transform } => {
                 let Some(parts) = loaded.models.get(&model) else { continue };
+                // Groundcover (model keys 0x6…, `loader::groundcover`) casts no shadows.
+                let casts_shadow = model.0 >> 60 != 6;
                 commands.spawn((Transform::from_matrix(transform), Visibility::default())).with_children(|c| {
                     for (mesh, mat) in parts {
-                        c.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat.clone())));
+                        let mut e = c.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat.clone())));
+                        if !casts_shadow {
+                            e.insert(bevy::light::NotShadowCaster);
+                        }
                     }
                 });
                 loaded.instances += 1;

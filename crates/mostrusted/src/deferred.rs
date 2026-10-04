@@ -29,6 +29,28 @@ use bevy::render::view::{ExtractedView, ViewTarget};
 use bevy::render::{Render, RenderApp, RenderStartup, RenderSystems};
 use bevy::shader::{Shader, ShaderDefVal};
 
+/// Edge length of each of the key light's shadow cascades. The game packs its three cascades into one
+/// atlas, stacked vertically (`LightBuffer_KeylightAndAmbient` addresses cascade i at v = (2i + 1) / 6);
+/// Bevy keeps them as layers of an array texture, which the lighting pass samples the same way.
+pub const SHADOW_MAP_SIZE: usize = 2048;
+/// Shadows end here (metres of view depth) and fade out over the last `SHADOW_FADE` metres. The game sets
+/// both through `ShadowMap_Constants{,2}.w` from code; these values are provisional.
+const SHADOW_DISTANCE: f32 = 180.0;
+const SHADOW_FADE: f32 = 30.0;
+
+/// The key light's cascades: three, as the game's shadow atlas has. Split distances are provisional (the
+/// game computes `ShadowMap_ScaleOffset` on the CPU).
+pub fn shadow_cascades() -> bevy::light::CascadeShadowConfig {
+    bevy::light::CascadeShadowConfigBuilder {
+        num_cascades: 3,
+        minimum_distance: 0.1,
+        first_cascade_far_bound: 20.0,
+        maximum_distance: SHADOW_DISTANCE,
+        overlap_proportion: 0.2,
+    }
+    .build()
+}
+
 /// Scene inputs of the game's lighting pass.
 #[derive(Resource, Clone, ExtractResource)]
 pub struct GameLighting {
@@ -229,7 +251,8 @@ fn prepare_buffer(
     buffer.0.set(GameLightingUniform {
         key_colour: l.key_colour.extend(0.0),
         key_direction: l.key_direction.normalize_or_zero().extend(0.0),
-        params: Vec4::new(l.sky_brightness, 0.0, 0.0, 0.0),
+        // Shadow fade as the game's `saturate(ShadowMap_Constants.w - depth × ShadowMap_Constants2.w)`.
+        params: Vec4::new(l.sky_brightness, 1.0 / SHADOW_FADE, SHADOW_DISTANCE / SHADOW_FADE, 1.0),
         fog_colour: f.colour.extend(0.0),
         fog_colour_sun: f.colour_sun.extend(0.0),
         fog_coeffs: Vec4::new(1.0 / span, f.near / span, f.power, 0.0),

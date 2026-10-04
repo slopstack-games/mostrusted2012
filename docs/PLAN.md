@@ -108,7 +108,8 @@ Make a static frame look like the game.
    vertex colour is decoded.
 7. `[~]` **The game's deferred pipeline** (see "Recreate the game's architecture"): done: the G-buffer pass
    writes the game's four targets (Bevy's deferred prepass as host), the ported key light + ambient pass and
-   Fog pass (`deferred.rs`, `game_lighting.wgsl`). Open: CSM shadows, the irradiance quadric / second
+   Fog pass (`deferred.rs`, `game_lighting.wgsl`), the game's 3-cascade shadow lookup on Bevy-rendered cascades.
+   Open: the game's cascade fit / split distances, shadow-only proxy casters (`WorldShadow_*`), the irradiance quadric / second
    irradiance cube, point / spot / cop lights (`LightBuffer_*`, `TiledLighting_*`), planar reflection,
    `GBufferComposite`, the game's tonemap / auto exposure, colour cube, bloom, `PostAA`.
 
