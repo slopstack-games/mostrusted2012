@@ -394,7 +394,7 @@ impl Worker {
                 self.texture(key)?;
             }
             look.retain_textures(|k| self.textures.contains(k));
-            let Some(mesh) = convert::mesh(&sm.mesh, look.uv_b) else { continue };
+            let Some(mesh) = convert::mesh(&sm.mesh, look.uv_b, look.vertex_colour) else { continue };
             parts.push(Part { mesh, look });
         }
         if parts.is_empty() {

@@ -15,6 +15,9 @@
 // mode 6: vehicle parts      F0 / roughness from textures or constants, vertex AO (UV_1), clear coat
 // mode 7: trees              premultiplied texel: albedo = (rgb / a)^2, vertex AO, no specular
 // mode 8: water              two scrolling wave normal maps, algae albedo, near-mirror reflection
+// mode 9: vehicle lamp interior (Refraction): parallax-offset reflector, LED emissive channels
+// mode 10: vehicle glass     forward, premultiplied: tinted volume + Fresnel sky reflection
+// mode 11: vehicle lens filter (Glass_Colourise): multiply blend
 
 #import bevy_pbr::{
     pbr_fragment::pbr_input_from_standard_material,
@@ -61,8 +64,19 @@ struct Layered {
     //          p10 = (has tiling normals, has AO map, instance AO, has decal)
     //          textures: mask, layer 1..3, decal, tiling normal 1..3, AO map
     // WorldPBR: p0 = (has SpecularColour map, instance AO scale, has AO map, planar only), p1 = MaterialDiffuse
-    // vehicle: p0 = (F0 rgb, roughness), p1 = (has spec map, has normal map, coat F0, coat fresnel),
-    //          p2.x = has vertex colour (AO in UV_1.x, specular occlusion in UV_1.y)
+    // vehicle: p0 = (F0 rgb, roughness), p1 = (has spec map, roughness source: 0 constant, 1 normal
+    //          alpha, 2 normal green, coat F0, coat fresnel), p2 = (has vertex colour (x = AO,
+    //          y = specular occlusion), has diffuse map, lightmapped-lights kind, multiplier),
+    //          p3 = (albedo rgb, lightmap reads UV_1 = TEXCOORD3), p4..p7 = red / green / blue / alpha
+    //          channel colours; textures: diffuse, specular, normal, lightmap lights
+    // refraction: p0 = ParallaxConstants, p1 = (EmissiveLuminance, ClearcoatSpecular, PbrMaterialFresnel),
+    //          p2 = PbrMaterialDiffuseColour, p3 = mExternalGlassColour, p4..p7 = brake / headlight /
+    //          reversing / taillight colours; textures: colour, external normal, emissive, internal
+    //          normal, displacement
+    // glass:   p0 = (OpacityMin, FresnelFactor, SurfaceSoftness, mSelfIlluminationMultiplier),
+    //          p1 = DebugOverride_GlassVolumeColour, p2 = RunningColour, p3 = (has diffuse, has lightmap,
+    //          has vertex colour); textures: diffuse, lightmap
+    // colourise: p0 = MaterialColour_SimpleMultiply
     // tree:    p0 = (has vertex colour, instance AO, 0, 0)
     // water:   p0 = (normalMapTile1.xy, normalMapTile2.xy), p1 = (waveAnimationSpeeds.xy, F0, roughness),
     //          p2 = algaeColour, p3 = (opaque variant, has normal map); textures: -, normal,
@@ -71,6 +85,8 @@ struct Layered {
     p: array<vec4<f32>, 12>,
     // x = sky brightness (cd/m² per panorama unit), y = reflection cube mip count
     env: vec4<f32>,
+    // vehicle light state (g_selfIlluminationMask): x = brake, y = headlights / running, z = reverse, w = tail
+    lights: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> layered: Layered;
@@ -325,23 +341,36 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             pbr_input.specular_occlusion = 0.0;
         }
     } else if layered.mode == 6u {
-        // VehicleNFS13 G-buffer pass: o2 = F0 (spec map rgb or PbrMaterialSpecularColour) * vertex y,
-        // o0.w = roughness (normal map alpha or PbrMaterialRoughness), o1.w = vertex x (AO). The coat
-        // reflects with F0 = ClearcoatSpecular, rising towards 1 at grazing angles by ClearcoatFresnel.
+        // VehicleNFS13 G-buffer pass: o1 = albedo (diffuse texture or PbrMaterialDiffuseColour),
+        // o2 = F0 (spec map rgb or PbrMaterialSpecularColour) * vertex y, o0.w = roughness
+        // (PbrMaterialRoughness, else the normal map's alpha, or its green in the single-channel
+        // Emissive variant), o1.w = vertex x (AO). The coat reflects with F0 = ClearcoatSpecular, rising
+        // towards 1 at grazing angles by ClearcoatFresnel. The vertex colour is read raw here (Bevy has
+        // multiplied it into its base colour), so the albedo is rebuilt from the material.
         let p0 = layered.p[0];
         let p1 = layered.p[1];
+        let p2 = layered.p[2];
+        let p3 = layered.p[3];
+        var albedo = vec4(p3.rgb, 1.0);
+        if p2.y > 0.5 {
+            albedo = textureSample(tex0, samp0, uv) * vec4(p3.rgb, 1.0);
+        }
+        pbr_input.material.base_color = albedo;
         var f0 = p0.rgb;
         var rough = p0.w;
         if p1.x > 0.5 {
             f0 = textureSample(tex1, samp1, uv).rgb;
         }
         if p1.y > 0.5 {
-            rough = textureSample(tex2, samp2, uv).a;
+            let nt = textureSample(tex2, samp2, uv);
+            rough = select(nt.a, nt.y, p1.y > 1.5);
         }
         var ao = vec2(1.0);
-        if layered.p[2].x > 0.5 {
-            ao = uv_b;
+#ifdef VERTEX_COLORS
+        if p2.x > 0.5 {
+            ao = in.color.xy;
         }
+#endif
         set_specular(&pbr_input, f0 * ao.y, rough);
         pbr_input.diffuse_occlusion *= vec3(ao.x);
         pbr_input.specular_occlusion *= ao.y;
@@ -358,6 +387,87 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let r = reflect(-v_dir, pbr_input.N);
         extra += textureSampleLevel(sky_cube, sky_samp, r, 0.0).rgb * layered.env.x * coat;
 #endif
+        // Lightmapped lights (LightmapLightsTextureSampler), switched by the light state mask:
+        // four channels sat(texel² × mask.xyzy) × multiplier against the red / green / blue / alpha
+        // colours, or the green channel alone (the `Lightmap` variants also tint it by the albedo).
+        if p2.z > 0.5 {
+            let t = textureSample(tex3, samp3, select(uv, uv_b, p3.w > 0.5));
+            let m = layered.lights;
+            var emit: vec3<f32>;
+            if p2.z < 1.5 {
+                let e = saturate(t * t * m.xyzy) * p2.w;
+                emit = e.x * layered.p[4].rgb + e.y * layered.p[5].rgb + e.z * layered.p[6].rgb
+                    + e.w * layered.p[7].rgb;
+            } else {
+                emit = saturate(t.y * t.y * m.y) * p2.w * layered.p[5].rgb;
+                if p2.z > 2.5 {
+                    emit *= pbr_input.material.base_color.rgb;
+                }
+            }
+            emit *= layered.env.x;
+            extra += emit;
+            pbr_input.material.emissive = vec4(emit, 1.0);
+        }
+    } else if layered.mode == 9u {
+        // VehicleNFS13_Refraction (lamp interiors), a G-buffer pass despite the name. The UV is offset
+        // along the eye ray in tangent space, bent towards the external lens normal by
+        // ParallaxConstants.z, by a height of displacement.x × P.x + P.y. At the offset UV: internal
+        // normal map → normal, displacement.z → roughness, .y → AO, Colour → F0, Fresnel =
+        // lerp(colour.x, 1, PbrMaterialFresnel), albedo = PbrMaterialDiffuseColour. RT3 holds only
+        // (sharp sky reflection of the eye ray off the reflector × ClearcoatSpecular + LED emission) ×
+        // lerp(colour, mExternalGlassColour, its w) × AO, without the vehicle flag.
+        let pc = layered.p[0];
+        let k = layered.p[1];
+        let i_w = -v_dir;
+        let i_ts = vec3(dot(i_w, tv), dot(i_w, bv), dot(i_w, nv));
+        let height = textureSample(tex4, samp4, uv).x * pc.x + pc.y;
+        let ext = 2.0 * textureSample(tex1, samp1, uv).rgb - 1.0;
+        let d = normalize(mix(i_ts, -ext, pc.z));
+        let uv2 = uv + vec2(d.x, -d.y) * height;
+        let ni = 2.0 * (textureSample(tex3, samp3, uv2).rgb - 0.5);
+        let n = normalize(ni.x * tv + ni.y * bv + ni.z * nv);
+        let disp = textureSample(tex4, samp4, uv2);
+        let colour = textureSample(tex0, samp0, uv2);
+        pbr_input.N = n;
+        pbr_input.material.base_color = vec4(layered.p[2].rgb, 1.0);
+        set_specular(&pbr_input, colour.rgb, disp.z);
+        fresnel = mix(colour.x, 1.0, k.z);
+        pbr_input.diffuse_occlusion = vec3(disp.y);
+        pbr_input.specular_occlusion = 0.0;
+        // Emissive channels: brake, headlight, reversing, tail.
+        let e = saturate(textureSample(tex2, samp2, uv2) * layered.lights) * k.x;
+        let emit = e.x * layered.p[4].rgb + e.y * layered.p[5].rgb + e.z * layered.p[6].rgb + e.w * layered.p[7].rgb;
+        let dw = normalize(d.x * tv + d.y * bv + d.z * nv);
+        let refl = textureSampleLevel(sky_cube, sky_samp, reflect(dw, n), 0.0).rgb;
+        let g = layered.p[3];
+        extra = (refl * k.y + emit) * layered.env.x * mix(colour.rgb, g.rgb, g.w) * disp.y;
+        pbr_input.material.emissive = vec4(extra, 1.0);
+    } else if layered.mode == 10u {
+        // VehicleNFS13_Glass: the volume colour is the vertex colour (Textured: lerp(vertex colour,
+        // diffuse, diffuse.a)), replaced by DebugOverride_GlassVolumeColour when its w > 0. Composited
+        // in the forward branch below.
+        let flags = layered.p[3];
+        var vol = vec4(0.0);
+#ifdef VERTEX_COLORS
+        if flags.z > 0.5 {
+            vol = in.color;
+        }
+#endif
+        if flags.x > 0.5 {
+            let dt = textureSample(tex0, samp0, uv);
+            vol = mix(vol, dt, dt.a);
+        }
+        if layered.p[1].w > 0.0 {
+            vol = layered.p[1];
+        }
+        pbr_input.material.base_color = vol;
+        set_specular(&pbr_input, vec3(0.0), 1.0);
+        pbr_input.specular_occlusion = 0.0;
+        if flags.y > 0.5 {
+            // Running light: lightmap.y × mask.y × mSelfIlluminationMultiplier × RunningColour.
+            let lm = textureSample(tex1, samp1, uv).y;
+            extra = lm * layered.lights.y * layered.p[0].w * layered.p[2].rgb * layered.env.x;
+        }
     } else if layered.mode == 7u {
         // The G-buffer stores rgb / a without the sqrt, so albedo = (rgb / a)^2 with rgb in gamma
         // space; Bevy has already decoded rgb to linear (~ rgb^2), so divide by a^2.
@@ -416,11 +526,42 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     out.motion_vector = calculate_motion_vector(in.world_position, in.previous_world_position);
 #endif
 #else
-    out.color = apply_pbr_lighting(pbr_input);
-    out.color = main_pass_post_lighting_processing(pbr_input, out.color);
+    if layered.mode == 11u {
+        // VehicleNFS13_Glass_Colourise: multiply blend by lerp(1, MaterialColour, fog.w = 1).
+        out.color = vec4(layered.p[0].rgb, 1.0);
+    } else if layered.mode == 10u {
+        out.color = main_pass_post_lighting_processing(pbr_input, vehicle_glass(pbr_input, v_dir, extra));
+    } else {
+        out.color = apply_pbr_lighting(pbr_input);
+        out.color = main_pass_post_lighting_processing(pbr_input, out.color);
+    }
 #endif
     return out;
 }
+
+#ifndef PREPASS_PIPELINE
+// VehicleNFS13_Glass forward pass (clean, dry, uncracked path), premultiplied:
+//   F = OpacityMin + (1 - OpacityMin) × FresnelFactor × (1 - N·V)^5
+//   colour = volume.rgb × volume.a × diffuse light × (1 - F) + lerp(cube(R), blurred cube(R), SurfaceSoftness) × F
+//   alpha = volume.a × (1 - F) + F, plus the running light added on top.
+// The game's diffuse light is key × N·L × shadow / π + irradiance cube; Bevy's lighting stands in for it.
+fn vehicle_glass(pbr_input: PbrInput, v: vec3<f32>, emit: vec3<f32>) -> vec4<f32> {
+    let g = layered.p[0];
+    let vol = pbr_input.material.base_color;
+    var lit_input = pbr_input;
+    lit_input.material.base_color = vec4(vol.rgb, 1.0);
+    let lit = apply_pbr_lighting(lit_input).rgb;
+    let n = normalize(pbr_input.N);
+    let nv = saturate(dot(n, v));
+    let f = g.x + (1.0 - g.x) * g.y * pow(1.0 - nv, 5.0);
+    let r = reflect(-v, n);
+    let sharp = textureSampleLevel(sky_cube, sky_samp, r, 0.0).rgb;
+    let soft = textureSampleLevel(sky_cube, sky_samp, r, min(3.0, layered.env.y - 1.0)).rgb;
+    let refl = mix(sharp, soft, g.z) * layered.env.x * view.exposure;
+    let colour = lit * vol.a * (1.0 - f) + refl * f + emit * view.exposure;
+    return vec4(colour, vol.a * (1.0 - f) + f);
+}
+#endif
 
 // Deferred lighting pass ID of the game's lighting (`deferred.rs`); Bevy's own pass handles ID 1.
 const GAME_LIGHTING_PASS_ID: u32 = 2u;

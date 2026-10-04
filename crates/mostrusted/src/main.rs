@@ -96,6 +96,10 @@ struct Cli {
     /// Hour of the day (0–23) on the environment timeline.
     #[arg(long, default_value_t = 13)]
     hour: u32,
+    /// Vehicle light state `brake,headlights,reverse,tail` (0–1 each; the game's
+    /// `g_selfIlluminationMask`). Driving switches brake and reverse with the pedals.
+    #[arg(long, value_delimiter = ',', default_value = "0,1,0,1")]
+    lights: Vec<f32>,
 }
 
 #[derive(Resource)]
@@ -220,6 +224,7 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(MaterialPlugin::<GameMaterial>::default())
         .add_plugins(deferred::GameLightingPlugin)
         .init_resource::<GameEnvironment>()
+        .insert_resource(materials::VehicleLights::from_slice(&cli.lights))
         .add_plugins((avian3d::PhysicsPlugins::default(), drive::DrivePlugin))
         .add_plugins(audio::GameAudioPlugin {
             music: !cli.no_music && !cli.mute && cli.screenshot.is_none() && test.is_none(),
@@ -240,6 +245,7 @@ fn main() -> anyhow::Result<()> {
         .init_resource::<Loaded>()
         .add_systems(Startup, setup)
         .add_systems(Update, (start_loader, receive_assets, update_status, auto_screenshot))
+        .add_systems(Update, (drive_vehicle_lights, apply_vehicle_lights).chain())
         .run();
     Ok(())
 }
@@ -355,6 +361,7 @@ fn receive_assets(
     mut camera: Query<&mut Transform, With<Camera3d>>,
     game: Res<Game>,
     env: Res<GameEnvironment>,
+    lights: Res<materials::VehicleLights>,
 ) {
     let Some(channel) = channel else { return };
     let rx = channel.0.lock().unwrap();
@@ -382,7 +389,7 @@ fn receive_assets(
                         Some(m) => m.clone(),
                         None => {
                             let tex = |k: Option<TexKey>| k.and_then(|k| loaded.textures.get(&k).cloned());
-                            let m = materials.add(part.look.material(tex, game.paint, &env));
+                            let m = materials.add(part.look.material(tex, game.paint, &env, &lights));
                             loaded.materials.insert(part.look, m.clone());
                             m
                         }
@@ -462,6 +469,39 @@ fn update_status(
         pos.y,
         pos.z
     );
+}
+
+/// Brake lights follow the brake pedal and reversing lights the reverse gear while driving.
+fn drive_vehicle_lights(
+    input: Res<drive::CarInput>,
+    car: Query<&drive::Car>,
+    mut lights: ResMut<materials::VehicleLights>,
+) {
+    let Ok(car) = car.single() else { return };
+    let mut mask = lights.base;
+    mask.x = mask.x.max(if input.brake > 0.05 { 1.0 } else { 0.0 });
+    mask.z = mask.z.max(if car.gear < 0 { 1.0 } else { 0.0 });
+    if lights.mask != mask {
+        lights.mask = mask;
+    }
+}
+
+/// Push the light state into the materials that read it (lightmapped lights, lamp interiors, glass).
+fn apply_vehicle_lights(
+    lights: Res<materials::VehicleLights>,
+    loaded: Res<Loaded>,
+    mut materials: ResMut<Assets<GameMaterial>>,
+) {
+    if !lights.is_changed() {
+        return;
+    }
+    for (look, handle) in &loaded.materials {
+        if look.uses_lights()
+            && let Some(mut m) = materials.get_mut(handle)
+        {
+            m.extension.params.lights = lights.mask;
+        }
+    }
 }
 
 /// `--screenshot`: wait for loading plus a few frames for GPU uploads, capture,

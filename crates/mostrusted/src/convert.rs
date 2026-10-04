@@ -12,8 +12,9 @@ pub const UV_FROM_COLOUR: u8 = 0xC0;
 
 /// Build a Bevy mesh from a decoded game mesh. Game TEXCOORD0 becomes UV_0
 /// and `uv_b` (if any) selects the game TEXCOORD that becomes UV_1. Normals
-/// are taken from the vertex data when present, otherwise computed.
-pub fn mesh(m: &mw_formats::DecodedMesh, uv_b: Option<u8>) -> Option<Mesh> {
+/// are taken from the vertex data when present, otherwise computed. `colour` adds the vertex
+/// colour as Bevy's COLOR attribute (the vehicle shaders read it themselves).
+pub fn mesh(m: &mw_formats::DecodedMesh, uv_b: Option<u8>, colour: bool) -> Option<Mesh> {
     if m.indices.is_empty() {
         return None;
     }
@@ -30,6 +31,9 @@ pub fn mesh(m: &mw_formats::DecodedMesh, uv_b: Option<u8>) -> Option<Mesh> {
     if let Some(uv) = uv_b {
         mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, uv2(uv));
     }
+    if colour && let Some(c) = &m.colors {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, c.clone());
+    }
     match &m.normals {
         Some(n) => {
             mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, n.iter().map(|v| [v[0], v[1], v[2]]).collect::<Vec<_>>())
@@ -37,9 +41,24 @@ pub fn mesh(m: &mw_formats::DecodedMesh, uv_b: Option<u8>) -> Option<Mesh> {
         None => mesh.compute_smooth_normals(),
     }
     // Tangents feed the normal maps. Packed frames carry the bitangent sign in w; stored float
-    // tangents (terrain) have none, so they get +1.
-    if let (Some(t), Some(_)) = (&m.tangents, &m.normals) {
-        let t: Vec<[f32; 4]> = t.iter().map(|v| [v[0], v[1], v[2], if v[3] < 0.0 { -1.0 } else { 1.0 }]).collect();
+    // tangents have none: their sign comes from the stored binormal when there is one (vehicle lamp
+    // interiors), else +1 (terrain).
+    if let (Some(t), Some(n)) = (&m.tangents, &m.normals) {
+        let t: Vec<[f32; 4]> = t
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                let sign = match m.binormals.as_ref().and_then(|b| b.get(i)) {
+                    Some(b) => {
+                        let n = n[i];
+                        let c = [n[1] * v[2] - n[2] * v[1], n[2] * v[0] - n[0] * v[2], n[0] * v[1] - n[1] * v[0]];
+                        c[0] * b[0] + c[1] * b[1] + c[2] * b[2]
+                    }
+                    None => v[3],
+                };
+                [v[0], v[1], v[2], if sign < 0.0 { -1.0 } else { 1.0 }]
+            })
+            .collect();
         mesh.insert_attribute(Mesh::ATTRIBUTE_TANGENT, t);
     }
     Some(mesh)

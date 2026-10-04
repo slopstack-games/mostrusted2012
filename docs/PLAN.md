@@ -87,10 +87,17 @@ Make a static frame look like the game.
    4. `[x]` WorldPBR (every variant) and World_Diffuse_Specular: normal map, roughness = spec.y, F0 =
       cubic(spec.x) or SpecularColour × MaterialDiffuse, AO map (material Overlay or per-instance
       `AOMapTextureSampler`), instance tint and AO from the InstanceList w column / `diffuseTintColour`.
-   5. `[~]` Vehicles: textured parts (F0 = spec rgb, roughness = normal alpha, vertex AO / specular occlusion),
-      solid parts from `PbrMaterial*` constants, black tyres (their texture slots are unbound), paint from the
-      car's `VehiclePaint` (`--paint-index`) with a clear coat. Open: metallic flakes / pearlescent, livery and
-      two-paint masks, glass (`VehicleNFS13_Glass`), lights (`Refraction`, emissive lightmaps), dirt / dust.
+   5. `[~]` Vehicles: textured parts (F0 = spec rgb, roughness per variant: `PbrMaterialRoughness`, normal
+      alpha, or normal green for `_Emissive_`; normal mapping only on `NormalMap` variants), vertex AO /
+      specular occlusion, solid parts from `PbrMaterial*` constants, black tyres (their texture slots are
+      unbound), paint from the car's `VehiclePaint` (`--paint-index`) with a clear coat. Lights done
+      (2026-10-04): lightmapped lights (`EmissiveFourChannel`, `Emissive`, `Lightmap`, `BodyPaint_Lightmap`),
+      lamp interiors (`Refraction`: parallax, LED channels, reflector), lens filters (`Glass_Colourise`,
+      multiply), light state mask (`--lights`, brake / reverse follow the pedals). Glass done: `Glass*` with
+      vertex-colour / override volume, Fresnel sky reflection, running light (forward, Bevy diffuse light).
+      Open: metallic flakes / pearlescent, livery and two-paint masks, `LocalEmissive` (5 meshes), dirt / dust
+      / scuffs (runtime `GenericVector4_A/B/C`), cracked glass, tyre textures (bound at runtime?), the glass
+      shader's own key light + irradiance (uses Bevy's lighting), light coronas / beams (VFX).
    6. `[~]` Trees: premultiplied albedo `(rgb/a)²`, vertex AO, alpha test 129/255. Open: wind
       (`amplitude`/`speed`). Water: scrolling wave normals, algae albedo, near-mirror reflection. Open: river
       floor (TEXCOORD2), foam, caustics.

@@ -53,6 +53,58 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-04 (vehicle lights and glass): VehicleNFS13 light, lens and glass shaders ported
+- **Usage survey** (`mwtool models <car> --verbose` over all 74 `VEH_*_HI` bundles): besides wheels and
+  body, the light / glass families are `Glass` (140 meshes), `Glass_Colourise` (118),
+  `Body_Textured_NormalMap_Lightmap` (77) + `_Licenseplate` (73), `Glass_Textured_Lightmap` (73),
+  `_Emissive_NoDamage_NoEffects` (72), `_EmissiveFourChannel_NoDamage_NoEffects` (71), `Refraction` (62),
+  `BodyPaint_Lightmap` (31), `Body_Lightmap` (7), `LocalEmissive` (5, not ported).
+- **`g_selfIlluminationMask`** (gObjectCB, set per car at runtime) switches the lights. In `Refraction` it
+  multiplies the emissive texture's rgba against Brake / Headlight / Reversing / Taillight colours, so
+  x = brake, y = headlights, z = reversing, w = tail. The lightmapped shaders use `mask.xyzy` against the
+  Red / Green / Blue / Alpha channel colours: red = brake (911: 909 × 10, a huge HDR value), green =
+  headlight glow, blue = reversing, alpha = tail glow, which also follows y. Ported as `--lights
+  brake,headlights,reverse,tail` (default `0,1,0,1`); driving sets x from the brake pedal and z in reverse.
+- **Lightmapped lights**: `EmissiveFourChannel`: sat(LM(uv0)² × mask.xyzy) × mSelfIlluminationMultiplier,
+  dotted with the four channel colours, added to RT3. Its albedo is `PbrMaterialDiffuseColour` (no diffuse
+  sampler), roughness the normal map's alpha. `_Emissive_`: sat(LM(TEXCOORD3).y² × mask.y) × multiplier ×
+  green colour. It does **not** normal-map (o0.xyz = vertex normal) and its roughness is the normal texture's
+  **green**. `Lightmap` variants (body, licence plate, paint): the same green term × the surface albedo after
+  the coat. Roughness = `PbrMaterialRoughness`, F0 = `PbrMaterialSpecularColour` (the normal map's alpha is
+  not used, which the old code got wrong). The lightmap UV is TEXCOORD3 for all of these except
+  EmissiveFourChannel (TEXCOORD0). Emission is in the game's HDR units, so it is scaled by `GAME_UNIT` like
+  the sky.
+- **`Refraction` is an opaque G-buffer pass** (the old code drew it translucent grey): it renders the lamp
+  interior. The eye ray in tangent space (VS output from TANGENT / BINORMAL / NORMAL), bent towards
+  −(external normal map) by ParallaxConstants.z, offsets the UV by height = displacement.x × P.x + P.y (uv +
+  (d.x, −d.y) × h). At the offset UV: internal normal map → RT0 normal, displacement.z → roughness,
+  displacement.y → AO, `ColourSampler` → F0, Fresnel = lerp(colour.x, 1, PbrMaterialFresnel), albedo =
+  `PbrMaterialDiffuseColour`. RT3 holds only (sharp cube(reflect(eye ray, n)) × ClearcoatSpecular + LED
+  emission) × lerp(colour, mExternalGlassColour, its w) × AO, without the vehicle flag. On the 911,
+  mExternalGlassColour = 14.1 × white, so the reflector is bright. The tangent sign for these float-frame
+  meshes now comes from the stored binormal (`convert::mesh`).
+- **`Glass_Colourise`** is a multiply-blend lens filter: the VS outputs lerp(1, MaterialColour_SimpleMultiply,
+  g_PerVehicleFog.w) and the PS writes it with alpha 1. This is what makes tail lights red (911: (0.83, 0,
+  0.009)). Ported with `AlphaMode::Multiply`.
+- **`Glass*`** (forward, premultiplied, decoded for the clean / dry / uncracked path; `GenericVector4_A` =
+  dirt, dust and wetness amounts at runtime): the volume colour is the **vertex colour** (Textured:
+  lerp(vertex colour, diffuse, diffuse.a)), replaced by `DebugOverride_GlassVolumeColour` when its w > 0
+  (artists use this: the 911's lamp glass has w = 0.05, an R8 piece w = 1). F = OpacityMin + (1 − OpacityMin)
+  × FresnelFactor × (1 − N·V)⁵. colour = volume.rgb × volume.a × (key × N·L × shadow / π + irradiance) ×
+  (1 − F) + lerp(cube(R), EnvironmentSpecular(R), SurfaceSoftness) × F, alpha = volume.a × (1 − F) + F,
+  plus the running light LM(uv0).y × mask.y × multiplier × RunningColour (not squared here). Windows have
+  vertex alpha ≈ 0.7 with near-black rgb (dark tint); headlight covers have alpha 0 (clear but for Fresnel).
+  The diffuse term uses Bevy's forward lighting for now.
+- Dirt / dust / scuffs are runtime-driven (`GenericVector4_A/B/C` × Effects texture). With them at 0 the
+  body shaders reduce to the formulas above. Wheels: `Wheel_Textured_Roughness` keeps the vertex normal and
+  reads roughness from the normal map's alpha.
+- The tyre shader samples Diffuse / Specular / Normal and their Blur variants, but tyre materials bind only
+  Effects / BlurEffects. Those textures probably come from somewhere at runtime; unresolved.
+- Vehicle vertex colours now reach the shader as Bevy's COLOR attribute (UV_1 carries the lightmap UV), so
+  the vehicle branch rebuilds its albedo from p3 × diffuse texture instead of Bevy's base colour.
+- Checked visually: 911 (tail outline glow, red brake LEDs with `--lights 1,1,1,1`, projector headlight),
+  Audi R8 GT (red tail clusters, LED DRL dots glowing at night), Veyron (round red tail lamps, LED bars).
+
 ### 2026-10-04 (evening): engine sound rewritten from the game's audio data
 - User report after the resampling fix: the engine "still plays snippets in full and isn't blending them".
   Cause: grains (whole engine cycles, up to 77 ms) were butt-joined with a 2 ms cross-fade while
