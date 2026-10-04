@@ -6,6 +6,8 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
 mod crack;
+#[cfg(target_os = "linux")]
+mod memscan;
 mod preview;
 mod survey;
 
@@ -92,6 +94,38 @@ enum Cmd {
         #[arg(long)]
         include_named: bool,
     },
+    /// Read-only value scanner for the running original game (Linux / Proton): find the memory holding
+    /// speed, drift state, ... for handling measurements. Interactive; `help` lists the commands. See
+    /// crates/mwtool/src/memscan.rs and docs/handling.md ("Measuring the original").
+    Memscan {
+        /// Process to attach to (basename on its command line).
+        #[arg(long, default_value = "NFS13.exe")]
+        process: String,
+        /// Attach to this pid instead.
+        #[arg(long)]
+        pid: Option<u32>,
+        /// Watch file that `save` appends to.
+        #[arg(long, default_value = "handling.watch")]
+        watch: PathBuf,
+        /// Also scan regions above 4 GiB (host libraries; the 32-bit game lives below).
+        #[arg(long)]
+        all_regions: bool,
+    },
+    /// Sample the values of a watch file from the running game into CSV.
+    Telemetry {
+        watch: PathBuf,
+        #[arg(long, short)]
+        out: PathBuf,
+        #[arg(long, default_value_t = 120.0)]
+        hz: f64,
+        /// Stop after this many seconds (default: until Ctrl-C or the game exits).
+        #[arg(long)]
+        seconds: Option<f64>,
+        #[arg(long, default_value = "NFS13.exe")]
+        process: String,
+        #[arg(long)]
+        pid: Option<u32>,
+    },
     /// Decode game audio to .wav: an .SPS file, or a bundle's Ginsu/Wave resources.
     Audio {
         /// `.SPS` path (relative to the game dir) or bundle path.
@@ -158,8 +192,17 @@ enum Cmd {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    // The live-process commands don't need the install.
+    match &cli.cmd {
+        Cmd::Memscan { process, pid, watch, all_regions } => return memscan_cmd(process, *pid, watch, *all_regions),
+        Cmd::Telemetry { watch, out, hz, seconds, process, pid } => {
+            return telemetry_cmd(watch, out, *hz, *seconds, process, *pid);
+        }
+        _ => {}
+    }
     let game = GameDir::locate(cli.game_dir.as_deref())?;
     match cli.cmd {
+        Cmd::Memscan { .. } | Cmd::Telemetry { .. } => unreachable!("handled before locating the game"),
         Cmd::Info => {
             println!("root:    {}", game.root().display());
             println!("version: {}", game.version().unwrap_or("unknown"));
@@ -864,4 +907,40 @@ fn print_genesys(obj: &fmt::genesys::Object, depth: usize, max_items: usize) {
             other => println!("{pad}{h}: {}", scalar(other).unwrap_or_default()),
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn attach(process: &str, pid: Option<u32>) -> Result<memscan::Process> {
+    match pid {
+        Some(pid) => memscan::Process::open(pid),
+        None => memscan::Process::find(process),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn memscan_cmd(process: &str, pid: Option<u32>, watch: &Path, all_regions: bool) -> Result<()> {
+    memscan::repl(&attach(process, pid)?, watch, all_regions)
+}
+
+#[cfg(target_os = "linux")]
+fn telemetry_cmd(
+    watch: &Path,
+    out: &PathBuf,
+    hz: f64,
+    seconds: Option<f64>,
+    process: &str,
+    pid: Option<u32>,
+) -> Result<()> {
+    let watches = memscan::read_watch_file(watch)?;
+    memscan::telemetry(&attach(process, pid)?, &watches, out, hz, seconds)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn memscan_cmd(_: &str, _: Option<u32>, _: &Path, _: bool) -> Result<()> {
+    bail!("memscan reads /proc/<pid>/mem and is Linux-only for now")
+}
+
+#[cfg(not(target_os = "linux"))]
+fn telemetry_cmd(_: &Path, _: &PathBuf, _: f64, _: Option<f64>, _: &str, _: Option<u32>) -> Result<()> {
+    bail!("telemetry reads /proc/<pid>/mem and is Linux-only for now")
 }

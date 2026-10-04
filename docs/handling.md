@@ -148,3 +148,50 @@ Real-world specs are only a proxy. To tune towards the actual game, measure the 
 
 Then adjust the model-decision constants (or use more fields) until `--test` matches, and record the change
 with its evidence in this file.
+
+### Measuring the original with `mwtool memscan` / `telemetry`
+
+Stopwatch measurements only give end results. To see *how* the original's handling works (when a drift
+triggers, how the drift scale builds and decays, how grip falls off with slip), read the car's state from the
+running game's memory and log it every frame. `mwtool memscan` and `mwtool telemetry`
+(`crates/mwtool/src/memscan.rs`) are **read-only**: they read data values from `/proc/<pid>/mem` of the
+game process the user is running. Nothing is written or injected, and the protected code is never read,
+traced or disassembled (docs/reverse-engineering.md). Linux / Proton only for now.
+
+**Setup (once per boot):** `sudo sysctl kernel.yama.ptrace_scope=0` (or `sudo setcap cap_sys_ptrace+ep
+target/release/mwtool` after each build). Start the game, enter free roam, then in a terminal:
+`./target/release/mwtool memscan --watch handling.watch`.
+
+**Finding a value.** The game may pause when it loses focus. That helps: do the manoeuvre, pause (or alt-tab)
+so the values freeze, type the step, go back. The pattern, for the car's speed:
+
+```text
+(car standing still)        scan f32 unknown      # snapshot everything (takes a few seconds)
+(drive off, pause)          inc
+(drive faster, pause)       inc
+(brake a little, pause)     dec
+(stand still, pause)        unchanged
+(repeat until a few dozen remain)
+                            list 20               # compare with the speedometer: m/s × 3.6 = km/h
+                            watch #3 10           # live values for 10 s while you drive
+                            save speed f32 #3
+```
+
+When the shown value is known, `scan f32 range LO HI` starts much narrower than `unknown`. Once one value of
+the car is found, `dump #3 64` shows its neighbours: velocity vectors, positions, RPM and the like usually
+sit in the same object, and their offsets from the speed are stable.
+
+**Surviving a restart.** Heap addresses change between runs. `ptr <addr>` lists 32-bit values pointing just
+below an address (object base + offset). One inside `NFS13.exe+…` is a static pointer: save the chain as
+`save speed f32 NFS13.exe+0x123456 0x48`. Otherwise run `ptr` on the pointer's own location for a two-level
+chain.
+
+**Values to find, in order:** speed, velocity vector and position (fixes units and axes), throttle / brake /
+steering inputs as the game sees them (after its own filtering), RPM and gear, yaw rate, then the drift
+state: the drift scale (rises on a brake tap while turning, decays afterwards: `inc` then `dec` passes),
+the drifting flag (`scan u8` or `i32`, 0/1 toggling with drifts), and per-wheel slip.
+
+**Recording:** `./target/release/mwtool telemetry handling.watch -o drift_911.csv --hz 120` while doing the
+manoeuvres from the list above (one CSV per car and manoeuvre). The CSVs contain measurements of game state,
+not game code or assets, but keep them out of the repo with other local captures. They drive the fit: run
+the same inputs through `--test`, compare the traces, and record each fitted rule here with its evidence.

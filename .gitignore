@@ -6,3 +6,8 @@
 /re/out
 /extracted
 *.dds
+
+# Live-game measurements (mwtool memscan / telemetry)
+*.watch
+*.csv
+.claude/

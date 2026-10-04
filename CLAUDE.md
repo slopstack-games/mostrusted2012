@@ -57,6 +57,9 @@ cargo fmt                                    # rustfmt.toml: max_width 120
 ./target/release/mwtool shader-usage               # world triangles per shader (prioritise ports)
 ./target/release/mwtool audio UI/SONGS/116502.SPS <dir>   # or a bundle: its Ginsu/Wave resources -> .wav
 ./target/release/mwtool engine-sound 911 out.wav   # rev sweep through the engine synth (--trace: `seconds rpm load` lines)
+# Measuring the original game (read-only, Linux/Proton; docs/handling.md "Measuring the original")
+./target/release/mwtool memscan --watch handling.watch        # interactive value scanner; `help`
+./target/release/mwtool telemetry handling.watch -o run.csv --hz 120
 
 # Visual check without a human: renders, saves, exits
 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,1720 --screenshot <scratch>/road.png   # see docs/viewpoints.md
