@@ -24,6 +24,10 @@ pub enum Blend {
     Opaque,
     Mask,
     Translucent,
+    /// Premultiplied colour, `src + dst × (1 - alpha)` (vehicle glass).
+    Premultiplied,
+    /// `src × dst` (vehicle lens filters).
+    Multiply,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -48,6 +52,14 @@ pub enum Mode {
     /// Water_Opaque / Water_Proto_Cheap: two scrolling wave normal maps, F0 / roughness from
     /// `specularAndRoughness`, algae-tinted albedo (black for the cheap variant).
     Water = 8,
+    /// VehicleNFS13_Refraction lamp interiors: parallax-offset internal normal / colour / AO, LED
+    /// emissive channels switched by the light state, the reflector's sharp sky reflection.
+    Refraction = 9,
+    /// VehicleNFS13_Glass*: forward, premultiplied: tinted volume colour lit diffusely, Fresnel-weighted
+    /// sky reflection, optional lightmapped running light.
+    Glass = 10,
+    /// VehicleNFS13_Glass_Colourise: multiplies what is behind it by MaterialColour_SimpleMultiply.
+    Colourise = 11,
 }
 
 /// Per-placement inputs the world shaders take from the instance rather than the material: the world
@@ -91,7 +103,9 @@ impl InstanceLook {
 pub struct Look {
     pub mode: Mode,
     /// Standard: [diffuse]. Road: [colour, detail]. Terrain: [mask, noise, layer1..3].
-    /// WorldPbr: [diffuse, specular, AO map]. Vehicle: [diffuse, specular, normal (alpha = roughness)].
+    /// WorldPbr: [diffuse, specular, AO map]. Vehicle: [diffuse, specular, normal, lightmapped lights].
+    /// Refraction: [colour, external normal, emissive, internal normal, displacement]. Glass:
+    /// [diffuse, lightmap].
     pub textures: [Option<TexKey>; N_TEX],
     /// Tangent-space normal map (Bevy's `normal_map_texture`; needs mesh tangents).
     pub normal: Option<TexKey>,
@@ -104,6 +118,8 @@ pub struct Look {
     pub blend: Blend,
     pub double_sided: bool,
     pub paint: bool,
+    /// The mesh keeps its vertex colour as Bevy's COLOR attribute (vehicle shaders read it raw).
+    pub vertex_colour: bool,
 }
 
 fn q(v: f32) -> u16 {
@@ -142,6 +158,39 @@ fn pack(v: &[[f32; 4]]) -> [i32; N_VEC * 4] {
     out
 }
 
+/// The lightmapped lights of a vehicle body / paint shader (`LightmapLightsTextureSampler`).
+struct VehicleLightmap {
+    texture: Option<TexKey>,
+    /// 0 none; 1 four channels (`EmissiveFourChannel`): sat(texel² × mask.xyzy) × multiplier against
+    /// the red / green / blue / alpha channel colours; 2 green only: sat(texel.y² × mask.y) × multiplier
+    /// × green colour; 3 like 2 but also times the surface albedo (`Lightmap` variants).
+    kind: f32,
+    multiplier: f32,
+    /// Red, green, blue and alpha channel colours (`LightmappedLights*ChannelColour`).
+    channels: [[f32; 4]; 4],
+    /// The lightmap is read with TEXCOORD3 (else TEXCOORD0).
+    uv3: bool,
+}
+
+fn vehicle_lightmap(sm: &SceneMesh, name: &str) -> VehicleLightmap {
+    let texture = sm.texture("LightmapLightsTextureSampler").map(|t| (t, false));
+    let kind = match texture {
+        None => 0.0,
+        Some(_) if name.contains("emissivefourchannel") => 1.0,
+        Some(_) if name.contains("_emissive_") => 2.0,
+        Some(_) if name.contains("lightmap") => 3.0,
+        Some(_) => 0.0,
+    };
+    let c = |n: &str| sm.parameter(&format!("LightmappedLights{n}ChannelColour")).unwrap_or([0.0; 4]);
+    VehicleLightmap {
+        texture: texture.filter(|_| kind > 0.0),
+        kind,
+        multiplier: sm.parameter("mSelfIlluminationMultiplier").map_or(1.0, |v| v[0]),
+        channels: [c("Red"), c("Green"), c("Blue"), c("Alpha")],
+        uv3: kind >= 2.0 && sm.mesh.texcoord(3).is_some(),
+    }
+}
+
 impl Look {
     /// Derive a look from a decoded game mesh.
     pub fn from_scene_mesh(sm: &SceneMesh) -> Self {
@@ -161,6 +210,7 @@ impl Look {
             blend: Blend::Opaque,
             double_sided: name.contains("doublesided"),
             paint: name.contains("bodypaint"),
+            vertex_colour: false,
         };
 
         // Road normal maps and F0 (SpecColour green); they need the decoded tangent frame.
@@ -301,12 +351,19 @@ impl Look {
             }
         }
 
-        if name.starts_with("vehiclenfs13_") && !["paint", "glass", "refraction"].iter().any(|k| name.contains(k)) {
+        let vehicle = name.starts_with("vehiclenfs13_");
+        if vehicle && !["paint", "glass", "refraction"].iter().any(|k| name.contains(k)) {
             look.mode = Mode::Vehicle;
             let diffuse = srgb("DiffuseTextureSampler");
             let spec = linear("SpecularTextureSampler");
-            let normal = linear("NormalTextureSampler").filter(|_| sm.mesh.tangents.is_some());
-            look.textures = slots(&[diffuse, spec, normal]);
+            let normal_tex = linear("NormalTextureSampler");
+            // Only the `NormalMap` variants perturb the normal; the single-channel `Emissive` one and
+            // the `Wheel_Textured_Roughness` one keep the vertex normal and read just roughness there.
+            let single_emissive = name.contains("_emissive_");
+            let normal_mapped = name.contains("normalmap") && !single_emissive;
+            let normal = normal_tex.filter(|_| normal_mapped && sm.mesh.tangents.is_some());
+            let lm = vehicle_lightmap(sm, &name);
+            look.textures = slots(&[diffuse, spec, normal_tex, lm.texture]);
             look.normal = normal;
             let tyre = name.contains("tyre");
             let c = if tyre {
@@ -314,24 +371,107 @@ impl Look {
                 // that only the dust layer lightens.
                 let d = sm.parameter("PbrMaterialDustColour").unwrap_or([0.05; 4]);
                 [d[0] * 0.5, d[1] * 0.5, d[2] * 0.5, 1.0]
+            } else if diffuse.is_some() {
+                [1.0; 4]
             } else {
                 sm.parameter("PbrMaterialDiffuseColour").unwrap_or([1.0; 4])
             };
-            if diffuse.is_none() {
-                look.tint = [c[0], c[1], c[2], 1.0].map(q);
-            }
+            look.tint = [c[0], c[1], c[2], 1.0].map(q);
             let f0 = if tyre { [0.0; 4] } else { sm.parameter("PbrMaterialSpecularColour").unwrap_or([0.04; 4]) };
-            let rough = if tyre { 0.9 } else { sm.parameter("PbrMaterialRoughness").map_or(0.5, |r| r[0]) };
+            // Roughness: the `PbrMaterialRoughness` constant where the shader has one (Body, Lightmap),
+            // else the normal map's alpha, or its green channel in the single-channel Emissive variant.
+            let rough_const = sm.parameter("PbrMaterialRoughness").map(|r| r[0]);
+            let rough_source = match (rough_const, normal_tex) {
+                (None, Some(_)) if single_emissive => 2.0,
+                (None, Some(_)) => 1.0,
+                _ => 0.0,
+            };
+            let rough = if tyre { 0.9 } else { rough_const.unwrap_or(0.5) };
             let cc_spec = sm.parameter("PbrMaterialClearcoatSpecular").map_or(0.0, |v| v[0]);
             let cc_fresnel = sm.parameter("PbrMaterialClearcoatFresnel").map_or(0.0, |v| v[0]);
             look.vals = pack(&[
                 [f0[0], f0[1], f0[2], rough],
-                [spec.is_some() as u8 as f32, normal.is_some() as u8 as f32, cc_spec, cc_fresnel],
-                [sm.mesh.colors.is_some() as u8 as f32, 0.0, 0.0, 0.0],
+                [flag(spec.is_some()), rough_source, cc_spec, cc_fresnel],
+                [flag(sm.mesh.colors.is_some()), flag(diffuse.is_some()), lm.kind, lm.multiplier],
+                [c[0], c[1], c[2], flag(lm.uv3)],
+                lm.channels[0],
+                lm.channels[1],
+                lm.channels[2],
+                lm.channels[3],
             ]);
-            if sm.mesh.colors.is_some() {
-                look.uv_b = Some(crate::convert::UV_FROM_COLOUR);
+            look.vertex_colour = sm.mesh.colors.is_some();
+            if lm.uv3 {
+                look.uv_b = Some(3);
             }
+        } else if vehicle && name.contains("paint") {
+            // Body paint: `with_paint` fills in the paint; only the lightmapped lights are set here.
+            let lm = vehicle_lightmap(sm, &name);
+            look.textures = slots(&[None, None, None, lm.texture]);
+            look.vals = pack(&[
+                [0.0; 4],
+                [0.0; 4],
+                [flag(sm.mesh.colors.is_some()), 0.0, lm.kind, lm.multiplier],
+                [1.0, 1.0, 1.0, flag(lm.uv3)],
+                lm.channels[0],
+                lm.channels[1],
+                lm.channels[2],
+                lm.channels[3],
+            ]);
+            look.vertex_colour = sm.mesh.colors.is_some();
+            if lm.uv3 {
+                look.uv_b = Some(3);
+            }
+        } else if vehicle && name.contains("refraction") && sm.mesh.tangents.is_some() {
+            // Lamp interiors: parallax-offset reflector with LED emissive channels (see `layered.wgsl`).
+            let p = |n: &str, d: [f32; 4]| sm.parameter(n).unwrap_or(d);
+            look.mode = Mode::Refraction;
+            look.textures = slots(&[
+                linear("ColourSampler"),
+                linear("ExternalNormalTextureSampler"),
+                linear("EmissiveTextureSampler"),
+                linear("InternalNormalTextureSampler"),
+                linear("DisplacementSampler"),
+            ]);
+            look.vals = pack(&[
+                p("ParallaxConstants", [0.0; 4]),
+                [
+                    p("EmissiveLuminance", [0.0; 4])[0],
+                    p("PbrMaterialClearcoatSpecular", [0.0; 4])[0],
+                    p("PbrMaterialFresnel", [0.0; 4])[0],
+                    0.0,
+                ],
+                p("PbrMaterialDiffuseColour", [0.25; 4]),
+                p("mExternalGlassColour", [1.0; 4]),
+                p("BrakeColour", [0.0; 4]),
+                p("HeadlightColour", [0.0; 4]),
+                p("ReversingColour", [0.0; 4]),
+                p("TaillightColour", [0.0; 4]),
+            ]);
+        } else if vehicle && name.contains("glass_colourise") {
+            // A multiplicative filter over what is behind it (light lenses): MaterialColour_SimpleMultiply.
+            let c = sm.parameter("MaterialColour_SimpleMultiply").unwrap_or([1.0; 4]);
+            look.mode = Mode::Colourise;
+            look.textures = [None; N_TEX];
+            look.tint = [c[0], c[1], c[2], 1.0].map(q);
+            look.vals = pack(&[[c[0], c[1], c[2], 1.0]]);
+        } else if vehicle && name.contains("glass") {
+            let p = |n: &str, d: [f32; 4]| sm.parameter(n).unwrap_or(d);
+            let lm = linear("LightmapTextureSampler").filter(|_| name.contains("lightmap"));
+            let diffuse = srgb("DiffuseTextureSampler").filter(|_| name.contains("textured"));
+            look.mode = Mode::Glass;
+            look.textures = slots(&[diffuse, lm]);
+            look.vals = pack(&[
+                [
+                    p("OpacityMin", [0.1; 4])[0],
+                    p("FresnelFactor", [1.0; 4])[0],
+                    p("SurfaceSoftness", [0.0; 4])[0],
+                    p("mSelfIlluminationMultiplier", [0.0; 4])[0],
+                ],
+                p("DebugOverride_GlassVolumeColour", [0.0; 4]),
+                p("RunningColour", [0.0; 4]),
+                [flag(diffuse.is_some()), flag(lm.is_some()), flag(sm.mesh.colors.is_some()), 0.0],
+            ]);
+            look.vertex_colour = sm.mesh.colors.is_some();
         }
 
         if name.starts_with("tree_") && look.textures[0].is_some() {
@@ -375,7 +515,14 @@ impl Look {
             look.tint = [c[0], c[1], c[2], 1.0].map(q);
         }
 
-        look.blend = if name.contains("1bit") || name.contains("alphatest") || name.contains("foliage") {
+        look.blend = if look.mode == Mode::Glass {
+            Blend::Premultiplied
+        } else if look.mode == Mode::Colourise {
+            Blend::Multiply
+        } else if look.mode == Mode::Refraction {
+            // Despite the name, the lamp interiors write the G-buffer.
+            Blend::Opaque
+        } else if name.contains("1bit") || name.contains("alphatest") || name.contains("foliage") {
             Blend::Mask
         } else if name.contains("glass")
             || name.contains("alphablend")
@@ -410,7 +557,8 @@ impl Look {
         // Missing textures bind as opaque white, so a layered mode needs its
         // essential inputs or it falls back to the plain material.
         let essential = match self.mode {
-            Mode::Standard | Mode::Vehicle => 0,
+            Mode::Standard | Mode::Vehicle | Mode::Glass | Mode::Colourise => 0,
+            Mode::Refraction => 5,
             Mode::Tree => 1,
             Mode::Water => 0,
             Mode::Road | Mode::Terrain | Mode::Plot | Mode::WorldPbr => 2,
@@ -454,9 +602,21 @@ impl Look {
             self.vals[0] = qi(self.textures[3].is_some() as u8 as f32);
             self.vals[2] = qi(self.textures[2].is_some() as u8 as f32);
         }
-        if self.mode == Mode::Vehicle {
-            self.vals[4] = qi(self.textures[1].is_some() as u8 as f32);
-            self.vals[5] = qi(self.textures[2].is_some() as u8 as f32);
+        if self.mode == Mode::Vehicle || self.paint {
+            // p1.x has spec map, p1.y roughness source (needs the normal texture), p2.y has diffuse,
+            // p2.z lightmapped-lights kind (needs the lightmap).
+            self.vals[4] = qi(has(1));
+            if self.textures[2].is_none() {
+                self.vals[5] = 0;
+            }
+            self.vals[9] = qi(has(0));
+            if self.textures[3].is_none() {
+                self.vals[10] = 0;
+            }
+        }
+        if self.mode == Mode::Glass {
+            self.vals[12] = qi(has(0));
+            self.vals[13] = qi(has(1));
         }
     }
 
@@ -509,8 +669,9 @@ impl Look {
         });
         let (cc_spec, cc_fresnel) = if p.clearcoat { (p.clearcoat_specular, p.clearcoat_fresnel) } else { (0.0, 0.0) };
         self.mode = Mode::Vehicle;
-        // Livery / two-paint masks are not applied yet: plain paint.
-        self.textures = [None; N_TEX];
+        // Livery / two-paint masks are not applied yet: plain paint. Slot 3 keeps the lightmapped
+        // lights of the `_Lightmap` paint variants.
+        self.textures = slots(&[None, None, None, self.textures[3]]);
         self.normal = None;
         self.tint = [p.diffuse[0], p.diffuse[1], p.diffuse[2], 1.0].map(q);
         self.vals[..8].copy_from_slice(
@@ -519,6 +680,10 @@ impl Look {
                 [0.0, 0.0, cc_spec, cc_fresnel],
             ])[..8],
         );
+        self.vals[9] = 0;
+        for (i, c) in p.diffuse.iter().enumerate() {
+            self.vals[12 + i] = qi(*c);
+        }
         self
     }
 
@@ -533,11 +698,22 @@ impl Look {
         if c < 0.02 { 0.0 } else { c.min(1.0) }
     }
 
+    /// Whether the material reads the vehicle light state.
+    pub fn uses_lights(&self) -> bool {
+        match self.mode {
+            Mode::Vehicle => self.vals[10] != 0,
+            Mode::Refraction => true,
+            Mode::Glass => self.vals[13] != 0,
+            _ => false,
+        }
+    }
+
     pub fn material(
         &self,
         tex: impl Fn(Option<TexKey>) -> Option<Handle<Image>>,
         paint: Option<Color>,
         env: &GameEnvironment,
+        lights: &VehicleLights,
     ) -> GameMaterial {
         let [r, g, b, a] = self.tint.map(dq);
         let base_color = match paint {
@@ -546,7 +722,16 @@ impl Look {
         };
         let roughness = dq(self.roughness);
         let v = self.vals.map(|x| x as f32 / 1000.0);
-        let p = std::array::from_fn(|i| Vec4::new(v[i * 4], v[i * 4 + 1], v[i * 4 + 2], v[i * 4 + 3]));
+        let mut p: [Vec4; N_VEC] =
+            std::array::from_fn(|i| Vec4::new(v[i * 4], v[i * 4 + 1], v[i * 4 + 2], v[i * 4 + 3]));
+        if self.mode == Mode::Vehicle
+            && self.paint
+            && let Some(c) = paint
+        {
+            // `--paint`: the vehicle mode's albedo is p3.rgb.
+            let c = c.to_linear();
+            p[3] = Vec4::new(c.red, c.green, c.blue, p[3].w);
+        }
         GameMaterial {
             base: StandardMaterial {
                 base_color,
@@ -568,6 +753,8 @@ impl Look {
                     // The 1-bit and tree shaders discard below 129/255.
                     Blend::Mask => AlphaMode::Mask(0.505882),
                     Blend::Translucent => AlphaMode::Blend,
+                    Blend::Premultiplied => AlphaMode::Premultiplied,
+                    Blend::Multiply => AlphaMode::Multiply,
                 },
                 double_sided: self.double_sided,
                 cull_mode: None,
@@ -578,6 +765,7 @@ impl Look {
                     mode: self.mode as u32,
                     p,
                     env: Vec4::new(env.sky_brightness, env.reflection_mips as f32, 0.0, 0.0),
+                    lights: lights.mask,
                     ..default()
                 },
                 sky: env.reflection.clone(),
@@ -606,6 +794,8 @@ pub struct LayeredParams {
     pub p: [Vec4; N_VEC],
     /// x = sky brightness (cd/m² per panorama unit), y = reflection cube mip count.
     pub env: Vec4,
+    /// Vehicle light state ([`VehicleLights::mask`]).
+    pub lights: Vec4,
 }
 
 /// Extension bindings start at 100 to stay clear of `StandardMaterial`'s.
@@ -656,6 +846,29 @@ impl MaterialExtension for Layered {
 
     fn deferred_fragment_shader() -> ShaderRef {
         "embedded://mostrusted/layered.wgsl".into()
+    }
+}
+
+/// The vehicle light state, the game's per-object `g_selfIlluminationMask`: x = brake, y = headlights /
+/// running lights (also the lightmapped tail glow), z = reversing, w = tail lights.
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct VehicleLights {
+    /// What is switched on regardless of the pedals (`--lights`).
+    pub base: Vec4,
+    pub mask: Vec4,
+}
+
+impl VehicleLights {
+    pub fn from_slice(v: &[f32]) -> Self {
+        let g = |i: usize, d: f32| v.get(i).copied().unwrap_or(d).clamp(0.0, 1.0);
+        let base = Vec4::new(g(0, 0.0), g(1, 1.0), g(2, 0.0), g(3, 1.0));
+        Self { base, mask: base }
+    }
+}
+
+impl Default for VehicleLights {
+    fn default() -> Self {
+        Self::from_slice(&[])
     }
 }
 
