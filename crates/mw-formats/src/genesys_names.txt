@@ -1279,3 +1279,6 @@ UpFillColour
 WindBearing
 WindSpeedMax
 WindSpeedMin
+ExposureCompensationBias
+DarkBloomWeight
+DarkBloomWhitePoint

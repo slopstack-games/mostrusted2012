@@ -101,7 +101,7 @@ Make a static frame look like the game.
 5. `[~]` **Environment**: the timeline is GeneSys (`EnvironmentTimeline` / `EnvironmentKeyframe`,
    `mw_assets::environment`). Key light, ambient rig, sky gradient / sun colour / cloud layer and fog come
    from the keyframe at `--hour`. Open: sun direction (SunMoonPath), the `NewSky` dome mapping and its second
-   gradient, fog in-scattering and layer fog, exposure / tonemap / `ColourCube` (0x52) grading, bloom,
+   gradient, fog in-scattering and layer fog, bloom,
    weather (`Alternate` keyframes), which timeline free roam uses.
 6. `[x]` **Vertex data**: packed tangent-frame quaternions (world RGBA8 `TEXCOORD1/2/3`, vehicle SNORM16
    `TEXCOORD4`) decode to normals + tangents (`mw_formats::tangent_frame`, checked against face normals);
@@ -109,9 +109,10 @@ Make a static frame look like the game.
 7. `[~]` **The game's deferred pipeline** (see "Recreate the game's architecture"): done: the G-buffer pass
    writes the game's four targets (Bevy's deferred prepass as host), the ported key light + ambient pass and
    Fog pass (`deferred.rs`, `game_lighting.wgsl`), the game's 3-cascade shadow lookup on Bevy-rendered cascades.
+   The game's auto exposure, tonemap and ColourCube grade (`tonemap.rs`).
    Open: the game's cascade fit / split distances, shadow-only proxy casters (`WorldShadow_*`), the irradiance quadric / second
    irradiance cube, point / spot / cop lights (`LightBuffer_*`, `TiledLighting_*`), planar reflection,
-   `GBufferComposite`, the game's tonemap / auto exposure, colour cube, bloom, `PostAA`.
+   bloom and the composite tint in `GBufferComposite`, motion blur, `PostAA`.
 
 ### M2: Game data layer `[ ]`
 Unlocks names, tuning and rules. Can run in parallel with M1.

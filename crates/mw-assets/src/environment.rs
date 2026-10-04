@@ -58,6 +58,31 @@ pub struct Clouds {
     pub intensity: f32,
 }
 
+/// The keyframe's tonemap / auto-exposure settings (`EnvironmentKeyframe.Camera`), in the order the game's
+/// `TonemapCameraConstants` / `TonemapExposureConstants` / `TonemapExposureSettingConstants` use them.
+/// Field names are not cracked; the roles come from the tonemap shaders (research log "the game's
+/// tonemap") and from how the values move over the day, so they are provisional. Exposures are log2.
+#[derive(Debug, Clone, Default)]
+pub struct CameraExposure {
+    /// `3bec5831` / `3bec5027`: the range auto exposure may move in (−8…8 over all keyframes, min ≤ max on
+    /// every one; −0.2…3 at noon, 2.7…3.5 at night).
+    pub min: f32,
+    pub max: f32,
+    /// `ExposureCompensationBias`: added to the adapted exposure (3 at night, else 0).
+    pub bias: f32,
+    /// `4b48cdce` / `ec890b00`: the scene luminance range over which the target luma moves (low ≤ high on
+    /// every keyframe).
+    pub luminance_low: f32,
+    pub luminance_high: f32,
+    /// `9355acc0` / `8357903e`: displayed-luma targets at the low and high ends of that range.
+    pub target_low: f32,
+    pub target_high: f32,
+    /// `0abf68c5` (0–0.1): the luma dead band around the target.
+    pub tolerance: f32,
+    /// `e59ff4ec` (0–2): adaptation speed in stops per second.
+    pub speed: f32,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct EnvironmentKeyframe {
     pub id: ResourceId,
@@ -72,6 +97,7 @@ pub struct EnvironmentKeyframe {
     pub clouds: Clouds,
     pub fog: Fog,
     pub colour_cube: Option<ResourceId>,
+    pub exposure: CameraExposure,
 }
 
 fn get(o: &Object, hash: u32) -> Option<&Value> {
@@ -146,6 +172,19 @@ impl EnvironmentKeyframe {
                 left: rgb(rig, h("LeftFillColour")),
                 right: rgb(rig, h("RightFillColour")),
                 scale: float(rig, h("AmbientIrradianceScale")),
+            };
+        }
+        if let Some(c) = sub(o, h("Camera")) {
+            out.exposure = CameraExposure {
+                min: float(c, 0x3bec5831),
+                max: float(c, 0x3bec5027),
+                bias: float(c, field_hash("ExposureCompensationBias")),
+                luminance_low: float(c, 0x4b48cdce),
+                luminance_high: float(c, 0xec890b00),
+                target_low: float(c, 0x9355acc0),
+                target_high: float(c, 0x8357903e),
+                tolerance: float(c, 0x0abf68c5),
+                speed: float(c, 0xe59ff4ec),
             };
         }
         if let Some(sky) = sub(o, SKY) {

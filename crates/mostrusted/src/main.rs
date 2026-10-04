@@ -10,6 +10,7 @@ mod drive;
 mod loader;
 mod materials;
 mod sky;
+mod tonemap;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -219,6 +220,7 @@ fn main() -> anyhow::Result<()> {
     app.add_plugins(FreeCameraPlugin)
         .add_plugins(MaterialPlugin::<GameMaterial>::default())
         .add_plugins(deferred::GameLightingPlugin)
+        .add_plugins(tonemap::GameTonemapPlugin)
         .init_resource::<GameEnvironment>()
         .add_plugins((avian3d::PhysicsPlugins::default(), drive::DrivePlugin))
         .add_plugins(audio::GameAudioPlugin {
@@ -245,8 +247,8 @@ fn main() -> anyhow::Result<()> {
 }
 
 /// cd/m² (and lux, for the key light) per unit of the game's HDR values (environment keyframes, sky).
-/// The game's own exposure (auto exposure from the keyframe's camera settings) is not ported; this
-/// scale makes the noon key light (~8.6 units) about 10,000 lux under Bevy's default exposure.
+/// The camera's exposure divides it out again, so the HDR target holds game units for the game's tonemap
+/// (`tonemap.rs`); the scale only matters to Bevy's forward lighting (translucent materials).
 const GAME_UNIT: f32 = 1200.0;
 
 fn setup(mut commands: Commands, game: Res<Game>, mut images: ResMut<Assets<Image>>) {
@@ -259,6 +261,10 @@ fn setup(mut commands: Commands, game: Res<Game>, mut images: ResMut<Assets<Imag
             bevy::core_pipeline::prepass::DepthPrepass,
             bevy::core_pipeline::prepass::DeferredPrepass,
             bevy::camera::Hdr,
+            // The game's tonemap and auto exposure replace Bevy's (`tonemap.rs`); this exposure makes the
+            // HDR target hold the game's units (view.exposure = 1 / GAME_UNIT).
+            bevy::core_pipeline::tonemapping::Tonemapping::None,
+            bevy::camera::Exposure { ev100: (GAME_UNIT / 1.2).log2() },
             Msaa::Off,
             Transform::from_xyz(6.0, 2.5, 6.0).looking_at(Vec3::new(0.0, 0.6, 0.0), Vec3::Y),
             Projection::Perspective(PerspectiveProjection { far: 20_000.0, ..default() }),
@@ -272,7 +278,17 @@ fn setup(mut commands: Commands, game: Res<Game>, mut images: ResMut<Assets<Imag
     let mut key_illuminance = 9_000.0;
     match keyframe {
         Ok(k) => {
-            info!("environment: hour {} keyframe {}", game.hour, k.id);
+            info!("environment: hour {} keyframe {} exposure {:?}", game.hour, k.id, k.exposure);
+            let colour_cube = k.colour_cube.and_then(|id| match game.store.load(id) {
+                Ok(res) => mw_formats::ColourCube::parse(&res).ok(),
+                Err(_) => None,
+            });
+            commands.insert_resource(tonemap::GameTonemap {
+                settings: k.exposure.clone(),
+                dt: 0.0,
+                reset: true,
+                colour_cube: colour_cube.map(|c| images.add(tonemap::colour_cube_image(&c))),
+            });
             let to_bevy = |c: [f32; 3]| Vec3::from(c) * GAME_UNIT;
             let key_colour = to_bevy(k.key_light);
             key_illuminance = key_colour.dot(Vec3::new(0.2126, 0.7152, 0.0722));

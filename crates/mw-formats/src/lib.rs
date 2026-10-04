@@ -5,6 +5,7 @@
 //! resolved through the resource's import table.
 
 mod collision;
+mod colour_cube;
 mod decode;
 mod dxgi;
 pub mod genesys;
@@ -18,6 +19,7 @@ mod vertex;
 mod world;
 
 pub use collision::{PolygonSoup, PolygonSoupList, SOUP_GRANULARITY, SOUP_OFFSET_UNIT, SoupPolygon};
+pub use colour_cube::ColourCube;
 pub use dxgi::{DxgiFormat, f16_to_f32};
 pub use groundcover::{GroundcoverCollection, GroundcoverInstance, GroundcoverInstances, GroundcoverLayer, Group};
 pub use material::{Material, MaterialParameter, MaterialSampler, Model, Shader, ShaderParameter, ShaderSampler};

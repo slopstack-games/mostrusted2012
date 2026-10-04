@@ -181,3 +181,10 @@ See `crates/mw-audio` (decoders reimplemented from vgmstream's documentation of 
 - **Ginsu** (`Ginsu` resources, 8-byte prefix, then `Gnsu30`): min/max RPM, table sizes, sample count and rate,
   a u32 at 0x20, an RPM → recording-position table, grain boundaries, then EA-XAS v0 (19-byte frames, 32 mono
   samples).
+
+## ColourCube (0x52)
+
+16-byte header: u32 edge N (16 everywhere), u32 N, 8 zero bytes; then N³ RGB8 entries, blue fastest (entry
+(r, g, b) at 3 × (b + N g + N² r)). Gamma-encoded in and out; `…3e93` is the identity. Each environment
+keyframe names one (`ColourCube` handle). Parser: `mw_formats::ColourCube`.
+
