@@ -643,11 +643,61 @@ struct ChannelState {
     has_send: bool,
 }
 
+/// Spreads a value's changes over time. The game sets values once per frame while the audio thread renders a
+/// whole device buffer at a time, so every sample of a buffer would see the same target and the pitch would
+/// climb in steps of the buffer length. Each new target is instead reached by a linear ramp as long as the
+/// interval (in control blocks) since the previous change, which makes the curve continuous at the cost of one
+/// update interval of latency.
+#[derive(Debug, Clone, Copy)]
+struct Ramp {
+    from: f32,
+    to: f32,
+    pos: u32,
+    len: u32,
+    since_change: u32,
+}
+
+/// `MW_AUDIO_NO_RAMP=1` turns the ramps off (A/B).
+fn no_ramp() -> bool {
+    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *V.get_or_init(|| std::env::var_os("MW_AUDIO_NO_RAMP").is_some())
+}
+
+/// Longest ramp, in control blocks (~0.15 s at 44.1 kHz).
+const MAX_RAMP_BLOCKS: u32 = 200;
+
+impl Ramp {
+    fn new(v: f32) -> Self {
+        Self { from: v, to: v, pos: 1, len: 1, since_change: 0 }
+    }
+
+    fn value(&self) -> f32 {
+        self.from + (self.to - self.from) * (self.pos as f32 / self.len as f32).min(1.0)
+    }
+
+    /// One control block with `target` as the latest value; returns the ramped value.
+    fn step(&mut self, target: f32) -> f32 {
+        self.since_change = self.since_change.saturating_add(1);
+        if target.to_bits() != self.to.to_bits() {
+            self.from = self.value();
+            self.to = target;
+            self.len = self.since_change.clamp(1, MAX_RAMP_BLOCKS);
+            self.pos = 0;
+            self.since_change = 0;
+        }
+        self.pos = (self.pos + 1).min(self.len);
+        self.value()
+    }
+}
+
 /// Renders a [`Bank`] driven by [`Params`].
 pub struct Player {
     bank: Bank,
     params: Arc<Params>,
     smoothed: Vec<f32>,
+    /// Per value: a linear ramp towards the latest target, spread over the time between the game's updates
+    /// as the audio thread sees them (`Ramp`).
+    ramps: Vec<Ramp>,
     seqs: Vec<SeqState>,
     channels: Vec<ChannelState>,
     order: Vec<usize>,
@@ -825,12 +875,14 @@ impl Player {
             ginsu.target = ginsu.rpm;
             ginsu.period = v.synth.period_for(ginsu.rpm) / v.rate_ratio.max(1e-3);
         }
-        let smoothed = (0..params.names().len()).map(|i| params.get(i)).collect();
+        let smoothed: Vec<f32> = (0..params.names().len()).map(|i| params.get(i)).collect();
+        let ramps = smoothed.iter().map(|&v| Ramp::new(v)).collect();
         Self {
             inputs: vec![0.0; n + 1],
             bank,
             params,
             smoothed,
+            ramps,
             seqs,
             channels,
             rank: {
@@ -881,8 +933,9 @@ impl Player {
         self.time += dt;
         let warming = self.time < 0.2;
         for i in 0..self.smoothed.len() {
-            let target = self.params.get(i);
             let tau = self.params.smoothing(i);
+            let ramp = tau > 0.0 && !no_ramp();
+            let target = if ramp { self.ramps[i].step(self.params.get(i)) } else { self.params.get(i) };
             let k = if tau <= 0.0 { 1.0 } else { (dt / tau).min(1.0) };
             self.smoothed[i] += (target - self.smoothed[i]) * k;
             if !self.smoothed[i].is_finite() {

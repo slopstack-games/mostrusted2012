@@ -31,6 +31,10 @@ const BURNOUT_MPH: f32 = 20.0;
 /// Throttle and brake gates of the speed hold (game constants).
 const HOLD_MIN_THROTTLE: f32 = 0.3;
 const HOLD_MAX_BRAKE: f32 = 0.1;
+// The game caps the side-force factor at 5 (`.bss` 0x01187380, read from the running game).
+/// The cap our model uses until the side force is measured in the original: with the game's cap the force
+/// reaches ~3 g, so our reading of its size or direction is off somewhere (research log, session 3).
+const SIDE_FORCE_CAP_MODEL: f32 = 1.0;
 /// The side-force boost decays at this rate (per second) and saturates at this yaw rate (rad/s).
 const BOOST_DECAY: f32 = 2.0;
 const BOOST_YAW_RATE: f32 = 2.0;
@@ -434,7 +438,7 @@ impl DriftState {
         let by_speed = ((i.mph.abs() - s0) / (s1 - s0)).clamp(0.0, 1.0);
         let by_scale = self.scale.min(p.side_full_scale) / p.side_full_scale;
         let f = (ramp - decay.min(p.side_decay_cap)).max(0.0) * by_scale * by_speed * (1.0 + self.boost);
-        out.side_force = dir * i.mass * p.side_accel * f.min(1.0);
+        out.side_force = dir * i.mass * p.side_accel * f.min(SIDE_FORCE_CAP_MODEL);
 
         // Speed hold: pull the car back up to the speed it entered the drift with (at most `hold_lead` ahead).
         if i.speed > self.target_speed || i.throttle < HOLD_MIN_THROTTLE || i.brake > HOLD_MAX_BRAKE {

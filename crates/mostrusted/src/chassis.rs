@@ -6,11 +6,10 @@ use bevy::prelude::*;
 use mw_assets::handling::VehicleHandling;
 
 const MPH: f32 = 0.44704;
-/// Drag scale K in F = −½·K·C·|v|·v (the game's constant is not in the data; 1 fits the 911's power at its top
-/// speed, docs/decomp.md).
-const DRAG_K: f32 = 1.0;
-/// Anti-roll stiffness unit: the data's values read as N m per degree of roll (inferred).
-const ARB_PER_DEGREE: f32 = 57.29578;
+/// Drag scale K in F = −½·K·C·|v|·v: 1.2, read from the running game (`.bss` 0x011872a0; ≈ air density).
+const DRAG_K: f32 = 1.2;
+/// Anti-roll stiffness scale on the data values: 60, read from the running game (`.bss` 0x01185d70).
+const ARB_PER_DEGREE: f32 = 60.0;
 /// The per-tick damping fractions are per 60 Hz tick.
 const DATA_HZ: f32 = 60.0;
 /// Take-off roll damping fades in between these speeds (mph).

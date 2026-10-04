@@ -108,6 +108,33 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-04 (session 3, later): constants read from the running game; the engine's 0.74 s steps
+
+- **memscan fix**: `/proc/<pid>/maps` paths with spaces ("Need for Speed(TM) Most Wanted") were cut at the first
+  space, so `NFS13.exe+…` addresses never resolved (the first `consts.txt` / `porsch.csv` were empty).
+- **Live vehicle**: `handling.watch` (git-ignored) reads the player's car through
+  `[[[[NFS13.exe+0xcedb04]+4]+0x53220]+4+8·i]` with i = 48 in free roam (`player_index`). Checked against the
+  speedometer and the body velocity. First readings (911, accelerating in 2nd): tyre loads front ~2460 N, rear
+  ~4000 N (sum = the car's weight), per-wheel grip multipliers all 1, drift entry threshold 7°.
+- **`.bss` constants** (docs/decomp.md, read with `dump`): drag K 1.2; anti-roll scale 60; drift damping time
+  bases 60 / 60; side-force cap 5; burnout speed 20 mph; clutch cap 5000 N m; shift phases 10 % declutch / 40 %
+  neutral; downshifts × 0.5 time; downshift hysteresis 2 mph; idle governor 20 rpm, 0.05 per rpm, up to 0.5
+  throttle; downshift blip × 2.5; declutched below 0.1; the steering's full-rate threshold 0.99 (inputs below it
+  steer outwards at the raw `High_speed_steer_rate`); the slip-ratio stop threshold 0.01; g 9.81; and 60/2π at
+  0x01187310 (the check value). Applied to the model.
+- **Not consistent yet**: with the game's side-force cap (5) our side force reaches ~3 g and the brake-tap drift
+  turns into a tight grip circle, so our reading of its size, boost or direction is off; the model keeps a cap of
+  1 until the side force (`drift_side_f*` in the watch file) is recorded in a drift. With the 0.99 steering
+  threshold the handbrake test's half-stick tap gives 4° (17.9° with the earlier guesses); whether that matches
+  the original needs a recording.
+- **Engine "steps" in game** (user: "a constant rpm held for about a second, then the next"): recorded the game's
+  own audio stream (`parecord --monitor-stream`) and tracked its pitch: plateaus of ~0.7 s while the rpm rose
+  smoothly (27 rpm per tick). The offline replay of the same rpm trace was smooth. Cause: `PlaybackSettings::LOOP`
+  makes bevy_audio wrap the source in rodio's `repeat_infinite`, which buffers it 32768 samples (0.743 s) at a
+  time, each rendered with the parameters of the moment it starts. The engine and SFX sources never end, so they
+  now play with `ONCE`: the recorded pitch rises continuously. Dead ends on the way: an adaptive per-parameter
+  ramp in `sequence::Player` and interpolating the rpm between physics ticks (both kept; neither was the cause).
+
 ### 2026-10-04 (session 3): handling rebuilt from the game's code
 
 The user supplied a decompilation of the game (`re/NFS13_dump/`, git-ignored; rules in reverse-engineering.md).

@@ -8,21 +8,28 @@
 use mw_assets::handling::VehicleHandling;
 
 const RPM_PER_RAD_S: f32 = 60.0 / std::f32::consts::TAU;
-/// Clutch torque capacity as a multiple of the engine's peak torque (the game's cap is not in the data;
-/// model value, fitted to launch times).
-const CLUTCH_CAP: f32 = 1.6;
+/// Clutch torque capacity (N m; game constant read from the running game, `.bss` 0x01186f70).
+const CLUTCH_CAP: f32 = 5000.0;
 /// Launch: the clutch closes fully once its engagement reaches this (game constant).
 const CLUTCH_CLOSED: f32 = 0.95;
-/// Shift phases as fractions of the shift time: declutch, neutral (the rest is clutch-in). Model values.
-const SHIFT_DECLUTCH: f32 = 0.25;
-const SHIFT_NEUTRAL: f32 = 0.5;
+/// Shift phases as fractions of the shift time: declutch, neutral (the rest is clutch-in); game constants
+/// read from the running game (`.bss` 0x01186ee0, 0x01186fd0). Downshifts take `DOWNSHIFT_TIME` of the time.
+const SHIFT_DECLUTCH: f32 = 0.1;
+const SHIFT_NEUTRAL: f32 = 0.4;
+const DOWNSHIFT_TIME: f32 = 0.5;
+/// The downshift blip drives the engine at `Engine_resistance` × this (game constant, 0x01187518).
+const BLIP_GAIN: f32 = 2.5;
+/// Below this clutch engagement the engine runs free (game constant, 0x01187570).
+const DECLUTCHED: f32 = 0.1;
 /// Each gear's upshift rpm varies by up to this much (game constant).
 const UPSHIFT_JITTER: f32 = 50.0;
-/// Downshift on speed this far (mph) below the lower gear's upshift speed (model value).
-const DOWNSHIFT_HYSTERESIS: f32 = 5.0;
-/// The idle governor opens the throttle below idle + this (rpm), fully this far below (model values).
-const IDLE_GOVERNOR_RPM: f32 = 150.0;
-const IDLE_GOVERNOR_THROTTLE: f32 = 0.35;
+/// Downshift on speed this far (mph) below the lower gear's upshift speed (game constant, 0x011872e0).
+const DOWNSHIFT_HYSTERESIS: f32 = 2.0;
+/// The idle governor: throttle up to `IDLE_GOVERNOR_THROTTLE` as the revs fall below idle + `IDLE_GOVERNOR_RPM`, at
+/// `IDLE_GOVERNOR_GAIN` per rpm (game constants, 0x01186f30 / 0x011871c0 / 0x011873f0).
+const IDLE_GOVERNOR_RPM: f32 = 20.0;
+const IDLE_GOVERNOR_GAIN: f32 = 0.05;
+const IDLE_GOVERNOR_THROTTLE: f32 = 0.5;
 
 /// Engine and gearbox data for one car.
 #[derive(Debug, Clone)]
@@ -45,7 +52,6 @@ pub struct DrivetrainParams {
     /// Forward gears in use (the top one is locked on many cars).
     pub gears: usize,
     pub shift_time: f32,
-    pub peak_torque: f32,
     /// `Power_To_Front`, axle limited-slip factors (front, rear; 0 open, 1 locked) and the
     /// `TransmissionInertia` added to each driven wheel.
     pub front_share: f32,
@@ -66,7 +72,6 @@ impl DrivetrainParams {
         let gears = if locked && ratios.len() > 1 { ratios.len() - 1 } else { ratios.len() };
         let idle_rpm = h.idle_rpm.unwrap_or(900.0);
         let max_rpm = h.redline_rpm.unwrap_or(7000.0);
-        let peak_torque = h.torque_curve.iter().map(|p| p.torque).fold(0.0, f32::max).max(100.0);
         let get = |v: Option<&Vec<f32>>| v.cloned().unwrap_or_default();
         Self {
             handling: h.clone(),
@@ -87,7 +92,6 @@ impl DrivetrainParams {
             ratios,
             gears,
             shift_time: h.gear_change_time.unwrap_or(0.15).clamp(0.02, 1.0),
-            peak_torque,
             front_share: h.front_drive_share.unwrap_or(0.0).clamp(0.0, 1.0),
             diff: [e("Differentials.Front_Differential", 0.0), e("Differentials.Rear_Differential", 0.0)],
             transmission_inertia: e("Transmission.TransmissionInertia", 0.0).max(0.0),
@@ -175,8 +179,10 @@ impl Drivetrain {
     }
 
     /// One tick. `wheel_omega` is the mean spin of the driven wheels (rad/s), `mph` the road speed along the
-    /// car (signed); `inv_inertia` the driven wheels' mean inverse inertia. Returns the torque (N m) to share
+    /// car (signed); `inv_inertia` the driven wheels' mean inverse inertia; `coupled` false when no wheel is on
+    /// the driveline (handbrake on a rear-driven car): the engine runs free. Returns the torque (N m) to share
     /// between the driven wheels.
+    #[allow(clippy::too_many_arguments)]
     pub fn step(
         &mut self,
         p: &DrivetrainParams,
@@ -184,6 +190,7 @@ impl Drivetrain {
         wheel_omega: f32,
         mph: f32,
         inv_inertia: f32,
+        coupled: bool,
         dt: f32,
     ) -> f32 {
         self.select_gear(p, throttle, mph);
@@ -240,7 +247,7 @@ impl Drivetrain {
         self.throttle = thr;
 
         // Engine torque: the idle governor opens the throttle near idle (and fades the friction out).
-        let governor = ((p.idle_rpm + IDLE_GOVERNOR_RPM - self.rpm) / IDLE_GOVERNOR_RPM).clamp(0.0, 1.0);
+        let governor = ((p.idle_rpm + IDLE_GOVERNOR_RPM - self.rpm) * IDLE_GOVERNOR_GAIN).clamp(0.0, 1.0);
         let thr = thr.max(governor * IDLE_GOVERNOR_THROTTLE);
         let friction = p.friction_torque(self.rpm) * (1.0 - governor);
         // Downshifts rev-match: while the clutch is open the engine is blipped up to the new gear's speed.
@@ -248,8 +255,8 @@ impl Drivetrain {
             self.shift.map_or(0.0, |s| wheel_omega.abs() * (p.ratio(s.target) * p.final_drive).abs() * RPM_PER_RAD_S);
         let downshift_blip = self.shift.is_some_and(|s| !s.up) && self.clutch == 0.0 && self.rpm < target_rpm;
         let net = if downshift_blip {
-            -p.engine_resistance * p.engine_inertia
-        } else if declutched || self.clutch < 0.05 && thr == 0.0 {
+            -p.engine_resistance * p.engine_inertia * BLIP_GAIN
+        } else if declutched || self.clutch < DECLUTCHED || !coupled {
             p.engine_resistance * p.engine_inertia * (1.0 - governor)
         } else {
             friction + thr * (p.full_torque(self.rpm) - friction)
@@ -260,10 +267,10 @@ impl Drivetrain {
 
         // Clutch: match the engine and the driveline within the torque capacity.
         let mut torque = 0.0;
-        if ratio != 0.0 && self.clutch > 0.0 {
+        if ratio != 0.0 && self.clutch > 0.0 && coupled {
             let delta = omega - wheel_omega * ratio;
             let inv_eff = 1.0 / p.engine_inertia + ratio * ratio * 0.5 * inv_inertia;
-            let t_c = (delta.abs() / inv_eff / dt * self.clutch).min(CLUTCH_CAP * p.peak_torque) * delta.signum();
+            let t_c = (delta.abs() / inv_eff / dt * self.clutch).min(CLUTCH_CAP) * delta.signum();
             omega -= t_c * dt / p.engine_inertia;
             torque = t_c * ratio;
         }
@@ -303,7 +310,7 @@ impl Drivetrain {
     }
 
     fn start_shift(&mut self, p: &DrivetrainParams, target: i32, up: bool) {
-        let total = p.shift_time * (1.0 + 0.15 * self.random());
+        let total = p.shift_time * (1.0 + 0.15 * self.random()) * if up { 1.0 } else { DOWNSHIFT_TIME };
         self.shift = Some(Shift { target, time: 0.0, total, up, committed: false });
     }
 

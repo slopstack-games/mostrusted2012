@@ -19,10 +19,14 @@ Status words: **confirmed** = read directly from the code; **inferred** = reason
   sub-behaviours.
 - **Constants** referenced as `DAT_00f…` / `DAT_010…` live in `.rdata` / initialised `.data`, which are not
   encrypted in `NFS13.exe` on disk, so they can be read from the file. Constants at `0x0118xxxx` are `.bss`
-  vectors filled by static initialisers; many initialisers are missing from the dump, so about 30 tuning
-  constants (listed under each section) are still unknown. The memory dump the pseudo-C was made from
-  (`NFS13_dump.exe`, not on this machine) holds their live values; reading `.bss` from it, or from the running
-  game with `mwtool memscan`, would settle them.
+  vectors filled by static initialisers; many initialisers are missing from the dump. Their live values were
+  read from the running game with `mwtool memscan` (`dump NFS13.exe+0x<addr − 0x400000>`; research log,
+  session 3): drag K 1.2, anti-roll scale 60, drift damping time bases 60, side-force cap 5, burnout 20 mph,
+  clutch cap 5000 N m, shift phases 0.1 / 0.4, downshift time × 0.5, hysteresis 2 mph, idle governor 20 rpm /
+  0.05 / 0.5, blip × 2.5, declutched below 0.1, steering full-rate threshold 0.99, slip-ratio stop 0.01.
+- **The running car** can be read live: `handling.watch` (git-ignored) follows
+  `[[[[NFS13.exe+0xcedb04]+4]+0x53220]+4+8·i]` to the player's vehicle object (i = `player_index`, 48 in free
+  roam) and lists the fields mapped below.
 - Upgrade / tuning overrides: `FUN_00574870(index, value)` applies the car's upgrade profile to a parameter
   (multiply, add or replace); with no upgrade the data value is used as is.
 - The sound system registers named getters on `RaceCarEntity` (`FUN_0057e280`), which helped map the vehicle

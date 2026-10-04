@@ -130,10 +130,11 @@ impl Process {
 }
 
 fn parse_maps_line(line: &str) -> Option<Region> {
-    let mut parts = line.split_whitespace();
+    // address perms offset dev inode [path]; the path may contain spaces ("Need for Speed(TM) Most Wanted").
+    let mut parts = line.splitn(6, ' ');
     let (start, end) = parts.next()?.split_once('-')?;
     let perms = parts.next()?;
-    let path = parts.nth(3).unwrap_or("").to_string();
+    let path = parts.nth(3).unwrap_or("").trim().to_string();
     Some(Region {
         start: u64::from_str_radix(start, 16).ok()?,
         end: u64::from_str_radix(end, 16).ok()?,
@@ -741,6 +742,12 @@ mod tests {
 
     #[test]
     fn watch_lines() {
+        let r = parse_maps_line(
+            "00401000-00f82000 r-xp 00001000 103:03 78521981                          /home/t/Need for Speed(TM) Most Wanted/NFS13.exe",
+        )
+        .unwrap();
+        assert_eq!(r.path, "/home/t/Need for Speed(TM) Most Wanted/NFS13.exe");
+        assert_eq!(parse_maps_line("010eb000-011be000 rw-p 00000000 00:00 0 ").unwrap().path, "");
         let w = Watch::parse("drift f32 NFS13.exe+0x9f1234 0x10 0x48  # comment").unwrap().unwrap();
         assert_eq!(w.to_line(), "drift f32 NFS13.exe+0x9f1234 0x10 0x48");
         assert!(Watch::parse("   # only a comment").unwrap().is_none());

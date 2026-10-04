@@ -217,7 +217,9 @@ fn engine_sound(
         let handle = assets.add(audio);
         commands.spawn((
             AudioPlayer::<EngineAudio>(handle),
-            PlaybackSettings::LOOP.with_volume(Volume::Linear(0.6)),
+            // ONCE, not LOOP: the source never ends, and looping makes rodio buffer it 32768 samples (0.74 s)
+            // at a time, so the engine held each rpm for most of a second and then jumped.
+            PlaybackSettings::ONCE.with_volume(Volume::Linear(0.6)),
             EngineSound { legacy, driver },
             ChildOf(car),
         ));
@@ -227,17 +229,22 @@ fn engine_sound(
 
 fn update_engine_params(
     time: Res<Time>,
+    fixed: Res<Time<Fixed>>,
     cars: Query<&crate::drive::Car>,
     input: Res<crate::drive::CarInput>,
     mut sounds: Query<&mut EngineSound>,
 ) {
     let Ok(car) = cars.single() else { return };
     let throttle = if car.gear < 0 { input.brake } else { input.throttle };
+    // The physics ticks at 60 Hz and the frames come at their own rate, so a frame sees one tick, then two, ...:
+    // the raw rpm advances unevenly per frame and the engine note steps at the frame rate. Interpolate between
+    // the last two ticks by how far the clock is into the next one (like the car's transform).
+    let rpm = car.rpm_prev + (car.rpm - car.rpm_prev) * fixed.overstep_fraction();
     for mut s in &mut sounds {
-        s.legacy.set(car.rpm, throttle);
+        s.legacy.set(rpm, throttle);
         if let Some(d) = &mut s.driver {
             let i = EngineInput {
-                rpm: car.rpm,
+                rpm,
                 throttle,
                 gear: car.gear,
                 speed_mph: car.speed.abs() / 0.447_04,

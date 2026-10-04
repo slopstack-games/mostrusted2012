@@ -152,8 +152,9 @@ fn long_grip() -> f32 {
 /// Burnout speed scale (mph): both pedals below this release the driven brakes (game constant not in the data).
 const BURNOUT_MPH: f32 = 20.0;
 const MPH: f32 = 0.44704;
-/// Steering input below which the game treats the stick as centred (its threshold is not in the data).
-const STEER_DEAD_ZONE: f32 = 0.01;
+/// Steering outwards at the full steer rate needs |input| ≥ this; below it the game uses the raw
+/// `High_speed_steer_rate` (game constant read from the running game, `.bss` 0x01186e90).
+const STEER_FULL_INPUT: f32 = 0.99;
 /// Left stick dead zone (ours: worn sticks drift).
 const STICK_DEAD_ZONE: f32 = 0.2;
 
@@ -249,6 +250,8 @@ pub struct Car {
     pub pitch: f32,
     pub gear: i32,
     pub rpm: f32,
+    /// Engine rpm at the previous physics tick (the audio interpolates between the two).
+    pub rpm_prev: f32,
     /// Engine, clutch and gearbox (`drivetrain.rs`); `gear` and `rpm` mirror it.
     pub drivetrain: Drivetrain,
     /// Brake pressure build-up (0..1).
@@ -482,6 +485,7 @@ fn spawn_car(
         pitch: 0.0,
         gear,
         rpm: params.idle_rpm,
+        rpm_prev: params.idle_rpm,
         drivetrain,
         brake_ramp: 0.0,
         debug_forces: [0.0; 3],
@@ -628,7 +632,17 @@ fn car_physics(
 
         // --- Engine, clutch, gearbox (drivetrain.rs) -------------------------------
         let dp = &p.drivetrain;
-        let axle_share = [dp.front_share, 1.0 - dp.front_share];
+        // A pull lasts at least `Minimum_handbrake_time`.
+        if input.handbrake && !car.handbrake_prev {
+            car.handbrake_hold = p.handbrake.min_time;
+        }
+        car.handbrake_prev = input.handbrake;
+        car.handbrake_hold -= dt;
+        let handbrake = input.handbrake || car.handbrake_hold > 0.0;
+        let handbrake_strength = p.handbrake.at(band_speed);
+        // With the handbrake held the rear wheels are taken off the driveline (the game drops them from the
+        // clutch), so the locked rear wheels do not drag the engine down.
+        let axle_share = [dp.front_share, if handbrake { 0.0 } else { 1.0 - dp.front_share }];
         let (mut omega, mut inv_inertia) = (0.0, 0.0);
         for (axle, share) in axle_share.iter().enumerate() {
             let wheels: Vec<&WheelState> = car.wheels.iter().filter(|w| usize::from(!w.front) == axle).collect();
@@ -636,9 +650,11 @@ fn car_physics(
             omega += share * wheels.iter().map(|w| w.omega).sum::<f32>() / n;
             inv_inertia += share.powi(2) * wheels.iter().map(|w| 1.0 / w.inertia).sum::<f32>() / n;
         }
-        let drive_torque = car.drivetrain.step(dp, throttle, omega, mph, inv_inertia, dt);
+        let coupled = axle_share.iter().any(|&s| s > 0.0);
+        let drive_torque = car.drivetrain.step(dp, throttle, omega, mph, inv_inertia, coupled, dt);
         car.gear = car.drivetrain.gear;
-        car.rpm = car.drivetrain.rpm;
+        car.rpm_prev = car.rpm;
+        car.rpm = car.drivetrain.rpm.min(dp.max_rpm);
         let n_axle = [
             car.wheels.iter().filter(|w| w.front).count().max(1) as f32,
             car.wheels.iter().filter(|w| !w.front).count().max(1) as f32,
@@ -658,14 +674,6 @@ fn car_physics(
         let steer = car.steer;
 
         let filter = SpatialQueryFilter::from_excluded_entities([entity, car.body_collider]);
-        // A pull lasts at least `Minimum_handbrake_time`.
-        if input.handbrake && !car.handbrake_prev {
-            car.handbrake_hold = p.handbrake.min_time;
-        }
-        car.handbrake_prev = input.handbrake;
-        car.handbrake_hold -= dt;
-        let handbrake = input.handbrake || car.handbrake_hold > 0.0;
-        let handbrake_strength = p.handbrake.at(band_speed);
 
         // --- Wheel spin: drive torque, and the brake budget (solved with the tyre below) ------------------
         let mut brake_budget = Vec::with_capacity(car.wheels.len());
@@ -969,7 +977,7 @@ fn steer_towards(
     let towards_centre = (target - cur) * -cur > 0.0;
     let rate = if towards_centre {
         if cur * input < 0.0 { pick(s.counter_rate) } else { pick(s.center_rate) }
-    } else if input.abs() >= STEER_DEAD_ZONE {
+    } else if input.abs() >= STEER_FULL_INPUT {
         pick(s.rate)
     } else {
         s.rate[1]
