@@ -304,15 +304,50 @@ impl<'a> SoundLoader<'a> {
     }
 }
 
+/// `EngineSound2` tuning the game's engine-sound code reads (research log 2026-10-04, "engine sound from
+/// the game code"). Field names are not recovered; the roles come from how the code uses them.
+#[derive(Debug, Clone, Copy)]
+pub struct EngineTuning {
+    /// RPM curve terms (`a33d84fe` at full load, `cb44d82d` off load, `913bb900` in the alternate state):
+    /// the audible RPM is `norm ^ (2 - a)` of the idle..max fraction, `a` crossfaded by load.
+    pub rpm_curve_on: f32,
+    pub rpm_curve_off: f32,
+    pub rpm_curve_alt: f32,
+    /// Engine-load response rate (`99d4b91e`), relative units.
+    pub load_rate: f32,
+    /// Cylinders (`ed754b99`): firing frequency = RPM / 120 × cylinders.
+    pub cylinders: f32,
+    /// Multiples of the firing frequency for the tracked harmonic 1 / 2 (`7cbc11ca`, `7cbc11c9`) and the
+    /// sub-harmoniser (`283e07de`) bindings.
+    pub harmonic1: f32,
+    pub harmonic2: f32,
+    pub subharmonic: f32,
+}
+
+impl Default for EngineTuning {
+    fn default() -> Self {
+        Self {
+            rpm_curve_on: 1.0,
+            rpm_curve_off: 1.0,
+            rpm_curve_alt: 1.0,
+            load_rate: 0.5,
+            cylinders: 6.0,
+            harmonic1: 1.0,
+            harmonic2: 3.0,
+            subharmonic: 1.0,
+        }
+    }
+}
+
 /// A car's engine as the game describes it (`Genesys.Gen.EngineSound2`).
 #[derive(Debug, Clone)]
 pub struct EngineBank {
     pub bank: Bank,
     /// Axis of the Ginsu sequences (`Binding_Min..Binding_Max` of the RPM sequence, 1790..7500 on the 911).
     pub rpm_range: (f32, f32),
-    /// Engine order (per crank revolution) with the most energy in the main recording, for the tracked
-    /// harmonic bindings.
+    /// Engine order (per crank revolution) with the most energy in the main recording (diagnostics).
     pub harmonic_order: f32,
+    pub tuning: EngineTuning,
 }
 
 /// RMS of the calibration render (full throttle at 75 % of the rev range) every engine is scaled to.
@@ -334,8 +369,15 @@ impl EngineBank {
         bank.sequences.iter_mut().filter(|s| s.retrigger).for_each(|s| s.items.clear());
         let mut player = Player::new(bank, params);
         let rate = OUTPUT_RATE as usize;
-        let input =
-            EngineInput { rpm: 5500.0, throttle: 1.0, gear: 3, speed_mph: 80.0, idle_rpm: 1000.0, redline_rpm: 7000.0 };
+        let input = EngineInput {
+            rpm: 5500.0,
+            throttle: 1.0,
+            gear: 3,
+            speed_mph: 80.0,
+            idle_rpm: 1000.0,
+            redline_rpm: 7000.0,
+            top_speed_mph: 180.0,
+        };
         let mut sum = 0f64;
         let n = rate;
         for i in 0..rate / 2 + n {
@@ -438,6 +480,42 @@ impl AssetStore {
                 c.gain *= v;
             }
         }
+        // Per-car plug-in overrides (`DspParam { Mixer_channel, PlugIn, Value, Parameter_name }` in four
+        // lists: `Engine_params` and three unnamed ones). The index ↔ runtime parameter table is not in
+        // the decompiled code; the readings applied here are the ones consistent across the data
+        // (research log 2026-10-04, "engine sound from the game code"): 1 = the first parameter, Frequency,
+        // of a filter (the 911's 6.5 kHz EQs become 400 Hz / 1 kHz), 0 on a send = its gain (0 mutes the
+        // comb-rasp delay path). Other indices (Delay 4, BandPass 5) are left alone.
+        for list in [field_hash("Engine_params"), 0xe792_2a45, 0x6b1a_9df7, 0x7b5b_ec24] {
+            for w in structs(&es, list) {
+                let Some(p) = sub(w, field_hash("Param")) else { continue };
+                let (Some(ch), Some(uid), Some(v)) = (handle(p, "Mixer_channel"), num(p, "PlugIn"), num(p, "Value"))
+                else {
+                    continue;
+                };
+                let index = num(p, "Parameter_name").unwrap_or(-1.0) as i32;
+                let Some(c) = bank.channels.iter_mut().find(|c| c.id == ch.0) else { continue };
+                let Some(plugin) = c.plugins.iter_mut().find(|p| p.uid == uid as u32) else { continue };
+                let target = match (plugin.kind, index) {
+                    (PluginKind::Send { .. }, 0) => Some(field::GAIN),
+                    (
+                        PluginKind::Peaking
+                        | PluginKind::HighShelf
+                        | PluginKind::LowPass
+                        | PluginKind::HighPass
+                        | PluginKind::BandPass,
+                        1,
+                    ) => Some(field::FREQUENCY),
+                    _ => None,
+                };
+                if let Some(f) = target {
+                    match plugin.fields.iter_mut().find(|(h, _)| *h == f) {
+                        Some(slot) => slot.1 = v,
+                        None => plugin.fields.push((f, v)),
+                    }
+                }
+            }
+        }
         let rpm_seq = bank.sequences.iter().find(|s| s.items.iter().any(|i| matches!(i.kind, ItemKind::Ginsu { .. })));
         let rpm_range = rpm_seq.map_or((1000.0, 7000.0), |s| (s.min, s.max));
         let main = bank.sequences.iter().flat_map(|s| &s.items).find_map(|i| match &i.kind {
@@ -445,7 +523,19 @@ impl AssetStore {
             _ => None,
         });
         let harmonic_order = main.map_or(3.0, |g| dominant_order(&g));
-        let mut eb = EngineBank { bank, rpm_range, harmonic_order };
+        let d = EngineTuning::default();
+        let f = |hash: u32, default: f32| number(es.get(hash)).unwrap_or(default);
+        let tuning = EngineTuning {
+            rpm_curve_on: f(0xa33d_84fe, d.rpm_curve_on),
+            rpm_curve_off: f(0xcb44_d82d, d.rpm_curve_off),
+            rpm_curve_alt: f(0x913b_b900, d.rpm_curve_alt),
+            load_rate: f(0x99d4_b91e, d.load_rate),
+            cylinders: f(0xed75_4b99, d.cylinders).max(1.0),
+            harmonic1: f(0x7cbc_11ca, d.harmonic1),
+            harmonic2: f(0x7cbc_11c9, d.harmonic2),
+            subharmonic: f(0x283e_07de, d.subharmonic),
+        };
+        let mut eb = EngineBank { bank, rpm_range, harmonic_order, tuning };
         eb.normalise();
         Ok(Some(eb))
     }

@@ -509,17 +509,31 @@ struct GinsuGroup {
     voices: Vec<GinsuVoice>,
     rpm: f32,
     target: f32,
+    /// RPM glide (the game's Ginsu player ramps linearly to a new RPM over 33 ms): start value and
+    /// samples left.
+    glide_from: f32,
+    glide_left: f32,
     t: f32,
     period: f32,
     seed: u32,
 }
+
+/// The game's Ginsu player glides to a new RPM over this long.
+const RPM_GLIDE_SECONDS: f32 = 0.033;
 
 impl GinsuGroup {
     fn next(&mut self, sr: f32, out: &mut [f32]) {
         if self.voices.is_empty() {
             return;
         }
-        self.rpm += (self.target - self.rpm) / (0.01 * sr);
+        if self.glide_left > 0.0 {
+            let n = RPM_GLIDE_SECONDS * sr;
+            self.glide_left -= 1.0;
+            let f = 1.0 - (self.glide_left / n).clamp(0.0, 1.0);
+            self.rpm = self.glide_from + (self.target - self.glide_from) * f;
+        } else {
+            self.rpm = self.target;
+        }
         if self.t >= self.period {
             self.t -= self.period;
             self.seed ^= self.seed << 13;
@@ -615,14 +629,23 @@ impl PluginState {
     }
 
     #[inline]
-    fn process(&mut self, x: f32, sr: f32) -> f32 {
+    fn process(&mut self, x: f32, sr: f32, bypass: Bypass) -> f32 {
         match self.plugin.kind {
             PluginKind::Peaking
             | PluginKind::HighShelf
             | PluginKind::LowPass
             | PluginKind::HighPass
-            | PluginKind::BandPass => self.biquads.iter_mut().fold(x, |x, b| b.process(x)),
+            | PluginKind::BandPass => {
+                if bypass.eq {
+                    x
+                } else {
+                    self.biquads.iter_mut().fold(x, |x, b| b.process(x))
+                }
+            }
+            PluginKind::Distortion if bypass.distortion => x,
+            PluginKind::Distortion if bypass.raw_distortion => dsp::distort_raw(x, self.value(field::DISTORTION, 1.0)),
             PluginKind::Distortion => dsp::distort(x, self.value(field::DISTORTION, 1.0)),
+            PluginKind::SubHarmoniser if bypass.sub_harmoniser => x,
             PluginKind::SubHarmoniser => self.sub.process(x, self.value(field::INTERVAL, 1.0) as u32, sr),
             PluginKind::Delay => {
                 let (t, fb) = (self.value(field::TIME, 0.0), self.value(field::FEEDBACK, 0.0));
@@ -641,6 +664,29 @@ struct ChannelState {
     plugins: Vec<PluginState>,
     /// Channels without sends play straight into the master.
     has_send: bool,
+}
+
+/// Which plug-in families to bypass, for A/B listening (`MW_AUDIO_DRY=1` bypasses them all; `MW_AUDIO_NO_DIST`,
+/// `MW_AUDIO_NO_SUB`, `MW_AUDIO_NO_EQ` one family each; `MW_AUDIO_DIST=raw` uses the uncompensated
+/// `tanh(d · x)` waveshaper).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Bypass {
+    pub distortion: bool,
+    pub sub_harmoniser: bool,
+    pub eq: bool,
+    pub raw_distortion: bool,
+}
+
+impl Bypass {
+    pub fn from_env() -> Self {
+        let set = |k: &str| std::env::var_os(k).is_some();
+        Self {
+            distortion: set("MW_AUDIO_NO_DIST"),
+            sub_harmoniser: set("MW_AUDIO_NO_SUB"),
+            eq: set("MW_AUDIO_NO_EQ"),
+            raw_distortion: std::env::var("MW_AUDIO_DIST").is_ok_and(|v| v == "raw"),
+        }
+    }
 }
 
 /// Renders a [`Bank`] driven by [`Params`].
@@ -664,6 +710,8 @@ pub struct Player {
     sr: f32,
     /// Bypass the plug-ins (A/B listening, `MW_AUDIO_DRY`).
     pub dry: bool,
+    /// Bypass some plug-in families ([`Bypass`]).
+    pub bypass: Bypass,
     /// Sum of squares of each channel's input after its gain (diagnostics, see [`Player::enable_meter`]).
     meter: Option<Vec<f64>>,
 }
@@ -766,8 +814,16 @@ impl Player {
             }
         }
 
-        let mut ginsu =
-            GinsuGroup { voices: Vec::new(), rpm: 0.0, target: 0.0, t: 0.0, period: 1000.0, seed: 0x9e37_79b9 };
+        let mut ginsu = GinsuGroup {
+            voices: Vec::new(),
+            rpm: 0.0,
+            target: 0.0,
+            glide_from: 0.0,
+            glide_left: 0.0,
+            t: 0.0,
+            period: 1000.0,
+            seed: 0x9e37_79b9,
+        };
         let rmod = |m: &ModValue| RMod { m: m.clone(), bind: bind(&params, &m.binding) };
         let seqs: Vec<SeqState> = bank
             .sequences
@@ -848,6 +904,7 @@ impl Player {
             block: 0,
             sr,
             dry: false,
+            bypass: Bypass::default(),
             meter: None,
         }
     }
@@ -946,7 +1003,11 @@ impl Player {
                         if let Some(g) = st.ginsu {
                             if g == 0
                                 && let Some(x) = x
+                                && (x - self.ginsu.target).abs() > 1e-3
                             {
+                                // A new target starts a 33 ms glide from the current RPM.
+                                self.ginsu.glide_from = self.ginsu.rpm;
+                                self.ginsu.glide_left = RPM_GLIDE_SECONDS * self.sr;
                                 self.ginsu.target = x;
                             }
                             let v = &mut self.ginsu.voices[g];
@@ -1180,6 +1241,7 @@ impl Player {
             }
         }
         let sr = self.sr;
+        let bypass = self.bypass;
         for k in 0..self.order.len() {
             let c = self.order[k];
             let ch = &mut self.channels[c];
@@ -1194,16 +1256,18 @@ impl Player {
             let mut sent_master = false;
             for p in &mut ch.plugins {
                 if let Some(to) = p.send {
+                    // `SendDspPlugIn.Gain` (1 in the data; a per-car override can mute a send).
+                    let sent = x * p.value(field::GAIN, 1.0);
                     match to {
                         Some(t) => {
                             // Senders come before receivers; a send back up the order would close a
                             // feedback loop (the 911's two vehicle buses send to each other) and is dropped.
                             if self.rank[t] > k {
-                                self.inputs[t] += x;
+                                self.inputs[t] += sent;
                             }
                         }
                         None if !sent_master => {
-                            self.inputs[master] += x;
+                            self.inputs[master] += sent;
                             sent_master = true;
                         }
                         None => {}
@@ -1211,7 +1275,7 @@ impl Player {
                     continue;
                 }
                 if !self.dry {
-                    x = p.process(x, sr);
+                    x = p.process(x, sr, bypass);
                 }
             }
             if !ch.has_send {

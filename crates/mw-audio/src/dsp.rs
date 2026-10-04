@@ -125,7 +125,15 @@ pub struct SubHarmoniser {
     crossings: u32,
     state: f32,
     smooth: f32,
+    /// Samples since the last zero crossing, and the length of the last half cycle.
+    since_flip: f32,
+    half_cycle: f32,
 }
+
+/// Inputs whose fundamental is above this (half cycles shorter than `sr / 2f`) are not tracked: an engine
+/// sub-harmoniser follows firing orders, not hiss. The 911's per-car data high-passes one of its
+/// sub-harmoniser buses at 6.8 kHz, which reads as switching that bus off.
+const SUB_TRACK_MAX_HZ: f32 = 1500.0;
 
 impl SubHarmoniser {
     pub fn process(&mut self, x: f32, interval: u32, sr: f32) -> f32 {
@@ -134,7 +142,10 @@ impl SubHarmoniser {
         self.env += (x.abs() - self.env) * k;
         let thr = self.env * 0.25;
         let flip = if self.positive { x < -thr } else { x > thr };
+        self.since_flip += 1.0;
         if flip {
+            self.half_cycle = self.since_flip;
+            self.since_flip = 0.0;
             self.positive = !self.positive;
             self.crossings += 1;
             if self.crossings >= 1 << interval.clamp(1, 3) {
@@ -142,9 +153,14 @@ impl SubHarmoniser {
                 self.state = if self.state > 0.0 { -1.0 } else { 1.0 };
             }
         }
-        // Soften the square's edges (~1 ms) so the toggles don't click.
-        self.smooth += (self.state - self.smooth) * (1.0 / (0.001 * sr)).min(1.0);
-        self.smooth * self.env * std::f32::consts::FRAC_PI_2
+        // Round the square's edges (~2 ms) so the toggles don't click and the upper harmonics stay below
+        // the input's. Level: the input's RMS (mean |x| × π/2 is a sine's peak; × 1/√2 its RMS). The
+        // game's sub-harmoniser code is not in the decompiled exe, so this stays a stand-in.
+        self.smooth += (self.state - self.smooth) * (1.0 / (0.002 * sr)).min(1.0);
+        if self.half_cycle < sr / (2.0 * SUB_TRACK_MAX_HZ) {
+            return 0.0;
+        }
+        self.smooth * self.env * (std::f32::consts::FRAC_PI_2 * std::f32::consts::FRAC_1_SQRT_2)
     }
 }
 
@@ -172,9 +188,20 @@ impl Delay {
     }
 }
 
-/// `DistortionDspPlugIn`: `tanh(d · x)`.
+/// `DistortionDspPlugIn`. The game's waveshaper is not in the decompiled code (research log 2026-10-04,
+/// "engine sound from the game code"); its parameter is a drive of 1e-5..1000 (default 1). This stand-in is
+/// a drive-compensated soft clip, `tanh(d · x) / d`: unity gain for small signals, so the strain buses
+/// (drive 4, fed at about -16 dB) add rasp without becoming as loud as the clean path, and transparent at
+/// the data's gentle drive of 0.4. [`distort_raw`] is the uncompensated `tanh(d · x)` (`MW_AUDIO_DIST=raw`).
 #[inline]
 pub fn distort(x: f32, amount: f32) -> f32 {
+    let d = amount.max(1e-3);
+    (x * d).tanh() / d
+}
+
+/// `tanh(d · x)`: the previous stand-in, kept for A/B listening.
+#[inline]
+pub fn distort_raw(x: f32, amount: f32) -> f32 {
     (x * amount.max(0.0)).tanh()
 }
 
@@ -224,5 +251,18 @@ mod tests {
         // Count sign changes of the output over the last half second: 100 Hz square = 100 per second.
         let changes = out[24_000..].windows(2).filter(|w| (w[0] > 0.0) != (w[1] > 0.0)).count();
         assert!((95..=105).contains(&changes), "{changes}");
+        // Nothing to divide above the tracking limit (a 6.8 kHz high-passed input is hiss, not firing).
+        let mut s = SubHarmoniser::default();
+        let out: Vec<f32> = (0..48_000).map(|i| s.process((TAU * 3000.0 * i as f32 / sr).sin(), 1, sr)).collect();
+        assert!(out[24_000..].iter().all(|v| *v == 0.0));
+    }
+
+    #[test]
+    fn distortion_keeps_small_signals_at_unity() {
+        assert!((distort(0.01, 4.0) / 0.01 - 1.0).abs() < 0.01);
+        assert!((distort(0.01, 0.4) / 0.01 - 1.0).abs() < 0.001);
+        // Large signals compress: the drive only decides where.
+        assert!(distort(1.0, 4.0) < 0.26 && distort(1.0, 4.0) > 0.24);
+        assert!((distort_raw(1.0, 4.0) - 4f32.tanh()).abs() < 1e-6);
     }
 }

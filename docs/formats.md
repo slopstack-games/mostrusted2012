@@ -291,7 +291,14 @@ See `crates/mw-audio` (decoders reimplemented from vgmstream's documentation of 
   (Feedback, Time)`, pans, `GinsuDspPlugIn`. `EngineSound2 { Sequences (always on), Burnout, Drift, In_air,
   Reversing and six unnamed sequence lists (gear changes), Backfire_Sequence, Gurgle_Sequence (bound to
   GetPopProbability), Pop_Sequence, Ignition_Sequence, c62d11ac (rev limiter), mixer channel list, DspParam
-  lists (per-car plug-in overrides), Gains (per-car channel trims), MasterGain }`.
+  lists (per-car plug-in overrides), Gains (per-car channel trims), MasterGain }`. Unnamed `EngineSound2`
+  floats the game's code reads (research log "engine sound from the game code"): `99d4b91e` load response
+  rate, `a33d84fe` / `cb44d82d` / `913bb900` RPM-curve terms (full load / off load / alternate; audible RPM =
+  1000 + 7000 × (idle..max fraction)^(2 − a)), `283e07de` sub-harmoniser, `7cbc11ca` / `7cbc11c9` tracked
+  harmonic 1 / 2 and `dbcddcfc` tunnel harmonic as multiples of the firing frequency (RPM / 120 × cylinders
+  `ed754b99`), `11a77b36` / `64cbe1ff` tunnel gain / Q, `f0291dd3` comb-rasp delay divisor. `DspParam
+  { Mixer_channel, PlugIn (unique id), Value, Parameter_name }`: index 1 on a filter reads as Frequency, 0 on a
+  Send as its gain; 4 (Delay) and 5 (BandPass) are unresolved.
 - **Surface and collision sounds**: `Surfaces { Default_surface, Chevron_surface, Surfaces }` →
   `SurfaceType { two condition sets (dry / wet) { Flats, Normal, Offroad, Rims, Track: { Surface_Physics,
   Surface_Rumble, Surface_Sounds } } }` → `SurfaceSounds { Brake, Drift, Spin (+ _Competitor), Reflection, two

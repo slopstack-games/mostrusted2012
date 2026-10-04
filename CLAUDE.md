@@ -125,6 +125,9 @@ in `crates/mostrusted/src/layered.wgsl`, selected by `materials::Look`.
 I can't listen to audio, so verify decoders numerically (see the research log): spectral flatness against
 white noise, sample-to-sample smoothness (diff/RMS), discontinuities at codec frame or grain boundaries, and
 spectral centroid against RPM for engine sounds. Export with `mwtool audio` and analyse the `.wav` in Python.
+Engine A/B switches (runtime and `mwtool engine-sound`): `MW_AUDIO_DRY=1` (plug-ins off), `MW_AUDIO_NO_DIST`,
+`MW_AUDIO_NO_SUB`, `MW_AUDIO_NO_EQ`, `MW_AUDIO_DIST=raw`, `MW_AUDIO_RPM_LINEAR=1` (audible RPM = physics RPM);
+`MW_AUDIO_METER=1` prints channel levels and plug-in chains.
 
 ## Conventions
 
