@@ -29,7 +29,13 @@ Four background agents were asked to commit their work in progress and stop. The
 `.claude/worktrees/`) still need reviewing and merging. Check each report / last commit message first:
 - `worktree-agent-a23d46f081ecde4ae`: **engine sound** (Fable): ground-truth comparison against the raw Ginsu
   recordings, decoder check, synthesis model, mix. The user's top audio complaint.
-- `worktree-agent-a61cdc331105fad7d`: **weather** (Alternate keyframes, wet roads, rain, wind).
+- `worktree-agent-a61cdc331105fad7d`: **weather**, finished (0be6e1a, clean build/tests). The game has **no rain**
+  in its data. Added: runtime hour / Alternate switching (F5/F6/F7, `--weather`, `--hour 13.5`), the
+  timeline painted per map cell (`WorldPaintMap`, `--timeline default` reproduces older screenshots), roads
+  always wet per the shader (puddle map × vertex mask, `--road-wetness 0`), opt-in `--planar-reflection`.
+  Merge notes: it adds a `crate::MainCamera` filter; the new `camera.rs` (merged after the branch was cut)
+  needs that filter too before planar reflection can be on by default. It also saw the daytime sky render
+  black in the main view (the tonemap or grade crushing it; the mirrored view without tonemap shows blue).
 - `worktree-agent-a448f6bbd0543fac1`: **prop collisions** (colliders, smashable props, surface tags).
 - `worktree-agent-a17939d9314475550`: **game UI** (UI data / Apt, game font, driving HUD).
 
