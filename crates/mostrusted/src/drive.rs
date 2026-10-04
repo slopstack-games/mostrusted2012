@@ -35,6 +35,11 @@ pub struct PendingCar {
     /// Yaw in radians; 0 faces +Z.
     pub heading: f32,
     pub parts: CarParts,
+    /// The ground ray starts this far above `spawn` (m): 30 at startup, small for a swap in place so a
+    /// bridge overhead is not mistaken for the ground.
+    pub probe: f32,
+    /// Initial velocity (m/s): a swapped car keeps the old one's.
+    pub velocity: Vec3,
 }
 
 /// Render parts for each body / wheel model, resolved on the main thread.
@@ -282,7 +287,7 @@ fn spawn_car(
 ) {
     let Some(pending) = pending else { return };
     // Wait until the collision under the spawn point has streamed in.
-    let origin = pending.spawn + Vec3::Y * 30.0;
+    let origin = pending.spawn + Vec3::Y * pending.probe;
     let Some(hit) = spatial.cast_ray(origin, Dir3::NEG_Y, 200.0, true, &SpatialQueryFilter::default()) else {
         return;
     };
@@ -310,6 +315,7 @@ fn spawn_car(
             Transform::from_translation(start).with_rotation(Quat::from_rotation_y(pending.heading)),
             Visibility::default(),
             RigidBody::Dynamic,
+            LinearVelocity(pending.velocity),
             // Explicit mass properties; the collider box would otherwise
             // contribute a ~6 kg (density 1) inertia and the car flips at once.
             Mass(params.mass),
@@ -393,17 +399,24 @@ fn spawn_car(
             spinner,
         });
     }
+    // A car swapped in at speed starts in the gear that speed needs.
+    let speed = pending.velocity.dot(Quat::from_rotation_y(pending.heading) * Vec3::Z);
+    let radius = wheels.iter().map(|w| w.radius).sum::<f32>() / wheels.len().max(1) as f32;
+    let wheel_rpm = speed.max(0.0) / radius.max(0.1) * 60.0 / std::f32::consts::TAU;
+    let gear = (1..=params.ratios.len() as i32)
+        .find(|&g| wheel_rpm * params.ratio(g) * params.final_drive < params.redline_rpm * 0.8)
+        .unwrap_or(params.ratios.len().max(1) as i32);
     commands.entity(car).insert(Car {
         wheels,
         steer: 0.0,
-        speed: 0.0,
+        speed,
         yaw_rate: 0.0,
         lateral_accel: 0.0,
         body_slip: 0.0,
         drifting: false,
         roll: 0.0,
         pitch: 0.0,
-        gear: 1,
+        gear,
         rpm: params.idle_rpm,
         shift_timer: 0.0,
         debug_forces: [0.0; 3],
@@ -419,7 +432,7 @@ fn spawn_car(
     info!("car spawned at {start:?}");
 }
 
-fn read_input(keys: Res<ButtonInput<KeyCode>>, pads: Query<&Gamepad>, mut input: ResMut<CarInput>) {
+pub(crate) fn read_input(keys: Res<ButtonInput<KeyCode>>, pads: Query<&Gamepad>, mut input: ResMut<CarInput>) {
     let key = |k: &[KeyCode]| -> f32 { if k.iter().any(|k| keys.pressed(*k)) { 1.0 } else { 0.0 } };
     let mut throttle = key(&[KeyCode::KeyW, KeyCode::ArrowUp]);
     let mut brake = key(&[KeyCode::KeyS, KeyCode::ArrowDown]);
@@ -786,6 +799,8 @@ fn wheel_visuals(cars: Query<&Car>, mut transforms: Query<&mut Transform>) {
 #[derive(Default)]
 struct ChaseState {
     init: bool,
+    /// The car being followed: a new one (menu swap) restarts the smoothing.
+    car: Option<Entity>,
     yaw: f32,
     up: Vec3,
     /// Extra distance (m, + = further back) from acceleration.
@@ -808,10 +823,10 @@ struct ChaseState {
 fn chase_camera(
     time: Res<Time>,
     mut state: Local<ChaseState>,
-    cars: Query<(&Transform, &LinearVelocity, &Car), Without<Camera3d>>,
+    cars: Query<(Entity, &Transform, &LinearVelocity, &Car), Without<Camera3d>>,
     mut camera: Query<(&mut Transform, &mut Projection), With<Camera3d>>,
 ) {
-    let (Ok((car_t, vel, car)), Ok((mut cam, mut projection))) = (cars.single(), camera.single_mut()) else {
+    let (Ok((entity, car_t, vel, car)), Ok((mut cam, mut projection))) = (cars.single(), camera.single_mut()) else {
         return;
     };
     let dt = time.delta_secs().max(1e-4);
@@ -828,8 +843,16 @@ fn chase_camera(
     let travel_yaw = flat_v.x.atan2(flat_v.z);
     let lean = if car.speed > 3.0 { (speed / 15.0).min(1.0) * 0.35 } else { 0.0 };
     let target_yaw = car_yaw + wrap_angle(travel_yaw - car_yaw) * lean;
-    if !s.init {
-        *s = ChaseState { init: true, yaw: target_yaw, up: Vec3::Y, fov: c.min_fov, speed, ..default() };
+    if !s.init || s.car != Some(entity) {
+        *s = ChaseState {
+            init: true,
+            car: Some(entity),
+            yaw: target_yaw,
+            up: Vec3::Y,
+            fov: c.min_fov,
+            speed,
+            ..default()
+        };
     }
     s.yaw += wrap_angle(target_yaw - s.yaw) * ease(6.0);
     // Follow the ground's slope slowly, not every bump.

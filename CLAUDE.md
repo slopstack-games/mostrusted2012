@@ -67,6 +67,11 @@ cargo fmt                                    # rustfmt.toml: max_width 120
 MW_ENGINE_TRACE=<scratch>/rpm.trace ./target/release/mostrusted --drive 911 --test engine
 # Driving without a human: fixed throttle, logs "car at x y z, speed, compression" once a second
 ./target/release/mostrusted --drive 911 --units 12 --auto-throttle 0.4 --screenshot <scratch>/drive.png --screenshot-delay 400
+# Car menu (Tab / F1 / gamepad Start in interactive runs). Headless: swap cars in turn (`name@paint`, `free` =
+# free camera), screenshot after the last; logs model / mesh / material / entity counts per step (leak check)
+./target/release/mostrusted --drive 911 --units 12 --auto-throttle 0.3 --swap-to "veyron super,aventador@2" --swap-delay 200 --screenshot <scratch>/swap.png
+./target/release/mostrusted --camera=-1131,27,1627,-1190,15,1720 --units 12 --swap-to 911,free,veyron --screenshot <scratch>/spawn.png
+./target/release/mostrusted --drive 911 --units 12 --show-menu --screenshot <scratch>/menu.png --screenshot-delay 60
 ```
 
 Use `--camera=` with `=` when the first value is negative. Release builds are needed: dependencies are

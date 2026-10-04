@@ -5,9 +5,9 @@
 //! the main thread over a channel. Track units are streamed nearest-first
 //! from the focus point, much like the original game streams its world.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 
 use bevy::prelude::*;
 use mw_assets::AssetStore;
@@ -29,6 +29,19 @@ pub enum Request {
     Drive { bundle: String, spawn: Vec3, heading: f32, max_units: Option<usize>, world: bool },
 }
 
+/// A car to load while the session runs (the in-game car menu, `--swap-to`). The world is not
+/// reloaded: the loader answers with `Msg::Car` (or `Msg::CarFailed`) between track units.
+#[derive(Debug, Clone)]
+pub struct CarRequest {
+    pub bundle: String,
+    /// Which of the car's `VehiclePaint` options to use (clamped to the ones it has).
+    pub paint_index: usize,
+}
+
+/// Sends [`CarRequest`]s to the loader thread.
+#[derive(Resource)]
+pub struct LoaderRequests(pub Sender<CarRequest>);
+
 /// A wheel of a drivable car, in car space.
 #[derive(Debug, Clone)]
 pub struct WheelSpec {
@@ -43,6 +56,10 @@ pub struct WheelSpec {
 /// Everything needed to spawn a drivable car.
 #[derive(Debug, Clone)]
 pub struct CarSpec {
+    /// The vehicle bundle it came from, and its paint (index, number of paints the car has).
+    pub bundle: String,
+    pub paint_index: usize,
+    pub paint_count: usize,
     pub body: Vec<ResourceId>,
     pub wheels: Vec<WheelSpec>,
     /// Handling parameters from the car's GeneSys data.
@@ -68,6 +85,8 @@ pub enum Msg {
     /// Static world collision (one per track unit).
     Collider(avian3d::prelude::Collider),
     Car(Box<CarSpec>),
+    /// A runtime [`CarRequest`] could not be loaded.
+    CarFailed(String),
     Progress(String),
     Done,
 }
@@ -90,8 +109,14 @@ pub struct WorldFilter {
 #[derive(Resource)]
 pub struct LoaderChannel(pub std::sync::Mutex<Receiver<Msg>>);
 
-pub fn spawn(store: Arc<AssetStore>, request: Request, bc_supported: bool, filter: WorldFilter) -> LoaderChannel {
+pub fn spawn(
+    store: Arc<AssetStore>,
+    request: Request,
+    bc_supported: bool,
+    filter: WorldFilter,
+) -> (LoaderChannel, LoaderRequests) {
     let (tx, rx) = channel();
+    let (req_tx, req_rx) = channel();
     std::thread::Builder::new()
         .name("mw-loader".into())
         .spawn(move || {
@@ -106,14 +131,23 @@ pub fn spawn(store: Arc<AssetStore>, request: Request, bc_supported: bool, filte
                 empty_models: HashSet::new(),
                 groundcover_done: HashSet::new(),
                 paint: None,
+                paint_count: 0,
+                paintable: HashMap::new(),
+                requests: req_rx,
             };
             if let Err(e) = w.run(request) {
                 let _ = w.tx.send(Msg::Progress(format!("loader error: {e:#}")));
             }
             let _ = w.tx.send(Msg::Done);
+            // Then serve runtime car requests until the main thread drops its sender.
+            while let Ok(req) = w.requests.recv() {
+                if w.car_request(req).is_err() {
+                    break;
+                }
+            }
         })
         .expect("spawn loader thread");
-    LoaderChannel(std::sync::Mutex::new(rx))
+    (LoaderChannel(std::sync::Mutex::new(rx)), LoaderRequests(req_tx))
 }
 
 struct Worker {
@@ -128,8 +162,13 @@ struct Worker {
     empty_models: HashSet<ResourceId>,
     /// Groundcover collections already sent (they are shared between track units).
     groundcover_done: HashSet<ResourceId>,
-    /// Paint of the car being loaded, applied to its body-paint meshes.
+    /// Paint of the car being loaded, applied to its body-paint meshes, and how many the car has.
     paint: Option<mw_assets::paint::VehiclePaint>,
+    paint_count: usize,
+    /// Models known to have body-paint meshes (their key includes the paint) or not.
+    paintable: HashMap<ResourceId, bool>,
+    /// Runtime car requests, served between track units and after the initial request.
+    requests: Receiver<CarRequest>,
 }
 
 impl Worker {
@@ -156,8 +195,8 @@ impl Worker {
                         .collect(),
                 };
                 for p in placements {
-                    if self.model(p.model)? {
-                        self.send(Msg::Instance { model: p.model, transform: game_matrix(&p.transform) })?;
+                    if let Some(model) = self.model_variant(p.model, false, InstanceLook::default())? {
+                        self.send(Msg::Instance { model, transform: game_matrix(&p.transform) })?;
                     }
                 }
                 self.send(Msg::Progress(format!("loaded {bundle}")))?;
@@ -173,8 +212,29 @@ impl Worker {
         Ok(())
     }
 
+    /// Load a car asked for at runtime. Load errors go back to the main thread; only a closed
+    /// channel is an error here.
+    fn car_request(&mut self, req: CarRequest) -> anyhow::Result<()> {
+        self.filter.paint_index = req.paint_index;
+        if let Err(e) = self.car(&req.bundle) {
+            self.send(Msg::CarFailed(format!("{}: {e:#}", req.bundle)))?;
+        }
+        Ok(())
+    }
+
+    /// Serve any runtime car requests that are waiting (called between track units).
+    fn poll_requests(&mut self) -> anyhow::Result<()> {
+        loop {
+            match self.requests.try_recv() {
+                Ok(req) => self.car_request(req)?,
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => return Ok(()),
+            }
+        }
+    }
+
     fn select_paint(&mut self, b: &mw_bundle::Bundle) {
         let paints = self.store.vehicle_paints(b).unwrap_or_default();
+        self.paint_count = paints.len();
         self.paint = paints.get(self.filter.paint_index.min(paints.len().saturating_sub(1))).copied();
         if !paints.is_empty() {
             let _ = self.send(Msg::Progress(format!(
@@ -195,10 +255,19 @@ impl Worker {
         let spec = mw_formats::VehicleGraphicsSpec::parse(&b.load(e)?)?;
         let handling = mw_assets::handling::VehicleHandling::from_bundle(&self.store, &b).unwrap_or_default();
         let engine = self.store.engine_voice(&b).unwrap_or_default();
-        let mut car = CarSpec { body: Vec::new(), wheels: Vec::new(), handling, engine };
+        let mut car = CarSpec {
+            bundle: bundle.to_string(),
+            paint_index: self.filter.paint_index.min(self.paint_count.saturating_sub(1)),
+            paint_count: self.paint_count,
+            body: Vec::new(),
+            wheels: Vec::new(),
+            handling,
+            engine,
+        };
+        // Parts are listed by the key the main thread knows them by (paint variants differ).
         for &m in spec.parts.iter().flatten() {
-            if self.model(m)? {
-                car.body.push(m);
+            if let Some(key) = self.model_variant(m, false, InstanceLook::default())? {
+                car.body.push(key);
             }
         }
         // Classify wheels by position, not name: every car faces +Z, but some
@@ -209,9 +278,9 @@ impl Worker {
             let mut parts = Vec::new();
             for p in &w.parts {
                 if let Some(m) = p.model
-                    && self.model(m)?
+                    && let Some(key) = self.model_variant(m, false, InstanceLook::default())?
                 {
-                    parts.push((m, p.spins));
+                    parts.push((key, p.spins));
                 }
             }
             let [x, y, z, qw] = [w.rotation[0], w.rotation[1], w.rotation[2], w.rotation[3]];
@@ -272,6 +341,7 @@ impl Worker {
 
         let total = max_units.unwrap_or(placed.len()).min(placed.len());
         for (i, (name, placements, _)) in placed.into_iter().take(total).enumerate() {
+            self.poll_requests()?;
             self.send(Msg::Progress(format!("streaming {name} ({}/{total})", i + 1)))?;
             if let Some(b) = self.store.bundle(&name) {
                 self.collision(&b)?;
@@ -344,12 +414,6 @@ impl Worker {
         Ok(())
     }
 
-    /// Ensure a model (and its textures) has been sent. Returns false if the
-    /// model has nothing drawable.
-    fn model(&mut self, id: ResourceId) -> anyhow::Result<bool> {
-        Ok(self.model_variant(id, false, InstanceLook::default())?.is_some())
-    }
-
     /// Load a model, optionally without its LOD2 stand-in meshes and with a
     /// placement's tint / AO. Returns the key the main thread knows it by (the
     /// stripped variant gets a synthetic ID with bit 62 set, per-instance
@@ -366,6 +430,11 @@ impl Worker {
             let mut h = std::collections::hash_map::DefaultHasher::new();
             (key, inst).hash(&mut h);
             key = ResourceId(h.finish() & !(3 << 62) | 1 << 61);
+        }
+        // Body-paint models are baked with the current paint, so each paint is its own variant
+        // (bit 60, a hash of the ID and the paint's values).
+        if self.paintable.get(&id) == Some(&true) {
+            key = self.paint_key(key);
         }
         if self.models.contains(&key) {
             return Ok(Some(key));
@@ -401,9 +470,30 @@ impl Worker {
             self.empty_models.insert(key);
             return Ok(None);
         }
+        let paintable = parts.iter().any(|p| p.look.paint);
+        if paintable && self.paintable.insert(id, true).is_none() {
+            key = self.paint_key(key);
+        }
+        self.paintable.entry(id).or_insert(false);
         self.models.insert(key);
         self.send(Msg::Model(key, parts))?;
         Ok(Some(key))
+    }
+
+    fn paint_key(&self, key: ResourceId) -> ResourceId {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        key.hash(&mut h);
+        if let Some(p) = &self.paint {
+            for v in p.diffuse.iter().chain(&p.specular).chain(&p.pearlescent) {
+                v.to_bits().hash(&mut h);
+            }
+            for v in [p.specular_roughness, p.clearcoat_specular, p.clearcoat_fresnel, p.clearcoat_roughness] {
+                v.to_bits().hash(&mut h);
+            }
+            p.clearcoat.hash(&mut h);
+        }
+        ResourceId(h.finish() & !(7 << 60) | 1 << 60)
     }
 
     fn texture(&mut self, key: TexKey) -> anyhow::Result<()> {
