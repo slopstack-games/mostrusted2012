@@ -209,11 +209,13 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
 ### M5: Audio `[~]`
 1. `[x]` EA audio decoders (`crates/mw-audio`): Ginsu (EA-XAS v0) and SPS / `Wave` (EALayer3 → MPEG frames →
    nanomp3). `mwtool audio`, `mwtool engine-sound`.
-2. `[~]` Engine sound: the car's `EngineSound2` data drives it (`mw_assets::engine_sound`): six Ginsu layers
-   (two microphone sets × full / part / off load) crossfaded by load curves, played by an overlap-add
-   granular synth in lockstep (research log "engine sound rewritten"). Still open: the bus effects (EQ,
-   distortion, sub-harmoniser), engine states (Burnout / Drift / In_air / Reversing), what the bindings are,
-   `EngineSound2` / `VehicleSound` data, mixing layers, surface/tyre/wind sounds, reverb.
+2. `[~]` Engine sound: the car's whole `EngineSound2` bank plays through a generic sequence runtime
+   (`mw_audio::sequence`, built by `mw_assets::sound`, driven by `mw_assets::engine_driver`): all six always-on
+   sequences (Ginsu layers, idle loops, load crossfades, bus automation), the mixer graph with its EQ /
+   distortion / sub-harmoniser / sends, pops, backfires, ignition, rev limiter, gear-change clunks; per-car
+   loudness normalised (research log "the engine plays the car's whole sound bank"). Still open: the state
+   lists (Burnout / Drift / In_air / Reversing), per-car DspParam overrides, bus / LFO items, the game's own
+   audible-RPM and load rules, reverb.
 3. `[x]` Music: shuffled `UI/SONGS/*.SPS` playlist. Still open: radio/track names, ducking.
 4. `[ ]` One-shot effects from `Wave` resources (collisions, gear shifts, nitrous), speech.
 

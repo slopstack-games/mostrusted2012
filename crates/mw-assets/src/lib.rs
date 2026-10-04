@@ -10,11 +10,13 @@
 pub mod backdrop;
 mod catalog;
 pub mod damage;
+pub mod engine_driver;
 pub mod engine_sound;
 pub mod environment;
 pub mod handling;
 pub mod paint;
 mod scene;
+pub mod sound;
 pub mod vfx;
 pub mod wheel_arches;
 

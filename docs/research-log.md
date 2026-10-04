@@ -206,6 +206,68 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
   west of downtown (`--auto-throttle 1 --screenshot-after-impact 0.04`: spark spray and dust),
   `MW_VFX_DEMO=010000000007bd97,0.25,15` at street level (orange specks and a white-hot streak).
 
+### 2026-10-04 (audio session): the engine plays the car's whole sound bank
+- **Bindings are strings.** `CgsCore.StringBase` = `{i32 offset from the field, u32 length incl. NUL}`; the
+  "raw" binding values in earlier dumps were these. Sequences bind named game values:
+  `Players.LocalPlayer.GetPlayerAudibleRPM`, `GetPlayerEngineLoad`, `RaceCars.EngineSound[#].EngineOn`,
+  `GetPopProbability`, `RevLimitGain`, `TrackedHarmonic1Frequency`, `SubharmoniserFrequency`,
+  `GetPlayerNormalisedGearChangeTimeElapsed`, `LatSlipIntensityForSkidSound`, `GetSpeedMph`, ... with optional
+  tests (`(NOT)`, `(GTEQ:100)`, `(BETWEEN,20,60)`).
+- **Field names cracked** (python CRC brute force over sound vocabulary, each checked against the values; added
+  to `genesys_names.txt`): `StartTime` / `EndTime` (item range on the sequence axis), `Fade_Out`,
+  `Binding_Max`, `Binding_Exponent`, `Binding_Invert`, `Binding_Evaluate_Once`, `Binding_Range_Min/Max`,
+  `Output_Value_Min/Max`, `Binding_Modulation_Type`, `Animation_Modulation_Type`, `AnimPointCount`,
+  `TangentIn/OutX/Y`, `WavesCount`, `Trigger_Probability(Count)`, `Double_ParamsCount`, and in EngineSound2
+  `Ignition_Sequence`, `Pop_Sequence`, `Backfire_Sequence`, `Gurgle_Sequence`. Dead ends: TyreSoundParams
+  fields (5,000-word 3-word search and `genesys-crack` at 4 words found nothing trustworthy); 3-word hits with
+  suffixes are mostly CRC collisions (`Down_Lift_Soft_Chance`).
+- **Two array-count bugs in the decoder**: a WaveSequenceItem's `Waves` showed 0 items (their count is the
+  second trailing u8, `WavesCount`, confirmed by array spacing), and EngineSound2's twelve handle lists were
+  read with overlapping lengths (Burnout 18, Drift 18, Sequences 3). Handle arrays sit back to back, every slot
+  with a handle import, so the decoder now takes such a run up to the next array as the length: Burnout 1,
+  Drift 2, In_air 4, **Sequences 6**, channels 14. VehicleSound's lists change the same way (Player_Sequences
+  12). The engine had been playing 3 of its 6 always-on sequences.
+- **Sequence semantics (from the data; formats.md)**: items fade in/out *inside* their range (wind layers
+  45–90 / 70–138 / 100–250 mph with 20–40 mph fades crossfade exactly); a modulating value maps its binding
+  (or, without one, the item's normalised position) through its curve onto `Output_Value_Min..Max`, else is
+  `Value`. Load curves therefore scale up to 2× and 4× (the earlier code read the curve y as the gain).
+  Assumed: the two modulation-type enums are ignored (frequency automations with `Value` 24000 and either type
+  only make sense as "output replaces"); curves are piecewise linear.
+- **The engine's mixer graph is data.** Each `MixerChannel` has a gain, a mixing group and a plug-in chain;
+  `SendDspPlugIn.Voice_Routing` sends to another channel, a `SubmixDspPlugIn` collects channels of the groups it
+  lists (the idle loop reaches the set-A bus this way). 911: set A → submix → {EQ (100 Hz ×5, 6.5 kHz ×2), EQ +
+  distortion 4} → vehicle bus; set B → submix → {EQ 2/6 kHz, band-pass + sub-harmoniser + low-pass, delay} →
+  {EQ, EQ + distortion 1–4 by load} → second bus + sub-harmoniser bus. `MixerChannelSequenceItem` parameters:
+  `PlugIn` 0 + `Parameter_Name` 0 + `Automated_Property` 0 = channel gain; a plug-in unique id + a field hash
+  (`Frequency` = 0x06096291) + 9 = that plug-in's field; `PlugIn` 0 + field hash + 9 = the channel's first
+  plug-in with that field (the load curves drive the strain channels' 1 kHz peak gain and distortion amount).
+  The two vehicle buses send to each other; the player drops sends that close a loop.
+- **New runtime** (`mw_audio::sequence` + `dsp`, built by `mw_assets::sound`, driven by
+  `mw_assets::engine_driver`): every sequence of the bank, Ginsu items in one shared period schedule, wave items
+  (loops vs one-shots by the SPS loop flag), the graph with RBJ biquads, `tanh` distortion, a flip-flop octave
+  divider, delay. Engine bank = `Sequences` (RPM ×2 with idle loops, load crossfades, speed, normalised RPM bus
+  automation), Gurgle (pops, retriggered at a rate ∝ pop probability), Backfire / Ignition / rev-limiter cues,
+  one upshift and one downshift gear-change group (by content: the upshift group has the LFO shunt and power
+  cut). Our rules (assumed): audible RPM = physics idle..redline mapped onto the RPM sequence's axis
+  (1790..7500 on the 911, so idle plays the recorded idle loop and the Ginsu fades in over 100 rpm); load =
+  throttle, cut for one normalised shift time (0.25 s); pops armed by lifting off above 45 % revs, fading over
+  0.6 s; backfires on 35 % of lifts above 75 % revs and half of full-throttle upshifts above 60 %; tracked
+  harmonic = audible rpm × the recording's strongest half-order (Goertzel over grains: 911 3, Mustang 4, GT-R
+  3, Veyron 4); per-car loudness normalised (raw bank levels spanned 24 dB, Mito −31.5 to GT-R −7.6 dBFS on one
+  sweep, because the mixes end in buses outside the vehicle bundle; now −16.7 to −11.2).
+- **Measurements** (911, `mwtool engine-sound`; scripts in the session scratchpad): 4 s rev + 4 s coast:
+  pitch vs the order-3 firing frequency median −12 cents, p90 72 (old six-layer mixer: 98); peak |diff|/RMS per
+  2 ms ≤ 1.0 (old 1.2); limiter 0.002 % of samples; max 10 ms loudness step 6.3 dB. Off load is now ~8 dB
+  below full load (old mixer: same level), idle ~15 dB below full throttle (the data's idle loop gain 0.3). The
+  plug-ins add +4.9 dB at 63 Hz and +2.7 dB at 500 Hz and −1.3 dB at 250 Hz against `--dry`. Recorded game
+  trace (`--test engine`): steady segments 6–47 cents p90; worst windows are the idle loop (fixed pitch by
+  design) and shifts. Corpus test `mw-assets/tests/engine_banks.rs`: all 73 engine banks render finite,
+  audible and without hitting the limiter. Discontinuity peaks left are real transients (ignition starter,
+  backfires).
+- Open: the state lists (Burnout, Drift, In_air, Reversing) and which gear-change list is which; per-car
+  DspParam overrides (parameter indices unknown); `BusMixerChannelSequenceItem`, `LfoSequenceItem`,
+  `RaceCarEffectSequenceItem` (camera shake?) not played; the true plug-in formulas; the game's audible-RPM and
+  engine-load definitions.
 ### 2026-10-04 (session 2): NewSky shader read
 - Main PS (`…79648d36`): glow = pow(saturate(dir · KeyLightDir), SunColour.w) × SunColour.rgb (exponent 0.65 at
   noon: a broad glow over the sun's half, not a disc); gradient = lerp(B(|y|), A(|y|), w) × BaseCloudColour.w

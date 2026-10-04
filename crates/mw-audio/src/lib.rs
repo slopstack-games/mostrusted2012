@@ -9,7 +9,9 @@
 //! crate's source files), reimplemented in Rust.
 
 mod bits;
+pub mod dsp;
 pub mod ginsu;
+pub mod sequence;
 pub mod sps;
 pub mod xas;
 

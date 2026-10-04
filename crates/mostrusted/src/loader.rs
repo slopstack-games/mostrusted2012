@@ -65,8 +65,8 @@ pub struct CarSpec {
     pub wheels: Vec<WheelSpec>,
     /// Handling parameters from the car's GeneSys data.
     pub handling: mw_assets::handling::VehicleHandling,
-    /// Engine sound layers and master gain (`AssetStore::engine_voice`).
-    pub engine: Option<(Vec<mw_audio::ginsu::EngineLayer>, f32)>,
+    /// Engine sound (`AssetStore::engine`): the car's sequence bank, or Ginsu layers for cars without one.
+    pub engine: Option<mw_assets::engine_sound::EngineVoice>,
     /// Deformation data; the body meshes carry joint attributes when this is set (`damage.rs`).
     pub damage: Option<Arc<mw_assets::damage::VehicleDamage>>,
     pub impact_graph: mw_assets::damage::ImpactGraph,
@@ -299,7 +299,7 @@ impl Worker {
                 w.position[2] += new - old;
             }
         }
-        let engine = self.store.engine_voice(&b).unwrap_or_default();
+        let engine = self.store.engine(&b).unwrap_or_default();
         let damage = match self.store.vehicle_damage(&b) {
             Ok(d) => d.map(Arc::new),
             Err(e) => {

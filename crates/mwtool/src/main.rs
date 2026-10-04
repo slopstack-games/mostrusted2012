@@ -137,9 +137,16 @@ enum Cmd {
     EngineSound {
         car: String,
         out: PathBuf,
-        /// Drive the synth from a recorded trace instead of a sweep: lines of `seconds rpm throttle`.
+        /// Drive the synth from a recorded trace (`MW_ENGINE_TRACE`) instead of a sweep: lines of
+        /// `seconds rpm throttle [gear [speed m/s]]`.
         #[arg(long)]
         trace: Option<PathBuf>,
+        /// Render the older six-layer Ginsu mixer instead of the full sequence bank.
+        #[arg(long)]
+        legacy: bool,
+        /// Bypass the mixer plug-ins (EQ, distortion, sub-harmoniser).
+        #[arg(long)]
+        dry: bool,
     },
     /// Count world triangles per shader (all track units), to prioritise ports.
     ShaderUsage,
@@ -469,54 +476,119 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Cmd::EngineSound { car, out, trace } => {
+        Cmd::EngineSound { car, out, trace, legacy, dry } => {
             let store = AssetStore::new(game)?;
             let v = store.find_vehicle(&car)?.with_context(|| format!("no car matches {car}"))?;
             let b = store.bundle(v.hi_bundle.as_deref().context("no bundle")?).context("bundle")?;
-            let (layers, master) = store.engine_voice(&b)?.context("no engine sound")?;
-            let on = layers[0].ginsu.clone();
-            let rate = on.pcm.sample_rate as usize;
-            let (lo, hi) = (on.min_rpm, on.max_rpm);
-            for l in &layers {
-                let dir = if l.ginsu.rising() { "rising" } else { "falling" };
-                println!(
-                    "layer {:.0}-{:.0} rpm ({dir}), gain {:.3}, load curve {:?}",
-                    l.ginsu.min_rpm, l.ginsu.max_rpm, l.gain, l.load_curve
-                );
-            }
-            let mut mixer = mw_audio::ginsu::EngineMixer::new(layers, master);
-            // A recorded trace (stepwise, as the game updates it), or a 4 s rev
-            // up on throttle and a 4 s coast down.
-            let points: Vec<[f32; 3]> = match &trace {
+            let h = mw_assets::handling::VehicleHandling::from_bundle(&store, &b).unwrap_or_default();
+            let (idle, redline) = (h.idle_rpm.unwrap_or(900.0), h.redline_rpm.unwrap_or(7000.0));
+            // A recorded trace (`seconds rpm throttle [gear]`, stepwise as the game updates it), or a 4 s
+            // rev-up on full throttle and a 4 s coast down, in physics RPM.
+            let points: Vec<[f32; 5]> = match &trace {
                 Some(p) => std::fs::read_to_string(p)?
                     .lines()
                     .filter_map(|l| {
                         let v: Vec<f32> = l.split_whitespace().filter_map(|x| x.parse().ok()).collect();
-                        (v.len() >= 3).then(|| [v[0], v[1], v[2]])
+                        (v.len() >= 3).then(|| {
+                            [v[0], v[1], v[2], v.get(3).copied().unwrap_or(1.0), v.get(4).copied().unwrap_or(0.0)]
+                        })
                     })
                     .collect(),
                 None => vec![],
             };
             let duration = points.last().map_or(8.0, |p| p[0]);
+            let input_at = |t: f32, k: &mut usize| -> [f32; 4] {
+                if !points.is_empty() {
+                    while *k + 1 < points.len() && points[*k + 1][0] <= t {
+                        *k += 1;
+                    }
+                    [points[*k][1], points[*k][2], points[*k][3], points[*k][4]]
+                } else if t < 4.0 {
+                    [idle + (redline - idle) * t / 4.0, 1.0, 1.0, 0.0]
+                } else {
+                    [redline - (redline - idle) * (t - 4.0) / 4.0, 0.0, 1.0, 0.0]
+                }
+            };
+            let voice = if legacy {
+                store.engine_voice(&b)?.map(|(l, g)| mw_assets::engine_sound::EngineVoice::Layers(l, g))
+            } else {
+                store.engine(&b)?
+            };
             let mut samples = Vec::new();
             let mut k = 0;
-            for i in 0..(rate as f32 * duration) as usize {
-                let t = i as f32 / rate as f32;
-                let (rpm, load) = if !points.is_empty() {
-                    while k + 1 < points.len() && points[k + 1][0] <= t {
-                        k += 1;
+            match voice.context("no engine sound")? {
+                mw_assets::engine_sound::EngineVoice::Bank(eb) => {
+                    let rate = mw_audio::sequence::OUTPUT_RATE as usize;
+                    println!(
+                        "engine bank: {} sequences, {} channels, rpm axis {:.0}-{:.0}, dominant order {}, physics {idle:.0}-{redline:.0} rpm",
+                        eb.bank.sequences.len(),
+                        eb.bank.channels.len(),
+                        eb.rpm_range.0,
+                        eb.rpm_range.1,
+                        eb.harmonic_order
+                    );
+                    for s in &eb.bank.sequences {
+                        println!(
+                            "  sequence {:016x} {:?} {}..{}: {} items",
+                            s.id,
+                            s.binding,
+                            s.min,
+                            s.max,
+                            s.items.len()
+                        );
                     }
-                    (points[k][1], points[k][2])
-                } else if t < 4.0 {
-                    (lo + (hi - lo) * t / 4.0, 1.0)
-                } else {
-                    (hi - (hi - lo) * (t - 4.0) / 4.0, 0.0)
-                };
-                let v = mixer.next_sample(rpm, load);
-                samples.push((v * 32767.0).clamp(-32768.0, 32767.0) as i16);
+                    let params = std::sync::Arc::new(mw_audio::sequence::Params::new(eb.bank.param_names()));
+                    let mut driver = mw_assets::engine_driver::EngineDriver::new(&eb, params.clone());
+                    let mut player = mw_audio::sequence::Player::new(eb.bank.clone(), params);
+                    player.dry = dry;
+                    player.enable_meter();
+                    // The game updates the engine at its physics rate; 64 Hz here.
+                    let tick = rate / 64;
+                    for i in 0..(rate as f32 * duration) as usize {
+                        if i % tick == 0 {
+                            let t = i as f32 / rate as f32;
+                            let [rpm, throttle, gear, speed] = input_at(t, &mut k);
+                            let input = mw_assets::engine_driver::EngineInput {
+                                rpm,
+                                throttle,
+                                gear: gear as i32,
+                                speed_mph: speed.abs() / 0.447_04,
+                                idle_rpm: idle,
+                                redline_rpm: redline,
+                            };
+                            driver.update(tick as f32 / rate as f32, &input);
+                        }
+                        samples.push((player.next_sample() * 32767.0).clamp(-32768.0, 32767.0) as i16);
+                    }
+                    if std::env::var_os("MW_AUDIO_METER").is_some() {
+                        let n = samples.len().max(1) as f64;
+                        for (id, e) in player.meter() {
+                            println!("  channel {id:016x}: {:.1} dB", 10.0 * (e / n + 1e-12).log10());
+                        }
+                    }
+                    let pcm = mw_audio::Pcm { channels: 1, sample_rate: rate as u32, samples };
+                    std::fs::write(&out, pcm.to_wav())?;
+                }
+                mw_assets::engine_sound::EngineVoice::Layers(layers, master) => {
+                    let rate = layers[0].ginsu.pcm.sample_rate as usize;
+
+                    for l in &layers {
+                        let dir = if l.ginsu.rising() { "rising" } else { "falling" };
+                        println!(
+                            "layer {:.0}-{:.0} rpm ({dir}), gain {:.3}, load curve {:?}",
+                            l.ginsu.min_rpm, l.ginsu.max_rpm, l.gain, l.load_curve
+                        );
+                    }
+                    let mut mixer = mw_audio::ginsu::EngineMixer::new(layers, master);
+                    for i in 0..(rate as f32 * duration) as usize {
+                        let t = i as f32 / rate as f32;
+                        let [rpm, load, _, _] = input_at(t, &mut k);
+                        samples.push((mixer.next_sample(rpm, load) * 32767.0).clamp(-32768.0, 32767.0) as i16);
+                    }
+                    let pcm = mw_audio::Pcm { channels: 1, sample_rate: rate as u32, samples };
+                    std::fs::write(&out, pcm.to_wav())?;
+                }
             }
-            let pcm = mw_audio::Pcm { channels: 1, sample_rate: rate as u32, samples };
-            std::fs::write(&out, pcm.to_wav())?;
             println!("{}: {:.1} s -> {}", v.name, duration, out.display());
         }
         Cmd::ShaderUsage => {
@@ -1009,6 +1081,7 @@ fn print_genesys(obj: &fmt::genesys::Object, depth: usize, max_items: usize) {
             Value::Handle(h) => format!("handle {}", h.map_or("-".into(), |h| h.to_string())),
             Value::Ref(r) => format!("ref {r}"),
             Value::Null => "null".into(),
+            Value::Str(s) => format!("{s:?}"),
             Value::Raw(b) => format!("raw {}", b.iter().map(|x| format!("{x:02x}")).collect::<String>()),
             _ => return None,
         })
