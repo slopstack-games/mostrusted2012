@@ -124,6 +124,26 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-04 (session 3, end): driving the original ourselves; the first reference run
+
+- **`tools/orig/orig`** runs the original headless inside gamescope (Steam launch option `tools/orig/orig-wrap
+  %command%`; normal launches unaffected) and drives it: XTest keys into gamescope's own X display, screenshots
+  via `gamescopectl screenshot`, memory reads from `handling.watch`, scripted steps (`waitfor speed_mph > 60`,
+  `capture`). Getting keys in: headless gamescope never sends WM_TAKE_FOCUS, so Wine ignored all keys until the
+  tool sends it to Wine's top-level window itself (`activate()`). The menus then take keys; driving reads only the
+  device selected in Settings > Gameplay > Controller, so automated driving needs "Keyboard" there (restore the
+  user's "Xbox 360 Controller for Windows" afterwards, as done this session). The virtual uinput pad is not seen
+  while Steam Input is on for the game (Steam takes controllers through hidraw; nothing opened the device).
+- **The original's controls** (this install): keyboard Left / Right steer, A accelerate, Z brake, Space
+  handbrake; pad left stick, RT, LT, X handbrake.
+- **First reference run** (`ref/xkr_launch`, Jaguar XKR, keyboard full throttle 5 s from rest, then full brake;
+  replayed with `--replay`, compared with `mwtool compare`): the launch matches closely (original / ours at
+  3, 4, 5, 6 s: 22.7 / 20.3, 39.5 / 36.6, 53.4 / 53.4, 63.7 / 65.3 mph; distance at 6 s 68.9 / 66.4 m; shifts
+  at the same times). Ours trails by ~2 mph off the line. **Bug found: in 2nd gear our revs sit at ~6400 while
+  the original's rise 4830 → 6430 with speed: our clutch does not lock after the 1→2 shift (XKR).** The braking
+  half is unusable: the original yawed at −34°/s with ~1 g sideways and entered the drift state (it hit or spun
+  on something in the car park). The original idles at 1004–1027 rpm (ours: a flat 1000 or 969).
+
 ### 2026-10-04 (session 3, later): constants read from the running game; the engine's 0.74 s steps
 
 - **memscan fix**: `/proc/<pid>/maps` paths with spaces ("Need for Speed(TM) Most Wanted") were cut at the first

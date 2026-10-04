@@ -349,9 +349,11 @@ SNORM ×10 scale).
 
 ## Suggested next sessions
 
-**Start with [next-session.md](next-session.md).** Priorities from the user's review (2026-10-04):
+**Start with [next-session.md](next-session.md).** Priorities from the user's review (2026-10-04). Work against
+the running original (`tools/orig/orig` drives it, `mwtool capture` / `--replay` / `mwtool compare` measure it):
 
-1. **Handling against the original**: record it with `handling.watch` and fit (M3.2); the drift side force.
+1. **Handling against the original** (M3.2): the 2nd-gear clutch bug found by the first reference run
+   (`ref/xkr_launch`), then braking, handbrake, drift, cornering and donut runs; the drift side force.
 2. **Tyre screech "horn"** (M5.4) and the **yellow tint** (M1.5 / M1.7): both are visible / audible every
    second of play.
 3. **Input mapping** like the original (M3.9) and the **crash camera** (M3.3).

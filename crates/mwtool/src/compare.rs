@@ -90,8 +90,8 @@ fn original(rows: &[Row]) -> Result<Vec<Sample>> {
 fn ours(rows: &[Row]) -> Vec<Sample> {
     let p = |r: &Row| [r.get("px").copied().unwrap_or(0.0), r.get("pz").copied().unwrap_or(0.0)];
     let p0 = rows.first().map(p).unwrap_or([0.0; 2]);
-    // Start heading: the direction of travel over the first few rows (the replay starts driving straight).
-    let p1 = rows.get(10.min(rows.len().saturating_sub(1))).map(p).unwrap_or([0.0, 1.0]);
+    // Start heading: the direction of the first metre travelled (the replay starts driving straight).
+    let p1 = rows.iter().map(p).find(|q| (q[0] - p0[0]).hypot(q[1] - p0[1]) > 1.0).unwrap_or([p0[0], p0[1] + 1.0]);
     let (dx, dz) = (p1[0] - p0[0], p1[1] - p0[1]);
     let n = (dx * dx + dz * dz).sqrt().max(1e-3);
     let (fx, fz) = (dx / n, dz / n);
