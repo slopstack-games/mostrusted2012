@@ -113,10 +113,17 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>, settings: Res<H
             }
         };
         let scene = store.ui_scene(layouts, &lang);
-        let images = scene.textures().into_iter().filter_map(|id| Some((id, game_text::decode_texture(&store, id)?))).collect();
+        let images =
+            scene.textures().into_iter().filter_map(|id| Some((id, game_text::decode_texture(&store, id)?))).collect();
         let fonts = scene.fonts.iter().map(|(&n, f)| (n, f.clone())).collect();
         let mosaic = store.ui_map_grid().ok().map(|g| MapMosaic::build(&store, g));
-        info!("HUD: {} layouts, {} fonts, minimap {} in {:.0?}", scene.layouts.len(), scene.fonts.len(), mosaic.is_some(), t.elapsed());
+        info!(
+            "HUD: {} layouts, {} fonts, minimap {} in {:.0?}",
+            scene.layouts.len(),
+            scene.fonts.len(),
+            mosaic.is_some(),
+            t.elapsed()
+        );
         let _ = tx.send(HudAssets { scene, images, fonts, mosaic });
     });
     commands.insert_resource(HudLoading(Mutex::new(rx)));
@@ -219,7 +226,9 @@ fn lookup(
         "Players.GetLocalCompetitor.GetPlayerSpeed" => (car?.speed as f64 * MPH).into(),
         "Language.IsMetric" => metric.into(),
         "Players.LocalPlayer.NitrousState.NitrousAmount" => (state.nitrous as f64).into(),
-        "Players.LocalPlayer.NitrousState.UsingNitrous" | "Players.LocalPlayer.NitrousState.InOverdrive" => false.into(),
+        "Players.LocalPlayer.NitrousState.UsingNitrous" | "Players.LocalPlayer.NitrousState.InOverdrive" => {
+            false.into()
+        }
         "Widget.Nitrous.ShowOdometer" => true.into(),
         "Widget.Nitrous.Odometer" => (state.odometer / if metric { 1000.0 } else { 1609.344 }).into(),
         "Signals.GetSineWave" => {

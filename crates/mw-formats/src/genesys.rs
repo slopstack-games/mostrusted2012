@@ -309,7 +309,6 @@ impl Type {
 /// (array field, count field) name hashes that override the positional rule in [`Type::array_counts`].
 const KNOWN_COUNTS: &[(u32, u32)] = &[(field_hash("Waves"), 0xbc51_4b0c)];
 
-
 /// A decoded GeneSys value.
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -430,7 +429,7 @@ impl<'a> Decoder<'a> {
                 let n = if ptr_null { 0 } else { n };
                 let elem = f.ty.and_then(self.types);
                 let handles = elem.as_ref().is_some_and(|e| e.kind == Kind::Handle) && !f.is_pointer_array();
-                let n = if !ptr_null && handles { self.handle_array_len(&t, at, ptr, n) } else { n };
+                let n = if !ptr_null && handles { self.handle_array_len(t, at, ptr, n) } else { n };
                 let stride = elem.as_ref().map_or(f.size, |e| e.size.max(1)) as usize;
                 let stride = align(stride, (f.flags & 0xFF).max(1) as usize);
                 let mut items = Vec::with_capacity(n.min(4096));

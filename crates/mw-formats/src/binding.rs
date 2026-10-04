@@ -135,7 +135,9 @@ impl Binding {
             v = match op.name.as_str() {
                 "NOT" => (!v.truthy()).into(),
                 "EQUALS" => match (&v, op.args.first()) {
-                    (BindValue::Text(s), Some(a)) if a.trim().parse::<f64>().is_err() => s.eq_ignore_ascii_case(a).into(),
+                    (BindValue::Text(s), Some(a)) if a.trim().parse::<f64>().is_err() => {
+                        s.eq_ignore_ascii_case(a).into()
+                    }
                     _ => (v.num() == op.arg(0)).into(),
                 },
                 "GTEQ" => (v.num() >= op.arg(0)).into(),
@@ -175,7 +177,7 @@ pub fn group_thousands(n: i64) -> String {
     let digits = n.unsigned_abs().to_string();
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(c);

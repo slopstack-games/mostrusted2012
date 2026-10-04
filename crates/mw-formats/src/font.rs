@@ -72,7 +72,7 @@ impl Font {
         }
         let (w, h) = (atlas_size[0] as f32, atlas_size[1] as f32);
         let ratio = r.f32(0x08)?;
-        if !(ratio > 0.0) {
+        if ratio.is_nan() || ratio <= 0.0 {
             return Err(Error::Malformed("font em ratio".into()));
         }
         let em = w / ratio;

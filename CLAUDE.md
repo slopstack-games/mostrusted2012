@@ -84,6 +84,8 @@ MW_CAMERA_TRACE=<scratch>/cam.trace ./target/release/mostrusted --drive 911 --te
 ./target/release/mostrusted --drive 911 --units 12 --auto-throttle 0.4 --prop-physics   # props collide in the world (opt-in, WIP)
 ./target/release/mwtool props -v                    # physics of every prop / compound / dynamic object
 ./target/release/mwtool surfaces                    # collision surface list with triangle counts
+./target/release/mwtool ui screens                  # game UI: screens / widgets (ui show <screen>, ui render <screen> out.png, ui font <n> out.png)
+# The driving HUD (hud.rs) is on in --drive runs except tests: --no-hud, --mph, F3 shows the debug status text
 # Engine RPM every physics tick, for `mwtool engine-sound --trace` (use with --test engine)
 MW_ENGINE_TRACE=<scratch>/rpm.trace ./target/release/mostrusted --drive 911 --test engine
 # Driving without a human: fixed throttle, logs "car at x y z, speed, compression" once a second

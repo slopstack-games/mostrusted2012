@@ -27,17 +27,24 @@ Read this first when resuming. Details of everything below are in [research-log.
 
 Four background agents were asked to commit their work in progress and stop. Their branches (worktrees under
 `.claude/worktrees/`) still need reviewing and merging. Check each report / last commit message first:
-- `worktree-agent-a23d46f081ecde4ae`: **engine sound** (Fable): ground-truth comparison against the raw Ginsu
-  recordings, decoder check, synthesis model, mix. The user's top audio complaint.
-- `worktree-agent-a61cdc331105fad7d`: **weather**, finished (0be6e1a, clean build/tests). The game has **no rain**
-  in its data. Added: runtime hour / Alternate switching (F5/F6/F7, `--weather`, `--hour 13.5`), the
-  timeline painted per map cell (`WorldPaintMap`, `--timeline default` reproduces older screenshots), roads
-  always wet per the shader (puddle map × vertex mask, `--road-wetness 0`), opt-in `--planar-reflection`.
-  Merge notes: it adds a `crate::MainCamera` filter; the new `camera.rs` (merged after the branch was cut)
-  needs that filter too before planar reflection can be on by default. It also saw the daytime sky render
-  black in the main view (the tonemap or grade crushing it; the mirrored view without tonemap shows blue).
-- `worktree-agent-a448f6bbd0543fac1`: **prop collisions** (colliders, smashable props, surface tags).
-- `worktree-agent-a17939d9314475550`: **game UI** (UI data / Apt, game font, driving HUD).
+- Merged into the integration branch `worktree-agent-a4ed5d38fe649a2e0` (from master, not yet merged into
+  master; three merge commits, physics tests unchanged: accel 0-100 3.80 s / top 296.6, drift peak 25.5°,
+  crash 116 km/h → front 29 %):
+  - **weather** (`worktree-agent-a61cdc331105fad7d`, finished). The game has **no rain** in its data. Runtime
+    hour / Alternate switching (F5/F6/F7, `--weather`, `--hour 13.5`), the timeline painted per map cell
+    (`WorldPaintMap`, `--timeline default`), roads always wet per the shader (`--road-wetness 0`), opt-in
+    `--planar-reflection`. `camera.rs` and `particles.rs` now use the `crate::MainCamera` filter, and the
+    reflection works with the new chase camera. The near-black upper daytime sky is already on master (seen
+    in master's own road screenshot), not caused by this branch.
+  - **prop collisions** (`worktree-agent-a448f6bbd0543fac1`, paused WIP): prop / compound / dynamic colliders
+    that break free, collision surface tags (`CarSurface`), `mwtool props|surfaces`, `--test smash`. Now
+    **opt-in** (`--prop-physics`): the default world drive wedges against a knocked lamp and the crash barrels,
+    and `--test smash` stops at the fence (research log). Its drive.rs hooks (World-layer masks on the
+    wheel / spawn rays, car layers, bumper box) must be re-applied to the new physics.
+  - **game UI** (`worktree-agent-a17939d9314475550`, paused WIP): UI data (`mwtool ui`), game fonts, driving
+    HUD (on when driving; `--no-hud`, `--mph`, F3). Speed digits look faint and the odometer reads ".0 KM".
+- Still waiting: `worktree-agent-a23d46f081ecde4ae`: **engine sound** (Fable): ground-truth comparison against
+  the raw Ginsu recordings, decoder check, synthesis model, mix. The user's top audio complaint.
 
 Merge procedure used all day: `git merge --no-edit <branch>`, resolve conflicts (usually both sides are
 additive: plugin lists in main.rs, `mod` lists, genesys_names.txt, research-log entries at the top of

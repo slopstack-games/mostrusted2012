@@ -68,7 +68,13 @@ impl AssetStore {
                 // A few layouts live only in bundles of other screens; skip what doesn't decode.
                 let Ok(layout) = self.ui_layout(id) else { continue };
                 let instance = l.instance.and_then(|i| self.ui_layout_instance(i).ok());
-                out.push(PlacedLayout { widget_index, widget: w.name.clone(), widget_type: w.type_name.clone(), layout, instance });
+                out.push(PlacedLayout {
+                    widget_index,
+                    widget: w.name.clone(),
+                    widget_type: w.type_name.clone(),
+                    layout,
+                    instance,
+                });
             }
         }
         Ok(out)
@@ -274,8 +280,10 @@ impl Placement {
             }
             None => ([r[0] * 0.5, r[1] * 0.5], [0.0; 2]),
         };
-        let anchor_screen =
-            [anchor_ref[0] / r[0] * screen[0] + offset[0] * scale, anchor_ref[1] / r[1] * screen[1] + offset[1] * scale];
+        let anchor_screen = [
+            anchor_ref[0] / r[0] * screen[0] + offset[0] * scale,
+            anchor_ref[1] / r[1] * screen[1] + offset[1] * scale,
+        ];
         Self { scale, anchor_ref, anchor_screen }
     }
 
@@ -538,8 +546,13 @@ impl AssetStore {
                     .collect(),
                 _ => Vec::new(),
             };
-            let grid =
-                MapGrid { origin, tile_size: num("Size"), columns: num("Width") as u32, rows: num("Height") as u32, tiles };
+            let grid = MapGrid {
+                origin,
+                tile_size: num("Size"),
+                columns: num("Width") as u32,
+                rows: num("Height") as u32,
+                tiles,
+            };
             if best.as_ref().is_none_or(|b| grid.tiles.len() > b.tiles.len()) {
                 best = Some(grid);
             }

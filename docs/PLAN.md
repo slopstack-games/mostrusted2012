@@ -121,7 +121,8 @@ Make a static frame look like the game.
    `Alternate` (bad-weather) keyframes (`--weather`). The data has no rain. Open: sun direction
    (SunMoonPath), the `NewSky` dome mapping and its second gradient, fog in-scattering and layer fog (the
    `LayerFog` paint map is decoded), bloom, what selects Alternates, wind (cloud scroll; no consumer found),
-   `Thunderstorm_Intensity`, blending when the painted timeline changes.
+   `Thunderstorm_Intensity`, blending when the painted timeline changes, the upper daytime sky rendering
+   near-black in the main view (also on master before the weather merge).
 6. `[x]` **Vertex data**: packed tangent-frame quaternions (world RGBA8 `TEXCOORD1/2/3`, vehicle SNORM16
    `TEXCOORD4`) decode to normals + tangents (`mw_formats::tangent_frame`, checked against face normals);
    vertex colour is decoded.
@@ -153,8 +154,9 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
 1. `[x]` **Collision**: `PolygonSoupList` (0x60) per track unit → static avian3d trimesh colliders (built on the
    loader thread; quads split strip-wise since 2026-10-04, which closed the holes). Collision tags decoded (surface index into
    `SURFACELIST.BNDL`, flags; `CarSurface`), and props / compounds / dynamic objects collide and break free
-   from their `PhysicalDefinition` data (`props.rs`, `--test smash`, 2026-10-04). Still open: compound parts
-   as separate pieces, surface grip in the tyre model.
+   from their `PhysicalDefinition` data (`props.rs`, `--test smash`, 2026-10-04). Opt-in (`--prop-physics`)
+   while the car can still wedge against knocked lamps / crash barrels (research log). Still open: that,
+   compound parts as separate pieces, surface grip in the tyre model, a clean perf A/B.
 2. `[~]` **Vehicle physics**: driven by the game's handling data (mass, CoM, wheels, springs, torque curve, gears,
    brakes, top speed, the tyres' lateral/longitudinal grip curves, speed-banded steering); see
    [handling.md](handling.md). `--test accel|brake|corner|handbrake|drift|donut` measures it on a flat track,
@@ -252,7 +254,11 @@ Roughly in dependency order:
 - `[~]` Native Bevy UI (fonts from `UI/FONTS` if feasible), menus, car select, settings, save data (our own format).
   Done: an in-game car select (`menu.rs`: catalogue by make / model / year, type-to-search, paint swatches from
   each car's `VehiclePaint`, keyboard + mouse + gamepad). It uses Bevy's ASCII-only default font, so names are
-  folded to ASCII ("Coupe"). Open: the game's fonts, the game's own front-end layout, settings, save data.
+  folded to ASCII ("Coupe"). Done (2026-10-04, paused WIP): the UI data (GeneSys screens / layouts / bindings,
+  `mw_formats::ui`, `mwtool ui screens|show|render|font`), the game's bitmap fonts (`UI/FONTS`, `game_text.rs`)
+  and a free-roam driving HUD (`hud.rs`: speedometer, nitrous gauge (full: no nitrous yet), odometer, minimap
+  from the map tiles; `--mph`, `--no-hud`, F3 = debug text). Open: the car menu in the game font, the game's
+  own front-end layout, widget adapters (which layouts show when), settings, save data.
 - Movies: `UI/MOVIES/*.VP6` (EA `MVhd` container, VP6). Decode through ffmpeg or skip.
 - Packaging for Linux and Windows; CI with build + lint + game-less tests.
 

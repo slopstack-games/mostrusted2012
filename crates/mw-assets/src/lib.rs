@@ -21,11 +21,11 @@ mod scene;
 pub mod sfx;
 mod sfx_loader;
 pub mod sound;
+pub mod surfaces;
+pub mod ui;
 pub mod vehicle_driver;
 pub mod vfx;
 pub mod wheel_arches;
-pub mod surfaces;
-pub mod ui;
 
 pub use catalog::{DEFAULT_LANGUAGE, VehicleInfo};
 

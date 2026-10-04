@@ -139,7 +139,7 @@ pub const MAP_ELEMENT_TYPE: ResourceId = ResourceId(0x0100_0000_0000_2a7d);
 /// UI layouts are authored for this frame (reference pixels).
 pub const REFERENCE_SIZE: [f32; 2] = [1280.0, 720.0];
 
-fn get<'a>(o: &'a Object, h: u32) -> Option<&'a Value> {
+fn get(o: &Object, h: u32) -> Option<&Value> {
     o.get(h)
 }
 
@@ -360,10 +360,13 @@ pub struct Element {
 
 impl Element {
     pub fn from_object(o: &Object) -> Self {
-        let kind = if o.type_id == MAP_ELEMENT_TYPE { ElementKind::Map } else { ElementKind::from_type_name(&o.type_name) };
+        let kind =
+            if o.type_id == MAP_ELEMENT_TYPE { ElementKind::Map } else { ElementKind::from_type_name(&o.type_name) };
         let quad = object(o, field::QUAD);
         let renderables = quad
-            .map(|q| array(q, field::RENDERABLES).iter().filter_map(|v| if let Value::Handle(h) = v { *h } else { None }))
+            .map(|q| {
+                array(q, field::RENDERABLES).iter().filter_map(|v| if let Value::Handle(h) = v { *h } else { None })
+            })
             .into_iter()
             .flatten()
             .collect();
@@ -460,7 +463,10 @@ impl Layout {
         if o.type_name != "Genesys.Gen.UILayout" {
             return None;
         }
-        Some(Self { id: uint(o, field::ID) as u32, elements: structs(o, field::ELEMENTS).map(Element::from_object).collect() })
+        Some(Self {
+            id: uint(o, field::ID) as u32,
+            elements: structs(o, field::ELEMENTS).map(Element::from_object).collect(),
+        })
     }
 }
 
@@ -648,7 +654,8 @@ pub fn quad_uv(vertices: &[u8]) -> Option<[f32; 4]> {
         Some(([f(0), f(4)], [h(12), h(14)]))
     };
     let verts: Vec<_> = (0..4).map(vert).collect::<Option<_>>()?;
-    let at = |x: f32, y: f32| verts.iter().find(|(p, _)| (p[0] - x).abs() < 1e-3 && (p[1] - y).abs() < 1e-3).map(|v| v.1);
+    let at =
+        |x: f32, y: f32| verts.iter().find(|(p, _)| (p[0] - x).abs() < 1e-3 && (p[1] - y).abs() < 1e-3).map(|v| v.1);
     let (a, b) = (at(0.0, 0.0)?, at(1.0, 1.0)?);
     Some([a[0], a[1], b[0], b[1]])
 }
@@ -708,7 +715,9 @@ mod tests {
     #[test]
     fn quad_uvs() {
         let mut v = Vec::new();
-        for (x, y, u, w) in [(0.0f32, 1.0f32, 0.0f32, 0.5f32), (0.0, 0.0, 0.0, 0.0), (1.0, 1.0, 0.25, 0.5), (1.0, 0.0, 0.25, 0.0)] {
+        for (x, y, u, w) in
+            [(0.0f32, 1.0f32, 0.0f32, 0.5f32), (0.0, 0.0, 0.0, 0.0), (1.0, 1.0, 0.25, 0.5), (1.0, 0.0, 0.25, 0.0)]
+        {
             v.extend(x.to_le_bytes());
             v.extend(y.to_le_bytes());
             v.extend(u32::MAX.to_le_bytes());

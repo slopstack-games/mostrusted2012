@@ -7,8 +7,8 @@ use anyhow::{Context, Result};
 use mw_assets::AssetStore;
 use mw_assets::ui::{PlacedLayout, UiCache};
 use mw_bundle::ResourceId;
-use mw_formats::ui::{Element, REFERENCE_SIZE};
 use mw_formats::Language;
+use mw_formats::ui::{Element, REFERENCE_SIZE};
 
 /// One line per screen bundle: its widgets and how many layouts each places.
 pub fn screens(store: &AssetStore) -> Result<()> {
@@ -22,11 +22,17 @@ pub fn screens(store: &AssetStore) -> Result<()> {
     for p in paths {
         match store.ui_screen(&p) {
             Ok(s) => {
-                let widgets: Vec<String> = s
-                    .widgets
-                    .iter()
-                    .map(|w| if w.layouts.is_empty() { w.name.clone() } else { format!("{}({})", w.name, w.layouts.len()) })
-                    .collect();
+                let widgets: Vec<String> =
+                    s.widgets
+                        .iter()
+                        .map(|w| {
+                            if w.layouts.is_empty() {
+                                w.name.clone()
+                            } else {
+                                format!("{}({})", w.name, w.layouts.len())
+                            }
+                        })
+                        .collect();
                 println!("{p}  screen {}: {}", s.id, widgets.join(" "));
             }
             Err(e) => println!("{p}  ({e})"),
@@ -64,7 +70,14 @@ fn print_layout(store: &AssetStore, cache: &mut UiCache, pl: &PlacedLayout, lang
         let t: Vec<String> = i
             .transforms
             .iter()
-            .map(|t| format!("{}{:?}{}", ["?", "T", "R", "S"][t.kind.min(3) as usize], t.value, if t.binding.is_empty() { String::new() } else { format!(" <{}>", t.binding) }))
+            .map(|t| {
+                format!(
+                    "{}{:?}{}",
+                    ["?", "T", "R", "S"][t.kind.min(3) as usize],
+                    t.value,
+                    if t.binding.is_empty() { String::new() } else { format!(" <{}>", t.binding) }
+                )
+            })
             .collect();
         println!("   instance anchor {} [{}] {}", i.anchor_type, t.join(", "), i.timeline);
     }
@@ -151,7 +164,13 @@ impl Canvas {
 
     /// Fill a rotated rectangle (reference pixels; rotation in degrees about `pivot`), colour from `shade(u, v)`
     /// with u, v in 0..1 across the rectangle.
-    pub fn fill(&mut self, rect: [f32; 4], rotation: f32, pivot: [f32; 2], mut shade: impl FnMut(f32, f32) -> [f32; 4]) {
+    pub fn fill(
+        &mut self,
+        rect: [f32; 4],
+        rotation: f32,
+        pivot: [f32; 2],
+        mut shade: impl FnMut(f32, f32) -> [f32; 4],
+    ) {
         let s = self.scale;
         let (sin, cos) = rotation.to_radians().sin_cos();
         let corners = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]].map(|[u, v]| {
@@ -310,7 +329,6 @@ pub fn render(store: &AssetStore, bundle: &str, lang: &Language, out: &Path, o: 
 /// pending the game's map camera (`UIMapCameraConfig`: distance 600, FOV 90°).
 pub const MINIMAP_METRES_PER_PIXEL: f32 = 4.0;
 
-
 /// Render a sample string in a UI font.
 pub fn font_sample(store: &AssetStore, number: u32, text: &str, size: f32, out: &Path) -> Result<()> {
     let font = store.ui_font(number)?;
@@ -337,7 +355,8 @@ pub fn font_sample(store: &AssetStore, number: u32, text: &str, size: f32, out: 
         for q in &quads {
             let r = [10.0 + q.rect[0], y + q.rect[1], q.rect[2], q.rect[3]];
             canvas.fill(r, 0.0, [0.0, 0.0], |u, v| {
-                let c = img.sample((q.atlas[0] + u * q.atlas[2]) / aw as f32, (q.atlas[1] + v * q.atlas[3]) / ah as f32);
+                let c =
+                    img.sample((q.atlas[0] + u * q.atlas[2]) / aw as f32, (q.atlas[1] + v * q.atlas[3]) / ah as f32);
                 [c[0], c[1], c[2], c[3]]
             });
         }
