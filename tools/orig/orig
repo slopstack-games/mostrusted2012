@@ -17,6 +17,14 @@ Typical use:
 
 Everything is read-only towards the game's files and code: inputs are synthetic key / pad events, memory is
 only read. Keep the game offline.
+
+Input notes (2026-10-04, the 1.4 Steam build under Proton):
+- Keyboard events reach the game only after `activate()` (sent automatically): headless gamescope never sends
+  WM_TAKE_FOCUS, and Wine ignores keys for a window it does not consider active.
+- Menus take keys any time; driving reads the device chosen in Settings > Gameplay > Controller. With
+  "Keyboard": Left / Right steer, A accelerate, Z brake, Space handbrake. With the pad: left stick, RT, LT, X.
+- The virtual pad (uinput) is not seen while Steam Input is on for the game (Steam only picks controllers up
+  through hidraw); select "Keyboard" in the game for automated driving, and switch it back afterwards.
 """
 
 import argparse
@@ -61,7 +69,31 @@ def display():
         from Xlib import display as xdisplay
 
         _display = xdisplay.Display(state_env()["DISPLAY"])
+        activate(_display)
     return _display
+
+
+def activate(d):
+    """Make Wine treat the game window as the active one. Headless gamescope never sends the window manager's
+    WM_TAKE_FOCUS, and without it Wine drops keyboard input even when the window has X focus."""
+    from Xlib import X, protocol
+
+    root = d.screen().root
+    top = None
+    for c in root.query_tree().children:
+        try:
+            cls = c.get_wm_class()
+            if c.get_attributes().map_state == X.IsViewable and cls and cls[0].startswith("steam_app"):
+                top = c
+        except Exception:
+            continue
+    if top is None:
+        return  # not a Wine game (e.g. `run-in` with a native program): focus is already right
+    wm_protocols, take_focus = d.intern_atom("WM_PROTOCOLS"), d.intern_atom("WM_TAKE_FOCUS")
+    top.send_event(protocol.event.ClientMessage(window=top, client_type=wm_protocols,
+                                                data=(32, [take_focus, X.CurrentTime, 0, 0, 0])), event_mask=0)
+    top.set_input_focus(X.RevertToParent, X.CurrentTime)
+    d.sync()
 
 
 KEY_ALIASES = {
@@ -177,6 +209,62 @@ class Pad:
     def close(self):
         self.off()
         self.ui.close()
+
+
+PAD_FIFO = STATE / "pad.fifo"
+PAD_PID = STATE / "pad.pid"
+
+
+def pad_daemon_alive():
+    try:
+        pid = int(PAD_PID.read_text())
+        os.kill(pid, 0)
+        return PAD_FIFO.exists()
+    except (OSError, ValueError):
+        return False
+
+
+def cmd_pad_up(_):
+    """Start the virtual pad as a background process (before `launch`, so Steam Input and Wine see it at start)."""
+    if pad_daemon_alive():
+        log("virtual pad already up")
+        return
+    STATE.mkdir(parents=True, exist_ok=True)
+    PAD_FIFO.unlink(missing_ok=True)
+    os.mkfifo(PAD_FIFO)
+    proc = subprocess.Popen([sys.executable, __file__, "_pad-serve"], start_new_session=True,
+                            stdout=open(STATE / "pad.log", "w"), stderr=subprocess.STDOUT)
+    PAD_PID.write_text(str(proc.pid))
+    time.sleep(1.5)
+    log(f"virtual pad up (pid {proc.pid})")
+
+
+def cmd_pad_serve(_):
+    pad = Pad()
+    try:
+        while True:
+            with open(PAD_FIFO) as f:  # blocks until a writer connects
+                for line in f:
+                    words = line.split()
+                    if not words:
+                        continue
+                    if words == ["quit"]:
+                        return
+                    if words == ["off"]:
+                        pad.off()
+                    else:
+                        pad.set(**dict(w.split("=", 1) for w in words))
+    finally:
+        pad.close()
+
+
+def cmd_pad_down(_):
+    if pad_daemon_alive():
+        with open(PAD_FIFO, "w") as f:
+            f.write("quit\n")
+        log("virtual pad down")
+    PAD_FIFO.unlink(missing_ok=True)
+    PAD_PID.unlink(missing_ok=True)
 
 
 # --- memory (read-only), the watch file ------------------------------------------------------------------
@@ -324,6 +412,8 @@ def cmd_setup(_):
 def cmd_launch(args):
     if game_pid():
         sys.exit("the game is already running; quit it first (a normal launch is not controllable)")
+    if not args.no_pad:
+        cmd_pad_up(args)  # present from the start, so Steam Input / Wine pick it up
     write_request(args)
     log(f"launching app {APP_ID} through Steam into gamescope ({args.size}, "
         f"{'visible window' if args.visible else 'headless'})")
@@ -367,6 +457,7 @@ def cmd_status(_):
 
 
 def cmd_quit(_):
+    cmd_pad_down(None)
     f = STATE / "gamescope.pid"
     if f.exists():
         pid = int(f.read_text().strip() or 0)
@@ -426,12 +517,25 @@ class Session:
         elif cmd == "shot":
             log(f"screenshot {screenshot(args[0])}")
         elif cmd == "pad":
-            if self.pad is None:
-                self.pad = Pad()
-            if args == ["off"]:
-                self.pad.off()
+            if pad_daemon_alive():
+                with open(PAD_FIFO, "w") as f:
+                    f.write(" ".join(args) + "\n")
             else:
-                self.pad.set(**dict(a.split("=", 1) for a in args))
+                if self.pad is None:
+                    self.pad = Pad()
+                if args == ["off"]:
+                    self.pad.off()
+                else:
+                    self.pad.set(**dict(a.split("=", 1) for a in args))
+        elif cmd == "button":
+            # Tap pad buttons: `button start`, `button a a down` (down/up/left/right = d-pad).
+            dpad = {"up": ("haty", -1), "down": ("haty", 1), "left": ("hatx", -1), "right": ("hatx", 1)}
+            for b in args:
+                axis, v = dpad.get(b, (b, 1))
+                self.step(["pad", f"{axis}={v}"])
+                time.sleep(0.15)
+                self.step(["pad", f"{axis}=0"])
+                time.sleep(0.25)
         elif cmd == "read":
             print(" ".join(f"{n}={self.read(n)}" for n in args), flush=True)
         elif cmd == "waitfor":
@@ -474,6 +578,7 @@ SCRIPT_HELP = """script steps (one per line, # comments):
   wait SECONDS
   shot PATH              screenshot (PNG)
   pad steer=0.5 throttle=1 brake=0 a=1 ...   set the virtual pad (persists); `pad off` centres it
+  button B [B ...]       tap pad buttons: a b x y lb rb start select l3 r3, d-pad up down left right
   read NAME [NAME ...]   print values from handling.watch
   waitfor NAME OP VALUE [TIMEOUT]            wait until e.g. `speed_mph > 60` (OP: > < >= <= == !=)
   capture NAME [SECONDS] record ref/NAME (mwtool capture) in the background
@@ -512,16 +617,21 @@ def main():
         p.add_argument("--size", default="1280x720")
         p.add_argument("--visible", action="store_true", help="a gamescope window on the desktop instead of headless")
         p.add_argument("--timeout", type=float, default=180)
+        p.add_argument("--no-pad", action="store_true", help="do not start the virtual pad first")
         if name == "run-in":
             p.add_argument("command", nargs=argparse.REMAINDER)
         p.set_defaults(f=f)
     sub.add_parser("status").set_defaults(f=cmd_status)
+    sub.add_parser("pad-up", help="start the virtual pad (background)").set_defaults(f=cmd_pad_up)
+    sub.add_parser("pad-down", help="remove the virtual pad").set_defaults(f=cmd_pad_down)
+    sub.add_parser("_pad-serve").set_defaults(f=cmd_pad_serve)
     sub.add_parser("quit", help="stop the managed gamescope (and the game in it)").set_defaults(f=cmd_quit)
     p = sub.add_parser("run", help="run a script of steps", description=SCRIPT_HELP,
                        formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("script")
     p.set_defaults(f=cmd_run)
-    for step in ["key", "press", "release", "hold", "type", "click", "wait", "shot", "read", "waitfor", "capture"]:
+    for step in ["key", "press", "release", "hold", "type", "click", "wait", "shot", "read", "waitfor", "capture",
+                 "pad", "button"]:
         p = sub.add_parser(step, help=f"one `{step}` step (see `orig run --help`)")
         p.add_argument("args", nargs=argparse.REMAINDER)
         p.set_defaults(f=lambda a, step=step: single([step] + a.args))

@@ -245,9 +245,11 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    World: `TriggerAnimationBehaviour`, `AnimatedDynamicEntityBehaviour` (gates, barriers), tree and flag wind.
    Needs the `Animation` / `AnimationList` decoding that damage already uses.
 9. `[ ]` **Input mapping like the original**: today our own layout (W/S/A/D, space handbrake, Tab / F1 menu, C
-   camera, F2 volume; pad triggers, stick, A handbrake, Y camera, Start menu). The original's keyboard and pad
-   bindings (nitrous, handbrake, camera, look back, Easydrive, horn, ...) are not found in the data yet; find
-   them (GeneSys / UI data, or the decomp's input code) and match them, including remapping.
+   camera, F2 volume; pad triggers, stick, A handbrake, Y camera, Start menu). Seen in the original's Settings >
+   Gameplay (2026-10-04, `tools/orig`): keyboard Left / Right steer, **A accelerate, Z brake**, Space handbrake;
+   pad left stick steer, RT accelerate, LT brake, **X handbrake**; Esc pause (DRIVE), PgUp / PgDn switch pause
+   tabs, R Ctrl undo. A controller selector picks one device for driving (menus take any). Still to read off:
+   nitrous, camera, look back, Easydrive, horn, map; then match them, including remapping.
 - Done when: you can pick a car from the catalogue, spawn on a road and drive around the city with collision.
   **Basic version reached on 2026-10-03; in-game car picking since 2026-10-04 (item 5).** Remaining: handling feel, real tuning data, spawn points on roads
   (from `RoadData` / AI data rather than hand-picked coordinates).
