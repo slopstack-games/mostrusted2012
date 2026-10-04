@@ -112,7 +112,24 @@ impl EngineSoundSpec {
     }
 }
 
+/// A car's engine voice: the full sequence bank when the car has `EngineSound2` data, else Ginsu layers.
+#[derive(Debug, Clone)]
+pub enum EngineVoice {
+    Bank(crate::sound::EngineBank),
+    Layers(Vec<mw_audio::ginsu::EngineLayer>, f32),
+}
+
 impl AssetStore {
+    /// A car's engine voice ([`AssetStore::engine_bank`], falling back to [`AssetStore::engine_voice`]).
+    pub fn engine(&self, bundle: &Bundle) -> Result<Option<EngineVoice>> {
+        if let Some(b) = self.engine_bank(bundle)?
+            && b.bank.sequences.iter().any(|s| !s.items.is_empty())
+        {
+            return Ok(Some(EngineVoice::Bank(b)));
+        }
+        Ok(self.engine_voice(bundle)?.map(|(l, g)| EngineVoice::Layers(l, g)))
+    }
+
     /// Everything needed to play a car's engine: the layers of its `EngineSound2` with their Ginsu
     /// recordings loaded, and the master gain; cars without engine-sound data fall back to an on-load /
     /// off-load pair picked from the bundle's Ginsu resources.

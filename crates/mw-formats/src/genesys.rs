@@ -242,10 +242,19 @@ impl Type {
     /// For each array field (by index into `fields`), the index of the
     /// field holding its length.
     pub fn array_counts(&self, types: &dyn Fn(ResourceId) -> Option<Type>) -> Vec<(usize, Option<usize>)> {
-        let mut arrays: Vec<usize> = (0..self.fields.len()).filter(|&i| self.fields[i].is_array()).collect();
-        let Some(&last) = arrays.iter().max() else { return Vec::new() };
+        // A derived type starts with its base type's fields, whose counts sit in the base's block
+        // (WaveSelectSequenceItem extends WaveSequenceItem).
+        let base = self.base.filter(|&b| b != self.id).and_then(types).filter(|b| {
+            !b.fields.is_empty()
+                && b.fields.len() <= self.fields.len()
+                && b.fields.iter().zip(&self.fields).all(|(x, y)| x.name_hash == y.name_hash && x.offset == y.offset)
+        });
+        let first = base.as_ref().map_or(0, |b| b.fields.len());
+        let mut out = base.map(|b| b.array_counts(types)).unwrap_or_default();
+        let mut arrays: Vec<usize> = (first..self.fields.len()).filter(|&i| self.fields[i].is_array()).collect();
+        let Some(&last) = arrays.iter().max() else { return out };
         let last_ptr =
-            (0..self.fields.len()).filter(|&i| self.fields[i].is_array() || self.fields[i].is_pointer()).max();
+            (first..self.fields.len()).filter(|&i| self.fields[i].is_array() || self.fields[i].is_pointer()).max();
         let start = last_ptr.unwrap_or(last) + 1;
         let counts: Vec<usize> = (start..self.fields.len())
             .filter(|&i| {
@@ -256,13 +265,28 @@ impl Type {
                     && f.ty.and_then(types).is_some_and(|t| matches!(t.kind, Kind::UInt | Kind::Int))
             })
             .collect();
+        let mut counts = counts;
+        // Pairs the general rule gets wrong, verified on the data: a WaveSequenceItem's `Waves` handles are
+        // counted by its second trailing u8 (`bc514b0c`, also the `Waves` count of SpeedSoundSet layers, where
+        // the array pointers' spacing confirms it), the ModulatingDoubleValue array by the first.
+        for &(array, count) in KNOWN_COUNTS {
+            let a = arrays.iter().position(|&i| self.fields[i].name_hash == array);
+            let c = counts.iter().position(|&i| self.fields[i].name_hash == count);
+            if let (Some(a), Some(c)) = (a, c) {
+                out.push((arrays.remove(a), Some(counts.remove(c))));
+            }
+        }
         // Counts follow the arrays ordered by alignment (descending), then
         // offset: verified on RigidBody, whose 1-byte-aligned bool array is
         // laid out first but counted last.
         arrays.sort_by_key(|&i| (std::cmp::Reverse(self.fields[i].flags & 0xFF), self.fields[i].offset));
-        arrays.iter().enumerate().map(|(k, &a)| (a, counts.get(k).copied())).collect()
+        out.extend(arrays.iter().enumerate().map(|(k, &a)| (a, counts.get(k).copied())));
+        out
     }
 }
+
+/// (array field, count field) name hashes that override the positional rule in [`Type::array_counts`].
+const KNOWN_COUNTS: &[(u32, u32)] = &[(field_hash("Waves"), 0xbc51_4b0c)];
 
 /// A decoded GeneSys value.
 #[derive(Debug, Clone)]
@@ -279,6 +303,9 @@ pub enum Value {
     Struct(Object),
     Array(Vec<Value>),
     Null,
+    /// `CgsCore.StringBase`: `i32` offset from the field to the text, `u32` length including the NUL.
+    /// The sound data's bindings are such strings (`"LocalPlayer.GetPlayerSpeed"`).
+    Str(String),
     Raw(Vec<u8>),
 }
 
@@ -358,6 +385,8 @@ impl<'a> Decoder<'a> {
                 };
                 let n = if ptr_null { 0 } else { n };
                 let elem = f.ty.and_then(self.types);
+                let handles = elem.as_ref().is_some_and(|e| e.kind == Kind::Handle) && !f.is_pointer_array();
+                let n = if !ptr_null && handles { self.handle_array_len(&t, at, ptr, n) } else { n };
                 let stride = elem.as_ref().map_or(f.size, |e| e.size.max(1)) as usize;
                 let stride = align(stride, (f.flags & 0xFF).max(1) as usize);
                 let mut items = Vec::with_capacity(n.min(4096));
@@ -404,6 +433,26 @@ impl<'a> Decoder<'a> {
         Ok(Object { type_name: t.name, type_id: ty, fields })
     }
 
+    /// Length of a handle array, checked against the import table. The count fields of some types are not
+    /// matched to their arrays by the positional rule (EngineSound2's twelve handle lists), but handle arrays
+    /// are laid out back to back: when every 8-byte slot up to the object's next array holds a handle import,
+    /// that run is the array; otherwise the count is only clamped so it doesn't run into the next array.
+    fn handle_array_len(&self, t: &Type, at: usize, ptr: usize, n: usize) -> usize {
+        let r = Reader(self.res.header());
+        let next = t
+            .fields
+            .iter()
+            .filter(|f| f.is_array())
+            .filter_map(|f| r.u32(at + f.offset as usize).ok().map(|p| p as usize))
+            .filter(|&p| p > ptr)
+            .min();
+        let Some(next) = next else { return n };
+        let slots = (next - ptr) / 8;
+        let is_handle =
+            |o: usize| self.res.imports.iter().any(|i| i.offset as usize == o && i.kind == ImportKind::Handle);
+        if slots > 0 && slots <= 4096 && (0..slots).all(|k| is_handle(ptr + k * 8)) { slots } else { n.min(slots) }
+    }
+
     fn value(&mut self, f: &Field, ty: Option<&Type>, o: usize) -> Result<Value> {
         let r = Reader(self.res.header());
         let Some(t) = ty else {
@@ -441,6 +490,17 @@ impl<'a> Decoder<'a> {
                 Value::Matrix(m)
             }
             Kind::Value if t.name.contains("Vector") => Value::Vector(r.f32_array(o)?),
+            Kind::Value if t.name == "CgsCore.StringBase" => {
+                let (rel, len) = (r.i32(o)?, r.u32(o + 4)? as usize);
+                let at = (o as i64 + i64::from(rel)) as usize;
+                match r.bytes(at, len).ok().filter(|_| len > 0 && rel != 0) {
+                    Some(b) => {
+                        let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
+                        Value::Str(String::from_utf8_lossy(&b[..end]).into_owned())
+                    }
+                    None => Value::Str(String::new()),
+                }
+            }
             _ => Value::Raw(r.bytes(o, t.size as usize).map(<[u8]>::to_vec).unwrap_or_default()),
         })
     }

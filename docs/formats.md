@@ -102,7 +102,11 @@ string and 0x1C-byte field records `{type import, type hash, 0, name hash, size,
 flags}`. Flags: low byte = alignment, `0x100` pointer (in-chunk sub-object; with an import on the field, a
 reference to another object), `0x200` fixed array, `0x800` dynamic array, `0x1000` array of pointers. Dynamic
 array lengths are trailing small unsigned fields, assigned to the arrays sorted by (alignment descending,
-offset). Objects start with a type import at +0. Layout tables are in `mw-formats/src/genesys.rs`.
+offset). Exceptions: a `WaveSequenceItem`'s `Waves` are counted by its second trailing u8 (`WavesCount`), and
+handle arrays are laid out back to back, so a handle array whose slots up to the object's next array all hold
+handle imports is that long (EngineSound2's and VehicleSound's lists; their count fields don't follow the
+rule). `CgsCore.StringBase` = `{i32 offset from the field to the text, u32 length incl. NUL}`. Objects start
+with a type import at +0. Layout tables are in `mw-formats/src/genesys.rs`.
 
 Field names are stored only as hashes: CRC-32 (0x04C11DB7, MSB first) computed without augmentation, with the
 register preloaded with the complement of the first four bytes and the result complemented, so names of four
@@ -181,6 +185,26 @@ See `crates/mw-audio` (decoders reimplemented from vgmstream's documentation of 
 - **Ginsu** (`Ginsu` resources, 8-byte prefix, then `Gnsu30`): min/max RPM, table sizes, sample count and rate,
   a u32 at 0x20, an RPM → recording-position table, grain boundaries, then EA-XAS v0 (19-byte frames, 32 mono
   samples).
+- **Wave** resources: 0x80-byte header (f32 1.0 at 0x10, duration in ms as f32 at 0x14), then an SPS stream; its
+  `H` block's loop flag separates loops (engine idle, skid, wind) from one-shots (pops, clunks, impacts).
+- **Sound sequences** (GeneSys, `mw_audio::sequence` has the full model): `Sequence { Binding (StringBase: a game
+  value such as "Players.LocalPlayer.GetPlayerAudibleRPM", optionally with a test "(NOT)", "(GTEQ:100)",
+  "(BETWEEN,20,60)"), Binding_Min, Binding_Max, SequenceItems }`; an empty binding makes a timeline in seconds.
+  Items sit between `StartTime` and `EndTime` on that axis: `WaveSequenceItem { Gain, Pitch (modulating
+  values), Fade_In / Fade_Out {Curve, Time} (axis units, inside the range), Mixer_Channel, Waves,
+  Trigger_Probability }`, `GinsuSequenceItem { Fade_In, Fade_Out, Ginsu, Mixer_Channel }`,
+  `MixerChannelSequenceItem { Mixer_Channel, Double_Params [{PlugIn (unique id, 0 = the channel), Value,
+  Parameter_Name (field hash of the target, e.g. Frequency), Automated_Property (0 = channel gain, 9 = plug-in
+  parameter)}] }`. `ModulatingDoubleValue { Binding, Binding_Exponent, Binding_Range_Min/Max, Output_Value_Min/
+  Max, Value, AnimPoints {x 12d3a8aa, y 12d3a8ab, TangentIn/OutX/Y}, Binding_Modulation_Type,
+  Animation_Modulation_Type, Binding_Evaluate_Once, Binding_Invert }`. `MixerChannel { Gain (linear),
+  MixingGroup, plug-in chain }`; chains hold `Submix (Mixing_Groups it collects)`, `Send (Voice_Routing → channel,
+  Gain)`, `Peaking (Frequency, Gain linear, Q)`, `HighShelf`, `Low/HighPassButterworth (Frequency, Order)`,
+  `BandPass (Bandwidth, Frequency)`, `Distortion (Distortion, Model)`, `SubHarmoniser (Interval)`, `Delay
+  (Feedback, Time)`, pans, `GinsuDspPlugIn`. `EngineSound2 { Sequences (always on), Burnout, Drift, In_air,
+  Reversing and six unnamed sequence lists (gear changes), Backfire_Sequence, Gurgle_Sequence (bound to
+  GetPopProbability), Pop_Sequence, Ignition_Sequence, c62d11ac (rev limiter), mixer channel list, DspParam
+  lists (per-car plug-in overrides), Gains (per-car channel trims), MasterGain }`.
 
 ## ColourCube (0x52)
 

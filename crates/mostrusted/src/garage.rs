@@ -390,12 +390,8 @@ fn place_arrived_car(
         commands.entity(e).despawn();
     }
     match spec.engine.clone() {
-        Some((layers, master_gain)) if !game.mute => {
-            commands.insert_resource(audio::PendingEngine(Some(audio::EngineAudio {
-                layers,
-                master_gain,
-                params: Default::default(),
-            })));
+        Some(voice) if !game.mute => {
+            commands.insert_resource(audio::PendingEngine(Some(audio::EngineAudio::new(voice))));
         }
         _ => commands.remove_resource::<audio::PendingEngine>(),
     }
