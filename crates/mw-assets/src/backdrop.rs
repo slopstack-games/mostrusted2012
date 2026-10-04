@@ -524,6 +524,8 @@ mod tests {
                 [0.0, 1.0, 0.0, 0.0],
             ])],
             indices: vec![0, 1, 2, 0, 2, 3],
+            joints: None,
+            weights: None,
         }
     }
 
