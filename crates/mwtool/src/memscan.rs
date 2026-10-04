@@ -665,6 +665,18 @@ fn repl_command(
 /// Sample every watch at `hz` into CSV (`t` in seconds, then one column per watch) until `seconds` pass
 /// or the process exits. Unreadable values are left empty.
 pub fn telemetry(p: &Process, watches: &[Watch], out: &PathBuf, hz: f64, seconds: Option<f64>) -> Result<()> {
+    telemetry_until(p, watches, out, hz, seconds, None)
+}
+
+/// [`telemetry`], also stopping when `stop` is set (another thread watching for Enter).
+pub fn telemetry_until(
+    p: &Process,
+    watches: &[Watch],
+    out: &PathBuf,
+    hz: f64,
+    seconds: Option<f64>,
+    stop: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<()> {
     if watches.is_empty() {
         bail!("the watch file has no entries");
     }
@@ -679,7 +691,8 @@ pub fn telemetry(p: &Process, watches: &[Watch], out: &PathBuf, hz: f64, seconds
     eprintln!("recording {} values at {hz} Hz to {} (Ctrl-C to stop)", watches.len(), out.display());
     loop {
         let t = start.elapsed().as_secs_f64();
-        if seconds.is_some_and(|s| t >= s) || !Path::new(&format!("/proc/{}", p.pid)).exists() {
+        let stopped = stop.is_some_and(|s| s.load(std::sync::atomic::Ordering::Relaxed));
+        if stopped || seconds.is_some_and(|s| t >= s) || !Path::new(&format!("/proc/{}", p.pid)).exists() {
             break;
         }
         let vals: Vec<String> = watches

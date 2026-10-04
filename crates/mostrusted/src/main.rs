@@ -21,6 +21,7 @@ mod menu;
 mod particles;
 mod props;
 mod reflection;
+mod replay;
 mod settings;
 mod sfx;
 mod sky;
@@ -70,6 +71,11 @@ struct Cli {
     /// after screenshots like crash). Implies --test-track.
     #[arg(long)]
     test: Option<String>,
+    /// Replay a recording of the original (`mwtool capture`): drive with its recorded inputs from its starting
+    /// speed on the test track, write our telemetry next to it (`<file>.ours.csv`) and exit. Compare with
+    /// `mwtool compare <file> <file>.ours.csv`.
+    #[arg(long)]
+    replay: Option<PathBuf>,
     /// Smash test: speed (km/h) the car holds through the props.
     #[arg(long, default_value_t = 60.0)]
     smash_speed: f32,
@@ -274,7 +280,7 @@ fn main() -> anyhow::Result<()> {
             [x, y, z, h] => (Vec3::new(x, y, z), h.to_radians()),
             _ => anyhow::bail!("--spawn expects x,y,z[,heading_degrees]"),
         };
-        let track = cli.test_track || cli.test.is_some();
+        let track = cli.test_track || cli.test.is_some() || cli.replay.is_some();
         let spawn = if track { Vec3::new(0.0, 1.0, 0.0) } else { spawn };
         let props = if cli.test.as_deref() == Some("smash") { props::smash_test_props() } else { Vec::new() };
         Request::Drive { bundle: resolve(q)?, spawn, heading, max_units: cli.units, world: !track, props }
@@ -305,9 +311,10 @@ fn main() -> anyhow::Result<()> {
             )
         }
     };
-    if cli.test.is_some() && cli.drive.is_none() {
-        anyhow::bail!("--test needs --drive <car>");
+    if (cli.test.is_some() || cli.replay.is_some()) && cli.drive.is_none() {
+        anyhow::bail!("--test / --replay need --drive <car>");
     }
+    let replay = cli.replay.as_deref().map(replay::Replay::load).transpose()?;
     let script = if cli.swap_to.is_empty() {
         None
     } else {
@@ -364,6 +371,11 @@ fn main() -> anyhow::Result<()> {
         ..default()
     }));
     bevy::asset::embedded_asset!(app, "layered.wgsl");
+    if let Some(r) = replay {
+        app.insert_resource(r)
+            .add_systems(FixedUpdate, replay::run_replay.before(drive::car_physics))
+            .add_systems(Startup, |mut t: ResMut<Time<Virtual>>| t.set_relative_speed(4.0));
+    }
     if let Some(kind) = test {
         app.insert_resource(drive::DriveTest::new(kind));
         // Run the simulation faster than real time.
@@ -445,7 +457,13 @@ fn main() -> anyhow::Result<()> {
             open: cli.show_settings,
         })
         .add_plugins(audio::GameAudioPlugin {
-            music: !cli.no_music && !cli.mute && screenshot.is_none() && test.is_none() && !crash && !smash,
+            music: !cli.no_music
+                && !cli.mute
+                && screenshot.is_none()
+                && test.is_none()
+                && !crash
+                && !smash
+                && cli.replay.is_none(),
         })
         .insert_resource(drive::CarInput { auto_throttle: cli.auto_throttle, ..default() })
         .insert_resource(Game {

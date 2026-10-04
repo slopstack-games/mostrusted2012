@@ -16,3 +16,6 @@
 /re/*.tar
 /re/*.md
 /re/NFS13_dump/
+
+# Reference runs of the original (mwtool capture): game audio and measurements
+/ref/

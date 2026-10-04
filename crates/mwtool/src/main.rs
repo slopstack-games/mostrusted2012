@@ -5,6 +5,7 @@ use std::sync::Mutex;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
+mod compare;
 mod crack;
 mod damage;
 #[cfg(target_os = "linux")]
@@ -179,6 +180,36 @@ enum Cmd {
         #[arg(long)]
         pid: Option<u32>,
     },
+    /// Record a reference run of the running original into `ref/<name>/`: its car state from the watch file
+    /// (`telemetry.csv`) and, on PipeWire / PulseAudio, its own audio stream (`audio.wav`). Press Enter to stop.
+    /// Replay it in Most Rusted with `mostrusted --drive <car> --replay ref/<name>/telemetry.csv` and compare
+    /// with `mwtool compare`.
+    Capture {
+        name: String,
+        #[arg(long, default_value = "handling.watch")]
+        watch: PathBuf,
+        #[arg(long, default_value_t = 60.0)]
+        hz: f64,
+        /// Stop after this many seconds (default: Enter, or the game exits).
+        #[arg(long)]
+        seconds: Option<f64>,
+        /// Skip the audio recording.
+        #[arg(long)]
+        no_audio: bool,
+        #[arg(long, default_value = "NFS13.exe")]
+        process: String,
+        #[arg(long)]
+        pid: Option<u32>,
+    },
+    /// Compare a recording of the original (`capture`) with Most Rusted's replay of it (`--replay`): speed, yaw
+    /// rate, lateral g, body slip, rpm, gear, drift state and path side by side, and RMS differences.
+    Compare {
+        original: PathBuf,
+        ours: PathBuf,
+        /// Table step (s).
+        #[arg(long, default_value_t = 0.5)]
+        every: f32,
+    },
     /// Decode game audio to .wav: an .SPS file, or a bundle's Ginsu/Wave resources.
     Audio {
         /// `.SPS` path (relative to the game dir) or bundle path.
@@ -330,11 +361,17 @@ fn main() -> Result<()> {
         Cmd::Telemetry { watch, out, hz, seconds, process, pid } => {
             return telemetry_cmd(watch, out, *hz, *seconds, process, *pid);
         }
+        Cmd::Capture { name, watch, hz, seconds, no_audio, process, pid } => {
+            return capture_cmd(name, watch, *hz, *seconds, *no_audio, process, *pid);
+        }
+        Cmd::Compare { original, ours, every } => return compare::compare(original, ours, *every),
         _ => {}
     }
     let game = GameDir::locate(cli.game_dir.as_deref())?;
     match cli.cmd {
-        Cmd::Memscan { .. } | Cmd::Telemetry { .. } => unreachable!("handled before locating the game"),
+        Cmd::Memscan { .. } | Cmd::Telemetry { .. } | Cmd::Capture { .. } | Cmd::Compare { .. } => {
+            unreachable!("handled before locating the game")
+        }
         Cmd::Info => {
             println!("root:    {}", game.root().display());
             println!("version: {}", game.version().unwrap_or("unknown"));
@@ -1470,6 +1507,106 @@ fn telemetry_cmd(
 ) -> Result<()> {
     let watches = memscan::read_watch_file(watch)?;
     memscan::telemetry(&attach(process, pid)?, &watches, out, hz, seconds)
+}
+
+/// Index of the original's PulseAudio / PipeWire playback stream (`application.name` "Need for Speed™ Most Wanted").
+#[cfg(target_os = "linux")]
+fn game_audio_stream() -> Option<String> {
+    let out = std::process::Command::new("pactl").args(["list", "sink-inputs"]).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let (mut current, mut corked) = (None, false);
+    for line in text.lines() {
+        if let Some(id) = line.strip_prefix("Sink Input #") {
+            current = Some(id.trim().to_string());
+        } else if line.trim() == "Corked: yes" {
+            corked = true;
+        } else if line.trim() == "Corked: no" {
+            corked = false;
+        } else if line.contains("application.name") && line.contains("Most Wanted") {
+            if corked {
+                eprintln!(
+                    "note: the game's audio stream is paused (game unfocused or paused); it records once it plays"
+                );
+            }
+            return current;
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn capture_cmd(
+    name: &str,
+    watch: &Path,
+    hz: f64,
+    seconds: Option<f64>,
+    no_audio: bool,
+    process: &str,
+    pid: Option<u32>,
+) -> Result<()> {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let dir = PathBuf::from("ref").join(name);
+    std::fs::create_dir_all(&dir)?;
+    let watches = memscan::read_watch_file(watch)?;
+    let p = attach(process, pid)?;
+    std::fs::write(
+        dir.join("meta.txt"),
+        format!(
+            "watch {}\nhz {hz}\nunix_time {}\n",
+            watch.display(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+        ),
+    )?;
+    // The game's own audio stream only (not the desktop's), through parecord.
+    let mut recorder = if no_audio {
+        None
+    } else if let Some(stream) = game_audio_stream() {
+        let wav = dir.join("audio.wav");
+        match std::process::Command::new("parecord")
+            .arg(format!("--monitor-stream={stream}"))
+            .arg("--file-format=wav")
+            .arg(&wav)
+            .spawn()
+        {
+            Ok(child) => {
+                eprintln!("recording the game's audio (stream {stream}) to {}", wav.display());
+                Some(child)
+            }
+            Err(e) => {
+                eprintln!("no audio: parecord failed ({e})");
+                None
+            }
+        }
+    } else {
+        eprintln!("no audio: the game's playback stream was not found (is it running with sound?)");
+        None
+    };
+    let stop = Arc::new(AtomicBool::new(false));
+    {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            // Only a real line stops it: a closed stdin (EOF, background runs) must not end the capture.
+            let mut line = String::new();
+            if std::io::stdin().read_line(&mut line).is_ok_and(|n| n > 0) {
+                stop.store(true, Ordering::Relaxed);
+            }
+        });
+    }
+    eprintln!("press Enter to stop");
+    let result = memscan::telemetry_until(&p, &watches, &dir.join("telemetry.csv"), hz, seconds, Some(&stop));
+    if let Some(mut child) = recorder.take() {
+        // SIGINT lets parecord finish the WAV header.
+        let _ = std::process::Command::new("kill").arg("-INT").arg(child.id().to_string()).status();
+        let _ = child.wait();
+    }
+    eprintln!("saved {}", dir.display());
+    result
+}
+
+#[cfg(not(target_os = "linux"))]
+fn capture_cmd(_: &str, _: &Path, _: f64, _: Option<f64>, _: bool, _: &str, _: Option<u32>) -> Result<()> {
+    bail!("capture reads /proc/<pid>/mem and is Linux-only for now")
 }
 
 #[cfg(not(target_os = "linux"))]

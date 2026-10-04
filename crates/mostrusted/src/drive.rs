@@ -288,6 +288,8 @@ struct WheelState {
     omega: f32,
     inertia: f32,
     corner_mass: f32,
+    /// Slip ratio and slip angle (degrees) at the last tick, for telemetry (`--replay`).
+    slip: (f32, f32),
     /// Current suspension compression (m), and its rate (m/s, positive = compressing).
     compression: f32,
     compression_rate: f32,
@@ -311,6 +313,12 @@ pub struct WheelContact {
 }
 
 impl Car {
+    /// Each wheel's (slip ratio, slip angle in degrees) from the last physics step, front wheels first in spec
+    /// order.
+    pub fn wheel_slips(&self) -> impl Iterator<Item = (f32, f32)> + '_ {
+        self.wheels.iter().map(|w| w.slip)
+    }
+
     /// Each wheel's ground contact from the last physics step (`None` while the wheel is in the air).
     pub fn wheel_contacts(&self) -> impl Iterator<Item = Option<WheelContact>> + '_ {
         self.wheels.iter().map(|w| w.contact)
@@ -467,6 +475,7 @@ fn spawn_car(
             omega: pending.velocity.dot(Quat::from_rotation_y(pending.heading) * Vec3::Z) / radius,
             inertia,
             corner_mass,
+            slip: (0.0, 0.0),
             compression: 0.0,
             compression_rate: 0.0,
             spin: 0.0,
@@ -776,6 +785,7 @@ pub(crate) fn car_physics(
                 0.0
             };
             let (mu_long, mu_lat) = tyre::coefficients(tyre, kappa, slip_deg, camber);
+            wheel.slip = (kappa, slip_deg);
             let driven = axle_share[usize::from(!wheel.front)] > 0.0;
             let long_cap =
                 mu_long * load * long_grip() * tyre.longitudinal_scale * if driven { 1.0 - burnout } else { 1.0 };

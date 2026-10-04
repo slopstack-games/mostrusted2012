@@ -19,6 +19,17 @@ user's install (IW4L-style). Read these before starting work:
   Ghidra databases, decompiled code (findings go into docs in prose only). Use the session scratchpad or git-ignored dirs (`/extracted`, `/re/out`).
 - Community references (burnout.wiki, DGIorio's MIT tools) may be read for format knowledge; don't copy code.
 
+## Fidelity rule: the original is the reference
+
+The goal is to play and look exactly like the original, not like a plausible racing game. Every behaviour or
+look change names its source: a data field, a function in the decomp ([docs/decomp.md](docs/decomp.md)), a
+constant or trace read from the running game, or a capture of the original (`mwtool capture`, Steam F12
+screenshots of the original at a known place and hour, the game's own audio stream). No tuning by feel: a model
+value that is not from one of those is marked as such (handling.md "Model decisions") and replaced when it can be
+measured. For handling: record the original (`mwtool capture <name>`), replay the same inputs
+(`mostrusted --drive <car> --replay ref/<name>/telemetry.csv`) and compare (`mwtool compare`) before and after a
+change. Reference captures live in the git-ignored `ref/`.
+
 ## Layout
 
 ```
@@ -66,6 +77,10 @@ cargo fmt                                    # rustfmt.toml: max_width 120
 # Measuring the original game (read-only, Linux/Proton; docs/handling.md "Measuring the original")
 ./target/release/mwtool memscan --watch handling.watch        # interactive value scanner; `help`
 ./target/release/mwtool telemetry handling.watch -o run.csv --hz 120
+# Reference runs: record the original (car state + its own audio, Enter stops), replay the inputs, compare
+./target/release/mwtool capture corner1                     # -> ref/corner1/{telemetry.csv,audio.wav}
+./target/release/mostrusted --drive 911 --replay ref/corner1/telemetry.csv   # -> telemetry.ours.csv
+./target/release/mwtool compare ref/corner1/telemetry.csv ref/corner1/telemetry.ours.csv
 
 # Visual check without a human: renders, saves, exits
 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,1720 --screenshot <scratch>/road.png   # see docs/viewpoints.md

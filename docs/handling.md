@@ -281,6 +281,27 @@ Real-world specs are only a proxy. To tune towards the actual game, measure the 
 Then adjust the model-decision constants (or use more fields) until `--test` matches, and record the change
 with its evidence in this file.
 
+### Reference runs: capture, replay, compare (2026-10-04)
+
+The handling is judged against the original, run for run:
+
+1. **Capture** the original while you drive: `./target/release/mwtool capture <name>` (Enter stops). It writes
+   `ref/<name>/telemetry.csv` (the car's state from `handling.watch`: speed, inputs, rpm, gear, drift state,
+   per-wheel load / slip / grip, body velocity, angular velocity, axes, position; 60 Hz) and `audio.wav` (the
+   game's own audio stream through `parecord`, nothing else from the desktop).
+2. **Replay** the same inputs in Most Rusted: `./target/release/mostrusted --drive <car> --replay
+   ref/<name>/telemetry.csv`. The car gets up to the recording's starting speed on the flat test track, then the
+   recorded throttle, brake, steering and handbrake play back tick by tick (the steering's sign is found from the
+   recording's yaw rate). Our state goes to `telemetry.ours.csv`.
+3. **Compare**: `./target/release/mwtool compare ref/<name>/telemetry.csv ref/<name>/telemetry.ours.csv` prints
+   speed, yaw rate, lateral g, body slip, rpm, gear, drift state and the path (in each run's start frame) side by
+   side, and RMS differences.
+
+Start each capture driving straight on a flat road (the replay starts straight), same car as the replay.
+Useful runs: a launch, full braking from speed, a steady fast corner, a handbrake turn, a brake-tap drift, a
+power-on drift, a full-lock donut from rest, slaloms. The world differs (our test track is flat), so compare the
+car's response, not where it ends up on the map.
+
 ### Measuring the original with `mwtool memscan` / `telemetry`
 
 Stopwatch measurements only give end results. To see *how* the original's handling works (when a drift
