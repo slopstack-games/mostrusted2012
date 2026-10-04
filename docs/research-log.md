@@ -108,6 +108,36 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-04 (session 3): handling rebuilt from the game's code
+
+The user supplied a decompilation of the game (`re/NFS13_dump/`, git-ignored; rules in reverse-engineering.md).
+Findings per subsystem are in [decomp.md](decomp.md); the model built from them is in handling.md "The model".
+- **Method**: GeneSys fields are read in place as `*(res + 0x28) + FIELD_OFFSET + instance`, so the offsets from
+  `mwtool genesys-types` identify the handling code; `.rdata` / `.data` constants come from the unencrypted parts
+  of `NFS13.exe` on disk. About 30 tuning constants live in `.bss` with no initialiser in the dump; the memory
+  dump the pseudo-C came from (`NFS13_dump.exe`, not on this machine) or `mwtool memscan` would give them.
+- **Settled**: 60 Hz tick; the steering range / rate rules and the in-drift input remap; the drift state machine
+  (rear-tyre slip entry, brake-tap threshold, signed drift scale, Bézier yaw torque with the donut top, body-axis
+  side force, peak-latched damping, speed hold); engine as its own inertia with a friction curve, clutch, no
+  efficiency loss, shift on rpm and speed, top-gear lock (911: 6 gears); brakes pedal² with a ramp, no ABS / TC;
+  spring k = load / sag, asymmetric damper, anti-roll bars; per-axis drag with an over-speed ramp and lift
+  (`Down_force` unused, which explains the parked downforce branch's regressions: wrong fields, ~7× too strong);
+  the tyre as a capped velocity constraint with the game's curve shapes and slip blends (no friction circle).
+- **Field names corrected**: `0c5f89b3` is a damper ratio (not a frequency), `41543f85` the static sag (not
+  travel), `Engine_resistance` the declutched deceleration (not engine braking), `35e18207` / `6ce0fda7` the
+  handbrake's drift scale (not grip), `0dce38f7` / `8f151151` / `b5290695` drift-entry angles and rate.
+- **Results** (911): 0–100 3.88 s, top 311 km/h with no drag fit (data 304; drag K = 1), 100–0 40 m, skidpad
+  1.01 g, brake-tap drift 22° held 4.5 s. Calibrated (model values): lateral / longitudinal grip scales 0.4 /
+  0.7, clutch cap 1.6 × peak torque.
+- **Bugs met on the way**: braking with brake and tyre as separate steps made locked wheels cycle (the tyre spun
+  them back up each tick) — now solved together in sequential-impulse passes, as the game does; clamping the
+  revs after integrating ate the drive near the limiter (the game clamps first); the speed hold's gain is per
+  tick (the game logs it × 60); a degenerate tyre frame after a crash gave a NaN camber.
+- **Open**: the absolute grip scale and per-wheel grip multipliers (measure N with memscan); the handbrake's lock
+  mask condition (inferred: the handbrake); the steering neutral offset's input; the full-throttle donut (the 911
+  no longer spins from full lock and throttle at rest; the rear slip stays under the 7° entry); the clutch cap
+  and shift-phase constants.
+
 ### 2026-10-04 (session 2): "everything is yellow": skylight in the ambient
 - User report: the frame looks yellow. Causes: the noon key light is warm (11.0, 7.95, 5.21), the ambient rig
   is small (up fill 0.065 × 2.6), and the noon ColourCube warms shadows and mid-tones (grey 102 → (116, 112,

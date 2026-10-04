@@ -5,11 +5,13 @@
 
 mod audio;
 mod camera;
+mod chassis;
 mod convert;
 mod damage;
 mod deferred;
 mod drift;
 mod drive;
+mod drivetrain;
 mod garage;
 mod loader;
 mod materials;
@@ -18,6 +20,7 @@ mod particles;
 mod sfx;
 mod sky;
 mod tonemap;
+mod tyre;
 
 use std::collections::HashMap;
 use std::path::PathBuf;

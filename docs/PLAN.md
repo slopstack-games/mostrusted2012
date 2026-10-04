@@ -144,15 +144,16 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
 1. `[x]` **Collision**: `PolygonSoupList` (0x60) per track unit → static avian3d trimesh colliders (built on the
    loader thread; quads split strip-wise since 2026-10-04, which closed the holes). Still open: surface types via collision tags (DGIorio's exporter documents
    `mu16CollisionTag`), and prop/dynamic collision.
-2. `[~]` **Vehicle physics**: driven by the game's handling data (mass, CoM, wheels, springs, torque curve, gears,
-   brakes, top speed, the tyres' lateral/longitudinal grip curves, speed-banded steering); see
-   [handling.md](handling.md). `--test accel|brake|corner|handbrake|drift|donut` measures it on a flat track,
-   tick-exact (identical results between runs since 2026-10-04). `[x]` Drift model (`drift.rs`, 2026-10-04):
-   the `DriftBehaviour` state (entry by slip, brake tap or handbrake; steering-driven yaw torque, damping,
-   side force, automatic counter-steer, exit), speed-banded handbrake strength, donuts. The 911 holds a steady
-   14–30° drift depending on steering and leaves it when the steering is released. Still open: field
-   meanings marked *hyp.* in handling.md, heavy/AWD cars barely drift, slip factors, aero, and calibration
-   against measurements from the original game.
+2. `[~]` **Vehicle physics**: since 2026-10-04 (session 3) the model follows the game's own code, read from the
+   user's decompiled dump ([decomp.md](decomp.md), [handling.md](handling.md) "The model"): 60 Hz tick; engine
+   inertia, friction curve, clutch, shift on rpm and speed, top-gear lock (`drivetrain.rs`); per-wheel spin with
+   brakes and axle LSDs; tyres as capped velocity constraints with the game's curves and slip blends, no ABS /
+   TC (`tyre.rs`); spring from sag, asymmetric dampers, anti-roll bars, per-axis drag and lift, in-air gravity and
+   take-off damping (`chassis.rs`); the game's steering rules and drift state machine (`drift.rs`).
+   `--test accel|brake|corner|handbrake|drift|donut` measures it on a flat track, tick-exact. Still open: the
+   absolute grip scale (model 0.4 / 0.7) and the other missing `.bss` constants (memscan, or the original memory
+   dump), the handbrake lock condition, the steering neutral offset, wheels as bodies instead of rays, and
+   calibration against the original game.
    Original plan: a raycast-wheel vehicle (suspension, tyre slip curves, drivetrain, gearbox) tuned
    from `VehiclePhysicsSpec` (0x107) and GeneSys physics config (`PHYSICS/PHYSICSCONFIG.BNDL`). The original
    model's code is unavailable, so feel is matched by comparing against the real game, not by porting it.

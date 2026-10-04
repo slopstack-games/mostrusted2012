@@ -7,14 +7,16 @@ user's install (IW4L-style). Read these before starting work:
 - [docs/research-log.md](docs/research-log.md): open format questions and dated findings. Add to it whenever
   something new is learned, including dead ends.
 - [docs/formats.md](docs/formats.md): settled format knowledge.
-- [docs/reverse-engineering.md](docs/reverse-engineering.md): why the exe can't be statically analysed.
+- [docs/reverse-engineering.md](docs/reverse-engineering.md): why the exe can't be statically analysed, and the
+  rules for the user's decompiled dump in `re/`.
+- [docs/decomp.md](docs/decomp.md): what the game's code says (handling maths, update loop), from that dump.
 - [docs/handling.md](docs/handling.md): GeneSys handling field mappings, model constants, test results.
 - [docs/next-session.md](docs/next-session.md): handoff from the last session (if present): start there.
 
 ## Hard rules
 
 - **Never commit game data or anything derived from it**: extracted resources, DDS/PNG/OBJ exports,
-  Ghidra databases, decompiled code. Use the session scratchpad or git-ignored dirs (`/extracted`, `/re/out`).
+  Ghidra databases, decompiled code (findings go into docs in prose only). Use the session scratchpad or git-ignored dirs (`/extracted`, `/re/out`).
 - Community references (burnout.wiki, DGIorio's MIT tools) may be read for format knowledge; don't copy code.
 
 ## Layout
