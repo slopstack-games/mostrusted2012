@@ -108,6 +108,12 @@ impl FieldHasher {
         self.len
     }
 
+    /// Continue hashing after a name of four or more bytes whose hash is `hash`: the register is the
+    /// complement of the hash, so suffixes can be appended without knowing the name.
+    pub const fn resume(hash: u32) -> Self {
+        Self { reg: !hash, len: 4 }
+    }
+
     pub const fn is_empty(&self) -> bool {
         self.len == 0
     }
@@ -120,6 +126,11 @@ impl FieldHasher {
         }
         !self.reg
     }
+}
+
+/// Hash of `<name>Count` from the hash of `<name>`: the field holding a dynamic array's length.
+pub fn count_hash(array: u32) -> u32 {
+    FieldHasher::resume(array).push_all(b"Count").finish()
 }
 
 /// Field names recovered from their hashes (one per line).
@@ -256,13 +267,29 @@ impl Type {
                     && f.ty.and_then(types).is_some_and(|t| matches!(t.kind, Kind::UInt | Kind::Int))
             })
             .collect();
-        // Counts follow the arrays ordered by alignment (descending), then
+        // Arrays without a `<Name>Count` field (about one in ten, mostly screen scripts): counts follow the
+        // arrays ordered by alignment (descending), then
         // offset: verified on RigidBody, whose 1-byte-aligned bool array is
         // laid out first but counted last.
         arrays.sort_by_key(|&i| (std::cmp::Reverse(self.fields[i].flags & 0xFF), self.fields[i].offset));
-        arrays.iter().enumerate().map(|(k, &a)| (a, counts.get(k).copied())).collect()
+        // The length field is named after the array: `<Name>Count` (`Elements` -> `ElementsCount`,
+        // `IdleBehaviour` -> `IdleBehaviourCount`), and its hash follows from the array's hash alone.
+        let named = |a: usize| {
+            let h = count_hash(self.fields[a].name_hash);
+            self.fields.iter().position(|f| f.name_hash == h)
+        };
+        let taken: Vec<usize> = arrays.iter().filter_map(|&a| named(a)).collect();
+        let mut free = counts.iter().copied().filter(|c| !taken.contains(c));
+        arrays
+            .iter()
+            .map(|&a| match named(a) {
+                Some(c) => (a, Some(c)),
+                None => (a, free.next()),
+            })
+            .collect()
     }
 }
+
 
 /// A decoded GeneSys value.
 #[derive(Debug, Clone)]
@@ -274,12 +301,16 @@ pub enum Value {
     Vector([f32; 4]),
     Matrix([[f32; 4]; 4]),
     Handle(Option<ResourceId>),
+    /// `CgsCore.StringBase`: `{i32 offset relative to the field, u32 length including the NUL}`.
+    String(String),
     /// Reference to another GenesysObject resource.
     Ref(ResourceId),
     Struct(Object),
     Array(Vec<Value>),
     Null,
     Raw(Vec<u8>),
+    /// A dynamic array that could not be read (its length field is probably guessed wrong).
+    Undecoded(String),
 }
 
 /// A decoded struct instance.
@@ -341,9 +372,29 @@ impl<'a> Decoder<'a> {
         }
         self.depth += 1;
         let counts = t.array_counts(self.types);
-        let r = Reader(self.res.header());
         let mut fields = Vec::with_capacity(t.fields.len());
         for (i, f) in t.fields.iter().enumerate() {
+            let depth = self.depth;
+            let value = match self.field(&t, &counts, i, at) {
+                Ok(v) => v,
+                // A dynamic array whose length field is guessed wrong (see `Type::array_counts`) reads garbage;
+                // keep the rest of the object.
+                Err(e) if f.is_array() => {
+                    self.depth = depth;
+                    Value::Undecoded(e.to_string())
+                }
+                Err(e) => return Err(Error::Malformed(format!("{}.{:08x} @{at:#x}: {e}", t.name, f.name_hash))),
+            };
+            fields.push((f.name_hash, value));
+        }
+        self.depth -= 1;
+        Ok(Object { type_name: t.name, type_id: ty, fields })
+    }
+
+    fn field(&mut self, t: &Type, counts: &[(usize, Option<usize>)], i: usize, at: usize) -> Result<Value> {
+        let r = Reader(self.res.header());
+        let f = &t.fields[i];
+        {
             let o = at + f.offset as usize;
             let value = if f.is_array() {
                 let ptr = r.u32(o)? as usize;
@@ -398,10 +449,8 @@ impl<'a> Decoder<'a> {
                 let elem = f.ty.and_then(self.types);
                 self.value(f, elem.as_ref(), o)?
             };
-            fields.push((f.name_hash, value));
+            Ok(value)
         }
-        self.depth -= 1;
-        Ok(Object { type_name: t.name, type_id: ty, fields })
     }
 
     fn value(&mut self, f: &Field, ty: Option<&Type>, o: usize) -> Result<Value> {
@@ -441,9 +490,23 @@ impl<'a> Decoder<'a> {
                 Value::Matrix(m)
             }
             Kind::Value if t.name.contains("Vector") => Value::Vector(r.f32_array(o)?),
+            Kind::Value if t.name == "CgsCore.StringBase" => Value::String(read_string(&r, o).unwrap_or_default()),
             _ => Value::Raw(r.bytes(o, t.size as usize).map(<[u8]>::to_vec).unwrap_or_default()),
         })
     }
+}
+
+/// A `CgsCore.StringBase` at `o`: self-relative offset, then the length including the terminating NUL.
+pub fn read_string(r: &Reader, o: usize) -> Option<String> {
+    let rel = r.i32(o).ok()?;
+    let len = r.u32(o + 4).ok()? as usize;
+    if len <= 1 {
+        return Some(String::new());
+    }
+    let start = (o as i64 + rel as i64) as usize;
+    let bytes = r.bytes(start, len - 1).ok()?;
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    Some(String::from_utf8_lossy(&bytes[..end]).into_owned())
 }
 
 fn align(v: usize, a: usize) -> usize {
@@ -462,6 +525,14 @@ mod tests {
         assert_eq!(field_hash("Power_curve"), 0xa1a3b0a2);
         assert_eq!(field_hash("Take_off_behaviour"), 0xc63c4447);
         assert_eq!(field_hash("Normal_quality_engine"), 0xbf36eecf);
+    }
+
+    #[test]
+    fn count_fields_follow_from_array_hashes() {
+        assert_eq!(count_hash(field_hash("Elements")), field_hash("ElementsCount"));
+        // Pairs observed in UI element types (array hash, count hash).
+        assert_eq!(count_hash(0x5606_0647), 0x6b1c_a08a);
+        assert_eq!(count_hash(0x3d30_2c57), 0x0f6f_34a1);
     }
 
     #[test]

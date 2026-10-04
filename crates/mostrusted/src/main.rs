@@ -9,7 +9,9 @@ mod damage;
 mod deferred;
 mod drift;
 mod drive;
+mod game_text;
 mod garage;
+mod hud;
 mod loader;
 mod materials;
 mod menu;
@@ -131,6 +133,12 @@ struct Cli {
     /// Open the car menu at startup (also in `--screenshot` runs, to capture it).
     #[arg(long)]
     show_menu: bool,
+    /// HUD speed and distance in mph / miles (the game's `Language.IsMetric` off).
+    #[arg(long)]
+    mph: bool,
+    /// No driving HUD (the debug status text stays; F3 toggles it when the HUD is up).
+    #[arg(long)]
+    no_hud: bool,
 }
 
 #[derive(Resource)]
@@ -161,8 +169,9 @@ struct Loaded {
     started: Option<Instant>,
 }
 
+/// The debug status text (top left); hidden behind the HUD while driving unless F3 is pressed.
 #[derive(Component)]
-struct StatusText;
+pub struct StatusText;
 
 fn main() -> anyhow::Result<()> {
     drive::install_gamepad_mappings();
@@ -299,6 +308,11 @@ fn main() -> anyhow::Result<()> {
         .insert_resource(materials::VehicleLights::from_slice(&cli.lights))
         .add_plugins((avian3d::PhysicsPlugins::default(), drive::DrivePlugin, damage::DamagePlugin))
         .add_plugins((garage::GaragePlugin { script }, menu::MenuPlugin { enabled: menu_enabled, open: cli.show_menu }))
+        .add_plugins(game_text::GameTextPlugin)
+        .add_plugins(hud::HudPlugin {
+            enabled: !cli.no_hud && test.is_none() && !crash && !matches!(request, Request::Vehicle { .. }),
+            metric: !cli.mph,
+        })
         .add_plugins(audio::GameAudioPlugin {
             music: !cli.no_music && !cli.mute && screenshot.is_none() && test.is_none() && !crash,
         })

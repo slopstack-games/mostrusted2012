@@ -11,6 +11,7 @@ mod damage;
 mod memscan;
 mod preview;
 mod survey;
+mod ui;
 
 use mw_assets::AssetStore;
 use mw_bundle::{Bundle, ResourceId, ResourceType};
@@ -26,6 +27,56 @@ struct Cli {
     game_dir: Option<PathBuf>,
     #[command(subcommand)]
     cmd: Cmd,
+}
+
+#[derive(Subcommand)]
+enum UiCmd {
+    /// One line per screen bundle with its widgets (and their layout counts).
+    Screens,
+    /// Print a screen's widgets, layouts and elements.
+    Show {
+        /// Screen bundle, e.g. `UI/SCREENS2/371670.BNDL` (the free-roam HUD).
+        screen: String,
+        /// Only these widgets (comma-separated names).
+        #[arg(long, value_delimiter = ',')]
+        widget: Vec<String>,
+        #[arg(long, default_value = mw_assets::DEFAULT_LANGUAGE)]
+        lang: String,
+    },
+    /// Draw a screen's layouts to a PNG.
+    Render {
+        screen: String,
+        out: PathBuf,
+        #[arg(long, value_delimiter = ',')]
+        widget: Vec<String>,
+        #[arg(long, default_value = mw_assets::DEFAULT_LANGUAGE)]
+        lang: String,
+        /// Output scale relative to 1280x720.
+        #[arg(long, default_value_t = 1.0)]
+        scale: f32,
+        /// Only these layouts (UniqueIds, comma-separated).
+        #[arg(long, value_delimiter = ',')]
+        layouts: Vec<u32>,
+        /// Binding values, `path=value` (e.g. `Players.GetLocalCompetitor.GetPlayerSpeed=88`,
+        /// `Language.IsMetric=1`); repeatable.
+        #[arg(long = "set")]
+        values: Vec<String>,
+        /// Show every element: unknown bindings count as 1 instead of hiding their elements.
+        #[arg(long)]
+        all: bool,
+        /// Draw the minimap at world `x,z,heading_degrees`.
+        #[arg(long, value_delimiter = ',', allow_hyphen_values = true)]
+        map: Vec<f32>,
+    },
+    /// Draw a text sample in a UI font.
+    Font {
+        number: u32,
+        out: PathBuf,
+        #[arg(long, default_value = "Most Wanted 0123456789 km/h MPH\nÀÉÎÕÜ ÇÑ ßæø Ünïcödé ŁŚŻ")]
+        text: String,
+        #[arg(long, default_value_t = 40.0)]
+        size: f32,
+    },
 }
 
 #[derive(Subcommand)]
@@ -166,6 +217,13 @@ enum Cmd {
         /// Car name, vehicle ID or bundle path.
         car: String,
     },
+    /// The game's UI (GeneSys screens and layouts): `ui screens` lists every screen's widgets, `ui show <screen>`
+    /// prints layouts and elements, `ui render <screen> out.png` draws them at 1280x720 (every element, bindings
+    /// ignored), `ui font <n> out.png` draws a sample in `UI/FONTS/<n>.BNDL`.
+    Ui {
+        #[command(subcommand)]
+        cmd: UiCmd,
+    },
     /// Disassemble the compiled D3D11 programs (DXBC) a shader uses.
     ShaderAsm {
         /// Exact shader name, e.g. `DriveableSurface`.
@@ -250,6 +308,36 @@ fn main() -> Result<()> {
         Cmd::Survey { r#type, len, limit, body } => {
             let ty = ResourceType::from_name(&r#type).with_context(|| format!("unknown type {type}", type = r#type))?;
             survey::run(&game, &survey::Options { ty, len, limit, body })?
+        }
+        Cmd::Ui { cmd } => {
+            let store = AssetStore::new(game)?;
+            fn names(w: &[String]) -> Vec<&str> {
+                w.iter().map(String::as_str).collect()
+            }
+            match cmd {
+                UiCmd::Screens => ui::screens(&store)?,
+                UiCmd::Show { screen, widget, lang } => {
+                    let lang = store.language(&lang)?;
+                    let w = names(&widget);
+                    ui::show(&store, &screen, (!w.is_empty()).then_some(&w[..]), &lang)?
+                }
+                UiCmd::Render { screen, out, widget, lang, scale, layouts, values, all, map } => {
+                    let lang = store.language(&lang)?;
+                    let w = names(&widget);
+                    let options = ui::RenderOptions {
+                        widgets: (!w.is_empty()).then_some(&w[..]),
+                        layouts: &layouts,
+                        scale,
+                        values: &values,
+                        all,
+                        map: (map.len() == 3).then(|| [map[0], map[1], map[2]]),
+                    };
+                    ui::render(&store, &screen, &lang, &out, &options)?
+                }
+                UiCmd::Font { number, out, text, size } => {
+                    ui::font_sample(&store, number, &text.replace("\\n", "\n"), size, &out)?
+                }
+            }
         }
         Cmd::ShaderAsm { name } => {
             let store = AssetStore::new(game)?;
@@ -896,6 +984,8 @@ fn print_genesys(obj: &fmt::genesys::Object, depth: usize, max_items: usize) {
             Value::Matrix(m) => format!("{m:?}"),
             Value::Handle(h) => format!("handle {}", h.map_or("-".into(), |h| h.to_string())),
             Value::Ref(r) => format!("ref {r}"),
+            Value::String(s) => format!("{s:?}"),
+            Value::Undecoded(e) => format!("<undecoded: {e}>"),
             Value::Null => "null".into(),
             Value::Raw(b) => format!("raw {}", b.iter().map(|x| format!("{x:02x}")).collect::<String>()),
             _ => return None,
