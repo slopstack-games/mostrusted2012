@@ -21,9 +21,12 @@ pub struct DrivePlugin;
 
 impl Plugin for DrivePlugin {
     fn build(&self, app: &mut App) {
+        // Test scripting runs in the fixed schedule, right before the physics,
+        // so every run feeds the same input on the same tick and `--test`
+        // results are reproducible.
         app.init_resource::<CarInput>()
-            .add_systems(Update, (spawn_car, read_input, chase_camera, wheel_visuals, log_car, run_test))
-            .add_systems(FixedUpdate, car_physics);
+            .add_systems(Update, (spawn_car, read_input, chase_camera, wheel_visuals, log_car))
+            .add_systems(FixedUpdate, (run_test, car_physics).chain());
     }
 }
 
@@ -425,6 +428,11 @@ fn read_input(keys: Res<ButtonInput<KeyCode>>, pads: Query<&Gamepad>, mut input:
     let mut brake = key(&[KeyCode::KeyS, KeyCode::ArrowDown]);
     let mut steer = key(&[KeyCode::KeyA, KeyCode::ArrowLeft]) - key(&[KeyCode::KeyD, KeyCode::ArrowRight]);
     let mut handbrake = keys.pressed(KeyCode::Space);
+    input.reset = keys.just_pressed(KeyCode::KeyR) || input.reset;
+    if input.scripted.is_some() {
+        // A `--test` script drives the car; `car_physics` reads it per tick.
+        return;
+    }
     for pad in &pads {
         throttle = throttle.max(trigger(pad, GamepadButton::RightTrigger2, GamepadAxis::RightZ));
         brake = brake.max(trigger(pad, GamepadButton::LeftTrigger2, GamepadAxis::LeftZ));
@@ -440,17 +448,23 @@ fn read_input(keys: Res<ButtonInput<KeyCode>>, pads: Query<&Gamepad>, mut input:
         brake = 0.0;
         steer = 0.0;
     }
-    if let Some([t, b, s, h]) = input.scripted {
-        throttle = t;
-        brake = b;
-        steer = s;
-        handbrake = h > 0.5;
-    }
     input.throttle = throttle;
     input.brake = brake;
     input.steer = steer.clamp(-1.0, 1.0);
     input.handbrake = handbrake;
-    input.reset = keys.just_pressed(KeyCode::KeyR) || input.reset;
+}
+
+impl CarInput {
+    /// Apply a scripted test input (set in the fixed schedule, so the physics
+    /// tick that follows sees it).
+    fn apply_script(&mut self) {
+        if let Some([t, b, s, h]) = self.scripted {
+            self.throttle = t;
+            self.brake = b;
+            self.steer = s.clamp(-1.0, 1.0);
+            self.handbrake = h > 0.5;
+        }
+    }
 }
 
 /// Analog trigger value in 0..1. Mapped pads report triggers as analog
@@ -494,6 +508,7 @@ fn car_physics(
 ) {
     use std::f32::consts::TAU;
     let dt = time.delta_secs();
+    input.apply_script();
     for (entity, mut car, mut forces, mut transform) in &mut cars {
         if std::mem::take(&mut input.reset) {
             let yaw = transform.rotation.to_euler(EulerRot::YXZ).0;
@@ -903,7 +918,9 @@ fn log_car(time: Res<Time>, mut next: Local<f32>, cars: Query<(&Car, &Transform)
 #[derive(Resource)]
 pub struct DriveTest {
     pub kind: TestKind,
-    started: Option<f32>,
+    /// Physics ticks since the car spawned (the test clock).
+    ticks: u32,
+    done: bool,
     distance: f32,
     marks: Vec<(String, f32, f32)>,
     top_speed: f32,
@@ -951,7 +968,8 @@ impl DriveTest {
     pub fn new(kind: TestKind) -> Self {
         Self {
             kind,
-            started: None,
+            ticks: 0,
+            done: false,
             distance: 0.0,
             marks: Vec::new(),
             top_speed: 0.0,
@@ -971,9 +989,15 @@ fn run_test(
     mut exit: MessageWriter<AppExit>,
 ) {
     let (Some(mut test), Ok(car)) = (test, cars.single()) else { return };
-    let now = time.elapsed_secs();
+    if test.done {
+        return;
+    }
+    // The clock counts physics ticks from the car's first one, so the script
+    // does not depend on frame timing.
+    test.ticks += 1;
+    let now = test.ticks as f32 * time.delta_secs();
     // Let the suspension settle before starting.
-    let t0 = *test.started.get_or_insert(now + 1.5);
+    let t0 = 1.5;
     if now < t0 {
         input.scripted = Some([0.0; 4]);
         return;
@@ -988,7 +1012,8 @@ fn run_test(
             test.marks.push((name.to_string(), t, v));
         }
     };
-    let finish = |test: &DriveTest, exit: &mut MessageWriter<AppExit>| {
+    let finish = |test: &mut DriveTest, exit: &mut MessageWriter<AppExit>| {
+        test.done = true;
         info!(
             "TEST RESULT {:?}: {}",
             test.kind,
@@ -1014,7 +1039,7 @@ fn run_test(
                     );
                     let top = format!("top={:.1}kmh", test.top_speed * 3.6);
                     test.marks.push((top, t, v));
-                    finish(&test, &mut exit);
+                    finish(&mut test, &mut exit);
                 }
                 test.plateau = (t, v);
             }
@@ -1053,7 +1078,7 @@ fn run_test(
                     car.roll.to_degrees()
                 );
                 test.marks.push((format!("corner={g:.2}g@{input_at:.2}"), t, v));
-                finish(&test, &mut exit);
+                finish(&mut test, &mut exit);
             }
         }
         TestKind::Handbrake => {
@@ -1082,7 +1107,7 @@ fn run_test(
             if dt >= 5.0 {
                 let mark = format!("slip={:.1}deg,yaw={:.0}deg/s", best[0].to_degrees(), best[1].to_degrees());
                 test.marks.push((mark, t, v));
-                finish(&test, &mut exit);
+                finish(&mut test, &mut exit);
             }
         }
         TestKind::Drift => {
@@ -1127,7 +1152,7 @@ fn run_test(
                 );
                 let mark = format!("peak={peak:.1}deg,held={held:.2}s,mean={mean:.1}deg,exit={:.0}kmh", v * 3.6);
                 test.marks.push((mark, t, v));
-                finish(&test, &mut exit);
+                finish(&mut test, &mut exit);
             }
         }
         TestKind::Engine => {
@@ -1144,7 +1169,7 @@ fn run_test(
             let Some(&(_, throttle, brake)) = SCRIPT.iter().find(|s| t < s.0) else {
                 info!("TEST engine: {:.0} km/h, gear {}, {:.0} rpm", v * 3.6, car.gear, car.rpm);
                 test.marks.push(("engine".into(), t, v));
-                finish(&test, &mut exit);
+                finish(&mut test, &mut exit);
                 return;
             };
             let throttle = if throttle < 0.0 { if (t / 0.3) as i32 % 2 == 0 { 1.0 } else { 0.0 } } else { throttle };
@@ -1163,7 +1188,7 @@ fn run_test(
                     let dist = test.distance - db;
                     info!("TEST 100-0 km/h: {:.2} s, {dist:.1} m", t - tb);
                     test.marks.push((format!("100-0kmh({dist:.1}m)"), t - tb, dist));
-                    finish(&test, &mut exit);
+                    finish(&mut test, &mut exit);
                 }
             }
         },
