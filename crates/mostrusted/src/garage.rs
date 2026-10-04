@@ -288,7 +288,7 @@ fn handle_actions(
     mut garage: ResMut<Garage>,
     requests: Option<Res<LoaderRequests>>,
     cars: Query<Entity, With<Car>>,
-    mut camera: Query<(Entity, &mut Transform, &mut Projection), With<Camera3d>>,
+    mut camera: Query<(Entity, &mut Transform, &mut Projection), crate::MainCamera>,
     game: Res<Game>,
     time: Res<Time>,
 ) {
@@ -342,7 +342,7 @@ pub fn free_camera() -> FreeCamera {
     FreeCamera { walk_speed: 30.0, run_speed: 150.0, ..default() }
 }
 
-type CameraNotCar = (With<Camera3d>, Without<Car>);
+type CameraNotCar = (With<Camera3d>, Without<Car>, Without<crate::reflection::PlanarReflectionCamera>);
 
 /// Place a car the loader finished: the startup car at `--spawn`, otherwise in place of the
 /// current car (keeping its position, heading and velocity) or on the ground below the camera.

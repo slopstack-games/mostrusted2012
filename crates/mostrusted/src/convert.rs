@@ -64,6 +64,22 @@ pub fn mesh(m: &mw_formats::DecodedMesh, uv_b: Option<u8>, colour: bool) -> Opti
     Some(mesh)
 }
 
+/// Road meshes (`DriveableSurface*`): put the vertex wetness mask TEXCOORD5.x (saturated, as the vertex
+/// shader does; 0 or ≥ 1 on real roads) and the vertex AO (colour alpha) in Bevy's COLOR attribute as
+/// (wetness, AO, 0, 1). The road shader reads them itself; road materials have no other use for COLOR.
+pub fn add_road_wetness(mesh: &mut Mesh, m: &mw_formats::DecodedMesh) {
+    let n = m.positions.len();
+    let wet = m.texcoord(5);
+    let colour: Vec<[f32; 4]> = (0..n)
+        .map(|i| {
+            let w = wet.and_then(|t| t.get(i)).map_or(0.0, |t| t[0].clamp(0.0, 1.0));
+            let ao = m.colors.as_ref().and_then(|c| c.get(i)).map_or(1.0, |c| c[3]);
+            [w, ao, 0.0, 1.0]
+        })
+        .collect();
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colour);
+}
+
 /// Add the game's bone indices and weights as Bevy joint attributes (for `damage.rs`, which skins car
 /// bodies to their damage skeleton). Weights on bones outside the skeleton are dropped. Only for meshes
 /// that will get a `SkinnedMesh`: Bevy skins any mesh with these attributes.

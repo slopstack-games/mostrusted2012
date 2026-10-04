@@ -201,6 +201,17 @@ enum Cmd {
     },
     /// Export the collision geometry (PolygonSoupList) of a bundle as .obj + preview.
     Collision { bundle: String, out: PathBuf },
+    /// Show a WorldPaintMap (what is painted where: environment timelines, layer fog, particle lighting),
+    /// which entries each track unit's zone covers, and optionally render it with the zone outlines.
+    PaintMap {
+        /// Resource ID of the map (010000000002823d = environment timelines, 01000000000285cb = layer fog).
+        id: String,
+        #[arg(long)]
+        png: Option<PathBuf>,
+        /// Print the entry painted at these `x,z` positions.
+        #[arg(long = "at", value_delimiter = ',', allow_hyphen_values = true)]
+        at: Vec<f32>,
+    },
     /// Export placed world geometry (all TRK_UNIT bundles by default).
     World {
         out: PathBuf,
@@ -723,6 +734,88 @@ fn main() -> Result<()> {
         Cmd::World { out, bundles, size, obj, instances } => {
             export_world(&AssetStore::new(game)?, &bundles, &out, size, obj, &instances)?
         }
+        Cmd::PaintMap { id, png, at } => paint_map(&AssetStore::new(game)?, &id, png.as_deref(), &at)?,
+    }
+    Ok(())
+}
+
+fn paint_map(store: &AssetStore, id: &str, png: Option<&Path>, at: &[f32]) -> Result<()> {
+    let id = ResourceId::parse(id).context("bad resource id")?;
+    let map = mw_formats::WorldPaintMap::parse(&store.load(id)?)?;
+    println!(
+        "{}×{} cells of {} m, origin {:?}, {} entries",
+        map.width,
+        map.height,
+        map.cell_size,
+        map.origin,
+        map.entries.len()
+    );
+    for (i, e) in map.entries.iter().enumerate() {
+        println!("  [{i:2}] {:016x}", 0x0100_0000_0000_0000u64 | *e as u64);
+    }
+    // Every track unit's zone: which entries its polygon covers (sampled on a 25 m grid).
+    let zones = store.zone_list()?;
+    let mut unpainted = 0;
+    for z in &zones.zones {
+        let [x0, z0, x1, z1] = z.bounds;
+        let mut seen = std::collections::BTreeMap::<u8, usize>::new();
+        let mut samples = 0;
+        let mut x = x0;
+        while x <= x1 {
+            let mut y = z0;
+            while y <= z1 {
+                if z.contains(x, y) {
+                    samples += 1;
+                    if let Some(i) = map.index_at(x, y) {
+                        *seen.entry(i).or_default() += 1;
+                    }
+                }
+                y += 25.0;
+            }
+            x += 25.0;
+        }
+        let painted: usize = seen.iter().filter(|(i, _)| **i != 0).map(|(_, n)| n).sum();
+        if painted * 2 < samples {
+            unpainted += 1;
+        }
+        println!("zone {:3}: {samples} samples, entries {seen:?}", z.id);
+    }
+    println!("{unpainted} of {} zones are mostly unpainted", zones.zones.len());
+    for p in at.as_chunks::<2>().0 {
+        let i = map.index_at(p[0], p[1]);
+        let e = map.entry_at(p[0], p[1]).map(|e| format!("{:016x}", 0x0100_0000_0000_0000u64 | e as u64));
+        println!("at {:.0},{:.0}: index {i:?} = {e:?}", p[0], p[1]);
+    }
+    if let Some(out) = png {
+        // 16 m per pixel, +x right, +z down; zone outlines in white.
+        let px = 16.0;
+        let ox = map.origin[0] as f32 * map.cell_size;
+        let oz = map.origin[1] as f32 * map.cell_size;
+        let (w, h) = ((map.width as f32 * map.cell_size / px) as u32, (map.height as f32 * map.cell_size / px) as u32);
+        let colour = |i: u8| {
+            let h = (i as u32).wrapping_mul(2_654_435_761);
+            if i == 0 { [0, 0, 0] } else { [(h >> 24) as u8 | 0x40, (h >> 16) as u8 | 0x40, (h >> 8) as u8 | 0x40] }
+        };
+        let mut img = image::RgbImage::new(w, h);
+        for v in 0..h {
+            for u in 0..w {
+                let (x, z) = ((u as f32 + 0.5) * px - ox, (v as f32 + 0.5) * px - oz);
+                img.put_pixel(u, v, image::Rgb(map.index_at(x, z).map_or([0, 0, 0], colour)));
+            }
+        }
+        for z in &zones.zones {
+            for (a, b) in z.points.iter().zip(z.points.iter().cycle().skip(1)) {
+                for t in 0..64 {
+                    let f = t as f32 / 64.0;
+                    let u = ((a[0] + (b[0] - a[0]) * f + ox) / px) as i64;
+                    let v = ((a[1] + (b[1] - a[1]) * f + oz) / px) as i64;
+                    if (0..w as i64).contains(&u) && (0..h as i64).contains(&v) {
+                        img.put_pixel(u as u32, v as u32, image::Rgb([255, 255, 255]));
+                    }
+                }
+            }
+        }
+        img.save(out)?;
     }
     Ok(())
 }

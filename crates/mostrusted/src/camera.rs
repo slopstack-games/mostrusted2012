@@ -272,7 +272,7 @@ impl Spring {
 }
 
 /// The 3D camera while it follows a car (the free camera has its own controller).
-type DrivingCamera = (With<Camera3d>, Without<FreeCamera>);
+type DrivingCamera = (With<Camera3d>, Without<FreeCamera>, Without<crate::reflection::PlanarReflectionCamera>);
 
 /// Camera state, smoothed every frame.
 #[derive(Default)]

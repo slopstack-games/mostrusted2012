@@ -420,7 +420,7 @@ fn simulate(
     time: Res<Time>,
     debug: Res<VfxDebug>,
     mut instances: ResMut<Instances>,
-    camera: Query<&GlobalTransform, With<Camera3d>>,
+    camera: Query<&GlobalTransform, crate::MainCamera>,
 ) {
     let dt = time.delta_secs().min(0.1);
     if dt <= 0.0 {
@@ -799,7 +799,7 @@ fn demo_emitter(
     vfx: Res<Vfx>,
     debug: Res<VfxDebug>,
     mut instances: ResMut<Instances>,
-    camera: Query<&GlobalTransform, With<Camera3d>>,
+    camera: Query<&GlobalTransform, crate::MainCamera>,
     mut next: Local<f32>,
 ) {
     let Some((id, every, speed)) = debug.demo else { return };
@@ -868,7 +868,7 @@ const SPARK_SHUTTER: f32 = 1.0 / 30.0;
 fn build_meshes(
     mut vfx: ResMut<Vfx>,
     instances: Res<Instances>,
-    camera: Query<&GlobalTransform, With<Camera3d>>,
+    camera: Query<&GlobalTransform, crate::MainCamera>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let Some(cam) = camera.iter().next() else { return };

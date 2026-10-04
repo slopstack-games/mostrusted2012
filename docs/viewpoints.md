@@ -2,7 +2,9 @@
 
 Fixed camera poses for visual checks with `--camera x,y,z,look_x,look_y,look_z --screenshot out.png`.
 Screenshots contain game content, so keep them local (session scratchpad), never in the repo.
-Use `--camera=` when the first value is negative. `--hour N` (0–23, default 13) picks the time of day.
+Use `--camera=` when the first value is negative. `--hour N` (0–24, fractions blend keyframes, default 13) picks
+the time of day; `--weather` uses the Alternate (bad-weather) keyframes; the timeline is the one painted under
+the camera unless `--timeline <id|default>` is given (screenshots taken before 2026-10-04 used `default`).
 
 | name | args | shows |
 |------|------|-------|
@@ -22,3 +24,5 @@ Use `--camera=` when the first value is negative. `--hour N` (0–23, default 13
 | tyre-smoke-drift | `--drive 911 --test drift --screenshot-time 9` | tyre smoke clouds behind the sliding car on the test track (`--test handbrake --screenshot-time 7.5` for the handbrake tap) |
 | crash-sparks | `--drive 911 --units 12 --auto-throttle 1 --screenshot-after-impact 0.04` | the car hits the guard rail west of downtown at ~80 km/h: spark spray and wheel dust |
 | spark-demo | `MW_VFX_DEMO=010000000007bd97,0.25,15` with `--camera=-1145,20.5,1712,-1157.5,19,1728 --units 6 --mute --screenshot-delay 150` | any effect by ID (here the scrape sparks) played 8 m ahead of the camera every 0.25 s |
+| road-wet | `--camera=-1131,27,1627,-1190,15,1720 --units 20 --mute` (+ `--road-wetness 0` for dry, `--planar-reflection`) | road-cliff with the wet path: puddles (puddle map), damp sheen; with `--planar-reflection` the trees reflect in the road |
+| road-wet-night | `--camera=-1131,27,1627,-1190,15,1720 --units 20 --mute --hour 1 --planar-reflection` | wet night road reflecting the trees; add `--weather` for the night Alternate (fog far 7500 m) |

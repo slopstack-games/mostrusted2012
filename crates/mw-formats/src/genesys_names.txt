@@ -1388,3 +1388,15 @@ ShakeMagnitude
 WobbleMagnitude
 AccelerationResponse
 FocalDistance
+# Environment keyframe (weather session 2026-10-04): array counts match their arrays' lengths
+ColourSunCount
+SkyColorGradientCount
+ScatteringColourCount
+TintColourCount
+LensFlareColourCount
+WindBearingVariability
+Thunderstorm_Intensity
+SparkExposure
+DistanceBlend
+Dry_Conditions
+Wet_Conditions

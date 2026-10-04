@@ -113,6 +113,32 @@ struct Layered {
 // The prefiltered sky reflection cube (mip = roughness × 5.5), as the game's G-buffer passes read it.
 @group(#{MATERIAL_BIND_GROUP}) @binding(121) var sky_cube: texture_cube<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(122) var sky_samp: sampler;
+// The planar reflection (`reflection.rs`): the scene mirrored in y = view.color_grading.hue, HDR game units.
+@group(#{MATERIAL_BIND_GROUP}) @binding(123) var planar_tex: texture_2d<f32>;
+@group(#{MATERIAL_BIND_GROUP}) @binding(124) var planar_samp: sampler;
+
+// The wet roads' reflection at a road point: the planar reflection at the point's mirrored projection,
+// shifted by the normal's deviation from the vertex normal (WetScaleParams.y), blurred by roughness (the
+// game reads a mip chain at roughness × WetScaleParams.z; four taps stand in for it). Without a planar
+// reflection (car viewer, `--no-reflection`) the sky cube stands in. cd/m².
+fn wet_reflection(p: vec3<f32>, n: vec3<f32>, nv: vec3<f32>, v: vec3<f32>, rough: f32, ws: vec4<f32>) -> vec3<f32> {
+#ifndef PLANAR_REFLECTION_VIEW
+    if layered.env.w > 0.5 {
+        let h = view.color_grading.hue;
+        let clip = view.clip_from_world * vec4(p.x, 2.0 * h - p.y, p.z, 1.0);
+        let uv = clip.xy / clip.w * vec2(0.5, -0.5) + 0.5 + (n - nv).xz * ws.y;
+        let r = rough * 0.02;
+        var c = vec3(0.0);
+        c += textureSampleLevel(planar_tex, planar_samp, uv + vec2(r, 0.5 * r), 0.0).rgb;
+        c += textureSampleLevel(planar_tex, planar_samp, uv + vec2(-0.5 * r, r), 0.0).rgb;
+        c += textureSampleLevel(planar_tex, planar_samp, uv + vec2(-r, -0.5 * r), 0.0).rgb;
+        c += textureSampleLevel(planar_tex, planar_samp, uv + vec2(0.5 * r, -r), 0.0).rgb;
+        return c * 0.25 * layered.env.x;
+    }
+#endif
+    let lod = min(rough * ws.z, layered.env.y - 1.0);
+    return textureSampleLevel(sky_cube, sky_samp, reflect(-v, n), lod).rgb * layered.env.x;
+}
 
 // The G-buffer pass turns the specular map's gamma-space reflectance into linear F0 with this cubic.
 fn gamma_to_f0(s: vec3<f32>) -> vec3<f32> {
@@ -180,6 +206,12 @@ fn detail_slope(texel: vec3<f32>) -> vec2<f32> {
 
 @fragment
 fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> FragmentOutput {
+#ifdef PLANAR_REFLECTION_VIEW
+    // The mirrored view only shows what is above the reflection plane (`reflection.rs`).
+    if in.world_position.y < view.color_grading.hue - 0.05 {
+        discard;
+    }
+#endif
     var pbr_input = pbr_input_from_standard_material(in, is_front);
 
     var uv = vec2<f32>(0.0);
@@ -222,6 +254,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             line_a = line.a;
             albedo = mix(albedo, line.rgb, line_a);
         }
+        var n_road = nv;
         if flags.x > 0.5 {
             // Slope sum of road map, detail map and vertex normal, then (p.x, 1, p.y) normalised.
             let road = textureSample(tex3, samp3, uv);
@@ -230,7 +263,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             if flags.z > 0.5 {
                 p += road_slope(textureSample(tex6, samp6, uv_b).rgb, tv, bv) * line_a;
             }
-            pbr_input.N = normalize(vec3(p.x, 1.0, p.y));
+            n_road = normalize(vec3(p.x, 1.0, p.y));
             rough = road.a * det.a;
         }
         if flags.y > 0.5 {
@@ -242,9 +275,40 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             f0 = mix(f0, rsf.y, line_a);
             fresnel = mix(1.0, rsf.z, line_a);
         }
-        pbr_input.material.base_color = vec4(albedo * pbr_input.material.base_color.rgb, 1.0);
+        // The wet path (DriveableSurface main pass): wet = puddle.w × saturate(TEXCOORD5.x); in a puddle
+        // the normal falls back to the vertex normal by RoadDepth.y × puddle.x, roughness scales by
+        // puddle.y, albedo darkens by puddle.z and F0 goes to water's 0.02. The only indirect light on a
+        // road is the planar reflection × env-BRDF × wet (none on dry roads); the sky cube stands in for
+        // the planar reflection texture.
+        var wet_in = 0.0;
+        var ao = 1.0;
+#ifdef VERTEX_COLORS
+        wet_in = in.color.x;
+        ao = in.color.y;
+#endif
+        var n = n_road;
+        if flags.w > 0.5 {
+            let ws = layered.p[4];
+            let puddle = textureSample(tex8, samp8, in.world_position.xz * ws.x);
+            var depth = 0.0;
+            if flags.w > 1.5 {
+                depth = textureSample(tex7, samp7, uv).y;
+            }
+            let wet = saturate(puddle.w * wet_in * layered.env.z);
+            let k = mix(vec3(1.0), vec3(depth * puddle.x, puddle.y, puddle.z), wet);
+            n = normalize(nv + k.x * (n_road - nv));
+            rough *= k.y;
+            albedo *= k.z;
+            f0 = mix(0.02, f0, k.x);
+            let ab = env_brdf(rough, saturate(dot(n, v_dir)));
+            let strength = (f0 * ab.x + ab.y) * wet;
+            extra += wet_reflection(in.world_position.xyz, n, nv, v_dir, rough, ws) * strength;
+        }
+        pbr_input.N = n;
+        pbr_input.material.base_color = vec4(albedo, 1.0);
         set_specular(&pbr_input, vec3(f0), rough);
-        // Roads reflect only the planar reflection, scaled by the wet mask: none when dry.
+        pbr_input.diffuse_occlusion = vec3(ao);
+        // No sky-cube reflection on roads (only the wet planar term in `extra`).
         pbr_input.specular_occlusion = 0.0;
     } else if layered.mode == 2u {
         let m = textureSample(tex0, samp0, uv);

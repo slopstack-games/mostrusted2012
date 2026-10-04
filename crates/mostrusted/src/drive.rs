@@ -353,7 +353,7 @@ fn spawn_car(
     mut commands: Commands,
     pending: Option<Res<PendingCar>>,
     spatial: SpatialQuery,
-    mut camera: Query<&mut Transform, With<Camera3d>>,
+    mut camera: Query<&mut Transform, crate::MainCamera>,
 ) {
     let Some(pending) = pending else { return };
     // Wait until the collision under the spawn point has streamed in.

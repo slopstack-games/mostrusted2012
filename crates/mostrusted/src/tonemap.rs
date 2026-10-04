@@ -201,7 +201,8 @@ fn prepare_buffer(
 
 #[allow(clippy::too_many_arguments)]
 fn game_tonemap(
-    view: ViewQuery<&ViewTarget>,
+    // Not the planar reflection: it keeps HDR game units for the road shader to sample.
+    view: ViewQuery<&ViewTarget, Without<crate::reflection::PlanarReflectionCamera>>,
     pipelines: Option<Res<TonemapPipelines>>,
     cache: Res<PipelineCache>,
     buffer: Res<TonemapBuffer>,

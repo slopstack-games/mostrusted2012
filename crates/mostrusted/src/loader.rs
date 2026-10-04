@@ -555,6 +555,9 @@ impl Worker {
             }
             look.retain_textures(|k| self.textures.contains(k));
             let Some(mut mesh) = convert::mesh(&sm.mesh, look.uv_b, look.vertex_colour) else { continue };
+            if look.wet_road() {
+                convert::add_road_wetness(&mut mesh, &sm.mesh);
+            }
             if let Some(bones) = self.skin_bones {
                 convert::add_skin(&mut mesh, &sm.mesh, bones);
             }
