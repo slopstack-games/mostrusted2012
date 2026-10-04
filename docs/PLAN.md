@@ -219,9 +219,14 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    distortion / sub-harmoniser / sends, pops, backfires, ignition, rev limiter, gear-change clunks; per-car
    loudness normalised (research log "the engine plays the car's whole sound bank"). Ground truth checked
    against the raw recordings (research log "engine ground truth": decoder clean, grains are phase-aligned
-   cycles, single-layer resynthesis at the recording's own floor; audible RPM = engine RPM). Still open: the state
-   lists (Burnout / Drift / In_air / Reversing), per-car DspParam overrides, bus / LFO items, the game's own
-   audible-RPM and load rules, reverb.
+   cycles, single-layer resynthesis at the recording's own floor). The game's own rules from its code (research
+   log "engine sound from the game code"): audible RPM = 1000..8000 × (idle..max fraction)^(2 − a) with `a`
+   from `EngineSound2`, load = speed-blended, smoothed and peak-held demand, harmonics from the firing frequency
+   × cylinders, Ginsu RPM glide 33 ms, Peaking EQ confirmed RBJ (linear gain), per-car DspParam Frequency / send
+   overrides, A/B env switches (`MW_AUDIO_DRY`, `_NO_DIST`, `_NO_SUB`, `_NO_EQ`, `_DIST=raw`, `_RPM_LINEAR`).
+   Still open: the Distortion and SubHarmoniser laws (their code is not in the decompilation: stand-ins), the
+   remaining DspParam indices, the state lists (Burnout / Drift / In_air / Reversing), bus / LFO items,
+   `EngineGainDueToPower`, reverb; a listening check of the new RPM curve.
 3. `[x]` Music: shuffled `UI/SONGS/*.SPS` playlist. Still open: radio/track names, ducking.
 4. `[~]` Vehicle sound effects from the sound data (`mw_assets::sfx`, `crates/mostrusted/src/sfx.rs`): tyre
    screech (the default surface's Drift / Spin / Brake sequences driven by wheel slip), road noise, wind,

@@ -108,6 +108,87 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-04 (engine sound from the game code): audible RPM, load, harmonics, the Ginsu player, the EQs
+
+The user supplied a Ghidra decompilation of the exe (`re/NFS13_dump`, git-ignored). It settles several of the
+"engine ground truth" entry's open questions; where the code is missing (not decompiled) this says so.
+Function addresses are given so the reading can be rechecked; no decompiled code is copied.
+
+- **Audible RPM is not the physics RPM** (reverses the previous entry's change). `RaceCarEngineSound` holds
+  a fixed RPM range of 1000..8000 (constructor `FUN_0058c3f0`; never overwritten) and `GetAudibleRPM` /
+  `Players.*.GetPlayerAudibleRPM` (`FUN_0083eb60`) return `min + (max − min) × normalised RPM`. The
+  normalised RPM (vehicle `+0x1f10`, `FUN_009aea50` ← `FUN_009ae930`) is the idle..max fraction of the engine
+  RPM (`Engine.Power_curve.Idle_RPM` / `Max_RPM`, `+0x2c` / `+0x38`) raised to `2 − a`, where `a` is an
+  `EngineSound2` term crossfaded by engine load between `cb44d82d` (off load) and `a33d84fe` (full load), or
+  `913bb900` when a vehicle flag (`+0x1f45`) is set. The 911 has 0.7 for all three: exponent 1.3, so 4400
+  physics rpm (half the range) plays as 1000 + 7000 × 0.5^1.3 = 3840 audible rpm, and the idle loop alone
+  (sequence axis 1790..7500) covers physics revs up to about 2300. The pow's argument order is read from the
+  register use around the SSE `powf` call; the small offset `_DAT_01186680` and the second branch of
+  `FUN_009ae930` (a term in a global tuning field `+0xd0`) were not resolved. A sum of a short history buffer
+  is added before the clamp (gear-change blips?, not reproduced). Implemented in
+  `engine_driver::normalised_rpm` / `audible_rpm`; `MW_AUDIO_RPM_LINEAR=1` restores audible = physics RPM for
+  A/B.
+- **Engine load** (`GetEngineLoad` → vehicle `+0x1f20`, `FUN_009b1f70`): a one-pole follower, rate =
+  `EngineSound2.99d4b91e` (0.5) × an unresolved constant, towards `s + (1 − s) × h`, with `s = (clamp01(speed /
+  reference) × Engine.937338e7 (0.75) × ?)²` and `h` a 0..1 value at vehicle `+0x1d14` whose writer was not
+  found (read as the pedal demand); the output is the maximum of the instant blend and the last six smoothed
+  values (peak hold). Implemented as `engine_driver::LoadFilter` with a 100 ms response and the top speed as
+  the reference; the hold keeps the on-load layers for ~100 ms after a lift.
+- **Tracked harmonics** (`FUN_00586330`, `FUN_00574ff0`): firing frequency = audible RPM / 120 × cylinders
+  (`EngineSound2.ed754b99`, 6 on the 911); `TrackedHarmonic1Frequency` = firing × `7cbc11ca` (1),
+  `TrackedHarmonic2Frequency` = firing × `7cbc11c9` (3; was 2 × harmonic 1 here), `SubharmoniserFrequency` =
+  firing × `283e07de` (1), tunnel harmonic × `dbcddcfc` (6) with gain `11a77b36` and Q `64cbe1ff` (not
+  bound in the 911's data). `CombRaspDelayTime` = 1 / (firing × `f0291dd3`). The LFO bindings are
+  `0.5 × sin` of a phase times an amplitude (`FUN_00aabc30`), `SkidLfo` a sawtooth; `Jitter` = two member
+  sums. `EngineOn` is vehicle `+0x1ef0`, `EngineGainDueToPower` `+0x1d1c` (writers not found).
+  `GetNormalisedRPM` and `GetAudibleRPM` themselves are thunks the dump lacks.
+- **Ginsu player** (`GinsuPlayer`, process `FUN_00aaf0a0`; helpers `FUN_00aad240` grain index at a
+  position, `FUN_00aacf60` position for an RPM, `FUN_00aad040` grain start, `FUN_00aad0f0` grain length,
+  `FUN_00aad3c0` copy / linear resample): the recording plays at its native rate (the copy is called with
+  equal in / out counts: pitch comes from the grain choice alone, not resampling); every other mixer block
+  (256 samples, the block counter at mixer `+0xc480`) the player may jump: it picks a grain within a window
+  around the RPM's grain (window = parameter 1 of the plug-in, default unknown), favouring staying or stepping
+  back one or two cycles at random, and jumps by whole grains from the fractional current position (phase
+  preserving) with a 0.25 ms linear crossfade (12 samples at 48 kHz). The RPM parameter glides linearly over
+  33 ms. Our overlap-add synth already keeps phase; adopted the 33 ms glide (`sequence::GinsuGroup`,
+  replacing the 10 ms one-pole). Chunking keeps each copy ≤ 64 input samples (two XAS blocks).
+- **DSP**: `PeakingIir2` (`FUN_00d01e60` / coefficients `FUN_00ced070`) is the RBJ peaking EQ with
+  `A = √Gain` (Gain linear, 1 = bypass) and Q clamped to 0.2..20, which is what `dsp::Biquad::peaking` does.
+  `HighPassButterworth` (`FUN_00cff950` → `FUN_00cde880`) and `BandPassIir2` (`FUN_00ce65b0`) are standard
+  designs with the frequency clamped to (0.001π, 0.999π). **`Distortion` ('Dst0') and `SubHarmoniser`
+  ('SUBH') are registered (`FUN_004b2cc0`, descriptors at `010d1930` / `010d2410`) but their code lies in
+  gaps Ghidra did not decompile (`00ab0e30..`, `00aad940..`), so they stay stand-ins.** Their parameter
+  tables give ranges: Distortion default 1, 1e-5..1000 (a drive), Model −100..100; SubHarmoniser Interval
+  default 2, 0..25. Stand-in changes: the distortion is now `tanh(d·x)/d` (unity for small signals, so the
+  drive-4 strain bus no longer rivals the clean path; `MW_AUDIO_DIST=raw` keeps `tanh(d·x)`), the octave
+  divider outputs at the input's RMS with 2 ms edges and tracks nothing above 1.5 kHz.
+- **Per-car `DspParam` overrides**: the index ↔ runtime parameter mapping is still not in the dump. Two
+  readings are consistent across the data and now applied: `Parameter_name` 1 on a filter = Frequency (the
+  911's global 6.5 kHz EQs 472213 / 472218 become 400 Hz × 2 and 1 kHz × 3; HighPass 472227 before one
+  sub-harmoniser becomes 6810 Hz, i.e. that bus is switched off), 0 on a Send = its gain (472306 = 0 mutes
+  the comb-rasp delay path). Delay "4 = 0.2" and BandPass "5 = 40" exceed the plug-ins' parameter counts
+  and are left alone. Send gains (`SendDspPlugIn.Gain`, all 1 in the 911) are now applied.
+- **Measurements** (`mwtool engine-sound 911`, scripts in the session scratch `engine/`): steady 4000 rpm
+  full load, bands in dB relative to the 500 Hz band, raw set-A recording 20 Hz −23 / 60 Hz −6 / 120 Hz +6 /
+  250 Hz +8 / 2 kHz −9 / 4 kHz −15. Wet before: −12 / −0.5 / +6 / +3 / −10 / −14 (the +11 dB sub-bass).
+  Wet now: −24 / +0.5 / +7 / +9 / −12 / −19 (within 2 dB of the recording up to 1 kHz; 60–120 Hz +6 dB of
+  which the sub-harmoniser stand-in is 5 dB; the top end 3–6 dB darker since the 6.5 kHz EQs moved).
+  Harmonic / total energy 0.98 (before 0.87, recording 0.97). Off load the 100 Hz EQs (× 4 Q 2, × 5 Q 0.5) still
+  put the 60–120 Hz bands 7–13 dB over the off-load recordings: that is what the data's EQ does. Default
+  sweep: f0 tracks the game mapping within −41 cents median (the glide lag), local pitch spread p90 124
+  cents (before 224); dry spectral centroid 422 Hz (before 469: the curve lowers mid-sweep pitch).
+- **A/B switches**: `MW_AUDIO_DRY=1` (all plug-ins off), `MW_AUDIO_NO_DIST`, `MW_AUDIO_NO_SUB`,
+  `MW_AUDIO_NO_EQ`, `MW_AUDIO_DIST=raw`, `MW_AUDIO_RPM_LINEAR=1`; `MW_AUDIO_METER=1` with `mwtool
+  engine-sound` prints each channel's level and plug-in chain with the applied parameters.
+- **Dead ends**: the `GetNormalisedRPM` / `GetAudibleRPM` thunk targets (`LAB_005a2190` / `LAB_005a2240`)
+  are not in the dump; vehicle `+0x1d14` (load source) has no scalar writer in the decompiled files; the class
+  descriptors' parameter tables carry no names; the `DspParam` reader (`EngineSound2 +0xd8..+0xe4`) was not
+  located (the +0xd8 hits in `0057/0058` are other GeneSys types).
+- **Open**: listen to `after2_911.wav` vs `before_911.wav` (scratch) and in game with / without
+  `MW_AUDIO_RPM_LINEAR`; the Distortion model and the SubHarmoniser law need the two undecompiled
+  functions (re-run Ghidra over `00aad940..00aade60` and `00ab0e30..00ab1110`); the Ginsu window parameter
+  default; the `DspParam` indices 4 / 5; `EngineGainDueToPower`; the state lists.
+
 ### 2026-10-04 (session 2): "everything is yellow": skylight in the ambient
 - User report: the frame looks yellow. Causes: the noon key light is warm (11.0, 7.95, 5.21), the ambient rig
   is small (up fill 0.065 × 2.6), and the noon ColourCube warms shadows and mid-tones (grey 102 → (116, 112,
