@@ -51,6 +51,12 @@ const DIFFUSE_SAMPLERS: &[&str] = &[
 ];
 const NORMAL_SAMPLERS: &[&str] = &["NormalTextureSampler", "NormalTextureSampler1"];
 
+/// Shaders that are not meant to be drawn as plain geometry (shadow casters, occluders, collision).
+pub fn is_hidden_shader(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    ["shadow", "occlusion", "occluder", "invisible", "collision"].iter().any(|k| name.contains(k))
+}
+
 /// A placed model (e.g. from an `InstanceList`).
 #[derive(Debug, Clone)]
 pub struct Placement {

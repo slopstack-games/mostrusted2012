@@ -11,6 +11,7 @@ use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 
 use bevy::prelude::*;
 use mw_assets::AssetStore;
+use mw_assets::backdrop::{BackdropSelector, track_unit_number};
 use mw_bundle::{ResourceId, ResourceType};
 
 use crate::convert;
@@ -94,16 +95,31 @@ pub enum Msg {
     Done,
 }
 
+/// Which `InstanceList` backdrop entries to draw (see `mw_assets::backdrop`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BackdropMode {
+    /// One backdrop per place: a backdrop triangle is drawn where the zone owning its position lists its
+    /// model, i.e. what the game shows there when the player stands in that zone.
+    #[default]
+    Composed,
+    /// Every unit's backdrop, unfiltered (all LOD tiers on top of each other; debug).
+    All,
+    /// Only this track unit's backdrop, as the game draws it while the player is in that unit (debug).
+    Zone(u32),
+    /// No backdrop (debug).
+    None,
+}
+
 /// Debug filters for world placements.
 #[derive(Debug, Clone, Default)]
 pub struct WorldFilter {
-    /// Skip InstanceList backdrop entries.
-    pub no_backdrop: bool,
+    /// Which backdrop entries to draw.
+    pub backdrop: BackdropMode,
     /// Skip groundcover (grass and plant sprites).
     pub no_groundcover: bool,
     /// Skip these models entirely.
     pub exclude: HashSet<ResourceId>,
-    /// Keep backdrop LOD2 stand-ins even though detailed geometry is loaded.
+    /// Keep backdrop LOD2 stand-ins in the `All` / `Zone` backdrop modes.
     pub keep_lod_proxies: bool,
     /// Which of the car's `VehiclePaint` options to paint it with.
     pub paint_index: usize,
@@ -138,6 +154,8 @@ pub fn spawn(
                 paintable: HashMap::new(),
                 requests: req_rx,
                 skin_bones: None,
+                backdrop: None,
+                backdrop_sent: HashSet::new(),
             };
             if let Err(e) = w.run(request) {
                 let _ = w.tx.send(Msg::Progress(format!("loader error: {e:#}")));
@@ -175,6 +193,19 @@ struct Worker {
     requests: Receiver<CarRequest>,
     /// While loading a drivable car's body: its skeleton size, so meshes get joint attributes.
     skin_bones: Option<usize>,
+    /// Backdrop composition for [`BackdropMode::Composed`].
+    backdrop: Option<BackdropSelector>,
+    /// Backdrop instances already sent (the same backdrop model is listed by many units).
+    backdrop_sent: HashSet<(ResourceId, [u32; 16])>,
+}
+
+/// How a model is turned into drawable parts.
+#[derive(Clone, Copy, Default)]
+struct Variant {
+    /// Drop meshes whose shader is a LOD2 stand-in.
+    strip_lod2: bool,
+    /// Keep only the backdrop triangles the zone composition draws, for a placement with this transform.
+    compose_backdrop: Option<[[f32; 4]; 4]>,
 }
 
 impl Worker {
@@ -201,7 +232,7 @@ impl Worker {
                         .collect(),
                 };
                 for p in placements {
-                    if let Some(model) = self.model_variant(p.model, false, InstanceLook::default())? {
+                    if let Some(model) = self.model_variant(p.model, Variant::default(), InstanceLook::default())? {
                         self.send(Msg::Instance { model, transform: game_matrix(&p.transform) })?;
                     }
                 }
@@ -283,7 +314,7 @@ impl Worker {
         };
         // Parts are listed by the key the main thread knows them by (paint variants differ).
         for &m in spec.parts.iter().flatten() {
-            if let Some(key) = self.model_variant(m, false, InstanceLook::default())? {
+            if let Some(key) = self.model_variant(m, Variant::default(), InstanceLook::default())? {
                 car.body.push(key);
             }
         }
@@ -296,7 +327,7 @@ impl Worker {
             let mut parts = Vec::new();
             for p in &w.parts {
                 if let Some(m) = p.model
-                    && let Some(key) = self.model_variant(m, false, InstanceLook::default())?
+                    && let Some(key) = self.model_variant(m, Variant::default(), InstanceLook::default())?
                 {
                     parts.push((key, p.spins));
                 }
@@ -357,7 +388,25 @@ impl Worker {
             d(&a.2).total_cmp(&d(&b.2))
         });
 
+        // Backdrop composition needs every unit's backdrop list, also of units not streamed.
+        if self.filter.backdrop == BackdropMode::Composed {
+            self.send(Msg::Progress("indexing backdrops".into()))?;
+            let listings = placed.iter().flat_map(|(name, placements, _)| {
+                let unit = track_unit_number(name);
+                placements.iter().filter(|p| p.backdrop).filter_map(move |p| Some((unit?, p.model, &p.transform)))
+            });
+            match self.store.backdrop_selector(listings) {
+                Ok(sel) => self.backdrop = Some(sel),
+                Err(e) => {
+                    self.send(Msg::Progress(format!("no zone list ({e}): drawing every backdrop")))?;
+                }
+            }
+        }
+
         let total = max_units.unwrap_or(placed.len()).min(placed.len());
+        if let Some(sel) = &mut self.backdrop {
+            sel.set_loaded(placed.iter().take(total).filter_map(|(name, _, _)| track_unit_number(name)));
+        }
         for (i, (name, placements, _)) in placed.into_iter().take(total).enumerate() {
             self.poll_requests()?;
             self.send(Msg::Progress(format!("streaming {name} ({}/{total})", i + 1)))?;
@@ -367,16 +416,30 @@ impl Worker {
                     self.groundcover(&b)?;
                 }
             }
+            let unit = track_unit_number(&name);
             for p in placements {
-                if (p.backdrop && self.filter.no_backdrop) || self.filter.exclude.contains(&p.model) {
+                if self.filter.exclude.contains(&p.model) {
                     continue;
                 }
-                // Backdrop entries mix needed world-space geometry (terrain,
-                // water, horizon) with LOD2 stand-ins for buildings whose
-                // detailed versions are also loaded; drawing both overlaps, so
-                // backdrop placements use a variant without the LOD2 meshes.
-                let strip = p.backdrop && !self.filter.keep_lod_proxies;
-                if let Some(model) = self.model_variant(p.model, strip, InstanceLook::from_placement(&p))? {
+                let mut variant = Variant::default();
+                if p.backdrop {
+                    match self.filter.backdrop {
+                        BackdropMode::None => continue,
+                        BackdropMode::Zone(z) if unit != Some(z) => continue,
+                        BackdropMode::Composed if self.backdrop.is_some() => {
+                            // Many units list the same backdrop model: compose and send it once.
+                            let bits = std::array::from_fn(|i| p.transform[i / 4][i % 4].to_bits());
+                            if !self.backdrop_sent.insert((p.model, bits)) {
+                                continue;
+                            }
+                            variant.compose_backdrop = Some(p.transform);
+                        }
+                        // Unfiltered backdrops mix needed world-space geometry (terrain, water, horizon)
+                        // with LOD2 stand-ins for buildings whose detailed versions are also loaded.
+                        _ => variant.strip_lod2 = !self.filter.keep_lod_proxies,
+                    }
+                }
+                if let Some(model) = self.model_variant(p.model, variant, InstanceLook::from_placement(&p))? {
                     self.send(Msg::Instance { model, transform: game_matrix(&p.transform) })?;
                 }
             }
@@ -424,22 +487,27 @@ impl Worker {
         Ok(())
     }
 
-    /// Load a model, optionally without its LOD2 stand-in meshes and with a
-    /// placement's tint / AO. Returns the key the main thread knows it by (the
-    /// stripped variant gets a synthetic ID with bit 62 set, per-instance
-    /// variants a hash with bit 61 set), or `None` if nothing is drawable.
+    /// Load a model as a [`Variant`] (without its LOD2 stand-in meshes, or cut down to the composed
+    /// backdrop) and with a placement's tint / AO. Returns the key the main thread knows it by (the
+    /// stripped variant gets a synthetic ID with bit 62 set, per-instance variants a hash with bit 61 set,
+    /// composed backdrops a hash with bit 63 set), or `None` if nothing is drawable.
     fn model_variant(
         &mut self,
         id: ResourceId,
-        strip_lod2: bool,
+        variant: Variant,
         inst: InstanceLook,
     ) -> anyhow::Result<Option<ResourceId>> {
-        let mut key = if strip_lod2 { ResourceId(id.0 | 1 << 62) } else { id };
+        use std::hash::{Hash, Hasher};
+        let mut key = if variant.strip_lod2 { ResourceId(id.0 | 1 << 62) } else { id };
         if !inst.is_default() {
-            use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
             (key, inst).hash(&mut h);
-            key = ResourceId(h.finish() & !(3 << 62) | 1 << 61);
+            key = ResourceId(h.finish() & !(7 << 61) | 1 << 61);
+        }
+        if let Some(t) = &variant.compose_backdrop {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (key, t.as_flattened().iter().map(|v| v.to_bits()).collect::<Vec<_>>()).hash(&mut h);
+            key = ResourceId(h.finish() | 1 << 63);
         }
         // Body-paint models are baked with the current paint, so each paint is its own variant
         // (bit 60, a hash of the ID and the paint's values).
@@ -460,12 +528,17 @@ impl Worker {
             }
         };
         let mut parts = Vec::new();
-        for sm in meshes {
-            if strip_lod2 && sm.shader_name.contains("LOD2") {
+        for mut sm in meshes {
+            if variant.strip_lod2 && sm.shader_name.contains("LOD2") {
                 continue;
             }
-            let name = sm.shader_name.to_ascii_lowercase();
-            if skip_shader(&name) {
+            if let (Some(t), Some(sel)) = (&variant.compose_backdrop, &self.backdrop) {
+                match sel.filter_mesh(id, sm.mesh_index, &sm.mesh, t) {
+                    Some(kept) => sm.mesh = kept,
+                    None => continue,
+                }
+            }
+            if mw_assets::is_hidden_shader(&sm.shader_name) {
                 continue;
             }
             let mut look = Look::from_scene_mesh(&sm).with_instance(&inst).with_paint(self.paint.as_ref());
@@ -580,11 +653,6 @@ fn groundcover_mesh(
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, col);
     mesh.insert_indices(Indices::U32(idx));
     Some(mesh)
-}
-
-/// Shaders that are not meant to be drawn as plain geometry.
-fn skip_shader(name: &str) -> bool {
-    ["shadow", "occlusion", "occluder", "invisible", "collision"].iter().any(|k| name.contains(k))
 }
 
 /// Game matrices are D3D row-major (`v * M`, translation in row 3). Some

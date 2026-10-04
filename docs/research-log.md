@@ -34,7 +34,14 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ### World
 - InstanceList instance `unknown_04` (f32) and `unknown_08` (u32).
-- ZoneHeader layout for MW (the exporter writes six import slots at 0x40+).
+- ZoneHeader (0x206, one per track unit, version 9): import slots at 0x04 InstanceList, 0x0C
+  DynamicInstanceList, 0x14 LightInstanceList, 0x1C CompoundInstanceList, 0x24 PropInstanceList, 0x2C one
+  GroundcoverCollection, then `u32 count` at 0x34 and `ptr` at 0x38 to more GroundcoverCollection imports
+  (2026-10-04, TRK_UNIT1). No visibility data in it. Not parsed yet.
+- How the game draws near water (city rivers, the airfield lake): no zone lists a water mesh over the river
+  next to downtown (unit 13), and no main geometry covers it. A separate water system? (`--backdrop-zone 13`
+  shows the gap.)
+- ZoneList zone byte 0x40 (0 or 1) and the header u32 at 0x18 (3).
 - What does `WORLDLIST.BNDL` contain, and how does it relate to `HAWAII/MAPS/*.BNDL`?
 
 ### Data
@@ -228,6 +235,52 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
   centroid, near-vertical normals ignored as landings) → `ImpactDamageGraphs` curve → zone levels → clip
   frames. `--test crash`: the 911 into a wall at 115 km/h gets 29 % front damage (bonnet creased, plate and
   bumper pieces gone); at 172 km/h 56 %; a 35° glancing hit at 141 km/h gives 39 % front-left and 14 % left.
+### 2026-10-04 (night): backdrop LOD tiers drawn on top of each other ("buildings on streets, mountains")
+- **Report**: buildings randomly on streets and mountains on top of the map. **Cause**: every track unit's
+  InstanceList backdrop (entries past the always-loaded count, 1,907 placements, 231 distinct models) was drawn
+  for all 169 units at once. A unit's backdrop is what the game draws *while the player is in that unit*: its
+  potentially visible set outside the loaded area, at the LOD that suits the distance. The same hillside is a
+  22,747-triangle tile (`b2fe2fa7`) in the backdrop of units 49-53/137 and a 2,342-triangle tile
+  (`28a73b07`) in that of 26 units farther away (same 1.9 km footprint, heights differ by up to 7 m); building
+  blocks have a full and a LOD2 twin (`37852c3c` / `462b7b99`); 144 units list the whole-map horizon model
+  `9eaa3c27` from GLOBALRESOURCES. Union = every tier stacked: coarse terrain pokes through roads and lawns,
+  a beige slab covered the road at the road-cliff viewpoint, building-block stand-ins overlapped streets.
+  The 2026-10-03 LOD2 strip only removed one symptom.
+- **Evidence the game draws one unit's backdrop**: rasterised all main and backdrop geometry on an 8 m grid
+  (temporary `examples/backdrop_raster.rs`, not committed). Only 12 % of a unit's backdrop cells fall on the main
+  geometry of that unit and its ZoneList neighbours (2 % on its own), i.e. the backdrop fills the area that
+  is *not* streamed. Tier pairs are listed by disjoint zone sets, and zone 137 lists the fine tile while its
+  edge neighbour 48 lists the coarse one, so the game cannot draw neighbours' backdrops together.
+  `--backdrop-zone 6` (only unit 6's list) at the city-lod-check viewpoint: roads clean, distant hills that
+  unit 6 cannot see are missing (PVS).
+- **ZoneList decoded** (`HAWAII/PVS.BNDL`, `mw_formats::ZoneList`, layout in formats.md): 169 zones = the 169
+  track units (zone ID = unit number), each a 4-12 point polygon on the ground plane with district and
+  arena IDs and a neighbour list (flag 3 = shared edge, mostly mutual; flag 1 = nearby, often one-way).
+  `TRK_UNIT1298-1390` (district 152518) form a 3x3 grid east of the map with almost nothing in them.
+- **Fix** (`mw_assets::backdrop`, default `BackdropMode::Composed`): compose one backdrop per place from the
+  view of the zone that owns it. Inside a zone a backdrop triangle is drawn when that zone lists its model;
+  outside all zones the models listed by the nearest listing zone win (the whole-map model only fills in);
+  water meshes are composed separately (a near zone's lake bed must not hide a farther zone's water plane),
+  and where a zone lists no water the nearest listing zone's water fills in. Triangles are split (adaptive,
+  48 m, always above 512 m, depth 12) so tiles are cut at zone borders. Each backdrop model is sent once
+  instead of once per listing unit (54,712 instead of 56,434 instances). `--all-backdrops` restores the old
+  union, `--backdrop-zone N` shows one unit's list, `--no-backdrop` none. With `--units N` the zones that
+  are not streamed count as outside and are filled from the nearest loaded zone's view (their stand-ins).
+- Before/after (same cameras, `--all-backdrops` vs default): road-cliff: rocky coarse tile over the lawn and a
+  flat slab over the road are gone; city-lod-check: terrain no longer smears over the curved road and the
+  rails; south view: the lighter coarse patch on the front ridge is gone.
+- Dead ends: (1) extra track units: all 169 bundles are in the zone list, none is a variant. (2) Per-model
+  keep/drop: 49 of 231 models are only partly right (big terrain tiles span their own zone and far areas), so
+  the decision has to be per triangle. (3) Nearest zone as the owner outside zones left holes where the
+  nearest zone does not see a far tile; (4) letting water compete with terrain dropped lake water where a
+  near zone lists the lake bed; (5) a 6-level split decided 600 m water pieces by one centroid (holes in the
+  airfield lake).
+- Remaining: cut faces where one zone's tile meets an area another zone represents differently (a mountain
+  north of the airfield, `eec26d7c`, listed by 36/37/42, is cut into an arch over zones 46/55 that do not
+  list it); trees in a few far places float where no zone lists ground under them (also with
+  `--all-backdrops`); the river beside downtown is filled by a cheap far water plane (y ≈ 29); a few small
+  triangle gaps where loaded and unloaded zones meet with `--units`. Full map load 19.4 s -> 23.9 s
+  (indexing 1.7 s, the rest is triangle splitting on the loader thread).
 
 ### 2026-10-04 (evening): engine sound rewritten from the game's audio data
 - User report after the resampling fix: the engine "still plays snippets in full and isn't blending them".
@@ -511,6 +564,7 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
   identity transform (terrain, water, roads, horizon). They also include LOD2 stand-in buildings
   (shaders containing `LOD2`) that overlap the detailed buildings; those meshes are now stripped from backdrop
   placements (`--keep-lod-proxies` brings them back). This was the "misplaced assets" report.
+  (Superseded on 2026-10-04: the backdrop is a per-unit LOD view; see the backdrop composition entry.)
 - **Controller**: gilrs's bundled SDL mapping DB lacked the 8BitDo Ultimate 2 (`03000000c82d00000b31…`), so its
   triggers were unmapped. The current SDL GameControllerDB is bundled and passed via `SDL_GAMECONTROLLERCONFIG`;
   `--gamepad-debug` logs raw input.
