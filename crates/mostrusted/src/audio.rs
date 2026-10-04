@@ -219,7 +219,8 @@ fn engine_sound(
             AudioPlayer::<EngineAudio>(handle),
             // ONCE, not LOOP: the source never ends, and looping makes rodio buffer it 32768 samples (0.74 s)
             // at a time, so the engine held each rpm for most of a second and then jumped.
-            PlaybackSettings::ONCE.with_volume(Volume::Linear(0.6)),
+            PlaybackSettings::ONCE.with_volume(Volume::Linear(0.0)),
+            crate::settings::Channel::Engine,
             EngineSound { legacy, driver },
             ChildOf(car),
         ));
@@ -326,7 +327,8 @@ fn music(
             let handle = assets.add(PcmAudio { pcm: Arc::new(pcm) });
             commands.spawn((
                 AudioPlayer::<PcmAudio>(handle),
-                PlaybackSettings::DESPAWN.with_volume(Volume::Linear(0.35)),
+                PlaybackSettings::DESPAWN.with_volume(Volume::Linear(0.0)),
+                crate::settings::Channel::Music,
                 Music,
             ));
         }

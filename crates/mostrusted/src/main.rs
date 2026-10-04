@@ -17,6 +17,7 @@ mod loader;
 mod materials;
 mod menu;
 mod particles;
+mod settings;
 mod sfx;
 mod sky;
 mod tonemap;
@@ -98,6 +99,13 @@ struct Cli {
     /// Disable all audio.
     #[arg(long)]
     mute: bool,
+    /// Volumes for this run, over the saved settings: `master=0.8,engine=1,sfx=0.5,music=0.3` (0..1 or %).
+    /// F2 / gamepad Select opens the volume settings in game (saved to ~/.config/mostrusted/settings.cfg).
+    #[arg(long)]
+    volume: Option<String>,
+    /// Open the volume settings at startup (for screenshots).
+    #[arg(long)]
+    show_settings: bool,
     /// Log raw gamepad input (to diagnose controller mappings).
     #[arg(long)]
     gamepad_debug: bool,
@@ -329,6 +337,10 @@ fn main() -> anyhow::Result<()> {
         ))
         .add_plugins(camera::CameraPlugin { mode: camera_mode, look_back })
         .add_plugins((garage::GaragePlugin { script }, menu::MenuPlugin { enabled: menu_enabled, open: cli.show_menu }))
+        .add_plugins(settings::SettingsPlugin {
+            settings: settings::load(cli.volume.as_deref()),
+            open: cli.show_settings,
+        })
         .add_plugins(audio::GameAudioPlugin {
             music: !cli.no_music && !cli.mute && screenshot.is_none() && test.is_none() && !crash,
         })

@@ -110,7 +110,12 @@ fn load_bank(
     state.driver = Some(VehicleDriver::new(params.clone()));
     let handle = assets.add(SfxAudio { bank, params });
     // ONCE: a live source never ends; LOOP would buffer it 0.74 s at a time (see audio.rs).
-    commands.spawn((AudioPlayer::<SfxAudio>(handle), PlaybackSettings::ONCE.with_volume(Volume::Linear(0.6))));
+    // Starts silent; `settings::apply_volumes` sets the effects volume once the sink exists.
+    commands.spawn((
+        AudioPlayer::<SfxAudio>(handle),
+        PlaybackSettings::ONCE.with_volume(Volume::Linear(0.0)),
+        crate::settings::Channel::Sfx,
+    ));
 }
 
 fn update_params(

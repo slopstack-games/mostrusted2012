@@ -86,6 +86,8 @@ MW_ENGINE_TRACE=<scratch>/rpm.trace ./target/release/mostrusted --drive 911 --te
 ./target/release/mostrusted --drive 911 --units 12 --auto-throttle 0.3 --swap-to "veyron super,aventador@2" --swap-delay 200 --screenshot <scratch>/swap.png
 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,1720 --units 12 --swap-to 911,free,veyron --screenshot <scratch>/spawn.png
 ./target/release/mostrusted --drive 911 --units 12 --show-menu --screenshot <scratch>/menu.png --screenshot-delay 60
+# Volumes: F2 / gamepad Select in game (saved to ~/.config/mostrusted/settings.cfg); per run:
+./target/release/mostrusted --drive 911 --volume master=0.8,engine=1,sfx=0.6,music=30%
 ```
 
 Use `--camera=` with `=` when the first value is negative. Release builds are needed: dependencies are
