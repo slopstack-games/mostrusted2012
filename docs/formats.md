@@ -162,6 +162,11 @@ bytes are stored verbatim (`Mass` = 0x4d617373). `mw_formats::genesys::field_has
 recovered so far are in `genesys_names.txt` next to it. Type names are stored as strings, e.g.
 `Genesys.Gen.HandlingBehaviour`; nested groups are types named `Parent.Child`, held in a field named `Child`.
 
+Fields are laid out by in-struct size (descending; nested structs first, then arrays, floats, pointers, counts)
+and, within a size, by name, case-insensitively (`Maximum_deceleration_for_pitch_change` before
+`Maximum_Pitch_Change`; holds for every named camera field). The `655d3f5f` UniqueId sorts first in its group.
+So an unnamed field's name sorts between its neighbours' names, which rules out most dictionary hits.
+
 ## Shaders
 
 `Shader` (0x53) also carries named parameters with hashes and defaults; materials override them by hash.

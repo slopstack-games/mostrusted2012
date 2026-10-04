@@ -156,9 +156,13 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    Original plan: a raycast-wheel vehicle (suspension, tyre slip curves, drivetrain, gearbox) tuned
    from `VehiclePhysicsSpec` (0x107) and GeneSys physics config (`PHYSICS/PHYSICSCONFIG.BNDL`). The original
    model's code is unavailable, so feel is matched by comparing against the real game, not by porting it.
-3. `[~]` Chase camera from each car's `VehicleCameraContainer` (eye, look-at, speed FOV, roll, braking pitch,
-   high-speed shake), interpolated between physics ticks; keyboard and gamepad input. Still open: the bonnet and
-   bumper views, impact shake, and the unnamed acceleration/yaw-spring blocks.
+3. `[~]` Cameras from each car's `VehicleCameraContainer` (`camera.rs`, 2026-10-04): chase, bonnet and bumper
+   modes (C / gamepad Y, `--camera-mode`); the chase camera's yaw spring (speed band, drift spring), speed
+   movement, acceleration spring, roll and pitch from the named thresholds, high-speed and impact shake, world
+   collision, look-back (B / right stick back) and look-around (right stick, right mouse drag) that springs
+   back; the free camera looks with the right stick. Still open: the in-car cameras' unnamed fields (rigid now),
+   the remaining acceleration / yaw-spring / gradient / height fields, FOV convention and calibration against
+   the original (handling.md, "Cameras").
 4. `[~]` The world streams nearest-first from the spawn point (or the `--camera` pose). Still open: streaming that
    follows the car (see M4).
 5. `[x]` **Car menu** (`menu.rs`, `garage.rs`; Tab / F1 / gamepad Start): pick any of the 93 drivable cars and
@@ -276,8 +280,9 @@ SNORM ×10 scale).
 1. Drift assist from `DriftBehaviour` (names mostly recovered: `Maximum_yaw_torque`, `Side_force_multiplier`,
    `Drift_scale_from_braking`, ...); then collect reference measurements from the original game (procedure in
    [handling.md](handling.md)) and calibrate.
-2. Name more GeneSys fields with `mwtool genesys-crack` (camera: `VehicleCameraContainer`; the environment
-   timeline types); fix the remaining GeneSys decode failures.
+2. Name more GeneSys fields with `mwtool genesys-crack` (camera: the in-car cameras and the remaining
+   `Acceleration_movement` / `Yaw_spring_modification` fields; the environment timeline types); fix the
+   remaining GeneSys decode failures.
 3. World-layer loose ends (M1.3): light rendering, groundcover tint/billboarding/wind.
 4. The game's deferred pipeline (M1.4 item 7), starting with the G-buffer pass and the key-light pass; decode
    the environment timeline (M1.5) so sun, sky and exposure come from data. Lightmap source (M1.4.7).

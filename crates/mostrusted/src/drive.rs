@@ -1,5 +1,5 @@
-//! Drivable cars: a raycast-suspension vehicle on avian3d, chase camera and
-//! input.
+//! Drivable cars: a raycast-suspension vehicle on avian3d, and input. The
+//! cameras that follow the car are in `camera.rs`.
 //!
 //! The game's handling code is in the encrypted executable, so this is a
 //! reimplementation driven by the game's own handling data
@@ -14,7 +14,8 @@
 use avian3d::prelude::*;
 use bevy::input::gamepad::RawGamepadEvent;
 use bevy::prelude::*;
-use mw_assets::handling::{ChaseCamera, LateralCurve, LongCurve, Steering, TyreAxle, VehicleHandling};
+use mw_assets::camera::VehicleCameras;
+use mw_assets::handling::{LateralCurve, LongCurve, Steering, TyreAxle, VehicleHandling};
 
 use crate::drift::{DriftInput, DriftParams, DriftState};
 use crate::loader::CarSpec;
@@ -27,7 +28,7 @@ impl Plugin for DrivePlugin {
         // so every run feeds the same input on the same tick and `--test`
         // results are reproducible.
         app.init_resource::<CarInput>()
-            .add_systems(Update, (spawn_car, read_input, chase_camera, wheel_visuals, log_car))
+            .add_systems(Update, (spawn_car, read_input, wheel_visuals, log_car))
             .add_systems(FixedUpdate, (run_test, car_physics).chain());
     }
 }
@@ -93,7 +94,8 @@ pub struct CarParams {
     pub in_air_gravity: f32,
     /// Engine rotating inertia (kg m²).
     pub engine_inertia: f32,
-    pub camera: ChaseCamera,
+    /// The car's cameras (`camera.rs`); `None` uses the 911's.
+    pub camera: Option<VehicleCameras>,
     /// The game's drift model (`None` if the car has no drift data).
     pub drift: Option<DriftParams>,
 }
@@ -231,17 +233,7 @@ impl CarParams {
             shift_time: h.gear_change_time.unwrap_or(0.15).clamp(0.05, 1.0),
             in_air_gravity: h.in_air_gravity.unwrap_or(1.0).clamp(1.0, 3.0),
             engine_inertia: h.engine_inertia.unwrap_or(0.25).clamp(0.05, 2.0),
-            camera: h.camera.unwrap_or(ChaseCamera {
-                eye: [0.0, 1.6, -4.6],
-                look_at: [0.0, 1.2, 0.75],
-                min_fov: 70.0,
-                max_fov: 95.0,
-                max_roll: 4.7,
-                max_pitch_change: 4.5,
-                shake_amplitude: 1.2,
-                shake_frequency: 1.0,
-                shake_power: 1.5,
-            }),
+            camera: h.camera,
             drift: DriftParams::new(h),
         };
         // Fit drag so the best gear's wheel force balances it at top speed.
@@ -313,7 +305,7 @@ pub struct Car {
     spawn: Vec3,
     pub params: CarParams,
     /// Wheel rays must not hit the car's own collider (a child entity).
-    body_collider: Entity,
+    pub(crate) body_collider: Entity,
 }
 
 struct WheelState {
@@ -964,111 +956,6 @@ fn wheel_visuals(cars: Query<&Car>, mut transforms: Query<&mut Transform>) {
             }
         }
     }
-}
-
-/// Chase-camera state, smoothed every frame.
-#[derive(Default)]
-struct ChaseState {
-    init: bool,
-    /// The car being followed: a new one (menu swap) restarts the smoothing.
-    car: Option<Entity>,
-    yaw: f32,
-    up: Vec3,
-    /// Extra distance (m, + = further back) from acceleration.
-    pull: f32,
-    fov: f32,
-    roll: f32,
-    pitch: f32,
-    speed: f32,
-    accel: f32,
-    shake_t: f32,
-}
-
-/// The game's external camera (`VehicleCameraContainer.External`): eye and
-/// look-at points behind the car, a field of view that widens with speed,
-/// roll into corners, a dip under braking and a high-speed shake. Rendering
-/// uses the physics-interpolated car pose, so it is smooth at any frame rate.
-/// The camera's yaw trails the car's and leans towards the direction of
-/// travel, so drifts show; only car-relative offsets are smoothed, so the
-/// distance does not grow with speed.
-fn chase_camera(
-    time: Res<Time>,
-    mut state: Local<ChaseState>,
-    cars: Query<(Entity, &Transform, &LinearVelocity, &Car), Without<Camera3d>>,
-    mut camera: Query<(&mut Transform, &mut Projection), With<Camera3d>>,
-) {
-    let (Ok((entity, car_t, vel, car)), Ok((mut cam, mut projection))) = (cars.single(), camera.single_mut()) else {
-        return;
-    };
-    let dt = time.delta_secs().max(1e-4);
-    let ease = |rate: f32| 1.0 - (-dt * rate).exp();
-    let c = car.params.camera;
-    let s = &mut *state;
-
-    let forward = car_t.rotation * Vec3::Z;
-    let car_yaw = forward.x.atan2(forward.z);
-    let flat_v = Vec3::new(vel.x, 0.0, vel.z);
-    let speed = flat_v.length();
-    // Lean towards the velocity direction at speed (about a third of the
-    // drift angle), never when reversing.
-    let travel_yaw = flat_v.x.atan2(flat_v.z);
-    let lean = if car.speed > 3.0 { (speed / 15.0).min(1.0) * 0.35 } else { 0.0 };
-    let target_yaw = car_yaw + wrap_angle(travel_yaw - car_yaw) * lean;
-    if !s.init || s.car != Some(entity) {
-        *s = ChaseState {
-            init: true,
-            car: Some(entity),
-            yaw: target_yaw,
-            up: Vec3::Y,
-            fov: c.min_fov,
-            speed,
-            ..default()
-        };
-    }
-    s.yaw += wrap_angle(target_yaw - s.yaw) * ease(6.0);
-    // Follow the ground's slope slowly, not every bump.
-    s.up = s.up.lerp(car_t.rotation * Vec3::Y, ease(2.0)).normalize_or(Vec3::Y);
-
-    // Longitudinal acceleration: fall back when accelerating, close in when braking.
-    let accel = (speed - s.speed) / dt;
-    s.speed = speed;
-    s.accel += (accel.clamp(-30.0, 30.0) - s.accel) * ease(4.0);
-    s.pull += ((s.accel * 0.05).clamp(-0.6, 0.8) - s.pull) * ease(3.0);
-
-    let frame = Quat::from_rotation_arc(Vec3::Y, s.up) * Quat::from_rotation_y(s.yaw);
-    let eye = Vec3::from(c.eye) - Vec3::Z * s.pull;
-    let target = car_t.translation + frame * Vec3::from(c.look_at);
-    let mut pos = car_t.translation + frame * eye;
-
-    // Field of view: from MinFieldOfView at rest to MaxFieldOfView at top speed.
-    let t = (speed / car.params.top_speed.max(1.0)).clamp(0.0, 1.0);
-    s.fov += (c.min_fov + (c.max_fov - c.min_fov) * t * t - s.fov) * ease(3.0);
-    // Roll into corners and dip under braking (degrees from the game data).
-    let lat_g = (car.lateral_accel / 9.81).clamp(-1.2, 1.2);
-    s.roll += (lat_g * c.max_roll - s.roll) * ease(4.0);
-    let brake_g = (-s.accel / 9.81).clamp(0.0, 1.0);
-    s.pitch += (brake_g * c.max_pitch_change - s.pitch) * ease(5.0);
-
-    // High-speed shake: grows with (speed fraction)^Power.
-    s.shake_t += dt * c.shake_frequency * 9.0;
-    let shake = c.shake_amplitude * 0.012 * t.powf(c.shake_power.max(0.1));
-    pos += frame
-        * Vec3::new((s.shake_t * 1.7).sin() + 0.5 * (s.shake_t * 4.1).sin(), (s.shake_t * 2.3).sin(), 0.0)
-        * shake;
-
-    cam.translation = pos;
-    cam.look_at(target, s.up);
-    cam.rotate_local_x(-s.pitch.to_radians());
-    cam.rotate_local_z(s.roll.to_radians());
-    if let Projection::Perspective(p) = &mut *projection {
-        // Vertical, as Bevy's: read as horizontal, 70° crops the car far
-        // tighter than the original's chase view.
-        p.fov = s.fov.to_radians();
-    }
-}
-
-fn wrap_angle(a: f32) -> f32 {
-    (a + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
 }
 
 /// Once a second: position and speed, for automated runs.

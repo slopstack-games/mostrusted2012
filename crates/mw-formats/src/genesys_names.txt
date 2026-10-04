@@ -1351,3 +1351,40 @@ Ignition_Sequence
 Pop_Sequence
 Backfire_Sequence
 Gurgle_Sequence
+# Cameras (2026-10-04, camera session): VehicleCameraContainer and its camera types. Templates against the
+# camera types' hashes (<= 5.5M candidates for <= 8 targets, ~1e-2 false hits); fields of a struct are
+# stored sorted by size then name, and every name below also sorts into its field's place.
+MinFieldOfView
+MaxFieldOfView
+YawDriftSpring
+Deceleration_pitch_change
+Maximum_Pitch_Change
+Maximum_deceleration_for_pitch_change
+Minimum_deceleration_for_pitch_change
+Pitch_change_curve_power
+Pitch_change_intensity
+Maximum_Roll_Angle
+Minimum_Lateral_Acceleration_for_Roll
+Minimum_Angular_Velocity_for_Roll
+Roll_Angle_Change_Intensity
+Maximum_Speed_for_Shake
+Minimum_Speed_for_Shake
+Maximum_Angle
+Minimum_Angle
+Spring_Coefficient
+Lower_Translation_Limit
+Upper_Translation_Limit
+Maximum_amplitude
+Maximum_frequency_multiplier
+Maximum_Gradient
+Aspect_ratio
+Horizontal_FOV
+Near_clip_plane
+Far_clip_plane
+X_axis_rotation
+# Plausible but without a sibling to confirm them
+Camera_Roll_Factor_Power
+ShakeMagnitude
+WobbleMagnitude
+AccelerationResponse
+FocalDistance

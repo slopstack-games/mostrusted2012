@@ -283,6 +283,55 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
   DspParam overrides (parameter indices unknown); `BusMixerChannelSequenceItem`, `LfoSequenceItem`,
   `RaceCarEffectSequenceItem` (camera shake?) not played; the true plug-in formulas; the game's audible-RPM and
   engine-load definitions.
+### 2026-10-04 (camera session): VehicleCameraContainer decoded, camera.rs
+- **Camera types** (`mwtool genesys-types | grep -i camera`): the container holds `CameraGameplayExternal`
+  (392 bytes: six sub-blocks, four vec3s, FOVs, a handle to `CameraGameplayShakeEffect` and pointers to
+  `CameraGameplayExternalGlobals` (`Impact_shake`, `LensProperties`, a shake effect) and
+  `CameraGameplayGradientAdjustments`), `CameraGameplayBonnet` / `Bumper` (128 bytes, same layout) and
+  `CameraRearView` (+ `CameraRearViewGlobals`). All 79 containers in the install read
+  (`crates/mw-assets/tests/cameras.rs`); 30 of ~150 fields vary between cars (eye, look-at, speed movement,
+  roll and pitch amounts, shake speed, in-car eyes), the rest are global constants.
+- **Field order is alphabetical** within a size group (case-insensitive): every named camera field is in
+  order (`Maximum_Roll_Angle` < `Minimum_Angular_Velocity_for_Roll` < `Minimum_Lateral_…` <
+  `Roll_Angle_Change_Intensity`; `Amplitude` < `Damping` < `Maximum_Angle` < `Minimum_Angle` <
+  `Spring_Coefficient`). That bounds an unnamed field's name and was used to accept or reject hits.
+- **Names cracked** (python templates with mixed capitalisation, plus `mwtool genesys-crack`, which gained a
+  `title-small` style: Title_Snake with `for`/`to`/`at`… in lower case, the style of
+  `Minimum_Lateral_Acceleration_for_Roll`): pitch `Maximum_` / `Minimum_deceleration_for_pitch_change` (12 / 2),
+  `Pitch_change_curve_power`, `Pitch_change_intensity`; roll `Minimum_Lateral_Acceleration_for_Roll` (10),
+  `Minimum_Angular_Velocity_for_Roll` (0.2), `Roll_Angle_Change_Intensity`; shake `Minimum_` /
+  `Maximum_Speed_for_Shake` (0 / 180 mph, the 911's top speed is 189); shake springs `Spring_Coefficient`,
+  `Minimum_` / `Maximum_Angle`, `Lower_` / `Upper_Translation_Limit`; `Maximum_amplitude`,
+  `Maximum_frequency_multiplier`, `YawDriftSpring`, `Maximum_Gradient`; mirror `Horizontal_FOV`,
+  `Aspect_ratio`, `Near_` / `Far_clip_plane`, `X_axis_rotation`. Plausible without a confirming sibling:
+  `Camera_Roll_Factor_Power`, `ShakeMagnitude`, `WobbleMagnitude`, `AccelerationResponse`, `FocalDistance`.
+  Also added the names handling.rs already hashed but genesys_names.txt lacked (`MinFieldOfView`, …), so the
+  dumps now show them.
+- **Units**: the thresholds only make sense in mph/s: `Minimum_Lateral_Acceleration_for_Roll` = 10 m/s² would
+  mean no roll below 1 g; as mph/s the roll range is 0.46–1.37 g and the pitch range 0.09–0.55 g.
+- **Dead ends**: (1) the two roll maxima (`02dd11bc` 2.5–3, `3f8ced67` 30–40) track the minima's meaning and
+  sort right, but `Maximum_Angular_Velocity_for_Roll`, `Maximum_Lateral_Acceleration_for_Roll`, all one- and
+  two-character edits of both (13.9 M candidates), `…_for_Maximum_Roll`, `Camera_Roll_Maximum_…` and Max/Full/Peak
+  variants miss. (2) No `Acceleration_movement`, `Speed_based_movement`, `Yaw_spring_modification`,
+  `Speed_based_height_change` or bonnet field cracked with 4–5-word vocabularies (snake, Title, title-small,
+  Camel); only nonsense hits (`Vertical_Speed_Impact_Mph`, `Low_at_Min_Z_Lateral`, …). (3) No look-around /
+  free-look fields (Look, Free, Orbit, Return, Recentre, Yaw, Pitch, Limit, Speed templates). (4)
+  `CAMERAS.BNDL` holds 45 `CameraTake`s named after event outros, intros, busted and "FinalCam" shots
+  (`Sprint_Race_Event_Outro_ICE`, `Busted`, `EMP_Zoom_Hit`): cinematic cameras, not gameplay. (5) A web search
+  found no community notes on these types.
+- **Bonnet / bumper**: the bumper eye (0, 0.425, 1.5) is inside the 911's nose (its bumper is at z ≈ 2.2), so the
+  car must not be drawn in that view; their FOVs (95→105, 95→120) look very wide when read as vertical.
+- Implemented in `crates/mostrusted/src/camera.rs` (moved out of drive.rs): yaw spring per 60 Hz tick from
+  the speed band (and `YawDriftSpring` with a lean towards the velocity while drifting), speed-based eye /
+  look-at movement, an acceleration spring (eye trails by a / ω², clamped to −2 / +1.5 m), roll and pitch from
+  the named thresholds and curve powers, high-speed shake, impact springs kicked by body-collider contacts,
+  a ray against the world so the eye stays in front of walls, look-back, look-around (right stick, right
+  mouse drag) that springs back, the bonnet and bumper modes (C / gamepad Y), `--camera-mode`,
+  `MW_CAMERA_TRACE`. Table and results in handling.md ("Cameras").
+- Open: the in-car cameras' 19 floats (they are rigid for now), the remaining acceleration and yaw-spring
+  fields, `Speed_based_height_change`, `Gradient_Adjustments`, whether the FOVs are vertical (compare
+  with the original; `mwtool memscan` could find the camera's position and FOV in the running game).
+
 ### 2026-10-04 (session 2): NewSky shader read
 - Main PS (`…79648d36`): glow = pow(saturate(dir · KeyLightDir), SunColour.w) × SunColour.rgb (exponent 0.65 at
   noon: a broad glow over the sun's half, not a disc); gradient = lerp(B(|y|), A(|y|), w) × BaseCloudColour.w
