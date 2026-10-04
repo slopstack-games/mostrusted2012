@@ -103,6 +103,8 @@ const LAT_SCALE: f32 = 0.44;
 const MPH: f32 = 0.44704;
 /// The clutch locks at this multiple of the launch rpm.
 const CLUTCH_LOCK: f32 = 1.3;
+/// Contact-patch speed assumed for a wheel spinning under power (no wheel-speed state yet); effects only.
+const WHEELSPIN_SLIP: f32 = 8.0;
 
 /// Used when a car lacks tyre data: a generic tyre on both axles.
 fn default_tyres() -> [TyreAxle; 2] {
@@ -277,6 +279,27 @@ struct WheelState {
     spin: f32,
     pivot: Entity,
     spinner: Entity,
+    /// Ground contact in the last physics step (read by `particles.rs`).
+    contact: Option<WheelContact>,
+}
+
+/// A wheel's ground contact, for effects (tyre smoke, kick-up). World space.
+#[derive(Clone, Copy, Debug)]
+pub struct WheelContact {
+    pub point: Vec3,
+    pub normal: Vec3,
+    /// Velocity of the contact patch over the ground (m/s): sideways sliding, plus the full ground speed
+    /// for a locked wheel and an assumed spin-up for a wheel spinning under power.
+    pub slip: Vec3,
+    /// Velocity of the car at the contact point (m/s).
+    pub velocity: Vec3,
+}
+
+impl Car {
+    /// Each wheel's ground contact from the last physics step (`None` while the wheel is in the air).
+    pub fn wheel_contacts(&self) -> impl Iterator<Item = Option<WheelContact>> + '_ {
+        self.wheels.iter().map(|w| w.contact)
+    }
 }
 
 fn spawn_car(
@@ -397,6 +420,7 @@ fn spawn_car(
             spin: 0.0,
             pivot,
             spinner,
+            contact: None,
         });
     }
     // A car swapped in at speed starts in the gear that speed needs.
@@ -623,6 +647,7 @@ fn car_physics(
             let reach = wheel.travel + wheel.radius;
             let Some(hit) = spatial.cast_ray(mount, Dir3::new(-up).unwrap_or(Dir3::NEG_Y), reach, true, &filter) else {
                 wheel.compression = 0.0;
+                wheel.contact = None;
                 continue;
             };
             let compression = (reach - hit.distance).clamp(0.0, wheel.travel);
@@ -707,6 +732,15 @@ fn car_physics(
             }
 
             wheel.spin += v_long / wheel.radius * dt;
+            let spinning = long_slipping && !locked && !braking;
+            wheel.contact = Some(WheelContact {
+                point: contact,
+                normal,
+                slip: side * v_side
+                    + if locked { fwd * v_long } else { Vec3::ZERO }
+                    + if spinning { -fwd * demand.signum() * WHEELSPIN_SLIP } else { Vec3::ZERO },
+                velocity: v,
+            });
         }
         if let Some(n) = ground_normal.try_normalize() {
             car.roll = -(rot * Vec3::X).dot(n).clamp(-1.0, 1.0).asin();
