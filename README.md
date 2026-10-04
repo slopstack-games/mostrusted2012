@@ -33,8 +33,15 @@ cargo run --release -p mostrusted -- --units 20
 # gamepad: right/left trigger, left stick, A = handbrake)
 cargo run --release -p mostrusted -- --drive "911"
 
-# Handling tests on a flat track (0-100, quarter mile, top speed / braking)
+# Handling tests on a flat track: accel (0-100, quarter mile, top speed), brake, corner (skidpad),
+# handbrake, drift (brake-tap drift), engine (a pedal sequence for engine-sound checks)
 cargo run --release -p mostrusted -- --drive "veyron" --test accel
+
+# Skip the grass sprites (faster loading)
+cargo run --release -p mostrusted -- --no-groundcover
+
+# Audio: engine sound follows the RPM, music plays from the game's own soundtrack
+# (--no-music, --mute)
 
 # Look at a car, by name, vehicle ID or bundle path; optional paint colour
 cargo run --release -p mostrusted -- --vehicle "911" --paint 20,60,170
@@ -64,6 +71,8 @@ cargo run --release -p mwtool -- survey VehicleGraphicsSpec   # per-field statis
 cargo run --release -p mwtool -- vehicles                     # car catalogue with names and bundles
 cargo run --release -p mwtool -- texture <id> out.png
 cargo run --release -p mwtool -- collision HAWAII/TRK_UNIT1.BNDL <dir>   # collision mesh .obj + preview
+cargo run --release -p mwtool -- audio UI/SONGS/116502.SPS <dir>          # game audio -> .wav
+cargo run --release -p mwtool -- shader-usage                             # world triangles per shader
 cargo run --release -p mwtool -- find <resource id>
 ```
 
@@ -76,8 +85,9 @@ default locations).
 |-------|---------|
 | [`mw-gamedir`](crates/mw-gamedir) | finds and validates the game install; case-insensitive path resolution |
 | [`mw-bundle`](crates/mw-bundle) | reads Criterion BundleV2 (`bnd2` v5) archives: header, resource table, zlib chunks, imports, debug names |
-| [`mw-formats`](crates/mw-formats) | resource parsers: Texture, VertexDescriptor, Renderable, Material, Shader, Model, InstanceList; BC1/2/3 decoding; DDS export |
+| [`mw-formats`](crates/mw-formats) | resource parsers: textures, meshes, materials, shaders, models, world layers (instances, props, compounds, groundcover), collision, vehicles, GeneSys; BC1/2/3 decoding; DDS export |
 | [`mw-assets`](crates/mw-assets) | game-wide resource index across all bundles, cross-bundle import resolution, model to mesh helpers |
+| [`mw-audio`](crates/mw-audio) | EA audio: SPS/EALayer3 (via nanomp3) and Ginsu engine sounds (EA-XAS), granular engine synth |
 | [`mwtool`](crates/mwtool) | CLI for inspection, extraction and previews |
 | [`mostrusted`](crates/mostrusted) | the Bevy runtime: background streaming loader, conversion to GPU assets, free camera |
 
@@ -98,18 +108,25 @@ Summary below; see [docs/PLAN.md](docs/PLAN.md) for milestones, acceptance crite
 - [x] World streaming from InstanceLists (35k placements) and the free-fly camera
 - [x] Vehicle assembly from VehicleGraphicsSpec (wheels, mirrored right side), car names from VehicleList + Language
 - [x] Game shaders disassembled from their DXBC; road and terrain albedo ported to WGSL
-- [ ] Remaining world layers: CompoundInstanceList, PropInstanceList, DynamicInstanceList, groundcover, lights
+- [x] Remaining world layers: props, compound and dynamic objects (56k placements), groundcover (1.36 M grass
+  sprites); lights parsed but not drawn yet
 - [ ] Remaining shader families: lightmaps, plots, road overlays, water, glass, the real vehicle paint
 - [x] Collision from PolygonSoupList; a first drivable car (raycast suspension, chase camera)
-- [~] Handling from the game's own physics data (engine curve, gears, mass, springs, brakes); calibration against
-  the original game still to do (see [docs/handling.md](docs/handling.md))
-- [ ] AttribSys / GeneSys data (vehicle tuning, game rules), vehicle list and names
-- [ ] Vehicle handling, AI traffic and cops, events, audio
+- [x] Audio: EALayer3 and Ginsu decoders, RPM-driven engine sound, soundtrack playback
+- [~] Handling from the game's own physics data (engine curve, gears, mass, springs, brakes, tyre grip curves,
+  steering); drift assist and calibration against the original game still to do (see
+  [docs/handling.md](docs/handling.md))
+- [~] GeneSys data (MW2012 has no AttribSys resources): reader and field-name hash done, ~1,200 field names recovered; vehicle list and names done.
+  Still open: game rules, cameras, paint
+- [ ] AI traffic and cops, events, sound effects and speech
 
 ## Credits
 
 Format knowledge builds on the community documentation at [burnout.wiki](https://burnout.wiki) and on
-[DGIorio](https://github.com/DGIorio)'s MIT-licensed NFS Most Wanted tools, used as a reference only.
+[DGIorio](https://github.com/DGIorio)'s MIT-licensed NFS Most Wanted tools, used as a reference only. Audio
+format knowledge comes from [vgmstream](https://github.com/vgmstream/vgmstream) (ISC; see
+`crates/mw-audio/NOTICE`). The bundled SDL GameControllerDB is zlib-licensed
+(`crates/mostrusted/assets/gamecontrollerdb.LICENSE`).
 
 Not affiliated with or endorsed by Electronic Arts or Criterion Games. "Need for Speed" is a trademark of
 Electronic Arts Inc.

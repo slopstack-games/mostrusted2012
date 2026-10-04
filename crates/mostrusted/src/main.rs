@@ -3,6 +3,7 @@
 //! No game data is shipped. All assets are streamed at runtime from an
 //! installed copy of the game (see `mw-gamedir` for how it is located).
 
+mod audio;
 mod convert;
 mod drive;
 mod loader;
@@ -44,7 +45,7 @@ struct Cli {
     /// Drive on an empty flat test track instead of the city (with --drive).
     #[arg(long)]
     test_track: bool,
-    /// Run a scripted handling test and exit: accel or brake (implies --test-track).
+    /// Run a scripted handling test and exit: accel, brake, corner, handbrake, drift or engine (implies --test-track).
     #[arg(long)]
     test: Option<String>,
     /// Hold the throttle at this value (0–1), for automated driving tests.
@@ -53,12 +54,21 @@ struct Cli {
     /// Debug: skip InstanceList backdrop entries.
     #[arg(long)]
     no_backdrop: bool,
+    /// Debug: skip groundcover (grass and plant sprites).
+    #[arg(long)]
+    no_groundcover: bool,
     /// Debug: also draw backdrop LOD2 stand-ins (they overlap the detailed buildings).
     #[arg(long)]
     keep_lod_proxies: bool,
     /// Debug: skip these model resource IDs (comma separated).
     #[arg(long, value_delimiter = ',')]
     exclude_models: Vec<String>,
+    /// Disable the background music.
+    #[arg(long)]
+    no_music: bool,
+    /// Disable all audio.
+    #[arg(long)]
+    mute: bool,
     /// Log raw gamepad input (to diagnose controller mappings).
     #[arg(long)]
     gamepad_debug: bool,
@@ -80,14 +90,15 @@ struct Cli {
 }
 
 #[derive(Resource)]
-struct Game {
-    store: Arc<AssetStore>,
+pub struct Game {
+    pub store: Arc<AssetStore>,
     request: Request,
     camera: Option<Transform>,
     screenshot: Option<PathBuf>,
     screenshot_delay: u32,
     paint: Color,
     filter: loader::WorldFilter,
+    mute: bool,
 }
 
 /// GPU meshes and materials making up one game Model.
@@ -152,7 +163,11 @@ fn main() -> anyhow::Result<()> {
         None => None,
         Some("accel") => Some(drive::TestKind::Accel),
         Some("brake") => Some(drive::TestKind::Brake),
-        Some(other) => anyhow::bail!("unknown --test {other} (accel, brake)"),
+        Some("corner") => Some(drive::TestKind::Corner),
+        Some("handbrake") => Some(drive::TestKind::Handbrake),
+        Some("drift") => Some(drive::TestKind::Drift),
+        Some("engine") => Some(drive::TestKind::Engine),
+        Some(other) => anyhow::bail!("unknown --test {other} (accel, brake, corner, handbrake, drift, engine)"),
     };
     if test.is_some() && cli.drive.is_none() {
         anyhow::bail!("--test needs --drive <car>");
@@ -160,6 +175,7 @@ fn main() -> anyhow::Result<()> {
     let test_track = matches!(request, Request::Drive { world: false, .. });
     let filter = loader::WorldFilter {
         no_backdrop: cli.no_backdrop,
+        no_groundcover: cli.no_groundcover,
         keep_lod_proxies: cli.keep_lod_proxies,
         exclude: cli
             .exclude_models
@@ -189,6 +205,9 @@ fn main() -> anyhow::Result<()> {
     app.add_plugins(FreeCameraPlugin)
         .add_plugins(MaterialPlugin::<GameMaterial>::default())
         .add_plugins((avian3d::PhysicsPlugins::default(), drive::DrivePlugin))
+        .add_plugins(audio::GameAudioPlugin {
+            music: !cli.no_music && !cli.mute && cli.screenshot.is_none() && test.is_none(),
+        })
         .insert_resource(drive::CarInput { auto_throttle: cli.auto_throttle, ..default() })
         .insert_resource(Game {
             store,
@@ -198,6 +217,7 @@ fn main() -> anyhow::Result<()> {
             screenshot_delay: cli.screenshot_delay,
             paint,
             filter,
+            mute: cli.mute || test.is_some(),
         })
         .insert_resource(ClearColor(Color::srgb(0.55, 0.68, 0.85)))
         .init_resource::<Loaded>()
@@ -321,7 +341,16 @@ fn receive_assets(
                     .filter_map(|m| Some((*m, loaded.models.get(m)?.clone())))
                     .collect();
                 let Request::Drive { spawn, heading, .. } = game.request else { continue };
-                commands.insert_resource(drive::PendingCar { spec, spawn, heading, parts });
+                if !game.mute
+                    && let Some((on_load, off_load)) = spec.engine.clone()
+                {
+                    commands.insert_resource(audio::PendingEngine(Some(audio::EngineAudio {
+                        on_load,
+                        off_load,
+                        params: Default::default(),
+                    })));
+                }
+                commands.insert_resource(drive::PendingCar { spec: *spec, spawn, heading, parts });
             }
             Msg::Progress(s) => {
                 info!("{s}");

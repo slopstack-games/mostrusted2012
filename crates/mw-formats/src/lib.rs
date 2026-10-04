@@ -8,6 +8,7 @@ mod collision;
 mod decode;
 mod dxgi;
 pub mod genesys;
+mod groundcover;
 mod material;
 mod renderable;
 mod text;
@@ -18,13 +19,14 @@ mod world;
 
 pub use collision::{PolygonSoup, PolygonSoupList, SOUP_GRANULARITY, SOUP_OFFSET_UNIT, SoupPolygon};
 pub use dxgi::{DxgiFormat, f16_to_f32};
+pub use groundcover::{GroundcoverCollection, GroundcoverInstance, GroundcoverInstances, GroundcoverLayer, Group};
 pub use material::{Material, MaterialParameter, MaterialSampler, Model, Shader, ShaderParameter, ShaderSampler};
 pub use renderable::{DecodedMesh, Mesh, Renderable, SNORM_POSITION_SCALE, Topology};
 pub use text::{Language, VehicleEntry, VehicleList};
 pub use texture::{Dimension, Texture};
 pub use vehicle::{VehicleGraphicsSpec, Wheel, WheelPart};
 pub use vertex::{Semantic, VertexAttribute, VertexDescriptor};
-pub use world::{Instance, InstanceList};
+pub use world::{Instance, InstanceList, ObjectDef, ObjectInstance, ObjectInstanceList};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {

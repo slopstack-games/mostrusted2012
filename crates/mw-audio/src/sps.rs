@@ -115,7 +115,10 @@ fn parse_frame(buf: &[u8], off: usize) -> Option<(EaFrame, usize)> {
         mode_extension: r.get(2)?,
         ..Default::default()
     };
-    if f.version_index == 1 || f.sample_rate_index == 3 || (f.version_index | f.sample_rate_index | f.channel_mode | f.mode_extension) == 0 {
+    if f.version_index == 1
+        || f.sample_rate_index == 3
+        || (f.version_index | f.sample_rate_index | f.channel_mode | f.mode_extension) == 0
+    {
         return None;
     }
     f.mpeg1 = f.version_index == 3;
@@ -288,7 +291,7 @@ pub fn decode(data: &[u8]) -> Result<Pcm> {
     let (out_ch, mixed): (u16, Vec<i16>) = match all.len() {
         0 => return Err(Error::Format("no channels".into())),
         1 => (1, all[0].iter().map(|&v| v as i16).collect()),
-        2 | 3 | 4 | 5 => (2, (0..frames_out).flat_map(|i| [all[0][i] as i16, all[1][i] as i16]).collect()),
+        2..=5 => (2, (0..frames_out).flat_map(|i| [all[0][i] as i16, all[1][i] as i16]).collect()),
         _ => {
             // EA 5.1 order: FL FC FR BL BR LFE.
             let mix = |i: usize, side: usize| -> i16 {

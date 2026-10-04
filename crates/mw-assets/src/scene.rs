@@ -1,5 +1,7 @@
 //! High-level helpers that turn Models into renderer-ready meshes.
 
+use std::collections::HashMap;
+
 use mw_bundle::{Bundle, ResourceId, ResourceType};
 use mw_formats as fmt;
 
@@ -116,16 +118,140 @@ impl AssetStore {
         })
     }
 
-    /// All model placements from every `InstanceList` in a bundle.
+    /// All model placements in a bundle: `InstanceList` entries plus props,
+    /// compound objects and dynamic objects (see [`WorldLayers`]).
     pub fn bundle_placements(&self, bundle: &Bundle) -> Result<Vec<Placement>> {
-        let mut out = Vec::new();
+        Ok(self.bundle_layers(bundle)?.into_placements())
+    }
+
+    /// Placements of every drawable world layer in a bundle, kept apart.
+    /// Objects whose definition or model cannot be resolved are skipped and
+    /// counted in `unresolved`.
+    pub fn bundle_layers(&self, bundle: &Bundle) -> Result<WorldLayers> {
+        let mut out = WorldLayers::default();
         for e in bundle.entries_of_type(ResourceType::InstanceList) {
             let list = fmt::InstanceList::parse(&bundle.load(e)?)?;
-            out.extend(list.instances.into_iter().filter_map(|i| {
+            out.instances.extend(list.instances.into_iter().filter_map(|i| {
                 Some(Placement { model: i.model?, transform: i.transform, backdrop: !i.always_loaded })
             }));
         }
+        type ParseDef = fn(&mw_bundle::Resource) -> fmt::Result<fmt::ObjectDef>;
+        let mut defs: HashMap<ResourceId, Option<ResourceId>> = HashMap::new();
+        let mut unresolved = 0;
+        let layers: [(ResourceType, ParseDef, &mut Vec<Placement>); 3] = [
+            (ResourceType::PropInstanceList, fmt::ObjectDef::parse_prop, &mut out.props),
+            (ResourceType::CompoundInstanceList, fmt::ObjectDef::parse_compound, &mut out.compounds),
+            (ResourceType::DynamicInstanceList, fmt::ObjectDef::parse_world_object, &mut out.dynamics),
+        ];
+        for (ty, parse_def, dest) in layers {
+            for e in bundle.entries_of_type(ty) {
+                let list = fmt::ObjectInstanceList::parse(&bundle.load(e)?)?;
+                for inst in list.instances {
+                    let Some(obj) = inst.object else { continue };
+                    let model = *defs.entry(obj).or_insert_with(|| {
+                        let res = self.load(obj).ok()?;
+                        parse_def(&res).ok()?.model()
+                    });
+                    match model {
+                        Some(model) => dest.push(Placement { model, transform: inst.transform, backdrop: false }),
+                        None => unresolved += 1,
+                    }
+                }
+            }
+        }
+        out.unresolved = unresolved;
+        for e in bundle.entries_of_type(ResourceType::LightInstanceList) {
+            out.lights += fmt::ObjectInstanceList::parse(&bundle.load(e)?)?.instances.len();
+        }
+        for e in bundle.entries_of_type(ResourceType::GroundcoverCollection) {
+            let col = fmt::GroundcoverCollection::parse(&bundle.load(e)?)?;
+            out.groundcover.push((col.id, col.layers.iter().map(|l| l.total).sum()));
+        }
         Ok(out)
+    }
+}
+
+/// A texture-atlas sprite class of a groundcover collection.
+#[derive(Debug, Clone)]
+pub struct GroundcoverMaterial {
+    pub texture: Option<ResourceId>,
+    /// `[offset.x, offset.y, scale.x, scale.y]` per sprite index.
+    pub regions: Vec<[f32; 4]>,
+}
+
+/// All instances of one groundcover collection with its materials resolved.
+#[derive(Debug, Clone)]
+pub struct Groundcover {
+    pub id: ResourceId,
+    pub materials: Vec<GroundcoverMaterial>,
+    pub instances: Vec<fmt::GroundcoverInstance>,
+}
+
+impl AssetStore {
+    /// Load and decode a groundcover collection (all layers).
+    pub fn groundcover(&self, id: ResourceId) -> Result<Groundcover> {
+        let col = fmt::GroundcoverCollection::parse(&self.load(id)?)?;
+        let blobs = col
+            .blobs
+            .iter()
+            .map(|&b| Ok(fmt::GroundcoverInstances::parse(&self.load(b)?)?))
+            .collect::<Result<Vec<_>>>()?;
+        let mut instances = Vec::with_capacity(col.layers.iter().map(|l| l.total as usize).sum());
+        for layer in 0..col.layers.len() {
+            instances.extend(col.instances(layer, &blobs)?);
+        }
+        let materials = col
+            .materials
+            .iter()
+            .map(|m| GroundcoverMaterial {
+                texture: m
+                    .material
+                    .and_then(|id| self.material(id).ok())
+                    .and_then(|mat| mat.samplers.iter().find_map(|s| s.texture)),
+                regions: m.regions.clone(),
+            })
+            .collect();
+        Ok(Groundcover { id, materials, instances })
+    }
+}
+
+/// The world layers of one bundle that become model placements.
+#[derive(Debug, Clone, Default)]
+pub struct WorldLayers {
+    /// `InstanceList`: buildings, terrain, roads.
+    pub instances: Vec<Placement>,
+    /// `PropInstanceList` via `PropObject`: street furniture.
+    pub props: Vec<Placement>,
+    /// `CompoundInstanceList` via `CompoundObject`.
+    pub compounds: Vec<Placement>,
+    /// `DynamicInstanceList` via `WorldObject`.
+    pub dynamics: Vec<Placement>,
+    /// `LightInstanceList` entries (parsed but not rendered).
+    pub lights: usize,
+    /// Groundcover collections the bundle references, with their instance counts. Collections are
+    /// shared between bundles, so deduplicate by ID when adding up.
+    pub groundcover: Vec<(ResourceId, u32)>,
+    /// Prop/compound/dynamic entries whose object or model could not be found.
+    pub unresolved: usize,
+}
+
+impl WorldLayers {
+    pub fn into_placements(self) -> Vec<Placement> {
+        let mut all = self.instances;
+        all.extend(self.props);
+        all.extend(self.compounds);
+        all.extend(self.dynamics);
+        all
+    }
+
+    pub fn add(&mut self, other: WorldLayers) {
+        self.instances.extend(other.instances);
+        self.props.extend(other.props);
+        self.compounds.extend(other.compounds);
+        self.dynamics.extend(other.dynamics);
+        self.lights += other.lights;
+        self.groundcover.extend(other.groundcover);
+        self.unresolved += other.unresolved;
     }
 }
 

@@ -5,14 +5,15 @@
 //! reimplementation driven by the game's own handling data
 //! ([`VehicleHandling`], from each car's GeneSys objects): mass and centre of
 //! mass, wheel sizes, spring frequencies and damping ratios, the engine torque
-//! curve, gear ratios and shift points, brake torques and top speed. Parts the
-//! data does not pin down (tyre slip curves, drivetrain efficiency) use
-//! documented defaults; see docs/handling.md.
+//! curve, gear ratios and shift points, brake torques, top speed, the tyres'
+//! lateral and longitudinal grip curves and the speed-banded steering. Parts
+//! the data does not pin down (the scale of the grip coefficients, drivetrain
+//! efficiency) are calibrated constants; see docs/handling.md.
 
 use avian3d::prelude::*;
 use bevy::input::gamepad::RawGamepadEvent;
 use bevy::prelude::*;
-use mw_assets::handling::VehicleHandling;
+use mw_assets::handling::{ChaseCamera, LateralCurve, LongCurve, Steering, TyreAxle, VehicleHandling};
 
 use crate::loader::CarSpec;
 
@@ -48,8 +49,9 @@ pub struct CarInput {
     pub reset: bool,
     /// Fixed throttle for automated runs (`--auto-throttle`).
     pub auto_throttle: Option<f32>,
-    /// Scripted test in progress (`--test`); overrides other input.
-    pub scripted: Option<(f32, f32)>,
+    /// Scripted test in progress (`--test`): throttle, brake, steer, handbrake
+    /// (> 0.5 = pulled). Overrides other input.
+    pub scripted: Option<[f32; 4]>,
 }
 
 /// Physical parameters of a car, derived from the game data.
@@ -66,35 +68,89 @@ pub struct CarParams {
     pub final_drive: f32,
     pub upshift_rpm: Vec<f32>,
     pub downshift_rpm: Vec<f32>,
+    /// Off-throttle downshift points (the cruising gearbox's).
+    pub coast_downshift_rpm: Vec<f32>,
     pub front_share: f32,
     pub top_speed: f32,
     /// Quadratic drag coefficient (N per (m/s)²), fitted to the top speed.
     pub drag: f32,
     pub engine_brake_torque: f32,
     pub handbrake_torque: f32,
-    pub grip: f32,
+    /// Front, rear.
+    pub tyres: [TyreAxle; 2],
+    pub steering: Steering,
+    pub shift_time: f32,
+    pub in_air_gravity: f32,
+    /// Engine rotating inertia (kg m²).
+    pub engine_inertia: f32,
+    pub camera: ChaseCamera,
 }
 
 /// Fraction of engine torque reaching the wheels (not in the data; typical).
 const DRIVETRAIN_EFFICIENCY: f32 = 0.85;
-/// Time with no drive torque while changing gear (the sport gearbox's 0.15 s field).
-const SHIFT_TIME: f32 = 0.15;
-const MAX_STEER_DEG: f32 = 35.0;
-/// Maps the game's longitudinal grip-curve peak to a friction coefficient.
-const GRIP_SCALE: f32 = 0.72;
-/// Lateral slip angle at which the tyre reaches peak grip.
-const PEAK_SLIP_ANGLE: f32 = 0.12;
+/// Map the game's grip-curve force coefficients to friction coefficients. The
+/// lateral and longitudinal curves are on different scales in the data (2.9 vs
+/// 1.8 peaks on the same tyre); calibrated so the 911 launches like the real
+/// car (0–100 km/h in about 4 s, braking at μ ≈ 1.1) and holds about 1.0 g on a
+/// skidpad (docs/handling.md).
+const LONG_SCALE: f32 = 0.6;
+const LAT_SCALE: f32 = 0.44;
+const MPH: f32 = 0.44704;
+/// The clutch locks at this multiple of the launch rpm.
+const CLUTCH_LOCK: f32 = 1.3;
+
+/// Used when a car lacks tyre data: a generic tyre on both axles.
+fn default_tyres() -> [TyreAxle; 2] {
+    let lat = LateralCurve { gradient: 0.8, peak: 2.8, peak_angle: 10.0 };
+    let long = LongCurve { peak: 1.8, peak_ratio: 0.1, max_slip: 1.5, max_slip_ratio: 0.6 };
+    let axle = TyreAxle {
+        pure_lateral: lat,
+        brake_slip_lateral: lat,
+        traction_slip_lateral: lat,
+        brake_pure_long: long,
+        traction_pure_long: long,
+        brake_slip_long: long,
+        traction_slip_long: long,
+        lateral_scale: 1.0,
+        longitudinal_scale: 1.0,
+    };
+    [axle, axle]
+}
+
+fn default_steering() -> Steering {
+    Steering {
+        medium_speed_mph: 65.0,
+        high_speed_mph: 135.0,
+        range: [35.0, 20.0, 35.0],
+        rate: [32.0, 22.0, 40.0],
+        counter_rate: [90.0, 42.0, 80.0],
+        center_rate: [42.0, 10.0, 80.0],
+    }
+}
+
+fn lerp_lat(a: &LateralCurve, b: &LateralCurve, t: f32) -> LateralCurve {
+    LateralCurve {
+        gradient: a.gradient + (b.gradient - a.gradient) * t,
+        peak: a.peak + (b.peak - a.peak) * t,
+        peak_angle: a.peak_angle + (b.peak_angle - a.peak_angle) * t,
+    }
+}
+
+/// (peak, sliding) longitudinal coefficients between two curves.
+fn lerp_long(a: &LongCurve, b: &LongCurve, t: f32) -> (f32, f32) {
+    (a.peak + (b.peak - a.peak) * t, a.max_slip + (b.max_slip - a.max_slip) * t)
+}
 
 impl CarParams {
     pub fn new(h: &VehicleHandling) -> Self {
         let mass = h.mass.unwrap_or(1450.0);
         let ext = h.body_half_extents.unwrap_or([0.9, 0.55, 2.2]);
-        // Solid box with the body's half extents.
+        // Solid box with the body's half extents, times the body's inertia scale.
         let inertia = Vec3::new(
             mass / 3.0 * (ext[1] * ext[1] + ext[2] * ext[2]),
             mass / 3.0 * (ext[0] * ext[0] + ext[2] * ext[2]),
             mass / 3.0 * (ext[0] * ext[0] + ext[1] * ext[1]),
-        );
+        ) * Vec3::from(h.inertia_scale.unwrap_or([1.0; 3]));
         let gb = h.gearbox.clone();
         let ratios = gb
             .as_ref()
@@ -111,6 +167,7 @@ impl CarParams {
             redline_rpm,
             upshift_rpm: gb.as_ref().map(|g| g.upshift_rpm.clone()).unwrap_or_default(),
             downshift_rpm: gb.as_ref().map(|g| g.downshift_rpm.clone()).unwrap_or_default(),
+            coast_downshift_rpm: gb.as_ref().map(|g| g.coast_downshift_rpm.clone()).unwrap_or_default(),
             reverse_ratio: gb.as_ref().map_or(3.0, |g| g.reverse.abs()),
             final_drive: gb.as_ref().map_or(3.5, |g| g.final_drive),
             ratios,
@@ -119,10 +176,22 @@ impl CarParams {
             drag: 0.4,
             engine_brake_torque: h.engine_brake_torque.unwrap_or(-250.0).abs(),
             handbrake_torque: h.handbrake_torque.unwrap_or(1200.0),
-            // The tyre curve "peak" (1.3–1.6) is not a plain friction
-            // coefficient; scaled to match real-world launch times until
-            // in-game measurements exist (docs/handling.md).
-            grip: (h.tyre_long_peak.unwrap_or(1.5) * GRIP_SCALE).clamp(0.7, 1.4),
+            tyres: h.tyres.unwrap_or_else(default_tyres),
+            steering: h.steering.unwrap_or_else(default_steering),
+            shift_time: h.gear_change_time.unwrap_or(0.15).clamp(0.05, 1.0),
+            in_air_gravity: h.in_air_gravity.unwrap_or(1.0).clamp(1.0, 3.0),
+            engine_inertia: h.engine_inertia.unwrap_or(0.25).clamp(0.05, 2.0),
+            camera: h.camera.unwrap_or(ChaseCamera {
+                eye: [0.0, 1.6, -4.6],
+                look_at: [0.0, 1.2, 0.75],
+                min_fov: 70.0,
+                max_fov: 95.0,
+                max_roll: 4.7,
+                max_pitch_change: 4.5,
+                shake_amplitude: 1.2,
+                shake_frequency: 1.0,
+                shake_power: 1.5,
+            }),
         };
         // Fit drag so the best gear's wheel force balances it at top speed.
         let radius = h.wheels.first().map_or(0.33, |w| w.radius);
@@ -166,6 +235,17 @@ pub struct Car {
     wheels: Vec<WheelState>,
     steer: f32,
     pub speed: f32,
+    /// Yaw rate (rad/s, positive = left) and lateral acceleration (m/s²).
+    pub yaw_rate: f32,
+    pub lateral_accel: f32,
+    /// Angle between heading and velocity (rad).
+    pub body_slip: f32,
+    /// In the game's drift state (see `drift.rs`).
+    pub drifting: bool,
+    /// Body roll and pitch relative to the ground plane under the wheels (rad;
+    /// roll positive = right side down, pitch positive = nose up).
+    pub roll: f32,
+    pub pitch: f32,
     pub gear: i32,
     pub rpm: f32,
     shift_timer: f32,
@@ -211,7 +291,7 @@ fn spawn_car(
 
     let params = CarParams::new(&pending.spec.handling);
     info!(
-        "car params: {:.0} kg, CoM {:?}, {} gears, final {:.2}, redline {:.0}, top {:.0} km/h, drag {:.3}, grip {:.2}, front drive {:.2}",
+        "car params: {:.0} kg, CoM {:?}, {} gears, final {:.2}, redline {:.0}, top {:.0} km/h, drag {:.3}, peak μ lat {:.2}/{:.2} long {:.2}, front drive {:.2}",
         params.mass,
         params.centre_of_mass,
         params.ratios.len(),
@@ -219,7 +299,9 @@ fn spawn_car(
         params.redline_rpm,
         params.top_speed * 3.6,
         params.drag,
-        params.grip,
+        params.tyres[0].pure_lateral.peak * LAT_SCALE,
+        params.tyres[1].pure_lateral.peak * LAT_SCALE,
+        params.tyres[1].traction_pure_long.peak * LONG_SCALE,
         params.front_share
     );
     let car = commands
@@ -240,6 +322,10 @@ fn spawn_car(
             // linear damping would add ~1.7 kN at 240 km/h and cap top speed.
             AngularDamping(0.4),
             LinearDamping(0.0),
+            // Render between physics ticks (64 Hz): without this the car and
+            // the chase camera judder on faster displays.
+            TransformInterpolation,
+            TransformHermiteEasing,
         ))
         .id();
     // Body collider: a box around the cabin, raised so the wheels do the work.
@@ -311,6 +397,12 @@ fn spawn_car(
         wheels,
         steer: 0.0,
         speed: 0.0,
+        yaw_rate: 0.0,
+        lateral_accel: 0.0,
+        body_slip: 0.0,
+        drifting: false,
+        roll: 0.0,
+        pitch: 0.0,
         gear: 1,
         rpm: params.idle_rpm,
         shift_timer: 0.0,
@@ -348,11 +440,11 @@ fn read_input(keys: Res<ButtonInput<KeyCode>>, pads: Query<&Gamepad>, mut input:
         brake = 0.0;
         steer = 0.0;
     }
-    if let Some((t, b)) = input.scripted {
+    if let Some([t, b, s, h]) = input.scripted {
         throttle = t;
         brake = b;
-        steer = 0.0;
-        handbrake = false;
+        steer = s;
+        handbrake = h > 0.5;
     }
     input.throttle = throttle;
     input.brake = brake;
@@ -420,6 +512,9 @@ fn car_physics(
         let velocity = forces.linear_velocity();
         let speed = velocity.dot(forward);
         car.speed = speed;
+        car.yaw_rate = forces.angular_velocity().dot(up);
+        car.lateral_accel = car.yaw_rate * speed;
+        car.body_slip = velocity.dot(rot * Vec3::X).atan2(speed.abs().max(1.0));
 
         // --- Gear selection (automatic) -------------------------------------
         let (mut throttle, mut brake) = (input.throttle, input.brake);
@@ -447,22 +542,44 @@ fn car_physics(
                 .filter(|&r| r > 0.0)
                 .unwrap_or(p.redline_rpm)
                 .min(p.redline_rpm - 100.0);
-            let down_rpm = p.downshift_rpm.get(g - 1).copied().unwrap_or(0.0);
+            // The race gearbox's downshift points are kick-down points: off
+            // the throttle the box shifts down at the cruising gearbox's (much
+            // lower) points instead, blending between the two with the pedal.
+            // Using the race points throughout made the revs leap up by
+            // ~1800 rpm every few seconds while coasting or braking.
+            let race_down = p.downshift_rpm.get(g - 1).copied().unwrap_or(0.0);
+            let coast_down = p.coast_downshift_rpm.get(g - 1).copied().unwrap_or(race_down).min(race_down);
+            let down_rpm = coast_down + (race_down - coast_down) * throttle;
             if rpm >= up_rpm && g < p.ratios.len() && car.shift_timer <= 0.0 {
                 car.gear += 1;
-                car.shift_timer = SHIFT_TIME;
+                car.shift_timer = p.shift_time;
             } else if g > 1 && rpm < down_rpm && car.shift_timer <= 0.0 {
                 car.gear -= 1;
-                car.shift_timer = SHIFT_TIME;
+                car.shift_timer = p.shift_time;
             }
         }
         car.shift_timer -= dt;
         let ratio = p.ratio(car.gear);
         rpm = wheel_rpm * ratio.abs() * p.final_drive;
-        // Clutch slip at low speed: the engine can rev above the wheels.
+        // Clutch slip when pulling away (first gear or reverse only): the
+        // engine revs above the wheels, starting at the launch rpm and rising
+        // with them until the clutch locks, so the engine note never holds
+        // still while the car accelerates. In the higher gears the clutch is
+        // locked and the revs follow the wheels; applying the slip there made
+        // every throttle tap jump the revs by ~600 rpm.
         let launch = p.idle_rpm + throttle * (p.redline_rpm * 0.55 - p.idle_rpm).max(0.0);
-        rpm = rpm.max(if throttle > 0.05 { launch } else { p.idle_rpm });
-        car.rpm += (rpm.min(p.redline_rpm + 200.0) - car.rpm) * (1.0 - (-dt * 20.0).exp());
+        rpm = if throttle > 0.05 && car.gear.abs() == 1 {
+            let lock = launch * CLUTCH_LOCK;
+            if rpm < lock { launch + (lock - launch) * rpm / lock } else { rpm }
+        } else {
+            rpm.max(p.idle_rpm)
+        };
+        // The engine's own inertia limits how fast the revs move: up by its
+        // torque, down by its resistance (both over `Engine_inertia`).
+        let to_rpm = 60.0 / TAU / p.engine_inertia * dt;
+        let rev_up = p.engine_torque(car.rpm).max(100.0) * to_rpm;
+        let rev_down = p.engine_brake_torque.max(100.0) * to_rpm;
+        car.rpm += (rpm.min(p.redline_rpm + 200.0) - car.rpm).clamp(-rev_down, rev_up);
 
         // --- Engine torque to the wheels -------------------------------------
         let engine = if car.shift_timer > 0.0 || car.gear == 0 {
@@ -479,17 +596,15 @@ fn car_physics(
         let n_front = car.wheels.iter().filter(|w| w.front).count().max(1) as f32;
         let n_rear = car.wheels.iter().filter(|w| !w.front).count().max(1) as f32;
 
-        // Steering: full lock at low speed, less at speed, smoothed.
-        let max_steer = MAX_STEER_DEG.to_radians() / (1.0 + speed.abs() / 20.0);
-        let target = input.steer * max_steer;
-        car.steer += (target - car.steer) * (1.0 - (-dt * 8.0).exp());
+        car.steer = steer_towards(&p.steering, car.steer, input.steer, speed, car.gear < 0, dt);
         let steer = car.steer;
 
         let filter = SpatialQueryFilter::from_excluded_entities([entity, car.body_collider]);
         let corner_mass = p.mass / car.wheels.len().max(1) as f32;
-        let grip = p.grip;
         let (front_share, handbrake_torque) = (p.front_share, p.handbrake_torque);
         let mut tyre_long_total = 0.0;
+        let mut grounded = false;
+        let mut ground_normal = Vec3::ZERO;
         for wheel in &mut car.wheels {
             let mount = pos + rot * (wheel.centre + Vec3::Y * wheel.travel);
             let reach = wheel.travel + wheel.radius;
@@ -499,6 +614,8 @@ fn car_physics(
             };
             let compression = (reach - hit.distance).clamp(0.0, wheel.travel);
             wheel.compression = compression;
+            grounded = true;
+            ground_normal += hit.normal;
             // Damp with the mount's velocity along the ground normal: using the
             // car's up axis couples forward speed into the damper whenever the
             // body pitches, and the car porpoises at speed.
@@ -516,35 +633,83 @@ fn car_physics(
             let v = forces.velocity_at_point(contact);
             let (v_long, v_side) = (v.dot(fwd), v.dot(side));
 
-            // Longitudinal: drive split by axle, brakes oppose rolling.
+            // Longitudinal demand: drive split by axle, brakes oppose rolling.
             let share = if wheel.front { front_share / n_front } else { (1.0 - front_share) / n_rear };
-            let mut f_long = axle_force * share;
-            let brake_force = brake * wheel.brake_torque / wheel.radius
-                + if input.handbrake && !wheel.front { handbrake_torque / wheel.radius } else { 0.0 };
+            let drive = axle_force * share;
+            let locked = input.handbrake && !wheel.front;
+            let brake_force =
+                brake * wheel.brake_torque / wheel.radius + if locked { handbrake_torque / wheel.radius } else { 0.0 };
             // Smooth near zero so the car comes to rest instead of jittering.
-            f_long -= brake_force * (v_long / 0.5).clamp(-1.0, 1.0);
+            let demand = drive - brake_force * (v_long / 0.5).clamp(-1.0, 1.0);
+            let braking = locked || demand * v_long < 0.0;
 
-            // Lateral: slip-angle model, velocity-cancelling at low speed.
-            let slip_angle = v_side.atan2(v_long.abs().max(2.0));
-            let mu = grip * if input.handbrake && !wheel.front { 0.45 } else { 1.0 };
-            let f_side_slip = -mu * load * (slip_angle / PEAK_SLIP_ANGLE).clamp(-1.0, 1.0);
+            // The game's tyre model: separate "pure" and "slip" curves for
+            // braking and traction, blended by how much the tyre slides in the
+            // other direction (docs/handling.md).
+            let tyre = &p.tyres[if wheel.front { 0 } else { 1 }];
+            let slip_deg = v_side.atan2(v_long.abs().max(2.0)).to_degrees();
+            let lat_use = (slip_deg.abs() / tyre.pure_lateral.peak_angle.max(1.0)).min(1.0);
+            let (pure_long, slip_long) = if braking {
+                (&tyre.brake_pure_long, &tyre.brake_slip_long)
+            } else {
+                (&tyre.traction_pure_long, &tyre.traction_slip_long)
+            };
+            let (peak, sliding) = lerp_long(pure_long, slip_long, lat_use);
+            let long_scale = LONG_SCALE * tyre.longitudinal_scale;
+            let long_limit = peak.max(sliding) * long_scale * load;
+            // Beyond the peak a wheel spins up or locks and grip falls to the
+            // curve's sliding value. Driver aids hold the peak instead: ABS on
+            // the service brakes, traction control on the drive unless the
+            // handbrake is pulled or the car already slides sideways (so the
+            // throttle still holds a drift). A handbraked wheel locks.
+            let assisted = if braking { !locked } else { !input.handbrake && lat_use < 0.5 };
+            let long_slipping = locked || (!assisted && demand.abs() > long_limit);
+            let f_long = if locked {
+                -sliding * long_scale * load * (v_long / 0.5).clamp(-1.0, 1.0)
+            } else if long_slipping {
+                demand.signum() * sliding * long_scale * load
+            } else {
+                demand.clamp(-long_limit, long_limit)
+            };
+            let long_use = if long_slipping { 1.0 } else { (f_long.abs() / long_limit.max(1.0)).powi(2) };
+            let slip_curve = if braking { &tyre.brake_slip_lateral } else { &tyre.traction_slip_lateral };
+            let curve = lerp_lat(&tyre.pure_lateral, slip_curve, long_use);
+            let mu_lat = curve.at(slip_deg) * LAT_SCALE * tyre.lateral_scale;
+            let f_side_slip = -mu_lat * load;
+            // At walking pace slip angles are meaningless: cancel sideways velocity instead.
             let f_side_cancel = -v_side * corner_mass / dt * 0.5;
             let f_side = if f_side_cancel.abs() < f_side_slip.abs() { f_side_cancel } else { f_side_slip };
-            // Friction circle.
-            let limit = mu * load;
-            let f = Vec2::new(f_long, f_side);
-            let f = if f.length() > limit { f * (limit / f.length()) } else { f };
+            // Combined grip: an ellipse between the two limits.
+            let lat_limit = (curve.peak * LAT_SCALE * tyre.lateral_scale * load).max(1.0);
+            let k = ((f_long / long_limit.max(1.0)).powi(2) + (f_side / lat_limit).powi(2)).sqrt();
+            let f = Vec2::new(f_long, f_side) / k.max(1.0);
             forces.apply_force_at_point(fwd * f.x + side * f.y, contact);
             tyre_long_total += f.x;
+            if tyre_debug() && (time.elapsed_secs() * 2.0).fract() < dt * 2.0 {
+                info!(
+                    "tyre front={} slip {slip_deg:.1}° μ {mu_lat:.2} load {load:.0} long {f_long:.0} side {f_side:.0} steer {:.1}°",
+                    wheel.front,
+                    steer.to_degrees()
+                );
+            }
 
             wheel.spin += v_long / wheel.radius * dt;
+        }
+        if let Some(n) = ground_normal.try_normalize() {
+            car.roll = -(rot * Vec3::X).dot(n).clamp(-1.0, 1.0).asin();
+            car.pitch = forward.dot(n).clamp(-1.0, 1.0).asin();
         }
         // Aerodynamic drag (fitted to the game's top speed) and a constant
         // rolling resistance (Crr 0.015), faded in near standstill.
         let rolling = velocity.normalize_or_zero() * (velocity.length() / 1.0).min(1.0) * 0.015 * p.mass * 9.81;
         let resist = -velocity * velocity.length() * p.drag - rolling;
         forces.apply_force(resist);
+        // The game pulls airborne cars down harder than gravity.
+        if !grounded {
+            forces.apply_force(Vec3::NEG_Y * (p.in_air_gravity - 1.0) * p.mass * 9.81);
+        }
         car.debug_forces = [axle_force, tyre_long_total, resist.dot(forward)];
+        trace_engine(time.elapsed_secs(), car.rpm, throttle, car.gear, speed);
 
         // Fell out of the world: back to the spawn point.
         if pos.y < car.spawn.y - 200.0 {
@@ -552,6 +717,55 @@ fn car_physics(
             *forces.linear_velocity_mut() = Vec3::ZERO;
         }
     }
+}
+
+/// Move the front wheel angle (radians) towards the input at the game's
+/// steering rates: separate rates for steering further, steering across to the
+/// other side and returning to centre, each for low speed, high speed and
+/// reverse. Below `Medium_speed` the low-speed values apply, above `High_speed`
+/// the high-speed ones, with a linear blend between.
+fn steer_towards(s: &Steering, current: f32, input: f32, speed: f32, reverse: bool, dt: f32) -> f32 {
+    let mph = speed.abs() / MPH;
+    let pick = |v: [f32; 3]| {
+        if reverse {
+            return v[2];
+        }
+        let t = ((mph - s.medium_speed_mph) / (s.high_speed_mph - s.medium_speed_mph).max(1.0)).clamp(0.0, 1.0);
+        v[0] + (v[1] - v[0]) * t
+    };
+    let target = (input * pick(s.range)).to_radians();
+    let rate = if input.abs() < 0.05 {
+        pick(s.center_rate)
+    } else if target * current < 0.0 {
+        pick(s.counter_rate)
+    } else if target.abs() < current.abs() {
+        // Easing off part of the way: as fast as centring.
+        pick(s.center_rate).max(pick(s.rate))
+    } else {
+        pick(s.rate)
+    };
+    let step = rate.to_radians() * dt;
+    current + (target - current).clamp(-step, step)
+}
+
+/// `MW_ENGINE_TRACE=<file>`: append `seconds rpm throttle gear speed` every
+/// physics tick, for `mwtool engine-sound --trace`.
+fn trace_engine(t: f32, rpm: f32, throttle: f32, gear: i32, speed: f32) {
+    use std::io::Write;
+    static FILE: std::sync::OnceLock<Option<std::sync::Mutex<std::fs::File>>> = std::sync::OnceLock::new();
+    let file = FILE.get_or_init(|| {
+        let path = std::env::var_os("MW_ENGINE_TRACE")?;
+        std::fs::File::create(path).ok().map(std::sync::Mutex::new)
+    });
+    if let Some(f) = file {
+        _ = writeln!(f.lock().unwrap(), "{t:.4} {rpm:.1} {throttle:.3} {gear} {speed:.3}");
+    }
+}
+
+/// `MW_TYRE_DEBUG=1`: log each tyre's slip angle and forces twice a second.
+fn tyre_debug() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("MW_TYRE_DEBUG").is_some())
 }
 
 fn wheel_visuals(cars: Query<&Car>, mut transforms: Query<&mut Transform>) {
@@ -568,17 +782,99 @@ fn wheel_visuals(cars: Query<&Car>, mut transforms: Query<&mut Transform>) {
     }
 }
 
+/// Chase-camera state, smoothed every frame.
+#[derive(Default)]
+struct ChaseState {
+    init: bool,
+    yaw: f32,
+    up: Vec3,
+    /// Extra distance (m, + = further back) from acceleration.
+    pull: f32,
+    fov: f32,
+    roll: f32,
+    pitch: f32,
+    speed: f32,
+    accel: f32,
+    shake_t: f32,
+}
+
+/// The game's external camera (`VehicleCameraContainer.External`): eye and
+/// look-at points behind the car, a field of view that widens with speed,
+/// roll into corners, a dip under braking and a high-speed shake. Rendering
+/// uses the physics-interpolated car pose, so it is smooth at any frame rate.
+/// The camera's yaw trails the car's and leans towards the direction of
+/// travel, so drifts show; only car-relative offsets are smoothed, so the
+/// distance does not grow with speed.
 fn chase_camera(
     time: Res<Time>,
-    cars: Query<&Transform, (With<Car>, Without<Camera3d>)>,
-    mut camera: Query<&mut Transform, With<Camera3d>>,
+    mut state: Local<ChaseState>,
+    cars: Query<(&Transform, &LinearVelocity, &Car), Without<Camera3d>>,
+    mut camera: Query<(&mut Transform, &mut Projection), With<Camera3d>>,
 ) {
-    let (Ok(car), Ok(mut cam)) = (cars.single(), camera.single_mut()) else { return };
-    let yaw = car.rotation.to_euler(EulerRot::YXZ).0;
-    let target = car.translation + Quat::from_rotation_y(yaw) * Vec3::new(0.0, 2.2, -6.5);
-    let k = 1.0 - (-time.delta_secs() * 6.0).exp();
-    cam.translation = cam.translation.lerp(target, k);
-    cam.look_at(car.translation + Vec3::Y * 1.0, Vec3::Y);
+    let (Ok((car_t, vel, car)), Ok((mut cam, mut projection))) = (cars.single(), camera.single_mut()) else {
+        return;
+    };
+    let dt = time.delta_secs().max(1e-4);
+    let ease = |rate: f32| 1.0 - (-dt * rate).exp();
+    let c = car.params.camera;
+    let s = &mut *state;
+
+    let forward = car_t.rotation * Vec3::Z;
+    let car_yaw = forward.x.atan2(forward.z);
+    let flat_v = Vec3::new(vel.x, 0.0, vel.z);
+    let speed = flat_v.length();
+    // Lean towards the velocity direction at speed (about a third of the
+    // drift angle), never when reversing.
+    let travel_yaw = flat_v.x.atan2(flat_v.z);
+    let lean = if car.speed > 3.0 { (speed / 15.0).min(1.0) * 0.35 } else { 0.0 };
+    let target_yaw = car_yaw + wrap_angle(travel_yaw - car_yaw) * lean;
+    if !s.init {
+        *s = ChaseState { init: true, yaw: target_yaw, up: Vec3::Y, fov: c.min_fov, speed, ..default() };
+    }
+    s.yaw += wrap_angle(target_yaw - s.yaw) * ease(6.0);
+    // Follow the ground's slope slowly, not every bump.
+    s.up = s.up.lerp(car_t.rotation * Vec3::Y, ease(2.0)).normalize_or(Vec3::Y);
+
+    // Longitudinal acceleration: fall back when accelerating, close in when braking.
+    let accel = (speed - s.speed) / dt;
+    s.speed = speed;
+    s.accel += (accel.clamp(-30.0, 30.0) - s.accel) * ease(4.0);
+    s.pull += ((s.accel * 0.05).clamp(-0.6, 0.8) - s.pull) * ease(3.0);
+
+    let frame = Quat::from_rotation_arc(Vec3::Y, s.up) * Quat::from_rotation_y(s.yaw);
+    let eye = Vec3::from(c.eye) - Vec3::Z * s.pull;
+    let target = car_t.translation + frame * Vec3::from(c.look_at);
+    let mut pos = car_t.translation + frame * eye;
+
+    // Field of view: from MinFieldOfView at rest to MaxFieldOfView at top speed.
+    let t = (speed / car.params.top_speed.max(1.0)).clamp(0.0, 1.0);
+    s.fov += (c.min_fov + (c.max_fov - c.min_fov) * t * t - s.fov) * ease(3.0);
+    // Roll into corners and dip under braking (degrees from the game data).
+    let lat_g = (car.lateral_accel / 9.81).clamp(-1.2, 1.2);
+    s.roll += (lat_g * c.max_roll - s.roll) * ease(4.0);
+    let brake_g = (-s.accel / 9.81).clamp(0.0, 1.0);
+    s.pitch += (brake_g * c.max_pitch_change - s.pitch) * ease(5.0);
+
+    // High-speed shake: grows with (speed fraction)^Power.
+    s.shake_t += dt * c.shake_frequency * 9.0;
+    let shake = c.shake_amplitude * 0.012 * t.powf(c.shake_power.max(0.1));
+    pos += frame
+        * Vec3::new((s.shake_t * 1.7).sin() + 0.5 * (s.shake_t * 4.1).sin(), (s.shake_t * 2.3).sin(), 0.0)
+        * shake;
+
+    cam.translation = pos;
+    cam.look_at(target, s.up);
+    cam.rotate_local_x(-s.pitch.to_radians());
+    cam.rotate_local_z(s.roll.to_radians());
+    if let Projection::Perspective(p) = &mut *projection {
+        // Vertical, as Bevy's: read as horizontal, 70° crops the car far
+        // tighter than the original's chase view.
+        p.fov = s.fov.to_radians();
+    }
+}
+
+fn wrap_angle(a: f32) -> f32 {
+    (a + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
 }
 
 /// Once a second: position and speed, for automated runs.
@@ -613,6 +909,10 @@ pub struct DriveTest {
     top_speed: f32,
     plateau: (f32, f32),
     braking_from: Option<(f32, f32)>,
+    /// Corner test: smoothed (lateral accel, body slip), and the best seen as
+    /// (lateral accel, body slip, steering input, speed).
+    corner_smooth: [f32; 2],
+    corner_best: [f32; 4],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -621,7 +921,31 @@ pub enum TestKind {
     Accel,
     /// Accelerate to 100 km/h, then full brakes: stopping distance and time.
     Brake,
+    /// At the corner-test speed: half steering plus a handbrake tap, then hold
+    /// the steering on part throttle. Peak body slip and yaw rate.
+    Handbrake,
+    /// Hold a speed and slowly wind in steering: best lateral g, the input it
+    /// needs, body slip angle.
+    Corner,
+    /// The game's brake-tap drift: at the drift-test speed, steer and tap the
+    /// brake, then hold the steering on part throttle. How long the car stays
+    /// beyond `DRIFT_HELD_DEG` of body slip, the mean angle and the speed lost.
+    Drift,
+    /// A human-like pedal sequence for engine-sound checks (record it with
+    /// `MW_ENGINE_TRACE`): full throttle, lift and coast, throttle taps,
+    /// braking, full throttle again.
+    Engine,
 }
+
+/// Target speed for `--test corner` (km/h) and how long the steering takes to wind in.
+const CORNER_TEST_KMH: f32 = 80.0;
+const CORNER_RAMP_SECS: f32 = 15.0;
+const HANDBRAKE_TAP_SECS: f32 = 0.4;
+const DRIFT_TEST_KMH: f32 = 110.0;
+const DRIFT_TAP_SECS: f32 = 0.3;
+const DRIFT_HOLD_SECS: f32 = 6.0;
+/// Body slip beyond which the drift test counts the car as drifting.
+const DRIFT_HELD_DEG: f32 = 10.0;
 
 impl DriveTest {
     pub fn new(kind: TestKind) -> Self {
@@ -633,6 +957,8 @@ impl DriveTest {
             top_speed: 0.0,
             plateau: (0.0, 0.0),
             braking_from: None,
+            corner_smooth: [0.0; 2],
+            corner_best: [0.0; 4],
         }
     }
 }
@@ -649,7 +975,7 @@ fn run_test(
     // Let the suspension settle before starting.
     let t0 = *test.started.get_or_insert(now + 1.5);
     if now < t0 {
-        input.scripted = Some((0.0, 0.0));
+        input.scripted = Some([0.0; 4]);
         return;
     }
     let t = now - t0;
@@ -672,7 +998,7 @@ fn run_test(
     };
     match test.kind {
         TestKind::Accel => {
-            input.scripted = Some((1.0, 0.0));
+            input.scripted = Some([1.0, 0.0, 0.0, 0.0]);
             let quarter = test.distance >= 402.336;
             mark(&mut test, "0-60mph", v >= 26.822);
             mark(&mut test, "0-100kmh", v >= 27.778);
@@ -693,15 +1019,146 @@ fn run_test(
                 test.plateau = (t, v);
             }
         }
+        TestKind::Corner => {
+            // Hold the speed and wind the steering in slowly (quasi steady
+            // state); report the best lateral acceleration, smoothed over 0.5 s.
+            let target = CORNER_TEST_KMH / 3.6;
+            let throttle = ((target - v) * 0.5).clamp(0.0, 1.0);
+            let brake = ((v - target - 1.0) * 0.5).clamp(0.0, 1.0);
+            if test.braking_from.is_none() && v >= target - 0.5 {
+                test.braking_from = Some((t, 0.0));
+            }
+            let Some((ts, _)) = test.braking_from else {
+                input.scripted = Some([throttle, brake, 0.0, 0.0]);
+                return;
+            };
+            let ramp = ((t - ts) / CORNER_RAMP_SECS).clamp(0.0, 1.0);
+            input.scripted = Some([throttle, brake, ramp, 0.0]);
+            let k = 1.0 - (-time.delta_secs() / 0.5).exp();
+            let [a, slip] = &mut test.corner_smooth;
+            *a += (car.lateral_accel.abs() - *a) * k;
+            *slip += (car.body_slip.abs() - *slip) * k;
+            let (a, slip) = (*a, *slip);
+            if a > test.corner_best[0] {
+                test.corner_best = [a, slip, ramp, v];
+            }
+            if ramp >= 1.0 {
+                let [a, slip, input_at, v_at] = test.corner_best;
+                let g = a / 9.81;
+                info!(
+                    "TEST corner: best {g:.2} g at {:.0} km/h, steering input {input_at:.2}, radius {:.0} m, body slip {:.1}°, roll {:.1}°",
+                    v_at * 3.6,
+                    v_at * v_at / a.max(0.01),
+                    slip.to_degrees(),
+                    car.roll.to_degrees()
+                );
+                test.marks.push((format!("corner={g:.2}g@{input_at:.2}"), t, v));
+                finish(&test, &mut exit);
+            }
+        }
+        TestKind::Handbrake => {
+            let target = CORNER_TEST_KMH / 3.6;
+            if test.braking_from.is_none() && v >= target {
+                test.braking_from = Some((t, 0.0));
+            }
+            let Some((ts, _)) = test.braking_from else {
+                input.scripted = Some([1.0, 0.0, 0.0, 0.0]);
+                return;
+            };
+            let dt = t - ts;
+            let pulled = if dt < HANDBRAKE_TAP_SECS { 1.0 } else { 0.0 };
+            input.scripted = Some([if pulled > 0.0 { 0.0 } else { 0.3 }, 0.0, 0.5, pulled]);
+            let best = &mut test.corner_best;
+            best[0] = best[0].max(car.body_slip.abs());
+            best[1] = best[1].max(car.yaw_rate.abs());
+            if [1.0, 2.0, 3.0, 5.0].iter().any(|&m| dt >= m && dt - time.delta_secs() < m) {
+                info!(
+                    "TEST handbrake +{dt:.0} s: {:.0} km/h, body slip {:.1}°, yaw {:.0}°/s",
+                    v * 3.6,
+                    car.body_slip.to_degrees(),
+                    car.yaw_rate.to_degrees()
+                );
+            }
+            if dt >= 5.0 {
+                let mark = format!("slip={:.1}deg,yaw={:.0}deg/s", best[0].to_degrees(), best[1].to_degrees());
+                test.marks.push((mark, t, v));
+                finish(&test, &mut exit);
+            }
+        }
+        TestKind::Drift => {
+            let target = DRIFT_TEST_KMH / 3.6;
+            if test.braking_from.is_none() && v >= target {
+                test.braking_from = Some((t, v));
+            }
+            let Some((ts, v0)) = test.braking_from else {
+                input.scripted = Some([1.0, 0.0, 0.0, 0.0]);
+                return;
+            };
+            let dt = t - ts;
+            let tap = dt < DRIFT_TAP_SECS;
+            // Steer left throughout; brake during the tap, then part throttle.
+            input.scripted = Some([if tap { 0.0 } else { 0.6 }, if tap { 1.0 } else { 0.0 }, 0.8, 0.0]);
+            let slip = car.body_slip.abs().to_degrees();
+            // corner_best: [peak slip, time beyond the threshold, Σ slip while beyond, yaw peak]
+            let step = time.delta_secs();
+            let best = &mut test.corner_best;
+            best[0] = best[0].max(slip);
+            if slip > DRIFT_HELD_DEG {
+                best[1] += step;
+                best[2] += slip * step;
+            }
+            best[3] = best[3].max(car.yaw_rate.abs().to_degrees());
+            if (dt * 2.0).floor() != ((dt - step) * 2.0).floor() {
+                info!(
+                    "TEST drift +{dt:.1} s: {:.0} km/h, body slip {:.1}°, yaw {:.0}°/s, drifting {}",
+                    v * 3.6,
+                    car.body_slip.to_degrees(),
+                    car.yaw_rate.to_degrees(),
+                    car.drifting
+                );
+            }
+            if dt >= DRIFT_HOLD_SECS || v < 3.0 {
+                let [peak, held, sum, yaw] = test.corner_best;
+                let mean = if held > 0.0 { sum / held } else { 0.0 };
+                info!(
+                    "TEST drift: peak {peak:.1}°, beyond {DRIFT_HELD_DEG}° for {held:.2} s (mean {mean:.1}°), peak yaw {yaw:.0}°/s, {:.0} -> {:.0} km/h",
+                    v0 * 3.6,
+                    v * 3.6
+                );
+                let mark = format!("peak={peak:.1}deg,held={held:.2}s,mean={mean:.1}deg,exit={:.0}kmh", v * 3.6);
+                test.marks.push((mark, t, v));
+                finish(&test, &mut exit);
+            }
+        }
+        TestKind::Engine => {
+            // (until seconds, throttle, brake); taps alternate every 0.3 s.
+            const SCRIPT: [(f32, f32, f32); 7] = [
+                (7.0, 1.0, 0.0),
+                (10.0, 0.0, 0.0),
+                (13.0, -1.0, 0.0),
+                (15.0, 0.4, 0.0),
+                (17.0, 0.0, 0.8),
+                (21.0, 1.0, 0.0),
+                (24.0, 0.0, 0.0),
+            ];
+            let Some(&(_, throttle, brake)) = SCRIPT.iter().find(|s| t < s.0) else {
+                info!("TEST engine: {:.0} km/h, gear {}, {:.0} rpm", v * 3.6, car.gear, car.rpm);
+                test.marks.push(("engine".into(), t, v));
+                finish(&test, &mut exit);
+                return;
+            };
+            let throttle = if throttle < 0.0 { if (t / 0.3) as i32 % 2 == 0 { 1.0 } else { 0.0 } } else { throttle };
+            input.scripted = Some([throttle, brake, 0.0, 0.0]);
+        }
         TestKind::Brake => match test.braking_from {
             None => {
-                input.scripted = Some((1.0, 0.0));
+                input.scripted = Some([1.0, 0.0, 0.0, 0.0]);
                 if v >= 27.778 {
                     test.braking_from = Some((t, test.distance));
                 }
             }
             Some((tb, db)) => {
-                input.scripted = Some((0.0, 1.0));
+                input.scripted = Some([0.0, 1.0, 0.0, 0.0]);
                 if v < 0.3 {
                     let dist = test.distance - db;
                     info!("TEST 100-0 km/h: {:.2} s, {dist:.1} m", t - tb);

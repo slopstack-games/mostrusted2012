@@ -45,8 +45,13 @@ Make a static frame look like the game.
 2. `[x]` **Vehicle assembly**: `VehicleGraphicsSpec` (0x106) gives part models, wheel placement and the skeleton.
    - Done: wheels sit in the arches (right side mirrored), and `--vehicle` accepts a car name. Still open: LOD
      selection by distance, and skinning to the skeleton.
-3. **Remaining world layers** from `ZoneHeader` (0x206): CompoundInstanceList / CompoundObject,
+3. `[x]` **Remaining world layers** from `ZoneHeader` (0x206): CompoundInstanceList / CompoundObject,
    PropInstanceList / PropObject, DynamicInstanceList, LightInstanceList, GroundcoverCollection / Instances.
+   - Done: props, compound objects and dynamic objects are placed (+21068 placements over the map, 0
+     unresolved; `mwtool world` prints counts per layer); lights are parsed (3628) but not rendered.
+     Groundcover is decoded and drawn (1.36 M sprites over the map as merged crossed-quad meshes,
+     `--no-groundcover` to skip). Still open: light rendering, groundcover billboarding/wind/fade, compound
+     sub-parts / LOD slot choice.
    - Done when: street furniture, props and grass appear, and the count of `mwtool world` placements grows
      accordingly.
 4. **Shader families as custom Bevy materials** (WGSL), largest visual payoff first. The game's compiled
@@ -54,7 +59,8 @@ Make a static frame look like the game.
    1. `[x]` TerrainPBR splat (mask + noise overlay weights, three tiling layers): `layered.wgsl` mode 2
    2. `[x]` DriveableSurface base (colour map × world-space detail × 2): mode 1. Still open: lines/decals as
       overlays, wetness, planar reflection
-   3. `[ ]` PlotPBR (terrain-like, plus decal and mask tiling)
+   3. `[x]` PlotPBR (mask-weighted tinted layers + decal): `layered.wgsl` mode 3; road line variants
+      (TEXCOORD2 line texture over the road): mode 4
    4. `[ ]` Lightmaps (identify lightmap UV set and texture source; `PersistentLightmap`); road vertex colour is
       baked light (`colour² × intensity × 0.318`)
    5. `[~]` Vehicle paint: `--paint` colour; untextured parts use `PbrMaterialDiffuseColour`. Still open: the real
@@ -72,10 +78,12 @@ Make a static frame look like the game.
 ### M2: Game data layer `[ ]`
 Unlocks names, tuning and rules. Can run in parallel with M1.
 
-1. `[x]` **GeneSys reader** (`mwtool genesys`; field names by hash, short names verbatim): `GenesysType` (0x14) = schema (fields, types, offsets), `GenesysObject` (0x15) =
+1. `[x]` **GeneSys reader** (`mwtool genesys`; field-name hash cracked 2026-10-04, ~1,200 names recovered,
+   `mwtool genesys-crack` to find more): `GenesysType` (0x14) = schema (fields, types, offsets), `GenesysObject` (0x15) =
    instances. Expose a dynamic object model in a new crate `mw-genesys` and a `mwtool genesys dump`
    command that writes JSON.
-2. **AttribSys** (`AttribSysSchema/Vault`, 0x10/0x11), if still used in places GeneSys isn't.
+2. `[x]` **AttribSys** (`AttribSysSchema/Vault`, 0x10/0x11): not used. The 1.4.0.0 install has no resources of
+   either type; all tuning data is GeneSys.
 3. `[x]` **Language** (0x201): localised strings (UTF-16 table).
 4. `[x]` **VehicleList** (0x105) joined with language: `mwtool vehicles`, 110 entries / 93 with bundles. Still open:
    decode the remaining entry fields (floats look like stats) and join with GeneSys.
@@ -84,16 +92,19 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
 
 ### M3: Drivable prototype `[~]` (north star)
 1. `[x]` **Collision**: `PolygonSoupList` (0x60) per track unit → static avian3d trimesh colliders (built on the
-   loader thread). Still open: surface types via collision tags (DGIorio's exporter documents
+   loader thread; quads split strip-wise since 2026-10-04, which closed the holes). Still open: surface types via collision tags (DGIorio's exporter documents
    `mu16CollisionTag`), and prop/dynamic collision.
 2. `[~]` **Vehicle physics**: driven by the game's handling data (mass, CoM, wheels, springs, torque curve, gears,
-   brakes, top speed); see [handling.md](handling.md). `--test accel|brake` measures it on a flat track. Still
-   open: tyre slip curves, drift/steering tables, and calibration against measurements from the original game.
+   brakes, top speed, the tyres' lateral/longitudinal grip curves, speed-banded steering); see
+   [handling.md](handling.md). `--test accel|brake|corner|handbrake` measures it on a flat track. Still open:
+   the drift assist (`DriftBehaviour` yaw torque / side force), slip factors, aero, and calibration against
+   measurements from the original game.
    Original plan: a raycast-wheel vehicle (suspension, tyre slip curves, drivetrain, gearbox) tuned
    from `VehiclePhysicsSpec` (0x107) and GeneSys physics config (`PHYSICS/PHYSICSCONFIG.BNDL`). The original
    model's code is unavailable, so feel is matched by comparing against the real game, not by porting it.
-3. `[~]` Chase camera, keyboard and gamepad input work. Still open: camera offsets/FOV from `CAMERAS.BNDL`
-   CameraTake data.
+3. `[~]` Chase camera from each car's `VehicleCameraContainer` (eye, look-at, speed FOV, roll, braking pitch,
+   high-speed shake), interpolated between physics ticks; keyboard and gamepad input. Still open: the bonnet and
+   bumper views, impact shake, and the unnamed acceleration/yaw-spring blocks.
 4. `[~]` The world streams nearest-first from the spawn point. Still open: streaming that follows the car (see M4).
 - Done when: you can pick a car from the catalogue, spawn on a road and drive around the city with collision.
   **Basic version reached on 2026-10-03.** Remaining: handling feel, real tuning data, spawn points on roads
@@ -107,11 +118,16 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
 - Target: steady 60 fps at 1080p while driving through downtown on mid-range hardware; startup to first frame
   under 3 s.
 
-### M5: Audio `[ ]`
-1. EA audio: `.SPS` streams and `Ginsu`/`Wave` resources (EA SNR/SPS headers; codecs likely EA-XAS /
-   EALayer3). Use vgmstream as the format reference.
-2. Engine sound: `VehicleSound` (0x207) granular/RPM-driven playback; surface sounds; reverb data.
-3. Music: `UI/SONGS/*.SPS` playlist.
+### M5: Audio `[~]`
+1. `[x]` EA audio decoders (`crates/mw-audio`): Ginsu (EA-XAS v0) and SPS / `Wave` (EALayer3 → MPEG frames →
+   nanomp3). `mwtool audio`, `mwtool engine-sound`.
+2. `[~]` Engine sound: Ginsu granular resynthesis driven by RPM and throttle (on-load / off-load recordings).
+   Recordings per car are known (two sets of rev-up / low sweep / off-load sweep, plus short copies; research
+   log 2026-10-04) and the matched on/off pair is used. Still open: the rev-up pitch steps at grain boundaries
+   under acceleration (fix planned: resample grains, see next-session.md), which set is engine vs exhaust,
+   `EngineSound2` / `VehicleSound` data, mixing layers, surface/tyre/wind sounds, reverb.
+3. `[x]` Music: shuffled `UI/SONGS/*.SPS` playlist. Still open: radio/track names, ducking.
+4. `[ ]` One-shot effects from `Wave` resources (collisions, gear shifts, nitrous), speech.
 
 ### M6: Gameplay `[ ]`
 Roughly in dependency order:
@@ -159,9 +175,15 @@ SNORM ×10 scale).
 
 ## Suggested next sessions
 
-1. Collect reference measurements from the original game (procedure in [handling.md](handling.md)) and
-   calibrate; decode the tyre lateral curves, steering and drift behaviour.
-2. Fix the remaining GeneSys decode failures; crack the field-name hash (short names are verbatim, a clue).
-3. Remaining world layers from ZoneHeader (M1.3): props, compound objects, lights.
+**Start with [next-session.md](next-session.md)** (handoff from 2026-10-04: engine pitch staircase, drift model, groundcover).
+
+0. Engine sound mixing from `EngineSound2` data; collision/skid sound effects from `Wave` resources.
+
+1. Drift assist from `DriftBehaviour` (names mostly recovered: `Maximum_yaw_torque`, `Side_force_multiplier`,
+   `Drift_scale_from_braking`, ...); then collect reference measurements from the original game (procedure in
+   [handling.md](handling.md)) and calibrate.
+2. Name more GeneSys fields with `mwtool genesys-crack` (camera: `VehicleCameraContainer`; paint:
+   `VehiclePaint`); fix the remaining GeneSys decode failures.
+3. World-layer loose ends (M1.3): light rendering, groundcover tint/billboarding/wind, stray tree leaf cards.
 4. Lightmaps / PlotPBR / vertex-colour lighting (M1.4).
 5. Streaming that follows the car (M4).

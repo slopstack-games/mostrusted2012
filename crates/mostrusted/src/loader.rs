@@ -47,6 +47,8 @@ pub struct CarSpec {
     pub wheels: Vec<WheelSpec>,
     /// Handling parameters from the car's GeneSys data.
     pub handling: mw_assets::handling::VehicleHandling,
+    /// Ginsu engine recordings (on load, off load).
+    pub engine: Option<(Arc<mw_audio::ginsu::Ginsu>, Option<Arc<mw_audio::ginsu::Ginsu>>)>,
 }
 
 pub struct Part {
@@ -65,7 +67,7 @@ pub enum Msg {
     },
     /// Static world collision (one per track unit).
     Collider(avian3d::prelude::Collider),
-    Car(CarSpec),
+    Car(Box<CarSpec>),
     Progress(String),
     Done,
 }
@@ -75,6 +77,8 @@ pub enum Msg {
 pub struct WorldFilter {
     /// Skip InstanceList backdrop entries.
     pub no_backdrop: bool,
+    /// Skip groundcover (grass and plant sprites).
+    pub no_groundcover: bool,
     /// Skip these models entirely.
     pub exclude: HashSet<ResourceId>,
     /// Keep backdrop LOD2 stand-ins even though detailed geometry is loaded.
@@ -98,6 +102,7 @@ pub fn spawn(store: Arc<AssetStore>, request: Request, bc_supported: bool, filte
                 failed_textures: HashSet::new(),
                 filter,
                 empty_models: HashSet::new(),
+                groundcover_done: HashSet::new(),
             };
             if let Err(e) = w.run(request) {
                 let _ = w.tx.send(Msg::Progress(format!("loader error: {e:#}")));
@@ -118,6 +123,8 @@ struct Worker {
     filter: WorldFilter,
     /// Models (or stripped variants) with nothing drawable.
     empty_models: HashSet<ResourceId>,
+    /// Groundcover collections already sent (they are shared between track units).
+    groundcover_done: HashSet<ResourceId>,
 }
 
 impl Worker {
@@ -163,7 +170,12 @@ impl Worker {
             .ok_or_else(|| anyhow::anyhow!("{bundle} has no VehicleGraphicsSpec"))?;
         let spec = mw_formats::VehicleGraphicsSpec::parse(&b.load(e)?)?;
         let handling = mw_assets::handling::VehicleHandling::from_bundle(&self.store, &b).unwrap_or_default();
-        let mut car = CarSpec { body: Vec::new(), wheels: Vec::new(), handling };
+        let ginsus = b
+            .entries_of_type(ResourceType::Ginsu)
+            .filter_map(|e| mw_audio::ginsu::Ginsu::parse(b.load(e).ok()?.header()).ok())
+            .collect();
+        let engine = mw_audio::ginsu::pick_engine(ginsus);
+        let mut car = CarSpec { body: Vec::new(), wheels: Vec::new(), handling, engine };
         for &m in spec.parts.iter().flatten() {
             if self.model(m)? {
                 car.body.push(m);
@@ -191,7 +203,7 @@ impl Worker {
                 parts,
             });
         }
-        self.send(Msg::Car(car))?;
+        self.send(Msg::Car(Box::new(car)))?;
         self.store.evict_all();
         Ok(())
     }
@@ -243,6 +255,9 @@ impl Worker {
             self.send(Msg::Progress(format!("streaming {name} ({}/{total})", i + 1)))?;
             if let Some(b) = self.store.bundle(&name) {
                 self.collision(&b)?;
+                if !self.filter.no_groundcover {
+                    self.groundcover(&b)?;
+                }
             }
             for p in placements {
                 if (p.backdrop && self.filter.no_backdrop) || self.filter.exclude.contains(&p.model) {
@@ -260,6 +275,51 @@ impl Worker {
             self.store.evict_all();
         }
         self.send(Msg::Progress(format!("world loaded: {total} track units")))?;
+        Ok(())
+    }
+
+    /// Send the groundcover of every collection in a bundle that has not been sent yet: one merged
+    /// mesh per collection and sprite class, drawn as an ordinary model at the origin.
+    fn groundcover(&mut self, b: &mw_bundle::Bundle) -> anyhow::Result<()> {
+        let ids: Vec<ResourceId> = b
+            .entries_of_type(ResourceType::GroundcoverCollection)
+            .map(|e| e.id)
+            .filter(|id| self.groundcover_done.insert(*id))
+            .collect();
+        for id in ids {
+            let Ok(gc) = self.store.groundcover(id) else { continue };
+            for (m, mat) in gc.materials.iter().enumerate() {
+                let Some(tex) = mat.texture else { continue };
+                let Some(mesh) = groundcover_mesh(&gc.instances, m, &mat.regions) else { continue };
+                // A stand-in scene mesh gives the usual alpha-tested, double-sided look.
+                let sm = mw_assets::SceneMesh {
+                    renderable: id,
+                    mesh_index: m,
+                    material: None,
+                    shader_name: "Groundcover_alphatest_doublesided".into(),
+                    diffuse: Some(tex),
+                    normal_map: None,
+                    textures: Vec::new(),
+                    parameters: Vec::new(),
+                    mesh: mw_formats::DecodedMesh {
+                        positions: Vec::new(),
+                        normals: None,
+                        tangents: None,
+                        binormals: None,
+                        texcoords: Vec::new(),
+                        indices: Vec::new(),
+                    },
+                };
+                let mut look = Look::from_scene_mesh(&sm);
+                for key in look.textures.into_iter().flatten() {
+                    self.texture(key)?;
+                }
+                look.retain_textures(|k| self.textures.contains(k));
+                let key = ResourceId(0x6000_0000_0000_0000 | (m as u64) << 32 | id.0 & 0xFFFF_FFFF);
+                self.send(Msg::Model(key, vec![Part { mesh, look }]))?;
+                self.send(Msg::Instance { model: key, transform: Mat4::IDENTITY })?;
+            }
+        }
         Ok(())
     }
 
@@ -329,6 +389,61 @@ impl Worker {
         }
         Ok(())
     }
+}
+
+/// Build one mesh of crossed, upright quads for the instances of one material. The game expands
+/// them on the GPU as camera-facing sprites; static crossed cards stand in for that.
+fn groundcover_mesh(
+    instances: &[mw_formats::GroundcoverInstance],
+    material: usize,
+    regions: &[[f32; 4]],
+) -> Option<Mesh> {
+    use bevy::asset::RenderAssetUsages;
+    use bevy::mesh::{Indices, PrimitiveTopology};
+    let mine: Vec<_> = instances.iter().filter(|i| i.material == material).collect();
+    if mine.is_empty() {
+        return None;
+    }
+    let quads: usize = mine.iter().map(|i| i.quads as usize).sum();
+    let mut pos = Vec::with_capacity(quads * 4);
+    let mut nor = Vec::with_capacity(quads * 4);
+    let mut uv = Vec::with_capacity(quads * 4);
+    let mut col = Vec::with_capacity(quads * 4);
+    let mut idx = Vec::with_capacity(quads * 6);
+    for inst in mine {
+        let region = regions.get(inst.region as usize).copied().filter(|r| r[2] > 0.0 && r[3] > 0.0);
+        let [ox, oy, sx, sy] = region.unwrap_or([0.0, 0.0, 1.0, 1.0]);
+        // The shader outputs sqrt(2 * tint) and the g-buffer stores sqrt(albedo): albedo = 2 * tint.
+        let tint = inst.tint.map(|t| (t as f32 / 255.0 * 2.0).min(1.0));
+        let colour = [tint[0], tint[1], tint[2], 1.0];
+        let normal = Vec3::from(inst.normal).try_normalize().unwrap_or(Vec3::Y).to_array();
+        // Width follows the sprite's texture region (assumes a square texture).
+        let width = inst.size * sx / sy;
+        for q in 0..inst.quads {
+            let a = inst.yaw + q as f32 * std::f32::consts::PI / inst.quads as f32;
+            let (dx, dz) = (a.cos() * width * 0.5, a.sin() * width * 0.5);
+            let base = pos.len() as u32;
+            let p = inst.position;
+            let top = p[1] + inst.size;
+            pos.extend([
+                [p[0] - dx, p[1], p[2] - dz],
+                [p[0] + dx, p[1], p[2] + dz],
+                [p[0] + dx, top, p[2] + dz],
+                [p[0] - dx, top, p[2] - dz],
+            ]);
+            nor.extend([normal; 4]);
+            uv.extend([[ox, oy + sy], [ox + sx, oy + sy], [ox + sx, oy], [ox, oy]]);
+            col.extend([colour; 4]);
+            idx.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+        }
+    }
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, nor);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, col);
+    mesh.insert_indices(Indices::U32(idx));
+    Some(mesh)
 }
 
 /// Shaders that are not meant to be drawn as plain geometry.
