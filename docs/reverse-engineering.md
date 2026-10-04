@@ -22,8 +22,20 @@ For the parts that are code rather than data (handling model, AI, game rules), t
 2. Use public research (burnout.wiki, the Burnout Paradise and Hot Pursuit modding communities). Criterion's
    engine is shared across these titles.
 3. Any analysis of a decrypted binary is a separate decision for the person doing it, who is responsible for
-   whether that is permitted where they live. Nothing derived from it, including decompiled code, belongs in
-   this repository.
+   whether that is permitted where they live. Decompiled code itself never goes into this repository.
+
+## The user's decompiled dump (2026-10-04)
+
+The user made a memory dump of the running game and decompiled it with Ghidra (`re/NFS13_dump/`, git-ignored:
+pseudo-C, function table, strings). It is used as a reference for behaviour the data cannot show (the handling
+model above all). Rules:
+
+- Never commit the dump, Ghidra databases or any pseudo-C, and never paste decompiled code into source, comments
+  or docs.
+- Record what the code *does* in prose and formulas, in our own words, citing function addresses so it can be
+  re-checked: [decomp.md](decomp.md) collects the findings; implementation details go into
+  [handling.md](handling.md) and the research log.
+- Write our own Rust from those descriptions.
 
 ## Ghidra setup
 

@@ -712,8 +712,11 @@ fn main() -> Result<()> {
                     player.dry = dry;
                     player.bypass = mw_audio::sequence::Bypass::from_env();
                     player.enable_meter();
-                    // The game updates the engine at its physics rate; 64 Hz here.
-                    let tick = rate / 64;
+                    // The game updates the engine at its physics rate; 64 Hz here. `MW_AUDIO_BURST=<samples>`
+                    // mimics the game, where the audio thread renders a device buffer at a time: the values the
+                    // player sees then only change once per buffer.
+                    let burst: usize = std::env::var("MW_AUDIO_BURST").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+                    let tick = if burst > 0 { burst } else { rate / 64 };
                     for i in 0..(rate as f32 * duration) as usize {
                         if i % tick == 0 {
                             let t = i as f32 / rate as f32;

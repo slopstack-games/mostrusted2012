@@ -7,14 +7,16 @@ user's install (IW4L-style). Read these before starting work:
 - [docs/research-log.md](docs/research-log.md): open format questions and dated findings. Add to it whenever
   something new is learned, including dead ends.
 - [docs/formats.md](docs/formats.md): settled format knowledge.
-- [docs/reverse-engineering.md](docs/reverse-engineering.md): why the exe can't be statically analysed.
+- [docs/reverse-engineering.md](docs/reverse-engineering.md): why the exe can't be statically analysed, and the
+  rules for the user's decompiled dump in `re/`.
+- [docs/decomp.md](docs/decomp.md): what the game's code says (handling maths, update loop), from that dump.
 - [docs/handling.md](docs/handling.md): GeneSys handling field mappings, model constants, test results.
 - [docs/next-session.md](docs/next-session.md): handoff from the last session (if present): start there.
 
 ## Hard rules
 
 - **Never commit game data or anything derived from it**: extracted resources, DDS/PNG/OBJ exports,
-  Ghidra databases, decompiled code. Use the session scratchpad or git-ignored dirs (`/extracted`, `/re/out`).
+  Ghidra databases, decompiled code (findings go into docs in prose only). Use the session scratchpad or git-ignored dirs (`/extracted`, `/re/out`).
 - Community references (burnout.wiki, DGIorio's MIT tools) may be read for format knowledge; don't copy code.
 
 ## Layout
@@ -95,6 +97,8 @@ MW_ENGINE_TRACE=<scratch>/rpm.trace ./target/release/mostrusted --drive 911 --te
 ./target/release/mostrusted --drive 911 --units 12 --auto-throttle 0.3 --swap-to "veyron super,aventador@2" --swap-delay 200 --screenshot <scratch>/swap.png
 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,1720 --units 12 --swap-to 911,free,veyron --screenshot <scratch>/spawn.png
 ./target/release/mostrusted --drive 911 --units 12 --show-menu --screenshot <scratch>/menu.png --screenshot-delay 60
+# Volumes: F2 / gamepad Select in game (saved to ~/.config/mostrusted/settings.cfg); per run:
+./target/release/mostrusted --drive 911 --volume master=0.8,engine=1,sfx=0.6,music=30%
 ```
 
 Use `--camera=` with `=` when the first value is negative. Release builds are needed: dependencies are

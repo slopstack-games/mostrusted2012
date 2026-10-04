@@ -93,10 +93,15 @@ mod h {
     pub const LOW_CENTER: u32 = field_hash("Low_speed_center_steer_rate");
     pub const HIGH_CENTER: u32 = field_hash("High_speed_center_steer_rate");
     pub const REVERSE_CENTER: u32 = field_hash("Reverse_center_steer_rate");
+    pub const REVERSE_SPEED: u32 = field_hash("Reverse_speed");
+    pub const MAX_STEERING_ANGLE: u32 = field_hash("Maximum_steering_angle");
+    /// Range on the throttle at `Medium_speed` / `High_speed` (unnamed).
+    pub const THROTTLE_RANGE_MEDIUM: u32 = 0x41d22d15;
+    pub const THROTTLE_RANGE_HIGH: u32 = 0x98820dfe;
     // WheelSuspensionSpringConstraint
     pub const SPRING_DAMPING: u32 = field_hash("Damping_Ratio");
-    pub const SPRING_FREQUENCY: u32 = 0x0c5f89b3;
-    pub const SPRING_TRAVEL: u32 = 0x41543f85;
+    pub const SPRING_DAMPER_RATIO: u32 = 0x0c5f89b3;
+    pub const SPRING_SAG: u32 = 0x41543f85;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -116,9 +121,14 @@ pub struct Gearbox {
     pub final_drive: f32,
     pub upshift_rpm: Vec<f32>,
     pub downshift_rpm: Vec<f32>,
-    /// Downshift points of the cruising gearbox (same ratios, early shifts):
-    /// where the box shifts down off the throttle.
+    /// `Gear_up_speed` (mph): an upshift also needs this speed.
+    pub upshift_mph: Vec<f32>,
+    /// Downshift points of the cruising gearbox (unused by the game's shift logic).
     pub coast_downshift_rpm: Vec<f32>,
+    /// `13bfea5a` / `7b20506a`: the top gear is locked (only a "long gears" option or nitrous unlocks it).
+    pub top_gear_locked: bool,
+    /// The cruising gearbox's `Gear_change_time` (the game's slow kick-down shift).
+    pub cruising_change_time: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -132,17 +142,22 @@ pub struct WheelBody {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Spring {
-    /// Natural frequency in Hz.
-    pub frequency: f32,
+    /// `0c5f89b3`: the second damper slot is this many times the base damper (the game's spring
+    /// constraint; read as rebound).
+    pub damper_ratio: f32,
+    /// `Damping_Ratio`: base damper as a fraction of critical damping for the sprung corner mass.
     pub damping_ratio: f32,
-    /// Suspension travel in metres.
-    pub travel: f32,
+    /// `41543f85`: static sag in metres. The game sets k = static corner load / sag.
+    pub sag: f32,
 }
 
 /// A lateral grip curve: force coefficient against slip angle. It rises from
 /// zero with slope `gradient` (per degree) to `peak` at `peak_angle` degrees
 /// with a flat tangent (a cubic Hermite; on most cars `gradient` is exactly
-/// 3 × peak / angle, the steepest monotonic case), and stays there.
+/// A lateral grip curve: force coefficient against slip angle (degrees). The game's shape (docs/decomp.md,
+/// "Tyres"): with n = `gradient` × `peak_angle` / `peak` and x = |angle| / `peak_angle` (≤ 1),
+/// μ = peak × (1 − (1−x)^n cos²(πx/2) − (1−x)^max(2,n) sin²(πx/2)), so the initial slope is `gradient` and the
+/// curve reaches `peak` at `peak_angle` without overshooting, then stays flat.
 #[derive(Debug, Clone, Copy)]
 pub struct LateralCurve {
     pub gradient: f32,
@@ -154,15 +169,17 @@ impl LateralCurve {
     /// Force coefficient at a slip angle in degrees (sign follows the angle).
     pub fn at(&self, angle_deg: f32) -> f32 {
         let a = self.peak_angle.max(0.1);
-        let t = (angle_deg.abs() / a).min(1.0);
-        let m0 = self.gradient * a;
-        let (t2, t3) = (t * t, t * t * t);
-        let f = (t3 - 2.0 * t2 + t) * m0 + (-2.0 * t3 + 3.0 * t2) * self.peak;
-        f.max(0.0) * angle_deg.signum()
+        let x = (angle_deg.abs() / a).min(1.0);
+        let n = (self.gradient * a / self.peak.max(1e-3)).max(0.1);
+        let (c, s) = ((std::f32::consts::FRAC_PI_2 * x).cos(), (std::f32::consts::FRAC_PI_2 * x).sin());
+        let rest = 1.0 - x;
+        let f = 1.0 - rest.powf(n) * c * c - rest.powf(n.max(2.0)) * s * s;
+        self.peak * f.clamp(0.0, 1.0) * angle_deg.signum()
     }
 }
 
-/// A longitudinal grip curve: `peak` at slip ratio `peak_ratio`, then
+/// A longitudinal grip curve: piecewise linear in the slip ratio from 0 to `peak` at `peak_ratio`, then to
+/// `max_slip` at `max_slip_ratio`, flat beyond.
 /// `max_slip` at `max_slip_ratio` (wheelspin or lock-up) and beyond.
 #[derive(Debug, Clone, Copy)]
 pub struct LongCurve {
@@ -170,6 +187,41 @@ pub struct LongCurve {
     pub peak_ratio: f32,
     pub max_slip: f32,
     pub max_slip_ratio: f32,
+}
+
+impl LongCurve {
+    /// Force coefficient at a slip ratio (sign follows the ratio).
+    pub fn at(&self, ratio: f32) -> f32 {
+        let k = ratio.abs();
+        let p = self.peak_ratio.max(1e-4);
+        let f = if k <= p {
+            self.peak * k / p
+        } else if k < self.max_slip_ratio {
+            let t = (k - p) / (self.max_slip_ratio - p).max(1e-4);
+            self.peak + (self.max_slip - self.peak) * t
+        } else {
+            self.max_slip
+        };
+        f * ratio.signum()
+    }
+}
+
+/// How far a "slip" curve replaces the "pure" one: t = clamp((x − `start`) / (`full` − `start`))^`exponent`,
+/// at most `max`. For the lateral curves x is the slip ratio |κ|; for the longitudinal ones the slip angle in
+/// degrees (`Tyre.Lateral_Slip_Factors` / `Long_Slip_Factors`).
+#[derive(Debug, Clone, Copy)]
+pub struct SlipBlend {
+    pub exponent: f32,
+    pub full: f32,
+    pub max: f32,
+    pub start: f32,
+}
+
+impl SlipBlend {
+    pub fn at(&self, x: f32) -> f32 {
+        let t = ((x - self.start) / (self.full - self.start).max(1e-4)).max(0.0);
+        t.powf(self.exponent.max(0.01)).min(self.max)
+    }
 }
 
 /// One axle's tyres. "Pure" curves apply with no slip in the other direction;
@@ -184,6 +236,14 @@ pub struct TyreAxle {
     pub traction_pure_long: LongCurve,
     pub brake_slip_long: LongCurve,
     pub traction_slip_long: LongCurve,
+    /// Pure → slip blends: lateral by |slip ratio| (braking / driving), longitudinal by slip angle.
+    pub brake_lateral_blend: SlipBlend,
+    pub traction_lateral_blend: SlipBlend,
+    pub brake_long_blend: SlipBlend,
+    pub traction_long_blend: SlipBlend,
+    /// Camber grip loss: grip falls from 1 at `camber[0]` degrees to `camber[2]` at `camber[1]` degrees
+    /// (`e84632d1`, `d699cd4c`, `8dd08eeb`).
+    pub camber: [f32; 3],
     pub lateral_scale: f32,
     pub longitudinal_scale: f32,
 }
@@ -202,6 +262,13 @@ pub struct Steering {
     pub counter_rate: [f32; 3],
     /// Returning to centre with no input.
     pub center_rate: [f32; 3],
+    /// Speed (mph, negative) at which reverse reaches `range[2]`.
+    pub reverse_speed_mph: f32,
+    /// Range on full throttle at `Medium_speed` and `High_speed` (unnamed `41d22d15` / `98820dfe`); the
+    /// low-speed end is `range[0]`.
+    pub throttle_range: [f32; 2],
+    /// Hard cap on the wheel angle (degrees).
+    pub max_angle: f32,
 }
 
 /// Everything the physics model takes from the game. Fields are `None` when
@@ -287,12 +354,12 @@ impl VehicleHandling {
                 "Genesys.Gen.HandlingBehaviour" => out.read_handling(&obj),
                 "Genesys.Gen.VehicleCameraContainer" => out.camera = VehicleCameras::from_container(&obj),
                 "Genesys.Gen.WheelSuspensionSpringConstraint" => {
-                    if let (Some(frequency), Some(damping_ratio), Some(travel)) = (
-                        float(&obj, h::SPRING_FREQUENCY),
+                    if let (Some(damper_ratio), Some(damping_ratio), Some(sag)) = (
+                        float(&obj, h::SPRING_DAMPER_RATIO),
                         float(&obj, h::SPRING_DAMPING),
-                        float(&obj, h::SPRING_TRAVEL),
+                        float(&obj, h::SPRING_SAG),
                     ) {
-                        springs.push((e.id.0 as u32, Spring { frequency, damping_ratio, travel }));
+                        springs.push((e.id.0 as u32, Spring { damper_ratio, damping_ratio, sag }));
                     }
                 }
                 _ => {}
@@ -380,7 +447,12 @@ impl VehicleHandling {
                     final_drive: float(g, h::FINAL_DRIVE).unwrap_or(3.5),
                     upshift_rpm: Vec::new(),
                     downshift_rpm: Vec::new(),
+                    upshift_mph: Vec::new(),
                     coast_downshift_rpm: coast.clone(),
+                    top_gear_locked: [0x13bfea5a, 0x7b20506a]
+                        .iter()
+                        .any(|&f| g.fields.iter().any(|(h, v)| *h == f && matches!(v, Value::Bool(true)))),
+                    cruising_change_time: sub(engine, h::CRUISING_GEARBOX).and_then(|c| float(c, h::GEAR_CHANGE_TIME)),
                 };
                 for gear in items(g, h::GEARS) {
                     let Value::Struct(gear) = gear else { continue };
@@ -391,6 +463,9 @@ impl VehicleHandling {
                     gearbox.ratios.push(ratio);
                     gearbox.upshift_rpm.push(float(gear, h::GEAR_UP_RPM).unwrap_or(0.0));
                     gearbox.downshift_rpm.push(float(gear, h::GEAR_DOWN_RPM).unwrap_or(0.0));
+                    gearbox
+                        .upshift_mph
+                        .push(float(gear, mw_formats::genesys::field_hash("Gear_up_speed")).unwrap_or(0.0));
                 }
                 gearbox
             });
@@ -489,6 +564,25 @@ fn read_tyres(tyres: &Object) -> Option<[TyreAxle; 2]> {
             max_slip_ratio: float(c, h::MAX_SLIP_RATIO)?,
         })
     };
+    let blend = |t: &Object, name: &str, lateral: bool| {
+        let c = sub(t, mw_formats::genesys::field_hash(name));
+        let f = |hash: u32, default: f32| c.and_then(|c| float(c, hash)).unwrap_or(default);
+        if lateral {
+            SlipBlend {
+                exponent: f(0x23a3702c, 1.0),
+                full: f(0xc35e15f1, 0.5),
+                max: f(0x24269da0, 1.0),
+                start: f(0x89f75d1a, 0.0),
+            }
+        } else {
+            SlipBlend {
+                exponent: f(0x1d0b87f6, 1.0),
+                full: f(0xbf1bc91d, 10.0),
+                max: f(0xd9d33254, 1.0),
+                start: f(0xe0e7e515, 0.0),
+            }
+        }
+    };
     let axle = |hash, lat_scale, long_scale| {
         let t = sub(axles, hash)?;
         Some(TyreAxle {
@@ -499,6 +593,15 @@ fn read_tyres(tyres: &Object) -> Option<[TyreAxle; 2]> {
             traction_pure_long: long(t, h::TRACTION_PURE_LONG)?,
             brake_slip_long: long(t, h::BRAKE_SLIP_LONG)?,
             traction_slip_long: long(t, h::TRACTION_SLIP_LONG)?,
+            brake_lateral_blend: blend(t, "Brake_Lateral_Slip_Factors", true),
+            traction_lateral_blend: blend(t, "Traction_Lateral_Slip_Factors", true),
+            brake_long_blend: blend(t, "Brake_Long_Slip_Factors", false),
+            traction_long_blend: blend(t, "Traction_Long_Slip_Factors", false),
+            camber: [
+                float(t, 0xe84632d1).unwrap_or(7.5),
+                float(t, 0xd699cd4c).unwrap_or(75.0),
+                float(t, 0x8dd08eeb).unwrap_or(1.0),
+            ],
             lateral_scale: float(tyres, lat_scale).unwrap_or(1.0),
             longitudinal_scale: float(tyres, long_scale).unwrap_or(1.0),
         })
@@ -518,5 +621,11 @@ fn read_steering(s: &Object) -> Option<Steering> {
         rate: [f(h::LOW_RATE)?, f(h::HIGH_RATE)?, f(h::REVERSE_RATE)?],
         counter_rate: [f(h::LOW_COUNTER)?, f(h::HIGH_COUNTER)?, f(h::REVERSE_COUNTER)?],
         center_rate: [f(h::LOW_CENTER)?, f(h::HIGH_CENTER)?, f(h::REVERSE_CENTER)?],
+        reverse_speed_mph: f(h::REVERSE_SPEED).unwrap_or(-30.0),
+        throttle_range: [
+            f(h::THROTTLE_RANGE_MEDIUM).unwrap_or(f(h::LOW_RANGE)?),
+            f(h::THROTTLE_RANGE_HIGH).unwrap_or(f(h::HIGH_RANGE)?),
+        ],
+        max_angle: f(h::MAX_STEERING_ANGLE).unwrap_or(35.0),
     })
 }

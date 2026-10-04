@@ -510,7 +510,7 @@ fn chase_view(
 
     // Yaw spring: per-60 Hz-tick fractions, low- to high-speed, or the drift spring while drifting.
     let ys = &ext.yaw_spring;
-    let drifting = matches!(car.drift.phase, Phase::Drifting | Phase::Entering);
+    let drifting = car.drift.phase == Phase::Drifting;
     let fraction = if drifting {
         ext.yaw_drift_spring
     } else {
