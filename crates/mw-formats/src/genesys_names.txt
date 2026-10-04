@@ -1283,3 +1283,24 @@ ExposureCompensationBias
 DarkBloomWeight
 DarkBloomWhitePoint
 BearingCentre
+
+# DriftBehaviour (2026-10-04, drift model session): one-word templates (prefix x subject x suffix, ~155k
+# candidates against 44 hashes, so ~1e-3 false hits expected); each also fits its values (docs/handling.md)
+Mid_yaw_torque
+Slip_angle_to_enter_drift
+Minimum_speed_to_enter_drift
+Drift_angle_to_exit_drift
+Drift_angle_for_side_force
+Minimum_drift_angle_for_side_force
+Drift_scale_for_maximum_side_force
+Speed_for_maximum_side_force
+Drift_scale_from_counter_steering
+Low_slip_angle_for_counter_steering
+# HandbrakeAbility (same session; templates, ~20k candidates, plus a structured 5-word search)
+Brake_strength_at_low_speed
+Brake_strength_at_high_speed
+Low_speed_mph
+High_speed_mph
+Minimum_handbrake_time
+Front_wheel_grip_factor
+Rear_wheel_grip_factor

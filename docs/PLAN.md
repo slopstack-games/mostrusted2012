@@ -146,9 +146,13 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    `mu16CollisionTag`), and prop/dynamic collision.
 2. `[~]` **Vehicle physics**: driven by the game's handling data (mass, CoM, wheels, springs, torque curve, gears,
    brakes, top speed, the tyres' lateral/longitudinal grip curves, speed-banded steering); see
-   [handling.md](handling.md). `--test accel|brake|corner|handbrake` measures it on a flat track. Still open:
-   the drift assist (`DriftBehaviour` yaw torque / side force), slip factors, aero, and calibration against
-   measurements from the original game.
+   [handling.md](handling.md). `--test accel|brake|corner|handbrake|drift|donut` measures it on a flat track,
+   tick-exact (identical results between runs since 2026-10-04). `[x]` Drift model (`drift.rs`, 2026-10-04):
+   the `DriftBehaviour` state (entry by slip, brake tap or handbrake; steering-driven yaw torque, damping,
+   side force, automatic counter-steer, exit), speed-banded handbrake strength, donuts. The 911 holds a steady
+   14–30° drift depending on steering and leaves it when the steering is released. Still open: field
+   meanings marked *hyp.* in handling.md, heavy/AWD cars barely drift, slip factors, aero, and calibration
+   against measurements from the original game.
    Original plan: a raycast-wheel vehicle (suspension, tyre slip curves, drivetrain, gearbox) tuned
    from `VehiclePhysicsSpec` (0x107) and GeneSys physics config (`PHYSICS/PHYSICSCONFIG.BNDL`). The original
    model's code is unavailable, so feel is matched by comparing against the real game, not by porting it.
