@@ -142,9 +142,16 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
 3. `[~]` Chase camera from each car's `VehicleCameraContainer` (eye, look-at, speed FOV, roll, braking pitch,
    high-speed shake), interpolated between physics ticks; keyboard and gamepad input. Still open: the bonnet and
    bumper views, impact shake, and the unnamed acceleration/yaw-spring blocks.
-4. `[~]` The world streams nearest-first from the spawn point. Still open: streaming that follows the car (see M4).
+4. `[~]` The world streams nearest-first from the spawn point (or the `--camera` pose). Still open: streaming that
+   follows the car (see M4).
+5. `[x]` **Car menu** (`menu.rs`, `garage.rs`; Tab / F1 / gamepad Start): pick any of the 93 drivable cars and
+   one of its paints mid-session. The loader thread takes runtime `CarRequest`s (between track units, without
+   reloading the world); the new car replaces the driven one in place (position, heading, velocity, a gear to
+   match) or drops onto the ground below the free camera; "free camera" leaves the car. Old cars despawn with
+   their colliders and engine sound; models stay cached (paint variants are separate cache keys), so repeated
+   swaps add no meshes, materials or entities. `--swap-to a,b@paint,free --swap-delay N` tests it headlessly.
 - Done when: you can pick a car from the catalogue, spawn on a road and drive around the city with collision.
-  **Basic version reached on 2026-10-03.** Remaining: handling feel, real tuning data, spawn points on roads
+  **Basic version reached on 2026-10-03; in-game car picking since 2026-10-04 (item 5).** Remaining: handling feel, real tuning data, spawn points on roads
   (from `RoadData` / AI data rather than hand-picked coordinates).
 
 ### M4: Streaming and performance `[ ]`
@@ -175,8 +182,11 @@ Roughly in dependency order:
 5. `HSMData` (0x501): hierarchical state machines that drive game flow. Interpret, or reimplement by hand.
 6. Characters / cutscenes (`CharacterSpec`, `Skeleton`, `Animation`) are low priority.
 
-### M7: Front-end and release `[ ]`
-- Native Bevy UI (fonts from `UI/FONTS` if feasible), menus, car select, settings, save data (our own format).
+### M7: Front-end and release `[~]`
+- `[~]` Native Bevy UI (fonts from `UI/FONTS` if feasible), menus, car select, settings, save data (our own format).
+  Done: an in-game car select (`menu.rs`: catalogue by make / model / year, type-to-search, paint swatches from
+  each car's `VehiclePaint`, keyboard + mouse + gamepad). It uses Bevy's ASCII-only default font, so names are
+  folded to ASCII ("Coupe"). Open: the game's fonts, the game's own front-end layout, settings, save data.
 - Movies: `UI/MOVIES/*.VP6` (EA `MVhd` container, VP6). Decode through ffmpeg or skip.
 - Packaging for Linux and Windows; CI with build + lint + game-less tests.
 

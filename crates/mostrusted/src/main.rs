@@ -7,8 +7,10 @@ mod audio;
 mod convert;
 mod deferred;
 mod drive;
+mod garage;
 mod loader;
 mod materials;
+mod menu;
 mod sky;
 
 use std::collections::HashMap;
@@ -96,6 +98,17 @@ struct Cli {
     /// Hour of the day (0–23) on the environment timeline.
     #[arg(long, default_value_t = 13)]
     hour: u32,
+    /// Test the car menu's swap headlessly: after loading, swap to these cars in turn (comma
+    /// separated names or IDs, `name@paint` picks a paint index, `free` leaves the car for the free
+    /// camera). `--screenshot` captures after the last swap.
+    #[arg(long, value_delimiter = ',')]
+    swap_to: Vec<String>,
+    /// Frames to wait before each `--swap-to` step (after loading, and after each car is placed).
+    #[arg(long, default_value_t = 120)]
+    swap_delay: u32,
+    /// Open the car menu at startup (also in `--screenshot` runs, to capture it).
+    #[arg(long)]
+    show_menu: bool,
 }
 
 #[derive(Resource)]
@@ -169,7 +182,8 @@ fn main() -> anyhow::Result<()> {
     } else if let Some(q) = &cli.vehicle {
         Request::Vehicle { bundle: resolve(q)? }
     } else {
-        Request::World { max_units: cli.units, focus: None }
+        // Stream nearest-first from the `--camera` pose, so `--units` loads what it sees.
+        Request::World { max_units: cli.units, focus: camera.map(|c| c.translation) }
     };
 
     let test = match cli.test.as_deref() {
@@ -185,6 +199,29 @@ fn main() -> anyhow::Result<()> {
     if test.is_some() && cli.drive.is_none() {
         anyhow::bail!("--test needs --drive <car>");
     }
+    let script = if cli.swap_to.is_empty() {
+        None
+    } else {
+        let mut steps = Vec::new();
+        for q in &cli.swap_to {
+            if q.eq_ignore_ascii_case("free") {
+                steps.push(garage::ScriptStep::FreeCamera);
+                continue;
+            }
+            let (q, paint_index) = match q.rsplit_once('@') {
+                Some((q, p)) => (q, p.parse().map_err(|_| anyhow::anyhow!("bad paint index in {q:?}@{p}"))?),
+                None => (q.as_str(), 0),
+            };
+            let v = store
+                .find_vehicle(q)?
+                .ok_or_else(|| anyhow::anyhow!("no car matches {q:?} (see `mwtool vehicles`)"))?;
+            let bundle = v.hi_bundle.expect("find_vehicle only returns cars with bundles");
+            steps.push(garage::ScriptStep::Drive { name: garage::ascii_fold(&v.name), bundle, paint_index });
+        }
+        Some(garage::SwapScript::new(steps, cli.swap_delay))
+    };
+    // The menu is for interactive sessions in the world (or on the test track).
+    let menu_enabled = cli.screenshot.is_none() && test.is_none() && !matches!(request, Request::Vehicle { .. });
     let test_track = matches!(request, Request::Drive { world: false, .. });
     let filter = loader::WorldFilter {
         no_backdrop: cli.no_backdrop,
@@ -221,6 +258,7 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(deferred::GameLightingPlugin)
         .init_resource::<GameEnvironment>()
         .add_plugins((avian3d::PhysicsPlugins::default(), drive::DrivePlugin))
+        .add_plugins((garage::GaragePlugin { script }, menu::MenuPlugin { enabled: menu_enabled, open: cli.show_menu }))
         .add_plugins(audio::GameAudioPlugin {
             music: !cli.no_music && !cli.mute && cli.screenshot.is_none() && test.is_none(),
         })
@@ -340,7 +378,9 @@ fn start_loader(
     let Some(support) = support else { return };
     let bc = support.0.contains(CompressedImageFormats::BC);
     loaded.started = Some(Instant::now());
-    commands.insert_resource(loader::spawn(game.store.clone(), game.request.clone(), bc, game.filter.clone()));
+    let (channel, requests) = loader::spawn(game.store.clone(), game.request.clone(), bc, game.filter.clone());
+    commands.insert_resource(channel);
+    commands.insert_resource(requests);
 }
 
 /// Turn loader messages into assets and entities, within a per-frame budget.
@@ -355,6 +395,7 @@ fn receive_assets(
     mut camera: Query<&mut Transform, With<Camera3d>>,
     game: Res<Game>,
     env: Res<GameEnvironment>,
+    mut garage: ResMut<garage::Garage>,
 ) {
     let Some(channel) = channel else { return };
     let rx = channel.0.lock().unwrap();
@@ -410,18 +451,10 @@ fn receive_assets(
                     .chain(spec.wheels.iter().flat_map(|w| w.parts.iter().map(|(m, _)| m)))
                     .filter_map(|m| Some((*m, loaded.models.get(m)?.clone())))
                     .collect();
-                let Request::Drive { spawn, heading, .. } = game.request else { continue };
-                if !game.mute
-                    && let Some((layers, master_gain)) = spec.engine.clone()
-                {
-                    commands.insert_resource(audio::PendingEngine(Some(audio::EngineAudio {
-                        layers,
-                        master_gain,
-                        params: Default::default(),
-                    })));
-                }
-                commands.insert_resource(drive::PendingCar { spec: *spec, spawn, heading, parts });
+                // Placed by the garage: at `--spawn` at startup, later in place of the current car.
+                garage.arrived(spec, parts);
             }
+            Msg::CarFailed(e) => garage.failed(e),
             Msg::Progress(s) => {
                 info!("{s}");
                 loaded.status = s;
@@ -451,6 +484,7 @@ fn update_status(
         ),
         Err(_) => "WASD/QE move, right mouse look, shift run, scroll speed".to_string(),
     };
+    let controls = format!("{controls}\nTab / F1 / gamepad Start: car menu");
     text.0 = format!(
         "Most Rusted - {}\n{} models, {} textures, {} instances{}\ncamera {:.0} {:.0} {:.0}\n{controls}",
         loaded.status,
@@ -470,11 +504,13 @@ fn auto_screenshot(
     mut commands: Commands,
     game: Res<Game>,
     loaded: Res<Loaded>,
+    script: Option<Res<garage::SwapScript>>,
     mut frames_after_done: Local<u32>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Some(path) = &game.screenshot else { return };
-    if !loaded.done {
+    // With `--swap-to`, capture after the last swap.
+    if !loaded.done || script.is_some_and(|s| !s.finished()) {
         return;
     }
     *frames_after_done += 1;
