@@ -159,6 +159,16 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    match) or drops onto the ground below the free camera; "free camera" leaves the car. Old cars despawn with
    their colliders and engine sound; models stay cached (paint variants are separate cache keys), so repeated
    swaps add no meshes, materials or entities. `--swap-to a,b@paint,free --swap-delay N` tests it headlessly.
+6. `[~]` **Crash damage** (2026-10-04): car bodies are skinned to their damage `Skeleton` and posed from the
+   per-zone damage clips of the `VehicleDamageBehaviour`'s `AnimationList` (formats.md "Vehicle damage",
+   `crates/mostrusted/src/damage.rs`). Body-collider impacts → `ImpactDamageGraphs` → zone levels → clip
+   frames: bonnets buckle, bumpers / plates / lights / mirrors break off; R repairs. `mwtool damage <car>
+   [--level front=0.5 --preview out.png]` inspects and previews it, `mostrusted --drive 911 --test crash
+   [--crash-angle 35] [--crash-distance 250] --screenshot <scratch>/crash.png` drives into a wall and saves
+   before / after shots. Still open: the game's impact → damage rules (curve choice, units, zone split,
+   landing damage), the crumple normal map (damage volume grid in the vehicle shaders), hinged body parts
+   swinging and detaching as physics debris (`Bodypart`), `WheelDamage` alignment, damage sounds / sparks
+   (`DamageSequence`), handling effects, car-vs-car (the detection is generic; needs a second car).
 - Done when: you can pick a car from the catalogue, spawn on a road and drive around the city with collision.
   **Basic version reached on 2026-10-03; in-game car picking since 2026-10-04 (item 5).** Remaining: handling feel, real tuning data, spawn points on roads
   (from `RoadData` / AI data rather than hand-picked coordinates).
@@ -187,7 +197,8 @@ Roughly in dependency order:
 1. Traffic: `TrafficLaneData` (0x701), `TrafficGraphicsStub`, traffic vehicle attribs.
 2. Road network and AI paths: `RoadData`, `RoadMapData`, `AIData`, `NavigationMesh`.
 3. Triggers and events: `TriggerData`, `GAMELOGIC/GAMEMODES.BNDL`, `GAMEPLAY.BNDL`, Jack spots, Most Wanted list.
-4. Cops / pursuit, damage (`DeformationModel`-equivalent data in vehicle bundles), takedowns.
+4. Cops / pursuit, takedowns, wrecks (deformation itself landed under M3.5: there is no `DeformationModel`;
+   damage is skeletal animation).
 5. `HSMData` (0x501): hierarchical state machines that drive game flow. Interpret, or reimplement by hand.
 6. Characters / cutscenes (`CharacterSpec`, `Skeleton`, `Animation`) are low priority.
 

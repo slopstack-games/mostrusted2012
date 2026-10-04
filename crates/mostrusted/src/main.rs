@@ -5,6 +5,7 @@
 
 mod audio;
 mod convert;
+mod damage;
 mod deferred;
 mod drive;
 mod garage;
@@ -51,9 +52,16 @@ struct Cli {
     /// Drive on an empty flat test track instead of the city (with --drive).
     #[arg(long)]
     test_track: bool,
-    /// Run a scripted handling test and exit: accel, brake, corner, handbrake, drift or engine (implies --test-track).
+    /// Run a scripted test and exit: accel, brake, corner, handbrake, drift, engine, or crash (drive into a
+    /// wall; with --screenshot, saves `<name>-before` / `<name>-after` images). Implies --test-track.
     #[arg(long)]
     test: Option<String>,
+    /// Crash test: wall angle in degrees (0 = head-on, 30 = the front-left corner hits first).
+    #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
+    crash_angle: f32,
+    /// Crash test: distance to the wall in metres (sets the impact speed).
+    #[arg(long, default_value_t = 80.0)]
+    crash_distance: f32,
     /// Hold the throttle at this value (0–1), for automated driving tests.
     #[arg(long)]
     auto_throttle: Option<f32>,
@@ -191,17 +199,18 @@ fn main() -> anyhow::Result<()> {
         Request::World { max_units: cli.units, focus: camera.map(|c| c.translation) }
     };
 
+    let crash = cli.test.as_deref() == Some("crash");
     let test = match cli.test.as_deref() {
-        None => None,
+        None | Some("crash") => None,
         Some("accel") => Some(drive::TestKind::Accel),
         Some("brake") => Some(drive::TestKind::Brake),
         Some("corner") => Some(drive::TestKind::Corner),
         Some("handbrake") => Some(drive::TestKind::Handbrake),
         Some("drift") => Some(drive::TestKind::Drift),
         Some("engine") => Some(drive::TestKind::Engine),
-        Some(other) => anyhow::bail!("unknown --test {other} (accel, brake, corner, handbrake, drift, engine)"),
+        Some(other) => anyhow::bail!("unknown --test {other} (accel, brake, corner, handbrake, drift, engine, crash)"),
     };
-    if test.is_some() && cli.drive.is_none() {
+    if cli.test.is_some() && cli.drive.is_none() {
         anyhow::bail!("--test needs --drive <car>");
     }
     let script = if cli.swap_to.is_empty() {
@@ -255,6 +264,13 @@ fn main() -> anyhow::Result<()> {
     if test_track {
         app.add_systems(Startup, spawn_test_track);
     }
+    // The crash test takes its own before / after screenshots.
+    let screenshot = if crash {
+        app.insert_resource(damage::CrashTest::new(cli.screenshot.clone(), cli.crash_angle, cli.crash_distance));
+        None
+    } else {
+        cli.screenshot
+    };
     if cli.gamepad_debug {
         app.add_systems(Update, drive::log_gamepad_events);
     }
@@ -264,22 +280,22 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(tonemap::GameTonemapPlugin)
         .init_resource::<GameEnvironment>()
         .insert_resource(materials::VehicleLights::from_slice(&cli.lights))
-        .add_plugins((avian3d::PhysicsPlugins::default(), drive::DrivePlugin))
+        .add_plugins((avian3d::PhysicsPlugins::default(), drive::DrivePlugin, damage::DamagePlugin))
         .add_plugins((garage::GaragePlugin { script }, menu::MenuPlugin { enabled: menu_enabled, open: cli.show_menu }))
         .add_plugins(audio::GameAudioPlugin {
-            music: !cli.no_music && !cli.mute && cli.screenshot.is_none() && test.is_none(),
+            music: !cli.no_music && !cli.mute && screenshot.is_none() && test.is_none() && !crash,
         })
         .insert_resource(drive::CarInput { auto_throttle: cli.auto_throttle, ..default() })
         .insert_resource(Game {
             store,
             request,
             camera,
-            screenshot: cli.screenshot,
+            screenshot,
             screenshot_delay: cli.screenshot_delay,
             hour: cli.hour.min(23),
             paint,
             filter,
-            mute: cli.mute || test.is_some(),
+            mute: cli.mute || test.is_some() || crash,
         })
         .insert_resource(ClearColor(Color::srgb(0.55, 0.68, 0.85)))
         .init_resource::<Loaded>()

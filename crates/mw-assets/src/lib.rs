@@ -8,6 +8,7 @@
 //! demand.
 
 mod catalog;
+pub mod damage;
 pub mod engine_sound;
 pub mod environment;
 pub mod handling;

@@ -6,6 +6,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
 mod crack;
+mod damage;
 #[cfg(target_os = "linux")]
 mod memscan;
 mod preview;
@@ -146,6 +147,20 @@ enum Cmd {
     Shaders,
     /// List the cars from the vehicle list with names and bundles.
     Vehicles,
+    /// Show a car's damage data (skeleton, per-zone deformation clips, hinged parts), check its
+    /// skinning, and optionally render a damaged pose (`--level front=0.5 --preview out.png`).
+    /// `damage all` surveys every car.
+    Damage {
+        /// Car name, vehicle ID, bundle path, or `all`.
+        car: String,
+        /// Damage per zone as `zone=level` (zone name such as `front` / `rear-left`, or clip index;
+        /// `all=level` sets every zone), level 0..1.
+        #[arg(long)]
+        level: Vec<String>,
+        /// Write a software-rendered preview of the posed body.
+        #[arg(long)]
+        preview: Option<PathBuf>,
+    },
     /// Show the handling data extracted from a car's GeneSys objects.
     Handling {
         /// Car name, vehicle ID or bundle path.
@@ -268,6 +283,10 @@ fn main() -> Result<()> {
                     _ => {}
                 }
             }
+        }
+        Cmd::Damage { car, level, preview } => {
+            let store = AssetStore::new(game)?;
+            damage::run(&store, &damage::Options { car: &car, levels: &level, preview: preview.as_deref() })?
         }
         Cmd::Handling { car } => {
             let store = AssetStore::new(game)?;

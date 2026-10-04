@@ -4,6 +4,7 @@
 //! resource are offsets into its chunk 0; pointers to other resources are
 //! resolved through the resource's import table.
 
+mod animation;
 mod collision;
 mod colour_cube;
 mod decode;
@@ -18,6 +19,7 @@ mod vehicle;
 mod vertex;
 mod world;
 
+pub use animation::{Animation, AnimationList, Bone, BoneKey, Skeleton, decode_quat32};
 pub use collision::{PolygonSoup, PolygonSoupList, SOUP_GRANULARITY, SOUP_OFFSET_UNIT, SoupPolygon};
 pub use colour_cube::ColourCube;
 pub use dxgi::{DxgiFormat, f16_to_f32};

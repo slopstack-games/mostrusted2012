@@ -189,6 +189,15 @@ impl Renderable {
             normals = Some(n);
             tangents = Some(t);
         }
+        // Skinning: BLENDINDICES are bone indices; the vehicle vertex shaders ignore BLENDWEIGHT.x and use
+        // 1 - (y + z + w) for the first bone instead.
+        let joints = layout
+            .read_attribute(Semantic::BlendIndices, vb)
+            .map(|v| v.iter().map(|j| j.map(|c| c.clamp(0.0, 255.0) as u16)).collect::<Vec<_>>());
+        let weights = joints
+            .as_ref()
+            .and(layout.read_attribute(Semantic::BlendWeight, vb))
+            .map(|v| v.iter().map(|w| [(1.0 - w[1] - w[2] - w[3]).max(0.0), w[1], w[2], w[3]]).collect::<Vec<_>>());
         let n = positions.len() as u32;
         // Drop triangles that reference vertices outside the buffer.
         let indices: Vec<u32> = self
@@ -200,7 +209,7 @@ impl Renderable {
             .flatten()
             .copied()
             .collect();
-        Ok(DecodedMesh { positions, normals, tangents, binormals, colors, texcoords, indices })
+        Ok(DecodedMesh { positions, normals, tangents, binormals, colors, texcoords, indices, joints, weights })
     }
 }
 
@@ -221,7 +230,7 @@ pub fn tangent_frame(q: [f32; 4]) -> ([f32; 4], [f32; 4]) {
     ([n[0] * sign, n[1] * sign, n[2] * sign, 0.0], [t[0], t[1], t[2], sign])
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct DecodedMesh {
     pub positions: Vec<[f32; 4]>,
     pub normals: Option<Vec<[f32; 4]>>,
@@ -234,6 +243,10 @@ pub struct DecodedMesh {
     /// `TEXCOORD0..7` (HLSL numbering; the game's semantic 5 is TEXCOORD0).
     pub texcoords: Vec<Option<Vec<[f32; 4]>>>,
     pub indices: Vec<u32>,
+    /// `BLENDINDICES`: skeleton bone indices (vehicle bodies and glass).
+    pub joints: Option<Vec<[u16; 4]>>,
+    /// Bone weights for `joints`, summing to 1 (the first one rebuilt the way the vertex shaders do).
+    pub weights: Option<Vec<[f32; 4]>>,
 }
 
 impl DecodedMesh {

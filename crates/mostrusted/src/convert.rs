@@ -64,6 +64,31 @@ pub fn mesh(m: &mw_formats::DecodedMesh, uv_b: Option<u8>, colour: bool) -> Opti
     Some(mesh)
 }
 
+/// Add the game's bone indices and weights as Bevy joint attributes (for `damage.rs`, which skins car
+/// bodies to their damage skeleton). Weights on bones outside the skeleton are dropped. Only for meshes
+/// that will get a `SkinnedMesh`: Bevy skins any mesh with these attributes.
+pub fn add_skin(mesh: &mut Mesh, m: &mw_formats::DecodedMesh, bones: usize) {
+    let (Some(joints), Some(weights)) = (&m.joints, &m.weights) else { return };
+    let mut j_out = Vec::with_capacity(joints.len());
+    let mut w_out = Vec::with_capacity(weights.len());
+    for (j, w) in joints.iter().zip(weights) {
+        let mut j = *j;
+        let mut w = *w;
+        for k in 0..4 {
+            if j[k] as usize >= bones {
+                (j[k], w[k]) = (0, 0.0);
+            }
+        }
+        let sum: f32 = w.iter().sum();
+        // A vertex left without weight follows the root.
+        let w = if sum > 1e-4 { w.map(|v| v / sum) } else { [1.0, 0.0, 0.0, 0.0] };
+        j_out.push(j);
+        w_out.push(w);
+    }
+    mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_INDEX, bevy::mesh::VertexAttributeValues::Uint16x4(j_out));
+    mesh.insert_attribute(Mesh::ATTRIBUTE_JOINT_WEIGHT, w_out);
+}
+
 /// Build a GPU image. Block-compressed textures are uploaded as-is when the
 /// device supports BC formats; everything else is decoded to RGBA8.
 pub fn image(tex: &Texture, srgb: bool, bc_supported: bool) -> Option<Image> {

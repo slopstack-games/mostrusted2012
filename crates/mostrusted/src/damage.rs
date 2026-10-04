@@ -1,0 +1,357 @@
+//! Crash damage: the car body deforms the way the original's does.
+//!
+//! The game skins every car body to a small skeleton and poses it from per-zone damage clips (front,
+//! rear, sides, corners; frames = damage level), see `mw_assets::damage`. Here the body meshes become
+//! Bevy skinned meshes with one joint entity per bone, impacts on the body collider raise the damage
+//! level of the zones facing the contact point, and the joints are re-posed from the clips.
+//!
+//! Impact strength: the approach speed along the contact normal (avian's pre-solve `normal_speed`)
+//! through the game's `ImpactDamageGraphs` curve. Which curve and units the game uses for which kind
+//! of impact is not known yet (research log, "vehicle damage").
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use avian3d::prelude::*;
+use bevy::mesh::skinning::{SkinnedMesh, SkinnedMeshInverseBindposes};
+use bevy::prelude::*;
+use bevy::render::view::screenshot::{Screenshot, save_to_disk};
+use mw_assets::damage::{ImpactGraph, Similarity, VehicleDamage};
+
+use crate::drive::{Car, CarInput, PendingCar};
+
+pub struct DamagePlugin;
+
+impl Plugin for DamagePlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<NextCarDamage>()
+            .add_observer(attach_damage)
+            .add_systems(Update, (remember_pending_damage, repair_on_reset, pose_joints).chain())
+            .add_systems(FixedPostUpdate, detect_impacts.after(PhysicsSystems::StepSimulation));
+        if app.world().contains_resource::<CrashTest>() {
+            app.add_systems(Startup, spawn_crash_wall)
+                .add_systems(Update, run_crash_test)
+                .add_systems(PostUpdate, crash_camera.before(TransformSystems::Propagate));
+        }
+    }
+}
+
+/// Damage data of the car about to spawn (taken from `PendingCar`, which is removed on spawn).
+#[derive(Resource, Default)]
+struct NextCarDamage(Option<(Arc<VehicleDamage>, ImpactGraph)>);
+
+/// Damage state of a car.
+#[derive(Component)]
+pub struct CarDamage {
+    model: Arc<VehicleDamage>,
+    graph: ImpactGraph,
+    /// Damage level (0..1) per zone clip.
+    pub levels: Vec<f32>,
+    joints: Vec<Entity>,
+    collider: Entity,
+    dirty: bool,
+    /// Largest impact so far: (approach speed m/s, car-space point).
+    pub worst_impact: Option<(f32, Vec3)>,
+    /// Current impact event: peak approach speed so far and seconds since the last approaching contact.
+    event_peak: f32,
+    event_quiet: f32,
+}
+
+/// Contacts closer together than this belong to one impact (a crash into a wall touches several
+/// triangles over a few steps, and scraping along it keeps making new contacts).
+const IMPACT_GAP: f32 = 0.3;
+
+impl CarDamage {
+    pub fn zone_levels(&self) -> impl Iterator<Item = (&'static str, f32)> + '_ {
+        self.model.clips.iter().zip(&self.levels).map(|(c, l)| (c.zone.name, *l))
+    }
+}
+
+fn remember_pending_damage(pending: Option<Res<PendingCar>>, mut next: ResMut<NextCarDamage>) {
+    if let Some(p) = pending
+        && p.is_added()
+    {
+        next.0 = p.spec.damage.clone().map(|d| (d, p.spec.impact_graph));
+    }
+}
+
+fn similarity_transform(s: &Similarity) -> Transform {
+    let [x, y, z, w] = s.rotation;
+    Transform {
+        translation: Vec3::from(s.translation),
+        rotation: Quat::from_xyzw(x, y, z, w),
+        scale: Vec3::splat(s.scale),
+    }
+}
+
+/// When a car spawns: one joint entity per bone (children of the car, in car space = model space), and
+/// a `SkinnedMesh` on each body mesh (the car's direct children with a mesh; wheels hang below pivots).
+/// Runs as an observer so the meshes are never drawn with joint attributes but without a skin.
+fn attach_damage(
+    add: On<Add, Car>,
+    mut commands: Commands,
+    mut next: ResMut<NextCarDamage>,
+    children: Query<&Children>,
+    meshes: Query<(), With<Mesh3d>>,
+    colliders: Query<(), With<Collider>>,
+    mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
+) {
+    let car = add.entity;
+    let Some((model, graph)) = next.0.take() else { return };
+    let kids: Vec<Entity> = children.get(car).map(|c| c.iter().collect()).unwrap_or_default();
+    let Some(collider) = kids.iter().copied().find(|&e| colliders.contains(e)) else { return };
+    let joints: Vec<Entity> = model
+        .bind
+        .iter()
+        .enumerate()
+        .map(|(i, b)| {
+            commands.spawn((Name::new(format!("damage bone {i}")), similarity_transform(b), ChildOf(car))).id()
+        })
+        .collect();
+    let inverse: Vec<Mat4> = model.bind.iter().map(|b| similarity_transform(b).to_matrix().inverse()).collect();
+    let inverse_bindposes = bindposes.add(SkinnedMeshInverseBindposes::from(inverse));
+    for &e in kids.iter().filter(|&&e| meshes.contains(e)) {
+        commands.entity(e).insert(SkinnedMesh { inverse_bindposes: inverse_bindposes.clone(), joints: joints.clone() });
+    }
+    let levels = vec![0.0; model.clips.len()];
+    info!("damage model: {} bones, {} zone clips", model.bind.len(), model.clips.len());
+    commands.entity(car).insert(CarDamage {
+        model,
+        graph,
+        levels,
+        joints,
+        collider,
+        dirty: false,
+        worst_impact: None,
+        event_peak: 0.0,
+        event_quiet: f32::MAX,
+    });
+}
+
+/// Turn contact impacts on the body collider into zone damage.
+fn detect_impacts(time: Res<Time>, collisions: Collisions, mut cars: Query<(&mut CarDamage, &Position, &Rotation)>) {
+    for (mut dmg, pos, rot) in &mut cars {
+        dmg.event_quiet += time.delta_secs();
+        // Approaching contact points this step. A box face against a wall gives a point per corner, so
+        // the impact point is their centroid (weighted by approach speed) and the speed the fastest.
+        // Contacts with near-vertical normals are the body landing on the ground; the game has separate
+        // landing damage rules (`Physics.LandingDamage`, not decoded), so they don't count here.
+        let points: Vec<(f32, Vec3)> = collisions
+            .collisions_with(dmg.collider)
+            .flat_map(|pair| pair.manifolds.iter())
+            .filter(|m| m.normal.y.abs() < 0.7)
+            .flat_map(|m| m.points.iter())
+            .map(|p| (-p.normal_speed, p.point))
+            .filter(|(s, _)| *s > 0.0)
+            .collect();
+        let speed = points.iter().map(|p| p.0).fold(0.0, f32::max);
+        if speed <= 0.0 {
+            continue;
+        }
+        let strong = points.iter().filter(|p| p.0 >= 0.5 * speed);
+        let weight: f32 = strong.clone().map(|p| p.0).sum();
+        let point = strong.fold(Vec3::ZERO, |acc, p| acc + p.1 * p.0) / weight;
+        // One impact event deals the damage of its fastest contact, not the sum of all its contacts.
+        if dmg.event_quiet > IMPACT_GAP {
+            dmg.event_peak = 0.0;
+        }
+        dmg.event_quiet = 0.0;
+        let amount = dmg.graph.damage(speed) - dmg.graph.damage(dmg.event_peak);
+        dmg.event_peak = dmg.event_peak.max(speed);
+        if amount < 0.005 {
+            continue;
+        }
+        let local = rot.0.inverse() * (point - pos.0);
+        let weights = dmg.model.zone_weights(local.to_array());
+        let mut changed = false;
+        for (level, w) in dmg.levels.iter_mut().zip(weights) {
+            let new = (*level + amount * w).min(1.0);
+            changed |= new != *level;
+            *level = new;
+        }
+        if dmg.worst_impact.is_none_or(|(s, _)| speed > s) {
+            dmg.worst_impact = Some((speed, local));
+        }
+        dmg.dirty |= changed;
+        info!(
+            "impact {:.1} km/h at car ({:.2} {:.2} {:.2}) -> +{:.0}% damage; zones {:?}",
+            speed * 3.6,
+            local.x,
+            local.y,
+            local.z,
+            amount * 100.0,
+            dmg.zone_levels()
+                .filter(|(_, l)| *l > 0.0)
+                .map(|(n, l)| format!("{n} {:.0}%", l * 100.0))
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+/// The reset key (R, which also puts the car back on its spawn point) repairs the car.
+fn repair_on_reset(keys: Res<ButtonInput<KeyCode>>, mut cars: Query<&mut CarDamage>) {
+    if !keys.just_pressed(KeyCode::KeyR) {
+        return;
+    }
+    for mut dmg in &mut cars {
+        dmg.levels.iter_mut().for_each(|l| *l = 0.0);
+        dmg.worst_impact = None;
+        dmg.dirty = true;
+    }
+}
+
+/// Re-pose the skeleton after damage changed.
+fn pose_joints(mut cars: Query<&mut CarDamage>, mut transforms: Query<&mut Transform>) {
+    for mut dmg in &mut cars {
+        if !dmg.dirty {
+            continue;
+        }
+        dmg.dirty = false;
+        let pose = dmg.model.pose(&dmg.levels);
+        for (joint, bone) in dmg.joints.iter().zip(&pose) {
+            if let Ok(mut t) = transforms.get_mut(*joint) {
+                *t = similarity_transform(bone);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// `--test crash`: drive into a wall on the test track, screenshot before and after.
+
+#[derive(Resource)]
+pub struct CrashTest {
+    /// Screenshot path; `-before` / `-after` are appended to the file stem.
+    out: Option<PathBuf>,
+    /// Wall yaw (degrees): 0 = square to the car, positive turns the wall so the car's left front
+    /// corner hits first.
+    angle: f32,
+    /// Distance from the spawn point to the wall face (m): sets the impact speed.
+    distance: f32,
+    phase: Phase,
+    timer: f32,
+    top_speed: f32,
+}
+
+impl CrashTest {
+    pub fn new(out: Option<PathBuf>, angle: f32, distance: f32) -> Self {
+        Self { out, angle, distance, phase: Phase::Settle, timer: 0.0, top_speed: 0.0 }
+    }
+
+    fn path(&self, suffix: &str) -> Option<PathBuf> {
+        let out = self.out.as_ref()?;
+        let stem = out.file_stem()?.to_string_lossy();
+        let ext = out.extension().map_or("png".into(), |e| e.to_string_lossy());
+        Some(out.with_file_name(format!("{stem}-{suffix}.{ext}")))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Phase {
+    /// Car spawned; let it settle and the environment prefilter finish, then shoot "before".
+    Settle,
+    Drive,
+    /// Hit something: brake and wait for the car to come to rest.
+    Crashed,
+    Done,
+}
+
+fn spawn_crash_wall(
+    mut commands: Commands,
+    test: Res<CrashTest>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let size = Vec3::new(30.0, 3.0, 2.0);
+    let rot = Quat::from_rotation_y(test.angle.to_radians());
+    let centre = Vec3::new(0.0, size.y / 2.0, test.distance + size.z / 2.0);
+    commands.spawn((
+        RigidBody::Static,
+        Collider::cuboid(size.x, size.y, size.z),
+        Transform::from_translation(centre).with_rotation(rot),
+        Mesh3d(meshes.add(Cuboid::from_size(size))),
+        MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.6, 0.55, 0.5), ..default() })),
+    ));
+}
+
+fn run_crash_test(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut test: ResMut<CrashTest>,
+    mut input: ResMut<CarInput>,
+    cars: Query<(&Car, &CarDamage, &Transform)>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    let Ok((car, dmg, transform)) = cars.single() else { return };
+    test.timer += time.delta_secs();
+    test.top_speed = test.top_speed.max(car.speed.abs());
+    let damaged = dmg.levels.iter().any(|l| *l > 0.0);
+    match test.phase {
+        Phase::Settle => {
+            input.scripted = Some([0.0, 0.0, 0.0, 1.0]);
+            if test.timer > 2.5 {
+                if let Some(p) = test.path("before") {
+                    commands.spawn(Screenshot::primary_window()).observe(save_to_disk(p));
+                }
+                test.phase = Phase::Drive;
+                test.timer = 0.0;
+            }
+        }
+        Phase::Drive => {
+            input.scripted = Some([1.0, 0.0, 0.0, 0.0]);
+            if damaged {
+                info!(
+                    "TEST crash: hit at {:.0} km/h (top speed {:.0} km/h)",
+                    car.speed.abs() * 3.6,
+                    test.top_speed * 3.6
+                );
+                test.phase = Phase::Crashed;
+                test.timer = 0.0;
+            } else if test.timer > 30.0 {
+                info!("TEST crash: no impact after 30 s (car at {:?})", transform.translation);
+                test.phase = Phase::Done;
+            }
+        }
+        Phase::Crashed => {
+            input.scripted = Some([0.0, 0.0, 0.0, 1.0]);
+            if test.timer > 3.0 && car.speed.abs() < 0.5 {
+                let (speed, point) = dmg.worst_impact.unwrap_or_default();
+                info!(
+                    "TEST crash: worst impact {:.0} km/h at car ({:.2} {:.2} {:.2}); damage {}",
+                    speed * 3.6,
+                    point.x,
+                    point.y,
+                    point.z,
+                    dmg.zone_levels().map(|(n, l)| format!("{n} {:.0}%", l * 100.0)).collect::<Vec<_>>().join(", ")
+                );
+                if let Some(p) = test.path("after") {
+                    commands.spawn(Screenshot::primary_window()).observe(save_to_disk(p));
+                }
+                test.phase = Phase::Done;
+                test.timer = 0.0;
+            }
+        }
+        Phase::Done => {
+            if test.timer > 1.0 {
+                exit.write(AppExit::Success);
+            }
+        }
+    }
+}
+
+/// Look at the car's nose (where the damage is) instead of following it.
+fn crash_camera(
+    test: Res<CrashTest>,
+    cars: Query<&GlobalTransform, With<CarDamage>>,
+    mut camera: Query<&mut Transform, With<Camera3d>>,
+) {
+    let (Ok(car), Ok(mut cam)) = (cars.single(), camera.single_mut()) else { return };
+    let (target, eye) = if test.angle == 0.0 {
+        // Head-on: the car stays at the wall, so look from the left side, behind the wall plane.
+        (Vec3::new(0.0, 0.5, 1.5), Vec3::new(3.4, 1.6, -0.4))
+    } else {
+        // Glancing: the car bounces away; look at the front-left corner.
+        (Vec3::new(0.4, 0.5, 1.6), Vec3::new(3.0, 1.5, 4.4))
+    };
+    *cam = Transform::from_translation(car.transform_point(eye)).looking_at(car.transform_point(target), Vec3::Y);
+}
