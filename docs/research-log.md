@@ -53,6 +53,21 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-04 (session 2): sun and moon path
+- `EnvironmentSettings` (`…69cad`) `SunMoonPath`: `BearingCentre` −232.37 (cracked), `BearingVariation` 35.06,
+  `BearingPhaseOffset` −0.5; unnamed `0bb64ed2` 50, `c915f96d` 40, `1dc20d63` 28, `ffbdcf8b` 25,
+  `ac4fe424` 35, `138500fe` 0, `a5caac0f` 8, `644383ee` 20 (crack with sun/moon/elevation/time vocabularies:
+  no further hits). `CarSelect` blocks hold KeyLightBearing / KeyLightElevation for the garage scenes;
+  `DayNightTransition` `1ab46d30` 8.5, `0e2be130` 20.
+- Model (`SunMoonPath::key_light_direction`, provisional): bearing = centre + variation × sin(2π(h/24 +
+  offset)) (centre at 12:00, ±35° over the day); sun elevation a sine arc 05:00–21:00 peaking at `0bb64ed2`
+  (the default timeline's key light switches on at 05:00 and peaks at 13:00); moon from `644383ee` (20) to
+  `a5caac0f` (8) peaking at `c915f96d`. **Unknown: the bearing's reference axis and direction**; assumed
+  clockwise from +Z towards +X (noon: towards +X −Z). Needs one reference screenshot from the original
+  (shadow direction at a known place and hour) to settle.
+- The sky model's darkening away from the sun (gradient position, research log "deferred pipeline") is now
+  visible with the sun behind the road-cliff camera.
+
 ### 2026-10-04 (session 2): the game's tonemap, auto exposure and colour cube
 - **Light buffer units**: `LightBuffer_KeylightAndAmbient` adds RT3 × HDRConstants.y / Tonemap.w, undoing the
   exposure the G-buffer pass applied, so the light accumulation buffer holds plain game HDR units.

@@ -15,6 +15,8 @@ use crate::{AssetStore, Error, Result};
 /// The timeline free roam most plausibly uses: the lowest-numbered one, with the most common fog variant
 /// (what selects a timeline in game is not found yet).
 pub const DEFAULT_TIMELINE: ResourceId = ResourceId(0x0100_0000_0006_9cbb);
+/// The `EnvironmentSettings` object (sun / moon path, rear-view mirror, car-select lighting).
+pub const SETTINGS: ResourceId = ResourceId(0x0100_0000_0006_9cad);
 
 /// Sub-structure field hashes whose names are not cracked.
 const SKY: u32 = 0x7dfab0cc;
@@ -240,7 +242,72 @@ impl EnvironmentKeyframe {
     }
 }
 
+/// `EnvironmentSettings.SunMoonPath`: where the key light comes from over the day. Only the bearing fields
+/// have names; the elevation model and the bearing's reference axis are provisional (research log
+/// "sun and moon path").
+#[derive(Debug, Clone)]
+pub struct SunMoonPath {
+    /// Degrees.
+    pub bearing_centre: f32,
+    pub bearing_variation: f32,
+    /// Fraction of a day.
+    pub bearing_phase_offset: f32,
+    /// `0bb64ed2` (50): the sun's highest elevation, degrees.
+    pub sun_max_elevation: f32,
+    /// `c915f96d` (40): the moon's highest elevation, degrees.
+    pub moon_max_elevation: f32,
+    /// `644383ee` (20) / `a5caac0f` (8): moonrise and moonset hours.
+    pub moonrise: f32,
+    pub moonset: f32,
+}
+
+/// Sunrise and sunset hours. Not in the data as far as found: the default timeline's key light turns on at
+/// 05:00 (red dawn keyframe) and peaks at 13:00, which a sine arc from 05:00 to 21:00 matches.
+const SUNRISE: f32 = 5.0;
+const SUNSET: f32 = 21.0;
+
+impl SunMoonPath {
+    pub fn from_settings(o: &Object) -> Self {
+        let p = sub(o, field_hash("SunMoonPath"));
+        let f = |hash: u32| p.map_or(0.0, |p| float(p, hash));
+        Self {
+            bearing_centre: f(field_hash("BearingCentre")),
+            bearing_variation: f(field_hash("BearingVariation")),
+            bearing_phase_offset: f(field_hash("BearingPhaseOffset")),
+            sun_max_elevation: f(0x0bb64ed2),
+            moon_max_elevation: f(0xc915f96d),
+            moonrise: f(0x644383ee),
+            moonset: f(0xa5caac0f),
+        }
+    }
+
+    /// Unit vector towards the key light (the sun by day, the moon by night) at an hour, in game
+    /// coordinates (Y up). Bearing: `BearingCentre + BearingVariation × sin(2π (hour / 24 +
+    /// BearingPhaseOffset))`, measured clockwise from +Z towards +X (assumed). Elevation: a sine arc
+    /// peaking at the max elevation between rise and set.
+    pub fn key_light_direction(&self, hour: f32) -> [f32; 3] {
+        let bearing = self.bearing_centre
+            + self.bearing_variation * (std::f32::consts::TAU * (hour / 24.0 + self.bearing_phase_offset)).sin();
+        let arc = |t: f32, max: f32| max * (std::f32::consts::PI * t.clamp(0.0, 1.0)).sin();
+        let elevation = if (SUNRISE..=SUNSET).contains(&hour) {
+            arc((hour - SUNRISE) / (SUNSET - SUNRISE), self.sun_max_elevation)
+        } else {
+            // The moon is up from moonrise through midnight to moonset.
+            let span = (self.moonset + 24.0 - self.moonrise).max(1.0);
+            let t = (hour - self.moonrise).rem_euclid(24.0) / span;
+            arc(t, self.moon_max_elevation)
+        }
+        .max(3.0);
+        let (b, e) = (bearing.to_radians(), elevation.to_radians());
+        [b.sin() * e.cos(), e.sin(), b.cos() * e.cos()]
+    }
+}
+
 impl AssetStore {
+    pub fn sun_moon_path(&self) -> Result<SunMoonPath> {
+        Ok(SunMoonPath::from_settings(&self.decode_genesys(&self.load(SETTINGS)?)?))
+    }
+
     /// The keyframe a timeline uses at an hour (0–23): the entry for that hour, else the latest earlier
     /// one.
     pub fn environment_keyframe_at(&self, timeline: ResourceId, hour: u32) -> Result<EnvironmentKeyframe> {

@@ -252,7 +252,16 @@ fn main() -> anyhow::Result<()> {
 const GAME_UNIT: f32 = 1200.0;
 
 fn setup(mut commands: Commands, game: Res<Game>, mut images: ResMut<Assets<Image>>) {
-    let sun = Transform::from_rotation(Quat::from_euler(EulerRot::YXZ, 0.8, -0.9, 0.0));
+    // The key light's direction from the environment's sun / moon path at this hour.
+    let to_sun = match game.store.sun_moon_path() {
+        Ok(path) => Vec3::from(path.key_light_direction(game.hour as f32)),
+        Err(e) => {
+            warn!("no sun path ({e})");
+            Vec3::new(0.45, 0.78, 0.43)
+        }
+    };
+    info!("key light from {to_sun:.3}");
+    let sun = Transform::IDENTITY.looking_to(-to_sun, Vec3::Y);
     // The game renders deferred: the camera keeps a depth + deferred G-buffer prepass (which the game
     // materials fill with the game's G-buffer) and renders in HDR.
     let camera = commands
