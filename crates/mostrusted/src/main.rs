@@ -14,6 +14,7 @@ mod loader;
 mod materials;
 mod menu;
 mod particles;
+mod sfx;
 mod sky;
 mod tonemap;
 
@@ -313,6 +314,7 @@ fn main() -> anyhow::Result<()> {
             drive::DrivePlugin,
             damage::DamagePlugin,
             particles::ParticlesPlugin,
+            sfx::SfxPlugin,
         ))
         .add_plugins((garage::GaragePlugin { script }, menu::MenuPlugin { enabled: menu_enabled, open: cli.show_menu }))
         .add_plugins(audio::GameAudioPlugin {

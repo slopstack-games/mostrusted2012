@@ -148,6 +148,13 @@ enum Cmd {
         #[arg(long)]
         dry: bool,
     },
+    /// Render a scripted drive (skids, wheelspin, locked brakes, impacts, a scrape, wind) through the
+    /// vehicle sound bank (tyre / road / wind / collision sounds) to a .wav.
+    VehicleSound {
+        out: PathBuf,
+        #[arg(long)]
+        dry: bool,
+    },
     /// Count world triangles per shader (all track units), to prioritise ports.
     ShaderUsage,
     /// List every shader with its sampler names.
@@ -590,6 +597,61 @@ fn main() -> Result<()> {
                 }
             }
             println!("{}: {:.1} s -> {}", v.name, duration, out.display());
+        }
+        Cmd::VehicleSound { out, dry } => {
+            use mw_assets::vehicle_driver::{VehicleDriver, VehicleInput, WheelSlip};
+            let store = AssetStore::new(game)?;
+            let bank = store.vehicle_sfx_bank()?;
+            println!("vehicle bank: {} sequences, {} channels", bank.sequences.len(), bank.channels.len());
+            for s in &bank.sequences {
+                println!("  sequence {:016x} {:?} {}..{}: {} items", s.id, s.binding, s.min, s.max, s.items.len());
+            }
+            for (c, s) in &bank.cues {
+                println!("  cue {c}: {} sequences", s.len());
+            }
+            let params = std::sync::Arc::new(mw_audio::sfx_player::Params::new(bank.param_names()));
+            let mut driver = VehicleDriver::new(params.clone());
+            let mut player = mw_audio::sfx_player::Player::new(bank, params);
+            player.dry = dry;
+            // Scripted 12 s: accelerate to 60 mph, cruise, drift, wheelspin, locked brakes, impacts, a scrape,
+            // then speed up to 160 mph for the wind.
+            let rate = mw_audio::sfx_player::OUTPUT_RATE as usize;
+            let tick = rate / 64;
+            let mut samples = Vec::new();
+            let mut fired = [false; 3];
+            for i in 0..rate * 12 {
+                if i % tick == 0 {
+                    let t = i as f32 / rate as f32;
+                    let mph = if t < 2.0 {
+                        30.0 * t
+                    } else if t < 10.0 {
+                        60.0
+                    } else {
+                        60.0 + 50.0 * (t - 10.0)
+                    };
+                    let v = mph * 0.447_04;
+                    let (lat, long) = match t {
+                        t if (2.5..4.5).contains(&t) => (v * 0.25, 0.0),
+                        t if (5.0..6.0).contains(&t) => (0.0, -4.0),
+                        t if (6.5..7.5).contains(&t) => (0.0, v),
+                        _ => (0.0, 0.0),
+                    };
+                    let wheels = vec![WheelSlip { speed: v, lateral: lat, longitudinal: long }; 2];
+                    let scrape = if (9.0..10.0).contains(&t) { 8.0 } else { 0.0 };
+                    driver
+                        .update(1.0 / 64.0, &VehicleInput { speed_mph: mph, wheels, brake: 0.0, scrape_speed: scrape });
+                    for (k, (at, speed)) in [(8.0, 15.0), (8.5, 6.0), (8.8, 2.0)].into_iter().enumerate() {
+                        if t >= at && !fired[k] {
+                            fired[k] = true;
+                            driver.impact(speed);
+                        }
+                    }
+                }
+                samples.push((player.next_sample() * 32767.0).clamp(-32768.0, 32767.0) as i16);
+            }
+            let pcm = mw_audio::Pcm { channels: 1, sample_rate: rate as u32, samples };
+            std::fs::write(&out, pcm.to_wav())?;
+            println!("12 s -> {}", out.display());
         }
         Cmd::ShaderUsage => {
             let store = AssetStore::new(game)?;
