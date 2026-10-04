@@ -84,6 +84,42 @@ InstanceList ──> Model ──(LOD state)──> Renderable ──(per mesh)�
 position, quaternion, scale and 2–4 part models each (tyre, rim, disc, caliper; a bitmask marks which spin).
 Right-hand wheels reuse the left-hand models mirrored on X. Layout tables are in `mw-formats/src/vehicle.rs`.
 
+### Vehicle damage (deformation)
+
+There is no dedicated deformation resource. A car's body is **skinned to a small skeleton** and damage is a
+set of **skeletal animation clips whose frames are damage levels**:
+
+- `VehicleGraphicsSpec` +0x04 imports the `Skeleton` (0xB2, `CgsAnimation::AnimSkel`): 33–47 bones per car.
+  Bone positions are model space (they sit on the body), rotations are mostly identity, parents precede
+  children. Bone IDs are CRC-32s of names that are not shipped (not `field_hash`, zlib or BZIP2 CRC of
+  obvious names).
+- Body and glass vertices carry `BLENDINDICES` (skeleton bone indices directly) and `BLENDWEIGHT`; the vertex
+  shaders ignore weight `.x` and use `1 − (y + z + w)` for the first bone, then skin with `gBoneMatrixArray`
+  (48 × 3×4 matrices). Checked on the 911: 28,893 body vertices, none outside the skeleton, and each bone's
+  vertices cluster around it (doors, mirrors, bumpers, lights, spoiler, steering wheel).
+- The `VehicleDamageBehaviour` GeneSys object's `AnimationList` handle points to the damage `AnimationList`
+  (0xB0): 8 clips (7 on one car) in a fixed zone order **front, rear, left, right, front-left, front-right,
+  rear-left, rear-right** (+X is the car's left). Each clip has 21 frames (two cars have one clip of 5 or
+  202): frame 0 is the bind pose, the last frame fully wrecked. Translations are offsets from the bind
+  position in the parent's space; rotations are applied in the bone's own space. A part breaking off gets
+  scale 0 (and drops ~0.7 m) from the frame where it detaches (911 front clip: number plate at frame 2,
+  a bumper piece at 7, a headlight at 20; side clips: mirror at 5).
+- `Animation` / clip layout (`CgsAnimation::Anim`, field names from burnout.wiki) is in
+  `mw-formats/src/animation.rs`: per-frame arrays of translations (f32×4), rotations (codec 1: 32-bit
+  smallest-three, 2-bit largest index + 3 × 10 bits mapped to ±1/√2; codec 0: f32×4) and uniform scales,
+  each with a per-bone remap table (0xFF = not animated). All 542 skeletons, 1,297 animations and 379
+  animation lists in the install parse.
+- `VehicleDamageBehaviour.Bodypart` (7–10 per car): hinged parts (`BonnetHinge`, `FrontBumperHinge`,
+  `FrontLeftDoorHinge`, ..., names are `CgsCore.StringBase` strings): hinge position, mass, `DamageArea`
+  (1 front, 2 rear, 3 left, 4 right), per-axis angle limits in degrees (unnamed fields), spring-like
+  vectors and `DamageThreshold` lists (damage → looseness). Not used yet.
+- The vehicle shaders also crumple the surface: `gavDamageVolumeValues` is a 3 × 5 grid of damage values
+  over the car's XZ footprint (`gvDamageVolumeParam` maps model XZ to grid cells), bilinearly sampled per
+  vertex, `max`ed with `g_damageConstants.x`, and used to blend in `CrumpleTextureSampler`'s normal map and
+  darken the surface. Not ported yet.
+- Global tuning: `ImpactDamageGraphs` in `PHYSICS/PHYSICSCONFIG.BNDL` has two 3-point curves; the first
+  reads as (5, 0 %), (80, 33 %), (160, 100 %) impact speed → damage. Field names and units are unknown.
+
 `VehicleList` (0x105, `VEHICLES/VEHICLELIST.BNDL`) lists 110 cars; the entry ID names the
 `VEHICLES/VEH_<id>_HI.BNDL` / `_LO.BNDL` pair, and names come from `Language` (0x201, `UI/LANGUAGE/0001.BNDL`
 for English).

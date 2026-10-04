@@ -49,6 +49,9 @@ pub struct CarSpec {
     pub handling: mw_assets::handling::VehicleHandling,
     /// Engine sound layers and master gain (`AssetStore::engine_voice`).
     pub engine: Option<(Vec<mw_audio::ginsu::EngineLayer>, f32)>,
+    /// Deformation data; the body meshes carry joint attributes when this is set (`damage.rs`).
+    pub damage: Option<Arc<mw_assets::damage::VehicleDamage>>,
+    pub impact_graph: mw_assets::damage::ImpactGraph,
 }
 
 pub struct Part {
@@ -106,6 +109,7 @@ pub fn spawn(store: Arc<AssetStore>, request: Request, bc_supported: bool, filte
                 empty_models: HashSet::new(),
                 groundcover_done: HashSet::new(),
                 paint: None,
+                skin_bones: None,
             };
             if let Err(e) = w.run(request) {
                 let _ = w.tx.send(Msg::Progress(format!("loader error: {e:#}")));
@@ -130,6 +134,8 @@ struct Worker {
     groundcover_done: HashSet<ResourceId>,
     /// Paint of the car being loaded, applied to its body-paint meshes.
     paint: Option<mw_assets::paint::VehiclePaint>,
+    /// While loading a drivable car's body: its skeleton size, so meshes get joint attributes.
+    skin_bones: Option<usize>,
 }
 
 impl Worker {
@@ -195,12 +201,22 @@ impl Worker {
         let spec = mw_formats::VehicleGraphicsSpec::parse(&b.load(e)?)?;
         let handling = mw_assets::handling::VehicleHandling::from_bundle(&self.store, &b).unwrap_or_default();
         let engine = self.store.engine_voice(&b).unwrap_or_default();
-        let mut car = CarSpec { body: Vec::new(), wheels: Vec::new(), handling, engine };
+        let damage = match self.store.vehicle_damage(&b) {
+            Ok(d) => d.map(Arc::new),
+            Err(e) => {
+                self.send(Msg::Progress(format!("no damage model: {e}")))?;
+                None
+            }
+        };
+        let impact_graph = self.store.impact_graph();
+        self.skin_bones = damage.as_ref().map(|d| d.skeleton.bones.len());
+        let mut car = CarSpec { body: Vec::new(), wheels: Vec::new(), handling, engine, damage, impact_graph };
         for &m in spec.parts.iter().flatten() {
             if self.model(m)? {
                 car.body.push(m);
             }
         }
+        self.skin_bones = None;
         // Classify wheels by position, not name: every car faces +Z, but some
         // specs label their axles or sides the other way round (the Veyron's
         // "Front" wheels are at the back).
@@ -321,15 +337,7 @@ impl Worker {
                     normal_map: None,
                     textures: Vec::new(),
                     parameters: Vec::new(),
-                    mesh: mw_formats::DecodedMesh {
-                        positions: Vec::new(),
-                        normals: None,
-                        tangents: None,
-                        binormals: None,
-                        colors: None,
-                        texcoords: Vec::new(),
-                        indices: Vec::new(),
-                    },
+                    mesh: mw_formats::DecodedMesh::default(),
                 };
                 let mut look = Look::from_scene_mesh(&sm);
                 for key in look.all_textures().collect::<Vec<_>>() {
@@ -394,7 +402,10 @@ impl Worker {
                 self.texture(key)?;
             }
             look.retain_textures(|k| self.textures.contains(k));
-            let Some(mesh) = convert::mesh(&sm.mesh, look.uv_b) else { continue };
+            let Some(mut mesh) = convert::mesh(&sm.mesh, look.uv_b) else { continue };
+            if let Some(bones) = self.skin_bones {
+                convert::add_skin(&mut mesh, &sm.mesh, bones);
+            }
             parts.push(Part { mesh, look });
         }
         if parts.is_empty() {

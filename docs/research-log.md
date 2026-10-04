@@ -49,9 +49,61 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
   (400, 1000, 2) are unnamed.
 - VehicleList entry fields beyond ID / names / year (floats look like stats; u16 near 0x6A may be RPM).
 
+### Vehicle damage
+- How the game turns an impact into zone damage: which `ImpactDamageGraphs` curve (two of them; the second
+  has its low point the other way round, `(0, 6 %)`?), what units (mph assumed), how damage is split between
+  zones (we use the nearest zone plus a 60° falloff), and what `CrashingRules` / `CollisionInfoDamageProfile`
+  / `DamageBarProfile.ImpactLocationDamageScale` / `Physics.LandingDamage` add. Global objects in
+  `PHYSICS/PHYSICSCONFIG.BNDL` and `GAMEPLAY.BNDL`.
+- `VehicleDamageBehaviour.Bodypart`: the hinged parts (doors, bonnet, bumpers, mirrors) presumably swing
+  physically once their `DamageThreshold` looseness exceeds 0. Which bone does each hinge drive? (Hinge
+  positions don't coincide with bone positions; bone names are unknown.) What are the three spring-like
+  Vector3s (`99e38802`, `19beda43`, `13ac399e`), `9a601fda` (rear bumper `[-3, -5, 0.35]`) and the
+  `DamageThreshold` value `31ad3690`?
+- `ControlMesh` (GeneSys, one per car, five Vector4s like `[2, 5, 0.2]`, `[0.01, 0.75, 0.75, 0.85]`): a
+  separate resource type 0x210 exists in the type list; is it the crumple / damage-volume tuning? The
+  car's `0x108e7a` GeneSys object (truncated decode) may be related.
+- `WheelDamage` (four per car: steering angle −20..30°, camber-like `b44cbfcf` −10..−20): damaged-wheel
+  alignment, not applied yet.
+- Damage volume grid (3 × 5 crumple values per car) for the crumple normal map: the shader side is known;
+  how the game fills it from the zone levels is not.
+
 ---
 
 ## Findings
+
+### 2026-10-04 (damage): car deformation is skeletal animation, one clip per impact zone
+- Started from PLAN M6.4's guess of a `DeformationModel`-like resource (Burnout Paradise's 0x10004). **Dead
+  end:** vehicle bundles have no such type. Their resource types: Renderable, Model, Material, Texture,
+  GeneSys, Wave/Ginsu, ConvexHull, PolygonSoupList, VehicleGraphicsSpec, VehicleSound, **Skeleton,
+  AnimationList (×2), Animation, HSMData**.
+- GeneSys types with damage in their name: `VehicleDamageBehaviour` (+ `.Bodypart`, `.DamageSequence`,
+  `.SpotEffect`), `ControlMesh`, `WheelDamage`, global `ImpactDamageGraphs`, `CrashingRules`,
+  `CollisionInfoDamageProfile`, `DamageBarProfile`, `LandingDamage`. `DamageSequence` handles point at audio
+  / VFX `Sequence`s (sounds and spot effects when parts break), not geometry.
+- **The vehicle vertex shader** (`mwtool shader-asm VehicleNFS13_BodyPaint`) is a 4-bone skinning shader:
+  `gBoneMatrixArray` (48 × 3 rows) indexed by `BLENDINDICES × 3`, first weight `1 − (w.y + w.z + w.w)`.
+  The `_NoDamage` shader variants drop `TEXCOORD1` and the crumple sampler; one variant reads
+  `gavDamageVolumeValues` (3 × 5 bilinear grid over model XZ) for the crumple normal-map blend.
+- `VehicleDamageBehaviour.AnimationList` → an `AnimationList` with 8 clips over the car's 37 bones
+  (911). burnout.wiki documents `AnimationCollection` / `Anim` / `AnimSkel` for NFS MW (field names from
+  PS3 debug symbols); the codec details were worked out here: rotations are 32-bit smallest-three (`0xDFF7FDFF`
+  = identity; decoded angles grow smoothly frame by frame, which a wrong bit layout would not do), scales
+  are one float per bone. Frame 0 is all zeros / identity, so translations are offsets from the bind pose.
+- Which clip is which zone: from the bones each clip moves (bones cluster on the body: `mwtool damage 911`
+  prints each bone's vertex centroid). On 50 of the 72 cars the moved bones point exactly at front, rear,
+  left, right, FL, FR, RL, RR in clip order; on the rest a few clips are one 45° sector off (bones placed
+  off-centre), never mirrored, so the order is fixed and the clip index is the zone.
+- Posing the 911 at full front + left + front-left damage in the software preview: the bonnet buckles
+  upward at its crease, the front bumper and plate disappear, the left mirror drops off. The bonnet rising
+  (rather than sinking into the engine bay) also confirms the rotation sign.
+- Skeleton bone IDs are not `field_hash`, zlib CRC-32 or BZIP2 CRC-32 of 1–3-word combinations of ~80 car part
+  words in three casings (dead end for now; the hinge names `BonnetHinge` etc. don't match either).
+- Runtime (`crates/mostrusted/src/damage.rs`): Bevy GPU skinning with one joint entity per bone; the
+  body collider's contacts give the impact (avian's pre-solve `normal_speed`, speed-weighted contact
+  centroid, near-vertical normals ignored as landings) → `ImpactDamageGraphs` curve → zone levels → clip
+  frames. `--test crash`: the 911 into a wall at 115 km/h gets 29 % front damage (bonnet creased, plate and
+  bumper pieces gone); at 172 km/h 56 %; a 35° glancing hit at 141 km/h gives 39 % front-left and 14 % left.
 
 ### 2026-10-04 (evening): engine sound rewritten from the game's audio data
 - User report after the resampling fix: the engine "still plays snippets in full and isn't blending them".
