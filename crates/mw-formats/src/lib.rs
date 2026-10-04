@@ -6,10 +6,12 @@
 
 mod animation;
 pub mod bear;
+pub mod binding;
 mod collision;
 mod colour_cube;
 mod decode;
 mod dxgi;
+mod font;
 pub mod genesys;
 mod groundcover;
 mod material;
@@ -17,6 +19,7 @@ mod paint_map;
 mod renderable;
 mod text;
 mod texture;
+pub mod ui;
 mod vehicle;
 mod vertex;
 mod world;
@@ -27,6 +30,7 @@ pub use bear::BearEffect;
 pub use collision::{CollisionTag, PolygonSoup, PolygonSoupList, SOUP_GRANULARITY, SOUP_OFFSET_UNIT, SoupPolygon};
 pub use colour_cube::ColourCube;
 pub use dxgi::{DxgiFormat, f16_to_f32};
+pub use font::{Font, Glyph, GlyphQuad};
 pub use groundcover::{GroundcoverCollection, GroundcoverInstance, GroundcoverInstances, GroundcoverLayer, Group};
 pub use material::{Material, MaterialParameter, MaterialSampler, Model, Shader, ShaderParameter, ShaderSampler};
 pub use paint_map::WorldPaintMap;

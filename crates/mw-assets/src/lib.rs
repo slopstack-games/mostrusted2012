@@ -25,6 +25,7 @@ pub mod vehicle_driver;
 pub mod vfx;
 pub mod wheel_arches;
 pub mod surfaces;
+pub mod ui;
 
 pub use catalog::{DEFAULT_LANGUAGE, VehicleInfo};
 

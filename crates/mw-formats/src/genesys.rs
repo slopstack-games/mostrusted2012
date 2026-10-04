@@ -108,6 +108,12 @@ impl FieldHasher {
         self.len
     }
 
+    /// Continue hashing after a name of four or more bytes whose hash is `hash`: the register is the
+    /// complement of the hash, so suffixes can be appended without knowing the name.
+    pub const fn resume(hash: u32) -> Self {
+        Self { reg: !hash, len: 4 }
+    }
+
     pub const fn is_empty(&self) -> bool {
         self.len == 0
     }
@@ -120,6 +126,11 @@ impl FieldHasher {
         }
         !self.reg
     }
+}
+
+/// Hash of `<name>Count` from the hash of `<name>`: the field holding a dynamic array's length.
+pub fn count_hash(array: u32) -> u32 {
+    FieldHasher::resume(array).push_all(b"Count").finish()
 }
 
 /// Field names recovered from their hashes (one per line).
@@ -276,17 +287,28 @@ impl Type {
                 out.push((arrays.remove(a), Some(counts.remove(c))));
             }
         }
-        // Counts follow the arrays ordered by alignment (descending), then
-        // offset: verified on RigidBody, whose 1-byte-aligned bool array is
-        // laid out first but counted last.
+        // Arrays without a `<Name>Count` field (about one in ten, mostly screen scripts): counts follow the
+        // arrays ordered by alignment (descending), then offset: verified on RigidBody, whose 1-byte-aligned
+        // bool array is laid out first but counted last.
         arrays.sort_by_key(|&i| (std::cmp::Reverse(self.fields[i].flags & 0xFF), self.fields[i].offset));
-        out.extend(arrays.iter().enumerate().map(|(k, &a)| (a, counts.get(k).copied())));
+        // The length field is named after the array: `<Name>Count` (`Elements` -> `ElementsCount`,
+        // `IdleBehaviour` -> `IdleBehaviourCount`), and its hash follows from the array's hash alone.
+        let named = |a: usize| {
+            let h = count_hash(self.fields[a].name_hash);
+            self.fields.iter().position(|f| f.name_hash == h)
+        };
+        let taken: Vec<usize> = arrays.iter().filter_map(|&a| named(a)).collect();
+        let mut free = counts.iter().copied().filter(|c| !taken.contains(c));
+        out.extend(arrays.iter().map(|&a| match named(a) {
+            Some(c) => (a, Some(c)),
+            None => (a, free.next()),
+        }));
         out
     }
 }
-
 /// (array field, count field) name hashes that override the positional rule in [`Type::array_counts`].
 const KNOWN_COUNTS: &[(u32, u32)] = &[(field_hash("Waves"), 0xbc51_4b0c)];
+
 
 /// A decoded GeneSys value.
 #[derive(Debug, Clone)]
@@ -307,6 +329,8 @@ pub enum Value {
     /// The sound data's bindings are such strings (`"LocalPlayer.GetPlayerSpeed"`).
     Str(String),
     Raw(Vec<u8>),
+    /// A dynamic array that could not be read (its length field is probably guessed wrong).
+    Undecoded(String),
 }
 
 /// A decoded struct instance.
@@ -368,9 +392,29 @@ impl<'a> Decoder<'a> {
         }
         self.depth += 1;
         let counts = t.array_counts(self.types);
-        let r = Reader(self.res.header());
         let mut fields = Vec::with_capacity(t.fields.len());
         for (i, f) in t.fields.iter().enumerate() {
+            let depth = self.depth;
+            let value = match self.field(&t, &counts, i, at) {
+                Ok(v) => v,
+                // A dynamic array whose length field is guessed wrong (see `Type::array_counts`) reads garbage;
+                // keep the rest of the object.
+                Err(e) if f.is_array() => {
+                    self.depth = depth;
+                    Value::Undecoded(e.to_string())
+                }
+                Err(e) => return Err(Error::Malformed(format!("{}.{:08x} @{at:#x}: {e}", t.name, f.name_hash))),
+            };
+            fields.push((f.name_hash, value));
+        }
+        self.depth -= 1;
+        Ok(Object { type_name: t.name, type_id: ty, fields })
+    }
+
+    fn field(&mut self, t: &Type, counts: &[(usize, Option<usize>)], i: usize, at: usize) -> Result<Value> {
+        let r = Reader(self.res.header());
+        let f = &t.fields[i];
+        {
             let o = at + f.offset as usize;
             let value = if f.is_array() {
                 let ptr = r.u32(o)? as usize;
@@ -427,10 +471,8 @@ impl<'a> Decoder<'a> {
                 let elem = f.ty.and_then(self.types);
                 self.value(f, elem.as_ref(), o)?
             };
-            fields.push((f.name_hash, value));
+            Ok(value)
         }
-        self.depth -= 1;
-        Ok(Object { type_name: t.name, type_id: ty, fields })
     }
 
     /// Length of a handle array, checked against the import table. The count fields of some types are not
@@ -490,20 +532,23 @@ impl<'a> Decoder<'a> {
                 Value::Matrix(m)
             }
             Kind::Value if t.name.contains("Vector") => Value::Vector(r.f32_array(o)?),
-            Kind::Value if t.name == "CgsCore.StringBase" => {
-                let (rel, len) = (r.i32(o)?, r.u32(o + 4)? as usize);
-                let at = (o as i64 + i64::from(rel)) as usize;
-                match r.bytes(at, len).ok().filter(|_| len > 0 && rel != 0) {
-                    Some(b) => {
-                        let end = b.iter().position(|&c| c == 0).unwrap_or(b.len());
-                        Value::Str(String::from_utf8_lossy(&b[..end]).into_owned())
-                    }
-                    None => Value::Str(String::new()),
-                }
-            }
+            Kind::Value if t.name == "CgsCore.StringBase" => Value::Str(read_string(&r, o).unwrap_or_default()),
             _ => Value::Raw(r.bytes(o, t.size as usize).map(<[u8]>::to_vec).unwrap_or_default()),
         })
     }
+}
+
+/// A `CgsCore.StringBase` at `o`: self-relative offset, then the length including the terminating NUL.
+pub fn read_string(r: &Reader, o: usize) -> Option<String> {
+    let rel = r.i32(o).ok()?;
+    let len = r.u32(o + 4).ok()? as usize;
+    if len <= 1 || rel == 0 {
+        return Some(String::new());
+    }
+    let start = (o as i64 + rel as i64) as usize;
+    let bytes = r.bytes(start, len - 1).ok()?;
+    let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
+    Some(String::from_utf8_lossy(&bytes[..end]).into_owned())
 }
 
 fn align(v: usize, a: usize) -> usize {
@@ -522,6 +567,14 @@ mod tests {
         assert_eq!(field_hash("Power_curve"), 0xa1a3b0a2);
         assert_eq!(field_hash("Take_off_behaviour"), 0xc63c4447);
         assert_eq!(field_hash("Normal_quality_engine"), 0xbf36eecf);
+    }
+
+    #[test]
+    fn count_fields_follow_from_array_hashes() {
+        assert_eq!(count_hash(field_hash("Elements")), field_hash("ElementsCount"));
+        // Pairs observed in UI element types (array hash, count hash).
+        assert_eq!(count_hash(0x5606_0647), 0x6b1c_a08a);
+        assert_eq!(count_hash(0x3d30_2c57), 0x0f6f_34a1);
     }
 
     #[test]
