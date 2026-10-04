@@ -288,3 +288,13 @@ the drifting flag (`scan u8` or `i32`, 0/1 toggling with drifts), and per-wheel 
 manoeuvres from the list above (one CSV per car and manoeuvre). The CSVs contain measurements of game state,
 not game code or assets, but keep them out of the repo with other local captures. They drive the fit: run
 the same inputs through `--test`, compare the traces, and record each fitted rule here with its evidence.
+
+### Suspension rest position (2026-10-04)
+
+The graphics spec's wheel position is the wheel **at rest** (in its arch under the car's weight). The suspension
+mount therefore sits `travel` (data, `WheelSuspensionSpringConstraint` `41543f85`: 0.07–0.08 m on the 911, 0.15
+on the Raptor) above it; the wheel droops below the rest position by up to the static sag (`corner mass × g /
+k`, ~0.06–0.10 m) and compresses at most `travel` above it. Before this, the spec position was treated as full
+droop, so the body rode one sag too low and the wheels rose `travel + sag` into the fenders (user report).
+911 tests after the change: 0–100 3.80 s (was 3.92), corner 0.98 g (1.01), drift mean 19.9° (20.2°).
+

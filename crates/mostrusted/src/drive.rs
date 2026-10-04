@@ -323,7 +323,11 @@ struct WheelState {
     front: bool,
     spring: f32,
     damper: f32,
+    /// Total suspension range: droop below the rest position (the static sag) plus the data's bump travel.
     travel: f32,
+    /// Compression under the car's static weight. The graphics spec's wheel position is the wheel at rest,
+    /// so the wheel sits there at this compression, droops below it, and rises at most `travel - sag` above.
+    sag: f32,
     brake_torque: f32,
     /// Current suspension compression (m).
     compression: f32,
@@ -468,6 +472,7 @@ fn spawn_car(
             damper: c,
             // Travel above the rest position plus room for the static sag.
             travel: travel.max(0.05) + corner_mass * 9.81 / k,
+            sag: corner_mass * 9.81 / k,
             brake_torque: brake,
             compression: 0.0,
             spin: 0.0,
@@ -732,7 +737,9 @@ fn car_physics(
         let mut grounded = false;
         let mut ground_normal = Vec3::ZERO;
         for wheel in &mut car.wheels {
-            let mount = pos + rot * (wheel.centre + Vec3::Y * wheel.travel);
+            // The mount sits `travel - sag` above the rest position, so the wheel is at its spec position
+            // (in its arch) under the static load.
+            let mount = pos + rot * (wheel.centre + Vec3::Y * (wheel.travel - wheel.sag));
             let reach = wheel.travel + wheel.radius;
             let Some(hit) = spatial.cast_ray(mount, Dir3::new(-up).unwrap_or(Dir3::NEG_Y), reach, true, &filter) else {
                 wheel.compression = 0.0;
@@ -949,7 +956,7 @@ fn wheel_visuals(cars: Query<&Car>, mut transforms: Query<&mut Transform>) {
     for car in &cars {
         for w in &car.wheels {
             if let Ok(mut t) = transforms.get_mut(w.pivot) {
-                t.translation = w.centre + Vec3::Y * w.compression;
+                t.translation = w.centre + Vec3::Y * (w.compression - w.sag);
                 t.rotation = if w.front { Quat::from_rotation_y(car.steer) } else { Quat::IDENTITY };
             }
             if let Ok(mut t) = transforms.get_mut(w.spinner) {
