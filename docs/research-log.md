@@ -124,6 +124,51 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-05: `mwtool tune`; present and input paths of the original
+
+- Read live through the tuning menu (XKR, car park, idle): the player car at table index 48; idle 1012 rpm;
+  wheel loads N 4576 / 4596 / 4071 / 4051 (front heavier, sum ≈ 17.3 kN ≈ the car's weight); grip multipliers
+  all 1; the `.bss` constants as in `consts.txt`. The `drift_threshold` field (vehicle +0x2c10) holds FLT_MAX
+  while not drifting, so it is state set on drift entry, not a tunable threshold.
+- From the dump (research for an in-game overlay that was not built; probe.md "Status"): the present wrapper is
+  `FUN_0046fb60`, which calls `IDXGISwapChain::Present` (vtable +0x20) on the swapchain in `DAT_011acde4`
+  (device in `DAT_011acd64`, created in `FUN_00d9bb20`); the frame end is `FUN_00476f20`. The pad is polled
+  on an input thread (`FUN_0040f140`, also `FUN_004119c0`) through `XInputGetState`; DirectInput 8 is created in
+  `FUN_0040fa40` for keyboard and mouse. Dead ends: `GetAsyncKeyState` is imported but never called;
+  `DebugPrint` is a script binding to the debugger log, not on-screen text; no game text-drawing helper.
+- Open: the pointer from the vehicle object to its loaded GeneSys handling resource, which would put grip curves,
+  gear ratios and drift behaviour on the tuning menu; whether the duplicate value next to each `.bss` constant
+  (e.g. 1.2 at both 0x011872a0 and 0x011872a4) is a second copy the code also reads.
+
+### 2026-10-05: the probe loads (Phase 0); memscan poke (Tier 0)
+
+- The unpacked game loads `xinput1_3.dll` and `dinput8.dll` by name (`orig modules`, from `/proc/<pid>/maps`),
+  both from Proton's builtin directory by default, and EA's `IGO32.dll` overlay injects itself from the EA
+  Desktop install in the prefix. A `xinput1_3.dll` next to `NFS13.exe` plus `WINEDLLOVERRIDES=xinput1_3=n,b`
+  (Proton appends its own overrides to ours) loads our DLL; `LoadLibraryW` of the full `system32` path then
+  gets Wine's builtin behind its placeholder file, so forwarding works. Wine's `xinput1_3` has no
+  `XInputGetDSoundAudioDeviceGuid` export.
+- The DLL is loaded after the wrapper has unpacked `.text` (the game asks for XInput during its own init), so no
+  waiting was needed. The vehicle-table chain `[[[NFS13.exe+0xcedb04]+4]+0x53220]` resolves ~1 s after that,
+  on the title screen already; `player_index` = 48 is the gameplay signal. Seven minutes of free roam with the
+  DLL loaded: no change in behaviour, input or readable state.
+- `memscan poke` verified: a code address is refused, a `.bss` constant can be changed and is restored by
+  `unpoke` and at exit. The detour step of Tier 1 is not written (probe.md "Status").
+
+### 2026-10-04 (session 3, end): the exe's headers; the probe designed
+
+- `NFS13.exe` on disk (PE headers, not code): image base `0x400000` with **no `DYNAMIC_BASE`** (DllCharacteristics
+  0x8100 = NX compatible + terminal-server aware), so the game is never relocated and every address in the dump
+  and in decomp.md is the live address. The import table names only `SHLWAPI.dll`, `KERNEL32.dll` and
+  `USER32.dll`: those are the wrapper's; the game's imports are bound after it unpacks. `.text` is 0xb80e81
+  bytes at `0x401000`; the wrapper is the unnamed 0x12f6-byte code section at `0x11dd000`.
+- The game runs in Proton 11 (new WoW64: 32-bit PE in a 64-bit Unix process). The prefix has Wine's builtin
+  `dinput8`, `winmm`, `version` and `xinput1_1..1_4` in `system32`. Toolchain for a 32-bit Windows DLL is not
+  installed (no `i686-w64-mingw32-gcc`, no `i686-pc-windows-gnu` target).
+- Design for running our own code inside the running game written up in [probe.md](probe.md); policy added to
+  reverse-engineering.md. Open: which DLL names the unpacked game loads (`/proc/<pid>/maps`), whether this Wine
+  implements `AppInit_DLLs`, whether the wrapper re-checks `.text` after start-up.
+
 ### 2026-10-04 (session 3, end): driving the original ourselves; the first reference run
 
 - **`tools/orig/orig`** runs the original headless inside gamescope (Steam launch option `tools/orig/orig-wrap

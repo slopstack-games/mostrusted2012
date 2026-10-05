@@ -1,0 +1,5 @@
+# Cross-building the probe DLL (crates/mw-probe) for the 32-bit game: `pacman -S mingw-w64-gcc`,
+# `rustup target add i686-pc-windows-gnu`, then
+#   cargo build --release -p mw-probe --target i686-pc-windows-gnu
+[target.i686-pc-windows-gnu]
+linker = "i686-w64-mingw32-gcc"

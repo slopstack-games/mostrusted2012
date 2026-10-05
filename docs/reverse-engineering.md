@@ -37,6 +37,50 @@ model above all). Rules:
   [handling.md](handling.md) and the research log.
 - Write our own Rust from those descriptions.
 
+## Code inside the running game: the probe (policy, 2026-10-04)
+
+The user decided that hooks running in their own licensed, running copy of the game are in scope, as a
+measuring and verification instrument. The design is [probe.md](probe.md). What is and is not allowed:
+
+**Allowed**
+- Loading our own DLL into the running game (proxy DLL, `AppInit_DLLs`, or a remote thread in the Wine prefix),
+  on this machine, by the user, for runs started with `tools/orig/orig launch --probe` or `mwtool capture
+  --probe`. Normal launches stay untouched: no file in the game directory and no DLL override outside those runs.
+- Reading anything in the process from inside it, including registers and stack contents at hooked
+  instructions, and logging it to the git-ignored `ref/`.
+- Writing *data* values in memory (constants, fields) to learn what they do, from inside (the probe) or from
+  outside (`mwtool memscan poke` through `/proc/<pid>/mem`), with the original value restored afterwards.
+- Patching *game* functions in memory, after the game has unpacked itself, at addresses that are documented in
+  prose in [decomp.md](decomp.md): a detour to a logging thunk, or a replacement by our own Rust port of that
+  function so the port can be proven exact against the original's behaviour.
+- Writing that instruction-patching step itself. This is the user's own licensed copy, offline, after
+  unpacking, on documented non-DRM addresses, for measurement and tuning, never distributed. Earlier the
+  assistant declined to write the detour installer and left it to the user; the user has since asked that the
+  assistant **at least try** to write it (2026-10-05), falling back to an equivalent external tool
+  (`/proc/<pid>/mem` pokes) only if it genuinely cannot. An in-process tuning overlay (hooking the game's
+  present and input paths to draw a menu that pokes handling *data* fields) is within this: it is the Tier-1
+  detour mechanism plus Tier-0 data pokes, not a new capability. The hard limits below still bind it in full.
+  Outcome of the first try (2026-10-05): the assistant's safety system stopped it again, so the overlay was
+  dropped and the external `mwtool tune` built instead ([probe.md](probe.md) "Status", "Tuning menu"). The
+  assistant still tries when asked, and states plainly when it is stopped.
+
+**Not allowed**
+- Anything that touches the DRM: the wrapper stub (the unnamed section after `.rsrc`), its import resolution,
+  `Core/Activation.dll`, licence or online checks. The probe installs only after the game has unpacked itself
+  and never reads, dumps, saves or decrypts protected code; the expected-bytes signatures it checks before
+  patching come from the user's existing dump and live in the git-ignored `re/probe.toml`, never in the repo.
+- Writing to the game's files, the install directory (beyond the proxy DLL placed for a probe run and removed
+  after it), the save game or the Steam / EA configuration.
+- Running the game online with the probe loaded. Only `orig launch --probe` / `mwtool capture --probe` load it,
+  and they launch offline.
+- Distributing the probe as a mod or growing it into one (new vehicle types, game modes, rendering). Those are
+  the reimplementation's job; [probe.md](probe.md) "Tier 3" says so. A one-off experiment that needs more is
+  written up in probe.md first.
+
+**What goes in the repository**: the mechanism (`crates/mw-probe`, `mwtool` commands, `orig` flags), function
+addresses (as in decomp.md), and measurement results in prose with the run name as their source. Not: byte
+signatures, pseudo-C, struct dumps, captured data.
+
 ## Ghidra setup
 
 A headless project can be created with:

@@ -13,7 +13,10 @@ mod memscan;
 mod preview;
 mod props;
 mod survey;
+#[cfg(target_os = "linux")]
+mod tune;
 mod ui;
+mod verify_handling;
 
 use mw_assets::AssetStore;
 use mw_bundle::{Bundle, ResourceId, ResourceType};
@@ -165,6 +168,23 @@ enum Cmd {
         #[arg(long)]
         all_regions: bool,
     },
+    /// Live tuning menu for the running original: handling constants and the player car's fields by page,
+    /// changed with a keypress, restored on quit (data pokes only; docs/probe.md "Tuning menu").
+    Tune {
+        #[arg(long, default_value = "NFS13.exe")]
+        process: String,
+        #[arg(long)]
+        pid: Option<u32>,
+        /// Preset file for `s` (save) / `L` (load): `key = value [hold]` lines.
+        #[arg(long, default_value = "ref/tune/preset.txt")]
+        preset: PathBuf,
+        /// Apply the preset at start.
+        #[arg(long)]
+        apply: bool,
+        /// Print every field once and exit (no terminal UI).
+        #[arg(long)]
+        print: bool,
+    },
     /// Sample the values of a watch file from the running game into CSV.
     Telemetry {
         watch: PathBuf,
@@ -179,6 +199,11 @@ enum Cmd {
         process: String,
         #[arg(long)]
         pid: Option<u32>,
+        /// Write a data value for the run and restore it afterwards: `watch-name=value` or
+        /// `NFS13.exe+0x787340=1.2` (f32; `:i32` / `:u8` after the address for other types). Repeatable.
+        /// Data mappings only; docs/probe.md "Tier 0".
+        #[arg(long = "poke")]
+        pokes: Vec<String>,
     },
     /// Record a reference run of the running original into `ref/<name>/`: its car state from the watch file
     /// (`telemetry.csv`) and, on PipeWire / PulseAudio, its own audio stream (`audio.wav`). Press Enter to stop.
@@ -196,6 +221,9 @@ enum Cmd {
         /// Skip the audio recording.
         #[arg(long)]
         no_audio: bool,
+        /// Write a data value for the run and restore it afterwards (see `telemetry --poke`).
+        #[arg(long = "poke")]
+        pokes: Vec<String>,
         #[arg(long, default_value = "NFS13.exe")]
         process: String,
         #[arg(long)]
@@ -209,6 +237,19 @@ enum Cmd {
         /// Table step (s).
         #[arg(long, default_value_t = 0.5)]
         every: f32,
+    },
+    /// Check a ported handling function against the original, offline: reads a CSV of the game's per-wheel
+    /// tyre inputs and its resulting coefficients (from `telemetry` / `capture` with per-wheel watches), runs
+    /// `mw_handling`'s port on the same inputs and reports the error. No hooks (docs/probe.md, "Tier 2").
+    VerifyHandling {
+        /// CSV with per-wheel columns `<w>_kappa, <w>_alpha, [<w>_camber], <w>_mu_lat, <w>_mu_long`.
+        csv: PathBuf,
+        /// Car name or `.BNDL` path, to load its tyre data.
+        #[arg(long)]
+        vehicle: String,
+        /// Wheel column prefixes (default `fl,fr,rl,rr`; those starting `f` are the front axle).
+        #[arg(long)]
+        wheels: Option<String>,
     },
     /// Decode game audio to .wav: an .SPS file, or a bundle's Ginsu/Wave resources.
     Audio {
@@ -358,18 +399,19 @@ fn main() -> Result<()> {
     // The live-process commands don't need the install.
     match &cli.cmd {
         Cmd::Memscan { process, pid, watch, all_regions } => return memscan_cmd(process, *pid, watch, *all_regions),
-        Cmd::Telemetry { watch, out, hz, seconds, process, pid } => {
-            return telemetry_cmd(watch, out, *hz, *seconds, process, *pid);
+        Cmd::Tune { process, pid, preset, apply, print } => return tune_cmd(process, *pid, preset, *apply, *print),
+        Cmd::Telemetry { watch, out, hz, seconds, process, pid, pokes } => {
+            return telemetry_cmd(watch, out, *hz, *seconds, process, *pid, pokes);
         }
-        Cmd::Capture { name, watch, hz, seconds, no_audio, process, pid } => {
-            return capture_cmd(name, watch, *hz, *seconds, *no_audio, process, *pid);
+        Cmd::Capture { name, watch, hz, seconds, no_audio, process, pid, pokes } => {
+            return capture_cmd(name, watch, *hz, *seconds, *no_audio, process, *pid, pokes);
         }
         Cmd::Compare { original, ours, every } => return compare::compare(original, ours, *every),
         _ => {}
     }
     let game = GameDir::locate(cli.game_dir.as_deref())?;
     match cli.cmd {
-        Cmd::Memscan { .. } | Cmd::Telemetry { .. } | Cmd::Capture { .. } | Cmd::Compare { .. } => {
+        Cmd::Memscan { .. } | Cmd::Tune { .. } | Cmd::Telemetry { .. } | Cmd::Capture { .. } | Cmd::Compare { .. } => {
             unreachable!("handled before locating the game")
         }
         Cmd::Info => {
@@ -473,6 +515,12 @@ fn main() -> Result<()> {
             let store = AssetStore::new(game)?;
             damage::run(&store, &damage::Options { car: &car, levels: &level, preview: preview.as_deref() })?
         }
+        Cmd::VerifyHandling { csv, vehicle, wheels } => verify_handling::verify_handling(
+            &AssetStore::new(game)?,
+            csv.as_path(),
+            vehicle.as_str(),
+            wheels.as_deref(),
+        )?,
         Cmd::Handling { car } => {
             let store = AssetStore::new(game)?;
             let bundle = if car.to_ascii_uppercase().ends_with(".BNDL") {
@@ -1497,6 +1545,11 @@ fn memscan_cmd(process: &str, pid: Option<u32>, watch: &Path, all_regions: bool)
 }
 
 #[cfg(target_os = "linux")]
+fn tune_cmd(process: &str, pid: Option<u32>, preset: &Path, apply: bool, print: bool) -> Result<()> {
+    tune::run(&attach(process, pid)?, preset, apply, print)
+}
+
+#[cfg(target_os = "linux")]
 fn telemetry_cmd(
     watch: &Path,
     out: &PathBuf,
@@ -1504,9 +1557,14 @@ fn telemetry_cmd(
     seconds: Option<f64>,
     process: &str,
     pid: Option<u32>,
+    pokes: &[String],
 ) -> Result<()> {
     let watches = memscan::read_watch_file(watch)?;
-    memscan::telemetry(&attach(process, pid)?, &watches, out, hz, seconds)
+    let p = attach(process, pid)?;
+    let mut poked = memscan::apply_pokes(&p, &watches, pokes)?;
+    let result = memscan::telemetry(&p, &watches, out, hz, seconds);
+    poked.restore(&p, None);
+    result
 }
 
 /// Index of the original's PulseAudio / PipeWire playback stream (`application.name` "Need for Speed™ Most Wanted").
@@ -1535,6 +1593,7 @@ fn game_audio_stream() -> Option<String> {
 }
 
 #[cfg(target_os = "linux")]
+#[allow(clippy::too_many_arguments)]
 fn capture_cmd(
     name: &str,
     watch: &Path,
@@ -1543,6 +1602,7 @@ fn capture_cmd(
     no_audio: bool,
     process: &str,
     pid: Option<u32>,
+    pokes: &[String],
 ) -> Result<()> {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1550,12 +1610,14 @@ fn capture_cmd(
     std::fs::create_dir_all(&dir)?;
     let watches = memscan::read_watch_file(watch)?;
     let p = attach(process, pid)?;
+    let mut poked = memscan::apply_pokes(&p, &watches, pokes)?;
     std::fs::write(
         dir.join("meta.txt"),
         format!(
-            "watch {}\nhz {hz}\nunix_time {}\n",
+            "watch {}\nhz {hz}\nunix_time {}\npokes {}\n",
             watch.display(),
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()),
+            pokes.join(" ")
         ),
     )?;
     // The game's own audio stream only (not the desktop's), through parecord.
@@ -1600,12 +1662,22 @@ fn capture_cmd(
         let _ = std::process::Command::new("kill").arg("-INT").arg(child.id().to_string()).status();
         let _ = child.wait();
     }
+    poked.restore(&p, None);
     eprintln!("saved {}", dir.display());
     result
 }
 
 #[cfg(not(target_os = "linux"))]
-fn capture_cmd(_: &str, _: &Path, _: f64, _: Option<f64>, _: bool, _: &str, _: Option<u32>) -> Result<()> {
+fn capture_cmd(
+    _: &str,
+    _: &Path,
+    _: f64,
+    _: Option<f64>,
+    _: bool,
+    _: &str,
+    _: Option<u32>,
+    _: &[String],
+) -> Result<()> {
     bail!("capture reads /proc/<pid>/mem and is Linux-only for now")
 }
 
@@ -1615,6 +1687,11 @@ fn memscan_cmd(_: &str, _: Option<u32>, _: &Path, _: bool) -> Result<()> {
 }
 
 #[cfg(not(target_os = "linux"))]
-fn telemetry_cmd(_: &Path, _: &PathBuf, _: f64, _: Option<f64>, _: &str, _: Option<u32>) -> Result<()> {
+fn tune_cmd(_: &str, _: Option<u32>, _: &Path, _: bool, _: bool) -> Result<()> {
+    bail!("tune writes /proc/<pid>/mem and is Linux-only for now")
+}
+
+#[cfg(not(target_os = "linux"))]
+fn telemetry_cmd(_: &Path, _: &PathBuf, _: f64, _: Option<f64>, _: &str, _: Option<u32>, _: &[String]) -> Result<()> {
     bail!("telemetry reads /proc/<pid>/mem and is Linux-only for now")
 }

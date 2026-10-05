@@ -1,0 +1,12 @@
+[package]
+name = "mw-handling"
+description = "The game's handling maths (tyres, drivetrain, drift), ported from the decomp, free of any engine. Shared by the mostrusted runtime and by mwtool's offline port-verification (docs/probe.md Tier 2)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mw-assets.workspace = true
+
+[dev-dependencies]
+mw-formats.workspace = true

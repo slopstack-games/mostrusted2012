@@ -44,7 +44,11 @@ findings in [research-log.md](research-log.md).
      read in place, so `mwtool genesys-types` offsets locate the code that uses them), write it down in prose in
      [decomp.md](decomp.md) and reimplement it. Never copy decompiled code into the repo.
    - Check against the running original: `mwtool memscan` / `telemetry` read its live state and missing
-     constants (`handling.watch`; handling.md "Measuring the original").
+     constants (`handling.watch`; handling.md "Measuring the original"). Since 2026-10-04 code may also run
+     *inside* the user's running copy for measurement and verification (the probe: [probe.md](probe.md),
+     policy in reverse-engineering.md "Code inside the running game"): tick-exact logs of per-wheel loads and
+     caps, data pokes, and our Rust port of a function substituted for the original's to prove it exact. It is
+     an instrument, not a mod loader.
 3. **Bevy moves fast.** It is pinned to one minor version (currently 0.19). Engine-specific code stays inside
    `crates/mostrusted`; format crates never depend on Bevy. Upgrade Bevy deliberately, in its own change.
 
@@ -198,6 +202,18 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    original.** Next: record the original with `handling.watch` (corner, braking, launch, handbrake turn,
    brake-tap drift, donut, slides) and fit against `--test` runs with the same inputs; resolve the drift side
    force (with the game's cap of 5 ours reaches ~3 g, so its size or direction is misread).
+   The quantities telemetry cannot reach (N, the grip caps, the solver's impulses, the side-force vector, who
+   writes the grip multipliers) come from the probe ([probe.md](probe.md)) in this order:
+   `[x]` Tier 0 `mwtool memscan poke` / `unpoke` (data only, refuses `.text`, restores on exit; 2026-10-05) →
+   `[x]` Phase 0 load path (`orig launch --probe`, hello DLL as an `xinput1_3` stand-in; verified 2026-10-05) →
+   `[x]` `mwtool tune`: live tuning menu beside the game (global `.bss` constants + the player car's fields,
+   data pokes, restored on quit; verified on the running game 2026-10-05; probe.md "Tuning menu") →
+   `[ ]` Tier 1 `crates/mw-probe` logging hooks: the detour installer is **not written by the assistant**
+   (its safety system stopped it twice, the second time on 2026-10-05 when asked to try again for an in-game
+   overlay; probe.md "Status"); the user decides how that step is done →
+   `[ ]` first measurements: N and caps in a steady corner, side force in a brake-tap drift, handbrake lock →
+   `[ ]` Tier 2: handling maths into a Bevy-free `mw-handling` crate, the lateral curve as the first
+   in-place replacement validated with `orig run` + `mwtool compare`.
 3. `[~]` Cameras from each car's `VehicleCameraContainer` (`camera.rs`, 2026-10-04): chase, bonnet and bumper
    modes (C / gamepad Y, `--camera-mode`); the chase camera's yaw spring (speed band, drift spring), speed
    movement, acceleration spring, roll and pitch from the named thresholds, high-speed and impact shake, world
@@ -328,6 +344,7 @@ code side (game modes, HSMs, AI) next to the data. Roughly in dependency order:
 | Corpus health | `mwtool verify` must stay at 0 failures; add per-type parse checks as parsers land (`mwtool verify --parse`) |
 | Visual | fixed viewpoints via `--camera … --screenshot`. Keep a list of named viewpoints in `docs/viewpoints.md`; images stay local (they contain game content) |
 | Behaviour (physics, AI) | scripted scenarios with recorded telemetry, compared against reference captures from the real game |
+| Ported functions | the Rust port runs *inside* the original in place of the game's function (the probe, [probe.md](probe.md) Tier 2); the same scripted manoeuvre with and without it must give the same telemetry |
 
 Before calling a format "done": it must parse every instance in the install without error, and the result
 must be checked visually or numerically against a known real-world value (as the 911's dimensions confirmed the
@@ -342,7 +359,8 @@ SNORM ×10 scale).
 | Code-only behaviour (handling, AI) can't be ported | Data-driven reimplementation; match feel empirically; document divergences |
 | Shader look depends on unknown shader code | `ShaderProgramBuffer` (0x8) holds compiled DXBC. Disassembling the bytecode (data, not the exe) can reveal lighting maths. Consider DXBC→WGSL translation later, as IW4L does for SM3 |
 | Bevy API churn | Pin version; isolate engine code; upgrade in dedicated changes |
-| Legal | No assets or decompiled code in the repo; no DRM circumvention tooling; game install required |
+| Legal | No assets or decompiled code in the repo; no DRM circumvention tooling; game install required. The probe runs only in the user's own licensed copy, offline, after the game has unpacked itself, and never touches the wrapper or licence code (reverse-engineering.md "Code inside the running game") |
+| The DRM wrapper rejects in-memory patches | Phase 0 of the probe tests one patch for ten minutes of play; fallback is hardware breakpoints (no code change) |
 | Scope | Ship vertical slices (drive in city) before breadth |
 
 ---
@@ -354,6 +372,8 @@ the running original (`tools/orig/orig` drives it, `mwtool capture` / `--replay`
 
 1. **Handling against the original** (M3.2): the 2nd-gear clutch bug found by the first reference run
    (`ref/xkr_launch`), then braking, handbrake, drift, cornering and donut runs; the drift side force.
+   In parallel, the probe ([probe.md](probe.md)): Tier 0 `memscan poke` first (a day, no toolchain), then the
+   load path and the logging DLL, which is what finally measures N, the grip caps and the side force.
 2. **Tyre screech "horn"** (M5.4) and the **yellow tint** (M1.5 / M1.7): both are visible / audible every
    second of play.
 3. **Input mapping** like the original (M3.9) and the **crash camera** (M3.3).

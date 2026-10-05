@@ -11,6 +11,8 @@ user's install (IW4L-style). Read these before starting work:
   rules for the user's decompiled dump in `re/`.
 - [docs/decomp.md](docs/decomp.md): what the game's code says (handling maths, update loop), from that dump.
 - [docs/handling.md](docs/handling.md): GeneSys handling field mappings, model constants, test results.
+- [docs/probe.md](docs/probe.md): code inside the running original (measurement hooks, pokes, in-place
+  verification of ports); its policy is in reverse-engineering.md "Code inside the running game".
 - [docs/next-session.md](docs/next-session.md): handoff from the last session (if present): start there.
 
 ## Hard rules
@@ -18,6 +20,9 @@ user's install (IW4L-style). Read these before starting work:
 - **Never commit game data or anything derived from it**: extracted resources, DDS/PNG/OBJ exports,
   Ghidra databases, decompiled code (findings go into docs in prose only). Use the session scratchpad or git-ignored dirs (`/extracted`, `/re/out`).
 - Community references (burnout.wiki, DGIorio's MIT tools) may be read for format knowledge; don't copy code.
+- **Code in the running game only as the probe policy allows** (docs/reverse-engineering.md): the user's own
+  copy, offline, after it has unpacked itself, never the DRM wrapper or licence code, never the game's files.
+  Byte signatures and anything from the dump stay in git-ignored `re/`.
 
 ## Fidelity rule: the original is the reference
 
@@ -77,6 +82,12 @@ cargo fmt                                    # rustfmt.toml: max_width 120
 # Measuring the original game (read-only, Linux/Proton; docs/handling.md "Measuring the original")
 ./target/release/mwtool memscan --watch handling.watch        # interactive value scanner; `help`
 ./target/release/mwtool telemetry handling.watch -o run.csv --hz 120
+#   poke / unpoke in memscan, or --poke NFS13.exe+0xd872a0=0.6 on telemetry / capture: change a data value for a run
+./target/release/mwtool tune                  # live tuning menu next to the running game (docs/probe.md "Tuning menu");
+#   pages of handling constants + the player car's fields, restored on quit; --print lists them, --apply loads a preset
+# The probe DLL (docs/probe.md): loads into the running original for one run and logs to ref/probe/<name>/
+cargo build --release -p mw-probe --target i686-pc-windows-gnu    # needs mingw-w64-gcc + the rustup target
+tools/orig/orig launch --probe hello   # orig modules lists the game's DLLs; orig quit removes the copied DLL
 # Drive the original yourself (tools/orig/orig --help): it runs headless in gamescope (always focused, input
 # only through gamescope's display, screenshots via gamescopectl); one-time: `tools/orig/orig setup` and set the
 # printed Steam launch option. Look at each screenshot before choosing the next input.

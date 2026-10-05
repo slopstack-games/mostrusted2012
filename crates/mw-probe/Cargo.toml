@@ -1,0 +1,18 @@
+[package]
+name = "mw-probe"
+description = "Measurement probe loaded into the running original game (docs/probe.md): a 32-bit Windows DLL"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[features]
+# Which system DLL the probe stands in for (the game loads it by name after unpacking; `orig modules`
+# lists the candidates). Exactly one.
+default = ["proxy-xinput1_3"]
+proxy-xinput1_3 = []
+proxy-dinput8 = []
+
+[dependencies]

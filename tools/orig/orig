@@ -18,6 +18,12 @@ Typical use:
 Everything is read-only towards the game's files and code: inputs are synthetic key / pad events, memory is
 only read. Keep the game offline.
 
+`orig launch --probe` additionally loads the probe DLL (crates/mw-probe, docs/probe.md) into the game for that
+run only: the built DLL is copied next to NFS13.exe under the name of a system DLL the game loads
+(--proxy, default xinput1_3), that name is overridden to "native" through WINEDLLOVERRIDES, and MW_PROBE_OUT
+names the directory it logs into (ref/probe/<name>/). `orig quit` (and the next `launch`) removes the copy.
+`orig modules` lists the DLLs the running game has loaded, to choose the proxy name.
+
 Input notes (2026-10-04, the 1.4 Steam build under Proton):
 - Keyboard events reach the game only after `activate()` (sent automatically): headless gamescope never sends
   WM_TAKE_FOCUS, and Wine ignores keys for a window it does not consider active.
@@ -39,6 +45,7 @@ from pathlib import Path
 
 APP_ID = "1262560"
 REPO = Path(__file__).resolve().parents[2]
+PROBE_DLL = REPO / "target" / "i686-pc-windows-gnu" / "release" / "mw_probe.dll"
 STATE = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "mostrusted-orig"
 WRAP = Path(__file__).resolve().parent / "orig-wrap"
 WATCH = REPO / "handling.watch"
@@ -379,11 +386,68 @@ def wait_for_display(timeout):
     return False
 
 
-def write_request(args):
+def write_request(args, extra=""):
     STATE.mkdir(parents=True, exist_ok=True)
     w, h = args.size.lower().split("x")
-    (STATE / "request").write_text(f"W={int(w)}\nH={int(h)}\nBACKEND={'wayland' if args.visible else 'headless'}\n")
+    (STATE / "request").write_text(f"W={int(w)}\nH={int(h)}\nBACKEND={'wayland' if args.visible else 'headless'}\n"
+                                   + extra)
     (STATE / "state.env").unlink(missing_ok=True)
+
+
+# --- the probe DLL (docs/probe.md) ----------------------------------------------------------------------
+
+
+def game_dir():
+    d = os.environ.get("MW_GAME_DIR")
+    cands = [Path(d)] if d else []
+    cands += [Path.home() / ".local/share/Steam/steamapps/common/Need for Speed(TM) Most Wanted",
+              Path.home() / ".steam/steam/steamapps/common/Need for Speed(TM) Most Wanted"]
+    for c in cands:
+        if (c / "NFS13.exe").exists():
+            return c
+    sys.exit("game directory not found (set MW_GAME_DIR)")
+
+
+def probe_cleanup():
+    """Remove the proxy DLL a previous probe run placed next to the game (recorded in the state dir)."""
+    f = STATE / "probe.dll"
+    if f.exists():
+        target = Path(f.read_text().strip())
+        if target.exists():
+            target.unlink()
+            log(f"removed {target}")
+        f.unlink()
+
+
+def probe_setup(args):
+    """Copy the built probe next to NFS13.exe as <proxy>.dll; return the request lines that enable it."""
+    if not PROBE_DLL.exists():
+        sys.exit(f"{PROBE_DLL} not built: cargo build --release -p mw-probe --target i686-pc-windows-gnu"
+                 + ("" if args.proxy == "xinput1_3" else f" --no-default-features --features proxy-{args.proxy}"))
+    target = game_dir() / f"{args.proxy}.dll"
+    if target.exists():
+        sys.exit(f"{target} already exists and is not ours; refusing to overwrite a game file")
+    import shutil
+    shutil.copy2(PROBE_DLL, target)
+    (STATE / "probe.dll").write_text(str(target))
+    out = REPO / "ref" / "probe" / (args.probe if isinstance(args.probe, str) else time.strftime("%Y%m%d-%H%M%S"))
+    out.mkdir(parents=True, exist_ok=True)
+    log(f"probe: {target.name} placed, log in {out}")
+    return f"PROBE_OVERRIDE={args.proxy}=n,b\nPROBE_OUT={out}\n"
+
+
+def cmd_modules(_):
+    pid = game_pid()
+    if not pid:
+        sys.exit("the game is not running")
+    seen = {}
+    for line in open(f"/proc/{pid}/maps"):
+        parts = line.split(None, 5)
+        path = parts[5].strip() if len(parts) > 5 else ""
+        if path.lower().endswith((".dll", ".exe")):
+            seen.setdefault(path.rsplit("/", 1)[-1].lower(), path)
+    for name in sorted(seen):
+        print(f"{name:32} {seen[name]}")
 
 
 def cmd_setup(_):
@@ -412,9 +476,10 @@ def cmd_setup(_):
 def cmd_launch(args):
     if game_pid():
         sys.exit("the game is already running; quit it first (a normal launch is not controllable)")
+    probe_cleanup()
     if not args.no_pad:
         cmd_pad_up(args)  # present from the start, so Steam Input / Wine pick it up
-    write_request(args)
+    write_request(args, probe_setup(args) if args.probe is not None else "")
     log(f"launching app {APP_ID} through Steam into gamescope ({args.size}, "
         f"{'visible window' if args.visible else 'headless'})")
     subprocess.Popen(["steam", f"steam://rungameid/{APP_ID}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -458,6 +523,7 @@ def cmd_status(_):
 
 def cmd_quit(_):
     cmd_pad_down(None)
+    probe_cleanup()
     f = STATE / "gamescope.pid"
     if f.exists():
         pid = int(f.read_text().strip() or 0)
@@ -620,8 +686,14 @@ def main():
         p.add_argument("--no-pad", action="store_true", help="do not start the virtual pad first")
         if name == "run-in":
             p.add_argument("command", nargs=argparse.REMAINDER)
+        else:
+            p.add_argument("--probe", nargs="?", const=True, default=None, metavar="NAME",
+                           help="load the probe DLL for this run (docs/probe.md); logs to ref/probe/NAME")
+            p.add_argument("--proxy", default="xinput1_3",
+                           help="system DLL name the probe stands in for (see `orig modules`)")
         p.set_defaults(f=f)
     sub.add_parser("status").set_defaults(f=cmd_status)
+    sub.add_parser("modules", help="DLLs loaded by the running game (to choose --proxy)").set_defaults(f=cmd_modules)
     sub.add_parser("pad-up", help="start the virtual pad (background)").set_defaults(f=cmd_pad_up)
     sub.add_parser("pad-down", help="remove the virtual pad").set_defaults(f=cmd_pad_down)
     sub.add_parser("_pad-serve").set_defaults(f=cmd_pad_serve)

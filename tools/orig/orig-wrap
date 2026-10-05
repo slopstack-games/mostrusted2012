@@ -13,6 +13,11 @@ if [ -f "$DIR/request" ]; then
     . "$DIR/request"
     rm -f "$DIR/request" "$DIR/state.env"
     echo $$ > "$DIR/gamescope.pid"
+    # The probe (docs/probe.md): only for runs that asked for it. Proton appends its own overrides to ours.
+    if [ -n "$PROBE_OVERRIDE" ]; then
+        export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:+$WINEDLLOVERRIDES;}$PROBE_OVERRIDE"
+        export MW_PROBE_OUT="$PROBE_OUT"
+    fi
     exec gamescope --backend "${BACKEND:-headless}" -W "${W:-1280}" -H "${H:-720}" -w "${W:-1280}" -h "${H:-720}" \
         -- sh -c 'env | grep -E "^(DISPLAY|GAMESCOPE_WAYLAND_DISPLAY)=" > "$0/state.env"; exec "$@"' "$DIR" "$@"
 fi

@@ -1,9 +1,11 @@
-//! Read-only memory scanner and telemetry recorder for the running original game (Linux / Proton).
+//! Memory scanner, telemetry recorder and data poker for the running original game (Linux / Proton).
 //!
 //! This watches the game's *data* while it runs (car speed, drift state, ...) to measure behaviour the
-//! handling model has to reproduce. It only reads `/proc/<pid>/mem` of a process the user owns: nothing is
-//! written, injected or patched, and code is never read or disassembled (the executable's code is DRM
-//! protected; see docs/reverse-engineering.md).
+//! handling model has to reproduce, through `/proc/<pid>/mem` of a process the user owns. Scanning and
+//! telemetry only read. `poke` writes a data value (to learn what a constant does; docs/probe.md "Tier 0")
+//! and remembers the original, which `unpoke` or exit restores; it refuses addresses outside writable,
+//! non-executable mappings, so code is never touched (docs/reverse-engineering.md, "Code inside the running
+//! game"). Code is never read or disassembled here.
 //!
 //! Reading another process needs ptrace permission. With `kernel.yama.ptrace_scope = 1` (the usual default)
 //! either run `sudo sysctl kernel.yama.ptrace_scope=0` for the session, or give the binary the capability:
@@ -35,12 +37,15 @@ pub struct Region {
     pub start: u64,
     pub end: u64,
     pub writable: bool,
+    pub executable: bool,
     pub path: String,
 }
 
 pub struct Process {
     pub pid: u32,
     mem: File,
+    /// `/proc/<pid>/mem` opened for writing, only once something is poked.
+    mem_rw: std::sync::Mutex<Option<File>>,
 }
 
 impl Process {
@@ -56,7 +61,7 @@ impl Process {
                 anyhow::Error::new(e).context(path.clone())
             }
         })?;
-        Ok(Self { pid, mem })
+        Ok(Self { pid, mem, mem_rw: std::sync::Mutex::new(None) })
     }
 
     /// The process whose command line names `name` (case-insensitive basename match); with several, the
@@ -127,6 +132,89 @@ impl Process {
         let n = ty.size();
         self.read(addr, &mut b[..n]).then(|| ty.decode(&b[..n]))
     }
+
+    /// Write `data` at `addr`, only inside a writable, non-executable mapping below 4 GiB (the game's data;
+    /// never its code, never host libraries). `/proc/<pid>/mem` itself would write anywhere, so this check is
+    /// the rule.
+    pub fn write(&self, addr: u64, data: &[u8]) -> Result<()> {
+        let end = addr + data.len() as u64;
+        let ok = self
+            .regions()?
+            .iter()
+            .any(|r| r.writable && !r.executable && r.end <= 1 << 32 && addr >= r.start && end <= r.end);
+        if !ok {
+            bail!("{addr:#010x} is not in a writable, non-executable data mapping of the game: refusing to write");
+        }
+        let mut guard = self.mem_rw.lock().unwrap_or_else(|e| e.into_inner());
+        if guard.is_none() {
+            let f = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(format!("/proc/{}/mem", self.pid))
+                .context("opening the process memory for writing")?;
+            *guard = Some(f);
+        }
+        guard.as_ref().unwrap().write_all_at(data, addr).with_context(|| format!("writing {addr:#010x}"))
+    }
+}
+
+/// Data values written into the game with their original bytes, so they can be put back.
+#[derive(Default)]
+pub struct Pokes(Vec<(u64, Ty, Vec<u8>)>);
+
+impl Pokes {
+    /// Write `value` as `ty` at `addr`; the first poke of an address remembers what was there.
+    pub fn poke(&mut self, p: &Process, addr: u64, ty: Ty, value: f64) -> Result<f64> {
+        let n = ty.size();
+        let mut old = vec![0u8; n];
+        if !p.read(addr, &mut old) {
+            bail!("cannot read {addr:#010x}");
+        }
+        let new = ty.encode(value);
+        p.write(addr, &new[..n])?;
+        let before = ty.decode(&old);
+        if !self.0.iter().any(|(a, _, _)| *a == addr) {
+            self.0.push((addr, ty, old));
+        }
+        Ok(before)
+    }
+
+    /// Restore one address (`Some`) or all of them (`None`); returns how many were restored.
+    pub fn restore(&mut self, p: &Process, addr: Option<u64>) -> usize {
+        let mut n = 0;
+        self.0.retain(|(a, _, old)| {
+            if addr.is_some_and(|x| x != *a) {
+                return true;
+            }
+            match p.write(*a, old) {
+                Ok(()) => n += 1,
+                Err(e) => eprintln!("could not restore {a:#010x}: {e}"),
+            }
+            false
+        });
+        n
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn list(&self) -> impl Iterator<Item = (u64, Ty, f64)> + '_ {
+        self.0.iter().map(|(a, ty, old)| (*a, *ty, ty.decode(old)))
+    }
+
+    /// Drop the record of a poked address without writing anything back: for a field of an object the game
+    /// has since freed (the player's car was replaced), where restoring would write into reused memory.
+    pub fn forget(&mut self, addr: u64) -> bool {
+        let n = self.0.len();
+        self.0.retain(|(a, _, _)| *a != addr);
+        self.0.len() != n
+    }
+
+    /// The value an address held before its first poke, if it was poked.
+    pub fn original(&self, addr: u64) -> Option<f64> {
+        self.0.iter().find(|(a, _, _)| *a == addr).map(|(_, ty, old)| ty.decode(old))
+    }
 }
 
 fn parse_maps_line(line: &str) -> Option<Region> {
@@ -139,6 +227,7 @@ fn parse_maps_line(line: &str) -> Option<Region> {
         start: u64::from_str_radix(start, 16).ok()?,
         end: u64::from_str_radix(end, 16).ok()?,
         writable: perms.as_bytes().get(1) == Some(&b'w'),
+        executable: perms.as_bytes().get(2) == Some(&b'x'),
         path,
     })
 }
@@ -180,6 +269,15 @@ impl Ty {
             Ty::F32 => f32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f64,
             Ty::I32 => i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f64,
             Ty::U8 => b[0] as f64,
+        }
+    }
+
+    /// Little-endian bytes of `v` as this type (the first `size()` bytes are meaningful).
+    pub fn encode(self, v: f64) -> [u8; 4] {
+        match self {
+            Ty::F32 => (v as f32).to_le_bytes(),
+            Ty::I32 => (v as i32).to_le_bytes(),
+            Ty::U8 => [v as u8, 0, 0, 0],
         }
     }
 
@@ -447,6 +545,33 @@ pub fn read_watch_file(path: &Path) -> Result<Vec<Watch>> {
     text.lines().filter_map(|l| Watch::parse(l).transpose()).collect()
 }
 
+/// Apply `--poke` specs (`watch-name=value`, `addr=value`, `addr:i32=value`) and return them for restoring.
+pub fn apply_pokes(p: &Process, watches: &[Watch], specs: &[String]) -> Result<Pokes> {
+    let mut pokes = Pokes::default();
+    let mut modules = ModuleCache::default();
+    for spec in specs {
+        let (target, value) = spec.split_once('=').with_context(|| format!("--poke {spec}: expected target=value"))?;
+        let value: f64 = value.trim().parse().with_context(|| format!("--poke {spec}: bad value"))?;
+        let (addr, ty) = match watches.iter().find(|w| w.name == target.trim()) {
+            Some(w) => (w.resolve(p, &mut modules).with_context(|| format!("{} does not resolve", w.name))?, w.ty),
+            None => {
+                let (addr, ty) = match target.split_once(':') {
+                    Some((a, t)) => (a, Ty::parse(t.trim())?),
+                    None => (target, Ty::F32),
+                };
+                let addr = match parse_base(addr.trim())? {
+                    Base::Absolute(a) => a,
+                    Base::Module(m, off) => p.module_base(&m)? + off,
+                };
+                (addr, ty)
+            }
+        };
+        let before = pokes.poke(p, addr, ty, value)?;
+        eprintln!("poked {addr:#010x}: {before} -> {value} (restored at the end)");
+    }
+    Ok(pokes)
+}
+
 /// Describe an address: `module+0x…` when it lies in a mapped file, else the absolute address.
 fn describe(regions: &[Region], addr: u64) -> String {
     match regions.iter().find(|r| (r.start..r.end).contains(&addr) && !r.path.is_empty()) {
@@ -469,6 +594,9 @@ watch <addr|#i> ... [secs]                       print values every 100 ms (defa
 dump <addr> [words]                              words around an address as hex / i32 / f32
 ptr <addr> [max_offset]                          find 32-bit pointers to [addr - max_offset, addr]
 save <name> <type> <addr|#i|module+off> [offsets...]   append a value to the watch file
+poke <addr|#i|module+off|watch-name> <value> [type]     write a data value (type: the watch's, else f32);
+                                                 the original is restored by unpoke or at exit
+unpoke [addr|all]                                restore poked values; `pokes` lists them
 help | quit";
 
 /// The interactive scanner.
@@ -476,23 +604,53 @@ pub fn repl(p: &Process, watch_file: &Path, all_regions: bool) -> Result<()> {
     println!("attached to pid {} (read-only); watch file {}; `help` for commands", p.pid, watch_file.display());
     let mut scan: Option<Scan> = None;
     let mut listed: Vec<u64> = Vec::new();
+    let mut pokes = Pokes::default();
     let stdin = std::io::stdin();
-    loop {
+    let result = loop {
         print!("> ");
         std::io::stdout().flush()?;
         let mut line = String::new();
         if stdin.lock().read_line(&mut line)? == 0 {
-            return Ok(());
+            break Ok(());
         }
         let args: Vec<&str> = line.split_whitespace().collect();
         let Some(&cmd) = args.first() else { continue };
-        if let Err(e) = repl_command(p, cmd, &args[1..], &mut scan, &mut listed, watch_file, all_regions) {
+        let mut st = ReplState { scan: &mut scan, listed: &mut listed, pokes: &mut pokes, watch_file, all_regions };
+        if let Err(e) = repl_command(p, cmd, &args[1..], &mut st) {
             if e.to_string() == "quit" {
-                return Ok(());
+                break Ok(());
             }
             println!("error: {e:#}");
         }
+    };
+    if !pokes.is_empty() {
+        let n = pokes.restore(p, None);
+        println!("restored {n} poked value(s)");
     }
+    result
+}
+
+struct ReplState<'a> {
+    scan: &'a mut Option<Scan>,
+    listed: &'a mut Vec<u64>,
+    pokes: &'a mut Pokes,
+    watch_file: &'a Path,
+    all_regions: bool,
+}
+
+/// `poke` target: a watch name (type from the watch file) or an address.
+fn poke_target(arg: &str, ty: Option<&str>, st: &ReplState, p: &Process) -> Result<(u64, Ty)> {
+    if let Ok(watches) = read_watch_file(st.watch_file)
+        && let Some(w) = watches.iter().find(|w| w.name == arg)
+    {
+        let addr = w.resolve(p, &mut ModuleCache::default()).with_context(|| format!("{arg} does not resolve"))?;
+        return Ok((addr, ty.map(Ty::parse).transpose()?.unwrap_or(w.ty)));
+    }
+    let ty = match ty {
+        Some(t) => Ty::parse(t)?,
+        None => st.scan.as_ref().map_or(Ty::F32, |s| s.ty),
+    };
+    Ok((resolve_addr(arg, st.listed, p)?, ty))
 }
 
 fn parse_filter(cmd: &str, args: &[&str], ty: Ty) -> Result<Option<Filter>> {
@@ -528,18 +686,34 @@ fn resolve_addr(arg: &str, listed: &[u64], p: &Process) -> Result<u64> {
     }
 }
 
-fn repl_command(
-    p: &Process,
-    cmd: &str,
-    args: &[&str],
-    scan: &mut Option<Scan>,
-    listed: &mut Vec<u64>,
-    watch_file: &Path,
-    all_regions: bool,
-) -> Result<()> {
+fn repl_command(p: &Process, cmd: &str, args: &[&str], st: &mut ReplState) -> Result<()> {
+    let ReplState { scan, listed, watch_file, all_regions, .. } = st;
+    let (scan, listed, watch_file, all_regions) = (&mut **scan, &mut **listed, *watch_file, *all_regions);
     match cmd {
         "help" | "?" => println!("{HELP}"),
         "quit" | "exit" | "q" => bail!("quit"),
+        "poke" => {
+            let [target, value, ty @ ..] = args else { bail!("poke <addr|#i|module+off|watch-name> <value> [type]") };
+            let value: f64 = value.parse().with_context(|| format!("bad value {value}"))?;
+            let (addr, ty) = poke_target(target, ty.first().copied(), st, p)?;
+            let before = st.pokes.poke(p, addr, ty, value)?;
+            let now = p.read_value(ty, addr).unwrap_or(f64::NAN);
+            println!("poked {}: {before} -> {now}", describe(&p.regions()?, addr));
+        }
+        "unpoke" => {
+            let which = match args.first() {
+                None | Some(&"all") => None,
+                Some(a) => Some(resolve_addr(a, listed, p)?),
+            };
+            let n = st.pokes.restore(p, which);
+            println!("restored {n} value(s)");
+        }
+        "pokes" => {
+            for (a, ty, orig) in st.pokes.list() {
+                let now = p.read_value(ty, a).unwrap_or(f64::NAN);
+                println!("{}  original {orig}  now {now}", describe(&p.regions()?, a));
+            }
+        }
         "scan" => {
             let ty = Ty::parse(args.first().context("scan <type> ...")?)?;
             let first = match args.get(1) {

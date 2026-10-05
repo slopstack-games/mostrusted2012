@@ -310,9 +310,10 @@ car's response, not where it ends up on the map.
 Stopwatch measurements only give end results. To see *how* the original's handling works (when a drift
 triggers, how the drift scale builds and decays, how grip falls off with slip), read the car's state from the
 running game's memory and log it every frame. `mwtool memscan` and `mwtool telemetry`
-(`crates/mwtool/src/memscan.rs`) are **read-only**: they read data values from `/proc/<pid>/mem` of the
-game process the user is running. Nothing is written or injected, and the protected code is never read,
-traced or disassembled (docs/reverse-engineering.md). Linux / Proton only for now.
+(`crates/mwtool/src/memscan.rs`) read data values from `/proc/<pid>/mem` of the game process the user is
+running; the protected code is never read, traced or disassembled (docs/reverse-engineering.md). Since
+2026-10-05 `poke` (and `--poke name=value` on `telemetry` / `capture`) writes a *data* value for an experiment
+and restores it afterwards; code mappings are refused (docs/probe.md "Tier 0"). Linux / Proton only for now.
 
 **Setup (once per boot):** `sudo sysctl kernel.yama.ptrace_scope=0` (or `sudo setcap cap_sys_ptrace+ep
 target/release/mwtool` after each build). Start the game, enter free roam, then in a terminal:

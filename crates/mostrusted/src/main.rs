@@ -6,12 +6,11 @@
 mod audio;
 mod camera;
 mod chassis;
+use mw_handling::{drift, drivetrain, tyre};
 mod convert;
 mod damage;
 mod deferred;
-mod drift;
 mod drive;
-mod drivetrain;
 mod game_text;
 mod garage;
 mod hud;
@@ -26,7 +25,6 @@ mod settings;
 mod sfx;
 mod sky;
 mod tonemap;
-mod tyre;
 mod weather;
 
 use std::collections::HashMap;

@@ -20,6 +20,14 @@ runs"), the session-3 entries at the top of [research-log.md](research-log.md), 
 - **Reference runs**: `mwtool capture <name>` (state + the game's audio into `ref/<name>/`), `mostrusted --drive
   <car> --replay ref/<name>/telemetry.csv`, `mwtool compare ref/<name>/telemetry.csv ref/<name>/telemetry.ours.csv`.
 - **Constants** from the running game: `mwtool memscan` (`dump NFS13.exe+0x<addr − 0x400000>`).
+- **Live tuning**: `mwtool tune` beside the running game changes handling constants and the player car's fields
+  with a keypress and restores them on quit ([probe.md](probe.md) "Tuning menu"). Next for it: find the pointer
+  from the vehicle object to its GeneSys handling resource so grip curves, gear ratios and drift data can go on it.
+- **The probe** ([probe.md](probe.md) "Status"): `memscan poke` works (Tier 0), and the DLL loads into the
+  running game through `orig launch --probe <name>` as an `xinput1_3` stand-in and logs readiness to
+  `ref/probe/<name>/probe.log` (Phase 0). The function-patching step (Tier 1) is not written and the assistant
+  will not write it; the user decides how to proceed. Until then, unmeasured quantities come from pokes and
+  telemetry: e.g. `mwtool capture corner --poke NFS13.exe+0xd872a0=0.6` halves the drag constant for one run.
 
 ## Next, in order
 
