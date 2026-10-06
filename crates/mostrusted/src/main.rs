@@ -4,6 +4,7 @@
 //! installed copy of the game (see `mw-gamedir` for how it is located).
 
 mod audio;
+mod bench;
 mod camera;
 mod car_anim;
 mod chassis;
@@ -90,6 +91,13 @@ struct Cli {
     /// Log the mean and worst frame time every 5 s once loading has finished (turns vsync off).
     #[arg(long)]
     frame_stats: bool,
+    /// Benchmark: once loaded and warmed up, measure this many seconds, print a `BENCH RESULT` line and exit
+    /// (turns vsync off; `bench.rs`).
+    #[arg(long)]
+    bench: Option<f32>,
+    /// Debug: the key light casts no shadows (benchmark attribution).
+    #[arg(long)]
+    no_shadows: bool,
     /// Crash test: wall angle in degrees (0 = head-on, 30 = the front-left corner hits first).
     #[arg(long, default_value_t = 0.0, allow_hyphen_values = true)]
     crash_angle: f32,
@@ -289,6 +297,12 @@ pub struct StatusText;
 fn main() -> anyhow::Result<()> {
     drive::install_gamepad_mappings();
     let cli = Cli::parse();
+    if cli.bench.is_some() && std::env::var_os("WAYLAND_DISPLAY").is_some() && std::env::var_os("DISPLAY").is_some() {
+        // Wayland offers no Immediate present mode and paces Mailbox at the monitor's refresh: benchmark
+        // through XWayland, where `AutoNoVsync` gets Immediate (`bench.rs`).
+        // SAFETY: no other thread has started yet.
+        unsafe { std::env::remove_var("WAYLAND_DISPLAY") };
+    }
     let game = GameDir::locate(cli.game_dir.as_deref())?;
     println!("Most Wanted install: {} (version {})", game.root().display(), game.version().unwrap_or("?"));
     let t = Instant::now();
@@ -412,7 +426,7 @@ fn main() -> anyhow::Result<()> {
         primary_window: Some(Window {
             title: "Most Rusted".into(),
             // Unthrottled frames for `--frame-stats`.
-            present_mode: if cli.frame_stats {
+            present_mode: if cli.frame_stats || cli.bench.is_some() {
                 bevy::window::PresentMode::AutoNoVsync
             } else {
                 bevy::window::PresentMode::default()
@@ -468,6 +482,13 @@ fn main() -> anyhow::Result<()> {
     }
     if cli.frame_stats {
         app.add_systems(Update, log_frame_stats);
+    }
+    if let Some(seconds) = cli.bench {
+        let label = std::env::args().skip(1).filter(|a| a != "--mute").collect::<Vec<_>>().join(" ");
+        app.add_plugins(bench::BenchPlugin { seconds, label });
+    }
+    if cli.no_shadows {
+        app.add_systems(PostUpdate, bench::disable_shadows);
     }
     if cli.gamepad_debug {
         app.add_systems(Update, drive::log_gamepad_events);
