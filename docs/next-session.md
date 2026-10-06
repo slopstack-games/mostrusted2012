@@ -47,6 +47,44 @@ the details, [PLAN.md](PLAN.md) "Where it stands" the state per gap.
   when their prop breaks). Not found: Speed Points, the jack-spot swap, junction behaviour, the switch from a
   lane follower to a physical car.
 
+## Round 3 (evening): the user's later reports and requests
+
+- **Cars sinking into the floor** after landings and steep climbs: fixed. The game makes the end of the strut a
+  hard contact on the chassis (`FUN_009c5a90` → `FUN_009c2670`); ported as `strut_stops` in drive.rs. New
+  tests: `--test landing | climb | jitter` (`MW_SUSP_TRACE=<file>` logs every tick). 911: landing sink 0.055 m
+  (was stuck 0.48 m low), climb ends on the plateau. Model decisions: stop slack 0 (`.bss` 0x01186bf0 /
+  0x01186b10), 4 passes, the wheel ray starting one radius above the mount.
+- **Jitter**: measured, not fixed: the body rolls ±0.2° at 11.2 Hz at 100 km/h (0.06° at rest). It is the
+  anti-roll bar's damper (previous tick's compression rates at 1.2 × critical) ringing; with that damper off
+  the roll drops to 0.008°. The bar's units and where the game applies it are not traced: do that first.
+- **"Stuck in a gear"**: the game switches to each car's `CruisingGearbox` after 3 s of part throttle
+  (`FUN_009ce630`, `FUN_00900660`) and back above 0.95 pedal; ported. Open: 1st gear still runs to ~0.95 × the
+  race `Gear_up_RPM` at part throttle (the launch state closes the clutch late; our partly engaged clutch is
+  nearly rigid: port the slip in `FUN_009d7ac0`); the sound side was not looked at.
+- **Fog / floating trees**: Bevy draws `AlphaMode::Mask` materials a second time in its forward pass even when
+  they are deferred, so trees and every 1-bit look were lit and fogged, then painted over without fog. The
+  forward branch of `layered.wgsl` now discards in that case. Open: hills beyond 500 m are still flat fog
+  colour (the Fog pass multiplies t by the alpha of a gradient texture whose builder was not found; ours uses
+  alpha 1), the height-layer term (`LayerFogCoeffs`), fog on forward glass / particles.
+- **Liveries**: drawn (`VehicleNFS13_BodyPaint_Livery*`: the car's own diffuse texture over the paint by its
+  alpha). **Dirt does not work**: the maths is ported behind `--dirt <dirt>[,<dust>]` but the colours come out
+  pink / cyan (the paint's `DirtColour` / `DustColour` are the expected brown / beige, so the fault is in our
+  path). Open: that, the second paint colour of two-tone cars, who sets the dirt amounts, scratches.
+- **Nitrous**: `FUN_009d2aa0` ported (`crates/mw-handling/src/nitrous.rs`; Left Shift / pad A; the HUD gauge
+  follows the tank; `--test nitrous`: 911 0–100 km/h 3.47 s against 3.72 s). Model decisions: the multiplier
+  scales engine torque (its reader was not found), tank capacity 100, starts full, no refill (the refill events
+  are in `NitrousParameters`, the tank code is not traced); punch / jump modes need `.bss` 0x0118a018.
+- **Mods**: the upgrade profile (`FUN_00574870`: 50 entries of operand, op, parameter index; value × Π + Σ) and
+  the data (`Vehicles.PerformanceUpgrades`; `mwtool mods <car>`) are decoded; **nothing applies them yet**.
+  Next: the parameter index → handling field map (call sites pass 0x00–0x36), then `--mods`.
+- **Active aero**: `AnimationStateBehaviour` (an `HSMData` state machine + `Animation` clips on the damage
+  skeleton). Cars whose rule is one clip on speed alone run (911, LFA, SLS, SL65, Panamera, 918: deploy at the
+  state's speed, e.g. 70 mph, retract below the lower operand); `--anim all=1` poses any car's parts in
+  `--drive`. Open: decoding the state machine layout (air brakes on `brake`, flaps on `steering`), the
+  evaluator code, whether a deployed wing changes the aero.
+- Seen, not investigated: at the default spawn the car loses ~18 km/h in one spot of the road shoulder
+  (z ≈ 1716), before and after this round.
+
 ## Live reads wanted (the original running; `sudo sysctl kernel.yama.ptrace_scope=0` first, ask the user)
 
 `mwtool memscan`: `dump NFS13.exe+0x<addr − 0x400000>` for `.bss`; object fields through `handling.watch`.
@@ -71,6 +109,10 @@ the details, [PLAN.md](PLAN.md) "Where it stands" the state per gap.
 | texture first-mip flag | global at 0x010eac98 (checked by `FUN_00414a50`) | whether the original skips the top mip of every texture |
 | groundcover size | constant-buffer slot 0x7F (`GroundcoverConstants`, `cb1[0].x`) | sprite size in metres |
 | free-roam state | game-state bytes +0x2e90, +0x2e91, +0x2e95 | gates on the collectable handler |
+| fog | constant slots 0x23 (`ScattCoeffs`), 0x27, 0x83 (`LayerFogCoeffs`) and the gradient texture | whether near / far are scaled; the gradient's alpha; the layer term |
+| strut stop slack | `.bss` 0x01186bf0, 0x01186b10 | the hard stop's slack (0) |
+| nitrous punch scale | `.bss` 0x0118a018 | the punch / jump force |
+| kick-down window | `.bss` 0x011871e0 | cruising → race change time window (1 s) |
 
 ## Next, in order
 

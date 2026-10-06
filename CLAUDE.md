@@ -121,7 +121,8 @@ MW_CAMERA_TRACE=<scratch>/cam.trace ./target/release/mostrusted --drive 911 --te
 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,1720 --units 20 --hour 1.5 --weather --planar-reflection --screenshot <scratch>/wet.png
 ./target/release/mwtool paint-map 010000000002823d --png <scratch>/timelines.png --at=-1158,1700   # WorldPaintMap + zone outlines
 # Handling tests on a flat track (4x real time), prints TEST RESULT lines and exits
-./target/release/mostrusted --drive 911 --test accel     # or brake, corner (skidpad g), handbrake, drift, engine
+./target/release/mostrusted --drive 911 --test accel     # or brake, corner (skidpad g), handbrake, drift, engine,
+#   nitrous, landing, climb, jitter (MW_SUSP_TRACE=<file> logs the suspension every tick)
 ./target/release/mostrusted --drive 911 --test smash --smash-speed 60 --screenshot <scratch>/smash.png   # props: cone, lamp, fence, wall
 ./target/release/mostrusted --drive 911 --units 12 --auto-throttle 0.4 --prop-physics   # props collide in the world (opt-in, WIP)
 ./target/release/mwtool props -v                    # physics of every prop / compound / dynamic object
@@ -130,6 +131,10 @@ MW_CAMERA_TRACE=<scratch>/cam.trace ./target/release/mostrusted --drive 911 --te
 ./target/release/mwtool traffic --png <scratch>/lanes.png   # TrafficLaneData: counts, flows, vehicle lists, lane map
 ./target/release/mwtool freeroam --list --kind SpeedCam     # TriggerData: speed cameras, billboards, gates, jack spots
 ./target/release/mwtool placement-check --top 10             # placements vs the collision under them, per layer / model
+./target/release/mwtool mods 911                             # performance upgrades: slot -> parameter changes
+./target/release/mwtool sampler-usage --filter Driveable     # the game's sampler states per shader slot
+# Car options: --dirt 0.6,0.3 (dirt, dust; colours still wrong), --anim all=1 (pose animated parts in --drive);
+# nitrous is Left Shift / pad A; active aero deploys by the car's own rule
 # The driving HUD (hud.rs) is on in --drive runs except tests: --no-hud, --mph, F3 shows the debug status text
 # Engine RPM every physics tick, for `mwtool engine-sound --trace` (use with --test engine)
 MW_ENGINE_TRACE=<scratch>/rpm.trace ./target/release/mostrusted --drive 911 --test engine
