@@ -147,13 +147,7 @@ the details, [PLAN.md](PLAN.md) "Where it stands" the state per gap.
 
 | What | Where | Used for (assumed today) |
 |---|---|---|
-| clutch torque scale | `.bss` 0x011873e0 (vector) | multiplies the clutch torque in `FUN_009d7ac0` (1) |
-| standstill hold speed limit | `.bss` 0x01186e60 | hold active below this forward speed (0: only rolling backwards) |
-| downshift ground time | `.bss` 0x01187580 | seconds on the ground before a downshift (0) |
-| per-tick → per-second factor | `.bss` 0x01187250 | throttle lag, drift speed hold (60) |
-| clutch-in throttle exponent, stall fraction | `.bss` 0x011874d0, 0x011874a0 | shift throttle return, launch stall |
 | slip-velocity term | `.bss` 0x01186b74 | y term in `FUN_009bc0c0` (not modelled; gravity?) |
-| skid spin scale, load floor | `.bss` 0x0118a060, 0x011870d0 | tyre spin sound ramp |
 | unidentified | `.bss` 0x01186630, 0x01186f60 | named in the drivetrain entry of the research log |
 | tyre blend-input scale | wheel constraint +0x210 | pure → combined slip blends (1; 0 if only the builder writes it) |
 | forced brake mask | controls +0x1c30 during a launch | the 0.45 s launch delay (not modelled) |
@@ -167,8 +161,6 @@ the details, [PLAN.md](PLAN.md) "Where it stands" the state per gap.
 | free-roam state | game-state bytes +0x2e90, +0x2e91, +0x2e95 | gates on the collectable handler |
 | fog | constant slots 0x23 (`ScattCoeffs`), 0x27, 0x83 (`LayerFogCoeffs`) and the gradient texture | whether near / far are scaled; the gradient's alpha; the layer term |
 | strut stop slack | `.bss` 0x01186bf0, 0x01186b10 | the hard stop's slack (0) |
-| nitrous punch scale | `.bss` 0x0118a018 | the punch / jump force |
-| kick-down window | `.bss` 0x011871e0 | cruising → race change time window (1 s) |
 
 ## Next, in order
 

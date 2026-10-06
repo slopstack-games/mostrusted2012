@@ -124,6 +124,41 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-06: the live-read `.bss` values applied to the handling code
+
+Each site re-read in the dump with the value in hand:
+- **Clutch k** 0x011873e0 = 2π/60: `FUN_009d7ac0`'s Δω is engine rpm (+0x20) minus the driveline's rpm
+  (`FUN_009d55f0` multiplies by 60/2π), so k converts it to rad/s. Ours already worked in rad/s: no change.
+- **Standstill hold** 0x01186e60 = −2 (mph, the scale 0x0118a060): the hold acts only when rolling backwards
+  faster than 2 mph, never at rest. Ours was 0; now −2.
+- **Downshift gate** 0x01187580 = 1 s on the ground; 0x01186630 = 1.8 is a speed (body |v| in m/s,
+  `FUN_009ae840`): the ground timer resets only with no wheel down *and* the body faster than 1.8 m/s. Ported.
+- **Clutch-in throttle**: the disassembly (the decompiler lost the `pow` arguments) shows the exponent is a
+  different vector, 0x01187470 = 0.5, and 0x011874d0 = 0.7 is a scale: upshift (`FUN_009d6af0`) throttle =
+  0.7 √progress with no pedal term, downshift (`FUN_009d6ca0`) = pedal × 0.7 √progress. Ported (was pedal ×
+  progress).
+- **Stall** 0x011874a0 = 0.9: rpm < 0.9 `Idle_RPM` drops to standstill (state 2) in the launch (`FUN_009d17d0`)
+  and in `FUN_009d6880`, `FUN_009d95a0`, `FUN_009d6af0`, `FUN_009d69e0`, `FUN_009d6ca0`, `FUN_009da1d0` (not the
+  downshift declutch `FUN_009ce490`). Ported.
+- **Kick-down window** 0x011871e0 = 0.2 s (was 1 s). **Punch** 0x0118a018 = mph → m/s (`Punch.0798d257` is
+  mph/s); `nitrous::PUNCH_SCALE`, modes 1 / 3 still not run. 0x01187250 = 60 confirms the time bases.
+- **Tyre brake hold** `FUN_009bc0c0`: the vector 0x01186b70 is 9.81 in every lane; only its y lane is used: the
+  slip speed is taken from the contact velocity with `param_8 × 9.81` off its vertical component, i.e. the
+  velocity after this tick's gravity if `param_8` is dt (the 4th argument of `FUN_009c6f00`, not traced). Not
+  ported.
+- **Strut stop**: share to the chassis = max(d − min(+0x470, 0.1), 0.1 d) / d (0x01186bf0, 0x01186b10 = 0.1).
+  Equal to ours when the constraint's +0x470 is 0. Dead end: the chain `10edb04,4,53220,184,0` lands on the
+  vehicle (vtable 0x01023758), and the wheel constraint (+0x210 blend-input scale, +0x470) was not located from
+  it in the time available; both stay open.
+- Skid sound: 0x0118a060 confirms mph; 0x011870d0 = −0.1 is compared with +0x108 of an unidentified wheel
+  object in `FUN_009d1bf0` (a signed value, likely travel / contact distance). 0x01186f60 (0.5) not looked at.
+- Telemetry `ref/live1`: the upshift clutch-in lasts 3–4 ticks (clutch 0.25 → 1); the sound load (lagged throttle)
+  stays below 0.7 √progress during it and passes 0.7 only after it, consistent with the 0.7 cap but not a proof
+  (the load is lagged).
+- 911 tests: accel, brake, corner, handbrake, drift, engine unchanged within 0.05 s; nitrous 0–200 km/h
+  10.33 → 10.87 s (the upshift clutch-in throttle is now 0.7 √progress); landing / climb fine (climb
+  overtravel 0.119 → 0.040 m).
+
 ### 2026-10-06 (session 5, late): live-read session against the running original
 
 The user ran the original (free roam, about five minutes: standing, then driving up to 134 mph, then standing);

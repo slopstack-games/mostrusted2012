@@ -40,13 +40,13 @@ const CRUISE_THROTTLE: f32 = 0.95;
 const CRUISE_ENTER_TIME: f32 = 3.0;
 const CRUISE_EXIT_TIME: f32 = 0.05;
 /// After a switch back to the race gearbox, shifts take the cruising gearbox's `Gear_change_time` for this
-/// long (`FUN_009dc3c0`, `.bss` 0x011871e0, not read: model decision).
-const KICKDOWN_WINDOW: f32 = 1.0;
+/// long (`FUN_009dc3c0`, `.bss` 0x011871e0 = 0.2 s, read live 2026-10-06).
+const KICKDOWN_WINDOW: f32 = 0.2;
 /// Downshift on speed this far (mph) below the lower gear's upshift speed (`.bss` 0x011872e0).
 const DOWNSHIFT_HYSTERESIS: f32 = 2.0;
 /// Downshifts wait until the car has been on the ground this long (`FUN_009d93b0`: vehicle +0x1ed0 against
-/// `.bss` 0x01187580, not read; assumed 0 s: no downshift while airborne).
-const DOWNSHIFT_GROUNDED_TIME: f32 = 0.0;
+/// `.bss` 0x01187580 = 1.0 s, read live 2026-10-06).
+const DOWNSHIFT_GROUNDED_TIME: f32 = 1.0;
 /// In gear with neither pedal pressed, the clutch opens below this speed (mph; `.bss` 0x011872d0, inferred
 /// from its lanes 2-3 read live).
 const COAST_DECLUTCH_MPH: f32 = 20.0;
@@ -57,12 +57,18 @@ const IDLE_GOVERNOR_RPM: f32 = 20.0;
 const IDLE_GOVERNOR_GAIN: f32 = 0.05;
 const IDLE_GOVERNOR_THROTTLE: f32 = 0.5;
 /// Time base of the throttle's peak-hold decay and lag (`Engine.c6deb7a6` / `36676b9c` are per-tick fractions;
-/// `.bss` 0x01187250 is not read yet). Model value: 60, the time base of the drift damping read live; with it
-/// the idle governor reproduces the original's idle (1003–1031 rpm, mean 1016, against 1002–1033, ~1015).
+/// `.bss` 0x01187250 = 60, read live 2026-10-06); with it the idle governor reproduces the original's idle
+/// (1003–1031 rpm, mean 1016, against 1002–1033, ~1015).
 const THROTTLE_TIME_BASE: f32 = 60.0;
-/// Clutch-in after an upshift: the throttle comes back as progress^this (`.bss` 0x011874d0, not read yet).
-/// Model value: 1 (linear).
-const CLUTCH_IN_THROTTLE_EXP: f32 = 1.0;
+/// Clutch-in: the throttle comes back as `CLUTCH_IN_THROTTLE_SCALE` × progress^this (`FUN_009d6af0` up,
+/// `FUN_009d6ca0` down, the exponent passed to the CRT `pow` from `.bss` 0x01187470 = 0.5, read live 2026-10-06).
+const CLUTCH_IN_THROTTLE_EXP: f32 = 0.5;
+/// Scale of the clutch-in throttle (`.bss` 0x011874d0 = 0.7, read live 2026-10-06). The upshift's clutch-in sets
+/// the throttle to 0.7 √progress whatever the pedal; the downshift's multiplies the pedal by it.
+const CLUTCH_IN_THROTTLE_SCALE: f32 = 0.7;
+/// The gearbox stalls to standstill below `Idle_RPM` × this during a launch or a shift (`.bss` 0x011874a0 = 0.9,
+/// read live 2026-10-06).
+const STALL_FRACTION: f32 = 0.9;
 /// The torque noise is sampled at the firing rate of one cylinder: rpm / 120 lattice points per second.
 const NOISE_RPM_DIV: f32 = 120.0;
 
@@ -435,8 +441,21 @@ impl Drivetrain {
     /// The gearbox state machine (`FUN_009da340`) for the gearbox in use: sets the clutch and the gear, returns
     /// the throttle after the gearbox's cuts.
     fn gearbox_state(&mut self, p: &DrivetrainParams, throttle: f32, brake: f32, mph: f32, dt: f32) -> f32 {
+        // Stall check (`FUN_009d17d0` launch; `FUN_009d6880`, `FUN_009d95a0`, `FUN_009d6af0` upshift phases;
+        // `FUN_009d69e0`, `FUN_009d6ca0` downshift neutral / clutch-in; `FUN_009da1d0` after a downshift; not the
+        // downshift's declutch `FUN_009ce490`): revs below `Idle_RPM` × `.bss` 0x011874a0 drop the gearbox to
+        // standstill (state 2, clutch open, first gear).
+        let stalling = self.rpm < p.idle_rpm * STALL_FRACTION;
         if let Some(mut s) = self.shift {
+            if stalling && !(!s.up && s.phase == Phase::Declutch) {
+                self.to_standstill(p);
+                return throttle;
+            }
             return self.shift_phase(p, &mut s, throttle, mph, dt);
+        }
+        if self.launching && stalling {
+            self.to_standstill(p);
+            return throttle;
         }
         if self.launching {
             // Launch (FUN_009d17d0): with no throttle the clutch stays open; otherwise it engages with the
@@ -476,7 +495,7 @@ impl Drivetrain {
         }
         // Downshift (FUN_009d93b0) on speed (below the lower gear's upshift speed, with hysteresis) or rpm,
         // to the highest lower gear whose downshift rpm the revs would still be above.
-        // Only once the car has been on the ground for longer than `.bss` 0x01187580 (not read; assumed 0).
+        // Only once the car has been on the ground for longer than `.bss` 0x01187580 (1 s).
         if g > 1
             && self.grounded_time > DOWNSHIFT_GROUNDED_TIME
             && (mph < p.upshift_mph(g - 1) - DOWNSHIFT_HYSTERESIS || self.rpm < p.downshift_rpm(g))
@@ -487,6 +506,15 @@ impl Drivetrain {
             }
         }
         throttle
+    }
+
+    /// Gearbox state 2 (standstill, `FUN_009d6370`): clutch open in first gear; the launch follows with throttle.
+    fn to_standstill(&mut self, p: &DrivetrainParams) {
+        self.shift = None;
+        self.clutch = 0.0;
+        self.launching = true;
+        self.gear = 1;
+        self.set_up_rpm(p);
     }
 
     /// One tick of a shift's phases (upshift: FUN_009d6880, FUN_009d95a0, FUN_009d6af0; downshift:
@@ -523,7 +551,8 @@ impl Drivetrain {
                 let progress = 1.0 - s.left / len;
                 if progress < 1.0 {
                     self.clutch = progress;
-                    thr = throttle * progress.max(0.0).powf(CLUTCH_IN_THROTTLE_EXP);
+                    let ramp = CLUTCH_IN_THROTTLE_SCALE * progress.max(0.0).powf(CLUTCH_IN_THROTTLE_EXP);
+                    thr = if s.up { ramp } else { throttle * ramp };
                 } else {
                     self.clutch = 1.0;
                     self.shift = None;

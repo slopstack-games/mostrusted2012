@@ -75,9 +75,13 @@ pub struct CarInput {
     pub crashed: bool,
 }
 
-/// Speed below which the standstill hold acts (`.bss` 0x01186e60, not read; assumed 0 mph: the original's
-/// launch in `ref/xkr_launch` pulls away at 6 m/s² from 0.03 m/s, so the hold is off there).
-const STANDSTILL_HOLD_MPH: f32 = 0.0;
+/// Signed forward speed below which the standstill hold acts (`.bss` 0x01186e60 = −2 mph, read live
+/// 2026-10-06): only when rolling backwards faster than 2 mph, so it never acts at a standstill or on a launch.
+const STANDSTILL_HOLD_MPH: f32 = -2.0;
+
+/// Body speed (m/s) above which a car with no wheel on the ground counts as airborne (`FUN_009ae840`, `.bss`
+/// 0x01186630 = 1.8, read live 2026-10-06); slower, the time on the ground keeps growing.
+const AIRBORNE_MIN_SPEED: f32 = 1.8;
 
 /// Physical parameters of a car, derived from the game data.
 #[derive(Debug, Clone)]
@@ -1028,9 +1032,14 @@ pub(crate) fn car_physics(
         // --- The game's drift model (drift.rs) ---------------------------------
         car.rear_slip = if rear_slip.1 > 0 { rear_slip.0 / rear_slip.1 as f32 } else { 0.0 };
         car.air_time = if wheels_down == car.wheels.len() { 0.0 } else { car.air_time + dt };
-        // Vehicle +0x1ed0 (`FUN_009ae840`): grows while any wheel touches, 0 in the air; the next tick's
-        // gearbox gates its downshifts on it.
-        car.drivetrain.grounded_time = if wheels_down > 0 { car.drivetrain.grounded_time + dt } else { 0.0 };
+        // Vehicle +0x1ed0 (`FUN_009ae840`): reset only while all four wheels are off the ground and the body moves
+        // faster than `.bss` 0x01186630 = 1.8 m/s (read live), else it grows by dt; the next tick's gearbox gates
+        // its downshifts on it.
+        car.drivetrain.grounded_time = if wheels_down == 0 && velocity.length() > AIRBORNE_MIN_SPEED {
+            0.0
+        } else {
+            car.drivetrain.grounded_time + dt
+        };
         let flat_v = velocity.reject_from(up);
         if let Some(drift) = &p.drift {
             // The drift reads the steering relative to the current range (full range = full lock).
