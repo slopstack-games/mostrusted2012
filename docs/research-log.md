@@ -207,7 +207,28 @@ _(to be filled in)_
 
 ### 2026-10-06 (session 5): traffic
 
-_(to be filled in)_
+- `TrafficLaneData` (0x701): a single instance, `HAWAII/TRAFFIC.BNDL` (2.3 MB, 57 imports), next to 35
+  `TrafficFlow`, 23 `TrafficFlowType`, 11 `TrafficVehicle` and one `TrafficVehicleTraits` GeneSys objects.
+  Decoded and parsed (`mw_formats::TrafficLaneData`, `mwtool traffic [--png]`): 294 hull cells (~400 m quads,
+  130 with lanes), 6758 lane sections, 52 607 rungs, 1005 spans, 5512 neighbour links, 36 junctions, 189 stop
+  lines, 392 static vehicles, 374 km of lanes. Ground truth: the lane map drawn top-down is Fairhaven's road
+  network (freeway loop, downtown grid, mountain roads), and 99.6 % of each hull's rungs lie in its cell.
+- Verified across all hulls: record sizes (section 0x30, rung 0x20, span 12, neighbour 4, static vehicle 0x50,
+  junction 0x150), every section's rung range within its hull, neighbour ranges within the list, forward /
+  backward hull links below the hull count, section length = last cumulative rung length (cumulative lengths
+  restart per section), span `f32` pairs are value and reciprocal. Section byte 0x24 = `TrafficFlow` index:
+  confirmed in the code (`FUN_005f4d10` reads the flow's `Speed` through it, scaled by 0.44704 → mph).
+- Dead end: hull header byte 0x04 read as u16 gave impossible neighbour counts; it is u8 neighbours + u8 static
+  vehicles (static-record region sizes are multiples of 0x50 matching byte 0x05).
+- Open (format): junction record (0x150: an id, 150 / 20 pairs, light masks), stop line (2 bytes, `00 01`),
+  static vehicle record (matrix + 16 bytes?), section byte 0x25 (0..21, probably a `TrafficFlowType` index),
+  span `u16` at +8 (a hull index?), hull header u16 0x08 / 0x0A (equal but once: traffic light range?), header
+  0x2C-0x34 (three pointers at the flow import list), the vehicle-type records at 0x38 / 0x3C (0.65, 1200).
+- Open (code): spawn / despawn distances, car count, per-flow density, hour-of-day density use
+  (`TrafficSystemConfig` array), junction behaviour, reactions to the player, switch to a physical car.
+  Leads: readers of `world+0x697fc`, `FUN_005e9350`, the "Crashing Traffic" net message in `00610000.c`.
+  `.bss` value needed from a live read: GeneSys object at `DAT_0110f940` field 0x48 (scales
+  `TrafficVehicle` field 0x10 in `FUN_005f4d10`).
 
 ### 2026-10-06: no Burnout Paradise bike code survives (dead end)
 

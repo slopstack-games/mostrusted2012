@@ -58,6 +58,15 @@ impl AssetStore {
         Ok(fmt::ZoneList::parse(&bundle.load(entry)?)?)
     }
 
+    /// The traffic lane network (`TrafficLaneData` in `HAWAII/TRAFFIC.BNDL`); query it with
+    /// [`fmt::TrafficLaneData::lanes_near`].
+    pub fn traffic_lanes(&self) -> Result<fmt::TrafficLaneData> {
+        let bundle = self.bundle("HAWAII/TRAFFIC.BNDL").ok_or(Error::Missing(ResourceId(0)))?;
+        let entry =
+            bundle.entries_of_type(ResourceType::TrafficLaneData).next().ok_or(Error::Missing(ResourceId(0)))?;
+        Ok(fmt::TrafficLaneData::parse(&bundle.load(entry)?)?)
+    }
+
     /// A [`BackdropSelector`] for the given backdrop listings `(track unit, model, transform)`: loads the
     /// zones and indexes the drawn meshes of every listed model.
     pub fn backdrop_selector<'a>(
