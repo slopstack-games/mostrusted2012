@@ -625,10 +625,38 @@ chain, from the light buffer (HDR game units) to the screen:
    GeneSys fields arrive as raw bit patterns: live, the words at +0xac80, +0xac88, +0xac8c, +0xac94 are the
    integers 4, 5, 5, 1 (falling to 1, 1, 1, 0 through a transition), while +0xac84 (B.w) = 0.595 → 0.510
    and +0xac98…+0xaca0 (the three set-up arguments) = (0.0083, 0.927, 1.043) drifting to (0.0073, 0.815,
-   1.109), and the colour drifts (0.342, 0.482, 0.585) → (0.417, 0.495, 0.557). None of this matches the
-   default keyframe `…78dc` (Colour 0.402 grey; `DarkBloomWeight` 0.65 a float), so the free-roam bloom comes
-   from other, time-blended PostFX keyframes, and the unpack order in the research log (which puts float
-   fields at the integer slots) is not confirmed. Bloom is not ported until both are settled.
+   1.109), and the colour drifts (0.342, 0.482, 0.585) → (0.417, 0.495, 0.557).
+   **Where the block comes from** (2026-10-07, disassembly of the call sites): `FUN_008ce250` passes
+   `&local_2a0` as `FUN_008c9e40`'s last argument, so the copy source (+0x80) is its `local_220`, which
+   `FUN_008e3b50` (this = the PostFX manager) fills from manager +0x1300…+0x1330 (the decompiler's argument
+   list for that call is shifted by one; the pushes settle it). `FUN_008ecf80` writes +0x1300…: zeroes it,
+   blends the PostFX keyframes / states into it (`FUN_008eccb0` → `FUN_008e9610`, words in the
+   `FUN_008e51b0` order), then, on the first state when the **environment override flag** +0x15e0 is set,
+   overwrites words 0–2 with +0x15f0 (colour), 3 and 8 with +0x1610 / +0x1614, 4–6 with +0x1620…+0x1628 and
+   9–12 with +0x1600…+0x160c; word 7 (`3efef892`, 1.0) stays from the PostFX blend. +0x15d0…+0x1628 are set by
+   `FUN_008e3e30`, called from `FUN_008c2080` with outputs of `FUN_008c0f30`, which copies them from the
+   blended environment state (+0x24d0 vignette multiplier, +0x24e0 colour, +0x24f0, +0x2500…+0x2510).
+   So in free roam the bloom is the **time-blended EnvironmentKeyframe.Camera**, not a PostFX keyframe:
+   word 0–2 = `BloomColour` (`96a4b35b`; the first live read (0.292, 0.474, 0.604) is exactly the noon
+   keyframes' value, 29 keyframes carry it), word 4 = B.w = `99436e68` (0.387…0.599 on the day keyframes;
+   live 0.595 → 0.510), words 9–11 = `9dd29928` (0.009 by day = live) and 1, 1 (`2b7c4634` / `e59ff4ec` are 1
+   by day; which is word 10 or 11 is not traced). The integer words 3, 5, 6, 8 (4, 5, 5, 1) come from the
+   environment state's +0x24f0 group and from `FUN_008e3e30`'s sixth argument (lost by the decompiler); no
+   float Camera field holds them, so they are runtime integers (likely pass or level counts), not data.
+   The drift of the colour and words 9–11 was not reproduced by a lerp between two noon-timeline keyframes
+   (colour fits ≈ 25 % towards the orange (0.784, 0.565, 0.434) keyframes, B.w and words 10 / 11 do not):
+   the environment blend has more inputs (regional timelines, weather) than one pair.
+   **Level combine** (`FUN_008eaaf0` → `FUN_008e6f40`, add pass `FUN_008e6810`, program `0x010117c0`): three
+   blurred levels, finest L1 to coarsest L3; weights a = word 11, b = word 10, c = word 9, each clamped to at
+   least `DAT_00f9d474`. The add program blurs its t0 vertically with the same 5-tap kernel (0.204164,
+   0.304005 ×2, 0.093913 ×2), × `kColorAddWeight.z`, plus t1 (the coarser result) × `.w`, and writes the
+   vignette weight in alpha. Calls: C3 = blur(L3) (z = 1, no t1); C2 = (b·blur(L2) + a·C3) / (a + b);
+   C1 = (c·blur(L1) + (a + b)·C2) / (a + b + c). With the day values (0.009, 1, 1) the finest level adds
+   under 0.5 %: the bloom is the mean of the two coarse levels. The argument → z / w assignment follows from
+   the first call (coarsest level must get z = 1) but the decompiled signature of `FUN_008e6810` is off by
+   one, so it is inferred. Level resolutions and the integer words' roles are not traced.
+   Our data: `CameraExposure.bloom_colour` / `bloom_intensity` / `bloom_weights` (mw-assets environment.rs),
+   blended with the timeline like the exposure. The render passes are not ported yet.
    The Bloom fields reach the renderer (+0xac74…+0xaca4) through `FUN_008e51b0` (unpack, field order in the
    research log), `FUN_008e9610` (keyframe and state blend), `FUN_008ecf80` → `FUN_008ce250` →
    `FUN_008c9e40` (copy when bloom is on); the bloom set-up `FUN_008eaaf0` takes three of them
