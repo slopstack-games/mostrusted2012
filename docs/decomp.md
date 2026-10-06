@@ -603,4 +603,36 @@ _(session 5: to be filled in)_
 
 ## Traffic and AI vehicles
 
-_(session 5: to be filled in)_
+First pass (session 5); the lane format is in formats.md "TrafficLaneData (0x701)". What is traced so far:
+
+- **Loading** (`FUN_006077c0`, the game's load state machine): case 0 queues `\TRAFFIC.BNDL` with a
+  `"TrafficData"` loader into `world+0xa3c90`; case 1 copies the lane data pointer to `world+0x697fc` (and
+  `+0xa3c94` to `+0x69800`) and calls `FUN_005e9350` with a byte at GeneSys field `0x26` and a word at `0x40` of
+  that object; case 4 loads `VEHICLES\TRAFFICATTRIBS.BNDL` (the traffic `VehicleComponent`s the lane data's
+  vehicle id list names). Network names in `00610000.c` ("Traffic Hull Sync", "Crashing Traffic", "No Crashing
+  Traffic") show traffic state is synced per hull, and a traffic car switches between a non-crashing (on rails)
+  and a crashing (physical) state.
+- **Placing a car on a lane** (`FUN_005f4d10(car, hull, section, rung_pos, ..., lane_data, ...)`): stores hull,
+  section and the rung position (float; its integer part is the rung within the section, the first rung index is
+  added for each of 4 wheel/probe slots); the section record is `section * 0x30 + hull[+0x10]`. The **cruise
+  speed** is `TrafficFlow.Speed` (field 0x24) of the flow the section's byte `+0x24` selects in the lane data's
+  flow import list (header 0x10), times `0.44704` (`DAT_010c4d24`, `.data`): Speed is in **mph** (flows hold 80
+  on the main roads). It is written to two slots (current and target speed). Another speed-like value is
+  `TrafficVehicle` field 0x10 times field 0x48 of the global GeneSys object at `DAT_0110f940` (`.bss`, needs a
+  live read). The car's front / back extents along the lane are `box.centre ± box.half_extent` (`param_12+8`,
+  `+0x18`); when `TrafficVehicle` field 0x20 is set the back extent grows by 10 m (`DAT_00fb23c0`), most
+  likely a trailer (the manoeuvre config has a `JackKnifeManoeuvre`). Unset links are `0xffff`, the free-space
+  distance starts at `FLT_MAX` (`DAT_00fb1784`).
+- **Kinematic body** (`FUN_005f7cf0`, 5.7 kB): a traffic car with 4+ wheels and speed above `DAT_00fb1db8`
+  gets per-wheel pose maths (suspension / body roll on rails); not traced further.
+- **Engine sound** (`FUN_005ee480`): registers `Game::Traffic::EngineSoundInstance` with RPM,
+  `NormalisedSpeed` (speed / top speed), `IsWetSurface`, `IsReversing` and a per-car `Random`.
+- **Impacts**: `FUN_00958130` (see "Crashes"), `TrafficRules`.
+
+Tuning lives in `GLOBALCONFIG.BNDL`: `TrafficConfig` (0x69443) → `SystemConfig` (0x69446), `ParamConfig`,
+`VehicleConfig`, `FuzzyConfig`, `ManoeuvreConfig` (JackKnife, Panic, Cutup, Weave, NearMiss, Swerve,
+SlowSpeedPanic). Almost all field names are unhashed. `TrafficSystemConfig` starts with a 24-entry array
+(0.05 at 00:00-02:00 rising to 0.5 at 08:00, 0.3-0.4 by day): the **density by hour of day**. Its scalars
+include 1500, 205, 300 / 200 / 250 (distance-like), `PursuitScale` 0.5, `PayloadDelay` 0. Which code reads
+them (spawn / despawn radius, car count, near-miss and horn logic, the switch to a physical car) is still open:
+the next step is to find the readers of `world+0x697fc` and of the `TrafficConfig` handles.

@@ -38,7 +38,7 @@ pub use paint_map::WorldPaintMap;
 pub use renderable::{DecodedMesh, Mesh, Renderable, SNORM_POSITION_SCALE, Topology, tangent_frame};
 pub use text::{Language, VehicleEntry, VehicleList};
 pub use texture::{Dimension, Texture};
-pub use traffic::{TrafficHull, TrafficLaneData, TrafficSection};
+pub use traffic::{LanePolyline, TrafficHull, TrafficLaneData, TrafficSection};
 pub use vehicle::{VehicleGraphicsSpec, Wheel, WheelPart};
 pub use vertex::{Semantic, VertexAttribute, VertexDescriptor};
 pub use world::{Instance, InstanceList, InstanceOverrides, ObjectDef, ObjectInstance, ObjectInstanceList};

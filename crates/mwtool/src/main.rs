@@ -1134,9 +1134,7 @@ fn skid_sweep(
 }
 
 fn traffic(store: &AssetStore, png: Option<&Path>) -> Result<()> {
-    let bundle = store.bundle("HAWAII/TRAFFIC.BNDL").context("HAWAII/TRAFFIC.BNDL not found")?;
-    let entry = bundle.entries_of_type(ResourceType::TrafficLaneData).next().context("no TrafficLaneData")?;
-    let t = mw_formats::TrafficLaneData::parse(&bundle.load(entry)?)?;
+    let t = store.traffic_lanes()?;
     let sum = |f: &dyn Fn(&mw_formats::TrafficHull) -> usize| t.hulls.iter().map(f).sum::<usize>();
     println!(
         "version {}, {} hulls ({} with lanes), {} sections, {} rungs, {} spans, {} neighbours, {} junctions, \
@@ -1154,6 +1152,9 @@ fn traffic(store: &AssetStore, png: Option<&Path>) -> Result<()> {
     );
     let length: f32 = t.hulls.iter().flat_map(|h| &h.sections).map(|s| s.length).sum();
     println!("total lane length {:.1} km", length / 1000.0);
+    // Query check at the docs/viewpoints.md road spot.
+    let near = t.lanes_near(-1131.0, 1627.0, 200.0);
+    println!("{} lane sections within 200 m of (-1131, 1627)", near.len());
     let mut per_flow = std::collections::BTreeMap::<u8, (usize, f32)>::new();
     for s in t.hulls.iter().flat_map(|h| &h.sections) {
         let e = per_flow.entry(s.flow).or_default();

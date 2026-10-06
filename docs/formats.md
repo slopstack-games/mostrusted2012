@@ -341,3 +341,28 @@ kernels are missing from the dump). Until 2026-10-06 it was read as blue fastest
 swapped red and blue and caused the yellow cast. Each environment keyframe names one (`ColourCube` handle);
 PostFX states (`POSTFX.BNDL`) name more. Parser: `mw_formats::ColourCube`.
 
+
+## TrafficLaneData (0x701)
+
+One instance in the install: `HAWAII/TRAFFIC.BNDL` (`000000001fe4ff4c`, 2.3 MB). Parser:
+`mw_formats::TrafficLaneData` (full layout table in `crates/mw-formats/src/traffic.rs`); `mwtool traffic`
+prints counts, flows and vehicles, `--png` draws the lanes. Burnout Paradise's `TrafficData` is the ancestor,
+but the record sizes and the flow / vehicle tables differ.
+
+- **Header**: `u16` version 3, `u16` hull count 294; `+0x0C` pointer array (one per hull) to the hull lane
+  data; `+0x10` / `+0x14` import list of 34 `TrafficFlow` GeneSys objects (Speed in mph, Density, FlowType);
+  `+0x18` / `+0x1C` 23 `TrafficFlowType` objects (vehicle handles with `Proportion`); `+0x24` vehicle type count
+  11, `+0x40` their `VehicleComponent` ids (low 32 bits, objects in `VEHICLES/TRAFFICATTRIBS.BNDL`);
+  `+0x54` the hull cells.
+- **Hull cell** (0x50): ~400 m quad (`[x, z]` points), up to 10 neighbouring cells (`u16`), AABB with
+  infinite Y.
+- **Hull lane data** (0x40 header): counts of sections, spans, junctions, stop lines, neighbours (all `u8`),
+  static vehicles (`u8`), rungs (`u16`), then 8 pointers: sections, rungs, cumulative rung lengths,
+  neighbours, spans, static vehicles, junctions, stop lines. Empty hulls share one zeroed record.
+- **Section** (0x30): first rung, rung count, stop line, span, up to 3 forward and 3 backward links (hull,
+  section), first neighbour and left / right neighbour counts, length (m), `TrafficFlow` index (`+0x24`,
+  confirmed in `FUN_005f4d10`), a second index `+0x25` (flow type?). Adjacent lanes of one road are separate
+  sections with their own flow.
+- **Rung** (0x20): two `[x, y, z, 0]` points across the lane, ~4.5 m apart; cumulative lengths restart at 0 in
+  each section. **Neighbour** (4): section, last rung. **Span** (12): max vehicles, its reciprocal, two `u16`.
+- Open: junction (0x150), stop line (2), static vehicle (0x50) records; see the research log.

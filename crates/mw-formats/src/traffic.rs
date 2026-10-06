@@ -213,3 +213,39 @@ impl TrafficLaneData {
         Ok(())
     }
 }
+
+/// One lane section as a centre-line polyline (what a traffic spawner needs).
+#[derive(Debug, Clone)]
+pub struct LanePolyline {
+    pub hull: usize,
+    pub section: usize,
+    /// Rung midpoints, `[x, y, z]`.
+    pub points: Vec<[f32; 3]>,
+    /// Index into [`TrafficLaneData::flows`] (its `TrafficFlow` holds the speed in mph and the density).
+    pub flow: u8,
+    pub length: f32,
+}
+
+impl TrafficLaneData {
+    /// Lane sections with at least one rung midpoint within `radius` of `(x, z)` (ground plane).
+    pub fn lanes_near(&self, x: f32, z: f32, radius: f32) -> Vec<LanePolyline> {
+        let r2 = radius * radius;
+        let mut out = Vec::new();
+        for (hi, hull) in self.hulls.iter().enumerate() {
+            for (si, s) in hull.sections.iter().enumerate() {
+                let Some(rungs) = hull.rungs.get(s.first_rung as usize..s.first_rung as usize + s.rung_count as usize)
+                else {
+                    continue;
+                };
+                let points: Vec<[f32; 3]> = rungs
+                    .iter()
+                    .map(|[a, b]| [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5, (a[2] + b[2]) * 0.5])
+                    .collect();
+                if points.iter().any(|p| (p[0] - x).powi(2) + (p[2] - z).powi(2) <= r2) {
+                    out.push(LanePolyline { hull: hi, section: si, points, flow: s.flow, length: s.length });
+                }
+            }
+        }
+        out
+    }
+}
