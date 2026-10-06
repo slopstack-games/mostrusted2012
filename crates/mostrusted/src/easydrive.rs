@@ -78,7 +78,7 @@ pub struct EasyDrive {
     enabled: bool,
     pub open: bool,
     tiers: Vec<Tier>,
-    job: Option<Arc<Mutex<Option<(Vec<Tier>, Option<Look>)>>>>,
+    job: Option<Arc<Mutex<Option<Loaded>>>>,
     look: Option<Look>,
     /// Open pages, root first, with the selected row of each.
     stack: Vec<(Page, usize)>,
@@ -88,6 +88,9 @@ pub struct EasyDrive {
     /// Rows still to enter (`--easydrive-path`), last first.
     script: Vec<usize>,
 }
+
+/// What the loader thread hands over: the tiers and the menu layout's look.
+type Loaded = (Vec<Tier>, Option<Look>);
 
 /// The menu layout's scene and decoded textures (loader thread), then its Bevy side.
 struct Look {
