@@ -187,6 +187,8 @@ fn default_steering() -> Steering {
         reverse_speed_mph: -30.0,
         throttle_range: [24.0, 19.0],
         max_angle: 35.0,
+        neutral_gain: 0.3,
+        offset_range_gain: [1.0, 0.0],
     }
 }
 
@@ -746,6 +748,8 @@ pub(crate) fn car_physics(
             car.gear < 0,
             pedal,
             drift_rate,
+            steer_slip_fraction(velocity.dot(rot * Vec3::X), speed),
+            car.drift.active(),
             dt,
         );
 
@@ -1184,8 +1188,14 @@ fn steer_range(s: &Steering, speed: f32, reverse: bool, pedal: f32) -> f32 {
 /// Move the front wheel angle (radians) towards the input the way the game does (`FUN_009d31f0`; docs/decomp.md
 /// "Steering"). Rates blend from 0 mph to `High_speed`; in reverse gear the reverse values apply. `raw_input` is
 /// the stick before the in-drift remap (the full-rate test reads it), `input` the one steered to. `drift_rate`
-/// (degrees per second, blend) pulls the rate towards the drift's counter-steer rate. The game's neutral offset
-/// (`553bc073` × a vehicle value whose writer was not found × `Maximum_steering_angle`) is taken as 0.
+/// (degrees per second, blend) pulls the rate towards the drift's counter-steer rate.
+///
+/// With no input the wheels stand at the neutral offset q × `Maximum_steering_angle` × gain (gain `553bc073`
+/// forwards, 1 in reverse gear, 0 in a drift); q is the game's vehicle +0x2c70, the body slip as a fraction
+/// ([`steer_slip_fraction`]), signed here so that the offset turns the front wheels towards the direction of
+/// travel (the game's −q in its own sign). Each side's limit grows by |offset| × `a40a6b17` on the side the offset
+/// points to and × `16fd6022` on the other (capped at `Maximum_steering_angle`); the input steers from the offset
+/// to the side's limit.
 #[allow(clippy::too_many_arguments)]
 fn steer_towards(
     s: &Steering,
@@ -1196,20 +1206,36 @@ fn steer_towards(
     reverse: bool,
     pedal: f32,
     drift_rate: Option<(f32, f32)>,
+    slip_q: f32,
+    drifting: bool,
     dt: f32,
 ) -> f32 {
     let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
     let t_high = (speed / MPH / s.high_speed_mph.max(f32::EPSILON)).clamp(0.0, 1.0);
-    let limit = steer_range(s, speed, reverse, pedal);
+    let range = steer_range(s, speed, reverse, pedal);
+    let gain = if drifting {
+        0.0
+    } else if reverse {
+        1.0
+    } else {
+        s.neutral_gain
+    };
+    let offset = slip_q * s.max_angle * gain;
+    let side_limit = |side: f32| {
+        let k = if offset * side > 0.0 { s.offset_range_gain[0] } else { s.offset_range_gain[1] };
+        (range + k * offset.abs()).min(s.max_angle)
+    };
+    let (limit_pos, limit_neg) = (side_limit(1.0), side_limit(-1.0));
     let input = input.clamp(-1.0, 1.0);
-    let target = (input * limit).clamp(-limit, limit);
+    let side = if input >= 0.0 { limit_pos } else { -limit_neg };
+    let target = (offset + input.abs() * (side - offset)).clamp(-limit_neg, limit_pos);
     let cur = current.to_degrees();
     let pick = |v: [f32; 3]| if reverse { v[2] } else { lerp(v[0], v[1], t_high) };
     // Moving back towards centre (the target lies on the same side as the neutral position): the counter-steer
     // rate when the input points across the current angle, otherwise the centring rate (easing off part of the
     // way counts as centring). Steering outwards: the steer rate, or the raw high-speed one when the stick is
     // short of full travel.
-    let towards_centre = (target - cur).signum() == (0.0 - cur).signum() && cur != 0.0;
+    let towards_centre = (target - cur).signum() == (offset - cur).signum() && cur != offset;
     let rate = if towards_centre {
         if cur * input < 0.0 { pick(s.counter_rate) } else { pick(s.center_rate) }
     } else if raw_input.abs() >= STEER_FULL_INPUT {
@@ -1222,8 +1248,30 @@ fn steer_towards(
         None => rate,
     };
     let step = rate * dt;
-    (cur + (target - cur).clamp(-step, step)).clamp(-limit, limit).to_radians()
+    (cur + (target - cur).clamp(-step, step)).clamp(-limit_neg, limit_pos).to_radians()
 }
+
+/// The steering's q (the game's vehicle +0x2c70, read by the steering through `FUN_00904260` /
+/// `FUN_00902930` → `FUN_009d73f0` → `FUN_009d31f0`; its writer is not found in the code). Read from the
+/// original's telemetry (`ref/xkr_launch`, 2026-10-06): q = body slip / 35°, the slip being
+/// atan2(lateral, |forward|) of the body velocity, the ratio constant to four digits over 0.5°–33°; below 10 mph
+/// it fades in proportion to the speed (|velocity| / 10 mph, constant over 1–4 m/s). `lateral` and `forward` are
+/// the body velocity's components along up × forward and forward (m/s). The ±1 clamp is a model decision (the
+/// run's largest was 0.95).
+fn steer_slip_fraction(lateral: f32, forward: f32) -> f32 {
+    let speed = lateral.hypot(forward);
+    if speed < 1e-3 {
+        return 0.0;
+    }
+    let slip = lateral.atan2(forward.abs()).to_degrees();
+    (slip / STEER_Q_SLIP_DEG).clamp(-1.0, 1.0) * (speed / (STEER_Q_FADE_MPH * MPH)).min(1.0)
+}
+
+/// Body slip (degrees) at which the steering's q reaches 1 (telemetry reading, [`steer_slip_fraction`]). It equals
+/// the XKR's `Maximum_steering_angle`; one car cannot tell a constant from that field.
+const STEER_Q_SLIP_DEG: f32 = 35.0;
+/// Speed (mph) below which q fades in proportion (telemetry reading, [`steer_slip_fraction`]).
+const STEER_Q_FADE_MPH: f32 = 10.0;
 
 /// The body collider's contact with the world on the last physics step, as the contact normal pointing from the
 /// world at the car (props do not count: the game's flag is set by world contacts).
