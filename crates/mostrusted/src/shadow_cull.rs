@@ -126,11 +126,14 @@ fn clip_rect(clip_from_world: &Mat4, points: impl Iterator<Item = Vec3>) -> (Vec
     })
 }
 
+/// What the cull reads of a caster.
+type Caster =
+    (Option<&'static ShadowClass>, Option<&'static Aabb>, &'static GlobalTransform, Option<&'static ShadowRange>);
 fn cull_casters(
     cfg: Res<ShadowCull>,
     shadow_map: Res<DirectionalLightShadowMap>,
     mut lights: Query<(&mut CascadesVisibleEntities, &Cascades, &CascadeShadowConfig)>,
-    casters: Query<(Option<&ShadowClass>, Option<&Aabb>, &GlobalTransform, Option<&ShadowRange>)>,
+    casters: Query<Caster>,
     views: Query<(&GlobalTransform, Option<&Projection>)>,
 ) {
     if !cfg.active() {

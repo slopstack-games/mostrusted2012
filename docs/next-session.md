@@ -118,9 +118,14 @@ the details, [PLAN.md](PLAN.md) "Where it stands" the state per gap.
   Quiet machine, RTX 3070, 1280×720: driving downtown 19.7 ms (51 fps) with shadows, 13.1 ms (76 fps) without;
   the cliff view sits at a 60 fps cap and cannot show gains. CPU-bound in Bevy's per-view batching; the loaded
   map's size costs nothing. Merging static meshes per material and unit gave no measurable gain (few materials
-  are shared) and is off by default (`--merge-static`). **Shadows (≈6.6 ms while driving) are the next item**:
-  an agent was attributing the cost per cascade and caster class when this was written (research log, "the
-  shadow pass's cost"; branch `worktree-agent-ad587880c745a7cb1` if it was not merged).
+  are shared) and is off by default (`--merge-static`). **Shadows** (≈5 ms of render-world time while driving): the cost is CPU work per
+  caster per cascade view, mostly the outer cascade's opaque world placements; shadow-map size and a
+  texel-size cull change nothing. Default-on since round 6 (`shadow_cull.rs`): a caster is dropped from a
+  cascade when its outline from the sun misses the camera view's outline (outer cascade 1586 → 853 casters,
+  ≈0.8 ms; `MW_SHADOW_FOOTPRINT=0` turns it off). Behind flags because they change the picture:
+  `MW_SHADOW_MODEL_RANGE=1` (each model's own shadow distance, `Model` +0x0C: trace it in the code, then make
+  it the default), `MW_SHADOW_DISTANCE=<m>`. Next: lift the bench's 60 fps cap, LOD selection by the models'
+  distances (`VisibilityRange`).
 - **Chase camera** (the user: it lacks the original's sway, weight and avoidance): four passes. The update is
   `FUN_005d4970` (decomp.md "## Cameras": director table, the data read through the state at camera +0x290,
   call order). **From the code now**: the followed frame (the car's Euler angles eased per axis, no lag cap),
