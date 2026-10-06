@@ -242,6 +242,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let ty = layered.p[1];
     if layered.mode == 1u || layered.mode == 4u {
         let world_uv = in.world_position.xz * ty.xy;
+        // FloatingDecal_1Bit: discard where EdgeAlphaPlusAoMap(uv0).y < 0.5.
+        if layered.mode == 1u && layered.p[2].x > 0.5 && textureSample(tex2, samp2, uv).y < 0.5 {
+            discard;
+        }
         let colour = textureSample(tex0, samp0, uv).rgb;
         let detail = textureSample(tex1, samp1, world_uv).rgb;
         var albedo = colour * detail * 2.0;

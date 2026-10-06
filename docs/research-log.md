@@ -124,6 +124,48 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-06 (session 5): ground texture scale audit
+
+Report: "some textures, especially on the road and terrain are still scaled wrong" (no location). Every UV path
+of the ground families with the most world triangles (`mwtool shader-usage`) was read from the DXBC
+(`mwtool shader-asm`, vertex program outputs, the pixel program's `sample` coordinates, and the `gMaterialCB`
+offsets in the reflection header) and compared with `materials.rs` / `layered.wgsl`.
+
+- **DriveableSurface** (+ `_Lightmap`, `_AlphaMask` by name): VS `o1.xy = TEXCOORD0` (raw), `o1.zw = world.xz ×
+  DetailMapUvScale.xy` (world = position × gObjectCB world, so instance transforms included), `o5.xy = world.xz
+  × gGlobalCB[6].x` (puddle map). PS: ColourMap, Normal, SpecColour, RoadDepth at uv0; DetailMap_Diffuse and
+  DetailMap_Normal at the world coordinate. **Ours already matched.**
+- **DriveableSurface_DEPRECATED_Line_DirectionV** (1643 meshes): uv0 as above, detail at world xz ×
+  DetailMapUvScale, Line_Diffuse and Line_NormalPlusSpec at **raw TEXCOORD2** (`o9.zw`). TEXCOORD4 (float3)
+  and TEXCOORD2.x outside (−0.3, 1.3) only feed the retroreflective emission flag, not coordinates. **Matched.**
+- **TerrainPBR** (`_Normal_`, `_TangentSpaceNormal_`): gMaterialCB packs `Tiling_Ratio_Noise` (float, offset 0),
+  `Tiling_Ratios_X` (float3, offset 4), `Tiling_Ratios_Y` (float3, offset 16); the material stores each as a
+  float4, used from .x / .xyz. VS: mask and macro normal at raw uv0; layer i (diffuse + normal) at
+  `uv1 × (X[i], Y[i])`; noise at `uv1 × Noise`. **Matched.** Values over TRK_UNIT1 (`mwtool models --verbose`)
+  are plausible: X/Y 1–300 per layer, Noise 50–200; no identity / zero / missing values seen.
+- **PlotPBR** (`DriveableGrass_…`, `AO_Normal_Specular_…`): layers i at `uv0 × (X[i], Y[i])` (VS), mask at
+  `uv0 × maskTilingRatios.xy`, decal at `uv0 × decalTilingRatios.xy` (PS), AO map and lightmap at raw uv1.
+  **Matched.**
+- **Mismatches found (fixed):** the road variants whose names contain "decal" or "retroreflective" fell to the
+  plain material with whichever texture `DIFFUSE_SAMPLERS` picked, on uv0:
+  - `DriveableSurface_Decal(_Lightmap)` (343 meshes): the DXBC writes the whole road (colour × detail × 2 as
+    above) and lerps `Decal_Diffuse` / `Decal_NormalPlusSpec` sampled at **TEXCOORD2** over it by the decal
+    alpha (albedo, normal slope, F0 to `Decal_Roughness_Specular_Fresnel.y`, roughness to .x, Fresnel to .z);
+    written opaque. Ours drew Decal_Diffuse on uv0, translucent. Now the line path (Mode::RoadLine, untinted).
+  - `DriveableSurface_FloatingDecal(_1Bit)` (65 meshes): the plain road maths (detail at world xz ×
+    DetailMapUvScale); `_1Bit` discards where `EdgeAlphaPlusAoMap(uv0).y < 0.5`. Ours drew the **detail map on
+    uv0** (wrong scale). Now Mode::Road, with the edge-alpha discard (slot 2, p2.x flag).
+  - `DriveableSurface_DEPRECATED_RetroreflectivePaint_Lightmap` (57 meshes): its G-buffer pass never samples
+    the Line_* maps (road at uv0 / world xz, AO map and lightmap at uv1). Ours drew Line_Diffuse on uv0. Now
+    Mode::Road.
+  Screenshot at `--camera=-1150,22,1700,-1160,20.5,1716`: before, faint smeared streaks on the asphalt; after,
+  distinct oil / tyre stains at their own places; lane lines unchanged (~0.1–0.15 m).
+- **Open:** the WorldPBR `Horizontal_*` ground variants (≈1200 meshes) were not audited; per-mesh vertex
+  descriptors were not surveyed (all these shaders declare TEXCOORD0/1/2 as R16G16Float); sampler address
+  modes not checked; non-1Bit FloatingDecal blending (still Translucent by name) not read from the DXBC; the
+  decal / line normal is added to the road slope in ours where the DXBC lerps it by the overlay alpha. If the
+  user's report persists, it is more likely a WorldPBR ground variant or texture filtering than these families.
+
 ### 2026-10-06 (session 5): tyres: longitudinal constraint and the launch
 
 - Read `FUN_009c6f00` (the per-wheel tyre pass called from `FUN_009c75b0`), `FUN_009bc340`, `FUN_009bc0c0`,

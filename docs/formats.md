@@ -257,6 +257,17 @@ Most world and vehicle shaders use `DiffuseTextureSampler`. Exceptions:
 - Roads (`DriveableSurface*`) use `DetailMap_Diffuse_Sampler` (tiling asphalt) plus `ColourMap_Sampler`,
   `Line_*`, `Decal_*` and `RoadDepth_Sampler`.
 - Terrain and plots (`TerrainPBR*`, `PlotPBR*`) blend `Tiling1/2/3TextureSampler` through `MaskTextureSampler`.
+- Ground texture coordinates (DXBC, research log 2026-10-06 "ground texture scale audit"):
+  - Roads: ColourMap / Normal / SpecColour / RoadDepth at raw TEXCOORD0; DetailMap_Diffuse / DetailMap_Normal
+    at world xz × `DetailMapUvScale.xy`; puddle map at world xz × a global scale. `Line_*` and `Decal_*` at raw
+    TEXCOORD2, lerped over the road by their alpha. FloatingDecal(_1Bit) and RetroreflectivePaint_Lightmap
+    write the plain road in the G-buffer pass.
+  - TerrainPBR: mask and macro normal at raw TEXCOORD0; layer i at TEXCOORD1 × (`Tiling_Ratios_X[i]`,
+    `Tiling_Ratios_Y[i]`); noise at TEXCOORD1 × `Tiling_Ratio_Noise`.
+  - PlotPBR: layer i at TEXCOORD0 × (`Tiling_Ratios_X[i]`, `Tiling_Ratios_Y[i]`); mask at TEXCOORD0 ×
+    `maskTilingRatios.xy`; decal at TEXCOORD0 × `decalTilingRatios.xy`; AO map and lightmap at raw TEXCOORD1.
+  - Material parameters are float4 each; the shader's cbuffer takes the leading components (the
+    `Tiling_Ratios_*` are float3, `Tiling_Ratio_Noise` a float).
 
 Run `mwtool shaders` for the full list.
 
