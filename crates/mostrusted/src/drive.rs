@@ -15,7 +15,7 @@ use avian3d::prelude::*;
 use bevy::input::gamepad::RawGamepadEvent;
 use bevy::prelude::*;
 use mw_assets::camera::VehicleCameras;
-use mw_assets::handling::{LateralCurve, LongCurve, SlipBlend, Steering, TyreAxle, VehicleHandling};
+use mw_assets::handling::{LateralCurve, LongCurve, SlipBlend, Steering, SurfaceLink, TyreAxle, VehicleHandling};
 
 use crate::chassis::ChassisParams;
 use crate::drift::{DriftInput, DriftParams, DriftState};
@@ -93,6 +93,8 @@ pub struct CarParams {
     pub camera: Option<VehicleCameras>,
     /// The game's drift model (`None` if the car has no drift data).
     pub drift: Option<DriftParams>,
+    /// How the tyres treat each surface (grip blend, slide drag): `VehicleSurfaceProfile` links.
+    pub surface_links: Vec<SurfaceLink>,
 }
 
 /// `HandbrakeAbility`: the handbrake's strength and rear grip blend from
@@ -129,26 +131,15 @@ impl Handbrake {
 /// Bump travel above the rest position (m): the game's strut on the 911 allows ~0.06 m (inferred from its
 /// geometry; not read per car yet).
 const BUMP_TRAVEL: f32 = 0.06;
-/// Grip scales on μ × load. The game multiplies the curves' coefficients by the load and by per-wheel surface
-/// and grip factors (separate ones for the two directions) whose values are not in the data; taken literally
-/// the 911 would corner at ~3 g. Calibrated on the 911: lateral on its skidpad, longitudinal on its braking
-/// distance (docs/handling.md). Model values.
-const LAT_GRIP: f32 = 0.4;
-const LONG_GRIP: f32 = std_long_grip();
-const fn std_long_grip() -> f32 {
-    0.7
-}
 fn finite_or_zero(x: f32) -> f32 {
     if x.is_finite() { x.max(0.0) } else { 0.0 }
 }
-
-/// Sequential-impulse passes per wheel for the tyre and brake solve.
-const TYRE_ITERATIONS: usize = 6;
-/// `MW_LONG_GRIP` overrides the longitudinal scale (calibration runs).
-fn long_grip() -> f32 {
-    static V: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("MW_LONG_GRIP").ok().and_then(|v| v.parse().ok()).unwrap_or(LONG_GRIP))
-}
+/// The game writes a tyre's force caps only while its contact's `+0x14` lane exceeds 0.5 (`FUN_009c5da0`,
+/// `DAT_00f8a810`); read as the ground normal's world-up component (inferred), so a wheel against a wall or a
+/// steep bank has no tyre grip.
+const TYRE_NORMAL_MIN_UP: f32 = 0.5;
+/// Floor on the slide-drag ramp's slip-angle span (`DAT_01025ab0`, FLT_EPSILON in `FUN_009cdd90`).
+const DRAG_SLIP_SPAN_MIN: f32 = f32::EPSILON;
 /// Burnout speed scale (mph): both pedals below this release the driven brakes (game constant not in the data).
 const BURNOUT_MPH: f32 = 20.0;
 const MPH: f32 = 0.44704;
@@ -219,6 +210,7 @@ impl CarParams {
             chassis: ChassisParams::new(h),
             camera: h.camera,
             drift: DriftParams::new(h),
+            surface_links: h.surface_links.clone(),
         }
     }
 }
@@ -288,7 +280,8 @@ struct WheelState {
     omega: f32,
     inertia: f32,
     corner_mass: f32,
-    /// Slip ratio and slip angle (degrees) at the last tick, for telemetry (`--replay`).
+    /// Slip ratio after the tyre pass and slip angle (degrees) at the last tick, for telemetry (`--replay`) and
+    /// the slide drag.
     slip: (f32, f32),
     /// Current suspension compression (m), and its rate (m/s, positive = compressing).
     compression: f32,
@@ -353,9 +346,9 @@ fn spawn_car(
         params.redline_rpm,
         params.top_speed * 3.6,
         params.chassis.drag,
-        params.tyres[0].pure_lateral.peak * LAT_GRIP,
-        params.tyres[1].pure_lateral.peak * LAT_GRIP,
-        params.tyres[1].traction_pure_long.peak * LONG_GRIP,
+        params.tyres[0].pure_lateral.peak * params.tyres[0].lateral_scale,
+        params.tyres[1].pure_lateral.peak * params.tyres[1].lateral_scale,
+        params.tyres[1].traction_pure_long.peak * params.tyres[1].longitudinal_scale,
         params.drivetrain.front_share
     );
     let car = commands
@@ -609,6 +602,8 @@ pub(crate) fn car_physics(
     mut input: ResMut<CarInput>,
     spatial: SpatialQuery,
     mut cars: Query<(Entity, &mut Car, Forces, &mut Transform)>,
+    surfaces: Res<crate::props::WorldSurfaces>,
+    world_tags: Query<(&Collider, &crate::props::SurfaceTags)>,
 ) {
     let dt = time.delta_secs();
     input.apply_script();
@@ -701,7 +696,7 @@ pub(crate) fn car_physics(
         let filter = SpatialQueryFilter::from_excluded_entities([entity, car.body_collider])
             .with_mask(crate::props::GameLayer::World);
 
-        // --- Wheel spin: drive torque, and the brake budget (solved with the tyre below) ------------------
+        // --- Wheel spin: drive torque, and the brake budget (applied before the tyre below) ---------------
         let mut brake_budget = Vec::with_capacity(car.wheels.len());
         for wheel in &mut car.wheels {
             let axle = usize::from(!wheel.front);
@@ -722,9 +717,25 @@ pub(crate) fn car_physics(
         }
         limited_slip(&mut car.wheels, &dp.diff);
 
+        // The downforce the tyres feel, per axle (chassis.rs): it adds to the static wheel loads that set the
+        // grip caps; the suspension force does not (docs/decomp.md "Tyres").
+        let z_front = car.wheels.iter().filter(|w| w.front).map(|w| w.centre.z).fold(f32::MIN, f32::max);
+        let z_rear = car.wheels.iter().filter(|w| !w.front).map(|w| w.centre.z).fold(f32::MAX, f32::min);
+        let axle_downforce = p.chassis.axle_downforce(rot, velocity, car.brake_ramp, z_front, z_rear);
+        let mph_abs = velocity.length() / MPH;
+
         let mut tyre_long_total = 0.0;
+        let mut resist_total = 0.0;
         let mut tyre_yaw = [0.0; 2];
         let com = pos + rot * p.centre_of_mass;
+        // The chassis's effective mass at a contact along a direction (`FUN_009ca610` / `FUN_009e8230`): the
+        // game's tyre constraint acts on the chassis body, one wheel after the other.
+        let inv_inertia =
+            Mat3::from_quat(rot) * Mat3::from_diagonal(p.inertia.recip()) * Mat3::from_quat(rot.inverse());
+        let effective_mass = |offset: Vec3, dir: Vec3| {
+            let arm = offset.cross(dir);
+            1.0 / (1.0 / p.mass + arm.dot(inv_inertia * arm)).max(1e-6)
+        };
         let mut grounded = false;
         let mut wheels_down = 0;
         let mut rear_slip = (0.0, 0);
@@ -735,7 +746,8 @@ pub(crate) fn car_physics(
             // (in its arch) under the static load.
             let mount = pos + rot * (wheel.centre + Vec3::Y * (wheel.travel - wheel.sag));
             let reach = wheel.travel + wheel.radius;
-            let Some(hit) = spatial.cast_ray(mount, Dir3::new(-up).unwrap_or(Dir3::NEG_Y), reach, true, &filter) else {
+            let ray_dir = Dir3::new(-up).unwrap_or(Dir3::NEG_Y);
+            let Some(hit) = spatial.cast_ray(mount, ray_dir, reach, true, &filter) else {
                 wheel.compression_rate = 0.0;
                 wheel.compression = 0.0;
                 wheel.contact = None;
@@ -766,12 +778,34 @@ pub(crate) fn car_physics(
             let axis = yaw * (rot * Vec3::X);
             let fwd = (yaw * forward).reject_from(normal).normalize_or_zero();
             let side = normal.cross(fwd).normalize_or_zero();
+            let axle = usize::from(!wheel.front);
+            let tyre = &p.tyres[axle];
+            let on_ground = if normal.y > TYRE_NORMAL_MIN_UP { 1.0 } else { 0.0 };
+            // The surface under the wheel and how this car's tyres treat it (`FUN_009d8bd0`).
+            let surface = WheelSurface::at(&surfaces, &world_tags, hit.entity, (mount, ray_dir, reach), p, wheel.front);
+            // Grip load: the static corner load plus half this axle's downforce, not the spring force
+            // (`FUN_00905910`; the XKR reference run shows it constant through launch and braking).
+            let static_load = wheel.corner_mass * 9.81;
+            let n_grip = tyre::grip_load(static_load, axle_downforce[axle]);
+            // Rolling resistance and slide drag along the wheel's heading, against its motion (`FUN_009d4a10`,
+            // in the vehicle update before the solver, so the tyre pass below sees it): the surface's
+            // coefficient × the grip load, plus |mph| × the surface's slide-drag scale × this car's drag for
+            // that surface, which ramps in with the slip angle (last tick's).
+            let v = forces.velocity_at_point(contact);
+            // Ours: at most what brings the contact to rest along the heading, so the force cannot flip sign
+            // every tick at a standstill (the game applies it in full against the sign of the motion).
+            let v_heading = v.dot(fwd);
+            let f_resist = -v_heading.signum() * surface.resistance(n_grip, mph_abs, wheel.slip.1.abs()) * on_ground;
+            let rest = v_heading.abs() * effective_mass(contact - com, fwd) / dt;
+            let f_resist = f_resist.clamp(-rest, rest);
+            forces.apply_linear_impulse(fwd * f_resist * dt);
+            let arm = (contact - com).cross(fwd * f_resist * dt);
+            forces.apply_angular_impulse(arm - forward * arm.dot(forward));
             let v = forces.velocity_at_point(contact);
             let (v_long, v_side) = (v.dot(fwd), v.dot(side));
 
             // The game's tyre: slip angle and slip ratio set the grip caps (tyre.rs), and within them the
             // contact takes whatever force stops it sliding.
-            let tyre = &p.tyres[usize::from(!wheel.front)];
             let slip_deg = v_side.atan2(v_long.abs().max(1e-3)).to_degrees();
             if !wheel.front {
                 rear_slip = (rear_slip.0 - slip_deg, rear_slip.1 + 1);
@@ -784,46 +818,57 @@ pub(crate) fn car_physics(
             } else {
                 0.0
             };
-            let (mu_long, mu_lat) = tyre::coefficients(tyre, kappa, slip_deg, camber);
+            let (mu_long, mu_lat) = tyre::coefficients(tyre, kappa, slip_deg, camber, static_load / n_grip);
             wheel.slip = (kappa, slip_deg);
-            let driven = axle_share[usize::from(!wheel.front)] > 0.0;
-            let long_cap =
-                mu_long * load * long_grip() * tyre.longitudinal_scale * if driven { 1.0 - burnout } else { 1.0 };
-            let lat_cap = mu_lat * load * LAT_GRIP * tyre.lateral_scale;
+            let driven = axle_share[axle] > 0.0;
+            // The caps (`FUN_009c5da0`): μ × N × the axle's data scale × the surface grip (lateral and
+            // longitudinal blends of `Surface_Grip`) × the per-wheel gameplay grip multipliers (1 outside the
+            // game's timed effects, so left out) × camber (inside the coefficients); the driven wheels'
+            // longitudinal cap shrinks with the burnout. No caps at all when the ground is too steep.
+            let long_cap = mu_long
+                * n_grip
+                * tyre.longitudinal_scale
+                * surface.grip[1]
+                * if driven { 1.0 - burnout } else { 1.0 }
+                * on_ground;
+            let lat_cap = mu_lat * n_grip * tyre.lateral_scale * surface.grip[0] * on_ground;
             let (long_cap, lat_cap) = (finite_or_zero(long_cap), finite_or_zero(lat_cap));
-            // Longitudinal: the tread is pulled to the road speed (wheel inertia against the corner mass)
-            // within the cap, while the brake (an angular impulse budget that can stop the wheel but never
-            // reverse it) holds the wheel back. Solved together with a few sequential-impulse passes, as the
-            // game's contact solver does, so a locked wheel stays locked instead of being spun back up.
+            // Longitudinal, in the game's order (`FUN_009c75b0`): the brake (an angular impulse budget that
+            // can stop the wheel but never reverse it) acts on the wheel's spin first, then one pass of the
+            // tyre constraint pulls the tread towards the road speed (the wheel's spin inertia against the
+            // chassis's effective mass at the contact) within the cap. A wheel the handbrake locks stays locked.
             let r = wheel.radius;
-            let k_eff = r * r / wheel.inertia + 1.0 / wheel.corner_mass;
-            let (mut impulse, mut road) = (0.0f32, v_long);
+            let step = (brake_left / wheel.inertia).min(wheel.omega.abs());
+            wheel.omega -= step * wheel.omega.signum();
+            brake_left -= step * wheel.inertia;
+            let k_eff = r * r / wheel.inertia + 1.0 / effective_mass(contact - com, fwd);
             let cap = long_cap * dt;
-            for _ in 0..TYRE_ITERATIONS {
-                let wanted = (wheel.omega * r - road) / k_eff;
-                let total = (impulse + wanted).clamp(-cap, cap);
-                let d = total - impulse;
-                impulse = total;
-                wheel.omega -= d * r / wheel.inertia;
-                road += d / wheel.corner_mass;
-                let step = (brake_left / wheel.inertia).min(wheel.omega.abs());
-                wheel.omega -= step * wheel.omega.signum();
-                brake_left -= step * wheel.inertia;
+            let impulse = ((wheel.omega * r - v_long) / k_eff).clamp(-cap, cap);
+            wheel.omega -= impulse * r / wheel.inertia;
+            if brake_left.is_infinite() {
+                wheel.omega = 0.0;
             }
             let f_long = impulse / dt;
-            // Lateral: stop the sideways slide, within the cap.
-            let f_side = (-v_side * wheel.corner_mass / dt).clamp(-lat_cap, lat_cap);
+            // Telemetry keeps the slip ratio the tyre pass leaves (tread against the road after the impulse),
+            // which is what the original's wheel field shows: in `ref/xkr_launch` its rear tyres read κ ≈ 0
+            // while accelerating at 0.6 g in 2nd, as ours do after the pass (inferred from that comparison).
+            wheel.slip.0 = tyre::slip_ratio(wheel.omega * r, v_long + impulse / effective_mass(contact - com, fwd));
+            // Lateral: the impulse that stops the sideways slide, within the cap.
+            let f_side = (-v_side * effective_mass(contact - com, side) / dt).clamp(-lat_cap, lat_cap);
             let force = fwd * f_long + side * f_side;
-            // The game's tyre forces do not roll the body: drop the torque about the car's long axis.
+            // Applied as an impulse, so the next wheel sees the velocity this one left (`FUN_009c2910`). The
+            // game's tyre forces do not roll the body: the angular part about the car's long axis is dropped.
             let torque = (contact - com).cross(force);
-            forces.apply_force(force);
-            forces.apply_torque(torque - forward * torque.dot(forward));
+            forces.apply_linear_impulse(force * dt);
+            forces.apply_angular_impulse((torque - forward * torque.dot(forward)) * dt);
             tyre_long_total += f_long;
-            tyre_yaw[usize::from(!wheel.front)] += torque.dot(up);
+            resist_total += f_resist;
+            tyre_yaw[axle] += torque.dot(up);
             if tyre_debug() && (time.elapsed_secs() * 2.0).fract() < dt * 2.0 {
                 info!(
-                    "tyre front={} α {slip_deg:.1}° κ {kappa:.2} μ {mu_long:.2}/{mu_lat:.2} load {load:.0} long {f_long:.0} side {f_side:.0} steer {:.1}°",
+                    "tyre front={} α {slip_deg:.1}° κ {kappa:.2} μ {mu_long:.2}/{mu_lat:.2} load {load:.0} N {n_grip:.0} long {f_long:.0} side {f_side:.0} resist {f_resist:.0} grip {:.2?} steer {:.1}°",
                     wheel.front,
+                    surface.grip,
                     steer.to_degrees()
                 );
             }
@@ -878,12 +923,10 @@ pub(crate) fn car_physics(
             car.roll = -(rot * Vec3::X).dot(n).clamp(-1.0, 1.0).asin();
             car.pitch = forward.dot(n).clamp(-1.0, 1.0).asin();
         }
-        // The game's per-axis drag (with its over-speed ramp) and lift (downforce), plus a constant rolling
-        // resistance (Crr 0.015, ours), faded in near standstill.
-        let rolling = velocity.normalize_or_zero() * (velocity.length() / 1.0).min(1.0) * 0.015 * p.mass * 9.81;
+        // The game's per-axis drag (with its over-speed ramp) and lift (downforce). Rolling resistance is per
+        // wheel, from the surface (above).
         let drag = p.chassis.drag_force(rot, velocity);
-        let resist = drag - rolling;
-        forces.apply_force(resist);
+        forces.apply_force(drag);
         let (lift, lift_at) = p.chassis.lift(rot, velocity, p.centre_of_mass);
         forces.apply_force_at_point(up * lift, pos + rot * lift_at);
         // Once a wheel leaves the ground the game pulls the car down harder than gravity and, for a moment,
@@ -897,7 +940,7 @@ pub(crate) fn car_physics(
             }
         }
         let driven_radius = car.wheels.iter().filter(|w| !w.front).map(|w| w.radius).next().unwrap_or(0.33);
-        car.debug_forces = [drive_torque / driven_radius, tyre_long_total, resist.dot(forward)];
+        car.debug_forces = [drive_torque / driven_radius, tyre_long_total, drag.dot(forward) + resist_total];
         car.tyre_yaw = tyre_yaw;
         trace_engine(time.elapsed_secs(), car.rpm, throttle, car.gear, speed);
 
@@ -906,6 +949,66 @@ pub(crate) fn car_physics(
             transform.translation = car.spawn;
             *forces.linear_velocity_mut() = Vec3::ZERO;
         }
+    }
+}
+
+/// What the ground under one wheel does to its tyre (`FUN_009d8bd0`: `FUN_0054d750` looks the surface up,
+/// `FUN_009d4b70` finds the car's link for it, `FUN_009cec40` blends the grip, `FUN_009d4a10` the drag).
+struct WheelSurface {
+    /// (lateral, longitudinal) grip factors on the tyre caps.
+    grip: [f32; 2],
+    /// `RoadOverrides` rolling resistance per newton of load.
+    rolling: f32,
+    /// Slide drag: the surface's scale × the car's link (drag ramp ends, N per mph; slip angles in degrees).
+    drag_scale: f32,
+    drag: [f32; 2],
+    drag_slip: [f32; 2],
+}
+
+impl WheelSurface {
+    /// The surface a wheel's ray (`origin`, `dir`, `reach`) hit on `entity`. World colliders carry per-triangle
+    /// surface tags; anything else (the flat test track) counts as the game's `Surfaces.Default_surface`, the
+    /// list's first entry. Without a surface list at all the tyre gets full grip and no drag.
+    fn at(
+        surfaces: &crate::props::WorldSurfaces,
+        world_tags: &Query<(&Collider, &crate::props::SurfaceTags)>,
+        entity: Entity,
+        (origin, dir, reach): (Vec3, Dir3, f32),
+        p: &CarParams,
+        front: bool,
+    ) -> Self {
+        let tagged = world_tags
+            .get(entity)
+            .ok()
+            .and_then(|(collider, tags)| surfaces.surface_at(collider, tags, origin, *dir, reach))
+            .and_then(|hit| hit.surface);
+        let info = tagged.or_else(|| surfaces.list.first().cloned());
+        let base = info.as_ref().and_then(|s| s.grip).unwrap_or(1.0);
+        let uid = info.as_ref().and_then(|s| s.physics_uid);
+        let link = uid.and_then(|u| p.surface_links.iter().find(|l| l.surfaces.contains(&u)));
+        // The car's link blends the surface grip towards its own value, per axle and direction.
+        let grip = match link {
+            Some(l) => {
+                let f = if front { l.front } else { l.rear };
+                [base + (l.grip - base) * f[0], base + (l.grip - base) * f[1]]
+            }
+            None => [base, base],
+        };
+        Self {
+            grip,
+            rolling: info.as_ref().and_then(|s| s.rolling).unwrap_or(0.0),
+            drag_scale: if link.is_some() { info.as_ref().and_then(|s| s.slide_drag).unwrap_or(0.0) } else { 0.0 },
+            drag: link.map_or([0.0; 2], |l| l.drag),
+            drag_slip: link.map_or([0.0, 1.0], |l| l.drag_slip),
+        }
+    }
+
+    /// Resistance (N, a magnitude) for a wheel with grip load `load` (N) at `mph` with `slip_deg` of slip angle.
+    fn resistance(&self, load: f32, mph: f32, slip_deg: f32) -> f32 {
+        let [lo, hi] = self.drag_slip;
+        let t = ((slip_deg - lo) / (hi - lo).max(DRAG_SLIP_SPAN_MIN)).clamp(0.0, 1.0);
+        let drag = self.drag[0] + (self.drag[1] - self.drag[0]) * t;
+        self.rolling * load + mph * self.drag_scale * drag
     }
 }
 

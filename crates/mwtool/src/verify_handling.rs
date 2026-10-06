@@ -127,7 +127,12 @@ pub fn verify_handling(store: &AssetStore, csv: &Path, vehicle: &str, wheels_arg
             let (Some(kappa), Some(alpha)) = (get("kappa"), get("alpha")) else { continue };
             let camber = get("camber").unwrap_or(0.0);
             let axle = if is_front(w) { &tyres[0] } else { &tyres[1] };
-            let (mu_long, mu_lat) = mw_handling::tyre::coefficients(axle, kappa, alpha, camber);
+            // The game scales the lateral curve's exponent by static load / grip load (`load_in` / `N`).
+            let load_ratio = match (get("load_in"), get("N")) {
+                (Some(s), Some(n)) if n > 1.0 => s / n,
+                _ => 1.0,
+            };
+            let (mu_long, mu_lat) = mw_handling::tyre::coefficients(axle, kappa, alpha, camber, load_ratio);
             if let Some(g) = get("mu_lat") {
                 lat.add(mu_lat, g);
             }

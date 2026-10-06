@@ -267,8 +267,9 @@ impl Worker {
                 self.world(max_units, focus)?
             }
             Request::Drive { bundle, spawn, max_units, world, props, .. } => {
-                self.car(&bundle)?;
+                // The surface list first: the tyres read it from the car's first physics tick.
                 self.surfaces()?;
+                self.car(&bundle)?;
                 for p in props {
                     self.test_prop(&p)?;
                 }

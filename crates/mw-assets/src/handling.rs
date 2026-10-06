@@ -168,9 +168,16 @@ pub struct LateralCurve {
 impl LateralCurve {
     /// Force coefficient at a slip angle in degrees (sign follows the angle).
     pub fn at(&self, angle_deg: f32) -> f32 {
+        self.at_load(angle_deg, 1.0)
+    }
+
+    /// As [`Self::at`], with the exponent n multiplied by `load_ratio`: the game passes the tyre's static load
+    /// over its grip load (static + downforce share) into the curve (`FUN_009c5da0` → `FUN_009bcdb0`), so
+    /// downforce raises the cap but softens the curve's initial rise.
+    pub fn at_load(&self, angle_deg: f32, load_ratio: f32) -> f32 {
         let a = self.peak_angle.max(0.1);
         let x = (angle_deg.abs() / a).min(1.0);
-        let n = (self.gradient * a / self.peak.max(1e-3)).max(0.1);
+        let n = (self.gradient * a / self.peak.max(1e-3) * load_ratio).max(0.1);
         let (c, s) = ((std::f32::consts::FRAC_PI_2 * x).cos(), (std::f32::consts::FRAC_PI_2 * x).sin());
         let rest = 1.0 - x;
         let f = 1.0 - rest.powf(n) * c * c - rest.powf(n.max(2.0)) * s * s;
@@ -248,6 +255,27 @@ pub struct TyreAxle {
     pub longitudinal_scale: f32,
 }
 
+/// One `VehicleSurfaceProfile.SurfaceLink` of a car (`Tyres.Surface_effects.Default_profile.Links`): how the
+/// car's tyres treat the listed `SurfacePhysics` (by unique id). The game (`FUN_009cec40`, `FUN_009cdd90`,
+/// `FUN_009d4a10`; docs/decomp.md "Tyres") blends the surface's `Surface_Grip` towards `grip` by the per-axle
+/// factors (lateral and longitudinal separately), and adds a drag of |mph| × the surface's slide-drag scale ×
+/// a value that ramps from `drag[0]` to `drag[1]` as the tyre's slip angle goes from `drag_slip[0]` to
+/// `drag_slip[1]` degrees.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SurfaceLink {
+    /// `SurfacePhysics` unique ids this link applies to (`e8011e56`).
+    pub surfaces: Vec<u32>,
+    /// Grip the factors blend towards (`f43804ae`; 1 on asphalt for every car).
+    pub grip: f32,
+    /// (lateral, longitudinal) blend factors: front (`fad9b7b5`, `f448cca5`), rear (`5567a3e0`, `42829f58`).
+    pub front: [f32; 2],
+    pub rear: [f32; 2],
+    /// `Min_drag`, `232a1438`: the drag ramp's ends (N per mph).
+    pub drag: [f32; 2],
+    /// `7a4cd931`, `810e99bc`: slip angles (degrees) where the drag ramp starts and ends.
+    pub drag_slip: [f32; 2],
+}
+
 /// `SteeringBehaviour`: wheel angle range and steering speed in two speed
 /// bands (below `medium_speed` and above `high_speed`, in mph) and reverse.
 /// Angles in degrees, rates in degrees per second.
@@ -307,6 +335,8 @@ pub struct VehicleHandling {
     pub camera: Option<VehicleCameras>,
     /// Front, rear.
     pub springs: Vec<Spring>,
+    /// The car's surface profile (`Tyres.Surface_effects.Default_profile.Links`).
+    pub surface_links: Vec<SurfaceLink>,
     /// Every numeric field of `HandlingBehaviour`, by path of field hashes
     /// (array elements are skipped). Read with [`VehicleHandling::param`].
     pub params: std::collections::HashMap<Vec<u32>, f32>,
@@ -476,6 +506,7 @@ impl VehicleHandling {
         }
         self.handbrake_torque = sub(hb, h::HANDBRAKE).and_then(|b| float(b, h::HANDBRAKE_TORQUE));
         self.tyres = sub(hb, h::TYRES).and_then(read_tyres);
+        self.surface_links = sub(hb, h::TYRES).map(read_surface_links).unwrap_or_default();
         self.steering = sub(hb, h::STEERING).and_then(read_steering);
         self.in_air_gravity = sub(hb, h::AERO).and_then(|a| float(a, h::IN_AIR_GRAVITY));
     }
@@ -610,6 +641,35 @@ fn read_tyres(tyres: &Object) -> Option<[TyreAxle; 2]> {
         axle(h::FRONT_TYRES, h::FRONT_LAT_SCALE, h::FRONT_LONG_SCALE)?,
         axle(h::REAR_TYRES, h::REAR_LAT_SCALE, h::REAR_LONG_SCALE)?,
     ])
+}
+
+fn read_surface_links(tyres: &Object) -> Vec<SurfaceLink> {
+    let Some(profile) = sub(tyres, 0xfefb4584).and_then(|e| sub(e, 0x2f34b0f6)) else { return Vec::new() };
+    items(profile, 0xd913c02b)
+        .iter()
+        .filter_map(|l| match l {
+            Value::Struct(l) => Some(l),
+            _ => None,
+        })
+        .map(|l| {
+            let f = |hash| float(l, hash).unwrap_or(0.0);
+            SurfaceLink {
+                surfaces: items(l, 0xe8011e56)
+                    .iter()
+                    .filter_map(|v| match v {
+                        Value::UInt(u) => u32::try_from(*u).ok(),
+                        Value::Int(i) => u32::try_from(*i).ok(),
+                        _ => None,
+                    })
+                    .collect(),
+                grip: float(l, 0xf43804ae).unwrap_or(1.0),
+                front: [f(0xfad9b7b5), f(0xf448cca5)],
+                rear: [f(0x5567a3e0), f(0x42829f58)],
+                drag: [f(mw_formats::genesys::field_hash("Min_drag")), f(0x232a1438)],
+                drag_slip: [f(0x7a4cd931), f(0x810e99bc)],
+            }
+        })
+        .collect()
 }
 
 fn read_steering(s: &Object) -> Option<Steering> {
