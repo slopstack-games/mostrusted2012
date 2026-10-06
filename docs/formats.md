@@ -232,7 +232,8 @@ roughness), (n+1)/8π, visibility 1/(max(N·L, N·V)·V·H + 0.0013), Schlick Fr
 (1 − F0) part; ambient = irradiance cube(N) (stored sqrt(x/4); vehicles blend a second cube by distance) ×
 AO × (1 − F0) × albedo; plus RT3² × exposure. The Fog pass: amount pow(saturate(d/(far − near) −
 near/(far − near)), Power) × gradient alpha, height-layer fog, sun-corona in-scattering
-strength/(1 + phase·cosθ)², sky pixels only get the layer fog.
+saturate(ScatteringSettings.y/(1 + g·cosθ)²) × t × gradient alpha, with ScatteringSettings = (g, (1 − g²) ×
+ScatteringStrength / 4π) and g = ScatteringPhase (decomp.md "Fog"); sky pixels only get the layer fog.
 
 ### SamplerState (0x7)
 

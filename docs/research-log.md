@@ -124,6 +124,35 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-06 (session 5, round 3): fog as the game computes it; fog on trees
+
+- **Why trees floated unfogged** (measured): with the Fog/lighting pass forced to output red, every pixel
+  turned red except the trees. Bevy 0.19 queues `AlphaMode::Mask` materials in the forward `AlphaMask3d`
+  phase even when their render method is deferred (`bevy_pbr` material.rs: only the opaque branch checks
+  `OpaqueRendererMethod::Deferred`), so trees (`Tree_Translucent_1Bit_*`), and every other 1-bit look, were
+  written to the G-buffer, lit and fogged by our pass, and then drawn again on top with Bevy's forward PBR and
+  no fog. In the game the tree programs only write the G-buffer (two render targets, `discard` below the alpha
+  reference, no fog constants) and the Fog pass fogs them with the terrain. Fix: layered.wgsl's forward
+  branch discards when `DEFERRED_PREPASS` and `MAY_DISCARD` are both defined (views without a deferred prepass,
+  such as the planar reflection, keep forward shading). After: trees and the hills under them are fogged alike
+  from the high and low cameras; at road level the trees are now lit by the game's key light and ambient.
+- **The Fog pass** (`mwtool shader-asm Fog`, ps 01010008ce7671f3; port in `apply_fog`): distance = Euclidean
+  camera → pixel in world metres (view-space reconstruction from depth); t = saturate(d × ScattCoeffs.x −
+  ScattCoeffs.y)^ScattCoeffs.z; t' = t × gradient alpha; in-scattering t' × saturate(ScatteringSettings.y /
+  (1 + ScatteringSettings.x × cos)²) × ScatteringColor (we clamped at 64 instead of 1); a height-layer term
+  exp(−|d × (C.z / (1 + exp(C.x Δy + C.y)) − C.w) / Δy|) from `LayerFogCoeffs`; sky pixels (depth 1) get only
+  the layer term and the scatter. The fog colour is a 1D texture sampled at the screen u.
+- **CPU side** (docs/decomp.md "Fog"): `ScatteringSettings` = (g, (1 − g²) × strength / 4π); now applied, so
+  in-scattering is on again (0.0039 / (1 + 0.971 cos)² at noon: ≤ 0.001 away from the sun, 1 into it).
+- **Still open**: whether near / far are scaled on the CPU (the shader's form matches 1 / (far − near),
+  near / (far − near), Power, so 80–500 m stays; the mountains beyond 500 m stay fully fogged); the gradient
+  texture builder (rgb approximated, alpha taken as 1: if its alpha is below 1 at noon the hills keep detail,
+  which is the most likely reason the original's hills are hazy rather than flat); the `LayerFogCoeffs`
+  source; the sky-pixel fog. A live read of slots 0x23, 0x27, 0x83 and of the gradient texture in the running
+  game would settle all four. Groundcover goes through layered.wgsl masks too; forward glass, particles and
+  sparks still get no fog (they need the fog uniform in their bind groups).
+
+
 ### 2026-10-06 (session 5, round 2): traffic rules in the code
 
 Details and formulas are in decomp.md "Traffic rules (session 5, round 2)".

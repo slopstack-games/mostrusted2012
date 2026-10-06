@@ -625,6 +625,32 @@ a constant's writer.
   height), which packs the object's precomputed cascade matrices (+0x90, +0x220, +0x3b0 ...). The cascade
   fit itself is not located.
 
+### Fog
+
+The `Fog` pass (a full-screen quad, premultiplied output; shader maths in game_lighting.wgsl `apply_fog`)
+reads five global constant slots, registered in `FUN_008c34b0`: `SunCoronaDirection` 0xe, `ScattCoeffs`
+0x23, `ScatteringColor` 0x26, `ScatteringSettings` 0x27, `LayerFogCoeffs` 0x83, plus a 1D `GradientTextureA`
+sampled at the screen u.
+
+- **Writers**: the light-buffer setup in `008A0000.c` (around the `FUN_00a5d660(0x83)` / `(0x27)` writes;
+  S = the interpolated environment state passed as its third argument) copies `ScattCoeffs` = (S+0xc50,
+  S+0xc54, S+0xc58, 1.0), `LayerFogCoeffs` = S+0xc70..0xc7c, `ScatteringColor` = S+0xca0..0xcac,
+  `SunCoronaDirection` = −(S+0xeb0..0xebc) and **`ScatteringSettings` = (g, (1 − g²) × s / (π × 4), 0, 0)**
+  with g = S+0xcb4, s = S+0xcb0 (π at `0x01029fc0`, 4 at `0x00f9c610`, `.rdata`): a Henyey–Greenstein-style
+  normalisation, so g is the keyframe's `ScatteringPhase` (0.971 at noon) and s its `ScatteringStrength`
+  (0.854) by inference. The shader saturates the phase, so it peaks at 1 looking into the sun's corona.
+  The scene path (`008C0000.c`, around the `FUN_00a5d660(0x23)` writes) re-writes 0x23 / 0x83 / 0x24 from
+  renderer +0x26d0 / +0x26f0 / +0x2700.
+- **State fill**: `FUN_008c2080` (called from `FUN_008c8b00` with renderer +0x1ef80..+0x1efc0) stores
+  `ScattCoeffs` at state +0xc50 (`param_9[0x314]`), `LayerFogCoeffs` at +0xc70, slot 0x24's vector at
+  +0xc80, and the scattering scalars at +0xcb0 / +0xcb4. Renderer +0x1ef80.. is copied from another
+  environment state (+0xc50.., `FUN_0089b4b0` at `008C0000.c` ~line 10007). **Not traced**: where
+  1 / (far − near), near / (far − near) and Power are computed from `EnvironmentKeyframe.Fog` (kept as
+  before, matching the shader's form), what fills `LayerFogCoeffs` (the Fog struct's `LayerBase` −100,
+  `LayerHeight` 100, `926ad850` 0.65, `e391466f` 0.225, `e391466c` 0 are the candidates), and the builder of
+  `GradientTextureA` (rgb and the alpha that caps the fog opacity; `Colour.w` and `ColourSun[3]` are 1 at noon,
+  `ColourSun[4]` 0.395 and `02799979` 10, `078c9088` 0.562, `14d20653` 1 are unexplained).
+
 ## Crashes (2026-10-06)
 
 Data: `mw_assets::crash` (layouts in its doc comment); runtime: `crates/mostrusted/src/crash.rs`; values and model
