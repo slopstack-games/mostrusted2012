@@ -51,9 +51,11 @@ impl Panorama {
 
 fn load_clouds(store: &AssetStore, id: ResourceId) -> Option<Panorama> {
     let (w, h, rgba) = store.texture(id).ok()?.decode_rgba8(0)?;
-    let srgb = |c: u8| (c as f32 / 255.0).powf(2.2);
+    // The cloud textures are BC3_UNORM (not _SRGB) and NewSky multiplies the sample straight into its HDR
+    // sum, so the stored values are used as they are (no gamma decode).
+    let unorm = |c: u8| c as f32 / 255.0;
     let px =
-        rgba.as_chunks::<4>().0.iter().map(|c| [srgb(c[0]), srgb(c[1]), srgb(c[2]), c[3] as f32 / 255.0]).collect();
+        rgba.as_chunks::<4>().0.iter().map(|c| [unorm(c[0]), unorm(c[1]), unorm(c[2]), unorm(c[3])]).collect();
     Some(Panorama { w: w as usize, h: h as usize, px })
 }
 

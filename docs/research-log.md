@@ -124,6 +124,34 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-06 (session 5): sky, sun path and shadow cascades
+- **The near-black upper sky** (noon, camera looking up): the black patches are the clear sky between the
+  clouds, i.e. the top of `SkyColorGradient` (stop at 1.0 ≈ (0, 0.11, 0.21)) at gradient scale 1, under an
+  exposure set by the noon key light (~11 units). The game scales the gradient by `BaseCloudColour.w` = s²
+  (`FUN_008b27e0`; decomp.md "Sky, sun and shadows"), s a runtime environment-state float whose keyframe field
+  is not identified, so the scale stays 1 (open). Dead end: fitting `SkyReflectionAverageColour` as the
+  hemisphere average of gradient × s² + glow for the unnamed Sky fields `e570557e` (1.80 in the first
+  keyframe), `d2f5bcb1` (1.07), `9f2051a4` and `BaseCloudIntensity` gives per-channel ratios 0.4–1.1 with a
+  spread of 0.3–0.9 over 175 keyframes: none of them is the scale on its own (the average probably includes
+  the clouds).
+- **Clouds were decoded as sRGB**: the cloud textures (`…3f34`, `…3f3c`, …) are `BC3_UNORM`, and NewSky
+  multiplies the sample straight into its HDR sum. Ours raised the RGB to 2.2, darkening the cloud colour
+  ~2.5× (0.65 → 0.39 in the thick parts). Fixed: the texels are used as stored.
+- **Dome mapping matches**: `FUN_008bca20` builds the dome (`Sky vertex buffer`, 0x7e vertices) as unit
+  vectors (radius `DAT_00f8a820` = 1.0), so the gradient coordinate |POSITION.y| is our |dir.y|. Its
+  `Sky texcoord buffer` holds x = the distance along the vertex direction to a sphere (centre and radius at
+  `DAT_010cf400..0c`, .bss: the cloud shell, used by the horizon fade) and y, z = the cloud layers' planar
+  coordinates (built from angles of the dome grid: constants π, 2π, π/2 at `0x00ffc024..2c`). Ours maps the
+  cloud texture by azimuth relative to the sun and by elevation: not the game's (open, needs the grid maths).
+- **Key light**: `KeyLightDirection` (constant slot 0xd) is copied from renderer +0x2920 in `FUN_008ad7d0`;
+  the writer of +0x2920 (a struct copy, no direct store in the dump) and the reader of
+  `EnvironmentSettings.SunMoonPath` (offset 0xf0, fields at 0x100–0x128) were not found. The provisional
+  `SunMoonPath::key_light_direction` model is unchanged (open).
+- **Shadow cascades**: `FUN_004a40a0` loads `ShadowMap_Constants{,2,3,4}` (slots 0x1c–0x1f) from environment
+  state +0xf00..0xf3f; those are packed by `FUN_008a4910` (called from `FUN_008c8b00` with renderer +0x16f10, the
+  shadow object; it reads its matrices at +0x90.., +0x220.., +0x3b0..). The fit that fills them (split
+  distances, cascade extents) is not located yet, so our splits stay provisional (open).
+
 ### 2026-10-06: no Burnout Paradise bike code survives (dead end)
 
 - Dump strings (23,963): no `bike`, `motorcycle`, `rider`, `wheelie` or `stoppie`. The only vehicle-type enum
