@@ -310,7 +310,8 @@ part of the remaining warm cast (not measured).
   from the data; link items open their tier; the CHANGE CAR tier lists the catalogue's makes, then models, and
   drives the car via `GarageAction::Drive` (skipping the jack-spot location step); everything else is shown and
   inert. **Model decisions**: panel place / colours / sizes (fonts are the game's body and title fonts, the
-  layouts are not read yet), 8 rows shown, keyboard keys (arrows, Esc, `E` opens) and gamepad B for `cancel`,
+  layouts are not read yet), 8 rows shown, keyboard `E` to open and Esc / gamepad B for `cancel` (navigation uses the original's EASY_* bindings, Num 4 / 6 /
+  8 / 2 and the d-pad, since the merge with the input work; the arrows steer),
   all list items of a tier shown regardless of their source's condition (so confirm tiers show four rows and the
   root shows retry / VITA / store), paint not wired.
 

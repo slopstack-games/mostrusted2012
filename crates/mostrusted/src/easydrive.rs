@@ -9,7 +9,7 @@
 //! `01000000001b0f44` & co. are not read yet) and the keyboard keys. The data binds the `EasyDrive::*` actions to
 //! the input mappings `easy_up` (previous), `easy_down` (next), `easy_left` (back a tier), `easy_right` (select;
 //! `Hack_EasyRight` opens) and `cancel` (quick close); which keys those mappings are on PC is not decoded, so
-//! here: gamepad d-pad and B, keyboard arrows and Esc, `E` opens (model decision).
+//! here: the original's EASY_* bindings (d-pad; Num 4 / 6 / 8 / 2, input.rs), Esc / pad B to close, `E` opens (ours).
 
 use std::sync::{Arc, Mutex};
 
@@ -61,6 +61,8 @@ pub struct EasyDrive {
     /// Open pages, root first, with the selected row of each.
     stack: Vec<(Page, usize)>,
     dirty: bool,
+    /// Closed by Esc this frame: the car menu must not take the same key press as "pause".
+    pub just_closed: bool,
 }
 
 #[derive(Component)]
@@ -168,21 +170,25 @@ fn navigate(
     if !menu.enabled || menu.tiers.is_empty() {
         return;
     }
-    let pad = |b: GamepadButton| pads.iter().any(|p| p.just_pressed(b));
-    let up = keys.just_pressed(KeyCode::ArrowUp) || pad(GamepadButton::DPadUp);
-    let down = keys.just_pressed(KeyCode::ArrowDown) || pad(GamepadButton::DPadDown);
-    let right = keys.just_pressed(KeyCode::ArrowRight) || pad(GamepadButton::DPadRight);
-    let left = keys.just_pressed(KeyCode::ArrowLeft) || pad(GamepadButton::DPadLeft);
+    // The original's EASY_* actions (Num 4 / 6 / 8 / 2, d-pad; input.rs). EASY_OPEN has no default binding in the
+    // original's tables; opening with "right" is the console layout, `E` is ours for keyboards without a numpad.
+    use crate::input::defaults as act;
+    let pad_list: Vec<&Gamepad> = pads.iter().collect();
+    let dev = crate::input::Devices { keys: &keys, pads: &pad_list };
+    let (up, down) = (dev.just_pressed(act::EASY_UP), dev.just_pressed(act::EASY_DOWN));
+    let (left, right) = (dev.just_pressed(act::EASY_LEFT), dev.just_pressed(act::EASY_RIGHT));
+    menu.just_closed = false;
     if !menu.open {
-        if keys.just_pressed(KeyCode::KeyE) || pad(GamepadButton::DPadRight) {
+        if keys.just_pressed(KeyCode::KeyE) || right {
             open_root(&mut menu);
         }
         return;
     }
     // `Hack_EasyDriveQuit` = the `cancel` mapping: EasyDrive::QuickClose.
-    if keys.just_pressed(KeyCode::Escape) || pad(GamepadButton::East) {
+    if keys.just_pressed(KeyCode::Escape) || pad_list.iter().any(|p| p.just_pressed(GamepadButton::East)) {
         menu.stack.clear();
         menu.open = false;
+        menu.just_closed = true;
         menu.dirty = true;
         return;
     }

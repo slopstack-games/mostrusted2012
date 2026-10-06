@@ -23,6 +23,7 @@ mod field {
     pub const TIER_TITLE: u32 = 0xb310_f1f5;
     pub const TIER_SOURCES: u32 = 0x7823_ea7b;
     pub const SOURCE_CONDITION: u32 = 0x053e_93c0;
+    #[allow(dead_code)] // known field, not read yet
     pub const SOURCE_LENGTH: u32 = 0x2205_fba3;
     pub const LIST_ENTRIES: u32 = 0xb7a8_1572;
     pub const ITEM_TOKEN: u32 = 0xb50f_f8fe;

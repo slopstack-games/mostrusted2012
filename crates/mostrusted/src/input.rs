@@ -77,6 +77,13 @@ pub mod defaults {
     /// opens the same menu.
     pub const PAUSE: &[Control] = &[Key(K::Escape), Button(B::Start)];
     pub const CHANGE_VEHICLE: &[Control] = &[Button(B::Select)];
+    /// EASY_LEFT / RIGHT / UP / DOWN (69–72): Num 4 / 6 / 8 / 2; d-pad (the pad bindings' min is 0.8, a digital
+    /// d-pad reads 0 or 1 either way). Left = back a tier, right = select, up / down = previous / next
+    /// (`EasyDrive_ScreenScript`'s `easy_*` mappings).
+    pub const EASY_LEFT: &[Control] = &[Key(K::Numpad4), Button(B::DPadLeft)];
+    pub const EASY_RIGHT: &[Control] = &[Key(K::Numpad6), Button(B::DPadRight)];
+    pub const EASY_UP: &[Control] = &[Key(K::Numpad8), Button(B::DPadUp)];
+    pub const EASY_DOWN: &[Control] = &[Key(K::Numpad2), Button(B::DPadDown)];
 }
 
 /// Raw device state the bindings read: keys and the pads.

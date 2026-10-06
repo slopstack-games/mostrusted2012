@@ -312,17 +312,25 @@ fn spawn_menu(mut commands: Commands, menu: Res<CarMenu>) {
 }
 
 /// Tab / F1 / Start / Select open and close the menu.
-fn toggle_menu(keys: Res<ButtonInput<KeyCode>>, pads: Query<&Gamepad>, mut menu: ResMut<CarMenu>, garage: Res<Garage>) {
+fn toggle_menu(
+    keys: Res<ButtonInput<KeyCode>>,
+    pads: Query<&Gamepad>,
+    mut menu: ResMut<CarMenu>,
+    garage: Res<Garage>,
+    easydrive: Option<Res<crate::easydrive::EasyDrive>>,
+) {
     if !menu.enabled {
         return;
     }
+    // Esc belongs to Easydrive while that is open (it closes it).
+    let easy_esc = keys.just_pressed(KeyCode::Escape) && easydrive.is_some_and(|e| e.open || e.just_closed);
     // Ours: Tab / F1. The original's PAUSE (Esc / Start) and CHANGE_VEHICLE (pad Back) also open it (input.rs);
     // Esc only opens, since the open menu closes on Esc itself.
     use crate::input::defaults as act;
     let pad_list: Vec<&Gamepad> = pads.iter().collect();
     let dev = crate::input::Devices { keys: &keys, pads: &pad_list };
     let pressed = keys.any_just_pressed([KeyCode::Tab, KeyCode::F1])
-        || (dev.just_pressed(act::PAUSE) && !(menu.open && keys.just_pressed(KeyCode::Escape)))
+        || (dev.just_pressed(act::PAUSE) && !easy_esc && !(menu.open && keys.just_pressed(KeyCode::Escape)))
         || dev.just_pressed(act::CHANGE_VEHICLE);
     if !pressed {
         return;
