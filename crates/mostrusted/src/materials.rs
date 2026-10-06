@@ -136,7 +136,7 @@ fn qi(v: f32) -> i32 {
 
 /// Extension texture slots and constant vec4s (keep in sync with `layered.wgsl`).
 const N_TEX: usize = 10;
-const N_VEC: usize = 12;
+const N_VEC: usize = 14;
 
 /// Fill the texture slots in order.
 fn slots(v: &[Option<TexKey>]) -> [Option<TexKey>; N_TEX] {
@@ -481,8 +481,8 @@ impl Look {
             };
             let livery = sm.texture("DiffuseTextureSampler").filter(|_| kind > 0.0).map(|t| (t, kind < 1.5));
             // Dirt / dust / scratches read EffectsTextureSampler at TEXCOORD2 (UV_1 here), unless the
-            // lightmapped lights already take UV_1 for TEXCOORD3. Only with `--dirt`: the dirt path tints
-            // clean paint pink in the first test (open, research log 2026-10-06 session 5).
+            // lightmapped lights already take UV_1 for TEXCOORD3. Only with `--dirt` until the game's
+            // dirt build-up rule is ported (research log 2026-10-06, session 5 round 4).
             let effects = linear("EffectsTextureSampler").filter(|_| has_uv(2) && !lm.uv3 && dirt_level() != [0.0; 2]);
             look.textures = slots(&[livery, effects, None, lm.texture]);
             let two_paint = sm.parameter("mPaintColourIndex").map_or(0.0, |v| v[0]);
@@ -690,7 +690,19 @@ impl Look {
             self.vals[0] = qi(self.textures[3].is_some() as u8 as f32);
             self.vals[2] = qi(self.textures[2].is_some() as u8 as f32);
         }
-        if self.mode == Mode::Vehicle || self.paint {
+        if self.paint {
+            // Body paint keeps the flags `from_scene_mesh` / `with_paint` wrote: its slot 0 is the livery or
+            // two-paint mask (p8.x) and slot 1 the effects texture (p8.z), not a diffuse and a spec map; read
+            // as the latter, the effects map became F0 at TEXCOORD0 and tinted the dirt pink / cyan (research
+            // log 2026-10-06, session 5 round 4).
+            if self.textures[0].is_none() {
+                self.vals[32] = 0;
+            }
+            self.vals[34] = qi(has(1));
+            if self.textures[3].is_none() {
+                self.vals[10] = 0;
+            }
+        } else if self.mode == Mode::Vehicle {
             // p1.x has spec map, p1.y roughness source (needs the normal texture), p2.y has diffuse,
             // p2.z lightmapped-lights kind (needs the lightmap).
             self.vals[4] = qi(has(1));
@@ -756,6 +768,9 @@ impl Look {
             pearlescent: [0.0; 3],
             dirt_colour: [0.0; 3],
             dust_colour: [0.0; 3],
+            dirt_scale: 1.0,
+            dust_scale: 1.0,
+            secondary: None,
             colour_index: -1,
         });
         let (cc_spec, cc_fresnel) = if p.clearcoat { (p.clearcoat_specular, p.clearcoat_fresnel) } else { (0.0, 0.0) };
@@ -764,11 +779,22 @@ impl Look {
         // lights of the `_Lightmap` paint variants; p8 (livery kind, mPaintColourIndex, has effects) is
         // kept from `from_scene_mesh`. GenericVector4_A.xy = (dirt, dust) amounts, B / C = the paint's
         // DirtColour / DustColour (research log 2026-10-06, session 5).
+        // `FUN_008e9c00` writes A = (dirt level × DirtColour.w, dust level × DustColour.w, ..), B = DirtColour,
+        // C = DustColour, and slots 0x30 / 0x31 = the secondary paint's diffuse / specular minus the primary's,
+        // which the `_TwoPaint*` programs add × (mPaintColourIndex or the mask's green): p12 / p13 here
+        // (research log 2026-10-06, session 5 round 4).
         let [dirt, dust] = dirt_level();
         let (dc, uc) = (p.dirt_colour, p.dust_colour);
         self.vals[36..48].copy_from_slice(
-            &pack(&[[dirt, dust, 0.0, 0.0], [dc[0], dc[1], dc[2], 0.0], [uc[0], uc[1], uc[2], 0.0]])[..12],
+            &pack(&[
+                [dirt * p.dirt_scale, dust * p.dust_scale, 0.0, 0.0],
+                [dc[0], dc[1], dc[2], 0.0],
+                [uc[0], uc[1], uc[2], 0.0],
+            ])[..12],
         );
+        let (sd, ss) = p.secondary.unwrap_or((p.diffuse, p.specular));
+        let d = |a: [f32; 3], b: [f32; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2], 0.0];
+        self.vals[48..56].copy_from_slice(&pack(&[d(sd, p.diffuse), d(ss, p.specular)])[..8]);
         self.textures = slots(&[self.textures[0], self.textures[1], None, self.textures[3]]);
         self.normal = None;
         self.tint = [p.diffuse[0], p.diffuse[1], p.diffuse[2], 1.0].map(q);
