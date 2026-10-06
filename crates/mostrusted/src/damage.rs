@@ -49,6 +49,8 @@ pub struct CarDamage {
     graph: ImpactGraph,
     /// Damage level (0..1) per zone clip.
     pub levels: Vec<f32>,
+    /// Position (0..1) of each animated body part clip (`car_anim.rs`), posed on top of the damage.
+    parts: Vec<f32>,
     joints: Vec<Entity>,
     collider: Entity,
     dirty: bool,
@@ -66,6 +68,22 @@ const IMPACT_GAP: f32 = 0.3;
 impl CarDamage {
     pub fn zone_levels(&self) -> impl Iterator<Item = (&'static str, f32)> + '_ {
         self.model.clips.iter().zip(&self.levels).map(|(c, l)| (c.zone.name, *l))
+    }
+
+    pub fn animations(&self) -> Option<&mw_assets::car_anim::CarAnimations> {
+        self.model.animations.as_ref()
+    }
+
+    pub fn parts(&self) -> &[f32] {
+        &self.parts
+    }
+
+    /// Set the animated body part positions; re-poses the skeleton when they changed.
+    pub fn set_parts(&mut self, parts: &[f32]) {
+        if self.parts != parts {
+            self.parts = parts.to_vec();
+            self.dirty = true;
+        }
     }
 }
 
@@ -116,11 +134,13 @@ fn attach_damage(
         commands.entity(e).insert(SkinnedMesh { inverse_bindposes: inverse_bindposes.clone(), joints: joints.clone() });
     }
     let levels = vec![0.0; model.clips.len()];
+    let parts = vec![0.0; model.animations.as_ref().map_or(0, |a| a.clips.len())];
     info!("damage model: {} bones, {} zone clips", model.bind.len(), model.clips.len());
     commands.entity(car).insert(CarDamage {
         model,
         graph,
         levels,
+        parts,
         joints,
         collider,
         dirty: false,
@@ -224,7 +244,11 @@ fn pose_joints(mut cars: Query<&mut CarDamage>, mut transforms: Query<&mut Trans
             continue;
         }
         dmg.dirty = false;
-        let pose = dmg.model.pose(&dmg.levels);
+        let parts: Vec<(&mw_formats::Animation, f32)> = match &dmg.model.animations {
+            Some(a) => a.clips.iter().map(|c| &c.animation).zip(dmg.parts.iter().copied()).collect(),
+            None => Vec::new(),
+        };
+        let pose = dmg.model.pose_with(&dmg.levels, &parts);
         for (joint, bone) in dmg.joints.iter().zip(&pose) {
             if let Ok(mut t) = transforms.get_mut(*joint) {
                 *t = similarity_transform(bone);

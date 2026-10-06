@@ -152,6 +152,8 @@ pub struct VehicleDamage {
     pub bind: Vec<Similarity>,
     /// Bind pose of each bone relative to its parent.
     bind_local: Vec<Similarity>,
+    /// Animated body parts (active aero) posed on the same skeleton (`crate::car_anim`).
+    pub animations: Option<crate::car_anim::CarAnimations>,
 }
 
 impl VehicleDamage {
@@ -192,19 +194,26 @@ impl VehicleDamage {
                 Ok(DamageClip { zone, bones_direction: [x / len, z / len], animation })
             })
             .collect::<Result<_>>()?;
-        Ok(Self { skeleton, clips, bodyparts, bind, bind_local })
+        Ok(Self { skeleton, clips, bodyparts, bind, bind_local, animations: None })
     }
 
     /// Pose every bone (model space) with `levels[i]` (0..1) of damage in clip `i`.
     pub fn pose(&self, levels: &[f32]) -> Vec<Similarity> {
+        self.pose_with(levels, &[])
+    }
+
+    /// Like [`Self::pose`], plus animated body part clips at a position each (0 = first frame, 1 = last).
+    /// Their keys are offsets from the bind pose like the damage keys, so the two add up on shared bones.
+    pub fn pose_with(&self, levels: &[f32], parts: &[(&Animation, f32)]) -> Vec<Similarity> {
         let n = self.skeleton.bones.len();
         let mut keys = vec![BoneKey::IDENTITY; n];
-        for (clip, &level) in self.clips.iter().zip(levels) {
-            if level <= 0.0 {
+        let damage = self.clips.iter().map(|c| &c.animation).zip(levels.iter().copied());
+        for (animation, level) in damage.chain(parts.iter().copied()) {
+            if level <= 0.0 || animation.bone_count != n {
                 continue;
             }
-            let frames = clip.animation.frames.len().saturating_sub(1) as f32;
-            for (&b, k) in clip.animation.bones.iter().zip(clip.animation.sample(level.min(1.0) * frames)) {
+            let frames = animation.frames.len().saturating_sub(1) as f32;
+            for (&b, k) in animation.bones.iter().zip(animation.sample(level.min(1.0) * frames)) {
                 let acc = &mut keys[b];
                 acc.translation = std::array::from_fn(|i| acc.translation[i] + k.translation[i]);
                 acc.rotation = qmul(acc.rotation, k.rotation);
@@ -357,7 +366,9 @@ impl AssetStore {
         }
         let Some(anims) = anims else { return Ok(None) };
         let list = AnimationList::parse(&self.load(anims)?)?;
-        Ok(Some(VehicleDamage::new(skeleton, list.clips, bodyparts)?))
+        let mut damage = VehicleDamage::new(skeleton, list.clips, bodyparts)?;
+        damage.animations = self.car_animations(bundle)?;
+        Ok(Some(damage))
     }
 
     /// The global impact speed → damage curve (defaults if `PHYSICSCONFIG` can't be read).
