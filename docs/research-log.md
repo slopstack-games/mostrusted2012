@@ -124,6 +124,37 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-06 (session 6): fog, groundcover size, top mip and the sun from the live dumps
+
+Read across all 20 `ref/live1/ren` dumps (slot records per dump, car positions from `ren.log`).
+- **Hour of the run**: slot 0x0d (key light direction) goes from (0.411, −0.765, −0.495) to (0.441,
+  −0.760, −0.477). With `BearingCentre` −232.37 / `BearingVariation` 35.06 / `BearingPhaseOffset` −0.5 the
+  bearing atan2(z, x) of the to-sun vector (129.7° → 132.8°) gives **~12:13 → ~12:34**, rising as it should.
+  Our old convention (bearing from +Z towards +X) puts that vector at −39.6°, outside the reachable
+  92.6°–162.7°; the two other sign variants either are unreachable or run backwards in time. Fixed in
+  `SunMoonPath::key_light_direction` (x = cos b, z = sin b): looking from (887, 27, −555) towards +X/−Z
+  at 12:00 the sun moved from in front of the camera (glare on the road) to behind it. The elevation (49.9°
+  → 49.5°, falling) means the arc peaks near 12:00; our sine arc between 05:00 and 21:00 peaks at 13:00
+  (open, not changed: no code source for rise / set yet).
+- **Fog `ScattCoeffs`**: computed in `FUN_008c0f30` with a constant scale of 1 (decomp.md "Fog"), so near /
+  far are **not** scaled. Live (0.0007576, 0.06061, 2) at (865, −578) = 80–1400 m, Power 2 = exactly what
+  our timeline `1245c8` gives there from 10:00 to 14:00. Driving north (dumps 13–16) the slot slid to
+  80–1171 m, Power 1.52 over ~10 s: the original blends between painted timelines in space / time, we switch.
+  So the "flat fog beyond 500 m" view is a timeline whose keyframe really reads 500 m; what keeps the
+  original's hills visible must be the gradient alpha or the layer term, not near / far. Dead end: renderer
+  +0x1ef80 and +0x2110 in snap2 hold no fog values (the `this` of `FUN_008c0f30` is another object).
+- **`LayerFogCoeffs`**: formula traced (decomp.md); w = z / (1 + 2^y) holds in every dump. Not ported: the
+  entry weights and the density factor (0.53 and rising at the run's place) are untraced, and the shader
+  term needs them.
+- **Groundcover**: the vertex program reads only `cb1[0].x`, size = BINORMAL.xy (byte / 127) × it, the quad
+  turned about Y to face the camera. Slot 0x7f = 4 in 15 dumps, 0 in 4, 256 in 2 (other passes reuse the
+  slot). Size now byte / 127 × 4 (was byte / 32, 0.8 % larger).
+- **Top mip**: `FUN_00409510` passes the "start at mip 1" flag only when `DAT_010eac98` is set and
+  `FUN_00414a50` (+0x113) returns **0**; the earlier note had it inverted. `FUN_0086cf50` / `FUN_0086cf80`
+  map +0x113 to a settings option (1 = option 1, reload on change). The live value 1 therefore means full
+  resolution: the original does not drop the top mip at the user's settings, ours already loads mip 0.
+  The "scaled wrong" road report needs another explanation.
+
 ### 2026-10-06 (session 5, late): live-read session against the running original
 
 The user ran the original (free roam, about five minutes: standing, then driving up to 134 mph, then standing);
@@ -1106,7 +1137,8 @@ asphalt grain, so the cause is still open.
      (0x00d8ee30) writes every level with `UpdateSubresource`, mip 0 included. The function that creates
      the shader-resource view (0x00d8e670) sets `MostDetailedMip` to this byte only when its flag argument
      is set, and to 0 otherwise. `MipLevels` is −1. Its single caller (0x00409510) passes 1 when the
-     global at 0x010eac98 is non-zero and 0x00414a50 returns true. Probably a texture-quality setting.
+     global at 0x010eac98 is non-zero and 0x00414a50 returns **false** (corrected 2026-10-06; the live
+     value is true, so the top mip is kept). A texture-quality setting.
      With the flag set, the game draws every mipped texture one level down: half the resolution, texels
      twice as large and softer. That fits "scaled wrong" and the harsh grain of ours.
      Next: read 0x010eac98 live (memscan / probe) with the user's settings, and find what 0x00414a50 tests.
