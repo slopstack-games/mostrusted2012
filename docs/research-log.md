@@ -253,7 +253,27 @@ part of the remaining warm cast (not measured).
 
 ### 2026-10-06 (session 5): input bindings
 
-_(to be filled in)_
+- Found from the action-name strings (`STEERLEFT` …, `.rdata` 0x00f9fd48 on): their pointer table at `.data`
+  0x010c3540 (96 actions), the default builders `FUN_00482250` (XInput pad), `FUN_00483470` (keyboard, Windows
+  virtual-key codes, not DirectInput scan codes) and `FUN_004843b0` (mouse), all calling `FUN_00ac72a0`, and
+  the ini reader `FUN_0047cf90`. Tables and the mapping are in decomp.md "Input and control bindings".
+- The Settings-screen reading is confirmed (A / Z / arrows / Space; RT / LT / left stick / X; Esc and Start
+  pause; PgUp / PgDn tabs; R Ctrl = AUTOLOG_SETTINGS). New: nitrous = Left Shift / A, camera = C / LB, horn =
+  W / B, look around = Delete, Page Down, Home, End / right stick, change vehicle = Q / Back, Easydrive = Num 4 /
+  6 / 8 / 2 / d-pad (min 0.8, so only a near-full press counts). LOOK_BACK and LOOK_AROUND exist as actions but
+  neither table binds them: how the original looks back by default (right stick down = ROTATECAMERADOWN?) is
+  open; trace the camera code that reads action 10 / 37.
+- Mapping: per binding `max(0, (raw − min) / (max − min))` (`FUN_00ac6850`); pad sticks per axis with dead zone
+  0.2 rescaled, triggers 0.1 rescaled, `|v| / 32768`, `byte / 255` (`FUN_004119c0`). Keys are 0 / 1: no ramp
+  before the controls are handed to `FUN_009aacc0` was seen on this path (the ramps, if any, are downstream:
+  decomp.md "Update loop").
+- Runtime: `crates/mostrusted/src/input.rs` holds the driving defaults and the mapping (unit tests); drive.rs,
+  camera.rs and menu.rs read through it. Ours: steer arrows / left stick, accelerate A / RT, brake Z / LT,
+  handbrake Space / X, camera C / LB, look around Delete / PgDn / Home / End / right stick (End or the stick
+  fully back looks back, our rule), car menu also on Esc / Start / Back (PAUSE / CHANGE_VEHICLE). W / S / B and
+  pad A / Y / R3 lost their old driving roles. No nitrous in the runtime yet.
+- Open: the dead zones are `.rdata` initial values; a live read of the pad object (+0x140 / +0x144) would show
+  whether the options change them. Whether the saved ini replaces or adds to the defaults.
 
 ### 2026-10-06 (session 5): Easydrive and the front end
 

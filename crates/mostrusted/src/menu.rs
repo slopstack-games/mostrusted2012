@@ -316,8 +316,14 @@ fn toggle_menu(keys: Res<ButtonInput<KeyCode>>, pads: Query<&Gamepad>, mut menu:
     if !menu.enabled {
         return;
     }
+    // Ours: Tab / F1. The original's PAUSE (Esc / Start) and CHANGE_VEHICLE (pad Back) also open it (input.rs);
+    // Esc only opens, since the open menu closes on Esc itself.
+    use crate::input::defaults as act;
+    let pad_list: Vec<&Gamepad> = pads.iter().collect();
+    let dev = crate::input::Devices { keys: &keys, pads: &pad_list };
     let pressed = keys.any_just_pressed([KeyCode::Tab, KeyCode::F1])
-        || pads.iter().any(|p| p.any_just_pressed([GamepadButton::Start, GamepadButton::Select]));
+        || (dev.just_pressed(act::PAUSE) && !(menu.open && keys.just_pressed(KeyCode::Escape)))
+        || dev.just_pressed(act::CHANGE_VEHICLE);
     if !pressed {
         return;
     }

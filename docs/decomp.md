@@ -674,7 +674,48 @@ decisions: [handling.md](handling.md), "Crash camera".
 
 ## Input and control bindings
 
-_(session 5: to be filled in)_
+- **Actions**: 96 (ids 0..0x5f), one 16-byte record each in the name table at `.data` 0x010c3540
+  (`{name, 0, id, flags}`; flags bit 0 = listed in the saved configuration). Driving: STEERLEFT 0, STEERRIGHT 1,
+  ACCELERATE 2, BRAKE 3, HANDBRAKE 4, HORN 5, CHANGECAMERA 6, ROTATECAMERALEFT / RIGHT / UP / DOWN 7–10,
+  SNAPSHOT 11, DREAMSHOT 12, WEAPON_DEFENCE 13, SWAP_CARS 14, LEADERBOARD 15, TAKEDOWNSTREAK 16, IGNITION 17,
+  RESPAWN 18, RESPAWNOFFLINE 19, PAUSE 20, BIND 21, SHUTDOWN1–6 22–27, SIM_PAUSE1–3 28–30, CHANGE_VEHICLE 31,
+  NITROUS 32, SPOT 33, SKIP_CUTSCENE 34, VOTE_A / B 35–36, LOOK_BACK 37, LOOK_AROUND 38, ENGINE_START / OFF 39–40,
+  EASY_OPEN 41; then AUTOLOG_* menu actions 42–68, EASY_LEFT / RIGHT / UP / DOWN 69–72, UNIVERSAL_ACCEPT / ALT
+  73–74, PM_CAMERA_* (photo mode) 75–… and dialog / keyboard actions up to 95. Context groups by name:
+  CAR_ONLY, DIALOG, DEBUG, UNIVERSAL, EASYDRIVE (`FUN_0047c660`).
+- **Binding record** (`FUN_00ac72a0`, 0x14 bytes, appended to a list at this+0xd0, count at this+0x2c2c):
+  u16 action, u8 device, u8 enabled, u16 control, f32 min, f32 max, f32 scale = 1/(max − min) (1 when
+  |max − min| ≤ FLT_EPSILON). **Value** (`FUN_00ac6850`): `max(0, (raw − min) × scale)`, no upper clamp, for the
+  current and the previous frame; the pair gives the state idle / held / pressed / released. So STEERLEFT is the
+  stick X with min 0, max −1 and STEERRIGHT the same with max +1; keys and buttons are 0 / 1, so keyboard
+  steering arrives as −1 / 0 / +1 with no ramp at this level.
+- **Pad** (device 1, XInput, polled in `FUN_004119c0`; 20 control slots of 12 bytes): 0 LX, 1 LY, 2 RX, 3 RY,
+  4 L3, 5 R3, 6–9 d-pad up / down / left / right, 10 LT, 11 RT, 12 LB, 13 RB, 14 Back, 15 Start, 16 A, 17 B,
+  18 X, 19 Y (from the `wButtons` bit tests). Sticks: `a = |v| / 32768` (`.rdata` 0x00f91580), per axis (not
+  radial) `sign × clamp((a − 0.2) / (1 − 0.2), 0, 1)`, dead zone 0.2 at this+0x140 (`.rdata` 0x00f9156c).
+  Triggers: `clamp((byte / 255 − 0.1) / (1 − 0.1), 0, 1)`, dead zone 0.1 at this+0x144 (`.rdata` 0x00f91570;
+  `FUN_00414920` copies a different value into +0x144 of its own object, not traced). Buttons 0 / 1.
+- **Default pad table** (`FUN_00482250`; min 0, max 1 unless noted): steer LX (left max −1, right +1),
+  accelerate RT, brake LT, handbrake X, horn B, change camera LB, rotate camera RX (left max −1) / RY (up +1,
+  down max −1), nitrous A, weapon-defence B, swap cars Y, change vehicle Back, leaderboard Back, takedown streak
+  d-pad right, snapshot R3, dreamshot A, ignition L3, respawn X, respawn-offline Back, spot Back, skip cutscene
+  Back, vote A / B = Y / B, pause Start, BIND Start, shutdown 1–6 LB, LT, RB, RT, Start, Back, sim-pause 1–3 LT,
+  RT, A; EASY_LEFT / RIGHT / UP / DOWN d-pad left / right / up / down with **min 0.8** (`.rdata` 0x00fa1db8).
+  LOOK_BACK, LOOK_AROUND, ENGINE_START / OFF and EASY_OPEN have no default binding.
+- **Default keyboard table** (`FUN_00483470`, device 2, Windows virtual-key codes, all min 0 max 1): steer
+  Left / Right arrows, accelerate A, brake Z, handbrake Space, horn W, change camera C, rotate camera Delete
+  (left) / Page Down (right) / Home (up) / End (down), nitrous Left Shift, weapon-defence W, swap cars E, change
+  vehicle Q, leaderboard Tab, takedown streak Num 6, snapshot P, dreamshot Enter, ignition I, respawn Space,
+  respawn-offline Tab, spot Tab, skip cutscene Esc, vote 1 / 2, pause Esc, BIND Enter, Easydrive Num 4 / 6 / 8 / 2,
+  Autolog menus on the arrows, Enter, Backspace, PgUp / PgDn (tabs), F1, F10 / F11. No LOOK_BACK, LOOK_AROUND or
+  EASY_OPEN key.
+- **Mouse** (`FUN_004843b0`, device 3): button 0 weapon-defence, button 1 swap cars.
+- **Saved configuration** (`FUN_0047cf90`): `GetPrivateProfileStringW` per action whose flags bit 0 is set, the
+  line `ACTION=<device id>,<control name>,<min>,<max>`; the control name is looked up in the device's control list
+  and the binding added with `FUN_00ac72a0` (whether the defaults are cleared first was not traced). `NumConfigs` / `Config_` /
+  `Controllers_` sections (`FUN_0047d250`, 0x00480000 block) hold several configurations and the chosen device.
+- Downstream, `FUN_008fa750` passes stored control fields (vehicle-controller words 0x7ed–0x7f3) to
+  `FUN_009aacc0`; the steering value is right − left (Update loop above).
 
 ## Front end, HUD and Easydrive
 

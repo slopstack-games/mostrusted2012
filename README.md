@@ -48,17 +48,18 @@ cargo run --release -p mostrusted -- --no-groundcover
 cargo run --release -p mostrusted -- --vehicle "911" --paint 20,60,170
 ```
 
-Driving controls (our own layout for now; matching the original's bindings is on the roadmap):
+Driving controls (the original's defaults, read from its code: docs/decomp.md "Input and control bindings";
+our debug keys F1–F7, Tab and R on top):
 
 | Action | Keyboard | Gamepad |
 |--------|----------|---------|
-| Throttle / brake (reverse at a standstill) | W / S or arrows | right / left trigger |
-| Steer | A / D or arrows | left stick |
-| Handbrake | Space | A |
-| Camera: chase / bonnet / bumper | C | Y |
-| Look back / look around | (right mouse drag) | B or right stick back / right stick |
-| Car menu (any car, any paint, free camera) | Tab or F1 | Start |
-| Volume settings | F2 | Select |
+| Accelerate / brake (reverse at a standstill) | A / Z | right / left trigger |
+| Steer | Left / Right arrows | left stick |
+| Handbrake | Space | X |
+| Camera: chase / bonnet / bumper | C | LB |
+| Look around / look back (held fully down) | Delete, Page Down, Home, End (or right mouse drag) | right stick |
+| Car menu (any car, any paint, free camera) | Esc, Tab or F1 | Start or Back |
+| Volume settings | F2 | Back |
 | Time of day / weather | F5 / F6 hour, F7 weather | |
 | HUD debug text | F3 | |
 | Reset the car / repair | R | |

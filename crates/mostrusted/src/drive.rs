@@ -152,8 +152,6 @@ const MPH: f32 = 0.44704;
 /// Steering outwards at the full steer rate needs |raw input| ≥ this; below it the game uses the raw
 /// `High_speed_steer_rate` (`FUN_009d73f0`; `.bss` 0x01186e90, read from the running game).
 const STEER_FULL_INPUT: f32 = 0.99;
-/// Left stick dead zone (ours: worn sticks drift).
-const STICK_DEAD_ZONE: f32 = 0.2;
 
 /// Used when a car lacks tyre data: a generic tyre on both axles.
 fn default_tyres() -> [TyreAxle; 2] {
@@ -545,25 +543,19 @@ fn spawn_car(
 }
 
 pub(crate) fn read_input(keys: Res<ButtonInput<KeyCode>>, pads: Query<&Gamepad>, mut input: ResMut<CarInput>) {
-    let key = |k: &[KeyCode]| -> f32 { if k.iter().any(|k| keys.pressed(*k)) { 1.0 } else { 0.0 } };
-    let mut throttle = key(&[KeyCode::KeyW, KeyCode::ArrowUp]);
-    let mut brake = key(&[KeyCode::KeyS, KeyCode::ArrowDown]);
-    let mut steer = key(&[KeyCode::KeyA, KeyCode::ArrowLeft]) - key(&[KeyCode::KeyD, KeyCode::ArrowRight]);
-    let mut handbrake = keys.pressed(KeyCode::Space);
+    // The original's default bindings and mapping (input.rs; FUN_00483470 / FUN_00482250 / FUN_00ac6850).
+    // Our steer is positive to the left, the game's (+0x1bf0) to the right: steer = left − right.
+    use crate::input::defaults as act;
+    let pads: Vec<&Gamepad> = pads.iter().collect();
+    let dev = crate::input::Devices { keys: &keys, pads: &pads };
+    let mut throttle = dev.value(act::ACCELERATE);
+    let mut brake = dev.value(act::BRAKE);
+    let mut steer = dev.value(act::STEER_LEFT) - dev.value(act::STEER_RIGHT);
+    let handbrake = dev.held(act::HANDBRAKE);
     input.reset = keys.just_pressed(KeyCode::KeyR) || input.reset;
     if input.scripted.is_some() {
         // A `--test` script drives the car; `car_physics` reads it per tick.
         return;
-    }
-    for pad in &pads {
-        throttle = throttle.max(trigger(pad, GamepadButton::RightTrigger2, GamepadAxis::RightZ));
-        brake = brake.max(trigger(pad, GamepadButton::LeftTrigger2, GamepadAxis::LeftZ));
-        let x = pad.get(GamepadAxis::LeftStickX).unwrap_or(0.0);
-        // Generous deadzone (drifting sticks are common), rescaled so the input still starts from 0.
-        if x.abs() > STICK_DEAD_ZONE {
-            steer = -x.signum() * (x.abs() - STICK_DEAD_ZONE) / (1.0 - STICK_DEAD_ZONE);
-        }
-        handbrake |= pad.pressed(GamepadButton::South);
     }
     if let Some(t) = input.auto_throttle {
         throttle = t;
@@ -587,15 +579,6 @@ impl CarInput {
             self.handbrake = h > 0.5;
         }
     }
-}
-
-/// Analog trigger value in 0..1. Mapped pads report triggers as analog
-/// buttons; some report them as Z axes instead.
-fn trigger(pad: &Gamepad, button: GamepadButton, axis: GamepadAxis) -> f32 {
-    let b = pad.get(button).unwrap_or(0.0);
-    let a = pad.get(axis).unwrap_or(0.0);
-    let digital = if pad.pressed(button) { 1.0 } else { 0.0 };
-    b.max(a).max(digital).clamp(0.0, 1.0)
 }
 
 /// Install the bundled SDL GameControllerDB (newer than the copy inside
