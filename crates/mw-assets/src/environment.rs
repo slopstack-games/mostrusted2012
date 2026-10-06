@@ -116,6 +116,16 @@ pub struct CameraExposure {
     pub tolerance: f32,
     /// `e59ff4ec` (0–2): adaptation speed in stops per second.
     pub speed: f32,
+    /// `BloomColour` (`96a4b35b`): the bloom tint B.rgb. The renderer's bloom block (+0xac74) takes it through
+    /// the environment override (`FUN_008c0f30` → `FUN_008e3e30` → PostFX state +0x15f0 → +0x1300); the live
+    /// value equals the noon keyframes' (0.292, 0.474, 0.604) exactly (decomp.md "Post-processing").
+    pub bloom_colour: [f32; 3],
+    /// `99436e68` (0.39–0.6 by day): the bloom intensity B.w (live 0.595 → 0.510 between keyframes of 0.599 / 0.5).
+    pub bloom_intensity: f32,
+    /// Bloom level weights, block words 9, 10, 11 (`FUN_008eaaf0` → `FUN_008e6f40`): `9dd29928` (0.009 by day,
+    /// live 0.009) for the finest level, then `2b7c4634` and `e59ff4ec` (1, 1 by day). Which of the last two is
+    /// word 10 or 11 is not traced (equal by day).
+    pub bloom_weights: [f32; 3],
 }
 
 #[derive(Debug, Clone, Default)]
@@ -324,6 +334,9 @@ impl EnvironmentKeyframe {
                 target_high: float(c, 0x8357903e),
                 tolerance: float(c, 0x0abf68c5),
                 speed: float(c, 0xe59ff4ec),
+                bloom_colour: rgb(c, 0x96a4b35b),
+                bloom_intensity: float(c, 0x99436e68),
+                bloom_weights: [float(c, 0x9dd29928), float(c, 0x2b7c4634), float(c, 0xe59ff4ec)],
             };
         }
         if let Some(sky) = sub(o, SKY) {
@@ -522,6 +535,9 @@ impl EnvironmentKeyframe {
                 target_high: mix(ea.target_high, eb.target_high, t),
                 tolerance: mix(ea.tolerance, eb.tolerance, t),
                 speed: mix(ea.speed, eb.speed, t),
+                bloom_colour: mix3(ea.bloom_colour, eb.bloom_colour, t),
+                bloom_intensity: mix(ea.bloom_intensity, eb.bloom_intensity, t),
+                bloom_weights: mix3(ea.bloom_weights, eb.bloom_weights, t),
             },
             alternate: near.alternate,
             weather: Weather {
