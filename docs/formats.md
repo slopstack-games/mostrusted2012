@@ -366,3 +366,19 @@ but the record sizes and the flow / vehicle tables differ.
 - **Rung** (0x20): two `[x, y, z, 0]` points across the lane, ~4.5 m apart; cumulative lengths restart at 0 in
   each section. **Neighbour** (4): section, last rung. **Span** (12): max vehicles, its reciprocal, two `u16`.
 - Open: junction (0x150), stop line (2), static vehicle (0x50) records; see the research log.
+
+## TriggerData (0x202)
+
+One instance, `HAWAII/TRIGGERS.BNDL`, version 8; loaded by `FUN_0053c2f0`. Parser `mw_formats::TriggerData`
+(layout table in `crates/mw-formats/src/trigger.rs`), listing `mwtool freeroam`.
+
+- Header: version (+0x00); boxes ptr/count (+0x04/+0x08, 0x30 bytes each), spheres (+0x0c/+0x10, 0x18 bytes),
+  points (+0x14/+0x18, 0x20 bytes); spatial index ptr (+0x1c) and dimensions 45 × 39 (+0x20/+0x24), origin
+  (+0x28) and 250 m cells (+0x30) (the index's meaning is inferred, see research-log 2026-10-06 session 5).
+- Every record: position `f32[3]`, id `u32` (+0xc; unique), kind `u8` (+0x10), shape `u8` (+0x11, 0 box,
+  1 sphere, 2 point, always matches the array), flags `u8` (+0x12). Box: quaternion x y z w (+0x14), size
+  `f32[3]` (+0x24, probably full extents). Sphere: radius (+0x14). Point: unit direction (+0x14).
+- The code indexes the three arrays as one list in that order and keys it by id. Kind codes of the free-roam
+  collectables (`FUN_006e4920`): '0' security gate, '2' billboard, '4' speed camera, '<' jack spot,
+  '=' jack spot car, 6 body shop (letters 'A'..'O' = the same in other content packs). Base game: 152 / 216 /
+  74 / 183 / 185 / 22. Rules in decomp.md "Free-roam rules".

@@ -682,7 +682,47 @@ _(session 5: to be filled in)_
 
 ## Free-roam rules: collectibles, jack spots, events
 
-_(session 5: to be filled in)_
+Speed cameras, billboards, security gates, jack spots and body shops are trigger volumes in the world's one
+`TriggerData` (`HAWAII/TRIGGERS.BNDL`, formats.md "TriggerData"); their kind byte (record +0x10) says what they
+are. `mwtool freeroam [--list|--kind SpeedCam]` lists them.
+
+- **Loading** (`FUN_0053c2f0`): loads `TRIGGERS.BNDL`, then walks boxes (0x30-byte records, header +4/+8),
+  spheres (0x18, +0xc/+0x10) and points (0x20, +0x14/+0x18) as one list and stores id (+0xc) → list index in a
+  sorted map. 300 entries are reserved per side for something at `DAT_010edb3c+0x622a0/4` (open).
+- **Kind codes** (`FUN_006e4920`, the `GAME EVNT COLL` telemetry event with tags `coty` = kind name, `coid` =
+  id, and Online/Offline): '0' (48) / 'H' SecGate; '2' (50) / 'A' 'D' 'J' 'M' Billboard; '4' (52) / 'G'
+  SpeedCam; '<' (60) / 'B' 'E' 'K' 'N' JackspotLocation; '=' (61) / 'C' 'F' 'L' 'O' JackspotCar; 6 BodyShop.
+  The letters are the same kinds for other content packs; the base TRIGGERS.BNDL only has the digit codes.
+- **Hit handler** (`FUN_007059b0(this, player, trigger record, …)`): looks the record's id up in its id → index
+  map (`this+0xc`), finds the per-kind "already found" bitset (`this+0x420`, 0x94-byte groups: 0x90 bytes of
+  bits, the kind char at +0x90) and dispatches on the kind:
+  - **Speed camera** ('4'/'G'): skipped if the camera is in a second bitset (`this+0x1108`) unless a flag at
+    `…+0x2e95` is set; otherwise `FUN_006ed0a0`. That reads the car's speed with `FUN_006ba3e0` →
+    `FUN_0083ea90` (vehicle +0x1620, the speed in mph, see "Update loop"; without a vehicle |velocity| ×
+    `0x0118a060`) and takes its absolute value. **The camera only counts at or above
+    `CollectablesConfig` field `d89eeda4` (offset 0x64) = 50 mph**: the threshold is read as
+    `GameLogicConfig` (global config +0x24) → field +0xc (the `CollectablesConfig` handle) → +0x64. The recorded
+    value is `(int)(100 × |mph|)` (`DAT_00ff8ec0` = 100.0), i.e. hundredths of a mph, handed to the speed-wall
+    / Autolog record `FUN_008749e0(id, player, centi_mph, 0, id)`; `FUN_006e1c10` compares it with the
+    friends' records. The first time a camera is found (bit clear) a list entry in `this+0x34` (5 words per
+    camera) is marked and the "found" event (`GameLogicConfig`-side id at +0x28c of the config at global +0x44)
+    is sent; every pass sends the event at +0x294. Hint `FUN_006ef070(4)` is shown once.
+  - **Jack spot location** ('<' …): counts only while `FUN_006e44f0(id)` is true, which reads the script
+    variable `JackSpots.IsSwapSpotVehicleSpawned[n]` (n = index + 1), i.e. only once the parked car is there;
+    first find sends the event at config +0x3c and updates the list (`FUN_006fc600`, `FUN_00702710`).
+  - **Jack spot car** ('=' …): ignored if `FUN_006ed400(id)` (already used/driven) and requires the same
+    spawned flag; first find sends +0x38.
+  - **Security gate** ('0'/'H'): events +0x260 / +0x288 on first find, hint 7 (`FUN_006f3f30(7)`), stats
+    0x44 and 0x57 (`FUN_006687e0`).
+  - **Billboard** (other kinds reaching the tail, '2' …): `FUN_006ed330` remembers the first billboard of
+    the frame (`this+0x3008/0x300c`, the "JustHitBillboard"/"LastItemBillboard" flags of the strings) and
+    sends event +0xfc; first find sends +0x1c / +0x18, hint 5, stat 0x45.
+- **Who calls the handler**: `FUN_006ab390` (the game-logic message loop over the queue at `DAT_010edb10`)
+  and `FUN_007061d0`, `FUN_00707510`, `FUN_0065fc00`. The overlap test that posts "car entered trigger" is
+  not traced yet, so whether the car's origin, its body or a smash of the prop fires a gate / billboard is open.
+- **Speed Points**: not found in this pass. The handler only sends events (ids in the config at global
+  +0x44); the points are presumably awarded by whatever listens to them (`FUN_006a8050` dispatch).
+  `CollectablesConfig` holds no point values (its floats are 2.5 at 0x60 and the 50 mph threshold).
 
 ## Traffic and AI vehicles
 

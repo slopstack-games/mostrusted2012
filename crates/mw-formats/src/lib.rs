@@ -20,6 +20,7 @@ mod renderable;
 mod text;
 mod texture;
 pub mod traffic;
+pub mod trigger;
 pub mod ui;
 mod vehicle;
 mod vertex;
@@ -39,6 +40,7 @@ pub use renderable::{DecodedMesh, Mesh, Renderable, SNORM_POSITION_SCALE, Topolo
 pub use text::{Language, VehicleEntry, VehicleList};
 pub use texture::{Dimension, Texture};
 pub use traffic::{LanePolyline, TrafficHull, TrafficLaneData, TrafficSection};
+pub use trigger::{Collectable, Trigger, TriggerData, TriggerShape};
 pub use vehicle::{VehicleGraphicsSpec, Wheel, WheelPart};
 pub use vertex::{Semantic, VertexAttribute, VertexDescriptor};
 pub use world::{Instance, InstanceList, InstanceOverrides, ObjectDef, ObjectInstance, ObjectInstanceList};

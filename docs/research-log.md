@@ -261,7 +261,31 @@ _(to be filled in)_
 
 ### 2026-10-06 (session 5): free-roam rules
 
-_(to be filled in)_
+- `TriggerData` (one instance, `HAWAII/TRIGGERS.BNDL`, 437680 bytes) decoded: header with three record arrays
+  (6404 boxes, 53 spheres, 2585 points) found by reading `FUN_0053c2f0`, which indexes the three as one list
+  (0x30 / 0x18 / 0x20 strides). Not Burnout Paradise's layout (no landmarks / generic-region split, no
+  start position). Parser `mw_formats::TriggerData`, listing `mwtool freeroam`.
+- Collectable kind codes come from `FUN_006e4920` (telemetry names). Base-game counts: 216 Billboard,
+  152 SecGate, 74 SpeedCam, 183 JackspotLocation, 185 JackspotCar, 22 BodyShop. All are distinct places (no two
+  of a kind within 5 m except one gate pair); every jack spot location has a car box beside it (2 extra cars).
+  Heights (20–90 m) are road / car-park heights for those parts of the map; a check against the road
+  collision is not done.
+- Counts vs the game's totals: no "x of N" found in the data yet. `CollectablesConfig` (GLOBALCONFIG) has five
+  id lists with counts 4, 35, 101, 35, 35 at its u16 fields 0x68..0x70; the 35/101 lists hold jack spot location
+  and car ids (checked against TriggerData), probably per content pack; the 4-item list is not in TriggerData.
+- Speed camera rule from `FUN_006ed0a0`: counts at |speed| ≥ `CollectablesConfig.d89eeda4` = 50 mph, records
+  `(int)(100 × mph)`. Jack spots need the script flag `JackSpots.IsSwapSpotVehicleSpawned[n]` (`FUN_006e44f0`).
+  Details in decomp.md "Free-roam rules".
+- Dead ends: the strings "SpeedCam", "SecGate" … are referenced only from code (`FUN_006e4920`), no data
+  tables point at them; `FUN_006f3f30(n)` is a show-once hint, not scoring; `GameLogicConfig.FirstSeenScores`
+  holds ids, not point values.
+- Open: (1) the spatial index (header +0x1c: 45 (ptr, count) pairs then 39 more at 0x5fa78, u32 trigger indices;
+  +0x20/+0x24 = 45 × 39 cells, +0x28 origin (-4794.6, -4303.2), +0x30 cell 250 × 250 m, all inferred); (2) box
+  `size`: full or half extents (full fits the objects: 10.5 m billboards, 19–35 m road-wide camera boxes);
+  (3) record flags byte (+0x12): 2 on speed cams, jack spot locations, body shops, 0 on gates / billboards /
+  jack spot cars; (4) the other ~55 kind codes (kind 4 points = 2518, probably spawn / roaming locations;
+  kind 29 spheres = 41); (5) the overlap test that fires a trigger and the smash requirement for gates and
+  billboards; (6) Speed Points per event; (7) `.bss` values to read live: `0x0118a060` (already open).
 
 ### 2026-10-06 (session 5): traffic
 

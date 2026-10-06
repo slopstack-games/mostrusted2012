@@ -12,6 +12,7 @@ mod crash;
 mod damage;
 mod deferred;
 mod drive;
+mod freeroam;
 mod game_text;
 mod garage;
 mod hud;
@@ -464,6 +465,7 @@ fn main() -> anyhow::Result<()> {
         ))
         .add_plugins(camera::CameraPlugin { mode: camera_mode, look_back })
         .add_plugins(crash::CrashPlugin)
+        .add_plugins(freeroam::FreeroamPlugin)
         .add_plugins((garage::GaragePlugin { script }, menu::MenuPlugin { enabled: menu_enabled, open: cli.show_menu }))
         .add_plugins(game_text::GameTextPlugin)
         .add_plugins(hud::HudPlugin {
