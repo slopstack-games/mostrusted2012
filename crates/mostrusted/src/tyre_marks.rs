@@ -96,7 +96,12 @@ struct Marks {
     strips: Vec<Option<Point>>,
     log: bool,
     last_log: f32,
+    /// Bumped whenever a segment is added or dropped; the mesh is rebuilt then and every `REFADE` seconds.
+    generation: u64,
 }
+
+/// The fade is slow (`LIFETIME`): refresh the faded mesh this often while nothing changes.
+const REFADE: f32 = 0.5;
 
 fn start_loading(
     mut commands: Commands,
@@ -225,7 +230,8 @@ fn lay_marks(time: Res<Time>, cars: Query<&Car>, mut marks: ResMut<Marks>) {
             }
             let along = c.velocity.normalize();
             let side = c.normal.cross(along).normalize_or_zero();
-            let mut p = Point { pos: c.point, normal: c.normal, side, u: 0.0, slip: lat, spin, opacity };
+            // The intensities weight the Slip / Spin layers (COLOR.xy); the opacity (COLOR.w) carries only the fade.
+            let mut p = Point { pos: c.point, normal: c.normal, side, u: 0.0, slip: lat, spin, opacity: 1.0 };
             match marks.strips[i] {
                 None => marks.strips[i] = Some(p),
                 Some(last) => {
@@ -233,6 +239,7 @@ fn lay_marks(time: Res<Time>, cars: Query<&Car>, mut marks: ResMut<Marks>) {
                     if d >= SEGMENT {
                         p.u = last.u + d / U_LENGTH;
                         marks.segments.push_back(Segment { a: last, b: p, born: now });
+                        marks.generation += 1;
                         while marks.segments.len() > MAX_SEGMENTS {
                             marks.segments.pop_front();
                         }
@@ -244,6 +251,7 @@ fn lay_marks(time: Res<Time>, cars: Query<&Car>, mut marks: ResMut<Marks>) {
     }
     while marks.segments.front().is_some_and(|s| now - s.born > LIFETIME) {
         marks.segments.pop_front();
+        marks.generation += 1;
     }
     if marks.log && now - marks.last_log >= 1.0 {
         marks.last_log = now;
@@ -251,13 +259,23 @@ fn lay_marks(time: Res<Time>, cars: Query<&Car>, mut marks: ResMut<Marks>) {
     }
 }
 
-fn build_mesh(time: Res<Time>, marks: Res<Marks>, draw: Res<MarkDraw>, mut meshes: ResMut<Assets<Mesh>>) {
-    let Some(mut mesh) = meshes.get_mut(&draw.mesh) else { return };
-    if marks.segments.is_empty() {
-        *mesh = empty_mesh();
+fn build_mesh(
+    time: Res<Time>,
+    marks: Res<Marks>,
+    draw: Res<MarkDraw>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut built: Local<(u64, f32)>,
+) {
+    let now = time.elapsed_secs();
+    if built.0 == marks.generation && now - built.1 < REFADE {
         return;
     }
-    let now = time.elapsed_secs();
+    *built = (marks.generation, now);
+    if marks.segments.is_empty() {
+        // Empty vertex buffers upset Bevy's mesh allocator (particles.rs): keep one degenerate triangle.
+        let _ = meshes.insert(&draw.mesh, empty_mesh());
+        return;
+    }
     let n = marks.segments.len() * 4;
     let (mut pos, mut normal, mut uv, mut side, mut colour) = (
         Vec::with_capacity(n),
@@ -285,10 +303,13 @@ fn build_mesh(time: Res<Time>, marks: Res<Marks>, draw: Res<MarkDraw>, mut meshe
     m.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
     m.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normal);
     m.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
+    // Unused: keeps the vertex layout off the cars' (a shared layout with the skinned car meshes broke the
+    // multi-draw batching: "skinned_mesh_layout" validation errors).
+    m.insert_attribute(Mesh::ATTRIBUTE_UV_1, vec![[0.0f32; 2]; n]);
     m.insert_attribute(Mesh::ATTRIBUTE_TANGENT, side);
     m.insert_attribute(Mesh::ATTRIBUTE_COLOR, colour);
     m.insert_indices(Indices::U32(indices));
-    *mesh = m;
+    let _ = meshes.insert(&draw.mesh, m);
 }
 
 fn empty_mesh() -> Mesh {
@@ -296,6 +317,7 @@ fn empty_mesh() -> Mesh {
     m.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0f32; 3]; 3]);
     m.insert_attribute(Mesh::ATTRIBUTE_NORMAL, vec![[0.0f32, 1.0, 0.0]; 3]);
     m.insert_attribute(Mesh::ATTRIBUTE_UV_0, vec![[0.0f32; 2]; 3]);
+    m.insert_attribute(Mesh::ATTRIBUTE_UV_1, vec![[0.0f32; 2]; 3]);
     m.insert_attribute(Mesh::ATTRIBUTE_TANGENT, vec![[1.0f32, 0.0, 0.0, 0.0]; 3]);
     m.insert_attribute(Mesh::ATTRIBUTE_COLOR, vec![[0.0f32; 4]; 3]);
     m.insert_indices(Indices::U32(vec![0, 1, 2]));
