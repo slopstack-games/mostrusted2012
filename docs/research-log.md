@@ -124,6 +124,33 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-06 (session 5, round 5): the chase camera, second attempt
+
+Goal: find the chase camera's update from round 4's leads and port its sway, weight and avoidance.
+Result: **the code is found; nothing ported yet** (the budget went into the search; decomp.md "## Cameras"
+has the map).
+
+- Lead 1 (the 0x3050 objects) worked, indirectly: the object at camera manager + 0x6a0 is a 0x3050-byte
+  camera director built by `FUN_00422640`, which stores 15 camera sub-objects' vtables. Their update methods
+  (vtable +8, read from `.rdata`) were checked for the car's speed and the camera data: the sub-camera at
+  director + 0x8d0 (vtable 0xf999b4) updates through **`FUN_005d4970`**, which reads the speed and calls about
+  20 helpers, of which `FUN_005c90a0` (yaw spring), `FUN_005c9380` (roll), `FUN_005c7a80` (gradient
+  adjustments) and `FUN_005d0b90` (speed-based movement, impact shake, final write) read
+  `CameraGameplayExternal`.
+- Why round 4 missed it: the camera reads its data through a per-player state at camera + 0x290
+  (resource at state + 0x98, instance offset at state + 0x9c), so the read is
+  `*(*(state + 0x98) + 0x28) + idx + OFF`, usually with a sub-struct base first (`+ 0xbc`, then `+0x10..`).
+- First rule read (`FUN_005c90a0`): the yaw spring is chosen by **the car's yaw rate in car space**, not only
+  by speed: `t = clamp(1 − (|ω_y| − y20) / (y14 − y20), 0, 1)`, rate-limited by `y10` per call into
+  cam + 0x6d8, and blended with a speed factor `clamp(|v| / v_ref, 0, 1)` (`v_ref` is `.bss` `_DAT_0110e8f0`)
+  and the car's mods-profile value 0x29. The y-names are sub-offsets of `Yaw_spring_modification`; which hash
+  is `Low_speed` / `High_speed` / `Decay_rate` is open, and so is the last blend (one unread local).
+- Lead 3: `CameraGameplayExternalGlobals` is only impact shake + lens + a shake effect. Lead 4: no
+  `ProcessNode.Camera*` instances exist in any bundle; the chase camera is plain code, not a node graph.
+- Avoidance is not located: `FUN_005dfe90` (shared with the scripted cameras, the impact shake and the final
+  writer) looks like transform composition; the unread helpers listed in decomp.md are the candidates.
+- No camera rule changed, so the round-4 baseline traces still describe our camera.
+
 ### 2026-10-06 (session 5, round 4): the chase camera from the code
 
 Goal: port the chase camera's sway, weight and avoidance from the code that reads `CameraGameplayExternal`.

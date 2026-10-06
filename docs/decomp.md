@@ -1177,9 +1177,112 @@ runtime borrows the per-wheel form of the skid sound intensities (`FUN_009d1bf0`
 
 ## Cameras
 
-Not found yet (2026-10-06, session 5 round 4). The chase camera's per-frame update, the code that reads
-`CameraGameplayExternal`, has not been located in the dump, so nothing about its sway, weight or avoidance is
-read from the code. The search, so that the next attempt does not repeat it:
+**Found (2026-10-06, session 5 round 5); not yet ported.** The chase camera's code and the way it reads
+`CameraGameplayExternal` are located below; the per-rule reading is only started (the yaw-spring helper).
+
+### The camera director and its 15 cameras
+
+- The camera manager (`*(DAT_010edaf4 + 4)`, `DAT_010edaf4` = game object + 0x6a968) holds a 0x3050-byte
+  **camera director** at manager + 0x6a0 (only slot 0 is used: `mgr + 0x400` is reset to 0 before each call).
+  Its constructor is `FUN_00422640` (no direct caller in the dump; the director's own vtable is `0x00f99d14`,
+  whose method +8 is `FUN_005d5e20`, the call `FUN_005d2cd0` makes each frame; how it picks the active
+  sub-camera is not read yet). The manager's
+  `FUN_005c7060` only zeroes the director's first 16 bytes; `FUN_005c44b0` (after loading `CAMERAS.BNDL`)
+  calls director +4, `FUN_005c4580` director +0x10, `FUN_005ce510` director +0xc, `FUN_004bc620` and several
+  HUD / AI callers director +0x28 (a "which camera is active" query, by its use).
+- `FUN_00422640` stores 15 camera sub-objects' vtables. Offset in the director, vtable, and the update
+  (vtable +8; read from `.rdata` with `exe-const`):
+
+  | offset | vtable | +8 update | size | note |
+  |---|---|---|---|---|
+  | 0x120 | 0xf99954 | `FUN_005d2f60` | 1739 | vehicle-attached (same helpers as 0x520) |
+  | 0x520 | 0xf99984 | `FUN_005d3630` | 1692 | vehicle-attached |
+  | **0x8d0** | **0xf999b4** | **`FUN_005d4970`** | 3728 | **the gameplay chase camera** (below) |
+  | 0x10a0 | 0xf990fc | `FUN_005caeb0` | 6438 | box / orbit camera round the car (8 corner points) |
+  | 0x1270 | 0xf99128 | `FUN_005cace0` | 457 | |
+  | 0x1400 | 0xf99154 | `FUN_005c98e0` | 101 | |
+  | 0x1570 | 0xf999e8 | `FUN_005c9a70` | 1941 | script-driven (channels `FUN_004962f0(n)`), FOV `FUN_005deca0`, `FUN_005df170` |
+  | 0x1980 | 0xf99180 | `FUN_005d2060` | 581 | |
+  | 0x1c90 | 0xf991ac | `0x5c02b0` | - | not a function start in the dump |
+  | 0x1f30 | 0xf991d8 | `FUN_005ca490` | 1393 | |
+  | 0x22e0 | 0xf99204 | `FUN_005cf770` | 2385 | script-driven, same helpers as 0x1570 |
+  | 0x2830 | 0xf99230 | `FUN_005ca410` | 57 | |
+  | 0x2950 | 0xf9925c | `FUN_005c5bc0` | 3991 | script-driven, same helpers as 0x1570 |
+  | 0x2b00 | 0xf99288 | `FUN_005ce820` | 1277 | |
+  | 0x2dc0 | 0xf99a14 | `FUN_005c6c10` | 667 | |
+
+### How the chase camera reads its data
+
+Every camera keeps a pointer at camera + 0x290 to a per-player camera state; that state holds the
+`CameraGameplayExternal` resource at +0x98 and the instance's byte offset at +0x9c, so a field is read as
+`*(float *)(*(*(state + 0x98) + 0x28) + state[+0x9c] + OFF)` (often with the sub-struct's base computed first,
+`base + 0xbc + idx`, then `+0x10..+0x28`). This double indirection is why the round-4 search for
+`res + 0x28 + OFF + idx` found nothing. Functions with this read: `FUN_005c90a0` (yaw spring, 0xbc),
+`FUN_005c9380` (camera roll, 0x90 and 0xac), `FUN_005c7a80` (gradient adjustments handle 0x178),
+`FUN_005c7340` / `FUN_005c7410` (globals handle 0x174), `FUN_005d0b90` (0x28 and 0x2c..0x38 in
+`Speed_based_movement`, globals + 0x44). Other state fields: +0x84 a mod / profile handle
+(`FUN_00574870(0x29, …)`, the mods getter of decomp.md "Nitrous and upgrades"), +0x4 / +0x20 passed to the
+final stages.
+
+### `FUN_005d4970`, the chase camera's update (order of calls)
+
+Target car = `*(cam + 0x110) + 0x34`; speed read at vehicle + 0x1620 (line ~301); time step from
+`FUN_0046ee10` (+0x10 × +0x14). Then: `FUN_005c1b90`, optional `FUN_005c1c30` (flag cam + 0x712),
+**`FUN_005c90a0` (yaw spring modification)**, **`FUN_005c9380` (roll)**, `FUN_005c8420`, `FUN_005c82c0`,
+`FUN_005c3af0`, `FUN_005c8820`, `FUN_005c2070`, `FUN_005c89c0`, `FUN_005c75b0`, **`FUN_005c7a80`** (2108
+bytes; gradient adjustments, a spring on cam + 0x670..0x67c), `FUN_005c76a0`, `FUN_005c8ad0`, `FUN_005c1f90`,
+`FUN_005c8880`, `FUN_005c2130`, `FUN_005c8e40`, **`FUN_005d0b90`** (1817 bytes: speed-based movement, impact
+shake via `FUN_005cd040` with globals + 0x44, `FUN_005e05a0`, then `FUN_005dfe90`, a 1580-byte stage also called by
+the scripted cameras, by the impact shake `FUN_005cd040` and by `FUN_005c0c80`, so more likely a transform
+composition than the collider, and `FUN_005c0c80` which writes the result). `FUN_005c90a0` and `FUN_005d0b90`
+have `FUN_005d4970` as their only caller. Where the world / car avoidance happens is not located yet: the
+candidates are the unread helpers `FUN_005c8420` (1018 bytes), `FUN_005c9380`'s tail, `FUN_005c2130` (1119)
+and `FUN_005c76a0` / `FUN_005c8ad0` (982 / 879). After `FUN_005d0b90` come `FUN_005c0550`, `FUN_005c7580`, `FUN_005c7340`. It also stores the car's frame into cam + 0x4d0..0x50c.
+
+### Yaw spring modification (`FUN_005c90a0`, read)
+
+`Yaw_spring_modification` sits at 0xbc; its seven floats at sub + 0x10..0x28 are, in stored order, the hashes
+`19c1db65`, `78527964`, `d48a307f`, `63fb2207`, `397fce82`, `2517d995`, `5a74d44d` (which of them are
+`Low_speed` / `High_speed` / `Decay_rate` is not settled; call them y10..y28 by sub-offset). Per frame:
+- `ω` = the car's angular velocity (body + 0xc0..0xc8, zero when body flag +0xf4 bit 0 is set) rotated into
+  car space by the matrix at vehicle + 0x2db0; the yaw component `|ω_y|` is used.
+- `t = clamp(1 − (|ω_y| − y20) / (y14 − y20), 0, 1)`: 1 below the low yaw rate y20, 0 above y14.
+- the state at cam + 0x6d8 moves towards `t` by at most `y10` per call (a rate limit, not scaled by dt in
+  this function).
+- a speed factor `s = clamp(|speed| / v_ref, 0, 1)` (lane 0 of a vector `|(speed, ω_car)|` built as
+  `max(−x, x)` with `_DAT_00fb05a0` = −1 from `.rdata`, divided by the vector `_DAT_0110e8f0` (`.bss`, needs a
+  live read: the reference speed) and clamped by `_DAT_00fb05f0`), then
+  cam + 0x6d4 = `lerp(lerp(y28, y18, f), mods(0x29), s)`, where `mods(0x29)` is `FUN_00574870(0x29, state +
+  0x84)`, the car's value at index 0x29 of its mods profile. `f` is a stack float the decompiler never shows
+  being written (an aliasing loss); by its place it is most likely the rate-limited `t` at cam + 0x6d8, which
+  would make the spring y28 at high yaw rate and y18 at low, but that needs the disassembly or a live read.
+  Read part: the yaw spring depends on **the car's yaw rate** (not only speed) through a rate-limited blend,
+  and is handed over to the mods-profile value as speed rises, which our model does not do.
+
+### Other leads checked in round 5
+
+- `CameraGameplayExternalGlobals` holds only `Impact_shake` (96 bytes), `LensProperties` (28) and a
+  `CameraGameplayShakeEffect`: no spring or avoidance settings; `CameraRearViewGlobals` is four floats. The
+  avoidance's tuning is therefore code constants or `CameraGameplayExternal` fields, not the globals.
+- No `ProcessNode.Camera*` instance exists in any bundle (`mwtool genesys all --type CameraTransformEntityAvoider`
+  and `--type ProcessNode` return nothing; `CAMERAS.BNDL` holds a `CameraTakeList` and `CameraTake`s, the
+  scripted shots). The chase camera is not a node graph; the node types are unused by the shipped data.
+- The script getters (`LAB_005dae70` / `LAB_005daeb0`) were not needed once the director was found.
+
+### Next steps for the port
+
+Read, in this order, with the field map above: `FUN_005c90a0` to its end (the local that blends y28 / y18),
+`FUN_005c9380` (roll), `FUN_005c7a80` (gradient spring on cam + 0x670), `FUN_005c8420` / `FUN_005c82c0`
+(likely the boom and the accelerations), `FUN_005c76a0` / `FUN_005c8ad0` / `FUN_005c2130` (look for ray casts:
+callees in the 0x00a6xxxx collision range or `FUN_005e34e0`), `FUN_005d0b90`. `.bss` values a live read must
+supply: `_DAT_0110e8f0` (the yaw-spring reference speed / rates vector), `_DAT_0110e4e0` (used in
+`FUN_005c7a80`). In the running game the director is at `M + 0x6a0` with `M = u32 at (u32 at 0x010edaf4) + 4`, so the chase
+camera is at that + 0x8d0, its state pointer at + 0x290, the yaw state at + 0x6d4 / + 0x6d8 and the gradient
+spring at + 0x670: a probe watch on those gives reference traces to port against.
+
+### Earlier search (round 4)
+
+What follows is the first attempt's search, kept so that it is not repeated:
 
 - **Field offsets.** `CameraGameplayExternal` (392 bytes, `mwtool genesys-types`): `Speed_based_movement` at
   0x0c (its floats 0x34..0x44), `Acceleration_movement` 0x54 (floats 0x64..0x8c), `Camera_Roll` 0x90 (0xa0..0xb8),
