@@ -9,9 +9,10 @@
 //! From the `NewSky` shader: the glow is pow(saturate(dir · L), SunColour.w) × SunColour.rgb; the shader
 //! blends two 1-D gradients (A towards the sun, B away, by saturate(dot(sun.xz, dir.xz) + DomeRanges.w))
 //! sampled at |dome y|, scaled by BaseCloudColour.w, under four cloud layers.
-//! Provisional (not decoded): gradient B and the gradient scale (both CPU-side; only SkyColorGradient is
-//! named, so it serves both sides at scale 1), how Opacity / Feathering map to the cloud threshold, the
-//! cloud layers' dome mapping. The two HDR panoramas in the bundle
+//! The gradient coordinate |dome y| equals our |dir.y| (`FUN_008bca20` builds a unit dome). The gradient
+//! scale BaseCloudColour.w is a squared environment-state value (`FUN_008b27e0`, docs/decomp.md "Sky, sun
+//! and shadows") whose keyframe field is not identified, so it is 1 here. Provisional (not decoded): gradient B (only SkyColorGradient is named, so it serves
+//! both sides), how Opacity / Feathering map to the cloud threshold, the cloud layers' dome mapping. The two HDR panoramas in the bundle
 //! (`…3f35`, `…3f39`) are a sunrise capture that no keyframe references; they are not used.
 
 use bevy::asset::RenderAssetUsages;
@@ -51,9 +52,10 @@ impl Panorama {
 
 fn load_clouds(store: &AssetStore, id: ResourceId) -> Option<Panorama> {
     let (w, h, rgba) = store.texture(id).ok()?.decode_rgba8(0)?;
-    let srgb = |c: u8| (c as f32 / 255.0).powf(2.2);
-    let px =
-        rgba.as_chunks::<4>().0.iter().map(|c| [srgb(c[0]), srgb(c[1]), srgb(c[2]), c[3] as f32 / 255.0]).collect();
+    // The cloud textures are BC3_UNORM (not _SRGB) and NewSky multiplies the sample straight into its HDR
+    // sum, so the stored values are used as they are (no gamma decode).
+    let unorm = |c: u8| c as f32 / 255.0;
+    let px = rgba.as_chunks::<4>().0.iter().map(|c| [unorm(c[0]), unorm(c[1]), unorm(c[2]), unorm(c[3])]).collect();
     Some(Panorama { w: w as usize, h: h as usize, px })
 }
 

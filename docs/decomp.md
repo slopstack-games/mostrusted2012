@@ -571,6 +571,35 @@ Consequence for the ColourCube layout: a straight weighted blend keeps the store
 are the texture's own (x = input red fastest, bytes B, G, R + alpha), not "blue fastest, stored R, G, B"
 (inferred; the kernels themselves are missing from the dump; `mw_formats::ColourCube`).
 
+## Sky, sun and shadows
+
+Shader constants are registered by name and slot in `FUN_008c34b0` (one `FUN_00a5d490` call per name, e.g.
+`KeyLightDirection` 0xd, `ShadowMap_Constants` 0x1c–0x1f, `ShadowMap_WorldToLight0` 0x21, `DomeRanges` 0x86,
+`KeyLightDirAndXZLength` 0x89, `CloudParamsPS` 0x90, `CloudParamsPS2` 0x91, `BaseCloudColour` 0x92) and
+written through `FUN_00a5d660(slot)`, which returns the slot's float4. Grep for `FUN_00a5d660(<slot>)` to find
+a constant's writer.
+
+- **NewSky constants** (`FUN_008b27e0`, called from `FUN_008bd6d0`); S = the interpolated environment state:
+  - `DomeRanges` = (dome[8], 1 / (dome[7] − dome[8]), S+0x11e0, S+0x1334): the horizon-fade start, its
+    inverse range and power, and the offset added to the sun-side gradient blend w.
+  - `BaseCloud{A..D}ParamsVS` = (1, S+0x12e0+4i, S+0xec0 × k + S+0x1310+4i + S+0x12d0+4i, S+0x1320+4i): one
+    scale and a scrolling offset per layer (S+0xec0 is probably the clock).
+  - `CloudParamsPS` = S+0x12f0..0x12fc (the per-layer alpha thresholds); `CloudParamsPS2` = (S+0xc00,
+    S+0x1300, 0, 0) (.y = the threshold sharpness).
+  - `BaseCloudColour` = (S+0xbe0, S+0xbe4, S+0xbe8, s²), s = S+0xe44, or S+0xe48 when the call's last flag is
+    set: **the sky gradient is scaled by a squared intensity**. Which keyframe fields feed these state
+    offsets is not traced (the state is filled by a struct copy).
+  - `KeyLightDirAndXZLength` = (key direction, √(x² + z²)).
+- **Dome** (`FUN_008bca20`): 0x7e vertices, positions normalised to radius 1.0 (`DAT_00f8a820`), so the
+  gradient coordinate |POSITION.y| is the sine of the elevation. Texcoord x is the distance along the
+  vertex direction to the sphere at `DAT_010cf400..0c` (.bss; centre and radius); y, z come from the dome
+  grid's angles (π, 2π, π/2 at `0x00ffc024..2c`) and become the cloud UVs in the VS.
+- **Key light**: slot 0xd is copied from renderer +0x2920 in `FUN_008ad7d0`; its source is not traced.
+- **Shadow constants**: `FUN_004a40a0` copies S+0xf00..0xf3f into `ShadowMap_Constants{,2,3,4}`;
+  `FUN_008c8b00` fills them through `FUN_008a4910`(shadow object = renderer +0x16f10, out = S+0xf00, width,
+  height), which packs the object's precomputed cascade matrices (+0x90, +0x220, +0x3b0 ...). The cascade
+  fit itself is not located.
+
 ## Crashes (2026-10-06)
 
 Data: `mw_assets::crash` (layouts in its doc comment); runtime: `crates/mostrusted/src/crash.rs`; values and model
@@ -624,10 +653,6 @@ decisions: [handling.md](handling.md), "Crash camera".
 - Not found: the bystander camera's maths (its params are read through cached pointers, not in place), the
   scene analysers' update (vtables at `0x00fe4638` and nearby, `FUN_007d9840` and its siblings build them),
   the `SlowMoSequenceItem` handler.
-
-## Sky, sun and shadows
-
-_(session 5: to be filled in)_
 
 ## Input and control bindings
 
