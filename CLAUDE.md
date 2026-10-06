@@ -20,14 +20,20 @@ user's install (IW4L-style). Read these before starting work:
 - **Never commit game data or anything derived from it**: extracted resources, DDS/PNG/OBJ exports,
   Ghidra databases, decompiled code (findings go into docs in prose only). Use the session scratchpad or git-ignored dirs (`/extracted`, `/re/out`).
 - Community references (burnout.wiki, DGIorio's MIT tools) may be read for format knowledge; don't copy code.
-- **Code in the running game only as the probe policy allows** (docs/reverse-engineering.md): the user's own
-  copy, offline, after it has unpacked itself, never the DRM wrapper or licence code, never the game's files.
-  Byte signatures and anything from the dump stay in git-ignored `re/`.
+- **Modding the original is allowed; a DRM bypass is not** (docs/reverse-engineering.md): code mods run in the
+  user's own copy, offline, in memory after it has unpacked itself, never in the DRM wrapper, licence code or
+  `NFS13.exe` on disk. Data files may be replaced if backed up and restorable. Byte signatures and anything from
+  the dump stay in git-ignored `re/`.
 
 ## Fidelity rule: the original is the reference
 
-The goal is to play and look exactly like the original, not like a plausible racing game. Every behaviour or
-look change names its source: a data field, a function in the decomp ([docs/decomp.md](docs/decomp.md)), a
+The goal is to play and look exactly like the original, not like a plausible racing game. Reverse engineering
+the original's inner workings (physics, rendering, audio, AI, rules) to get there is allowed and preferred:
+the dump, shader disassembly, the probe, memory reads and frame captures (docs/reverse-engineering.md).
+**How vehicles drive is read from the decompiled code**, not guessed or
+calibrated from data: trace each rule and constant to its function (`.rdata` constants from the exe on disk,
+`.bss` ones from their initialiser or a live read). A value becomes a model decision only after a documented,
+failed search of the code. Every behaviour or look change names its source: a data field, a function in the decomp ([docs/decomp.md](docs/decomp.md)), a
 constant or trace read from the running game, or a capture of the original (`mwtool capture`, Steam F12
 screenshots of the original at a known place and hour, the game's own audio stream). No tuning by feel: a model
 value that is not from one of those is marked as such (handling.md "Model decisions") and replaced when it can be

@@ -15,37 +15,54 @@ Most Rusted does **not** include or automate any way to remove or bypass that pr
 project does not need the executable at all: every format so far has been worked out from the data files and
 public community documentation.
 
-For the parts that are code rather than data (handling model, AI, game rules), the options are:
+For the parts that are code rather than data (physics and handling, rendering, audio, AI, game rules, UI), the
+sources are:
 
-1. Keep working data-first: much of the game's behaviour is driven by AttribSys vaults and GeneSys objects,
-   which are readable from the bundles.
-2. Use public research (burnout.wiki, the Burnout Paradise and Hot Pursuit modding communities). Criterion's
-   engine is shared across these titles.
-3. Any analysis of a decrypted binary is a separate decision for the person doing it, who is responsible for
-   whether that is permitted where they live. Decompiled code itself never goes into this repository.
+1. The data: much of the game's behaviour is driven by AttribSys vaults and GeneSys objects, which are readable
+   from the bundles.
+2. Public research (burnout.wiki, the Burnout Paradise and Hot Pursuit modding communities). Criterion's engine
+   is shared across these titles.
+3. **Reverse engineering the game's own code** (user decision, 2026-10-06): to make Most Rusted look and feel
+   exactly like the original, any of the game's inner workings may be reverse engineered. That covers the physics
+   and handling, the renderer (passes, shaders, lighting, post-processing, LOD and streaming), audio, AI, traffic,
+   cameras and game rules. Allowed means are the decompiled dump (below), the shader disassembly (`mwtool
+   shader-asm`), observing the running game (`mwtool memscan` / `telemetry`, the probe's hooks and pokes,
+   graphics frame captures of the original's draw calls and render targets), and experiments that change a value
+   or function and watch the result. Where both are available, this beats a plausible guess: the fidelity rule
+   in CLAUDE.md wants a source for every behaviour. The limits stay the same: nothing that touches the DRM, and
+   decompiled code never goes into this repository (the rules below).
 
 ## The user's decompiled dump (2026-10-04)
 
 The user made a memory dump of the running game and decompiled it with Ghidra (`re/NFS13_dump/`, git-ignored:
-pseudo-C, function table, strings). It is used as a reference for behaviour the data cannot show (the handling
-model above all). Rules:
+pseudo-C, function table, strings). It is the reference for any behaviour the data cannot show: the handling
+model first, and equally the renderer, audio, AI and game rules (point 3 above). Rules:
 
 - Never commit the dump, Ghidra databases or any pseudo-C, and never paste decompiled code into source, comments
   or docs.
 - Record what the code *does* in prose and formulas, in our own words, citing function addresses so it can be
-  re-checked: [decomp.md](decomp.md) collects the findings; implementation details go into
-  [handling.md](handling.md) and the research log.
+  re-checked: [decomp.md](decomp.md) collects the findings for every system; implementation details go into
+  the system's own doc ([handling.md](handling.md) for physics) and the research log.
 - Write our own Rust from those descriptions.
 
-## Code inside the running game: the probe (policy, 2026-10-04)
+## Code inside the running game: the probe and mods (policy, 2026-10-04; widened 2026-10-06)
 
-The user decided that hooks running in their own licensed, running copy of the game are in scope, as a
-measuring and verification instrument. The design is [probe.md](probe.md). What is and is not allowed:
+The user decided that hooks running in their own licensed, running copy of the game are in scope, first as a
+measuring and verification instrument (the probe, 2026-10-04). On 2026-10-06 the user widened this: **modding
+the original is allowed**, including new behaviour such as new vehicle types (bikes), game modes or rendering,
+and changes to the game's data files. The one thing that stays forbidden is getting around the DRM. The probe's
+design is [probe.md](probe.md). What is and is not allowed:
 
 **Allowed**
 - Loading our own DLL into the running game (proxy DLL, `AppInit_DLLs`, or a remote thread in the Wine prefix),
   on this machine, by the user, for runs started with `tools/orig/orig launch --probe` or `mwtool capture
-  --probe`. Normal launches stay untouched: no file in the game directory and no DLL override outside those runs.
+  --probe`, or by a mod launcher built the same way. A normal Steam launch stays untouched: no DLL override is
+  left behind after a modded run.
+- **Mods**: new or changed game behaviour through code patched in memory after the game has unpacked itself
+  (the probe's detour and replacement mechanism), new code in our own DLL, and changed or added data: GeneSys
+  objects, AttribSys vaults, bundles and their resources. Data mods may replace files in the install, provided
+  the original is backed up first and the mod tooling can restore it (verify with Steam's "Verify integrity"
+  as the last resort). The save game may be changed the same way, with a backup.
 - Reading anything in the process from inside it, including registers and stack contents at hooked
   instructions, and logging it to the git-ignored `ref/`.
 - Writing *data* values in memory (constants, fields) to learn what they do, from inside (the probe) or from
@@ -54,7 +71,7 @@ measuring and verification instrument. The design is [probe.md](probe.md). What 
   prose in [decomp.md](decomp.md): a detour to a logging thunk, or a replacement by our own Rust port of that
   function so the port can be proven exact against the original's behaviour.
 - Writing that instruction-patching step itself. This is the user's own licensed copy, offline, after
-  unpacking, on documented non-DRM addresses, for measurement and tuning, never distributed. Earlier the
+  unpacking, on documented non-DRM addresses, for measurement, tuning and (since 2026-10-06) mods. Earlier the
   assistant declined to write the detour installer and left it to the user; the user has since asked that the
   assistant **at least try** to write it (2026-10-05), falling back to an equivalent external tool
   (`/proc/<pid>/mem` pokes) only if it genuinely cannot. An in-process tuning overlay (hooking the game's
@@ -65,21 +82,23 @@ measuring and verification instrument. The design is [probe.md](probe.md). What 
   assistant still tries when asked, and states plainly when it is stopped.
 
 **Not allowed**
-- Anything that touches the DRM: the wrapper stub (the unnamed section after `.rsrc`), its import resolution,
-  `Core/Activation.dll`, licence or online checks. The probe installs only after the game has unpacked itself
-  and never reads, dumps, saves or decrypts protected code; the expected-bytes signatures it checks before
-  patching come from the user's existing dump and live in the git-ignored `re/probe.toml`, never in the repo.
-- Writing to the game's files, the install directory (beyond the proxy DLL placed for a probe run and removed
-  after it), the save game or the Steam / EA configuration.
-- Running the game online with the probe loaded. Only `orig launch --probe` / `mwtool capture --probe` load it,
-  and they launch offline.
-- Distributing the probe as a mod or growing it into one (new vehicle types, game modes, rendering). Those are
-  the reimplementation's job; [probe.md](probe.md) "Tier 3" says so. A one-off experiment that needs more is
-  written up in probe.md first.
+- **A DRM bypass, or anything that touches the DRM**: the wrapper stub (the unnamed section after `.rsrc`), its
+  import resolution, `Core/Activation.dll`, licence or online checks. A modded game is always started through
+  the normal licensed launch. The probe and mods install only after the game has unpacked itself and never
+  read, dump, save or decrypt protected code. `NFS13.exe` on disk is not patched: its code is encrypted, so
+  changing it would mean decrypting it. Code mods live in memory only. The expected-bytes signatures checked
+  before patching come from the user's existing dump and live in the git-ignored `re/probe.toml`, never in the
+  repo.
+- Running the game online with the probe or a code mod loaded. Modded launches go offline, as `orig launch
+  --probe` / `mwtool capture --probe` already do. This keeps other players' games and the user's account out
+  of it.
 
-**What goes in the repository**: the mechanism (`crates/mw-probe`, `mwtool` commands, `orig` flags), function
-addresses (as in decomp.md), and measurement results in prose with the run name as their source. Not: byte
-signatures, pseudo-C, struct dumps, captured data.
+**What goes in the repository**: the mechanism (`crates/mw-probe`, mod code, `mwtool` commands, `orig` flags),
+function addresses (as in decomp.md), and measurement results in prose with the run name as their source. Not:
+byte signatures, pseudo-C, struct dumps, captured data, game files or assets (new or edited bundles that
+contain game data stay in git-ignored dirs). Mod content we make ourselves (our own models, textures, tuning
+values) may be committed. A mod that is ever shared carries only our own code and content, never game files
+and nothing that touches the DRM.
 
 ## Ghidra setup
 

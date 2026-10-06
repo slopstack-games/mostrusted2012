@@ -124,6 +124,21 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-06: no Burnout Paradise bike code survives (dead end)
+
+- Dump strings (23,963): no `bike`, `motorcycle`, `rider`, `wheelie` or `stoppie`. The only vehicle-type enum
+  strings are `VEHICLE_TYPE_RACER` / `VEHICLE_TYPE_COP`, which sit among the Blaze `REQUEST_TYPE_*` matchmaking
+  strings. They are an Autolog racer-or-cop flag, not a chassis type.
+- GeneSys (`mwtool genesys-types`, 12,410 lines): no bike, rider or lean type. `BodyMovementBehaviour`
+  (`Take_off_behaviour`, `Angle_control`) is the car body's movement, the source of the anti-roll bar values.
+  It is not a helicopter or bike type.
+- Install: no bike-named files. `VEHICLES/` holds only `VEH_*` car bundles and the shared lists.
+- `VehicleInfo.Axle` stores a list of wheel handles plus a u16 count (2 on every car checked), so the data
+  format could describe one wheel per axle. The handling code assumes left/right pairs, though: per-axle
+  differentials (`FUN_009d8140`) and per-axle anti-roll bars (decomp.md).
+- Caveat: engine functions are unnamed and have no RTTI, so a nameless dead function cannot be ruled out. With no
+  strings and no data types left, though, nothing of the bike code is usable.
+
 ### 2026-10-05: `mwtool tune`; present and input paths of the original
 
 - Read live through the tuning menu (XKR, car park, idle): the player car at table index 48; idle 1012 rpm;

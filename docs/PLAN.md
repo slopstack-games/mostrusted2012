@@ -47,8 +47,8 @@ findings in [research-log.md](research-log.md).
      constants (`handling.watch`; handling.md "Measuring the original"). Since 2026-10-04 code may also run
      *inside* the user's running copy for measurement and verification (the probe: [probe.md](probe.md),
      policy in reverse-engineering.md "Code inside the running game"): tick-exact logs of per-wheel loads and
-     caps, data pokes, and our Rust port of a function substituted for the original's to prove it exact. It is
-     an instrument, not a mod loader.
+     caps, data pokes, and our Rust port of a function substituted for the original's to prove it exact. Since
+     2026-10-06 the policy also allows mods of the original (anything but a DRM bypass; probe.md "Tier 3").
 3. **Bevy moves fast.** It is pinned to one minor version (currently 0.19). Engine-specific code stays inside
    `crates/mostrusted`; format crates never depend on Bevy. Upgrade Bevy deliberately, in its own change.
 

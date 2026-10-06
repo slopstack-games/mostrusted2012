@@ -86,10 +86,11 @@ identically with our lateral curve substituted for its own, the port is right by
 
 ## What it is not
 
-The probe is a research instrument for this project, not a mod loader and not a step towards distributing
-anything. The policy in [reverse-engineering.md](reverse-engineering.md) applies in full: it never touches the
-DRM wrapper, the licence check or `Core/Activation.dll`, never writes code or data to the game's files, never
-dumps or decrypts protected code, and the game stays offline while it is loaded. The repository holds only the
+The probe started as a research instrument. Since 2026-10-06 the policy also allows mods of the original
+(Tier 3 below), and the probe's load path and patcher are their mechanism. The policy in
+[reverse-engineering.md](reverse-engineering.md) applies in full: it never touches the DRM wrapper, the licence
+check or `Core/Activation.dll`, never patches `NFS13.exe` on disk, never dumps or decrypts protected code, and
+the game stays offline while it is loaded. Data files it replaces are backed up and restorable. The repository holds only the
 mechanism; the addresses and byte signatures it needs are already documented in prose in
 [decomp.md](decomp.md) or live in the git-ignored `re/`.
 
@@ -220,12 +221,14 @@ Same DLL, two more spec kinds:
   floating-point noise. This needs the handling maths pulled out of `crates/mostrusted` into a plain crate
   (`mw-handling`), which is also a cleanliness win for the runtime.
 
-### Tier 3 (not planned): changing the game
+### Tier 3 (allowed since 2026-10-06, not yet designed): mods
 
-New vehicle types (bikes), new game modes or new rendering would need the class layouts of many systems and
-code that cooperates with all of them. That is the reimplementation's job; the probe stays a measuring and
-verification tool. If a one-off experiment needs more (a second car for car-vs-car damage, say), it is written
-up here first.
+New vehicle types (bikes), new game modes or new rendering in the original. The policy allows this
+([reverse-engineering.md](reverse-engineering.md)). The cost is the same as before: each needs the class layouts
+of many systems and code that cooperates with all of them, in an engine with no names. Bikes in particular have
+nothing to build on: no bike code, types or assets survive from Burnout Paradise (research log, 2026-10-06), and
+the handling code assumes left/right wheel pairs per axle. Each mod is designed here before it is built: what it
+patches (addresses documented in decomp.md), what data it adds or replaces, and how it is undone.
 
 ## Phases and acceptance
 
@@ -252,7 +255,7 @@ up here first.
 | The game pauses or crashes while a hook runs (page protection, a hook on the wrong thread) | Hooks only read memory and push into a ring buffer; nothing allocates or locks on the game thread. The writer thread does the I/O. |
 | Wrong version or wrong signature patches a live instruction stream | `expect` bytes are compulsory and must match exactly, or the hook is skipped and logged. |
 | Addresses drift | They don't: fixed image base, the game is on its final patch (1.4.0.0). |
-| The probe becomes a mod loader | Scope stays Tiers 0–2; anything else is a plan decision first. |
+| A mod leaves the install changed | Replaced data files are backed up before the first write and restored by the mod tooling; Steam's "Verify integrity" is the fallback. No DLL override survives a modded run. |
 | Online play with modified code | `orig` only ever launches offline (the EA sign-in prompt is dismissed); the probe is never loaded by a normal launch. A check for a live connection from inside the DLL is a Phase 1 nicety, not a safeguard to rely on. |
 
 ## Open questions
