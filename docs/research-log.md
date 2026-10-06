@@ -125,9 +125,9 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 ## Findings
 
 ### 2026-10-06 (session 5): sky, sun path and shadow cascades
-- **The near-black upper sky** (noon, camera looking up): the black patches are the clear sky between the
-  clouds, i.e. the top of `SkyColorGradient` (stop at 1.0 ≈ (0, 0.11, 0.21)) at gradient scale 1, under an
-  exposure set by the noon key light (~11 units). The game scales the gradient by `BaseCloudColour.w` = s²
+- **The near-black upper sky** (noon, camera looking up) was the cloud layer decoded as sRGB (next item): with
+  that fixed the patches read teal-blue. Still open: the clear sky's gradient (top stop ≈ (0, 0.11, 0.21)) runs
+  at scale 1 under an exposure set by the noon key light (~11 units). The game scales the gradient by `BaseCloudColour.w` = s²
   (`FUN_008b27e0`; decomp.md "Sky, sun and shadows"), s a runtime environment-state float whose keyframe field
   is not identified, so the scale stays 1 (open). Dead end: fitting `SkyReflectionAverageColour` as the
   hemisphere average of gradient × s² + glow for the unnamed Sky fields `e570557e` (1.80 in the first
