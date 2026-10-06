@@ -340,8 +340,11 @@ impl SunMoonPath {
 
     /// Unit vector towards the key light (the sun by day, the moon by night) at an hour, in game
     /// coordinates (Y up). Bearing: `BearingCentre + BearingVariation × sin(2π (hour / 24 +
-    /// BearingPhaseOffset))`, measured clockwise from +Z towards +X (assumed). Elevation: a sine arc
-    /// peaking at the max elevation between rise and set.
+    /// BearingPhaseOffset))`, measured from +X towards +Z: the original's key light direction (constant
+    /// slot 0x0d, live read 2026-10-06, research log) points from (−0.41, 0.765, 0.495) to the sun, a
+    /// bearing of 129.7° in this convention (reached at ~12:13), while the earlier +Z-towards-+X reading
+    /// could not produce it at any hour. Elevation: a sine arc peaking at the max elevation between rise
+    /// and set (assumed; the live read suggests a peak near 12:00, not 13:00).
     pub fn key_light_direction(&self, hour: f32) -> [f32; 3] {
         let bearing = self.bearing_centre
             + self.bearing_variation * (std::f32::consts::TAU * (hour / 24.0 + self.bearing_phase_offset)).sin();
@@ -356,7 +359,7 @@ impl SunMoonPath {
         }
         .max(3.0);
         let (b, e) = (bearing.to_radians(), elevation.to_radians());
-        [b.sin() * e.cos(), e.sin(), b.cos() * e.cos()]
+        [b.cos() * e.cos(), e.sin(), b.sin() * e.cos()]
     }
 }
 
