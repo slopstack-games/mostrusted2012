@@ -124,6 +124,20 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-07: the chase camera's impact shake read and ported
+
+- `FUN_005dfe90` read: a noise spring (game LCG, ±`WobbleMagnitude` kicks, step `Maximum_frequency_multiplier`
+  × dt) plus a ±`ShakeMagnitude` jitter, times `Maximum_amplitude` × level, as view angles in degrees.
+  `FUN_005cd040`'s arguments mapped to the `Impact_shake` fields through the call in `FUN_005d0b90`; the
+  decompiler drops one argument there (the body), so the mapping was settled with the disassembly of the call
+  site and by matching the recording (decay 0.835 / frame, x autocorrelation 0.5, x std 0.167, jitter uniform
+  ±1). Details: decomp.md "Camera effects".
+- Ported (camera.rs `ImpactShakeState`); the guessed `CameraGameplayShakeEffect` springs are gone.
+- Open: contact + 0xc's unit (taken as m/s normal speed), the landing request's |v| units (`FUN_005c8e40`, not
+  ported), `FUN_005d9740`'s Euler order and the rotation pivot; the speed shake (the level at speed is ~0.01,
+  so the impact path does not explain the 0.2-0.3° wobble at 40-80 mph; not found); the strings search for
+  other camera effects was not done.
+
 ### 2026-10-06: the live-read `.bss` values applied to the handling code
 
 Each site re-read in the dump with the value in hand:

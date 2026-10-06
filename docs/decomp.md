@@ -1456,10 +1456,33 @@ distinct camera frames (the game updates at 60 Hz). What it settles:
   height residual has 0.15-0.27 m standard deviation above 40 mph. cam + 0x120..0x12c is a vector that is 0
   at rest and 0.1-0.2 at speed (by its behaviour a shake state; not correlated frame-by-frame with the view
   angles); cam + 0x130..0x170 and 0x330 / 0x334 are noise-like at all speeds (generator states).
-- **Ours vs the original**: our impact kicks come only from body-collider contacts ≥ 1 m/s scaled by 1/10
-  (a typical crash ≈ 0.3-0.7, as a spring velocity) and there is no landing kick; the original's level for a
-  crash is 2-2.6 and every landing after ~0.8 s air time gives ~1. Not ported this round: `FUN_005dfe90` (how
-  the level becomes motion) is unread, and the car exposes no airborne state.
+- **Impact shake, settled (round 9; ported in camera.rs `ImpactShakeState`)**. The call in `FUN_005d0b90`
+  passes the `Impact_shake` fields one by one (globals = the `+0x174` handle; Impact_shake starts at globals
+  + 12): decay per update `79f982f0` (0.165, not dt-scaled: 0.835 per 60 Hz frame, matches the recorded
+  10.8 /s), contact range lo `96f848b2` (5) / hi `a2c5d2eb` (60), scale `192db931` (1), power `d4c1621b`
+  (0.75; `FUN_00ed9e1b` is the CRT `powf`, base and exponent in xmm0 / xmm1), cap `4ffbfd8f` (4),
+  `Maximum_amplitude` (2, the last argument: degrees per unit of level), `Maximum_frequency_multiplier` (30,
+  times the update dt) and a 7-float block for the stage: `91b99f00` (1), `WobbleMagnitude` (0.5 ×3),
+  `ShakeMagnitude` (1 ×3). Only contacts of material classes 7 and 8 (mask 0x180) count, value = |contact +
+  0xc|; a second value comes from a per-body table (+0x1c). Level = `max(level, min((clamp((x − 5) / 55, 0,
+  1) × x)^0.75, 4))`. `b4632dc1` ([10, 10, 50]) is not read on this path; `CameraGameplayShakeEffect`
+  (the springs with Amplitude 250 / Spring 450) is not used by it either.
+- **`FUN_005dfe90` (read, this = cam + 0x120)**: a noise generator object (cam + 0x110: eight shuffled floats
+  and the 64-bit LCG 0x5851f42d4c957f2d + 1) draws per lane a jitter `j ∈ ±ShakeMagnitude` and, for lanes 0
+  and 1, a kick `k ∈ ±WobbleMagnitude`: `v += k + (−x − v) × 1; x += v × 30 × dt` (x at cam + 0x130, v at +
+  0x13c; the third lane's x / v are never stored, so it is jitter only). Output angles (degrees, cam + 0x120)
+  = `2 × level × (x + j)`; they become a rotation matrix (`FUN_005d9740`, radians) pre-multiplied onto the
+  camera matrix, with a translation that rotates about a pivot (fourth argument, not traced; ours pivots on
+  the eye). Checked on `ref/live1`: x lag-1 autocorrelation 0.50 (30 × 1/60), x std 0.167 (theory 0.167), v
+  std 0.333 (0.333), `out / (2 level) − x` uniform in ±1 (std 0.58), decay 0.835 per frame; at level > 1.5
+  the output is 3.6 / 3.0 / 3.2° RMS for mean level 2.5. Lane → axis (x, y, z of the camera) is assumed in
+  that order; `FUN_005d9740`'s Euler order was not traced.
+- **Landing**: the recorded landing levels (~1.0) fit the contact path with x ≈ the vertical speed into the
+  ground in m/s (a 1 s fall, 9.8 m/s, gives 0.9); the `FUN_005c8e40` request (`× 6.5`) explains the one
+  level above the cap (5.4) in the recording; its |v| units remain open, so it is not ported. Ours feeds the
+  vertical speed at touch-down (after ≥ 0.2 s with no wheel down) as a contact value: model decision, since
+  our wheels are ray casts and not in a contact list. The unit "normal speed in m/s" for contact + 0xc is also
+  a model decision (its writer was not read); it reproduces crash levels 2-3 and landing levels ~1.
 
 ### Avoidance: where the search ended (round 7)
 
