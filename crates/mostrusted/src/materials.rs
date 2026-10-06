@@ -223,18 +223,23 @@ impl Look {
         let road_depth = linear("RoadDepth_Sampler");
         let puddle = Some((mw_assets::environment::PUDDLE_MAP, false));
         let wet_scale = [WET_SCALE_PARAMS[0], WET_SCALE_PARAMS[1], WET_SCALE_PARAMS[2], 0.0];
-        // Line / decal / paint variants draw their own texture on top of the road.
-        let road_overlay = ["line", "decal", "retroreflective"].iter().any(|k| name.contains(k));
+        // Line and Decal variants draw their own texture (TEXCOORD2) over the road. FloatingDecal(_1Bit) and
+        // RetroreflectivePaint_Lightmap write the plain road in their G-buffer pass (colour and spec at uv0,
+        // detail at world xz × DetailMapUvScale; the paint one never samples its Line_* maps there), so they
+        // take the road path; FloatingDecal_1Bit also discards where EdgeAlphaPlusAoMap(uv0).y < 0.5.
+        let floating = name.contains("floatingdecal");
+        let road_overlay = name.contains("line") || (name.contains("decal") && !floating);
         if name.starts_with("driveablesurface")
             && !road_overlay
             && let (Some(colour), Some(detail)) = (srgb("ColourMap_Sampler"), srgb("DetailMap_Diffuse_Sampler"))
         {
             let s = sm.parameter("DetailMapUvScale").unwrap_or([1.0, 1.0, 0.0, 0.0]);
+            let edge = linear("EdgeAlphaPlusAoMap_Sampler").filter(|_| floating);
             look.mode = Mode::Road;
             look.textures = slots(&[
                 Some(colour),
                 Some(detail),
-                None,
+                edge,
                 normal_map,
                 detail_normal,
                 spec_colour,
@@ -242,7 +247,35 @@ impl Look {
                 road_depth,
                 puddle,
             ]);
-            look.vals = pack(&[[0.0; 4], [s[0], s[1], 0.0, 0.0], [0.0; 4], [0.0; 4], wet_scale]);
+            // p2.x: discard where tex2(uv0).y < 0.5 (FloatingDecal_1Bit).
+            let edge_test = if edge.is_some() { 1.0 } else { 0.0 };
+            look.vals = pack(&[[0.0; 4], [s[0], s[1], 0.0, 0.0], [edge_test, 0.0, 0.0, 0.0], [0.0; 4], wet_scale]);
+        } else if name.starts_with("driveablesurface")
+            && name.contains("decal")
+            && let (Some(colour), Some(detail), Some(decal)) =
+                (srgb("ColourMap_Sampler"), srgb("DetailMap_Diffuse_Sampler"), srgb("Decal_Diffuse_Sampler"))
+            && has_uv(2)
+        {
+            // DriveableSurface_Decal(_Lightmap): the road with Decal_Diffuse / Decal_NormalPlusSpec at
+            // TEXCOORD2 lerped over it by the decal alpha (albedo, normal, F0, roughness, Fresnel from
+            // Decal_Roughness_Specular_Fresnel), written opaque like a line, so it shares the line path
+            // with an untinted overlay.
+            let s = sm.parameter("DetailMapUvScale").unwrap_or([1.0, 1.0, 0.0, 0.0]);
+            let rsf = sm.parameter("Decal_Roughness_Specular_Fresnel").unwrap_or([0.5, 0.04, 1.0, 0.0]);
+            look.mode = Mode::RoadLine;
+            look.textures = slots(&[
+                Some(colour),
+                Some(detail),
+                Some(decal),
+                normal_map,
+                detail_normal,
+                spec_colour,
+                linear("Decal_NormalPlusSpec_Sampler"),
+                road_depth,
+                puddle,
+            ]);
+            look.uv_b = Some(2);
+            look.vals = pack(&[[0.0; 4], [s[0], s[1], 0.0, 0.0], [1.0; 4], rsf, wet_scale]);
         } else if name.starts_with("driveablesurface")
             && name.contains("line")
             && let (Some(colour), Some(detail), Some(line)) =
@@ -538,6 +571,9 @@ impl Look {
             Blend::Multiply
         } else if look.mode == Mode::Refraction {
             // Despite the name, the lamp interiors write the G-buffer.
+            Blend::Opaque
+        } else if look.mode == Mode::RoadLine {
+            // Lines and DriveableSurface_Decal write the whole road, the overlay lerped in by its alpha.
             Blend::Opaque
         } else if name.contains("1bit") || name.contains("alphatest") || name.contains("foliage") {
             Blend::Mask
