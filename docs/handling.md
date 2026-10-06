@@ -32,7 +32,8 @@ name is trusted only when it reads naturally, fits its neighbours (`Low_speed_st
 One physics tick is 1/60 s (`Time::<Fixed>` at 60 Hz, as the game). Per tick, in `car_physics`:
 
 1. **Pedals and gear**: in reverse gear the pedals swap; brake at a standstill engages reverse. Brake pressure
-   ramps up at 10 × pedal per second; both pedals at low speed count as a burnout (releases the driven brakes).
+   ramps up at 10 × pedal per second; both pedals at low speed count as a burnout (releases one axle's brakes).
+   The handbrake state (countdown of `Minimum_handbrake_time`) updates here.
 2. **Engine, clutch, gearbox** (`drivetrain.rs`): the engine is its own inertia (`Engine_inertia`). Its torque
    blends linearly by throttle from a three-point closed-throttle friction curve (`Power_curve` `b3066e01` at
    idle, `5a6aaf9f` at `f71be7c6`, `a53d9b5d` at `Max_RPM`) to the full-load `TorqueCurve`. With the clutch open
@@ -45,7 +46,7 @@ One physics tick is 1/60 s (`Time::<Fixed>` at 60 Hz, as the game). Per tick, in
    entry speed is already passed; downshift below the lower gear's `Gear_up_speed` (− 5 mph) or, on the throttle,
    below `Gear_down_RPM`. Shifts take `Gear_change_time` × (1 + 0.15 × random) in declutch / neutral / clutch-in
    phases. Only the race gearbox is used; `13bfea5a` / `7b20506a` lock its top gear (the 911 has 6, not 7).
-3. **Steering** (game rules, below).
+3. **Steering** (game rules, below). The angle computed here is used by the next tick's tyres, as in the game.
 4. **Wheels**: each wheel has a spin ω (inertia ½ m r² of its rigid body, plus `TransmissionInertia` on driven
    wheels). Drive torque spins it; the axle limited-slip differentials (`Front_` / `Rear_Differential` = c) keep
    the wheel speeds within a ratio of 1 / c.
@@ -58,7 +59,9 @@ One physics tick is 1/60 s (`Time::<Fixed>` at 60 Hz, as the game). Per tick, in
    impulse budget that can stop the wheel but never reverse it) in 6 sequential-impulse passes. Lateral: the
    force that stops the sideways slide, within ±μy × load. The tyre forces do not roll the body (the torque
    about the car's long axis is dropped, as in the game).
-7. **Drift** (`drift.rs`, below), then aero, lift, in-air gravity and take-off damping (`chassis.rs`).
+7. **Turn-around assist** and **drift** (`drift.rs`, below), then aero, lift, in-air gravity and take-off damping
+   (`chassis.rs`). The game runs aero / airborne before the handbrake, assist, steering and drift
+   (decomp.md "Update loop").
 
 ### Tyres
 
@@ -82,50 +85,71 @@ One physics tick is 1/60 s (`Time::<Fixed>` at 60 Hz, as the game). Per tick, in
 ### Brakes and handbrake
 
 Brake torque per wheel = `6ade4bb6` (front) / `66251131` (rear) × pedal² × ramp. **No ABS and no traction
-control** (the game has neither); wheels lock when the brake beats the tyre. The handbrake's strength blends from
-`Brake_strength_at_low_speed` to `_at_high_speed` between `Low_speed_mph` and `High_speed_mph` and combines with
-the service brake by max; a pull lasts at least `Minimum_handbrake_time`. *Inferred*: the handbrake locks the rear
-wheels outright (the game's brake code has a lock mask; the rear tyres' nearly flat `Brake_Slip_Lateral_Grip`
-curves, fully blended at κ = −1, are made for it). `35e18207` / `6ce0fda7` belong to the drift (initial drift
-scale with the handbrake), not to grip.
+control** (the game has neither); wheels lock when the brake beats the tyre. A burnout (both pedals below 20 mph)
+releases the front brakes on a front-driven car and the rear brakes otherwise. The handbrake is a state with a
+countdown (`FUN_009d27b0`): reset to `Minimum_handbrake_time` on every tick it is pulled, so it stays on that
+long after it is let go. While it is on, the rear brake torque is max(handbrake strength, service torque), the
+strength blending from `Brake_strength_at_low_speed` to `_at_high_speed` between `Low_speed_mph` and
+`High_speed_mph` (signed speed); the front axle takes all of the drive (rear share 0, also on rear-driven cars);
+no drift can start and a running drift ends.
+It does **not** lock the rear wheels outright (the game's lock mask comes from other states). The brakes and the
+driveline see the previous tick's state, the drift this tick's. `35e18207` / `6ce0fda7` are the drift scale a
+drift starts with on the tick after the handbrake is let go, not grip.
 
 ### Steering
 
-`steer_range` / `steer_towards` in drive.rs, after the game's steering update:
+`steer_range` / `steer_towards` in drive.rs, after the game's steering update (`FUN_009d31f0`):
 - Range off the throttle: `Low_speed_steering_range` at 0 mph → `High_speed_steering_range` at `High_speed`. On the
   throttle: low-speed range → `41d22d15` at `Medium_speed` → `98820dfe` at `High_speed` (911: 35° → 24° → 19°),
   blended by clamp(throttle − brake). Reverse gear: → `Reverse_steering_range` by `Reverse_speed` (negative mph).
   Capped at `Maximum_steering_angle`.
 - Rates blend from 0 mph to `High_speed` (reverse gear: the reverse rates). Back towards centre: counter-steer rate
-  when the input points across the current angle, else the centring rate; outwards: the steer rate.
+  when the input points across the current angle, else the centring rate; outwards: the steer rate if the raw
+  stick is at full travel (≥ 0.99), else the raw `High_speed_steer_rate`.
+- The game steers after the tyres: each tick's tyres use the angle set on the tick before.
 - In a drift the input is remapped (`DriftState::steering`): no input holds `Default_steering` (0.24) of the
   range into the drift, full input full lock; counter-steer is limited to `ac261613` (−0.15) early in a drift
-  (until `fb0656a3` = 18° of peak rear slip) and opens to `939b8fdc` (−1) as the rear slip grows from
-  `Low_slip_angle_for_counter_steering` (5°) to `fe68bc4b` (40°). The rate blends towards
-  `Counter_steer_rate_in_drift` with the rear slip up to `5277ec9e` (40°).
-- Not modelled yet: the neutral offset (`553bc073` × an unknown vehicle value × `Maximum_steering_angle`) with its
-  side-limit extension `a40a6b17` / `16fd6022`.
+  (until the peak rear slip has gone from `Slip_angle_to_enter_drift` to `fb0656a3` = 18°) and opens to
+  `939b8fdc` (−1) as the rear slip grows from `Low_slip_angle_for_counter_steering` (5°) to `fe68bc4b` (40°),
+  that opening raised to `Max_counter_steering_power` (inferred, see decomp.md); the wheels themselves are kept
+  within that limit. While counter-steering against the rotation the rate blends towards
+  `Counter_steer_rate_in_drift` with the body slip from `Slip_angle_to_enter_drift` to `5277ec9e` (40°). A drift
+  that ends while counter-steering multiplies the wheel angle by `Drift_exit.ca545e03`.
+- Not modelled: the neutral offset (`553bc073` × a vehicle value whose writer was not found ×
+  `Maximum_steering_angle`) with its side-limit extension `a40a6b17` / `16fd6022`; the zeroing of the wheel
+  angle on a hard wall hit (`FUN_008f7ab0`, contact unit unknown).
+
+### Low-speed turn-around assist
+
+After the body touches a wall facing it, full throttle (> 0.5) and steering (> 0.5) away from the wall, or any
+steering below 5 mph, slide the car sideways (towards 0.5 m/s) and yaw it (towards 1 rad/s, less the more
+head-on the hit) in the steering direction; the effect ramps in at 1/s, holds 0.5 s and fades at 2/s
+(`TurnAssist` in drive.rs, from `FUN_008f8360`). Wall contacts come from avian's contacts of the body collider
+with the world layer.
 
 ### Drift (`DriftBehaviour`, `drift.rs`)
 
 See [decomp.md](decomp.md) "Drift" for every field. In short: a drift starts when the **mean rear-tyre slip**
 exceeds `Slip_angle_to_enter_drift` (a brake tap drops the threshold to `0dce38f7`, recovering at `b5290695` °/s;
-the brake pedal blends it towards `8f151151`), with every wheel down and above `Minimum_speed_to_enter_drift`.
-It ends after 0.5 s once the rear slip is below `Drift_angle_to_exit_drift` (or airborne > 1 s, reverse gear,
-< 0.5 m/s). A signed **drift scale** integrates throttle × body slip (`ce8870ad`, full at `c1bc8c79`°),
-steering into the drift × throttle (`_from_steering`; `_from_counter_steering` and negative when
-counter-steering), brake, the handbrake (`HandbrakeAbility` lerp) and a constant decay. It sets a **yaw torque**
-(quadratic Bézier in the scale through `Minimum_` / `Mid_yaw_torque` and a top that is `Donut_yaw_torque` below
-`Donut_speed_limit_low` and `Maximum_yaw_torque` above `_high`) × a steering factor (`a5c9496f` no steering, 1
-full lock into the drift, `70528afa` full counter-lock, + `2ef426dd` × throttle); a **side force** of mass ×
-`09832a93` along the body's side axis (ramped by body slip from `Drift_angle_for_side_force` to
-`Minimum_drift_angle_for_side_force`, reduced by `Decay_rate` per degree above `Drift_angle_for_decay` while steering
-into the drift, × scale and speed ramps, × (1 + a yaw-rate boost of gain `Side_force_multiplier`)); **damping** of
-the yaw rate by (1 − peak scale × `Drift_angular_damping`)^(ticks) and of the sideways velocity by `ff5dcf85` per
-tick, fading over `Time_to_blend_damping` after the exit; and a **speed hold** that makes up `55930ac1` of the
-shortfall per tick towards the entry speed (at most `35e937b8` mph ahead). Donuts are this torque at low speed;
-`DonutAbility` is not read by the game. `Maximum_drift_angle`, `Max_counter_steering_power`,
-`Steering_angle_multiplier`, `Torque_decay` are not read either.
+the brake pedal blends it towards `8f151151`), with every wheel down, above `Minimum_speed_to_enter_drift`, not
+touching a wall, the handbrake off and no burnout. It ends after 0.5 s once the rear slip is below
+`Drift_angle_to_exit_drift`, or at once when airborne > 1 s, in reverse gear, under 0.5 m/s or when the handbrake
+comes on. A signed **drift scale** integrates throttle × body slip (`ce8870ad`, full at `c1bc8c79`°), steering
+into the drift × throttle (`_from_steering`; `_from_counter_steering` and negative when counter-steering), brake,
+the handbrake and a constant decay; it starts at `e6abd30f`, or at the `HandbrakeAbility` value right after the
+handbrake is let go. It sets a **yaw torque** into the drift (quadratic Bézier in the scale through `Minimum_` /
+`Mid_yaw_torque` and a top that is `Donut_yaw_torque` below `Donut_speed_limit_low` and `Maximum_yaw_torque`
+above `_high`) × a steering factor (`a5c9496f` no steering, 1 full lock into the drift, `70528afa` full
+counter-lock, + `2ef426dd` × throttle); with every wheel down a **side force** of mass × `09832a93` × f along the
+body's side axis **outwards**, opposite to the torque's turn (f ramped by body slip from
+`Drift_angle_for_side_force` to `Minimum_drift_angle_for_side_force`, reduced by `Decay_rate` per degree above
+`Drift_angle_for_decay` while steering into the drift, × scale and speed ramps, × (1 + a yaw-rate boost of gain
+`Side_force_multiplier` while counter-steering), capped at 5); **damping** of the yaw rate by (1 − peak scale ×
+`Drift_angular_damping`)^(60 dt) and of the sideways velocity by (1 − `ff5dcf85`)^(60 dt), fading over
+`Time_to_blend_damping` after the exit; and a **speed hold** that pushes along the travel with mass × shortfall ×
+throttle × `55930ac1` × 60 towards the entry speed (at most `35e937b8` mph ahead). Donuts are this torque at low
+speed; `DonutAbility` is not read by the game. `Maximum_drift_angle`, `Steering_angle_multiplier`, `Torque_decay`
+are not read either.
 
 ### Aerodynamics and airborne (`chassis.rs`)
 
@@ -228,12 +252,14 @@ car's in a 19.7° drift (half the slip angle plus 6° of spring lag), the eye 1.
 | shift phases | 25 / 50 / 25 % | declutch / neutral / clutch-in fractions (constants missing) |
 | downshift hysteresis | 5 mph | missing constant |
 | idle governor | below idle + 150 rpm, up to 0.35 throttle | missing constants |
-| `BURNOUT_MPH` | 20 | burnout speed scale (missing constant) |
 | `DRAG_K` | 1 | drag scale (missing constant; fits the top speed) |
 | `BUMP_TRAVEL` | 0.06 m | from the 911's strut geometry; not read per car |
 | anti-roll unit | N m per degree | inferred; the scale constant is missing |
-| drift time base | 60 Hz | damping fractions are per tick; the game ticks at 60 Hz |
-| handbrake | locks the rear wheels | inferred (above) |
+| drift speed-hold scale | 60 | `.bss` 0x01187250 (`FUN_009d0420`): no initialiser in the dump, not read live; 60 because the same constant turns per-tick rates into per-second ones in `FUN_009d9960` and `FUN_009cfce0` |
+| counter-steer opening exponent | `Max_counter_steering_power` | `FUN_009d2e20` raises the opening to a power whose exponent the decompiler drops (a register load); inferred as the one counter-steering field the code does not otherwise read |
+| steering neutral offset | 0 | `553bc073` × vehicle +0x2c70 × `Maximum_steering_angle` (`FUN_009d31f0`); searched for a writer of +0x2c70 in the vehicle code (0x008e–0x009e: only reads in `FUN_00904260`, `FUN_00902930`; the 0x006e writers belong to another class): none found |
+| drift collision exits, wall-hit steering reset | not modelled | `FUN_009d83e0` codes 1 / 3 and `FUN_008f7ab0` compare a contact value with 6; which contact quantity (impulse, speed) and unit was not settled |
+| per-wheel surface factor on drift torque, side force, damping | 1 | `FUN_009cede0` (mean of a per-wheel value); its writer was not traced |
 | rolling resistance | Crr 0.015 | ours |
 | wheel contact | one ray per wheel | the game's wheels are cylinder bodies on a strut |
 | wheel axle/side | by position | some specs label wheels the other way round (the Veyron's "Front" wheels are at the back) |
@@ -255,6 +281,21 @@ With the model from the game's code (2026-10-04):
 | Bugatti Veyron SS | 3.78 s | 420 km/h (data 431) | 42.2 m | 1.00 g | 11° held 3.5 s | 9.5° |
 | McLaren MP4-12C | 3.18 s | 346 km/h | 35.4 m | 0.91 g | 12° held 3.9 s | 14.3° |
 | Ford F-150 Raptor | 7.75 s | 273 km/h | 50.8 m | (drifts on the skidpad: 2 g with the side force) | no drift (peak 8°) | 17.8° |
+
+After the update loop, steering, drift and handbrake were re-read from the code (2026-10-06: side force
+outwards with its cap of 5, handbrake as a countdown state that ends drifts and moves the drive to the front axle,
+no handbrake lock, steering one tick behind the tyres; research log), before → after:
+
+| Car | skidpad | handbrake test (peak slip, yaw) | drift test | donut |
+|-----|---------|---------------------------------|------------|-------|
+| 911 | 1.02 → 1.02 g | 4.3° 36°/s → 2.9° 29°/s | 22° held 4.4 s, exit 68 km/h → spins: peak 72°, held 2.6 s, mean 43°, down to 10 km/h | unchanged (15°/s at 120 km/h) |
+| Veyron SS | 1.00 → 1.00 g | 6.7° 45°/s → 3.3° 26°/s | no drift (4°) → unchanged | unchanged |
+| MP4-12C | 0.91 → 0.91 g | 2.9° 34°/s → 3.6° 40°/s | 12° held 3.7 s → 33° held 5.2 s, exit 51 km/h | unchanged |
+| F-150 Raptor | 2.01 → 1.22 g | 13.9° 58°/s → 2.7° 23°/s | no drift (7°) → unchanged | 106°/s at 32 km/h → 29°/s at 16 km/h |
+
+The F-150's skidpad drops from 2 g because the drift's side force no longer pushes it into the corner. Whether
+the original's brake-tap drift spins the 911 with this script (steering held at 0.8 into the drift on 0.6
+throttle) needs a recording.
 
 Real-world references: 911 Carrera S PDK ≈ 3.9–4.3 s / 304 km/h; Veyron SS ≈ 2.5 s / 431 km/h; MP4-12C ≈ 3.3 s.
 The Veyron's launch is traction-limited at the calibrated grip (its AWD split is 0.37 front).

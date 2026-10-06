@@ -36,77 +36,185 @@ Status words: **confirmed** = read directly from the code; **inferred** = reason
 
 - **Fixed 60 Hz tick** (confirmed: a 1/60 s step, with a 2/60 catch-up step when the game falls behind).
   Vehicles update once per tick, no sub-steps; the step is scaled by the clock's time scale (slow motion).
-- Order within a tick (`FUN_00904260`): controls are copied to the vehicle; suspension, contacts, tyres and
-  drivetrain; body movement, handbrake state, nitrous, a low-speed turn-around assist; steering (its angle is
-  used by the *next* tick's tyres); the drift (only while drifting and with every wheel down); final velocity
-  update and speed. Each stage integrates its forces into the velocity before the next runs (`FUN_00907840`).
-- Input: the pad mapping is `max(0, (raw − offset) × scale)` per binding; steering = right − left. No smoothing
-  or ramping of the input, and no central stability control, traction control or ABS.
+- **Controls** (`FUN_009aacc0` writes them; vehicle offsets): steering +0x1bf0 (positive = **right**), throttle
+  +0x1bf4, brake +0x1c00, handbrake +0x1c40 (a mask: pulled above 0.1), nitrous +0x1c20 / mode +0x1c60,
+  steering-wheel controller +0x1c64. The pad mapping is `max(0, (raw − offset) × scale)` per binding; steering =
+  right − left. No smoothing or ramping of the input, and no central stability control, traction control or ABS.
+- **Order in a tick** (`FUN_00904da0`): engine rev-limiter cut (`FUN_009d21b0`), then driveline and brakes
+  (`FUN_008f7c50`: the driveline `FUN_009b32c0` with the engine `FUN_009d9960` and clutch `FUN_009d7ac0`, the
+  burnout measure `FUN_009ab230`, the brakes `FUN_009b1180`), then `FUN_00904260`:
+  1. `FUN_009b4d70`: speed in mph (vehicle +0x1620: the speed over the ground signed by the forward component),
+     air / ground timers (`FUN_009ae840`), the per-wheel update (`FUN_009aaf30` → `FUN_009d8bd0`), the
+     engine-sound values (`FUN_009b3030`), then an integration.
+  2. `FUN_00900660`: gearbox mode switch.
+  3. `FUN_009ae6f0`: drag, lift and the airborne state with the take-off behaviour (`FUN_009cf850`,
+     `FUN_009d50b0`); skipped in two special states (+0x1774 / +0x1775).
+  4. `FUN_009d27b0`: the handbrake state (below).
+  5. `FUN_009d2aa0`: nitrous (`Engine` → `NitrousStrength`).
+  6. `FUN_008f8360`: the low-speed turn-around assist (below).
+  7. `FUN_009aae10` → `FUN_009d73f0`: steering. Its angle is used by the **next** tick's tyres.
+  8. `FUN_009d91a0`: the drift.
+  9. `FUN_008f7ab0`: a hard world hit (a contact value above 6, unit not settled) zeroes the front wheels'
+     angle for the next tick.
+  10. `FUN_009ae670`: the "every wheel down" flag (+0x1772, read by the next tick's drift), a final
+      integration, the speed again; then the time since the last world contact (+0x3010) grows by dt.
+- **Integration**: each stage adds forces and torques to the body's accumulators and `FUN_00907840` integrates
+  them into the velocity before the next stage; the damping stages (`FUN_00907b50` angular, `FUN_0091dad0`
+  linear) and the turn-around assist set velocities directly.
+- **Body movement** has no per-tick stage: `BodyMovementBehaviour` is read when the vehicle is built
+  (`FUN_008fda70`: roll damping, the in-air springs `ddbd44c0` / `b80e5de3`); its `Take_off_behaviour` is the
+  airborne state's data. The type `BodyMovementBehaviour.Angle_control` exists but no car's data has one.
 - Speed-banded lookups use the speed in mph signed by the direction of travel (the full speed, not the forward
   component).
 
-## Steering (`FUN_009d31f0`; `FUN_009d39b0` for steering-wheel controllers)
+## Low-speed turn-around assist (`FUN_008f8360`)
 
+Helps a car that has driven into a wall turn away from it. A contact flag (+0x30ed, set by `FUN_0090dfa0` from
+the world-contact table) resets a timer (+0x3010) that grows by dt each tick. The assist runs while that timer
+is under 0.4 s or its strength is non-zero. It is **active** when throttle > 0.5, |steering| > 0.5, the body
+touches the world facing it (dot(−n, forward) > 0 for the contact normal n), and the steering points away from
+the wall (the normal's side component and the steering differ in sign) or the car is below 5 mph. Its strength
+grows at 1/s while active, is held for 0.5 s after, then fades at 2/s, and restarts from 0 when the steering
+changes side. With k = |steering| × strength and h = clamp((dot(−n, forward) − lo) / (0.8 − lo), 0, 1),
+lo = 0.5 − 0.4 × clamp(mph / 5, 0, 1) (how head-on the hit is): the sideways velocity is pushed towards 0.5 m/s
+in the steering direction (at most 30 × k m/s² × dt per tick), and the yaw rate towards (1 − 0.5 h) rad/s in the
+steering direction (at most (20 − 10 h) × k rad/s² × dt). Constants: `.rdata` 0x01021ee0..0x010220ac.
+
+## Steering (`FUN_009d73f0` → `FUN_009d31f0`; `FUN_009d39b0` for steering-wheel controllers)
+
+- **Order inside the step** (`FUN_009d73f0`): the full-rate test reads the **raw** input (|input| ≥ `.bss`
+  0x01186e90 = 0.99); in a drift the input is then remapped (`FUN_009d2e20`, below); a scripted hold mode
+  (`FUN_009d30c0`, steering +0x71, set only by a scripted event in `FUN_00900120`) is not used in normal driving;
+  then `FUN_009d31f0` (pads, keys) or `FUN_009d39b0` (wheels). Afterwards two hold timers track how long the
+  input has been past ±0.01 (rates from a global tuning object; nothing in the handling reads them).
 - **Range** (wheel angle at full input): off the throttle it blends from `Low_speed_steering_range` at 0 mph to
   `High_speed_steering_range` at `High_speed`. On the throttle a second curve runs from the low-speed range to
   `41d22d15` at `Medium_speed` and `98820dfe` at `High_speed` (911: 35° → 24° → 19°); the two curves blend by
   `clamp(throttle − brake)`. In reverse gear the range goes to `Reverse_steering_range` by `Reverse_speed`
-  (negative mph). Capped at `Maximum_steering_angle`.
-- **Rates** (degrees per second) blend from 0 mph to `High_speed` (not from `Medium_speed`). Moving back towards
-  centre: the counter-steer rate if the input points across the current angle, else the centring rate (easing
-  off part of the way counts as centring). Steering outwards: the steer rate. Reverse gear: the `Reverse_*`
-  rates. While drifting the rate blends towards `Counter_steer_rate_in_drift` with the drift angle up to
-  `5277ec9e` (40°).
-- **Neutral offset**: the wheels settle at `−q × Maximum_steering_angle × 553bc073` (0.3; 1 in reverse, 0 while
-  drifting), with extra lock `a40a6b17 × |offset|` on that side. `q` is a vehicle value whose writer was not
-  found (perhaps the travel direction relative to the body: self-alignment). Not modelled yet.
-- **In a drift** (`FUN_009d2e20`) the input is remapped: no input holds `Default_steering` (0.24) of the range
-  into the drift, full input full lock; the opposite input reaches `ac261613` (−0.15) early in a drift
-  (`fb0656a3` = 18° of peak slip) and opens to `939b8fdc` (−1, full counter-lock) as the slip grows from
-  `Low_slip_angle_for_counter_steering` (5°) to `fe68bc4b` (40°).
+  (negative mph). Each side's limit is min(range + k × |offset|, `Maximum_steering_angle`), k = `a40a6b17` on
+  the side the offset points to and `16fd6022` on the other.
+- **Neutral offset**: −q × `Maximum_steering_angle` × `553bc073` (0.3; 1 in reverse, 0 while drifting). The
+  target is offset + input × (limit − offset). q is vehicle +0x2c70; no writer of it was found in the vehicle
+  code (searched 0x008e–0x009e: only reads in `FUN_00904260` and `FUN_00902930`; the 0x006e writers of a
+  +0x2c70 belong to another class). Taken as 0.
+- **Rates** (degrees per second) blend from 0 mph to `High_speed`. Back towards the neutral position
+  (sign(target − angle) = sign(offset − angle)): the counter-steer rate if the input points across the current
+  angle, else the centring rate. Outwards: the steer rate with the raw input at full travel, else the raw
+  `High_speed_steer_rate`. Reverse gear: the `Reverse_*` rates.
+- **Counter-steer rate in a drift**: the rate blends towards `Counter_steer_rate_in_drift` by
+  clamp((body slip − `Slip_angle_to_enter_drift`) / (`5277ec9e` − `Slip_angle_to_enter_drift`), 0, 1), only
+  while the drift's counter-steer flag is set (drift +0x15: steering against the rotation, set by the side
+  force). Body slip is the drift's 0..180° angle between heading and velocity (drift +0xe0).
+- **Output**: the angle is stored as a fraction of `Maximum_steering_angle` (+0x1c80) and as radians with the
+  sign flipped (+0x1c8c, the tyres' input); the right-hand limit is +0x1c88, which the drift uses as the range.
+- **In a drift** (`FUN_009d2e20`) the input is remapped relative to the drift: no input holds `Default_steering`
+  (0.24) of the range into the drift, full input full lock; the opposite input reaches a counter-steer limit
+  lo = lerp(lerp(−1, `ac261613`, e), lerp(−1, `939b8fdc`, e), o), with
+  e = clamp((peak rear slip − `Slip_angle_to_enter_drift`) / (`fb0656a3` − `Slip_angle_to_enter_drift`)) and
+  o = clamp((|rear slip| − `Low_slip_angle_for_counter_steering`) / (`fe68bc4b` − `Low_slip...`)) raised to a
+  power (`powf`; the exponent is a register the decompiler does not show. Inferred: `Max_counter_steering_power`,
+  the only counter-steering field of `DriftBehaviour.Other` not otherwise read, at the one offset (+0x30) missing
+  between the fields this function reads). The current wheel angle is also clamped to at most lo ×
+  `Maximum_steering_angle` across. Steering-wheel controllers use `SteeringWheelPhysics.942c18c0` instead of
+  `ac261613`.
 - `Steering_angle_curve` is a type that `SteeringBehaviour` does not contain (a leftover).
   `SteeringWheelPhysics` (one shared instance) only applies to steering-wheel controllers.
 
 ## Drift (`DriftBehaviour`; `FUN_009d91a0` per tick)
 
-- **Entry** (`FUN_009d5690`): the mean slip angle of the two rear tyres (degrees) exceeds a threshold, every
-  wheel is down, the car is going forwards above `Minimum_speed_to_enter_drift` (mph) and not doing a burnout.
-  The threshold is `Slip_angle_to_enter_drift`; a **brake tap** (pressed above 0.25 and released below 0.1 within
-  0.6 s) drops it to `0dce38f7` (2°), from where it climbs back at `b5290695` (10°/s); holding the brake blends it
-  towards `8f151151` (5°). There is no steering requirement and no separate "entering" phase. The handbrake
-  does not start a drift by itself: it locks the rear wheels, and a drift started with it begins with a larger
-  drift scale (`HandbrakeAbility` `6ce0fda7` at low speed → `35e18207` at high speed, 0.6 → 0.4).
-- **Exit**: after at least 0.5 s, when the rear slip falls below `Drift_angle_to_exit_drift`; forced by more than
-  1 s airborne or no wheel contact, a collision, reverse gear, or speed under 0.5 m/s.
-- **Drift scale** S (0..1 in the drift's direction, never changes sign), integrated per second: `ce8870ad` ×
-  throttle × body slip (full at `c1bc8c79` = 6°); `Drift_scale_from_steering` × steering into the drift ×
-  throttle (`_from_counter_steering` and negative when counter-steering); `8a2a92f3` × the throttle's rise;
-  `Drift_scale_from_braking` × brake (negative when counter-steering); the handbrake value while it is held;
-  minus `Drift_scale_decay`. A drift starts at `e6abd30f` (0.0001).
-- **Yaw torque** about the body's up axis: a quadratic Bézier in S through `Minimum_`, `Mid_` and a top torque;
-  the top is `Donut_yaw_torque` below `Donut_speed_limit_low` mph, blending to `Maximum_yaw_torque` by
-  `Donut_speed_limit_high` (always the maximum when counter-steering). So **donuts are the drift torque at low
-  speed**, not a separate state. Times a steering factor: `a5c9496f` (0.5) with no steering, 1 at full lock into
-  the drift, `70528afa` (0.1) at full counter-lock, plus `2ef426dd` (−0.1) × throttle. `Maximum_drift_angle` is
-  not read: there is no fade with the angle.
-- **Side force** along the body's side axis, towards the inside of the drift: mass × `09832a93` (14 m/s²) ×
-  a ramp in body slip from `Drift_angle_for_side_force` (1.5°) to `Minimum_drift_angle_for_side_force` (5°),
-  reduced by `Decay_rate` per degree above `Drift_angle_for_decay` while steering into the drift, × min(S /
-  `Drift_scale_for_maximum_side_force`, 1) × a speed ramp from `d79e7ebc` to `Speed_for_maximum_side_force` mph
-  × (1 + boost); the boost comes from the yaw rate (gain `Side_force_multiplier`, decaying at 2 per second).
-  Capped by an unknown constant.
-- **Damping**: while drifting and for `Time_to_blend_damping` after, the yaw rate is multiplied by
-  `(1 − b × d)^(dt × K)`, d = the drift's peak S × `Drift_angular_damping`, b fading 1 → 0 after the exit; the
-  body's sideways velocity by `(1 − ff5dcf85)^(dt × K)`. K is unknown (60 fits the per-tick reading).
-- **Speed hold**: the speed at entry is kept as a target (at most `35e937b8` mph above the current speed); while
-  the throttle is above 0.3 and the brake below 0.1 a force mass × shortfall × throttle × `55930ac1` pushes along
-  the travel direction.
-- Not read anywhere in the drift code: `Max_counter_steering_power`, `Maximum_drift_angle`,
-  `Steering_angle_multiplier`, `Torque_decay`, `Counter_steer_yaw_torque` (cached only). Nothing reads
-  `DonutAbility` either.
-- Unknown: the damping time base K, the side-force cap, the burnout speed scale, a per-car torque scalar
-  reached through the physical definition, and a per-wheel surface factor that multiplies torque, side force
-  and damping (1 assumed).
+The drift object is vehicle +0x2ab0; its parameters are cached in a block (drift +0x1c) by `FUN_009d12b0`
+(entry angles), `FUN_009d1350` (side force) and `FUN_009d1410` (`Side_force_multiplier`, `55930ac1`,
+`de67c45d`), each through the upgrade function `FUN_00574870`. Sign: the game's drift scale S has the sign of
+the steering **into** the drift (steering is positive to the right), i.e. S = −sign(mean rear slip) at entry.
+
+- **Per tick** (`FUN_009d91a0`): the mean rear slip (the rear wheels' slip, vehicle +0xd1c / +0xeec) and its
+  peak; entry and exit (`FUN_009d83e0`); the damping (`FUN_009d11d0`, while drifting and for
+  `Time_to_blend_damping` after); then, while drifting, `FUN_009d8770`: speed hold, drift scale, yaw torque, and
+  the side force only when every wheel is down; outside a drift the time since the exit grows and the peak slip
+  resets.
+- **Entry** (`FUN_009d5690`): not drifting, every wheel down, faster than `Minimum_speed_to_enter_drift` (mph),
+  the body not touching the world (+0x30ed), the handbrake off, and the burnout measure below 0.1. The mean rear
+  slip must exceed lerp(threshold, `8f151151`, brake). The threshold is `Slip_angle_to_enter_drift`; a **brake
+  tap** (brake above 0.25 at some point, released below 0.1 within 0.6 s; `.rdata` 0x010261d0 / 0x010261e0 /
+  0x01026140) drops it to `0dce38f7`, from where it climbs back at `b5290695` °/s. The drift starts with
+  S = −sign(rear slip) × (`e6abd30f`, or the `HandbrakeAbility` scale lerp(`6ce0fda7`, `35e18207`) by
+  `Low_speed_mph`..`High_speed_mph` if the handbrake was on in the previous tick, i.e. it was just let go)
+  (`FUN_009cd530`, `FUN_009d29f0`); the target speed is the current speed.
+- **Exit** (`FUN_009d83e0`, codes at drift +0x10): forced by a collision (1, 3: contact values above 6), more than
+  1 s airborne or no wheel contact (5), speed under 0.5 m/s (and a second speed under 0.5) (7), reverse gear (8),
+  **the handbrake** (9), a special state +0x1774 (11); otherwise after 0.5 s when the mean rear slip falls below
+  `Drift_angle_to_exit_drift` (6, `FUN_009d1120`). On every exit S = 0, the threshold resets, and if the wheels
+  are counter-steering their angle is multiplied by `Drift_exit.ca545e03` (1 on 191 cars, 0.8 / 0.7 on six).
+- **Drift scale** S (`FUN_009d5a30`), integrated per second: `ce8870ad` × throttle × clamp(|body slip| /
+  `c1bc8c79`) × sign(S); (`_from_counter_steering` if counter-steering else `_from_steering`) × steering ×
+  throttle (steering flipped when reversing; counter = steering × S ≤ 0); `8a2a92f3` × the throttle's rise per
+  second; ± `Drift_scale_from_braking` × brake (negative when counter-steering); the handbrake scale while the
+  handbrake is on; − `Drift_scale_decay` × sign(S). It never changes sign (it stops at ±ε) and is clamped to ±1.
+  `Initial_yaw_torque` × brake adds a torque against the drift (0 on every car).
+- **Yaw torque** (`FUN_009d0860`) about the body's up axis, into the drift: a quadratic Bézier in |S| through
+  `Minimum_`, `Mid_` and a top torque; the top is `Donut_yaw_torque` below `Donut_speed_limit_low` mph,
+  blending to `Maximum_yaw_torque` by `Donut_speed_limit_high` (always the maximum when counter-steering). So
+  **donuts are the drift torque at low speed**, not a separate state. Times a steering factor: lerp(`a5c9496f`,
+  1, |steering|) into the drift, lerp(`a5c9496f`, `70528afa`, |steering|) counter-steering, plus `2ef426dd` ×
+  throttle; while counter-steering also × clamp((|rear slip| − `c901c1e8`) / (`e40fa397` − `c901c1e8`)) (both 0
+  on every car: 1). Times a per-wheel surface factor (`FUN_009cede0`, 1 assumed), `VehicleInfo.40634c09.y` (1 on
+  every car) and the upgrade function (identity without an upgrade).
+- **Side force** (`FUN_009d0fb0` → `FUN_009d0df0`, `FUN_009ce240`), only with every wheel down: mass ×
+  `09832a93` × f along the body's side axis with the **sign of S, i.e. outwards** (opposite to the yaw torque's
+  turn; the push also has a forward component along the travel), projected off the ground normal. f = (ramp in
+  body slip from `Drift_angle_for_side_force` to `Minimum_drift_angle_for_side_force` − min(`Decay_rate` ×
+  (slip − `Drift_angle_for_decay`)+ while steering into the drift, 1 − `c3db1a2a` / `09832a93`))+ ×
+  min(|S| / `Drift_scale_for_maximum_side_force`, 1) × a speed ramp from `d79e7ebc` to
+  `Speed_for_maximum_side_force` mph × surface factor × (1 + boost), **capped at 5** (`.bss` 0x01187380, live):
+  up to 5 × 14 = 70 m/s². The boost (`FUN_009cd460`) grows to clamp(0.5 × |yaw rate|) × |S| ×
+  `Side_force_multiplier` while counter-steering against the rotation (which also sets the steering's
+  counter-steer flag) and decays at 2 per second. The body slip used here is the 0..180° angle between heading
+  and ground velocity (`FUN_009ce110`).
+- **Damping** (`FUN_009d11d0`): the yaw rate (in body axes) is multiplied by `(1 − b × d × f)^(dt × 60)`, d = the
+  drift's peak |S| × `Drift_angular_damping`, b = 1 − time since exit / `Time_to_blend_damping`; the body's
+  sideways velocity by `(1 − ff5dcf85 × f)^(dt × 60)`. The 60s are `.bss` 0x01184cc0 and 0x01185640 (read live;
+  `FUN_00907b50`, `FUN_0091dad0`). Applied before the drift's forces, and on the exit tick too.
+- **Speed hold** (`FUN_009d0420`): the target is the speed at entry; it follows the speed whenever the car is
+  faster, not on all four wheels, the throttle under 0.3 or the brake over 0.1, and runs at most `35e937b8` mph
+  ahead. Force = mass × shortfall × throttle × (`55930ac1` along the ground-relative travel direction (its
+  sideways and backward parts clipped by two axes not resolved) + `de67c45d` along the body's forward axis, 0 on
+  every car) × the vector at `.bss` 0x01187250 (no initialiser in the dump; the same constant turns per-tick rates
+  into per-second ones in `FUN_009d9960` and `FUN_009cfce0`, so 60 by that reading, not read live).
+- Not read anywhere in the drift code: `Maximum_drift_angle`, `Steering_angle_multiplier`, `Torque_decay`,
+  `Counter_steer_yaw_torque` (cached only). Nothing reads `DonutAbility` either.
+- Unknown: the constant at 0x01187250, the counter-steer exponent's source, the collision exits' units, the
+  per-wheel surface factor (1 assumed).
+
+## Handbrake and burnout (`FUN_009d27b0`, `FUN_009b1180`, `FUN_009cdfd0`, `FUN_009ab230`)
+
+- **State** (`FUN_009d27b0`, handbrake object vehicle +0x2a20): a countdown reset to `Minimum_handbrake_time`
+  on every tick the handbrake is pulled and reduced by dt otherwise; the handbrake is **on while the countdown is
+  ≥ 0**, so a pull lasts that long after it is let go. +0x2a40 is this tick's state, +0x2a41 the previous tick's.
+  The vehicle's virtual +0x44 returns it (below). The same function runs a small state machine
+  on the speed's sign and the yaw rate (pulled moving forwards / standing; held, released and still turning;
+  rolling backwards for a timer from `.bss` 0x011870f0, yaw threshold 0x01187070); nothing in the handling path
+  was found to read its outputs.
+- **Brakes** (`FUN_009b1180` → `FUN_009cdfd0` per wheel): rear wheels only, the torque budget is
+  max(handbrake strength, service torque × pedal²); strength = lerp(`Brake_strength_at_low_speed`,
+  `_at_high_speed`) by the signed mph from `Low_speed_mph` to `High_speed_mph`. The brakes see the handbrake
+  state of the previous tick (they run before `FUN_009d27b0`). **The handbrake does not lock the wheels**: the
+  lock mask (a stopping torque that holds a wheel still) comes from other vehicle states (+0x1774 on all wheels,
+  +0x1b90 on the front), not from the handbrake. Whether the rear wheels lock is up to the tyre and the torque.
+- **Driveline** (`FUN_009b32c0` stores the state at +0x17b0; `FUN_009d5520`, `FUN_009d0380`, clutch
+  `FUN_009d7ac0`): while the handbrake is on the front axle's torque share is 1 and the rear's 0, on every car
+  (rear-driven ones included); the burnout measure then blends both shares towards the burnout axle's (front if
+  `Power_To_Front` = 1, else rear). So with the handbrake on the engine stays coupled through the front wheels;
+  the drivetrain agent's reading of `ref/xkr_launch` (parked, rear wheels locked, ~109 rpm per tick with the
+  clutch closed, ~150–190 N m of load) fits that.
+- **Which function**: the state is read through the vehicle's virtual +0x44 (vtable 0x01023758 written by
+  `FUN_00920720`; entry +0x44 = 0x00920810, a stub the dump did not decompile). That it is the handbrake is
+  inferred from its three uses: the rear brakes' handbrake mask, no drift entry, drift exit code 9.
+- **Drift**: no drift starts while the handbrake is on, a drift ends when it comes on (exit code 9), and a drift
+  that starts on the tick after it is let go begins with the handbrake's drift scale (above).
+- **Burnout** (`FUN_009ab230`, copied to +0x17c0 by `FUN_009b32c0`): clamp((1 − |mph| / 20) × throttle ×
+  brake, 0, 1), 20 mph from `.bss` 0x011866f0 (read live). It releases one axle's brakes by (1 − burnout): the
+  front if `Power_To_Front` = 1, else the rear (so an AWD car keeps its front brakes); it blocks drift entry at
+  0.1 or more; and the tyre code reduces the driven wheels' longitudinal cap by it.
 
 ## Drivetrain and brakes
 
@@ -136,11 +244,9 @@ Status words: **confirmed** = read directly from the code; **inferred** = reason
   over-speed ramp, below) and the rpm clamp in the highest unlocked gear.
 - **Brakes** (`FUN_009b1180`): torque per wheel = `6ade4bb6` (front) / `66251131` (rear) × pedal² × a ramp that
   rises at 10 × pedal per second. A brake can stop a wheel but never reverse it. **No ABS, no traction
-  control.** During a burnout the driven axle's brakes are released. `99407bbc` (15 everywhere) is a standstill
-  hold deceleration.
-- **Handbrake**: strength blends from `Brake_strength_at_low_speed` to `_at_high_speed` between `Low_speed_mph`
-  and `High_speed_mph`, rear wheels only, combined with the service brake by max (not added). `35e18207` /
-  `6ce0fda7` belong to the drift (above), not to grip.
+  control.** During a burnout one axle's brakes are released (see "Handbrake and burnout"). `99407bbc` (15
+  everywhere) is a standstill hold deceleration.
+- **Handbrake**: see "Handbrake and burnout" above. `35e18207` / `6ce0fda7` belong to the drift, not to grip.
 - Unknown: about 20 tuning constants (clutch torque cap, idle governor, shift-phase fractions, hysteresis,
   thresholds).
 

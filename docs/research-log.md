@@ -51,9 +51,9 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
   it may also be a layout fingerprint.
 - GeneSys: three objects per vehicle bundle still fail to decode (pointers read as huge offsets).
 - AttribSys: no `AttribSysSchema` / `AttribSysVault` resources exist in the install (checked 2026-10-04).
-- Drift data still guessed (2026-10-04): the yaw-curve breakpoints (`2ef426dd`, `70528afa`, `a5c9496f`),
-  triggers `8f151151` / `0dce38f7` / `b5290695`, `Default_steering`, the side force's unit, the per-tick time
-  base, and the handbrake's `35e18207` / `6ce0fda7`. See handling.md, Drift.
+- Drift (2026-10-06, from the code): every field's role is settled (decomp.md "Drift"). Still open: the speed
+  hold's `.bss` constant 0x01187250, the counter-steer `powf` exponent (taken as `Max_counter_steering_power`),
+  and whether the outward side force reproduces the original's drifts (needs a recording).
 - Tyre data not yet understood: `Lateral/Long_Slip_Factors`, `Grip_factor` / `Sliding_grip_factor`,
   `Available_grip`, and the lateral curve's fourth field (0.5 everywhere). Five more `Tyres` floats per axle
   (400, 1000, 2) are unnamed.
@@ -123,6 +123,51 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 ---
 
 ## Findings
+
+### 2026-10-06: update loop, steering, drift and handbrake re-read from the code
+
+Every rule in the tick from the steering to the drift, checked against the dump line by line (decomp.md "Update
+loop", "Low-speed turn-around assist", "Steering", "Drift", "Handbrake and burnout" have the details and
+addresses). Changes to the model:
+- **Order**: the steering runs after the tyres (`FUN_00904260` step 7), so each tick's tyres use the previous
+  tick's wheel angle; ours now does too. The full-rate test (0.99) reads the raw stick, not the in-drift remap.
+- **Drift side force pushes outwards.** It acts along the body's side axis with the sign of the drift scale S,
+  and the yaw torque with −sign(S) about the up axis (`FUN_009ce240`, `FUN_009d0860`). The torque must turn the
+  car into the drift (it is the donut torque, largest at full lock into the drift), so the force points away from
+  the turn's centre. Ours pushed inwards; that was why the cap of 5 gave a 3 g "grip circle". The cap (`.bss`
+  0x01187380) applies to the dimensionless factor, so the force can reach 5 × `09832a93` = 70 m/s²; it is only
+  applied with every wheel down, while torque, scale and speed hold run whenever drifting.
+- **Damping time base K = 60** is in the code: `(1 − c)^(dt × K)` in `FUN_00907b50` / `FUN_0091dad0` with K at
+  `.bss` 0x01184cc0 / 0x01185640 (both read live as 60). Damping now applies before the forces and on the exit
+  tick, as in `FUN_009d91a0`.
+- **Steering in a drift**: the early counter-steer limit counts from `Slip_angle_to_enter_drift` (not 0) to
+  `fb0656a3`; the counter-steer opening is raised to a power (`powf`, exponent not visible; taken as
+  `Max_counter_steering_power`); the wheels themselves are clamped to the limit; the counter-steer rate blends in
+  with body slip from the entry angle to `5277ec9e`, only while counter-steering against the rotation. The yaw
+  boost of the side force is gated by the same counter-steer flag (ours had it inverted).
+- **Handbrake** (`FUN_009d27b0`): a countdown reset to `Minimum_handbrake_time` while pulled, so it stays on
+  that long after release. While on: rear brake torque = max(handbrake strength, service) (no forced lock: the
+  game's lock mask comes from other states), the front axle takes all of the drive (`FUN_009d5520`: also on
+  rear-driven cars; matches the drivetrain agent's live reading of `ref/xkr_launch`), no drift can start, and a
+  drift ends (code 9). A drift that starts on the tick after release gets the handbrake's scale. The state is read
+  through the vehicle's virtual +0x44 (vtable 0x01023758, entry 0x00920810, not in the dump), identified by
+  these uses.
+- **Burnout** (20 mph live): releases the front brakes on front-driven cars, else the rear (AWD keeps its front
+  brakes); blends the driveline split towards that axle; blocks drift entry.
+- **Ported**: the low-speed turn-around assist (`FUN_008f8360`, wall contacts from avian), the drift's exit
+  steering scale `ca545e03`, the counter-steer torque gate (`c901c1e8` / `e40fa397`, 0 everywhere), the
+  `de67c45d` forward hold (0 everywhere). Body movement has no per-tick stage (`BodyMovementBehaviour` is read at
+  setup); `Angle_control` exists as a type only. `VehicleInfo.40634c09` (the drift torque's per-car scalar) is
+  (1, 1, 1) on all 197 cars.
+- **Results** (handling.md "Measurements"): the 911's brake-tap drift now spins (peak 72°, down to 10 km/h)
+  instead of holding 22°; the MP4-12C holds 33° for 5.2 s (was 12°); the F-150's skidpad falls from 2.0 to 1.2 g;
+  handbrake taps give 3–4° (F-150 2.7°, was 13.9°). Not tuned; needs the original's runs.
+- **Open**: the speed-hold constant at `.bss` 0x01187250 (60 assumed; `memscan dump NFS13.exe+0xd87250`); the
+  counter-steer exponent's source; the steering neutral offset's input (vehicle +0x2c70: no writer found); the
+  collision exits and wall-hit steering reset (a contact value > 6, unit unknown); the handbrake state machine's
+  `.bss` thresholds 0x011870f0 / 0x01187070 (no reader of its outputs found); the per-wheel surface factor.
+- Dead ends: `FUN_00920810` (vtable +0x44) and the drift's `powf` exponent are not recoverable from the dump;
+  `0x006e…` writers of a +0x2c70 belong to another class; `FUN_009d4f20` reads a curve, not `BodyMovement`.
 
 ### 2026-10-05: `mwtool tune`; present and input paths of the original
 

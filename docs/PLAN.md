@@ -61,7 +61,7 @@ user's review after session 3, with where each gap is tracked:
 
 | Gap | State | Item |
 |-----|-------|------|
-| Handling does not feel like the game | the model follows the game's code since session 3, but grip scales, the drift side force and the handbrake are unmeasured; needs recordings of the original | M3.2 |
+| Handling does not feel like the game | the model follows the game's code since session 3 (update loop, steering, drift, handbrake re-read 2026-10-06: the drift side force pushes outwards, the handbrake does not lock), but grip scales are unmeasured and the brake-tap drift now spins the 911; needs recordings of the original | M3.2 |
 | Tyre screech sounds as if a horn is held at the same time | a tonal layer plays with the screech; not investigated | M5.4 |
 | Shading has a yellow tint over everything | the tonemap / ColourCube grade / ambient are suspects; compare against screenshots of the original at the same place and hour | M1.5, M1.7 |
 | Animations are missing | none play: driver, steering wheel, animated body parts (`PhysicsDrivenVehicleAnimationBehaviour`), world animations (`TriggerAnimationBehaviour`, `AnimatedDynamicEntityBehaviour`), tree wind | M3.8 |
@@ -197,11 +197,19 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    take-off damping (`chassis.rs`); the game's steering rules and drift state machine (`drift.rs`).
    `--test accel|brake|corner|handbrake|drift|donut` measures it on a flat track, tick-exact. Still open: the
    absolute grip scale (model 0.4 / 0.7) and the other missing `.bss` constants (memscan, or the original memory
-   dump), the handbrake lock condition, the steering neutral offset, wheels as bodies instead of rays, and
-   calibration against the original game. **User review (2026-10-04): it still does not drive like the
+   dump), the steering neutral offset's input (no writer found), wheels as bodies instead of rays, and
+   calibration against the original game. `[x]` 2026-10-06: update loop, steering, drift and handbrake checked
+   line by line against the code (decomp.md): the tyres use the previous tick's steering angle; the in-drift
+   steering remap's zero point and the counter-steer rate's gate; drift damping time base 60 (code + live `.bss`);
+   the side force pushes **outwards** (sign of the drift scale, opposite to the yaw torque) with its factor capped
+   at 5; side force only with every wheel down, torque / scale / speed hold always while drifting; the handbrake
+   is a countdown state that blocks and ends drifts and gives the next drift its scale, a rear brake torque by max,
+   never a lock; burnout releases one axle's brakes; the low-speed turn-around assist (`FUN_008f8360`) ported.
+   Open from that: the speed-hold constant at `.bss` 0x01187250 (60 assumed), the counter-steer exponent
+   (inferred `Max_counter_steering_power`), the brake-tap drift now spinning the 911 (needs the original's run). **User review (2026-10-04): it still does not drive like the
    original.** Next: record the original with `handling.watch` (corner, braking, launch, handbrake turn,
-   brake-tap drift, donut, slides) and fit against `--test` runs with the same inputs; resolve the drift side
-   force (with the game's cap of 5 ours reaches ~3 g, so its size or direction is misread).
+   brake-tap drift, donut, slides) and fit against `--test` runs with the same inputs; check the drift side force's
+   direction in a recorded drift (`drift_side_f*` in the watch file).
    The quantities telemetry cannot reach (N, the grip caps, the solver's impulses, the side-force vector, who
    writes the grip multipliers) come from the probe ([probe.md](probe.md)) in this order:
    `[x]` Tier 0 `mwtool memscan poke` / `unpoke` (data only, refuses `.text`, restores on exit; 2026-10-05) →
