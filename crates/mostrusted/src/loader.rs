@@ -615,7 +615,9 @@ impl Worker {
                 && !p.look.paint
                 && convert::merge_signature(&p.mesh).is_some()
         };
-        let mut groups: HashMap<(Look, u8), Vec<(ResourceId, usize, Mat4)>> = HashMap::new();
+        // (material, attribute layout) -> the (model, part, world matrix) triples to merge.
+        type Placed = (ResourceId, usize, Mat4);
+        let mut groups: HashMap<(Look, u8), Vec<Placed>> = HashMap::new();
         let mut order = Vec::new();
         // Models placed more than once already share a draw (one bin per mesh and material): merging them
         // would only copy their vertices (the full map then ran out of GPU memory).
