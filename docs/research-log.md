@@ -134,7 +134,60 @@ _(to be filled in)_
 
 ### 2026-10-06 (session 5): post-processing: composite constants, bloom, vignette, tint
 
-_(to be filled in)_
+Traced from the dump and the exe programs (details in decomp.md "Post-processing and colour grade"). No
+rendering change this session: every stage still missing has at least one value that could not be traced
+without the running game, and the brief was to leave a stage out rather than guess it.
+
+- **The constant names are not in the code.** `kHdrToneMapping`, `kColorAddWeight`, `kVignette…`,
+  `ColourCubeScalesOffsets`, `BloomColour` only occur inside the DXBC blobs (RDEF); no function references them.
+  `GBufferComposite`'s pixel constants are `GenericVector4_A` / `_B` / `_D` (gObjectCB), set through the global
+  constant table (`FUN_00a5d660(index)` returns the slot): A = 0x9c, B = 0x9d, C = 0x9e, D = 0x9f.
+- **B and C** (`FUN_0089d5c0`, branch for material type 0x36): when bloom is on (a flag at +0x1518 of the view
+  settings object and the renderer's +0x9836, both runtime), B = (Bloom.Colour.rgb, Bloom `ff564907`) and C =
+  (1 / Bloom `76826c13`, Bloom `da328699`, 0, 0), with C = (1, 1) when `76826c13` ≤ 0.001 (`0x00f8bb34`).
+  When bloom is off, B = (1, 1, 1, 0) (`.rdata 0x0100cc10`) and C = (1, 1, 0, 0) (`0x0100caf0`): B.w = 0
+  removes the bloom term, so our composite without bloom equals the game's with bloom off.
+- **PostFxKeyframe.Bloom** is unpacked by `FUN_008e51b0` into 13 floats (the order the renderer keeps them at
+  +0xac74…): Colour.xyz, `da328699` (DarkBloomWeight), `ff564907` (Threshold?), `b303e3e6`, `41e5a069`,
+  `3efef892` (Luminance), `76826c13` (DarkBloomWhitePoint), `c9f605e2`, `a3d336c1`, `cf7d9668`, 0. Field
+  names are the cracked ones `mwtool genesys` prints (unconfirmed). `29c5d30d` (Saturation) is not read.
+  `FUN_008e9610` blends the current and next keyframe's set (lerp by the transition) and then towards the
+  state by its weight; `FUN_008eccb0` runs it for each PostFX state whose flag at +0xf4 is set.
+  Bloom set-up `FUN_008eaaf0` receives `c9f605e2`, `a3d336c1`, `cf7d9668` (default keyframe `…78d9`: 1, 0, 0)
+  plus three vignette vectors; that they become `kColorAddWeight` is likely but not followed to the end.
+- **Bloom programs** (exe): downsample `0x0100ffa0` = 4 RGBM taps × 32, × 1/128 (the average), re-encoded
+  as RGBM with M = max channel (≥ 1e-6, ≤ 1) rounded up to 1/255: RGBM covers 0…32. Blur VS `0x010109c8`
+  places taps at 0, ±1.407333, ±3.294215 × `kScale` along one axis; blur PS `0x01010d38` weights them 6.533238
+  (centre), 9.728171, 3.005209 (sum 32, i.e. normalised for the RGBM range: a 5-tap linear-sampled Gaussian)
+  and divides by the 1×1 tonemap texture's w (the exposure) back to HDR units.
+- **Vignette A and D**: A = renderer +0xa990, D = +0xa980, each multiplied per component by a vec4 at
+  +0x15d0 of the view settings (set by `FUN_008e3e30`, an override setter). Nothing in the dump writes +0xa980 /
+  +0xa990 with a literal offset; the writer was not found. The keyframe data (`Vignette.5e9c4fa6` = inner
+  (1, 1, 1, 1), `5f000214` = outer colour, (0.04, 0.18, 0.27) in `…78d9`) suggest D = inner and A = outer −
+  inner, but that is not traced, so the vignette stays out.
+- **TintBlend weights** (`FUN_008c9e40`, the frame's post set-up, before `FUN_008e0930`): seven (resource,
+  offset) cube slots from the frame state at +0x2c, +0x34, +0x3c, +0x44, +0x4c, +0x64, +0x6c with weights
+  +0x54, +0x58, +0x5c, +0x60, +0x74, +0x78 (the last two replaced by +0x1560 / +0x1564 and the first two by
+  +0x1568 / +0x156c when the view's +0x155e override is set). A missing slot falls back to the base cube
+  (+0x2c). If the six weights sum above 1 they are scaled to sum 1; the base cube gets 1 − sum. The PostFX
+  state's two `ColourCubeSettings` cubes and their [0, 1]-clamped weights (`FUN_008ecf80` → state +0x12e8…
+  +0x12fc) are very likely the last two slots. Where the EnvironmentKeyframe's `ColourCube` enters (one of
+  the base / first four slots) was not found.
+- **EnvironmentKeyframe.Camera** carries the same two field hashes as the bloom (`da328699` at +68,
+  `76826c13` at +72) next to the colour vector `96a4b35b` at +16: an environment bloom override, reader not
+  found.
+
+Open, needs the running game (`.bss` / heap reads, not possible this session): the bloom-enabled flag
+(view settings +0x1518, renderer +0x9836); renderer +0xa980 / +0xa990 (vignette D / A) and +0xac74…+0xaca4
+(the bloom set) on a frame; the seven TintBlend slots and weights in the frame state (+0x2c…+0x78), which
+answers which slot holds the environment cube; which PostFxKeyframe is active in free roam (`…78d9` vs
+`…78dc`). With those, bloom (traced kernel above), the vignette and the cube blend can be ported without
+model decisions; the bloom level weights (`kColorAddWeight.z/.w`) also need a live read of the combine
+program's constant buffer.
+
+Note for the yellow-tint question: the default keyframe's bloom colour is blue (0.29, 0.42, 0.60) and its
+vignette outer colour is a dark blue; both push the image away from yellow, so their absence is a plausible
+part of the remaining warm cast (not measured).
 
 ### 2026-10-06 (session 5): sky, sun path and shadow cascades
 
