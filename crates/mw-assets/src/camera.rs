@@ -50,6 +50,10 @@ mod h {
     pub const ACCEL_FORWARD: u32 = 0x7c9039e2;
     pub const ACCEL_RATE: u32 = 0xfdd25ee3;
     pub const BRAKE_RATE: u32 = 0x285f2260;
+    pub const VERT_GAIN_UP: u32 = 0x8e1310f6;
+    pub const VERT_GAIN_DOWN: u32 = 0xa8cc9c9b;
+    pub const VERT_MIN: u32 = 0x65b4f9c6;
+    pub const VERT_MAX: u32 = 0x0da33093;
     pub const CAMERA_ROLL: u32 = field_hash("Camera_Roll");
     pub const ROLL_FACTOR_POWER: u32 = field_hash("Camera_Roll_Factor_Power");
     pub const ROLL_MAX_ANGULAR: u32 = 0x02dd11bc;
@@ -164,7 +168,7 @@ pub struct HighSpeedShake {
 
 /// `Acceleration_movement`: 11 floats; the four below are read by `FUN_005d12b0` (decomp.md "Cameras").
 /// Sub-offsets: +0x10 `bd3a7cfc`, +0x14 `7c9039e2`, +0x18 `285f2260`, +0x2c `fdd25ee3`; the vertical
-/// stage reads +0x24 `8e1310f6`, +0x28, +0x34 and +0x38 (not ported).
+/// stage (the eye's height spring) reads +0x24 `8e1310f6`, +0x28 `65b4f9c6`, +0x34 `a8cc9c9b`, +0x38 `0da33093`.
 #[derive(Debug, Clone, Copy)]
 pub struct AccelerationMovement {
     /// `bd3a7cfc` (−2.5…−1.9): eye z offset at full forward acceleration (m, negative = back).
@@ -175,6 +179,11 @@ pub struct AccelerationMovement {
     pub accel_rate: f32,
     /// `285f2260` (2.5): the same while decelerating.
     pub brake_rate: f32,
+    /// `8e1310f6` (1.5) / `a8cc9c9b` (1.75): gain on the car's vertical acceleration driving the eye's
+    /// height spring, while it is upwards / not upwards.
+    pub vertical_gain: [f32; 2],
+    /// `65b4f9c6` (−1.2) / `0da33093` (2.5): limits of the eye's height spring (m).
+    pub vertical_limits: [f32; 2],
 }
 
 /// `Camera_Roll`.
@@ -326,7 +335,14 @@ impl Default for ExternalCamera {
             yaw_drift_spring: 0.055,
             speed: SpeedMovement { eye_z: -1.0, eye_y: 1.7, look_y: 1.5, full_speed: 50.0, min_speed: 0.0 },
             shake: HighSpeedShake { amplitude: 1.2, frequency: 1.0, speed: [0.0, 180.0], power: 1.5 },
-            acceleration: AccelerationMovement { back: -2.0, forward: 0.5, accel_rate: 2.0, brake_rate: 2.5 },
+            acceleration: AccelerationMovement {
+                back: -2.0,
+                forward: 0.5,
+                accel_rate: 2.0,
+                brake_rate: 2.5,
+                vertical_gain: [1.5, 1.75],
+                vertical_limits: [-1.2, 2.5],
+            },
             roll: CameraRoll {
                 factor_power: 2.5,
                 lateral: [10.0, 30.0],
@@ -407,6 +423,14 @@ impl ExternalCamera {
                 forward: f(accel, h::ACCEL_FORWARD, d.acceleration.forward),
                 accel_rate: f(accel, h::ACCEL_RATE, d.acceleration.accel_rate),
                 brake_rate: f(accel, h::BRAKE_RATE, d.acceleration.brake_rate),
+                vertical_gain: [
+                    f(accel, h::VERT_GAIN_UP, d.acceleration.vertical_gain[0]),
+                    f(accel, h::VERT_GAIN_DOWN, d.acceleration.vertical_gain[1]),
+                ],
+                vertical_limits: [
+                    f(accel, h::VERT_MIN, d.acceleration.vertical_limits[0]),
+                    f(accel, h::VERT_MAX, d.acceleration.vertical_limits[1]),
+                ],
             },
             roll: CameraRoll {
                 factor_power: f(roll, h::ROLL_FACTOR_POWER, d.roll.factor_power),

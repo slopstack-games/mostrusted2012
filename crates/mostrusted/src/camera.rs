@@ -19,6 +19,9 @@
 //!   (`FUN_005c8ad0`) and dollies along its line to the look-at point to offset the FOV (`FUN_005c1f90`).
 //! - **Acceleration**: the eye falls back under acceleration and closes in under braking
 //!   (`Acceleration_movement`).
+//! - **Weight**: the eye's height rides a damped spring (`FUN_005d12b0`'s vertical stage) kicked by the
+//!   car's vertical acceleration on the ground and its vertical speed in the air, stiffer for 0.3 s after
+//!   a landing; the look-at point stays, so the view dips and tilts over bumps and on landings.
 //! - **Roll and pitch**: roll from lateral acceleration or yaw rate between the data's minimum and
 //!   maximum, shaped by `Camera_Roll_Factor_Power`; a nose-down pitch from deceleration between
 //!   `Minimum_` and `Maximum_deceleration_for_pitch_change`, shaped by `Pitch_change_curve_power`.
@@ -433,6 +436,128 @@ impl SpeedShakeState {
     }
 }
 
+/// `FUN_005d12b0`'s vertical stage: spring stiffness (cam + 0x564, `_DAT_00fb07f0`) and the mass factor
+/// (cam + 0x560: recorded 1.0 throughout, its writer not read).
+const HEIGHT_K: f32 = 20.0;
+const HEIGHT_MASS: f32 = 1.0;
+/// Damping ratios, the spring's rate rising / falling (`_DAT_00fb0970` / `_DAT_00fb0980`); `FUN_005dbbc0`
+/// turns them into `2 · ζ · √(k / m)` (`_DAT_00fb0600` = 2): recorded cam + 0x568 7.155 / 6.708.
+const HEIGHT_ZETA: [f32; 2] = [0.8, 0.75];
+/// Grounded input `−g·a_y · clamp(clamp(|g·a_y| / N, 0, 1)^E, 0, 1)`: N and E for an upward / other
+/// vertical acceleration (`_DAT_00fb0960` / `0950`, `_DAT_00fb0970` / `05e0`).
+const HEIGHT_NORM: [f32; 2] = [185.0, 15.0];
+const HEIGHT_EXP: [f32; 2] = [0.8, 0.5];
+/// Airborne input `−v_y · f`: rising `4 − 3 · k60 · clamp(v_y / 7)` (`_DAT_00fb06b0`, `09b0`, `09a0`),
+/// falling `8 − 5 · k60 · clamp(mph / 60)` (`_DAT_00fb06c0`, `0790`, `0730`; mph from the `.bss` scale
+/// 0x0118a060 = 2.23694, the horizontal speed).
+const HEIGHT_AIR_UP: [f32; 3] = [4.0, -3.0, 7.0];
+const HEIGHT_AIR_DOWN: [f32; 3] = [8.0, -5.0, 60.0];
+const MPH_PER_MS: f32 = 2.23694;
+/// Below this (m/s, per axis) the car counts as standing and the spring gets no input (`_DAT_00fb07a0`).
+const HEIGHT_STILL: f32 = 0.1;
+/// The landing window (`FUN_005d4970`'s tail): for 0.3 s after touch-down (`_DAT_00fafb8c`, flag cam + 0x716)
+/// the gain is 3 (`_DAT_00fb0900`) and the falling damping ratio `0.5 + clamp((peak a_y − 10) / 490) · k60 ·
+/// 0.25` (`_DAT_00fb05e0`, `0820`, `0830`, `0990`), peak a_y (cam + 0x6b0) the largest upward acceleration
+/// in the window so far.
+const LANDING_WINDOW: f32 = 0.3;
+const LANDING_GAIN: f32 = 3.0;
+
+/// The eye's vertical spring (`FUN_005d12b0`'s vertical stage, cam + 0x550..0x56c; the step is
+/// `FUN_005bd470`). Its position is added to the eye's height in the followed frame (cam + 0x584); the
+/// look-at point does not move with it, so the view tilts as the eye bobs. Replayed against `ref/live1`
+/// to 6 mm RMS (tools/camreplay.py).
+struct HeightSpring {
+    /// Position (m, cam + 0x550) and rate (m/s, cam + 0x554).
+    x: f32,
+    v: f32,
+    /// Damping coefficient (cam + 0x568 / 0x56c), set while the car moves and kept while it stands.
+    damping: f32,
+    /// cam + 0x715 / 0x716 / 0x70c / 0x6b0.
+    was_airborne: bool,
+    landing: bool,
+    landing_time: f32,
+    landing_peak: f32,
+}
+
+impl Default for HeightSpring {
+    fn default() -> Self {
+        Self {
+            x: 0.0,
+            v: 0.0,
+            damping: 2.0 * HEIGHT_ZETA[0] * (HEIGHT_K / HEIGHT_MASS).sqrt(),
+            was_airborne: false,
+            landing: false,
+            landing_time: 0.0,
+            landing_peak: 0.0,
+        }
+    }
+}
+
+impl HeightSpring {
+    /// `vel` / `accel`: the car's world velocity (m/s) and acceleration (m/s², `FUN_005d9610`'s role);
+    /// `airborne`: no wheel on the ground (`FUN_008f5350`).
+    fn step(&mut self, d: &mw_assets::camera::AccelerationMovement, vel: Vec3, accel: Vec3, airborne: bool, dt: f32) {
+        let k60 = dt * UPDATE_HZ;
+        let (mut vy, mut ay) = (vel.y, accel.y);
+        if vel.x.abs() <= HEIGHT_STILL && vel.z.abs() <= HEIGHT_STILL {
+            vy = 0.0;
+            ay = 0.0;
+        }
+        let moving = vel.x.abs() > HEIGHT_STILL || vy.abs() > HEIGHT_STILL || vel.z.abs() > HEIGHT_STILL;
+        if moving {
+            let up = ay > 0.0;
+            let gain = if self.landing { LANDING_GAIN } else { d.vertical_gain[usize::from(!up)] };
+            let zeta = if self.landing && self.v < 0.0 {
+                0.5 + ((self.landing_peak - 10.0) / 490.0).clamp(0.0, 1.0) * k60 * 0.25
+            } else {
+                HEIGHT_ZETA[usize::from(self.v < 0.0)]
+            };
+            self.damping = 2.0 * zeta * (HEIGHT_K / HEIGHT_MASS).sqrt();
+            let input = if airborne {
+                let f = if vel.y > 0.0 {
+                    let [base, slope, full] = HEIGHT_AIR_UP;
+                    base + slope * k60 * (vy / full).clamp(0.0, 1.0)
+                } else {
+                    let [base, slope, full] = HEIGHT_AIR_DOWN;
+                    base + slope * k60 * (Vec2::new(vel.x, vel.z).length() * MPH_PER_MS / full).clamp(0.0, 1.0)
+                };
+                -vy * f
+            } else {
+                let i = usize::from(!up);
+                let g = ay * gain;
+                -g * (g.abs() / HEIGHT_NORM[i]).clamp(0.0, 1.0).powf(HEIGHT_EXP[i]).clamp(0.0, 1.0)
+            };
+            self.v += HEIGHT_MASS * input * dt;
+        }
+        // FUN_005bd470: damping, then the spring, then the position; at a limit the rate is zeroed.
+        self.v -= self.damping * self.v * dt * HEIGHT_MASS;
+        self.v -= HEIGHT_K * self.x * dt * HEIGHT_MASS;
+        self.x += self.v * dt;
+        let [lo, hi] = d.vertical_limits;
+        if self.x <= lo || self.x >= hi {
+            self.x = self.x.clamp(lo, hi);
+            self.v = 0.0;
+        }
+        // FUN_005d4970's tail: a touch-down opens the landing window; while it is open its peak upward
+        // acceleration is kept.
+        if !airborne && self.was_airborne {
+            self.landing = true;
+            self.was_airborne = false;
+            return;
+        }
+        if self.landing {
+            self.landing_time += dt;
+            self.landing_peak = self.landing_peak.max(accel.y);
+            if self.landing_time > LANDING_WINDOW {
+                self.landing = false;
+                self.landing_time = 0.0;
+                self.landing_peak = 0.0;
+            }
+        }
+        self.was_airborne = airborne;
+    }
+}
+
 /// The 3D camera while it follows a car (the free camera has its own controller).
 pub(crate) type DrivingCamera =
     (With<Camera3d>, Without<FreeCamera>, Without<crate::reflection::PlanarReflectionCamera>);
@@ -474,6 +599,7 @@ struct CameraState {
     last_speed: f32,
     since_speed: f32,
     speed_shake: SpeedShakeState,
+    height: HeightSpring,
     /// Distance from the look-at point to the eye the walls allow.
     clip: f32,
     impact: ImpactShakeState,
@@ -537,7 +663,7 @@ fn follow_car(
             if let Some(f) = &mut s.trace {
                 let _ = writeln!(
                     f,
-                    "# t speed_kmh accel_ms2 yaw_rate lat_ms2 slip_deg mode eye_x eye_y eye_z yaw_lag_deg fov roll pitch accel_z shake_pitch shake_level speed_shake_pitch_deg speed_shake_drop"
+                    "# t speed_kmh accel_ms2 yaw_rate lat_ms2 slip_deg mode eye_x eye_y eye_z yaw_lag_deg fov roll pitch accel_z shake_pitch shake_level speed_shake_pitch_deg speed_shake_drop eye_spring"
                 );
             }
         }
@@ -577,6 +703,9 @@ fn follow_car(
 
     // High-speed shake (FUN_005d0b90's first stage): vehicle + 0x1620, mph.
     s.speed_shake.step(&ext.shake, mph, dt);
+    // The eye's vertical spring (FUN_005d12b0), driven by the car's vertical acceleration on the ground and
+    // its vertical speed in the air.
+    s.height.step(&ext.acceleration, vel.0, s.accel_vec, wheels_down == 0, dt);
 
     let mode = settings.mode;
     let in_car = match mode {
@@ -648,7 +777,7 @@ fn follow_car(
         let local = car_t.rotation.inverse() * (cam.translation - car_t.translation);
         let _ = writeln!(
             f,
-            "{:.3} {:.2} {:.2} {:.3} {:.2} {:.2} {:?} {:.3} {:.3} {:.3} {:.2} {:.2} {:.2} {:.2} {:.3} {:.3} {:.3} {:.4} {:.4}",
+            "{:.3} {:.2} {:.2} {:.3} {:.2} {:.2} {:?} {:.3} {:.3} {:.3} {:.2} {:.2} {:.2} {:.2} {:.3} {:.3} {:.3} {:.4} {:.4} {:.4}",
             s.time,
             car.speed * 3.6,
             s.accel,
@@ -667,7 +796,8 @@ fn follow_car(
             shake_pitch,
             s.impact.level,
             s.speed_shake.angles.x.to_degrees(),
-            s.speed_shake.drop
+            s.speed_shake.drop,
+            s.height.x
         );
     }
 }
@@ -759,6 +889,8 @@ fn chase_view(
     if let Ok(dir) = Dir3::new(look_at - eye) {
         eye += *dir * dolly;
     }
+    // The vertical spring's position (cam + 0x584 = cam + 0x550) raises the eye only, not the look-at point.
+    eye.y += s.height.x;
     // The eye's z offset (cam + 0x588) follows a target at a first-order rate: target = 0a78c15f · h +
     // (bd3a7cfc while accelerating, 7c9039e2 while decelerating) · |a| / a_full, where a is the
     // acceleration along the velocity; the rate is fdd25ee3 accelerating, 285f2260 decelerating.

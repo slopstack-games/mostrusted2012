@@ -93,3 +93,48 @@ for lo, hi in [(1, 40), (40, 80), (80, 140)]:
     m = (mph >= lo) & (mph < hi)
     r, o = np.degrees(rec[m]), np.degrees(mod[m])
     print(f'    {lo}-{hi} mph: recorded {r.mean():+.4f} / {r.std():.4f}, model {o.mean():+.4f} / {o.std():.4f}')
+
+# The eye's vertical spring (camera.rs HeightSpring; FUN_005d12b0's vertical stage, the step FUN_005bd470,
+# the landing window from FUN_005d4970's tail). Input: the recorded body velocity, its per-frame difference
+# as the acceleration, airborne = vehicle + 0x1630 (air time) > 0. Compared with cam + 0x550. The data
+# values are this run's (gains 1.5 / 1.75, limits -1.2 / 2.5; cam + 0x558 / 0x55c confirm the limits).
+GAIN, LIMITS = (1.5, 1.75), (-1.2, 2.5)
+air_t = D['veh'][idx, (0x1630 - 0x1600) // 4]; x_ref = V(0x550)
+x, vs = x_ref[0], V(0x554)[0]; damp = 2 * 0.8 * np.sqrt(20); was_air = land = False; land_t = peak = 0.0
+X = np.zeros(len(t))
+for i in range(len(t)):
+    dt = 1 / 60 if i == 0 else min(t[i] - t[i - 1], 0.1); k60 = dt * 60
+    v = vel[i].astype(float); a = (v - vel[i - 1]) / dt if i > 0 else np.zeros(3)
+    air = air_t[i] > 0; vy, ay = v[1], a[1]
+    if abs(v[0]) <= 0.1 and abs(v[2]) <= 0.1:
+        vy = ay = 0.0
+    if abs(v[0]) > 0.1 or abs(vy) > 0.1 or abs(v[2]) > 0.1:
+        up = ay > 0
+        g = 3.0 if land else GAIN[0 if up else 1]
+        z = 0.5 + np.clip((peak - 10) / 490, 0, 1) * k60 * 0.25 if land and vs < 0 else (0.75 if vs < 0 else 0.8)
+        damp = 2 * z * np.sqrt(20)
+        if air:
+            f = 4 - 3 * k60 * np.clip(vy / 7, 0, 1) if v[1] > 0 else \
+                8 - 5 * k60 * np.clip(np.hypot(v[0], v[2]) * 2.23694 / 60, 0, 1)
+            u = -vy * f
+        else:
+            n, e = (185.0, 0.8) if up else (15.0, 0.5)
+            u = -ay * g * min(np.clip(abs(ay * g) / n, 0, 1) ** e, 1)
+        vs += u * dt
+    vs -= damp * vs * dt; vs -= 20 * x * dt; x += vs * dt
+    if x <= LIMITS[0] or x >= LIMITS[1]:
+        x = np.clip(x, *LIMITS); vs = 0.0
+    X[i] = x
+    if not air and was_air:
+        land, was_air = True, False
+        continue
+    if land:
+        land_t += dt; peak = max(peak, a[1])
+        if land_t > 0.3:
+            land, land_t, peak = False, 0.0, 0.0
+    was_air = air
+print(f'  eye height spring (cam + 0x550): RMS error {np.sqrt(np.mean((X - x_ref) ** 2)):.4f} m, '
+      f'correlation {np.corrcoef(X, x_ref)[0, 1]:.4f}; std recorded / model per band:')
+for lo, hi in [(1, 40), (40, 80), (80, 140)]:
+    m = (mph >= lo) & (mph < hi)
+    print(f'    {lo}-{hi} mph: {x_ref[m].std():.3f} / {X[m].std():.3f} (error RMS {np.sqrt(np.mean((X - x_ref)[m] ** 2)):.3f})')
