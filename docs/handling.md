@@ -270,6 +270,15 @@ track the eye as closely as `7d4ec535`), `Gradient_Adjustments` (`Downwards` 0.5
 `Lens_Properties` (`FocalDistance` 90, 1.4, false: depth of field, off), and the rest of `Impact_shake`
 (`ShakeMagnitude` / `WobbleMagnitude` vectors, frequencies).
 
+**Source status (2026-10-06):** the whole chase-camera model above is built from field names and values, not
+from the game's code. A search of the dump for the code that reads `CameraGameplayExternal` (decomp.md
+"## Cameras") did not find it, so the camera's sway (the target frame, yaw / lateral springs, the drift
+spring's use), weight (how the distance, height, pitch and FOV springs are integrated) and avoidance (what is
+cast and how the camera responds; the GeneSys types `CameraTransformCollider` and
+`CameraTransformEntityAvoider` suggest more than a push-in along the boom) are all still model decisions or
+*hyp.* rows. No camera rule changed in that round; the baseline trace numbers (drift, accel, corner, crash)
+are in the research log, 2026-10-06 round 4, to compare a port against.
+
 Model decisions (not data): the FOV is vertical (as horizontal the chase view is far tighter than the
 original's; the bonnet and bumper views look very wide this way); acceleration is measured from the car's
 speed between physics ticks; the drift lean (`DRIFT_LEAN` 0.5 of the slip angle) and the yaw-lag cap (0.6 rad);

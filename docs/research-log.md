@@ -124,6 +124,37 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-06 (session 5, round 4): the chase camera from the code
+
+Goal: port the chase camera's sway, weight and avoidance from the code that reads `CameraGameplayExternal`.
+Result: **not found; nothing ported** (decomp.md "## Cameras" lists every search and candidate).
+
+- Searched every function for reads of the External camera's field offsets (eye 0x148, look-at 0x130, pivot
+  0x13c, acceleration 0x64..0x8c, roll 0xa0..0xb8, yaw spring 0xcc..0xe4, pitch 0xf8..0x108, top level
+  0x160..0x170) in the GeneSys read form `*(res + 0x28) + OFF + index` (both orders), as `*(float *)(base + OFF)`
+  and as `base[OFF / 4]`, and for the container's four camera handles. Only false positives (render-state
+  setup at `FUN_008be4e0` / `FUN_008be1c0` / `FUN_008bdc50`, matrix maths, an unrelated global GeneSys resource).
+  Conclusion: the camera does not read its data in any of the forms the handling code uses; it probably copies
+  it once into its own object, or reaches it through a node graph.
+- Leads: `FUN_005d4270` registers `CameraEntityModuleState` with getters for `GameplayExternalCameraTransform`
+  and `GameplayExternalFOV` (`LAB_005dae70`, `LAB_005daeb0`): labels, not decompiled; their bodies (the probe or a
+  disassembly of the unpacked code) give the field that holds the Gameplay External camera. `FUN_005e23c0` keeps
+  eight-deep histories of a car's speed (+0x1620), the time step, the body's velocity and a transform (a
+  target filter, by its shape), next to the camera module; its caller's caller `FUN_005d2cd0` looks like the
+  camera manager's update (loads `CAMERAS.BNDL`, updates that history, then calls virtual method +8 of a
+  0x3050-byte object in an array at manager + 0x6a0): the vtable of those objects is the next thing to find. GeneSys has camera process nodes
+  (`CameraTransformTracker`, `VelocityLerp`, `Collider`, `EntityAvoider`, `ImpactShake`, `FOVAutoZoom`), which
+  suggests the avoidance is more than a push-in along the boom; whether the gameplay camera uses them is open.
+- Baseline traces of the current (data-only) camera, 911, for the next attempt to compare against (peak /
+  settle over the last second; yaw lag = camera yaw − car yaw; lateral, boom = |(x, z)|, height in car space):
+  drift: yaw lag −15.5° / −14.7°, lateral 1.32 / 1.27 m, boom 4.6 → 6.80 (launch) / 5.0 m, height 1.74 / 1.69 m,
+  FOV 73.1 / 71.6°; accel: yaw 0, boom 6.81 at 4.5 s / 5.6 m at 308 km/h, height 1.73 / 1.70, FOV 70 → 95°;
+  corner (skidpad, 74 km/h): yaw lag −15.7 / −15.4°, lateral 1.49 / 1.47 m, boom 6.79 / 5.5 m, FOV 71.5°.
+  crash (114 km/h into the wall at 7.05 s): yaw lag ±0.7°, lateral ±0.06 m; the boom jumps 6.60 → 5.44 m in
+  one frame at the hit and bottoms at 4.05 m, settling at 5.6 m; height dips to 1.34 m; impact pitch 10.5°.
+  Nothing in our camera steers round the wall or other cars: the only world response is the push-in along the
+  ray from the look-at point.
+
 ### 2026-10-06 (session 5, round 4): Easydrive and HUD from the game's layouts
 
 **Differences found** (our frames at 1280×720 against the layout data, `mwtool ui show`; largest first):
