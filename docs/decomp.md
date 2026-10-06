@@ -464,7 +464,11 @@ watch file logs the wheel's grip load (`w*_N`, wheel +0x100) and static load (`w
 - Never read: `Available_grip`, `Grip_factor`, `Sliding_grip_factor`, `f5c703c9`, `9b0ab57e`. `AligningTorque` is
   null on all cars. Tyre forces do not roll the body: the torque about the car's long axis is removed (inferred
   from the flags).
-- Unknown: the constraint +0x210 scale on the blend inputs (no writer in the dump; read it with the probe), which
+- Unknown: the constraint +0x210 scale on the blend inputs (read it with the probe). Leads (2026-10-06): the
+  constraint builder `FUN_009c24b0` zeroes +0x210..0x21c; `FUN_009a56b0` (called from `FUN_0095b100`) copies a
+  4-float vector into +0x210..0x21c of an object and sets its byte +0x4aa, which fits inside the 0x500-byte wheel
+  constraint but is not proven to be it. If nothing else writes it the blends see 0 (pure curves only), not 1.
+  Also which
   state picks `35d32b7d` for the downforce point, and the meaning of the contact's +0x14 lane.
 
 ## Tyre skid sound intensities (`FUN_009d1bf0`)

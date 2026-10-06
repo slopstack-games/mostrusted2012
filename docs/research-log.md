@@ -149,7 +149,9 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
   dump), taken as 1. Below 1 the clutch is softer, the engine runs further above the wheels and less torque
   reaches them in 1st: the first live read to make. The relative velocity in `FUN_009bc0c0` also subtracts
   a `.bss` scalar 0x01186b74 × an input lane from its y component (probably gravity × dt; not modelled).
-- The +0x210 blend-input scale: not searched again this session (budget).
+- The +0x210 blend-input scale: two leads, not followed to the end (decomp.md "Tyres" → Unknown): the
+  constraint builder `FUN_009c24b0` zeroes it, and `FUN_009a56b0` (from `FUN_0095b100`) writes a vector there
+  on some object with a flag at +0x4aa. If only the builder writes it, the blends get 0 (pure curves), not 1.
 
 ### 2026-10-06: no Burnout Paradise bike code survives (dead end)
 
