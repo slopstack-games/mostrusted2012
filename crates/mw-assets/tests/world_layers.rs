@@ -178,7 +178,7 @@ fn diag_gc_ground() {
             if let Some(y) = best {
                 dys.push(p[1] - y);
                 if (p[1] - y).abs() < 0.05 {
-                    good.push((p, i.size, i.quads));
+                    good.push((p, (i.width, i.height), i.shift));
                 }
             }
         }
@@ -198,7 +198,7 @@ fn diag_gc_ground() {
         .collect();
     scored.sort_by(|a, b| b.0.cmp(&a.0));
     for s in scored.iter().step_by(40).take(8) {
-        eprintln!("cluster {} at {:.1?} size {:?} quads {}", s.0, s.1, s.2, s.3);
+        eprintln!("cluster {} at {:.1?} width, height {:?} shift {}", s.0, s.1, s.2, s.3);
     }
 }
 

@@ -587,7 +587,7 @@ impl Worker {
                 for (gi, (g, range)) in gc.groups.iter().enumerate().filter(|(_, (g, _))| g.material == m) {
                     let Some(mesh) = groundcover_mesh(&gc.instances[range.clone()], &mat.regions) else { continue };
                     let key = ResourceId(0x6000_0000_0000_0000 | (gi as u64) << 32 | id.0 & 0xFFFF_FFFF);
-                    self.send(Msg::Model(key, vec![Part { mesh, look: look.clone() }]))?;
+                    self.send(Msg::Model(key, vec![Part { mesh, look }]))?;
                     self.send(Msg::Groundcover {
                         model: key,
                         min: Vec3::from(g.min),
