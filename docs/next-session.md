@@ -113,10 +113,20 @@ the details, [PLAN.md](PLAN.md) "Where it stands" the state per gap.
   frame on an RTX 3070 when the machine is quiet; CPU-bound in Bevy's per-view batching; shadows cost 2–7 ms;
   the loaded map's size costs nothing. Next by the numbers: merge static meshes per material and unit (an
   agent was on it when this was written: see the research log's "static mesh merging" entry).
-- **Chase camera** (the user: it lacks the original's sway, weight and avoidance): the update is
-  `FUN_005d4970` (decomp.md "## Cameras": director table, how it reads its data, call order, the yaw-spring
-  rule). Reading its ~20 helpers and porting them was in progress when this was written.
-- **Groundcover** draws as black clumps (an agent was on it).
+- **Chase camera** (the user: it lacks the original's sway, weight and avoidance): four passes. The update is
+  `FUN_005d4970` (decomp.md "## Cameras": director table, the data read through the state at camera +0x290,
+  call order). **From the code now**: the followed frame (the car's Euler angles eased per axis, no lag cap),
+  the speed band, the eye / look-at heights, and the distance as a first-order lag (targets and rates from the
+  data; the braking offset is 0.5 m, ours was 1.5 m). **Still ours**: the yaw spring's value (two unresolved
+  inputs in `FUN_005c90a0`), the vertical stage at cam +0x554, roll, pitch, the bob (`FUN_005c8880`), the
+  gradient spring (`FUN_005c7a80`), speed movement / impact shake (`FUN_005d0b90`), FOV, and the collision
+  push-in. **Avoidance was not found**: no world query exists in the decompiled camera code; the director's
+  update `FUN_005d5e20` is not a function in the dump (disassemble it through the probe). Live values needed:
+  `DAT_0110e770`, `0110e4d0`, `0110e680`, `0110e610`, `0110e640`, `0110e8f0`, `0118a060`, and state +0x44 /
+  +0x64 / +0x70 / +0x74 / +0x94. The user has not judged the result yet.
+- **Groundcover** tufts are lit and textured (they were black: Bevy's double-sided material flipped the ground
+  normal on back faces; `Mode::Groundcover` with the game's albedo, atlas cell and normal). Open: the sprite
+  size (a load-time write into the collection's material record), camera-facing sprites, per-sprite range.
 
 ## Live reads wanted (the original running; `sudo sysctl kernel.yama.ptrace_scope=0` first, ask the user)
 
