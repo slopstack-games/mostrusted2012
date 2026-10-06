@@ -473,7 +473,8 @@ impl VehicleHandling {
             self.engine_inertia = float(engine, h::ENGINE_INERTIA);
             self.front_drive_share = sub(engine, h::DIFFERENTIALS).and_then(|d| float(d, h::FRONT_SHARE));
             // Two gearboxes per car: "Cruising" (early shifts, slow changes)
-            // and "Race" (shifts near the limiter); the player uses the race one.
+            // and "Race" (shifts near the limiter); the game switches to the cruising one after 3 s of part
+            // throttle (FUN_009ce630, docs/decomp.md "Gearbox modes").
             let race = sub(engine, h::RACE_GEARBOX);
             let cruising = sub(engine, h::CRUISING_GEARBOX);
             let gb = race.or(cruising);

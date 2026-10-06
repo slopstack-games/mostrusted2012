@@ -297,6 +297,24 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
   the gear's `Gear_down_RPM`) and vehicle +0x1ed0 > 0x01187580 (neither identified; braking from 63 mph the
   original downshifts 3 → 2 → 1 with no throttle, so it is not the throttle) and no nitrous; the target is the
   highest lower gear whose `Gear_down_RPM` is below the rpm it would have (`FUN_009d8d60`), none → no shift.
+- **Gearbox modes** (2026-10-06, session 5): `FUN_009da600` runs `FUN_009ce630` after the pedals are copied
+  and before the state machine. Mode at vehicle +0x1bdc (gearbox +0x16c), a qualifying timer at +0x140 (reset
+  to 0 on any tick that does not qualify) and the time since the last switch at +0x144 (+= dt every tick,
+  0 on a switch). Mode 0 → 1 when the timer passes 3 s (`.rdata` 0x01026180) with 0 < throttle (control
+  block +0x1bf4) < 0.95 (0x01026160), brake (+0x1c00) ≤ 0 and a flag clear (`FUN_009b3030` passes it from
+  vtable +0x34 of the vehicle; not identified). Mode 1 → 0 when throttle > 0.95 for 0.05 s (0x01026170).
+  Step 2 of the update loop, `FUN_00900660`, applies a change: mode 0 makes the gearbox pair at vehicle
+  +0x4c0 active (→ +0x4b8), mode 1 the one at +0x4c8 (`FUN_008f37f0`); both reload the per-gear tables
+  (`FUN_009d7300` → `FUN_009d7110`, which copies the active box's `Gear_change_time` (+0x40) to gearbox
+  +0x26c), and the switch to mode 0 clamps the gear index to the box's last gear (its gear count − 1, reverse
+  being index 0). Mode 1 is the `CruisingGearbox` (it is the box entered at part throttle, and
+  `FUN_009dc3c0`'s kick-down time reads it): its own ratios, `Gear_up_RPM`, `Gear_up_speed`, `Gear_down_RPM`
+  and change time, and its top gear is not locked on the 911. `FUN_009dc3c0`: shift time = (change time +
+  gearbox +0xb8) × (1 + 0.15 × random), where the change time is the cruising box's while in mode 0 and
+  +0x144 < `.bss` 0x011871e0 (just after a kick-down), else +0x26c (the active box's). The upshift rules of
+  state 5 are unchanged: they read the active box. `FUN_009d17d0` (launch) closes the clutch only when
+  max(throttle, clutch, rpm / gearbox +0x130) ≥ 0.95; +0x130 (the gear's `Gear_up_RPM` ± 50) is refreshed by
+  `FUN_009dc4e0` from the standstill and in-gear states, not on a mode switch.
 - **Shifts**: time T = (`Gear_change_time` (the `CruisingGearbox` one for a kick-down, `FUN_009dc3c0`)) ×
   (1 + 0.15 × random) (`.data` 0x010cfa64); downshifts × 0.5 (0x01186fa0). Phases, each counted down per tick
   and acted on in the tick it ends: **declutch** 0.1 T (0x01186ee0; clutch = time left / phase, 1 → 0),

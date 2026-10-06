@@ -124,6 +124,37 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-06 (session 5, round 3): gearbox modes and part-throttle shifting
+
+User report: "sometimes it kind of sounds like the vehicles are stuck in a gear". Reproduced on the test
+track with `--auto-throttle` (log once a second, km/h : gear : rpm). Before: the 911 at 0.3 held first gear
+for 17 s, 1100 → 7650 rpm, shifting at 72 km/h; at 0.5 it shifted 1→2 at 68 km/h, 7391 rpm; the XKR at 0.5
+held first to 6499 rpm (52 km/h) and every gear to ~6500; the Veyron at 0.7 shifted at 6300–6600 rpm in every
+gear. Cause: we only had the race gearbox (911: `Gear_up_RPM` 7700 in every gear, `Gear_up_speed` 25 / 40 /
+80 / 120 / 150 / 175 mph), whose shift points sit near the limiter whatever the pedal.
+
+The code (decomp.md "Gearbox modes"): `FUN_009ce630` switches to the `CruisingGearbox` after 3 s of
+0 < pedal < 0.95 with no brake, and back after 0.05 s above 0.95; `FUN_00900660` applies it (tables reloaded,
+gear clamped on the way back); `FUN_009dc3c0` takes the cruising `Gear_change_time` just after a kick-down.
+The 911's cruising box: 5500 rpm, 15 / 45 / 70 / 85 / 105 / 135 mph, `Gear_down_RPM` 2000, 0.9 s per shift,
+4th / 6th / 7th 1.30 / 0.88 / 0.71 instead of 1.225 / 0.92 / 0.77, top gear not locked.
+
+After (same runs): 911 at 0.3: cruising box from 3 s, 2nd at 68 km/h, 3rd at 88 km/h (5477 rpm); at 0.7:
+2nd at 67, 3rd at 81, 4th at 128, 5th at 154 km/h, all near 5500 rpm, then 4500–5400 rpm cruising; XKR at
+0.5: 1 → 3 at 56 km/h (the target skips gears as `FUN_009d4c80` does), 4th at 100 km/h, 3000–4000 rpm;
+Veyron at 0.7: shifts at 4100–4500 rpm, 7th (cruising box) at 247 km/h. Full throttle never qualifies, so
+`--test accel` (911: 0–100 km/h 3.72 s, quarter mile 11.58 s, top 307.6 km/h) and the `ref/xkr_launch` replay
+are unchanged (compare output identical).
+
+Still open: (1) the first gear at part throttle still runs to ~0.95 × the race `Gear_up_RPM` (911: 7262 rpm at
+68 km/h at 0.3): the launch state `FUN_009d17d0` keeps the clutch slipping until max(throttle, clutch, rpm /
++0x130) ≥ 0.95, and +0x130 was set from the race box at standstill. That is the game's rule, but our clutch at
+partial engagement is almost rigid, so the rpm only gets there with the road speed; the game's clutch
+(`FUN_009d7ac0`) may let the engine flare ahead and close sooner. Port the clutch's slip torque to settle it.
+(2) `.bss` 0x011871e0 (kick-down window, assumed 1 s), gearbox +0xb8 (added to the shift time) and the
+vehicle's vtable +0x34 flag (blocks the cruising box) are unread. (3) The sound side (limiter and gear-change
+sequences of the bank) was not examined: the engine sound still follows the physics rpm.
+
 ### 2026-10-06 (session 5, round 2): traffic rules in the code
 
 Details and formulas are in decomp.md "Traffic rules (session 5, round 2)".

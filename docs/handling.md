@@ -51,8 +51,13 @@ One physics tick is 1/60 s (`Time::<Fixed>` at 60 Hz, as the game). Per tick, in
    gears whose entry speed is already passed; downshift below the lower gear's `Gear_up_speed` − 2 mph or below
    `Gear_down_RPM`, to the highest lower gear still above its own down rpm. Shifts take `Gear_change_time` × (1 +
    0.15 × random) (downshifts half that): declutch 10 %, neutral 50 % (the gear changes at its end), clutch-in
-   40 %; upshifts cut the throttle until the clutch-in, which brings it back with the clutch. Only the race
-   gearbox is used; `13bfea5a` / `7b20506a` lock its top gear (the 911 has 6, not 7).
+   40 %; upshifts cut the throttle until the clutch-in, which brings it back with the clutch. Two gearboxes
+   (`FUN_009ce630`, `FUN_00900660`): the race one (`RaceGearbox`; `13bfea5a` / `7b20506a` lock its top gear, so
+   the 911 has 6, not 7) at full throttle, and the `CruisingGearbox` (own ratios, `Gear_up_RPM` /
+   `Gear_up_speed` / `Gear_down_RPM`, slower `Gear_change_time`; the 911's: 5500 rpm, 15 / 45 / 70 / 85 / 105 /
+   135 mph, 2000 rpm, 0.9 s, 7 gears) after 3 s of part throttle (0 < pedal < 0.95, no brake). The pedal
+   above 0.95 for 0.05 s switches back (a kick-down: the gear is clamped to the race box's gears and the race
+   box's `Gear_down_RPM` then downshifts, with the cruising change time for a short window).
 3. **Steering** (game rules, below). The angle computed here is used by the next tick's tyres, as in the game.
 4. **Wheels**: each wheel has a spin ω (inertia ½ m r² of its rigid body, plus `TransmissionInertia` on driven
    wheels). Drive torque spins it; the axle limited-slip differentials (`Front_` / `Rear_Differential` = c) keep
@@ -332,6 +337,8 @@ stands 10 m past the impact); a 2 m pillar shows the car.
 | clutch-in throttle | pedal × progress¹ | `FUN_009d6af0` / `FUN_009d6ca0` raise the progress to `.bss` 0x011874d0 (not read). Measure: `dump NFS13.exe+0xd874d0` |
 | coast declutch | 20 mph | `.bss` 0x011872d0 in `FUN_009d9ee0`: lanes 2–3 read 20 (`consts.txt`), lanes 0–1 assumed the same |
 | downshift gate | always open | `FUN_009d93b0` also needs vehicle +0x1ed0 > `.bss` 0x01187580 (neither identified; the original downshifts while braking with no throttle). Not modelled |
+| kick-down window (`KICKDOWN_WINDOW`) | 1.0 s | `FUN_009dc3c0` uses the cruising gearbox's `Gear_change_time` while the time since the last gearbox-mode switch (gearbox +0x144) is below `.bss` 0x011871e0 (not read); it also adds gearbox +0xb8 to the time (not identified, taken as 0) |
+| gearbox-mode flag | down | `FUN_009da600` passes a flag from a virtual call on the vehicle (`FUN_009b3030`, vtable +0x34) that keeps the race gearbox while up; not identified (race start? AI?), so the cruising box is always allowed |
 | stall check in shifts | none | `Idle_RPM` × `.bss` 0x011874a0 (not read) drops the gearbox to standstill during a shift or launch |
 | launch torque | lagged | the original reaches full torque in the first tick of its launch (`ref/xkr_launch`), which the lag does not; source not found (`FUN_009262a0`'s override list?) |
 | `BURNOUT_MPH` | 20 | **from the game**: `.bss` 0x011866f0 (read live) in `FUN_009ab230` (now `drift::BURNOUT_MPH`) |
