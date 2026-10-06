@@ -24,6 +24,10 @@ pub struct VehiclePaint {
     pub clearcoat_roughness: f32,
     pub clearcoat: bool,
     pub pearlescent: [f32; 3],
+    /// `DirtColour` / `DustColour`: the paint shaders' `GenericVector4_B` / `_C` colours of the dirt and
+    /// dust layers (their `.w` is not read by the paint shaders).
+    pub dirt_colour: [f32; 3],
+    pub dust_colour: [f32; 3],
     /// `PaintColour`: the colour family index the menus group paints by.
     pub colour_index: i64,
 }
@@ -53,6 +57,8 @@ impl VehiclePaint {
             clearcoat_roughness: float(o, field_hash("PbrClearcoatRoughness")).unwrap_or(0.0),
             clearcoat: !matches!(o.get(field_hash("PbrClearcoatEnabled")), Some(Value::Bool(false))),
             pearlescent: vec3(o, "PbrPearlescentColour").unwrap_or([0.0; 3]),
+            dirt_colour: vec3(o, "DirtColour").unwrap_or([0.0; 3]),
+            dust_colour: vec3(o, "DustColour").unwrap_or([0.0; 3]),
             colour_index: match o.get(field_hash("PaintColour")) {
                 Some(Value::Int(i)) => *i,
                 Some(Value::UInt(u)) => *u as i64,
