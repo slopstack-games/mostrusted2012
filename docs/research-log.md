@@ -124,6 +124,27 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-06 (session 5, round 3): car animations, active aero
+
+- **Where active aero lives**: `Genesys.Vehicles.AnimationStateBehaviour` → an `HSMData` state machine + its
+  `Animation` clips on the damage skeleton (layout in formats.md "Vehicle animations"; 16 models).
+  `PhysicsDrivenVehicleAnimationBehaviour` / `AnimatedBodyPart` turned out to be the exposed suspension and
+  wheel-angle bones of four open-wheel cars, not aero (dead end for aero; useful later for suspension).
+  `AnimatedRaceCarBehaviour` has no vehicle instances checked yet.
+- **HSM conditions are in the data as text**: the 911's machine reads `speedinmph`, condition `Speed above
+  70mph`, operands `70` and `40`; LFA `70` / `50`; the SLS / SL65 labels give 74 / 75 mph but no bare operand
+  string (probably stored binary). Veyron, McLaren and Venom read `brake` too (`Brake ON and Speed above
+  80mph`, `Wait 0.4s`); the Huayra reads `steering` (`Speed between 50 and 137mph and Turning Left`); the
+  Agera R reads `gas`. Unknown operands per state: `False` (reverse play?) and `0.25` (blend time?).
+- **Code**: the variable name strings (`.rdata` 0x00fae7e0..0x00fae7f4) have no references in the dump;
+  the condition evaluator and the variables' producers are not found (docs/decomp.md "Vehicle animations").
+  Next step: decode the HSMData property tree so every machine can run, and look
+  for the HSM interpreter through the `HSM.AnimationCondition` type string.
+- **Built**: `mw_assets::car_anim` (loader, simple speed rule), clips composed on top of the damage pose
+  (`VehicleDamage::pose_with`), `car_anim.rs` (`--anim all=1` / `0=0.5` pins, otherwise the rule in
+  `--drive`), `mwtool damage <car>` lists the parts. 911 `--test accel`: deploys at 70.2 mph, fully out
+  1.6 s later. The `--vehicle` viewer draws static instances without the skeleton, so `--anim` needs `--drive`.
+
 ### 2026-10-06 (session 5, round 2): traffic rules in the code
 
 Details and formulas are in decomp.md "Traffic rules (session 5, round 2)".

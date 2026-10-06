@@ -1021,3 +1021,16 @@ Not traced: the controller itself (`FUN_00617d00`), the swerve and near-miss rea
 stop-line handling (junction records are reached through the hull's `+0x28` pointer; `FUN_0060c9f0` walks a
 `u8` count at junction `+0x35` with entries near `+0x56`), the switch to a physical car (`FUN_005fcbd0` →
 `FUN_005f7cf0`) and the 150 / 24-slot ranges.
+
+## Vehicle animations
+
+The variable names the animation state machines read sit together in `.rdata`: `brake` 0x00fae7e0,
+`steering` 0x00fae7e8, `speedinmph` 0x00fae7f4 (then `coplights`, `Rear_Bumper_Hinge`). No function of the
+dump references them by address (searched for the addresses and `s_` labels; probably reached through a
+table built at start-up), so the code that feeds them and evaluates `HSM.AnimationCondition` is not found
+yet. Until it is, the rule in `car_anim.rs` comes from the data only (the HSM's condition strings and
+operands, docs/formats.md "Vehicle animations"): a one-clip `speedinmph` machine deploys at the condition's
+speed and retracts below its other operand (911: 70 / 40 mph, LFA 70 / 50), playing the clip at its frame
+rate both ways. Whether a deployed wing changes the handling is open: `AnimationStateBehaviour` has no aero
+field, and no write from the animation side into what `FUN_009cf850` / `FUN_009cfaf0` read was found (the
+search could not start without the condition code).

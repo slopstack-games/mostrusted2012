@@ -82,7 +82,7 @@ fn animate_parts(
                 state.deployed[i] = open;
                 let step = dt / clip.duration().max(1e-3);
                 let target = if open { 1.0 } else { 0.0 };
-                parts[i] = if parts[i] < target { (parts[i] + step).min(1.0) } else { (parts[i] - step).max(0.0) };
+                parts[i] += (target - parts[i]).clamp(-step, step);
             }
         } else {
             for &(k, v) in &pins.0 {

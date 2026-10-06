@@ -145,6 +145,31 @@ set of **skeletal animation clips whose frames are damage levels**:
 `VEHICLES/VEH_<id>_HI.BNDL` / `_LO.BNDL` pair, and names come from `Language` (0x201, `UI/LANGUAGE/0001.BNDL`
 for English).
 
+### Vehicle animations (active aero)
+
+Moving body parts (spoilers, air brakes, flaps, vents) are `Animation` clips on the car's damage `Skeleton`,
+started by a state machine. `Genesys.Vehicles.AnimationStateBehaviour` (44 bytes): +12 label, +20 UniqueId,
++24..26 three bools, +28 `0501d88b` handle → `HSMData` (0x501), +36 `Resources` (`3f227e59`) handle array →
+the `Animation` clips, +40 their count. 16 models (18 `_HI` bundles) have one (`mwtool damage <car>` prints it): one clip for the
+911 Carrera S (both bundles), LFA, SL65 Black Series (both), SLS, Panamera Turbo S, 918 Spyder, Agera R
+(`gas`), Marussia B2 and Aventador J (vents with timers); several for the 918 concept and Aventador
+LP700-4 (spoiler + vents), McLaren MP4-12C and Venom GT Spyder (spoiler + air brake), both Veyrons (handling /
+top speed / air brake) and the Huayra (front / rear flaps on speed, steering and brake).
+
+A clip is two (or a few) frames: frame 0 is the retracted pose (identity keys), the last the deployed one;
+keys are offsets from the bind pose like the damage clips, on 1-4 bones (the 911's bone 36: 30° about X and
+2 cm up / 7 cm back). It plays at its own frame rate: the 911's 0.612 frames/s makes the deploy 1.63 s.
+
+The `HSMData` is a serialized property tree (apparently hashed keys with values as strings; layout not decoded).
+Its strings name states (`Spoiler Anim`, `Brake from Top Speed Anim`, `Reverse … Anim`, `Wait 0.4s`),
+conditions (`Speed above 70mph`, `Brake ON and Speed above 80mph`), their operands as decimal text (`70`,
+`40`), the variables `speedinmph` / `brake` / `steering` / `gas`, a clip by its resource id in decimal
+(`904078` = `0dcb8e`), and the node types `HSM.AnimationCondition`, `HSM.AnimationState`, `Wait For Time`.
+
+`Genesys.Gen.PhysicsDrivenVehicleAnimationBehaviour` is a different thing: exposed suspension of the Atom,
+Mono, Caterham and Zonda R (`AnimatedBodyPart` = bone name `FrontLeftSuspension` / `…WheelAngle`, wheel
+index, `ApplyPosition` / `ApplySpin` / `ApplySteering` / `Steering` flags), no aero.
+
 ## Collision (`PolygonSoupList` 0x60)
 
 One list per track unit, world space. Vertices are `u16 × 500/32768 + i8 multiplier × 500` metres. Polygons
