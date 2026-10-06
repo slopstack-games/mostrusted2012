@@ -35,7 +35,7 @@ impl Plugin for DrivePlugin {
         app.insert_resource(Time::<Fixed>::from_hz(60.0))
             .init_resource::<CarInput>()
             .add_systems(Update, (spawn_car, read_input, wheel_visuals, log_car))
-            .add_systems(FixedUpdate, (run_test, car_physics).chain());
+            .add_systems(FixedUpdate, (run_test, ground_test, car_physics).chain());
     }
 }
 
@@ -251,6 +251,8 @@ pub struct Car {
     /// roll positive = right side down, pitch positive = nose up).
     pub roll: f32,
     pub pitch: f32,
+    /// The body collider touched the world on the last physics step (`--test landing / climb` logs it).
+    pub body_contact: bool,
     pub gear: i32,
     pub rpm: f32,
     /// Engine rpm at the previous physics tick (the audio interpolates between the two).
@@ -297,6 +299,8 @@ struct WheelState {
     /// Current suspension compression (m), and its rate (m/s, positive = compressing).
     compression: f32,
     compression_rate: f32,
+    /// How far the ground reached past full compression on the last tick (m): the wheel inside the ground.
+    overtravel: f32,
     spin: f32,
     pivot: Entity,
     spinner: Entity,
@@ -494,6 +498,7 @@ fn spawn_car(
             slip: (0.0, 0.0),
             compression: 0.0,
             compression_rate: 0.0,
+            overtravel: 0.0,
             spin: 0.0,
             pivot,
             spinner,
@@ -525,6 +530,7 @@ fn spawn_car(
         turn_assist: TurnAssist::default(),
         roll: 0.0,
         pitch: 0.0,
+        body_contact: false,
         gear,
         rpm: params.idle_rpm,
         rpm_prev: params.idle_rpm,
@@ -799,23 +805,33 @@ pub(crate) fn car_physics(
         let mut rear_slip = (0.0, 0);
         let anti_roll = anti_roll_loads(&car.wheels, p);
         let mut ground_normal = Vec3::ZERO;
+        // Wheels whose ground is within one tick of the strut's end: (contact, normal, signed overtravel).
+        let mut stops: Vec<(Vec3, Vec3, f32)> = Vec::new();
         for ((wheel, bar_load), mut brake_left) in car.wheels.iter_mut().zip(anti_roll).zip(brake_budget) {
             // The mount sits `travel - sag` above the rest position, so the wheel is at its spec position
             // (in its arch) under the static load.
             let mount = pos + rot * (wheel.centre + Vec3::Y * (wheel.travel - wheel.sag));
             let reach = wheel.travel + wheel.radius;
             let ray_dir = Dir3::new(-up).unwrap_or(Dir3::NEG_Y);
-            let Some(hit) = spatial.cast_ray(mount, ray_dir, reach, true, &filter) else {
+            // The ray starts one wheel radius above the mount so that ground which has come up past the strut
+            // still registers (from inside a solid it returns a zero normal, through a trimesh's back face
+            // nothing). Stopgap, handling.md "Model decisions": the game's wheel collides as a body.
+            let lift = wheel.radius;
+            let Some(mut hit) = spatial.cast_ray(mount + up * lift, ray_dir, reach + lift, true, &filter) else {
                 wheel.compression_rate = 0.0;
                 wheel.compression = 0.0;
+                wheel.overtravel = 0.0;
                 wheel.contact = None;
                 let step = (brake_left / wheel.inertia).min(wheel.omega.abs());
                 wheel.omega -= step * wheel.omega.signum();
                 wheel.spin += wheel.omega * dt;
                 continue;
             };
+            hit.distance -= lift;
             let compression = (reach - hit.distance).clamp(0.0, wheel.travel);
             wheel.compression = compression;
+            wheel.overtravel = (reach - hit.distance - wheel.travel).max(0.0);
+            stops.push((mount - up * hit.distance, hit.normal, reach - hit.distance - wheel.travel));
             grounded = true;
             wheels_down += 1;
             ground_normal += hit.normal;
@@ -951,6 +967,7 @@ pub(crate) fn car_physics(
         // The body's contact with the world (not props) on the last physics step, as the wall normal pointing
         // at the car; the game counts the time since the last one (vehicle +0x3010).
         let wall = world_contact(&collisions, &layers, car.body_collider);
+        car.body_contact = wall.is_some();
         car.wall_time = if wall.is_some() { 0.0 } else { car.wall_time + dt };
         let side_axis = rot * Vec3::X;
         let (dv, dw) = car.turn_assist.step(
@@ -1029,6 +1046,12 @@ pub(crate) fn car_physics(
         }
         // The game's per-axis drag (with its over-speed ramp) and lift (downforce). Rolling resistance is per
         // wheel, from the surface (above).
+        if stops.iter().any(|s| s.2 > -0.5) {
+            let (mut v, mut w) = (forces.linear_velocity(), forces.angular_velocity());
+            strut_stops(&stops, com, p.mass, &inv_inertia, dt, (&mut v, &mut w));
+            *forces.linear_velocity_mut() = v;
+            *forces.angular_velocity_mut() = w;
+        }
         let drag = p.chassis.drag_force(rot, velocity);
         forces.apply_force(drag);
         let (lift, lift_at) = p.chassis.lift(rot, velocity, p.centre_of_mass);
@@ -1140,6 +1163,40 @@ fn limited_slip(wheels: &mut [WheelState], diff: &[f32; 2]) {
         }
     }
 }
+
+/// The end of the strut as a hard contact on the chassis (`FUN_009c5a90` → `FUN_009c2670`, decomp.md
+/// "Suspension, wheels, aerodynamics"): the game predicts each wheel contact's penetration at the end of the
+/// tick (positions plus velocity × dt); where the ground would come past the strut's end point on the chassis
+/// (constraint +0x460) it sets a flag (+0x4ae) and the contact's non-negative normal impulse then acts on the
+/// chassis at that point, through the chassis's own mass and inertia, until the predicted penetration is 0.
+/// `over` is the ground's reach past the strut's end (m, negative = travel left): the normal velocity at the
+/// contact must be at least `over / dt`. Sequential impulses over the contacts (`STOP_ITERATIONS` passes).
+fn strut_stops(
+    stops: &[(Vec3, Vec3, f32)],
+    com: Vec3,
+    mass: f32,
+    inv_inertia: &Mat3,
+    dt: f32,
+    (v, w): (&mut Vec3, &mut Vec3),
+) {
+    let mut total = vec![0.0f32; stops.len()];
+    for _ in 0..STOP_ITERATIONS {
+        for (&(point, n, over), total) in stops.iter().zip(&mut total) {
+            let r = point - com;
+            let arm = r.cross(n);
+            let m = 1.0 / (1.0 / mass + arm.dot(*inv_inertia * arm)).max(1e-6);
+            let vn = (*v + w.cross(r)).dot(n);
+            let next = (*total + (over / dt - vn) * m).max(0.0);
+            let impulse = next - *total;
+            *total = next;
+            *v += n * impulse / mass;
+            *w += *inv_inertia * (arm * impulse);
+        }
+    }
+}
+/// Passes over the strut stops per tick: the game iterates its contacts in sub-steps whose count was not read
+/// (handling.md "Model decisions").
+const STOP_ITERATIONS: usize = 4;
 
 /// Anti-roll bar load (N) on each wheel from last tick's compressions: per axle a torsion bar between the left
 /// and right wheels (`BodyMovement` `782f05c1` front / `2bb0f6a0` rear, damped at `Front_` / `Rear_roll_damping`
@@ -1475,6 +1532,14 @@ pub enum TestKind {
     /// `MW_ENGINE_TRACE`): full throttle, lift and coast, throttle taps,
     /// braking, full throttle again.
     Engine,
+    /// Hold 130 km/h into a kicker ramp that ends in a 3 m drop: the landing (sink, wheel overtravel, body
+    /// contacts, settling time).
+    Landing,
+    /// Hold 120 km/h into a 30° incline (an abrupt kink from the flat): same measures as the landing.
+    Climb,
+    /// At rest, then at a steady 100 km/h: peak-to-peak and dominant frequency of the body's height, pitch,
+    /// roll and their rates.
+    Jitter,
 }
 
 /// Target speed for `--test corner` (km/h) and how long the steering takes to wind in.
@@ -1765,6 +1830,7 @@ fn run_test(
             let throttle = if throttle < 0.0 { if (t / 0.3) as i32 % 2 == 0 { 1.0 } else { 0.0 } } else { throttle };
             input.scripted = Some([throttle, brake, 0.0, 0.0]);
         }
+        TestKind::Landing | TestKind::Climb | TestKind::Jitter => {}
         TestKind::Brake => match test.braking_from {
             None => {
                 input.scripted = Some([1.0, 0.0, 0.0, 0.0]);
@@ -1783,4 +1849,260 @@ fn run_test(
             }
         },
     }
+}
+
+/// Obstacles on the test track for `--test landing` and `--test climb`: a profile (z, height) along +Z, 200 m
+/// wide, built as a trimesh like the world's collision. Landing: a 5.7° kicker up to a 3 m plateau that ends in
+/// a sheer drop at z = 460. Climb: flat into a 30° incline at z = 400 (an abrupt kink), up to a plateau.
+pub fn test_obstacle(kind: TestKind) -> Option<(Vec<Vec3>, Vec<[u32; 3]>)> {
+    let profile: &[(f32, f32)] = match kind {
+        TestKind::Landing => &[(LANDING_RAMP_Z, 0.0), (430.0, 3.0), (LANDING_DROP_Z, 3.0), (LANDING_DROP_Z, 0.0)],
+        TestKind::Climb => {
+            let rise = CLIMB_LENGTH * test_env("MW_TEST_SLOPE", CLIMB_SLOPE_DEG).to_radians().tan();
+            &*Box::leak(Box::new([
+                (CLIMB_Z, 0.0),
+                (CLIMB_Z + CLIMB_LENGTH, rise),
+                (CLIMB_Z + CLIMB_LENGTH + 200.0, rise),
+            ]))
+        }
+        _ => return None,
+    };
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    for (i, &(z, y)) in profile.iter().enumerate() {
+        vertices.push(Vec3::new(-100.0, y, z));
+        vertices.push(Vec3::new(100.0, y, z));
+        if i > 0 {
+            let [a, b, c, d] = [2 * i as u32 - 2, 2 * i as u32 - 1, 2 * i as u32, 2 * i as u32 + 1];
+            indices.push([a, c, b]);
+            indices.push([b, c, d]);
+        }
+    }
+    Some((vertices, indices))
+}
+const LANDING_RAMP_Z: f32 = 400.0;
+const LANDING_DROP_Z: f32 = 460.0;
+const CLIMB_Z: f32 = 400.0;
+const CLIMB_LENGTH: f32 = 40.0;
+const CLIMB_SLOPE_DEG: f32 = 30.0;
+
+/// State of `--test landing / climb / jitter` (`ground_test`).
+#[derive(Default)]
+pub(crate) struct GroundTest {
+    /// Body origin's height above the ground along the body's down axis at rest (m).
+    rest: Option<f32>,
+    deepest: f32,
+    body_contact_ticks: u32,
+    max_overtravel: f32,
+    min_wheels: usize,
+    event_t: Option<f32>,
+    settled_since: Option<f32>,
+    settle_time: Option<f32>,
+    slow_since: Option<f32>,
+    trace: Option<std::fs::File>,
+    /// Jitter samples: (y, pitch, roll, vy, pitch rate, roll rate); phase 0 = at rest, 1 = at 100 km/h.
+    samples: Vec<[f32; 6]>,
+    phase: u32,
+    phase_t: f32,
+}
+
+/// Peak-to-peak and the dominant frequency (Hz, DFT over 0.25 Hz .. Nyquist, mean removed) of a series.
+fn spectrum_peak(x: &[f32], rate: f32) -> (f32, f32) {
+    let n = x.len().max(1);
+    let mean = x.iter().sum::<f32>() / n as f32;
+    let (lo, hi) = x.iter().fold((f32::MAX, f32::MIN), |(l, h), &v| (l.min(v), h.max(v)));
+    let mut best = (0.0, 0.0);
+    for k in 1..=n / 2 {
+        let (mut re, mut im) = (0.0f32, 0.0f32);
+        for (i, &v) in x.iter().enumerate() {
+            let ph = std::f32::consts::TAU * (k * i) as f32 / n as f32;
+            re += (v - mean) * ph.cos();
+            im += (v - mean) * ph.sin();
+        }
+        let p = re * re + im * im;
+        if p > best.0 {
+            best = (p, k as f32 * rate / n as f32);
+        }
+    }
+    (hi - lo, best.1)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn ground_test(
+    time: Res<Time>,
+    test: Option<ResMut<DriveTest>>,
+    mut input: ResMut<CarInput>,
+    spatial: SpatialQuery,
+    cars: Query<(Entity, &Car, &Transform, &LinearVelocity, &AngularVelocity)>,
+    mut state: Local<GroundTest>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    let (Some(mut test), Ok((entity, car, tf, vel, ang))) = (test, cars.single()) else { return };
+    if test.done || !matches!(test.kind, TestKind::Landing | TestKind::Climb | TestKind::Jitter) {
+        return;
+    }
+    let dt = time.delta_secs();
+    let now = test.ticks as f32 * dt;
+    let rot = tf.rotation;
+    let up = rot * Vec3::Y;
+    let filter = SpatialQueryFilter::from_excluded_entities([entity, car.body_collider])
+        .with_mask(crate::props::GameLayer::World);
+    // From 2 m above the origin, so the cast starts above the ground even when the body is in it.
+    let height = Dir3::new(-up)
+        .ok()
+        .and_then(|d| spatial.cast_ray(tf.translation + up * 2.0, d, 50.0, true, &filter))
+        .map_or(f32::NAN, |h| h.distance - 2.0);
+    let (pitch, roll, _) = {
+        let (yaw, pitch, roll) = rot.to_euler(EulerRot::YXZ);
+        (pitch, roll, yaw)
+    };
+    if now < 1.5 {
+        if now > 1.2 {
+            state.rest = Some(height);
+            state.min_wheels = 4;
+        }
+        return;
+    }
+    let rest = state.rest.unwrap_or(height);
+    let t = now - 1.5;
+    let v = car.speed;
+    let sink = rest - height;
+    let wheels_down = car.wheels.iter().filter(|w| w.contact.is_some()).count();
+    if test.kind == TestKind::Jitter {
+        // 4 s at rest, then 100 km/h held; sample 4 s once the speed has been steady for 3 s.
+        let target = if state.phase == 0 && t < 4.0 { 0.0 } else { 100.0 / 3.6 };
+        let throttle = if target > 0.0 { ((target - v) * 0.5).clamp(0.0, 1.0) } else { 0.0 };
+        input.scripted = Some([throttle, 0.0, 0.0, 0.0]);
+        let local_w = rot.inverse() * ang.0;
+        let sample = [tf.translation.y, pitch, roll, vel.y, local_w.x, local_w.z];
+        let steady = target == 0.0 || (v - target).abs() < 0.5 && t - state.phase_t > 3.0;
+        if target > 0.0 && state.phase == 0 {
+            state.phase = 1;
+            state.phase_t = t;
+            report_jitter("rest", &state.samples, 1.0 / dt);
+            state.samples.clear();
+        }
+        if steady {
+            state.samples.push(sample);
+        }
+        if state.phase == 1 && state.samples.len() as f32 * dt >= 4.0 {
+            let m = report_jitter("100kmh", &state.samples, 1.0 / dt);
+            test.marks.push((m, t, v));
+            test.done = true;
+            info!(
+                "TEST RESULT {:?}: {}",
+                test.kind,
+                test.marks.iter().map(|m| m.0.clone()).collect::<Vec<_>>().join(" ")
+            );
+            exit.write(AppExit::Success);
+        }
+        if state.phase == 0 && target == 0.0 && t >= 0.0 {
+            // Rest samples are taken above.
+        }
+        return;
+    }
+    let (target_kmh, event_z, end_z) = match test.kind {
+        TestKind::Landing => (test_env("MW_TEST_KMH", 130.0), LANDING_RAMP_Z, LANDING_DROP_Z + 150.0),
+        _ => (test_env("MW_TEST_KMH", 120.0), CLIMB_Z, CLIMB_Z + CLIMB_LENGTH + 120.0),
+    };
+    let target = target_kmh / 3.6;
+    let z = tf.translation.z;
+    // Hold the speed up to the obstacle, then full throttle through it (the player keeps the pedal down).
+    let throttle = if z < event_z - 20.0 { ((target - v) * 0.5).clamp(0.0, 1.0) } else { 1.0 };
+    input.scripted = Some([throttle, 0.0, 0.0, 0.0]);
+    if state.trace.is_none()
+        && let Some(path) = std::env::var_os("MW_SUSP_TRACE")
+    {
+        state.trace = std::fs::File::create(path).ok();
+    }
+    if z > event_z - 10.0 {
+        state.event_t.get_or_insert(t);
+        if let Some(f) = state.trace.as_mut() {
+            use std::io::Write;
+            let comp: Vec<String> = car
+                .wheels
+                .iter()
+                .map(|w| {
+                    format!(
+                        "{:.3}/{:.3}+{:.3}{}",
+                        w.compression,
+                        w.travel,
+                        w.overtravel,
+                        if w.contact.is_some() { "" } else { "x" }
+                    )
+                })
+                .collect();
+            let _ = writeln!(
+                f,
+                "{t:.3} z {z:.2} y {:.3} sink {sink:.3} vy {:.2} v {:.1} pitch {:.1} body {} wheels {}",
+                tf.translation.y,
+                vel.y,
+                v * 3.6,
+                pitch.to_degrees(),
+                u8::from(car.body_contact),
+                comp.join(" ")
+            );
+        }
+        state.deepest = state.deepest.max(sink);
+        state.body_contact_ticks += u32::from(car.body_contact);
+        state.max_overtravel = state.max_overtravel.max(car.wheels.iter().map(|w| w.overtravel).fold(0.0, f32::max));
+        state.min_wheels = state.min_wheels.min(wheels_down);
+        // Settled: within 2 cm of the rest height, all wheels down, |vertical velocity| < 0.1 m/s, for 0.5 s.
+        let calm = sink.abs() < 0.02 && wheels_down == 4 && vel.y.abs() < 0.1;
+        let past = match test.kind {
+            TestKind::Landing => z > LANDING_DROP_Z + 5.0,
+            _ => z > CLIMB_Z,
+        };
+        if past && calm {
+            let since = *state.settled_since.get_or_insert(t);
+            if t - since > 0.5 && state.settle_time.is_none() {
+                state.settle_time = Some(since - state.event_t.unwrap_or(t));
+            }
+        } else {
+            state.settled_since = None;
+            if !calm {
+                state.settle_time = None;
+            }
+        }
+        state.slow_since = if v < 2.0 { state.slow_since.or(Some(t)) } else { None };
+    }
+    let stuck = state.slow_since.is_some_and(|s| t - s > 2.0);
+    if z > end_z || stuck || t > 60.0 {
+        let below = sink > 0.02;
+        let m = format!(
+            "end={} sink={:.3}m deepest={:.3}m overtravel={:.3}m body_contact={:.2}s min_wheels={} settle={} v={:.0}kmh",
+            if stuck {
+                "STUCK"
+            } else if below {
+                "BELOW_REST"
+            } else {
+                "ok"
+            },
+            sink,
+            state.deepest,
+            state.max_overtravel,
+            state.body_contact_ticks as f32 * dt,
+            state.min_wheels,
+            state.settle_time.map_or("never".into(), |s| format!("{s:.2}s")),
+            v * 3.6
+        );
+        test.marks.push((m, t, v));
+        test.done = true;
+        info!("TEST RESULT {:?}: {}", test.kind, test.marks.iter().map(|m| m.0.clone()).collect::<Vec<_>>().join(" "));
+        exit.write(AppExit::Success);
+    }
+}
+
+fn report_jitter(label: &str, samples: &[[f32; 6]], rate: f32) -> String {
+    let names = ["y", "pitch", "roll", "vy", "pitch_rate", "roll_rate"];
+    let mut out = Vec::new();
+    for (i, name) in names.iter().enumerate() {
+        let series: Vec<f32> = samples.iter().map(|s| s[i]).collect();
+        let (pp, f) = spectrum_peak(&series, rate);
+        let pp = if (1..3).contains(&i) || i >= 4 { pp.to_degrees() } else { pp };
+        out.push(format!("{name}_pp={pp:.4}@{f:.1}Hz"));
+    }
+    let line = format!("{label}:{}", out.join(","));
+    info!("TEST jitter {line} ({} samples)", samples.len());
+    line
 }

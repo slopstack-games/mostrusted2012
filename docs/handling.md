@@ -61,7 +61,11 @@ One physics tick is 1/60 s (`Time::<Fixed>` at 60 Hz, as the game). Per tick, in
    c = 2 `Damping_Ratio` √(k W / g) in bump and `0c5f89b3` × c in rebound; bump travel 0.06 m above rest (model,
    from the 911's strut); anti-roll bars per axle (`Body_movement` `782f05c1` / `2bb0f6a0` × 60, read as N m per
    degree; damping `Front_` / `Rear_roll_damping` × critical against the roll inertia). The spring force holds
-   the body up; it does not set the tyre grip.
+   the body up; it does not set the tyre grip. **Strut end stop** (`FUN_009c5a90` → `FUN_009c2670`): where the
+   ground would come past the end of the bump travel by the end of the tick, the wheel contact acts on the chassis
+   as a hard, non-negative normal impulse at the contact (target normal velocity ≥ overtravel / dt, so the
+   predicted penetration is 0), solved as sequential impulses over the four wheels (`strut_stops` in drive.rs).
+   The wheel ray starts one radius above the mount so ground that has come past the strut still registers.
 6. **Tyres** (`tyre.rs`): a velocity constraint, capped, solved once per tick as the game does. Grip load N =
    the static corner load + ½ × the axle's downforce (not the spring force). Longitudinal: the brake (an angular
    impulse budget that can stop the wheel but never reverse it) acts on the wheel's spin first; what is left of
@@ -347,9 +351,25 @@ stands 10 m past the impact); a 2 m pillar shows the car.
 | per-wheel surface factor on drift torque, side force, damping | 1 | `FUN_009cede0` (mean of a per-wheel value); its writer was not traced |
 | ~~rolling resistance Crr 0.015~~ | removed 2026-10-06 | the game's comes from the surface: `5c2a9f18` × N per wheel plus the slide drag (`FUN_009d4a10`) |
 | wheel contact | one ray per wheel | the game ties each wheel record to the chassis with a constraint holding the wheel's ground contact points, iterated in sub-steps (`FUN_0093f200`); the tyre friction is one pass after them |
+| strut stop slack | 0 | the game allows `min(constraint +0x470, .bss 0x01186bf0)` of penetration (and at least the share `.bss 0x01186b10`) before the stop acts on the chassis; neither value read (needs a live read) |
+| `STOP_ITERATIONS` | 4 | passes of the strut-stop impulses per tick; the game iterates contacts in sub-steps of the island step (`FUN_0093f5a0`), count not read |
+| wheel ray start | one wheel radius above the mount | stands in for the game's wheel body colliding with the world: a ray from a mount already under the ground returns a zero normal (solid box) or nothing (trimesh back face), and the car stayed sunk on its body box |
 | wheel axle/side | by position | some specs label wheels the other way round (the Veyron's "Front" wheels are at the back) |
 
 ## Measurements
+
+Ground tests (2026-10-06, `--test landing|climb|jitter`; `MW_SUSP_TRACE=<file>` writes a line per tick from 10 m
+before the obstacle: height, sink below rest, vertical speed, pitch, body contact, each wheel's compression /
+travel + overtravel). `landing`: 130 km/h into a 5.7° kicker to a 3 m plateau that ends in a sheer drop;
+`climb`: 120 km/h into a 30° incline (`MW_TEST_SLOPE`, `MW_TEST_KMH`); both are trimesh ramps. `jitter`: 4 s at
+rest, then 4 s at a steady 100 km/h; peak-to-peak and dominant frequency of height, pitch, roll and their rates.
+911 before the strut stop: landing touches down at −8.6 m/s, all four wheels 0.34 m past full compression, the
+body box on the ground (sink 0.478 m) for the rest of the run; climb STUCK at 0 km/h with the same sink. After:
+landing sink 0.055 m (the bump travel), overtravel 0, settled 0.45 s after touchdown (test settle 2.72 s from
+10 m before the ramp); climb ends ok on the plateau (deepest 0.10 m, a one-tick 0.12 m overtravel on the rears at
+the kink, the body's nose touches the 30° slope and the car hops; settle 4.27 s). Jitter (unchanged by the fix):
+roll 0.45° p-p at 11.2 Hz at 100 km/h (roll rate 37°/s p-p), 0.06° at rest; it is the anti-roll bar's damper
+(without it 0.008°): see the research log. Accel / brake / corner unchanged (3.72 s, 38.5 m / 2.63 s, 2.57 g).
 
 Run on the flat test track with `mostrusted --drive <car> --test accel|brake|corner|handbrake|drift|donut` (logs
 `TEST RESULT`; tick-exact, so results repeat). `corner` holds 80 km/h and winds the steering in over 15 s;
