@@ -9,7 +9,7 @@ the one ported from FUN_005c89c0 / FUN_005c90a0 / FUN_005c76a0 (docs/decomp.md "
 """
 import sys, os, numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '.claude', 'tools'))
-sys.path.insert(0, os.path.expanduser('~/Documents/GitHub/mostrusted2012/.claude/tools'))
+sys.path.insert(0, os.environ.get('MW_TOOLS', ''))  # worktrees: MW_TOOLS=<main checkout>/.claude/tools
 from camload import load
 
 D = load(sys.argv[1]); which = sys.argv[2] if len(sys.argv) > 2 else 'after'
