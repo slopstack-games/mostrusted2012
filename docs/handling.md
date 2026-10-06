@@ -290,9 +290,32 @@ game's `FUN_005c90a0` picks it by the car's yaw rate in car space (thresholds in
 +0x14 / +0x20, rate-limited by +0x10 per update) blended with a speed factor and the mods profile's value 0x29.
 That row stays a guess until the helper is read to its end.
 
+**Round 6 (2026-10-06): what is from the code now and what is still ours.**
+- *From the code* (decomp.md "The followed frame"): the camera follows the car's whole orientation as three
+  Euler angles (pitch, yaw, roll; `FUN_005e14d0`, keeping the previous angles within 0.01 of a vertical
+  forward axis), each smoothed by `angle += (1 − retain) · wrap(target − angle)` with
+  `retain = 1 − clamp(K · dt · 60, 0, 1)` (`FUN_005c89c0` / `FUN_005c75b0`; this linear-in-dt form replaces
+  our `1 − exp(−rate · dt)`, identical at 60 Hz, stiffer at long frames); the pitch's retain is multiplied by
+  `min(|speed| · 0.02, 1)` (rigid at standstill, full lag from 50 m/s); the pitch stiffness eases 0.1 per
+  update to its default (`FUN_005c8e40`). The yaw-lag cap (0.6 rad) is removed: no clamp exists in the code
+  read. This replaces our "up vector eased at 2/s" slope following and the yaw ease.
+- *Still ours*: the yaw stiffness's value (the speed blend of `5a74d44d` 0.075 → `63fb2207` 0.05 between
+  `Low_speed` and `High_speed`, and `YawDriftSpring` while drifting): `FUN_005c90a0` computes it from
+  `lerp(lerp(y28, y18, f), mods(0x29), s)` with `f`, `mods(0x29)` and `s`'s reference speed unresolved, and
+  y18 = `High_speed` (100) as an endpoint does not make sense without them; its yaw-rate term is inert with
+  the shipped data (both thresholds 10). Also ours: the drift lean, the speed movement and acceleration
+  spring (`FUN_005d12b0` writes cam + 0x550..0x58c, not read), the data-driven roll and deceleration pitch
+  (`FUN_005c9380`, `FUN_005c7a80` not read), the FOV, the shakes and the collision push-in (no world query
+  found in the helpers read). The airborne branch of `FUN_005c8e40` (stiffness → 0.1 in the air, landing
+  shake) is not ported (the car exposes no airborne state).
+- *Model decisions with the game's address*: `K_PITCH_DEFAULT` = 2/60 per tick stands for the per-player
+  default at camera state + 0x70 (written outside the functions read; a live read: state pointer at
+  camera + 0x290), `K_ROLL` = 2/60 for cam + 0x6dc (no writer found). `.bss` values a live read must supply:
+  `_DAT_0110e8f0` (yaw spring's reference speed), `_DAT_01189f60` (fixed-yaw mode's yaw).
+
 Model decisions (not data): the FOV is vertical (as horizontal the chase view is far tighter than the
 original's; the bonnet and bumper views look very wide this way); acceleration is measured from the car's
-speed between physics ticks; the drift lean (`DRIFT_LEAN` 0.5 of the slip angle) and the yaw-lag cap (0.6 rad);
+speed between physics ticks; the drift lean (`DRIFT_LEAN` 0.5 of the slip angle);
 the high-speed shake's scale (0.012 m per unit of Amplitude, 1.4 Hz at Frequency 1); impact strength =
 approach speed / 10 m/s; camera collision (a ray from the look-at point to the eye, 0.25 m margin, at least
 0.8 m from the look-at point, eases back out at 3/s); look-around (right stick: ±110° yaw, −10…30° pitch, 20%
