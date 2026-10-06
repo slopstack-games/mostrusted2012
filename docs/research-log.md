@@ -126,6 +126,33 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ### 2026-10-06 (session 5): tyres: longitudinal constraint and the launch
 
+- Read `FUN_009c6f00` (the per-wheel tyre pass called from `FUN_009c75b0`), `FUN_009bc340`, `FUN_009bc0c0`,
+  `FUN_009bbff0` and the clutch's torque line in `FUN_009d7ac0` (decomp.md "Tyres", step 3). `FUN_009bc340` is
+  bookkeeping (a copy of the solve state and two contact anchors), not a force. `FUN_009bc0c0` is the
+  longitudinal constraint: a brake hold first (the brake budget left after the spin step, / r, against the
+  chassis alone, the spin untouched), then the slip that remains with the coupled mass 1/m + r²/I, both within
+  the one cap; only the coupled part turns the wheel. The drive torque never enters the tyre pass: the clutch
+  puts it into the driveline before. κ for the caps is taken from the spin after the clutch and the brake step.
+- Ours already matched the coupled part, the order (brake step → caps → longitudinal → lateral) and the κ
+  definition. It lacked the brake hold: a wheel the brake had stopped was spun back up by the coupled pass and
+  stopped again next tick, so braking moved through the wheel's inertia and the rears slipped. Ported
+  (drive.rs); the old "locked wheel stays at 0" special case now falls out of it.
+- `ref/xkr_launch` replay (XKR) with the current model, before → after: RMS speed 15.2 → 15.1 mph, yaw 7.8 →
+  7.8 °/s; during the braking the rear κ goes −0.14 / −0.26 → −0.03 / −0.02 (original +0.01 / −0.03) and the
+  front κ −0.07 / −0.02 → −0.11 / −0.15 (original −0.13 / −0.54). 911 tests unchanged: 0–100 km/h 3.72 s,
+  100–0 km/h 38.5 m / 2.63 s, skidpad 2.57 g.
+- The "revs hang at ~6400 after the 1→2 shift, κ ≈ 0.6 in 2nd" no longer reproduces with the merged model: ours
+  now reads κ 0.42 / 0.33 in 1st, 0.49 just after the shift and 0 from 3.5 s (original 0.10–0.12 in 1st, 0.39
+  after the shift, 0 from 3.75 s). What is left: ours spins more in 1st and reaches the limiter (6750 against
+  6120 rpm), and it leaves ~0.3 s early (launch timing, 3612 against 1568 rpm at 1.5 s).
+- Open: the clutch torque is multiplied by a `.bss` vector at 0x011873e0 (one lane per entry; no writer in the
+  dump), taken as 1. Below 1 the clutch is softer, the engine runs further above the wheels and less torque
+  reaches them in 1st: the first live read to make. The relative velocity in `FUN_009bc0c0` also subtracts
+  a `.bss` scalar 0x01186b74 × an input lane from its y component (probably gravity × dt; not modelled).
+- The +0x210 blend-input scale: two leads, not followed to the end (decomp.md "Tyres" → Unknown): the
+  constraint builder `FUN_009c24b0` zeroes it, and `FUN_009a56b0` (from `FUN_0095b100`) writes a vector there
+  on some object with a flag at +0x4aa. If only the builder writes it, the blends get 0 (pure curves), not 1.
+
 _(to be filled in)_
 
 ### 2026-10-06 (session 5): drivetrain: standstill, downshift gate, launch delay
