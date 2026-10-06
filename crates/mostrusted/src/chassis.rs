@@ -26,6 +26,11 @@ pub struct ChassisParams {
     /// `Lift_coefficient` × `ca386558` (negative = downforce), applied at body z = `b821de16`.
     pub lift: f32,
     pub lift_z: f32,
+    /// `Lift_coefficient` alone: the downforce the tyres feel is |this| × |v_forward| |v| (`FUN_009cfaf0`), not
+    /// the body force (which has the extra `ca386558` factor). Split between the axles at body z
+    /// `downforce_z[0]` (`b821de16`), moving to `downforce_z[1]` (`d21c15d0`) with the brake pressure.
+    pub lift_coefficient: f32,
+    pub downforce_z: [f32; 2],
     /// `In_air_gravity_coefficient`: total gravity while a wheel is off the ground.
     pub in_air_gravity: f32,
     /// Anti-roll bars (front, rear): stiffness (N m per rad of roll) and damping ratio.
@@ -56,6 +61,8 @@ impl ChassisParams {
             overspeed_drag: a("b8786ac2", 1.5),
             lift: a("Lift_coefficient", -1.0) * a("ca386558", 0.5),
             lift_z: a("b821de16", -0.3),
+            lift_coefficient: a("Lift_coefficient", -1.0),
+            downforce_z: [a("b821de16", -0.3), a("d21c15d0", 0.0)],
             in_air_gravity: h.in_air_gravity.unwrap_or(1.0).clamp(1.0, 3.0),
             anti_roll: [b("782f05c1", 1200.0) * ARB_PER_DEGREE, b("2bb0f6a0", 1200.0) * ARB_PER_DEGREE],
             roll_damping: [b("Front_roll_damping", 1.2), b("Rear_roll_damping", 1.2)],
@@ -86,6 +93,21 @@ impl ChassisParams {
     pub fn lift(&self, rot: Quat, velocity: Vec3, centre_of_mass: Vec3) -> (f32, Vec3) {
         let forward = velocity.dot(rot * Vec3::Z).abs();
         (self.lift * forward * velocity.length(), Vec3::new(0.0, centre_of_mass.y, self.lift_z))
+    }
+
+    /// The downforce the tyres feel on each axle (N; front, rear), which the game adds (half per wheel) to the
+    /// static wheel loads its grip caps use (`FUN_009cfaf0`, `FUN_00905910`; docs/decomp.md "Tyres"). The total
+    /// is −`Lift_coefficient` × |v_forward| × |v| (none when the car makes lift); it is shared between the axles
+    /// by where its point (body z) sits between them, `b821de16`, moving to `d21c15d0` as the brake pressure
+    /// `brake_ramp` (0..1) builds. Checked on the XKR reference run: 1.00 × v² in all, 42.1 % on the front axle
+    /// on the throttle, 47.6 % under full brakes. `z_front` / `z_rear` are the axles' body-space z.
+    pub fn axle_downforce(&self, rot: Quat, velocity: Vec3, brake_ramp: f32, z_front: f32, z_rear: f32) -> [f32; 2] {
+        let forward = velocity.dot(rot * Vec3::Z).abs();
+        let total = (-self.lift_coefficient * forward * velocity.length()).max(0.0);
+        let [z_on, z_brake] = self.downforce_z;
+        let z = z_on + (z_brake - z_on) * brake_ramp.clamp(0.0, 1.0);
+        let front = ((z - z_rear) / (z_front - z_rear).max(0.1)).clamp(0.0, 1.0);
+        [total * front, total * (1.0 - front)]
     }
 
     /// Per-axis multipliers (pitch about X, yaw about Y, roll about Z, body space) for the angular velocity

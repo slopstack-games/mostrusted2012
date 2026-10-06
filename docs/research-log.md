@@ -124,6 +124,50 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-06: the grip caps traced to the end; N is the static load; surfaces; no calibrated grip scale
+
+- **No hidden factor.** `FUN_009c5da0`'s caps are μ × N × camber × (surface grip × axle `*_scale` × the per-wheel
+  grip multipliers); `FUN_00905910` builds every input per wheel each tick. The multipliers (wheel +0x140) are 1
+  outside a timed gameplay effect (`FUN_00900120`, lanes 0 / 1) and a post-event ramp (`FUN_009b2bb0`, lanes 2 / 3);
+  the axle scales come from `Tyres` (`FUN_009d4ce0`); the surface grip is `Surface_Grip` blended by the car's
+  `VehicleSurfaceProfile` link (`FUN_009cec40`), 1 on asphalt for every car. `LAT_GRIP` / `LONG_GRIP` (0.4 /
+  0.7, fitted to real-world 911 figures) are gone. Details in decomp.md "Tyres".
+- **N is not the spring force**: static corner load + ½ × the axle's downforce share (Tyre `5f032abb` would blend
+  in the strut force; 0 on all 197 cars). `ref/xkr_launch` shows it: `w*_load_in` is 4576 / 4596 / 4071 / 4051 N
+  throughout (= 1762 kg × g by the centre of mass), `w*_N` adds |`Lift_coefficient`| × |v_fwd| |v| (1.00 × v² in
+  all) split 42.1 % front at body z `b821de16` and 47.6 % at `d21c15d0` with the brake ramp at 1. The body's lift
+  force keeps the extra `ca386558` factor; the tyres do not. The lateral curve's exponent is × static / N.
+- **The reference run agrees with the literal scale**: braking with only the fronts biting (κ ≈ −0.2) the XKR
+  slows at 0.95–1.0 g = 1.74 × front static load / weight; sliding at 20–30° with locked fronts, a steady 1.95 g.
+- **Its κ field is the post-solve slip**: the original's rear tyres read κ ≈ 0 while pulling 0.6 g in 2nd
+  (the clutch slips instead); ours, read after the tyre pass, does the same (0.40 vs 0.42 at the 1→2 shift, 0
+  from 3.5 s); before the pass ours reads 0.2–0.6. Telemetry now records the post-pass slip ratio. Tested with the
+  drivetrain branch (04533ea) cherry-picked: 2nd-gear revs 4913 / 5278 / 5975 vs the original's 4831 / 5101 /
+  5776 at 3.5 / 4 / 4.5 s; speed ~2 mph ahead; 60 mph 0.26 s early; 1st gear still spins more than the original
+  (post-pass κ 0.7 vs 0.1 at 2 s).
+- **Solver order and mass** (`FUN_009289f0` → `FUN_009c75b0`): one pass per tick per wheel, wheel after wheel,
+  after the contact iterations; brake budget on the wheel's spin first, then the tyre; the force goes into the
+  **chassis** (the 0x100-byte body records; the wheels are compact 0x80-byte spin records) with the chassis's
+  effective mass at the contact (`FUN_009ca610`). Ported: brake-then-one-pass (the 6 sequential passes are gone),
+  impulses applied wheel by wheel so each sees the velocity the previous left, chassis effective mass.
+- **Surfaces and rolling resistance** (`FUN_009d8bd0`, `FUN_0054d750`, `FUN_009d4a10`): each wheel's surface
+  (collision tag) → `SurfacePhysics` `RoadOverrides`: `Surface_Grip`, `5c2a9f18` (rolling, 0.01 on asphalt) and
+  `7585f9cb` (slide-drag scale); the car's link adds |mph| × a drag ramping with the slip angle (0 → 4 N per mph
+  over 15° on asphalt). Ported per wheel (`WheelSurface`), replacing our Crr 0.015; the flat test track counts as
+  the game's `Default_surface` (rolling 0.01, grip 1, no slide drag). Not ported: the fade when the surface changes.
+- **Side effects of the true grip**: the 911 and Veyron hold 2.6 g on the skidpad, the scripted brake-tap drift no
+  longer reaches the 7° rear slip (results in handling.md), and braking below ~30 km/h tails off exponentially
+  (the tyre pass is no longer saturated); the game's standstill hold (`BrakeBehaviour.99407bbc` = 15 m/s²,
+  `FUN_009b1180`, scaled by vehicle +0x1aa8 whose meaning is unknown) is what should finish a stop: not ported.
+- **Standstill**: the slip angle's floor in the game is a physics epsilon (`DAT_01188270`, compared against
+  throughout the solver), so slip angles at rest are noise in both games; with `Minimum_speed_to_enter_drift` 0
+  (XKR) our drift state now flickers on for a tick at 0 mph in the replay. The gate belongs in drift.rs (the
+  original's bodies come to rest exactly). Our rolling resistance is clamped to what stops the contact (ours).
+- **Open**: the tyre constraint's +0x210 scale on the slip-blend inputs (no writer in the dump; if it is large,
+  any brake or wheelspin collapses the lateral grip, which is how a brake tap could start a drift); which state
+  moves the downforce point to `35d32b7d`; vehicle +0x1aa8; the strut travel (`WheelSuspensionConstraint`
+  `7fc0dc41`?) and the rebound damper slot (no reader found).
+
 ### 2026-10-05: `mwtool tune`; present and input paths of the original
 
 - Read live through the tuning menu (XKR, car park, idle): the player car at table index 48; idle 1012 rpm;

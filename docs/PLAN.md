@@ -188,17 +188,23 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    from their `PhysicalDefinition` data (`props.rs`, `--test smash`, 2026-10-04). **Not usable yet**: opt-in
    (`--prop-physics`) because the car wedges against knocked lamps / crash barrels and stops dead (research
    log). Still open: that, the game's smash rules (`CollisionResponses_*`), compound parts as separate pieces,
-   surface grip in the tyre model, a clean perf A/B.
+   a clean perf A/B. Surface grip, rolling resistance and slide drag per wheel are in the tyre model since
+   2026-10-06 (the fade on a surface change is not).
 2. `[~]` **Vehicle physics**: since 2026-10-04 (session 3) the model follows the game's own code, read from the
    user's decompiled dump ([decomp.md](decomp.md), [handling.md](handling.md) "The model"): 60 Hz tick; engine
    inertia, friction curve, clutch, shift on rpm and speed, top-gear lock (`drivetrain.rs`); per-wheel spin with
    brakes and axle LSDs; tyres as capped velocity constraints with the game's curves and slip blends, no ABS /
    TC (`tyre.rs`); spring from sag, asymmetric dampers, anti-roll bars, per-axis drag and lift, in-air gravity and
    take-off damping (`chassis.rs`); the game's steering rules and drift state machine (`drift.rs`).
-   `--test accel|brake|corner|handbrake|drift|donut` measures it on a flat track, tick-exact. Still open: the
-   absolute grip scale (model 0.4 / 0.7) and the other missing `.bss` constants (memscan, or the original memory
-   dump), the handbrake lock condition, the steering neutral offset, wheels as bodies instead of rays, and
-   calibration against the original game. **User review (2026-10-04): it still does not drive like the
+   `--test accel|brake|corner|handbrake|drift|donut` measures it on a flat track, tick-exact. **Grip scale
+   settled from the code (2026-10-06)**: the caps are μ × N × data scales × surface grip, N = static corner load
+   + ½ the axle's downforce (not the spring force; confirmed on `ref/xkr_launch`), solved once per wheel per tick
+   after the brake, wheel by wheel on the chassis's effective mass; the calibrated 0.4 / 0.7 and our Crr 0.015
+   are gone (decomp.md "Tyres"). Consequences to check against the original: 2.6 g skidpads, no brake-tap drift
+   from the scripted inputs, a slow low-speed stop (the standstill hold `99407bbc` is not ported). Still open:
+   the tyre constraint's +0x210 blend-input scale (probe), the standstill hold's input (vehicle +0x1aa8), strut
+   travel and damper slots, the other missing `.bss` constants, the handbrake lock condition, the steering
+   neutral offset, and calibration against the original game. **User review (2026-10-04): it still does not drive like the
    original.** Next: record the original with `handling.watch` (corner, braking, launch, handbrake turn,
    brake-tap drift, donut, slides) and fit against `--test` runs with the same inputs; resolve the drift side
    force (with the game's cap of 5 ours reaches ~3 g, so its size or direction is misread).
@@ -211,7 +217,8 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    `[ ]` Tier 1 `crates/mw-probe` logging hooks: the detour installer is **not written by the assistant**
    (its safety system stopped it twice, the second time on 2026-10-05 when asked to try again for an in-game
    overlay; probe.md "Status"); the user decides how that step is done →
-   `[ ]` first measurements: N and caps in a steady corner, side force in a brake-tap drift, handbrake lock →
+   `[ ]` first measurements: the caps and the +0x210 blend scale in a steady corner (N is settled: static +
+   downforce share, 2026-10-06), side force in a brake-tap drift, handbrake lock →
    `[ ]` Tier 2: handling maths into a Bevy-free `mw-handling` crate, the lateral curve as the first
    in-place replacement validated with `orig run` + `mwtool compare`.
 3. `[~]` Cameras from each car's `VehicleCameraContainer` (`camera.rs`, 2026-10-04): chase, bonnet and bumper

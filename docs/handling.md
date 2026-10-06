@@ -51,13 +51,17 @@ One physics tick is 1/60 s (`Time::<Fixed>` at 60 Hz, as the game). Per tick, in
    the wheel speeds within a ratio of 1 / c.
 5. **Suspension**: a ray per wheel. Spring k = W / sag (W = static corner load, sag = `41543f85`); damper
    c = 2 `Damping_Ratio` √(k W / g) in bump and `0c5f89b3` × c in rebound; bump travel 0.06 m above rest (model,
-   from the 911's strut); anti-roll bars per axle (`Body_movement` `782f05c1` / `2bb0f6a0`, read as N m per
-   degree; damping `Front_` / `Rear_roll_damping` × critical against the roll inertia).
-6. **Tyres** (`tyre.rs`): a velocity constraint, capped. Longitudinal: the tread is pulled to the road speed
-   (wheel inertia against the corner mass) within ±μx × load, solved together with the brake (an angular
-   impulse budget that can stop the wheel but never reverse it) in 6 sequential-impulse passes. Lateral: the
-   force that stops the sideways slide, within ±μy × load. The tyre forces do not roll the body (the torque
-   about the car's long axis is dropped, as in the game).
+   from the 911's strut); anti-roll bars per axle (`Body_movement` `782f05c1` / `2bb0f6a0` × 60, read as N m per
+   degree; damping `Front_` / `Rear_roll_damping` × critical against the roll inertia). The spring force holds
+   the body up; it does not set the tyre grip.
+6. **Tyres** (`tyre.rs`): a velocity constraint, capped, solved once per tick as the game does. Grip load N =
+   the static corner load + ½ × the axle's downforce (not the spring force). Longitudinal: the brake (an angular
+   impulse budget that can stop the wheel but never reverse it) acts on the wheel's spin first, then one pass
+   pulls the tread to the road speed (wheel inertia against the corner mass) within ±μx × N × factors. Lateral:
+   the force that stops the sideways slide, within ±μy × N × factors. Factors: the axle's data scale, the
+   surface grip under the wheel (`Surface_Grip` blended by the car's surface link) and camber. Each wheel also
+   gets the surface's rolling resistance and slide drag. The tyre forces do not roll the body (the torque about
+   the car's long axis is dropped, as in the game).
 7. **Drift** (`drift.rs`, below), then aero, lift, in-air gravity and take-off damping (`chassis.rs`).
 
 ### Tyres
@@ -73,9 +77,15 @@ One physics tick is 1/60 s (`Time::<Fixed>` at 60 Hz, as the game). Per tick, in
   (`89f75d1a` start, `c35e15f1` full, `23a3702c` exponent, `24269da0` max); longitudinal by α in degrees through
   `Brake_` / `Traction_Long_Slip_Factors` (`e0e7e515` start, `bf1bc91d` full, `1d0b87f6` exponent, `d9d33254`
   max). Brake curves when κ < 0.
-- Caps = μ × suspension load × `*_lateral_scale` / `*_longitudinal_scale` × camber factor (grip falls from 1 at
-  `e84632d1`° of camber to `8dd08eeb` at `d699cd4c`°) × a grip scale (model, below). The driven wheels' cap is
-  reduced by the burnout factor.
+- Caps = μ × N × `*_lateral_scale` / `*_longitudinal_scale` × surface grip × camber factor (grip falls from 1
+  at `e84632d1`° of camber to `8dd08eeb` at `d699cd4c`°); no hidden scale (docs/decomp.md "Tyres", 2026-10-06).
+  N = static corner load + ½ × the axle's share of −`Lift_coefficient` × |v_forward| |v|; the lateral curve's
+  exponent is multiplied by static load / N. The driven wheels' longitudinal cap is reduced by the burnout
+  factor. No caps where the ground normal's up component is under 0.5.
+- Surface (per wheel, from the collision tag under it; the flat test track counts as the game's
+  `Default_surface`): grip = `Surface_Grip` blended towards the car's `VehicleSurfaceProfile` link grip by its
+  per-axle lateral / longitudinal factors (1 on asphalt for every car); resistance = `5c2a9f18` × N (0.01 on
+  asphalt) + |mph| × `7585f9cb` × the link's drag ramp over the slip angle (asphalt: up to 4 N per mph at 15°).
 - Not read by the game: `Available_grip`, `Grip_factor`, `Sliding_grip_factor`, `f5c703c9`; `AligningTorque` is
   null on every car; the slip-angle relaxation (`7ab2a90a`, 1.8 m) is disabled by `c5cf33ea` = 0.
 
@@ -130,7 +140,7 @@ shortfall per tick towards the entry speed (at most `35e937b8` mph ahead). Donut
 ### Aerodynamics and airborne (`chassis.rs`)
 
 Drag per body axis F = −½ K C |v| v with C = (`Side_drag_coefficient`, `Top_drag_coefficient`,
-`Front_drag_coefficient`), K = 1 (model; it gives the 911 311 km/h against its 304 km/h data top speed); above
+`Front_drag_coefficient`), K = 1.2 (read from the running game, `.bss` 0x011872a0); above
 `f1538c51` mph the front coefficient ramps to `b8786ac2` at `4aadb133` mph. Lift = `Lift_coefficient` ×
 `ca386558` × |v_forward| |v| along the body's up axis at z = `b821de16` (−0.5 v² N on the 911: downforce).
 `Down_force` / `Down_force_lift_coefficient` are not read by the game. Once a wheel leaves the ground gravity
@@ -223,19 +233,25 @@ car's in a 19.7° drift (half the slip angle plus 6° of spring lag), the eye 1.
 
 | Constant | Value | Why |
 |----------|-------|-----|
-| `LAT_GRIP` / `LONG_GRIP` | 0.4 / 0.7 | the game multiplies μ × load by per-wheel factors (separate per direction) not in the data; calibrated on the 911: 1.0 g skidpad, 0–100 km/h 3.9 s, 100–0 km/h ~40 m. `MW_LONG_GRIP` overrides the second |
+| ~~`LAT_GRIP` / `LONG_GRIP`~~ | removed 2026-10-06 | the code's caps are μ × N × data axle scale × surface grip × camber × gameplay grip multipliers (1 outside timed effects): `FUN_009c5da0`, `FUN_00905910`, `FUN_009d8bd0` (decomp.md "Tyres"); N and the downforce share confirmed on `ref/xkr_launch` |
+| tyre effective mass | the corner's sprung mass, all four wheels from the same velocity | the game uses the chassis's effective mass at the contact (`FUN_009ca610`) and solves the wheels one after the other, each seeing the velocity the previous left (`FUN_009289f0`); same steady state, different transients |
+| blend-input scale | 1 | the pure → slip blends take κ and α × the tyre constraint's +0x210, whose writer is not in the dump; measure with the probe |
+| surface-change fade | none (instant) | the game fades the grip of the surface just left over a time and uses the lower of old and new (`FUN_009ceb00`, `FUN_009d4460`); not ported |
+| resistance at rest | clamped to what stops the contact | ours: the game applies rolling resistance in full against the sign of the motion (`FUN_009d4a10`), which flips every tick at a standstill |
+| test-track surface | `Surfaces.Default_surface` | ours: the flat track has no collision tags; the game's default surface (grip 1, rolling 0.01, no slide drag) |
 | `CLUTCH_CAP` | 1.6 × peak torque | the game's clutch torque cap is a missing constant |
 | shift phases | 25 / 50 / 25 % | declutch / neutral / clutch-in fractions (constants missing) |
 | downshift hysteresis | 5 mph | missing constant |
 | idle governor | below idle + 150 rpm, up to 0.35 throttle | missing constants |
 | `BURNOUT_MPH` | 20 | burnout speed scale (missing constant) |
-| `DRAG_K` | 1 | drag scale (missing constant; fits the top speed) |
-| `BUMP_TRAVEL` | 0.06 m | from the 911's strut geometry; not read per car |
-| anti-roll unit | N m per degree | inferred; the scale constant is missing |
+| `DRAG_K` | 1.2 | read from the running game (`.bss` 0x011872a0); was 1 |
+| `BUMP_TRAVEL` | 0.06 m | from the 911's strut geometry; not read per car. Searched for the strut joint's builder (`WheelSuspensionConstraint` readers in the vehicle build, `009A`–`009D`): not found; `7fc0dc41` (0.09 / 0.08 m on the 911) is the likeliest field |
+| damper slots | `0c5f89b3` × c in rebound | the setup stores c and `0c5f89b3` × c (spring +0x2c / +0x18, `FUN_009b29b0`); the function applying them was not found |
+| anti-roll unit | N m per degree, scale 60 | the scale is read live (`.bss` 0x01185d70); the unit is inferred |
 | drift time base | 60 Hz | damping fractions are per tick; the game ticks at 60 Hz |
 | handbrake | locks the rear wheels | inferred (above) |
-| rolling resistance | Crr 0.015 | ours |
-| wheel contact | one ray per wheel | the game's wheels are cylinder bodies on a strut |
+| ~~rolling resistance Crr 0.015~~ | removed 2026-10-06 | the game's comes from the surface: `5c2a9f18` × N per wheel plus the slide drag (`FUN_009d4a10`) |
+| wheel contact | one ray per wheel | the game ties each wheel record to the chassis with a constraint holding the wheel's ground contact points, iterated in sub-steps (`FUN_0093f200`); the tyre friction is one pass after them |
 | wheel axle/side | by position | some specs label wheels the other way round (the Veyron's "Front" wheels are at the back) |
 
 ## Measurements
@@ -255,6 +271,22 @@ With the model from the game's code (2026-10-04):
 | Bugatti Veyron SS | 3.78 s | 420 km/h (data 431) | 42.2 m | 1.00 g | 11° held 3.5 s | 9.5° |
 | McLaren MP4-12C | 3.18 s | 346 km/h | 35.4 m | 0.91 g | 12° held 3.9 s | 14.3° |
 | Ford F-150 Raptor | 7.75 s | 273 km/h | 50.8 m | (drifts on the skidpad: 2 g with the side force) | no drift (peak 8°) | 17.8° |
+
+With the code's grip caps (2026-10-06: μ × static load + downforce share, surfaces, brake-then-one-pass, wheel by
+wheel on the chassis's effective mass; no calibrated scale):
+
+| Car | 0–100 km/h | top speed | 100–0 km/h | skidpad | drift test | handbrake |
+|-----|-----------|-----------|------------|---------|------------|-----------|
+| Porsche 911 Carrera S | 3.60 s | 308 km/h | 37.1 m, 3.07 s | 2.57 g | no drift (peak rear slip 4.4°) | 3.7° |
+| Bugatti Veyron SS | 2.37 s | 421 km/h | 30.4 m | 2.58 g | no drift (6.2°) | 4.4° |
+| Ford F-150 Raptor | 6.70 s | 269 km/h | 37.6 m | 2.04 g | no drift (2.6°) | 3.7° |
+
+Before (same day, calibrated 0.4 / 0.7, Crr 0.015): 911 3.87 s / 40.1 m / 1.02 g / 24.6° drift; Veyron 3.75 s /
+42.4 m / 1.00 g; F-150 7.37 s / 51.7 m / 2.01 g (drifting on the skidpad). The scripted brake-tap drift no longer
+reaches the entry angle with full grip; whether its inputs drift the original needs a recording (and the +0x210
+blend scale, decomp.md "Tyres"). XKR reference replay (`ref/xkr_launch`): launch within 1–3 mph of the original
+(was 1–3 mph behind; with the drivetrain branch 04533ea the 2nd-gear revs match too); the braking half of that run
+hit something in the original, so its RMS (speed 10.1 mph) says little.
 
 Real-world references: 911 Carrera S PDK ≈ 3.9–4.3 s / 304 km/h; Veyron SS ≈ 2.5 s / 431 km/h; MP4-12C ≈ 3.3 s.
 The Veyron's launch is traction-limited at the calibrated grip (its AWD split is 0.37 front).

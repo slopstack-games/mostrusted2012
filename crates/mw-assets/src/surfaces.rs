@@ -33,9 +33,24 @@ pub struct SurfaceInfo {
     pub sounds: Option<ResourceId>,
     pub vfx: Option<ResourceId>,
     pub collision_sounds: Option<ResourceId>,
+    /// The `SurfacePhysics` unique id (`655d3f5f`) of the normal contact: what a car's
+    /// `VehicleSurfaceProfile` links name (`mw_assets::handling::SurfaceLink`).
+    pub physics_uid: Option<u32>,
+    /// `RoadOverrides` `5c2a9f18`: rolling resistance per newton of tyre load (0.01 on asphalt). The game
+    /// pushes each wheel back with this × its load (`FUN_009d4a10`, docs/decomp.md "Tyres").
+    pub rolling: Option<f32>,
+    /// `RoadOverrides` `7585f9cb`: scale of the speed- and slip-dependent drag from the car's surface link
+    /// (1 on asphalt, 0 on the default surface).
+    pub slide_drag: Option<f32>,
 }
 
 const DRY: u32 = 0xf395b019;
+/// `CgsCore.UniqueId` field present in every GeneSys object.
+const UNIQUE_ID: u32 = 0x655d3f5f;
+/// `SurfacePhysics.TyreSpecificOverrides`: rolling resistance coefficient and slide-drag scale (unnamed;
+/// read by `FUN_0054d750`, used by `FUN_009d4a10`).
+const ROLLING: u32 = 0x5c2a9f18;
+const SLIDE_DRAG: u32 = 0x7585f9cb;
 
 fn get<'a>(o: &'a Object, name: &str) -> Option<&'a Value> {
     o.get(field_hash(name))
@@ -110,6 +125,13 @@ impl AssetStore {
                 sounds: handle(normal.and_then(|n| get(n, "Surface_Sounds"))),
                 vfx: handle(dry.and_then(|d| get(d, "Surface_vfx"))),
                 collision_sounds: handle(get(&s, "Collision_Sounds")),
+                physics_uid: physics.as_ref().and_then(|p| match p.get(UNIQUE_ID)? {
+                    Value::UInt(v) => u32::try_from(*v).ok(),
+                    Value::Int(v) => u32::try_from(*v).ok(),
+                    _ => None,
+                }),
+                rolling: float(road.and_then(|r| r.get(ROLLING))),
+                slide_drag: float(road.and_then(|r| r.get(SLIDE_DRAG))),
             });
         }
         Ok(out)
