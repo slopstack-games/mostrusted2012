@@ -124,6 +124,16 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-06 (session 5, round 3): nitrous and the upgrade profile
+
+- `FUN_009d2aa0` decoded (decomp.md "Nitrous and upgrades"): mode 0 is a torque-multiplier lerp to
+  `Engine.Nitrous_strength.e9de413e` (1.9 on the 911); modes 1 / 3 (punch, jump) add a forward force × mass
+  faded from `Punch/Jump` fade-start mph to vehicle +0x7e8. Ported as `mw_handling::nitrous` with the gearbox's
+  nitrous rules; `--test nitrous` on the 911: 0–100 3.47 s (3.72 without), 0–200 10.33 s (11.05), quarter
+  11.25 s (11.58).
+- Open: the multiplier's reader (assumed engine torque), the tank code and its refill rules (the data is
+  `NitrousParameters`, five variants per car), `.bss` 0x0118a018 (punch / jump force scale), vehicle +0x30e8.
+
 ### 2026-10-06 (session 5, round 2): traffic rules in the code
 
 Details and formulas are in decomp.md "Traffic rules (session 5, round 2)".

@@ -5,4 +5,5 @@
 
 pub mod drift;
 pub mod drivetrain;
+pub mod nitrous;
 pub mod tyre;

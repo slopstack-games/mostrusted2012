@@ -62,6 +62,8 @@ pub mod defaults {
     pub const BRAKE: &[Control] = &[Key(K::KeyZ), Trigger(B::LeftTrigger2, A::LeftZ)];
     /// HANDBRAKE (4): Space; X (pad slot 18).
     pub const HANDBRAKE: &[Control] = &[Key(K::Space), Button(B::West)];
+    /// NITROUS (32): Left Shift; A (decomp.md, "Input").
+    pub const NITROUS: &[Control] = &[Key(K::ShiftLeft), Button(B::South)];
     /// CHANGECAMERA (6): C; LB (pad slot 12).
     pub const CHANGE_CAMERA: &[Control] = &[Key(K::KeyC), Button(B::LeftTrigger)];
     /// ROTATECAMERALEFT (7): Delete; right stick X, max −1.

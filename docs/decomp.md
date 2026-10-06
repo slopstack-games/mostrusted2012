@@ -1021,3 +1021,30 @@ Not traced: the controller itself (`FUN_00617d00`), the swerve and near-miss rea
 stop-line handling (junction records are reached through the hull's `+0x28` pointer; `FUN_0060c9f0` walks a
 `u8` count at junction `+0x35` with entries near `+0x56`), the switch to a physical car (`FUN_005fcbd0` →
 `FUN_005f7cf0`) and the 150 / 24-slot ranges.
+
+## Nitrous and upgrades
+
+- **`FUN_009d2aa0`** (update step 5, called from `FUN_00904260` with the controls' nitrous lanes +0x1c20..+0x1c2c
+  and the mode +0x1c60, both written by `FUN_009aacc0` from the player's control record (`FUN_005734c0(i)` +0x1c
+  amount, +0x33 mode) in `FUN_0091c5c0`). `this` holds [0] the engine owner (handling resource at +0x240/+0x244;
+  `Engine` → `Nitrous_strength` at engine +0x118) and [1] the vehicle. It resets a four-lane multiplier at
+  `this`+0x10 to 1 (`.rdata` 0x01026060 = 1,1,1,1), then:
+  - vehicle +0x30e8 set (a special state, not identified): multiplier = `Engine.d00887ca` (engine +0xf0, 1 on the
+    911); with amount > 0 and a wheel down (`FUN_008f5350`: not all four wheel flags at wheel +0xa30, stride 0x1d0,
+    clear) a forward force clamp(R+0x14 − mph, 0, 10 (`.rdata` 0x010261b0)) × mass (vehicle +0x10 → +0x7c) ×
+    amount, R = the resource at vehicle +0x7c4/+0x7c8.
+  - mode 0: multiplier = lerp(1, `Nitrous_strength.e9de413e` (+0x3c), amount) per lane.
+  - mode 1 (punch): multiplier = the strength; with a wheel down a forward force (1 − clamp((mph − `Punch.5cb7c5aa`)
+    / (vehicle +0x7e8 − `Punch.5cb7c5aa`), 0, 1)) × amount × `Punch.0798d257` × `.bss` 0x0118a018 × mass.
+  - mode 3 (jump): airborne and not in state +0x1774: the same force with `Jump.0798d257` / `Jump.b959e02f`;
+    multiplier lerp(1, `Jump.e9de413e`, amount).
+  Forces go through `FUN_009076a0` (body-frame vector rotated by the body matrix, added to the force
+  accumulator at body +0x70); `FUN_00907840` finishes. 911 values: strength 1.9, Punch {40, 100 mph}, Jump {20,
+  1.6, 100 mph}.
+- The tank is gameplay code (the HUD's `NitrousViewModel.NitrousAmount` / `NitrousHighest`), not traced. Its data
+  is `Genesys.Gen.NitrousParameters` (in each vehicle bundle, several variants): `NitrousUsage` {`053c5a6a` burn
+  16 / 18 / 24, `845c3879` amount 1, `7ebf362a` 0.1}, `Restrictions` {`c441f502` 1 or 100, `ddfca712` 300,
+  `d5b487c7` 300}, and the refill events, each {Message (Language id), `4d907940` enabled, `d629c55f`, `d63cff99`,
+  ...}: TrafficOncoming, Drifting (`TimeDrifting` 0.75), NearMiss ×2, CatchingAir, CrashEscape, HighSpeed,
+  MinSpeed, TakingShortcut, FatalHit, Slipstreaming, HittingAnotherCompetitor, Donutting, Balancing; the
+  `PunchUsage` / `JumpUsage` / `SpeedbreakerUsage` blocks carry an `Enabled` flag (the nitrous upgrade's modes).

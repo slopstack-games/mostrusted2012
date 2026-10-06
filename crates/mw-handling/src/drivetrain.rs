@@ -250,6 +250,10 @@ pub struct Drivetrain {
     seed: u32,
     /// The current gear's upshift rpm with its random offset (gearbox +0x130), for the launch clutch.
     up_rpm: f32,
+    /// Nitrous (nitrous.rs), set by the caller each tick: the engine torque multiplier (`FUN_009d2aa0`'s
+    /// component +0x10) and whether it burns (`FUN_009d4c20`: upshift on rpm alone, top gear unlocked).
+    pub nitrous_scale: f32,
+    pub nitrous: bool,
 }
 
 impl Drivetrain {
@@ -267,6 +271,8 @@ impl Drivetrain {
             lag: 0.0,
             noise_time: 0.0,
             seed: 0x9e37,
+            nitrous_scale: 1.0,
+            nitrous: false,
             up_rpm: p.max_rpm,
         };
         d.set_up_rpm(p);
@@ -330,7 +336,7 @@ impl Drivetrain {
         let mut net = if down {
             -p.engine_resistance * p.engine_inertia * BLIP_GAIN
         } else {
-            base + effective * (p.full_torque(self.rpm) - base)
+            base + effective * (p.full_torque(self.rpm) * self.nitrous_scale - base)
         };
         // The game clamps the revs at `Max_RPM` after the torque is known (so this tick's torque still reaches
         // the clutch), then adds the noise sampled at rpm / 120 lattice points per second.
@@ -392,8 +398,9 @@ impl Drivetrain {
             return throttle;
         }
         let g = self.gear;
-        // Upshift on rpm and speed (the speed condition is waived with nitrous, not modelled).
-        if g < p.gears as i32 && self.rpm > p.upshift_rpm(g) && mph > p.upshift_mph(g) {
+        // Upshift on rpm and speed; nitrous waives the speed condition and unlocks the top gear (FUN_009d4c20).
+        let top = if self.nitrous { p.ratios.len() as i32 } else { p.gears as i32 };
+        if g < top && self.rpm > p.upshift_rpm(g) && (mph > p.upshift_mph(g) || self.nitrous) {
             let target = self.upshift_target(p, mph);
             self.start_shift(p, target, true);
             return throttle;

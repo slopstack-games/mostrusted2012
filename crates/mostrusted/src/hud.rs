@@ -66,8 +66,9 @@ pub struct HudState {
     /// Distance driven (m).
     pub odometer: f64,
     last_position: Option<Vec3>,
-    /// 0–1. Nitrous isn't simulated yet: the gauge shows a full tank.
+    /// Nitrous tank fill 0–1 and whether it burns (the driven car's `mw_handling::nitrous::Nitrous`).
     pub nitrous: f32,
+    pub using_nitrous: bool,
 }
 
 struct HudAssets {
@@ -200,8 +201,8 @@ fn toggle_debug(
     }
 }
 
-fn track_car(mut state: ResMut<HudState>, car: Query<&GlobalTransform, With<crate::drive::Car>>) {
-    let Ok(t) = car.single() else {
+fn track_car(mut state: ResMut<HudState>, car: Query<(&GlobalTransform, &crate::drive::Car)>) {
+    let Ok((t, car)) = car.single() else {
         state.last_position = None;
         return;
     };
@@ -214,7 +215,8 @@ fn track_car(mut state: ResMut<HudState>, car: Query<&GlobalTransform, With<crat
         }
     }
     state.last_position = Some(p);
-    state.nitrous = 1.0;
+    state.nitrous = car.nitrous.fill();
+    state.using_nitrous = car.nitrous.burning;
 }
 
 /// Values for the bindings the free-roam layouts use.
@@ -233,9 +235,8 @@ fn lookup(
         "Players.GetLocalCompetitor.GetPlayerSpeed" => (car?.speed as f64 * MPH).into(),
         "Language.IsMetric" => metric.into(),
         "Players.LocalPlayer.NitrousState.NitrousAmount" => (state.nitrous as f64).into(),
-        "Players.LocalPlayer.NitrousState.UsingNitrous" | "Players.LocalPlayer.NitrousState.InOverdrive" => {
-            false.into()
-        }
+        "Players.LocalPlayer.NitrousState.UsingNitrous" => state.using_nitrous.into(),
+        "Players.LocalPlayer.NitrousState.InOverdrive" => false.into(),
         "Widget.Nitrous.ShowOdometer" => true.into(),
         "Widget.Nitrous.Odometer" => (state.odometer / if metric { 1000.0 } else { 1609.344 }).into(),
         "Signals.GetSineWave" => {

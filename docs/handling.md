@@ -185,6 +185,19 @@ becomes `In_air_gravity_coefficient` × g, and for `Take_off_behaviour.123d2559`
 rates are damped per tick (`8b456140`, `312bd67d`, roll by roll rate). `Top_speed_MPH` is not read by the
 game's physics (the camera's FOV still uses it).
 
+### Nitrous (`mw_handling::nitrous`, 2026-10-06)
+
+Update step 5 (`FUN_009d2aa0`, decomp.md "Nitrous and upgrades"): while the tank burns, the controls' nitrous
+amount (`NitrousUsage.845c3879` = 1) makes the engine's torque multiplier lerp(1, `Engine.Nitrous_strength.e9de413e`,
+amount) (1.9 on the 911), and the gearbox upshifts on rpm alone with the top gear unlocked (`FUN_009d4c20`). The
+tank (0–100) burns `NitrousUsage.053c5a6a` per second (24 stock: 4.17 s; the other variants carry 18 and 16) and
+starts a burn only above 10 % (`7ebf362a` = 0.1). It starts full and does not refill yet. Left Shift / pad A;
+the HUD gauge follows the tank. The punch (mode 1) and jump (mode 3) forces are described but not run.
+
+`--test nitrous` on the 911 (accel without nitrous unchanged: 0–100 3.72 s, quarter 11.58 s, top 307.6 km/h):
+0–60 mph 3.37 s, 0–100 km/h 3.47 s, tank empty at 4.17 s (122 km/h, third gear), 0–200 km/h 10.33 s (11.05
+without), quarter mile 11.25 s, top 307.4 km/h. Low gears are traction-limited, so most of the gain is in third.
+
 ## Cameras (`VehicleCameraContainer`, `crates/mostrusted/src/camera.rs`)
 
 Every vehicle bundle has one `VehicleCameraContainer` (79 in the install) with four cameras: `External`
@@ -320,6 +333,9 @@ stands 10 m past the impact); a 2 m pillar shows the car.
 |----------|-------|-----|
 | ~~`LAT_GRIP` / `LONG_GRIP`~~ | removed 2026-10-06 | the code's caps are μ × N × data axle scale × surface grip × camber × gameplay grip multipliers (1 outside timed effects): `FUN_009c5da0`, `FUN_00905910`, `FUN_009d8bd0` (decomp.md "Tyres"); N and the downforce share confirmed on `ref/xkr_launch` |
 | tyre effective mass | the corner's sprung mass, all four wheels from the same velocity | the game uses the chassis's effective mass at the contact (`FUN_009ca610`) and solves the wheels one after the other, each seeing the velocity the previous left (`FUN_009289f0`); same steady state, different transients |
+| nitrous multiplier target | engine full-throttle torque | `FUN_009d2aa0` writes a four-lane multiplier at its component's +0x10; the reader was not found (the call's `this` is not recoverable in the caller `FUN_00904260`); scaling the full-throttle torque is assumed |
+| nitrous tank | 100 units, starts full, no refill, burn starts above 10 % | the tank is gameplay code, not traced; capacity from `Restrictions.c441f502` = 100 (1 in most instances), rates from `NitrousParameters` (handling.md "Nitrous") |
+| punch / jump force scale | not run | `.bss` 0x0118a018 multiplies both forces; not read this session |
 | blend-input scale | 1 | the pure → slip blends take κ and α × the tyre constraint's +0x210, whose writer is not in the dump; measure with the probe |
 | surface-change fade | none (instant) | the game fades the grip of the surface just left over a time and uses the lower of old and new (`FUN_009ceb00`, `FUN_009d4460`); not ported |
 | resistance at rest | clamped to what stops the contact | ours: the game applies rolling resistance in full against the sign of the motion (`FUN_009d4a10`), which flips every tick at a standstill |
