@@ -87,8 +87,13 @@ InstanceList ──> Model ──(LOD state)──> Renderable ──(per mesh)�
 - **GroundcoverCollection (0x20F) / GroundcoverInstances (0x214)**: grass and plant sprites, no meshes (the
   `Groundcover` shader billboards them). Layout in the doc comment of `crates/mw-formats/src/groundcover.rs`:
   collection = materials (atlas texture + 16 regions each), 3 layers of a box tree whose leaves hold groups
-  `(box, material, quads, blob, start, count)`; instances are 16 bytes with u16 x/y/z as fractions of the
-  group box, yaw, size, ground normal, tint and region index. The x/y/z decode is confirmed against collision
+  `(box, material, size exponent e, blob, start, count, radius r)`; instances are 16 bytes with u16 x/y/z as
+  fractions of the group box, i8 width and height (BINORMAL.xy = byte / 127, times the shader's
+  `GroundcoverConstants.x`), ground normal, tint and region index. Draw distance (`FUN_00eb9500`, the CPU
+  vertex builder): a group is drawn while the camera is within 125·r of its box (`DAT_010c6f74` = 125.0,
+  .data); each sprite within R = ((w>>1&63) + (h>>1&63))·2^e/127·125 of the camera and in front of it, its
+  width and height scaled by min(5·(1 − d²/R²), 1) (`DAT_01081000` = 5.0), at most 20000 sprites
+  (`DAT_010c6f70`). The `Groundcover` vertex program turns each sprite about world up to face the camera. The x/y/z decode is confirmed against collision
   (`mwtool placement-check --groups`: swapped or flipped axes match 3-10% of groups, the decode 50%, the rest
   stand on render-only terrain). The vertex program anchors each sprite at its base (corner = position +
   width x (u - 0.5) x camera-perpendicular horizontal axis + height x v x up; sizes scaled by `cb1[0].x`), a

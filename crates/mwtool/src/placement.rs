@@ -190,7 +190,7 @@ pub fn run(store: &AssetStore, bundles: &[String], top: usize) -> Result<()> {
         for e in b.entries_of_type(ResourceType::GroundcoverCollection) {
             let Ok(gc) = store.groundcover(e.id) else { continue };
             for i in &gc.instances {
-                let layer = format!("groundcover q{}", i.quads);
+                let layer = format!("groundcover e{}", i.shift);
                 let dy = layers.entry(layer.clone()).or_default().add(&ground, i.position);
                 units_stats.entry(name.clone()).or_default().add(&ground, i.position);
                 if let Some(dy) = dy.filter(|d| d.abs() > 2.0) {
@@ -307,12 +307,15 @@ pub fn groups(store: &AssetStore, bundles: &[String]) -> Result<()> {
                     let good = s.dy.iter().filter(|d| d.abs() < 0.1).count() * 2 > s.dy.len();
                     if verbose && gi < 40 {
                         println!(
-                            "{} L{l} g{gi} blob {} start {} n {} quads {} box y {:.1}..{:.1} median {:+.2} good {good}",
+                            "{} L{l} g{gi} blob {} start {} n {} e {} r {:.3} max w/h byte {}/{} box y {:.1}..{:.1} median {:+.2} good {good}",
                             col.id,
                             g.blob,
                             g.start,
                             g.count,
-                            g.quads,
+                            g.shift,
+                            g.radius,
+                            inst.iter().map(|i| i.width).max().unwrap_or(0),
+                            inst.iter().map(|i| i.height).max().unwrap_or(0),
                             g.min[1],
                             g.max[1],
                             s.median()
@@ -321,7 +324,7 @@ pub fn groups(store: &AssetStore, bundles: &[String]) -> Result<()> {
                     let keys = [
                         format!("layer {l}"),
                         format!("blob {}", g.blob.min(3)),
-                        format!("quads {}", g.quads),
+                        format!("e {}", g.shift),
                         format!("start0 {}", g.start == 0),
                         format!("group# {}", gi.min(4)),
                     ];

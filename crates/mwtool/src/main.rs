@@ -357,7 +357,7 @@ enum Cmd {
         /// Rows per outlier list.
         #[arg(long, default_value_t = 25)]
         top: usize,
-        /// Groundcover only: per group, which groups stand on the ground (by layer, blob, start, quads).
+        /// Groundcover only: per group, which groups stand on the ground (by layer, blob, start, size exponent).
         #[arg(long)]
         groups: bool,
     },
