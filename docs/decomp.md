@@ -265,8 +265,8 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
   instant lag do not (987–1029 / 968–1091).
 - **Clutch** (`FUN_009d7ac0`): one impulse per tick, before the tyres: with Δω the engine speed minus the
   driveline's (`FUN_009d55f0`: the axles' mean wheel spin × share × gear ratio × final drive),
-  T = min(5000 N m (0x01186f70), clutch × |Δω| × I_eff / dt × k) along Δω (k: the `.bss` vector 0x011873e0,
-  one lane per entry, no writer in the dump; taken as 1, to be read live), where 1/I_eff = 1/`Engine_inertia` +
+  T = min(5000 N m (0x01186f70), clutch × |Δω| × I_eff / dt × k) along Δω (k: the `.bss` vector 0x011873e0 = 2π/60 in every lane, read live 2026-10-06: the game's Δω is in rpm,
+  engine +0x20 against `FUN_009d55f0`'s rad/s × 60/2π, so k turns it into rad/s; ours works in rad/s already), where 1/I_eff = 1/`Engine_inertia` +
   ½ ratio² × the driven wheels' mean inverse inertia × share² (Newton-refined reciprocal). The engine loses
   T dt / I, the driveline gets T × ratio. **No efficiency factor** anywhere. Each driven wheel gets half of its
   axle's torque; `TransmissionInertia` is added to each driven wheel's inertia. A second half-step pass
@@ -332,15 +332,15 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
   mask the player sets from handbrake input (+0x1fc0) > 0.1 (`.rdata` 0x01021cd8).
 - **Standstill hold** (2026-10-06, session 5): `FUN_009d6170` writes the hold input at gearbox +0x38 (vehicle
   +0x1aa8): when the signed forward speed (×`.bss` 0x0118a060, the scale of vehicle +0x1620) is below `.bss`
-  0x01186e60 (no absolute value), input = brake pedal (1 with the handbrake mask), raised to the throttle when
+  0x01186e60 = −2 mph (read live 2026-10-06; no absolute value: only rolling backwards faster than 2 mph), input = brake pedal (1 with the handbrake mask), raised to the throttle when
   the gear index is not 0; otherwise 0; then max'ed with the override +0x1c10. With the handbrake mask and
   |speed| < 1 it also releases the pedal brake. `FUN_009b1180` reads it: the rigid body (vehicle +0x1760) gets
   Δv = −sign(+0x1620) × `99407bbc` × input × dt along its forward axis (body +0x20) added to its velocity
   (+0xb0) every tick, with no clamp at zero (`FUN_009073b0` stores it, or zero above the body's speed cap
   +0xbc). The lock mask +0x1b90 is OR'ed into the per-wheel "brake engaged" mask passed to `FUN_009cdfd0`.
 - **Downshift gate** (2026-10-06): vehicle +0x1ed0 is the **time on the ground**: `FUN_009ae840` adds dt
-  while any wheel has contact and resets it while all four are in the air above `.bss` 0x01186630 (air time
-  +0x1630 counts then). So `FUN_009d93b0` does not downshift until the car has been down for 0x01187580 s.
+  while any wheel has contact and resets it while all four are in the air and the body moves faster than `.bss` 0x01186630 = 1.8 m/s (air time
+  +0x1630 counts then). So `FUN_009d93b0` does not downshift until the car has been down for 0x01187580 = 1 s (read live).
   It reaches the gearbox through `FUN_009b3030` → `FUN_009da600` (argument 5), with +0x1620 (forward speed)
   as argument 3 and the brake ramp +0x1610 as argument 6.
 - **Launch delay** (2026-10-06, not resolved): in `ref/xkr_launch` the rpm stays at idle and the brake ramp at 1

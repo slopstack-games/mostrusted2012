@@ -372,8 +372,6 @@ What the code does is in [decomp.md](decomp.md) ("Crashes"); here the data and w
 
 | What | Ours | Missing source |
 |------|------|----------------|
-| Standstill hold speed (`FUN_009d6170`) | 0 mph signed: the hold (`Brakes.99407bbc` × brake, or throttle in gear) acts only while rolling backwards | `.bss` 0x01186e60, live read |
-| Downshift ground time (`FUN_009d93b0`) | 0 s: no downshift while airborne | `.bss` 0x01187580, live read |
 | crash test | closing speed only (avian's pre-solve `normal_speed`, contacts with \|normal.y\| < 0.7 against static scenery) | the impact damage in damage-bar units (`1617a710` rule) and the solver's own closing speed |
 | reset time | when the cameras end (4.5 s) | `GameMode+0x44` (no `GameMode` instance found) |
 | reset pose | the pose 1 s of game time before the impact, upright, moving forward | the game saves the last pre-crash frame and moves it onto the road (`FUN_00648060`) |
@@ -401,7 +399,7 @@ stands 10 m past the impact); a 2 m pillar shows the car.
 | tyre effective mass | the corner's sprung mass, all four wheels from the same velocity | the game uses the chassis's effective mass at the contact (`FUN_009ca610`) and solves the wheels one after the other, each seeing the velocity the previous left (`FUN_009289f0`); same steady state, different transients |
 | nitrous multiplier target | engine full-throttle torque | `FUN_009d2aa0` writes a four-lane multiplier at its component's +0x10; the reader was not found (the call's `this` is not recoverable in the caller `FUN_00904260`); scaling the full-throttle torque is assumed |
 | nitrous tank | 100 units, starts full, no refill, burn starts above 10 % | the tank is gameplay code, not traced; capacity from `Restrictions.c441f502` = 100 (1 in most instances), rates from `NitrousParameters` (handling.md "Nitrous") |
-| punch / jump force scale | not run | `.bss` 0x0118a018 multiplies both forces; not read this session |
+| punch / jump force scale | 0.44704 (`nitrous::PUNCH_SCALE`) | **from the game**: `.bss` 0x0118a018 (read live), mph → m/s, so `0798d257` is mph/s; the modes 1 / 3 are still not run |
 | blend-input scale | 1 | the pure → slip blends take κ and α × the tyre constraint's +0x210, whose writer is not in the dump; measure with the probe |
 | surface-change fade | none (instant) | the game fades the grip of the surface just left over a time and uses the lower of old and new (`FUN_009ceb00`, `FUN_009d4460`); not ported |
 | resistance at rest | clamped to what stops the contact | ours: the game applies rolling resistance in full against the sign of the motion (`FUN_009d4a10`), which flips every tick at a standstill |
@@ -410,13 +408,13 @@ stands 10 m past the impact); a 2 m pillar shows the car.
 | shift phases | 10 / 50 / 40 % | **from the game**: declutch 0x01186ee0 = 0.1, clutch-in 0x01186fd0 = 0.4, neutral the rest (`FUN_009d1560`, `FUN_009d6880`, `FUN_009ce490`); confirmed tick by tick in `ref/xkr_launch` |
 | downshift hysteresis | 2 mph | **from the game**: 0x011872e0 in `FUN_009d93b0` |
 | idle governor | idle + 20 rpm, 0.05 / rpm, up to 0.5 throttle | **from the game**: 0x01186f30 / 0x011871c0 / 0x011873f0 in `FUN_009d9960` |
-| throttle time base | 60 | `c6deb7a6` / `36676b9c` × the `.bss` vector 0x01187250 (not read; the dump has no initialiser). 60 as the drift's time bases; it reproduces the original's idle (1003–1031 rpm against 1002–1033) where 1 or an instant lag do not. Measure: `memscan` `dump NFS13.exe+0xd87250` |
-| clutch-in throttle | pedal × progress¹ | `FUN_009d6af0` / `FUN_009d6ca0` raise the progress to `.bss` 0x011874d0 (not read). Measure: `dump NFS13.exe+0xd874d0` |
+| throttle time base | 60 | **from the game**: `c6deb7a6` / `36676b9c` × `.bss` 0x01187250 = 60 (read live 2026-10-06) |
+| clutch-in throttle | 0.7 √progress | **from the game**: `FUN_009d6af0` (upshift: 0.7 √progress whatever the pedal) / `FUN_009d6ca0` (downshift: pedal × 0.7 √progress); scale `.bss` 0x011874d0 = 0.7, exponent 0x01187470 = 0.5 (the CRT pow argument, from the disassembly), read live 2026-10-06. Gearbox +0x170 == 4 (throttle 1) not identified |
 | coast declutch | 20 mph | `.bss` 0x011872d0 in `FUN_009d9ee0`: lanes 2–3 read 20 (`consts.txt`), lanes 0–1 assumed the same |
-| downshift gate | always open | `FUN_009d93b0` also needs vehicle +0x1ed0 > `.bss` 0x01187580 (neither identified; the original downshifts while braking with no throttle). Not modelled |
-| kick-down window (`KICKDOWN_WINDOW`) | 1.0 s | `FUN_009dc3c0` uses the cruising gearbox's `Gear_change_time` while the time since the last gearbox-mode switch (gearbox +0x144) is below `.bss` 0x011871e0 (not read); it also adds gearbox +0xb8 to the time (not identified, taken as 0) |
+| downshift gate | 1 s on the ground | **from the game**: vehicle +0x1ed0 (`FUN_009ae840`, reset only with no wheel down and the body above `.bss` 0x01186630 = 1.8 m/s) > `.bss` 0x01187580 = 1.0 (read live 2026-10-06) |
+| kick-down window (`KICKDOWN_WINDOW`) | 0.2 s | **from the game**: `.bss` 0x011871e0 = 0.2 (read live 2026-10-06) in `FUN_009dc3c0`; gearbox +0xb8 added to the time still taken as 0 |
 | gearbox-mode flag | down | `FUN_009da600` passes a flag from a virtual call on the vehicle (`FUN_009b3030`, vtable +0x34) that keeps the race gearbox while up; not identified (race start? AI?), so the cruising box is always allowed |
-| stall check in shifts | none | `Idle_RPM` × `.bss` 0x011874a0 (not read) drops the gearbox to standstill during a shift or launch |
+| stall check | `Idle_RPM` × 0.9 | **from the game**: `.bss` 0x011874a0 = 0.9 (read live); the launch and every shift phase but the downshift declutch drop to standstill (clutch open, 1st) below it |
 | launch torque | lagged | the original reaches full torque in the first tick of its launch (`ref/xkr_launch`), which the lag does not; source not found (`FUN_009262a0`'s override list?) |
 | `BURNOUT_MPH` | 20 | **from the game**: `.bss` 0x011866f0 (read live) in `FUN_009ab230` (now `drift::BURNOUT_MPH`) |
 | `DRAG_K` | 1.2 | read from the running game (`.bss` 0x011872a0); was 1 |
@@ -425,14 +423,14 @@ stands 10 m past the impact); a 2 m pillar shows the car.
 | anti-roll unit | N m per radian, scale 60 | the scale is read live (`.bss` 0x01185d70) and applied by the bar's builder `FUN_00933a60` to the stiffness only (the damping is 2 ζ √(k_data I), from the same function); the unit, and so the angle the stiffness multiplies, is inferred: the solve that applies the bar is likely the undecompiled `FUN_00932af0` |
 | anti-roll input and form | compression difference, explicit force | the bar element (type 2, `FUN_00933a60`) names the axle's two wheel objects and the chassis, so it may act on the body's roll against the axle rather than on the compression difference; its per-tick solve was not found. Ours applies k Δx / t² + c Δẋ / t² at the wheels with last tick's compression rates (stable at the game's damping) |
 | drift time base | 60 | **from the game**: damping `(1 − c)^(dt × 60)`, the 60 at `.bss` 0x01184cc0 / 0x01185640 (read live), `FUN_00907b50`, `FUN_0091dad0` |
-| drift speed-hold scale | 60 | `.bss` 0x01187250 (`FUN_009d0420`): no initialiser in the dump, not read live; 60 because the same constant turns per-tick rates into per-second ones in `FUN_009d9960` and `FUN_009cfce0` |
+| drift speed-hold scale | 60 | **from the game**: `.bss` 0x01187250 = 60 (read live 2026-10-06), `FUN_009d0420` |
 | counter-steer opening exponent | `Max_counter_steering_power` | `FUN_009d2e20` raises the opening to a power whose exponent the decompiler drops (a register load); inferred as the one counter-steering field the code does not otherwise read |
 | steering neutral offset's q | body slip / 35° × min(1, speed / 10 mph), clamped to ±1 | read from the original's telemetry (`ref/xkr_launch`: q / slip = 0.0286/° over 0.5°–33°, the fade constant over 1–4 m/s); its writer (vehicle +0x2c70) was searched by offset in the whole dump (0x004–0x011: the other writers are of the game-mode object at +0x2f3fc, `FUN_006e0580` …) and as a typed index (`[0xb1c]`): not found. 35° equals the XKR's `Maximum_steering_angle` (one car cannot separate them); the ±1 clamp is ours |
 | drift collision exits, wall-hit steering reset | not modelled | `FUN_009d83e0` codes 1 / 3 and `FUN_008f7ab0` compare a contact value with 6; which contact quantity (impulse, speed) and unit was not settled |
 | per-wheel surface factor on drift torque, side force, damping | 1 | `FUN_009cede0` (mean of a per-wheel value); its writer was not traced |
 | ~~rolling resistance Crr 0.015~~ | removed 2026-10-06 | the game's comes from the surface: `5c2a9f18` × N per wheel plus the slide drag (`FUN_009d4a10`) |
 | wheel contact | one ray per wheel | the game ties each wheel record to the chassis with a constraint holding the wheel's ground contact points, iterated in sub-steps (`FUN_0093f200`); the tyre friction is one pass after them |
-| strut stop slack | 0 | the game allows `min(constraint +0x470, .bss 0x01186bf0)` of penetration (and at least the share `.bss 0x01186b10`) before the stop acts on the chassis; neither value read (needs a live read) |
+| strut stop slack | 0 | the chassis gets share = max(d − min(+0x470, 0.1), 0.1 d) / d of the stop impulse at penetration d (`.bss` 0x01186bf0 = 0.1, 0x01186b10 = 0.1, read live 2026-10-06); equals ours (share 1) only when the constraint field +0x470 is 0, not read (the wheel constraint was not located from the vehicle in the snapshot). Not changed: ours has no wheel bodies to take the rest |
 | `STOP_ITERATIONS` | 4 | passes of the strut-stop impulses per tick; the game iterates contacts in sub-steps of the island step (`FUN_0093f5a0`), count not read |
 | wheel ray start | one wheel radius above the mount | stands in for the game's wheel body colliding with the world: a ray from a mount already under the ground returns a zero normal (solid box) or nothing (trimesh back face), and the car stayed sunk on its body box |
 | wheel axle/side | by position | some specs label wheels the other way round (the Veyron's "Front" wheels are at the back) |
