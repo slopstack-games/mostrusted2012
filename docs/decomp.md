@@ -607,7 +607,28 @@ chain, from the light buffer (HDR game units) to the screen:
    is enabled (view settings +0x1518 and renderer +0x9836, runtime flags), else (1, 1, 1, 0), which removes
    the bloom term; slot 0x9e (C, `GenericVector4_C`, not read by the composite) = (1 / Bloom `76826c13`,
    Bloom `da328699`, 0, 0) or (1, 1, 0, 0). **A** = renderer +0xa990 and **D** = renderer +0xa980, each times
-   the view's vec4 at +0x15d0 (override, `FUN_008e3e30`); what writes +0xa980 / +0xa990 was not found.
+   the view's vec4 at +0x15d0 (override, `FUN_008e3e30`). **Vignette fields** (live reads 2026-10-06, 20
+   dumps): +0xa980 = (inner.rgb × s, k), +0xa990 = ((outer − inner).rgb × s, 1 − k), +0xa9a0 = (angle 0, …),
+   +0xa9b0 = (centre.xy, `Scale`.xy × k), with inner / outer / centre / Scale the `PostFxKeyframe.Vignette`
+   fields `5e9c4fa6` / `5f000214` / `19f17784` / `Scale` (A / D = outer − inner to 5 digits in every dump).
+   `FUN_008c9e40` passes +0xa9b0, +0xa9a0 and +0xa990 to the bloom set-up `FUN_008eaaf0`: they are the add
+   pass's `kVignetteCentreXyScaleXy`, `kVignetteAngle` and `kVignetteOuterRgbPlusAdd` (its .w is the weight
+   offset). So v = smoothstep(saturate(k·|p₀| + 1 − k)) with p₀ the unscaled offset: the weight rises from
+   0 at |p₀| = 1 − 1/k to 1 at |p₀| = 1. k = 1.8245 in every dump (also under another PostFX state, which
+   changed centre and Scale), so it is not derived from a blended field; `Sharpness` (0.34) is the likely
+   source but no formula was found. s drifts 1.0025…1.0385 over the run (2.81 in the dump taken during a
+   state change). Ported in `tonemap.rs` with k = 1.8245 as a measured constant and s = 1 (model
+   decision). No instruction in the renderer code (0x880000…0x900000 of the snapshot) stores to
+   +0xa980 / +0xa990 with a literal displacement: the writer goes through another base and is still unknown.
+   **Bloom copy**: the copy at 0x008ccbdc (inside `FUN_008c9e40`) sets bit 1 of +0xaa9c and moves 13 words
+   from the blended set (+0x80…+0xb0 of its source) to +0xac74…+0xaca4 with x87 load/store pairs, so integer
+   GeneSys fields arrive as raw bit patterns: live, the words at +0xac80, +0xac88, +0xac8c, +0xac94 are the
+   integers 4, 5, 5, 1 (falling to 1, 1, 1, 0 through a transition), while +0xac84 (B.w) = 0.595 → 0.510
+   and +0xac98…+0xaca0 (the three set-up arguments) = (0.0083, 0.927, 1.043) drifting to (0.0073, 0.815,
+   1.109), and the colour drifts (0.342, 0.482, 0.585) → (0.417, 0.495, 0.557). None of this matches the
+   default keyframe `…78dc` (Colour 0.402 grey; `DarkBloomWeight` 0.65 a float), so the free-roam bloom comes
+   from other, time-blended PostFX keyframes, and the unpack order in the research log (which puts float
+   fields at the integer slots) is not confirmed. Bloom is not ported until both are settled.
    The Bloom fields reach the renderer (+0xac74…+0xaca4) through `FUN_008e51b0` (unpack, field order in the
    research log), `FUN_008e9610` (keyframe and state blend), `FUN_008ecf80` → `FUN_008ce250` →
    `FUN_008c9e40` (copy when bloom is on); the bloom set-up `FUN_008eaaf0` takes three of them
@@ -628,7 +649,7 @@ chain, from the light buffer (HDR game units) to the screen:
    (cooldown `…7898`, heat `…789d`, nitrous `…789f`, escaped `…789c`, wreck `…789a` / `…789b`) through
    `ValueBinding` strings. The caller is `FUN_008c9e40` (the frame's post set-up): seven cube slots from the
    frame state (+0x2c base, +0x34, +0x3c, +0x44, +0x4c, +0x64, +0x6c; each a resource + offset, a missing
-   one falls back to the base) with weights +0x54, +0x58, +0x5c, +0x60, +0x74, +0x78 (the first two and the
+   one falls back to the base; not read live yet) with weights +0x54, +0x58, +0x5c, +0x60, +0x74, +0x78 (the first two and the
    last two replaceable by a view override at +0x1568… / +0x1560…). If the six weights sum above 1
    (`DAT_00f8a820`) they are scaled to sum 1; the base cube gets 1 − sum. The PostFX state's two
    `ColourCubeSettings` cubes and [0, 1] weights (`FUN_008ecf80`, state +0x12e8…+0x12fc) are very likely the

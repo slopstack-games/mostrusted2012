@@ -142,6 +142,88 @@ pub struct EnvironmentKeyframe {
     pub weather: Weather,
 }
 
+/// The default PostFX state's keyframe (`POSTFX.BNDL`); the live original used its vignette in free roam
+/// (decomp.md "Post-processing").
+pub const DEFAULT_POSTFX_KEYFRAME: ResourceId = ResourceId(0x0100_0000_0000_78dc);
+
+/// `PostFxKeyframe.Vignette`, as the vignette pass reads it (decomp.md "Post-processing": renderer
+/// +0xa980 = inner × s, +0xa990 = (outer − inner) × s, +0xa9b0 = centre, scale × k, live read 2026-10-06).
+#[derive(Debug, Clone, Copy)]
+pub struct Vignette {
+    /// `19f17784`: centre in texture coordinates (y down); (0.5, 0.3) in the default keyframe.
+    pub centre: [f32; 2],
+    /// `Scale`: (0.7, 0.555) in the default keyframe.
+    pub scale: [f32; 2],
+    /// `5e9c4fa6`: colour where the weight is 0.
+    pub inner: [f32; 3],
+    /// `5f000214`: colour where the weight is 1.
+    pub outer: [f32; 3],
+    /// `Sharpness` (0.34): not matched to the live k = 1.8245 yet.
+    pub sharpness: f32,
+}
+
+impl Default for Vignette {
+    fn default() -> Self {
+        Self { centre: [0.5, 0.5], scale: [0.0; 2], inner: [1.0; 3], outer: [1.0; 3], sharpness: 0.0 }
+    }
+}
+
+/// `PostFxKeyframe.Bloom` fields that the bloom passes use (decomp.md "Post-processing").
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Bloom {
+    pub colour: [f32; 4],
+    pub threshold: f32,
+    pub luminance: f32,
+    pub saturation: f32,
+    pub dark_weight: f32,
+    pub dark_white_point: f32,
+    /// Unnamed fields the bloom set-up `FUN_008eaaf0` takes (`c9f605e2`, `a3d336c1`, `cf7d9668`).
+    pub c9f605e2: f32,
+    pub a3d336c1: f32,
+    pub cf7d9668: f32,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PostFxKeyframe {
+    pub vignette: Vignette,
+    pub bloom: Bloom,
+}
+
+impl PostFxKeyframe {
+    pub fn from_object(o: &Object) -> Self {
+        let h = field_hash;
+        let mut out = Self::default();
+        if let Some(v) = sub(o, h("Vignette")) {
+            let (c, s) = (vec4(v, 0x19f17784), vec4(v, h("Scale")));
+            out.vignette = Vignette {
+                centre: [c[0], c[1]],
+                scale: [s[0], s[1]],
+                inner: rgb(v, 0x5e9c4fa6),
+                outer: rgb(v, 0x5f000214),
+                sharpness: float(v, h("Sharpness")),
+            };
+        }
+        if let Some(b) = sub(o, h("Bloom")) {
+            out.bloom = Bloom {
+                colour: vec4(b, h("Colour")),
+                threshold: float(b, h("Threshold")),
+                luminance: float(b, h("Luminance")),
+                saturation: float(b, h("Saturation")),
+                dark_weight: float(b, h("DarkBloomWeight")),
+                dark_white_point: float(b, h("DarkBloomWhitePoint")),
+                c9f605e2: float(b, 0xc9f605e2),
+                a3d336c1: float(b, 0xa3d336c1),
+                cf7d9668: float(b, 0xcf7d9668),
+            };
+        }
+        out
+    }
+
+    pub fn load(store: &AssetStore, id: ResourceId) -> Result<Self> {
+        Ok(Self::from_object(&store.genesys_object(id)?))
+    }
+}
+
 fn get(o: &Object, hash: u32) -> Option<&Value> {
     o.get(hash)
 }

@@ -159,6 +159,36 @@ Each site re-read in the dump with the value in hand:
   10.33 → 10.87 s (the upshift clutch-in throttle is now 0.7 √progress); landing / climb fine (climb
   overtravel 0.119 → 0.040 m).
 
+### 2026-10-06 (session 5, late): vignette ported; bloom's live block does not fit the keyframe
+
+From the 20 renderer dumps of `ref/live1/ren` (3 s apart) and the snapshot `snap2`; details in decomp.md
+"Post-processing".
+
+- **Vignette, solved except two scalars.** D = (inner × s, k), A = ((outer − inner) × s, 1 − k), the vertex
+  shader's constant = (centre, `Scale` × k), all from `PostFxKeyframe.Vignette` of the default keyframe
+  `…78dc` (A.rgb / D.rgb = −0.54921 = 0.45078585 − 1 in every dump; centre (0.5, 0.3), `Scale` × 1.8245 =
+  (1.2771, 1.0126)). k = 1.8245 is constant over all dumps, including one under another PostFX state; s moves
+  slowly between 1.0025 and 1.0385 (2.81 in that state). Neither is explained: `Sharpness` = 0.34 fits no
+  simple formula tried (1 / (1 − x), (1 + x)², …), and no renderer instruction stores to +0xa980 / +0xa990 by a
+  literal displacement (byte search of the snapshot's code, 0x880000…0x900000), so the writer uses another
+  base. The add pass's alpha is v = smoothstep(saturate(|p| + A.w)) (PS `0x010117c0`), the VS (`0x01011e18`)
+  takes p = (rotate(2·uv − 1, angle) − 2·centre + 1) × scale with uv the D3D texture coordinate (y down, so
+  the centre sits 30 % from the top and the bottom corners darken most). **Ported** in `tonemap.rs` /
+  `tonemap.wgsl` with k as a measured constant and s = 1 (model decision); `MW_NO_VIGNETTE=1` turns it off.
+  Check at the `--camera=-1131,27,1627,…` view, noon (displayed linear luminance, on / off): centre 1.00,
+  top-left 0.78, top-right 0.63, bottom-left 0.51, bottom-right 0.31 (after the tonemap curve and the colour
+  cube, so not the raw factor; the raw factor is 1 at the centre, 0.45 where v = 1, i.e. both bottom
+  corners, and ≈ 0.66 at the top corners).
+- **Bloom, not ported.** The copy into +0xac74 is at 0x008ccbdc (`FUN_008c9e40`, x87 load/store of 13 words,
+  sets bit 1 of +0xaa9c). Four of the words are integer bit patterns (4, 5, 5, 1, sliding to 1, 1, 1, 0 in a
+  transition), the colour drifts linearly over the minute (0.342 → 0.417 red) and B.w (+0xac84) 0.595 → 0.510;
+  the default keyframe has a grey 0.402 colour and floats at those slots. So free roam blends other PostFX
+  keyframes over time (the selector, presumably a PostFX timeline, is not known), and the unpack order of
+  `FUN_008e51b0` noted below puts float fields where the live block holds integers: the field mapping is not
+  confirmed. No PostFxKeyframe has a Colour near the live one. Next: disassemble the source of that copy (its
+  `edi`) and the PostFX state's keyframe selection from the snapshot.
+- The colour-cube slot weights were not reached.
+
 ### 2026-10-06 (session 5, late): live-read session against the running original
 
 The user ran the original (free roam, about five minutes: standing, then driving up to 134 mph, then standing);

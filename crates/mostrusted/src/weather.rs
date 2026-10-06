@@ -220,8 +220,15 @@ pub fn spawn_environment(
         irradiance: images.add(std::mem::take(&mut b.irradiance)),
         colour_cube: images.add(b.colour_cube.take().unwrap_or_default()),
     };
+    let post_fx =
+        mw_assets::environment::PostFxKeyframe::load(&state.store, mw_assets::environment::DEFAULT_POSTFX_KEYFRAME)
+            .unwrap_or_else(|e| {
+                warn!("no PostFX keyframe ({e}); no vignette");
+                Default::default()
+            });
     commands.insert_resource(tonemap::GameTonemap {
         settings: b.keyframe.exposure.clone(),
+        post_fx,
         dt: 0.0,
         reset: true,
         colour_cube: has_cube.then(|| handles.colour_cube.clone()),
