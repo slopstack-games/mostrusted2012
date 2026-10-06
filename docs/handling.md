@@ -279,6 +279,13 @@ cast and how the camera responds; the GeneSys types `CameraTransformCollider` an
 *hyp.* rows. No camera rule changed in that round; the baseline trace numbers (drift, accel, corner, crash)
 are in the research log, 2026-10-06 round 4, to compare a port against.
 
+**Round 5 (2026-10-06):** the code is found (decomp.md "## Cameras": the chase camera's update is
+`FUN_005d4970`, director sub-camera + 0x8d0) but not yet ported, so the rows above are unchanged. What the
+first helper read already contradicts: our yaw spring blends `5a74d44d` / `63fb2207` by speed only, while the
+game's `FUN_005c90a0` picks it by the car's yaw rate in car space (thresholds in `Yaw_spring_modification`
++0x14 / +0x20, rate-limited by +0x10 per update) blended with a speed factor and the mods profile's value 0x29.
+That row stays a guess until the helper is read to its end.
+
 Model decisions (not data): the FOV is vertical (as horizontal the chase view is far tighter than the
 original's; the bonnet and bumper views look very wide this way); acceleration is measured from the car's
 speed between physics ticks; the drift lean (`DRIFT_LEAN` 0.5 of the slip angle) and the yaw-lag cap (0.6 rad);
