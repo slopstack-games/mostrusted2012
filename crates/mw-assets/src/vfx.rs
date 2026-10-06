@@ -46,6 +46,23 @@ pub struct SurfaceEffects {
     /// Impact effects by direction: front, front left, front right, rear, rear left, rear right,
     /// left, right, top, bottom.
     pub impacts: [Option<ResourceId>; 10],
+    /// `TyreMarksMaterials` (`Vfx_TyreMarksNew` materials) by tyre: field `eff16a09`, `Offroad`, `Road`,
+    /// `Sport`, `Track` (field order).
+    pub tyre_marks: [Option<ResourceId>; 5],
+}
+
+pub const TYRE_MARKS_ROAD: usize = 2;
+
+/// A `Vfx_TyreMarksNew` material: its three diffuse layers and material constants.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TyreMarkMaterial {
+    pub id: ResourceId,
+    /// `RunDiffuseSampler`, `SlipDiffuseSampler`, `SpinDiffuseSampler`.
+    pub textures: [Option<ResourceId>; 3],
+    /// `WidthScale`, `Animation`, `Specular` (first component of each; `None` when unset).
+    pub width_scale: Option<f32>,
+    pub animation: Option<[f32; 4]>,
+    pub specular: Option<f32>,
 }
 
 pub const IMPACT_FRONT: usize = 0;
@@ -157,6 +174,33 @@ impl AssetStore {
         })
     }
 
+    pub fn tyre_mark_material(&self, id: ResourceId) -> Result<TyreMarkMaterial> {
+        let material = self.material(id)?;
+        let shader = self.shader(material.shader.ok_or(Error::Missing(id))?)?;
+        let param = |name: &str| {
+            let hash = shader.parameters.iter().find(|p| p.name == name).map(|p| p.hash)?;
+            material
+                .parameters
+                .iter()
+                .find(|p| p.name_hash == hash)
+                .and_then(|p| p.value)
+                .or_else(|| shader.parameters.iter().find(|p| p.hash == hash).and_then(|p| p.default))
+        };
+        let texture = |name: &str| {
+            shader
+                .sampler_named(name)
+                .and_then(|s| material.samplers.iter().find(|m| m.key == s.key))
+                .and_then(|m| m.texture)
+        };
+        Ok(TyreMarkMaterial {
+            id,
+            textures: ["RunDiffuseSampler", "SlipDiffuseSampler", "SpinDiffuseSampler"].map(texture),
+            width_scale: param("WidthScale").map(|v| v[0]),
+            animation: param("Animation"),
+            specular: param("Specular").map(|v| v[0]),
+        })
+    }
+
     /// Resolve the surface and global effect tables.
     pub fn vfx_library(&self) -> Result<VfxLibrary> {
         let mut lib = VfxLibrary::default();
@@ -201,6 +245,17 @@ impl AssetStore {
                         player_wheels,
                         ai_wheels,
                         impacts: IMPACT_FIELDS.map(|n| handle(&vfx, n)),
+                        tyre_marks: match vfx.get(0x75cb5de9) {
+                            Some(Value::Struct(t)) => [
+                                0xeff16a09,
+                                field_hash("Offroad"),
+                                field_hash("Road"),
+                                field_hash("Sport"),
+                                field_hash("Track"),
+                            ]
+                            .map(|h| handle_hash(t, h)),
+                            _ => [None; 5],
+                        },
                     }
                 };
                 let dry = effects(SURFACE_DRY, &mut object);

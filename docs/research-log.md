@@ -177,6 +177,37 @@ message queue) first.
 - Open: the Easydrive "Customize car" pages are not wired yet; the unidentified indices (incl. all body / damage
   ones); `TyreUpgrade` (its `a316f8e3` is a `Tyres` handle, not applied); the top-gear lock that long gears lift.
 
+### 2026-10-06 (session 5, round 4): tyre marks
+
+- **Look** (`Vfx_TyreMarksNew`, G-buffer pass = the `ps_4_0` with three targets): vertex = POSITION.xyz strip centre
+  (.w an age-like value), TEXCOORD.xyz the vector across the strip (.w = U along it), COLOR = (Slip weight, Spin
+  weight, side 0/1 = V, opacity). Position = centre + across x `WidthScale` x (V - 0.5) + 0.03 m along the up
+  vector it derives from the across vector, then 0.35 - 0.33 x saturate(dot(to_eye, up)) m towards the eye (depth
+  bias). Opacity out = (1 - `Animation`.x x POSITION.w) x COLOR.w. Pixel: `RunDiffuse` premultiplied, `SlipDiffuse`
+  "over" it with weight Slip.a x COLOR.x, `SpinDiffuse` likewise with COLOR.y, all x saturate(opacity), discard
+  below 1/2550; RT1 = colour (premultiplied), RT0 = (0,0,0,a), RT2 = `Specular` x a. Details in formats.md "Shaders".
+- **Data**: `SurfaceVfx.TyreMarksMaterials` (field `75cb5de9`, inline struct) holds one material per tyre class:
+  `eff16a09`, `Offroad`, `Road`, `Sport`, `Track`; also `SurfaceVfx.RimMarksMaterial`. 48 of 65 surfaces have one;
+  surfaces 0 and 1 (the `Surfaces` list head) have none. Tarmac `Road` material `…117f16`: Run `…7a932` (8x8, fully
+  transparent: no marks from rolling), Slip `…7a92a` (32x32 black, alpha fading at the strip edges), Spin
+  `…117f0e`; `WidthScale` 0.65, `Animation` 0, `Specular` 0. `Offroad` = `…117f14`, `Track` = `…117f23`.
+- Per car, `TyreVfxBehaviour` (`Front_Tyres` / `Rear_Tyres` -> `Skid_Marks` / `Smoke`, each `Lat_Slip`
+  (`LatParams`: `Curve_Power` 0.35 and seven unnamed floats, e.g. 0.1, 60, 50, 0.45, 23.5, 0, 0.2 on `…68fe4`),
+  `Long_Spin` and `64222c3f` (`LongParams`)): the intensity curves of the marks. Field names beyond `Curve_Power`
+  are not cracked and **the code reading them was not found**: no string in strings.csv names tyre marks, skid
+  marks or `TyreVfx`, the field hashes and the struct stride (0x130 = `FrontRearParams`) do not appear as
+  constants, and `* 8 + 0x18` (`TyreMarksMaterials` indexed by tyre class) has no hit. Open.
+- **Built** (`crates/mostrusted/src/tyre_marks.rs`, `tyre_marks.wgsl`): the shader port above (lit in place,
+  blend ONE / INV_SRC_ALPHA), strips per wheel of the driven car. Model decisions (until the rule is traced):
+  the Slip / Spin weights are the per-wheel lateral / spin intensities of the skid **sound** rule
+  (`FUN_009d1bf0`, decomp.md); a mark is laid while max(lat, spin) >= 0.05; a strip point every 0.25 m; U = metres
+  of strip; the across vector is a unit vector (width = `WidthScale` = 0.65 m, wide for a 911: the game may scale
+  it by the tyre width); fade linear over 60 s on the CPU instead of `Animation`; at most 4000 segments (oldest
+  dropped); the first surface with a material stands in for every contact (surface types not decoded), `Road`
+  tyres, dry only. `MW_TYRE_MARKS_LOG=1` logs live segments (drift test: ~100 per second while sliding).
+- A mark mesh with the same vertex layout as the skinned car meshes made Bevy's multi-draw batching fail
+  (`skinned_mesh_layout` validation error); an extra unused `UV_1` attribute avoids it.
+
 ### 2026-10-06 (session 5, round 3): vehicle liveries, paint masks and dirt
 
 - **Paint variants** across all car bundles (`mwtool models <bundle> --verbose`): plain `BodyPaint` (53 cars),

@@ -402,6 +402,12 @@ Shaders: `VfxParticles_Diffuse*` draw CPU-expanded, per-vertex-lit quads with pr
 frames from `NumTiles` / `EnableLooping`); `VfxParticles_MotionBlurSpriteUntex` draws sparks as moving discs
 with analytic coverage, additive. Ports: `crates/mostrusted/src/particles.wgsl`, `sparks.wgsl`.
 
+- **Tyre marks**: `SurfaceVfx.TyreMarksMaterials` (`75cb5de9`) = { `eff16a09`, `Offroad`, `Road`, `Sport`, `Track` }
+  `Vfx_TyreMarksNew` materials (tyre class), plus `SurfaceVfx.RimMarksMaterial`. Each material: `RunDiffuse`
+  (rolling; transparent on tarmac), `SlipDiffuse` (sideways), `SpinDiffuse` (wheelspin / lock) layers, `WidthScale`
+  (0.65 on tarmac), `Animation`, `Specular`. Per car `TyreVfxBehaviour.{Front,Rear}_Tyres.Skid_Marks` holds the
+  intensity curves (`Lat_Slip`, `Long_Spin`, `64222c3f`; mostly unnamed). Shader: research log 2026-10-06 round 4.
+
 ## ColourCube (0x52)
 
 16-byte header: u32 edge N (16 everywhere), u32 N, 8 zero bytes; then N³ three-byte entries laid out as a D3D
