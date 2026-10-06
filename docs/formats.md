@@ -268,7 +268,8 @@ See `crates/mw-audio` (decoders reimplemented from vgmstream's documentation of 
 - **SPS** (`.SPS`, and `Wave` resources from offset 0x80): blocks of `u8 id, u24 size`; `H` = EAAC header
   (`version:4 codec:4 channels-1:6 rate:18`, `type:2 loop:1 samples:29`), `D` = `u32 samples` + codec data,
   `E` = end. MW uses codec 5, EALayer3 v1: one MPEG Layer III granule per EA frame with a compacted header and
-  side info (+ optional big-endian PCM blocks). Multichannel = interleaved stereo/mono sub-streams.
+  side info (+ optional big-endian PCM blocks). Multichannel = interleaved stereo/mono sub-streams. Sample
+  rates include 32 kHz (MPEG-1): rebuilt free-format frames must stay under 2304 bytes, or minimp3 finds none.
 - **Ginsu** (`Ginsu` resources, 8-byte prefix, then `Gnsu30`): min/max RPM, table sizes, sample count and rate,
   a u32 at 0x20, an RPM → recording-position table, grain boundaries, then EA-XAS v0 (19-byte frames, 32 mono
   samples).

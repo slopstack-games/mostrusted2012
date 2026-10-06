@@ -292,6 +292,13 @@ enum Cmd {
         out: PathBuf,
         #[arg(long)]
         dry: bool,
+        /// Instead of the scripted drive: hold `--mph` and sweep one skid intensity binding (`lat`, `spin` or
+        /// `braking`) from 0 to 1 over 10 s (after 1 s at 0, then 2 s at 1), and print the skid sequence's
+        /// wave layers' gains (fade envelope × item gain) against the intensity.
+        #[arg(long)]
+        sweep: Option<String>,
+        #[arg(long, default_value_t = 40.0)]
+        mph: f32,
     },
     /// Count world triangles per shader (all track units), to prioritise ports.
     ShaderUsage,
@@ -870,7 +877,7 @@ fn main() -> Result<()> {
             }
             println!("{}: {:.1} s -> {}", v.name, duration, out.display());
         }
-        Cmd::VehicleSound { out, dry } => {
+        Cmd::VehicleSound { out, dry, sweep, mph } => {
             use mw_assets::vehicle_driver::{VehicleDriver, VehicleInput, WheelSlip};
             let store = AssetStore::new(game)?;
             let bank = store.vehicle_sfx_bank()?;
@@ -881,8 +888,19 @@ fn main() -> Result<()> {
             for (c, s) in &bank.cues {
                 println!("  cue {c}: {} sequences", s.len());
             }
+            if let Some(which) = sweep {
+                let tyre = store.tyre_sound_params();
+                if let Some(t) = &tyre {
+                    println!("TyreSoundParams: {t:?}");
+                }
+                return skid_sweep(bank, tyre.unwrap_or_default(), &which, mph, dry, &out);
+            }
             let params = std::sync::Arc::new(mw_audio::sfx_player::Params::new(bank.param_names()));
             let mut driver = VehicleDriver::new(params.clone());
+            match store.tyre_sound_params() {
+                Some(t) => driver.tyre = t,
+                None => eprintln!("no TyreSoundParams; using the built-in copy"),
+            }
             let mut player = mw_audio::sfx_player::Player::new(bank, params);
             player.dry = dry;
             // Scripted 12 s: accelerate to 60 mph, cruise, drift, wheelspin, locked brakes, impacts, a scrape,
@@ -902,16 +920,24 @@ fn main() -> Result<()> {
                         60.0 + 50.0 * (t - 10.0)
                     };
                     let v = mph * 0.447_04;
-                    let (lat, long) = match t {
-                        t if (2.5..4.5).contains(&t) => (v * 0.25, 0.0),
-                        t if (5.0..6.0).contains(&t) => (0.0, -4.0),
-                        t if (6.5..7.5).contains(&t) => (0.0, v),
-                        _ => (0.0, 0.0),
+                    // A 30° drift, wheelspin at 8 m/s, then locked wheels under full braking.
+                    let (slip_angle, slip_speed, brake) = match t {
+                        t if (2.5..4.5).contains(&t) => (30.0, 0.0, 0.0),
+                        t if (5.0..6.0).contains(&t) => (0.0, 8.0, 0.0),
+                        t if (6.5..7.5).contains(&t) => (0.0, -v, 1.0),
+                        _ => (0.0, 0.0, 0.0),
                     };
-                    let wheels = vec![WheelSlip { speed: v, lateral: lat, longitudinal: long }; 2];
                     let scrape = if (9.0..10.0).contains(&t) { 8.0 } else { 0.0 };
-                    driver
-                        .update(1.0 / 64.0, &VehicleInput { speed_mph: mph, wheels, brake: 0.0, scrape_speed: scrape });
+                    driver.update(
+                        1.0 / 64.0,
+                        &VehicleInput {
+                            speed_mph: mph,
+                            skid_wheel: Some(WheelSlip { slip_angle, slip_speed }),
+                            brake,
+                            handbrake: false,
+                            scrape_speed: scrape,
+                        },
+                    );
                     for (k, (at, speed)) in [(8.0, 15.0), (8.5, 6.0), (8.8, 2.0)].into_iter().enumerate() {
                         if t >= at && !fired[k] {
                             fired[k] = true;
@@ -997,6 +1023,100 @@ fn main() -> Result<()> {
         }
         Cmd::PaintMap { id, png, at } => paint_map(&AssetStore::new(game)?, &id, png.as_deref(), &at)?,
     }
+    Ok(())
+}
+
+/// `vehicle-sound --sweep`: one skid intensity binding swept 0 → 1 at a fixed speed, everything else at rest.
+/// Prints the swept sequence's wave layers (envelope × gain) against the intensity, then renders the sweep:
+/// 1 s at 0, a 10 s ramp, 2 s at 1.
+fn skid_sweep(
+    bank: mw_audio::sfx_player::Bank,
+    tyre: mw_assets::vehicle_driver::TyreSoundParams,
+    which: &str,
+    mph: f32,
+    dry: bool,
+    out: &Path,
+) -> Result<()> {
+    use mw_audio::sfx_player::{ItemKind, OUTPUT_RATE, Params, Player};
+    let suffix = match which {
+        "lat" => "LatSlipIntensityForSkidSound",
+        "spin" => "SpinIntensityForSkidSound",
+        "braking" => "SpinBrakingIntensityForSkidSound",
+        _ => bail!("--sweep takes lat, spin or braking"),
+    };
+    let params = std::sync::Arc::new(Params::new(bank.param_names()));
+    let names: Vec<String> = params.names().to_vec();
+    let set = |end: &str, v: f32| {
+        for n in names.iter().filter(|n| n.rsplit('.').next() == Some(end)) {
+            params.set(n, v);
+        }
+    };
+    let speed_of = |b: &str| match b.rsplit('.').next() {
+        Some("GetPlayerSpeed" | "GetSpeedMph") => Some(mph),
+        _ => None,
+    };
+    if let Some(seq) = bank.sequences.iter().find(|s| s.binding.ends_with(suffix)) {
+        println!("{:016x} {}: wave layers at {mph} mph (envelope x gain / pitch)", seq.id, seq.binding);
+        // The physical input that gives intensity x at this speed (the steady state of FUN_009d1bf0's ramps).
+        let (ramp, unit) = match which {
+            "lat" => (tyre.lat_slip, "deg"),
+            "spin" => (tyre.long_spin, "mph"),
+            _ => (tyre.long_spin_braking, "pedal"),
+        };
+        let sf = if ramp.full_speed_mph > 0.0 { (mph / ramp.full_speed_mph).min(1.0) } else { 1.0 };
+        let sf = if which == "braking" { sf * 0.5 } else { sf };
+        print!("  x     input({unit})");
+        let layers: Vec<_> = seq
+            .items
+            .iter()
+            .enumerate()
+            .filter_map(|(i, it)| match &it.kind {
+                ItemKind::Wave { waves, gain, pitch, .. } => Some((i, it, waves, gain, pitch)),
+                _ => None,
+            })
+            .collect();
+        for (i, it, waves, ..) in &layers {
+            let looping = if waves.iter().all(|w| w.looping) { "loop" } else { "shot" };
+            print!(" [{i}]{:.2}-{:.2}{looping}", it.start, it.end);
+        }
+        println!();
+        for k in 0..=20 {
+            let x = k as f32 / 20.0;
+            let need = x / sf.max(1e-6);
+            let input = if need <= 1.0 {
+                format!("{:>9.2}", ramp.start + (ramp.full - ramp.start) * need.powf(1.0 / ramp.curve_power.max(1e-3)))
+            } else {
+                format!("{:>9}", "-")
+            };
+            print!("  {x:.2} {input}");
+            for (_, it, _, gain, pitch) in &layers {
+                let t = if it.end > it.start { (x - it.start) / (it.end - it.start) } else { 0.0 };
+                let g = it.envelope(x) * gain.eval(t, speed_of(&gain.binding));
+                let p = pitch.eval(t, speed_of(&pitch.binding));
+                print!(" {g:>6.3}/{p:<4.2}{:>6}", "");
+            }
+            println!();
+        }
+    }
+    let mut player = Player::new(bank, params.clone());
+    player.dry = dry;
+    set("EngineOn", 1.0);
+    set("GetIsLocalPlayer", 1.0);
+    let rate = OUTPUT_RATE as usize;
+    let tick = rate / 64;
+    let mut samples = Vec::new();
+    for i in 0..rate * 13 {
+        if i % tick == 0 {
+            let t = i as f32 / rate as f32;
+            set("GetPlayerSpeed", mph);
+            set("GetSpeedMph", mph);
+            set(suffix, ((t - 1.0) / 10.0).clamp(0.0, 1.0));
+        }
+        samples.push((player.next_sample() * 32767.0).clamp(-32768.0, 32767.0) as i16);
+    }
+    let pcm = mw_audio::Pcm { channels: 1, sample_rate: rate as u32, samples };
+    std::fs::write(out, pcm.to_wav())?;
+    println!("13 s sweep of {suffix} at {mph} mph -> {}", out.display());
     Ok(())
 }
 

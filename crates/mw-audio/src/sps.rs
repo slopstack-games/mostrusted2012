@@ -97,6 +97,9 @@ struct EaFrame {
     pcm_samples: usize,
 }
 
+/// Largest free-format frame minimp3 finds (`MAX_FREE_FORMAT_FRAME_SIZE` is 2304, searched with `k < 2304`).
+const MAX_FREE_FORMAT_BYTES: usize = 2303;
+
 const SAMPLE_RATES: [[u32; 3]; 4] = [[11025, 12000, 8000], [0, 0, 0], [22050, 24000, 16000], [44100, 48000, 32000]];
 
 /// Parse one EALayer3 v1b frame at byte `off`; returns the frame and its size.
@@ -227,9 +230,12 @@ fn decode_stream(buf: &[u8], frames: &[EaFrame]) -> Option<(usize, Vec<i16>)> {
     let first = frames.first()?;
     let channels = first.channels;
     // Free-format frames must all have one size; use the spec's 640/320 kbps
-    // size, capped by minimp3's free-format limit.
+    // size, capped below minimp3's free-format limit: its frame search only
+    // tries sizes *under* 2304 bytes, so 32 kHz MPEG-1 streams (nominal 2880,
+    // formerly capped to exactly 2304) decoded to nothing but their PCM prefix
+    // (47 samples), which then looped as a ~680 Hz buzz.
     let nominal = if first.mpeg1 { 144 * 640_000 } else { 72 * 320_000 } / first.sample_rate.max(1) as usize;
-    let frame_bytes = nominal.min(2304);
+    let frame_bytes = nominal.min(MAX_FREE_FORMAT_BYTES);
     let mut mp3 = Vec::new();
     let mut prefix_pcm: Vec<i16> = Vec::new();
     let mut discard = 529 + 576; // decoder delay + first granule

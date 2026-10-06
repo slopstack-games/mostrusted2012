@@ -1,13 +1,14 @@
 //! The player car's tyre, road, wind, impact and scrape sounds, from the game's sound data
-//! (`mw_assets::sfx`): one sequence bank rendered by `mw_audio::sfx_player::Player`, driven by the wheels'
-//! ground contacts (`Car::wheel_contacts`) and the body's contacts (`particles::ImpactEvent`).
+//! (`mw_assets::sfx`): one sequence bank rendered by `mw_audio::sfx_player::Player`, driven by the skid wheel
+//! (`Car::skid_wheel`, as the game picks it), the wheels' ground contacts (landings) and the body's contacts
+//! (`particles::ImpactEvent`).
 
 use std::num::NonZero;
 use std::sync::{Arc, Mutex};
 
 use bevy::audio::{AddAudioSource, Decodable, Sample, Source, Volume};
 use bevy::prelude::*;
-use mw_assets::vehicle_driver::{VehicleDriver, VehicleInput, WheelSlip};
+use mw_assets::vehicle_driver::{TyreSoundParams, VehicleDriver, VehicleInput};
 use mw_audio::sfx_player::{Bank, OUTPUT_RATE, Params, Player};
 
 use crate::drive::{Car, CarInput};
@@ -62,10 +63,13 @@ impl Decodable for SfxAudio {
     }
 }
 
+/// What the worker thread builds: the bank and the skid tuning.
+type Built = (Bank, Option<TyreSoundParams>);
+
 #[derive(Resource, Default)]
 struct SfxState {
     /// The bank, built on a worker thread (it decodes a few hundred waves).
-    building: Option<Arc<Mutex<Option<Bank>>>>,
+    building: Option<Arc<Mutex<Option<Built>>>>,
     started: bool,
     driver: Option<VehicleDriver>,
     last_impact: f32,
@@ -97,17 +101,25 @@ fn load_bank(
                 warn!("vehicle sounds: {e}");
                 Bank::default()
             });
-            *out.lock().unwrap() = Some(bank);
+            let tyre = store.tyre_sound_params();
+            if tyre.is_none() {
+                warn!("vehicle sounds: no TyreSoundParams, using the built-in copy");
+            }
+            *out.lock().unwrap() = Some((bank, tyre));
         });
         state.building = Some(slot);
         return;
     }
     let Some(slot) = state.building.clone() else { return };
-    let Some(bank) = slot.lock().unwrap().take() else { return };
+    let Some((bank, tyre)) = slot.lock().unwrap().take() else { return };
     state.building = None;
     info!("vehicle sounds: {} sequences, {} channels", bank.sequences.len(), bank.channels.len());
     let params = Arc::new(Params::new(bank.param_names()));
-    state.driver = Some(VehicleDriver::new(params.clone()));
+    let mut driver = VehicleDriver::new(params.clone());
+    if let Some(t) = tyre {
+        driver.tyre = t;
+    }
+    state.driver = Some(driver);
     let handle = assets.add(SfxAudio { bank, params });
     // ONCE: a live source never ends; LOOP would buffer it 0.74 s at a time (see audio.rs).
     // Starts silent; `settings::apply_volumes` sets the effects volume once the sink exists.
@@ -121,7 +133,7 @@ fn load_bank(
 fn update_params(
     time: Res<Time>,
     mut state: ResMut<SfxState>,
-    cars: Query<(Entity, &Car, &GlobalTransform)>,
+    cars: Query<(Entity, &Car)>,
     input: Res<CarInput>,
     mut impacts: MessageReader<ImpactEvent>,
 ) {
@@ -147,28 +159,18 @@ fn update_params(
     }
     // Scrapes hold briefly between contact frames.
     state.scrape = if sliding > 0.0 { sliding } else { (state.scrape - dt * 40.0).max(0.0) };
-    let mut i = VehicleInput { brake: input.brake, scrape_speed: state.scrape, ..default() };
-    let mut landing = 0f32;
-    if let Some((_, car, transform)) = car {
+    let mut i =
+        VehicleInput { brake: input.brake, handbrake: input.handbrake, scrape_speed: state.scrape, ..default() };
+    let (mut landing, mut grounded) = (0f32, 0usize);
+    if let Some((_, car)) = car {
         i.speed_mph = car.speed.abs() / 0.447_04;
-        let forward = transform.rotation() * Vec3::Z;
+        i.skid_wheel = car.skid_wheel();
         for c in car.wheel_contacts().flatten() {
-            let speed = c.velocity.length();
-            // Split the patch's slip along the car's heading (positive: locked or sliding forward, negative:
-            // spinning) and across it. At a standstill only wheelspin slips (a burnout).
-            let fwd = forward.reject_from(c.normal).normalize_or_zero();
-            let (long, lateral) = if speed < 1.0 {
-                (-c.slip.length(), 0.0)
-            } else {
-                let long = c.slip.dot(fwd);
-                (long, (c.slip - fwd * long).length())
-            };
-            i.wheels.push(WheelSlip { speed, lateral, longitudinal: long });
+            grounded += 1;
             landing = landing.max(-c.velocity.dot(c.normal));
         }
     }
     // Landings: wheels back on the ground after a jump thump like a body impact at the touchdown speed.
-    let grounded = i.wheels.len();
     if grounded == 0 {
         state.air_time += dt;
     } else {

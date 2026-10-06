@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use mw_assets::AssetStore;
-use mw_assets::vehicle_driver::{VehicleDriver, VehicleInput, WheelSlip};
+use mw_assets::vehicle_driver::{TyreSoundParams, VehicleDriver, VehicleInput, WheelSlip};
 use mw_audio::sfx_player::{OUTPUT_RATE, Params, Player};
 use mw_gamedir::GameDir;
 
@@ -34,12 +34,13 @@ impl Rig {
     }
 }
 
-fn cruise(mph: f32, lateral: f32, longitudinal: f32, scrape: f32) -> VehicleInput {
-    let v = mph * 0.447_04;
+/// `slip_angle` in degrees, `slip_speed` tread minus ground (m/s), `brake` pedal, `scrape` body slide (m/s).
+fn cruise(mph: f32, slip_angle: f32, slip_speed: f32, brake: f32, scrape: f32) -> VehicleInput {
     VehicleInput {
         speed_mph: mph,
-        wheels: vec![WheelSlip { speed: v, lateral, longitudinal }; 4],
-        brake: 0.0,
+        skid_wheel: Some(WheelSlip { slip_angle, slip_speed }),
+        brake,
+        handbrake: false,
         scrape_speed: scrape,
     }
 }
@@ -53,23 +54,37 @@ fn vehicle_sounds_follow_the_physics() {
     let store = AssetStore::new(game).expect("index the install");
     let bank = store.vehicle_sfx_bank().expect("vehicle bank");
     assert!(bank.sequences.len() > 20, "{} sequences", bank.sequences.len());
+    // Every wave decodes to more than its 47-sample PCM prefix (32 kHz streams used to stop there and loop
+    // as a buzz: the "horn" in the tyre screech).
+    let shortest = bank
+        .sequences
+        .iter()
+        .flat_map(|s| &s.items)
+        .filter_map(|i| match &i.kind {
+            mw_audio::sfx_player::ItemKind::Wave { waves, .. } => Some(waves),
+            _ => None,
+        })
+        .flatten()
+        .map(|c| c.samples.len() as f32 / c.rate as f32)
+        .fold(f32::MAX, f32::min);
+    assert!(shortest > 0.05, "shortest wave {shortest} s");
+    let tyre = store.tyre_sound_params().expect("TyreSoundParams");
+    assert_eq!(tyre, TyreSoundParams::default(), "the built-in copy matches the data");
     let params = Arc::new(Params::new(bank.param_names()));
     let mut rig = Rig { driver: VehicleDriver::new(params.clone()), player: Player::new(bank, params) };
 
-    let base = rig.run(1.5, &cruise(50.0, 0.0, 0.0, 0.0));
-    // Slip angles 0°, 6°, 9°, 14° at 50 mph.
+    let base = rig.run(1.5, &cruise(50.0, 0.0, 0.0, 0.0, 0.0));
+    // Slip angles 0°, 10°, 20°, 35° at 50 mph (lateral intensity 0, 0.25, 0.5, 0.87 in the game's ramp).
     let v = 50.0 * 0.447_04;
-    let skids: Vec<f32> = [0.0f32, 6.0, 9.0, 14.0]
-        .iter()
-        .map(|deg| rig.run(1.0, &cruise(50.0, v * deg.to_radians().tan(), 0.0, 0.0)))
-        .collect();
-    let locked = rig.run(1.0, &cruise(50.0, 0.0, v, 0.0));
-    let after = rig.run(1.5, &cruise(50.0, 0.0, 0.0, 0.0));
+    let skids: Vec<f32> =
+        [0.0f32, 10.0, 20.0, 35.0].iter().map(|&deg| rig.run(1.0, &cruise(50.0, deg, 0.0, 0.0, 0.0))).collect();
+    let locked = rig.run(1.0, &cruise(50.0, 0.0, -v, 1.0, 0.0));
+    let after = rig.run(1.5, &cruise(50.0, 0.0, 0.0, 0.0, 0.0));
     rig.driver.impact(15.0);
-    let impact = rig.run(0.3, &cruise(50.0, 0.0, 0.0, 0.0));
-    rig.run(3.0, &cruise(50.0, 0.0, 0.0, 0.0));
-    let scrape = rig.run(1.0, &cruise(50.0, 0.0, 0.0, 10.0));
-    let released = rig.run(1.0, &cruise(50.0, 0.0, 0.0, 0.0));
+    let impact = rig.run(0.3, &cruise(50.0, 0.0, 0.0, 0.0, 0.0));
+    rig.run(3.0, &cruise(50.0, 0.0, 0.0, 0.0, 0.0));
+    let scrape = rig.run(1.0, &cruise(50.0, 0.0, 0.0, 0.0, 10.0));
+    let released = rig.run(1.0, &cruise(50.0, 0.0, 0.0, 0.0, 0.0));
     eprintln!(
         "road {base:.1} dB, skid by slip angle {skids:.1?}, locked {locked:.1}, after {after:.1}, impact {impact:.1}, scrape {scrape:.1}, released {released:.1}"
     );
