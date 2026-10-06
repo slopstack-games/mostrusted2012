@@ -85,6 +85,39 @@ the details, [PLAN.md](PLAN.md) "Where it stands" the state per gap.
 - At the default spawn the car loses ~18 km/h at z ≈ 1716 with `--auto-throttle`: it runs into a barrier there
   (user, 2026-10-06); not a physics fault. Use `--test-track` or another `--spawn` for speed logs.
 
+## Rounds 4–5 (late evening): UI, mods, tyre marks, performance, camera, water
+
+- **Easydrive** is drawn from the game's own layout (UI element stacks, `mw_assets::ui`; the menu layout
+  1773380): the white selected bar, translucent rows, stacked tier titles. Open: the row spacing rule, the
+  glow / slide animations, the closed-menu prompt and the side panel, conditional entries.
+- **Mods through Easydrive** (`mods_menu.rs`, pages in `easydrive.rs`): Customize car → class → mod → standard
+  / PRO, applied at once; `--mods slot=level`; `--easydrive-path 4,4,1,1` walks the menu headlessly. The slot
+  field names are cracked (`Body1`/`2`, `Chassis1`–`3`, `Nitrous1`–`4`, `PowerTrain1`/`2`, `Stock*`). 25 of the
+  55 parameter indices of `FUN_00574870` are identified (engine torque scale, gearing, steering, drift); the
+  rest (4–19, 22–25, 29, 30, 33, 41, 48–54: tyres, chassis, body) are not, so those mods do little yet.
+  `TyreUpgrade` is not applied. Class labels are ours; all mods are unlocked (no events yet).
+- **Tyre marks** (`tyre_marks.rs`, `tyre_marks.wgsl`: the `Vfx_TyreMarksNew` port with the surface's
+  `TyreMarksMaterials` texture). The rule for when a mark is laid was not found in the dump: strength follows
+  the skid-sound intensities (model decision), 0.65 m wide (too wide), 60 s fade.
+- **Jitter**: fixed. The anti-roll bar's damping is 2ζ√(k·I) with k before the ×60 scale (`FUN_00933a60`), i.e.
+  ~0.15 of critical; ours was 7.7× more and rang at 11 Hz. The per-tick solve that applies the bar has no body
+  in the dump (`FUN_00932af0`), so the bar's input and integration are still ours.
+- **Dirt**: colours fixed (a flag reset in `Look::retain_textures` made the shader read the effects texture as
+  specular); off unless `--dirt`. The build-up rule is not traced (`FUN_008e1280`'s callers `FUN_008b7a20`,
+  `FUN_008cffa0`). **Two-tone paint** from `VehicleColourPalette` (primary / secondary pairs, `FUN_008e9c00`);
+  which pair the game picks by default is open.
+- **Water**: `Water_Opaque_Singlesided` ported (floor and caustics on the third UV set, foam, the game's
+  reflection term); `MW_WATER_DEBUG=1` lists the water meshes; viewpoints `water-river`, `water-pond`. Open: the
+  material's reflection cube (a mountain silhouette), the lighting LUT's clamp, `PlotPBR_AO_StandingWater`.
+- **Performance**: `--bench <s>` (three fixed viewpoints in the research log), `--no-shadows`. ~18–20 ms per
+  frame on an RTX 3070 when the machine is quiet; CPU-bound in Bevy's per-view batching; shadows cost 2–7 ms;
+  the loaded map's size costs nothing. Next by the numbers: merge static meshes per material and unit (an
+  agent was on it when this was written: see the research log's "static mesh merging" entry).
+- **Chase camera** (the user: it lacks the original's sway, weight and avoidance): the update is
+  `FUN_005d4970` (decomp.md "## Cameras": director table, how it reads its data, call order, the yaw-spring
+  rule). Reading its ~20 helpers and porting them was in progress when this was written.
+- **Groundcover** draws as black clumps (an agent was on it).
+
 ## Live reads wanted (the original running; `sudo sysctl kernel.yama.ptrace_scope=0` first, ask the user)
 
 `mwtool memscan`: `dump NFS13.exe+0x<addr − 0x400000>` for `.bss`; object fields through `handling.watch`.
