@@ -18,7 +18,7 @@ use mw_assets::camera::VehicleCameras;
 use mw_assets::handling::{LateralCurve, LongCurve, SlipBlend, Steering, SurfaceLink, TyreAxle, VehicleHandling};
 
 use crate::chassis::ChassisParams;
-use crate::drift::{DriftInput, DriftParams, DriftState};
+use crate::drift::{self, DriftInput, DriftParams, DriftState};
 use crate::drivetrain::{Drivetrain, DrivetrainParams};
 use crate::loader::CarSpec;
 use crate::tyre;
@@ -97,9 +97,9 @@ pub struct CarParams {
     pub surface_links: Vec<SurfaceLink>,
 }
 
-/// `HandbrakeAbility`: the handbrake's strength and rear grip blend from
-/// their low-speed to their high-speed values between `Low_speed_mph` and
-/// `High_speed_mph`, and a pull lasts at least `Minimum_handbrake_time`.
+/// `HandbrakeAbility`: the handbrake's strength blends from its low-speed to its high-speed value between
+/// `Low_speed_mph` and `High_speed_mph` (`FUN_009b1180`), and it stays on for `Minimum_handbrake_time` after it is
+/// let go (`FUN_009d27b0`).
 #[derive(Debug, Clone, Copy)]
 pub struct Handbrake {
     /// `Brake_strength_at_low_speed` / `_at_high_speed` (N m per rear wheel).
@@ -120,10 +120,10 @@ impl Handbrake {
         }
     }
 
-    /// Strength in N m per rear wheel at `speed` (m/s).
+    /// Strength in N m per rear wheel at `speed` (m/s, signed: reversing counts as the low speed).
     fn at(&self, speed: f32) -> f32 {
         let [lo, hi] = self.speeds_mph;
-        let t = ((speed.abs() / MPH - lo) / (hi - lo).max(1.0)).clamp(0.0, 1.0);
+        let t = ((speed / MPH - lo) / (hi - lo).max(f32::EPSILON)).clamp(0.0, 1.0);
         self.strength[0] + (self.strength[1] - self.strength[0]) * t
     }
 }
@@ -140,11 +140,9 @@ fn finite_or_zero(x: f32) -> f32 {
 const TYRE_NORMAL_MIN_UP: f32 = 0.5;
 /// Floor on the slide-drag ramp's slip-angle span (`DAT_01025ab0`, FLT_EPSILON in `FUN_009cdd90`).
 const DRAG_SLIP_SPAN_MIN: f32 = f32::EPSILON;
-/// Burnout speed scale (mph): both pedals below this release the driven brakes (game constant not in the data).
-const BURNOUT_MPH: f32 = 20.0;
 const MPH: f32 = 0.44704;
-/// Steering outwards at the full steer rate needs |input| ≥ this; below it the game uses the raw
-/// `High_speed_steer_rate` (game constant read from the running game, `.bss` 0x01186e90).
+/// Steering outwards at the full steer rate needs |raw input| ≥ this; below it the game uses the raw
+/// `High_speed_steer_rate` (`FUN_009d73f0`; `.bss` 0x01186e90, read from the running game).
 const STEER_FULL_INPUT: f32 = 0.99;
 /// Left stick dead zone (ours: worn sticks drift).
 const STICK_DEAD_ZONE: f32 = 0.2;
@@ -232,10 +230,14 @@ pub struct Car {
     pub rear_slip: f32,
     /// Seconds since a wheel last left the ground (0 while all are down).
     air_time: f32,
-    /// Handbrake input on the previous tick, and how long a short pull is
-    /// still held (`Minimum_handbrake_time`).
-    handbrake_prev: bool,
-    handbrake_hold: f32,
+    /// The handbrake's countdown (reset to `Minimum_handbrake_time` on every tick it is pulled) and whether it is
+    /// on (`FUN_009d27b0`).
+    handbrake_timer: f32,
+    pub handbrake_on: bool,
+    /// Seconds since the body last touched the world, and the low-speed turn-around assist's state
+    /// (`FUN_008f8360`).
+    wall_time: f32,
+    turn_assist: TurnAssist,
     /// Body roll and pitch relative to the ground plane under the wheels (rad;
     /// roll positive = right side down, pitch positive = nose up).
     pub roll: f32,
@@ -496,8 +498,10 @@ fn spawn_car(
         drift: DriftState::default(),
         rear_slip: 0.0,
         air_time: 0.0,
-        handbrake_prev: false,
-        handbrake_hold: 0.0,
+        handbrake_timer: -1.0,
+        handbrake_on: false,
+        wall_time: f32::MAX,
+        turn_assist: TurnAssist::default(),
         roll: 0.0,
         pitch: 0.0,
         gear,
@@ -601,6 +605,8 @@ pub(crate) fn car_physics(
     time: Res<Time>,
     mut input: ResMut<CarInput>,
     spatial: SpatialQuery,
+    collisions: Collisions,
+    layers: Query<&CollisionLayers>,
     mut cars: Query<(Entity, &mut Car, Forces, &mut Transform)>,
     surfaces: Res<crate::props::WorldSurfaces>,
     world_tags: Query<(&Collider, &crate::props::SurfaceTags)>,
@@ -646,22 +652,30 @@ pub(crate) fn car_physics(
         let mph = speed / MPH;
         // Brake pressure builds at 10 × pedal per second; the torque goes with the pedal squared.
         car.brake_ramp = if brake > 0.1 { (car.brake_ramp + 10.0 * brake * dt).min(1.0) } else { 0.0 };
-        // A burnout (both pedals at low speed) releases the driven axle's brakes.
-        let burnout = ((1.0 - mph.abs() / BURNOUT_MPH).max(0.0) * throttle * brake).clamp(0.0, 1.0);
+        // A burnout (both pedals at low speed, `FUN_009ab230`) releases one axle's brakes: the front on a
+        // front-driven car (`Power_To_Front` = 1), else the rear (`FUN_009b1180`).
+        let burnout = drift::burnout(band_speed / MPH, throttle, brake);
+
+        // --- Handbrake (`FUN_009d27b0`) ---------------------------------------------------------------------
+        // A countdown reset to `Minimum_handbrake_time` on every tick the handbrake is pulled; it is on while the
+        // countdown has not run out, so it stays on that long after it is let go. In the game's tick the brakes
+        // and the driveline run before this update and see the previous tick's state; the drift sees this tick's
+        // and the previous one.
+        let handbrake = car.handbrake_on;
+        car.handbrake_timer = if input.handbrake { p.handbrake.min_time } else { car.handbrake_timer - dt };
+        car.handbrake_on = car.handbrake_timer >= 0.0;
+        let handbrake_strength = p.handbrake.at(band_speed);
 
         // --- Engine, clutch, gearbox (drivetrain.rs) -------------------------------
         let dp = &p.drivetrain;
-        // A pull lasts at least `Minimum_handbrake_time`.
-        if input.handbrake && !car.handbrake_prev {
-            car.handbrake_hold = p.handbrake.min_time;
-        }
-        car.handbrake_prev = input.handbrake;
-        car.handbrake_hold -= dt;
-        let handbrake = input.handbrake || car.handbrake_hold > 0.0;
-        let handbrake_strength = p.handbrake.at(band_speed);
-        // With the handbrake held the rear wheels are taken off the driveline (the game drops them from the
-        // clutch), so the locked rear wheels do not drag the engine down.
-        let axle_share = [dp.front_share, if handbrake { 0.0 } else { 1.0 - dp.front_share }];
+        // The driveline's axle split (`FUN_009d5520`, `FUN_009d0380`, `FUN_009d7ac0`): with the handbrake on, the
+        // front axle takes all of the drive (share 1, rear 0) on every car, rear-driven ones included; the
+        // burnout measure then blends each share towards the burnout axle's (front if `Power_To_Front` = 1, else
+        // rear).
+        let burnout_front = if dp.front_share >= 1.0 { 1.0 } else { 0.0 };
+        let (front, rear) = if handbrake { (1.0, 0.0) } else { (dp.front_share, 1.0 - dp.front_share) };
+        let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+        let axle_share = [lerp(front, burnout_front, burnout), lerp(rear, 1.0 - burnout_front, burnout)];
         let (mut omega, mut inv_inertia) = (0.0, 0.0);
         for (axle, share) in axle_share.iter().enumerate() {
             let wheels: Vec<&WheelState> = car.wheels.iter().filter(|w| usize::from(!w.front) == axle).collect();
@@ -679,18 +693,36 @@ pub(crate) fn car_physics(
             car.wheels.iter().filter(|w| !w.front).count().max(1) as f32,
         ];
 
-        // In a drift the game remaps the steering input (no input holds some lock into the drift) and blends
-        // the steering rate towards `Counter_steer_rate_in_drift` (drift.rs).
-        let in_drift_steer = p.drift.as_ref().and_then(|d| {
-            car.drift.steering(d, input.steer, car.rear_slip).map(|(s, blend)| (s, d.counter_steer_rate, blend))
-        });
-        let (steer_input, drift_rate) = match in_drift_steer {
-            Some((s, rate, blend)) => (s, Some((rate, blend))),
-            None => (input.steer, None),
-        };
-        let pedal = throttle - brake;
-        car.steer = steer_towards(&p.steering, car.steer, steer_input, band_speed, car.gear < 0, pedal, drift_rate, dt);
+        // --- Steering (`FUN_009d73f0` → `FUN_009d31f0`) -----------------------------------------------------
+        // The game steers after the tyres, so this tick's tyres use the angle set on the previous tick. In a
+        // drift the input is remapped (no input holds some lock into the drift, counter-steer is limited) and
+        // the wheels may not stand further across than that limit; while counter-steering the rate blends
+        // towards `Counter_steer_rate_in_drift` (drift.rs).
         let steer = car.steer;
+        let mut current = car.steer;
+        let mut steer_input = input.steer;
+        let mut drift_rate = None;
+        if let Some(d) = &p.drift {
+            if let Some((mapped, lo)) = car.drift.steering(d, input.steer, car.rear_slip) {
+                let dir = car.drift.direction;
+                let max = p.steering.max_angle.to_radians();
+                current = dir * (current * dir).clamp(lo * max, max);
+                steer_input = mapped;
+            }
+            drift_rate = Some((d.counter_steer_rate, car.drift.counter_rate_blend(d)));
+        }
+        let pedal = throttle - brake;
+        car.steer = steer_towards(
+            &p.steering,
+            current,
+            input.steer,
+            steer_input,
+            band_speed,
+            car.gear < 0,
+            pedal,
+            drift_rate,
+            dt,
+        );
 
         // Wheels only stand on the world (props are pushed by the body and bumper boxes).
         let filter = SpatialQueryFilter::from_excluded_entities([entity, car.body_collider])
@@ -701,19 +733,16 @@ pub(crate) fn car_physics(
         for wheel in &mut car.wheels {
             let axle = usize::from(!wheel.front);
             wheel.omega += drive_torque * axle_share[axle] / n_axle[axle] * dt / wheel.inertia;
-            let driven = axle_share[axle] > 0.0;
             let mut t_brake = wheel.brake_torque * brake * brake * car.brake_ramp;
-            if driven {
+            if axle == if dp.front_share >= 1.0 { 0 } else { 1 } {
                 t_brake *= 1.0 - burnout;
             }
+            // The handbrake is a rear brake torque, combined with the service brake by max (`FUN_009cdfd0`). It
+            // does not lock the wheels outright: the game's lock mask is set by other states, not the handbrake.
             if handbrake && !wheel.front {
                 t_brake = t_brake.max(handbrake_strength);
             }
-            // The handbrake locks the rear wheels (the game's brake code has a "lock" mask that stops a wheel
-            // outright; the rear tyres' brake-slip curves, nearly flat and fully blended at κ = −1, are made
-            // for it). Inferred: docs/decomp.md.
-            let locked = handbrake && !wheel.front;
-            brake_budget.push(if locked { f32::INFINITY } else { t_brake * dt });
+            brake_budget.push(t_brake * dt);
         }
         limited_slip(&mut car.wheels, &dp.diff);
 
@@ -881,6 +910,31 @@ pub(crate) fn car_physics(
                 velocity: v,
             });
         }
+        // --- Low-speed turn-around assist (`FUN_008f8360`) -------------------------------------------------
+        // The body's contact with the world (not props) on the last physics step, as the wall normal pointing
+        // at the car; the game counts the time since the last one (vehicle +0x3010).
+        let wall = world_contact(&collisions, &layers, car.body_collider);
+        car.wall_time = if wall.is_some() { 0.0 } else { car.wall_time + dt };
+        let side_axis = rot * Vec3::X;
+        let (dv, dw) = car.turn_assist.step(
+            &TurnAssistInput {
+                steer: input.steer,
+                throttle,
+                mph: band_speed / MPH,
+                wall_time: car.wall_time,
+                wall,
+                forward,
+                side: side_axis,
+                v_side: velocity.dot(side_axis),
+                yaw_rate: car.yaw_rate,
+            },
+            dt,
+        );
+        if dv != 0.0 || dw != 0.0 {
+            *forces.linear_velocity_mut() += side_axis * dv;
+            *forces.angular_velocity_mut() += up * dw;
+        }
+
         // --- The game's drift model (drift.rs) ---------------------------------
         car.rear_slip = if rear_slip.1 > 0 { rear_slip.0 / rear_slip.1 as f32 } else { 0.0 };
         car.air_time = if wheels_down == car.wheels.len() { 0.0 } else { car.air_time + dt };
@@ -894,7 +948,9 @@ pub(crate) fn car_physics(
                     steer: (input.steer * p.steering.max_angle / range.max(1.0)).clamp(-1.0, 1.0),
                     throttle,
                     brake: input.brake,
-                    handbrake,
+                    handbrake: car.handbrake_on,
+                    handbrake_prev: handbrake,
+                    touching_world: wall.is_some(),
                     speed: velocity.length(),
                     mph: band_speed / MPH,
                     angle: -car.body_slip,
@@ -910,7 +966,15 @@ pub(crate) fn car_physics(
             );
             forces.apply_torque(up * out.yaw_torque);
             let left = (rot * Vec3::X).reject_from(up).normalize_or_zero();
-            forces.apply_force(left * out.side_force + flat_v.normalize_or_zero() * out.hold_force);
+            let hold = flat_v.normalize_or_zero() * out.hold_force + forward.reject_from(up) * out.hold_forward;
+            forces.apply_force(left * out.side_force + hold);
+            // A drift that ends while counter-steering scales the wheels' angle by `Drift_exit.ca545e03`
+            // (`FUN_009d1120`): the next tick's tyres and steering start from it.
+            if let Some(k) = out.exit_steer_scale
+                && car.steer * car.drift.direction < 0.0
+            {
+                car.steer *= k;
+            }
             // The drift damps the yaw rate and the sideways velocity directly.
             if out.yaw_rate_scale < 1.0 || out.lateral_scale < 1.0 {
                 let w = forces.angular_velocity();
@@ -1081,13 +1145,16 @@ fn steer_range(s: &Steering, speed: f32, reverse: bool, pedal: f32) -> f32 {
     range.min(s.max_angle)
 }
 
-/// Move the front wheel angle (radians) towards the input the way the game does (`SteeringBehaviour`;
-/// docs/handling.md "Steering"). Rates blend from 0 mph to `High_speed`; in reverse gear the reverse values
-/// apply. `drift_rate` (degrees per second, blend) pulls the rate towards the drift's counter-steer rate.
+/// Move the front wheel angle (radians) towards the input the way the game does (`FUN_009d31f0`; docs/decomp.md
+/// "Steering"). Rates blend from 0 mph to `High_speed`; in reverse gear the reverse values apply. `raw_input` is
+/// the stick before the in-drift remap (the full-rate test reads it), `input` the one steered to. `drift_rate`
+/// (degrees per second, blend) pulls the rate towards the drift's counter-steer rate. The game's neutral offset
+/// (`553bc073` × a vehicle value whose writer was not found × `Maximum_steering_angle`) is taken as 0.
 #[allow(clippy::too_many_arguments)]
 fn steer_towards(
     s: &Steering,
     current: f32,
+    raw_input: f32,
     input: f32,
     speed: f32,
     reverse: bool,
@@ -1096,18 +1163,20 @@ fn steer_towards(
     dt: f32,
 ) -> f32 {
     let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
-    let t_high = (speed / MPH / s.high_speed_mph.max(1.0)).clamp(0.0, 1.0);
+    let t_high = (speed / MPH / s.high_speed_mph.max(f32::EPSILON)).clamp(0.0, 1.0);
     let limit = steer_range(s, speed, reverse, pedal);
-    let target = (input.clamp(-1.0, 1.0) * limit).clamp(-limit, limit);
+    let input = input.clamp(-1.0, 1.0);
+    let target = (input * limit).clamp(-limit, limit);
     let cur = current.to_degrees();
     let pick = |v: [f32; 3]| if reverse { v[2] } else { lerp(v[0], v[1], t_high) };
-    // Moving back towards centre: the counter-steer rate when the input points across the current angle,
-    // otherwise the centring rate (easing off part of the way counts as centring). Steering outwards: the
-    // steer rate, or the raw high-speed one with the input in its dead zone.
-    let towards_centre = (target - cur) * -cur > 0.0;
+    // Moving back towards centre (the target lies on the same side as the neutral position): the counter-steer
+    // rate when the input points across the current angle, otherwise the centring rate (easing off part of the
+    // way counts as centring). Steering outwards: the steer rate, or the raw high-speed one when the stick is
+    // short of full travel.
+    let towards_centre = (target - cur).signum() == (0.0 - cur).signum() && cur != 0.0;
     let rate = if towards_centre {
         if cur * input < 0.0 { pick(s.counter_rate) } else { pick(s.center_rate) }
-    } else if input.abs() >= STEER_FULL_INPUT {
+    } else if raw_input.abs() >= STEER_FULL_INPUT {
         pick(s.rate)
     } else {
         s.rate[1]
@@ -1118,6 +1187,109 @@ fn steer_towards(
     };
     let step = rate * dt;
     (cur + (target - cur).clamp(-step, step)).clamp(-limit, limit).to_radians()
+}
+
+/// The body collider's contact with the world on the last physics step, as the contact normal pointing from the
+/// world at the car (props do not count: the game's flag is set by world contacts).
+fn world_contact(collisions: &Collisions, layers: &Query<&CollisionLayers>, body: Entity) -> Option<Vec3> {
+    collisions.collisions_with(body).find_map(|pair| {
+        let (other, sign) = if pair.collider1 == body { (pair.collider2, -1.0) } else { (pair.collider1, 1.0) };
+        let world = layers.get(other).map_or(true, |l| l.memberships.has_all(crate::props::GameLayer::World));
+        if !world {
+            return None;
+        }
+        pair.manifolds.first().map(|m| m.normal * sign)
+    })
+}
+
+/// The game's low-speed turn-around assist (`FUN_008f8360`): after the body has hit a wall nearly head-on, full
+/// throttle and steering away from the wall (or any steering below 5 mph) slide the car sideways and yaw it
+/// towards the steering, so it can turn away from the wall. All constants are `.rdata` (0x01021ee0..0x010220ac).
+#[derive(Debug, Default, Clone, Copy)]
+struct TurnAssist {
+    /// Strength 0..1: grows at 1/s while the conditions hold, is held 0.5 s after, then fades at 2/s (+0x3020).
+    amount: f32,
+    hold: f32,
+    /// The steering side the strength belongs to; it restarts from 0 when the steering changes side (+0x3028).
+    side: f32,
+}
+
+struct TurnAssistInput {
+    /// Steering input (positive = left), throttle, signed speed in mph.
+    steer: f32,
+    throttle: f32,
+    mph: f32,
+    /// Seconds since the body last touched the world, and that contact's normal (pointing at the car) if it is
+    /// touching now.
+    wall_time: f32,
+    wall: Option<Vec3>,
+    /// The body's forward and side (+X, left) axes, the velocity along the side axis and the yaw rate.
+    forward: Vec3,
+    side: Vec3,
+    v_side: f32,
+    yaw_rate: f32,
+}
+
+/// Recent wall contact (s), slow speed (mph), throttle / steering thresholds, hold time (s).
+const ASSIST_WALL_TIME: f32 = 0.4;
+const ASSIST_SLOW_MPH: f32 = 5.0;
+const ASSIST_PEDAL: f32 = 0.5;
+const ASSIST_HOLD: f32 = 0.5;
+/// Sideways: target speed (m/s) and acceleration cap (m/s²). Yaw: target rate 1 − 0.5 h (rad/s) and
+/// acceleration cap 20 − 10 h (rad/s²), h = how head-on the hit was.
+const ASSIST_SIDE_SPEED: f32 = 0.5;
+const ASSIST_SIDE_ACCEL: f32 = 30.0;
+
+impl TurnAssist {
+    /// Returns the change of the sideways velocity (m/s along +X) and of the yaw rate (rad/s) this tick.
+    fn step(&mut self, i: &TurnAssistInput, dt: f32) -> (f32, f32) {
+        if self.amount.abs() <= f32::EPSILON && i.wall_time >= ASSIST_WALL_TIME {
+            return (0.0, 0.0);
+        }
+        let sign = |x: f32| {
+            if x > 0.0 {
+                1.0
+            } else if x < 0.0 {
+                -1.0
+            } else {
+                0.0
+            }
+        };
+        let side = sign(i.steer);
+        let mut amount = if side == self.side { self.amount } else { 0.0 };
+        let hold = if side == self.side { self.hold } else { 0.0 };
+        // How head-on the wall is, and whether the steering points away from it (or the car is nearly stopped).
+        let lo = 0.5 - 0.4 * (i.mph / ASSIST_SLOW_MPH).clamp(0.0, 1.0);
+        let (head_on, away, h) = match i.wall {
+            Some(n) => {
+                let head = (-n).dot(i.forward).clamp(0.0, 1.0);
+                let away = sign(n.dot(i.side)) != -side || i.mph < ASSIST_SLOW_MPH;
+                (head > 0.0, away, ((head - lo) / (0.8 - lo)).clamp(0.0, 1.0))
+            }
+            None => (false, true, 0.0),
+        };
+        let active = i.throttle > ASSIST_PEDAL
+            && i.wall_time < ASSIST_WALL_TIME
+            && i.steer.abs() > ASSIST_PEDAL
+            && head_on
+            && away;
+        self.hold = if active { ASSIST_HOLD } else { (hold - dt).max(0.0) };
+        if active {
+            amount += dt;
+        } else if self.hold <= 0.0 {
+            amount -= dt / ASSIST_HOLD;
+        }
+        self.amount = amount.clamp(0.0, 1.0);
+        self.side = side;
+        let k = i.steer.abs() * self.amount;
+        if k <= f32::EPSILON {
+            return (0.0, 0.0);
+        }
+        let dir = if i.steer >= 0.0 { 1.0 } else { -1.0 };
+        let dv = ((ASSIST_SIDE_SPEED * dir - i.v_side) * dir).clamp(0.0, ASSIST_SIDE_ACCEL * dt * k) * dir;
+        let dw = (((1.0 - 0.5 * h) * dir - i.yaw_rate) * dir).clamp(0.0, (20.0 - 10.0 * h) * dt * k) * dir;
+        (dv, dw)
+    }
 }
 
 /// `MW_ENGINE_TRACE=<file>`: append `seconds rpm throttle gear speed` every
@@ -1416,11 +1588,12 @@ fn run_test(
             }
             if (dt * 4.0).floor() != ((dt - step) * 4.0).floor() {
                 info!(
-                    "TEST drift +{dt:.1} s: {:.0} km/h, body slip {:.1}°, yaw {:.0}°/s, {:?} (scale {:.2}, rear slip {:.1}°, wheel {:.0}°, torque {:.0} N m, side force {:.0} N, hold {:.0} N, tyre yaw {:.0}/{:.0})",
+                    "TEST drift +{dt:.1} s: {:.0} km/h, body slip {:.1}°, yaw {:.0}°/s, {:?}/{:?} (scale {:.2}, rear slip {:.1}°, wheel {:.0}°, torque {:.0} N m, side force {:.0} N, hold {:.0} N, tyre yaw {:.0}/{:.0})",
                     v * 3.6,
                     car.body_slip.to_degrees(),
                     car.yaw_rate.to_degrees(),
                     car.drift.phase,
+                    car.drift.exit_reason,
                     car.drift.scale,
                     car.rear_slip,
                     car.steer.to_degrees(),
