@@ -208,6 +208,76 @@ message queue) first.
 - A mark mesh with the same vertex layout as the skinned car meshes made Bevy's multi-draw batching fail
   (`skinned_mesh_layout` validation error); an extra unused `UV_1` attribute avoids it.
 
+### 2026-10-06 (session 5, round 4): performance baseline and first optimisations
+
+**Benchmark** (`bench.rs`): `--bench <s>` on any headless run waits for `Loaded::done`, warms up 4 s, measures
+for `<s>` seconds and prints one `BENCH RESULT` line: frames, mean / median / 1 %-low frame time (Bevy's
+`FrameTimeDiagnosticsPlugin`), the main-world schedule time (First..Last), the render-world CPU time split into
+prepare (extract .. bind groups, which includes the swapchain acquire and so any GPU wait) and graph (the
+`Render` set: encoding, submit, present), shadow casters per cascade, entity / mesh-entity / visible counts,
+mesh and image asset counts at start and end (both constant: no streaming during the measurement), RSS and
+GPU / backend. `MW_BENCH_PASSES=1` adds Bevy's `RenderDiagnosticsPlugin` (per-pass CPU / GPU timestamps and
+pipeline statistics; Bevy's shadow passes and our own lighting / sky / tonemap nodes are not instrumented).
+`--no-shadows` turns the key light's shadow maps off (attribution only).
+
+Vsync: on Wayland (this machine: KWin, NVIDIA) wgpu offers no `Immediate`, and `AutoNoVsync` falls back to
+`Mailbox`, which the compositor paces at 60 Hz: every run read 59-60 fps, even with one track unit. Under
+XWayland `AutoNoVsync` gets `Immediate` (a 1-unit scene went from 16.9 to 11.1 ms), so `--bench` drops
+`WAYLAND_DISPLAY` at startup when `DISPLAY` is set; the result line says "X11" or "Wayland, vsync-paced".
+`--frame-stats` numbers taken on Wayland before today were capped the same way.
+
+All runs: RTX 3070, Vulkan, 1280x720 window, release build, while other agents were compiling (load average
+6-21 on 16 threads). Run-to-run noise is large (up to 2x): each configuration was run twice, the table gives
+both. Commands: `--camera=-1131,27,1627,-1190,15,1720` (cliff, full map), `--camera=-650,260,1850,-1000,60,2150`
+(city overview, full map), `--drive 911 --units 30 --spawn=815,60,1760,270 --auto-throttle 0.3` (drive), each
+with `--mute --bench 10`.
+
+| view | frame mean ms | median | 1 % low | main world ms | entities / mesh / visible | RSS |
+|---|---|---|---|---|---|---|
+| cliff | 28.0 / 19.4 (later 17.6) | 26.6 / 17.4 | 59 / 45 | 18.9 / 10.1 | 178 811 / 107 868 / 3 257 | 1.3-1.8 GB |
+| city | 18.7 / 18.5 | 17.3 / 16.9 | 41 / 69 | 10.1 / 9.9 | 178 811 / 107 868 / 3 651 | 1.9 GB |
+| drive | 29.0 / 35.2 (later 20.3 / 18.3) | 28.8 / 31.8 | 60 / 90 | 9.2 / 12.4 | 34 394 / 20 755 / 3 845 | 1.6-1.9 GB |
+
+**Attribution** (same viewpoint, two runs; "saves" against the quieter baseline runs):
+
+| switch | cliff frame ms | drive frame ms | saves |
+|---|---|---|---|
+| baseline | 19.4 / 18.7 | 20.3 / 18.3 | |
+| `--units 20` (23 341 entities) | 19.6 / 19.1 | | nothing: the 150 unloaded-from-view units cost no frame time |
+| `--no-groundcover` | 44 (busy) / 16.0, main 8.1 ms | | ~2 ms main world (15 000 group entities, visibility) |
+| `--no-backdrop` | | 21.2 / 29.9 | nothing measurable |
+| `--no-shadows` | 21.7 / 16.6, main 6.5 ms | 11.2 / 13.1, main 4.0 / 3.7 ms | 2-3 ms cliff, ~7 ms drive: the largest single cost |
+
+GPU utilisation during the drive bench (nvidia-smi, 1 Hz) was 25-40 % at 21-50 fps: the runtime is **CPU
+bound**, and mostly in the **render world**: render-world CPU (prepare + graph) 13.5-19 ms against a main
+world of 5-8 ms, so with pipelined rendering the render world sets the frame time. GPU timestamps of the
+instrumented passes are small (deferred G-buffer 0.4-0.5 ms, bin unpacking 0.5-1.7 ms).
+
+A chrome trace of the drive bench (`--features bevy/trace_chrome`, one build; the trace itself slows frames
+~2x, so read proportions, not absolutes) puts the render world's CPU in Bevy's GPU-driven batching, per view:
+`write_binned_instance_buffers<Shadow>` 2.4 ms and `<Opaque3dDeferred>` 1.8 ms, `prepare_preprocess_bind_groups`
+2.5, `queue_submit` 1.9, `unpack_bins` 1.6, `update_sparse_buffers` 1.3, shadow pass encoding 1.2 ms per frame.
+These scale with views (the 3 shadow cascades are 3 more views) and with bins (one per distinct mesh x
+material visible in a view; world geometry is almost all unique meshes, so bins ~ visible entities), not with
+the loaded entity count. Main world: avian physics 2.75 ms per frame (1.27 fixed steps per frame, 6 substeps),
+visibility propagation and frustum tests ~2.5 ms of CPU across threads, `calculate_bounds` 0.7 ms. Our own
+systems are small: `hud::draw_hud` 0.4 ms, everything else under 0.1 ms (`groundcover_distance` included).
+
+The floor: one track unit with `--no-shadows` (3 647 entities) ran at 11.1 ms (main world 3.5 ms) on a
+quieter machine and 19.4 ms (main world 12.4 ms) at load average 15, so on this shared machine CPU contention
+alone moves every number by up to 8 ms, and the full map adds only ~0-8 ms over that floor. Some runs landed
+on exactly 600 frames in 10 s (60.0 fps) on the X11 path too; an unloaded machine is needed to rule out a
+remaining pacing cap before comparing small changes. A drive pair run back to back: `--no-shadows` 16.7 ms
+(main 4.2, render 6.6 + 7.7 ms) against 36.8 ms with shadows (main 14.5, render 17.3 + 18.1 ms).
+
+So the candidate list's distance culling, unloading far units and merging groundcover would not move the
+frame time at these viewpoints: the work is in what is visible, per view. What would: fewer bins per view
+(merging static world meshes per material within a track unit, which also cuts shadow bins), fewer shadow
+views or casters (the cascade split and the 180 m shadow distance in `deferred.rs` are provisional, not from
+the game: measuring the game's `ShadowMap_ScaleOffset` / distance first is the fidelity-safe order), and
+physics on its own thread budget. No optimisation was landed in this round: the measured costs did not
+match a change that keeps the frame identical and fits the round.
+
 ### 2026-10-06 (session 5, round 3): vehicle liveries, paint masks and dirt
 
 - **Paint variants** across all car bundles (`mwtool models <bundle> --verbose`): plain `BodyPaint` (53 cars),
