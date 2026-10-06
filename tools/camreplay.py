@@ -62,3 +62,34 @@ print(f'  eye (cam + 0x5a0..0x5a8) RMS: z {np.sqrt(np.mean(ee[:, 2] ** 2)):.3f} 
       f'x {np.sqrt(np.mean(ee[:, 0] ** 2)):.3f}; distance {np.sqrt(np.mean((np.linalg.norm(E, axis=1) - np.linalg.norm(E_ref, axis=1)) ** 2)):.3f}')
 lag_ref = np.degrees(wrap(ref[:, 1] - tgt[:, 1])); lag = np.degrees(wrap(out[:, 1] - tgt[:, 1]))
 print(f'  yaw lag p1/p99: original {np.percentile(lag_ref, [1, 99]).round(2)}, model {np.percentile(lag, [1, 99]).round(2)}')
+
+# High-speed shake (camera.rs SpeedShakeState; FUN_005e2a70's matrix at cam + 0x360). The recorded rotation's
+# pitch (sin, from the matrix's skew part; positive = looking down) against the model's, per speed band. The
+# run's car is not identified: SHAKE = the install's (Amplitude, Frequency, Maximum, Minimum, Power) entry
+# that fits best. The model's curve is a stand-in (same statistics, not the same samples), so compare the
+# mean and standard deviation, not frame by frame.
+SHAKE = (1.2, 1.0, 200.0, 0.0, 1.5)
+MEAN, STD, WIDTH = [-0.00486, -0.00633, -0.00587], [0.0123, 0.0106, 0.00285], [3.8, 7.6, 4.0]
+rng = 0x2545f4914f6cdd1d; curve = np.zeros((199, 3))
+for lane in range(3):
+    noise = []
+    for _ in range(199 + 80):
+        rng = (rng * 0x5851f42d4c957f2d + 1) & (2 ** 64 - 1)
+        noise.append(np.frombuffer(np.uint32(((rng >> 41) & 0xffffffff) | 0x3f800000).tobytes(), '<f4')[0] * 2 - 3)
+    k = np.exp(-np.arange(-40, 41) ** 2 / (2 * WIDTH[lane] ** 2)); sm = np.convolve(noise, k[::-1], 'valid')
+    curve[:, lane] = MEAN[lane] + (sm - sm.mean()) / sm.std() * STD[lane]
+mx = d[idx, C + 0x360 // 4:C + 0x390 // 4].reshape(-1, 3, 4)
+rec = (mx[:, 1, 2] - mx[:, 2, 1]) / 2
+amp, freq, vmax, vmin, power = SHAKE; ph = 0.0; mod = np.zeros(len(t))
+for i in range(len(t)):
+    dt = 0.0 if i == 0 else min(t[i] - t[i - 1], 0.1)
+    kk = amp * np.clip((mph[i] - vmin) / (vmax - vmin), 0, 1) ** power / 10
+    ph = (ph + freq * dt) % (398 / 30); x = ph * 30; j = int(x); fr = x - j
+    a, b = (min(j, 198), min(j + 1, 198)) if j < 199 else (min(398 - j, 198), min(397 - j, 198))
+    q = curve[a, 0] + (curve[b, 0] - curve[a, 0]) * fr
+    mod[i] = np.sin(2 * q * kk + kk * 1.0693 * 0.04)
+print('  high-speed shake pitch (deg), recorded vs model: mean / std per band')
+for lo, hi in [(1, 40), (40, 80), (80, 140)]:
+    m = (mph >= lo) & (mph < hi)
+    r, o = np.degrees(rec[m]), np.degrees(mod[m])
+    print(f'    {lo}-{hi} mph: recorded {r.mean():+.4f} / {r.std():.4f}, model {o.mean():+.4f} / {o.std():.4f}')

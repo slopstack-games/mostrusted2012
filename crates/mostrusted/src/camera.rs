@@ -23,9 +23,9 @@
 //!   maximum, shaped by `Camera_Roll_Factor_Power`; a nose-down pitch from deceleration between
 //!   `Minimum_` and `Maximum_deceleration_for_pitch_change`, shaped by `Pitch_change_curve_power`.
 //!   Both approach their targets at their `…_Intensity` rate.
-//! - **Shake**: a high-speed shake (`High_Speed_Shake`, between its minimum and maximum speeds) and an
-//!   impact shake: body-collider contacts kick the damped springs of `CameraGameplayShakeEffect`
-//!   (pitch and fore-aft translation).
+//! - **Shake**: a high-speed shake (`High_Speed_Shake`: a slow quaternion curve scaled by
+//!   `Amplitude · f^Power / 10`, turning the view about a point 10 m behind the eye; `FUN_005e2a70`) and an
+//!   impact shake (`FUN_005cd040` level, `FUN_005dfe90` noise spring).
 //! - **Collision**: a ray from the look-at point to the eye keeps the camera on this side of walls.
 //! - **Look around**: the right stick (and right mouse button + drag) orbits the camera; it springs
 //!   back behind the car when released.
@@ -100,10 +100,6 @@ const FOV_ACCEL_RISE: f32 = 0.01;
 const FOV_ACCEL_FALL: f32 = 0.05;
 /// Rate (1/s) at which the field of view follows its target.
 const FOV_RATE: f32 = 3.0;
-/// High-speed shake: metres of eye movement per unit of `High_Speed_Shake.Amplitude`, and the
-/// noise's base frequency (Hz) at `Frequency` 1.
-const SHAKE_METRES: f32 = 0.012;
-const SHAKE_HZ: f32 = 1.4;
 /// Air time (s, all wheels off) after which touching down counts as a landing contact for the impact shake.
 /// Model decision: the original's contact list holds the wheels' ground contacts, ours does not.
 const LANDING_AIR: f32 = 0.2;
@@ -337,6 +333,106 @@ impl ImpactShakeState {
     }
 }
 
+/// Samples in the high-speed shake's curve, and their rate (the original's period is 398 / 30 = 13.27 s:
+/// the 199 samples are played forwards then backwards).
+const SPEED_SHAKE_SAMPLES: usize = 199;
+const SPEED_SHAKE_RATE: f32 = 30.0;
+/// `FUN_005e34e0`'s constant vectors: the amplitude divisor (also the pivot distance, m), the pitch bias factor.
+const SPEED_SHAKE_DIVISOR: f32 = 10.0;
+const SPEED_SHAKE_BIAS: f32 = 0.04;
+/// `FUN_005e2a70`'s random-walk state (cam + 0x440) as recorded: it stayed at 1.0692–1.0696 for the whole of
+/// `ref/live1` (model decision: its update is not understood, see decomp.md "High-speed shake").
+const SPEED_SHAKE_WALK: f32 = 1.0693;
+/// Stand-in for the original's curve (a 199-sample `.bss` table at 0x01188300, the ICE `SHAKE_DATA`
+/// quaternion x / y / z, filled at run time and not reproducible from the code): smoothed noise with the
+/// recorded per-lane mean, standard deviation and smoothness (Gaussian width in samples). Model decision.
+const SPEED_SHAKE_MEAN: [f32; 3] = [-0.00486, -0.00633, -0.00587];
+const SPEED_SHAKE_STD: [f32; 3] = [0.0123, 0.0106, 0.00285];
+const SPEED_SHAKE_WIDTH: [f32; 3] = [3.8, 7.6, 4.0];
+
+/// The high-speed shake (`FUN_005d0b90` -> `FUN_005e34e0` -> `FUN_005e2a70`, decomp.md "High-speed shake"):
+/// a quaternion curve played at `Frequency`, scaled by `Amplitude · f^Power / 10` (f = the speed's place
+/// between the shake speeds), as a small rotation of the view about a point 10 m behind the eye.
+struct SpeedShakeState {
+    curve: [[f32; 3]; SPEED_SHAKE_SAMPLES],
+    /// Play position in seconds (cam + 0x420), wrapped at the ping-pong period.
+    phase: f32,
+    /// Rotation about the camera's own right, up and forward axes (radians; pitch positive = looking down,
+    /// yaw positive = towards the game's right row, roll positive = the right row rising) and the drop of
+    /// the eye along its own up axis (m).
+    angles: Vec3,
+    drop: f32,
+}
+
+impl Default for SpeedShakeState {
+    fn default() -> Self {
+        // Deterministic white noise from the game's LCG, smoothed per lane and normalised.
+        let mut rng = 0x2545_f491_4f6c_dd1du64;
+        let mut curve = [[0.0; 3]; SPEED_SHAKE_SAMPLES];
+        for lane in 0..3 {
+            let pad = 40usize;
+            let noise: Vec<f32> = (0..SPEED_SHAKE_SAMPLES + 2 * pad)
+                .map(|_| {
+                    rng = rng.wrapping_mul(0x5851_f42d_4c95_7f2d).wrapping_add(1);
+                    f32::from_bits(((rng >> 41) as u32) | 0x3f80_0000) * 2.0 - 3.0
+                })
+                .collect();
+            let w = SPEED_SHAKE_WIDTH[lane];
+            let kernel: Vec<f32> =
+                (-(pad as i32)..=pad as i32).map(|k| (-(k * k) as f32 / (2.0 * w * w)).exp()).collect();
+            let smooth: Vec<f32> = (0..SPEED_SHAKE_SAMPLES)
+                .map(|i| kernel.iter().enumerate().map(|(k, g)| g * noise[i + k]).sum())
+                .collect();
+            let n = SPEED_SHAKE_SAMPLES as f32;
+            let mean = smooth.iter().sum::<f32>() / n;
+            let std = (smooth.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / n).sqrt().max(1e-6);
+            for (c, x) in curve.iter_mut().zip(smooth) {
+                c[lane] = SPEED_SHAKE_MEAN[lane] + (x - mean) / std * SPEED_SHAKE_STD[lane];
+            }
+        }
+        Self { curve, phase: 0.0, angles: Vec3::ZERO, drop: 0.0 }
+    }
+}
+
+impl SpeedShakeState {
+    fn step(&mut self, d: &mw_assets::camera::HighSpeedShake, mph: f32, dt: f32) {
+        // FUN_005d0b90: f = clamp((speed − Minimum) / max(Maximum − Minimum, ε), 0, 1); amplitude = Amplitude ·
+        // f^Power. FUN_005e2a70: the play position advances by Frequency · dt.
+        let f = ((mph.abs() - d.speed[0]) / (d.speed[1] - d.speed[0]).max(f32::EPSILON)).clamp(0.0, 1.0);
+        let k = d.amplitude * f.powf(d.power) / SPEED_SHAKE_DIVISOR;
+        let period = (2 * SPEED_SHAKE_SAMPLES) as f32 / SPEED_SHAKE_RATE;
+        self.phase = (self.phase + d.frequency * dt).rem_euclid(period);
+        // FUN_009e7a30: index = phase · 30, forwards for the first 199 samples, then mirrored; interpolated
+        // between neighbours (a slerp in the original; these are 1-2° rotations, so linear).
+        let x = self.phase * SPEED_SHAKE_RATE;
+        let i = x.floor() as usize;
+        let frac = x - i as f32;
+        let last = SPEED_SHAKE_SAMPLES - 1;
+        let n2 = 2 * SPEED_SHAKE_SAMPLES;
+        let (a, b) = if i < SPEED_SHAKE_SAMPLES {
+            (i.min(last), (i + 1).min(last))
+        } else {
+            (n2.saturating_sub(i).min(last), (n2 - 1).saturating_sub(i).min(last))
+        };
+        let q: [f32; 3] = std::array::from_fn(|l| self.curve[a][l] + (self.curve[b][l] - self.curve[a][l]) * frac);
+        // The quaternion's x, y, z scaled by the amplitude / 10 become the view's pitch, yaw, roll (twice the
+        // half-angle); the pitch also gets amplitude / 10 · walk · 0.04 (local_30 in FUN_005e2a70). The matrix's
+        // y translation is −10 · sin(pitch): the view turns about a point 10 m behind the eye.
+        self.angles =
+            Vec3::new(2.0 * q[0] * k + k * SPEED_SHAKE_WALK * SPEED_SHAKE_BIAS, 2.0 * q[1] * k, 2.0 * q[2] * k);
+        self.drop = SPEED_SHAKE_DIVISOR * self.angles.x.sin();
+    }
+
+    /// Pre-multiplied onto the camera matrix in the original (before the impact shake). The game's camera rows
+    /// are right, up, forward with right × up = forward; Bevy's camera looks down −Z, so the game's right row is
+    /// Bevy's −X: looking down is a negative turn about local X, the game's yaw / roll turn the other way.
+    fn apply(&self, t: &mut Transform) {
+        let down = t.rotation * Vec3::NEG_Y;
+        t.translation += down * self.drop;
+        t.rotation *= Quat::from_euler(EulerRot::XYZ, -self.angles.x, self.angles.y, -self.angles.z);
+    }
+}
+
 /// The 3D camera while it follows a car (the free camera has its own controller).
 pub(crate) type DrivingCamera =
     (With<Camera3d>, Without<FreeCamera>, Without<crate::reflection::PlanarReflectionCamera>);
@@ -377,7 +473,7 @@ struct CameraState {
     fov_accel: f32,
     last_speed: f32,
     since_speed: f32,
-    shake_t: f32,
+    speed_shake: SpeedShakeState,
     /// Distance from the look-at point to the eye the walls allow.
     clip: f32,
     impact: ImpactShakeState,
@@ -441,7 +537,7 @@ fn follow_car(
             if let Some(f) = &mut s.trace {
                 let _ = writeln!(
                     f,
-                    "# t speed_kmh accel_ms2 yaw_rate lat_ms2 slip_deg mode eye_x eye_y eye_z yaw_lag_deg fov roll pitch accel_z shake_pitch shake_level"
+                    "# t speed_kmh accel_ms2 yaw_rate lat_ms2 slip_deg mode eye_x eye_y eye_z yaw_lag_deg fov roll pitch accel_z shake_pitch shake_level speed_shake_pitch_deg speed_shake_drop"
                 );
             }
         }
@@ -479,16 +575,8 @@ fn follow_car(
     s.impact.last_vy = vel.y;
     s.impact.step(&ext.impact, contact, dt);
 
-    // High-speed shake: grows with the speed fraction between the shake speeds, to the power `Power`.
-    let sh = &ext.shake;
-    let shake_f = ((mph - sh.speed[0]) / (sh.speed[1] - sh.speed[0]).max(1.0)).clamp(0.0, 1.0);
-    s.shake_t += dt * sh.frequency * SHAKE_HZ * TAU;
-    let shake = sh.amplitude * SHAKE_METRES * shake_f.powf(sh.power.max(0.1));
-    let shake_v = Vec3::new(
-        (s.shake_t * 1.7).sin() + 0.5 * (s.shake_t * 4.1).sin(),
-        (s.shake_t * 2.3).sin() + 0.4 * (s.shake_t * 5.3).sin(),
-        0.0,
-    ) * shake;
+    // High-speed shake (FUN_005d0b90's first stage): vehicle + 0x1620, mph.
+    s.speed_shake.step(&ext.shake, mph, dt);
 
     let mode = settings.mode;
     let in_car = match mode {
@@ -540,10 +628,13 @@ fn follow_car(
 
     let frame = Transform::from_translation(pos).looking_at(target, up);
     let mut t = frame;
-    t.translation += frame.rotation * shake_v;
     t.rotate_local_x(-s.pitch.to_radians());
     t.rotate_local_z(s.roll.to_radians());
-    // Camera effects, after the follow position: the impact shake.
+    // Camera effects, after the follow position (FUN_005d0b90): the high-speed shake (chase view only),
+    // then the impact shake.
+    if in_car.is_none() {
+        s.speed_shake.apply(&mut t);
+    }
     s.impact.apply(&mut t);
     let shake_pitch = s.impact.angles.x;
     *cam = t;
@@ -557,7 +648,7 @@ fn follow_car(
         let local = car_t.rotation.inverse() * (cam.translation - car_t.translation);
         let _ = writeln!(
             f,
-            "{:.3} {:.2} {:.2} {:.3} {:.2} {:.2} {:?} {:.3} {:.3} {:.3} {:.2} {:.2} {:.2} {:.2} {:.3} {:.3} {:.3}",
+            "{:.3} {:.2} {:.2} {:.3} {:.2} {:.2} {:?} {:.3} {:.3} {:.3} {:.2} {:.2} {:.2} {:.2} {:.3} {:.3} {:.3} {:.4} {:.4}",
             s.time,
             car.speed * 3.6,
             s.accel,
@@ -574,7 +665,9 @@ fn follow_car(
             s.pitch,
             s.accel_z,
             shake_pitch,
-            s.impact.level
+            s.impact.level,
+            s.speed_shake.angles.x.to_degrees(),
+            s.speed_shake.drop
         );
     }
 }
