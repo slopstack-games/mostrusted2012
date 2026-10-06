@@ -763,11 +763,97 @@ are. `mwtool freeroam [--list|--kind SpeedCam]` lists them.
     the frame (`this+0x3008/0x300c`, the "JustHitBillboard"/"LastItemBillboard" flags of the strings) and
     sends event +0xfc; first find sends +0x1c / +0x18, hint 5, stat 0x45.
 - **Who calls the handler**: `FUN_006ab390` (the game-logic message loop over the queue at `DAT_010edb10`)
-  and `FUN_007061d0`, `FUN_00707510`, `FUN_0065fc00`. The overlap test that posts "car entered trigger" is
-  not traced yet, so whether the car's origin, its body or a smash of the prop fires a gate / billboard is open.
+  and `FUN_007061d0`, `FUN_00707510`, `FUN_0065fc00`, and the overlap path `FUN_00707650` (see "Trigger
+  hits" below).
 - **Speed Points**: not found in this pass. The handler only sends events (ids in the config at global
   +0x44); the points are presumably awarded by whatever listens to them (`FUN_006a8050` dispatch).
   `CollectablesConfig` holds no point values (its floats are 2.5 at 0x60 and the 50 mph threshold).
+
+### Trigger hits: streaming, overlap and firing (session 5, round 2)
+
+How a car "hits" a trigger, traced from the hit handler's callers back to the trigger streamer. Confirmed by
+reading the code unless marked *inferred*.
+
+- **Streaming by grid cell** (`FUN_0053bc70`, every frame, trigger manager at `this`, the `TriggerData` handle
+  at `this+0xc18`/`+0xc1c`): for each of the 16 player slots (`FUN_00571160`) with an active vehicle, take
+  its position x (matrix +0x30) and z (+0x38) and compute `cx = (int)((x − origin.x) / cell.x)`,
+  `cz = (int)((z − origin.z) / cell.z)` with origin at header +0x28/+0x2c and cell size at +0x30/+0x34
+  (250 m). The range is `cx .. min(cx + 1, dimX − 1)` and `cz .. min(cz + 1, dimZ − 1)` (dims at header
+  +0x20/+0x24), with one less at the top when `pos + 0.5 × cell` falls in the same cell (`DAT_00f8a810` =
+  0.5); i.e. *inferred*: the 2 × 2 block of cells nearest the car. Cell index = `dimX × cz + cx`. The union of
+  all players' cells (list at `this+0x8020`, count `+0x8280`) is diffed with last frame's: cells that left are
+  released (`FUN_0053b390` → `FUN_0053a420`), new ones added (`FUN_0053b2c0` → `FUN_00539e50` per trigger
+  index in the cell). This settles the header +0x1c index as **per-cell lists of trigger indices**.
+- **Active trigger slots** (`FUN_00539e50(index)`): at most **300** triggers are live at once (slots of 0x60
+  bytes at `this+0xe70`, a 10-word bitset at `+0x7ef0`, a reference count byte per slot, so a trigger shared by
+  several cells is created once); this is the "300 entries" seen in `FUN_0053c2f0`. Per shape (record +0x11):
+  **box** → a box shape with **half extents = size × 0.5** (`FUN_00a102b0`, `DAT_00faa580` = 0.5 × 4), so
+  the record's size (+0x24) is the **full** extent; **sphere** → a sphere of radius +0x14 (`FUN_00a0e190`);
+  **point** → no shape at all, so points are never overlap-tested (they are locations, read by id elsewhere).
+  The shape is registered with `FUN_00541850` (type 2, filter 0x20).
+- **Overlap job** (`FUN_00536a10`, profiler name `"TriggerUpdate"`): for each of 24 vehicle slots that is
+  active and in state 0 or 2 (`+0x9c`), builds a 0x80-byte query: the car's half-extent box (for a vehicle
+  with a full body: a vector at +0x20 of the object behind vehicle `+0xd8`/`+0xdc`, *inferred* the body's
+  half extents; otherwise `(max − min) / 2` of its physics AABB, again × 0.5), its pose and a velocity-like
+  vector (`FUN_00573450`: vehicle `+0x100`; or the physics body's `+0xb0` when its flag bit `+0xf4 & 1` is
+  clear, else zero). The job is dispatched with `FUN_00da2e50` over the active slots; its narrow-phase test
+  was not read (*inferred*: the car's box against the trigger box / sphere, not the car's origin).
+- **Per-vehicle hit list** (`FUN_00536f70(slot, vehicle)`, a job callback): appends the trigger index to the
+  vehicle's list (16 × u16 at `this+0xc20 + v × 0x24`, count at `+0x20`). Spheres are always appended. Boxes
+  with **flags bit 0 clear** are always appended; with **bit 0 set** only when
+  `dot(vehicle vector, trigger axis) ≥ 0` (`DAT_00faa600` = 0.0; the axis is row 2 of the shape's matrix, its
+  local Z) — a **one-way trigger** that counts only when crossed in the facing direction (*inferred*: the
+  vector is the velocity). Flags bit 1 (set on speed cameras, jack spot locations, body shops) is not read
+  here. `FUN_005372f0(vehicle, out, 16)` copies the list out.
+- **Firing** (`FUN_00707650`, game-logic per frame, player vehicle `+0xa0`): reads the player's list and the
+  extra indices queued at `this+0x1100` (count `+0x1104`), and **fires on entry only**: an index that was in
+  last frame's list (`this+0x10dc`, count `+0x10fc`) is skipped. Kind filter: `FUN_006e42f0(kind)` (true for
+  6, '4'/'G', billboard kinds, '0'/'H', 7/'I', and some more through `FUN_006e16c0` / `FUN_006e1690`); jack
+  spot kinds ('<' '=' and letters) pass only while the game-state bytes `+0x2e90` or `+0x2e91` are set;
+  kind 11 goes to `FUN_006e4770` instead (once per entry). Already-found triggers (`FUN_006fa530`) are dropped
+  except speed cameras (repeatable unless `+0x2e95`). Survivors go into a ring buffer (`this+0x2f94`,
+  capacity `+0x2f98`, head `+0x2f9c`, count `+0x2fa0`) that is **drained one entry per 4 s**
+  (`DAT_00fcb050` = 4.0; the timer is held at 4 while the queue is empty, so a lone hit is handled the same
+  frame; `FUN_006ba290()` true also skips the wait). The drained record is re-filtered and handed to
+  `FUN_007059b0(player, record, 0, 0, 0)`. *Inferred consequence*: a speed camera's speed is read when its
+  queue entry is handled, up to 4 s × queue position after the pass when several hits come together.
+- **Other callers of the handler**: `FUN_007061d0(key)` and `FUN_00707510` walk a GeneSys list at
+  `this+0x41b0`/`+0x41b4` (u16 count at +0x14, pointer array at +0x10) whose entries hold two trigger ids at
+  +0x20 and +0x28 and a key at +0x24, and mark both triggers found with `FUN_007059b0(…, 0, 1, 1)`:
+  `FUN_007061d0` for the entry whose key matches, `FUN_00707510` for all entries once when a config short
+  (`+0xd0`) is 1. *Inferred*: the entries are `CarSwapSpot` structs (44 bytes, eight UniqueIds 0x0c..0x28,
+  `mwtool genesys-types`; the read offsets 0x20/0x24/0x28 are its fields `0aff900c` / `a3b7a168` /
+  `0e3bcabe`): jack spot location and car trigger ids with the car's id as key, so owning a car marks its
+  jack spot pair found. `FUN_0065fc00` hits the trigger of a 0x34-byte record list (`+0x20` = trigger id).
+
+### Billboards, gates and other kinds (session 5, round 2)
+
+- **Billboards are counted by the prop breaking**, confirmed: game-logic message 0x14 (handled in
+  `FUN_006ab390` case 0x14: unless `FUN_006e0440()`, and only if the message's flag byte is set, call
+  `FUN_007059b0`; then always `FUN_006ed900(id)` and `FUN_0074c1a0(id)`) is posted by exactly one function,
+  `FUN_005b5340`: a smashable object (byte `+6` == 2) carries a linked trigger id at `+0x90`; when it breaks
+  and the linked trigger's kind is a billboard (`FUN_006e16f0`: '2' 'A' 'D' 'J' 'M') and its byte `+0x10d` is
+  set, it posts 0x14 with the trigger record and the flag "broken by the local player's vehicle" (vehicle
+  id compare); otherwise it posts message 0x12 with the object's position (`FUN_006fa900`). `FUN_005b52a0`
+  posts 0x12 with flag 0 (*inferred*: the object reset). Billboard kinds also pass the overlap filter above,
+  so whether the volume alone counts is open; the smash path is the one that carries the player flag.
+- **Security gates** are counted by the overlap path. A second kind, **7 / 'I'**, is a gate helper:
+  `FUN_007059b0` takes it through `FUN_006e1760` and searches the trigger nearest to the record's position
+  among kinds "0H" (`FUN_00537600(pos, "0H", 2)`, `FUN_00543e00` → index); if that gate is not found yet it is
+  hit recursively (`FUN_007059b0(…, 0, 0, 0)`), otherwise the 4 s queue timer is reset to 4. Whether the gate
+  prop must break as well was not found (no gate kind in `FUN_005b5340`).
+- **Body shop** (kind 6): in `FUN_007059b0` it only sets a local flag and falls through to the common tail;
+  what it does (repair, repaint, heat) was not traced. Next: the tail of `FUN_007059b0` after that flag.
+- **Hints**: `FUN_006ef070(4)` (speed camera), `FUN_006f3f30(5)` (billboard), `FUN_006f3f30(7)` (gate) are
+  show-once tutorial hints; their texts were not resolved.
+- **Speed camera record** (`FUN_008749e0(id, player, centi_mph, 0, id)`): stores the values and, when online
+  (`FUN_007e9360`), builds a leaderboard request with `"eventId"` = the camera id and the board name
+  `"RoadRules"` (or `"Survival"` in another mode): the Autolog **speed camera leaderboard**. Offline it only
+  calls `FUN_00874830(id)` (*inferred*: local best) and a virtual callback. No points are given here.
+- **Speed Points**: still not found. `BillboardWorth`, `ItemWorth`, `HighValueWorth` and `Score` are
+  variables of `HSMBehaviourHSMDoSmashAndGrabScoring` (a Smash-and-Grab event mode), not free roam (dead
+  end). Leads: the strings `CurrentSpeedPoints`, `SpeedPoints`, `SPEEDPOINTS`, `upload_sp_buckets`,
+  `SP_%d_%d`, and the listeners of the events the handler sends (`FUN_006a8050`).
 
 ## Traffic and AI vehicles
 
