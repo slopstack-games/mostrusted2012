@@ -162,6 +162,7 @@ mod tests {
             diffuse: None,
             normal_map: None,
             textures: Vec::new(),
+            sampler_states: Vec::new(),
             parameters: Vec::new(),
             mesh,
         }]

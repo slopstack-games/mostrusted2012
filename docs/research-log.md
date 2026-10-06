@@ -293,6 +293,53 @@ Implemented: one mesh per group, hidden by `groundcover_distance` (main.rs) when
 125·r from its box. Not done: the per-sprite range / shrink (needs a vertex-shader path; merged group meshes
 draw every sprite of a visible group at full size) and the camera-facing turn (two crossed quads stand in).
 
+### 2026-10-06 (session 5, round 2): ground texture filtering, sampler states, WorldPBR ground variants
+
+Follow-up to the "wrong scale on road and terrain" report, after the UV audit below found the UV maths
+matching. Five candidates checked; only the anisotropy differed, and fixing it does not remove the coarse
+asphalt grain, so the cause is still open.
+
+- **Mip maps: match.** `mwtool sampler-usage --textures` over all track units: every texture bound to a
+  ground shader is BC1 / BC3 with a full chain down to 1×1. The only exceptions are 4×4 placeholders with a
+  single level and 7 textures from other families. The chain is stored mip 0 first and tightly packed:
+  on 154 BC textures of `TRK_UNIT1`, mip 1's block-endpoint image correlates with mip 0's downsampled 2×2
+  at a median of 0.92. Our BC upload path (`convert::image`) passes every level (`mip_level_count`), with
+  trilinear filtering. Only non-BC or non-4-aligned textures fall back to a single decoded level, and no
+  ground texture does.
+- **Sampler states: decoded** (docs/formats.md "SamplerState"; layout from the function that fills the
+  `D3D11_SAMPLER_DESC`). Every ground colour, detail and normal map is wrap / 4× anisotropic / bias 0. Ours
+  was one sampler for everything: wrap, 8× anisotropic, bias 0. Changed it to 4× (convert.rs). The
+  effect is small: in the fixed `road-close` view, the mean horizontal gradient of the mid-distance road
+  fell from 9.6 to 8.5, and the near road did not change.
+  Still open: slots on trilinear / MipLODBias −0.9 (RoadDepth, Line, Decal normal/spec, SpecColour, some
+  Plot/Terrain tiling maps; sharper in the game than ours) and the 37 mirror / clamp states on non-ground
+  slots. Both need a per-slot sampler: `TexKey` would carry the state, and the shader would call
+  `textureSampleBias`, because a wgpu sampler has no LOD bias.
+- **Address modes: match** for the ground (all wrap).
+- **`WorldPBR_Horizontal_*`: match.** In the vertex program, TEXCOORD0 and TEXCOORD1 pass through unscaled
+  (`o1.xy = v1.xy`, `o1.zw = v2.xy`), and only the wet map gets world XZ × `cb0[6].x`. In the pixel program,
+  albedo = Diffuse(uv0) × vertex colour × `MaterialDiffuse` × wet darkening, and AO = Overlay(uv1).y. Our
+  `Mode::WorldPbr` does the same: diffuse on uv0 as the base colour, AO on `uv_b` = uv1.
+- **Vertex UV formats: match.** Every TEXCOORD stream that the ground shader layouts carry for UVs is
+  R16G16Float. Our half decoder (`dxgi::f16_to_f32`) is exact, subnormals included.
+- **Detail map strength: matches.** The DriveableSurface G-buffer pixel program computes
+  `ColourMap(v1.xy) × DetailMap(v1.zw) × 2 × wet darkening` with no distance fade and no strength
+  parameter.
+- **Still unexplained:** the high-contrast grain shows right behind the car, where mip 0 is sampled, so it
+  comes from the detail texture itself at its authored tiling, not from filtering. Next checks:
+  1. **Lead: the Texture header byte at 0x2C.** We read it as `most_detailed_mip`. It is 1 on every
+     mipped texture and 0 on the single-level ones (survey of 20000 textures). The upload loop
+     (0x00d8ee30) writes every level with `UpdateSubresource`, mip 0 included. The function that creates
+     the shader-resource view (0x00d8e670) sets `MostDetailedMip` to this byte only when its flag argument
+     is set, and to 0 otherwise. `MipLevels` is −1. Its single caller (0x00409510) passes 1 when the
+     global at 0x010eac98 is non-zero and 0x00414a50 returns true. Probably a texture-quality setting.
+     With the flag set, the game draws every mipped texture one level down: half the resolution, texels
+     twice as large and softer. That fits "scaled wrong" and the harsh grain of ours.
+     Next: read 0x010eac98 live (memscan / probe) with the user's settings, and find what 0x00414a50 tests.
+     If both hold, start our views at `most_detailed_mip` too (wgpu `TextureViewDescriptor::base_mip_level`,
+     or drop level 0 at upload).
+  2. Take a Steam F12 capture of the original at the `road-close` viewpoint.
+
 ### 2026-10-06 (session 5): ground texture scale audit
 
 Report: "some textures, especially on the road and terrain are still scaled wrong" (no location). Every UV path

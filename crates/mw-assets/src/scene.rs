@@ -19,6 +19,8 @@ pub struct SceneMesh {
     pub normal_map: Option<ResourceId>,
     /// Bound textures by shader sampler name, e.g. `MaskTextureSampler`.
     pub textures: Vec<(String, ResourceId)>,
+    /// `SamplerState` bound next to each texture, by shader sampler name (filter, address modes, LOD bias).
+    pub sampler_states: Vec<(String, ResourceId)>,
     /// Material constants by shader parameter name (material value, else the
     /// shader default), e.g. `PbrMaterialDiffuseColour`.
     pub parameters: Vec<(String, [f32; 4])>,
@@ -26,6 +28,9 @@ pub struct SceneMesh {
 }
 
 impl SceneMesh {
+    pub fn sampler_state(&self, sampler: &str) -> Option<ResourceId> {
+        self.sampler_states.iter().find(|(n, _)| n == sampler).map(|(_, v)| *v)
+    }
     pub fn parameter(&self, name: &str) -> Option<[f32; 4]> {
         self.parameters.iter().find(|(n, _)| n == name).map(|(_, v)| *v)
     }
@@ -115,8 +120,16 @@ impl AssetStore {
             .iter()
             .filter_map(|ss| Some((ss.name.clone(), material.samplers.iter().find(|m| m.key == ss.key)?.texture?)))
             .collect();
+        let sampler_states = shader
+            .samplers
+            .iter()
+            .filter_map(|ss| {
+                Some((ss.name.clone(), material.samplers.iter().find(|m| m.key == ss.key)?.sampler_state?))
+            })
+            .collect();
         Ok(SceneMesh {
             textures,
+            sampler_states,
             parameters,
             renderable: rend.id,
             mesh_index: index,

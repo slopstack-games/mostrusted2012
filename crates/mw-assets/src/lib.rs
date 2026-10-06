@@ -167,6 +167,9 @@ impl AssetStore {
     pub fn material(&self, id: ResourceId) -> Result<fmt::Material> {
         Ok(fmt::Material::parse(&self.load_typed(id, ResourceType::Material)?)?)
     }
+    pub fn sampler_state(&self, id: ResourceId) -> Result<fmt::SamplerState> {
+        Ok(fmt::SamplerState::parse(&self.load_typed(id, ResourceType::SamplerState)?)?)
+    }
     pub fn shader(&self, id: ResourceId) -> Result<fmt::Shader> {
         Ok(fmt::Shader::parse(&self.load_typed(id, ResourceType::Shader)?)?)
     }
