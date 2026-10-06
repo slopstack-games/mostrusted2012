@@ -1161,3 +1161,60 @@ Not found. The skid mark code would read `TyreVfxBehaviour.{Front,Rear}_Tyres.Sk
 `LatParams` floats at +0x10..+0x2c) and `SurfaceVfx.TyreMarksMaterials` (+0x18 + 8 x tyre class); none of these
 offsets, the field hashes, or a tyre-mark string turns up in the dump (research log 2026-10-06 round 4). The
 runtime borrows the per-wheel form of the skid sound intensities (`FUN_009d1bf0`, above) as a model decision.
+
+## Cameras
+
+Not found yet (2026-10-06, session 5 round 4). The chase camera's per-frame update, the code that reads
+`CameraGameplayExternal`, has not been located in the dump, so nothing about its sway, weight or avoidance is
+read from the code. The search, so that the next attempt does not repeat it:
+
+- **Field offsets.** `CameraGameplayExternal` (392 bytes, `mwtool genesys-types`): `Speed_based_movement` at
+  0x0c (its floats 0x34..0x44), `Acceleration_movement` 0x54 (floats 0x64..0x8c), `Camera_Roll` 0x90 (0xa0..0xb8),
+  `Yaw_spring_modification` 0xbc (0xcc..0xe4), `Deceleration_Pitch_Change` 0xe8 (0xf8..0x108),
+  `Speed_based_height_change` 0x10c, then the vectors `67660e20` 0x124, look-at `006e1686` 0x130, pivot
+  `d68bbc59` 0x13c, eye `6e08f788` 0x148, the floats 0x160..0x170 (FOV pair, `YawDriftSpring` and two unnamed),
+  the handles to `CameraGameplayExternalGlobals` 0x174 and `CameraGameplayGradientAdjustments` 0x178.
+  `VehicleCameraContainer` holds the four camera handles at 0x10 / 0x14 / 0x18 / 0x1c.
+- **Read forms searched** over every function: `*(int *)(res + 0x28) + OFF + index` in both operand orders
+  (the form the handling code uses), `*(float *)(base + OFF)` with at least 9 of 22 External offsets,
+  `base[OFF / 4]` (a float or int pointer kept to the instance) together with the vehicle's speed (+0x1620), and
+  the container's four handle offsets together. Only false positives came back:
+  `FUN_008be4e0` / `FUN_008be1c0` / `FUN_008bdc50` read +0x130 / +0x134 / +0x148 of a GeneSys instance but set up
+  render state (a texture handle and shader constants); `FUN_005ef0f0` reads a global GeneSys resource
+  (`DAT_0110f474`) at 0x10..0x130 but not the eye; `FUN_005ea6a0` / `FUN_005ea970` are matrix maths.
+- **Vehicle side.** About 40 functions read the speed at vehicle +0x1620. One lead: `FUN_005e23c0` (called from
+  `FUN_005ce610` ← `FUN_005d2cd0` ← `FUN_004766a0`) keeps eight-deep ring buffers of a car's speed, of the frame's
+  time step × scale, of the active body's velocity (+0xb0) and of a transform, reset when the tracked car
+  changes: a smoothed history of the target's motion, which fits a camera target filter but is not tied to any
+  camera field. `FUN_009d5ec0` (caller `FUN_009b4b70`) seeds an object with eight random floats from a 64-bit
+  LCG (multiplier 0x5851f42d4c957f2d) and zeroes its state: a noise source, possibly for a shake; unconfirmed.
+- **Strings** appear inline in the pseudo-C. `CAMERAS.BNDL` is loaded in `005C0000.c` (an `IceList` load into
+  `param_1 + 0x3798`). `FUN_005d4270` registers the script interface `CameraEntityModuleState` ("Camera
+  Interface") with getters `DistToCar`, `ZoomLevel`, `IsInternalDrivingCam`, `IsCockpitCam` ("the in-car view -
+  called bonnet in code"), `PictureParadiseAllowed`, `CurrentCameraTransform`, `GameplayExternalCameraTransform`
+  (`LAB_005dae70`), `DrivingBehaviourCameraTransform` (`LAB_005dae00`), `GameplayExternalFOV` (`LAB_005daeb0`) and
+  `DrivingBehaviourFOV` (`LAB_005dae40`). The getters are labels the decompiler did not turn into functions, so
+  the field of the camera manager that holds the Gameplay External camera is not readable from the dump; the
+  getter bodies (disassembly of the unpacked exe, or the probe) would give it and from it the camera's class and
+  update. Note the 0x005c..0x005e region: the camera module (`FUN_005d4270`), the target history
+  `FUN_005e23c0` below and its callers sit together.
+- **Types that hint at the structure.** GeneSys also has camera process nodes: `ProcessNode.
+  CameraTransformTracker` (two floats, a bool), `CameraTransformVelocityLerp` (two floats, a bool),
+  `CameraTransformLerp`, `CameraTransformLerpLookAt` (three floats), `CameraTransformCollider` (a string, likely a
+  collision set's name), `CameraTransformEntityAvoider` (six floats, a bool), `CameraTransformImpactShake`,
+  `CameraFOVAutoZoom`, `CameraDistanceFrom`. If the gameplay camera is such a node graph, the avoidance is
+  `EntityAvoider` + `Collider` and the code is reached through the node types' vtables rather than through
+  `CameraGameplayExternal` offsets.
+
+- **The camera manager's update (likely).** `FUN_005d2cd0` (called from the game-update dispatcher
+  `FUN_004766a0`), when the flag `DAT_010f77ed` is set: makes sure `CAMERAS.BNDL` is loaded (`FUN_005c44b0`),
+  updates the target history (`FUN_005ce610` → `FUN_005e23c0`), sets a flag bit in `DAT_010edb24`, then calls
+  virtual method +8 of the object in slot `*(mgr + 0x400)` of an array at `mgr + 0x6a0` with stride 0x3050
+  (slot index reset to 0 first; `FUN_004bc620` calls method +0x28 of the same array for a given slot).
+  If these 0x3050-byte objects are the cameras, method +8 is the per-frame update and the class's vtable
+  (found where a constructor stores it at `+0x6a0 + n × 0x3050`) leads to the chase camera. Not confirmed.
+
+Next steps: read the `CameraEntityModuleState` getters' bodies (`LAB_005dae70`, `LAB_005daeb0`) from the
+unpacked code with the probe, follow `FUN_005ce610` / `FUN_005d2cd0` / `FUN_004766a0` (they surround the
+target history and sit next to the camera module), and look for the process-node update
+functions by their field offsets (`EntityAvoider` floats at 0x18..0x2c, bool 0x30).
