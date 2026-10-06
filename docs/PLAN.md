@@ -61,8 +61,8 @@ user's review after session 3, with where each gap is tracked:
 
 | Gap | State | Item |
 |-----|-------|------|
-| Handling does not feel like the game | the model follows the game's code since session 3 (update loop, steering, drift, handbrake re-read 2026-10-06: the drift side force pushes outwards, the handbrake does not lock), but grip scales are unmeasured and the brake-tap drift now spins the 911; needs recordings of the original | M3.2 |
-| Tyre screech sounds as if a horn is held at the same time | a tonal layer plays with the screech; not investigated | M5.4 |
+| Handling does not feel like the game | re-read from the code 2026-10-06: drivetrain (14-state gearbox, live constants), tyres (μ × static load + downforce share, no calibrated scale; 2.6 g skidpads), steering, drift (side force outwards) and handbrake (no lock). Open: whether the brake-tap drift starts (the tyre constraint's +0x210 blend scale), the low-speed standstill hold, a few `.bss` constants; needs recordings of the original | M3.2 |
+| Tyre screech sounds as if a horn is held at the same time | fixed 2026-10-06 (not yet heard by the user): the 32 kHz waves decoded to a 47-sample loop (a 681 Hz buzz); skid intensities now follow the game's `FUN_009d1bf0`. A capture of the original would confirm | M5.4 |
 | Shading has a yellow tint over everything | the tonemap / ColourCube grade / ambient are suspects; compare against screenshots of the original at the same place and hour | M1.5, M1.7 |
 | Animations are missing | none play: driver, steering wheel, animated body parts (`PhysicsDrivenVehicleAnimationBehaviour`), world animations (`TriggerAnimationBehaviour`, `AnimatedDynamicEntityBehaviour`), tree wind | M3.8 |
 | Inputs are not mapped like the original | our own keyboard / pad layout; the game's bindings not found yet | M3.9 |
@@ -319,9 +319,15 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
 4. `[~]` Vehicle sound effects from the sound data (`mw_assets::sfx`, `crates/mostrusted/src/sfx.rs`): tyre
    screech (the default surface's Drift / Spin / Brake sequences driven by wheel slip), road noise, wind,
    impacts and scrapes from the `CollisionSoundSet`, landings (research log "tyre screech, road, wind,
-   impacts"). **Bug (user, 2026-10-04): the tyre screech sounds as if a horn were held at the same time**:
-   a tonal layer (wrong sequence, wave or pitch binding) plays with it. Open: that, per-surface sounds
-   (collision tags), bumps, ambience, wall reflections, horn, nitrous, speech.
+   impacts"). The screech "horn" (user, 2026-10-04) is fixed (2026-10-06, research log "the tyre screech
+   horn was a decoder bug"): every 32 kHz wave decoded to its 47-sample PCM prefix and looped as a 681 Hz buzz;
+   the skid intensities now follow the game's `FUN_009d1bf0` (one reference wheel, `TyreSoundParams` ramps and
+   rise / fall rates; decomp.md "Tyre skid sound intensities"). To confirm against the original: capture a long
+   slide (`mwtool capture slide1` while holding a 20–30° drift for 5 s, then a straight-line lock-up from 60 mph)
+   and compare its spectrum with `mostrusted --replay` of the same run: no narrow lines more than ~15 dB over
+   their third-octave in the drift. Open: `GetPlayerSuspensionLoad` (vehicle +0x1f28) for the skid channels'
+   gains, the runtime constants of the spin ramp, per-surface sounds (collision tags), bumps, ambience, wall
+   reflections, horn, nitrous, speech.
 5. `[x]` Volume settings (F2 / gamepad Select overlay, `--volume`, `~/.config/mostrusted/settings.cfg`) and the
    live sources play with `ONCE` (LOOP buffered them 0.74 s at a time: the engine held each rpm, then jumped).
 
@@ -393,8 +399,8 @@ the running original (`tools/orig/orig` drives it, `mwtool capture` / `--replay`
    drift, cornering and donut runs; the drift side force.
    In parallel, the probe ([probe.md](probe.md)): Tier 0 `memscan poke` first (a day, no toolchain), then the
    load path and the logging DLL, which is what finally measures N, the grip caps and the side force.
-2. **Tyre screech "horn"** (M5.4) and the **yellow tint** (M1.5 / M1.7): both are visible / audible every
-   second of play.
+2. The **yellow tint** (M1.5 / M1.7), visible every second of play; a listen to the fixed tyre screech (M5.4)
+   and a capture of the original's slide to confirm it.
 3. **Input mapping** like the original (M3.9) and the **crash camera** (M3.3).
 4. **Easydrive** and the game's HUD / front end (M7).
 5. **Animations** (M3.8): driver, steering wheel, animated body parts.

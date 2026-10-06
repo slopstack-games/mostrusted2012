@@ -20,6 +20,7 @@ use mw_formats::genesys::{Object, Value, field_hash};
 
 use crate::AssetStore;
 use crate::sfx_loader::{SoundLoader, handle, handles};
+use crate::vehicle_driver::{SkidRamp, TyreSoundParams};
 
 /// Cue and binding names of the vehicle bank. The `Custom.` bindings are ours (the scrape layer is
 /// assembled here from the collision set's `Scratch` waves).
@@ -46,7 +47,8 @@ const SURFACE_ROAD: [u32; 2] = [0x4648_873a, 0x1376_f03b];
 
 /// Our mix (assumed: the bank's sounds reach the master through buses outside the bundles we load, as the
 /// engine's do). Measured on `mwtool vehicle-sound` against the engine at full throttle (≈ −14 dBFS): road and
-/// wind at 60 mph ≈ −25 dBFS, a full drift ≈ −13, locked brakes ≈ −14, a heavy impact ≈ −8.
+/// wind at 60 mph ≈ −25 dBFS, a 30° drift ≈ −12.5 (−16.7 before the 32 kHz waves decoded: four of the drift
+/// layers were a 47-sample buzz), locked brakes ≈ −13, a heavy impact ≈ −8.
 const MASTER_GAIN: f32 = 1.4;
 const SKID_GAINS: [(&str, f32); 3] = [("Drift", 4.0), ("Spin", 3.5), ("Brake", 2.5)];
 const IMPACT_GAIN: f32 = 3.0;
@@ -111,7 +113,33 @@ fn loudness(s: &Sequence) -> f32 {
         .sum()
 }
 
+/// One `TyreSoundParams` ramp struct (field roles from `FUN_009d1bf0`, docs/decomp.md): `Curve_power`, the
+/// fall rate `07c5dd70`, the rise rate `7961414d`, and the given start / full / full-speed fields.
+fn skid_ramp(o: &Object, start: u32, full: u32, speed: Option<u32>) -> Option<SkidRamp> {
+    let f = |h: u32| crate::sfx_loader::number(o.get(h));
+    Some(SkidRamp {
+        start: f(start)?,
+        full: f(full)?,
+        full_speed_mph: speed.map_or(Some(0.0), f)?,
+        curve_power: f(field_hash("Curve_power")).unwrap_or(1.0),
+        rise: f(0x7961_414d)?,
+        fall: f(0x07c5_dd70)?,
+    })
+}
+
 impl AssetStore {
+    /// The skid-sound tuning (`TyreSoundParams`, `HAWAII/SURFACELIST.BNDL`; the install has one). `None` when
+    /// it is missing or a field does not read.
+    pub fn tyre_sound_params(&self) -> Option<TyreSoundParams> {
+        let o = first_object(self, "HAWAII/SURFACELIST.BNDL", "Genesys.Gen.TyreSoundParams")?;
+        const FULL_SPEED: u32 = 0x4b05_7923;
+        Some(TyreSoundParams {
+            lat_slip: skid_ramp(sub(&o, 0x0735_e463)?, 0x2f5a_0697, 0x166e_d1d6, Some(FULL_SPEED))?,
+            long_spin: skid_ramp(sub(&o, 0x0300_16b3)?, 0x9cc6_4e8b, 0xe412_7a7c, None)?,
+            long_spin_braking: skid_ramp(sub(&o, 0x6422_2c3f)?, 0x551d_00de, 0x3fa7_1b19, Some(FULL_SPEED))?,
+        })
+    }
+
     /// The player car's tyre, road, wind and impact sounds ([`crate::sfx`]).
     pub fn vehicle_sfx_bank(&self) -> crate::Result<Bank> {
         let mut loader = SoundLoader::new(self);

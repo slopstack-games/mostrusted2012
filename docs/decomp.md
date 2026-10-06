@@ -453,6 +453,43 @@ watch file logs the wheel's grip load (`w*_N`, wheel +0x100) and static load (`w
 - Unknown: the constraint +0x210 scale on the blend inputs (no writer in the dump; read it with the probe), which
   state picks `35d32b7d` for the downforce point, and the meaning of the contact's +0x14 lane.
 
+## Tyre skid sound intensities (`FUN_009d1bf0`)
+
+The three bindings the surface's skid sequences follow (`LatSlipIntensityForSkidSound` → `Drift`,
+`SpinIntensityForSkidSound` → `Spin`, `SpinBrakingIntensityForSkidSound` → `Brake`) are registered on
+`RaceCarEntity` by `FUN_0057e280`; their getters (`LAB_005a2220`, `LAB_005a2200`, `LAB_0059ef60`) are not
+decompiled. The values are computed in the handling code, once per 60 Hz tick, by `FUN_009d1bf0` (called from
+`FUN_00904da0` → `FUN_009d6e30`, after the surface rumble `FUN_009d19c0`), which stores them at +0xd0 / +0xd4 /
++0xd8 of its per-vehicle object (reset to 1.0 by `FUN_009d1120`). The link from those fields to the getters is
+inferred. Confirmed from the code:
+
+- **One reference wheel**, no max or average over wheels: wheel 0 (vehicle +0x870, the first front wheel) when
+  `Power_To_Front` (Engine +0xb0) is exactly 1, else wheel 2 (+0xc10, the first rear wheel).
+- **Tuning**: a `TyreSoundParams` handle on a per-vehicle object (`*(this+0xe4)+0x50`), replaced by the wheel's
+  surface's `SurfaceSounds.TyreParams` (+0x5c) when the wheel is on the ground and that handle is set
+  (`FUN_0054a5d0` picks the `SurfaceSounds` from the surface id, wet flag and rim / flat state). The install has
+  one `TyreSoundParams` (`…1b0ca7`); its `Lateral` and `Longitudinal` groups are never read.
+- **Lateral** = clamp((|α| − 0.05) / (40 − 0.05)) × clamp(v / 10), with α the wheel's slip angle in degrees
+  (wheel +0x114) and v the vehicle's speed in mph (+0x1620, absolute). Fields: `LatSlip.2f5a0697` = start,
+  `166ed1d6` = full, `4b057923` = full-effect speed.
+- **Spin** = clamp((s − 2) / (20 − 2)) with s = |tread speed − ground speed| of the wheel (wheel +0xe4 − +0xe0)
+  times a runtime constant (`0x0118a060`, not in the dump; inferred mph). Either sign counts, so a locked wheel
+  at speed spins this sequence too. Zeroed when the wheel's load (wheel +0x108) is under another runtime
+  constant (`0x011870d0`). Fields: `LongSpin.9cc64e8b` = start, `e4127a7c` = full.
+- **Braking** = clamp((b − 0.3) / (1 − 0.3)) × clamp(v / 40) × 0.5, with b at vehicle +0x1aa4 (read as the brake
+  pedal: it sits next to the throttle at +0x1aa0), ignored while a vector at +0x1b80 is non-zero. When the
+  vehicle's virtual method +0x44 returns true the value is clamp(v / 40) alone (not decompiled; the handbrake
+  would fit). Fields: `LongSpinBraking.551d00de` = start, `3fa71b19` = full, `4b057923` = full-effect speed.
+- **Smoothing**: per tick x += k (target − x), with k the rise rate (`7961414d`) when the target is above,
+  else the fall rate (`07c5dd70`): lateral 0.5 / 0.1, spin 0.12 / 0.2, braking 0.05 / 0.5. Not scaled by the
+  time step.
+- `Curve_power` (1 everywhere in the data) feeds three `powf` calls whose arguments the decompiler dropped;
+  read as an exponent on each ramp.
+
+What this means for the sound: a typical slide of 10–20° is 0.25–0.5 on the drift sequence's axis, which plays
+its low and middle layers; only slides past ~30° reach the top layers. Our earlier stand-in (full at 12°) put
+every slide on the top layers.
+
 ## Engine sound
 
 See the research log, "engine sound from the game code": the sound runs on its own 1000–8000 rpm axis

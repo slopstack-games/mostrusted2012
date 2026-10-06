@@ -279,6 +279,50 @@ addresses). Changes to the model:
 - Dead ends: `FUN_00920810` (vtable +0x44) and the drift's `powf` exponent are not recoverable from the dump;
   `0x006e…` writers of a +0x2c70 belong to another class; `FUN_009d4f20` reads a curve, not `BodyMovement`.
 
+### 2026-10-06: the tyre screech "horn" was a decoder bug; skid intensities from the game's code
+
+- **Cause of the horn**: every 32 kHz `Wave` decoded to just its 47-sample PCM prefix. `mw_audio::sps` rebuilds
+  EALayer3 granules into free-format MPEG frames of the nominal 640 kbps size, capped at 2304 bytes; at 32 kHz
+  the nominal size is 2880, so frames were exactly 2304 bytes, and minimp3 (nanomp3) only searches free-format
+  sizes *below* 2304 (`k < MAX_FREE_FORMAT_FRAME_SIZE`). It found no frame, and the 47 samples were played as a
+  loop: a 681 Hz buzz (32000 / 47) with all its harmonics, times the item's pitch (1.1 → 749 Hz, 1.3 → 885,
+  1.4 → 953: the "peak ≈ 950 Hz" of the 2026-10-04 measurement). Fix: cap at 2303. Affected: 18 of 281 waves
+  in `HAWAII/SURFACESOUNDS.BNDL`, 9 of 119 in `SOUND/METALCAR.BNDL`, 16 of 141 in `SOUND/GLOBAL.BNDL`; all now
+  decode to their header's sample count (e.g. `…f34e3` 65014 samples, 2.03 s), with no discontinuity at
+  granule edges (|diff|/rms 0.14–0.19 inside and at edges).
+- **The default surface's `Drift` sequence** (`…f4eae`, bound to `LatSlipIntensityForSkidSound` 0..1) has six
+  wave layers: [0] 0.03–0.40 `…f34e3` pitch 1.3, gain 1–1.5 by speed 40–80 mph; [1] 0.065–0.33 `…f4ead` /
+  `…f4eac` (48 kHz) pitch 0.6–0.7 by `Jitter`; [3] 0.18–0.44 `…f4eb4` (48 kHz) gain 2; [4] 0.33–0.83 `…f4eb2` /
+  `…f4eb1` pitch 1.1 gain 2.5; [5] 0.62–1 `…f4eb5` / `…f4eb6` pitch 1.1 gain 2.5; [6] 0.43–1 `…f34e3` pitch
+  1.4, gain 3 → 1 as speed rises 0 → 100 mph. Layers 0, 4, 5 and 6 are the 32 kHz waves, so above 0.44 the
+  drift was nothing but the buzz. Decoded, they are tyre squeal like the others: lines at most +8 to +14 dB
+  over their third-octave (the recordings' own squeal), energy mostly at 500 Hz–2 kHz.
+- **Truly tonal layers by design**: the `Brake` sequence's items [2] (`…d4a7e`, a 5.24 kHz tone, pitch 0.9 →
+  4.7 kHz) and [3] (`…d4a7a`, a 2.75 kHz sine) on channel `…d4a85` (gain 0.36), with curves peaking at 0.31 /
+  0.19 between braking intensity 0.03 and 0.63. In a braking sweep they hold −25 to −28 dB of the total: faint,
+  as the data sets them.
+- **Measured** (`mwtool vehicle-sound --sweep lat --mph 40`, 13 s, intensity 0 → 1; "lines" = energy in bins
+  more than 20 dB above their third-octave median): before, lines held −0.7 to −1.6 dB of the total from
+  intensity 0.5 up (≈ 70–85 % of the sound was the buzz, peaks +33 to +41 dB at 750 / 1500 / 2244 / 3744 Hz);
+  after, no such bins at any intensity, strongest line +8 to +15 dB. Level at full drift −16.2 → −11.9 dBFS.
+  Scripted 12 s render: drift segment −16.7 → −12.5 dBFS, peak prominence +45 → +10 dB.
+- **Skid intensities, from `FUN_009d1bf0`** (decomp.md "Tyre skid sound intensities"): one reference wheel
+  (the first rear wheel, or the first front one on front-drive cars); lateral = slip angle 0.05° → 40° times
+  speed 0 → 10 mph; spin = |tread − ground| 2 → 20 mph (a locked wheel counts); braking = pedal 0.3 → 1 times
+  speed 0 → 40 mph, halved, or the speed factor alone under a vehicle predicate (assumed: handbrake); per-tick
+  rise / fall lerps 0.5 / 0.1, 0.12 / 0.2, 0.05 / 0.5. The values come from `TyreSoundParams` (`…1b0ca7`,
+  `AssetStore::tyre_sound_params`). Ours had: lateral full at 12° (so a 15° slide sat on the drift's top
+  layers, the ones that were broken), spin on/off, braking from locked wheels or 0.45 × pedal, max over all
+  wheels, 80 ms smoothing. In `--test drift` the lateral intensity now peaks at 0.75 (5.5 s above 0.1, 3.7 s
+  in 0.6–0.8); `--test brake` locks the wheels, so the spin sequence plays (as the game's formula does) and
+  braking reaches 0.48.
+- **Open**: the runtime constants `0x0118a060` (slip-speed scale, read as mph) and `0x011870d0` (wheel-load
+  threshold for spin) and what vehicle +0x1b80 and the virtual method +0x44 are (memscan dumps / the probe
+  would settle them); `GetPlayerSuspensionLoad` (`FUN_006d92d0` → vehicle +0x1f28, smoothed per tick by
+  `FUN_009aae90` towards the mean of two axle ratios) drives the drift / brake channels' gains (0.4 → 1, exp 2)
+  and is not fed yet (0: those channels sit at 0.4 / 0.5); `BusMixer` / `Lfo` sequence items are ignored; our
+  ×4 / ×3.5 / ×2.5 skid mix gains are still assumed. Confirming capture of the original: see PLAN M5.4.
+
 ### 2026-10-05: `mwtool tune`; present and input paths of the original
 
 - Read live through the tuning menu (XKR, car park, idle): the player car at table index 48; idle 1012 rpm;

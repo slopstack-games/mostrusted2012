@@ -305,6 +305,8 @@ pub struct WheelContact {
     pub slip: Vec3,
     /// Velocity of the car at the contact point (m/s).
     pub velocity: Vec3,
+    /// Tread speed minus ground speed along the tyre (m/s): positive spinning, negative locked / dragged.
+    pub tread_slip: f32,
 }
 
 impl Car {
@@ -317,6 +319,16 @@ impl Car {
     /// Each wheel's ground contact from the last physics step (`None` while the wheel is in the air).
     pub fn wheel_contacts(&self) -> impl Iterator<Item = Option<WheelContact>> + '_ {
         self.wheels.iter().map(|w| w.contact)
+    }
+
+    /// The wheel the game's skid sounds follow (`FUN_009d1bf0`): wheel 0 (the first front wheel) when the
+    /// engine drives only the front axle (`Power_To_Front` = 1), else wheel 2 (the first rear wheel). Its slip
+    /// angle and tread-minus-ground speed, `None` while it is in the air.
+    pub fn skid_wheel(&self) -> Option<mw_assets::vehicle_driver::WheelSlip> {
+        let index = if self.params.drivetrain.front_share >= 1.0 { 0 } else { 2 };
+        let w = self.wheels.get(index).or(self.wheels.last())?;
+        let c = w.contact?;
+        Some(mw_assets::vehicle_driver::WheelSlip { slip_angle: w.slip.1, slip_speed: c.tread_slip })
     }
 }
 
@@ -908,6 +920,7 @@ pub(crate) fn car_physics(
                 normal,
                 slip: side * v_side + fwd * (v_long - wheel.omega * r),
                 velocity: v,
+                tread_slip: wheel.omega * r - v_long,
             });
         }
         // --- Low-speed turn-around assist (`FUN_008f8360`) -------------------------------------------------

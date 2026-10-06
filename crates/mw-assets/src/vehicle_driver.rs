@@ -1,6 +1,7 @@
-//! Game state → the vehicle sound bank's bindings ([`crate::sfx`]). The skid intensities are computed by the
-//! game from `TyreSoundParams` (`HAWAII/SURFACELIST.BNDL`), whose fields are not named; the rules here are
-//! ours and marked "assumed".
+//! Game state → the vehicle sound bank's bindings ([`crate::sfx`]). The three skid intensities follow the
+//! game's `FUN_009d1bf0` (docs/decomp.md, "Tyre skid sound intensities"): one reference wheel of the driven
+//! axle, ramps from `TyreSoundParams` (`HAWAII/SURFACELIST.BNDL`) and a per-tick rise / fall lerp. What the
+//! code does not show is marked "assumed".
 
 use std::sync::Arc;
 
@@ -42,33 +43,121 @@ fn classify(name: &str) -> Option<Kind> {
     })
 }
 
-/// One wheel's contact this tick, in the car's frame of motion.
+/// The skid sound's reference wheel this tick (`FUN_009d1bf0` reads one wheel: the front-left one when the
+/// engine drives only the front axle, else the first rear wheel).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct WheelSlip {
-    /// Ground speed of the wheel (m/s).
-    pub speed: f32,
-    /// Sideways sliding speed of the contact patch (m/s).
-    pub lateral: f32,
-    /// Longitudinal slip speed: positive = sliding forward over the ground (locked / braking past the limit),
-    /// negative = spinning under power.
-    pub longitudinal: f32,
+    /// Slip angle (degrees, either sign).
+    pub slip_angle: f32,
+    /// Difference between the tread speed (ω r) and the ground speed along the wheel (m/s, either sign):
+    /// a spinning or a locked wheel.
+    pub slip_speed: f32,
 }
 
 /// What the physics knows this tick.
 #[derive(Debug, Clone, Default)]
 pub struct VehicleInput {
     pub speed_mph: f32,
-    /// Wheels on the ground.
-    pub wheels: Vec<WheelSlip>,
-    /// Brake pedal (0..1): hard ABS braking squeals a little even without locking.
+    /// The reference wheel ([`WheelSlip`]), `None` while it is in the air.
+    pub skid_wheel: Option<WheelSlip>,
+    /// Brake pedal (0..1).
     pub brake: f32,
+    /// Handbrake pulled.
+    pub handbrake: bool,
     /// Sliding speed of a body contact with the world (m/s), 0 when none.
     pub scrape_speed: f32,
 }
 
+/// One ramp of `TyreSoundParams` (`LatSlip`, `LongSpin`, `LongSpinBraking`): the input's start and full values,
+/// the speed (mph) at which the intensity reaches full (0 = no speed factor), the exponent and the per-tick
+/// (60 Hz) lerp rates up and down.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SkidRamp {
+    pub start: f32,
+    pub full: f32,
+    pub full_speed_mph: f32,
+    pub curve_power: f32,
+    pub rise: f32,
+    pub fall: f32,
+}
+
+impl SkidRamp {
+    fn ratio(&self, input: f32) -> f32 {
+        let r = ((input - self.start) / (self.full - self.start).max(1.19e-7)).clamp(0.0, 1.0);
+        if self.curve_power > 0.0 && self.curve_power != 1.0 { r.powf(self.curve_power) } else { r }
+    }
+
+    fn speed_factor(&self, mph: f32) -> f32 {
+        if self.full_speed_mph > 0.0 { (mph.abs() / self.full_speed_mph).clamp(0.0, 1.0) } else { 1.0 }
+    }
+
+    /// The game's per-tick lerp towards `target` (rise rate when above, fall rate when below), made
+    /// independent of the frame time: `dt` seconds are `60 dt` ticks.
+    fn approach(&self, x: f32, target: f32, dt: f32) -> f32 {
+        let k = if target > x { self.rise } else { self.fall }.clamp(0.0, 1.0);
+        let k = 1.0 - (1.0 - k).powf(dt * 60.0);
+        x + (target - x) * k
+    }
+}
+
+/// The skid-sound tuning (`Genesys.Gen.TyreSoundParams`, one instance in the install, `…1b0ca7`). Its
+/// `Lateral` and `Longitudinal` groups are never read by the code.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TyreSoundParams {
+    /// Input: the slip angle (degrees).
+    pub lat_slip: SkidRamp,
+    /// Input: the slip speed (mph).
+    pub long_spin: SkidRamp,
+    /// Input: the brake pedal (0..1).
+    pub long_spin_braking: SkidRamp,
+}
+
+impl Default for TyreSoundParams {
+    /// The data's values (`…1b0ca7`), used until the bundle is read.
+    fn default() -> Self {
+        Self {
+            lat_slip: SkidRamp {
+                start: 0.05,
+                full: 40.0,
+                full_speed_mph: 10.0,
+                curve_power: 1.0,
+                rise: 0.5,
+                fall: 0.1,
+            },
+            long_spin: SkidRamp {
+                start: 2.0,
+                full: 20.0,
+                full_speed_mph: 0.0,
+                curve_power: 1.0,
+                rise: 0.12,
+                fall: 0.2,
+            },
+            long_spin_braking: SkidRamp {
+                start: 0.3,
+                full: 1.0,
+                full_speed_mph: 40.0,
+                curve_power: 1.0,
+                rise: 0.05,
+                fall: 0.5,
+            },
+        }
+    }
+}
+
+/// Metres per second to miles per hour. The game scales the wheel's slip speed by a runtime constant
+/// (`0x0118a060`, not in the dump) before comparing it with `LongSpin`'s 2 / 20; read as mph (inferred: the
+/// other speed thresholds of the tyre sound are in mph).
+const MPH_PER_MS: f32 = 2.236_936;
+/// `FUN_009d1bf0` halves the pedal-driven braking intensity (constant `0x01026058` = 0.5).
+const PEDAL_BRAKING_SCALE: f32 = 0.5;
+
 pub struct VehicleDriver {
     params: Arc<Params>,
     slots: Vec<(usize, Kind)>,
+    /// Skid tuning ([`TyreSoundParams`]).
+    pub tyre: TyreSoundParams,
+    /// Smoothed skid intensities: lateral, spin, braking.
+    skid: [f32; 3],
     time: f32,
     jitter: f32,
     jitter_timer: f32,
@@ -77,22 +166,14 @@ pub struct VehicleDriver {
     last: [f32; 5],
 }
 
-/// Skid intensity from a slip angle (assumed): silent below 4°, full at 12°. `TyreSoundParams.Lateral` holds
-/// 0.4 and 1.3, which read as fractions of the tyre's peak slip angle (~9°) give the same range.
-fn lateral_intensity(w: &WheelSlip) -> f32 {
-    let angle = w.lateral.abs().atan2(w.speed.max(2.0)).to_degrees();
-    let fade = ((w.speed - 2.0) / 6.0).clamp(0.0, 1.0);
-    ((angle - 4.0) / 8.0).clamp(0.0, 1.0) * fade
-}
-
 impl VehicleDriver {
     pub fn new(params: Arc<Params>) -> Self {
         let slots: Vec<(usize, Kind)> =
             params.names().iter().enumerate().filter_map(|(i, n)| Some((i, classify(n)?))).collect();
         for (i, k) in &slots {
             let tau = match k {
-                // Skids rise and fall over ~80 ms so single-tick slips don't chirp.
-                Kind::LatSlip | Kind::Spin | Kind::SpinBraking => 0.08,
+                // The skids are smoothed here, as the game does ([`SkidRamp::approach`]).
+                Kind::LatSlip | Kind::Spin | Kind::SpinBraking => 0.0,
                 Kind::ImpactVelocity | Kind::CrashMass | Kind::Jitter => 0.0,
                 _ => 0.03,
             };
@@ -101,6 +182,8 @@ impl VehicleDriver {
         let d = Self {
             params,
             slots,
+            tyre: TyreSoundParams::default(),
+            skid: [0.0; 3],
             time: 0.0,
             jitter: 0.5,
             jitter_timer: 0.0,
@@ -129,22 +212,29 @@ impl VehicleDriver {
     /// Advance by `dt` seconds.
     pub fn update(&mut self, dt: f32, i: &VehicleInput) {
         self.time += dt;
-        let lat = i.wheels.iter().map(lateral_intensity).fold(0.0, f32::max);
-        // Spinning under power: any driven wheel past its grip (assumed: full intensity).
-        let spin = if i.wheels.iter().any(|w| w.longitudinal < -0.5) { 1.0 } else { 0.0 };
-        // Locked or sliding under braking, plus a squeal under hard ABS braking at speed (assumed).
-        let fade = |v: f32| ((v - 2.0) / 8.0).clamp(0.0, 1.0);
-        let locked = i
-            .wheels
-            .iter()
-            .filter(|w| w.longitudinal > 0.5 && w.speed > 1.0)
-            .map(|w| fade(w.speed))
-            .fold(0.0, f32::max);
-        let abs = if i.brake > 0.7 { 0.45 * i.brake * fade(i.speed_mph * 0.447) } else { 0.0 };
-        self.last = [i.speed_mph, lat, spin, locked.max(abs), i.scrape_speed];
+        let t = self.tyre;
+        let mph = i.speed_mph.abs();
+        // Targets as `FUN_009d1bf0` computes them. Lateral: the slip angle's ramp times the speed's.
+        // In the air the wheel has no slip (assumed: the game keeps reading the wheel's last solve).
+        let w = i.skid_wheel.unwrap_or_default();
+        let lat = t.lat_slip.ratio(w.slip_angle.abs()) * t.lat_slip.speed_factor(mph);
+        // Spin: the tread against the ground in mph, either way (a spinning or a locked wheel). The game zeroes
+        // it below a wheel-load threshold (`0x011870d0`, not in the dump); assumed: in the air.
+        let spin = if i.skid_wheel.is_some() { t.long_spin.ratio(w.slip_speed.abs() * MPH_PER_MS) } else { 0.0 };
+        // Braking: the pedal's ramp, times the speed's, halved; a predicate of the vehicle (its virtual method
+        // +0x44, not decompiled) replaces it with the speed factor alone. Assumed: that predicate is the
+        // handbrake.
+        let speed = t.long_spin_braking.speed_factor(mph);
+        let braking =
+            if i.handbrake { speed } else { t.long_spin_braking.ratio(i.brake) * speed * PEDAL_BRAKING_SCALE };
+        self.skid[0] = t.lat_slip.approach(self.skid[0], lat, dt);
+        self.skid[1] = t.long_spin.approach(self.skid[1], spin, dt);
+        self.skid[2] = t.long_spin_braking.approach(self.skid[2], braking, dt);
+        let [lat, spin, braking] = self.skid;
+        self.last = [i.speed_mph, lat, spin, braking, i.scrape_speed];
         self.set(Kind::LatSlip, lat);
         self.set(Kind::Spin, spin);
-        self.set(Kind::SpinBraking, locked.max(abs));
+        self.set(Kind::SpinBraking, braking);
         self.set(Kind::Speed, i.speed_mph);
         self.set(Kind::Scrape, i.scrape_speed);
         if i.scrape_speed > 5.0 && !self.scraping {
