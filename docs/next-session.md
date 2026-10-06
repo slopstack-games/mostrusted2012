@@ -34,9 +34,14 @@ the details, [PLAN.md](PLAN.md) "Where it stands" the state per gap.
 - **Vignette ported** (`tonemap.rs`, `MW_NO_VIGNETTE=1`; decomp.md "Post-processing"): A·v + D from the
   default PostFX keyframe's Vignette, the gain k = 1.8245 a live read whose source is open, the small live
   stretch s of A and D (1.0025…1.0385) not modelled.
-- **Traced, not ported**: bloom (the live renderer block at +0xac74 does not match the assumed Bloom unpack
-  order: see the research log; needs the copy in `FUN_008c9e40` disassembled from the snapshot) and the
-  colour-cube blend (slot weights not read yet); the sun direction's writer and the shadow cascade fit were
+- **Traced, not ported**: bloom. The source is settled (decomp.md "Post-processing", "Where the block comes
+  from"): in free roam the block is the time-blended `EnvironmentKeyframe.Camera` (BloomColour, `99436e68`
+  intensity, level weights `9dd29928` / `2b7c4634` / `e59ff4ec`), already parsed and blended in
+  `CameraExposure` (mw-assets environment.rs); the three-level combine rule is written up there. Left to do:
+  the render passes in tonemap.rs / tonemap.wgsl (downsample × exposure clipped at 32, H blur, add pass with
+  V blur + coarser level, composite `hdr + bloom × B.rgb × saturate(bloom × T.w) × B.w`, `MW_NO_BLOOM=1`),
+  with level resolutions as a marked model decision until traced; then
+  the colour-cube blend (slot weights not read yet); the sun direction's writer and the shadow cascade fit were
   not found.
 - **The user's two visual reports** (road / terrain texture scale; foliage in the wrong place), state:
   - Texture scale: UV maths of every ground family, mip chains, UV formats and the detail-map strength match the

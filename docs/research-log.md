@@ -138,6 +138,29 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
   so the impact path does not explain the 0.2-0.3° wobble at 40-80 mph; not found); the strings search for
   other camera effects was not done.
 
+### 2026-10-07: free-roam bloom comes from the environment keyframe, not PostFX
+
+- **Source of the renderer's bloom block** (+0xac74, decomp.md "Post-processing" has the chain): the copy's
+  source is `FUN_008ce250`'s local filled from the PostFX manager +0x1300…+0x1330 (`FUN_008e3b50`; found by
+  counting the pushes, the decompiled argument lists of both calls are off by one). `FUN_008ecf80` blends
+  the PostFX keyframes there and then, when the environment override flag +0x15e0 is set, overwrites every
+  word but 7 from +0x15f0…+0x1628, which `FUN_008e3e30` fills from the blended environment state
+  (`FUN_008c2080` / `FUN_008c0f30`, +0x24d0…+0x2510).
+- **Value match**: live colour (0.292, 0.474, 0.604) = `EnvironmentKeyframe.Camera.BloomColour` of 29
+  keyframes (the noon set, e.g. `…124575`); B.w = `99436e68` (0.387…0.599 by day, live 0.595 / 0.510);
+  words 9–11 = `9dd29928` (0.009) and 1, 1 (`2b7c4634`, `e59ff4ec`). The research log's earlier note that
+  the PostFX `Bloom` unpack order puts floats at integer slots is resolved: in free roam those words are not
+  the PostFX keyframe's at all. The integer words (4, 5, 5, 1) have no float Camera field: runtime values.
+- **Conflict to check**: `e59ff4ec` is also used as the exposure adaptation speed (`CameraExposure.speed`,
+  role inferred from the day curve). If it is a bloom weight, the speed field is something else.
+- **Dead end**: the minute-long drift of the colour and weights is not a lerp between two keyframes of the
+  noon timeline (colour ≈ 25 % towards the orange keyframes, B.w and weights inconsistent with that); more
+  inputs are blended (regions, weather). Not followed further.
+- **Level combine** traced (`FUN_008e6f40`): C3 = blur(L3), C2 = (w10·blur(L2) + w11·C3) / (w10 + w11),
+  C1 = (w9·blur(L1) + (w10 + w11)·C2) / Σ; the add program `0x010117c0` blurs t0 vertically with the 5-tap
+  kernel and adds t1 × `kColorAddWeight.w`. Which weight is z or w is inferred from the first call.
+- Data parsed and blended (`CameraExposure.bloom_*`); render passes not ported this session (budget).
+
 ### 2026-10-06: the live-read `.bss` values applied to the handling code
 
 Each site re-read in the dump with the value in hand:
