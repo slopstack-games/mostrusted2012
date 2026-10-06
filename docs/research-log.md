@@ -124,6 +124,91 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-06 (session 5, late): live-read session against the running original
+
+The user ran the original (free roam, about five minutes: standing, then driving up to 134 mph, then standing);
+everything below was read from its memory, read-only. Reads through `/proc/<pid>/mem` worked with
+`kernel.yama.ptrace_scope` = 1 on this machine (no sysctl needed this time).
+
+**What was saved** (git-ignored; raw memory never leaves `re/out` / `ref`):
+
+- `re/out/live/snap1`, `snap2`: full snapshots of the process's readable memory below 4 GiB (1.4 GB each;
+  `mem.bin` + `index.tsv`), standing and at speed. They hold the unpacked code as well, so call sites the
+  decompiler lost (`this` in ECX) can be disassembled, and every `.bss` value and object can still be followed
+  after the game has quit. Helpers in the git-ignored `.claude/tools/`: `live.py [-s snap] <va|chain> [n]`
+  (chain = `10edb04,4,53220`: deref then add), `disas.py <snap> <va> <len>`, `slots.py [-s snap]`,
+  `snapshot.py`, the recorders `camrec.py` / `renrec.py`, the loader `camload.py`.
+- `ref/live1/telemetry.csv`: the handling watch list at 120 Hz (35,610 rows).
+- `ref/live1/cam.bin` (+ `cam.json`): 30,983 records at ~120 Hz of the whole camera director (0x3050 bytes), the
+  player vehicle object +0x1600…+0x2d00, its rigid body block (0x100) and the per-player camera state (0x200).
+- `ref/live1/ren/ren_NNNN.bin`: 20 dumps, 3 s apart, of the renderer object (0x20000 bytes from renderer − 0x80)
+  and every shader constant slot; `ren.log` has the car position and speed of each.
+
+**Objects found** (addresses are this run's; the route is what matters):
+
+- The **frame object** `G` (`this` of `FUN_0046f730`, called from `FUN_00476f20`): found by scanning for
+  `[G+0x2db10c] == 7` and `[G+0x623afc] ∈ {1, 2}`; no global pointer to it is known yet. The camera module
+  (`DAT_010edaf4`) lies inside it.
+- The **renderer** (`this` of `FUN_008c9e40` and of `FUN_0089d5c0`, i.e. their `param_1`) = `G + 0x2bc400 + 0x80`
+  (disassembly: `FUN_0046f730` passes `G + 0x2bc400` to `FUN_008ce250`, which passes `this + 0x80` on). Its
+  render mode at +0x1ed0c − 0x80 read 7.
+- The **shader constant context** (`this` of `FUN_00a5d660`, in ESI in `FUN_0089d5c0`) = `*(renderer + 0x2e50)`:
+  `ctx[slot]` points at the slot's float4s (count per slot in the table at `0x0118cec8`). Slots are rewritten
+  by each pass, so a read shows what the last writer left (a mid-frame snapshot shows another pass's values).
+- The **chase camera** is where decomp.md said: director = `*(*0x010edaf4 + 4) + 0x6a0`, chase camera at
+  +0x8d0 (vtable `0xf999b4` confirmed). Camera matrix at camera +0x10 (rows right / up / back, position at +0x40),
+  the followed car's frame at +0x4d0 (position +0x500), **field of view in degrees at +0x90** (70 at rest,
+  102.7 at 134 mph in this run).
+
+**Static values** (`.bss`, initialised at start-up; vectors repeat the value four times):
+
+| address | value | what the code uses it for (decomp.md / handling.md) | we assumed |
+|---|---|---|---|
+| 0x011873e0 | 0.10472 (= 2π/60) | factor in the clutch torque of `FUN_009d7ac0`: an rpm → rad/s conversion, not a tuning scale | 1 |
+| 0x01186e60 | −2.0 | standstill hold speed limit | 0 |
+| 0x01187580 | 1.0 | seconds on the ground before a downshift is allowed | 0 |
+| 0x01187250 | 60 | per-tick → per-second factor | 60 |
+| 0x011874d0 | 0.7 | clutch-in throttle exponent | - |
+| 0x011874a0 | 0.9 | stall fraction | - |
+| 0x01186b74 | 9.81 | the y term in `FUN_009bc0c0` (gravity) | not modelled |
+| 0x0118a060, 0x0118a090 | 2.23694 | m/s → mph | - |
+| 0x011870d0 | −0.1 | load floor of the tyre spin sound ramp | - |
+| 0x01186630 | 1.8 | unidentified (drivetrain entry) | - |
+| 0x01186f60 | 0.5 | unidentified (drivetrain entry) | - |
+| 0x01186bf0, 0x01186b10 | 0.1, 0.1 | strut stop slack | 0 |
+| 0x0118a018 | 0.44704 | mph → m/s (the nitrous punch "scale" is a unit conversion) | - |
+| 0x011871e0 | 0.2 | kick-down time window, seconds | 1 |
+| 0x0110f590 | 3600 | traffic cull radius squared (60 m) | - |
+| 0x0110e8f0 | 45 | camera: `_DAT_0110e8f0` of the yaw spring (`FUN_005c90a0`) | - |
+| 0x0110e4e0 | 0.9848 (cos 10°) | camera: `_DAT_0110e4e0` of `FUN_005c7a80` | - |
+
+**Renderer values while driving in daylight** (renderer offsets as in decomp.md "Post-processing"):
+
+- **Bloom is on in free roam**: the flag bytes at +0x9834…+0x9837 are all 1 and bit 1 of +0xaa9c is set. The
+  set at +0xac74: colour (0.292, 0.474, 0.604), then 4 (integer), 0.5, 5, 5 (integers), 1.0, 1 (integer),
+  0.009, 1.0, 1.0, 0.
+- **Vignette**: D (+0xa980) = (1.0065, 1.0065, 1.0065, 1.8245), A (+0xa990) = (−0.5528, −0.5528, −0.5528,
+  −0.8245). The composite multiplies by A·v + D, so the factor is 1.0065 where the vignette weight is 0 and
+  0.4537 where it is 1 (the keyframe's inner 1 and outer 0.45, stretched by about 1 %); the alpha pair gives
+  1.8245 → 1.0. The neighbours +0xa9a0…+0xa9bc read (0, nan, nan, nan) and (0.5, 0.3, 1.277, 1.013).
+- **Constant slots** at one moment (car at (887, 24.5, −555)): 0x23 `ScattCoeffs` = (0.000895, 0.0716, 1.502,
+  0.4); 0x24 = (0.2808, 0.4115, 0.4959, 0.25); 0x27 = (0.96915, 0.00412, 0, 0); 0x83 `LayerFogCoeffs` =
+  (0.1512, −6.888, 0.0826, 0.0819); 0x7f `GroundcoverConstants` = (4, 4, 4, 4); 0x0d key light direction =
+  (0.397, −0.766, −0.505). The other 15 dumps hold the rest of the run.
+
+**Other one-off reads**:
+
+- The object at `0x010eac98` (pointer `0x014de500`), byte +0x113 (what `FUN_00414a50` returns) = **1**.
+- The GeneSys object at `DAT_0110f940`: type word `0x00069444`/`0x00069445` near its header, data
+  (`*(obj + 0x28)`) floats from +0x10: 4, 50, 10, 0.25, 0.4, 0.7, 2, 80, 6, 25, 0.6, 0.649, 0.3, 8, **0.24
+  (+0x48)**, 4, −20, 15, 20, 14, 25, −8, 20, 2, 0.05, 5, 0.05, 0.5, 0.15, 0.5, 2, 2, 0, 8, 4, 10.
+  `DAT_0110f944` = 0.
+- The player index was 48 again (vehicle table slot offset 0x184).
+
+Not read (no route to the object yet): pad dead zones, the free-roam state bytes, the traffic "world" values
+(+0xa2b74, +0xa2bfc: the object in decomp.md's traffic section is not the vehicle world), the colour-cube frame
+state. All of them can still be followed in the snapshots.
+
 ### 2026-10-06 (session 5, round 6): the shadow pass's cost
 
 **Tooling** (`shadow_cull.rs`, a PostUpdate system after Bevy's `check_dir_light_mesh_visibility` that filters
