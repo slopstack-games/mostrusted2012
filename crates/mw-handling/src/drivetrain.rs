@@ -33,6 +33,15 @@ const UPSHIFT_RPM_JITTER: f32 = 50.0;
 const BLIP_GAIN: f32 = 2.5;
 /// Below this clutch engagement the engine runs free (`.bss` 0x01187570).
 const DECLUTCHED: f32 = 0.1;
+/// Gearbox mode (`FUN_009ce630`): the cruising gearbox takes over after `CRUISE_ENTER_TIME` s with the pedal
+/// between 0 and this (exclusive) and no brake, and hands back after `CRUISE_EXIT_TIME` s above it
+/// (`.rdata` 0x01026160, 0x01026180, 0x01026170).
+const CRUISE_THROTTLE: f32 = 0.95;
+const CRUISE_ENTER_TIME: f32 = 3.0;
+const CRUISE_EXIT_TIME: f32 = 0.05;
+/// After a switch back to the race gearbox, shifts take the cruising gearbox's `Gear_change_time` for this
+/// long (`FUN_009dc3c0`, `.bss` 0x011871e0, not read: model decision).
+const KICKDOWN_WINDOW: f32 = 1.0;
 /// Downshift on speed this far (mph) below the lower gear's upshift speed (`.bss` 0x011872e0).
 const DOWNSHIFT_HYSTERESIS: f32 = 2.0;
 /// Downshifts wait until the car has been on the ground this long (`FUN_009d93b0`: vehicle +0x1ed0 against
@@ -85,6 +94,8 @@ pub struct DrivetrainParams {
     /// Forward gears in use (the top one is locked on many cars).
     pub gears: usize,
     pub shift_time: f32,
+    /// The same engine with the `CruisingGearbox` (its ratios, shift points and `Gear_change_time`).
+    pub cruising: Option<Box<DrivetrainParams>>,
     /// `Power_To_Front`, axle limited-slip factors (front, rear; 0 open, 1 locked) and the
     /// `TransmissionInertia` added to each driven wheel.
     pub front_share: f32,
@@ -107,7 +118,7 @@ impl DrivetrainParams {
         let max_rpm = h.redline_rpm.unwrap_or(7000.0);
         let mid_rpm = e("Power_curve.f71be7c6", (idle_rpm + max_rpm) / 2.0);
         let get = |v: Option<&Vec<f32>>| v.cloned().unwrap_or_default();
-        Self {
+        let mut race = Self {
             handling: h.clone(),
             idle_rpm,
             max_rpm,
@@ -126,6 +137,7 @@ impl DrivetrainParams {
             engine_resistance: h.engine_brake_torque.unwrap_or(-300.0).min(-1.0),
             throttle_decay: e("c6deb7a6", 0.09).max(0.0),
             throttle_lag: e("36676b9c", 0.15).max(0.0),
+            cruising: None,
             upshift_rpm: get(gb.as_ref().map(|g| &g.upshift_rpm)),
             downshift_rpm: get(gb.as_ref().map(|g| &g.downshift_rpm)),
             upshift_mph: get(gb.as_ref().map(|g| &g.upshift_mph)),
@@ -137,7 +149,25 @@ impl DrivetrainParams {
             front_share: h.front_drive_share.unwrap_or(0.0).clamp(0.0, 1.0),
             diff: [e("Differentials.Front_Differential", 0.0), e("Differentials.Rear_Differential", 0.0)],
             transmission_inertia: e("Transmission.TransmissionInertia", 0.0).max(0.0),
+        };
+        if let Some(c) = h.cruising_gearbox.as_ref().filter(|c| !c.ratios.is_empty()) {
+            let mut cruise = race.clone();
+            cruise.ratios = c.ratios.clone();
+            cruise.upshift_rpm = c.upshift_rpm.clone();
+            cruise.downshift_rpm = c.downshift_rpm.clone();
+            cruise.upshift_mph = c.upshift_mph.clone();
+            cruise.reverse_ratio = c.reverse.abs();
+            cruise.final_drive = c.final_drive;
+            cruise.gears = if c.top_gear_locked && c.ratios.len() > 1 { c.ratios.len() - 1 } else { c.ratios.len() };
+            cruise.shift_time = c.change_time.unwrap_or(race.shift_time).clamp(0.02, 2.0);
+            race.cruising = Some(Box::new(cruise));
         }
+        race
+    }
+
+    /// The gearbox in use: the cruising one when `cruising` and the car has one.
+    pub fn active(&self, cruising: bool) -> &DrivetrainParams {
+        if cruising { self.cruising.as_deref().unwrap_or(self) } else { self }
     }
 
     /// Full-load torque (N m) at `rpm`.
@@ -250,12 +280,21 @@ pub struct Drivetrain {
     seed: u32,
     /// The current gear's upshift rpm with its random offset (gearbox +0x130), for the launch clutch.
     up_rpm: f32,
+    /// The cruising gearbox is in use (vehicle +0x1bdc = 1), the qualifying time towards a switch
+    /// (gearbox +0x140) and the time since the last switch (+0x144).
+    pub cruising: bool,
+    mode_time: f32,
+    since_mode: f32,
 }
 
 impl Drivetrain {
     pub fn new(p: &DrivetrainParams, gear: i32) -> Self {
         let launching = gear == 1;
         let mut d = Self {
+            cruising: false,
+            mode_time: 0.0,
+            // Long since any switch: a car's first shifts use the race box's own change time.
+            since_mode: f32::MAX,
             gear,
             rpm: p.idle_rpm,
             clutch: if launching { 0.0 } else { 1.0 },
@@ -300,7 +339,10 @@ impl Drivetrain {
         coupled: bool,
         dt: f32,
     ) -> f32 {
-        let thr = self.gearbox(p, throttle, brake, mph, dt);
+        let race = p;
+        let p = race.active(self.cruising);
+        let thr = self.gearbox_state(p, throttle, brake, mph, dt);
+        self.gearbox_mode(race, throttle, brake, dt);
         let (up, down) = match self.shift {
             Some(s) => (s.up, !s.up),
             None => (false, false),
@@ -357,9 +399,36 @@ impl Drivetrain {
         torque
     }
 
-    /// The gearbox state machine (`FUN_009da340`): sets the clutch and the gear, returns the throttle after the
-    /// gearbox's cuts.
-    fn gearbox(&mut self, p: &DrivetrainParams, throttle: f32, brake: f32, mph: f32, dt: f32) -> f32 {
+    /// `FUN_009ce630` (run by `FUN_009da600` after the pedals are copied) and `FUN_00900660` (which applies the
+    /// mode next tick: reloads the gearbox tables and, back in the race box, clamps the gear to its last one).
+    /// Part throttle (0 < pedal < 0.95, no brake) held for 3 s selects the cruising gearbox; the pedal above
+    /// 0.95 for 0.05 s selects the race one again. The game also keeps the race box while an unidentified flag
+    /// is up (a virtual call on the vehicle in `FUN_009b3030`); assumed down here.
+    fn gearbox_mode(&mut self, race: &DrivetrainParams, throttle: f32, brake: f32, dt: f32) {
+        if race.cruising.is_none() {
+            return;
+        }
+        self.since_mode += dt;
+        let qualifies = if self.cruising {
+            throttle > CRUISE_THROTTLE
+        } else {
+            throttle > 0.0 && throttle < CRUISE_THROTTLE && brake <= 0.0
+        };
+        self.mode_time = if qualifies { self.mode_time + dt } else { 0.0 };
+        let limit = if self.cruising { CRUISE_EXIT_TIME } else { CRUISE_ENTER_TIME };
+        if self.mode_time > limit {
+            self.cruising = !self.cruising;
+            self.since_mode = 0.0;
+            let top = race.active(self.cruising).ratios.len() as i32;
+            if self.gear > top {
+                self.gear = top;
+            }
+        }
+    }
+
+    /// The gearbox state machine (`FUN_009da340`) for the gearbox in use: sets the clutch and the gear, returns
+    /// the throttle after the gearbox's cuts.
+    fn gearbox_state(&mut self, p: &DrivetrainParams, throttle: f32, brake: f32, mph: f32, dt: f32) -> f32 {
         if let Some(mut s) = self.shift {
             return self.shift_phase(p, &mut s, throttle, mph, dt);
         }
@@ -471,7 +540,12 @@ impl Drivetrain {
     }
 
     fn start_shift(&mut self, p: &DrivetrainParams, target: i32, up: bool) {
-        let total = p.shift_time * (1.0 + SHIFT_TIME_JITTER * self.random()) * if up { 1.0 } else { DOWNSHIFT_TIME };
+        // FUN_009dc3c0: in the race box shortly after a kick-down, the cruising box's (slower) change time.
+        let base = match p.cruising.as_deref() {
+            Some(c) if !self.cruising && self.since_mode < KICKDOWN_WINDOW => c.shift_time,
+            _ => p.shift_time,
+        };
+        let total = base * (1.0 + SHIFT_TIME_JITTER * self.random()) * if up { 1.0 } else { DOWNSHIFT_TIME };
         let mut s = Shift { target, up, phase: Phase::Declutch, total, left: 0.0 };
         s.left = s.length(Phase::Declutch);
         self.shift = Some(s);

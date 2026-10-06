@@ -135,6 +135,8 @@ pub struct Gearbox {
     pub top_gear_locked: bool,
     /// The cruising gearbox's `Gear_change_time` (the game's slow kick-down shift).
     pub cruising_change_time: Option<f32>,
+    /// This gearbox's own `Gear_change_time` (s).
+    pub change_time: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -333,6 +335,8 @@ pub struct VehicleHandling {
     /// Share of drive torque sent to the front axle (0 = RWD).
     pub front_drive_share: Option<f32>,
     pub gearbox: Option<Gearbox>,
+    /// `CruisingGearbox`: the box the game switches to after 3 s of part throttle (`FUN_009ce630`).
+    pub cruising_gearbox: Option<Gearbox>,
     pub brake_torque_front: Option<f32>,
     pub brake_torque_rear: Option<f32>,
     /// `Brakes.99407bbc`: the standstill hold's deceleration (m/s²).
@@ -470,7 +474,9 @@ impl VehicleHandling {
             self.front_drive_share = sub(engine, h::DIFFERENTIALS).and_then(|d| float(d, h::FRONT_SHARE));
             // Two gearboxes per car: "Cruising" (early shifts, slow changes)
             // and "Race" (shifts near the limiter); the player uses the race one.
-            let gb = sub(engine, h::RACE_GEARBOX).or_else(|| sub(engine, h::CRUISING_GEARBOX));
+            let race = sub(engine, h::RACE_GEARBOX);
+            let cruising = sub(engine, h::CRUISING_GEARBOX);
+            let gb = race.or(cruising);
             let downshifts = |g: &Object| -> Vec<f32> {
                 items(g, h::GEARS)
                     .iter()
@@ -482,9 +488,9 @@ impl VehicleHandling {
                     })
                     .collect()
             };
-            let coast = sub(engine, h::CRUISING_GEARBOX).map(downshifts).unwrap_or_default();
-            self.gear_change_time = gb.and_then(|g| float(g, h::GEAR_CHANGE_TIME));
-            self.gearbox = gb.map(|g| {
+            let coast = cruising.map(downshifts).unwrap_or_default();
+            let cruising_change_time = cruising.and_then(|c| float(c, h::GEAR_CHANGE_TIME));
+            let read_gearbox = |g: &Object| {
                 let mut gearbox = Gearbox {
                     ratios: Vec::new(),
                     reverse: sub(g, h::REVERSE).and_then(|r| float(r, h::GEAR_RATIO)).unwrap_or(-3.0),
@@ -496,7 +502,8 @@ impl VehicleHandling {
                     top_gear_locked: [0x13bfea5a, 0x7b20506a]
                         .iter()
                         .any(|&f| g.fields.iter().any(|(h, v)| *h == f && matches!(v, Value::Bool(true)))),
-                    cruising_change_time: sub(engine, h::CRUISING_GEARBOX).and_then(|c| float(c, h::GEAR_CHANGE_TIME)),
+                    cruising_change_time,
+                    change_time: float(g, h::GEAR_CHANGE_TIME),
                 };
                 for gear in items(g, h::GEARS) {
                     let Value::Struct(gear) = gear else { continue };
@@ -512,7 +519,10 @@ impl VehicleHandling {
                         .push(float(gear, mw_formats::genesys::field_hash("Gear_up_speed")).unwrap_or(0.0));
                 }
                 gearbox
-            });
+            };
+            self.gear_change_time = gb.and_then(|g| float(g, h::GEAR_CHANGE_TIME));
+            self.gearbox = gb.map(read_gearbox);
+            self.cruising_gearbox = race.and(cruising).map(read_gearbox);
         }
         if let Some(b) = sub(hb, h::BRAKES) {
             self.brake_torque_front = float(b, h::BRAKE_FRONT);

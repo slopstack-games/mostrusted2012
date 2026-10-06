@@ -1419,12 +1419,13 @@ fn log_car(time: Res<Time>, mut next: Local<f32>, cars: Query<(&Car, &Transform)
     let interval = std::env::var("MW_CAR_LOG_INTERVAL").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
     *next = time.elapsed_secs() + interval;
     info!(
-        "car at {:.1} {:.3} {:.1}, {:.0} km/h, gear {} at {:.0} rpm, pitch {:.2}°, forces {:?}, compression {:?}",
+        "car at {:.1} {:.3} {:.1}, {:.0} km/h, gear {}{} at {:.0} rpm, pitch {:.2}°, forces {:?}, compression {:?}",
         t.translation.x,
         t.translation.y,
         t.translation.z,
         car.speed * 3.6,
         car.gear,
+        if car.drivetrain.cruising { " (cruising box)" } else { "" },
         car.rpm,
         (t.rotation * Vec3::Z).y.asin().to_degrees(),
         car.debug_forces.map(|f| f.round()),
