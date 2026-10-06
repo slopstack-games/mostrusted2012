@@ -1132,3 +1132,10 @@ speed and retracts below its other operand (911: 70 / 40 mph, LFA 70 / 50), play
 rate both ways. Whether a deployed wing changes the handling is open: `AnimationStateBehaviour` has no aero
 field, and no write from the animation side into what `FUN_009cf850` / `FUN_009cfaf0` read was found (the
 search could not start without the condition code).
+
+## Tyre marks
+
+Not found. The skid mark code would read `TyreVfxBehaviour.{Front,Rear}_Tyres.Skid_Marks` (stride 0x130 per axle,
+`LatParams` floats at +0x10..+0x2c) and `SurfaceVfx.TyreMarksMaterials` (+0x18 + 8 x tyre class); none of these
+offsets, the field hashes, or a tyre-mark string turns up in the dump (research log 2026-10-06 round 4). The
+runtime borrows the per-wheel form of the skid sound intensities (`FUN_009d1bf0`, above) as a model decision.
