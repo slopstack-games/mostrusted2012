@@ -90,6 +90,8 @@ pub struct CarParams {
     /// Standstill hold deceleration (`Brakes.99407bbc`, m/s²; `FUN_009b1180`).
     pub hold_decel: f32,
     pub inertia: Vec3,
+    /// The body's half extents (m; x width, z length): the chase camera's side-on pull-in (`FUN_005c8ad0`).
+    pub body_half_extents: Vec3,
     pub centre_of_mass: Vec3,
     pub idle_rpm: f32,
     pub redline_rpm: f32,
@@ -212,6 +214,7 @@ impl CarParams {
             mass,
             hold_decel: h.brake_hold_decel.unwrap_or(15.0),
             inertia,
+            body_half_extents: Vec3::from(ext),
             centre_of_mass: Vec3::from(h.centre_of_mass.unwrap_or([0.0, 0.4, 0.0])),
             idle_rpm: h.idle_rpm.unwrap_or(900.0),
             redline_rpm: h.redline_rpm.unwrap_or(7000.0),

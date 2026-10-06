@@ -283,6 +283,18 @@ cast and how the camera responds; the GeneSys types `CameraTransformCollider` an
 *hyp.* rows. No camera rule changed in that round; the baseline trace numbers (drift, accel, corner, crash)
 are in the research log, 2026-10-06 round 4, to compare a port against.
 
+**Round 9 (2026-10-07): eye position and FOV from the code** (decomp.md "Eye position and the FOV's
+acceleration term"; replay `tools/camreplay.py`): the data eye is pulled in as the car turns side-on
+(`FUN_005c8ad0`: x / z × `1 + |sin(yaw lag)| × (width / length − 1) × 0.5`, our body box standing for the
+original's unidentified box), then moved along its line to the look-at point by
+`3.15 + 0.15 − 3.15 / tan(FOV/2)` (`FUN_005c1f90`; −1.2 m at 70°, +0.41 m at 95°), so the recorded −5.94 m
+at rest and −4.0 m at speed come from the data's −4.6 and the FOV. The FOV gains cam + 0x6ec
+(`FUN_005c76a0`): the body's acceleration magnitude (m/s², ≤ 20) while accelerating forwards, approached at
+0.01 / 0.05 per update (rising / falling), in degrees. Replay: eye z RMS 0.70 → 0.24 m, FOV RMS 3.76 → 2.23°.
+Still model decisions: the yaw stiffness fit (0.09 standing, `0.05 + 0.025 × mph/100`), the FOV term's time
+factor (two getters unread, taken as 1 per 60 Hz update), roll, deceleration pitch, the drift lean.
+The run's car is not identified (`mwtool genesys all --type CameraGameplayExternal` printed nothing).
+
 **Round 7 (2026-10-06): from the code now** (decomp.md "Speed and acceleration movement"): the speed band
 and the eye / look-at heights (direct, linear in `h`), and the eye's z offset: a first-order lag
 (`z += (target − z) · rate · dt`) towards `0a78c15f · h + (bd3a7cfc | 7c9039e2) · |a_long| / a_full`, rate
