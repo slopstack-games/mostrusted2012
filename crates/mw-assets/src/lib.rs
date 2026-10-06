@@ -10,6 +10,7 @@
 pub mod backdrop;
 pub mod camera;
 mod catalog;
+pub mod crash;
 pub mod damage;
 pub mod engine_driver;
 pub mod engine_sound;

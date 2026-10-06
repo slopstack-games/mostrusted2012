@@ -1447,3 +1447,19 @@ CellsCount
 ValueCount
 ColourCount
 RotationCount
+
+# Crash camera (2026-10-06): BystanderCameraParams (+ Tracking / Zoom parameters), genesys-crack with a camera
+# word list. Each sorts into its field's place (size, then name) and the three X/Y/Z triples sit together.
+Camera_Transform_Binding
+Target_Transform_Binding
+Target_X_Offset
+Target_Y_Offset
+Target_Z_Offset
+X_Offset
+Y_Offset
+Z_Offset
+Screen_Offset_X
+Screen_Offset_Y
+Maximum_FOV
+Minimum_FOV
+Use_Zoom

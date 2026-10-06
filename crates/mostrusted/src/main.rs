@@ -8,6 +8,7 @@ mod camera;
 mod chassis;
 use mw_handling::{drift, drivetrain, tyre};
 mod convert;
+mod crash;
 mod damage;
 mod deferred;
 mod drive;
@@ -91,6 +92,10 @@ struct Cli {
     /// Crash test: distance to the wall in metres (sets the impact speed).
     #[arg(long, default_value_t = 80.0)]
     crash_distance: f32,
+    /// Crash test: wall width in metres (a narrow one, like a bridge pillar, leaves the crash camera's
+    /// roadside shot a view past it).
+    #[arg(long, default_value_t = 30.0)]
+    crash_wall_width: f32,
     /// Hold the throttle at this value (0–1), for automated driving tests.
     #[arg(long)]
     auto_throttle: Option<f32>,
@@ -382,9 +387,23 @@ fn main() -> anyhow::Result<()> {
     if test_track {
         app.add_systems(Startup, spawn_test_track);
     }
+    // Crash rules and the crash camera (driving only).
+    if matches!(request, Request::Drive { .. }) {
+        match store.crash_data() {
+            Ok(data) => {
+                app.insert_resource(crash::CrashConfig(Arc::new(data)));
+            }
+            Err(e) => warn!("no crash data ({e}): crashes and the crash camera are off"),
+        }
+    }
     // The crash and smash tests take their own before / after screenshots.
     let screenshot = if crash {
-        app.insert_resource(damage::CrashTest::new(cli.screenshot.clone(), cli.crash_angle, cli.crash_distance));
+        app.insert_resource(damage::CrashTest::new(
+            cli.screenshot.clone(),
+            cli.crash_angle,
+            cli.crash_distance,
+            cli.crash_wall_width,
+        ));
         None
     } else if smash {
         app.insert_resource(props::SmashTest::new(cli.screenshot.clone(), cli.smash_speed / 3.6));
@@ -444,6 +463,7 @@ fn main() -> anyhow::Result<()> {
             sfx::SfxPlugin,
         ))
         .add_plugins(camera::CameraPlugin { mode: camera_mode, look_back })
+        .add_plugins(crash::CrashPlugin)
         .add_plugins((garage::GaragePlugin { script }, menu::MenuPlugin { enabled: menu_enabled, open: cli.show_menu }))
         .add_plugins(game_text::GameTextPlugin)
         .add_plugins(hud::HudPlugin {

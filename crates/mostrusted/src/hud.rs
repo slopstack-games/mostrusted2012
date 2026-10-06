@@ -37,10 +37,15 @@ pub struct HudPlugin {
 
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(HudSettings { enabled: self.enabled, metric: self.metric, debug_text: false })
-            .init_resource::<HudState>()
-            .add_systems(Startup, start_loading)
-            .add_systems(Update, (receive_hud, toggle_debug, track_car, draw_hud).chain());
+        app.insert_resource(HudSettings {
+            enabled: self.enabled,
+            metric: self.metric,
+            debug_text: false,
+            hidden_by_sequence: false,
+        })
+        .init_resource::<HudState>()
+        .add_systems(Startup, start_loading)
+        .add_systems(Update, (receive_hud, toggle_debug, track_car, draw_hud).chain());
     }
 }
 
@@ -51,6 +56,8 @@ pub struct HudSettings {
     pub metric: bool,
     /// F3: the debug status text instead of / with the HUD.
     pub debug_text: bool,
+    /// A sequence hides the HUD (`HideHudSequenceItem`, the crash camera).
+    pub hidden_by_sequence: bool,
 }
 
 /// Game state the bindings read that the car doesn't keep.
@@ -184,7 +191,7 @@ fn toggle_debug(
         settings.debug_text = !settings.debug_text;
     }
     let hud_up = settings.enabled && hud.is_some() && !car.is_empty();
-    let show = settings.debug_text || !hud_up;
+    let show = (settings.debug_text || !hud_up) && !settings.hidden_by_sequence;
     for mut v in &mut status {
         let want = if show { Visibility::Inherited } else { Visibility::Hidden };
         if *v != want {
@@ -265,7 +272,7 @@ fn draw_hud(
 ) {
     let Some(mut hud) = hud else { return };
     let car = car.single().ok();
-    let visible = settings.enabled && car.is_some();
+    let visible = settings.enabled && !settings.hidden_by_sequence && car.is_some();
     if let Ok(mut v) = root_vis.get_mut(hud.root) {
         let want = if visible { Visibility::Inherited } else { Visibility::Hidden };
         if *v != want {
