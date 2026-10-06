@@ -82,8 +82,8 @@ the details, [PLAN.md](PLAN.md) "Where it stands" the state per gap.
   state's speed, e.g. 70 mph, retract below the lower operand); `--anim all=1` poses any car's parts in
   `--drive`. Open: decoding the state machine layout (air brakes on `brake`, flaps on `steering`), the
   evaluator code, whether a deployed wing changes the aero.
-- Seen, not investigated: at the default spawn the car loses ~18 km/h in one spot of the road shoulder
-  (z ≈ 1716), before and after this round.
+- At the default spawn the car loses ~18 km/h at z ≈ 1716 with `--auto-throttle`: it runs into a barrier there
+  (user, 2026-10-06); not a physics fault. Use `--test-track` or another `--spawn` for speed logs.
 
 ## Live reads wanted (the original running; `sudo sysctl kernel.yama.ptrace_scope=0` first, ask the user)
 
