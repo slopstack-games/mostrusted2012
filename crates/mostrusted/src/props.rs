@@ -207,12 +207,22 @@ impl Plugin for PropsPlugin {
 }
 
 /// Spawn a prop: the render parts as children of a rigid body carrying the collider.
-pub fn spawn_prop(commands: &mut Commands, physics: Arc<PropPhysics>, transform: Transform, parts: &crate::ModelParts) {
+pub fn spawn_prop(
+    commands: &mut Commands,
+    physics: Arc<PropPhysics>,
+    transform: Transform,
+    parts: &crate::ModelParts,
+    range: Option<crate::shadow_cull::ShadowRange>,
+) {
     commands
         .spawn((transform, Visibility::default(), PropBody { physics, home: transform, pinned: true, active: false }))
         .with_children(|c| {
             for (mesh, mat) in parts {
-                c.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat.clone())));
+                let mut e =
+                    c.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat.clone()), crate::shadow_cull::ShadowClass::Prop));
+                if let Some(r) = range {
+                    e.insert(r);
+                }
             }
         });
 }

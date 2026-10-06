@@ -95,6 +95,8 @@ pub enum Msg {
     Focus(Vec3),
     Texture(TexKey, Image),
     Model(ResourceId, Vec<Part>),
+    /// A model's own shadow distance (`Model` +0x0C, metres), sent before its `Model` when it is finite.
+    ShadowRange(ResourceId, f32),
     Instance {
         model: ResourceId,
         transform: Mat4,
@@ -186,6 +188,7 @@ pub fn spawn(
                 failed_textures: HashSet::new(),
                 filter,
                 empty_models: HashSet::new(),
+                shadow_ranges: HashMap::new(),
                 groundcover_done: HashSet::new(),
                 paint: None,
                 paint_count: 0,
@@ -226,6 +229,8 @@ struct Worker {
     filter: WorldFilter,
     /// Models (or stripped variants) with nothing drawable.
     empty_models: HashSet<ResourceId>,
+    /// Model shadow distances by variant key, sent with the model (`Msg::ShadowRange`).
+    shadow_ranges: HashMap<ResourceId, f32>,
     /// Groundcover collections already sent (they are shared between track units).
     groundcover_done: HashSet<ResourceId>,
     /// Paint of the car being loaded, applied to its body-paint meshes, and how many the car has.
@@ -739,6 +744,9 @@ impl Worker {
         if let Some(parts) = self.parts.remove(&key)
             && self.models.insert(key)
         {
+            if let Some(&d) = self.shadow_ranges.get(&key) {
+                self.send(Msg::ShadowRange(key, d))?;
+            }
             self.send(Msg::Model(key, parts))?;
         }
         Ok(())
@@ -775,6 +783,12 @@ impl Worker {
         }
         if self.empty_models.contains(&key) {
             return Ok(None);
+        }
+        if let Ok(m) = self.store.model(id)
+            && m.shadow_distance.is_finite()
+            && m.shadow_distance < 1e6
+        {
+            self.shadow_ranges.insert(key, m.shadow_distance);
         }
         let meshes = match self.store.model_meshes(id, 0) {
             Ok((m, _errors)) => m,

@@ -124,6 +124,83 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-06 (session 5, round 6): the shadow pass's cost
+
+**Tooling** (`shadow_cull.rs`, a PostUpdate system after Bevy's `check_dir_light_mesh_visibility` that filters
+each cascade's `CascadesVisibleEntities` before extraction). Env switches: `MW_SHADOW_CASCADE_OFF=0,2`,
+`MW_SHADOW_CLASS_OFF=alpha,world,backdrop,prop,car,other` (mesh entities carry a `ShadowClass`: world placements
+split into opaque `world` / alpha-tested `alpha` / `backdrop` = model keys with bit 62 or 63, `prop` from
+`props::spawn_prop`, `car` from `drive.rs`, `other` = no class), `MW_SHADOW_MIN_TEXELS=k`,
+`MW_SHADOW_MAP_SIZE`, `MW_SHADOW_DISTANCE`, `MW_SHADOW_MODEL_RANGE=1`, `MW_SHADOW_FOOTPRINT=0`. The bench line now
+prints each cascade's texel size.
+
+**Measurement caveat**: the machine was not quiet (another agent's rustc and a browser; load average 4.4-8,
+given per run below). Frame means also clamp at 16.6-16.8 ms in many runs (60 Hz) although the line says
+"X11": the same city view read 12.4 ms in one run and 16.67 ms in the next with identical settings, so
+`AutoNoVsync` under XWayland is paced at 60 Hz part of the time. Below ~16.7 ms the frame mean is not a cost
+signal; the render-world CPU (prepare + graph) is used alongside. Not fixed (open: force `Immediate` or run
+the bench in gamescope / a bare X server).
+
+**Attribution**, drive view (`--drive 911 --units 30 --spawn=815,60,1760,270 --auto-throttle 0.3 --bench 8`),
+two runs each (run 1 at load 5-8, run 2 at load 5-7); baseline casters 147 / 316 / 1586 per cascade, texel
+0.028 / 0.084 / 0.251 m:
+
+| switch | casters | frame mean ms | render world ms (prep + graph) | saves |
+|---|---|---|---|---|
+| baseline | 147/316/1586 | 26.3 (disturbed) / 18.4 | 25.4 / 17.7 | |
+| `--no-shadows` | - | 16.6 / 16.7 (capped) | 12.9 / 12.4 | ≥ 1.7 frame, 5 ms render world |
+| cascade 0 off | 0/316/1587 | 19.0 / 18.7 | 18.3 / 18.0 | nothing |
+| cascade 1 off | 147/0/1587 | 18.2 / 19.6 | 17.5 / 18.8 | nothing |
+| cascade 2 (outer) off | 147/316/0 | 16.6 / 16.8 (capped) | 14.3 / 14.5 | ≥ 1.6 frame, ~3.3 ms render world |
+| alpha-tested off | 128/259/1351 | 19.6 / 19.0 | 18.9 / 18.3 | nothing |
+| opaque world placements off | 83/123/307 | 16.7 / 16.9 (capped) | 14.2 / 14.0 | ≥ 1.6 frame, ~3.6 ms render world |
+| backdrop off | 143/310/1574 | 19.6 / 19.7 | 18.9 / 19.0 | nothing |
+| props + car off | 102/271/1541 | 17.8 / 19.1 | 17.2 / 18.4 | within noise |
+| other off | 132/301/1571 | 18.3 / 19.1 | 17.6 / 18.5 | nothing |
+| map 1024 / 4096 | same | 19.2, 21.0 / 20.6, 19.0 | 18.5-20.3 | nothing (not GPU raster) |
+| min 1 texel | 147/312/1571 | 18.5 / 18.6 | 17.8 / 18.0 | nothing (16 casters) |
+
+The cost is **CPU per caster per cascade view** in Bevy's render world (specialise / queue / batch), not
+rasterisation: map size does not matter, and the outer cascade's ~1 250 opaque world placements are most of it
+(about 1-2 µs each). A sub-texel size cull cannot help: the outer texel is 0.25 m and only 16 casters (85 at
+4 texels) are smaller.
+
+**Default-on change: receiver-footprint cull** (`shadow_cull.rs` module docs). Our lighting pass samples a
+cascade only for visible points whose light-space xy is inside it, and fades the shadow to nothing at the last
+far bound (180 m). Bevy keeps every caster inside each cascade's square box, which bounds a sphere around the
+frustum slice. Criterion: project the caster's world AABB corners and the view frustum's corners (from
+`minimum_distance` to the last far bound, the whole shadow range, not just the cascade's slice) with the cascade's
+`clip_from_world`; drop the caster from that cascade if the two xy rectangles do not overlap after widening the
+frustum's by 4 texels (2×2 PCF tap and the receiver's normal offset). Casters toward the sun are not culled by
+depth, so off-screen casters whose shadow reaches the view stay.
+
+| view | casters before -> after | frame mean ms before / after (two rounds) | render world ms |
+|---|---|---|---|
+| drive | 147/316/1586 -> 138/277/853 | 18.98, 19.35 -> 18.20, 18.58 (load 6-7) | 18.3, 18.7 -> 17.5, 17.9 |
+| city overview | 28/29/108 -> 28/28/56 | 13.10, 13.18 -> 12.55 (second run disturbed: load spike, 24.6 ms) | 12.4, 12.4 -> 11.8 |
+
+About **0.8 ms per frame** in the drive view. Image check (`--hour 12`, standing car, PIL): drive view before vs
+after MAD 0.45/255, 0.9 % of pixels > 8/255, and the amplified difference shows only the idling tachometer and
+one-pixel edge shimmer of the car and tiles, no shadow change; city overview MAD 0.04/255, 0.25 % > 8/255.
+
+**Left behind flags (picture changes)**:
+- `MW_SHADOW_MODEL_RANGE=1`: the model's own **shadow distance** (`Model` +0x0C, stored squared, now parsed as
+  `Model::shadow_distance`; survey of 12 679 models: 100, 200, 400, 800, 1000 m and 81 other values). A caster
+  is dropped while the camera is farther than that from its AABB centre (the comparison point is a model
+  decision; the field's use is not yet traced in the decomp). Drive: outer cascade 1586 -> 1090 alone,
+  frame 18.98 / 18.88 -> 17.83 / 17.42 ms; with the footprint cull 853 -> 648, 18.20 / 18.58 -> 17.74 /
+  17.78 ms. Picture: 0.6 % of pixels > 8/255, upper half (far buildings' shadows). Fidelity-sourced data,
+  so it should become the default once the decomp confirms the meaning and the distance origin.
+- `MW_SHADOW_DISTANCE=120` (instead of 180): 147/271/774 casters, 17.1 ms (one clean run; the other disturbed).
+- `MW_SHADOW_MAP_SIZE`: no gain either way.
+
+**LODs for shadows** (step 3, not done): the loader only ever loads LOD0 (`AssetStore::model_meshes(id, 0)`).
+The measured cost is per caster (draw), not per vertex, so a coarser LOD in the shadow views would not cut it;
+the `SHADOW` state (`Model::STATE_SHADOW`, index 6) could map a model to a dedicated shadow renderable, which
+would need a second mesh entity per placement (Bevy cannot swap meshes per view) and so add entities. Distance
+LOD selection for the main view (from `lod_distances`) is the fidelity task; it would need `VisibilityRange`
+per LOD entity, which Bevy's directional-light culling also honours per view.
+
 ### 2026-10-06 (session 5, round 6): the chase camera's position springs and avoidance
 
 Goal: read `FUN_005d12b0` and the other "weight" helpers, resolve the yaw spring's value, locate avoidance.

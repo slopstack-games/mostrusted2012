@@ -433,7 +433,12 @@ fn spawn_car(
     ));
     for m in &pending.spec.body {
         for (mesh, mat) in pending.parts.get(m).into_iter().flatten() {
-            commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat.clone()), ChildOf(car)));
+            commands.spawn((
+                Mesh3d(mesh.clone()),
+                MeshMaterial3d(mat.clone()),
+                crate::shadow_cull::ShadowClass::Car,
+                ChildOf(car),
+            ));
         }
     }
 
@@ -484,7 +489,12 @@ fn spawn_car(
         for &(m, spins) in &w.parts {
             for (mesh, mat) in pending.parts.get(&m).into_iter().flatten() {
                 let parent = if spins { spinner } else { fixed };
-                commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat.clone()), ChildOf(parent)));
+                commands.spawn((
+                    Mesh3d(mesh.clone()),
+                    MeshMaterial3d(mat.clone()),
+                    crate::shadow_cull::ShadowClass::Car,
+                    ChildOf(parent),
+                ));
             }
         }
         debug!(

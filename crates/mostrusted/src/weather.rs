@@ -241,7 +241,7 @@ pub fn spawn_environment(
     // Lights the forward (translucent) materials; the game's lighting pass takes the key light from
     // `GameLighting`. Its cascaded shadow maps are rendered by Bevy and sampled by the game's lighting
     // pass (`deferred.rs`).
-    commands.insert_resource(bevy::light::DirectionalLightShadowMap { size: deferred::SHADOW_MAP_SIZE });
+    commands.insert_resource(bevy::light::DirectionalLightShadowMap { size: deferred::shadow_map_size() });
     commands.spawn((
         DirectionalLight { illuminance: key_illuminance(&b), shadow_maps_enabled: true, ..default() },
         deferred::shadow_cascades(),

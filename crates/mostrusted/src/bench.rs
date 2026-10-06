@@ -172,6 +172,7 @@ fn report(
     meshes: Query<(&ViewVisibility, &InheritedVisibility), With<Mesh3d>>,
     adapter: Option<Res<RenderAdapterInfo>>,
     cascades: Query<&bevy::camera::visibility::CascadesVisibleEntities>,
+    texels: Query<&bevy::light::Cascades>,
     loaded: Res<Loaded>,
     mesh_assets: Res<Assets<Mesh>>,
     image_assets: Res<Assets<Image>>,
@@ -199,12 +200,17 @@ fn report(
         .flat_map(|c| c.entities.values())
         .map(|v| v.iter().map(|c| c.entities.len().to_string()).collect::<Vec<_>>().join("/"))
         .collect();
+    let texel: Vec<String> = texels
+        .iter()
+        .flat_map(|c| c.cascades.values())
+        .map(|v| v.iter().map(|c| format!("{:.3}", c.texel_size)).collect::<Vec<_>>().join("/"))
+        .collect();
     let window_system = if std::env::var_os("WAYLAND_DISPLAY").is_some() { "Wayland, vsync-paced" } else { "X11" };
     let gpu = adapter.map_or("unknown".to_string(), |a| format!("{} ({:?}, {window_system})", a.name, a.backend));
     println!(
         "BENCH RESULT {}: {} frames in {:.1} s, frame mean {:.2} ms, median {:.2} ms, 1% low {:.2} ms \
          ({:.0} fps mean), main-world schedule {:.2} ms, render world {:.2} ms prepare + {:.2} ms graph, \
-         shadow casters per cascade {}, {} entities, {} mesh entities ({} visible), \
+         shadow casters per cascade {} (texel {} m), {} entities, {} mesh entities ({} visible), \
          {} instances, meshes {} -> {}, images {} -> {} during the run, RSS {:.0} MB, GPU {}",
         bench.label,
         ft.len(),
@@ -217,6 +223,7 @@ fn report(
         prep,
         graph,
         casters.join(" "),
+        texel.join(" "),
         entities.iter().count(),
         mesh_entities,
         visible,
