@@ -239,11 +239,11 @@ meaning is read from values or position; values are the 911's, ranges are across
 | `….Minimum_Speed_for_Shake` / `Maximum_Speed_for_Shake` | 0 / 180 (125…208) | **code** (0x34 / 0x30) f = clamp((mph − Min) / (Max − Min), 0, 1) |
 | `Acceleration_movement.bd3a7cfc` / `7c9039e2` | −2 (−2.5…−1.9) / 0.5 | **code** eye z offset at full acceleration / deceleration (m), × `|a_long|` / a_full |
 | `….fdd25ee3` / `285f2260` | 2 / 2.5 | **code** rate (1/s) of the first-order lag of the z offset while accelerating / decelerating |
-| `….8e1310f6`, `a8cc9c9b`, `65b4f9c6`, `0da33093` | 1.5, 1.75, −1.2, 2.5 | read by `FUN_005d12b0`'s vertical stage (cam + 0x554), not ported |
-| `Camera_Roll.Minimum_Lateral_Acceleration_for_Roll`, `3f8ced67` | 10, 30 (30…40) | **data** / *hyp.* (the maximum, by its place and values) lateral range, mph/s |
-| `….Minimum_Angular_Velocity_for_Roll`, `02dd11bc` | 0.2, 2.5 (2.5…3) | **data** / *hyp.* yaw-rate range, rad/s |
-| `….Maximum_Roll_Angle` | 4.7 (3…6) | **data** roll = sign × max × max(f_lat, f_yaw)^`Camera_Roll_Factor_Power` (2.5) |
-| `….Roll_Angle_Change_Intensity` | 2 (2…2.5) | *hyp.* rate (1/s) the roll follows its target |
+| `….8e1310f6`, `a8cc9c9b`, `65b4f9c6`, `0da33093` | 1.5, 1.75, −1.2, 2.5 | **code** the eye's height spring (`FUN_005d12b0`, camera.rs `HeightSpring`): gain on the car's vertical acceleration while it is upwards / not, and the spring's lower / upper limit (m) |
+| `Camera_Roll.Minimum_Lateral_Acceleration_for_Roll`, `3f8ced67` | 10, 30 (30…40) | **code** (`FUN_005c9380`) lateral range, m/s² (the body velocity's change per update along the car's right) |
+| `….Minimum_Angular_Velocity_for_Roll`, `02dd11bc` | 0.2, 2.5 (2.5…3) | **code** yaw-rate range, rad/s |
+| `….Maximum_Roll_Angle` | 4.7 (3…6) | **code** roll = max × max(f_lat^P, f_yaw^P), P = `Camera_Roll_Factor_Power` (2.5); the camera leans out of the turn |
+| `….Roll_Angle_Change_Intensity` | 2 (2…2.5) | **code** the roll moves by intensity × π/180 × 20 × dt of its gap per update (0.70/s) |
 | `Deceleration_pitch_change.Minimum_` / `Maximum_deceleration_for_pitch_change` | 2 / 12 (11…12) | **data** deceleration range, mph/s |
 | `….Maximum_Pitch_Change`, `Pitch_change_curve_power` | 4.5 (2.5…6), 2.25 | **data** pitch = max × f^power (nose down) |
 | `….Pitch_change_intensity` | 2 (1.75…2) | *hyp.* rate (1/s) the pitch follows its target |
@@ -296,8 +296,22 @@ original's unidentified box), then moved along its line to the look-at point by
 at rest and −4.0 m at speed come from the data's −4.6 and the FOV. The FOV gains cam + 0x6ec
 (`FUN_005c76a0`): the body's acceleration magnitude (m/s², ≤ 20) while accelerating forwards, approached at
 0.01 / 0.05 per update (rising / falling), in degrees. Replay: eye z RMS 0.70 → 0.24 m, FOV RMS 3.76 → 2.23°.
-Still model decisions: the yaw stiffness fit (0.09 standing, `0.05 + 0.025 × mph/100`), the FOV term's time
-factor (two getters unread, taken as 1 per 60 Hz update), roll, deceleration pitch, the drift lean.
+Still model decisions: the standing yaw stiffness (0.09 below 0.5 mph) and the missing `s` blend of
+`FUN_005c90a0` (its moving part, `0.05 + 0.025 × mph/100`, is now read: K1 of decomp.md round 11), the FOV
+term's time factor (two getters unread, taken as 1 per 60 Hz update), deceleration pitch, the drift lean.
+
+Round 11 (2026-10-07, read from the disassembly; decomp.md "The eye's vertical spring, roll and yaw
+stiffness"): **the eye's vertical spring** (cam + 0x550; camera.rs `HeightSpring`): K 20, damping ratio 0.8
+rising / 0.75 falling, kicked by `−g · a_y` shaped by `powf` on the ground (g = `8e1310f6` / `a8cc9c9b`) and by
+`−v_y · f` in the air, gain 3 and a landing-dependent damping for 0.3 s after touch-down, limits `65b4f9c6` /
+`0da33093`; it raises the eye only, not the look-at point. Replay 5.8 mm RMS (recorded std 0.14 m, 0.21 m above
+80 mph); before, nothing (0.14 m RMS error). **Roll** (`FUN_005c9380`): lateral acceleration in m/s² along the
+car's right and yaw rate, `Maximum_Roll_Angle × max(f_lat^P, f_yaw^P)` leaning out of the turn, followed at
+intensity × π/180 × 20 per second. Replay 0.023° RMS (recorded std 0.56°); before 1.7°. Model decisions in our
+port: the acceleration is the velocity's change between physics ticks (the original's `FUN_005d9610` per 60 Hz
+update), airborne = no wheel down, and the spring's mass factor 1 (recorded, writer not read). Our drive at
+--units 12 (auto-throttle 0.6, ≤ 56 mph) gives a height std of 0.05 m at 1-40 mph and 0.01 m at 40-80 mph
+against the original's 0.018 / 0.148 m on its roads: not the same road, so not compared.
 The run's car is not identified (`mwtool genesys all --type CameraGameplayExternal` printed nothing).
 
 **Round 7 (2026-10-06): from the code now** (decomp.md "Speed and acceleration movement"): the speed band
@@ -342,13 +356,13 @@ That row stays a guess until the helper is read to its end.
 - *Fitted from the recording (model decision)*: the yaw stiffness. Recorded cam + 0x6d4 is 0.09 at a
   standstill (= state + 0x74, the per-player default) and otherwise `0.05 + 0.025 × clamp(mph / 100)`
   (93 % of frames within 0.002); that is the data pair `63fb2207` 0.05 → `5a74d44d` 0.075 **rising** with
-  speed (we had it falling), but which operand of `FUN_005c90a0`'s lerp gives it is still unread. The
-  standing threshold (0.5 mph) is ours.
+  speed (we had it falling); round 11 read it as `FUN_005c90a0`'s K1 (code, not a fit). The standing value
+  and threshold (0.5 mph) and the unread `s` blend towards a mods-profile value stay model decisions.
 - *Still ours*: the drift lean and `YawDriftSpring` (no drift in the recording), the eye position (the
   recorded eye sits at z = −5.94 at rest, not the data's −4.6, and moves forward to −4.0 at 130 mph; its
   look-z lane follows `−1.2 + 4.55 × (1 − tan 35° / tan(FOV/2))` to 0.04 m RMS, a FOV-compensating dolly
-  that is not read or ported), the roll and deceleration pitch models, the eye's vertical spring
-  (cam + 0x550, not ported; decomp.md "High-speed shake and the eye's vertical spring") and the collision push-in. The FOV residual (3.8° RMS) correlates with acceleration (+0.1° per
+  that is not read or ported), the deceleration pitch model (the roll and the eye's vertical spring
+  were ported in round 11) and the collision push-in. The FOV residual (3.8° RMS) correlates with acceleration (+0.1° per
   mph/s): a further term after `FUN_005c76a0` that is not found. The airborne branch of `FUN_005c8e40` is not
   ported (the car exposes no airborne state).
 - *Model decisions with the game's address*: `.bss` values still unread: `_DAT_0110e8f0` (yaw spring's

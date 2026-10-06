@@ -124,6 +124,30 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-07: chase camera weight: the eye's vertical spring and the roll ported, yaw stiffness read
+
+- **Method**: the decompiler drops arguments and locals on the camera helpers, so `FUN_005d12b0`'s vertical
+  stage, `FUN_005dc270` / `FUN_005dbbc0` / `FUN_005bd470`, `FUN_005c9380` and `FUN_005c90a0`'s tail were read
+  from `disas.py snap2`, constants with `exe-const`, and every rule replayed on `ref/live1` before porting
+  (decomp.md "The eye's vertical spring, roll and yaw stiffness (round 11)").
+- **Vertical spring** (cam + 0x550): a clamped damped spring (K 20, ζ 0.8 / 0.75, m 1) kicked by the shaped
+  vertical acceleration on the ground and by the vertical speed in the air, with a 0.3 s landing window
+  (cam + 0x716 / 0x6b0, written at the end of `FUN_005d4970`). It moves the eye only, not the look-at point.
+  Replay 5.8 mm RMS, correlation 0.999 (recorded std 0.14 m). The `.bss` 0x0118a060 (2.23694) only turns the
+  horizontal speed into mph for the airborne gain.
+- **Roll** (cam + 0x660): lateral acceleration is m/s² (the range 10-30 is 1-3 g, so the yaw-rate term does
+  most of the work), the rate is intensity × π/180 × 20 = 0.70/s, and the camera leans out of the turn.
+  Replay 0.023° RMS with the 911's `Camera_Roll`, so the recorded car shares it.
+- **Sign trap**: the game's car and camera row 0 is forward × up (the car's right as rendered), i.e. Bevy's
+  local −X for our proper rotations; the camera matrix's row 0 is screen-left. Check signs on the recording
+  (yaw rate vs heading change) before trusting a row's name.
+- **Yaw stiffness**: the moving part of the old fit is code (K1 = lerp(`63fb2207`, `5a74d44d`, min(cam + 0x6d8,
+  speed fraction))); a further blend `s = clamp(|vtable+0x48 vector| / _DAT_0110e8f0)` towards
+  `FUN_00574870(0x29)` is unresolved: no motion signal tried (slip, lateral speed, yaw rate, world velocity)
+  explains the 0.002 residual. Dead end for now; a live read of `_DAT_0110e8f0` and the vtable's +0x48 target
+  would settle it.
+- Not done: the deceleration pitch (`Deceleration_Pitch_Change`), the standing yaw value's producer.
+
 ### 2026-10-07: bloom ported
 
 - **Passes** (decomp.md "Bloom passes (ported)"): three RGBM levels (exe downsample programs, 4 taps at ±1

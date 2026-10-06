@@ -1576,8 +1576,7 @@ cam + 0x120 at zero, 95 % of the frames above 40 mph):
   (bumps, landings); it is cam + 0x550 (= cam + 0x584, correlation 0.995): the vertical stage of
   `FUN_005d12b0` (round 7), a spring: cam + 0x550 integrates its rate cam + 0x554 (slope 1.03 per dt), and
   cam + 0x568 switches between 7.155 and 6.708 = √(20 × 1.6²) and √(20 × 1.5²) (20 = cam + 0x564, `_DAT_00fb07f0`),
-  by its form the spring's ω for the two gain branches. Not ported: its driving input and the `.bss` scale
-  `0118a060` still need the disassembly.
+  by its form the spring's damping for the two branches. Read from the disassembly and ported in round 11 (below).
 
 **The high-speed shake (read; ported as camera.rs `SpeedShakeState`).**
 - `FUN_005d0b90`, first stage: `High_Speed_Shake` (instance 0x18; `Amplitude` 0x28, `Frequency` 0x2c,
@@ -1605,6 +1604,78 @@ cam + 0x120 at zero, 95 % of the frames above 40 mph):
 - Replay (`tools/camreplay.py`, pitch of the matrix in degrees, mean / std, recorded vs ported): 1-40 mph
   +0.004 / 0.007 vs +0.009 / 0.012; 40-80 mph +0.027 / 0.030 vs +0.043 / 0.030; 80-140 mph +0.077 / 0.071 vs
   +0.083 / 0.068. Before: a guessed 1.4 Hz eye translation (0.012 m per unit of Amplitude) with no rotation.
+
+### The eye's vertical spring, roll and yaw stiffness (round 11, from the disassembly)
+
+The decompiler drops the arguments and locals on these calls; read from `disas.py snap2` instead.
+**Arguments of `FUN_005d12b0`** (thiscall, `ret 0x10`): the target's velocity, `S`, the update's `dt` broadcast
+(the local at `FUN_005d4970` + 0xd0, overwritten with `dt` just before `FUN_005c9380`) and `k60 = dt × 60`.
+
+**Vertical stage of `FUN_005d12b0` (ported, camera.rs `HeightSpring`).** cam + 0x550..0x56c is a spring
+object: position x (0x550), rate v (0x554), lower / upper limit (0x558 / 0x55c, rewritten every update from
+`Acceleration_movement` `65b4f9c6` −1.2 and `0da33093` 2.5), mass factor m (0x560, recorded 1.0, writer not
+read), stiffness K (0x564 = 20, `_DAT_00fb07f0`), damping c (0x568 and 0x56c, always equal). Per update:
+- `airborne` = `FUN_008f5350` on the car (true when none of the four wheel contact bytes at +0xa30 + i ×
+  0x1d0 is set). `a` = `FUN_005d9610`'s acceleration (m/s²), `v` = the velocity argument.
+- If |v.x| and |v.z| are both ≤ 0.1 (`_DAT_00fb07a0`), v.y and a.y are zeroed; if then all three of v's
+  lanes are ≤ 0.1 the input stage is skipped (the spring still steps).
+- Gain g = 3 (`_DAT_00fb0900`) while the landing flag cam + 0x716 is set, else `8e1310f6` (1.5) when a.y > 0,
+  `a8cc9c9b` (1.75) otherwise. Damping ratio ζ = 0.8 (`_DAT_00fb0970`) while v ≥ 0, 0.75 (`_DAT_00fb0980`) while
+  v < 0, or, with the landing flag and v < 0, `0.5 + clamp((cam[+0x6b0] − 10) / 490, 0, 1) × k60 × 0.25`
+  (`_DAT_00fb05e0`, `0820`, `0830`, `0990`). `FUN_005dc270` → `FUN_005dbbc0` sets c = `2 ζ √(K / m)`
+  (`_DAT_00fb0600` = 2; zero if K or 1/m is below 1.19e−7): the recorded 7.155 / 6.708 / 4.472.
+- Input u, grounded: `−g·a.y × clamp(powf(clamp(|g·a.y| / N, 0, 1), E), 0, 1)` with N, E = 185, 0.8
+  (`_DAT_00fb0960`, `0970`) for a.y > 0, else 15, 0.5 (`0950`, `05e0`). Airborne: `−v.y × f`, f = `4 − 3 × k60 ×
+  clamp(v.y / 7, 0, 1)` while the car rises (`_DAT_00fb06b0`, `09b0`, `09a0`), else `8 − 5 × k60 × clamp(h_mph /
+  60, 0, 1)` (`06c0`, `0790`, `0730`), h_mph = `FUN_005d76d0` (vector length) of the horizontal velocity × the
+  `.bss` `0118a060` (2.23694, m/s → mph). Then `v += m × u × dt`.
+- `FUN_005bd470(dt)`: c is chosen by whether x and v have the same sign (0x568) or not (0x56c); `v −= c·v·dt·m`,
+  `v −= K·x·dt·m`, `x += v·dt`; x clamped to the limits, v zeroed when it lands on one (`_DAT_00fae830` /
+  `0890` = ∓1 are only the sign masks). cam + 0x574 = v; cam + 0x584 = x.
+- **Landing window** (the tail of `FUN_005d4970`, after `FUN_005c7340`): `FUN_008f5350` again; a grounded
+  update after an airborne one (cam + 0x715) sets cam + 0x716 and returns; while it is set, cam + 0x70c += dt
+  and cam + 0x6b0 = max(itself, a.y); after 0.3 s (`_DAT_00fafb8c`) all three reset. Recorded: 0x716 is set
+  for 0.30 s after every touch-down; 0x6b0 reached 192 / 221 / 784 after 0.8 / 1.0 / 1.7 s in the air.
+- **Use**: the eye's height in the followed frame is cam + 0x5a4 + x (recorded residual 0.018 m after
+  subtracting x, from 0.136); the look-at point does not move with it (adding x to it triples the view's pitch
+  residual), so the view tilts as the eye bobs.
+- Replay (`tools/camreplay.py`; body velocity, its per-frame difference as a, airborne = vehicle + 0x1630 > 0,
+  the landing window simulated): 5.8 mm RMS against cam + 0x550, correlation 0.999; std per band recorded /
+  replayed 0.018 / 0.019 (1-40 mph), 0.148 / 0.148 (40-80), 0.212 / 0.210 (80-140). With the recorded 0x716 /
+  0x6b0 instead: 8.6 mm.
+
+**Roll, `FUN_005c9380` (ported).** `Camera_Roll` sub-offsets (stored order, `mwtool genesys-types`): +0x10
+`Camera_Roll_Factor_Power`, +0x14 `02dd11bc` (maximum yaw rate), +0x18 `3f8ced67` (maximum lateral), +0x1c
+`Maximum_Roll_Angle`, +0x20 `Minimum_Angular_Velocity_for_Roll`, +0x24 `Minimum_Lateral_Acceleration_for_Roll`,
++0x28 `Roll_Angle_Change_Intensity`. Per update (skipped while paused):
+- `lat` = (body velocity − cam + 0x5d0) / dt projected on the car's row 0 (vehicle + 0x2db0; `FUN_004aeb10` is
+  the body's +0xb0 velocity, stored back to cam + 0x5d0 afterwards); `w` = the body's angular velocity
+  (`FUN_0059f490`, +0xc0) on the car's up row. Units m/s² and rad/s: the lateral range (10, 30) is 1-3 g.
+- `f = max(powf(f_lat, P), powf(f_w, P))`, each `clamp((|x| − min) / max(max − min, 2.38e−7), 0, 1)`; target
+  = `f × Maximum_Roll_Angle × π/180` (`_DAT_00fb0630`), +target when lat < 0, else −target.
+- `step = intensity × π/180 × 20 × dt × (target − cam[+0x660])` (`_DAT_00fb07f0` = 20); cam + 0x660 +=
+  `min(step, max(−step, gap))`: a first-order lag at 0.70/s for intensity 2.
+- The game's row 0 is forward × up (the car's right side as rendered), so lat > 0 is a right turn; the view's
+  right side rises by −cam + 0x660 (regression slope −1.06, correlation 0.89 with the shakes in): the camera
+  leans out of the turn by up to `Maximum_Roll_Angle`.
+- Replay with the 911's values (4.7°, (10, 30) m/s², (0.2, 2.5) rad/s, power 2.5, intensity 2): 0.023° RMS
+  against cam + 0x660 (0.010° at a fixed 60 Hz step), correlation 0.999; recorded std 0.56°, p1/p99 −2.3° /
+  +1.6°. The run's car therefore has the 911's `Camera_Roll`. Our previous model (mph/s, a 2/s rate) was 1.7°
+  RMS off in magnitude.
+
+**Yaw stiffness, `FUN_005c90a0` (read; producing part settled, one term open).** The x87 tail: K1 =
+`y1c + (y28 − y1c) × f` (`63fb2207` 0.05 → `5a74d44d` 0.075), f = `min(cam[+0x6d8], clamp((mph − Low_speed) /
+(High_speed − Low_speed), 0, 1))` (cam + 0x6d8 is the rate-limited yaw-rate term of round 7, 1 with the shipped
+data); then `FUN_00574870(0x29, state + 0x84)` (a mods-profile value, m) and cam + 0x6d4 = `K1 + (m − K1) × s`,
+s = `clamp(|x| / _DAT_0110e8f0, 0, 1)` with x the vector the car's vtable + 0x48 returns. So the fitted
+`0.05 + 0.025 × mph / 100` is K1 exactly (the earlier "high / low swapped" note is this order). Open: the
+source of x and the `.bss` reference. Recorded K − K1 is 0.002 RMS while moving, negative at speed (down to
+−0.28 of the way to 0.09) and best (weakly) explained by the slip angle with m ≈ 0.059, near `YawDriftSpring`
+(0.055); lateral speed, yaw rate and world-velocity lanes fit no better (RMS 0.00173-0.00207 vs 0.00196 for
+K1 alone). The standing value 0.09 (= state + 0x74) is not produced by this formula with s from motion; it
+is likely `FUN_005c89c0`'s reset path. Not changed in camera.rs (its moving part already equals K1).
+
+**Deceleration pitch**: not read this round.
 
 ### Avoidance: where the search ended (round 7)
 
