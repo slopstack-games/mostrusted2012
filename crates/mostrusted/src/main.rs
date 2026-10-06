@@ -15,6 +15,7 @@ mod drive;
 mod game_text;
 mod garage;
 mod hud;
+mod input;
 mod loader;
 mod materials;
 mod menu;

@@ -168,12 +168,19 @@ fn camera_input(
     mut look: ResMut<LookInput>,
 ) {
     let menu_open = menu.is_some_and(|m| m.open);
-    let mut switch = !menu_open && keys.just_pressed(KeyCode::KeyC);
-    let mut look_back = !menu_open && keys.pressed(KeyCode::KeyB);
-    let mut stick = Vec2::ZERO;
+    // The original's defaults (input.rs): CHANGECAMERA = C / LB; ROTATECAMERA* = Delete, Page Down, Home,
+    // End / right stick. LOOK_BACK has no default binding: End or the stick held fully back looks back below.
+    use crate::input::defaults as act;
+    let pad_list: Vec<&Gamepad> = pads.iter().collect();
+    let switch = !menu_open && crate::input::Devices { keys: &keys, pads: &pad_list }.just_pressed(act::CHANGE_CAMERA);
+    let mut look_back = false;
+    // Keys as a stick; the pads' right stick (radial, below) overrides them when deflected further.
+    let keys_only = crate::input::Devices { keys: &keys, pads: &[] };
+    let mut stick = Vec2::new(
+        keys_only.value(act::CAMERA_RIGHT) - keys_only.value(act::CAMERA_LEFT),
+        keys_only.value(act::CAMERA_UP) - keys_only.value(act::CAMERA_DOWN),
+    );
     for pad in &pads {
-        switch |= !menu_open && pad.just_pressed(GamepadButton::North);
-        look_back |= !menu_open && pad.pressed(GamepadButton::RightThumb);
         let s = Vec2::new(
             pad.get(GamepadAxis::RightStickX).unwrap_or(0.0),
             pad.get(GamepadAxis::RightStickY).unwrap_or(0.0),
