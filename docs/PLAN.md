@@ -61,7 +61,7 @@ user's review after session 3, with where each gap is tracked:
 
 | Gap | State | Item |
 |-----|-------|------|
-| Handling does not feel like the game | re-read from the code 2026-10-06: drivetrain (14-state gearbox, live constants), tyres (μ × static load + downforce share, no calibrated scale; 2.6 g skidpads), steering, drift (side force outwards) and handbrake (no lock). Open: whether the brake-tap drift starts (the tyre constraint's +0x210 blend scale), the low-speed standstill hold, a few `.bss` constants; needs recordings of the original. Session 5: the tyre pass's brake hold and the standstill hold / downshift ground-time gate ported; on `ref/xkr_launch` the launch slip now roughly matches, the large remaining gap is the braking phase (the original enters a drift and stops in 1.3 s, ours does not rotate) | M3.2 |
+| Handling does not feel like the game | re-read from the code 2026-10-06: drivetrain (14-state gearbox, live constants), tyres (μ × static load + downforce share, no calibrated scale; 2.6 g skidpads), steering, drift (side force outwards) and handbrake (no lock). Open: whether the brake-tap drift starts (the tyre constraint's +0x210 blend scale), the low-speed standstill hold, a few `.bss` constants; needs recordings of the original. Session 5: the tyre pass's brake hold and the standstill hold / downshift ground-time gate ported; on `ref/xkr_launch` the launch slip now roughly matches, its braking phase is two collisions in the original and cannot judge the brakes (a clean braking capture is needed); the steering's neutral offset (a counter-steer assist that follows body slip) ported from the telemetry relation | M3.2 |
 | Tyre screech sounds as if a horn is held at the same time | fixed 2026-10-06 (not yet heard by the user): the 32 kHz waves decoded to a 47-sample loop (a 681 Hz buzz); skid intensities now follow the game's `FUN_009d1bf0`. A capture of the original would confirm | M5.4 |
 | Shading has a yellow tint over everything | `[~]` main cause fixed 2026-10-06: the ColourCube bytes were read with red and blue swapped, so the noon grade warmed instead of cooled (noon frame warm bias +33 → +13). Session 5: the cloud layer was decoded as sRGB (dark patches in the day sky), fixed; the bloom, vignette and colour-cube blend inputs are traced to renderer fields but each needs a live read before it can be ported without guessing (research log). Left: those live reads, a screenshot of the original, the provisional skylight, night warmth | M1.5, M1.7 |
 | Animations are missing | none play: driver, steering wheel, animated body parts (`PhysicsDrivenVehicleAnimationBehaviour`), world animations (`TriggerAnimationBehaviour`, `AnimatedDynamicEntityBehaviour`), tree wind | M3.8 |
@@ -419,9 +419,10 @@ original** (`.bss` constants and renderer fields; the list is in next-session.md
 1. **A live-read session** with the original running (`sudo sysctl kernel.yama.ptrace_scope=0`, `tools/orig/orig
    launch`): the handling `.bss` constants, the post-processing fields (bloom flag and set, vignette A / D, the
    seven colour-cube slots and weights), the pad dead zones. Then port bloom, the vignette and the cube blend.
-2. **Handling** (M3.2): the braking phase of `ref/xkr_launch` (the original drifts and stops in 1.3 s; ours stays
-   straight): settle the tyre constraint's +0x210 blend scale (two leads in decomp.md "Tyres"), then more
-   reference runs (handbrake turn, steady corner, donut).
+2. **Handling** (M3.2): new reference runs on a clear road: straight-line braking first (`ref/xkr_launch` hits
+   something while braking, so it cannot judge the brakes; its clean stretch suggests the rear brakes barely
+   act in the original), a slide in a second car, handbrake turn, steady corner, donut; the tyre constraint's
+   +0x210 blend scale (two leads in decomp.md "Tyres").
 3. **The user's visual reports** (road / terrain texture scale, foliage placement): get a location, then the
    WorldPBR `Horizontal_*` variants, sampler modes, and the game's groundcover draw distance.
 4. **Easydrive** (M7): the game's own layouts for its look, the conditional entries, the hooks (customise, paint,

@@ -11,9 +11,14 @@ the details, [PLAN.md](PLAN.md) "Where it stands" the state per gap.
   turning the wheel), the standstill hold (`Brakes.99407bbc` through `FUN_009d6170` / `FUN_009b1180`) and the
   downshift's ground-time gate (`FUN_009ae840`). 911: 0–100 km/h 3.72 s, 100–0 in 38.5 m, skidpad 2.57 g
   (unchanged). `ref/xkr_launch`: RMS speed 15.1 mph; launch slip now close (κ 0.4 / 0.49 against 0.1 / 0.39),
-  ours pulls away ~0.3 s early and revs to 6630 against 6120. **The big gap is the braking phase** (6.0–7.3 s):
-  the original enters a drift (yaw −34 °/s, 1 g lateral) and stops in 1.3 s, ours stays straight and takes far
-  longer.
+  ours pulls away ~0.3 s early and revs to 6630 against 6120. **The run's braking phase (after 6.0 s) cannot
+  judge brakes or tyres**: the original car hits something twice (6.02 s: −7.4 m/s in one tick; 6.60 s: the
+  velocity turns 34° in one tick) and then slides; our replay runs on the flat test track. Between the hits it
+  brakes at 1.13 g (ours 1.1–1.6 g). A clean straight-line braking capture is needed.
+- **Steering's neutral offset** (round 2): q (vehicle +0x2c70, the `steer_q` column) = body slip / 35°, scaled by
+  speed / 10 mph below 10 mph: outside a drift the front wheels turn towards the direction of travel by 0.3 q,
+  a counter-steer assist. Ported from the telemetry relation (its writer was not found in the dump; 35° is also
+  the XKR's `Maximum_steering_angle`, so a second car's capture must tell a constant from that field).
 - **Input**: the original's default bindings and mapping rule (`input.rs`). W / S no longer drive: arrows, A, Z.
 - **Easydrive**: menu tree from the UI data, shown in game; Change car works, the rest is inert, the look is ours.
 - **Free-roam**: `TriggerData` decoded (`mwtool freeroam`); speed cameras log passes (`freeroam.rs`).
@@ -53,9 +58,10 @@ the details, [PLAN.md](PLAN.md) "Where it stands" the state per gap.
 
 1. The live-read session above; then port bloom, vignette and the cube blend (kernels and sources are in
    decomp.md "Post-processing and colour grade").
-2. Handling: why the original drifts under braking in `ref/xkr_launch` and ours does not (inputs in the
-   telemetry at 6.0–7.3 s; the +0x210 leads `FUN_009c24b0` / `FUN_009a56b0`), the launch delay, then new
-   reference runs (handbrake turn, steady corner, donut; tools/orig).
+2. Handling: new reference runs on a clear road (tools/orig): **straight-line braking** first (the original's
+   rear wheels show κ ≈ 0…+0.07 under full brake in the clean stretch, ours −0.1…−0.3: the brake split), a
+   slide in a second car (settles q's 35°), handbrake turn, steady corner, donut; the +0x210 leads
+   (`FUN_009c24b0` / `FUN_009a56b0`); the launch delay.
 3. The user's visual reports with a location: WorldPBR `Horizontal_*` variants, sampler address modes, the
    game's groundcover draw distance (`GroundcoverJob`), camera-facing groundcover.
 4. Easydrive's own layouts and conditional entries; nitrous, horn, look back; free-roam HUD messages and
