@@ -512,8 +512,20 @@ chain, from the light buffer (HDR game units) to the screen:
 2. **Tonemap** (`GBufferComposite` in `SHADERS.BNDL`): (hdr + bloom × B.rgb × saturate(bloom × T.w) × B.w) ×
    (A.rgb × v + D.rgb) × T.w → 1 − 2^(−x) → polynomial sRGB fit. T.w = the auto-exposure scale; with v the
    vignette weight, A·v + D is the vignette's inner → outer colour blend (`PostFxKeyframe.Vignette` holds an
-   inner (1, 1, 1) and outer colour, (0.45, 0.45, 0.45) in the default keyframe `…78dc`). Which CPU function
-   fills A, B and D was not found (inferred: B = bloom colour and strength, A / D from the vignette colours).
+   inner (1, 1, 1) and outer colour, (0.45, 0.45, 0.45) in the default keyframe `…78dc`). The constants are
+   `GenericVector4_A` / `_B` / `_D`, global constant slots 0x9c / 0x9d / 0x9f written in `FUN_0089d5c0`
+   (through `FUN_00a5d660(slot)`): **B** = (`PostFxKeyframe.Bloom.Colour`.rgb, Bloom `ff564907`) when bloom
+   is enabled (view settings +0x1518 and renderer +0x9836, runtime flags), else (1, 1, 1, 0), which removes
+   the bloom term; slot 0x9e (C, `GenericVector4_C`, not read by the composite) = (1 / Bloom `76826c13`,
+   Bloom `da328699`, 0, 0) or (1, 1, 0, 0). **A** = renderer +0xa990 and **D** = renderer +0xa980, each times
+   the view's vec4 at +0x15d0 (override, `FUN_008e3e30`); what writes +0xa980 / +0xa990 was not found.
+   The Bloom fields reach the renderer (+0xac74…+0xaca4) through `FUN_008e51b0` (unpack, field order in the
+   research log), `FUN_008e9610` (keyframe and state blend), `FUN_008ecf80` → `FUN_008ce250` →
+   `FUN_008c9e40` (copy when bloom is on); the bloom set-up `FUN_008eaaf0` takes three of them
+   (`c9f605e2`, `a3d336c1`, `cf7d9668`) and the vignette vectors at +0xa980…+0xa9bc.
+   Blur kernel (exe programs `0x010109c8` VS + `0x01010d38` PS): 5 taps at 0, ±1.407333, ±3.294215 texels
+   (× `kScale`), weights 6.533238, 9.728171, 3.005209 (sum 32 = the RGBM range: the downsample `0x0100ffa0`
+   averages 4 taps decoded × 32 and re-encodes with M rounded up to 1/255), result ÷ exposure.
 3. **Final pass** (12 variants created in `FUN_008e41e0`, e.g. `0x01016148`, `0x01017050`): offset the UV by a
    distortion texture, optionally blend depth of field, composite the "splatter" overlay (premultiplied:
    src × (1 − a) + rgb), then **out = TintBlend(rgb × `ColourCubeScalesOffsets`.xyz + .w)** (3-D texture,
@@ -525,7 +537,14 @@ chain, from the light buffer (HDR game units) to the screen:
    in the dump); `FUN_008e0ac0` copies the result into the texture row by row, without reordering. The default
    PostFX state (`POSTFX.BNDL` `…78ae`) contributes the identity cube `…78f1`; other states add their own
    (cooldown `…7898`, heat `…789d`, nitrous `…789f`, escaped `…789c`, wreck `…789a` / `…789b`) through
-   `ValueBinding` strings. Where the environment keyframe's cube enters, and with which weight, was not found.
+   `ValueBinding` strings. The caller is `FUN_008c9e40` (the frame's post set-up): seven cube slots from the
+   frame state (+0x2c base, +0x34, +0x3c, +0x44, +0x4c, +0x64, +0x6c; each a resource + offset, a missing
+   one falls back to the base) with weights +0x54, +0x58, +0x5c, +0x60, +0x74, +0x78 (the first two and the
+   last two replaceable by a view override at +0x1568… / +0x1560…). If the six weights sum above 1
+   (`DAT_00f8a820`) they are scaled to sum 1; the base cube gets 1 − sum. The PostFX state's two
+   `ColourCubeSettings` cubes and [0, 1] weights (`FUN_008ecf80`, state +0x12e8…+0x12fc) are very likely the
+   last two slots. Which slot holds the environment keyframe's cube, and with which weight, was not found
+   (needs a live read of the frame state).
 
 Consequence for the ColourCube layout: a straight weighted blend keeps the stored order, so the stored entries
 are the texture's own (x = input red fastest, bytes B, G, R + alpha), not "blue fastest, stored R, G, B"
