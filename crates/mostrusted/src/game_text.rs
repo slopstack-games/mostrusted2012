@@ -69,7 +69,12 @@ impl Plugin for GameTextPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<GameFonts>()
             .add_systems(Startup, load_menu_fonts)
-            .add_systems(PostUpdate, layout_game_text.before(bevy::ui::UiSystems::Prepare));
+            // Before the stack system too (it is not ordered against Prepare): glyphs spawned after it keep stack
+            // index 0 for the frame and draw under their own panel, which hid every text that changes each frame.
+            .add_systems(
+                PostUpdate,
+                layout_game_text.before(bevy::ui::UiSystems::Prepare).before(bevy::ui::UiSystems::Stack),
+            );
     }
 }
 
