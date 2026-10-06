@@ -582,6 +582,20 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         pbr_input.specular_occlusion *= ao;
     }
 
+    else if layered.mode == 12u {
+        // Groundcover G-buffer program: RT1 (sqrt albedo) = texel.rgb / texel.a × sqrt(2 tint), RT0 = the
+        // interpolated vertex normal; alpha test at 0.5. Bevy has decoded rgb to linear (~ rgb²) and
+        // multiplied in the vertex colour (2 tint, linear), so divide by a².
+        let base = pbr_input.material.base_color;
+        let a = max(base.a, 0.5);
+        pbr_input.material.base_color = vec4(min(base.rgb / (a * a), vec3(1.0)), base.a);
+        // The game's sprite always faces the camera, so its normal (mostly the ground normal) is never
+        // flipped; Bevy's double-sided flip turned it downwards on back faces and the tufts drew black.
+        pbr_input.N = normalize(in.world_normal);
+        // RT2 / RT3 are not written by the program: no specular.
+        set_specular(&pbr_input, vec3(0.0), 1.0);
+    }
+
     else if layered.mode == 8u {
         // Water_Opaque_Singlesided's G-buffer program (Water_Proto_Cheap: waves only, uv_b = TEXCOORD0).
         let t = time();

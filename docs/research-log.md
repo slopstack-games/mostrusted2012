@@ -181,6 +181,35 @@ has the map).
   writer) looks like transform composition; the unread helpers listed in decomp.md are the candidates.
 - No camera rule changed, so the round-4 baseline traces still describe our camera.
 
+### 2026-10-06 (session 5, round 5): groundcover look
+
+- **Why the tufts were black**: the groundcover quads used the Standard look with Bevy's double-sided
+  material, which flips the world normal on back faces. Our sprite normal is the instance's ground normal
+  (pointing up), so every back-facing quad got a downward normal and the deferred pass left it unlit. Test
+  (park lawn, `--camera=-760,45,1960,-900,30,2080 --hour 12`): with the new groundcover mode but Bevy's
+  flipped normal kept, the tufts stay solid black exactly as before; with the vertex normal used unflipped
+  they read as olive grass clumps in the lawn's light. The game never meets the case: its sprites always
+  face the camera.
+- **The programs** (`mwtool shader-asm Groundcover`; facts in formats.md "Sprite vertices"): one texture
+  (`DiffuseSampler`, an atlas), cell from the COLOR alpha byte (= the instance's region byte) via
+  `GroundcoverTextureRegions`, `uv = region.xy + region.zw × (u, 1 − v)`; alpha test at 0.5; RT1 = texel.rgb /
+  texel.a × sqrt(2 tint), so albedo = (rgb / a)² × 2 tint, like the trees' premultiplied texels; RT0 = the
+  normalised vertex normal; RT2 / RT3 untouched (no specular); no lighting in the shader. The vertex normal
+  is mostly the ground normal: `normalize(sprite vector) + max(8 − height, 0.75)·(n + (0, 0.25, 0))`.
+- **The CPU vertices** (`FUN_00eb9500`): position, NORMAL = bytes +8..+10 / 127, BINORMAL = (+6, +7, +11) /
+  127 (width and height shrunk by the range fade), COLOR = bytes +12..+15 as RGBA (tint, region), UV halfs
+  (0,0), (1,0), (1,1), (0,1). Constant `DAT_01081004` = 1/127 (.rdata).
+- **Sprite size, still open, narrowed**: `gObjectCB` is not a separate buffer: the draw record points at the
+  collection's own material record (`collection +0x30 + material × 0x110`, 0x110 = the cbuffer's 272
+  bytes), so `GroundcoverConstants` = the record's first 16 bytes. On disk those hold the material import
+  (all zero in `TRK_UNIT1`'s collection 03c936db), so whatever resolves the import must also write the size
+  scale there; the 0x20F load / fix-up function was not found this round (next: the resource-type handler
+  for 0x20F, or a live read of the record in the running game). Sizes stay at byte / 32 (model decision).
+- **Done**: `Mode::Groundcover` (materials.rs / layered.wgsl): albedo = (texel / a)² × 2 tint clamped to 1,
+  unflipped vertex normal, no specular. The quads' vertex normals follow the game's formula without the
+  camera term (−0.1·d), since the crossed quads are static; the tint is no longer clamped per factor.
+  Camera-facing sprites need a vertex-shader path in the layered material (not cheap): still crossed quads.
+
 ### 2026-10-06 (session 5, round 4): the chase camera from the code
 
 Goal: port the chase camera's sway, weight and avoidance from the code that reads `CameraGameplayExternal`.

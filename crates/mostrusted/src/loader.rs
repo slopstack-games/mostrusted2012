@@ -763,13 +763,28 @@ fn groundcover_mesh(mine: &[mw_formats::GroundcoverInstance], regions: &[[f32; 4
     for inst in mine {
         let region = regions.get(inst.region as usize).copied().filter(|r| r[2] > 0.0 && r[3] > 0.0);
         let [ox, oy, sx, sy] = region.unwrap_or([0.0, 0.0, 1.0, 1.0]);
-        // The shader outputs sqrt(2 * tint) and the g-buffer stores sqrt(albedo): albedo = 2 * tint.
-        let tint = inst.tint.map(|t| (t as f32 / 255.0 * 2.0).min(1.0));
+        // The shader outputs sqrt(2 * tint) and the g-buffer stores sqrt(albedo): albedo = 2 * tint (times
+        // the texel; the layered shader clamps the product, as the 8-bit target does).
+        let tint = inst.tint.map(|t| t as f32 / 255.0 * 2.0);
         let colour = [tint[0], tint[1], tint[2], 1.0];
-        let normal = Vec3::from(inst.normal).try_normalize().unwrap_or(Vec3::Y).to_array();
         let (width, height) = inst.size_m();
+        // The vertex program's normal (TEXCOORD1): normalize(sign(w) right (u - 0.5) + up v - 0.1 d) +
+        // max(8 - height, 0.75) (ground normal + (0, 0.25, 0)), d = horizontal direction from the camera;
+        // the pixel program normalises it. The camera term is left out for the static quads.
+        let ground = (Vec3::from(inst.normal) + Vec3::new(0.0, 0.25, 0.0)) * (8.0 - height).max(0.75);
+        let sign = if width > 0.0 {
+            1.0
+        } else if width < 0.0 {
+            -1.0
+        } else {
+            0.0
+        };
         for q in 0..2 {
             let a = q as f32 * std::f32::consts::FRAC_PI_2;
+            let right = Vec3::new(a.cos(), 0.0, a.sin());
+            let n = |u: f32, v: f32| {
+                ((sign * right * (u - 0.5) + Vec3::Y * v).normalize_or_zero() + ground).normalize_or(Vec3::Y).to_array()
+            };
             let (dx, dz) = (a.cos() * width * 0.5, a.sin() * width * 0.5);
             let base = pos.len() as u32;
             let p = inst.position;
@@ -780,7 +795,7 @@ fn groundcover_mesh(mine: &[mw_formats::GroundcoverInstance], regions: &[[f32; 4
                 [p[0] + dx, top, p[2] + dz],
                 [p[0] - dx, top, p[2] - dz],
             ]);
-            nor.extend([normal; 4]);
+            nor.extend([n(0.0, 0.0), n(1.0, 0.0), n(1.0, 1.0), n(0.0, 1.0)]);
             uv.extend([[ox, oy + sy], [ox + sx, oy + sy], [ox + sx, oy], [ox, oy]]);
             col.extend([colour; 4]);
             idx.extend([base, base + 1, base + 2, base, base + 2, base + 3]);

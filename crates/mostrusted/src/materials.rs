@@ -60,6 +60,10 @@ pub enum Mode {
     Glass = 10,
     /// VehicleNFS13_Glass_Colourise: multiplies what is behind it by MaterialColour_SimpleMultiply.
     Colourise = 11,
+    /// Groundcover sprites (G-buffer program of the `Groundcover` shader): sqrt-albedo = texel.rgb / texel.a
+    /// × sqrt(2 · tint), so albedo = (rgb / a)² in gamma space × 2 · tint (vertex colour); the normal is the
+    /// vertex normal (built on the CPU from the ground normal), never flipped for back faces; no specular.
+    Groundcover = 12,
 }
 
 /// Per-placement inputs the world shaders take from the instance rather than the material: the world
@@ -564,6 +568,10 @@ impl Look {
             }
         }
 
+        if name.starts_with("groundcover") && look.textures[0].is_some() {
+            look.mode = Mode::Groundcover;
+        }
+
         if name.starts_with("cable") {
             // Power lines: the gradient texture isn't bound as diffuse.
             look.textures = [None; N_TEX];
@@ -688,7 +696,7 @@ impl Look {
         let essential = match self.mode {
             Mode::Standard | Mode::Vehicle | Mode::Glass | Mode::Colourise => 0,
             Mode::Refraction => 5,
-            Mode::Tree => 1,
+            Mode::Tree | Mode::Groundcover => 1,
             Mode::Water => 0,
             Mode::Road | Mode::Terrain | Mode::Plot | Mode::WorldPbr => 2,
             Mode::RoadLine => 3,
@@ -911,8 +919,10 @@ impl Look {
         GameMaterial {
             base: StandardMaterial {
                 base_color,
-                base_color_texture: if matches!(self.mode, Mode::Standard | Mode::WorldPbr | Mode::Vehicle | Mode::Tree)
-                {
+                base_color_texture: if matches!(
+                    self.mode,
+                    Mode::Standard | Mode::WorldPbr | Mode::Vehicle | Mode::Tree | Mode::Groundcover
+                ) {
                     tex(self.textures[0])
                 } else {
                     None
