@@ -359,6 +359,20 @@ With the model from the game's code (2026-10-04):
 | McLaren MP4-12C | 3.18 s | 346 km/h | 35.4 m | 0.91 g | 12° held 3.9 s | 14.3° |
 | Ford F-150 Raptor | 7.75 s | 273 km/h | 50.8 m | (drifts on the skidpad: 2 g with the side force) | no drift (peak 8°) | 17.8° |
 
+**Current master (2026-10-06, all three re-reads merged: drivetrain, tyres, steering / drift / handbrake).** The
+tables below were each measured on one branch alone; together they give:
+
+| Car | 0–100 km/h | top speed | 100–0 km/h | skidpad | drift test | handbrake | donut |
+|-----|-----------|-----------|------------|---------|------------|-----------|-------|
+| Porsche 911 Carrera S | 3.72 s | 307.5 km/h | 39.5 m, 3.23 s | 2.57 g | no drift (peak 4.5°), exit 74 km/h | 1.2°, 59°/s | 130°/s at 40 km/h, r 4.9 m |
+| Bugatti Veyron SS | 2.45 s | 420.5 km/h | 34.3 m, 2.73 s | 2.58 g | 19.3° peak, held 4.2 s, exit 92 km/h | 1.5°, 50°/s | 136°/s at 39 km/h, r 4.6 m |
+
+XKR replay of `ref/xkr_launch` on master: the revs rise ~0.5 s early after the handbrake release (3612 against
+1568 rpm at 1.5 s: the original's unexplained 0.45 s launch delay plus the handbrake's front-axle drive), so the
+launch runs ~5 mph ahead from 2 s; the 1→2 shift and the 2nd-gear revs follow the original's shape. The
+original's run ends in an impact at 6.5 s, so the RMS (speed 15.2 mph) says little. Next: record the original's
+brake-tap drift, handbrake turn and donut (`mwtool capture`) to check the drift balance between cars.
+
 With the code's grip caps (2026-10-06: μ × static load + downforce share, surfaces, brake-then-one-pass, wheel by
 wheel on the chassis's effective mass; no calibrated scale):
 
