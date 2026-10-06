@@ -156,7 +156,13 @@ GPU never sees the packed instances. What it says:
   carries e, so `cb1[0].x` is probably derived from it; with 2^e it would be 2^e/127 m per byte, which is
   the old byte/32 only for e = 2 and up to 2 m per byte for e = 8 (implausible for grass, unchecked). The
   size stays byte/32 (model decision, `GroundcoverInstance::size_m`). `mwtool placement-check --groups -v`
-  now prints e, r and the largest width / height bytes per group, to test a hypothesis against r.
+  now prints e, r and the largest width / height bytes per group (`MW_GC_VERBOSE=1`). Result: **r is in
+  2^e/127-per-byte units**, r ≈ ((w + h) / 2) × 2^e/127 of the largest sprite (e 2: 62/62 → 1.95 vs r 1.974;
+  e 4: 47/47 → 5.92 vs 5.938, 37/18 → 3.46 vs 3.504; e 6: 21/87 → 27.2 vs 27.6; e 8: 7/32 → 19.7 × 2.016 =
+  39.7 vs 40.9), so 125·r is the largest per-sprite range of the group. e = 8 groups are drawn to ~5 km;
+  with byte/32 they are 1 m tufts (the far specks the audit saw), with 2^e/127 they would be 14 x 64 m
+  sprites (far-vegetation cards?). Which is right needs a look at the original or the 0x7F writer; this
+  session could not run screenshots (the agent sandbox refused to launch `mostrusted`), so sizes stay byte/32.
 - **Unit visibility**: the builder only sees groups handed to it (by the `GroundcoverJob`, string at
   0x1002028 with no code reference in the dump); not traced whether a group needs its track unit loaded.
 
