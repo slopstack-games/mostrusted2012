@@ -584,3 +584,23 @@ decisions: [handling.md](handling.md), "Crash camera".
 - Not found: the bystander camera's maths (its params are read through cached pointers, not in place), the
   scene analysers' update (vtables at `0x00fe4638` and nearby, `FUN_007d9840` and its siblings build them),
   the `SlowMoSequenceItem` handler.
+
+## Sky, sun and shadows
+
+_(session 5: to be filled in)_
+
+## Input and control bindings
+
+_(session 5: to be filled in)_
+
+## Front end, HUD and Easydrive
+
+_(session 5: to be filled in)_
+
+## Free-roam rules: collectibles, jack spots, events
+
+_(session 5: to be filled in)_
+
+## Traffic and AI vehicles
+
+_(session 5: to be filled in)_

@@ -124,6 +124,38 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-06 (session 5): tyres: longitudinal constraint and the launch
+
+_(to be filled in)_
+
+### 2026-10-06 (session 5): drivetrain: standstill, downshift gate, launch delay
+
+_(to be filled in)_
+
+### 2026-10-06 (session 5): post-processing: composite constants, bloom, vignette, tint
+
+_(to be filled in)_
+
+### 2026-10-06 (session 5): sky, sun path and shadow cascades
+
+_(to be filled in)_
+
+### 2026-10-06 (session 5): input bindings
+
+_(to be filled in)_
+
+### 2026-10-06 (session 5): Easydrive and the front end
+
+_(to be filled in)_
+
+### 2026-10-06 (session 5): free-roam rules
+
+_(to be filled in)_
+
+### 2026-10-06 (session 5): traffic
+
+_(to be filled in)_
+
 ### 2026-10-06: no Burnout Paradise bike code survives (dead end)
 
 - Dump strings (23,963): no `bike`, `motorcycle`, `rider`, `wheelie` or `stoppie`. The only vehicle-type enum
