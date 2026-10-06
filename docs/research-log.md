@@ -124,6 +124,66 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-06 (session 5): placement audit (groundcover, trees, props)
+
+User report: "foliage etc sometimes is in the wrong place" (no location). New checker `mwtool placement-check
+[--bundle <unit>] [--top N] [--groups]` (`crates/mwtool/src/placement.rs`): loads the collision of every track
+unit (1,652,030 triangles, 8 m grid), drops each placement onto the surface under its origin (vertical line,
+nearest surface in y) and reports per layer, per model, per unit (groundcover) and the largest offsets. Trees
+(models with a `Tree_*` shader) are their own layer and are checked at their lowest vertex (model min y times
+the matrix's y row), not the origin. `--groups` rates every groundcover group (good = median |dy| < 0.1 m) by
+layer / blob / start / quads; `MW_GC_VARIANTS=1` adds alternative decodes of the u16 fractions.
+
+Numbers (dy = placement y - ground y; share of placements that have ground under them):
+
+| layer | n | no ground | median | abs(dy) < 0.1 | < 0.5 | > 2 up | > 2 down |
+|---|---|---|---|---|---|---|---|
+| prop | 12,290 | 21 | +0.01 | 85.4% | 96.0% | 0.1% | 0.5% |
+| compound | 4,301 | 37 | +0.01 | 77.6% | 88.2% | 5.5% | 1.2% |
+| dynamic | 4,477 | 65 | +0.01 | 40.2% | 64.7% | 11.9% | 5.1% |
+| instance (non-tree, origin) | 23,904 | 1,149 | +0.01 | 28.5% | 45.1% | 17.4% | 14.0% |
+| instance tree (lowest vertex) | 9,620 | 234 | -0.64 | 10.2% | 37.9% | 2.4% | 26.5% |
+| groundcover q1 / q2 / q3 / q4 | 5.09 M / 2.91 M / 0.29 M / 0.51 M | 37-77% | +0.01 | 42 / 32 / 45 / 26% | 64 / 55 / 61 / 41% | 8-25% | 10-16% |
+
+(Groundcover n counts a collection once per unit that lists it; collections are shared between units.
+Backdrop `InstanceList` entries have no collision under their origin: 1,907 of 1,907, as expected for far LODs.)
+
+Results, no decode error found:
+- **Groundcover position decode is right.** Per group, 50.2% of 11,579 groups (55% of instances) sit within
+  0.1 m of collision with the current decode; every alternative is far worse (x/z swapped 8.8%, x flipped 9.4%,
+  z flipped 9.7%, x and z flipped 4.7%, y flipped 3.5%). Good groups are spread evenly over blob index
+  (43-57%), start = 0 or not (53 / 50%) and group order, so the group -> blob/start mapping is not the problem.
+  Layer 0 (small tufts) 61% good, layers 1-2 (bushes, 2-4 crossed quads) 28%: they grow on terrain that
+  collision covers coarsely or not at all. The worst unit (TRK_UNIT165, median +5.1 m) was checked visually at
+  (1562, 22.5, 1456): the tufts stand on a raised lawn planter that has render geometry but no collision.
+- **Groundcover anchor matches the shader.** `Groundcover` vs_4_0: vertex = instance position + width x (u - 0.5)
+  along the camera-perpendicular horizontal + height x v up (`mad r0.xyz, r1.w, l(0,1,0,0), r0.xyz` with
+  r1.w = v4.y x size x `cb1[0].x`), so the sprite stands on its base, as the loader draws it. The billboard is
+  cylindrical: the quad's horizontal axis is perpendicular to (position - camera).xz, not the stored yaw (our
+  static crossed quads use yaw; open). `cb1[0].x` is still unknown; the dump registers the cbuffer
+  `GroundcoverConstants` (slot 0x7F, 16 bytes) and `GroundcoverTextureRegions` (0x80, 16 x 16 bytes) in
+  `FUN_008c34b0`; the writer of slot 0x7F was not traced.
+- **Trees are planted, not floating**: per-model medians of the lowest vertex are -0.1 to -0.9 m (trunks sunk
+  into the ground), 2.4% more than 2 m up. Outliers: `a97b9688` (1,545 placements, lowest vertex median -5.8 m,
+  origin -2.0 m: the model reaches 3.8 m below its origin; looks like a deliberate deep root, not checked
+  visually) and `f86cfc31` (12, +2.2 m, probably on planters without collision).
+- **Tree vertex programs do not move vertices** beyond wind sway (`Tree_Translucent_1Bit_Doublesided`: xz +=
+  sin(time x speed + phase) x amplitude x weight, phase / weight from a vertex attribute), so the leaf cards are
+  meant to be where the mesh puts them.
+- Props, compounds: placed on the ground. Dynamics with large offsets are a handful of models (`34280415`
+  +43 m x 33, `cdf4b833` +20 m x 40, `42d010d9` -18 m x 23); not identified (no debug names), probably objects
+  on roofs / under bridges where the nearest collision is another level.
+- Screenshot `lamp-tree` (-1112,24,1640 -> -1130,20,1630): lamp, trees, hedges and kerb stand correctly. In the
+  same shot, dark groundcover specks hang against the sky in front of the cliff on the left.
+
+Most likely cause of the report (not fixed, open): **groundcover is drawn at every distance.** The game presumably
+draws groundcover only near the camera (unverified; open point "fade distance"), but we draw all collections everywhere, so tufts of
+far collections (e.g. `e557779c`, shared by units 36-57, instances up to y = 422 over the mountains) are drawn
+over far terrain that we render with a different / coarser backdrop LOD or not at all; they appear as floating
+specks. Next step: find the fade distance (the GroundcoverJob, string at 0x1002028, culls groups per frame; or a
+live read) and cull groups beyond it in the loader / renderer. Also open: camera-facing billboards instead of
+yaw-oriented crossed quads.
+
 ### 2026-10-06 (session 5): tyres: longitudinal constraint and the launch
 
 _(to be filled in)_
