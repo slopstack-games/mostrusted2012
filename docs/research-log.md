@@ -124,6 +124,46 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-06 (session 5, round 2): groundcover draw distance and sprites
+
+Found the CPU side of groundcover: `FUN_00eb9500` (and a twin, `FUN_00eb8390`) walks a group's instances
+and writes four 0x2C-byte vertices per visible sprite into a dynamic buffer (the `Groundcover` vertex
+layout: position, normal, binormal, colour, half-float uv), then records the draw with the material at
+`collection+0x30 + material·0x110` (found by grepping for that stride) and the group's byte +0x30. So the
+GPU never sees the packed instances. What it says:
+
+- **Group test**: distance from the camera (`param_6`) to the nearest point of the group box ≤ group+0x3C ×
+  `DAT_010c6f74`. `DAT_010c6f74` is .data, 125.0 on disk (could be changed at runtime; nothing seen writing it).
+  group+0x3C is the box margin `r`, so a group with 1 m sprites is drawn to 125 m.
+- **Group byte +0x30 is a size exponent e, not a quad count**: the test scales size bytes by
+  `(1 << (e & 0x1f)) × 1/127` (`DAT_01081004`). Values 2/4/6/8. Our old "1 to 4 crossed quads" was a guess;
+  the game draws one quad per instance.
+- **Instance +6 / +7 are width / height** (signed `char`), not yaw / size: BINORMAL = (w·f/127, h·f/127,
+  byte 11/127). The shader uses BINORMAL.x × `cb1[0].x` as the width and .y × `cb1[0].x` as the height, and
+  the sign of the width for its normal. Where the two bytes are equal (the "yaw equals size" note) the
+  sprite is square.
+- **Per-sprite test and fade**: drawn if in front of the camera plane (`(p − eye)·forward ≥ 0`, `param_7`)
+  and |p − eye|² ≤ R², R = ((w>>1 & 63) + (h>>1 & 63)) × 2^e/127 × 125; then f = min((1 − d²/R²) ×
+  `DAT_01081000` (5.0), 1) multiplies the width and height bytes (truncated to an integer). Sprites shrink
+  to nothing over the last fifth of their range in squared distance; no alpha fade (the pixel programs
+  only `discard` alpha < 0.5). Cap `DAT_010c6f70` = 20000 sprites per frame and 300 draws (`param_11+0x12c0`).
+- **Vertex program**: right = (−d.z, 0, d.x) with d = normalize(instance.xz − ViewPosition.xz): yaw-only,
+  turns about world up; vertex = p + right × (width × (u − 0.5) + sway × v) + up × height × v, sway =
+  sin(Time.x × `speed` + p.x) × `amount` (material parameters), so only the top sways, sideways. Normal for
+  lighting = sign(width)·right·(u − 0.5) + up·v − 0.1·d, plus max(8 − height, 0.75) × (normal + (0, 0.25, 0)).
+  Texture region = `GroundcoverTextureRegions[colour.a × 255]`, uv (u, 1 − v) × scale + offset.
+- **Not found**: who fills `GroundcoverConstants` (slot 0x7F; no `FUN_00a5d660(0x7f)` call). The draw record
+  carries e, so `cb1[0].x` is probably derived from it; with 2^e it would be 2^e/127 m per byte, which is
+  the old byte/32 only for e = 2 and up to 2 m per byte for e = 8 (implausible for grass, unchecked). The
+  size stays byte/32 (model decision, `GroundcoverInstance::size_m`). `mwtool placement-check --groups -v`
+  now prints e, r and the largest width / height bytes per group, to test a hypothesis against r.
+- **Unit visibility**: the builder only sees groups handed to it (by the `GroundcoverJob`, string at
+  0x1002028 with no code reference in the dump); not traced whether a group needs its track unit loaded.
+
+Implemented: one mesh per group, hidden by `groundcover_distance` (main.rs) when the camera is farther than
+125·r from its box. Not done: the per-sprite range / shrink (needs a vertex-shader path; merged group meshes
+draw every sprite of a visible group at full size) and the camera-facing turn (two crossed quads stand in).
+
 ### 2026-10-06 (session 5): ground texture scale audit
 
 Report: "some textures, especially on the road and terrain are still scaled wrong" (no location). Every UV path

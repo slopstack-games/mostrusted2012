@@ -13,7 +13,7 @@ mod decode;
 mod dxgi;
 mod font;
 pub mod genesys;
-mod groundcover;
+pub mod groundcover;
 mod material;
 mod paint_map;
 mod renderable;

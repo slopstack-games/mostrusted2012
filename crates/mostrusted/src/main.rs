@@ -234,6 +234,29 @@ pub struct Game {
 /// The player's view: every `Camera3d` except the planar reflection's mirrored camera (`reflection.rs`).
 pub type MainCamera = (With<Camera3d>, Without<reflection::PlanarReflectionCamera>);
 
+/// A groundcover group's box and draw distance (`loader::Msg::Groundcover`).
+#[derive(Component)]
+struct GroundcoverRange {
+    min: Vec3,
+    max: Vec3,
+    range: f32,
+}
+
+/// The game's group test (`FUN_00eb9500`): a group is drawn while the distance from the camera to the
+/// nearest point of its box is at most 125 x its radius (`Group::radius`). The game also drops and shrinks
+/// single sprites near their own range (`GroundcoverInstance::fade`); merged group meshes cannot do that.
+fn groundcover_distance(
+    camera: Query<&GlobalTransform, MainCamera>,
+    mut groups: Query<(&GroundcoverRange, &mut Visibility)>,
+) {
+    let Some(eye) = camera.iter().next().map(|t| t.translation()) else { return };
+    for (g, mut vis) in &mut groups {
+        let d = eye.clamp(g.min, g.max).distance(eye);
+        let want = if d <= g.range { Visibility::Inherited } else { Visibility::Hidden };
+        vis.set_if_neq(want);
+    }
+}
+
 /// GPU meshes and materials making up one game Model.
 pub type ModelParts = Vec<(Handle<Mesh>, Handle<GameMaterial>)>;
 
@@ -519,6 +542,10 @@ fn main() -> anyhow::Result<()> {
         .init_resource::<Loaded>()
         .add_systems(Startup, setup)
         .add_systems(Update, (start_loader, receive_assets, update_status, auto_screenshot))
+        .add_systems(
+            PostUpdate,
+            groundcover_distance.before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
+        )
         .add_systems(Update, (drive_vehicle_lights, apply_vehicle_lights).chain())
         .run();
     Ok(())
@@ -645,6 +672,16 @@ fn receive_assets(
                         if !casts_shadow {
                             e.insert(bevy::light::NotShadowCaster);
                         }
+                    }
+                });
+                loaded.instances += 1;
+            }
+            Msg::Groundcover { model, min, max, range } => {
+                let Some(parts) = loaded.models.get(&model) else { continue };
+                let range = GroundcoverRange { min, max, range };
+                commands.spawn((Transform::IDENTITY, Visibility::Hidden, range)).with_children(|c| {
+                    for (mesh, mat) in parts {
+                        c.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat.clone()), bevy::light::NotShadowCaster));
                     }
                 });
                 loaded.instances += 1;

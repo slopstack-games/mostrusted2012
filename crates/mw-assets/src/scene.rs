@@ -220,6 +220,8 @@ pub struct Groundcover {
     pub id: ResourceId,
     pub materials: Vec<GroundcoverMaterial>,
     pub instances: Vec<fmt::GroundcoverInstance>,
+    /// Every group of every layer with its slice of `instances` (the game culls by group).
+    pub groups: Vec<(fmt::Group, std::ops::Range<usize>)>,
 }
 
 impl AssetStore {
@@ -232,8 +234,11 @@ impl AssetStore {
             .map(|&b| Ok(fmt::GroundcoverInstances::parse(&self.load(b)?)?))
             .collect::<Result<Vec<_>>>()?;
         let mut instances = Vec::with_capacity(col.layers.iter().map(|l| l.total as usize).sum());
-        for layer in 0..col.layers.len() {
-            instances.extend(col.instances(layer, &blobs)?);
+        let mut groups = Vec::new();
+        for g in col.layers.iter().flat_map(|l| &l.groups) {
+            let start = instances.len();
+            instances.extend(col.group_instances(g, &blobs)?);
+            groups.push((g.clone(), start..instances.len()));
         }
         let materials = col
             .materials
@@ -246,7 +251,7 @@ impl AssetStore {
                 regions: m.regions.clone(),
             })
             .collect();
-        Ok(Groundcover { id, materials, instances })
+        Ok(Groundcover { id, materials, instances, groups })
     }
 }
 

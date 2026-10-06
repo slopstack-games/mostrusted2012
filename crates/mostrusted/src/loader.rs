@@ -96,6 +96,13 @@ pub enum Msg {
         model: ResourceId,
         transform: Mat4,
     },
+    /// One groundcover group (a model at the origin), drawn while the camera is within `range` of its box.
+    Groundcover {
+        model: ResourceId,
+        min: Vec3,
+        max: Vec3,
+        range: f32,
+    },
     /// A prop / compound / dynamic object with physics (`props.rs`).
     Prop {
         model: ResourceId,
@@ -558,7 +565,6 @@ impl Worker {
             let Ok(gc) = self.store.groundcover(id) else { continue };
             for (m, mat) in gc.materials.iter().enumerate() {
                 let Some(tex) = mat.texture else { continue };
-                let Some(mesh) = groundcover_mesh(&gc.instances, m, &mat.regions) else { continue };
                 // A stand-in scene mesh gives the usual alpha-tested, double-sided look.
                 let sm = mw_assets::SceneMesh {
                     renderable: id,
@@ -576,9 +582,18 @@ impl Worker {
                     self.texture(key)?;
                 }
                 look.retain_textures(|k| self.textures.contains(k));
-                let key = ResourceId(0x6000_0000_0000_0000 | (m as u64) << 32 | id.0 & 0xFFFF_FFFF);
-                self.send(Msg::Model(key, vec![Part { mesh, look }]))?;
-                self.send(Msg::Instance { model: key, transform: Mat4::IDENTITY })?;
+                // One model per group: the game culls whole groups by distance (`FUN_00eb9500`).
+                for (gi, (g, range)) in gc.groups.iter().enumerate().filter(|(_, (g, _))| g.material == m) {
+                    let Some(mesh) = groundcover_mesh(&gc.instances[range.clone()], &mat.regions) else { continue };
+                    let key = ResourceId(0x6000_0000_0000_0000 | (gi as u64) << 32 | id.0 & 0xFFFF_FFFF);
+                    self.send(Msg::Model(key, vec![Part { mesh, look: look.clone() }]))?;
+                    self.send(Msg::Groundcover {
+                        model: key,
+                        min: Vec3::from(g.min),
+                        max: Vec3::from(g.max),
+                        range: g.radius * mw_formats::groundcover::DRAW_DISTANCE_SCALE,
+                    })?;
+                }
             }
         }
         Ok(())
@@ -700,20 +715,18 @@ impl Worker {
     }
 }
 
-/// Build one mesh of crossed, upright quads for the instances of one material. The game expands
-/// them on the GPU as camera-facing sprites; static crossed cards stand in for that.
-fn groundcover_mesh(
-    instances: &[mw_formats::GroundcoverInstance],
-    material: usize,
-    regions: &[[f32; 4]],
-) -> Option<Mesh> {
+/// Build one mesh for a group's instances. The game's `Groundcover` vertex program turns each instance into
+/// one quad that turns about the vertical to face the camera (right = perpendicular to the horizontal
+/// direction from the camera, up = world up), `width x (u - 0.5)` across and `height x v` up from the
+/// instance position. Without a vertex-shader path here, two crossed upright quads of that size stand in
+/// for the turning one (model decision; `GroundcoverInstance::size_m` for the size).
+fn groundcover_mesh(mine: &[mw_formats::GroundcoverInstance], regions: &[[f32; 4]]) -> Option<Mesh> {
     use bevy::asset::RenderAssetUsages;
     use bevy::mesh::{Indices, PrimitiveTopology};
-    let mine: Vec<_> = instances.iter().filter(|i| i.material == material).collect();
     if mine.is_empty() {
         return None;
     }
-    let quads: usize = mine.iter().map(|i| i.quads as usize).sum();
+    let quads = mine.len() * 2;
     let mut pos = Vec::with_capacity(quads * 4);
     let mut nor = Vec::with_capacity(quads * 4);
     let mut uv = Vec::with_capacity(quads * 4);
@@ -726,14 +739,13 @@ fn groundcover_mesh(
         let tint = inst.tint.map(|t| (t as f32 / 255.0 * 2.0).min(1.0));
         let colour = [tint[0], tint[1], tint[2], 1.0];
         let normal = Vec3::from(inst.normal).try_normalize().unwrap_or(Vec3::Y).to_array();
-        // Width follows the sprite's texture region (assumes a square texture).
-        let width = inst.size * sx / sy;
-        for q in 0..inst.quads {
-            let a = inst.yaw + q as f32 * std::f32::consts::PI / inst.quads as f32;
+        let (width, height) = inst.size_m();
+        for q in 0..2 {
+            let a = q as f32 * std::f32::consts::FRAC_PI_2;
             let (dx, dz) = (a.cos() * width * 0.5, a.sin() * width * 0.5);
             let base = pos.len() as u32;
             let p = inst.position;
-            let top = p[1] + inst.size;
+            let top = p[1] + height;
             pos.extend([
                 [p[0] - dx, p[1], p[2] - dz],
                 [p[0] + dx, p[1], p[2] + dz],
