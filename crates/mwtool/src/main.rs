@@ -310,6 +310,15 @@ enum Cmd {
     },
     /// Count world triangles per shader (all track units), to prioritise ports.
     ShaderUsage,
+    /// Sampler states (filter, anisotropy, LOD bias, address modes) per shader and sampler slot over the
+    /// world meshes of all track units; `--filter` keeps shaders whose name contains it. `--textures` lists
+    /// the bound textures' format, size and mip count instead (mips must reach 1x1 to filter at a distance).
+    SamplerUsage {
+        #[arg(long)]
+        filter: Option<String>,
+        #[arg(long)]
+        textures: bool,
+    },
     /// List every shader with its sampler names.
     Shaders,
     /// List the cars from the vehicle list with names and bundles.
@@ -1034,6 +1043,55 @@ fn main() -> Result<()> {
             rows.sort_by_key(|a| std::cmp::Reverse(a.1.0));
             for (name, (tris, meshes, untextured)) in rows {
                 println!("{tris:>9} tris {meshes:>6} meshes {untextured:>6} without diffuse  {name}");
+            }
+        }
+        Cmd::SamplerUsage { filter, textures } => {
+            let store = AssetStore::new(game)?;
+            // (shader, sampler, state summary) -> meshes
+            let mut usage: std::collections::BTreeMap<(String, String, String), usize> = Default::default();
+            let mut seen = std::collections::HashSet::new();
+            let mut states = std::collections::HashMap::new();
+            let units: Vec<_> = store
+                .bundle_paths()
+                .iter()
+                .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("TRK_UNIT")))
+                .cloned()
+                .collect();
+            for u in units {
+                let Some(b) = store.bundle(&u) else { continue };
+                for p in store.bundle_placements(&b)? {
+                    if !seen.insert(p.model) {
+                        continue;
+                    }
+                    let Ok((meshes, _)) = store.model_meshes(p.model, 0) else { continue };
+                    for m in meshes {
+                        if filter.as_ref().is_some_and(|f| !m.shader_name.contains(f.as_str())) {
+                            continue;
+                        }
+                        let bound = if textures { &m.textures } else { &m.sampler_states };
+                        for (name, id) in bound {
+                            let summary = states
+                                .entry(*id)
+                                .or_insert_with(|| {
+                                    let r = if textures {
+                                        store.texture(*id).map(|t| {
+                                            let full = 1 + t.width.max(t.height).max(1).ilog2();
+                                            format!("{:?} mips {}/{full}", t.format, t.mip_count)
+                                        })
+                                    } else {
+                                        store.sampler_state(*id).map(|s| s.summary())
+                                    };
+                                    r.unwrap_or_else(|e| format!("error {e}"))
+                                })
+                                .clone();
+                            *usage.entry((m.shader_name.clone(), name.clone(), summary)).or_default() += 1;
+                        }
+                    }
+                }
+                store.evict_all();
+            }
+            for ((shader, sampler, state), n) in usage {
+                println!("{n:>6}  {shader:<48} {sampler:<32} {state}");
             }
         }
         Cmd::Shaders => {
