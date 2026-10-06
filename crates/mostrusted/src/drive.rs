@@ -353,6 +353,7 @@ impl Car {
 fn spawn_car(
     mut commands: Commands,
     pending: Option<Res<PendingCar>>,
+    selection: Res<crate::mods_menu::ModSelection>,
     spatial: SpatialQuery,
     mut camera: Query<&mut Transform, crate::MainCamera>,
 ) {
@@ -366,7 +367,12 @@ fn spawn_car(
     let ground = origin - Vec3::Y * hit.distance;
     let start = ground + Vec3::Y * 0.15;
 
-    let params = CarParams::new(&pending.spec.handling);
+    // Performance mods (`mods_menu.rs`): the selection applied to the stock handling.
+    let catalogue = pending.spec.mod_catalogue.clone();
+    let (modded, nitrous_burn) = catalogue.modded(&selection);
+    info!("mods: {}", catalogue.describe(&selection));
+    commands.insert_resource(catalogue);
+    let params = CarParams::new(&modded);
     info!(
         "car params: {:.0} kg, inertia {:.0?}, drift {}, CoM {:?}, {} gears, final {:.2}, redline {:.0}, top {:.0} km/h, drag {:.2?}, peak μ lat {:.2}/{:.2} long {:.2}, front drive {:.2}",
         params.mass,
@@ -541,7 +547,11 @@ fn spawn_car(
         rpm_prev: params.idle_rpm,
         drivetrain,
         nitrous: Default::default(),
-        nitrous_params: mw_handling::nitrous::NitrousParams::new(&pending.spec.handling),
+        nitrous_params: {
+            let mut n = mw_handling::nitrous::NitrousParams::new(&modded);
+            n.burn = nitrous_burn.unwrap_or(n.burn);
+            n
+        },
         brake_ramp: 0.0,
         debug_forces: [0.0; 3],
         tyre_yaw: [0.0; 2],

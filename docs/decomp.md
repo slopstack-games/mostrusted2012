@@ -1084,6 +1084,28 @@ The paint shaders' object constants are registered by name with slot numbers in 
 
 ## Nitrous and upgrades
 
+- **Profile index → field** (2026-10-06, the call sites of `FUN_00574870`; table `mw_assets::mods::PARAMS`,
+  printed by `mwtool mods`). Field offsets were matched against `mwtool genesys-types` (nested struct fields
+  sit at struct offset + field offset) and names checked by hash:
+  - 0: engine torque scale: `FUN_009cd8f0` folds it into a scale on 1.0; `FUN_009d7110` multiplies three
+    `Engine.Power_curve` values (`8c227e4d`, `91c58956`, `12ad185d`, the resource beside the gearbox) by it.
+  - `FUN_009d7110` / `FUN_009d2740` (gearbox, +0x248, identified by its `uint16` gear count at +0x50 and the
+    per-gear loop): 20 `Gear_change_time`, 38 `Differential` (final drive), 39 each gear's `Gear_down_RPM`,
+    40 each gear's `Gear_up_speed`.
+  - `FUN_009cf6a0` (`SteeringBehaviour`): 2 `High_speed_counter_steer_rate`, 3 `Reverse_speed`, 21
+    `High_speed_center_steer_rate`, 31 `High_speed_steer_rate`, 32 `High_speed_steering_range`, 36
+    `Reverse_steering_range`, 37 `16fd6022`.
+  - Drift (`FUN_009d12b0`, `FUN_009d1350`, `FUN_009d1410`, `FUN_009d0200`, all re-run by `FUN_009d79a0`):
+    34 / 47 / 46 `Drift_trigger.8e4032c0` / `0dce38f7` / `8f151151`; 35 / 43 / 42 / 44 `Side_force.09832a93` /
+    `f6c50d59` / `ff5dcf85` / `df1c4fa8`; 45 `Other.30580747`; 28 `Other.55930ac1` and `de67c45d`; 26
+    `Yaw_torque.179fe51e` and `4cad24de`; 27 `Yaw_torque.e324fa82`; 1 the computed yaw torque in `FUN_009d0860`.
+  - Not identified (call site known, field not traced): 4–7 (`FUN_005d4970`-area scales on 1.0), 8–13 and 19
+    (values read from `ushort` / `byte` data), 14–17 (interpolated pairs in the 0x0057xxxx file), 18, 22–25
+    (vehicle +0x560 / +0x588 / +0x680 / +0x6a8, `FUN_008f77f0`-area), 29, 30, 33 (`FUN_0057e1d0`, scale on 1.0),
+    41, 48–54 (a per-state switch, 0x005Cxxxx).
+- **Categories**: category 0 holds the "PRO" names (e.g. `LONG GEARS PRO`), category 1 the base level of the
+  same slots. Unlocks (won events) are not modelled: every mod is available (divergence).
+
 - **`FUN_009d2aa0`** (update step 5, called from `FUN_00904260` with the controls' nitrous lanes +0x1c20..+0x1c2c
   and the mode +0x1c60, both written by `FUN_009aacc0` from the player's control record (`FUN_005734c0(i)` +0x1c
   amount, +0x33 mode) in `FUN_0091c5c0`). `this` holds [0] the engine owner (handling resource at +0x240/+0x244;

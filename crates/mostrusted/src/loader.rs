@@ -75,6 +75,8 @@ pub struct CarSpec {
     pub wheels: Vec<WheelSpec>,
     /// Handling parameters from the car's GeneSys data.
     pub handling: mw_assets::handling::VehicleHandling,
+    /// Performance mods (`mods_menu.rs`); `handling` is the stock car.
+    pub mod_catalogue: crate::mods_menu::ModCatalogue,
     /// Engine sound (`AssetStore::engine`): the car's sequence bank, or Ginsu layers for cars without one.
     pub engine: Option<mw_assets::engine_sound::EngineVoice>,
     /// Deformation data; the body meshes carry joint attributes when this is set (`damage.rs`).
@@ -348,7 +350,32 @@ impl Worker {
         };
         let impact_graph = self.store.impact_graph();
         self.skin_bones = damage.as_ref().map(|d| d.skeleton.bones.len());
+        // Performance mods (`mods_menu.rs`): the catalogue, the nitrous variants' burn rates, the slot names.
+        let mods = mw_assets::mods::performance_upgrades(&self.store, &b).unwrap_or_default();
+        let lang = self.store.language(mw_assets::DEFAULT_LANGUAGE).ok();
+        let mod_catalogue = crate::mods_menu::ModCatalogue {
+            stock: handling.clone(),
+            nitrous_burns: mods
+                .iter()
+                .flatten()
+                .filter_map(|c| c.nitrous.clone())
+                .filter_map(|id| Some((id.clone(), mw_assets::mods::nitrous_burn(&self.store, &id)?)))
+                .collect(),
+            names: mods
+                .iter()
+                .map(|cat| {
+                    cat.iter()
+                        .map(|c| {
+                            let name = c.name.and_then(|id| lang.as_ref()?.get(id as u32)).unwrap_or_default();
+                            if name.is_empty() { c.kind.clone() } else { name.to_string() }
+                        })
+                        .collect()
+                })
+                .collect(),
+            mods,
+        };
         let mut car = CarSpec {
+            mod_catalogue,
             bundle: bundle.to_string(),
             paint_index: self.filter.paint_index.min(self.paint_count.saturating_sub(1)),
             paint_count: self.paint_count,

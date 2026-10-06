@@ -611,7 +611,14 @@ fn main() -> Result<()> {
                     let changes: Vec<String> = c
                         .modifications
                         .iter()
-                        .map(|m| format!("p{} {}{}", m.param, OPS.get(m.op as usize).unwrap_or(&"?"), m.value))
+                        .map(|m| {
+                            format!(
+                                "{} {}{}",
+                                mw_assets::mods::param_name(m.param),
+                                OPS.get(m.op as usize).unwrap_or(&"?"),
+                                m.value
+                            )
+                        })
                         .collect();
                     println!("  slot {:08x} {:<16} name {name}{extra}: {}", c.slot, c.kind, changes.join(", "));
                 }
