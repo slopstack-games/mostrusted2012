@@ -122,10 +122,11 @@ struct Cli {
     /// Debug: skip groundcover (grass and plant sprites).
     #[arg(long)]
     no_groundcover: bool,
-    /// Draw every static world placement as its own entity instead of merging each track unit's static
-    /// placements per material (A/B runs of the merge).
+    /// Merge each track unit's single-use static placements per material (`loader::Worker::send_merged`).
+    /// Off by default: it removed ~10 % of the visible mesh entities and no measurable frame time
+    /// (research log, 2026-10-06 round 5).
     #[arg(long)]
-    no_merge: bool,
+    merge_static: bool,
     /// Debug: draw the backdrop of every track unit unfiltered (all LOD tiers stacked: coarse terrain and
     /// building stand-ins overlap the detailed world). The default composes one backdrop per place from the
     /// zone that owns it.
@@ -424,7 +425,7 @@ fn main() -> anyhow::Result<()> {
             _ => loader::BackdropMode::Composed,
         },
         no_groundcover: cli.no_groundcover,
-        no_merge: cli.no_merge,
+        no_merge: !cli.merge_static,
         keep_lod_proxies: cli.keep_lod_proxies,
         paint_index: cli.paint_index,
         no_prop_physics: !(cli.prop_physics || smash),

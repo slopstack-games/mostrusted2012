@@ -156,8 +156,8 @@ pub struct WorldFilter {
     pub paint_index: usize,
     /// Draw props, compounds and dynamic objects without collision (no `--prop-physics`).
     pub no_prop_physics: bool,
-    /// Draw every static world placement as its own entity (`--no-merge`) instead of merging a track
-    /// unit's static placements per material.
+    /// Draw every static world placement as its own entity (the default: without `--merge-static`)
+    /// instead of merging a track unit's single-use static placements per material.
     pub no_merge: bool,
 }
 
