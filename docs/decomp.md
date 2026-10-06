@@ -1021,3 +1021,7 @@ Not traced: the controller itself (`FUN_00617d00`), the swerve and near-miss rea
 stop-line handling (junction records are reached through the hull's `+0x28` pointer; `FUN_0060c9f0` walks a
 `u8` count at junction `+0x35` with entries near `+0x56`), the switch to a physical car (`FUN_005fcbd0` →
 `FUN_005f7cf0`) and the 150 / 24-slot ranges.
+
+## Vehicle paint, liveries and dirt
+
+The paint shaders' object constants are registered by name with slot numbers in one table function in the 0x8c4xxx range (a run of `FUN_00a5d490` calls): `PbrPaintDiffuseColour` 0x2a, `PbrPaintScratchColour` 0x2e, `PbrPaintScratchSettings` 0x2f, `PbrPaintSecondaryDiffuseColour` 0x30, `PbrPaintSecondarySpecularColour` 0x31, `GenericVector4_A` 0x9c (B, C follow). No `FUN_00a5d660(index)` call uses the paint slots, so they are per-object constants written elsewhere; the writer (and with it the secondary paint's source and the dirt accumulation rule) is still open. Shader maths: research log 2026-10-06 (session 5, round 3).

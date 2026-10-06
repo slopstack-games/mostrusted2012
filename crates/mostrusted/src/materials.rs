@@ -158,6 +158,20 @@ fn pack(v: &[[f32; 4]]) -> [i32; N_VEC * 4] {
     out
 }
 
+/// Car dirt and dust amounts (the paint shaders' `GenericVector4_A.xy`), as f32 bits; set by `--dirt`.
+/// The game's rule that drives them at runtime is not traced yet, so they default to clean.
+static DIRT: [std::sync::atomic::AtomicU32; 2] = [const { std::sync::atomic::AtomicU32::new(0) }; 2];
+
+pub fn set_dirt_level(dirt: f32, dust: f32) {
+    use std::sync::atomic::Ordering::Relaxed;
+    DIRT[0].store(dirt.clamp(0.0, 1.0).to_bits(), Relaxed);
+    DIRT[1].store(dust.clamp(0.0, 1.0).to_bits(), Relaxed);
+}
+
+fn dirt_level() -> [f32; 2] {
+    DIRT.each_ref().map(|a| f32::from_bits(a.load(std::sync::atomic::Ordering::Relaxed)))
+}
+
 /// The lightmapped lights of a vehicle body / paint shader (`LightmapLightsTextureSampler`).
 struct VehicleLightmap {
     texture: Option<TexKey>,
@@ -456,7 +470,22 @@ impl Look {
         } else if vehicle && name.contains("paint") {
             // Body paint: `with_paint` fills in the paint; only the lightmapped lights are set here.
             let lm = vehicle_lightmap(sm, &name);
-            look.textures = slots(&[None, None, None, lm.texture]);
+            // `_Livery`: DiffuseTextureSampler at TEXCOORD0 is a colour over the paint by its alpha;
+            // `_TwoPaintMask`: its green selects the secondary paint (research log 2026-10-06, session 5).
+            let kind = if name.contains("twopaintmask") {
+                2.0
+            } else if name.contains("livery") {
+                1.0
+            } else {
+                0.0
+            };
+            let livery = sm.texture("DiffuseTextureSampler").filter(|_| kind > 0.0).map(|t| (t, kind < 1.5));
+            // Dirt / dust / scratches read EffectsTextureSampler at TEXCOORD2 (UV_1 here), unless the
+            // lightmapped lights already take UV_1 for TEXCOORD3. Only with `--dirt`: the dirt path tints
+            // clean paint pink in the first test (open, research log 2026-10-06 session 5).
+            let effects = linear("EffectsTextureSampler").filter(|_| has_uv(2) && !lm.uv3 && dirt_level() != [0.0; 2]);
+            look.textures = slots(&[livery, effects, None, lm.texture]);
+            let two_paint = sm.parameter("mPaintColourIndex").map_or(0.0, |v| v[0]);
             look.vals = pack(&[
                 [0.0; 4],
                 [0.0; 4],
@@ -466,10 +495,13 @@ impl Look {
                 lm.channels[1],
                 lm.channels[2],
                 lm.channels[3],
+                [if livery.is_some() { kind } else { 0.0 }, two_paint, flag(effects.is_some()), 0.0],
             ]);
             look.vertex_colour = sm.mesh.colors.is_some();
             if lm.uv3 {
                 look.uv_b = Some(3);
+            } else if effects.is_some() {
+                look.uv_b = Some(2);
             }
         } else if vehicle && name.contains("refraction") && sm.mesh.tangents.is_some() {
             // Lamp interiors: parallax-offset reflector with LED emissive channels (see `layered.wgsl`).
@@ -708,6 +740,7 @@ impl Look {
     }
 
     /// Body-paint meshes take the car's paint: the vehicle mode with the paint's colour, F0 and coat.
+    /// The livery / two-paint mask and the dirt amounts (`--dirt`) are applied in `layered.wgsl`.
     pub fn with_paint(mut self, paint: Option<&mw_assets::paint::VehiclePaint>) -> Self {
         if !self.paint {
             return self;
@@ -721,13 +754,22 @@ impl Look {
             clearcoat_roughness: 0.0,
             clearcoat: true,
             pearlescent: [0.0; 3],
+            dirt_colour: [0.0; 3],
+            dust_colour: [0.0; 3],
             colour_index: -1,
         });
         let (cc_spec, cc_fresnel) = if p.clearcoat { (p.clearcoat_specular, p.clearcoat_fresnel) } else { (0.0, 0.0) };
         self.mode = Mode::Vehicle;
-        // Livery / two-paint masks are not applied yet: plain paint. Slot 3 keeps the lightmapped
-        // lights of the `_Lightmap` paint variants.
-        self.textures = slots(&[None, None, None, self.textures[3]]);
+        // Slot 0 keeps the livery / two-paint mask, 1 the effects (dirt) texture, 3 the lightmapped
+        // lights of the `_Lightmap` paint variants; p8 (livery kind, mPaintColourIndex, has effects) is
+        // kept from `from_scene_mesh`. GenericVector4_A.xy = (dirt, dust) amounts, B / C = the paint's
+        // DirtColour / DustColour (research log 2026-10-06, session 5).
+        let [dirt, dust] = dirt_level();
+        let (dc, uc) = (p.dirt_colour, p.dust_colour);
+        self.vals[36..48].copy_from_slice(
+            &pack(&[[dirt, dust, 0.0, 0.0], [dc[0], dc[1], dc[2], 0.0], [uc[0], uc[1], uc[2], 0.0]])[..12],
+        );
+        self.textures = slots(&[self.textures[0], self.textures[1], None, self.textures[3]]);
         self.normal = None;
         self.tint = [p.diffuse[0], p.diffuse[1], p.diffuse[2], 1.0].map(q);
         self.vals[..8].copy_from_slice(

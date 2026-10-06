@@ -145,6 +145,8 @@ set of **skeletal animation clips whose frames are damage levels**:
 `VEHICLES/VEH_<id>_HI.BNDL` / `_LO.BNDL` pair, and names come from `Language` (0x201, `UI/LANGUAGE/0001.BNDL`
 for English).
 
+- Liveries and two-paint masks are bound in the car's Material as `DiffuseTextureSampler` of the `VehicleNFS13_BodyPaint_*Livery*` / `*TwoPaintMask*` shaders; `mPaintColourIndex` (material constant, 0 / 1) picks the secondary paint on `_TwoPaint` meshes. `VehiclePaint` carries `DirtColour` / `DustColour` (the paint shaders' `GenericVector4_B` / `_C`) and `PbrScratchColour`, no texture.
+
 ## Collision (`PolygonSoupList` 0x60)
 
 One list per track unit, world space. Vertices are `u16 × 500/32768 + i8 multiplier × 500` metres. Polygons

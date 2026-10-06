@@ -423,9 +423,32 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         if p2.y > 0.5 {
             albedo = textureSample(tex0, samp0, uv) * vec4(p3.rgb, 1.0);
         }
+        // VehicleNFS13_BodyPaint* (p8 = (livery kind, mPaintColourIndex, has effects map), p9 = GenericVector4_A,
+        // p10 / p11 = GenericVector4_B / _C = the paint's DirtColour / DustColour). `_Livery`: lerp(paint,
+        // livery.rgb, livery.a) with the livery at TEXCOORD0; `_TwoPaint` / `_TwoPaintMask` add the secondary
+        // paint × (mPaintColourIndex or the mask's green), which is not bound yet (0). Then dirt and dust from
+        // EffectsTextureSampler at TEXCOORD2: dirt a = sat(e.w² · A.x), dust d = sat(2 · sat(e.y² · A.y) ·
+        // e(uv × 7).x); coverage = a + d (1 - a) blends towards a·B (1 - d) + d·C, F0 × (1 - coverage),
+        // roughness towards 1, clear coat × (1 - coverage)⁴. Scratches need the damage weight (open).
+        let p8 = layered.p[8];
+        var cover = 0.0;
+        if p8.x > 0.5 && p8.x < 1.5 {
+            let l = textureSample(tex0, samp0, uv);
+            albedo = vec4(mix(albedo.rgb, l.rgb, l.a), 1.0);
+        }
+        if p8.z > 0.5 {
+            let a_in = layered.p[9];
+            let e = textureSample(tex1, samp1, uv_b);
+            let e7 = textureSample(tex1, samp1, uv_b * 7.0);
+            let a = saturate(e.w * e.w * a_in.x);
+            let d = saturate(2.0 * saturate(e.y * e.y * a_in.y) * e7.x);
+            let dirt = mix(a * layered.p[10].rgb, layered.p[11].rgb, d);
+            cover = a + d * (1.0 - a);
+            albedo = vec4(mix(albedo.rgb, dirt, cover), 1.0);
+        }
         pbr_input.material.base_color = albedo;
-        var f0 = p0.rgb;
-        var rough = p0.w;
+        var f0 = p0.rgb * (1.0 - cover);
+        var rough = mix(p0.w, 1.0, cover);
         if p1.x > 0.5 {
             f0 = textureSample(tex1, samp1, uv).rgb;
         }
@@ -449,7 +472,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let nv = saturate(dot(pbr_input.N, v_dir));
         let schlick = pow(1.0 - nv, 5.0);
         let grazing = p1.z + (1.0 - p1.z) * p1.w;
-        let coat = mix(p1.z, grazing, schlick) * ao.y;
+        let coat = mix(p1.z, grazing, schlick) * ao.y * pow(1.0 - cover, 4.0);
         pbr_input.material.base_color = vec4(pbr_input.material.base_color.rgb * (1.0 - coat), pbr_input.material.base_color.a);
         pbr_input.material.reflectance *= sqrt(1.0 - coat);
         let r = reflect(-v_dir, pbr_input.N);

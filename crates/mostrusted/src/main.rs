@@ -162,6 +162,9 @@ struct Cli {
     /// Which of the car's paint options (`VehiclePaint` objects, in ID order) to use.
     #[arg(long, default_value_t = 0)]
     paint_index: usize,
+    /// Car dirt as `dirt[,dust]` (0–1, the paint shaders' GenericVector4_A.xy; dust defaults to dirt).
+    #[arg(long, value_delimiter = ',')]
+    dirt: Option<Vec<f32>>,
     /// Save a screenshot once loading has finished, then exit.
     #[arg(long)]
     screenshot: Option<PathBuf>,
@@ -289,6 +292,12 @@ fn main() -> anyhow::Result<()> {
 
     if cli.camera.as_ref().is_some_and(|c| c.len() != 6) {
         anyhow::bail!("--camera expects 6 comma-separated values: x,y,z,look_x,look_y,look_z");
+    }
+    match cli.dirt.as_deref() {
+        None => {}
+        Some(&[d]) => materials::set_dirt_level(d, d),
+        Some(&[d, u]) => materials::set_dirt_level(d, u),
+        Some(_) => anyhow::bail!("--dirt expects dirt[,dust]"),
     }
     let paint = match cli.paint.as_deref() {
         None => None,
