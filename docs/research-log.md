@@ -144,6 +144,23 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
   lamps, so the night glow of point lights was not seen. Frame time (`--bench 10`, RTX 3070) 16.61 ms on vs
   16.68 ms off: within vsync noise; the passes don't record GPU spans, so per-pass cost was not measured.
 
+### 2026-10-07: the chase camera's "speed shake" split into its sources; the high-speed shake ported
+
+- `ref/live1` decomposed (decomp.md "High-speed shake and the eye's vertical spring"): with the impact
+  shake idle, the view's pitch residual against the followed frame is a matrix at cam + 0x360 (correlation
+  0.98), the eye's height residual is cam + 0x550 (`FUN_005d12b0`'s vertical spring, 0.995). Body pitch passes
+  only weakly (the followed frame's pitch is 0.05° RMS high-passed, the body's 0.15-0.2°).
+- `High_Speed_Shake` read in `FUN_005d0b90` → `FUN_005e34e0` → `FUN_005e2a70` / `FUN_009e7a30`: a 199-sample
+  quaternion curve (`.bss` 0x01188300, ICE `SHAKE_DATA`, filled at run time) ping-ponged at 30 samples/s ×
+  Frequency, scaled by Amplitude × f^Power / 10, plus a pitch bias, turning the view about a point 10 m
+  behind the eye. Ported with a stand-in curve of the recorded statistics (model decision); the replay
+  matches the recorded std per speed band (0.030° / 0.068-0.071° at 40-80 / 80-140 mph).
+- Open: the curve's own samples (where the table is filled: not in the dump; the ICE strings `SHAKE_DATA`,
+  `SHAKE_QUAT_*`, `SHAKE_POS_*`, `Shake Type` at 0x0107c4xx..ccxx are the lead); the speed input S (the recorded
+  scale is ~30 % below the data law under 60 mph); why the random walk at cam + 0x440 never moves; the
+  vertical spring's input and `.bss` scale (needs `disas.py` on `FUN_005d12b0`). Roll (`FUN_005c9380`), the
+  deceleration pitch and the yaw-stiffness producer were not reached this round.
+
 ### 2026-10-07: the chase camera's impact shake read and ported
 
 - `FUN_005dfe90` read: a noise spring (game LCG, ±`WobbleMagnitude` kicks, step `Maximum_frequency_multiplier`
