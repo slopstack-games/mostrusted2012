@@ -27,6 +27,8 @@ const METER_SIZE: u32 = 32;
 #[derive(Resource, Clone, ExtractResource)]
 pub struct GameTonemap {
     pub settings: mw_assets::environment::CameraExposure,
+    /// The PostFX keyframe (vignette).
+    pub post_fx: mw_assets::environment::PostFxKeyframe,
     /// Seconds since the last frame.
     pub dt: f32,
     /// Restart adaptation from the middle of the exposure range (set for the first frame).
@@ -67,6 +69,32 @@ struct TonemapUniform {
     exposure: Vec4,
     setting: Vec4,
     flags: Vec4,
+    /// Vignette (decomp.md "Post-processing"): A = renderer +0xa990 (`kVignetteOuterRgbPlusAdd`),
+    /// D = +0xa980, and the vertex shader's (centre, scale × k) and angle.
+    vignette_a: Vec4,
+    vignette_d: Vec4,
+    vignette_centre_scale: Vec4,
+    vignette_angle: Vec4,
+}
+
+/// The vignette's falloff gain k, read live (renderer +0xa980.w = k, +0xa990.w = 1 − k, +0xa9b0.zw =
+/// `Scale` × k; constant over all 20 dumps of 2026-10-06 and with both PostFX states seen). Which code
+/// derives it (from `Sharpness` = 0.34?) was not found: a measured constant, not a keyframe field yet.
+const VIGNETTE_K: f32 = 1.8245;
+
+/// The vignette constants the original's pass reads, from the PostFX keyframe. The live renderer holds
+/// D = inner × s and A = (outer − inner) × s with s = 1.0025…1.0385 (drifting over the run, 2.81 during a
+/// state change); s is not derived yet and is taken as 1 here (a model decision, ≤ 4 % brightness).
+fn vignette_constants(v: &mw_assets::environment::Vignette) -> [Vec4; 4] {
+    let inner = Vec3::from(v.inner);
+    let a = Vec3::from(v.outer) - inner;
+    [
+        a.extend(1.0 - VIGNETTE_K),
+        inner.extend(VIGNETTE_K),
+        Vec4::new(v.centre[0], v.centre[1], v.scale[0] * VIGNETTE_K, v.scale[1] * VIGNETTE_K),
+        // +0xa9a0.x (kVignetteAngle) read 0; no keyframe field is known to feed it.
+        Vec4::ZERO,
+    ]
 }
 
 pub struct GameTonemapPlugin;
@@ -191,7 +219,18 @@ fn prepare_buffer(
 ) {
     let Some(t) = tonemap else { return };
     let s = &t.settings;
+    let vignette_on = std::env::var_os("MW_NO_VIGNETTE").is_none() && t.post_fx.vignette.scale != [0.0; 2];
+    let [vignette_a, vignette_d, vignette_centre_scale, vignette_angle] = if vignette_on {
+        vignette_constants(&t.post_fx.vignette)
+    } else {
+        // Weight 0 everywhere and factor 1: A = 0, D = 1.
+        [Vec4::new(0.0, 0.0, 0.0, -1.0), Vec4::ONE, Vec4::new(0.5, 0.5, 0.0, 0.0), Vec4::ZERO]
+    };
     buffer.0.set(TonemapUniform {
+        vignette_a,
+        vignette_d,
+        vignette_centre_scale,
+        vignette_angle,
         camera: Vec4::new(s.min, s.max, s.bias, 0.0),
         exposure: Vec4::new(0.0, s.tolerance, s.speed, t.dt),
         setting: Vec4::new(s.target_high, s.target_low, s.luminance_high, s.luminance_low),
