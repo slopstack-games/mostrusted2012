@@ -124,6 +124,45 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-06 (session 5, round 4): Easydrive and HUD from the game's layouts
+
+**Differences found** (our frames at 1280×720 against the layout data, `mwtool ui show`; largest first):
+
+1. **Easydrive panel** was our own (dark box at 4 % / 28 %, orange highlight, Bevy-sized rows, 8 rows). The game's
+   is the `EasyDrive` widget's layout 1773380: a single `UIElement_ElementStack` at (3, 43) whose rows are
+   further stacks and item layouts (formats.md "UI element stacks"). Element stacks were not parsed at all, so
+   nothing the game draws through them (Easydrive, the `EasyDrivePanel`, any list UI) could be drawn.
+2. **Speed digits faint**: the speed label's own colour is grey with alpha 0.45 (`1670378/9`, font 581007,
+   size 38), so faint digits are what the data says for that label; why the original reads bright is not
+   known (a material / blend on the label, or a code-set colour). Not changed.
+3. **Odometer ". 0 KM"**: the layout splits the reading: `{Widget.Nitrous.Odometer(DIST,LONG)}` right-justified
+   (118×21, anchor 5, font 581007 size 19, alpha 0.56) and a separate "." label at (1209, 696) (font 1206239).
+   Our `DIST` format prints `0.0`, which collides with that dot; the game's `DIST,LONG` formatter (code) must
+   print the digits around the separate dot (probably integer part, gap, tenths). Not changed: needs the formatter.
+4. **Minimap**: drawn as an opaque black square with grey roads; whether the original's map is masked / tinted
+   by the frame layout (1206246) was not checked this round.
+5. Nitrous bar and "KM/H" / "KM" unit labels: placed and coloured as the data says (unit labels alpha 0.51).
+
+**Easydrive now** (`crates/mostrusted/src/easydrive.rs`): layout 1773380 drawn through `UiScene` (as the HUD)
+with the `Widget.EasyDrive.*` bindings filled from the menu state: `Items._length` / `Items[i].Name` (visible
+rows), `SelectedIndex` (the selected row template), `CurrentItem.Name`, `TierHistoryLength` /
+`TierHistory[i].Name` (header: the titles of the open tiers), `EasyDrive.Length` (footer arrows), item flags
+(`Locked`, `New`, `PositionNotNull`) false, `Shutdown` empty (picks the plain name label), `Widget.<TYPE>.IsActive`
+false (the generic row). Element stacks are generic in `UiScene::stack`: header, one cell per entry (first true
+template, else default), footer; inside a cell `#` / `#parent_index#` are substituted and dot-less bindings are
+fields of the entry. Before: our dark box with orange bar; after: the game's white selected bar with its arrow,
+translucent dark row strips, game font, at the layout's place (top left).
+
+**Still ours / open**: row pitch = the lowest element bottom of the cell layout (26 px; the `EasyDrivePanel`
+moves by 26.42 per item, so the stack's real cell size rule is not decoded: `CellSizeDefinition`, `Padding`
+unread); 10 rows shown (from the footer's `Length >= 11` threshold; `NumItemsShown` is code); the six glow images
+of the selected row (`01010000001942a0`) and every layout's APPROACH / FADE transitions and idle behaviours are
+not animated; the header at the root tier is empty (root has no title); the closed-menu prompt (1805584) and the
+`EasyDrivePanel` side panel (descriptions, 1902272) are not drawn (which shows when is widget-adapter code).
+HUD layouts not drawn at all: pursuit / cooldown widgets, event prompt (`Prompt`), messages (`UIMessages.*`),
+Most Wanted / AdditionalHUD layouts beyond the minimap and road name: each needs its game state (heat, events,
+message queue) first.
+
 ### 2026-10-06 (session 5, round 3): vehicle liveries, paint masks and dirt
 
 - **Paint variants** across all car bundles (`mwtool models <bundle> --verbose`): plain `BodyPaint` (53 cars),
