@@ -71,8 +71,14 @@ const K_PITCH_EASE: f32 = 0.1;
 const PITCH_RETAIN_PER_SPEED: f32 = 0.02;
 /// `FUN_005e14d0`: within this of a vertical forward axis the previous angles are kept (`DAT_00f9d474`).
 const GIMBAL_EPS: f32 = 0.01;
-/// Damping ratio of the acceleration spring (critical: no overshoot when the throttle lifts).
-const ACCEL_DAMPING: f32 = 1.0;
+/// Model decision (handling.md "Cameras"): the longitudinal acceleration (mph/s) at which the eye's z
+/// offset reaches the data's full value. `FUN_005d12b0` clamps the acceleration by, and divides it by, the
+/// `.bss` vector `DAT_0110e770` (not read yet); ~0.9 g.
+const ACCEL_FULL_MPHS: f32 = 20.0;
+/// Model decision: limit of the eye's acceleration z offset (m). `FUN_005d12b0` clamps the step towards
+/// the target by `DAT_0110e4d0` and the offset by `DAT_0110e680` (both `.bss`, not read); only this one
+/// is applied, generous enough not to bind at the data's targets.
+const ACCEL_Z_LIMIT: f32 = 3.0;
 /// Rate (1/s) at which the field of view follows its target.
 const FOV_RATE: f32 = 3.0;
 /// High-speed shake: metres of eye movement per unit of `High_Speed_Shake.Amplitude`, and the
@@ -324,7 +330,6 @@ struct CameraState {
     orbit: Vec2,
     /// Eye z offset from acceleration (m) and its rate (m/s).
     accel_z: f32,
-    accel_zv: f32,
     fov: f32,
     roll: f32,
     pitch: f32,
@@ -582,30 +587,25 @@ fn chase_view(
     // Its airborne branch (towards 0.1, the landing shake) is not ported: our car has no airborne state.
     s.k_pitch += (K_PITCH_DEFAULT - s.k_pitch) * K_PITCH_EASE;
 
-    // Speed: eye and look-at heights and the eye distance reach their full-speed values at `full_speed`.
+    // Speed and acceleration movement (FUN_005d12b0). h = the speed's place in the band
+    // [b6010ee1, 53e4b4f9] (mph, vehicle + 0x1620); the eye and look-at heights move to their full-speed
+    // values directly (cam + 0x5a4 / 0x5c4).
     let sp = &ext.speed;
-    let f = (mph / sp.full_speed.max(1.0)).clamp(0.0, 1.0);
+    let h = ((mph.abs() - sp.min_speed) / (sp.full_speed - sp.min_speed).max(1.0)).clamp(0.0, 1.0);
     let mut eye = Vec3::from(ext.eye);
     let mut look_at = Vec3::from(ext.look_at);
-    eye.y += (sp.eye_y - eye.y) * f;
-    eye.z += sp.eye_z * f;
-    look_at.y += (sp.look_y - look_at.y) * f;
-
-    // Acceleration: the eye hangs on a critically damped spring of angular frequency `frequency`, so it
-    // trails by a / ω² under acceleration and runs ahead under braking, within the data's limits.
+    eye.y += (sp.eye_y - eye.y) * h;
+    look_at.y += (sp.look_y - look_at.y) * h;
+    // The eye's z offset (cam + 0x588) follows a target at a first-order rate: target = 0a78c15f · h +
+    // (bd3a7cfc while accelerating, 7c9039e2 while decelerating) · |a| / a_full, where a is the
+    // acceleration along the velocity; the rate is fdd25ee3 accelerating, 285f2260 decelerating.
     let am = &ext.acceleration;
-    let w = am.frequency.max(0.5);
-    let a = if car.speed < 0.0 { 0.0 } else { s.accel };
-    let n = (dt * 240.0).ceil().max(1.0);
-    let h = dt / n;
-    for _ in 0..n as usize {
-        s.accel_zv += (-w * w * s.accel_z - 2.0 * ACCEL_DAMPING * w * s.accel_zv - a) * h;
-        s.accel_z += s.accel_zv * h;
-        if s.accel_z < am.back || s.accel_z > am.forward {
-            s.accel_z = s.accel_z.clamp(am.back, am.forward);
-            s.accel_zv = 0.0;
-        }
-    }
+    let a = if car.speed.abs() < 0.1 { 0.0 } else { accel_mph * car.speed.signum() };
+    let a_n = (a.abs() / ACCEL_FULL_MPHS).min(1.0);
+    let (target, rate) = if a >= 0.0 { (am.back, am.accel_rate) } else { (am.forward, am.brake_rate) };
+    let target = sp.eye_z * h + target * a_n;
+    s.accel_z += (target - s.accel_z) * (rate * dt).min(1.0);
+    s.accel_z = s.accel_z.clamp(-ACCEL_Z_LIMIT, ACCEL_Z_LIMIT);
     eye.z += s.accel_z;
 
     // Roll: from lateral acceleration (mph/s) or yaw rate (rad/s), whichever is further into its range.
@@ -643,7 +643,6 @@ fn in_car_view(
     s.roll = 0.0;
     s.pitch = 0.0;
     s.accel_z = 0.0;
-    s.accel_zv = 0.0;
     let (eye, dir) = if look_back { (c.back_eye, -1.0) } else { (c.eye, 1.0) };
     let orbit = Quat::from_rotation_y(s.orbit.x) * Quat::from_rotation_x(-s.orbit.y * 0.5);
     let eye = Vec3::from(eye);

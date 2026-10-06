@@ -231,15 +231,15 @@ meaning is read from values or position; values are the 911's, ranges are across
 | `006e1686` | (0, 1.2, 0.75) | **data** look-at point |
 | `d68bbc59` | (0, 0, 0.75) | *hyp.* pivot: always (0, 0, look-at z); the yaw and look-around orbit turn around it |
 | `MinFieldOfView` / `MaxFieldOfView` | 70 / 95 | **data** FOV, blended by (speed / top speed)²; read as vertical (see below) |
-| `Speed_based_movement.0a78c15f` | −1 (−1.2…0) | *hyp.* eye z change at full speed (pulls the eye back 1 m) |
-| `….7d4ec535` | 1.7 (1.45…4.4) | *hyp.* eye height at full speed (tracks the eye height on every car) |
-| `….b028673b` | 1.5 (1.35…3.1) | *hyp.* look-at height at full speed (≈ look-at height + 0.25) |
-| `….53e4b4f9` | 50 (50/75/100) | *hyp.* speed (mph) where the three changes above are complete |
+| `Speed_based_movement.0a78c15f` | −1 (−1.2…0) | **code** (`FUN_005d12b0`) eye z target at full speed, smoothed with the acceleration offset below |
+| `….7d4ec535` | 1.7 (1.45…4.4) | **code** eye height at full speed: `eye.y += (this − eye.y) · h`, unsmoothed |
+| `….b028673b` | 1.5 (1.35…3.1) | **code** look-at height at full speed, the same form |
+| `….b6010ee1` / `53e4b4f9` | 0 / 50 (50/75/100) | **code** speed band (mph): `h = clamp((v − b6010ee1) / (53e4b4f9 − b6010ee1), 0, 1)` |
 | `High_Speed_Shake.Amplitude`, `Frequency`, `Power` | 1.2, 1, 1.5 | **data** shake = Amplitude × f^Power |
 | `….Minimum_Speed_for_Shake` / `Maximum_Speed_for_Shake` | 0 / 180 (125…208) | **data** f = speed fraction between them (mph) |
-| `Acceleration_movement.bd3a7cfc` | −2 (−2.5…−1.9) | *hyp.* furthest the eye falls back under acceleration (m) |
-| `….8e1310f6` | 1.5 | *hyp.* furthest the eye closes in under braking (m) |
-| `….285f2260` | 2.5 | *hyp.* angular frequency (rad/s) of the critically damped spring the eye hangs on: it trails by a / ω², ≈ 1 m at a 911 launch |
+| `Acceleration_movement.bd3a7cfc` / `7c9039e2` | −2 (−2.5…−1.9) / 0.5 | **code** eye z offset at full acceleration / deceleration (m), × `|a_long|` / a_full |
+| `….fdd25ee3` / `285f2260` | 2 / 2.5 | **code** rate (1/s) of the first-order lag of the z offset while accelerating / decelerating |
+| `….8e1310f6`, `a8cc9c9b`, `65b4f9c6`, `0da33093` | 1.5, 1.75, −1.2, 2.5 | read by `FUN_005d12b0`'s vertical stage (cam + 0x554), not ported |
 | `Camera_Roll.Minimum_Lateral_Acceleration_for_Roll`, `3f8ced67` | 10, 30 (30…40) | **data** / *hyp.* (the maximum, by its place and values) lateral range, mph/s |
 | `….Minimum_Angular_Velocity_for_Roll`, `02dd11bc` | 0.2, 2.5 (2.5…3) | **data** / *hyp.* yaw-rate range, rad/s |
 | `….Maximum_Roll_Angle` | 4.7 (3…6) | **data** roll = sign × max × max(f_lat, f_yaw)^`Camera_Roll_Factor_Power` (2.5) |
@@ -266,8 +266,8 @@ at the tail), *hyp.* the eye of the look-back view. 19 other floats are unnamed 
 `AccelerationResponse` = 0.05, fits but has no sibling to confirm it); they are not used yet, so the in-car
 views are rigid. The bumper eye sits inside the body's nose, so the car is hidden in that view.
 
-Unused and unnamed: the other 9 `Acceleration_movement` floats (0.5, 0, 50, −1.2, 2, 0/−0.9, 1.75, 2.5),
-`Yaw_spring_modification.78527964` / `397fce82` (10 / 10) and `Decay_rate` (0.01),
+Unused and unnamed: the `Acceleration_movement` floats `b40b3fb7` (0), `77e7de37` (50), `f393abd1` (0/−0.9) and the
+vertical stage's four (above), `Yaw_spring_modification.78527964` / `397fce82` (10 / 10) and `Decay_rate` (0.01),
 `Speed_based_movement.b6010ee1` (0), `Speed_based_height_change` (1.59 / 1.973; heights, but they do not
 track the eye as closely as `7d4ec535`), `Gradient_Adjustments` (`Downwards` 0.5 / 1.5, `Upwards` 0.5 / 4,
 `Maximum_Gradient` 10°), the top-level `c6ca2dc7` (5 / 10), `6d906d74` (4) and `67660e20` ((0.55, 0.09, 1)),
@@ -282,6 +282,20 @@ cast and how the camera responds; the GeneSys types `CameraTransformCollider` an
 `CameraTransformEntityAvoider` suggest more than a push-in along the boom) are all still model decisions or
 *hyp.* rows. No camera rule changed in that round; the baseline trace numbers (drift, accel, corner, crash)
 are in the research log, 2026-10-06 round 4, to compare a port against.
+
+**Round 7 (2026-10-06): from the code now** (decomp.md "Speed and acceleration movement"): the speed band
+and the eye / look-at heights (direct, linear in `h`), and the eye's z offset: a first-order lag
+(`z += (target − z) · rate · dt`) towards `0a78c15f · h + (bd3a7cfc | 7c9039e2) · |a_long| / a_full`, rate
+`fdd25ee3` accelerating / `285f2260` decelerating, `a_long` the acceleration along the velocity (signed by
+the speed's direction in our port). This replaces our critically damped spring (ω = 2.5) and the 1.5 m
+braking limit (`8e1310f6` belongs to the vertical stage). Model decisions in that rule: `a_full` = 20 mph/s
+(`ACCEL_FULL_MPHS`, stands for `.bss` `DAT_0110e770`), the offset clamp ±3 m (`ACCEL_Z_LIMIT`, for
+`DAT_0110e680`), no step clamp (`DAT_0110e4d0`), the rate's `g · k · (1 − w)` term (vehicle + 0x2b20)
+and the 1.85 low-pass above `DAT_0110e640` left out. Still ours: the vertical acceleration stage, roll,
+deceleration pitch, the yaw spring's value (0.075 → 0.05 by speed), the drift lean, the bob
+(`FUN_005c8880`), the gradient spring, FOV, shakes and the collision push-in (no world query exists in the
+decompiled camera code; the director update `FUN_005d5e20` is not in the dump). `FUN_005d0b90`,
+`FUN_005c7a80` and `FUN_005c9380` are still unread.
 
 **Round 5 (2026-10-06):** the code is found (decomp.md "## Cameras": the chase camera's update is
 `FUN_005d4970`, director sub-camera + 0x8d0) but not yet ported, so the rows above are unchanged. What the
