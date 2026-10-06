@@ -79,8 +79,9 @@ struct Layered {
     // colourise: p0 = MaterialColour_SimpleMultiply
     // tree:    p0 = (has vertex colour, instance AO, 0, 0)
     // water:   p0 = (normalMapTile1.xy, normalMapTile2.xy), p1 = (waveAnimationSpeeds.xy, F0, roughness),
-    //          p2 = algaeColour, p3 = (opaque variant, has normal map); textures: -, normal,
-    //          DiffuseAndCaustics, SpecDepthAndRefraction
+    //          p2 = algaeColour, p3 = (opaque variant, has normal map, has river floor + TEXCOORD2 in COLOR.xy,
+    //          has surf), p4 = (surfTile.xy, surfAnimationSpeed, 0), p5 = (causticTile.xy, 0, 0); textures: -,
+    //          normal, DiffuseAndCaustics, SpecDepthAndRefraction, RiverFloor, Surf, SurfMask, SurfNormal
     // RSF = Roughness_Specular_Fresnel (x = roughness scale, y = F0, z = Fresnel strength)
     p: array<vec4<f32>, 12>,
     // x = sky brightness (cd/m² per panorama unit), y = reflection cube mip count
@@ -575,17 +576,37 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     }
 
     else if layered.mode == 8u {
+        // Water_Opaque_Singlesided's G-buffer program (Water_Proto_Cheap: waves only, uv_b = TEXCOORD0).
         let t = time();
         let tiles = layered.p[0];
         let p1 = layered.p[1];
         let flags = layered.p[3];
-        let w1 = uv_b * tiles.xy + vec2(0.0, t / p1.x);
-        let w2 = uv_b * tiles.zw + vec2(0.0, t / p1.y);
+        let st = layered.p[4];
+        var uv2 = vec2(0.0);
+#ifdef VERTEX_COLORS
+        uv2 = in.color.xy;
+#endif
+        // Two wave normals over TEXCOORD1 × normalMapTile, each scrolling in v by Time / waveAnimationSpeed.
+        var nt = vec3(0.5, 0.5, 1.0);
         if flags.y > 0.5 {
-            let nt = 0.5 * (textureSample(tex1, samp1, w1).rgb + textureSample(tex1, samp1, w2).rgb);
-            let c = 2.0 * (nt - 0.5);
-            pbr_input.N = normalize(c.x * tv + c.y * bv + c.z * nv);
+            let w1 = uv_b * tiles.xy + vec2(0.0, t / p1.x);
+            let w2 = uv_b * tiles.zw + vec2(0.0, t / p1.y);
+            nt = 0.5 * (textureSample(tex1, samp1, w1).rgb + textureSample(tex1, samp1, w2).rgb);
         }
+        // SpecDepthAndRefraction.w at 2 × TEXCOORD2 scrolling by Time / 2: shifts surf, floor and caustics.
+        var refr = 0.0;
+        if flags.x > 0.5 && flags.z > 0.5 {
+            refr = textureSample(tex3, samp3, 2.0 * uv2 + vec2(0.0, 0.5 * t)).w;
+        }
+        // Surf: its normal replaces the waves by Surf.y × SurfMask.y (mask over TEXCOORD0).
+        var surf = 0.0;
+        if flags.w > 0.5 {
+            let su = vec2(uv_b.x * st.x, uv_b.y * st.y + t / st.z + 0.05 * t - refr);
+            surf = textureSample(tex5, samp5, su).y * textureSample(tex6, samp6, uv).y;
+            nt = mix(nt, textureSample(tex7, samp7, su).rgb, surf);
+        }
+        let c = 2.0 * (nt - 0.5);
+        pbr_input.N = normalize(c.x * tv + c.y * bv + c.z * nv);
         var albedo = vec3(0.0);
         var rough = p1.w;
         var refl = 1.0;
@@ -593,16 +614,33 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             // s: x = roughness scale, y = depth (floor visibility, damps the reflection), z = algae.
             let s = textureSample(tex3, samp3, uv);
             let base = textureSample(tex2, samp2, uv).rgb;
-            // The river floor (TEXCOORD2) is not available here: a mid grey stands in for it.
-            albedo = mix(saturate(vec3(0.35) * s.y) * base, layered.p[2].rgb, s.z);
-            rough *= s.x;
+            // River floor at TEXCOORD2 - refraction / 4, lit by s.y plus the caustics (DiffuseAndCaustics.w
+            // at world xz / causticTile + refraction) × s.y. Without TEXCOORD2 a mid grey stands in.
+            var floor = vec3(0.35) * s.y;
+            if flags.z > 0.5 {
+                let cuv = in.world_position.xz / layered.p[5].xy + refr;
+                let caustic = textureSample(tex2, samp2, cuv).w * s.y;
+                floor = saturate(textureSample(tex4, samp4, uv2 - 0.25 * refr).rgb * s.y + caustic);
+            }
+            albedo = mix(floor * base, layered.p[2].rgb, s.z);
+            rough = mix(rough * s.x, rough, surf);
             refl = 1.0 - s.y;
         }
+        // Surf is white foam.
+        albedo = mix(albedo, vec3(1.0), surf);
         pbr_input.material.base_color = vec4(albedo, 1.0);
-        // The game's reflection Fresnel lookup reads dot(-V, N) (negative on visible water), so it
-        // always takes the grazing-angle value: a near-mirror. A high F0 stands in for that.
-        set_specular(&pbr_input, vec3(max(p1.z, 0.6)), rough);
-        pbr_input.specular_occlusion *= refl;
+        set_specular(&pbr_input, vec3(p1.z), rough);
+        // RT3: sky cube along R (kept above the horizon: R.y ≤ 0.005 becomes |R.y| + 0.01) at LOD
+        // roughness × 5.5, times the env-BRDF LUT, which the program reads at dot(-V, N): negative on
+        // visible water, so the clamped LUT returns its grazing (N·V = 0) column: a near-mirror.
+        // Scaled by 1 - depth. (The material's ReflectionTextureSampler cube multiplies it in the game.)
+        var r = reflect(-v_dir, pbr_input.N);
+        r.y = select(abs(r.y) + 0.01, r.y, r.y > 0.005);
+        let lod = min(pbr_input.material.perceptual_roughness * 5.5, layered.env.y - 1.0);
+        let sky = textureSampleLevel(sky_cube, sky_samp, r, lod).rgb * layered.env.x;
+        let ab = env_brdf(pbr_input.material.perceptual_roughness, 0.0);
+        extra += sky * (p1.z * ab.x + ab.y) * refl;
+        pbr_input.specular_occlusion = 0.0;
     }
 
     pbr_input.material.base_color = alpha_discard(pbr_input.material, pbr_input.material.base_color);

@@ -569,22 +569,66 @@ impl Look {
             look.textures = [None; N_TEX];
             look.tint = [0.04, 0.04, 0.045, 1.0].map(q);
         } else if name.starts_with("water") && sm.texture("NormalTextureSampler").is_some() {
-            // Waves scroll over TEXCOORD1 (opaque) or TEXCOORD0 (cheap); the rest uses TEXCOORD0.
+            // Water_Opaque_Singlesided's vertex program: waves, surf over TEXCOORD1; diffuse, spec-depth and
+            // surf mask over TEXCOORD0; river floor and the scrolling refraction lookup over TEXCOORD2
+            // (carried in the COLOR attribute, `convert::WATER_UVS`); caustics over world xz / causticTile.
+            // Water_Proto_Cheap: waves over TEXCOORD0, nothing else.
             let opaque = !name.contains("cheap");
-            let t1 = sm.parameter("normalMapTile1").unwrap_or([1.0; 4]);
-            let t2 = sm.parameter("normalMapTile2").unwrap_or([1.0; 4]);
-            let speed = sm.parameter("waveAnimationSpeeds").unwrap_or([20.0; 4]);
-            let sr = sm.parameter("specularAndRoughness").unwrap_or([0.02, 0.1, 0.0, 0.0]);
-            let algae = sm.parameter("algaeColour").unwrap_or([0.0; 4]);
+            let p = |n: &str, d: [f32; 4]| sm.parameter(n).unwrap_or(d);
+            let t1 = p("normalMapTile1", [1.0; 4]);
+            let t2 = p("normalMapTile2", [1.0; 4]);
+            let speed = p("waveAnimationSpeeds", [20.0; 4]);
+            let sr = p("specularAndRoughness", [0.02, 0.1, 0.0, 0.0]);
+            let algae = p("algaeColour", [0.0; 4]);
+            let surf = p("surfTile", [1.0; 4]);
+            let surf_speed = p("surfAnimationSpeed", [1.0; 4]);
+            let caustic = p("causticTile", [1.0; 4]);
+            let tex = |s: &str, srgb_: bool| sm.texture(s).filter(|_| opaque).map(|t| (t, srgb_));
             look.mode = Mode::Water;
             look.textures = slots(&[
                 None,
                 linear("NormalTextureSampler"),
-                srgb("DiffuseAndCausticsTextureSampler").filter(|_| opaque),
-                linear("SpecDepthAndRefractionTextureSampler").filter(|_| opaque),
+                tex("DiffuseAndCausticsTextureSampler", true),
+                tex("SpecDepthAndRefractionTextureSampler", false),
+                tex("RiverFloorTextureSampler", true),
+                tex("SurfTextureSampler", false),
+                tex("SurfMaskTextureSampler", false),
+                tex("SurfNormalTextureSampler", false),
             ]);
-            look.uv_b = Some(if opaque && has_uv(1) { 1 } else { 0 });
-            look.vals = pack(&[[t1[0], t1[1], t2[0], t2[1]], [speed[0], speed[1], sr[0], sr[1]], algae, [0.0; 4]]);
+            look.uv_b = Some(if opaque && has_uv(1) && has_uv(2) {
+                crate::convert::WATER_UVS
+            } else if opaque && has_uv(1) {
+                1
+            } else {
+                0
+            });
+            look.vals = pack(&[
+                [t1[0], t1[1], t2[0], t2[1]],
+                [speed[0], speed[1], sr[0], sr[1]],
+                algae,
+                [0.0; 4],
+                [surf[0], surf[1], surf_speed[0], 0.0],
+                [caustic[0], caustic[1], 0.0, 0.0],
+            ]);
+            if std::env::var_os("MW_WATER_DEBUG").is_some() {
+                let n = sm.mesh.positions.len().max(1) as f32;
+                let c = sm.mesh.positions.iter().fold([0.0f32; 3], |a, q| [a[0] + q[0], a[1] + q[1], a[2] + q[2]]);
+                let names: Vec<String> = sm
+                    .textures
+                    .iter()
+                    .map(|(s, t)| format!("{}={:016x}", s.trim_end_matches("TextureSampler"), t.0))
+                    .collect();
+                eprintln!(
+                    "water {} renderable {:016x} centre {:.0} {:.0} {:.0} uv2 {} textures {:?}",
+                    sm.shader_name,
+                    sm.renderable.0,
+                    c[0] / n,
+                    c[1] / n,
+                    c[2] / n,
+                    has_uv(2),
+                    names
+                );
+            }
         } else if name.starts_with("water") {
             look.textures = [None; N_TEX];
             look.tint = [0.0, 0.0, 0.0, 1.0].map(q);
@@ -678,6 +722,9 @@ impl Look {
             Mode::Water => {
                 self.vals[12] = qi(flag(self.textures[2].is_some() && self.textures[3].is_some()));
                 self.vals[13] = qi(has(1));
+                // p3.z: river floor + TEXCOORD2 present; p3.w: surf (texture, mask and normal) present.
+                self.vals[14] = qi(flag(self.uv_b == Some(crate::convert::WATER_UVS) && self.textures[4].is_some()));
+                self.vals[15] = qi(flag(self.textures[5..8].iter().all(Option::is_some)));
             }
             Mode::Plot => {
                 self.vals[40] = qi(flag(self.textures[5..8].iter().all(Option::is_some)));

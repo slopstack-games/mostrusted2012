@@ -262,6 +262,27 @@ near/(far − near)), Power) × gradient alpha, height-layer fog, sun-corona in-
 saturate(ScatteringSettings.y/(1 + g·cosθ)²) × t × gradient alpha, with ScatteringSettings = (g, (1 − g²) ×
 ScatteringStrength / 4π) and g = ScatteringPhase (decomp.md "Fog"); sky pixels only get the layer fog.
 
+**Water** (`Water_Opaque_Singlesided`, `Water_Proto_Cheap`) is opaque and writes the four G-buffer targets
+like the road (no forward or blended pass; fog comes from the Fog pass). Vertex layout of the opaque family:
+TEXCOORD0 (diffuse, SpecDepthAndRefraction, SurfMask), TEXCOORD1 (waves, surf), TEXCOORD2 (river floor,
+refraction lookup), TEXCOORD3 = packed tangent frame (no vertex colour). Its programs:
+- waves: NormalTextureSampler at TEXCOORD1 × normalMapTile1 / 2, each scrolled in v by Time / waveAnimationSpeeds.x
+  / .y, averaged; surf: SurfNormal replaces that normal by Surf.y × SurfMask.y, at (TEXCOORD1.u × surfTile.x,
+  TEXCOORD1.v × surfTile.y + Time / surfAnimationSpeed + 0.05 Time − R), where R = SpecDepthAndRefraction.w
+  sampled at 2 × TEXCOORD2 + (0, Time / 2).
+- SpecDepthAndRefraction at TEXCOORD0 = s: roughness = lerp(specularAndRoughness.y × s.x,
+  specularAndRoughness.y, surf); s.y = floor visibility; s.z = algae.
+- albedo = lerp(lerp(D × F, algaeColour, s.z), 1, surf), D = DiffuseAndCaustics.rgb at TEXCOORD0,
+  F = saturate(RiverFloor(TEXCOORD2 − R/4) × s.y + DiffuseAndCaustics.w(world xz / causticTile + R) × s.y)
+  (caustics on the floor). RT2 = specularAndRoughness.x as F0, Fresnel 1.
+- RT3 = cubeSky(R′, roughness × 5.5)² × 4 × (Refl.rgb + Refl.a) × LUT × (1 − s.y) × exposure, where R′ =
+  reflect(−V, N) with R′.y ≤ 0.005 replaced by |R′.y| + 0.01, Refl = the material's ReflectionTextureSampler
+  cube at R′ (a 128² skyline cube: rgb = grey mountain silhouette, a = 1 above it), LUT = AmbientSpec env-BRDF
+  read at (dot(−V, N), roughness, F0), i.e. at a negative N·V on visible water: the clamped grazing column, so
+  the reflection is a near-mirror whatever the angle.
+- `Water_Proto_Cheap` (9 meshes, all far from roads): waves at TEXCOORD0 only, albedo 0, roughness = .y, the
+  same RT3 reflection without the 1 − s.y factor.
+
 ### SamplerState (0x7)
 
 64 bytes, bound per material slot next to the texture (`Material` 0x28). The game turns it into a

@@ -124,6 +124,46 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-06 (session 5, round 4): water shaders
+
+User report: water "still looks very weird". Where it is (`MW_WATER_DEBUG=1` on any run logs each water
+mesh: shader, renderable, vertex centroid (local for instanced meshes), whether it has TEXCOORD2, and its
+textures by sampler): 16 `Water_Opaque_Singlesided` meshes (rivers and ponds: e.g. near 1647,13,2976,
+2837,13,4777, 7454,13,4356, 1559,14,−212, −2269,17,−4193; the park pond near −850,·,2000 and the river under
+the road-cliff bridge are instanced), 9 `Water_Proto_Cheap` (sea / far water: 6419,19,951, −385,17,5343,
+2919,18,−5855, 6259,10,2539, …). Viewpoints `water-river`, `water-pond` (viewpoints.md).
+
+**Before** (pond, noon): a flat slate-blue surface, no waves, no floor, no reflection structure. Causes,
+term by term against the DXBC (formats.md "Shaders", Water):
+- Pass: the family is opaque in our materials (deferred, our lighting + Fog pass) and in the game (4 G-buffer
+  targets): already right; not the Bevy forward-pass bug the trees had.
+- F0: ours forced max(specularAndRoughness.x, 0.6) to fake the mirror, so the deferred sun specular and the
+  sky term used a wrong F0. The game writes specularAndRoughness.x and gets the mirror from the LUT read at a
+  negative N·V instead. Fixed: F0 from the material; RT3 now computed as the program does (reflect(−V, N),
+  horizon clamp of R.y, LOD roughness × 5.5, env-BRDF at N·V = 0, × (1 − s.y)) into the RT3 extra, with the
+  generic sky term switched off (specular occlusion 0) so it is not counted twice.
+- River floor: ours used a constant 0.35 grey because Bevy has two UV sets. TEXCOORD2 now rides in the COLOR
+  attribute (`convert::WATER_UVS`; the water layout has no vertex colour), and the floor, its refraction offset
+  (SpecDepthAndRefraction.w at 2 × TEXCOORD2 scrolling Time / 2) and the caustics (DiffuseAndCaustics.w at
+  world xz / causticTile) are ported.
+- Surf (foam): not drawn before; now SurfNormal / Surf / SurfMask as in the program (white albedo, normal and
+  roughness lerped by Surf.y × SurfMask.y).
+- Waves: coordinates and scroll already matched (TEXCOORD1 × normalMapTile, v + Time / waveAnimationSpeeds).
+- `Water_Proto_Cheap`: albedo 0, roughness .y, same reflection: matches after the reflection fix.
+
+**After**: pond shows the floor and algae near the banks and wave structure; the river close up shows the
+floor with caustic nets in the shallow part and the sky reflection in the deep part, also at night (floor and
+caustics are albedo, so night ambient lights them).
+
+**Open**: (1) the material's `ReflectionTextureSampler` cube (`…157de9`, 128² BC3: grey mountain silhouette in
+rgb, alpha 1 above it) multiplies the sky reflection by (rgb + a); we have no cube slot per material, so it is
+left out (factor 1): reflected mountains are missing and the reflection below the silhouette is too bright.
+(2) The env-BRDF LUT's address mode (AmbientSpecSampler, s14) is assumed clamp; with wrap a negative N·V
+would read the head-on column (reflection ≈ F0) instead of the mirror. (3) A straight diagonal edge between
+a floor-visible and a deep region at `water-river`: data (two meshes / SpecDepth) or ours, not checked.
+(4) `PlotPBR_AO_StandingWater_Opaque_Lightmap_Singlesided` (28 meshes) not ported. (5) No capture of the
+original's water to compare against.
+
 ### 2026-10-06 (session 5, round 4): Easydrive and HUD from the game's layouts
 
 **Differences found** (our frames at 1280×720 against the layout data, `mwtool ui show`; largest first):
