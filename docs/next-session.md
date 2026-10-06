@@ -34,15 +34,12 @@ the details, [PLAN.md](PLAN.md) "Where it stands" the state per gap.
 - **Vignette ported** (`tonemap.rs`, `MW_NO_VIGNETTE=1`; decomp.md "Post-processing"): A·v + D from the
   default PostFX keyframe's Vignette, the gain k = 1.8245 a live read whose source is open, the small live
   stretch s of A and D (1.0025…1.0385) not modelled.
-- **Traced, not ported**: bloom. The source is settled (decomp.md "Post-processing", "Where the block comes
-  from"): in free roam the block is the time-blended `EnvironmentKeyframe.Camera` (BloomColour, `99436e68`
-  intensity, level weights `9dd29928` / `2b7c4634` / `e59ff4ec`), already parsed and blended in
-  `CameraExposure` (mw-assets environment.rs); the three-level combine rule is written up there. Left to do:
-  the render passes in tonemap.rs / tonemap.wgsl (downsample × exposure clipped at 32, H blur, add pass with
-  V blur + coarser level, composite `hdr + bloom × B.rgb × saturate(bloom × T.w) × B.w`, `MW_NO_BLOOM=1`),
-  with level resolutions as a marked model decision until traced; then
-  the colour-cube blend (slot weights not read yet); the sun direction's writer and the shadow cascade fit were
-  not found.
+- **Bloom ported** (2026-10-07, `bloom.wgsl` run from tonemap.rs, `MW_NO_BLOOM=1`; decomp.md
+  "Post-processing", "Bloom passes (ported)"): the exe's downsample / blur / add programs and the composite
+  term, with the time-blended `EnvironmentKeyframe.Camera` values. Model decisions: level sizes 1/4, 1/8, 1/16
+  of the screen (not traced), the vignette weight per pixel instead of in the bloom alpha, bloom always on in
+  free roam (the live flags were 1). No capture of the original to compare. Left in post: the colour-cube
+  blend (slot weights not read yet); the sun direction's writer and the shadow cascade fit were not found.
 - **The user's two visual reports** (road / terrain texture scale; foliage in the wrong place), state:
   - Texture scale: UV maths of every ground family, mip chains, UV formats and the detail-map strength match the
     game; three road decal variants and the anisotropy (8× → the game's 4×, `SamplerState` decoded, `mwtool
@@ -175,8 +172,10 @@ the details, [PLAN.md](PLAN.md) "Where it stands" the state per gap.
 
 ## Next, in order
 
-1. The live-read session above; then port bloom, vignette and the cube blend (kernels and sources are in
-   decomp.md "Post-processing and colour grade").
+1. The live-read session above; then the cube blend (bloom and the vignette are ported; kernels and sources
+   are in decomp.md "Post-processing and colour grade"). For bloom, read the level target sizes live: the
+   struct `*(renderer + 0x220)` (+0x254 in another mode) holds them at +0x130…+0x148 (width, height at the
+   texture's +0, +4), and compare a frame with the original at a known place and hour.
 2. Handling: new reference runs on a clear road (tools/orig): **straight-line braking** first (the original's
    rear wheels show κ ≈ 0…+0.07 under full brake in the clean stretch, ours −0.1…−0.3: the brake split), a
    slide in a second car (settles q's 35°), handbrake turn, steady corner, donut; the +0x210 leads

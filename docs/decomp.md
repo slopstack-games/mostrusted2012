@@ -656,7 +656,25 @@ chain, from the light buffer (HDR game units) to the screen:
    the first call (coarsest level must get z = 1) but the decompiled signature of `FUN_008e6810` is off by
    one, so it is inferred. Level resolutions and the integer words' roles are not traced.
    Our data: `CameraExposure.bloom_colour` / `bloom_intensity` / `bloom_weights` (mw-assets environment.rs),
-   blended with the timeline like the exposure. The render passes are not ported yet.
+   blended with the timeline like the exposure.
+   **Bloom passes (ported 2026-10-07, `bloom.wgsl` from tonemap.rs, `MW_NO_BLOOM=1`).** `FUN_008e6f40` runs
+   L1 = down(source) with the tonemap texture (`FUN_008e6470(L1, src, 1, tonemap)`, PS `0x010104c0`),
+   L2 = down(L1), then `FUN_008e36d0` / `FUN_008e2f80` on L2 (not followed; likely the exposure meter's
+   input), L3 = down(L2), then the three add calls coarse to fine. `FUN_008e6470` sets `kInvWidthHeight` =
+   (1 / src width, 1 / src height, 2 / src width, 1 / src height); VS `0x0100fc50` puts the four taps at
+   uv ± (1, 1) and uv ± (1, −1) source texels. Level encode: rgb × T.w / 128 summed over 4 taps (= the
+   average × T.w / 32), M = ceil(min(max channel, 1) × 255) / 255, rgb / M saturated (so a channel clips at
+   32 after the decode); `0x0100ffa0` decodes 4 taps × 32 and re-encodes. H blur (VS `0x010109c8`, PS
+   `0x01010d38`): taps at x + {0, ±1.407333, ±3.294215} × `kScale`, decoded rgb × a × the weights (sum 32),
+   ÷ T.w, alpha 1 (a float target). Add (VS `0x01011280`, PS `0x010117c0`): the same taps along y with the
+   weights ÷ 32 on t0, × `kColorAddWeight.z`, + t1 (sampled at the same uv) × `.w`. The composite samples
+   the finest combined level. Model decisions in the port: the level sizes 1/4, 1/8, 1/16 of the screen (the
+   targets are passed in through `*(renderer + 0x220)` +0x130…+0x148 at the call `0x008cc828`, created
+   elsewhere; the snapshot `snap2` is another run than the renderer dumps, where that pointer is
+   0x04ca25f0, and the renderer was not located in it within the time spent; the first step's taps make an
+   exact 4 × 4 box only at a divisor of 4), `kScale` = 1 / the level's width (or height) (not read), the
+   vignette weight computed per pixel instead of in the combined level's alpha, bloom always on (the flags
+   were 1 in free roam), and the level weights' minimum 0.01 = `DAT_00f9d474` (`.rdata`).
    The Bloom fields reach the renderer (+0xac74…+0xaca4) through `FUN_008e51b0` (unpack, field order in the
    research log), `FUN_008e9610` (keyframe and state blend), `FUN_008ecf80` → `FUN_008ce250` →
    `FUN_008c9e40` (copy when bloom is on); the bloom set-up `FUN_008eaaf0` takes three of them

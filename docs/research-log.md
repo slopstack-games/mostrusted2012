@@ -124,6 +124,26 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-07: bloom ported
+
+- **Passes** (decomp.md "Bloom passes (ported)"): three RGBM levels (exe downsample programs, 4 taps at ±1
+  source texel on both diagonals, `kInvWidthHeight` from `FUN_008e6470` = the source's texel size), 5-tap
+  horizontal blur into a float target ÷ T.w, the add pass (vertical blur × z + coarser × w), coarse to fine
+  with the `FUN_008e6f40` weights (minimum `DAT_00f9d474` = 0.01 from `.rdata`), and the `GBufferComposite`
+  term with B = (`BloomColour`, `99436e68`) of the time-blended environment keyframe. T.w in our tonemap is
+  1.442695 × 2^(e + bias) (`_BuildConstant`), which both the downsample and the composite's saturate use.
+- **Level sizes not traced** (model decision 1/4, 1/8, 1/16): the targets come through `*(renderer + 0x220)`
+  +0x130…+0x148 (call at `0x008cc828`, edx = renderer +0x220, or +0x254 in a mode tested at `0x008cc66b`).
+  Dead end: in the renderer dumps that pointer is 0x04ca25f0, but `snap2` is another run (the address holds
+  other data there), and a byte-signature search for the renderer in `snap2` (40 bytes of static pointers
+  from the dump) matched hundreds of places. A live read of the struct settles it.
+- **Check** (no capture of the original exists, so only plausibility): `--camera=-1131,27,1627,…`, mean
+  displayed linear luminance below the text lines, on / off: noon (12.3 h) 0.272 / 0.245 (+11 %), 1.5 h
+  0.089 / 0.081 (+10 %); bright clouds and the sky behind the trees glow, nothing clips to white. The
+  exposure is metered before the bloom, so it is the same in both. At 1.5 h this view shows no lit street
+  lamps, so the night glow of point lights was not seen. Frame time (`--bench 10`, RTX 3070) 16.61 ms on vs
+  16.68 ms off: within vsync noise; the passes don't record GPU spans, so per-pass cost was not measured.
+
 ### 2026-10-07: the chase camera's impact shake read and ported
 
 - `FUN_005dfe90` read: a noise spring (game LCG, ±`WobbleMagnitude` kicks, step `Maximum_frequency_multiplier`
