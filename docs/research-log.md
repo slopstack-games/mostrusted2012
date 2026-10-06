@@ -153,8 +153,6 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
   constraint builder `FUN_009c24b0` zeroes it, and `FUN_009a56b0` (from `FUN_0095b100`) writes a vector there
   on some object with a flag at +0x4aa. If only the builder writes it, the blends get 0 (pure curves), not 1.
 
-_(to be filled in)_
-
 ### 2026-10-06 (session 5): drivetrain: standstill, downshift gate, launch delay
 
 - Standstill hold found and ported (decomp.md "Drivetrain and brakes"): `FUN_009d6170` builds the input at
