@@ -1,5 +1,10 @@
 # Handoff: end of 2026-10-06 (session 5)
 
+**State**: master builds and passes clippy, the tests and `mwtool verify`; the user was about to test it by
+hand (controls: arrows, A / Z, Space, Left Shift nitrous; E / numpad 6 / d-pad right opens Easydrive).
+Their verdict on the camera, the handling after the strut-stop / anti-roll / gearbox changes, tyre marks, water
+and the UI is the first thing to ask for.
+
 Read this first. Method as before (CLAUDE.md "Fidelity rule"): the original is the reference, behaviour comes
 from the decompiled code ([decomp.md](decomp.md)), every change names its source. This session re-read nine
 systems from the dump in parallel; the session-5 entries at the top of [research-log.md](research-log.md) hold
@@ -109,10 +114,13 @@ the details, [PLAN.md](PLAN.md) "Where it stands" the state per gap.
 - **Water**: `Water_Opaque_Singlesided` ported (floor and caustics on the third UV set, foam, the game's
   reflection term); `MW_WATER_DEBUG=1` lists the water meshes; viewpoints `water-river`, `water-pond`. Open: the
   material's reflection cube (a mountain silhouette), the lighting LUT's clamp, `PlotPBR_AO_StandingWater`.
-- **Performance**: `--bench <s>` (three fixed viewpoints in the research log), `--no-shadows`. ~18–20 ms per
-  frame on an RTX 3070 when the machine is quiet; CPU-bound in Bevy's per-view batching; shadows cost 2–7 ms;
-  the loaded map's size costs nothing. Next by the numbers: merge static meshes per material and unit (an
-  agent was on it when this was written: see the research log's "static mesh merging" entry).
+- **Performance**: `--bench <s>` (fixed viewpoints in the research log), `--no-shadows`, `MW_BENCH_PASSES=1`.
+  Quiet machine, RTX 3070, 1280×720: driving downtown 19.7 ms (51 fps) with shadows, 13.1 ms (76 fps) without;
+  the cliff view sits at a 60 fps cap and cannot show gains. CPU-bound in Bevy's per-view batching; the loaded
+  map's size costs nothing. Merging static meshes per material and unit gave no measurable gain (few materials
+  are shared) and is off by default (`--merge-static`). **Shadows (≈6.6 ms while driving) are the next item**:
+  an agent was attributing the cost per cascade and caster class when this was written (research log, "the
+  shadow pass's cost"; branch `worktree-agent-ad587880c745a7cb1` if it was not merged).
 - **Chase camera** (the user: it lacks the original's sway, weight and avoidance): four passes. The update is
   `FUN_005d4970` (decomp.md "## Cameras": director table, the data read through the state at camera +0x290,
   call order). **From the code now**: the followed frame (the car's Euler angles eased per axis, no lag cap),

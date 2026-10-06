@@ -137,7 +137,7 @@ MW_CAMERA_TRACE=<scratch>/cam.trace ./target/release/mostrusted --drive 911 --te
 # as `mwtool mods` prints them; also through Easydrive: Customize car); nitrous is Left Shift / pad A
 ./target/release/mostrusted --drive 911 --units 6 --show-easydrive --easydrive-path 4,4,1,1 --screenshot <scratch>/mods.png --screenshot-delay 200
 # Frame-time benchmark (prints a BENCH RESULT line; --no-shadows, MW_BENCH_PASSES=1 for per-pass GPU times)
-./target/release/mostrusted --camera=-1131,27,1627,-1190,15,1720 --mute --bench 10
+./target/release/mostrusted --drive 911 --units 30 --spawn=815,60,1760,270 --auto-throttle 0.3 --mute --bench 10   # --merge-static: A/B the mesh merge
 # MW_TYRE_MARKS_LOG=1 (tyre-mark segments alive), MW_WATER_DEBUG=1 (lists the water meshes)
 # The driving HUD (hud.rs) is on in --drive runs except tests: --no-hud, --mph, F3 shows the debug status text
 # Engine RPM every physics tick, for `mwtool engine-sound --trace` (use with --test engine)
