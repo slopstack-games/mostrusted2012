@@ -20,10 +20,9 @@ const MPH: f32 = 0.44704;
 /// 0x01184cc0 (yaw, `FUN_00907b50`) and 0x01185640 (sideways, `FUN_0091dad0`), both 60 (read from the running
 /// game; their static initialisers are not in the dump).
 const DAMPING_K: f32 = 60.0;
-/// The speed hold's force is multiplied by the vector at `.bss` 0x01187250 (`FUN_009d0420`). It has no
-/// initialiser in the dump and was not read live; the same constant turns per-tick rates into per-second ones in
-/// the engine's throttle lag (`FUN_009d9960`) and the take-off pitch kick (`FUN_009cfce0`), so 60 (model value
-/// until read: `memscan dump NFS13.exe+0xd87250`).
+/// The speed hold's force is multiplied by the vector at `.bss` 0x01187250 (`FUN_009d0420`) = 60, read live
+/// 2026-10-06; the same constant turns per-tick rates into per-second ones in the engine's throttle lag
+/// (`FUN_009d9960`) and the take-off pitch kick (`FUN_009cfce0`).
 const HOLD_K: f32 = 60.0;
 /// Brake tap: a press above `TAP_HIGH` released below `TAP_LOW` within `TAP_WINDOW` seconds (`.rdata`
 /// 0x010261d0, 0x010261e0, 0x01026140; `FUN_009d5690`).

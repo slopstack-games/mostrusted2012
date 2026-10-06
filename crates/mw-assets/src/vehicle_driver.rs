@@ -145,8 +145,7 @@ impl Default for TyreSoundParams {
 }
 
 /// Metres per second to miles per hour. The game scales the wheel's slip speed by a runtime constant
-/// (`0x0118a060`, not in the dump) before comparing it with `LongSpin`'s 2 / 20; read as mph (inferred: the
-/// other speed thresholds of the tyre sound are in mph).
+/// (`.bss` 0x0118a060 = 2.23694, read live 2026-10-06: m/s → mph) before comparing it with `LongSpin`'s 2 / 20.
 const MPH_PER_MS: f32 = 2.236_936;
 /// `FUN_009d1bf0` halves the pedal-driven braking intensity (constant `0x01026058` = 0.5).
 const PEDAL_BRAKING_SCALE: f32 = 0.5;
@@ -219,7 +218,8 @@ impl VehicleDriver {
         let w = i.skid_wheel.unwrap_or_default();
         let lat = t.lat_slip.ratio(w.slip_angle.abs()) * t.lat_slip.speed_factor(mph);
         // Spin: the tread against the ground in mph, either way (a spinning or a locked wheel). The game zeroes
-        // it below a wheel-load threshold (`0x011870d0`, not in the dump); assumed: in the air.
+        // it while a wheel value (+0x108 of the object `FUN_009d1bf0` reads) is below `.bss` 0x011870d0 = −0.1
+        // (read live 2026-10-06); which value is not identified, assumed: the wheel is in the air.
         let spin = if i.skid_wheel.is_some() { t.long_spin.ratio(w.slip_speed.abs() * MPH_PER_MS) } else { 0.0 };
         // Braking: the pedal's ramp, times the speed's, halved; a predicate of the vehicle (its virtual method
         // +0x44, not decompiled) replaces it with the speed factor alone. Assumed: that predicate is the

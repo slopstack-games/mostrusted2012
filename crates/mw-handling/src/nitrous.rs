@@ -8,7 +8,8 @@
 //!   (1.9 on the 911).
 //! - mode 1 (punch): multiplier = the strength; with a wheel down, a forward force
 //!   `(1 − clamp((mph − Punch.5cb7c5aa) / (top mph − Punch.5cb7c5aa), 0, 1)) · amount · Punch.0798d257 · k · mass`
-//!   (k = `.bss` 0x0118a018, not read).
+//!   (k = `.bss` 0x0118a018 = 0.44704, read live 2026-10-06: mph → m/s, so `0798d257` is an acceleration in
+//!   mph per second; the 911's 40 is 17.9 m/s²).
 //! - mode 3 (jump, airborne only): the same force with the `Jump` fields, multiplier lerp(1, `Jump.e9de413e`).
 //!
 //! The gearbox sees nitrous too (`FUN_009d4c20`, drivetrain.rs): upshifts on rpm alone and the top gear unlocked.
@@ -59,11 +60,20 @@ impl NitrousParams {
         if amount <= 0.0 { 1.0 } else { 1.0 + (self.strength - 1.0) * amount }
     }
 
+    /// Modes 1 / 3: the forward acceleration (m/s², to be multiplied by the mass) of the punch or jump force for
+    /// its `0798d257` value in mph per second (`FUN_009d2aa0`, `PUNCH_SCALE`). Not run yet (only mode 0 is).
+    pub fn force_accel(mph_per_s: f32, fade: f32, amount: f32) -> f32 {
+        fade * amount * mph_per_s * PUNCH_SCALE
+    }
+
     /// Modes 1 / 3: the speed fade of the punch and jump forces, `1 − clamp((mph − from) / (top − from), 0, 1)`.
     pub fn fade(mph: f32, from: f32, top_mph: f32) -> f32 {
         1.0 - ((mph - from) / (top_mph - from)).clamp(0.0, 1.0)
     }
 }
+
+/// mph → m/s on the punch and jump forces (`.bss` 0x0118a018 = 0.44704, read live 2026-10-06).
+pub const PUNCH_SCALE: f32 = 0.44704;
 
 /// The tank and the burn state.
 #[derive(Debug, Clone, Copy)]
