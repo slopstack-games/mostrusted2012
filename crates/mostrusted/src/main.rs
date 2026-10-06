@@ -770,12 +770,12 @@ fn update_status(
     let pos = cam.single().map(|t| t.translation).unwrap_or_default();
     let controls = match car.single() {
         Ok(car) => format!(
-            "{:.0} km/h\nW/S throttle/brake, A/D steer, space handbrake, R reset (or gamepad triggers + stick)\nC / Y: camera, B / right stick back or click: look back, right stick or right mouse drag: look around",
+            "{:.0} km/h\nA / Z throttle / brake, arrows steer, space handbrake, left shift nitrous, R reset (pad: RT / LT, stick, X, A)\nC / LB: camera, End / right stick back: look back, right stick or right mouse drag: look around\nE / numpad 6 / d-pad right: Easydrive",
             car.speed.abs() * 3.6
         ),
         Err(_) => "WASD/QE move, right mouse or right stick look, shift run, scroll speed".to_string(),
     };
-    let controls = format!("{controls}\nTab / F1 / gamepad Start: car menu");
+    let controls = format!("{controls}\nEsc / Tab / F1 / gamepad Start: car menu");
     text.0 = format!(
         "Most Rusted - {}\n{} models, {} textures, {} instances{}\ncamera {:.0} {:.0} {:.0}\n{controls}",
         loaded.status,
