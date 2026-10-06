@@ -8,8 +8,9 @@ use mw_assets::handling::VehicleHandling;
 const MPH: f32 = 0.44704;
 /// Drag scale K in F = −½·K·C·|v|·v: 1.2, read from the running game (`.bss` 0x011872a0; ≈ air density).
 const DRAG_K: f32 = 1.2;
-/// Anti-roll stiffness scale on the data values: 60, read from the running game (`.bss` 0x01185d70).
-const ARB_PER_DEGREE: f32 = 60.0;
+/// Anti-roll stiffness scale on the data values: 60, read from the running game (`.bss` 0x01185d70). The bar's
+/// builder (`FUN_00933a60`) applies it to the stiffness only, not inside the damping's square root.
+const ARB_SCALE: f32 = 60.0;
 /// The per-tick damping fractions are per 60 Hz tick.
 const DATA_HZ: f32 = 60.0;
 /// Take-off roll damping fades in between these speeds (mph).
@@ -33,7 +34,11 @@ pub struct ChassisParams {
     pub downforce_z: [f32; 2],
     /// `In_air_gravity_coefficient`: total gravity while a wheel is off the ground.
     pub in_air_gravity: f32,
-    /// Anti-roll bars (front, rear): stiffness (N m per rad of roll) and damping ratio.
+    /// Anti-roll bars (front, rear): stiffness (N m per rad of roll; the data value × 60) and damping
+    /// coefficient (N m s per rad): 2 × `Front_` / `Rear_roll_damping` × √(data value × roll inertia), with the
+    /// data stiffness before the × 60, as the bar's builder `FUN_00933a60` stores them (docs/decomp.md
+    /// "Suspension, wheels, aerodynamics"). `roll_damping` holds 2 × ratio × √(data stiffness); the roll inertia
+    /// is applied in `drive::anti_roll_loads`.
     pub anti_roll: [f32; 2],
     pub roll_damping: [f32; 2],
     /// Take-off: duration (s) and per-tick angular damping of pitch, yaw, and roll (low and high, blended by
@@ -64,8 +69,11 @@ impl ChassisParams {
             lift_coefficient: a("Lift_coefficient", -1.0),
             downforce_z: [a("b821de16", -0.3), a("d21c15d0", 0.0)],
             in_air_gravity: h.in_air_gravity.unwrap_or(1.0).clamp(1.0, 3.0),
-            anti_roll: [b("782f05c1", 1200.0) * ARB_PER_DEGREE, b("2bb0f6a0", 1200.0) * ARB_PER_DEGREE],
-            roll_damping: [b("Front_roll_damping", 1.2), b("Rear_roll_damping", 1.2)],
+            anti_roll: [b("782f05c1", 1200.0) * ARB_SCALE, b("2bb0f6a0", 1200.0) * ARB_SCALE],
+            roll_damping: [
+                2.0 * b("Front_roll_damping", 1.2) * b("782f05c1", 1200.0).max(0.0).sqrt(),
+                2.0 * b("Rear_roll_damping", 1.2) * b("2bb0f6a0", 1200.0).max(0.0).sqrt(),
+            ],
             take_off_time: t("123d2559", 0.35),
             take_off_pitch: t("8b456140", 0.3).clamp(0.0, 0.99),
             take_off_yaw: t("312bd67d", 0.15).clamp(0.0, 0.99),
