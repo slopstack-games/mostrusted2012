@@ -191,7 +191,9 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    surface grip in the tyre model, a clean perf A/B.
 2. `[~]` **Vehicle physics**: since 2026-10-04 (session 3) the model follows the game's own code, read from the
    user's decompiled dump ([decomp.md](decomp.md), [handling.md](handling.md) "The model"): 60 Hz tick; engine
-   inertia, friction curve, clutch, shift on rpm and speed, top-gear lock (`drivetrain.rs`); per-wheel spin with
+   inertia, friction curve, clutch, shift on rpm and speed, top-gear lock (`drivetrain.rs`; since 2026-10-06 the
+   gearbox state machine, shift phases, idle governor, throttle hold / lag and torque noise as in the code, all
+   drivetrain constants sourced, decomp.md); per-wheel spin with
    brakes and axle LSDs; tyres as capped velocity constraints with the game's curves and slip blends, no ABS /
    TC (`tyre.rs`); spring from sag, asymmetric dampers, anti-roll bars, per-axis drag and lift, in-air gravity and
    take-off damping (`chassis.rs`); the game's steering rules and drift state machine (`drift.rs`).
@@ -370,8 +372,10 @@ SNORM ×10 scale).
 **Start with [next-session.md](next-session.md).** Priorities from the user's review (2026-10-04). Work against
 the running original (`tools/orig/orig` drives it, `mwtool capture` / `--replay` / `mwtool compare` measure it):
 
-1. **Handling against the original** (M3.2): the 2nd-gear clutch bug found by the first reference run
-   (`ref/xkr_launch`), then braking, handbrake, drift, cornering and donut runs; the drift side force.
+1. **Handling against the original** (M3.2): the 2nd-gear revs in `ref/xkr_launch` are not a clutch bug (the
+   drivetrain now follows the code, 2026-10-06): the original's clutch slips while its tyres hold κ ≈ 0, ours
+   spin the tyres (κ 0.6 in 2nd); the longitudinal tyre cap at small slip is the gap. Then braking, handbrake,
+   drift, cornering and donut runs; the drift side force.
    In parallel, the probe ([probe.md](probe.md)): Tier 0 `memscan poke` first (a day, no toolchain), then the
    load path and the logging DLL, which is what finally measures N, the grip caps and the side force.
 2. **Tyre screech "horn"** (M5.4) and the **yellow tint** (M1.5 / M1.7): both are visible / audible every

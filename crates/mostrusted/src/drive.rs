@@ -8,8 +8,8 @@
 //! curve, gear ratios and shift points, brake torques, top speed, the tyres'
 //! lateral and longitudinal grip curves, the speed-banded steering, the
 //! handbrake's speed bands and the drift state (`drift.rs`). Parts
-//! the data does not pin down (the scale of the grip coefficients, drivetrain
-//! efficiency) are calibrated constants; see docs/handling.md.
+//! the data does not pin down (the scale of the grip coefficients) are
+//! calibrated constants; see docs/handling.md.
 
 use avian3d::prelude::*;
 use bevy::input::gamepad::RawGamepadEvent;
@@ -675,7 +675,7 @@ pub(crate) fn car_physics(
             inv_inertia += share.powi(2) * wheels.iter().map(|w| 1.0 / w.inertia).sum::<f32>() / n;
         }
         let coupled = axle_share.iter().any(|&s| s > 0.0);
-        let drive_torque = car.drivetrain.step(dp, throttle, omega, mph, inv_inertia, coupled, dt);
+        let drive_torque = car.drivetrain.step(dp, throttle, brake, omega, mph, inv_inertia, coupled, dt);
         car.gear = car.drivetrain.gear;
         car.rpm_prev = car.rpm;
         car.rpm = car.drivetrain.rpm.min(dp.max_rpm);

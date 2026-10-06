@@ -33,18 +33,25 @@ One physics tick is 1/60 s (`Time::<Fixed>` at 60 Hz, as the game). Per tick, in
 
 1. **Pedals and gear**: in reverse gear the pedals swap; brake at a standstill engages reverse. Brake pressure
    ramps up at 10 × pedal per second; both pedals at low speed count as a burnout (releases the driven brakes).
-2. **Engine, clutch, gearbox** (`drivetrain.rs`): the engine is its own inertia (`Engine_inertia`). Its torque
-   blends linearly by throttle from a three-point closed-throttle friction curve (`Power_curve` `b3066e01` at
-   idle, `5a6aaf9f` at `f71be7c6`, `a53d9b5d` at `Max_RPM`) to the full-load `TorqueCurve`. With the clutch open
-   (upshifts, standstill) it slows at `Engine_resistance` rad/s²; downshifts blip it up to the new gear's speed.
-   The revs are clamped at `Max_RPM` before each tick's integration. The clutch matches engine and driveline
-   speed within a torque cap; the torque goes through gear × final drive unchanged (no efficiency loss), split by
-   `Power_To_Front`, half per wheel. Pulling away the clutch engages with max(throttle, rpm / 1st's
-   `Gear_up_RPM`) and closes at 0.95; stopped with no throttle (or below idle) it opens.
-   Upshift when rpm > `Gear_up_RPM` (±50 random per gear) **and** mph > `Gear_up_speed`, skipping gears whose
-   entry speed is already passed; downshift below the lower gear's `Gear_up_speed` (− 5 mph) or, on the throttle,
-   below `Gear_down_RPM`. Shifts take `Gear_change_time` × (1 + 0.15 × random) in declutch / neutral / clutch-in
-   phases. Only the race gearbox is used; `13bfea5a` / `7b20506a` lock its top gear (the 911 has 6, not 7).
+2. **Engine, clutch, gearbox** (`mw-handling/src/drivetrain.rs`; decomp.md "Drivetrain and brakes" has the
+   functions and constants): the engine is its own inertia (`Engine_inertia`). An idle governor opens the
+   throttle up to 0.5 within 20 rpm of `Idle_RPM` and fades the closed-throttle drag out; the throttle is
+   peak-held (decaying at `c6deb7a6` per tick) and lagged (`36676b9c` per tick). The torque blends by that
+   throttle from the closed-throttle torque (the `Power_curve` friction curve, or `Engine_resistance` × inertia
+   with the clutch open or during an upshift) to the full-load `TorqueCurve`; downshifts drive the engine at
+   −2.5 × `Engine_resistance` × inertia for the whole shift; a small torque noise at the firing rate follows a
+   second three-point curve. The revs are clamped at `Max_RPM` after the torque is known. The clutch is one
+   speed-matching impulse per tick before the tyres, capped at 5000 N m; the torque goes through gear × final
+   drive unchanged (no efficiency loss), split by `Power_To_Front`, half per wheel. As the tyres hold the wheels
+   at road speed, it slips under load (the original's engine runs ×1.9 / ×1.3 / ×1.14 above the wheels in
+   1st / 2nd / 3rd at full throttle). Pulling away the clutch engages with max(throttle, rpm / the gear's
+   `Gear_up_RPM` ± 50) and closes at 0.95; it opens with no throttle while pulling away, below idle, or in gear
+   below 20 mph with neither pedal. Upshift when rpm > `Gear_up_RPM` **and** mph > `Gear_up_speed`, skipping
+   gears whose entry speed is already passed; downshift below the lower gear's `Gear_up_speed` − 2 mph or below
+   `Gear_down_RPM`, to the highest lower gear still above its own down rpm. Shifts take `Gear_change_time` × (1 +
+   0.15 × random) (downshifts half that): declutch 10 %, neutral 50 % (the gear changes at its end), clutch-in
+   40 %; upshifts cut the throttle until the clutch-in, which brings it back with the clutch. Only the race
+   gearbox is used; `13bfea5a` / `7b20506a` lock its top gear (the 911 has 6, not 7).
 3. **Steering** (game rules, below).
 4. **Wheels**: each wheel has a spin ω (inertia ½ m r² of its rigid body, plus `TransmissionInertia` on driven
    wheels). Drive torque spins it; the axle limited-slip differentials (`Front_` / `Rear_Differential` = c) keep
@@ -224,10 +231,16 @@ car's in a 19.7° drift (half the slip angle plus 6° of spring lag), the eye 1.
 | Constant | Value | Why |
 |----------|-------|-----|
 | `LAT_GRIP` / `LONG_GRIP` | 0.4 / 0.7 | the game multiplies μ × load by per-wheel factors (separate per direction) not in the data; calibrated on the 911: 1.0 g skidpad, 0–100 km/h 3.9 s, 100–0 km/h ~40 m. `MW_LONG_GRIP` overrides the second |
-| `CLUTCH_CAP` | 1.6 × peak torque | the game's clutch torque cap is a missing constant |
-| shift phases | 25 / 50 / 25 % | declutch / neutral / clutch-in fractions (constants missing) |
-| downshift hysteresis | 5 mph | missing constant |
-| idle governor | below idle + 150 rpm, up to 0.35 throttle | missing constants |
+| `CLUTCH_CAP` | 5000 N m | **from the game**: `.bss` 0x01186f70 (read live), the cap in `FUN_009d7ac0` |
+| shift phases | 10 / 50 / 40 % | **from the game**: declutch 0x01186ee0 = 0.1, clutch-in 0x01186fd0 = 0.4, neutral the rest (`FUN_009d1560`, `FUN_009d6880`, `FUN_009ce490`); confirmed tick by tick in `ref/xkr_launch` |
+| downshift hysteresis | 2 mph | **from the game**: 0x011872e0 in `FUN_009d93b0` |
+| idle governor | idle + 20 rpm, 0.05 / rpm, up to 0.5 throttle | **from the game**: 0x01186f30 / 0x011871c0 / 0x011873f0 in `FUN_009d9960` |
+| throttle time base | 60 | `c6deb7a6` / `36676b9c` × the `.bss` vector 0x01187250 (not read; the dump has no initialiser). 60 as the drift's time bases; it reproduces the original's idle (1003–1031 rpm against 1002–1033) where 1 or an instant lag do not. Measure: `memscan` `dump NFS13.exe+0xd87250` |
+| clutch-in throttle | pedal × progress¹ | `FUN_009d6af0` / `FUN_009d6ca0` raise the progress to `.bss` 0x011874d0 (not read). Measure: `dump NFS13.exe+0xd874d0` |
+| coast declutch | 20 mph | `.bss` 0x011872d0 in `FUN_009d9ee0`: lanes 2–3 read 20 (`consts.txt`), lanes 0–1 assumed the same |
+| downshift gate | always open | `FUN_009d93b0` also needs vehicle +0x1ed0 > `.bss` 0x01187580 (neither identified; the original downshifts while braking with no throttle). Not modelled |
+| stall check in shifts | none | `Idle_RPM` × `.bss` 0x011874a0 (not read) drops the gearbox to standstill during a shift or launch |
+| launch torque | lagged | the original reaches full torque in the first tick of its launch (`ref/xkr_launch`), which the lag does not; source not found (`FUN_009262a0`'s override list?) |
 | `BURNOUT_MPH` | 20 | burnout speed scale (missing constant) |
 | `DRAG_K` | 1 | drag scale (missing constant; fits the top speed) |
 | `BUMP_TRAVEL` | 0.06 m | from the 911's strut geometry; not read per car |

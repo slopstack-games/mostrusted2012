@@ -110,28 +110,96 @@ Status words: **confirmed** = read directly from the code; **inferred** = reason
 
 ## Drivetrain and brakes
 
-- **Engine** (`FUN_009d9960`): the engine is its own rotating inertia (`Engine_inertia`), driven by its net torque
-  and coupled to the wheels only through the clutch. Off the throttle the torque is a three-point friction curve
-  in `Power_curve`: `b3066e01` at `Idle_RPM`, `5a6aaf9f` at `f71be7c6` (the peak-torque rpm), `a53d9b5d` at
-  `Max_RPM` (911: −50 / −100 / −125 N m). The throttle blends linearly from that curve to the full-load
-  `TorqueCurve`. The rpm is clamped at `Max_RPM` (`Rev_limiter` is a cut time in seconds, 0 on 179 of 197 cars).
-  `Engine_resistance` is not engine braking: it is the free engine's deceleration (rad/s², inferred) while the
-  clutch is open or during an upshift; downshifts blip the engine up instead. An idle governor opens the throttle
-  near idle; the throttle has a peak-hold and lag (`c6deb7a6`, `36676b9c`); a noise term (`15d1d117` …) only
-  roughens the sound.
-- **Clutch** (`FUN_009d7ac0`): a speed-matching link between the engine and the driveline, scaled by the clutch
-  engagement and capped by an unknown torque. **No efficiency factor** anywhere. Each driven wheel gets half of
-  its axle's torque; `TransmissionInertia` is added to each driven wheel's inertia.
+- **Where the drivetrain sits** (2026-10-06): per tick the gearbox runs first (`FUN_009b3030` →
+  `FUN_009da600` → the state machine `FUN_009da340`), then `FUN_008f7c50` → `FUN_009b32c0` runs the engine
+  (`FUN_009d9960`) and then the clutch (`FUN_009d7ac0`), then the brakes and the tyre solve. Vehicle object
+  layout: engine at +0x1cf0 (rpm +0x1d10, lagged throttle +0x1d14), driveline / gear index at +0x1d40 (+0x1d70),
+  clutch engagement at +0x1e20, gearbox state machine at +0x1a70 (state +0x1bd8, its throttle at +0x1aa0). The
+  engine data pointer reads the `Engine` GeneSys struct: `Power_curve` fields from +0x18, `Engine_inertia`
+  +0xf4, `Engine_resistance` +0xf8, `c6deb7a6` +0xfc, `36676b9c` +0x100, `232d4b68` +0x108 (a limiter cut
+  time: while the engine's limiter flag (+0x44) is up the throttle is scaled by the time since the cut over
+  this; 0 on the XKR).
+- **Engine** (`FUN_009d9960`): the engine is its own rotating inertia, coupled to the wheels only through the
+  clutch. Per tick, with rpm the value at the start of the tick:
+  1. idle governor g = clamp((`Idle_RPM` + 20 − rpm) × 0.05, 0, 1); throttle u = max(gearbox throttle, 0.5 g)
+     (0x01186f30, 0x011871c0, 0x011873f0).
+  2. closed-throttle torque X: the free engine's `Engine_resistance` × inertia while an upshift is under way
+     (states 6–8) or the clutch is below 0.1 and no downshift is under way (0x01187570); otherwise the friction
+     curve (`FUN_009d6ec0`: `b3066e01` at `Idle_RPM`, `5a6aaf9f` at `f71be7c6`, `a53d9b5d` at `Max_RPM`,
+     piecewise linear). B = X × (1 − g): the governor fades the drag out.
+  3. throttle peak-hold and lag: hold = max(hold − `c6deb7a6` × K × dt, u); lag += clamp(`36676b9c` × K × dt,
+     0, 1) × (hold − lag), with K from `.bss` 0x01187250 (not read; 60 reproduces the original's idle, below).
+     During an upshift both are set to u (no lag). The lagged value (engine +0x24, scaled by the limiter cut while
+     its flag is up, clamped 0..1) is the effective throttle T.
+  4. torque = B + T × (full-load torque − B); during a downshift (states 10–12) instead −`Engine_resistance` ×
+     inertia × 2.5 (0x01187518) for the whole shift, whatever the rpm.
+  5. the rpm is clamped at `Max_RPM`, then a **torque noise** is added: n(t × rpm / 120) × N(rpm) × (`455b2e4a`
+     + (`dc7b0a4b` − `455b2e4a`) × load). t is a clock (engine +0x30) that wraps after rpm / 120 s; n is
+     `FUN_009e3780`, value noise on an integer lattice (the classic 15731 / 789221 / 1376312589 hash, divided by
+     2³⁰) with cosine interpolation; N is a second three-point curve (`FUN_009d6f90`: `15d1d117` at idle,
+     `d857ea54` at `f71be7c6`, `ddfc5326` at `Max_RPM`; XKR 0 / 2 / 10 N m); load is the sound's engine load
+     (vehicle +0x1f20, `FUN_009b1f70`). So the noise reaches the rpm, not only the sound; it is zero at idle on
+     the XKR.
+  6. rpm += torque × dt / inertia × 60/2π (0x01187310).
+  `FUN_009262a0` (max of the lagged throttle with a list of override values held by an object not identified)
+  sits between steps 3 and 4.
+- **The original's idle** (`ref/xkr_launch`, XKR, clutch open): 1002–1033 rpm, mean ~1015, alternating tick to
+  tick. That is the governor's limit cycle: the term B reacts to the rpm within the tick (gain ≈ −3 per tick)
+  while the throttle reacts through the lag. Steps 1–6 with K = 60 give 1003–1031, mean 1016, the same
+  alternating pattern and an effective throttle of 0.25 (the game's sound load reads 0.25); K = 1 or an
+  instant lag do not (987–1029 / 968–1091).
+- **Clutch** (`FUN_009d7ac0`): one impulse per tick, before the tyres: with Δω the engine speed minus the
+  driveline's (`FUN_009d55f0`: the axles' mean wheel spin × share × gear ratio × final drive),
+  T = min(5000 N m (0x01186f70), clutch × |Δω| × I_eff / dt) along Δω, where 1/I_eff = 1/`Engine_inertia` +
+  ½ ratio² × the driven wheels' mean inverse inertia × share² (Newton-refined reciprocal). The engine loses
+  T dt / I, the driveline gets T × ratio. **No efficiency factor** anywhere. Each driven wheel gets half of its
+  axle's torque; `TransmissionInertia` is added to each driven wheel's inertia. A second half-step pass
+  (`FUN_009050b0`, dt / 2 and 2 / dt) runs after the tyre solve when a world flag (+0x531b9 of the caller's
+  object) is set; not modelled.
+  Because the tyres then hold the wheel at road speed, the clutch never locks under load: it slips with
+  T ≈ I_eff × Δω / dt. In the original's launch the engine runs far above the wheels: ×1.9 in 1st, ×1.3 in
+  2nd, ×1.14 in 3rd at full throttle (rpm against w2_omega × ratio × final drive), with the tyres at κ ≈ 0
+  (`ref/xkr_launch`).
+- **Gearbox state machine** (`FUN_009da340`, state at gearbox +0x168; every state change is forced to 0 by
+  byte +0x173): 0/1 start-up (`FUN_009ce3d0`, `FUN_009cd7a0`), 2 standstill (`FUN_009d6370`: clutch open,
+  reverse selection, burnout), 3 launch (`FUN_009d17d0`), 4 close the clutch (`FUN_009cd820`), 5 in gear
+  (`FUN_009d9ee0`), 6/7/8 upshift declutch / neutral / clutch-in (`FUN_009d6880`, `FUN_009d95a0`,
+  `FUN_009d6af0`), 9 shift request (`FUN_009d88e0`), 10/11/12 downshift declutch / neutral / clutch-in
+  (`FUN_009ce490`, `FUN_009d69e0`, `FUN_009d6ca0`), 13 after a downshift (`FUN_009da1d0`). Before each state
+  function, `FUN_009d6170` copies the pedal to the gearbox throttle (the brake in reverse). Gear index 0 is
+  reverse, 1 first; the original sits in index 0 with the clutch open when parked.
+- **Launch** (state 3): with no throttle the clutch opens and the state returns to standstill; otherwise
+  engagement = max(throttle, the clutch's previous value, clamp(rpm / the gear's `Gear_up_RPM` ± 50 random)) —
+  the ± 50 (`FUN_009dc4e0`, `.data` 0x010cfa68) is drawn per gear and is only used here — and at ≥ 0.95
+  (0x01187080) with rpm > `Idle_RPM` the clutch closes fully (state 4 → 5). Below `Idle_RPM` × 0x011874a0
+  (not read) it stalls back to standstill.
+- **In gear** (state 5): the clutch opens (standstill, gear 1) when rpm < `Idle_RPM`, or when neither pedal is
+  pressed below 20 mph (0x011872d0, inferred: its lanes 2–3 read 20). Upshift when rpm > `Gear_up_RPM` of the
+  gear (no random offset) **and** (mph > `Gear_up_speed` **or** nitrous), while the gear is below the top
+  usable one; the target is the highest gear whose lower neighbour's `Gear_up_speed` is passed (`FUN_009d4c80`).
+  Otherwise `FUN_009d93b0` downshifts when (mph < the lower gear's `Gear_up_speed` − 2 (0x011872e0) or rpm <
+  the gear's `Gear_down_RPM`) and vehicle +0x1ed0 > 0x01187580 (neither identified; braking from 63 mph the
+  original downshifts 3 → 2 → 1 with no throttle, so it is not the throttle) and no nitrous; the target is the
+  highest lower gear whose `Gear_down_RPM` is below the rpm it would have (`FUN_009d8d60`), none → no shift.
+- **Shifts**: time T = (`Gear_change_time` (the `CruisingGearbox` one for a kick-down, `FUN_009dc3c0`)) ×
+  (1 + 0.15 × random) (`.data` 0x010cfa64); downshifts × 0.5 (0x01186fa0). Phases, each counted down per tick
+  and acted on in the tick it ends: **declutch** 0.1 T (0x01186ee0; clutch = time left / phase, 1 → 0),
+  **neutral** (1 − 0.1 − 0.4) T = 0.5 T (clutch 0; the gear changes at its end, an upshift's target chosen
+  again for the speed then), **clutch-in** 0.4 T (0x01186fd0; clutch 0 → 1). Upshifts cut the throttle from
+  the first declutch tick (shift style 1, the only one the code sets) and bring it back during clutch-in as
+  pedal × progress^0x011874d0 (not read; `FUN_00ed9e1b` is `pow`); downshifts keep the pedal in declutch, cut it
+  in neutral and bring it back the same way. The original's 1→2 in `ref/xkr_launch` shows exactly this: one
+  declutch tick, five neutral ticks, gear 2 on the fifth, then 0.25 / 0.5 / 0.75 / 1 (T ≈ 0.167 s for the XKR's
+  0.15 s). **Top-gear lock**: flags `13bfea5a` / `7b20506a` lock the last gear unless a profile option ("long
+  gears", inferred) or nitrous is active (`FUN_009d4c20`), so the 911's race box has 6 usable gears, not 7.
+- Not resolved in the drivetrain: K (0x01187250), the clutch-in throttle exponent (0x011874d0), the stall
+  fraction (0x011874a0), the downshift gate (vehicle +0x1ed0 against 0x01187580), the objects behind
+  `FUN_009262a0`'s override list, and why the original's engine reaches full torque in the first tick of the
+  launch (`ref/xkr_launch` 1.45 s: +140 rpm per tick = the full-load torque, while the lag would give ~0.4 of
+  it). The launch also waits 0.45 s after the throttle with the car parked (brake ramp 1, gear index 0), which
+  the standstill state's timers or the parked mask in `FUN_009d6170` (controls +0x40) may explain.
 - **Differentials** (`FUN_009d8140`): `Front_` / `Rear_Differential` = c limit the axle's wheel-speed ratio to
   1/c (0 open, 1 locked; 911 rear 0.75). `Center_Differential` is 0 on every car.
-- **Gearbox**: only the `RaceGearbox` ratios and shift points are used; the `CruisingGearbox` only supplies a
-  slower shift time for kick-downs. Upshift when rpm > `Gear_up_RPM` **and** mph > `Gear_up_speed` (may skip
-  gears). Downshift when speed < the lower gear's `Gear_up_speed` (with hysteresis) or rpm < `Gear_down_RPM`, to
-  the highest lower gear still above its own down rpm. Shift time = `Gear_change_time` × (1 + 0.15 × random),
-  split into declutch / neutral / clutch-in with the throttle cut. **Top-gear lock**: flags `13bfea5a` /
-  `7b20506a` lock the last gear unless a profile option ("long gears", inferred) or nitrous is active, so the
-  911's race box has 6 usable gears, not 7.
-- **Launch**: clutch engagement = max(throttle, rpm / `Gear_up_RPM` of 1st), fully closed at ≥ 0.95.
 - **Top speed**: `Top_speed_MPH` is never read by the physics. Top speed follows from torque, drag (with its
   over-speed ramp, below) and the rpm clamp in the highest unlocked gear.
 - **Brakes** (`FUN_009b1180`): torque per wheel = `6ade4bb6` (front) / `66251131` (rear) × pedal² × a ramp that
@@ -141,8 +209,8 @@ Status words: **confirmed** = read directly from the code; **inferred** = reason
 - **Handbrake**: strength blends from `Brake_strength_at_low_speed` to `_at_high_speed` between `Low_speed_mph`
   and `High_speed_mph`, rear wheels only, combined with the service brake by max (not added). `35e18207` /
   `6ce0fda7` belong to the drift (above), not to grip.
-- Unknown: about 20 tuning constants (clutch torque cap, idle governor, shift-phase fractions, hysteresis,
-  thresholds).
+- The drivetrain constants are now accounted for (above); the ones not yet read are listed at the end of the
+  gearbox entries.
 
 ## Suspension, wheels, aerodynamics
 
