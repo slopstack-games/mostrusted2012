@@ -12,6 +12,7 @@ pub mod camera;
 mod catalog;
 pub mod crash;
 pub mod damage;
+pub mod easydrive;
 pub mod engine_driver;
 pub mod engine_sound;
 pub mod environment;

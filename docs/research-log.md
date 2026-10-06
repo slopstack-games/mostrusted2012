@@ -146,7 +146,42 @@ _(to be filled in)_
 
 ### 2026-10-06 (session 5): Easydrive and the front end
 
-_(to be filled in)_
+- **Where the menu lives**: not in standalone GeneSys objects (`mwtool genesys all --type
+  Widget_EasyDriveTierDefinition` finds none) but inline in the driving screens' `Screen2` objects
+  (`UI/SCREENS2/371621.BNDL` free roam with the full tree; 1019407, 1019814, 1560359, 2173025, 2210073, 371670,
+  371678, 371720, 371725, 604153 carry variants). The screen's widget groups (`WidgetGroup`, children in field
+  `c7413006`) are the unit: one group holds the menu widget (`Widget_ShowLayouts` "EasyDrive": 3 layouts
+  `01000000001b0f44`, `01000000001b8d10`, `01000000001a24e2`, scripts `Menu_Fast`, `EasyDrive_ScreenScript`,
+  `EasyDriveSpeech`, `ExitOnIdleScript`) plus every item type (`Widget_EasyDriveTypeDefinition`); every other
+  group with a `Widget_EasyDriveTierDefinition` is one tier with its item lists. Loader `mw_assets::easydrive`,
+  listing `mwtool ui easydrive [screen]`. Layout in formats.md "Easydrive".
+- **Tree** (labels from the English table): root `TO_BASE` (no title): RETRY LAST EVENT (`TO_RTY_CNF`, only
+  with `Mode.RetryLastEventEnabled`), AUTOLOG RECOMMENDS (`TO_AR`), RACES (`TO_FMN`), EXCLUSIVE RACES (VITA only),
+  CUSTOMIZE CAR (`TO_MOD`), CHANGE CAR (`TO_JACK`), MOST WANTED CARS (`TO_BLACKLIST`), MULTIPLAYER (`TO_MP`),
+  STORE. Change car = MANUFACTURERS (`JSMANUFACT` source) -> MODELS (`TO_JS_MOD`, `JSMODEL`) -> LOCATIONS
+  (`TO_JS_LOC`, jack spots) -> OPTIONS. Customise = MOD CLASS (+ LIVERIES -> `TO_PAINT`, `PAINTITEM`) -> MOD TYPE
+  -> MOD STANDARD. Confirm tiers (retry, store, leave single player) hold NO / YES and the speech variants.
+- **Behaviour from the data**: link items select through `LINKITEM`'s callback `ExitTierVia(Token)` (enabled
+  by `Unlocked`), so a link token is the HSM transition naming the next tier. Generated tiers name their code
+  callbacks: `EZStateJack::SelectManufacturer(Id)`, `EZStateJack::SelectModel`, `JACKSPOT::JackIt(Placement)`,
+  `SelectPaintPackFromEasyDrive(PaintId)`, `UpdatePendingRollout_EasyDrive(UpgradeEnum)`,
+  `SetVehicleAndRolloutFromSaveGameByVehicleIDString(Id)`. Inputs: the menu widget's user actions bind
+  `EasyUp`/`easy_up` -> `EasyDrive::EasyDriveOnPrevious`, `EasyDown`/`easy_down` -> `OnNext`, `EasyLeft` ->
+  `GoBackTier`, `EasyRight` -> `SelectCurrentItem` (only if `NumItemsShown >= 1`), `Hack_EasyDriveQuit`/`cancel`
+  -> `QuickClose`; the HackEasyDrive widget opens it with `Hack_EasyRight`/`easy_right`. Idle close:
+  `ExitOnIdleScript` fires `TIMEOUT` on `ScreenTimer` "EasyDriveTimer", `Delay: 1000` (unit not checked).
+- **Code**: the strings (`ExitTierVia`, `EasyDriveOnNext`, `easy_right`, `SelectPaintPackFromEasyDrive` ...)
+  are in `strings.csv` but `callers` finds no reference to any of them (registered through tables the dump has no
+  xrefs for); no function found yet. Open: which `ConstantItems` / `ConstantItems2` adapter entries come from
+  which list (the adapters are code), how `Signals.GetIntValue` sources are filled, the PC keys behind the
+  `easy_*` mappings, the layouts' look.
+- **Runtime first version** (`crates/mostrusted/src/easydrive.rs`, `--show-easydrive`): tree, titles and labels
+  from the data; link items open their tier; the CHANGE CAR tier lists the catalogue's makes, then models, and
+  drives the car via `GarageAction::Drive` (skipping the jack-spot location step); everything else is shown and
+  inert. **Model decisions**: panel place / colours / sizes (fonts are the game's body and title fonts, the
+  layouts are not read yet), 8 rows shown, keyboard keys (arrows, Esc, `E` opens) and gamepad B for `cancel`,
+  all list items of a tier shown regardless of their source's condition (so confirm tiers show four rows and the
+  root shows retry / VITA / store), paint not wired.
 
 ### 2026-10-06 (session 5): free-roam rules
 

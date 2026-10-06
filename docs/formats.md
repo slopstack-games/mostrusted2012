@@ -341,3 +341,16 @@ kernels are missing from the dump). Until 2026-10-06 it was read as blue fastest
 swapped red and blue and caused the yellow cast. Each environment keyframe names one (`ColourCube` handle);
 PostFX states (`POSTFX.BNDL`) name more. Parser: `mw_formats::ColourCube`.
 
+
+## Easydrive (inside `Screen2`, `UI/SCREENS2/*.BNDL`)
+
+Inline GeneSys structs in a driving screen's widget groups (group children: field `c7413006`); loader
+`mw_assets::easydrive`, listing `mwtool ui easydrive`. All definitions share the widget base (Name, ids, handles,
+`UserActionInstance` actions, data sources, layouts, scripts, 8 `u8` flags, 0x0C..0x44).
+
+| type | own fields |
+|------|------------|
+| `Widget_EasyDriveTierDefinition` (88) | 68 HSM transition name (`TO_BASE` = root), 76 `Title` (Language id), 80 `Sources`[] {`053e93c0` condition binding, `2205fba3` length binding, `Path`, `Type` (item type name), `77b2f836` bool} |
+| `Widget_EasyDriveLinkItemList` (76) | 68 `Entries`[] {`Token` (transition to the tier of that name, or `DISMISS` / `CONFIRM`), `Description`, `Name` (Language ids), `SpeechCommand` u16} |
+| `Widget_EasyDriveHookItemList` (76) | 68 `Entries`[] {`aabe34d0` hook argument, `3ab7e7fa` HSM exit token, `b50ff8fe` hook token, description, name, speech} |
+| `Widget_EasyDriveTypeDefinition` (108) | 88 properties[] {`Name`, `Path` binding with `[#]` = item index}, 92 / 96 selection callbacks[] {`aabe34d0` argument property, `781443e5` enabled property, `Name` (code callback), three u16 enums} |

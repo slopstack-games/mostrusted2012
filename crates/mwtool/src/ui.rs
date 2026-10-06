@@ -11,6 +11,36 @@ use mw_formats::Language;
 use mw_formats::ui::{Element, REFERENCE_SIZE};
 
 /// One line per screen bundle: its widgets and how many layouts each places.
+/// `mwtool ui easydrive`: the menu model (mw_assets::easydrive), one line per type, tier, source and item.
+pub fn easydrive(store: &AssetStore, screen: &str, lang: &Language) -> Result<()> {
+    use mw_assets::easydrive::label;
+    let ed = store.easydrive(screen)?;
+    for t in &ed.types {
+        let props: Vec<_> = t.properties.iter().map(|(n, p)| format!("{n}={p}")).collect();
+        let cbs: Vec<_> =
+            t.callbacks.iter().map(|c| format!("{}({}) if {}", c.name, c.argument, c.enabled_property)).collect();
+        println!("type {}: callbacks [{}]\n    props {}", t.name, cbs.join(", "), props.join(" "));
+    }
+    for t in &ed.tiers {
+        let title = if t.title == 0 { String::new() } else { label(lang, t.title) };
+        println!("tier {} (group {}) \"{title}\" widgets [{}]", t.transition, t.group, t.widgets.join(" "));
+        for s in &t.sources {
+            println!("    source {} {}{}", s.item_type, s.path, if s.condition.is_empty() { "" } else { " if " });
+            if !s.condition.is_empty() {
+                println!("        {}", s.condition);
+            }
+        }
+        for l in &t.lists {
+            println!("    {} list {}", l.kind, l.widget);
+            for i in &l.items {
+                let hook = if i.exit.is_empty() { String::new() } else { format!(" ({}) then {}", i.argument, i.exit) };
+                println!("        {:<16} \"{}\"{hook}", i.token, label(lang, i.name));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn screens(store: &AssetStore) -> Result<()> {
     let mut paths: Vec<_> = store
         .bundle_paths()
