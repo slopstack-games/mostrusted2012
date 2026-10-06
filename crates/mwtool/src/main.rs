@@ -338,8 +338,13 @@ enum Cmd {
     },
     /// Disassemble the compiled D3D11 programs (DXBC) a shader uses.
     ShaderAsm {
-        /// Exact shader name, e.g. `DriveableSurface`.
+        /// Exact shader name, e.g. `DriveableSurface`. With `--exe`: `list`, `all`, a program's address
+        /// (`0x01016148`) or a word its disassembly contains (`Sampler3dTint`).
         name: String,
+        /// The programs built into `NFS13.exe` (`.rdata`, not encrypted) instead of `SHADERS.BNDL`: the
+        /// final post-process pass, the UI and sky helpers live there.
+        #[arg(long)]
+        exe: bool,
     },
     /// Per-field statistics of a resource type's header across the install.
     Survey {
@@ -478,7 +483,8 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Cmd::ShaderAsm { name } => {
+        Cmd::ShaderAsm { name, exe: true } => exe_shader_asm(&game, &name)?,
+        Cmd::ShaderAsm { name, exe: false } => {
             let store = AssetStore::new(game)?;
             let b = store.bundle("SHADERS.BNDL").context("SHADERS.BNDL missing")?;
             let entry = b
@@ -1474,6 +1480,57 @@ fn effect(store: &AssetStore, id: &str, raw: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// `shader-asm --exe`: the DXBC programs stored in `NFS13.exe`, addressed by their virtual address (as in
+/// the decompiled dump). `.rdata` is not encrypted on disk, so the file is read as is; nothing is written.
+fn exe_shader_asm(game: &GameDir, filter: &str) -> Result<()> {
+    let path = game.path(mw_gamedir::EXECUTABLE).context("NFS13.exe not found")?;
+    let data = std::fs::read(&path)?;
+    let va_of = pe_file_offset_to_va(&data);
+    let wanted = parse_int(filter).ok();
+    for shader in d3dasm::parse(&data) {
+        let va = va_of(shader.offset()).unwrap_or(0);
+        let text = shader.to_string();
+        let stage = text.lines().map(str::trim).find(|l| l.starts_with("ps_") || l.starts_with("vs_")).unwrap_or("?");
+        if filter == "list" {
+            let mut names = Vec::new();
+            if let Some(rd) = shader.resource_def() {
+                names.extend(rd.bindings.iter().filter(|b| !b.name.starts_with('$')).map(|b| b.name.to_string()));
+                for cb in &rd.constant_buffers {
+                    names.extend(cb.variables.iter().map(|v| v.name.to_string()));
+                }
+            }
+            names.dedup();
+            println!("{va:#010x} {stage:<6} {:>5} B  {}", shader.size(), names.join(" "));
+        } else if filter == "all" || wanted == Some(va as usize) || (wanted.is_none() && text.contains(filter)) {
+            println!("// ===== NFS13.exe {va:#010x} ({} bytes) =====\n{text}", shader.size());
+        }
+    }
+    Ok(())
+}
+
+/// Maps a file offset in a 32-bit PE image to its virtual address (image base + section RVA).
+fn pe_file_offset_to_va(data: &[u8]) -> impl Fn(usize) -> Option<u32> + '_ {
+    let u16_at = |o: usize| data.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]]));
+    let u32_at = |o: usize| data.get(o..o + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+    let pe = u32_at(0x3c).unwrap_or(0) as usize;
+    let sections = u16_at(pe + 6).unwrap_or(0) as usize;
+    let optional = u16_at(pe + 20).unwrap_or(0) as usize;
+    let base = u32_at(pe + 24 + 28).unwrap_or(0);
+    let table: Vec<(u32, u32, u32)> = (0..sections)
+        .filter_map(|i| {
+            let o = pe + 24 + optional + 40 * i;
+            Some((u32_at(o + 12)?, u32_at(o + 20)?, u32_at(o + 16)?))
+        })
+        .collect();
+    move |offset| {
+        let offset = u32::try_from(offset).ok()?;
+        table
+            .iter()
+            .find(|&&(_, raw, len)| (raw..raw + len).contains(&offset))
+            .map(|&(rva, raw, _)| base + rva + offset - raw)
+    }
 }
 
 /// Parse a decimal or `0x`-prefixed hexadecimal integer.

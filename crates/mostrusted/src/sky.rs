@@ -243,8 +243,9 @@ pub fn irradiance_cube(key: &EnvironmentKeyframe, sun: Vec3) -> Image {
         }
         // Skylight: the upper hemisphere at the keyframe's average sky colour, cosine-weighted
         // ((1 + n.y) / 2 of it reaches a surface facing n). Provisional: the game builds this cube on the
-        // CPU; without a sky term the warm key light leaves shade neutral and the grade turns it yellow,
-        // while the data's warm sun + blue SkyReflectionAverageColour balance to white.
+        // CPU. It was added while the colour cube was read with red and blue swapped (research log
+        // 2026-10-06); with the cube fixed, noon shade reads blue-grey with it and neutral but darker
+        // without it. Kept until the original's shade colour is measured.
         let w = 0.5 * (1.0 + d.y) * SKY_FILL;
         for i in 0..3 {
             c[i] += sky[i] * w;

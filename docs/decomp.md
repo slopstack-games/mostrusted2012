@@ -205,3 +205,37 @@ See the research log, "engine sound from the game code": the sound runs on its o
 (audible = 1000 + 7000 × normalised rpm^(2 − a)), engine load is the pedal blended towards full by speed, and the
 harmonic multipliers come from `EngineSound2`. The Distortion and SubHarmoniser plug-ins fall in undecompiled
 gaps of the dump.
+
+## Post-processing and colour grade (2026-10-06)
+
+The final post-process shaders are not in `SHADERS.BNDL`: 74 DXBC programs sit in `NFS13.exe`'s `.rdata`
+(not encrypted on disk; `mwtool shader-asm --exe list`, addresses are virtual addresses as in the dump). The
+chain, from the light buffer (HDR game units) to the screen:
+
+1. **Bloom and vignette** (exe programs, set up in `FUN_008e1580` / `FUN_008e1c30`): `0x0100f5f0` /
+   `0x010104c0` downsample 4 taps × the exposure (`kHdrToneMapping.w`, or the 1×1 tonemap texture's w) / 128
+   into RGBM (M = max channel rounded up to 1/255); Gaussian blurs; `0x010117c0` adds two blurred levels
+   (`kColorAddWeight.z`, `.w`) and writes the **vignette weight in alpha**: v = smoothstep(saturate(|p| +
+   `kVignetteOuterRgbPlusAdd.w`)), p = (rotate(2·uv − 1, `kVignetteAngle`) − (2·centre − 1)) × scale
+   (`kVignetteCentreXyScaleXy`, VS `0x01011e18`).
+2. **Tonemap** (`GBufferComposite` in `SHADERS.BNDL`): (hdr + bloom × B.rgb × saturate(bloom × T.w) × B.w) ×
+   (A.rgb × v + D.rgb) × T.w → 1 − 2^(−x) → polynomial sRGB fit. T.w = the auto-exposure scale; with v the
+   vignette weight, A·v + D is the vignette's inner → outer colour blend (`PostFxKeyframe.Vignette` holds an
+   inner (1, 1, 1) and outer colour, (0.45, 0.45, 0.45) in the default keyframe `…78dc`). Which CPU function
+   fills A, B and D was not found (inferred: B = bloom colour and strength, A / D from the vignette colours).
+3. **Final pass** (12 variants created in `FUN_008e41e0`, e.g. `0x01016148`, `0x01017050`): offset the UV by a
+   distortion texture, optionally blend depth of field, composite the "splatter" overlay (premultiplied:
+   src × (1 − a) + rgb), then **out = TintBlend(rgb × `ColourCubeScalesOffsets`.xyz + .w)** (3-D texture,
+   x = red). No other colour operation follows; the `BloomColour` constant in that buffer is unused by these
+   variants.
+4. **TintBlend** (the grade volume, 16³ × 4 bytes): `FUN_008e5f80` allocates the 0x4000-byte buffer and names
+   it; `FUN_008e0930` starts a job with up to seven source cubes (ColourCube resource data) and a weight each;
+   the job dispatches through the table at `0x010e8f70` by cube count (kernels `0x00eb56d0`…`0x00eb64c0`, not
+   in the dump); `FUN_008e0ac0` copies the result into the texture row by row, without reordering. The default
+   PostFX state (`POSTFX.BNDL` `…78ae`) contributes the identity cube `…78f1`; other states add their own
+   (cooldown `…7898`, heat `…789d`, nitrous `…789f`, escaped `…789c`, wreck `…789a` / `…789b`) through
+   `ValueBinding` strings. Where the environment keyframe's cube enters, and with which weight, was not found.
+
+Consequence for the ColourCube layout: a straight weighted blend keeps the stored order, so the stored entries
+are the texture's own (x = input red fastest, bytes B, G, R + alpha), not "blue fastest, stored R, G, B"
+(inferred; the kernels themselves are missing from the dump; `mw_formats::ColourCube`).
