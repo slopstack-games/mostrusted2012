@@ -124,6 +124,57 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-06: the drivetrain from the code; the "2nd-gear clutch bug" is the tyres
+
+- **Read from the dump** (details and addresses in decomp.md "Drivetrain and brakes"): the gearbox is a
+  14-state machine (`FUN_009da340`); the engine (`FUN_009d9960`) and clutch (`FUN_009d7ac0`) run after it each
+  tick. Corrections to our model: the shift phases are declutch 10 % / **neutral 50 %** / **clutch-in 40 %**
+  (we had 40 / 50), with the gear changing at the end of neutral; the ±50 rpm random offset only feeds the
+  launch clutch, not the upshift point; downshifts blip the engine for the whole shift; the rpm downshift rule
+  is not gated by the throttle (its gate, vehicle +0x1ed0 against `.bss` 0x01187580, is unidentified; the
+  original downshifts 3 → 2 → 1 while braking with no throttle); in gear the clutch opens below 20 mph with
+  neither pedal, or below idle. The declutched engine still takes the throttle (torque = B + T × (full − B),
+  B the resistance faded by the governor); ours ignored it, which is why our idle sat at a flat 1000 / 969.
+  The throttle is peak-held (`c6deb7a6` per tick) and lagged (`36676b9c` per tick), bypassed during upshifts;
+  a value-noise torque (rpm / 120 lattice points per second, amplitude from a second `Power_curve` three-point
+  curve, 0 at idle on the XKR) reaches the rpm. Clutch-in brings the throttle back as pedal × progress^k.
+- **The idle**: with the hold / lag time base 60 the governor's limit cycle gives 1003–1031 rpm, mean 1016,
+  alternating tick to tick, against the original's 1002–1033, mean ~1015 (`ref/xkr_launch`); 1 gives 987–1029,
+  an instant lag 968–1091. The `.bss` vector 0x01187250 that holds it is not read yet (handling.md "Model
+  decisions").
+- **The 1→2 shift** in `ref/xkr_launch`, tick by tick: one declutch tick (clutch 1 → 0), five neutral ticks,
+  gear 2 on the fifth, then 0.25 / 0.5 / 0.75 / 1: T ≈ 0.167 s from the XKR's 0.15 s × (1 + 0.15 × r). Ours now
+  does the same.
+- **The original's clutch never locks under load.** Its engine runs ×1.9 / ×1.3 / ×1.14 above the driven
+  wheels in 1st / 2nd / 3rd at full throttle (rpm against w2_omega × ratio × final drive) while the rear tyres
+  sit at κ ≈ 0: the clutch is one speed-matching impulse per tick before the tyre solve, and the tyres pull the
+  wheels back to road speed, so it slips with T ≈ I_eff × Δω / dt (≈ 250 / ratio² N m per rad/s, consistent
+  across the three gears). Our clutch is the same impulse; the difference after the shift is the tyres: ours
+  spin the rear tyres (κ 0.6 in 2nd, κ 0.2–0.3 with `MW_LONG_GRIP=1`) instead of holding them, so the engine
+  sits on the tyres' slip instead of the clutch's. With `MW_LONG_GRIP=1` the 2nd-gear rpm takes the original's
+  shape (4600 → 4430 → 6460) but the car is 0.5 s quicker to 60 mph: the longitudinal tyre cap at small slip,
+  not the drivetrain, is the gap (handed on to the tyre work).
+- **Replay** (`--replay ref/xkr_launch`, before → after): speed RMS over the launch (1–6 s) 1.86 → 0.83 mph;
+  speed at 1 / 1.5 / 2 / 3 s after the throttle 4.8 / 13.1 / 20.4 / 36.3 → 6.6 / 14.8 / 21.3 / 38.0 mph
+  (original 6.6 / 15.4 / 22.4 / 39.3); 60 mph after 4.55 → 4.58 s (original 4.63); 1→2 at 2.02 → 1.92 s
+  (original 1.87); 2nd-gear rpm 6250–6680 → 5770–6720 (original 4750–6750; RMS 1105 → 636); idle 1000 flat →
+  1003–1031. Worse: the first second, where the replay holds the handbrake (the original was parked in gear
+  index 0 with the rear wheels locked): our handbrake takes the driven wheels off the clutch (`drive.rs`), so the
+  free engine now revs to the limiter on the throttle (the original's rose at +109 rpm per tick with the clutch
+  closed, i.e. loaded by ~150–190 N m, which fits the clutch formula with the driveline still connected, best
+  with the front axle: `FUN_009d5520` / `FUN_009d7ac0` force the front share to 1 when vehicle vfunc +0x44 is
+  true). Left for the handbrake work; 1st-gear rpm RMS 568 → 2493 because of it.
+- **911 tests**: `--test accel` 0–60 mph 3.72 → 3.82 s, 0–100 km/h 3.87 → 3.98 s, 0–200 km/h 11.12 → 11.40 s,
+  quarter mile 11.68 → 11.82 s, top 307.4 → 307.6 km/h (the clutch-in throttle ramp and the throttle lag at
+  launch); `--test engine` idles 1002–1046 rpm (was 1000), revs and shifts as before, and now downshifts 3 → 2
+  on the brake. `--test brake` 100–0 km/h 40.1 → 42.3 m (downshift blips while braking).
+- Open: the launch reaches full torque in its first tick in the original (+140 rpm per tick = the full-load
+  torque at 1028–1312 rpm) while the lag needs ~10 ticks; the 0.45 s the original waits between throttle and
+  revs (parked, gear index 0); the constants 0x01187250, 0x011874d0, 0x011874a0, 0x01187580 and vehicle
+  +0x1ed0. Procedure: with the game in free roam, `mwtool memscan`, `dump NFS13.exe+0xd87250` (and +0xd874d0,
+  +0xd874a0, +0xd87580); add `engine_lag f32 … 0x184 0x1d14` and `gearbox_state i32 … 0x184 0x1bd8` and
+  `x1ed0 f32 … 0x184 0x1ed0` to `handling.watch` and re-capture the launch and a braking run.
+
 ### 2026-10-05: `mwtool tune`; present and input paths of the original
 
 - Read live through the tuning menu (XKR, car park, idle): the player car at table index 48; idle 1012 rpm;

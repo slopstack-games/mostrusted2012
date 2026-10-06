@@ -1,35 +1,58 @@
 //! Engine, clutch and gearbox after the game's code (docs/decomp.md, "Drivetrain and brakes").
 //!
-//! The engine is its own rotating inertia: the throttle blends its torque from a closed-throttle friction
-//! curve to the full-load curve, and it is coupled to the driven wheels only through a clutch that matches
-//! the two speeds within a torque limit. The gearbox shifts on rpm *and* road speed, through declutch /
-//! neutral / clutch-in phases. Constants the game keeps outside the data are marked as model values.
+//! The engine is its own rotating inertia (`FUN_009d9960`): an idle governor, a peak-held and lagged throttle,
+//! a closed-throttle friction curve blended to the full-load curve, and a small torque noise. It is coupled to
+//! the driven wheels only through a clutch (`FUN_009d7ac0`) that matches the two speeds within a torque limit,
+//! once per tick before the tyres; as the tyres then hold the wheels at road speed, the clutch slips for as long
+//! as the engine has torque to spare (the original's engine runs well above the wheels in the low gears). The
+//! gearbox is the state machine of `FUN_009da340`: standstill, launch, in gear, and declutch / neutral /
+//! clutch-in phases for each shift. Constants the game keeps outside the data are read from the running game
+//! (`.bss`, docs/decomp.md "Reading the dump") or from `NFS13.exe` (`.rdata` / `.data`); the few still unknown
+//! are marked as model values.
 
 use mw_assets::handling::VehicleHandling;
 
 const RPM_PER_RAD_S: f32 = 60.0 / std::f32::consts::TAU;
-/// Clutch torque capacity (N m; game constant read from the running game, `.bss` 0x01186f70).
+/// Clutch torque capacity (N m; `.bss` 0x01186f70, read from the running game).
 const CLUTCH_CAP: f32 = 5000.0;
-/// Launch: the clutch closes fully once its engagement reaches this (game constant).
+/// Launch: the clutch closes fully once its engagement reaches this (`.bss` 0x01187080, 0.95 in the dump).
 const CLUTCH_CLOSED: f32 = 0.95;
-/// Shift phases as fractions of the shift time: declutch, neutral (the rest is clutch-in); game constants
-/// read from the running game (`.bss` 0x01186ee0, 0x01186fd0). Downshifts take `DOWNSHIFT_TIME` of the time.
+/// Shift phases as fractions of the shift time (`.bss` 0x01186ee0 = 0.1, 0x01186fd0 = 0.4): declutch first,
+/// then neutral for the rest (`1 − 0.1 − 0.4`), then clutch-in. The gear changes at the end of neutral.
 const SHIFT_DECLUTCH: f32 = 0.1;
-const SHIFT_NEUTRAL: f32 = 0.4;
+const SHIFT_CLUTCH_IN: f32 = 0.4;
+const SHIFT_NEUTRAL: f32 = 1.0 - SHIFT_DECLUTCH - SHIFT_CLUTCH_IN;
+/// Downshifts take this fraction of the shift time (`.bss` 0x01186fa0).
 const DOWNSHIFT_TIME: f32 = 0.5;
-/// The downshift blip drives the engine at `Engine_resistance` × this (game constant, 0x01187518).
+/// Shift time varies by up to this fraction (`.data` 0x010cfa64).
+const SHIFT_TIME_JITTER: f32 = 0.15;
+/// The launch clutch engages with the revs towards each gear's upshift rpm, randomised by ± this (rpm; `.data`
+/// 0x010cfa68, `FUN_009dc4e0`).
+const UPSHIFT_RPM_JITTER: f32 = 50.0;
+/// During a downshift the engine is driven at −`Engine_resistance` × this (`.bss` 0x01187518).
 const BLIP_GAIN: f32 = 2.5;
-/// Below this clutch engagement the engine runs free (game constant, 0x01187570).
+/// Below this clutch engagement the engine runs free (`.bss` 0x01187570).
 const DECLUTCHED: f32 = 0.1;
-/// Each gear's upshift rpm varies by up to this much (game constant).
-const UPSHIFT_JITTER: f32 = 50.0;
-/// Downshift on speed this far (mph) below the lower gear's upshift speed (game constant, 0x011872e0).
+/// Downshift on speed this far (mph) below the lower gear's upshift speed (`.bss` 0x011872e0).
 const DOWNSHIFT_HYSTERESIS: f32 = 2.0;
-/// The idle governor: throttle up to `IDLE_GOVERNOR_THROTTLE` as the revs fall below idle + `IDLE_GOVERNOR_RPM`, at
-/// `IDLE_GOVERNOR_GAIN` per rpm (game constants, 0x01186f30 / 0x011871c0 / 0x011873f0).
+/// In gear with neither pedal pressed, the clutch opens below this speed (mph; `.bss` 0x011872d0, inferred
+/// from its lanes 2-3 read live).
+const COAST_DECLUTCH_MPH: f32 = 20.0;
+/// The idle governor: throttle `IDLE_GOVERNOR_THROTTLE` × g with g = (idle + `IDLE_GOVERNOR_RPM` − rpm) ×
+/// `IDLE_GOVERNOR_GAIN` clamped to 0..1; the closed-throttle torque fades out with g (`.bss` 0x01186f30,
+/// 0x011871c0, 0x011873f0).
 const IDLE_GOVERNOR_RPM: f32 = 20.0;
 const IDLE_GOVERNOR_GAIN: f32 = 0.05;
 const IDLE_GOVERNOR_THROTTLE: f32 = 0.5;
+/// Time base of the throttle's peak-hold decay and lag (`Engine.c6deb7a6` / `36676b9c` are per-tick fractions;
+/// `.bss` 0x01187250 is not read yet). Model value: 60, the time base of the drift damping read live; with it
+/// the idle governor reproduces the original's idle (1003–1031 rpm, mean 1016, against 1002–1033, ~1015).
+const THROTTLE_TIME_BASE: f32 = 60.0;
+/// Clutch-in after an upshift: the throttle comes back as progress^this (`.bss` 0x011874d0, not read yet).
+/// Model value: 1 (linear).
+const CLUTCH_IN_THROTTLE_EXP: f32 = 1.0;
+/// The torque noise is sampled at the firing rate of one cylinder: rpm / 120 lattice points per second.
+const NOISE_RPM_DIV: f32 = 120.0;
 
 /// Engine and gearbox data for one car.
 #[derive(Debug, Clone)]
@@ -39,9 +62,16 @@ pub struct DrivetrainParams {
     pub max_rpm: f32,
     /// Closed-throttle torque (N m, negative) at idle, at `f71be7c6` (peak-torque rpm) and at `Max_RPM`.
     pub friction: [(f32, f32); 3],
+    /// Torque noise amplitude (N m) at the same three rpm (`Power_curve.15d1d117`, `d857ea54`, `ddfc5326`),
+    /// scaled by `noise_load` = (no load, full load) (`455b2e4a`, `dc7b0a4b`).
+    pub noise: [(f32, f32); 3],
+    pub noise_load: (f32, f32),
     pub engine_inertia: f32,
     /// `Engine_resistance` (rad/s², negative): the free engine's deceleration with the clutch open.
     pub engine_resistance: f32,
+    /// The throttle's peak-hold decay and lag, per tick (`Engine.c6deb7a6`, `Engine.36676b9c`).
+    pub throttle_decay: f32,
+    pub throttle_lag: f32,
     /// Forward ratios (1st first), their shift points and upshift speeds (mph).
     pub ratios: Vec<f32>,
     pub upshift_rpm: Vec<f32>,
@@ -72,6 +102,7 @@ impl DrivetrainParams {
         let gears = if locked && ratios.len() > 1 { ratios.len() - 1 } else { ratios.len() };
         let idle_rpm = h.idle_rpm.unwrap_or(900.0);
         let max_rpm = h.redline_rpm.unwrap_or(7000.0);
+        let mid_rpm = e("Power_curve.f71be7c6", (idle_rpm + max_rpm) / 2.0);
         let get = |v: Option<&Vec<f32>>| v.cloned().unwrap_or_default();
         Self {
             handling: h.clone(),
@@ -79,11 +110,19 @@ impl DrivetrainParams {
             max_rpm,
             friction: [
                 (idle_rpm, e("Power_curve.b3066e01", -50.0)),
-                (e("Power_curve.f71be7c6", (idle_rpm + max_rpm) / 2.0), e("Power_curve.5a6aaf9f", -100.0)),
+                (mid_rpm, e("Power_curve.5a6aaf9f", -100.0)),
                 (max_rpm, e("Power_curve.a53d9b5d", -125.0)),
             ],
+            noise: [
+                (idle_rpm, e("Power_curve.15d1d117", 0.0)),
+                (mid_rpm, e("Power_curve.d857ea54", 0.0)),
+                (max_rpm, e("Power_curve.ddfc5326", 0.0)),
+            ],
+            noise_load: (e("Power_curve.455b2e4a", 0.0), e("Power_curve.dc7b0a4b", 0.0)),
             engine_inertia: h.engine_inertia.unwrap_or(0.25).clamp(0.05, 2.0),
             engine_resistance: h.engine_brake_torque.unwrap_or(-300.0).min(-1.0),
+            throttle_decay: e("c6deb7a6", 0.09).max(0.0),
+            throttle_lag: e("36676b9c", 0.15).max(0.0),
             upshift_rpm: get(gb.as_ref().map(|g| &g.upshift_rpm)),
             downshift_rpm: get(gb.as_ref().map(|g| &g.downshift_rpm)),
             upshift_mph: get(gb.as_ref().map(|g| &g.upshift_mph)),
@@ -108,10 +147,7 @@ impl DrivetrainParams {
 
     /// Closed-throttle torque (N m, negative) at `rpm`: linear through the three points.
     pub fn friction_torque(&self, rpm: f32) -> f32 {
-        let f = &self.friction;
-        let seg =
-            |a: (f32, f32), b: (f32, f32)| a.1 + (b.1 - a.1) * ((rpm - a.0) / (b.0 - a.0).max(1.0)).clamp(0.0, 1.0);
-        if rpm < f[1].0 { seg(f[0], f[1]) } else { seg(f[1], f[2]) }
+        three_point(&self.friction, rpm)
     }
 
     /// Gear ratio of gear `g` (1 = first, −1 = reverse, 0 = neutral).
@@ -130,15 +166,60 @@ impl DrivetrainParams {
     fn upshift_mph(&self, g: i32) -> f32 {
         self.upshift_mph.get(g as usize - 1).copied().unwrap_or(0.0)
     }
+
+    fn downshift_rpm(&self, g: i32) -> f32 {
+        self.downshift_rpm.get(g as usize - 1).copied().unwrap_or(0.0)
+    }
 }
 
+/// A curve linear through three (x, y) points, flat outside.
+fn three_point(p: &[(f32, f32); 3], x: f32) -> f32 {
+    let seg = |a: (f32, f32), b: (f32, f32)| a.1 + (b.1 - a.1) * ((x - a.0) / (b.0 - a.0).max(1.0)).clamp(0.0, 1.0);
+    if x < p[1].0 { seg(p[0], p[1]) } else { seg(p[1], p[2]) }
+}
+
+/// The engine's torque noise (`FUN_009e3780`): value noise on an integer lattice, cosine-interpolated, in −1..1.
+fn noise(x: f32) -> f32 {
+    let lattice = |i: u32| {
+        let n = (i << 13) ^ i;
+        let h = n.wrapping_mul(n.wrapping_mul(n).wrapping_mul(15731).wrapping_add(789_221)).wrapping_add(1_376_312_589)
+            & 0x7fff_ffff;
+        1.0 - h as f32 / 1_073_741_824.0
+    };
+    let x = x.max(0.0);
+    let i = x.floor();
+    let w = (1.0 - ((x - i) * std::f32::consts::PI).cos()) * 0.5;
+    let i = i as u32;
+    lattice(i) * (1.0 - w) + lattice(i.wrapping_add(1)) * w
+}
+
+/// A gear change in progress (`FUN_009d1560` up, `FUN_009d16f0` down).
 #[derive(Debug, Clone, Copy)]
 struct Shift {
     target: i32,
-    time: f32,
-    total: f32,
     up: bool,
-    committed: bool,
+    phase: Phase,
+    /// The shift's total time and the time left in the current phase (s).
+    total: f32,
+    left: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Declutch,
+    Neutral,
+    ClutchIn,
+}
+
+impl Shift {
+    fn length(&self, phase: Phase) -> f32 {
+        self.total
+            * match phase {
+                Phase::Declutch => SHIFT_DECLUTCH,
+                Phase::Neutral => SHIFT_NEUTRAL,
+                Phase::ClutchIn => SHIFT_CLUTCH_IN,
+            }
+    }
 }
 
 /// Engine and gearbox state.
@@ -149,33 +230,51 @@ pub struct Drivetrain {
     pub rpm: f32,
     /// Clutch engagement (0 open, 1 closed).
     pub clutch: f32,
-    /// The clutch is slipping to pull away (from standstill or after a stall).
+    /// Standing or pulling away: the clutch slips in with the throttle or the revs (the game's standstill and
+    /// launch states).
     launching: bool,
     shift: Option<Shift>,
-    /// Throttle after the gearbox (cut while shifting), for the engine sound.
+    /// The engine's effective throttle (after the gearbox's cuts, the peak hold and the lag), for the sound.
     pub throttle: f32,
+    /// Peak-held throttle and lagged throttle (`FUN_009d9960`, engine +0x28 / +0x24).
+    hold: f32,
+    lag: f32,
+    /// Time accumulator of the torque noise (engine +0x30).
+    noise_time: f32,
     seed: u32,
-    /// This gear's upshift rpm offset (the game randomises it by ±50 rpm per gear).
-    up_jitter: f32,
+    /// The current gear's upshift rpm with its random offset (gearbox +0x130), for the launch clutch.
+    up_rpm: f32,
 }
 
 impl Drivetrain {
     pub fn new(p: &DrivetrainParams, gear: i32) -> Self {
-        Self {
+        let launching = gear == 1;
+        let mut d = Self {
             gear,
             rpm: p.idle_rpm,
-            clutch: 1.0,
-            launching: gear == 1,
+            clutch: if launching { 0.0 } else { 1.0 },
+            launching,
             shift: None,
             throttle: 0.0,
+            hold: 0.0,
+            lag: 0.0,
+            noise_time: 0.0,
             seed: 0x9e37,
-            up_jitter: 0.0,
-        }
+            up_rpm: p.max_rpm,
+        };
+        d.set_up_rpm(p);
+        d
     }
 
     fn random(&mut self) -> f32 {
         self.seed = self.seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         (self.seed >> 8) as f32 / (1u32 << 24) as f32
+    }
+
+    /// `FUN_009dc4e0`: the gear's upshift rpm ± `UPSHIFT_RPM_JITTER`, kept for the launch clutch.
+    fn set_up_rpm(&mut self, p: &DrivetrainParams) {
+        let r = self.random();
+        self.up_rpm = p.upshift_rpm(self.gear.max(1)) + (r * 2.0 - 1.0) * UPSHIFT_RPM_JITTER;
     }
 
     /// One tick. `wheel_omega` is the mean spin of the driven wheels (rad/s), `mph` the road speed along the
@@ -187,85 +286,58 @@ impl Drivetrain {
         &mut self,
         p: &DrivetrainParams,
         throttle: f32,
+        brake: f32,
         wheel_omega: f32,
         mph: f32,
         inv_inertia: f32,
         coupled: bool,
         dt: f32,
     ) -> f32 {
-        self.select_gear(p, throttle, mph);
-        let mut thr = throttle;
-        let mut declutched = false;
-        if let Some(s) = &mut self.shift {
-            s.time += dt;
-            let f = s.time / s.total;
-            self.clutch = if f < SHIFT_DECLUTCH {
-                1.0 - f / SHIFT_DECLUTCH
-            } else if f < SHIFT_DECLUTCH + SHIFT_NEUTRAL {
-                0.0
-            } else {
-                ((f - SHIFT_DECLUTCH - SHIFT_NEUTRAL) / (1.0 - SHIFT_DECLUTCH - SHIFT_NEUTRAL)).min(1.0)
-            };
-            if !s.committed && f >= SHIFT_DECLUTCH + SHIFT_NEUTRAL {
-                s.committed = true;
-                self.gear = s.target;
-                self.seed = self.seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
-                self.up_jitter = ((self.seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5) * 2.0 * UPSHIFT_JITTER;
-            }
-            let up = s.up;
-            if f < SHIFT_DECLUTCH + SHIFT_NEUTRAL {
-                // Upshifts cut the throttle; downshifts blip the engine (below).
-                thr = 0.0;
-                declutched = up;
-            }
-            if f >= 1.0 {
-                self.shift = None;
-                self.clutch = 1.0;
-            }
-        }
+        let thr = self.gearbox(p, throttle, brake, mph, dt);
+        let (up, down) = match self.shift {
+            Some(s) => (s.up, !s.up),
+            None => (false, false),
+        };
         let ratio = p.ratio(self.gear) * p.final_drive;
-        let shaft_rpm = wheel_omega * ratio * RPM_PER_RAD_S;
-        // Pulling away: the clutch engages with the throttle or the revs, and closes at 0.95.
-        if self.shift.is_none() {
-            if self.launching {
-                let by_rpm = self.rpm / p.upshift_rpm(1).max(p.idle_rpm + 1.0);
-                self.clutch = self.clutch.max(throttle).max(by_rpm.clamp(0.0, 1.0));
-                if throttle <= 0.0 && shaft_rpm.abs() < p.idle_rpm {
-                    self.clutch = 0.0;
-                }
-                if self.clutch >= CLUTCH_CLOSED && self.rpm > p.idle_rpm {
-                    self.clutch = 1.0;
-                    self.launching = false;
-                }
-            } else if (throttle <= 0.0 && shaft_rpm.abs() < p.idle_rpm) || self.rpm < p.idle_rpm {
-                // Stopped with no throttle, or the revs fell below idle: open the clutch and pull away again
-                // (the game's standstill state).
-                self.launching = true;
-                self.clutch = 0.0;
-            }
-        }
-        self.throttle = thr;
 
-        // Engine torque: the idle governor opens the throttle near idle (and fades the friction out).
+        // --- Engine (FUN_009d9960) -----------------------------------------------------------------------
+        // The idle governor opens the throttle near idle and fades the closed-throttle torque out.
         let governor = ((p.idle_rpm + IDLE_GOVERNOR_RPM - self.rpm) * IDLE_GOVERNOR_GAIN).clamp(0.0, 1.0);
         let thr = thr.max(governor * IDLE_GOVERNOR_THROTTLE);
-        let friction = p.friction_torque(self.rpm) * (1.0 - governor);
-        // Downshifts rev-match: while the clutch is open the engine is blipped up to the new gear's speed.
-        let target_rpm =
-            self.shift.map_or(0.0, |s| wheel_omega.abs() * (p.ratio(s.target) * p.final_drive).abs() * RPM_PER_RAD_S);
-        let downshift_blip = self.shift.is_some_and(|s| !s.up) && self.clutch == 0.0 && self.rpm < target_rpm;
-        let net = if downshift_blip {
+        // Clutch open (or an upshift under way): the free engine's resistance instead of the friction curve.
+        let declutched = up || (self.clutch < DECLUTCHED && !down) || !coupled;
+        let closed = if declutched { p.engine_resistance * p.engine_inertia } else { p.friction_torque(self.rpm) };
+        let base = closed * (1.0 - governor);
+        // The throttle is peak-held (decaying) and lagged; an upshift sets both directly.
+        let k = THROTTLE_TIME_BASE * dt;
+        self.hold = (self.hold - p.throttle_decay * k).max(thr);
+        self.lag += (p.throttle_lag * k).clamp(0.0, 1.0) * (self.hold - self.lag);
+        if up {
+            self.hold = thr;
+            self.lag = thr;
+        }
+        let effective = self.lag.clamp(0.0, 1.0);
+        let load = self.throttle;
+        self.throttle = effective;
+        // Downshifts blip the engine for the whole shift.
+        let mut net = if down {
             -p.engine_resistance * p.engine_inertia * BLIP_GAIN
-        } else if declutched || self.clutch < DECLUTCHED || !coupled {
-            p.engine_resistance * p.engine_inertia * (1.0 - governor)
         } else {
-            friction + thr * (p.full_torque(self.rpm) - friction)
+            base + effective * (p.full_torque(self.rpm) - base)
         };
-        // The game clamps the revs at `Max_RPM` before integrating (so this tick's torque still reaches the
-        // clutch).
-        let mut omega = self.rpm.min(p.max_rpm) / RPM_PER_RAD_S + net * dt / p.engine_inertia;
+        // The game clamps the revs at `Max_RPM` after the torque is known (so this tick's torque still reaches
+        // the clutch), then adds the noise sampled at rpm / 120 lattice points per second.
+        let rpm = self.rpm.min(p.max_rpm);
+        let per = rpm / NOISE_RPM_DIV;
+        self.noise_time += dt;
+        if self.noise_time > per {
+            self.noise_time -= per;
+        }
+        let amplitude = three_point(&p.noise, self.rpm) * (p.noise_load.0 + (p.noise_load.1 - p.noise_load.0) * load);
+        net += noise(self.noise_time * per) * amplitude;
+        let mut omega = rpm / RPM_PER_RAD_S + net * dt / p.engine_inertia;
 
-        // Clutch: match the engine and the driveline within the torque capacity.
+        // --- Clutch (FUN_009d7ac0): match the engine and the driveline within the torque capacity --------------
         let mut torque = 0.0;
         if ratio != 0.0 && self.clutch > 0.0 && coupled {
             let delta = omega - wheel_omega * ratio;
@@ -278,40 +350,120 @@ impl Drivetrain {
         torque
     }
 
-    fn select_gear(&mut self, p: &DrivetrainParams, throttle: f32, mph: f32) {
-        if self.shift.is_some() || self.launching || self.gear <= 0 {
-            return;
+    /// The gearbox state machine (`FUN_009da340`): sets the clutch and the gear, returns the throttle after the
+    /// gearbox's cuts.
+    fn gearbox(&mut self, p: &DrivetrainParams, throttle: f32, brake: f32, mph: f32, dt: f32) -> f32 {
+        if let Some(mut s) = self.shift {
+            return self.shift_phase(p, &mut s, throttle, mph, dt);
+        }
+        if self.launching {
+            // Launch (FUN_009d17d0): with no throttle the clutch stays open; otherwise it engages with the
+            // throttle or with the revs towards the gear's upshift rpm, and closes once that reaches 0.95.
+            if throttle <= 0.0 {
+                self.clutch = 0.0;
+                return throttle;
+            }
+            let by_rpm = (self.rpm / self.up_rpm.max(1.0)).clamp(0.0, 1.0);
+            let c = throttle.max(self.clutch).max(by_rpm);
+            if c >= CLUTCH_CLOSED && self.rpm > p.idle_rpm {
+                self.clutch = 1.0;
+                self.launching = false;
+            } else {
+                self.clutch = c;
+            }
+            return throttle;
+        }
+        if self.gear <= 0 {
+            return throttle;
+        }
+        // In gear (FUN_009d9ee0): below idle, or coasting slowly with neither pedal, the clutch opens.
+        if self.rpm < p.idle_rpm || (throttle <= 0.0 && brake <= 0.0 && mph.abs() < COAST_DECLUTCH_MPH) {
+            self.clutch = 0.0;
+            self.launching = true;
+            self.gear = 1;
+            self.set_up_rpm(p);
+            return throttle;
         }
         let g = self.gear;
-        let max_gear = p.gears as i32;
-        if g < max_gear && self.rpm > p.upshift_rpm(g) + self.up_jitter && mph > p.upshift_mph(g) {
-            // May skip gears: the highest one whose entry speed is already passed.
-            let target = (g + 1..=max_gear).filter(|&k| p.upshift_mph(k - 1) < mph).max().unwrap_or(g + 1);
+        // Upshift on rpm and speed (the speed condition is waived with nitrous, not modelled).
+        if g < p.gears as i32 && self.rpm > p.upshift_rpm(g) && mph > p.upshift_mph(g) {
+            let target = self.upshift_target(p, mph);
             self.start_shift(p, target, true);
-            return;
+            return throttle;
         }
-        if g > 1 {
-            let down_rpm = p.downshift_rpm.get(g as usize - 1).copied().unwrap_or(0.0);
-            let slow = mph < p.upshift_mph(g - 1) - DOWNSHIFT_HYSTERESIS;
-            if slow || (throttle > 0.1 && self.rpm < down_rpm) {
-                let shaft = self.rpm / p.ratio(g);
-                let target = (1..g)
-                    .rev()
-                    .find(|&k| {
-                        let rpm = shaft * p.ratio(k);
-                        rpm > p.downshift_rpm.get(k as usize - 1).copied().unwrap_or(0.0) && rpm < p.max_rpm * 0.97
-                    })
-                    .unwrap_or(if slow { g - 1 } else { g });
-                if target < g {
-                    self.start_shift(p, target, false);
+        // Downshift (FUN_009d93b0) on speed (below the lower gear's upshift speed, with hysteresis) or rpm,
+        // to the highest lower gear whose downshift rpm the revs would still be above.
+        if g > 1 && (mph < p.upshift_mph(g - 1) - DOWNSHIFT_HYSTERESIS || self.rpm < p.downshift_rpm(g)) {
+            let target = self.downshift_target(p);
+            if target >= 1 && target != g {
+                self.start_shift(p, target, false);
+            }
+        }
+        throttle
+    }
+
+    /// One tick of a shift's phases (upshift: FUN_009d6880, FUN_009d95a0, FUN_009d6af0; downshift:
+    /// FUN_009ce490, FUN_009d69e0, FUN_009d6ca0). Each phase counts its time down and acts on the tick it ends.
+    fn shift_phase(&mut self, p: &DrivetrainParams, s: &mut Shift, throttle: f32, mph: f32, dt: f32) -> f32 {
+        s.left -= dt;
+        let len = s.length(s.phase);
+        let mut thr = throttle;
+        match s.phase {
+            Phase::Declutch => {
+                // Upshifts cut the throttle from here to the clutch-in.
+                if s.up {
+                    thr = 0.0;
+                }
+                if s.left > 0.0 {
+                    self.clutch = s.left / len;
+                } else {
+                    self.clutch = 0.0;
+                    s.phase = Phase::Neutral;
+                    s.left = s.length(Phase::Neutral);
+                }
+            }
+            Phase::Neutral => {
+                thr = 0.0;
+                if s.left <= 0.0 {
+                    // The upshift's target is chosen again for the speed now.
+                    self.gear = if s.up && s.target > self.gear { self.upshift_target(p, mph) } else { s.target };
+                    self.set_up_rpm(p);
+                    s.phase = Phase::ClutchIn;
+                    s.left = s.length(Phase::ClutchIn);
+                }
+            }
+            Phase::ClutchIn => {
+                let progress = 1.0 - s.left / len;
+                if progress < 1.0 {
+                    self.clutch = progress;
+                    thr = throttle * progress.max(0.0).powf(CLUTCH_IN_THROTTLE_EXP);
+                } else {
+                    self.clutch = 1.0;
+                    self.shift = None;
+                    return thr;
                 }
             }
         }
+        self.shift = Some(*s);
+        thr
+    }
+
+    /// `FUN_009d4c80`: the next gear up, or a higher one whose entry speed is already passed.
+    fn upshift_target(&self, p: &DrivetrainParams, mph: f32) -> i32 {
+        (self.gear + 1..=p.ratios.len() as i32).filter(|&k| p.upshift_mph(k - 1) < mph).max().unwrap_or(self.gear + 1)
+    }
+
+    /// `FUN_009d8d60`: the highest lower gear in which the revs would be above its downshift rpm (0 if none).
+    fn downshift_target(&self, p: &DrivetrainParams) -> i32 {
+        let shaft = self.rpm / p.ratio(self.gear);
+        (1..self.gear).filter(|&k| p.downshift_rpm(k) < shaft * p.ratio(k)).max().unwrap_or(0)
     }
 
     fn start_shift(&mut self, p: &DrivetrainParams, target: i32, up: bool) {
-        let total = p.shift_time * (1.0 + 0.15 * self.random()) * if up { 1.0 } else { DOWNSHIFT_TIME };
-        self.shift = Some(Shift { target, time: 0.0, total, up, committed: false });
+        let total = p.shift_time * (1.0 + SHIFT_TIME_JITTER * self.random()) * if up { 1.0 } else { DOWNSHIFT_TIME };
+        let mut s = Shift { target, up, phase: Phase::Declutch, total, left: 0.0 };
+        s.left = s.length(Phase::Declutch);
+        self.shift = Some(s);
     }
 
     /// Change straight into `gear` (reverse engagement, a reset): no shift phases, the clutch pulls away.
@@ -320,5 +472,21 @@ impl Drivetrain {
         self.shift = None;
         self.launching = true;
         self.clutch = 0.0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn noise_is_bounded_and_continuous() {
+        let mut prev = noise(0.0);
+        for i in 1..2000 {
+            let v = noise(i as f32 * 0.01);
+            assert!((-1.0..=1.0).contains(&v));
+            assert!((v - prev).abs() < 0.1);
+            prev = v;
+        }
     }
 }
