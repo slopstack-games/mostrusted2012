@@ -10,6 +10,9 @@
 //            NFS13.exe (pixel shader at 0x01016148, research log 2026-10-06): the "TintBlend" volume
 //            sampled at rgb × ColourCubeScalesOffsets.xyz + .w (15/16, 1/32), here the keyframe's
 //            ColourCube alone. The result is decoded back to linear for Bevy's sRGB swapchain.
+//            Without bloom this equals the game with bloom off: `FUN_0089d5c0` then sets B (slot 0x9d)
+//            to (1, 1, 1, 0), and B.w = 0 removes the bloom term. Bloom, the vignette (A, D) and the
+//            TintBlend slot weights (`FUN_008c9e40`) wait for live reads (decomp.md "Post-processing").
 // The light buffer holds the game's HDR units: the camera's exposure is set so that Bevy's
 // `view.exposure` is 1 / GAME_UNIT (`main.rs`).
 
