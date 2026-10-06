@@ -388,7 +388,19 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
   0.08, `447b4e1c` / `668c92ac` −1.5, `c2a87807` 1.5, `b867a203` 0.23, `b1c680d5`): no reader of these offsets
   turned up in the vehicle build (`FUN_009b4e60` and its callees) or in `009A`–`009D` (searched `+ 0x14` / `+ 0x24`
   reads off a resource); `7fc0dc41` (0.09 front, 0.08 rear on the 911) is the likeliest travel. Open.
-- Unknown: the anti-roll stiffness unit, which damper slot is rebound, the strut travel.
+- **Strut end stop** (`FUN_009c5a90`, the wheel constraint's contact pass, and `FUN_009c2670`, its normal
+  impulse pass). The constraint (`FUN_009c24b0`: +0x460 a point on the chassis, the strut's end; +0x470 a slack;
+  +0x490 a velocity; flag +0x4ac from the builder) keeps a list of contact records (0x40 bytes: normal, point,
+  accumulated impulse). `FUN_009c5a90` predicts each contact's penetration at the end of the tick (points plus
+  velocity × dt) and pushes the wheel out along the normal by it; with +0x4ac set it measures the same from the
+  strut's end point on the chassis, and where that is positive beyond `min(+0x470, .bss 0x01186bf0)` it stores the
+  excess share in +0x474 (clamped 0..1, at least × `.bss 0x01186b10`) and sets +0x4ae. `FUN_009c2670` then
+  applies the non-negative normal impulse (target from the record's bias and n · +0x490, accumulated, clamped
+  at 0) to the wheel, and while +0x4ae is set also to the chassis at the strut point through the chassis's
+  inverse mass and inertia, scaled by +0x474. So the end of the strut is a hard contact on the chassis, not a
+  spring: a landing cannot drive the body into the ground. Ported as `strut_stops` (handling.md item 5).
+- Unknown: the anti-roll stiffness unit, which damper slot is rebound, the strut travel (+0x460 is set by the
+  builder's caller; not traced), the stop's slack (+0x470, `.bss` 0x01186bf0, 0x01186b10).
 
 ## Tyres (`FUN_009c75b0` per-wheel solve, `FUN_009c5da0` caps, `FUN_00905910` per-tick inputs)
 

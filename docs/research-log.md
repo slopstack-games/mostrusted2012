@@ -124,6 +124,29 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-06 (session 5, round 3): landings, steep climbs, jitter
+
+- **Reproduced** with new test-track tests (`--test landing`, `--test climb`, `--test jitter`; handling.md
+  "Measurements"). Before: the 911 lands from a 3 m drop at 150 km/h with −8.6 m/s; 0.14 m of travel and the
+  load cap (4 × corner weight) cannot stop that, the wheels end 0.34 m past full compression and the body box
+  rests on the ground; the climb (120 km/h into 30°) ends STUCK at 0 km/h, sunk 0.478 m.
+- **Why it stayed stuck**: once the wheel mount is under the ground the wheel ray starts inside it: against the
+  test track's solid box the hit is at distance 0 with a zero normal (spring force × 0), against a trimesh (the
+  world) the ray misses the back face (wheel airborne, in-air gravity on). Nothing lifts the car off its body box.
+- **The game**: the strut's end is a hard contact on the chassis (`FUN_009c5a90` → `FUN_009c2670`, decomp.md).
+  Ported: the speculative non-negative impulse at each wheel contact once the ground reaches the strut's end;
+  the ray now starts a wheel radius above the mount (stopgap). After: landing sink 0.055 m, no overtravel,
+  settled 0.45 s after touchdown; the climb completes. Regression tests unchanged.
+- **Jitter** is a roll buzz at 11.2 Hz: 0.45° p-p (37°/s) at 100 km/h, 0.06° at rest. Turning the anti-roll bar
+  off removes it (0.03°), and so does its damper alone (0.008°): the bar damper (`Front_` / `Rear_roll_damping`
+  × critical against the roll inertia, an interpretation) is explicit and uses the previous tick's compression
+  rates, which rings. Not fixed: the bar's unit and damping are not traced in the code (decomp.md "Unknown").
+  Pitch 0.75° p-p at ~1 Hz at 100 km/h is the test's throttle controller, not jitter.
+- The body collider reports world contacts on the 5.7° kicker without touching (speculative contacts in
+  `collisions_with`), which also feeds `wall_time` for the turn-around assist; worth checking.
+- Open: the strut travel (+0x460, from the builder's caller), the slack constants (`.bss` 0x01186bf0, 0x01186b10:
+  a live read), the sub-step count of `FUN_0093f5a0`.
+
 ### 2026-10-06 (session 5, round 2): traffic rules in the code
 
 Details and formulas are in decomp.md "Traffic rules (session 5, round 2)".
