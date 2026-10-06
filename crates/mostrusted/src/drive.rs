@@ -805,13 +805,19 @@ pub(crate) fn car_physics(
         let mut rear_slip = (0.0, 0);
         let anti_roll = anti_roll_loads(&car.wheels, p);
         let mut ground_normal = Vec3::ZERO;
+        // Wheels whose ground is within one tick of the strut's end: (contact, normal, signed overtravel).
+        let mut stops: Vec<(Vec3, Vec3, f32)> = Vec::new();
         for ((wheel, bar_load), mut brake_left) in car.wheels.iter_mut().zip(anti_roll).zip(brake_budget) {
             // The mount sits `travel - sag` above the rest position, so the wheel is at its spec position
             // (in its arch) under the static load.
             let mount = pos + rot * (wheel.centre + Vec3::Y * (wheel.travel - wheel.sag));
             let reach = wheel.travel + wheel.radius;
             let ray_dir = Dir3::new(-up).unwrap_or(Dir3::NEG_Y);
-            let Some(hit) = spatial.cast_ray(mount, ray_dir, reach, true, &filter) else {
+            // The ray starts one wheel radius above the mount so that ground which has come up past the strut
+            // still registers (from inside a solid it returns a zero normal, through a trimesh's back face
+            // nothing). Stopgap, handling.md "Model decisions": the game's wheel collides as a body.
+            let lift = wheel.radius;
+            let Some(mut hit) = spatial.cast_ray(mount + up * lift, ray_dir, reach + lift, true, &filter) else {
                 wheel.compression_rate = 0.0;
                 wheel.compression = 0.0;
                 wheel.overtravel = 0.0;
@@ -821,9 +827,11 @@ pub(crate) fn car_physics(
                 wheel.spin += wheel.omega * dt;
                 continue;
             };
+            hit.distance -= lift;
             let compression = (reach - hit.distance).clamp(0.0, wheel.travel);
             wheel.compression = compression;
             wheel.overtravel = (reach - hit.distance - wheel.travel).max(0.0);
+            stops.push((mount - up * hit.distance, hit.normal, reach - hit.distance - wheel.travel));
             grounded = true;
             wheels_down += 1;
             ground_normal += hit.normal;
@@ -1038,6 +1046,12 @@ pub(crate) fn car_physics(
         }
         // The game's per-axis drag (with its over-speed ramp) and lift (downforce). Rolling resistance is per
         // wheel, from the surface (above).
+        if stops.iter().any(|s| s.2 > -0.5) {
+            let (mut v, mut w) = (forces.linear_velocity(), forces.angular_velocity());
+            strut_stops(&stops, com, p.mass, &inv_inertia, dt, (&mut v, &mut w));
+            *forces.linear_velocity_mut() = v;
+            *forces.angular_velocity_mut() = w;
+        }
         let drag = p.chassis.drag_force(rot, velocity);
         forces.apply_force(drag);
         let (lift, lift_at) = p.chassis.lift(rot, velocity, p.centre_of_mass);
@@ -1149,6 +1163,40 @@ fn limited_slip(wheels: &mut [WheelState], diff: &[f32; 2]) {
         }
     }
 }
+
+/// The end of the strut as a hard contact on the chassis (`FUN_009c5a90` → `FUN_009c2670`, decomp.md
+/// "Suspension, wheels, aerodynamics"): the game predicts each wheel contact's penetration at the end of the
+/// tick (positions plus velocity × dt); where the ground would come past the strut's end point on the chassis
+/// (constraint +0x460) it sets a flag (+0x4ae) and the contact's non-negative normal impulse then acts on the
+/// chassis at that point, through the chassis's own mass and inertia, until the predicted penetration is 0.
+/// `over` is the ground's reach past the strut's end (m, negative = travel left): the normal velocity at the
+/// contact must be at least `over / dt`. Sequential impulses over the contacts (`STOP_ITERATIONS` passes).
+fn strut_stops(
+    stops: &[(Vec3, Vec3, f32)],
+    com: Vec3,
+    mass: f32,
+    inv_inertia: &Mat3,
+    dt: f32,
+    (v, w): (&mut Vec3, &mut Vec3),
+) {
+    let mut total = vec![0.0f32; stops.len()];
+    for _ in 0..STOP_ITERATIONS {
+        for (&(point, n, over), total) in stops.iter().zip(&mut total) {
+            let r = point - com;
+            let arm = r.cross(n);
+            let m = 1.0 / (1.0 / mass + arm.dot(*inv_inertia * arm)).max(1e-6);
+            let vn = (*v + w.cross(r)).dot(n);
+            let next = (*total + (over / dt - vn) * m).max(0.0);
+            let impulse = next - *total;
+            *total = next;
+            *v += n * impulse / mass;
+            *w += *inv_inertia * (arm * impulse);
+        }
+    }
+}
+/// Passes over the strut stops per tick: the game iterates its contacts in sub-steps whose count was not read
+/// (handling.md "Model decisions").
+const STOP_ITERATIONS: usize = 4;
 
 /// Anti-roll bar load (N) on each wheel from last tick's compressions: per axle a torsion bar between the left
 /// and right wheels (`BodyMovement` `782f05c1` front / `2bb0f6a0` rear, damped at `Front_` / `Rear_roll_damping`
@@ -1803,7 +1851,7 @@ fn run_test(
     }
 }
 
-/// Obstacles on the test track for `--test landing` and `--test climb`: a profile (z, height) along +Z, 20 m
+/// Obstacles on the test track for `--test landing` and `--test climb`: a profile (z, height) along +Z, 200 m
 /// wide, built as a trimesh like the world's collision. Landing: a 5.7° kicker up to a 3 m plateau that ends in
 /// a sheer drop at z = 460. Climb: flat into a 30° incline at z = 400 (an abrupt kink), up to a plateau.
 pub fn test_obstacle(kind: TestKind) -> Option<(Vec<Vec3>, Vec<[u32; 3]>)> {
@@ -1822,8 +1870,8 @@ pub fn test_obstacle(kind: TestKind) -> Option<(Vec<Vec3>, Vec<[u32; 3]>)> {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
     for (i, &(z, y)) in profile.iter().enumerate() {
-        vertices.push(Vec3::new(-10.0, y, z));
-        vertices.push(Vec3::new(10.0, y, z));
+        vertices.push(Vec3::new(-100.0, y, z));
+        vertices.push(Vec3::new(100.0, y, z));
         if i > 0 {
             let [a, b, c, d] = [2 * i as u32 - 2, 2 * i as u32 - 1, 2 * i as u32, 2 * i as u32 + 1];
             indices.push([a, c, b]);
@@ -1999,8 +2047,8 @@ pub(crate) fn ground_test(
         state.body_contact_ticks += u32::from(car.body_contact);
         state.max_overtravel = state.max_overtravel.max(car.wheels.iter().map(|w| w.overtravel).fold(0.0, f32::max));
         state.min_wheels = state.min_wheels.min(wheels_down);
-        // Settled: within 2 cm of the rest height, all wheels down, |vy along up| < 0.1 m/s, for 0.5 s.
-        let calm = sink.abs() < 0.02 && wheels_down == 4 && vel.dot(up).abs() < 0.1;
+        // Settled: within 2 cm of the rest height, all wheels down, |vertical velocity| < 0.1 m/s, for 0.5 s.
+        let calm = sink.abs() < 0.02 && wheels_down == 4 && vel.y.abs() < 0.1;
         let past = match test.kind {
             TestKind::Landing => z > LANDING_DROP_Z + 5.0,
             _ => z > CLIMB_Z,
