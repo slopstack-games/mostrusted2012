@@ -1225,8 +1225,11 @@ fn strut_stops(
 const STOP_ITERATIONS: usize = 4;
 
 /// Anti-roll bar load (N) on each wheel from last tick's compressions: per axle a torsion bar between the left
-/// and right wheels (`BodyMovement` `782f05c1` front / `2bb0f6a0` rear, damped at `Front_` / `Rear_roll_damping`
-/// of critical against the body's roll inertia), turned into forces at the wheels over the track width.
+/// and right wheels (`BodyMovement` `782f05c1` front / `2bb0f6a0` rear × 60), damped with
+/// c = 2 × `Front_` / `Rear_roll_damping` × √(data stiffness × body roll inertia) as the bar's builder
+/// `FUN_00933a60` stores it (the × 60 is not inside the root, so the bar runs at ratio / √60 ≈ 0.15 of critical),
+/// turned into forces at the wheels over the track width. The solve that applies the bar was not found
+/// (docs/decomp.md): the input (compression difference) and the explicit form are ours.
 fn anti_roll_loads(wheels: &[WheelState], p: &CarParams) -> Vec<f32> {
     wheels
         .iter()
@@ -1237,7 +1240,8 @@ fn anti_roll_loads(wheels: &[WheelState], p: &CarParams) -> Vec<f32> {
             let axle = usize::from(!w.front);
             let track2 = (w.centre.x - other.centre.x).powi(2).max(0.5);
             let k = p.chassis.anti_roll[axle];
-            let c = 2.0 * p.chassis.roll_damping[axle] * (k * p.inertia.z).sqrt();
+            // 2 ζ √(k_data · I): the data stiffness without the × 60 (`FUN_00933a60`).
+            let c = p.chassis.roll_damping[axle] * p.inertia.z.max(0.0).sqrt();
             if w.compression <= 0.0 || other.compression <= 0.0 {
                 return 0.0;
             }
