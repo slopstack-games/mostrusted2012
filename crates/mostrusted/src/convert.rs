@@ -10,6 +10,11 @@ use mw_formats::{DxgiFormat, Texture};
 /// a COLOR attribute into the base colour; vehicles keep AO and specular occlusion there).
 pub const UV_FROM_COLOUR: u8 = 0xC0;
 
+/// `uv_b` value for Water_Opaque_Singlesided: TEXCOORD1 becomes UV_1 and TEXCOORD2 (river floor,
+/// refraction lookup) rides in the COLOR attribute's xy (the water layout has no vertex colour; its
+/// TEXCOORD3 is the packed tangent frame).
+pub const WATER_UVS: u8 = 0xA1;
+
 /// Build a Bevy mesh from a decoded game mesh. Game TEXCOORD0 becomes UV_0
 /// and `uv_b` (if any) selects the game TEXCOORD that becomes UV_1. Normals
 /// are taken from the vertex data when present, otherwise computed. `colour` adds the vertex
@@ -26,8 +31,16 @@ pub fn mesh(m: &mw_formats::DecodedMesh, uv_b: Option<u8>, colour: bool) -> Opti
     if let Some(uv) = m.texcoord(0) {
         mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv2(uv));
     }
-    let uv_b =
-        if uv_b == Some(UV_FROM_COLOUR) { m.colors.as_deref() } else { uv_b.and_then(|i| m.texcoord(i as usize)) };
+    if uv_b == Some(WATER_UVS)
+        && let Some(uv) = m.texcoord(2)
+    {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, uv.iter().map(|t| [t[0], t[1], 0.0, 1.0]).collect::<Vec<_>>());
+    }
+    let uv_b = match uv_b {
+        Some(UV_FROM_COLOUR) => m.colors.as_deref(),
+        Some(WATER_UVS) => m.texcoord(1),
+        _ => uv_b.and_then(|i| m.texcoord(i as usize)),
+    };
     if let Some(uv) = uv_b {
         mesh.insert_attribute(Mesh::ATTRIBUTE_UV_1, uv2(uv));
     }
