@@ -179,6 +179,13 @@ the loaded entity count. Main world: avian physics 2.75 ms per frame (1.27 fixed
 visibility propagation and frustum tests ~2.5 ms of CPU across threads, `calculate_bounds` 0.7 ms. Our own
 systems are small: `hud::draw_hud` 0.4 ms, everything else under 0.1 ms (`groundcover_distance` included).
 
+The floor: one track unit with `--no-shadows` (3 647 entities) ran at 11.1 ms (main world 3.5 ms) on a
+quieter machine and 19.4 ms (main world 12.4 ms) at load average 15, so on this shared machine CPU contention
+alone moves every number by up to 8 ms, and the full map adds only ~0-8 ms over that floor. Some runs landed
+on exactly 600 frames in 10 s (60.0 fps) on the X11 path too; an unloaded machine is needed to rule out a
+remaining pacing cap before comparing small changes. A drive pair run back to back: `--no-shadows` 16.7 ms
+(main 4.2, render 6.6 + 7.7 ms) against 36.8 ms with shadows (main 14.5, render 17.3 + 18.1 ms).
+
 So the candidate list's distance culling, unloading far units and merging groundcover would not move the
 frame time at these viewpoints: the work is in what is visible, per view. What would: fewer bins per view
 (merging static world meshes per material within a track unit, which also cuts shadow bins), fewer shadow
