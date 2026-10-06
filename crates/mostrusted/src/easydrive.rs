@@ -31,16 +31,20 @@ use mw_formats::binding::BindValue;
 use crate::game_text;
 use crate::garage::{Garage, GarageAction};
 use crate::hud::PoolNode;
+use crate::mods_menu::{ModCatalogue, ModSelection};
 
 pub struct EasyDrivePlugin {
     pub enabled: bool,
     /// Open at startup (`--show-easydrive`, for screenshots).
     pub open: bool,
+    /// `--easydrive-path`: rows to enter one after the other once the car has loaded (headless checks).
+    pub path: Vec<usize>,
 }
 
 impl Plugin for EasyDrivePlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(EasyDrive { enabled: self.enabled, open: self.open, ..default() })
+        let script = self.path.iter().rev().copied().collect();
+        app.insert_resource(EasyDrive { enabled: self.enabled, open: self.open, script, ..default() })
             .add_systems(Startup, start_load)
             .add_systems(Update, (poll_load, navigate, redraw).chain());
     }
@@ -62,6 +66,11 @@ enum Page {
     Tier(usize),
     /// The jack tier's model list for one manufacturer.
     Models(String),
+    /// "Customize car": a mod class's types (the `TO_OPT` tier, "MOD TYPE"), generated from the car's
+    /// `PerformanceUpgrades` (mods_menu.rs).
+    ModClass(usize),
+    /// A mod type's two levels (the "MOD STANDARD" tier): (class, slot).
+    ModType(usize, usize),
 }
 
 #[derive(Resource, Default)]
@@ -76,6 +85,8 @@ pub struct EasyDrive {
     dirty: bool,
     /// Closed by Esc this frame: the car menu must not take the same key press as "pause".
     pub just_closed: bool,
+    /// Rows still to enter (`--easydrive-path`), last first.
+    script: Vec<usize>,
 }
 
 /// The menu layout's scene and decoded textures (loader thread), then its Bevy side.
@@ -182,12 +193,46 @@ enum Choice {
     Tier(usize),
     Make(String),
     Car(usize),
+    ModClass(usize),
+    ModType(usize, usize),
+    /// Equip (class, Some((slot, category))) or return the class to stock.
+    Mod(usize, Option<(usize, usize)>),
     Inert,
 }
 
 /// The rows of a page: (label, enabled, choice).
-fn rows(menu: &EasyDrive, page: &Page, garage: &Garage) -> Vec<(String, Choice)> {
+fn rows(
+    menu: &EasyDrive,
+    page: &Page,
+    garage: &Garage,
+    mods: &ModCatalogue,
+    sel: &ModSelection,
+) -> Vec<(String, Choice)> {
+    // The equipped row's mark (ours; the game's row template has its own equipped state, not read yet).
+    let mark = |on: bool, label: String| if on { format!("{label} - ON") } else { label };
     match page {
+        // The mod-class tier: its classes come from the car (`MODCLASS` source), then the tier's own links.
+        Page::Tier(i) if menu.tiers[*i].transition == "TO_MOD" => {
+            let mut v: Vec<(String, Choice)> =
+                mods.classes().into_iter().map(|(k, label)| (label.to_string(), Choice::ModClass(k))).collect();
+            v.extend(menu.tiers[*i].items.iter().map(|(label, _)| (label.clone(), Choice::Inert)));
+            v
+        }
+        Page::ModClass(k) => {
+            let on = mods.equipped(sel, *k);
+            let mut v = vec![(mark(on.is_none(), "STOCK".into()), Choice::Mod(*k, None))];
+            v.extend(mods.class_slots(*k).into_iter().map(|s| {
+                (mark(on.is_some_and(|(e, _)| e == s), mods.name(s, crate::mods_menu::BASE)), Choice::ModType(*k, s))
+            }));
+            v
+        }
+        Page::ModType(k, s) => {
+            let on = mods.equipped(sel, *k);
+            [crate::mods_menu::BASE, crate::mods_menu::PRO]
+                .into_iter()
+                .map(|c| (mark(on == Some((*s, c)), mods.name(*s, c)), Choice::Mod(*k, Some((*s, c)))))
+                .collect()
+        }
         Page::Tier(i) if menu.tiers[*i].jack => {
             let mut makes: Vec<String> = garage.catalogue.iter().map(|c| c.make.clone()).collect();
             makes.dedup();
@@ -216,6 +261,8 @@ fn navigate(
     keys: Res<ButtonInput<KeyCode>>,
     pads: Query<&Gamepad>,
     garage: Res<Garage>,
+    mods: Res<ModCatalogue>,
+    mut mod_sel: ResMut<ModSelection>,
     mut actions: MessageWriter<GarageAction>,
 ) {
     if !menu.enabled || menu.tiers.is_empty() {
@@ -227,8 +274,17 @@ fn navigate(
     let pad_list: Vec<&Gamepad> = pads.iter().collect();
     let dev = crate::input::Devices { keys: &keys, pads: &pad_list };
     let (up, down) = (dev.just_pressed(act::EASY_UP), dev.just_pressed(act::EASY_DOWN));
-    let (left, right) = (dev.just_pressed(act::EASY_LEFT), dev.just_pressed(act::EASY_RIGHT));
+    let (left, mut right) = (dev.just_pressed(act::EASY_LEFT), dev.just_pressed(act::EASY_RIGHT));
     menu.just_closed = false;
+    // `--easydrive-path`: select the next scripted row and enter it, one per frame, once the car's mods are known.
+    if menu.open
+        && !menu.stack.is_empty()
+        && !mods.mods.is_empty()
+        && let Some(row) = menu.script.pop()
+    {
+        menu.stack.last_mut().unwrap().1 = row;
+        right = true;
+    }
     if !menu.open {
         if keys.just_pressed(KeyCode::KeyE) || right {
             open_root(&mut menu);
@@ -244,7 +300,7 @@ fn navigate(
         return;
     }
     let Some((page, sel)) = menu.stack.last().cloned() else { return };
-    let list = rows(&menu, &page, &garage);
+    let list = rows(&menu, &page, &garage, &mods, &mod_sel);
     if up || down {
         let n = list.len().max(1);
         let sel = if up { (sel + n - 1) % n } else { (sel + 1) % n };
@@ -263,6 +319,15 @@ fn navigate(
                 actions.write(GarageAction::Drive { name: c.name.clone(), bundle: c.bundle.clone(), paint_index: 0 });
                 menu.stack.clear();
                 menu.open = false;
+            }
+            Some(Choice::ModClass(k)) => menu.stack.push((Page::ModClass(k), 0)),
+            Some(Choice::ModType(k, s)) => menu.stack.push((Page::ModType(k, s), 0)),
+            // The game applies a mod while driving; mods_menu::apply_live picks the change up.
+            Some(Choice::Mod(k, choice)) => {
+                mods.equip(&mut mod_sel, k, choice);
+                if matches!(page, Page::ModType(..)) {
+                    menu.stack.pop();
+                }
             }
             Some(Choice::Inert) | None => {}
         }
@@ -313,10 +378,12 @@ fn redraw(
     mut commands: Commands,
     mut menu: ResMut<EasyDrive>,
     garage: Res<Garage>,
+    mods: Res<ModCatalogue>,
+    mod_sel: Res<ModSelection>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     mut nodes: Query<PoolNode>,
 ) {
-    if !menu.dirty && !garage.is_changed() {
+    if !menu.dirty && !garage.is_changed() && !mod_sel.is_changed() {
         return;
     }
     let Ok(window) = windows.single() else { return };
@@ -324,7 +391,7 @@ fn redraw(
     let page = menu.stack.last().cloned().filter(|_| menu.open);
     let (history, names, sel) = match &page {
         Some((page, sel)) => {
-            let list = rows(&menu, page, &garage);
+            let list = rows(&menu, page, &garage, &mods, &mod_sel);
             let first = sel.saturating_sub(WINDOW - 1).min(list.len().saturating_sub(WINDOW));
             let names = list.into_iter().skip(first).take(WINDOW).map(|(l, _)| l).collect::<Vec<_>>();
             let history = menu
@@ -333,6 +400,9 @@ fn redraw(
                 .map(|(p, _)| match p {
                     Page::Tier(i) => menu.tiers[*i].title.clone(),
                     Page::Models(make) => make.clone(),
+                    // The titles of the game's `TO_OPT` tier and of the unnamed tier after it.
+                    Page::ModClass(_) => "MOD TYPE".into(),
+                    Page::ModType(..) => "MOD STANDARD".into(),
                 })
                 .filter(|t| !t.is_empty())
                 .collect::<Vec<_>>();

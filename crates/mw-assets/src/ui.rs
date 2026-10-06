@@ -487,20 +487,30 @@ impl UiScene {
 /// lower). Our reading: the stack's own cell-size fields (`CellSizeDefinition`, empty here) are
 /// not decoded; for Easydrive this gives 26 px rows, against the 26.42 px per item the `EasyDrivePanel` layout
 /// moves by (`Widget.EasyDrive.ItemsAbovePanel(MULT:26.42)`).
-fn cell_height(scene: &UiScene, layout: &Layout, depth: u32) -> f32 {
-    layout
-        .elements
-        .iter()
-        .map(|e| match &e.stack {
+fn cell_height(scene: &UiScene, layout: &Layout, depth: u32, lookup: &mut Lookup) -> f32 {
+    let mut h: f32 = 0.0;
+    for e in &layout.elements {
+        let own = match &e.stack {
             Some(st) if depth < 8 => {
                 let inner = st.default.first().and_then(|id| scene.cells.get(id));
-                let own =
-                    if e.size[1] > 0.0 { e.size[1] } else { inner.map_or(0.0, |l| cell_height(scene, l, depth + 1)) };
-                e.top_left()[1] + own
+                let one = if e.size[1] > 0.0 {
+                    e.size[1]
+                } else {
+                    inner.map_or(0.0, |l| cell_height(scene, l, depth + 1, lookup))
+                };
+                // A nested list grows by one cell per entry (the tier-history titles above Easydrive's rows).
+                let n = if st.length.is_empty() {
+                    1.0
+                } else {
+                    eval_num(&st.length, lookup).map_or(1.0, |v| v.clamp(0.0, 64.0).floor().max(1.0))
+                };
+                one * n
             }
-            _ => e.top_left()[1] + e.size[1],
-        })
-        .fold(0.0, f32::max)
+            _ => e.size[1],
+        };
+        h = h.max(e.top_left()[1] + own);
+    }
+    h
 }
 
 impl UiScene {
@@ -546,7 +556,7 @@ impl UiScene {
                         this.element(e, place, Some([origin[0], *y]), clip, &mut inner, out);
                     }
                 }
-                h = h.max(cell_height(this, l, 0));
+                h = h.max(cell_height(this, l, 0, &mut inner));
             }
             *y += h;
         };

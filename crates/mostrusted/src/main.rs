@@ -211,6 +211,10 @@ struct Cli {
     /// Open Easydrive, the game's d-pad menu, at startup (also in `--screenshot` runs, to capture it).
     #[arg(long)]
     show_easydrive: bool,
+    /// With --show-easydrive: enter these rows one after the other (e.g. `4,0,1,1` = Customize car, first class,
+    /// its first mod, the PRO level), for headless checks of the menu's pages
+    #[arg(long, value_delimiter = ',')]
+    easydrive_path: Vec<usize>,
     /// Driving camera at startup: chase, bonnet, bumper, or lookback (the chase camera looking back).
     /// C / gamepad Y cycles the modes the car's data defines.
     #[arg(long, default_value = "chase")]
@@ -522,6 +526,7 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(easydrive::EasyDrivePlugin {
             enabled: menu_enabled || cli.show_easydrive,
             open: cli.show_easydrive,
+            path: cli.easydrive_path.clone(),
         })
         .add_plugins(game_text::GameTextPlugin)
         .add_plugins(hud::HudPlugin {
