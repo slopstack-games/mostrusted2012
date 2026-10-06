@@ -63,6 +63,8 @@ pub struct CarInput {
     pub brake: f32,
     pub steer: f32,
     pub handbrake: bool,
+    /// Nitrous held (Left Shift / pad A; set by `--test nitrous` in scripted runs).
+    pub nitrous: bool,
     pub reset: bool,
     /// Fixed throttle for automated runs (`--auto-throttle`).
     pub auto_throttle: Option<f32>,
@@ -259,6 +261,9 @@ pub struct Car {
     pub rpm_prev: f32,
     /// Engine, clutch and gearbox (`drivetrain.rs`); `gear` and `rpm` mirror it.
     pub drivetrain: Drivetrain,
+    /// Nitrous tank and data (`mw_handling::nitrous`).
+    pub nitrous: mw_handling::nitrous::Nitrous,
+    pub nitrous_params: mw_handling::nitrous::NitrousParams,
     /// Brake pressure build-up (0..1).
     brake_ramp: f32,
     /// Diagnostics from the last physics step (N): engine force at the axle,
@@ -535,6 +540,8 @@ fn spawn_car(
         rpm: params.idle_rpm,
         rpm_prev: params.idle_rpm,
         drivetrain,
+        nitrous: Default::default(),
+        nitrous_params: mw_handling::nitrous::NitrousParams::new(&pending.spec.handling),
         brake_ramp: 0.0,
         debug_forces: [0.0; 3],
         tyre_yaw: [0.0; 2],
@@ -560,6 +567,9 @@ pub(crate) fn read_input(keys: Res<ButtonInput<KeyCode>>, pads: Query<&Gamepad>,
     let mut brake = dev.value(act::BRAKE);
     let mut steer = dev.value(act::STEER_LEFT) - dev.value(act::STEER_RIGHT);
     let handbrake = dev.held(act::HANDBRAKE);
+    if input.scripted.is_none() {
+        input.nitrous = dev.held(act::NITROUS);
+    }
     input.reset = keys.just_pressed(KeyCode::KeyR) || input.reset;
     if input.scripted.is_some() {
         // A `--test` script drives the car; `car_physics` reads it per tick.
@@ -717,6 +727,12 @@ pub(crate) fn car_physics(
             inv_inertia += share.powi(2) * wheels.iter().map(|w| 1.0 / w.inertia).sum::<f32>() / n;
         }
         let coupled = axle_share.iter().any(|&s| s > 0.0);
+        // Update step 5 (FUN_009d2aa0, mode 0) before the engine: the tank and the torque multiplier.
+        let held = input.nitrous && !input.crashed;
+        let n_params = car.nitrous_params;
+        let amount = car.nitrous.step(&n_params, held, dt);
+        car.drivetrain.nitrous = amount > 0.0;
+        car.drivetrain.nitrous_scale = n_params.multiplier(amount);
         let drive_torque = car.drivetrain.step(dp, throttle, brake, omega, mph, inv_inertia, coupled, dt);
         car.gear = car.drivetrain.gear;
         car.rpm_prev = car.rpm;
@@ -1514,6 +1530,8 @@ pub struct DriveTest {
 pub enum TestKind {
     /// Full throttle from rest: 0–60 mph, 0–100/200 km/h, quarter mile, top speed.
     Accel,
+    /// `Accel` with nitrous held from the start: the same marks plus the tank every 0.5 s and when it runs dry.
+    Nitrous,
     /// Accelerate to 100 km/h, then full brakes: stopping distance and time.
     Brake,
     /// At the corner-test speed: half steering plus a handbrake tap, then hold
@@ -1619,8 +1637,21 @@ fn run_test(
         exit.write(AppExit::Success);
     };
     match test.kind {
-        TestKind::Accel => {
+        TestKind::Accel | TestKind::Nitrous => {
             input.scripted = Some([1.0, 0.0, 0.0, 0.0]);
+            if test.kind == TestKind::Nitrous {
+                input.nitrous = true;
+                let dt = time.delta_secs();
+                if (t / 0.5).floor() != ((t - dt) / 0.5).floor() {
+                    info!(
+                        "TEST nitrous tank {:.0}% at {t:.1} s, {:.1} km/h, gear {}",
+                        car.nitrous.fill() * 100.0,
+                        v * 3.6,
+                        car.gear
+                    );
+                }
+                mark(&mut test, "tank-empty", car.nitrous.tank <= 0.0);
+            }
             let quarter = test.distance >= 402.336;
             mark(&mut test, "0-60mph", v >= 26.822);
             mark(&mut test, "0-100kmh", v >= 27.778);

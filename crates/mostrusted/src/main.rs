@@ -340,6 +340,7 @@ fn main() -> anyhow::Result<()> {
     let test = match cli.test.as_deref() {
         None | Some("crash") | Some("smash") => None,
         Some("accel") => Some(drive::TestKind::Accel),
+        Some("nitrous") => Some(drive::TestKind::Nitrous),
         Some("brake") => Some(drive::TestKind::Brake),
         Some("corner") => Some(drive::TestKind::Corner),
         Some("handbrake") => Some(drive::TestKind::Handbrake),

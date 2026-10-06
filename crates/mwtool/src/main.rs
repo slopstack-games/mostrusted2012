@@ -342,6 +342,11 @@ enum Cmd {
         /// Car name, vehicle ID or bundle path.
         car: String,
     },
+    /// A car's performance mods (`Vehicles.PerformanceUpgrades`): slot -> choice -> parameter changes.
+    Mods {
+        /// Car name, vehicle ID or bundle path.
+        car: String,
+    },
     /// The collision surface list (`HAWAII/SURFACELIST.BNDL`) with each surface's triangle count and
     /// collision flags over the track units.
     Surfaces,
@@ -583,6 +588,35 @@ fn main() -> Result<()> {
             vehicle.as_str(),
             wheels.as_deref(),
         )?,
+        Cmd::Mods { car } => {
+            let store = AssetStore::new(game)?;
+            let bundle = if car.to_ascii_uppercase().ends_with(".BNDL") {
+                car
+            } else {
+                let v = store.find_vehicle(&car)?.with_context(|| format!("no car matches {car}"))?;
+                println!("{} ({}, id {})", v.name, v.year, v.id);
+                v.hi_bundle.context("car has no bundle")?
+            };
+            let b = store.bundle(&bundle).with_context(|| format!("no bundle {bundle}"))?;
+            const OPS: [&str; 3] = ["x", "+", "="];
+            for (i, cat) in mw_assets::mods::performance_upgrades(&store, &b)?.iter().enumerate() {
+                println!("category {i}");
+                for c in cat {
+                    let name = c.name.map_or("-".into(), |n| n.to_string());
+                    let extra = match (&c.nitrous, c.tyre) {
+                        (Some(n), _) => format!(" nitrous params {n}"),
+                        (_, Some(t)) => format!(" tyre {t}"),
+                        _ => String::new(),
+                    };
+                    let changes: Vec<String> = c
+                        .modifications
+                        .iter()
+                        .map(|m| format!("p{} {}{}", m.param, OPS.get(m.op as usize).unwrap_or(&"?"), m.value))
+                        .collect();
+                    println!("  slot {:08x} {:<16} name {name}{extra}: {}", c.slot, c.kind, changes.join(", "));
+                }
+            }
+        }
         Cmd::Handling { car } => {
             let store = AssetStore::new(game)?;
             let bundle = if car.to_ascii_uppercase().ends_with(".BNDL") {

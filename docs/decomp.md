@@ -1081,3 +1081,41 @@ stop-line handling (junction records are reached through the hull's `+0x28` poin
 ## Vehicle paint, liveries and dirt
 
 The paint shaders' object constants are registered by name with slot numbers in one table function in the 0x8c4xxx range (a run of `FUN_00a5d490` calls): `PbrPaintDiffuseColour` 0x2a, `PbrPaintScratchColour` 0x2e, `PbrPaintScratchSettings` 0x2f, `PbrPaintSecondaryDiffuseColour` 0x30, `PbrPaintSecondarySpecularColour` 0x31, `GenericVector4_A` 0x9c (B, C follow). No `FUN_00a5d660(index)` call uses the paint slots, so they are per-object constants written elsewhere; the writer (and with it the secondary paint's source and the dirt accumulation rule) is still open. Shader maths: research log 2026-10-06 (session 5, round 3).
+
+## Nitrous and upgrades
+
+- **`FUN_009d2aa0`** (update step 5, called from `FUN_00904260` with the controls' nitrous lanes +0x1c20..+0x1c2c
+  and the mode +0x1c60, both written by `FUN_009aacc0` from the player's control record (`FUN_005734c0(i)` +0x1c
+  amount, +0x33 mode) in `FUN_0091c5c0`). `this` holds [0] the engine owner (handling resource at +0x240/+0x244;
+  `Engine` → `Nitrous_strength` at engine +0x118) and [1] the vehicle. It resets a four-lane multiplier at
+  `this`+0x10 to 1 (`.rdata` 0x01026060 = 1,1,1,1), then:
+  - vehicle +0x30e8 set (a special state, not identified): multiplier = `Engine.d00887ca` (engine +0xf0, 1 on the
+    911); with amount > 0 and a wheel down (`FUN_008f5350`: not all four wheel flags at wheel +0xa30, stride 0x1d0,
+    clear) a forward force clamp(R+0x14 − mph, 0, 10 (`.rdata` 0x010261b0)) × mass (vehicle +0x10 → +0x7c) ×
+    amount, R = the resource at vehicle +0x7c4/+0x7c8.
+  - mode 0: multiplier = lerp(1, `Nitrous_strength.e9de413e` (+0x3c), amount) per lane.
+  - mode 1 (punch): multiplier = the strength; with a wheel down a forward force (1 − clamp((mph − `Punch.5cb7c5aa`)
+    / (vehicle +0x7e8 − `Punch.5cb7c5aa`), 0, 1)) × amount × `Punch.0798d257` × `.bss` 0x0118a018 × mass.
+  - mode 3 (jump): airborne and not in state +0x1774: the same force with `Jump.0798d257` / `Jump.b959e02f`;
+    multiplier lerp(1, `Jump.e9de413e`, amount).
+  Forces go through `FUN_009076a0` (body-frame vector rotated by the body matrix, added to the force
+  accumulator at body +0x70); `FUN_00907840` finishes. 911 values: strength 1.9, Punch {40, 100 mph}, Jump {20,
+  1.6, 100 mph}.
+- The tank is gameplay code (the HUD's `NitrousViewModel.NitrousAmount` / `NitrousHighest`), not traced. Its data
+  is `Genesys.Gen.NitrousParameters` (in each vehicle bundle, several variants): `NitrousUsage` {`053c5a6a` burn
+  16 / 18 / 24, `845c3879` amount 1, `7ebf362a` 0.1}, `Restrictions` {`c441f502` 1 or 100, `ddfca712` 300,
+  `d5b487c7` 300}, and the refill events, each {Message (Language id), `4d907940` enabled, `d629c55f`, `d63cff99`,
+  ...}: TrafficOncoming, Drifting (`TimeDrifting` 0.75), NearMiss ×2, CatchingAir, CrashEscape, HighSpeed,
+  MinSpeed, TakingShortcut, FatalHit, Slipstreaming, HittingAnotherCompetitor, Donutting, Balancing; the
+  `PunchUsage` / `JumpUsage` / `SpeedbreakerUsage` blocks carry an `Enabled` flag (the nitrous upgrade's modes).
+- **`FUN_00574870(index, value)`**, the upgrade profile: `this` holds 50 entries {f32 operand at +8i, op at
+  +8i+4}, a parameter index per entry at +400+4i, and a 64-bit active mask at +700 (two u32). For each active
+  entry whose index matches: op 0 multiplies, op 1 adds (summed), op 2 returns the operand at once; the result is
+  value × Π + Σ (identity with no entries). Call sites pass indices 0x00..0x36 as literals; which handling field
+  each index belongs to was not mapped this session (open: read each call site).
+- **The mods' data**: `Genesys.Gen.Vehicles.PerformanceUpgrades` in each vehicle bundle (911: `…6a59f`), two
+  `Category` fields (`cb186d88`, `6eeb691f`; their names in Language ids differ by one, so most likely the pro
+  and base levels), each up to 18 slot fields holding a `ModifierUpgrade` {`Icon`, `Name` (Language ids),
+  `Modifier`: `PerformanceModifier` {`Modifications`: [`PerformanceModificationItem` {`Value`, `566a7ed1`
+  profile index, `ModificationType` 0 / 1 / 2}]}}, a `NitrousUpgrade` (`5b7038f6`: the `NitrousParameters`
+  variant it selects) or a `TyreUpgrade` (`a316f8e3`: tyre index). `mwtool mods <car>` prints them.
