@@ -300,12 +300,33 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
   declutch tick, five neutral ticks, gear 2 on the fifth, then 0.25 / 0.5 / 0.75 / 1 (T ≈ 0.167 s for the XKR's
   0.15 s). **Top-gear lock**: flags `13bfea5a` / `7b20506a` lock the last gear unless a profile option ("long
   gears", inferred) or nitrous is active (`FUN_009d4c20`), so the 911's race box has 6 usable gears, not 7.
+- **Driver inputs** (`FUN_009aacc0`, called by `FUN_008fa750` for the player): vehicle +0x1bf0 is the gearbox's
+  control block: +0x1bf4 throttle, +0x1c00 brake, +0x1c10 a hold override (0 from the player), +0x1c30 a
+  forced-brake mask (cleared on every write; when set, `FUN_009d6170` makes brake 1 and throttle 0), +0x1c40 a
+  mask the player sets from handbrake input (+0x1fc0) > 0.1 (`.rdata` 0x01021cd8).
+- **Standstill hold** (2026-10-06, session 5): `FUN_009d6170` writes the hold input at gearbox +0x38 (vehicle
+  +0x1aa8): when the signed forward speed (×`.bss` 0x0118a060, the scale of vehicle +0x1620) is below `.bss`
+  0x01186e60 (no absolute value), input = brake pedal (1 with the handbrake mask), raised to the throttle when
+  the gear index is not 0; otherwise 0; then max'ed with the override +0x1c10. With the handbrake mask and
+  |speed| < 1 it also releases the pedal brake. `FUN_009b1180` reads it: the rigid body (vehicle +0x1760) gets
+  Δv = −sign(+0x1620) × `99407bbc` × input × dt along its forward axis (body +0x20) added to its velocity
+  (+0xb0) every tick, with no clamp at zero (`FUN_009073b0` stores it, or zero above the body's speed cap
+  +0xbc). The lock mask +0x1b90 is OR'ed into the per-wheel "brake engaged" mask passed to `FUN_009cdfd0`.
+- **Downshift gate** (2026-10-06): vehicle +0x1ed0 is the **time on the ground**: `FUN_009ae840` adds dt
+  while any wheel has contact and resets it while all four are in the air above `.bss` 0x01186630 (air time
+  +0x1630 counts then). So `FUN_009d93b0` does not downshift until the car has been down for 0x01187580 s.
+  It reaches the gearbox through `FUN_009b3030` → `FUN_009da600` (argument 5), with +0x1620 (forward speed)
+  as argument 3 and the brake ramp +0x1610 as argument 6.
+- **Launch delay** (2026-10-06, not resolved): in `ref/xkr_launch` the rpm stays at idle and the brake ramp at 1
+  for 0.45 s after the throttle, then the engine revs one tick before gear index 0 → 1: the gearbox throttle is
+  zero during the wait, which is what the forced-brake mask +0x1c30 does (`FUN_009d6170`). Its setter is not
+  found (only `FUN_009aacc0` clears it). In standstill (`FUN_009d6370`) the gear index goes 0 → 1 once the
+  throttle passes `.rdata` 0x01026130, and state 3 (launch) needs the handbrake mask clear and brake ≥
+  0x01186ec0 or throttle ≥ 0x01187230; its timers +0x60/+0x80/+0x90/+0xf0/+0x100 gate reverse selection, not
+  the launch. The engine-load ramp 0.25 → 0.62 → 0.81 → 0.91 → 0.95 in the reference is a lag of 0.5 per tick.
 - Not resolved in the drivetrain: K (0x01187250), the clutch-in throttle exponent (0x011874d0), the stall
-  fraction (0x011874a0), the downshift gate (vehicle +0x1ed0 against 0x01187580), the objects behind
-  `FUN_009262a0`'s override list, and why the original's engine reaches full torque in the first tick of the
-  launch (`ref/xkr_launch` 1.45 s: +140 rpm per tick = the full-load torque, while the lag would give ~0.4 of
-  it). The launch also waits 0.45 s after the throttle with the car parked (brake ramp 1, gear index 0), which
-  the standstill state's timers or the parked mask in `FUN_009d6170` (controls +0x40) may explain.
+  fraction (0x011874a0), the hold speed (0x01186e60), the downshift ground time (0x01187580), the writer of the
+  forced-brake mask +0x1c30, and the objects behind `FUN_009262a0`'s override list.
 - **Differentials** (`FUN_009d8140`): `Front_` / `Rear_Differential` = c limit the axle's wheel-speed ratio to
   1/c (0 open, 1 locked; 911 rear 0.75). `Center_Differential` is 0 on every car.
 - **Top speed**: `Top_speed_MPH` is never read by the physics. Top speed follows from torque, drag (with its
@@ -313,7 +334,7 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
 - **Brakes** (`FUN_009b1180`): torque per wheel = `6ade4bb6` (front) / `66251131` (rear) × pedal² × a ramp that
   rises at 10 × pedal per second. A brake can stop a wheel but never reverse it. **No ABS, no traction
   control.** During a burnout one axle's brakes are released (see "Handbrake and burnout"). `99407bbc` (15
-  everywhere) is a standstill hold deceleration.
+  everywhere) is the standstill hold deceleration (above).
 - **Handbrake**: see "Handbrake and burnout" above. `35e18207` / `6ce0fda7` belong to the drift, not to grip.
 - The drivetrain constants are now accounted for (above); the ones not yet read are listed at the end of the
   gearbox entries.

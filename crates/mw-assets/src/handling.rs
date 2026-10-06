@@ -54,6 +54,8 @@ mod h {
     pub const BRAKES: u32 = field_hash("Brakes");
     pub const BRAKE_FRONT: u32 = 0x6ade4bb6;
     pub const BRAKE_REAR: u32 = 0x66251131;
+    /// Standstill hold deceleration (m/s², 15 on every car; `FUN_009b1180`).
+    pub const BRAKE_HOLD: u32 = 0x99407bbc;
     pub const HANDBRAKE: u32 = field_hash("Handbrake");
     pub const HANDBRAKE_TORQUE: u32 = 0x4af55f8a;
     pub const STEERING: u32 = field_hash("Steering");
@@ -323,6 +325,8 @@ pub struct VehicleHandling {
     pub gearbox: Option<Gearbox>,
     pub brake_torque_front: Option<f32>,
     pub brake_torque_rear: Option<f32>,
+    /// `Brakes.99407bbc`: the standstill hold's deceleration (m/s²).
+    pub brake_hold_decel: Option<f32>,
     pub handbrake_torque: Option<f32>,
     /// Front, rear.
     pub tyres: Option<[TyreAxle; 2]>,
@@ -503,6 +507,7 @@ impl VehicleHandling {
         if let Some(b) = sub(hb, h::BRAKES) {
             self.brake_torque_front = float(b, h::BRAKE_FRONT);
             self.brake_torque_rear = float(b, h::BRAKE_REAR);
+            self.brake_hold_decel = float(b, h::BRAKE_HOLD);
         }
         self.handbrake_torque = sub(hb, h::HANDBRAKE).and_then(|b| float(b, h::HANDBRAKE_TORQUE));
         self.tyres = sub(hb, h::TYRES).and_then(read_tyres);
