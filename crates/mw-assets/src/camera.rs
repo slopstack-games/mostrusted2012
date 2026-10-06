@@ -38,6 +38,7 @@ mod h {
     pub const SPEED_LOOK_Y: u32 = 0xb028673b;
     pub const SPEED_EYE_Y: u32 = 0x7d4ec535;
     pub const SPEED_FULL: u32 = 0x53e4b4f9;
+    pub const SPEED_MIN: u32 = 0xb6010ee1;
     pub const HIGH_SPEED_SHAKE: u32 = field_hash("High_Speed_Shake");
     pub const AMPLITUDE: u32 = field_hash("Amplitude");
     pub const FREQUENCY: u32 = field_hash("Frequency");
@@ -46,8 +47,9 @@ mod h {
     pub const MAX_SPEED_FOR_SHAKE: u32 = field_hash("Maximum_Speed_for_Shake");
     pub const ACCELERATION_MOVEMENT: u32 = field_hash("Acceleration_movement");
     pub const ACCEL_BACK: u32 = 0xbd3a7cfc;
-    pub const ACCEL_FORWARD: u32 = 0x8e1310f6;
-    pub const ACCEL_FREQUENCY: u32 = 0x285f2260;
+    pub const ACCEL_FORWARD: u32 = 0x7c9039e2;
+    pub const ACCEL_RATE: u32 = 0xfdd25ee3;
+    pub const BRAKE_RATE: u32 = 0x285f2260;
     pub const CAMERA_ROLL: u32 = field_hash("Camera_Roll");
     pub const ROLL_FACTOR_POWER: u32 = field_hash("Camera_Roll_Factor_Power");
     pub const ROLL_MAX_ANGULAR: u32 = 0x02dd11bc;
@@ -135,6 +137,8 @@ pub struct SpeedMovement {
     pub look_y: f32,
     /// `53e4b4f9` (50 / 75 / 100): speed (mph) at which the change is complete.
     pub full_speed: f32,
+    /// `b6010ee1` (0 on every car): speed (mph) at which the change starts (`FUN_005d12b0`).
+    pub min_speed: f32,
 }
 
 /// `Speed_based_movement.High_Speed_Shake`.
@@ -147,16 +151,19 @@ pub struct HighSpeedShake {
     pub power: f32,
 }
 
-/// `Acceleration_movement`: 11 floats, two named by meaning so far.
+/// `Acceleration_movement`: 11 floats; the four below are read by `FUN_005d12b0` (decomp.md "Cameras").
+/// Sub-offsets: +0x10 `bd3a7cfc`, +0x14 `7c9039e2`, +0x18 `285f2260`, +0x2c `fdd25ee3`; the vertical
+/// stage reads +0x24 `8e1310f6`, +0x28, +0x34 and +0x38 (not ported).
 #[derive(Debug, Clone, Copy)]
 pub struct AccelerationMovement {
-    /// `bd3a7cfc` (−2.5…−1.9): eye z offset under full acceleration (m, negative = back).
+    /// `bd3a7cfc` (−2.5…−1.9): eye z offset at full forward acceleration (m, negative = back).
     pub back: f32,
-    /// `8e1310f6` (1.5): eye z offset under full braking (m, forward).
+    /// `7c9039e2` (0.5): eye z offset at full deceleration (m, forward).
     pub forward: f32,
-    /// `285f2260` (2.5 on every car): taken as the angular frequency (rad/s) of the spring the eye hangs
-    /// on (hypothesis; the other unnamed fields are 0.5, 0, 50, −1.2, 2, 0/−0.9, 1.75 and 2.5).
-    pub frequency: f32,
+    /// `fdd25ee3` (2): rate (1/s) the eye's z offset follows its target while accelerating.
+    pub accel_rate: f32,
+    /// `285f2260` (2.5): the same while decelerating.
+    pub brake_rate: f32,
 }
 
 /// `Camera_Roll`.
@@ -291,9 +298,9 @@ impl Default for ExternalCamera {
             pivot: [0.0, 0.0, 0.75],
             fov: [70.0, 95.0],
             yaw_drift_spring: 0.055,
-            speed: SpeedMovement { eye_z: -1.0, eye_y: 1.7, look_y: 1.5, full_speed: 50.0 },
+            speed: SpeedMovement { eye_z: -1.0, eye_y: 1.7, look_y: 1.5, full_speed: 50.0, min_speed: 0.0 },
             shake: HighSpeedShake { amplitude: 1.2, frequency: 1.0, speed: [0.0, 180.0], power: 1.5 },
-            acceleration: AccelerationMovement { back: -2.0, forward: 1.5, frequency: 2.5 },
+            acceleration: AccelerationMovement { back: -2.0, forward: 0.5, accel_rate: 2.0, brake_rate: 2.5 },
             roll: CameraRoll {
                 factor_power: 2.5,
                 lateral: [10.0, 30.0],
@@ -352,6 +359,7 @@ impl ExternalCamera {
                 eye_y: f(speed, h::SPEED_EYE_Y, d.speed.eye_y),
                 look_y: f(speed, h::SPEED_LOOK_Y, d.speed.look_y),
                 full_speed: f(speed, h::SPEED_FULL, d.speed.full_speed),
+                min_speed: f(speed, h::SPEED_MIN, d.speed.min_speed),
             },
             shake: HighSpeedShake {
                 amplitude: f(shake, h::AMPLITUDE, 0.0),
@@ -362,7 +370,8 @@ impl ExternalCamera {
             acceleration: AccelerationMovement {
                 back: f(accel, h::ACCEL_BACK, d.acceleration.back),
                 forward: f(accel, h::ACCEL_FORWARD, d.acceleration.forward),
-                frequency: f(accel, h::ACCEL_FREQUENCY, d.acceleration.frequency),
+                accel_rate: f(accel, h::ACCEL_RATE, d.acceleration.accel_rate),
+                brake_rate: f(accel, h::BRAKE_RATE, d.acceleration.brake_rate),
             },
             roll: CameraRoll {
                 factor_power: f(roll, h::ROLL_FACTOR_POWER, d.roll.factor_power),

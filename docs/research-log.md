@@ -124,6 +124,33 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-06 (session 5, round 6): the chase camera's position springs and avoidance
+
+Goal: read `FUN_005d12b0` and the other "weight" helpers, resolve the yaw spring's value, locate avoidance.
+Result: **`FUN_005d12b0` partly read; its speed band, heights and longitudinal (z) offset ported**;
+avoidance not in the decompiled code (decomp.md "Speed and acceleration movement", "Avoidance: where the
+search ended").
+
+- `FUN_005d12b0`: `h = clamp((v − b6010ee1) / (53e4b4f9 − b6010ee1), 0, 1)` (mph); eye / look-at heights go
+  to `7d4ec535` / `b028673b` linearly in `h`, unsmoothed (the round-4 guesses were right). The eye's z offset
+  is a **first-order lag** (rate `fdd25ee3` = 2/s accelerating, `285f2260` = 2.5/s decelerating) towards
+  `0a78c15f · h + (bd3a7cfc | 7c9039e2) · |a_long| / a_max`, `a_long` the acceleration projected on the
+  velocity. So the braking offset is `7c9039e2` = 0.5 m, not `8e1310f6` = 1.5 m (that one feeds a vertical
+  stage at cam + 0x554 whose locals the decompiler lost). `.bss` limits not read: `DAT_0110e770` (a_max and
+  clamp), `DAT_0110e4d0`, `DAT_0110e680`, `DAT_0110e610`, `DAT_0110e640`; `a_max` = 20 mph/s is a model value.
+- Yaw spring: nothing more resolvable from the pseudo-C; stays a model decision.
+- Avoidance: the director's update `FUN_005d5e20` is not a function in the dump; every remaining helper of
+  the chase update and the manager `FUN_005e23c0` calls only camera-range maths, leaves and the CRT (callee
+  lists in decomp.md). No world / car / prop query exists in the decompiled camera code. Next: disassemble
+  0x005d5e20 from the unpacked exe (probe), or watch cam + 0x580..0x58c / 0x5a0 live against a wall.
+- Not read this round (budget): `FUN_005d0b90`, `FUN_005c7a80`, `FUN_005c9380`.
+- **Traces, 911, before → after** (boom = horizontal eye distance in car space, m; accel_z = z offset):
+  accel: boom peak 6.83 → 7.19, settle 5.60 → 5.60, z offset peak −1.33 → −2.64 (it now includes the speed
+  term: −1.00 at top speed); brake (100 → 0 km/h): eye forward 1.50 → 0.32 m, boom at stop 3.10 → 4.28;
+  drift: boom 6.79 / 5.12 → 7.10 / 5.38; corner: 6.77 / 5.51 → 7.10 / 5.52; crash: boom min 4.08 → 4.60,
+  settle 4.60 both; landing: boom 6.83 / 6.08 → 7.10 / 6.26, eye height 1.32…2.00 → 1.32…2.03. Yaw lag,
+  lateral, FOV and pitch unchanged (rules not touched).
+
 ### 2026-10-06 (session 5, round 5): the chase camera ported from FUN_005d4970
 
 - **Structure of the update** (decomp.md "The followed frame"): the "sway" is a per-axis smoothing of the

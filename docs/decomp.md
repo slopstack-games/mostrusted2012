@@ -1241,6 +1241,9 @@ and `FUN_005c76a0` / `FUN_005c8ad0` (982 / 879). After `FUN_005d0b90` come `FUN_
 
 ### Yaw spring modification (`FUN_005c90a0`, read)
 
+Round 7: nothing more resolvable from the pseudo-C (the blend local `f`, `mods(0x29)` and `_DAT_0110e8f0`
+need the disassembly or a live read); our speed blend 0.075 → 0.05 stays a model decision.
+
 `Yaw_spring_modification` sits at 0xbc; its seven floats at sub + 0x10..0x28 are, in stored order, the hashes
 `19c1db65`, `78527964`, `d48a307f`, `63fb2207`, `397fce82`, `2517d995`, `5a74d44d` (which of them are
 `Low_speed` / `High_speed` / `Decay_rate` is not settled; call them y10..y28 by sub-offset). Per frame:
@@ -1320,6 +1323,62 @@ three Euler angles, in this order inside the update:
   the world / car avoidance is not in the chase update's own call tree as read: the remaining places are
   `FUN_005c76a0` (calls `FUN_005d9590`), `FUN_005c8ad0`, `FUN_005c3af0` (`FUN_00513200`), `FUN_005e05a0` and
   `FUN_005c0c80` inside `FUN_005d0b90`, or a separate pass on the final eye (the manager `FUN_005e23c0`).
+
+### Speed and acceleration movement: `FUN_005d12b0` (round 7, partly read; the z offset ported)
+
+Called with the target's velocity vector (param 2), the `|speed|` vector `S` (param 3, mph: vehicle + 0x1620),
+`dt` (param 4) and the gains (param 5). Returns at once unless the state flag `state + 0xa0` is set; if the
+target is not valid (`FUN_0057a010`), zeroes cam + 0x570..0x58c. `A` = `Acceleration_movement` (instance
++ 0x54), `M` = `Speed_based_movement` (+ 0x0c); sub-offsets with the 911's values: A+0x10 `bd3a7cfc` −2,
++0x14 `7c9039e2` 0.5, +0x18 `285f2260` 2.5, +0x1c `b40b3fb7` 0, +0x20 `77e7de37` 50, +0x24 `8e1310f6` 1.5,
++0x28 `65b4f9c6` −1.2, +0x2c `fdd25ee3` 2, +0x30 `f393abd1` 0, +0x34 `a8cc9c9b` 1.75, +0x38 `0da33093` 2.5;
+M+0x34 `0a78c15f` −1, +0x38 `b028673b` 1.5, +0x3c `7d4ec535` 1.7, +0x40 `b6010ee1` 0, +0x44 `53e4b4f9` 50.
+- **Longitudinal acceleration (read).** `FUN_005d9610` returns an acceleration vector `a` (by its use; source
+  not read, likely the target history of `FUN_005e23c0`). Unless `|v|` or `|a|` is below `DAT_00fb0770`
+  (1.19e−7), `a_long = clamp(sign(v̂·â) · |a| · |v̂·â|, ±DAT_0110e770)`: the acceleration projected on the
+  velocity, clamped by the `.bss` vector `DAT_0110e770` (not read). `mask = a_long < 0` (decelerating).
+- **Speed fraction (read).** `h = clamp((S − M.b6010ee1) / (M.53e4b4f9 − M.b6010ee1), 0, 1)`.
+- **Heights (read, direct).** `cam + 0x5a4 += (M.7d4ec535 − state[+0x44]) · h` and `cam + 0x5c4 +=
+  (M.b028673b − state[+0x64]) · h` (these vectors are re-set each frame elsewhere; `state + 0x44` / `+0x64`
+  by the formula's shape are the data eye / look-at heights): eye and look-at heights go linearly to their
+  full-speed values, unsmoothed. Matches the round-4 *hyp.* rows, now with the lower bound `b6010ee1`.
+- **Longitudinal (z) offset (read; three `.bss` limits).** Target lane z =
+  `M.0a78c15f · h + (mask ? A.7c9039e2 : A.bd3a7cfc) · |a_long| / DAT_0110e770`. The velocity
+  `cam + 0x578 = (g · k · (1 − w) + w) · clamp(target − cam[+0x588], ±DAT_0110e4d0)`, `w = mask ? A.285f2260 :
+  A.fdd25ee3`, `g` = `|lane 0|` of the vector at vehicle + 0x2b20 (not identified), `k` = param 5; zero when a
+  local vector's squared length is below `DAT_0110e610`. Then `cam + 0x578 −= cam + 0x6c8`, where
+  `cam + 0x6c0..0x6cc` low-pass (rate `0.1 · k`, `_DAT_00fb07a0`) towards `1.85` (`_DAT_00fb09d0`, lane 0)
+  while `S > DAT_0110e640` (`.bss`), else 0. Position `cam + 0x580..0x58c += velocity · dt`, z clamped to
+  `±DAT_0110e680` (`.bss`); `cam + 0x584` (y) is then replaced by `cam + 0x550`. So the eye's distance is a
+  **first-order lag** at 2/s (accelerating) or 2.5/s (decelerating) towards a target set by speed and the
+  normalised longitudinal acceleration, not a second-order spring. The braking target is `7c9039e2` (0.5 m),
+  not `8e1310f6` (1.5), which belongs to the vertical stage.
+- **Vertical stage (read in outline, not ported).** `cam + 0x554` (the y of 0x550..0x55c) integrates
+  `cam + 0x560 · dt · (…)`, with the gain chosen by the target sign between `A.8e1310f6` (1.5) and
+  `A.a8cc9c9b` (1.75) (or 3, `_DAT_00fb0900`, when flag cam + 0x716 is set), `A.65b4f9c6` (−1.2) and
+  `A.0da33093` (2.5) stored to cam + 0x558 / 0x55c, 20 (`_DAT_00fb07f0`) to 0x564, and the constants 15 / 185,
+  0.8 / 0.75, 0.25, 7, 60, −5 / 8, −3 / 4 and `(cam[+0x6b0] − 10) / 490`, an airborne branch through
+  `FUN_008f5350`, `FUN_005d76d0` × `.bss` `0118a060` (the speed scale). The decompiler's output loses the
+  locals here (a zero vector is used as an operand); this needs the disassembly.
+- **Tail (not read).** `cam + 0x5e0 += (x − cam[+0x5e0]) · 1.6667 · dt` (`_DAT_00fb0a00`) after eight
+  `FUN_00edec52` / four `FUN_00edc7b2` CRT calls (trigonometry, by the CRT range).
+- `.bss` needed: `DAT_0110e770` (acceleration normaliser and clamp), `DAT_0110e4d0` (step clamp),
+  `DAT_0110e680` (offset clamp), `DAT_0110e610`, `DAT_0110e640` (speed threshold of the 1.85 term).
+
+### Avoidance: where the search ended (round 7)
+
+- The director's update `FUN_005d5e20` is **not in the dump** ("not a function start; not in any decompiled
+  function"), so a post-step after the active sub-camera cannot be read there; it needs the disassembly of the
+  unpacked exe (probe) at 0x005d5e20.
+- Callees of every remaining chase-update helper, none of which is a physics or world query:
+  `FUN_005c76a0` (`0046ee20`, `0057a010`, `005d9610`, `005734a0`, `0046ee10`, `005d9590`), `FUN_005c8ad0`
+  (`0057a010` only), `FUN_005c3af0` (`005d9610`, `005734a0`, `00513200`: a 181-byte leaf), `FUN_005e05a0`
+  (`005bd470`, `005d9740`), `FUN_005c0c80` (`005dfe90`), `FUN_005c8420` (`004aeb10`, a 73-byte leaf,
+  `0057a010`), `FUN_005c82c0` (`00491050` → `00490e30` → `0048c090`; a speed-scaled maths helper, by its
+  inputs), the manager `FUN_005e23c0` (`0046ee10`, `005423d0`, a 231-byte leaf) and `FUN_005d2cd0`.
+- Conclusion: within the decompiled code the chase camera has **no world, car or prop query**; if the
+  original avoids walls it is in the undecompiled director update or a later render-side stage. Our push-in
+  along the boom stays a model decision.
 
 ### Other leads checked in round 5
 
