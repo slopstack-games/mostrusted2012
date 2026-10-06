@@ -124,6 +124,44 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-06 (session 5, round 2): braking instability and the steering's neutral offset
+
+Question: in `ref/xkr_launch` (Jaguar XKR, rows at 60 Hz) the original turns and stops from 64 mph in 1.3 s
+under straight braking (6.0–7.1 s, brake 1, steer 0); our replay brakes straight and is at 29 mph at 7.5 s.
+
+- **The original hits something twice; the tyres do not start it.** Between two rows (6.017 → 6.033 s) the body
+  velocity jumps from (28.4, 0.0, −1.83) to (21.0, 0.53, −4.91) m/s with a vertical kick and the yaw rate from 0
+  to 61°/s: a 7.4 m/s change in one 1/60 s tick (≈ 45 g), at (1834.4, 38.8, 1983.1). The second one at
+  6.600 → 6.617 s, (1845.2, 38.8, 1981.6): the velocity turns 34° in one tick (15.5 m/s straight on → 8.9 forward,
+  5.8 sideways) and the speed drops from 34.8 to 25.6 mph. Before either the wheels show nothing: κ ≈ 0 on all
+  four at 6.00 s, α < 0.2°. After the second the car slides at 30° body slip with the fronts locked (ω 0, κ −1 from
+  6.78 s) and stops at 2.3 g (sliding sideways, possibly still in contact). The wheel `N` stays 4580–4750 front,
+  4050–4300 rear throughout.
+- **Between the hits the braking matches ours.** 6.08 → 6.58 s the original loses 5.6 m/s (1.13 g, slip within
+  ±2°, the drift flag on from 6.07 s with `steer_norm` creeping to +0.26 from the drift's remap); our replay
+  brakes at 1.1 g over its first 0.5 s and 1.4–1.6 g later. So the mismatch in the window is the collisions,
+  which the flat test track of `--replay` cannot reproduce (our car is also 5 mph faster at the brake point:
+  68.8 against 63.7 mph, an acceleration difference). This run is not usable for brakes or tyres after 6.0 s.
+- **Open lead (brakes):** in the clean stretch the original's rear wheels show κ 0 … +0.07 under full brake with
+  the clutch in (gear 3, 4300–4600 rpm), the fronts −0.05 → −0.51: the rears are not visibly braked although
+  the XKR has 2000 N·m rear brake torque. Ours shows rear κ −0.1 … −0.3. Needs a clean straight-line brake capture.
+- **q (vehicle +0x2c70) is the body slip / 35°.** The probe's `steer_q` equals atan2(v · right, |v · forward|) /
+  35° to four digits from 0.5° to 33° (both events), times speed / 10 mph below 10 mph (q / slip / speed constant
+  over 1–4 m/s). Outside the drift `steer_norm` follows −0.3 q at the steering rate (−0.20 at q 0.63, −0.09 at
+  q 0.21), and that steers the fronts towards the velocity (their slip angle is the body slip plus yaw minus the
+  wheel angle): a counter-steer assist. Writer still not found: every `0x2c70` in the dump (0x004–0x011) is either
+  a read (`FUN_00904260`, `FUN_00902930`, `FUN_008f8cd0` as `[0xb1c]`) or a write to the game-mode object at
+  +0x2f3fc (`FUN_006e0580` adds to it, 0x006c / 0x0074 / 0x0076 set it); the 4-float vector +0x2c70..+0x2c7c is
+  never stored by offset, so it is likely written through a pointer to the block. 35° equals the XKR's
+  `Maximum_steering_angle`: a capture of a car with another maximum would tell a constant from the field.
+- Ported (drive.rs `steer_towards`, `steer_slip_fraction`): the offset q × `Maximum_steering_angle` ×
+  `553bc073` (0.3; 1 in reverse; 0 in a drift), its side-limit extension `a40a6b17` (1) / `16fd6022` (0), and the
+  centring test against the offset (decomp.md "Steering"). The replay is unchanged (RMS speed 15.1 mph, yaw rate
+  7.8°/s, slip 5.5°: our car never slips there); 911: 0–100 km/h 3.72 s, 100–0 km/h 38.5 m, skidpad 2.57 g, all
+  unchanged; handbrake test slip 1.2° → 1.1° (yaw 59°/s), drift test peak 4.5° (no drift) both ways.
+- Not reached: the tyre +0x210 combined-slip scale and the brake torque split in the code (the run gave no
+  clean evidence on them).
+
 ### 2026-10-06 (session 5): ground texture scale audit
 
 Report: "some textures, especially on the road and terrain are still scaled wrong" (no location). Every UV path

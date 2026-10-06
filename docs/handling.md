@@ -134,8 +134,12 @@ drift starts with on the tick after the handbrake is let go, not grip.
   within that limit. While counter-steering against the rotation the rate blends towards
   `Counter_steer_rate_in_drift` with the body slip from `Slip_angle_to_enter_drift` to `5277ec9e` (40°). A drift
   that ends while counter-steering multiplies the wheel angle by `Drift_exit.ca545e03`.
-- Not modelled: the neutral offset (`553bc073` × a vehicle value whose writer was not found ×
-  `Maximum_steering_angle`) with its side-limit extension `a40a6b17` / `16fd6022`; the zeroing of the wheel
+- Neutral offset (2026-10-06): with no input the wheels stand at q × `Maximum_steering_angle` × `553bc073`
+  (0.3 on the 911 and XKR; 1 in reverse, 0 in a drift), turned towards the direction of travel, and each side's
+  limit grows by |offset| × `a40a6b17` (1) on the offset's side and × `16fd6022` (0) on the other. q (vehicle
+  +0x2c70) is the body slip / 35°, faded by speed / 10 mph below 10 mph: a telemetry reading, its writer is not
+  found (decomp.md "Steering").
+- Not modelled: the zeroing of the wheel
   angle on a hard wall hit (`FUN_008f7ab0`, contact unit unknown).
 
 ### Low-speed turn-around assist
@@ -338,7 +342,7 @@ stands 10 m past the impact); a 2 m pillar shows the car.
 | drift time base | 60 | **from the game**: damping `(1 − c)^(dt × 60)`, the 60 at `.bss` 0x01184cc0 / 0x01185640 (read live), `FUN_00907b50`, `FUN_0091dad0` |
 | drift speed-hold scale | 60 | `.bss` 0x01187250 (`FUN_009d0420`): no initialiser in the dump, not read live; 60 because the same constant turns per-tick rates into per-second ones in `FUN_009d9960` and `FUN_009cfce0` |
 | counter-steer opening exponent | `Max_counter_steering_power` | `FUN_009d2e20` raises the opening to a power whose exponent the decompiler drops (a register load); inferred as the one counter-steering field the code does not otherwise read |
-| steering neutral offset | 0 | `553bc073` × vehicle +0x2c70 × `Maximum_steering_angle` (`FUN_009d31f0`); searched for a writer of +0x2c70 in the vehicle code (0x008e–0x009e: only reads in `FUN_00904260`, `FUN_00902930`; the 0x006e writers belong to another class): none found |
+| steering neutral offset's q | body slip / 35° × min(1, speed / 10 mph), clamped to ±1 | read from the original's telemetry (`ref/xkr_launch`: q / slip = 0.0286/° over 0.5°–33°, the fade constant over 1–4 m/s); its writer (vehicle +0x2c70) was searched by offset in the whole dump (0x004–0x011: the other writers are of the game-mode object at +0x2f3fc, `FUN_006e0580` …) and as a typed index (`[0xb1c]`): not found. 35° equals the XKR's `Maximum_steering_angle` (one car cannot separate them); the ±1 clamp is ours |
 | drift collision exits, wall-hit steering reset | not modelled | `FUN_009d83e0` codes 1 / 3 and `FUN_008f7ab0` compare a contact value with 6; which contact quantity (impulse, speed) and unit was not settled |
 | per-wheel surface factor on drift torque, side force, damping | 1 | `FUN_009cede0` (mean of a per-wheel value); its writer was not traced |
 | ~~rolling resistance Crr 0.015~~ | removed 2026-10-06 | the game's comes from the surface: `5c2a9f18` × N per wheel plus the slide drag (`FUN_009d4a10`) |
