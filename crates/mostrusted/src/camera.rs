@@ -59,11 +59,14 @@ const ORBIT_FOLLOW: f32 = 10.0;
 const ORBIT_RETURN: f32 = 4.0;
 /// Share of the drift angle the chase camera leans towards the direction of travel while drifting.
 const DRIFT_LEAN: f32 = 0.5;
-/// Model decision (handling.md "Cameras"): the per-player default pitch stiffness (`state + 0x70`, its
-/// writer not read) and the roll stiffness (`cam + 0x6dc`, no writer found), per 60 Hz tick. 2/60 keeps
-/// the previous model's slope following (an ease at 2/s).
-const K_PITCH_DEFAULT: f32 = 2.0 / 60.0;
-const K_ROLL: f32 = 2.0 / 60.0;
+/// The per-player default pitch stiffness (`state + 0x70`, live read 0.55; recorded cam + 0x6d0 sits there
+/// except in the air), per 60 Hz tick. Its writer is not read. (The roll stiffness cam + 0x6dc reads 1.0, but
+/// the followed frame has no roll at all: see `chase_view`.)
+const K_PITCH_DEFAULT: f32 = 0.55;
+/// Per-player default yaw stiffness (state + 0x74, live read 0.09): the value cam + 0x6d4 holds at a standstill.
+const K_YAW_STANDING: f32 = 0.09;
+/// FOV speed band (state + 0x88 / + 0x8c, live read 0 / 125 mph; FUN_005c76a0).
+const FOV_FULL_MPH: f32 = 125.0;
 /// `FUN_005c8e40`: the pitch stiffness moves this share of the way to its default each update
 /// (`DAT_00f9f660`, not scaled by the time step).
 const K_PITCH_EASE: f32 = 0.1;
@@ -468,7 +471,8 @@ fn follow_car(
     } else {
         chase_view(ext, car_t, car, s, &look, mph, accel_mph, speed_frac, flat_v, dt)
     };
-    s.fov += (fov - s.fov) * ease(FOV_RATE);
+    // The chase FOV is set directly each frame (FUN_005c76a0 has no smoothing); in-car views ease.
+    s.fov = if in_car.is_none() { fov } else { s.fov + (fov - s.fov) * ease(FOV_RATE) };
 
     // Walls between the look-at point and the eye pull the eye in (in-car views sit inside the body).
     let mut pos = pos;
@@ -561,11 +565,14 @@ fn chase_view(
     // Yaw spring: per-60 Hz-tick fractions, low- to high-speed, or the drift spring while drifting.
     let ys = &ext.yaw_spring;
     let drifting = car.drift.phase == Phase::Drifting;
-    let fraction = if drifting {
+    let fraction = if mph.abs() < 0.5 {
+        K_YAW_STANDING
+    } else if drifting {
         ext.yaw_drift_spring
     } else {
         let t = ((mph - ys.speed[0]) / (ys.speed[1] - ys.speed[0]).max(1.0)).clamp(0.0, 1.0);
-        ys.spring[0] + (ys.spring[1] - ys.spring[0]) * t
+        // Recorded cam + 0x6d4: 0.05 at low speed rising to 0.075 at 100 mph (the data's pair, low/high swapped).
+        ys.spring[1] + (ys.spring[0] - ys.spring[1]) * t
     };
     let mut target_yaw = car_yaw;
     if drifting && car.speed > 3.0 {
@@ -579,10 +586,13 @@ fn chase_view(
         if forward.y.abs() > 1.0 - GIMBAL_EPS { (s.frame_pitch, s.frame_roll) } else { (car_pitch, car_roll) };
     let k60 = dt * 60.0;
     let retain = |k: f32| 1.0 - (k * k60).clamp(0.0, 1.0);
-    let retain_pitch = retain(s.k_pitch) * (car.speed.abs() * PITCH_RETAIN_PER_SPEED).min(1.0);
+    // vehicle + 0x1620 is mph (recording): the pitch is rigid at a standstill, smoothed above 50 mph.
+    let retain_pitch = retain(s.k_pitch) * (mph.abs() * PITCH_RETAIN_PER_SPEED).min(1.0);
     s.frame_pitch += (1.0 - retain_pitch) * wrap_angle(target_pitch - s.frame_pitch);
     s.yaw = wrap_angle(s.yaw + (1.0 - retain(fraction)) * wrap_angle(target_yaw - s.yaw));
-    s.frame_roll += (1.0 - retain(K_ROLL)) * wrap_angle(target_roll - s.frame_roll);
+    // The followed frame carries no roll: recorded cam + 0x598 stays within 0.25° (the view's roll is FUN_005c9380's).
+    let _ = target_roll;
+    s.frame_roll = 0.0;
     // FUN_005c8e40 (late in the update, so for the next frame): the pitch stiffness eases to its default.
     // Its airborne branch (towards 0.1, the landing shake) is not ported: our car has no airborne state.
     s.k_pitch += (K_PITCH_DEFAULT - s.k_pitch) * K_PITCH_EASE;
@@ -628,7 +638,9 @@ fn chase_view(
     let pivot = Vec3::from(ext.pivot);
     let eye_w = car_t.translation + frame * (pivot + orbit * (eye - pivot));
     let look_w = car_t.translation + frame * (pivot + Quat::from_rotation_y(s.orbit.x + back) * (look_at - pivot));
-    let fov = ext.fov[0] + (ext.fov[1] - ext.fov[0]) * speed_frac * speed_frac;
+    // FUN_005c76a0: FOV = lerp(min, max, clamp(mph / 125)) + state + 0x90 (10) × cam + 0x284 (0 in the recording).
+    let _ = speed_frac;
+    let fov = ext.fov[0] + (ext.fov[1] - ext.fov[0]) * (mph.abs() / FOV_FULL_MPH).clamp(0.0, 1.0);
     (eye_w, look_w, frame * Vec3::Y, fov)
 }
 
