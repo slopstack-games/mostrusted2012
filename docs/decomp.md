@@ -1177,7 +1177,7 @@ runtime borrows the per-wheel form of the skid sound intensities (`FUN_009d1bf0`
 
 ## Cameras
 
-**Found (2026-10-06, session 5 round 5); not yet ported.** The chase camera's code and the way it reads
+**Found (2026-10-06, session 5 round 5); the followed frame ported in round 6 (below).** The chase camera's code and the way it reads
 `CameraGameplayExternal` are located below; the per-rule reading is only started (the yaw-spring helper).
 
 ### The camera director and its 15 cameras
@@ -1258,6 +1258,68 @@ and `FUN_005c76a0` / `FUN_005c8ad0` (982 / 879). After `FUN_005d0b90` come `FUN_
   would make the spring y28 at high yaw rate and y18 at low, but that needs the disassembly or a live read.
   Read part: the yaw spring depends on **the car's yaw rate** (not only speed) through a rate-limited blend,
   and is handed over to the mods-profile value as speed rises, which our model does not do.
+
+### The followed frame: per-axis angle smoothing (round 6, read and ported)
+
+The core of `FUN_005d4970`'s "sway" is not a position spring but a smoothing of the car's orientation as
+three Euler angles, in this order inside the update:
+- **Inputs.** `|speed|` (vehicle + 0x1620, m/s) is broadcast to a 4-lane vector `S` (`max(−x, x)` with
+  `_DAT_00fb05a0` = −1). The time step is `dt = +0x10 × +0x14` of `FUN_0046ee10()` (zero when its +0x1c flag is
+  clear, i.e. paused); `k60 = dt × DAT_00f8b534` (= **60**, `.rdata`), so every rate below is "per 60 Hz tick".
+  The car's matrix is copied to cam + 0x510..0x54c.
+- **`FUN_005e14d0` (matrix → Euler angles).** Lane 0 = pitch = `−asin(m[2].y)` (the forward row's height,
+  clamped to ±1 by `_DAT_00fb1360` / `_DAT_00fb13b0`), lane 1 = yaw (`atan2`), lane 2 = roll (`atan2`). If
+  `|cos pitch| − 1` is within `DAT_00f9d474` (= **0.01**) of gimbal lock, it returns the previous angles (the
+  third argument, cam + 0x590) instead. The target angles of this frame are `Euler(car)`.
+- **`FUN_005c89c0` (per-axis gains).** With the stiffnesses `K = (cam + 0x6d0, cam + 0x6d4, cam + 0x6dc)`:
+  `retain_i = 1 − clamp(K_i × k60, 0, 1)` (`DAT_00f8a820` = 1); the pitch lane is further multiplied by
+  `min(|speed| × 0.02, 1)` (`_DAT_00fb0880` = 0.02, `_DAT_00fb05f0` = 1; the vector arrives in EDX, which by
+  the call sequence is the `|speed|` vector `S`), so **below 50 m/s the camera's pitch follows the car's
+  pitch faster, and at standstill it is rigid**. Output `blend_i = 1 − retain_i`. If the car's flag +0x3c is
+  set (a reset), K_yaw is reset to the per-player default (state + 0x74).
+- **`FUN_005c75b0` (the step).** `d = wrap(target − angle)` per lane (`FUN_005e1840`, the angle difference),
+  `angle(cam + 0x590) += blend × d`, then re-wrapped. The output (smoothed angles) equals
+  `target − retain × d`. Overrides: with flag cam + 0x31c the yaw lane is replaced by `_DAT_01189f60` (`.bss`)
+  or 0 (a fixed-yaw mode); if cam + 0x6f0 is outside (`DAT_00f91588`, `DAT_00faf87c`) it is added to the yaw (a
+  yaw offset, by its place the look-around / look-back; who writes 0x6f0 is not read).
+- **No clamp on the lag**: nothing in these three helpers limits how far the angles trail the car.
+- **Pitch stiffness K_pitch (`FUN_005c8e40`, called late in the update, so it acts on the next frame).**
+  `K_pitch += (state[+0x70] − K_pitch) × 0.1` per update (`DAT_00f9f660` = 0.1, not scaled by dt). While the
+  car is airborne (vehicle + 0x1630 > 0, a "has-air" check through `FUN_00911430` and `FUN_008f5350`) it eases
+  towards 0.1 instead and accumulates the air time at cam + 0x6e4; on landing a shake request
+  `cam + 0x280 = max(cam + 0x280, clamp((|v| − DAT_00fa929c) × _DAT_00fb0eac, 0, 1) × _DAT_00fafe14)` and a
+  height offset `cam + 0x574 = airtime × DAT_00f8a810 × DAT_00fb0d7c × DAT_00fafe20` are set (constants not
+  read this round). `state + 0x70` / `+ 0x74` (the per-player default pitch / yaw stiffness) are written
+  outside the functions read: their source is open.
+- **Roll stiffness K_roll (cam + 0x6dc)**: no writer in the helpers dumped this round (`FUN_005c9380`'s writes
+  go to cam + 0x660..0x66c, its own roll state); open.
+- **Yaw stiffness K_yaw (cam + 0x6d4)**: `FUN_005c90a0` above. Field map, settled with `mwtool genesys`
+  (it prints in stored order): y10 = `Decay_rate` (0.01), y14 = `78527964` (10), y18 = `High_speed` (100),
+  y1c = `63fb2207` (0.05), y20 = `397fce82` (10), y24 = `Low_speed` (0), y28 = `5a74d44d` (0.075). With the
+  shipped data y14 = y20 = 10, so the yaw-rate term `1 − (|ω_y| − 10) / 0` is +∞ → t = 1 for every real yaw
+  rate: **the yaw-rate modulation is inert in the shipped data**. The lerp `lerp(y28, y18, f)` then mixes the
+  low-speed spring 0.075 with `High_speed` = 100, which only makes sense if `f` stays 0 (or is a speed
+  fraction and the read operand is wrong); `y1c` (0.05) is never read here. Unresolved without the
+  disassembly: `f`, `mods(0x29)` and `_DAT_0110e8f0`.
+- After the angles: `FUN_005c7a80` (gradient spring), `FUN_005c76a0`, `FUN_005c8ad0` (both take `S`), then
+  **`FUN_005d12b0`** (3500 bytes; called with `S`, the gains and `k60`; writes cam + 0x550..0x58c and
+  0x5a0; callees `FUN_005dc270`, `FUN_005d76d0`, `FUN_005bd470`): the most likely place of the eye / look-at
+  offsets (speed and acceleration movement), not read. `FUN_005c2130` (1119 bytes; callees `FUN_005d9740`,
+  `FUN_005e1ae0`) takes the target angles, the smoothed angles, the car matrix and an output frame: the
+  composition, and still the best avoidance candidate with `FUN_005d0b90`'s `FUN_005dfe90`.
+- **`FUN_005c8880` (a vertical bob, read; weight).** Unless `FUN_0057a010(target)` fails (then zero), it
+  reads two floats through `FUN_009cdd20(n)` = `*(float *)(obj + 0x1f0 + n × 4)` for n = 2 and 3 (the
+  object in ECX is not identified; per-index values 2 and 3 suggest the rear wheels, e.g. their compression),
+  takes `0.5 × (v2 + v3)` (`_DAT_00fb05e0` = 0.5), pushes it into a 4-sample history at cam + 0x490..0x49c
+  (`FUN_005d8330`) and returns the history's mean (sum / count at cam + 0x4a0) × state + 0x94, in the **Y lane
+  only** (`_DAT_00fb05c0` = (0, 1, 0, 0)). The result goes to `FUN_005c2130` as an offset: the camera rises
+  and falls with a 4-frame average of those two values. Not ported (object and state + 0x94 unread).
+- **Avoidance, negative result.** None of `FUN_005c2130`, `FUN_005d12b0`, `FUN_005dfe90`, `FUN_005d9740`,
+  `FUN_005e1ae0`, `FUN_005dc270`, `FUN_005d76d0`, `FUN_005bd470`, `FUN_005d9610` calls anything outside the
+  camera's own 0x5bxxxx–0x5exxxx range and the CRT (no collision / world query); the leaves are maths. So
+  the world / car avoidance is not in the chase update's own call tree as read: the remaining places are
+  `FUN_005c76a0` (calls `FUN_005d9590`), `FUN_005c8ad0`, `FUN_005c3af0` (`FUN_00513200`), `FUN_005e05a0` and
+  `FUN_005c0c80` inside `FUN_005d0b90`, or a separate pass on the final eye (the manager `FUN_005e23c0`).
 
 ### Other leads checked in round 5
 

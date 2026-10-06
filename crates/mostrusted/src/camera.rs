@@ -5,10 +5,14 @@
 //! mode looks back while B or the right stick button is held, or the right stick is pulled fully back.
 //!
 //! The chase camera:
-//! - **Yaw spring**: the camera's heading follows the car's with a per-60 Hz-tick spring that blends
-//!   from the low-speed to the high-speed value (`Yaw_spring_modification`), and `YawDriftSpring`
-//!   while drifting, when it also leans towards the direction of travel. It orbits the data's pivot
-//!   point (`d68bbc59`, at the look-at point's z).
+//! - **Followed frame** (the game's chase update `FUN_005d4970`, docs/decomp.md "The followed frame"):
+//!   the car's orientation as Euler angles (pitch, yaw, roll) is smoothed per angle with
+//!   `angle += (1 − retain) · wrap(target − angle)`, `retain = 1 − clamp(K · dt · 60, 0, 1)`; the pitch's
+//!   retain is scaled by `min(|speed| · 0.02, 1)`. No limit on the lag. The yaw stiffness is the
+//!   per-60 Hz-tick spring from `Yaw_spring_modification` (low- to high-speed value, `YawDriftSpring`
+//!   while drifting, when it also leans towards the direction of travel: ours); the pitch stiffness
+//!   eases by 0.1 per update to its default. The eye orbits the data's pivot point (`d68bbc59`, at the
+//!   look-at point's z) in that frame.
 //! - **Speed**: eye and look-at heights and the eye distance move to their full-speed values
 //!   (`Speed_based_movement`); the field of view widens from `MinFieldOfView` to `MaxFieldOfView`.
 //! - **Acceleration**: the eye falls back under acceleration and closes in under braking
@@ -55,8 +59,18 @@ const ORBIT_FOLLOW: f32 = 10.0;
 const ORBIT_RETURN: f32 = 4.0;
 /// Share of the drift angle the chase camera leans towards the direction of travel while drifting.
 const DRIFT_LEAN: f32 = 0.5;
-/// How far the camera's yaw may trail the car's (radians).
-const MAX_YAW_LAG: f32 = 0.6;
+/// Model decision (handling.md "Cameras"): the per-player default pitch stiffness (`state + 0x70`, its
+/// writer not read) and the roll stiffness (`cam + 0x6dc`, no writer found), per 60 Hz tick. 2/60 keeps
+/// the previous model's slope following (an ease at 2/s).
+const K_PITCH_DEFAULT: f32 = 2.0 / 60.0;
+const K_ROLL: f32 = 2.0 / 60.0;
+/// `FUN_005c8e40`: the pitch stiffness moves this share of the way to its default each update
+/// (`DAT_00f9f660`, not scaled by the time step).
+const K_PITCH_EASE: f32 = 0.1;
+/// `FUN_005c89c0`: the pitch's retain is scaled by `min(|speed| · this, 1)` (`_DAT_00fb0880`, m/s).
+const PITCH_RETAIN_PER_SPEED: f32 = 0.02;
+/// `FUN_005e14d0`: within this of a vertical forward axis the previous angles are kept (`DAT_00f9d474`).
+const GIMBAL_EPS: f32 = 0.01;
 /// Damping ratio of the acceleration spring (critical: no overshoot when the throttle lifts).
 const ACCEL_DAMPING: f32 = 1.0;
 /// Rate (1/s) at which the field of view follows its target.
@@ -300,8 +314,12 @@ pub struct SnapCamera(pub bool);
 struct CameraState {
     car: Option<Entity>,
     mode: Option<CameraMode>,
+    /// The followed frame's smoothed Euler angles (cam + 0x590 in the game) and the pitch stiffness
+    /// (cam + 0x6d0).
     yaw: f32,
-    up: Vec3,
+    frame_pitch: f32,
+    frame_roll: f32,
+    k_pitch: f32,
     /// Orbit offset (look-around) applied on top of the camera's yaw and pitch.
     orbit: Vec2,
     /// Eye z offset from acceleration (m) and its rate (m/s).
@@ -363,7 +381,9 @@ fn follow_car(
         *s = CameraState {
             car: Some(entity),
             yaw: car_yaw,
-            up: Vec3::Y,
+            frame_pitch: car_t.rotation.to_euler(EulerRot::YXZ).1,
+            frame_roll: car_t.rotation.to_euler(EulerRot::YXZ).2,
+            k_pitch: K_PITCH_DEFAULT,
             fov: ext.fov[0],
             last_speed: car.speed,
             clip: f32::MAX,
@@ -542,19 +562,25 @@ fn chase_view(
         let t = ((mph - ys.speed[0]) / (ys.speed[1] - ys.speed[0]).max(1.0)).clamp(0.0, 1.0);
         ys.spring[0] + (ys.spring[1] - ys.spring[0]) * t
     };
-    let rate = -(1.0 - fraction.clamp(0.001, 0.9)).ln() * 60.0;
     let mut target_yaw = car_yaw;
     if drifting && car.speed > 3.0 {
         let travel = flat_v.x.atan2(flat_v.z);
         target_yaw += wrap_angle(travel - car_yaw) * DRIFT_LEAN;
     }
-    s.yaw += wrap_angle(target_yaw - s.yaw) * ease(rate);
-    let lag = wrap_angle(s.yaw - target_yaw);
-    if lag.abs() > MAX_YAW_LAG {
-        s.yaw = target_yaw + lag.signum() * MAX_YAW_LAG;
-    }
-    // Follow the ground's slope slowly, not every bump.
-    s.up = s.up.lerp(car_t.rotation * Vec3::Y, ease(2.0)).normalize_or(Vec3::Y);
+    // The followed frame (FUN_005d4970): the car's Euler angles (FUN_005e14d0; the previous ones near a
+    // vertical forward axis), per-axis gains (FUN_005c89c0), one step towards them (FUN_005c75b0).
+    let (_, car_pitch, car_roll) = car_t.rotation.to_euler(EulerRot::YXZ);
+    let (target_pitch, target_roll) =
+        if forward.y.abs() > 1.0 - GIMBAL_EPS { (s.frame_pitch, s.frame_roll) } else { (car_pitch, car_roll) };
+    let k60 = dt * 60.0;
+    let retain = |k: f32| 1.0 - (k * k60).clamp(0.0, 1.0);
+    let retain_pitch = retain(s.k_pitch) * (car.speed.abs() * PITCH_RETAIN_PER_SPEED).min(1.0);
+    s.frame_pitch += (1.0 - retain_pitch) * wrap_angle(target_pitch - s.frame_pitch);
+    s.yaw = wrap_angle(s.yaw + (1.0 - retain(fraction)) * wrap_angle(target_yaw - s.yaw));
+    s.frame_roll += (1.0 - retain(K_ROLL)) * wrap_angle(target_roll - s.frame_roll);
+    // FUN_005c8e40 (late in the update, so for the next frame): the pitch stiffness eases to its default.
+    // Its airborne branch (towards 0.1, the landing shake) is not ported: our car has no airborne state.
+    s.k_pitch += (K_PITCH_DEFAULT - s.k_pitch) * K_PITCH_EASE;
 
     // Speed: eye and look-at heights and the eye distance reach their full-speed values at `full_speed`.
     let sp = &ext.speed;
@@ -597,13 +623,13 @@ fn chase_view(
     // Orbit the pivot: the look-around offsets turn and raise the eye around it; looking back turns
     // the whole view round.
     let back = if look.look_back { PI } else { 0.0 };
-    let frame = Quat::from_rotation_arc(Vec3::Y, s.up) * Quat::from_rotation_y(s.yaw);
+    let frame = Quat::from_euler(EulerRot::YXZ, s.yaw, s.frame_pitch, s.frame_roll);
     let orbit = Quat::from_rotation_y(s.orbit.x + back) * Quat::from_rotation_x(s.orbit.y);
     let pivot = Vec3::from(ext.pivot);
     let eye_w = car_t.translation + frame * (pivot + orbit * (eye - pivot));
     let look_w = car_t.translation + frame * (pivot + Quat::from_rotation_y(s.orbit.x + back) * (look_at - pivot));
     let fov = ext.fov[0] + (ext.fov[1] - ext.fov[0]) * speed_frac * speed_frac;
-    (eye_w, look_w, s.up, fov)
+    (eye_w, look_w, frame * Vec3::Y, fov)
 }
 
 /// Bonnet and bumper views: fixed in the car, looking along it (or back from `back_eye`).

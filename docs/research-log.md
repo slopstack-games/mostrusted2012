@@ -124,6 +124,36 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-06 (session 5, round 5): the chase camera ported from FUN_005d4970
+
+- **Structure of the update** (decomp.md "The followed frame"): the "sway" is a per-axis smoothing of the
+  car's orientation as Euler angles (pitch, yaw, roll), `angle += (1 − retain) · wrap(target − angle)`,
+  `retain = 1 − clamp(K · dt · 60, 0, 1)` (`FUN_005e14d0` → `FUN_005c89c0` → `FUN_005c75b0`), stiffnesses at
+  cam + 0x6d0 / 0x6d4 / 0x6dc; the pitch's retain × `min(|speed| · 0.02, 1)`; the pitch stiffness eases 0.1 per
+  update to a per-player default (`FUN_005c8e40`, with an airborne branch and a landing shake). No lag clamp.
+  Ported (`camera.rs`); our 0.6 rad yaw-lag cap and the "up vector at 2/s" slope following are gone.
+- **Yaw spring field map settled** (stored order via `mwtool genesys`): y10 `Decay_rate` 0.01, y14 `78527964`
+  10, y18 `High_speed` 100, y1c `63fb2207` 0.05, y20 `397fce82` 10, y24 `Low_speed` 0, y28 `5a74d44d` 0.075.
+  The yaw-rate term divides by y14 − y20 = 0, so it is inert in the shipped data. The stiffness formula
+  `lerp(lerp(y28, y18, f), mods(0x29), s)` stays unresolved (`f` unshown by the decompiler, `mods(0x29)` and
+  `_DAT_0110e8f0` need a live read); our speed blend 0.075 → 0.05 is kept and marked as ours.
+- **Weight**: `FUN_005c8880` is a vertical bob, a 4-sample mean of `0.5 (v2 + v3)` read at `obj + 0x1f0 + n·4`
+  (likely the rear wheels) × state + 0x94, Y only; not ported. `FUN_005d12b0` (3500 bytes, writes
+  cam + 0x550..0x58c) is the likely speed / acceleration movement; not read.
+- **Avoidance**: no world or collision query anywhere in the call tree of `FUN_005c2130`, `FUN_005d12b0`,
+  `FUN_005dfe90` (all leaves are maths). Remaining candidates listed in decomp.md.
+- **Traces, 911, before (round-4 baseline) → after** (peak / settle; lateral and boom in car space):
+  drift yaw lag −15.5 / −14.7° → −14.6 / −14.0°, lateral 1.32 / 1.27 → 1.29 / 1.21 m, boom 6.80 / 5.0 m
+  unchanged, height 1.74 / 1.69 → 1.74 / 1.68 m, FOV 73.1 / 71.6 → 73.1 / 71.2°; corner yaw lag −15.7 / −15.4° →
+  −13.8 / −13.6°, lateral 1.49 / 1.47 → 1.32 / 1.29 m, boom 6.79 / 5.5 → 6.77 / 5.51 m; accel unchanged (yaw 0,
+  boom 6.80 / 5.60 m, FOV 70 → 95°); crash: yaw lag 1.1° peak, boom min 4.10 m (4.05), settle 5.47 m. The
+  smaller lag is the linear-in-dt gain (stiffer than `1 − e^(−r·dt)` at the tests' 4× time step); at 60 Hz
+  real time the two are identical. The visible change is the pitch: rigid with the car at standstill and
+  following faster below 50 m/s; the car's body roll, followed before through the eased up vector, is now
+  its own smoothed angle (`K_ROLL`, a model value).
+- Still needed for the rest of the port, from a live read (the original was not run this round): state + 0x70,
+  + 0x74, + 0x94, cam + 0x6dc, `_DAT_0110e8f0`, `_DAT_01189f60`, and the stack `f` of `FUN_005c90a0`.
+
 ### 2026-10-06 (session 5, round 5): the chase camera, second attempt
 
 Goal: find the chase camera's update from round 4's leads and port its sway, weight and avoidance.
