@@ -332,7 +332,12 @@ with analytic coverage, additive. Ports: `crates/mostrusted/src/particles.wgsl`,
 
 ## ColourCube (0x52)
 
-16-byte header: u32 edge N (16 everywhere), u32 N, 8 zero bytes; then N³ RGB8 entries, blue fastest (entry
-(r, g, b) at 3 × (b + N g + N² r)). Gamma-encoded in and out; `…3e93` is the identity. Each environment
-keyframe names one (`ColourCube` handle). Parser: `mw_formats::ColourCube`.
+16-byte header: u32 edge N (16 everywhere), u32 N, 8 zero bytes; then N³ three-byte entries laid out as a D3D
+volume texture without alpha: input red fastest, then green, then blue, each entry stored B, G, R (the output
+for input (r, g, b) at 3 × (r + N g + N² b)). Gamma-encoded in and out; `…3e93` is the identity (symmetric, so
+it does not decide the order). The order follows from how the game uses the bytes (blended and copied
+unchanged into a B8G8R8A8-ordered volume sampled at x = red; research log 2026-10-06, inferred: the blend
+kernels are missing from the dump). Until 2026-10-06 it was read as blue fastest with R, G, B entries, which
+swapped red and blue and caused the yellow cast. Each environment keyframe names one (`ColourCube` handle);
+PostFX states (`POSTFX.BNDL`) name more. Parser: `mw_formats::ColourCube`.
 

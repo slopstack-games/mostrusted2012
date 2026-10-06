@@ -323,6 +323,64 @@ addresses). Changes to the model:
   and is not fed yet (0: those channels sit at 0.4 / 0.5); `BusMixer` / `Lfo` sequence items are ignored; our
   ×4 / ×3.5 / ×2.5 skid mix gains are still assumed. Confirming capture of the original: see PLAN M5.4.
 
+### 2026-10-06: the yellow tint: ColourCube channels were swapped; the post chain lives in NFS13.exe
+- **Where the grade happens**: the earlier entry ("tonemap, auto exposure and colour cube") found no PC post
+  shader in `SHADERS.BNDL` that samples a cube except the rear-view mirror and assumed the main view does the
+  same. The real final pass is one of 74 DXBC programs in `NFS13.exe`'s `.rdata`, which is not encrypted
+  (`mwtool shader-asm --exe list`, new). `0x01016148` and its 11 variants (created in `FUN_008e41e0`):
+  distortion offset, optional DOF, splatter overlay, then `out = Sampler3dTint(rgb ×
+  ColourCubeScalesOffsets.xyz + .w)`, the last operation on the frame. The whole chain is in
+  [decomp.md](decomp.md) "Post-processing and colour grade".
+- **The grade volume is built on the CPU** ("TintBlend", `FUN_008e5f80` / `FUN_008e0930` / `FUN_008e0ac0`):
+  a job blends up to seven ColourCubes with weights into a 16³ four-byte buffer, which is copied into the
+  texture row by row. The kernels (`0x00eb56d0`… via the table at `0x010e8f70`, indexed by cube count) are not
+  in the dump.
+- **Cause of the yellow**: the cube bytes were read as "blue fastest, stored R, G, B". A straight blend + row
+  copy keeps the stored order, and the shader samples x = red, so the stored data is the texture's own layout:
+  red fastest, each entry B, G, R (+ alpha → B8G8R8A8). That is the same bytes with red and blue swapped in
+  both the index and the output. The identity cube `…3e93` reads as the identity either way, which is why the
+  old reading passed its test. With the fix, the noon cube `…4e220` turns mid grey 102 into (99, 112, 116):
+  it cools the mid-tones against the orange key light (11.0, 7.95, 5.21), where the old reading warmed them to
+  (116, 112, 99) on top of it. Supporting evidence from the PostFX states' bindings: the cooldown cube
+  (`Status.IsInCooldown`, `…7898`) now reads blue-steel (grey 102 → (77, 102, 118)) instead of sepia, and the
+  noon / dawn cubes give teal shade under neutral highlights. **Inferred, not confirmed**: the kernels that
+  would prove it are missing from the dump; a screenshot of the original settles it (procedure below).
+- **Change**: `mw_formats::ColourCube` now reads the layout above (`at(r, g, b)` returns the graded RGB for
+  input (r, g, b)); `tonemap.rs` builds the texture with x = red as before.
+- **Measured** (road-cliff viewpoint, `--units 20`, sRGB means; warm = (R + G)/2 − B):
+
+  | hour | region | before RGB / warm | after RGB / warm |
+  |------|--------|-------------------|------------------|
+  | 13 | whole frame | 114 110 79 / +33.0 | 105 110 95 / +12.7 |
+  | 13 | road | 70 63 58 / +8.4 | 57 63 71 / −10.6 |
+  | 13 | concrete post (shade) | 90 93 94 / −2.7 | 73 93 108 / −24.3 |
+  | 13 | white cliff rock (sun) | 171 169 154 / +15.6 | 165 169 164 / +3.1 |
+  | 13 (downtown plaza) | whole frame | 176 171 148 / +26.2 | 174 171 163 / +9.5 |
+  | 9 | whole frame | 118 117 98 / +19.6 | 131 126 102 / +26.3 |
+  | 18 | whole frame | 116 115 105 / +10.6 | 126 122 108 / +16.3 |
+  | 22 | whole frame | 147 132 115 / +24.0 | 169 151 125 / +34.5 |
+
+  Noon (cube `…4e220`) loses its cast. 09:00 (`…1244fc`) and 18:00 (`…0f0862`) are close to neutral cubes, and
+  22:00 uses the identity cube, so their warmth comes from elsewhere: the key light and fills, the missing
+  TintColour (21–23 h: (0.745, 0.776, 1.0), blue), the missing bloom (noon BloomColour (0.29, 0.47, 0.6), blue)
+  and vignette. The foliage stays golden: it is the textures' autumn colour.
+- **Now questionable**: the provisional skylight in `sky::irradiance_cube` (SKY_FILL) was added to stop the
+  grade turning shade olive, which was the swapped cube. With the fix, shade in the sun-lit noon frame reads
+  blue (post −24). For comparison, the same noon frame with the skylight off (SKY_FILL = 0, not committed):
+  road 48 48 49 (−1.5), post 37 36 37 (−0.5), whole frame +18.8: neutral greys, but the shade is much darker.
+  Left in place until the original's shade colour is measured.
+- **Open**: the TintBlend weights (does the environment cube replace or blend with the PostFX states'
+  identity cube, and are keyframe pairs blended or the nearest taken, as we do?); who fills the composite's A,
+  B, D (`EnvironmentKeyframe.Camera.TintColour`, `BloomColour`, the `PostFxKeyframe` vignette / bloom fields);
+  bloom; the night warmth.
+- **Confirming screenshot of the original** (not taken: needs the user): free roam, pause or park on the
+  coastal road at (−1131, 27, 1627) looking towards (−1190, 15, 1720), clear weather, 13:00, no pursuit /
+  nitrous (those states add their own cubes). `tools/orig/orig launch`, drive there, `tools/orig/orig shot
+  <scratch>/orig_h13.png`; ours: `mostrusted --camera=-1131,27,1627,-1190,15,1720 --units 20 --hour 13
+  --screenshot <scratch>/ours_h13.png`. Compare the asphalt and the concrete post's (R + G)/2 − B: the old
+  reading predicts warm (+8 road), the new one cool (−11 road). The time of day in the original must be read
+  from its clock (`GameTimeOfDay`), since the hour is not settable from the menu.
+
 ### 2026-10-05: `mwtool tune`; present and input paths of the original
 
 - Read live through the tuning menu (XKR, car park, idle): the player car at table index 48; idle 1012 rpm;

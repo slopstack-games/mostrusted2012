@@ -63,7 +63,7 @@ user's review after session 3, with where each gap is tracked:
 |-----|-------|------|
 | Handling does not feel like the game | re-read from the code 2026-10-06: drivetrain (14-state gearbox, live constants), tyres (μ × static load + downforce share, no calibrated scale; 2.6 g skidpads), steering, drift (side force outwards) and handbrake (no lock). Open: whether the brake-tap drift starts (the tyre constraint's +0x210 blend scale), the low-speed standstill hold, a few `.bss` constants; needs recordings of the original | M3.2 |
 | Tyre screech sounds as if a horn is held at the same time | fixed 2026-10-06 (not yet heard by the user): the 32 kHz waves decoded to a 47-sample loop (a 681 Hz buzz); skid intensities now follow the game's `FUN_009d1bf0`. A capture of the original would confirm | M5.4 |
-| Shading has a yellow tint over everything | the tonemap / ColourCube grade / ambient are suspects; compare against screenshots of the original at the same place and hour | M1.5, M1.7 |
+| Shading has a yellow tint over everything | `[~]` main cause fixed 2026-10-06: the ColourCube bytes were read with red and blue swapped, so the noon grade warmed instead of cooled (noon frame warm bias +33 → +13). Left: confirm with a screenshot of the original (procedure in the research log), bloom (blue at noon), the composite vignette / TintColour, the provisional skylight, night warmth | M1.5, M1.7 |
 | Animations are missing | none play: driver, steering wheel, animated body parts (`PhysicsDrivenVehicleAnimationBehaviour`), world animations (`TriggerAnimationBehaviour`, `AnimatedDynamicEntityBehaviour`), tree wind | M3.8 |
 | Inputs are not mapped like the original | our own keyboard / pad layout; the game's bindings not found yet | M3.9 |
 | UI incomplete, no Easydrive | HUD (speed, nitrous, odometer, minimap) and our own menus; the game's front end and Easydrive (`EasyDrive_ScreenScript`, `Widget_EasyDrive*`) not built | M7 |
@@ -152,15 +152,18 @@ Make a static frame look like the game.
    `LayerFog` paint map is decoded), bloom, what selects Alternates, wind (cloud scroll; no consumer found),
    `Thunderstorm_Intensity`, blending when the painted timeline changes, the upper daytime sky rendering
    near-black in the main view (also on master before the weather merge). **User review (2026-10-04): a yellow
-   tint lies over the whole image**; check the ColourCube grade, exposure and ambient against screenshots of the
-   original at the same place and hour.
+   tint lies over the whole image**: main cause found 2026-10-06 (ColourCube channel order, research log). Open:
+   `EnvironmentKeyframe.Camera.TintColour` (blue at night, warm in the evening) and `BloomColour` are not
+   applied yet; which CPU code feeds them into `GBufferComposite` (A, B, D) is not found.
 6. `[x]` **Vertex data**: packed tangent-frame quaternions (world RGBA8 `TEXCOORD1/2/3`, vehicle SNORM16
    `TEXCOORD4`) decode to normals + tangents (`mw_formats::tangent_frame`, checked against face normals);
    vertex colour is decoded.
 7. `[~]` **The game's deferred pipeline** (see "Recreate the game's architecture"): done: the G-buffer pass
    writes the game's four targets (Bevy's deferred prepass as host), the ported key light + ambient pass and
    Fog pass (`deferred.rs`, `game_lighting.wgsl`), the game's 3-cascade shadow lookup on Bevy-rendered cascades.
-   The game's auto exposure, tonemap and ColourCube grade (`tonemap.rs`).
+   The game's auto exposure, tonemap and ColourCube grade (`tonemap.rs`); the grade is the final pass built
+   into `NFS13.exe` (`mwtool shader-asm --exe`, decomp.md "Post-processing and colour grade"), cube channel
+   order fixed 2026-10-06. Not yet: the TintBlend weights (one cube, nearest keyframe, for now).
    Open: the game's cascade fit / split distances, shadow-only proxy casters (`WorldShadow_*`), the irradiance quadric / second
    irradiance cube, point / spot / cop lights (`LightBuffer_*`, `TiledLighting_*`), planar reflection
    (`[~]` opt-in mirrored camera for wet roads; not yet for `WorldPBR_Horizontal_PlanarReflection`),

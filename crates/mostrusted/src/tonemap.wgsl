@@ -4,11 +4,12 @@
 //   adapt:   `Blit2d_GeneratePCTonemapConstants_AverageLumaFinal` + `_BuildConstant`: average the
 //            metered luma and step the log2 exposure towards a target; the 1×1 state holds
 //            (exposure, smoothed luma) and carries over to the next frame.
-//   tonemap: `GBufferComposite` without motion blur, bloom or the composite tint: 1 - exp(-hdr × E),
-//            E = 2^(exposure + bias), gamma-encoded with the game's polynomial fit of sRGB, then the
-//            keyframe's ColourCube grade as `UIRearViewMirrorShader` applies it (cube(saturate(rgb) × 15/16
-//            + 1/32), ColourTintAndBloomHeadroom taken as 1). The result is decoded back to linear for
-//            Bevy's sRGB swapchain.
+//   tonemap: `GBufferComposite` without motion blur, bloom or the vignette (A × vignette + D, neutral
+//            in the default PostFX keyframe): 1 - exp(-hdr × E), E = 2^(exposure + bias), gamma-encoded
+//            with the game's polynomial fit of sRGB. Then the grade of the final post pass built into
+//            NFS13.exe (pixel shader at 0x01016148, research log 2026-10-06): the "TintBlend" volume
+//            sampled at rgb × ColourCubeScalesOffsets.xyz + .w (15/16, 1/32), here the keyframe's
+//            ColourCube alone. The result is decoded back to linear for Bevy's sRGB swapchain.
 // The light buffer holds the game's HDR units: the camera's exposure is set so that Bevy's
 // `view.exposure` is 1 / GAME_UNIT (`main.rs`).
 

@@ -35,7 +35,8 @@ pub struct GameTonemap {
     pub colour_cube: Option<Handle<Image>>,
 }
 
-/// A `ColourCube` as a 3-D texture (raw gamma-encoded values: Rgba8Unorm, not sRGB).
+/// A `ColourCube` as a 3-D texture (raw gamma-encoded values: Rgba8Unorm, not sRGB), laid out as the
+/// game's TintBlend volume: x = input red, y = green, z = blue (`mw_formats::ColourCube`).
 pub fn colour_cube_image(cube: &mw_formats::ColourCube) -> Image {
     let n = cube.size;
     let mut data = Vec::with_capacity(n * n * n * 4);

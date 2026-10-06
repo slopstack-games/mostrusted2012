@@ -1,4 +1,5 @@
-//! Every `ColourCube` in the install parses, and cube `…3e93` is the identity (checks the axis order).
+//! Every `ColourCube` in the install parses, and cube `…3e93` is the identity (it is symmetric, so it does
+//! not settle the axis order: see `mw_formats::ColourCube`).
 //! Skipped when no game install is found.
 
 use mw_assets::AssetStore;
