@@ -33,6 +33,18 @@ use bevy::shader::{Shader, ShaderDefVal};
 /// atlas, stacked vertically (`LightBuffer_KeylightAndAmbient` addresses cascade i at v = (2i + 1) / 6);
 /// Bevy keeps them as layers of an array texture, which the lighting pass samples the same way.
 pub const SHADOW_MAP_SIZE: usize = 2048;
+
+/// [`SHADOW_MAP_SIZE`], or `MW_SHADOW_MAP_SIZE` (a picture-changing A/B switch, research log session 5
+/// round 6).
+pub fn shadow_map_size() -> usize {
+    std::env::var("MW_SHADOW_MAP_SIZE").ok().and_then(|v| v.parse().ok()).unwrap_or(SHADOW_MAP_SIZE)
+}
+
+/// [`SHADOW_DISTANCE`], or `MW_SHADOW_DISTANCE` metres (a picture-changing A/B switch).
+fn shadow_distance() -> f32 {
+    static D: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *D.get_or_init(|| std::env::var("MW_SHADOW_DISTANCE").ok().and_then(|v| v.parse().ok()).unwrap_or(SHADOW_DISTANCE))
+}
 /// Shadows end here (metres of view depth) and fade out over the last `SHADOW_FADE` metres. The game sets
 /// both through `ShadowMap_Constants{,2}.w` from code; these values are provisional.
 const SHADOW_DISTANCE: f32 = 180.0;
@@ -45,7 +57,7 @@ pub fn shadow_cascades() -> bevy::light::CascadeShadowConfig {
         num_cascades: 3,
         minimum_distance: 0.1,
         first_cascade_far_bound: 20.0,
-        maximum_distance: SHADOW_DISTANCE,
+        maximum_distance: shadow_distance(),
         overlap_proportion: 0.2,
     }
     .build()
@@ -250,7 +262,7 @@ fn prepare_buffer(
         key_colour: l.key_colour.extend(0.0),
         key_direction: l.key_direction.normalize_or_zero().extend(0.0),
         // Shadow fade as the game's `saturate(ShadowMap_Constants.w - depth × ShadowMap_Constants2.w)`.
-        params: Vec4::new(l.sky_brightness, 1.0 / SHADOW_FADE, SHADOW_DISTANCE / SHADOW_FADE, 1.0),
+        params: Vec4::new(l.sky_brightness, 1.0 / SHADOW_FADE, shadow_distance() / SHADOW_FADE, 1.0),
         fog_colour: f.colour.extend(0.0),
         fog_colour_sun: f.colour_sun.extend(0.0),
         fog_coeffs: Vec4::new(1.0 / span, f.near / span, f.power, 0.0),

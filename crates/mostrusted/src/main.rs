@@ -30,12 +30,13 @@ mod reflection;
 mod replay;
 mod settings;
 mod sfx;
+mod shadow_cull;
 mod sky;
 mod tonemap;
 mod tyre_marks;
 mod weather;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -296,6 +297,10 @@ pub(crate) struct Loaded {
     textures: HashMap<TexKey, Handle<Image>>,
     models: HashMap<ResourceId, ModelParts>,
     materials: HashMap<Look, Handle<GameMaterial>>,
+    /// Materials of alpha-tested parts (`shadow_cull::ShadowClass::Alpha`).
+    mask_materials: HashSet<AssetId<GameMaterial>>,
+    /// Models' own shadow distances (`loader::Msg::ShadowRange`).
+    shadow_ranges: HashMap<ResourceId, f32>,
     instances: usize,
     /// Placements with physics (`props.rs`).
     props: usize,
@@ -531,6 +536,7 @@ fn main() -> anyhow::Result<()> {
         && cli.road_wetness > 0.0
         && matches!(request, Request::World { .. } | Request::Drive { world: true, .. });
     app.add_plugins(weather::WeatherPlugin { hud: menu_enabled })
+        .add_plugins(shadow_cull::ShadowCullPlugin)
         .add_plugins(reflection::PlanarReflectionPlugin { enabled: reflection })
         .add_plugins(FreeCameraPlugin)
         .add_plugins(MaterialPlugin::<GameMaterial>::default())
@@ -719,17 +725,34 @@ fn receive_assets(
                             m
                         }
                     };
+                    if part.look.blend == materials::Blend::Mask {
+                        loaded.mask_materials.insert(mat.id());
+                    }
                     handles.push((meshes.add(part.mesh), mat));
                 }
                 loaded.models.insert(id, handles);
+            }
+            Msg::ShadowRange(id, d) => {
+                loaded.shadow_ranges.insert(id, d);
             }
             Msg::Instance { model, transform } => {
                 let Some(parts) = loaded.models.get(&model) else { continue };
                 // Groundcover (model keys 0x6…, `loader::groundcover`) casts no shadows.
                 let casts_shadow = model.0 >> 60 != 6;
+                let range = loaded.shadow_ranges.get(&model).copied().map(shadow_cull::ShadowRange);
                 commands.spawn((Transform::from_matrix(transform), Visibility::default())).with_children(|c| {
                     for (mesh, mat) in parts {
-                        let mut e = c.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat.clone())));
+                        let class = if loaded.mask_materials.contains(&mat.id()) {
+                            shadow_cull::ShadowClass::Alpha
+                        } else if model.0 >> 62 != 0 {
+                            shadow_cull::ShadowClass::Backdrop
+                        } else {
+                            shadow_cull::ShadowClass::World
+                        };
+                        let mut e = c.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat.clone()), class));
+                        if let Some(r) = range {
+                            e.insert(r);
+                        }
                         if !casts_shadow {
                             e.insert(bevy::light::NotShadowCaster);
                         }
@@ -749,7 +772,8 @@ fn receive_assets(
             }
             Msg::Prop { model, transform, physics } => {
                 let Some(parts) = loaded.models.get(&model) else { continue };
-                props::spawn_prop(&mut commands, physics, Transform::from_matrix(transform), parts);
+                let range = loaded.shadow_ranges.get(&model).copied().map(shadow_cull::ShadowRange);
+                props::spawn_prop(&mut commands, physics, Transform::from_matrix(transform), parts, range);
                 loaded.instances += 1;
                 loaded.props += 1;
             }

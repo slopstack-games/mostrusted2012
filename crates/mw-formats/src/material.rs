@@ -180,6 +180,8 @@ pub struct Model {
     /// Indexed by `EModelState`: LOD0..LOD5, SHADOW, OCCLUSION.
     pub state_renderables: Vec<Option<u8>>,
     pub lod_distances: Vec<f32>,
+    /// Distance (metres, stored squared) up to which the model casts shadows; FLT_MAX-squared = always.
+    pub shadow_distance: f32,
     pub flags: u8,
 }
 
@@ -200,6 +202,7 @@ impl Model {
                 .map(|i| r.u8(states + i).map(|v| (v != 0xFF).then_some(v)))
                 .collect::<mw_bundle::Result<_>>()?,
             lod_distances: (0..n_lods).map(|i| r.f32(lods + i * 4).map(f32::sqrt)).collect::<mw_bundle::Result<_>>()?,
+            shadow_distance: r.f32(0x0C)?.sqrt(),
             flags: r.u8(0x15)?,
         })
     }
