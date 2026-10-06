@@ -69,6 +69,8 @@ pub struct CarInput {
     /// Scripted test in progress (`--test`): throttle, brake, steer, handbrake
     /// (> 0.5 = pulled). Overrides other input.
     pub scripted: Option<[f32; 4]>,
+    /// The car is crashed (`crash.rs`): no control until the reset (`Player.CanDriveAway`).
+    pub crashed: bool,
 }
 
 /// Physical parameters of a car, derived from the game data.
@@ -625,6 +627,12 @@ pub(crate) fn car_physics(
 ) {
     let dt = time.delta_secs();
     input.apply_script();
+    if input.crashed {
+        input.throttle = 0.0;
+        input.brake = 0.0;
+        input.steer = 0.0;
+        input.handbrake = false;
+    }
     for (entity, mut car, mut forces, mut transform) in &mut cars {
         if std::mem::take(&mut input.reset) {
             let yaw = transform.rotation.to_euler(EulerRot::YXZ).0;

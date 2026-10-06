@@ -89,7 +89,11 @@ impl Plugin for CameraPlugin {
         app.insert_resource(CameraSettings { mode: self.mode, look_back: self.look_back })
             .init_resource::<LookInput>()
             .init_resource::<ImpactKicks>()
-            .add_systems(Update, (camera_input, follow_car).chain().after(crate::drive::read_input))
+            .init_resource::<SnapCamera>()
+            .add_systems(
+                Update,
+                (camera_input, follow_car).chain().in_set(GameplayCamera).after(crate::drive::read_input),
+            )
             .add_systems(Update, free_camera_stick)
             .add_systems(FixedPostUpdate, collect_impacts.after(PhysicsSystems::StepSimulation));
     }
@@ -272,7 +276,17 @@ impl Spring {
 }
 
 /// The 3D camera while it follows a car (the free camera has its own controller).
-type DrivingCamera = (With<Camera3d>, Without<FreeCamera>, Without<crate::reflection::PlanarReflectionCamera>);
+pub(crate) type DrivingCamera =
+    (With<Camera3d>, Without<FreeCamera>, Without<crate::reflection::PlanarReflectionCamera>);
+
+/// The gameplay camera's systems (the crash camera overrides what they placed).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct GameplayCamera;
+
+/// Set when the car is moved (the crash reset): the camera starts over behind it instead of springing
+/// across the jump.
+#[derive(Resource, Default)]
+pub struct SnapCamera(pub bool);
 
 /// Camera state, smoothed every frame.
 #[derive(Default)]
@@ -306,6 +320,7 @@ struct CameraState {
 fn follow_car(
     time: Res<Time>,
     settings: Res<CameraSettings>,
+    mut snap: ResMut<SnapCamera>,
     look: Res<LookInput>,
     mut kicks: ResMut<ImpactKicks>,
     mut state: Local<CameraState>,
@@ -333,6 +348,9 @@ fn follow_car(
     let flat_v = Vec3::new(vel.x, 0.0, vel.z);
     let speed = flat_v.length();
     let mph = speed / MPH;
+    if std::mem::take(&mut snap.0) {
+        s.car = None;
+    }
     if s.car != Some(entity) {
         let trace = s.trace.take();
         *s = CameraState {

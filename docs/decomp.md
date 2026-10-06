@@ -530,3 +530,57 @@ chain, from the light buffer (HDR game units) to the screen:
 Consequence for the ColourCube layout: a straight weighted blend keeps the stored order, so the stored entries
 are the texture's own (x = input red fastest, bytes B, G, R + alpha), not "blue fastest, stored R, G, B"
 (inferred; the kernels themselves are missing from the dump; `mw_formats::ColourCube`).
+
+## Crashes (2026-10-06)
+
+Data: `mw_assets::crash` (layouts in its doc comment); runtime: `crates/mostrusted/src/crash.rs`; values and model
+decisions: [handling.md](handling.md), "Crash camera".
+
+- **The test** (`FUN_009a9fd0`, confirmed): an impact is tested against one `ImpactRules` entry of the car's
+  `CrashingRules` (reached through its damage bar profile, `vehicle+0x1178` → `DamageBarProfile+0x34`). It is a
+  crash when any threshold that is present is exceeded strictly: `1617a710` against the impact's damage,
+  `d6c0e908` against a third value, `2414aa68` against the closing speed times a `.bss` constant (inferred to be
+  m/s → mph: the thresholds read as mph, 70 for scenery and 38–100 for landings). A car flagged at
+  `vehicle+0x1777` never crashes. When it fires, the entry's `DamageOverride` (`DamageToDeal`, flag) replaces
+  the impact's damage.
+- **Which entry** (confirmed): car against car (`FUN_009575e0`) uses `PlayerRules` (0x24) when both are race
+  cars ("race car impact"), else `22061460` (0x10, "AI impact") or `RoadblockRules` (0x2c, "roadblock impact")
+  by a flag of the other car; traffic impacts ("traffic impact" / "crashing traffic impact",
+  `FUN_00958130`) use `TrafficRules` (0x30). The closing speed there is the sum of both cars' velocities
+  along the normal, and the damage values come from the impulse solve (`FUN_0093c240`: impulse over a
+  response mass scale, clamped). `FUN_008fbb90` makes a car-on-car contact a crash outright when the contact
+  point lies inside 0.8 × a box from the struck car's physics data and that car is on the ground, taking only
+  the matching set's `DamageOverride`. Landings (`FUN_00915eb0`) use `LandingRules` (0x1c) with the speed into
+  the ground; props and payloads have their own names ("prop impact", `FUN_00940d50`). Scenery:
+  `FUN_0093bc40` copies the `WorldRules` (0x34) thresholds and override into the collision response block,
+  so the world test happens inside the contact solver (the comparison was not traced; the contact record
+  carries the crash flag at `+0xed`, and `FUN_009175e0` turns it into a crash).
+- **Entering the crash** (`FUN_009145c0`, `FUN_009b2d40`, confirmed): the impact handler calls the crash
+  entry with reason "Impact" / "damage applied"; it saves the car's pre-crash state (velocity at
+  `+0x1124…` copied to `+0x114c…`, the "pre-carnage velocity" the sound reads) and sets `vehicle+0x1774`.
+  Other entries: "wrecked" / "no health" when the damage bar's used segments reach the profile's segment
+  count (`DamageBarProfile+0x74`), "voodoo logic" / "upside down" (`FUN_009168b0`, from the per-frame check in
+  `FUN_00918600` when the body's up vector's y falls below a `.bss` threshold) and "over fatal collision"
+  (`FUN_00916b70`, scripted). The player receives the result as a message (`FUN_006d3550`): crashed /
+  wrecked flags at `player+0x23f` / `+0x23e`, the cause (0 world, 1 traffic, 4 battling; telemetry
+  `GAME EVNT CRSH` / `WRCK`, `FUN_006be330`).
+- **No control while crashed**: inferred from the player binding "Can the player drive away from his current
+  crash?" (`player+0x42c`); the car keeps its physics and tumbles.
+- **Safe pose** (`FUN_006d0f40`, confirmed): every frame the player is neither crashed nor wrecked, it saves
+  the car's position, orientation and speed in mph (`vehicle+0x1620`) at `player+0x30…0x4c`, `+0x90`.
+- **Reset** (`FUN_006d39d0`, `FUN_006c9fb0`, `FUN_006d0180`, confirmed): while crashed, in modes where the
+  predicate `FUN_006dfed0` holds (not identified), a timer from the game mode (`GameMode+0x44`, `09d6656d`; no
+  `GameMode` instance was found in the PC bundles) counts down by the scaled frame time; on expiry, or at
+  once when the mode's `+0x68` flag is set, the reset starts. Its target is the saved
+  pose (or the nearest race-route point when the mode's `+0x70` flag is set), moved onto the road by
+  `FUN_00648060` (not read further). The car is placed rolling at `max(GameLogicConfig 75d82dd5 (30),
+  a44eb2f3 (0.7) × saved mph)`, capped after a crash at `74521df4` (50) (0 when `FUN_006bd930` holds, not identified), when the mode
+  allows rolling resets (a flag in the game-mode manager); otherwise from rest.
+- **The crash camera** is a feedback `Sequence` (the second of `FeedbackMessageGroup` 457707's `Sequences2`,
+  inferred from its content: the only sequence with slow motion and bystander shots, 5.5 s long). The code that
+  plays it on the crash event was not found. `CameraSequenceItem` (`0x3f858`) is the one item type the dump
+  tests by ID (`FUN_0049a050`); the other items' handlers are reached through vtables. The sequence clock is
+  real time (inferred: at its 0.14 / 0.22 time scales the shots would otherwise last over 10 s each).
+- Not found: the bystander camera's maths (its params are read through cached pointers, not in place), the
+  scene analysers' update (vtables at `0x00fe4638` and nearby, `FUN_007d9840` and its siblings build them),
+  the `SlowMoSequenceItem` handler.

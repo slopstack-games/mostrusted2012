@@ -381,6 +381,42 @@ addresses). Changes to the model:
   reading predicts warm (+8 road), the new one cool (−11 road). The time of day in the original must be read
   from its clock (`GameTimeOfDay`), since the hour is not settable from the menu.
 
+### 2026-10-06: crash rules and the crash camera (M3.3)
+- **Rules** (`Physics.CrashingRules`, 14 instances: 10 in GAMELOGIC/GAMEPLAY, 4 in PHYSICS/PHYSICSCONFIG): ten
+  `ImpactRules` arrays (named so far: `LandingRules`, `PlayerRules`, `RoadblockRules`, `TrafficRules`,
+  `WorldRules`) with their counts; each rule has three float-array thresholds and an optional
+  `DamageOverride`. `FUN_009a9fd0` is the test: damage over `1617a710`, closing speed (mph) over `2414aa68`, a
+  third value over `d6c0e908` (empty everywhere). The player's rules come through its damage bar profile
+  (`DamageBarProfiles.PlayerOffline` → `CrashingRules` handle at +0x34). Offline player: world 30 damage /
+  70 mph. Write-up: decomp.md "Crashes"; values: handling.md "Crash camera".
+- **Crash camera** = `Sequences2[1]` of `FeedbackMessageGroup` 457707 (`0100000000068b43`): slow motion
+  (1 → 0.1, 0.14, 0.22), two `CameraSequenceItem`s with `BystanderCameraParams`, `HideHudSequenceItem`, a
+  letterbox `UILayout`, a `SceneAnalysis` and mixer automation, 5.5 s on the real-time clock. Identified by
+  content only: the code that plays it on a crash was not found (the item handlers sit behind vtables).
+- **Names cracked** (`genesys-crack`, camera vocabulary): `Camera_Transform_Binding`,
+  `Target_Transform_Binding`, `X/Y/Z_Offset`, `Target_X/Y/Z_Offset`, `Screen_Offset_X/Y`, `Maximum_FOV`,
+  `Minimum_FOV`, `Use_Zoom`. Unnamed: `86980811` (10 / 1000), `cc8312fe` (50 / 5.4), `005c8fc7` (bool),
+  `72b09fef` (10 / 3.07), `c6b768dd`, `8b9e63bb`, `af29af91`; 4-word searches only gave nonsense.
+  `SAS.Analyser["Freeway"]`: analyser names are field hashes of the string (`Freeway` = 892525534,
+  `Landing` = 1890182743).
+- **Reset after a crash** (`FUN_006d0f40`, `FUN_006c9fb0`, `FUN_006d0180`): the last pre-crash pose, rolling at
+  `min(max(30, 0.7 × mph), 50)` (`GameLogicConfig` `75d82dd5`, `a44eb2f3`, `74521df4`). The wait is
+  `GameMode+0x44`; no `GameMode` object is in the PC bundles (`mwtool genesys all --type GameMode` finds none,
+  and `SmashAndGrabConfig.GameMode` 2210000 is not a resource).
+- **Dead ends**: the world impact's damage value and closing speed are computed inside the contact solver
+  (`FUN_0093bc40` copies the thresholds into the response block; `FUN_008fab30` and `FUN_009bb640` move
+  flags but the comparison was not found); the `DAT_0118a090` scale in the closing-speed test is `.bss`
+  (read it live: `mwtool memscan`, `dump NFS13.exe+0xd8a090`; 2.2369 expected); the bystander and analyser
+  maths (no in-place reads of `BystanderCameraParams`; analysers built by `FUN_007d9840`…).
+- Implemented: `mw_assets::crash` (rules, sequence, bystander params, analyser, letterbox, reset speeds; all
+  rules and the sequence verified by `crates/mw-assets/tests/crash.rs`), `crates/mostrusted/src/crash.rs`
+  (detection, slow motion via `Time<Virtual>`, shots, HUD, letterbox, reset), `--crash-wall-width`,
+  `MW_CRASH_TRACE`.
+- Open: confirm against a capture of the original's crash cam (procedure in the session report: a
+  `tools/orig` run into a wall at > 70 mph closing, screenshots at 0.3 / 1.25 / 3.25 / 5 s, and the bystander
+  camera's position and FOV read with `memscan`); the analyser's y = −8; the shot FOV with zoom off; whether
+  free roam resets rolling.
+
 ### 2026-10-05: `mwtool tune`; present and input paths of the original
 
 - Read live through the tuning menu (XKR, car park, idle): the player car at table index 48; idle 1012 rpm;

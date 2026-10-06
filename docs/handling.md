@@ -260,6 +260,52 @@ eye closes 1.5 m in and pitches 4.5° nose down at 1.1 g. `--test drift`: the ca
 car's in a 19.7° drift (half the slip angle plus 6° of spring lag), the eye 1.5 m to the side; roll peaks at
 3.4° at the 1 g entry.
 
+## Crash camera (`mw_assets::crash`, `crates/mostrusted/src/crash.rs`, 2026-10-06)
+
+What the code does is in [decomp.md](decomp.md) ("Crashes"); here the data and what we made of it.
+
+**Data**:
+- Rules: `DamageBarProfiles.PlayerOffline` (PHYSICS/PHYSICSCONFIG) → `DamageBarProfile` `01000000001028bf` →
+  `CrashingRules` `0100000000102928`. `WorldRules`: damage > 30 or closing speed > 70 mph is a crash
+  (`DamageOverride` 50, flag off). The offline player has no `LandingRules` and no `PlayerRules`;
+  `TrafficRules` 20 (damage), `RoadblockRules` 40, the AI / cop set (`22061460`) 33, two prop-ish sets 150 /
+  150 + 100 mph. Eight more rule sets in GAMELOGIC/GAMEPLAY belong to modes (landing at 38 / 60 / 100 mph).
+- Sequence `0100000000068b43` (`FeedbackMessageGroup` 457707, `Sequences2[1]`), real-time seconds:
+
+  | time | item |
+  |------|------|
+  | 0–0.5 | slow motion 1 → 0.1006 (two-key curve, flat tangents); gameplay camera |
+  | 0.5–2.0 | slow motion 0.14; bystander `0100000000068b41`: camera at `SAS.Analyser["Freeway"]` (a `SimpleSceneAnalyser`, offset (−5, −8, 10)) + (0, 3, 0), aim at the car (`Players.CameraTarget`), `Screen_Offset_Y` 0.207, `Tracking_Speed` 0.2, `TrackingAcceleration` 0.01, FOV 10…70.93 with `Use_Zoom` off, `005c8fc7` true |
+  | 2.0–4.5 | slow motion 0.22; bystander `0100000000068b42`: camera at the car + (−1.5, 1, 3), aim at the car, FOV 10…90, zoom off, `005c8fc7` false |
+  | 0–4.5 | `HideHudSequenceItem`; `SceneAnalysisSequenceItem` (`010000000006ccb3`, five analysers) |
+  | 0–4.75 | `UILayout` `0100000000019c66`: black letterbox bars, 94 px top / 100 px bottom of 720, slide 150 px out over 0.25 s |
+  | 0–5.5 | mixer and bus automation (music and engine ducking), `RaceCarEffectSequenceItem` property 5 (0.45 → 1 → 0.46) |
+
+- Reset (`GameLogicConfig`): rolling at `max(30, 0.7 × pre-crash mph)`, capped at 50 mph after a crash.
+
+**Model decisions** (no source yet):
+
+| What | Ours | Missing source |
+|------|------|----------------|
+| crash test | closing speed only (avian's pre-solve `normal_speed`, contacts with \|normal.y\| < 0.7 against static scenery) | the impact damage in damage-bar units (`1617a710` rule) and the solver's own closing speed |
+| reset time | when the cameras end (4.5 s) | `GameMode+0x44` (no `GameMode` instance found) |
+| reset pose | the pose 1 s of game time before the impact, upright, moving forward | the game saves the last pre-crash frame and moves it onto the road (`FUN_00648060`) |
+| `Freeway` shot | analyser offset x / z in the pre-crash heading's frame from the car at the shot's start, on the ground there (ray down), plus `Y_Offset`; fixed for the shot | the analyser's update (its y = −8 is not understood) |
+| car shot | car position + offset turned by the car's current heading | how `Players.CameraTarget` binds (full rotation?) |
+| aim | moves `Tracking_Speed` of the way to the target per 60 Hz tick; `TrackingAcceleration` unused | the tracker's maths |
+| screen offset | the view pitches so the target sits `Screen_Offset_Y` × half-height above centre | sign and units |
+| FOV | `Maximum_FOV` (vertical, as camera.rs) while `Use_Zoom` is off | which FOV a non-zooming bystander holds |
+| control | none until the reset | inferred from `Player.CanDriveAway` |
+| not done | `RaceCarEffect` property 5, audio ducking, upside-down crashes (`.bss` threshold), traffic / cop / prop rules | |
+
+Test: `mostrusted --drive 911 --test crash [--crash-wall-width 2] --screenshot <scratch>/crash.png` adds
+`-crashcam-0-slowmo` (0.3 s), `-1-freeway` (1.25 s), `-2-car` (3.25 s) and `-3-reset` (5 s) to the before / after
+shots; `MW_CRASH_TRACE=<file>` logs each impact's decision, the sequence frame by frame (time scale, shot, eye,
+aim, FOV, car) and the reset. 911 into the 80 m wall (2026-10-06): `impact 7.150 71.5 70.0 1` (71.5 mph closing,
+a crash), shot 0's eye at (−5.07, 3.0, 87.92) beyond the wall, the reset to (0, 0, 49.04) rolling at 50 mph
+(pre-crash 71.5 × 0.7 capped). With the default 30 m wall the `Freeway` shot looks at the wall's back (the shot
+stands 10 m past the impact); a 2 m pillar shows the car.
+
 ## Model decisions (not from data)
 
 | Constant | Value | Why |

@@ -245,14 +245,35 @@ pub struct CrashTest {
     angle: f32,
     /// Distance from the spawn point to the wall face (m): sets the impact speed.
     distance: f32,
+    /// Wall width (m).
+    width: f32,
     phase: Phase,
     timer: f32,
     top_speed: f32,
+    /// Crash camera screenshots taken (`crash.rs`), and the one after the reset.
+    crash_shots: usize,
+    reset_shot: bool,
 }
 
+/// Crash-camera screenshots: sequence time (real seconds after the impact) and file suffix. The first is
+/// the gameplay camera slowing down, then one per bystander shot, then the chase camera after the reset.
+const CRASH_SHOTS: [(f32, &str); 3] =
+    [(0.3, "crashcam-0-slowmo"), (1.25, "crashcam-1-freeway"), (3.25, "crashcam-2-car")];
+const RESET_SHOT: f32 = 5.0;
+
 impl CrashTest {
-    pub fn new(out: Option<PathBuf>, angle: f32, distance: f32) -> Self {
-        Self { out, angle, distance, phase: Phase::Settle, timer: 0.0, top_speed: 0.0 }
+    pub fn new(out: Option<PathBuf>, angle: f32, distance: f32, width: f32) -> Self {
+        Self {
+            out,
+            angle,
+            distance,
+            width,
+            phase: Phase::Settle,
+            timer: 0.0,
+            top_speed: 0.0,
+            crash_shots: 0,
+            reset_shot: false,
+        }
     }
 
     fn path(&self, suffix: &str) -> Option<PathBuf> {
@@ -279,7 +300,7 @@ fn spawn_crash_wall(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let size = Vec3::new(30.0, 3.0, 2.0);
+    let size = Vec3::new(test.width, 3.0, 2.0);
     let rot = Quat::from_rotation_y(test.angle.to_radians());
     let centre = Vec3::new(0.0, size.y / 2.0, test.distance + size.z / 2.0);
     commands.spawn((
@@ -297,6 +318,7 @@ fn run_crash_test(
     mut test: ResMut<CrashTest>,
     mut input: ResMut<CarInput>,
     cars: Query<(&Car, &CarDamage, &Transform)>,
+    crash: Res<crate::crash::CrashState>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Ok((car, dmg, transform)) = cars.single() else { return };
@@ -316,7 +338,7 @@ fn run_crash_test(
         }
         Phase::Drive => {
             input.scripted = Some([1.0, 0.0, 0.0, 0.0]);
-            if damaged {
+            if damaged || crash.active.is_some() {
                 info!(
                     "TEST crash: hit at {:.0} km/h (top speed {:.0} km/h)",
                     car.speed.abs() * 3.6,
@@ -331,6 +353,30 @@ fn run_crash_test(
         }
         Phase::Crashed => {
             input.scripted = Some([0.0, 0.0, 0.0, 1.0]);
+            if let Some(active) = &crash.active {
+                // The crash camera: screenshots during the sequence and of the chase camera after the reset.
+                if let Some(&(at, name)) = CRASH_SHOTS.get(test.crash_shots)
+                    && active.t >= at
+                {
+                    info!(
+                        "TEST crash: crash camera at {:.2} s ({:.0} mph impact) -> {name}",
+                        active.t, active.closing_mph
+                    );
+                    if let Some(p) = test.path(name) {
+                        commands.spawn(Screenshot::primary_window()).observe(save_to_disk(p));
+                    }
+                    test.crash_shots += 1;
+                }
+                if !test.reset_shot && active.reset_done && active.t >= RESET_SHOT {
+                    info!("TEST crash: after the reset at {:.2} s", active.t);
+                    if let Some(p) = test.path("crashcam-3-reset") {
+                        commands.spawn(Screenshot::primary_window()).observe(save_to_disk(p));
+                    }
+                    test.reset_shot = true;
+                }
+                test.timer = 0.0;
+                return;
+            }
             if test.timer > 3.0 && car.speed.abs() < 0.5 {
                 let (speed, point) = dmg.worst_impact.unwrap_or_default();
                 info!(
@@ -359,9 +405,14 @@ fn run_crash_test(
 /// Look at the car's nose (where the damage is) instead of following it.
 fn crash_camera(
     test: Res<CrashTest>,
+    crash: Res<crate::crash::CrashState>,
     cars: Query<&GlobalTransform, With<CarDamage>>,
     mut camera: Query<&mut Transform, crate::MainCamera>,
 ) {
+    // The crash camera has the view while its sequence runs.
+    if crash.active.is_some() {
+        return;
+    }
     let (Ok(car), Ok(mut cam)) = (cars.single(), camera.single_mut()) else { return };
     let (target, eye) = if test.angle == 0.0 {
         // Head-on: the car stays at the wall, so look from the left side, behind the wall plane.

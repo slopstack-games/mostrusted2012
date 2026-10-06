@@ -67,7 +67,7 @@ user's review after session 3, with where each gap is tracked:
 | Animations are missing | none play: driver, steering wheel, animated body parts (`PhysicsDrivenVehicleAnimationBehaviour`), world animations (`TriggerAnimationBehaviour`, `AnimatedDynamicEntityBehaviour`), tree wind | M3.8 |
 | Inputs are not mapped like the original | our own keyboard / pad layout; the game's bindings not found yet | M3.9 |
 | UI incomplete, no Easydrive | HUD (speed, nitrous, odometer, minimap) and our own menus; the game's front end and Easydrive (`EasyDrive_ScreenScript`, `Widget_EasyDrive*`) not built | M7 |
-| No crash camera | crash damage works, but no crash cam (`Physics.CrashingRules`, `CameraSequenceItem` / `CameraShakeSequenceItem` sequences) | M3.3 |
+| No crash camera | crash cam since 2026-10-06 (`crash.rs`): rules, slow motion, bystander shots, letterbox and rolling reset from the data; the shots' placement / FOV and the reset pose are model decisions until compared with a capture of the original | M3.3 |
 | No AI vehicles | no traffic, racers or cops | M6.1, M6.4 |
 | Prop collisions | decoded and simulated but opt-in (`--prop-physics`): the car wedges against knocked props | M3.1 |
 | Game logic in general | no events, pursuits, Most Wanted list, jack spots, progression | M6 |
@@ -238,9 +238,14 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    modes (C / gamepad Y, `--camera-mode`); the chase camera's yaw spring (speed band, drift spring), speed
    movement, acceleration spring, roll and pitch from the named thresholds, high-speed and impact shake, world
    collision, look-back (B / right stick back) and look-around (right stick, right mouse drag) that springs
-   back; the free camera looks with the right stick. **Missing: the crash camera** (cut-away replay of a crash /
-   takedown; look for it in the crash sequences: `Physics.CrashingRules`, `CameraSequenceItem`,
-   `CameraShakeSequenceItem`, the decomp's crash path). Still open: the in-car cameras' unnamed fields (rigid now),
+   back; the free camera looks with the right stick. **Crash camera** (`crash.rs`, 2026-10-06): a body impact
+   on scenery closing faster than the player's `WorldRules` (70 mph, `FUN_009a9fd0`) is a crash: no control,
+   the feedback sequence `0100000000068b43` on real time (slow motion 1 → 0.1, 0.14, 0.22; the `Freeway` and
+   car-relative bystander shots; no HUD; letterbox), then the rolling reset of `GameLogicConfig`
+   (decomp.md "Crashes", handling.md "Crash camera"; `--test crash` takes crash-cam screenshots,
+   `MW_CRASH_TRACE`). Still open there: the damage rule (needs damage-bar units), the reset onto the road and
+   its timer (`GameMode`), the bystander maths (placement, tracking, FOV are model decisions), takedown /
+   traffic / landing rules, a capture of the original to compare. Still open: the in-car cameras' unnamed fields (rigid now),
    the remaining acceleration / yaw-spring / gradient / height fields, FOV convention and calibration against
    the original (handling.md, "Cameras").
 4. `[~]` The world streams nearest-first from the spawn point (or the `--camera` pose). Still open: streaming that
@@ -404,7 +409,7 @@ the running original (`tools/orig/orig` drives it, `mwtool capture` / `--replay`
    load path and the logging DLL, which is what finally measures N, the grip caps and the side force.
 2. The **yellow tint** (M1.5 / M1.7), visible every second of play; a listen to the fixed tyre screech (M5.4)
    and a capture of the original's slide to confirm it.
-3. **Input mapping** like the original (M3.9) and the **crash camera** (M3.3).
+3. **Input mapping** like the original (M3.9); the **crash camera** (M3.3, first version 2026-10-06) needs a capture of the original to settle its model decisions.
 4. **Easydrive** and the game's HUD / front end (M7).
 5. **Animations** (M3.8): driver, steering wheel, animated body parts.
 6. **Prop collisions** usable by default (M3.1).
