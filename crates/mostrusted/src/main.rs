@@ -337,9 +337,12 @@ fn main() -> anyhow::Result<()> {
         Some("drift") => Some(drive::TestKind::Drift),
         Some("donut") => Some(drive::TestKind::Donut),
         Some("engine") => Some(drive::TestKind::Engine),
+        Some("landing") => Some(drive::TestKind::Landing),
+        Some("climb") => Some(drive::TestKind::Climb),
+        Some("jitter") => Some(drive::TestKind::Jitter),
         Some(other) => {
             anyhow::bail!(
-                "unknown --test {other} (accel, brake, corner, handbrake, drift, donut, engine, crash, smash)"
+                "unknown --test {other} (accel, brake, corner, handbrake, drift, donut, engine, landing, climb, jitter, crash, smash)"
             )
         }
     };
@@ -847,8 +850,23 @@ fn spawn_test_track(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    test: Option<Res<drive::DriveTest>>,
 ) {
     use avian3d::prelude::{Collider, RigidBody};
+    // Ramps for the landing and climb tests, a trimesh like the world's collision.
+    if let Some((vertices, indices)) = test.and_then(|t| drive::test_obstacle(t.kind)) {
+        let mut mesh =
+            Mesh::new(bevy::mesh::PrimitiveTopology::TriangleList, bevy::asset::RenderAssetUsages::default());
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vertices.iter().map(|v| v.to_array()).collect::<Vec<_>>());
+        mesh.insert_indices(bevy::mesh::Indices::U32(indices.iter().flatten().copied().collect()));
+        mesh.compute_smooth_normals();
+        commands.spawn((
+            RigidBody::Static,
+            Collider::trimesh(vertices, indices),
+            Mesh3d(meshes.add(mesh)),
+            MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.5, 0.45, 0.4), ..default() })),
+        ));
+    }
     commands.spawn((RigidBody::Static, Collider::cuboid(40_000.0, 1.0, 40_000.0), Transform::from_xyz(0.0, -0.5, 0.0)));
     commands.spawn((
         Mesh3d(meshes.add(Plane3d::default().mesh().size(40_000.0, 40_000.0))),
