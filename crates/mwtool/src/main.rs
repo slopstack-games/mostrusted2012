@@ -38,6 +38,13 @@ struct Cli {
 enum UiCmd {
     /// One line per screen bundle with its widgets (and their layout counts).
     Screens,
+    /// The Easydrive menu model of a driving screen: item types, tiers, sources and items.
+    Easydrive {
+        #[arg(default_value = mw_assets::easydrive::EASYDRIVE_SCREEN)]
+        screen: String,
+        #[arg(long, default_value = mw_assets::DEFAULT_LANGUAGE)]
+        lang: String,
+    },
     /// Print a screen's widgets, layouts and elements.
     Show {
         /// Screen bundle, e.g. `UI/SCREENS2/371670.BNDL` (the free-roam HUD).
@@ -485,6 +492,7 @@ fn main() -> Result<()> {
             }
             match cmd {
                 UiCmd::Screens => ui::screens(&store)?,
+                UiCmd::Easydrive { screen, lang } => ui::easydrive(&store, &screen, &store.language(&lang)?)?,
                 UiCmd::Show { screen, widget, lang } => {
                     let lang = store.language(&lang)?;
                     let w = names(&widget);

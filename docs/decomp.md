@@ -678,7 +678,11 @@ _(session 5: to be filled in)_
 
 ## Front end, HUD and Easydrive
 
-_(session 5: to be filled in)_
+_(session 5)_ Easydrive's tree, labels, item types and input actions are data (research log 2026-10-06
+session 5). The code side is not located yet: the callback names the data invokes (`ExitTierVia`,
+`EasyDriveOnNext`, `EZStateJack::SelectManufacturer`, `SelectPaintPackFromEasyDrive`, ...) appear in
+`strings.csv`, but the dump has no references to them, so the functions that register the hooks, generate the
+manufacturer / model / race lists (`Signals.GetIntValue` sources) and map `easy_*` to keys are still to be found.
 
 ## Free-roam rules: collectibles, jack spots, events
 

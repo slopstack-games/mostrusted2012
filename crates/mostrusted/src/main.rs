@@ -13,6 +13,7 @@ mod damage;
 mod deferred;
 mod drive;
 mod freeroam;
+mod easydrive;
 mod game_text;
 mod garage;
 mod hud;
@@ -194,6 +195,9 @@ struct Cli {
     /// Open the car menu at startup (also in `--screenshot` runs, to capture it).
     #[arg(long)]
     show_menu: bool,
+    /// Open Easydrive, the game's d-pad menu, at startup (also in `--screenshot` runs, to capture it).
+    #[arg(long)]
+    show_easydrive: bool,
     /// Driving camera at startup: chase, bonnet, bumper, or lookback (the chase camera looking back).
     /// C / gamepad Y cycles the modes the car's data defines.
     #[arg(long, default_value = "chase")]
@@ -467,6 +471,10 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(crash::CrashPlugin)
         .add_plugins(freeroam::FreeroamPlugin)
         .add_plugins((garage::GaragePlugin { script }, menu::MenuPlugin { enabled: menu_enabled, open: cli.show_menu }))
+        .add_plugins(easydrive::EasyDrivePlugin {
+            enabled: menu_enabled || cli.show_easydrive,
+            open: cli.show_easydrive,
+        })
         .add_plugins(game_text::GameTextPlugin)
         .add_plugins(hud::HudPlugin {
             enabled: !cli.no_hud && test.is_none() && !crash && !smash && !matches!(request, Request::Vehicle { .. }),

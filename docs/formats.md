@@ -382,3 +382,16 @@ One instance, `HAWAII/TRIGGERS.BNDL`, version 8; loaded by `FUN_0053c2f0`. Parse
   collectables (`FUN_006e4920`): '0' security gate, '2' billboard, '4' speed camera, '<' jack spot,
   '=' jack spot car, 6 body shop (letters 'A'..'O' = the same in other content packs). Base game: 152 / 216 /
   74 / 183 / 185 / 22. Rules in decomp.md "Free-roam rules".
+
+## Easydrive (inside `Screen2`, `UI/SCREENS2/*.BNDL`)
+
+Inline GeneSys structs in a driving screen's widget groups (group children: field `c7413006`); loader
+`mw_assets::easydrive`, listing `mwtool ui easydrive`. All definitions share the widget base (Name, ids, handles,
+`UserActionInstance` actions, data sources, layouts, scripts, 8 `u8` flags, 0x0C..0x44).
+
+| type | own fields |
+|------|------------|
+| `Widget_EasyDriveTierDefinition` (88) | 68 HSM transition name (`TO_BASE` = root), 76 `Title` (Language id), 80 `Sources`[] {`053e93c0` condition binding, `2205fba3` length binding, `Path`, `Type` (item type name), `77b2f836` bool} |
+| `Widget_EasyDriveLinkItemList` (76) | 68 `Entries`[] {`Token` (transition to the tier of that name, or `DISMISS` / `CONFIRM`), `Description`, `Name` (Language ids), `SpeechCommand` u16} |
+| `Widget_EasyDriveHookItemList` (76) | 68 `Entries`[] {`aabe34d0` hook argument, `3ab7e7fa` HSM exit token, `b50ff8fe` hook token, description, name, speech} |
+| `Widget_EasyDriveTypeDefinition` (108) | 88 properties[] {`Name`, `Path` binding with `[#]` = item index}, 92 / 96 selection callbacks[] {`aabe34d0` argument property, `781443e5` enabled property, `Name` (code callback), three u16 enums} |
