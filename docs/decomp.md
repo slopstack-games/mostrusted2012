@@ -1417,7 +1417,7 @@ distinct camera frames (the game updates at 60 Hz). What it settles:
   reset each update from state + 0x40..0x4c (this car: (0, 1.575, −4.6, 0)), and cam + 0x5b0.. from state +
   0x50.. (look-at), then modified by `FUN_005c76a0`, `FUN_005c8ad0` and `FUN_005d12b0`. The recorded eye z is
   −5.94 at rest and −4.0 at 130 mph (plus cam + 0x588, down to −1.18); the w lane (cam + 0x5ac) fits
-  `−1.2 + 4.55 × (1 − tan 35° / tan(FOV/2))`, a FOV-compensating dolly whose source is not read.
+  `−1.2 + 4.55 × (1 − tan 35° / tan(FOV/2))`, a FOV-compensating dolly: `FUN_005c1f90` (round 9, below).
 - **Live state block** (camera + 0x290): +0x44 / +0x48 eye y / z, +0x64 look-at y 1.15, +0x58 / +0x68 0.891,
   **+0x70 K_pitch 0.55**, **+0x74 K_yaw default 0.09**, **+0x78 K_roll 1.0**, +0x7c / +0x80 FOV 70 / 95,
   +0x84 0.055, **+0x88 / +0x8c FOV speed band 0 / 125 mph**, +0x90 10 (FOV per unit of cam + 0x284), +0x94 4.
@@ -1431,12 +1431,42 @@ distinct camera frames (the game updates at 60 Hz). What it settles:
 - **FOV (`FUN_005c76a0`, read)**: `FOV = lerp(state+0x7c, state+0x80, clamp((mph − state+0x88) /
   (state+0x8c − state+0x88), 0, 1)) + state+0x90 × cam+0x284`; cam + 0x284 stayed 0. The same function ramps
   cam + 0x6f8 up while vehicle + 0x1944 > 0 (by its shape nitrous) and writes it × `DAT_00fafc4c` to target +
-  0x38 (0 in this run). The recorded FOV deviates from this by 3.8° RMS, correlated with acceleration: a later
-  term, not found.
+  0x38 (0 in this run). The recorded FOV deviates from this by 3.8° RMS, correlated with acceleration: the
+  term at the end of the same function (cam + 0x6ec, round 9, below).
 - **`FUN_005c8ad0` (read)**: scales the eye vector's x, z and w lanes (not y) by `1 + |sin-poly(yaw lag)| ×
   (r − 1) × DAT_00f8a810`, `r` a ratio of the target object's +0xd0 − +0xc0 over +0xd8 − +0xc8 (by its shape the
-  car's box width over length): the camera moves in as the car turns side-on to it. Not ported (object and
-  constant unread); this is the nearest thing to "avoidance" in the chase code.
+  car's box width over length): the camera moves in as the car turns side-on to it. Ported in round 9 (below); this is the nearest thing
+  to "avoidance" in the chase code.
+
+### Eye position and the FOV's acceleration term (round 9, read and ported)
+
+Order inside `FUN_005d4970`: `FUN_005c76a0` (FOV), `FUN_005c8ad0` (side-on), `FUN_005c1f90` (dolly), later
+`FUN_005d12b0` (heights, the z offset cam + 0x588). Replay: `tools/camreplay.py` (eye = cam + 0x5a0..0x5a8).
+- **FOV acceleration term (`FUN_005c76a0`, tail).** `a` = `FUN_005d9610`'s vector, `v` = `FUN_005d9590`'s,
+  `f` = the target's forward row (target object + 0x2dd0). Target = `clamp(|a|, 0, 20)` (`_DAT_00fb06a0` = 0
+  subtracted, `_DAT_00fb07f0` = 20), zero unless `f·â > 0` and `f·v̂ > 0` (accelerating forwards while moving
+  forwards). cam + 0x6ec moves towards it by 0.01 of the gap per update when rising (`_DAT_00fb0810`) and 0.05
+  when falling (`_DAT_00fb0800`), not scaled by dt. Then `FOV += (+0x14 of FUN_0046ee10) × FUN_0046ee20() ×
+  cam+0x6ec × 60` (`DAT_00f8b534`); the two time getters are not identified (ported as 1 per 60 Hz update).
+  A replay of cam + 0x6ec from the recorded body velocity, differentiated per game frame, in m/s², matches the
+  recorded value to 0.094 RMS (mph/s gives 2.7): `a` is the body's acceleration in m/s². The nitrous ramp
+  (cam + 0x6f8: +2 × dt while vehicle + 0x1944 > 0, else −0.5 × dt, clamped to [0, 1]; × 5 to target + 0x38) is
+  not a FOV term here: it goes to the target object.
+- **Side-on pull-in (`FUN_005c8ad0`).** The eye's x, z, w lanes (y × `_UNK_00fb05f4` = 1) scale by
+  `1 + |sin(lag_yaw)| × (r − 1) × 0.5` (`DAT_00f8a810`), the sine from a range-reduced polynomial of the yaw
+  lane of its second argument (the followed yaw minus the car's), `r` = (+0xd0 − +0xc0) / (+0xd8 − +0xc8) of
+  the target's object (a box's max − min: width over length). Fit to the recording (eye before the dolly vs
+  `|sin(lag)|`): slope −0.287, so r = 0.425 for this run's car. Ported with the body's collision box.
+- **FOV dolly (`FUN_005c1f90`).** `d = 3.15 − 3.15 / tan(FOV × 0.5 × π/180) + 0.15` (`DAT_00fb0e90` = 3.15,
+  `_DAT_00fb0720` = 0.15, `_DAT_00faf84c` = π/180; the CRT call is the tangent); the eye moves by `d` along
+  the unit vector from eye to look-at (cam + 0x5c0..0x5c8), and its w lane by `d` (look-at w holds the
+  distance): −1.2 m (back) at 70°, +0.41 m (in) at 95°. This is the recorded −5.94 at rest / −4.0 at speed:
+  undoing it leaves the eye at the data's −4.6 (±2 %, the side-on term) at every speed.
+- **Replay (`tools/camreplay.py`)**: eye z RMS 0.70 m (data eye) → 0.24 m (ported, with our FOV; ~0.13 m with
+  the recorded FOV); FOV RMS 3.76° (base lerp) → 2.23°. Remaining FOV error: about −1.3 to −2.7° mean between 0
+  and 120 mph (the term is too large while it is high; the unidentified time getters are the likely factor).
+- **Not read this round**: the yaw stiffness producer (`FUN_005c90a0`'s `f`, `_DAT_0110e8f0`; the fit
+  `0.05 + 0.025 × mph/100` stays a model decision), `FUN_005c9380` (roll), the deceleration pitch.
 
 ### Camera effects (round 8)
 
