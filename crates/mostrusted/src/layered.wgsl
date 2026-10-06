@@ -617,6 +617,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     out.motion_vector = calculate_motion_vector(in.world_position, in.previous_world_position);
 #endif
 #else
+#ifdef DEFERRED_PREPASS
+#ifdef MAY_DISCARD
+    // Bevy queues alpha-masked materials in the forward AlphaMask3d pass even when they are deferred,
+    // so trees and other 1-bit looks were drawn a second time over the game lighting + Fog result, lit
+    // by Bevy and unfogged. The game's alpha-tested programs (Tree_Translucent_1Bit_*) only write the
+    // G-buffer and are fogged by the Fog pass like the terrain: keep the deferred result.
+    discard;
+#endif
+#endif
     if layered.mode == 11u {
         // VehicleNFS13_Glass_Colourise: multiply blend by lerp(1, MaterialColour, fog.w = 1).
         out.color = vec4(layered.p[0].rgb, 1.0);
