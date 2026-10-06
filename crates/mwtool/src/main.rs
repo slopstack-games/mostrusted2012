@@ -328,6 +328,18 @@ enum Cmd {
     /// The collision surface list (`HAWAII/SURFACELIST.BNDL`) with each surface's triangle count and
     /// collision flags over the track units.
     Surfaces,
+    /// Free-roam objects from the world's TriggerData (`HAWAII/TRIGGERS.BNDL`): speed cameras, billboards,
+    /// security gates, jack spots (location + car), body shops; counts per kind, then one line each with
+    /// `--list` (or `--kind SpeedCam` etc.). `--all-kinds` adds the counts of every trigger kind byte.
+    Freeroam {
+        #[arg(long)]
+        list: bool,
+        /// Only this kind (telemetry name: SpeedCam, Billboard, SecGate, JackspotLocation, JackspotCar, BodyShop).
+        #[arg(long)]
+        kind: Option<String>,
+        #[arg(long)]
+        all_kinds: bool,
+    },
     /// Physics of the world's props, compound and dynamic objects (`PhysicalDefinition`): volume kinds,
     /// masses and break forces over the track units (or the given bundles).
     Props {
@@ -553,6 +565,7 @@ fn main() -> Result<()> {
             }
         }
         Cmd::Surfaces => props::surfaces(&AssetStore::new(game)?)?,
+        Cmd::Freeroam { list, kind, all_kinds } => freeroam(&AssetStore::new(game)?, list, kind.as_deref(), all_kinds)?,
         Cmd::Props { bundles, verbose } => props::run(&AssetStore::new(game)?, &bundles, verbose)?,
         Cmd::Vehicles => {
             let store = AssetStore::new(game)?;
@@ -1871,4 +1884,57 @@ fn tune_cmd(_: &str, _: Option<u32>, _: &Path, _: bool, _: bool) -> Result<()> {
 #[cfg(not(target_os = "linux"))]
 fn telemetry_cmd(_: &Path, _: &PathBuf, _: f64, _: Option<f64>, _: &str, _: Option<u32>, _: &[String]) -> Result<()> {
     bail!("telemetry reads /proc/<pid>/mem and is Linux-only for now")
+}
+
+/// `mwtool freeroam`: the free-roam collectables in TriggerData (docs/formats.md "TriggerData").
+fn freeroam(store: &AssetStore, list: bool, kind: Option<&str>, all_kinds: bool) -> Result<()> {
+    let data = store.trigger_data()?;
+    let mut per_kind: BTreeMap<fmt::Collectable, usize> = BTreeMap::new();
+    let mut per_byte: BTreeMap<(u8, &str), usize> = BTreeMap::new();
+    for t in &data.triggers {
+        if let Some(c) = t.collectable() {
+            *per_kind.entry(c).or_default() += 1;
+        }
+        let shape = match t.shape {
+            fmt::TriggerShape::Box { .. } => "box",
+            fmt::TriggerShape::Sphere { .. } => "sphere",
+            fmt::TriggerShape::Point { .. } => "point",
+        };
+        *per_byte.entry((t.kind, shape)).or_default() += 1;
+    }
+    println!(
+        "TriggerData v{}: {} triggers, grid {:?} {:?}",
+        data.version,
+        data.triggers.len(),
+        data.grid_dims,
+        data.grid
+    );
+    for (c, n) in &per_kind {
+        println!("{:<17} {n}", c.name());
+    }
+    if all_kinds {
+        for ((k, shape), n) in &per_byte {
+            println!("kind {k:3} ({:?}) {shape:<6} {n}", *k as char);
+        }
+    }
+    if list || kind.is_some() {
+        for t in &data.triggers {
+            let Some(c) = t.collectable() else { continue };
+            if kind.is_some_and(|k| !k.eq_ignore_ascii_case(c.name())) {
+                continue;
+            }
+            let [x, y, z] = t.position;
+            let shape = match t.shape {
+                fmt::TriggerShape::Box { rotation: q, size: s } => {
+                    // Heading of the box's local +z axis about Y, in degrees.
+                    let yaw = (2.0 * (q[0] * q[2] + q[3] * q[1])).atan2(1.0 - 2.0 * (q[0] * q[0] + q[1] * q[1]));
+                    format!("box {:.1}x{:.1}x{:.1} yaw {:.0}", s[0], s[1], s[2], yaw.to_degrees())
+                }
+                fmt::TriggerShape::Sphere { radius } => format!("sphere r {radius:.1}"),
+                fmt::TriggerShape::Point { direction: d } => format!("point dir {:.2},{:.2},{:.2}", d[0], d[1], d[2]),
+            };
+            println!("{:<17} {:>8} {x:9.1} {y:7.1} {z:9.1}  flags {:#04x}  {shape}", c.name(), t.id, t.flags);
+        }
+    }
+    Ok(())
 }

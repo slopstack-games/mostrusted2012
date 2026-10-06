@@ -51,6 +51,14 @@ const MARGIN: f32 = 6000.0;
 const TIE: f32 = 1.0;
 
 impl AssetStore {
+    /// The world's trigger volumes (`TriggerData` in `HAWAII/TRIGGERS.BNDL`, loaded by `FUN_0053c2f0`):
+    /// speed cameras, billboards, security gates, jack spots and the other region kinds.
+    pub fn trigger_data(&self) -> Result<fmt::TriggerData> {
+        let bundle = self.bundle("HAWAII/TRIGGERS.BNDL").ok_or(Error::Missing(ResourceId(0)))?;
+        let entry = bundle.entries_of_type(ResourceType::TriggerData).next().ok_or(Error::Missing(ResourceId(0)))?;
+        Ok(fmt::TriggerData::parse(&bundle.load(entry)?)?)
+    }
+
     /// The streaming zones (`ZoneList` in `HAWAII/PVS.BNDL`).
     pub fn zone_list(&self) -> Result<fmt::ZoneList> {
         let bundle = self.bundle("HAWAII/PVS.BNDL").ok_or(Error::Missing(ResourceId(0)))?;
