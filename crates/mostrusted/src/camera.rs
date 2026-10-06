@@ -82,6 +82,20 @@ const ACCEL_FULL_MPHS: f32 = 20.0;
 /// the target by `DAT_0110e4d0` and the offset by `DAT_0110e680` (both `.bss`, not read); only this one
 /// is applied, generous enough not to bind at the data's targets.
 const ACCEL_Z_LIMIT: f32 = 3.0;
+/// `FUN_005c1f90`, the FOV dolly: the eye moves along its line to the look-at point by
+/// `DOLLY_C + DOLLY_OFFSET − DOLLY_C / tan(FOV / 2)` metres (`.rdata` 0x00fb0e90 = 3.15, 0x00fb0720 = 0.15):
+/// −1.2 (back) at 70°, +0.41 (in) at 95°, so the car keeps its size on screen as the FOV widens.
+const DOLLY_C: f32 = 3.15;
+const DOLLY_OFFSET: f32 = 0.15;
+/// `FUN_005c8ad0`, the side-on pull-in: the eye's x / z scale by `1 + |sin(yaw lag)| × (width / length − 1) ×
+/// SIDE_ON_WEIGHT` (`DAT_00f8a810` = 0.5).
+const SIDE_ON_WEIGHT: f32 = 0.5;
+/// `FUN_005c76a0`, the acceleration FOV term (cam + 0x6ec): target `|a|` (m/s²) clamped to 20
+/// (`_DAT_00fb07f0`) while the car accelerates forwards, approached by 0.01 per update rising and 0.05
+/// falling (`_DAT_00fb0810` / `_DAT_00fb0800`), added to the FOV in degrees.
+const FOV_ACCEL_MAX: f32 = 20.0;
+const FOV_ACCEL_RISE: f32 = 0.01;
+const FOV_ACCEL_FALL: f32 = 0.05;
 /// Rate (1/s) at which the field of view follows its target.
 const FOV_RATE: f32 = 3.0;
 /// High-speed shake: metres of eye movement per unit of `High_Speed_Shake.Amplitude`, and the
@@ -338,6 +352,11 @@ struct CameraState {
     pitch: f32,
     /// Longitudinal acceleration (m/s²), measured between physics ticks.
     accel: f32,
+    /// Acceleration vector (m/s²) between physics ticks (`FUN_005d9610`'s role) and the velocity it is
+    /// measured from; the FOV's acceleration term (cam + 0x6ec).
+    accel_vec: Vec3,
+    last_vel: Vec3,
+    fov_accel: f32,
     last_speed: f32,
     since_speed: f32,
     shake_t: f32,
@@ -417,6 +436,8 @@ fn follow_car(
     if car.speed != s.last_speed {
         let raw = ((car.speed - s.last_speed) / s.since_speed.max(1e-3)).clamp(-40.0, 40.0);
         s.accel += (raw - s.accel) * (1.0 - (-s.since_speed * 8.0).exp());
+        s.accel_vec = (vel.0 - s.last_vel) / s.since_speed.max(1e-3);
+        s.last_vel = vel.0;
         s.last_speed = car.speed;
         s.since_speed = 0.0;
     }
@@ -606,6 +627,29 @@ fn chase_view(
     let mut look_at = Vec3::from(ext.look_at);
     eye.y += (sp.eye_y - eye.y) * h;
     look_at.y += (sp.look_y - look_at.y) * h;
+
+    // FUN_005c76a0: FOV = lerp(min, max, clamp(mph / 125)) + state + 0x90 (10) × cam + 0x284 (0 in the
+    // recording) + the acceleration term cam + 0x6ec. Its rates are per update (60 Hz in the original).
+    let _ = speed_frac;
+    let a = s.accel_vec;
+    let a_target = if forward.dot(a) > 0.0 && forward.dot(flat_v) > 0.0 { a.length().min(FOV_ACCEL_MAX) } else { 0.0 };
+    let a_rate = if a_target > s.fov_accel { FOV_ACCEL_RISE } else { FOV_ACCEL_FALL };
+    s.fov_accel += (a_target - s.fov_accel) * (1.0 - (1.0 - a_rate).powf(k60));
+    let fov = ext.fov[0] + (ext.fov[1] - ext.fov[0]) * (mph.abs() / FOV_FULL_MPH).clamp(0.0, 1.0) + s.fov_accel;
+
+    // FUN_005c8ad0: the eye closes in as the car turns side-on to the camera (yaw lag), by the body's
+    // width-to-length ratio. The original's box is the target object's +0xc0..+0xd8 (not identified; the
+    // body's collision box here).
+    let half = car.params.body_half_extents;
+    let ratio = if half.z > 0.1 { half.x / half.z } else { 1.0 };
+    let side_on = 1.0 + wrap_angle(s.yaw - car_yaw).sin().abs() * (ratio - 1.0) * SIDE_ON_WEIGHT;
+    eye.x *= side_on;
+    eye.z *= side_on;
+    // FUN_005c1f90: the FOV dolly along the eye's line to the look-at point.
+    let dolly = DOLLY_C + DOLLY_OFFSET - DOLLY_C / (fov.to_radians() * 0.5).tan();
+    if let Ok(dir) = Dir3::new(look_at - eye) {
+        eye += *dir * dolly;
+    }
     // The eye's z offset (cam + 0x588) follows a target at a first-order rate: target = 0a78c15f · h +
     // (bd3a7cfc while accelerating, 7c9039e2 while decelerating) · |a| / a_full, where a is the
     // acceleration along the velocity; the rate is fdd25ee3 accelerating, 285f2260 decelerating.
@@ -638,9 +682,6 @@ fn chase_view(
     let pivot = Vec3::from(ext.pivot);
     let eye_w = car_t.translation + frame * (pivot + orbit * (eye - pivot));
     let look_w = car_t.translation + frame * (pivot + Quat::from_rotation_y(s.orbit.x + back) * (look_at - pivot));
-    // FUN_005c76a0: FOV = lerp(min, max, clamp(mph / 125)) + state + 0x90 (10) × cam + 0x284 (0 in the recording).
-    let _ = speed_frac;
-    let fov = ext.fov[0] + (ext.fov[1] - ext.fov[0]) * (mph.abs() / FOV_FULL_MPH).clamp(0.0, 1.0);
     (eye_w, look_w, frame * Vec3::Y, fov)
 }
 
