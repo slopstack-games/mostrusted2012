@@ -31,8 +31,13 @@ the details, [PLAN.md](PLAN.md) "Where it stands" the state per gap.
 - **Rendering**: the day sky's dark patches (cloud textures decoded as sRGB) fixed; three road decal shader
   variants drawn as the game does; game-font text no longer draws under its own panel (glyph layout ran after
   Bevy's UI stack system: this was also the HUD's "faint digits").
-- **Traced, not ported** (each needs a live read first): bloom, vignette, the colour-cube blend; the sun
-  direction's writer and the shadow cascade fit were not found.
+- **Vignette ported** (`tonemap.rs`, `MW_NO_VIGNETTE=1`; decomp.md "Post-processing"): A·v + D from the
+  default PostFX keyframe's Vignette, the gain k = 1.8245 a live read whose source is open, the small live
+  stretch s of A and D (1.0025…1.0385) not modelled.
+- **Traced, not ported**: bloom (the live renderer block at +0xac74 does not match the assumed Bloom unpack
+  order: see the research log; needs the copy in `FUN_008c9e40` disassembled from the snapshot) and the
+  colour-cube blend (slot weights not read yet); the sun direction's writer and the shadow cascade fit were
+  not found.
 - **The user's two visual reports** (road / terrain texture scale; foliage in the wrong place), state:
   - Texture scale: UV maths of every ground family, mip chains, UV formats and the detail-map strength match the
     game; three road decal variants and the anisotropy (8× → the game's 4×, `SamplerState` decoded, `mwtool

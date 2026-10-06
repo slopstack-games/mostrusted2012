@@ -171,7 +171,8 @@ Make a static frame look like the game.
    Open: the game's cascade fit / split distances, shadow-only proxy casters (`WorldShadow_*`), the irradiance quadric / second
    irradiance cube, point / spot / cop lights (`LightBuffer_*`, `TiledLighting_*`), planar reflection
    (`[~]` opt-in mirrored camera for wet roads; not yet for `WorldPBR_Horizontal_PlanarReflection`),
-   bloom and the composite tint in `GBufferComposite`, motion blur, `PostAA`.
+   bloom and the composite tint in `GBufferComposite` (`[~]` the vignette A·v + D is ported, 2026-10-06; bloom
+   waits for its live field mapping), motion blur, `PostAA`.
 
 ### M2: Game data layer `[ ]`
 Unlocks names, tuning and rules. Can run in parallel with M1.
