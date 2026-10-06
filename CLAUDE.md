@@ -119,7 +119,8 @@ MW_CAMERA_TRACE=<scratch>/cam.trace ./target/release/mostrusted --drive 911 --te
 # under the camera (--timeline <id|default> overrides); --weather = the Alternate (bad-weather) keyframes.
 # Roads are always wet as in the game (--road-wetness 0 dries them); --planar-reflection mirrors the scene in them
 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,1720 --units 20 --hour 1.5 --weather --planar-reflection --screenshot <scratch>/wet.png
-# Post-processing (tonemap.rs): the original's vignette from the default PostFX keyframe; MW_NO_VIGNETTE=1 for A/B
+# Post-processing (tonemap.rs): the original's vignette from the default PostFX keyframe; MW_NO_VIGNETTE=1 for A/B.
+# Bloom (bloom.wgsl, colour / intensity / level weights from the environment keyframe): MW_NO_BLOOM=1 for A/B
 MW_NO_VIGNETTE=1 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,1720 --units 20 --hour 13 --screenshot <scratch>/novig.png
 ./target/release/mwtool paint-map 010000000002823d --png <scratch>/timelines.png --at=-1158,1700   # WorldPaintMap + zone outlines
 # Handling tests on a flat track (4x real time), prints TEST RESULT lines and exits

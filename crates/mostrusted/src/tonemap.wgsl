@@ -4,15 +4,16 @@
 //   adapt:   `Blit2d_GeneratePCTonemapConstants_AverageLumaFinal` + `_BuildConstant`: average the
 //            metered luma and step the log2 exposure towards a target; the 1×1 state holds
 //            (exposure, smoothed luma) and carries over to the next frame.
-//   tonemap: `GBufferComposite` without motion blur or bloom: the vignette (A × v + D from the default
+//   tonemap: `GBufferComposite` without motion blur: the bloom term (bloom.wgsl builds its texture;
+//            `MW_NO_BLOOM=1` turns it off), the vignette (A × v + D from the default
 //            PostFX keyframe, `MW_NO_VIGNETTE=1` turns it off), then 1 - exp(-hdr × E), E = 2^(exposure + bias), gamma-encoded
 //            with the game's polynomial fit of sRGB. Then the grade of the final post pass built into
 //            NFS13.exe (pixel shader at 0x01016148, research log 2026-10-06): the "TintBlend" volume
 //            sampled at rgb × ColourCubeScalesOffsets.xyz + .w (15/16, 1/32), here the keyframe's
 //            ColourCube alone. The result is decoded back to linear for Bevy's sRGB swapchain.
-//            Without bloom this equals the game with bloom off: `FUN_0089d5c0` then sets B (slot 0x9d)
-//            to (1, 1, 1, 0), and B.w = 0 removes the bloom term. Bloom and the
-//            TintBlend slot weights (`FUN_008c9e40`) wait for live reads (decomp.md "Post-processing").
+//            Bloom off is the game's own off path: `FUN_0089d5c0` then sets B (slot 0x9d) to
+//            (1, 1, 1, 0), and B.w = 0 removes the bloom term. The TintBlend slot weights
+//            (`FUN_008c9e40`) wait for live reads (decomp.md "Post-processing").
 // The light buffer holds the game's HDR units: the camera's exposure is set so that Bevy's
 // `view.exposure` is 1 / GAME_UNIT (`main.rs`).
 
@@ -33,6 +34,8 @@ struct Tonemap {
     vignette_d: vec4<f32>,
     vignette_centre_scale: vec4<f32>,
     vignette_angle: vec4<f32>,
+    // B: BloomColour.rgb, bloom intensity (0 = bloom off)
+    bloom: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> tm: Tonemap;
@@ -42,6 +45,7 @@ struct Tonemap {
 @group(0) @binding(4) var state: texture_2d<f32>;
 @group(0) @binding(5) var colour_cube: texture_3d<f32>;
 @group(0) @binding(6) var cube_sampler: sampler;
+@group(0) @binding(7) var bloom_texture: texture_2d<f32>;
 
 // Must match `METER_SIZE` in tonemap.rs.
 const METER: u32 = 32u;
@@ -131,9 +135,12 @@ fn vignette_weight(uv: vec2<f32>) -> f32 {
 fn tonemap(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let c = textureSampleLevel(hdr, hdr_sampler, in.uv, 0.0);
     let k = exposure_scale(current_exposure());
-    // GBufferComposite: hdr × (A.rgb × v + D.rgb) × T.w (decomp.md "Post-processing").
+    // GBufferComposite: (hdr + bloom × B.rgb × saturate(bloom × T.w) × B.w) × (A.rgb × v + D.rgb) × T.w
+    // (decomp.md "Post-processing"); T.w = k / ln 2, the curve below is 2^(-x · T.w) = exp(-x · k).
+    let bloom = textureSampleLevel(bloom_texture, hdr_sampler, in.uv, 0.0).rgb;
+    let lit = c.rgb + bloom * tm.bloom.rgb * saturate(bloom * k * 1.442695) * tm.bloom.w;
     let vignette = tm.vignette_a.rgb * vignette_weight(in.uv) + tm.vignette_d.rgb;
-    var g = gamma_fit(max(1.0 - exp(-c.rgb * vignette * k), vec3(0.0)));
+    var g = gamma_fit(max(1.0 - exp(-lit * vignette * k), vec3(0.0)));
     if tm.flags.y > 0.5 {
         g = textureSampleLevel(colour_cube, cube_sampler, saturate(g) * (15.0 / 16.0) + 1.0 / 32.0, 0.0).rgb;
     }

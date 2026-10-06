@@ -4,7 +4,9 @@
 //! turns off with `Tonemapping::None`): meter the displayed luma onto a small grid, adapt a 1×1 exposure
 //! state (ping-ponged between two textures so it carries over frames), then tonemap the HDR target with
 //! the adapted exposure. Settings come from the environment keyframe (`mw_assets::environment::
-//! CameraExposure`) through the [`GameTonemap`] resource.
+//! CameraExposure`) through the [`GameTonemap`] resource. Between the adaptation and the tonemap the game's
+//! bloom chain runs (`bloom.wgsl`): three downsampled RGBM levels, blurred and combined coarse to fine, added
+//! in the composite. `MW_NO_BLOOM=1` turns it off (the game's bloom-off path: B = (1, 1, 1, 0)).
 
 use bevy::asset::{embedded_asset, load_embedded_asset};
 use bevy::core_pipeline::FullscreenShader;
@@ -75,6 +77,34 @@ struct TonemapUniform {
     vignette_d: Vec4,
     vignette_centre_scale: Vec4,
     vignette_angle: Vec4,
+    /// Bloom B = renderer slot 0x9d (`GenericVector4_B`): `BloomColour`.rgb, intensity in w (0 = off).
+    bloom: Vec4,
+}
+
+/// One bloom pass's constants (bloom.wgsl): x = `kColorAddWeight.z`, y = `.w`, z = the exposure bias.
+#[derive(ShaderType, Clone, Copy, Default)]
+struct BloomUniform {
+    weights: Vec4,
+}
+
+/// The lower bound `FUN_008e6f40` clamps the three level weights to (`DAT_00f9d474`, `.rdata`).
+const BLOOM_MIN_WEIGHT: f32 = 0.01;
+
+/// Bloom level sizes as fractions of the screen, finest first. Not traced (the targets are created outside
+/// the bloom code, `FUN_008eaaf0` receives them in a struct at +0x130…+0x148): a model decision. The first
+/// downsample's taps at ±1 source texel on both diagonals average a 4 × 4 block exactly when it divides by
+/// 4; the later ones then divide by 2.
+const BLOOM_DIVISORS: [u32; 3] = [4, 8, 16];
+
+/// `kColorAddWeight.z` / `.w` of the three add passes, finest level first (`FUN_008e6f40`, decomp.md
+/// "Level combine"): C3 = blur(L3); C2 = (b·blur(L2) + a·C3) / (a + b); C1 = (c·blur(L1) + (a + b)·C2) / Σ.
+fn bloom_add_weights(w: [f32; 3]) -> [[f32; 2]; 3] {
+    let [c, b, a] = w.map(|x| x.max(BLOOM_MIN_WEIGHT));
+    [[c / (a + b + c), (a + b) / (a + b + c)], [b / (a + b), a / (a + b)], [1.0, 0.0]]
+}
+
+fn bloom_enabled() -> bool {
+    std::env::var_os("MW_NO_BLOOM").is_none()
 }
 
 /// The vignette's falloff gain k, read live (renderer +0xa980.w = k, +0xa990.w = 1 − k, +0xa9b0.zw =
@@ -102,10 +132,12 @@ pub struct GameTonemapPlugin;
 impl Plugin for GameTonemapPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "tonemap.wgsl");
+        embedded_asset!(app, "bloom.wgsl");
         app.add_plugins(ExtractResourcePlugin::<GameTonemap>::default()).add_systems(Last, update_time);
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else { return };
         render_app
             .init_resource::<TonemapBuffer>()
+            .init_resource::<BloomBuffers>()
             .add_systems(RenderStartup, init_pipelines)
             .add_systems(Render, prepare_buffer.in_set(RenderSystems::Prepare))
             .add_systems(Core3d, game_tonemap.before(tonemapping).in_set(Core3dSystems::PostProcess));
@@ -126,10 +158,44 @@ fn update_time(time: Res<Time>, tonemap: Option<ResMut<GameTonemap>>, mut frames
 #[derive(Resource, Default)]
 struct TonemapBuffer(UniformBuffer<TonemapUniform>);
 
+/// The add passes' constants, finest level first (the downsample and horizontal passes read only the bias).
+#[derive(Resource, Default)]
+struct BloomBuffers([UniformBuffer<BloomUniform>; 3]);
+
+/// Bloom render targets for one screen size: RGBM levels (Rgba8Unorm, as the game's encode), the horizontal
+/// blur and the combined result of each level (float, HDR game units). Finest first.
+struct BloomTargets {
+    size: (u32, u32),
+    levels: [TextureView; 3],
+    blurred: [TextureView; 3],
+    combined: [TextureView; 3],
+}
+
+impl BloomTargets {
+    fn new(device: &RenderDevice, (w, h): (u32, u32)) -> Self {
+        let make = |label: &'static str, d: u32, format: TextureFormat| {
+            target_2d(device, label, ((w / d).max(1), (h / d).max(1)), format)
+        };
+        let per_level =
+            |label: &'static str, format: TextureFormat| [0, 1, 2].map(|i| make(label, BLOOM_DIVISORS[i], format));
+        Self {
+            size: (w, h),
+            levels: per_level("bloom_level", TextureFormat::Rgba8Unorm),
+            blurred: per_level("bloom_blur_h", TextureFormat::Rgba16Float),
+            combined: per_level("bloom_combined", TextureFormat::Rgba16Float),
+        }
+    }
+}
+
 #[derive(Resource)]
 struct TonemapPipelines {
     layout: BindGroupLayoutDescriptor,
     sampler: Sampler,
+    bloom_layout: BindGroupLayoutDescriptor,
+    bloom_down_hdr: CachedRenderPipelineId,
+    bloom_down_rgbm: CachedRenderPipelineId,
+    bloom_blur_h: CachedRenderPipelineId,
+    bloom_add: CachedRenderPipelineId,
     meter: CachedRenderPipelineId,
     adapt: CachedRenderPipelineId,
     tonemap: CachedRenderPipelineId,
@@ -139,10 +205,14 @@ struct TonemapPipelines {
 }
 
 fn render_target(device: &RenderDevice, label: &'static str, size: u32, format: TextureFormat) -> TextureView {
+    target_2d(device, label, (size, size), format)
+}
+
+fn target_2d(device: &RenderDevice, label: &'static str, (w, h): (u32, u32), format: TextureFormat) -> TextureView {
     device
         .create_texture(&TextureDescriptor {
             label: Some(label),
-            size: Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+            size: Extent3d { width: w, height: h, depth_or_array_layers: 1 },
             mip_level_count: 1,
             sample_count: 1,
             dimension: TextureDimension::D2,
@@ -172,11 +242,30 @@ fn init_pipelines(
                 texture_2d(TextureSampleType::Float { filterable: false }),
                 texture_3d(TextureSampleType::Float { filterable: true }),
                 sampler(SamplerBindingType::Filtering),
+                texture_2d(TextureSampleType::Float { filterable: true }),
+            ),
+        ),
+    );
+    let bloom_layout = BindGroupLayoutDescriptor::new(
+        "game_bloom_layout",
+        &BindGroupLayoutEntries::sequential(
+            ShaderStages::FRAGMENT,
+            (
+                uniform_buffer::<BloomUniform>(false),
+                texture_2d(TextureSampleType::Float { filterable: true }),
+                sampler(SamplerBindingType::Filtering),
+                texture_2d(TextureSampleType::Float { filterable: true }),
+                texture_2d(TextureSampleType::Float { filterable: false }),
             ),
         ),
     );
     let shader = load_embedded_asset!(asset_server.as_ref(), "tonemap.wgsl");
-    let pipeline = |label: &'static str, entry: &'static str, format: TextureFormat| {
+    let bloom_shader = load_embedded_asset!(asset_server.as_ref(), "bloom.wgsl");
+    let queue = |label: &'static str,
+                 layout: &BindGroupLayoutDescriptor,
+                 shader: &Handle<Shader>,
+                 entry: &'static str,
+                 format: TextureFormat| {
         cache.queue_render_pipeline(RenderPipelineDescriptor {
             label: Some(label.into()),
             layout: vec![layout.clone()],
@@ -190,6 +279,8 @@ fn init_pipelines(
             ..default()
         })
     };
+    let pipeline = |label, entry, format| queue(label, &layout, &shader, entry, format);
+    let bloom = |label, entry, format| queue(label, &bloom_layout, &bloom_shader, entry, format);
     let sampler = device.create_sampler(&SamplerDescriptor {
         mag_filter: FilterMode::Linear,
         min_filter: FilterMode::Linear,
@@ -198,6 +289,11 @@ fn init_pipelines(
         ..default()
     });
     commands.insert_resource(TonemapPipelines {
+        bloom_down_hdr: bloom("game_bloom_down_hdr", "down_hdr", TextureFormat::Rgba8Unorm),
+        bloom_down_rgbm: bloom("game_bloom_down_rgbm", "down_rgbm", TextureFormat::Rgba8Unorm),
+        bloom_blur_h: bloom("game_bloom_blur_h", "blur_h", TextureFormat::Rgba16Float),
+        bloom_add: bloom("game_bloom_add", "add", TextureFormat::Rgba16Float),
+        bloom_layout,
         meter: pipeline("game_tonemap_meter", "meter", TextureFormat::R32Float),
         adapt: pipeline("game_tonemap_adapt", "adapt", TextureFormat::Rgba32Float),
         tonemap: pipeline("game_tonemap", "tonemap", TextureFormat::Rgba16Float),
@@ -214,6 +310,7 @@ fn init_pipelines(
 fn prepare_buffer(
     tonemap: Option<Res<GameTonemap>>,
     mut buffer: ResMut<TonemapBuffer>,
+    mut bloom_buffers: ResMut<BloomBuffers>,
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
 ) {
@@ -231,12 +328,23 @@ fn prepare_buffer(
         vignette_d,
         vignette_centre_scale,
         vignette_angle,
+        // B with bloom on (`FUN_0089d5c0`): the environment keyframe's colour and intensity in free roam
+        // (decomp.md "Where the block comes from"); off: (1, 1, 1, 0).
+        bloom: if bloom_enabled() {
+            Vec3::from(s.bloom_colour).extend(s.bloom_intensity)
+        } else {
+            Vec4::new(1.0, 1.0, 1.0, 0.0)
+        },
         camera: Vec4::new(s.min, s.max, s.bias, 0.0),
         exposure: Vec4::new(0.0, s.tolerance, s.speed, t.dt),
         setting: Vec4::new(s.target_high, s.target_low, s.luminance_high, s.luminance_low),
         flags: Vec4::new(f32::from(u8::from(t.reset)), f32::from(u8::from(t.colour_cube.is_some())), 0.0, 0.0),
     });
     buffer.0.write_buffer(&device, &queue);
+    for (b, [z, w]) in bloom_buffers.0.iter_mut().zip(bloom_add_weights(s.bloom_weights)) {
+        b.set(BloomUniform { weights: Vec4::new(z, w, s.bias, 0.0) });
+        b.write_buffer(&device, &queue);
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -246,10 +354,12 @@ fn game_tonemap(
     pipelines: Option<Res<TonemapPipelines>>,
     cache: Res<PipelineCache>,
     buffer: Res<TonemapBuffer>,
+    bloom_buffers: Res<BloomBuffers>,
     settings: Option<Res<GameTonemap>>,
     images: Res<RenderAssets<GpuImage>>,
     fallback: Res<FallbackImage>,
     mut frame: Local<usize>,
+    mut bloom_targets: Local<Option<BloomTargets>>,
     mut ctx: RenderContext,
 ) {
     let target = view.into_inner();
@@ -263,6 +373,14 @@ fn game_tonemap(
         return;
     };
     let layout = cache.get_bind_group_layout(&p.layout);
+    let bloom_layout = cache.get_bind_group_layout(&p.bloom_layout);
+    let bloom_pipelines = (
+        cache.get_render_pipeline(p.bloom_down_hdr),
+        cache.get_render_pipeline(p.bloom_down_rgbm),
+        cache.get_render_pipeline(p.bloom_blur_h),
+        cache.get_render_pipeline(p.bloom_add),
+    );
+    let bloom_uniforms = [0, 1, 2].map(|i| bloom_buffers.0[i].binding());
     // Missing cube: the fallback is bound and the shader skips the grade (flags.y = 0).
     let cube = settings.as_ref().and_then(|s| s.colour_cube.as_ref()).and_then(|h| images.get(h));
     let (cube_view, cube_sampler) = match cube {
@@ -272,6 +390,14 @@ fn game_tonemap(
     let (read, write) = (&p.states[(*frame + 1) % 2], &p.states[*frame % 2]);
     *frame += 1;
     let device = ctx.render_device().clone();
+    let main = target.main_texture();
+    let size = (main.width(), main.height());
+    if bloom_targets.as_ref().is_none_or(|t| t.size != size) {
+        *bloom_targets = Some(BloomTargets::new(&device, size));
+    }
+    let bt = bloom_targets.as_ref().expect("just created");
+    let bloom_on = bloom_enabled();
+    let bloom_view = if bloom_on { &bt.combined[0] } else { &fallback.d2.texture_view };
     let bind = |hdr: &TextureView, state: &TextureView| {
         device.create_bind_group(
             "game_tonemap_bind_group",
@@ -284,6 +410,7 @@ fn game_tonemap(
                 state,
                 cube_view,
                 cube_sampler,
+                bloom_view,
             )),
         )
     };
@@ -318,10 +445,37 @@ fn game_tonemap(
             read,
             cube_view,
             cube_sampler,
+            bloom_view,
         )),
     );
     run(&p.meter_view, meter, &meter_group);
     run(write, adapt, &bind(target.main_texture_view(), read));
+    // Bloom (bloom.wgsl): L1 = down(hdr), L2 = down(L1), L3 = down(L2); then coarse to fine, blur along x and
+    // add (blur along y, plus the coarser combined level). Uses this frame's exposure, as the game's
+    // downsample reads the tonemap texture written before it.
+    if let (true, (Some(down_hdr), Some(down_rgbm), Some(blur_h), Some(add)), [Some(u0), Some(u1), Some(u2)]) =
+        (bloom_on, bloom_pipelines, bloom_uniforms)
+    {
+        let uniforms = [u0, u1, u2];
+        let bloom_bind = |u: &BindingResource, source: &TextureView, coarser: &TextureView| {
+            device.create_bind_group(
+                "game_bloom_bind_group",
+                &bloom_layout,
+                &BindGroupEntries::sequential((u.clone(), source, &p.sampler, coarser, write)),
+            )
+        };
+        // The coarser input of passes that don't read it: any texture that isn't their target.
+        let unused = &fallback.d2.texture_view;
+        let hdr = target.main_texture_view();
+        run(&bt.levels[0], down_hdr, &bloom_bind(&uniforms[0], hdr, unused));
+        run(&bt.levels[1], down_rgbm, &bloom_bind(&uniforms[0], &bt.levels[0], unused));
+        run(&bt.levels[2], down_rgbm, &bloom_bind(&uniforms[0], &bt.levels[1], unused));
+        for i in (0..3).rev() {
+            run(&bt.blurred[i], blur_h, &bloom_bind(&uniforms[i], &bt.levels[i], unused));
+            let coarser = if i == 2 { unused } else { &bt.combined[i + 1] };
+            run(&bt.combined[i], add, &bloom_bind(&uniforms[i], &bt.blurred[i], coarser));
+        }
+    }
     let post = target.post_process_write();
     run(post.destination, tonemap, &bind(post.source, write));
 }
