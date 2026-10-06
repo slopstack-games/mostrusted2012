@@ -98,6 +98,22 @@ InstanceList ──> Model ──(LOD state)──> Renderable ──(per mesh)�
   stand on render-only terrain). The vertex program anchors each sprite at its base (corner = position +
   width x (u - 0.5) x camera-perpendicular horizontal axis + height x v x up; sizes scaled by `cb1[0].x`), a
   cylindrical billboard.
+  **Sprite vertices** (`FUN_00eb9500`, 4 × 0x2C bytes per sprite, the `Groundcover` layout): POSITION = the
+  decoded instance position (all four corners the same), NORMAL = instance bytes +8/+9/+10 (i8) × 1/127
+  (`DAT_01081004` = 0.007874), BINORMAL = (+6, +7, +11) × 1/127 with +6/+7 (width, height) first scaled by
+  the range shrink, COLOR = bytes (+12, +13, +14, +15) as R, G, B, A (tint rgb, region index in A; a debug
+  mode replaces it with green + the region), TEXCOORD (two halfs) = (0,0), (1,0), (1,1), (0,1): u across, v
+  up from the base. The vertex program picks the atlas cell by `round(A × 255)` from `GroundcoverTextureRegions`
+  (`uv = region.xy + region.zw × (u, 1 − v)`), sways the top by `sin(Time × speed + x) × amount × v` along the
+  sprite's right axis, and outputs the normal `normalize(sign(w) · right · (u − 0.5) + up · v − 0.1 · d) +
+  max(8 − height, 0.75) · (ground normal + (0, 0.25, 0))` (d = horizontal direction from the camera, height
+  in metres), mostly the ground normal. `gObjectCB` (272 bytes = `GroundcoverConstants` + 16 regions) is the
+  collection's own 0x110-byte material record (`collection +0x30 + material × 0x110`), so
+  `GroundcoverConstants` is its first 16 bytes; on disk they are the material import slot (zero), so the
+  runtime writes the size scale there (writer not found). **Pixel program** (G-buffer): `DiffuseSampler`
+  only; discard where alpha < 0.5; RT1 (sqrt albedo) = texel.rgb / texel.a × sqrt(2 · tint), w = 1; RT0 =
+  normalize(normal) × 0.5 + 0.5, w = 1; RT2 / RT3 are not written; no lighting in the shader. The second
+  pixel program (forward / HDR) outputs texel.rgb / a × sqrt(2 tint) × `HDRConstants.x` with the texel alpha.
 
 ## Vehicles
 
