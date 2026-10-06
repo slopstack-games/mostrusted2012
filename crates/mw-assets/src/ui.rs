@@ -163,6 +163,8 @@ pub struct UiScene {
     pub uvs: HashMap<ResourceId, [f32; 4]>,
     /// Blend mode of each `UIMaterial`.
     pub blends: HashMap<ResourceId, UiBlend>,
+    /// Layouts that element stacks place (cell contents), by resource ID.
+    pub cells: HashMap<ResourceId, fmt::ui::Layout>,
 }
 
 fn walk_elements<'a>(elements: impl IntoIterator<Item = &'a Element>, f: &mut impl FnMut(&'a Element)) {
@@ -182,6 +184,25 @@ impl AssetStore {
         let mut all = Vec::new();
         for pl in &scene.layouts {
             walk_elements(&pl.layout.elements, &mut |e| all.push(e.clone()));
+        }
+        // Element stacks' cell layouts, recursively.
+        let mut i = 0;
+        while i < all.len() {
+            if let Some(st) = all[i].stack.clone() {
+                let ids =
+                    st.header.iter().chain(&st.default).chain(&st.footer).chain(st.templates.iter().flat_map(|t| &t.1));
+                for &id in ids {
+                    if scene.cells.contains_key(&id) {
+                        continue;
+                    }
+                    // A missing cell layout draws nothing (the stack's other cells still do).
+                    if let Ok(l) = self.ui_layout(id) {
+                        walk_elements(&l.elements, &mut |e| all.push(e.clone()));
+                        scene.cells.insert(id, l);
+                    }
+                }
+            }
+            i += 1;
         }
         for e in &all {
             for &r in &e.renderables {
@@ -217,6 +238,9 @@ impl UiScene {
         let mut out = Vec::new();
         for pl in &self.layouts {
             walk_elements(&pl.layout.elements, &mut |e| out.extend(e.texture));
+        }
+        for l in self.cells.values() {
+            walk_elements(&l.elements, &mut |e| out.extend(e.texture));
         }
         out.extend(self.fonts.values().filter_map(|f| f.texture));
         out.sort();
@@ -369,6 +393,10 @@ impl UiScene {
         let rotation = eval_num(&e.bindings.rotation, lookup).unwrap_or(e.rotation);
         let opacity = eval_num(&e.bindings.opacity, lookup).map_or(e.opacity, |o| o.clamp(0.0, 1.0));
         let blend = e.material.and_then(|m| self.blends.get(&m).copied()).unwrap_or_default();
+        if let Some(st) = &e.stack {
+            self.stack(st, place, [rect[0], rect[1]], clip, lookup, out);
+            return;
+        }
         let screen_rect = place.rect(rect);
         let screen_pivot = place.point(pivot);
         // Backed labels: the backing image first, filling the label's rectangle.
@@ -454,6 +482,91 @@ impl UiScene {
 }
 
 /// Rectangle (reference pixels, top-left based) and rotation pivot of an element, with its bindings.
+/// Height of a stack cell: the lowest element bottom (reference pixels); a nested stack counts its own `Height`,
+/// or its default cell's when that is 0 (the selected Easydrive row is a 25 px stack whose glow images reach
+/// lower). Our reading: the stack's own cell-size fields (`CellSizeDefinition`, empty here) are
+/// not decoded; for Easydrive this gives 26 px rows, against the 26.42 px per item the `EasyDrivePanel` layout
+/// moves by (`Widget.EasyDrive.ItemsAbovePanel(MULT:26.42)`).
+fn cell_height(scene: &UiScene, layout: &Layout, depth: u32) -> f32 {
+    layout
+        .elements
+        .iter()
+        .map(|e| match &e.stack {
+            Some(st) if depth < 8 => {
+                let inner = st.default.first().and_then(|id| scene.cells.get(id));
+                let own =
+                    if e.size[1] > 0.0 { e.size[1] } else { inner.map_or(0.0, |l| cell_height(scene, l, depth + 1)) };
+                e.top_left()[1] + own
+            }
+            _ => e.top_left()[1] + e.size[1],
+        })
+        .fold(0.0, f32::max)
+}
+
+impl UiScene {
+    /// Draw an element stack: header cells, one cell per data-source entry, footer cells, top to bottom from
+    /// `origin` (reference pixels). Inside a cell, `#` and `#parent_index#` in binding arguments are the
+    /// entry's index and the enclosing stack's index, a binding without a dot (`Name`, `Locked`) is a field of
+    /// the entry and is looked up as `<data source>[<index>].<field>`, and the lookup answers `#index` with
+    /// the current index (how a nested stack learns `#parent_index#`).
+    fn stack(
+        &self,
+        st: &fmt::ui::Stack,
+        place: &Placement,
+        origin: [f32; 2],
+        clip: Option<[f32; 4]>,
+        lookup: &mut Lookup,
+        out: &mut Vec<Quad>,
+    ) {
+        let parent = lookup("#index", None).map_or(0, |v| v.num() as i64);
+        let list = !st.length.is_empty();
+        let n = if list { eval_num(&st.length, lookup).map_or(0, |v| v.clamp(0.0, 64.0) as usize) } else { 1 };
+        let source = st.data_source.trim_start_matches('~').replace("#parent_index#", &parent.to_string());
+        let mut y = origin[1];
+        let mut cell = |this: &Self, ids: &[ResourceId], index: Option<usize>, y: &mut f32, lookup: &mut Lookup| {
+            let i = index.unwrap_or(0);
+            let item = match (index, list) {
+                (Some(i), true) => format!("{source}[{i}]"),
+                _ => source.clone(),
+            };
+            let mut inner = |path: &str, arg: Option<&str>| -> Option<fmt::binding::BindValue> {
+                if path == "#index" {
+                    return Some((i as f64).into());
+                }
+                let arg = arg.map(|a| a.replace("#parent_index#", &parent.to_string()).replace('#', &i.to_string()));
+                if !path.contains('.') && !item.is_empty() {
+                    return lookup(&format!("{item}.{path}"), arg.as_deref());
+                }
+                lookup(path, arg.as_deref())
+            };
+            let mut h: f32 = 0.0;
+            for l in ids.iter().filter_map(|id| this.cells.get(id)) {
+                for e in &l.elements {
+                    if e.kind != ElementKind::Mask {
+                        this.element(e, place, Some([origin[0], *y]), clip, &mut inner, out);
+                    }
+                }
+                h = h.max(cell_height(this, l, 0));
+            }
+            *y += h;
+        };
+        cell(self, &st.header, None, &mut y, lookup);
+        for i in 0..n {
+            // The first template whose binding holds for this entry, else the default.
+            let ids = st
+                .templates
+                .iter()
+                .find(|(b, _)| {
+                    let b = b.replace('#', &i.to_string());
+                    !b.is_empty() && eval(&b, lookup).is_some_and(|v| v.truthy())
+                })
+                .map_or(&st.default, |t| &t.1);
+            cell(self, ids, Some(i), &mut y, lookup);
+        }
+        cell(self, &st.footer, None, &mut y, lookup);
+    }
+}
+
 fn element_rect(e: &Element, lookup: &mut Lookup) -> ([f32; 4], [f32; 2]) {
     let x = eval_num(&e.bindings.position_x, lookup).unwrap_or(e.position[0]);
     let y = eval_num(&e.bindings.position_y, lookup).unwrap_or(e.position[1]);

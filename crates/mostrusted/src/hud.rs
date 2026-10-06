@@ -256,7 +256,7 @@ fn lookup(
     })
 }
 
-type PoolNode<'a> = (&'a mut Node, &'a mut ImageNode, &'a mut UiTransform, &'a mut Visibility);
+pub type PoolNode<'a> = (&'a mut Node, &'a mut ImageNode, &'a mut UiTransform, &'a mut Visibility);
 
 #[allow(clippy::too_many_arguments)]
 fn draw_hud(
@@ -310,8 +310,23 @@ fn draw_hud(
         map_image = Some(map.image.clone());
     }
 
+    let Hud { root, pool, textures, .. } = &mut *hud;
+    show_quads(&mut commands, *root, pool, &quads, textures, map_image, &mut nodes);
+}
+
+/// Show `quads` as absolutely placed image nodes under `root`, reusing (and growing) the node `pool`; the
+/// HUD and Easydrive both draw this way. `map_image` fills the minimap quad.
+pub fn show_quads(
+    commands: &mut Commands,
+    root: Entity,
+    pool: &mut Vec<Entity>,
+    quads: &[mw_assets::ui::Quad],
+    textures: &HashMap<ResourceId, (Handle<Image>, Vec2)>,
+    map_image: Option<Handle<Image>>,
+    nodes: &mut Query<PoolNode>,
+) {
     // Grow the pool of quad nodes as needed.
-    while hud.pool.len() < quads.len() {
+    while pool.len() < quads.len() {
         let e = commands
             .spawn((
                 Node { position_type: PositionType::Absolute, ..default() },
@@ -319,12 +334,12 @@ fn draw_hud(
                 UiTransform::default(),
                 Visibility::Hidden,
                 Pickable::IGNORE,
-                ChildOf(hud.root),
+                ChildOf(root),
             ))
             .id();
-        hud.pool.push(e);
+        pool.push(e);
     }
-    for (i, &e) in hud.pool.iter().enumerate() {
+    for (i, &e) in pool.iter().enumerate() {
         let Ok((mut node, mut image, mut transform, mut vis)) = nodes.get_mut(e) else { continue };
         let Some(q) = quads.get(i) else {
             if *vis != Visibility::Hidden {
@@ -332,7 +347,7 @@ fn draw_hud(
             }
             continue;
         };
-        let (handle, rect, flip) = match (q.map, q.texture.and_then(|t| hud.textures.get(&t))) {
+        let (handle, rect, flip) = match (q.map, q.texture.and_then(|t| textures.get(&t))) {
             (true, _) => (map_image.clone().unwrap_or_default(), None, (false, false)),
             (false, Some((h, size))) => {
                 let [u0, v0, u1, v1] = q.uv;
