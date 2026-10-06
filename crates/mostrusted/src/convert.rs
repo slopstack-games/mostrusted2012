@@ -139,11 +139,16 @@ pub fn image(tex: &Texture, srgb: bool, bc_supported: bool) -> Option<Image> {
             )
         }
     };
+    // One sampler for every slot, set to the game's most common anisotropic `SamplerState` (wrap, 4x
+    // anisotropic, no LOD bias): the one every DriveableSurface colour, detail and normal map and most
+    // TerrainPBR / PlotPBR tiling maps use (`mwtool sampler-usage`). The other common state (trilinear,
+    // MipLODBias -0.9) needs a per-slot sampler and a bias that wgpu samplers lack; docs/formats.md
+    // "SamplerState".
     image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
         address_mode_u: ImageAddressMode::Repeat,
         address_mode_v: ImageAddressMode::Repeat,
         address_mode_w: ImageAddressMode::Repeat,
-        anisotropy_clamp: 8,
+        anisotropy_clamp: 4,
         ..ImageSamplerDescriptor::linear()
     });
     Some(image)

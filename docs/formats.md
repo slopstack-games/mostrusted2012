@@ -229,6 +229,30 @@ AO × (1 − F0) × albedo; plus RT3² × exposure. The Fog pass: amount pow(sat
 near/(far − near)), Power) × gradient alpha, height-layer fog, sun-corona in-scattering
 strength/(1 + phase·cosθ)², sky pixels only get the layer fog.
 
+### SamplerState (0x7)
+
+64 bytes, bound per material slot next to the texture (`Material` 0x28). The game turns it into a
+`D3D11_SAMPLER_DESC` field by field (the function at 0x00d8e0c0 in the dump, which then calls the device's
+`CreateSamplerState`), so the layout is settled (parser: `mw-formats/src/sampler.rs`):
+
+| off  | field |
+|------|-------|
+| 0x00 / 0x04 / 0x08 | AddressU / V / W, D3D11 numbering (1 wrap, 2 mirror, 3 clamp, 4 border) |
+| 0x0C / 0x10 / 0x14 | mag / min / mip filter: 0 point, 1 linear, 2 anisotropic. Any field at 2 makes the sampler `D3D11_FILTER_ANISOTROPIC`, else filter = min<<4 \| mag<<2 \| mip |
+| 0x18 / 0x1C | MinLOD / MaxLOD (−FLT_MAX / FLT_MAX in all 2742 instances) |
+| 0x20 | MaxAnisotropy (1, 2, 4, 6, 8) |
+| 0x24 | MipLODBias (f32: 0, −0.9, −1, +0.9, +1, ...) |
+| 0x28 | comparison function, −1 = none (D3D11 ALWAYS, no comparison bit) |
+| 0x2C | u8 border colour: 0 = transparent black, else opaque white (bytes 0x2D.. are not read) |
+| 0x34 | runtime `ID3D11SamplerState*` |
+
+`mwtool sampler-usage [--filter <shader>]` lists the states per shader slot over all track units
+(`--textures`: the bound textures' format and mip count). Ground slots: every DriveableSurface `ColourMap`,
+`DetailMap_Diffuse`, `DetailMap_Normal` and `Normal` sampler is wrap / 4× anisotropic / bias 0; `RoadDepth`,
+`Line_*`, `Decal_NormalPlusSpec` and most `SpecColour` are wrap / trilinear / bias −0.9 (some `SpecColour`
++0.9); TerrainPBR / PlotPBR tiling maps are either 4× anisotropic or trilinear / −0.9 per material. Every
+ground slot wraps; mirror / clamp appear only in 37 non-ground slot states.
+
 ## WorldPaintMap (0x91)
 
 A value painted over the world, one quadtree per 1 km cell (`mw_formats::WorldPaintMap`, `mwtool paint-map`).
