@@ -10,6 +10,7 @@ mod crack;
 mod damage;
 #[cfg(target_os = "linux")]
 mod memscan;
+mod placement;
 mod preview;
 mod props;
 mod survey;
@@ -347,6 +348,19 @@ enum Cmd {
         #[arg(long)]
         all_kinds: bool,
     },
+    /// Drop every placement (instances, props, compounds, dynamics, groundcover) onto the track units'
+    /// collision and report per layer / model / unit how far it stands off the ground.
+    PlacementCheck {
+        /// Track unit bundles to check (default: all; collision is always loaded from all).
+        #[arg(long = "bundle")]
+        bundles: Vec<String>,
+        /// Rows per outlier list.
+        #[arg(long, default_value_t = 25)]
+        top: usize,
+        /// Groundcover only: per group, which groups stand on the ground (by layer, blob, start, quads).
+        #[arg(long)]
+        groups: bool,
+    },
     /// Physics of the world's props, compound and dynamic objects (`PhysicalDefinition`): volume kinds,
     /// masses and break forces over the track units (or the given bundles).
     Props {
@@ -580,6 +594,10 @@ fn main() -> Result<()> {
         }
         Cmd::Surfaces => props::surfaces(&AssetStore::new(game)?)?,
         Cmd::Freeroam { list, kind, all_kinds } => freeroam(&AssetStore::new(game)?, list, kind.as_deref(), all_kinds)?,
+        Cmd::PlacementCheck { bundles, top, groups } => {
+            let store = AssetStore::new(game)?;
+            if groups { placement::groups(&store, &bundles)? } else { placement::run(&store, &bundles, top)? }
+        }
         Cmd::Props { bundles, verbose } => props::run(&AssetStore::new(game)?, &bundles, verbose)?,
         Cmd::Vehicles => {
             let store = AssetStore::new(game)?;

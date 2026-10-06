@@ -88,7 +88,11 @@ InstanceList ──> Model ──(LOD state)──> Renderable ──(per mesh)�
   `Groundcover` shader billboards them). Layout in the doc comment of `crates/mw-formats/src/groundcover.rs`:
   collection = materials (atlas texture + 16 regions each), 3 layers of a box tree whose leaves hold groups
   `(box, material, quads, blob, start, count)`; instances are 16 bytes with u16 x/y/z as fractions of the
-  group box, yaw, size, ground normal, tint and region index.
+  group box, yaw, size, ground normal, tint and region index. The x/y/z decode is confirmed against collision
+  (`mwtool placement-check --groups`: swapped or flipped axes match 3-10% of groups, the decode 50%, the rest
+  stand on render-only terrain). The vertex program anchors each sprite at its base (corner = position +
+  width x (u - 0.5) x camera-perpendicular horizontal axis + height x v x up; sizes scaled by `cb1[0].x`), a
+  cylindrical billboard.
 
 ## Vehicles
 
