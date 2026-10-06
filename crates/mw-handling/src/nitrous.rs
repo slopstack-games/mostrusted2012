@@ -56,11 +56,7 @@ impl NitrousParams {
 
     /// Mode 0 of `FUN_009d2aa0`: the component's multiplier at nitrous `amount` (0–1).
     pub fn multiplier(&self, amount: f32) -> f32 {
-        if amount <= 0.0 {
-            1.0
-        } else {
-            1.0 + (self.strength - 1.0) * amount
-        }
+        if amount <= 0.0 { 1.0 } else { 1.0 + (self.strength - 1.0) * amount }
     }
 
     /// Modes 1 / 3: the speed fade of the punch and jump forces, `1 − clamp((mph − from) / (top − from), 0, 1)`.

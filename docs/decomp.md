@@ -1048,3 +1048,14 @@ stop-line handling (junction records are reached through the hull's `+0x28` poin
   ...}: TrafficOncoming, Drifting (`TimeDrifting` 0.75), NearMiss ×2, CatchingAir, CrashEscape, HighSpeed,
   MinSpeed, TakingShortcut, FatalHit, Slipstreaming, HittingAnotherCompetitor, Donutting, Balancing; the
   `PunchUsage` / `JumpUsage` / `SpeedbreakerUsage` blocks carry an `Enabled` flag (the nitrous upgrade's modes).
+- **`FUN_00574870(index, value)`**, the upgrade profile: `this` holds 50 entries {f32 operand at +8i, op at
+  +8i+4}, a parameter index per entry at +400+4i, and a 64-bit active mask at +700 (two u32). For each active
+  entry whose index matches: op 0 multiplies, op 1 adds (summed), op 2 returns the operand at once; the result is
+  value × Π + Σ (identity with no entries). Call sites pass indices 0x00..0x36 as literals; which handling field
+  each index belongs to was not mapped this session (open: read each call site).
+- **The mods' data**: `Genesys.Gen.Vehicles.PerformanceUpgrades` in each vehicle bundle (911: `…6a59f`), two
+  `Category` fields (`cb186d88`, `6eeb691f`; their names in Language ids differ by one, so most likely the pro
+  and base levels), each up to 18 slot fields holding a `ModifierUpgrade` {`Icon`, `Name` (Language ids),
+  `Modifier`: `PerformanceModifier` {`Modifications`: [`PerformanceModificationItem` {`Value`, `566a7ed1`
+  profile index, `ModificationType` 0 / 1 / 2}]}}, a `NitrousUpgrade` (`5b7038f6`: the `NitrousParameters`
+  variant it selects) or a `TyreUpgrade` (`a316f8e3`: tyre index). `mwtool mods <car>` prints them.

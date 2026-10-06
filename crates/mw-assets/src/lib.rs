@@ -17,6 +17,7 @@ pub mod engine_driver;
 pub mod engine_sound;
 pub mod environment;
 pub mod handling;
+pub mod mods;
 pub mod paint;
 pub mod props;
 mod scene;

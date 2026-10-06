@@ -131,6 +131,11 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
   faded from `Punch/Jump` fade-start mph to vehicle +0x7e8. Ported as `mw_handling::nitrous` with the gearbox's
   nitrous rules; `--test nitrous` on the 911: 0–100 3.47 s (3.72 without), 0–200 10.33 s (11.05), quarter
   11.25 s (11.58).
+- `FUN_00574870` decoded: a 50-entry profile (operand, op, index, 64-bit active mask), multiply / add /
+  replace. The mods are `Vehicles.PerformanceUpgrades` (two categories of slots; ModifierUpgrade /
+  NitrousUpgrade / TyreUpgrade); `mw_assets::mods` loads them, `mwtool mods <car>` prints slot → choice →
+  `p<index> x|+|= value`. Open: the index → handling-field map (call sites with literal 0x00..0x36), which
+  category is pro, the slot names (field hashes), and applying a selection (`--mods`) in the runtime.
 - Open: the multiplier's reader (assumed engine torque), the tank code and its refill rules (the data is
   `NitrousParameters`, five variants per car), `.bss` 0x0118a018 (punch / jump force scale), vehicle +0x30e8.
 
