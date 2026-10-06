@@ -14,7 +14,9 @@
 //!   eases by 0.1 per update to its default. The eye orbits the data's pivot point (`d68bbc59`, at the
 //!   look-at point's z) in that frame.
 //! - **Speed**: eye and look-at heights and the eye distance move to their full-speed values
-//!   (`Speed_based_movement`); the field of view widens from `MinFieldOfView` to `MaxFieldOfView`.
+//!   (`Speed_based_movement`); the field of view widens from `MinFieldOfView` to `MaxFieldOfView`, plus a
+//!   lagged acceleration term (`FUN_005c76a0`). The eye closes in as the car turns side-on
+//!   (`FUN_005c8ad0`) and dollies along its line to the look-at point to offset the FOV (`FUN_005c1f90`).
 //! - **Acceleration**: the eye falls back under acceleration and closes in under braking
 //!   (`Acceleration_movement`).
 //! - **Roll and pitch**: roll from lateral acceleration or yaw rate between the data's minimum and
