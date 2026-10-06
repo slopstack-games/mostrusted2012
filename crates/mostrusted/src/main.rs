@@ -22,6 +22,7 @@ mod input;
 mod loader;
 mod materials;
 mod menu;
+mod mods_menu;
 mod particles;
 mod props;
 mod reflection;
@@ -103,6 +104,9 @@ struct Cli {
     /// Hold the throttle at this value (0–1), for automated driving tests.
     #[arg(long)]
     auto_throttle: Option<f32>,
+    /// Performance mods on the driven car: `slot=category[,…]`, indices as `mwtool mods <car>` prints them.
+    #[arg(long, default_value = "")]
+    mods: String,
     /// Debug: skip InstanceList backdrop entries.
     #[arg(long)]
     no_backdrop: bool,
@@ -538,6 +542,9 @@ fn main() -> anyhow::Result<()> {
                 && cli.replay.is_none(),
         })
         .insert_resource(drive::CarInput { auto_throttle: cli.auto_throttle, ..default() })
+        .insert_resource(mods_menu::ModSelection::parse(&cli.mods, &[]))
+        .init_resource::<mods_menu::ModCatalogue>()
+        .add_systems(Update, mods_menu::apply_live)
         .insert_resource(Game {
             store,
             request,

@@ -551,6 +551,18 @@ impl VehicleHandling {
         self.params.get(&key).copied()
     }
 
+    /// [`Self::param`] for writing (performance mods, `mods::apply_to`).
+    pub fn param_mut(&mut self, path: &str) -> Option<&mut f32> {
+        let key: Vec<u32> = path
+            .split('.')
+            .map(|c| match u32::from_str_radix(c, 16) {
+                Ok(h) if c.len() == 8 => h,
+                _ => mw_formats::genesys::field_hash(c),
+            })
+            .collect();
+        self.params.get_mut(&key)
+    }
+
     /// Engine torque (Nm) at `rpm`, Hermite-interpolated along the curve.
     pub fn torque_at(&self, rpm: f32) -> f32 {
         let c = &self.torque_curve;

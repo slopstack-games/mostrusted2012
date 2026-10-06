@@ -124,6 +124,20 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-06 (session 5, round 4): mods applied, chosen through Easydrive
+
+- 25 of the 55 profile indices are identified from `FUN_00574870`'s call sites (decomp.md "Nitrous and
+  upgrades"); `mwtool mods` prints their field names. The rest keep `p<n>`.
+- Applying (`mw_assets::mods::apply_to`, `crates/mostrusted/src/mods_menu.rs`): the stock handling is cloned and
+  each identified index goes through value × Π + Σ / replace; a `NitrousUpgrade` sets the tank burn to its
+  variant's `Nitrous.053c5a6a`. `--mods slot=category` (indices as `mwtool mods` prints them); the spawn logs
+  `mods: …`. A selection change rebuilds `CarParams` live.
+- 911: no mods = baseline (accel 3.72 s / 11.58 s; nitrous 3.47 s, tank 4.17 s). `12=0` (LONG GEARS PRO: torque
+  ×1.05, final drive ×0.85, gear-up speed ×1.175): 0–200 km/h 11.05 → 10.72 s, top 307.6 → 309.1 km/h. `7=0`
+  (POWERSHOT NITROUS PRO, burn 24 → 18): tank empty 4.17 → 5.57 s, 0–200 10.33 → 8.93 s.
+- Open: the Easydrive "Customize car" pages are not wired yet; the unidentified indices (incl. all body / damage
+  ones); `TyreUpgrade` (its `a316f8e3` is a `Tyres` handle, not applied); the top-gear lock that long gears lift.
+
 ### 2026-10-06 (session 5, round 3): vehicle liveries, paint masks and dirt
 
 - **Paint variants** across all car bundles (`mwtool models <bundle> --verbose`): plain `BodyPaint` (53 cars),
