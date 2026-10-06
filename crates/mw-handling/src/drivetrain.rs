@@ -448,13 +448,13 @@ impl Drivetrain {
         let stalling = self.rpm < p.idle_rpm * STALL_FRACTION;
         if let Some(mut s) = self.shift {
             if stalling && !(!s.up && s.phase == Phase::Declutch) {
-                self.to_standstill(p);
+                self.drop_to_standstill(p);
                 return throttle;
             }
             return self.shift_phase(p, &mut s, throttle, mph, dt);
         }
         if self.launching && stalling {
-            self.to_standstill(p);
+            self.drop_to_standstill(p);
             return throttle;
         }
         if self.launching {
@@ -509,7 +509,7 @@ impl Drivetrain {
     }
 
     /// Gearbox state 2 (standstill, `FUN_009d6370`): clutch open in first gear; the launch follows with throttle.
-    fn to_standstill(&mut self, p: &DrivetrainParams) {
+    fn drop_to_standstill(&mut self, p: &DrivetrainParams) {
         self.shift = None;
         self.clutch = 0.0;
         self.launching = true;
