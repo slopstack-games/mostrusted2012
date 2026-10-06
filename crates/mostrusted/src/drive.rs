@@ -891,13 +891,20 @@ pub(crate) fn car_physics(
             let step = (brake_left / wheel.inertia).min(wheel.omega.abs());
             wheel.omega -= step * wheel.omega.signum();
             brake_left -= step * wheel.inertia;
-            let k_eff = r * r / wheel.inertia + 1.0 / effective_mass(contact - com, fwd);
+            // The constraint (`FUN_009bc0c0`) works in two parts along the slip direction. First the brake
+            // torque the spin step left over holds the tread like a locked wheel: an impulse against the
+            // chassis alone (its effective mass at the contact), at most that torque / r (unbounded when the
+            // wheel is locked) and the cap; the wheel's spin is not touched. Then the slip that remains is
+            // taken out with the chassis and the wheel's spin inertia together (1/m + r²/I), within what is
+            // left of the cap; only this part turns the wheel.
+            let m_chassis = effective_mass(contact - com, fwd);
+            let slip = wheel.omega * r - v_long;
             let cap = long_cap * dt;
-            let impulse = ((wheel.omega * r - v_long) / k_eff).clamp(-cap, cap);
-            wheel.omega -= impulse * r / wheel.inertia;
-            if brake_left.is_infinite() {
-                wheel.omega = 0.0;
-            }
+            let hold = (brake_left / r).min(slip.abs() * m_chassis).min(cap);
+            let k_eff = r * r / wheel.inertia + 1.0 / m_chassis;
+            let coupled = ((slip.abs() - hold / m_chassis) / k_eff).min(cap - hold).max(0.0);
+            let impulse = slip.signum() * (hold + coupled);
+            wheel.omega -= slip.signum() * coupled * r / wheel.inertia;
             let f_long = impulse / dt;
             // Telemetry keeps the slip ratio the tyre pass leaves (tread against the road after the impulse),
             // which is what the original's wheel field shows: in `ref/xkr_launch` its rear tyres read κ ≈ 0

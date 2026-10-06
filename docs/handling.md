@@ -64,8 +64,10 @@ One physics tick is 1/60 s (`Time::<Fixed>` at 60 Hz, as the game). Per tick, in
    the body up; it does not set the tyre grip.
 6. **Tyres** (`tyre.rs`): a velocity constraint, capped, solved once per tick as the game does. Grip load N =
    the static corner load + ½ × the axle's downforce (not the spring force). Longitudinal: the brake (an angular
-   impulse budget that can stop the wheel but never reverse it) acts on the wheel's spin first, then one pass
-   pulls the tread to the road speed (wheel inertia against the corner mass) within ±μx × N × factors. Lateral:
+   impulse budget that can stop the wheel but never reverse it) acts on the wheel's spin first; what is left of
+   it then holds the tread like a locked wheel (a force on the chassis alone, at most that torque / r), and one
+   coupled pass takes out the remaining slip (wheel spin inertia against the chassis's effective mass), all
+   within ±μx × N × factors (`FUN_009bc0c0`). Lateral:
    the force that stops the sideways slide, within ±μy × N × factors. Factors: the axle's data scale, the
    surface grip under the wheel (`Surface_Grip` blended by the car's surface link) and camber. Each wheel also
    gets the surface's rolling resistance and slide drag. The tyre forces do not roll the body (the torque about

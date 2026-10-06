@@ -258,7 +258,8 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
   instant lag do not (987–1029 / 968–1091).
 - **Clutch** (`FUN_009d7ac0`): one impulse per tick, before the tyres: with Δω the engine speed minus the
   driveline's (`FUN_009d55f0`: the axles' mean wheel spin × share × gear ratio × final drive),
-  T = min(5000 N m (0x01186f70), clutch × |Δω| × I_eff / dt) along Δω, where 1/I_eff = 1/`Engine_inertia` +
+  T = min(5000 N m (0x01186f70), clutch × |Δω| × I_eff / dt × k) along Δω (k: the `.bss` vector 0x011873e0,
+  one lane per entry, no writer in the dump; taken as 1, to be read live), where 1/I_eff = 1/`Engine_inertia` +
   ½ ratio² × the driven wheels' mean inverse inertia × share² (Newton-refined reciprocal). The engine loses
   T dt / I, the driveline gets T × ratio. **No efficiency factor** anywhere. Each driven wheel gets half of its
   axle's torque; `TransmissionInertia` is added to each driven wheel's inertia. A second half-step pass
@@ -377,8 +378,21 @@ watch file logs the wheel's grip load (`w*_N`, wheel +0x100) and static load (`w
      that slows the wheel's spin towards zero and never past it;
   2. the contact frame (`FUN_009c2aa0`, `FUN_009ca610`); skipped while the contact points carry no normal
      impulse;
-  3. the caps (`FUN_009c5da0`), then one pass of the longitudinal constraint coupled with the wheel's spin
-     (`FUN_009bc340`, `FUN_009bc0c0`) and of the lateral one (`FUN_009c6f00`);
+  3. the tyre pass `FUN_009c6f00`: it clears the solve state (constraint +0x100…), writes the caps into it
+     (`FUN_009c5da0`; κ is taken there from the spin × radius as it stands after the clutch and the brake
+     step), then `FUN_009bc340`, which only copies that state with two contact anchor points into +0x220 (no
+     force, no spin change), then the longitudinal constraint `FUN_009bc0c0`, then the lateral clamp in
+     `FUN_009c6f00` itself. `FUN_009bc0c0` (read 2026-10-06), with s the slip speed along the tyre, m the
+     chassis's effective mass at the contact along it (`FUN_009e8230`), I the wheel's spin inertia, r its
+     radius and C the longitudinal force cap:
+     - first a **brake hold**: λ1 = min(B / r, |s| m, C), B being the brake budget `FUN_009bbff0` left over
+       (tyre object +0x30 = constraint +0x2a0; unbounded, FLT_MAX `DAT_01025900`, when the lock flag +0x2a8 is
+       1). It acts on the chassis only; the wheel's spin is not touched;
+     - then the **coupled part**: λ2 = min((|s| − λ1 / m) / (1/m + r²/I), C − λ1);
+     - force on the chassis −sign(s) (λ1 + λ2); torque on the wheel's spin λ2 × r only. No slip curve inside:
+       within the cap the tread is held at the road speed in one pass.
+     The drive torque is not an input of the tyre pass: the clutch (`FUN_009d7ac0`) has already put it into the
+     driveline's per-axle torque before the solver runs;
   4. the impulses go into the chassis (force at the contact point, its component of torque about the chassis's
      long axis removed unless flags +0x251..0x253 are set) and the wheel's spin (`FUN_009c2910`).
   The solver works in forces (its vectors hold dt and 1/dt; the brake and the relaxation term only balance that
