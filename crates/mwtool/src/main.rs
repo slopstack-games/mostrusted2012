@@ -369,6 +369,12 @@ enum Cmd {
     },
     /// Export the collision geometry (PolygonSoupList) of a bundle as .obj + preview.
     Collision { bundle: String, out: PathBuf },
+    /// Traffic lane network (TrafficLaneData in HAWAII/TRAFFIC.BNDL): counts, flows, flow types, vehicles;
+    /// `--png` draws the lane rungs top-down (colour = flow index, red = stop line section).
+    Traffic {
+        #[arg(long)]
+        png: Option<PathBuf>,
+    },
     /// Show a WorldPaintMap (what is painted where: environment timelines, layer fog, particle lighting),
     /// which entries each track unit's zone covers, and optionally render it with the zone outlines.
     PaintMap {
@@ -1027,6 +1033,7 @@ fn main() -> Result<()> {
         Cmd::World { out, bundles, size, obj, instances } => {
             export_world(&AssetStore::new(game)?, &bundles, &out, size, obj, &instances)?
         }
+        Cmd::Traffic { png } => traffic(&AssetStore::new(game)?, png.as_deref())?,
         Cmd::PaintMap { id, png, at } => paint_map(&AssetStore::new(game)?, &id, png.as_deref(), &at)?,
     }
     Ok(())
@@ -1123,6 +1130,94 @@ fn skid_sweep(
     let pcm = mw_audio::Pcm { channels: 1, sample_rate: rate as u32, samples };
     std::fs::write(out, pcm.to_wav())?;
     println!("13 s sweep of {suffix} at {mph} mph -> {}", out.display());
+    Ok(())
+}
+
+fn traffic(store: &AssetStore, png: Option<&Path>) -> Result<()> {
+    let bundle = store.bundle("HAWAII/TRAFFIC.BNDL").context("HAWAII/TRAFFIC.BNDL not found")?;
+    let entry = bundle.entries_of_type(ResourceType::TrafficLaneData).next().context("no TrafficLaneData")?;
+    let t = mw_formats::TrafficLaneData::parse(&bundle.load(entry)?)?;
+    let sum = |f: &dyn Fn(&mw_formats::TrafficHull) -> usize| t.hulls.iter().map(f).sum::<usize>();
+    println!(
+        "version {}, {} hulls ({} with lanes), {} sections, {} rungs, {} spans, {} neighbours, {} junctions, \
+         {} stop lines, {} static vehicles",
+        t.version,
+        t.hulls.len(),
+        t.hulls.iter().filter(|h| !h.sections.is_empty()).count(),
+        sum(&|h| h.sections.len()),
+        sum(&|h| h.rungs.len()),
+        sum(&|h| h.spans.len()),
+        sum(&|h| h.neighbours.len()),
+        sum(&|h| h.junctions),
+        sum(&|h| h.stop_lines),
+        sum(&|h| h.static_vehicles.len()),
+    );
+    let length: f32 = t.hulls.iter().flat_map(|h| &h.sections).map(|s| s.length).sum();
+    println!("total lane length {:.1} km", length / 1000.0);
+    let mut per_flow = std::collections::BTreeMap::<u8, (usize, f32)>::new();
+    for s in t.hulls.iter().flat_map(|h| &h.sections) {
+        let e = per_flow.entry(s.flow).or_default();
+        e.0 += 1;
+        e.1 += s.length;
+    }
+    let id = |r: &Option<ResourceId>| r.map_or("-".to_string(), |r| r.to_string());
+    println!("{} flows (TrafficFlow):", t.flows.len());
+    for (i, f) in t.flows.iter().enumerate() {
+        let (n, len) = per_flow.get(&(i as u8)).copied().unwrap_or_default();
+        println!("  [{i:2}] {}  {n:5} sections {:7.1} km", id(f), len / 1000.0);
+    }
+    println!("{} flow types (TrafficFlowType):", t.flow_types.len());
+    for (i, f) in t.flow_types.iter().enumerate() {
+        println!("  [{i:2}] {}", id(f));
+    }
+    let ids: Vec<String> =
+        t.vehicle_ids.iter().map(|v| format!("{:016x}", 0x0100_0000_0000_0000u64 | *v as u64)).collect();
+    println!("{} vehicle types (VehicleComponent): {}", ids.len(), ids.join(" "));
+    if let Some(png) = png {
+        let (mut x0, mut z0, mut x1, mut z1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for p in t.hulls.iter().flat_map(|h| &h.rungs).flatten() {
+            (x0, z0, x1, z1) = (x0.min(p[0]), z0.min(p[2]), x1.max(p[0]), z1.max(p[2]));
+        }
+        let scale = 4096.0 / (x1 - x0).max(z1 - z0);
+        let (w, h) = (((x1 - x0) * scale) as u32 + 1, ((z1 - z0) * scale) as u32 + 1);
+        let mut img = image::RgbImage::from_pixel(w, h, image::Rgb([16, 16, 20]));
+        let mut plot = |x: f32, z: f32, c: [u8; 3]| {
+            let (px, pz) = (((x - x0) * scale) as u32, ((z - z0) * scale) as u32);
+            if px < w && pz < h {
+                img.put_pixel(px, pz, image::Rgb(c));
+            }
+        };
+        for hull in &t.hulls {
+            // Cell outlines, dim.
+            for (k, a) in hull.points.iter().enumerate() {
+                let b = hull.points[(k + 1) % hull.points.len()];
+                for s in 0..200 {
+                    let f = s as f32 / 200.0;
+                    plot(a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, [50, 50, 60]);
+                }
+            }
+            for s in &hull.sections {
+                let hue = (s.flow as f32 * 0.618).fract();
+                let c = if s.stop_line.is_some() {
+                    [255, 40, 40]
+                } else {
+                    [(120.0 + 135.0 * hue) as u8, (255.0 - 150.0 * hue) as u8, (90.0 + 160.0 * (1.0 - hue)) as u8]
+                };
+                let rungs = &hull.rungs[s.first_rung as usize..][..s.rung_count as usize];
+                for pair in rungs.windows(2) {
+                    let mid = |r: &[[f32; 3]; 2]| [(r[0][0] + r[1][0]) * 0.5, (r[0][2] + r[1][2]) * 0.5];
+                    let (a, b) = (mid(&pair[0]), mid(&pair[1]));
+                    let steps = (((b[0] - a[0]).hypot(b[1] - a[1]) * scale) as usize).max(1);
+                    for k in 0..=steps {
+                        let f = k as f32 / steps as f32;
+                        plot(a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, c);
+                    }
+                }
+            }
+        }
+        img.save(png)?;
+        println!("wrote {} ({w}x{h}, x {x0:.0}..{x1:.0}, z {z0:.0}..{z1:.0}, +z down)", png.display());
+    }
     Ok(())
 }
 
