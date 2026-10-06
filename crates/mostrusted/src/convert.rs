@@ -77,6 +77,95 @@ pub fn mesh(m: &mw_formats::DecodedMesh, uv_b: Option<u8>, colour: bool) -> Opti
     Some(mesh)
 }
 
+/// Which optional attributes a mesh has (bit 0 UV_0, 1 UV_1, 2 COLOR, 3 TANGENT, 4 NORMAL). Only meshes
+/// with the same set can be merged into one; `None` for anything [`merge`] does not handle (joints).
+pub fn merge_signature(mesh: &Mesh) -> Option<u8> {
+    use bevy::mesh::VertexAttributeValues as V;
+    let mut sig = 0;
+    for (id, values) in mesh.attributes() {
+        let bit = match (id.id, values) {
+            (i, V::Float32x3(_)) if i == Mesh::ATTRIBUTE_POSITION.id => continue,
+            (i, V::Float32x2(_)) if i == Mesh::ATTRIBUTE_UV_0.id => 1,
+            (i, V::Float32x2(_)) if i == Mesh::ATTRIBUTE_UV_1.id => 2,
+            (i, V::Float32x4(_)) if i == Mesh::ATTRIBUTE_COLOR.id => 4,
+            (i, V::Float32x4(_)) if i == Mesh::ATTRIBUTE_TANGENT.id => 8,
+            (i, V::Float32x3(_)) if i == Mesh::ATTRIBUTE_NORMAL.id => 16,
+            _ => return None,
+        };
+        sig |= bit;
+    }
+    matches!(mesh.indices(), Some(Indices::U32(_))).then_some(sig)
+}
+
+/// Merge meshes with the same [`merge_signature`] into one, each moved by its transform into the merged
+/// mesh's space. This reproduces Bevy's mesh vertex stage: positions by the matrix, normals by its inverse
+/// transpose (normalised), tangents by the matrix (normalised) with w times the sign of the determinant.
+/// The winding is kept as it is under a mirroring transform too: Bevy does not flip the front face for a
+/// negative determinant either (all world materials draw both faces; `double_sided` ones flip the normal
+/// of back faces, so a mirrored double-sided mesh keeps the lighting it had unmerged).
+pub fn merge(meshes: &[(&Mesh, bevy::math::Mat4)]) -> Mesh {
+    use bevy::math::{Mat3, Vec3, Vec4Swizzles};
+    use bevy::mesh::VertexAttributeValues as V;
+    let n: usize = meshes.iter().map(|(m, _)| m.count_vertices()).sum();
+    let mut pos: Vec<[f32; 3]> = Vec::with_capacity(n);
+    let mut nrm: Vec<[f32; 3]> = Vec::new();
+    let mut tan: Vec<[f32; 4]> = Vec::new();
+    let mut uv0: Vec<[f32; 2]> = Vec::new();
+    let mut uv1: Vec<[f32; 2]> = Vec::new();
+    let mut col: Vec<[f32; 4]> = Vec::new();
+    let mut idx: Vec<u32> = Vec::new();
+    for &(mesh, m) in meshes {
+        let base = pos.len() as u32;
+        let m3 = Mat3::from_mat4(m);
+        let det = m3.determinant();
+        let nm = m3.inverse().transpose();
+        let sign = if det < 0.0 { -1.0 } else { 1.0 };
+        if let Some(V::Float32x3(p)) = mesh.attribute(Mesh::ATTRIBUTE_POSITION) {
+            pos.extend(p.iter().map(|p| m.transform_point3(Vec3::from(*p)).to_array()));
+        }
+        if let Some(V::Float32x3(v)) = mesh.attribute(Mesh::ATTRIBUTE_NORMAL) {
+            nrm.extend(v.iter().map(|v| (nm * Vec3::from(*v)).normalize_or_zero().to_array()));
+        }
+        if let Some(V::Float32x4(v)) = mesh.attribute(Mesh::ATTRIBUTE_TANGENT) {
+            tan.extend(v.iter().map(|v| {
+                let t = (m3 * bevy::math::Vec4::from(*v).xyz()).normalize_or_zero();
+                [t.x, t.y, t.z, v[3] * sign]
+            }));
+        }
+        if let Some(V::Float32x2(v)) = mesh.attribute(Mesh::ATTRIBUTE_UV_0) {
+            uv0.extend_from_slice(v);
+        }
+        if let Some(V::Float32x2(v)) = mesh.attribute(Mesh::ATTRIBUTE_UV_1) {
+            uv1.extend_from_slice(v);
+        }
+        if let Some(V::Float32x4(v)) = mesh.attribute(Mesh::ATTRIBUTE_COLOR) {
+            col.extend_from_slice(v);
+        }
+        if let Some(Indices::U32(i)) = mesh.indices() {
+            idx.extend(i.iter().map(|i| i + base));
+        }
+    }
+    let mut out = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, pos)
+        .with_inserted_indices(Indices::U32(idx));
+    if !nrm.is_empty() {
+        out.insert_attribute(Mesh::ATTRIBUTE_NORMAL, nrm);
+    }
+    if !tan.is_empty() {
+        out.insert_attribute(Mesh::ATTRIBUTE_TANGENT, tan);
+    }
+    if !uv0.is_empty() {
+        out.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv0);
+    }
+    if !uv1.is_empty() {
+        out.insert_attribute(Mesh::ATTRIBUTE_UV_1, uv1);
+    }
+    if !col.is_empty() {
+        out.insert_attribute(Mesh::ATTRIBUTE_COLOR, col);
+    }
+    out
+}
+
 /// Road meshes (`DriveableSurface*`): put the vertex wetness mask TEXCOORD5.x (saturated, as the vertex
 /// shader does; 0 or ≥ 1 on real roads) and the vertex AO (colour alpha) in Bevy's COLOR attribute as
 /// (wetness, AO, 0, 1). The road shader reads them itself; road materials have no other use for COLOR.

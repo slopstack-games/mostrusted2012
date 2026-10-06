@@ -15,7 +15,7 @@ use mw_assets::backdrop::{BackdropSelector, track_unit_number};
 use mw_bundle::{ResourceId, ResourceType};
 
 use crate::convert;
-use crate::materials::{InstanceLook, Look, TexKey};
+use crate::materials::{Blend, InstanceLook, Look, TexKey};
 
 /// What to load.
 #[derive(Debug, Clone)]
@@ -84,6 +84,7 @@ pub struct CarSpec {
     pub impact_graph: mw_assets::damage::ImpactGraph,
 }
 
+#[derive(Clone)]
 pub struct Part {
     pub mesh: Mesh,
     pub look: Look,
@@ -137,6 +138,9 @@ pub enum BackdropMode {
     None,
 }
 
+/// Most vertices in one merged static mesh (`Worker::send_merged`).
+const MERGE_VERTICES: usize = 1 << 18;
+
 /// Debug filters for world placements.
 #[derive(Debug, Clone, Default)]
 pub struct WorldFilter {
@@ -152,6 +156,9 @@ pub struct WorldFilter {
     pub paint_index: usize,
     /// Draw props, compounds and dynamic objects without collision (no `--prop-physics`).
     pub no_prop_physics: bool,
+    /// Draw every static world placement as its own entity (the default: without `--merge-static`)
+    /// instead of merging a track unit's single-use static placements per material.
+    pub no_merge: bool,
 }
 
 #[derive(Resource)]
@@ -173,6 +180,8 @@ pub fn spawn(
                 tx,
                 bc_supported,
                 models: HashSet::new(),
+                parts: HashMap::new(),
+                merged: 0,
                 textures: HashSet::new(),
                 failed_textures: HashSet::new(),
                 filter,
@@ -206,7 +215,12 @@ struct Worker {
     store: Arc<AssetStore>,
     tx: Sender<Msg>,
     bc_supported: bool,
+    /// Models sent to the main thread.
     models: HashSet<ResourceId>,
+    /// Decoded models not (yet) sent: the current track unit's merge candidates.
+    parts: HashMap<ResourceId, Vec<Part>>,
+    /// Merged meshes sent so far (their synthetic model keys count up).
+    merged: u64,
     textures: HashSet<TexKey>,
     failed_textures: HashSet<TexKey>,
     filter: WorldFilter,
@@ -548,6 +562,7 @@ impl Worker {
                 }
             }
             let unit = track_unit_number(&name);
+            let mut statics = Vec::new();
             for p in placements {
                 if self.filter.exclude.contains(&p.model) {
                     continue;
@@ -570,13 +585,86 @@ impl Worker {
                         _ => variant.strip_lod2 = !self.filter.keep_lod_proxies,
                     }
                 }
+                // Static placements (no physics, not a backdrop) are merged per material below.
+                let physics = p.object.and_then(|(object, kind)| self.prop_physics(object, kind));
+                if !self.filter.no_merge && !p.backdrop && physics.is_none() {
+                    if let Some(model) = self.model_parts(p.model, variant, InstanceLook::from_placement(&p), true)? {
+                        statics.push((model, game_matrix(&p.transform)));
+                    }
+                    continue;
+                }
                 if let Some(model) = self.model_variant(p.model, variant, InstanceLook::from_placement(&p))? {
                     self.send_placement(model, &p)?;
                 }
             }
+            self.send_merged(std::mem::take(&mut statics))?;
+            self.parts.clear();
             self.store.evict_all();
         }
         self.send(Msg::Progress(format!("world loaded: {total} track units")))?;
+        Ok(())
+    }
+
+    /// Send a track unit's static placements: models placed once in the unit whose parts can all share a
+    /// draw are merged per material (and vertex layout) into world-space meshes of at most
+    /// [`MERGE_VERTICES`] vertices, drawn at the origin. Repeated models and models with a part that cannot
+    /// be merged (blended, painted, an unknown attribute) are placed as before.
+    fn send_merged(&mut self, statics: Vec<(ResourceId, Mat4)>) -> anyhow::Result<()> {
+        let mergeable = |p: &Part| {
+            matches!(p.look.blend, Blend::Opaque | Blend::Mask)
+                && !p.look.paint
+                && convert::merge_signature(&p.mesh).is_some()
+        };
+        let mut groups: HashMap<(Look, u8), Vec<(ResourceId, usize, Mat4)>> = HashMap::new();
+        let mut order = Vec::new();
+        // Models placed more than once already share a draw (one bin per mesh and material): merging them
+        // would only copy their vertices (the full map then ran out of GPU memory).
+        let mut uses: HashMap<ResourceId, usize> = HashMap::new();
+        for (key, _) in &statics {
+            *uses.entry(*key).or_default() += 1;
+        }
+        for (key, transform) in statics {
+            let all = uses[&key] == 1 && self.parts.get(&key).is_some_and(|parts| parts.iter().all(mergeable));
+            if !all {
+                self.send_model(key)?;
+                self.send(Msg::Instance { model: key, transform })?;
+                continue;
+            }
+            for (i, part) in self.parts[&key].iter().enumerate() {
+                let g = (part.look, convert::merge_signature(&part.mesh).unwrap_or(0));
+                groups.entry(g).or_insert_with(|| {
+                    order.push(g);
+                    Vec::new()
+                });
+                groups.get_mut(&g).unwrap().push((key, i, transform));
+            }
+        }
+        for g in order {
+            let members = &groups[&g];
+            let mut start = 0;
+            while start < members.len() {
+                let mut end = start;
+                let mut verts = 0;
+                while end < members.len() {
+                    let (key, i, _) = members[end];
+                    let n = self.parts[&key][i].mesh.count_vertices();
+                    if end > start && verts + n > MERGE_VERTICES {
+                        break;
+                    }
+                    verts += n;
+                    end += 1;
+                }
+                let meshes: Vec<_> =
+                    members[start..end].iter().map(|&(key, i, t)| (&self.parts[&key][i].mesh, t)).collect();
+                let mesh = convert::merge(&meshes);
+                self.merged += 1;
+                let key = ResourceId(0x7000_0000_0000_0000 | self.merged);
+                self.models.insert(key);
+                self.send(Msg::Model(key, vec![Part { mesh, look: g.0 }]))?;
+                self.send(Msg::Instance { model: key, transform: Mat4::IDENTITY })?;
+                start = end;
+            }
+        }
         Ok(())
     }
 
@@ -637,6 +725,32 @@ impl Worker {
         variant: Variant,
         inst: InstanceLook,
     ) -> anyhow::Result<Option<ResourceId>> {
+        let key = self.model_parts(id, variant, inst, false)?;
+        if let Some(key) = key {
+            self.send_model(key)?;
+        }
+        Ok(key)
+    }
+
+    /// Send a decoded model to the main thread (once).
+    fn send_model(&mut self, key: ResourceId) -> anyhow::Result<()> {
+        if let Some(parts) = self.parts.remove(&key)
+            && self.models.insert(key)
+        {
+            self.send(Msg::Model(key, parts))?;
+        }
+        Ok(())
+    }
+
+    /// Decode a model variant into [`Self::parts`] (see [`Self::model_variant`]) unless it is there or,
+    /// without `need_parts`, already sent.
+    fn model_parts(
+        &mut self,
+        id: ResourceId,
+        variant: Variant,
+        inst: InstanceLook,
+        need_parts: bool,
+    ) -> anyhow::Result<Option<ResourceId>> {
         use std::hash::{Hash, Hasher};
         let mut key = if variant.strip_lod2 { ResourceId(id.0 | 1 << 62) } else { id };
         if !inst.is_default() {
@@ -654,7 +768,7 @@ impl Worker {
         if self.paintable.get(&id) == Some(&true) {
             key = self.paint_key(key);
         }
-        if self.models.contains(&key) {
+        if self.parts.contains_key(&key) || !need_parts && self.models.contains(&key) {
             return Ok(Some(key));
         }
         if self.empty_models.contains(&key) {
@@ -704,8 +818,7 @@ impl Worker {
             key = self.paint_key(key);
         }
         self.paintable.entry(id).or_insert(false);
-        self.models.insert(key);
-        self.send(Msg::Model(key, parts))?;
+        self.parts.insert(key, parts);
         Ok(Some(key))
     }
 

@@ -181,6 +181,51 @@ search ended").
 - Still needed for the rest of the port, from a live read (the original was not run this round): state + 0x70,
   + 0x74, + 0x94, cam + 0x6dc, `_DAT_0110e8f0`, `_DAT_01189f60`, and the stack `f` of `FUN_005c90a0`.
 
+### 2026-10-06 (session 5, round 5): static mesh merging
+
+**What was built** (`loader.rs` `Worker::send_merged`, `convert::merge`; opt-in `--merge-static`): per track
+unit, static placements (no physics, not a backdrop, not groundcover, not the car) whose model is placed
+**once** in the unit and whose parts are all opaque or alpha-tested, unpainted, with a plain attribute set,
+are moved to world space and merged per (`Look` after instance tint / AO, attribute set) into meshes of at
+most 2^18 vertices drawn at the origin. The vertex transform reproduces Bevy's mesh vertex stage: positions
+by the matrix, normals by the inverse transpose (normalised), tangents by the matrix (normalised) with w
+times the determinant's sign. The winding is not reversed for mirroring transforms: Bevy 0.19 does not flip
+the front face for a negative determinant either (only `meshlet` does), all world materials have
+`cull_mode: None`, and `double_sided` ones flip back-face normals, so keeping the winding keeps the picture.
+
+**Merging repeated models runs out of GPU memory**: the first version merged every static placement; full-map
+loads then failed with wgpu "Out of Memory" (8 GB RTX 3070, others' runs sharing it), because instanced
+models (trees, lamps, kerbs) were copied into every merged mesh. Repeated models already share one bin (one
+per mesh x material), so merging them saves nothing; only single-use models are merged now.
+
+**Result: no measurable gain, so it is off by default.** Back-to-back A/B on one binary (`--no-merge` then
+merged, two rounds, load average 6-11 from other agents' builds and runs), frame mean ms:
+
+| view | unmerged | merged | mesh entities (visible) unmerged -> merged | shadow casters per cascade |
+|---|---|---|---|---|
+| cliff | 23.6 / 14.2 | 17.9 / 16.9 | 107 869 (3 258) -> 98 702 (2 945) | 79/162/655 -> 84/160/642 |
+| city | 16.7 / 18.2 | 21.8 / 16.6 | 107 869 (3 652) -> 98 702 (3 233) | 28/29/108 -> 50/53/128 |
+| drive | 22.4 / 20.1 | 20.4 / 20.1 | 20 756 (3 846) -> 18 791 (3 484) | 147/316/1586 -> 161/304/1446 |
+
+Render-world CPU (prepare + graph) moved with the frame time, within the noise (cliff 22.4 / 13.4 vs
+16.3 / 14.2 ms; drive 21.6 / 19.4 vs 19.8 / 19.4 ms). RSS 1.2-2.4 GB in both, dominated by noise; load wall
+time unchanged within noise (merging is cheap next to decoding). Earlier baseline runs on master at load 8-15:
+cliff 20.7 / 17.9 ms, city 18.7 ms, drive 48.5 / 39.7 ms (other agents' games and rustc running).
+
+Why it does not help: merging cuts only ~10 % of the visible mesh entities. Bins are per mesh x material and
+world materials are almost all specific to one model (their textures), so single-use models rarely share a
+`Look` with another model in the same unit; repeated models are already one bin. To cut bins substantially
+the materials would have to be shared (texture arrays / atlases, bindless), which is a renderer change.
+
+Images (`--screenshot`, PIL, mean abs diff per channel, pixels off by > 8/255): cliff 0.81/0.47/0.26 and
+2.6 %, city 0.37/0.24/0.12 and 0.6 %, night (20 units, hour 1.5) 0.10 and 0.1 %. Two unmerged runs of the
+cliff differ by more (1.22/0.79/0.44, 2.9 %): the scrolling sea and the swaying tree canopies; no
+difference outside them.
+
+Next by the numbers: shadows (2-3 ms cliff, ~7 ms drive in round 4): fewer casters per cascade (far or tiny
+objects out of the outer cascade; the drive's third cascade has ~1 450 casters) and fewer shadow views, after
+measuring the game's own shadow distance and split.
+
 ### 2026-10-06 (session 5, round 5): the chase camera, second attempt
 
 Goal: find the chase camera's update from round 4's leads and port its sway, weight and avoidance.
