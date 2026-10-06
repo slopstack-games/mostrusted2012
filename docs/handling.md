@@ -287,6 +287,8 @@ What the code does is in [decomp.md](decomp.md) ("Crashes"); here the data and w
 
 | What | Ours | Missing source |
 |------|------|----------------|
+| Standstill hold speed (`FUN_009d6170`) | 0 mph signed: the hold (`Brakes.99407bbc` × brake, or throttle in gear) acts only while rolling backwards | `.bss` 0x01186e60, live read |
+| Downshift ground time (`FUN_009d93b0`) | 0 s: no downshift while airborne | `.bss` 0x01187580, live read |
 | crash test | closing speed only (avian's pre-solve `normal_speed`, contacts with \|normal.y\| < 0.7 against static scenery) | the impact damage in damage-bar units (`1617a710` rule) and the solver's own closing speed |
 | reset time | when the cameras end (4.5 s) | `GameMode+0x44` (no `GameMode` instance found) |
 | reset pose | the pose 1 s of game time before the impact, upright, moving forward | the game saves the last pre-crash frame and moves it onto the road (`FUN_00648060`) |

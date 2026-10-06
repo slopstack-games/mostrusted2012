@@ -1666,3 +1666,15 @@ against the raw recordings instead of against its own metrics. Scripts are in th
 - Audio: `.SPS` streams start with an EA SNR/SPS block header (`0x48`). Movies: `.VP6` with EA `MVhd`
   container.
 - No signage is mirrored when the game's coordinates are used as-is (Y up, metres).
+
+### 2026-10-06 (session 5): drivetrain: standstill, downshift gate, launch delay
+
+- Standstill hold found and ported (decomp.md "Drivetrain and brakes"): `FUN_009d6170` builds the input at
+  vehicle +0x1aa8 (brake, or throttle in a forward gear, below a signed speed threshold), `FUN_009b1180` turns it
+  into a body velocity change of `99407bbc` m/s² against the direction of travel. The threshold (`.bss`
+  0x01186e60) is unread; any positive value would hold the XKR's launch (6 m/s² < 15), which the reference does
+  not show, so it is set to 0 pending a live read.
+- Downshift gate: vehicle +0x1ed0 is the time on the ground (`FUN_009ae840`); ported with an assumed limit 0.
+- Launch delay: the 0.45 s idle wait matches the forced-brake mask (vehicle +0x1c30) of the control block, whose
+  setter is not found; the standstill timers serve reverse selection. Dead end: the gearbox states 0/1 and
+  `FUN_009262a0` were not reached this session.

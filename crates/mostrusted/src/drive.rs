@@ -73,10 +73,16 @@ pub struct CarInput {
     pub crashed: bool,
 }
 
+/// Speed below which the standstill hold acts (`.bss` 0x01186e60, not read; assumed 0 mph: the original's
+/// launch in `ref/xkr_launch` pulls away at 6 m/s² from 0.03 m/s, so the hold is off there).
+const STANDSTILL_HOLD_MPH: f32 = 0.0;
+
 /// Physical parameters of a car, derived from the game data.
 #[derive(Debug, Clone)]
 pub struct CarParams {
     pub mass: f32,
+    /// Standstill hold deceleration (`Brakes.99407bbc`, m/s²; `FUN_009b1180`).
+    pub hold_decel: f32,
     pub inertia: Vec3,
     pub centre_of_mass: Vec3,
     pub idle_rpm: f32,
@@ -198,6 +204,7 @@ impl CarParams {
         ) * Vec3::from(h.inertia_scale.unwrap_or([1.0; 3]));
         Self {
             mass,
+            hold_decel: h.brake_hold_decel.unwrap_or(15.0),
             inertia,
             centre_of_mass: Vec3::from(h.centre_of_mass.unwrap_or([0.0, 0.4, 0.0])),
             idle_rpm: h.idle_rpm.unwrap_or(900.0),
@@ -671,6 +678,20 @@ pub(crate) fn car_physics(
             car.drivetrain.engage(-1);
         }
         let mph = speed / MPH;
+        // Standstill hold (`FUN_009d6170` writes vehicle +0x1aa8, `FUN_009b1180` reads it): below a speed
+        // threshold (`.bss` 0x01186e60, signed forward speed, not read; assumed 0, see handling.md "Model
+        // decisions") the input is the brake pedal (1 with the handbrake up), raised to the throttle in a forward
+        // gear. The body's velocity then changes by −sign(speed) × `Brakes.99407bbc` × input × dt along the car's
+        // forward axis, every tick, with no clamp at zero.
+        let hold_in = if mph < STANDSTILL_HOLD_MPH {
+            let parked = if input.handbrake { 1.0 } else { brake };
+            if car.drivetrain.gear > 0 { parked.max(throttle) } else { parked }
+        } else {
+            0.0
+        };
+        if hold_in > 0.0 && speed != 0.0 {
+            *forces.linear_velocity_mut() -= forward * (speed.signum() * p.hold_decel * hold_in.min(1.0) * dt);
+        }
         // Brake pressure builds at 10 × pedal per second; the torque goes with the pedal squared.
         car.brake_ramp = if brake > 0.1 { (car.brake_ramp + 10.0 * brake * dt).min(1.0) } else { 0.0 };
         // A burnout (both pedals at low speed, `FUN_009ab230`) releases one axle's brakes: the front on a
@@ -960,6 +981,9 @@ pub(crate) fn car_physics(
         // --- The game's drift model (drift.rs) ---------------------------------
         car.rear_slip = if rear_slip.1 > 0 { rear_slip.0 / rear_slip.1 as f32 } else { 0.0 };
         car.air_time = if wheels_down == car.wheels.len() { 0.0 } else { car.air_time + dt };
+        // Vehicle +0x1ed0 (`FUN_009ae840`): grows while any wheel touches, 0 in the air; the next tick's
+        // gearbox gates its downshifts on it.
+        car.drivetrain.grounded_time = if wheels_down > 0 { car.drivetrain.grounded_time + dt } else { 0.0 };
         let flat_v = velocity.reject_from(up);
         if let Some(drift) = &p.drift {
             // The drift reads the steering relative to the current range (full range = full lock).

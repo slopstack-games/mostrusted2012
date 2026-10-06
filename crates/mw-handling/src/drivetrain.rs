@@ -35,6 +35,9 @@ const BLIP_GAIN: f32 = 2.5;
 const DECLUTCHED: f32 = 0.1;
 /// Downshift on speed this far (mph) below the lower gear's upshift speed (`.bss` 0x011872e0).
 const DOWNSHIFT_HYSTERESIS: f32 = 2.0;
+/// Downshifts wait until the car has been on the ground this long (`FUN_009d93b0`: vehicle +0x1ed0 against
+/// `.bss` 0x01187580, not read; assumed 0 s: no downshift while airborne).
+const DOWNSHIFT_GROUNDED_TIME: f32 = 0.0;
 /// In gear with neither pedal pressed, the clutch opens below this speed (mph; `.bss` 0x011872d0, inferred
 /// from its lanes 2-3 read live).
 const COAST_DECLUTCH_MPH: f32 = 20.0;
@@ -230,6 +233,9 @@ pub struct Drivetrain {
     pub rpm: f32,
     /// Clutch engagement (0 open, 1 closed).
     pub clutch: f32,
+    /// Time since a wheel last touched the ground (vehicle +0x1ed0, `FUN_009ae840`), set by the caller: the
+    /// downshift gate.
+    pub grounded_time: f32,
     /// Standing or pulling away: the clutch slips in with the throttle or the revs (the game's standstill and
     /// launch states).
     launching: bool,
@@ -253,6 +259,7 @@ impl Drivetrain {
             gear,
             rpm: p.idle_rpm,
             clutch: if launching { 0.0 } else { 1.0 },
+            grounded_time: 1.0,
             launching,
             shift: None,
             throttle: 0.0,
@@ -393,7 +400,11 @@ impl Drivetrain {
         }
         // Downshift (FUN_009d93b0) on speed (below the lower gear's upshift speed, with hysteresis) or rpm,
         // to the highest lower gear whose downshift rpm the revs would still be above.
-        if g > 1 && (mph < p.upshift_mph(g - 1) - DOWNSHIFT_HYSTERESIS || self.rpm < p.downshift_rpm(g)) {
+        // Only once the car has been on the ground for longer than `.bss` 0x01187580 (not read; assumed 0).
+        if g > 1
+            && self.grounded_time > DOWNSHIFT_GROUNDED_TIME
+            && (mph < p.upshift_mph(g - 1) - DOWNSHIFT_HYSTERESIS || self.rpm < p.downshift_rpm(g))
+        {
             let target = self.downshift_target(p);
             if target >= 1 && target != g {
                 self.start_shift(p, target, false);
