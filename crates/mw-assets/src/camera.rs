@@ -192,13 +192,14 @@ pub struct CameraRoll {
     /// `Camera_Roll_Factor_Power` (2.5).
     pub factor_power: f32,
     /// `Minimum_Lateral_Acceleration_for_Roll` (10) and `3f8ced67` (30–40, the maximum by its place
-    /// and its values), mph/s.
+    /// and its values), m/s² (`FUN_005c9380`: the body velocity's change per update along the car's row 0).
     pub lateral: [f32; 2],
     /// `Minimum_Angular_Velocity_for_Roll` (0.2) and `02dd11bc` (2.5–3, the maximum), rad/s.
     pub angular: [f32; 2],
     /// `Maximum_Roll_Angle` (3–6°).
     pub max_angle: f32,
-    /// `Roll_Angle_Change_Intensity` (2–2.5).
+    /// `Roll_Angle_Change_Intensity` (2–2.5): the roll moves by intensity · π/180 · 20 · dt of its gap per
+    /// update (`FUN_005c9380`).
     pub intensity: f32,
 }
 

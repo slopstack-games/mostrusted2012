@@ -22,10 +22,11 @@
 //! - **Weight**: the eye's height rides a damped spring (`FUN_005d12b0`'s vertical stage) kicked by the
 //!   car's vertical acceleration on the ground and its vertical speed in the air, stiffer for 0.3 s after
 //!   a landing; the look-at point stays, so the view dips and tilts over bumps and on landings.
-//! - **Roll and pitch**: roll from lateral acceleration or yaw rate between the data's minimum and
-//!   maximum, shaped by `Camera_Roll_Factor_Power`; a nose-down pitch from deceleration between
-//!   `Minimum_` and `Maximum_deceleration_for_pitch_change`, shaped by `Pitch_change_curve_power`.
-//!   Both approach their targets at their `…_Intensity` rate.
+//! - **Roll and pitch**: roll (`FUN_005c9380`) from the lateral acceleration (m/s²) or the yaw rate between
+//!   the data's minimum and maximum, shaped by `Camera_Roll_Factor_Power`, leaning out of the turn and
+//!   following at `intensity · π/180 · 20` per second; a nose-down pitch from deceleration between
+//!   `Minimum_` and `Maximum_deceleration_for_pitch_change`, shaped by `Pitch_change_curve_power`;
+//!   it approaches its target at its `…_intensity` rate (ours).
 //! - **Shake**: a high-speed shake (`High_Speed_Shake`: a slow quaternion curve scaled by
 //!   `Amplitude · f^Power / 10`, turning the view about a point 10 m behind the eye; `FUN_005e2a70`) and an
 //!   impact shake (`FUN_005cd040` level, `FUN_005dfe90` noise spring).
@@ -62,6 +63,10 @@ const MOUSE_PITCH: f32 = 0.004;
 /// Orbit follows the stick at this rate (1/s) and springs back behind the car at `ORBIT_RETURN`.
 const ORBIT_FOLLOW: f32 = 10.0;
 const ORBIT_RETURN: f32 = 4.0;
+/// `FUN_005c9380`: the roll moves by `intensity · (π/180) · ROLL_RATE · dt` of its gap per update
+/// (`_DAT_00fb0630` = π/180, `_DAT_00fb07f0` = 20); ranges narrower than `ROLL_EPS` (`_DAT_00fb0890`) count as it.
+const ROLL_RATE: f32 = 20.0;
+const ROLL_EPS: f32 = 2.384_19e-7;
 /// Share of the drift angle the chase camera leans towards the direction of travel while drifting.
 const DRIFT_LEAN: f32 = 0.5;
 /// The per-player default pitch stiffness (`state + 0x70`, live read 0.55; recorded cam + 0x6d0 sits there
@@ -903,13 +908,23 @@ fn chase_view(
     s.accel_z = s.accel_z.clamp(-ACCEL_Z_LIMIT, ACCEL_Z_LIMIT);
     eye.z += s.accel_z;
 
-    // Roll: from lateral acceleration (mph/s) or yaw rate (rad/s), whichever is further into its range.
+    // Roll (FUN_005c9380, cam + 0x660): the body's acceleration (m/s², the velocity's change per update)
+    // along the game's row 0 (forward × up: the car's right side, Bevy local −X) and its yaw rate (rad/s),
+    // each placed in its range; magnitude = Maximum_Roll_Angle · max(f_lat, f_yaw)^power, cam + 0x660 =
+    // −magnitude while the car accelerates to its right, else +magnitude. The view's right side rises by
+    // −cam + 0x660 (recorded slope −1.06), so `s.roll` (that rise, degrees) is +magnitude in a right turn:
+    // the camera leans out of the turn.
     let r = &ext.roll;
-    let lat = car.lateral_accel / MPH;
-    let f_lat = ((lat.abs() - r.lateral[0]) / (r.lateral[1] - r.lateral[0]).max(0.1)).clamp(0.0, 1.0);
-    let f_ang = ((car.yaw_rate.abs() - r.angular[0]) / (r.angular[1] - r.angular[0]).max(0.01)).clamp(0.0, 1.0);
-    let roll_target = lat.signum() * r.max_angle * f_lat.max(f_ang).powf(r.factor_power.max(0.1));
-    s.roll += (roll_target - s.roll) * ease(r.intensity);
+    let lat = s.accel_vec.dot(car_t.rotation * Vec3::NEG_X);
+    let band = |x: f32, [lo, hi]: [f32; 2]| ((x.abs() - lo) / (hi - lo).max(ROLL_EPS)).clamp(0.0, 1.0);
+    let f = band(lat, r.lateral).powf(r.factor_power).max(band(car.yaw_rate, r.angular).powf(r.factor_power));
+    let magnitude = f * r.max_angle;
+    // In cam + 0x660's sign: a step of intensity · π/180 · 20 · dt of the gap (0.7/s at intensity 2), the
+    // code's clamp of the step to [−step, gap].
+    let state = -s.roll;
+    let error = if lat < 0.0 { magnitude } else { -magnitude } - state;
+    let step = r.intensity * ROLL_RATE.to_radians() * dt * error;
+    s.roll = -(state + step.min((-step).max(error)));
     // Pitch: nose down under deceleration.
     let decel = (-accel_mph).max(0.0);
     let pitch_target = if car.speed > 0.5 { p.max_change * range(decel).powf(p.curve_power.max(0.1)) } else { 0.0 };

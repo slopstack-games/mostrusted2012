@@ -138,3 +138,25 @@ print(f'  eye height spring (cam + 0x550): RMS error {np.sqrt(np.mean((X - x_ref
 for lo, hi in [(1, 40), (40, 80), (80, 140)]:
     m = (mph >= lo) & (mph < hi)
     print(f'    {lo}-{hi} mph: {x_ref[m].std():.3f} / {X[m].std():.3f} (error RMS {np.sqrt(np.mean((X - x_ref)[m] ** 2)):.3f})')
+
+# Roll (camera.rs chase_view; FUN_005c9380, cam + 0x660 in radians; the view's right side rises by it). Input:
+# the body velocity's change per update along the car's row 0 (cam + 0x4d0) and the angular velocity about its
+# up row. ROLL = (Maximum_Roll_Angle, lateral range m/s², yaw-rate range rad/s, power, intensity): the 911's,
+# which reproduce this run. `before` = the model up to 2026-10-07 (mph/s, rate = intensity per second, the
+# opposite sign convention is not checked: magnitudes only).
+ROLL = (4.7, (10.0, 30.0), (0.2, 2.5), 2.5, 2.0)
+om = body[:, 0xc0 // 4:0xc0 // 4 + 3]; row0, up0 = car[:, 0, :3], car[:, 1, :3]; roll_ref = V(0x660)
+mr, lr, ar, pw, it = ROLL; roll = roll_ref[0]; R = np.zeros(len(t)); Rb = np.zeros(len(t)); rb = 0.0
+band = lambda x, r: np.clip((abs(x) - r[0]) / max(r[1] - r[0], 2.384e-7), 0, 1)
+for i in range(len(t)):
+    dt = 1 / 60 if i == 0 else min(t[i] - t[i - 1], 0.1)
+    lat = (vel[i] - vel[i - 1]) @ row0[i] / dt if i > 0 else 0.0; w = om[i] @ up0[i]
+    mag = np.radians(mr) * max(band(lat, lr) ** pw, band(w, ar) ** pw)
+    e = (mag if lat < 0 else -mag) - roll; step = it * np.radians(1) * 20 * dt * e
+    roll += min(step, max(-step, e)); R[i] = roll
+    lat_b = abs(w) * np.linalg.norm(vel[i][[0, 2]]) / 0.44704
+    fb = max(np.clip((lat_b - 10) / 20, 0, 1), band(w, ar)) ** pw
+    rb += (np.radians(mr) * fb - rb) * (1 - np.exp(-dt * it)); Rb[i] = rb
+print(f'  roll (cam + 0x660): RMS error {np.degrees(np.sqrt(np.mean((R - roll_ref) ** 2))):.3f} deg, correlation '
+      f'{np.corrcoef(R, roll_ref)[0, 1]:.4f}; |roll| RMS error before {np.degrees(np.sqrt(np.mean((Rb - abs(roll_ref)) ** 2))):.3f} deg '
+      f'(recorded std {np.degrees(roll_ref.std()):.3f})')
