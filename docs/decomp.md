@@ -707,7 +707,29 @@ sampled at the screen u.
   renderer +0x26d0 / +0x26f0 / +0x2700.
 - **State fill**: `FUN_008c2080` (called from `FUN_008c8b00` with renderer +0x1ef80..+0x1efc0) stores
   `ScattCoeffs` at state +0xc50 (`param_9[0x314]`), `LayerFogCoeffs` at +0xc70, slot 0x24's vector at
-  +0xc80, and the scattering scalars at +0xcb0 / +0xcb4. Renderer +0x1ef80.. is copied from another
+  +0xc80, and the scattering scalars at +0xcb0 / +0xcb4.
+- **Where the coefficients are computed** (`FUN_008c0f30`, called from `FUN_008c2080`; its 12th and 18th
+  arguments are the `ScattCoeffs` and `LayerFogCoeffs` outputs; `this` holds the blended fog block at
+  +0x2240..+0x22dc and the two painted `LayerFog` entries at +0x2110.. / +0x2130..):
+  - `ScattCoeffs` = (1 / max(far − near, ε), near / (far − near), Power, +0x22cc) with near = +0x22c0, far =
+    +0x22c4, Power = +0x22c8 of the interpolated keyframe fog; the scale in front is the constant 1.0
+    (`0x00f8a820`): **near / far are not scaled**. Checked live: at (865, 24.8, −578) the slot holds
+    (0.0007576, 0.06061, 2) = keyframe fog 80–1400 m, Power 2, which is what our timeline `1245c8` gives
+    there at every hour from 10:00 to 14:00. The interpolation is linear in near / far / Power (not in
+    the coefficients): driving north across a timeline border the slot moved over ~10 s to (0.000916,
+    0.0733, 1.519) = 80–1171 m, Power 1.52, i.e. a spatial blend between painted timelines that we do not
+    do (we switch). w (0.70 → 0.40 across the same border) is not read by the Fog shader.
+  - `LayerFogCoeffs` (DXBC `exp`/`log` are base 2): blend weight b = W1 / (W0 + W1) of the two entries
+    (+0x22d8 / +0x22dc; with the enable byte +0x2148 clear or no weight: base −200, depth 1, distance
+    10000, follow 0, density 0.0001); base, LayerDepth, distance (`13dacf47`), follow (`5d346b33`) lerped by
+    b; base' = base + (min(base, cam_y) − base) × follow; density = (W0 + W1) × lerp(1, +0x2df8, +0x2df4).
+    Then x = 4 / max(depth, 1) (4 at `0x010cf48c`), y = x × (cam_y − base'), z = (log2 50 / distance) ×
+    density × (4 / ln 2) / x (`0x00f9c368` via `FUN_0042b510`, `0x0100e990` = 5.77078), w = z / (1 + 2^y);
+    zero when +0x21d0 is clear. Live check: w = z / (1 + 2^y) holds to 4 digits in every dump; at the
+    run's place (paint index 3 = `LayerFog` `…3eac`: entries base 308.2 / depth 25 / distance 700 /
+    follow 0.94 and 22 / 35 / 492.6 / 0) x = 0.1556 gives b ≈ 0.93 and y matches a camera ~24 m high, but
+    the density factor (0.53, rising over time) and the source of W0 / W1 are not traced.
+- Renderer +0x1ef80.. is copied from another
   environment state (+0xc50.., `FUN_0089b4b0` at `008C0000.c` ~line 10007). **Not traced**: where
   1 / (far − near), near / (far − near) and Power are computed from `EnvironmentKeyframe.Fog` (kept as
   before, matching the shader's form), what fills `LayerFogCoeffs` (the Fog struct's `LayerBase` −100,
