@@ -124,6 +124,23 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-06 (session 5, round 4): dirt colours, two-tone paint
+
+**Why the dirt drew pink / cyan.** Not the maths, the data or the colour space: our `layered.wgsl` port of
+`VehicleNFS13_BodyPaint`'s G-buffer program matches the DXBC line by line (the `gObjectCB` listing in
+`mwtool shader-asm` confirms `GenericVector4_A/B/C` at cb1[0..2], `PbrPaintDiffuseColour` cb1[4], scratch cb1[5..6],
+`PbrPaintSpecularColour` cb1[7]; effects texture `t1` at `v3.zw` = vertex TEXCOORD2). Debug frames (albedo forced to
+the raw effects texture, to its alpha, to `p[10]`, to the UV) showed that even a flat `DirtColour` albedo came out
+pink and cyan, so the tint was added after the albedo. Cause: `Look::retain_textures` re-derived the generic vehicle
+flags for paint meshes after `with_paint` had written them: p1.x = "has spec map" = slot 1, which on paint meshes is
+the effects texture, so F0 became the effects map's rgb at TEXCOORD0 (and p2.y = "has diffuse" multiplied the livery
+into the paint before the livery blend). Paint meshes now keep their own flags there (only clearing a slot whose
+texture failed to load). After the fix the red and silver 911 at `--dirt 0.6,0.3` show light dust patches and darker
+streaks low on the doors and behind the wheels, no hue shift; a flat `DirtColour` albedo renders brown-grey.
+The effects texture stays linear: the program squares `e.w` and `e.y` itself (a gamma-2 decode), which it would
+not do on an sRGB view. Note from the asm: partial dust darkens (lerp(paint, d·C, d), the same formula as ours),
+and covered areas lose F0 and the clear coat, so dust on a white car reads as grey specks.
+
 ### 2026-10-06 (session 5, round 4): Easydrive and HUD from the game's layouts
 
 **Differences found** (our frames at 1280×720 against the layout data, `mwtool ui show`; largest first):

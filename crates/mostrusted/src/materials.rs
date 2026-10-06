@@ -481,8 +481,8 @@ impl Look {
             };
             let livery = sm.texture("DiffuseTextureSampler").filter(|_| kind > 0.0).map(|t| (t, kind < 1.5));
             // Dirt / dust / scratches read EffectsTextureSampler at TEXCOORD2 (UV_1 here), unless the
-            // lightmapped lights already take UV_1 for TEXCOORD3. Only with `--dirt`: the dirt path tints
-            // clean paint pink in the first test (open, research log 2026-10-06 session 5).
+            // lightmapped lights already take UV_1 for TEXCOORD3. Only with `--dirt` until the game's
+            // dirt build-up rule is ported (research log 2026-10-06, session 5 round 4).
             let effects = linear("EffectsTextureSampler").filter(|_| has_uv(2) && !lm.uv3 && dirt_level() != [0.0; 2]);
             look.textures = slots(&[livery, effects, None, lm.texture]);
             let two_paint = sm.parameter("mPaintColourIndex").map_or(0.0, |v| v[0]);
@@ -690,7 +690,19 @@ impl Look {
             self.vals[0] = qi(self.textures[3].is_some() as u8 as f32);
             self.vals[2] = qi(self.textures[2].is_some() as u8 as f32);
         }
-        if self.mode == Mode::Vehicle || self.paint {
+        if self.paint {
+            // Body paint keeps the flags `from_scene_mesh` / `with_paint` wrote: its slot 0 is the livery or
+            // two-paint mask (p8.x) and slot 1 the effects texture (p8.z), not a diffuse and a spec map; read
+            // as the latter, the effects map became F0 at TEXCOORD0 and tinted the dirt pink / cyan (research
+            // log 2026-10-06, session 5 round 4).
+            if self.textures[0].is_none() {
+                self.vals[32] = 0;
+            }
+            self.vals[34] = qi(has(1));
+            if self.textures[3].is_none() {
+                self.vals[10] = 0;
+            }
+        } else if self.mode == Mode::Vehicle {
             // p1.x has spec map, p1.y roughness source (needs the normal texture), p2.y has diffuse,
             // p2.z lightmapped-lights kind (needs the lightmap).
             self.vals[4] = qi(has(1));
