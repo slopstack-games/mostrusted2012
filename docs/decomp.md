@@ -1542,6 +1542,52 @@ Order inside `FUN_005d4970`: `FUN_005c76a0` (FOV), `FUN_005c8ad0` (side-on), `FU
   our wheels are ray casts and not in a contact list. The unit "normal speed in m/s" for contact + 0xc is also
   a model decision (its writer was not read); it reproduces crash levels 2-3 and landing levels ~1.
 
+### High-speed shake and the eye's vertical spring (round 10)
+
+What the "speed shake" in `ref/live1` is made of, split by source (records with the impact shake output
+cam + 0x120 at zero, 95 % of the frames above 40 mph):
+- **Body motion through the followed frame.** The camera's world pitch, high-passed (0.15 s), is 0.25° RMS
+  at 40-80 mph, but the followed frame's own pitch (cam + 0x590) only 0.05° and the body's 0.15-0.2° (energy
+  at 4-10 Hz); correlation camera / body pitch 0.16. The body's motion is mostly smoothed away by K_pitch;
+  the followed position (cam + 0x500) is the body position (correlation 0.99 in height) less a constant.
+- **The view relative to the followed frame** (camera forward against the eye-to-look-at line): pitch
+  residual 0.08° MAD, almost all of it (correlation 0.98) a small rotation matrix at **cam + 0x360..0x39c**
+  that `FUN_005d0b90` pre-multiplies onto the camera matrix right after `FUN_005e34e0`, before the impact
+  shake. Its effect on the view is 2.7 × its angle, because it also moves the eye (below).
+- **The eye's height**: the eye's residual in the frame is 0.02 m MAD but 0.13-0.21 m standard deviation
+  (bumps, landings); it is cam + 0x550 (= cam + 0x584, correlation 0.995): the vertical stage of
+  `FUN_005d12b0` (round 7), a spring: cam + 0x550 integrates its rate cam + 0x554 (slope 1.03 per dt), and
+  cam + 0x568 switches between 7.155 and 6.708 = √(20 × 1.6²) and √(20 × 1.5²) (20 = cam + 0x564, `_DAT_00fb07f0`),
+  by its form the spring's ω for the two gain branches. Not ported: its driving input and the `.bss` scale
+  `0118a060` still need the disassembly.
+
+**The high-speed shake (read; ported as camera.rs `SpeedShakeState`).**
+- `FUN_005d0b90`, first stage: `High_Speed_Shake` (instance 0x18; `Amplitude` 0x28, `Frequency` 0x2c,
+  `Maximum_Speed_for_Shake` 0x30, `Minimum_Speed_for_Shake` 0x34, `Power` 0x38, by `mwtool genesys-types`
+  offsets) gives `f = clamp((S − Min) / max(Max − Min, 1.19e−7), 0, 1)`, amplitude `A = Amplitude ×
+  powf(f, Power)` (the CRT `powf` `FUN_00ed9e1b`; the decompiler shows only the clamp), then
+  `FUN_005e34e0(this = cam + 0x360, 1, A, Frequency, dt)`, which passes the `.data` vectors 10, 0.07, 0 (`.bss`
+  `0110ed84`, live 0) and 0.04 (`010c4c58..60`) to `FUN_005e2a70`.
+- `FUN_005e2a70`: matrix = identity; `k = A / 10`. Play position cam + 0x420 += Frequency × dt, wrapped at
+  13.267 s (`01028160`); a second phase cam + 0x430 += 30 × Frequency × dt wrapped at 255 feeds a periodic
+  term multiplied by the 0 vector (inert). A random walk cam + 0x440 (two LCG draws, cubed, step clamped to
+  ±0.07) times k × 0.04 is added to the pitch; recorded, it stayed at 1.0692-1.0696 all run, so the draws'
+  effect as decompiled is not what runs (taken as the constant 1.0693). `FUN_009e7a30` samples the curve: 199
+  quaternion x, y, z entries at `.bss` 0x01188300 (the ICE `SHAKE_DATA`; no writer in the dump, so filled at
+  run time), index = position × 30 (`01028170`), forwards then mirrored (398 − i), slerped between
+  neighbours, each lane times k, w = √(1 − |v|²). Rotation → Euler (`FUN_005e14d0`), pitch += the walk term,
+  matrix (`FUN_005d9740`), and the translation's y −= 10 × sin(pitch): the view turns about a point 10 m
+  behind the eye (looking down drops the eye).
+- Checked on the recording: lane i of the matrix's rotation vector is `2 × k × curve_i` with the same k in
+  all three lanes per 10-mph band, plus a pitch offset k × 0.043 (= 1.0693 × 0.04); k rises from 0.002 at
+  35 mph to 0.065 at 135 mph. The install's entry that fits best is (1.2, 1, 200, 0, 1.5) above 80 mph; below
+  60 mph the recorded k is ~30 % lower (power 2 fits better there; no car has power 2, so S may be a
+  filtered speed: open). The curve's statistics are slow (spectral centroid 0.2-0.7 Hz at Frequency 1),
+  so this effect is a slow sway, not the 3-4 Hz wobble; the faster content is body pitch and bumps.
+- Replay (`tools/camreplay.py`, pitch of the matrix in degrees, mean / std, recorded vs ported): 1-40 mph
+  +0.004 / 0.007 vs +0.009 / 0.012; 40-80 mph +0.027 / 0.030 vs +0.043 / 0.030; 80-140 mph +0.077 / 0.071 vs
+  +0.083 / 0.068. Before: a guessed 1.4 Hz eye translation (0.012 m per unit of Amplitude) with no rotation.
+
 ### Avoidance: where the search ended (round 7)
 
 - The director's update `FUN_005d5e20` is **not in the dump** ("not a function start; not in any decompiled

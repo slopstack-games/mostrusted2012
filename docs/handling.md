@@ -235,8 +235,8 @@ meaning is read from values or position; values are the 911's, ranges are across
 | `….7d4ec535` | 1.7 (1.45…4.4) | **code** eye height at full speed: `eye.y += (this − eye.y) · h`, unsmoothed |
 | `….b028673b` | 1.5 (1.35…3.1) | **code** look-at height at full speed, the same form |
 | `….b6010ee1` / `53e4b4f9` | 0 / 50 (50/75/100) | **code** speed band (mph): `h = clamp((v − b6010ee1) / (53e4b4f9 − b6010ee1), 0, 1)` |
-| `High_Speed_Shake.Amplitude`, `Frequency`, `Power` | 1.2, 1, 1.5 | **data** shake = Amplitude × f^Power |
-| `….Minimum_Speed_for_Shake` / `Maximum_Speed_for_Shake` | 0 / 180 (125…208) | **data** f = speed fraction between them (mph) |
+| `High_Speed_Shake.Amplitude`, `Frequency`, `Power` | 1.2, 1, 1.5 | **code** `FUN_005d0b90` (instance 0x28 / 0x2c / 0x38): scale = Amplitude × f^Power / 10 on a curve played at Frequency (decomp.md "High-speed shake") |
+| `….Minimum_Speed_for_Shake` / `Maximum_Speed_for_Shake` | 0 / 180 (125…208) | **code** (0x34 / 0x30) f = clamp((mph − Min) / (Max − Min), 0, 1) |
 | `Acceleration_movement.bd3a7cfc` / `7c9039e2` | −2 (−2.5…−1.9) / 0.5 | **code** eye z offset at full acceleration / deceleration (m), × `|a_long|` / a_full |
 | `….fdd25ee3` / `285f2260` | 2 / 2.5 | **code** rate (1/s) of the first-order lag of the z offset while accelerating / decelerating |
 | `….8e1310f6`, `a8cc9c9b`, `65b4f9c6`, `0da33093` | 1.5, 1.75, −1.2, 2.5 | read by `FUN_005d12b0`'s vertical stage (cam + 0x554), not ported |
@@ -347,8 +347,8 @@ That row stays a guess until the helper is read to its end.
 - *Still ours*: the drift lean and `YawDriftSpring` (no drift in the recording), the eye position (the
   recorded eye sits at z = −5.94 at rest, not the data's −4.6, and moves forward to −4.0 at 130 mph; its
   look-z lane follows `−1.2 + 4.55 × (1 − tan 35° / tan(FOV/2))` to 0.04 m RMS, a FOV-compensating dolly
-  that is not read or ported), the roll and deceleration pitch models, the shakes (decomp.md "Camera
-  effects") and the collision push-in. The FOV residual (3.8° RMS) correlates with acceleration (+0.1° per
+  that is not read or ported), the roll and deceleration pitch models, the eye's vertical spring
+  (cam + 0x550, not ported; decomp.md "High-speed shake and the eye's vertical spring") and the collision push-in. The FOV residual (3.8° RMS) correlates with acceleration (+0.1° per
   mph/s): a further term after `FUN_005c76a0` that is not found. The airborne branch of `FUN_005c8e40` is not
   ported (the car exposes no airborne state).
 - *Model decisions with the game's address*: `.bss` values still unread: `_DAT_0110e8f0` (yaw spring's
@@ -357,7 +357,10 @@ That row stays a guess until the helper is read to its end.
 Model decisions (not data): the FOV is vertical (as horizontal the chase view is far tighter than the
 original's; the bonnet and bumper views look very wide this way); acceleration is measured from the car's
 speed between physics ticks; the drift lean (`DRIFT_LEAN` 0.5 of the slip angle);
-the high-speed shake's scale (0.012 m per unit of Amplitude, 1.4 Hz at Frequency 1); impact strength =
+the high-speed shake's curve (the original's 199-sample table is run-time data at `0x01188300`; ours is
+smoothed noise with its recorded per-lane mean −0.0049 / −0.0063 / −0.0059, standard deviation 0.0123 /
+0.0106 / 0.0028 and Gaussian width 3.8 / 7.6 / 4 samples) and its random-walk factor (1.0693, the recorded
+cam + 0x440, constant through `ref/live1`); impact strength =
 approach speed / 10 m/s; camera collision (a ray from the look-at point to the eye, 0.25 m margin, at least
 0.8 m from the look-at point, eases back out at 3/s); look-around (right stick: ±110° yaw, −10…30° pitch, 20%
 dead zone, follows at 10/s, springs back at 4/s; right mouse drag; stick fully back, the stick's button or B looks back, a cut to
