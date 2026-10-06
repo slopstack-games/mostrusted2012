@@ -30,6 +30,7 @@ mod settings;
 mod sfx;
 mod sky;
 mod tonemap;
+mod tyre_marks;
 mod weather;
 
 use std::collections::HashMap;
@@ -513,6 +514,7 @@ fn main() -> anyhow::Result<()> {
         ))
         .add_plugins(camera::CameraPlugin { mode: camera_mode, look_back })
         .add_plugins(crash::CrashPlugin)
+        .add_plugins(tyre_marks::TyreMarksPlugin)
         .add_plugins(freeroam::FreeroamPlugin)
         .add_plugins((garage::GaragePlugin { script }, menu::MenuPlugin { enabled: menu_enabled, open: cli.show_menu }))
         .add_plugins(easydrive::EasyDrivePlugin {
