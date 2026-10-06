@@ -100,6 +100,10 @@ mod h {
     /// Range on the throttle at `Medium_speed` / `High_speed` (unnamed).
     pub const THROTTLE_RANGE_MEDIUM: u32 = 0x41d22d15;
     pub const THROTTLE_RANGE_HIGH: u32 = 0x98820dfe;
+    /// Neutral-offset gain and the side limits' extension by the offset (unnamed; `FUN_009d31f0`).
+    pub const NEUTRAL_GAIN: u32 = 0x553bc073;
+    pub const OFFSET_RANGE_TOWARDS: u32 = 0xa40a6b17;
+    pub const OFFSET_RANGE_AWAY: u32 = 0x16fd6022;
     // WheelSuspensionSpringConstraint
     pub const SPRING_DAMPING: u32 = field_hash("Damping_Ratio");
     pub const SPRING_DAMPER_RATIO: u32 = 0x0c5f89b3;
@@ -299,6 +303,12 @@ pub struct Steering {
     pub throttle_range: [f32; 2],
     /// Hard cap on the wheel angle (degrees).
     pub max_angle: f32,
+    /// Neutral-offset gain (unnamed `553bc073`): with no input the wheels stand at −q × `max_angle` × this,
+    /// q being the body slip as a fraction (docs/decomp.md "Steering").
+    pub neutral_gain: f32,
+    /// How far each side's limit extends by |offset| (unnamed `a40a6b17` on the side the offset points to,
+    /// `16fd6022` on the other).
+    pub offset_range_gain: [f32; 2],
 }
 
 /// Everything the physics model takes from the game. Fields are `None` when
@@ -692,5 +702,7 @@ fn read_steering(s: &Object) -> Option<Steering> {
             f(h::THROTTLE_RANGE_HIGH).unwrap_or(f(h::HIGH_RANGE)?),
         ],
         max_angle: f(h::MAX_STEERING_ANGLE).unwrap_or(35.0),
+        neutral_gain: f(h::NEUTRAL_GAIN).unwrap_or(0.0),
+        offset_range_gain: [f(h::OFFSET_RANGE_TOWARDS).unwrap_or(0.0), f(h::OFFSET_RANGE_AWAY).unwrap_or(0.0)],
     })
 }

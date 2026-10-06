@@ -94,9 +94,16 @@ steering direction (at most (20 − 10 h) × k rad/s² × dt). Constants: `.rdat
   (negative mph). Each side's limit is min(range + k × |offset|, `Maximum_steering_angle`), k = `a40a6b17` on
   the side the offset points to and `16fd6022` on the other.
 - **Neutral offset**: −q × `Maximum_steering_angle` × `553bc073` (0.3; 1 in reverse, 0 while drifting). The
-  target is offset + input × (limit − offset). q is vehicle +0x2c70; no writer of it was found in the vehicle
-  code (searched 0x008e–0x009e: only reads in `FUN_00904260` and `FUN_00902930`; the 0x006e writers of a
-  +0x2c70 belong to another class). Taken as 0.
+  target is offset + input × (limit − offset). q is vehicle +0x2c70, the first lane of a 4-float vector
+  (+0x2c70..+0x2c7c) that `FUN_00904260` and `FUN_00902930` copy to the stack and pass through `FUN_009aae10` /
+  `FUN_009d42d0` into `FUN_009d73f0`; `FUN_008f8cd0` reads it as the typed index `[0xb1c]`. No writer was found
+  in the whole dump (the 0x006c/0x006e/0x0074/0x0076 writers of a +0x2c70 address the game-mode object at
+  +0x2f3fc; `FUN_008e8c40`'s `+ 0xb1c` is a byte offset). The original's telemetry (`ref/xkr_launch`, the probe's
+  `steer_q`) shows what it is: **q = body slip / 35°**, slip = atan2(v · right, |v · forward|), the ratio
+  0.0286 per degree to four digits from 0.5° to 33°, times speed / 10 mph below 10 mph (constant over 1–4 m/s).
+  The steering follows −0.3 q in that run (`steer_norm` −0.20 at q 0.63, −0.09 at q 0.21, outside the drift),
+  which turns the front wheels towards the direction of travel (the front slip angle drops by the wheel angle):
+  a counter-steer assist. 35° is also the XKR's `Maximum_steering_angle`.
 - **Rates** (degrees per second) blend from 0 mph to `High_speed`. Back towards the neutral position
   (sign(target − angle) = sign(offset − angle)): the counter-steer rate if the input points across the current
   angle, else the centring rate. Outwards: the steer rate with the raw input at full travel, else the raw
