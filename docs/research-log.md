@@ -205,9 +205,22 @@ everything below was read from its memory, read-only. Reads through `/proc/<pid>
   `DAT_0110f944` = 0.
 - The player index was 48 again (vehicle table slot offset 0x184).
 
-Not read (no route to the object yet): pad dead zones, the free-roam state bytes, the traffic "world" values
-(+0xa2b74, +0xa2bfc: the object in decomp.md's traffic section is not the vehicle world), the colour-cube frame
-state. All of them can still be followed in the snapshots.
+**Traffic, from the snapshots** (after the game had quit):
+
+- `DAT_0110f940` **is `TrafficParamConfig`** (`0100000000069444` in `GLOBALCONFIG.BNDL`): all 36 floats read
+  live equal the data file's fields in order (field +0x48 = 0.24). The inference in decomp.md is confirmed.
+- The traffic system object (`world` in decomp.md's traffic section) was found by searching for the copy of
+  `TrafficSystemConfig`'s 4.78 outside the resource: at `world + 0xa2b74` it reads **4.78** in both snapshots
+  (the base, unmodified), followed by 1.0, an empty marker, then **1.0 standing / 1.1106 at speed** at +0xa2b80
+  and 0 at +0xa2b84. The word at +0xa2b40 is 0xd and the one at +0xa2b44 is 1, so the mode decomp.md puts at
+  +0xa2b40 is probably at +0xa2b44. +0xa2bfc does not hold a float (bytes 01 01 ff 7f); the float after it
+  (+0xa2c00) is 1.0, so the runtime speed scale is very likely that one and was 1.0 in free roam. The point at
+  +0x36114 is not the player's position: (1814, 23.7, 1650) while the car stood at (1400, 34, 1178), and
+  (925, 22.4, −101) while it drove at (887, 24.5, −555), so it runs several hundred metres ahead of or away from
+  the car (a streaming or look-ahead point; not identified).
+
+Not read (no route to the object yet): pad dead zones, the free-roam state bytes, the colour-cube frame state.
+All of them can still be followed in the snapshots.
 
 ### 2026-10-06 (session 5, round 6): the shadow pass's cost
 

@@ -973,7 +973,7 @@ Notation: `sys[x]` = `TrafficSystemConfig` field at instance offset `x` (handle 
 `world+0xb17b4`; offsets from `mwtool genesys-types`, values from `GLOBALCONFIG.BNDL`). `prm[x]` = the GeneSys
 object at `DAT_0110f940` / `DAT_0110f944` (`.bss`). Its field values fit `TrafficParamConfig` (0x69441) at every
 offset read, which is why it is taken to be that object: 0x10 = 4, 0x60 = 25, 0x6c = 2, 0x88 = 2, 0xac = 3. This
-is **inferred**. A live read of `DAT_0110f940` would confirm it. `mph` = `0.44704` (`DAT_010c4d24`).
+was inferred and is **confirmed** by a live read (2026-10-06: all 36 floats equal the data file's, research log). `mph` = `0.44704` (`DAT_010c4d24`).
 
 **Tick order** (confirmed). `FUN_0060ebc0` is the traffic system's frame function. It handles the message queue
 (`FUN_0060a380`), then branches on the mode at `world+0xa2b40`: 0 = start-up, 1 = local game, 2 = teardown.
