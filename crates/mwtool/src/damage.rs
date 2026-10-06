@@ -43,6 +43,7 @@ pub fn run(store: &AssetStore, o: &Options) -> Result<()> {
             dmg.skeleton.ids[i]
         );
     }
+    print_animations(&dmg);
     for (i, c) in dmg.clips.iter().enumerate() {
         let a = &c.animation;
         let last = a.frames.len().saturating_sub(1);
@@ -242,4 +243,33 @@ fn survey(store: &AssetStore) -> Result<()> {
     }
     println!("{ok} cars with damage data, {missing} without, {failed} failed");
     Ok(())
+}
+
+/// Animated body parts (active aero) of the car: clips, the bones they move, the state machine's
+/// variables and the speed rule when it is the simple form (`mw_assets::car_anim`).
+fn print_animations(dmg: &mw_assets::damage::VehicleDamage) {
+    let Some(a) = &dmg.animations else {
+        println!("animated parts: none");
+        return;
+    };
+    println!(
+        "animated parts: {:?}  hsm {}  variables {:?}  rule {:?}",
+        a.label,
+        a.hsm.map_or("-".into(), |id| id.to_string()),
+        a.variables,
+        a.speed_rule
+    );
+    for (i, c) in a.clips.iter().enumerate() {
+        println!(
+            "  anim {i}: {}  {} frames at {:.3}/s ({:.2} s)  bones {:?}",
+            c.id,
+            c.animation.frames.len(),
+            c.animation.frame_rate,
+            c.duration(),
+            c.animation.bones
+        );
+    }
+    let names: Vec<&str> =
+        a.hsm_strings.iter().filter(|s| s.len() > 3 || s.parse::<f32>().is_ok()).map(String::as_str).collect();
+    println!("  hsm strings: {}", names.join(" | "));
 }

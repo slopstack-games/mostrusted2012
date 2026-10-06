@@ -5,6 +5,7 @@
 
 mod audio;
 mod camera;
+mod car_anim;
 mod chassis;
 use mw_handling::{drift, drivetrain, tyre};
 mod convert;
@@ -196,6 +197,10 @@ struct Cli {
     /// Frames to wait before each `--swap-to` step (after loading, and after each car is placed).
     #[arg(long, default_value_t = 120)]
     swap_delay: u32,
+    /// Pin animated body parts (active aero clips, `mwtool damage <car>` lists them) at a position:
+    /// `all=1`, `0=0.5`. Without it, `--drive` runs the game's rule from the car's speed.
+    #[arg(long, value_delimiter = ',')]
+    anim: Vec<String>,
     /// Open the car menu at startup (also in `--screenshot` runs, to capture it).
     #[arg(long)]
     show_menu: bool,
@@ -402,6 +407,7 @@ fn main() -> anyhow::Result<()> {
             .collect::<anyhow::Result<_>>()?,
     };
     let mut app = App::new();
+    app.insert_resource(car_anim::AnimOverride::parse(&cli.anim)?);
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
             title: "Most Rusted".into(),
@@ -500,6 +506,7 @@ fn main() -> anyhow::Result<()> {
             avian3d::PhysicsPlugins::default().with_collision_hooks::<props::PropHooks>(),
             drive::DrivePlugin,
             damage::DamagePlugin,
+            car_anim::CarAnimPlugin,
             props::PropsPlugin,
             particles::ParticlesPlugin,
             sfx::SfxPlugin,

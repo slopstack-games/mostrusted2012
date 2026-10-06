@@ -9,6 +9,7 @@
 
 pub mod backdrop;
 pub mod camera;
+pub mod car_anim;
 mod catalog;
 pub mod crash;
 pub mod damage;

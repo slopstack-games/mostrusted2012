@@ -1119,3 +1119,16 @@ The paint shaders' object constants are registered by name with slot numbers in 
   `Modifier`: `PerformanceModifier` {`Modifications`: [`PerformanceModificationItem` {`Value`, `566a7ed1`
   profile index, `ModificationType` 0 / 1 / 2}]}}, a `NitrousUpgrade` (`5b7038f6`: the `NitrousParameters`
   variant it selects) or a `TyreUpgrade` (`a316f8e3`: tyre index). `mwtool mods <car>` prints them.
+
+## Vehicle animations
+
+The variable names the animation state machines read sit together in `.rdata`: `brake` 0x00fae7e0,
+`steering` 0x00fae7e8, `speedinmph` 0x00fae7f4 (then `coplights`, `Rear_Bumper_Hinge`). No function of the
+dump references them by address (searched for the addresses and `s_` labels; probably reached through a
+table built at start-up), so the code that feeds them and evaluates `HSM.AnimationCondition` is not found
+yet. Until it is, the rule in `car_anim.rs` comes from the data only (the HSM's condition strings and
+operands, docs/formats.md "Vehicle animations"): a one-clip `speedinmph` machine deploys at the condition's
+speed and retracts below its other operand (911: 70 / 40 mph, LFA 70 / 50), playing the clip at its frame
+rate both ways. Whether a deployed wing changes the handling is open: `AnimationStateBehaviour` has no aero
+field, and no write from the animation side into what `FUN_009cf850` / `FUN_009cfaf0` read was found (the
+search could not start without the condition code).
