@@ -124,6 +124,42 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-06 (session 5, round 3): vehicle liveries, paint masks and dirt
+
+- **Paint variants** across all car bundles (`mwtool models <bundle> --verbose`): plain `BodyPaint` (53 cars),
+  `_Lightmap` 31, `_Livery` 10, `_Livery_Lightmap` 5, `_TwoPaint` 6, `_TwoPaint_Livery` 5 (the police cars
+  122699, 122706, 122713, 510072, 2076005), `_TwoPaintMask` 9, `_TwoPaintMask_Lightmap` 2, `_NormalMap_NoDamage` 4.
+- **Liveries are material data, not paint options.** The livery is the material's `DiffuseTextureSampler`
+  texture (BC3, alpha 0 where the paint shows); `Genesys.Gen.VehiclePaint` has no texture field (its 21 fields:
+  `PbrDiffuse/Specular/Pearlescent/ScratchColour`, `DirtColour`, `DustColour`, clear coat and scratch floats,
+  `Display_Texture` = the menu swatch, `Type`, `PaintColour`). So `--paint-index` and liveries are independent;
+  no `--livery` flag.
+- **Paint pixel program** (longest `ps_4_0`, object CB `gObjectCB`): `GenericVector4_A/B/C`, then
+  `PbrPaintClearcoatSettings`, `PbrPaintDiffuseColour`, `PbrPaintScratchColour`, `PbrPaintScratchSettings`,
+  (`PbrPaintSecondaryDiffuseColour`, `PbrPaintSecondarySpecularColour` in the two-paint variants),
+  `PbrPaintSpecularColour`, `VehicleID`; material CB `mPaintColourIndex` (0 / 1 per mesh). Maths:
+  `_Livery`: paint = lerp(paint, livery.rgb, livery.a), livery at TEXCOORD0. `_TwoPaint`: diffuse =
+  `PbrPaintDiffuseColour + mPaintColourIndex × PbrPaintSecondaryDiffuseColour` (specular likewise);
+  `_TwoPaintMask`: the same with the DiffuseTextureSampler's green at TEXCOORD0 in place of the index.
+- **Dirt / dust** (all paint variants): EffectsTextureSampler (material-bound, shared) at TEXCOORD2:
+  dirt a = sat(e.w² × A.x), dust d = sat(2 × sat(e.y² × A.y) × e(uv×7).x); coverage = a + d(1 - a);
+  colour lerps towards a·B(1 - d) + d·C (B, C = GenericVector4_B / _C, whose data are the paint's
+  `DirtColour` / `DustColour`); roughness lerps to 1, F0 × (1 - coverage), clear-coat reflection ×
+  (1 - coverage)⁴. **Scratches**: e(uv×(2,3)).z band × sat(2·e.z - 1) × TEXCOORD5.w (the damage weight from the
+  vertex program) lerp the colour to `PbrPaintScratchColour` and roughness / F0 to `PbrPaintScratchSettings.xy`.
+- **Code**: the object-constant names are registered with slot numbers in one table function in the
+  0x8c4xxx range (calls to `FUN_00a5d490`): `PbrPaintDiffuseColour` 0x2a, `PbrPaintScratchColour` 0x2e,
+  `ScratchSettings` 0x2f, `SecondaryDiffuse` 0x30, `SecondarySpecular` 0x31, `GenericVector4_A` 0x9c. Who writes
+  these slots for the car (the per-object setter, not `FUN_00a5d660`) was not found yet.
+- **Built**: liveries drawn (`materials.rs` paint branch, `layered.wgsl` mode 6). Police Corvette
+  (`--vehicle "corvette z06 police"`) shows its POLICE / FAIRHAVEN CITY livery over the dark-blue paint.
+  `--dirt dirt[,dust]` enables the dirt port.
+- **Open**: (1) the secondary paint's source (no VehiclePaint field names it; two-paint meshes with index 1
+  draw the primary paint); (2) the dirt port tinted clean paint pink with orange blotches even at zero
+  amounts in the first test, so it is only enabled by `--dirt` until that is found (suspect: UV_1 = TEXCOORD2
+  on these meshes or the p9–p11 uniforms); (3) the dirt accumulation rule and who sets GenericVector4_A;
+  (4) scratches (need the damage weight); (5) whether the mask texture is sRGB (read linear here).
+
 ### 2026-10-06 (session 5, round 2): traffic rules in the code
 
 Details and formulas are in decomp.md "Traffic rules (session 5, round 2)".
