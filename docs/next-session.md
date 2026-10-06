@@ -28,9 +28,24 @@ the details, [PLAN.md](PLAN.md) "Where it stands" the state per gap.
   Bevy's UI stack system: this was also the HUD's "faint digits").
 - **Traced, not ported** (each needs a live read first): bloom, vignette, the colour-cube blend; the sun
   direction's writer and the shadow cascade fit were not found.
-- **Audits without a fix**: ground texture scale (the main families match the DXBC) and foliage placement
-  (`mwtool placement-check`: no decode error). The user's two reports are **not resolved**; ask for a location
-  (F3 shows the position).
+- **The user's two visual reports** (road / terrain texture scale; foliage in the wrong place), state:
+  - Texture scale: UV maths of every ground family, mip chains, UV formats and the detail-map strength match the
+    game; three road decal variants and the anisotropy (8× → the game's 4×, `SamplerState` decoded, `mwtool
+    sampler-usage`) were fixed. **Not resolved.** One lead: texture header byte 0x2C is used as the first mip to
+    draw when the global flag at 0x010eac98 is set (texture quality?): read it live and take an F12 capture of
+    the original at the `road-close` viewpoint. Open: per-slot samplers (the −0.9 LOD bias slots).
+  - Foliage: no decode error in any layer (`mwtool placement-check`). Groundcover now uses the game's field
+    meanings (size exponent, signed width / height) and its group draw distance (125 × the group's range);
+    sprite size in metres, per-sprite range and shrink, and camera-facing sprites are open. **The likely cause
+    is fog** (found at the end of the session): at noon the keyframe's fog reads 80–500 m, so hills beyond
+    500 m are flat fog colour while forward-rendered trees get no fog and hang in front of them
+    (`--camera=-650,260,1850,-1000,60,2150 --hour 12`). An agent was working on the game's fog rule and fog on
+    forward materials when this was written: check the research log's round-3 entry and whether it merged.
+- **Rules traced, no runtime yet** (round 2, decomp.md): traffic population (active cells, emitters at lane
+  starts, `Density` = cars per minute per lane × 4.78, the 2 s spawn gap, the load budget of 200) and free-roam
+  trigger hits (full-extent boxes, fire on entry, one-way boxes, one hit handled every 4 s; billboards count
+  when their prop breaks). Not found: Speed Points, the jack-spot swap, junction behaviour, the switch from a
+  lane follower to a physical car.
 
 ## Live reads wanted (the original running; `sudo sysctl kernel.yama.ptrace_scope=0` first, ask the user)
 
@@ -52,7 +67,10 @@ the details, [PLAN.md](PLAN.md) "Where it stands" the state per gap.
 | vignette | renderer +0xa980 (D), +0xa990 (A) | composite inner / outer colours |
 | colour-cube blend | frame state +0x2c…+0x78 (seven slots, six weights) | which slot holds the environment cube |
 | pad dead zones | pad object +0x140 / +0x144 | 0.2 / 0.1 from `.rdata` defaults |
-| traffic scale | field 0x48 of the object at `DAT_0110f940` | scales a `TrafficVehicle` field in `FUN_005f4d10` |
+| traffic parameters | `DAT_0110f940` / `f944` (object; field 0x48), `DAT_0110f590` (cull radius), `DAT_0118a090`, world +0xa2bfc, world +0xa2b74 at several hours | traffic speed scale, cull radius, the hour's density |
+| texture first-mip flag | global at 0x010eac98 (checked by `FUN_00414a50`) | whether the original skips the top mip of every texture |
+| groundcover size | constant-buffer slot 0x7F (`GroundcoverConstants`, `cb1[0].x`) | sprite size in metres |
+| free-roam state | game-state bytes +0x2e90, +0x2e91, +0x2e95 | gates on the collectable handler |
 
 ## Next, in order
 
