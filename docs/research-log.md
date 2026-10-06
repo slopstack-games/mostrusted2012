@@ -124,6 +124,34 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-06 (session 5, round 4): the anti-roll bar and roll damping from the code
+
+The jitter (roll 0.45° p-p at 11.2 Hz at 100 km/h, 0.06° at rest, gone without the bar's damper) came from our
+bar damping, which used `Front_` / `Rear_roll_damping` (1.2) as a ratio of critical against the scaled stiffness.
+
+- **Where the game builds the bar**: `FUN_008fda70` (vehicle build) reads `BodyMovement` +0x68
+  (`Front_roll_damping`) and +0x7c (`Rear_roll_damping`) and calls `FUN_00933a60` once per axle with the axle's
+  two wheel objects, the chassis body, a stiffness (vehicle slots +0x7fc / +0x800), the ratio and an inertia: the
+  reciprocal of lane z of the chassis's +0xe0 vector (inverse inertia → roll inertia, inferred). `FUN_00933a60`
+  allocates a type-2 constraint element (types registered in `FUN_009333b0`; springs are type 0 via
+  `FUN_00933930`) and stores k × 60 (`.bss` 0x01185d70, read live earlier) and 2 (`.rdata` 0x010245d0) × ζ ×
+  √(k × I), with k **unscaled** inside the root. So the effective ratio is ζ / √60 ≈ 0.155: ours was 7.7× too
+  damped, and with last tick's compression rates the explicit damper rang at 11 Hz.
+- **Not found** (searched for about half the budget): the writer of the stiffness slots +0x7fc / +0x800 (they
+  are copied, not read from `BodyMovement` directly in any decompiled function; `782f05c1` / `2bb0f6a0` at +0x64 /
+  +0x78 is from the field order and earlier sessions), and the per-tick solve of the type-2 element: no
+  decompiled function reads element +0x20 / +0x30; the island step `FUN_0093f5a0` calls `FUN_00932af0` (1104
+  bytes, no callees), which has no body in the dump: likely the force-element pass (bars and spring dampers).
+  Searched: readers of `BodyMovement` +0x64 / +0x78 in all files, the pool at world +0x3ac / +0x3c4, `switch` on
+  the element type in 0092–009C, functions loading +0x20 and +0x30 vectors with `sqrt`. So the bar's input
+  (compression difference vs. body roll against the axle), where it acts and its integration form stay ours.
+- **Ported**: the damping coefficient (chassis.rs `roll_damping` = 2 ζ √k_data, × √I in `drive::anti_roll_loads`).
+  Jitter at 100 km/h 0.449° @ 11.2 Hz → 0.011° @ 1.0 Hz, at rest 0.060° → 0.000°. Accel, corner (2.57 g),
+  handbrake, drift unchanged; brake 38.5 → 38.6 m; landing deepest 0.055 → 0.058 m; climb deepest 0.101 →
+  0.056 m, 133 → 126 km/h (handling.md "Measurements").
+- **Open**: the stiffness unit (per radian in our model), the solve (`FUN_00932af0` needs a disassembly or a
+  live trace: a probe write-watch on the element's +0x20 lanes would name the reader).
+
 ### 2026-10-06 (session 5, round 4): Easydrive and HUD from the game's layouts
 
 **Differences found** (our frames at 1280×720 against the layout data, `mwtool ui show`; largest first):

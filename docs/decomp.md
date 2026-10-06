@@ -383,8 +383,21 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
   upgrade input, 1 by default) multiplies k. The function that applies the two dampers was not found (the island
   solver files hold no spring solve that reads +0x18 and +0x2c as plain floats; it uses vector loads), so which
   slot is rebound is still open.
-- **Anti-roll bars** per axle, stiffness `BodyMovement.782f05c1` / `2bb0f6a0` (unit unknown), damping ratio
-  `Front_` / `Rear_roll_damping` (1.2) against the body's roll inertia.
+- **Anti-roll bars** per axle, built when the vehicle is (`FUN_008fda70` → `FUN_00933a60`, twice: the front
+  pair of wheel objects at vehicle +0xa08 / +0xbd8, the rear pair at +0xda8 / +0xf78, with the chassis body at
+  vehicle +0x10). `FUN_00933a60` takes a constraint element of type 2 from the world's element pools (registered
+  in `FUN_009333b0` with 0x28 extra bytes; the springs are type 0, `FUN_00933930`) and stores the two bodies'
+  ids (+0x60 of each), an index (+0xf0 of the third object), then per lane the stiffness k × 60 (`.bss`
+  0x01185d70) at element +0x20 and the damping 2 (`.rdata` 0x010245d0) × ζ × √(k × I) at +0x30, k the unscaled
+  data stiffness. The inputs: ζ = `Front_roll_damping` / `Rear_roll_damping` (`BodyMovement` +0x68 / +0x7c,
+  1.2), I = the reciprocal (rcpps with two Newton steps) of lane z of the chassis body's +0xe0 vector (its inverse
+  inertia, so the roll inertia about the forward axis; inferred), k = the vehicle's slots +0x7fc / +0x800, whose
+  writer was not found; that they hold `782f05c1` / `2bb0f6a0` (+0x64 / +0x78, the field before each roll
+  damping) is from the field order. So the bar's damping ratio against its own stiffness is ζ / √60 ≈ 0.15, not
+  ζ. The per-tick solve that reads the element was not found: no decompiled function reads +0x20 and +0x30 of a
+  type-2 element; the island step `FUN_0093f5a0` calls `FUN_00932af0` (1104 bytes, no callees), which the dump
+  has no body for and is the likeliest candidate (with the spring dampers, also unfound). So the bar's input
+  (compression difference, body roll against the axle) and its integration form are not known.
 - **Drag** (`FUN_009cf850`): per body axis, F = −½ K C |v| v with C = `Side_drag_coefficient` (2),
   `Top_drag_coefficient` (2), `Front_drag_coefficient` (0.75); K = 1.2 (`.bss` 0x011872a0, read live). Above `f1538c51` mph (= the top speed) the front coefficient ramps to `b8786ac2` (1.5) at `4aadb133`
   (229 mph). `b1322654` (0.5) scales the front drag by a 0..1 state (slipstream, inferred).
@@ -400,8 +413,8 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
   (`123d2559`) the angular velocity is damped per axis (pitch `8b456140`, yaw `312bd67d`, roll by roll rate) and a
   nose-down pitch kick applies. Over long jumps the springs blend over 1.9 s to a stiff undamped in-air spring
   (`ddbd44c0` / `b80e5de3`).
-- **Anti-roll scale** 60 (`.bss` 0x01185d70, read live) on the data values; the unit (N m per degree) is
-  inferred.
+- **Anti-roll scale** 60 (`.bss` 0x01185d70, read live) on the stiffness only (`FUN_00933a60`); the unit
+  (N m per radian in our model) is inferred.
 - **Strut travel**: searched for the joint built from `WheelSuspensionConstraint` (`Angle` 5, `7fc0dc41` 0.09 /
   0.08, `447b4e1c` / `668c92ac` −1.5, `c2a87807` 1.5, `b867a203` 0.23, `b1c680d5`): no reader of these offsets
   turned up in the vehicle build (`FUN_009b4e60` and its callees) or in `009A`–`009D` (searched `+ 0x14` / `+ 0x24`
@@ -417,7 +430,7 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
   at 0) to the wheel, and while +0x4ae is set also to the chassis at the strut point through the chassis's
   inverse mass and inertia, scaled by +0x474. So the end of the strut is a hard contact on the chassis, not a
   spring: a landing cannot drive the body into the ground. Ported as `strut_stops` (handling.md item 5).
-- Unknown: the anti-roll stiffness unit, which damper slot is rebound, the strut travel (+0x460 is set by the
+- Unknown: the anti-roll stiffness unit and the bar's per-tick solve (`FUN_00932af0`?), which damper slot is rebound, the strut travel (+0x460 is set by the
   builder's caller; not traced), the stop's slack (+0x470, `.bss` 0x01186bf0, 0x01186b10).
 
 ## Tyres (`FUN_009c75b0` per-wheel solve, `FUN_009c5da0` caps, `FUN_00905910` per-tick inputs)

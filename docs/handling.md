@@ -64,8 +64,12 @@ One physics tick is 1/60 s (`Time::<Fixed>` at 60 Hz, as the game). Per tick, in
    the wheel speeds within a ratio of 1 / c.
 5. **Suspension**: a ray per wheel. Spring k = W / sag (W = static corner load, sag = `41543f85`); damper
    c = 2 `Damping_Ratio` √(k W / g) in bump and `0c5f89b3` × c in rebound; bump travel 0.06 m above rest (model,
-   from the 911's strut); anti-roll bars per axle (`Body_movement` `782f05c1` / `2bb0f6a0` × 60, read as N m per
-   degree; damping `Front_` / `Rear_roll_damping` × critical against the roll inertia). The spring force holds
+   from the 911's strut); anti-roll bars per axle (`FUN_00933a60`, built by `FUN_008fda70`): stiffness
+   `Body_movement` `782f05c1` / `2bb0f6a0` × 60 (applied as N m per radian of roll), damping
+   c = 2 × `Front_` / `Rear_roll_damping` × √(data stiffness × roll inertia), the × 60 **outside** the root, so the
+   bar runs at 1.2 / √60 ≈ 0.15 of critical (it was 1.2 × critical against the scaled stiffness, 7.7× too much,
+   and rang at 11 Hz). Its input (left-right compression difference over the track) and explicit force form are
+   ours: the solve that applies the bar was not found (decomp.md). The spring force holds
    the body up; it does not set the tyre grip. **Strut end stop** (`FUN_009c5a90` → `FUN_009c2670`): where the
    ground would come past the end of the bump travel by the end of the tick, the wheel contact acts on the chassis
    as a hard, non-negative normal impulse at the contact (target normal velocity ≥ overtravel / dt, so the
@@ -365,7 +369,8 @@ stands 10 m past the impact); a 2 m pillar shows the car.
 | `DRAG_K` | 1.2 | read from the running game (`.bss` 0x011872a0); was 1 |
 | `BUMP_TRAVEL` | 0.06 m | from the 911's strut geometry; not read per car. Searched for the strut joint's builder (`WheelSuspensionConstraint` readers in the vehicle build, `009A`–`009D`): not found; `7fc0dc41` (0.09 / 0.08 m on the 911) is the likeliest field |
 | damper slots | `0c5f89b3` × c in rebound | the setup stores c and `0c5f89b3` × c (spring +0x2c / +0x18, `FUN_009b29b0`); the function applying them was not found |
-| anti-roll unit | N m per degree, scale 60 | the scale is read live (`.bss` 0x01185d70); the unit is inferred |
+| anti-roll unit | N m per radian, scale 60 | the scale is read live (`.bss` 0x01185d70) and applied by the bar's builder `FUN_00933a60` to the stiffness only (the damping is 2 ζ √(k_data I), from the same function); the unit, and so the angle the stiffness multiplies, is inferred: the solve that applies the bar is likely the undecompiled `FUN_00932af0` |
+| anti-roll input and form | compression difference, explicit force | the bar element (type 2, `FUN_00933a60`) names the axle's two wheel objects and the chassis, so it may act on the body's roll against the axle rather than on the compression difference; its per-tick solve was not found. Ours applies k Δx / t² + c Δẋ / t² at the wheels with last tick's compression rates (stable at the game's damping) |
 | drift time base | 60 | **from the game**: damping `(1 − c)^(dt × 60)`, the 60 at `.bss` 0x01184cc0 / 0x01185640 (read live), `FUN_00907b50`, `FUN_0091dad0` |
 | drift speed-hold scale | 60 | `.bss` 0x01187250 (`FUN_009d0420`): no initialiser in the dump, not read live; 60 because the same constant turns per-tick rates into per-second ones in `FUN_009d9960` and `FUN_009cfce0` |
 | counter-steer opening exponent | `Max_counter_steering_power` | `FUN_009d2e20` raises the opening to a power whose exponent the decompiler drops (a register load); inferred as the one counter-steering field the code does not otherwise read |
@@ -393,6 +398,11 @@ landing sink 0.055 m (the bump travel), overtravel 0, settled 0.45 s after touch
 the kink, the body's nose touches the 30° slope and the car hops; settle 4.27 s). Jitter (unchanged by the fix):
 roll 0.45° p-p at 11.2 Hz at 100 km/h (roll rate 37°/s p-p), 0.06° at rest; it is the anti-roll bar's damper
 (without it 0.008°): see the research log. Accel / brake / corner unchanged (3.72 s, 38.5 m / 2.63 s, 2.57 g).
+Anti-roll damping from `FUN_00933a60` (2026-10-06, round 4): jitter at 100 km/h roll 0.449° p-p at 11.2 Hz →
+0.011° at 1.0 Hz (roll rate 37.3 → 0.07°/s p-p), at rest 0.060° → 0.000°; pitch 0.76° → 0.74° p-p at 1 Hz (not
+the bar). Accel 3.72 s and corner 2.57 g (roll 0.0° in both) unchanged; brake 38.5 → 38.6 m (2.63 s); landing
+sink 0.006 m, deepest 0.055 → 0.058 m; climb deepest 0.101 → 0.056 m, body contact 0.28 → 0.35 s, settle
+4.27 → 4.62 s, 133 → 126 km/h on the plateau; handbrake (59°/s) and drift (peak 4.5°) unchanged.
 
 Run on the flat test track with `mostrusted --drive <car> --test accel|brake|corner|handbrake|drift|donut` (logs
 `TEST RESULT`; tick-exact, so results repeat). `corner` holds 80 km/h and winds the steering in over 15 s;
