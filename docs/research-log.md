@@ -175,6 +175,40 @@ Details and formulas are in decomp.md "Traffic rules (session 5, round 2)".
   - The base density `world+0xa2b74` during free roam at several hours, to see whether the hour array reaches
     it.
 
+### 2026-10-06 (session 5, round 2): free-roam scoring, trigger hits, jack spots
+
+Read from the dump only (no live reads); details and formulas in decomp.md "Trigger hits" and "Billboards,
+gates and other kinds".
+
+- Settled: the header +0x1c index is per-250 m-cell lists of trigger indices; the streamer `FUN_0053bc70`
+  activates the 2 × 2 cells around each player car and keeps at most 300 triggers live (`FUN_00539e50`, the
+  "300 entries" of the loader). Box size (+0x24) is the **full** extent (the shape gets size × 0.5); points
+  get no shape and are never overlap-tested. Flags bit 0 makes a box **one-way** (`FUN_00536f70`: counts only
+  if `dot(vehicle vector, box Z axis) ≥ 0`); bit 1 is not read by the trigger code (meaning still open).
+- Firing (`FUN_00707650`): on entry only (diff with last frame's per-vehicle list), already-found triggers
+  dropped except speed cameras, then a ring buffer drained one hit per 4 s (`DAT_00fcb050`) into
+  `FUN_007059b0`. The overlap test itself runs in the `"TriggerUpdate"` job (`FUN_00536a10` builds per-vehicle
+  queries from the car's half-extent box); its narrow phase was not read, so "car box vs trigger shape" is
+  inferred, not confirmed. Our runtime's origin-in-box test stays a model decision until then.
+- Billboards: counted when the **prop breaks** (`FUN_005b5340`, the only poster of game-logic message 0x14,
+  checks the smashed object's linked trigger id at +0x90 and the billboard kind). Gates: overlap path, plus a
+  helper kind 7 / 'I' that hits the nearest '0'/'H' gate (`FUN_00537600`).
+- Speed camera result goes to the Autolog leaderboard request in `FUN_008749e0` (`"eventId"`, board
+  `"RoadRules"`); offline `FUN_00874830(id)`.
+- Jack spots: a GeneSys list at manager +0x41b0 pairs two trigger ids (+0x20, +0x28) with a key (+0x24);
+  `FUN_007061d0(key)` marks a pair found. Probably `CarSwapSpot` (44 bytes, eight UniqueIds), not confirmed:
+  `mwtool genesys all --type CarSwapSpot` printed nothing, so the instances are embedded or in a bundle the
+  tool does not scan.
+- Dead ends: `BillboardWorth` / `ItemWorth` / `HighValueWorth` are Smash-and-Grab mode variables
+  (`HSMBehaviourHSMDoSmashAndGrabScoring`), not free-roam points. No other poster of message 0x14 exists (all
+  functions using the game-logic queue `DAT_010edb10` checked).
+- Stopped at: the job's narrow-phase test (find the function `FUN_00da2e50` dispatches for "TriggerUpdate";
+  `FUN_00536f70` is its per-hit callback), the body shop tail of `FUN_007059b0`, Speed Points (strings
+  `CurrentSpeedPoints`, `SPEEDPOINTS`, `upload_sp_buckets`; listeners in `FUN_006a8050`), jack spot car
+  spawning and the swap input (the `JackSpots` script and `JackspotScript_ScreenScript`), kinds 11
+  (`FUN_006e4770`) and those of `FUN_006e16c0` / `FUN_006e1690`. Live reads wanted: game-state bytes
+  `+0x2e90`, `+0x2e91`, `+0x2e95` (jack spot and speed-camera modes) during free roam.
+
 ### 2026-10-06 (session 5): ground texture scale audit
 
 Report: "some textures, especially on the road and terrain are still scaled wrong" (no location). Every UV path
