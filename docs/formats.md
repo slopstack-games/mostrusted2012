@@ -472,3 +472,31 @@ Inline GeneSys structs in a driving screen's widget groups (group children: fiel
 | `Widget_EasyDriveLinkItemList` (76) | 68 `Entries`[] {`Token` (transition to the tier of that name, or `DISMISS` / `CONFIRM`), `Description`, `Name` (Language ids), `SpeechCommand` u16} |
 | `Widget_EasyDriveHookItemList` (76) | 68 `Entries`[] {`aabe34d0` hook argument, `3ab7e7fa` HSM exit token, `b50ff8fe` hook token, description, name, speech} |
 | `Widget_EasyDriveTypeDefinition` (108) | 88 properties[] {`Name`, `Path` binding with `[#]` = item index}, 92 / 96 selection callbacks[] {`aabe34d0` argument property, `781443e5` enabled property, `Name` (code callback), three u16 enums} |
+
+### UI element stacks (`UIElement_ElementStack`) and the Easydrive menu layout
+
+An element stack repeats `UILayout`s (resource IDs in `Cell.Content`) over a data source; parser
+`mw_formats::ui::Stack`, drawing `UiScene::stack`.
+
+| field | meaning |
+|-------|---------|
+| `DataSource` | the list the cells refer to (`Widget.EasyDrive.Items`), or for a one-cell stack the item itself (`~Widget.EasyDrive.Items[#parent_index#]`, `~Widget.EasyDrive.CurrentItem`) |
+| `3555b1f7` | cell count binding (`<list>._length`, `~Widget.EasyDrive.EasyDrive.TierHistoryLength`); empty = one cell |
+| `Header` / `DefaultTemplate` / `Footer` | `Cell`[] {`Content` layout, `CellIndex`, `Span`} |
+| `TemplateLayouts` | {`Binding`, `Cells`[]}: the first whose binding holds (with `#` = the entry index) replaces the default for that entry (`Widget.EasyDrive.SelectedIndex(EQUALS:#)` = the selected row; `Widget.PAINTITEM.IsActive` & co. = the item type's row) |
+| `Width`, `Height` | the stack's box; nested row stacks have Height 25 (selected row) or 0 (from their content) |
+
+Not decoded: `CellSizeDefinition` (empty in Easydrive), `Padding`, `Shift`, `ScrollSpeed`, the unnamed counts
+(`280402f1` = 3 on the menu stack). Inside a cell, bindings without a dot (`Name`, `Locked`, `DLCIconID`,
+`PositionNotNull`, `Shutdown`, `New`) are fields of the entry.
+
+Easydrive (`UI/SCREENS2/371621.BNDL`, widget `EasyDrive`): layout **1773380** = the menu, one stack at (3, 43)
+299×231 over `Widget.EasyDrive.Items`: header `01000000001b0e24` (stack over the tier history: banner image
+256×29 + title label `TierHistory[#].Name`), unselected row `010000000019a0db` → `01000000000f75b7` (dark row
+image 256×29 at (7,−3), name label at (56,12) left-middle, lock / DLC / medal icons), selected row
+`01000000001b0f4b` → `01000000001b0f03` (white bar 342×29 at (38,−3) and 354×37 at (34,−7), name at (87,12), arrow
+16×22 at (354,11), "NEW" badge, six glow images `01010000001942a0`), footer `01000000001b1186` (scroll arrows
+14×24 at (55,9), shown when `~Widget.EasyDrive.EasyDrive.Length(GTEQ:11)`). Layout **1805584** = the closed-menu
+prompt (d-pad icon 39×39 at (8,6), alert variant with `Recommends.ShowAlert`, logo strip 100×16, "NEW" badge on
+`Widget.Prompt.New`); **1713378** is empty. Widget `EasyDrivePanel` (layout 1902272, a 548×25 stack at (365,15)
+moved down by `Widget.EasyDrive.ItemsAbovePanel × 26.42`) is the side panel next to the selected row.

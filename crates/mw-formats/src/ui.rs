@@ -352,6 +352,8 @@ pub struct Element {
     pub margins: [f32; 4],
     pub min_size: [f32; 2],
     pub sub_image: Option<Box<Element>>,
+    /// `UIElement_ElementStack`: a list of layouts repeated over a data source.
+    pub stack: Option<Box<Stack>>,
     pub idle: Vec<Behaviour>,
     pub transition_in: Vec<Behaviour>,
     pub transition_out: Vec<Behaviour>,
@@ -424,6 +426,7 @@ impl Element {
             margins,
             min_size: [float(o, field::MIN_WIDTH), float(o, field::MIN_HEIGHT)],
             // Backed labels' backing image, or the minimap's mask image.
+            stack: (kind == ElementKind::ElementStack).then(|| Box::new(Stack::from_object(o))),
             sub_image: object(o, field::SUB_IMAGE)
                 .or_else(|| object(o, field::MASK))
                 .and_then(|s| object(s, field::ASSET))
@@ -449,6 +452,46 @@ impl Element {
         let (col, row) = ((self.anchor % 3) as f32, (self.anchor / 3).min(2) as f32);
         [self.position[0] - self.size[0] * col * 0.5, self.position[1] - self.size[1] * row * 0.5]
     }
+}
+
+/// `UIElement_ElementStack` (field names from the GeneSys type table; `length` is the unnamed `3555b1f7`,
+/// always the data source's `._length`). The stack draws `header`, then one cell per data-source entry (the
+/// first template whose binding, with `#` = the entry's index, is true, else `default`), then `footer`. Cell
+/// contents are `UILayout` objects (often stacks again: the Easydrive row is a one-cell stack over
+/// `~Widget.EasyDrive.Items[#parent_index#]` whose templates pick the item type's layout).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Stack {
+    /// `DataSource`: the list (or, for a one-cell stack, the item) the cells' relative bindings refer to.
+    pub data_source: String,
+    /// Binding giving the number of cells; empty = one cell.
+    pub length: String,
+    pub header: Vec<ResourceId>,
+    pub default: Vec<ResourceId>,
+    pub footer: Vec<ResourceId>,
+    /// (`Binding`, cell layouts) in order.
+    pub templates: Vec<(String, Vec<ResourceId>)>,
+}
+
+impl Stack {
+    fn from_object(o: &Object) -> Self {
+        let cells = |o: &Object, name: &str| -> Vec<ResourceId> {
+            structs(o, crate::genesys::field_hash(name)).filter_map(|c| handle(c, field_hash_const::CONTENT)).collect()
+        };
+        Self {
+            data_source: string(o, crate::genesys::field_hash("DataSource")),
+            length: string(o, 0x3555_b1f7),
+            header: cells(o, "Header"),
+            default: cells(o, "DefaultTemplate"),
+            footer: cells(o, "Footer"),
+            templates: structs(o, crate::genesys::field_hash("TemplateLayouts"))
+                .map(|t| (string(t, field::BINDING), cells(t, "Cells")))
+                .collect(),
+        }
+    }
+}
+
+mod field_hash_const {
+    pub const CONTENT: u32 = crate::genesys::field_hash("Content");
 }
 
 /// `UILayout`: a flat list of elements.

@@ -5,8 +5,13 @@
 //! chosen car through the garage (`GarageAction::Drive`). Hook items and tiers whose entries the game's code
 //! generates are shown and inert.
 //!
-//! Model decisions (not from the data or code yet): the panel's place and look (the game's layouts
-//! `01000000001b0f44` & co. are not read yet) and the keyboard keys. The data binds the `EasyDrive::*` actions to
+//! The look is the `EasyDrive` widget's menu layout (`MENU_LAYOUT`): an element stack whose header lists the
+//! tier history, whose rows repeat the item layouts over `Widget.EasyDrive.Items` (the selected row's template
+//! where `Widget.EasyDrive.SelectedIndex` equals the row) and whose footer holds the scroll arrows; drawn
+//! through `UiScene` like the HUD, with the bindings in `lookup` filled from the menu state.
+//!
+//! Model decisions (not from the data or code yet): the rows shown at once (`WINDOW`), which of the widget's
+//! three layouts shows when (code: only the menu layout, while open) and the keyboard keys. The data binds the `EasyDrive::*` actions to
 //! the input mappings `easy_up` (previous), `easy_down` (next), `easy_left` (back a tier), `easy_right` (select;
 //! `Hack_EasyRight` opens) and `cancel` (quick close); which keys those mappings are on PC is not decoded, so
 //! here: the original's EASY_* bindings (d-pad; Num 4 / 6 / 8 / 2, input.rs), Esc / pad B to close, `E` opens (ours).
@@ -17,8 +22,15 @@ use bevy::prelude::*;
 use mw_assets::easydrive::{self as ed, EASYDRIVE_SCREEN};
 
 use crate::Game;
-use crate::game_text::{BODY_FONT, GameText, TITLE_FONT};
+use std::collections::HashMap;
+
+use mw_assets::ui::UiScene;
+use mw_bundle::ResourceId;
+use mw_formats::binding::BindValue;
+
+use crate::game_text;
 use crate::garage::{Garage, GarageAction};
+use crate::hud::PoolNode;
 
 pub struct EasyDrivePlugin {
     pub enabled: bool,
@@ -29,7 +41,7 @@ pub struct EasyDrivePlugin {
 impl Plugin for EasyDrivePlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(EasyDrive { enabled: self.enabled, open: self.open, ..default() })
-            .add_systems(Startup, (start_load, spawn_panel))
+            .add_systems(Startup, start_load)
             .add_systems(Update, (poll_load, navigate, redraw).chain());
     }
 }
@@ -57,7 +69,8 @@ pub struct EasyDrive {
     enabled: bool,
     pub open: bool,
     tiers: Vec<Tier>,
-    job: Option<Arc<Mutex<Option<Vec<Tier>>>>>,
+    job: Option<Arc<Mutex<Option<(Vec<Tier>, Option<Look>)>>>>,
+    look: Option<Look>,
     /// Open pages, root first, with the selected row of each.
     stack: Vec<(Page, usize)>,
     dirty: bool,
@@ -65,8 +78,32 @@ pub struct EasyDrive {
     pub just_closed: bool,
 }
 
-#[derive(Component)]
-struct Panel;
+/// The menu layout's scene and decoded textures (loader thread), then its Bevy side.
+struct Look {
+    scene: UiScene,
+    images: Vec<(ResourceId, Image)>,
+    textures: HashMap<ResourceId, (Handle<Image>, Vec2)>,
+    root: Option<Entity>,
+    pool: Vec<Entity>,
+}
+
+/// The `EasyDrive` widget's menu layout in `EASYDRIVE_SCREEN` (UniqueId): the element stack at (3, 43). The
+/// widget's other layouts are the closed-menu prompt (1805584: d-pad icon, alert, "NEW" badge) and an empty one.
+const MENU_LAYOUT: u32 = 1_773_380;
+
+fn load_look(store: &mw_assets::AssetStore, lang: &mw_formats::Language) -> Option<Look> {
+    let layouts = store
+        .ui_screen_layouts(EASYDRIVE_SCREEN, Some(&["EasyDrive"]))
+        .map_err(|e| warn!("Easydrive layouts unavailable: {e}"))
+        .ok()?
+        .into_iter()
+        .filter(|l| l.layout.id == MENU_LAYOUT)
+        .collect();
+    let scene = store.ui_scene(layouts, lang);
+    let images =
+        scene.textures().into_iter().filter_map(|id| Some((id, game_text::decode_texture(store, id)?))).collect();
+    Some(Look { scene, images, textures: HashMap::new(), root: None, pool: Vec::new() })
+}
 
 fn start_load(mut menu: ResMut<EasyDrive>, game: Res<Game>) {
     if !menu.enabled && !menu.open {
@@ -78,7 +115,7 @@ fn start_load(mut menu: ResMut<EasyDrive>, game: Res<Game>) {
         let tiers = store
             .language(mw_assets::DEFAULT_LANGUAGE)
             .and_then(|lang| Ok((store.easydrive(EASYDRIVE_SCREEN)?, lang)))
-            .map(|(m, lang)| resolve(&m, &lang))
+            .map(|(m, lang)| (resolve(&m, &lang), load_look(&store, &lang)))
             .map_err(|e| warn!("Easydrive data unavailable: {e}"))
             .unwrap_or_default();
         *out.lock().unwrap() = Some(tiers);
@@ -107,9 +144,23 @@ fn resolve(m: &ed::EasyDrive, lang: &mw_formats::Language) -> Vec<Tier> {
         .collect()
 }
 
-fn poll_load(mut menu: ResMut<EasyDrive>) {
-    let Some(tiers) = menu.job.as_ref().and_then(|j| j.lock().unwrap().take()) else { return };
+fn poll_load(mut commands: Commands, mut menu: ResMut<EasyDrive>, mut images: ResMut<Assets<Image>>) {
+    let Some((tiers, look)) = menu.job.as_ref().and_then(|j| j.lock().unwrap().take()) else { return };
     menu.job = None;
+    menu.look = look.map(|mut look| {
+        for (id, img) in std::mem::take(&mut look.images) {
+            let size = img.size().as_vec2();
+            look.textures.insert(id, (images.add(img), size));
+        }
+        let node = Node {
+            position_type: PositionType::Absolute,
+            width: Val::Percent(100.0),
+            height: Val::Percent(100.0),
+            ..default()
+        };
+        look.root = Some(commands.spawn((node, Pickable::IGNORE, GlobalZIndex(5))).id());
+        look
+    });
     info!("Easydrive: {} tiers from {EASYDRIVE_SCREEN}", tiers.len());
     menu.tiers = tiers;
     if menu.open {
@@ -219,66 +270,84 @@ fn navigate(
     }
 }
 
-fn spawn_panel(mut commands: Commands) {
-    commands.spawn((
-        Panel,
-        Node {
-            position_type: PositionType::Absolute,
-            left: Val::Percent(4.0),
-            top: Val::Percent(28.0),
-            flex_direction: FlexDirection::Column,
-            row_gap: Val::Px(2.0),
-            padding: UiRect::all(Val::Px(8.0)),
-            display: Display::None,
-            ..default()
-        },
-        BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.55)),
-        GlobalZIndex(5),
-    ));
-}
+/// Rows shown at once (model decision: the script's `Widget.EasyDrive.Menu.NumItemsShown` is set by code; the
+/// footer's scroll arrows show from `Length >= 11`, which suggests ten).
+const WINDOW: usize = 10;
 
-/// Rows shown at once (model decision; the script's `Widget.EasyDrive.Menu.NumItemsShown` is set by code).
-const WINDOW: usize = 8;
+/// Values for the bindings the menu layout uses (`Widget.EasyDrive.*`; inside a row the item's fields arrive as
+/// `Widget.EasyDrive.Items[<row>].<field>` or `Widget.EasyDrive.CurrentItem.<field>`).
+fn lookup(path: &str, arg: Option<&str>, history: &[String], names: &[String], sel: usize) -> Option<BindValue> {
+    let item_field = |name: Option<&String>, f: &str| -> Option<BindValue> {
+        Some(match f {
+            "Name" => BindValue::Text(name?.to_uppercase()),
+            // `Shutdown(IS_EMPTY)` picks the plain name label over the backed "shut down" one.
+            "Shutdown" => BindValue::Text(String::new()),
+            "Locked" | "Unavailable" | "New" | "PositionNotNull" => false.into(),
+            _ => return None,
+        })
+    };
+    if let Some(f) = path.strip_prefix("Widget.EasyDrive.CurrentItem.") {
+        return item_field(names.get(sel), f);
+    }
+    if let Some(rest) = path.strip_prefix("Widget.EasyDrive.Items[") {
+        let (i, f) = rest.split_once("].")?;
+        return item_field(names.get(i.parse::<usize>().ok()?), f);
+    }
+    Some(match path {
+        "Widget.EasyDrive.Items._length" | "Widget.EasyDrive.EasyDrive.Length" => (names.len() as f64).into(),
+        "Widget.EasyDrive.SelectedIndex" => (sel as f64).into(),
+        "Widget.EasyDrive.EasyDrive.TierHistoryLength" => (history.len() as f64).into(),
+        // `TierHistory[#].Name`: the argument arrives as `<index>].Name`.
+        "Widget.EasyDrive.EasyDrive.TierHistory" => {
+            let i = arg?.split(']').next()?.parse::<usize>().ok()?;
+            BindValue::Text(history.get(i)?.to_uppercase())
+        }
+        "Signals.False" => false.into(),
+        // Item types: the special row templates (paint, nearest event, recommends, friends) are not ours yet.
+        p if p.starts_with("Widget.") && p.ends_with(".IsActive") => false.into(),
+        _ => return None,
+    })
+}
 
 fn redraw(
     mut commands: Commands,
     mut menu: ResMut<EasyDrive>,
     garage: Res<Garage>,
-    mut panel: Query<(Entity, &mut Node), With<Panel>>,
+    windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
+    mut nodes: Query<PoolNode>,
 ) {
     if !menu.dirty && !garage.is_changed() {
         return;
     }
+    let Ok(window) = windows.single() else { return };
     menu.dirty = false;
-    let Ok((entity, mut node)) = panel.single_mut() else { return };
-    commands.entity(entity).despawn_related::<Children>();
-    let Some((page, sel)) = menu.stack.last().cloned().filter(|_| menu.open) else {
-        node.display = Display::None;
-        return;
-    };
-    node.display = Display::Flex;
-    let title = match &page {
-        Page::Tier(i) => menu.tiers[*i].title.clone(),
-        Page::Models(make) => make.clone(),
-    };
-    let list = rows(&menu, &page, &garage);
-    let first = sel.saturating_sub(WINDOW - 1).min(list.len().saturating_sub(WINDOW));
-    commands.entity(entity).with_children(|p| {
-        if !title.is_empty() {
-            p.spawn(GameText::new(title.to_uppercase(), 30.0, Color::WHITE).with_font(TITLE_FONT));
+    let page = menu.stack.last().cloned().filter(|_| menu.open);
+    let (history, names, sel) = match &page {
+        Some((page, sel)) => {
+            let list = rows(&menu, page, &garage);
+            let first = sel.saturating_sub(WINDOW - 1).min(list.len().saturating_sub(WINDOW));
+            let names = list.into_iter().skip(first).take(WINDOW).map(|(l, _)| l).collect::<Vec<_>>();
+            let history = menu
+                .stack
+                .iter()
+                .map(|(p, _)| match p {
+                    Page::Tier(i) => menu.tiers[*i].title.clone(),
+                    Page::Models(make) => make.clone(),
+                })
+                .filter(|t| !t.is_empty())
+                .collect::<Vec<_>>();
+            (history, names, sel - first)
         }
-        for (i, (label, choice)) in list.iter().enumerate().skip(first).take(WINDOW) {
-            let selected = i == sel;
-            let color = match (selected, choice) {
-                (true, _) => Color::BLACK,
-                (false, Choice::Inert) => Color::srgb(0.55, 0.55, 0.58),
-                _ => Color::WHITE,
-            };
-            let back = if selected { Color::srgb(1.0, 0.55, 0.1) } else { Color::NONE };
-            p.spawn((Node { padding: UiRect::axes(Val::Px(8.0), Val::Px(2.0)), ..default() }, BackgroundColor(back)))
-                .with_children(|r| {
-                    r.spawn(GameText::new(label.to_uppercase(), 22.0, color).with_font(BODY_FONT));
-                });
-        }
-    });
+        None => Default::default(),
+    };
+    let open = page.is_some();
+    let Some(look) = menu.look.as_mut() else { return };
+    let Some(root) = look.root else { return };
+    let quads = if open {
+        look.scene.draw([window.width(), window.height()], &mut |p, a| lookup(p, a, &history, &names, sel))
+    } else {
+        Vec::new()
+    };
+    let Look { pool, textures, .. } = look;
+    crate::hud::show_quads(&mut commands, root, pool, &quads, textures, None, &mut nodes);
 }
