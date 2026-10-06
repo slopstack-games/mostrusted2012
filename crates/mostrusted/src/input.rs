@@ -91,9 +91,9 @@ impl Devices<'_> {
         let pads = self.pads.iter();
         match c {
             Control::Key(k) => f32::from(u8::from(self.keys.pressed(k))),
-            Control::Button(b) => pads
-                .map(|p| p.get(b).unwrap_or(0.0).max(f32::from(u8::from(p.pressed(b)))))
-                .fold(0.0, f32::max),
+            Control::Button(b) => {
+                pads.map(|p| p.get(b).unwrap_or(0.0).max(f32::from(u8::from(p.pressed(b))))).fold(0.0, f32::max)
+            }
             Control::Axis(a, dir) => {
                 // The axis value whose sign matches the binding direction, largest across pads.
                 pads.map(|p| dead_zone(p.get(a).unwrap_or(0.0), STICK_DEAD_ZONE))
