@@ -76,8 +76,6 @@ pub struct FogSettings {
     pub power: f32,
     pub scattering_colour: Vec3,
     pub scattering_phase: f32,
-    /// Not applied yet (see `prepare_buffer`).
-    #[allow(dead_code)]
     pub scattering_strength: f32,
 }
 
@@ -256,9 +254,12 @@ fn prepare_buffer(
         fog_colour: f.colour.extend(0.0),
         fog_colour_sun: f.colour_sun.extend(0.0),
         fog_coeffs: Vec4::new(1.0 / span, f.near / span, f.power, 0.0),
-        // In-scattering is off: the CPU-side mapping from the keyframe's ScatteringPhase / Strength to the
-        // shader's ScatteringSettings is not decoded, and the raw values flood the view with sun colour.
-        scattering: f.scattering_colour.extend(0.0),
+        // ScatteringSettings = (g, (1 - g²) × strength / 4π) as the game writes it per frame (decomp.md
+        // "Fog"); g = ScatteringPhase and strength = ScatteringStrength by inference (the state copy that
+        // fills those two slots is not traced).
+        scattering: f.scattering_colour.extend(
+            (1.0 - f.scattering_phase * f.scattering_phase) * f.scattering_strength / (4.0 * std::f32::consts::PI),
+        ),
         scattering_params: Vec4::new(f.scattering_phase, 0.0, 0.0, 0.0),
     });
     buffer.0.write_buffer(&device, &queue);

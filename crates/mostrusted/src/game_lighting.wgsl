@@ -116,11 +116,21 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     return vec4(apply_fog(colour, world, l), 1.0);
 }
 
-// The game's Fog pass: amount t = saturate(d / (far - near) - near / (far - near))^power, blended as
-// scene × (1 - t) + colour × t, plus in-scattering t × ScatteringColour × strength / (1 + phase cosθ)²
-// with θ measured from the sun's corona direction (opposite the sun, so looking at the sun gives the
-// peak). The fog colour comes from a gradient between Colour and ColourSun that the game rebuilds per
-// frame; here it is blended by how close the view azimuth is to the sun's (approximation).
+// The game's Fog pass (`mwtool shader-asm Fog`, ps_4_0 of 01010008ce7671f3), a full-screen quad over the
+// lit scene with premultiplied output (rgb = gradient × alpha + scatter, alpha = coverage):
+//   d     = |camera → pixel| in metres (the VS hands over a ray scaled by the projection's z terms, the
+//           PS divides it by (depth − P22): view-space reconstruction, so world metres)
+//   t     = saturate(d × ScattCoeffs.x − ScattCoeffs.y)^ScattCoeffs.z, ScattCoeffs = (1 / (far − near),
+//           near / (far − near), Power) from the keyframe's NearDistance / FarDistance (metres) / Power
+//   t'    = t × GradientTextureA.a (a 1D texture sampled at the screen u; its alpha caps the opacity)
+//   phase = saturate(ScatteringSettings.y / (1 + ScatteringSettings.x × dot(dir, SunCoronaDirection))²)
+//   out   = scene × (1 − t') × layer + gradient.rgb × (1 − (1 − t') × layer) + t' × phase × ScatteringColor
+// ScatteringSettings = (g, (1 − g²) × strength / 4π) and SunCoronaDirection = −(state +0xeb0), written per
+// frame in the light-buffer setup (docs/decomp.md "Fog"). Not ported: `layer` = exp(−|d × (C.z / (1 +
+// exp(C.x × Δy + C.y)) − C.w) / Δy|) with C = LayerFogCoeffs (Δy = the ray's height change), whose CPU
+// source is not traced (1 here, as with LayerFogCoeffs = 0); the gradient texture, whose builder is not
+// traced: its rgb is approximated by blending Colour → ColourSun with the view azimuth's closeness to
+// the sun's, its alpha is taken as 1 (Colour.w and ColourSun[3] are 1 in the data).
 fn apply_fog(colour: vec3<f32>, world: vec3<f32>, to_sun: vec3<f32>) -> vec3<f32> {
     let rel = world - view.world_position.xyz;
     let d = length(rel);
@@ -130,8 +140,8 @@ fn apply_fog(colour: vec3<f32>, world: vec3<f32>, to_sun: vec3<f32>) -> vec3<f32
     let toward = pow(saturate(dot(normalize(vec3(dir.x, 0.0, dir.z)), normalize(vec3(to_sun.x, 0.0, to_sun.z)))), 4.0);
     let fog = mix(lighting.fog_colour.rgb, lighting.fog_colour_sun.rgb, toward) * view.exposure;
     let cos_corona = dot(dir, -to_sun);
-    let phase = lighting.scattering.w / pow(1.0 + lighting.scattering_params.x * cos_corona, 2.0);
-    let scatter = t * min(phase, 64.0) * lighting.scattering.rgb * view.exposure;
+    let phase = saturate(lighting.scattering.w / pow(1.0 + lighting.scattering_params.x * cos_corona, 2.0));
+    let scatter = t * phase * lighting.scattering.rgb * view.exposure;
     return colour * (1.0 - t) + fog * t + scatter;
 }
 
