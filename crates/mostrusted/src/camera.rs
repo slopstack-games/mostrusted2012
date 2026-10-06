@@ -39,7 +39,7 @@ use avian3d::prelude::*;
 use bevy::camera_controller::free_camera::{FreeCamera, FreeCameraState};
 use bevy::input::mouse::AccumulatedMouseMotion;
 use bevy::prelude::*;
-use mw_assets::camera::{ExternalCamera, ImpactShake, InCarCamera, ShakeAxis, VehicleCameras};
+use mw_assets::camera::{ExternalCamera, ImpactShake, InCarCamera, VehicleCameras};
 
 use crate::drift::Phase;
 use crate::drive::Car;
@@ -104,11 +104,11 @@ const FOV_RATE: f32 = 3.0;
 /// noise's base frequency (Hz) at `Frequency` 1.
 const SHAKE_METRES: f32 = 0.012;
 const SHAKE_HZ: f32 = 1.4;
-/// Impact speed (m/s, approaching the body collider) that kicks the shake springs with strength 1.
-const IMPACT_FULL: f32 = 10.0;
-const IMPACT_MIN: f32 = 1.0;
-/// Contacts this close together belong to one impact (seconds).
-const IMPACT_GAP: f32 = 0.3;
+/// Air time (s, all wheels off) after which touching down counts as a landing contact for the impact shake.
+/// Model decision: the original's contact list holds the wheels' ground contacts, ours does not.
+const LANDING_AIR: f32 = 0.2;
+/// The original's camera update rate: `FUN_005cd040`'s decay is per update, not scaled by dt.
+const UPDATE_HZ: f32 = 60.0;
 /// Keep the eye this far in front of a wall (m), and never nearer to the look-at point than this.
 const CLIP_MARGIN: f32 = 0.25;
 const CLIP_MIN: f32 = 0.8;
@@ -187,12 +187,11 @@ struct LookInput {
     mouse: Vec2,
 }
 
-/// Impact strength waiting for the camera (filled in the fixed schedule).
+/// The largest contact value (normal speed into the contact, m/s) since the camera last ran (filled in the
+/// fixed schedule; `FUN_005cd040` takes the maximum over the contact list, never a sum).
 #[derive(Resource, Default)]
 struct ImpactKicks {
-    pending: f32,
-    event_peak: f32,
-    quiet: f32,
+    contact: f32,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -268,56 +267,73 @@ fn camera_input(
     look.look_back = look_back || settings.look_back;
 }
 
-/// Body-collider contacts of the driven car become impact kicks for the shake springs.
-fn collect_impacts(time: Res<Time>, collisions: Collisions, cars: Query<&Car>, mut kicks: ResMut<ImpactKicks>) {
+/// Body-collider contacts of the driven car: the largest normal speed this tick feeds the impact shake.
+fn collect_impacts(collisions: Collisions, cars: Query<&Car>, mut kicks: ResMut<ImpactKicks>) {
     let Ok(car) = cars.single() else { return };
-    kicks.quiet += time.delta_secs();
     let speed = collisions
         .collisions_with(car.body_collider)
         .flat_map(|pair| pair.manifolds.iter())
         .flat_map(|m| m.points.iter())
         .map(|p| -p.normal_speed)
         .fold(0.0, f32::max);
-    if speed < IMPACT_MIN {
-        return;
-    }
-    if kicks.quiet > IMPACT_GAP {
-        kicks.event_peak = 0.0;
-    }
-    kicks.quiet = 0.0;
-    // One kick per impact: later contacts of the same crash only add what exceeds its peak so far.
-    if speed > kicks.event_peak {
-        kicks.pending += (speed - kicks.event_peak.max(IMPACT_MIN)) / IMPACT_FULL;
-        kicks.event_peak = speed;
-    }
+    kicks.contact = kicks.contact.max(speed);
 }
 
-/// A damped spring per shake axis (degrees or metres), kicked by impacts.
-#[derive(Default, Clone, Copy)]
-struct Spring {
-    x: f32,
-    v: f32,
+/// The impact shake (`FUN_005cd040` -> `FUN_005dfe90`, decomp.md "Camera effects"): a level raised by contacts
+/// and decaying per update, times a noise-driven spring, gives three view angles (degrees).
+#[derive(Default)]
+struct ImpactShakeState {
+    level: f32,
+    /// Spring offset and velocity of the first two lanes (the original stores no state for the third).
+    x: [f32; 2],
+    v: [f32; 2],
+    rng: u64,
+    /// Output angles (degrees) about the camera's own x, y, z (cam + 0x120).
+    angles: Vec3,
+    /// Landing detection (see `LANDING_AIR`): vertical speed last frame and whether the car was in the air.
+    last_vy: f32,
+    airborne: bool,
 }
 
-impl Spring {
-    fn step(&mut self, axis: &ShakeAxis, dt: f32) {
-        if axis.amplitude == 0.0 {
-            *self = Spring::default();
-            return;
+impl ImpactShakeState {
+    /// The game's LCG (`FUN_005dfe90`, multiplier 0x5851f42d4c957f2d, + 1): a uniform float in [0, 1).
+    fn uniform(&mut self) -> f32 {
+        self.rng = self.rng.wrapping_mul(0x5851_f42d_4c95_7f2d).wrapping_add(1);
+        f32::from_bits(((self.rng >> 41) as u32) | 0x3f80_0000) - 1.0
+    }
+
+    fn step(&mut self, d: &ImpactShake, contact: f32, dt: f32) {
+        // FUN_005cd040: decay by a fraction per update, then raise to the normalised contact (max, not add).
+        self.level *= (1.0 - d.decay).max(0.0).powf(dt * UPDATE_HZ);
+        if contact > 0.0 {
+            let t = ((contact - d.contact[0]) / (d.contact[1] - d.contact[0]).max(f32::EPSILON)).clamp(0.0, 1.0);
+            let raised = (t * contact * d.scale).powf(d.power).clamp(0.0, d.cap);
+            self.level = self.level.max(raised);
         }
-        let k = axis.spring.max(1.0);
-        let c = 2.0 * axis.damping * k.sqrt();
-        // Substeps keep the stiff springs (k = 450) stable at low frame rates.
-        let n = (dt * 240.0).ceil().max(1.0);
-        let h = dt / n;
-        for _ in 0..n as usize {
-            self.v += (-k * self.x - c * self.v) * h;
-            self.x += self.v * h;
-            if self.x < axis.limits[0] || self.x > axis.limits[1] {
-                self.x = self.x.clamp(axis.limits[0], axis.limits[1]);
-                self.v = 0.0;
+        // FUN_005dfe90: per lane a jitter in +-ShakeMagnitude; lanes 0-1 also a spring kicked by a velocity in
+        // +-WobbleMagnitude each update: v += kick + (-x - v) * spring; x += v * frequency * dt.
+        let amplitude = d.max_amplitude * self.level;
+        let h = d.frequency * dt;
+        let mut out = [0.0; 3];
+        for (lane, o) in out.iter_mut().enumerate() {
+            let jitter = (2.0 * self.uniform() - 1.0) * d.jitter[lane];
+            let mut x = 0.0;
+            if lane < 2 {
+                let kick = (2.0 * self.uniform() - 1.0) * d.wobble[lane];
+                self.v[lane] += kick + (-self.x[lane] - self.v[lane]) * d.spring;
+                self.x[lane] += self.v[lane] * h;
+                x = self.x[lane];
             }
+            *o = amplitude * (x + jitter);
         }
+        self.angles = Vec3::from(out);
+    }
+
+    /// Rotates the view about its own axes (the original pre-multiplies the angle matrix onto the camera
+    /// matrix; its rotation pivot, `FUN_005dfe90`'s fourth argument, is not ported: we pivot on the eye).
+    fn apply(&self, t: &mut Transform) {
+        let a = self.angles * (std::f32::consts::PI / 180.0);
+        t.rotation *= Quat::from_euler(EulerRot::XYZ, a.x, a.y, a.z);
     }
 }
 
@@ -364,8 +380,7 @@ struct CameraState {
     shake_t: f32,
     /// Distance from the look-at point to the eye the walls allow.
     clip: f32,
-    /// Impact springs: translation x, y, z then rotation pitch, roll, yaw.
-    springs: [Spring; 6],
+    impact: ImpactShakeState,
     trace: Option<std::fs::File>,
     time: f32,
 }
@@ -426,7 +441,7 @@ fn follow_car(
             if let Some(f) = &mut s.trace {
                 let _ = writeln!(
                     f,
-                    "# t speed_kmh accel_ms2 yaw_rate lat_ms2 slip_deg mode eye_x eye_y eye_z yaw_lag_deg fov roll pitch accel_z shake_pitch"
+                    "# t speed_kmh accel_ms2 yaw_rate lat_ms2 slip_deg mode eye_x eye_y eye_z yaw_lag_deg fov roll pitch accel_z shake_pitch shake_level"
                 );
             }
         }
@@ -454,9 +469,15 @@ fn follow_car(
         s.orbit.y += (look.pitch - s.orbit.y) * ease(rate);
     }
 
-    // Impact shake springs.
-    let kick = std::mem::take(&mut kicks.pending).min(ext.impact.max_amplitude);
-    step_springs(&mut s.springs, &ext.impact, kick, dt);
+    // Impact shake: body contacts, and a touch-down after a jump as the wheels' ground contact.
+    let mut contact = std::mem::take(&mut kicks.contact);
+    let wheels_down = car.wheels_down();
+    if s.impact.airborne && wheels_down > 0 {
+        contact = contact.max(-s.impact.last_vy);
+    }
+    s.impact.airborne = wheels_down == 0 && car.air_time > LANDING_AIR;
+    s.impact.last_vy = vel.y;
+    s.impact.step(&ext.impact, contact, dt);
 
     // High-speed shake: grows with the speed fraction between the shake speeds, to the power `Power`.
     let sh = &ext.shake;
@@ -518,12 +539,13 @@ fn follow_car(
     }
 
     let frame = Transform::from_translation(pos).looking_at(target, up);
-    let shake_pitch = s.springs[3].x;
     let mut t = frame;
-    t.translation += frame.rotation * (shake_v + Vec3::new(s.springs[0].x, s.springs[1].x, -s.springs[2].x));
-    t.rotate_local_x(-(s.pitch + shake_pitch).to_radians());
-    t.rotate_local_y(s.springs[5].x.to_radians());
-    t.rotate_local_z((s.roll + s.springs[4].x).to_radians());
+    t.translation += frame.rotation * shake_v;
+    t.rotate_local_x(-s.pitch.to_radians());
+    t.rotate_local_z(s.roll.to_radians());
+    // Camera effects, after the follow position: the impact shake.
+    s.impact.apply(&mut t);
+    let shake_pitch = s.impact.angles.x;
     *cam = t;
     if let Projection::Perspective(p) = &mut *projection {
         // Vertical, as Bevy's: read as horizontal, 70° crops the car far tighter than the original's
@@ -535,7 +557,7 @@ fn follow_car(
         let local = car_t.rotation.inverse() * (cam.translation - car_t.translation);
         let _ = writeln!(
             f,
-            "{:.3} {:.2} {:.2} {:.3} {:.2} {:.2} {:?} {:.3} {:.3} {:.3} {:.2} {:.2} {:.2} {:.2} {:.3} {:.2}",
+            "{:.3} {:.2} {:.2} {:.3} {:.2} {:.2} {:?} {:.3} {:.3} {:.3} {:.2} {:.2} {:.2} {:.2} {:.3} {:.3} {:.3}",
             s.time,
             car.speed * 3.6,
             s.accel,
@@ -551,17 +573,9 @@ fn follow_car(
             s.roll,
             s.pitch,
             s.accel_z,
-            shake_pitch
+            shake_pitch,
+            s.impact.level
         );
-    }
-}
-
-fn step_springs(springs: &mut [Spring; 6], data: &ImpactShake, kick: f32, dt: f32) {
-    let axes = data.translation.iter().chain(&data.rotation);
-    for (spring, axis) in springs.iter_mut().zip(axes) {
-        // A kick is an initial velocity: the spring's peak is about amplitude × strength / √k.
-        spring.v += axis.amplitude * kick;
-        spring.step(axis, dt);
     }
 }
 

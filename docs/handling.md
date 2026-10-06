@@ -250,15 +250,20 @@ meaning is read from values or position; values are the 911's, ranges are across
 | `Yaw_spring_modification.Low_speed` / `High_speed` | 0 / 100 | **data** speed band (mph) |
 | `….5a74d44d` / `63fb2207` | 0.075 / 0.05 | yaw spring at **high / low** speed (recorded cam + 0x6d4: 0.05 at low speed rising to 0.075 at 100 mph), a fraction per 60 Hz tick (sorted after `Low_speed` / `High_speed`): 4.7/s at rest, 3.1/s at 100 mph |
 | `YawDriftSpring` | 0.055 (0.045…0.07) | **data** name; *hyp.* the yaw spring while drifting (3.4/s) |
-| `Global_params.f50dccb9` (`CameraGameplayShakeEffect`) | see below | **data** impact shake springs |
-| `Global_params.Impact_shake.Maximum_amplitude` | 2 | **data** cap on an impact's strength |
+| `Global_params.f50dccb9` (`CameraGameplayShakeEffect`) | see below | **data**, not used by the chase camera's impact shake |
+| `Global_params.Impact_shake.*` | see below | **code** `FUN_005cd040` / `FUN_005dfe90` (decomp.md "Camera effects") |
 
-Impact shake (`CameraGameplayShakeEffect`, the same on every car): per axis a damped spring with
-`Amplitude`, `Damping` (translation: `00fd0a79`, *hyp.*), `Spring_Coefficient` and limits (`Minimum_` /
-`Maximum_Angle` in degrees, `Lower_` / `Upper_Translation_Limit` in metres). Only two axes are active: rotation
-`Pitch` (250, 0.4, 450, ±20°) and the third translation axis (100, 0.5, 100, −0.2…0.2 m; taken as fore-aft).
-An impact kicks each spring's velocity by Amplitude × strength; with k = 450 and ζ = 0.4 it rings at 3.4 Hz and
-dies in ~0.4 s. A 115 km/h wall hit (`--test crash`, strength capped at 2) peaks at 13° of pitch.
+Impact shake (`Impact_shake`, the same on every car; ported as camera.rs `ImpactShakeState`): a level decays
+by 0.165 per 60 Hz update and is raised (max) by each contact to `min((clamp((x − 5) / 55, 0, 1) × x)^0.75, 4)`;
+the view turns by `2 × level × (x_noise + jitter)` degrees about the camera's x, y (noise spring kicked by
+±`WobbleMagnitude` 0.5, step 30 × dt, plus a ±`ShakeMagnitude` 1 jitter) and z (jitter only). Model decisions:
+x = the body collider's normal contact speed in m/s, a touch-down after ≥ 0.2 s with no wheel down counts as a
+contact of the vertical speed, the lanes map to x / y / z in that order, and the shake pivots on the eye (the
+original's pivot argument was not traced). Results: `--test crash` levels 2.9 and 4.0 (the cap), view 2.3-2.6°
+RMS over the 0.3 s after the hit, 10-13° peak; `--test landing` (151 km/h) level 0.77, 1.6° RMS, 7.9° peak.
+Recorded original: crashes 2.2-2.6 (one 3.8), landings 1.0-1.1, 3.0-3.6° RMS per axis at level ~2.5.
+`CameraGameplayShakeEffect` (springs: `Pitch` 250 / 0.4 / 450 / ±20°, third translation axis 100 / 0.5 / 100 /
+±0.2 m) is not on this path; its user is unknown (the previous port kicked these springs, a guess, removed).
 
 Bonnet / bumper (`CameraGameplayBonnet` / `Bumper`): eye `6e08f788` ((0, 1.05, 0.8) / (0, 0.425, 1.5)), FOV
 95→105 / 95→120 (by speed², like the chase camera), and `3f017c6b` ((0, 1.32, 0.21) on the roof / (0, 0.6, −1.5)
