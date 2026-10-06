@@ -82,7 +82,7 @@ struct Layered {
     //          p2 = algaeColour, p3 = (opaque variant, has normal map); textures: -, normal,
     //          DiffuseAndCaustics, SpecDepthAndRefraction
     // RSF = Roughness_Specular_Fresnel (x = roughness scale, y = F0, z = Fresnel strength)
-    p: array<vec4<f32>, 12>,
+    p: array<vec4<f32>, 14>,
     // x = sky brightness (cd/m² per panorama unit), y = reflection cube mip count
     env: vec4<f32>,
     // vehicle light state (g_selfIlluminationMask): x = brake, y = headlights / running, z = reverse, w = tail
@@ -426,12 +426,19 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // VehicleNFS13_BodyPaint* (p8 = (livery kind, mPaintColourIndex, has effects map), p9 = GenericVector4_A,
         // p10 / p11 = GenericVector4_B / _C = the paint's DirtColour / DustColour). `_Livery`: lerp(paint,
         // livery.rgb, livery.a) with the livery at TEXCOORD0; `_TwoPaint` / `_TwoPaintMask` add the secondary
-        // paint × (mPaintColourIndex or the mask's green), which is not bound yet (0). Then dirt and dust from
+        // paint × (mPaintColourIndex or the mask's green), see below. Then dirt and dust from
         // EffectsTextureSampler at TEXCOORD2: dirt a = sat(e.w² · A.x), dust d = sat(2 · sat(e.y² · A.y) ·
         // e(uv × 7).x); coverage = a + d (1 - a) blends towards a·B (1 - d) + d·C, F0 × (1 - coverage),
         // roughness towards 1, clear coat × (1 - coverage)⁴. Scratches need the damage weight (open).
         let p8 = layered.p[8];
         var cover = 0.0;
+        // Two-paint: + (secondary − primary) diffuse / specular (p12 / p13, slots 0x30 / 0x31) × the mesh's
+        // mPaintColourIndex (`_TwoPaint`) or the mask texture's green at TEXCOORD0 (`_TwoPaintMask`).
+        var second = p8.y;
+        if p8.x > 1.5 {
+            second = textureSample(tex0, samp0, uv).y;
+        }
+        albedo = vec4(albedo.rgb + layered.p[12].rgb * second, 1.0);
         if p8.x > 0.5 && p8.x < 1.5 {
             let l = textureSample(tex0, samp0, uv);
             albedo = vec4(mix(albedo.rgb, l.rgb, l.a), 1.0);
@@ -447,7 +454,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             albedo = vec4(mix(albedo.rgb, dirt, cover), 1.0);
         }
         pbr_input.material.base_color = albedo;
-        var f0 = p0.rgb * (1.0 - cover);
+        var f0 = (p0.rgb + layered.p[13].rgb * second) * (1.0 - cover);
         var rough = mix(p0.w, 1.0, cover);
         if p1.x > 0.5 {
             f0 = textureSample(tex1, samp1, uv).rgb;

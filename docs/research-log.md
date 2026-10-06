@@ -141,6 +141,36 @@ The effects texture stays linear: the program squares `e.w` and `e.y` itself (a 
 not do on an sRGB view. Note from the asm: partial dust darkens (lerp(paint, d·C, d), the same formula as ours),
 and covered areas lose F0 and the clear coat, so dust on a white car reads as grey specks.
 
+**The writer of the paint constants** is `FUN_008e9c00` (008E0000.c, the per-object constant block written
+through `FUN_00a621a0(slot)`, not `FUN_00a5d660`, which is why the earlier search found no writer). For a render
+record (stride 0x2b0 at `param_1 + 0x1a0`) with a paint block `P` at record word 0xa2:
+- 0x2a = `P+0x10` (primary diffuse), 0x2b = `P+0x20` (primary specular), 0x2e = `P+0x30` (scratch colour);
+- 0x30 = `P+0x40 − P+0x10`, 0x31 = `P+0x50 − P+0x20`: the **secondary** diffuse / specular **minus the primary**,
+  so `_TwoPaint*`'s `mad(Secondary, index, Primary)` is a lerp to the secondary paint;
+- 0x9d (`GenericVector4_B`) = `P+0x60..0x6c` = DirtColour, 0x9e (`_C`) = `P+0x70..0x7c` = DustColour;
+- 0x9c (`_A`) = (`DirtColour.w` × record word 0x28, `DustColour.w` × word 0x29, word 0x2a, word 0x2b).
+  So the shader's dirt amount is the car's dirt level × `DirtColour.w` (0.83 on the cars seen) and the dust
+  amount its dust level × `DustColour.w` (0.85). Now applied to `--dirt`.
+
+**Two-tone paint.** The second paint comes from the car's `Genesys.Gen.VehicleColourPalette`: field `Colours`
+(`16671e74`, a list of paint handles) and `ColourGroups`, each a `ColourGroup` struct of `PrimaryColour`
+(`2968e77a`), `SecondaryColour` (`750cf08e`) and `WheelColour` (names cracked with `mwtool genesys-crack`; the
+sort order by name matches). The secondary paint's own `PaintColour` is 1 (the primary's 0). Two more palette
+fields, `17acabdb` and `db17b169`, are 1 on the police cars seen (unnamed). Bound now: `vehicle_paints` gives a
+paint the (diffuse, specular) of the `SecondaryColour` of the group whose `PrimaryColour` it is, and the shader
+adds (secondary − primary) × (`mPaintColourIndex` or the mask's green). Check: Ford Police Interceptor
+(122713) at `--paint-index 2` (its group's primary, a mid blue) draws its `mPaintColourIndex = 1` roof mesh white.
+**Open:** the paint the palette's `Colours` list names (1099e2, dark blue, index 0, our default) is not the group's
+`PrimaryColour` (18cf62) on that car, so by default the roof stays blue; on the Corvette Z06 police (122699)
+`Colours` and the group agree but both `_TwoPaint_Livery` meshes have index 0. How the game picks the group for a
+car (cop cars may always use group 0) needs the code that fills the paint block `P` (word 0xa2 of the render
+record; `FUN_008e1280` initialises the record, called from `FUN_008b7a20` and `FUN_008cffa0`).
+
+**Dirt build-up: where it stopped.** The dirt / dust levels are words 0x28 / 0x29 of the render record, copied
+as one float4 (with 0x2a / 0x2b) from a parameter of `FUN_008e1280` (record init); its callers `FUN_008b7a20`
+and `FUN_008cffa0` were not read, so the source (surface, speed, distance, car washes) is not traced. Dirt stays
+off unless `--dirt` is given.
+
 ### 2026-10-06 (session 5, round 4): Easydrive and HUD from the game's layouts
 
 **Differences found** (our frames at 1280×720 against the layout data, `mwtool ui show`; largest first):

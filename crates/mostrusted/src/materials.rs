@@ -136,7 +136,7 @@ fn qi(v: f32) -> i32 {
 
 /// Extension texture slots and constant vec4s (keep in sync with `layered.wgsl`).
 const N_TEX: usize = 10;
-const N_VEC: usize = 12;
+const N_VEC: usize = 14;
 
 /// Fill the texture slots in order.
 fn slots(v: &[Option<TexKey>]) -> [Option<TexKey>; N_TEX] {
@@ -768,6 +768,9 @@ impl Look {
             pearlescent: [0.0; 3],
             dirt_colour: [0.0; 3],
             dust_colour: [0.0; 3],
+            dirt_scale: 1.0,
+            dust_scale: 1.0,
+            secondary: None,
             colour_index: -1,
         });
         let (cc_spec, cc_fresnel) = if p.clearcoat { (p.clearcoat_specular, p.clearcoat_fresnel) } else { (0.0, 0.0) };
@@ -776,11 +779,22 @@ impl Look {
         // lights of the `_Lightmap` paint variants; p8 (livery kind, mPaintColourIndex, has effects) is
         // kept from `from_scene_mesh`. GenericVector4_A.xy = (dirt, dust) amounts, B / C = the paint's
         // DirtColour / DustColour (research log 2026-10-06, session 5).
+        // `FUN_008e9c00` writes A = (dirt level × DirtColour.w, dust level × DustColour.w, ..), B = DirtColour,
+        // C = DustColour, and slots 0x30 / 0x31 = the secondary paint's diffuse / specular minus the primary's,
+        // which the `_TwoPaint*` programs add × (mPaintColourIndex or the mask's green): p12 / p13 here
+        // (research log 2026-10-06, session 5 round 4).
         let [dirt, dust] = dirt_level();
         let (dc, uc) = (p.dirt_colour, p.dust_colour);
         self.vals[36..48].copy_from_slice(
-            &pack(&[[dirt, dust, 0.0, 0.0], [dc[0], dc[1], dc[2], 0.0], [uc[0], uc[1], uc[2], 0.0]])[..12],
+            &pack(&[
+                [dirt * p.dirt_scale, dust * p.dust_scale, 0.0, 0.0],
+                [dc[0], dc[1], dc[2], 0.0],
+                [uc[0], uc[1], uc[2], 0.0],
+            ])[..12],
         );
+        let (sd, ss) = p.secondary.unwrap_or((p.diffuse, p.specular));
+        let d = |a: [f32; 3], b: [f32; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2], 0.0];
+        self.vals[48..56].copy_from_slice(&pack(&[d(sd, p.diffuse), d(ss, p.specular)])[..8]);
         self.textures = slots(&[self.textures[0], self.textures[1], None, self.textures[3]]);
         self.normal = None;
         self.tint = [p.diffuse[0], p.diffuse[1], p.diffuse[2], 1.0].map(q);

@@ -146,6 +146,7 @@ set of **skeletal animation clips whose frames are damage levels**:
 for English).
 
 - Liveries and two-paint masks are bound in the car's Material as `DiffuseTextureSampler` of the `VehicleNFS13_BodyPaint_*Livery*` / `*TwoPaintMask*` shaders; `mPaintColourIndex` (material constant, 0 / 1) picks the secondary paint on `_TwoPaint` meshes. `VehiclePaint` carries `DirtColour` / `DustColour` (the paint shaders' `GenericVector4_B` / `_C`) and `PbrScratchColour`, no texture.
+- `Genesys.Gen.VehicleColourPalette` (one per car bundle): `Colours` (`16671e74`, list of `VehiclePaint` handles) and `ColourGroups`, each a `ColourGroup` { `PrimaryColour` (`2968e77a`), `SecondaryColour` (`750cf08e`), `WheelColour` } of paint handles; `17acabdb` / `db17b169` unnamed (1 on police cars). A secondary paint has `PaintColour` 1. `DirtColour.w` / `DustColour.w` scale the dirt / dust levels (`FUN_008e9c00`, docs/decomp.md).
 
 ### Vehicle animations (active aero)
 
