@@ -61,16 +61,17 @@ user's review after session 3, with where each gap is tracked:
 
 | Gap | State | Item |
 |-----|-------|------|
-| Handling does not feel like the game | re-read from the code 2026-10-06: drivetrain (14-state gearbox, live constants), tyres (μ × static load + downforce share, no calibrated scale; 2.6 g skidpads), steering, drift (side force outwards) and handbrake (no lock). Open: whether the brake-tap drift starts (the tyre constraint's +0x210 blend scale), the low-speed standstill hold, a few `.bss` constants; needs recordings of the original | M3.2 |
+| Handling does not feel like the game | re-read from the code 2026-10-06: drivetrain (14-state gearbox, live constants), tyres (μ × static load + downforce share, no calibrated scale; 2.6 g skidpads), steering, drift (side force outwards) and handbrake (no lock). Open: whether the brake-tap drift starts (the tyre constraint's +0x210 blend scale), the low-speed standstill hold, a few `.bss` constants; needs recordings of the original. Session 5: the tyre pass's brake hold and the standstill hold / downshift ground-time gate ported; on `ref/xkr_launch` the launch slip now roughly matches, the large remaining gap is the braking phase (the original enters a drift and stops in 1.3 s, ours does not rotate) | M3.2 |
 | Tyre screech sounds as if a horn is held at the same time | fixed 2026-10-06 (not yet heard by the user): the 32 kHz waves decoded to a 47-sample loop (a 681 Hz buzz); skid intensities now follow the game's `FUN_009d1bf0`. A capture of the original would confirm | M5.4 |
-| Shading has a yellow tint over everything | `[~]` main cause fixed 2026-10-06: the ColourCube bytes were read with red and blue swapped, so the noon grade warmed instead of cooled (noon frame warm bias +33 → +13). Left: confirm with a screenshot of the original (procedure in the research log), bloom (blue at noon), the composite vignette / TintColour, the provisional skylight, night warmth | M1.5, M1.7 |
+| Shading has a yellow tint over everything | `[~]` main cause fixed 2026-10-06: the ColourCube bytes were read with red and blue swapped, so the noon grade warmed instead of cooled (noon frame warm bias +33 → +13). Session 5: the cloud layer was decoded as sRGB (dark patches in the day sky), fixed; the bloom, vignette and colour-cube blend inputs are traced to renderer fields but each needs a live read before it can be ported without guessing (research log). Left: those live reads, a screenshot of the original, the provisional skylight, night warmth | M1.5, M1.7 |
 | Animations are missing | none play: driver, steering wheel, animated body parts (`PhysicsDrivenVehicleAnimationBehaviour`), world animations (`TriggerAnimationBehaviour`, `AnimatedDynamicEntityBehaviour`), tree wind | M3.8 |
-| Inputs are not mapped like the original | our own keyboard / pad layout; the game's bindings not found yet | M3.9 |
-| UI incomplete, no Easydrive | HUD (speed, nitrous, odometer, minimap) and our own menus; the game's front end and Easydrive (`EasyDrive_ScreenScript`, `Widget_EasyDrive*`) not built | M7 |
+| Inputs are not mapped like the original | `[~]` 2026-10-06 (session 5): the original's action list, default keyboard / pad tables and mapping rule read from the code and made our defaults (`input.rs`: arrows / A / Z / Space, RT / LT / X, C / LB camera, numpad / d-pad Easydrive). Open: look back / look around have no default binding in the tables (ours: End / right stick), nitrous and horn have no runtime yet, remapping | M3.9 |
+| UI incomplete, no Easydrive | `[~]` 2026-10-06 (session 5): Easydrive's menu tree is read from the UI data (23 tiers in the free-roam screen) and shown in game (`easydrive.rs`, `--show-easydrive`); Change car works through it, every other entry is inert. Its look and position are our own (the game's layouts are not read), conditional entries are not filtered. The game's front end is not built | M7 |
 | No crash camera | crash cam since 2026-10-06 (`crash.rs`): rules, slow motion, bystander shots, letterbox and rolling reset from the data; the shots' placement / FOV and the reset pose are model decisions until compared with a capture of the original | M3.3 |
-| No AI vehicles | no traffic, racers or cops | M6.1, M6.4 |
+| No AI vehicles | no traffic, racers or cops at runtime. 2026-10-06 (session 5): the traffic lane data is decoded (`mwtool traffic`: 374 km of lanes, flows, vehicle lists) and lanes can be queried by position; spawn / despawn and driving rules are not traced yet | M6.1, M6.4 |
 | Prop collisions | decoded and simulated but opt-in (`--prop-physics`): the car wedges against knocked props | M3.1 |
-| Game logic in general | no events, pursuits, Most Wanted list, jack spots, progression | M6 |
+| Game logic in general | no events, pursuits, Most Wanted list, progression. 2026-10-06 (session 5): the free-roam objects are decoded (`mwtool freeroam`: 74 speed cameras, 216 billboards, 152 gates, 183 jack spots, 22 body shops) and speed cameras log the pass speed (`freeroam.rs`, the game's 50 mph threshold); no HUD message, Speed Points, smashes or jack-spot swaps yet | M6 |
+| Road / terrain textures scaled wrong, foliage in the wrong place (user, 2026-10-06) | `[~]` audited the same day: the road, terrain and plot families' UV maths match the game's shaders; three road decal variants (465 meshes) were drawn with the wrong coordinates and are fixed. Not audited: the WorldPBR `Horizontal_*` ground variants, sampler address modes, texture filtering. Foliage: `mwtool placement-check` found no decode error in any layer; suspected cause (unverified) is groundcover drawn at every distance, over far terrain we draw coarsely. **Needs a location from the user to confirm either** | M1.3, M1.4 |
 
 ---
 
@@ -285,12 +286,16 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    suspension parts), `Genesys.Vehicles.AnimationStateBehaviour`, `AnimatedRaceCarBehaviour` (scripted cars).
    World: `TriggerAnimationBehaviour`, `AnimatedDynamicEntityBehaviour` (gates, barriers), tree and flag wind.
    Needs the `Animation` / `AnimationList` decoding that damage already uses.
-9. `[ ]` **Input mapping like the original**: today our own layout (W/S/A/D, space handbrake, Tab / F1 menu, C
-   camera, F2 volume; pad triggers, stick, A handbrake, Y camera, Start menu). Seen in the original's Settings >
-   Gameplay (2026-10-04, `tools/orig`): keyboard Left / Right steer, **A accelerate, Z brake**, Space handbrake;
-   pad left stick steer, RT accelerate, LT brake, **X handbrake**; Esc pause (DRIVE), PgUp / PgDn switch pause
-   tabs, R Ctrl undo. A controller selector picks one device for driving (menus take any). Still to read off:
-   nitrous, camera, look back, Easydrive, horn, map; then match them, including remapping.
+9. `[~]` **Input mapping like the original** (2026-10-06, session 5; `input.rs`, decomp.md "Input and control
+   bindings"): the original's 96 actions, its default keyboard table (Windows virtual keys, `FUN_00483470`) and
+   pad table (`FUN_00482250`) and the per-binding mapping rule (`max(0, (raw − min) / (max − min))`, stick dead
+   zone 0.2, trigger 0.1, keys 0 / 1 with no ramp) are our defaults: Left / Right steer, A accelerate, Z brake,
+   Space handbrake, C change camera, Esc pause (opens the car menu), numpad 4 / 6 / 8 / 2 Easydrive; pad left
+   stick, RT / LT, X handbrake, LB camera, right stick camera, Start pause, Back change vehicle, d-pad Easydrive.
+   Our debug keys (Tab / F1 car menu, F2 volume, F3, F5–F7) stay. Open: look back / look around have no default
+   binding in the tables (ours: End / right stick; trace the camera code reading actions 10 and 37), nitrous
+   (Left Shift / A) and horn (W / B) have no runtime, remapping through the settings file, whether the saved ini
+   replaces or extends the defaults, the pad object's live dead zones.
 - Done when: you can pick a car from the catalogue, spawn on a road and drive around the city with collision.
   **Basic version reached on 2026-10-03; in-game car picking since 2026-10-04 (item 5).** Remaining: handling feel, real tuning data, spawn points on roads
   (from `RoadData` / AI data rather than hand-picked coordinates).
@@ -342,9 +347,16 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
 ### M6: Gameplay `[ ]`
 Nothing of the game's logic runs yet: no AI vehicles, events, pursuits, progression. The decomp now shows the
 code side (game modes, HSMs, AI) next to the data. Roughly in dependency order:
-1. Traffic: `TrafficLaneData` (0x701), `TrafficGraphicsStub`, traffic vehicle attribs.
+1. `[~]` Traffic: `TrafficLaneData` (0x701) decoded (2026-10-06, session 5; formats.md, `mwtool traffic
+   [--png]`, `AssetStore::traffic_lanes()` / `lanes_near`): hulls, lane sections, rungs, flows and their vehicle
+   lists. Open: junction, stop-line and parked-vehicle records; the spawn / despawn, driving and reaction rules
+   in the code (first leads in decomp.md "Traffic and AI vehicles"); `TrafficGraphicsStub`; the runtime.
 2. Road network and AI paths: `RoadData`, `RoadMapData`, `AIData`, `NavigationMesh`.
-3. Triggers and events: `TriggerData`, `GAMELOGIC/GAMEMODES.BNDL`, `GAMEPLAY.BNDL`, Jack spots, Most Wanted list.
+3. `[~]` Triggers and events: `TriggerData` (0x202) decoded (2026-10-06, session 5; formats.md, `mwtool
+   freeroam`): speed cameras, billboards, security gates, jack spots, body shops, with the collectable rules
+   from the code (decomp.md "Free-roam rules"); speed cameras run (`freeroam.rs`: logs the pass speed above the
+   game's 50 mph, best per camera). Open: Speed Points, the hit test's overlap rule, smashes, jack-spot swaps,
+   HUD messages; `GAMELOGIC/GAMEMODES.BNDL`, `GAMEPLAY.BNDL`, the Most Wanted list.
 4. Cops / pursuit, takedowns, wrecks (deformation itself landed under M3.5: there is no `DeformationModel`;
    damage is skeletal animation).
 5. `HSMData` (0x501): hierarchical state machines that drive game flow. Interpret, or reimplement by hand.
@@ -357,9 +369,11 @@ code side (game modes, HSMs, AI) next to the data. Roughly in dependency order:
   folded to ASCII ("Coupe"). Done (2026-10-04, paused WIP): the UI data (GeneSys screens / layouts / bindings,
   `mw_formats::ui`, `mwtool ui screens|show|render|font`), the game's bitmap fonts (`UI/FONTS`, `game_text.rs`)
   and a free-roam driving HUD (`hud.rs`: speedometer, nitrous gauge (full: no nitrous yet), odometer, minimap
-  from the map tiles; `--mph`, `--no-hud`, F3 = debug text). Done: volume settings (F2). **Missing: Easydrive**
-  (the in-game d-pad menu: `EasyDrive_ScreenScript`, `EasyDriveSpeech_ScreenScript`, `Widget_EasyDrive*` type /
-  tier / link / hook definitions) and the game's front end. Open: those, the car menu in the game font, widget
+  from the map tiles; `--mph`, `--no-hud`, F3 = debug text). Done: volume settings (F2). **Easydrive, first version** (2026-10-06,
+  session 5; `mw_assets::easydrive`, `easydrive.rs`, `mwtool ui easydrive`, `--show-easydrive`): the menu tree
+  (tiers, link and hook items, labels) comes from the free-roam screen's data; link items navigate, Change car
+  drives the picked car; the panel's look and position are ours, other entries are inert. Missing: the game's
+  front end. Open: those, the car menu in the game font, widget
   adapters (which layouts show when), HUD polish (faint speed digits, odometer ".0 KM"), save data.
 - Movies: `UI/MOVIES/*.VP6` (EA `MVhd` container, VP6). Decode through ffmpeg or skip.
 - Packaging for Linux and Windows; CI with build + lint + game-less tests.
@@ -398,19 +412,20 @@ SNORM ×10 scale).
 
 ## Suggested next sessions
 
-**Start with [next-session.md](next-session.md).** Priorities from the user's review (2026-10-04). Work against
-the running original (`tools/orig/orig` drives it, `mwtool capture` / `--replay` / `mwtool compare` measure it):
+**Start with [next-session.md](next-session.md).** State after session 5 (2026-10-06): nine systems were re-read
+from the decompiled code in parallel; what is blocked now is mostly blocked on **live reads of the running
+original** (`.bss` constants and renderer fields; the list is in next-session.md).
 
-1. **Handling against the original** (M3.2): the 2nd-gear revs in `ref/xkr_launch` are not a clutch bug (the
-   drivetrain now follows the code, 2026-10-06): the original's clutch slips while its tyres hold κ ≈ 0, ours
-   spin the tyres (κ 0.6 in 2nd); the longitudinal tyre cap at small slip is the gap. Then braking, handbrake,
-   drift, cornering and donut runs; the drift side force.
-   In parallel, the probe ([probe.md](probe.md)): Tier 0 `memscan poke` first (a day, no toolchain), then the
-   load path and the logging DLL, which is what finally measures N, the grip caps and the side force.
-2. The **yellow tint** (M1.5 / M1.7), visible every second of play; a listen to the fixed tyre screech (M5.4)
-   and a capture of the original's slide to confirm it.
-3. **Input mapping** like the original (M3.9); the **crash camera** (M3.3, first version 2026-10-06) needs a capture of the original to settle its model decisions.
-4. **Easydrive** and the game's HUD / front end (M7).
-5. **Animations** (M3.8): driver, steering wheel, animated body parts.
-6. **Prop collisions** usable by default (M3.1).
-7. **AI vehicles**: traffic first (M6.1), then racers and cops; game logic (M6).
+1. **A live-read session** with the original running (`sudo sysctl kernel.yama.ptrace_scope=0`, `tools/orig/orig
+   launch`): the handling `.bss` constants, the post-processing fields (bloom flag and set, vignette A / D, the
+   seven colour-cube slots and weights), the pad dead zones. Then port bloom, the vignette and the cube blend.
+2. **Handling** (M3.2): the braking phase of `ref/xkr_launch` (the original drifts and stops in 1.3 s; ours stays
+   straight): settle the tyre constraint's +0x210 blend scale (two leads in decomp.md "Tyres"), then more
+   reference runs (handbrake turn, steady corner, donut).
+3. **The user's visual reports** (road / terrain texture scale, foliage placement): get a location, then the
+   WorldPBR `Horizontal_*` variants, sampler modes, and the game's groundcover draw distance.
+4. **Easydrive** (M7): the game's own layouts for its look, the conditional entries, the hooks (customise, paint,
+   races) as their systems arrive; **input**: nitrous, horn, look back.
+5. **Traffic runtime** (M6.1): spawn / despawn and driving rules from the code (leads in decomp.md), then cars on
+   the decoded lanes. **Free-roam** (M6.3): HUD messages, Speed Points, billboard / gate smashes, jack spots.
+6. **Animations** (M3.8), **prop collisions** by default (M3.1), crash camera against a capture (M3.3).

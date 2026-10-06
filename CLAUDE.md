@@ -110,7 +110,7 @@ tools/orig/orig run-in -- ./target/release/mostrusted --drive 911 --test-track  
 # Visual check without a human: renders, saves, exits
 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,1720 --screenshot <scratch>/road.png   # see docs/viewpoints.md
 ./target/release/mostrusted --vehicle "911" --camera 4.5,1.4,4.0,0,0.4,0 --screenshot <scratch>/car.png
-# Driving cameras: --camera-mode chase|bonnet|bumper|lookback (C / gamepad Y cycles; B, right stick click or
+# Driving cameras: --camera-mode chase|bonnet|bumper|lookback (C / gamepad LB cycles; End or the right
 # stick fully back looks back; right stick / right mouse drag looks around; the free camera looks with the
 # right stick too). MW_CAMERA_TRACE=<file> logs the camera every frame
 MW_CAMERA_TRACE=<scratch>/cam.trace ./target/release/mostrusted --drive 911 --test drift
@@ -126,13 +126,19 @@ MW_CAMERA_TRACE=<scratch>/cam.trace ./target/release/mostrusted --drive 911 --te
 ./target/release/mostrusted --drive 911 --units 12 --auto-throttle 0.4 --prop-physics   # props collide in the world (opt-in, WIP)
 ./target/release/mwtool props -v                    # physics of every prop / compound / dynamic object
 ./target/release/mwtool surfaces                    # collision surface list with triangle counts
-./target/release/mwtool ui screens                  # game UI: screens / widgets (ui show <screen>, ui render <screen> out.png, ui font <n> out.png)
+./target/release/mwtool ui screens                  # game UI: screens / widgets (ui show <screen>, ui render <screen> out.png, ui font <n> out.png, ui easydrive)
+./target/release/mwtool traffic --png <scratch>/lanes.png   # TrafficLaneData: counts, flows, vehicle lists, lane map
+./target/release/mwtool freeroam --list --kind SpeedCam     # TriggerData: speed cameras, billboards, gates, jack spots
+./target/release/mwtool placement-check --top 10             # placements vs the collision under them, per layer / model
 # The driving HUD (hud.rs) is on in --drive runs except tests: --no-hud, --mph, F3 shows the debug status text
 # Engine RPM every physics tick, for `mwtool engine-sound --trace` (use with --test engine)
 MW_ENGINE_TRACE=<scratch>/rpm.trace ./target/release/mostrusted --drive 911 --test engine
 # Driving without a human: fixed throttle, logs "car at x y z, speed, compression" once a second
 ./target/release/mostrusted --drive 911 --units 12 --auto-throttle 0.4 --screenshot <scratch>/drive.png --screenshot-delay 400
-# Car menu (Tab / F1 / gamepad Start in interactive runs). Headless: swap cars in turn (`name@paint`, `free` =
+# Controls are the original's defaults (input.rs): arrows steer, A accelerate, Z brake, Space handbrake; pad left
+# stick, RT / LT, X. Easydrive (easydrive.rs): numpad 6 or d-pad right opens (E too), 8 / 2 move, 4 back; headless:
+./target/release/mostrusted --drive 911 --units 12 --show-easydrive --screenshot <scratch>/easydrive.png --screenshot-delay 60
+# Car menu (Esc / Tab / F1 / gamepad Start or Back in interactive runs). Headless: swap cars in turn (`name@paint`, `free` =
 # free camera), screenshot after the last; logs model / mesh / material / entity counts per step (leak check)
 ./target/release/mostrusted --drive 911 --units 12 --auto-throttle 0.3 --swap-to "veyron super,aventador@2" --swap-delay 200 --screenshot <scratch>/swap.png
 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,1720 --units 12 --swap-to 911,free,veyron --screenshot <scratch>/spawn.png

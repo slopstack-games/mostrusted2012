@@ -170,7 +170,7 @@ mod tests {
 
     #[test]
     fn degenerate_range_has_unit_scale() {
-        assert_eq!(binding_value(0.7, 0.5, 0.5), 0.2);
+        assert!((binding_value(0.7, 0.5, 0.5) - 0.2).abs() < 1e-6);
     }
 
     #[test]
