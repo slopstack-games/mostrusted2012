@@ -244,7 +244,7 @@ pub struct Car {
     /// the game's drift entry and exit measure this.
     pub rear_slip: f32,
     /// Seconds since a wheel last left the ground (0 while all are down).
-    air_time: f32,
+    pub(crate) air_time: f32,
     /// The handbrake's countdown (reset to `Minimum_handbrake_time` on every tick it is pulled) and whether it is
     /// on (`FUN_009d27b0`).
     handbrake_timer: f32,
@@ -332,6 +332,11 @@ pub struct WheelContact {
 }
 
 impl Car {
+    /// Wheels touching the ground (the camera's landing trigger).
+    pub(crate) fn wheels_down(&self) -> usize {
+        self.wheels.iter().filter(|w| w.contact.is_some()).count()
+    }
+
     /// Each wheel's (slip ratio, slip angle in degrees) from the last physics step, front wheels first in spec
     /// order.
     pub fn wheel_slips(&self) -> impl Iterator<Item = (f32, f32)> + '_ {

@@ -80,6 +80,17 @@ mod h {
     pub const ROTATION_AXES: [u32; 3] = [field_hash("Pitch"), field_hash("Roll"), 0x41bd8729];
     pub const DAMPING: u32 = field_hash("Damping");
     pub const TRANSLATION_DAMPING: u32 = 0x00fd0a79;
+    pub const SHAKE_MAGNITUDE: u32 = field_hash("ShakeMagnitude");
+    pub const WOBBLE_MAGNITUDE: u32 = field_hash("WobbleMagnitude");
+    pub const MAX_FREQ_MULT: u32 = field_hash("Maximum_frequency_multiplier");
+    // Impact_shake fields without a cracked name, by their use in FUN_005cd040 / FUN_005dfe90.
+    pub const IMPACT_POWER: u32 = 0xd4c1621b;
+    pub const IMPACT_DECAY: u32 = 0x79f982f0;
+    pub const IMPACT_SCALE: u32 = 0x192db931;
+    pub const IMPACT_HI: u32 = 0xa2c5d2eb;
+    pub const IMPACT_CAP: u32 = 0x4ffbfd8f;
+    pub const IMPACT_LO: u32 = 0x96f848b2;
+    pub const IMPACT_SPRING: u32 = 0x91b99f00;
     pub const SPRING_COEFFICIENT: u32 = field_hash("Spring_Coefficient");
     pub const MIN_ANGLE: u32 = field_hash("Minimum_Angle");
     pub const MAX_ANGLE: u32 = field_hash("Maximum_Angle");
@@ -224,8 +235,23 @@ pub struct ImpactShake {
     /// Three translation axes (only the third, taken as z, has an amplitude) and pitch / roll / yaw.
     pub translation: [ShakeAxis; 3],
     pub rotation: [ShakeAxis; 3],
-    /// `Maximum_amplitude` (2): cap on an impact's strength.
+    /// `Maximum_amplitude` (2): the shake level's multiplier into degrees (`FUN_005cd040`'s last argument).
     pub max_amplitude: f32,
+    /// The noise shake stage `FUN_005dfe90` (decomp.md "Camera effects"): `WobbleMagnitude` (a random
+    /// velocity impulse per update, ±), `ShakeMagnitude` (a random offset per update, ±), `91b99f00` (the
+    /// spring / damping fraction) and `Maximum_frequency_multiplier` (the step: `× dt`).
+    pub wobble: [f32; 3],
+    pub jitter: [f32; 3],
+    pub spring: f32,
+    pub frequency: f32,
+    /// The level (`FUN_005cd040`): decays by `79f982f0` per update; a contact `x` raises it to
+    /// `min((clamp((x − lo) / (hi − lo), 0, 1) × x × scale)^power, cap)` with lo `96f848b2`, hi `a2c5d2eb`,
+    /// scale `192db931`, power `d4c1621b`, cap `4ffbfd8f`.
+    pub decay: f32,
+    pub contact: [f32; 2],
+    pub scale: f32,
+    pub power: f32,
+    pub cap: f32,
 }
 
 /// `CameraGameplayBonnet` / `Bumper`.
@@ -314,6 +340,15 @@ impl Default for ExternalCamera {
                 translation: [ShakeAxis::default(), ShakeAxis::default(), axis(100.0, 0.5, 100.0, [-0.2, 0.2])],
                 rotation: [axis(250.0, 0.4, 450.0, [-20.0, 20.0]), ShakeAxis::default(), ShakeAxis::default()],
                 max_amplitude: 2.0,
+                wobble: [0.5; 3],
+                jitter: [1.0; 3],
+                spring: 1.0,
+                frequency: 30.0,
+                decay: 0.165,
+                contact: [5.0, 60.0],
+                scale: 1.0,
+                power: 0.75,
+                cap: 4.0,
             },
         }
     }
@@ -409,6 +444,15 @@ impl ExternalCamera {
                     d.impact.rotation,
                 ),
                 max_amplitude: f(impact, h::MAX_AMPLITUDE, 2.0),
+                wobble: impact.and_then(|i| vec3(i, h::WOBBLE_MAGNITUDE)).unwrap_or(d.impact.wobble),
+                jitter: impact.and_then(|i| vec3(i, h::SHAKE_MAGNITUDE)).unwrap_or(d.impact.jitter),
+                spring: f(impact, h::IMPACT_SPRING, d.impact.spring),
+                frequency: f(impact, h::MAX_FREQ_MULT, d.impact.frequency),
+                decay: f(impact, h::IMPACT_DECAY, d.impact.decay),
+                contact: [f(impact, h::IMPACT_LO, d.impact.contact[0]), f(impact, h::IMPACT_HI, d.impact.contact[1])],
+                scale: f(impact, h::IMPACT_SCALE, d.impact.scale),
+                power: f(impact, h::IMPACT_POWER, d.impact.power),
+                cap: f(impact, h::IMPACT_CAP, d.impact.cap),
             },
         })
     }
