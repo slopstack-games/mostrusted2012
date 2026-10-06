@@ -124,6 +124,57 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Findings
 
+### 2026-10-06 (session 5, round 2): traffic rules in the code
+
+Details and formulas are in decomp.md "Traffic rules (session 5, round 2)".
+
+- **Found (confirmed by reading the code).**
+  - Frame function `FUN_0060ebc0`; its local-game tick is `FUN_0060eab0`.
+  - Active area = the player's hull cell plus that cell's listed neighbours (`FUN_005f0270`). The union and
+    diff of that set is in `FUN_0060c9f0`.
+  - Emitters are lane sections at the edge of the active area or with no predecessor (`FUN_0061c780`).
+  - Spawn interval `60 / (m·Density)` with a random factor (`FUN_005fb120`): **`TrafficFlow.Density` is cars
+    per minute per lane**.
+  - A new car is skipped unless the gap to the last car on the section is at least `Speed × 2 s`
+    (`FUN_0060e5e0`). The 2 s is read from the `DAT_0110f940` object.
+  - Vehicle pick by `Proportion` from the flow type that section byte `+0x25` selects (`FUN_00608c80`). This
+    settles the byte: it is the `TrafficFlowType` index.
+  - Density multiplier = `TrafficSystemConfig` 0x80 (4.78), ×1.2 when the player is slow (20 → 60 mph ramp),
+    ×`PursuitScale` 0.5 in a pursuit (`FUN_005f0780`).
+  - Load budget 200 within a `.bss` radius: 20 per moving car, 5 per slow or stopped car, 30 per physical car.
+    No spawning at 200 or above; above it the farthest car is removed every 0.5 s (`FUN_005fd6a0`).
+  - The game's random source is a 64-bit LCG (`0x5851f42d4c957f2d`) feeding an 8-slot delay ring.
+- **Inferred.**
+  - The `DAT_0110f940` object is `TrafficParamConfig`: the values at every offset read fit (0x10 = 4 m
+    standstill gap, 0x60 = 25 m minimum look-ahead, 0x6c = 2 s spawn headway, 0x88 = 2 s look-ahead time,
+    0xac = 3).
+  - Car following in `FUN_005fc220`: look-ahead `1.5 × max(2 s·v, 25 m)` (`FUN_005f1380` scans for the car
+    ahead), and gap = `dist − back − 4 m − 3·x`.
+  - World vehicle slots 256-405 / 406-429 may be parked cars.
+- **Dead ends.**
+  - The 24-entry hour array of `TrafficSystemConfig` has no direct reader among the users of `world+0xb17b0`.
+    The only other way the base density changes is message 4 in `FUN_0060a380` (the sender is not traced).
+  - `sys` 0x74 / 0x78 (1500 / 205) are read only by the setup function `FUN_005ef0f0`, into SIMD constant
+    blocks at `world+0x35ff0..`. Their use is not traced.
+  - `fn` cannot show the start value of the random lerp in `FUN_005fb120`: x87 temporaries were lost in
+    decompilation.
+- **Stopped at.**
+  - `FUN_00617d00`: read only up to branch 1. It is a four-way behaviour arbiter: `FUN_005ea6a0` scores four
+    options, the best one wins, and the cruise target is `Speed·mph·world+0xa2bfc`. The scorer and the
+    acceleration limits (`MinAcceleration` −20 is in the same object) are not traced.
+  - The rung advance and pose: `FUN_005f0d90`, `FUN_005f7cf0`, `FUN_005fcbd0` (the switch to a physical car).
+  - The other tick steps: `FUN_00605d30`, `FUN_00602ae0` (it calls the "Crashing Traffic" network helpers
+    `FUN_006180d0` / `FUN_0061a550`), `FUN_005fbbf0`, `FUN_0060ba30`, `FUN_0060b9a0`.
+  - Junction records: reached through hull lane data `+0x28`. `FUN_0060c9f0` walks a `u8` at junction `+0x35`
+    with entries near `+0x56`.
+  - The player-stopped-for-30 s action `FUN_005fd3f0`.
+- **`.bss` values needed (live read).**
+  - `DAT_0110f940` / `DAT_0110f944`: which GeneSys object, and fields 0x48 and 0x6c.
+  - `DAT_0118a090` (a rate scale in `FUN_00617d00`) and `world+0xa2bfc` (the global cruise-speed scale).
+  - `DAT_0110f590`: the squared radius of the load budget.
+  - The base density `world+0xa2b74` during free roam at several hours, to see whether the hour array reaches
+    it.
+
 ### 2026-10-06 (session 5): ground texture scale audit
 
 Report: "some textures, especially on the road and terrain are still scaled wrong" (no location). Every UV path

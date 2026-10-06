@@ -804,3 +804,127 @@ SlowSpeedPanic). Almost all field names are unhashed. `TrafficSystemConfig` star
 include 1500, 205, 300 / 200 / 250 (distance-like), `PursuitScale` 0.5, `PayloadDelay` 0. Which code reads
 them (spawn / despawn radius, car count, near-miss and horn logic, the switch to a physical car) is still open:
 the next step is to find the readers of `world+0x697fc` and of the `TrafficConfig` handles.
+
+### Traffic rules (session 5, round 2)
+
+Notation: `sys[x]` = `TrafficSystemConfig` field at instance offset `x` (handle `world+0xb17b0`, instance offset
+`world+0xb17b4`; offsets from `mwtool genesys-types`, values from `GLOBALCONFIG.BNDL`). `prm[x]` = the GeneSys
+object at `DAT_0110f940` / `DAT_0110f944` (`.bss`). Its field values fit `TrafficParamConfig` (0x69441) at every
+offset read, which is why it is taken to be that object: 0x10 = 4, 0x60 = 25, 0x6c = 2, 0x88 = 2, 0xac = 3. This
+is **inferred**. A live read of `DAT_0110f940` would confirm it. `mph` = `0.44704` (`DAT_010c4d24`).
+
+**Tick order** (confirmed). `FUN_0060ebc0` is the traffic system's frame function. It handles the message queue
+(`FUN_0060a380`), then branches on the mode at `world+0xa2b40`: 0 = start-up, 1 = local game, 2 = teardown.
+In mode 1 it calls `FUN_0060eab0`, which runs:
+- `FUN_006024f0(first, 0x100)`: the per-car update over the 256 lane-follower slots (from `+0x1bfd4`, stride
+  0x80). Each car's step is `FUN_005fc220`.
+- `FUN_0060c9f0`: the active hull set (below).
+- `FUN_0060e5e0`: the emitters (spawning).
+- `FUN_00605d30`, `FUN_00602ae0`, `FUN_005f0aa0`, `FUN_005fbbf0`, `FUN_0060ba30`, `FUN_0060b9a0`: not traced.
+
+The world's vehicle table is 0x1af (431) slots of 0x80 bytes at `world+0x60`. Teardown frees three ranges of
+it: slots 0-255 (traffic), 256-405 (150) and 406-429 (24); the roles of the last two are inferred (parked
+cars?). Slot `+0x62` holds a linked slot that is removed together with the car (a trailer, inferred).
+
+**Active area** (confirmed, `FUN_005f0270` in a local game). The active area is the hull cell the player is in
+(`FUN_0043cf00` with the last cell as a hint) plus that cell's own neighbour list (hull cell `+0x04`, count
+`+0x18`, up to 10). In a network game there is one such list per player, 16 lists at `world+0x67d84`, stride
+0x18. `FUN_0060c9f0` takes their union (`world+0x37c80`, count `+0x37dc0`) and compares it with the previous
+frame's set. Hulls that left the set lose their per-hull state (`world+0x2ae00` hull → slot, records of 0x498
+bytes at `+0x37f58`). So there is no despawn *radius*: traffic lives in the cells around the player's cell.
+
+**Emitters** (confirmed, `FUN_0061c780`). An emitter is a section of an active hull that:
+- has a flow with `Density` (`TrafficFlow` +0x20) ≠ 0, and
+- does not continue a lane already inside the area: its first backward link (section `+0x0E` hull, `+0x17`
+  section) is missing (`0xff`) or lies in a hull outside the active set.
+
+So cars enter only at lane starts and at the edge of the area, never in the middle of it (no view test was seen in the emitter code). Each emitter
+holds a timer at `world+0x2a600`. Its first value is `interval × 0.5 + phase`, where `phase` starts at 0, grows
+by `sys[0x98]` (0.7) per emitter and is wrapped to [0,1).
+
+**Spawn interval** (confirmed, `FUN_005fb120`):
+- `D` = the section's flow `Density`, `m` = the global multiplier `world+0xa2b7c`.
+- `d = max(m·D, min(D, sys[0xd0]=0))`, floored at `1e-15` (`DAT_00fb1e90`).
+- `interval = 60 / d × lerp(a, sys[0xb8]=1, u)`, with `u` uniform in [0,1). The decompiler lost the lerp's
+  start `a`.
+
+So **`Density` is cars per minute per lane**, at multiplier 1.
+
+The random source is a 64-bit LCG: multiplier `0x5851f42d4c957f2d`, increment 1, state at `world+0x36190`. Its
+high word goes through `>>9 | 0x3f800000` into an 8-slot ring of floats in [1,2) at `+0x36170`, and each draw
+returns the slot written 8 draws earlier.
+
+**Spawn step** (confirmed, `FUN_0060e5e0`). Spawning runs only while the load `world+0xa2b80` is below 200
+(`DAT_00fb1ab0`). Each emitter timer counts down by dt (`world+0xa2b5c`). When it reaches ≤ 0:
+1. Pick a vehicle type from the section's flow type (`FUN_00608c80`, section byte `+0x25` = `TrafficFlowType`
+   index).
+2. Place the car `Speed·mph·|timer|` metres into the section (`FUN_006146b0` on the cumulative rung lengths),
+   that is, where it would be had it spawned on time.
+3. Check the last car already on that section (`+0x37f58 + section·2`, `0xffff` = none). The new car is placed
+   (`FUN_00608720` → `FUN_005f4d10`) only if the gap to that car's back is at least `Speed·mph × prm[0x6c]`
+   (2 s headway). Otherwise this slot is skipped.
+4. Add the next interval to the timer.
+
+**Vehicle pick** (confirmed, `FUN_00608c80`):
+- `total` = the sum of `Proportion` (inline struct +0x1c) over the flow type's entries. When a class filter is
+  given (≠ −1), only entries whose vehicle has that class (`u16` at +0x14 of the vehicle's +0x28 object) count.
+- `r = u·total`. The first entry whose running sum reaches `r` is taken.
+- Overrides: in a local game, a forced flow type at `world+0xa2bf4` wins, and a mode flag
+  (`FUN_006a04c0()+0x2eb8`) can remap the flow type through `FUN_0061bd80`.
+
+**Density multiplier** (confirmed, `FUN_005f0780` every frame):
+- Start with `m = base`. `base` (`world+0xa2b74`) is `sys[0x80]` = **4.78**, unless message 4 in
+  `FUN_0060a380` sets another value or restores `sys[0x80]`. In a network game, `m` is also scaled by
+  `lerp(sys[0xc0], sys[0xd8], (activeHulls − c)·k)`, capped at 1.
+- Player speed (local game, when `FUN_0069ffe0()`): with `s` = the player's speed,
+  `t = clamp((s − sys[0x8c]·mph) / (sys[0x94]·mph − sys[0x8c]·mph), 0, 1)`, and `m *= lerp(sys[0x90]=1,
+  sys[0x88]=1.2, t)`. With `sys[0x8c]` = 60 and `sys[0x94]` = 20, that is ×1.2 at or below 20 mph and ×1 at or
+  above 60 mph.
+- Pursuit (`FUN_006a1200()`): `m *= sys[0x10c]` (`PursuitScale` 0.5).
+
+The **24-entry hour array (`sys[0x0c..0x6c]`) has no direct reader** among the `world+0xb17b0` users. It may
+reach `base` through message 4 (not traced).
+
+**Load budget and culling** (confirmed, `FUN_005fd6a0`). Every car within `sqrt(DAT_0110f590)` (`.bss`) of the
+point `world+0x36110` (the player or camera) adds to the load `world+0xa2b80`:
+- `sys[0x9c]` = 30 if the car is physical (byte `+0x1d2` of its 0x620-byte record at `+0x2c910`);
+- otherwise `sys[0xa4]` = 5 if the value at `+0x1c0` is below `sys[0xb4]` = 6 (speed, inferred);
+- otherwise `sys[0xa0]` = 20.
+
+At a load of 200 or more, a cooldown (`+0xa2b84`) counts down. When it runs out, the **farthest** car in the
+radius is removed (`FUN_005ec4b0`, with its linked slot) and the cooldown restarts at `sys[0xa8]` (0.5 s). The
+budget allows about 10 moving cars, about 40 stopped ones, or about 6 physical ones near the player.
+
+Separately, `FUN_00602ce0` runs `FUN_005fd3f0` (not traced) once the player has been slower than `sys[0x108]`
+(2) for `sys[0x104]` (30) seconds.
+
+**Car following** (partly confirmed, `FUN_005fc220`). `prm` values are inferred, see above.
+- Look-ahead: `L = 1.5 × max(prm[0x88]·v, prm[0x60])`, that is `1.5 × max(2 s·v, 25 m)`, where `v` = speed at
+  `+0x1c` of the car state. The constant 1.5 is `DAT_00fb1bb0`.
+- `FUN_005f1380` scans the lanes ahead (following forward links) for the next car within `L`. It returns the
+  car's index or `0xffff`, and the distance.
+- `gap = max(0, dist − back(+0x4c) − prm[0x10] − prm[0xac]·x(+0x3c))`. With `prm[0x10]` = 4 m and
+  `prm[0xac]` = 3, `x` is probably a speed, giving a time headway (inferred).
+- `closing = v − v_ahead`, where `v_ahead` is the other car's `+0x1bf9c` slot.
+- These, with `prm[0x84]·x + (+0x34)` and `prm[0x80]` (only when the state byte `+0x22` = 1), go to
+  `FUN_00617d00`.
+
+`FUN_00617d00` is a **behaviour arbiter**, not a plain speed controller (partly confirmed):
+- `FUN_005ea6a0` scores four options from the gap, the closing speed and the car state. The scoring is
+  probably the `FuzzyConfig` (inferred).
+- The scores are forced to zero while `world+0xa2be6` is set. They are also zeroed when `world+0xa2ba8 ≤ 16 −
+  world+0x32b20`, a cap on concurrent manoeuvres (inferred); in a local game that test is skipped at a load of
+  200 or more. A car whose state byte `+0x78` is 2 gets fixed scores (`DAT_00fb2330`).
+- The best score picks the branch.
+- The cruise target in every branch is `Speed·mph·world+0xa2bfc` (a runtime speed scale).
+- Branch 0 sets the car's mode to 5 and a rate of `lerp(prm[0x98]=4, prm[0x94]=8, x(+0x3c)) ×
+  DAT_0118a090` (`.bss`). It may also queue the car into a 5-entry list at `world+0x32bac`, as a manoeuvre
+  request (inferred).
+- Branch 1 uses `max(0, score − prm[0x9c]=10)`.
+- The remaining branches were not read.
+
+`prm` names `MinAcceleration` (−20, offset 0x50) and `SwerveScale` (4, offset 0xb8), the only hashed names.
+Not traced: the controller itself (`FUN_00617d00`), the swerve and near-miss reactions, the horn, junction /
+stop-line handling (junction records are reached through the hull's `+0x28` pointer; `FUN_0060c9f0` walks a
+`u8` count at junction `+0x35` with entries near `+0x56`), the switch to a physical car (`FUN_005fcbd0` →
+`FUN_005f7cf0`) and the 150 / 24-slot ranges.
