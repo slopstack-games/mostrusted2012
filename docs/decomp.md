@@ -1365,6 +1365,59 @@ M+0x34 `0a78c15f` −1, +0x38 `b028673b` 1.5, +0x3c `7d4ec535` 1.7, +0x40 `b6010
 - `.bss` needed: `DAT_0110e770` (acceleration normaliser and clamp), `DAT_0110e4d0` (step clamp),
   `DAT_0110e680` (offset clamp), `DAT_0110e610`, `DAT_0110e640` (speed threshold of the 1.85 term).
 
+### The live recording (round 8, `ref/live1`)
+
+A 258 s recording of the chase camera object (cam = director + 0x8d0) and the player car at ~120 Hz, 14,383
+distinct camera frames (the game updates at 60 Hz). What it settles:
+- **Camera placement.** Eye = followed position (cam + 0x500) + R(smoothed angles cam + 0x590) ×
+  (0, cam + 0x5a4, cam + 0x5a8 + cam + 0x588): the residual median is 0 on all axes. cam + 0x5a0..0x5ac is
+  reset each update from state + 0x40..0x4c (this car: (0, 1.575, −4.6, 0)), and cam + 0x5b0.. from state +
+  0x50.. (look-at), then modified by `FUN_005c76a0`, `FUN_005c8ad0` and `FUN_005d12b0`. The recorded eye z is
+  −5.94 at rest and −4.0 at 130 mph (plus cam + 0x588, down to −1.18); the w lane (cam + 0x5ac) fits
+  `−1.2 + 4.55 × (1 − tan 35° / tan(FOV/2))`, a FOV-compensating dolly whose source is not read.
+- **Live state block** (camera + 0x290): +0x44 / +0x48 eye y / z, +0x64 look-at y 1.15, +0x58 / +0x68 0.891,
+  **+0x70 K_pitch 0.55**, **+0x74 K_yaw default 0.09**, **+0x78 K_roll 1.0**, +0x7c / +0x80 FOV 70 / 95,
+  +0x84 0.055, **+0x88 / +0x8c FOV speed band 0 / 125 mph**, +0x90 10 (FOV per unit of cam + 0x284), +0x94 4.
+  +0x98 / +0x9c were 0 in this block, so the run's car was not identified (its eye (0, 1.575, −4.6) and look-at
+  height 1.15 identify it against `mwtool genesys`, which this round did not run to completion).
+- **Followed frame**: the yaw step of `FUN_005c75b0` with the recorded K_yaw reproduces cam + 0x594 to 0.0002°
+  median. K_yaw (cam + 0x6d4) = 0.09 standing, else `0.05 + 0.025 × clamp(mph / 100)`; cam + 0x6d8 is always
+  1; K_pitch (cam + 0x6d0) 0.55, 0.1 in the air. The roll lane cam + 0x598 stays within 0.25°: the followed
+  frame has no roll; the camera's roll (its right vector's height) tracks cam + 0x660 (`FUN_005c9380`'s
+  state, ±3°, correlation 0.89). The speed in `FUN_005c89c0`'s pitch gate is mph.
+- **FOV (`FUN_005c76a0`, read)**: `FOV = lerp(state+0x7c, state+0x80, clamp((mph − state+0x88) /
+  (state+0x8c − state+0x88), 0, 1)) + state+0x90 × cam+0x284`; cam + 0x284 stayed 0. The same function ramps
+  cam + 0x6f8 up while vehicle + 0x1944 > 0 (by its shape nitrous) and writes it × `DAT_00fafc4c` to target +
+  0x38 (0 in this run). The recorded FOV deviates from this by 3.8° RMS, correlated with acceleration: a later
+  term, not found.
+- **`FUN_005c8ad0` (read)**: scales the eye vector's x, z and w lanes (not y) by `1 + |sin-poly(yaw lag)| ×
+  (r − 1) × DAT_00f8a810`, `r` a ratio of the target object's +0xd0 − +0xc0 over +0xd8 − +0xc8 (by its shape the
+  car's box width over length): the camera moves in as the car turns side-on to it. Not ported (object and
+  constant unread); this is the nearest thing to "avoidance" in the chase code.
+
+### Camera effects (round 8)
+
+- **Impact shake (`FUN_005cd040`, read; called from `FUN_005d0b90`, `FUN_005cf1d0`, `FUN_005cf320`)**. Level
+  cam + 0x280 decays each update by `× (1 − param_6)` (recorded: 10.8 /s, factor 0.835 per 60 Hz frame).
+  Each update it walks the target's contact list (`FUN_00904880` count, `FUN_00904850` entries, material
+  table `DAT_010edb68` by entry + 0x42), normalises each contact's value `clamp((x − lo) / (hi − lo), 0, 1)`
+  × per-lane scale, and raises the level to the clamped maximum (never adds). Amplitude = param_13 × level,
+  passed with data vectors to `FUN_005dfe90` (not read) which moves the camera. The string
+  `GameplayExternalImpactShakeAngles` ("the current angles of the impact camera shake effect") names its
+  output. Recorded triggers: crashes (speed drops 70→65, 99→79, 61→50 mph gave levels 2.6, 2.2, 2.3; scrapes
+  0.1-0.6) and landings (air 0.8 s at 131 mph → 1.1; 1.0 s at 80 mph → 1.0); the landing request of
+  `FUN_005c8e40` is `clamp((|v| − 10) × 0.00204, 0, 1) × 6.5` (`DAT_00fa929c`, `_DAT_00fb0eac`,
+  `_DAT_00fafe14`, `.rdata`), |v|'s units unconfirmed (neither mph nor m/s fits both landings).
+- **Speed shake**: the camera's angle relative to the followed frame, high-passed (0.15 s), is 0.05° RMS in
+  pitch at rest, 0.30° at 40-80 mph and 0.16-0.19° above, with energy at 3-4 Hz; roll 0.18° / 0.11°. The eye's
+  height residual has 0.15-0.27 m standard deviation above 40 mph. cam + 0x120..0x12c is a vector that is 0
+  at rest and 0.1-0.2 at speed (by its behaviour a shake state; not correlated frame-by-frame with the view
+  angles); cam + 0x130..0x170 and 0x330 / 0x334 are noise-like at all speeds (generator states).
+- **Ours vs the original**: our impact kicks come only from body-collider contacts ≥ 1 m/s scaled by 1/10
+  (a typical crash ≈ 0.3-0.7, as a spring velocity) and there is no landing kick; the original's level for a
+  crash is 2-2.6 and every landing after ~0.8 s air time gives ~1. Not ported this round: `FUN_005dfe90` (how
+  the level becomes motion) is unread, and the car exposes no airborne state.
+
 ### Avoidance: where the search ended (round 7)
 
 - The director's update `FUN_005d5e20` is **not in the dump** ("not a function start; not in any decompiled

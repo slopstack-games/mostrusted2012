@@ -230,7 +230,7 @@ meaning is read from values or position; values are the 911's, ranges are across
 | `6e08f788` | (0, 1.6, −4.6) | **data** eye in car space (also the bonnet / bumper eye) |
 | `006e1686` | (0, 1.2, 0.75) | **data** look-at point |
 | `d68bbc59` | (0, 0, 0.75) | *hyp.* pivot: always (0, 0, look-at z); the yaw and look-around orbit turn around it |
-| `MinFieldOfView` / `MaxFieldOfView` | 70 / 95 | **data** FOV, blended by (speed / top speed)²; read as vertical (see below) |
+| `MinFieldOfView` / `MaxFieldOfView` | 70 / 95 | **data** FOV, `lerp(min, max, clamp(mph / 125))` (`FUN_005c76a0`); read as vertical (see below) |
 | `Speed_based_movement.0a78c15f` | −1 (−1.2…0) | **code** (`FUN_005d12b0`) eye z target at full speed, smoothed with the acceleration offset below |
 | `….7d4ec535` | 1.7 (1.45…4.4) | **code** eye height at full speed: `eye.y += (this − eye.y) · h`, unsmoothed |
 | `….b028673b` | 1.5 (1.35…3.1) | **code** look-at height at full speed, the same form |
@@ -248,7 +248,7 @@ meaning is read from values or position; values are the 911's, ranges are across
 | `….Maximum_Pitch_Change`, `Pitch_change_curve_power` | 4.5 (2.5…6), 2.25 | **data** pitch = max × f^power (nose down) |
 | `….Pitch_change_intensity` | 2 (1.75…2) | *hyp.* rate (1/s) the pitch follows its target |
 | `Yaw_spring_modification.Low_speed` / `High_speed` | 0 / 100 | **data** speed band (mph) |
-| `….5a74d44d` / `63fb2207` | 0.075 / 0.05 | *hyp.* yaw spring at low / high speed, a fraction per 60 Hz tick (sorted after `Low_speed` / `High_speed`): 4.7/s at rest, 3.1/s at 100 mph |
+| `….5a74d44d` / `63fb2207` | 0.075 / 0.05 | yaw spring at **high / low** speed (recorded cam + 0x6d4: 0.05 at low speed rising to 0.075 at 100 mph), a fraction per 60 Hz tick (sorted after `Low_speed` / `High_speed`): 4.7/s at rest, 3.1/s at 100 mph |
 | `YawDriftSpring` | 0.055 (0.045…0.07) | **data** name; *hyp.* the yaw spring while drifting (3.4/s) |
 | `Global_params.f50dccb9` (`CameraGameplayShakeEffect`) | see below | **data** impact shake springs |
 | `Global_params.Impact_shake.Maximum_amplitude` | 2 | **data** cap on an impact's strength |
@@ -313,19 +313,29 @@ That row stays a guess until the helper is read to its end.
   `min(|speed| · 0.02, 1)` (rigid at standstill, full lag from 50 m/s); the pitch stiffness eases 0.1 per
   update to its default (`FUN_005c8e40`). The yaw-lag cap (0.6 rad) is removed: no clamp exists in the code
   read. This replaces our "up vector eased at 2/s" slope following and the yaw ease.
-- *Still ours*: the yaw stiffness's value (the speed blend of `5a74d44d` 0.075 → `63fb2207` 0.05 between
-  `Low_speed` and `High_speed`, and `YawDriftSpring` while drifting): `FUN_005c90a0` computes it from
-  `lerp(lerp(y28, y18, f), mods(0x29), s)` with `f`, `mods(0x29)` and `s`'s reference speed unresolved, and
-  y18 = `High_speed` (100) as an endpoint does not make sense without them; its yaw-rate term is inert with
-  the shipped data (both thresholds 10). Also ours: the drift lean, the speed movement and acceleration
-  spring (`FUN_005d12b0` writes cam + 0x550..0x58c, not read), the data-driven roll and deceleration pitch
-  (`FUN_005c9380`, `FUN_005c7a80` not read), the FOV, the shakes and the collision push-in (no world query
-  found in the helpers read). The airborne branch of `FUN_005c8e40` (stiffness → 0.1 in the air, landing
-  shake) is not ported (the car exposes no airborne state).
-- *Model decisions with the game's address*: `K_PITCH_DEFAULT` = 2/60 per tick stands for the per-player
-  default at camera state + 0x70 (written outside the functions read; a live read: state pointer at
-  camera + 0x290), `K_ROLL` = 2/60 for cam + 0x6dc (no writer found). `.bss` values a live read must supply:
-  `_DAT_0110e8f0` (yaw spring's reference speed), `_DAT_01189f60` (fixed-yaw mode's yaw).
+- *From the live recording (2026-10-06, `ref/live1`, 14,383 distinct camera frames, 0-134 mph; checked with
+  `tools/camreplay.py`, see decomp.md "Cameras: the live recording")*: the yaw step rule of `FUN_005c75b0`
+  reproduces the recorded smoothed yaw (cam + 0x594) to 0.0002° median when fed the recorded stiffness.
+  Ported from the recording and the live state block: pitch stiffness 0.55 (state + 0x70; was 2/60), its
+  speed gate `min(0.02 × speed, 1)` in **mph** (vehicle + 0x1620; was m/s), the followed frame without roll
+  (cam + 0x598 stays within 0.25°; the view's only roll is `FUN_005c9380`'s cam + 0x660), and the FOV
+  `lerp(70, 95, clamp(mph / 125, 0, 1))` set directly each frame (`FUN_005c76a0`, state + 0x88 / + 0x8c =
+  0 / 125; was `(speed / top speed)²` eased at 3/s). Replay error, before → after: yaw 3.00° → 2.17° RMS
+  (p99 6.3° → 3.0°), pitch 0.35° → 0.21°, frame roll 0.99° → 0.01°, FOV 11.1° → 3.8° RMS.
+- *Fitted from the recording (model decision)*: the yaw stiffness. Recorded cam + 0x6d4 is 0.09 at a
+  standstill (= state + 0x74, the per-player default) and otherwise `0.05 + 0.025 × clamp(mph / 100)`
+  (93 % of frames within 0.002); that is the data pair `63fb2207` 0.05 → `5a74d44d` 0.075 **rising** with
+  speed (we had it falling), but which operand of `FUN_005c90a0`'s lerp gives it is still unread. The
+  standing threshold (0.5 mph) is ours.
+- *Still ours*: the drift lean and `YawDriftSpring` (no drift in the recording), the eye position (the
+  recorded eye sits at z = −5.94 at rest, not the data's −4.6, and moves forward to −4.0 at 130 mph; its
+  look-z lane follows `−1.2 + 4.55 × (1 − tan 35° / tan(FOV/2))` to 0.04 m RMS, a FOV-compensating dolly
+  that is not read or ported), the roll and deceleration pitch models, the shakes (decomp.md "Camera
+  effects") and the collision push-in. The FOV residual (3.8° RMS) correlates with acceleration (+0.1° per
+  mph/s): a further term after `FUN_005c76a0` that is not found. The airborne branch of `FUN_005c8e40` is not
+  ported (the car exposes no airborne state).
+- *Model decisions with the game's address*: `.bss` values still unread: `_DAT_0110e8f0` (yaw spring's
+  reference speed), `_DAT_01189f60` (fixed-yaw mode's yaw).
 
 Model decisions (not data): the FOV is vertical (as horizontal the chase view is far tighter than the
 original's; the bonnet and bumper views look very wide this way); acceleration is measured from the car's
