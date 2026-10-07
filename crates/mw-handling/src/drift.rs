@@ -35,6 +35,11 @@ const MIN_DRIFT_TIME: f32 = 0.5;
 /// 0x01026050) (`FUN_009d83e0`).
 const MAX_AIR_TIME: f32 = 1.0;
 const MIN_DRIFT_SPEED: f32 = 0.5;
+/// A contact stronger than this ends a drift (world: `.data` 0x010cfb40; other objects: `.rdata` 0x01026230;
+/// both 6, `FUN_009d83e0`) and, with the world, centres the steering (`FUN_008f7ab0`, `.rdata` 0x01021ff0 = 6).
+/// The game's contact value is the collision table's (unit not traced); the caller passes the body's normal
+/// closing speed in m/s, the same stand-in as the camera's impact shake.
+pub const HARD_IMPACT: f32 = 6.0;
 /// No drift entry during a burnout: `clamp((1 - |mph| / BURNOUT_MPH) * throttle * brake)` must stay below
 /// `BURNOUT_ENTRY` (`FUN_009ab230`; 20 mph is `.bss` 0x011866f0, read live; 0.1 is `.rdata` 0x010261e0).
 pub const BURNOUT_MPH: f32 = 20.0;
@@ -279,6 +284,10 @@ pub struct DriftInput {
     pub reverse_gear: bool,
     /// The body touches the world this tick (the game's +0x30ed): no drift starts then.
     pub touching_world: bool,
+    /// The strongest contact this tick with the world, and with any other object (the game's contact table:
+    /// the car's world record +0x1c, and the +0xc of each object entry). Zero without contact.
+    pub world_impact: f32,
+    pub object_impact: f32,
 }
 
 /// What the drift model does to the car this tick.
@@ -325,6 +334,10 @@ pub enum Phase {
 pub enum ExitReason {
     #[default]
     None,
+    /// 1: a contact with the world above [`HARD_IMPACT`].
+    HitWorld,
+    /// 3: a contact with another object above [`HARD_IMPACT`].
+    HitObject,
     /// 5: airborne longer than a second, or no wheel on the ground.
     Airborne,
     /// 6: the rear slip fell below the exit angle after the minimum drift time.
@@ -488,7 +501,7 @@ impl DriftState {
     }
 
     /// The forced exits in the game's order of precedence (a later code overwrites an earlier one), then the
-    /// normal exit. Collision exits (codes 1 and 3: a contact impulse above 6) are not modelled.
+    /// normal exit. The special state +0x1774 (code 11) is not modelled.
     fn exit_reason(&self, p: &DriftParams, i: &DriftInput) -> Option<ExitReason> {
         if i.handbrake {
             Some(ExitReason::Handbrake)
@@ -498,6 +511,10 @@ impl DriftState {
             Some(ExitReason::Stopped)
         } else if i.air_time > MAX_AIR_TIME || !i.any_grounded {
             Some(ExitReason::Airborne)
+        } else if i.object_impact > HARD_IMPACT {
+            Some(ExitReason::HitObject)
+        } else if i.world_impact > HARD_IMPACT {
+            Some(ExitReason::HitWorld)
         } else if self.time > MIN_DRIFT_TIME && i.rear_slip.abs() < p.exit_angle {
             Some(ExitReason::Straightened)
         } else {
@@ -652,10 +669,45 @@ mod tests {
             air_time: 0.0,
             reverse_gear: false,
             touching_world: false,
+            world_impact: 0.0,
+            object_impact: 0.0,
         }
     }
 
     const DT: f32 = 1.0 / 60.0;
+
+    #[test]
+    fn hard_contacts_end_a_drift_and_soft_ones_do_not() {
+        let p = params();
+        let start = |s: &mut DriftState| {
+            *s = DriftState::default();
+            s.step(&p, &input(0.8, p.enter_slip + 1.0), DT);
+            assert_eq!(s.phase, Phase::Drifting);
+        };
+        let mut s = DriftState::default();
+        start(&mut s);
+        let mut i = input(0.8, 20.0);
+        i.world_impact = HARD_IMPACT - 0.5;
+        i.object_impact = HARD_IMPACT - 0.5;
+        s.step(&p, &i, DT);
+        assert_eq!(s.phase, Phase::Drifting, "scrapes below the threshold keep the drift");
+
+        i.world_impact = HARD_IMPACT + 1.0;
+        s.step(&p, &i, DT);
+        assert_eq!((s.phase, s.exit_reason), (Phase::Off, ExitReason::HitWorld));
+
+        // Both at once: the game writes code 3 after code 1, so the object hit is the reason.
+        start(&mut s);
+        i.object_impact = HARD_IMPACT + 1.0;
+        s.step(&p, &i, DT);
+        assert_eq!(s.exit_reason, ExitReason::HitObject);
+
+        // The handbrake's code 9 is written later still and wins.
+        start(&mut s);
+        i.handbrake = true;
+        s.step(&p, &i, DT);
+        assert_eq!(s.exit_reason, ExitReason::Handbrake);
+    }
 
     #[test]
     fn yaw_curve_runs_from_minimum_to_maximum() {

@@ -6,6 +6,7 @@
 //! recorded throttle, brake, steering and handbrake play back tick by tick, interpolated in time. Our telemetry
 //! goes to `<recording>.ours.csv` with the column names of the recording where they mean the same thing.
 
+use avian3d::prelude::{AngularVelocity, LinearVelocity};
 use bevy::prelude::*;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -38,6 +39,10 @@ pub struct Replay {
     ticks: u32,
     /// Seconds into the playback (None while approaching the start speed).
     playing: Option<f32>,
+    /// The last tick's playback time and inputs. This system runs before `car_physics`, so the car state it
+    /// sees is the one the previous tick's inputs produced: each line pairs that state with those inputs, as a
+    /// row of the recording does (logging this tick's inputs instead put ours one tick behind the original).
+    prev: Option<(f32, [f32; 4])>,
     done: bool,
 }
 
@@ -98,6 +103,7 @@ impl Replay {
             out: None,
             ticks: 0,
             playing: None,
+            prev: None,
             done: false,
         })
     }
@@ -124,17 +130,17 @@ impl Replay {
 
 const COLUMNS: &str = "t,speed_mph,in_throttle,in_brake,in_steer,handbrake,rpm,gear,drifting,drift_scale,\
 drift_rear_slip,yaw_rate,lat_accel,body_slip_deg,px,pz,w0_kappa,w0_alpha,w1_kappa,w1_alpha,w2_kappa,w2_alpha,\
-w3_kappa,w3_alpha";
+w3_kappa,w3_alpha,wheel_angle,tyre_yaw_front,tyre_yaw_rear,drift_yaw_tq,drift_side_f,drift_hold_f,drift_yaw_scale";
 
 /// Runs before `car_physics` in the fixed schedule: approach the start speed, then play the inputs back.
 pub fn run_replay(
     time: Res<Time>,
     replay: Option<ResMut<Replay>>,
     mut input: ResMut<crate::drive::CarInput>,
-    cars: Query<(&crate::drive::Car, &Transform)>,
+    cars: Query<(&crate::drive::Car, &Transform, &LinearVelocity, &AngularVelocity)>,
     mut exit: MessageWriter<AppExit>,
 ) {
-    let (Some(mut r), Ok((car, transform))) = (replay, cars.single()) else { return };
+    let (Some(mut r), Ok((car, transform, velocity, angular))) = (replay, cars.single()) else { return };
     if r.done {
         return;
     }
@@ -175,11 +181,22 @@ pub fn run_replay(
         return;
     };
     input.scripted = Some(inputs);
+    let Some((t, inputs)) = r.prev.replace((t, inputs)) else {
+        r.playing = Some(t + dt);
+        return;
+    };
+    // The body's motion as the last physics step left it (the `Car` fields are read at the start of its tick).
+    let (rot, v) = (transform.rotation, velocity.0);
+    let (forward, up) = (rot * Vec3::Z, rot * Vec3::Y);
+    let speed = v.dot(forward);
+    let mph = speed / MPH;
+    let yaw_rate = angular.0.dot(up);
+    let body_slip = v.dot(rot * Vec3::X).atan2(speed.abs().max(1.0));
     let slips: Vec<(f32, f32)> = car.wheel_slips().collect();
     let slip = |i: usize| slips.get(i).copied().unwrap_or_default();
     let p = transform.translation;
     let line = format!(
-        "{t:.4},{mph:.3},{:.3},{:.3},{:.3},{:.0},{:.0},{},{},{:.3},{:.2},{:.4},{:.3},{:.2},{:.2},{:.2},{:.3},{:.2},{:.3},{:.2},{:.3},{:.2},{:.3},{:.2}",
+        "{t:.4},{mph:.3},{:.3},{:.3},{:.3},{:.0},{:.0},{},{},{:.3},{:.2},{:.4},{:.3},{:.2},{:.2},{:.2},{:.3},{:.2},{:.3},{:.2},{:.3},{:.2},{:.3},{:.2},{:.5},{:.0},{:.0},{:.0},{:.0},{:.0},{:.4}",
         inputs[0],
         inputs[1],
         inputs[2],
@@ -189,9 +206,9 @@ pub fn run_replay(
         u8::from(car.drift.active()),
         car.drift.scale,
         car.rear_slip,
-        car.yaw_rate,
-        car.lateral_accel,
-        -car.body_slip.to_degrees(),
+        yaw_rate,
+        yaw_rate * speed,
+        -body_slip.to_degrees(),
         p.x,
         p.z,
         slip(0).0,
@@ -202,9 +219,16 @@ pub fn run_replay(
         slip(2).1,
         slip(3).0,
         slip(3).1,
+        car.steer_angle(),
+        car.tyre_yaw[0],
+        car.tyre_yaw[1],
+        car.drift.last.yaw_torque,
+        car.drift.last.side_force,
+        car.drift.last.hold_force,
+        car.drift.last.yaw_rate_scale,
     );
     if let Some(w) = &mut r.out {
         let _ = writeln!(w, "{line}");
     }
-    r.playing = Some(t + dt);
+    r.playing = r.prev.map(|(next, _)| next + dt);
 }

@@ -8,6 +8,204 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ---
 
+## Dated findings
+
+### 2026-10-07: the anti-roll bar's solve found (`FUN_0092ee70`); `FUN_00932af0` is the sleep pass; 2 sub-steps
+- Prompted by the Vita cross-check ("Update constraints" ⊇ the island step). `FUN_00932af0`, which Ghidra could
+  not decompile and which was taken for the bar's solve, is the island **sleep** pass (disassembled from
+  snap2; details in decomp.md "Suspension, wheels, aerodynamics"). The bar is solved by **`FUN_0092ee70`**
+  through `FUN_0093f200` → `FUN_00932f90`: torque k·atan(Δy/Δx) − c·(chassis ω · forward) per axle from the
+  two wheel centres in the chassis frame, ±F along the up axis at the wheel centres, capped per wheel at
+  |Δy| / (4 W dt²), chassis only, explicit, at dt / 2 in each of the 2 sub-steps. Checked by hand at
+  0x92f00e..0x92f031 and the zeroed term at 0x92ee86 / 0x92eec5. The earlier note that no decompiled function
+  reads element +0x20 / +0x30 was wrong: `FUN_0092ee70` does.
+- The island step's sub-step counts are world +0x460 = 2 (`FUN_00932190`) and +0x464 = 2 (`FUN_0093f200`),
+  from the constructor `FUN_009330d0` and in both snapshots: `STOP_ITERATIONS` 4 → 2.
+- Ported (drive.rs `anti_roll`, replacing `anti_roll_loads`, which added a compression-difference load to each
+  wheel's spring force and switched off for a wheel in the air). 911 before → after: jitter roll p-p
+  0.0121° → 0.0092°, roll-rate p-p 0.084 → 0.057°/s; climb settle 4.20 → 4.13 s; landing, corner (2.57 g),
+  brake (38.5 m) and handbrake unchanged. The steady-corner roll is 0.0° before and after: our tyre forces carry
+  no roll moment, so the bar mostly acts over bumps and landings.
+- **Damper slots settled**: `FUN_0092f160` (the damper element) uses +0x18 = `0c5f89b3` × c while the strut
+  extends (wheel moving away from the chassis anchor) and +0x2c = c while it compresses, which is what we
+  already assumed (handling.md "Model decisions"); now sourced.
+- Leads left: the spring `FUN_0092f510`; then our springs and dampers could move into the same sub-stepped
+  element pass (they act on the wheel-vs-anchor velocity, ours on the mount's velocity along the ground
+  normal). What wheel record +0x0c is (1 in every read).
+
+### 2026-10-07: wall scrape and the drift's collision exits ported; `--test drift` has not drifted since a9a73f6
+- **Wall scrape** (`FUN_008f7ab0`, the "Update wall scrape" profiler scope, step 9 of decomp.md "Update loop"):
+  read from the disassembly (the pseudo-C garbles the shuffles). A world contact above 6 (`.rdata` 0x01021ff0)
+  zeroes the steering fraction +0x1c80 and the tyres' angle +0x1c8c, keeping +0x1c84 and the range +0x1c88.
+  Ported in drive.rs after the drift (`car.steer = 0`). Seen firing in `--test crash` on both impacts (closing
+  speed 31.8 and 17.9 m/s; `RUST_LOG=mostrusted::drive=debug` logs it), silent otherwise.
+- **Drift collision exits** (`FUN_009d83e0` codes 1 and 3): world contact above 6 (`.data` 0x010cfb40), object
+  contact above 6 (`.rdata` 0x01026230, from a per-car list of 0x90-byte entries); precedence as the game's (later
+  codes overwrite: 1 < 3 < 5 < 7 < 8 < 9). Unit test `hard_contacts_end_a_drift_and_soft_ones_do_not`.
+- The contact value: the game's comes from the collision table (world record +0x1c; the same field the camera's
+  impact shake reads with range 5..60), whose writer and unit were not traced. Ours is the largest normal closing
+  speed (m/s) of the body collider's world contacts, and of the body's and bumper box's other contacts for the
+  object exit: the same stand-in the camera already uses (handling.md "Model decisions").
+- 911 tests unchanged: corner 2.57 g, 0–100 km/h 3.73 s, landing ok, smash and crash fine.
+- **Found while testing**: `--test drift` gave no drift (peak 4.5°), on master too; bisected to a9a73f6 ("Tyres from
+  the code", the game's μ × N caps replacing LAT_GRIP 0.4 / LONG_GRIP 0.7). **Not a fault of the model**: replays of
+  `ref/live1` show the original would not drift with that script either. At 166.42 s the driver did what the
+  script did (straight at 77 mph, a 0.2 s full brake tap, full lock during it): the original's rear slip peaked at
+  2.5° against the tap threshold recovering from 2.17° at 10°/s, no drift; our replay of that window also stays out
+  (1.96°). All six brake-tap entries in the recording follow yaw already built, by a flick the other way (65.98,
+  69.52, 98.98, 107.97, 156.70) or full lock on the throttle (146.00); replayed, ours enters on the same tick
+  (within one 120 Hz row) with the rear slip within 0.1–0.2° RMS. The 0.6 s tap window is confirmed (presses up to
+  0.48 s lowered the threshold, one of 0.68 s did not). The live1 car for 58.4–178 s is the **McLaren MP4-12C**
+  (id 122765; 1350 kg, corner loads 2827 / 3800 N, thresholds 8.0 / 2.17 / 5.5); 0–53.7 s the XKR; from 178.4 s an
+  unidentified 1807 kg car.
+- **Fixed: κ taken before the brake step.** `FUN_009c75b0` runs the brake step `FUN_009bbff0` before the tyre pass
+  `FUN_009c6f00`, whose caps (`FUN_009c5da0`) take κ from the stepped wheel; ours took κ first, so a rolling
+  wheel's braking cap came out near 0 and the wheel stayed slowed. Replay of 98.98 (κ RMS against the original):
+  braking before the entry front 0.076 → 0.006, rear 0.027 → 0.006; braking in the drift front 0.174 → 0.041, rear
+  0.091 → 0.031. 911 brake 100–0 km/h 38.5 → 38.1 m; other tests unchanged. (Detail not verified: `FUN_009c5da0`
+  reads the spin at +0x4c where `FUN_009bbff0` writes +0x2c; the decompiler garbles the arguments.)
+- `--test drift` now plays the recorded 98.98 s entry (full lock one way 0.2 s, centre 0.1 s, full brake with full
+  lock the other way 0.45 s, then throttle with the lock held): 911 drift 5.25 s, peak 37.6°; MP4-12C 5.25 s, 18.2°.
+- `--replay` now pairs each row with the inputs that produced it (our rows were one tick late) and reads speed, yaw
+  rate and body slip after the physics step; new columns `wheel_angle`, `tyre_yaw_front/rear`, `drift_yaw_tq`,
+  `drift_side_f`, `drift_hold_f`, `drift_yaw_scale`. In the recording, `drift_side_f` x/y/z hold the same value.
+- Open: ours over-rotates once in a drift (98.98: yaw −84°/s against −54°/s at 2.0 s, more speed lost) although the
+  drift forces match the original's within ~2 % (side force exactly). Our `AngularDamping(0.4)` has no source; with
+  it at 0 the over-rotation gets much worse (yaw RMS 13.8 → 21.9°/s), so the original has yaw damping or more yaw
+  inertia on the ground that is not traced. Lead: the MP4's chassis is four convex hulls, ours a solid box.
+
+### 2026-10-07: what the Vita eboot can and cannot give (scope of the ARM build)
+- The decrypted Vita eboot (below) is self-relocated and analysable (27,867 absolute `0x81......` code
+  pointers; r2 `aaa` built 14,350 functions), so real code/data xref works. **But the handling/physics layer
+  is as anonymous in it as in the PC dump**, for two confirmed reasons:
+  1. Physics reflection type/field names and the game's own source-path asserts were **compiled out of this
+     retail build**. Present: gameplay/AI/UI/Lua command names (`AwardNitrous`, `SetInfiniteNitrous`,
+     `GetSteering`, ~40 `*HSM Behaviour` state names) and SDK source paths only (Blaze, EAAudioCore,
+     rwfilesystem). Absent (0 string hits): `NitrousParameters`, `NitrousStrength`, `HandlingBehaviour`,
+     `SteeringBehaviour`, `DriftBehaviour`, `Maximum_steering_angle`, `*_speed_steering_range`,
+     `Power_curve`, and the type tokens `Gearbox`/`Gen.Vehicle`/`GenReflection`/`AttribSys`.
+  2. The physics *simulation* names don't exist at all (compiled out), and the surviving gameplay/UI command
+     names (`AwardNitrous`, `UsingNitrous`, profiler-scope labels) that the sim would use are **hash-interned
+     and have no code reference** — so "find string → xref → name the handling function" does not work for the
+     physics layer. (Reflection/telemetry *property-registration* strings like `GetPlayerSuspensionLoad` ARE
+     referenced — see below — but only from the ID-registration table, not from the solver.)
+  3. The **PC GeneSys field hashes are not Vita code immediates** (different intern/hash scheme): `/v4` for
+     `0xe9de413e` (Nitrous_strength), `0xd00887ca` (engine +0xf0), `0x0798d257` (punch) = 0 each, vs 1931
+     hits for `0x3f800000`=1.0f as a control. Portable float constants don't discriminate either (10.0f = 68
+     hits). So PC offsets/hashes cannot pin a Vita function.
+- **Tooling correction (important):** r2's `aaa` recorded code→code call xrefs but **NOT data xrefs from
+  MOVW/MOVT split-immediate loads** (the usual ARM way to materialise a string/data address), so `axt`/`/v4`
+  on a string vaddr wrongly returns nothing even for strings that ARE referenced. Confirm string→code with a
+  MOVW/MOVT+LDR-literal scanner (scratch `movtscan.py`), not r2. Verified: `GetPlayerSuspensionLoad`
+  (0x816d1464) is loaded by a MOVW/MOVT pair at 0x811ba082 — a real reference r2 missed. (r2 also mis-decodes
+  some literal pools as Thumb branches, compounding the problem.)
+- **Net**: the Vita build is a good structural reference (the physics-tick profiler tree below) and a second
+  binary to confirm *behaviour*, but it is **not a shortcut for the anonymous handling internals**. Tracing a
+  specific handling rule in it costs about the same as the PC searches that already failed, with ARM/Thumb on
+  top. For the remaining data-reader dead-ends (nitrous multiplier reader, steering neutral-offset +0x2c70
+  writer, etc.) a live read/probe on the running PC game is the more promising route, not more static Vita work.
+- Dead-ends this confirms are NOT closable from the Vita build as-is (all three delegated searches ended
+  negative): nitrous multiplier reader (handling.md ~L444), steering neutral-offset q writer (~L472), the
+  anti-roll bar per-tick solve (PC `FUN_00932af0`, ~L467-468), strut-stop slack (wheel constraint +0x470,
+  ~L477), and damper rebound-vs-bump application (spring +0x18/+0x2c, ~L466). All remain
+  telemetry/assumption-backed; the better route for them is a **live read/probe on the running PC game**, as
+  handling.md "Model decisions" already anticipates for `FUN_00932af0`.
+- Two concrete Vita entry points found, if the physics-data subsystem is ever walked by call graph (not names):
+  - **Damping-constraints bundle loader at Vita 0x81380f70** — references the string
+    `PHYSICS/DAMPINGCONSTRAINTSLIST.BNDL` (vaddr 0x816f4ae0) via MOVW/MOVT; the asset-ingest side of the
+    per-car spring/damper definitions (not the per-tick solve).
+  - **Telemetry/reflection property registrar**: `fcn.811b88ac` (~6.4 KB) builds a property table binding
+    name+description+integer-ID and calling registrar `fcn.8140ee9a`. `GetPlayerSuspensionLoad` (0x816d1464,
+    ref at 0x811ba082) and "Current level of Suspension Load" (0x816d147c) are registered here as IDs, NOT
+    function pointers — the getter is dispatched elsewhere by ID. This is the UI/telemetry surface, not the
+    per-wheel load solver (PC `FUN_00905910`: N = wheel +0x104 static corner load + ½ axle downforce).
+
+### 2026-10-07: the Vita tick tree is CONFIRMED identical in the PC dump
+- The same profiler-scope label block exists in the PC dump (`re/NFS13_dump/strings.csv`) at
+  0x01022d38..0x01022f10, **byte-for-byte identical to the Vita block in labels, indentation and order** —
+  e.g. `"Update Race Car Physics"` (0x01022d38), `"  Apply handling forces"` (0x01022d64),
+  `"      Update Handbrake"` (0x01022e00), `"    Update steering"` (0x01022e8c), `"  Update wheel fr input"`
+  (0x01022ee4), `UpdatePreSolveVel`/`UpdatePostPhysics` (0x01022efc/0x01022f10). Same engine, same source.
+  So the tick tree below is not just the Vita's — it IS the PC game's per-vehicle physics tick structure.
+- Like on Vita, these label strings have **xrefs=0** in Ghidra (the profiler computes the address), so they
+  don't name functions by themselves on either side — the FUN_ mapping must come from the known decomp
+  anchors + the call tree + RTTI class names (`?RaceCarPhysicsObject`, `BSimpleRaceCarPhysicsObject`,
+  `?DynamicPhysicsObject`, `APhysicsObject`, all in the PC dump).
+
+### 2026-10-07: physics-tick structure from the Vita profiler labels
+- The Vita eboot carries a contiguous indented profiler-scope label table at vaddr 0x816f4590..0x816f4ac0;
+  indentation = call depth. It maps the per-vehicle physics tick (the Vita equivalent of decomp.md "Update
+  loop"), even though the labels themselves aren't pointer-xref'd to their functions:
+  - Frame **Update Race Car Physics**: Attribsys Update → **Apply handling forces** → Update physics object
+    → LineTests → Update network state → Update RaceCarPhysics { Update RoadVehiclePhysics; Update Car
+    { Handbrake → Engine → Driving { wall scrape → steering } → sound } → steering } → Update vehicle info →
+    Update constraints → Update freezing → Update wheel fr input. Then UpdatePreSolveVel, UpdatePostPhysics.
+  - Enclosing frame **Update Module** (sim frame): voice pools, PhObjM create/destroy race cars, inputs,
+    network extrapolation, PhObjM Update_Pre/PostCarnage (traffic create), tri-cache, gameplay manager,
+    update solver inputs, carnage, collision analyzer (Move Points To Hull / Handle Race Car Wall / Non Race
+    Car World / Object Object), collision rep mgr, damage.
+  - Behaviour/order correspondence to PC `FUN_` (hypotheses, not address-confirmed): Handbrake↔FUN_009d27b0,
+    Driving→steering↔FUN_009d73f0→FUN_009d31f0, wall scrape↔FUN_008f7ab0/turn-around FUN_008f8360,
+    LineTests↔suspension ray casts, Update wheel fr input↔tyre inputs FUN_00905910, Update constraints↔island
+    solver FUN_0093f5a0. Drift has no own scope (folded into Driving/steering).
+
+### 2026-10-07: PS Vita eboot DECRYPTED — statically analysable ARM build in `re/vita/FAGDec`
+- FAGDec (run on the modded Vita, base + patch) decrypted `eboot.bin` and the `sce_module/*.suprx` to ELF.
+  Output in `re/vita/FAGDec/{app,patch}/PCSB00183/`. The **`patch` eboot is the one that runs** (8,050,440 B
+  vs `app` 8,049,928 B — the game has an update). `.elf` and `.elf.temp` are identical; `.sha256` +
+  `self_auth.bin` are FAGDec bookkeeping.
+- `eboot.bin.elf` is a genuine **ELF32, little-endian, Machine=ARM, Type=0xfe00 (SCE exec)**, entry
+  `0x67c798`. Whole-file entropy **7.226** (normal ARM code + data, NOT packed — contrast the x86
+  `NFS13.exe` at 8.0). **This is the first statically analysable copy of the game's code.**
+- Segments: LOAD `0x81000000` R+E, FileSiz `0x78a3a8` (~7.9 MB `.text`+rodata); LOAD `0x8178b000` RW
+  (data/bss, MemSiz `0x12a0d8`); a SceModuleInfo segment (PT type `LOOS+0xfffff01`). **Load base
+  `0x81000000`** — use when disassembling.
+- Retains debug strings and **full source paths**: `D:\dev\CGCode\Hawaii\Runtime\VITAOPT\Code\...` ("Hawaii"
+  = engine codename, matches the PC `HAWAII/` bundles). Handling leads found as plaintext: the string
+  `"  Apply handling forces"`, `AwardNitrous`, `GetPlayerSuspensionLoad`, `GetChassisModifications*`,
+  `Player_Vehicle_Suspension_Hits`. `Blaze::GameReporting::NFS::*` C++ symbol names present.
+- Caveat: ARMv7 build of the same engine, not the x86 PC binary — structurally the same logic, but
+  constants/layout may differ by platform. Use it to recover *control flow and which fields are read* for a
+  handling rule, then confirm the exact constants against the PC dump / live reads per the fidelity rule.
+- The `.BNDL` assets were NOT decrypted by FAGDec (SELF layer only) and **getting them decrypted was tried
+  and abandoned** (2026-10-07, user decision). What was ruled out, so it isn't re-attempted:
+  - VitaShell **copy** from `ux0:/app/PCSB00183` serves ciphertext (FTP-pulled `PHYSICSCONFIG.BNDL`
+    byte-identical to the dump, SHA1 0e3880b7…); `ux0:` is aliased to the microSD `uma0:`, so neither path
+    helps.
+  - VitaShell **direct open** (hex view) of a `.BNDL` also shows ciphertext (magic `3e 59 86 8d`, not
+    `bnd2`) — this installed title has no live PFS mount through VitaShell, so VitaShell cannot decrypt it.
+  - VitaShell FTP (192.168.0.39:1337) reads raw encrypted files and rejects `DELE` (550).
+  - `psvpfsparser` (offline PC) needs a klicensee/zRIF **and** F00D service access — multi-step, likely
+    dead-ends on F00D. `MaiDumpTool` would decrypt on-console but is a 2016 unvetted binary (not used).
+  - **Why it's not worth it:** the Vita bundles use a different GeneSys hash scheme than the PC build (PC
+    field hashes aren't Vita immediates, confirmed above), so decrypted Vita data wouldn't cross-reference
+    cleanly with the PC bundles we already read natively. The value was always the code, which we have.
+  - If ever needed: a PFS dumper that uses the console's reF00D (the clean on-Vita route) into `ux0:/dump`,
+    then FTP in. The eboot + modules are already decrypted in `re/vita/FAGDec/`.
+
+### 2026-10-07: PS Vita build (`re/vita/PCSB00183`) — fully encrypted, needs on-Vita decryption
+- The dump is the EU retail Vita game: `param.sfo` (plaintext, outside the SELF) says
+  `EP0006-PCSB00183_00-NFSMW000VITA00EU`, version `01.00`, `c_date=20120924`, `sdk_ver=01800000`. 2.5 GB,
+  3108 files, dated 2022-02-17.
+- **Nothing in the dump is decrypted.** `eboot.bin` has no `SCE\0` magic, entropy 8.000 (pure random);
+  `eboot.elf` is just a renamed copy of the same still-encrypted eboot (not a converted ELF). `.suprx`
+  modules and every `.BNDL` are encrypted too (no `bnd2` magic → `mwtool list` rejects them). This is a raw
+  PFS-encrypted image: `sce_pfs/{unicv.db,files.db}` present, NPDRM key at
+  `sce_sys/package/work.bin` (1024 B).
+- **The PSVita-RE-tools cannot decrypt this on the PC.** `vita-unmake-fself` (the only PC tool) explicitly
+  cannot handle NPDRM/System-encrypted SELF (its README). `FAGDec` — the tool that can — is a PS Vita
+  homebrew `.vpk`; it runs on a modded console, not here. There is no offline PC key path in that repo.
+- Two encryption layers to undo, both console-side: (1) **PFS** on the whole filesystem (gives plaintext
+  `.BNDL` assets — then `mwtool` reads them like the PC bundles, which are `bnd2` v5 **platform 1 (PC)**; the
+  Vita bundles may differ in platform/endianness, TBD once readable); (2) **SELF** on `eboot.bin` + `.suprx`
+  (FAGDec → ELF, an ARMv7 binary statically analysable in Ghidra/radare2, unlike the encrypted x86
+  `NFS13.exe`). The Vita eboot is a legitimate second reference for handling/physics per the fidelity rule.
+- Decrypt procedure recorded for when a modded Vita is available: use FAGDec's `app_em` PATH_ID mode —
+  place the game under `ux0:/app_em/PCSB00183/` with `sce_sys/package/work.bin` in place, then decrypt
+  `eboot.bin` and the `sce_module/*.suprx` to ELF; PFS-decrypt the `.BNDL` set separately (FAGDec app_em, or
+  a NoNpDrm/`psvpfsparser` dump). Drop the decrypted ELFs + bundles into `re/vita/` (git-ignored, like the
+  PC dump) for analysis.
+
 ## Open questions
 
 ### Textures
@@ -123,6 +321,23 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 ---
 
 ## Findings
+
+### 2026-10-07: the PS Vita build (PCSB00183, EU, 1.00): encrypted copy, not analysed
+
+The user copied their Vita install (`re/vita/PCSB00183`, git-ignored) as a second reference for the physics
+code. The copy is the encrypted on-console form: `eboot.bin`, the `.suprx` modules, every `.BNDL` and even
+`sce_sys/icon0.png` have 8.0 bits/byte entropy and no magic (no `SCE\0`, `\x7fELF`, `bnd2` or PNG header). Only
+`param.sfo` is plain (title ID PCSB00183, content ID EP0006-PCSB00183_00-NFSMW000VITA00EU, APP_VER 01.00).
+Decrypting it would mean getting around the console's DRM, which the project does not do
+([reverse-engineering.md](reverse-engineering.md)), so nothing was read from it. It becomes useful only as a
+plain ARM ELF supplied by the user, the same way as the PC dump. Why it might help then: a second compiler's
+output of the same handling code (different inlining, maybe leftover symbols or asserts) could name or confirm
+functions the PC dump leaves open, such as the writer of the steering's neutral offset.
+A later `eboot.elf` (4,472,368 bytes, 4 KiB shorter than `eboot.bin`) is still ciphertext: 8.0 bits/byte across
+the whole file, no ELF or SCE header anywhere, no readable strings. It is byte for byte `eboot.bin` with its
+first 4096 bytes cut off. The tools on gamebrew's "PSVita RE Tools" page fall into two groups. FAGDec,
+vita-unmake-fself and the kernel dumpers do the decryption step, which is the DRM step, so they are not used here.
+VitaDecompilerMod, prxtool and the psvitalibdoc NID tables do the analysis, but only on a plain ELF.
 
 ### 2026-10-07: chase camera weight: the eye's vertical spring and the roll ported, yaw stiffness read
 

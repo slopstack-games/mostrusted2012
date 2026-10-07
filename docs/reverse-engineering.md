@@ -11,10 +11,6 @@ As a result, statically loading the file into Ghidra yields almost nothing: auto
 minute and finds no game code. `.rdata` is not encrypted and still has strings and 116 RTTI type descriptors
 (`.?AV...`), which can help name classes once code is available.
 
-Most Rusted does **not** include or automate any way to remove or bypass that protection. The asset side of the
-project does not need the executable at all: every format so far has been worked out from the data files and
-public community documentation.
-
 For the parts that are code rather than data (physics and handling, rendering, audio, AI, game rules, UI), the
 sources are:
 
@@ -44,6 +40,26 @@ model first, and equally the renderer, audio, AI and game rules (point 3 above).
   re-checked: [decomp.md](decomp.md) collects the findings for every system; implementation details go into
   the system's own doc ([handling.md](handling.md) for physics) and the research log.
 - Write our own Rust from those descriptions.
+
+## The PS Vita build: a statically analysable ARM binary (2026-10-07)
+
+The user owns the PS Vita release (PCSB00183, EU, v01.00, built 2012-09-24) and, on their own modded console,
+decrypted the eboot with FAGDec. Unlike the x86 `NFS13.exe`, **the Vita eboot is not DRM-wrapped once FAGDec
+has run**: `re/vita/FAGDec/patch/PCSB00183/eboot.bin.elf` is a clean ELF32 little-endian ARM executable
+(entry `0x67c798`, load base `0x81000000`, ~7.9 MB code segment, entropy 7.23 — not packed). It loads
+straight into Ghidra/radare2 and still carries debug strings and full `D:\dev\CGCode\Hawaii\Runtime\VITAOPT\...`
+source paths. It is the same engine as the PC version ("Hawaii"), so it is a legitimate RE source under the
+same policy as the dump, and often an easier one (clean disassembly, named asserts).
+
+Rules, same spirit as the dump:
+- The ELF and anything derived from it (Ghidra DBs, disassembly, pseudo-C) are game data: they live in
+  git-ignored `re/vita/` and are **never committed**; findings go into the docs in prose + addresses only.
+- It is an **ARMv7 build, not the x86 binary**. Use it to recover control flow and *which fields a rule reads*;
+  then confirm the exact constants/offsets against the PC dump or a live read before a value becomes a model
+  decision (the fidelity rule — the shipping target is the PC game). Note the Vita address (`0x81......`) and
+  the PC-dump address side by side when both are known.
+- Only the eboot + `sce_module` SELFs are decrypted so far. The `.BNDL` assets are PFS-encrypted and still
+  need a decrypted copy (VitaShell / FTP / NoNpDrm) before `mwtool` can read them.
 
 ## Code inside the running game: the probe and mods (policy, 2026-10-04; widened 2026-10-06)
 

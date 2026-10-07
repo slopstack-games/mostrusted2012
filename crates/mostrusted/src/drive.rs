@@ -283,6 +283,8 @@ pub struct Car {
     pub params: CarParams,
     /// Wheel rays must not hit the car's own collider (a child entity).
     pub(crate) body_collider: Entity,
+    /// The low bumper box that only meets props; its contacts count as object contacts.
+    bumper_collider: Entity,
 }
 
 struct WheelState {
@@ -344,6 +346,11 @@ impl Car {
     /// order.
     pub fn wheel_slips(&self) -> impl Iterator<Item = (f32, f32)> + '_ {
         self.wheels.iter().map(|w| w.slip)
+    }
+
+    /// The front wheels' steering angle (rad, positive = left) the next tick's tyres use.
+    pub fn steer_angle(&self) -> f32 {
+        self.steer
     }
 
     /// Each wheel's ground contact from the last physics step (`None` while the wheel is in the air).
@@ -437,12 +444,14 @@ fn spawn_car(
         .id();
     // Low bumper box that only meets props (cones would pass under the body box). Its bottom is at
     // 0.2 m so the car can roll over a fallen lamp post.
-    commands.spawn((
-        Collider::cuboid(1.7, 0.35, 4.1),
-        Transform::from_xyz(0.0, 0.375, 0.0),
-        crate::props::GameLayer::car_bumper(),
-        ChildOf(car),
-    ));
+    let bumper_collider = commands
+        .spawn((
+            Collider::cuboid(1.7, 0.35, 4.1),
+            Transform::from_xyz(0.0, 0.375, 0.0),
+            crate::props::GameLayer::car_bumper(),
+            ChildOf(car),
+        ))
+        .id();
     for m in &pending.spec.body {
         for (mesh, mat) in pending.parts.get(m).into_iter().flatten() {
             commands.spawn((
@@ -580,6 +589,7 @@ fn spawn_car(
         spawn: start,
         params,
         body_collider,
+        bumper_collider,
     });
     if let Ok(mut cam) = camera.single_mut() {
         let behind = Quat::from_rotation_y(pending.heading) * Vec3::new(0.0, 2.5, -7.0);
@@ -851,11 +861,10 @@ pub(crate) fn car_physics(
         let mut grounded = false;
         let mut wheels_down = 0;
         let mut rear_slip = (0.0, 0);
-        let anti_roll = anti_roll_loads(&car.wheels, p);
         let mut ground_normal = Vec3::ZERO;
         // Wheels whose ground is within one tick of the strut's end: (contact, normal, signed overtravel).
         let mut stops: Vec<(Vec3, Vec3, f32)> = Vec::new();
-        for ((wheel, bar_load), mut brake_left) in car.wheels.iter_mut().zip(anti_roll).zip(brake_budget) {
+        for (wheel, mut brake_left) in car.wheels.iter_mut().zip(brake_budget) {
             // The mount sits `travel - sag` above the rest position, so the wheel is at its spec position
             // (in its arch) under the static load.
             let mount = pos + rot * (wheel.centre + Vec3::Y * (wheel.travel - wheel.sag));
@@ -890,7 +899,7 @@ pub(crate) fn car_physics(
             wheel.compression_rate = compression_speed;
             let max_load = wheel.corner_mass * 9.81 * 4.0;
             let damper = if compression_speed >= 0.0 { wheel.damper } else { wheel.rebound };
-            let load = (wheel.spring * compression + damper * compression_speed + bar_load).clamp(0.0, max_load);
+            let load = (wheel.spring * compression + damper * compression_speed).clamp(0.0, max_load);
             let contact = mount - up * hit.distance;
             let normal = hit.normal;
             forces.apply_force_at_point(normal * load, contact);
@@ -932,7 +941,19 @@ pub(crate) fn car_physics(
             if !wheel.front {
                 rear_slip = (rear_slip.0 - slip_deg, rear_slip.1 + 1);
             }
-            let kappa = tyre::slip_ratio(wheel.omega * wheel.radius, v_long);
+            // The brake (`FUN_009bbff0`, an angular impulse budget that can stop the wheel but never reverse it)
+            // acts on the wheel's spin first, and the caps take κ from the spin as it stands after it (and after
+            // the clutch): `FUN_009c75b0` runs the brake step before the tyre pass `FUN_009c6f00`, whose cap
+            // function `FUN_009c5da0` computes κ (`FUN_009ba3e0`) from the stepped wheel (docs/decomp.md "Tyres").
+            // Taking κ before the brake step (as this did) put a rolling wheel's braking cap at μ(κ ≈ 0) ≈ 0, so
+            // the wheel stayed slowed: in the replay of `ref/live1` 97.6–101.5 s (MP4-12C, full brake at 120 mph)
+            // our front wheels slipped at κ −0.03…−0.10 before the drift and −0.20…−0.26 in it, where the
+            // original's stay at ≈ +0.01 and −0.05…−0.07; taken after the step they read ≈ 0 and −0.03…−0.07.
+            let r = wheel.radius;
+            let step = (brake_left / wheel.inertia).min(wheel.omega.abs());
+            wheel.omega -= step * wheel.omega.signum();
+            brake_left -= step * wheel.inertia;
+            let kappa = tyre::slip_ratio(wheel.omega * r, v_long);
             // Camber: the wheel's spin axis against the ground-plane side axis (0 when the frame degenerates).
             let camber = if side.length_squared() > 0.5 && axis.length_squared() > 0.5 {
                 let a = axis.angle_between(side).to_degrees();
@@ -955,14 +976,9 @@ pub(crate) fn car_physics(
                 * on_ground;
             let lat_cap = mu_lat * n_grip * tyre.lateral_scale * surface.grip[0] * on_ground;
             let (long_cap, lat_cap) = (finite_or_zero(long_cap), finite_or_zero(lat_cap));
-            // Longitudinal, in the game's order (`FUN_009c75b0`): the brake (an angular impulse budget that
-            // can stop the wheel but never reverse it) acts on the wheel's spin first, then one pass of the
+            // Longitudinal, in the game's order (`FUN_009c75b0`): after the brake step (above), one pass of the
             // tyre constraint pulls the tread towards the road speed (the wheel's spin inertia against the
-            // chassis's effective mass at the contact) within the cap. A wheel the handbrake locks stays locked.
-            let r = wheel.radius;
-            let step = (brake_left / wheel.inertia).min(wheel.omega.abs());
-            wheel.omega -= step * wheel.omega.signum();
-            brake_left -= step * wheel.inertia;
+            // chassis's effective mass at the contact) within the cap.
             // The constraint (`FUN_009bc0c0`) works in two parts along the slip direction. First the brake
             // torque the spin step left over holds the tread like a locked wheel: an impulse against the
             // chassis alone (its effective mass at the contact), at most that torque / r (unbounded when the
@@ -1014,7 +1030,8 @@ pub(crate) fn car_physics(
         // --- Low-speed turn-around assist (`FUN_008f8360`) -------------------------------------------------
         // The body's contact with the world (not props) on the last physics step, as the wall normal pointing
         // at the car; the game counts the time since the last one (vehicle +0x3010).
-        let wall = world_contact(&collisions, &layers, car.body_collider);
+        let contacts = car_contacts(&collisions, &layers, car);
+        let wall = contacts.wall;
         car.body_contact = wall.is_some();
         car.wall_time = if wall.is_some() { 0.0 } else { car.wall_time + dt };
         let side_axis = rot * Vec3::X;
@@ -1061,6 +1078,8 @@ pub(crate) fn car_physics(
                     handbrake: car.handbrake_on,
                     handbrake_prev: handbrake,
                     touching_world: wall.is_some(),
+                    world_impact: contacts.world_impact,
+                    object_impact: contacts.object_impact,
                     speed: velocity.length(),
                     mph: band_speed / MPH,
                     angle: -car.body_slip,
@@ -1093,6 +1112,17 @@ pub(crate) fn car_physics(
                 *forces.linear_velocity_mut() = v - left * v.dot(left) * (1.0 - out.lateral_scale);
             }
         }
+        // --- Wall scrape (`FUN_008f7ab0`, profiler scope "Update wall scrape", after the drift) ---------------
+        // A world contact above 6 zeroes the steering's fraction and angle (+0x1c80, +0x1c8c; the range +0x1c88 is
+        // kept): the next tick's tyres run straight and the steering ramps out again from the centre.
+        if contacts.world_impact > mw_handling::drift::HARD_IMPACT {
+            debug!(
+                "wall scrape: contact {:.1} m/s, steering {:.1}° -> 0",
+                contacts.world_impact,
+                car.steer.to_degrees()
+            );
+            car.steer = 0.0;
+        }
         if let Some(n) = ground_normal.try_normalize() {
             car.roll = -(rot * Vec3::X).dot(n).clamp(-1.0, 1.0).asin();
             car.pitch = forward.dot(n).clamp(-1.0, 1.0).asin();
@@ -1102,6 +1132,13 @@ pub(crate) fn car_physics(
         if stops.iter().any(|s| s.2 > -0.5) {
             let (mut v, mut w) = (forces.linear_velocity(), forces.angular_velocity());
             strut_stops(&stops, com, p.mass, &inv_inertia, dt, (&mut v, &mut w));
+            *forces.linear_velocity_mut() = v;
+            *forces.angular_velocity_mut() = w;
+        }
+        // The anti-roll bars, after the strut stops as in the game's sub-step (`FUN_0093f200`).
+        {
+            let (mut v, mut w) = (forces.linear_velocity(), forces.angular_velocity());
+            anti_roll(&car.wheels, p, (pos, rot, com), &inv_inertia, dt, (&mut v, &mut w));
             *forces.linear_velocity_mut() = v;
             *forces.angular_velocity_mut() = w;
         }
@@ -1247,34 +1284,59 @@ fn strut_stops(
         }
     }
 }
-/// Passes over the strut stops per tick: the game iterates its contacts in sub-steps whose count was not read
-/// (handling.md "Model decisions").
-const STOP_ITERATIONS: usize = 4;
+/// Sub-steps of the game's island solve (`FUN_0093f200` loops world +0x464 = 2 times, set by the world's
+/// constructor `FUN_009330d0` and read live): each runs the strut stops' impulse pass (`FUN_009c2670`) and the
+/// force elements (`FUN_00932f90`: dampers, springs, anti-roll bars) at dt / 2.
+const SOLVER_SUBSTEPS: usize = 2;
+const STOP_ITERATIONS: usize = SOLVER_SUBSTEPS;
 
-/// Anti-roll bar load (N) on each wheel from last tick's compressions: per axle a torsion bar between the left
-/// and right wheels (`BodyMovement` `782f05c1` front / `2bb0f6a0` rear × 60), damped with
-/// c = 2 × `Front_` / `Rear_roll_damping` × √(data stiffness × body roll inertia) as the bar's builder
-/// `FUN_00933a60` stores it (the × 60 is not inside the root, so the bar runs at ratio / √60 ≈ 0.15 of critical),
-/// turned into forces at the wheels over the track width. The solve that applies the bar was not found
-/// (docs/decomp.md): the input (compression difference) and the explicit form are ours.
-fn anti_roll_loads(wheels: &[WheelState], p: &CarParams) -> Vec<f32> {
-    wheels
-        .iter()
-        .map(|w| {
-            let Some(other) = wheels.iter().find(|o| o.front == w.front && o.centre.x * w.centre.x < 0.0) else {
-                return 0.0;
-            };
-            let axle = usize::from(!w.front);
-            let track2 = (w.centre.x - other.centre.x).powi(2).max(0.5);
-            let k = p.chassis.anti_roll[axle];
-            // 2 ζ √(k_data · I): the data stiffness without the × 60 (`FUN_00933a60`).
-            let c = p.chassis.roll_damping[axle] * p.inertia.z.max(0.0).sqrt();
-            if w.compression <= 0.0 || other.compression <= 0.0 {
-                return 0.0;
+/// The anti-roll bars (`FUN_0092ee70`, reached through `FUN_00932f90` for the type-2 elements that
+/// `FUN_00933a60` builds; decomp.md "Suspension, wheels, aerodynamics"). Per axle: the two wheel centres in the
+/// body's frame give the axle line's roll against the chassis, θ = atan(Δy / Δx); the bar's force is
+/// F = (k θ − c ω·forward) / Δx with the chassis's own roll rate (not relative to the axle), k = data × 60 and
+/// c = 2 ζ √(k_data I) (element +0x20 / +0x30). Each wheel's share is capped at |Δy| / (4 W dt²) with W the
+/// chassis's inverse effective mass along its up axis at the wheel (`FUN_009275b0`), then +F up at one wheel
+/// centre and −F at the other act on the chassis only (the wheel records' +0x0c is 1 in every read, which masks
+/// the wheels' share). Explicit, once per sub-step at dt / 2 with the roll rate updated in between; θ is taken
+/// once per tick (positions are integrated after the sub-steps). It acts whether the wheels touch or not.
+fn anti_roll(
+    wheels: &[WheelState],
+    p: &CarParams,
+    (pos, rot, com): (Vec3, Quat, Vec3),
+    inv_inertia: &Mat3,
+    dt: f32,
+    (v, w): (&mut Vec3, &mut Vec3),
+) {
+    let (up, forward) = (rot * Vec3::Y, rot * Vec3::Z);
+    let centre = |wheel: &WheelState| wheel.centre + Vec3::Y * (wheel.compression - wheel.sag);
+    for front in [true, false] {
+        let mut axle = wheels.iter().filter(|w| w.front == front);
+        let (Some(a), Some(b)) = (axle.next(), axle.next()) else { continue };
+        let (ca, cb) = (centre(a), centre(b));
+        let (dx, dy) = (ca.x - cb.x, ca.y - cb.y);
+        if dx.abs() < 0.1 {
+            continue;
+        }
+        let theta = (dy / dx).atan();
+        let i = usize::from(!front);
+        let k = p.chassis.anti_roll[i];
+        let c = p.chassis.roll_damping[i] * p.inertia.z.max(0.0).sqrt();
+        // (world point, sign, cap) per wheel.
+        let ends = [(pos + rot * ca, 1.0), (pos + rot * cb, -1.0)].map(|(point, sign)| {
+            let arm = (point - com).cross(up);
+            let m = 1.0 / (1.0 / p.mass + arm.dot(*inv_inertia * arm)).max(1e-6);
+            (point, sign, dy.abs() * m / (4.0 * dt * dt))
+        });
+        let h = dt / SOLVER_SUBSTEPS as f32;
+        for _ in 0..SOLVER_SUBSTEPS {
+            let force = (k * theta - c * w.dot(forward)) / dx;
+            for &(point, sign, cap) in &ends {
+                let impulse = up * (sign * force.clamp(-cap, cap) * h);
+                *v += impulse / p.mass;
+                *w += *inv_inertia * (point - com).cross(impulse);
             }
-            (k * (w.compression - other.compression) + c * (w.compression_rate - other.compression_rate)) / track2
-        })
-        .collect()
+        }
+    }
 }
 
 /// The steering range (wheel angle at full input, degrees) at `speed` (m/s, signed) the way the game sets it
@@ -1387,17 +1449,39 @@ const STEER_Q_SLIP_DEG: f32 = 35.0;
 /// Speed (mph) below which q fades in proportion (telemetry reading, [`steer_slip_fraction`]).
 const STEER_Q_FADE_MPH: f32 = 10.0;
 
-/// The body collider's contact with the world on the last physics step, as the contact normal pointing from the
-/// world at the car (props do not count: the game's flag is set by world contacts).
-fn world_contact(collisions: &Collisions, layers: &Query<&CollisionLayers>, body: Entity) -> Option<Vec3> {
-    collisions.collisions_with(body).find_map(|pair| {
-        let (other, sign) = if pair.collider1 == body { (pair.collider2, -1.0) } else { (pair.collider1, 1.0) };
-        let world = layers.get(other).map_or(true, |l| l.memberships.has_all(crate::props::GameLayer::World));
-        if !world {
-            return None;
+/// The car's contacts on the last physics step, in the shape of the game's contact table (vehicle +0x303c):
+/// whether and where the body touches the world, and the strongest world and object contact.
+#[derive(Debug, Default, Clone, Copy)]
+struct Contacts {
+    /// The body's contact normal with the world, pointing from the world at the car (props do not count: the
+    /// game's flag is set by world contacts).
+    wall: Option<Vec3>,
+    /// The strongest contact with the world, and with anything else (props, through the body or the bumper
+    /// box). The game's value is the table's record +0x1c / entry +0xc, whose unit is not traced; ours is the
+    /// largest normal closing speed (m/s) before the solve, the stand-in the camera's impact shake uses.
+    world_impact: f32,
+    object_impact: f32,
+}
+
+fn car_contacts(collisions: &Collisions, layers: &Query<&CollisionLayers>, car: &Car) -> Contacts {
+    let mut c = Contacts::default();
+    for collider in [car.body_collider, car.bumper_collider] {
+        for pair in collisions.collisions_with(collider) {
+            let (other, sign) = if pair.collider1 == collider { (pair.collider2, -1.0) } else { (pair.collider1, 1.0) };
+            let world = layers.get(other).map_or(true, |l| l.memberships.has_all(crate::props::GameLayer::World));
+            let speed =
+                pair.manifolds.iter().flat_map(|m| m.points.iter()).map(|p| -p.normal_speed).fold(0.0, f32::max);
+            if world {
+                c.world_impact = c.world_impact.max(speed);
+                if collider == car.body_collider && c.wall.is_none() {
+                    c.wall = pair.manifolds.first().map(|m| m.normal * sign);
+                }
+            } else {
+                c.object_impact = c.object_impact.max(speed);
+            }
         }
-        pair.manifolds.first().map(|m| m.normal * sign)
-    })
+    }
+    c
 }
 
 /// The game's low-speed turn-around assist (`FUN_008f8360`): after the body has hit a wall nearly head-on, full
@@ -1607,7 +1691,11 @@ const CORNER_TEST_KMH: f32 = 80.0;
 const CORNER_RAMP_SECS: f32 = 15.0;
 const HANDBRAKE_TAP_SECS: f32 = 0.4;
 const DRIFT_TEST_KMH: f32 = 110.0;
-const DRIFT_TAP_SECS: f32 = 0.3;
+/// `--test drift` plays the brake-tap entry the original made at `ref/live1` 98.98 s (MP4-12C): full lock one way
+/// off the throttle, centred, then full brake with full lock the other way, released onto the throttle with the lock
+/// held. Phase ends (s from the start of the flick). A plain brake tap while turning in from straight does not start
+/// a drift in the original either (166.42 s): its brake-tap entries all follow yaw already built.
+const DRIFT_FLICK_SECS: [f32; 3] = [0.2, 0.3, 0.75];
 const DRIFT_HOLD_SECS: f32 = 6.0;
 const DONUT_SECS: f32 = 8.0;
 /// Body slip beyond which the drift test counts the car as drifting.
@@ -1783,18 +1871,32 @@ fn run_test(
             let target = test_env("MW_TEST_KMH", DRIFT_TEST_KMH) / 3.6;
             if test.braking_from.is_none() && v >= target {
                 test.braking_from = Some((t, v));
+                if let Some(d) = &car.params.drift {
+                    info!(
+                        "TEST drift entry: rear slip above {:.1}° ({:.1}° after a brake tap, recovering at {:.1}°/s; \
+                         {:.1}° on full brake), faster than {:.0} mph",
+                        d.enter_slip, d.enter_slip_tap, d.enter_recovery, d.enter_slip_brake, d.enter_min_speed
+                    );
+                }
             }
             let Some((ts, v0)) = test.braking_from else {
                 input.scripted = Some([1.0, 0.0, 0.0, 0.0]);
                 return;
             };
             let dt = t - ts;
-            let tap = dt < DRIFT_TAP_SECS;
-            // Steer left throughout; brake during the tap, then part throttle.
-            let (k_steer, k_throttle) = (test_env("MW_TEST_STEER", 0.8), test_env("MW_TEST_THROTTLE", 0.6));
-            // Optionally let go of the steering after a while (exit check).
-            let k_steer = if dt > test_env("MW_TEST_RELEASE", f32::INFINITY) { 0.0 } else { k_steer };
-            input.scripted = Some([if tap { 0.0 } else { k_throttle }, if tap { 1.0 } else { 0.0 }, k_steer, 0.0]);
+            let (k_steer, k_throttle) = (test_env("MW_TEST_STEER", 1.0), test_env("MW_TEST_THROTTLE", 1.0));
+            let [flick, centre, braked] = DRIFT_FLICK_SECS;
+            let (throttle, brake, steer) = if dt < flick {
+                (0.0, 0.0, -k_steer)
+            } else if dt < centre {
+                (0.0, 0.0, 0.0)
+            } else if dt < braked {
+                (0.0, 1.0, k_steer)
+            } else {
+                // Optionally let go of the steering after a while (exit check).
+                (k_throttle, 0.0, if dt > test_env("MW_TEST_RELEASE", f32::INFINITY) { 0.0 } else { k_steer })
+            };
+            input.scripted = Some([throttle, brake, steer, 0.0]);
             let slip = car.body_slip.abs().to_degrees();
             // corner_best: [peak slip, time beyond the threshold, Σ slip while beyond, yaw peak]
             let step = time.delta_secs();

@@ -54,8 +54,14 @@ Status words: **confirmed** = read directly from the code; **inferred** = reason
   6. `FUN_008f8360`: the low-speed turn-around assist (below).
   7. `FUN_009aae10` → `FUN_009d73f0`: steering. Its angle is used by the **next** tick's tyres.
   8. `FUN_009d91a0`: the drift.
-  9. `FUN_008f7ab0`: a hard world hit (a contact value above 6, unit not settled) zeroes the front wheels'
-     angle for the next tick.
+  9. `FUN_008f7ab0` (profiler scope "Update wall scrape"): if the car's bit (index vehicle +0x1768) is set in
+     the contact table at vehicle +0x303c (bitset words at table +0xc) and its record (table +0x10, 0x80 bytes
+     per car) has its fourth float (+0x1c) above 6 (`.rdata` 0x01021ff0), lanes 0 and 3 of the steering block
+     are zeroed: +0x1c80 (angle as a fraction of `Maximum_steering_angle`) and +0x1c8c (radians, the tyres'
+     input); +0x1c84 and the range +0x1c88 are kept (from the disassembly: two shufps pairs against a zero
+     register). The next tick's tyres run straight and the steering ramps out from the centre. The same record
+     field drives the camera's impact shake (`FUN_005cd040`, range 5..60, reached through world + 0x5ddf0) and the
+     drift's code-1 exit; its writer (the collision analyzer) and unit were not traced.
   10. `FUN_009ae670`: the "every wheel down" flag (+0x1772, read by the next tick's drift), a final
       integration, the speed again; then the time since the last world contact (+0x3010) grows by dt.
 - **Integration**: each stage adds forces and torques to the body's accumulators and `FUN_00907840` integrates
@@ -66,6 +72,42 @@ Status words: **confirmed** = read directly from the code; **inferred** = reason
   airborne state's data. The type `BodyMovementBehaviour.Angle_control` exists but no car's data has one.
 - Speed-banded lookups use the speed in mph signed by the direction of travel (the full speed, not the forward
   component).
+
+### Profiler scope tree (Vita↔PC cross-check, 2026-10-07)
+
+Both builds carry an identical indented profiler-label table (PC `strings.csv` 0x01022d38..0x01022f10; Vita
+0x816f4590..). It names the per-vehicle tick's scopes; the labels have no code xref on either build (the
+profiler computes the address), so the FUN_ bindings come from the call tree + the anchors above, not the
+strings. Depth (indent) and PC binding:
+
+- d0 **Update Race Car Physics** → the per-object-type update **vmethod** (vtable-dispatched; `FUN_00904da0`
+  is the body, which has no direct caller in `functions.csv`, consistent with virtual dispatch).
+- d1 Attribsys Update · Apply handling forces · Update physics object · LineTests · Update network state —
+  the d1 siblings are pushed by the (undumped, data-section) object-manager dispatcher, so most don't bind to
+  a FUN_. "Apply handling forces" is the force-accumulate/integrate stage around `FUN_00907840`.
+- d1 **Update RaceCarPhysics** → d2 **Update RoadVehiclePhysics** (candidate `FUN_009b4d70`, step 1 above) and
+  d2 **Update Car** = **`FUN_00904da0`** (confirmed — the "Order in a tick" body).
+  - d3 **Update Handbrake** = `FUN_008f7c50`(+state `FUN_009d27b0`); **Update Engine** = `FUN_009d9960`;
+    **Update Driving** = **`FUN_00904260`** (its callee list matches steps 1–10 exactly); **Update sound** =
+    `FUN_009b3030`→`FUN_009b1f70` (newly tied to this scope).
+  - d4 under Driving: **Update steering** = `FUN_009aae10`→`FUN_009d73f0`; **Update wall scrape** =
+    **`FUN_008f7ab0`** (verified: reads the contact table at vehicle +0x303c, clears the steering-output
+    block +0x1c80..+0x1c8c — newly tied to this scope and confirming step 9).
+- A **second, shallower "Update steering" at d2** (after Update Car) exists in the table — a separate steering
+  invocation at the RaceCarPhysics-wrapper level, distinct from the d4 one inside Driving. decomp.md
+  previously documented only the single `FUN_009d73f0` steering; the second scope is a new structural note
+  (PC candidate: the second `FUN_009aae10` call in `FUN_008fa750`, UNCERTAIN).
+- d1 Update vehicle info · **Update constraints** (⊇ the island solver `FUN_0093f5a0` family, which hosts the
+  still-undecompiled anti-roll/damper solve `FUN_00932af0`) · Update freezing · **Update wheel fr input** =
+  "wheel friction input", candidate `FUN_00905910` (the per-tick tyre normal-load prep; vmethod, no caller).
+- d0 **UpdatePreSolveVel** / **UpdatePostPhysics** — pre-solve velocity and post-solve write-back in the
+  solver-driver chain `FUN_00906490`→`FUN_00904a40`→`FUN_009024e0`→`FUN_00901d50`→`FUN_0093f680`→`FUN_0093f5a0`
+  (not isolated to single functions; UNCERTAIN).
+
+**Label order vs execution**: the table lists wall-scrape before the d4 steering, but the PC *executes*
+steering (step 7) before wall-scrape (step 9) — the label layout is the authored scope order, not the tick
+execution order. Everything else matches. The d1/d0 phases that don't bind are all vtable-dispatched through
+the data section absent from the memory dump; the Vita build does not name them either.
 
 ## Low-speed turn-around assist (`FUN_008f8360`)
 
@@ -147,7 +189,10 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
   S = −sign(rear slip) × (`e6abd30f`, or the `HandbrakeAbility` scale lerp(`6ce0fda7`, `35e18207`) by
   `Low_speed_mph`..`High_speed_mph` if the handbrake was on in the previous tick, i.e. it was just let go)
   (`FUN_009cd530`, `FUN_009d29f0`); the target speed is the current speed.
-- **Exit** (`FUN_009d83e0`, codes at drift +0x10): forced by a collision (1, 3: contact values above 6), more than
+- **Exit** (`FUN_009d83e0`, codes at drift +0x10): forced by a collision (1: the car's world record in the contact
+  table above 6, `.data` 0x010cfb40, the same field as step 9 of the update loop; 3: any of the car's object
+  entries, count byte at table +0xdc + index, 0x90-byte entries from the pointer at table +0xec + index × 8,
+  value at entry +0xc above 6, `.rdata` 0x01026230; later codes overwrite earlier ones), more than
   1 s airborne or no wheel contact (5), speed under 0.5 m/s (and a second speed under 0.5) (7), reverse gear (8),
   **the handbrake** (9), a special state +0x1774 (11); otherwise after 0.5 s when the mean rear slip falls below
   `Drift_angle_to_exit_drift` (6, `FUN_009d1120`). On every exit S = 0, the threshold resets, and if the wheels
@@ -430,8 +475,45 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
   at 0) to the wheel, and while +0x4ae is set also to the chassis at the strut point through the chassis's
   inverse mass and inertia, scaled by +0x474. So the end of the strut is a hard contact on the chassis, not a
   spring: a landing cannot drive the body into the ground. Ported as `strut_stops` (handling.md item 5).
-- Unknown: the anti-roll stiffness unit and the bar's per-tick solve (`FUN_00932af0`?), which damper slot is rebound, the strut travel (+0x460 is set by the
-  builder's caller; not traced), the stop's slack (+0x470, `.bss` 0x01186bf0, 0x01186b10).
+- **Island step and sub-steps** (2026-10-07, from the disassembly in the live snapshots). `FUN_0093f5a0` calls
+  each pass once; the iterations live in two callees, both counted by the world (constructor `FUN_009330d0`,
+  same values live): `FUN_00932190` loops world +0x460 = 2 times (joints `FUN_009c62e0` / `FUN_009c5840`, the
+  wheel constraints' contact pass `FUN_009c5a90`, contacts `FUN_009be060`, `FUN_00928cd0`), and `FUN_0093f200`
+  loops world +0x464 = 2 times at dt / 2 (joints `FUN_009c4e10` / `FUN_009c1fb0`, contacts `FUN_009be420`,
+  `FUN_00928fb0`, the wheel constraints' impulse pass `FUN_009c2670`, the force elements `FUN_00932f90`, then
+  gravity and velocity integration `FUN_009282d0`). Positions appear to be integrated once afterwards
+  (`FUN_009328a0`; inferred).
+- **`FUN_00932af0` is the island sleep pass**, not a force: the island sleeps once every body stays under 0.4 m/s
+  (world +0x46c) and 0.3 rad/s (+0x470) and every wheel's spin under 1 rad/s (+0x474) for 2 s (+0x468) of
+  accumulated dt; then it zeroes the bodies' velocities and accumulators, sets body +0xf4 bit 0 and wheel record
+  +0x64, and flags the island's elements (+0xc bit 0) so the solver skips them (parked cars in the snapshots).
+- **Force elements** (`FUN_00932f90`, three island lists): +0x68 dampers (`FUN_0092f160`, then `FUN_0092f510`,
+  likely the springs), +0x70 anti-roll bars (`FUN_0092ee70`). Elements with +0xc bit 0 set are skipped.
+- **Anti-roll bar** (`FUN_0092ee70`, read from the disassembly; element from `FUN_00933a60`: wheel record
+  indices at +4 / +8 (× 0x80), chassis at int16 +0x10 (× 0x100), k × 60 at +0x20 (`.bss` 0x01185d70 = 60,
+  four lanes, live), damping at +0x30). Both wheel centres (wheel record +0x00, world space) are taken into the
+  chassis's frame (rows +0x00/+0x10/+0x20, position +0x30); with Δx, Δy their differences across and up,
+  θ = atan(Δy / Δx) (CRT `atanf` `FUN_00edc7b2`). The roll rate is the chassis's angular velocity (+0xc0) along
+  its forward row: absolute, not relative to the axle (the subtracted term is a zeroed register, 0x92ee86 /
+  0x92eec5). F = (k θ − c ω_roll) / Δx (0x92f00e..0x92f031). `FUN_009275b0` caps each wheel's share at
+  |Δy| / (4 W dt²), W = the chassis's inverse effective mass along its up row at the wheel centre
+  (`FUN_009e8230`) plus the wheel's 1/m (only if wheel record +0x0c ≠ 1; it was 1 in every snapshot), with the
+  full tick's dt (ctx +0x1e0 = 1/dt; the 4 is 2.0 at 0x010245d0 twice). `FUN_00909dd0` adds +F_A along the up
+  row at wheel A's centre and −F_B at wheel B's to the chassis accumulators, and `FUN_00907840` integrates them
+  at once with dt / 2; the wheels get their share only under the same +0x0c mask. Net torque about the forward
+  axis k θ − c ω_roll, towards the axle line. Ported as `anti_roll` in drive.rs.
+- **Damper** (`FUN_0092f160`, from its pseudo-C, whose selection logic is clean): chassis at element +4, wheel record at
+  +8, a chassis-local anchor at +0x20. n = the unit vector from the anchor (in world space) to the wheel centre;
+  the relative velocity is the wheel's velocity along n minus the chassis's at the anchor. Positive (the wheel
+  moving away from the mount: the strut extending, rebound) takes element +0x18 (`0c5f89b3` × c from
+  `FUN_009b29b0`), otherwise +0x2c (c); the impulse is −coefficient × relative velocity × 0.5 (0x010245b0) ×
+  the sub-step's scale, capped through the same effective mass (`FUN_009e8230`) so the relative velocity cannot
+  change sign, applied to the chassis (`FUN_0097e440`) and to the wheel only under the +0x0c mask. The spring is
+  likely `FUN_0092f510` (the same list, elements +0x10 / +0x14 / +0x20..+0x3c), not read.
+- Unknown: the spring element `FUN_0092f510`, the strut travel (+0x460 is set
+  by the builder's caller; not traced), the stop's slack (+0x470, `.bss` 0x01186bf0, 0x01186b10; not touched by
+  the sleep pass or the bar, whose context offsets +0x210 / +0x470 only coincide), what wheel record +0x0c is and
+  whether it ever changes (e.g. in the air).
 
 ## Tyres (`FUN_009c75b0` per-wheel solve, `FUN_009c5da0` caps, `FUN_00905910` per-tick inputs)
 
