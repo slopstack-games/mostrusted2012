@@ -211,12 +211,20 @@ impl ObjectInstanceList {
 /// (absent on trigger-like objects without collision).
 ///
 /// `CompoundObject` (0x240-0x1150 bytes) starts like a `WorldObject` (version 8, behaviour count at
-/// 0x01, model at 0x04, physical definition at 0x1C, locators at 0x10), plus a GeneSys handle at 0x08,
-/// a second model at 0x24 (lower-poly twin of 0x04, same bbox) and sometimes 0x28, and at 0x30 a
-/// pointer to `u32` part count at 0x38 parts. A part is 0x70 bytes: an embedded `WorldObject` (no model
-/// of its own, its own physical definition at +0x1C, behaviours, locators), `(1,1,1,1)` at +0x4C, a u32
-/// part number at +0x60 and four u8 links at +0x64 (other part numbers, 0xFF = none; probably what each
-/// part hangs from). 0x34 points to one u32 hash per part.
+/// 0x01, model at 0x04, `mpSkeleton` at 0x08 (the model is skinned to it: one bone per part), behaviours at
+/// 0x0C, locators at 0x10, physical definition at 0x1C), plus a second model at 0x24 (lower-poly twin of
+/// 0x04, same bbox) and sometimes 0x28, a pointer to 8-byte joint handles at 0x2C (count at 0x3C), and at
+/// 0x30 a pointer to `u32` part count at 0x38 parts; 0x34 points to one u32 hash per part (the joints name
+/// their two parts by these). A part is 0x70 bytes: an embedded `WorldObject` (no model of its own,
+/// behaviours at +0x0C with their count at +0x01, its own physical definition at +0x1C, locators),
+/// `(1,1,1,1)` at +0x4C, its skeleton bone at +0x60 (`FUN_005341a0` → part +0x134, posed by `FUN_00532b00`),
+/// three u8 part indices at +0x64 / +0x65 / +0x66 (0xFF = none): the part this one replaces when that smashes
+/// (0xFF = present from the start, `FUN_005547f0`), the next part of the same replacement chain, and the
+/// first part that replaces this one (message 3 in `FUN_0055a680`); and at +0x68 a pointer to +0x6C u8
+/// part indices this part is linked to (a pinned part comes loose once all of them are loose,
+/// `FUN_0054e750`). Behaviour entries are 0x14 bytes: GeneSys import at +0x00 (its id again at +0x08),
+/// type id at +0x0C (0x5A1F2 `EnableCompoundBehaviour`, 0x6909C `SmashProxyBehaviour`, 0x5D79D
+/// `MakePhysicalBehaviour`, 0x2AD8 `WCPlaySoundBehaviour`, 0x2AE0 `WCVfxBehaviour`), a hash at +0x10.
 #[derive(Debug, Clone)]
 pub struct ObjectDef {
     pub id: ResourceId,
@@ -226,6 +234,14 @@ pub struct ObjectDef {
     pub physics: Option<ResourceId>,
     /// Compound objects: the physical definition of each part.
     pub parts: Vec<Option<ResourceId>>,
+    /// Compound objects: everything else about each part (same order as [`Self::parts`]).
+    pub compound_parts: Vec<CompoundPart>,
+    /// Compound objects: the skeleton the model is skinned to (0x08).
+    pub skeleton: Option<ResourceId>,
+    /// Compound objects: joint definitions between parts (GeneSys imports, 0x2C / 0x3C).
+    pub joints: Vec<Option<ResourceId>>,
+    /// Compound and world objects: behaviours (0x0C, count at 0x01).
+    pub behaviours: Vec<Behaviour>,
     /// Props: `mfResetDistanceSquared` (m²).
     pub reset_distance_sq: Option<f32>,
     /// Props: `mbRemoveInsteadOfReset`.
@@ -236,8 +252,56 @@ pub struct ObjectDef {
     pub impact_sound: Option<ResourceId>,
 }
 
+/// A behaviour of a world object or compound part (`maBehaviourSpecs`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Behaviour {
+    /// The behaviour's GeneSys object.
+    pub object: Option<ResourceId>,
+    /// GeneSys type id (low bits of the type's resource id).
+    pub type_id: u32,
+    pub hash: u32,
+}
+
+/// `EnableCompoundBehaviour` type id.
+pub const ENABLE_COMPOUND_BEHAVIOUR: u32 = 0x5a1f2;
+/// `SmashProxyBehaviour` type id.
+pub const SMASH_PROXY_BEHAVIOUR: u32 = 0x6909c;
+
+/// One part of a `CompoundObject` (see [`ObjectDef`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompoundPart {
+    /// The part's hash (0x34 list).
+    pub hash: u32,
+    /// Skeleton bone the part's geometry is skinned to and whose bind pose places it (+0x60).
+    pub bone: u32,
+    /// The part index this one replaces when that part smashes (+0x64); `None` = present from the start.
+    pub replaces: Option<u8>,
+    /// The next part in the same replacement chain (+0x65).
+    pub next: Option<u8>,
+    /// The first part that replaces this one when it smashes (+0x66).
+    pub first_replacement: Option<u8>,
+    /// Part indices this part is linked to (+0x68 / +0x6C).
+    pub links: Vec<u8>,
+    pub behaviours: Vec<Behaviour>,
+}
+
 /// Size of one `CompoundObject` part record.
 const COMPOUND_PART_SIZE: usize = 0x70;
+
+fn behaviours(res: &Resource, base: usize) -> Result<Vec<Behaviour>> {
+    let r = Reader(res.header());
+    let (count, ptr) = (r.u8(base + 1)? as usize, r.u32(base + 0x0C)? as usize);
+    let mut out = Vec::with_capacity(count);
+    for i in 0..count {
+        let o = ptr + i * 0x14;
+        out.push(Behaviour { object: res.import_at(o as u32), type_id: r.u32(o + 0x0C)?, hash: r.u32(o + 0x10)? });
+    }
+    Ok(out)
+}
+
+fn part_index(b: u8) -> Option<u8> {
+    (b != 0xff).then_some(b)
+}
 
 impl ObjectDef {
     fn parse_slots(res: &Resource, slots: &[u32], physics: u32) -> Result<Self> {
@@ -248,6 +312,10 @@ impl ObjectDef {
             models: slots.iter().map(|&o| res.import_at(o)).collect(),
             physics: res.import_at(physics),
             parts: Vec::new(),
+            compound_parts: Vec::new(),
+            skeleton: None,
+            joints: Vec::new(),
+            behaviours: Vec::new(),
             reset_distance_sq: None,
             remove_instead_of_reset: false,
             impact_effect: None,
@@ -271,15 +339,35 @@ impl ObjectDef {
         if count > 256 {
             return Err(crate::Error::Malformed(format!("compound part count {count}")));
         }
+        def.skeleton = res.import_at(0x08);
+        def.behaviours = behaviours(res, 0)?;
+        let hashes = r.u32(0x34)? as usize;
         for i in 0..count {
             let o = base + i * COMPOUND_PART_SIZE;
             r.u32(o + COMPOUND_PART_SIZE - 4)?;
             def.parts.push(res.import_at((o + 0x1C) as u32));
+            let (links_ptr, links) = (r.u32(o + 0x68)? as usize, r.u8(o + 0x6c)? as usize);
+            def.compound_parts.push(CompoundPart {
+                hash: if hashes == 0 { 0 } else { r.u32(hashes + 4 * i)? },
+                bone: r.u32(o + 0x60)?,
+                replaces: part_index(r.u8(o + 0x64)?),
+                next: part_index(r.u8(o + 0x65)?),
+                first_replacement: part_index(r.u8(o + 0x66)?),
+                links: if links == 0 { Vec::new() } else { r.bytes(links_ptr, links)?.to_vec() },
+                behaviours: behaviours(res, o)?,
+            });
         }
+        let (joints_ptr, joints) = (r.u32(0x2c)? as usize, r.u32(0x3c)? as usize);
+        if joints > 256 {
+            return Err(crate::Error::Malformed(format!("compound joint count {joints}")));
+        }
+        def.joints = (0..joints).map(|i| res.import_at((joints_ptr + 8 * i) as u32)).collect();
         Ok(def)
     }
     pub fn parse_world_object(res: &Resource) -> Result<Self> {
-        Self::parse_slots(res, &[0x04], 0x1C)
+        let mut def = Self::parse_slots(res, &[0x04], 0x1C)?;
+        def.behaviours = behaviours(res, 0).unwrap_or_default();
+        Ok(def)
     }
 
     /// The model to draw: the first populated slot.

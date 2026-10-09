@@ -21,9 +21,10 @@
 //! before each physics step. Standing (pinned) props stay in avian's solver: one that holds stops the car
 //! like a wall.
 //!
-//! Compound objects (lamp posts, traffic lights) have per-part physical definitions too; the parts
-//! have no models of their own that are decoded yet, so a compound breaks free as one body (the
-//! root definition's volumes and mass).
+//! Compound objects (lamp posts, traffic lights, billboards) break free as one body (the root definition's
+//! volumes and mass) and come apart into their parts when they smash ([`smash_compounds`]): each part is a
+//! body of its own with its own physical definition, drawn with the triangles of the model skinned to its
+//! skeleton bone (split on the loader thread).
 //!
 //! Only props near a car carry a collider ([`stream_props`]): the game keeps at most 80 physics objects
 //! (cars and props, world +0x51500), so it cannot hold the map's 18,000 props as bodies either.
@@ -122,20 +123,85 @@ pub struct PropPhysics {
     pub break_force: f32,
     /// Contact force (N) that starts the impact effect (`ForceToDamage`).
     pub force_to_damage: f32,
-    /// `ForceToSmash` (compound objects): logged, parts are not split yet.
+    /// Compound objects: `ForceToSmash` (N), the contact force that breaks a knocked compound into its parts
+    /// once it has been loose for `smash_delay` seconds (`08c87eeb`; `FUN_00555c90`). Compound parts: their
+    /// `SmashProxyBehaviour.ForceToSmash`, which replaces the part by its replacement chain.
     pub smash_force: Option<f32>,
+    pub smash_delay: f32,
     pub reset_distance: f32,
     pub remove_instead_of_reset: bool,
-    /// Props: the impact effect (`BearEffect`) and sound (`WCPlaySoundBehaviour`).
+    /// Props: the impact effect (`BearEffect`) and sound (`WCPlaySoundBehaviour`); compound parts: the part's
+    /// sound behaviour.
     pub impact_effect: Option<ResourceId>,
     pub impact_sound: Option<ResourceId>,
+    /// Compound objects: the parts that replace it when it smashes.
+    pub compound: Option<CompoundBreak>,
+}
+
+/// The parts of a compound object (`mw_assets::props::CompoundPhysics`), ready to spawn.
+#[derive(Debug, Clone)]
+pub struct CompoundBreak {
+    pub parts: Vec<PartBreak>,
+}
+
+/// One part of a compound object.
+#[derive(Debug, Clone)]
+pub struct PartBreak {
+    /// The part's own body; `None` without collision volumes (it is not spawned).
+    pub physics: Option<Arc<PropPhysics>>,
+    /// The part's frame in the compound's space: its skeleton bone's bind pose (`FUN_00532b00`).
+    pub bone: Mat4,
+    pub bone_index: u32,
+    /// The part this one replaces when that part smashes; `None` = one of the compound's first parts.
+    pub replaces: Option<usize>,
+    pub next: Option<usize>,
+    pub first_replacement: Option<usize>,
+    /// Parts this one is linked to: while pinned, it comes loose once none of them is still pinned
+    /// (`FUN_0054e750`).
+    pub links: Vec<usize>,
 }
 
 impl PropPhysics {
     /// Build from decoded physics; `None` if the object has no collision volumes.
     pub fn new(p: &mw_assets::props::ObjectPhysics) -> Option<Self> {
+        let mut out = Self::from_definition(p.object, p.kind, p.definition.as_ref()?)?;
+        out.reset_distance = p.reset_distance.unwrap_or(100.0);
+        out.remove_instead_of_reset = p.remove_instead_of_reset;
+        out.impact_effect = p.impact_effect;
+        out.impact_sound = p.impact_sound;
+        let reset = out.reset_distance;
+        out.compound = p.compound.as_ref().map(|c| CompoundBreak {
+            parts: c
+                .parts
+                .iter()
+                .map(|part| PartBreak {
+                    physics: part.definition.as_ref().and_then(|d| {
+                        let mut ph = Self::from_definition(p.object, p.kind, d)?;
+                        ph.reset_distance = reset;
+                        ph.smash_force = part.smash_force;
+                        ph.smash_delay = 0.0;
+                        ph.impact_sound = part.impact_sound;
+                        Some(Arc::new(ph))
+                    }),
+                    bone: crate::loader::game_matrix(&part.bone),
+                    bone_index: part.bone_index,
+                    replaces: part.replaces,
+                    next: part.next,
+                    first_replacement: part.first_replacement,
+                    links: part.links.clone(),
+                })
+                .collect(),
+        });
+        Some(out)
+    }
+
+    /// The body of one physical definition (an object's, or a compound part's).
+    fn from_definition(
+        object: ResourceId,
+        kind: ObjectKind,
+        def: &mw_assets::props::PhysicalDefinition,
+    ) -> Option<Self> {
         use mw_assets::props::Volume;
-        let def = p.definition.as_ref()?;
         let mut shapes: Vec<(Vec3, Quat, Collider)> = Vec::new();
         let mut volume = 0.0;
         let mut com = Vec3::ZERO;
@@ -207,8 +273,8 @@ impl PropPhysics {
             info.force_67f0233c
         };
         Some(Self {
-            object: p.object,
-            kind: p.kind,
+            object,
+            kind,
             collider: Collider::compound(shapes),
             radius,
             mass,
@@ -223,10 +289,12 @@ impl PropPhysics {
             break_force,
             force_to_damage: info.force_to_damage,
             smash_force: info.force_to_smash,
-            reset_distance: p.reset_distance.unwrap_or(100.0),
-            remove_instead_of_reset: p.remove_instead_of_reset,
-            impact_effect: p.impact_effect,
-            impact_sound: p.impact_sound,
+            smash_delay: info.smash_delay.unwrap_or(0.0),
+            reset_distance: 100.0,
+            remove_instead_of_reset: false,
+            impact_effect: None,
+            impact_sound: None,
+            compound: None,
         })
     }
 }
@@ -254,6 +322,52 @@ pub struct PropBody {
     damaged: bool,
     /// Speed (m/s) the player's car lost to this prop's contacts (shared by normal impulse; `--test smash`).
     pub speed_loss: f32,
+    /// Seconds since it was knocked loose (the game counts its compound timer down from `08c87eeb`).
+    loose_for: f32,
+    /// The largest contact force (N, normal impulse / step) of a race car's contact this step ([`prop_contacts`]).
+    car_force: f32,
+}
+
+impl PropBody {
+    fn new(physics: Arc<PropPhysics>, home: Transform, pinned: bool) -> Self {
+        Self {
+            physics,
+            home,
+            pinned,
+            active: false,
+            last_impact: f32::NEG_INFINITY,
+            damaged: false,
+            speed_loss: 0.0,
+            loose_for: 0.0,
+            car_force: 0.0,
+        }
+    }
+}
+
+/// A compound object's model split by part (its skeleton bones, built on the loader thread).
+#[derive(Clone, Default)]
+pub struct CompoundMeshes {
+    /// One per part (`PartBreak`); `None` where the model has no triangles on the part's bone.
+    pub parts: Vec<Option<crate::ModelParts>>,
+    /// The triangles of bones no part owns: drawn with the standing compound and gone with it.
+    pub rest: Option<crate::ModelParts>,
+}
+
+/// A compound object and its break-up (see [`smash_compounds`]).
+#[derive(Component)]
+pub struct Compound {
+    meshes: CompoundMeshes,
+    range: Option<crate::shadow_cull::ShadowRange>,
+    /// The part bodies after the smash, by part index.
+    parts: Vec<Option<Entity>>,
+    smashed: bool,
+}
+
+/// A part of a smashed compound: a prop of its own until the compound is put back.
+#[derive(Component)]
+pub struct CompoundPiece {
+    pub compound: Entity,
+    pub part: usize,
 }
 
 /// Asks [`unpin_props`] to break a prop free after this physics step (hits by traffic or knocked props; race
@@ -295,6 +409,13 @@ pub struct PropStats {
     pub player_speed_loss: f32,
     /// Impact effects started (a contact passed `ForceToDamage`).
     pub effects: usize,
+    /// Compounds smashed into their parts, parts smashed by their `SmashProxyBehaviour`, and the part bodies
+    /// spawned by both.
+    pub smashed: usize,
+    pub splits: usize,
+    pub pieces: usize,
+    /// Where the last compound or part smashed.
+    pub last_smash: Vec3,
 }
 
 pub struct PropsPlugin;
@@ -307,42 +428,60 @@ impl Plugin for PropsPlugin {
             .init_resource::<PropSounds>()
             .add_message::<PropImpact>()
             .add_systems(FixedPostUpdate, prop_contacts.before(PhysicsSystems::StepSimulation))
-            .add_systems(FixedPostUpdate, unpin_props.after(PhysicsSystems::StepSimulation))
+            .add_systems(FixedPostUpdate, (unpin_props, smash_compounds).chain().after(PhysicsSystems::StepSimulation))
             .add_systems(Update, (index_props, reset_far_props, stream_props, track_car_surface, prop_sounds).chain());
     }
 }
 
-/// Spawn a prop: the render parts as children of a rigid body carrying the collider.
+/// Spawn a prop: the render parts as children of a rigid body carrying the collider. A compound object with
+/// its model split by part draws the pieces of its first parts instead of the whole model (the model also
+/// holds the parts that replace those later, on top of them).
 pub fn spawn_prop(
     commands: &mut Commands,
     physics: Arc<PropPhysics>,
     transform: Transform,
     parts: &crate::ModelParts,
     range: Option<crate::shadow_cull::ShadowRange>,
+    pieces: Option<CompoundMeshes>,
 ) {
-    commands
-        .spawn((
-            transform,
-            Visibility::default(),
-            PropBody {
-                physics,
-                home: transform,
-                pinned: true,
-                active: false,
-                last_impact: f32::NEG_INFINITY,
-                damaged: false,
-                speed_loss: 0.0,
-            },
-        ))
-        .with_children(|c| {
-            for (mesh, mat) in parts {
-                let mut e =
-                    c.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat.clone()), crate::shadow_cull::ShadowClass::Prop));
-                if let Some(r) = range {
-                    e.insert(r);
-                }
+    let pieces = pieces.filter(|p| physics.compound.as_ref().is_some_and(|c| c.parts.len() == p.parts.len()));
+    let mut e = commands.spawn((transform, Visibility::default(), PropBody::new(physics.clone(), transform, true)));
+    let Some(pieces) = pieces else {
+        e.with_children(|c| spawn_meshes(c, parts, Transform::IDENTITY, range));
+        return;
+    };
+    let compound = physics.compound.as_ref().expect("checked above");
+    e.with_children(|c| {
+        for (part, meshes) in compound.parts.iter().zip(&pieces.parts) {
+            if let (None, Some(meshes)) = (part.replaces, meshes) {
+                spawn_meshes(c, meshes, Transform::IDENTITY, range);
             }
-        });
+        }
+        if let Some(rest) = &pieces.rest {
+            spawn_meshes(c, rest, Transform::IDENTITY, range);
+        }
+    });
+    let n = compound.parts.len();
+    e.insert(Compound { meshes: pieces, range, parts: vec![None; n], smashed: false });
+}
+
+fn spawn_meshes(
+    c: &mut bevy::ecs::hierarchy::ChildSpawnerCommands,
+    parts: &crate::ModelParts,
+    transform: Transform,
+    range: Option<crate::shadow_cull::ShadowRange>,
+) {
+    for (mesh, mat) in parts {
+        let mut e = c.spawn((
+            Mesh3d(mesh.clone()),
+            MeshMaterial3d(mat.clone()),
+            transform,
+            crate::shadow_cull::ShadowClass::Prop,
+        ));
+        if let Some(r) = range {
+            e.insert(r);
+        }
+    }
 }
 
 /// The rigid body and collider of a prop, inserted while it is near a car.
@@ -385,7 +524,10 @@ fn grid_cell(p: Vec3) -> (i32, i32) {
 }
 
 /// Add new props to the grid.
-fn index_props(mut grid: ResMut<PropGrid>, props: Query<(Entity, &PropBody), Added<PropBody>>) {
+fn index_props(
+    mut grid: ResMut<PropGrid>,
+    props: Query<(Entity, &PropBody), (Added<PropBody>, Without<CompoundPiece>)>,
+) {
     for (e, p) in &props {
         grid.cells.entry(grid_cell(p.home.translation)).or_default().push(e);
     }
@@ -719,6 +861,7 @@ fn prop_state(
 }
 
 static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+static PIECE_TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 /// The race cars' contacts with props, before each physics step (see the module docs):
 /// 1. a standing prop the car's boxes reach is knocked loose when the car's momentum passes its threshold
@@ -916,6 +1059,7 @@ pub(crate) fn prop_contacts(
             let Some((c, s)) = touching.clone().max_by(|a, b| a.1.total_cmp(b.1)) else { continue };
             let force: f32 = touching.map(|(c, _)| c.normal_impulse).sum::<f32>() / dt;
             car.prop_impact = car.prop_impact.max(*s);
+            prop.car_force = prop.car_force.max(force);
             // `ForceToDamage` passed by a vehicle's contact: the prop's impact effect, once per knocked lifetime
             // (`FUN_0054bf70`).
             let effect = (!prop.damaged && force > prop.physics.force_to_damage).then(|| {
@@ -945,25 +1089,49 @@ pub(crate) fn prop_contacts(
 /// Knocked props go back where they stood (or are removed, `mbRemoveInsteadOfReset`) as soon as both the
 /// camera and the player's car are farther from them than their reset distance (`FUN_0055ae50`, every frame,
 /// no timer; `mfResetDistanceSquared` against both squared distances).
+#[allow(clippy::type_complexity)]
 fn reset_far_props(
     mut commands: Commands,
     car: Query<&GlobalTransform, (With<Car>, With<crate::drive::Player>)>,
     camera: Query<&GlobalTransform, crate::MainCamera>,
-    mut props: Query<(Entity, &mut PropBody, &mut Transform)>,
+    mut props: Query<(Entity, &mut PropBody, &mut Transform, Option<&mut Compound>), Without<CompoundPiece>>,
+    pieces: Query<&Transform, With<CompoundPiece>>,
+    mut grid: ResMut<PropGrid>,
     mut stats: ResMut<PropStats>,
 ) {
     let Ok(car) = car.single() else { return };
     let car = car.translation();
     let camera = camera.iter().next().map_or(car, |c| c.translation());
-    for (e, mut prop, mut t) in &mut props {
+    for (e, mut prop, mut t, compound) in &mut props {
         if prop.pinned {
             continue;
         }
         let d = prop.physics.reset_distance;
-        if t.translation.distance(car) <= d || t.translation.distance(camera) <= d {
+        let near = |p: Vec3| p.distance(car) <= d || p.distance(camera) <= d;
+        // A smashed compound goes back once neither its home nor any of its parts is near (model decision: the
+        // game resets each part in its own slot).
+        let smashed = compound.as_ref().is_some_and(|c| c.smashed);
+        if near(if smashed { prop.home.translation } else { t.translation }) {
+            continue;
+        }
+        if let Some(c) = &compound
+            && c.parts.iter().flatten().any(|&p| pieces.get(p).is_ok_and(|pt| near(pt.translation)))
+        {
             continue;
         }
         stats.reset += 1;
+        if let Some(mut c) = compound {
+            for p in c.parts.iter_mut().filter_map(Option::take) {
+                commands.entity(p).despawn();
+            }
+            if c.smashed {
+                c.smashed = false;
+                // Back without a body: [`stream_props`] gives it one again when a car comes near.
+                prop.active = false;
+                grid.active.remove(&e);
+                commands.entity(e).insert(Visibility::Inherited);
+            }
+        }
         if prop.physics.remove_instead_of_reset {
             commands.entity(e).despawn();
             continue;
@@ -971,15 +1139,212 @@ fn reset_far_props(
         *t = prop.home;
         prop.pinned = true;
         prop.damaged = false;
-        commands.entity(e).insert((
-            RigidBody::Static,
-            GameLayer::prop(),
-            Position(prop.home.translation),
-            Rotation(prop.home.rotation),
-            LinearVelocity::ZERO,
-            AngularVelocity::ZERO,
-        ));
+        prop.loose_for = 0.0;
+        if prop.active {
+            commands.entity(e).insert((
+                RigidBody::Static,
+                GameLayer::prop(),
+                Position(prop.home.translation),
+                Rotation(prop.home.rotation),
+                LinearVelocity::ZERO,
+                AngularVelocity::ZERO,
+            ));
+        }
     }
+}
+
+/// The physics components a prop carries while it has a body ([`physics_bundle`]).
+type PhysicsComponents = (
+    RigidBody,
+    Collider,
+    CollisionLayers,
+    ColliderDensity,
+    CenterOfMass,
+    Friction,
+    Restitution,
+    LinearDamping,
+    AngularDamping,
+    ActiveCollisionHooks,
+);
+
+/// The largest contact force (N) on a body this step: its avian contact pairs (the world, traffic, other props)
+/// and a race car's contacts from [`prop_contacts`] (the game compares the world-contact record and each pair
+/// record with the threshold, `FUN_00555c90`: normal impulse over the step).
+fn contact_force(collisions: &Collisions, e: Entity, car_force: f32, dt: f32) -> f32 {
+    collisions.collisions_with(e).map(|p| p.total_normal_impulse_magnitude() / dt).fold(car_force, f32::max)
+}
+
+/// Compound objects come apart (`FUN_00555c90`, after the physics step; docs/decomp.md "Props"):
+/// - a knocked compound smashes once it has been loose for `08c87eeb` seconds and a contact force passes its
+///   `ForceToSmash` (strictly): its body goes (`FUN_0054e210`) and its first parts take its place, each a body
+///   of its own at its skeleton bone (messages 2 → `FUN_00558bb0` → `FUN_00554500` / `FUN_005547f0`; placed by
+///   `FUN_00532b00`), at rest (`FUN_005341a0` clears the part's velocities), pinned as their own `AdditionalInfo`
+///   says;
+/// - a part with a `SmashProxyBehaviour` is replaced by its replacement chain when a contact force passes the
+///   behaviour's `ForceToSmash` (message 3 in `FUN_0055a680`): each new part at its own bone relative to where
+///   the old one is, moving with it (`FUN_00536050`: the old body's velocity at the new part's position, the
+///   same spin);
+/// - a pinned part linked to other parts comes loose once none of them is still pinned (`FUN_0054e750`).
+#[allow(clippy::type_complexity)]
+fn smash_compounds(
+    mut commands: Commands,
+    time: Res<Time>,
+    collisions: Collisions,
+    mut compounds: Query<(Entity, &mut PropBody, &mut Compound, &Position, &Rotation), Without<CompoundPiece>>,
+    mut pieces: Query<
+        (Entity, &mut PropBody, &CompoundPiece, &Position, &Rotation, &LinearVelocity, &AngularVelocity),
+        Without<Compound>,
+    >,
+    mut stats: ResMut<PropStats>,
+) {
+    let dt = time.delta_secs();
+    if dt <= 0.0 {
+        return;
+    }
+    let now = time.elapsed_secs();
+    for (e, mut prop, mut compound, pos, rot) in &mut compounds {
+        let force = contact_force(&collisions, e, prop.car_force, dt);
+        prop.car_force = 0.0;
+        if prop.pinned || compound.smashed {
+            continue;
+        }
+        let (Some(smash), Some(parts)) = (prop.physics.smash_force, prop.physics.compound.as_ref()) else { continue };
+        // The game checks the timer before it counts it down (`<= 0`, then `-= dt`).
+        if prop.loose_for < prop.physics.smash_delay || force <= smash {
+            prop.loose_for += dt;
+            continue;
+        }
+        stats.smashed += 1;
+        stats.last_smash = pos.0;
+        let world = Mat4::from_rotation_translation(rot.0, pos.0);
+        let mut spawned = 0;
+        for i in (0..parts.parts.len()).filter(|&i| parts.parts[i].replaces.is_none()) {
+            let p = spawn_part(&mut commands, e, &compound, parts, i, world, Vec3::ZERO, Vec3::ZERO);
+            spawned += p.is_some() as usize;
+            compound.parts[i] = p;
+        }
+        stats.pieces += spawned;
+        info!(
+            "compound {} smashed at t {now:.2} ({:.2} s loose, contact force {force:.0} N > {smash}): {spawned} parts",
+            prop.physics.object, prop.loose_for
+        );
+        compound.smashed = true;
+        commands.entity(e).remove::<PhysicsComponents>().insert(Visibility::Hidden);
+    }
+
+    // `MW_PIECE_TRACE=1`: where the parts of smashed compounds are, twice a second.
+    if *PIECE_TRACE.get_or_init(|| std::env::var_os("MW_PIECE_TRACE").is_some()) && (now * 2.0).fract() < dt * 2.0 {
+        for (_, prop, piece, pos, _, v, _) in &pieces {
+            info!(
+                "piece t {now:.2}: part {} of {:?} ({:.0} kg, {}) at {:.2}, v {:.2}",
+                piece.part,
+                piece.compound,
+                prop.physics.mass,
+                if prop.pinned { "pinned" } else { "loose" },
+                pos.0,
+                v.0
+            );
+        }
+    }
+
+    // Parts: smash proxies and links.
+    let mut splits = Vec::new();
+    for (e, mut prop, piece, pos, rot, v, w) in &mut pieces {
+        let force = contact_force(&collisions, e, prop.car_force, dt);
+        prop.car_force = 0.0;
+        if !prop.pinned && prop.physics.smash_force.is_some_and(|f| force > f) {
+            splits.push((e, piece.compound, piece.part, *pos, *rot, v.0, w.0, prop.physics.centre_of_mass, force));
+        }
+    }
+    for (e, owner, part, pos, rot, v, w, com, force) in splits {
+        let Ok((_, owner_prop, mut compound, ..)) = compounds.get_mut(owner) else { continue };
+        let Some(parts) = owner_prop.physics.compound.clone() else { continue };
+        let old = &parts.parts[part];
+        let old_world = Mat4::from_rotation_translation(rot.0, pos.0);
+        let old_com = old_world.transform_point3(com);
+        // The compound's frame as the old part sees it now (old world × old bone⁻¹).
+        let frame = old_world * old.bone.inverse();
+        let mut next = old.first_replacement;
+        let mut spawned = 0;
+        while let Some(i) = next {
+            let new = &parts.parts[i];
+            let com_i =
+                (frame * new.bone).transform_point3(new.physics.as_ref().map_or(Vec3::ZERO, |p| p.centre_of_mass));
+            let v_i = v + w.cross(com_i - old_com);
+            let p = spawn_part(&mut commands, owner, &compound, &parts, i, frame, v_i, w);
+            spawned += p.is_some() as usize;
+            compound.parts[i] = p;
+            next = new.next;
+        }
+        compound.parts[part] = None;
+        commands.entity(e).despawn();
+        stats.splits += 1;
+        stats.pieces += spawned;
+        stats.last_smash = pos.0;
+        info!(
+            "compound {} part {part} smashed (contact force {force:.0} N > {:?}): {spawned} parts",
+            owner_prop.physics.object,
+            old.physics.as_ref().and_then(|p| p.smash_force)
+        );
+    }
+
+    // Links (`FUN_0054e750`, every frame): a pinned part comes loose once no linked part is still pinned.
+    let mut unpin = Vec::new();
+    for (_, owner_prop, compound, ..) in &compounds {
+        let Some(parts) = &owner_prop.physics.compound else { continue };
+        if !compound.smashed {
+            continue;
+        }
+        let pinned = |i: usize| compound.parts[i].is_some_and(|p| pieces.get(p).is_ok_and(|q| q.1.pinned));
+        for (i, part) in parts.parts.iter().enumerate() {
+            let Some(p) = compound.parts[i] else { continue };
+            if !part.links.is_empty() && pinned(i) && !part.links.iter().any(|&l| pinned(l)) {
+                unpin.push(p);
+            }
+        }
+    }
+    for p in unpin {
+        if let Ok((_, mut q, ..)) = pieces.get_mut(p) {
+            q.pinned = false;
+            stats.knocked += 1;
+            commands.entity(p).insert((RigidBody::Dynamic, GameLayer::loose_prop()));
+        }
+    }
+}
+
+/// Spawn part `i` of a compound as a prop of its own: `frame` is the compound's frame in the world (the part
+/// sits at its bone in it), `v` / `w` its velocity.
+#[allow(clippy::too_many_arguments)]
+fn spawn_part(
+    commands: &mut Commands,
+    owner: Entity,
+    compound: &Compound,
+    parts: &CompoundBreak,
+    i: usize,
+    frame: Mat4,
+    v: Vec3,
+    w: Vec3,
+) -> Option<Entity> {
+    let part = &parts.parts[i];
+    let physics = part.physics.clone()?;
+    let (_, rotation, translation) = (frame * part.bone).to_scale_rotation_translation();
+    let t = Transform { translation, rotation, scale: Vec3::ONE };
+    debug!("compound part {i} ({:.0} kg) at {translation:.2}", physics.mass);
+    // Pinned as the part's own `AdditionalInfo` says (`FUN_0054dfe0`, `94c94bab`); the rest move at once (the
+    // game creates them asleep, but next to the moving compound: model decision).
+    let pinned = physics.break_force > 0.0;
+    let mut prop = PropBody::new(physics.clone(), t, pinned);
+    prop.active = true;
+    let mut e = commands.spawn((t, Visibility::default(), prop, CompoundPiece { compound: owner, part: i }));
+    e.insert(physics_bundle(&physics));
+    if !pinned {
+        e.insert((RigidBody::Dynamic, GameLayer::loose_prop(), LinearVelocity(v), AngularVelocity(w)));
+    }
+    if let Some(Some(meshes)) = compound.meshes.parts.get(i) {
+        let local = Transform::from_matrix(part.bone.inverse());
+        e.with_children(|c| spawn_meshes(c, meshes, local, compound.range));
+    }
+    Some(e.id())
 }
 
 /// Decoded impact sounds, per `WCPlaySoundBehaviour` and per wave.
@@ -1099,10 +1464,33 @@ impl WorldSurfaces {
 /// The smash test's layout along the car's path (+Z from the origin): a traffic cone (5 kg, loose from the
 /// start), a sign (50 kg, momentum 500, with an impact effect and sound), a street lamp (150 kg compound,
 /// 5000), a 6 m fence panel (50 kg, 2500), and an immovable 5 m wall (a mass-0 dynamic object).
-pub fn smash_test_props() -> Vec<crate::loader::TestProp> {
+/// `--smash-set compounds`: six compound objects 30 m apart: the single-arm street lamp (934 placements; its pole
+/// splits in two by a `SmashProxyBehaviour`), the double lamp, two pole compounds, a 600 kg object and an
+/// 11-panel structure whose panels are pinned and linked.
+pub fn smash_test_props(set: &str) -> Vec<crate::loader::TestProp> {
     use crate::loader::TestProp;
     let p =
         |id: u64, kind, z: f32| TestProp { object: ResourceId(id), kind, position: Vec3::new(0.0, 0.0, z), yaw: 0.0 };
+    if set == "compounds" {
+        // The panel structure reaches 2.5 m below its origin (bounds centre 0.04, half height 2.56): raised to
+        // stand on the track.
+        return [
+            (0xfed64b97, 0.0),
+            (0x621c484f, 0.0),
+            (0xe547f377, 0.0),
+            (0xf3afb6cd, 0.0),
+            (0x1e63a9d5, 0.0),
+            (0xac10f734, 2.6),
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, &(id, y))| {
+            let mut prop = p(id, ObjectKind::Compound, 40.0 + 30.0 * i as f32);
+            prop.position.y = y;
+            prop
+        })
+        .collect();
+    }
     vec![
         p(0x3698c67a, ObjectKind::Prop, 40.0),
         p(0x39c4412d, ObjectKind::Prop, 60.0),
@@ -1112,8 +1500,10 @@ pub fn smash_test_props() -> Vec<crate::loader::TestProp> {
     ]
 }
 
-/// Seconds of test time between a knock and its `-knock<n>` screenshot.
+/// Seconds of test time between a knock and its `-knock<n>` screenshot, and between a smash and its
+/// `-smash<n>` one.
 const KNOCK_SHOT_DELAY: f32 = 0.25;
+const SMASH_SHOT_DELAY: f32 = 0.6;
 
 #[derive(Resource)]
 pub struct SmashTest {
@@ -1128,6 +1518,11 @@ pub struct SmashTest {
     loss_mark: f32,
     /// When to save the `-knock<n>` screenshot after a knock (test time).
     knock_shot: Option<f32>,
+    /// `--smash-set compounds`: the camera follows the knocks, and a `-smash<n>` screenshot follows each smash.
+    follow: bool,
+    focus: f32,
+    smashed: usize,
+    smash_shot: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1138,7 +1533,7 @@ enum SmashPhase {
 }
 
 impl SmashTest {
-    pub fn new(out: Option<std::path::PathBuf>, speed: f32) -> Self {
+    pub fn new(out: Option<std::path::PathBuf>, speed: f32, follow: bool) -> Self {
         Self {
             out,
             speed,
@@ -1149,6 +1544,10 @@ impl SmashTest {
             knocked: 0,
             loss_mark: 0.0,
             knock_shot: None,
+            follow,
+            focus: 30.0,
+            smashed: 0,
+            smash_shot: None,
         }
     }
 
@@ -1190,7 +1589,7 @@ fn run_smash_test(
     match test.phase {
         SmashPhase::Settle => {
             input.scripted = Some([0.0, 0.0, 0.0, 1.0]);
-            if test.timer > 2.5 && props.iter().count() >= 5 {
+            if test.timer > 2.5 && props.iter().count() >= if test.follow { 6 } else { 5 } {
                 if let Some(p) = test.path("before") {
                     commands.spawn(Screenshot::primary_window()).observe(save_to_disk(p));
                 }
@@ -1218,6 +1617,20 @@ fn run_smash_test(
                 info!("TEST smash: prop knocked at car z {:.1}, car {:.0} km/h", transform.translation.z, speed * 3.6);
                 test.knocked = stats.knocked;
                 test.knock_shot = Some(test.timer + KNOCK_SHOT_DELAY);
+                if test.smash_shot.is_none() {
+                    test.focus = transform.translation.z;
+                }
+            }
+            if stats.smashed + stats.splits > test.smashed {
+                test.smashed = stats.smashed + stats.splits;
+                test.smash_shot = Some(test.timer + SMASH_SHOT_DELAY);
+                test.focus = stats.last_smash.z - 4.0;
+            }
+            if test.smash_shot.is_some_and(|t| test.timer >= t) {
+                test.smash_shot = None;
+                if let Some(p) = test.path(&format!("smash{}", test.smashed)) {
+                    commands.spawn(Screenshot::primary_window()).observe(save_to_disk(p));
+                }
             }
             if test.knock_shot.is_some_and(|t| test.timer >= t) {
                 test.knock_shot = None;
@@ -1233,6 +1646,10 @@ fn run_smash_test(
                     stats.contacts,
                     stats.max_speed_loss * 100.0,
                     stats.effects
+                );
+                info!(
+                    "TEST RESULT smash: {} compounds smashed, {} parts smashed by their proxy, {} part bodies spawned",
+                    stats.smashed, stats.splits, stats.pieces
                 );
                 info!(
                     "TEST RESULT smash: target {:.0} km/h, top {:.0} km/h, car at z {:.1} ({}), {} props knocked",
@@ -1274,10 +1691,16 @@ fn run_smash_test(
     }
 }
 
-/// A fixed side view over the props instead of the chase camera.
-fn smash_camera(mut camera: Query<&mut Transform, crate::MainCamera>) {
+/// A fixed side view over the props instead of the chase camera; with `--smash-set compounds`, a view from
+/// beside the last knock.
+fn smash_camera(test: Res<SmashTest>, mut camera: Query<&mut Transform, crate::MainCamera>) {
     let Ok(mut cam) = camera.single_mut() else { return };
-    *cam = Transform::from_xyz(-16.0, 6.0, 60.0).looking_at(Vec3::new(0.0, 1.5, 118.0), Vec3::Y);
+    *cam = if test.follow {
+        let z = test.focus;
+        Transform::from_xyz(-11.0, 4.5, z - 4.0).looking_at(Vec3::new(0.0, 2.5, z + 9.0), Vec3::Y)
+    } else {
+        Transform::from_xyz(-16.0, 6.0, 60.0).looking_at(Vec3::new(0.0, 1.5, 118.0), Vec3::Y)
+    };
 }
 
 /// The world surface under the car (updated a few times a second), for audio, particles and grip.

@@ -115,6 +115,49 @@ pub fn run(store: &AssetStore, bundles: &[String], verbose: bool) -> Result<()> 
                 phys.parts.len(),
                 phys.reset_distance,
             );
+            if let Some(c) = &phys.compound {
+                println!("   compound: enabled at start {}, joints {:?}", c.enabled_at_start, c.joints);
+                // The model's triangles per skeleton bone (a triangle belongs to the bone of its first vertex's
+                // heaviest weight): each part draws the geometry skinned to its bone.
+                let mut per_bone: BTreeMap<u16, usize> = BTreeMap::new();
+                let mut unskinned = 0;
+                if let Ok((meshes, _)) = store.model_meshes(*model, 0) {
+                    for m in meshes.iter().filter(|m| !mw_assets::is_hidden_shader(&m.shader_name)) {
+                        let (Some(j), Some(w)) = (&m.mesh.joints, &m.mesh.weights) else {
+                            unskinned += m.mesh.indices.len() / 3;
+                            continue;
+                        };
+                        for t in m.mesh.indices.chunks_exact(3) {
+                            let v = t[0] as usize;
+                            let k = (0..4).max_by(|&a, &b| w[v][a].total_cmp(&w[v][b])).unwrap_or(0);
+                            *per_bone.entry(j[v][k]).or_default() += 1;
+                        }
+                    }
+                }
+                println!("   model triangles per bone {per_bone:?}, unskinned {unskinned}");
+                for (i, p) in c.parts.iter().enumerate() {
+                    let d = p.definition.as_ref();
+                    let info = d.and_then(|d| d.info);
+                    println!(
+                        "   part {i}: bone {} at ({:.2} {:.2} {:.2}) mass {:.0} vols {} replaces {:?} next {:?} replaced by {:?} \
+                         links {:?} smash proxy {:?} pinned {:?} knock {:?} sound {}",
+                        p.bone_index,
+                        p.bone[3][0],
+                        p.bone[3][1],
+                        p.bone[3][2],
+                        d.map_or(0.0, |d| d.bodies.iter().map(|b| b.mass).sum::<f32>()),
+                        d.map_or(0, |d| d.bodies.iter().map(|b| b.volumes.len()).sum::<usize>()),
+                        p.replaces,
+                        p.next,
+                        p.first_replacement,
+                        p.links,
+                        p.smash_force,
+                        info.map(|i| i.starts_pinned),
+                        info.map(|i| i.force_67f0233c),
+                        p.impact_sound.is_some(),
+                    );
+                }
+            }
         }
     }
     for (kind, s) in &stats {

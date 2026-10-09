@@ -50,7 +50,10 @@ pub use traffic::{LanePolyline, TrafficHull, TrafficJunction, TrafficLaneData, T
 pub use trigger::{Collectable, Trigger, TriggerData, TriggerShape};
 pub use vehicle::{Locator, LocatorGroup, VehicleGraphicsSpec, Wheel, WheelPart};
 pub use vertex::{Semantic, VertexAttribute, VertexDescriptor};
-pub use world::{Instance, InstanceList, InstanceOverrides, ObjectDef, ObjectInstance, ObjectInstanceList};
+pub use world::{
+    Behaviour, CompoundPart, ENABLE_COMPOUND_BEHAVIOUR, Instance, InstanceList, InstanceOverrides, ObjectDef,
+    ObjectInstance, ObjectInstanceList, SMASH_PROXY_BEHAVIOUR,
+};
 pub use zone::{Zone, ZoneList};
 
 #[derive(Debug, thiserror::Error)]
