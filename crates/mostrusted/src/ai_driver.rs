@@ -400,9 +400,75 @@ fn banded_pedal(e: f32) -> f32 {
     }
 }
 
+/// The race's rubber band for one opponent (`RaceBalancingData.OpponentBalancingData[k]` and the event's
+/// `RaceBalancingProfile`), read in `FUN_00645c90` → `FUN_0063ef30` / `FUN_006432a0`: a target-speed schedule,
+/// not a grip or torque multiplier. The driver's target speed is this schedule (driver +0x5668).
+#[derive(Debug, Clone, Copy)]
+pub struct RubberBand {
+    /// `RaceBalancingProfile.MaxSpeed` × the event's pace multiplier for the player's car (m/s).
+    pub max_speed: f32,
+    /// `AheadDistance` (+0x10) and `BehindDistance` (+0x14), metres; the blend t runs between them.
+    pub ahead: f32,
+    pub behind: f32,
+    /// Race progress breakpoints: early (+0x24) and late (+0x18).
+    pub early_x: f32,
+    pub late_x: f32,
+    /// Speed factors early (+0x2c behind, +0x28 ahead) and late (+0x20 behind, +0x1c ahead).
+    pub early: [f32; 2],
+    pub late: [f32; 2],
+}
+
+impl RubberBand {
+    /// The schedule speed (m/s) at race progress `x` (0..1, `FUN_00654110`), with `lead` = the player's remaining
+    /// distance minus the AI's (positive = the AI is ahead) and `gap` the straight-line distance between the cars.
+    /// Not ported: the time correction (`FUN_006433f0`: × (1 + 0.1 clamp((race time − expected time) / 30, ±1)),
+    /// the expected time needs the route's segment speeds, `FUN_00661eb0`).
+    pub fn speed(&self, x: f32, lead: f32, gap: f32) -> f32 {
+        let t = if lead < self.behind {
+            0.0
+        } else if lead >= self.ahead {
+            1.0
+        } else {
+            let s = gap.copysign(lead);
+            ((s - self.behind) / (self.ahead - self.behind).max(1e-3)).clamp(0.0, 1.0)
+        };
+        let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+        let a = lerp(self.early[0], self.early[1], t);
+        let b = lerp(self.late[0], self.late[1], t);
+        let f = if x < self.early_x {
+            a
+        } else if x < self.late_x {
+            lerp(a, b, (x - self.early_x) / (self.late_x - self.early_x).max(1e-4))
+        } else {
+            b
+        };
+        f * self.max_speed
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rubber_band_blends_by_lead_and_progress() {
+        let rb = RubberBand {
+            max_speed: 100.0,
+            ahead: 100.0,
+            behind: -100.0,
+            early_x: 0.0,
+            late_x: 0.9,
+            early: [1.0, 0.9],
+            late: [0.7, 0.6],
+        };
+        // Far behind at the start: the early "behind" factor.
+        assert!((rb.speed(0.0, -500.0, 500.0) - 100.0).abs() < 1e-3);
+        // Far ahead at the end: the late "ahead" factor.
+        assert!((rb.speed(1.0, 500.0, 500.0) - 60.0).abs() < 1e-3);
+        // Level halfway through the race: t = 0.5, x between the breakpoints.
+        let v = rb.speed(0.45, 0.0, 0.0);
+        assert!((v - 100.0 * (0.95 + (0.65 - 0.95) * 0.5)).abs() < 1e-3, "{v}");
+    }
 
     #[test]
     fn contact_time_of_closing_circles() {

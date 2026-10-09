@@ -249,6 +249,10 @@ struct Cli {
     /// Seconds an `--test ai` run lasts.
     #[arg(long, default_value_t = 60.0)]
     ai_seconds: f32,
+    /// Rubber band for the `--ai` opponents: `<RaceBalancingData id>,<RaceBalancingProfile id>` (GeneSys ids in
+    /// GAMELOGIC/GAMEMODES.BNDL, e.g. 01000000000f0258,01000000000f0259).
+    #[arg(long, value_delimiter = ',')]
+    ai_balancing: Vec<String>,
 }
 
 #[derive(Resource)]
@@ -455,7 +459,15 @@ fn main() -> anyhow::Result<()> {
     let mut app = App::new();
     app.insert_resource(car_anim::AnimOverride::parse(&cli.anim)?);
     if matches!(request, Request::Drive { world: true, .. }) {
-        app.add_plugins(ai::AiPlugin { cars: ai_cars, test: ai_test.then_some(cli.ai_seconds) });
+        let balancing = match &cli.ai_balancing[..] {
+            [] => None,
+            [d, p] => Some((
+                ResourceId::parse(d).ok_or_else(|| anyhow::anyhow!("bad resource id {d}"))?,
+                ResourceId::parse(p).ok_or_else(|| anyhow::anyhow!("bad resource id {p}"))?,
+            )),
+            _ => anyhow::bail!("--ai-balancing expects <RaceBalancingData id>,<RaceBalancingProfile id>"),
+        };
+        app.add_plugins(ai::AiPlugin { cars: ai_cars, test: ai_test.then_some(cli.ai_seconds), balancing });
         if ai_test {
             app.add_systems(Startup, |mut t: ResMut<Time<Virtual>>| t.set_relative_speed(2.0));
         }

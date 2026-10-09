@@ -11,6 +11,7 @@ use std::sync::Arc;
 use avian3d::prelude::*;
 use bevy::prelude::*;
 
+use crate::ai_driver::RubberBand;
 use crate::drive::{Car, CarBuild, CarControls, CarParts, Player};
 use crate::loader::{CarRequest, CarSpec, LoaderRequests};
 
@@ -19,6 +20,8 @@ pub struct AiPlugin {
     pub cars: Vec<String>,
     /// `--test ai`: drive the player car with the same driver, log both, exit after `seconds`.
     pub test: Option<f32>,
+    /// `--ai-balancing <RaceBalancingData>,<RaceBalancingProfile>`: give the test race the event's rubber band.
+    pub balancing: Option<(mw_bundle::ResourceId, mw_bundle::ResourceId)>,
 }
 
 impl Plugin for AiPlugin {
@@ -36,8 +39,15 @@ impl Plugin for AiPlugin {
         if let Some(seconds) = self.test {
             app.insert_resource(AiTest { seconds, ..default() });
         }
+        if let Some(b) = self.balancing {
+            app.insert_resource(AiBalancingArg(Some(b)));
+        }
     }
 }
+
+/// `--ai-balancing`: the `RaceBalancingData` and `RaceBalancingProfile` ids for the test race.
+#[derive(Resource)]
+struct AiBalancingArg(Option<(mw_bundle::ResourceId, mw_bundle::ResourceId)>);
 
 /// The route and start grid a race hands to its AI drivers. Insert it before the opponents arrive; without it
 /// `--ai` builds a test route along the traffic lanes from the player's spawn.
@@ -47,6 +57,39 @@ pub struct RaceSetup {
     /// Start-grid transforms (road level, facing along the route), one per opponent in order. Opponents
     /// beyond the grid are placed behind the last slot along the route.
     pub grid: Vec<Transform>,
+    /// Each opponent's rubber band (by slot; `None` = no schedule, full speed). [`rubber_band_from_data`] reads
+    /// the event's `RaceBalancingData` / `RaceBalancingProfile`.
+    pub balancing: Vec<Option<RubberBand>>,
+}
+
+/// One opponent's rubber band from the event's `RaceBalancingData` (`OpponentData[k]`) and `RaceBalancingProfile`
+/// GeneSys objects (`OfflineEvent` +0x94 / +0x98), with the event's pace multiplier for the player's car
+/// (`AllowedVehicleList` entry `a17a5e72`, 1.0 by default).
+pub fn rubber_band_from_data(
+    store: &mw_assets::AssetStore,
+    data: mw_bundle::ResourceId,
+    profile: mw_bundle::ResourceId,
+    k: usize,
+    pace: f32,
+) -> anyhow::Result<RubberBand> {
+    use mw_formats::genesys::Value;
+    let rbd = store.genesys_object(data)?;
+    let prof = store.genesys_object(profile)?;
+    let f = |o: &mw_formats::genesys::Object, h: u32, default: f32| match o.get(h) {
+        Some(Value::Float(v)) => *v,
+        _ => default,
+    };
+    let Some(Value::Array(opps)) = rbd.get(0x811f88a3) else { anyhow::bail!("{data}: no OpponentData") };
+    let Some(Value::Struct(e)) = opps.get(k).or(opps.last()) else { anyhow::bail!("{data}: no opponent {k}") };
+    Ok(RubberBand {
+        max_speed: f(&prof, 0x02318b5f, 100.0) * pace * 0.44704,
+        ahead: f(e, 0x01b78556, 100.0),
+        behind: f(e, 0x849481e9, 100.0),
+        late_x: f(e, 0xb11db112, 1.0),
+        late: [f(e, 0x7c5d657c, 1.0), f(e, 0x8fd2c7ab, 1.0)],
+        early_x: f(e, 0x871a887d, 0.0),
+        early: [f(e, 0xa7662f40, 1.0), f(e, 0xab82db21, 1.0)],
+    })
 }
 
 /// Opponent cars: requested from the loader, waiting to be placed, placed.
@@ -305,6 +348,8 @@ pub struct AiDriver {
     pub state: crate::ai_driver::DriverState,
     /// The rubber band's schedule speed (m/s; `f32::MAX` without a race, as the game's schedule returns then).
     pub schedule_speed: f32,
+    /// The race's rubber band, which sets `schedule_speed` every tick.
+    pub rubber_band: Option<RubberBand>,
     /// Distance along the route at the last tick, and the lateral offset from it (m, positive = left).
     pub progress: f32,
     pub lateral: f32,
@@ -325,6 +370,7 @@ impl AiDriver {
             route,
             state: Default::default(),
             schedule_speed: f32::MAX,
+            rubber_band: None,
             progress: 0.0,
             lateral: 0.0,
             time: 0.0,
@@ -395,6 +441,7 @@ fn setup_race(
     game: Res<crate::Game>,
     test: Option<Res<AiTest>>,
     player: Query<(Entity, &Transform), (With<Player>, With<Car>)>,
+    balancing: Option<Res<AiBalancingArg>>,
     mut done: Local<bool>,
 ) {
     if *done || race.is_some() || (opponents.bundles.is_empty() && test.is_none()) {
@@ -436,7 +483,22 @@ fn setup_race(
         // The player's car follows the same route with the same driver: its pace is the reference.
         commands.entity(player_entity).insert((AiDriver::new(route.clone()), crate::drive::ExternalControls));
     }
-    commands.insert_resource(RaceSetup { route, grid });
+    let balancing = (0..opponents.bundles.len())
+        .map(|k| {
+            let (data, profile) = balancing.as_ref()?.0?;
+            match rubber_band_from_data(&game.store, data, profile, k, 1.0) {
+                Ok(rb) => {
+                    info!("AI: opponent {k} rubber band {rb:?}");
+                    Some(rb)
+                }
+                Err(e) => {
+                    warn!("AI: no rubber band for opponent {k}: {e:#}");
+                    None
+                }
+            }
+        })
+        .collect();
+    commands.insert_resource(RaceSetup { route, grid, balancing });
 }
 
 fn request_opponents(mut opponents: ResMut<Opponents>, requests: Option<Res<LoaderRequests>>) {
@@ -492,7 +554,9 @@ fn spawn_opponents(
                 damage: Some(crate::damage::DamageSource(spec.damage.clone().map(|d| (d, spec.impact_graph)))),
             },
         );
-        commands.entity(car).insert(AiDriver::new(race.route.clone()));
+        let mut driver = AiDriver::new(race.route.clone());
+        driver.rubber_band = race.balancing.get(slot).copied().flatten();
+        commands.entity(car).insert(driver);
         opponents.spawned[slot] = true;
         info!("AI: opponent {slot} ({}) placed at {start:.1?}", spec.bundle);
     }
@@ -537,6 +601,8 @@ fn ai_drive(
         })
         .collect();
     let player = cars.iter().find(|c| c.7).map(|c| (c.0, c.2.translation));
+    // The player's progress along each route (the race tracker's remaining distance, `world+0x2f47c` +0xdf0).
+    let player_progress = |route: &AiRoute| player.map(|(_, p)| route.project(p, None, 0.0).0);
     for (entity, mut car, mut t, mut v, mut w, ai, mut ctl, _) in &mut cars {
         let Some(mut ai) = ai else { continue };
         let ai = &mut *ai;
@@ -584,7 +650,15 @@ fn ai_drive(
             velocity: v.0,
             radius: ext.x.max(ext.z),
             steer_gains: car.params.ai_steer_pid,
-            schedule_speed: ai.schedule_speed,
+            schedule_speed: match (ai.rubber_band, player_progress(&ai.route)) {
+                (Some(rb), Some(ps)) if player.is_some_and(|(e, _)| e != entity) => {
+                    let x = (s / ai.route.length().max(1.0)).clamp(0.0, 1.0);
+                    let gap = player.map_or(0.0, |(_, p)| p.distance(t.translation));
+                    ai.schedule_speed = rb.speed(x, s - ps, gap);
+                    ai.schedule_speed
+                }
+                _ => ai.schedule_speed,
+            },
             corner_speed: corner_speed(&ai.route, s, &car, &settings.0),
             all_wheels_off: car.wheels_down() == 0,
             contact: car.body_contact,
