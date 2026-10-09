@@ -203,7 +203,7 @@ fn receive(
 }
 
 /// Lateral and spin intensities of one wheel (the skid sound rule of `FUN_009d1bf0`, per wheel).
-fn intensities(slip_angle_deg: f32, speed_mph: f32, tread_slip_mph: f32) -> (f32, f32) {
+pub(crate) fn intensities(slip_angle_deg: f32, speed_mph: f32, tread_slip_mph: f32) -> (f32, f32) {
     let lat = ((slip_angle_deg.abs() - 0.05) / (40.0 - 0.05)).clamp(0.0, 1.0) * (speed_mph / 10.0).clamp(0.0, 1.0);
     let spin = ((tread_slip_mph.abs() - 2.0) / (20.0 - 2.0)).clamp(0.0, 1.0);
     (lat, spin)

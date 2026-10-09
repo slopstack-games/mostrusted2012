@@ -358,13 +358,14 @@ enum Cmd {
         car: String,
     },
     /// The collision surface list (`HAWAII/SURFACELIST.BNDL`) with each surface's triangle count and
-    /// collision flags over the track units.
+    /// collision flags over the track units, and its dirt / dust build-up (`VehicleEffects`, dry | wet).
     Surfaces {
         /// `x,z[,radius]`: list the surfaces of the triangles around this point instead (radius 30 m): per
         /// surface the triangle count and the nearest triangle's centre, to find a spot to drive on.
         #[arg(long, allow_hyphen_values = true)]
         near: Option<String>,
-        /// With `--near`: list the 20 m cells with the most triangles of this surface index instead.
+        /// With `--near`: list the 20 m cells with the most triangles of this surface index instead; without it,
+        /// list places (flat triangles, at least 150 m apart) with this surface index (`x,y,z` for `--spawn`).
         #[arg(long)]
         find: Option<u8>,
     },

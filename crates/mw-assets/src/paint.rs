@@ -24,14 +24,21 @@ pub struct VehiclePaint {
     pub clearcoat_roughness: f32,
     pub clearcoat: bool,
     pub pearlescent: [f32; 3],
-    /// `DirtColour` / `DustColour`: the paint shaders' `GenericVector4_B` / `_C` colours of the dirt and
-    /// dust layers (their `.w` is not read by the paint shaders).
+    /// `DustColour` / `DirtColour`: the paint shaders' `GenericVector4_B` / `_C` colours of the dust and
+    /// dirt layers (the render record's paint block holds DustColour at +0x60 and DirtColour at +0x70, read
+    /// from a memory snapshot; docs/decomp.md "Vehicle paint, liveries and dirt").
     pub dirt_colour: [f32; 3],
     pub dust_colour: [f32; 3],
-    /// `DirtColour.w` / `DustColour.w`: `FUN_008e9c00` writes `GenericVector4_A.xy` = the car's dirt / dust
-    /// level × these (research log 2026-10-06, session 5 round 4).
+    /// `DirtColour.w` / `DustColour.w`: `FUN_008e9c00` writes `GenericVector4_A.xy` = (dust level ×
+    /// `DustColour.w`, dirt level × `DirtColour.w`).
     pub dirt_scale: f32,
     pub dust_scale: f32,
+    /// `PbrScratchColour`: `PbrPaintScratchColour`, the colour scratches show.
+    pub scratch_colour: [f32; 3],
+    /// `PbrScratchRoughness` and `0802d981` (unnamed): `PbrPaintScratchSettings.xy`, the roughness and F0 of
+    /// a scratch (paint block +0x8c / +0x90, matched to the paint's fields in a memory snapshot).
+    pub scratch_roughness: f32,
+    pub scratch_specular: f32,
     /// The `SecondaryColour` paint's (diffuse, specular) when the car's `VehicleColourPalette` pairs this
     /// paint with one in a `ColourGroup`: the `_TwoPaint*` shaders' second colour.
     pub secondary: Option<([f32; 3], [f32; 3])>,
@@ -75,6 +82,9 @@ impl VehiclePaint {
             dust_colour: vec3(o, "DustColour").unwrap_or([0.0; 3]),
             dirt_scale: vec_w(o, "DirtColour").unwrap_or(1.0),
             dust_scale: vec_w(o, "DustColour").unwrap_or(1.0),
+            scratch_colour: vec3(o, "PbrScratchColour").unwrap_or([0.0; 3]),
+            scratch_roughness: float(o, field_hash("PbrScratchRoughness")).unwrap_or(1.0),
+            scratch_specular: float(o, 0x0802d981).unwrap_or(0.0),
             secondary: None,
             colour_index: match o.get(field_hash("PaintColour")) {
                 Some(Value::Int(i)) => *i,
@@ -86,6 +96,18 @@ impl VehiclePaint {
 }
 
 impl AssetStore {
+    /// The car's scratch scale: `VehicleInfo.76bfd668` (10 on 173 cars, 1 on 24). `FUN_00585030` multiplies the
+    /// zone damage levels by it (capped at 1) into the paint's damage grid, so 10 % damage scratches a zone fully.
+    pub fn scratch_scale(&self, bundle: &Bundle) -> Option<f32> {
+        for e in bundle.entries_of_type(ResourceType::GenesysObject) {
+            let Ok(obj) = self.decode_genesys(&bundle.load(e).ok()?) else { continue };
+            if obj.type_name == "Genesys.Gen.VehicleInfo" {
+                return float(&obj, 0x76bfd668);
+            }
+        }
+        None
+    }
+
     /// One `VehiclePaint` object by ID (traffic cars keep theirs in `VEHICLES/TRAFFICATTRIBS.BNDL`).
     pub fn vehicle_paint(&self, id: ResourceId) -> Result<Option<VehiclePaint>> {
         let obj = self.genesys_object(id)?;

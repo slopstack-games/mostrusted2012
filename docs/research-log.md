@@ -43,6 +43,56 @@ User report: "surfaces don't change the grip yet, grass and dirt drive like norm
   to confirm "human player"); `FUN_009d5270`, the other reader of the front wheels' lateral grip; the wet block's
   condition.
 
+### 2026-10-09: cars get dirty and scratched (dirt / dust build-up, damage scratches)
+User report: "the cars also don't get scratches and dirt on them". Ported from the code, the data and the paint
+shader; rules in decomp.md "Vehicle paint, liveries and dirt", runtime `crates/mostrusted/src/paint_wear.rs`.
+- **Dead end first**: the 2026-10-06 lead (`FUN_008e1280`'s callers) is a view-constant block, not the car's
+  record. The records come from `FUN_00583290`, which reads the dust / dirt from render instance words 0x6f6 /
+  0x6f4; `FUN_00591ac0` copies them from vehicle +0x2c80 / +0x2c84 each frame. No function in the dump writes
+  those: scanning the decrypted `.text` of a memory snapshot (`re/out/live/snap1`) for the 32-bit displacement
+  0x2c80 found three `lea ecx, [reg+0x2c80]` before thiscalls, i.e. a sub-object whose methods use `this`:
+  `FUN_009d1980` (reset), `FUN_009ce7b0` (spawn: start levels from the instance), `FUN_009d6e30` → **`FUN_009d19c0`
+  (the build-up)**, earlier mislabelled "surface rumble". Useful technique for other "no writer" offsets
+  (vehicle +0x2c70, the steering offset, sits in the same block). Scanner kept in the session scratchpad
+  (`dispscan.py`: objdump at each hit, function from `functions.csv`).
+- **Build-up**: per wheel on the ground, from the surface's `SurfaceVehicleEffects` (new type: `Dirt` / `Dust`
+  = (rate, time), speed ramp 30 → 120 mph): dirt += max(skid values, ramp) × dt / max(time, dt) × rate / 4, dust
+  += ramp × dt / max(time, dt) × rate / 4, clamped 0..1. Grass / dirt: 0.06 / s each at full speed; dry asphalt
+  only dust (0.01 / s at 120 mph); two water surfaces wash (−0.5). The repair message (0x12) zeroes them.
+- **Dust and dirt were swapped**: the snapshot's paint block holds `DustColour` at +0x60 (→ `GenericVector4_B`,
+  the e.w² mask: light streaks low on the body) and `DirtColour` at +0x70 (→ `_C`, the e.y² × e(uv × 7).x
+  splatter). The record scales dust × 2 and dirt × 3 before the colours' w.
+- **Scratches**: the paint's vertex program samples a 3 × 5 grid (`gavDamageVolumeValues`) over the car's
+  bounding box at the bind-pose x / z; `FUN_00585030` fills it from the eight zone levels (vehicle +0x112c…,
+  ring order front-left … left) × `VehicleInfo.76bfd668` (10; read through the snapshot) capped at 1. The pixel
+  program's scratch term (effects map z bands) lerps to `PbrScratchColour`, `PbrScratchRoughness` and
+  `0802d981` (scratch F0, matched in the snapshot). A 10 % zone hit scratches that end of the car fully.
+- **Built**: `CarGrime` (dust, dirt) per `Car` (player and AI) built up in `FixedPostUpdate`; each car gets its
+  own copies of its paint materials, updated when the levels or the grid move by 1/512; the paint meshes carry
+  the bind-pose x / z in COLOR.zw (AO stays in xy); lightmapped paints (`_Lightmap`, 31 cars) read the effects
+  map from UV_0, so they get dirt and scratches too (`_Livery_Lightmap` still not: three UV sets). `--dirt`
+  now sets the starting levels; R (reset) repairs and washes. `mwtool surfaces` prints each surface's build-up and
+  `--find <index>` lists flat places with that surface; `--track-surface <index>` (merged in place of `MW_TEST_SURFACE`) makes the test track that
+  surface; `MW_DIRT_LOG=1` logs the player's levels.
+- **Checks** (session scratchpad `pw/`): `static_compare.png` (911 `--dirt 1,0` splatter, `0,1` dust streaks,
+  silver `0.6,0.6`), `m3_compare.png` (BMW M3, lightmapped paint, clean / dirty), `track_dirt_1500.png` vs
+  `track_clean_1500.png` (`--track-surface 7 --test-track --auto-throttle 1`: dust 0.60, dirt 0.62 after ~25 s;
+  rear bumper and sills covered), `crash_compare.png` / `m3crash_compare.png` (`--test crash`, front 44 % /
+  26 %: scratch bands over the front wings and bumper fading onto the doors). `--test drift` on dirt: dirt
+  0.34 after the 6 s drift.
+- **Model decisions**: (1) the per-wheel skid values that feed the dirt rate (`FUN_009cef90`, smoothed, three
+  per wheel) are stood in for by the skid sound's lateral / spin ramps per wheel, unsmoothed; (2) the dry weather
+  block is always used (the game takes the wet one when the surface manager's state is ≥ 1, not identified;
+  grip and sounds also use dry here); (3) the grid box is the body meshes' vertex box (the game's: the model's
+  mesh boxes); (4) the grid is sampled per fragment from interpolated x / z (the game per vertex); (5) our zone
+  levels (the damage clips' positions) stand for the vehicle's zone values, and the 0.99 cap is applied always
+  (no wrecked state here); (6) traffic cars stay clean (their own spawn path; whether the game builds up their
+  dirt is not checked); (7) the clear coat keeps our merged form, now × (1 − s) as well.
+- **Open**: the crumple normal map / AO (TEXCOORD1, needs a third UV path), rain drops on the paint
+  (`GenericSamplerB`, `A.zw`), the wet block's selector, `FUN_009cef90`, gas stations repairing (the handler is
+  reached through a vtable), and a capture of the original's dirty car for colour (ours reads blue-grey under
+  the test track's sky).
+
 ### 2026-10-09: engine sound "stuck in gear": the audible RPM range is the bank's Ginsu span; load, shift clock, effects
 User report after a race: "the sound in general is pretty fucked but mostly the engine still sounds as if it is
 stuck in gear". The physics shifts (911 `--test accel`: 7800 → 5100 rpm on 1→2); the sound did not follow.

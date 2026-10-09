@@ -218,6 +218,7 @@ pub fn surfaces(store: &AssetStore, near: Option<[f32; 3]>, find: Option<u8>) ->
         return surfaces_near(store, &list, at, find);
     }
     let mut tris: BTreeMap<u8, (usize, BTreeMap<u16, usize>)> = BTreeMap::new();
+    let mut places: Vec<[f32; 3]> = Vec::new();
     for p in store.bundle_paths().to_vec() {
         if !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("TRK_UNIT")) {
             continue;
@@ -225,6 +226,27 @@ pub fn surfaces(store: &AssetStore, near: Option<[f32; 3]>, find: Option<u8>) ->
         let Some(b) = store.bundle(&p) else { continue };
         for e in b.entries_of_type(ResourceType::PolygonSoupList) {
             let soups = mw_formats::PolygonSoupList::parse(&b.load(e)?)?;
+            if let Some(want) = find {
+                let (verts, idx) = soups.triangles();
+                for (tri, tag) in idx.iter().zip(soups.triangle_tags()) {
+                    if CollisionTag::from_u32(tag).surface != want {
+                        continue;
+                    }
+                    let [a, b, c] = tri.map(|i| verts[i as usize]);
+                    let sub = |p: [f32; 3], q: [f32; 3]| [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
+                    let (u, v) = (sub(b, a), sub(c, a));
+                    let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+                    let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                    let centre = [(a[0] + b[0] + c[0]) / 3.0, (a[1] + b[1] + c[1]) / 3.0, (a[2] + b[2] + c[2]) / 3.0];
+                    let far = |p: &[f32; 3]| {
+                        let d = sub(*p, centre);
+                        d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > 150.0 * 150.0
+                    };
+                    if len > 0.0 && (n[1] / len).abs() > 0.95 && places.iter().all(far) {
+                        places.push(centre);
+                    }
+                }
+            }
             for t in soups.triangle_tags().into_iter().map(CollisionTag::from_u32) {
                 let s = tris.entry(t.surface).or_default();
                 s.0 += 1;
@@ -234,12 +256,18 @@ pub fn surfaces(store: &AssetStore, near: Option<[f32; 3]>, find: Option<u8>) ->
         store.evict_all();
     }
     println!(
-        "index  id                colour (debug)         grip   rolling  drag   physics  speed  roughness      triangles  flags (count)"
+        "index  id                colour (debug)         grip   rolling  drag   physics  speed  roughness      triangles  dirt/dust dry | wet  flags (count)"
     );
+    let fx = |e: &Option<mw_assets::surfaces::VehicleEffects>| match e {
+        Some(e) => {
+            format!("{:+.3}/{} {:+.3}/{} {}-{}", e.dirt.0, e.dirt.1, e.dust.0, e.dust.1, e.speed_start, e.speed_full)
+        }
+        None => "-".into(),
+    };
     for (i, s) in list.iter().enumerate() {
         let (n, flags) = tris.get(&(i as u8)).cloned().unwrap_or_default();
         println!(
-            "{i:>5}  {}  ({:.2} {:.2} {:.2})   {:>5}  {:>7}  {:>5}  {:>7}  {:>5}  {:<13}  {n:>9}  {:?}",
+            "{i:>5}  {}  ({:.2} {:.2} {:.2})   {:>5}  {:>7}  {:>5}  {:>7}  {:>5}  {:<13}  {n:>9}  {} | {}  {:?}",
             s.id,
             s.colour[0],
             s.colour[1],
@@ -250,8 +278,16 @@ pub fn surfaces(store: &AssetStore, near: Option<[f32; 3]>, find: Option<u8>) ->
             s.physics_uid.map_or("-".into(), |g| g.to_string()),
             s.speed.map_or("-".into(), |g| g.to_string()),
             s.roughness.map_or("-".into(), |r| format!("{:.2} {:.2}", r[0], r[1])),
+            fx(&s.vehicle_effects[0]),
+            fx(&s.vehicle_effects[1]),
             flags
         );
+    }
+    if let Some(want) = find {
+        println!("surface {want}: {} places", places.len());
+        for p in places.iter().take(40) {
+            println!("  {:.0},{:.0},{:.0}", p[0], p[1], p[2]);
+        }
     }
     Ok(())
 }

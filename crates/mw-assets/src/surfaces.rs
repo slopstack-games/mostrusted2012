@@ -42,9 +42,51 @@ pub struct SurfaceInfo {
     /// `RoadOverrides` `7585f9cb`: scale of the speed- and slip-dependent drag from the car's surface link
     /// (1 on asphalt, 0 on the default surface).
     pub slide_drag: Option<f32>,
+    /// `VehicleEffects` of the dry and the wet weather block: how fast a car on this surface gets dirty
+    /// (`FUN_009d19c0`, docs/decomp.md "Vehicle paint, liveries and dirt").
+    pub vehicle_effects: [Option<VehicleEffects>; 2],
+}
+
+/// `Genesys.Gen.SurfaceVehicleEffects`: the dirt and dust build-up a surface gives a car's paint.
+///
+/// Read by `FUN_009d19c0` once per physics tick for every wheel on the ground (offsets in the object):
+/// `Dirt` +0x0c (`ea1c1262` rate +0x1c, `0979a504` time +0x20), `Dust` +0x24 (+0x34, +0x38), `0d9ece32` +0x40
+/// (speed of full effect, mph) and `f8bbba83` +0x44 (speed where it starts, mph).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VehicleEffects {
+    /// The `Dirt` effect: (rate, time in seconds).
+    pub dirt: (f32, f32),
+    /// The `Dust` effect: (rate, time in seconds).
+    pub dust: (f32, f32),
+    /// `0d9ece32`: speed (mph) where the speed ramp reaches 1 (120 on every surface that has the block).
+    pub speed_full: f32,
+    /// `f8bbba83`: speed (mph) where the speed ramp starts (30, or 15 on the 60 mph block).
+    pub speed_start: f32,
+}
+
+const RATE: u32 = 0xea1c1262;
+const TIME: u32 = 0x0979a504;
+const SPEED_FULL: u32 = 0x0d9ece32;
+const SPEED_START: u32 = 0xf8bbba83;
+
+impl VehicleEffects {
+    fn from_object(o: &Object) -> Self {
+        let effect = |name: &str| {
+            sub(o, field_hash(name))
+                .map(|e| (float(e.get(RATE)).unwrap_or(0.0), float(e.get(TIME)).unwrap_or(0.0)))
+                .unwrap_or((0.0, 0.0))
+        };
+        VehicleEffects {
+            dirt: effect("Dirt"),
+            dust: effect("Dust"),
+            speed_full: float(o.get(SPEED_FULL)).unwrap_or(0.0),
+            speed_start: float(o.get(SPEED_START)).unwrap_or(0.0),
+        }
+    }
 }
 
 const DRY: u32 = 0xf395b019;
+const WET: u32 = 0x7348be25;
 /// `CgsCore.UniqueId` field present in every GeneSys object.
 const UNIQUE_ID: u32 = 0x655d3f5f;
 /// `SurfacePhysics.TyreSpecificOverrides`: rolling resistance coefficient and slide-drag scale (unnamed;
@@ -132,6 +174,11 @@ impl AssetStore {
                 }),
                 rolling: float(road.and_then(|r| r.get(ROLLING))),
                 slide_drag: float(road.and_then(|r| r.get(SLIDE_DRAG))),
+                vehicle_effects: [DRY, WET].map(|block| {
+                    handle(sub(&s, block).and_then(|b| get(b, "VehicleEffects")))
+                        .and_then(|h| self.genesys_object(h).ok())
+                        .map(|o| VehicleEffects::from_object(&o))
+                }),
             });
         }
         Ok(out)
