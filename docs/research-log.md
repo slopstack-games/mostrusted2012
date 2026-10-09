@@ -10,6 +10,52 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-09: traffic horns, traffic crash and skid sounds, AI racers' crash sounds
+Request: "add traffic horns and traffic crash and skid sounds as the original has them". Every function and
+constant in decomp.md "Traffic horns, crashes and skids"; data `mw_assets::car_sfx`, runtime `car_sfx.rs`.
+- **Horns**: the "55" timer is seconds of behaviour time and starts at FLT_MAX (`snap2`: FLT_MAX on every
+  unchecked car); a car stopping for an obstacle (mode 0) honks when its personality ≤ `TrafficParamConfig
+  .831be501` = 0.4, then not again for 55 s. The open "TrafficConfig +0x20 / +0x24" were `TrafficParamConfig`
+  (0.4, and 0.7 for the swerve / jack-knife manoeuvres' horn). Two horn slots, `horns[car index % count]` within
+  60 m. Six horn timelines; four branch on `Signals.GetRandomNumber[100](LTEQ,50)` through a
+  `JumpTimelineController`, now run by `sfx_player` (with the comma form). Traffic `JumpTimelineController`s are
+  time triggers (the skid loop 4 → 1 s, the wreck loop 12 → 10.5 s).
+- **Crashes**: the 31 `CollisionSoundSet` slots are now identified for 18 of them: (competitor | player) ×
+  (light / medium / heavy) × (front / rear / side by 30°), `FUN_0057e920`; traffic car contacts always use the
+  competitor light front slot (`333a28fc`). World impacts play a wave of the surface's `Collision_Sounds` pool
+  `7e01f1e6`, gain 0.714..1 over 30..100 mph. Thresholds in the global `VehicleSound` (2.235 m/s, 14, 30, 0.1 s).
+  Items without a mixer channel play on a mix-snapshot channel named by `Snapshot_Property` (`Mix_Main`, gains
+  0.26 / 0.40 / 0.63 small / medium / big); 38 channel names added to `genesys_names.txt` from `FUN_004b5f40`.
+- **Skids**: six traffic skid slots, started for the nearest physical car whose wheel 0 marks and that moves
+  faster than 5 m/s, stopped with a 0.1 s release. AI racers' skids: a Drift + (Brake | Spin) state machine with
+  0.15 s swaps (`FUN_0058f6d0`), switched by an unidentified vehicle field (+0x2d58); not ported.
+- **Offline** (`mwtool traffic-sound sfx out.wav`, levels before placement): horns 0.95–4.94 s, −27..−31 dBFS
+  RMS (branches seen: 1822f8 2.12 / 3.53 s, 1822ff 3.50 / 3.83 s); competitor impacts 2.5–3 s, light −40..−42,
+  medium −35..−36, heavy −31..−34 dBFS; world wave −34.5 / −32.8 / −31.6 dBFS at 10 / 30 / 50 m/s; skid loop
+  −25 dBFS, stopped at 6 s it ends at 6.51 s.
+- **In game** (`MW_AUDIO_METER=1 MW_CAR_SFX_LOG=1`, voice out = rendered RMS before the effects volume):
+  - free roam at 0.3 throttle (`--drive 911 --units 30 --spawn=800,42,1688,71 --auto-throttle 0.3 --bench 75`):
+    the 911 rams car 25 and stays pushing it; 13–23 horn timers armed, 1 horn (46.6 m, full gain).
+  - the same at full throttle (60 s, two runs): 3 horns each (35–48 m at start, out −28..−31 dBFS at 10–40 m, gain
+    0 dB: the horn falloff's peak gain 5 holds full level to ~45 m), 5–6 traffic skids (pushed crashed car, 11–12 m,
+    gain −2.3 dB, out −28..−44 dBFS), 1 traffic car impact (11.2 m, −1.1 dB, out −34.7 dBFS), 1–3 traffic world
+    impacts (11–12 m, −1.0 dB, out −32..−34 dBFS); traffic engines at the same distances −32..−45 dBFS.
+  - race (`--race 462174 --no-cutscenes --bench 90`): 11 AI car impacts, 52 AI world impacts (+2 with the set's
+    slot), 3 horns, 4 traffic skids, 1 traffic world impact. AI impact gain by distance: −3 dB at 10–40 m, −10 at
+    40–60, −17 at 60–100 (out −35..−39 dBFS within 40 m, −60 at 60–100); world waves −5 dB to 60 m, −13 at 60–100,
+    −26 beyond 100 m; doppler 0.955..1.05. AI engines at 23–48 m: −26..−28 dBFS.
+  - first race run, with the game's own car-car test (any value above 0): AI cars leaning on each other filled
+    the impact voices (624 impacts skipped in 90 s); with the 2.235 m/s threshold none were skipped.
+- Model decisions (decomp.md lists them): impact records → per-step contacts with the 2.235 m/s threshold and
+  0.1 s spacing for every impact; closing speed as the impact value; the default surface; no scrapes; crashed
+  traffic "skids" when touching the world above 5 m/s; 8 impact voices; impacts at zero gain not started; one
+  placement per voice; the random draw's range.
+- Open: the player's horn runtime (the player's horn list, `Player Vehicle Horn`), the player's impacts by the
+  traced slot table (`sfx.rs` still sorts by loudness), the scrape branch (`FUN_00929da0`), the AI skid state
+  machine's field (+0x2d58), contact surfaces for impact waves, wrecked-traffic sounds and car alarms (no damage
+  bar on traffic, no parked cars), manoeuvre horns, a capture of the original with traffic to set these levels
+  against the player's engine.
+
 ### 2026-10-09: the "flashbang": the impact shake's noise spring diverged at low frame rates
 User report: "sometimes it randomly seems to flashbang" (the screen goes white for a moment while driving).
 - **Detector** (`flash_probe.rs` / `flash_probe.wgsl`, debug only): `MW_FLASH_LOG=1|<file>` reduces each
