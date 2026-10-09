@@ -343,15 +343,26 @@ fn label_text(scene: &UiScene, e: &Element, lookup: &mut Lookup) -> String {
 impl UiScene {
     /// Draw every layout for a screen of `screen` pixels. Elements whose visibility binding is unknown or
     /// false are skipped; masks clip (axis-aligned, by rectangle) the elements up to their `PopMask`.
+    /// Triggered behaviours show their settled state (see [`UiAnim`]).
     pub fn draw(&self, screen: [f32; 2], lookup: &mut Lookup) -> Vec<Quad> {
+        self.draw_with(screen, lookup, &mut DrawOptions::default())
+    }
+
+    /// [`draw`](Self::draw) with options: only some layouts, and triggered behaviours animated over time.
+    pub fn draw_with(&self, screen: [f32; 2], lookup: &mut Lookup, options: &mut DrawOptions) -> Vec<Quad> {
         let mut out = Vec::new();
-        for pl in &self.layouts {
+        for (index, pl) in self.layouts.iter().enumerate() {
+            if options.layouts.as_ref().is_some_and(|only| !only(index)) {
+                continue;
+            }
             if let Some(i) = &pl.instance
                 && !i.visibility.is_empty()
                 && !eval(&i.visibility, lookup).is_some_and(|v| v.truthy())
             {
                 continue;
             }
+            options.layout = index as u32;
+            options.cell = u32::MAX;
             let place = Placement::new(pl.instance.as_ref(), screen);
             let mut clips: Vec<[f32; 4]> = Vec::new();
             for e in &pl.layout.elements {
@@ -365,12 +376,13 @@ impl UiScene {
                     }
                     continue;
                 }
-                self.element(e, &place, None, clips.last().copied(), lookup, &mut out);
+                self.element(e, &place, None, clips.last().copied(), lookup, options, &mut out);
             }
         }
         out
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn element(
         &self,
         e: &Element,
@@ -378,12 +390,20 @@ impl UiScene {
         parent: Option<[f32; 2]>,
         clip: Option<[f32; 4]>,
         lookup: &mut Lookup,
+        options: &mut DrawOptions,
         out: &mut Vec<Quad>,
     ) {
         if !e.bindings.visibility.is_empty() && !eval(&e.bindings.visibility, lookup).is_some_and(|v| v.truthy()) {
             return;
         }
+        let tween = options.tween(e, lookup);
+        if tween.opacity <= 0.0 {
+            return;
+        }
         let (mut rect, mut pivot) = element_rect(e, lookup);
+        rect[0] += tween.offset[0];
+        rect[1] += tween.offset[1];
+        pivot = [pivot[0] + tween.offset[0], pivot[1] + tween.offset[1]];
         // Sub-elements (backing images) are placed relative to their label.
         if let Some(p) = parent {
             rect[0] += p[0];
@@ -391,10 +411,10 @@ impl UiScene {
             pivot = [pivot[0] + p[0], pivot[1] + p[1]];
         }
         let rotation = eval_num(&e.bindings.rotation, lookup).unwrap_or(e.rotation);
-        let opacity = eval_num(&e.bindings.opacity, lookup).map_or(e.opacity, |o| o.clamp(0.0, 1.0));
+        let opacity = eval_num(&e.bindings.opacity, lookup).map_or(e.opacity, |o| o.clamp(0.0, 1.0)) * tween.opacity;
         let blend = e.material.and_then(|m| self.blends.get(&m).copied()).unwrap_or_default();
         if let Some(st) = &e.stack {
-            self.stack(st, place, [rect[0], rect[1]], clip, lookup, out);
+            self.stack(st, place, [rect[0], rect[1]], clip, lookup, options, out);
             return;
         }
         let screen_rect = place.rect(rect);
@@ -407,7 +427,8 @@ impl UiScene {
             backing.size = [rect[2], rect[3]];
             backing.position = [0.0, 0.0];
             backing.anchor = 0;
-            self.element(&backing, place, Some([rect[0], rect[1]]), clip, lookup, out);
+            backing.opacity *= tween.opacity;
+            self.element(&backing, place, Some([rect[0], rect[1]]), clip, lookup, options, out);
         }
         let mut push = |texture: Option<ResourceId>, uv: [f32; 4], r: [f32; 4], colour: [f32; 4], map: bool| {
             push_quad(out, Quad { texture, uv, rect: r, rotation, colour, blend, map }, screen_pivot, clip);
@@ -519,6 +540,7 @@ impl UiScene {
     /// entry's index and the enclosing stack's index, a binding without a dot (`Name`, `Locked`) is a field of
     /// the entry and is looked up as `<data source>[<index>].<field>`, and the lookup answers `#index` with
     /// the current index (how a nested stack learns `#parent_index#`).
+    #[allow(clippy::too_many_arguments)]
     fn stack(
         &self,
         st: &fmt::ui::Stack,
@@ -526,6 +548,7 @@ impl UiScene {
         origin: [f32; 2],
         clip: Option<[f32; 4]>,
         lookup: &mut Lookup,
+        options: &mut DrawOptions,
         out: &mut Vec<Quad>,
     ) {
         let parent = lookup("#index", None).map_or(0, |v| v.num() as i64);
@@ -533,7 +556,12 @@ impl UiScene {
         let n = if list { eval_num(&st.length, lookup).map_or(0, |v| v.clamp(0.0, 64.0) as usize) } else { 1 };
         let source = st.data_source.trim_start_matches('~').replace("#parent_index#", &parent.to_string());
         let mut y = origin[1];
-        let mut cell = |this: &Self, ids: &[ResourceId], index: Option<usize>, y: &mut f32, lookup: &mut Lookup| {
+        let mut cell = |this: &Self,
+                        ids: &[ResourceId],
+                        index: Option<usize>,
+                        y: &mut f32,
+                        lookup: &mut Lookup,
+                        options: &mut DrawOptions| {
             let i = index.unwrap_or(0);
             let item = match (index, list) {
                 (Some(i), true) => format!("{source}[{i}]"),
@@ -553,14 +581,18 @@ impl UiScene {
             for l in ids.iter().filter_map(|id| this.cells.get(id)) {
                 for e in &l.elements {
                     if e.kind != ElementKind::Mask {
-                        this.element(e, place, Some([origin[0], *y]), clip, &mut inner, out);
+                        // Behaviour state per cell: entry index + 1 (0 = header / footer).
+                        let outer = options.cell;
+                        options.cell = index.map_or(0, |i| i as u32 + 1);
+                        this.element(e, place, Some([origin[0], *y]), clip, &mut inner, options, out);
+                        options.cell = outer;
                     }
                 }
                 h = h.max(cell_height(this, l, 0, &mut inner));
             }
             *y += h;
         };
-        cell(self, &st.header, None, &mut y, lookup);
+        cell(self, &st.header, None, &mut y, lookup, options);
         for i in 0..n {
             // The first template whose binding holds for this entry, else the default.
             let ids = st
@@ -571,9 +603,9 @@ impl UiScene {
                     !b.is_empty() && eval(&b, lookup).is_some_and(|v| v.truthy())
                 })
                 .map_or(&st.default, |t| &t.1);
-            cell(self, ids, Some(i), &mut y, lookup);
+            cell(self, ids, Some(i), &mut y, lookup, options);
         }
-        cell(self, &st.footer, None, &mut y, lookup);
+        cell(self, &st.footer, None, &mut y, lookup, options);
     }
 }
 
@@ -622,6 +654,150 @@ fn push_quad(out: &mut Vec<Quad>, mut q: Quad, pivot: [f32; 2], clip: Option<[f3
         }
     }
     out.push(q);
+}
+
+/// Which layouts to draw and how to animate triggered behaviours.
+#[derive(Default)]
+pub struct DrawOptions<'a> {
+    /// Only the layouts (indices into [`UiScene::layouts`]) this returns true for.
+    pub layouts: Option<Box<dyn Fn(usize) -> bool + 'a>>,
+    /// Trigger state for timed tweens; `None` shows every triggered behaviour settled.
+    pub anim: Option<&'a mut UiAnim>,
+    /// Seconds, on any clock `anim` keeps seeing.
+    pub now: f64,
+    layout: u32,
+    cell: u32,
+}
+
+/// When each element's trigger bindings last changed and their value then, keyed by (element UniqueId,
+/// trigger index, layout index, stack cell).
+#[derive(Debug, Default, Clone)]
+pub struct UiAnim {
+    triggers: HashMap<(u32, u32, u32, u32), (bool, f64)>,
+}
+
+impl UiAnim {
+    /// Forget every trigger (the next frame shows settled states).
+    pub fn reset(&mut self) {
+        self.triggers.clear();
+    }
+}
+
+/// What the triggered behaviours do to an element at one moment.
+#[derive(Debug, Clone, Copy)]
+struct Tween {
+    opacity: f32,
+    offset: [f32; 2],
+}
+
+impl DrawOptions<'_> {
+    /// Combine the element's triggered behaviours (a `TriggerBinding` whose rising edge plays the
+    /// transition-in steps and falling edge the transition-out steps). Steps, in order, each from its `Delay`
+    /// over its `Duration` (ms): `IN` fades in, `OUT` fades out, `TO,INVISIBLE` hides, `dx,dy` moves by that
+    /// many reference pixels. Colour steps (`TO,WHITE`, `TO,<palette entry>`), four-number steps (scales,
+    /// read) and bare ids (sounds) are not applied. A trigger that has not changed since it was first seen
+    /// counts as long finished (its current list settled). The step vocabulary is the data's; what each step
+    /// does is our reading of the names (the tween code was not traced).
+    fn tween(&mut self, e: &Element, lookup: &mut Lookup) -> Tween {
+        let mut t = Tween { opacity: 1.0, offset: [0.0; 2] };
+        for (k, tb) in e.triggered.iter().enumerate() {
+            if tb.trigger.is_empty() {
+                continue;
+            }
+            let on = eval(&tb.trigger, lookup).is_some_and(|v| v.truthy());
+            let since = match self.anim.as_deref_mut() {
+                Some(anim) => {
+                    let key = (e.id, k as u32, self.layout, self.cell);
+                    let entry = anim.triggers.entry(key).or_insert((on, f64::NEG_INFINITY));
+                    if entry.0 != on {
+                        *entry = (on, self.now);
+                    }
+                    ((self.now - entry.1) * 1000.0) as f32
+                }
+                None => f32::INFINITY,
+            };
+            let steps = if on { &tb.transition_in } else { &tb.transition_out };
+            for b in steps {
+                let p = if b.duration <= 0.0 {
+                    if since >= b.delay { 1.0 } else { 0.0 }
+                } else {
+                    ((since - b.delay) / b.duration).clamp(0.0, 1.0)
+                };
+                let params = b.parameters.trim();
+                let nums: Vec<f32> = params.split(',').filter_map(|v| v.trim().parse().ok()).collect();
+                match params {
+                    "IN" => t.opacity *= p,
+                    "OUT" => t.opacity *= 1.0 - p,
+                    "TO,INVISIBLE" if p >= 1.0 => t.opacity = 0.0,
+                    _ if nums.len() == 2 && params.split(',').count() == 2 => {
+                        t.offset[0] += nums[0] * p;
+                        t.offset[1] += nums[1] * p;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        t
+    }
+}
+
+/// A layout a `Sequence` shows (`LayoutSequenceItem`), from `start` to `end` seconds of the sequence's clock.
+#[derive(Debug, Clone)]
+pub struct SequenceLayout {
+    pub start: f32,
+    pub end: f32,
+    /// `EnabledBinding` (empty = always).
+    pub enabled: String,
+    /// `Text1` (`bf1ce9a1`), `Text2`, `Text3`: language ids the layout reads as `UISequences.Params[#].TextN`.
+    pub texts: [u32; 3],
+    pub layout: PlacedLayout,
+}
+
+impl AssetStore {
+    /// The `LayoutSequenceItem`s of a `Sequence` (by UniqueId), in item order; the other items (waves,
+    /// PostFX, mixer channels) are left out.
+    pub fn ui_sequence_layouts(&self, sequence: u32) -> Result<Vec<SequenceLayout>> {
+        use fmt::genesys::{Value, field_hash as h};
+        let o = self.genesys_object(fmt::ui::object_id(sequence))?;
+        let num = |o: &fmt::genesys::Object, name: u32| match o.get(name) {
+            Some(Value::Float(f)) => *f,
+            Some(Value::Int(i)) => *i as f32,
+            Some(Value::UInt(u)) => *u as f32,
+            _ => 0.0,
+        };
+        let handle = |o: &fmt::genesys::Object, name: &str| match o.get(h(name)) {
+            Some(Value::Handle(Some(id))) | Some(Value::Ref(id)) => Some(*id),
+            _ => None,
+        };
+        let mut out = Vec::new();
+        let Some(Value::Array(items)) = o.get(h("SequenceItems")) else { return Ok(out) };
+        for item in items {
+            let Value::Struct(item) = item else { continue };
+            if !item.type_name.ends_with("LayoutSequenceItem") {
+                continue;
+            }
+            let Some(layout) = handle(item, "Layout").and_then(|l| self.ui_layout(l).ok()) else { continue };
+            let instance = handle(item, "InstanceParams").and_then(|i| self.ui_layout_instance(i).ok());
+            let enabled = match item.get(h("EnabledBinding")) {
+                Some(Value::Str(s)) => s.clone(),
+                _ => String::new(),
+            };
+            out.push(SequenceLayout {
+                start: num(item, h("StartTime")),
+                end: num(item, h("EndTime")),
+                enabled,
+                texts: [num(item, 0xbf1c_e9a1) as u32, num(item, h("Text2")) as u32, num(item, h("Text3")) as u32],
+                layout: PlacedLayout {
+                    widget_index: 0,
+                    widget: String::new(),
+                    widget_type: String::new(),
+                    layout,
+                    instance,
+                },
+            });
+        }
+        Ok(out)
+    }
 }
 
 /// The minimap's source: a grid of map tiles (`HAWAII/MAPS/UIMAPGRIDS.BNDL`, `UIMapGrid`) covering the city.
