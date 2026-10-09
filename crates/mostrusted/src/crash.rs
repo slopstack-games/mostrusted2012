@@ -324,12 +324,19 @@ pub(crate) fn run_sequence(
             let fov = if b.zoom.use_zoom { b.zoom.min_fov } else { b.zoom.max_fov };
             if let Ok((mut cam, mut projection)) = camera.single_mut() {
                 let mut frame = Transform::from_translation(eye).looking_at(view.aim, Vec3::Y);
-                let half = (fov.to_radians() / 2.0).tan();
-                frame.rotate_local_x(-(b.tracking.screen_offset[1] * half).atan());
-                frame.rotate_local_y((b.tracking.screen_offset[0] * half).atan());
+                // Screen offsets in half-widths / half-heights; the FOV is horizontal (`camera::projection_fov`).
+                let (half_x, half_y) = match &*projection {
+                    Projection::Perspective(p) => (
+                        (fov.to_radians() / 2.0).tan(),
+                        (crate::camera::projection_fov(fov, p.aspect_ratio) / 2.0).tan(),
+                    ),
+                    _ => ((fov.to_radians() / 2.0).tan(), (fov.to_radians() / 2.0).tan()),
+                };
+                frame.rotate_local_x(-(b.tracking.screen_offset[1] * half_y).atan());
+                frame.rotate_local_y((b.tracking.screen_offset[0] * half_x).atan());
                 *cam = frame;
                 if let Projection::Perspective(p) = &mut *projection {
-                    p.fov = fov.to_radians();
+                    p.fov = crate::camera::projection_fov(fov, p.aspect_ratio);
                 }
             }
             traced = Some((index as i32, eye, view.aim, fov, car_t.translation, vel.length() / MPH));
@@ -338,7 +345,7 @@ pub(crate) fn run_sequence(
             active.shot = None;
             if let (Some((_, car_t, vel, _)), Ok((cam, projection))) = (car, camera.single_mut()) {
                 let fov = match &*projection {
-                    Projection::Perspective(p) => p.fov.to_degrees(),
+                    Projection::Perspective(p) => crate::camera::game_fov(p),
                     _ => 0.0,
                 };
                 traced = Some((

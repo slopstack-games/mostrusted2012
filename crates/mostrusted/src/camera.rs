@@ -792,9 +792,8 @@ fn follow_car(
     let shake_pitch = s.impact.angles.x;
     *cam = t;
     if let Projection::Perspective(p) = &mut *projection {
-        // Vertical, as Bevy's: read as horizontal, 70° crops the car far tighter than the original's
-        // chase view.
-        p.fov = s.fov.to_radians();
+        // The game's FOV is horizontal ([`projection_fov`]).
+        p.fov = projection_fov(s.fov, p.aspect_ratio);
     }
 
     if let Some(f) = &mut s.trace {
@@ -1012,4 +1011,25 @@ fn free_camera_stick(
 
 fn wrap_angle(a: f32) -> f32 {
     (a + PI).rem_euclid(TAU) - PI
+}
+
+/// The game's field of view (degrees) is horizontal; Bevy's projection takes the vertical one (radians) for its
+/// aspect ratio. Captures of the original at 1280×720 (2026-10-09, docs/research-log.md): the 4C at rest in the
+/// chase view (`MinFieldOfView` 70) and the first shot of 462174's intro (35 mm, `2 atan(18 / f)` = 54.4°) both
+/// frame 1.78× (the aspect ratio) tighter than the same values read as vertical. `MW_FOV_VERTICAL=1` reads them
+/// as vertical again (A/B).
+pub fn projection_fov(horizontal_deg: f32, aspect: f32) -> f32 {
+    let h = horizontal_deg.clamp(1.0, 170.0).to_radians();
+    if std::env::var_os("MW_FOV_VERTICAL").is_some() || aspect.is_nan() || aspect <= 0.0 {
+        return h;
+    }
+    2.0 * ((h * 0.5).tan() / aspect).atan()
+}
+
+/// The inverse of [`projection_fov`]: the game's horizontal FOV (degrees) of a projection.
+pub fn game_fov(p: &PerspectiveProjection) -> f32 {
+    if std::env::var_os("MW_FOV_VERTICAL").is_some() || p.aspect_ratio.is_nan() || p.aspect_ratio <= 0.0 {
+        return p.fov.to_degrees();
+    }
+    (2.0 * ((p.fov * 0.5).tan() * p.aspect_ratio).atan()).to_degrees()
 }

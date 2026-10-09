@@ -527,7 +527,8 @@ fn run_cutscene(
     // blends from the last cinematic view to the gameplay one.
     if let Ok((mut cam, mut projection)) = camera.single_mut() {
         let gameplay_fov = match &*projection {
-            Projection::Perspective(pp) => pp.fov.to_degrees(),
+            // In the game's (horizontal) degrees, as the cinematic FOVs.
+            Projection::Perspective(pp) => crate::camera::game_fov(pp),
             _ => 60.0,
         };
         let out = match (view, blend, p.last_view) {
@@ -557,7 +558,7 @@ fn run_cutscene(
         if let Some((v, fov, _)) = out {
             *cam = v;
             if let Projection::Perspective(pp) = &mut *projection {
-                pp.fov = fov.clamp(1.0, 170.0).to_radians();
+                pp.fov = crate::camera::projection_fov(fov, pp.aspect_ratio);
             }
         }
         let (kind, fov) = out.map_or(("gameplay", gameplay_fov), |o| (o.2, o.1));
@@ -665,13 +666,9 @@ fn animated_camera_view(
         position = r.transform_point(position);
         rotation = r.rotation * rotation;
     }
-    // The bone looks along its +Z, its up is whichever of ±Y the clip holds upwards (model decision, module
-    // docs); Bevy's camera looks along −Z with +Y up. `MW_CUTSCENE_AXES=gl` (look −Z, up +Y) for comparisons.
-    let fix = match std::env::var("MW_CUTSCENE_AXES").as_deref() {
-        Ok("gl") => Quat::IDENTITY,
-        _ if c.y_down() => Quat::from_rotation_x(std::f32::consts::PI),
-        _ => Quat::from_rotation_y(std::f32::consts::PI),
-    };
+    // The bone looks along its +Z with its +Y up, its full orientation used (roll included: 462174's intro is
+    // upside down in the original, capture 2026-10-09); Bevy's camera looks along −Z with +Y up.
+    let fix = Quat::from_rotation_y(std::f32::consts::PI);
     let fov = AnimatedCamera::fov_degrees(c.focal_length.at(u));
     Some((Transform { translation: position, rotation: rotation * fix, scale: Vec3::ONE }, fov))
 }

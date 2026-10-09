@@ -299,8 +299,9 @@ fn sequences(store: &AssetStore, events: &Events, e: &Event) {
                 ItemKind::AnimatedCamera(c) => {
                     let k = c.key_at(0.0);
                     format!(
-                        "animated camera {:?}, {} frames at {} fps, focal {:.1}..{:.1} mm, relative to {:?}, first key {:?}",
+                        "animated camera {:?} (skeleton {:?}), {} frames at {} fps, focal {:.1}..{:.1} mm, relative to {:?}, first key {:?}",
                         c.animation_id.map(|a| format!("{:016x}", a.0)),
+                        c.skeleton_id.map(|a| format!("{:x}", a.0 & 0xffff_ffff)),
                         c.keys.len(),
                         c.frame_rate,
                         c.focal_length.at(0.0),
@@ -352,6 +353,24 @@ fn sequences(store: &AssetStore, events: &Events, e: &Event) {
                 ItemKind::Other(n) => n.clone(),
             };
             println!("    {:6.2}-{:6.2} {}{what}", i.start, i.end, "  ".repeat(i.depth as usize));
+            // `MW_EVENTS_KEYS=<dir>`: the camera and car clips' keys, one CSV per item (for axis surveys).
+            if let Some(dir) = std::env::var_os("MW_EVENTS_KEYS") {
+                let (kind, keys, rate, extra) = match &i.kind {
+                    ItemKind::AnimatedCamera(c) => {
+                        ("cam", &c.keys, c.frame_rate, format!("{} {:.1}", c.relative_to, c.focal_length.at(0.0)))
+                    }
+                    ItemKind::AnimatedCar(c) => ("car", &c.keys, c.frame_rate, format!("{:?}", c.racer)),
+                    _ => continue,
+                };
+                let path = Path::new(&dir).join(format!("{}_{label}_{:07.3}_{kind}.csv", e.id, i.start));
+                let mut s = format!("# {} {} {rate} {extra}\n", i.start, i.end);
+                for k in keys {
+                    let [x, y, z] = k.translation;
+                    let [a, b, c, d] = k.rotation;
+                    s += &format!("{x} {y} {z} {a} {b} {c} {d}\n");
+                }
+                let _ = std::fs::write(path, s);
+            }
         }
     }
 }
