@@ -640,12 +640,32 @@ impl CollisionHooks for PropHooks<'_, '_> {
     fn modify_contacts(&self, contacts: &mut ContactPair, commands: &mut Commands) -> bool {
         // A car (the player's, or crashed traffic) touching a lane follower turns it into a crashing car; the
         // contact is dropped for this step and solved between two dynamic bodies from the next one.
-        for (collider, other) in [(contacts.collider1, contacts.body2), (contacts.collider2, contacts.body1)] {
+        for (first, collider, other, own) in [
+            (true, contacts.collider1, contacts.body2, contacts.body1),
+            (false, contacts.collider2, contacts.body1, contacts.body2),
+        ] {
             if self.traffic.get(collider).is_ok() {
                 let Some(other) = other else { return true };
-                let dynamic = self.bodies.get(other).is_ok_and(|(rb, _, _)| rb.is_dynamic());
-                if dynamic && self.hitters.get(other).is_ok() {
-                    commands.entity(collider).insert(crate::traffic::TrafficHit);
+                let Ok((rb, _, v_hitter)) = self.bodies.get(other) else { return true };
+                if rb.is_dynamic() && self.hitters.get(other).is_ok() {
+                    // The impact as the car-against-car handlers see it (`car_impacts.rs`): the contact point,
+                    // the normal from the hitter to the traffic car and both velocities before the solve.
+                    let (point, normal) = contacts
+                        .manifolds
+                        .first()
+                        .map(|m| {
+                            let n = if first { -m.normal } else { m.normal };
+                            (m.points.first().map_or(Vec3::NAN, |p| p.point), n)
+                        })
+                        .unwrap_or((Vec3::NAN, Vec3::ZERO));
+                    let v_traffic = own.and_then(|b| self.bodies.get(b).ok()).map_or(Vec3::ZERO, |(_, _, v)| v.0);
+                    commands.entity(collider).insert(crate::traffic::TrafficHit {
+                        hitter: other,
+                        point,
+                        normal,
+                        v_hitter: v_hitter.0,
+                        v_traffic,
+                    });
                     return false;
                 }
                 return true;

@@ -447,7 +447,7 @@ What the code does is in [decomp.md](decomp.md) ("Crashes"); here the data and w
 | screen offset | the view pitches so the target sits `Screen_Offset_Y` × half-height above centre | sign and units |
 | FOV | `Maximum_FOV` (vertical, as camera.rs) while `Use_Zoom` is off | which FOV a non-zooming bystander holds |
 | control | none until the reset | inferred from `Player.CanDriveAway` |
-| not done | `RaceCarEffect` property 5, audio ducking, upside-down crashes (`.bss` threshold), traffic / cop / prop rules | |
+| not done | `RaceCarEffect` property 5, audio ducking, upside-down crashes (`.bss` threshold), cop / prop rules (traffic and AI cars since 2026-10-09: `car_impacts.rs`, decomp.md "Car against car") | |
 
 Test: `mostrusted --drive 911 --test crash [--crash-wall-width 2] --screenshot <scratch>/crash.png` adds
 `-crashcam-0-slowmo` (0.3 s), `-1-freeway` (1.25 s), `-2-car` (3.25 s) and `-3-reset` (5 s) to the before / after

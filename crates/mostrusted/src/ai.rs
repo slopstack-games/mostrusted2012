@@ -374,6 +374,8 @@ pub struct AiDriver {
     pub max_lateral: f32,
     pub hits: u32,
     pub resets: u32,
+    /// Crashes from car impacts (`car_impacts.rs`).
+    pub crashes: u32,
     touching: bool,
 }
 
@@ -393,6 +395,7 @@ impl AiDriver {
             max_lateral: 0.0,
             hits: 0,
             resets: 0,
+            crashes: 0,
             touching: false,
         }
     }
@@ -679,9 +682,12 @@ fn spawn_opponents(
 /// Every fixed tick, before the physics: each AI driver writes its car's controls (the game runs the AI pass
 /// before the player manager and the world step, `FUN_004766a0`).
 #[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
 fn ai_drive(
+    mut commands: Commands,
     time: Res<Time>,
     settings: Res<AiSettings>,
+    crash_config: Option<Res<crate::crash::CrashConfig>>,
     spatial: SpatialQuery,
     event: Option<Res<crate::race::RaceState>>,
     progress: Query<&crate::race::RacerProgress>,
@@ -694,6 +700,7 @@ fn ai_drive(
         Option<&mut AiDriver>,
         &mut CarControls,
         Has<Player>,
+        Option<&mut crate::car_impacts::AiCrash>,
     )>,
 ) {
     let dt = time.delta_secs();
@@ -718,9 +725,35 @@ fn ai_drive(
     let player = cars.iter().find(|c| c.7).map(|c| (c.0, c.2.translation));
     // The player's progress along each route (the race tracker's remaining distance, `world+0x2f47c` +0xdf0).
     let player_progress = |route: &AiRoute| player.map(|(_, p)| route.project(p, None, 0.0).0);
-    for (entity, mut car, mut t, mut v, mut w, ai, mut ctl, is_player) in &mut cars {
+    for (entity, mut car, mut t, mut v, mut w, ai, mut ctl, is_player, crashed) in &mut cars {
         let Some(mut ai) = ai else { continue };
         let ai = &mut *ai;
+        // A crashed AI car (`car_impacts.rs`) has no control (as the player's, `Player.CanDriveAway`) until its
+        // reset. MODEL: the reset comes when the player's crash cameras would end (`crash.rs`), on the route at the
+        // car's progress, rolling at the game's reset speed (`GameLogicConfig`, `FUN_006d0180`; AI racers are
+        // players 12–23, inferred to share it).
+        if let Some(mut c) = crashed {
+            if c.time == 0.0 {
+                ai.crashes += 1;
+            }
+            c.time += dt;
+            *ctl = CarControls::default();
+            let delay = crash_config.as_ref().map_or(4.5, |cfg| cfg.0.camera.cameras_end());
+            if c.time >= delay {
+                let mph = crash_config.as_ref().map_or(30.0, |cfg| cfg.0.reset.after_crash(c.pre_mph));
+                let (p, tangent) = ai.route.at(ai.progress);
+                let rotation = Quat::from_rotation_y(tangent.x.atan2(tangent.z));
+                t.translation = p + Vec3::Y * 0.5;
+                t.rotation = rotation;
+                v.0 = rotation * Vec3::Z * mph * 0.44704;
+                w.0 = Vec3::ZERO;
+                ai.state = Default::default();
+                ai.resets += 1;
+                info!("AI car {entity}: crash reset after {:.1} s ({}), rolling at {mph:.0} mph", c.time, c.rule);
+                commands.entity(entity).remove::<crate::car_impacts::AiCrash>();
+            }
+            continue;
+        }
         // Before go the race freezes every car (`FREEZE_CAR`, `FUN_006c1a80`: handbrake held).
         // An intro sequence's rolling start (`cutscene.rs`) lets them drive.
         if event.as_ref().is_some_and(|e| {
@@ -900,7 +933,7 @@ fn log_ai(
     if longest >= test.seconds || all_done {
         for (name, _, _, ai, player) in &cars {
             info!(
-                "TEST RESULT AI {}{}: {:.0} m in {:.1} s ({:.1} km/h mean), finished {:?}, max lateral {:.2} m, {} world hits, {} resets, 100 m splits {:?}",
+                "TEST RESULT AI {}{}: {:.0} m in {:.1} s ({:.1} km/h mean), finished {:?}, max lateral {:.2} m, {} world hits, {} resets, {} crashes, 100 m splits {:?}",
                 name,
                 if player { " (player car)" } else { "" },
                 ai.progress,
@@ -910,6 +943,7 @@ fn log_ai(
                 ai.max_lateral,
                 ai.hits,
                 ai.resets,
+                ai.crashes,
                 ai.splits.iter().map(|s| (s * 10.0).round() / 10.0).collect::<Vec<_>>(),
             );
         }
