@@ -41,7 +41,7 @@ pub use renderable::{DecodedMesh, Mesh, Renderable, SNORM_POSITION_SCALE, Topolo
 pub use sampler::SamplerState;
 pub use text::{Language, VehicleEntry, VehicleList};
 pub use texture::{Dimension, Texture};
-pub use traffic::{LanePolyline, TrafficHull, TrafficLaneData, TrafficSection};
+pub use traffic::{LanePolyline, TrafficHull, TrafficJunction, TrafficLaneData, TrafficLightGroup, TrafficSection};
 pub use trigger::{Collectable, Trigger, TriggerData, TriggerShape};
 pub use vehicle::{VehicleGraphicsSpec, Wheel, WheelPart};
 pub use vertex::{Semantic, VertexAttribute, VertexDescriptor};

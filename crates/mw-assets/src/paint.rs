@@ -6,7 +6,7 @@
 //! whose reflectance rises from its F0 at normal incidence towards 1 at grazing angles by its Fresnel
 //! factor, with the base layer scaled by (1 - coat).
 
-use mw_bundle::{Bundle, ResourceType};
+use mw_bundle::{Bundle, ResourceId, ResourceType};
 use mw_formats::genesys::{Object, Value, field_hash};
 
 use crate::{AssetStore, Result};
@@ -86,6 +86,12 @@ impl VehiclePaint {
 }
 
 impl AssetStore {
+    /// One `VehiclePaint` object by ID (traffic cars keep theirs in `VEHICLES/TRAFFICATTRIBS.BNDL`).
+    pub fn vehicle_paint(&self, id: ResourceId) -> Result<Option<VehiclePaint>> {
+        let obj = self.genesys_object(id)?;
+        Ok(if obj.type_name == "Genesys.Gen.VehiclePaint" { VehiclePaint::from_object(&obj) } else { None })
+    }
+
     /// The paint options stored in a vehicle bundle, in resource ID order.
     /// The car's paints in resource-id order, each with the secondary colour its `VehicleColourPalette`
     /// `ColourGroup` (`PrimaryColour`, `SecondaryColour`, `WheelColour`; names cracked by hash) pairs it with.

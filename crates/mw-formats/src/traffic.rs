@@ -32,8 +32,8 @@
 //! |------|------|-------|
 //! | 0x00 | u8   | sections |
 //! | 0x01 | u8   | section spans |
-//! | 0x02 | u8   | junctions (0x150 bytes each, layout open) |
-//! | 0x03 | u8   | stop lines (2 bytes each) |
+//! | 0x02 | u8   | junctions (0x150 bytes each, [`TrafficJunction`]) |
+//! | 0x03 | u8   | stop lines (`u16` each: a rung position in 8.8 fixed point, `FUN_00439b60`) |
 //! | 0x04 | u8   | neighbours (4 bytes each) |
 //! | 0x05 | u8   | static (parked) vehicles (0x50 bytes each) |
 //! | 0x06 | u16  | rungs |
@@ -41,8 +41,8 @@
 //! | 0x0E | u16  | entries of the u8 list at 0x30 (0, 1, 2, ...) |
 //! | 0x10 | ptr x 8 | sections, rungs, cumulative rung lengths, neighbours, spans, static vehicles, junctions, stop lines |
 //!
-//! Section (0x30): `u32` first rung, `u8` rung count, `u8` stop line (0xFF none), `u8` stop line count,
-//! `u8` span; `u16[3]` forward hulls and `u16[3]` backward hulls (0xFFFF none) at 0x08 / 0x0E, `u8[3]`
+//! Section (0x30): `u32` first rung, `u8` rung count, `u8` first stop line (0xFF none), `u8` stop line count,
+//! `u8` span (index into the hull's spans; its count of cars steers the route choice, `FUN_00618470`); `u16[3]` forward hulls and `u16[3]` backward hulls (0xFFFF none) at 0x08 / 0x0E, `u8[3]`
 //! forward and backward sections at 0x14 / 0x17, `u8` first neighbour at 0x1A, `u8` left / right neighbour
 //! counts at 0x1C / 0x1D, `f32` length at 0x20 (= the last cumulative rung length), `u8` flow at 0x24
 //! (index into the `TrafficFlow` list; adjacent lanes of one road use different flows), `u8` at 0x25 (0..21:
@@ -50,7 +50,14 @@
 //!
 //! Rung (0x20): two `[x, y, z, 0]` points across the lane (≈4.5 m apart). Cumulative rung lengths restart
 //! at 0 in every section. Neighbour (4): `u8` section, `u8` last rung (rung count − 1), `u16` 0.
-//! Span (12): `f32` max vehicles, `f32` its reciprocal, `u16` (a hull index?), `u16` span index.
+//! Span (12): `f32` max vehicles, `f32` its reciprocal, `u16` hull and `u8` span of the span it continues
+//! into (0xFFFF none; `FUN_00618470` sums the load along that chain).
+//!
+//! Junction (0x150, read in `FUN_00605d30`, the traffic-light cycle): `u16[16]` phase durations at 0x04
+//! (tenths of a second, `DAT_00fb1a94` = 0.1), `u8[16]` phase masks at 0x24 (bit k set: light group k
+//! holds its stop lines), `u8` phase count at 0x34, `u8` group count at 0x35, groups of 0x20 bytes from
+//! 0x40: `u16` light object ids at 0x00, `u8` stop line indices at 0x04, `u16` their hulls at 0x0A,
+//! `u8` stop line count at 0x16, `u8` light count at 0x17.
 use mw_bundle::{Reader, Resource, ResourceId};
 
 use crate::{Error, Result};
@@ -80,17 +87,37 @@ pub struct TrafficHull {
     pub neighbours: Vec<(u8, u8)>,
     /// `(max vehicles, a, index)` per span.
     pub spans: Vec<(f32, u16, u16)>,
-    pub junctions: usize,
-    pub stop_lines: usize,
+    pub junctions: Vec<TrafficJunction>,
+    /// Stop line positions: rung index in the high byte, fraction (1/256) in the low byte.
+    pub stop_lines: Vec<u16>,
     /// Raw 0x50-byte records (a world matrix plus 0x10 bytes, layout open).
     pub static_vehicles: Vec<[f32; 20]>,
+}
+
+/// A traffic-light junction: a cycle of phases, each holding some light groups' stop lines.
+#[derive(Debug, Clone, Default)]
+pub struct TrafficJunction {
+    /// Phase durations in seconds.
+    pub durations: Vec<f32>,
+    /// Per phase: bit k set = light group k is red (its stop lines hold traffic).
+    pub masks: Vec<u8>,
+    pub groups: Vec<TrafficLightGroup>,
+}
+
+/// One light group of a junction: the stop lines (hull, index into the hull's stop lines) it controls.
+#[derive(Debug, Clone, Default)]
+pub struct TrafficLightGroup {
+    pub stop_lines: Vec<(u16, u8)>,
+    pub lights: Vec<u16>,
 }
 
 #[derive(Debug, Clone)]
 pub struct TrafficSection {
     pub first_rung: u32,
     pub rung_count: u8,
+    /// First stop line (index into the hull's `stop_lines`) and how many follow.
     pub stop_line: Option<u8>,
+    pub stop_line_count: u8,
     pub span: u8,
     pub forward: Vec<(u16, u8)>,
     pub backward: Vec<(u16, u8)>,
@@ -145,8 +172,8 @@ impl TrafficLaneData {
     fn parse_lanes(r: Reader, h: usize, n_hulls: usize, hull: &mut TrafficHull) -> Result<()> {
         let n_sec = r.u8(h)? as usize;
         let n_span = r.u8(h + 1)? as usize;
-        hull.junctions = r.u8(h + 2)? as usize;
-        hull.stop_lines = r.u8(h + 3)? as usize;
+        let n_junctions = r.u8(h + 2)? as usize;
+        let n_stop_lines = r.u8(h + 3)? as usize;
         let n_nb = r.u8(h + 4)? as usize;
         let n_static = r.u8(h + 5)? as usize;
         let n_rungs = r.u16(h + 6)? as usize;
@@ -166,8 +193,12 @@ impl TrafficLaneData {
         for k in 0..n_static {
             hull.static_vehicles.push(r.f32_array::<20>(p[5] + 0x50 * k)?);
         }
-        r.bytes(p[6], 0x150 * hull.junctions)?;
-        r.bytes(p[7], 2 * hull.stop_lines)?;
+        for k in 0..n_junctions {
+            hull.junctions.push(Self::parse_junction(r, p[6] + 0x150 * k, n_hulls)?);
+        }
+        for k in 0..n_stop_lines {
+            hull.stop_lines.push(r.u16(p[7] + 2 * k)?);
+        }
         for s in 0..n_sec {
             let o = p[0] + 0x30 * s;
             let first_rung = r.u32(o)?;
@@ -199,6 +230,7 @@ impl TrafficLaneData {
                 first_rung,
                 rung_count,
                 stop_line: (stop != 0xFF).then_some(stop),
+                stop_line_count: r.u8(o + 6)?,
                 span: r.u8(o + 7)?,
                 forward: link(o + 0x08, o + 0x14)?,
                 backward: link(o + 0x0E, o + 0x17)?,
@@ -211,6 +243,32 @@ impl TrafficLaneData {
             });
         }
         Ok(())
+    }
+
+    fn parse_junction(r: Reader, o: usize, n_hulls: usize) -> Result<TrafficJunction> {
+        let phases = (r.u8(o + 0x34)? as usize).min(16);
+        let n_groups = (r.u8(o + 0x35)? as usize).min(8);
+        let mut j = TrafficJunction::default();
+        for k in 0..phases {
+            j.durations.push(r.u16(o + 4 + 2 * k)? as f32 * 0.1);
+            j.masks.push(r.u8(o + 0x24 + k)?);
+        }
+        for g in 0..n_groups {
+            let b = o + 0x40 + 0x20 * g;
+            let mut group = TrafficLightGroup::default();
+            for k in 0..(r.u8(b + 0x16)? as usize).min(6) {
+                let hull = r.u16(b + 0x0A + 2 * k)?;
+                if hull as usize >= n_hulls {
+                    return Err(bad(format!("junction stop line in hull {hull}")));
+                }
+                group.stop_lines.push((hull, r.u8(b + 4 + k)?));
+            }
+            for k in 0..(r.u8(b + 0x17)? as usize).min(2) {
+                group.lights.push(r.u16(b + 2 * k)?);
+            }
+            j.groups.push(group);
+        }
+        Ok(j)
     }
 }
 

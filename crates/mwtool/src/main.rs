@@ -1284,12 +1284,45 @@ fn traffic(store: &AssetStore, png: Option<&Path>) -> Result<()> {
         sum(&|h| h.rungs.len()),
         sum(&|h| h.spans.len()),
         sum(&|h| h.neighbours.len()),
-        sum(&|h| h.junctions),
-        sum(&|h| h.stop_lines),
+        sum(&|h| h.junctions.len()),
+        sum(&|h| h.stop_lines.len()),
         sum(&|h| h.static_vehicles.len()),
     );
     let length: f32 = t.hulls.iter().flat_map(|h| &h.sections).map(|s| s.length).sum();
     println!("total lane length {:.1} km", length / 1000.0);
+    // Traffic-light junctions: phase cycle and the stop lines each light group holds (checked against the
+    // hulls' stop line lists and the sections that own them).
+    let (mut bad_refs, mut owned) = (0, 0);
+    for (hi, hull) in t.hulls.iter().enumerate() {
+        for (ji, j) in hull.junctions.iter().enumerate() {
+            let cycle: Vec<String> =
+                j.durations.iter().zip(&j.masks).map(|(d, m)| format!("{d:.1}s:{m:02x}")).collect();
+            let groups: Vec<String> = j
+                .groups
+                .iter()
+                .map(|g| {
+                    let lines: Vec<String> = g.stop_lines.iter().map(|(h, s)| format!("{h}/{s}")).collect();
+                    format!("[{}]", lines.join(" "))
+                })
+                .collect();
+            if ji == 0 && hi % 3 == 0 {
+                println!("  junction {hi}.{ji}: cycle {} groups {}", cycle.join(" "), groups.join(" "));
+            }
+            for &(h, s) in j.groups.iter().flat_map(|g| &g.stop_lines) {
+                let Some(target) = t.hulls.get(h as usize) else { continue };
+                if s as usize >= target.stop_lines.len() {
+                    bad_refs += 1;
+                } else if target
+                    .sections
+                    .iter()
+                    .any(|sec| sec.stop_line.is_some_and(|f| (f..f + sec.stop_line_count.max(1)).contains(&s)))
+                {
+                    owned += 1;
+                }
+            }
+        }
+    }
+    println!("junction stop line references: {owned} owned by a section, {bad_refs} out of range");
     // Query check at the docs/viewpoints.md road spot.
     let near = t.lanes_near(-1131.0, 1627.0, 200.0);
     println!("{} lane sections within 200 m of (-1131, 1627)", near.len());
@@ -1312,6 +1345,28 @@ fn traffic(store: &AssetStore, png: Option<&Path>) -> Result<()> {
     let ids: Vec<String> =
         t.vehicle_ids.iter().map(|v| format!("{:016x}", 0x0100_0000_0000_0000u64 | *v as u64)).collect();
     println!("{} vehicle types (VehicleComponent): {}", ids.len(), ids.join(" "));
+    // The decoded rule data the runtime uses (mw_assets::traffic).
+    let data = store.traffic_data()?;
+    for (i, v) in data.vehicles.iter().enumerate() {
+        println!(
+            "  vehicle {i}: {} ({} paints), box centre {:?} half {:?}, {:.0} kg{}",
+            v.bundle,
+            v.paints.len(),
+            v.box_centre,
+            v.half_extents,
+            v.mass,
+            if v.trailer { ", trailer" } else { "" }
+        );
+    }
+    for (i, f) in data.flow_types.iter().enumerate() {
+        let e: Vec<String> = f.iter().map(|e| format!("{}:{:.2}", e.vehicle, e.proportion)).collect();
+        println!("  flow type {i}: {}", e.join(" "));
+    }
+    let f: Vec<String> = data.flows.iter().map(|f| format!("{:.0}mph/{:.0}", f.speed_mph, f.density)).collect();
+    println!("  flows (speed / cars per minute): {}", f.join(" "));
+    println!("  system: {:?}", data.system);
+    println!("  params: {:?}", data.params);
+    println!("  fuzzy: {:?}", data.fuzzy);
     if let Some(png) = png {
         let (mut x0, mut z0, mut x1, mut z1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
         for p in t.hulls.iter().flat_map(|h| &h.rungs).flatten() {
