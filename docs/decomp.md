@@ -1182,7 +1182,7 @@ Runtime: `crates/mostrusted/src/props.rs`; data: `mw_assets::props` (`Additional
   momentum. Traffic keeps avian's ordinary contact against loose props (its scales are near 1).
 - Model decisions: unscaled effective mass; overlap push-out (0.2 of the depth per step, ≤ 4 m/s, 1 cm slop)
   and speculative contacts for gaps within a step's travel; loose-from-the-start props stand static until
-  the first touch; no `AdditionalInfo` = never loose; colliders within 30 m of any car (the game activates on
+  the first touch; no `AdditionalInfo` = never loose; colliders within 30 m of a race car or crashed traffic (the game activates on
   box overlap, with pools); sound gain ∝ closing / 12 m/s, 2 m/s threshold; traffic and loose props break
   standing ones through the contact hook.
 

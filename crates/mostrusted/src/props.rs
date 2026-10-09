@@ -256,14 +256,13 @@ pub struct PropBody {
     pub speed_loss: f32,
 }
 
-/// Asks [`unpin_props`] to break a prop free after this physics step.
+/// Asks [`unpin_props`] to break a prop free after this physics step (hits by traffic or knocked props; race
+/// cars' hits are handled in [`prop_contacts`]).
 #[derive(Component)]
 struct Unpin {
     /// The hitter's closing speed (m/s) and the contact point.
     closing: f32,
     point: Vec3,
-    /// The hit came from the player's car (effects and sounds).
-    by_player: bool,
 }
 
 /// A car hit a prop hard enough to show: the prop's impact effect and sound (`particles.rs`,
@@ -399,7 +398,7 @@ fn stream_props(
     time: Res<Time>,
     mut timer: Local<f32>,
     mut grid: ResMut<PropGrid>,
-    cars: Query<&GlobalTransform, Hitter>,
+    cars: Query<(&GlobalTransform, &RigidBody), Hitter>,
     mut props: Query<(&mut PropBody, &Transform)>,
     mut stats: ResMut<PropStats>,
     mut effects: Option<ResMut<crate::particles::EffectRequests>>,
@@ -409,7 +408,9 @@ fn stream_props(
         return;
     }
     *timer = 0.0;
-    let cars: Vec<Vec3> = cars.iter().map(|t| t.translation()).collect();
+    // Race cars and crashed (dynamic) traffic; lane followers meet standing props as solid obstacles and never
+    // knock them loose, so they need no colliders around them.
+    let cars: Vec<Vec3> = cars.iter().filter(|(_, rb)| rb.is_dynamic()).map(|(t, _)| t.translation()).collect();
     // Activate the standing props near each car.
     let reach = ACTIVATE_DISTANCE + MAX_PROP_RADIUS;
     let span = (reach / GRID_CELL).ceil() as i32;
@@ -535,8 +536,8 @@ impl CollisionHooks for PropHooks<'_, '_> {
         if hit_momentum(mass.value(), velocity.0) <= prop.physics.break_force {
             return true;
         }
-        let by_player = false;
-        commands.entity(prop_entity).insert(Unpin { closing, point, by_player });
+
+        commands.entity(prop_entity).insert(Unpin { closing, point });
         contacts.manifolds.clear();
         false
     }
@@ -573,7 +574,7 @@ fn unpin_props(
                 closing_speed: unpin.closing,
                 effect: None,
                 sound: p.impact_sound,
-                by_player: unpin.by_player,
+                by_player: false,
             });
         }
     }

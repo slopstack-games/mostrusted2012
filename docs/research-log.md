@@ -45,7 +45,8 @@ this entry (`--no-prop-physics` opts out; `--prop-physics` is gone).
   (before each step) tests standing props against the car's momentum and solves the car–prop contacts itself
   with the scales above (two passes, as the game's two sub-steps), accumulated and clamped impulses, friction
   within μ × normal. A standing prop that holds stays in avian's solver and stops the car. Props get a
-  collider within 30 m (+ their radius) of any race or traffic car, kept to 45 m (grid of 32 m cells). Prop
+  collider within 30 m (+ their radius) of a race car or crashed (dynamic) traffic, kept to 45 m (grid of
+  32 m cells); lane-following traffic does not activate props (it never knocks them loose). Prop
   impact sounds play (player only), impact effects start on `ForceToDamage` (props only; compounds carry no
   effect handle).
 - **Results** (`--test smash`, 911 at a held speed; car speed lost to each prop's contacts, which includes
@@ -57,6 +58,11 @@ this entry (`--no-prop-physics` opts out; `--prop-physics` is gone).
   steps and flies off spinning (screenshot looked at); the speed trace matches `--no-prop-physics` within
   1 km/h; the stop at x 990 is a world wall in both runs, and the suggested heading 71 stops behind a traffic
   van in both.
+- **Performance** (`--bench 10` at the CLAUDE.md spot, shared machine at load 7–14, so noisy): props with a
+  collider 5 (master's 120 m streaming around the player: 69; 30 m around every traffic car too: ~180). In
+  the quieter rounds the frame median was 22.1–22.9 ms with props against 21.0–21.5 ms with
+  `--no-prop-physics` (main-world schedule +0.2–0.6 ms); master's `--prop-physics` 21.6 ms against this
+  branch's 23.1 ms in one pair, the other pairs within noise either way.
 - **Model decisions**: the impulse is computed with the unscaled effective mass (the contact prestep that
   writes the point's effective mass, point +0x2c, was not read); overlap push-out 0.2 of the depth per step,
   capped at 4 m/s, 1 cm slop (the game's targets, point +0x30.., not traced); speculative contacts for gaps
