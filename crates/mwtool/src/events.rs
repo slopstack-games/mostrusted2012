@@ -397,9 +397,35 @@ pub fn frontend(store: &AssetStore) -> Result<()> {
         store.keyboard_button_text("KEY_RETURN").map(text)
     );
     for id in [fe::TITLE_SEQUENCE, fe::BOOT_TRANSITION_SEQUENCE] {
-        print_ui_sequence(&store.ui_sequence(id)?, 0);
+        let seq = store.ui_sequence(id)?;
+        print_ui_sequence(&seq, 0);
+        layout_shaders(store, &seq);
     }
     Ok(())
+}
+
+/// The shaders of the UI materials the sequence's layouts use (blend states, masks).
+fn layout_shaders(store: &AssetStore, seq: &mw_assets::sequence::Sequence) {
+    use mw_assets::sequence::ItemKind;
+    for i in &seq.items {
+        match &i.kind {
+            ItemKind::Layout { layout: Some(id), .. } => {
+                let Ok(l) = store.ui_layout(*id) else { continue };
+                for e in &l.elements {
+                    let shader = e.material.and_then(|m| store.ui_material_shader(m));
+                    println!(
+                        "  layout {} element {} {:?}: {}",
+                        id.0 & 0xffff_ffff,
+                        e.id,
+                        e.kind,
+                        shader.unwrap_or_default()
+                    );
+                }
+            }
+            ItemKind::Conductor(s) => layout_shaders(store, s),
+            _ => {}
+        }
+    }
 }
 
 fn print_ui_sequence(seq: &mw_assets::sequence::Sequence, depth: usize) {
@@ -413,7 +439,7 @@ fn print_ui_sequence(seq: &mw_assets::sequence::Sequence, depth: usize) {
     }
     for i in &seq.items {
         let what = match &i.kind {
-            ItemKind::Layout { layout, layer, texts } => {
+            ItemKind::Layout { layout, layer, texts, .. } => {
                 format!("layout {} layer {layer} texts {texts:?}", layout.map_or(0, |l| l.0 & 0xffff_ffff))
             }
             ItemKind::Movie { movie, looping } => format!("movie {movie} loop {looping}"),

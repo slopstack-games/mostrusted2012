@@ -380,6 +380,7 @@ impl Element {
         let opacity = object(o, field::OPACITY);
         let text_props = object(o, field::TEXT_PROPERTIES);
         let display = object(o, field::DISPLAY_TEXT);
+        let scroll = structs(o, crate::genesys::field_hash("ScrollingStrings")).next();
         let mut margins = [0.0; 4];
         for (m, v) in margins.iter_mut().zip(array(o, field::MARGINS)) {
             if let Value::Float(f) = v {
@@ -404,7 +405,21 @@ impl Element {
                 tint: tint.map(|t| string(t, field::BINDING)).unwrap_or_default(),
                 opacity: opacity.map(|t| string(t, field::BINDING)).unwrap_or_default(),
                 image: string(o, field::IMAGE_BINDING),
-                text: display.map(|t| string(t, field::BINDING)).unwrap_or_default(),
+                // A scrolling text's strings are `ScrollingStrings`; with neither binding nor string its
+                // `DataSource` supplies the text (the loading strip's `Transitions.Tip`).
+                text: display
+                    .or(scroll)
+                    .map(|t| string(t, field::BINDING))
+                    .filter(|b| {
+                        !b.is_empty() || display.is_some() || scroll.is_some_and(|s| uint(s, field::STRING_ID) != 0)
+                    })
+                    .unwrap_or_else(|| {
+                        if kind == ElementKind::ScrollingText {
+                            string(o, crate::genesys::field_hash("DataSource"))
+                        } else {
+                            String::new()
+                        }
+                    }),
                 text_colour: text_props.map(|t| string(t, field::COLOUR_BINDING)).unwrap_or_default(),
             },
             texture: quad.and_then(|q| handle(q, field::TEXTURE_HANDLE)),
@@ -417,7 +432,7 @@ impl Element {
             flip: [boolean(o, field::FLIP_HORIZONTAL), boolean(o, field::FLIP_VERTICAL)],
             text: kind.has_text().then(|| Text {
                 style: text_props.and_then(|t| handle(t, field::TEXT_STYLE)),
-                string_id: display.map_or(0, |d| uint(d, field::STRING_ID) as u32),
+                string_id: display.or(scroll).map_or(0, |d| uint(d, field::STRING_ID) as u32),
                 word_wrap: text_props.is_some_and(|t| boolean(t, field::WORD_WRAP)),
                 justification: text_props.map_or(0, |t| uint(t, field::JUSTIFICATION) as u8),
             }),

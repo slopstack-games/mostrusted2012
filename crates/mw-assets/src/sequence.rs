@@ -113,6 +113,7 @@ mod h {
     pub const TEXT1: u32 = 0xbf1c_e9a1;
     pub const TEXT2: u32 = field_hash("Text2");
     pub const TEXT3: u32 = field_hash("Text3");
+    pub const INSTANCE_PARAMS: u32 = field_hash("InstanceParams");
     // MovieSequenceItem
     pub const MOVIE: u32 = field_hash("Movie");
     pub const LOOP: u32 = field_hash("Loop");
@@ -602,6 +603,8 @@ pub enum ItemKind {
         layout: Option<ResourceId>,
         layer: u32,
         texts: [u32; 3],
+        /// `InstanceParams`: the `UILayoutInstanceParams` placing it.
+        instance: Option<ResourceId>,
     },
     /// `MovieSequenceItem`: a movie (`UI/MOVIES/<movie>.VP6`) on the `MoviePlayer` element, looped or not.
     Movie {
@@ -1070,6 +1073,7 @@ impl<'a> SequenceContext<'a> {
                         layout,
                         layer: uint(item, h::LAYOUT_LAYER),
                         texts: [uint(item, h::TEXT1), uint(item, h::TEXT2), uint(item, h::TEXT3)],
+                        instance: handle(item.get(h::INSTANCE_PARAMS)),
                     },
                 }
             }

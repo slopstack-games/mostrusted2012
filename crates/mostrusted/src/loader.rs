@@ -142,6 +142,9 @@ pub enum Msg {
     },
     /// The streaming zones (`ZoneList`), for the groundcover residency (`groundcover.rs`).
     Zones(mw_formats::ZoneList),
+    /// A track unit (= zone) has been sent completely: its collision, placements and groundcover
+    /// (`frontend::Residency`).
+    UnitLoaded(u32),
     /// The groundcover collections a track unit lists (also those already sent for another unit).
     GroundcoverListing {
         unit: u32,
@@ -696,12 +699,21 @@ impl Worker {
         let mut centres: Vec<Vec3> = placed.iter().filter_map(|(_, _, c)| *c).collect();
         let focus = focus.or_else(|| median_vec(&mut centres)).unwrap_or(Vec3::ZERO);
         self.send(Msg::Focus(focus))?;
-        if let Ok(zones) = self.store.zone_list() {
-            self.send(Msg::Zones(zones))?;
+        let zones = self.store.zone_list().ok();
+        if let Some(zones) = &zones {
+            self.send(Msg::Zones(zones.clone()))?;
         }
+        // Nearest zone first (the game streams by `ZoneList` zone: the zone holding the focus, then its
+        // neighbours; docs/decomp.md "Front end"), units without a zone by their placements' median.
+        let zone_distance = |name: &str| -> Option<f32> {
+            let unit = track_unit_number(name)?;
+            Some(zones.as_ref()?.zones.iter().find(|z| z.id == unit)?.distance(focus.x, focus.z))
+        };
         placed.sort_by(|a, b| {
-            let d = |c: &Option<Vec3>| c.map_or(f32::MAX, |c| c.distance_squared(focus));
-            d(&a.2).total_cmp(&d(&b.2))
+            let d = |name: &str, c: &Option<Vec3>| {
+                zone_distance(name).unwrap_or_else(|| c.map_or(f32::MAX, |c| c.distance(focus)))
+            };
+            d(&a.0, &a.2).total_cmp(&d(&b.0, &b.2))
         });
 
         // Backdrop composition needs every unit's backdrop list, also of units not streamed.
@@ -772,6 +784,9 @@ impl Worker {
             self.send_merged(std::mem::take(&mut statics))?;
             self.parts.clear();
             self.store.evict_all();
+            if let Some(unit) = unit {
+                self.send(Msg::UnitLoaded(unit))?;
+            }
         }
         self.send(Msg::Progress(format!("world loaded: {total} track units")))?;
         Ok(())

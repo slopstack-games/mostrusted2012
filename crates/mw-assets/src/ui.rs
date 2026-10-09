@@ -835,6 +835,14 @@ impl Tween {
     /// Colour steps (`TO,WHITE`, `TO,<palette entry>`), four-number steps (scales, read) and bare ids
     /// (sounds) are not applied. The vocabulary is the data's; what each step does is our reading of the names
     /// (the tween code was not traced).
+    /// [`apply`](Self::apply) for loops and idle lists: steps that have not started yet do nothing (an `IN`
+    /// waiting for its delay does not hold the element invisible).
+    fn apply_started(&mut self, steps: &[fmt::ui::Behaviour], since: f32) {
+        for b in steps.iter().filter(|b| since >= b.delay) {
+            self.apply(std::slice::from_ref(b), since);
+        }
+    }
+
     fn apply(&mut self, steps: &[fmt::ui::Behaviour], since: f32) {
         for b in steps {
             let started = since >= b.delay;
@@ -916,6 +924,23 @@ impl<'a> DrawOptions<'a> {
                 None => f32::INFINITY,
             };
             t.apply(if on { &tb.transition_in } else { &tb.transition_out }, since);
+            // A triggered behaviour's idle steps run while its trigger holds (the title's "PRESS START" /
+            // "PRESS ANY KEY" pair hide each other with an instant `OUT` on the pad-connected binding).
+            if on {
+                t.apply_started(&tb.idle, since);
+            }
+        }
+        // The element's own idle fades loop over their span (the prompt's pulse: `OUT` 0–0.8 s, `IN` 0.8–1.8 s),
+        // timed from when the element appeared; only animated draws pulse.
+        let fades = |b: &&fmt::ui::Behaviour| b.kind == 0 && matches!(b.parameters.trim(), "IN" | "OUT");
+        let period = e.idle.iter().filter(fades).map(|b| b.delay + b.duration).fold(0.0, f32::max);
+        if period > 0.0
+            && let Some(anim) = self.anim.as_deref_mut()
+        {
+            let appeared = anim.shown.get(&(e.id, layout, cell)).map_or(0.0, |s| s.0);
+            let since = (((now - appeared) * 1000.0) as f32).rem_euclid(period);
+            let steps: Vec<fmt::ui::Behaviour> = e.idle.iter().filter(fades).cloned().collect();
+            t.apply_started(&steps, since);
         }
         t
     }

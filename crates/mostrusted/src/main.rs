@@ -25,6 +25,7 @@ mod easydrive;
 mod exhaust;
 mod flash_probe;
 mod freeroam;
+mod frontend;
 mod game_text;
 mod garage;
 mod gate_marker;
@@ -35,6 +36,7 @@ mod loader;
 mod materials;
 mod menu;
 mod mods_menu;
+mod movie;
 mod nitrous;
 mod paint_wear;
 mod particles;
@@ -301,6 +303,24 @@ struct Cli {
     /// GAMELOGIC/GAMEMODES.BNDL, e.g. 01000000000f0258,01000000000f0259).
     #[arg(long, value_delimiter = ',')]
     ai_balancing: Vec<String>,
+    /// Run the game's start-up flow (title screen, boot transition over the loading, free-roam start); the
+    /// default when no mode flag (--drive, --vehicle, --camera, --race, --test, --replay) is given.
+    #[arg(long)]
+    front_end: bool,
+    /// Start a new game: the default car at the free-roam start, ignoring the saved profile.
+    #[arg(long)]
+    new_game: bool,
+    /// Front end without a human: "press a key" this many seconds after the title's prompt shows.
+    #[arg(long)]
+    auto_start: Option<f32>,
+    /// Front end: save screenshots of the title, the transition and the first seconds of play into this
+    /// directory, print the timing log (`FRONTEND TIMING` lines) and exit.
+    #[arg(long)]
+    front_end_shots: Option<PathBuf>,
+    /// Show the in-game loading screen (layout 108177) until the start area is resident, also in headless runs
+    /// (interactive world drives show it anyway).
+    #[arg(long)]
+    show_loading: bool,
 }
 
 #[derive(Resource)]
@@ -322,6 +342,9 @@ pub struct Game {
     paint: Option<Color>,
     filter: loader::WorldFilter,
     mute: bool,
+    /// How far above the start the ground ray begins (m): 30 for `--spawn` points, small for the game's own
+    /// start points (road level; a swap spot's car box is centred ~1.5 m up).
+    start_probe: f32,
 }
 
 /// The player's view: every `Camera3d` except the planar reflection's mirrored camera (`reflection.rs`).
@@ -445,7 +468,47 @@ fn main() -> anyhow::Result<()> {
         }
         _ => None,
     };
+    // The start-up flow: a plain run (no mode flag) or --front-end.
+    let boot = cli.front_end
+        || (cli.drive.is_none()
+            && cli.vehicle.is_none()
+            && camera.is_none()
+            && cli.race.is_none()
+            && cli.test.is_none()
+            && cli.replay.is_none());
+    // Where free roam starts (`mw_assets::frontend`): a continued game's car near its saved position (the
+    // nearest swap spot holding it, else the default start), or a new game's default car at the default start.
+    let mut boot_start: Option<(String, Vec3, f32)> = None;
+    if boot && race.is_none() {
+        let cfg = store.start_config().map_err(|e| anyhow::anyhow!("free-roam start data: {e}"))?;
+        let profile = if cli.new_game { None } else { frontend::load_profile() };
+        let bundle = match (&cli.drive, &profile, cfg.default_vehicle) {
+            (Some(q), _, _) => Some(resolve(q)?),
+            (None, Some(p), _) => Some(p.bundle.clone()),
+            (None, None, Some(v)) => Some(resolve(&v.to_string())?),
+            _ => None,
+        };
+        if let Some(bundle) = bundle {
+            let pose = match (&profile, frontend::vehicle_id(&bundle)) {
+                (Some(p), Some(v)) if !cli.new_game => {
+                    cfg.continue_pose(v, p.position.map_or([0.0; 3], |p| p.to_array()))
+                }
+                _ => cfg.default_start,
+            };
+            let pose = pose.ok_or_else(|| anyhow::anyhow!("no free-roam start point in the data"))?;
+            println!(
+                "free-roam start: {} at trigger {} {:?} ({})",
+                bundle,
+                pose.trigger,
+                pose.position,
+                if profile.is_some() && !cli.new_game { "continue" } else { "new game" }
+            );
+            let d = pose.direction;
+            boot_start = Some((bundle, Vec3::from_array(pose.position), d[0].atan2(d[2])));
+        }
+    }
     let drive = match (&cli.drive, &race) {
+        _ if boot_start.is_some() => boot_start.as_ref().map(|b| b.0.clone()),
         (Some(q), _) => Some(q.clone()),
         (None, Some(r)) => Some(r.event.default_vehicle().map(|v| v.to_string()).ok_or_else(|| {
             anyhow::anyhow!("event {} names no car (a Most Wanted race): pass --drive <car>", r.event.id)
@@ -454,6 +517,10 @@ fn main() -> anyhow::Result<()> {
     };
     let request = if let Some(q) = &drive {
         let (spawn, heading) = match (&race, &cli.spawn[..]) {
+            (None, []) if boot_start.is_some() => {
+                let (_, p, h) = boot_start.as_ref().expect("checked");
+                (*p, *h)
+            }
             (Some(r), []) => {
                 let s = r.event.spawn.expect("checked above");
                 (Vec3::from_array(s.position), s.direction[0].atan2(s.direction[2]))
@@ -470,7 +537,8 @@ fn main() -> anyhow::Result<()> {
         let spawn = if track { Vec3::new(0.0, 1.0, 0.0) } else { spawn };
         let props =
             if cli.test.as_deref() == Some("smash") { props::smash_test_props(&cli.smash_set) } else { Vec::new() };
-        Request::Drive { bundle: resolve(q)?, spawn, heading, max_units: cli.units, world: !track, props }
+        let bundle = if q.to_ascii_uppercase().ends_with(".BNDL") { q.clone() } else { resolve(q)? };
+        Request::Drive { bundle, spawn, heading, max_units: cli.units, world: !track, props }
     } else if let Some(q) = &cli.vehicle {
         Request::Vehicle { bundle: resolve(q)? }
     } else {
@@ -553,6 +621,14 @@ fn main() -> anyhow::Result<()> {
             .collect::<anyhow::Result<_>>()?,
     };
     let ai_test = cli.test.as_deref() == Some("ai");
+    let world_drive = matches!(request, Request::Drive { world: true, .. });
+    let front_phase = if boot_start.is_some() && (cli.screenshot.is_none() || cli.front_end) {
+        frontend::Phase::Title
+    } else if world_drive && (menu_enabled || cli.show_loading) {
+        frontend::Phase::Loading
+    } else {
+        frontend::Phase::Playing
+    };
     let ai_cars = cli.ai.iter().map(|q| resolve(q)).collect::<anyhow::Result<Vec<_>>>()?;
     let mut app = App::new();
     app.insert_resource(car_anim::AnimOverride::parse(&cli.anim)?);
@@ -723,6 +799,13 @@ fn main() -> anyhow::Result<()> {
             open: cli.show_easydrive,
             path: cli.easydrive_path.clone(),
         })
+        .insert_resource(frontend::Residency::new(world_drive || matches!(request, Request::World { .. })))
+        .add_plugins(frontend::FrontEndPlugin {
+            start: front_phase,
+            auto_start: cli.auto_start,
+            shots: cli.front_end_shots.clone(),
+            profile: world_drive && (menu_enabled || boot) && cli.front_end_shots.is_none() && cli.auto_start.is_none(),
+        })
         .add_plugins(game_text::GameTextPlugin)
         .add_plugins(ui_quads::UiQuadsPlugin)
         .add_plugins((world_ui::WorldUiPlugin, gate_marker::GateMarkerPlugin))
@@ -769,6 +852,7 @@ fn main() -> anyhow::Result<()> {
             paint,
             filter,
             mute: cli.mute || test.is_some() || crash || smash || race_test,
+            start_probe: if boot_start.is_some() && cli.spawn.is_empty() { 3.0 } else { 30.0 },
         })
         .insert_resource(ClearColor(Color::srgb(0.55, 0.68, 0.85)))
         .init_resource::<Loaded>()
@@ -863,6 +947,7 @@ fn receive_assets(
     mut surfaces: ResMut<props::WorldSurfaces>,
     mut traffic_models: Option<ResMut<traffic::TrafficModels>>,
     mut residency: ResMut<groundcover::GroundcoverResidency>,
+    mut streamed: ResMut<frontend::Residency>,
 ) {
     let Some(channel) = channel else { return };
     let rx = channel.0.lock().unwrap();
@@ -930,7 +1015,11 @@ fn receive_assets(
                 });
                 loaded.instances += 1;
             }
-            Msg::Zones(zones) => residency.set_zones(zones),
+            Msg::Zones(zones) => {
+                streamed.set_zones(zones.clone());
+                residency.set_zones(zones);
+            }
+            Msg::UnitLoaded(unit) => streamed.unit_loaded(unit),
             Msg::GroundcoverListing { unit, collections } => residency.add_listing(unit, collections),
             Msg::Groundcover { model, collection, min, max, range, bounds } => {
                 let Some(parts) = loaded.models.get(&model) else { continue };
@@ -997,6 +1086,7 @@ fn receive_assets(
             }
             Msg::Done => {
                 loaded.done = true;
+                streamed.all_sent = true;
                 if let Some(t) = loaded.started {
                     info!(
                         "loading finished in {:.1?}: {} instances, {} with physics",
