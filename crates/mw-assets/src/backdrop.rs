@@ -75,6 +75,13 @@ impl AssetStore {
         Ok(fmt::TrafficLaneData::parse(&bundle.load(entry)?)?)
     }
 
+    /// The AI's road graph (`AIData` in `HAWAII/AI/AIDATA.BNDL`): road centre-line nodes with widths.
+    pub fn ai_data(&self) -> Result<fmt::AiData> {
+        let bundle = self.bundle("HAWAII/AI/AIDATA.BNDL").ok_or(Error::Missing(ResourceId(0)))?;
+        let entry = bundle.entries_of_type(ResourceType::AIData).next().ok_or(Error::Missing(ResourceId(0)))?;
+        Ok(fmt::AiData::parse(&bundle.load(entry)?)?)
+    }
+
     /// A [`BackdropSelector`] for the given backdrop listings `(track unit, model, transform)`: loads the
     /// zones and indexes the drawn meshes of every listed model.
     pub fn backdrop_selector<'a>(

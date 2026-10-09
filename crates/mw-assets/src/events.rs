@@ -233,6 +233,8 @@ pub struct AllowedVehicle {
     /// `Mods` values (per-slot levels, meaning open).
     pub mods: Vec<i64>,
     pub difficulty: i64,
+    /// The AI rubber band's pace multiplier when the player drives this car.
+    pub ai_pace: f32,
 }
 
 /// `OfflineEvent.AlternateRoutes`: a checkpoint that may be replaced by others.
@@ -253,6 +255,9 @@ pub struct Event {
     pub name: u32,
     pub description: u32,
     pub laps: u8,
+    /// `RaceBalancingData` and `RaceBalancingProfile` unique ids (+0x94 / +0x98; GeneSys resource id =
+    /// 0x0100000000000000 | id): the AI rubber band (`ai.rs`). 0 = none.
+    pub balancing: (u32, u32),
     pub spawn: Option<StartPoint>,
     pub spawn_id: u32,
     pub checkpoints: Vec<Gate>,
@@ -429,6 +434,12 @@ impl AssetStore {
                             vehicle: uint(v.get(h::VEHICLE)),
                             mods: array(v.get(h::MODS)).iter().map(|m| int(Some(m))).collect(),
                             difficulty: int(v.get(h::DIFFICULTY)),
+                            // `a17a5e72` (VehicleAndMods +0x10): the AI pace multiplier when the player drives
+                            // this car (`FUN_0063a0f0`; 1.0 by default).
+                            ai_pace: match v.get(0xa17a5e72) {
+                                Some(Value::Float(f)) if *f > 0.0 => *f,
+                                _ => 1.0,
+                            },
                         })
                         .collect();
                     allowed.insert(uint(o.get(h::ID)), list);
@@ -470,6 +481,8 @@ impl AssetStore {
                         name: uint(o.get(h::NAME)),
                         description: uint(o.get(h::DESCRIPTION)),
                         laps: uint(o.get(h::LAPS)) as u8,
+                        // +0x94 / +0x98: the rubber band (`FUN_0070caa0` → `FUN_0063a0f0`).
+                        balancing: (uint(o.get(0xcc1a2667)), uint(o.get(0x1c6e495f))),
                         spawn: point(spawn_id),
                         spawn_id,
                         checkpoints,

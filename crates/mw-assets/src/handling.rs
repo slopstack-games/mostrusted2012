@@ -24,6 +24,13 @@ mod h {
     pub const RB_MASS: u32 = field_hash("Mass");
     pub const PD_BODIES: u32 = field_hash("RigidBodies");
     pub const RCPD_DEFINITION: u32 = field_hash("PhysicalDefinition");
+    // Vehicle_Gameplay: the AI driver's steering PID (`FUN_00506c00` reads instance +0xb0) and the top speed
+    // (+0xac, mph) the AI's virtual driving caps at.
+    pub const GAMEPLAY_PID: u32 = 0xe3f8e31f;
+    pub const GAMEPLAY_TOP_SPEED: u32 = 0xa5d6993d;
+    pub const PID_P: u32 = field_hash("Proportional");
+    pub const PID_I: u32 = field_hash("Integral");
+    pub const PID_D: u32 = field_hash("Derivative");
     // Engine
     pub const ENGINE: u32 = field_hash("Engine");
     pub const POWER_CURVE: u32 = field_hash("Power_curve");
@@ -317,6 +324,10 @@ pub struct Steering {
 /// a car lacks the data (and the model falls back to defaults).
 #[derive(Debug, Clone, Default)]
 pub struct VehicleHandling {
+    /// `Vehicle_Gameplay.PIDController` (Proportional, Integral, Derivative): the AI driver's steering gains.
+    pub ai_steering_pid: Option<[f32; 3]>,
+    /// `Vehicle_Gameplay` +0xac (mph): the top speed the AI's virtual driving caps at.
+    pub gameplay_top_speed_mph: Option<f32>,
     pub mass: Option<f32>,
     /// Body rigid-body origin in car space (used as the centre of mass).
     pub centre_of_mass: Option<[f32; 3]>,
@@ -401,6 +412,11 @@ impl VehicleHandling {
                 "Genesys.Gen.RaceCarPhysicalDefinition" => out.read_bodies(&obj),
                 "Genesys.Gen.HandlingBehaviour" => out.read_handling(&obj),
                 "Genesys.Gen.VehicleCameraContainer" => out.camera = VehicleCameras::from_container(&obj),
+                "Genesys.Gen.Vehicle_Gameplay" => {
+                    out.ai_steering_pid = sub(&obj, h::GAMEPLAY_PID)
+                        .and_then(|p| Some([float(p, h::PID_P)?, float(p, h::PID_I)?, float(p, h::PID_D)?]));
+                    out.gameplay_top_speed_mph = float(&obj, h::GAMEPLAY_TOP_SPEED);
+                }
                 "Genesys.Gen.WheelSuspensionSpringConstraint" => {
                     if let (Some(damper_ratio), Some(damping_ratio), Some(sag)) = (
                         float(&obj, h::SPRING_DAMPER_RATIO),

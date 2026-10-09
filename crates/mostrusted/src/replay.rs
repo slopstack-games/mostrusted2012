@@ -145,7 +145,10 @@ pub fn run_replay(
     time: Res<Time>,
     replay: Option<ResMut<Replay>>,
     mut input: ResMut<crate::drive::CarInput>,
-    mut cars: Query<(&mut crate::drive::Car, &Transform, &LinearVelocity, &AngularVelocity)>,
+    mut cars: Query<
+        (&mut crate::drive::Car, &Transform, &LinearVelocity, &AngularVelocity),
+        With<crate::drive::Player>,
+    >,
     mut exit: MessageWriter<AppExit>,
 ) {
     let (Some(mut r), Ok((mut car, transform, velocity, angular))) = (replay, cars.single_mut()) else { return };

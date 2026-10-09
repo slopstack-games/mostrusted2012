@@ -37,7 +37,11 @@ pub struct SpeedCameras {
     pub best: HashMap<u32, i32>,
 }
 
-fn speed_cameras(game: Option<Res<Game>>, mut state: ResMut<SpeedCameras>, cars: Query<(&Car, &Transform)>) {
+fn speed_cameras(
+    game: Option<Res<Game>>,
+    mut state: ResMut<SpeedCameras>,
+    cars: Query<(&Car, &Transform), With<crate::drive::Player>>,
+) {
     let Some(game) = game else { return };
     if !state.loaded {
         state.loaded = true;

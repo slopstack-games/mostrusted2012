@@ -301,13 +301,16 @@ fn receive_vfx(mut maker: BatchMaker, loading: Option<Res<VfxLoading>>) {
     maker.commands.insert_resource(Vfx { lib: loaded.lib, effects, batches });
 }
 
+/// Loaded effects and their materials, sent back from the worker thread.
+type LoadedEffects = (Vec<BearEffect>, LoadedMaterials);
+
 /// Effects asked for after the start (the cars' spot effects, `exhaust.rs`): loaded on a worker thread
 /// and added to [`Vfx`].
 #[derive(Resource, Default)]
 pub(crate) struct EffectRequests {
     asked: std::collections::HashSet<ResourceId>,
     want: Vec<ResourceId>,
-    pending: Option<Mutex<mpsc::Receiver<(Vec<BearEffect>, LoadedMaterials)>>>,
+    pending: Option<Mutex<mpsc::Receiver<LoadedEffects>>>,
 }
 
 impl EffectRequests {

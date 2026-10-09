@@ -49,6 +49,8 @@ pub struct CarRequest {
     pub paint_index: usize,
     /// A traffic car's model instead of a drivable car (`traffic.rs`): answered with `Msg::TrafficCar`.
     pub traffic: Option<TrafficModelRequest>,
+    /// An opponent's slot (`ai.rs`): the car comes back with [`CarSpec::opponent`] set instead of going to the garage.
+    pub opponent: Option<usize>,
 }
 
 /// A traffic car model in one paint (traffic cars keep their paints outside their bundle).
@@ -104,6 +106,8 @@ pub struct CarSpec {
     pub impact_graph: mw_assets::damage::ImpactGraph,
     /// `VehicleVfxBehaviour` spot effects with their locators (exhaust flames, smoke, ...; `exhaust.rs`).
     pub spot_effects: Vec<mw_assets::vfx::VehicleSpotEffect>,
+    /// Set for an AI opponent's car (its slot in `ai::Opponents`); `None` for the player's.
+    pub opponent: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -219,6 +223,7 @@ pub fn spawn(
                 paintable: HashMap::new(),
                 requests: req_rx,
                 skin_bones: None,
+                opponent: None,
                 backdrop: None,
                 backdrop_sent: HashSet::new(),
                 prop_physics: HashMap::new(),
@@ -266,6 +271,8 @@ struct Worker {
     requests: Receiver<CarRequest>,
     /// While loading a drivable car's body: its skeleton size, so meshes get joint attributes.
     skin_bones: Option<usize>,
+    /// The opponent slot of the car being loaded (`CarRequest::opponent`).
+    opponent: Option<usize>,
     /// Backdrop composition for [`BackdropMode::Composed`].
     backdrop: Option<BackdropSelector>,
     /// Backdrop instances already sent (the same backdrop model is listed by many units).
@@ -343,7 +350,10 @@ impl Worker {
             return Ok(());
         }
         self.filter.paint_index = req.paint_index;
-        if let Err(e) = self.car(&req.bundle) {
+        self.opponent = req.opponent;
+        let loaded = self.car(&req.bundle);
+        self.opponent = None;
+        if let Err(e) = loaded {
             self.send(Msg::CarFailed(format!("{}: {e:#}", req.bundle)))?;
         }
         Ok(())
@@ -436,6 +446,7 @@ impl Worker {
             damage,
             impact_graph,
             spot_effects,
+            opponent: self.opponent,
         };
         // Parts are listed by the key the main thread knows them by (paint variants differ).
         for &m in spec.parts.iter().flatten() {

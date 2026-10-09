@@ -3,6 +3,8 @@
 //! No game data is shipped. All assets are streamed at runtime from an
 //! installed copy of the game (see `mw-gamedir` for how it is located).
 
+mod ai;
+mod ai_driver;
 mod audio;
 mod bench;
 mod camera;
@@ -261,6 +263,17 @@ struct Cli {
     /// Multiply the traffic density (1 = the game's; for tests).
     #[arg(long, default_value_t = 1.0)]
     traffic_density: f32,
+    /// AI opponents (with --drive): comma-separated car names or IDs, placed on a route along the traffic lanes
+    /// ahead of the player (`ai.rs`). `--test ai` also drives the player's car with the same driver and logs both.
+    #[arg(long, value_delimiter = ',')]
+    ai: Vec<String>,
+    /// Seconds an `--test ai` run lasts.
+    #[arg(long, default_value_t = 60.0)]
+    ai_seconds: f32,
+    /// Rubber band for the `--ai` opponents: `<RaceBalancingData id>,<RaceBalancingProfile id>` (GeneSys ids in
+    /// GAMELOGIC/GAMEMODES.BNDL, e.g. 01000000000f0258,01000000000f0259).
+    #[arg(long, value_delimiter = ',')]
+    ai_balancing: Vec<String>,
 }
 
 #[derive(Resource)]
@@ -422,7 +435,9 @@ fn main() -> anyhow::Result<()> {
             (None, [x, y, z, h]) => (Vec3::new(*x, *y, *z), h.to_radians()),
             _ => anyhow::bail!("--spawn expects x,y,z[,heading_degrees]"),
         };
-        let track = cli.test_track || (cli.test.is_some() && !race_test) || cli.replay.is_some();
+        // `--test ai` and `--test race` drive the streets; the other tests run on the flat track.
+        let street_test = race_test || cli.test.as_deref() == Some("ai");
+        let track = cli.test_track || (cli.test.is_some() && !street_test) || cli.replay.is_some();
         let spawn = if track { Vec3::new(0.0, 1.0, 0.0) } else { spawn };
         let props = if cli.test.as_deref() == Some("smash") { props::smash_test_props() } else { Vec::new() };
         Request::Drive { bundle: resolve(q)?, spawn, heading, max_units: cli.units, world: !track, props }
@@ -439,7 +454,7 @@ fn main() -> anyhow::Result<()> {
     };
     let smash = cli.test.as_deref() == Some("smash");
     let test = match cli.test.as_deref() {
-        None | Some("crash") | Some("smash") | Some("race") => None,
+        None | Some("crash") | Some("smash") | Some("ai") | Some("race") => None,
         Some("accel") => Some(drive::TestKind::Accel),
         Some("nitrous") => Some(drive::TestKind::Nitrous),
         Some("brake") => Some(drive::TestKind::Brake),
@@ -454,7 +469,7 @@ fn main() -> anyhow::Result<()> {
         Some("exhaust") => Some(drive::TestKind::Exhaust),
         Some(other) => {
             anyhow::bail!(
-                "unknown --test {other} (accel, brake, corner, handbrake, drift, donut, engine, exhaust, landing, climb, jitter, crash, smash, race)"
+                "unknown --test {other} (accel, brake, corner, handbrake, drift, donut, engine, exhaust, landing, climb, jitter, crash, smash, ai, race)"
             )
         }
     };
@@ -505,8 +520,26 @@ fn main() -> anyhow::Result<()> {
             .map(|s| ResourceId::parse(s).ok_or_else(|| anyhow::anyhow!("bad resource id {s}")))
             .collect::<anyhow::Result<_>>()?,
     };
+    let ai_test = cli.test.as_deref() == Some("ai");
+    let ai_cars = cli.ai.iter().map(|q| resolve(q)).collect::<anyhow::Result<Vec<_>>>()?;
     let mut app = App::new();
     app.insert_resource(car_anim::AnimOverride::parse(&cli.anim)?);
+    if matches!(request, Request::Drive { world: true, .. }) {
+        let balancing = match &cli.ai_balancing[..] {
+            [] => None,
+            [d, p] => Some((
+                ResourceId::parse(d).ok_or_else(|| anyhow::anyhow!("bad resource id {d}"))?,
+                ResourceId::parse(p).ok_or_else(|| anyhow::anyhow!("bad resource id {p}"))?,
+            )),
+            _ => anyhow::bail!("--ai-balancing expects <RaceBalancingData id>,<RaceBalancingProfile id>"),
+        };
+        app.add_plugins(ai::AiPlugin { cars: ai_cars, test: ai_test.then_some(cli.ai_seconds), balancing });
+        if ai_test {
+            app.add_systems(Startup, |mut t: ResMut<Time<Virtual>>| t.set_relative_speed(2.0));
+        }
+    } else {
+        app.init_resource::<ai::Opponents>();
+    }
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
             title: "Most Rusted".into(),
@@ -765,6 +798,7 @@ fn receive_assets(
     env: Res<GameEnvironment>,
     lights: Res<materials::VehicleLights>,
     mut garage: ResMut<garage::Garage>,
+    mut opponents: ResMut<ai::Opponents>,
     mut surfaces: ResMut<props::WorldSurfaces>,
     mut traffic_models: Option<ResMut<traffic::TrafficModels>>,
 ) {
@@ -862,12 +896,16 @@ fn receive_assets(
                     .chain(spec.wheels.iter().flat_map(|w| w.parts.iter().map(|(m, _)| m)))
                     .filter_map(|m| Some((*m, loaded.models.get(m)?.clone())))
                     .collect();
-                // Placed by the garage: at `--spawn` at startup, later in place of the current car.
-                garage.arrived(spec, parts);
+                // An opponent's car goes to the AI (`ai.rs`); the player's is placed by the garage: at `--spawn` at
+                // startup, later in place of the current car.
+                match spec.opponent {
+                    Some(slot) => opponents.arrived(slot, spec, parts),
+                    None => garage.arrived(spec, parts),
+                }
             }
             Msg::TrafficCar(spec) => {
                 if let Some(t) = traffic_models.as_mut() {
-                    t.arrived(spec, &loaded.models);
+                    t.arrived(&spec, &loaded.models);
                 }
             }
             Msg::CarFailed(e) => garage.failed(e),
@@ -894,7 +932,7 @@ fn update_status(
     loaded: Res<Loaded>,
     mut text: Query<&mut Text, With<StatusText>>,
     cam: Query<&Transform, MainCamera>,
-    car: Query<&drive::Car>,
+    car: Query<&drive::Car, With<drive::Player>>,
 ) {
     let Ok(mut text) = text.single_mut() else { return };
     let pos = cam.single().map(|t| t.translation).unwrap_or_default();
@@ -922,7 +960,7 @@ fn update_status(
 /// Brake lights follow the brake pedal and reversing lights the reverse gear while driving.
 fn drive_vehicle_lights(
     input: Res<drive::CarInput>,
-    car: Query<&drive::Car>,
+    car: Query<&drive::Car, With<drive::Player>>,
     mut lights: ResMut<materials::VehicleLights>,
 ) {
     let Ok(car) = car.single() else { return };

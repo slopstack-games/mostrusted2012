@@ -206,7 +206,7 @@ fn engine_sound(
     mut commands: Commands,
     pending: Option<ResMut<PendingEngine>>,
     mut assets: ResMut<Assets<EngineAudio>>,
-    cars: Query<Entity, With<crate::drive::Car>>,
+    cars: Query<Entity, (With<crate::drive::Car>, With<crate::drive::Player>)>,
 ) {
     let (Some(mut pending), Ok(car)) = (pending, cars.single()) else { return };
     if let Some(audio) = pending.0.take() {
@@ -232,7 +232,7 @@ fn engine_sound(
 fn update_engine_params(
     time: Res<Time>,
     fixed: Res<Time<Fixed>>,
-    cars: Query<&crate::drive::Car>,
+    cars: Query<&crate::drive::Car, With<crate::drive::Player>>,
     input: Res<crate::drive::CarInput>,
     mut sounds: Query<&mut EngineSound>,
 ) {

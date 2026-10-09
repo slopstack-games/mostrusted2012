@@ -133,7 +133,7 @@ fn load_bank(
 fn update_params(
     time: Res<Time>,
     mut state: ResMut<SfxState>,
-    cars: Query<(Entity, &Car)>,
+    cars: Query<(Entity, &Car), With<crate::drive::Player>>,
     input: Res<CarInput>,
     mut impacts: MessageReader<ImpactEvent>,
 ) {
