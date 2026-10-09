@@ -83,13 +83,25 @@ pub struct RigidBodyDef {
 /// `DynamicAdditionalInfo` / `CompoundAdditionalInfo`.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct AdditionalInfo {
+    /// +0x18: the contact force (N) that swaps in the damaged state and starts the impact effect
+    /// (`FUN_0054bf70`, once per knocked lifetime).
     pub force_to_damage: f32,
-    /// `67f0233c` (0, 10, 500, 5000, 10000): unnamed, a force threshold like its neighbours.
+    /// +0x1c `67f0233c` (unnamed; 0, 10, 500, 5000, 10000): the **momentum** (kg m/s) a hitting body must
+    /// carry to knock the object loose: `|mass × velocity|` of the hitter, its whole velocity
+    /// (`FUN_0054e570`, run from the bounding-box overlap test `FUN_00554d80`).
     pub force_67f0233c: f32,
     pub strength: f32,
     pub score: u32,
-    /// Compound objects only.
+    /// +0x26 `5586d09d`: can be knocked loose at all (false on the 100000 / mass-0 objects; `FUN_0054e570`
+    /// returns at once without it).
+    pub knockable: bool,
+    /// +0x28 `94c94bab`: starts pinned (`FUN_0054dfe0` copies it into the pinned set; true exactly where the
+    /// threshold is above 0).
+    pub starts_pinned: bool,
+    /// Compound objects only: +0x30 `ForceToSmash` (N, against the contact force) and +0x34 `08c87eeb`, the
+    /// time (s) a knocked compound waits before it can smash (`FUN_00555c90`).
     pub force_to_smash: Option<f32>,
+    pub smash_delay: Option<f32>,
 }
 
 /// A decoded `PhysicalDefinition`.
@@ -113,6 +125,9 @@ pub struct ObjectPhysics {
     /// Props: distance (m) beyond which a knocked prop is put back (`mfResetDistanceSquared`).
     pub reset_distance: Option<f32>,
     pub remove_instead_of_reset: bool,
+    /// Props: the impact effect (`BearEffect`) and sound (`WCPlaySoundBehaviour`).
+    pub impact_effect: Option<ResourceId>,
+    pub impact_sound: Option<ResourceId>,
 }
 
 impl ObjectPhysics {
@@ -121,6 +136,51 @@ impl ObjectPhysics {
         self.definition.as_ref().map_or(0.0, |d| d.bodies.iter().map(|b| b.mass).sum())
     }
 }
+
+/// How a car's contact with a dynamic object (a knocked prop) is solved: the share of the contact impulse
+/// each side receives, linear and angular (`CollisionResponses_RaceCar.RaceCarVsDynamic`,
+/// `CollisionResponses_Global.TrafficVsDynamic`). The game's contact solver (`FUN_009be420`, the friction
+/// pass `FUN_009bed70`) computes the impulse from the relative velocity and adds `impulse × scale` to each
+/// body's accumulator: with 0.1 / 0.05 a race car hardly feels a lamp post it knocks down (docs/decomp.md,
+/// "Props").
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DynamicResponse {
+    /// The car's linear and angular impulse scales.
+    pub car_linear: f32,
+    pub car_angular: f32,
+    /// The object's.
+    pub object_linear: f32,
+    pub object_angular: f32,
+    pub restitution: f32,
+}
+
+/// The responses per kind of car (`FUN_00960f20` picks them by the pair's categories, `FUN_00929350`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DynamicResponses {
+    /// Category 0, the player's race car (`FUN_00941170`, `RaceCarVsDynamic` at +0x40c, field `c7d59471`).
+    pub player: DynamicResponse,
+    /// Category 1, AI race cars (`FUN_009415f0`, +0x3d0, `2e3c3d30`).
+    pub ai: DynamicResponse,
+    /// Category 3, traffic (`FUN_00940d50`, `CollisionResponses_Global` +0x9c, `09f6c358`).
+    pub traffic: DynamicResponse,
+}
+
+impl Default for DynamicResponses {
+    /// The values in `PHYSICS/PHYSICSCONFIG.BNDL` (read 2026-10-09), for runs that cannot load it.
+    fn default() -> Self {
+        let r = |car_linear, car_angular, object_angular| DynamicResponse {
+            car_linear,
+            car_angular,
+            object_linear: 1.0,
+            object_angular,
+            restitution: 0.0,
+        };
+        Self { player: r(0.1, 0.05, 0.4), ai: r(0.01, 0.01, 0.4), traffic: r(1.0, 0.55, 0.4) }
+    }
+}
+
+const COLLISION_RESPONSES_RACE_CAR: ResourceId = ResourceId(0x0100_0000_0007_f0c9);
+const COLLISION_RESPONSES_GLOBAL: ResourceId = ResourceId(0x0100_0000_0007_f0c6);
 
 const RIGID_BODIES: u32 = field_hash("RigidBodies");
 const ADDITIONAL_INFO: u32 = field_hash("AdditionalInfo");
@@ -144,6 +204,13 @@ fn vec3(o: &Object, hash: u32) -> Option<[f32; 3]> {
 fn float(o: &Object, name: u32) -> Option<f32> {
     match o.get(name)? {
         Value::Float(f) => Some(*f),
+        _ => None,
+    }
+}
+
+fn boolean(o: &Object, name: u32) -> Option<bool> {
+    match o.get(name)? {
+        Value::Bool(b) => Some(*b),
         _ => None,
     }
 }
@@ -233,7 +300,10 @@ impl AssetStore {
             force_67f0233c: float(&i, FORCE_67F0233C).unwrap_or(0.0),
             strength: float(&i, field_hash("Strength")).unwrap_or(0.0),
             score: uint(&i, field_hash("Score")).unwrap_or(0) as u32,
+            knockable: boolean(&i, 0x5586d09d).unwrap_or(true),
+            starts_pinned: boolean(&i, 0x94c94bab).unwrap_or(true),
             force_to_smash: float(&i, field_hash("ForceToSmash")),
+            smash_delay: float(&i, 0x08c87eeb),
         });
         Ok(PhysicalDefinition {
             id,
@@ -241,6 +311,59 @@ impl AssetStore {
             bodies,
             info,
         })
+    }
+
+    /// The car-against-dynamic-object contact responses (`PHYSICS/PHYSICSCONFIG.BNDL`). Field offsets from the
+    /// readers: `RaceCarVsDynamic` +0x34 → the car's linear scale, +0x30 its angular one, +0x2c the object's
+    /// linear, +0x28 its angular, +0x38 `Restitution` (`FUN_00941170` / `FUN_009415f0`); `TrafficVsDynamic`
+    /// +0x20, +0x1c, +0x14, +0x10, +0x18 (`FUN_00940d50`).
+    pub fn dynamic_responses(&self) -> Result<DynamicResponses> {
+        let race = self.genesys_object(COLLISION_RESPONSES_RACE_CAR)?;
+        let global = self.genesys_object(COLLISION_RESPONSES_GLOBAL)?;
+        let sub = |o: &Object, id: ResourceId, hash: u32| -> Result<Object> {
+            match o.get(hash) {
+                Some(Value::Struct(s)) => Ok(s.clone()),
+                _ => Err(crate::Error::Missing(id)),
+            }
+        };
+        let f = |o: &Object, hash: u32| float(o, hash).unwrap_or(0.0);
+        let race_car = |o: Object| DynamicResponse {
+            car_linear: f(&o, 0xe75eb28b),
+            car_angular: f(&o, 0x207258c8),
+            object_linear: f(&o, 0x357a73bd),
+            object_angular: f(&o, 0x1caa1e4f),
+            restitution: f(&o, field_hash("Restitution")),
+        };
+        let t = sub(&global, COLLISION_RESPONSES_GLOBAL, 0x09f6c358)?;
+        Ok(DynamicResponses {
+            player: race_car(sub(&race, COLLISION_RESPONSES_RACE_CAR, 0xc7d59471)?),
+            ai: race_car(sub(&race, COLLISION_RESPONSES_RACE_CAR, 0x2e3c3d30)?),
+            traffic: DynamicResponse {
+                car_linear: f(&t, 0x16c25fa9),
+                car_angular: f(&t, 0x31e69a76),
+                object_linear: f(&t, 0x357a73bd),
+                object_angular: f(&t, 0x1caa1e4f),
+                restitution: f(&t, field_hash("Restitution")),
+            },
+        })
+    }
+
+    /// The waves of a prop's impact sound (`WCPlaySoundBehaviour.Collision_Waves`, e.g.
+    /// "PlayConeCollisionSound": six cone knocks). The per-surface lists (`Surface_Collisions`) are not used.
+    pub fn impact_sound_waves(&self, id: ResourceId) -> Result<Vec<ResourceId>> {
+        let o = self.genesys_object(id)?;
+        let waves: &[Value] = match o.get(field_hash("Collision_Waves")) {
+            Some(Value::Array(a)) => a,
+            _ => &[],
+        };
+        Ok(waves
+            .iter()
+            .filter_map(|v| match v {
+                Value::Handle(h) => *h,
+                Value::Ref(id) => Some(*id),
+                _ => None,
+            })
+            .collect())
     }
 
     /// The object definition behind a prop / compound / dynamic placement.
@@ -264,6 +387,8 @@ impl AssetStore {
             parts: def.parts.iter().map(|p| load(*p)).collect(),
             reset_distance: def.reset_distance_sq.filter(|d| *d > 0.0).map(f32::sqrt),
             remove_instead_of_reset: def.remove_instead_of_reset,
+            impact_effect: def.impact_effect,
+            impact_sound: def.impact_sound,
         })
     }
 }

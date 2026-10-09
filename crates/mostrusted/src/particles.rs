@@ -58,7 +58,15 @@ impl Plugin for ParticlesPlugin {
             .add_systems(FixedPostUpdate, detect_impacts.after(PhysicsSystems::Writeback))
             .add_systems(
                 Update,
-                (load_requested, wheel_emitters, impact_emitters, demo_emitter, simulate, build_meshes)
+                (
+                    load_requested,
+                    wheel_emitters,
+                    impact_emitters,
+                    prop_impact_effects,
+                    demo_emitter,
+                    simulate,
+                    build_meshes,
+                )
                     .chain()
                     .after(receive_vfx)
                     .run_if(resource_exists::<Vfx>),
@@ -1099,6 +1107,52 @@ fn impact_emitters(
             );
         }
     }
+}
+
+/// A prop's impact effect (`PropObject` +0x14) when a car's contact passes its `ForceToDamage`
+/// (`props::prop_contacts`, the game's `FUN_0054bf70`, which orients it by the hitter's velocity). Effects
+/// load on first use; an impact waits up to half a second for its effect.
+fn prop_impact_effects(
+    time: Res<Time>,
+    vfx: Res<Vfx>,
+    mut requests: ResMut<EffectRequests>,
+    mut instances: ResMut<Instances>,
+    mut impacts: MessageReader<crate::props::PropImpact>,
+    mut waiting: Local<Vec<(f32, crate::props::PropImpact)>>,
+) {
+    let now = time.elapsed_secs();
+    for hit in impacts.read() {
+        if let Some(id) = hit.effect {
+            requests.request(id);
+            waiting.push((now, *hit));
+        }
+    }
+    waiting.retain(|(t, hit)| {
+        let Some(id) = hit.effect else { return false };
+        if !vfx.has_effect(id) {
+            return now - t < 0.5;
+        }
+        // Emitter frame: Y along the contact normal (out of the prop), Z along the car's travel.
+        let y = hit.normal.try_normalize().unwrap_or(Vec3::Y);
+        let z = (hit.velocity - y * hit.velocity.dot(y)).try_normalize().unwrap_or_else(|| y.any_orthonormal_vector());
+        let frame = Mat4::from_cols(y.cross(z).extend(0.0), y.extend(0.0), z.extend(0.0), hit.position.extend(1.0));
+        instances.one_shot(
+            &vfx,
+            Some(id),
+            Params {
+                transform: frame,
+                velocity: hit.velocity,
+                intensity: (hit.closing_speed / 15.0).clamp(0.0, 1.0),
+                emitting: false,
+                moved: 0.0,
+                // Model decision: the ground is taken as level, half a metre under the contact.
+                ground: Vec4::new(0.0, 1.0, 0.0, -(hit.position.y - 0.5)),
+                impact: hit.closing_speed,
+                movement: 0.0,
+            },
+        );
+        false
+    });
 }
 
 /// `MW_VFX_DEMO=<effect id>[,<seconds>[,<speed>]]`: play an effect every few seconds 8 m ahead of and 3 m

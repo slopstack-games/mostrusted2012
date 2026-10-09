@@ -6,9 +6,10 @@
 //! level of the zones facing the contact point, and the joints are re-posed from the clips.
 //!
 //! Impact strength: the approach speed along the contact normal (avian's pre-solve `normal_speed`)
-//! through the game's `ImpactDamageGraphs` curve. Against a loose prop (`props.rs`) only the car's
-//! own change of speed counts, `m_prop / (m_car + m_prop)` of the approach speed, so a cone does no
-//! damage and a pinned lamp post that holds counts like a wall. Which curve and units the game uses for which kind
+//! through the game's `ImpactDamageGraphs` curve. A standing lamp post that holds counts like a wall.
+//! Knocked props do not reach this: their contacts with the race cars are solved by `props::prop_contacts`
+//! outside avian (the car takes a tenth of the impulse) and deal no damage here (model decision: the game's
+//! "prop impact" rule, `FUN_00941170` → `FUN_009a9fd0`, is not ported). Which curve and units the game uses for which kind
 //! of impact is not known yet (research log, "vehicle damage").
 
 use std::path::PathBuf;

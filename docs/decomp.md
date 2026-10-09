@@ -1161,6 +1161,87 @@ decisions: [handling.md](handling.md), "Crash camera".
   scene analysers' update (vtables at `0x00fe4638` and nearby, `FUN_007d9840` and its siblings build them),
   the `SlowMoSequenceItem` handler.
 
+## Props (2026-10-09)
+
+Runtime: `crates/mostrusted/src/props.rs`; data: `mw_assets::props` (`AdditionalInfo`, `DynamicResponses`).
+
+### Car against a dynamic object: shared impulses (confirmed)
+- **Dispatch**: `FUN_00961750` builds the contact response for a body pair through `FUN_00960f20`, which
+  switches on both bodies' categories from `FUN_00929350`: 0 the player's race car (`RaceCarPhysicsObject`,
+  not crashing, +0xc38 ≠ 2), 1 an AI race car, 2 a crashing race car (+0x5dd set), 3 traffic or a trailer, 4
+  anything else (props, compounds, world objects: `DynamicPhysicsObject`). 0 vs 4 → `FUN_00941170`; 1 vs 4 →
+  `FUN_009415f0`; 3 vs 4 → `FUN_00940d50`; 2 vs 4 → the default record (`FUN_009251f0`) with record +0x132 set;
+  4 vs 4 → `FUN_0092e3e0`. Other pairs: 0/1 → `FUN_009588c0` (`PlayerVsAI`, +0x100), 0/2 → `FUN_00959210`
+  (`PlayerVsCrashingRaceCar`, +0x2c0), 1/2 → `FUN_00959730` (+0x368), 1/3 → `FUN_0095a680` (`AIVsTraffic`,
+  +0x1e8), 3/3 → `FUN_00958130`.
+- **The record** (`FUN_009251f0` defaults: four scale lanes 1.0 (`.rdata` 0x010245c0), restitution 0): the player
+  handler reads `CollisionResponses_RaceCar` +0x40c (`RaceCarVsDynamic`, field `c7d59471`): record +0x20 ← +0x34
+  (`e75eb28b`), +0x40 ← +0x30 (`207258c8`), +0x30 ← +0x2c (`357a73bd`), +0x50 ← +0x28 (`1caa1e4f`), +0x60 ←
+  +0x38 (`Restitution`). With the car's flag +0x1777 set, +0x20 / +0x40 come from the embedded `BasicParams`
+  (`e3882eb1` 0.4, `e5ea1414` 0.01) instead. When the object's body has flag +0xf4 bit 2, both car lanes are
+  raised to at least 0.01 (`.rdata` 0x00f9d474). Record +0x00 / +0x10 ← the object's main rigid body's
+  `Friction` (definition +0x40 array of 0xe0-byte bodies, index at definition +0x48, field +0xa0). The AI
+  handler reads +0x3d0 (`2e3c3d30`) the same way; the traffic handler `CollisionResponses_Global` +0x9c
+  (`TrafficVsDynamic`: +0x20 `16c25fa9`, +0x1c `31e69a76`, +0x14 `357a73bd`, +0x10 `1caa1e4f`, +0x18
+  `Restitution`). The "prop impact" / "payload impact" crash test (`FUN_009a9fd0` with the car's
+  `CrashingRules` +0x28 / +0x20 entries) runs in the same handlers.
+- **Applied** (`FUN_009bb640` copies the record into the contact constraint: +0x90 = (record +0x20, +0x30,
+  +0x40, +0x50), +0x30 = (friction, friction, restitution), +0x80 = (1, 1, 0, 0), +0xf1 / +0xf2 = record
+  +0x132 / +0x133). The sub-step contact pass `FUN_009be420` computes each point's impulse from the relative
+  velocity and its stored effective mass (point +0x2c) and adds impulse × +0x90 to body A's linear accumulator,
+  × +0x94 to B's, and the angular impulse × +0x98 / × +0x9c; bodies with +0xf4 bit 2 get nothing. The friction
+  pass `FUN_009bed70` uses the same four lanes. The first pass `FUN_009be060` (the island's first loop) uses
+  +0x80: full linear, no angular. Constraint +0x4c accumulates the normal impulse.
+- **Values** (`PHYSICS/PHYSICSCONFIG.BNDL`, `010000000007f0c9` / `…f0c6`): player 0.1 car linear, 0.05 car
+  angular, 1 object linear, 0.4 object angular, restitution 0; AI 0.01 / 0.01 / 1 / 0.4; traffic 1 / 0.55 / 1 /
+  0.4. So a knocked prop changes the player's velocity by a tenth of what a rigid contact would: at 60 km/h a
+  150 kg lamp takes about 0.55 km/h off a 1.5 t car.
+- Inferred, not read: that the effective mass at point +0x2c is the unscaled one (the prestep that writes it
+  was not found).
+
+### The prop manager: activation, break-free, reset (confirmed unless stated; sub-agent trace)
+- The world streamer holds a prop manager (streamer + 0xde950) driven by `FUN_00554d80` (activation, from
+  `FUN_00556880`) and `FUN_00555c90` (after physics, from `FUN_0055ac30`); up to 3664 objects in four index
+  ranges (instance objects, compounds 0x334.., compound parts 0x5a0.. (48), props 0x5d0..), with bitsets for
+  active, touched, awake, newly active, pinned and pinned-next-frame. Registration (`FUN_0054dfe0`) copies
+  `AdditionalInfo` +0x28 (`94c94bab`) into the pinned set and posts a static box proxy from the definition's
+  bounds.
+- **Activation**: the broadphase pair list (`FUN_00a9a720`, up to 255 pairs) is scanned each frame; a prop whose
+  box overlaps an awake body (body +0xf4 bit 0 clear) is touched; active = touched | awake. New ones get a
+  `DynamicPhysicsObject` created **asleep** (`FUN_009ae320`) with body flag bit 2 = pinned
+  (`FUN_008fcad0` → `FUN_009aac50`); ones no longer active lose their body (message 0xc), the static proxy
+  stays. The physics side has 48 slots, evicting the lowest `1/(d² + 1)` (+2 for some objects) with d the
+  camera distance (×200 + 10000 outside the frustum; `FUN_0090f530` / `FUN_0090f3b0`).
+- **Break-free** (`FUN_0054e570`, from the overlap pass `FUN_0054ec10` / `FUN_0054ed10`): only when
+  `AdditionalInfo` +0x26 (`5586d09d`) is set; unpins when (hitter mass +0x70.w × hitter velocity +0xb0)² >
+  (+0x1c `67f0233c`)²: the hitter's **whole momentum**, before any contact is solved. Then message 0xd clears
+  bit 2 (`FUN_00919c80` case 0xd → `FUN_009aac50(0)`).
+- **Damage / effect** (`FUN_0054bf70`): when a body-pair record's force (`FUN_00901740` +0x3c = Σ normal impulse
+  / dt, N) exceeds `ForceToDamage` (+0x18), once per knocked lifetime: damaged state (model `PropObject` +8)
+  and, for a vehicle hitter, the impact effect (`PropObject` +0x14) oriented by the hitter's velocity.
+- **Compound smash** (`FUN_00555c90`): loose, its timer (`08c87eeb`, +0x34, seconds) run out, and the world
+  contact force or a pair force above `ForceToSmash` (+0x30) → messages 2 and 0x11, the body removed. Parts
+  are linked by joints (`FUN_005547f0`, `FUN_0054e120`, message 0x2f); a pinned part whose links are all loose
+  is unpinned (`FUN_0054e750`). The joint-break rule was not found.
+- **Reset** (`FUN_0055ae50`, every frame, no timer): a moving prop (64-slot pool, `FUN_00553fe0`) is put back
+  (`FUN_00553540`) or removed (`FUN_00553740`, `mbRemoveInsteadOfReset` or a game flag) once **both** the camera
+  and the player's car are farther than `mfResetDistanceSquared`. ResetProps (message 0x15, `FUN_0055a680`)
+  re-creates everything.
+- **Sound**: a prop's world contact plays its `PropObject` +0x1c sound (`WCPlaySoundBehaviour`) or
+  "World_Prop_Collision" above a threshold from an audio object, then waits 0.35 s (`.rdata` 0xfaaf2c,
+  `FUN_0054c680`).
+
+### Port and model decisions (`props.rs`)
+- Knocked props are outside the race cars' avian layers; `prop_contacts` solves car–prop contacts with the
+  scales above in two passes per step (the island's two sub-steps), normal impulses clamped at 0 and friction
+  within the object's `Friction` × normal. The break test runs there too, before the step, on the car's
+  momentum. Traffic keeps avian's ordinary contact against loose props (its scales are near 1).
+- Model decisions: unscaled effective mass; overlap push-out (0.2 of the depth per step, ≤ 4 m/s, 1 cm slop)
+  and speculative contacts for gaps within a step's travel; loose-from-the-start props stand static until
+  the first touch; no `AdditionalInfo` = never loose; colliders within 30 m of a race car or crashed traffic (the game activates on
+  box overlap, with pools); sound gain ∝ closing / 12 m/s, 2 m/s threshold; traffic and loose props break
+  standing ones through the contact hook.
+
 ## Input and control bindings
 
 - **Actions**: 96 (ids 0..0x5f), one 16-byte record each in the name table at `.data` 0x010c3540

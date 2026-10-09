@@ -163,6 +163,8 @@ pub enum Msg {
     Collider(avian3d::prelude::Collider, Arc<Vec<u32>>),
     /// The game's collision surface list (`mw_assets::surfaces`).
     Surfaces(Vec<mw_assets::surfaces::SurfaceInfo>),
+    /// How cars' contacts with knocked props are solved (`mw_assets::props::DynamicResponses`).
+    PropResponses(mw_assets::props::DynamicResponses),
     Car(Box<CarSpec>),
     /// A traffic car model ([`CarRequest::traffic`]).
     TrafficCar(Box<TrafficCarSpec>),
@@ -203,7 +205,7 @@ pub struct WorldFilter {
     pub keep_lod_proxies: bool,
     /// Which of the car's `VehiclePaint` options to paint it with.
     pub paint_index: usize,
-    /// Draw props, compounds and dynamic objects without collision (no `--prop-physics`).
+    /// Draw props, compounds and dynamic objects without collision (`--no-prop-physics`).
     pub no_prop_physics: bool,
     /// Draw every static world placement as its own entity (the default: without `--merge-static`)
     /// instead of merging a track unit's single-use static placements per material.
@@ -575,8 +577,12 @@ impl Worker {
 
     fn surfaces(&self) -> anyhow::Result<()> {
         match self.store.surfaces() {
-            Ok(list) => self.send(Msg::Surfaces(list)),
-            Err(e) => self.send(Msg::Progress(format!("no surface list: {e}"))),
+            Ok(list) => self.send(Msg::Surfaces(list))?,
+            Err(e) => self.send(Msg::Progress(format!("no surface list: {e}")))?,
+        }
+        match self.store.dynamic_responses() {
+            Ok(r) => self.send(Msg::PropResponses(r)),
+            Err(e) => self.send(Msg::Progress(format!("no collision responses (using the data's values): {e}"))),
         }
     }
 

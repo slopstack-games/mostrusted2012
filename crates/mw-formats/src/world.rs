@@ -199,8 +199,8 @@ impl ObjectInstanceList {
 /// | 0x04 | ptr    | `mpModel` (import) |
 /// | 0x08 | ptr    | `mpDamagedModel` (import; the same model in every instance seen) |
 /// | 0x0C | handle | `mPhysicalDefinitionHandle`: GeneSys `PhysicalDefinition` |
-/// | 0x14 | handle | `mImpactEffectHandle` (GeneSys, VFX) |
-/// | 0x1C | handle | `mImpactSoundHandle` (GeneSys, audio) |
+/// | 0x14 | handle | `mImpactEffectHandle`: a `BearEffect` (`GLOBALEFFECTS.BNDL`) |
+/// | 0x1C | handle | `mImpactSoundHandle`: a `WCPlaySoundBehaviour` (GeneSys) |
 /// | 0x24 | f32    | `mfResetDistanceSquared` (10000 = 100 m) |
 /// | 0x28 | bool   | `mbRemoveInsteadOfReset` |
 ///
@@ -230,6 +230,10 @@ pub struct ObjectDef {
     pub reset_distance_sq: Option<f32>,
     /// Props: `mbRemoveInsteadOfReset`.
     pub remove_instead_of_reset: bool,
+    /// Props: the impact effect (+0x14, a `BearEffect` in `GLOBALEFFECTS.BNDL`; 81% of props have one).
+    pub impact_effect: Option<ResourceId>,
+    /// Props: the impact sound (+0x1c, a `WCPlaySoundBehaviour` GeneSys object with `Collision_Waves`).
+    pub impact_sound: Option<ResourceId>,
 }
 
 /// Size of one `CompoundObject` part record.
@@ -246,6 +250,8 @@ impl ObjectDef {
             parts: Vec::new(),
             reset_distance_sq: None,
             remove_instead_of_reset: false,
+            impact_effect: None,
+            impact_sound: None,
         })
     }
 
@@ -254,6 +260,8 @@ impl ObjectDef {
         let r = Reader(res.header());
         def.reset_distance_sq = r.f32(0x24).ok();
         def.remove_instead_of_reset = r.u8(0x28).is_ok_and(|b| b != 0);
+        def.impact_effect = res.import_at(0x14);
+        def.impact_sound = res.import_at(0x1c);
         Ok(def)
     }
     pub fn parse_compound(res: &Resource) -> Result<Self> {

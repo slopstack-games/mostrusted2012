@@ -105,7 +105,7 @@ struct Cli {
     track_surface: usize,
     /// Run a scripted test and exit: accel, brake, corner, handbrake, drift, donut, engine, crash (drive into a
     /// wall; with --screenshot, saves `<name>-before` / `<name>-after` images), or smash (drive through a cone,
-    /// a street lamp and a fence into an immovable wall made of the game's props, at --smash-speed; before /
+    /// a sign, a street lamp and a fence into an immovable wall made of the game's props, at --smash-speed; before /
     /// after screenshots like crash). Implies --test-track.
     #[arg(long)]
     test: Option<String>,
@@ -117,11 +117,10 @@ struct Cli {
     /// Smash test: speed (km/h) the car holds through the props.
     #[arg(long, default_value_t = 60.0)]
     smash_speed: f32,
-    /// Give props, compound and dynamic objects collision (smashable street furniture; `props.rs`).
-    /// Off by default while it is work in progress: knocked lamps and crash barrels can still wedge the
-    /// car (research log, props session). `--test smash` turns it on.
+    /// Draw props, compound and dynamic objects without collision (smashable street furniture is on by
+    /// default; `props.rs`). `--test smash` keeps it on.
     #[arg(long)]
-    prop_physics: bool,
+    no_prop_physics: bool,
     /// Log the mean and worst frame time every 5 s once loading has finished (turns vsync off).
     #[arg(long)]
     frame_stats: bool,
@@ -535,7 +534,7 @@ fn main() -> anyhow::Result<()> {
         no_merge: !cli.merge_static,
         keep_lod_proxies: cli.keep_lod_proxies,
         paint_index: cli.paint_index,
-        no_prop_physics: !(cli.prop_physics || smash),
+        no_prop_physics: cli.no_prop_physics && !smash,
         exclude: cli
             .exclude_models
             .iter()
@@ -588,7 +587,7 @@ fn main() -> anyhow::Result<()> {
     }
     if test_track {
         app.add_systems(Startup, spawn_test_track);
-        app.insert_resource(props::WorldSurfaces { list: Vec::new(), untagged: cli.track_surface });
+        app.insert_resource(props::WorldSurfaces { list: Vec::new(), untagged: cli.track_surface, ..Default::default() });
     }
     // Crash rules and the crash camera (driving only).
     if matches!(request, Request::Drive { .. }) {
@@ -923,6 +922,10 @@ fn receive_assets(
                 commands.spawn((avian3d::prelude::RigidBody::Static, c, props::SurfaceTags(tags)));
             }
             Msg::Surfaces(list) => surfaces.list = list,
+            Msg::PropResponses(r) => {
+                info!("prop contact responses: {r:?}");
+                surfaces.responses = r;
+            }
             Msg::Car(spec) => {
                 let parts = spec
                     .body

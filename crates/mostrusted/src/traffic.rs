@@ -1615,10 +1615,20 @@ fn traffic_layers(crashed: bool) -> CollisionLayers {
     if crashed {
         CollisionLayers::new(
             GameLayer::Traffic,
-            [GameLayer::World, GameLayer::Car, GameLayer::CarBumper, GameLayer::Prop, GameLayer::Traffic],
+            [
+                GameLayer::World,
+                GameLayer::Car,
+                GameLayer::CarBumper,
+                GameLayer::Prop,
+                GameLayer::Traffic,
+                GameLayer::LooseProp,
+            ],
         )
     } else {
-        CollisionLayers::new(GameLayer::Traffic, [GameLayer::Car, GameLayer::Prop, GameLayer::Traffic])
+        CollisionLayers::new(
+            GameLayer::Traffic,
+            [GameLayer::Car, GameLayer::Prop, GameLayer::Traffic, GameLayer::LooseProp],
+        )
     }
 }
 
