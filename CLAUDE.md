@@ -20,10 +20,8 @@ user's install (IW4L-style). Read these before starting work:
 - **Never commit game data or anything derived from it**: extracted resources, DDS/PNG/OBJ exports,
   Ghidra databases, decompiled code (findings go into docs in prose only). Use the session scratchpad or git-ignored dirs (`/extracted`, `/re/out`).
 - Community references (burnout.wiki, DGIorio's MIT tools) may be read for format knowledge; don't copy code.
-- **Modding the original is allowed; a DRM bypass is not** (docs/reverse-engineering.md): code mods run in the
-  user's own copy, offline, in memory after it has unpacked itself, never in the DRM wrapper, licence code or
-  `NFS13.exe` on disk. Data files may be replaced if backed up and restorable. Byte signatures and anything from
-  the dump stay in git-ignored `re/`.
+- **Modding the original is allowed** (docs/reverse-engineering.md): code mods run in the
+  user's own copy, offline. Data files may be replaced if backed up and restorable. Byte signatures and anything from the dump stay in git-ignored `re/`.
 
 ## Fidelity rule: the original is the reference
 
@@ -49,8 +47,10 @@ crates/mw-bundle    bnd2 v5 reader, ResourceId, ResourceType, Reader
 crates/mw-formats   per-type parsers; take &mw_bundle::Resource     (never depends on Bevy)
 crates/mw-audio     EA audio decoders (SPS/EALayer3, Ginsu/XAS) and the engine-sound synth
 crates/mw-assets    AssetStore: index over all bundles, cross-bundle loads, scene helpers
+crates/mw-handling  the game's handling maths, engine-free (tyres, drivetrain, drift, nitrous, surfaces)
 crates/mwtool       CLI for inspection / extraction / previews
 crates/mostrusted   Bevy 0.19 runtime (loader thread → channel → ECS), avian3d 0.7 physics (drive.rs)
+crates/mw-probe     DLL loaded into the running original (docs/probe.md; i686-pc-windows-gnu)
 ```
 
 Game install on this machine: `~/.local/share/Steam/steamapps/common/Need for Speed(TM) Most Wanted`
@@ -127,9 +127,12 @@ MW_NO_VIGNETTE=1 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,172
 ./target/release/mostrusted --drive 911 --test accel     # or brake, corner (skidpad g), handbrake, drift, engine,
 #   nitrous, landing, climb, jitter (MW_SUSP_TRACE=<file> logs the suspension every tick)
 ./target/release/mostrusted --drive 911 --test smash --smash-speed 60 --screenshot <scratch>/smash.png   # props: cone, lamp, fence, wall
-./target/release/mostrusted --drive 911 --units 12 --auto-throttle 0.4 --prop-physics   # props collide in the world (opt-in, WIP)
+#   --smash-set compounds: lamps etc. breaking into parts. Props collide in the world by default (--no-prop-physics)
+./target/release/mostrusted --drive 911 --test kerb        # kerb strike (MW_TEST_KERB_H / _DEPTH / _ANGLE, MW_TEST_KMH)
+./target/release/mostrusted --drive 911 --test-track --track-surface 4 --test accel   # the flat track as any surface (4 = grass)
 ./target/release/mwtool props -v                    # physics of every prop / compound / dynamic object
-./target/release/mwtool surfaces                    # collision surface list with triangle counts
+./target/release/mwtool surfaces                    # surfaces: grip, rolling, drag, dirt build-up, triangle counts
+#   --near x,z[,r] (surfaces around a point), --find <index> (where a surface is), --steps (kerbs / steps nearby)
 ./target/release/mwtool ui screens                  # game UI: screens / widgets (ui show <screen>, ui render <screen> out.png, ui font <n> out.png, ui easydrive)
 ./target/release/mwtool traffic --png <scratch>/lanes.png   # TrafficLaneData: counts, flows, vehicle lists, lane map
 ./target/release/mwtool freeroam --list --kind SpeedCam     # TriggerData: speed cameras, billboards, gates, jack spots
@@ -157,6 +160,29 @@ MW_ENGINE_TRACE=<scratch>/rpm.trace ./target/release/mostrusted --drive 911 --te
 ./target/release/mostrusted --drive 911 --units 12 --show-menu --screenshot <scratch>/menu.png --screenshot-delay 60
 # Volumes: F2 / gamepad Select in game (saved to ~/.config/mostrusted/settings.cfg); per run:
 ./target/release/mostrusted --drive 911 --volume master=0.8,engine=1,sfx=0.6,music=30%
+
+# Game flow (frontend.rs, pause.rs): no mode flag starts the game's front end (title, loading, free roam in the
+# default car at the game's start point; Esc / pad Start pauses). --drive / --race / --test / --camera / --replay
+# skip it. --new-game, --profile <file> (~/.config/mostrusted/profile.cfg), --front-end-shots <dir>, --show-loading
+./target/release/mostrusted
+./target/release/mwtool hsm [<node id>] [--find text]     # game-logic state machines (HSMData); mwtool frontend
+# Races (race.rs, ai.rs, cutscene.rs): the event's intro, AI opponents on the grid, gates, laps, results
+./target/release/mwtool events [<id> [--png f]] [--all]  # offline events; mwtool camera-take [take] (ICE cameras)
+./target/release/mostrusted --race 462174                # CONTINENTAL DRIFT; --no-cutscenes, --spawn= overrides the start
+./target/release/mostrusted --race 462174 --test race --units 12   # TEST RESULT race ... (gates, laps, wrong way)
+MW_CUTSCENE_SHOT=intro:9 ./target/release/mostrusted --race 462174 --units 12 --screenshot <scratch>/i.png --screenshot-delay 100000
+./target/release/mostrusted --drive 911 --units 20 --ai "911,veyron super" --test ai --ai-seconds 60   # AI racers
+# Traffic (traffic.rs; density from the event): --no-traffic, --traffic-density x, MW_TRAFFIC_LOG=1
+./target/release/mwtool traffic --at x,z                 # lanes near a point (plain: junction cycles, decoded data)
+./target/release/mostrusted --drive 911 --test crash-traffic       # head-on with traffic: crash camera (car_impacts.rs)
+./target/release/mostrusted --drive 911 --test crash-ai --ai 911 --no-traffic
+# Car state: --nitrous holds nitrous, --damage all=0.5 starts damaged, R washes the car, --dirt 0.6,0.3
+./target/release/mostrusted --drive 911 --test exhaust   # pops / backfires (MW_EXHAUST_LOG=1)
+./target/release/mwtool damage <car> --keys              # damage clip keys; --level all=0.5 --preview <png>
+./target/release/mwtool traffic-sound all|sfx out.wav    # traffic engines / horns / impacts offline; engine-sound <car> --competitor
+# Debug logs: MW_NITROUS_LOG=1, MW_DIRT_LOG=1, MW_GATE_LOG=1, MW_TYRE_DEBUG=1, MW_FLASH_LOG=1 [MW_FLASH_SHOTS=dir]
+# Performance: MW_FRAME_LOG=<file> (per-frame schedule / render times), --bench prints p95 / p99 / hitches;
+# A/B switches MW_INDIRECT=1 (Bevy's multi-draw-indirect), MW_AVIAN_ASYNC=1, MW_BAKE_THREADS=0, MW_FOV_VERTICAL=1
 ```
 
 Use `--camera=` with `=` when the first value is negative. Release builds are needed: dependencies are
@@ -189,7 +215,20 @@ white noise, sample-to-sample smoothness (diff/RMS), discontinuities at codec fr
 spectral centroid against RPM for engine sounds. Export with `mwtool audio` and analyse the `.wav` in Python.
 Engine A/B switches (runtime and `mwtool engine-sound`): `MW_AUDIO_DRY=1` (plug-ins off), `MW_AUDIO_NO_DIST`,
 `MW_AUDIO_NO_SUB`, `MW_AUDIO_NO_EQ`, `MW_AUDIO_DIST=raw`, `MW_AUDIO_RPM_LINEAR=1` (audible RPM = physics RPM);
-`MW_AUDIO_METER=1` prints channel levels and plug-in chains.
+`MW_AUDIO_METER=1` prints channel levels and plug-in chains (and other cars' voices), `MW_AUDIO_NO_FX=1` turns the
+sequences' effect items off, `MW_SOUND_TRACE=<file>` logs what the engine sound plays from.
+
+## Parallel agents
+
+Worktree agents work well here if builds are throttled (docs/next-session.md has the details):
+- At most ~4 agents building at once; each worktree gets a real copy of a finished dependency build
+  (`.claude/tools/copy-deps.sh <main checkout> <worktree>`, never hard links) and builds only
+  `nice -n 19 cargo build --release -p mostrusted -p mwtool`. Agents skip clippy / tests; the integrator runs them
+  once on the merged tree. `.claude/worktrees/.cargo/config.toml` caps build jobs.
+- Worktrees may start from an older commit: agents `git merge --ff-only master` first.
+- /tmp (and the session scratchpad) is a RAM-backed tmpfs: binaries, traces and captures go into the worktree.
+- Agents that run the original (`tools/orig`) mute its audio stream (`pactl set-sink-input-mute`) and quit it after.
+- Remove merged worktrees and their branches at the end of a session (≈12 GB each).
 
 ## Conventions
 

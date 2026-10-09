@@ -47,15 +47,12 @@ times all changed.
 
 ## Housekeeping
 
-- 20+ agent worktrees under `.claude/worktrees/` (≈12 GB each) are all merged; remove them when the user agrees
-  (`git worktree remove <path>` and delete the `worktree-agent-*` branches).
+- The day's agent worktrees were removed (all merged).
 - /tmp is a RAM tmpfs: big artefacts go into a worktree, not the scratchpad (memory note).
 - The user's original-game save changed during the intro capture (SP from races); a backup from the start of
   that run is in the git-ignored `ref/savebackup-2026-10-09/`.
-- CLAUDE.md has the user's uncommitted edits: its `--prop-physics` line is stale (now `--no-prop-physics`) and
-  the new commands below are not in it yet.
 
-New commands of part 3 (add to CLAUDE.md when it is free):
+New commands of part 3 (also in CLAUDE.md now):
 ```sh
 ./target/release/mostrusted                                   # front end: title, loading, free roam (--new-game, --profile <f>)
 ./target/release/mostrusted --drive 911 --test crash-traffic  # head-on with traffic; --test crash-ai --ai 911 --no-traffic
