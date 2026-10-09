@@ -325,6 +325,10 @@ struct Cli {
     /// Open the pause menu (screen 431082) at startup (also in `--screenshot` runs, to capture it).
     #[arg(long)]
     show_pause: bool,
+    /// The profile file (the car and where it was, saved every 10 s while driving; read by the start-up flow to
+    /// continue). Default: ~/.config/mostrusted/profile.cfg.
+    #[arg(long)]
+    profile: Option<PathBuf>,
     /// With --show-pause: open its MAP page (the offline races).
     #[arg(long)]
     pause_map: bool,
@@ -486,9 +490,10 @@ fn main() -> anyhow::Result<()> {
     // Where free roam starts (`mw_assets::frontend`): a continued game's car near its saved position (the
     // nearest swap spot holding it, else the default start), or a new game's default car at the default start.
     let mut boot_start: Option<(String, Vec3, f32)> = None;
+    let profile_file = cli.profile.clone().or_else(frontend::default_profile_path);
     if boot && race.is_none() {
         let cfg = store.start_config().map_err(|e| anyhow::anyhow!("free-roam start data: {e}"))?;
-        let profile = if cli.new_game { None } else { frontend::load_profile() };
+        let profile = if cli.new_game { None } else { profile_file.as_deref().and_then(frontend::load_profile) };
         let bundle = match (&cli.drive, &profile, cfg.default_vehicle) {
             (Some(q), _, _) => Some(resolve(q)?),
             (None, Some(p), _) => Some(p.bundle.clone()),
@@ -811,7 +816,13 @@ fn main() -> anyhow::Result<()> {
             start: front_phase,
             auto_start: cli.auto_start,
             shots: cli.front_end_shots.clone(),
-            profile: world_drive && (menu_enabled || boot) && cli.front_end_shots.is_none() && cli.auto_start.is_none(),
+            profile: (cli.profile.is_some()
+                || (world_drive
+                    && (menu_enabled || boot)
+                    && cli.front_end_shots.is_none()
+                    && cli.auto_start.is_none()))
+            .then(|| profile_file.clone())
+            .flatten(),
         })
         .add_plugins(pause::PausePlugin {
             enabled: (menu_enabled || cli.show_pause) && matches!(request, Request::Drive { .. }),

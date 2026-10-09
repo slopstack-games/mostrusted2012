@@ -85,8 +85,8 @@ pub struct FrontEndPlugin {
     pub auto_start: Option<f32>,
     /// `--front-end-shots <dir>`: screenshots at each step, then exit.
     pub shots: Option<PathBuf>,
-    /// Save the profile (interactive world drives).
-    pub profile: bool,
+    /// Where to save the profile (interactive world drives, or `--profile`); `None` saves nothing.
+    pub profile: Option<PathBuf>,
 }
 
 impl Plugin for FrontEndPlugin {
@@ -106,7 +106,7 @@ impl Plugin for FrontEndPlugin {
             images_clock: None,
             pictures: [0, 1],
             next_picture: 2,
-            profile: self.profile,
+            profile: self.profile.clone(),
             autosave: 0.0,
             log: Vec::new(),
         })
@@ -189,7 +189,7 @@ pub struct FrontEnd {
     /// Picture shown in `Transitions.Image1` / `Image2` (indices into the preloaded ones).
     pictures: [usize; 2],
     next_picture: usize,
-    profile: bool,
+    profile: Option<PathBuf>,
     autosave: f32,
     /// Timing log (phase, seconds since start).
     log: Vec<(String, f32)>,
@@ -756,15 +756,15 @@ pub struct Profile {
     pub position: Option<Vec3>,
 }
 
-fn profile_path() -> Option<PathBuf> {
+pub fn default_profile_path() -> Option<PathBuf> {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
     Some(base.join("mostrusted").join("profile.cfg"))
 }
 
-pub fn load_profile() -> Option<Profile> {
-    let text = std::fs::read_to_string(profile_path()?).ok()?;
+pub fn load_profile(path: &std::path::Path) -> Option<Profile> {
+    let text = std::fs::read_to_string(path).ok()?;
     let mut p = Profile::default();
     for line in text.lines() {
         match line.split_once('=') {
@@ -792,7 +792,7 @@ fn save_profile(
     garage: Res<crate::garage::Garage>,
     car: Query<&GlobalTransform, (With<crate::drive::Car>, With<crate::drive::Player>)>,
 ) {
-    if !front.profile || !front.playing() {
+    if front.profile.is_none() || !front.playing() {
         return;
     }
     let t = time.elapsed_secs();
@@ -801,7 +801,7 @@ fn save_profile(
     }
     front.autosave = t;
     let (Some(current), Ok(xf)) = (garage.current.as_ref(), car.single()) else { return };
-    let Some(path) = profile_path() else { return };
+    let Some(path) = front.profile.clone() else { return };
     let p = xf.translation();
     let text = format!("bundle={}\nposition={:.2},{:.2},{:.2}\n", current.bundle, p.x, p.y, p.z);
     if let Some(dir) = path.parent() {
