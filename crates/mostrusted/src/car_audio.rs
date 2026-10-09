@@ -1,7 +1,8 @@
 //! Engine sounds of the cars the player does not drive (docs/decomp.md "Other cars' engine sounds"):
 //!
 //! - **AI racers**: every opponent plays its car's competitor engine (`<id>_COMPETITORSOUND`, loaded by the
-//!   loader thread for opponents) through the same engine driver as the player's, from its own drivetrain.
+//!   loader thread for opponents) through the same engine driver as the player's, from its own drivetrain, and
+//!   the surface's competitor skid sequences through the player's skid driver (`mw_assets::sfx`).
 //! - **Traffic**: the game's pool of five traffic engine instances (`FUN_0060bc20`): every 0.3 s the traffic
 //!   cars within 85 m of the player's car are scored by speed, distance and whether they are in view, the best
 //!   five keep or get an engine, cars beyond 85 m lose theirs (1.5 s fade), and when more cars want one than
