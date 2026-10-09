@@ -252,7 +252,7 @@ meaning is read from values or position; values are the 911's, ranges are across
 | `6e08f788` | (0, 1.6, −4.6) | **data** eye in car space (also the bonnet / bumper eye) |
 | `006e1686` | (0, 1.2, 0.75) | **data** look-at point |
 | `d68bbc59` | (0, 0, 0.75) | *hyp.* pivot: always (0, 0, look-at z); the yaw and look-around orbit turn around it |
-| `MinFieldOfView` / `MaxFieldOfView` | 70 / 95 | **data** FOV, `lerp(min, max, clamp(mph / 125))` (`FUN_005c76a0`); read as vertical (see below) |
+| `MinFieldOfView` / `MaxFieldOfView` | 70 / 95 | **data** FOV, `lerp(min, max, clamp(mph / 125))` (`FUN_005c76a0`); horizontal (capture 2026-10-09, see below) |
 | `Speed_based_movement.0a78c15f` | −1 (−1.2…0) | **code** (`FUN_005d12b0`) eye z target at full speed, smoothed with the acceleration offset below |
 | `….7d4ec535` | 1.7 (1.45…4.4) | **code** eye height at full speed: `eye.y += (this − eye.y) · h`, unsmoothed |
 | `….b028673b` | 1.5 (1.35…3.1) | **code** look-at height at full speed, the same form |
@@ -390,8 +390,11 @@ That row stays a guess until the helper is read to its end.
 - *Model decisions with the game's address*: `.bss` values still unread: `_DAT_0110e8f0` (yaw spring's
   reference speed), `_DAT_01189f60` (fixed-yaw mode's yaw).
 
-Model decisions (not data): the FOV is vertical (as horizontal the chase view is far tighter than the
-original's; the bonnet and bumper views look very wide this way); acceleration is measured from the car's
+The FOV is horizontal (settled 2026-10-09, research log): a capture of the original at 1280×720 (the 4C at
+rest in the chase view, FOV `MinFieldOfView` 70) frames the car at the same size as ours with 70° read as the
+horizontal FOV (≈ 400 px wide), and 1.8× smaller read as vertical; the cinematic lenses' `2 atan(18 / f)` is
+the horizontal FOV of a 36 mm frame. `camera::projection_fov` converts for Bevy's vertical one
+(`MW_FOV_VERTICAL=1` for A/B). Model decisions (not data): acceleration is measured from the car's
 speed between physics ticks; the drift lean (`DRIFT_LEAN` 0.5 of the slip angle);
 the high-speed shake's curve (the original's 199-sample table is run-time data at `0x01188300`; ours is
 smoothed noise with its recorded per-lane mean −0.0049 / −0.0063 / −0.0059, standard deviation 0.0123 /
@@ -445,7 +448,7 @@ What the code does is in [decomp.md](decomp.md) ("Crashes"); here the data and w
 | car shot | car position + offset turned by the car's current heading | how `Players.CameraTarget` binds (full rotation?) |
 | aim | moves `Tracking_Speed` of the way to the target per 60 Hz tick; `TrackingAcceleration` unused | the tracker's maths |
 | screen offset | the view pitches so the target sits `Screen_Offset_Y` × half-height above centre | sign and units |
-| FOV | `Maximum_FOV` (vertical, as camera.rs) while `Use_Zoom` is off | which FOV a non-zooming bystander holds |
+| FOV | `Maximum_FOV` (horizontal, as camera.rs) while `Use_Zoom` is off | which FOV a non-zooming bystander holds |
 | control | none until the reset | inferred from `Player.CanDriveAway` |
 | not done | `RaceCarEffect` property 5, audio ducking, upside-down crashes (`.bss` threshold), cop / prop rules (traffic and AI cars since 2026-10-09: `car_impacts.rs`, decomp.md "Car against car") | |
 

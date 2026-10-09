@@ -2008,18 +2008,23 @@ timelines, `mwtool camera-take [take]` evaluates a take. Confirmed unless marked
   jumps the clock to `DestinationTime` (462174: from 1 s to 19.5 s, past the cinematic, just after the teleports).
   The button is SKIP_CUTSCENE (34; Esc, pad Back, "Input and control bindings"); *inferred*, `Action` 1 is not
   traced. `ConductorSequenceItem`s start nested sequences (the outros put all their content in one).
-- **`AnimatedCameraSequenceItem`**: a clip (`CameraAnimation`) of a two-bone camera skeleton (`CameraSkeleton`,
-  identity bind pose, bone 1 animated, 30 fps, f32 quaternions), in world space or, with the `6f3ea350` binding
-  `Players.LocalPlayer.GetTransform`, in the car's frame. Lens: the director camera at 0x2dc0 (`FUN_005c6c10`)
-  takes FOV = 2·atan(18 / focal length) in degrees (`.rdata` 0x00fb0e94 = 18, 0x00faf850 = 180/π) and an aperture
+- **`AnimatedCameraSequenceItem`**: a clip (`CameraAnimation`) of the two-bone camera skeleton `0x6cc42`
+  (`CameraSkeleton`; bone 1's bind rotation is 180° about Y, formats.md "Sequences"; the clip animates bone 1 only,
+  30 fps, f32 quaternions), in world space or, with the `6f3ea350` binding `Players.LocalPlayer.GetTransform`, in
+  the car's frame. Lens: the director camera at 0x2dc0 (`FUN_005c6c10`) takes FOV = 2·atan(18 / focal length) in
+  degrees (`.rdata` 0x00fb0e94 = 18, 0x00faf850 = 180/π), the horizontal FOV of a 36 mm frame, and an aperture
   focal / f-stop (`DAT_00fb0ea8` = 64); `FocalLength`, `FStop`, `FocalDistance` are modulated values (462174 zooms
-  24 → 10.4 mm in its 3 s shot). The bone's axes are *inferred* from the clips (the handler was not found): its X
-  stays level in every clip, but its +Y points up in 704 of the 753 camera clips of the 108 intros and down in 49
-  (7 of 462174's 8, one or two in eleven other intros), so no single fixed axis mapping renders both kinds
-  upright. Ours: the camera looks along the bone's +Z (the game's camera and car convention, z forward; in
-  462174 that frames the animated car under the overpass, −Z would look away from it) and takes as up whichever
-  of ±Y the clip holds upwards on average. In 575163 the alternative (look −Z, +Y up, the usual exporter camera)
-  also gives purposeful shots, so the look direction of the +Y-up clips is not settled.
+  24 → 10.4 mm in its 3 s shot). **Axes (settled 2026-10-09)**: the bone's key is the camera matrix as it is, look
+  +Z, up +Y, X left (the rows the game camera holds: `FUN_00495b70` writes left, up, forward, position), roll
+  included and the bind rotation not applied. Sources: (1) the subject survey: in 244 of the 251 camera clips that
+  run while an `AnimatedRaceCarBehaviour` drives a car (or are bound to the player), the car stays within 40° of
+  the bone's +Z, against 7 of −Z; (2) a capture of the original playing 462174's intro (`orig`, 2026-10-09,
+  research log): its second to eighth shots are upside down in the original too, because those clips hold +Y down
+  (the first shot rolls 175° over its 3 s, the barrel roll that turns the intro over), and every shot frames what
+  ours frames with this rule. The earlier per-clip "up = whichever ±Y is upward" rule was wrong. The handler was
+  not found in the decompiled set (the sequence-item vtables near `.rdata` 0x00ff2ad8 point at code Ghidra did not
+  decompile, e.g. 0x866c60); the type id 0x6cc34 appears only in the `(type id, name hash)` table at 0x00ff2a60.
+  **Bound clips** (`GetTransform`) follow the car live in ours; not traced.
 - **ICE takes** (`CameraSequenceItem.Camera.7aef95c3` = a `CameraTake` UniqueId; all 59 camera items of the
   intros and outros are takes, none bystander shots): EA's ICE library at 0x00e20000–0x00e31000, decoded in
   `mw_formats::camera_take` (layout `FUN_00e26fb0`, 17 channels and 81 elements from `FUN_00e2ccc0` / `.rdata`
@@ -2030,7 +2035,16 @@ timelines, `mwtool camera-take [take]` evaluates a take. Confirmed unless marked
   `NOROLL` = heading only), World, Hybrid (world axes at the avatar), Scene (not modelled). The item's
   `01130178` bindings become avatars 1.. (`FUN_005d22b0` → `FUN_0049b180` → `FUN_0049a3c0`, "BoundAvatar%i"); a
   binding whose `0bd6ff75` flag is set is sampled once when the take starts (`FUN_0049a910` re-reads it every
-  frame only while the flag is clear): the race outros freeze the finishing car's frame. `GAME_CAM_BLEND` (read
+  frame only while the flag is clear): the race outros freeze the finishing car's frame (confirmed by captures,
+  2026-10-09: in the original the outro camera stays over the spot where the car crossed the line and the car,
+  finishing at 59 mph, leaves the shot within 0.5 s; finished at rest it sits at the left edge of the top-down
+  view, as in ours). The camera matrix (`FUN_00e278c0`): forward = look − eye, left = up × forward (ICE up =
+  +z, or the subject's up when locked), up = forward × left, then `FUN_00e230c0` rolls it by `DUTCH`: the
+  value × 65536 (`.rdata` 0x0106f9d0, f64) rounded to a 16-bit angle, ×2π/65536 (`FUN_00e22760`, 0x0106f5a8 =
+  2π, 0x0107c138 = 1/65536), so `DUTCH` is in turns and its ±0.25 range is ±90°; the roll matrix
+  (rows (1,0,0), (0,c,s), (0,−s,c)) pre-multiplies the camera rows, left' = c·left + s·up, up' = −s·left +
+  c·up (what `camera_take` does). `FUN_00495b70` hands the rows to the game camera as left, up, forward,
+  position in game axes. `GAME_CAM_BLEND` (read
   back by `FUN_004962f0` case 0) blends to the gameplay camera, 1 = gameplay (*inferred* from the data). The race
   outro take 0x19c8b2 looks almost straight down from 3.6 m above and 4.4 m ahead of the car (lens 19.3 mm) while
   the outro's slow motion drops to 0.01 within 1.3 s and to 0 from 10.5 to 13.5 s; it blends to the chase camera
@@ -2044,9 +2058,7 @@ timelines, `mwtool camera-take [take]` evaluates a take. Confirmed unless marked
   binding), `HideRacecarSequenceItem`.
 - **Not traced**: the item handlers themselves (reached through vtables; only `CameraSequenceItem` is tested by type
   id), so how the teleport sets the car's speed, what the AI drive's `DrivingStyle` does, whether a cut snaps the
-  gameplay camera; `DUTCH` (roll) in ICE takes: the code turns its +0.25 maximum into a 90° roll and 11 takes
-  (including 0x167b67 `Default_No_Race_Event_Outro`) hold it there, which looks wrong (unit or decode to check
-  against a capture); LAG, BUNGEE, shake and Scene space of takes; the take channels LETTERBOX / FADE / OVERLAY /
+  gameplay camera; LAG, BUNGEE, shake and Scene space of takes; the take channels LETTERBOX / FADE / OVERLAY /
   TIME_SCALE downstream; the outros' nested timeline controllers (jumps waiting for UI triggers).
 
 ### Port and model decisions (`cutscene.rs`)
@@ -2056,9 +2068,11 @@ the opponents are placed), the outro after the player's finish, the skip, animat
 bindings and `GAME_CAM_BLEND`, the dynamic camera blend, teleports with their speed (and `RaceState::rolling_start`:
 no freeze), the AI driving the player (`ai.rs`'s driver on the player's car with `MaxSpeedMph` as its schedule
 speed), animated race cars, slow motion, the HUD, the letterbox (shared with the crash camera), traffic clearing.
-Model decisions: the race starts on the intro's event trigger (else at its end) with no countdown; the camera
-bone looks along +Z with the clip's upward ±Y as up; `GetTransform` bindings of animated cameras follow the car live; both FOVs are
-used as vertical (as camera.rs); the animated car is placed on its bone every tick with the clip's velocity
+Settled 2026-10-09 (captures): the camera bone's key is used as the camera matrix (look +Z, up +Y, roll kept);
+every FOV (lens, ICE take, chase, bonnet, crash) is horizontal (`camera::projection_fov`); the outro's take
+freezes the finishing car's frame. Model decisions: the race starts on the intro's event trigger (else at its end)
+with no countdown; `GetTransform` bindings of animated cameras follow the car live; the animated car is placed
+on its bone every tick with the clip's velocity
 (zero across a cut), the root motion ignored; an opponent teleported onto the player's own start is left where it
 is (462174's `Racer[8]`: the original seats fewer opponents, our opponents' cars are a model); `Racer[n]` = grid
 slot n − 1; after the finish the AI drives the player along a road-graph route from the finish (the race route

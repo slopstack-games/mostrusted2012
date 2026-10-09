@@ -11,7 +11,8 @@
 //!   has passed its `TriggerTime` jumps to its `DestinationTime` (the intro of 462174: 1 s → 19.5 s, just after
 //!   the teleports).
 //! - **Items played**: animated cameras (a clip of a two-bone camera skeleton, world space or relative to the
-//!   player's car; field of view `2 atan(18 / FocalLength)`, `FUN_005c6c10`), the dynamic camera's blend to the
+//!   player's car; horizontal field of view `2 atan(18 / FocalLength)`, a 36 mm frame, `FUN_005c6c10`), ICE
+//!   camera takes (`mw_formats::camera_take`), the dynamic camera's blend to the
 //!   gameplay camera (lerp of transform and FOV by the item's curves), teleports, the AI driving the player
 //!   (`ai.rs`'s driver on the player's car, at most `MaxSpeedMph`), animated race cars (the clip's `car` bone),
 //!   hidden race cars, hidden HUD, the letterbox, slow motion and the event trigger.
@@ -20,15 +21,20 @@
 //!   freeze); the intro's `EventTriggerSequenceItem` (at 24 s in 462174) starts the race with no countdown
 //!   (`RaceState::intro` = 0).
 //!
-//! Model decisions (no source yet; docs/decomp.md "Cutscenes and sequences"): the race starts on the intro's
-//! event trigger (the item that signals the game logic; what the HSM does with it was not traced); the camera
-//! bone looks along its +Z (the game's own camera / car convention) and its up is whichever of ±Y the clip holds
-//! upwards (704 of the 753 intro camera clips hold +Y up, 462174's hold it down; their X axis stays level);
-//! `GetTransform` bindings follow the car live; the FOV from the focal length is used as
-//! the vertical FOV (as camera.rs); the animated car is placed on the clip's car bone every tick with the
-//! clip's velocity (the original drives it with its `controls_*` bones, not read); nested timeline controllers
-//! (the outro's waits for input) are not run, so the outro plays straight through; audio, post-processing,
-//! UI layouts other than the letterbox, traffic clearing and the ICE camera takes are not played yet.
+//! Camera conventions (settled 2026-10-09 by captures of the original, docs/decomp.md "Cutscenes and
+//! sequences"): the camera bone's key is the camera matrix as it is (rows left, up, forward like the game camera
+//! `FUN_00495b70` fills): it looks along +Z with +Y up, roll included, so 462174's intro is upside down from its
+//! second shot on, as in the original; the skeleton's bind pose (180° about Y on bone 1) is not applied. Every
+//! FOV is horizontal (`camera::projection_fov`). The outro's take samples the finishing car's transform once
+//! (`0bd6ff75` flags, `FUN_0049a910`): the camera stays where the car finished and the car drives out of shot, as
+//! the original does.
+//!
+//! Model decisions (no source yet): the race starts on the intro's event trigger (the item that signals the game
+//! logic; what the HSM does with it was not traced); `GetTransform` bindings of animated cameras follow the car
+//! live; the animated car is placed on the clip's car bone every tick with the clip's velocity (the original
+//! drives it with its `controls_*` bones, not read); nested timeline controllers (the outro's waits for input)
+//! are not run, so the outro plays straight through; audio, post-processing and UI layouts other than the
+//! letterbox are not played.
 //!
 //! `--no-cutscenes` turns them off (the race then keeps the game mode's 10 s frozen intro); `--cutscene outro`
 //! plays the outro at once (for screenshots). `MW_CUTSCENE_TRACE=<file>` logs the camera every frame.
@@ -527,7 +533,8 @@ fn run_cutscene(
     // blends from the last cinematic view to the gameplay one.
     if let Ok((mut cam, mut projection)) = camera.single_mut() {
         let gameplay_fov = match &*projection {
-            Projection::Perspective(pp) => pp.fov.to_degrees(),
+            // In the game's (horizontal) degrees, as the cinematic FOVs.
+            Projection::Perspective(pp) => crate::camera::game_fov(pp),
             _ => 60.0,
         };
         let out = match (view, blend, p.last_view) {
@@ -557,7 +564,7 @@ fn run_cutscene(
         if let Some((v, fov, _)) = out {
             *cam = v;
             if let Projection::Perspective(pp) = &mut *projection {
-                pp.fov = fov.clamp(1.0, 170.0).to_radians();
+                pp.fov = crate::camera::projection_fov(fov, pp.aspect_ratio);
             }
         }
         let (kind, fov) = out.map_or(("gameplay", gameplay_fov), |o| (o.2, o.1));
@@ -665,13 +672,9 @@ fn animated_camera_view(
         position = r.transform_point(position);
         rotation = r.rotation * rotation;
     }
-    // The bone looks along its +Z, its up is whichever of ±Y the clip holds upwards (model decision, module
-    // docs); Bevy's camera looks along −Z with +Y up. `MW_CUTSCENE_AXES=gl` (look −Z, up +Y) for comparisons.
-    let fix = match std::env::var("MW_CUTSCENE_AXES").as_deref() {
-        Ok("gl") => Quat::IDENTITY,
-        _ if c.y_down() => Quat::from_rotation_x(std::f32::consts::PI),
-        _ => Quat::from_rotation_y(std::f32::consts::PI),
-    };
+    // The bone looks along its +Z with its +Y up, its full orientation used (roll included: 462174's intro is
+    // upside down in the original, capture 2026-10-09); Bevy's camera looks along −Z with +Y up.
+    let fix = Quat::from_rotation_y(std::f32::consts::PI);
     let fov = AnimatedCamera::fov_degrees(c.focal_length.at(u));
     Some((Transform { translation: position, rotation: rotation * fix, scale: Vec3::ONE }, fov))
 }
