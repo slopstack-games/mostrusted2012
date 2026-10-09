@@ -87,6 +87,16 @@ impl Similarity {
     }
 }
 
+/// A clip key as a change from the clip's first frame `k0` (its undamaged / retracted pose), so that
+/// `relative_to(k0, k0)` is the identity: translation `k - k0`, rotation `k0⁻¹ · k`, scale `k / k0`.
+fn relative_to(k: &BoneKey, k0: &BoneKey) -> BoneKey {
+    BoneKey {
+        translation: std::array::from_fn(|i| k.translation[i] - k0.translation[i]),
+        rotation: qmul(qconj(k0.rotation), k.rotation),
+        scale: if k0.scale > 0.0 { k.scale / k0.scale } else { k.scale },
+    }
+}
+
 /// Impact zones in clip order. Every car's damage `AnimationList` lists its clips in this order (on 50
 /// of the 72 cars the bones each clip moves point exactly this way; on the others a few clips move
 /// bones placed off-centre), so the clip index is the zone.
@@ -213,7 +223,9 @@ impl VehicleDamage {
                 continue;
             }
             let frames = animation.frames.len().saturating_sub(1) as f32;
-            for (&b, k) in animation.bones.iter().zip(animation.sample(level.min(1.0) * frames)) {
+            let sampled = animation.sample(level.min(1.0) * frames);
+            for ((&b, k), k0) in animation.bones.iter().zip(sampled).zip(&animation.frames[0]) {
+                let k = relative_to(&k, k0);
                 let acc = &mut keys[b];
                 acc.translation = std::array::from_fn(|i| acc.translation[i] + k.translation[i]);
                 acc.rotation = qmul(acc.rotation, k.rotation);

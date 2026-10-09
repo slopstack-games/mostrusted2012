@@ -13,6 +13,8 @@ pub struct Options<'a> {
     /// `zone=level` pairs (zone name or clip index), or `all=level`.
     pub levels: &'a [String],
     pub preview: Option<&'a Path>,
+    /// Print each clip's last-frame keys.
+    pub keys: bool,
 }
 
 fn bundle_for(store: &AssetStore, car: &str) -> Result<String> {
@@ -79,6 +81,43 @@ pub fn run(store: &AssetStore, o: &Options) -> Result<()> {
             .max_by(|a, b| a.1.total_cmp(&b.1));
         if let Some((bone, d)) = worst {
             println!("        at frame {last}: bone {bone} moved {:.3} m", d);
+        }
+        if o.keys {
+            // Bones whose first-frame key is not the identity (the clip moves them before any damage).
+            let moved0: Vec<usize> = a
+                .bones
+                .iter()
+                .enumerate()
+                .filter(|(k, _)| {
+                    let key = &a.frames[0][*k];
+                    key.translation.iter().any(|t| t.abs() > 1e-4) || key.rotation[3] < 0.9999 || key.scale != 1.0
+                })
+                .map(|(_, &b)| b)
+                .collect();
+            println!("          not identity at frame 0: bones {moved0:?}");
+            let frames = [0, 1, last];
+            for (k, &bone) in a.bones.iter().enumerate() {
+                for f in frames {
+                    if f != last && !moved0.contains(&bone) {
+                        continue;
+                    }
+                    let key = &a.frames[f][k];
+                    let [x, y, z, w] = key.rotation;
+                    let angle = 2.0 * w.clamp(-1.0, 1.0).acos().to_degrees();
+                    let s = (1.0 - w * w).max(1e-12).sqrt();
+                    let t = key.translation;
+                    println!(
+                        "          f{f:<2} bone {bone:2}: offset ({:6.3} {:6.3} {:6.3})  rot {angle:6.1}° about ({:5.2} {:5.2} {:5.2})  scale {:.2}",
+                        t[0],
+                        t[1],
+                        t[2],
+                        x / s,
+                        y / s,
+                        z / s,
+                        key.scale
+                    );
+                }
+            }
         }
     }
     for (i, p) in dmg.bodyparts.iter().enumerate() {
@@ -220,8 +259,28 @@ fn survey(store: &AssetStore) -> Result<()> {
                     .collect();
                 let frames: std::collections::BTreeSet<usize> =
                     d.clips.iter().map(|c| c.animation.frames.len()).collect();
+                // Bones whose first-frame key is not the identity, in damage and animated part clips
+                // (`pose_with` applies keys relative to frame 0), with the largest such offset.
+                let mut rest = std::collections::BTreeSet::new();
+                let mut rest_max = 0.0f32;
+                let anims = d.animations.iter().flat_map(|a| a.clips.iter().map(|c| &c.animation));
+                for a in d.clips.iter().map(|c| &c.animation).chain(anims) {
+                    let Some(f0) = a.frames.first() else { continue };
+                    for (&bone, key) in a.bones.iter().zip(f0) {
+                        let t = key.translation.iter().map(|t| t * t).sum::<f32>().sqrt();
+                        if t > 1e-3 || key.rotation[3] < 0.9999 || key.scale != 1.0 {
+                            rest.insert(bone);
+                            rest_max = rest_max.max(t);
+                        }
+                    }
+                }
+                let rest = if rest.is_empty() {
+                    String::new()
+                } else {
+                    format!("  frame-0 offsets on bones {rest:?} (up to {rest_max:.3} m)")
+                };
                 println!(
-                    "{:<40} {:2} bones  {} clips  frames {:?}  {:2} bodyparts  off-zone {:?}",
+                    "{:<40} {:2} bones  {} clips  frames {:?}  {:2} bodyparts  off-zone {:?}{rest}",
                     v.name,
                     d.skeleton.bones.len(),
                     d.clips.len(),

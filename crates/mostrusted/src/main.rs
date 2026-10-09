@@ -258,6 +258,10 @@ struct Cli {
     /// `all=1`, `0=0.5`. Without it, `--drive` runs the game's rule from the car's speed.
     #[arg(long, value_delimiter = ',')]
     anim: Vec<String>,
+    /// Start the player car damaged: `zone=level` per damage zone (`front`, `rear-left`, ... or the clip
+    /// index; `all=0.3` sets every zone), level 0..1, as `mwtool damage --level` takes them.
+    #[arg(long, value_delimiter = ',')]
+    damage: Vec<String>,
     /// Open the car menu at startup (also in `--screenshot` runs, to capture it).
     #[arg(long)]
     show_menu: bool,
@@ -546,6 +550,7 @@ fn main() -> anyhow::Result<()> {
     let ai_cars = cli.ai.iter().map(|q| resolve(q)).collect::<anyhow::Result<Vec<_>>>()?;
     let mut app = App::new();
     app.insert_resource(car_anim::AnimOverride::parse(&cli.anim)?);
+    app.insert_resource(damage::InitialDamage::parse(&cli.damage)?);
     if matches!(request, Request::Drive { world: true, .. }) {
         let balancing = match &cli.ai_balancing[..] {
             [] => None,

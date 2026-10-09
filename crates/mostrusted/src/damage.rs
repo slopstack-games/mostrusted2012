@@ -29,7 +29,7 @@ impl Plugin for DamagePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<NextCarDamage>()
             .add_observer(attach_damage)
-            .add_systems(Update, (remember_pending_damage, repair_on_reset, pose_joints).chain())
+            .add_systems(Update, (remember_pending_damage, apply_initial_damage, repair_on_reset, pose_joints).chain())
             .add_systems(FixedPostUpdate, detect_impacts.after(PhysicsSystems::StepSimulation));
         if app.world().contains_resource::<CrashTest>() {
             app.add_systems(Startup, spawn_crash_wall)
@@ -234,6 +234,44 @@ fn detect_impacts(
                 .map(|(n, l)| format!("{n} {:.0}%", l * 100.0))
                 .collect::<Vec<_>>()
         );
+    }
+}
+
+/// `--damage`: zone levels the player car starts with, as (zone name, clip index or `all`, level).
+#[derive(Resource, Default)]
+pub struct InitialDamage(Vec<(String, f32)>);
+
+impl InitialDamage {
+    pub fn parse(args: &[String]) -> anyhow::Result<Self> {
+        let pins = args
+            .iter()
+            .map(|a| {
+                let (k, v) = a.split_once('=').ok_or_else(|| anyhow::anyhow!("--damage {a}: expected zone=0..1"))?;
+                Ok((k.to_string(), v.parse::<f32>()?.clamp(0.0, 1.0)))
+            })
+            .collect::<anyhow::Result<_>>()?;
+        Ok(Self(pins))
+    }
+}
+
+fn apply_initial_damage(
+    initial: Res<InitialDamage>,
+    mut cars: Query<&mut CarDamage, (Added<CarDamage>, With<crate::drive::Player>)>,
+) {
+    if initial.0.is_empty() {
+        return;
+    }
+    for mut dmg in &mut cars {
+        let names: Vec<&str> = dmg.model.clips.iter().map(|c| c.zone.name).collect();
+        for (zone, level) in &initial.0 {
+            for (i, l) in dmg.levels.iter_mut().enumerate() {
+                if zone == "all" || zone == names[i] || zone.parse::<usize>() == Ok(i) {
+                    *l = *level;
+                }
+            }
+        }
+        info!("--damage: zones {:?}", dmg.zone_levels().collect::<Vec<_>>());
+        dmg.dirty = true;
     }
 }
 
