@@ -374,8 +374,10 @@ fn navigate(
     mut race_start: MessageWriter<StartRace>,
     game: Res<Game>,
     player: Query<&GlobalTransform, (With<crate::drive::Car>, With<crate::drive::Player>)>,
+    front: Option<Res<crate::frontend::FrontEnd>>,
 ) {
-    if !menu.enabled || menu.tiers.is_empty() {
+    // Not over the front end's screens ("Disable Car Control and Easydrive").
+    if !menu.enabled || menu.tiers.is_empty() || front.is_some_and(|f| !f.playing()) {
         return;
     }
     // The original's EASY_* actions (Num 4 / 6 / 8 / 2, d-pad; input.rs). EASY_OPEN has no default binding in the

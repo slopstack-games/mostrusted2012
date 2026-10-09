@@ -148,8 +148,17 @@ pub fn show_quads(
             }
         } else {
             let color = Color::linear_rgba(q.colour[0], q.colour[1], q.colour[2], q.colour[3]);
-            let wanted =
-                || ImageNode { image: handle.clone(), color, rect, flip_x: flip.0, flip_y: flip.1, ..default() };
+            // `Stretch`: a quad fills its rectangle whatever the texture's aspect (`Auto` keeps the image's aspect
+            // inside the node: a solid full-screen quad, a 1×1 image, came out square).
+            let wanted = || ImageNode {
+                image: handle.clone(),
+                color,
+                rect,
+                flip_x: flip.0,
+                flip_y: flip.1,
+                image_mode: bevy::ui::widget::NodeImageMode::Stretch,
+                ..default()
+            };
             if pool.additive[i].take().is_some() {
                 commands.entity(e).remove::<MaterialNode<AdditiveQuadMaterial>>().insert(wanted());
             } else if let Some(mut image) = image

@@ -34,11 +34,14 @@ pub struct AudioSettings {
     pub engine: f32,
     pub sfx: f32,
     pub music: f32,
+    /// Every sound muted for now (not saved): the game's `MUTE_SOUND` behaviour with reason `LoadingScreen`
+    /// while the boot flow's screens and the loading screen show (`frontend.rs`).
+    pub muted: bool,
 }
 
 impl Default for AudioSettings {
     fn default() -> Self {
-        Self { master: 1.0, engine: 1.0, sfx: 1.0, music: 0.6 }
+        Self { master: 1.0, engine: 1.0, sfx: 1.0, music: 0.6, muted: false }
     }
 }
 
@@ -66,6 +69,9 @@ impl AudioSettings {
             Channel::Sfx => self.sfx,
             Channel::Music => self.music,
         };
+        if self.muted {
+            return 0.0;
+        }
         channel.base() * v * self.master
     }
 

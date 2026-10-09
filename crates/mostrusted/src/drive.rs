@@ -400,8 +400,15 @@ fn spawn_car(
     selection: Res<crate::mods_menu::ModSelection>,
     spatial: SpatialQuery,
     mut camera: Query<&mut Transform, crate::MainCamera>,
+    residency: Option<Res<crate::frontend::Residency>>,
 ) {
     let Some(pending) = pending else { return };
+    // A placement waits until its target is resident within max(200 m, 3 s of travel) (`FUN_00647e00`), so
+    // the ground and what stands around it have streamed in before the car is put down.
+    let radius = crate::frontend::PLACE_RADIUS.max(pending.velocity.length() * 3.0);
+    if residency.is_some_and(|r| !r.resident(pending.spawn, radius)) {
+        return;
+    }
     // Wait until the collision under the spawn point has streamed in.
     let origin = pending.spawn + Vec3::Y * pending.probe;
     let ground_only = SpatialQueryFilter::default().with_mask(crate::props::GameLayer::World);

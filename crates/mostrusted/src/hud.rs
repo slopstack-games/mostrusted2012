@@ -666,10 +666,13 @@ fn draw_hud(
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<AdditiveQuadMaterial>>,
     mut root_vis: Query<&mut Visibility, Without<QuadNode>>,
+    pause: Option<Res<crate::pause::PauseMenu>>,
 ) {
     let Some(mut hud) = hud else { return };
     let car = car.single().ok();
-    let visible = settings.enabled && !settings.hidden_by_sequence && car.is_some();
+    // The pause menu covers the game (its own screen); the HUD goes while it is open.
+    let paused = pause.is_some_and(|p| p.open);
+    let visible = settings.enabled && !settings.hidden_by_sequence && car.is_some() && !paused;
     if let Ok(mut v) = root_vis.get_mut(hud.root) {
         let want = if visible { Visibility::Inherited } else { Visibility::Hidden };
         if *v != want {

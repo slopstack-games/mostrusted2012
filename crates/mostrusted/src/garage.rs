@@ -364,7 +364,7 @@ fn place_arrived_car(
     let (spawn, heading, probe, velocity) = match name {
         None => {
             let Request::Drive { spawn, heading, .. } = game.request else { return };
-            (spawn, heading, 30.0, Vec3::ZERO)
+            (spawn, heading, game.start_probe, Vec3::ZERO)
         }
         Some(name) => {
             if let Some((_, t, v)) = cars.iter().next() {

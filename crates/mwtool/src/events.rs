@@ -347,10 +347,15 @@ fn sequences(store: &AssetStore, events: &Events, e: &Event) {
                 ItemKind::HideRacecar(r) => format!("hide {r:?}"),
                 ItemKind::HideHud => "hide HUD".into(),
                 ItemKind::Letterbox(l) => format!("letterbox {:?}", l.bars),
-                ItemKind::Layout { layout, layer } => format!("layout {:?} layer {layer}", layout.map(|l| l.0)),
+                ItemKind::Layout { layout, layer, .. } => format!("layout {:?} layer {layer}", layout.map(|l| l.0)),
                 ItemKind::SlowMo(m) => format!("slow motion {:.2} -> {:.2}", m.at(0.0), m.at(1.0)),
                 ItemKind::EventTrigger => "event trigger".into(),
                 ItemKind::ClearTraffic(c) => format!("clear traffic within {} m of {:?}", c.radius, c.points),
+                ItemKind::Movie { movie, looping } => format!("movie {movie}{}", if *looping { " (loop)" } else { "" }),
+                ItemKind::BlackQuad => "black quad".into(),
+                ItemKind::StreamedImage { target, index } => format!("streamed image {target} <- {index}"),
+                ItemKind::GeneralTrigger { name, trigger } => format!("general trigger {name} [{trigger}]"),
+                ItemKind::Conductor(s) => format!("conductor: sequence {} ({} items)", s.unique_id, s.items.len()),
                 ItemKind::Other(n) => n.clone(),
             };
             println!("    {:6.2}-{:6.2} {}{what}", i.start, i.end, "  ".repeat(i.depth as usize));
@@ -374,4 +379,165 @@ fn sequences(store: &AssetStore, events: &Events, e: &Event) {
             }
         }
     }
+}
+
+/// `mwtool frontend`: the front end's data (`mw_assets::frontend`).
+pub fn frontend(store: &AssetStore) -> Result<()> {
+    use mw_assets::frontend as fe;
+    let lang = store.language(mw_assets::DEFAULT_LANGUAGE).ok();
+    let text = |id: u32| lang.as_ref().and_then(|l| l.get(id)).map_or_else(|| format!("#{id}"), str::to_owned);
+    let start = store.start_config()?;
+    println!("new game car: {:?}; default start: {:?}", start.default_vehicle, start.default_start);
+    println!("{} swap spots (jack spots); first 5:", start.swap_spots.len());
+    for s in start.swap_spots.iter().take(5) {
+        println!("  spot {} car {} location {} pose {:?}", s.id, s.vehicle, s.location, s.car);
+    }
+    let lc = store.loading_config()?;
+    println!(
+        "loading layouts {:?}, toggle layouts {:?}, {} pictures ({} s each), {} tips",
+        lc.layouts,
+        lc.toggle_layouts,
+        lc.images.len(),
+        lc.image_seconds,
+        lc.tips.len()
+    );
+    for t in lc.tips.iter().take(3) {
+        println!("  tip: {}", text(*t));
+    }
+    for (name, id) in [("StdData", 431_091), ("Data", 431_113)] {
+        let items = store.menu_items(fe::PAUSE_SCREEN, id)?;
+        let list: Vec<String> =
+            items.iter().map(|(a, n, on)| format!("{a}={}{}", text(*n), if *on { "" } else { " (off)" })).collect();
+        println!("pause menu {name}: {}", list.join(", "));
+    }
+    println!(
+        "Press: {:?}, PressStart: {:?}, KEY_RETURN: {:?}",
+        store.compliance_term("Press").map(text),
+        store.compliance_term("PressStart").map(text),
+        store.keyboard_button_text("KEY_RETURN").map(text)
+    );
+    for id in [fe::TITLE_SEQUENCE, fe::BOOT_TRANSITION_SEQUENCE] {
+        let seq = store.ui_sequence(id)?;
+        print_ui_sequence(&seq, 0);
+        layout_shaders(store, &seq);
+    }
+    Ok(())
+}
+
+/// The shaders of the UI materials the sequence's layouts use (blend states, masks).
+fn layout_shaders(store: &AssetStore, seq: &mw_assets::sequence::Sequence) {
+    use mw_assets::sequence::ItemKind;
+    for i in &seq.items {
+        match &i.kind {
+            ItemKind::Layout { layout: Some(id), .. } => {
+                let Ok(l) = store.ui_layout(*id) else { continue };
+                for e in &l.elements {
+                    let shader = e.material.and_then(|m| store.ui_material_shader(m));
+                    println!(
+                        "  layout {} element {} {:?}: {}",
+                        id.0 & 0xffff_ffff,
+                        e.id,
+                        e.kind,
+                        shader.unwrap_or_default()
+                    );
+                }
+            }
+            ItemKind::Conductor(s) => layout_shaders(store, s),
+            _ => {}
+        }
+    }
+}
+
+fn print_ui_sequence(seq: &mw_assets::sequence::Sequence, depth: usize) {
+    use mw_assets::sequence::{Controller, ItemKind};
+    let pad = "  ".repeat(depth);
+    println!("{pad}sequence {} ({:.2} s, {} items)", seq.unique_id, seq.length, seq.items.len());
+    for c in &seq.controllers {
+        if let Controller::Jump { kind, trigger_time, destination, enabled, .. } = c {
+            println!("{pad}  {kind}: at {trigger_time:.3} s -> {destination:.3} s if {enabled:?}");
+        }
+    }
+    for i in &seq.items {
+        let what = match &i.kind {
+            ItemKind::Layout { layout, layer, texts, .. } => {
+                format!("layout {} layer {layer} texts {texts:?}", layout.map_or(0, |l| l.0 & 0xffff_ffff))
+            }
+            ItemKind::Movie { movie, looping } => format!("movie {movie} loop {looping}"),
+            ItemKind::BlackQuad => "black quad".into(),
+            ItemKind::StreamedImage { target, index } => format!("streamed image {target} <- {index}"),
+            ItemKind::GeneralTrigger { name, trigger } => format!("general trigger {name} [{trigger}]"),
+            ItemKind::Conductor(_) => "conductor".into(),
+            ItemKind::Other(n) => n.clone(),
+            _ => "(other)".into(),
+        };
+        let en = if i.enabled.is_empty() { String::new() } else { format!(" if {:?}", i.enabled) };
+        println!("{pad}  {:7.3}-{:7.3} {what}{en}", i.start, i.end);
+        if let ItemKind::Conductor(s) = &i.kind {
+            print_ui_sequence(s, depth + 2);
+        }
+    }
+}
+
+/// `mwtool hsm`: the game logic's state machines.
+pub fn hsm(store: &AssetStore, bundle: &str, node: Option<u32>, find: Option<&str>, depth: usize) -> Result<()> {
+    use mw_formats::hsm::key_name;
+    let data = store.hsm_data(bundle)?;
+    if let Some(text) = find {
+        for n in data.nodes.iter().filter(|n| n.name.to_lowercase().contains(&text.to_lowercase())) {
+            println!("{:8} [{:08x}] {}", n.id, n.code, n.name);
+        }
+        return Ok(());
+    }
+    let Some(root) = node else {
+        let children: std::collections::HashSet<u32> =
+            data.nodes.iter().flat_map(|n| n.children.iter().map(|c| c.id)).collect();
+        println!(
+            "{} nodes, {} entry points, {} behaviour types; roots with children:",
+            data.nodes.len(),
+            data.entries.len(),
+            data.behaviours.len()
+        );
+        for n in data.nodes.iter().filter(|n| !children.contains(&n.id) && !n.children.is_empty()) {
+            println!("{:8} {} ({} children)", n.id, n.name, n.children.len());
+        }
+        return Ok(());
+    };
+    fn show(data: &mw_formats::hsm::HsmData, id: u32, depth: usize, max: usize) {
+        let pad = "  ".repeat(depth);
+        let Some(n) = data.node(id) else {
+            println!("{pad}? {id}");
+            return;
+        };
+        let params: Vec<String> = n.parameters.iter().map(|(k, v)| format!("{}={v:?}", key_name(*k))).collect();
+        let init: Vec<u32> = n.initial().collect();
+        println!(
+            "{pad}{} [{:08x}] {:?} {}{}{}",
+            n.id,
+            n.code,
+            n.name,
+            params.join(" "),
+            if init.is_empty() { String::new() } else { format!(" starts {init:?}") },
+            if n.has_lua { " (Lua)" } else { "" }
+        );
+        if depth >= max {
+            return;
+        }
+        for c in &n.children {
+            show(data, c.id, depth + 1, max);
+            for t in &c.transitions {
+                let names: Vec<String> = t
+                    .targets
+                    .iter()
+                    .map(|t| format!("{t} {:?}", data.node(*t).map_or("?", |n| n.name.as_str())))
+                    .collect();
+                println!(
+                    "{pad}    on {} -> {}",
+                    key_name(t.exit),
+                    if names.is_empty() { "(done)".into() } else { names.join(", ") }
+                );
+            }
+        }
+    }
+    show(&data, root, 0, depth);
+    Ok(())
 }

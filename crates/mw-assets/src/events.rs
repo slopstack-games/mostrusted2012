@@ -103,7 +103,7 @@ mod h {
 }
 
 const GAME_MODES: &str = "GAMELOGIC/GAMEMODES.BNDL";
-const GAMEPLAY: &str = "GAMELOGIC/GAMEPLAY.BNDL";
+pub(crate) const GAMEPLAY: &str = "GAMELOGIC/GAMEPLAY.BNDL";
 
 /// What kind of event, from its `GameMode` and `TypeName` (the type names' English texts: "Circuit",
 /// "Sprint", "Speed Run", "Ambush", ...; see [`EventKind::from_ids`]).
@@ -396,7 +396,7 @@ fn structs(v: Option<&Value>) -> impl Iterator<Item = &Object> {
 }
 
 /// Every struct in the `Item` arrays of a bundle's objects, by type name (without `Genesys.Gen.`).
-fn items(store: &AssetStore, bundle: &str) -> Result<Vec<Object>> {
+pub(crate) fn items(store: &AssetStore, bundle: &str) -> Result<Vec<Object>> {
     let b = store.bundle(bundle).ok_or(Error::Missing(ResourceId::NULL))?;
     let mut out = Vec::new();
     for e in b.entries_of_type(ResourceType::GenesysObject) {

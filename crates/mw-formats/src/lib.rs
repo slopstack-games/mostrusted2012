@@ -16,6 +16,7 @@ mod dxgi;
 mod font;
 pub mod genesys;
 pub mod groundcover;
+pub mod hsm;
 mod material;
 mod paint_map;
 mod renderable;

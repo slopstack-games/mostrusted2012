@@ -492,6 +492,23 @@ enum Cmd {
         #[arg(long)]
         all: bool,
     },
+    /// The front end's data (`mw_assets::frontend`): the free-roam start (default car, start point, swap
+    /// spots), the loading screens (layouts, pictures, tips), the pause menu's items and the title / transition
+    /// sequences' items.
+    Frontend,
+    /// The game logic's state machines (`HSMData`, `mw_formats::hsm`): `hsm` lists the root nodes, `hsm <id>`
+    /// prints a node's tree (children, what each child's exit codes start, parameters), `hsm --find <text>`
+    /// searches node names.
+    Hsm {
+        node: Option<u32>,
+        #[arg(long, default_value = "GAMELOGIC/GAMEMODES.BNDL")]
+        bundle: String,
+        #[arg(long)]
+        find: Option<String>,
+        /// Tree depth for `hsm <id>`.
+        #[arg(long, default_value_t = 3)]
+        depth: usize,
+    },
     /// Show a WorldPaintMap (what is painted where: environment timelines, layer fog, particle lighting),
     /// which entries each track unit's zone covers, and optionally render it with the zone outlines.
     PaintMap {
@@ -1326,6 +1343,10 @@ fn main() -> Result<()> {
             export_world(&AssetStore::new(game)?, &bundles, &out, size, obj, &instances)?
         }
         Cmd::Events { id, png, all } => events::run(&AssetStore::new(game)?, id.as_deref(), png.as_deref(), all)?,
+        Cmd::Frontend => events::frontend(&AssetStore::new(game)?)?,
+        Cmd::Hsm { node, bundle, find, depth } => {
+            events::hsm(&AssetStore::new(game)?, &bundle, node, find.as_deref(), depth)?
+        }
         Cmd::Traffic { png, at } => traffic(&AssetStore::new(game)?, png.as_deref(), &at)?,
         Cmd::PaintMap { id, png, at } => paint_map(&AssetStore::new(game)?, &id, png.as_deref(), &at)?,
     }
