@@ -8,6 +8,7 @@ use clap::{Parser, Subcommand};
 mod compare;
 mod crack;
 mod damage;
+mod events;
 #[cfg(target_os = "linux")]
 mod memscan;
 mod placement;
@@ -421,6 +422,17 @@ enum Cmd {
     Traffic {
         #[arg(long)]
         png: Option<PathBuf>,
+    },
+    /// Offline events (`OfflineEvent` in GAMELOGIC/GAMEMODES.BNDL, resolved against HAWAII/TRIGGERS.BNDL): one
+    /// line per event (id, kind, laps, checkpoints, opponents, name, car); `events <id>` prints one in detail,
+    /// `--png` draws its route over the lane map (yellow route, white gates, green start, red opponents).
+    Events {
+        id: Option<String>,
+        #[arg(long)]
+        png: Option<PathBuf>,
+        /// Also list events without checkpoints (free-roam placeholders, DLC modes).
+        #[arg(long)]
+        all: bool,
     },
     /// Show a WorldPaintMap (what is painted where: environment timelines, layer fog, particle lighting),
     /// which entries each track unit's zone covers, and optionally render it with the zone outlines.
@@ -1172,6 +1184,7 @@ fn main() -> Result<()> {
             export_world(&AssetStore::new(game)?, &bundles, &out, size, obj, &instances)?
         }
         Cmd::Traffic { png } => traffic(&AssetStore::new(game)?, png.as_deref())?,
+        Cmd::Events { id, png, all } => events::run(&AssetStore::new(game)?, id.as_deref(), png.as_deref(), all)?,
         Cmd::PaintMap { id, png, at } => paint_map(&AssetStore::new(game)?, &id, png.as_deref(), &at)?,
     }
     Ok(())
