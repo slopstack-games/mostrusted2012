@@ -391,6 +391,17 @@ enum Cmd {
         /// Groundcover only: per group, which groups stand on the ground (by layer, blob, start, size exponent).
         #[arg(long)]
         groups: bool,
+        /// Groundcover only: the sprites a camera at `eye x,y,z,target x,y,z` sees within 30° of its
+        /// axis, with their distance, the ground under them and the game's per-sprite range.
+        #[arg(long, allow_hyphen_values = true)]
+        view: Option<String>,
+        /// Every placed render mesh (main and backdrop) that covers the point `x,z`: unit, model, shader and
+        /// the surface height there.
+        #[arg(long, allow_hyphen_values = true)]
+        column: Option<String>,
+        /// Groundcover only: per group, whether the zone that owns its place lists its collection.
+        #[arg(long)]
+        owners: bool,
     },
     /// Physics of the world's props, compound and dynamic objects (`PhysicalDefinition`): volume kinds,
     /// masses and break forces over the track units (or the given bundles).
@@ -692,9 +703,19 @@ fn main() -> Result<()> {
             camera_take::run(&open_bundle(&game, "CAMERAS.BNDL")?, take.as_deref(), step)?
         }
         Cmd::Freeroam { list, kind, all_kinds } => freeroam(&AssetStore::new(game)?, list, kind.as_deref(), all_kinds)?,
-        Cmd::PlacementCheck { bundles, top, groups } => {
+        Cmd::PlacementCheck { bundles, top, groups, view, column, owners } => {
             let store = AssetStore::new(game)?;
-            if groups { placement::groups(&store, &bundles)? } else { placement::run(&store, &bundles, top)? }
+            if owners {
+                placement::owners(&store)?
+            } else if let Some(c) = column {
+                placement::column(&store, &c)?
+            } else if let Some(v) = view {
+                placement::view(&store, &v, top)?
+            } else if groups {
+                placement::groups(&store, &bundles)?
+            } else {
+                placement::run(&store, &bundles, top)?
+            }
         }
         Cmd::Props { bundles, verbose } => props::run(&AssetStore::new(game)?, &bundles, verbose)?,
         Cmd::Vehicles => {

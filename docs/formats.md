@@ -89,7 +89,7 @@ InstanceList ──> Model ──(LOD state)──> Renderable ──(per mesh)�
   collection = materials (atlas texture + 16 regions each), 3 layers of a box tree whose leaves hold groups
   `(box, material, size exponent e, blob, start, count, radius r)`; instances are 16 bytes with u16 x/y/z as
   fractions of the group box, i8 width and height (BINORMAL.xy = byte / 127, times the shader's
-  `GroundcoverConstants.x`), ground normal, tint and region index. Draw distance (`FUN_00eb9500`, the CPU
+  `GroundcoverConstants.x` = 2^e), ground normal, tint and region index. Draw distance (`FUN_00eb9500`, the CPU
   vertex builder): a group is drawn while the camera is within 125·r of its box (`DAT_010c6f74` = 125.0,
   .data); each sprite within R = ((w>>1&63) + (h>>1&63))·2^e/127·125 of the camera and in front of it, its
   width and height scaled by min(5·(1 − d²/R²), 1) (`DAT_01081000` = 5.0), at most 20000 sprites
@@ -109,8 +109,16 @@ InstanceList ──> Model ──(LOD state)──> Renderable ──(per mesh)�
   max(8 − height, 0.75) · (ground normal + (0, 0.25, 0))` (d = horizontal direction from the camera, height
   in metres), mostly the ground normal. `gObjectCB` (272 bytes = `GroundcoverConstants` + 16 regions) is the
   collection's own 0x110-byte material record (`collection +0x30 + material × 0x110`), so
-  `GroundcoverConstants` is its first 16 bytes; on disk they are the material import slot (zero), so the
-  runtime writes the size scale there (writer not found). **Pixel program** (G-buffer): `DiffuseSampler`
+  `GroundcoverConstants` is its first 16 bytes; on disk they are the material import slot (zero). The draw
+  loop `FUN_008c9aa0` binds the 16 regions (`material + 0x10`) to slot 0x80 and writes `(float)(1 << e)` into
+  all four components of slot 0x7f (`GroundcoverConstants`) whenever the draw record's size exponent changes
+  (the record's byte +0xC, copied from the group's +0x30), so **a sprite is byte / 127 × 2^e metres**: up to 4 m
+  for e = 2, 16 m for e = 4, 64 m for e = 6 and 256 m for e = 8 (the e = 6 / 8 groups are tree cards that cover
+  hills; live reads of slot 0x7f gave 4 and 256). The per-sprite range R = 125 × the sprite's mean size.
+  **Which collections are drawn**: `FUN_00eb9f50` walks a list of 64 collection slots (copied by
+  `FUN_008d6900`), each layer only when its flag `DAT_010c6f78[layer]` is set. Every track unit lists 1–34
+  collections (400 in all, one listed by up to 144 units); a zone and all its `ZoneList` neighbours list at
+  most 63 distinct ones, which fits the 64 slots (`mwtool placement-check --owners`). **Pixel program** (G-buffer): `DiffuseSampler`
   only; discard where alpha < 0.5; RT1 (sqrt albedo) = texel.rgb / texel.a × sqrt(2 · tint), w = 1; RT0 =
   normalize(normal) × 0.5 + 0.5, w = 1; RT2 / RT3 are not written; no lighting in the shader. The second
   pixel program (forward / HDR) outputs texel.rgb / a × sqrt(2 tint) × `HDRConstants.x` with the texel alpha.

@@ -127,9 +127,18 @@ pub enum Msg {
         model: ResourceId,
         transform: Mat4,
     },
-    /// One groundcover group (a model at the origin), drawn while the camera is within `range` of its box.
+    /// The streaming zones (`ZoneList`), for the groundcover residency (`groundcover.rs`).
+    Zones(mw_formats::ZoneList),
+    /// The groundcover collections a track unit lists (also those already sent for another unit).
+    GroundcoverListing {
+        unit: u32,
+        collections: Vec<ResourceId>,
+    },
+    /// One groundcover group (a model at the origin), drawn while the camera is within `range` of its box
+    /// and a unit around the camera lists `collection`.
     Groundcover {
         model: ResourceId,
+        collection: ResourceId,
         min: Vec3,
         max: Vec3,
         range: f32,
@@ -618,6 +627,9 @@ impl Worker {
         let mut centres: Vec<Vec3> = placed.iter().filter_map(|(_, _, c)| *c).collect();
         let focus = focus.or_else(|| median_vec(&mut centres)).unwrap_or(Vec3::ZERO);
         self.send(Msg::Focus(focus))?;
+        if let Ok(zones) = self.store.zone_list() {
+            self.send(Msg::Zones(zones))?;
+        }
         placed.sort_by(|a, b| {
             let d = |c: &Option<Vec3>| c.map_or(f32::MAX, |c| c.distance_squared(focus));
             d(&a.2).total_cmp(&d(&b.2))
@@ -648,7 +660,7 @@ impl Worker {
             if let Some(b) = self.store.bundle(&name) {
                 self.collision(&b)?;
                 if !self.filter.no_groundcover {
-                    self.groundcover(&b)?;
+                    self.groundcover(&b, track_unit_number(&name))?;
                 }
             }
             let unit = track_unit_number(&name);
@@ -762,12 +774,12 @@ impl Worker {
 
     /// Send the groundcover of every collection in a bundle that has not been sent yet: one merged
     /// mesh per collection and sprite class, drawn as an ordinary model at the origin.
-    fn groundcover(&mut self, b: &mw_bundle::Bundle) -> anyhow::Result<()> {
-        let ids: Vec<ResourceId> = b
-            .entries_of_type(ResourceType::GroundcoverCollection)
-            .map(|e| e.id)
-            .filter(|id| self.groundcover_done.insert(*id))
-            .collect();
+    fn groundcover(&mut self, b: &mw_bundle::Bundle, unit: Option<u32>) -> anyhow::Result<()> {
+        let listed: Vec<ResourceId> = b.entries_of_type(ResourceType::GroundcoverCollection).map(|e| e.id).collect();
+        if let Some(unit) = unit {
+            self.send(Msg::GroundcoverListing { unit, collections: listed.clone() })?;
+        }
+        let ids: Vec<ResourceId> = listed.into_iter().filter(|id| self.groundcover_done.insert(*id)).collect();
         for id in ids {
             let Ok(gc) = self.store.groundcover(id) else { continue };
             for (m, mat) in gc.materials.iter().enumerate() {
@@ -791,12 +803,19 @@ impl Worker {
                 }
                 look.retain_textures(|k| self.textures.contains(k));
                 // One model per group: the game culls whole groups by distance (`FUN_00eb9500`).
-                for (gi, (g, range)) in gc.groups.iter().enumerate().filter(|(_, (g, _))| g.material == m) {
+                let only_e: Option<u32> = std::env::var("MW_GC_E").ok().and_then(|v| v.parse().ok());
+                for (gi, (g, range)) in gc
+                    .groups
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (g, _))| g.material == m && only_e.is_none_or(|e| e == g.shift))
+                {
                     let Some(mesh) = groundcover_mesh(&gc.instances[range.clone()], &mat.regions) else { continue };
                     let key = ResourceId(0x6000_0000_0000_0000 | (gi as u64) << 32 | id.0 & 0xFFFF_FFFF);
                     self.send(Msg::Model(key, vec![Part { mesh, look }]))?;
                     self.send(Msg::Groundcover {
                         model: key,
+                        collection: id,
                         min: Vec3::from(g.min),
                         max: Vec3::from(g.max),
                         range: g.radius * mw_formats::groundcover::DRAW_DISTANCE_SCALE,

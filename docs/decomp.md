@@ -736,6 +736,25 @@ gaps of the dump.
   wrecked and 13 for a non-zero vector of the player state; the coronas, lights and spot effects test
   `1 << Group` against it.
 
+## Groundcover drawing (2026-10-09)
+
+- **Job**: `FUN_0089ffe0` (called from `FUN_008ad290` with the list at `+0x2e94` of its object) copies the
+  collection list (`FUN_008d6900`: 64 entries of `{collection, offset}`, count at +0x200) and the camera into a
+  job named "Groundcover" whose function is `FUN_00eb7f40` → `FUN_00eb7f60` → `FUN_00eb9f50`.
+- **`FUN_00eb9f50`**: for each of the 64 collection slots, for each layer (3, `collection + 0x28`) whose flag
+  `DAT_010c6f78[layer]` is set, walks the layer's box tree (`FUN_00eb9d70`, nodes 0x60 bytes, groups 0x40) and
+  calls the vertex builder `FUN_00eb9500` (or its twin `FUN_00eb8390` under a flag set) per group. The
+  builder's distance tests and sprite vertices are in formats.md (GroundcoverCollection).
+- **`FUN_008c9aa0`** (the draw loop over the job's records, stride 0x10, count at +0x12c0, sorted first by
+  `FUN_008dee30`): binds the material's 16 texture regions (`material + 0x10`) to constant slot 0x80
+  (`FUN_004ad9f0`) when the material changes, and when the record's byte +0xC (the group's size exponent e)
+  changes writes `(float)(1 << e)` into the four floats of slot 0x7f (`GroundcoverConstants`, through
+  `FUN_00a5d660`), then draws (`FUN_00a5cb70`, 0x90). So the sprite size is BINORMAL × 2^e metres: the
+  e = 6 / 8 groups are 10–60 m tree cards over the hills, not 1 m tufts.
+- **Not traced**: who fills the 64-slot list at `+0x2e94` (which track units' collections are resident). The
+  data fit "the player's zone and its `ZoneList` neighbours": at most 63 distinct collections over every
+  zone's neighbourhood. The runtime uses that rule (`groundcover.rs`, model decision).
+
 ## Car spot effects (`FUN_005b28d0`, 2026-10-09)
 
 - Per `VehicleVfxBehaviour.SpotEffect` (0x20 bytes: effect handle +0x0c, `LocatorGroup` +0x14, `Group` +0x18,

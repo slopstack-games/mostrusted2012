@@ -61,19 +61,23 @@ const LAYERS: usize = 3;
 /// the groundcover vertex builder `FUN_00eb9500` for both the group test and the per-instance test.
 pub const DRAW_DISTANCE_SCALE: f32 = 125.0;
 
-/// `GroundcoverConstants.x`: metres per unit of the BINORMAL size (byte / 127), a live read of the
-/// original's constant slot 0x7f (research log, 2026-10-06).
-pub const SIZE_SCALE: f32 = 4.0;
 /// `DAT_01081000` (.rdata 5.0): the sprite shrinks over the last fifth of its range in squared distance.
 pub const FADE_RATE: f32 = 5.0;
 
 impl GroundcoverInstance {
-    /// Sprite width and height in metres. The shader multiplies BINORMAL.xy (= byte / 127) by
-    /// `GroundcoverConstants.x` (`cb1[0].x`, the only component the vertex program reads), read as 4 from
-    /// the running original (constant slot 0x7f in 15 of the 18 non-empty live dumps, 2026-10-06; the 0
-    /// and 256 in the others are other passes' writes to the shared slot). The CPU write is not traced.
+    /// `GroundcoverConstants.x` for this sprite's group: metres per unit of the BINORMAL size (byte / 127).
+    /// The draw loop `FUN_008c9aa0` writes `(float)(1 << e)` into all four components of constant slot
+    /// 0x7f whenever the draw record's size exponent (the group's byte +0x30) changes, so the scale is
+    /// 2^e: 4 for e = 2 (the live read of 2026-10-06), 256 for e = 8 (also seen live).
+    pub fn size_scale(&self) -> f32 {
+        (1u32 << self.shift) as f32
+    }
+
+    /// Sprite width and height in metres: BINORMAL.xy (= byte / 127) × [`Self::size_scale`]; the vertex
+    /// program multiplies by `cb1[0].x`, the only component it reads.
     pub fn size_m(&self) -> (f32, f32) {
-        (self.width as f32 / 127.0 * SIZE_SCALE, self.height as f32 / 127.0 * SIZE_SCALE)
+        let s = self.size_scale() / 127.0;
+        (self.width as f32 * s, self.height as f32 * s)
     }
 
     /// The CPU's per-instance draw range in metres (`FUN_00eb9500`): (w/2 + h/2) bytes, each taken as
