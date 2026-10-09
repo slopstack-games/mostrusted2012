@@ -316,6 +316,13 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    neighbours and draw only the current zone's backdrop (`--backdrop-zone N` shows one), instead of the
    static composition used while everything is loaded.
 4. GPU instancing for repeated models; profile with Tracy (`bevy/trace_tracy`).
+5. **Stream around the player** (user, 2026-10-09: "just load what is needed around the player instead of the
+   whole map and everything"): load and unload track units, props, groundcover, traffic models and world
+   effects by the player's zone and its neighbours as the game does (its streaming / PVS code, not a distance
+   guess), including the cars and AI only when an event needs them.
+6. **Loading screens** (user, 2026-10-09): the game's own loading screens and their flow (UI screens with
+   `LoadingProfile` / `LoadingIcon`, the tips / car shots they show) while the start area streams in, instead of
+   showing the world assembling.
 - Target: steady 60 fps at 1080p while driving through downtown on mid-range hardware; startup to first frame
   under 3 s.
 
