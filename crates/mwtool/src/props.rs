@@ -134,10 +134,89 @@ pub fn run(store: &AssetStore, bundles: &[String], verbose: bool) -> Result<()> 
     Ok(())
 }
 
-pub fn surfaces(store: &AssetStore) -> Result<()> {
+/// Per surface, the triangles whose centre lies within `r` (horizontally) of (`x`, `z`): count, the nearest
+/// one's centre and its normal's up component.
+fn surfaces_near(
+    store: &AssetStore,
+    list: &[mw_assets::surfaces::SurfaceInfo],
+    [x, z, r]: [f32; 3],
+    find: Option<u8>,
+) -> Result<()> {
+    // With `find`: (cell x, cell z) -> (triangle count of that surface, area, height sum)
+    let mut cells: BTreeMap<(i32, i32), (usize, f32, f32)> = BTreeMap::new();
+    use mw_bundle::ResourceType;
+    use mw_formats::CollisionTag;
+    // surface -> (count, nearest distance, centre, normal y, flags)
+    let mut near: BTreeMap<u8, (usize, f32, [f32; 3], f32, u16)> = BTreeMap::new();
+    for p in store.bundle_paths().to_vec() {
+        if !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("TRK_UNIT")) {
+            continue;
+        }
+        let Some(b) = store.bundle(&p) else { continue };
+        for e in b.entries_of_type(ResourceType::PolygonSoupList) {
+            let soups = mw_formats::PolygonSoupList::parse(&b.load(e)?)?;
+            if soups.max[0] < x - r || soups.min[0] > x + r || soups.max[2] < z - r || soups.min[2] > z + r {
+                continue;
+            }
+            let (verts, tris) = soups.triangles();
+            for (t, tag) in tris.iter().zip(soups.triangle_tags()) {
+                let [a, b, c] = t.map(|i| verts[i as usize]);
+                let centre = [0, 1, 2].map(|k| (a[k] + b[k] + c[k]) / 3.0);
+                let d = ((centre[0] - x).powi(2) + (centre[2] - z).powi(2)).sqrt();
+                if d > r {
+                    continue;
+                }
+                let (u, v) = ([0, 1, 2].map(|k| b[k] - a[k]), [0, 1, 2].map(|k| c[k] - a[k]));
+                let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+                let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-9);
+                let tag = CollisionTag::from_u32(tag);
+                if find == Some(tag.surface) && n[1] / len > 0.9 {
+                    let c = cells
+                        .entry(((centre[0] / 20.0).floor() as i32, (centre[2] / 20.0).floor() as i32))
+                        .or_default();
+                    *c = (c.0 + 1, c.1 + len / 2.0, c.2 + centre[1]);
+                }
+                let e = near.entry(tag.surface).or_insert((0, f32::MAX, [0.0; 3], 0.0, 0));
+                e.0 += 1;
+                if d < e.1 {
+                    *e = (e.0, d, centre, (n[1] / len).abs(), tag.flags);
+                }
+            }
+        }
+        store.evict_all();
+    }
+    if find.is_some() {
+        let mut v: Vec<_> = cells.into_iter().collect();
+        v.sort_by(|a, b| b.1.1.total_cmp(&a.1.1));
+        println!("cell centre (x y z)          triangles  flat area m²");
+        for ((cx, cz), (n, area, ys)) in v.into_iter().take(15) {
+            println!(
+                "({:>7.0} {:>6.1} {:>7.0})  {n:>9}  {area:>8.0}",
+                cx as f32 * 20.0 + 10.0,
+                ys / n as f32,
+                cz as f32 * 20.0 + 10.0
+            );
+        }
+        return Ok(());
+    }
+    println!("surface  grip   triangles  nearest (x y z)            dist  up    flags");
+    for (s, (n, d, c, up, flags)) in near {
+        let grip = list.get(s as usize).and_then(|i| i.grip).map_or("-".into(), |g| format!("{g:.3}"));
+        println!(
+            "{s:>7}  {grip:>5}  {n:>9}  ({:>8.1} {:>6.1} {:>8.1})  {d:>5.1}  {up:.2}  {flags:#05x}",
+            c[0], c[1], c[2]
+        );
+    }
+    Ok(())
+}
+
+pub fn surfaces(store: &AssetStore, near: Option<[f32; 3]>, find: Option<u8>) -> Result<()> {
     use mw_bundle::ResourceType;
     use mw_formats::CollisionTag;
     let list = store.surfaces()?;
+    if let Some(at) = near {
+        return surfaces_near(store, &list, at, find);
+    }
     let mut tris: BTreeMap<u8, (usize, BTreeMap<u16, usize>)> = BTreeMap::new();
     for p in store.bundle_paths().to_vec() {
         if !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("TRK_UNIT")) {
@@ -154,16 +233,21 @@ pub fn surfaces(store: &AssetStore) -> Result<()> {
         }
         store.evict_all();
     }
-    println!("index  id                colour (debug)         grip   speed  roughness      triangles  flags (count)");
+    println!(
+        "index  id                colour (debug)         grip   rolling  drag   physics  speed  roughness      triangles  flags (count)"
+    );
     for (i, s) in list.iter().enumerate() {
         let (n, flags) = tris.get(&(i as u8)).cloned().unwrap_or_default();
         println!(
-            "{i:>5}  {}  ({:.2} {:.2} {:.2})   {:>5}  {:>5}  {:<13}  {n:>9}  {:?}",
+            "{i:>5}  {}  ({:.2} {:.2} {:.2})   {:>5}  {:>7}  {:>5}  {:>7}  {:>5}  {:<13}  {n:>9}  {:?}",
             s.id,
             s.colour[0],
             s.colour[1],
             s.colour[2],
             s.grip.map_or("-".into(), |g| format!("{g:.3}")),
+            s.rolling.map_or("-".into(), |g| format!("{g:.3}")),
+            s.slide_drag.map_or("-".into(), |g| format!("{g:.2}")),
+            s.physics_uid.map_or("-".into(), |g| g.to_string()),
             s.speed.map_or("-".into(), |g| g.to_string()),
             s.roughness.map_or("-".into(), |r| format!("{:.2} {:.2}", r[0], r[1])),
             flags

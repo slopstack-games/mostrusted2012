@@ -16,6 +16,7 @@ use bevy::input::gamepad::RawGamepadEvent;
 use bevy::prelude::*;
 use mw_assets::camera::VehicleCameras;
 use mw_assets::handling::{LateralCurve, LongCurve, SlipBlend, Steering, SurfaceLink, TyreAxle, VehicleHandling};
+use mw_handling::surface::{self, SurfaceGrip};
 
 use crate::chassis::ChassisParams;
 use crate::drift::{self, DriftInput, DriftParams, DriftState};
@@ -328,6 +329,8 @@ struct WheelState {
     spinner: Entity,
     /// Ground contact in the last physics step (read by `particles.rs`).
     contact: Option<WheelContact>,
+    /// The grip of the surface under the wheel and of those it just left (`mw_handling::surface`).
+    surface: SurfaceGrip,
 }
 
 /// A wheel's ground contact, for effects (tyre smoke, kick-up). World space.
@@ -612,6 +615,7 @@ pub fn build_car(commands: &mut Commands, b: &CarBuild) -> Entity {
             pivot,
             spinner,
             contact: None,
+            surface: SurfaceGrip::default(),
         });
     }
     // A car swapped in at speed starts in the gear that speed needs.
@@ -1068,6 +1072,24 @@ pub(crate) fn car_physics(
                 continue;
             };
             hit.distance -= lift;
+            // The surface under the wheel and how this car's tyres treat it (`FUN_009d8bd0`).
+            let surface = WheelSurface::at(&surfaces, &world_tags, hit.entity, (mount, ray_dir, reach), p, wheel.front);
+            // The surface's bumps (`FUN_009d77b0` → `FUN_009d4650`): the contact moves along the ground normal by
+            // Perlin noise of its position and the normal tilts with it; the suspension and the tyre see the
+            // bumped ground. The game does this only under a flag that reads as "the car has a human player"
+            // (`FUN_00904260`: the car's player record +0x9c is 0; inferred), so AI and traffic cars skip it.
+            if player && let Some((frequency, amplitude)) = surface.roughness {
+                let point = mount - up * hit.distance;
+                let (moved, tilted, _) =
+                    surface::roughness(point.to_array(), hit.normal.to_array(), frequency, amplitude);
+                let (moved, tilted) = (Vec3::from(moved), Vec3::from(tilted));
+                // Where the wheel's ray meets the bumped ground (the plane through the moved point).
+                let along = up.dot(tilted);
+                if along > TYRE_NORMAL_MIN_UP {
+                    hit.distance = (mount - moved).dot(tilted) / along;
+                    hit.normal = tilted;
+                }
+            }
             let compression = (reach - hit.distance).clamp(0.0, wheel.travel);
             wheel.compression = compression;
             wheel.overtravel = (reach - hit.distance - wheel.travel).max(0.0);
@@ -1095,8 +1117,9 @@ pub(crate) fn car_physics(
             let axle = usize::from(!wheel.front);
             let tyre = &p.tyres[axle];
             let on_ground = if normal.y > TYRE_NORMAL_MIN_UP { 1.0 } else { 0.0 };
-            // The surface under the wheel and how this car's tyres treat it (`FUN_009d8bd0`).
-            let surface = WheelSurface::at(&surfaces, &world_tags, hit.entity, (mount, ray_dir, reach), p, wheel.front);
+            // The surface grip this tick: the surface's own, or lower while the grip of one just left fades
+            // (`FUN_009d4460`).
+            let grip = wheel.surface.step(surface.uid, surface.grip, surface.target, dt);
             // Grip load: the static corner load plus half this axle's downforce, not the spring force
             // (`FUN_00905910`; the XKR reference run shows it constant through launch and braking).
             let static_load = wheel.corner_mass * 9.81;
@@ -1154,10 +1177,10 @@ pub(crate) fn car_physics(
             let long_cap = mu_long
                 * n_grip
                 * tyre.longitudinal_scale
-                * surface.grip[1]
+                * grip[1]
                 * if driven { 1.0 - burnout } else { 1.0 }
                 * on_ground;
-            let lat_cap = mu_lat * n_grip * tyre.lateral_scale * surface.grip[0] * on_ground;
+            let lat_cap = mu_lat * n_grip * tyre.lateral_scale * grip[0] * on_ground;
             let (long_cap, lat_cap) = (finite_or_zero(long_cap), finite_or_zero(lat_cap));
             // Longitudinal, in the game's order (`FUN_009c75b0`): after the brake step (above), one pass of the
             // tyre constraint pulls the tread towards the road speed (the wheel's spin inertia against the
@@ -1194,8 +1217,10 @@ pub(crate) fn car_physics(
             tyre_yaw[axle] += torque.dot(up);
             if tyre_debug() && (time.elapsed_secs() * 2.0).fract() < dt * 2.0 {
                 info!(
-                    "tyre front={} α {slip_deg:.1}° κ {kappa:.2} μ {mu_long:.2}/{mu_lat:.2} load {load:.0} N {n_grip:.0} long {f_long:.0} side {f_side:.0} resist {f_resist:.0} grip {:.2?} steer {:.1}°",
+                    "tyre front={} α {slip_deg:.1}° κ {kappa:.2} μ {mu_long:.2}/{mu_lat:.2} load {load:.0} N {n_grip:.0} long {f_long:.0} side {f_side:.0} resist {f_resist:.0} surface {} grip {:.3?} (own {:.3?}) steer {:.1}°",
                     wheel.front,
+                    surface.uid,
+                    grip,
                     surface.grip,
                     steer.to_degrees()
                 );
@@ -1272,6 +1297,7 @@ pub(crate) fn car_physics(
                     any_grounded: grounded,
                     air_time: car.air_time,
                     reverse_gear: car.gear < 0,
+                    surface: surface::drift_factor(car.wheels.iter().map(|w| &w.surface)),
                 },
                 dt,
             );
@@ -1356,8 +1382,14 @@ pub(crate) fn car_physics(
 /// What the ground under one wheel does to its tyre (`FUN_009d8bd0`: `FUN_0054d750` looks the surface up,
 /// `FUN_009d4b70` finds the car's link for it, `FUN_009cec40` blends the grip, `FUN_009d4a10` the drag).
 struct WheelSurface {
-    /// (lateral, longitudinal) grip factors on the tyre caps.
+    /// The `SurfacePhysics` unique id (`u32::MAX` when the surface is not known).
+    uid: u32,
+    /// (lateral, longitudinal) grip factors on the tyre caps, before the fade of a surface just left.
     grip: [f32; 2],
+    /// The car's link grip for this surface (1 without a link): what the fades head for.
+    target: f32,
+    /// `Surface_roughness` as (noise frequency per metre, amplitude in metres); `None` when flat.
+    roughness: Option<(f32, f32)>,
     /// `RoadOverrides` rolling resistance per newton of load.
     rolling: f32,
     /// Slide drag: the surface's scale × the car's link (drag ramp ends, N per mph; slip angles in degrees).
@@ -1369,7 +1401,8 @@ struct WheelSurface {
 impl WheelSurface {
     /// The surface a wheel's ray (`origin`, `dir`, `reach`) hit on `entity`. World colliders carry per-triangle
     /// surface tags; anything else (the flat test track) counts as the game's `Surfaces.Default_surface`, the
-    /// list's first entry. Without a surface list at all the tyre gets full grip and no drag.
+    /// list's first entry (or the `--track-surface` entry). Without a surface list at all the tyre gets full grip
+    /// and no drag.
     fn at(
         surfaces: &crate::props::WorldSurfaces,
         world_tags: &Query<(&Collider, &crate::props::SurfaceTags)>,
@@ -1383,7 +1416,7 @@ impl WheelSurface {
             .ok()
             .and_then(|(collider, tags)| surfaces.surface_at(collider, tags, origin, *dir, reach))
             .and_then(|hit| hit.surface);
-        let info = tagged.or_else(|| surfaces.list.first().cloned());
+        let info = tagged.or_else(|| surfaces.list.get(surfaces.untagged).or(surfaces.list.first()).cloned());
         let base = info.as_ref().and_then(|s| s.grip).unwrap_or(1.0);
         let uid = info.as_ref().and_then(|s| s.physics_uid);
         let link = uid.and_then(|u| p.surface_links.iter().find(|l| l.surfaces.contains(&u)));
@@ -1395,8 +1428,13 @@ impl WheelSurface {
             }
             None => [base, base],
         };
+        let roughness =
+            info.as_ref().and_then(|s| s.roughness).map(surface::roughness_scale).filter(|&(f, a)| f > 0.0 && a > 0.0);
         Self {
+            uid: uid.unwrap_or(u32::MAX),
             grip,
+            target: link.map_or(1.0, |l| l.grip),
+            roughness,
             rolling: info.as_ref().and_then(|s| s.rolling).unwrap_or(0.0),
             drag_scale: if link.is_some() { info.as_ref().and_then(|s| s.slide_drag).unwrap_or(0.0) } else { 0.0 },
             drag: link.map_or([0.0; 2], |l| l.drag),

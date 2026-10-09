@@ -97,6 +97,10 @@ struct Cli {
     /// Drive on an empty flat test track instead of the city (with --drive).
     #[arg(long)]
     test_track: bool,
+    /// The collision surface (index into the game's surface list, `mwtool surfaces`) the flat test track
+    /// counts as: 0 is the game's default surface, 8 asphalt, 4 grass, 7 dirt. Tests compare surfaces with it.
+    #[arg(long, default_value_t = 0)]
+    track_surface: usize,
     /// Run a scripted test and exit: accel, brake, corner, handbrake, drift, donut, engine, crash (drive into a
     /// wall; with --screenshot, saves `<name>-before` / `<name>-after` images), or smash (drive through a cone,
     /// a street lamp and a fence into an immovable wall made of the game's props, at --smash-speed; before /
@@ -581,6 +585,7 @@ fn main() -> anyhow::Result<()> {
     }
     if test_track {
         app.add_systems(Startup, spawn_test_track);
+        app.insert_resource(props::WorldSurfaces { list: Vec::new(), untagged: cli.track_surface });
     }
     // Crash rules and the crash camera (driving only).
     if matches!(request, Request::Drive { .. }) {

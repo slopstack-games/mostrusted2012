@@ -197,7 +197,8 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    (`--prop-physics`) because the car wedges against knocked lamps / crash barrels and stops dead (research
    log). Still open: that, the game's smash rules (`CollisionResponses_*`), compound parts as separate pieces,
    a clean perf A/B. Surface grip, rolling resistance and slide drag per wheel are in the tyre model since
-   2026-10-06 (the fade on a surface change is not).
+   2026-10-06; the fade on a surface change, the drift's surface factor and the player's bumps on rough
+   surfaces (`Surface_roughness` Perlin noise) since 2026-10-09.
 2. `[~]` **Vehicle physics**: since 2026-10-04 (session 3) the model follows the game's own code, read from the
    user's decompiled dump ([decomp.md](decomp.md), [handling.md](handling.md) "The model"): 60 Hz tick; engine
    inertia, friction curve, clutch, shift on rpm and speed, top-gear lock (`drivetrain.rs`; since 2026-10-06 the

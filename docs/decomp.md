@@ -240,8 +240,9 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
   **donuts are the drift torque at low speed**, not a separate state. Times a steering factor: lerp(`a5c9496f`,
   1, |steering|) into the drift, lerp(`a5c9496f`, `70528afa`, |steering|) counter-steering, plus `2ef426dd` ×
   throttle; while counter-steering also × clamp((|rear slip| − `c901c1e8`) / (`e40fa397` − `c901c1e8`)) (both 0
-  on every car: 1). Times a per-wheel surface factor (`FUN_009cede0`, 1 assumed), `VehicleInfo.40634c09.y` (1 on
-  every car) and the upgrade function (identity without an upgrade).
+  on every car: 1). Times the surface factor (`FUN_009cede0`: the mean effective lateral surface grip of the four
+  wheels, "Tyres"), `VehicleInfo.40634c09.y` (1 on every car) and the upgrade function (identity without an
+  upgrade).
 - **Side force** (`FUN_009d0fb0` → `FUN_009d0df0`, `FUN_009ce240`), only with every wheel down: mass ×
   `09832a93` × f along the body's side axis with the **sign of S, i.e. outwards** (opposite to the yaw torque's
   turn; the push also has a forward component along the travel), projected off the ground normal. f = (ramp in
@@ -265,8 +266,8 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
   into per-second ones in `FUN_009d9960` and `FUN_009cfce0`, so 60 by that reading, not read live).
 - Not read anywhere in the drift code: `Maximum_drift_angle`, `Steering_angle_multiplier`, `Torque_decay`,
   `Counter_steer_yaw_torque` (cached only). Nothing reads `DonutAbility` either.
-- Unknown: the constant at 0x01187250, the counter-steer exponent's source, the collision exits' units, the
-  per-wheel surface factor (1 assumed).
+- Unknown: the constant at 0x01187250, the counter-steer exponent's source, the collision exits' units. (The
+  per-wheel surface factor is the mean effective lateral surface grip, "Tyres", 2026-10-09.)
 
 ## Handbrake and burnout (`FUN_009d27b0`, `FUN_009b1180`, `FUN_009cdfd0`, `FUN_009ab230`)
 
@@ -615,15 +616,51 @@ watch file logs the wheel's grip load (`w*_N`, wheel +0x100) and static load (`w
   braking form (ωr − v) / v when |ωr| < 0.01 (`.bss` 0x01186af0, read live) or the rim is slower than the road,
   else (ωr − v) / ωr, clamped to ±10 (`DAT_010258c0`). The pure → slip blends take κ and α multiplied by a
   value at constraint +0x210 whose writer was not found (taken as 1; see "Unknown").
-- **Surface factors** (`FUN_009d8bd0` per wheel, per tick): the collision tag's surface (bits 13–19) →
-  `SurfaceType` → the contact kind's `SurfacePhysics` (normal; flats / rims after tyre damage) → the car's tyre
-  class override (`RoadOverrides` by default; `FUN_0054d750`): `Surface_Grip`, `5c2a9f18` (rolling resistance),
-  `7585f9cb` (slide-drag scale) and the roughness. The car's `VehicleSurfaceProfile` link for that
-  `SurfacePhysics` (`FUN_009d4b70`) blends the grip (`FUN_009cec40`): lateral = lerp(`Surface_Grip`,
-  link `f43804ae`, `fad9b7b5` front / `5567a3e0` rear), longitudinal the same with `f448cca5` / `42829f58`. When the
-  surface changes, the old values fade over a time and the lower of old and new applies (`FUN_009ceb00`,
-  `FUN_009d4460`, `FUN_009cece0`; not ported). Asphalt (`SurfacePhysics` 283001, the dark-grey road type):
-  `Surface_Grip` 1 and link grip 1 on every car, so 1; the game's `Default_surface` (250315) is 1 too.
+- **Surface factors** (`FUN_009d8bd0` per wheel with a contact, per tick, `this` = vehicle +0x17e0; called from
+  `FUN_009aaf30` ← `FUN_009b4d70` ← `FUN_00904260`; read in full 2026-10-09): the collision tag's surface (bits
+  13–19) → `Surfaces.Surfaces[i]` (`SurfaceType`) → the weather block (wet when the surface system's state is ≥ 2
+  and the game car's byte +0x1c17 is clear, else dry) → the contact kind (`FUN_0054a760`: Normal; Rims when the
+  wheel's +0x1c1 is set, Flats when +0x1c2; the wet kinds fall back to the dry ones, null to `Default_surface`) →
+  `SurfacePhysics` → the tyre class's `TyreSpecificOverrides` (`FUN_0054d750`; class = game car +0x1a88, 2 at
+  creation in `FUN_00586810`, rewritten from upgrade data by `FUN_00589a60` / `FUN_00589b00`): class 0
+  `OffRoadOverrides` (+0x28), 1 `08b66463` (+0x0c), 2 `RoadOverrides` (+0x44, also any other value), 3
+  `SportOverrides` (+0x60), 4 `TrackOverrides` (+0x7c). The record it fills: [0] `7585f9cb` (slide-drag scale),
+  [1] `Surface_roughness.8193fd9b`, [2] `Surface_roughness.7cb58933` × 0.001 (`.rdata` 0x00f8bb34), [3]
+  `5c2a9f18` (rolling resistance), [4] the physics' `UniqueId`, [5] `Surface_Grip`, [6] `Surface_speed` (not read
+  by the car code). Then per wheel, in order:
+  1. **Bumps** (`FUN_009d77b0` → `FUN_009d4650`), only when the caller's flag is set (`FUN_00904260`: the car has
+     a player record, game car +0x1a80 via `FUN_008f5420`, whose +0x9c is 0; read as the human player's car):
+     with f = [1] (per metre), A = [2] (m), P / N the contact point and normal, n(x) = Perlin's improved noise
+     (`FUN_009e31e0`: Ken Perlin's 2002 reference, fade 6t⁵ − 15t⁴ + 10t³, the reference permutation twice at
+     `.data` 0x010cfcb0), the contact becomes P' = P + N × A × n(f P); two tangents t1 = normalize(N × X),
+     t2 = normalize(N × t1) are sampled 0.03 m away (`.bss` 0x01186ea0, read in a snapshot) the same way and the
+     normal becomes normalize((Q1' − P') × (Q2' − P')). The results go to vehicle +0x19d0 + 4i (A × n),
+     +0x19f0 + 16i (point) and +0x1a30 + 16i (normal); `FUN_009aaf30` writes them into the wheel's contact
+     (`FUN_009df850`) and the wheel constraint's contact record (+0x10 point, +0x20 normal), so the suspension
+     and the tyre work on the bumped ground. Without the flag the contact is unchanged. Values: asphalt f 25,
+     A 0.12 mm; paving (406000) 0.3, 12 mm; dirt (283003) 0.5, 20 mm; grass (283005) 0.1, 80 mm; 681641 1.25,
+     50 mm; rims 4, 5 mm.
+  2. **Grip** (`FUN_009d4460` on the wheel's 0x7c-byte record at +0x17e0 + 0x7c i): the car's
+     `VehicleSurfaceProfile` link for the `UniqueId` (`FUN_009d4b70`, first link listing it). On a change of
+     surface (`UniqueId` ≠ record +0x54) `FUN_009ceb00` ends a fade of the surface entered, then puts the surface
+     left into a free fade slot (three; with none free, the one whose lower grip is highest): start = its
+     (lateral, longitudinal) grip, duration = (its link grip − the lower of the two) × 3 (`.rdata` 0x01025dcc) ×
+     the time spent on it × 0.5 (0x00f8a810); `FUN_009cec40` then sets lateral = lerp(`Surface_Grip`, link
+     `f43804ae`, `fad9b7b5` front / `5567a3e0` rear), longitudinal the same with `f448cca5` / `42829f58` (front =
+     wheels 0 and 1), the link grip as the fades' target (1 without a link) and the time to 0. Every tick each
+     fade runs from its start towards the **current** link grip over its duration (then frees, at 1), the time on
+     the surface grows (capped at 2 s, 0x01026028), and `FUN_009cece0` sets the effective grip (+0x70 lateral,
+     +0x74 longitudinal) = the lower of the surface's and every fade's. The tyre caps read the effective values
+     (`FUN_009ceda0` / `FUN_009cedc0` from `FUN_00905910`). Grass → asphalt on the 911 after 2 s on grass: 0.835
+     back to 1 over (1.3 − 0.835) × 3 × 1 = 1.4 s; asphalt → grass: no fade (link grip 1 = grip).
+  3. **Rolling resistance and slide drag** (`FUN_009d4a10`, below).
+  Asphalt (`SurfacePhysics` 283001, the dark-grey road type): `Surface_Grip` 1 and link grip 1 on every car, so 1;
+  the game's `Default_surface` (250315) is 1 too. Grass (283005) on the 911: 0.7 blended to 0.835 / 0.88 (front)
+  and 0.82 / 0.88 (rear) by its link (grip 1.3); dirt (283003, link grip 1.25): 0.875 / 0.90.
+- **Drift surface factor** (`FUN_009cede0`, `this` = vehicle +0x17e0): 0.25 (0x00fa8830) × the sum of the four
+  wheels' effective lateral grip; the drift's yaw torque and side force are multiplied by it.
+- Another reader of the front wheels' effective lateral grip: `FUN_00905580` → `FUN_009d5270` (two lanes into a
+  force term at its +0x10 / +0x20, purpose not read).
 - **Per-wheel grip multipliers** (wheel +0x140, four lanes): lanes 0 / 1 belong to a timed gameplay effect
   (`FUN_00900120`: per-wheel mask +0x30f4, values blended over +0x2ed0…; reset to 1 when it ends), lanes 2 / 3 to
   a post-event timer (`FUN_009b2bb0`) that ramps × 0 back to 1. They are 1 in normal driving (read live: all 1).

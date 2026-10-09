@@ -288,6 +288,9 @@ pub struct DriftInput {
     /// the car's world record +0x1c, and the +0xc of each object entry). Zero without contact.
     pub world_impact: f32,
     pub object_impact: f32,
+    /// The mean effective lateral surface grip of the four wheels (`FUN_009cede0`; 1 on asphalt): it scales the
+    /// yaw torque and the side force.
+    pub surface: f32,
 }
 
 /// What the drift model does to the car this tick.
@@ -579,7 +582,7 @@ impl DriftState {
         } else {
             1.0
         };
-        out.yaw_torque += dir * slip_gate * factor * p.yaw_torque(self.scale, i.mph, counter_steering);
+        out.yaw_torque += dir * slip_gate * factor * i.surface * p.yaw_torque(self.scale, i.mph, counter_steering);
         // Drift +0x80: the donut weight of the torque's top point (read by the nitrous Donutting refill).
         self.donut_weight =
             1.0 - if counter_steering { 1.0 } else { ramp(i.mph, p.donut_speeds[0], p.donut_speeds[1]) };
@@ -603,7 +606,11 @@ impl DriftState {
             let by_scale = self.scale.min(p.side_full_scale) / p.side_full_scale.max(EPS);
             let [s0, s1] = p.side_speeds;
             let by_speed = ramp(i.mph, s0, s1);
-            let f = (by_angle - decay.min(p.side_decay_cap)).max(0.0) * by_scale * by_speed * (1.0 + self.boost);
+            let f = (by_angle - decay.min(p.side_decay_cap)).max(0.0)
+                * by_scale
+                * by_speed
+                * i.surface
+                * (1.0 + self.boost);
             out.side_force = -dir * i.mass * p.side_accel * f.min(SIDE_FORCE_CAP);
         }
     }
@@ -678,6 +685,7 @@ mod tests {
             touching_world: false,
             world_impact: 0.0,
             object_impact: 0.0,
+            surface: 1.0,
         }
     }
 
