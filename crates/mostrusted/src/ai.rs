@@ -523,8 +523,8 @@ fn race_from_event(
     commands.insert_resource(RaceSetup { route: Arc::new(route), grid, balancing });
 }
 
-/// Build the test race when there is none: once the player's car is on the road, a route along the AI road graph from
-/// it and grid slots ahead of it.
+/// Build the test race when there is none: once the player's car is on the road, a route along the AI road
+/// graph from it and grid slots ahead of it.
 fn setup_race(
     mut commands: Commands,
     race: Option<Res<RaceSetup>>,
