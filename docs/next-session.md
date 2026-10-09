@@ -27,6 +27,16 @@ manoeuvres; the minimap arrow.
 
 Commands (not yet in CLAUDE.md, which has uncommitted local edits):
 ```sh
+# round 2 (user reports): engine pitch range, floating grass, checkpoint markers + minimap, nitrous refill,
+# surfaces, dirt / scratches, props on by default, white flashes, traffic / AI sounds
+./target/release/mostrusted --drive 911 --test-track --track-surface 4 --test accel   # the test track as grass (any surface index)
+./target/release/mwtool surfaces [--near x,z[,r]] [--find <index>]   # surfaces, build-up columns, where a surface is
+./target/release/mostrusted --race 462174 --no-cutscenes --spawn=-531.5,58,2113.3,144.3   # look at a gate marker
+./target/release/mostrusted --drive 911 --test smash --smash-speed 60     # props: speed lost per prop (now on by default)
+./target/release/mwtool traffic-sound all out.wav --passby 40   # traffic engine banks; engine-sound <car> --competitor
+# --no-prop-physics (replaces --prop-physics), R washes the car, --dirt sets the start levels
+# MW_NITROUS_LOG=1, MW_DIRT_LOG=1, MW_FLASH_LOG=1 [MW_FLASH_SHOTS=dir], MW_SOUND_TRACE=<f>, MW_AUDIO_NO_FX=1,
+# MW_GATE_LOG=1, MW_GC_E=<e>, MW_AUDIO_METER=1 (now lists other cars' voices)
 ./target/release/mwtool events [<id> [--png f]] [--all]       # offline events, a route on the map
 ./target/release/mwtool camera-take [take] [--step s]          # ICE camera takes
 ./target/release/mwtool traffic --at x,z                       # lanes near a point (plain: junction cycles, data)
