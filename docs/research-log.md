@@ -10,6 +10,65 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-09: traffic and AI racers make sound: competitor engines, the traffic engine pool, 3D falloff and doppler
+User report: "traffic sounds are also missing" (only the player's car had engine / tyre sounds). Details and
+every function in decomp.md "Other cars' engine sounds".
+- **Data**: each car has `<id>_VEHICLESOUND` (the player's) and `<id>_COMPETITORSOUND` `VehicleSound` resources
+  (type 0x207, id = CRC-32 of the name, checked: `1085007_competitorsound` = `1d6e64d2`, `122816_…` = `090c3b09`);
+  +0x48 is the `EngineSound2`, +0x60 / +0x64 the horn list. AI racers use the competitor bank (one Ginsu set, a
+  listener-distance mixer). Traffic loads `<component>_COMPETITORSOUND` from `TRAFFICATTRIBS.BNDL`: four distinct
+  two-sequence banks (wave loops on `Traffic.EngineSounds[#].RPM`, road / tyre layers on `NormalisedSpeed`).
+- **The traffic RPM is in the sound data**: the `NormalisedSpeed` sequence's `TrafficEffectSequenceItem` maps the
+  speed onto the RPM sequence's own axis through a curve with gear-change dips (`mwtool traffic-sound all`:
+  `…18231b` 2000 2363 2670 3249 3829 3539 4143 3947 4275 4525 4631 rpm at 0, 0.1 .. 1). Inferred: the four banks'
+  output ranges equal their RPM axes, and the live instances in `snap2` hold 2081 / 2961 rpm where the wheel-spin
+  fallback of the getter gives 2726.
+- **The pool** (`FUN_0060bc20`, all constants read from `.rdata` or `snap2`): five instances, re-chosen every 0.3 s
+  among the traffic cars within 85 m of the player's car by `min(v²/400, 1)·0.4 + (0.5 + 0.1 in view)·(1 −
+  min(d²/85², 1))`; beyond 85 m an instance fades out over 1.5 s; when more top-five cars find no slot than
+  instances are fading, the oldest is released. `snap2` had two playing, one releasing.
+- **3D maths** (`FUN_00ab9690`, `FUN_00ab7260`; `pow` = `FUN_00ed9e1b` from the disassembly): gain = clamp(emitter
+  directivity × listener focus × `SoundDistanceFalloff` curve, 0, 1), doppler = |c / ((v_e − v_l)·u + c)| with c
+  = 680 / 340 / 170 m/s by the channel's mode. Traffic engines: −1.8 dB at 10 m, −5.0 at 20, −16.4 at 50, −35.1 at
+  85 m (`mwtool traffic-sound`); competitor engines: full to ~39 m (peak gain 2, clamped), −16 dB at 100 m, silent
+  at 250 m. Voice pools: 10 / 32 / 6 / 16 voices (`Voice3dShared`, `Voice3dMonoShared`, `Voice3dDefragShared`,
+  `VoiceMonoShared`).
+- **Measured** (`MW_AUDIO_METER=1`, summarised by distance band; out = the voice's rendered RMS before the engine
+  volume):
+  - pass-by render (`mwtool traffic-sound 122819 out.wav --passby 40`, listener 4 m from the lane): −48.5 dB at
+    100 m, −16.7 at 46 m, −3.4 at 11 m, −0.2 at 4.3 m; doppler 1.055 approaching and 0.950 receding (= 340 / (340
+    ∓ 17.9)); the balance swings from left to right through the pass (L −30.3 / R −39.3 dBFS 0.25 s before the
+    closest point, L −41.0 / R −29.9 after).
+  - free roam (`--drive 911 --units 30 --spawn=800,42,1688,71 --auto-throttle 0.3`, 60 s): five traffic voices,
+    40 started and 32 taken over in 59 s; gain median −2.5 dB under 10 m, −4.9 (10–20 m), −8.6 (20–40), −17.7
+    (40–60), −27.6 (60–85), −51.4 (85–120, fading); out −33 dBFS under 10 m to −53 at 60–85 m; doppler 0.95..1.08.
+  - race (`--race 462174 --no-cutscenes`, the player held on the grid, 148 s): 8 AI engines + 8 AI tyre voices + 5
+    traffic; AI engine gain 0 dB to 40 m, −1.8 (40–60), −6.9 (60–85), −16.0 (85–120), −29.4 (120–180), −84 (180–250)
+    and inaudible beyond; out −28 to −34 dBFS within 60 m (−30 at idle on the grid); AI skids (spin 0.9 at the
+    start) −32..−35 dBFS within 60 m (gain −2 to −6 dB: their channel's falloff, min 4 m, max 280 m, curve 3.5);
+    doppler 0.89..1.17.
+  - cost: audio thread per voice (median, of one core) AI engine 1.9 %, AI tyres 0.36 %, traffic engine 0.9..1.3 %;
+    the race's 21 voices ≈ 25 % of a core, voices beyond their falloff's range are not rendered. Game thread 65 µs
+    per frame with 8 AI + 5 traffic, 17 µs with traffic only.
+  - the player's engine is unchanged: `mwtool engine-sound 911` renders a byte-identical file before and after.
+- **Levels**: the competitor banks' raw mix is 24..29 dB below full scale at full throttle (911 −26.3, XKR −26.0,
+  Veyron −24.8, Aventador −24.1, 1085698 −28.7, 122682 −24.8 dBFS), close to the traffic banks (−22..−37 over a
+  speed sweep), while the player's banks are −2..−11 and are normalised to −10.5. So the other cars play at the
+  data's level (no normalisation, no skid mix gains): AI engines sit ~18 dB under the player's at full throttle,
+  traffic a further ~10–17 dB down. Model relation: the game's bus levels are outside the bundles.
+- **Model decisions** (decomp.md lists them): listener = camera; one placement per voice (first channel of the
+  bank's list); our linear-balance pan; no distance filter / occlusion (3D slots 3–6); `Random` = the lane car's
+  personality; `IsWetSurface` = bad-weather keyframes; RPM fallback = idle; linear 1.5 s release ramp; virtual
+  voices at zero gain; one engine + one tyre voice per AI car (no competitor limit found); AI gear-change clock =
+  the player's (the competitor banks bind `LocalPlayer.GetPlayerNormalisedGearChangeTimeElapsed`); other cars at
+  the data level.
+- **Open**: horns (`FUN_006042c0`: two slots, `horns[car % count]` within 60 m; the trigger's timer at car +0x48
+  against 55 and `TrafficConfig` +0x20 / +0x24 not settled; our player lacks `JumpTimelineController` and the
+  `(LTEQ,50)` comma form the horn timelines use), traffic collision and skid sounds, `PassbySequenceBehaviour`
+  "TrafficPassby" (no reader found), occlusion (+0x44's writer), the 3D slots 3–6 consumers, the panner
+  (`FUN_00ab5a60` azimuth), the competitor skids' start code, AI impacts, and a capture of the original with
+  traffic and racers passing to set the levels against the player's engine.
+
 ### 2026-10-09: engine sound "stuck in gear": the audible RPM range is the bank's Ginsu span; load, shift clock, effects
 User report after a race: "the sound in general is pretty fucked but mostly the engine still sounds as if it is
 stuck in gear". The physics shifts (911 `--test accel`: 7800 → 5100 rpm on 1→2); the sound did not follow.
