@@ -10,6 +10,67 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-09: engine sound "stuck in gear": the audible RPM range is the bank's Ginsu span; load, shift clock, effects
+User report after a race: "the sound in general is pretty fucked but mostly the engine still sounds as if it is
+stuck in gear". The physics shifts (911 `--test accel`: 7800 → 5100 rpm on 1→2); the sound did not follow.
+- **Cause**: `GetPlayerAudibleRPM` was `1000 + 7000 × normalised RPM` (the `RaceCarEngineSound` constructor's
+  range, "never overwritten" in the 2026-10-04 reading). `FUN_00575340`, run when the sound starts, overwrites it
+  with the lowest `StartTime` and highest `EndTime` of the Ginsu items in `Sequences` (decomp.md "Engine sound").
+  Over the 73 engine banks that span runs 1000..2770 at the bottom (median 1720) and 4400..10000 at the top
+  (median 6400), so with the fixed range the sequences clamped the top of every gear to one grain: the top 19 %
+  of the rev range on the median car (up to 45 %, 34 cars over 20 %; estimated with `a` = 0.8), plus the
+  bottom on the idle loop alone. In a race (race gearbox, shifts near `Max_RPM`) that is where the engine spends
+  its time, so the pitch sat still through most of each gear and barely dropped on the shift.
+- **Evidence** (`ref/xkr_launch`, the original's own audio; pitch tracked as the RPM whose cycle harmonics stand
+  out, 50 ms hops; the audio lags the telemetry by about 0.25 s): the recorded pitch follows `1750 + 4250 × n` of
+  the telemetry rpm (4764 → 4196 tracked against 4220 predicted, 5101 → 4550 / 4511, 5776 → 5215 / 5108, 6427 →
+  5826 / 5700); `1000 + 7000 × n` would pin everything above ~5000 rpm. Replaying its inputs (`--replay`) and
+  rendering our sound from the run: before, the tracked pitch sat at the 5424 top for 71 % of the full-throttle
+  time and the upshifts dropped it 7 and 251 cents; now 45 % and 354 / 539 cents, and after the 1→2 shift ours
+  falls to 4196 at +0.83 s against the original's 4196 at +0.85 s. The 911 (`--test accel`): pinned 23 % → 3 %
+  (its span 1790..7500 is close to the old range, so it was the lesser case).
+- **Also from the code** (all in decomp.md "Engine sound", ported in `mw_assets::engine_driver`): the
+  normalised RPM ignores the bottom 5 % of the range (`.bss` 0x01186680, read live); the engine load follows the
+  engine's lagged throttle (+0x1d14, which an upshift cuts to 0), not the pedal, with the speed term scaled by
+  the clutch and a rate of 60 × `99d4b91e` per second (0.5 per tick, `.bss` 0x011865e0 read live), and no peak
+  hold; the gear-change sequences start when the shift starts (the clutch opening) and run on time since the
+  shift started / its shift time (`FUN_00911650`), not on a gear-index change with an assumed 0.25 s; every
+  variant plays round robin and the cruising gearbox has its own lists; their `RaceCarEffectSequenceItem`s post
+  back to the engine model (`FUN_008f5490`): an RPM kick at engagement, an LFO shunt, a power cut of the load and
+  a load floor on downshifts; the rev limiter plays only in the last two gears above 0.99 (ours fired whenever
+  the rpm touched the redline, so at most upshifts); the engine and tyre sounds read the player car's control
+  block, and AI cars no longer overwrite the Bear effects' engine load.
+- **Load through the 2→3 shift** (original's +0x1f20 per tick from the declutch tick / ours on the replay):
+  0.99 / 1.00, 0.40 / 0.53, 0.11 / 0.28, 0.02 / 0.15, 0.010 / 0.08, 0.005 / 0.04, then with the clutch coming in
+  0.17 / 0.32, 0.34 / 0.45, 0.51 / 0.60, 0.52 / 0.75, and about 0.95 in both ten ticks after the clutch-in; the original's load rises
+  past 1 (1.04) after the shift, which is the shunt's ×1.2 multiplier. Ours leads by one tick (the game computes
+  the load before the engine's tick). Before, the sound used the pedal: full load through the declutch and neutral
+  phases, cut only after the gear index changed.
+- **Level through a shift** (911, mean of 5 upshifts, 20 ms RMS relative to the 100 ms before): before −0.1..−0.4
+  dB for 140 ms, then −3 dB at 200 ms; now +2.5 dB at 20–60 ms (the clunk wave, gain 1.3) and −4.8 dB at 100 ms
+  (the power cut). The original XKR dips 3–5 dB for about 0.2 s (its recording).
+- **Mix** (defaults, `settings.rs` bases × volumes; model values, the game's buses are outside the data): engine
+  full-throttle run −12.4 dBFS RMS, peak −4.5; vehicle sounds (`mwtool vehicle-sound`) −19.7 / −5.6; music −28.2
+  / −13.6. Nothing clips on its own; the engine source peaks at 0.996 (its tanh limiter, 0.003 % of samples), and
+  engine, impact and music peaks together can pass full scale (no master limiter). No traffic or AI sound reaches
+  the player's banks (impacts are filtered to the player car; only the player has an engine sound).
+- **Model decisions**: the `LfoSequenceItem` properties are read as 0 = rate (Hz) and 1 = depth of `Lfo`, or of
+  `ShuntLfo` when the sequence's effects read it (the writer is not in the dump), depth 0 when none is active,
+  property 2 ignored; effect items bound to values we do not supply (suspension load +0x1f28, traction load
+  `FUN_009ab130`, pitch) are left out; effects reach the next update (frame rate, the game's next tick); the rev
+  limiter restarts once per cycle at `6e6be213`..`9529a29e` cycles per second, without its RPM / load dip (the
+  LFO depth +0xd8 has no writer found); `RevLimitGain` = 1 while limiting; the round-robin index starts at 0;
+  traces without the shift clock assume 0.15 s per shift; the engine-damage factor of `FUN_009ae930` is 1.
+- **Open**: whether a sequence clamps its binding at `Binding_Max` or its items drop out above `EndTime` (the
+  XKR's first Ginsu set ends at 5424, the span at 6000: ours holds set A's top grain above ~6100 rpm and the
+  tracker still finds 45 % pinned, while the original's pitch keeps rising to ~5800; the position comes through
+  binding controllers' virtual calls, `FUN_00a42140`); property 5 (+0x1e94); the engine's throttle override
+  list; the Burnout / Drift / In_air / Reversing lists (their RPM offsets and load multipliers); a capture of the
+  original with +0x1f10, +0x1f20 and the shift clock (+0x1b20 / +0x1b24) in the watch to check the effects tick
+  by tick. `MW_SOUND_TRACE=<file>` (game and `mwtool engine-sound`) logs load, normalised / audible RPM, the shift
+  clock and the effects; `MW_ENGINE_TRACE` now carries the drivetrain columns the sound reads; `MW_AUDIO_NO_FX=1`
+  drops the effect items.
+
 ### 2026-10-09: race cutscenes: event intro / outro sequences, ICE camera takes, no offline countdown
 - **Where they are**: `OfflineEvent` fields cracked: `EventIntro`, `EventOutro`, `AROutro`, `IntroMessageGroup`,
   `FeedbackMessageGroup`; `GameMode`: `AROutro`, `CountdownSequence`, `HUD_HSM`, `Intro`, `ResultsSequence`,

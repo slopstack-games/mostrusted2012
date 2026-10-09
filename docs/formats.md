@@ -403,12 +403,17 @@ See `crates/mw-audio` (decoders reimplemented from vgmstream's documentation of 
   Gain)`, `Peaking (Frequency, Gain linear, Q)`, `HighShelf`, `Low/HighPassButterworth (Frequency, Order)`,
   `BandPass (Bandwidth, Frequency)`, `Distortion (Distortion, Model)`, `SubHarmoniser (Interval)`, `Delay
   (Feedback, Time)`, pans, `GinsuDspPlugIn`. `EngineSound2 { Sequences (always on), Burnout, Drift, In_air,
-  Reversing and six unnamed sequence lists (gear changes), Backfire_Sequence, Gurgle_Sequence (bound to
+  Reversing, six unnamed sequence lists (four are the gear changes: +0x50 `83ea3a92` upshift / +0x48 `ce819b08`
+  downshift with the race gearbox, +0x54 `9492327c` / +0x4c `c342c096` with the cruising one; their counts are the
+  bytes +0xfc / +0xfa / +0xfb / +0xf9), Backfire_Sequence, Gurgle_Sequence (bound to
   GetPopProbability), Pop_Sequence (bound to it too; started on a pop), Ignition_Sequence, c62d11ac (rev limiter), mixer channel list, DspParam
   lists (per-car plug-in overrides), Gains (per-car channel trims), MasterGain }`. Unnamed `EngineSound2`
-  floats the game's code reads (research log "engine sound from the game code"): `99d4b91e` load response
-  rate, `a33d84fe` / `cb44d82d` / `913bb900` RPM-curve terms (full load / off load / alternate; audible RPM =
-  1000 + 7000 × (idle..max fraction)^(2 − a)), `283e07de` sub-harmoniser, `7cbc11ca` / `7cbc11c9` tracked
+  floats the game's code reads (research log "engine sound from the game code", decomp.md "Engine sound"):
+  `99d4b91e` load response rate (× 60 per second), `a33d84fe` / `cb44d82d` / `913bb900` RPM-curve terms (full load /
+  off load / alternate; normalised RPM = ((idle..max fraction − 0.05) / 0.95)^(2 − a); audible RPM = the span of
+  the Ginsu items of `Sequences`, min `StartTime` .. max `EndTime`, at that fraction), the rev limiter's cycle
+  rate `6e6be213`..`9529a29e`, depth `18adb27c`..`f81e0914` and floor `a1049379`..`34c8d45a`, `283e07de`
+  sub-harmoniser, `7cbc11ca` / `7cbc11c9` tracked
   harmonic 1 / 2 and `dbcddcfc` tunnel harmonic as multiples of the firing frequency (RPM / 120 × cylinders
   `ed754b99`), `11a77b36` / `64cbe1ff` tunnel gain / Q, `f0291dd3` comb-rasp delay divisor. `DspParam
   { Mixer_channel, PlugIn (unique id), Value, Parameter_name }`: index 1 on a filter reads as Frequency, 0 on a

@@ -694,10 +694,78 @@ every slide on the top layers.
 
 ## Engine sound
 
-See the research log, "engine sound from the game code": the sound runs on its own 1000–8000 rpm axis
-(audible = 1000 + 7000 × normalised rpm^(2 − a)), engine load is the pedal blended towards full by speed, and the
-harmonic multipliers come from `EngineSound2`. The Distortion and SubHarmoniser plug-ins fall in undecompiled
-gaps of the dump.
+Read 2026-10-09 (research log "engine sound stuck in gear"); ported in `mw_assets::engine_driver`. Per vehicle tick
+`FUN_009b3030` runs the gearbox, the pop rule (`FUN_009b20b0`, next section), the normalised RPM
+(`FUN_009ae930` → `FUN_009aea50`) and the engine load (`FUN_009b1f70`), then clears four effect lists
+(`FUN_00926270` × 4). The sound update (`FUN_005911d0`, per frame) reads those values, runs the sequences and
+posts their effects back for the next tick.
+
+- **Audible RPM range** (`GetPlayerAudibleRPM` / `GetAudibleRPM`, `FUN_0083eb60`): `min + (max − min) × +0x1f10`
+  with min / max at `RaceCarEngineSound` +0x1c0 / +0x1c4. The constructor sets 1000 / 8000 (`.rdata`
+  0x00f95dc0, 0x00fadebc), but **`FUN_00575340`, run when the sound starts (state 3, called from
+  `00580000.c` near line 7653), replaces them with the lowest `StartTime` and the highest `EndTime` of the
+  `GinsuSequenceItem`s (type 0x73417) in `EngineSound2.Sequences`** (+0x68, count +0x102; item `EndTime` +0x18,
+  `StartTime` +0x1c). So the whole rev range plays across the car's recordings: 1790..7500 on the 911, 1750..6000
+  on the XKR; over the 73 engine banks the top runs 4400..10000 (median 6400). The earlier reading (fixed
+  1000..8000) missed this function. Confirmed on `ref/xkr_launch`: the recorded pitch follows `1750 + 4250 ×
+  +0x1f10` (research log).
+- **Normalised RPM** (vehicle +0x1f10): `x = max((rpm − Idle_RPM) / (Max_RPM − Idle_RPM) − 0.05, 0) / 0.95`
+  (`.bss` 0x01186680 = 0.05, read live; the reciprocal is Newton-refined), times `(tuning +0xd0)^(4m)` with `m`
+  the scaled RMS of vehicle +0x19d0 (`FUN_009cdd40`, × `.bss` 0x01187220: an engine-damage term, 1 on an
+  undamaged car; not ported), clamped 0..1; then `FUN_009aea50` raises it to `2 − a` (`.rdata` 0x01025080 = 2;
+  `a` = `EngineSound2` +0xb0 `cb44d82d` → +0xac `a33d84fe` by the load +0x1f20, or +0xb4 `913bb900` with flag
+  +0x1f45), adds the property-1 effect list (+0x1e78, `FUN_00926330`) and clamps to 0..1 (`.rdata` 0x010245c0).
+  Vehicle +0x1f00 = `Idle_RPM + (Max_RPM − Idle_RPM) × +0x1f10` (the pop rule's RPM). Both run only while the
+  world flag `FUN_004b1a70` is set. Snapshot check (XKR, `snap2`): 4040.6 rpm → 0.5017 against 0.5040 computed
+  with `a` = 1.
+- **Engine load** (`FUN_009b1f70`, `GetPlayerEngineLoad` = +0x1f20, state +0x1f24): `h` = the engine's lagged
+  throttle (+0x1d14 = engine +0x24; max'ed with an override list on the engine object, `FUN_009262a0`, writer
+  not found), `s = (clamp01(speed (+0x1620) / +0x7e4) × Engine.937338e7 (+0x104) × clutch (+0x1e20))²`
+  (`FUN_009aeba0`; +0x7e4 = 174 on the XKR = its `Top_speed_MPH`, read live), `state += clamp(60 × EngineSound2.
+  99d4b91e × dt, 0, 1) × (s + (1 − s) h − state)` (`.bss` 0x011865e0 = 60, read live: 0.5 per tick), output =
+  max(state × Π property-3 list (+0x1e40, `FUN_009262f0`), max of the property-4 list (+0x1e5c,
+  `FUN_0092ae80`)). There is no peak hold (the "last six values" of the earlier reading are these lists). The
+  load is computed before the engine's tick, so it sees the previous tick's lagged throttle.
+- **Effect properties** (`RaceCarEffectSequenceItem.Automated_Property`, posted as message 0x2a and applied by
+  `FUN_008f5490`; jump table at 0x008f55a0): 0 multiplies vehicle +0x2e70; 1 → list +0x1e78 (added to the
+  normalised RPM); 3 → +0x1e40 (multiplies the load); 4 → +0x1e5c (floor under the load); 5 → +0x1e94 (reader
+  not found); 6 / 7 set the engine-start flags +0x1be3 / +0x1be5 (6 also resets the gearbox state). In the 911's
+  data: the upshift sequences cut the load over the shift (×0.94 → 1 → 0.83 → 0.13 at 0.9 → 1, normalised time
+  0..1), kick the RPM +0.2 at engagement (1..1.25) and shunt it (LFO, ±0.023..±0.15 and load ×0.8..1.2, 1..2);
+  the downshift sequences hold the load up (property 4, 0..4); the speed sequence scales load and RPM by
+  `GetPlayerSuspensionLoad` (+0x1f28), `GetPlayerTractionLoad` (`FUN_009ab130`) and `Pitch`; in-air, burnout and
+  drift sequences lower the RPM (−0.4..−0.8).
+- **Gear-change sequences** (`FUN_0058ca50`): gearbox +0xd0 (vehicle +0x1b40) is set on the tick an upshift starts
+  (`FUN_009d1560`), +0xd4 on a downshift (`FUN_009d16f0`). The sound then stops the previous gear-change instance
+  (`FUN_00a44d50`) and starts the next sequence of the list, round robin with one index for all lists
+  (+0x1b4 = (+0x1b4 + 1) mod count): `EngineSound2` +0x50 `83ea3a92` (upshift, race gearbox, count +0xfc), +0x54
+  `9492327c` (upshift, cruising gearbox +0x1bdc = 1, count +0xfb), +0x48 `ce819b08` (downshift, race, +0xfa),
+  +0x4c `c342c096` (downshift, cruising, +0xf9). Their axis, `GetPlayerNormalisedGearChangeTimeElapsed`
+  (`FUN_00911650`), is gearbox +0xb4 / +0xb0, at least 0: +0xb4 counts dt every tick (`FUN_009da340`) and is set
+  to 0 when a shift starts, +0xb0 is that shift's time (`FUN_009dc3c0`, × 0.5 for a downshift). So 0..1 is the
+  shift itself (declutch to clutch-in) and the clunk plays as the clutch opens, not when the gear index changes.
+- **Rev limiter** (`FUN_0058cdb0`): only when the gear index is the gearbox's last or second to last
+  (`FUN_00911690`: +0x1d70 against the gear count − 1 / − 2) and +0x1f10 > 0.99 (`.rdata` 0x00fad930). Each
+  cycle of its LFO (+0xd4 phase / 2π) restarts the `c62d11ac` sequence and draws the cycle's rate (+0xe4 =
+  `6e6be213`..`9529a29e`, 6..7 on the 911), depth (+0xe8 = `18adb27c`..`f81e0914`) and floor (+0xec =
+  `a1049379`..`34c8d45a`), and posts property 1 = (LFO − 1) × depth and property 3 = LFO' × (1 − floor) + floor;
+  the LFO's own depth +0xd8 is set to 0 at the start and no other writer was found. `RevLimitGain` (the limiter
+  wave's gain) is `LAB_005a22e0`, not decompiled.
+- **LFOs** (`FUN_00586330`): `RaceCarEngineSound` +0x11c `Lfo`, +0x120 `ShuntLfo`, +0x128 `TurboLfo` = 0.5 ×
+  sin(phase) × depth (`FUN_00aabc30`), +0x124 `SkidLfo` (`FUN_00aabc60`), +0x12c `Jitter` = +0x80 + +0x84.
+  `LfoSequenceItem` automates properties 0 / 1 / 2 (8..20, 0.3..0.6, 5..20 in the gear changes); which object they
+  write was not found (read: 0 = rate in Hz, 1 = depth).
+- **Ported** (`mw_assets::engine_driver`, `mw_handling::drivetrain` `shift_elapsed` / `shift_time` /
+  `shifts_started`): all of the above except the damage term, the override list, property 0 / 5 / 6 / 7, the
+  limiter's RPM / load dip and the effect items bound to suspension load, traction load or pitch. Model
+  decisions: the LFO items set the rate (property 0) and depth (1) of `Lfo`, or of `ShuntLfo` when the sequence's
+  own effects read it, depth 0 when none is active, property 2 ignored; the limiter's cycle rate is in cycles per
+  second; effect items with a binding we do not supply are left out (not read as 0); the effects reach the next
+  update (the game: the next tick); `RevLimitGain` = 1 while limiting; the round-robin index starts at 0; offline
+  traces without the gear-change clock use 0.15 s per shift.
+
+The harmonic multipliers come from `EngineSound2` (research log "engine sound from the game code"). The Distortion
+and SubHarmoniser plug-ins fall in undecompiled gaps of the dump.
 
 ## Exhaust pops and backfires (2026-10-09)
 
