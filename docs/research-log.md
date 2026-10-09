@@ -10,6 +10,36 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-09: events decoded, race rules traced, races playable (`--race`)
+- **Where the events are**: not one resource each. `GAMELOGIC/GAMEMODES.BNDL` has one 240 KB GenesysObject
+  (`0100000000045d5b`) whose polymorphic `Item` array holds the 111 `OfflineEvent`s next to the online events,
+  the 12 `GameMode`s, arenas and balancing data; `GAMELOGIC/GAMEPLAY.BNDL` holds the `EventList`s (career: 109
+  ids), `AllowedVehicleList`s and `AIPlayerType`s the same way. A first install-wide scan by type name found no
+  `OfflineEvent` object, because the scan only listed top-level objects (dead end worth remembering: look
+  inside `Item` containers). References are UniqueIds, matched against items' `655d3f5f`. Layout and the event
+  kinds in formats.md "Events"; `mwtool events [<id> --png]`.
+- **Checkpoints and starts are TriggerData records**: every `Checkpoints` id is a kind-0 box (2 m deep, 36 m
+  tall, as wide as the road or junction), every `SpawnPosition` / `Placement` a kind-4 point with a heading.
+  All 111 events resolve (0 unresolved ids). The earlier decomp note that no `GameMode` instance exists on PC
+  was wrong: they are container items too (`09d6656d` = 10 s, the crash reset delay).
+- **Race rules** traced from the dump (decomp.md "Races"): the intro is GameMode `15f07dbf` (10 s for races,
+  0 for speed runs) with the 3-2-1 in its last 3 s; cars are frozen by the handbrake only (throttle revs);
+  only the target gate is tested, as the car box's overlap with the trigger box, in order; laps and finish by
+  the route-entry count; position = 1 + racers finished or strictly closer to the finish along the route; a
+  wrong-way / missed-checkpoint state machine (1 s / 2 s / √10 m / 1 s); won = top three (first only on the Most
+  Wanted races); a race respawn faces the target gate (corrects "nearest race-route point" in "Crashes").
+- **Route markers** found by following `GameLogicConfig.CheckpointConfig` to two materials in
+  `HAWAII/GLOBALRESOURCES.BNDL`: shader `Chevron` (green HDR arrows, `materialDiffuse` (0, 5.6, 0.036), scrolling
+  by frac(Time × speed)) and `ChevronBlockRoad` (red crosses fading over 500 m). Drawn along the events'
+  `CustomChevron` polylines (`chevron.rs`); they look like the original's holographic arrows. The strip builder
+  is not in the dump: board height, UV scale and which flag selects the crosses are model decisions.
+- **Runtime**: `--race <id>` (event car, or `--drive`), `--test race` (kinematic run through every gate; circuit
+  462174: 27 / 27 gates, 3 laps, P1, wrong way seen on a backwards start; sprint 983491, speed run 1186771, Most
+  Wanted 1399902 with `--drive 911` also pass). Open: the gate POI visual (id 1013519 not found as a top-level
+  `PointOfInterestVisuals`), the road-network route segments (ours are straight), what advances the race clock,
+  the countdown sequence id, the AI start hold, the outro / results flow, `CheckpointInfo` counts that exceed the
+  checkpoint count on some events (the dynamic-array count rule may be off there).
+
 ### 2026-10-09: no generic angular damping on a driving car; the chassis inertia is ours; post-impact yaw damping ported
 - Searched for the source of our unsourced `AngularDamping(0.4)` through the callers of the angular-damping
   routine `FUN_00907b50` (decomp.md "Angular damping"). The vehicle's damping constraint (`FUN_009aa700`, record

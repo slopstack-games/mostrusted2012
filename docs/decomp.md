@@ -934,10 +934,11 @@ decisions: [handling.md](handling.md), "Crash camera".
 - **Safe pose** (`FUN_006d0f40`, confirmed): every frame the player is neither crashed nor wrecked, it saves
   the car's position, orientation and speed in mph (`vehicle+0x1620`) at `player+0x30…0x4c`, `+0x90`.
 - **Reset** (`FUN_006d39d0`, `FUN_006c9fb0`, `FUN_006d0180`, confirmed): while crashed, in modes where the
-  predicate `FUN_006dfed0` holds (not identified), a timer from the game mode (`GameMode+0x44`, `09d6656d`; no
-  `GameMode` instance was found in the PC bundles) counts down by the scaled frame time; on expiry, or at
+  predicate `FUN_006dfed0` holds (not identified), a timer from the game mode (`GameMode+0x44`, `09d6656d` = 10 s; the
+  `GameMode`s are items of the GAMELOGIC/GAMEMODES.BNDL container, formats.md "Events") counts down by the scaled frame time; on expiry, or at
   once when the mode's `+0x68` flag is set, the reset starts. Its target is the saved
-  pose (or the nearest race-route point when the mode's `+0x70` flag is set), moved onto the road by
+  pose, turned to face the race's current target gate when the event has a checkpoint list, or the nearest
+  racer when it has none and the mode's `+0x70` flag is set (corrected 2026-10-09, see "Races"), moved onto the road by
   `FUN_00648060` (not read further). The car is placed rolling at `max(GameLogicConfig 75d82dd5 (30),
   a44eb2f3 (0.7) × saved mph)`, capped after a crash at `74521df4` (50) (0 when `FUN_006bd930` holds, not identified), when the mode
   allows rolling resets (a flag in the game-mode manager); otherwise from rest.
@@ -1132,6 +1133,137 @@ reading the code unless marked *inferred*.
   variables of `HSMBehaviourHSMDoSmashAndGrabScoring` (a Smash-and-Grab event mode), not free roam (dead
   end). Leads: the strings `CurrentSpeedPoints`, `SpeedPoints`, `SPEEDPOINTS`, `upload_sp_buckets`,
   `SP_%d_%d`, and the listeners of the events the handler sends (`FUN_006a8050`).
+
+## Races (2026-10-09)
+
+Data: `mw_assets::events` (formats.md "Events"); runtime: `crates/mostrusted/src/race.rs` (rules, API),
+`chevron.rs` (route markers). Checkpoints, laps, wrong way, position and finish are C++; the race's sequence
+(intro, countdown, freezing the cars, starting the timer, outro, results) is the game-logic `HSMData`
+state machine (`GAMELOGIC/GAMEMODES.BNDL` 01000000000ef1e8, state names in plain text), which calls C++
+through HSM behaviour codes and Lua-callable functions. Notation: **G** = the game-logic state object; **GMM**
+= the game-mode manager at G+0x2f3fc; **PM** = the player manager at G+0x2f3dc (player objects 0x7f0 bytes
+apart; AI racers in slots 12..23); **DTF** = the `DistanceToFinishManager` at G+0x2f47c (vtable 0xfbfd38, built
+by `FUN_006b51a0`). Times are 64-bit ticks of 1/3,000,000 s (`DAT_00f9f604`). Confirmed unless marked.
+
+- **HSM layer.** Behaviour codes (factory → vtable; slot 0 enter, 3 update returning 1 when done, 6 exit):
+  `CHECKPTS` (vt 0xfd94a0, update `FUN_0075da20`, exit 0x75d960), `CHKPNTSONLIN` (online, `FUN_0075f4e0`),
+  `FREEZE_CAR` (vt 0xfd9914), `GAMEMODEINTR` (0x73c750), `HSM.CheckForFalseStarts`, `ENABLETIME` /
+  `DISABLETIME`, `SETSPAWNPOS`, `TPORTTOEVNT`, `SETUPRESULTS`, `ENDGAME`, `MODEENDCHECK`, `HIDECHEV`,
+  `HSM.DOSPEEDT`, `EXITWHENGAME` (found in the snapshot's text; most are not in the decompiled set). Lua
+  functions registered by `FUN_007763b0`: `StartGameModeTimer` / `StopGameModeTimer` (GMM `TimerRunning`
+  +0x2e74 through `FUN_006f4650`), `RequestRespawn`, `RequestRespawnAtEventStart`, `RetryLastEvent`,
+  `OnStartEvent`, `AddAllAIPlayers`, `RemoveAllRaceCars`, `HACKSuspendCarControlForIntro`. HSM state texts
+  include "Wait For Countdown Start (Exit When Binding Is True)" with `Mode.IntroTime(LTEQ:3)`, "Play
+  countdown (Run Gamelogic Sequence)" with `Mode.Data.CountdownSequence`, "HSM.PauseAIForRaceStart",
+  "Disable Car Controls and Easydrive", "Start Game Mode Timer", "Request Respawn At Event Start", "Add All
+  AI Players", "Race Game Mode / Run Race Logic / Race Update", "Do Checkpoints", "Event Outro Sequence",
+  "Activate Results Widget". The transition table is not decoded, so the order is *inferred* from the texts.
+- **Intro and countdown** (`FUN_0070caa0`, `FUN_006e2640`): `GAMEMODEINTR` sets the start time GMM+0x2d18 =
+  now + GameMode +0x48 (`15f07dbf`): 10 s for races and ambushes, 0 for speed runs and two DLC modes (7.5 / 9
+  online). `IntroTime` (`FUN_006e2670`) = (start − now + 1 s) in whole seconds (30 with no start set);
+  `FUN_006e00b0` "intro running" = now < start. *Inferred*: the 3-2-1 countdown sequence plays over the last
+  3 s of the intro (the HSM condition). At go the HSM calls `StartGameModeTimer` → `FUN_006f0f80`: starts the
+  event's `Timeline` sequences (OfflineEvent +0xa0), arms the timeout GameMode +0x50 (`fe4f2d8c`, 900 s),
+  resets the wrong-way state (`FUN_006581c0`). The race clock is GMM+0x2d28; what advances it was not found.
+- **Holding the cars**: `FREEZE_CAR` sets PM+0xcba8 to 1 on enter, 0 on exit; the player input builder
+  `FUN_006c1a80` takes handbrake = max(input, PM+0xcba8), so a frozen car is held by the handbrake alone and the
+  throttle still revs it. Player flags +0x27c..+0x280 zero throttle / brake / steering and force the handbrake
+  ("Disable Car Controls"). The AI is held by `HSM.PauseAIForRaceStart` (not traced). False starts are checked
+  only in the online flow.
+- **Starting grid**: `TPORTTOEVNT` (0x741270 → `FUN_006cd380`) sets the spawn trigger id and runs the reset
+  `FUN_006c9fb0`; `FUN_0042f250` gives a trigger's direction (a point's +0x14 vector, a box's local Z). AI
+  (`FUN_00686f30`): per `AIPlayerInformation` (count OfflineEvent +0xd6) the car stands on its `Placement`
+  point facing its direction, spawned with zero velocity (`FUN_006ce030`) into slots 12..23; racers without
+  flags +0xb5 / +0xb3 join the opponent list; with OfflineEvent +0xee (`c75c9d90`) set, a slot whose car is the
+  player's car is skipped.
+- **Route entries** (`FUN_00645290`; online `FUN_00642140`): DTF+0x10 holds 0x14-byte entries {position, trigger
+  id, cumulative route distance}, count DTF+0x510: entry 0 is `SpawnPosition`, then for each of `Laps` (+0xf6)
+  every id of `Checkpoints` (+0x64), positioned at the box centre lowered by half its height (on the road).
+  DTF+0x660 = per-lap count, +0x664 = laps. `AlternateRoutes` attach alternative trigger ids to an entry in every
+  lap (`FUN_0063dd80`). Each segment between entries is a path through the AI road network requested by
+  `FUN_006423e0` (`FUN_00843240`, through an alternate trigger when one exists); `FUN_006676b0` stores it and
+  sets cumdist[k] = cumdist[k−1] + the path length.
+- **Checkpoint test** (`CHECKPTS`: `FUN_0075da20` for the player, `FUN_00759cf0` for AI): only the current
+  target is tested (checkpoint counter `cp` at behaviour+0x50; the gate is entry cp + 1), every frame, with
+  `FUN_00537190(vehicle slot, trigger id, −1)`: is the trigger in the vehicle's overlap hit list (`FUN_00536f70`,
+  "Trigger hits" above). So it is the car's box against the trigger box, a held overlap, in order; the kind does
+  not matter, and every checkpoint box in the data has flags 0 (not one-way). Gates are reference counted per
+  `cp % perLap` and switched on / off through `FUN_007160b0` (`FUN_00759860`, `FUN_00759b70`); when the player
+  activates one, the GPS line is built over the next min(8, perLap − 1) segments (`FUN_007a0e40`). A hit calls
+  `FUN_00665350` (DTF's per-player target, DTF+0xd90 = cp + 1). Then `CheckpointInfo[cp % perLap]`: `eb1ecc26`
+  (+0x13) stores the race time as a split (player+0x4c0 + 8n); a nonzero `Sequence` is played (for AI only
+  with `a1ec8d81`); in the data every entry has Type 0 and Sequence 0. An event (config +0x44 → +0x60) is sent
+  for every checkpoint but the last two. After a reset (`G+0x25694 + slot` pending flag), `FUN_00661da0` moves the
+  target on by at most one when the car is already past it (more than 0.5 m along), without counting a lap.
+- **Laps**: the lap counter (behaviour+0x54, from 1; the `Lap` binding, player+0x5bc) goes up after a hit when
+  (cp + 1) % perLap == 0. The finish is the hit on the last entry (cp + 1 == count − 1).
+- **Distance to finish** (`FUN_00661b40`, per slot at DTF+0xdf0): cumdist[last] − cumdist[target] + what is
+  left of the target's segment polyline (up to 150 points of x, y, z, length at DTF+0x2778) after the car's
+  projection onto its nearest piece (`FUN_0051e850`, clamped); past the end it adds the distance driven on the
+  following segments; more than 20 m behind a segment's start it adds the straight distance to that start.
+- **Position** (`FUN_00749bb0`; behaviour+0x58, written to player+0x5b8): 1 + the opponents ahead, where ahead
+  = finished (its cp ≥ count − 1) or a strictly smaller distance to finish (cached per slot, FLT_MAX at init);
+  equal distances do not overtake. Quirk: an opponent also counts as ahead while the player's cp is below its
+  "was resetting" byte (behaviour+0xc0 + slot), which only fires at cp 0 (looks like an original bug). Events:
+  "took the lead" (config +0x2dc), "lost the lead" (+0x12c), first place held 1.5 s (`DAT_00fd2338`,
+  `FUN_00749570`). DTF's own 12-entry leaderboard (`FUN_0066aa60`, insertion sort `FUN_0066d680`; `Position`,
+  `OvertakenCount` bindings) puts finished players first by finish time, then the rest by distance, ties
+  keeping the previous order.
+- **Wrong way / missed checkpoint** (`FUN_006585b0`, state machine at DTF+0x439b0, run by `FUN_0066b3f0` for
+  the local player): d = distance to finish through the target + the car's distance from its projection, d' =
+  through the next target. State 0: reset the timer, store the position; d rose → 1. State 1: after 1 s (`.bss`
+  0x01177580) with d rising while d' falls → *missed checkpoint* (flag set) → 2; else after 2 s (0x01177388) and
+  more than √10 m moved (`DAT_00fb77b8` = 10, squared) → *wrong way* (flag clear) → 2; else d fell → 0. State 2:
+  d stops rising → 3. State 3: d rises → 2; after 1 s (0x01177378) → 0. `IsGoingWrongWay` (`FUN_0065dcf0`) =
+  state 2/3 without the flag; `HasMissedCheckpoint` (`FUN_006584d0`) = state 2/3 with it, only for checkpoints
+  1..count − 2; both false during the intro. No respawn or penalty: `CHECKPTS` asks for a new GPS route to
+  the target (`FUN_007684d0` → path type 9) when `FUN_00656220` holds, and speed runs stop counting distance
+  for the average speed (`FUN_006e0580`).
+- **Finish** (`FUN_006b9d00`, when the race state G+0x2f458 +0x85c is not 3): the player's place and finish
+  time (= race clock) are stored; the won flag GMM+0x2e78 is cleared when the place is above 3, or above 1 with
+  OfflineEvent +0xe9 (`c8f26580`, set on the Most Wanted races). `CHECKPTS` returns 1 and the HSM goes to the
+  outro and results. An AI racer reaching its last checkpoint gets AI goal 3 (`FUN_00843030`, *inferred* stop
+  racing) and racer+0x5d7 = 1; no time is stored. On `CHECKPTS` exit the markers and triggers are released
+  (`FUN_00759fa0`) and every remaining AI racer gets +0x1ea7 = 1 and goal 3. `FUN_006f46e0` also fails the
+  event past `TargetTime[0]` (count +0xe4, when GameMode +0x58 is 0), below the last `TargetSpeed` (speed runs:
+  average speed GMM+0x2c88), below `TargetScore` (+0xcc), at the timeout while DisplayTimeout is on, or with
+  player+0x434 set outside free drive. `SetUseFinishLineCamera` has no code reference (Lua / HSM).
+- **Respawn** (`RequestRespawn` 0x675b10 → `FUN_006cd340` → `FUN_006c9fb0(0, 0)`): in a race (DTF count ≠ 0) the
+  car goes back to the saved safe pose **facing the current target gate** (direction = gate position from
+  `FUN_00658310` − saved position); without a checkpoint list and with GameMode +0x70 (`bc5ea1ae`) it faces the
+  nearest racer of the opponent list (`FUN_006c3430`). `RequestRespawnAtEventStart` (0x675b40) uses the spawn id
+  at G+0x2f6f8. `RetryLastEvent` and `ResetCurrentEventStats` are HSM-driven.
+- **Event types** (`FUN_00701cb0`): the event's GameMode id against GameLogicConfig fields: `IsRaceEvent` =
+  730000 (+0x170), speed run 955569 (+0x1ec; GMM+0x2e8c), `IsAmbushEvent` = 390185 (+0x60),
+  `IsScoreBasedEvent` = 2173009 (+0xb0), free drive 390145. Within races `TypeName` tells sprint (979289),
+  circuit (979287) and the Most Wanted 1-vs-1 races (457003).
+- **Markers**: GameMode +0x6e (`f1123d7b`) turns the player's gate markers on (race, speed run, DLC modes; off
+  in free drive and ambushes). `FUN_007545b0` takes a `PointOfInterestVisuals` id from `GameLogicConfig
+  .CheckpointConfig` (+0x2a8): `NormalPoi` (+0x28, 1013519) for the active gate, +0x24 (1013518) for a preview,
+  the per-Type fields otherwise; the finish gate (cp == count − 2) uses `MapPoiConfig` (+0x2ac) +0x28 (1013510)
+  or +0x2c (1695650). `FUN_00749930` places it at the gate's ground point with the gate's rotation scaled by
+  size.x / 22, size.y / 18, size.z × 0.5 (*inferred*: a model authored for a 22 × 18 m gate), registered in a
+  POI list (`FUN_00790c70`, up to 260 records). The ids are not top-level `PointOfInterestVisuals` objects
+  (those carry other `655d3f5f` ids): where 1013519 lives is open. The road chevrons (`CustomChevron` lines
+  drawn with the `Chevron` / `ChevronBlockRoad` materials of `CheckpointConfig` `53a76c21` / `beb301a3`, shaders
+  ported in `chevron.wgsl`) and the GPS line come from the route (G+0x2f480); the strip builder was not found.
+- **Not found**: what advances the race clock; `HSM.PauseAIForRaceStart` and the false-start check; the AI goal
+  enum; the outro and the camera after the finish; the HSM transition table; which `GameMode` field is
+  `Mode.Data.CountdownSequence`; the chevron strip builder (height, UV scale, which flag picks which material).
+
+### Port and model decisions (`race.rs`, `chevron.rs`)
+
+Ported as above: intro length from the game mode, 3-2-1 from `IntroTime`, handbrake freeze with live throttle,
+route entries, target-only gate overlap (car box from `body_half_extents` vs the trigger box, separating
+axes), lap and finish rule, distance to finish, position rule, the wrong-way state machine, the won rule
+(with `TargetSpeed` / `TargetTime`), respawn facing the target gate (`crash.rs` reads `race::RespawnFacing`).
+Model decisions: segments between entries are straight lines (no road-network paths), so positions and the
+wrong-way test differ where the road bends away from the line; the car box is centred half its height above
+the car's origin; the wrong-way machine runs for every racer (the original: the local player); AI finish times
+are kept for results; the speed run's average speed is the counted distance over the race time; the race clock
+advances by the fixed tick; the chevron boards are 2 m tall with one texture repeat per 2 m, `baseColour`
+white, premultiplied-over blending, `f8ccf73e` set = block-road crosses (from the data: those lines are short and
+cross side roads); the gate POI marker is not drawn (its visual is not located).
 
 ## Traffic and AI vehicles
 
