@@ -1819,6 +1819,26 @@ fn verify(game: &GameDir) -> Result<()> {
                         {
                             errs.push(format!("{}: {} {err}", rel.display(), e.id));
                         }
+                        // AIData: parses, links are symmetric, every node lies in its grid cell's range.
+                        if e.resource_type() == ResourceType::AIData {
+                            match fmt::AiData::parse(&r) {
+                                Err(err) => errs.push(format!("{}: {} {err}", rel.display(), e.id)),
+                                Ok(ai) => {
+                                    let asym = ai.nodes.iter().enumerate().any(|(i, n)| {
+                                        n.links.iter().any(|&l| !ai.nodes[l as usize].links.contains(&(i as u16)))
+                                    });
+                                    let in_cells: usize = ai.cells.iter().map(|c| c.1 as usize).sum();
+                                    if asym || in_cells != ai.nodes.len() {
+                                        errs.push(format!(
+                                            "{}: {} AIData: asymmetric links {asym}, {in_cells} nodes in cells of {}",
+                                            rel.display(),
+                                            e.id,
+                                            ai.nodes.len()
+                                        ));
+                                    }
+                                }
+                            }
+                        }
                         let mut s = stats.lock().unwrap();
                         let t = s.entry(e.resource_type()).or_default();
                         t.count += 1;

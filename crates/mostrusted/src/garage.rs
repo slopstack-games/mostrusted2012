@@ -287,7 +287,7 @@ fn handle_actions(
     mut actions: MessageReader<GarageAction>,
     mut garage: ResMut<Garage>,
     requests: Option<Res<LoaderRequests>>,
-    cars: Query<Entity, With<Car>>,
+    cars: Query<Entity, (With<Car>, With<crate::drive::Player>)>,
     mut camera: Query<(Entity, &mut Transform, &mut Projection), crate::MainCamera>,
     game: Res<Game>,
     time: Res<Time>,
@@ -300,7 +300,8 @@ fn handle_actions(
                     garage.set_status("the loader has not started yet".into(), now);
                     continue;
                 };
-                let req = CarRequest { bundle: bundle.clone(), paint_index: *paint_index, traffic: None };
+                let req =
+                    CarRequest { bundle: bundle.clone(), paint_index: *paint_index, traffic: None, opponent: None };
                 if requests.0.send(req).is_err() {
                     garage.set_status("the loader thread has stopped".into(), now);
                     continue;
@@ -352,7 +353,7 @@ fn place_arrived_car(
     mut garage: ResMut<Garage>,
     game: Res<Game>,
     time: Res<Time>,
-    cars: Query<(Entity, &Transform, &LinearVelocity), With<Car>>,
+    cars: Query<(Entity, &Transform, &LinearVelocity), (With<Car>, With<crate::drive::Player>)>,
     camera: Query<(Entity, &Transform), CameraNotCar>,
     mut cursors: Query<&mut CursorOptions>,
     spatial: SpatialQuery,

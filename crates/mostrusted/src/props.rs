@@ -58,7 +58,8 @@ pub enum GameLayer {
 
 impl GameLayer {
     pub fn car() -> CollisionLayers {
-        CollisionLayers::new(GameLayer::Car, [GameLayer::World, GameLayer::Prop, GameLayer::Traffic])
+        // Cars collide with each other too (race cars, `ai.rs`).
+        CollisionLayers::new(GameLayer::Car, [GameLayer::World, GameLayer::Car, GameLayer::Prop, GameLayer::Traffic])
     }
     pub fn car_bumper() -> CollisionLayers {
         CollisionLayers::new(GameLayer::CarBumper, [GameLayer::Prop, GameLayer::Traffic])
@@ -264,7 +265,7 @@ fn stream_props(
     mut commands: Commands,
     time: Res<Time>,
     mut timer: Local<f32>,
-    car: Query<&GlobalTransform, With<Car>>,
+    car: Query<&GlobalTransform, (With<Car>, With<crate::drive::Player>)>,
     mut props: Query<(Entity, &mut PropBody, &Transform)>,
     mut stats: ResMut<PropStats>,
 ) {
@@ -407,7 +408,7 @@ fn unpin_props(
 /// Knocked props go back where they stood (or are removed) once the car is beyond their reset distance.
 fn reset_far_props(
     mut commands: Commands,
-    car: Query<&GlobalTransform, With<Car>>,
+    car: Query<&GlobalTransform, (With<Car>, With<crate::drive::Player>)>,
     mut props: Query<(Entity, &mut PropBody, &mut Transform)>,
     mut stats: ResMut<PropStats>,
 ) {
@@ -546,7 +547,7 @@ fn run_smash_test(
     time: Res<Time>,
     mut test: ResMut<SmashTest>,
     mut input: ResMut<crate::drive::CarInput>,
-    cars: Query<(&Car, &Transform)>,
+    cars: Query<(&Car, &Transform), With<crate::drive::Player>>,
     props: Query<(&PropBody, &Transform), Without<Car>>,
     stats: Res<PropStats>,
     mut exit: MessageWriter<AppExit>,

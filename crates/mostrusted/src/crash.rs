@@ -30,7 +30,7 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use mw_assets::crash::{CrashData, Shot};
 
-use crate::drive::{Car, CarInput};
+use crate::drive::{Car, CarInput, Player};
 
 /// m/s per mph.
 const MPH: f32 = 0.44704;
@@ -139,7 +139,7 @@ fn detect_crash(
     mut state: ResMut<CrashState>,
     virtual_time: Res<Time<Virtual>>,
     collisions: Collisions,
-    cars: Query<(&Car, &Transform, &LinearVelocity)>,
+    cars: Query<(&Car, &Transform, &LinearVelocity), With<Player>>,
     collider_of: Query<&ColliderOf>,
     bodies: Query<&RigidBody>,
     props: Query<(), With<crate::props::PropBody>>,
@@ -216,7 +216,7 @@ fn hold_and_reset(
     config: Option<Res<CrashConfig>>,
     mut state: ResMut<CrashState>,
     mut input: ResMut<CarInput>,
-    mut cars: Query<(&mut Transform, &mut LinearVelocity, &mut AngularVelocity), With<Car>>,
+    mut cars: Query<(&mut Transform, &mut LinearVelocity, &mut AngularVelocity), (With<Car>, With<Player>)>,
     facing: Res<crate::race::RespawnFacing>,
 ) {
     let Some(config) = config else { return };
@@ -294,7 +294,7 @@ fn run_sequence(
     mut hud: ResMut<crate::hud::HudSettings>,
     mut snap: ResMut<crate::camera::SnapCamera>,
     spatial: SpatialQuery,
-    cars: Query<(Entity, &Transform, &LinearVelocity, &Car), Without<Camera3d>>,
+    cars: Query<(Entity, &Transform, &LinearVelocity, &Car), (Without<Camera3d>, With<Player>)>,
     mut car_visibility: Query<&mut Visibility, (With<Car>, Without<LetterboxBar>)>,
     mut camera: Query<(&mut Transform, &mut Projection), crate::camera::DrivingCamera>,
     mut bars: Query<(&LetterboxBar, &mut Node, &mut Visibility), Without<Car>>,

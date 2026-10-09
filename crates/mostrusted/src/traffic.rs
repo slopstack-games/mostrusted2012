@@ -874,7 +874,7 @@ fn in_cell(points: &[[f32; 2]], x: f32, z: f32) -> bool {
 
 /// The player's position and velocity, else the camera's position.
 type PlayerQuery<'w, 's> =
-    Query<'w, 's, (&'static Transform, &'static LinearVelocity), (With<crate::drive::Car>, Without<TrafficCar>)>;
+    Query<'w, 's, (&'static Transform, &'static LinearVelocity), (With<crate::drive::Player>, Without<TrafficCar>)>;
 
 #[allow(clippy::too_many_arguments)]
 fn traffic_tick(
@@ -1480,6 +1480,7 @@ fn spawn_entities(
                         paint: car.paint,
                         colour: v.paints.get(car.paint).map(|(_, p)| *p),
                     }),
+                    opponent: None,
                 });
             }
             continue;

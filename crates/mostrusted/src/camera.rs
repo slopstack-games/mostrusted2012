@@ -46,7 +46,7 @@ use bevy::prelude::*;
 use mw_assets::camera::{ExternalCamera, ImpactShake, InCarCamera, VehicleCameras};
 
 use crate::drift::Phase;
-use crate::drive::Car;
+use crate::drive::{Car, Player};
 
 /// m/s per mph: the camera data's speeds are mph, its accelerations mph per second.
 const MPH: f32 = 0.44704;
@@ -205,7 +205,7 @@ fn camera_input(
     mouse: Res<AccumulatedMouseMotion>,
     pads: Query<&Gamepad>,
     menu: Option<Res<crate::menu::CarMenu>>,
-    cars: Query<&Car>,
+    cars: Query<&Car, With<Player>>,
     mut settings: ResMut<CameraSettings>,
     mut look: ResMut<LookInput>,
 ) {
@@ -272,7 +272,7 @@ fn camera_input(
 }
 
 /// Body-collider contacts of the driven car: the largest normal speed this tick feeds the impact shake.
-fn collect_impacts(collisions: Collisions, cars: Query<&Car>, mut kicks: ResMut<ImpactKicks>) {
+fn collect_impacts(collisions: Collisions, cars: Query<&Car, With<Player>>, mut kicks: ResMut<ImpactKicks>) {
     let Ok(car) = cars.single() else { return };
     let speed = collisions
         .collisions_with(car.body_collider)
@@ -621,7 +621,7 @@ fn follow_car(
     mut kicks: ResMut<ImpactKicks>,
     mut state: Local<CameraState>,
     spatial: SpatialQuery,
-    cars: Query<(Entity, &Transform, &LinearVelocity, &Car), Without<Camera3d>>,
+    cars: Query<(Entity, &Transform, &LinearVelocity, &Car), (Without<Camera3d>, With<Player>)>,
     mut car_visibility: Query<&mut Visibility, With<Car>>,
     mut camera: Query<(&mut Transform, &mut Projection), DrivingCamera>,
 ) {

@@ -113,6 +113,9 @@ pub struct CarParams {
     pub drift: Option<DriftParams>,
     /// How the tyres treat each surface (grip blend, slide drag): `VehicleSurfaceProfile` links.
     pub surface_links: Vec<SurfaceLink>,
+    /// The AI driver's steering PID gains (Proportional, Integral, Derivative), `Vehicle_Gameplay.PIDController`
+    /// (`ai_driver.rs`; the 911's 0.3 / 0.01 / 0.1 when a car has none).
+    pub ai_steer_pid: [f32; 3],
 }
 
 /// `HandbrakeAbility`: the handbrake's strength blends from its low-speed to its high-speed value between
@@ -229,6 +232,7 @@ impl CarParams {
             camera: h.camera,
             drift: DriftParams::new(h),
             surface_links: h.surface_links.clone(),
+            ai_steer_pid: h.ai_steering_pid.unwrap_or([0.3, 0.01, 0.1]),
         }
     }
 }
@@ -400,7 +404,50 @@ fn spawn_car(
     let (modded, nitrous_burn) = catalogue.modded(&selection);
     info!("mods: {}", catalogue.describe(&selection));
     commands.insert_resource(catalogue);
-    let params = CarParams::new(&modded);
+    let car = build_car(
+        &mut commands,
+        &CarBuild {
+            name: "player car",
+            spec: &pending.spec,
+            parts: &pending.parts,
+            handling: &modded,
+            nitrous_burn,
+            start,
+            heading: pending.heading,
+            velocity: pending.velocity,
+            damage: None,
+        },
+    );
+    commands.entity(car).insert(Player);
+    if let Ok(mut cam) = camera.single_mut() {
+        let behind = Quat::from_rotation_y(pending.heading) * Vec3::new(0.0, 2.5, -7.0);
+        *cam = Transform::from_translation(start + behind).looking_at(start, Vec3::Y);
+    }
+    commands.remove_resource::<PendingCar>();
+    info!("car spawned at {start:?}");
+}
+
+/// What [`build_car`] needs to put a car in the world.
+pub struct CarBuild<'a> {
+    pub name: &'a str,
+    pub spec: &'a CarSpec,
+    pub parts: &'a CarParts,
+    /// The handling the physics runs (the player's with its mods applied).
+    pub handling: &'a VehicleHandling,
+    /// The nitrous variant's burn rate, when a mod picked one.
+    pub nitrous_burn: Option<f32>,
+    /// Where the car's origin (road level) starts, its yaw (0 faces +Z) and velocity.
+    pub start: Vec3,
+    pub heading: f32,
+    pub velocity: Vec3,
+    /// The car's damage model; `None` takes it from the pending player car (`damage.rs`).
+    pub damage: Option<crate::damage::DamageSource>,
+}
+
+/// Spawn a drivable car: rigid body, colliders, body and wheel meshes, [`Car`] and [`CarControls`]. Every car
+/// (player or AI) is built and simulated the same way. Returns the car's entity.
+pub fn build_car(commands: &mut Commands, b: &CarBuild) -> Entity {
+    let params = CarParams::new(b.handling);
     info!(
         "car params: {:.0} kg, inertia {:.0?}, drift {}, CoM {:?}, {} gears, final {:.2}, redline {:.0}, top {:.0} km/h, drag {:.2?}, peak μ lat {:.2}/{:.2} long {:.2}, front drive {:.2}",
         params.mass,
@@ -419,11 +466,11 @@ fn spawn_car(
     );
     let car = commands
         .spawn((
-            Name::new("player car"),
-            Transform::from_translation(start).with_rotation(Quat::from_rotation_y(pending.heading)),
+            Name::new(b.name.to_string()),
+            Transform::from_translation(b.start).with_rotation(Quat::from_rotation_y(b.heading)),
             Visibility::default(),
             RigidBody::Dynamic,
-            LinearVelocity(pending.velocity),
+            LinearVelocity(b.velocity),
             // Explicit mass properties; the collider box would otherwise
             // contribute a ~6 kg (density 1) inertia and the car flips at once.
             Mass(params.mass),
@@ -464,8 +511,8 @@ fn spawn_car(
             ChildOf(car),
         ))
         .id();
-    for m in &pending.spec.body {
-        for (mesh, mat) in pending.parts.get(m).into_iter().flatten() {
+    for m in &b.spec.body {
+        for (mesh, mat) in b.parts.get(m).into_iter().flatten() {
             commands.spawn((
                 Mesh3d(mesh.clone()),
                 MeshMaterial3d(mat.clone()),
@@ -476,12 +523,12 @@ fn spawn_car(
     }
 
     // Static load per corner from the centre of mass between the axles.
-    let h = &pending.spec.handling;
-    let z_front = pending.spec.wheels.iter().filter(|w| w.front).map(|w| w.position.z).fold(f32::MIN, f32::max);
-    let z_rear = pending.spec.wheels.iter().filter(|w| !w.front).map(|w| w.position.z).fold(f32::MAX, f32::min);
+    let h = &b.spec.handling;
+    let z_front = b.spec.wheels.iter().filter(|w| w.front).map(|w| w.position.z).fold(f32::MIN, f32::max);
+    let z_rear = b.spec.wheels.iter().filter(|w| !w.front).map(|w| w.position.z).fold(f32::MAX, f32::min);
     let front_load = ((params.centre_of_mass.z - z_rear) / (z_front - z_rear).max(0.5)).clamp(0.2, 0.8);
     let mut wheels = Vec::new();
-    for w in &pending.spec.wheels {
+    for w in &b.spec.wheels {
         // The game's spring holds the static corner load W at the data's sag (k = W / sag), its damper is
         // 2ζ√(k·W/g) one way and `0c5f89b3` times that the other (docs/decomp.md).
         let corner_mass = params.mass * if w.front { front_load } else { 1.0 - front_load } / 2.0;
@@ -520,7 +567,7 @@ fn spawn_car(
             .spawn((Transform::from_rotation(w.rotation).with_scale(mirror), Visibility::default(), ChildOf(pivot)))
             .id();
         for &(m, spins) in &w.parts {
-            for (mesh, mat) in pending.parts.get(&m).into_iter().flatten() {
+            for (mesh, mat) in b.parts.get(&m).into_iter().flatten() {
                 let parent = if spins { spinner } else { fixed };
                 commands.spawn((
                     Mesh3d(mesh.clone()),
@@ -546,7 +593,7 @@ fn spawn_car(
             travel: BUMP_TRAVEL + sag,
             sag,
             brake_torque: brake,
-            omega: pending.velocity.dot(Quat::from_rotation_y(pending.heading) * Vec3::Z) / radius,
+            omega: b.velocity.dot(Quat::from_rotation_y(b.heading) * Vec3::Z) / radius,
             inertia,
             corner_mass,
             slip: (0.0, 0.0),
@@ -560,7 +607,7 @@ fn spawn_car(
         });
     }
     // A car swapped in at speed starts in the gear that speed needs.
-    let speed = pending.velocity.dot(Quat::from_rotation_y(pending.heading) * Vec3::Z);
+    let speed = b.velocity.dot(Quat::from_rotation_y(b.heading) * Vec3::Z);
     let radius = wheels.iter().map(|w| w.radius).sum::<f32>() / wheels.len().max(1) as f32;
     let wheel_rpm = speed.max(0.0) / radius.max(0.1) * 60.0 / std::f32::consts::TAU;
     let dp = &params.drivetrain;
@@ -568,58 +615,60 @@ fn spawn_car(
         .find(|&g| wheel_rpm * dp.ratio(g) * dp.final_drive < params.redline_rpm * 0.8)
         .unwrap_or(dp.gears.max(1) as i32);
     let drivetrain = Drivetrain::new(dp, gear);
-    commands.entity(car).insert(Car {
-        wheels,
-        steer: 0.0,
-        speed,
-        yaw_rate: 0.0,
-        lateral_accel: 0.0,
-        body_slip: 0.0,
-        drift: DriftState::default(),
-        rear_slip: 0.0,
-        air_time: 0.0,
-        handbrake_timer: -1.0,
-        handbrake_on: false,
-        wall_time: f32::MAX,
-        turn_assist: TurnAssist::default(),
-        impact_yaw: ImpactYawDamping::default(),
-        roll: 0.0,
-        pitch: 0.0,
-        body_contact: false,
-        gear,
-        rpm: params.idle_rpm,
-        rpm_prev: params.idle_rpm,
-        drivetrain,
-        nitrous: Default::default(),
-        nitrous_params: {
-            let mut n = mw_handling::nitrous::NitrousParams::new(&modded);
-            n.burn = nitrous_burn.unwrap_or(n.burn);
-            n
-        },
-        brake_ramp: 0.0,
-        debug_forces: [0.0; 3],
-        tyre_yaw: [0.0; 2],
-        spawn: start,
-        params,
-        body_collider,
-        bumper_collider,
-    });
-    if let Ok(mut cam) = camera.single_mut() {
-        let behind = Quat::from_rotation_y(pending.heading) * Vec3::new(0.0, 2.5, -7.0);
-        *cam = Transform::from_translation(start + behind).looking_at(start, Vec3::Y);
+    let mut e = commands.entity(car);
+    if let Some(d) = b.damage.clone() {
+        e.insert(d);
     }
+    e.insert((
+        CarControls::default(),
+        Car {
+            wheels,
+            steer: 0.0,
+            speed,
+            yaw_rate: 0.0,
+            lateral_accel: 0.0,
+            body_slip: 0.0,
+            drift: DriftState::default(),
+            rear_slip: 0.0,
+            air_time: 0.0,
+            handbrake_timer: -1.0,
+            handbrake_on: false,
+            wall_time: f32::MAX,
+            turn_assist: TurnAssist::default(),
+            impact_yaw: ImpactYawDamping::default(),
+            roll: 0.0,
+            pitch: 0.0,
+            body_contact: false,
+            gear,
+            rpm: params.idle_rpm,
+            rpm_prev: params.idle_rpm,
+            drivetrain,
+            nitrous: Default::default(),
+            nitrous_params: {
+                let mut n = mw_handling::nitrous::NitrousParams::new(b.handling);
+                n.burn = b.nitrous_burn.unwrap_or(n.burn);
+                n
+            },
+            brake_ramp: 0.0,
+            debug_forces: [0.0; 3],
+            tyre_yaw: [0.0; 2],
+            spawn: b.start,
+            params,
+            body_collider,
+            bumper_collider,
+        },
+    ));
     // Exhaust pops and the car's spot effects (`exhaust.rs`).
-    let tuning = match &pending.spec.engine {
+    let tuning = match &b.spec.engine {
         Some(mw_assets::engine_sound::EngineVoice::Bank(b)) => b.tuning,
         _ => Default::default(),
     };
-    commands.entity(car).insert(crate::exhaust::Exhaust::new(
-        pending.spec.spot_effects.clone(),
-        mw_assets::engine_driver::PopParams::from_handling(&modded),
+    e.insert(crate::exhaust::Exhaust::new(
+        b.spec.spot_effects.clone(),
+        mw_assets::engine_driver::PopParams::from_handling(b.handling),
         tuning,
     ));
-    commands.remove_resource::<PendingCar>();
-    info!("car spawned at {start:?}");
+    car
 }
 
 pub(crate) fn read_input(keys: Res<ButtonInput<KeyCode>>, pads: Query<&Gamepad>, mut input: ResMut<CarInput>) {
@@ -649,6 +698,46 @@ pub(crate) fn read_input(keys: Res<ButtonInput<KeyCode>>, pads: Query<&Gamepad>,
     input.brake = brake;
     input.steer = steer.clamp(-1.0, 1.0);
     input.handbrake = handbrake;
+}
+
+/// The car the player drives. Its [`CarControls`] come from [`CarInput`]; the cameras, HUD, engine sound,
+/// replay, crash and test systems follow this car. Other cars (`ai.rs`) run the same physics.
+#[derive(Component, Debug, Default, Clone, Copy)]
+pub struct Player;
+
+/// The car's [`CarControls`] are written by another system (an AI driver, `ai.rs`) even on the player's car.
+#[derive(Component, Debug, Default, Clone, Copy)]
+pub struct ExternalControls;
+
+/// One car's controls for its next physics tick: the game's per-vehicle control block (steering +0x1bf0,
+/// throttle +0x1bf4, brake +0x1c00, nitrous +0x1c20, handbrake +0x1c40; decomp.md "Update loop"), written for
+/// every race car the same way. The player's are copied from [`CarInput`] each tick, an AI driver writes its own.
+#[derive(Component, Debug, Default, Clone, Copy)]
+pub struct CarControls {
+    pub throttle: f32,
+    pub brake: f32,
+    /// Positive = left (the game's +0x1bf0 is positive to the right).
+    pub steer: f32,
+    pub handbrake: bool,
+    pub nitrous: bool,
+    /// Put the car back on its wheels (R for the player); cleared after one tick.
+    pub reset: bool,
+    /// No drive while crashed (`crash.rs`).
+    pub crashed: bool,
+}
+
+impl CarControls {
+    fn from_input(input: &mut CarInput) -> Self {
+        Self {
+            throttle: input.throttle,
+            brake: input.brake,
+            steer: input.steer,
+            handbrake: input.handbrake,
+            nitrous: input.nitrous,
+            reset: std::mem::take(&mut input.reset),
+            crashed: input.crashed,
+        }
+    }
 }
 
 impl CarInput {
@@ -695,7 +784,7 @@ pub(crate) fn car_physics(
     spatial: SpatialQuery,
     collisions: Collisions,
     layers: Query<&CollisionLayers>,
-    mut cars: Query<(Entity, &mut Car, Forces, &mut Transform)>,
+    mut cars: Query<(Entity, &mut Car, Forces, &mut Transform, &mut CarControls, Has<Player>, Has<ExternalControls>)>,
     surfaces: Res<crate::props::WorldSurfaces>,
     world_tags: Query<(&Collider, &crate::props::SurfaceTags)>,
 ) {
@@ -707,8 +796,15 @@ pub(crate) fn car_physics(
         input.steer = 0.0;
         input.handbrake = false;
     }
-    for (entity, mut car, mut forces, mut transform) in &mut cars {
-        if std::mem::take(&mut input.reset) {
+    for (entity, mut car, mut forces, mut transform, mut controls, player, external) in &mut cars {
+        // Every car runs the same tick from its own control block (the game writes each of its 16 race-car slots'
+        // controls with `FUN_009aacc0` from `FUN_0091c5c0`); the player's comes from the input devices.
+        if player && !external {
+            *controls = CarControls::from_input(&mut input);
+        }
+        let ctl = *controls;
+        controls.reset = false;
+        if ctl.reset {
             let yaw = transform.rotation.to_euler(EulerRot::YXZ).0;
             transform.rotation = Quat::from_rotation_y(yaw);
             transform.translation += Vec3::Y * 1.5;
@@ -728,7 +824,11 @@ pub(crate) fn car_physics(
         if contacts.wall.is_some() && !car.body_contact {
             debug!("impact yaw damping: new world contact ({:.1} m/s)", contacts.world_impact);
         }
-        car.impact_yaw.hit(contacts.wall.is_some() && !car.body_contact, contacts.object_impact > 0.0);
+        car.impact_yaw.hit(
+            contacts.wall.is_some() && !car.body_contact,
+            contacts.car_impact > 0.0,
+            contacts.object_impact > 0.0,
+        );
         let w = car.impact_yaw.step(forces.angular_velocity(), up, dt);
         *forces.angular_velocity_mut() = w;
         let velocity = forces.linear_velocity();
@@ -742,14 +842,14 @@ pub(crate) fn car_physics(
         let band_speed = velocity.length().copysign(speed);
 
         // --- Pedals, reverse ---------------------------------------------------
-        let (mut throttle, mut brake) = (input.throttle, input.brake);
+        let (mut throttle, mut brake) = (ctl.throttle, ctl.brake);
         if car.drivetrain.gear < 0 {
             // In reverse the pedals swap roles.
             std::mem::swap(&mut throttle, &mut brake);
-            if input.throttle > 0.1 && speed > -1.0 {
+            if ctl.throttle > 0.1 && speed > -1.0 {
                 car.drivetrain.engage(1);
             }
-        } else if input.brake > 0.1 && input.throttle < 0.05 && speed < 0.5 {
+        } else if ctl.brake > 0.1 && ctl.throttle < 0.05 && speed < 0.5 {
             car.drivetrain.engage(-1);
         }
         let mph = speed / MPH;
@@ -759,7 +859,7 @@ pub(crate) fn car_physics(
         // gear. The body's velocity then changes by −sign(speed) × `Brakes.99407bbc` × input × dt along the car's
         // forward axis, every tick, with no clamp at zero.
         let hold_in = if mph < STANDSTILL_HOLD_MPH {
-            let parked = if input.handbrake { 1.0 } else { brake };
+            let parked = if ctl.handbrake { 1.0 } else { brake };
             if car.drivetrain.gear > 0 { parked.max(throttle) } else { parked }
         } else {
             0.0
@@ -779,7 +879,7 @@ pub(crate) fn car_physics(
         // and the driveline run before this update and see the previous tick's state; the drift sees this tick's
         // and the previous one.
         let handbrake = car.handbrake_on;
-        car.handbrake_timer = if input.handbrake { p.handbrake.min_time } else { car.handbrake_timer - dt };
+        car.handbrake_timer = if ctl.handbrake { p.handbrake.min_time } else { car.handbrake_timer - dt };
         car.handbrake_on = car.handbrake_timer >= 0.0;
         let handbrake_strength = p.handbrake.at(band_speed);
 
@@ -802,7 +902,7 @@ pub(crate) fn car_physics(
         }
         let coupled = axle_share.iter().any(|&s| s > 0.0);
         // Update step 5 (FUN_009d2aa0, mode 0) before the engine: the tank and the torque multiplier.
-        let held = input.nitrous && !input.crashed;
+        let held = ctl.nitrous && !ctl.crashed;
         let n_params = car.nitrous_params;
         let amount = car.nitrous.step(&n_params, held, dt);
         car.drivetrain.nitrous = amount > 0.0;
@@ -823,10 +923,10 @@ pub(crate) fn car_physics(
         // towards `Counter_steer_rate_in_drift` (drift.rs).
         let steer = car.steer;
         let mut current = car.steer;
-        let mut steer_input = input.steer;
+        let mut steer_input = ctl.steer;
         let mut drift_rate = None;
         if let Some(d) = &p.drift {
-            if let Some((mapped, lo)) = car.drift.steering(d, input.steer, car.rear_slip) {
+            if let Some((mapped, lo)) = car.drift.steering(d, ctl.steer, car.rear_slip) {
                 let dir = car.drift.direction;
                 let max = p.steering.max_angle.to_radians();
                 current = dir * (current * dir).clamp(lo * max, max);
@@ -838,7 +938,7 @@ pub(crate) fn car_physics(
         car.steer = steer_towards(
             &p.steering,
             current,
-            input.steer,
+            ctl.steer,
             steer_input,
             band_speed,
             car.gear < 0,
@@ -1068,7 +1168,7 @@ pub(crate) fn car_physics(
         let side_axis = rot * Vec3::X;
         let (dv, dw) = car.turn_assist.step(
             &TurnAssistInput {
-                steer: input.steer,
+                steer: ctl.steer,
                 throttle,
                 mph: band_speed / MPH,
                 wall_time: car.wall_time,
@@ -1103,9 +1203,9 @@ pub(crate) fn car_physics(
             let out = car.drift.step(
                 drift,
                 &DriftInput {
-                    steer: (input.steer * p.steering.max_angle / range.max(1.0)).clamp(-1.0, 1.0),
+                    steer: (ctl.steer * p.steering.max_angle / range.max(1.0)).clamp(-1.0, 1.0),
                     throttle,
-                    brake: input.brake,
+                    brake: ctl.brake,
                     handbrake: car.handbrake_on,
                     handbrake_prev: handbrake,
                     touching_world: wall.is_some(),
@@ -1492,6 +1592,8 @@ struct Contacts {
     /// largest normal closing speed (m/s) before the solve, the stand-in the camera's impact shake uses.
     world_impact: f32,
     object_impact: f32,
+    /// The strongest contact with another car's body (m/s, as above).
+    car_impact: f32,
 }
 
 fn car_contacts(collisions: &Collisions, layers: &Query<&CollisionLayers>, car: &Car) -> Contacts {
@@ -1502,7 +1604,10 @@ fn car_contacts(collisions: &Collisions, layers: &Query<&CollisionLayers>, car: 
             let world = layers.get(other).map_or(true, |l| l.memberships.has_all(crate::props::GameLayer::World));
             let speed =
                 pair.manifolds.iter().flat_map(|m| m.points.iter()).map(|p| -p.normal_speed).fold(0.0, f32::max);
-            if world {
+            let other_car = layers.get(other).is_ok_and(|l| l.memberships.has_all(crate::props::GameLayer::Car));
+            if other_car {
+                c.car_impact = c.car_impact.max(speed);
+            } else if world {
                 c.world_impact = c.world_impact.max(speed);
                 if collider == car.body_collider && c.wall.is_none() {
                     c.wall = pair.manifolds.first().map(|m| m.normal * sign);
@@ -1522,8 +1627,8 @@ fn car_contacts(collisions: &Collisions, layers: &Query<&CollisionLayers>, car: 
 /// object (`FUN_009175e0`). Each tick the yaw rate in body axes (the up axis only) is multiplied by
 /// (1 − 0.05 × the largest timer)^(60 dt) (`FUN_00907b50`; 0.05 `.rdata` 0x01021fd0), then the timers fall
 /// linearly, the first two over 1 s (0x01021ef0), the object's over 0.3 s (0x01021fe0). Read from the
-/// disassembly; not modelled: the analyzer's gates (`FUN_006a3b50`, the special state +0x1774), and car contacts
-/// (we have no other cars).
+/// disassembly; not modelled: the analyzer's gates (`FUN_006a3b50`, the special state +0x1774). A car contact
+/// sets its timer on every tick it lasts (whether `FUN_00917bb0` gates it like the world record is not read).
 #[derive(Debug, Default, Clone, Copy)]
 struct ImpactYawDamping {
     /// World, car, object.
@@ -1534,9 +1639,12 @@ const IMPACT_YAW_DAMP: f32 = 0.05;
 const IMPACT_YAW_TIMES: [f32; 3] = [1.0, 1.0, 0.3];
 
 impl ImpactYawDamping {
-    fn hit(&mut self, new_world_contact: bool, object_contact: bool) {
+    fn hit(&mut self, new_world_contact: bool, car_contact: bool, object_contact: bool) {
         if new_world_contact {
             self.timers[0] = 1.0;
+        }
+        if car_contact {
+            self.timers[1] = 1.0;
         }
         if object_contact {
             self.timers[2] = 1.0;
@@ -1682,7 +1790,7 @@ fn wheel_visuals(cars: Query<&Car>, mut transforms: Query<&mut Transform>) {
 }
 
 /// Once a second: position and speed, for automated runs.
-fn log_car(time: Res<Time>, mut next: Local<f32>, cars: Query<(&Car, &Transform)>) {
+fn log_car(time: Res<Time>, mut next: Local<f32>, cars: Query<(&Car, &Transform), With<Player>>) {
     let Ok((car, t)) = cars.single() else { return };
     if time.elapsed_secs() < *next {
         return;
@@ -1805,7 +1913,7 @@ fn run_test(
     time: Res<Time>,
     test: Option<ResMut<DriveTest>>,
     mut input: ResMut<CarInput>,
-    cars: Query<&Car>,
+    cars: Query<&Car, With<Player>>,
     exhaust: Query<&crate::exhaust::Exhaust>,
     mut exit: MessageWriter<AppExit>,
 ) {
@@ -2201,7 +2309,7 @@ pub(crate) fn ground_test(
     test: Option<ResMut<DriveTest>>,
     mut input: ResMut<CarInput>,
     spatial: SpatialQuery,
-    cars: Query<(Entity, &Car, &Transform, &LinearVelocity, &AngularVelocity)>,
+    cars: Query<(Entity, &Car, &Transform, &LinearVelocity, &AngularVelocity), With<Player>>,
     mut state: Local<GroundTest>,
     mut exit: MessageWriter<AppExit>,
 ) {
@@ -2386,7 +2494,7 @@ mod tests {
         // No collision: nothing changes.
         assert_eq!(d.step(w, up, dt), w);
         // A new world contact removes 5 % of the yaw rate on the next 60 Hz tick, the other axes untouched.
-        d.hit(true, false);
+        d.hit(true, false, false);
         let w1 = d.step(w, up, dt);
         assert!((w1.y - 0.95).abs() < 1e-5 && w1.x == w.x && w1.z == w.z, "{w1}");
         // The world timer runs out after 1 s, the object timer after 0.3 s.
@@ -2394,7 +2502,7 @@ mod tests {
             d.step(w, up, dt);
         }
         assert_eq!(d.step(w, up, dt), w);
-        d.hit(false, true);
+        d.hit(false, false, true);
         for _ in 0..18 {
             d.step(w, up, dt);
         }

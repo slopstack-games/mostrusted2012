@@ -1615,6 +1615,180 @@ colliders only within 250 m of the player (performance); a crashed car is a dyna
 on hulls that leave the area are removed (inferred from the per-hull state going away); the heading blend is
 scaled to the fixed step; the random seed; junction timers start at zero; traffic waits for the player's car.
 
+## AI racers (2026-10-09)
+
+Read from the dump by three parallel searches; ported in `ai_driver.rs` (the law) and `ai.rs` (routes, spawning,
+the race hookup). Labels as above: **confirmed** = read from the code / disassembly, **inferred** otherwise.
+`D` = a driver object (12 of them, 0x5870 bytes each, at manager + 0x630, the manager at `DAT_010edb50`),
+`AIC[x]` = `AIConfig` (`GLOBALCONFIG.BNDL` 010000000007fb0e) at instance offset x, reached through
+`DAT_010edac0` / `DAT_010edac4`.
+
+### Same physics as the player (confirmed)
+
+- The fixed tick (`FUN_004766a0`) runs the AI pass first (`FUN_0052a450` → `FUN_004e78f0` → per driver
+  `FUN_004e75f0`: clear the command block at D+0x57f0, run the state's Update, the stuck / reset timer), then the
+  player manager (`FUN_00597280` → `FUN_00580640`: per player, clear the input record at player+0x1928 and fill
+  it through the entity's vfunc +0x28; for an AI racer `AIPlayer::FillInput` 0x006c0890, not decompiled, read
+  from the disassembly), then the world step, where `FUN_0091c5c0` writes **every** race-car slot's controls
+  with `FUN_009aacc0` from its input record (`FUN_005734c0(i)`). AI racers drive the full handling model.
+- Input record: +0x04 throttle, +0x08 brake, +0x0c hold override, +0x10 handbrake (analog; the mask is set
+  above 0.1), +0x14 steering, +0x1c nitrous amount, byte +0x33 nitrous mode. Command block (D+0x57f0, 0x30
+  bytes): throttle, brake, hold, steering, handbrake, nitrous, target speed (+0x18, m/s, FLT_MAX = none),
+  modes, "throttle set" / "brake set" bytes (+0x2c / +0x2d) that stop later stages overwriting them.
+- When a racer has no physical car (far away; the slot's car index < 0) it advances **virtually** along its
+  path (`FUN_005056b0`, `FUN_005046e0`): speed rising at most AIC[0x54] = 15 m/s², capped by the path's
+  corner speed byte and the top speed (`Vehicle_Gameplay` +0xac mph, or 110), then teleported in when a car
+  appears (`FUN_005705f0`). Not ported (all our opponents are physical).
+- No handling cheat was found on the control path. The AI's advantages are the rubber band (below), a nitrous
+  tank that refills at AIC[0x10] = 10 units/s (`FUN_00667c10`, the AI branch; the AI earns nothing from drift
+  or near misses) and the shunt steering.
+
+### The racer state (state 8, `FUN_0050da90`)
+
+The driver is a state machine (`FUN_004ee970` switches; vtable [0] Enter, [1] Exit, [2] Update, [3] Id).
+Behaviour command 1 maps to state 8 (vtable 0x00fa8868), the racer: `AIPlayerType.Behaviour` 8 → 1
+(`FUN_006b8a40`); 75 of the 77 racer types events use have it. State 9 runs state 8 and switches to the chase
+state when the player is ahead; 0 / 18 / 22–24 / 26 are cop roles, 4 drives to a point, 11 is the crash
+recovery, 13 the traffic-lane driving. State 8's Update, in order: path upkeep (`FUN_0050a070`, the lane
+planner `FUN_0050b000`), crash check (`FUN_004fb9f0` → state 11), then for a physical car the command
+builder `FUN_0050a740`, nitrous (`FUN_004fdb60`), racer interaction (`FUN_005050d0`), the emergency brake and
+pedal controller (`FUN_005095b0`), and the post to D+0x57f0 (`FUN_004dff40`).
+
+**Steering** (`FUN_0050a740` → `FUN_00508d50` → `FUN_00506c00`, confirmed):
+- Look-ahead time T (`FUN_00503880`): over the path nodes within AIC[0x1f0] = 0.6 × speed metres, sum the
+  node turns; stop at the first node whose inside clearance (+0x38 when the summed turn is positive, else +0x3c)
+  is below AIC[0x1ec] = 8 m and that turns more than AIC[0x1f4] = 90° (or has node flag 0x80); d = the path
+  length to it (else to the last node scanned). T = d / speed, at least AIC[0x1fc] = 0.45, at most the
+  planner's cap D+0x549c (lane planner +0x51c, clamped to AIC[0x200] 0.15 … 0.6) and at most 0.6.
+- Look-ahead distance L = max(AIC[0x144] = 15, speed × T + 3) (3: `.data` 0x010c4414).
+- Lateral error (`FUN_00505e60`): P = the path's Hermite point at arc length (car's projection + L); with h the
+  car's heading in the ground plane, e = (pos + L·h − P) · (−h.z, h.x), positive when the aim point lies to the
+  right of the path ((−h.z, h.x) is the car's right; checked in a memory snapshot against the body matrix).
+- PID (`FUN_00436920`): e − lane offset clamped to ±20, integral clamped to ±20, u = −(Kp e + Ki I + Kd Δe/dt)
+  with the integral from before the tick. Gains per car from `Vehicle_Gameplay.PIDController` (instance +0xb0:
+  Proportional +0x18, Integral +0x14, Derivative +0x10; the 911 0.3 / 0.01 / 0.1; Kp 0.2–2, Kd 0.1–1.25, Ki
+  0.01 across the cars). Steering = clamp(u, ±1) (positive = right), 0 with every wheel off the ground
+  (`FUN_008f5350`).
+- Lane offset: interpolated from the old to the planner's new offset at AIC[0x18] = 3 m/s (`FUN_0050b000`).
+  The planner (`FUN_00502e20`) runs only with obstacle records: 32 offsets across the road scored against the
+  obstacles (`FUN_004febe0`, inferred) plus bonuses (AIC[0x3c] 0.2 nearest the racing line, AIC[0x20] 0.1
+  nearest the car, AIC[0x1c] 0.05 nearest the current target), kept 1.5 m inside the road. With nothing
+  around, the offset is 0 and the car follows its path exactly.
+
+**Target speed** (`FUN_00508d50`, confirmed): min(settings speed D+0x818 if ≥ 0, else D+0x5668), lowered to
+0 when the narrow obstacle sweep along the path hits (`FUN_00503bf0`; the wide sweep only forces brake = 1;
+sweep length min(AIC[0x44] 500, max(1.1 × speed, the stopping distance))), and by the ram mode. For an AI
+racer the settings speed is −1 (`FUN_006c0700` builds the settings from defaults) and D+0x5668 is the rubber
+band's schedule speed, FLT_MAX outside a race (the rubber-band search found the copy `FUN_00514590`; the
+path-follower search listed only the init and the traffic substates as writers of D+0x5668: to be settled by a
+live read). **A physical racer has no corner speed rule**: every access to
+the path node's speed byte (+0x4d) and corner radius (+0x2c) was listed; the readers are the virtual-progress
+paths only and `FUN_004e5270`, reached from the uncalled 0x004ff480 (a braking look-ahead); 0x004ff550 (speed
+from the turn angle, AIC[0xcc..0xd8]: 130 → 80 mph over 10° → 80°) is uncalled too. On a clear road the
+racer holds full throttle and takes corners by steering (the look-ahead shortens at tight corners) and the
+rubber band's cap. A live read of the target speed (D+0x5808) and pedals during a race would confirm it.
+
+**Pedals** (`FUN_004fa0e0`, confirmed): a speed PID (`FUN_004f8100`: Kp 0.6, Ki 0.05, Kd 0.5, `.rdata`
+0x00fa8ecc..; error = speed − target and integral clamped to ±9) integrates a pedal once per tick: pedal =
+clamp(pedal + 0.03 × u, ±1) (0x00fa8ee0); pedal > 0 is throttle, else brake. A target below 0.5 m/s under
+10 mph pulls the handbrake, and below 0.5 m/s also brakes fully; airborne, no brake.
+
+**Emergency brake** (`FUN_005095b0` → `FUN_00508070`, confirmed): above 70 mph (0x00fa8eb8), the cars within
+r = clamp(speed × AIC[0x28] × 0.5, 40, 150) of pos + forward × (r − 10) are tested for a 2D circle-circle time
+to contact (velocities = heading × speed; overlap = 0, separating = never; radii from the car's box); under
+AIC[0x28] = 1.5 s the brake is forced to 1.
+
+**Nitrous** (confirmed): `FUN_004ff620` only while speed + 2.7 m/s (0x00fa8f0c) < target and the driver's
+nitrous mode is not 2. To start: tank fraction > AIC[0x140] = 0.25, speed ≤ the schedule speed − AIC[0x14c]
+= 10 mph, and the larger of the left / right turn sums over the next speed × 1.5 m of path (`FUN_004e4eb0`)
+under AIC[0x128] = 5°; to keep firing, under AIC[0x124] = 30°. State 8 adds `FUN_004fdb60`: on when the local
+player is ahead along the AI's heading and the AI is below its schedule speed.
+
+**Racer interaction** (`FUN_005050d0`, inferred meaning): with the nearest race car, mode 2 follows / rams a
+car with a better race position close ahead (AIC[0x164] 20 m, AIC[0x16c..0x174] speed windows, at least
+80 mph); mode 1 shunts (own speed 90–200 mph, after a random delay lerp(AIC[0x188] 0.2, AIC[0x17c] 1) s, lateral
+gap within both half-widths + 5 m, |Δspeed| ≤ 15 mph): steering = clamp(AIC[0x198] 0.15 × the lateral gap, ±1),
+into the other car. Only within −20 … +80 m of the local player. Not ported.
+
+**Crash recovery** (confirmed): `FUN_004fb9f0` starts state 11 when the car's contact flags (VS flags 0x1 /
+0x200 / 0x4000, meaning unknown) stay set over 1 s below 10 mph (cleared after 0.2 s free; not within
+AIC[0x19c] = 10 m of the target). State 11 (`FUN_004eeba0`): steering = clamp(−4 × the heading error to the
+path, ±1), mirrored in reverse; the pedal from `FUN_004f9e80`, a banded controller towards 10 mph (0 within
+1 mph, full above / below by 9 / 1 mph, a ramp from 4 to 9 mph; its smoothing helper `FUN_005114e0` not read);
+the direction flips when probe rays at ±25° (0.436 rad, `.data` 0x010c4234) hit or the car sticks again, at
+most once a second; back to the previous state above 5 mph with the probes clear. D+0x5854 accumulates time
+in state 11 (decaying at 0.25/s otherwise); past AIC[0x1a0] = 10 s, or AIC[0x1a4] = 3 s when an (inferred)
+off-screen check passes, the driver asks for a reset (`FUN_0083d4b0`).
+
+### The path (confirmed unless stated)
+
+- Routes: an A* search on a worker thread (`"AStarWorker"`, `FUN_00528fe0`) over the **AIData** road graph's
+  junctions (`FUN_00527300`: step cost = exit cost / 511 (= length / 200 m), plus a turn penalty
+  5·max(0, 0.98 − trig(Δ))³ (`FUN_0052e250`; sin or cos unresolved), × 5 on shortcut exits and × 100 on jump
+  exits when route options are set; heuristic the straight distance / 200), expanded back into nodes
+  (`FUN_00524e20`). The format is in formats.md "AIData (0x200)".
+- A race path (`FUN_005075e0` → `FUN_004edb80` → `FUN_004e7d80`) takes one node per route point (closer than
+  0.15 m skipped), **resampled every 15 m** (`FUN_004e95e0`; at most 48 nodes in the 64-node ring at D+0x8a0),
+  half-widths 5 m (`.rdata` 0x00fa8538), Hermite tangents 0.5 × (next − previous) (`FUN_004e6160`), side
+  clearances from nav raycasts along ±the side vector up to 100 m minus 0.5 m (`FUN_004e58e0`), the node turn
+  wrap(heading of the next segment − heading of the previous) (`FUN_004e6a10`).
+- **A racing line**, not the centre line: `FUN_004ec380` → `FUN_004e70e0` relaxes per-node particles (0.99
+  velocity damping, bending forces) within ±half the road width of the route points (`FUN_004e6e60`), 35
+  iterations per tick for one driver per frame, until 10 iterations change less than 0.01 (or 3000); the force
+  law is only partly read. Node +0/+4 hold the line, +0x10/+0x14 the route points. Not ported.
+- Corner speeds (`FUN_004ea510` finds corners: a run of same-sign node turns passing 3° (0x00fa884c) and
+  totalling 25° (0x00fa8848), its ends 3° in from either side, split at the middle node, each half ≥ 5 m;
+  `FUN_004ea860`): per half, the chord L (the road's full width instead when that is over 1.5 L, 0x00fa8850),
+  for each segment with Δ = |wrap(entry heading − segment heading)| > 0.01: R = (L/2) / cos((π − Δ)/2), the
+  half's speed = clamp(AIC[0xc8] 1.8 × min(top speed, √(9.81 μ R)), 0, 255) m/s with μ = the rear tyres'
+  `Pure_Lateral_Grip.Peak_Force_Coefficient` (2.99 on the 911) and the top speed from the aerodynamics data
+  (`f1538c51`, 189 mph on the 911); no smoothing between nodes. Read only by the virtual progress.
+- Braking distance (`FUN_00518520`, live in the obstacle sweep): d = 1.666 ln((a v0² + b) / (a v1² + b)) /
+  (2a), a = (vehicle+0x688 × −vehicle+0x7d8 + vehicle+0x7d4) / mass, b = vehicle+0x688 × 9.81 (inferred: a grip
+  μ, the lift and a drag coefficient; snapshot values 2.05 / −1 / 0.8 on a 1807 kg car); the writer of +0x688
+  was not found.
+- Nodes built straight from AIData (`FUN_004f2310`, the wander and traffic builders) take the node position and
+  half-widths of drivable width × 0.125 m; no reader of the fast width (+0x24) was found.
+
+### Rubber band (confirmed)
+
+Manager at world+0x2f478 (`DAT_01177868`), frame function `FUN_00645c90` (one racer per frame, round robin
+over player slots 12–23, opponent k = slot − 12), initialised by `FUN_0070caa0` → `FUN_0063a0f0` from
+`OfflineEvent` +0x94 (`RaceBalancingData`) and +0x98 (`RaceBalancingProfile`), with a pace multiplier mgr+0xa0 =
+the event's `AllowedVehicleList` entry `a17a5e72` for the player's car (1.0 … 2.3). Per racer:
+- t (`FUN_0063ef30`): with lead = the player's remaining distance − the AI's (race tracker world+0x2f47c,
+  +0xdf0) and e = `OpponentData[k]`: lead < `BehindDistance` (+0x14) → 0, lead ≥ `AheadDistance` (+0x10) → 1,
+  else clamp((s − Behind) / (Ahead − Behind)) with s the straight distance between the cars signed by lead.
+- f (`FUN_006432a0`): A = lerp(e+0x2c, e+0x28, t), B = lerp(e+0x20, e+0x1c, t); A before progress e+0x24, B
+  after e+0x18, linear between. Progress x = 1 − remaining / total (`FUN_00654110`).
+- Speed = f × `MaxSpeed` (`RaceBalancingProfile` +0x10, cracked name) × pace × 0.44704 for a physical car;
+  then × (1 + K clamp((race time − expected time) / 30, ±1)) with K = 0.1 (0.2 virtual) (`FUN_006433f0`), the
+  expected time from the route's segment speeds (`FUN_00642da0`, `FUN_00661eb0`) plus 3 s per player crash
+  (RBD +0x10) and an offset (RBD +0x14). Pushed to D+0x5668 every frame (`FUN_0083c820` → `FUN_00514590`).
+- It is a **target-speed cap**, not a grip or torque multiplier. Ported without the time correction.
+
+`AIPlayerType` (GAMELOGIC/GAMEPLAY.BNDL, 200 types; the racer personality copied by `FUN_006c0700`): its
+speed caps (0x78 / 0x7c, 90 mph) are read only by non-racer behaviours; nitrous usage (u16 0xaa) has no
+reader; the car comes from its rollout (0x14). Not used yet.
+
+### Model decisions (ours, `ai.rs` / `ai_driver.rs`)
+
+- The path: the road-graph centre line through AIData nodes (a Catmull-Rom spline), not the game's relaxed
+  racing line; the inside clearance is the node's drivable half-width, not a nav raycast; no lane planner (the
+  offset stays 0, as the game's does on a clear road).
+- Race routes: the shortest node path (A* on link lengths, no turn penalty or exit factors) between the start
+  and every gate, laps unrolled; test routes (`--ai` without `--race`): from the player's spawn, the
+  best-aligned neighbour at every node (`FUN_00436c00`'s rule) for 3 km.
+- Opponents' cars: the event's allowed cars in turn (the opponents' own cars, `AIPlayerInformation`
+  `9b4e35f7` / `2968e77a` and the type's rollout, are not resolved).
+- The emergency brake's circle radius = the larger horizontal half extent of the body.
+- The recovery's probe length 6 m; the banded pedal's shape between its read thresholds; the reset puts the car
+  on the path at its progress (the game's reset placement not traced); the off-screen 3 s reset is not used.
+- `MW_AI_CORNER_SPEED=1`: applies the game's uncalled braking look-ahead (0x004ff480) on the ported corner speeds,
+  with the braking distance's aero term left out (a = 0). Off by default, as in the game.
+- Not ported: the racer interaction (side swipe / ram), the virtual progress, the time correction of the
+  rubber band, the slipstream.
+
 ## Vehicle paint, liveries and dirt
 
 The paint shaders' object constants are registered by name with slot numbers in one table function in the 0x8c4xxx range (a run of `FUN_00a5d490` calls): `PbrPaintDiffuseColour` 0x2a, `PbrPaintScratchColour` 0x2e, `PbrPaintScratchSettings` 0x2f, `PbrPaintSecondaryDiffuseColour` 0x30, `PbrPaintSecondarySpecularColour` 0x31, `GenericVector4_A` 0x9c (B, C follow). No `FUN_00a5d660(index)` call uses the paint slots: they are per-object constants, written through `FUN_00a621a0(slot)` in `FUN_008e9c00` from a paint block `P` (word 0xa2 of a 0x2b0-byte render record): 0x2a / 0x2b = primary diffuse / specular (`P+0x10` / `+0x20`), 0x2e = scratch colour (`+0x30`), 0x30 / 0x31 = secondary diffuse / specular minus the primary ones (`+0x40` / `+0x50`), so the `_TwoPaint*` programs lerp to the secondary paint by `mPaintColourIndex` or the mask's green; 0x9d / 0x9e = DirtColour / DustColour (`+0x60` / `+0x70`); 0x9c = (DirtColour.w × record word 0x28, DustColour.w × word 0x29, words 0x2a, 0x2b), i.e. the car's dirt and dust levels scaled by the colours' `.w`. The levels come into the record as one float4 parameter of `FUN_008e1280` (record init; callers `FUN_008b7a20`, `FUN_008cffa0`); their source (the build-up rule) and the code that fills `P` (which `ColourGroup` of the car's `VehicleColourPalette` supplies the secondary paint) are still open. Shader maths: research log 2026-10-06 (session 5, round 3).
