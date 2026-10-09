@@ -179,6 +179,17 @@ pub struct TrafficCarInfo {
     pub vehicle: usize,
 }
 
+/// A traffic car as the engine-sound pool sees it ([`TrafficSystem::sound_cars`]).
+#[derive(Debug, Clone, Copy)]
+pub struct TrafficSoundCar {
+    pub key: u32,
+    pub position: Vec3,
+    pub velocity: Vec3,
+    pub forward: Vec3,
+    pub vehicle: usize,
+    pub random: f32,
+}
+
 /// The game's random source (`world+0x36190`): a 64-bit LCG whose high word feeds an 8-slot ring of floats
 /// in [1, 2); each draw returns the slot written 8 draws earlier, minus 1.
 struct GameRng {
@@ -359,6 +370,36 @@ impl TrafficSystem {
             vehicle: c.vehicle,
         });
         lane.chain(crashed).filter(|c| c.position.distance_squared(point) <= r2).collect()
+    }
+
+    /// Traffic cars within `radius` of `point` for the engine-sound pool (`car_audio.rs`): a key that tells
+    /// cars apart (lane followers by spawn serial, crashed ones by entity, as [`Self::near_miss_query`]), the
+    /// position, velocity and forward axis, the vehicle type and the car's random value (its personality).
+    pub fn sound_cars(&self, point: Vec3, radius: f32) -> Vec<TrafficSoundCar> {
+        let r2 = radius * radius;
+        let lane = self.cars.iter().flatten().map(|c| TrafficSoundCar {
+            key: c.serial,
+            position: c.position,
+            velocity: c.forward * c.speed,
+            forward: c.forward,
+            vehicle: c.vehicle,
+            random: c.personality,
+        });
+        let crashed = self.crashed.iter().map(|c| TrafficSoundCar {
+            key: 0x8000_0000 | c.entity.to_bits() as u32,
+            position: c.position,
+            velocity: c.velocity,
+            forward: c.right.cross(Vec3::Y).normalize_or_zero(),
+            vehicle: c.vehicle,
+            // MODEL: a crashed car keeps no personality here; any fixed value.
+            random: 0.5,
+        });
+        lane.chain(crashed).filter(|c| c.position.distance_squared(point) <= r2).collect()
+    }
+
+    /// The traffic vehicle types (for their sounds).
+    pub fn vehicles(&self) -> &[mw_assets::traffic::TrafficVehicleType] {
+        &self.data.vehicles
     }
 
     /// The nitrous near-miss query (`FUN_00665f30` → the world's sphere query `FUN_00aa0440` on broadphase
