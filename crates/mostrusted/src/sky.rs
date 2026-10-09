@@ -137,6 +137,32 @@ impl Sky {
 
 /// A cube map (`size` per face, `mips` levels, RGBA16F) filled per texel direction and mip level.
 fn cube_image(size: usize, mips: usize, f: impl Fn(Vec3, usize) -> [f32; 3] + Sync) -> Image {
+    match bake_pool() {
+        Some(pool) => pool.install(|| cube_image_in_pool(size, mips, &f)),
+        None => cube_image_in_pool(size, mips, f),
+    }
+}
+
+/// The environment bakes run on a small pool of their own: on the global rayon pool a bake (a timeline change
+/// while driving) took every core for its duration and starved the main and render threads (research log
+/// 2026-10-09, frame drops). The texels are the same; only the bake takes longer. `MW_BAKE_THREADS=n` sets the
+/// pool size, 0 = the global pool (A/B).
+fn bake_pool() -> Option<&'static rayon::ThreadPool> {
+    static POOL: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
+    POOL.get_or_init(|| {
+        let n = std::env::var("MW_BAKE_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+        (n > 0).then(|| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(n)
+                .thread_name(|i| format!("environment bake {i}"))
+                .build()
+                .expect("bake thread pool")
+        })
+    })
+    .as_ref()
+}
+
+fn cube_image_in_pool(size: usize, mips: usize, f: impl Fn(Vec3, usize) -> [f32; 3] + Sync) -> Image {
     use rayon::prelude::*;
     let mut data = Vec::new();
     // wgpu wants layer-major order: every mip of face 0, then face 1, ...

@@ -710,6 +710,13 @@ fn main() -> anyhow::Result<()> {
             particles::ParticlesPlugin,
             sfx::SfxPlugin,
         ))
+        // Avian optimises its collider trees on the async compute pool and blocks on the result later in the
+        // same step; that pool also compiles pipelines, so a shader compile (or a busy machine) stalled the
+        // physics step. Inline it is ~0.05 ms a step (research log 2026-10-09). `MW_AVIAN_ASYNC=1`: as before.
+        .insert_resource(avian3d::collider_tree::ColliderTreeOptimization {
+            use_async_tasks: std::env::var_os("MW_AVIAN_ASYNC").is_some(),
+            ..default()
+        })
         .add_plugins(camera::CameraPlugin { mode: camera_mode, look_back })
         .add_plugins(crash::CrashPlugin)
         .add_plugins(car_impacts::CarImpactsPlugin)
