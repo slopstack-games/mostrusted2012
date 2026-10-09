@@ -472,7 +472,7 @@ fn spawn_route_markers(
 }
 
 /// Give the player's car (each new one after a swap too) its `Racer`.
-fn attach_player(mut commands: Commands, cars: Query<(Entity, &Car), Without<Racer>>) {
+fn attach_player(mut commands: Commands, cars: Query<(Entity, &Car), (Without<Racer>, With<crate::drive::Player>)>) {
     for (e, car) in &cars {
         commands.entity(e).insert((Racer::player(car.params.body_half_extents), RacerProgress::default()));
     }
@@ -787,7 +787,10 @@ fn run_test(
     race: Res<RaceState>,
     mut test: ResMut<RaceTest>,
     mut input: ResMut<CarInput>,
-    mut cars: Query<(&mut Transform, &mut LinearVelocity, &mut AngularVelocity, &RacerProgress), With<Car>>,
+    mut cars: Query<
+        (&mut Transform, &mut LinearVelocity, &mut AngularVelocity, &RacerProgress),
+        (With<Car>, With<crate::drive::Player>),
+    >,
     mut exit: MessageWriter<AppExit>,
 ) {
     if test.done {

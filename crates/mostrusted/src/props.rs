@@ -39,6 +39,9 @@ use mw_formats::CollisionTag;
 
 use crate::drive::Car;
 
+/// What can knock a prop or a traffic car loose: a race car or crashed traffic.
+type Hitter = Or<(With<Car>, With<crate::traffic::TrafficCar>)>;
+
 /// Collision layers. The default (first) layer is the world, so colliders spawned without layers are
 /// world geometry.
 #[derive(PhysicsLayer, Default, Clone, Copy, Debug)]
@@ -55,7 +58,8 @@ pub enum GameLayer {
 
 impl GameLayer {
     pub fn car() -> CollisionLayers {
-        CollisionLayers::new(GameLayer::Car, [GameLayer::World, GameLayer::Prop, GameLayer::Traffic])
+        // Cars collide with each other too (race cars, `ai.rs`).
+        CollisionLayers::new(GameLayer::Car, [GameLayer::World, GameLayer::Car, GameLayer::Prop, GameLayer::Traffic])
     }
     pub fn car_bumper() -> CollisionLayers {
         CollisionLayers::new(GameLayer::CarBumper, [GameLayer::Prop, GameLayer::Traffic])
@@ -261,7 +265,7 @@ fn stream_props(
     mut commands: Commands,
     time: Res<Time>,
     mut timer: Local<f32>,
-    car: Query<&GlobalTransform, With<Car>>,
+    car: Query<&GlobalTransform, (With<Car>, With<crate::drive::Player>)>,
     mut props: Query<(Entity, &mut PropBody, &Transform)>,
     mut stats: ResMut<PropStats>,
 ) {
@@ -307,7 +311,7 @@ pub struct PropHooks<'w, 's> {
     bodies: Query<'w, 's, (&'static RigidBody, &'static ComputedMass, &'static LinearVelocity)>,
     /// Lane-following traffic colliders, and the bodies that knock them off their lane (`traffic.rs`).
     traffic: Query<'w, 's, (), With<crate::traffic::TrafficBody>>,
-    hitters: Query<'w, 's, (), Or<(With<Car>, With<crate::traffic::TrafficCar>)>>,
+    hitters: Query<'w, 's, (), Hitter>,
 }
 
 impl CollisionHooks for PropHooks<'_, '_> {
@@ -404,7 +408,7 @@ fn unpin_props(
 /// Knocked props go back where they stood (or are removed) once the car is beyond their reset distance.
 fn reset_far_props(
     mut commands: Commands,
-    car: Query<&GlobalTransform, With<Car>>,
+    car: Query<&GlobalTransform, (With<Car>, With<crate::drive::Player>)>,
     mut props: Query<(Entity, &mut PropBody, &mut Transform)>,
     mut stats: ResMut<PropStats>,
 ) {
@@ -543,7 +547,7 @@ fn run_smash_test(
     time: Res<Time>,
     mut test: ResMut<SmashTest>,
     mut input: ResMut<crate::drive::CarInput>,
-    cars: Query<(&Car, &Transform)>,
+    cars: Query<(&Car, &Transform), With<crate::drive::Player>>,
     props: Query<(&PropBody, &Transform), Without<Car>>,
     stats: Res<PropStats>,
     mut exit: MessageWriter<AppExit>,

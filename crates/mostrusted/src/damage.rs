@@ -42,6 +42,11 @@ impl Plugin for DamagePlugin {
 #[derive(Resource, Default)]
 struct NextCarDamage(Option<(Arc<VehicleDamage>, ImpactGraph)>);
 
+/// The damage model of a car spawned outside the player's `PendingCar` path (an AI car, `ai.rs`): inserted with
+/// the car so [`attach_damage`] takes it instead of the pending player car's.
+#[derive(Component, Clone)]
+pub struct DamageSource(pub Option<(Arc<VehicleDamage>, ImpactGraph)>);
+
 /// Damage state of a car.
 #[derive(Component)]
 pub struct CarDamage {
@@ -111,13 +116,18 @@ fn attach_damage(
     add: On<Add, Car>,
     mut commands: Commands,
     mut next: ResMut<NextCarDamage>,
+    sources: Query<&DamageSource>,
     children: Query<&Children>,
     meshes: Query<(), With<Mesh3d>>,
     colliders: Query<(), With<Collider>>,
     mut bindposes: ResMut<Assets<SkinnedMeshInverseBindposes>>,
 ) {
     let car = add.entity;
-    let Some((model, graph)) = next.0.take() else { return };
+    let source = match sources.get(car) {
+        Ok(s) => s.0.clone(),
+        Err(_) => next.0.take(),
+    };
+    let Some((model, graph)) = source else { return };
     let kids: Vec<Entity> = children.get(car).map(|c| c.iter().collect()).unwrap_or_default();
     let Some(collider) = kids.iter().copied().find(|&e| colliders.contains(e)) else { return };
     let joints: Vec<Entity> = model
@@ -341,7 +351,7 @@ fn run_crash_test(
     time: Res<Time>,
     mut test: ResMut<CrashTest>,
     mut input: ResMut<CarInput>,
-    cars: Query<(&Car, &CarDamage, &Transform)>,
+    cars: Query<(&Car, &CarDamage, &Transform), With<crate::drive::Player>>,
     crash: Res<crate::crash::CrashState>,
     mut exit: MessageWriter<AppExit>,
 ) {
@@ -430,7 +440,7 @@ fn run_crash_test(
 fn crash_camera(
     test: Res<CrashTest>,
     crash: Res<crate::crash::CrashState>,
-    cars: Query<&GlobalTransform, With<CarDamage>>,
+    cars: Query<&GlobalTransform, (With<CarDamage>, With<crate::drive::Player>)>,
     mut camera: Query<&mut Transform, crate::MainCamera>,
 ) {
     // The crash camera has the view while its sequence runs.

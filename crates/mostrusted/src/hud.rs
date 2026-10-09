@@ -186,7 +186,7 @@ fn toggle_debug(
     keys: Res<ButtonInput<KeyCode>>,
     mut settings: ResMut<HudSettings>,
     hud: Option<Res<Hud>>,
-    car: Query<(), With<crate::drive::Car>>,
+    car: Query<(), (With<crate::drive::Car>, With<crate::drive::Player>)>,
     mut status: Query<&mut Visibility, With<crate::StatusText>>,
 ) {
     if keys.just_pressed(KeyCode::F3) {
@@ -202,7 +202,10 @@ fn toggle_debug(
     }
 }
 
-fn track_car(mut state: ResMut<HudState>, car: Query<(&GlobalTransform, &crate::drive::Car)>) {
+fn track_car(
+    mut state: ResMut<HudState>,
+    car: Query<(&GlobalTransform, &crate::drive::Car), With<crate::drive::Player>>,
+) {
     let Ok((t, car)) = car.single() else {
         state.last_position = None;
         return;
@@ -263,7 +266,7 @@ fn draw_hud(
     hud: Option<ResMut<Hud>>,
     settings: Res<HudSettings>,
     state: Res<HudState>,
-    car: Query<(&crate::drive::Car, &GlobalTransform)>,
+    car: Query<(&crate::drive::Car, &GlobalTransform), With<crate::drive::Player>>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     time: Res<Time>,
     mut nodes: Query<PoolNode, With<QuadNode>>,
