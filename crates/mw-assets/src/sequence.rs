@@ -1086,6 +1086,7 @@ impl AssetStore {
 
     /// Load an event's intro and outro sequences (`EventIntro` from its `IntroMessageGroup`, `EventOutro` from
     /// the game mode's feedback group).
+    #[allow(clippy::type_complexity)]
     pub fn event_sequences(
         &self,
         event: &crate::events::Event,

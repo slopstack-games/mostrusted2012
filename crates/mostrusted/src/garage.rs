@@ -348,6 +348,7 @@ type CameraNotCar = (With<Camera3d>, Without<Car>, Without<crate::reflection::Pl
 /// Place a car the loader finished: the startup car at `--spawn`, otherwise in place of the
 /// current car (keeping its position, heading and velocity) or on the ground below the camera.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
 fn place_arrived_car(
     mut commands: Commands,
     mut garage: ResMut<Garage>,

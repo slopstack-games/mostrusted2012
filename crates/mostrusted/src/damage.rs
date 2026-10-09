@@ -112,6 +112,7 @@ fn similarity_transform(s: &Similarity) -> Transform {
 /// When a car spawns: one joint entity per bone (children of the car, in car space = model space), and
 /// a `SkinnedMesh` on each body mesh (the car's direct children with a mesh; wheels hang below pivots).
 /// Runs as an observer so the meshes are never drawn with joint attributes but without a skin.
+#[allow(clippy::too_many_arguments)]
 fn attach_damage(
     add: On<Add, Car>,
     mut commands: Commands,

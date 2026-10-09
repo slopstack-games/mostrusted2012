@@ -223,6 +223,7 @@ fn hold_for_intro(setup: Res<Setup>, race: Option<ResMut<RaceState>>) {
 
 /// Start the intro once the world, the player's car and the opponents are in place; the outro at the finish.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
 fn start_cutscenes(
     setup: Res<Setup>,
     loaded: Res<crate::Loaded>,

@@ -613,6 +613,7 @@ struct CameraState {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
 fn follow_car(
     time: Res<Time>,
     settings: Res<CameraSettings>,

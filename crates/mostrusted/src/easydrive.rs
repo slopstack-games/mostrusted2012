@@ -362,6 +362,7 @@ fn rows(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn navigate(
     mut menu: ResMut<EasyDrive>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -490,6 +491,7 @@ fn lookup(path: &str, arg: Option<&str>, history: &[String], names: &[String], s
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn redraw(
     mut commands: Commands,
     mut menu: ResMut<EasyDrive>,

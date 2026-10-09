@@ -482,6 +482,7 @@ pub struct RacerFinished {
 #[derive(Message, Clone)]
 pub struct StartRace(pub Arc<RaceSetup>);
 
+#[allow(clippy::type_complexity)]
 fn start_race(
     mut commands: Commands,
     mut starts: MessageReader<StartRace>,
@@ -530,6 +531,7 @@ fn spawn_route_markers(
 }
 
 /// Give the player's car (each new one after a swap too) its `Racer`.
+#[allow(clippy::type_complexity)]
 fn attach_player(mut commands: Commands, cars: Query<(Entity, &Car), (Without<Racer>, With<crate::drive::Player>)>) {
     for (e, car) in &cars {
         commands.entity(e).insert((Racer::player(car.params.body_half_extents), RacerProgress::default()));
@@ -834,6 +836,9 @@ struct RaceTest {
     /// The wrong-way check: drive the first leg backwards first.
     reversed: bool,
     saw_wrong_way: bool,
+    /// The detector may call reversing a missed checkpoint instead (after an intro's rolling start the car can
+    /// sit where backing up nears the gate after next, `FUN_006585b0`).
+    saw_missed: bool,
     /// `MW_RACE_TEST_HOLD=<s>`: keep running this long after the result (to screenshot the results).
     exit_at: Option<u32>,
 }
@@ -842,6 +847,7 @@ const TEST_SPEED: f32 = 40.0;
 const TEST_BEFORE: f32 = 20.0;
 const TEST_AFTER: f32 = 10.0;
 
+#[allow(clippy::type_complexity)]
 fn run_test(
     time: Res<Time>,
     race: Res<RaceState>,
@@ -878,7 +884,7 @@ fn run_test(
             test.done = true;
             let laps: Vec<String> = p.lap_times.iter().map(|l| format!("{l:.2}")).collect();
             info!(
-                "TEST RESULT race event={} kind={} intro={:.1}s laps={} gates={} passed={} finished={:.2}s position={} won={:?} wrong_way_seen={} average={:.1}mph lap_times=[{}]",
+                "TEST RESULT race event={} kind={} intro={:.1}s laps={} gates={} passed={} finished={:.2}s position={} won={:?} wrong_way_seen={} missed_seen={} average={:.1}mph lap_times=[{}]",
                 race.event.id,
                 race.event.kind.label(),
                 race.intro,
@@ -889,6 +895,7 @@ fn run_test(
                 p.position,
                 race.won,
                 test.saw_wrong_way,
+                test.saw_missed,
                 p.average_mph(p.finished.unwrap_or(race.clock)),
                 laps.join(","),
             );
@@ -904,10 +911,14 @@ fn run_test(
     }
     input.scripted = Some([0.0; 4]);
     test.saw_wrong_way |= p.wrong_way;
+    test.saw_missed |= p.missed_checkpoint;
     // First 4 s: drive away from the first gate (a wrong-way check), then the gates.
     if !test.reversed {
         if race.clock < 4.0 {
-            let back = -(race.entries[1].position - race.player_start.translation).with_y(0.0).normalize_or(Vec3::Z);
+            // Away from the racer's next target from where the car is: after an intro's rolling start the car
+            // is no longer on `player_start`.
+            let target = race.entries.get(p.target()).map_or(race.entries[1].position, |e| e.position);
+            let back = -(target - t.translation).with_y(0.0).normalize_or(Vec3::Z);
             t.translation += back * 15.0 * time.delta_secs();
             t.rotation = Quat::from_rotation_y(back.x.atan2(back.z));
             lin.0 = Vec3::ZERO;

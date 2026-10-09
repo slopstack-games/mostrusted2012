@@ -367,7 +367,7 @@ fn recover(r: &mut Recovery, i: &DriverInput, speed: f32, h: Vec2, dt: f32) -> C
     let (_, tangent) = i.route.at(i.progress + 5.0);
     let t = Vec2::new(tangent.x, tangent.z).normalize_or(h);
     // Heading error: positive when the path points to the car's left (+X is left of +Z).
-    let error = (h.x * t.y - h.y * t.x).atan2(h.dot(t)) * -1.0;
+    let error = -(h.x * t.y - h.y * t.x).atan2(h.dot(t));
     let mut steer = (RECOVER_STEER_GAIN * error).clamp(-1.0, 1.0);
     let pedal = banded_pedal(speed / MPH - RECOVER_MPH);
     let mut c = CarControls::default();
@@ -460,7 +460,7 @@ pub fn corner_speeds(points: &[Vec2], turn: &[f32], width: f32, top_speed: f32, 
                 }
             }
             if e > s {
-                let (mid, mid2) = ((s + e) / 2, (s + e + 1) / 2);
+                let (mid, mid2) = ((s + e) / 2, (s + e).div_ceil(2));
                 let theta0 = heading(s.saturating_sub(1));
                 for (a, b) in [(s, mid), (mid2.max(mid + 1).min(e), e)] {
                     let chord = points[b].distance(points[a]);

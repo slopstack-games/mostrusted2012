@@ -211,6 +211,7 @@ fn detect_crash(
 }
 
 /// While crashed the player has no control; when the reset is due, put the car back on its saved pose.
+#[allow(clippy::type_complexity)]
 fn hold_and_reset(
     config: Option<Res<CrashConfig>>,
     mut state: ResMut<CrashState>,
@@ -260,6 +261,7 @@ fn hold_and_reset(
 
 /// Advance the sequence: time scale, HUD, letterbox, the shots' camera, and the reset when the cameras end.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
 pub(crate) fn run_sequence(
     real: Res<Time<Real>>,
     mut virtual_time: ResMut<Time<Virtual>>,

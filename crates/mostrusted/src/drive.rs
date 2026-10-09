@@ -778,6 +778,7 @@ pub fn log_gamepad_events(mut events: MessageReader<RawGamepadEvent>) {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
 pub(crate) fn car_physics(
     time: Res<Time>,
     mut input: ResMut<CarInput>,
