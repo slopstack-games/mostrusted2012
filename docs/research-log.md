@@ -10,6 +10,27 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-09: no generic angular damping on a driving car; the chassis inertia is ours; post-impact yaw damping ported
+- Searched for the source of our unsourced `AngularDamping(0.4)` through the callers of the angular-damping
+  routine `FUN_00907b50` (decomp.md "Angular damping"). The vehicle's damping constraint (`FUN_009aa700`, record
+  at vehicle +0xe0) comes from `PHYSICS/DAMPINGCONSTRAINTSLIST.BNDL`, whose `DrivingVehicle` entry is empty; live
+  in both snapshots the record holds zeros and FLT_MAX thresholds. The only other per-tick damping of the
+  player car outside a drift is `FUN_008f7950`: yaw only, 0.05 × a timer that a collision sets to 1 and that
+  runs out in 1 s (world, car) or 0.3 s (object). Ported (drive.rs `ImpactYawDamping`); fires on both impacts
+  of `--test crash`; the 911's accel / brake / corner / handbrake / drift / landing results are unchanged.
+- **Chassis inertia confirmed live**: the body record's local inverse inertia (+0xe0) is a solid box with the
+  chassis half extents about the centre of mass × `Inertia_Scale`, to four digits on both snapshot cars
+  (1399602, 1762 kg; 122769, 1807 kg). Ours already does this. The MP4's four hulls do not enter (the lead in
+  the 2026-10-07 entry is closed).
+- So the original has no yaw resistance we lack in the body: on `ref/live1` 98.98 s (MP4-12C, the brake-tap
+  entry) ours with the original's zero damping over-rotates more (yaw RMS 8.6 → 14.0 °/s, speed RMS 7.7 → 11.4
+  mph, slip 2.8 → 5.9°). The 0.4 stays, listed as a model decision (handling.md), until the real cause is found.
+- Where the runs part (0.4 kept): the drift's yaw torque, scale and side force match tick by tick, the yaw
+  rates match up to 1.5 s. Under the full brake in the slide (1.75–2.25 s) the original slows 111.4 → 89.4 mph
+  (≈2.0 g), ours 106.6 → 74.5 (≈2.9 g); from 2 s our front / rear slip angles run 8° above the original's
+  (2.25 s: front 47 / 39°, rear 25.5 / 17.6°) and the speed hold then pushes twice as hard to catch up (20 kN
+  against 10 kN). Next: the tyres' combined braking and side force at 20–45° of slip.
+
 ### 2026-10-07: the anti-roll bar's solve found (`FUN_0092ee70`); `FUN_00932af0` is the sleep pass; 2 sub-steps
 - Prompted by the Vita cross-check ("Update constraints" ⊇ the island step). `FUN_00932af0`, which Ghidra could
   not decompile and which was taken for the bar's solve, is the island **sleep** pass (disassembled from

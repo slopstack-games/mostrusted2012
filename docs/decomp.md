@@ -66,7 +66,38 @@ Status words: **confirmed** = read directly from the code; **inferred** = reason
       integration, the speed again; then the time since the last world contact (+0x3010) grows by dt.
 - **Integration**: each stage adds forces and torques to the body's accumulators and `FUN_00907840` integrates
   them into the velocity before the next stage; the damping stages (`FUN_00907b50` angular, `FUN_0091dad0`
-  linear) and the turn-around assist set velocities directly.
+  linear) and the turn-around assist set velocities directly. Neither `FUN_00907840` nor the island's
+  `FUN_009282d0` (gravity × body +0x9c, a speed cap at +0xbc = 447 m/s) damps anything.
+- **Angular damping** (2026-10-09). `FUN_00907b50(body, d, dt)` multiplies the angular velocity in body axes
+  by (1 − d)^(dt × 60) per axis (d a four-lane vector, nothing done when dt is 0). Its per-tick callers on a
+  driving car:
+  1. `FUN_009b2bb0` → `FUN_009aa700` with the record at vehicle +0xe0: the `Physics.DampingConstraint` the car
+     uses, per axis a damping below and above a speed threshold (linear lanes by horizontal, upward and
+     downward speed; angular lanes by |ω| about each body axis), applied through `FUN_009b7160` (linear) and
+     `FUN_00907b50`. `PHYSICS/DAMPINGCONSTRAINTSLIST.BNDL` holds `CrashingVehicle` (angular 0.02 above 2 / 3 /
+     4 rad/s, linear 0.005 above 50), `DrivingVehicle` (**empty**) and `Prop`. Live (both snapshots, player
+     at 115 and 36 mph): every damping 0, every threshold FLT_MAX, the record's pointer +0x60 set: **a driving
+     car gets no damping here**.
+  2. `FUN_008f7950` (from `FUN_00904da0`, before the driveline): yaw damping after a collision. Three timers
+     (vehicle +0x2e80, +0x2e90, +0x2ea0) are set to 1 by `FUN_008f5620` / `FUN_008f5640` / `FUN_008f5660`
+     (skipped in the special state +0x1774), called by the collision analyzer `FUN_00918600` (16 car slots,
+     the slot table at world +0x53220 / +0x55c48) through its three handlers: `FUN_00918120` for the world
+     record (the 0x80-byte table the wall scrape reads; only on a contact's first tick, the analyzer's flag
+     at +0x220 + slot holding it off while the contact lasts; the slot's type byte must be 1, as the
+     player's is live), `FUN_00917bb0` for another car (0x90-byte entries) and `FUN_009175e0` for an object
+     (0xa0-byte entries). Each handler first needs a record value above 1.19e-7 (`.rdata` 0x01023160). The
+     tick damps the body-up lane only, d = 0.05 (0x01021fd0) × the largest timer, then lowers the timers by
+     dt / 1, dt / 1 and dt / 0.3 (0x01021ef0, 0x01021fe0), clamped at 0 (read from the disassembly in snap2).
+     Ported (drive.rs `ImpactYawDamping`).
+  3. `FUN_009d11d0`: the drift's damping (below). `FUN_009cfce0`: the airborne state. `FUN_008f9f40` (another
+     physics object's update with constants at 0x010220e0) and `FUN_00919240` (a network message, case 0x32)
+     are not the player car's tick.
+- **Chassis inertia** (live, 2026-10-09): the body record (vehicle +0x10 [+0x1e0]) holds the local inverse
+  inertia at +0xe0, the world one at +0x40..+0x6c, the inverse mass at +0x8c. Both snapshot cars match a solid
+  box with the chassis's half extents about the centre of mass, × `Inertia_Scale`, exactly (1762 kg, 0.923 /
+  0.581 / 2.342: 3418.5 / 3720.5 / 698.8 kg m²; 1807 kg, 122769: 3348.6 / 3724.0 / 774.5): the bounding
+  box's offset from the centre of mass and the convex hulls do not enter. Ours is the same formula. The rigid
+  body's `AngularDrag` / `LinearDrag` (1 and 1 on cars) were not found applied to a car.
 - **Body movement** has no per-tick stage: `BodyMovementBehaviour` is read when the vehicle is built
   (`FUN_008fda70`: roll damping, the in-air springs `ddbd44c0` / `b80e5de3`); its `Take_off_behaviour` is the
   airborne state's data. The type `BodyMovementBehaviour.Angle_control` exists but no car's data has one.

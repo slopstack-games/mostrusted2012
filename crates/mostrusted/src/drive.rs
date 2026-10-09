@@ -256,6 +256,8 @@ pub struct Car {
     /// (`FUN_008f8360`).
     wall_time: f32,
     turn_assist: TurnAssist,
+    /// The yaw damping after a collision (`FUN_008f7950`).
+    impact_yaw: ImpactYawDamping,
     /// Body roll and pitch relative to the ground plane under the wheels (rad;
     /// roll positive = right side down, pitch positive = nose up).
     pub roll: f32,
@@ -425,7 +427,10 @@ fn spawn_car(
             NoAutoCenterOfMass,
             // Drag and rolling resistance are modelled explicitly; avian's
             // linear damping would add ~1.7 kN at 240 km/h and cap top speed.
-            AngularDamping(0.4),
+            // Model decision: the original damps a driving car's rotation only in a drift and after a collision
+            // (its `DrivingVehicle` damping constraint is empty, read live); this 0.4 stands in for a yaw
+            // resistance ours lacks in a slide (handling.md "Model decisions"). MW_ANGULAR_DAMPING=<v> for A/B.
+            AngularDamping(std::env::var("MW_ANGULAR_DAMPING").ok().and_then(|v| v.parse().ok()).unwrap_or(0.4)),
             LinearDamping(0.0),
             // Render between physics ticks (64 Hz): without this the car and
             // the chase camera judder on faster displays.
@@ -570,6 +575,7 @@ fn spawn_car(
         handbrake_on: false,
         wall_time: f32::MAX,
         turn_assist: TurnAssist::default(),
+        impact_yaw: ImpactYawDamping::default(),
         roll: 0.0,
         pitch: 0.0,
         body_contact: false,
@@ -699,6 +705,15 @@ pub(crate) fn car_physics(
         let pos = transform.translation;
         let up = rot * Vec3::Y;
         let forward = rot * Vec3::Z;
+        // The contacts of the last physics step: the game's collision analysis (`FUN_00918600`) runs before the
+        // vehicle's tick, whose first stages damp the yaw after a collision (`FUN_008f7950`).
+        let contacts = car_contacts(&collisions, &layers, car);
+        if contacts.wall.is_some() && !car.body_contact {
+            debug!("impact yaw damping: new world contact ({:.1} m/s)", contacts.world_impact);
+        }
+        car.impact_yaw.hit(contacts.wall.is_some() && !car.body_contact, contacts.object_impact > 0.0);
+        let w = car.impact_yaw.step(forces.angular_velocity(), up, dt);
+        *forces.angular_velocity_mut() = w;
         let velocity = forces.linear_velocity();
         let speed = velocity.dot(forward);
         car.speed = speed;
@@ -1030,7 +1045,6 @@ pub(crate) fn car_physics(
         // --- Low-speed turn-around assist (`FUN_008f8360`) -------------------------------------------------
         // The body's contact with the world (not props) on the last physics step, as the wall normal pointing
         // at the car; the game counts the time since the last one (vehicle +0x3010).
-        let contacts = car_contacts(&collisions, &layers, car);
         let wall = contacts.wall;
         car.body_contact = wall.is_some();
         car.wall_time = if wall.is_some() { 0.0 } else { car.wall_time + dt };
@@ -1482,6 +1496,48 @@ fn car_contacts(collisions: &Collisions, layers: &Query<&CollisionLayers>, car: 
         }
     }
     c
+}
+
+/// Yaw damping after a collision (`FUN_008f7950`, called from the tick `FUN_00904da0` before the driveline). The
+/// collision analysis (`FUN_00918600`) sets one of three timers to 1 (vehicle +0x2e80 / +0x2e90 / +0x2ea0, through
+/// `FUN_008f5620` / `5640` / `5660`): a world contact on its first tick (`FUN_00918120`; the analyzer's per-car
+/// flag at +0x220 holds it off while the contact lasts), a contact with another car (`FUN_00917bb0`) or with an
+/// object (`FUN_009175e0`). Each tick the yaw rate in body axes (the up axis only) is multiplied by
+/// (1 − 0.05 × the largest timer)^(60 dt) (`FUN_00907b50`; 0.05 `.rdata` 0x01021fd0), then the timers fall
+/// linearly, the first two over 1 s (0x01021ef0), the object's over 0.3 s (0x01021fe0). Read from the
+/// disassembly; not modelled: the analyzer's gates (`FUN_006a3b50`, the special state +0x1774), and car contacts
+/// (we have no other cars).
+#[derive(Debug, Default, Clone, Copy)]
+struct ImpactYawDamping {
+    /// World, car, object.
+    timers: [f32; 3],
+}
+
+const IMPACT_YAW_DAMP: f32 = 0.05;
+const IMPACT_YAW_TIMES: [f32; 3] = [1.0, 1.0, 0.3];
+
+impl ImpactYawDamping {
+    fn hit(&mut self, new_world_contact: bool, object_contact: bool) {
+        if new_world_contact {
+            self.timers[0] = 1.0;
+        }
+        if object_contact {
+            self.timers[2] = 1.0;
+        }
+    }
+
+    /// Damps the angular velocity `w` about the body's `up` axis and runs the timers down; returns the new `w`.
+    fn step(&mut self, w: Vec3, up: Vec3, dt: f32) -> Vec3 {
+        let d = IMPACT_YAW_DAMP * self.timers.iter().copied().fold(0.0, f32::max);
+        for (t, time) in self.timers.iter_mut().zip(IMPACT_YAW_TIMES) {
+            *t = (*t - dt / time).max(0.0);
+        }
+        if d <= f32::EPSILON {
+            return w;
+        }
+        let yaw = w.dot(up);
+        w - up * yaw * (1.0 - (1.0 - d).powf(dt * 60.0))
+    }
 }
 
 /// The game's low-speed turn-around assist (`FUN_008f8360`): after the body has hit a wall nearly head-on, full
@@ -2280,4 +2336,31 @@ fn report_jitter(label: &str, samples: &[[f32; 6]], rate: f32) -> String {
     let line = format!("{label}:{}", out.join(","));
     info!("TEST jitter {line} ({} samples)", samples.len());
     line
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn impact_yaw_damping_follows_the_timers() {
+        let mut d = ImpactYawDamping::default();
+        let (w, up, dt) = (Vec3::new(0.3, 1.0, 0.2), Vec3::Y, 1.0 / 60.0);
+        // No collision: nothing changes.
+        assert_eq!(d.step(w, up, dt), w);
+        // A new world contact removes 5 % of the yaw rate on the next 60 Hz tick, the other axes untouched.
+        d.hit(true, false);
+        let w1 = d.step(w, up, dt);
+        assert!((w1.y - 0.95).abs() < 1e-5 && w1.x == w.x && w1.z == w.z, "{w1}");
+        // The world timer runs out after 1 s, the object timer after 0.3 s.
+        for _ in 0..59 {
+            d.step(w, up, dt);
+        }
+        assert_eq!(d.step(w, up, dt), w);
+        d.hit(false, true);
+        for _ in 0..18 {
+            d.step(w, up, dt);
+        }
+        assert_eq!(d.step(w, up, dt), w);
+    }
 }
