@@ -177,6 +177,60 @@ pub fn run(store: &AssetStore, bundles: &[String], verbose: bool) -> Result<()> 
     Ok(())
 }
 
+/// The low steep faces (kerbs, steps) within `r` of (`x`, `z`): triangles steeper than 45° whose vertical extent
+/// is under 0.5 m, nearest first (at most 40), with the height they span, their surface and horizontal facing.
+fn steps_near(store: &AssetStore, [x, z, r]: [f32; 3]) -> Result<()> {
+    use mw_bundle::ResourceType;
+    use mw_formats::CollisionTag;
+    let mut found: Vec<(f32, [f32; 3], f32, f32, [f32; 3], u8)> = Vec::new();
+    for p in store.bundle_paths().to_vec() {
+        if !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("TRK_UNIT")) {
+            continue;
+        }
+        let Some(b) = store.bundle(&p) else { continue };
+        for e in b.entries_of_type(ResourceType::PolygonSoupList) {
+            let soups = mw_formats::PolygonSoupList::parse(&b.load(e)?)?;
+            if soups.max[0] < x - r || soups.min[0] > x + r || soups.max[2] < z - r || soups.min[2] > z + r {
+                continue;
+            }
+            let (verts, tris) = soups.triangles();
+            for (t, tag) in tris.iter().zip(soups.triangle_tags()) {
+                let [a, b, c] = t.map(|i| verts[i as usize]);
+                let centre = [0, 1, 2].map(|k| (a[k] + b[k] + c[k]) / 3.0);
+                let d = ((centre[0] - x).powi(2) + (centre[2] - z).powi(2)).sqrt();
+                if d > r {
+                    continue;
+                }
+                let (u, v) = ([0, 1, 2].map(|k| b[k] - a[k]), [0, 1, 2].map(|k| c[k] - a[k]));
+                let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+                let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-9);
+                let n = n.map(|k| k / len);
+                let (lo, hi) = (a[1].min(b[1]).min(c[1]), a[1].max(b[1]).max(c[1]));
+                if n[1].abs() > std::f32::consts::FRAC_1_SQRT_2 || hi - lo > 0.5 || hi - lo < 0.01 {
+                    continue;
+                }
+                found.push((d, centre, lo, hi, n, CollisionTag::from_u32(tag).surface));
+            }
+        }
+        store.evict_all();
+    }
+    found.sort_by(|a, b| a.0.total_cmp(&b.0));
+    println!("dist  centre (x y z)              y from..to       height  surface  normal (x y z)");
+    for (d, c, lo, hi, n, s) in found.into_iter().take(40) {
+        println!(
+            "{d:>5.1}  ({:>8.2} {:>6.2} {:>8.2})  {lo:>6.2}..{hi:>6.2}  {:>5.3}  {s:>7}  ({:>5.2} {:>5.2} {:>5.2})",
+            c[0],
+            c[1],
+            c[2],
+            hi - lo,
+            n[0],
+            n[1],
+            n[2]
+        );
+    }
+    Ok(())
+}
+
 /// Per surface, the triangles whose centre lies within `r` (horizontally) of (`x`, `z`): count, the nearest
 /// one's centre and its normal's up component.
 fn surfaces_near(
@@ -253,10 +307,15 @@ fn surfaces_near(
     Ok(())
 }
 
-pub fn surfaces(store: &AssetStore, near: Option<[f32; 3]>, find: Option<u8>) -> Result<()> {
+pub fn surfaces(store: &AssetStore, near: Option<[f32; 3]>, find: Option<u8>, steps: bool) -> Result<()> {
     use mw_bundle::ResourceType;
     use mw_formats::CollisionTag;
     let list = store.surfaces()?;
+    if let Some(at) = near
+        && steps
+    {
+        return steps_near(store, at);
+    }
     if let Some(at) = near {
         return surfaces_near(store, &list, at, find);
     }

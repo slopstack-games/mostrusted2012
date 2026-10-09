@@ -10,6 +10,44 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-09: kerbs threw the car (the strut stop's sidewall slack ported)
+User report: "the curbs are making the car way too jumpy."
+- **Kerbs** (new `mwtool surfaces --near x,z[,r] --steps`: low steep faces, nearest first): downtown kerbs are
+  vertical faces of paving surface 9, 0.15–0.23 m high, mostly 0.168 m (around 800, 1688). No surface roughness
+  is involved (paving: 12 mm over ~3 m; vertical faces are never under a wheel ray), and the flat track shows the
+  same, so the surface bumps of today are not the cause: it is the suspension's step response, older than them.
+- **Reproduced** with the new `--test kerb` (flat track, a 0.168 m slab 3 m deep with vertical faces, edge 30°
+  off square, 50 km/h held; `MW_TEST_KERB_H` / `_DEPTH` / `_ANGLE`, `MW_TEST_KMH`; `MW_SUSP_TRACE` logs pitch,
+  roll, rates and the stop impulse per tick). 911 before: the front-right wheel meets the step, the ground is
+  0.108 m past its strut end, and our hard stop put 2161 N s into the chassis in one tick (roll rate −190 °/s,
+  pitch −84 °/s); three wheels left the ground and the body rose 0.227 m over a 0.168 m kerb.
+- **The game's stop** (`FUN_009c5a90`, read in full, decomp.md): the chassis takes max(d − min(d, slack, 0.1),
+  0.1 d) of the predicted penetration per contact pass, slack = constraint +0x470 = **the tyre sidewall**, wheel
+  radius − `WheelSizes.337afbd9` (rim radius; `FUN_0095b4d0`), 0.074 / 0.073 m on the XKR in the snapshot
+  (0.065 / 0.068 on the 911). Ours took all of it (the model decision "slack 0"). The wheel itself follows the
+  ground (its velocity raised by d / dt) and its spring keeps compressing.
+- **Ported**: `strut_stops` (2 contact passes with the slack rule at the strut end, then 2 impulse sub-steps
+  scaled by the share), `VehicleHandling::rim_radius` (per axle through `VehicleInfo.Axles`; the 911's front
+  axle points at the higher-id `WheelSizes`, so not by id order), the spring no longer clamps at the travel.
+- **After** (911, `--test kerb`, 50 km/h, 30°): stop impulse on the first hit 2161 → 993 N s, peak roll rate 190 →
+  106 °/s, pitch rate 84 → 41 °/s, peak |vy| 1.96 → 1.36 m/s, roll swing −6.3..4.0° → −4.3..2.5°, pitch
+  −4.9..1.7° → −4.1..0.4°, rise 0.227 → 0.185 m, time with a wheel off 0.53 → 0.38 s (all four never).
+- **911 tests**: accel (0–200 km/h 11.12 s, top 307.5 → 307.6 km/h), brake (38.1 m), corner (2.57 g) and drift
+  (peak 37.6°, held 4.75 s) unchanged. Landing: deepest 0.056 → 0.104 m, overtravel 0 → 0.051 m, body contact
+  0.82 s and settle 2.73 → 2.72 s; climb: deepest 0.049 → 0.098 m, body contact 0.78 → 1.70 s, settle 4.33 → 4.72 s.
+  Both as expected from the rule: within the sidewall the stop only takes a tenth per pass, so the body sinks
+  about the sidewall (0.065 m) further onto the stop before the rim holds it; the extra body contact on the climb's
+  kink is the body box touching the slope while sunk. Not checked against the original's landing yet.
+- **The original** (`ref/live1`, XKR): at 65.8–66.8 s it crosses a 0.153 m kerb face at (1571, 554) at 117 km/h,
+  ~27° off square, dropping off the pavement: pitch rate up to 21 °/s, roll rate ±45 °/s, vy −0.96 → +0.73 m/s, all
+  four contacts kept. Same order as ours now; a like-for-like run (our XKR over a drop-off at that speed) is next.
+- **Open**: the game's damper acts on the wheel record's velocity (a 25 kg point mass the contact pass drives
+  onto the ground), so in the original a step also kicks through the damper and the wheel's momentum; ours has
+  a massless ray wheel. Porting the wheel as a point mass (spring `FUN_0092f510`, damper `FUN_0092f160`, contact
+  pass) is the next step for kerbs. The strut top is −0.077 m chassis-local on both XKR axles (bump travel 0.056 /
+  0.067 m above rest; ours 0.06 for every car): its data source not found. A ray wheel still meets a step at
+  once where the game's cylinder rides up over √(2rh) ≈ 0.3 m (slow speeds).
+
 ### 2026-10-09: car badges and decals cut out (vehicle `_Alpha1bit` / `_Alpha_` shaders)
 User report: the 911's rear "PORSCHE" letters drew as solid rounded blocks and "911 Carrera S" sat on an opaque
 silver plate. An old bug: every car's badges, the traffic cars' grille logos and hub caps were opaque quads.

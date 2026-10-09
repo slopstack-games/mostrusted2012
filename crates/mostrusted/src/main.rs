@@ -502,10 +502,11 @@ fn main() -> anyhow::Result<()> {
         Some("landing") => Some(drive::TestKind::Landing),
         Some("climb") => Some(drive::TestKind::Climb),
         Some("jitter") => Some(drive::TestKind::Jitter),
+        Some("kerb") => Some(drive::TestKind::Kerb),
         Some("exhaust") => Some(drive::TestKind::Exhaust),
         Some(other) => {
             anyhow::bail!(
-                "unknown --test {other} (accel, brake, corner, handbrake, drift, donut, engine, exhaust, landing, climb, jitter, crash, smash, ai, race, crash-traffic, crash-ai)"
+                "unknown --test {other} (accel, brake, corner, handbrake, drift, donut, engine, exhaust, landing, climb, jitter, kerb, crash, smash, ai, race, crash-traffic, crash-ai)"
             )
         }
     };

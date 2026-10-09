@@ -301,6 +301,8 @@ pub struct Car {
     /// solved by `props::prop_contacts` (the game's scaled car-against-object response), not by avian, so
     /// they do not show in its contact graph.
     pub(crate) prop_impact: f32,
+    /// The strut stops' total impulse on the chassis on the last physics step (N s; telemetry).
+    pub(crate) stop_impulse: f32,
 }
 
 struct WheelState {
@@ -331,6 +333,8 @@ struct WheelState {
     compression_rate: f32,
     /// How far the ground reached past full compression on the last tick (m): the wheel inside the ground.
     overtravel: f32,
+    /// The strut stop's slack (m): the tyre's sidewall, wheel radius − rim radius (constraint +0x470).
+    stop_slack: f32,
     spin: f32,
     pivot: Entity,
     spinner: Entity,
@@ -567,6 +571,9 @@ pub fn build_car(commands: &mut Commands, b: &CarBuild) -> Entity {
             })
             .map_or(w.position.y.max(0.25), |b| b.radius);
         let brake = if w.front { h.brake_torque_front } else { h.brake_torque_rear }.unwrap_or(1200.0);
+        // The strut stop gives over the tyre's sidewall: max(wheel radius − the axle's rim radius, 0)
+        // (`FUN_0095b4d0` → constraint +0x470; 0, a hard stop, without the data).
+        let stop_slack = h.rim_radius[usize::from(!w.front)].map_or(0.0, |rim| (radius - rim).max(0.0));
         // A cylinder of the wheel body's mass, plus the transmission inertia on driven wheels.
         let wheel_mass = h
             .wheels
@@ -599,7 +606,7 @@ pub fn build_car(commands: &mut Commands, b: &CarBuild) -> Entity {
             }
         }
         debug!(
-            "wheel {:?} front={} radius {radius:.3} k {k:.0} c {c:.0}/{:.0} sag {sag:.3} corner {corner_mass:.0} kg",
+            "wheel {:?} front={} radius {radius:.3} k {k:.0} c {c:.0}/{:.0} sag {sag:.3} stop slack {stop_slack:.3} corner {corner_mass:.0} kg",
             w.position,
             w.front,
             c * ratio
@@ -621,6 +628,7 @@ pub fn build_car(commands: &mut Commands, b: &CarBuild) -> Entity {
             compression: 0.0,
             compression_rate: 0.0,
             overtravel: 0.0,
+            stop_slack,
             spin: 0.0,
             pivot,
             spinner,
@@ -679,6 +687,7 @@ pub fn build_car(commands: &mut Commands, b: &CarBuild) -> Entity {
             body_collider,
             bumper_collider,
             prop_impact: 0.0,
+            stop_impulse: 0.0,
         },
     ));
     // Exhaust pops and the car's spot effects (`exhaust.rs`).
@@ -1060,8 +1069,8 @@ pub(crate) fn car_physics(
         let mut wheels_down = 0;
         let mut rear_slip = (0.0, 0);
         let mut ground_normal = Vec3::ZERO;
-        // Wheels whose ground is within one tick of the strut's end: (contact, normal, signed overtravel).
-        let mut stops: Vec<(Vec3, Vec3, f32)> = Vec::new();
+        // The wheels' strut stops: (strut end, ground normal, signed overtravel, slack).
+        let mut stops: Vec<(Vec3, Vec3, f32, f32)> = Vec::new();
         for (wheel, mut brake_left) in car.wheels.iter_mut().zip(brake_budget) {
             // The mount sits `travel - sag` above the rest position, so the wheel is at its spec position
             // (in its arch) under the static load.
@@ -1101,10 +1110,14 @@ pub(crate) fn car_physics(
                     hit.normal = tilted;
                 }
             }
-            let compression = (reach - hit.distance).clamp(0.0, wheel.travel);
+            // The game's wheel stays on the ground (the constraint's contact pass pushes the wheel record out of
+            // it, `FUN_009c5a90`) and its spring runs from the chassis anchor to the wheel centre
+            // (`FUN_0092f510`): no limit at the strut's end was found, so past it the spring keeps compressing
+            // while the stop below takes the rest.
+            let compression = (reach - hit.distance).max(0.0);
             wheel.compression = compression;
             wheel.overtravel = (reach - hit.distance - wheel.travel).max(0.0);
-            stops.push((mount - up * hit.distance, hit.normal, reach - hit.distance - wheel.travel));
+            stops.push((mount, hit.normal, reach - hit.distance - wheel.travel, wheel.stop_slack));
             grounded = true;
             wheels_down += 1;
             ground_normal += hit.normal;
@@ -1349,9 +1362,10 @@ pub(crate) fn car_physics(
         }
         // The game's per-axis drag (with its over-speed ramp) and lift (downforce). Rolling resistance is per
         // wheel, from the surface (above).
+        car.stop_impulse = 0.0;
         if stops.iter().any(|s| s.2 > -0.5) {
             let (mut v, mut w) = (forces.linear_velocity(), forces.angular_velocity());
-            strut_stops(&stops, com, p.mass, &inv_inertia, dt, (&mut v, &mut w));
+            car.stop_impulse = strut_stops(&stops, com, p.mass, &inv_inertia, dt, (&mut v, &mut w));
             *forces.linear_velocity_mut() = v;
             *forces.angular_velocity_mut() = w;
         }
@@ -1491,41 +1505,70 @@ fn limited_slip(wheels: &mut [WheelState], diff: &[f32; 2]) {
     }
 }
 
-/// The end of the strut as a hard contact on the chassis (`FUN_009c5a90` → `FUN_009c2670`, decomp.md
-/// "Suspension, wheels, aerodynamics"): the game predicts each wheel contact's penetration at the end of the
-/// tick (positions plus velocity × dt); where the ground would come past the strut's end point on the chassis
-/// (constraint +0x460) it sets a flag (+0x4ae) and the contact's non-negative normal impulse then acts on the
-/// chassis at that point, through the chassis's own mass and inertia, until the predicted penetration is 0.
-/// `over` is the ground's reach past the strut's end (m, negative = travel left): the normal velocity at the
-/// contact must be at least `over / dt`. Sequential impulses over the contacts (`STOP_ITERATIONS` passes).
+/// The strut's end stop (`FUN_009c5a90` → `FUN_009c2670`, decomp.md "Suspension, wheels, aerodynamics"). Each
+/// stop is (strut end, ground normal, `over`, slack): the strut end is the wheel centre at full bump on the chassis
+/// (constraint +0x460), `over` how far the ground reaches past a tyre centred there (m, negative = travel left) and
+/// the slack the tyre's sidewall (+0x470). In each of the island's contact passes (`FUN_00932190`, world +0x460 = 2)
+/// the game predicts that penetration at the end of the tick, d = over − v_n dt with the chassis's velocity at the
+/// strut end, and where d > 0 moves the chassis there along the normal by e / dt through its effective mass, with
+/// e = max(d − min(d, slack, 0.1), 0.1 d): only a tenth of the penetration while the ground is within the sidewall,
+/// all of the excess once it reaches the rim. It keeps e / d (+0x474) and a flag (+0x4ae, cleared at the start of
+/// every pass). Each impulse sub-step (`FUN_0093f200`, 2) then stops the strut end closing on the ground, scaled by
+/// that share: the chassis gets share × m_eff × max(−v_n, 0) (the wheel takes the full contact impulse). Returns the
+/// total impulse on the chassis (N s).
 fn strut_stops(
-    stops: &[(Vec3, Vec3, f32)],
+    stops: &[(Vec3, Vec3, f32, f32)],
     com: Vec3,
     mass: f32,
     inv_inertia: &Mat3,
     dt: f32,
     (v, w): (&mut Vec3, &mut Vec3),
-) {
-    let mut total = vec![0.0f32; stops.len()];
-    for _ in 0..STOP_ITERATIONS {
-        for (&(point, n, over), total) in stops.iter().zip(&mut total) {
-            let r = point - com;
-            let arm = r.cross(n);
-            let m = 1.0 / (1.0 / mass + arm.dot(*inv_inertia * arm)).max(1e-6);
-            let vn = (*v + w.cross(r)).dot(n);
-            let next = (*total + (over / dt - vn) * m).max(0.0);
-            let impulse = next - *total;
-            *total = next;
-            *v += n * impulse / mass;
-            *w += *inv_inertia * (arm * impulse);
+) -> f32 {
+    let mut total = 0.0;
+    let mut share = vec![None; stops.len()];
+    let mut push = |v: &mut Vec3, w: &mut Vec3, point: Vec3, n: Vec3, impulse: f32| {
+        let arm = (point - com).cross(n);
+        *v += n * impulse / mass;
+        *w += *inv_inertia * (arm * impulse);
+        total += impulse;
+    };
+    let effective_mass = |point: Vec3, n: Vec3| {
+        let arm = (point - com).cross(n);
+        1.0 / (1.0 / mass + arm.dot(*inv_inertia * arm)).max(1e-6)
+    };
+    for _ in 0..STOP_CONTACT_PASSES {
+        for (&(point, n, over, slack), share) in stops.iter().zip(&mut share) {
+            *share = None;
+            let vn = (*v + w.cross(point - com)).dot(n);
+            let d = over - vn * dt;
+            if d <= 0.0 {
+                continue;
+            }
+            let excess = (d - d.min(slack).min(STOP_SLACK_MAX)).max(0.0).max(d * STOP_MIN_SHARE);
+            *share = Some((excess / d.max(f32::EPSILON)).clamp(0.0, 1.0));
+            push(v, w, point, n, effective_mass(point, n) * excess / dt);
         }
     }
+    for _ in 0..SOLVER_SUBSTEPS {
+        for (&(point, n, _, _), share) in stops.iter().zip(&share) {
+            let Some(share) = *share else { continue };
+            let vn = (*v + w.cross(point - com)).dot(n);
+            push(v, w, point, n, share * effective_mass(point, n) * (-vn).max(0.0));
+        }
+    }
+    total
 }
 /// Sub-steps of the game's island solve (`FUN_0093f200` loops world +0x464 = 2 times, set by the world's
 /// constructor `FUN_009330d0` and read live): each runs the strut stops' impulse pass (`FUN_009c2670`) and the
 /// force elements (`FUN_00932f90`: dampers, springs, anti-roll bars) at dt / 2.
 const SOLVER_SUBSTEPS: usize = 2;
-const STOP_ITERATIONS: usize = SOLVER_SUBSTEPS;
+/// The island's contact passes (`FUN_00932190` loops world +0x460 = 2 times; same constructor, read live): each
+/// runs the wheel constraints' contact pass `FUN_009c5a90`, where the strut stop moves the chassis.
+const STOP_CONTACT_PASSES: usize = 2;
+/// The stop's slack is at most 0.1 m and the chassis takes at least a tenth of the predicted penetration
+/// (`.bss` 0x01186bf0 and 0x01186b10, both 0.1 in all four lanes, read in the snapshots).
+const STOP_SLACK_MAX: f32 = 0.1;
+const STOP_MIN_SHARE: f32 = 0.1;
 
 /// The anti-roll bars (`FUN_0092ee70`, reached through `FUN_00932f90` for the type-2 elements that
 /// `FUN_00933a60` builds; decomp.md "Suspension, wheels, aerodynamics"). Per axle: the two wheel centres in the
@@ -1986,6 +2029,11 @@ pub enum TestKind {
     /// At rest, then at a steady 100 km/h: peak-to-peak and dominant frequency of the body's height, pitch,
     /// roll and their rates.
     Jitter,
+    /// At a steady speed (`MW_TEST_KMH`, 50 km/h) over a kerb: a slab `MW_TEST_KERB_H` high (0.168 m, the downtown
+    /// kerbs' faces, `mwtool surfaces --near 800,1688 --steps`) and `MW_TEST_KERB_DEPTH` deep (3 m) with vertical
+    /// faces, its edge turned `MW_TEST_KERB_ANGLE` degrees (30) from square to the car's path: peak vertical
+    /// speed, pitch / roll rates and swings, time with a wheel off the ground, strut-stop impulses.
+    Kerb,
     /// Exhaust pops and backfires (`exhaust.rs`): full throttle through the gears, a lift at high revs, nitrous;
     /// counts the backfires and pops.
     Exhaust,
@@ -2332,7 +2380,7 @@ fn run_test(
             input.nitrous = nitrous;
             input.scripted = Some([throttle, 0.0, 0.0, 0.0]);
         }
-        TestKind::Landing | TestKind::Climb | TestKind::Jitter => {}
+        TestKind::Landing | TestKind::Climb | TestKind::Jitter | TestKind::Kerb => {}
         TestKind::Brake => match test.braking_from {
             None => {
                 input.scripted = Some([1.0, 0.0, 0.0, 0.0]);
@@ -2367,13 +2415,23 @@ pub fn test_obstacle(kind: TestKind) -> Option<(Vec<Vec3>, Vec<[u32; 3]>)> {
                 (CLIMB_Z + CLIMB_LENGTH + 200.0, rise),
             ]))
         }
+        TestKind::Kerb => {
+            let (h, depth) = (test_env("MW_TEST_KERB_H", KERB_HEIGHT), test_env("MW_TEST_KERB_DEPTH", 3.0));
+            &*Box::leak(Box::new([(KERB_Z, 0.0), (KERB_Z, h), (KERB_Z + depth, h), (KERB_Z + depth, 0.0)]))
+        }
         _ => return None,
+    };
+    // The kerb's edge is turned about the point where the car's path (x = 0) meets it.
+    let turn = if kind == TestKind::Kerb { test_env("MW_TEST_KERB_ANGLE", 30.0).to_radians() } else { 0.0 };
+    let place = |x: f32, y: f32, z: f32| {
+        let (s, c) = turn.sin_cos();
+        Vec3::new(x * c - (z - KERB_Z) * s, y, KERB_Z + x * s + (z - KERB_Z) * c)
     };
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
     for (i, &(z, y)) in profile.iter().enumerate() {
-        vertices.push(Vec3::new(-100.0, y, z));
-        vertices.push(Vec3::new(100.0, y, z));
+        vertices.push(place(-100.0, y, z));
+        vertices.push(place(100.0, y, z));
         if i > 0 {
             let [a, b, c, d] = [2 * i as u32 - 2, 2 * i as u32 - 1, 2 * i as u32, 2 * i as u32 + 1];
             indices.push([a, c, b]);
@@ -2387,6 +2445,9 @@ const LANDING_DROP_Z: f32 = 460.0;
 const CLIMB_Z: f32 = 400.0;
 const CLIMB_LENGTH: f32 = 40.0;
 const CLIMB_SLOPE_DEG: f32 = 30.0;
+const KERB_Z: f32 = 400.0;
+/// The downtown kerbs' face height (m): `mwtool surfaces --near 800,1688 --steps` (0.15–0.18 m, mostly 0.168).
+const KERB_HEIGHT: f32 = 0.168;
 
 /// State of `--test landing / climb / jitter` (`ground_test`).
 #[derive(Default)]
@@ -2402,6 +2463,14 @@ pub(crate) struct GroundTest {
     settle_time: Option<f32>,
     slow_since: Option<f32>,
     trace: Option<std::fs::File>,
+    /// Kerb test: peak |vertical speed| (m/s), |pitch rate|, |roll rate| (°/s); pitch and roll (min, max, °); time
+    /// with at least one / all wheels off the ground (s); the strut stops' total impulse (N s).
+    kerb_peaks: [f32; 3],
+    kerb_pitch: (f32, f32),
+    kerb_roll: (f32, f32),
+    kerb_air: [f32; 2],
+    kerb_stop: f32,
+    kerb_rise: f32,
     /// Jitter samples: (y, pitch, roll, vy, pitch rate, roll rate); phase 0 = at rest, 1 = at 100 km/h.
     samples: Vec<[f32; 6]>,
     phase: u32,
@@ -2440,7 +2509,7 @@ pub(crate) fn ground_test(
     mut exit: MessageWriter<AppExit>,
 ) {
     let (Some(mut test), Ok((entity, car, tf, vel, ang))) = (test, cars.single()) else { return };
-    if test.done || !matches!(test.kind, TestKind::Landing | TestKind::Climb | TestKind::Jitter) {
+    if test.done || !matches!(test.kind, TestKind::Landing | TestKind::Climb | TestKind::Jitter | TestKind::Kerb) {
         return;
     }
     let dt = time.delta_secs();
@@ -2505,12 +2574,15 @@ pub(crate) fn ground_test(
     }
     let (target_kmh, event_z, end_z) = match test.kind {
         TestKind::Landing => (test_env("MW_TEST_KMH", 130.0), LANDING_RAMP_Z, LANDING_DROP_Z + 150.0),
+        TestKind::Kerb => (test_env("MW_TEST_KMH", 50.0), KERB_Z, KERB_Z + test_env("MW_TEST_KERB_DEPTH", 3.0) + 30.0),
         _ => (test_env("MW_TEST_KMH", 120.0), CLIMB_Z, CLIMB_Z + CLIMB_LENGTH + 120.0),
     };
     let target = target_kmh / 3.6;
     let z = tf.translation.z;
-    // Hold the speed up to the obstacle, then full throttle through it (the player keeps the pedal down).
-    let throttle = if z < event_z - 20.0 { ((target - v) * 0.5).clamp(0.0, 1.0) } else { 1.0 };
+    // Hold the speed up to the obstacle, then full throttle through it (the player keeps the pedal down); over the
+    // kerb the speed is held throughout.
+    let hold = ((target - v) * 0.5).clamp(0.0, 1.0);
+    let throttle = if z < event_z - 20.0 || test.kind == TestKind::Kerb { hold } else { 1.0 };
     input.scripted = Some([throttle, 0.0, 0.0, 0.0]);
     if state.trace.is_none()
         && let Some(path) = std::env::var_os("MW_SUSP_TRACE")
@@ -2534,16 +2606,38 @@ pub(crate) fn ground_test(
                     )
                 })
                 .collect();
+            let local_w = rot.inverse() * ang.0;
             let _ = writeln!(
                 f,
-                "{t:.3} z {z:.2} y {:.3} sink {sink:.3} vy {:.2} v {:.1} pitch {:.1} body {} wheels {}",
+                "{t:.3} z {z:.2} y {:.3} sink {sink:.3} vy {:.2} v {:.1} pitch {:.2} roll {:.2} rates {:.1} {:.1} body {} stop {:.0} wheels {}",
                 tf.translation.y,
                 vel.y,
                 v * 3.6,
                 pitch.to_degrees(),
+                roll.to_degrees(),
+                local_w.x.to_degrees(),
+                local_w.z.to_degrees(),
                 u8::from(car.body_contact),
+                car.stop_impulse,
                 comp.join(" ")
             );
+        }
+        if test.kind == TestKind::Kerb {
+            let local_w = rot.inverse() * ang.0;
+            let p = &mut state.kerb_peaks;
+            *p =
+                [p[0].max(vel.y.abs()), p[1].max(local_w.x.abs().to_degrees()), p[2].max(local_w.z.abs().to_degrees())];
+            let (pd, rd) = (pitch.to_degrees(), roll.to_degrees());
+            state.kerb_pitch = (state.kerb_pitch.0.min(pd), state.kerb_pitch.1.max(pd));
+            state.kerb_roll = (state.kerb_roll.0.min(rd), state.kerb_roll.1.max(rd));
+            if wheels_down < 4 {
+                state.kerb_air[0] += dt;
+            }
+            if wheels_down == 0 {
+                state.kerb_air[1] += dt;
+            }
+            state.kerb_stop += car.stop_impulse;
+            state.kerb_rise = state.kerb_rise.max(-sink);
         }
         state.deepest = state.deepest.max(sink);
         state.body_contact_ticks += u32::from(car.body_contact);
@@ -2569,6 +2663,30 @@ pub(crate) fn ground_test(
         state.slow_since = if v < 2.0 { state.slow_since.or(Some(t)) } else { None };
     }
     let stuck = state.slow_since.is_some_and(|s| t - s > 2.0);
+    if test.kind == TestKind::Kerb && (z > end_z || stuck || t > 60.0) {
+        let m = format!(
+            "kmh={target_kmh:.0} vy_peak={:.2}m/s pitch_rate={:.1}deg/s roll_rate={:.1}deg/s pitch={:.2}..{:.2}deg roll={:.2}..{:.2}deg rise={:.3}m wheel_off={:.3}s all_off={:.3}s stop={:.0}Ns overtravel={:.3}m body_contact={:.2}s{}",
+            state.kerb_peaks[0],
+            state.kerb_peaks[1],
+            state.kerb_peaks[2],
+            state.kerb_pitch.0,
+            state.kerb_pitch.1,
+            state.kerb_roll.0,
+            state.kerb_roll.1,
+            state.kerb_rise,
+            state.kerb_air[0],
+            state.kerb_air[1],
+            state.kerb_stop,
+            state.max_overtravel,
+            state.body_contact_ticks as f32 * dt,
+            if stuck { " STUCK" } else { "" }
+        );
+        test.marks.push((m, t, v));
+        test.done = true;
+        info!("TEST RESULT {:?}: {}", test.kind, test.marks.iter().map(|m| m.0.clone()).collect::<Vec<_>>().join(" "));
+        exit.write(AppExit::Success);
+        return;
+    }
     if z > end_z || stuck || t > 60.0 {
         let below = sink > 0.02;
         let m = format!(
