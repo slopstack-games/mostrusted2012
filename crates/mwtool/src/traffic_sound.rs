@@ -11,6 +11,9 @@ use mw_audio::sequence::{OUTPUT_RATE, Params, Player};
 use mw_audio::spatial::{SpatialParams, SpatialRender};
 
 pub fn run(store: &AssetStore, component: &str, out: Option<&Path>, passby_mph: f32) -> Result<()> {
+    if component == "sfx" {
+        return sfx(store, out);
+    }
     let data = store.traffic_data()?;
     let mut picked: Option<(u32, TrafficEngine)> = None;
     for v in &data.vehicles {
@@ -61,6 +64,10 @@ pub fn run(store: &AssetStore, component: &str, out: Option<&Path>, passby_mph: 
             .map(|&m| format!("{m} m {:.1} dB", 20.0 * e.spatial.gain(m, 0.0, 1.0).max(1e-6).log10()))
             .collect();
         println!("  gain: {}", gains.join(", "));
+        if let Some(vs) = store.vehicle_sound(&format!("{}_COMPETITORSOUND", v.component)) {
+            let horns: Vec<String> = vs.horns.iter().map(|h| format!("{:016x}", h.0)).collect();
+            println!("  horns: {}", horns.join(" "));
+        }
         if picked.is_none() {
             picked = Some((v.component, e));
         }
@@ -148,5 +155,104 @@ pub fn run(store: &AssetStore, component: &str, out: Option<&Path>, passby_mph: 
     let pcm = mw_audio::Pcm { channels: 2, sample_rate: rate as u32, samples };
     std::fs::write(out, pcm.to_wav())?;
     println!("wrote {}", out.display());
+    Ok(())
+}
+
+/// `traffic-sound sfx [out.wav]`: the other cars' one-shots (`mw_assets::car_sfx`): the collision rules, each
+/// sound's data and placement, and an offline render of each (cue, then until the player reports it finished;
+/// the skid loop is stopped after 6 s with the game's 0.1 s release), with its length and level. Each horn runs
+/// three times to show its random jump (one long blast, or the long blast and three short ones).
+fn sfx(store: &AssetStore, out: Option<&Path>) -> Result<()> {
+    use mw_assets::car_sfx::{CUE, IMPACT_GAIN, OneShot, world_impact_gain};
+    let data = store.traffic_data()?;
+    let components: Vec<u32> = data.vehicles.iter().map(|v| v.component).collect();
+    let sfx = store.other_car_sfx(&components);
+    println!("rules: {:?}", sfx.rules);
+    let rate = mw_audio::sfx_player::OUTPUT_RATE as usize;
+    let mut wav: Vec<i16> = Vec::new();
+    let render = |name: &str, o: &OneShot, gain: Option<f32>, stop_after: Option<f32>, wav: &mut Vec<i16>| {
+        let params = Arc::new(mw_audio::sfx_player::Params::new(o.bank.param_names()));
+        if let Some(g) = gain {
+            params.set(IMPACT_GAIN, g);
+        }
+        let mut p = mw_audio::sfx_player::Player::new(o.bank.clone(), params.clone());
+        params.trigger(CUE);
+        let (mut acc, mut peak, mut n) = (0f64, 0f32, 0usize);
+        let mut stopped = false;
+        while n < rate * 20 {
+            let s = p.next_sample();
+            acc += (s * s) as f64;
+            peak = peak.max(s.abs());
+            n += 1;
+            wav.push((s * 32767.0).clamp(-32768.0, 32767.0) as i16);
+            if let Some(t) = stop_after
+                && !stopped
+                && n as f32 / rate as f32 >= t
+            {
+                params.stop(0.1);
+                stopped = true;
+            }
+            if n % 64 == 0 && params.finished() {
+                break;
+            }
+        }
+        wav.extend(std::iter::repeat_n(0i16, rate / 4));
+        let f = &o.spatial.falloff;
+        let jumps: Vec<_> = o
+            .bank
+            .sequences
+            .first()
+            .map(|s| s.jumps.iter().map(|j| (j.trigger_time, j.destination, j.enabled.clone())).collect())
+            .unwrap_or_default();
+        println!(
+            "  {name} {:016x}: {:.2} s, RMS {:.1} dBFS, peak {:.1} dBFS; {} items, jumps {jumps:?}; falloff min {} m \
+             max {} m curve {} peak gain {}, focus {}, doppler {:?}",
+            o.id,
+            n as f32 / rate as f32,
+            10.0 * (acc / n.max(1) as f64 + 1e-12).log10(),
+            20.0 * (peak + 1e-9).log10(),
+            o.bank.sequences.first().map_or(0, |s| s.items.len()),
+            f.min_distance,
+            f.max_distance,
+            f.curve,
+            f.peak_gain,
+            o.spatial.listener_focus,
+            o.spatial.doppler_speed,
+        );
+    };
+    println!("horns ({} distinct):", sfx.horns.len());
+    let mut lists: Vec<_> = sfx.horn_lists.iter().collect();
+    lists.sort();
+    for (c, list) in lists {
+        println!("  {c}: {list:?}");
+    }
+    for h in &sfx.horns {
+        for _ in 0..3 {
+            render("horn", h, None, None, &mut wav);
+        }
+    }
+    println!("impacts (competitor slots, level x front / side / rear):");
+    for (level, row) in sfx.impacts.iter().enumerate() {
+        for (dir, o) in row.iter().enumerate() {
+            match o {
+                Some(o) => render(&format!("level {level} dir {dir}"), o, None, None, &mut wav),
+                None => println!("  level {level} dir {dir}: none"),
+            }
+        }
+    }
+    if let Some(o) = &sfx.world_impact {
+        for v in [10.0, 30.0, 50.0] {
+            let g = world_impact_gain(v);
+            render(&format!("world impact at {v} m/s (gain {g:.3})"), o, Some(g), None, &mut wav);
+        }
+    }
+    if let Some(o) = &sfx.skid {
+        render("traffic skid (stopped at 6 s)", o, None, Some(6.0), &mut wav);
+    }
+    if let Some(out) = out {
+        let pcm = mw_audio::Pcm { channels: 1, sample_rate: rate as u32, samples: wav };
+        std::fs::write(out, pcm.to_wav())?;
+        println!("wrote {}", out.display());
+    }
     Ok(())
 }

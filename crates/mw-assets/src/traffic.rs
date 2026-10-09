@@ -105,6 +105,12 @@ pub struct SystemConfig {
 pub struct ParamConfig {
     /// 0x10: standstill gap behind the car ahead (4 m).
     pub standstill_gap: f32,
+    /// 0x20 (`831be501`, 0.4): a car blocked by an obstacle sounds its horn when its personality is at most this
+    /// (`FUN_00ebe8c0` → `FUN_005ebb40`, at most once per 55 s; decomp.md "Traffic horns").
+    pub horn_chance: f32,
+    /// 0x24 (`fa75a686`, 0.7): a car ending a swerve or jack-knife manoeuvre sounds its horn when its random value
+    /// (car +0x5c) is at most this (`FUN_005f77e0`, `FUN_005ffc10`; the manoeuvres are not ported).
+    pub manoeuvre_horn_chance: f32,
     /// 0x34: the planned route reaches at least this far ahead (25 m, `FUN_005fc020`).
     pub plan_distance: f32,
     /// 0x3c: following speed per metre of gap (0.649 /s, `FUN_00617d00` branches 2 and 4).
@@ -264,6 +270,8 @@ impl ParamConfig {
         let f = |h| float(o, h);
         Self {
             standstill_gap: f(0xa5cd_60b8),
+            horn_chance: f(0x831b_e501),
+            manoeuvre_horn_chance: f(0xfa75_a686),
             plan_distance: f(0x29a8_0792),
             gap_speed: f(0x0ea8_45e0),
             max_accel_brake_law: f(0xb9be_788e),
