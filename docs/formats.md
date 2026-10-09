@@ -720,7 +720,13 @@ states). A sequence is referenced by its own `655d3f5f` UniqueId, never by resou
   `Animation`, `Skeleton`, `DrivingControls` [{`BoneName`, `Control`, `VectorComponent`}], `Wheels` [three bone
   names], counts and flags. Its skeleton (18 bones, identity bind pose) animates bone 1 = the car (world space,
   codec-1 quaternions), 2–5 the wheels.
-- Camera skeleton (`0x6cc42`): two bones, identity bind pose; clips animate bone 1 with f32 quaternions at 30 fps.
+- Camera skeleton (`0x6cc42`, used by all 741 camera items of the intros and outros): two bones; bone 0 identity,
+  bone 1's bind rotation is (0, 1, 0, 0), 180° about Y (`0x8b2ba`, in 13 groups but no camera item, is all
+  identity). Clips animate bone 1 only (translation + f32 quaternion, codec 0, 30 fps; bone 0 and the root
+  translation stay zero), and the key is the camera's world (or bound) pose as it is: +Z the view direction, +Y
+  up, +X left, the bind rotation not applied (decomp.md "Cutscenes and sequences").
+- `mwtool events <id>` lists each animated camera's skeleton; `MW_EVENTS_KEYS=<dir>` writes every camera / car
+  clip's keys as CSV (one file per item) for surveys.
 
 ## ICE camera takes (`CameraTake` 0x20D, `CameraTakeList` 0x20E, 2026-10-09)
 

@@ -10,6 +10,45 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-09: race cinematic cameras settled by captures (axes, FOV, DUTCH, outro binding)
+User report: intro shots rolled ~40° or framing sky / trees, the outro framing an opponent top-down. Captured the
+original (`tools/orig/orig`, headless, muted; the 4C at Hughes Park, Easydrive → Races → CONTINENTAL DRIFT →
+Start race, screenshots every ~0.6 s through the intro), then compared shot by shot with ours
+(`MW_CUTSCENE_SHOT=intro:<t>`).
+- **The original's 462174 intro is upside down** from its second shot (3 s) to the teleport: road and buildings
+  hang from the top of the frame, the sun at the bottom; the tall-building shot looks up at the towers upside
+  down, the car passes the KNOCKING BROTHERS sign upside down. The first shot (an aerial over the park dome)
+  rolls by 175° over its 3 s: the barrel roll that turns the intro over. So the camera bone's key is the camera
+  matrix as stored: look +Z, up +Y, roll kept; the 49 "+Y down" clips are authored that way. Our earlier
+  per-clip flip (up = whichever of ±Y is upward on average) made those shots upright and the first shot's roll
+  meaningless; removed (`AnimatedCamera::y_down` gone). With the rule every one of the eight shots frames what
+  the original frames (dome, upside-down road with the sun, curved overpass, overpass with the car, towers,
+  arch, sign with the car, sky with a lamp post).
+- **Subject survey** (all 741 camera items of the 111 events, `MW_EVENTS_KEYS` dumps): in 244 of 251 clips that
+  run while an animated race car is on screen (or are bound to the player), the car is within 40° of the bone's
+  +Z (7 on −Z). The skeleton's bind rotation for bone 1 (180° about Y; formats.md said "identity") would turn the
+  look to −Z if applied, so it is not.
+- **FOVs are horizontal**: the chase view of the 4C at rest (FOV 70, `MinFieldOfView`) frames the car ≈ 405 px
+  wide in the original at 1280×720, ours 400 px with 70° horizontal and 220 px with 70° vertical (A/B with
+  `MW_FOV_VERTICAL=1`); the intro's 19–35 mm lens shots match in size the same way (arch 260 / 280 px). The lens
+  formula's 18 is half of a 36 mm frame's width. Converted in `camera::projection_fov` for chase, bonnet, crash
+  and cinematic cameras (handling.md "Model decisions" corrected).
+- **`DUTCH`** (code): × 65536 (`.rdata` 0x0106f9d0) → 16-bit angle → × 2π / 65536 (`FUN_00e22760`), so it is
+  in turns and ±0.25 is ±90°; `FUN_00e230c0` pre-multiplies the camera rows (left' = c·left + s·up), as
+  `camera_take` does. The 3 s intro takes `South`, `Trail`, `To`, `Get` sweep 0.25 → −0.25 → 0.25 (barrel rolls,
+  the same style as 462174's first shot); `Default_No_Race_Event_Outro` holds 90° for 10 s (not captured).
+- **The outro freezes where the car finished** (code `FUN_0049a910` + the take's `0bd6ff75` flags, and now
+  captures): the race outro's top-down camera stays over the finish spot; finishing at 59 mph (the event's route
+  entry count at DTF+0x510 cut to 1 in memory, restored by quitting) the car is at the left edge 0.5 s later and
+  gone by 1 s, the rest of the outro shows only asphalt; finishing at rest the car sits at the left edge, as in
+  ours. So "the outro frames road or an opponent" is the original's behaviour; no binding change.
+- Captures: the scratch copies were not kept in the repo (game imagery). Harness notes: Easydrive's Start Race
+  only appears for discovered events (Turf War offered only Set Destination); the event's `Laps` (+0xf6) set to 0
+  in memory gives a zero-lap race that ends at once with the car at rest.
+- **Open**: 1119174's first shot (0–3 s) puts the camera 0.4 m above the trigger height looking up 87°; ours draws
+  the road's back faces (all world materials are double-sided), so it shows asphalt; whether the original
+  culls them there was not captured. The animated cameras' `GetTransform` binding is still read live.
+
 ### 2026-10-09: groundcover sprites face the camera (the `Groundcover` vertex program ported)
 User report: since the sprite-size fix (byte / 127 × 2^e m, so the e = 6 / 8 groups are 10–60 m tree cards) the
 cards showed as thin vertical slivers when seen edge-on: we drew each sprite as two crossed static quads.

@@ -18,7 +18,7 @@
 //! taken in the pre-crash heading's frame with its height replaced by the ground there; the car-relative
 //! shot turns with the car's heading only; aim tracking is a per-60 Hz-tick fraction `Tracking_Speed`;
 //! the screen offset pitches the view so the target sits that fraction of the half-height above centre;
-//! with `Use_Zoom` off the field of view is `Maximum_FOV` (vertical, as in camera.rs).
+//! with `Use_Zoom` off the field of view is `Maximum_FOV` (horizontal, as every game FOV: `camera::projection_fov`).
 //!
 //! `MW_CRASH_TRACE=<file>` logs every impact's decision and the sequence frame by frame.
 

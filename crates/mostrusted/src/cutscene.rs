@@ -11,7 +11,8 @@
 //!   has passed its `TriggerTime` jumps to its `DestinationTime` (the intro of 462174: 1 s → 19.5 s, just after
 //!   the teleports).
 //! - **Items played**: animated cameras (a clip of a two-bone camera skeleton, world space or relative to the
-//!   player's car; field of view `2 atan(18 / FocalLength)`, `FUN_005c6c10`), the dynamic camera's blend to the
+//!   player's car; horizontal field of view `2 atan(18 / FocalLength)`, a 36 mm frame, `FUN_005c6c10`), ICE
+//!   camera takes (`mw_formats::camera_take`), the dynamic camera's blend to the
 //!   gameplay camera (lerp of transform and FOV by the item's curves), teleports, the AI driving the player
 //!   (`ai.rs`'s driver on the player's car, at most `MaxSpeedMph`), animated race cars (the clip's `car` bone),
 //!   hidden race cars, hidden HUD, the letterbox, slow motion and the event trigger.
@@ -20,15 +21,20 @@
 //!   freeze); the intro's `EventTriggerSequenceItem` (at 24 s in 462174) starts the race with no countdown
 //!   (`RaceState::intro` = 0).
 //!
-//! Model decisions (no source yet; docs/decomp.md "Cutscenes and sequences"): the race starts on the intro's
-//! event trigger (the item that signals the game logic; what the HSM does with it was not traced); the camera
-//! bone looks along its +Z (the game's own camera / car convention) and its up is whichever of ±Y the clip holds
-//! upwards (704 of the 753 intro camera clips hold +Y up, 462174's hold it down; their X axis stays level);
-//! `GetTransform` bindings follow the car live; the FOV from the focal length is used as
-//! the vertical FOV (as camera.rs); the animated car is placed on the clip's car bone every tick with the
-//! clip's velocity (the original drives it with its `controls_*` bones, not read); nested timeline controllers
-//! (the outro's waits for input) are not run, so the outro plays straight through; audio, post-processing,
-//! UI layouts other than the letterbox, traffic clearing and the ICE camera takes are not played yet.
+//! Camera conventions (settled 2026-10-09 by captures of the original, docs/decomp.md "Cutscenes and
+//! sequences"): the camera bone's key is the camera matrix as it is (rows left, up, forward like the game camera
+//! `FUN_00495b70` fills): it looks along +Z with +Y up, roll included, so 462174's intro is upside down from its
+//! second shot on, as in the original; the skeleton's bind pose (180° about Y on bone 1) is not applied. Every
+//! FOV is horizontal (`camera::projection_fov`). The outro's take samples the finishing car's transform once
+//! (`0bd6ff75` flags, `FUN_0049a910`): the camera stays where the car finished and the car drives out of shot, as
+//! the original does.
+//!
+//! Model decisions (no source yet): the race starts on the intro's event trigger (the item that signals the game
+//! logic; what the HSM does with it was not traced); `GetTransform` bindings of animated cameras follow the car
+//! live; the animated car is placed on the clip's car bone every tick with the clip's velocity (the original
+//! drives it with its `controls_*` bones, not read); nested timeline controllers (the outro's waits for input)
+//! are not run, so the outro plays straight through; audio, post-processing and UI layouts other than the
+//! letterbox are not played.
 //!
 //! `--no-cutscenes` turns them off (the race then keeps the game mode's 10 s frozen intro); `--cutscene outro`
 //! plays the outro at once (for screenshots). `MW_CUTSCENE_TRACE=<file>` logs the camera every frame.
