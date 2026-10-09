@@ -98,7 +98,7 @@ struct Cli {
     test_track: bool,
     /// Run a scripted test and exit: accel, brake, corner, handbrake, drift, donut, engine, crash (drive into a
     /// wall; with --screenshot, saves `<name>-before` / `<name>-after` images), or smash (drive through a cone,
-    /// a street lamp and a fence into an immovable wall made of the game's props, at --smash-speed; before /
+    /// a sign, a street lamp and a fence into an immovable wall made of the game's props, at --smash-speed; before /
     /// after screenshots like crash). Implies --test-track.
     #[arg(long)]
     test: Option<String>,

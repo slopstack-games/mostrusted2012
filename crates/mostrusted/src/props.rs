@@ -294,6 +294,8 @@ pub struct PropStats {
     pub max_speed_loss: f32,
     /// The speed (m/s) the player's car has lost to knocked props in total (`--test smash`).
     pub player_speed_loss: f32,
+    /// Impact effects started (a contact passed `ForceToDamage`).
+    pub effects: usize,
 }
 
 pub struct PropsPlugin;
@@ -400,6 +402,7 @@ fn stream_props(
     cars: Query<&GlobalTransform, Hitter>,
     mut props: Query<(&mut PropBody, &Transform)>,
     mut stats: ResMut<PropStats>,
+    mut effects: Option<ResMut<crate::particles::EffectRequests>>,
 ) {
     *timer += time.delta_secs();
     if *timer < 0.1 {
@@ -431,6 +434,10 @@ fn stream_props(
             continue;
         }
         prop.active = true;
+        // Load the impact effect ahead of a hit.
+        if let (Some(fx), Some(id)) = (effects.as_mut(), prop.physics.impact_effect) {
+            fx.request(id);
+        }
         commands.entity(e).insert(physics_bundle(&prop.physics));
         grid.active.insert(e);
     }
@@ -911,6 +918,7 @@ pub(crate) fn prop_contacts(
             // (`FUN_0054bf70`).
             let effect = (!prop.damaged && force > prop.physics.force_to_damage).then(|| {
                 prop.damaged = true;
+                stats.effects += prop.physics.impact_effect.is_some() as usize;
                 prop.physics.impact_effect
             });
             let sound = *s >= IMPACT_SOUND_SPEED && now - prop.last_impact > IMPACT_SOUND_GAP;
@@ -1083,20 +1091,24 @@ impl WorldSurfaces {
 // ---------------------------------------------------------------------------------------------
 // `--test smash`: drive through real props on the test track at a held speed.
 
-/// The smash test's layout along the car's path (+Z from the origin): a traffic cone (5 kg, breaks at
-/// any touch), a street lamp (150 kg compound, break force 5000), a 6 m fence panel (50 kg, 2500), and
-/// an immovable 5 m wall (a mass-0 dynamic object with break force 100000).
+/// The smash test's layout along the car's path (+Z from the origin): a traffic cone (5 kg, loose from the
+/// start), a sign (50 kg, momentum 500, with an impact effect and sound), a street lamp (150 kg compound,
+/// 5000), a 6 m fence panel (50 kg, 2500), and an immovable 5 m wall (a mass-0 dynamic object).
 pub fn smash_test_props() -> Vec<crate::loader::TestProp> {
     use crate::loader::TestProp;
     let p =
         |id: u64, kind, z: f32| TestProp { object: ResourceId(id), kind, position: Vec3::new(0.0, 0.0, z), yaw: 0.0 };
     vec![
         p(0x3698c67a, ObjectKind::Prop, 40.0),
+        p(0x39c4412d, ObjectKind::Prop, 60.0),
         p(0xfed64b97, ObjectKind::Compound, 80.0),
         p(0x406f7f52, ObjectKind::Prop, 120.0),
         p(0xd22c0396, ObjectKind::Dynamic, 170.0),
     ]
 }
+
+/// Seconds of test time between a knock and its `-knock<n>` screenshot.
+const KNOCK_SHOT_DELAY: f32 = 0.25;
 
 #[derive(Resource)]
 pub struct SmashTest {
@@ -1109,6 +1121,8 @@ pub struct SmashTest {
     knocked: usize,
     /// `PropStats::player_speed_loss` at the last knock.
     loss_mark: f32,
+    /// When to save the `-knock<n>` screenshot after a knock (test time).
+    knock_shot: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1129,6 +1143,7 @@ impl SmashTest {
             top_speed: 0.0,
             knocked: 0,
             loss_mark: 0.0,
+            knock_shot: None,
         }
     }
 
@@ -1170,7 +1185,7 @@ fn run_smash_test(
     match test.phase {
         SmashPhase::Settle => {
             input.scripted = Some([0.0, 0.0, 0.0, 1.0]);
-            if test.timer > 2.5 && props.iter().count() >= 4 {
+            if test.timer > 2.5 && props.iter().count() >= 5 {
                 if let Some(p) = test.path("before") {
                     commands.spawn(Screenshot::primary_window()).observe(save_to_disk(p));
                 }
@@ -1197,14 +1212,22 @@ fn run_smash_test(
                 report_loss(&mut test, "until the next knock");
                 info!("TEST smash: prop knocked at car z {:.1}, car {:.0} km/h", transform.translation.z, speed * 3.6);
                 test.knocked = stats.knocked;
+                test.knock_shot = Some(test.timer + KNOCK_SHOT_DELAY);
+            }
+            if test.knock_shot.is_some_and(|t| test.timer >= t) {
+                test.knock_shot = None;
+                if let Some(p) = test.path(&format!("knock{}", test.knocked)) {
+                    commands.spawn(Screenshot::primary_window()).observe(save_to_disk(p));
+                }
             }
             test.stalled = if speed < 0.5 && test.timer > 3.0 { test.stalled + dt } else { 0.0 };
             if test.stalled > 2.0 || transform.translation.z > 220.0 || test.timer > 60.0 {
                 report_loss(&mut test, "until the end");
                 info!(
-                    "TEST RESULT smash: {} prop contacts solved, largest one-step speed loss {:.2}%",
+                    "TEST RESULT smash: {} prop contacts solved, largest one-step speed loss {:.2}%, {} impact effects",
                     stats.contacts,
-                    stats.max_speed_loss * 100.0
+                    stats.max_speed_loss * 100.0,
+                    stats.effects
                 );
                 info!(
                     "TEST RESULT smash: target {:.0} km/h, top {:.0} km/h, car at z {:.1} ({}), {} props knocked",
