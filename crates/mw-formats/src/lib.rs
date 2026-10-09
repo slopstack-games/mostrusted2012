@@ -4,6 +4,7 @@
 //! resource are offsets into its chunk 0; pointers to other resources are
 //! resolved through the resource's import table.
 
+pub mod ai_data;
 mod animation;
 pub mod bear;
 pub mod binding;
@@ -28,6 +29,7 @@ mod vertex;
 mod world;
 mod zone;
 
+pub use ai_data::{AiData, AiJumpPoint, AiJunction, AiNode};
 pub use animation::{Animation, AnimationList, Bone, BoneKey, Skeleton, decode_quat32};
 pub use bear::BearEffect;
 pub use collision::{CollisionTag, PolygonSoup, PolygonSoupList, SOUP_GRANULARITY, SOUP_OFFSET_UNIT, SoupPolygon};

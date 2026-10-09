@@ -2,7 +2,7 @@
 //! [`CarControls`]) and are driven along a route by an AI driver.
 //!
 //! A race hands in a [`RaceSetup`] (the route as a polyline and the start-grid transforms); without one, `--ai`
-//! builds a test route along the traffic lanes from the player's spawn point (`route_from_lanes`) and places the
+//! builds a test route along the AI road graph (`AIData`) from the player's spawn point (`route_from_ai_graph`) and places the
 //! opponents on it ahead of and beside the player. Opponent cars are loaded by the loader thread like the
 //! player's (`CarRequest::opponent`) and built by [`crate::drive::build_car`].
 
@@ -73,6 +73,8 @@ pub struct AiRoute {
     pub distance: Vec<f32>,
     /// The last point joins the first (a circuit).
     pub closed: bool,
+    /// Drivable half-width at each point (m; empty when unknown).
+    pub half_width: Vec<f32>,
 }
 
 impl AiRoute {
@@ -86,7 +88,7 @@ impl AiRoute {
             }
             distance.push(d);
         }
-        Self { points, distance, closed }
+        Self { points, distance, closed, half_width: Vec::new() }
     }
 
     pub fn length(&self) -> f32 {
@@ -172,70 +174,55 @@ impl AiRoute {
     }
 }
 
-/// Model decision (docs/decomp.md "AI racers"): a test route along the traffic lanes, used only when no race
-/// hands one in. Start at the lane section nearest `start` running within 90° of `heading` (yaw, 0 = +Z), then
-/// follow the forward links, at each fork the continuation that turns least, until `length` metres.
-pub fn route_from_lanes(
-    lanes: &mw_formats::TrafficLaneData,
-    start: Vec3,
-    heading: f32,
-    length: f32,
-) -> Option<AiRoute> {
-    let dir = Vec3::new(heading.sin(), 0.0, heading.cos());
-    let mid = |hull: usize, section: usize| -> Option<Vec<Vec3>> {
-        let h = lanes.hulls.get(hull)?;
-        let s = h.sections.get(section)?;
-        let rungs = h.rungs.get(s.first_rung as usize..s.first_rung as usize + s.rung_count as usize)?;
-        Some(rungs.iter().map(|[a, b]| (Vec3::from_slice(&a[..3]) + Vec3::from_slice(&b[..3])) * 0.5).collect())
-    };
-    // The starting section: nearest rung midpoint, lane running our way.
-    let mut best: Option<(f32, usize, usize, usize)> = None;
-    for lane in lanes.lanes_near(start.x, start.z, 60.0) {
-        let pts: Vec<Vec3> = lane.points.iter().map(|p| Vec3::from(*p)).collect();
-        for (i, w) in pts.windows(2).enumerate() {
-            let along = (w[1] - w[0]).normalize_or_zero();
-            if along.dot(dir) < 0.0 {
-                continue;
-            }
-            let d = Vec3::new(w[0].x - start.x, 0.0, w[0].z - start.z).length();
-            if best.is_none_or(|b| d < b.0) {
-                best = Some((d, lane.hull, lane.section, i));
-            }
-        }
-    }
-    let (_, mut hull, mut section, first) = best?;
-    let mut points: Vec<Vec3> = mid(hull, section)?.into_iter().skip(first).collect();
+/// A path along the AI's road graph (`AIData`) from `start` heading `heading` (yaw, 0 = +Z), the way the game's path
+/// builders walk it (`FUN_004ed1a0` / `FUN_004e8ac0`, docs/decomp.md "AI racers"): from the nearest non-junction
+/// node (`FUN_004375b0`), each step takes the neighbour best aligned with the direction so far, main roads before
+/// shortcut-flagged ones (`FUN_00436c00`); nodes of width 0 are not path points. The centre line is a
+/// Catmull-Rom spline through the nodes (tangents 0.5 × (next − previous), `FUN_004e6160`), sampled every ~2 m,
+/// with the node's drivable half-width (`width` × 0.5, `FUN_004f2310`). Picking the straightest exit at every
+/// junction is ours (the game's junction choice, `FUN_004e90d0`, is random or angle-based and not ported): it is
+/// only the test route used when no race hands one in.
+pub fn route_from_ai_graph(ai: &mw_formats::AiData, start: Vec3, heading: f32, length: f32) -> Option<AiRoute> {
+    let pos = |i: usize| Vec3::from(ai.nodes[i].position);
+    let first = ai.nearest_node(start.to_array(), true)?;
+    let mut dir = Vec2::new(heading.sin(), heading.cos());
+    let mut nodes = vec![first];
     let mut total = 0.0;
-    let mut visited = std::collections::HashSet::new();
-    while total < length {
-        let s = &lanes.hulls[hull].sections[section];
-        let end_dir = match points.len() {
-            n if n >= 2 => (points[n - 1] - points[n - 2]).normalize_or_zero(),
-            _ => dir,
-        };
-        let mut next: Option<(f32, usize, usize, Vec<Vec3>)> = None;
-        for &(h, sec) in &s.forward {
-            let (h, sec) = (h as usize, sec as usize);
-            if visited.contains(&(h, sec)) {
-                continue;
-            }
-            let Some(pts) = mid(h, sec) else { continue };
-            if pts.len() < 2 {
-                continue;
-            }
-            let turn = (pts[1] - pts[0]).normalize_or_zero().dot(end_dir);
-            if next.as_ref().is_none_or(|n| turn > n.0) {
-                next = Some((turn, h, sec, pts));
-            }
-        }
-        let Some((_, h, sec, pts)) = next else { break };
-        visited.insert((h, sec));
-        let before = points.len();
-        points.extend(pts);
-        total += points[before.saturating_sub(1)..].windows(2).map(|w| w[0].distance(w[1])).sum::<f32>();
-        (hull, section) = (h, sec);
+    let mut prev = None;
+    let mut cur = first;
+    while total < length && nodes.len() < 20_000 {
+        let Some(next) = ai.next_node(cur, dir.to_array(), prev) else { break };
+        let d = pos(next) - pos(cur);
+        total += d.length();
+        dir = Vec2::new(d.x, d.z).normalize_or(dir);
+        prev = Some(cur);
+        cur = next;
+        nodes.push(cur);
     }
-    (points.len() >= 2).then(|| AiRoute::new(points, false))
+    let nodes: Vec<usize> = nodes.into_iter().filter(|&i| ai.nodes[i].width > 0.0).collect();
+    if nodes.len() < 2 {
+        return None;
+    }
+    let (mut points, mut widths) = (Vec::new(), Vec::new());
+    for k in 0..nodes.len() - 1 {
+        let p = |j: isize| pos(nodes[j.clamp(0, nodes.len() as isize - 1) as usize]);
+        let (p0, p1, p2, p3) = (p(k as isize - 1), p(k as isize), p(k as isize + 1), p(k as isize + 2));
+        let (m1, m2) = ((p2 - p0) * 0.5, (p3 - p1) * 0.5);
+        let steps = (p1.distance(p2) / 2.0).ceil().max(1.0) as usize;
+        let (w1, w2) = (ai.nodes[nodes[k]].width * 0.5, ai.nodes[nodes[k + 1]].width * 0.5);
+        for i in 0..steps {
+            let t = i as f32 / steps as f32;
+            let (t2, t3) = (t * t, t * t * t);
+            let h = [2.0 * t3 - 3.0 * t2 + 1.0, t3 - 2.0 * t2 + t, -2.0 * t3 + 3.0 * t2, t3 - t2];
+            points.push(p1 * h[0] + m1 * h[1] + p2 * h[2] + m2 * h[3]);
+            widths.push(w1 + (w2 - w1) * t);
+        }
+    }
+    points.push(pos(*nodes.last().unwrap()));
+    widths.push(ai.nodes[*nodes.last().unwrap()].width * 0.5);
+    let mut route = AiRoute::new(points, false);
+    route.half_width = widths;
+    Some(route)
 }
 
 /// Grid slots along `route` from distance `s0`: two abreast, `gap` metres between rows, `half_width` either side.
@@ -265,11 +252,26 @@ pub struct AiDriver {
     pub time: f32,
     pub splits: Vec<f32>,
     pub finished: Option<f32>,
+    /// Test statistics: the largest lateral error so far (m) and the number of body hits on the world.
+    pub max_lateral: f32,
+    pub hits: u32,
+    touching: bool,
 }
 
 impl AiDriver {
     pub fn new(route: Arc<AiRoute>) -> Self {
-        Self { route, progress: 0.0, lateral: 0.0, target_speed: 0.0, time: 0.0, splits: Vec::new(), finished: None }
+        Self {
+            route,
+            progress: 0.0,
+            lateral: 0.0,
+            target_speed: 0.0,
+            time: 0.0,
+            splits: Vec::new(),
+            finished: None,
+            max_lateral: 0.0,
+            hits: 0,
+            touching: false,
+        }
     }
 }
 
@@ -298,21 +300,21 @@ fn setup_race(
     *done = true;
     let fwd = t.rotation * Vec3::Z;
     let heading = fwd.x.atan2(fwd.z);
-    let lanes = match game.store.traffic_lanes() {
-        Ok(l) => l,
+    let graph = match game.store.ai_data() {
+        Ok(g) => g,
         Err(e) => {
-            warn!("AI: no traffic lanes ({e}); no route");
+            warn!("AI: no road graph ({e}); no route");
             return;
         }
     };
-    let Some(route) = route_from_lanes(&lanes, t.translation, heading, 3000.0) else {
+    let Some(route) = route_from_ai_graph(&graph, t.translation, heading, 3000.0) else {
         warn!("AI: no lane near {:?}; no route", t.translation);
         return;
     };
     let route = Arc::new(route);
     let (s_player, _) = route.project(t.translation, None, 0.0);
     info!(
-        "AI route: {} points, {:.0} m along the traffic lanes from {:?} (player at {:.0} m)",
+        "AI route: {} points, {:.0} m along the AI road graph from {:?} (player at {:.0} m)",
         route.points.len(),
         route.length(),
         route.points[0],
@@ -403,6 +405,13 @@ fn ai_drive(time: Res<Time>, mut cars: Query<(&Car, &Transform, &LinearVelocity,
         let (s, lateral) = ai.route.project(t.translation, hint, 30.0);
         ai.progress = s;
         ai.lateral = lateral;
+        if ai.time > 1.0 {
+            ai.max_lateral = ai.max_lateral.max(lateral.abs());
+        }
+        if car.body_contact && !ai.touching {
+            ai.hits += 1;
+        }
+        ai.touching = car.body_contact;
         while (ai.splits.len() as f32 + 1.0) * 100.0 <= s {
             ai.splits.push(ai.time);
         }
@@ -481,17 +490,17 @@ fn log_ai(
     let all_done = cars.iter().all(|c| c.3.finished.is_some());
     if longest >= test.seconds || all_done {
         for (name, _, _, ai, player) in &cars {
-            let max_lat = ai.lateral.abs();
             info!(
-                "TEST RESULT AI {}{}: {:.0} m in {:.1} s ({:.1} km/h mean), 100 m splits {:?}, finished {:?}, lateral now {:.2} m",
+                "TEST RESULT AI {}{}: {:.0} m in {:.1} s ({:.1} km/h mean), finished {:?}, max lateral {:.2} m, {} world hits, 100 m splits {:?}",
                 name,
                 if player { " (player car)" } else { "" },
                 ai.progress,
                 ai.time,
                 ai.progress / ai.time.max(1e-3) * 3.6,
-                ai.splits.iter().map(|s| (s * 10.0).round() / 10.0).collect::<Vec<_>>(),
                 ai.finished,
-                max_lat
+                ai.max_lateral,
+                ai.hits,
+                ai.splits.iter().map(|s| (s * 10.0).round() / 10.0).collect::<Vec<_>>(),
             );
         }
         exit.write(AppExit::Success);
