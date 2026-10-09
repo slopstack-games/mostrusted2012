@@ -115,6 +115,11 @@ mod h {
     pub const SPRING_DAMPING: u32 = field_hash("Damping_Ratio");
     pub const SPRING_DAMPER_RATIO: u32 = 0x0c5f89b3;
     pub const SPRING_SAG: u32 = 0x41543f85;
+    // VehicleInfo.Axles[i].Wheel_Sizes -> WheelSizes: `337afbd9` is the rim radius (m; 0.24765 / 0.26035 / 0.275 ..
+    // = 9.75 / 10.25 / 10.83 in), `e98ed83b` a little larger (not read by the physics as far as traced).
+    pub const VEHICLE_AXLES: u32 = field_hash("Axles");
+    pub const AXLE_WHEEL_SIZES: u32 = field_hash("Wheel_Sizes");
+    pub const WHEEL_SIZES_RIM: u32 = 0x337afbd9;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -366,6 +371,10 @@ pub struct VehicleHandling {
     pub camera: Option<VehicleCameras>,
     /// Front, rear.
     pub springs: Vec<Spring>,
+    /// Front, rear: the rim radius (`WheelSizes.337afbd9` of the axle's `VehicleInfo.Axles[i].Wheel_Sizes`). The
+    /// wheel constraint's strut stop is soft over the tyre's sidewall, wheel radius − rim radius (`FUN_0095b4d0`
+    /// → constraint +0x470, read by `FUN_009c5a90`).
+    pub rim_radius: [Option<f32>; 2],
     /// The car's surface profile (`Tyres.Surface_effects.Default_profile.Links`).
     pub surface_links: Vec<SurfaceLink>,
     /// Every numeric field of `HandlingBehaviour`, by path of field hashes
@@ -408,6 +417,8 @@ impl VehicleHandling {
     pub fn from_bundle(store: &AssetStore, bundle: &Bundle) -> Result<Self> {
         let mut out = Self::default();
         let mut springs: Vec<(u32, Spring)> = Vec::new();
+        let mut wheel_sizes: Vec<(ResourceId, f32)> = Vec::new();
+        let mut axle_sizes: Vec<ResourceId> = Vec::new();
         for e in bundle.entries_of_type(ResourceType::GenesysObject) {
             let Ok(obj) = store.decode_genesys(&bundle.load(e)?) else { continue };
             match obj.type_name.as_str() {
@@ -419,6 +430,23 @@ impl VehicleHandling {
                         .and_then(|p| Some([float(p, h::PID_P)?, float(p, h::PID_I)?, float(p, h::PID_D)?]));
                     out.gameplay_top_speed_mph = float(&obj, h::GAMEPLAY_TOP_SPEED);
                     out.damage_stats = crate::crash::VehicleDamageStats::from_gameplay(&obj);
+                }
+                "Genesys.Gen.WheelSizes" => {
+                    if let Some(rim) = float(&obj, h::WHEEL_SIZES_RIM) {
+                        wheel_sizes.push((e.id, rim));
+                    }
+                }
+                "Genesys.Gen.VehicleInfo" => {
+                    axle_sizes = items(&obj, h::VEHICLE_AXLES)
+                        .iter()
+                        .filter_map(|a| match a {
+                            Value::Struct(a) => match a.get(h::AXLE_WHEEL_SIZES)? {
+                                Value::Handle(Some(id)) | Value::Ref(id) => Some(*id),
+                                _ => None,
+                            },
+                            _ => None,
+                        })
+                        .collect();
                 }
                 "Genesys.Gen.WheelSuspensionSpringConstraint" => {
                     if let (Some(damper_ratio), Some(damping_ratio), Some(sag)) = (
@@ -435,6 +463,9 @@ impl VehicleHandling {
         // Lower resource IDs belong to the front axle in every car checked.
         springs.sort_by_key(|(id, _)| *id);
         out.springs = springs.into_iter().map(|(_, s)| s).collect();
+        for (axle, id) in axle_sizes.iter().take(2).enumerate() {
+            out.rim_radius[axle] = wheel_sizes.iter().find(|(w, _)| w == id).map(|(_, r)| *r);
+        }
         Ok(out)
     }
 

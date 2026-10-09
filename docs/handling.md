@@ -71,9 +71,11 @@ One physics tick is 1/60 s (`Time::<Fixed>` at 60 Hz, as the game). Per tick, in
    and rang at 11 Hz). Its input (left-right compression difference over the track) and explicit force form are
    ours: the solve that applies the bar was not found (decomp.md). The spring force holds
    the body up; it does not set the tyre grip. **Strut end stop** (`FUN_009c5a90` → `FUN_009c2670`): where the
-   ground would come past the end of the bump travel by the end of the tick, the wheel contact acts on the chassis
-   as a hard, non-negative normal impulse at the contact (target normal velocity ≥ overtravel / dt, so the
-   predicted penetration is 0), solved as sequential impulses over the four wheels (`strut_stops` in drive.rs).
+   ground would come past the end of the bump travel by the end of the tick (predicted penetration d), the chassis
+   is moved at the strut end by max(d − min(d, sidewall, 0.1), 0.1 d) per contact pass (2), then its closing speed
+   there is stopped × that share in each impulse sub-step (2); sidewall = wheel radius − rim radius
+   (`WheelSizes.337afbd9`), so the stop is soft until the rim reaches the ground (`strut_stops` in drive.rs,
+   2026-10-09). The spring keeps compressing past the travel (the game's wheel stays on the ground).
    The wheel ray starts one radius above the mount so ground that has come past the strut still registers.
 6. **Tyres** (`tyre.rs`): a velocity constraint, capped, solved once per tick as the game does. Grip load N =
    the static corner load + ½ × the axle's downforce (not the spring force). Longitudinal: the brake (an angular
@@ -507,7 +509,9 @@ stands 10 m past the impact); a 2 m pillar shows the car.
 | ~~per-wheel surface factor on drift torque and side force~~ | ported 2026-10-09 | `FUN_009cede0` = 0.25 × the sum of the four wheels' effective lateral surface grip (+0x70 of each 0x7c-byte surface record at vehicle +0x17e0, written by `FUN_009cece0`); the damping does not take it |
 | ~~rolling resistance Crr 0.015~~ | removed 2026-10-06 | the game's comes from the surface: `5c2a9f18` × N per wheel plus the slide drag (`FUN_009d4a10`) |
 | wheel contact | one ray per wheel | the game ties each wheel record to the chassis with a constraint holding the wheel's ground contact points, iterated in sub-steps (`FUN_0093f200`); the tyre friction is one pass after them |
-| strut stop slack | 0 | the chassis gets share = max(d − min(+0x470, 0.1), 0.1 d) / d of the stop impulse at penetration d (`.bss` 0x01186bf0 = 0.1, 0x01186b10 = 0.1, read live 2026-10-06); equals ours (share 1) only when the constraint field +0x470 is 0, not read (the wheel constraint was not located from the vehicle in the snapshot). Not changed: ours has no wheel bodies to take the rest |
+| ~~strut stop slack 0~~ | ported 2026-10-09, from the game | slack = wheel radius − the axle's rim radius (`VehicleInfo.Axles[i].Wheel_Sizes` → `WheelSizes.337afbd9`; `FUN_0095b4d0` → constraint +0x470; snapshot: XKR 0.339 − 0.265 = 0.074 front, 0.338 − 0.265 = 0.073 rear, as read at +0x470). Per contact pass (2) the chassis moves by e / dt at the strut end, e = max(d − min(d, slack, 0.1), 0.1 d); the impulse sub-steps (2) then stop its closing speed × e / d (`strut_stops`, decomp.md "Suspension, wheels, aerodynamics") |
+| spring past the strut end | keeps compressing | ours: the game's wheel stays on the ground (contact pass) and its spring runs anchor → wheel centre (`FUN_0092f510`); no limit on the wheel at the strut's end was found, so our compression is no longer clamped at the travel (the 4 × corner-weight load cap is still ours) |
+| damper input | the mount's velocity along the ground normal | the game's damper (`FUN_0092f160`) takes the wheel record's velocity (25 kg point mass that the contact pass sets to follow the ground) minus the anchor's, so a step also kicks through the damper there; ours has no wheel mass. Open: port the wheel as a point mass (spring `FUN_0092f510`, damper, contact pass) |
 | ~~`STOP_ITERATIONS`~~ | 2, from the game | the island step's sub-step loop `FUN_0093f200` runs world +0x464 = 2 times (set by `FUN_009330d0`, 2 in both live snapshots); each runs the strut stops' impulse pass `FUN_009c2670` once (`SOLVER_SUBSTEPS`) |
 | wheel ray start | one wheel radius above the mount | stands in for the game's wheel body colliding with the world: a ray from a mount already under the ground returns a zero normal (solid box) or nothing (trimesh back face), and the car stayed sunk on its body box |
 | chassis angular damping | 0.4 /s (avian `AngularDamping`, all axes) | **not in the original**: a driving car's rotation is damped only in a drift (`FUN_009d11d0`) and for up to 1 s after a collision (`FUN_008f7950`, ported); its `DrivingVehicle` damping constraint is empty (read live, decomp.md "Angular damping"). Kept because ours over-rotates in slides without it (four clean brake-tap windows of `ref/live1`: yaw RMS 4.8–15.6 °/s with it, 7.6–19.9 without) while the drift's forces match the original's: the missing yaw resistance is in the tyre or chassis model (research log 2026-10-09). `MW_ANGULAR_DAMPING=<v>` for A/B; remove once found |

@@ -542,6 +542,33 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
   the sub-step's scale, capped through the same effective mass (`FUN_009e8230`) so the relative velocity cannot
   change sign, applied to the chassis (`FUN_0097e440`) and to the wheel only under the +0x0c mask. The spring is
   likely `FUN_0092f510` (the same list, elements +0x10 / +0x14 / +0x20..+0x3c), not read.
+- **Strut stop, read in full (2026-10-09)**. `FUN_009c5a90` runs per wheel constraint in each of the island's
+  contact passes (`FUN_00932190`, `this` = constraint, then wheel record, chassis body, dt, 1/dt). With d = the
+  predicted penetration of the ground into the tyre placed at the strut end (+0x460, chassis-local; d = (ground
+  point − (strut end + contact offset + v_chassis dt)) · n) and s = min(+0x470, 0.1 `.bss` 0x01186bf0): excess
+  e = max(max(d − min(d, s), 0), 0.1 d) (0x01186b10), share +0x474 = clamp(e / max(d, FLT_EPSILON), 0, 1), flag
+  +0x4ae (cleared at the top of every call); the chassis gets n × e × (1/dt) through its inverse effective mass
+  at the strut end (`FUN_009e8230`, rcpps + Newton), accumulated by `FUN_009ca290` and applied by
+  `FUN_00907840`. The wheel record itself gets its velocity raised by d / dt along n (+0x40 += n d / dt), so the
+  wheel follows the ground fully. `FUN_009c2670` (each impulse sub-step) gives the wheel max((bias + n · v_ground)
+  − n · v_wheel, 0) (+0x50 = mass accumulates the impulse) and, while +0x4ae is set, the chassis share × m_eff ×
+  max(−v_n, 0) at the strut end. **+0x470 is the tyre's sidewall**: the builder `FUN_009c24b0` copies it from its
+  sixth argument, which `FUN_0095b4d0` computes as max(wheel shape radius (wheel object +0x19c → +0x40) − wheel
+  object +0xcc, 0); +0xcc is `WheelSizes.337afbd9` (rim radius) of the axle's `VehicleInfo.Axles[i].Wheel_Sizes`.
+  Snapshot snap1 (XKR, 1762 kg): radius 0.339 / 0.338, rim 0.265 → +0x470 = 0.074 / 0.073 ✓; +0x474 never
+  written (0xcdcdcdcd) in snap1, 0.1 on the fronts in snap2. So within the sidewall the chassis takes a tenth of
+  the penetration per pass, beyond it the rim hits hard.
+- **Wheel and strut objects (snap1, XKR)**: wheel record (world +0x08, 0x80 each): +0x00 centre, +0x40 velocity,
+  +0x50 mass 25, +0x54 spin inertia, +0x58 1/m, +0x5c 1/I. Wheel object (vehicle +0x870 + i × 0x1d0 in the
+  frame of `FUN_0095b4d0`; +0x198 → wheel record, +0x19c → its cylinder shape, radius at +0x40): +0xc0 =
+  chassis-local rest position (0.795, −0.133, 1.291) front, (0.799, −0.144, −1.458) rear, w = rim 0.265. The strut
+  object (pointer at vehicle +0x10f0 + 8i): +0x40 top (0.8018, −0.077, 1.291), +0x50 bottom (0.788, −0.232),
+  +0x60 an arm pivot on the far side (−1.197, 0.020), +0x70 1.5° (0.02618 rad); rear top −0.077, bottom −0.237.
+  So the bump travel above rest is 0.056 front / 0.067 rear on the XKR (ours: 0.06 for every car), droop 0.099 /
+  0.093, the strut tilted 5° (`Angle`). The spring element (+0x10 rest length 0.463 / 0.449, +0x14 k 41603 /
+  47896, +0x18 rebound c, +0x1c W, +0x20 anchor (0.795, 0.22, 1.291), +0x2c c) puts the rest position at the sag
+  (0.463 − (0.22 + 0.133) = 0.11 ✓). Where the strut top (−0.077 chassis-local on both axles) comes from in the
+  data was not found.
 - Unknown: the spring element `FUN_0092f510`, the strut travel (+0x460 is set
   by the builder's caller; not traced), the stop's slack (+0x470, `.bss` 0x01186bf0, 0x01186b10; not touched by
   the sleep pass or the bar, whose context offsets +0x210 / +0x470 only coincide), what wheel record +0x0c is and
