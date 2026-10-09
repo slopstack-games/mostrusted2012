@@ -51,7 +51,7 @@ times all changed.
   (`git worktree remove <path>` and delete the `worktree-agent-*` branches).
 - /tmp is a RAM tmpfs: big artefacts go into a worktree, not the scratchpad (memory note).
 - The user's original-game save changed during the intro capture (SP from races); a backup from the start of
-  that run was in the session scratchpad (`savebackup/`), which does not survive a reboot.
+  that run is in the git-ignored `ref/savebackup-2026-10-09/`.
 - CLAUDE.md has the user's uncommitted edits: its `--prop-physics` line is stale (now `--no-prop-physics`) and
   the new commands below are not in it yet.
 
