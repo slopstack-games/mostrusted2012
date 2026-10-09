@@ -111,7 +111,7 @@ Commands (not yet in CLAUDE.md, which has uncommitted local edits):
 ./target/release/mostrusted --race 462174                      # CONTINENTAL DRIFT: intro, 8 AI, traffic
 ./target/release/mostrusted --race 462174 --test race --units 12   # TEST RESULT race … (--no-cutscenes: frozen start)
 MW_CUTSCENE_SHOT=intro:9 ./target/release/mostrusted --race 462174 --units 12 --screenshot f.png --screenshot-delay 100000
-./target/release/mostrusted --drive 911 --units 20 --ai "911,veyron super" --test ai --ai-seconds 60
+./target/release/mostrusted --drive 911 --ai "911,veyron super" --test ai --ai-seconds 60
 ./target/release/mostrusted --drive 911 --test exhaust         # pops / backfires; --nitrous holds nitrous
 ./target/release/mostrusted --drive xkr --units 12 --spawn=-600,52,2300 --show-easydrive --easydrive-path 2,0,1
 # --no-traffic, --traffic-density x, --no-cutscenes, MW_TRAFFIC_LOG=1, MW_EXHAUST_LOG=1, MW_RACE_TEXT=1

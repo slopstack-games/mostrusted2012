@@ -99,10 +99,17 @@ impl AudioSettings {
     }
 }
 
-fn config_path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
+/// Where the user's configuration lives: `$XDG_CONFIG_HOME`, else `%APPDATA%` on Windows, else `~/.config`.
+pub fn config_dir() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
+        .or_else(|| if cfg!(windows) { std::env::var_os("APPDATA") } else { None })
+        .filter(|v| !v.is_empty())
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+}
+
+fn config_path() -> Option<PathBuf> {
+    let base = config_dir()?;
     Some(base.join("mostrusted").join("settings.cfg"))
 }
 

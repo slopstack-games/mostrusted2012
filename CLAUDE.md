@@ -56,6 +56,13 @@ crates/mw-probe     DLL loaded into the running original (docs/probe.md; i686-pc
 Game install on this machine: `~/.local/share/Steam/steamapps/common/Need for Speed(TM) Most Wanted`
 (found automatically).
 
+Windows hosts build and run the same workspace (MSVC toolchain). The install is found through Steam's registry
+key and the default Steam / EA app folders; settings and the profile go to `%APPDATA%\mostrusted`. `mwtool
+memscan` / `telemetry` / `tune` / `capture` read the game through `ReadProcessMemory` (`memscan/windows.rs`);
+`capture` records no audio there (it uses pactl / parecord). The probe DLL builds with
+`rustup target add i686-pc-windows-msvc` and `cargo build --release -p mw-probe --target i686-pc-windows-msvc`.
+`tools/orig` (gamescope) is Linux-only.
+
 ## Commands
 
 ```sh
@@ -171,11 +178,11 @@ MW_ENGINE_TRACE=<scratch>/rpm.trace ./target/release/mostrusted --drive 911 --te
 ./target/release/mostrusted --race 462174                # CONTINENTAL DRIFT; --no-cutscenes, --spawn= overrides the start
 ./target/release/mostrusted --race 462174 --test race --units 12   # TEST RESULT race ... (gates, laps, wrong way)
 MW_CUTSCENE_SHOT=intro:9 ./target/release/mostrusted --race 462174 --units 12 --screenshot <scratch>/i.png --screenshot-delay 100000
-./target/release/mostrusted --drive 911 --units 20 --ai "911,veyron super" --test ai --ai-seconds 60   # AI racers
+./target/release/mostrusted --drive 911 --ai "911,veyron super" --test ai --ai-seconds 60   # AI racers
 # Traffic (traffic.rs; density from the event): --no-traffic, --traffic-density x, MW_TRAFFIC_LOG=1
 ./target/release/mwtool traffic --at x,z                 # lanes near a point (plain: junction cycles, decoded data)
 ./target/release/mostrusted --drive 911 --test crash-traffic       # head-on with traffic: crash camera (car_impacts.rs)
-./target/release/mostrusted --drive 911 --test crash-ai --ai 911 --no-traffic
+./target/release/mostrusted --drive 911 --test crash-ai --ai 911 --no-traffic --spawn=925,23,-101,10   # (the default spawn has a barrier ahead)
 # Car state: --nitrous holds nitrous, --damage all=0.5 starts damaged, R washes the car, --dirt 0.6,0.3
 ./target/release/mostrusted --drive 911 --test exhaust   # pops / backfires (MW_EXHAUST_LOG=1)
 ./target/release/mwtool damage <car> --keys              # damage clip keys; --level all=0.5 --preview <png>

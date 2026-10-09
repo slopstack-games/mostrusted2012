@@ -9,10 +9,12 @@
 //!
 //! Only `tools/orig/orig launch --probe` puts this DLL next to the game and enables the DLL override for
 //! that run; `orig quit` removes it. Build:
-//! `cargo build --release -p mw-probe --target i686-pc-windows-gnu`.
+//! `cargo build --release -p mw-probe --target i686-pc-windows-gnu` (on a Windows host:
+//! `--target i686-pc-windows-msvc`). Other targets, a 64-bit Windows host included, only type-check it: the
+//! exports and `DllMain` exist in the 32-bit Windows build alone.
 
 #![allow(non_snake_case, non_camel_case_types, clippy::upper_case_acronyms)]
-#![cfg_attr(not(windows), allow(dead_code, unused_imports, unused_macros))]
+#![cfg_attr(not(all(windows, target_arch = "x86")), allow(dead_code, unused_imports, unused_macros))]
 
 use std::ffi::c_void;
 use std::fmt::Write as _;
@@ -174,7 +176,7 @@ macro_rules! forward {
             pub mod $name {
                 pub static mut TARGET: usize = 0;
             }
-            #[cfg(windows)]
+            #[cfg(all(windows, target_arch = "x86"))]
             #[unsafe(naked)]
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn $name() {
@@ -325,7 +327,7 @@ fn attach(module: HMODULE) {
     std::thread::spawn(move || hello(real_loaded, missing));
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, target_arch = "x86"))]
 #[unsafe(no_mangle)]
 pub extern "system" fn DllMain(module: HMODULE, reason: u32, _reserved: *mut c_void) -> BOOL {
     match reason {

@@ -193,7 +193,8 @@ struct Cli {
     #[arg(long)]
     mute: bool,
     /// Volumes for this run, over the saved settings: `master=0.8,engine=1,sfx=0.5,music=0.3` (0..1 or %).
-    /// F2 / gamepad Select opens the volume settings in game (saved to ~/.config/mostrusted/settings.cfg).
+    /// F2 / gamepad Select opens the volume settings in game (saved to ~/.config/mostrusted/settings.cfg;
+    /// %APPDATA%\mostrusted on Windows).
     #[arg(long)]
     volume: Option<String>,
     /// Open the volume settings at startup (for screenshots).
@@ -331,7 +332,7 @@ struct Cli {
     #[arg(long)]
     show_pause: bool,
     /// The profile file (the car and where it was, saved every 10 s while driving; read by the start-up flow to
-    /// continue). Default: ~/.config/mostrusted/profile.cfg.
+    /// continue). Default: ~/.config/mostrusted/profile.cfg (%APPDATA%\mostrusted\profile.cfg on Windows).
     #[arg(long)]
     profile: Option<PathBuf>,
     /// With --show-pause: open its MAP page (the offline races).
@@ -829,13 +830,18 @@ fn main() -> anyhow::Result<()> {
         .insert_resource(frontend::Residency::new(world_drive || matches!(request, Request::World { .. })))
         .add_plugins(frontend::FrontEndPlugin {
             start: front_phase,
-            auto_start: cli.auto_start,
+            // The shots run has nobody to press a key: it starts 1 s after the prompt unless told otherwise.
+            auto_start: cli.auto_start.or(cli.front_end_shots.as_ref().map(|_| 1.0)),
             shots: cli.front_end_shots.clone(),
             profile: (cli.profile.is_some()
                 || (world_drive
                     && (menu_enabled || boot)
                     && cli.front_end_shots.is_none()
-                    && cli.auto_start.is_none()))
+                    && cli.auto_start.is_none()
+                    // Runs without a human must not move the saved car.
+                    && cli.bench.is_none()
+                    && cli.auto_throttle.is_none()
+                    && cli.swap_to.is_empty()))
             .then(|| profile_file.clone())
             .flatten(),
         })
@@ -1231,6 +1237,8 @@ fn auto_screenshot(
     impact: Option<Res<particles::FirstImpact>>,
     backfire: Option<Res<exhaust::FirstBackfire>>,
     mut frames_after_done: Local<u32>,
+    real: Res<Time<Real>>,
+    mut since_done: Local<f32>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Some(path) = &game.screenshot else { return };
@@ -1261,6 +1269,12 @@ fn auto_screenshot(
             }
             _ => {}
         }
+        return;
+    }
+    // The delay counts frames at 60 per second: on a machine that renders faster it also waits that long in
+    // real time, so late arrivals (the viewer's car, textures) are in the picture.
+    *since_done += real.delta_secs();
+    if *frames_after_done + 1 == game.screenshot_delay && *since_done < game.screenshot_delay as f32 / 60.0 {
         return;
     }
     *frames_after_done += 1;

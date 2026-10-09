@@ -84,14 +84,14 @@ const K_PITCH_EASE: f32 = 0.1;
 const PITCH_RETAIN_PER_SPEED: f32 = 0.02;
 /// `FUN_005e14d0`: within this of a vertical forward axis the previous angles are kept (`DAT_00f9d474`).
 const GIMBAL_EPS: f32 = 0.01;
-/// Model decision (handling.md "Cameras"): the longitudinal acceleration (mph/s) at which the eye's z
-/// offset reaches the data's full value. `FUN_005d12b0` clamps the acceleration by, and divides it by, the
-/// `.bss` vector `DAT_0110e770` (not read yet); ~0.9 g.
-const ACCEL_FULL_MPHS: f32 = 20.0;
-/// Model decision: limit of the eye's acceleration z offset (m). `FUN_005d12b0` clamps the step towards
-/// the target by `DAT_0110e4d0` and the offset by `DAT_0110e680` (both `.bss`, not read); only this one
-/// is applied, generous enough not to bind at the data's targets.
-const ACCEL_Z_LIMIT: f32 = 3.0;
+/// The longitudinal acceleration (mph/s) at which the eye's z offset reaches the data's full value.
+/// `FUN_005d12b0` clamps the acceleration by, and divides it by, the `.bss` vector `DAT_0110e770` = 22.352
+/// m/s² (read live 2026-10-10): 50 mph/s.
+const ACCEL_FULL_MPHS: f32 = 50.0;
+/// `FUN_005d12b0` clamps the step towards the target by `DAT_0110e4d0` = 0.75 m and the offset itself by
+/// `DAT_0110e680` = 4 m (`.bss`, read live 2026-10-10).
+const ACCEL_Z_STEP: f32 = 0.75;
+const ACCEL_Z_LIMIT: f32 = 4.0;
 /// `FUN_005c1f90`, the FOV dolly: the eye moves along its line to the look-at point by
 /// `DOLLY_C + DOLLY_OFFSET − DOLLY_C / tan(FOV / 2)` metres (`.rdata` 0x00fb0e90 = 3.15, 0x00fb0720 = 0.15):
 /// −1.2 (back) at 70°, +0.41 (in) at 95°, so the car keeps its size on screen as the FOV widens.
@@ -922,7 +922,7 @@ fn chase_view(
     let a_n = (a.abs() / ACCEL_FULL_MPHS).min(1.0);
     let (target, rate) = if a >= 0.0 { (am.back, am.accel_rate) } else { (am.forward, am.brake_rate) };
     let target = sp.eye_z * h + target * a_n;
-    s.accel_z += (target - s.accel_z) * (rate * dt).min(1.0);
+    s.accel_z += (target - s.accel_z).clamp(-ACCEL_Z_STEP, ACCEL_Z_STEP) * (rate * dt).min(1.0);
     s.accel_z = s.accel_z.clamp(-ACCEL_Z_LIMIT, ACCEL_Z_LIMIT);
     eye.z += s.accel_z;
 

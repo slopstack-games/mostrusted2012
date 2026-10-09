@@ -10,6 +10,56 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-10: Windows host; first live read of the original from Windows (chase-camera `.bss`)
+The workspace builds and runs on Windows (MSVC): `mwtool memscan` / `telemetry` / `tune` / `capture` reach the
+game through `ReadProcessMemory` (`memscan/windows.rs`), the install is found through the EA app's registry key
+(`C:\EA\...` here: the EA app build, `VERSION.TXT` = 1.4.0.0, 2,020 bundles, `mwtool verify` 0 failures) or
+Steam's. The 911's accel test gives the Linux numbers (0-100 km/h 3.73 s). `tools/orig` is not ported: there is
+no input / screenshot harness for the original on Windows yet, so gameplay captures need a person driving.
+
+Live read with the game started from the EA app and left at its start-up screens (`NFS13.exe` at 0x00400000;
+no elevation needed). Values already known read the same as on Linux / Proton: 0x01186b74 = 9.81,
+0x01186bf0 = 0x01186b10 = 0.1, 0x01186630 = 1.8, 0x01186f60 = 0.5, 0x0118a018 = 0.44704, 0x0118a060 =
+0x0118a090 = 2.23694, 0x0110f590 = 3600, `_DAT_0110e8f0` = 45. **New** (the chase camera's `.bss` constants, decomp.md "Cameras"
+listed them as not read):
+
+| Address | Value | Where it is used (decomp.md) |
+|---|---|---|
+| `DAT_0110e770` | 22.352 (= 50 mph in m/s) | normaliser and clamp of the longitudinal acceleration `a_long` |
+| `DAT_0110e4d0` | 0.75 | the step clamp of `target - cam[+0x588]` |
+| `DAT_0110e680` | 4.0 | the offset clamp |
+| `DAT_0110e610` | 0.01 | squared-length threshold of the local vector |
+| `DAT_0110e640` | 5.0 | speed threshold `S` of the 1.85 term |
+
+Each is the first lane of a vector of four equal values. Applied the same day in `camera.rs`: the
+acceleration normaliser (was a model value of 20 mph/s), the 0.75 m step clamp and the 4 m offset clamp. Also read: 0x0110f940 holds
+a pointer (0x1a199970), 0x0110f944 = 0 and 0x010eac98 = 0x001ae534 at this state (objects; their fields need
+gameplay).
+
+**Telemetry works too**: a `handling.watch` rebuilt from the offsets in `mwtool tune` and decomp.md "Update
+loop" (vehicle = `[[[[NFS13.exe+0xcedb04]+4]+0x53220]+0x184]`, index 48; git-ignored
+`ref/win-live1/handling.watch`) sampled the idling free-roam car: 1,010-1,020 rpm, gear 1, wheel loads 3,950 /
+3,959 / 3,805 / 3,796 N, grip 1. It has the car, drift, input (+0x1bf0 / +0x1bf4 / +0x1c00) and wheel-load
+columns; the body pose / velocity, wheel contact, spin and slip columns that `--replay` and `mwtool compare`
+need were then found live: the rigid body is `[vehicle + 0x1760]` with right / up / forward at +0x00 / +0x10 /
++0x20, position at +0x30, velocity at +0xb0 and angular velocity at +0xc0 (1.2-1.5 rad/s about y in a left
+turn at 45 mph, 0 at rest). Wheel contact, spin and slip columns are still missing.
+
+**Driving the original from Windows** (`tools/orig/orig.ps1`: focus, scancode keys through `SendInput`, a
+screenshot of the game's client area; keys are only sent while the game is the foreground window). The
+keyboard drives without changing the controller setting: A / Left / Z show up as `in_throttle` 1, `in_steer`
+-1 (left is negative), `in_brake` 1. First recorded run (`ref/win-live1/drive1.csv`, the Aston V12 Vantage on
+grass then brick downtown, so not a clean reference): 0 to 47 mph in 4 s through 1st and 2nd, then a wall.
+
+**Matched screenshots**: the chase camera's matrix (camera +0x10) and FOV (+0x90) read at the moment of a
+screenshot give the same view in ours (`--camera=<position>,<position + 20 x third row>`). The third row
+points **forward** (from the eye to the car), not back as the 2026-10-06 entry says. First pair, downtown
+(camera 2221.45, 21.43, 2611.26; FOV 70; the original's hour is not known, an overcast dusk or dawn): in ours
+the road beyond the lawn is a bright tan band (the wet road's sky reflection at a grazing angle; the
+original's is dark grey), the brick paving is bright and dry-looking (the original's is dark and glossy), no
+lit windows or street lamps. Open: where the original keeps its time of day, so pairs can be made at the same
+hour.
+
 ### 2026-10-09: frame drops: the render thread's multi-draw path, physics catch-up, bakes on every core
 User report: "optimize this game, it is weirdly dropping frames sometimes". Measured with a new per-frame log
 (`MW_FRAME_LOG=<file>`, `frame_log.rs`: main schedule segments First / PreUpdate / fixed loop / Update /

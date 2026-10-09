@@ -10,13 +10,11 @@ mod compare;
 mod crack;
 mod damage;
 mod events;
-#[cfg(target_os = "linux")]
 mod memscan;
 mod placement;
 mod preview;
 mod props;
 mod survey;
-#[cfg(target_os = "linux")]
 mod traffic_sound;
 mod tune;
 mod ui;
@@ -2267,7 +2265,6 @@ fn print_genesys(obj: &fmt::genesys::Object, depth: usize, max_items: usize) {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn attach(process: &str, pid: Option<u32>) -> Result<memscan::Process> {
     match pid {
         Some(pid) => memscan::Process::open(pid),
@@ -2275,17 +2272,14 @@ fn attach(process: &str, pid: Option<u32>) -> Result<memscan::Process> {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn memscan_cmd(process: &str, pid: Option<u32>, watch: &Path, all_regions: bool) -> Result<()> {
     memscan::repl(&attach(process, pid)?, watch, all_regions)
 }
 
-#[cfg(target_os = "linux")]
 fn tune_cmd(process: &str, pid: Option<u32>, preset: &Path, apply: bool, print: bool) -> Result<()> {
     tune::run(&attach(process, pid)?, preset, apply, print)
 }
 
-#[cfg(target_os = "linux")]
 fn telemetry_cmd(
     watch: &Path,
     out: &PathBuf,
@@ -2304,7 +2298,6 @@ fn telemetry_cmd(
 }
 
 /// Index of the original's PulseAudio / PipeWire playback stream (`application.name` "Need for Speed™ Most Wanted").
-#[cfg(target_os = "linux")]
 fn game_audio_stream() -> Option<String> {
     let out = std::process::Command::new("pactl").args(["list", "sink-inputs"]).output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
@@ -2328,7 +2321,6 @@ fn game_audio_stream() -> Option<String> {
     None
 }
 
-#[cfg(target_os = "linux")]
 #[allow(clippy::too_many_arguments)]
 fn capture_cmd(
     name: &str,
@@ -2358,6 +2350,9 @@ fn capture_cmd(
     )?;
     // The game's own audio stream only (not the desktop's), through parecord.
     let mut recorder = if no_audio {
+        None
+    } else if cfg!(windows) {
+        eprintln!("no audio: recording the game's own stream goes through pactl / parecord (Linux only)");
         None
     } else if let Some(stream) = game_audio_stream() {
         let wav = dir.join("audio.wav");
@@ -2401,35 +2396,6 @@ fn capture_cmd(
     poked.restore(&p, None);
     eprintln!("saved {}", dir.display());
     result
-}
-
-#[cfg(not(target_os = "linux"))]
-fn capture_cmd(
-    _: &str,
-    _: &Path,
-    _: f64,
-    _: Option<f64>,
-    _: bool,
-    _: &str,
-    _: Option<u32>,
-    _: &[String],
-) -> Result<()> {
-    bail!("capture reads /proc/<pid>/mem and is Linux-only for now")
-}
-
-#[cfg(not(target_os = "linux"))]
-fn memscan_cmd(_: &str, _: Option<u32>, _: &Path, _: bool) -> Result<()> {
-    bail!("memscan reads /proc/<pid>/mem and is Linux-only for now")
-}
-
-#[cfg(not(target_os = "linux"))]
-fn tune_cmd(_: &str, _: Option<u32>, _: &Path, _: bool, _: bool) -> Result<()> {
-    bail!("tune writes /proc/<pid>/mem and is Linux-only for now")
-}
-
-#[cfg(not(target_os = "linux"))]
-fn telemetry_cmd(_: &Path, _: &PathBuf, _: f64, _: Option<f64>, _: &str, _: Option<u32>, _: &[String]) -> Result<()> {
-    bail!("telemetry reads /proc/<pid>/mem and is Linux-only for now")
 }
 
 /// `mwtool freeroam`: the free-roam collectables in TriggerData (docs/formats.md "TriggerData").

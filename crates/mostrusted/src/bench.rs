@@ -152,6 +152,38 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
     sorted[((sorted.len() - 1) as f64 * p).round() as usize]
 }
 
+#[cfg(windows)]
+fn rss_mb() -> f64 {
+    #[repr(C)]
+    #[allow(non_snake_case)]
+    struct ProcessMemoryCounters {
+        cb: u32,
+        PageFaultCount: u32,
+        PeakWorkingSetSize: usize,
+        WorkingSetSize: usize,
+        QuotaPeakPagedPoolUsage: usize,
+        QuotaPagedPoolUsage: usize,
+        QuotaPeakNonPagedPoolUsage: usize,
+        QuotaNonPagedPoolUsage: usize,
+        PagefileUsage: usize,
+        PeakPagefileUsage: usize,
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetCurrentProcess() -> *mut std::ffi::c_void;
+        fn K32GetProcessMemoryInfo(process: *mut std::ffi::c_void, out: *mut ProcessMemoryCounters, len: u32) -> i32;
+    }
+    // SAFETY: all-zero is a valid value of this plain struct, and it is passed with its own size.
+    let mut counters: ProcessMemoryCounters = unsafe { std::mem::zeroed() };
+    counters.cb = std::mem::size_of::<ProcessMemoryCounters>() as u32;
+    // SAFETY: the pseudo-handle of this process and a correctly sized out-struct.
+    if unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut counters, counters.cb) } == 0 {
+        return 0.0;
+    }
+    counters.WorkingSetSize as f64 / (1024.0 * 1024.0)
+}
+
+#[cfg(not(windows))]
 fn rss_mb() -> f64 {
     std::fs::read_to_string("/proc/self/status")
         .ok()
@@ -243,7 +275,13 @@ fn report(
         .flat_map(|c| c.cascades.values())
         .map(|v| v.iter().map(|c| format!("{:.3}", c.texel_size)).collect::<Vec<_>>().join("/"))
         .collect();
-    let window_system = if std::env::var_os("WAYLAND_DISPLAY").is_some() { "Wayland, vsync-paced" } else { "X11" };
+    let window_system = if cfg!(windows) {
+        "Windows"
+    } else if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        "Wayland, vsync-paced"
+    } else {
+        "X11"
+    };
     let gpu = adapter.map_or("unknown".to_string(), |a| format!("{} ({:?}, {window_system})", a.name, a.backend));
     println!(
         "BENCH RESULT {}: {} frames in {:.1} s, frame mean {:.2} ms, median {:.2} ms, 1% low {:.2} ms \

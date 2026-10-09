@@ -343,10 +343,10 @@ and the eye / look-at heights (direct, linear in `h`), and the eye's z offset: a
 (`z += (target − z) · rate · dt`) towards `0a78c15f · h + (bd3a7cfc | 7c9039e2) · |a_long| / a_full`, rate
 `fdd25ee3` accelerating / `285f2260` decelerating, `a_long` the acceleration along the velocity (signed by
 the speed's direction in our port). This replaces our critically damped spring (ω = 2.5) and the 1.5 m
-braking limit (`8e1310f6` belongs to the vertical stage). Model decisions in that rule: `a_full` = 20 mph/s
-(`ACCEL_FULL_MPHS`, stands for `.bss` `DAT_0110e770`), the offset clamp ±3 m (`ACCEL_Z_LIMIT`, for
-`DAT_0110e680`), no step clamp (`DAT_0110e4d0`), the rate's `g · k · (1 − w)` term (vehicle + 0x2b20)
-and the 1.85 low-pass above `DAT_0110e640` left out. Still ours: the vertical acceleration stage, roll,
+braking limit (`8e1310f6` belongs to the vertical stage). From a live read (2026-10-10): `a_full` = 50 mph/s
+(`ACCEL_FULL_MPHS`, `.bss` `DAT_0110e770` = 22.352 m/s²), the step clamp 0.75 m (`ACCEL_Z_STEP`,
+`DAT_0110e4d0`) and the offset clamp ±4 m (`ACCEL_Z_LIMIT`, `DAT_0110e680`). Left out: the rate's
+`g · k · (1 − w)` term (vehicle + 0x2b20) and the 1.85 low-pass above `DAT_0110e640` (5.0). Still ours: the vertical acceleration stage, roll,
 deceleration pitch, the yaw spring's value (0.075 → 0.05 by speed), the drift lean, the bob
 (`FUN_005c8880`), the gradient spring, FOV, shakes and the collision push-in (no world query exists in the
 decompiled camera code; the director update `FUN_005d5e20` is not in the dump). `FUN_005d0b90`,
@@ -663,7 +663,7 @@ running game's memory and log it every frame. `mwtool memscan` and `mwtool telem
 (`crates/mwtool/src/memscan.rs`) read data values from `/proc/<pid>/mem` of the game process the user is
 running; the protected code is never read, traced or disassembled (docs/reverse-engineering.md). Since
 2026-10-05 `poke` (and `--poke name=value` on `telemetry` / `capture`) writes a *data* value for an experiment
-and restores it afterwards; code mappings are refused (docs/probe.md "Tier 0"). Linux / Proton only for now.
+and restores it afterwards; code mappings are refused (docs/probe.md "Tier 0"). Linux / Proton and Windows.
 
 **Setup (once per boot):** `sudo sysctl kernel.yama.ptrace_scope=0` (or `sudo setcap cap_sys_ptrace+ep
 target/release/mwtool` after each build). Start the game, enter free roam, then in a terminal:
