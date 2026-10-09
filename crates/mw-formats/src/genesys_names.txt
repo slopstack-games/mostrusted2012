@@ -892,6 +892,7 @@ NucleusEntitlement
 NucleusTag
 Occlusion
 OffRoad
+OffRoadOverrides
 Offroad
 Offset
 Oncoming
@@ -1078,6 +1079,7 @@ SpeedbreakerId
 Spin_Competitor
 Spin_Loop
 Sport
+SportOverrides
 Spot_effect
 Spot_effects
 Springiness
@@ -1150,6 +1152,7 @@ TitleString
 Token
 Toughness
 Track
+TrackOverrides
 TrackingAcceleration
 TrackingSpeed
 Tracking_Params

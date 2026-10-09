@@ -108,9 +108,23 @@ One physics tick is 1/60 s (`Time::<Fixed>` at 60 Hz, as the game). Per tick, in
   exponent is multiplied by static load / N. The driven wheels' longitudinal cap is reduced by the burnout
   factor. No caps where the ground normal's up component is under 0.5.
 - Surface (per wheel, from the collision tag under it; the flat test track counts as the game's
-  `Default_surface`): grip = `Surface_Grip` blended towards the car's `VehicleSurfaceProfile` link grip by its
-  per-axle lateral / longitudinal factors (1 on asphalt for every car); resistance = `5c2a9f18` × N (0.01 on
-  asphalt) + |mph| × `7585f9cb` × the link's drag ramp over the slip angle (asphalt: up to 4 N per mph at 15°).
+  `Default_surface`, or `--track-surface <index>`): grip = `RoadOverrides.Surface_Grip` blended towards the car's
+  `VehicleSurfaceProfile` link grip by its per-axle lateral / longitudinal factors (1 on asphalt for every car);
+  resistance = `5c2a9f18` × N (0.01 on asphalt) + |mph| × `7585f9cb` × the link's drag ramp over the slip angle
+  (asphalt: up to 4 N per mph at 15°). When a wheel leaves a surface its grip lingers: it fades towards the new
+  surface's link grip over (old link grip − lower old grip) × 3 × min(time on the old surface, 2 s) × 0.5 and the
+  tyre gets the lower of the fading and the new grip (`mw_handling::surface::SurfaceGrip`; grass → asphalt on the
+  911: 0.835 back to 1 over 1.4 s). The drift's yaw torque and side force are scaled by the mean effective lateral
+  surface grip of the four wheels. The player's car also feels the surface's bumps: the contact moves along the
+  ground normal by `Surface_roughness` amplitude (`7cb58933` mm) × Perlin noise of the position × its frequency
+  (`8193fd9b` per m), and the normal tilts with it (grass ±8 cm over ~10 m, dirt ±2 cm over 2 m, asphalt 0.1 mm).
+- Surface effects on the 911 (flat test track, `--track-surface`; 2026-10-09):
+
+  | surface | 0–100 km/h | 0–200 km/h | top | skidpad | drift test (peak / mean slip, exit speed) |
+  |---------|-----------:|-----------:|----:|--------:|------------------------------------------|
+  | asphalt (8) | 3.73 s | 11.12 s | 307.5 km/h | 2.54 g | 36.5° / 31.9°, 56 km/h |
+  | dirt (7) | 4.13 s | 13.87 s | 257.9 km/h | 2.14 g | 30.3° / 27.0°, 62 km/h (before the drift factor: 45.8° / 35.8°, 44 km/h) |
+  | grass (4) | 4.22 s | 14.12 s | 256.5 km/h | 1.99 g | 28.7° / 25.8°, 64 km/h (before: spun, 67.9° / 41.0°, 11 km/h) |
 - Not read by the game: `Available_grip`, `Grip_factor`, `Sliding_grip_factor`, `f5c703c9`; `AligningTorque` is
   null on every car; the slip-angle relaxation (`7ab2a90a`, 1.8 m) is disabled by `c5cf33ea` = 0.
 
@@ -445,7 +459,11 @@ stands 10 m past the impact); a 2 m pillar shows the car.
 | nitrous tank | 100 units, starts full, no refill, burn starts above 10 % | the tank is gameplay code, not traced; capacity from `Restrictions.c441f502` = 100 (1 in most instances), rates from `NitrousParameters` (handling.md "Nitrous") |
 | punch / jump force scale | 0.44704 (`nitrous::PUNCH_SCALE`) | **from the game**: `.bss` 0x0118a018 (read live), mph → m/s, so `0798d257` is mph/s; the modes 1 / 3 are still not run |
 | ~~blend-input scale~~ | 1, from the game | settled 2026-10-09: the player's four wheel constraints (island +0x20 array, 0x500 bytes each, at 0x07c27280 in the snapshots) hold +0x210 = (1, 0, 0, 0) and +0x4aa = 1 (the full tyre solve `FUN_009c75b0` runs only with that byte set) in both snapshots; `FUN_009c5da0` broadcasts lane 0 onto κ and α |
-| surface-change fade | none (instant) | the game fades the grip of the surface just left over a time and uses the lower of old and new (`FUN_009ceb00`, `FUN_009d4460`); not ported |
+| ~~surface-change fade~~ | ported 2026-10-09 | `FUN_009d4460`, `FUN_009ceb00`, `FUN_009cec40`, `FUN_009cece0` (`mw_handling::surface::SurfaceGrip`); constants 3 (0x01025dcc), 0.5 (0x00f8a810), 2 s (0x01026028) from the exe |
+| tyre class | `RoadOverrides` (class 2) | **from the game** for a stock car: the car's class (game car +0x1a88) is set to 2 at creation (`FUN_00586810`) and picks the `TyreSpecificOverrides` block in `FUN_0054d750` (0 `OffRoadOverrides`, 1 `08b66463`, 2 `RoadOverrides`, 3 `SportOverrides`, 4 `TrackOverrides`; names cracked). Two writers copy a short from upgrade data into it (`FUN_00589a60`, `FUN_00589b00`); whether the `TyreUpgrade` mods (`a316f8e3` tyre index) feed it is not traced, so mods do not change the class |
+| roughness on | the player's car only | `FUN_00904260` passes a flag to `FUN_009d77b0` that is set when the car has a player record (game car +0x1a80, `FUN_008f5420`) whose +0x9c is 0; read as "a human player" (inferred, not checked live). AI racers and traffic run without bumps |
+| bumped ground under the ray | plane through the moved contact with the tilted normal | ours: the game moves its wheel's contact point and normal (`FUN_009df850`, the constraint's contact record); our wheel is a ray, so it meets the plane through the moved point instead (`drive.rs`) |
+| surface weather block | dry | `FUN_0054d750` picks the wet block when the surface system's state is ≥ 2 and the car's flag (game car +0x1c17) is clear; not traced. Asphalt (8), dirt (7), grass (4) and paving (2) name the same `SurfacePhysics` in both blocks, so it changes nothing there |
 | resistance at rest | clamped to what stops the contact | ours: the game applies rolling resistance in full against the sign of the motion (`FUN_009d4a10`), which flips every tick at a standstill |
 | test-track surface | `Surfaces.Default_surface` | ours: the flat track has no collision tags; the game's default surface (grip 1, rolling 0.01, no slide drag) |
 | `CLUTCH_CAP` | 5000 N m | **from the game**: `.bss` 0x01186f70 (read live), the cap in `FUN_009d7ac0` |
@@ -470,7 +488,7 @@ stands 10 m past the impact); a 2 m pillar shows the car.
 | counter-steer opening exponent | `Max_counter_steering_power` | `FUN_009d2e20` raises the opening to a power whose exponent the decompiler drops (a register load); inferred as the one counter-steering field the code does not otherwise read |
 | steering neutral offset's q | body slip / 35° × min(1, speed / 10 mph), clamped to ±1 | read from the original's telemetry (`ref/xkr_launch`: q / slip = 0.0286/° over 0.5°–33°, the fade constant over 1–4 m/s); its writer (vehicle +0x2c70) was searched by offset in the whole dump (0x004–0x011: the other writers are of the game-mode object at +0x2f3fc, `FUN_006e0580` …) and as a typed index (`[0xb1c]`): not found. 35° equals the XKR's `Maximum_steering_angle` (one car cannot separate them); the ±1 clamp is ours |
 | contact value of the drift's collision exits and the wall scrape | the body's (and bumper box's) largest normal closing speed before the solve, m/s | ported 2026-10-07: `FUN_009d83e0` ends a drift on a world contact above 6 (code 1, `.data` 0x010cfb40) or an object contact above 6 (code 3, `.rdata` 0x01026230), and `FUN_008f7ab0` centres the steering on a world contact above 6 (`.rdata` 0x01021ff0). The game's value is its contact table's (world record +0x1c, object entry +0xc), whose unit and writer were not traced; ours is the same stand-in as the camera's impact shake (handling.md "Cameras") |
-| per-wheel surface factor on drift torque, side force, damping | 1 | `FUN_009cede0` (mean of a per-wheel value); its writer was not traced |
+| ~~per-wheel surface factor on drift torque and side force~~ | ported 2026-10-09 | `FUN_009cede0` = 0.25 × the sum of the four wheels' effective lateral surface grip (+0x70 of each 0x7c-byte surface record at vehicle +0x17e0, written by `FUN_009cece0`); the damping does not take it |
 | ~~rolling resistance Crr 0.015~~ | removed 2026-10-06 | the game's comes from the surface: `5c2a9f18` × N per wheel plus the slide drag (`FUN_009d4a10`) |
 | wheel contact | one ray per wheel | the game ties each wheel record to the chassis with a constraint holding the wheel's ground contact points, iterated in sub-steps (`FUN_0093f200`); the tyre friction is one pass after them |
 | strut stop slack | 0 | the chassis gets share = max(d − min(+0x470, 0.1), 0.1 d) / d of the stop impulse at penetration d (`.bss` 0x01186bf0 = 0.1, 0x01186b10 = 0.1, read live 2026-10-06); equals ours (share 1) only when the constraint field +0x470 is 0, not read (the wheel constraint was not located from the vehicle in the snapshot). Not changed: ours has no wheel bodies to take the rest |

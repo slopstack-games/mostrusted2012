@@ -10,6 +10,39 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-09: surfaces: what grass and dirt do, the grip fade, the drift factor and the bumps
+User report: "surfaces don't change the grip yet, grass and dirt drive like normal road."
+- **Measured first** (`MW_TYRE_DEBUG=1`, park grass at 1117, 56 and −751, 2147, found with the new
+  `mwtool surfaces --near x,z[,r] [--find <index>]`): the surface **was** resolved per wheel (tag → list index →
+  `SurfacePhysics` 283005 → 911 link grip 1.3 → lateral 0.835 / longitudinal 0.88, rolling 0.03 × N, slide drag
+  2.25 × mph × 1…12 over 0–20° of slip). No step lost the surface; the triangle lookup (`surface_at` re-casts
+  against the trimesh, whose triangle order `TrimeshFlags::FIX_INTERNAL_EDGES` keeps) and the tag decode are
+  right. On the flat track (new `--track-surface <index>`) the steady state already differed before this work:
+  911 0–200 km/h 11.1 s / 14.0 s / 13.7 s and top 307 / 258 / 260 km/h on asphalt / grass / dirt, skidpad 2.54 /
+  1.98 / 2.14 g. So the grip numbers were in; what was missing is what makes grass *feel* different.
+- **Read in full** (`FUN_009d8bd0` and everything it calls; decomp.md "Tyres"): (1) **bumps**: the player's car
+  rides on Perlin noise of the contact position, amplitude `Surface_roughness.7cb58933` mm, frequency
+  `8193fd9b` per metre (grass ±8 cm over ~10 m, dirt ±2 cm over 2 m, paving ±1.2 cm over 3 m, asphalt 0.1 mm),
+  normal rebuilt from samples 3 cm away; the game's noise is exactly Ken Perlin's 2002 improved noise (its
+  512-entry table at 0x010cfcb0 is the reference permutation twice). (2) **grip fade**: leaving a surface its
+  grip fades towards the new link grip over (old link grip − lower old grip) × 3 × min(time on it, 2 s) × 0.5 and
+  the lower applies (grass → asphalt: 1.4 s). (3) the **drift's surface factor** (`FUN_009cede0`, assumed 1
+  before) is the mean effective lateral grip of the four wheels: the drift's yaw torque and side force shrink on
+  grass. (4) the tyre class (`RoadOverrides` = class 2 at car creation) and the `TyreSpecificOverrides` names
+  `OffRoadOverrides`, `SportOverrides`, `TrackOverrides` (cracked; `08b66463` not). `Surface_speed` is not read by
+  the car code; the wet block names the same physics on the main surfaces.
+- **Ported** (`mw_handling::surface`: `SurfaceGrip`, `drift_factor`, `roughness`, `perlin`; `drive.rs`;
+  `DriftInput::surface`). Unit tests (run standalone with `rustc --test`): Perlin gives the reference 0.13692 at
+  (3.14, 42, 7), the fade takes 1.395 s.
+- **After** (911, flat track): the steady state hardly moves (the bumps cost grass 0.14 s to 200 km/h and 1.5 km/h
+  of top speed, dirt 0.17 s and 2.5 km/h; skidpad within 0.01 g); the grass run's car height now moves ±3 cm and the front / rear compression ±2–3 cm over the run (before: constant to
+  1 mm); the scripted drift on grass no longer spins (peak 67.9° → 28.7°, exit 11 → 64 km/h), on dirt 45.8° →
+  30.3°, asphalt unchanged (36.5°). In the world (park, grass → paving): the rears' grip read 0.83 / 0.89 on the
+  paving and climbed back to 1 over ~1.4 s.
+- Open: whether the `TyreUpgrade` mods set the tyre class; the roughness flag's player record +0x9c (read it live
+  to confirm "human player"); `FUN_009d5270`, the other reader of the front wheels' lateral grip; the wet block's
+  condition.
+
 ### 2026-10-09: engine sound "stuck in gear": the audible RPM range is the bank's Ginsu span; load, shift clock, effects
 User report after a race: "the sound in general is pretty fucked but mostly the engine still sounds as if it is
 stuck in gear". The physics shifts (911 `--test accel`: 7800 → 5100 rpm on 1→2); the sound did not follow.
