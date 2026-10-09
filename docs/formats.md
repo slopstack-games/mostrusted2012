@@ -706,6 +706,56 @@ named by its UniqueId (= the resource id's low 32 bits, e.g. 0x19c8b2 = 1689778 
   `UISequences.Params[#].TextN`, and a `LayoutLayer`. Loader `AssetStore::ui_sequence_layouts`. `GameMode`
   `4d1a6bfa` / `c9ccb25c` / `ResultsSequence` are sequence UniqueIds (0 for every offline mode).
 
+## Points of interest and the minimap (`Widget_PointOfInterest`, `PointOfInterestVisuals`)
+
+(2026-10-09) A screen's `Widget_PointOfInterest` (the race HUD 604153: widget "POI", script `POIDisplayScript`)
+holds `f7dfe43b`, an array of handles to `PointOfInterestVisuals` objects (32 in 604153), a `UIMapCameraConfig`
+(`0e636ecb`) and the minimap tile layout (`0e7b0e38`). Parsers `mw_formats::ui::PoiVisuals`,
+`AssetStore::ui_poi_visuals(screen)`; the keys `AssetStore::poi_keys`.
+
+`PointOfInterestVisuals` (104 bytes):
+
+| off | field | meaning |
+|---|---|---|
+| 16 | `8daa3bb7` `World_Entity` (CgsResource.ID) | 0 in all 393 instances |
+| 24 | `b8a6b50a` {`Layout`, `LayoutInstanceParams`} | the icon on the map; its instance is `T(Pos)` |
+| 52 | `f50e27b7` {Layout, Params} | empty everywhere |
+| 80 | `655d3f5f` | the object's UniqueId |
+| 84 | `9a5a94d3` | the **key** game code names the look by (not the UniqueId; several objects share a key across screens) |
+| 88 | `bd550893` [] {Layout, Params}, count `2300858a` | layouts drawn in the world at the point's matrix |
+| 94–98 | `e3256f36`, `8ac61148`, `ea3ab789`, `d788383f`, `db617d4f` | flags (`ea3ab789` = has world layouts) |
+
+Keys are fields of `GameLogicConfig`: `CheckPointsConfig` (+0x24 `e9d221fe` = 1013518 next gate, +0x28
+`NormalPoi` = 1013519 target gate, `OnlinePoi`, per-Type fields) and `GameLogic.MapPoiConfig` (25 UniqueIds;
++0x28 `f4d5177c` = 1013510 finish, +0x2c `8d67562d` = 1695650 finish as the next gate, `29401278` = 1013507 the
+player arrow, `5bfb3553` = 1013521 racer / cop arrows, `VisionCone`). In 604153 the gate looks are:
+
+| key | world layouts (instance) | map icon |
+|---|---|---|
+| 1013519 target gate | 1014464 pole: image 4 × 115 px, anchor bottom centre, tex `01010000001e5d71`, `UIDepthTestedShader`; 1014477: "CHECK" (font 1022113, size 28) and `{~Mode.Time}` on glow strips (tex `01010000000f7aef`). Params 1013644 | 371998: tex `0101000000160b34` 23 × 22, `rot: Rot` |
+| 1013518 next gate | 1014519: white shape 2 × 100 px at alpha 0.4; 1014516: "CHECK" size 18 at alpha 0.35. Params 1119494 | 604244 (11 × 9) |
+| 1013510 finish | 1014464 pole; 1014487: "FINISH" and the time. Params 1560452 (`17cf84`) | 604240: tex `01010000000f789f` |
+| 1695650 finish next | 1014464 pole; 1695642: faint "FINISH". Params 1014486 | 604240 |
+
+World instance params share the transforms S(0.1, 0.1, 0.1) · S(`DistanceToCamera(LERP,MINVALUE:20,MAXVALUE:500,
+MINRANGE:0.5,MAXRANGE:8)`) · R(`Rot`) · T(`Pos`) · T(0, 0.25, 0); 1013644 adds a colour transform
+`DistanceToCamera(LERP,MINVALUE:20,MAXVALUE:60,MINRANGE:0,MAXRANGE:1)` (type 3, blend mode 1), 1119494 a
+triggered timeline "FADE(0,300,OUT)" / "FADE(0,300,IN)" on `DistanceToCamera(LTEQ:10)`.
+
+`UILayoutInstanceParams` fields now read: `Colour_Transforms` (`080b944c`) [] {`Binding`, `Value` f32,
+`BlendMode` u16, `Type` u16}; the triggered list `402057b7` [] of `TimelineParameters` {`TriggerBinding`,
+`aedfbe15` = played when the trigger turns true (the field the visibility timeline plays on show),
+`0b603df7` = played when it turns false}.
+
+`UIMapCameraConfig` (in the widget): `LookAt` bound to `Players.LocalPlayer.GetPosition`, `Distance` 600 bound to
+`Mode.MinimapDistance`, `FieldOfView` 90, `LookAhead` 0, `LookAtRotation` bound to
+`Players.LocalPlayer.GetPlayerDirection`, `ProjectionAngle` 0, `Shape` 1, `23c59c62` 1500, `82cf35f3` 0.1,
+`029f7de0` 0.92. The tile layout 371427 is nine 100 × 100 px images bound to
+`Widget.POI.POIDisplayScript.TileTex[1..9]` (additive `MapIconShaderAdditive`, opacity 0.7) under
+S(`TileSize(DIV:100)`) · R(`MapRot`) · T(`MapOrigin`) · R(90, 0, 0): the map is a world-fixed plane the map
+camera looks down on. `MapOrigin` (`FUN_007977c0`) is the corner of the tile one column and one row before the
+current one, `MapRot` (`FUN_00797760`) the grid's own yaw (`UIMapGrid.Rotation`, identity).
+
 ## Easydrive (inside `Screen2`, `UI/SCREENS2/*.BNDL`)
 
 Inline GeneSys structs in a driving screen's widget groups (group children: field `c7413006`); loader

@@ -71,6 +71,41 @@ stuck in gear". The physics shifts (911 `--test accel`: 7800 → 5100 rpm on 1�
   clock and the effects; `MW_ENGINE_TRACE` now carries the drivetrain columns the sound reads; `MW_AUDIO_NO_FX=1`
   drops the effect items.
 
+### 2026-10-09: race checkpoint markers found (points of interest), minimap turned the wrong way
+The user's reports from a race: "checkpoints aren't visible", "the minimap is rotated the wrong way around".
+- **Where the gate visual is**: the ids the race code picks (`NormalPoi` 1013519, finish 1013510, ...) are the
+  **`9a5a94d3` key** of `PointOfInterestVisuals` objects, not their UniqueIds (dead end of the first search:
+  matching `655d3f5f`). The objects sit in the UI screens (393 instances over the HUD screens; the race HUD
+  604153's `Widget_PointOfInterest` lists 32). Each has a map icon and **world layouts**: the checkpoint marker is
+  a UI panel drawn in the gate's plane, not a model or effect. Formats and the four gate looks: formats.md
+  "Points of interest and the minimap".
+- **The code**: `FUN_00759860` marks the target gate and the one after it (`FUN_007545b0` look keys, the finish
+  from `MapPoiConfig`); `FUN_00749930` the matrix (gate rotation, box bottom); the bindings `Transform` / `Pos` /
+  `Rot` / `Scale` / `DistanceToCamera` / `MapOrigin` / `MapRot` / `TileTex` / `TileSize` were located by their
+  name hashes (static initialisers at 0xf699b0..0xf69bf0 store `hash("Pos")` etc. in `.bss` 0x0117fxxx, found by
+  scanning the memory snapshot for the string addresses) → evaluators `FUN_00805870` (world layouts) and
+  `FUN_0080ba00` (map tiles). `UIDepthTestedShader` samples the deferred depth itself: world layouts are drawn in
+  the UI pass after post-processing. Ported in `gate_marker.rs` + `world_ui.rs` (a pass after the game tonemap,
+  depth-tested against the main depth buffer); decisions in decomp.md "Races" → "Port and model decisions".
+- **Looks**: target = a thin white pole with "CHECK" and the race time on glow strips at its top, 0.1 m per
+  layout pixel × 0.5…8 with camera distance 20…500 m (it stays readable far away), fading in from 20 to 60 m;
+  next gate = a faint bar and "CHECK" that fades out within 10 m; finish = "FINISH". On gate 0 of 462174 the box
+  bottom (the marker's origin) is 4 m under the road: the data's, kept.
+- **Minimap cause**: `GetPlayerDirection` (`FUN_006be9b0`) reads the vehicle matrix's row 2 = local **+Z**; the
+  HUD rendered the map with Bevy's `forward()` (local −Z), so the map showed the road behind the car at the top
+  and turned the wrong way. Fixed (map and the binding). Checked the other suspect, mirroring: the stitched
+  `UIMapGrid` tiles overlay the traffic lanes exactly with column = +x, row = +z, and the heading 0 / 90
+  screenshots match the mosaic rotated 180° / 90° (screen right = (−f.z, f.x), as the 3-D view).
+- **Minimap icons added** from the same looks: player arrow (1013507), target / next gate bars, finish, the other
+  racers' arrows (1013521). Icon turn, size and off-map handling are model decisions (decomp.md "Minimap
+  orientation and icons").
+- Open: a capture of the original at a gate (marker size and the text side; the 3D UI's axis convention, which
+  taken literally from the map tile layout would hang the panel below the gate); the map camera's scale (600 m,
+  FOV 90°) and the additive tiles; which `MapPoiConfig` fields the code reads for player / racer icons; icon
+  clamping at the map edge; the per-Type checkpoint looks (+0x0c, +0x30, +0x1c, +0x20; unused by the data).
+- `--spawn` now overrides the event start of `--race` (for looking at a gate:
+  `--race 462174 --no-cutscenes --spawn=-531.5,58,2113.3,144.3`); `MW_GATE_LOG=1` logs the shown gates.
+
 ### 2026-10-09: race cutscenes: event intro / outro sequences, ICE camera takes, no offline countdown
 - **Where they are**: `OfflineEvent` fields cracked: `EventIntro`, `EventOutro`, `AROutro`, `IntroMessageGroup`,
   `FeedbackMessageGroup`; `GameMode`: `AROutro`, `CountdownSequence`, `HUD_HSM`, `Intro`, `ResultsSequence`,

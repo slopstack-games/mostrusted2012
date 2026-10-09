@@ -129,6 +129,10 @@ fn vignette_constants(v: &mw_assets::environment::Vignette) -> [Vec4; 4] {
 
 pub struct GameTonemapPlugin;
 
+/// The game tonemap pass in `Core3d` (passes drawing over the tonemapped image run after it).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct GameTonemapPass;
+
 impl Plugin for GameTonemapPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "tonemap.wgsl");
@@ -140,7 +144,10 @@ impl Plugin for GameTonemapPlugin {
             .init_resource::<BloomBuffers>()
             .add_systems(RenderStartup, init_pipelines)
             .add_systems(Render, prepare_buffer.in_set(RenderSystems::Prepare))
-            .add_systems(Core3d, game_tonemap.before(tonemapping).in_set(Core3dSystems::PostProcess));
+            .add_systems(
+                Core3d,
+                game_tonemap.before(tonemapping).in_set(Core3dSystems::PostProcess).in_set(GameTonemapPass),
+            );
     }
 }
 

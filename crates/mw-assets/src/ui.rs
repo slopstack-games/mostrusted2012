@@ -12,6 +12,37 @@ use crate::{AssetStore, Error, Result};
 /// counter, minimap, nitrous gauge (research log, 2026-10-04 UI section).
 pub const FREE_ROAM_HUD: &str = "UI/SCREENS2/371670.BNDL";
 
+/// A point-of-interest look ([`fmt::ui::PoiVisuals`]) with its layouts.
+#[derive(Debug, Clone)]
+pub struct PoiVisual {
+    pub id: u32,
+    /// What game code names it by (`CheckPointsConfig.NormalPoi`, `MapPoiConfig` fields).
+    pub key: u32,
+    /// The icon drawn on the map (its instance translates to the `Pos` binding).
+    pub map: Option<PlacedLayout>,
+    /// Layouts drawn in the world at the point's transform (`Pos`, `Rot`, `DistanceToCamera` bindings).
+    pub world: Vec<PlacedLayout>,
+}
+
+/// Point-of-interest keys (see [`AssetStore::poi_keys`]). Offsets are into the config structs as
+/// `FUN_007545b0` reads them.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PoiKeys {
+    /// `CheckPointsConfig.NormalPoi` (+0x28, 1013519): the gate being driven to.
+    pub gate: u32,
+    /// `CheckPointsConfig` +0x24 (`e9d221fe`, 1013518): the gate after it.
+    pub gate_preview: u32,
+    /// `MapPoiConfig` +0x28 (`f4d5177c`, 1013510): the finish as the target.
+    pub finish: u32,
+    /// `MapPoiConfig` +0x2c (`8d67562d`, 1695650): the finish as the gate after the target.
+    pub finish_preview: u32,
+    /// `MapPoiConfig` `29401278` (1013507): its map icon is the player-coloured car arrow (which field the
+    /// code reads for the local player was not traced).
+    pub player: u32,
+    /// `MapPoiConfig` `5bfb3553` (1013521): racer / cop arrows (not traced which field races use).
+    pub opponent: u32,
+}
+
 /// A layout as a widget places it.
 #[derive(Debug, Clone)]
 pub struct PlacedLayout {
@@ -26,15 +57,85 @@ pub struct PlacedLayout {
 impl AssetStore {
     /// The `Screen2` object of a screen bundle.
     pub fn ui_screen(&self, bundle: &str) -> Result<Screen> {
+        fmt::ui::Screen::from_object(&self.ui_screen_object(bundle)?)
+            .ok_or_else(|| Error::Format(fmt::Error::Malformed("not a screen".into())))
+    }
+
+    /// The decoded `Screen2` object of a screen bundle.
+    pub fn ui_screen_object(&self, bundle: &str) -> Result<fmt::genesys::Object> {
         let b = self.bundle(bundle).ok_or(Error::Missing(ResourceId::NULL))?;
         for e in b.entries_of_type(ResourceType::GenesysObject) {
             let res = b.load(e)?;
             // Screens are the objects whose type is `Screen2`; check the type before decoding everything.
             let Some(ty) = res.import_at(0) else { continue };
             if self.genesys_type(ty).is_some_and(|t| t.name == "Genesys.Gen.Screen2") {
-                return fmt::ui::Screen::from_object(&self.decode_genesys(&res)?)
-                    .ok_or_else(|| Error::Format(fmt::Error::Malformed("not a screen".into())));
+                return self.decode_genesys(&res);
             }
+        }
+        Err(Error::Missing(ResourceId::NULL))
+    }
+
+    /// The points-of-interest looks a screen's `Widget_PointOfInterest` lists, with their layouts loaded
+    /// (layouts that do not decode are left out).
+    pub fn ui_poi_visuals(&self, bundle: &str) -> Result<Vec<PoiVisual>> {
+        use fmt::genesys::Value;
+        let screen = self.ui_screen_object(bundle)?;
+        let widget = screen.find("Genesys.Gen.Widget_PointOfInterest").ok_or(Error::Missing(ResourceId::NULL))?.clone();
+        let ids: Vec<ResourceId> = match widget.get(fmt::ui::POI_VISUALS_LIST) {
+            Some(Value::Array(a)) => a
+                .iter()
+                .filter_map(|v| match v {
+                    Value::Handle(Some(id)) | Value::Ref(id) => Some(*id),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        let placed = |l: &fmt::ui::WidgetLayout| -> Option<PlacedLayout> {
+            let layout = self.ui_layout(l.layout?).ok()?;
+            let instance = l.instance.and_then(|i| self.ui_layout_instance(i).ok());
+            Some(PlacedLayout { widget_index: 0, widget: String::new(), widget_type: String::new(), layout, instance })
+        };
+        let mut out = Vec::new();
+        for id in ids {
+            let Some(v) = self.genesys_object(id).ok().and_then(|o| fmt::ui::PoiVisuals::from_object(&o)) else {
+                continue;
+            };
+            out.push(PoiVisual {
+                id: v.id,
+                key: v.key,
+                map: v.map.as_ref().and_then(placed),
+                world: v.world.iter().filter_map(placed).collect(),
+            });
+        }
+        Ok(out)
+    }
+
+    /// The point-of-interest keys the race code picks gate looks by (`FUN_007545b0`): `GameLogicConfig
+    /// .CheckpointConfig` (`CheckPointsConfig`) and `.MapPoiConfig` in GLOBALCONFIG.BNDL.
+    pub fn poi_keys(&self) -> Result<PoiKeys> {
+        use fmt::genesys::{Value, field_hash};
+        let b = self.bundle("GLOBALCONFIG.BNDL").ok_or(Error::Missing(ResourceId::NULL))?;
+        for e in b.entries_of_type(ResourceType::GenesysObject) {
+            let Ok(root) = self.decode_genesys(&b.load(e)?) else { continue };
+            let (Some(cp), Some(map)) =
+                (root.find("Genesys.Gen.CheckPointsConfig"), root.find("Genesys.Gen.GameLogic.MapPoiConfig"))
+            else {
+                continue;
+            };
+            let key = |o: &fmt::genesys::Object, h: u32| match o.get(h) {
+                Some(Value::UInt(u)) => *u as u32,
+                Some(Value::Int(i)) => *i as u32,
+                _ => 0,
+            };
+            return Ok(PoiKeys {
+                gate: key(cp, field_hash("NormalPoi")),
+                gate_preview: key(cp, 0xe9d2_21fe),
+                finish: key(map, 0xf4d5_177c),
+                finish_preview: key(map, 0x8d67_562d),
+                player: key(map, 0x2940_1278),
+                opponent: key(map, 0x5bfb_3553),
+            });
         }
         Err(Error::Missing(ResourceId::NULL))
     }

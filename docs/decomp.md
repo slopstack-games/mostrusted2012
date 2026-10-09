@@ -1191,6 +1191,29 @@ Model decisions (marked in `hud.rs`, `binding.rs`, `ui.rs`):
   being drawn (again after 0.25 s unseen). Not played: transition-out, idle behaviours, the layouts' instance
   timelines (`APPROACH`, `FADE`).
 - Masks with a texture (soft edges, `MaskSampler0/1` in the shader) are axis-aligned rectangle clips.
+
+### Minimap orientation and icons (2026-10-09, `hud.rs`)
+
+The minimap is a 3-D view: the race / free-roam HUD's `Widget_PointOfInterest` lays the map tiles as a world-fixed
+plane (tile layout 371427 under R(`MapRot`) · T(`MapOrigin`) · R(90, 0, 0), `MapRot` = the grid's yaw, 0) and
+renders it with its `UIMapCameraConfig`: look at `Players.LocalPlayer.GetPosition` from 600 m
+(`Mode.MinimapDistance`), FOV 90, `LookAtRotation` = `Players.LocalPlayer.GetPlayerDirection`. That binding
+(`FUN_006db960` → `FUN_006be9b0`) is −atan2(f.x, f.z) in degrees of f = the vehicle matrix's row 2
+(`FUN_0083c030` returns +0x20..+0x2c), i.e. the car's local **+Z**. So the map turns with the car, its facing up.
+**Bug fixed**: ours took Bevy's `forward()` (local −Z), so the map showed what was behind the car at the top
+(rotated 180°, turning the wrong way); `GetPlayerDirection` had the same sign error. The tiles are not mirrored:
+the stitched `UIMapGrid` (column = +x, row = +z from `Position`) overlays the `TrafficLaneData` lanes exactly
+(checked 2026-10-09), and screen right is (−f.z, f.x) as in the 3-D view.
+
+Icons: each `PointOfInterestVisuals` has a map layout (`b8a6b50a`) placed at `Pos` with its elements turned by
+`Rot`. Drawn now: the player (key 1013507, `MapPoiConfig.29401278`: the green arrow 371790, offline variant),
+the target and next gates and the finish (the keys of "Races" → "Markers": bar icons 371998 / 604244, finish
+604240) and the other racers (1013521, `MapPoiConfig.5bfb3553`: the orange arrow 816012). Model decisions: an
+icon's turn is its heading relative to the map (the player's arrow points up); icons keep their reference-pixel
+size × the HUD scale; icons whose centre is off the map are left out (the widget's `EnableClamping` /
+`IsClamped` is code not traced); which `MapPoiConfig` field the code uses for the player and for racers was not
+traced (the two named hold the matching arrows). Still ours: the map scale (4 m per reference pixel from the
+tile resolution, not the 600 m / 90° camera) and the tiles drawn opaque grey (the game adds them, opacity 0.7).
 - Easydrive's RACES list: the offline races (730000) whose `AllowedVehicleList` holds the driven car (all races
   when none does), nearest start first. "START RACE" puts the car on the event's start 0.5 m up; the start
   must be inside the streamed world (`--units`), else the car falls and is reset. One race per run.
@@ -1433,13 +1456,25 @@ by `FUN_006b51a0`). Times are 64-bit ticks of 1/3,000,000 s (`DAT_00f9f604`). Co
   `IsScoreBasedEvent` = 2173009 (+0xb0), free drive 390145. Within races `TypeName` tells sprint (979289),
   circuit (979287) and the Most Wanted 1-vs-1 races (457003).
 - **Markers**: GameMode +0x6e (`f1123d7b`) turns the player's gate markers on (race, speed run, DLC modes; off
-  in free drive and ambushes). `FUN_007545b0` takes a `PointOfInterestVisuals` id from `GameLogicConfig
-  .CheckpointConfig` (+0x2a8): `NormalPoi` (+0x28, 1013519) for the active gate, +0x24 (1013518) for a preview,
-  the per-Type fields otherwise; the finish gate (cp == count − 2) uses `MapPoiConfig` (+0x2ac) +0x28 (1013510)
-  or +0x2c (1695650). `FUN_00749930` places it at the gate's ground point with the gate's rotation scaled by
-  size.x / 22, size.y / 18, size.z × 0.5 (*inferred*: a model authored for a 22 × 18 m gate), registered in a
-  POI list (`FUN_00790c70`, up to 260 records). The ids are not top-level `PointOfInterestVisuals` objects
-  (those carry other `655d3f5f` ids): where 1013519 lives is open. The road chevrons (`CustomChevron` lines
+  in free drive and ambushes). `FUN_00759860(player, cp, active)` registers a point of interest at entry cp + 1
+  and, when active and cp + 1 < count − 1, calls itself for cp + 1 with active = 0: so the **target gate and the
+  one after it** are marked, no others. `FUN_007545b0` picks the look's key: target = `CheckpointConfig`
+  `NormalPoi` (+0x28, 1013519) or the per-Type field of `CheckpointInfo[cp % perLap]` (Type 1–4: +0x0c, +0x30,
+  +0x1c, +0x20; every entry in the data has Type 0), next gate = +0x24 (1013518); when the gate is the last entry
+  (cp == count − 2) `MapPoiConfig` +0x28 (1013510) as the target, +0x2c (1695650) as the next gate.
+  `FUN_00749930` builds the point's matrix: the trigger box's rotation (`FUN_0042ee30`, quaternion at record +0x14)
+  with its rows scaled by size.x / 22, size.y / 18, size.z × 0.5, at the box centre lowered by half its height
+  (record +0x24..+0x2c is the size); `FUN_00790c70` adds it to the POI list (0x60-byte records at +0x7b24, up to
+  260). **The keys are `PointOfInterestVisuals.9a5a94d3`, not the objects' UniqueIds** (2026-10-09; formats.md
+  "Points of interest"): the looks are listed by the race HUD screen's `Widget_PointOfInterest`, each with a map
+  icon and world layouts. The world layouts' bindings are evaluated by `FUN_00805870`: `Transform` = the record's
+  matrix, `Pos` = its translation, `Rot` = its Euler angles in degrees (`FUN_005bad40`; the row scaling drops out
+  for a level gate), `Scale` = the row lengths (unused by the gate looks), `DistanceToCamera` = |camera (+0x140
+  of `DAT_010edaf4`+4) − position|. So the marker is a UI panel in the gate's plane, 0.1 m per layout pixel ×
+  0.5…8 with distance 20…500 m, 0.25 m above the box bottom: a thin pole (4 × 115 px, `UIDepthTestedShader`) with
+  "CHECK" and the race time on glow strips at its top, fading in from 20 to 60 m; the next gate a faint bar and
+  "CHECK" that fades out within 10 m; the finish "FINISH". `UIDepthTestedShader` compares against the deferred
+  depth by hand, i.e. it is drawn in the UI pass after post-processing. The road chevrons (`CustomChevron` lines
   drawn with the `Chevron` / `ChevronBlockRoad` materials of `CheckpointConfig` `53a76c21` / `beb301a3`, shaders
   ported in `chevron.wgsl`) and the GPS line come from the route (G+0x2f480); the strip builder was not found.
 - **Not found**: what advances the race clock; `HSM.PauseAIForRaceStart` and the false-start check; the AI goal
@@ -1459,7 +1494,14 @@ the car's origin; the wrong-way machine runs for every racer (the original: the 
 are kept for results; the speed run's average speed is the counted distance over the race time; the race clock
 advances by the fixed tick; the chevron boards are 2 m tall with one texture repeat per 2 m, `baseColour`
 white, premultiplied-over blending, `f8ccf73e` set = block-road crosses (from the data: those lines are short and
-cross side roads); the gate POI marker is not drawn (its visual is not located).
+cross side roads). Gate markers (`gate_marker.rs`, drawn by `world_ui.rs` after the tonemap with the scene's
+depth): the looks, transforms, fades and the target / next-gate choice as above; model decisions: layout x runs
+to the approaching driver's right and layout y down (the 3D UI's axis convention was not found: the minimap's
+tile layout, R(90, 0, 0) after T(`MapOrigin`), maps layout +y to world +z, which taken literally would hang the
+pole under the gate's ground point and mirror the text for a driver passing along the gate normal; ours stands
+it up and reads from the approach), colour transform type 3 multiplies the layout's opacity, the text
+(`FlaptGenericShader`) is depth-tested like the pole, markers show in the intro and race phases while no
+sequence hides the HUD. The box bottom is below the road on some gates (gate 0 of 462174: 4 m), as in the data.
 
 ## Cutscenes and sequences (2026-10-09)
 
