@@ -228,6 +228,25 @@ impl AssetStore {
         Some(VehicleSoundRes { engine: res.import_at(0x48), horns })
     }
 
+    /// How a `MixerChannel` places its voices ([`Spatial`]).
+    pub fn channel_spatial(&self, channel: ResourceId) -> Option<Spatial> {
+        let ch = self.genesys_object(channel).ok()?;
+        let falloff = handle_of(ch.get(field_hash("DistanceFalloff")).or_else(|| ch.get(0x0e7f_a14a)))
+            .and_then(|f| self.genesys_object(f).ok());
+        Some(Spatial::from_channel(&ch, falloff.as_ref()))
+    }
+
+    /// The [`Spatial`] of the first item channel of a `Sequence`.
+    pub fn sequence_spatial(&self, sequence: ResourceId) -> Option<Spatial> {
+        let s = self.genesys_object(sequence).ok()?;
+        let Some(Value::Array(items)) = s.get(field_hash("SequenceItems")) else { return None };
+        let channel = items.iter().find_map(|it| match it {
+            Value::Struct(o) => handle_of(o.get(field_hash("Mixer_Channel"))),
+            _ => None,
+        })?;
+        self.channel_spatial(channel)
+    }
+
     /// How the first channel of an `EngineSound2`'s channel list places the engine (the channels the game
     /// instantiates and positions per engine, `FUN_00600bb0` / `FUN_005ee250`).
     fn engine_spatial(&self, es: &Object) -> Spatial {
@@ -235,10 +254,7 @@ impl AssetStore {
             Some(Value::Array(a)) => a.iter().find_map(|v| handle_of(Some(v))),
             _ => None,
         };
-        let Some(ch) = channel.and_then(|c| self.genesys_object(c).ok()) else { return Spatial::default() };
-        let falloff = handle_of(ch.get(field_hash("DistanceFalloff")).or_else(|| ch.get(0x0e7f_a14a)))
-            .and_then(|f| self.genesys_object(f).ok());
-        Spatial::from_channel(&ch, falloff.as_ref())
+        channel.and_then(|c| self.channel_spatial(c)).unwrap_or_default()
     }
 
     /// An AI racer's engine: the `EngineSound2` of `<vehicle>_COMPETITORSOUND`.

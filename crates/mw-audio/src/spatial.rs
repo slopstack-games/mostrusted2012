@@ -2,7 +2,8 @@
 //! ([`SpatialParams`]) and applied per sample by the audio thread ([`SpatialRender`]). The values come from
 //! `mw_assets::car_sound::Spatial` (the game's `FUN_00ab9690` / `FUN_00ab7260`); the pan law is ours (the game's
 //! mixer takes an azimuth, `FUN_00ab5a60`, whose panner is not in the dump): linear balance with both sides at
-//! full level in the centre.
+//! full level in the centre. A voice whose gain is 0 for a whole block is not rendered (a virtual voice: beyond
+//! its falloff's maximum distance it costs nothing).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -51,6 +52,8 @@ pub struct SpatialRender {
     prev: f32,
     next: f32,
     started: bool,
+    /// The whole block is at zero gain: the source is not pulled (a virtual voice; it resumes where it stopped).
+    silent: bool,
 }
 
 impl SpatialRender {
@@ -64,6 +67,7 @@ impl SpatialRender {
             prev: 0.0,
             next: 0.0,
             started: false,
+            silent: false,
         }
     }
 
@@ -80,8 +84,13 @@ impl SpatialRender {
             }
             let n = BLOCK as f32;
             self.step = ((target.0 - self.cur.0) / n, (target.1 - self.cur.1) / n, (target.2 - self.cur.2) / n);
+            self.silent = self.cur.0 <= 0.0 && target.0 <= 0.0;
         }
         self.counter = (self.counter + 1) % BLOCK;
+        if self.silent {
+            self.cur = (0.0, self.cur.1 + self.step.1, self.cur.2 + self.step.2);
+            return (0.0, 0.0);
+        }
         self.cur = (self.cur.0 + self.step.0, self.cur.1 + self.step.1, self.cur.2 + self.step.2);
         self.pos += self.cur.2.clamp(0.05, 8.0);
         while self.pos >= 1.0 {

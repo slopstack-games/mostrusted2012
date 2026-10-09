@@ -38,9 +38,20 @@ impl Plugin for CarAudioPlugin {
         app.add_audio_source::<SpatialAudio>()
             .init_resource::<TrafficVoices>()
             .init_resource::<Listener>()
+            .init_resource::<CompetitorTyres>()
             .add_systems(
                 Update,
-                (update_listener, attach_ai_voices, update_ai_voices, load_traffic_banks, traffic_pool, meter).chain(),
+                (
+                    update_listener,
+                    attach_ai_voices,
+                    update_ai_voices,
+                    attach_ai_tyres,
+                    update_ai_tyres,
+                    load_traffic_banks,
+                    traffic_pool,
+                    meter,
+                )
+                    .chain(),
             );
     }
 }
@@ -49,6 +60,25 @@ impl Plugin for CarAudioPlugin {
 /// (the same name as the player's bank): read literally, an AI car's gear-change sound runs on the local
 /// player's shift clock. Kept as the data says.
 const AI_GEAR_CLOCK_FROM_PLAYER: bool = true;
+
+/// Game-thread time spent in this module's updates (ns), for `MW_AUDIO_METER`.
+static GAME_NANOS: AtomicU64 = AtomicU64::new(0);
+static GAME_FRAMES: AtomicU64 = AtomicU64::new(0);
+
+/// Adds the time until it is dropped to [`GAME_NANOS`].
+struct Timed(std::time::Instant);
+
+impl Timed {
+    fn start() -> Self {
+        Self(std::time::Instant::now())
+    }
+}
+
+impl Drop for Timed {
+    fn drop(&mut self) {
+        GAME_NANOS.fetch_add(self.0.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    }
+}
 
 // --- The audio source ----------------------------------------------------------------------------------------
 
@@ -70,17 +100,37 @@ impl VoiceStats {
     }
 }
 
-/// A placed sequence-bank voice (an engine of another car).
+/// What a placed voice renders: an engine bank (`mw_audio::sequence`) or a tyre bank (`mw_audio::sfx_player`).
+#[derive(Clone)]
+enum VoiceBank {
+    Engine(mw_audio::sequence::Bank, Arc<Params>),
+    Tyres(mw_audio::sfx_player::Bank, Arc<mw_audio::sfx_player::Params>),
+}
+
+enum VoicePlayer {
+    Engine(Box<Player>),
+    Tyres(Box<mw_audio::sfx_player::Player>),
+}
+
+impl VoicePlayer {
+    fn next_sample(&mut self) -> f32 {
+        match self {
+            VoicePlayer::Engine(p) => p.next_sample(),
+            VoicePlayer::Tyres(p) => p.next_sample(),
+        }
+    }
+}
+
+/// A placed voice of another car (its engine or its tyres).
 #[derive(Asset, TypePath, Clone)]
 pub struct SpatialAudio {
-    bank: mw_audio::sequence::Bank,
-    params: Arc<Params>,
+    bank: VoiceBank,
     spatial: Arc<SpatialParams>,
     stats: Arc<VoiceStats>,
 }
 
 pub struct SpatialSource {
-    player: Box<Player>,
+    player: VoicePlayer,
     render: SpatialRender,
     right: Option<f32>,
     stats: Arc<VoiceStats>,
@@ -135,11 +185,22 @@ impl Source for SpatialSource {
 impl Decodable for SpatialAudio {
     type Decoder = SpatialSource;
     fn decoder(&self) -> SpatialSource {
-        let mut player = Player::new(self.bank.clone(), self.params.clone());
-        player.dry = std::env::var_os("MW_AUDIO_DRY").is_some();
-        player.bypass = mw_audio::sequence::Bypass::from_env();
+        let dry = std::env::var_os("MW_AUDIO_DRY").is_some();
+        let player = match &self.bank {
+            VoiceBank::Engine(bank, params) => {
+                let mut p = Player::new(bank.clone(), params.clone());
+                p.dry = dry;
+                p.bypass = mw_audio::sequence::Bypass::from_env();
+                VoicePlayer::Engine(Box::new(p))
+            }
+            VoiceBank::Tyres(bank, params) => {
+                let mut p = mw_audio::sfx_player::Player::new(bank.clone(), params.clone());
+                p.dry = dry;
+                VoicePlayer::Tyres(Box::new(p))
+            }
+        };
         SpatialSource {
-            player: Box::new(player),
+            player,
             render: SpatialRender::new(self.spatial.clone()),
             right: None,
             stats: self.stats.clone(),
@@ -152,19 +213,18 @@ impl Decodable for SpatialAudio {
 fn spawn_voice(
     commands: &mut Commands,
     assets: &mut Assets<SpatialAudio>,
-    bank: mw_audio::sequence::Bank,
-    params: Arc<Params>,
+    bank: VoiceBank,
 ) -> (Entity, Arc<SpatialParams>, Arc<VoiceStats>) {
     let spatial = Arc::new(SpatialParams::default());
     let stats = Arc::new(VoiceStats::default());
-    let handle = assets.add(SpatialAudio { bank, params, spatial: spatial.clone(), stats: stats.clone() });
+    let channel = match bank {
+        VoiceBank::Engine(..) => crate::settings::Channel::Engine,
+        VoiceBank::Tyres(..) => crate::settings::Channel::Sfx,
+    };
+    let handle = assets.add(SpatialAudio { bank, spatial: spatial.clone(), stats: stats.clone() });
     // ONCE: the source never ends (see audio.rs); starts silent until `settings::apply_volumes` sets it.
     let e = commands
-        .spawn((
-            AudioPlayer::<SpatialAudio>(handle),
-            PlaybackSettings::ONCE.with_volume(Volume::Linear(0.0)),
-            crate::settings::Channel::Engine,
-        ))
+        .spawn((AudioPlayer::<SpatialAudio>(handle), PlaybackSettings::ONCE.with_volume(Volume::Linear(0.0)), channel))
         .id();
     (e, spatial, stats)
 }
@@ -241,11 +301,112 @@ fn attach_ai_voices(
         let eb = &pending.0.engine;
         let params = Arc::new(Params::new(eb.bank.param_names()));
         let driver = EngineDriver::new(eb, params.clone());
-        let (e, sp, stats) = spawn_voice(&mut commands, &mut assets, eb.bank.clone(), params);
+        let (e, sp, stats) = spawn_voice(&mut commands, &mut assets, VoiceBank::Engine(eb.bank.clone(), params));
         commands.entity(e).insert((
             AiVoice { car, driver, spatial: pending.0.spatial, params: sp, stats, last: (0.0, 0.0, 1.0, 0.0) },
             ChildOf(car),
         ));
+        commands.entity(car).insert(NeedsTyreVoice);
+    }
+}
+
+/// An AI car whose tyre voice is still to start (the competitor tyre bank loads on a worker thread).
+#[derive(Component)]
+struct NeedsTyreVoice;
+
+/// The competitor skid sequences (`mw_assets::sfx::competitor_tyre_bank`) and the skid tuning, shared by every AI
+/// car's tyre voice.
+type TyreBank = (mw_audio::sfx_player::Bank, Spatial, Option<mw_assets::vehicle_driver::TyreSoundParams>);
+
+#[derive(Resource, Default)]
+struct CompetitorTyres {
+    bank: Option<Arc<TyreBank>>,
+    job: Option<Arc<Mutex<Option<TyreBank>>>>,
+}
+
+/// An AI car's tyre voice (skids from its own skid wheel, as the player's `sfx.rs`).
+#[derive(Component)]
+struct AiTyreVoice {
+    car: Entity,
+    driver: mw_assets::vehicle_driver::VehicleDriver,
+    spatial: Spatial,
+    params: Arc<SpatialParams>,
+    stats: Arc<VoiceStats>,
+    last: (f32, f32, f32, f32),
+}
+
+fn attach_ai_tyres(
+    mut commands: Commands,
+    game: Res<crate::Game>,
+    mut tyres: ResMut<CompetitorTyres>,
+    mut assets: ResMut<Assets<SpatialAudio>>,
+    cars: Query<Entity, With<NeedsTyreVoice>>,
+) {
+    if cars.is_empty() {
+        return;
+    }
+    let Some(bank) = tyres.bank.clone() else {
+        match tyres.job.clone() {
+            None => {
+                let job = Arc::new(Mutex::new(None));
+                let out = job.clone();
+                let store = game.store.clone();
+                std::thread::spawn(move || {
+                    let (bank, spatial) = store.competitor_tyre_bank().unwrap_or_else(|e| {
+                        warn!("competitor tyre sounds: {e}");
+                        Default::default()
+                    });
+                    *out.lock().unwrap() = Some((bank, spatial, store.tyre_sound_params()));
+                });
+                tyres.job = Some(job);
+            }
+            Some(job) => {
+                if let Some(b) = job.lock().unwrap().take() {
+                    info!("competitor tyre sounds: {} sequences, 3D {:?}", b.0.sequences.len(), b.1.falloff);
+                    tyres.bank = Some(Arc::new(b));
+                }
+            }
+        }
+        return;
+    };
+    for car in &cars {
+        commands.entity(car).remove::<NeedsTyreVoice>();
+        if bank.0.sequences.is_empty() {
+            continue;
+        }
+        let params = Arc::new(mw_audio::sfx_player::Params::new(bank.0.param_names()));
+        let mut driver = mw_assets::vehicle_driver::VehicleDriver::new(params.clone());
+        if let Some(t) = bank.2 {
+            driver.tyre = t;
+        }
+        let (e, sp, stats) = spawn_voice(&mut commands, &mut assets, VoiceBank::Tyres(bank.0.clone(), params));
+        commands.entity(e).insert((
+            AiTyreVoice { car, driver, spatial: bank.1, params: sp, stats, last: (0.0, 0.0, 1.0, 0.0) },
+            ChildOf(car),
+        ));
+    }
+}
+
+fn update_ai_tyres(
+    time: Res<Time>,
+    listener: Res<Listener>,
+    cars: Query<(&Car, &CarControls, &Transform, &LinearVelocity), Without<crate::drive::Player>>,
+    mut voices: Query<&mut AiTyreVoice>,
+) {
+    let _timed = Timed::start();
+    for mut v in &mut voices {
+        let Ok((car, controls, t, vel)) = cars.get(v.car) else { continue };
+        let i = mw_assets::vehicle_driver::VehicleInput {
+            speed_mph: car.speed.abs() / 0.447_04,
+            skid_wheel: car.skid_wheel(),
+            brake: controls.brake,
+            handbrake: controls.handbrake,
+            ..default()
+        };
+        v.driver.update(time.delta_secs(), &i);
+        let placed = place(&v.spatial, &listener, t.translation, vel.0, t.rotation * Vec3::Z);
+        v.params.set(placed.0, placed.1, placed.2);
+        v.last = placed;
     }
 }
 
@@ -258,6 +419,7 @@ fn update_ai_voices(
     player: Query<&Car, With<crate::drive::Player>>,
     mut voices: Query<&mut AiVoice>,
 ) {
+    let _timed = Timed::start();
     let player_elapsed = player.iter().next().map(|c| c.drivetrain.gear_change_elapsed());
     for mut v in &mut voices {
         let Ok((car, controls, t, vel)) = cars.get(v.car) else { continue };
@@ -385,6 +547,8 @@ fn traffic_pool(
     mut assets: ResMut<Assets<SpatialAudio>>,
     mut voices: ResMut<TrafficVoices>,
 ) {
+    let _timed = Timed::start();
+    GAME_FRAMES.fetch_add(1, Ordering::Relaxed);
     let voices = &mut *voices;
     let (Some(banks), Some(traffic)) = (voices.banks.clone(), traffic) else { return };
     let dt = time.delta_secs();
@@ -436,7 +600,8 @@ fn traffic_pool(
             let Some(Some(engine)) = banks.get(c.vehicle) else { continue };
             let params = Arc::new(Params::new(engine.bank.param_names()));
             let driver = TrafficEngineDriver::new(engine, params.clone());
-            let (entity, sp, stats) = spawn_voice(&mut commands, &mut assets, engine.bank.clone(), params);
+            let (entity, sp, stats) =
+                spawn_voice(&mut commands, &mut assets, VoiceBank::Engine(engine.bank.clone(), params));
             voices.serial += 1;
             voices.started += 1;
             voices.slots[free] = Some(TrafficSlot {
@@ -501,6 +666,7 @@ fn meter(
     mut next: Local<f32>,
     voices: Res<TrafficVoices>,
     ai: Query<&AiVoice>,
+    tyres: Query<&AiTyreVoice>,
     player: Query<&Transform, (With<Car>, With<crate::drive::Player>)>,
 ) {
     if std::env::var_os("MW_AUDIO_METER").is_none() {
@@ -530,13 +696,25 @@ fn meter(
     for v in &ai {
         out.push(line("ai", format!("{:?}", v.car), v.last, v.driver.state().audible, &v.stats));
     }
+    for v in &tyres {
+        let skid = v.driver.last();
+        out.push(line(
+            "ai tyres",
+            format!("{:?} skid {:.2}/{:.2}/{:.2}", v.car, skid[1], skid[2], skid[3]),
+            v.last,
+            0.0,
+            &v.stats,
+        ));
+    }
     for s in voices.slots.iter().flatten() {
         let kind = if s.releasing.is_some() { "traffic (releasing)" } else { "traffic" };
         out.push(line(kind, format!("{} (type {})", s.key, s.vehicle), s.last, s.driver.rpm(), &s.stats));
     }
     let pos = player.iter().next().map(|t| t.translation);
+    let frames = GAME_FRAMES.swap(0, Ordering::Relaxed).max(1);
+    let game_us = GAME_NANOS.swap(0, Ordering::Relaxed) as f64 / frames as f64 / 1000.0;
     info!(
-        "car audio at {:.0?}: {} AI, {} traffic voices (started {}, stolen {})\n{}",
+        "car audio at {:.0?}: {} AI, {} traffic voices (started {}, stolen {}), game thread {game_us:.0} µs/frame\n{}",
         pos,
         ai.iter().count(),
         voices.slots.iter().flatten().count(),
