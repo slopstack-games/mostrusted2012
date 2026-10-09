@@ -110,11 +110,10 @@ struct Cli {
     /// Smash test: speed (km/h) the car holds through the props.
     #[arg(long, default_value_t = 60.0)]
     smash_speed: f32,
-    /// Give props, compound and dynamic objects collision (smashable street furniture; `props.rs`).
-    /// Off by default while it is work in progress: knocked lamps and crash barrels can still wedge the
-    /// car (research log, props session). `--test smash` turns it on.
+    /// Draw props, compound and dynamic objects without collision (smashable street furniture is on by
+    /// default; `props.rs`). `--test smash` keeps it on.
     #[arg(long)]
-    prop_physics: bool,
+    no_prop_physics: bool,
     /// Log the mean and worst frame time every 5 s once loading has finished (turns vsync off).
     #[arg(long)]
     frame_stats: bool,
@@ -550,7 +549,7 @@ fn main() -> anyhow::Result<()> {
         no_merge: !cli.merge_static,
         keep_lod_proxies: cli.keep_lod_proxies,
         paint_index: cli.paint_index,
-        no_prop_physics: !(cli.prop_physics || smash),
+        no_prop_physics: cli.no_prop_physics && !smash,
         exclude: cli
             .exclude_models
             .iter()
@@ -930,6 +929,10 @@ fn receive_assets(
                 commands.spawn((avian3d::prelude::RigidBody::Static, c, props::SurfaceTags(tags)));
             }
             Msg::Surfaces(list) => surfaces.list = list,
+            Msg::PropResponses(r) => {
+                info!("prop contact responses: {r:?}");
+                surfaces.responses = r;
+            }
             Msg::Car(spec) => {
                 let parts = spec
                     .body

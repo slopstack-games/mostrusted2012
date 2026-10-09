@@ -293,6 +293,10 @@ pub struct Car {
     pub(crate) body_collider: Entity,
     /// The low bumper box that only meets props; its contacts count as object contacts.
     pub(crate) bumper_collider: Entity,
+    /// The strongest closing speed (m/s) against a knocked prop on the last physics step. Those contacts are
+    /// solved by `props::prop_contacts` (the game's scaled car-against-object response), not by avian, so
+    /// they do not show in its contact graph.
+    pub(crate) prop_impact: f32,
 }
 
 struct WheelState {
@@ -664,6 +668,7 @@ pub fn build_car(commands: &mut Commands, b: &CarBuild) -> Entity {
             params,
             body_collider,
             bumper_collider,
+            prop_impact: 0.0,
         },
     ));
     // Exhaust pops and the car's spot effects (`exhaust.rs`).
@@ -1670,6 +1675,7 @@ fn car_contacts(collisions: &Collisions, layers: &Query<&CollisionLayers>, car: 
             }
         }
     }
+    c.object_impact = c.object_impact.max(car.prop_impact);
     c
 }
 

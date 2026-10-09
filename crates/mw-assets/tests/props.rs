@@ -140,3 +140,11 @@ fn diag_raw_tags() {
         }
     }
 }
+
+/// The car-against-dynamic-object responses decode to the values the runtime falls back to.
+#[test]
+fn dynamic_responses() {
+    let Some(store) = store() else { return };
+    let r = store.dynamic_responses().expect("decode PHYSICSCONFIG responses");
+    assert_eq!(r, mw_assets::props::DynamicResponses::default());
+}
