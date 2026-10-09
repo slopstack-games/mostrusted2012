@@ -10,7 +10,9 @@
 //! - **Intro and countdown**: the intro lasts the game mode's `15f07dbf` (10 s for races, 0 for speed runs;
 //!   `FUN_0070caa0`); the 3-2-1 shows while `IntroTime` = ⌊remaining + 1⌋ ≤ 3 (`FUN_006e2670`, the HSM's
 //!   "Wait For Countdown Start" condition). The cars are frozen meanwhile: handbrake = max(input, 1)
-//!   (`FREEZE_CAR`, `FUN_006c1a80`), so the throttle still revs the engine. At 0 the race clock starts.
+//!   (`FREEZE_CAR`, `FUN_006c1a80`), so the throttle still revs the engine. At 0 the race clock starts. With the
+//!   event's intro sequence playing (`cutscene.rs`, the default) there is neither: the offline flow has no
+//!   countdown, the intro hands over a rolling start (`RaceState::rolling_start`) and sets the intro to 0.
 //! - **Route entries** (`FUN_00645290`): entry 0 is the start, then every checkpoint of every lap; a gate's
 //!   entry stands at its box centre lowered by half its height (on the road). Cumulative distances along the
 //!   entries give the distance to the finish.
