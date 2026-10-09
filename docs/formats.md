@@ -505,6 +505,26 @@ same set, from `GLOBALEFFECTS.BNDL` (`mwtool genesys all --type VehicleVfxBehavi
   (0.65 on tarmac), `Animation`, `Specular`. Per car `TyreVfxBehaviour.{Front,Rear}_Tyres.Skid_Marks` holds the
   intensity curves (`Lat_Slip`, `Long_Spin`, `64222c3f`; mostly unnamed). Shader: research log 2026-10-06 round 4.
 
+## World object physics (`PhysicalDefinition`, `DynamicAdditionalInfo`, collision responses)
+
+`mw_assets::props`; how the game uses the values: decomp.md "Props".
+- `PropObject` +0x0C `PhysicalDefinition`, +0x14 impact effect (a `BearEffect`, 81% of props), +0x1C impact
+  sound (a `WCPlaySoundBehaviour`: `Collision_Waves` handles, per-surface `Surface_Collisions`), +0x24
+  `mfResetDistanceSquared` (10000 everywhere), +0x28 `mbRemoveInsteadOfReset`.
+- `PhysicalDefinition`: +0x10 bounds centre, +0x20 half extents, +0x30 `AdditionalInfo`, +0x40 `RigidBodies`
+  (0xe0 bytes each: +0x10 transform, `ComOffset`, `Inertia_Scale`, bounds, +0x98 `AngularDrag`, +0x9c
+  `44ac37c1` (restitution), +0xa0 `Friction`, +0xa4 `LinearDrag`, +0xa8 `Mass`, volume arrays), +0x48 the
+  main body's index.
+- `DynamicAdditionalInfo` (`CompoundAdditionalInfo` adds +0x2c `d7f803ec`, +0x30 `ForceToSmash`, +0x34
+  `08c87eeb` = seconds before a loose compound may smash): +0x0C `Sequence`, +0x18 `ForceToDamage` (N, contact
+  force), +0x1C `67f0233c` (momentum kg m/s that knocks the object loose), +0x20 `Strength`, +0x24 `Score`,
+  +0x26 `5586d09d` (may come loose), +0x27 `c2315b63`, +0x28 `94c94bab` (starts pinned; true exactly where
+  `67f0233c` > 0).
+- `CollisionResponses_RaceCar` (`010000000007f0c9`) `RaceCarVsDynamic` ×2 (+0x3d0 AI, +0x40c player):
+  `BasicParams` (`e5ea1414`, `e3882eb1`), `1caa1e4f` object angular scale, `357a73bd` object linear scale,
+  `207258c8` car angular scale, `e75eb28b` car linear scale, `Restitution`. `CollisionResponses_Global`
+  (`…f0c6`) `TrafficVsDynamic` (+0x9c: `16c25fa9` / `31e69a76` the traffic car's linear / angular scales).
+
 ## ColourCube (0x52)
 
 16-byte header: u32 edge N (16 everywhere), u32 N, 8 zero bytes; then N³ three-byte entries laid out as a D3D

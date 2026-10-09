@@ -10,6 +10,68 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-09: prop collisions on by default: the game's car-against-object response and break-free rule
+Traced in the dump (details and addresses in decomp.md "Props"); runtime in `props.rs`, on by default since
+this entry (`--no-prop-physics` opts out; `--prop-physics` is gone).
+- **Why the car wedged**: ours solved a knocked lamp like a wall. The game solves a race car's contact with a
+  dynamic object like any contact but adds only a share of the impulse to each body: `FUN_00960f20` picks the
+  pair handler by category (`FUN_00929350`: 0 player, 1 AI, 2 crashing race car, 3 traffic, 4 anything
+  else), `FUN_00941170` (player vs object) fills a response record from
+  `CollisionResponses_RaceCar.RaceCarVsDynamic` (`c7d59471`, +0x40c), `FUN_009bb640` copies it into the
+  contact constraint, and the contact passes (`FUN_009be420`, friction `FUN_009bed70`) add `impulse × scale` to
+  each body's linear / angular accumulator (+0x90 / +0x94 / +0x98 / +0x9c). Data: the player's car takes
+  **0.1** of the linear and **0.05** of the angular impulse, the object 1 and 0.4 (fields `e75eb28b`, `207258c8`,
+  `357a73bd`, `1caa1e4f`), restitution 0; AI racers 0.01 / 0.01 (`2e3c3d30`); traffic 1 / 0.55
+  (`CollisionResponses_Global.TrafficVsDynamic`); a crashing race car gets the default record (all 1). The
+  contact friction is the object's rigid-body `Friction` (record +0x00, read from the definition's main body).
+  Bodies with flag +0xf4 bit 2 (pinned) take no impulse at all.
+- **Break-free** (sub-agent trace, confirmed from the disassembly): `67f0233c` is a **momentum** threshold:
+  `FUN_0054e570` unpins when the hitter's `|mass × velocity|` (its whole velocity, body +0x70.w × +0xb0)
+  exceeds it, run from the bounding-box overlap pass `FUN_00554d80` before the contact solve. `5586d09d` = may
+  come loose, `94c94bab` = starts pinned (true exactly where the threshold is above 0; cones start loose).
+  A 1.5 t car knocks a street lamp (5000) over above 3.3 m/s, a 750 sign above 0.5 m/s. The earlier reading
+  (impulse along the normal) is replaced.
+- **Reset**: `FUN_0055ae50` every frame, no timer: a moving prop goes back (or is removed) once both the camera
+  and the player's car are beyond `mfResetDistanceSquared`. Moving props live in a 64-slot pool (the farthest
+  from the camera is reset when full); physics objects in a 48-slot pool, evicted by camera distance and
+  frustum.
+- **Effects**: `ForceToDamage` (+0x18) is a contact force (N, impulse / dt): above it, once per knocked
+  lifetime, the prop's damaged state is set and, for a vehicle hitter, its impact effect (`PropObject` +0x14,
+  a `BearEffect`) starts (`FUN_0054bf70`). `PropObject` +0x1c is a `WCPlaySoundBehaviour` with
+  `Collision_Waves`; the world-contact sound waits 0.35 s between plays (`FUN_0054c680`). Compounds smash when
+  the contact force passes `ForceToSmash` (+0x30) after `08c87eeb` (+0x34, seconds) of being loose
+  (`FUN_00555c90`); not ported (no part models).
+- **Runtime**: knocked props are `GameLayer::LooseProp`, outside the race cars' avian layers; `prop_contacts`
+  (before each step) tests standing props against the car's momentum and solves the car–prop contacts itself
+  with the scales above (two passes, as the game's two sub-steps), accumulated and clamped impulses, friction
+  within μ × normal. A standing prop that holds stays in avian's solver and stops the car. Props get a
+  collider within 30 m (+ their radius) of any race or traffic car, kept to 45 m (grid of 32 m cells). Prop
+  impact sounds play (player only), impact effects start on `ForceToDamage` (props only; compounds carry no
+  effect handle).
+- **Results** (`--test smash`, 911 at a held speed; car speed lost to each prop's contacts, which includes
+  pushing it along afterwards): 60 km/h: cone 0.15 km/h, sign (threshold 500) 0.24, lamp 0.93, fence
+  1.55 (pushed into the wall at the end); 120 km/h: 0.10 / 0.36 / 1.13 / 0.49; at 10 km/h the lamp holds (car
+  momentum 4.2k < 5000) and the car stops against it; largest one-step loss 0.57–0.77 %. The rules predict for
+  a single inelastic exchange at 60 km/h 0.02 (cone), 0.2 (sign, fence), 0.55 km/h (lamp). World drive
+  (`--spawn=800,42,1688,62 --no-traffic`, 0.7 throttle): a lamp knocked at 89 km/h costs 0.7 km/h over two
+  steps and flies off spinning (screenshot looked at); the speed trace matches `--no-prop-physics` within
+  1 km/h; the stop at x 990 is a world wall in both runs, and the suggested heading 71 stops behind a traffic
+  van in both.
+- **Model decisions**: the impulse is computed with the unscaled effective mass (the contact prestep that
+  writes the point's effective mass, point +0x2c, was not read); overlap push-out 0.2 of the depth per step,
+  capped at 4 m/s, 1 cm slop (the game's targets, point +0x30.., not traced); speculative contacts for gaps
+  up to one step's travel; props that start loose stand static until the first touch (the game creates them
+  asleep: same behaviour); objects without `AdditionalInfo` never come loose; the activation radius (the game
+  activates on bounding-box overlap with an awake body); prop sound volume ∝ closing speed / 12 m/s and a
+  2 m/s threshold for car contacts (the game's threshold is in an audio object, not read); traffic and loose
+  props hitting standing props still break them through the contact hook (closing contact, not box overlap).
+- Open: compound parts and smash; the damaged model swap (`PropObject` +8, the same model in every instance
+  seen); the world-contact sound of falling props and "Player_Vehicle_Prop_Collision" (only looked up by
+  name); the prop pools' limits; knocked props that come to rest keep their body (the game drops it and keeps
+  the static proxy where it lies); `vehicle+0x1777` switches the player's scales to 0.4 / 0.01 (not ported).
+- Dead ends: name guesses for `67f0233c`, `5586d09d`, `94c94bab`, `08c87eeb` (about 45 words); the prop manager
+  in the snapshots (its global is unknown).
+
 ### 2026-10-09: engine sound "stuck in gear": the audible RPM range is the bank's Ginsu span; load, shift clock, effects
 User report after a race: "the sound in general is pretty fucked but mostly the engine still sounds as if it is
 stuck in gear". The physics shifts (911 `--test accel`: 7800 → 5100 rpm on 1→2); the sound did not follow.
