@@ -8,6 +8,7 @@ mod bench;
 mod camera;
 mod car_anim;
 mod chassis;
+mod chevron;
 use mw_handling::{drift, drivetrain, tyre};
 mod convert;
 mod crash;
@@ -385,7 +386,8 @@ fn main() -> anyhow::Result<()> {
                 event.checkpoints.len(),
                 event.opponents.len()
             );
-            Some(race::RaceSetup { event, name, test: race_test })
+            let game_mode = events.game_mode(event.game_mode).copied();
+            Some(race::RaceSetup { event, game_mode, name, test: race_test })
         }
     };
     let drive = match (&cli.drive, &race) {

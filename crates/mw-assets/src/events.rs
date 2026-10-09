@@ -72,6 +72,12 @@ mod h {
     pub const CHECKPOINT: u32 = field_hash("Checkpoint");
     pub const ALTERNATES: u32 = 0xfe6e_f8d8;
     pub const CRASH_RESET_DELAY: u32 = 0x09d6_656d;
+    pub const INTRO_TIME: u32 = 0x15f0_7dbf;
+    pub const TIMEOUT: u32 = 0xfe4f_2d8c;
+    pub const GATE_MARKERS: u32 = 0xf112_3d7b;
+    pub const RESPAWN_TO_RACER: u32 = 0xbc5e_a1ae;
+    pub const FIRST_PLACE_ONLY: u32 = 0xc8f2_6580;
+    pub const SKIP_PLAYER_CAR_AI: u32 = 0xc75c_9d90;
     pub const VEHICLES: u32 = 0x193a_d61b;
     pub const VEHICLE: u32 = field_hash("Vehicle");
     pub const MODS: u32 = field_hash("Mods");
@@ -246,6 +252,11 @@ pub struct Event {
     pub target_time: Vec<f32>,
     pub nitrous_allowed: bool,
     pub traffic_enabled: bool,
+    /// `c8f26580` (+0xe9): the event is won only in first place (else in the top three; `FUN_006b9d00`).
+    /// Set on the Most Wanted races.
+    pub first_place_only: bool,
+    /// `c75c9d90` (+0xee): an opponent slot whose car is the player's own car is skipped (`FUN_00686f30`).
+    pub skip_player_car_ai: bool,
 }
 
 impl Event {
@@ -268,6 +279,15 @@ pub struct GameMode {
     pub name: u32,
     /// `09d6656d` (+0x44): seconds before a crashed car is reset (`FUN_006d39d0`).
     pub crash_reset_delay: f32,
+    /// `15f07dbf` (+0x48): the intro before go, s (`FUN_0070caa0`, `FUN_006e2640`); the 3-2-1 countdown is its
+    /// last 3 s. 10 for races and ambushes, 0 for speed runs.
+    pub intro_time: f32,
+    /// `fe4f2d8c` (+0x50): the event's timeout, s (armed by `FUN_006f0f80`; 900 for races).
+    pub timeout: f32,
+    /// `f1123d7b` (+0x6e): the player's gate markers are shown (`FUN_007545b0`).
+    pub gate_markers: bool,
+    /// `bc5ea1ae` (+0x70): without a checkpoint list a respawn faces the nearest racer (`FUN_006c9fb0`).
+    pub respawn_to_racer: bool,
 }
 
 /// Every offline event plus the game modes and the career's event lists.
@@ -394,6 +414,10 @@ impl AssetStore {
                     id: uint(o.get(h::ID)),
                     name: uint(o.get(h::NAME)),
                     crash_reset_delay: float(o.get(h::CRASH_RESET_DELAY)),
+                    intro_time: float(o.get(h::INTRO_TIME)),
+                    timeout: float(o.get(h::TIMEOUT)),
+                    gate_markers: boolean(o.get(h::GATE_MARKERS)),
+                    respawn_to_racer: boolean(o.get(h::RESPAWN_TO_RACER)),
                 }),
                 "OfflineEvent" => {
                     let game_mode = uint(o.get(h::GAME_MODE));
@@ -453,6 +477,8 @@ impl AssetStore {
                         target_speed: floats(o.get(h::TARGET_SPEED)),
                         target_time: floats(o.get(h::TARGET_TIME)),
                         nitrous_allowed: boolean(o.get(h::NITROUS_ALLOWED)),
+                        first_place_only: boolean(o.get(h::FIRST_PLACE_ONLY)),
+                        skip_player_car_ai: boolean(o.get(h::SKIP_PLAYER_CAR_AI)),
                         traffic_enabled: boolean(o.get(h::TRAFFIC_ENABLED)),
                     });
                 }
@@ -461,4 +487,63 @@ impl AssetStore {
         }
         Ok(out)
     }
+
+    /// The materials the race route is marked with.
+    pub fn route_markers(&self) -> Result<RouteMarkers> {
+        let b = self.bundle("GLOBALCONFIG.BNDL").ok_or(Error::Missing(ResourceId::NULL))?;
+        let mut config = None;
+        for e in b.entries_of_type(ResourceType::GenesysObject) {
+            if let Ok(root) = self.decode_genesys(&b.load(e)?)
+                && let Some(c) = root.find("Genesys.Gen.CheckPointsConfig")
+            {
+                config = Some(c.clone());
+                break;
+            }
+        }
+        let c = config.ok_or(Error::Missing(ResourceId::NULL))?;
+        let look = |hash: u32| -> Result<ChevronLook> {
+            let id = ResourceId(0x0100_0000_0000_0000 | uint(c.get(hash)) as u64);
+            let m = self.material(id)?;
+            let param = |h: u32| m.parameters.iter().find(|p| p.name_hash == h).and_then(|p| p.value);
+            Ok(ChevronLook {
+                material: id,
+                texture: m.samplers.first().and_then(|s| s.texture),
+                colour: param(MATERIAL_DIFFUSE).unwrap_or([1.0; 4]),
+                speed: param(SPEED).map_or(0.0, |v| v[0]),
+            })
+        };
+        Ok(RouteMarkers {
+            arrows: look(0x53a7_6c21)?,
+            block: look(0xbeb3_01a3)?,
+            poi: [uint(c.get(0x9c90_086c)), uint(c.get(mw_formats::genesys::field_hash("NormalPoi")))],
+        })
+    }
+}
+
+/// Shader parameter name hashes (`mwtool shaders` prints them).
+const MATERIAL_DIFFUSE: u32 = 0xf6e2_7caa;
+const SPEED: u32 = 0xf0d9_0109;
+
+/// One of the two route-marker looks: a material of `HAWAII/GLOBALRESOURCES.BNDL` drawn on strips the game
+/// builds along chevron lines (its shaders take positions and UVs only, no model).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChevronLook {
+    pub material: ResourceId,
+    /// The material's one texture (white; the arrows / crosses are in its alpha).
+    pub texture: Option<ResourceId>,
+    /// `materialDiffuse` (game colour units).
+    pub colour: [f32; 4],
+    /// `speed`: the arrows scroll by `frac(Time × speed)` texture widths (shader `Chevron`); 0 for the block.
+    pub speed: f32,
+}
+
+/// The route markers (`GameLogicConfig.CheckpointConfig`, a `CheckPointsConfig` in GLOBALCONFIG.BNDL).
+#[derive(Debug, Clone)]
+pub struct RouteMarkers {
+    /// Field `53a76c21` → material 0x253d6, shader `Chevron`: scrolling arrows.
+    pub arrows: ChevronLook,
+    /// Field `beb301a3` → material 0x298ce, shader `ChevronBlockRoad`: the red crosses closing side roads.
+    pub block: ChevronLook,
+    /// `9c90086c` and `NormalPoi`: map icon ids (POIs), for the map / HUD.
+    pub poi: [u32; 2],
 }

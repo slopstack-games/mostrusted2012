@@ -26,6 +26,13 @@ pub fn run(store: &AssetStore, id: Option<&str>, png: Option<&Path>, all: bool) 
 
     let Some(id) = id else {
         summary(&events, &text, &car, all);
+        match store.route_markers() {
+            Ok(m) => println!(
+                "route markers (GameLogicConfig.CheckpointConfig): arrows {:?}\n  block {:?}\n  POIs {:?}",
+                m.arrows, m.block, m.poi
+            ),
+            Err(e) => println!("route markers: {e}"),
+        }
         return Ok(());
     };
     let id: u32 = id.parse()?;
@@ -86,16 +93,19 @@ fn detail(events: &Events, e: &Event, text: &dyn Fn(u32) -> String, car: &dyn Fn
     println!("  description: {}", text(e.description));
     let mode = events.game_mode(e.game_mode);
     println!(
-        "  game mode {} ({}), crash reset delay {} s; type {} ({})",
+        "  game mode {} ({}): intro {} s, timeout {} s, crash reset delay {} s, gate markers {}; type {} ({})",
         e.game_mode,
         mode.map_or("-".into(), |m| text(m.name)),
+        mode.map_or(f32::NAN, |m| m.intro_time),
+        mode.map_or(f32::NAN, |m| m.timeout),
         mode.map_or(f32::NAN, |m| m.crash_reset_delay),
+        mode.is_some_and(|m| m.gate_markers),
         e.type_name,
         text(e.type_name)
     );
     println!(
-        "  laps {}, nitrous {}, traffic {}, target speed {:?}, target time {:?}",
-        e.laps, e.nitrous_allowed, e.traffic_enabled, e.target_speed, e.target_time
+        "  laps {}, nitrous {}, traffic {}, first place only {}, target speed {:?}, target time {:?}",
+        e.laps, e.nitrous_allowed, e.traffic_enabled, e.first_place_only, e.target_speed, e.target_time
     );
     match &e.spawn {
         Some(s) => println!(
