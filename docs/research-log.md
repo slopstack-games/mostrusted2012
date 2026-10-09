@@ -10,6 +10,38 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-09: traffic density is the event's (1.0 in free roam, not 4.78); car-against-car crashes ported
+User reports: "scale back the traffic" (more traffic than the original) and "collisions with traffic and other cars
+can result in crashes with the crash camera". Details: decomp.md "Traffic rules" (density, load budget, counts)
+and "Crashes" → "Car against car".
+- **The density base is set by the event**, not fixed at `TrafficSystemConfig` 0x80 (4.78): `FUN_0070caa0`
+  (event set-up) posts traffic message 4 with the `OfflineEvent`'s `ce4961e7` (+0xb0) when `90f52617` (+0xf1)
+  is set, else the hour array (the open "hour array reader": `FUN_0070caa0` / `FUN_006e6380`, reached through
+  `AIConfig` handles); `TrafficEnabled` off posts message 0xf (no traffic). The posting wrappers were found by
+  scanning `snap2`'s decrypted `.text` for the queue pointer `DAT_010edb30` (the decompiler hides the calls).
+  Free drive's events all hold 1.0; the snapshots read base 1.0 at `world+0xa2b74` (the 4.78 sits at +0xa2b70,
+  the reset copy). The port used 4.78: 4.78× too dense, the 256-car cap reached at once.
+- **The load budget counts only crashing traffic** (the AND with the crash-record mask `+0x1afe8`); the
+  measuring point `world+0x36110` is the player's car (snapshot, within 0.3 m).
+- **Counts** (live lane cars around the player, snapshot vehicle table vs ours standing at the same spot after
+  25 s): snap1 (1814, 1649) original 96 total, 12 / 27 / 34 / 56 / 86 within 100 / 200 / 250 / 400 / 600 m; ours
+  now 103, 10 / 28 / 37 / 61 / 87 (before: 255, 17 / 71 / 86 / 132 / 216). snap2 (925, −101) original 108,
+  1 / 5 / 9 / 31 / 75; ours now 126–135, 3–5 / 8–10 / 10–14 / 30–38 / 85–90 (ours stands: ×1.2 slow-speed
+  ramp against the original's ×1.11 at 38 mph); before 256 (cap), 14–23 / 34–37 / 54 / 128–135 / 211–216.
+- **Car against car**: the game's handlers ported (impact zone, the two `ImpactDamageGraphs` curves, the
+  `Vehicle_Gameplay.DamageStats` strength factors, the race-car share split, the glancing cap, landing on a car,
+  the rule set per pair). Checks (`--test crash-traffic`, `--test crash-ai --ai 911 --no-traffic`, spawn
+  925,23,-101,10): head-on into a traffic car at 63 mph against its 18 (closing 80.7 mph, front zones): player
+  damage 20.1 > `TrafficRules` 20 → crash camera, slow motion, Freeway / car shots, reset rolling at 44 mph; the
+  traffic car takes 50.3 > its `PlayerRules` 50 → wrecked. T-bone of a nearly stationary AI 911 at 70 mph:
+  AI damage 73.7 > `PlayerRules` 50 → AI crash, reset 4.5 s later rolling at 30 mph; the player takes 0.2
+  (the struck car's weight is its speed). An 81 mph closing head-on is right at the player's threshold: hits on
+  traffic below about 80 mph closing do not crash the player, as in the game's numbers.
+- **Dead ends / open**: the writer of the per-pair gate (vehicle +0x1640 + 4·i); vehicle +0x1630 (landing
+  rule); `FUN_0092e7b0`'s inputs (+0x1bf0…+0x1c20); the per-location table +0x16a0; the damage bar
+  (`FUN_009b2530`); how AI racers reset after a crash in the game (`FUN_006d39d0` skips players with kind +0x9c ≠
+  0; ours uses the crash camera's length); the parked-car slots (60–77 live in the snapshots) are still not ported.
+
 ### 2026-10-09: the "flashbang": the impact shake's noise spring diverged at low frame rates
 User report: "sometimes it randomly seems to flashbang" (the screen goes white for a moment while driving).
 - **Detector** (`flash_probe.rs` / `flash_probe.wgsl`, debug only): `MW_FLASH_LOG=1|<file>` reduces each

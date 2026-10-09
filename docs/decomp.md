@@ -1225,8 +1225,8 @@ decisions: [handling.md](handling.md), "Crash camera".
   m/s → mph: the thresholds read as mph, 70 for scenery and 38–100 for landings). A car flagged at
   `vehicle+0x1777` never crashes. When it fires, the entry's `DamageOverride` (`DamageToDeal`, flag) replaces
   the impact's damage.
-- **Which entry** (confirmed): car against car (`FUN_009575e0`) uses `PlayerRules` (0x24) when both are race
-  cars ("race car impact"), else `22061460` (0x10, "AI impact") or `RoadblockRules` (0x2c, "roadblock impact")
+- **Which entry** (confirmed; per pair in "Car against car" below): `FUN_009575e0` (player–player, AI–AI) uses `PlayerRules` (0x24) for two players
+  ("race car impact"), else `22061460` (0x10, "AI impact") or `RoadblockRules` (0x2c, "roadblock impact")
   by a flag of the other car; traffic impacts ("traffic impact" / "crashing traffic impact",
   `FUN_00958130`) use `TrafficRules` (0x30). The closing speed there is the sum of both cars' velocities
   along the normal, and the damage values come from the impulse solve (`FUN_0093c240`: impulse over a
@@ -1267,6 +1267,78 @@ decisions: [handling.md](handling.md), "Crash camera".
 - Not found: the bystander camera's maths (its params are read through cached pointers, not in place), the
   scene analysers' update (vtables at `0x00fe4638` and nearby, `FUN_007d9840` and its siblings build them),
   the `SlowMoSequenceItem` handler.
+
+### Car against car (2026-10-09, ported in `crates/mostrusted/src/car_impacts.rs`)
+
+Read from the dump and the snapshot disassembly; `.rdata` values with `exe-const`, `.bss` ones from `snap2`.
+
+- **Pair dispatch** (`FUN_00960f20`, from `FUN_00961750`; `this` = the collision manager + 0x414, holding
+  handles to `CollisionInfo`, `ImpactDamageGraphs`, `CollisionResponses_*`): by the categories of
+  `FUN_00929350` (0 player, 1 AI, 2 crashing race car, 3 traffic, 4 other). Player–player and AI–AI:
+  `FUN_009575e0` (a mask selects "race car impact" `PlayerRules` for 0–0, "AI impact" `22061460` /
+  "roadblock impact" for 1–1); player–AI `FUN_009588c0`; player–traffic `FUN_00959be0`; AI–traffic
+  `FUN_0095a680`; traffic–traffic `FUN_00958130`; crashing race cars `FUN_00959210` / `FUN_00959730` /
+  `FUN_00957f90`; props `FUN_00941170` / `FUN_009415f0` / `FUN_00940d50`.
+- **Rules per side** (`FUN_009a9fd0(rule, closing m/s, damage, third)`: damage > `1617a710`, third >
+  `d6c0e908`, closing × 2.23694 > `2414aa68`; vehicle +0x1777 never crashes): player–traffic: the player's
+  `TrafficRules` ("traffic impact"), or `5ccf9942` ("crashing traffic impact") when the traffic car's crashed
+  flag +0x1774 is set; the traffic car's `PlayerRules`. AI–traffic: the AI's the same; the traffic car's
+  "AI impact". Traffic–traffic: `TrafficRules` / `5ccf9942` both ways. Player–AI: the player's "AI impact",
+  **cleared unless an event runs** (`FUN_006a0040`: event object +0x2ce0); the AI's `PlayerRules` ("player
+  impact"). AI–AI: "AI impact" both ways. `FUN_006a3c40` (team / mode gates) zeroes damage in some modes.
+- **Profiles** (`DamageBarProfiles`, vehicle +0x1178): the player `PlayerOffline` (`TrafficRules` 20, "AI
+  impact" 33, `5ccf9942` 150 or 100 mph, `WorldRules` 30 or 70 mph); AI cars (driver kind +0x30e0 = 2) the
+  profile `2ae17c10` (snapshot: an AI car's profile held its scales 1.125 / 1.65): `PlayerRules` 50, "AI impact"
+  50, `TrafficRules` 25; traffic `Traffic`: `PlayerRules` 50, "AI impact" 50, `TrafficRules` 15 (`DamageOverride`
+  0 with the flag set).
+- **Impact zone** (`FUN_00929da0`): contact point in the car's physical box (definition +0x10 centre, +0x20 half
+  extents), divided by the largest |component|; x > 0.5: front (z > 0.7) 2, rear (z < −0.7) 8, underside 1
+  (y < −0.8 and |y| > 0.8 + 0.4(|x| − 0.5)), else 9; |x| ≤ 0.5: 3 / 7 / roof 0 (y > 0.8) / underside 1 / 10;
+  x < −0.5: 4 / 6 / 1 / 5; a point at the centre is 10. Location scale (`FUN_0092ebf0`, the profile's
+  `ImpactLocationDamageScale` +0x18…+0x30): 1 → +0x18, 2 / 4 → +0x1c, 3 → +0x20, 6 / 8 → +0x24, 7 → +0x28, 5 / 9 →
+  +0x2c, 0 → +0x30, 10 → 1; performance mods 0x32…0x36 modify it for players (`FUN_00574870`, not ported).
+- **Damage curve** (`FUN_009250d0`, `ImpactDamageGraphs` = `CollisionInfo.Damage_Graphs`): below the mid speed,
+  `low_d + max(0, (v − low_v)/(mid_v − low_v))·(mid_d − low_d)`, above it on to the high point without a cap;
+  speeds in mph (× 0.44704, `.bss` 0x0118a010). Graph `97aab742` 5 → 0, 80 → 33, 160 → 100; graph `3fd69cce` 0 → 6,
+  60 → 32, 120 → 100; `674ea963` = 25 mph.
+- **Generic damage** (`FUN_00941a50`; all pairs with a non-race car): closing = the relative velocity along the
+  pair normal (its length when the normal is zero); base = graph 1 (0 below 0.25 m/s, `DAT_01024720`); × min(max
+  speed / max(25 mph, 0.5), 1); × the location scale; × the strength factor (`FUN_0092ea20`): the other car's
+  +0x1608 + its table[zone].x over (this car's +0x1604 if the other's `VehicleComponent` byte +0x8f
+  (`05cd1d74`) is set, else the handler's scale) + this car's table[zone].y (table at vehicle +0x16a0, stride
+  0x10). Scales: player–traffic player +0x15f4 / traffic +0x15fc; AI–traffic AI +0x15f4 / traffic +0x15f8;
+  traffic–traffic +0x15f4 both. The undamaged-by-strength value goes to the third threshold.
+- **Strength stats** (`FUN_008ffb20`): `Vehicle_Gameplay` (the `VehicleComponent.Gameplay`) `DamageStats`
+  +0xc (`ac7a3b27`, driver kind 2 = AI), +0x28 (`8570ce40`, default), +0x44 (`304e4b58`, online,
+  `FUN_006a0290`): u16 +0xc → 0x15f8, +0xe → 0x1600, +0x10 → 0x1604, +0x12 → 0x15fc, +0x14 → 0x15f4, +0x16 →
+  0x15f0 (each ≥ 1), u8 `Strength` +0x18 → 0x1608; mods 8…0x13 adjust them for players. Snapshot check: the
+  911 held 50, 50, 50, 50, 50, 100, 60 (default set); traffic cars 30–35 strength, defence 30, +0x1604 = 1.
+- **Glancing cap** (`FUN_0093c0b0` → `FUN_0092e580` both ways, player / AI against traffic): motion frames (forward
+  = velocity or the body's forward, `FUN_009ae1c0`), poses predicted one frame (`FUN_009e8310`); when
+  |forward_B · right_A| ≤ 0.7 (`CollisionInfo` `226dddf1`) and the boxes' corners overlap by less than 0.5 m
+  (`12236fc8`) across B's path, the race car's damage is capped at 4 (`.bss` 0x01185d60).
+- **Race car against race car** (`FUN_0093c240`): w_A = |v_A|·(1 + c_A − c_B + e_A − e_B), c = 0.1 for zones
+  2 / 3 / 4 (`DAT_01023b64`), e = small input-dependent extras (`FUN_0092e7b0`, 0.025…0.1 from vehicle
+  +0x1bf0…+0x1c20, not ported); w = d_A w_A − d_B w_B; base = graph 2 of |w| (zero when ≤ 0.1 or |v_A − v_B| <
+  0.25); shares p = w·cos(α/2) with α = acos(ŵ · d_A) and acos(−ŵ · d_B) (`FUN_00924bb0`: acos `FUN_00eddb3b`,
+  then a sin polynomial of 2π(¼ − x/2π) = cos x); A's damage = min(w_B / 25 mph, 1) × A's location scale × B's
+  share × base × A's strength factor (scales: player–AI player +0x15f8 / AI +0x15fc; AI–AI +0x15f8 both). The car
+  that drives into the other takes little: a stationary car's weight is 0, so it deals nothing.
+- **Landing on a car** (`FUN_008fbb90`, from `FUN_00901160`, tried A on B then B on A): neither crashed, B's
+  +0x1630 ≥ 0.2 and A's ≤ 0 (inferred: time on the ground), the contact within 0.8 (`DAT_010cf570`) of A's half
+  extents in x and z → A crashes (the matching rule's `DamageOverride` only; a missing rule still crashes).
+- **Re-test gate**: `FUN_009575e0` computes damage only while vehicle +0x1640 + 4·other ≥ 0.5 (`FUN_009588c0`:
+  ≠ 0); the array is reset to 0.5 (`FUN_009b3d70`); its writer was not found.
+- After the rules: `FUN_009b2530` applies the damage to the damage bar (wrecked when used up); `FUN_009253a0`
+  passes the crashes on.
+
+Model decisions (`car_impacts.rs`): the per-location table at +0x16a0 is zero (it was zero on the player's car
+in both snapshots); the `05cd1d74` flag is clear (it is on every car checked); `FUN_0092e7b0`'s extras are 0;
+the glancing test uses the current poses; a pair is tested when its contact starts and then not for 0.5 s;
+"grounded" = a wheel on the ground; no damage bar; a crashed AI car has no control and is reset after the
+player's crash cameras' length (4.5 s) onto its route at its progress, rolling at the `GameLogicConfig` reset
+speed; a crashed traffic car is marked wrecked (later hits on it use `5ccf9942`). Not ported: takedown
+feedback, battling (`FUN_008f8ac0`, damage × profile +0x4c), the crashing-race-car pairs, props' "prop impact".
 
 ## Props (2026-10-09)
 
@@ -1942,27 +2014,59 @@ returns the slot written 8 draws earlier.
   (`FUN_006a04c0()+0x2eb8`) can remap the flow type through `FUN_0061bd80`.
 
 **Density multiplier** (confirmed, `FUN_005f0780` every frame):
-- Start with `m = base`. `base` (`world+0xa2b74`) is `sys[0x80]` = **4.78**, unless message 4 in
-  `FUN_0060a380` sets another value or restores `sys[0x80]`. In a network game, `m` is also scaled by
-  `lerp(sys[0xc0], sys[0xd8], (activeHulls − c)·k)`, capped at 1.
+- Start with `m = base × net` (`world+0xa2b7c = +0xa2b74 × +0xa2b6c`; `net` = 1 in a local game). `base`
+  (`world+0xa2b74`) is reset to `sys[0x80]` = 4.78 (`FUN_005e9a40`, copied from `+0xa2b70`), but **the event
+  sets it** (message 4, below): **1.0 in free roam** (both snapshots read 1.0 there, with `+0xa2b70` = 4.78
+  beside it). In a network game, `net = lerp(sys[0xc0], sys[0xd8], (activeHulls − c)·k)`, capped at 1.
 - Player speed (local game, when `FUN_0069ffe0()`): with `s` = the player's speed,
   `t = clamp((s − sys[0x8c]·mph) / (sys[0x94]·mph − sys[0x8c]·mph), 0, 1)`, and `m *= lerp(sys[0x90]=1,
   sys[0x88]=1.2, t)`. With `sys[0x8c]` = 60 and `sys[0x94]` = 20, that is ×1.2 at or below 20 mph and ×1 at or
   above 60 mph.
 - Pursuit (`FUN_006a1200()`): `m *= sys[0x10c]` (`PursuitScale` 0.5).
 
-The **24-entry hour array (`sys[0x0c..0x6c]`) has no direct reader** among the `world+0xb17b0` users. It may
-reach `base` through message 4 (not traced).
+**Who sets the base: the event** (2026-10-09, confirmed). The traffic message queue (`DAT_010edb30` =
+`world+0xb1810`, read in `FUN_0060a380`) is fed by small posting wrappers at 0x00845e80…0x00846520 (found by
+scanning the snapshot's decrypted `.text` for the queue's address): `FUN_00845fb0(flag, value)` posts message
+4 (+8 value, +0xc flag: set → base = value, clear → base = `sys[0x80]`), `FUN_008462a0` posts message 0xf (base
+= 0 and the system restarts, `FUN_00615020`: no traffic). Callers:
+- `FUN_0070caa0` (the event set-up, offline branch): if the event's `TrafficEnabled` (+0xf0) is clear → message
+  0xf; else message 4 with the event's `ce4961e7` (+0xb0) when its `90f52617` (+0xf1) is set, else
+  `TrafficSystemConfig` hour array `[hour]` (`sys[0x0c..0x6c]`, reached through `AIConfig` +0x24 → +0x34 →
+  +0x24 handles; resolved in the snapshot). The online branch (`+0xe8`) uses the `OnlineEvent`'s `999297ea`
+  (+0x38) and `b9157a03` (+0x48).
+- `FUN_006e6380` (per frame): when the event uses the hour array and the hour (`FUN_00897980`, an int at
+  +0x1b614) changed, message 4 with the new hour's value.
 
-**Load budget and culling** (confirmed, `FUN_005fd6a0`). Every car within `sqrt(DAT_0110f590)` (`.bss`) of the
-point `world+0x36110` (the player or camera) adds to the load `world+0xa2b80`:
+Data (`GAMELOGIC/GAMEMODES.BNDL`, 111 `OfflineEvent`s): the three free-drive events (game mode 390145) have
+density 1, fixed, traffic on; races (730000) 0.1–1 (most 0.2–0.5); `TrafficEnabled` is off in 5 events; only 2
+use the hour table (0.05 at night … 0.5). So free roam runs at **1.0**, not the 4.78 the port used.
+
+**Load budget and culling** (confirmed, `FUN_005fd6a0`; corrected 2026-10-09). It walks the slots set in **both**
+the live mask `world+0x1af40` and the crash-record mask `world+0x1af40 + 0xa8` (`+0x1afe8`, from the
+disassembly: `and edx,[eax]` with `[eax+0xa8]`). A slot gets a crash record (0x620 bytes at `+0x2c910`, 16 of
+them) only in `FUN_0061cf50`, called from `FUN_0060c3a0` when a physics body touched the car (vehicle +0x6b bit
+0) and from `FUN_0060c2f0`: **only crashing traffic counts**; lane followers never do (both snapshots: no crash
+records, load 0, with 1 and 3 lane cars within 60 m). The measuring point `world+0x36110` is **the player's car**
+(snap2: (925.30, 22.38, −101.09) against the car's (925.35, 22.37, −100.81); snap1 likewise). A crashing car within
+`sqrt(DAT_0110f590)` (60 m) adds:
 - `sys[0x9c]` = 30 if the car is physical (byte `+0x1d2` of its 0x620-byte record at `+0x2c910`);
 - otherwise `sys[0xa4]` = 5 if the value at `+0x1c0` is below `sys[0xb4]` = 6 (speed, inferred);
 - otherwise `sys[0xa0]` = 20.
 
-At a load of 200 or more, a cooldown (`+0xa2b84`) counts down. When it runs out, the **farthest** car in the
-radius is removed (`FUN_005ec4b0`, with its linked slot) and the cooldown restarts at `sys[0xa8]` (0.5 s). The
-budget allows about 10 moving cars, about 40 stopped ones, or about 6 physical ones near the player.
+At a load of 200 or more, spawning stops and a cooldown (`+0xa2b84`) counts down. When it runs out, the
+**farthest** crashing car (at any distance) is removed (`FUN_005ec4b0`, with its linked slot) and the cooldown
+restarts at `sys[0xa8]` (0.5 s). The budget allows about 6 physical crashing cars near the player.
+
+**Live traffic counts** (snapshots, vehicle table: live mask `world+0x1af40`, positions at `world+0xd7b0 +
+slot·0x40`, player position at `*(*(0x10edae4)+4) + 0x3050 + i·0x1c40` + 0x110, i = `world+0xa2b30`):
+
+| snapshot | player | speed | lane cars (slots 0–255) | within 100 / 200 / 250 / 400 / 600 m | parked (256–405) |
+|----------|--------|-------|-------------------------|--------------------------------------|------------------|
+| snap1 | (1814, 23.6, 1649) | 115 mph | 96 | 12 / 27 / 34 / 56 / 86 | 60 |
+| snap2 | (925, 22.4, −101) | 38 mph | 108 | 1 / 5 / 9 / 31 / 75 | 77 |
+
+(`traffic.rs` at the same places, standing, after 25 s: snap1 spot 103 cars, 10 / 28 / 37 / 61 / 87; snap2 spot
+126–135, 3–5 / 8–10 / 10–14 / 30–38 / 85–90. With the old base 4.78: 255–256, 17 / 71 / 86 / 132 / 216.)
 
 Separately, `FUN_00602ce0` runs `FUN_005fd3f0` (not traced) once the player has been slower than `sys[0x108]`
 (2) for `sys[0x104]` (30) seconds.
@@ -2090,13 +2194,12 @@ from this base, which `FUN_005ef0f0` fills with `sys[0x80]`). All `prm` field na
 
 Not found or not ported: the manoeuvres (option 0's queue: swerve, cut-up, weave, panic, jack-knife), the
 game's own switch to a physical car (`FUN_005fcbd0` sets up the kinematic wheel job, not the crash; the crash
-entry was not found), the kinematic wheel and suspension pose (`FUN_005f7cf0`), the point the load budget
-measures from (`world+0x36110`, several hundred metres from the car in the snapshots), the world vehicle
+entry was not found), the kinematic wheel and suspension pose (`FUN_005f7cf0`), the world vehicle
 allocation for lane followers (`FUN_00608fb0`, 80 m / 30 m tests from `sys[0x118]` / `sys[0x11c]`), and per-car
 lights.
 
 **Runtime model decisions** (each marked `MODEL:` in traffic.rs): option 0 keeps a car stopping for its
-obstacle (no manoeuvres); the load budget and the draw range measure from the player's car; models and
+obstacle (no manoeuvres); the draw range measures from the player's car (the load budget's point is the player's car in the game too, confirmed 2026-10-09); models and
 colliders only within 250 m of the player (performance); a crashed car is a dynamic box down to the ground
 (no wheels), turned physical when the player's car or another crashed car touches it; cars and crashed cars
 on hulls that leave the area are removed (inferred from the per-hull state going away); the heading blend is

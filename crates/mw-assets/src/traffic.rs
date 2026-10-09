@@ -69,9 +69,10 @@ pub struct TrafficVehicleType {
 /// `sys[x]` names them.
 #[derive(Debug, Clone)]
 pub struct SystemConfig {
-    /// 0x0c: 24 hourly values (0.05 at night, 0.5 at 08:00). No reader found (decomp.md).
+    /// 0x0c: 24 hourly values (0.05 at night, 0.5 at 08:00): the density base for events that follow the hour
+    /// (`FUN_0070caa0`, `FUN_006e6380`; decomp.md "Traffic rules").
     pub hours: Vec<f32>,
-    /// 0x80: the base density multiplier (4.78).
+    /// 0x80: the density base's reset value (4.78, `FUN_005e9a40`); every event replaces it (free drive: 1).
     pub density_base: f32,
     /// 0x84: the jitter of pre-placed cars, as a fraction of their spacing (0.3, `FUN_0060afb0`).
     pub prepopulate_jitter: f32,
