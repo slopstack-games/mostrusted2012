@@ -45,7 +45,7 @@ pub fn run(store: &AssetStore, o: &Options) -> Result<()> {
             dmg.skeleton.ids[i]
         );
     }
-    print_animations(&dmg);
+    print_animations(&dmg, o.keys);
     for (i, c) in dmg.clips.iter().enumerate() {
         let a = &c.animation;
         let last = a.frames.len().saturating_sub(1);
@@ -102,20 +102,7 @@ pub fn run(store: &AssetStore, o: &Options) -> Result<()> {
                         continue;
                     }
                     let key = &a.frames[f][k];
-                    let [x, y, z, w] = key.rotation;
-                    let angle = 2.0 * w.clamp(-1.0, 1.0).acos().to_degrees();
-                    let s = (1.0 - w * w).max(1e-12).sqrt();
-                    let t = key.translation;
-                    println!(
-                        "          f{f:<2} bone {bone:2}: offset ({:6.3} {:6.3} {:6.3})  rot {angle:6.1}° about ({:5.2} {:5.2} {:5.2})  scale {:.2}",
-                        t[0],
-                        t[1],
-                        t[2],
-                        x / s,
-                        y / s,
-                        z / s,
-                        key.scale
-                    );
+                    println!("          f{f:<2} bone {bone:2}: {}", key_text(key));
                 }
             }
         }
@@ -259,12 +246,11 @@ fn survey(store: &AssetStore) -> Result<()> {
                     .collect();
                 let frames: std::collections::BTreeSet<usize> =
                     d.clips.iter().map(|c| c.animation.frames.len()).collect();
-                // Bones whose first-frame key is not the identity, in damage and animated part clips
-                // (`pose_with` applies keys relative to frame 0), with the largest such offset.
+                // Bones whose first-frame key in a damage clip is not the identity (`pose_with` counts damage
+                // keys from frame 0), with the largest such offset.
                 let mut rest = std::collections::BTreeSet::new();
                 let mut rest_max = 0.0f32;
-                let anims = d.animations.iter().flat_map(|a| a.clips.iter().map(|c| &c.animation));
-                for a in d.clips.iter().map(|c| &c.animation).chain(anims) {
+                for a in d.clips.iter().map(|c| &c.animation) {
                     let Some(f0) = a.frames.first() else { continue };
                     for (&bone, key) in a.bones.iter().zip(f0) {
                         let t = key.translation.iter().map(|t| t * t).sum::<f32>().sqrt();
@@ -306,7 +292,7 @@ fn survey(store: &AssetStore) -> Result<()> {
 
 /// Animated body parts (active aero) of the car: clips, the bones they move, the state machine's
 /// variables and the speed rule when it is the simple form (`mw_assets::car_anim`).
-fn print_animations(dmg: &mw_assets::damage::VehicleDamage) {
+fn print_animations(dmg: &mw_assets::damage::VehicleDamage, keys: bool) {
     let Some(a) = &dmg.animations else {
         println!("animated parts: none");
         return;
@@ -327,8 +313,33 @@ fn print_animations(dmg: &mw_assets::damage::VehicleDamage) {
             c.duration(),
             c.animation.bones
         );
+        if keys {
+            for (f, frame) in c.animation.frames.iter().enumerate() {
+                for (&bone, key) in c.animation.bones.iter().zip(frame) {
+                    println!("          f{f:<2} bone {bone:2}: {}", key_text(key));
+                }
+            }
+        }
     }
     let names: Vec<&str> =
         a.hsm_strings.iter().filter(|s| s.len() > 3 || s.parse::<f32>().is_ok()).map(String::as_str).collect();
     println!("  hsm strings: {}", names.join(" | "));
+}
+
+/// A clip key as offset, rotation angle about its axis, and scale.
+fn key_text(key: &mw_formats::BoneKey) -> String {
+    let [x, y, z, w] = key.rotation;
+    let angle = 2.0 * w.clamp(-1.0, 1.0).acos().to_degrees();
+    let s = (1.0 - w * w).max(1e-12).sqrt();
+    let t = key.translation;
+    format!(
+        "offset ({:6.3} {:6.3} {:6.3})  rot {angle:6.1}° about ({:5.2} {:5.2} {:5.2})  scale {:.2}",
+        t[0],
+        t[1],
+        t[2],
+        x / s,
+        y / s,
+        z / s,
+        key.scale
+    )
 }

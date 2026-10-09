@@ -213,19 +213,24 @@ impl VehicleDamage {
     }
 
     /// Like [`Self::pose`], plus animated body part clips at a position each (0 = first frame, 1 = last).
-    /// Their keys are offsets from the bind pose like the damage keys, so the two add up on shared bones.
+    /// Part keys are offsets from the bind pose; damage keys are changes from their clip's first frame
+    /// (some cars' damage clips carry a constant offset on a few bones in every frame, e.g. the XKR's boot
+    /// lid, which must not move the undamaged car or stack once per zone). Both add up on shared bones.
     pub fn pose_with(&self, levels: &[f32], parts: &[(&Animation, f32)]) -> Vec<Similarity> {
         let n = self.skeleton.bones.len();
         let mut keys = vec![BoneKey::IDENTITY; n];
-        let damage = self.clips.iter().map(|c| &c.animation).zip(levels.iter().copied());
-        for (animation, level) in damage.chain(parts.iter().copied()) {
+        // Damage clips count from their first frame (the undamaged car); part clips from the bind pose, since
+        // a part's transition clips start where another clip ended (the Veyron's air brake starts deployed).
+        let damage = self.clips.iter().map(|c| (&c.animation, true)).zip(levels.iter().copied());
+        let parts = parts.iter().map(|&(a, p)| ((a, false), p));
+        for ((animation, from_first_frame), level) in damage.chain(parts) {
             if level <= 0.0 || animation.bone_count != n {
                 continue;
             }
             let frames = animation.frames.len().saturating_sub(1) as f32;
             let sampled = animation.sample(level.min(1.0) * frames);
             for ((&b, k), k0) in animation.bones.iter().zip(sampled).zip(&animation.frames[0]) {
-                let k = relative_to(&k, k0);
+                let k = if from_first_frame { relative_to(&k, k0) } else { k };
                 let acc = &mut keys[b];
                 acc.translation = std::array::from_fn(|i| acc.translation[i] + k.translation[i]);
                 acc.rotation = qmul(acc.rotation, k.rotation);
