@@ -963,6 +963,23 @@ Read for the user's report "traffic sounds are also missing"; ported in `mw_asse
   changes writes `(float)(1 << e)` into the four floats of slot 0x7f (`GroundcoverConstants`, through
   `FUN_00a5d660`), then draws (`FUN_00a5cb70`, 0x90). So the sprite size is BINORMAL × 2^e metres: the
   e = 6 / 8 groups are 10–60 m tree cards over the hills, not 1 m tufts.
+- **`FUN_00eb9500`** (the vertex builder, per group): skips the group unless the eye is within
+  `group + 0x3C` × 125 (`DAT_010c6f74`) of its box and `FUN_00eb8290` (box against the six frustum planes)
+  passes; then per instance: position = box min + u16 × (max − min) × 1/65535 (`DAT_00f8f370`); kept if
+  `(p − eye) · param_7 ≥ 0` (in front of the camera plane), `FUN_00eb8290` passes for it and |p − eye|² ≤ R²
+  with R = (byte)((h >> 1 & 63) + (w >> 1 & 63)) × 2^e × 1/127 (`DAT_01081004`) × 125; f = (1 − d²/R²) × 5
+  (`DAT_01081000`, cached in `DAT_011b4904`), at most 1 (`DAT_00f8a820`); the width / height bytes become
+  `(char)(int)(byte × f)`. It writes four 0x2C-byte vertices (formats.md) into a scratch buffer and copies them
+  to the frame's vertex ring (`FUN_00ac69f0`); the draw record (0x10 bytes) holds the ring offset, the material
+  record (`collection + 0x30` + material × 0x110), the vertex count, e (+0xC) and two sort bytes. Caps: 20000
+  sprites a frame (`DAT_010c6f70`, counter at `param_1 + 0x610`) and 300 records (`param_11 + 0x12c0`). The
+  `Groundcover` vertex program then turns each sprite to the camera (formats.md, ported in
+  `groundcover.wgsl`, 2026-10-09).
+- **Our port** (`groundcover.wgsl`): the builder's per-sprite step and the vertex program run together in
+  one vertex shader over static per-group meshes (4 vertices per sprite at its base). Model decisions: the
+  shader `Time` is taken as seconds (not read live); the 20000-sprite / 300-record caps are not applied; the
+  range, facing and in-front test use the view being drawn (the game builds once a frame for the main
+  camera); the group test stays on the CPU (`groundcover.rs`).
 - **Not traced**: who fills the 64-slot list at `+0x2e94` (which track units' collections are resident). The
   data fit "the player's zone and its `ZoneList` neighbours": at most 63 distinct collections over every
   zone's neighbourhood. The runtime uses that rule (`groundcover.rs`, model decision).

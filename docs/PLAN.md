@@ -101,9 +101,10 @@ Make a static frame look like the game.
    PropInstanceList / PropObject, DynamicInstanceList, LightInstanceList, GroundcoverCollection / Instances.
    - Done: props, compound objects and dynamic objects are placed (+21068 placements over the map, 0
      unresolved; `mwtool world` prints counts per layer); lights are parsed (3628) but not rendered.
-     Groundcover is decoded and drawn (1.36 M sprites over the map as merged crossed-quad meshes,
-     `--no-groundcover` to skip). Still open: light rendering, groundcover billboarding/wind/fade, compound
-     sub-parts / LOD slot choice.
+     Groundcover is decoded and drawn (1.36 M sprites over the map, one mesh per group, `--no-groundcover` to
+     skip); since 2026-10-09 by the port of the game's `Groundcover` vertex program (camera-facing about world
+     up, wind sway, the CPU builder's per-sprite range drop and shrink, `groundcover.wgsl`). Still open: light
+     rendering, the builder's 20000-sprite / 300-draw caps, compound sub-parts / LOD slot choice.
    - Done when: street furniture, props and grass appear, and the count of `mwtool world` placements grows
      accordingly.
    - `[x]` **Backdrop composition** (2026-10-04): InstanceList backdrops are per-unit LOD views; drawing all

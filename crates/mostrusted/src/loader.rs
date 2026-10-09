@@ -155,6 +155,8 @@ pub enum Msg {
         min: Vec3,
         max: Vec3,
         range: f32,
+        /// World bounds of every sprite turned any way and swaying (the mesh holds only base points).
+        bounds: (Vec3, Vec3),
     },
     /// A prop / compound / dynamic object with physics (`props.rs`).
     Prop {
@@ -833,7 +835,10 @@ impl Worker {
                     normal_map: None,
                     textures: Vec::new(),
                     sampler_states: Vec::new(),
-                    parameters: Vec::new(),
+                    parameters: vec![
+                        ("amount".into(), [mat.wind[0], 0.0, 0.0, 0.0]),
+                        ("speed".into(), [mat.wind[1], 0.0, 0.0, 0.0]),
+                    ],
                     mesh: mw_formats::DecodedMesh::default(),
                 };
                 let mut look = Look::from_scene_mesh(&sm);
@@ -849,7 +854,9 @@ impl Worker {
                     .enumerate()
                     .filter(|(_, (g, _))| g.material == m && only_e.is_none_or(|e| e == g.shift))
                 {
-                    let Some(mesh) = groundcover_mesh(&gc.instances[range.clone()], &mat.regions) else { continue };
+                    let mine = &gc.instances[range.clone()];
+                    let Some(mesh) = groundcover_mesh(mine, &mat.regions) else { continue };
+                    let bounds = groundcover_bounds(mine, mat.wind[0]);
                     let key = ResourceId(0x6000_0000_0000_0000 | (gi as u64) << 32 | id.0 & 0xFFFF_FFFF);
                     self.send(Msg::Model(key, vec![Part { mesh, look }]))?;
                     self.send(Msg::Groundcover {
@@ -858,6 +865,7 @@ impl Worker {
                         min: Vec3::from(g.min),
                         max: Vec3::from(g.max),
                         range: g.radius * mw_formats::groundcover::DRAW_DISTANCE_SCALE,
+                        bounds,
                     })?;
                 }
             }
@@ -1018,71 +1026,67 @@ impl Worker {
     }
 }
 
-/// Build one mesh for a group's instances. The game's `Groundcover` vertex program turns each instance into
-/// one quad that turns about the vertical to face the camera (right = perpendicular to the horizontal
-/// direction from the camera, up = world up), `width x (u - 0.5)` across and `height x v` up from the
-/// instance position. Without a vertex-shader path here, two crossed upright quads of that size stand in
-/// for the turning one (model decision; `GroundcoverInstance::size_m` for the size).
+/// Build one mesh for a group's instances: four vertices per sprite, all at the instance position, that
+/// `groundcover.wgsl` (the port of the game's `Groundcover` vertex program) expands into a quad turned
+/// about world up to face the camera, shrunk and dropped with distance as the game's CPU builder does
+/// (`FUN_00eb9500`). The vertices carry what the game's builder writes (POSITION, NORMAL, the size bytes
+/// and corner as [`crate::materials::ATTRIBUTE_GROUNDCOVER_SPRITE`], the colour) with the atlas cell
+/// already applied to the texture coordinate (`region.xy + region.zw × (u, 1 − v)`, as the program does).
 fn groundcover_mesh(mine: &[mw_formats::GroundcoverInstance], regions: &[[f32; 4]]) -> Option<Mesh> {
     use bevy::asset::RenderAssetUsages;
     use bevy::mesh::{Indices, PrimitiveTopology};
     if mine.is_empty() {
         return None;
     }
-    let quads = mine.len() * 2;
-    let mut pos = Vec::with_capacity(quads * 4);
-    let mut nor = Vec::with_capacity(quads * 4);
-    let mut uv = Vec::with_capacity(quads * 4);
-    let mut col = Vec::with_capacity(quads * 4);
-    let mut idx = Vec::with_capacity(quads * 6);
+    let n = mine.len() * 4;
+    let mut pos = Vec::with_capacity(n);
+    let mut nor = Vec::with_capacity(n);
+    let mut uv = Vec::with_capacity(n);
+    let mut col = Vec::with_capacity(n);
+    let mut sprite = Vec::with_capacity(n);
+    let mut idx = Vec::with_capacity(mine.len() * 6);
     for inst in mine {
-        let region = regions.get(inst.region as usize).copied().filter(|r| r[2] > 0.0 && r[3] > 0.0);
-        let [ox, oy, sx, sy] = region.unwrap_or([0.0, 0.0, 1.0, 1.0]);
-        // The shader outputs sqrt(2 * tint) and the g-buffer stores sqrt(albedo): albedo = 2 * tint (times
-        // the texel; the layered shader clamps the product, as the 8-bit target does).
+        // The program indexes `GroundcoverTextureRegions[round(A × 255)]`: 16 entries; a read past the
+        // constant buffer gives zeros in D3D10.
+        let [ox, oy, sx, sy] = regions.get(inst.region as usize).copied().unwrap_or([0.0; 4]);
+        // The program outputs sqrt(2 tint) and the G-buffer stores sqrt(albedo): albedo = 2 tint (times the
+        // texel; the layered shader clamps the product, as the 8-bit target does).
         let tint = inst.tint.map(|t| t as f32 / 255.0 * 2.0);
         let colour = [tint[0], tint[1], tint[2], 1.0];
-        let (width, height) = inst.size_m();
-        // The vertex program's normal (TEXCOORD1): normalize(sign(w) right (u - 0.5) + up v - 0.1 d) +
-        // max(8 - height, 0.75) (ground normal + (0, 0.25, 0)), d = horizontal direction from the camera;
-        // the pixel program normalises it. The camera term is left out for the static quads.
-        let ground = (Vec3::from(inst.normal) + Vec3::new(0.0, 0.25, 0.0)) * (8.0 - height).max(0.75);
-        let sign = if width > 0.0 {
-            1.0
-        } else if width < 0.0 {
-            -1.0
-        } else {
-            0.0
-        };
-        for q in 0..2 {
-            let a = q as f32 * std::f32::consts::FRAC_PI_2;
-            let right = Vec3::new(a.cos(), 0.0, a.sin());
-            let n = |u: f32, v: f32| {
-                ((sign * right * (u - 0.5) + Vec3::Y * v).normalize_or_zero() + ground).normalize_or(Vec3::Y).to_array()
-            };
-            let (dx, dz) = (a.cos() * width * 0.5, a.sin() * width * 0.5);
-            let base = pos.len() as u32;
-            let p = inst.position;
-            let top = p[1] + height;
-            pos.extend([
-                [p[0] - dx, p[1], p[2] - dz],
-                [p[0] + dx, p[1], p[2] + dz],
-                [p[0] + dx, top, p[2] + dz],
-                [p[0] - dx, top, p[2] - dz],
-            ]);
-            nor.extend([n(0.0, 0.0), n(1.0, 0.0), n(1.0, 1.0), n(0.0, 1.0)]);
-            uv.extend([[ox, oy + sy], [ox + sx, oy + sy], [ox + sx, oy], [ox, oy]]);
-            col.extend([colour; 4]);
-            idx.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+        let scale = inst.size_scale();
+        let base = pos.len() as u32;
+        // Corners (u, v) = (0,0) (1,0) (1,1) (0,1): u across, v up from the base.
+        for (c, (u, v)) in [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)].into_iter().enumerate() {
+            pos.push(inst.position);
+            nor.push(inst.normal);
+            uv.push([ox + sx * u, oy + sy * (1.0 - v)]);
+            col.push(colour);
+            sprite.push([inst.width as f32, inst.height as f32, scale, c as f32]);
         }
+        idx.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
     }
     let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD);
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, pos);
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, nor);
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv);
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, col);
+    mesh.insert_attribute(crate::materials::ATTRIBUTE_GROUNDCOVER_SPRITE, sprite);
     mesh.insert_indices(Indices::U32(idx));
     Some(mesh)
+}
+
+/// World bounds of a group's sprites at full size, turned any way about world up and swayed by up to
+/// `amount` metres at the top (`groundcover.wgsl`).
+fn groundcover_bounds(mine: &[mw_formats::GroundcoverInstance], amount: f32) -> (Vec3, Vec3) {
+    let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+    for inst in mine {
+        let (w, h) = inst.size_m();
+        let p = Vec3::from(inst.position);
+        let side = w.abs() * 0.5 + amount.abs();
+        lo = lo.min(p - Vec3::new(side, h.min(0.0), side));
+        hi = hi.max(p + Vec3::new(side, h.max(0.0), side));
+    }
+    (lo, hi)
 }
 
 /// Game matrices are D3D row-major (`v * M`, translation in row 3). Some

@@ -10,6 +10,45 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-09: groundcover sprites face the camera (the `Groundcover` vertex program ported)
+User report: since the sprite-size fix (byte / 127 × 2^e m, so the e = 6 / 8 groups are 10–60 m tree cards) the
+cards showed as thin vertical slivers when seen edge-on: we drew each sprite as two crossed static quads.
+- **Ported** (`groundcover.wgsl`, from `mwtool shader-asm Groundcover`, the `vs_4_0` program): per corner
+  (u, v), sway = sin(Time × `speed` + p.x) × `amount`; d = normalize(p.xz − ViewPosition.xz), right = (−d.z,
+  0, d.x); vertex = p + right × (sway × v + width × (u − 0.5)) + up × height × v, width / height =
+  BINORMAL.xy × `GroundcoverConstants.x` (= byte / 127 × 2^e); uv = region.xy + region.zw × (u, 1 − v) with
+  region = `GroundcoverTextureRegions[round(A × 255)]`; normal = normalize(sign(width) × right × (u − 0.5) +
+  (0, v, 0) − 0.1 (d.x, 0, d.y)) + max(8 − height, 0.75) × (ground normal + (0, 0.25, 0)); colour sqrt(2 tint)
+  (we keep 2 tint for the layered shader's sqrt-albedo path, as before).
+- **The CPU builder's per-sprite step** (`FUN_00eb9500`), done in the same vertex shader: a sprite is emitted
+  only if (p − eye) · forward ≥ 0 and |p − eye|² ≤ R², R = ((w >> 1 & 63) + (h >> 1 & 63)) × 2^e / 127 × 125;
+  its width and height bytes are multiplied by min(5 (1 − d² / R²), 1) and truncated (`(char)(int)`) before
+  the / 127. Positions are 3D distances (`param_6` = eye). The other per-sprite test, `FUN_00eb8290`, is a
+  box-against-frustum-planes test (the rasteriser's clipping does that here).
+- **How**: one mesh per group as before, but 4 vertices per sprite all at its base, with the sprite's size
+  bytes, 2^e and corner index in a custom attribute (`materials::ATTRIBUTE_GROUNDCOVER_SPRITE`);
+  `Layered::specialize` swaps in `groundcover.wgsl` as the vertex shader (forward, deferred prepass, the
+  planar view's normal prepass) for meshes that carry it. The entities get explicit bounds (`NoAutoAabb`) that
+  cover any turn and the sway. Wind constants come from the collection material's `amount` / `speed`
+  (material value or shader default): (0.025, 0.8) on 5461 groups, (0.24, 0.8) on 4923, (0.1, 0.1) on 4845, a
+  few others up to 0.35.
+- **Side find**: atlas region 2 of many grass materials has scale.x = −0.5 (a mirrored cell); our old mesh
+  builder treated any non-positive scale as missing and mapped the whole atlas onto those 41 k sprites. No
+  sprite uses an all-zero region or an index ≥ 16. The regions are now used as the program uses them.
+- **Look** (`--camera=-610,56,2310,-420,90,2390`): the slivers are gone, the cards turn with the camera
+  (orbit views from the west and south-west of the park); tufts at the `grass-tufts` viewpoint unchanged.
+- **Cost**: vertices per sprite 8 → 4 (two quads → one), 384 → 256 bytes. Interleaved A/B at the park view
+  (`MW_BENCH_PASSES=1`, machine at load 13–24 from parallel builds, so the CPU-side frame times, 76–160 ms,
+  are noise): deferred prepass GPU 2.33–2.38 ms old vs 2.33–2.43 ms new, its fragment invocations 4.35 M →
+  3.82 M (−12 %, one card instead of two crossed). The frame is CPU-bound (render-world prepare and
+  main-world schedule, 178 k entities); groundcover's 15 k group entities are ~14 % of the mesh entities but
+  only ~19 are visible there.
+- **Model decisions**: `Time` taken as seconds (Bevy's `globals.time`, wrapping at 1 h; the game's value not
+  read live); the builder's caps (20000 sprites a frame, `DAT_010c6f70`, and 300 draw records) are not
+  applied, so where the game would run out (tree traversal order) we draw more; the facing and range use the
+  view being drawn (the planar reflection view uses its own mirrored eye; the game builds once per frame for
+  the main camera); motion vectors ignore the sway.
+
 ### 2026-10-09: the "flashbang": the impact shake's noise spring diverged at low frame rates
 User report: "sometimes it randomly seems to flashbang" (the screen goes white for a moment while driving).
 - **Detector** (`flash_probe.rs` / `flash_probe.wgsl`, debug only): `MW_FLASH_LOG=1|<file>` reduces each

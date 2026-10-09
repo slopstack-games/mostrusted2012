@@ -577,6 +577,10 @@ impl Look {
 
         if name.starts_with("groundcover") && look.textures[0].is_some() {
             look.mode = Mode::Groundcover;
+            // `groundcover.wgsl` reads the shader's wind constants (`gMaterialCB`) from p0.
+            let amount = sm.parameter("amount").map_or(0.0, |v| v[0]);
+            let speed = sm.parameter("speed").map_or(0.0, |v| v[0]);
+            look.vals = pack(&[[amount, speed, 0.0, 0.0]]);
         }
 
         if name.starts_with("cable") {
@@ -1008,6 +1012,18 @@ pub struct LayeredParams {
     pub lights: Vec4,
 }
 
+/// A groundcover sprite corner (`loader::groundcover_mesh`): (width byte, height byte, 2^e, corner index 0..3).
+/// Meshes with it are drawn by `groundcover.wgsl`, the port of the game's `Groundcover` vertex program.
+pub const ATTRIBUTE_GROUNDCOVER_SPRITE: bevy::mesh::MeshVertexAttribute =
+    bevy::mesh::MeshVertexAttribute::new("GroundcoverSprite", 0x6C0D_5E01, bevy::mesh::VertexFormat::Float32x4);
+
+/// `groundcover.wgsl`, loaded at startup ([`load_groundcover_shader`]); read by [`Layered::specialize`].
+static GROUNDCOVER_VERTEX_SHADER: std::sync::OnceLock<Handle<bevy::shader::Shader>> = std::sync::OnceLock::new();
+
+pub fn load_groundcover_shader(asset_server: Res<AssetServer>) {
+    let _ = GROUNDCOVER_VERTEX_SHADER.set(asset_server.load("embedded://mostrusted/groundcover.wgsl"));
+}
+
 /// Extension bindings start at 100 to stay clear of `StandardMaterial`'s.
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone, Default)]
 pub struct Layered {
@@ -1063,17 +1079,32 @@ impl MaterialExtension for Layered {
     }
 
     /// The planar reflection camera is the only view with a normal prepass: its pipelines discard what
-    /// lies below the reflection plane (`reflection.rs`).
+    /// lies below the reflection plane (`reflection.rs`). Groundcover sprite meshes (those with
+    /// [`ATTRIBUTE_GROUNDCOVER_SPRITE`]) get the port of the game's `Groundcover` vertex program
+    /// (`groundcover.wgsl`) in every pipeline.
     fn specialize(
         _pipeline: &bevy::pbr::MaterialExtensionPipeline,
         descriptor: &mut bevy::render::render_resource::RenderPipelineDescriptor,
-        _layout: &bevy::mesh::MeshVertexBufferLayoutRef,
+        layout: &bevy::mesh::MeshVertexBufferLayoutRef,
         key: bevy::pbr::MaterialExtensionKey<Self>,
     ) -> Result<(), bevy::render::render_resource::SpecializedMeshPipelineError> {
         if key.mesh_key.contains(bevy::pbr::MeshPipelineKey::NORMAL_PREPASS)
             && let Some(fragment) = descriptor.fragment.as_mut()
         {
             fragment.shader_defs.push("PLANAR_REFLECTION_VIEW".into());
+        }
+        if layout.0.contains(ATTRIBUTE_GROUNDCOVER_SPRITE)
+            && let Some(shader) = GROUNDCOVER_VERTEX_SHADER.get()
+        {
+            descriptor.vertex.shader = shader.clone();
+            descriptor.vertex.entry_point = None;
+            descriptor.vertex.buffers = vec![layout.0.get_layout(&[
+                Mesh::ATTRIBUTE_POSITION.at_shader_location(0),
+                Mesh::ATTRIBUTE_NORMAL.at_shader_location(1),
+                Mesh::ATTRIBUTE_UV_0.at_shader_location(2),
+                Mesh::ATTRIBUTE_COLOR.at_shader_location(3),
+                ATTRIBUTE_GROUNDCOVER_SPRITE.at_shader_location(4),
+            ])?];
         }
         Ok(())
     }

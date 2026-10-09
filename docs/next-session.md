@@ -231,7 +231,7 @@ the details, [PLAN.md](PLAN.md) "Where it stands" the state per gap.
 | pad dead zones | pad object +0x140 / +0x144 | 0.2 / 0.1 from `.rdata` defaults |
 | traffic parameters | `DAT_0110f940` / `f944` (object; field 0x48), `DAT_0110f590` (cull radius), `DAT_0118a090`, world +0xa2bfc, world +0xa2b74 at several hours | traffic speed scale, cull radius, the hour's density |
 | texture first-mip flag | settled 2026-10-06: +0x113 = 1 means the top mip is **kept** (`FUN_00409510` passes 1 only when the byte is 0) | nothing: our full-resolution loading matches |
-| groundcover size | settled 2026-10-06: `cb1[0].x` = 4 live, size = byte / 127 × 4 (in code) | the CPU write; camera-facing sprites in a vertex shader (we cross two quads) |
+| groundcover size | settled 2026-10-06: `cb1[0].x` = 4 live, size = byte / 127 × 4 (in code) | settled 2026-10-09: 2^e from the draw loop; camera-facing sprites ported (`groundcover.wgsl`) |
 | free-roam state | game-state bytes +0x2e90, +0x2e91, +0x2e95 | gates on the collectable handler |
 | fog | 0x23 settled (not scaled; ours equals live); 0x83 formula in decomp.md "Fog" | `LayerFog` blend weights (+0x22d8 / +0x22dc) and density factor (+0x2df4 / +0x2df8); the gradient texture's builder and alpha; the original fades between painted timelines over ~10 s (we switch) |
 | sun path elevation | slot 0x0d over 20 dumps: 49.9° falling to 49.5° between ~12:13 and ~12:34 | the arc peaks near 12:00, not 13:00 (our sunrise 5 / sunset 21 are assumed) |
@@ -248,7 +248,7 @@ the details, [PLAN.md](PLAN.md) "Where it stands" the state per gap.
    slide in a second car (settles q's 35°), handbrake turn, steady corner, donut; the +0x210 leads
    (`FUN_009c24b0` / `FUN_009a56b0`); the launch delay.
 3. The user's visual reports with a location: WorldPBR `Horizontal_*` variants, sampler address modes, the
-   game's groundcover draw distance (`GroundcoverJob`), camera-facing groundcover.
+   game's groundcover draw distance (`GroundcoverJob`); camera-facing groundcover done 2026-10-09.
 4. Easydrive's own layouts and conditional entries; nitrous, horn, look back; free-roam HUD messages and
    Speed Points; the traffic runtime.
 

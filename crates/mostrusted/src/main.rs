@@ -576,6 +576,8 @@ fn main() -> anyhow::Result<()> {
         ..default()
     }));
     bevy::asset::embedded_asset!(app, "layered.wgsl");
+    bevy::asset::embedded_asset!(app, "groundcover.wgsl");
+    app.add_systems(Startup, materials::load_groundcover_shader);
     if let Some(r) = replay {
         app.insert_resource(r)
             .add_systems(FixedUpdate, replay::run_replay.before(drive::car_physics))
@@ -907,12 +909,21 @@ fn receive_assets(
             }
             Msg::Zones(zones) => residency.set_zones(zones),
             Msg::GroundcoverListing { unit, collections } => residency.add_listing(unit, collections),
-            Msg::Groundcover { model, collection, min, max, range } => {
+            Msg::Groundcover { model, collection, min, max, range, bounds } => {
                 let Some(parts) = loaded.models.get(&model) else { continue };
                 let range = groundcover::GroundcoverRange { collection, min, max, range };
+                // The vertex shader expands each sprite from its base point (`groundcover.wgsl`), so the
+                // mesh's own bounds are too small: the loader's cover every turned, swaying sprite.
+                let aabb = bevy::camera::primitives::Aabb::from_min_max(bounds.0, bounds.1);
                 commands.spawn((Transform::IDENTITY, Visibility::Hidden, range)).with_children(|c| {
                     for (mesh, mat) in parts {
-                        c.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat.clone()), bevy::light::NotShadowCaster));
+                        c.spawn((
+                            Mesh3d(mesh.clone()),
+                            MeshMaterial3d(mat.clone()),
+                            bevy::light::NotShadowCaster,
+                            aabb,
+                            bevy::camera::visibility::NoAutoAabb,
+                        ));
                     }
                 });
                 loaded.instances += 1;

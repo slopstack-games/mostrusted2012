@@ -225,6 +225,9 @@ pub struct GroundcoverMaterial {
     pub texture: Option<ResourceId>,
     /// `[offset.x, offset.y, scale.x, scale.y]` per sprite index.
     pub regions: Vec<[f32; 4]>,
+    /// The `Groundcover` shader's wind constants (`gMaterialCB`): `amount` (metres of sway at the top) and
+    /// `speed` (radians per second of `Time`); the material's own value or the shader default.
+    pub wind: [f32; 2],
 }
 
 /// All instances of one groundcover collection with its materials resolved.
@@ -256,12 +259,19 @@ impl AssetStore {
         let materials = col
             .materials
             .iter()
-            .map(|m| GroundcoverMaterial {
-                texture: m
-                    .material
-                    .and_then(|id| self.material(id).ok())
-                    .and_then(|mat| mat.samplers.iter().find_map(|s| s.texture)),
-                regions: m.regions.clone(),
+            .map(|m| {
+                let mat = m.material.and_then(|id| self.material(id).ok());
+                let shader = mat.as_ref().and_then(|mat| self.shader(mat.shader?).ok());
+                let param = |name: &str| {
+                    let p = shader.as_ref()?.parameters.iter().find(|p| p.name == name)?;
+                    let own = mat.as_ref()?.parameters.iter().find(|m| m.name_hash == p.hash).and_then(|m| m.value);
+                    own.or(p.default).map(|v| v[0])
+                };
+                GroundcoverMaterial {
+                    texture: mat.as_ref().and_then(|mat| mat.samplers.iter().find_map(|s| s.texture)),
+                    regions: m.regions.clone(),
+                    wind: [param("amount").unwrap_or(0.0), param("speed").unwrap_or(0.0)],
+                }
             })
             .collect();
         Ok(Groundcover { id, materials, instances, groups })

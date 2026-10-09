@@ -104,7 +104,8 @@ InstanceList ──> Model ──(LOD state)──> Renderable ──(per mesh)�
   the range shrink, COLOR = bytes (+12, +13, +14, +15) as R, G, B, A (tint rgb, region index in A; a debug
   mode replaces it with green + the region), TEXCOORD (two halfs) = (0,0), (1,0), (1,1), (0,1): u across, v
   up from the base. The vertex program picks the atlas cell by `round(A × 255)` from `GroundcoverTextureRegions`
-  (`uv = region.xy + region.zw × (u, 1 − v)`), sways the top by `sin(Time × speed + x) × amount × v` along the
+  (`uv = region.xy + region.zw × (u, 1 − v)`; a negative scale mirrors the cell: region 2 of many grass
+  materials is (0.5, 0.5, −0.5, 0.5), used by 41 k sprites; no sprite indexes an all-zero region or past 16), sways the top by `sin(Time × speed + x) × amount × v` along the
   sprite's right axis, and outputs the normal `normalize(sign(w) · right · (u − 0.5) + up · v − 0.1 · d) +
   max(8 − height, 0.75) · (ground normal + (0, 0.25, 0))` (d = horizontal direction from the camera, height
   in metres), mostly the ground normal. `gObjectCB` (272 bytes = `GroundcoverConstants` + 16 regions) is the

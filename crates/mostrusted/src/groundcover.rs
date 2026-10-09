@@ -13,8 +13,9 @@
 //!   placement-check --owners`), which fits the 64 slots; the residency rule itself (which units the game
 //!   keeps loaded) is not traced in the code (model decision).
 //! - **Distance.** A group is drawn while the camera is within 125 x its radius of its box
-//!   (`FUN_00eb9500`). The game also drops and shrinks single sprites near their own range
-//!   (`GroundcoverInstance::fade`); merged group meshes cannot do that.
+//!   (`FUN_00eb9500`). The game also drops sprites behind the camera plane or beyond their own range and
+//!   shrinks them near it (`GroundcoverInstance::fade`); `groundcover.wgsl` does that per sprite on the GPU,
+//!   with the port of the `Groundcover` vertex program (camera-facing about world up, wind sway).
 
 use std::collections::{HashMap, HashSet};
 
