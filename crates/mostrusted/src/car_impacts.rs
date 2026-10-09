@@ -418,6 +418,7 @@ fn evaluate_impacts(
     race: Option<Res<crate::race::RaceState>>,
     mut crash: ResMut<crate::crash::CrashState>,
     mut cooldown: Local<HashMap<(Entity, Entity), f32>>,
+    mut touching: Local<HashSet<(Entity, Entity)>>,
 ) {
     let Some(config) = config else {
         pending.0.clear();
@@ -439,9 +440,11 @@ fn evaluate_impacts(
         }
         traffic_cars.get(e).ok().map(|(_, _, v, sv)| sv.map_or(v.0, |s| s.0))
     };
+    // Car pairs touching now; a pair not touching on the last step is a new impact (avian clears its own
+    // "started touching" flag within the step).
     let mut seen: HashSet<(Entity, Entity)> = HashSet::new();
     for pair in collisions.iter() {
-        if !pair.collision_started() {
+        if !pair.is_touching() {
             continue;
         }
         let (Ok(c1), Ok(c2)) = (collider_of.get(pair.collider1), collider_of.get(pair.collider2)) else { continue };
@@ -449,11 +452,15 @@ fn evaluate_impacts(
         if a == b || !is_car(a) || !is_car(b) || !seen.insert((a.min(b), a.max(b))) {
             continue;
         }
+        if touching.contains(&(a.min(b), a.max(b))) {
+            continue;
+        }
         let Some(m) = pair.manifolds.first() else { continue };
         let Some(p) = m.points.first() else { continue };
         let (Some(va), Some(vb)) = (step_velocity(a), step_velocity(b)) else { continue };
         impacts.push(RawImpact { a, b, point: p.point, normal: m.normal, va, vb });
     }
+    *touching = seen;
     if impacts.is_empty() {
         return;
     }
@@ -624,6 +631,9 @@ impl Plugin for ImpactTestPlugin {
 /// Speed of the player's car on the collision course (m/s; about 67 / 78 mph).
 const TEST_SPEED_TRAFFIC: f32 = 30.0;
 const TEST_SPEED_AI: f32 = 35.0;
+/// The AI car is placed this far ahead of the player's car (m), across the road at this speed (m/s).
+const TEST_AI_AHEAD: f32 = 20.0;
+const TEST_AI_ROLL: f32 = 0.0;
 /// Crash-camera screenshots (real seconds after the impact), as `--test crash` takes them.
 const TEST_SHOTS: [(f32, &str); 4] =
     [(0.3, "crashcam-0-slowmo"), (1.25, "crashcam-1-freeway"), (3.25, "crashcam-2-car"), (5.5, "crashcam-3-reset")];
@@ -642,7 +652,10 @@ fn run_impact_test(
         (Entity, &mut Transform, &mut LinearVelocity, &mut AngularVelocity),
         (With<Player>, With<Car>, Without<AiDriver>),
     >,
-    ai_cars: Query<(Entity, &Transform, &LinearVelocity, Option<&AiCrash>), (With<AiDriver>, Without<Player>)>,
+    mut ai_cars: Query<
+        (Entity, &mut Transform, &mut LinearVelocity, Option<&AiCrash>),
+        (With<AiDriver>, Without<Player>),
+    >,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Ok((me, mut t, mut v, mut w)) = player.single_mut() else { return };
@@ -675,13 +688,22 @@ fn run_impact_test(
                         (c.entity.expect("filtered"), Vec3::new(p.x, ground(p) + 0.6, p.z), -dir, TEST_SPEED_TRAFFIC)
                     })
                 }
-                ImpactTestKind::Ai => ai_cars.iter().next().map(|(e, at, av, _)| {
-                    let fwd = (at.rotation * Vec3::Z).with_y(0.0).normalize_or(Vec3::Z);
-                    let right = Vec3::Y.cross(fwd);
-                    let lead = av.0.length() * 25.0 / TEST_SPEED_AI;
-                    let p = at.translation + fwd * lead + right * 25.0;
-                    (e, Vec3::new(p.x, ground(p) + 0.6, p.z), -right, TEST_SPEED_AI)
-                }),
+                // The AI car is put across the road ahead of the player's car, rolling slowly; the player's car
+                // drives into its side.
+                ImpactTestKind::Ai => {
+                    let fwd = (t.rotation * Vec3::Z).with_y(0.0).normalize_or(Vec3::Z);
+                    let start = t.translation;
+                    ai_cars.iter_mut().next().map(|(e, mut at, mut av, _)| {
+                        let p = start + fwd * TEST_AI_AHEAD;
+                        let across = Vec3::Y.cross(fwd);
+                        at.translation = Vec3::new(p.x, ground(p) + 0.6, p.z);
+                        at.rotation = Quat::from_rotation_y(across.x.atan2(across.z));
+                        // The physics pose too (the spatial query holds `Position` here).
+                        commands.entity(e).insert((Position(at.translation), Rotation(at.rotation)));
+                        av.0 = across * TEST_AI_ROLL;
+                        (e, start + Vec3::Y * 0.3, fwd, TEST_SPEED_AI)
+                    })
+                }
             };
             let Some((target, at, dir, speed)) = course else {
                 if test.timer > 60.0 {
@@ -703,6 +725,18 @@ fn run_impact_test(
         // Drive into the target.
         1 => {
             input.scripted = Some([1.0, 0.0, 0.0, 0.0]);
+            if let Some((_, at, av, _)) = test.target.and_then(|e| ai_cars.get(e).ok())
+                && (test.timer * 4.0).fract() < time.delta_secs() * 4.0
+            {
+                info!(
+                    "TEST {:?}: player {:?} target {:?} ({:.0} m/s), {:.1} m apart",
+                    test.kind,
+                    t.translation,
+                    at.translation,
+                    av.0.length(),
+                    t.translation.distance(at.translation)
+                );
+            }
             let ai_crashed = test.target.and_then(|e| ai_cars.get(e).ok()).is_some_and(|c| c.3.is_some());
             if crash.active.is_some() || ai_crashed {
                 info!("TEST {:?}: crash (player {}, AI {ai_crashed})", test.kind, crash.active.is_some());
