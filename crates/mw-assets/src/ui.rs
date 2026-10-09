@@ -165,6 +165,8 @@ pub struct UiScene {
     pub blends: HashMap<ResourceId, UiBlend>,
     /// Layouts that element stacks place (cell contents), by resource ID.
     pub cells: HashMap<ResourceId, fmt::ui::Layout>,
+    /// Units for the code-side formatters (`DIST`: metres in, metric or imperial out); `None` = raw numbers.
+    pub metric: Option<bool>,
 }
 
 fn walk_elements<'a>(elements: impl IntoIterator<Item = &'a Element>, f: &mut impl FnMut(&'a Element)) {
@@ -327,6 +329,15 @@ impl Placement {
 /// A label's text with its bindings filled in; private-use formatting codes (`U+F000`–`U+F0FF`) dropped.
 fn label_text(scene: &UiScene, e: &Element, lookup: &mut Lookup) -> String {
     let Some(t) = &e.text else { return String::new() };
+    // A known `DisplayText` binding replaces the authored string ("PLACEHOLDER" under
+    // `Widget.HUD.SummaryHeadline`); when the binding's value is unknown the string stays.
+    let bound = (!e.bindings.text.is_empty())
+        .then(|| fmt::binding::Binding::parse(&e.bindings.text))
+        .flatten()
+        .and_then(|b| b.eval(lookup).map(|v| b.format_in(&v, scene.metric)));
+    if let Some(text) = bound {
+        return text.chars().filter(|c| !('\u{f000}'..='\u{f0ff}').contains(c)).collect();
+    }
     let template = match scene.strings.get(&t.string_id) {
         Some(s) if t.string_id != 0 => s.clone(),
         _ if !e.bindings.text.is_empty() => format!("{{{}}}", e.bindings.text),
@@ -335,7 +346,7 @@ fn label_text(scene: &UiScene, e: &Element, lookup: &mut Lookup) -> String {
     let text = fmt::ui::substitute(&template, |expr| {
         let b = fmt::binding::Binding::parse(expr)?;
         let v = b.eval(lookup)?;
-        Some(b.format(&v))
+        Some(b.format_in(&v, scene.metric))
     });
     text.chars().filter(|c| !('\u{f000}'..='\u{f0ff}').contains(c)).collect()
 }
@@ -669,37 +680,94 @@ pub struct DrawOptions<'a> {
     cell: u32,
 }
 
-/// When each element's trigger bindings last changed and their value then, keyed by (element UniqueId,
-/// trigger index, layout index, stack cell).
+/// Animation state: per (element UniqueId, trigger index, layout index, stack cell) the trigger's value and
+/// when it last changed; per (element, layout, cell) when the element appeared and when it was last drawn.
 #[derive(Debug, Default, Clone)]
 pub struct UiAnim {
     triggers: HashMap<(u32, u32, u32, u32), (bool, f64)>,
+    shown: HashMap<(u32, u32, u32), (f64, f64)>,
 }
+
+/// An element not drawn for this long (s) plays its transition-in again when it is drawn.
+const REAPPEAR_GAP: f64 = 0.25;
 
 impl UiAnim {
     /// Forget every trigger (the next frame shows settled states).
     pub fn reset(&mut self) {
         self.triggers.clear();
+        self.shown.clear();
     }
 }
 
-/// What the triggered behaviours do to an element at one moment.
+/// What the behaviours do to an element at one moment.
 #[derive(Debug, Clone, Copy)]
 struct Tween {
     opacity: f32,
     offset: [f32; 2],
 }
 
-impl DrawOptions<'_> {
-    /// Combine the element's triggered behaviours (a `TriggerBinding` whose rising edge plays the
-    /// transition-in steps and falling edge the transition-out steps). Steps, in order, each from its `Delay`
-    /// over its `Duration` (ms): `IN` fades in, `OUT` fades out, `TO,INVISIBLE` hides, `dx,dy` moves by that
-    /// many reference pixels. Colour steps (`TO,WHITE`, `TO,<palette entry>`), four-number steps (scales,
-    /// read) and bare ids (sounds) are not applied. A trigger that has not changed since it was first seen
-    /// counts as long finished (its current list settled). The step vocabulary is the data's; what each step
-    /// does is our reading of the names (the tween code was not traced).
+impl Tween {
+    /// Apply behaviour steps `since` ms after they started. Each step runs from its `Delay` over its `Duration`
+    /// (ms), in order: `IN` fades in from invisible (and holds the element invisible until it starts), `OUT`
+    /// fades out, `TO,INVISIBLE` hides, `dx,dy` approaches the rest position from that offset (reference
+    /// pixels; sitting at the offset until it starts), as the layouts' `APPROACH (delay, duration, dx, dy)`.
+    /// Colour steps (`TO,WHITE`, `TO,<palette entry>`), four-number steps (scales, read) and bare ids
+    /// (sounds) are not applied. The vocabulary is the data's; what each step does is our reading of the names
+    /// (the tween code was not traced).
+    fn apply(&mut self, steps: &[fmt::ui::Behaviour], since: f32) {
+        for b in steps {
+            let started = since >= b.delay;
+            let p = if b.duration <= 0.0 {
+                if started { 1.0 } else { 0.0 }
+            } else {
+                ((since - b.delay) / b.duration).clamp(0.0, 1.0)
+            };
+            let params = b.parameters.trim();
+            match params {
+                "IN" => self.opacity = p,
+                "OUT" if started => self.opacity *= 1.0 - p,
+                "TO,INVISIBLE" if started => self.opacity = 0.0,
+                _ => {
+                    let parts: Vec<&str> = params.split(',').collect();
+                    if let [x, y] = parts[..]
+                        && let (Ok(x), Ok(y)) = (x.trim().parse::<f32>(), y.trim().parse::<f32>())
+                    {
+                        self.offset[0] += x * (1.0 - p);
+                        self.offset[1] += y * (1.0 - p);
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl<'a> DrawOptions<'a> {
+    pub fn new(layouts: Option<Box<dyn Fn(usize) -> bool + 'a>>, anim: Option<&'a mut UiAnim>, now: f64) -> Self {
+        Self { layouts, anim, now, layout: 0, cell: u32::MAX }
+    }
+
+    /// The element's behaviours now: its own transition-in since it appeared (was drawn after not being
+    /// drawn), then each triggered behaviour (a `TriggerBinding` whose rising edge plays the transition-in
+    /// steps and falling edge the transition-out steps). Without `anim`, and for a trigger that has not changed
+    /// since it was first seen, the steps count as long finished. Transition-out of disappearing elements
+    /// and idle behaviours are not played.
     fn tween(&mut self, e: &Element, lookup: &mut Lookup) -> Tween {
         let mut t = Tween { opacity: 1.0, offset: [0.0; 2] };
+        let (now, layout, cell) = (self.now, self.layout, self.cell);
+        if !e.transition_in.is_empty() {
+            let since = match self.anim.as_deref_mut() {
+                Some(anim) => {
+                    let entry = anim.shown.entry((e.id, layout, cell)).or_insert((now, now));
+                    if now - entry.1 > REAPPEAR_GAP {
+                        entry.0 = now;
+                    }
+                    entry.1 = now;
+                    ((now - entry.0) * 1000.0) as f32
+                }
+                None => f32::INFINITY,
+            };
+            t.apply(&e.transition_in, since);
+        }
         for (k, tb) in e.triggered.iter().enumerate() {
             if tb.trigger.is_empty() {
                 continue;
@@ -707,35 +775,15 @@ impl DrawOptions<'_> {
             let on = eval(&tb.trigger, lookup).is_some_and(|v| v.truthy());
             let since = match self.anim.as_deref_mut() {
                 Some(anim) => {
-                    let key = (e.id, k as u32, self.layout, self.cell);
-                    let entry = anim.triggers.entry(key).or_insert((on, f64::NEG_INFINITY));
+                    let entry = anim.triggers.entry((e.id, k as u32, layout, cell)).or_insert((on, f64::NEG_INFINITY));
                     if entry.0 != on {
-                        *entry = (on, self.now);
+                        *entry = (on, now);
                     }
-                    ((self.now - entry.1) * 1000.0) as f32
+                    ((now - entry.1) * 1000.0) as f32
                 }
                 None => f32::INFINITY,
             };
-            let steps = if on { &tb.transition_in } else { &tb.transition_out };
-            for b in steps {
-                let p = if b.duration <= 0.0 {
-                    if since >= b.delay { 1.0 } else { 0.0 }
-                } else {
-                    ((since - b.delay) / b.duration).clamp(0.0, 1.0)
-                };
-                let params = b.parameters.trim();
-                let nums: Vec<f32> = params.split(',').filter_map(|v| v.trim().parse().ok()).collect();
-                match params {
-                    "IN" => t.opacity *= p,
-                    "OUT" => t.opacity *= 1.0 - p,
-                    "TO,INVISIBLE" if p >= 1.0 => t.opacity = 0.0,
-                    _ if nums.len() == 2 && params.split(',').count() == 2 => {
-                        t.offset[0] += nums[0] * p;
-                        t.offset[1] += nums[1] * p;
-                    }
-                    _ => {}
-                }
-            }
+            t.apply(if on { &tb.transition_in } else { &tb.transition_out }, since);
         }
         t
     }

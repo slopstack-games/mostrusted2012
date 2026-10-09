@@ -51,7 +51,8 @@
 //!   racer's `RacerFinished` the original sets its AI goal 3 (stop racing, `FUN_00843030`); when the player
 //!   finishes every remaining AI racer gets that goal too (`CHECKPTS` exit).
 //!
-//! Minimal text (countdown, lap, position, time) is drawn with `game_text` until the HUD wave replaces it.
+//! The race HUD, countdown and results are `hud.rs` (the game's layouts); `MW_RACE_TEXT=1` adds a one-line
+//! debug text (countdown, lap, position, time).
 //! `--test race` carries the player's car through every gate kinematically (no driving involved), prints
 //! `TEST RESULT race ...` and exits: it checks the race logic, not the handling.
 
@@ -92,11 +93,15 @@ impl Plugin for RacePlugin {
         app.add_plugins(crate::chevron::ChevronPlugin)
             .add_systems(Startup, spawn_route_markers)
             .insert_resource(RaceState::new(setup))
-            .add_systems(Update, (attach_player, spawn_text, update_text, log_messages))
+            .add_systems(Update, (attach_player, log_messages))
             .add_systems(
                 FixedUpdate,
                 (hold_at_start.before(crate::drive::car_physics), run_race.after(crate::drive::car_physics)),
             );
+        // The race HUD is `hud.rs` (the game's race layouts); `MW_RACE_TEXT=1` adds the old one-line debug text.
+        if std::env::var_os("MW_RACE_TEXT").is_some() {
+            app.add_systems(Update, (spawn_text, update_text));
+        }
         if setup.test {
             app.insert_resource(RaceTest::default())
                 .add_systems(FixedUpdate, run_test.before(crate::drive::car_physics).before(hold_at_start))
@@ -776,6 +781,8 @@ struct RaceTest {
     /// The wrong-way check: drive the first leg backwards first.
     reversed: bool,
     saw_wrong_way: bool,
+    /// `MW_RACE_TEST_HOLD=<s>`: keep running this long after the result (to screenshot the results).
+    exit_at: Option<u32>,
 }
 
 const TEST_SPEED: f32 = 40.0;
@@ -794,6 +801,11 @@ fn run_test(
     mut exit: MessageWriter<AppExit>,
 ) {
     if test.done {
+        test.ticks += 1;
+        if test.exit_at.is_some_and(|t| test.ticks >= t) {
+            test.exit_at = None;
+            exit.write(AppExit::Success);
+        }
         return;
     }
     test.ticks += 1;
@@ -825,7 +837,12 @@ fn run_test(
                 p.average_mph(p.finished.unwrap_or(race.clock)),
                 laps.join(","),
             );
-            exit.write(AppExit::Success);
+            match std::env::var("MW_RACE_TEST_HOLD").ok().and_then(|s| s.parse::<f32>().ok()) {
+                Some(hold) => test.exit_at = Some(test.ticks + (hold * 60.0) as u32),
+                None => {
+                    exit.write(AppExit::Success);
+                }
+            }
             return;
         }
         RacePhase::Racing => {}
