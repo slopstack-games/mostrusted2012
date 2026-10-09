@@ -113,6 +113,10 @@ const FOV_RATE: f32 = 3.0;
 const LANDING_AIR: f32 = 0.2;
 /// The original's camera update rate: `FUN_005cd040`'s decay is per update, not scaled by dt.
 const UPDATE_HZ: f32 = 60.0;
+/// At most this many impact-noise updates per frame; a longer frame drops the rest, as the original's loop
+/// drops time behind its 2/60 s catch-up step (decomp.md "Update loop"). The noise is stationary, so dropped
+/// updates change nothing but its phase.
+const SHAKE_MAX_STEPS: u32 = 8;
 /// Keep the eye this far in front of a wall (m), and never nearer to the look-at point than this.
 const CLIP_MARGIN: f32 = 0.25;
 const CLIP_MIN: f32 = 0.8;
@@ -294,6 +298,10 @@ struct ImpactShakeState {
     rng: u64,
     /// Output angles (degrees) about the camera's own x, y, z (cam + 0x120).
     angles: Vec3,
+    /// Frame time not yet consumed by the noise stage's 1/60 s updates, and the stage's last output
+    /// (x + jitter per lane, before the amplitude).
+    pending: f32,
+    noise: Vec3,
     /// Landing detection (see `LANDING_AIR`): vertical speed last frame and whether the car was in the air.
     last_vy: f32,
     airborne: bool,
@@ -315,22 +323,32 @@ impl ImpactShakeState {
             self.level = self.level.max(raised);
         }
         // FUN_005dfe90: per lane a jitter in +-ShakeMagnitude; lanes 0-1 also a spring kicked by a velocity in
-        // +-WobbleMagnitude each update: v += kick + (-x - v) * spring; x += v * frequency * dt.
+        // +-WobbleMagnitude each update: v += kick + (-x - v) * spring; x += v * frequency * dt. The original
+        // runs it once per 1/60 s tick (h = frequency · dt = 0.5 in `ref/live1` for 13 417 of 13 430 updates,
+        // also right after a 4.7 s stall), so it runs here in 1/60 s steps whatever the frame time: with
+        // spring 1 the map is x ← (1 − h)·x + h·kick, which grows without bound once h > 2 (frames longer than
+        // 1/15 s at frequency 30). Stepped with the frame time it reached 1e30 in ordinary low-frame-rate
+        // driving and then turned the view by huge angles or, past f32 overflow, into NaN (a white screen).
+        self.pending = (self.pending + dt).min(SHAKE_MAX_STEPS as f32 / UPDATE_HZ);
+        let h = d.frequency / UPDATE_HZ;
         let amplitude = d.max_amplitude * self.level;
-        let h = d.frequency * dt;
-        let mut out = [0.0; 3];
-        for (lane, o) in out.iter_mut().enumerate() {
-            let jitter = (2.0 * self.uniform() - 1.0) * d.jitter[lane];
-            let mut x = 0.0;
-            if lane < 2 {
-                let kick = (2.0 * self.uniform() - 1.0) * d.wobble[lane];
-                self.v[lane] += kick + (-self.x[lane] - self.v[lane]) * d.spring;
-                self.x[lane] += self.v[lane] * h;
-                x = self.x[lane];
+        while self.pending >= 1.0 / UPDATE_HZ {
+            self.pending -= 1.0 / UPDATE_HZ;
+            let mut out = [0.0; 3];
+            for (lane, o) in out.iter_mut().enumerate() {
+                let jitter = (2.0 * self.uniform() - 1.0) * d.jitter[lane];
+                let mut x = 0.0;
+                if lane < 2 {
+                    let kick = (2.0 * self.uniform() - 1.0) * d.wobble[lane];
+                    self.v[lane] += kick + (-self.x[lane] - self.v[lane]) * d.spring;
+                    self.x[lane] += self.v[lane] * h;
+                    x = self.x[lane];
+                }
+                *o = x + jitter;
             }
-            *o = amplitude * (x + jitter);
+            self.noise = Vec3::from(out);
         }
-        self.angles = Vec3::from(out);
+        self.angles = amplitude * self.noise;
     }
 
     /// Rotates the view about its own axes (the original pre-multiplies the angle matrix onto the camera

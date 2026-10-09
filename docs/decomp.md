@@ -2562,6 +2562,12 @@ Order inside `FUN_005d4970`: `FUN_005c76a0` (FOV), `FUN_005c8ad0` (side-on), `FU
   std 0.333 (0.333), `out / (2 level) − x` uniform in ±1 (std 0.58), decay 0.835 per frame; at level > 1.5
   the output is 3.6 / 3.0 / 3.2° RMS for mean level 2.5. Lane → axis (x, y, z of the camera) is assumed in
   that order; `FUN_005d9740`'s Euler order was not traced.
+- **The noise stage's time step (2026-10-09)**: the step is the fixed update tick, not the frame time.
+  Solving `x' = x + h·v'` for h on every update of `ref/live1` gives h = 0.5 (= 30 × 1/60) on 13 417 of
+  13 430 updates and 1.0 (the 2/60 catch-up step) twice, including the update right after a 4.7 s stall and a
+  0.37 s one (the rest are records torn by the 120 Hz sampler). With `91b99f00` = 1 the stage is
+  `x ← (1 − h)·x + h·kick`, stable only for h < 2: stepped with a variable frame time, frames longer than
+  1/15 s grow x geometrically. Ours (camera.rs) now runs it in 1/60 s steps, at most 8 per frame.
 - **Landing**: the recorded landing levels (~1.0) fit the contact path with x ≈ the vertical speed into the
   ground in m/s (a 1 s fall, 9.8 m/s, gives 0.9); the `FUN_005c8e40` request (`× 6.5`) explains the one
   level above the cap (5.4) in the recording; its |v| units remain open, so it is not ported. Ours feeds the

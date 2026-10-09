@@ -20,6 +20,7 @@ mod deferred;
 mod drive;
 mod easydrive;
 mod exhaust;
+mod flash_probe;
 mod freeroam;
 mod game_text;
 mod garage;
@@ -662,6 +663,7 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(MaterialPlugin::<GameMaterial>::default())
         .add_plugins(deferred::GameLightingPlugin)
         .add_plugins(tonemap::GameTonemapPlugin)
+        .add_plugins(flash_probe::FlashProbePlugin)
         .init_resource::<GameEnvironment>()
         .insert_resource(materials::VehicleLights::from_slice(&cli.lights))
         .add_plugins((

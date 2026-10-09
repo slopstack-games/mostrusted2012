@@ -10,6 +10,39 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-09: the "flashbang": the impact shake's noise spring diverged at low frame rates
+User report: "sometimes it randomly seems to flashbang" (the screen goes white for a moment while driving).
+- **Detector** (`flash_probe.rs` / `flash_probe.wgsl`, debug only): `MW_FLASH_LOG=1|<file>` reduces each
+  tonemapped frame onto a 32 × 32 grid after the tonemap (mean displayed luma, non-finite HDR pixels,
+  brightest HDR value, adapted exposure), reads it back every frame, logs one line per frame (with the camera
+  pose, timeline, hour, exposure range) and warns `FLASH` when the mean luma jumps over the last second's
+  median; `MW_FLASH_SHOTS=<dir>` saves a screenshot of each.
+- **Reproduced**: in `--race 462174 --test race` the whole frame went to a flat displayed luma 0.91 (all
+  1024 cells, HDR 1.877 everywhere: the fog colour) for long stretches, with the camera's **rotation NaN** and
+  its position finite. No non-finite HDR pixel, no exposure jump (pinned at the keyframe minimum all along),
+  no bloom involvement. A check in `follow_car` showed the impact shake's spring state (`ImpactShakeState`
+  x / v) at ±1e37…inf / NaN with the shake level 0: 0 × inf = NaN angles.
+- **Cause**: the noise stage of `FUN_005dfe90` (decomp.md "Camera effects") was stepped with the frame time:
+  `v += kick + (−x − v)·1; x += v·30·dt`, i.e. `x ← (1 − 30·dt)·x + 30·dt·kick`, which grows geometrically when a
+  frame takes longer than 1/15 s. In an ordinary 120 s `--drive 911 --units 30 --auto-throttle 1 --nitrous` run
+  (normal speed, frames of 50–110 ms while smoke filled the screen) x reached 1e30. While the level is 0
+  this is invisible; after any contact the level stays above 0 for 10–20 s (decay 0.835 per update until it
+  underflows), and the view was then turned by 2 × level × x degrees: an arbitrary orientation each frame, and
+  NaN (white) once x overflowed, until the camera state was reset. The 4× test runs hit it within seconds.
+- **The original** steps it once per 1/60 s tick: on `ref/live1` h = 0.5 on every clean update, also right
+  after a 4.7 s stall (decomp.md "The noise stage's time step"). **Fixed** (`camera.rs` `ImpactShakeState`): the
+  noise runs in 1/60 s updates (at most 8 per frame, the rest dropped, as the original drops time behind its
+  catch-up step); the level's decay was already per-update exact.
+- **Checked after**: the race test and the 120 s nitrous drive keep a finite camera with no full-white frames
+  (probe log: 0 frames with a NaN camera, before 93 of 1052 in the same race test); `--test crash` still shakes (level 4, 2.5° RMS pitch
+  at level > 1, the recording had 3.6 / 3.0 / 3.2° at mean level 2.5).
+- **Not the cause, seen on the way**: (1) a standing burnout (car pushed against a wall at full throttle) fills
+  the whole view with tyre smoke at displayed luma ~0.9 (`FLASH` lines with up to 1022 / 1024 cells white,
+  HDR only 4–5 units, exposure at its −0.2 minimum): plausible for white smoke in noon sun, but not compared
+  with a capture of the original (open). (2) The eye's vertical spring (`HeightSpring`) is also stepped with
+  the frame time and is unstable above ~0.2 s frames, but its limits clamp it (bounded bob, no NaN); not
+  changed.
+
 ### 2026-10-09: surfaces: what grass and dirt do, the grip fade, the drift factor and the bumps
 User report: "surfaces don't change the grip yet, grass and dirt drive like normal road."
 - **Measured first** (`MW_TYRE_DEBUG=1`, park grass at 1117, 56 and −751, 2147, found with the new

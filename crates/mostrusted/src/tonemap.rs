@@ -137,6 +137,7 @@ impl Plugin for GameTonemapPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "tonemap.wgsl");
         embedded_asset!(app, "bloom.wgsl");
+        embedded_asset!(app, "flash_probe.wgsl");
         app.add_plugins(ExtractResourcePlugin::<GameTonemap>::default()).add_systems(Last, update_time);
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else { return };
         render_app
@@ -207,6 +208,9 @@ struct TonemapPipelines {
     adapt: CachedRenderPipelineId,
     tonemap: CachedRenderPipelineId,
     meter_view: TextureView,
+    /// The `MW_FLASH_LOG` probe (flash_probe.rs): layout and pipeline.
+    probe_layout: BindGroupLayoutDescriptor,
+    probe: CachedRenderPipelineId,
     /// Ping-pong exposure states; `states[frame % 2]` is written each frame.
     states: [TextureView; 2],
 }
@@ -266,6 +270,18 @@ fn init_pipelines(
             ),
         ),
     );
+    let probe_layout = BindGroupLayoutDescriptor::new(
+        "flash_probe_layout",
+        &BindGroupLayoutEntries::sequential(
+            ShaderStages::FRAGMENT,
+            (
+                texture_2d(TextureSampleType::Float { filterable: false }),
+                texture_2d(TextureSampleType::Float { filterable: false }),
+                texture_2d(TextureSampleType::Float { filterable: false }),
+            ),
+        ),
+    );
+    let probe_shader = load_embedded_asset!(asset_server.as_ref(), "flash_probe.wgsl");
     let shader = load_embedded_asset!(asset_server.as_ref(), "tonemap.wgsl");
     let bloom_shader = load_embedded_asset!(asset_server.as_ref(), "bloom.wgsl");
     let queue = |label: &'static str,
@@ -301,6 +317,8 @@ fn init_pipelines(
         bloom_blur_h: bloom("game_bloom_blur_h", "blur_h", TextureFormat::Rgba16Float),
         bloom_add: bloom("game_bloom_add", "add", TextureFormat::Rgba16Float),
         bloom_layout,
+        probe: queue("flash_probe", &probe_layout, &probe_shader, "probe", TextureFormat::Rgba32Float),
+        probe_layout,
         meter: pipeline("game_tonemap_meter", "meter", TextureFormat::R32Float),
         adapt: pipeline("game_tonemap_adapt", "adapt", TextureFormat::Rgba32Float),
         tonemap: pipeline("game_tonemap", "tonemap", TextureFormat::Rgba16Float),
@@ -367,6 +385,7 @@ fn game_tonemap(
     fallback: Res<FallbackImage>,
     mut frame: Local<usize>,
     mut bloom_targets: Local<Option<BloomTargets>>,
+    flash_probe: Option<Res<crate::flash_probe::FlashProbe>>,
     mut ctx: RenderContext,
 ) {
     let target = view.into_inner();
@@ -485,4 +504,15 @@ fn game_tonemap(
     }
     let post = target.post_process_write();
     run(post.destination, tonemap, &bind(post.source, write));
+    // MW_FLASH_LOG: reduce the HDR and the tonemapped frame onto the probe grid (flash_probe.rs).
+    if let (Some(probe), Some(pipeline)) = (flash_probe, cache.get_render_pipeline(p.probe))
+        && let Some(gpu) = images.get(&probe.0)
+    {
+        let group = device.create_bind_group(
+            "flash_probe_bind_group",
+            &cache.get_bind_group_layout(&p.probe_layout),
+            &BindGroupEntries::sequential((post.source, post.destination, write)),
+        );
+        run(&gpu.texture_view, pipeline, &group);
+    }
 }
