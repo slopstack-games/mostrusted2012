@@ -319,9 +319,15 @@ fn toggle_menu(
     garage: Res<Garage>,
     easydrive: Option<Res<crate::easydrive::EasyDrive>>,
     cutscene: Option<Res<crate::cutscene::CutsceneState>>,
+    pause: Option<Res<crate::pause::PauseMenu>>,
 ) {
     // Esc and Back are SKIP_CUTSCENE while a sequence plays.
     if !menu.enabled || cutscene.is_some_and(|c| c.playing()) {
+        return;
+    }
+    // With the game's pause menu (`pause.rs`), PAUSE (Esc / Start) is its key; Tab / F1 / pad Back stay ours.
+    let pause_menu = pause.as_ref().is_some_and(|p| p.enabled);
+    if pause.is_some_and(|p| p.open || p.just_closed) {
         return;
     }
     // Esc belongs to Easydrive while that is open (it closes it).
@@ -332,7 +338,10 @@ fn toggle_menu(
     let pad_list: Vec<&Gamepad> = pads.iter().collect();
     let dev = crate::input::Devices { keys: &keys, pads: &pad_list };
     let pressed = keys.any_just_pressed([KeyCode::Tab, KeyCode::F1])
-        || (dev.just_pressed(act::PAUSE) && !easy_esc && !(menu.open && keys.just_pressed(KeyCode::Escape)))
+        || (dev.just_pressed(act::PAUSE)
+            && !pause_menu
+            && !easy_esc
+            && !(menu.open && keys.just_pressed(KeyCode::Escape)))
         || dev.just_pressed(act::CHANGE_VEHICLE);
     if !pressed {
         return;

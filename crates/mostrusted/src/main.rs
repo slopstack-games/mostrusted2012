@@ -40,6 +40,7 @@ mod movie;
 mod nitrous;
 mod paint_wear;
 mod particles;
+mod pause;
 mod props;
 mod race;
 mod reflection;
@@ -321,6 +322,12 @@ struct Cli {
     /// (interactive world drives show it anyway).
     #[arg(long)]
     show_loading: bool,
+    /// Open the pause menu (screen 431082) at startup (also in `--screenshot` runs, to capture it).
+    #[arg(long)]
+    show_pause: bool,
+    /// With --show-pause: open its MAP page (the offline races).
+    #[arg(long)]
+    pause_map: bool,
 }
 
 #[derive(Resource)]
@@ -805,6 +812,11 @@ fn main() -> anyhow::Result<()> {
             auto_start: cli.auto_start,
             shots: cli.front_end_shots.clone(),
             profile: world_drive && (menu_enabled || boot) && cli.front_end_shots.is_none() && cli.auto_start.is_none(),
+        })
+        .add_plugins(pause::PausePlugin {
+            enabled: (menu_enabled || cli.show_pause) && matches!(request, Request::Drive { .. }),
+            open: cli.show_pause,
+            map: cli.pause_map,
         })
         .add_plugins(game_text::GameTextPlugin)
         .add_plugins(ui_quads::UiQuadsPlugin)

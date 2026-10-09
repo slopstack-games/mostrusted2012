@@ -682,7 +682,13 @@ impl UiScene {
         let parent = lookup("#index", None).map_or(0, |v| v.num() as i64);
         let list = !st.length.is_empty();
         let n = if list { eval_num(&st.length, lookup).map_or(0, |v| v.clamp(0.0, 64.0) as usize) } else { 1 };
-        let source = st.data_source.trim_start_matches('~').replace("#parent_index#", &parent.to_string());
+        let mut source = st.data_source.trim_start_matches('~').replace("#parent_index#", &parent.to_string());
+        // A nested stack over `{parent}` lists the enclosing stack's current item (the pause menu's rows).
+        if source.contains("{parent}")
+            && let Some(fmt::binding::BindValue::Text(item)) = lookup("#item", None)
+        {
+            source = source.replace("{parent}", &item);
+        }
         let mut y = origin[1];
         let mut cell = |this: &Self,
                         ids: &[ResourceId],
@@ -698,6 +704,9 @@ impl UiScene {
             let mut inner = |path: &str, arg: Option<&str>| -> Option<fmt::binding::BindValue> {
                 if path == "#index" {
                     return Some((i as f64).into());
+                }
+                if path == "#item" {
+                    return Some(fmt::binding::BindValue::Text(item.clone()));
                 }
                 let arg = arg.map(|a| a.replace("#parent_index#", &parent.to_string()).replace('#', &i.to_string()));
                 if !path.contains('.') && !item.is_empty() {
@@ -727,7 +736,7 @@ impl UiScene {
                 .templates
                 .iter()
                 .find(|(b, _)| {
-                    let b = b.replace('#', &i.to_string());
+                    let b = b.replace("#parent_index#", &parent.to_string()).replace('#', &i.to_string());
                     !b.is_empty() && eval(&b, lookup).is_some_and(|v| v.truthy())
                 })
                 .map_or(&st.default, |t| &t.1);
