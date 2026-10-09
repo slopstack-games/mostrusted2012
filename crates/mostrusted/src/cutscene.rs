@@ -22,8 +22,9 @@
 //!
 //! Model decisions (no source yet; docs/decomp.md "Cutscenes and sequences"): the race starts on the intro's
 //! event trigger (the item that signals the game logic; what the HSM does with it was not traced); the camera
-//! bone looks along its +Z with +Y pointing down (read from the clips: their X axis stays level, Y points down
-//! in 86 % of frames); `GetTransform` bindings follow the car live; the FOV from the focal length is used as
+//! bone looks along its +Z (the game's own camera / car convention) and its up is whichever of ±Y the clip holds
+//! upwards (704 of the 753 intro camera clips hold +Y up, 462174's hold it down; their X axis stays level);
+//! `GetTransform` bindings follow the car live; the FOV from the focal length is used as
 //! the vertical FOV (as camera.rs); the animated car is placed on the clip's car bone every tick with the
 //! clip's velocity (the original drives it with its `controls_*` bones, not read); nested timeline controllers
 //! (the outro's waits for input) are not run, so the outro plays straight through; audio, post-processing,
@@ -663,11 +664,12 @@ fn animated_camera_view(
         position = r.transform_point(position);
         rotation = r.rotation * rotation;
     }
-    // The bone looks along +Z with +Y down (model decision, module docs): Bevy's camera looks along −Z, +Y up.
+    // The bone looks along its +Z, its up is whichever of ±Y the clip holds upwards (model decision, module
+    // docs); Bevy's camera looks along −Z with +Y up. `MW_CUTSCENE_AXES=gl` (look −Z, up +Y) for comparisons.
     let fix = match std::env::var("MW_CUTSCENE_AXES").as_deref() {
-        Ok("none") => Quat::IDENTITY,
-        Ok("flipy") => Quat::from_rotation_y(std::f32::consts::PI),
-        _ => Quat::from_rotation_x(std::f32::consts::PI),
+        Ok("gl") => Quat::IDENTITY,
+        _ if c.y_down() => Quat::from_rotation_x(std::f32::consts::PI),
+        _ => Quat::from_rotation_y(std::f32::consts::PI),
     };
     let fov = AnimatedCamera::fov_degrees(c.focal_length.at(u));
     Some((Transform { translation: position, rotation: rotation * fix, scale: Vec3::ONE }, fov))

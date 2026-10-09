@@ -21,9 +21,12 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
   the player, slow motion ramps up, the camera blends to the chase camera) and an event trigger, on which we
   start the race. The `GAMEMODEINTR` 10 s is still in the code; where it sits in the offline flow is open.
 - **Camera clips**: `AnimatedCameraSequenceItem` clips animate bone 1 of a two-bone camera skeleton; FOV =
-  2 atan(18 / `FocalLength`) (`FUN_005c6c10`). Dead end first: the look axis can't be read off one clip (a pure
-  pitch about X fits several conventions); over all 701 frames of 462174's clips the bone's X stays level and its
-  Y points down, and renders with "+Z forward, −Y up" give level horizons and frame the animated car.
+  2 atan(18 / `FocalLength`) (`FUN_005c6c10`). The look axis can't be read off one clip (a pure pitch about X
+  fits several conventions). 462174's clips hold the bone's +Y down and "+Z forward, −Y up" frames its animated
+  car; 575163's hold +Y up and the same mapping turns them upside down. Survey of all 753 intro camera clips: X
+  always level, +Y up in 704, down in 49. Rule now: look along +Z, up = the clip's upward ±Y (model decision);
+  for the +Y-up clips "look −Z" (the usual exporter camera) also gives good shots in 575163: settle with a
+  capture.
 - **ICE takes decoded** (`CameraTake`, 45 in CAMERAS.BNDL; `mw_formats::camera_take`, `mwtool camera-take`): the
   whole ICE player read from the dump's ICE library (layout, bit packing, fixed point, Hermite keys with the
   game's tangent rule, spaces / avatars, lens FOV 2 atan(15.96 / lens)); all 45 parse to their exact end. Every

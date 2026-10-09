@@ -411,6 +411,22 @@ impl AnimatedCamera {
         })
     }
 
+    /// Whether the clip's camera bone holds its +Y downwards (the mean over the clip of the world y of its +Y is
+    /// negative). 704 of the 753 camera clips of the race intros hold +Y up; 462174's (7 of 8) and a few others
+    /// hold it down (decomp.md "Cutscenes and sequences").
+    pub fn y_down(&self) -> bool {
+        let sum: f32 = self
+            .keys
+            .iter()
+            .map(|k| {
+                let [x, _, z, _] = k.rotation;
+                // y of the rotated +Y axis: 1 - 2(x² + z²).
+                1.0 - 2.0 * (x * x + z * z)
+            })
+            .sum();
+        sum < 0.0
+    }
+
     /// Clip length (s).
     pub fn length(&self) -> f32 {
         self.keys.len().saturating_sub(1) as f32 / self.frame_rate.max(1e-3)

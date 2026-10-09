@@ -1392,9 +1392,13 @@ timelines, `mwtool camera-take [take]` evaluates a take. Confirmed unless marked
   `Players.LocalPlayer.GetTransform`, in the car's frame. Lens: the director camera at 0x2dc0 (`FUN_005c6c10`)
   takes FOV = 2·atan(18 / focal length) in degrees (`.rdata` 0x00fb0e94 = 18, 0x00faf850 = 180/π) and an aperture
   focal / f-stop (`DAT_00fb0ea8` = 64); `FocalLength`, `FStop`, `FocalDistance` are modulated values (462174 zooms
-  24 → 10.4 mm in its 3 s shot). The bone's axes are *inferred* from the clips: its X stays level (mean |y| 0.12
-  over 701 frames) and its +Y points down in 86 % of frames, so the camera looks along +Z with −Y up; renders
-  with that convention give level horizons and frame the animated car.
+  24 → 10.4 mm in its 3 s shot). The bone's axes are *inferred* from the clips (the handler was not found): its X
+  stays level in every clip, but its +Y points up in 704 of the 753 camera clips of the 108 intros and down in 49
+  (7 of 462174's 8, one or two in eleven other intros), so no single fixed axis mapping renders both kinds
+  upright. Ours: the camera looks along the bone's +Z (the game's camera and car convention, z forward; in
+  462174 that frames the animated car under the overpass, −Z would look away from it) and takes as up whichever
+  of ±Y the clip holds upwards on average. In 575163 the alternative (look −Z, +Y up, the usual exporter camera)
+  also gives purposeful shots, so the look direction of the +Y-up clips is not settled.
 - **ICE takes** (`CameraSequenceItem.Camera.7aef95c3` = a `CameraTake` UniqueId; all 59 camera items of the
   intros and outros are takes, none bystander shots): EA's ICE library at 0x00e20000–0x00e31000, decoded in
   `mw_formats::camera_take` (layout `FUN_00e26fb0`, 17 channels and 81 elements from `FUN_00e2ccc0` / `.rdata`
@@ -1432,7 +1436,7 @@ bindings and `GAME_CAM_BLEND`, the dynamic camera blend, teleports with their sp
 no freeze), the AI driving the player (`ai.rs`'s driver on the player's car with `MaxSpeedMph` as its schedule
 speed), animated race cars, slow motion, the HUD, the letterbox (shared with the crash camera), traffic clearing.
 Model decisions: the race starts on the intro's event trigger (else at its end) with no countdown; the camera
-bone looks along +Z with −Y up; `GetTransform` bindings of animated cameras follow the car live; both FOVs are
+bone looks along +Z with the clip's upward ±Y as up; `GetTransform` bindings of animated cameras follow the car live; both FOVs are
 used as vertical (as camera.rs); the animated car is placed on its bone every tick with the clip's velocity
 (zero across a cut), the root motion ignored; an opponent teleported onto the player's own start is left where it
 is (462174's `Racer[8]`: the original seats fewer opponents, our opponents' cars are a model); `Racer[n]` = grid
