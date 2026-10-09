@@ -400,6 +400,105 @@ fn banded_pedal(e: f32) -> f32 {
     }
 }
 
+/// Signed difference of two headings wrapped to (−π, π].
+fn wrap_angle(a: f32) -> f32 {
+    let t = std::f32::consts::TAU;
+    let a = a.rem_euclid(t);
+    if a > std::f32::consts::PI { a - t } else { a }
+}
+
+/// The path's corner speeds (m/s per node), the game's corner annotation (`FUN_004ea510` finds the corners,
+/// `FUN_004ea860` sets the node speed byte +0x4d). `points` are the path nodes (ground plane), `turn` their signed
+/// heading change. A corner is a run of same-sign turns that passes 3° and totals at least 25°; its ends are
+/// where 3° is reached from either side. Each half (start..mid, mid2..end, both at least 5 m) gets one speed: with
+/// the chord L of the half (replaced by the road's full width when that is over 1.5 L) and Δ the heading change
+/// since the corner's entry segment, R = (L / 2) / cos((π − Δ) / 2) for every segment with Δ > 0.01, and the
+/// half's speed = clamp(`scale` × min(top speed, √(9.81 μ R)), 0, 255). Nodes outside corners stay 255. The
+/// game reads these speeds only while a racer has no physical car (virtual progress, `FUN_005056b0`).
+pub fn corner_speeds(points: &[Vec2], turn: &[f32], width: f32, top_speed: f32, mu: f32, scale: f32) -> Vec<f32> {
+    let n = points.len();
+    let mut speed = vec![255.0; n];
+    let heading = |k: usize| {
+        let d = points[(k + 1).min(n - 1)] - points[k.min(n - 2)];
+        d.x.atan2(d.y)
+    };
+    if n < 3 {
+        return speed;
+    }
+    let (start_deg, total_deg) = (3f32.to_radians(), 25f32.to_radians());
+    let mut k = 1;
+    while k < n - 1 {
+        // A run of same-sign turns from k.
+        let sign = turn[k].signum();
+        if sign == 0.0 {
+            k += 1;
+            continue;
+        }
+        let mut end = k;
+        while end + 1 < n - 1 && turn[end + 1].signum() == sign {
+            end += 1;
+        }
+        let total: f32 = turn[k..=end].iter().sum::<f32>().abs();
+        if total >= total_deg {
+            // The corner's ends: where the run's sum passes 3° from either side.
+            let mut acc = 0.0;
+            let mut s = k;
+            for (j, t) in turn.iter().enumerate().take(end + 1).skip(k) {
+                acc += t.abs();
+                if acc > start_deg {
+                    s = j;
+                    break;
+                }
+            }
+            acc = 0.0;
+            let mut e = end;
+            for j in (k..=end).rev() {
+                acc += turn[j].abs();
+                if acc > start_deg {
+                    e = j;
+                    break;
+                }
+            }
+            if e > s {
+                let (mid, mid2) = ((s + e) / 2, (s + e + 1) / 2);
+                let theta0 = heading(s.saturating_sub(1));
+                for (a, b) in [(s, mid), (mid2.max(mid + 1).min(e), e)] {
+                    let chord = points[b].distance(points[a]);
+                    if chord * chord < 25.0 || b <= a {
+                        continue;
+                    }
+                    let l = if width > 1.5 * chord { width } else { chord };
+                    let mut v_min = top_speed;
+                    for seg in a..b {
+                        let delta = wrap_angle(theta0 - heading(seg)).abs();
+                        if delta > 0.01 {
+                            let r = (l * 0.5) / ((std::f32::consts::PI - delta) * 0.5).cos();
+                            v_min = v_min.min((9.81 * mu * r).sqrt());
+                        }
+                    }
+                    let byte = (scale * v_min).clamp(0.0, 255.0);
+                    for sp in &mut speed[a..=b] {
+                        *sp = byte;
+                    }
+                }
+            }
+        }
+        k = end + 1;
+    }
+    speed
+}
+
+/// The braking distance from `v0` to `v1` (m/s) for a deceleration a·v² + b (`FUN_00518520`):
+/// 1.666 ln((a v0² + b) / (a v1² + b)) / (2a); with a = 0 (ours: the aero term is not modelled) the limit
+/// 1.666 (v0² − v1²) / (2b).
+pub fn braking_distance(v0: f32, v1: f32, a: f32, b: f32) -> f32 {
+    if a.abs() < 1e-6 {
+        1.666 * (v0 * v0 - v1 * v1) / (2.0 * b)
+    } else {
+        1.666 * ((a * v0 * v0 + b) / (a * v1 * v1 + b)).ln() / (2.0 * a)
+    }
+}
+
 /// The race's rubber band for one opponent (`RaceBalancingData.OpponentBalancingData[k]` and the event's
 /// `RaceBalancingProfile`), read in `FUN_00645c90` → `FUN_0063ef30` / `FUN_006432a0`: a target-speed schedule,
 /// not a grip or torque multiplier. The driver's target speed is this schedule (driver +0x5668).

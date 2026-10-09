@@ -504,6 +504,46 @@ One instance, `HAWAII/TRIGGERS.BNDL`, version 8; loaded by `FUN_0053c2f0`. Parse
   '=' jack spot car, 6 body shop (letters 'A'..'O' = the same in other content packs). Base game: 152 / 216 /
   74 / 183 / 185 / 22. Rules in decomp.md "Free-roam rules".
 
+## Events (`OfflineEvent`, GeneSys in `GAMELOGIC/GAMEMODES.BNDL`)
+
+Reader `mw_assets::events` (layout table in its doc comment), listing `mwtool events`, one event with its
+route drawn over the lane map `mwtool events <id> --png <file>`. Settled 2026-10-09; every reference resolves.
+
+- **Where**: no event is its own resource. `GAMELOGIC/GAMEMODES.BNDL` holds one 240 KB GenesysObject
+  (`0100000000045d5b`, untyped root `{655d3f5f, Item[]}`) whose polymorphic `Item` array carries 111
+  `OfflineEvent`s, 143 `OnlineEvent`s, 12 `GameMode`s, `EventArena`s, `RaceBalancingData`, `Challenge.*`, ...
+  `GAMELOGIC/GAMEPLAY.BNDL` has the same kind of containers for `EventList` (the career list: 109 event ids),
+  `Gameplay.AllowedVehicleList` (95), `AIPlayerType` (200), `EventLocation`, `CarSwapSpot`, `GameplayTrigger`, ...
+  References are `CgsCore.UniqueId` (u32) values matched against each item's `655d3f5f`, not resource IDs.
+- **`OfflineEvent`** (248 B; the first 76 B are the `Event` base): id `655d3f5f` (+0x18); `GameMode` (+0x1c,
+  730000 Race, 955569 Speed Run, 390185 ambush / pursuit modes, 390145 free roam, 2173009 / 2210000 DLC modes);
+  `TypeName` (+0xa4, a language id: 979287 "CIRCUIT RACE", 979289 "SPRINT RACE", 457003 "MOST WANTED", 1472095
+  "SPEED RUN", 1119989 "AMBUSH", 2193051 "DRIFT ATTACK"); `Name` (+0x84) and `Description` (+0x14) language ids;
+  `Checkpoints` (+0x64, UniqueId[]); `SpawnPosition` (+0x9c); `Laps` (u8 +0xf6: 1 for sprints, 2–3 for
+  circuits; "AROUND THE WORLD" is a circuit with 1 lap); `AllowedVehicleList` (+0x5c); `TargetSpeed` /
+  `TargetTime` (float[3], speed runs / timed DLC modes); `1795ca2a` `AIPlayerInformation`[] (+0xc0:
+  `AIPlayerType`, `9b4e35f7`, `Placement`, `2968e77a`); `c0756b63` `CustomChevron`[] (+0xb8); `d4b38a64`
+  `AlternateRoutes`[] (+0xc4: `Checkpoint`, `fe6ef8d8` UniqueId[]); `CheckpointInfo`[] (+0xc8: `Sequence`,
+  `Type`, two bools; on 7 events, the count rule gives more entries than checkpoints on some: open);
+  `NitrousAllowed` (+0xec), `TrafficEnabled` (+0xf0); `RaceBalancingData` / `RaceBalancingProfile` ids
+  (items of GAMEMODES). Career content: 22 circuits, 36 sprints, 14 Most Wanted races (one opponent, no car
+  list: the player's own car), 18 speed runs, 7 ambushes, plus DLC drift attacks and timed modes.
+- **Checkpoints and starts are `TriggerData` records** (`HAWAII/TRIGGERS.BNDL`, same ids): every checkpoint is a
+  kind-0 **box**, 2 m deep, 36 m high (centre 18 m above the road), as wide as the road or the junction (27–186 m),
+  its local Z the driving direction through it. The list is in driving order; on circuits the last gate stands
+  next to the start (the start / finish line), on sprints it is the finish. `SpawnPosition` and each opponent's
+  `Placement` are kind-4 **points** (position on the road, unit direction = the car's heading). In
+  "CONTINENTAL DRIFT" four opponents start ahead of the player (42, 29, 15 and 4 m along the road) and four
+  behind, the slots 11–14 m apart, alternating a few metres across the road.
+- **`CustomChevron`** (36 B): `655d3f5f`, three float arrays `c6bc8827` / `c27d9491` / `cf3eb14b` (x, y, z of a
+  polyline, 2–4 points on the road's edge at junctions the route passes), their counts, a bool `f8ccf73e`:
+  inferred, the lines of arrow boards that close side roads.
+- **`Gameplay.AllowedVehicleList`**: `193ad61b` `VehicleAndMods`[] (`Vehicle` = vehicle list id, `a17a5e72`
+  float 1.25–1.35, `Mods` u8[2], `TargetScores` / `507d336c` float[3], `Difficulty`). The first entry is the car
+  the event is offered with (the car whose five events it is); `--race` uses it.
+- **`GameMode`**: `09d6656d` (+0x44) = 10, the crash reset delay `FUN_006d39d0` reads (decomp.md "Crashes"; the
+  earlier note that no `GameMode` instance exists on PC is wrong: they are items of the GAMEMODES container).
+
 ## Easydrive (inside `Screen2`, `UI/SCREENS2/*.BNDL`)
 
 Inline GeneSys structs in a driving screen's widget groups (group children: field `c7413006`); loader

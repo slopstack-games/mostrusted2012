@@ -118,18 +118,21 @@ pub struct AiRoute {
     pub closed: bool,
     /// Drivable half-width at each point (m; empty when unknown).
     pub half_width: Vec<f32>,
-    /// The path nodes the driver reasons about (the game's 0x50-byte path elements: one per road-graph node):
-    /// for a polyline handed in, its points.
+    /// The path nodes the driver reasons about (the game's 0x50-byte path elements), every 15 m along the route.
     pub nodes: Vec<RouteNode>,
 }
 
-/// A path node: distance along the route, the signed heading change there (rad, positive = left; the game's node
-/// +0x28) and the radius of the circle through it and its neighbours (m; the game's +0x2c, infinite when straight).
+/// Path node spacing (m): the game resamples a race path every 15 m (`FUN_004e95e0`).
+const NODE_SPACING: f32 = 15.0;
+
+/// A path node: distance along the route, ground-plane position, and the signed heading change there (rad,
+/// positive = left; the game's node +0x28 = wrap(heading of the next segment − heading of the previous one),
+/// `FUN_004e6a10`, whose sign is the other way round).
 #[derive(Debug, Clone, Copy)]
 pub struct RouteNode {
     pub s: f32,
+    pub position: Vec2,
     pub turn: f32,
-    pub radius: f32,
 }
 
 impl AiRoute {
@@ -144,39 +147,26 @@ impl AiRoute {
             distance.push(d);
         }
         let mut route = Self { points, distance, closed, half_width: Vec::new(), nodes: Vec::new() };
-        let pts = route.points.clone();
-        route.set_nodes(&pts);
-        route
-    }
-
-    /// Set the path nodes from their positions (in route order, on the route).
-    pub fn set_nodes(&mut self, positions: &[Vec3]) {
-        let mut hint = None;
-        let s: Vec<f32> = positions
-            .iter()
-            .map(|p| {
-                let (s, _) = self.project(*p, hint, 60.0);
-                hint = Some(s);
-                s
-            })
-            .collect();
+        // The game resamples a race path every 15 m (`FUN_004e95e0`).
+        let count = (route.length() / NODE_SPACING).floor() as usize + 1;
         let flat = |v: Vec3| Vec2::new(v.x, v.z);
-        self.nodes = (0..positions.len())
+        let pts: Vec<(f32, Vec2)> =
+            (0..count).map(|k| k as f32 * NODE_SPACING).map(|s| (s, flat(route.at(s).0))).collect();
+        route.nodes = (0..pts.len())
             .map(|k| {
-                let (Some(prev), Some(next)) = (k.checked_sub(1).map(|j| positions[j]), positions.get(k + 1)) else {
-                    return RouteNode { s: s[k], turn: 0.0, radius: f32::INFINITY };
+                let (s, position) = pts[k];
+                let turn = match (k.checked_sub(1).map(|j| pts[j].1), pts.get(k + 1).map(|p| p.1)) {
+                    (Some(prev), Some(next)) => {
+                        let (a, b) = (position - prev, next - position);
+                        // With +X to the left of +Z, a turn to the left has a negative perp-dot.
+                        -(a.x * b.y - a.y * b.x).atan2(a.dot(b))
+                    }
+                    _ => 0.0,
                 };
-                let (a, b) = (flat(positions[k] - prev), flat(*next - positions[k]));
-                // Signed angle from a to b; with +X to the left of +Z, a turn to the left is a positive perp-dot.
-                let turn = (a.x * b.y - a.y * b.x).atan2(a.dot(b)) * -1.0;
-                // The circle through three points `chord` apart turning by Δθ: R = (chord / 2) / sin(Δθ / 2)
-                // (the game's (chord / 2) / cos((π − |Δθ|) / 2), FUN_004ea860).
-                let chord = 0.5 * (a.length() + b.length());
-                let half = (turn.abs() * 0.5).sin();
-                let radius = if half > 1e-4 { chord * 0.5 / half } else { f32::INFINITY };
-                RouteNode { s: s[k], turn, radius }
+                RouteNode { s, position, turn }
             })
             .collect();
+        route
     }
 
     pub fn length(&self) -> f32 {
@@ -323,7 +313,6 @@ pub fn route_from_ai_graph(ai: &mw_formats::AiData, start: Vec3, heading: f32, l
     widths.push(ai.nodes[*nodes.last().unwrap()].width * 0.5);
     let mut route = AiRoute::new(points, false);
     route.half_width = widths;
-    route.set_nodes(&nodes.iter().map(|&i| pos(i)).collect::<Vec<_>>());
     Some(route)
 }
 
@@ -350,6 +339,8 @@ pub struct AiDriver {
     pub schedule_speed: f32,
     /// The race's rubber band, which sets `schedule_speed` every tick.
     pub rubber_band: Option<RubberBand>,
+    /// The path's corner speeds for this car (`ai_driver::corner_speeds`), built on first use.
+    pub corner_speeds: Option<Vec<f32>>,
     /// Distance along the route at the last tick, and the lateral offset from it (m, positive = left).
     pub progress: f32,
     pub lateral: f32,
@@ -371,6 +362,7 @@ impl AiDriver {
             state: Default::default(),
             schedule_speed: f32::MAX,
             rubber_band: None,
+            corner_speeds: None,
             progress: 0.0,
             lateral: 0.0,
             time: 0.0,
@@ -641,6 +633,7 @@ fn ai_drive(
         let others: Vec<_> = all.iter().filter(|o| o.0 != entity).map(|o| o.1).collect();
         let player_ahead = player.is_some_and(|(e, p)| e != entity && (p - t.translation).dot(fwd) > 0.0);
         let ext = car.params.body_half_extents;
+        let corner = corner_speed(ai, s, v.0.length(), &car, &settings.0);
         let input = crate::ai_driver::DriverInput {
             dt,
             route: &ai.route,
@@ -659,7 +652,7 @@ fn ai_drive(
                 }
                 _ => ai.schedule_speed,
             },
-            corner_speed: corner_speed(&ai.route, s, &car, &settings.0),
+            corner_speed: corner,
             all_wheels_off: car.wheels_down() == 0,
             contact: car.body_contact,
             nitrous_fill: car.nitrous.fill(),
@@ -690,17 +683,40 @@ fn ai_drive(
 /// Length of the recovery's probe rays (m). Model decision: not read.
 const PROBE_LENGTH: f32 = 6.0;
 
-/// The corner speed limit at distance `s` (placeholder until its source is settled).
-fn corner_speed(route: &AiRoute, s: f32, car: &Car, cfg: &crate::ai_driver::AiConfig) -> f32 {
-    let mu = 1.0;
-    let decel = 8.0;
+/// The corner speed limit at distance `s`. The game's physical racer has none (its target speed is the rubber
+/// band, lowered only by obstacles; the node speeds of `ai_driver::corner_speeds` feed only the virtual
+/// progress of a racer without a car), so this is `f32::MAX` unless `MW_AI_CORNER_SPEED=1` asks for the model
+/// decision: the game's uncalled braking look-ahead (0x004ff480 → `FUN_004e5270`): of the nodes within the
+/// stopping distance whose corner speed is below the current speed, the lowest one whose distance is within the
+/// braking distance to its speed (`FUN_00518520`, here without its aero term: a = 0, b = μ g).
+fn corner_speed(ai: &mut AiDriver, s: f32, speed: f32, car: &Car, cfg: &crate::ai_driver::AiConfig) -> f32 {
+    if !*CORNER_SPEED_RULE {
+        return f32::MAX;
+    }
+    let mu = car.params.tyres[1].pure_lateral.peak;
+    let speeds = ai.corner_speeds.get_or_insert_with(|| {
+        let pts: Vec<Vec2> = ai.route.nodes.iter().map(|n| n.position).collect();
+        let turn: Vec<f32> = ai.route.nodes.iter().map(|n| n.turn).collect();
+        // A race path's nodes have 5 m half-widths (`.rdata` 0x00fa8538): a full width of 10 m.
+        crate::ai_driver::corner_speeds(&pts, &turn, 10.0, car.params.top_speed, mu, cfg.corner_speed_scale)
+    });
+    let b = mu * 9.81;
+    let stop = crate::ai_driver::braking_distance(speed, 0.0, 0.0, b);
     let mut limit = f32::MAX;
-    for n in route.nodes.iter().filter(|n| n.s > s && n.s < s + 400.0) {
-        let v = (cfg.corner_speed_scale * (9.81 * mu * n.radius).sqrt()).min(car.params.top_speed);
-        limit = limit.min((v * v + 2.0 * decel * (n.s - s)).sqrt());
+    for (n, &v) in ai.route.nodes.iter().zip(speeds.iter()) {
+        let d = n.s - s;
+        if d <= 0.0 || d > stop {
+            continue;
+        }
+        if v < speed && d <= crate::ai_driver::braking_distance(speed, v, 0.0, b) {
+            limit = limit.min(v);
+        }
     }
     limit
 }
+
+static CORNER_SPEED_RULE: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var("MW_AI_CORNER_SPEED").is_ok_and(|v| v == "1"));
 
 /// Once a second: every AI car's position, speed, progress and lateral error; in `--test ai`, the result.
 fn log_ai(
@@ -736,7 +752,7 @@ fn log_ai(
     if longest >= test.seconds || all_done {
         for (name, _, _, ai, player) in &cars {
             info!(
-                "TEST RESULT AI {}{}: {:.0} m in {:.1} s ({:.1} km/h mean), finished {:?}, max lateral {:.2} m, {} world hits, 100 m splits {:?}",
+                "TEST RESULT AI {}{}: {:.0} m in {:.1} s ({:.1} km/h mean), finished {:?}, max lateral {:.2} m, {} world hits, {} resets, 100 m splits {:?}",
                 name,
                 if player { " (player car)" } else { "" },
                 ai.progress,
@@ -745,6 +761,7 @@ fn log_ai(
                 ai.finished,
                 ai.max_lateral,
                 ai.hits,
+                ai.resets,
                 ai.splits.iter().map(|s| (s * 10.0).round() / 10.0).collect::<Vec<_>>(),
             );
         }

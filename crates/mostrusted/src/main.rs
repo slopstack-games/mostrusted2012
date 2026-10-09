@@ -10,6 +10,7 @@ mod bench;
 mod camera;
 mod car_anim;
 mod chassis;
+mod chevron;
 use mw_handling::{drift, drivetrain, tyre};
 mod convert;
 mod crash;
@@ -28,6 +29,7 @@ mod menu;
 mod mods_menu;
 mod particles;
 mod props;
+mod race;
 mod reflection;
 mod replay;
 mod settings;
@@ -71,6 +73,11 @@ struct Cli {
     /// Spawn point for `--drive` as `x,y,z[,heading_degrees]` (default: a road west of downtown).
     #[arg(long, value_delimiter = ',', allow_hyphen_values = true, default_value = "-1158,17.5,1700")]
     spawn: Vec<f32>,
+    /// Race an offline event (an id from `mwtool events`): its car (unless --drive names one) on its start,
+    /// the countdown, checkpoints, laps and the result (`race.rs`). `--test race` runs it through
+    /// scripted and exits.
+    #[arg(long)]
+    race: Option<u32>,
     /// Drive on an empty flat test track instead of the city (with --drive).
     #[arg(long)]
     test_track: bool,
@@ -366,14 +373,56 @@ fn main() -> anyhow::Result<()> {
         println!("vehicle: {} ({}, id {})", v.name, v.year, v.id);
         Ok(v.hi_bundle.expect("find_vehicle only returns cars with bundles"))
     };
-    let request = if let Some(q) = &cli.drive {
-        let (spawn, heading) = match cli.spawn[..] {
-            [x, y, z] => (Vec3::new(x, y, z), 0.0),
-            [x, y, z, h] => (Vec3::new(x, y, z), h.to_radians()),
+    let race_test = cli.test.as_deref() == Some("race");
+    if race_test && cli.race.is_none() {
+        anyhow::bail!("--test race needs --race <event id>");
+    }
+    // `--race`: the event's start and (unless --drive names one) its first allowed car.
+    let race = match cli.race {
+        None => None,
+        Some(id) => {
+            let events = store.events()?;
+            let event =
+                events.get(id).cloned().ok_or_else(|| anyhow::anyhow!("no event {id} (see `mwtool events`)"))?;
+            let name = store
+                .language(mw_assets::DEFAULT_LANGUAGE)
+                .ok()
+                .and_then(|l| l.get(event.name).map(str::to_owned))
+                .unwrap_or_else(|| format!("event {id}"));
+            if event.spawn.is_none() || event.checkpoints.is_empty() {
+                anyhow::bail!("event {id} ({name}) has no start or no checkpoints: not a race");
+            }
+            println!(
+                "race: {name} ({}, {} laps, {} checkpoints, {} opponents)",
+                event.kind.label(),
+                event.laps,
+                event.checkpoints.len(),
+                event.opponents.len()
+            );
+            let game_mode = events.game_mode(event.game_mode).copied();
+            Some(race::RaceSetup { event, game_mode, name, test: race_test })
+        }
+    };
+    let drive = match (&cli.drive, &race) {
+        (Some(q), _) => Some(q.clone()),
+        (None, Some(r)) => Some(r.event.default_vehicle().map(|v| v.to_string()).ok_or_else(|| {
+            anyhow::anyhow!("event {} names no car (a Most Wanted race): pass --drive <car>", r.event.id)
+        })?),
+        (None, None) => None,
+    };
+    let request = if let Some(q) = &drive {
+        let (spawn, heading) = match (&race, &cli.spawn[..]) {
+            (Some(r), _) => {
+                let s = r.event.spawn.expect("checked above");
+                (Vec3::from_array(s.position), s.direction[0].atan2(s.direction[2]))
+            }
+            (None, [x, y, z]) => (Vec3::new(*x, *y, *z), 0.0),
+            (None, [x, y, z, h]) => (Vec3::new(*x, *y, *z), h.to_radians()),
             _ => anyhow::bail!("--spawn expects x,y,z[,heading_degrees]"),
         };
-        // `--test ai` drives the streets; the other tests run on the flat track.
-        let track = cli.test_track || (cli.test.is_some() && cli.test.as_deref() != Some("ai")) || cli.replay.is_some();
+        // `--test ai` and `--test race` drive the streets; the other tests run on the flat track.
+        let street_test = race_test || cli.test.as_deref() == Some("ai");
+        let track = cli.test_track || (cli.test.is_some() && !street_test) || cli.replay.is_some();
         let spawn = if track { Vec3::new(0.0, 1.0, 0.0) } else { spawn };
         let props = if cli.test.as_deref() == Some("smash") { props::smash_test_props() } else { Vec::new() };
         Request::Drive { bundle: resolve(q)?, spawn, heading, max_units: cli.units, world: !track, props }
@@ -390,7 +439,7 @@ fn main() -> anyhow::Result<()> {
     };
     let smash = cli.test.as_deref() == Some("smash");
     let test = match cli.test.as_deref() {
-        None | Some("crash") | Some("smash") | Some("ai") => None,
+        None | Some("crash") | Some("smash") | Some("ai") | Some("race") => None,
         Some("accel") => Some(drive::TestKind::Accel),
         Some("nitrous") => Some(drive::TestKind::Nitrous),
         Some("brake") => Some(drive::TestKind::Brake),
@@ -404,11 +453,11 @@ fn main() -> anyhow::Result<()> {
         Some("jitter") => Some(drive::TestKind::Jitter),
         Some(other) => {
             anyhow::bail!(
-                "unknown --test {other} (accel, brake, corner, handbrake, drift, donut, engine, landing, climb, jitter, crash, smash, ai)"
+                "unknown --test {other} (accel, brake, corner, handbrake, drift, donut, engine, landing, climb, jitter, crash, smash, ai, race)"
             )
         }
     };
-    if (cli.test.is_some() || cli.replay.is_some()) && cli.drive.is_none() {
+    if (cli.test.is_some() || cli.replay.is_some()) && drive.is_none() {
         anyhow::bail!("--test / --replay need --drive <car>");
     }
     let replay = cli.replay.as_deref().map(replay::Replay::load).transpose()?;
@@ -434,7 +483,8 @@ fn main() -> anyhow::Result<()> {
         Some(garage::SwapScript::new(steps, cli.swap_delay))
     };
     // The menu is for interactive sessions in the world (or on the test track).
-    let menu_enabled = cli.screenshot.is_none() && test.is_none() && !matches!(request, Request::Vehicle { .. });
+    let menu_enabled =
+        cli.screenshot.is_none() && test.is_none() && !race_test && !matches!(request, Request::Vehicle { .. });
     let test_track = matches!(request, Request::Drive { world: false, .. });
     let filter = loader::WorldFilter {
         backdrop: match (cli.no_backdrop, cli.all_backdrops, cli.backdrop_zone) {
@@ -589,6 +639,7 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(crash::CrashPlugin)
         .add_plugins(tyre_marks::TyreMarksPlugin)
         .add_plugins(freeroam::FreeroamPlugin)
+        .add_plugins(race::RacePlugin { setup: race.map(Arc::new) })
         .add_plugins((garage::GaragePlugin { script }, menu::MenuPlugin { enabled: menu_enabled, open: cli.show_menu }))
         .add_plugins(easydrive::EasyDrivePlugin {
             enabled: menu_enabled || cli.show_easydrive,
@@ -609,6 +660,7 @@ fn main() -> anyhow::Result<()> {
                 && !cli.mute
                 && screenshot.is_none()
                 && test.is_none()
+                && !race_test
                 && !crash
                 && !smash
                 && cli.replay.is_none(),
@@ -635,7 +687,7 @@ fn main() -> anyhow::Result<()> {
             sync_environment,
             paint,
             filter,
-            mute: cli.mute || test.is_some() || crash || smash,
+            mute: cli.mute || test.is_some() || crash || smash || race_test,
         })
         .insert_resource(ClearColor(Color::srgb(0.55, 0.68, 0.85)))
         .init_resource::<Loaded>()

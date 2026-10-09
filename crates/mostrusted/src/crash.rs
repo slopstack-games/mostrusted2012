@@ -217,6 +217,7 @@ fn hold_and_reset(
     mut state: ResMut<CrashState>,
     mut input: ResMut<CarInput>,
     mut cars: Query<(&mut Transform, &mut LinearVelocity, &mut AngularVelocity), (With<Car>, With<Player>)>,
+    facing: Res<crate::race::RespawnFacing>,
 ) {
     let Some(config) = config else { return };
     let crashed = state.active.as_ref().is_some_and(|a| !a.reset_done);
@@ -235,7 +236,11 @@ fn hold_and_reset(
         rotation: transform.rotation,
         mph: active.pre_mph,
     });
-    let fwd = pose.rotation * Vec3::Z;
+    // In a race the reset faces the target gate (`FUN_006c9fb0`: gate position − saved position).
+    let fwd = match facing.0 {
+        Some(gate) if (gate - pose.translation).with_y(0.0).length() > 0.1 => gate - pose.translation,
+        _ => pose.rotation * Vec3::Z,
+    };
     let yaw = fwd.x.atan2(fwd.z);
     let rotation = Quat::from_rotation_y(yaw);
     let mph = config.0.reset.after_crash(active.pre_mph);
