@@ -106,6 +106,45 @@ The user's reports from a race: "checkpoints aren't visible", "the minimap is ro
 - `--spawn` now overrides the event start of `--race` (for looking at a gate:
   `--race 462174 --no-cutscenes --spawn=-531.5,58,2113.3,144.3`); `MW_GATE_LOG=1` logs the shown gates.
 
+### 2026-10-09: nitrous tank and refill traced (FUN_00669ab0, FUN_00667c10); RoadData decoded
+- **Found through** the `NitrousViewModel` registration (`FUN_00658ee0`: field offsets into a per-player copy) and
+  the `ClearNitrous` script command (→ `FUN_00658c90`, the per-player reset): a 200-byte record per player at
+  game +0x264f0. The game-logic tick `FUN_0066ad70` → `FUN_00669ab0` runs the refill events (`FUN_00667c10`, a
+  13-way switch reading `NitrousParameters` by offset) and the burn; `FUN_00663270` the near misses. Full rules in
+  decomp.md "Nitrous refill"; ported in `mw_handling::nitrous` (`Nitrous::update`, `NitrousRules`) and fed by
+  `mostrusted/src/nitrous.rs`.
+- **Surprises**: the tank starts empty; `NitrousUsage.845c3879` is a 1 s ramp of the control amount (not "the
+  amount"), `7ebf362a` a 0.1 s minimum burn (not a start threshold); burning forces the throttle to 1
+  (`FUN_006c1a80`); every car's offline default `Nitrous_Offline` has nitrous disabled (you win the mod first);
+  the punch's minimum-burn word is its 50 / 100 start amount, so a punch cannot be cut short; MinSpeed and
+  TakingShortcut never award (`aeba495e` false in every variant, and no road carries the shortcut bit);
+  near misses award once per 0.5 s window and only above 80 mph; CrashEscape is a police car crashing near the
+  player (inferred), FatalHit a takedown.
+- **Field names cracked by use**: `fc79a57e` = `Enabled` (the four usages), `aeba495e` = the event awards,
+  `d629c55f` = the event's speed threshold (mph), `d63cff99` = its rate per second or one-off amount,
+  `21948e6c` = HighSpeed's percentage of the top speed, `efb8084e` = Slipstreaming's percentage, `1732c75e` =
+  a contact / lane delay, `d6eeeb05` = the oncoming grace, `02318b5f` = Donutting's speed limit, `959a0ec3` =
+  its delay, `c8e9863d` = CatchingAir's time, `fd8a5ed5` = the punch's start amount, `c441f502` / `d5b487c7` =
+  the start amount / speed. `4d907940` is in every event and read by nothing found.
+- **RoadData (0x203)** decoded (`mw_formats::road_data`): 147 roads, 342 sections, 1494 Hermite points with a
+  capture radius and per-direction oncoming-lane bounds in metres (i8 × 4). The player's road position is
+  refreshed every 24th tick (`FUN_00668650` cycles the 24 player slots).
+- **Near-miss query** (`FUN_00665f30` → `FUN_004b71a0` → `FUN_00aa0440`): a 5 m sphere at the car against the
+  broadphase spheres of category 8 (traffic only), one tick of latency; touching traffic (`FUN_006564c0`)
+  cancels the window until an empty answer. Vehicle +0x100 is the forward axis, +0x120 the velocity
+  (decomp.md's trigger section had +0x100 as a velocity: corrected).
+- **Slipstream** (`FUN_0063c790`): the AI port lacked it; now computed for the player against every other car.
+- **Checks**: `--test drift` (911, `MW_NITROUS_LOG=1`): nothing for 0.75 s, then 6.1 per second (the Online
+  variant's 6/s); high speed adds 1.5/s above 66 mph. `--test donut`: 2.0/s at 25 mph after 0.75 s.
+  `--test ai --ai-seconds 90 --traffic-density 2` (the AI drives the player through traffic): oncoming lane
+  1.2/s, high speed 1.5/s, air 24/s, an oncoming near miss +6 at 92 mph, the cancel while stuck against a
+  crashed car; same-direction near misses and the competitor hit did not occur in that run. Unit tests in
+  `mw_handling::nitrous` and `mw_formats::road_data`.
+- **Open**: the input action states (2 = pressed is inferred); speedbreaker / jump modes; the broadphase
+  sphere source; the slipstream ray's end points; the AI racers' own nitrous variant (they run the default
+  rules plus the AIConfig refill); race-start fills (no writer of the amount other than the awards, the reset and the infinite flag was found); wiring the
+  gate smash (+10) and gas stations (+100).
+
 ### 2026-10-09: race cutscenes: event intro / outro sequences, ICE camera takes, no offline countdown
 - **Where they are**: `OfflineEvent` fields cracked: `EventIntro`, `EventOutro`, `AROutro`, `IntroMessageGroup`,
   `FeedbackMessageGroup`; `GameMode`: `AROutro`, `CountdownSequence`, `HUD_HSM`, `Intro`, `ResultsSequence`,

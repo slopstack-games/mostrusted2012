@@ -30,6 +30,7 @@ mod loader;
 mod materials;
 mod menu;
 mod mods_menu;
+mod nitrous;
 mod particles;
 mod props;
 mod race;
@@ -689,6 +690,7 @@ fn main() -> anyhow::Result<()> {
         ))
         .add_plugins(camera::CameraPlugin { mode: camera_mode, look_back })
         .add_plugins(crash::CrashPlugin)
+        .add_plugins(nitrous::NitrousPlugin)
         .add_plugins(exhaust::ExhaustPlugin)
         .add_plugins(tyre_marks::TyreMarksPlugin)
         .add_plugins(freeroam::FreeroamPlugin)

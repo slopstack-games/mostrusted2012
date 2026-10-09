@@ -17,8 +17,11 @@ pub struct ModCatalogue {
     pub stock: VehicleHandling,
     /// Per category, the slots (`mw_assets::mods::performance_upgrades`).
     pub mods: Vec<Vec<ModChoice>>,
-    /// `NitrousParameters` id → its burn per second.
-    pub nitrous_burns: Vec<(String, f32)>,
+    /// `NitrousParameters` id → its rules (every nitrous mod's variant).
+    pub nitrous: Vec<(String, mw_handling::nitrous::NitrousRules)>,
+    /// The car's nitrous without a nitrous mod (`Vehicle_Gameplay.Nitrous_Online`, handling.md "Model
+    /// decisions": the original's offline default `Nitrous_Offline` has the nitrous disabled).
+    pub default_nitrous: mw_handling::nitrous::NitrousRules,
     /// Language-resolved slot names, per category and slot.
     pub names: Vec<Vec<String>>,
 }
@@ -46,20 +49,21 @@ impl ModSelection {
 }
 
 impl ModCatalogue {
-    /// The stock handling with the selection applied, and the selected nitrous variant's burn per second.
-    pub fn modded(&self, sel: &ModSelection) -> (VehicleHandling, Option<f32>) {
+    /// The stock handling with the selection applied, and the nitrous rules: the selected nitrous mod's
+    /// `NitrousParameters` (`FUN_0065de50`), else the default.
+    pub fn modded(&self, sel: &ModSelection) -> (VehicleHandling, mw_handling::nitrous::NitrousRules) {
         let mut h = self.stock.clone();
         let mut mods: Vec<Modification> = Vec::new();
-        let mut burn = None;
+        let mut rules = self.default_nitrous;
         for &(slot, cat) in &sel.0 {
             let Some(c) = self.mods.get(cat).and_then(|s| s.get(slot)) else { continue };
             mods.extend(&c.modifications);
             if let Some(id) = &c.nitrous {
-                burn = self.nitrous_burns.iter().find(|(i, _)| i == id).map(|b| b.1).or(burn);
+                rules = self.nitrous.iter().find(|(i, _)| i == id).map_or(rules, |b| b.1);
             }
         }
         mw_assets::mods::apply_to(&mut h, &mods);
-        (h, burn)
+        (h, rules)
     }
 
     /// "slot:category name" of each selected mod, for test output.
@@ -86,11 +90,11 @@ pub fn apply_live(
     if !sel.is_changed() || sel.is_added() {
         return;
     }
-    let (h, burn) = cat.modded(&sel);
+    let (h, rules) = cat.modded(&sel);
     for mut car in &mut cars {
         car.params = crate::drive::CarParams::new(&h);
         let mut n = mw_handling::nitrous::NitrousParams::new(&h);
-        n.burn = burn.unwrap_or(n.burn);
+        n.rules = rules;
         car.nitrous_params = n;
     }
     info!("mods: {}", cat.describe(&sel));

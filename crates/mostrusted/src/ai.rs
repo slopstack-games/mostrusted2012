@@ -650,7 +650,7 @@ fn spawn_opponents(
                 spec: &spec,
                 parts: &parts,
                 handling: &spec.handling,
-                nitrous_burn: None,
+                nitrous_rules: None,
                 start,
                 heading: fwd.x.atan2(fwd.z),
                 velocity: Vec3::ZERO,

@@ -234,3 +234,47 @@ pub fn nitrous_burn(store: &AssetStore, id: &str) -> Option<f32> {
         _ => None,
     }
 }
+
+/// Every number of a `NitrousParameters` object, keyed by (sub-block field hash, field hash): floats as they are,
+/// bools as 0 / 1 (`mw_handling::nitrous::NitrousRules` reads them; docs/decomp.md "Nitrous refill").
+pub type NitrousFields = std::collections::HashMap<(u32, u32), f32>;
+
+/// The fields of the `NitrousParameters` with this id (16 hex digits).
+pub fn nitrous_parameters(store: &AssetStore, id: &str) -> Option<NitrousFields> {
+    let id = mw_bundle::ResourceId(u64::from_str_radix(id, 16).ok()?);
+    let obj = store.decode_genesys(&store.load(id).ok()?).ok()?;
+    if obj.type_name != "Genesys.Gen.NitrousParameters" {
+        return None;
+    }
+    let mut out = NitrousFields::new();
+    for (block, v) in &obj.fields {
+        let Value::Struct(s) = v else { continue };
+        for (field, v) in &s.fields {
+            let x = match v {
+                Value::Float(f) => *f,
+                Value::Bool(b) => f32::from(u8::from(*b)),
+                _ => continue,
+            };
+            out.insert((*block, *field), x);
+        }
+    }
+    Some(out)
+}
+
+/// The vehicle's default nitrous variants (`Vehicle_Gameplay.Nitrous_Offline`, `Nitrous_Online`): the ids the
+/// game's `FUN_0065de50` falls back to when no nitrous mod is fitted, offline and online.
+pub fn default_nitrous(store: &AssetStore, bundle: &Bundle) -> Option<(String, String)> {
+    for e in bundle.entries_of_type(ResourceType::GenesysObject) {
+        let Ok(res) = bundle.load(e) else { continue };
+        let Ok(obj) = store.decode_genesys(&res) else { continue };
+        if obj.type_name != "Genesys.Gen.Vehicle_Gameplay" {
+            continue;
+        }
+        let id = |name: &str| match obj.get(field_hash(name)) {
+            Some(Value::Handle(Some(id))) | Some(Value::Ref(id)) => Some(format!("{:016x}", id.0)),
+            _ => None,
+        };
+        return Some((id("Nitrous_Offline")?, id("Nitrous_Online")?));
+    }
+    None
+}

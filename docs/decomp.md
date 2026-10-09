@@ -1288,7 +1288,8 @@ reading the code unless marked *inferred*.
   active and in state 0 or 2 (`+0x9c`), builds a 0x80-byte query: the car's half-extent box (for a vehicle
   with a full body: a vector at +0x20 of the object behind vehicle `+0xd8`/`+0xdc`, *inferred* the body's
   half extents; otherwise `(max − min) / 2` of its physics AABB, again × 0.5), its pose and a velocity-like
-  vector (`FUN_00573450`: vehicle `+0x100`; or the physics body's `+0xb0` when its flag bit `+0xf4 & 1` is
+  vector (`FUN_00573450`: vehicle `+0x100`, which is the matrix's third row, the forward axis, not a velocity
+  (2026-10-09, "Nitrous refill"); or the physics body's `+0xb0` when its flag bit `+0xf4 & 1` is
   clear, else zero). The job is dispatched with `FUN_00da2e50` over the active slots; its narrow-phase test
   was not read (*inferred*: the car's box against the trigger box / sphere, not the car's origin).
 - **Per-vehicle hit list** (`FUN_00536f70(slot, vehicle)`, a job callback): appends the trigger index to the
@@ -2075,13 +2076,8 @@ The paint shaders' object constants are registered by name with slot numbers in 
   Forces go through `FUN_009076a0` (body-frame vector rotated by the body matrix, added to the force
   accumulator at body +0x70); `FUN_00907840` finishes. 911 values: strength 1.9, Punch {40, 100 mph}, Jump {20,
   1.6, 100 mph}.
-- The tank is gameplay code (the HUD's `NitrousViewModel.NitrousAmount` / `NitrousHighest`), not traced. Its data
-  is `Genesys.Gen.NitrousParameters` (in each vehicle bundle, several variants): `NitrousUsage` {`053c5a6a` burn
-  16 / 18 / 24, `845c3879` amount 1, `7ebf362a` 0.1}, `Restrictions` {`c441f502` 1 or 100, `ddfca712` 300,
-  `d5b487c7` 300}, and the refill events, each {Message (Language id), `4d907940` enabled, `d629c55f`, `d63cff99`,
-  ...}: TrafficOncoming, Drifting (`TimeDrifting` 0.75), NearMiss ×2, CatchingAir, CrashEscape, HighSpeed,
-  MinSpeed, TakingShortcut, FatalHit, Slipstreaming, HittingAnotherCompetitor, Donutting, Balancing; the
-  `PunchUsage` / `JumpUsage` / `SpeedbreakerUsage` blocks carry an `Enabled` flag (the nitrous upgrade's modes).
+- The tank and its refill are traced in "Nitrous refill" below (2026-10-09). Its data is
+  `Genesys.Gen.NitrousParameters` (several variants in each vehicle bundle).
 - **`FUN_00574870(index, value)`**, the upgrade profile: `this` holds 50 entries {f32 operand at +8i, op at
   +8i+4}, a parameter index per entry at +400+4i, and a 64-bit active mask at +700 (two u32). For each active
   entry whose index matches: op 0 multiplies, op 1 adds (summed), op 2 returns the operand at once; the result is
@@ -2093,6 +2089,98 @@ The paint shaders' object constants are registered by name with slot numbers in 
   `Modifier`: `PerformanceModifier` {`Modifications`: [`PerformanceModificationItem` {`Value`, `566a7ed1`
   profile index, `ModificationType` 0 / 1 / 2}]}}, a `NitrousUpgrade` (`5b7038f6`: the `NitrousParameters`
   variant it selects) or a `TyreUpgrade` (`a316f8e3`: tyre index). `mwtool mods <car>` prints them.
+
+## Nitrous refill
+
+Traced 2026-10-09 (`mw_handling::nitrous`, `mostrusted/src/nitrous.rs`). Times are countdowns in ticks of
+3e6 per second (`.rdata` 0x00f9f604), run out below 3 ticks (`FUN_0064cd40`); speeds are mph: |vehicle
++0x120| × `.bss` 0x0118a090 (2.23694) for the events, the signed vehicle +0x1620 for the start.
+
+- **State**: a 200-byte record per player at game +0x264f0 (game = `[0x1177868]`, the nitrous system at
+  +0x264e0; `FUN_00658c90` clears it to 0, also through the `ClearNitrous` script command). +0x00..+0x0c one
+  "active" byte per refill event (the HUD's `NitrousViewModel` `IsOncoming`, `IsSlipStreaming`, distances and
+  near-miss counts come from them, `FUN_00663610` / `FUN_00666030`), +0x10 the amount (0..100, `.rdata`
+  0x00fb77e4), +0x14 the amount added this tick, +0x18 the control amount, +0x1c seconds since the burn
+  started, +0x20 its distance, +0x28..+0x58 the event countdowns, +0x60 the minimum-burn countdown, +0x68 the
+  amount at the start, +0x6c the mode (0 idle, 1 nitrous, 2 punch, 3 speedbreaker, 4 jump), +0x70 the usage
+  block, +0x74 / +0x75 the near-miss window and its cancel flag, +0x76 a takedown this tick, +0x78 / +0x90 the
+  near-miss car ids (10 each) with counts at +0x8c / +0xa4, +0xa8 the crash escapes seen, +0xb0 / +0xb4 /
+  +0xb8 the balancing multipliers (high-speed refill, burn, every award; 1 unless `EnableNitrousBalancing`
+  (`FUN_00663190`, `Balancing` block: lerp by the distance to the leader), +0xbc a second burn multiplier (1),
+  +0xc0 infinite nitrous (amount held at 100). Every award goes through `FUN_0066e030`: amount × +0xb8, added
+  to +0x10 and +0x14, clamped to 0..100. The HUD's `NitrousAmount` is +0x10 × 0.01 (`FUN_00658a90`).
+- **Variant** (`FUN_0065de50`): an event override (`FUN_0068b380`), else the fitted nitrous mod (mod slots 3,
+  4, 12, 13 at levels 1 / 2: `PerformanceUpgrades` handles at +0x88..+0x94 / +0x34..+0x40), else
+  `Vehicle_Gameplay.Nitrous_Online` when the event is online (`[[0x10edb58]+4]+0x6a20` ≠ 0), otherwise
+  `Nitrous_Offline`. Every car's `Nitrous_Offline` (911 `…6a338`) has all four usages disabled and
+  `Restrictions` {100, 300, 300}: **a car without a nitrous mod has no nitrous offline**.
+- **Input** (`FUN_006cd3e0`, per player): the nitrous action's state 2 (taken as "pressed this frame", 1 as
+  "held") starts the first enabled mode (`FUN_00662e30`: `NitrousUsage.Enabled` → 1, `PunchUsage` → 2,
+  `SpeedbreakerUsage` → 3, `JumpUsage` → 4) if the mode is 0 and: mode 1 (`FUN_00662a50`) amount ≥
+  `Restrictions.c441f502` and |mph| ≥ `Restrictions.d5b487c7`; mode 2 (`FUN_00662b40`) amount ≥
+  `PunchUsage.fd8a5ed5`, same speed; modes 3 / 4 (`FUN_00662c30` / `FUN_00662d00`) the speed only. The start
+  (`FUN_00662ea0` / `FUN_00662f20`) keeps the usage block and sets the minimum-burn countdown to the block's
+  word +0x1c (`NitrousUsage.7ebf362a` = 0.1 s; for the punch `fd8a5ed5`, 50 / 100 s, so a punch runs until
+  the tank is empty). Not held (neither state): the mode drops to 0 once that countdown has run out
+  (`FUN_00658a40`). `fc79a57e` is `Enabled`; `ddfca712` was not seen read.
+- **Burn** (`FUN_00669ab0`, after the events): mode ≠ 0 (and for the punch only once +0x1c ≥
+  `PunchDelay` `a82e62ca`): amount −= usage `053c5a6a` × dt × +0xb4 × +0xbc, ≥ 0; the control amount +0x18 =
+  clamp(+0x1c / usage `845c3879`, 0, 1) while amount > 0 (`845c3879` = 1 s: **the nitrous ramps in over a
+  second**; 0 for the punch: instant after the first tick); then +0x1c += dt; empty → mode 0. Idle: +0x18,
+  +0x1c, +0x20 = 0. The control block (`FUN_006c1a80`) takes +0x18 as the nitrous amount (+0x1c) and the mode
+  (`FUN_00658b50`: 1 → 0, 2 → 1, 3 → 2, 4 → 3) and, with any mode on, sets the **throttle to 1** while the
+  amount is above 0 or the signed speed is under 15 mph (`.rdata` 0x00fc397c).
+- **AI racers** (player kind +0x9c = 2) skip the events: a constant refill `AIConfig` +0x10 × dt × +0xb8.
+- **Events** (`FUN_00667c10`, a 13-way switch; block offsets in `NitrousParameters`; "awards" = only when the
+  block's `aeba495e` is set; `4d907940` is in every block but not read):
+  - 0 MinSpeed (+0x16c): speed > `d629c55f` → `d63cff99`/s. `aeba495e` is false in every variant.
+  - 1 HighSpeed (+0x14c): speed / the vehicle list's top speed (entry +0x3c, 189 mph on the 911) × 100 >
+    `21948e6c` (35) → `d63cff99`/s × +0xb0.
+  - 2 TakingShortcut (+0x1ac): speed > `d629c55f` (70) on a `RoadData` road with flag bit 1 → rate. No road has
+    the bit and `aeba495e` is false everywhere: never fires.
+  - 3 TrafficOncoming (+0x0c): speed > `d629c55f` (20) and in an oncoming lane (`FUN_0065eec0`) for
+    `1732c75e` (0.25 s) → `d63cff99`/s; after leaving the lane it keeps paying for `d6eeeb05` (0.5 s), or 3 s
+    (`.rdata` 0x00fb865c) when off the road network.
+  - 4 Slipstreaming (+0xe8): 100 × the slipstream amount (racer vehicle +0xc60) > `efb8084e` (50) and speed >
+    `d629c55f` (50) → rate.
+  - 5 Drifting (+0x7c): in a drift (drift +0x14, the vehicle's virtual +0x34) at speed ≥ `d629c55f` (30) for
+    `TimeDrifting` (`f003dfe5`, 0.75 s) → rate.
+  - 6 Donutting (+0x58): the racer vehicle's virtual +0x6c (`FUN_00572860`: in a drift and drift +0x80 ≤ 0.95,
+    `.rdata` 0x00fad860; drift +0x80 = 1 − the yaw torque's blend from `Donut_speed_limit_low` to `_high`,
+    0 while counter-steering, `FUN_009d0860`) at speed ≤ `02318b5f` (30) for `959a0ec3` s → rate.
+  - 7 CatchingAir (+0x10c): vehicle +0x1630 (time in the air) > `c8e9863d` (0.1 s) → rate.
+  - 10 HittingAnotherCompetitor (+0xa0): speed > `d629c55f` (50) and the car's contact (`FUN_00658e80`) is a
+    player of kind 2 for `1732c75e` (0.05 s) → `d63cff99` once per contact.
+  - 11 FatalHit (+0x20c): +0x76 set this tick (`FUN_006b8d00`, from `FUN_006ccd20` when a car is wrecked and
+    the player responsible has kind 0: a takedown) → `d63cff99` (100) at once.
+  - 12 CrashEscape (+0x12c): speed > `d629c55f` (50) on the tick the stats counter (game +0x2f3ec → +0x2c,
+    `FUN_00656a90`) goes up → `d63cff99` (100). The counter counts cars of the list at +0xa664 (inferred: the
+    police) that crash within a range and ahead of the player without being its takedown (`FUN_00748150`).
+  Near misses (8, 9; `FUN_00665f30` → `FUN_0065e280` → `FUN_00663270`): unless the car touches a traffic car
+  (`FUN_006564c0`, which cancels the window until a query comes back empty), a world sphere query: centre
+  the vehicle position (+0x110), radius 5 m (`.rdata` 0x00fb82b0 splatted into `.bss` 0x011777a0), broadphase
+  category 8 (traffic only), each car's bounding sphere (2.3–2.6 m) against it, answered a tick later. Each
+  car is "same direction" when its forward axis · our velocity ≥ 0, else oncoming; distinct ids per window,
+  10 each. The first car opens a 0.5 s window (`.rdata` 0x00fb8660 = 1.5e6 ticks); when it closes, each kind
+  with a count > 0 awards its `d63cff99` once (2.5 / 3 / 4.5 and 5 / 6 / 9) if the speed is above its
+  `d629c55f` (80 mph both).
+  Fixed awards: 100 at a gas station (`FUN_00748ff0`, an object of type 6 in the car's contacts) and 10 per
+  smashed gate in free roam (`FUN_0074cf40`), both through `FUN_00658ad0`.
+- **Road position** (`FUN_00668650` → `FUN_00666200`, one of 24 player slots per tick): road, section and
+  segment on `RoadData` (formats: `mw_formats::road_data`): the first road and section (file order) whose
+  boxes contain the car and whose Hermite segment (`FUN_00a3ba80`, basis from `.bss` 0x0118a640) the car is
+  within (max radius + 1 m, under 5 m in height; `FUN_006592b0`, `FUN_0065f410`, `FUN_006638f0`). The oncoming
+  test (`FUN_0065eec0`): the car projected on the segment's chord, the curve's point and tangent there, the
+  lateral offset along normalize(tangent × up); (byte +0x1c, +0x1d) when the forward axis · tangent ≤ 0, else
+  (+0x1e, +0x1f) of the segment's first point; oncoming when lo < offset < hi (metres).
+- **Slipstream** (`FUN_0063c790`, per player): both faster than 50 mph (`.rdata` 0x00fb6330 × `.bss`
+  0x0118a010), the other 1 to 80 m away (0x00fb6260, 0x00fb6340), in sight (a world ray, offline), and the
+  direction to it within acos 0.95 of our velocity (0x00fb6350): best = max of (direction to it · its velocity
+  direction); amount = clamp((best − 0.95) / 0.05, 0, 1) (0x00fb6360), stored per player and copied to the
+  racer vehicle +0xc60 and the physics vehicle +0x1dd0.
+- The HUD messages are the blocks' `Message` Language ids: AIR 24009, DRIFTING 24010, NEAR MISS 24011,
+  ONCOMING NEAR MISS 24012, ONCOMING 24013, TAKING SHORTCUT 24016, SLAM 24017, SLIPSTREAMING 24018, CRASH
+  ESCAPE 955550, TAKEDOWN 1660283, DONUT 1007667.
 
 ## Vehicle animations
 

@@ -108,6 +108,14 @@ pub struct CarSpec {
     pub spot_effects: Vec<mw_assets::vfx::VehicleSpotEffect>,
     /// Set for an AI opponent's car (its slot in `ai::Opponents`); `None` for the player's.
     pub opponent: Option<usize>,
+    /// The vehicle list's top speed (entry +0x3C, mph): the nitrous HighSpeed refill's reference.
+    pub top_speed_mph: f32,
+}
+
+/// The vehicle id in a `VEHICLES/VEH_<id>_HI.BNDL` path.
+fn bundle_vehicle_id(bundle: &str) -> Option<u32> {
+    let name = bundle.rsplit('/').next()?.to_ascii_uppercase();
+    name.strip_prefix("VEH_")?.split('_').next()?.parse().ok()
 }
 
 #[derive(Clone)]
@@ -382,6 +390,12 @@ impl Worker {
         }
     }
 
+    /// A `NitrousParameters` variant's rules (`mw_handling::nitrous`).
+    fn nitrous_rules(&self, id: &str) -> Option<mw_handling::nitrous::NitrousRules> {
+        let f = mw_assets::mods::nitrous_parameters(&self.store, id)?;
+        Some(mw_handling::nitrous::NitrousRules::from_fields(|b, k| f.get(&(b, k)).copied()))
+    }
+
     fn car(&mut self, bundle: &str) -> anyhow::Result<()> {
         let b = self.store.bundle(bundle).ok_or_else(|| anyhow::anyhow!("bundle not found: {bundle}"))?;
         self.select_paint(&b);
@@ -415,12 +429,15 @@ impl Worker {
         let lang = self.store.language(mw_assets::DEFAULT_LANGUAGE).ok();
         let mod_catalogue = crate::mods_menu::ModCatalogue {
             stock: handling.clone(),
-            nitrous_burns: mods
+            nitrous: mods
                 .iter()
                 .flatten()
                 .filter_map(|c| c.nitrous.clone())
-                .filter_map(|id| Some((id.clone(), mw_assets::mods::nitrous_burn(&self.store, &id)?)))
+                .filter_map(|id| Some((id.clone(), self.nitrous_rules(&id)?)))
                 .collect(),
+            default_nitrous: mw_assets::mods::default_nitrous(&self.store, &b)
+                .and_then(|(_offline, online)| self.nitrous_rules(&online))
+                .unwrap_or_default(),
             names: mods
                 .iter()
                 .map(|cat| {
@@ -447,6 +464,9 @@ impl Worker {
             impact_graph,
             spot_effects,
             opponent: self.opponent,
+            top_speed_mph: bundle_vehicle_id(bundle)
+                .and_then(|id| self.store.vehicle_entry(id).ok().flatten())
+                .map_or(0.0, |v| v.top_speed),
         };
         // Parts are listed by the key the main thread knows them by (paint variants differ).
         for &m in spec.parts.iter().flatten() {
