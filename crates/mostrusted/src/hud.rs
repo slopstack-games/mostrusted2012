@@ -2,7 +2,8 @@
 //! (`UI/SCREENS2/371670.BNDL`), the race HUD's (`UI/SCREENS2/604153.BNDL`), the countdown and results
 //! sequences' layouts, their textures and bitmap fonts, with the bindings the layouts name filled from the car
 //! and the race (`mw_assets::ui::UiScene::draw_with` turns them into quads; `ui_quads` shows them as Bevy UI
-//! nodes). The minimap is the game's map-tile grid, composited on the CPU heading-up.
+//! nodes). The minimap is the game's map-tile grid, composited on the CPU with the car's facing (local +Z) up,
+//! with the points-of-interest icons over it (player, gates, racers; docs/decomp.md "Minimap orientation").
 //!
 //! The game decides which layouts a widget shows in code (widget adapters); here fixed sets stand in:
 //! - free roam (always): speedometer + nitrous gauge, odometer, minimap frame, road / district name;
@@ -119,6 +120,19 @@ enum Group {
     /// Item of the countdown / results sequence (index into `Hud::countdown` / `Hud::results`).
     Countdown(usize),
     Results(usize),
+    /// A point-of-interest icon drawn on the minimap (the race HUD's `Widget_PointOfInterest` looks).
+    MapIcon(MapIcon),
+}
+
+/// The minimap icons drawn: the `PointOfInterestVisuals` map layouts named by `mw_assets::ui::PoiKeys`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum MapIcon {
+    Player,
+    Gate,
+    GatePreview,
+    Finish,
+    FinishPreview,
+    Opponent,
 }
 
 /// A sequence item's timing, enabling binding and texts.
@@ -216,6 +230,31 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>, settings: Res<H
         for l in screen_layouts(&store, RACE_HUD, &RACE_LAYOUTS) {
             layouts.push(l);
             groups.push(Group::Race);
+        }
+        // Minimap icons: the map layout of each point-of-interest look the race code names. Their instance only
+        // translates to the `Pos` binding (the point on the map), which `draw_hud` does.
+        match (store.poi_keys(), store.ui_poi_visuals(RACE_HUD)) {
+            (Ok(keys), Ok(pois)) => {
+                let wanted = [
+                    (MapIcon::Player, keys.player),
+                    (MapIcon::Gate, keys.gate),
+                    (MapIcon::GatePreview, keys.gate_preview),
+                    (MapIcon::Finish, keys.finish),
+                    (MapIcon::FinishPreview, keys.finish_preview),
+                    (MapIcon::Opponent, keys.opponent),
+                ];
+                for (icon, key) in wanted {
+                    match pois.iter().find(|p| p.key == key).and_then(|p| p.map.clone()) {
+                        Some(mut l) => {
+                            l.instance = None;
+                            layouts.push(l);
+                            groups.push(Group::MapIcon(icon));
+                        }
+                        None => warn!("HUD: no map icon for {icon:?} (point of interest {key})"),
+                    }
+                }
+            }
+            (k, p) => warn!("HUD: no point-of-interest looks ({:?} / {:?})", k.err(), p.err()),
         }
         let sequence = |id: u32| {
             store.ui_sequence_layouts(id).unwrap_or_else(|e| {
@@ -480,6 +519,102 @@ impl RaceView<'_> {
     }
 }
 
+/// The race's gate icons for the player's target route entry `target`, as `FUN_00759860` registers the
+/// points of interest: the target gate (the finish look when it is the last entry) and, while the target is
+/// not the last entry, the gate after it (the finish's preview look when that one is last). Each at the gate's
+/// ground point, facing its normal.
+fn gate_icons(race: &RaceState, target: usize) -> Vec<(MapIcon, Vec3, Vec3)> {
+    use crate::gate_marker::{GateLook, shown_gates};
+    shown_gates(race, target)
+        .into_iter()
+        .map(|(look, gate)| {
+            let icon = match look {
+                GateLook::Gate => MapIcon::Gate,
+                GateLook::GatePreview => MapIcon::GatePreview,
+                GateLook::Finish => MapIcon::Finish,
+                GateLook::FinishPreview => MapIcon::FinishPreview,
+            };
+            (icon, gate.ground(), gate.normal())
+        })
+        .collect()
+}
+
+/// Draw the minimap's icons: each icon layout centred on its point's place on the map (`Pos`), turned by its
+/// heading relative to the map (`Rot`, degrees clockwise; the player's arrow points up). The map is centred on
+/// the player, `facing` up, `metres_per_px` per logical pixel. Model decisions: icons are drawn at their
+/// layouts' reference size × the HUD scale, and icons whose centre is off the map are left out (the POI
+/// widget's clamping, `EnableClamping` / `IsClamped`, is code that was not traced).
+#[allow(clippy::too_many_arguments)]
+fn map_icons(
+    scene: &UiScene,
+    groups: &[Group],
+    anim: &mut UiAnim,
+    t: f64,
+    screen: [f32; 2],
+    map: &Quad,
+    centre: Vec3,
+    facing: Vec3,
+    metres_per_px: f32,
+    icons: &[(MapIcon, Vec3, Vec3)],
+    base: &mut dyn FnMut(&str, Option<&str>) -> Option<BindValue>,
+) -> Vec<Quad> {
+    let up = Vec2::new(facing.x, facing.z).normalize_or(Vec2::Y);
+    // Screen right of the heading-up map (as `MapMosaic::render`).
+    let right = Vec2::new(-up.y, up.x) * mw_assets::ui::MAP_RIGHT_SIGN;
+    let map_centre = Vec2::new(map.rect[0] + map.rect[2] * 0.5, map.rect[1] + map.rect[3] * 0.5);
+    // Where a layout's origin lands when drawn without an instance (`Placement`: the reference frame centred).
+    let s = (screen[0] / 1280.0).min(screen[1] / 720.0);
+    let origin = Vec2::new(screen[0] * 0.5 - 640.0 * s, screen[1] * 0.5 - 360.0 * s);
+    let mut out = Vec::new();
+    for &(icon, pos, dir) in icons {
+        let d = Vec2::new(pos.x - centre.x, pos.z - centre.z);
+        let at = map_centre + Vec2::new(d.dot(right), -d.dot(up)) / metres_per_px;
+        if at.x < map.rect[0]
+            || at.y < map.rect[1]
+            || at.x > map.rect[0] + map.rect[2]
+            || at.y > map.rect[1] + map.rect[3]
+        {
+            continue;
+        }
+        let g = Vec2::new(dir.x, dir.z);
+        let rot = g.dot(right).atan2(g.dot(up)).to_degrees();
+        let mut lookup = |path: &str, arg: Option<&str>| -> Option<BindValue> {
+            match path {
+                "Rot" => Some((rot as f64).into()),
+                "Net.IsInOnlineGame" => Some(false.into()),
+                // `Players.PlayerBase[#].IsCop` / `.InChase`: racers, not cops.
+                "Players.PlayerBase" => Some(false.into()),
+                _ => base(path, arg),
+            }
+        };
+        let mut options = DrawOptions::new(
+            Some(Box::new(move |i| groups.get(i).is_some_and(|&g| g == Group::MapIcon(icon)))),
+            Some(&mut *anim),
+            t,
+        );
+        let offset = at - origin;
+        for mut q in scene.draw_with(screen, &mut lookup, &mut options) {
+            q.rect[0] += offset.x;
+            q.rect[1] += offset.y;
+            out.push(q);
+        }
+    }
+    out
+}
+
+/// The car's facing on the ground plane: its local +Z (the game's vehicle matrix row 2, which
+/// `FUN_0083c030` returns for the binding below). Not Bevy's `forward()`, which is local −Z.
+fn car_facing(xf: &GlobalTransform) -> Vec3 {
+    xf.back().as_vec3()
+}
+
+/// `Players.LocalPlayer.GetPlayerDirection` ("2d Direction of the car in degrees", `FUN_006db960` →
+/// `FUN_006be9b0`): −atan2(f.x, f.z) in degrees of the facing f.
+fn player_direction(xf: &GlobalTransform) -> f32 {
+    let f = car_facing(xf);
+    -f.x.atan2(f.z).to_degrees()
+}
+
 /// Values for the bindings the free-roam layouts use.
 fn lookup(
     path: &str,
@@ -505,10 +640,7 @@ fn lookup(
             let period = arg.and_then(|a| a.parse::<f64>().ok()).unwrap_or(1000.0) / 1000.0;
             (0.5 + 0.5 * (t / period.max(0.001) * std::f64::consts::TAU).sin()).into()
         }
-        "Players.LocalPlayer.GetPlayerDirection" => {
-            let f = xf?.forward();
-            (f.x.atan2(f.z).to_degrees() as f64).into()
-        }
+        "Players.LocalPlayer.GetPlayerDirection" => (player_direction(xf?) as f64).into(),
         "Players.LocalPlayer.IsInChase"
         | "Players.LocalPlayer.IsInCooldown"
         | "Players.LocalPlayer.IsInChaseOrCooldown"
@@ -527,6 +659,7 @@ fn draw_hud(
     car: Query<(&crate::drive::Car, &GlobalTransform), With<crate::drive::Player>>,
     race: Option<Res<RaceState>>,
     racers: Query<(&Racer, &RacerProgress)>,
+    racer_xf: Query<(&Racer, &GlobalTransform)>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     time: Res<Time>,
     mut nodes: Query<PoolNode, With<QuadNode>>,
@@ -551,7 +684,7 @@ fn draw_hud(
     let t = time.elapsed_secs_f64();
     let metric = settings.metric;
 
-    let Hud { scene, groups, countdown, results, lang, car_names, anim, .. } = &mut *hud;
+    let Hud { scene, groups, countdown, results, lang, car_names, anim, map, .. } = &mut *hud;
     scene.metric = Some(metric);
     let view = race.as_deref().map(|race| {
         let player = racers.iter().find(|(r, _)| r.player).map(|(_, p)| p);
@@ -625,25 +758,44 @@ fn draw_hud(
         sequence(results, clock, Group::Results, &mut quads);
     }
 
-    // The minimap: re-render the heading-up view into its image (every other frame).
+    // The minimap: re-render the heading-up view into its image (every other frame). The map camera looks at
+    // the player with `LookAtRotation` = `GetPlayerDirection` (the POI widget's `UIMapCameraConfig`): the car's
+    // facing (local +Z) is up.
     let mut map_image = None;
-    if let (Some(q), Some(map), Some((_, xf))) = (quads.iter().find(|q| q.map), hud.map.as_mut(), car) {
+    let map_quad = quads.iter().position(|q| q.map);
+    if let (Some(qi), Some(map), Some((_, xf))) = (map_quad, map.as_mut(), car) {
+        let q = quads[qi].clone();
         let scale = window.scale_factor();
         let size = UVec2::new((q.rect[2] * scale).round().max(1.0) as u32, (q.rect[3] * scale).round().max(1.0) as u32);
+        let p = xf.translation();
+        let f = car_facing(xf);
+        // Metres per logical pixel: the map's reference scale over the HUD's scale.
+        let hud_scale = (screen[0] / 1280.0).min(screen[1] / 720.0);
+        let metres_per_px = MINIMAP_METRES_PER_PIXEL / hud_scale;
         map.frame += 1;
         if size != map.size || map.frame % 2 == 0 {
-            let p = xf.translation();
-            let f = xf.forward();
-            // Metres per physical pixel: the reference scale over the HUD's pixel scale.
-            let ref_scale = (screen[0] / 1280.0).min(screen[1] / 720.0) * scale;
             let mut px = vec![0u8; (size.x * size.y * 4) as usize];
-            map.mosaic.render(p.x, p.z, [f.x, f.z], MINIMAP_METRES_PER_PIXEL / ref_scale, size.x, size.y, &mut px);
+            map.mosaic.render(p.x, p.z, [f.x, f.z], metres_per_px / scale, size.x, size.y, &mut px);
             map.size = size;
             if let Some(mut img) = images.get_mut(&map.image) {
                 *img = game_text::ui_image(size.x, size.y, px);
             }
         }
         map_image = Some(map.image.clone());
+
+        // Icons over the map: the player, the race's target and next gates, the other racers.
+        let mut icons = vec![(MapIcon::Player, p, f)];
+        if let Some(v) = view.as_ref().filter(|v| matches!(v.race.phase, RacePhase::Intro | RacePhase::Racing)) {
+            icons.extend(gate_icons(v.race, v.player.map_or(1, |p| p.target())));
+        }
+        icons.extend(
+            racer_xf
+                .iter()
+                .filter(|(r, _)| !r.player)
+                .map(|(_, x)| (MapIcon::Opponent, x.translation(), car_facing(x))),
+        );
+        let icon_quads = map_icons(scene, groups, anim, t, screen, &q, p, f, metres_per_px, &icons, &mut base);
+        quads.splice(qi + 1..qi + 1, icon_quads);
     }
 
     let Hud { root, pool, textures, .. } = &mut *hud;

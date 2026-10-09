@@ -128,6 +128,9 @@ pub mod field {
     pub const TRANSFORM_VALUE_Y: u32 = 0x5a5e_0251;
     pub const TRANSFORM_VALUE_Z: u32 = 0x571d_278b;
     pub const TIMELINE_IDLE: u32 = 0xaedf_be15;
+    pub const TIMELINE_OFF: u32 = 0x0b60_3df7;
+    pub const COLOUR_TRANSFORMS: u32 = field_hash("Colour_Transforms");
+    pub const BLEND_MODE: u32 = field_hash("BlendMode");
     // Masks and the road-map element
     pub const POP_MASK: u32 = field_hash("PopMask");
     pub const MASK: u32 = field_hash("Mask");
@@ -602,6 +605,31 @@ pub struct LayoutInstance {
     pub timeline: String,
     /// Binding that shows the layout (rarely set: most layouts are shown by the widget's code).
     pub visibility: String,
+    /// `Colour_Transforms`: bound colour changes of the whole layout (the gate markers' distance fade).
+    pub colours: Vec<ColourTransform>,
+    /// Triggered timelines (`402057b7`): `on` plays when the trigger becomes true, `off` when it turns false
+    /// (`FADE(0,300,OUT)` / `FADE(0,300,IN)` on `DistanceToCamera(LTEQ:10)`).
+    pub timelines: Vec<InstanceTimeline>,
+}
+
+/// `UILayoutInstanceParams.ColourTransformComponents`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ColourTransform {
+    pub binding: String,
+    pub value: f32,
+    pub blend_mode: u16,
+    /// 3 (with blend mode 1 and a 0–1 binding) on the gate markers' distance fade.
+    pub kind: u16,
+}
+
+/// `UILayoutInstanceParams.TimelineParameters` of the triggered list.
+#[derive(Debug, Clone, PartialEq)]
+pub struct InstanceTimeline {
+    pub trigger: String,
+    /// Played when the trigger becomes true (`aedfbe15`, the field the visibility timeline plays on show).
+    pub on: String,
+    /// Played when it becomes false (`0b603df7`).
+    pub off: String,
 }
 
 impl LayoutInstance {
@@ -629,6 +657,21 @@ impl LayoutInstance {
             visibility: object(o, field::VISIBILITY_TIMELINE)
                 .map(|t| string(t, field::TRIGGER_BINDING))
                 .unwrap_or_default(),
+            colours: structs(o, field::COLOUR_TRANSFORMS)
+                .map(|c| ColourTransform {
+                    binding: string(c, field::BINDING),
+                    value: float(c, field::VALUE),
+                    blend_mode: uint(c, field::BLEND_MODE) as u16,
+                    kind: uint(c, field::TYPE) as u16,
+                })
+                .collect(),
+            timelines: structs(o, field::TRIGGERED_BEHAVIOURS)
+                .map(|t| InstanceTimeline {
+                    trigger: string(t, field::TRIGGER_BINDING),
+                    on: string(t, field::TIMELINE_IDLE),
+                    off: string(t, field::TIMELINE_OFF),
+                })
+                .collect(),
         })
     }
 
@@ -686,6 +729,53 @@ impl Screen {
         Some(Self { id: uint(o, field::ID) as u32, widgets })
     }
 }
+
+/// `PointOfInterestVisuals` (listed by a screen's `Widget_PointOfInterest`, field `f7dfe43b`): how one kind of
+/// point of interest is drawn. Game code names a kind by its `key` (`CheckPointsConfig.NormalPoi`, the
+/// `MapPoiConfig` fields), not by the object's own UniqueId.
+///
+/// | field | meaning |
+/// |---|---|
+/// | `8daa3bb7` `World_Entity` | resource id (0 in every instance) |
+/// | `b8a6b50a` | `{Layout, LayoutInstanceParams}`: the icon on the map |
+/// | `f50e27b7` | a second `{Layout, Params}` (empty in every instance) |
+/// | `655d3f5f` | UniqueId |
+/// | `9a5a94d3` | the key |
+/// | `bd550893` (count `2300858a`) | `{Layout, Params}` drawn in the world at the point's transform |
+/// | `e3256f36`, `8ac61148`, `ea3ab789`, `d788383f`, `db617d4f` | flags (`ea3ab789` set exactly when there are world layouts) |
+#[derive(Debug, Clone, PartialEq)]
+pub struct PoiVisuals {
+    pub id: u32,
+    pub key: u32,
+    pub map: Option<WidgetLayout>,
+    pub world: Vec<WidgetLayout>,
+}
+
+impl PoiVisuals {
+    pub const TYPE_NAME: &'static str = "Genesys.Gen.PointOfInterestVisuals";
+    const MAP: u32 = 0xb8a6_b50a;
+    const KEY: u32 = 0x9a5a_94d3;
+    const WORLD: u32 = 0xbd55_0893;
+
+    pub fn from_object(o: &Object) -> Option<Self> {
+        if o.type_name != Self::TYPE_NAME {
+            return None;
+        }
+        let layout = |l: &Object| {
+            let layout = handle(l, field::LAYOUT)?;
+            Some(WidgetLayout { layout: Some(layout), instance: handle(l, field::LAYOUT_INSTANCE_PARAMS) })
+        };
+        Some(Self {
+            id: uint(o, field::ID) as u32,
+            key: uint(o, Self::KEY) as u32,
+            map: object(o, Self::MAP).and_then(layout),
+            world: structs(o, Self::WORLD).filter_map(layout).collect(),
+        })
+    }
+}
+
+/// The `Widget_PointOfInterest` field listing a screen's [`PoiVisuals`] (handles).
+pub const POI_VISUALS_LIST: u32 = 0xf7df_e43b;
 
 /// UV rectangle of a UI quad renderable: four vertices `{f32 x, f32 y, u32 colour, f16 u, f16 v}` (16 bytes)
 /// over the unit square; returns `[u0, v0, u1, v1]` at positions (0,0) and (1,1).

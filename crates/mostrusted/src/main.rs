@@ -23,6 +23,7 @@ mod exhaust;
 mod freeroam;
 mod game_text;
 mod garage;
+mod gate_marker;
 mod hud;
 mod input;
 mod loader;
@@ -43,6 +44,7 @@ mod traffic;
 mod tyre_marks;
 mod ui_quads;
 mod weather;
+mod world_ui;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -74,8 +76,9 @@ struct Cli {
     /// Drive a car (name, ID or bundle) through the world.
     #[arg(long)]
     drive: Option<String>,
-    /// Spawn point for `--drive` as `x,y,z[,heading_degrees]` (default: a road west of downtown).
-    #[arg(long, value_delimiter = ',', allow_hyphen_values = true, default_value = "-1158,17.5,1700")]
+    /// Spawn point for `--drive` as `x,y,z[,heading_degrees]` (default: a road west of downtown; with
+    /// `--race`, the event's start, which this overrides for the player's car).
+    #[arg(long, value_delimiter = ',', allow_hyphen_values = true)]
     spawn: Vec<f32>,
     /// Race an offline event (an id from `mwtool events`): its car (unless --drive names one) on its start,
     /// the countdown, checkpoints, laps and the result (`race.rs`). `--test race` runs it through
@@ -459,12 +462,13 @@ fn main() -> anyhow::Result<()> {
     };
     let request = if let Some(q) = &drive {
         let (spawn, heading) = match (&race, &cli.spawn[..]) {
-            (Some(r), _) => {
+            (Some(r), []) => {
                 let s = r.event.spawn.expect("checked above");
                 (Vec3::from_array(s.position), s.direction[0].atan2(s.direction[2]))
             }
-            (None, [x, y, z]) => (Vec3::new(*x, *y, *z), 0.0),
-            (None, [x, y, z, h]) => (Vec3::new(*x, *y, *z), h.to_radians()),
+            (None, []) => (Vec3::new(-1158.0, 17.5, 1700.0), 0.0),
+            (_, [x, y, z]) => (Vec3::new(*x, *y, *z), 0.0),
+            (_, [x, y, z, h]) => (Vec3::new(*x, *y, *z), h.to_radians()),
             _ => anyhow::bail!("--spawn expects x,y,z[,heading_degrees]"),
         };
         // `--test ai` and `--test race` drive the streets; the other tests run on the flat track.
@@ -702,6 +706,7 @@ fn main() -> anyhow::Result<()> {
         })
         .add_plugins(game_text::GameTextPlugin)
         .add_plugins(ui_quads::UiQuadsPlugin)
+        .add_plugins((world_ui::WorldUiPlugin, gate_marker::GateMarkerPlugin))
         .add_plugins(hud::HudPlugin {
             enabled: !cli.no_hud && test.is_none() && !crash && !smash && !matches!(request, Request::Vehicle { .. }),
             metric: !cli.mph,
