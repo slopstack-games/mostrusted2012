@@ -77,6 +77,26 @@ pub fn mesh(m: &mw_formats::DecodedMesh, uv_b: Option<u8>, colour: bool) -> Opti
     Some(mesh)
 }
 
+/// Body paint (`materials::Look::paint`): COLOR becomes (AO, specular occlusion, model x, model z), the bind-pose
+/// position the paint's vertex program samples the car's damage grid at (`gvDamageVolumeParam` ×
+/// `POSITION.xz`, docs/decomp.md "Vehicle paint, liveries and dirt"). Meshes without a vertex colour get AO 1.
+/// With `effects_uv0` the effects map's TEXCOORD2 replaces UV_0 (the lightmapped paints use UV_1 for TEXCOORD3).
+pub fn add_paint_grid(mesh: &mut Mesh, m: &mw_formats::DecodedMesh, effects_uv0: bool) {
+    let colour: Vec<[f32; 4]> = m
+        .positions
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let c = m.colors.as_ref().and_then(|c| c.get(i)).copied().unwrap_or([1.0; 4]);
+            [c[0], c[1], p[0], p[2]]
+        })
+        .collect();
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colour);
+    if effects_uv0 && let Some(uv) = m.texcoord(2) {
+        mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uv.iter().map(|t| [t[0], t[1]]).collect::<Vec<_>>());
+    }
+}
+
 /// Which optional attributes a mesh has (bit 0 UV_0, 1 UV_1, 2 COLOR, 3 TANGENT, 4 NORMAL). Only meshes
 /// with the same set can be merged into one; `None` for anything [`merge`] does not handle (joints).
 pub fn merge_signature(mesh: &Mesh) -> Option<u8> {

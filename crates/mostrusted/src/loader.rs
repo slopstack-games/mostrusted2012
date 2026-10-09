@@ -110,6 +110,8 @@ pub struct CarSpec {
     pub opponent: Option<usize>,
     /// The vehicle list's top speed (entry +0x3C, mph): the nitrous HighSpeed refill's reference.
     pub top_speed_mph: f32,
+    /// `VehicleInfo.76bfd668`: zone damage → paint scratch weight (`paint_wear.rs`).
+    pub scratch_scale: f32,
 }
 
 /// The vehicle id in a `VEHICLES/VEH_<id>_HI.BNDL` path.
@@ -467,6 +469,7 @@ impl Worker {
             top_speed_mph: bundle_vehicle_id(bundle)
                 .and_then(|id| self.store.vehicle_entry(id).ok().flatten())
                 .map_or(0.0, |v| v.top_speed),
+            scratch_scale: self.store.scratch_scale(&b).unwrap_or(10.0),
         };
         // Parts are listed by the key the main thread knows them by (paint variants differ).
         for &m in spec.parts.iter().flatten() {
@@ -924,6 +927,9 @@ impl Worker {
             let Some(mut mesh) = convert::mesh(&sm.mesh, look.uv_b, look.vertex_colour) else { continue };
             if look.wet_road() {
                 convert::add_road_wetness(&mut mesh, &sm.mesh);
+            }
+            if look.paint {
+                convert::add_paint_grid(&mut mesh, &sm.mesh, look.effects_in_uv0());
             }
             if let Some(bones) = self.skin_bones {
                 convert::add_skin(&mut mesh, &sm.mesh, bones);

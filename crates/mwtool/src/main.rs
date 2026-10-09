@@ -358,8 +358,13 @@ enum Cmd {
         car: String,
     },
     /// The collision surface list (`HAWAII/SURFACELIST.BNDL`) with each surface's triangle count and
-    /// collision flags over the track units.
-    Surfaces,
+    /// collision flags over the track units, and its dirt / dust build-up (`VehicleEffects`, dry | wet).
+    Surfaces {
+        /// Also list places (flat triangles, at least 150 m apart) with this surface index: `x,y,z` for
+        /// `mostrusted --spawn`.
+        #[arg(long)]
+        find: Option<u8>,
+    },
     /// ICE camera takes (`CAMERAS.BNDL`, `mw_formats::camera_take`): one line each, or one take (name,
     /// UniqueId or resource id) with its channel layout and the camera evaluated every `--step` seconds.
     CameraTake {
@@ -687,7 +692,7 @@ fn main() -> Result<()> {
                 println!("torque (rpm:Nm): {}", samples.join("  "));
             }
         }
-        Cmd::Surfaces => props::surfaces(&AssetStore::new(game)?)?,
+        Cmd::Surfaces { find } => props::surfaces(&AssetStore::new(game)?, find)?,
         Cmd::CameraTake { take, step } => {
             camera_take::run(&open_bundle(&game, "CAMERAS.BNDL")?, take.as_deref(), step)?
         }

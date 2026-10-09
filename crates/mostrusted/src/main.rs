@@ -31,6 +31,7 @@ mod materials;
 mod menu;
 mod mods_menu;
 mod nitrous;
+mod paint_wear;
 mod particles;
 mod props;
 mod race;
@@ -212,7 +213,8 @@ struct Cli {
     /// Which of the car's paint options (`VehiclePaint` objects, in ID order) to use.
     #[arg(long, default_value_t = 0)]
     paint_index: usize,
-    /// Car dirt as `dirt[,dust]` (0–1, the paint shaders' GenericVector4_A.xy; dust defaults to dirt).
+    /// The car's starting dirt as `dirt[,dust]` (0–1, the game's vehicle +0x2c84 / +0x2c80; dust defaults to
+    /// dirt). Driving builds them up from there (`paint_wear.rs`).
     #[arg(long, value_delimiter = ',')]
     dirt: Option<Vec<f32>>,
     /// Save a screenshot once loading has finished, then exit.
@@ -693,6 +695,7 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(nitrous::NitrousPlugin)
         .add_plugins(exhaust::ExhaustPlugin)
         .add_plugins(tyre_marks::TyreMarksPlugin)
+        .add_plugins(paint_wear::PaintWearPlugin)
         .add_plugins(freeroam::FreeroamPlugin)
         .add_plugins(race::RacePlugin { setup: race.map(Arc::new) })
         .add_plugins(cutscene::CutscenePlugin { setup: cutscenes })

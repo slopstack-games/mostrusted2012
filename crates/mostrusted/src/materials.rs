@@ -140,7 +140,7 @@ fn qi(v: f32) -> i32 {
 
 /// Extension texture slots and constant vec4s (keep in sync with `layered.wgsl`).
 const N_TEX: usize = 10;
-const N_VEC: usize = 14;
+const N_VEC: usize = 21;
 
 /// Fill the texture slots in order.
 fn slots(v: &[Option<TexKey>]) -> [Option<TexKey>; N_TEX] {
@@ -162,8 +162,8 @@ fn pack(v: &[[f32; 4]]) -> [i32; N_VEC * 4] {
     out
 }
 
-/// Car dirt and dust amounts (the paint shaders' `GenericVector4_A.xy`), as f32 bits; set by `--dirt`.
-/// The game's rule that drives them at runtime is not traced yet, so they default to clean.
+/// The car's starting dirt and dust levels (the game's vehicle +0x2c84 / +0x2c80, 0–1), as f32 bits; set by
+/// `--dirt`. Driving cars build them up from there (`paint_wear.rs`).
 static DIRT: [std::sync::atomic::AtomicU32; 2] = [const { std::sync::atomic::AtomicU32::new(0) }; 2];
 
 pub fn set_dirt_level(dirt: f32, dust: f32) {
@@ -172,7 +172,7 @@ pub fn set_dirt_level(dirt: f32, dust: f32) {
     DIRT[1].store(dust.clamp(0.0, 1.0).to_bits(), Relaxed);
 }
 
-fn dirt_level() -> [f32; 2] {
+pub fn dirt_level() -> [f32; 2] {
     DIRT.each_ref().map(|a| f32::from_bits(a.load(std::sync::atomic::Ordering::Relaxed)))
 }
 
@@ -484,10 +484,11 @@ impl Look {
                 0.0
             };
             let livery = sm.texture("DiffuseTextureSampler").filter(|_| kind > 0.0).map(|t| (t, kind < 1.5));
-            // Dirt / dust / scratches read EffectsTextureSampler at TEXCOORD2 (UV_1 here), unless the
-            // lightmapped lights already take UV_1 for TEXCOORD3. Only with `--dirt` until the game's
-            // dirt build-up rule is ported (research log 2026-10-06, session 5 round 4).
-            let effects = linear("EffectsTextureSampler").filter(|_| has_uv(2) && !lm.uv3 && dirt_level() != [0.0; 2]);
+            // Dirt / dust / scratches read EffectsTextureSampler at TEXCOORD2: UV_1 here, or UV_0 when the
+            // lightmapped lights take UV_1 for TEXCOORD3 and no livery needs TEXCOORD0 (the plain paint
+            // programs do not read TEXCOORD0). `_Livery_Lightmap` would need three UV sets: no effects there.
+            let effects_uv0 = lm.uv3 && livery.is_none();
+            let effects = linear("EffectsTextureSampler").filter(|_| has_uv(2) && (!lm.uv3 || effects_uv0));
             look.textures = slots(&[livery, effects, None, lm.texture]);
             let two_paint = sm.parameter("mPaintColourIndex").map_or(0.0, |v| v[0]);
             look.vals = pack(&[
@@ -501,7 +502,13 @@ impl Look {
                 lm.channels[3],
                 [if livery.is_some() { kind } else { 0.0 }, two_paint, flag(effects.is_some()), 0.0],
             ]);
-            look.vertex_colour = sm.mesh.colors.is_some();
+            // p19.w: the loader stores the bind-pose model x / z in COLOR.zw (`convert::add_paint_grid`) for the
+            // damage grid; p20.z: the effects map rides in UV_0. COLOR.xy keep the AO (1 where the mesh has
+            // none), so p2.x is set for every paint mesh.
+            look.vals[2 * 4] = qi(1.0);
+            look.vals[19 * 4 + 3] = qi(1.0);
+            look.vals[20 * 4 + 2] = qi(flag(effects_uv0 && effects.is_some()));
+            look.vertex_colour = true;
             if lm.uv3 {
                 look.uv_b = Some(3);
             } else if effects.is_some() {
@@ -825,6 +832,9 @@ impl Look {
             dust_colour: [0.0; 3],
             dirt_scale: 1.0,
             dust_scale: 1.0,
+            scratch_colour: [0.0; 3],
+            scratch_roughness: 1.0,
+            scratch_specular: 0.0,
             secondary: None,
             colour_index: -1,
         });
@@ -832,21 +842,24 @@ impl Look {
         self.mode = Mode::Vehicle;
         // Slot 0 keeps the livery / two-paint mask, 1 the effects (dirt) texture, 3 the lightmapped
         // lights of the `_Lightmap` paint variants; p8 (livery kind, mPaintColourIndex, has effects) is
-        // kept from `from_scene_mesh`. GenericVector4_A.xy = (dirt, dust) amounts, B / C = the paint's
-        // DirtColour / DustColour (research log 2026-10-06, session 5).
-        // `FUN_008e9c00` writes A = (dirt level × DirtColour.w, dust level × DustColour.w, ..), B = DirtColour,
-        // C = DustColour, and slots 0x30 / 0x31 = the secondary paint's diffuse / specular minus the primary's,
-        // which the `_TwoPaint*` programs add × (mPaintColourIndex or the mask's green): p12 / p13 here
-        // (research log 2026-10-06, session 5 round 4).
+        // kept from `from_scene_mesh`. `FUN_008e9c00` writes GenericVector4_A = (dust level × DustColour.w,
+        // dirt level × DirtColour.w, ..), B = DustColour, C = DirtColour (the paint block's +0x60 / +0x70,
+        // matched to the paint's fields in a memory snapshot), and slots 0x30 / 0x31 = the secondary paint's
+        // diffuse / specular minus the primary's, which the `_TwoPaint*` programs add × (mPaintColourIndex or
+        // the mask's green): p12 / p13 here. p9 is the car's own state at runtime (`paint_wear.rs`); here it
+        // holds `--dirt` for cars that are only shown (`--vehicle`). The colours' .w ride in p10.w / p11.w.
         let [dirt, dust] = dirt_level();
         let (dc, uc) = (p.dirt_colour, p.dust_colour);
+        let a = crate::paint_wear::shader_levels(dust, dirt, p.dust_scale, p.dirt_scale);
         self.vals[36..48].copy_from_slice(
-            &pack(&[
-                [dirt * p.dirt_scale, dust * p.dust_scale, 0.0, 0.0],
-                [dc[0], dc[1], dc[2], 0.0],
-                [uc[0], uc[1], uc[2], 0.0],
-            ])[..12],
+            &pack(&[[a[0], a[1], 0.0, 0.0], [uc[0], uc[1], uc[2], p.dust_scale], [dc[0], dc[1], dc[2], p.dirt_scale]])
+                [..12],
         );
+        // Scratches: PbrPaintScratchColour (p19.rgb; p19.w is the grid flag) and PbrPaintScratchSettings =
+        // (PbrScratchRoughness, `0802d981`) (p20.xy; p20.z is the effects UV flag).
+        let sc = p.scratch_colour;
+        self.vals[76..79].copy_from_slice(&pack(&[[sc[0], sc[1], sc[2], 0.0]])[..3]);
+        self.vals[80..82].copy_from_slice(&pack(&[[p.scratch_roughness, p.scratch_specular, 0.0, 0.0]])[..2]);
         let (sd, ss) = p.secondary.unwrap_or((p.diffuse, p.specular));
         let d = |a: [f32; 3], b: [f32; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2], 0.0];
         self.vals[48..56].copy_from_slice(&pack(&[d(sd, p.diffuse), d(ss, p.specular)])[..8]);
@@ -880,6 +893,11 @@ impl Look {
     /// Whether the mesh needs the road wetness mask (`convert::add_road_wetness`).
     pub fn wet_road(&self) -> bool {
         matches!(self.mode, Mode::Road | Mode::RoadLine)
+    }
+
+    /// Body paint whose effects map (TEXCOORD2) rides in UV_0 (`convert::add_paint_grid`).
+    pub fn effects_in_uv0(&self) -> bool {
+        self.paint && self.vals[20 * 4 + 2] != 0
     }
 
     /// Whether the material reads the vehicle light state.

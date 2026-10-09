@@ -83,7 +83,7 @@ struct Layered {
     //          has surf), p4 = (surfTile.xy, surfAnimationSpeed, 0), p5 = (causticTile.xy, 0, 0); textures: -,
     //          normal, DiffuseAndCaustics, SpecDepthAndRefraction, RiverFloor, Surf, SurfMask, SurfNormal
     // RSF = Roughness_Specular_Fresnel (x = roughness scale, y = F0, z = Fresnel strength)
-    p: array<vec4<f32>, 14>,
+    p: array<vec4<f32>, 21>,
     // x = sky brightness (cd/m² per panorama unit), y = reflection cube mip count
     env: vec4<f32>,
     // vehicle light state (g_selfIlluminationMask): x = brake, y = headlights / running, z = reverse, w = tail
@@ -203,6 +203,34 @@ fn road_slope(texel: vec3<f32>, t: vec3<f32>, b: vec3<f32>) -> vec2<f32> {
 fn detail_slope(texel: vec3<f32>) -> vec2<f32> {
     let c = 2.0 * (texel - 0.5);
     return vec2(c.x, -c.y) / max(c.z, 0.05);
+}
+
+/// The paint's damage weight (VehicleNFS13_BodyPaint vertex program): the car's 3 × 5 `gavDamageVolumeValues`
+/// (p14..p17, row-major from the back right, three per row) sampled bilinearly at gvDamageVolumeParam (p18)
+/// × the bind-pose model (x, z), at least g_damageConstants.x (0 in the game).
+fn damage_weight(xz: vec2<f32>) -> f32 {
+    let q = layered.p[18];
+    let g = xz * q.xy + q.zw;
+    let c = floor(g);
+    let f = g - c;
+    let i = vec2<i32>(c);
+    let v00 = grid_value(i.x, i.y);
+    let v10 = grid_value(i.x + 1, i.y);
+    let v01 = grid_value(i.x, i.y + 1);
+    let v11 = grid_value(i.x + 1, i.y + 1);
+    let w = (1.0 - f.y) * ((1.0 - f.x) * v00 + f.x * v10) + f.y * ((1.0 - f.x) * v01 + f.x * v11);
+    return max(w, 0.0);
+}
+
+/// One grid value (index row × 3 + column, as the game's `cb1[145 + i].x`); outside the grid it reads 0 (the
+/// game's weight there is 0 too: the AABB maps the body to [0, 2] × [0, 4]).
+fn grid_value(x: i32, y: i32) -> f32 {
+    let i = y * 3 + x;
+    if x < 0 || y < 0 || i > 14 {
+        return 0.0;
+    }
+    let v = layered.p[14 + i / 4];
+    return v[i % 4];
 }
 
 @fragment
@@ -424,15 +452,21 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         if p2.y > 0.5 {
             albedo = textureSample(tex0, samp0, uv) * vec4(p3.rgb, 1.0);
         }
-        // VehicleNFS13_BodyPaint* (p8 = (livery kind, mPaintColourIndex, has effects map), p9 = GenericVector4_A,
-        // p10 / p11 = GenericVector4_B / _C = the paint's DirtColour / DustColour). `_Livery`: lerp(paint,
-        // livery.rgb, livery.a) with the livery at TEXCOORD0; `_TwoPaint` / `_TwoPaintMask` add the secondary
-        // paint × (mPaintColourIndex or the mask's green), see below. Then dirt and dust from
-        // EffectsTextureSampler at TEXCOORD2: dirt a = sat(e.w² · A.x), dust d = sat(2 · sat(e.y² · A.y) ·
-        // e(uv × 7).x); coverage = a + d (1 - a) blends towards a·B (1 - d) + d·C, F0 × (1 - coverage),
-        // roughness towards 1, clear coat × (1 - coverage)⁴. Scratches need the damage weight (open).
+        // VehicleNFS13_BodyPaint* (p8 = (livery kind, mPaintColourIndex, has effects map), p9 = GenericVector4_A
+        // = (dust level × DustColour.w, dirt level × DirtColour.w), p10 / p11 = GenericVector4_B / _C = the
+        // paint's DustColour / DirtColour). `_Livery`: lerp(paint, livery.rgb, livery.a) with the livery at
+        // TEXCOORD0; `_TwoPaint` / `_TwoPaintMask` add the secondary paint × (mPaintColourIndex or the mask's
+        // green), see below. Then dust and dirt from EffectsTextureSampler at TEXCOORD2 (UV_1, or UV_0 when
+        // p20.z): dust a = sat(e.w² · A.x), dirt d = sat(2 · sat(e.y² · A.y) · e(uv × 7).x); coverage
+        // = a + d (1 - a) blends towards a·B (1 - d) + d·C, F0 × (1 - coverage), roughness towards 1, clear coat
+        // × (1 - coverage)⁴. Scratches: s = (1 - 2|e(uv × (2, 3)).z - 0.5|) · sat(2 e.z - 1) · w, with w the
+        // damage weight the vertex program samples from the car's 3 × 5 `gavDamageVolumeValues` grid
+        // (p14..p17) at gvDamageVolumeParam (p18) × the bind-pose x / z (COLOR.zw, p19.w), at least
+        // g_damageConstants.x (0); s lerps the colour to PbrPaintScratchColour (p19.rgb), roughness and F0 to
+        // PbrPaintScratchSettings.xy (p20.xy) and takes the clear coat's reflection away (× (1 - s)).
         let p8 = layered.p[8];
         var cover = 0.0;
+        var scratch = 0.0;
         // Two-paint: + (secondary − primary) diffuse / specular (p12 / p13, slots 0x30 / 0x31) × the mesh's
         // mPaintColourIndex (`_TwoPaint`) or the mask texture's green at TEXCOORD0 (`_TwoPaintMask`).
         var second = p8.y;
@@ -445,14 +479,24 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             albedo = vec4(mix(albedo.rgb, l.rgb, l.a), 1.0);
         }
         if p8.z > 0.5 {
+            let euv = select(uv_b, uv, layered.p[20].z > 0.5);
             let a_in = layered.p[9];
-            let e = textureSample(tex1, samp1, uv_b);
-            let e7 = textureSample(tex1, samp1, uv_b * 7.0);
+            let e = textureSample(tex1, samp1, euv);
+            let e7 = textureSample(tex1, samp1, euv * 7.0);
             let a = saturate(e.w * e.w * a_in.x);
             let d = saturate(2.0 * saturate(e.y * e.y * a_in.y) * e7.x);
             let dirt = mix(a * layered.p[10].rgb, layered.p[11].rgb, d);
             cover = a + d * (1.0 - a);
             albedo = vec4(mix(albedo.rgb, dirt, cover), 1.0);
+#ifdef VERTEX_COLORS
+            if layered.p[19].w > 0.5 {
+                let w = damage_weight(in.color.zw);
+                let e23 = textureSample(tex1, samp1, euv * vec2(2.0, 3.0));
+                let band = 1.0 - 2.0 * abs(e23.z - 0.5);
+                scratch = band * saturate(2.0 * e.z - 1.0) * w;
+                albedo = vec4(mix(albedo.rgb, layered.p[19].rgb, scratch), 1.0);
+            }
+#endif
         }
         pbr_input.material.base_color = albedo;
         var f0 = (p0.rgb + layered.p[13].rgb * second) * (1.0 - cover);
@@ -464,13 +508,14 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             let nt = textureSample(tex2, samp2, uv);
             rough = select(nt.a, nt.y, p1.y > 1.5);
         }
+        rough = mix(rough, layered.p[20].x, scratch);
         var ao = vec2(1.0);
 #ifdef VERTEX_COLORS
         if p2.x > 0.5 {
             ao = in.color.xy;
         }
 #endif
-        set_specular(&pbr_input, f0 * ao.y, rough);
+        set_specular(&pbr_input, mix(f0 * ao.y, vec3(layered.p[20].y), scratch), rough);
         pbr_input.diffuse_occlusion *= vec3(ao.x);
         pbr_input.specular_occlusion *= ao.y;
         car = 1.0;
@@ -480,7 +525,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let nv = saturate(dot(pbr_input.N, v_dir));
         let schlick = pow(1.0 - nv, 5.0);
         let grazing = p1.z + (1.0 - p1.z) * p1.w;
-        let coat = mix(p1.z, grazing, schlick) * ao.y * pow(1.0 - cover, 4.0);
+        let coat = mix(p1.z, grazing, schlick) * ao.y * pow(1.0 - cover, 4.0) * (1.0 - scratch);
         pbr_input.material.base_color = vec4(pbr_input.material.base_color.rgb * (1.0 - coat), pbr_input.material.base_color.a);
         pbr_input.material.reflectance *= sqrt(1.0 - coat);
         let r = reflect(-v_dir, pbr_input.N);

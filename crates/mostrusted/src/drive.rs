@@ -342,6 +342,8 @@ pub struct WheelContact {
     pub velocity: Vec3,
     /// Tread speed minus ground speed along the tyre (m/s): positive spinning, negative locked / dragged.
     pub tread_slip: f32,
+    /// The surface's `VehicleEffects` (dry block): how fast it makes the car dirty (`paint_wear.rs`).
+    pub effects: Option<mw_assets::surfaces::VehicleEffects>,
 }
 
 impl Car {
@@ -500,6 +502,7 @@ pub fn build_car(commands: &mut Commands, b: &CarBuild) -> Entity {
             TransformHermiteEasing,
         ))
         .id();
+    commands.entity(car).insert(crate::paint_wear::ScratchScale(b.spec.scratch_scale));
     // Body collider: a box around the cabin, raised so the wheels do the work.
     let body_collider = commands
         .spawn((
@@ -1208,6 +1211,7 @@ pub(crate) fn car_physics(
                 slip: side * v_side + fwd * (v_long - wheel.omega * r),
                 velocity: v,
                 tread_slip: wheel.omega * r - v_long,
+                effects: surface.effects,
             });
         }
         // --- Low-speed turn-around assist (`FUN_008f8360`) -------------------------------------------------
@@ -1364,6 +1368,8 @@ struct WheelSurface {
     drag_scale: f32,
     drag: [f32; 2],
     drag_slip: [f32; 2],
+    /// The surface's dirt and dust build-up (`FUN_009d19c0`; the dry weather block, like the grip).
+    effects: Option<mw_assets::surfaces::VehicleEffects>,
 }
 
 impl WheelSurface {
@@ -1383,7 +1389,11 @@ impl WheelSurface {
             .ok()
             .and_then(|(collider, tags)| surfaces.surface_at(collider, tags, origin, *dir, reach))
             .and_then(|hit| hit.surface);
-        let info = tagged.or_else(|| surfaces.list.first().cloned());
+        // `MW_TEST_SURFACE=<index>`: untagged ground (the flat test track) counts as that surface instead.
+        static TEST_SURFACE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+        let default = *TEST_SURFACE
+            .get_or_init(|| std::env::var("MW_TEST_SURFACE").ok().and_then(|v| v.parse().ok()).unwrap_or(0));
+        let info = tagged.or_else(|| surfaces.list.get(default).or(surfaces.list.first()).cloned());
         let base = info.as_ref().and_then(|s| s.grip).unwrap_or(1.0);
         let uid = info.as_ref().and_then(|s| s.physics_uid);
         let link = uid.and_then(|u| p.surface_links.iter().find(|l| l.surfaces.contains(&u)));
@@ -1401,6 +1411,7 @@ impl WheelSurface {
             drag_scale: if link.is_some() { info.as_ref().and_then(|s| s.slide_drag).unwrap_or(0.0) } else { 0.0 },
             drag: link.map_or([0.0; 2], |l| l.drag),
             drag_slip: link.map_or([0.0, 1.0], |l| l.drag_slip),
+            effects: info.as_ref().and_then(|s| s.vehicle_effects[0]),
         }
     }
 
