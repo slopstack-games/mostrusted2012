@@ -38,6 +38,7 @@ mod sky;
 mod tonemap;
 mod traffic;
 mod tyre_marks;
+mod ui_quads;
 mod weather;
 
 use std::collections::{HashMap, HashSet};
@@ -635,6 +636,7 @@ fn main() -> anyhow::Result<()> {
             path: cli.easydrive_path.clone(),
         })
         .add_plugins(game_text::GameTextPlugin)
+        .add_plugins(ui_quads::UiQuadsPlugin)
         .add_plugins(hud::HudPlugin {
             enabled: !cli.no_hud && test.is_none() && !crash && !smash && !matches!(request, Request::Vehicle { .. }),
             metric: !cli.mph,

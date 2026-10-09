@@ -17,6 +17,7 @@ use mw_bundle::ResourceId;
 use mw_formats::binding::BindValue;
 
 use crate::game_text::{self, GameFonts, LoadedFont};
+use crate::ui_quads::{AdditiveQuadMaterial, PoolNode, QuadNode, QuadPool, show_quads};
 
 /// Layouts shown while driving in free roam (UniqueIds in `FREE_ROAM_HUD`): the first `Nitrous` widget's
 /// speedometer + nitrous gauge (1670359) and odometer (1806698), and `AdditionalHUD`'s minimap frame
@@ -86,7 +87,7 @@ struct Hud {
     scene: UiScene,
     textures: HashMap<ResourceId, (Handle<Image>, Vec2)>,
     root: Entity,
-    pool: Vec<Entity>,
+    pool: QuadPool,
     map: Option<MapView>,
 }
 
@@ -177,7 +178,7 @@ fn receive_hud(
         size: UVec2::ONE,
         frame: 0,
     });
-    commands.insert_resource(Hud { scene: assets.scene, textures, root, pool: Vec::new(), map });
+    commands.insert_resource(Hud { scene: assets.scene, textures, root, pool: QuadPool::default(), map });
 }
 
 /// F3 shows the debug status text (hidden while the HUD is up).
@@ -256,8 +257,6 @@ fn lookup(
     })
 }
 
-pub type PoolNode<'a> = (&'a mut Node, &'a mut ImageNode, &'a mut UiTransform, &'a mut Visibility);
-
 #[allow(clippy::too_many_arguments)]
 fn draw_hud(
     mut commands: Commands,
@@ -267,9 +266,10 @@ fn draw_hud(
     car: Query<(&crate::drive::Car, &GlobalTransform)>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     time: Res<Time>,
-    mut nodes: Query<PoolNode>,
+    mut nodes: Query<PoolNode, With<QuadNode>>,
     mut images: ResMut<Assets<Image>>,
-    mut root_vis: Query<&mut Visibility, Without<ImageNode>>,
+    mut materials: ResMut<Assets<AdditiveQuadMaterial>>,
+    mut root_vis: Query<&mut Visibility, Without<QuadNode>>,
 ) {
     let Some(mut hud) = hud else { return };
     let car = car.single().ok();
@@ -311,78 +311,5 @@ fn draw_hud(
     }
 
     let Hud { root, pool, textures, .. } = &mut *hud;
-    show_quads(&mut commands, *root, pool, &quads, textures, map_image, &mut nodes);
-}
-
-/// Show `quads` as absolutely placed image nodes under `root`, reusing (and growing) the node `pool`; the
-/// HUD and Easydrive both draw this way. `map_image` fills the minimap quad.
-pub fn show_quads(
-    commands: &mut Commands,
-    root: Entity,
-    pool: &mut Vec<Entity>,
-    quads: &[mw_assets::ui::Quad],
-    textures: &HashMap<ResourceId, (Handle<Image>, Vec2)>,
-    map_image: Option<Handle<Image>>,
-    nodes: &mut Query<PoolNode>,
-) {
-    // Grow the pool of quad nodes as needed.
-    while pool.len() < quads.len() {
-        let e = commands
-            .spawn((
-                Node { position_type: PositionType::Absolute, ..default() },
-                ImageNode::default(),
-                UiTransform::default(),
-                Visibility::Hidden,
-                Pickable::IGNORE,
-                ChildOf(root),
-            ))
-            .id();
-        pool.push(e);
-    }
-    for (i, &e) in pool.iter().enumerate() {
-        let Ok((mut node, mut image, mut transform, mut vis)) = nodes.get_mut(e) else { continue };
-        let Some(q) = quads.get(i) else {
-            if *vis != Visibility::Hidden {
-                *vis = Visibility::Hidden;
-            }
-            continue;
-        };
-        let (handle, rect, flip) = match (q.map, q.texture.and_then(|t| textures.get(&t))) {
-            (true, _) => (map_image.clone().unwrap_or_default(), None, (false, false)),
-            (false, Some((h, size))) => {
-                let [u0, v0, u1, v1] = q.uv;
-                let r = Rect::new(u0.min(u1) * size.x, v0.min(v1) * size.y, u0.max(u1) * size.x, v0.max(v1) * size.y);
-                (h.clone(), Some(r), (u0 > u1, v0 > v1))
-            }
-            (false, None) if q.texture.is_some() => {
-                *vis = Visibility::Hidden;
-                continue;
-            }
-            // Solid colour: Bevy's default image is one white pixel.
-            (false, None) => (Handle::default(), None, (false, false)),
-        };
-        let color = Color::linear_rgba(q.colour[0], q.colour[1], q.colour[2], q.colour[3]);
-        if image.image != handle
-            || image.color != color
-            || image.rect != rect
-            || image.flip_x != flip.0
-            || image.flip_y != flip.1
-        {
-            *image = ImageNode { image: handle, color, rect, flip_x: flip.0, flip_y: flip.1, ..default() };
-        }
-        let (left, top, w, h) = (Val::Px(q.rect[0]), Val::Px(q.rect[1]), Val::Px(q.rect[2]), Val::Px(q.rect[3]));
-        if node.left != left || node.top != top || node.width != w || node.height != h {
-            node.left = left;
-            node.top = top;
-            node.width = w;
-            node.height = h;
-        }
-        let rot = Rot2::degrees(q.rotation);
-        if transform.rotation != rot {
-            transform.rotation = rot;
-        }
-        if *vis != Visibility::Inherited {
-            *vis = Visibility::Inherited;
-        }
-    }
+    show_quads(&mut commands, *root, pool, &quads, textures, map_image, &mut nodes, &mut materials);
 }

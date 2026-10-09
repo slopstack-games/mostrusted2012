@@ -30,8 +30,8 @@ use mw_formats::binding::BindValue;
 
 use crate::game_text;
 use crate::garage::{Garage, GarageAction};
-use crate::hud::PoolNode;
 use crate::mods_menu::{ModCatalogue, ModSelection};
+use crate::ui_quads::{AdditiveQuadMaterial, PoolNode, QuadNode, QuadPool};
 
 pub struct EasyDrivePlugin {
     pub enabled: bool,
@@ -98,7 +98,7 @@ struct Look {
     images: Vec<(ResourceId, Image)>,
     textures: HashMap<ResourceId, (Handle<Image>, Vec2)>,
     root: Option<Entity>,
-    pool: Vec<Entity>,
+    pool: QuadPool,
 }
 
 /// The `EasyDrive` widget's menu layout in `EASYDRIVE_SCREEN` (UniqueId): the element stack at (3, 43). The
@@ -116,7 +116,7 @@ fn load_look(store: &mw_assets::AssetStore, lang: &mw_formats::Language) -> Opti
     let scene = store.ui_scene(layouts, lang);
     let images =
         scene.textures().into_iter().filter_map(|id| Some((id, game_text::decode_texture(store, id)?))).collect();
-    Some(Look { scene, images, textures: HashMap::new(), root: None, pool: Vec::new() })
+    Some(Look { scene, images, textures: HashMap::new(), root: None, pool: QuadPool::default() })
 }
 
 fn start_load(mut menu: ResMut<EasyDrive>, game: Res<Game>) {
@@ -384,7 +384,8 @@ fn redraw(
     mods: Res<ModCatalogue>,
     mod_sel: Res<ModSelection>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
-    mut nodes: Query<PoolNode>,
+    mut nodes: Query<PoolNode, With<QuadNode>>,
+    mut materials: ResMut<Assets<AdditiveQuadMaterial>>,
 ) {
     if !menu.dirty && !garage.is_changed() && !mod_sel.is_changed() {
         return;
@@ -422,5 +423,5 @@ fn redraw(
         Vec::new()
     };
     let Look { pool, textures, .. } = look;
-    crate::hud::show_quads(&mut commands, root, pool, &quads, textures, None, &mut nodes);
+    crate::ui_quads::show_quads(&mut commands, root, pool, &quads, textures, None, &mut nodes, &mut materials);
 }
