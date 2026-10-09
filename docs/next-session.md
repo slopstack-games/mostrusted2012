@@ -1,3 +1,74 @@
+# Handoff: end of 2026-10-09 (session 6, part 3): start here
+
+**State**: master (c11c9db and later) builds; clippy 0 warnings, 140 tests, `mwtool verify` 0 failures; the 911's
+accel / brake / corner / drift results are unchanged from the morning (landing deepest 0.104 m and climb
+settle 4.7 s changed with the kerb fix, by the game's rule). Every system below has its own decomp.md section and a
+dated research-log entry (newest first) with sources, model decisions and next steps. **Ask the user how it
+plays now**: since their last play test the FOV, the start-up flow, traffic density, crashes, kerbs and frame
+times all changed.
+
+## Landed today (after part 2 below)
+
+- **Fixes from the user's play test**: engine pitch range per bank (was pinned at the top of each gear);
+  floating grass (only the camera zone's + neighbours' groundcover; sprite size 2^e) and camera-facing sprites
+  (the game's vertex program); checkpoint markers (3D UI panels of `PointOfInterestVisuals`) and the minimap
+  (+Z forward, the game's icons); nitrous refill (traced: starts empty, per-event awards); surfaces (bumps,
+  grip fade, drift factor); dirt / dust build-up and scratches; props on by default (game's contact response)
+  and compounds breaking into parts; the white flashbang (camera shake spring stepped per frame); traffic
+  and AI engine sounds; horns, traffic crash / skid sounds, AI impact slots; car badges / decals alpha
+  (1-bit cut-out at 0.5, `_Alpha_` parts blended); the Jaguar's damage (the game's additive damage-clip blend,
+  30 cars affected); kerbs (the strut stop gives over the tyre sidewall).
+- **Traffic density** is the event's (free roam 1.0, was a fixed 4.78), matching the snapshots' counts; hard
+  hits on traffic / AI cars **crash** by the game's car-against-car rules (`car_impacts.rs`).
+- **FOV is horizontal** everywhere (captured from the original: all our cameras were ~1.8× too wide); the race
+  intro's upside-down / rolled shots are correct (the original shows them too); the outro camera stays fixed.
+- **Start-up flow** from the game's HSM data (`frontend.rs`, `pause.rs`, `mw_formats::hsm`): boot, title (movies
+  via `ffmpeg`), the loading transition and in-game loading screen, the free-roam start (Aston V12 Vantage at
+  trigger 1156487, or the profile's jack spot), pause menu (Esc / Start). `mostrusted` with no mode flag now
+  starts the front end; `--drive`, `--race`, `--test`, `--camera`, `--replay` skip it.
+- **Performance**: direct draws instead of Bevy's multi-draw-indirect path (render thread 2–3× cheaper
+  downtown; `MW_INDIRECT=1` for A/B), avian's tree optimisation inline, environment bakes on their own 2
+  threads, `MW_FRAME_LOG=<file>`, `--bench` prints p95 / p99 / hitches.
+
+## Next, in order (each has details in its research-log entry)
+
+1. The user's verdict on the above, then their next reports.
+2. Performance: fewer draws (the game's model LOD / draw distances; 3,465 visible prop meshes downtown at full
+   detail), the 2/60 s game-time cap per frame (measure with the handling tests), pre-warm the race start's
+   pipelines, the sky environment map re-filtered every frame. Then M4.5 streaming around the player.
+3. Kerbs part 2: the wheel as a point mass with the game's spring / damper (`FUN_0092f510`, `FUN_0092f160`), a
+   like-for-like run against `ref/live1`'s kerb drop-off at 66 s.
+4. Front end: the map screen 899991 (event selection), car select / customise (1571371, 1135879), the
+   new-game intro event 1560354, event-loading cards, the transition's sounds.
+5. Open model decisions worth a capture of the original: checkpoint marker orientation / size, burnout smoke
+   density, traffic / AI sound levels against the player's engine, dirt colour, landing sink.
+6. Smaller: the player's horn, scrapes, parked cars (static records decoded), traffic manoeuvres, the damaged
+   prop models, opponents' own cars and names, the AI racing line.
+
+## Housekeeping
+
+- 20+ agent worktrees under `.claude/worktrees/` (≈12 GB each) are all merged; remove them when the user agrees
+  (`git worktree remove <path>` and delete the `worktree-agent-*` branches).
+- /tmp is a RAM tmpfs: big artefacts go into a worktree, not the scratchpad (memory note).
+- The user's original-game save changed during the intro capture (SP from races); a backup from the start of
+  that run was in the session scratchpad (`savebackup/`), which does not survive a reboot.
+- CLAUDE.md has the user's uncommitted edits: its `--prop-physics` line is stale (now `--no-prop-physics`) and
+  the new commands below are not in it yet.
+
+New commands of part 3 (add to CLAUDE.md when it is free):
+```sh
+./target/release/mostrusted                                   # front end: title, loading, free roam (--new-game, --profile <f>)
+./target/release/mostrusted --drive 911 --test crash-traffic  # head-on with traffic; --test crash-ai --ai 911 --no-traffic
+./target/release/mostrusted --drive 911 --test kerb           # MW_TEST_KERB_H / _DEPTH / _ANGLE, MW_TEST_KMH
+./target/release/mostrusted --drive 911 --test smash --smash-set compounds
+./target/release/mostrusted --drive xkr --damage all=0.5      # start damaged; mwtool damage <car> --keys
+./target/release/mwtool hsm [id] [--find text]                # game-logic state machines; mwtool frontend
+./target/release/mwtool traffic-sound sfx out.wav             # horns / impacts / skids offline
+./target/release/mwtool surfaces --near x,z --steps           # kerbs and steps near a point
+# --front-end-shots <dir>, --show-loading, --show-pause, MW_FRAME_LOG=<f>, MW_INDIRECT=1, MW_AVIAN_ASYNC=1,
+# MW_BAKE_THREADS=0, MW_FOV_VERTICAL=1, MW_GATE_LOG=1
+```
+
 # Handoff: 2026-10-09 (session 6, part 2): races, AI, traffic, exhaust, race UI, cutscenes
 
 Six worktree agents, merged into master and checked together (clippy 0 warnings, 118 tests, `mwtool verify` 0
