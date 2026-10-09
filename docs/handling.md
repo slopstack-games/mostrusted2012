@@ -198,18 +198,26 @@ becomes `In_air_gravity_coefficient` × g, and for `Take_off_behaviour.123d2559`
 rates are damped per tick (`8b456140`, `312bd67d`, roll by roll rate). `Top_speed_MPH` is not read by the
 game's physics (the camera's FOV still uses it).
 
-### Nitrous (`mw_handling::nitrous`, 2026-10-06)
+### Nitrous (`mw_handling::nitrous`, 2026-10-06; tank and refill 2026-10-09)
 
-Update step 5 (`FUN_009d2aa0`, decomp.md "Nitrous and upgrades"): while the tank burns, the controls' nitrous
-amount (`NitrousUsage.845c3879` = 1) makes the engine's torque multiplier lerp(1, `Engine.Nitrous_strength.e9de413e`,
-amount) (1.9 on the 911), and the gearbox upshifts on rpm alone with the top gear unlocked (`FUN_009d4c20`). The
-tank (0–100) burns `NitrousUsage.053c5a6a` per second (24 stock: 4.17 s; the other variants carry 18 and 16) and
-starts a burn only above 10 % (`7ebf362a` = 0.1). It starts full and does not refill yet. Left Shift / pad A;
-the HUD gauge follows the tank. The punch (mode 1) and jump (mode 3) forces are described but not run.
+Update step 5 (`FUN_009d2aa0`, decomp.md "Nitrous and upgrades"): the controls' nitrous amount makes the
+engine's torque multiplier lerp(1, `Engine.Nitrous_strength.e9de413e`, amount) (1.9 on the 911), and the gearbox
+upshifts on rpm alone with the top gear unlocked (`FUN_009d4c20`). The punch (mode 1) and jump (mode 3) forces
+are described but not run.
 
-`--test nitrous` on the 911 (accel without nitrous unchanged: 0–100 3.72 s, quarter 11.58 s, top 307.6 km/h):
-0–60 mph 3.37 s, 0–100 km/h 3.47 s, tank empty at 4.17 s (122 km/h, third gear), 0–200 km/h 10.33 s (11.05
-without), quarter mile 11.25 s, top 307.4 km/h. Low gears are traction-limited, so most of the gain is in third.
+The tank is the game logic's (decomp.md "Nitrous refill"): 0–100, empty at the start (`FUN_00658c90`). A press
+starts a burn when the tank holds `Restrictions.c441f502` (1) and the car does `d5b487c7` (10 mph); it burns
+`NitrousUsage.053c5a6a` per second (24 / 18 / 16 by mod), runs at least `7ebf362a` (0.1 s), and the control amount
+ramps from 0 to 1 over `845c3879` (1 s) after the start. While it burns the throttle is held at 1. It refills from
+the car's `NitrousParameters` variant: the fitted nitrous mod's, else `Vehicle_Gameplay.Nitrous_Online` (model
+decision below). The 911's `Nitrous_Online` (BURN NITROUS) pays per second 1.5 above 35 % of the top speed
+(189 mph), 1.2 in an oncoming lane, 3 slipstreaming, 6 drifting at 30+ mph after 0.75 s, 2 for a donut under
+30 mph, 24 in the air; once 3 / 6 per near-miss window (same direction / oncoming, above 80 mph), 18 per hit on
+a racer above 50 mph, 100 for a takedown or a crash escape. `MW_NITROUS_LOG=1` logs it.
+
+`--test nitrous` on the 911 (full tank, the press at 10 mph): 0–60 mph 3.45 s, 0–100 km/h 3.53 s, tank empty at
+4.93 s (142 km/h), 0–200 km/h 9.87 s (the high-speed refill keeps a trickle), quarter mile 11.08 s. Before the
+tank port (instant amount 1, held from rest): 3.37 / 3.47 / 4.17 / 10.33 / 11.25 s.
 
 ## Cameras (`VehicleCameraContainer`, `crates/mostrusted/src/camera.rs`)
 
@@ -442,7 +450,12 @@ stands 10 m past the impact); a 2 m pillar shows the car.
 | ~~`LAT_GRIP` / `LONG_GRIP`~~ | removed 2026-10-06 | the code's caps are μ × N × data axle scale × surface grip × camber × gameplay grip multipliers (1 outside timed effects): `FUN_009c5da0`, `FUN_00905910`, `FUN_009d8bd0` (decomp.md "Tyres"); N and the downforce share confirmed on `ref/xkr_launch` |
 | ~~tyre effective mass~~ | ported | the chassis's effective mass at the contact (`FUN_009ca610`), the wheels solved one after the other, each seeing the velocity the previous left (`FUN_009289f0`): drive.rs does this (this row was stale until 2026-10-09) |
 | nitrous multiplier target | engine full-throttle torque | `FUN_009d2aa0` writes a four-lane multiplier at its component's +0x10; the reader was not found (the call's `this` is not recoverable in the caller `FUN_00904260`); scaling the full-throttle torque is assumed |
-| nitrous tank | 100 units, starts full, no refill, burn starts above 10 % | the tank is gameplay code, not traced; capacity from `Restrictions.c441f502` = 100 (1 in most instances), rates from `NitrousParameters` (handling.md "Nitrous") |
+| nitrous default variant | `Vehicle_Gameplay.Nitrous_Online` without a nitrous mod | the game uses `Nitrous_Offline` offline (`FUN_0065de50`), which has every usage disabled (no nitrous until a nitrous mod is won); unlocks are not modelled, so the base mod's variant is fitted instead |
+| nitrous start input | a press (action state 2), kept while held (1 or 2) | `FUN_006cd3e0` starts on state 2 and keeps on 1 or 2; that 2 is "pressed this frame" is inferred from the split, the input states were not traced |
+| nitrous modes 3 / 4 | not started | speedbreaker and jump nitrous (`FUN_00662fa0`, `FUN_00663020`) not ported; their usage blocks have no word at +0x1c; mode 2 (punch) runs in the tank with the mode-0 engine multiplier only |
+| near-miss traffic spheres | box centre, radius \|half extents\| | the game's broadphase bounding spheres (2.32–2.58 m in a snapshot) were not traced to their source |
+| slipstream line of sight | a world ray between the car origins + 0.5 m | `FUN_0063c790` casts from objects at vehicle +0xac (`FUN_00514a40`); their points were not traced |
+| nitrous events not fed | takedowns, crash escapes, gas stations, gates | the runtime has no takedowns, police or gas stations; the gate smash award (+10, `FUN_0074cf40`) is not wired to `freeroam.rs` |
 | punch / jump force scale | 0.44704 (`nitrous::PUNCH_SCALE`) | **from the game**: `.bss` 0x0118a018 (read live), mph → m/s, so `0798d257` is mph/s; the modes 1 / 3 are still not run |
 | ~~blend-input scale~~ | 1, from the game | settled 2026-10-09: the player's four wheel constraints (island +0x20 array, 0x500 bytes each, at 0x07c27280 in the snapshots) hold +0x210 = (1, 0, 0, 0) and +0x4aa = 1 (the full tyre solve `FUN_009c75b0` runs only with that byte set) in both snapshots; `FUN_009c5da0` broadcasts lane 0 onto κ and α |
 | surface-change fade | none (instant) | the game fades the grip of the surface just left over a time and uses the lower of old and new (`FUN_009ceb00`, `FUN_009d4460`); not ported |
