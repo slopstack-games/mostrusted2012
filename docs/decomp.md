@@ -946,7 +946,107 @@ Read for the user's report "traffic sounds are also missing"; ported in `mw_asse
   at the data's own level (master and channel gains; the competitor banks are not normalised like the player's,
   the competitor skids get none of our skid mix gains), so the level between the player's sounds and the others'
   is a model relation (the player's normalisation is one); the AI gear-change clock is the player's, as the
-  binding names it. Not ported: horns, traffic collision and skid sounds, pass-bys, occlusion.
+  binding names it. Not ported: pass-bys, occlusion (horns, traffic crash and skid sounds: next section).
+
+## Traffic horns, crashes and skids (2026-10-09)
+
+Read for the request "traffic horns, traffic crash and skid sounds as the original has them"; data in
+`mw_assets::car_sfx`, runtime `crates/mostrusted/src/car_sfx.rs`. `world` = the traffic object, "car" = the 0x80-byte
+vehicle slot at `world + i·0x80` (+0x00 speed, +0x48 horn timer, +0x58 blink timer, +0x5c random, +0x60 flags,
++0x69 type, +0x6a / +0x6b state bits), "lane car" = the lane follower at `world + (i + 0x37f)·0x80` (+0x22 mode,
++0x34 waiting time, +0x3c personality). `FUN_0060d290` (per frame) calls `FUN_006042c0` for every car within
+60 m of the local player's car (`.data` 0x010c4e04 = 3600), with the car's 0x200-byte sound emitter at
+`world + 0x69d30 + i·0x200` as `this` (disassembly at 0x0060d590); every sound below plays on that emitter.
+
+- **Horn wish** (`FUN_00ebe8c0`, the traffic behaviour, run by `FUN_00ebeb00` only while the car is within
+  `TrafficVehicleConfig.6e54f849` = 150 m of the behaviour's reference point, `param_1[0x2c]` = 150² from its
+  constructor; confirmed): if the timer (+0x48) ≤ 55 (`.rdata` 0x01082f08) or the lane car's mode (+0x22) ≠ 0:
+  clear 0x200, timer += frame time (the time `FUN_005f53b0` blinks the lights with: seconds); else `FUN_005ebb40`:
+  timer = 0 and, when the lane car's personality (+0x3c, `[edi+0x3c]` in the disassembly) ≤ `TrafficParamConfig
+  .831be501` (+0x20, 0.4), set 0x200. In `snap2` the timer is FLT_MAX on every car not yet checked (31.1 and
+  20.6 s on the two that had been), so a car honks the first time it stops for an obstacle (mode 0, the arbiter's
+  "stop for the obstacle": the player's car or crashed traffic) with a 40 % chance, then at most every 55 s.
+  Bit 0 is the manoeuvres' horn: the swerve (`FUN_005f77e0`, `SwerveManoeuvre` fields +0x1a8..+0x1e0) and
+  `FUN_005ffc10` set it when their phase timer (+0x200) passes 0.5 s and the car's random +0x5c ≤
+  `TrafficParamConfig.fa75a686` (+0x24, 0.7); the jack-knife (`FUN_005f65a0`) holds it through some phases. (The
+  research log's "TrafficConfig +0x20 / +0x24" is this `TrafficParamConfig`, `DAT_0110f940`.)
+- **Horn sound** (`FUN_006042c0`): with bit 0 or 0x200 set and 0x800 clear, and horns in the type's competitor
+  `VehicleSound` (+0x64 count), the first free of two horn slots (`world+0xa2b9c`, freed by `FUN_0060d290` once
+  `FUN_00a422d0` reports the voice gone) plays `horns[car index % count]` (`FUN_00600ed0`; `FUN_005ecd70` stores
+  the voice) and sets 0x800, cleared when neither bit is set. Six distinct horn timelines over the 11 traffic
+  types (1–3 per type): a long blast with click-in / release items and a `JumpTimelineController` that skips the
+  rest, unconditionally in two (one blast), on `Signals.GetRandomNumber[100](LTEQ,50)` in four (one blast, or the
+  blast and up to three short ones). Channel `…076b23`: min 5 m, max 120 m, curve 3.94, peak gain 5 (clamped to 1:
+  full level to ~45 m), focus 0.6, doppler 680.
+- **Wrecked traffic and car alarms** (`FUN_006042c0`, not ported): a car whose race-car entity's damage bar is
+  full (+0x1180 ≥ profile +0x74) plays the global `VehicleSound.385b1faf` list round robin (`world+0xb1731`; four
+  timelines: a crunch, then a 1.5 s loop by a jump 12 → 10.5 s) and sets 0x400. A parked car (+0x6a low nibble
+  1) within 10.5 m (`.rdata` 0x00fb2884 = 110.25) of the player, with `FUN_00577190` below 6 (0x00fb1b58; not
+  identified) and a flag of the player car's data (+0xf6), or with bit 0x10, plays the alarm `MiscSound.c1109b6e`
+  (an 8 s timeline) when `(car index % 10) × 0.1 ≤ MiscSound.7f18169d` (0.4: half the cars) and blinks the hazard
+  lights (0x20: 15 s at 0.4 s, `FUN_005f53b0`).
+- **Traffic car contacts** (`FUN_006042c0`, physical cars only, +0x6b bit 3): of the car's contact records
+  (`FUN_0090d610` count, 0x30 bytes), the one with the largest +0xc above `VehicleSound.392b1040` (the global
+  `VehicleSound`, `world+0xb270`; 2.235, read as m/s = 5 mph) whose other car (+0x28) is not nearer to the player
+  than this one plays `CollisionSoundSet` (`SOUND/METALCAR.BNDL`, `world+0xb17a8`) slot +0x6c (`333a28fc`, the
+  competitor light front impact) through the emitter's `vtable+0x54`. World contacts (bitset `+0x5de10`) go to
+  `FUN_0057caf0`.
+- **World impacts** (`FUN_0057caf0`, traffic and race cars): the contact's surface (`record[3] >> 13 & 0x7f`) gives
+  `SurfaceType.Collision_Sounds` (+0x1e0, `FUN_0054a4f0`; seven sets over the surfaces). Not scraping (emitter
+  `vtable+0x58` false): an impact above 2.235 plays one wave of the set's pool `7e01f1e6` (+0x118, round robin) on
+  the channel set's +0x60 with gain `0.714 + 0.286 × clamp((|v| − 30 mph) / 70 mph)` (|v| the car's speed;
+  `.data` 0x010c4730 = 0.44704, `.rdata` 0x00faba74 / 0x00faba78 / 0x00fae1c8 / 0x00faba7c), and for the player
+  the set's slot +0xf4. Scraping: a state machine over the pools +0x154..+0x164 (`FUN_00929da0`; not ported).
+  The traffic channel set (`world2 + 0x12a00`) equals the competitors' (`+0x12950`) in `snap2`; the names come from
+  `FUN_004b5f40` (+0x60 = `Competitor_World_Collision`, a channel of the mix snapshot `Mix_Main`).
+- **Race car impacts** (`FUN_00591ac0` per race car → `FUN_0057e920`), thresholds in the global `VehicleSound`:
+  against a race car by `s = max(this car's value, the other's)`: heavy above `edc5149f` (+0xcc, 30), medium from
+  `ad43123c` (+0xfc, 14), else light; skipped when both are ≤ 1.19e-7; without a human player in the pair only
+  the car with the larger value plays it; a human player's object always plays it (the AI side stays silent).
+  World contacts, at most every `567b6cc3` (0.1 s): `FUN_0057caf0`, then, if the surface has a set, medium above
+  `89672c4c` (+0xc8, 30), light above `945a7617` (+0xf8, 14). Direction (`FUN_00570b60`): the contact in the car's
+  frame against its forward axis: front above cos 30° (`.bss` 0x0110d0f0 = 0.866 in `snap2`), rear below −0.866,
+  else side. Slots (competitor | player): heavy front / rear / side +0x34 / +0x3c / +0x44 | +0x0c / +0x1c / +0x24;
+  medium +0x54 / +0x5c / +0x64 | +0x9c / +0xa4 / +0xac; light +0x6c / +0x74 / +0x7c | +0xd4 / +0xe4 / +0xec. A
+  player's heavy impact adds a wave of pool +0x108 (`a8f44b4f`); a crash (flag +0x1c2d) forces heavy and adds pool
+  +0x150 (`0960076c`) and slot +0xb4. The level also sets a value from `VehicleSound` +0xe4 / +0xe8 / +0xec
+  (0.067 / 0.042 / 0.009; its reader not traced).
+- **Snapshot channels**: an item without `Mixer_Channel` names a channel of the mix snapshot in `Snapshot_Property`
+  ("Competitor Vehicle Collision Small" → the field `Competitor_Vehicle_Collision_Small` of `Mix_Main` `…72a0`,
+  from `MiscSound.20c447e8` → `MixSnapshotSet.External_Camera`): gains 0.259 / 0.399 / 0.633 (small / medium /
+  big), `Competitor_World_Collision` 0.794 (falloff `…7273`: min 4 m, max 250 m). Names added to
+  `genesys_names.txt`.
+- **Traffic skids** (`FUN_0060d290`, after the events): six slots at `world+0xb1748` (+0 time, +4 voice, +8 car,
+  +0xc state). A playing slot whose car is no longer physical or lost flag 0x1000 stops with a 0.1 s release
+  (`FUN_00a44e40(voice, 0.1)`, `.rdata` 0x00fb1a94). Then the car nearest the player (within 60 m), if physical
+  with 0x1000 and without a slot, starts its wheel surface's `SurfaceSounds.6bdefb10` (+0x54, `FUN_0054a5d0`):
+  a timeline with one looping wave (0..4 s, fade-in 0.5 s, gain 3) and a jump 4 → 1 s, so it loops until stopped.
+  Flag 0x1000 (`FUN_00606210`, the physical cars' wheel effects): wheel 0 leaves marks (+0x1be, with a tyre-mark
+  set for its surface) and the body's speed² exceeds `.bss` 0x0110f580 = 25 (read in `snap2`).
+- **AI racers' skids** (`FUN_0058f6d0`, from the surface update `FUN_0058fe10`; competitors walk wheels 0 / 2
+  only, the player all four): state 0 starts `Drift` (+0x1c) or, for a non-player, `Drift_Competitor` (+0x24), then
+  `Brake` / `Brake_Competitor` (+0x0c / +0x14); 1 → 2 swaps the second for `Spin` / `Spin_Competitor` (+0x44 /
+  +0x4c) when `FUN_00573d70` turns false, 2 → 1 back, each swap releasing the old voice over 0.15 s (`.rdata`
+  0x00fad428). `FUN_00573d70` = |vehicle +0x2d58| > 0.01 (0x00f9d474 / 0x00fa934c), a field not identified. The
+  road sequences are `SurfaceSounds` +0x34 (player) / +0x3c (others). Not ported (ours run all three competitor
+  sequences from their bindings).
+- **`JumpTimelineController`** (now run by `mw_audio::sfx_player`): when a timeline's clock crosses `TriggerTime`
+  and `EnabledBinding` holds (empty = always) the clock moves to `b6a51260`. `Signals.GetRandomNumber[n]` is drawn
+  when the jump is reached (assumed uniform 0..n−1); the comma test form `(LTEQ,50)` is parsed.
+- **Ported** (`car_sfx.rs`): horn wish and sound as above (chance from the data), two horn slots, `horns[slot %
+  count]`; crashed traffic's car contacts (slot 12, nearer car of the pair, never against the player's car) and
+  world contacts (the surface wave); AI racers' car-car and world / traffic contacts with the levels, directions
+  and slots above; the six traffic skid slots. Model decisions: our contacts are every physics step's, not impact
+  records, so every impact (AI against AI too) needs the 2.235 m/s closing speed and is spaced 0.1 s per car (at
+  the game's eps test AI cars leaning on each other started a sound every 0.1 s: 624 skipped in a race); closing
+  speed for the game's impact values (one per pair, so the faster AI car plays an AI–AI impact); the default
+  surface for every impact wave and skid; no scrape branch; AI against traffic as a world contact; props excluded
+  (their own sounds, `props.rs`); a crashed car "skids" when it touches the world faster than 5 m/s (our crashed
+  cars have no wheels to mark); the behaviour radius measured from the player's car; at most 8 impact voices,
+  impacts at zero gain not started; one placement per voice (its first wave item's channel or snapshot channel).
+  Not ported: manoeuvre horns (no manoeuvres), wrecked-traffic sounds, car alarms, the player's horn (HORN = action
+  5, W / pad B; the player's horn list plays on `Player Vehicle Horn`, its runtime not traced), the AI skid state
+  machine, the player's impacts by this table (`sfx.rs` still sorts the 31 slots by loudness).
 
 ## Groundcover drawing (2026-10-09)
 

@@ -54,6 +54,8 @@ pub struct SpatialRender {
     started: bool,
     /// The whole block is at zero gain: the source is not pulled (a virtual voice; it resumes where it stopped).
     silent: bool,
+    /// Pull the source even when silent (one-shots whose clock must run on: a horn out of earshot still ends).
+    keep_running: bool,
 }
 
 impl SpatialRender {
@@ -68,7 +70,14 @@ impl SpatialRender {
             next: 0.0,
             started: false,
             silent: false,
+            keep_running: false,
         }
+    }
+
+    /// Render the source even at zero gain (its timeline keeps running; the output is silent).
+    pub fn keep_running(mut self) -> Self {
+        self.keep_running = true;
+        self
     }
 
     /// The next stereo frame, pulling as many samples from `source` as the pitch needs.
@@ -84,7 +93,7 @@ impl SpatialRender {
             }
             let n = BLOCK as f32;
             self.step = ((target.0 - self.cur.0) / n, (target.1 - self.cur.1) / n, (target.2 - self.cur.2) / n);
-            self.silent = self.cur.0 <= 0.0 && target.0 <= 0.0;
+            self.silent = self.cur.0 <= 0.0 && target.0 <= 0.0 && !self.keep_running;
         }
         self.counter = (self.counter + 1) % BLOCK;
         if self.silent {

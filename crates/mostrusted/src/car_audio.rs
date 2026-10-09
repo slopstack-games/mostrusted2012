@@ -85,7 +85,7 @@ impl Drop for Timed {
 
 /// Counters the audio thread fills for `MW_AUDIO_METER`.
 #[derive(Default)]
-struct VoiceStats {
+pub(crate) struct VoiceStats {
     /// Sum of squares of the rendered output (both channels), as f64 bits, and the frames.
     energy: AtomicU64,
     frames: AtomicU64,
@@ -95,17 +95,20 @@ struct VoiceStats {
 
 impl VoiceStats {
     /// Mean square since the last call (resets).
-    fn take(&self) -> (f64, u64, u64) {
+    pub(crate) fn take(&self) -> (f64, u64, u64) {
         let e = f64::from_bits(self.energy.swap(0f64.to_bits(), Ordering::Relaxed));
         (e, self.frames.swap(0, Ordering::Relaxed), self.nanos.swap(0, Ordering::Relaxed))
     }
 }
 
-/// What a placed voice renders: an engine bank (`mw_audio::sequence`) or a tyre bank (`mw_audio::sfx_player`).
+/// What a placed voice renders: an engine bank (`mw_audio::sequence`), a tyre bank (`mw_audio::sfx_player`), or
+/// a one-shot (`car_sfx.rs`: an `sfx_player` bank whose source ends once its cue has played, and whose clock runs
+/// on while it is out of earshot).
 #[derive(Clone)]
-enum VoiceBank {
+pub(crate) enum VoiceBank {
     Engine(mw_audio::sequence::Bank, Arc<Params>),
     Tyres(mw_audio::sfx_player::Bank, Arc<mw_audio::sfx_player::Params>),
+    OneShot(mw_audio::sfx_player::Bank, Arc<mw_audio::sfx_player::Params>),
 }
 
 enum VoicePlayer {
@@ -132,6 +135,8 @@ pub struct SpatialAudio {
 
 pub struct SpatialSource {
     player: VoicePlayer,
+    /// A one-shot's parameters: the source ends when they report the cue finished.
+    one_shot: Option<Arc<mw_audio::sfx_player::Params>>,
     render: SpatialRender,
     right: Option<f32>,
     stats: Arc<VoiceStats>,
@@ -146,6 +151,9 @@ impl Iterator for SpatialSource {
     fn next(&mut self) -> Option<Sample> {
         if let Some(r) = self.right.take() {
             return Some(r);
+        }
+        if self.one_shot.as_ref().is_some_and(|p| p.finished()) {
+            return None;
         }
         let t0 = self.timing.then(std::time::Instant::now);
         let player = &mut self.player;
@@ -194,15 +202,21 @@ impl Decodable for SpatialAudio {
                 p.bypass = mw_audio::sequence::Bypass::from_env();
                 VoicePlayer::Engine(Box::new(p))
             }
-            VoiceBank::Tyres(bank, params) => {
+            VoiceBank::Tyres(bank, params) | VoiceBank::OneShot(bank, params) => {
                 let mut p = mw_audio::sfx_player::Player::new(bank.clone(), params.clone());
                 p.dry = dry;
                 VoicePlayer::Tyres(Box::new(p))
             }
         };
+        let one_shot = match &self.bank {
+            VoiceBank::OneShot(_, params) => Some(params.clone()),
+            _ => None,
+        };
+        let render = SpatialRender::new(self.spatial.clone());
         SpatialSource {
             player,
-            render: SpatialRender::new(self.spatial.clone()),
+            render: if one_shot.is_some() { render.keep_running() } else { render },
+            one_shot,
             right: None,
             stats: self.stats.clone(),
             block: (0.0, 0, 0),
@@ -220,7 +234,7 @@ fn spawn_voice(
     let stats = Arc::new(VoiceStats::default());
     let channel = match bank {
         VoiceBank::Engine(..) => crate::settings::Channel::Engine,
-        VoiceBank::Tyres(..) => crate::settings::Channel::Sfx,
+        VoiceBank::Tyres(..) | VoiceBank::OneShot(..) => crate::settings::Channel::Sfx,
     };
     let handle = assets.add(SpatialAudio { bank, spatial: spatial.clone(), stats: stats.clone() });
     // ONCE: the source never ends (see audio.rs); starts silent until `settings::apply_volumes` sets it.
@@ -230,19 +244,45 @@ fn spawn_voice(
     (e, spatial, stats)
 }
 
+/// A one-shot voice (`car_sfx.rs`): plays `bank`'s cue once and despawns when it has finished. Spawned at the
+/// effects volume (a sink added at volume 0 would lose the first frame's attack).
+pub(crate) fn spawn_one_shot(
+    commands: &mut Commands,
+    assets: &mut Assets<SpatialAudio>,
+    bank: mw_audio::sfx_player::Bank,
+    params: Arc<mw_audio::sfx_player::Params>,
+    volume: f32,
+) -> (Entity, Arc<SpatialParams>, Arc<VoiceStats>) {
+    let spatial = Arc::new(SpatialParams::default());
+    let stats = Arc::new(VoiceStats::default());
+    let handle = assets.add(SpatialAudio {
+        bank: VoiceBank::OneShot(bank, params),
+        spatial: spatial.clone(),
+        stats: stats.clone(),
+    });
+    let e = commands
+        .spawn((
+            AudioPlayer::<SpatialAudio>(handle),
+            PlaybackSettings::DESPAWN.with_volume(Volume::Linear(volume)),
+            crate::settings::Channel::Sfx,
+        ))
+        .id();
+    (e, spatial, stats)
+}
+
 // --- The listener ----------------------------------------------------------------------------------------------
 
 /// The camera as the listener: position, axes and velocity (from its movement).
 #[derive(Resource, Default)]
-struct Listener {
-    position: Vec3,
-    forward: Vec3,
-    right: Vec3,
-    velocity: Vec3,
-    valid: bool,
+pub(crate) struct Listener {
+    pub position: Vec3,
+    pub forward: Vec3,
+    pub right: Vec3,
+    pub velocity: Vec3,
+    pub valid: bool,
 }
 
-fn update_listener(
+pub(crate) fn update_listener(
     time: Res<Time>,
     mut l: ResMut<Listener>,
     cam: Query<&GlobalTransform, (crate::MainCamera, With<Frustum>)>,
@@ -262,7 +302,7 @@ fn update_listener(
 }
 
 /// Gain, pan and doppler of an emitter at `position` moving at `velocity` facing `forward`.
-fn place(s: &Spatial, l: &Listener, position: Vec3, velocity: Vec3, forward: Vec3) -> (f32, f32, f32, f32) {
+pub(crate) fn place(s: &Spatial, l: &Listener, position: Vec3, velocity: Vec3, forward: Vec3) -> (f32, f32, f32, f32) {
     let d = position - l.position;
     let dist = d.length();
     let u = if dist > 1e-3 { d / dist } else { l.forward };

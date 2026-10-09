@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use mw_audio::sfx_player::{
-    Channel, Clip, Fade, Item, ItemKind, ModValue, Plugin, PluginKind, Sequence, Target, field,
+    Channel, Clip, Fade, Item, ItemKind, Jump, ModValue, Plugin, PluginKind, Sequence, Target, field,
 };
 use mw_bundle::ResourceId;
 use mw_formats::genesys::{Object, Value, field_hash};
@@ -21,6 +21,8 @@ const POINT_Y: u32 = 0x12d3_a8ab;
 const MIXER_CHANNEL_CHAIN: u32 = 0x1a00_9288;
 const CHAIN_PLUGINS: u32 = 0x1d8b_4b21;
 const TRIGGER_PROBABILITY: u32 = 0xdb46_6b79;
+/// `JumpTimelineController`'s destination time (unnamed; `TriggerTime` is named).
+const JUMP_DESTINATION: u32 = 0xb6a5_1260;
 
 pub(crate) fn number(v: Option<&Value>) -> Option<f32> {
     match v? {
@@ -118,11 +120,21 @@ pub struct SoundLoader<'a> {
     waves: Mutex<HashMap<ResourceId, Option<Arc<Clip>>>>,
     /// Channel ids reached so far, in discovery order.
     channels: Vec<ResourceId>,
+    /// Mix snapshot channel gains by the `field_hash` of the channel name: an item without a `Mixer_Channel`
+    /// plays on the snapshot channel its `Snapshot_Property` names (`"Competitor Vehicle Collision Small"` →
+    /// `Competitor_Vehicle_Collision_Small`), whose gain scales the item.
+    snapshot: HashMap<u32, f32>,
 }
 
 impl<'a> SoundLoader<'a> {
     pub fn new(store: &'a AssetStore) -> Self {
-        Self { store, waves: Default::default(), channels: Vec::new() }
+        Self { store, waves: Default::default(), channels: Vec::new(), snapshot: HashMap::new() }
+    }
+
+    /// Items naming a snapshot channel (`Snapshot_Property`, no `Mixer_Channel`) take its gain from `gains`.
+    pub fn with_snapshot(mut self, gains: HashMap<u32, f32>) -> Self {
+        self.snapshot = gains;
+        self
     }
 
     pub fn object(&self, id: ResourceId) -> Option<Object> {
@@ -218,6 +230,16 @@ impl<'a> SoundLoader<'a> {
                 _ => continue,
             };
             self.note_channel(channel);
+            let mut kind = kind;
+            let snapshot = text(it, field_hash("Snapshot_Property"));
+            if channel.is_none()
+                && !snapshot.is_empty()
+                && let Some(&g) = self.snapshot.get(&field_hash(&snapshot.replace(' ', "_")))
+                && let ItemKind::Wave { gain, .. } = &mut kind
+            {
+                gain.value *= g;
+                gain.out = (gain.out.0 * g, gain.out.1 * g);
+            }
             items.push(Item {
                 start: number(it.get(START_TIME)).unwrap_or(0.0),
                 end: number(it.get(END_TIME)).unwrap_or(0.0),
@@ -236,6 +258,16 @@ impl<'a> SoundLoader<'a> {
             items,
             gate: String::new(),
             retrigger: false,
+            jumps: structs(&o, field_hash("TimelineControllers"))
+                .filter(|c| c.type_name.ends_with("JumpTimelineController"))
+                .filter_map(|c| {
+                    Some(Jump {
+                        trigger_time: num(c, "TriggerTime")?,
+                        destination: number(c.get(JUMP_DESTINATION)).or_else(|| num(c, "DestinationTime"))?,
+                        enabled: text(c, field_hash("EnabledBinding")),
+                    })
+                })
+                .collect(),
         })
     }
 

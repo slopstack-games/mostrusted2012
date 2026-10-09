@@ -236,6 +236,7 @@ impl AssetStore {
                     items: vec![wave_item(scratch, 1.0, 60.0, fade, gain)],
                     gate: String::new(),
                     retrigger: false,
+                    jumps: Vec::new(),
                 });
             }
             let sparks = pool("Sparks");
@@ -248,6 +249,7 @@ impl AssetStore {
                     items: vec![wave_item(sparks, 0.0, 1.0, Fade::default(), ModValue::constant(0.7))],
                     gate: String::new(),
                     retrigger: false,
+                    jumps: Vec::new(),
                 });
                 bank.cues.push((names::SPARKS.to_string(), vec![bank.sequences.len() - 1]));
             }

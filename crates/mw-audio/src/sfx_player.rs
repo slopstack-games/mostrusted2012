@@ -199,6 +199,20 @@ pub struct Sequence {
     /// One-shot items fire again whenever the previous one ends while the item is active, at a rate
     /// proportional to the binding (pops and crackles: `Gurgle_Sequence` is bound to a pop probability).
     pub retrigger: bool,
+    /// The timeline's `JumpTimelineController`s.
+    pub jumps: Vec<Jump>,
+}
+
+/// A `JumpTimelineController` (`TriggerType` 1, the only kind the sound timelines use): when the timeline's
+/// clock passes `trigger_time` and `enabled` holds, the clock jumps to `destination` (`b6a51260`). A jump back is
+/// a loop (the traffic skid: 4 → 1 s), a jump forward skips the rest (the horns: 2.42 → 5 s, half the time).
+#[derive(Debug, Clone, Default)]
+pub struct Jump {
+    pub trigger_time: f32,
+    pub destination: f32,
+    /// A binding test (empty = always). `Signals.GetRandomNumber[n]` is drawn by the player when the jump is
+    /// reached: an integer in 0..n (assumed: uniform, n exclusive).
+    pub enabled: String,
 }
 
 /// Plug-in kinds the player implements. Others (pans, limiters, reverb) pass the signal through.
@@ -346,6 +360,13 @@ impl Expr {
             Op::Lteq(v)
         } else if let Some(v) = arg.strip_prefix("EQUALS:").and_then(num) {
             Op::Equals(v)
+        } else if let Some(v) = arg.strip_prefix("GTEQ,").and_then(num) {
+            // The comma form some timelines use (`Signals.GetRandomNumber[100](LTEQ,50)`).
+            Op::Gteq(v)
+        } else if let Some(v) = arg.strip_prefix("LTEQ,").and_then(num) {
+            Op::Lteq(v)
+        } else if let Some(v) = arg.strip_prefix("EQUALS,").and_then(num) {
+            Op::Equals(v)
         } else if let Some(rest) = arg.strip_prefix("BETWEEN,") {
             let mut it = rest.split(',').filter_map(num);
             Op::Between(it.next()?, it.next()?)
@@ -383,6 +404,10 @@ pub struct Params {
     /// Smoothing time constant per value (s).
     smoothing: Vec<AtomicU32>,
     triggers: Mutex<Vec<String>>,
+    /// A stop request: release time in seconds (NaN = none).
+    stop: AtomicU32,
+    /// Set by the player once a cue has played and nothing sounds any more.
+    finished: std::sync::atomic::AtomicBool,
 }
 
 impl Params {
@@ -390,7 +415,15 @@ impl Params {
         let index = names.iter().enumerate().map(|(i, n)| (n.clone(), i)).collect();
         let values = names.iter().map(|_| AtomicU32::new(0f32.to_bits())).collect();
         let smoothing = names.iter().map(|_| AtomicU32::new(0.02f32.to_bits())).collect();
-        Self { names, index, values, smoothing, triggers: Mutex::new(Vec::new()) }
+        Self {
+            names,
+            index,
+            values,
+            smoothing,
+            triggers: Mutex::new(Vec::new()),
+            stop: AtomicU32::new(f32::NAN.to_bits()),
+            finished: Default::default(),
+        }
     }
 
     pub fn names(&self) -> &[String] {
@@ -430,6 +463,21 @@ impl Params {
         {
             t.push(cue.to_string());
         }
+    }
+
+    /// Stop every timeline and voice, releasing over `seconds` (`FUN_00a44e40(voice, fade)`).
+    pub fn stop(&self, seconds: f32) {
+        self.stop.store(seconds.max(0.0).to_bits(), Ordering::Relaxed);
+    }
+
+    fn take_stop(&self) -> Option<f32> {
+        let v = f32::from_bits(self.stop.swap(f32::NAN.to_bits(), Ordering::Relaxed));
+        (!v.is_nan()).then_some(v)
+    }
+
+    /// True once a cue has played to its end (or was stopped) and no voice sounds: a one-shot player is done.
+    pub fn finished(&self) -> bool {
+        self.finished.load(Ordering::Relaxed)
     }
 
     fn take_triggers(&self) -> Vec<String> {
@@ -476,6 +524,23 @@ struct SeqState {
     t: f32,
     duration: f32,
     items: Vec<ItemState>,
+    jumps: Vec<JumpState>,
+}
+
+/// A jump's resolved condition.
+enum JumpWhen {
+    Always,
+    Bind(Bind),
+    /// `Signals.GetRandomNumber[n]` with its test.
+    Random(u32, Op),
+    /// A binding the bank's parameters do not carry: never true.
+    Never,
+}
+
+struct JumpState {
+    trigger: f32,
+    destination: f32,
+    when: JumpWhen,
 }
 
 struct WaveVoice {
@@ -489,6 +554,8 @@ struct WaveVoice {
     owner: (usize, usize),
     stopping: bool,
     done: bool,
+    /// Release time when stopping (s).
+    release: f32,
 }
 
 struct PluginState {
@@ -610,6 +677,8 @@ pub struct Player {
     pub dry: bool,
     /// Sum of squares of each channel's input after its gain (diagnostics, see [`Player::enable_meter`]).
     meter: Option<Vec<f64>>,
+    /// A cue has started (for [`Params::finished`]).
+    cued: bool,
 }
 
 /// xorshift32.
@@ -630,6 +699,9 @@ impl Rng {
 
 /// Overall level before the soft limiter.
 const MIX_SCALE: f32 = 0.12;
+
+/// Players created so far (seeds their random draws apart).
+static PLAYERS: AtomicU32 = AtomicU32::new(0);
 
 impl Player {
     pub fn new(bank: Bank, params: Arc<Params>) -> Self {
@@ -720,6 +792,25 @@ impl Player {
                 playing: false,
                 t: 0.0,
                 duration: s.items.iter().map(|i| i.end).fold(s.max, f32::max),
+                jumps: s
+                    .jumps
+                    .iter()
+                    .map(|j| {
+                        let when = match Expr::parse(&j.enabled) {
+                            None => JumpWhen::Always,
+                            Some(e) => match e
+                                .base
+                                .strip_prefix("Signals.GetRandomNumber[")
+                                .and_then(|r| r.strip_suffix(']'))
+                                .and_then(|n| n.parse::<u32>().ok())
+                            {
+                                Some(n) => JumpWhen::Random(n.max(1), e.op),
+                                None => bind(&params, &j.enabled).map_or(JumpWhen::Never, JumpWhen::Bind),
+                            },
+                        };
+                        JumpState { trigger: j.trigger_time, destination: j.destination, when }
+                    })
+                    .collect(),
                 items: s
                     .items
                     .iter()
@@ -769,11 +860,13 @@ impl Player {
             order,
             time: 0.0,
             voices: Vec::new(),
-            rng: Rng(0x2545_f491),
+            // Each player draws its own sequence (a fixed start would send every horn down the same branch).
+            rng: Rng((0x2545_f491 ^ PLAYERS.fetch_add(1, Ordering::Relaxed).wrapping_mul(0x9e37_79b9)) | 1),
             block: 0,
             sr,
             dry: false,
             meter: None,
+            cued: false,
         }
     }
 
@@ -820,12 +913,26 @@ impl Player {
                 continue;
             }
             let pick = cands[self.rng.next() as usize % cands.len()];
+            self.cued = true;
             let s = &mut self.seqs[pick];
             s.playing = true;
             s.t = 0.0;
             for it in &mut s.items {
                 it.active = false;
                 it.held = None;
+            }
+        }
+
+        if let Some(release) = self.params.take_stop() {
+            for s in &mut self.seqs {
+                s.playing = false;
+                for it in &mut s.items {
+                    it.active = false;
+                }
+            }
+            for v in &mut self.voices {
+                v.stopping = true;
+                v.release = release;
             }
         }
 
@@ -842,8 +949,29 @@ impl Player {
                 let v = raw.unwrap_or(0.0);
                 if seq.max > seq.min { Some(v.clamp(seq.min, seq.max)) } else { Some(v) }
             } else if self.seqs[si].playing {
-                self.seqs[si].t += dt;
-                Some(self.seqs[si].t - dt)
+                let t0 = self.seqs[si].t;
+                let t1 = t0 + dt;
+                self.seqs[si].t = t1;
+                // `JumpTimelineController`: the first jump whose time is crossed in this block and whose
+                // condition holds moves the clock (the items see the old time this block).
+                for k in 0..self.seqs[si].jumps.len() {
+                    let j = &self.seqs[si].jumps[k];
+                    if !(t0 < j.trigger && t1 >= j.trigger) {
+                        continue;
+                    }
+                    let fire = match j.when {
+                        JumpWhen::Always => true,
+                        JumpWhen::Never => false,
+                        JumpWhen::Bind(b) => self.value(Some(b)).is_some_and(|v| v > 0.5),
+                        JumpWhen::Random(n, op) => op.apply((self.rng.next() % n) as f32) > 0.5,
+                    };
+                    if fire {
+                        let d = self.seqs[si].jumps[k].destination;
+                        self.seqs[si].t = d + (t1 - self.seqs[si].jumps[k].trigger);
+                        break;
+                    }
+                }
+                Some(t0)
             } else {
                 None
             };
@@ -946,7 +1074,7 @@ impl Player {
             let target = if v.stopping { 0.0 } else { v.target };
             // Stopping voices release over ~20 ms rather than one block, so cut-off one-shots don't click.
             let step = (target - v.gain) / BLOCK as f32;
-            v.dgain = if v.stopping { step.max(-v.gain.max(0.05) / (0.02 * self.sr)) } else { step };
+            v.dgain = if v.stopping { step.max(-v.gain.max(0.05) / (v.release.max(0.002) * self.sr)) } else { step };
             if v.stopping && v.gain <= 1e-4 {
                 v.done = true;
             }
@@ -966,6 +1094,10 @@ impl Player {
                     it.voice = it.voice.and_then(|v| map.get(v).copied().flatten());
                 }
             }
+        }
+        if self.cued {
+            let idle = self.voices.is_empty() && !self.seqs.iter().any(|s| s.playing);
+            self.params.finished.store(idle, Ordering::Relaxed);
         }
         // Channel gains and plug-in parameters.
         for (c, ch) in self.channels.iter_mut().enumerate() {
@@ -1041,6 +1173,7 @@ impl Player {
             owner: (si, ii),
             stopping: false,
             done: false,
+            release: 0.02,
         });
         self.seqs[si].items[ii].voice = Some(self.voices.len() - 1);
         if self.voices.len() > 96 {
@@ -1236,6 +1369,7 @@ mod tests {
                 items: vec![wave],
                 gate: String::new(),
                 retrigger: false,
+                jumps: vec![],
             }],
             cues: vec![],
             master_gain: 1.0,
