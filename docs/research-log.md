@@ -31,8 +31,10 @@ Code findings are in decomp.md "Traffic runtime"; the runtime is `crates/mostrus
   speeds); 3–13 cars wait at red lights at any time; hitting traffic at 30–100 km/h turns the car into a crashed
   body that spins away (screenshots in the session scratchpad); the tick costs ~0.2 ms for 256 cars.
 - **Performance** (`--drive 911 --units 30 --spawn=815,60,1760,270 --auto-throttle 0.3 --bench 10`, other builds
-  running): 13.3 ms mean without traffic, 25.3 ms with every car drawn, 16.8–18.7 ms with models only within
-  250 m (the draw range is a model decision; most of the cost is the extra mesh entities in the render world).
+  running, load average ~4): back to back 15.9 ms mean with `--no-traffic`, 17.3 ms with traffic (main world
+  4.7 → 5.7 ms, render prepare 7.6 → 8.8 ms, far-cascade shadow casters 879 → 1332). Drawing every car instead
+  of those within 250 m cost 25.3 ms against 13.3 on a quieter machine (the draw range is a model decision;
+  most of the cost is the extra mesh entities in the render world).
 - **Dead ends / open**: the game's switch to a physical car (the crash entry for traffic; `FUN_005fcbd0` is the
   kinematic wheel setup), the manoeuvres (option 0), the point the load budget measures from (`world+0x36110`),
   the 24-slot vehicle range, the hour array's reader, per-car brake / indicator lights (our light state is one
