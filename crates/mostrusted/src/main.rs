@@ -4,6 +4,7 @@
 //! installed copy of the game (see `mw-gamedir` for how it is located).
 
 mod ai;
+mod ai_driver;
 mod audio;
 mod bench;
 mod camera;

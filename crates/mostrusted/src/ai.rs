@@ -14,8 +14,6 @@ use bevy::prelude::*;
 use crate::drive::{Car, CarBuild, CarControls, CarParts, Player};
 use crate::loader::{CarRequest, CarSpec, LoaderRequests};
 
-const MPH: f32 = 0.44704;
-
 pub struct AiPlugin {
     /// Opponent car bundles (`--ai`).
     pub cars: Vec<String>,
@@ -31,6 +29,8 @@ impl Plugin for AiPlugin {
             arrived: Vec::new(),
             spawned: vec![false; self.cars.len()],
         })
+        .init_resource::<AiSettings>()
+        .add_systems(Startup, |game: Res<crate::Game>, mut s: ResMut<AiSettings>| s.0 = load_ai_config(&game.store))
         .add_systems(Update, (setup_race, request_opponents, spawn_opponents, log_ai).chain())
         .add_systems(FixedUpdate, ai_drive.before(crate::drive::car_physics));
         if let Some(seconds) = self.test {
@@ -75,6 +75,18 @@ pub struct AiRoute {
     pub closed: bool,
     /// Drivable half-width at each point (m; empty when unknown).
     pub half_width: Vec<f32>,
+    /// The path nodes the driver reasons about (the game's 0x50-byte path elements: one per road-graph node):
+    /// for a polyline handed in, its points.
+    pub nodes: Vec<RouteNode>,
+}
+
+/// A path node: distance along the route, the signed heading change there (rad, positive = left; the game's node
+/// +0x28) and the radius of the circle through it and its neighbours (m; the game's +0x2c, infinite when straight).
+#[derive(Debug, Clone, Copy)]
+pub struct RouteNode {
+    pub s: f32,
+    pub turn: f32,
+    pub radius: f32,
 }
 
 impl AiRoute {
@@ -88,7 +100,40 @@ impl AiRoute {
             }
             distance.push(d);
         }
-        Self { points, distance, closed, half_width: Vec::new() }
+        let mut route = Self { points, distance, closed, half_width: Vec::new(), nodes: Vec::new() };
+        let pts = route.points.clone();
+        route.set_nodes(&pts);
+        route
+    }
+
+    /// Set the path nodes from their positions (in route order, on the route).
+    pub fn set_nodes(&mut self, positions: &[Vec3]) {
+        let mut hint = None;
+        let s: Vec<f32> = positions
+            .iter()
+            .map(|p| {
+                let (s, _) = self.project(*p, hint, 60.0);
+                hint = Some(s);
+                s
+            })
+            .collect();
+        let flat = |v: Vec3| Vec2::new(v.x, v.z);
+        self.nodes = (0..positions.len())
+            .map(|k| {
+                let (Some(prev), Some(next)) = (k.checked_sub(1).map(|j| positions[j]), positions.get(k + 1)) else {
+                    return RouteNode { s: s[k], turn: 0.0, radius: f32::INFINITY };
+                };
+                let (a, b) = (flat(positions[k] - prev), flat(*next - positions[k]));
+                // Signed angle from a to b; with +X to the left of +Z, a turn to the left is a positive perp-dot.
+                let turn = (a.x * b.y - a.y * b.x).atan2(a.dot(b)) * -1.0;
+                // The circle through three points `chord` apart turning by Δθ: R = (chord / 2) / sin(Δθ / 2)
+                // (the game's (chord / 2) / cos((π − |Δθ|) / 2), FUN_004ea860).
+                let chord = 0.5 * (a.length() + b.length());
+                let half = (turn.abs() * 0.5).sin();
+                let radius = if half > 1e-4 { chord * 0.5 / half } else { f32::INFINITY };
+                RouteNode { s: s[k], turn, radius }
+            })
+            .collect();
     }
 
     pub fn length(&self) -> f32 {
@@ -108,6 +153,19 @@ impl AiRoute {
         let a = self.points[i];
         let b = self.points[(i + 1) % self.points.len()];
         (a, b, self.distance[i])
+    }
+
+    /// The drivable half-width at distance `s` (m; infinite when the route has no widths).
+    pub fn half_width_at(&self, s: f32) -> f32 {
+        if self.half_width.len() != self.points.len() {
+            return f32::INFINITY;
+        }
+        let s = self.wrap(s);
+        let i = match self.distance.binary_search_by(|d| d.total_cmp(&s)) {
+            Ok(i) => i,
+            Err(i) => i.saturating_sub(1),
+        };
+        self.half_width[i.min(self.half_width.len() - 1)]
     }
 
     /// Wrap (closed) or clamp (open) a distance onto the route.
@@ -222,6 +280,7 @@ pub fn route_from_ai_graph(ai: &mw_formats::AiData, start: Vec3, heading: f32, l
     widths.push(ai.nodes[*nodes.last().unwrap()].width * 0.5);
     let mut route = AiRoute::new(points, false);
     route.half_width = widths;
+    route.set_nodes(&nodes.iter().map(|&i| pos(i)).collect::<Vec<_>>());
     Some(route)
 }
 
@@ -243,18 +302,20 @@ pub fn grid_along(route: &AiRoute, s0: f32, count: usize, gap: f32, half_width: 
 #[derive(Component, Debug)]
 pub struct AiDriver {
     pub route: Arc<AiRoute>,
+    pub state: crate::ai_driver::DriverState,
+    /// The rubber band's schedule speed (m/s; `f32::MAX` without a race, as the game's schedule returns then).
+    pub schedule_speed: f32,
     /// Distance along the route at the last tick, and the lateral offset from it (m, positive = left).
     pub progress: f32,
     pub lateral: f32,
-    /// Target speed of the last tick (m/s).
-    pub target_speed: f32,
     /// Seconds since the start, and when each 100 m mark was passed.
     pub time: f32,
     pub splits: Vec<f32>,
     pub finished: Option<f32>,
-    /// Test statistics: the largest lateral error so far (m) and the number of body hits on the world.
+    /// Test statistics: the largest lateral error so far (m), body hits on the world, resets.
     pub max_lateral: f32,
     pub hits: u32,
+    pub resets: u32,
     touching: bool,
 }
 
@@ -262,17 +323,60 @@ impl AiDriver {
     pub fn new(route: Arc<AiRoute>) -> Self {
         Self {
             route,
+            state: Default::default(),
+            schedule_speed: f32::MAX,
             progress: 0.0,
             lateral: 0.0,
-            target_speed: 0.0,
             time: 0.0,
             splits: Vec::new(),
             finished: None,
             max_lateral: 0.0,
             hits: 0,
+            resets: 0,
             touching: false,
         }
     }
+}
+
+/// The racer's `AIConfig` values (`ai_driver::AiConfig`), read from `GLOBALCONFIG.BNDL` when the race is set up.
+#[derive(Resource, Default)]
+pub struct AiSettings(pub crate::ai_driver::AiConfig);
+
+/// Read `AIConfig` (010000000007fb0e) by field hash; a field the data lacks keeps the default (the data's value).
+fn load_ai_config(store: &mw_assets::AssetStore) -> crate::ai_driver::AiConfig {
+    use mw_formats::genesys::Value;
+    let mut c = crate::ai_driver::AiConfig::default();
+    let obj = match store.genesys_object(mw_bundle::ResourceId(0x010000000007fb0e)) {
+        Ok(o) => o,
+        Err(e) => {
+            warn!("AI: no AIConfig ({e}); using the defaults (the data's values)");
+            return c;
+        }
+    };
+    let f = |hash: u32, slot: &mut f32| {
+        if let Some(Value::Float(v)) = obj.get(hash) {
+            *slot = *v;
+        }
+    };
+    // Field hashes by instance offset (`mwtool genesys-types`).
+    f(0x54d23bfb, &mut c.nitrous_refill); // 0x10
+    f(0xbd6f7f45, &mut c.lane_rate); // 0x18
+    f(0x6f76d23f, &mut c.contact_time); // 0x28
+    f(0x492f7ddb, &mut c.corner_speed_scale); // 0xc8
+    f(0x27d18b55, &mut c.nitrous_keep_turn); // 0x124
+    f(0x63c7374a, &mut c.nitrous_start_turn); // 0x128
+    f(0xc064967b, &mut c.nitrous_min_tank); // 0x140
+    f(0xe9d45ba2, &mut c.min_look); // 0x144
+    f(0xd695c3bb, &mut c.nitrous_margin_mph); // 0x14c
+    f(0x619a7200, &mut c.stuck_end_radius); // 0x19c
+    f(0x51c3d831, &mut c.reset_time); // 0x1a0
+    f(0xae76a715, &mut c.reset_time_hidden); // 0x1a4
+    f(0x072ea6da, &mut c.corner_clearance); // 0x1ec
+    f(0x8744d6b3, &mut c.look_scan_time); // 0x1f0
+    f(0xc932b6d4, &mut c.sharp_turn); // 0x1f4
+    f(0xedfecd74, &mut c.min_look_time); // 0x1fc
+    info!("AI: AIConfig {c:?}");
+    c
 }
 
 /// `--test ai` state.
@@ -395,10 +499,46 @@ fn spawn_opponents(
     opponents.arrived = waiting;
 }
 
-/// Every fixed tick, before the physics: each AI driver writes its car's controls.
-fn ai_drive(time: Res<Time>, mut cars: Query<(&Car, &Transform, &LinearVelocity, &mut AiDriver, &mut CarControls)>) {
+/// Every fixed tick, before the physics: each AI driver writes its car's controls (the game runs the AI pass
+/// before the player manager and the world step, `FUN_004766a0`).
+#[allow(clippy::type_complexity)]
+fn ai_drive(
+    time: Res<Time>,
+    settings: Res<AiSettings>,
+    spatial: SpatialQuery,
+    mut cars: Query<(
+        Entity,
+        &mut Car,
+        &mut Transform,
+        &mut LinearVelocity,
+        &mut AngularVelocity,
+        Option<&mut AiDriver>,
+        &mut CarControls,
+        Has<Player>,
+    )>,
+) {
     let dt = time.delta_secs();
-    for (car, t, v, mut ai, mut ctl) in &mut cars {
+    if dt <= 0.0 {
+        return;
+    }
+    // Every car for the emergency brake (circle radius from the body's half extents), and the player's position.
+    let all: Vec<(Entity, crate::ai_driver::OtherCar)> = cars
+        .iter()
+        .map(|(e, car, t, v, ..)| {
+            let fwd = t.rotation * Vec3::Z;
+            let h = Vec2::new(fwd.x, fwd.z).normalize_or(Vec2::Y);
+            let ext = car.params.body_half_extents;
+            let other = crate::ai_driver::OtherCar {
+                position: Vec2::new(t.translation.x, t.translation.z),
+                velocity: h * v.0.length(),
+                radius: ext.x.max(ext.z),
+            };
+            (e, other)
+        })
+        .collect();
+    let player = cars.iter().find(|c| c.7).map(|c| (c.0, c.2.translation));
+    for (entity, mut car, mut t, mut v, mut w, ai, mut ctl, _) in &mut cars {
+        let Some(mut ai) = ai else { continue };
         let ai = &mut *ai;
         ai.time += dt;
         let hint = (ai.time > dt * 1.5).then_some(ai.progress);
@@ -418,43 +558,74 @@ fn ai_drive(time: Res<Time>, mut cars: Query<(&Car, &Transform, &LinearVelocity,
         if ai.finished.is_none() && !ai.route.closed && s >= ai.route.length() - 1.0 {
             ai.finished = Some(ai.time);
         }
-        *ctl = drive_controls(car, t, v.0, ai);
+        // The AI's tank refills at `AIConfig` 0x10 per second (`FUN_00667c10`, the AI branch).
+        car.nitrous.add(settings.0.nitrous_refill * dt);
+
+        let fwd = t.rotation * Vec3::Z;
+        // Probe rays at ±25° (`.data` 0x010c4234 = 0.436 rad) in the direction of travel, for the recovery.
+        let reverse = ai.state.recovering.is_some_and(|r| r.reverse);
+        let filter = SpatialQueryFilter::from_excluded_entities([entity, car.body_collider]);
+        let probes = [0.436f32, -0.436].map(|a| {
+            let dir = Quat::from_rotation_y(a) * if reverse { -fwd } else { fwd };
+            Dir3::new(dir)
+                .ok()
+                .and_then(|d| spatial.cast_ray(t.translation + Vec3::Y * 0.5, d, PROBE_LENGTH, true, &filter))
+                .is_some()
+        });
+        let others: Vec<_> = all.iter().filter(|o| o.0 != entity).map(|o| o.1).collect();
+        let player_ahead = player.is_some_and(|(e, p)| e != entity && (p - t.translation).dot(fwd) > 0.0);
+        let ext = car.params.body_half_extents;
+        let input = crate::ai_driver::DriverInput {
+            dt,
+            route: &ai.route,
+            progress: s,
+            position: t.translation,
+            forward: fwd,
+            velocity: v.0,
+            radius: ext.x.max(ext.z),
+            steer_gains: car.params.ai_steer_pid,
+            schedule_speed: ai.schedule_speed,
+            corner_speed: corner_speed(&ai.route, s, &car, &settings.0),
+            all_wheels_off: car.wheels_down() == 0,
+            contact: car.body_contact,
+            nitrous_fill: car.nitrous.fill(),
+            nitrous_burning: car.nitrous.burning,
+            player_ahead,
+            probes,
+            others: &others,
+        };
+        let out = ai.state.tick(&settings.0, &input);
+        *ctl = out.controls;
+        if ai.finished.is_some() || (!ai.route.closed && ai.route.length() - s < 15.0) {
+            // End of an open route: stop (ours; a race's finish logic will take over).
+            *ctl = CarControls { brake: 1.0, ..default() };
+        }
+        if out.reset {
+            // The game's reset request (`FUN_0083d4b0`): back on the path where the car got stuck. Model decision:
+            // the placement (the route's point at the car's progress, facing along it, at rest).
+            let (p, tangent) = ai.route.at(s);
+            t.translation = p + Vec3::Y * 0.5;
+            t.rotation = Quat::from_rotation_y(tangent.x.atan2(tangent.z));
+            v.0 = Vec3::ZERO;
+            w.0 = Vec3::ZERO;
+            ai.resets += 1;
+        }
     }
 }
 
-/// The driving law (placeholder until the port lands).
-fn drive_controls(car: &Car, t: &Transform, v: Vec3, ai: &mut AiDriver) -> CarControls {
-    let speed = v.length();
-    let look = 8.0 + 0.6 * speed;
-    let (target, _) = ai.route.at(ai.progress + look);
-    let local = t.rotation.inverse() * (target - t.translation);
-    let angle = local.x.atan2(local.z);
-    let max = car.params.steering.max_angle.to_radians().max(0.1);
-    let steer = (angle / max).clamp(-1.0, 1.0);
-    // Speed from the curvature ahead.
-    let mut limit = 90.0f32;
-    for k in 1..12 {
-        let s = ai.progress + k as f32 * 10.0;
-        let (_, t0) = ai.route.at(s - 5.0);
-        let (_, t1) = ai.route.at(s + 5.0);
-        let curv = t0.angle_between(t1) / 10.0;
-        let vmax = (9.0 / curv.max(1e-4)).sqrt();
-        let dist = k as f32 * 10.0;
-        limit = limit.min((vmax * vmax + 2.0 * 7.0 * dist).sqrt());
+/// Length of the recovery's probe rays (m). Model decision: not read.
+const PROBE_LENGTH: f32 = 6.0;
+
+/// The corner speed limit at distance `s` (placeholder until its source is settled).
+fn corner_speed(route: &AiRoute, s: f32, car: &Car, cfg: &crate::ai_driver::AiConfig) -> f32 {
+    let mu = 1.0;
+    let decel = 8.0;
+    let mut limit = f32::MAX;
+    for n in route.nodes.iter().filter(|n| n.s > s && n.s < s + 400.0) {
+        let v = (cfg.corner_speed_scale * (9.81 * mu * n.radius).sqrt()).min(car.params.top_speed);
+        limit = limit.min((v * v + 2.0 * decel * (n.s - s)).sqrt());
     }
-    ai.target_speed = limit;
-    let (throttle, brake) = if speed < limit {
-        (1.0, 0.0)
-    } else if speed > limit + 2.0 {
-        (0.0, 1.0)
-    } else {
-        (0.3, 0.0)
-    };
-    if ai.finished.is_some() || ai.route.length() - ai.progress < 20.0 {
-        return CarControls { brake: 1.0, ..default() };
-    }
-    let _ = MPH;
-    CarControls { throttle, brake, steer, ..default() }
+    limit
 }
 
 /// Once a second: every AI car's position, speed, progress and lateral error; in `--test ai`, the result.
@@ -479,7 +650,7 @@ fn log_ai(
             t.translation.y,
             t.translation.z,
             v.length() * 3.6,
-            ai.target_speed * 3.6,
+            ai.state.target_speed.min(999.0) * 3.6,
             ai.progress,
             ai.lateral
         );
