@@ -475,6 +475,7 @@ impl UiScene {
             }
             options.layout = index as u32;
             options.cell = u32::MAX;
+            options.replacement = pl.instance.as_ref().map_or(0, |i| i.replacement_index);
             let place = Placement::new(pl.instance.as_ref(), screen);
             let mut clips: Vec<[f32; 4]> = Vec::new();
             for e in &pl.layout.elements {
@@ -522,7 +523,7 @@ impl UiScene {
             rect[1] += p[1];
             pivot = [pivot[0] + p[0], pivot[1] + p[1]];
         }
-        let rotation = eval_num(&e.bindings.rotation, lookup).unwrap_or(e.rotation);
+        let rotation = eval_num(&e.bindings.rotation, lookup).unwrap_or(e.rotation) + tween.rotation;
         let opacity = eval_num(&e.bindings.opacity, lookup).map_or(e.opacity, |o| o.clamp(0.0, 1.0)) * tween.opacity;
         let blend = e.material.and_then(|m| self.blends.get(&m).copied()).unwrap_or_default();
         if let Some(st) = &e.stack {
@@ -548,9 +549,24 @@ impl UiScene {
         let tint = [e.tint[0], e.tint[1], e.tint[2], e.tint[3] * opacity];
         match e.kind {
             ElementKind::Image | ElementKind::SubImage => {
-                let Some(tex) = e.texture else { return };
-                let mut uv =
-                    e.renderables.first().and_then(|r| self.uvs.get(r)).copied().unwrap_or([0.0, 0.0, 1.0, 1.0]);
+                // `ImageBinding`: the lookup answers with a texture resource id (16 hex digits) to show whole
+                // (streamed pictures such as the loading screen's `Transitions.Image#`, `#` being the layout
+                // instance's replacement index).
+                let bound = (!e.bindings.image.is_empty())
+                    .then(|| e.bindings.image.replace('#', &options.replacement.to_string()))
+                    .and_then(|b| eval(&b, lookup))
+                    .and_then(|v| match v {
+                        fmt::binding::BindValue::Text(s) if s.trim().len() == 16 => ResourceId::parse(s.trim()),
+                        fmt::binding::BindValue::Text(_) => None,
+                        fmt::binding::BindValue::Num(_) => None,
+                    });
+                let Some(tex) = bound.or(e.texture) else { return };
+                let mut uv = match bound {
+                    Some(_) => [0.0, 0.0, 1.0, 1.0],
+                    None => {
+                        e.renderables.first().and_then(|r| self.uvs.get(r)).copied().unwrap_or([0.0, 0.0, 1.0, 1.0])
+                    }
+                };
                 if e.flip[0] {
                     uv.swap(0, 2);
                 }
@@ -779,6 +795,8 @@ pub struct DrawOptions<'a> {
     pub now: f64,
     layout: u32,
     cell: u32,
+    /// The current layout instance's `Binding_Replacement_Index` (`#` in image bindings).
+    replacement: u32,
 }
 
 /// Animation state: per (element UniqueId, trigger index, layout index, stack cell) the trigger's value and
@@ -805,6 +823,8 @@ impl UiAnim {
 struct Tween {
     opacity: f32,
     offset: [f32; 2],
+    /// Degrees added by idle spins.
+    rotation: f32,
 }
 
 impl Tween {
@@ -844,7 +864,7 @@ impl Tween {
 
 impl<'a> DrawOptions<'a> {
     pub fn new(layouts: Option<Box<dyn Fn(usize) -> bool + 'a>>, anim: Option<&'a mut UiAnim>, now: f64) -> Self {
-        Self { layouts, anim, now, layout: 0, cell: u32::MAX }
+        Self { layouts, anim, now, layout: 0, cell: u32::MAX, replacement: 0 }
     }
 
     /// The element's behaviours now: its own transition-in since it appeared (was drawn after not being
@@ -853,7 +873,18 @@ impl<'a> DrawOptions<'a> {
     /// since it was first seen, the steps count as long finished. Transition-out of disappearing elements
     /// and idle behaviours are not played.
     fn tween(&mut self, e: &Element, lookup: &mut Lookup) -> Tween {
-        let mut t = Tween { opacity: 1.0, offset: [0.0; 2] };
+        let mut t = Tween { opacity: 1.0, offset: [0.0; 2], rotation: 0.0 };
+        // Idle behaviours of type 8 spin the element by `Parameters` degrees every `Duration` ms, repeating (the
+        // loading spinner of layout 108177: "360.0" over 1000 ms). Our reading of the type; the other idle
+        // types are not played. Only animated draws spin.
+        if self.anim.is_some() {
+            for b in e.idle.iter().filter(|b| b.kind == 8 && b.duration > 0.0) {
+                if let Ok(deg) = b.parameters.trim().parse::<f32>() {
+                    let ms = self.now * 1000.0 - b.delay as f64;
+                    t.rotation += deg * (ms / b.duration as f64).rem_euclid(1.0) as f32;
+                }
+            }
+        }
         let (now, layout, cell) = (self.now, self.layout, self.cell);
         if !e.transition_in.is_empty() {
             let since = match self.anim.as_deref_mut() {

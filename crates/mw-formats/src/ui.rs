@@ -123,6 +123,7 @@ pub mod field {
     // UILayoutInstanceParams
     pub const LAYOUT_TRANSFORMS: u32 = field_hash("Layout_Transforms");
     pub const ANCHOR_TYPE: u32 = field_hash("AnchorType");
+    pub const BINDING_REPLACEMENT_INDEX: u32 = field_hash("Binding_Replacement_Index");
     pub const VISIBILITY_TIMELINE: u32 = field_hash("Visibility_Timeline");
     pub const TRANSFORM_VALUE_X: u32 = 0x5e9f_1ee7;
     pub const TRANSFORM_VALUE_Y: u32 = 0x5a5e_0251;
@@ -610,6 +611,9 @@ pub struct LayoutInstance {
     /// Triggered timelines (`402057b7`): `on` plays when the trigger becomes true, `off` when it turns false
     /// (`FADE(0,300,OUT)` / `FADE(0,300,IN)` on `DistanceToCamera(LTEQ:10)`).
     pub timelines: Vec<InstanceTimeline>,
+    /// `Binding_Replacement_Index`: what `#` stands for in the layout's bindings (`Transitions.Image#` of the
+    /// loading screen's two image layers, 1 and 2).
+    pub replacement_index: u32,
 }
 
 /// `UILayoutInstanceParams.ColourTransformComponents`.
@@ -672,6 +676,7 @@ impl LayoutInstance {
                     off: string(t, field::TIMELINE_OFF),
                 })
                 .collect(),
+            replacement_index: uint(o, field::BINDING_REPLACEMENT_INDEX) as u32,
         })
     }
 

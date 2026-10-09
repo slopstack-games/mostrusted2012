@@ -20,6 +20,7 @@ pub mod engine_driver;
 pub mod engine_sound;
 pub mod environment;
 pub mod events;
+pub mod frontend;
 pub mod handling;
 pub mod mods;
 pub mod paint;

@@ -106,6 +106,21 @@ mod h {
     pub const CLEAR_TRAFFIC_BINDING: u32 = 0x79e4_8d67;
     // ConductorSequenceItem
     pub const SEQUENCE: u32 = field_hash("Sequence");
+    pub const ENABLED_BINDING: u32 = field_hash("EnabledBinding");
+    /// `JumpTimelineController`'s destination (unnamed; `sfx_loader` reads the same field).
+    pub const JUMP_DESTINATION: u32 = 0xb6a5_1260;
+    // LayoutSequenceItem texts (`Text1` is unnamed)
+    pub const TEXT1: u32 = 0xbf1c_e9a1;
+    pub const TEXT2: u32 = field_hash("Text2");
+    pub const TEXT3: u32 = field_hash("Text3");
+    // MovieSequenceItem
+    pub const MOVIE: u32 = field_hash("Movie");
+    pub const LOOP: u32 = field_hash("Loop");
+    // StreamedImageSequenceItem
+    pub const IMAGE_TARGET: u32 = 0xbe87_ac54;
+    pub const IMAGE_INDEX: u32 = 0xcd5c_111c;
+    // GeneralTriggerSequenceItem
+    pub const NAME: u32 = field_hash("Name");
     // Timeline controllers
     pub const TRIGGER_TYPE: u32 = field_hash("TriggerType");
     pub const TRIGGER_TIME: u32 = field_hash("TriggerTime");
@@ -581,11 +596,35 @@ pub enum ItemKind {
     HideRacecar(RacerRef),
     HideHud,
     Letterbox(Letterbox),
-    /// Any other UI layout (results panels, titles): not drawn yet.
+    /// Any other UI layout (results panels, titles, the front end's screens). `texts` are `Text1` (`bf1ce9a1`),
+    /// `Text2`, `Text3`: language ids the layout reads as `UISequences.Params[#].TextN`.
     Layout {
         layout: Option<ResourceId>,
         layer: u32,
+        texts: [u32; 3],
     },
+    /// `MovieSequenceItem`: a movie (`UI/MOVIES/<movie>.VP6`) on the `MoviePlayer` element, looped or not.
+    Movie {
+        movie: u32,
+        looping: bool,
+    },
+    /// `BlackQuadSequenceItem`: a full-screen black quad (under the sequence's layouts; our reading).
+    BlackQuad,
+    /// `SequenceItems.StreamedImageSequenceItem`: streams a picture into the image binding `target`
+    /// (`Transitions.Image1`), its index from the binding `index` (`Signals.GetIntValue[1]`).
+    StreamedImage {
+        target: String,
+        index: String,
+    },
+    /// `GeneralTriggerSequenceItem`: sets a named trigger (`GeneralSequence.Triggers["BOOT"].IsTriggerSet[1]`):
+    /// `name` is the name's hash (1112493908 = "BOOT" on the title), `trigger` the index.
+    GeneralTrigger {
+        name: u32,
+        trigger: u32,
+    },
+    /// `ConductorSequenceItem` kept as its own sequence (only when not flattening, see
+    /// [`SequenceContext::flatten`]): it runs on its own clock (with its own controllers) from the item's start.
+    Conductor(Box<Sequence>),
     SlowMo(Modulated),
     /// Signals the game logic (the intros end with one; inferred: the race starts on it).
     EventTrigger,
@@ -604,6 +643,8 @@ pub struct Item {
     /// Nesting depth (0 = the sequence's own item; items of conductor sequences are flattened in, shifted
     /// by the conductor's start and cut at its end).
     pub depth: u32,
+    /// `EnabledBinding` (empty = always on).
+    pub enabled: String,
 }
 
 /// A timeline controller.
@@ -612,8 +653,10 @@ pub enum Controller {
     /// `JumpOnButtonPress`: once the clock passes `trigger_time`, the skip button jumps it to `destination`.
     JumpOnButtonPress { trigger_type: u32, trigger_time: f32, destination: f32, action: u32 },
     /// `JumpTimelineController` / `JumpMonitorTimelineController` / ...: jumps driven by game-logic triggers
-    /// (waits for input in the outros); not run.
-    Jump { kind: String, trigger_type: u32, trigger_time: f32, destination: f32 },
+    /// (waits for input in the outros); not run by the cutscenes. `enabled` is its `EnabledBinding` (the title's
+    /// `Language.IsJapanese(NOT)` skip to 28.1 s); the destination is the unnamed `b6a51260` where
+    /// `DestinationTime` is absent.
+    Jump { kind: String, trigger_type: u32, trigger_time: f32, destination: f32, enabled: String },
 }
 
 /// A decoded `Sequence`.
@@ -659,6 +702,11 @@ impl Sequence {
                 ItemKind::SlowMo(_) => "SlowMo".into(),
                 ItemKind::EventTrigger => "EventTrigger".into(),
                 ItemKind::ClearTraffic(_) => "ClearTraffic".into(),
+                ItemKind::Movie { .. } => "Movie".into(),
+                ItemKind::BlackQuad => "BlackQuad".into(),
+                ItemKind::StreamedImage { .. } => "StreamedImage".into(),
+                ItemKind::GeneralTrigger { .. } => "GeneralTrigger".into(),
+                ItemKind::Conductor(_) => "Conductor".into(),
                 ItemKind::Other(n) => n.clone(),
             };
             match counts.iter_mut().find(|(n, _)| *n == name) {
@@ -779,12 +827,15 @@ pub struct SequenceContext<'a> {
     pub store: &'a AssetStore,
     /// Sequences decoded so far (conductor recursion guard).
     depth: u32,
+    /// Flatten conductor sequences into their parent (the cutscenes); `false` keeps each as an
+    /// [`ItemKind::Conductor`] with its own controllers (the front end's looping image sequence).
+    pub flatten: bool,
 }
 
 impl<'a> SequenceContext<'a> {
     pub fn new(store: &'a AssetStore) -> Result<Self> {
         let triggers = store.trigger_data()?.triggers.into_iter().map(|t| (t.id, t)).collect();
-        Ok(Self { triggers, store, depth: 0 })
+        Ok(Self { triggers, store, depth: 0, flatten: true })
     }
 
     fn animation(&self, id: Option<ResourceId>) -> Option<Animation> {
@@ -817,12 +868,38 @@ impl<'a> SequenceContext<'a> {
                     destination,
                     action: uint(c, h::ACTION),
                 },
-                kind => Controller::Jump { kind: kind.to_string(), trigger_type, trigger_time, destination },
+                kind => Controller::Jump {
+                    kind: kind.to_string(),
+                    trigger_type,
+                    trigger_time,
+                    destination: float(c, h::DESTINATION_TIME).or(float(c, h::JUMP_DESTINATION)).unwrap_or(0.0),
+                    enabled: string(c, h::ENABLED_BINDING),
+                },
             });
         }
         for item in structs(&o, h::SEQUENCE_ITEMS) {
             let (start, end) = (float(item, h::START_TIME).unwrap_or(0.0), float(item, h::END_TIME).unwrap_or(0.0));
             seq.length = seq.length.max(end);
+            if short(item) == "ConductorSequenceItem" && !self.flatten {
+                if self.depth < 4
+                    && let Some(child_id) = handle(item.get(h::SEQUENCE))
+                {
+                    self.depth += 1;
+                    let child = self.read(child_id);
+                    self.depth -= 1;
+                    if let Ok(child) = child {
+                        seq.items.push(Item {
+                            unique_id: uint(item, h::ID),
+                            start,
+                            end,
+                            kind: ItemKind::Conductor(Box::new(child)),
+                            depth: 0,
+                            enabled: string(item, h::ENABLED_BINDING),
+                        });
+                    }
+                }
+                continue;
+            }
             if short(item) == "ConductorSequenceItem" {
                 if self.depth < 4
                     && let Some(child_id) = handle(item.get(h::SEQUENCE))
@@ -844,7 +921,8 @@ impl<'a> SequenceContext<'a> {
                 continue;
             }
             let kind = self.item_kind(item, start, end);
-            seq.items.push(Item { unique_id: uint(item, h::ID), start, end, kind, depth: 0 });
+            let enabled = string(item, h::ENABLED_BINDING);
+            seq.items.push(Item { unique_id: uint(item, h::ID), start, end, kind, depth: 0, enabled });
         }
         seq.items.sort_by(|a, b| a.start.total_cmp(&b.start));
         Ok(seq)
@@ -988,8 +1066,22 @@ impl<'a> SequenceContext<'a> {
                     .filter(|_| layout == Some(LETTERBOX_LAYOUT));
                 match letterbox {
                     Some(l) => ItemKind::Letterbox(l),
-                    None => ItemKind::Layout { layout, layer: uint(item, h::LAYOUT_LAYER) },
+                    None => ItemKind::Layout {
+                        layout,
+                        layer: uint(item, h::LAYOUT_LAYER),
+                        texts: [uint(item, h::TEXT1), uint(item, h::TEXT2), uint(item, h::TEXT3)],
+                    },
                 }
+            }
+            "MovieSequenceItem" => {
+                ItemKind::Movie { movie: uint(item, h::MOVIE), looping: boolean(item, h::LOOP).unwrap_or(false) }
+            }
+            "BlackQuadSequenceItem" => ItemKind::BlackQuad,
+            "StreamedImageSequenceItem" => {
+                ItemKind::StreamedImage { target: string(item, h::IMAGE_TARGET), index: string(item, h::IMAGE_INDEX) }
+            }
+            "GeneralTriggerSequenceItem" => {
+                ItemKind::GeneralTrigger { name: uint(item, h::NAME), trigger: uint(item, h::TRIGGER) }
             }
             "SlowMoSequenceItem" => ItemKind::SlowMo(Modulated::field(item, h::SLOW_MO_VALUE, 1.0)),
             "EventTriggerSequenceItem" => ItemKind::EventTrigger,
@@ -1067,6 +1159,14 @@ impl AssetStore {
     /// Read a sequence by resource id (with its conductor sequences flattened in).
     pub fn sequence(&self, id: ResourceId) -> Result<Sequence> {
         SequenceContext::new(self)?.read(id)
+    }
+
+    /// A UI sequence by UniqueId (the front end's title and transitions): conductor sequences stay nested
+    /// ([`ItemKind::Conductor`]), each with its own controllers.
+    pub fn ui_sequence(&self, unique_id: u32) -> Result<Sequence> {
+        let mut cx = SequenceContext::new(self)?;
+        cx.flatten = false;
+        cx.read(ResourceId(0x0100_0000_0000_0000 | unique_id as u64))
     }
 
     /// The `Sequences2` resource ids of a feedback group.

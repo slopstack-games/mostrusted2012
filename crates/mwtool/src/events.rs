@@ -345,13 +345,89 @@ fn sequences(store: &AssetStore, events: &Events, e: &Event) {
                 ItemKind::HideRacecar(r) => format!("hide {r:?}"),
                 ItemKind::HideHud => "hide HUD".into(),
                 ItemKind::Letterbox(l) => format!("letterbox {:?}", l.bars),
-                ItemKind::Layout { layout, layer } => format!("layout {:?} layer {layer}", layout.map(|l| l.0)),
+                ItemKind::Layout { layout, layer, .. } => format!("layout {:?} layer {layer}", layout.map(|l| l.0)),
                 ItemKind::SlowMo(m) => format!("slow motion {:.2} -> {:.2}", m.at(0.0), m.at(1.0)),
                 ItemKind::EventTrigger => "event trigger".into(),
                 ItemKind::ClearTraffic(c) => format!("clear traffic within {} m of {:?}", c.radius, c.points),
+                ItemKind::Movie { movie, looping } => format!("movie {movie}{}", if *looping { " (loop)" } else { "" }),
+                ItemKind::BlackQuad => "black quad".into(),
+                ItemKind::StreamedImage { target, index } => format!("streamed image {target} <- {index}"),
+                ItemKind::GeneralTrigger { name, trigger } => format!("general trigger {name} [{trigger}]"),
+                ItemKind::Conductor(s) => format!("conductor: sequence {} ({} items)", s.unique_id, s.items.len()),
                 ItemKind::Other(n) => n.clone(),
             };
             println!("    {:6.2}-{:6.2} {}{what}", i.start, i.end, "  ".repeat(i.depth as usize));
+        }
+    }
+}
+
+/// `mwtool frontend`: the front end's data (`mw_assets::frontend`).
+pub fn frontend(store: &AssetStore) -> Result<()> {
+    use mw_assets::frontend as fe;
+    let lang = store.language(mw_assets::DEFAULT_LANGUAGE).ok();
+    let text = |id: u32| lang.as_ref().and_then(|l| l.get(id)).map_or_else(|| format!("#{id}"), str::to_owned);
+    let start = store.start_config()?;
+    println!("new game car: {:?}; default start: {:?}", start.default_vehicle, start.default_start);
+    println!("{} swap spots (jack spots); first 5:", start.swap_spots.len());
+    for s in start.swap_spots.iter().take(5) {
+        println!("  spot {} car {} location {} pose {:?}", s.id, s.vehicle, s.location, s.car);
+    }
+    let lc = store.loading_config()?;
+    println!(
+        "loading layouts {:?}, toggle layouts {:?}, {} pictures ({} s each), {} tips",
+        lc.layouts,
+        lc.toggle_layouts,
+        lc.images.len(),
+        lc.image_seconds,
+        lc.tips.len()
+    );
+    for t in lc.tips.iter().take(3) {
+        println!("  tip: {}", text(*t));
+    }
+    for (name, id) in [("StdData", 431_091), ("Data", 431_113)] {
+        let items = store.menu_items(fe::PAUSE_SCREEN, id)?;
+        let list: Vec<String> =
+            items.iter().map(|(a, n, on)| format!("{a}={}{}", text(*n), if *on { "" } else { " (off)" })).collect();
+        println!("pause menu {name}: {}", list.join(", "));
+    }
+    println!(
+        "Press: {:?}, PressStart: {:?}, KEY_RETURN: {:?}",
+        store.compliance_term("Press").map(text),
+        store.compliance_term("PressStart").map(text),
+        store.keyboard_button_text("KEY_RETURN").map(text)
+    );
+    for id in [fe::TITLE_SEQUENCE, fe::BOOT_TRANSITION_SEQUENCE] {
+        print_ui_sequence(&store.ui_sequence(id)?, 0);
+    }
+    Ok(())
+}
+
+fn print_ui_sequence(seq: &mw_assets::sequence::Sequence, depth: usize) {
+    use mw_assets::sequence::{Controller, ItemKind};
+    let pad = "  ".repeat(depth);
+    println!("{pad}sequence {} ({:.2} s, {} items)", seq.unique_id, seq.length, seq.items.len());
+    for c in &seq.controllers {
+        if let Controller::Jump { kind, trigger_time, destination, enabled, .. } = c {
+            println!("{pad}  {kind}: at {trigger_time:.3} s -> {destination:.3} s if {enabled:?}");
+        }
+    }
+    for i in &seq.items {
+        let what = match &i.kind {
+            ItemKind::Layout { layout, layer, texts } => {
+                format!("layout {} layer {layer} texts {texts:?}", layout.map_or(0, |l| l.0 & 0xffff_ffff))
+            }
+            ItemKind::Movie { movie, looping } => format!("movie {movie} loop {looping}"),
+            ItemKind::BlackQuad => "black quad".into(),
+            ItemKind::StreamedImage { target, index } => format!("streamed image {target} <- {index}"),
+            ItemKind::GeneralTrigger { name, trigger } => format!("general trigger {name} [{trigger}]"),
+            ItemKind::Conductor(_) => "conductor".into(),
+            ItemKind::Other(n) => n.clone(),
+            _ => "(other)".into(),
+        };
+        let en = if i.enabled.is_empty() { String::new() } else { format!(" if {:?}", i.enabled) };
+        println!("{pad}  {:7.3}-{:7.3} {what}{en}", i.start, i.end);
+        if let ItemKind::Conductor(s) = &i.kind {
+            print_ui_sequence(s, depth + 2);
         }
     }
 }
