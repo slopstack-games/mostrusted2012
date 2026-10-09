@@ -38,7 +38,7 @@ use bevy::shader::ShaderRef;
 use mw_assets::AssetStore;
 use mw_assets::vfx::{self, ParticleMaterial as GameMaterial, VfxLibrary};
 use mw_bundle::ResourceId;
-use mw_formats::bear::{BearEffect, Layer, Op, Renderer, Spawner};
+use mw_formats::bear::{BearEffect, Bindings, ConeEmitter, Layer, Op, Renderer, Spawner};
 
 use crate::drive::Car;
 
@@ -51,12 +51,14 @@ impl Plugin for ParticlesPlugin {
         app.add_plugins((MaterialPlugin::<QuadMaterial>::default(), MaterialPlugin::<SparkMaterial>::default()))
             .add_message::<ImpactEvent>()
             .init_resource::<Instances>()
+            .init_resource::<BearGlobals>()
+            .init_resource::<EffectRequests>()
             .insert_resource(VfxDebug::from_env())
             .add_systems(Update, (start_loading, receive_vfx))
             .add_systems(FixedPostUpdate, detect_impacts.after(PhysicsSystems::Writeback))
             .add_systems(
                 Update,
-                (wheel_emitters, impact_emitters, demo_emitter, simulate, build_meshes)
+                (load_requested, wheel_emitters, impact_emitters, demo_emitter, simulate, build_meshes)
                     .chain()
                     .after(receive_vfx)
                     .run_if(resource_exists::<Vfx>),
@@ -85,7 +87,7 @@ pub struct ImpactEvent {
 /// Debug switches from the environment: `MW_VFX_DEMO=<effect id>[,<seconds>[,<speed>]]` (see
 /// [`demo_emitter`]) and `MW_VFX_DEBUG=1` (log live particle counts four times a second).
 #[derive(Resource, Default)]
-struct VfxDebug {
+pub(crate) struct VfxDebug {
     demo: Option<(ResourceId, f32, f32)>,
     log: bool,
 }
@@ -117,10 +119,16 @@ struct VfxLoading(Mutex<mpsc::Receiver<anyhow::Result<VfxLoaded>>>);
 
 /// Effect definitions and render batches.
 #[derive(Resource)]
-pub struct Vfx {
+pub(crate) struct Vfx {
     lib: VfxLibrary,
     effects: HashMap<ResourceId, Arc<BearEffect>>,
     batches: HashMap<ResourceId, Batch>,
+}
+
+impl Vfx {
+    pub(crate) fn has_effect(&self, id: ResourceId) -> bool {
+        self.effects.contains_key(&id)
+    }
 }
 
 struct Batch {
@@ -156,7 +164,7 @@ fn start_loading(
 /// Parse the effects the runtime plays and their materials and textures (loader thread).
 fn load_vfx(store: &AssetStore, bc: bool) -> anyhow::Result<VfxLoaded> {
     let lib = store.vfx_library()?;
-    let mut ids: Vec<ResourceId> = lib
+    let ids: Vec<ResourceId> = lib
         .surfaces
         .iter()
         .flat_map(|s| [&s.dry, &s.wet])
@@ -165,6 +173,15 @@ fn load_vfx(store: &AssetStore, bc: bool) -> anyhow::Result<VfxLoaded> {
         .chain(lib.vehicle_scrapes.iter().copied())
         .flatten()
         .collect();
+    let (effects, materials) = load_effects(store, bc, ids);
+    info!("vfx: {} effects, {} materials", effects.len(), materials.len());
+    Ok(VfxLoaded { lib, effects, materials })
+}
+
+type LoadedMaterials = Vec<(GameMaterial, Option<Image>)>;
+
+/// Parse effects and their materials and textures (loader thread).
+fn load_effects(store: &AssetStore, bc: bool, mut ids: Vec<ResourceId>) -> (Vec<BearEffect>, LoadedMaterials) {
     ids.sort();
     ids.dedup();
     let mut effects = Vec::new();
@@ -195,30 +212,82 @@ fn load_vfx(store: &AssetStore, bc: bool) -> anyhow::Result<VfxLoaded> {
             Err(e) => warn!("particle material {id}: {e}"),
         }
     }
-    info!("vfx: {} effects, {} materials", effects.len(), materials.len());
-    Ok(VfxLoaded { lib, effects, materials })
+    (effects, materials)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn receive_vfx(
-    mut commands: Commands,
-    loading: Option<Res<VfxLoading>>,
-    lighting: Option<Res<crate::deferred::GameLighting>>,
-    mut images: ResMut<Assets<Image>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut quad_materials: ResMut<Assets<QuadMaterial>>,
-    mut spark_materials: ResMut<Assets<SparkMaterial>>,
-) {
+/// What a render batch needs from the world: the game's key light and sky for the lit quads.
+#[derive(bevy::ecs::system::SystemParam)]
+struct BatchMaker<'w, 's> {
+    commands: Commands<'w, 's>,
+    lighting: Option<Res<'w, crate::deferred::GameLighting>>,
+    images: ResMut<'w, Assets<Image>>,
+    meshes: ResMut<'w, Assets<Mesh>>,
+    quad_materials: ResMut<'w, Assets<QuadMaterial>>,
+    spark_materials: ResMut<'w, Assets<SparkMaterial>>,
+}
+
+impl BatchMaker<'_, '_> {
+    /// One render batch (an entity with a mesh rebuilt every frame) per material not batched yet.
+    fn add(&mut self, materials: LoadedMaterials, batches: &mut HashMap<ResourceId, Batch>) {
+        let (key_colour, key_direction, sky, irradiance) = match &self.lighting {
+            Some(l) => (l.key_colour, l.key_direction, l.sky_brightness, Some(l.irradiance.clone())),
+            None => (Vec3::splat(9000.0), Vec3::new(-0.4, -0.8, -0.4).normalize(), 1200.0, None),
+        };
+        for (m, image) in materials {
+            if batches.contains_key(&m.id) {
+                continue;
+            }
+            debug!(
+                "particle material {}: {} tiles {:?} looping {} overbright {}",
+                m.id, m.shader, m.tiles, m.looping, m.overbright
+            );
+            let mesh = self.meshes.add(empty_mesh());
+            let spark = m.shader.contains("MotionBlurSprite");
+            let mut e = self.commands.spawn((
+                Mesh3d(mesh.clone()),
+                Transform::IDENTITY,
+                Visibility::default(),
+                NoFrustumCulling,
+            ));
+            if spark {
+                let scale = m.overbright * SPARK_BRIGHTNESS;
+                e.insert(MeshMaterial3d(
+                    self.spark_materials
+                        .add(SparkMaterial { params: SparkParams { scale: Vec4::new(scale, 0.0, 0.0, 0.0) } }),
+                ));
+            } else {
+                let blend = if m.shader.contains("NoBlend") { 0.0 } else { 1.0 };
+                e.insert(MeshMaterial3d(self.quad_materials.add(QuadMaterial {
+                    params: QuadParams {
+                        atlas: Vec4::new(
+                            m.tiles[0] as f32,
+                            m.tiles[1] as f32,
+                            if m.looping { 1.0 } else { 0.0 },
+                            blend,
+                        ),
+                        key_colour: key_colour.extend(sky),
+                        key_direction: key_direction.extend(0.0),
+                    },
+                    texture: image.map(|i| self.images.add(i)),
+                    irradiance: irradiance.clone(),
+                })));
+            }
+            batches.insert(m.id, Batch { mesh, spark, quads: Vec::new(), sparks: Vec::new() });
+        }
+    }
+}
+
+fn receive_vfx(mut maker: BatchMaker, loading: Option<Res<VfxLoading>>) {
     let Some(loading) = loading else { return };
     let msg = match loading.0.lock().unwrap().try_recv() {
         Ok(m) => m,
         Err(mpsc::TryRecvError::Empty) => return,
         Err(mpsc::TryRecvError::Disconnected) => {
-            commands.remove_resource::<VfxLoading>();
+            maker.commands.remove_resource::<VfxLoading>();
             return;
         }
     };
-    commands.remove_resource::<VfxLoading>();
+    maker.commands.remove_resource::<VfxLoading>();
     let loaded = match msg {
         Ok(l) => l,
         Err(e) => {
@@ -226,41 +295,70 @@ fn receive_vfx(
             return;
         }
     };
-    let (key_colour, key_direction, sky, irradiance) = match &lighting {
-        Some(l) => (l.key_colour, l.key_direction, l.sky_brightness, Some(l.irradiance.clone())),
-        None => (Vec3::splat(9000.0), Vec3::new(-0.4, -0.8, -0.4).normalize(), 1200.0, None),
-    };
     let mut batches = HashMap::new();
-    for (m, image) in loaded.materials {
-        debug!(
-            "particle material {}: {} tiles {:?} looping {} overbright {}",
-            m.id, m.shader, m.tiles, m.looping, m.overbright
-        );
-        let mesh = meshes.add(empty_mesh());
-        let spark = m.shader.contains("MotionBlurSprite");
-        let mut e =
-            commands.spawn((Mesh3d(mesh.clone()), Transform::IDENTITY, Visibility::default(), NoFrustumCulling));
-        if spark {
-            let scale = m.overbright * SPARK_BRIGHTNESS;
-            e.insert(MeshMaterial3d(
-                spark_materials.add(SparkMaterial { params: SparkParams { scale: Vec4::new(scale, 0.0, 0.0, 0.0) } }),
-            ));
-        } else {
-            let blend = if m.shader.contains("NoBlend") { 0.0 } else { 1.0 };
-            e.insert(MeshMaterial3d(quad_materials.add(QuadMaterial {
-                params: QuadParams {
-                    atlas: Vec4::new(m.tiles[0] as f32, m.tiles[1] as f32, if m.looping { 1.0 } else { 0.0 }, blend),
-                    key_colour: key_colour.extend(sky),
-                    key_direction: key_direction.extend(0.0),
-                },
-                texture: image.map(|i| images.add(i)),
-                irradiance: irradiance.clone(),
-            })));
-        }
-        batches.insert(m.id, Batch { mesh, spark, quads: Vec::new(), sparks: Vec::new() });
-    }
+    maker.add(loaded.materials, &mut batches);
     let effects = loaded.effects.into_iter().map(|fx| (fx.id, Arc::new(fx))).collect();
-    commands.insert_resource(Vfx { lib: loaded.lib, effects, batches });
+    maker.commands.insert_resource(Vfx { lib: loaded.lib, effects, batches });
+}
+
+/// Effects asked for after the start (the cars' spot effects, `exhaust.rs`): loaded on a worker thread
+/// and added to [`Vfx`].
+#[derive(Resource, Default)]
+pub(crate) struct EffectRequests {
+    asked: std::collections::HashSet<ResourceId>,
+    want: Vec<ResourceId>,
+    pending: Option<Mutex<mpsc::Receiver<(Vec<BearEffect>, LoadedMaterials)>>>,
+}
+
+impl EffectRequests {
+    /// Load an effect unless it was asked for before.
+    pub(crate) fn request(&mut self, id: ResourceId) {
+        if self.asked.insert(id) {
+            self.want.push(id);
+        }
+    }
+}
+
+fn load_requested(
+    game: Res<crate::Game>,
+    support: Option<Res<CompressedImageFormatSupport>>,
+    mut requests: ResMut<EffectRequests>,
+    mut vfx: ResMut<Vfx>,
+    mut maker: BatchMaker,
+) {
+    if let Some(rx) = &requests.pending {
+        let got = rx.lock().unwrap().try_recv();
+        match got {
+            Ok((effects, materials)) => {
+                info!("vfx: {} more effects, {} materials", effects.len(), materials.len());
+                maker.add(materials, &mut vfx.batches);
+                for fx in effects {
+                    vfx.effects.insert(fx.id, Arc::new(fx));
+                }
+                requests.pending = None;
+            }
+            Err(mpsc::TryRecvError::Disconnected) => requests.pending = None,
+            Err(mpsc::TryRecvError::Empty) => return,
+        }
+    }
+    if requests.want.is_empty() {
+        return;
+    }
+    let ids: Vec<ResourceId> =
+        std::mem::take(&mut requests.want).into_iter().filter(|id| !vfx.effects.contains_key(id)).collect();
+    if ids.is_empty() {
+        return;
+    }
+    let bc = support.is_some_and(|s| s.0.contains(CompressedImageFormats::BC));
+    let store = game.store.clone();
+    let (tx, rx) = mpsc::channel();
+    std::thread::Builder::new()
+        .name("vfx loader (more)".into())
+        .spawn(move || {
+            let _ = tx.send(load_effects(&store, bc, ids));
+        })
+        .expect("spawn vfx loader");
+    requests.pending = Some(Mutex::new(rx));
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -270,29 +368,34 @@ fn receive_vfx(
 /// emitting while the contact lasts.
 const ONE_SHOT_EMIT: f32 = 0.15;
 
-/// Persistent emitters are keyed by owner and slot (wheel smoke, wheel kick-up, scrape).
+/// Persistent emitters are keyed by owner and slot (wheel smoke, wheel kick-up, scrape, car spot effects).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-struct EmitterKey {
-    owner: Entity,
-    slot: u32,
+pub(crate) struct EmitterKey {
+    pub owner: Entity,
+    pub slot: u32,
 }
 
 const SLOT_TYRE: u32 = 0;
 const SLOT_KICKUP: u32 = 0x100;
 const SLOT_SCRAPE: u32 = 0x200;
+/// Car spot effects (`exhaust.rs`): this + 0x10 × effect index + locator index.
+pub(crate) const SLOT_SPOT: u32 = 0x1000;
 
 /// The parameters the game sets on an effect instance (stand-ins, see the module docs).
 #[derive(Clone, Copy, Debug)]
-struct Params {
+pub(crate) struct Params {
     /// World from emitter space (origin at the emitter, the car's axes; impacts: Y = contact normal).
-    transform: Mat4,
-    velocity: Vec3,
-    intensity: f32,
-    emitting: bool,
+    pub transform: Mat4,
+    pub velocity: Vec3,
+    pub intensity: f32,
+    pub emitting: bool,
     /// Metres the emitter moved (or slid) this step, for per-metre emission.
-    moved: f32,
+    pub moved: f32,
     /// Ground plane under the emitter (normal, -distance), for bouncing particles.
-    ground: Vec4,
+    pub ground: Vec4,
+    /// `ImpactClosingVelocity` and `MovementSinceLastFrame` (binding sources 17 / 18).
+    pub impact: f32,
+    pub movement: f32,
 }
 
 impl Default for Params {
@@ -304,8 +407,18 @@ impl Default for Params {
             emitting: false,
             moved: 0.0,
             ground: Vec4::new(0.0, 1.0, 0.0, f32::MAX),
+            impact: 0.0,
+            movement: 0.0,
         }
     }
+}
+
+/// The game's `BearGlobalParameters` the binding controllers read (`FUN_004a1470` fills them each frame).
+/// Only the one the car effects use is known: +0x74, the player car's engine load (vehicle +0x1f20 through
+/// `FUN_0090d6d0`). Set by `exhaust.rs`.
+#[derive(Resource, Default, Clone, Copy)]
+pub(crate) struct BearGlobals {
+    pub player_load: f32,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -327,8 +440,101 @@ struct LayerSim {
     particles: Vec<Particle>,
     /// Fractional particles carried to the next step.
     carry: f32,
-    /// Emission scale from the layer's controller.
+    /// Emission scale from the layer's controller (spawners other than `EmitterConePlus`: the first
+    /// curve over `Intensity`, a stand-in).
     rate_scale: f32,
+    /// The binding slots the controllers write (`mw_formats::bear::Bindings`; slot 0 reads 1).
+    slots: [f32; Bindings::SLOTS],
+    /// Seconds since the layer started (the controllers' clock) and the random phases of source 15.
+    time: f32,
+    phase: [f32; 4],
+    /// `EmitterConePlus`: its own clock and particle accumulator (`burst + 0.9999` at the start).
+    cone_time: f32,
+    accum: f32,
+}
+
+impl LayerSim {
+    /// A binding slot (out of range: 0).
+    fn slot(&self, i: u8) -> f32 {
+        self.slots.get(i as usize).copied().unwrap_or(0.0)
+    }
+}
+
+/// One `UpdateBindings` run (`FUN_0045ffd0`): each curve over its source, then the combine steps.
+fn run_bindings(
+    b: &Bindings,
+    curves: &[mw_formats::bear::Curve5; 4],
+    scales: &[f32; 4],
+    sim: &mut LayerSim,
+    p: &Params,
+    globals: &BearGlobals,
+    camera_distance: f32,
+) {
+    let t = sim.time;
+    for i in 0..4 {
+        let s = scales[i];
+        let frac = |x: f32| x - x.floor();
+        let ratio = |v: f32| if s != 0.0 { v / s } else { 0.0 };
+        let x = match b.sources[i] {
+            0 => s * t,
+            1 => frac(s * t),
+            3 => s * p.velocity.length(),
+            4 => s * camera_distance,
+            7 => 0.5 + 0.5 * (s * t * TAU).sin(),
+            8 => 0.5 + 0.5 * (s * t * TAU).cos(),
+            // `FUN_0045fc60` replaces source 9's scale with a random number when it compiles the action.
+            9 => sim.phase[i],
+            10 => p.intensity,
+            15 => frac(s * (t + sim.phase[i])),
+            16 => globals.player_load,
+            17 => ratio(p.impact),
+            18 => ratio(p.movement),
+            // Other globals (time of day, weather and quality bytes, ...): not traced; byte +0x7d is 0.
+            _ => 0.0,
+        };
+        sim.slots[1 + i] = curves[i].eval(x) + b.offsets[i];
+    }
+    b.combine(&mut sim.slots);
+}
+
+/// `EmitterConePlus` (`FUN_0044cf30`): how many particles this update emits, or `None` when it does not.
+fn cone_count(
+    sp: &Spawner,
+    c: &ConeEmitter,
+    sim: &mut LayerSim,
+    p: &Params,
+    lod: f32,
+    camera_distance: f32,
+    dt: f32,
+) -> Option<usize> {
+    sim.cone_time += dt;
+    if !p.emitting && c.emitting != mw_formats::bear::Operand::None {
+        return None;
+    }
+    let t = sim.cone_time;
+    if t < c.time_window[0] || (t > c.time_window[1] && sim.accum <= 1.0) {
+        return None;
+    }
+    let speed = p.velocity.length();
+    if speed < c.speed_window[0] || speed > c.speed_window[1] {
+        return None;
+    }
+    // The camera window compares the squared distance.
+    let d2 = camera_distance * camera_distance;
+    if d2 < c.camera_window[0] || d2 > c.camera_window[1] {
+        return None;
+    }
+    let count = (sp.per_metre * dt * speed + sp.rate * dt) * sim.slot(c.state[0]) * lod;
+    if sim.accum > 1.0 {
+        sim.accum *= sim.slot(c.state[1]) * lod;
+    }
+    sim.accum += count;
+    let n = sim.accum.round();
+    if n < 1.0 {
+        return None;
+    }
+    sim.accum -= n;
+    Some(n as usize)
 }
 
 struct EffectInstance {
@@ -345,9 +551,29 @@ struct EffectInstance {
 
 impl EffectInstance {
     fn new(def: Arc<BearEffect>, key: Option<EmitterKey>, params: Params, seed: u32) -> Self {
-        let layers =
-            def.layers.iter().map(|_| LayerSim { particles: Vec::new(), carry: 0.0, rate_scale: 1.0 }).collect();
-        Self { def, key, params, layers, burst_done: false, emit_for: 0.0, rng: Rng(seed | 1) }
+        let mut rng = Rng(seed | 1);
+        let layers = def
+            .layers
+            .iter()
+            .map(|l| {
+                let mut slots = [0.0; Bindings::SLOTS];
+                slots[0] = 1.0;
+                // `FUN_0044ccc0`: the accumulator starts at the burst count + 0.9999, so the first update
+                // that emits rounds up to at least one particle.
+                let burst = l.spawner().filter(|s| s.cone.is_some()).map_or(0.0, |s| s.burst as f32);
+                LayerSim {
+                    particles: Vec::new(),
+                    carry: 0.0,
+                    rate_scale: 1.0,
+                    slots,
+                    time: 0.0,
+                    phase: std::array::from_fn(|_| rng.next()),
+                    cone_time: 0.0,
+                    accum: burst + 0.9999,
+                }
+            })
+            .collect();
+        Self { def, key, params, layers, burst_done: false, emit_for: 0.0, rng }
     }
 
     fn alive(&self) -> bool {
@@ -356,14 +582,33 @@ impl EffectInstance {
 }
 
 #[derive(Resource, Default)]
-struct Instances {
+pub(crate) struct Instances {
     list: Vec<EffectInstance>,
     seed: u32,
 }
 
 impl Instances {
+    /// Refresh a persistent emitter, or start it when `start` is set and it emits (car spot effects).
+    pub(crate) fn refresh_or_start(
+        &mut self,
+        vfx: &Vfx,
+        key: EmitterKey,
+        effect: ResourceId,
+        params: Params,
+        start: bool,
+    ) {
+        let Some(def) = vfx.effects.get(&effect) else { return };
+        if let Some(inst) = self.list.iter_mut().find(|i| i.key == Some(key) && Arc::ptr_eq(&i.def, def)) {
+            inst.params = params;
+            return;
+        }
+        if start && params.emitting {
+            self.emit(vfx, key, Some(effect), params);
+        }
+    }
+
     /// Refresh (or start) a persistent emitter.
-    fn emit(&mut self, vfx: &Vfx, key: EmitterKey, effect: Option<ResourceId>, params: Params) {
+    pub(crate) fn emit(&mut self, vfx: &Vfx, key: EmitterKey, effect: Option<ResourceId>, params: Params) {
         let Some(def) = effect.and_then(|id| vfx.effects.get(&id)) else { return };
         if let Some(inst) = self.list.iter_mut().find(|i| i.key == Some(key) && Arc::ptr_eq(&i.def, def)) {
             inst.params = params;
@@ -416,9 +661,10 @@ fn hash01(seed: u32) -> f32 {
     (x >> 8) as f32 / (1u32 << 24) as f32
 }
 
-fn simulate(
+pub(crate) fn simulate(
     time: Res<Time>,
     debug: Res<VfxDebug>,
+    globals: Res<BearGlobals>,
     mut instances: ResMut<Instances>,
     camera: Query<&GlobalTransform, crate::MainCamera>,
 ) {
@@ -430,7 +676,7 @@ fn simulate(
     for inst in &mut instances.list {
         let def = inst.def.clone();
         for (layer, sim) in def.layers.iter().zip(&mut inst.layers) {
-            step_layer(layer, sim, &inst.params, inst.burst_done, eye, dt, &mut inst.rng);
+            step_layer(layer, sim, &inst.params, &globals, inst.burst_done, eye, dt, &mut inst.rng);
         }
         inst.burst_done = true;
         if inst.key.is_some() {
@@ -457,16 +703,31 @@ fn simulate(
 }
 
 /// Run a layer's update group: controller, per-particle actions and spawners, in stored order.
-fn step_layer(layer: &Layer, sim: &mut LayerSim, p: &Params, burst_done: bool, eye: Vec3, dt: f32, rng: &mut Rng) {
+#[allow(clippy::too_many_arguments)]
+fn step_layer(
+    layer: &Layer,
+    sim: &mut LayerSim,
+    p: &Params,
+    globals: &BearGlobals,
+    burst_done: bool,
+    eye: Vec3,
+    dt: f32,
+    rng: &mut Rng,
+) {
     let Some(group) = &layer.groups[0] else { return };
+    let origin = p.transform.w_axis.truncate();
+    let camera_distance = origin.distance(eye);
     for seq in &group.sequences {
         for step in &seq.steps {
             let Some(action) = layer.actions.get(step.action as usize) else { continue };
             match &action.op {
-                Op::Controller { curves, .. } => {
-                    // The first curve over the effect's intensity (which input drives which curve is in
-                    // bytes not decoded yet).
+                Op::Controller { curves, scales, bindings, .. } => {
+                    // Spawners other than the cone emitter: the first curve over the effect's intensity
+                    // (their binding-slot bytes are not decoded).
                     sim.rate_scale = curves[0].eval(p.intensity.clamp(0.0, 1.0));
+                    if let Some(b) = bindings {
+                        run_bindings(b, curves, scales, sim, p, globals, camera_distance);
+                    }
                 }
                 Op::Age { .. } => {
                     for q in &mut sim.particles {
@@ -509,6 +770,17 @@ fn step_layer(layer: &Layer, sim: &mut LayerSim, p: &Params, burst_done: bool, e
             }
         }
     }
+    // The render group's controllers (`ParametricSetColourGradient` reads their slots for the alpha).
+    for seq in layer.groups[1].iter().flat_map(|g| &g.sequences) {
+        for step in &seq.steps {
+            if let Some(Op::Controller { curves, scales, bindings: Some(b), .. }) =
+                layer.actions.get(step.action as usize).map(|a| &a.op)
+            {
+                run_bindings(b, curves, scales, sim, p, globals, camera_distance);
+            }
+        }
+    }
+    sim.time += dt;
     sim.particles.retain(|q| q.age < 1.0);
 }
 
@@ -544,9 +816,19 @@ fn spawn(
     if !burst_done && sp.burst > 0 {
         count += sp.burst as f32 * p.intensity.clamp(0.1, 1.0) * lod;
     }
-    let n = count.floor() as usize;
+    let mut n = count.floor() as usize;
     sim.carry = if p.emitting { count - n as f32 } else { 0.0 };
+    let (mut speed_scale, mut angle_scale) = (1.0, 1.0);
+    if let Some(c) = &sp.cone {
+        sim.carry = 0.0;
+        let Some(k) = cone_count(sp, c, sim, p, lod, origin.distance(eye), dt) else { return };
+        n = k;
+        speed_scale = sim.slot(c.state[2]);
+        angle_scale = sim.slot(c.state[3]);
+    }
     let overwrite = layer.flags & 2 != 0;
+    // Layers that live in the emitter's space (`Op::ToWorld`) keep their particles there.
+    let local = layer.to_world().is_some();
     for i in 0..n {
         if sim.particles.len() >= layer.max_particles as usize {
             if !overwrite {
@@ -557,7 +839,7 @@ fn spawn(
         // Spread births over the step so streams stay continuous.
         let sub = (i as f32 + rng.next()) / n.max(1) as f32;
         let mut q = Particle { alpha: 1.0, recip_life: 1.0, radius: 0.1, plane: p.ground, ..default() };
-        let (mut pos, mut vel) = local_birth(sp, rng);
+        let (mut pos, mut vel) = local_birth(sp, rng, speed_scale, angle_scale);
         let mut placed = false;
         for &s in secondaries {
             let Some(a) = layer.actions.get(s as usize) else { continue };
@@ -569,10 +851,15 @@ fn spawn(
                     q.spin = *spin;
                 }
                 Op::AlphaInit { min, max, .. } => q.alpha = rng.range([*min, *max]),
-                Op::PlaceInFrame { rotation, offset, .. } => {
+                Op::PlaceInFrame { rotation, offset, transform, .. } => {
                     let r = Quat::from_array(*rotation).normalize();
-                    pos = p.transform.transform_point3(r * pos + Vec3::from(*offset));
-                    vel = p.transform.transform_vector3(r * vel);
+                    pos = r * pos + Vec3::from(*offset);
+                    vel = r * vel;
+                    // 0x14 (`InitialisePosOffset`, no transform) leaves a local layer's particle in emitter space.
+                    if !(local && *transform == mw_formats::bear::Operand::None) {
+                        pos = p.transform.transform_point3(pos);
+                        vel = p.transform.transform_vector3(vel);
+                    }
                     placed = true;
                 }
                 Op::InheritVelocity { min, max, .. } => {
@@ -588,13 +875,14 @@ fn spawn(
                 _ => {}
             }
         }
-        if !placed {
+        if !placed && !local {
             pos = p.transform.transform_point3(pos);
             vel = p.transform.transform_vector3(vel);
         }
-        // Age the particle by its share of the step.
+        // Age the particle by its share of the step (a local layer moves with its emitter).
         let back = (1.0 - sub) * dt;
-        q.pos = pos - p.velocity * back + vel * back;
+        let carried = if local { Vec3::ZERO } else { p.velocity };
+        q.pos = pos - carried * back + vel * back;
         q.vel = vel;
         q.age = back * q.recip_life;
         sim.particles.push(q);
@@ -606,11 +894,26 @@ fn spawn(
 /// Direction: the spawner's first angle range read as an azimuth in the emitter's XZ plane (from X towards
 /// Z), the second as an elevation towards Y, in degrees. This fits the data's extremes (impact sparks
 /// `0, 0` / `90, 90`: straight off the surface; `0..180` / `0`: a fan along the surface) but is a guess.
-fn local_birth(sp: &Spawner, rng: &mut Rng) -> (Vec3, Vec3) {
-    let speed = rng.range(sp.speed);
-    let azimuth = rng.range(sp.angles[0]).to_radians();
-    let elevation = rng.range(sp.angles[1]).to_radians();
-    let dir = Vec3::new(elevation.cos() * azimuth.cos(), elevation.sin(), elevation.cos() * azimuth.sin());
+///
+/// `EmitterConePlus` (0x00) emits along the emitter's +Z instead: the car exhaust locators are turned
+/// half a turn about X, so +Z leaves the tail pipe backwards while +X would point every pipe at the
+/// car's left side and +Y at the road. Its two ranges are read as a yaw (about Y) and a pitch (towards
+/// Y) away from +Z with a random sign each (the game draws them from symmetric random numbers in
+/// `FUN_0044cf30`; the exact mapping is not decoded), scaled by the binding slot `angle_scale`.
+fn local_birth(sp: &Spawner, rng: &mut Rng, speed_scale: f32, angle_scale: f32) -> (Vec3, Vec3) {
+    let speed = rng.range(sp.speed) * speed_scale;
+    let dir = if sp.kind == 0x00 {
+        let mut signed = |r: [f32; 2]| {
+            let a = rng.range(r).to_radians() * angle_scale;
+            if rng.next() < 0.5 { -a } else { a }
+        };
+        let (yaw, pitch) = (signed(sp.angles[0]), signed(sp.angles[1]));
+        Vec3::new(pitch.cos() * yaw.sin(), pitch.sin(), pitch.cos() * yaw.cos())
+    } else {
+        let azimuth = rng.range(sp.angles[0]).to_radians();
+        let elevation = rng.range(sp.angles[1]).to_radians();
+        Vec3::new(elevation.cos() * azimuth.cos(), elevation.sin(), elevation.cos() * azimuth.sin())
+    };
     let pos = match sp.kind {
         // Wheel: across the tyre's width, a little above the ground.
         0x05 => Vec3::new(rng.range(sp.lateral) * 0.12, rng.range(sp.height), 0.0),
@@ -653,6 +956,7 @@ fn wheel_emitters(
                     emitting: slip > 2.5,
                     moved: slip * dt,
                     ground,
+                    ..default()
                 },
             );
             let speed = c.velocity.length();
@@ -667,6 +971,7 @@ fn wheel_emitters(
                     emitting: speed > 2.0,
                     moved: speed * dt,
                     ground,
+                    ..default()
                 },
             );
         }
@@ -767,6 +1072,8 @@ fn impact_emitters(
                     emitting: false,
                     moved: 0.0,
                     ground,
+                    impact: ev.closing_speed,
+                    movement: 0.0,
                 },
             );
         }
@@ -784,6 +1091,7 @@ fn impact_emitters(
                     emitting: true,
                     moved: 0.0,
                     ground,
+                    ..default()
                 },
             );
         }
@@ -821,6 +1129,7 @@ fn demo_emitter(
         emitting: true,
         moved: 0.0,
         ground: Vec4::new(0.0, 1.0, 0.0, -at.y),
+        ..default()
     };
     instances.one_shot(&vfx, Some(id), params);
 }
@@ -885,8 +1194,20 @@ fn build_meshes(
             let Some(r) = layer.renderer() else { continue };
             let Some(batch) = r.material.and_then(|m| vfx.batches.get_mut(&m)) else { continue };
             drawn.clear();
+            // `ParametricPosVelToWorldSpace`: emitter-space particles placed with the current transform.
+            let to_world = layer.to_world().map(|(r, o)| {
+                inst.params.transform * Mat4::from_rotation_translation(Quat::from_array(r).normalize(), Vec3::from(o))
+            });
             for q in &sim.particles {
-                if let Some(d) = render_particle(layer, q, eye) {
+                let placed;
+                let q = match to_world {
+                    Some(m) => {
+                        placed = Particle { pos: m.transform_point3(q.pos), vel: m.transform_vector3(q.vel), ..*q };
+                        &placed
+                    }
+                    None => q,
+                };
+                if let Some(d) = render_particle(layer, q, eye, &sim.slots) {
                     drawn.push(d);
                 }
             }
@@ -927,7 +1248,10 @@ fn build_meshes(
 }
 
 /// The layer's render group for one particle: size and colour curves, alpha, fades, atlas frame.
-fn render_particle(layer: &Layer, q: &Particle, eye: Vec3) -> Option<Drawn> {
+/// `slots` are the layer's binding slots; the colour override parameter (`use_tint`) is not set by any
+/// emitter here and reads white.
+fn render_particle(layer: &Layer, q: &Particle, eye: Vec3, slots: &[f32]) -> Option<Drawn> {
+    let tint = Vec4::ONE;
     let mut d = Drawn { pos: q.pos, vel: q.vel, radius: q.radius, rot: q.rot, colour: Vec4::ONE, subuv: q.age };
     let t = q.age.clamp(0.0, 1.0);
     let group = layer.groups[1].as_ref()?;
@@ -940,15 +1264,23 @@ fn render_particle(layer: &Layer, q: &Particle, eye: Vec3) -> Option<Drawn> {
                     let s = u * u * u * b[0] + 3.0 * u * u * t * b[1] + 3.0 * u * t * t * b[2] + t * t * t * b[3];
                     d.radius = q.radius * s;
                 }
-                Op::ColourCurve { rows, alpha, alpha_scale, .. } => {
-                    let mut c = Vec4::ZERO;
-                    let mut tk = 1.0;
-                    for row in rows {
-                        c += Vec4::from(*row) * tk;
-                        tk *= t;
+                Op::ColourCurve { rows, ramp, alpha, rates, alpha_slot, use_tint, .. } => {
+                    // `FUN_004553b0`: ramp weights over the (wrapped) age, rgb times the brightness column.
+                    let frac = |x: f32| x - x.floor();
+                    let u = frac(t * rates[0]);
+                    let mut c = Vec4::from(rows[0]);
+                    for k in 0..4 {
+                        let w = (u * ramp[0][k] + ramp[1][k]).clamp(0.0, 1.0);
+                        c += Vec4::from(rows[k + 1]) * w;
                     }
-                    let rgb = c.truncate().max(Vec3::ZERO);
-                    d.colour = rgb.extend(c.w.max(0.0) * alpha.eval(t) * alpha_scale);
+                    let mut rgb = (c.truncate() * c.w).max(Vec3::ZERO);
+                    let mut a =
+                        alpha.eval(frac(t * rates[1])) * slots.get(*alpha_slot as usize).copied().unwrap_or(0.0);
+                    if *use_tint {
+                        rgb = tint.truncate();
+                        a *= tint.w;
+                    }
+                    d.colour = rgb.extend(a);
                 }
                 Op::AlphaApply { .. } => d.colour.w *= q.alpha,
                 Op::SeedTint { min, max, .. } => {

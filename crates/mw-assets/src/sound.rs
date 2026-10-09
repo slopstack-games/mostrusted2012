@@ -252,6 +252,7 @@ impl<'a> SoundLoader<'a> {
             items,
             gate: String::new(),
             retrigger: false,
+            exclusive_cue: false,
         })
     }
 
@@ -399,6 +400,7 @@ impl EngineBank {
 /// Cue names of the engine bank.
 pub mod cue {
     pub const BACKFIRE: &str = "engine.backfire";
+    pub const POP: &str = "engine.pop";
     pub const IGNITION: &str = "engine.ignition";
     pub const LIMITER: &str = "engine.limiter";
 }
@@ -448,17 +450,24 @@ impl AssetStore {
             s.retrigger = true;
             bank.sequences.push(s);
         }
-        if let Some(mut s) = handle(&es, "Pop_Sequence").and_then(|id| loader.sequence(id)) {
-            s.retrigger = true;
-            bank.sequences.push(s);
-        }
         let add_cue = |bank: &mut Bank, name: &str, s: Option<Sequence>| {
             if let Some(s) = s {
                 bank.sequences.push(s);
                 bank.cues.push((name.to_string(), vec![bank.sequences.len() - 1]));
             }
         };
-        let s = handle(&es, "Backfire_Sequence").and_then(|id| loader.sequence(id));
+        // The pop rule (`FUN_009b20b0`) starts `Pop_Sequence` on a pop and `Backfire_Sequence` on a backfire
+        // (`FUN_0058ccb0`), each only once its previous instance has ended. The pop sequence is bound to the
+        // pop probability: a start plays its items whose range holds the probability then.
+        let s = handle(&es, "Pop_Sequence").and_then(|id| loader.sequence(id)).map(|mut s| {
+            s.exclusive_cue = true;
+            s
+        });
+        add_cue(&mut bank, cue::POP, s);
+        let s = handle(&es, "Backfire_Sequence").and_then(|id| loader.sequence(id)).map(|mut s| {
+            s.exclusive_cue = true;
+            s
+        });
         add_cue(&mut bank, cue::BACKFIRE, s);
         let s = handle(&es, "Ignition_Sequence").and_then(|id| loader.sequence(id));
         add_cue(&mut bank, cue::IGNITION, s);

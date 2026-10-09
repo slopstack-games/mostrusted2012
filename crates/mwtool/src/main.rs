@@ -916,6 +916,7 @@ fn main() -> Result<()> {
                     }
                     let params = std::sync::Arc::new(mw_audio::sequence::Params::new(eb.bank.param_names()));
                     let mut driver = mw_assets::engine_driver::EngineDriver::new(&eb, params.clone());
+                    driver.set_pop_params(mw_assets::engine_driver::PopParams::from_handling(&h));
                     let mut player = mw_audio::sequence::Player::new(eb.bank.clone(), params);
                     player.dry = dry;
                     player.bypass = mw_audio::sequence::Bypass::from_env();

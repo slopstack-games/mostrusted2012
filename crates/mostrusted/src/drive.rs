@@ -68,6 +68,8 @@ pub struct CarInput {
     pub reset: bool,
     /// Fixed throttle for automated runs (`--auto-throttle`).
     pub auto_throttle: Option<f32>,
+    /// Hold nitrous in automated runs (`--nitrous`).
+    pub auto_nitrous: bool,
     /// Scripted test in progress (`--test`): throttle, brake, steer, handbrake
     /// (> 0.5 = pulled). Overrides other input.
     pub scripted: Option<[f32; 4]>,
@@ -606,6 +608,16 @@ fn spawn_car(
         let behind = Quat::from_rotation_y(pending.heading) * Vec3::new(0.0, 2.5, -7.0);
         *cam = Transform::from_translation(start + behind).looking_at(start, Vec3::Y);
     }
+    // Exhaust pops and the car's spot effects (`exhaust.rs`).
+    let tuning = match &pending.spec.engine {
+        Some(mw_assets::engine_sound::EngineVoice::Bank(b)) => b.tuning,
+        _ => Default::default(),
+    };
+    commands.entity(car).insert(crate::exhaust::Exhaust::new(
+        pending.spec.spot_effects.clone(),
+        mw_assets::engine_driver::PopParams::from_handling(&modded),
+        tuning,
+    ));
     commands.remove_resource::<PendingCar>();
     info!("car spawned at {start:?}");
 }
@@ -621,7 +633,7 @@ pub(crate) fn read_input(keys: Res<ButtonInput<KeyCode>>, pads: Query<&Gamepad>,
     let mut steer = dev.value(act::STEER_LEFT) - dev.value(act::STEER_RIGHT);
     let handbrake = dev.held(act::HANDBRAKE);
     if input.scripted.is_none() {
-        input.nitrous = dev.held(act::NITROUS);
+        input.nitrous = dev.held(act::NITROUS) || input.auto_nitrous;
     }
     input.reset = keys.just_pressed(KeyCode::KeyR) || input.reset;
     if input.scripted.is_some() {
@@ -1745,6 +1757,9 @@ pub enum TestKind {
     /// At rest, then at a steady 100 km/h: peak-to-peak and dominant frequency of the body's height, pitch,
     /// roll and their rates.
     Jitter,
+    /// Exhaust pops and backfires (`exhaust.rs`): full throttle through the gears, a lift at high revs, nitrous;
+    /// counts the backfires and pops.
+    Exhaust,
 }
 
 /// Target speed for `--test corner` (km/h) and how long the steering takes to wind in.
@@ -1791,6 +1806,7 @@ fn run_test(
     test: Option<ResMut<DriveTest>>,
     mut input: ResMut<CarInput>,
     cars: Query<&Car>,
+    exhaust: Query<&crate::exhaust::Exhaust>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let (Some(mut test), Ok(car)) = (test, cars.single()) else { return };
@@ -2065,6 +2081,22 @@ fn run_test(
             };
             let throttle = if throttle < 0.0 { if (t / 0.3) as i32 % 2 == 0 { 1.0 } else { 0.0 } } else { throttle };
             input.scripted = Some([throttle, brake, 0.0, 0.0]);
+        }
+        TestKind::Exhaust => {
+            // (until seconds, throttle, nitrous)
+            const SCRIPT: [(f32, f32, bool); 5] =
+                [(9.0, 1.0, false), (11.0, 0.0, false), (13.0, 1.0, false), (16.0, 1.0, true), (18.0, 0.0, false)];
+            let (backfires, pops) = exhaust.iter().next().map_or((0, 0), |e| (e.backfires, e.pop_count));
+            mark(&mut test, "first-backfire", backfires > 0);
+            mark(&mut test, "first-pop", pops > 0);
+            let Some(&(_, throttle, nitrous)) = SCRIPT.iter().find(|s| t < s.0) else {
+                info!("TEST exhaust: {backfires} backfires, {pops} pops");
+                test.marks.push((format!("backfires-{backfires}-pops-{pops}"), t, v));
+                finish(&mut test, &mut exit);
+                return;
+            };
+            input.nitrous = nitrous;
+            input.scripted = Some([throttle, 0.0, 0.0, 0.0]);
         }
         TestKind::Landing | TestKind::Climb | TestKind::Jitter => {}
         TestKind::Brake => match test.braking_from {

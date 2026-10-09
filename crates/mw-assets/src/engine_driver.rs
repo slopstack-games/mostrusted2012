@@ -1,8 +1,9 @@
 //! Game state → the engine bank's bindings. The bindings are the game's own value names
 //! (`"Players.LocalPlayer.GetPlayerAudibleRPM"`, `"RaceCars.EntityEngineSound[#].PopGain"`, ...). The RPM,
 //! load and harmonic values follow the game's code (research log 2026-10-04, "engine sound from the game
-//! code"); the pops, backfires, limiter and gear-change rules are still ours (marked "assumed"). Shared by
-//! the runtime and `mwtool engine-sound`, so offline renders match the game.
+//! code"), the pops and backfires the game's `FUN_009b20b0` ([`ExhaustPops`]); the limiter and gear-change
+//! rules are still ours (marked "assumed"). Shared by the runtime and `mwtool engine-sound`, so offline
+//! renders match the game.
 //!
 //! `MW_AUDIO_RPM_LINEAR=1` feeds the physics RPM straight to the sequences instead of the game's curve
 //! (A/B listening).
@@ -39,6 +40,117 @@ pub fn normalised_rpm(t: &EngineTuning, rpm: f32, idle: f32, max: f32, load: f32
     let a = t.rpm_curve_off + (t.rpm_curve_on - t.rpm_curve_off) * load.clamp(0.0, 1.0);
     let e = (2.0 - a).clamp(0.1, 4.0);
     if (e - 1.0).abs() < 1e-3 { x } else { x.powf(e) }
+}
+
+/// The exhaust pop rule's data: `Engine.Sound` fields of the car's handling (`38d82e04` at Engine +0x70,
+/// `99a16939` at +0x7c; 0.1 and 0.9 on the 911).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PopParams {
+    /// A tick backfires when `1 − drop · r · 10` falls below this (vehicle +0x1f42).
+    pub backfire: f32,
+    /// Otherwise it pops when it falls below this (vehicle +0x1f41).
+    pub pop: f32,
+}
+
+impl PopParams {
+    pub fn from_handling(h: &crate::handling::VehicleHandling) -> Self {
+        Self {
+            backfire: h.param("Engine.Sound.38d82e04").unwrap_or(0.0),
+            pop: h.param("Engine.Sound.99a16939").unwrap_or(0.0),
+        }
+    }
+}
+
+/// What the pop rule reads each tick.
+#[derive(Debug, Clone, Copy)]
+pub struct PopInput {
+    /// The engine-sound RPM fraction ([`normalised_rpm`], vehicle +0x1f10).
+    pub fraction: f32,
+    /// The car's `Idle_RPM` and `Max_RPM` (`Engine` +0x2c / +0x38).
+    pub idle_rpm: f32,
+    pub max_rpm: f32,
+    /// The pedal after the gearbox's cuts (vehicle +0x1aa0).
+    pub gearbox_throttle: f32,
+    /// The gearbox is past its start-up states (+0x1bd8 not 0 or 1).
+    pub running: bool,
+    /// The cruising gearbox is in use (+0x1bdc = 1): no pops.
+    pub cruising: bool,
+}
+
+/// What a tick's pop rule fired.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PopEvent {
+    None,
+    /// A pop (vehicle +0x1f41): starts the engine's `Pop_Sequence`.
+    Pop,
+    /// A backfire (vehicle +0x1f42): starts `Backfire_Sequence` and the backfire flames (effect group 14).
+    Backfire,
+}
+
+/// Audible RPM above which the exhaust can pop (`.rdata` 0x010251e0).
+const POP_MIN_RPM: f32 = 4000.0;
+/// Scale of the per-tick drop in the pop test (`.rdata` 0x010250c0).
+const POP_DROP_SCALE: f32 = 10.0;
+/// `GetPopProbability` reaches 1 at this RPM fraction (`.bss` 0x01186810, read live).
+const POP_PROBABILITY_FRACTION: f32 = 0.8;
+
+/// The game's exhaust pops and backfires (`FUN_009b20b0`, run every tick by the engine-sound update
+/// `FUN_009b3030` after the gearbox; docs/decomp.md "Exhaust pops and backfires"). With the audible RPM
+/// `A = Idle + (Max − Idle) · fraction` (vehicle +0x1f00), it looks at how far `A` fell over the last tick:
+/// above 4000 audible RPM, outside the cruising gearbox, `x = 1 − drop / (Max − Idle) · r · 10` with `r`
+/// uniform in 0..1; a backfire when the car's backfire value is above `x`, else a pop when its pop value
+/// is. The pop probability the gurgle / pop sequences are bound to (`GetPopProbability`, +0x1eb4) is
+/// `clamp(fraction / 0.8) · (1 − gearbox throttle)²`. The game evaluates this before it updates the
+/// audible RPM, so both use the previous tick's values (kept here the same way).
+#[derive(Debug, Clone)]
+pub struct ExhaustPops {
+    /// Audible RPM and fraction at the last tick and the one before (+0x1f00 / +0x1f10, +0x1eb0).
+    last: Option<(f32, f32)>,
+    before: Option<f32>,
+    /// `GetPopProbability` (vehicle +0x1eb4).
+    pub probability: f32,
+    /// The last tick's drop as a fraction of the rev range (diagnostics).
+    pub drop: f32,
+    rng: u32,
+}
+
+impl Default for ExhaustPops {
+    fn default() -> Self {
+        Self { last: None, before: None, probability: 0.0, drop: 0.0, rng: 0x2545_f491 }
+    }
+}
+
+impl ExhaustPops {
+    fn random(&mut self) -> f32 {
+        self.rng ^= self.rng << 13;
+        self.rng ^= self.rng >> 17;
+        self.rng ^= self.rng << 5;
+        (self.rng >> 8) as f32 / (1u32 << 24) as f32
+    }
+
+    /// One physics tick.
+    pub fn tick(&mut self, p: &PopParams, i: &PopInput) -> PopEvent {
+        let range = (i.max_rpm - i.idle_rpm).max(1.0);
+        let mut event = PopEvent::None;
+        if let Some((audible, fraction)) = self.last {
+            let drop = (self.before.unwrap_or(audible) - audible).max(0.0);
+            self.drop = drop / range;
+            if i.running && audible > POP_MIN_RPM && !i.cruising {
+                let x = 1.0 - drop / range * self.random() * POP_DROP_SCALE;
+                if p.backfire > x {
+                    event = PopEvent::Backfire;
+                } else if p.pop > x {
+                    event = PopEvent::Pop;
+                }
+            }
+            let open = 1.0 - i.gearbox_throttle.clamp(0.0, 1.0);
+            self.probability = (fraction / POP_PROBABILITY_FRACTION).clamp(0.0, 1.0) * open * open;
+            self.before = Some(audible);
+        }
+        let fraction = i.fraction.clamp(0.0, 1.0);
+        self.last = Some((i.idle_rpm + range * fraction, fraction));
+        event
+    }
 }
 
 /// Engine firing frequency (Hz): one cylinder fires every two revolutions.
@@ -140,11 +252,15 @@ pub struct EngineDriver {
     load: LoadFilter,
     /// Last engine load written (the RPM curve depends on it).
     load_value: f32,
-    prev_throttle: f32,
     prev_gear: i32,
     gear_elapsed: f32,
     upshift: bool,
-    pop: f32,
+    /// The exhaust pop rule: run here at `update`'s rate unless the caller runs it in its physics tick and
+    /// hands the results over ([`EngineDriver::push_pops`]).
+    pops: ExhaustPops,
+    pop_params: PopParams,
+    external_pops: bool,
+    pop_probability: f32,
     limiter: f32,
     jitter_timer: f32,
     jitter: f32,
@@ -175,11 +291,13 @@ impl EngineDriver {
             linear_rpm: std::env::var_os("MW_AUDIO_RPM_LINEAR").is_some(),
             load: LoadFilter::default(),
             load_value: 0.0,
-            prev_throttle: 0.0,
             prev_gear: 1,
             gear_elapsed: 100.0,
             upshift: true,
-            pop: 0.0,
+            pops: ExhaustPops::default(),
+            pop_params: PopParams::default(),
+            external_pops: false,
+            pop_probability: 0.0,
             limiter: 0.0,
             jitter_timer: 0.0,
             jitter: 0.5,
@@ -231,33 +349,28 @@ impl EngineDriver {
             self.params.trigger(cue::IGNITION);
             self.prev_gear = i.gear;
         }
-        let norm = ((i.rpm - i.idle_rpm) / (i.redline_rpm - i.idle_rpm).max(1.0)).clamp(0.0, 1.0);
-        // Gear changes (assumed rules): restart the shift timeline, pick the group by direction; a full-throttle
-        // upshift at high revs sometimes backfires.
+        // Gear changes (assumed rules): restart the shift timeline, pick the group by direction.
         if i.gear != self.prev_gear && i.gear != 0 && self.prev_gear != 0 {
             self.upshift = i.gear.abs() > self.prev_gear.abs();
             self.gear_elapsed = 0.0;
-            if self.upshift && i.throttle > 0.8 && norm > 0.6 && self.random() < 0.5 {
-                self.params.trigger(cue::BACKFIRE);
-            }
         }
         self.prev_gear = i.gear;
         self.gear_elapsed = (self.gear_elapsed + dt / SHIFT_SECONDS).min(100.0);
-        // Overrun pops: lifting off at high revs arms a crackle that fades over ~1.5 s (assumed); a sharp
-        // lift from near the redline sometimes backfires.
-        if i.throttle < 0.1 && self.prev_throttle >= 0.3 {
-            if norm > 0.45 {
-                self.pop = 1.0;
-            }
-            if norm > 0.75 && self.random() < 0.35 {
-                self.params.trigger(cue::BACKFIRE);
-            }
+        // Exhaust pops (`FUN_009b20b0`), unless the caller runs them in its physics tick. Offline renders have
+        // no gearbox: the pedal stands in for the gearbox throttle.
+        if !self.external_pops {
+            let input = PopInput {
+                fraction: normalised_rpm(&self.tuning, i.rpm, i.idle_rpm, i.redline_rpm, self.load_value),
+                idle_rpm: i.idle_rpm,
+                max_rpm: i.redline_rpm,
+                gearbox_throttle: i.throttle,
+                running: true,
+                cruising: false,
+            };
+            let event = self.pops.tick(&self.pop_params, &input);
+            self.fire(event);
+            self.pop_probability = self.pops.probability;
         }
-        if i.throttle > 0.2 {
-            self.pop = 0.0;
-        }
-        self.pop *= (-dt / 0.6).exp();
-        self.prev_throttle = i.throttle;
         // Rev limiter: bouncing on the limit fires the limiter cue every 80 ms.
         let on_limiter = i.throttle > 0.5 && i.rpm >= i.redline_rpm - 60.0;
         self.limiter -= dt;
@@ -273,6 +386,38 @@ impl EngineDriver {
         self.write(i, dt);
         if on_limiter {
             self.set_kind(Kind::RevLimitGain, 1.0);
+        }
+    }
+
+    /// The car's pop rule data (`Engine.Sound`).
+    pub fn set_pop_params(&mut self, p: PopParams) {
+        self.pop_params = p;
+    }
+
+    /// The engine load the sound uses (the RPM curve crossfades by it), for the caller's pop rule.
+    pub fn load(&self) -> f32 {
+        self.load_value
+    }
+
+    pub fn tuning(&self) -> &EngineTuning {
+        &self.tuning
+    }
+
+    /// Results of the pop rule run by the caller in its physics tick: `GetPopProbability` and the tick's
+    /// event. Once called, [`EngineDriver::update`] stops running its own.
+    pub fn push_pops(&mut self, probability: f32, event: PopEvent) {
+        self.external_pops = true;
+        self.pop_probability = probability;
+        self.fire(event);
+    }
+
+    /// A backfire starts `Backfire_Sequence`, a pop `Pop_Sequence` (`FUN_0058ccb0`, which starts each only
+    /// when its previous instance has ended).
+    fn fire(&self, event: PopEvent) {
+        match event {
+            PopEvent::Backfire => self.params.trigger(cue::BACKFIRE),
+            PopEvent::Pop => self.params.trigger(cue::POP),
+            PopEvent::None => {}
         }
     }
 
@@ -305,7 +450,7 @@ impl EngineDriver {
                 Kind::Harmonic1 => firing * self.tuning.harmonic1,
                 Kind::Harmonic2 => firing * self.tuning.harmonic2,
                 Kind::Subharmonic => firing * self.tuning.subharmonic,
-                Kind::PopProbability => self.pop * norm.max(0.3),
+                Kind::PopProbability => self.pop_probability,
                 Kind::RevLimitGain => 0.0,
                 Kind::GearElapsed => self.gear_elapsed,
                 Kind::Upshift => f32::from(u8::from(self.upshift)),

@@ -43,7 +43,7 @@ pub use text::{Language, VehicleEntry, VehicleList};
 pub use texture::{Dimension, Texture};
 pub use traffic::{LanePolyline, TrafficHull, TrafficJunction, TrafficLaneData, TrafficLightGroup, TrafficSection};
 pub use trigger::{Collectable, Trigger, TriggerData, TriggerShape};
-pub use vehicle::{VehicleGraphicsSpec, Wheel, WheelPart};
+pub use vehicle::{Locator, LocatorGroup, VehicleGraphicsSpec, Wheel, WheelPart};
 pub use vertex::{Semantic, VertexAttribute, VertexDescriptor};
 pub use world::{Instance, InstanceList, InstanceOverrides, ObjectDef, ObjectInstance, ObjectInstanceList};
 pub use zone::{Zone, ZoneList};

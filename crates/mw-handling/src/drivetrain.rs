@@ -278,6 +278,9 @@ pub struct Drivetrain {
     shift: Option<Shift>,
     /// The engine's effective throttle (after the gearbox's cuts, the peak hold and the lag), for the sound.
     pub throttle: f32,
+    /// The pedal after the gearbox's cuts (vehicle +0x1aa0, before the engine's hold and lag): the exhaust
+    /// pops read it (`FUN_009b20b0`).
+    pub gearbox_throttle: f32,
     /// Peak-held throttle and lagged throttle (`FUN_009d9960`, engine +0x28 / +0x24).
     hold: f32,
     lag: f32,
@@ -312,6 +315,7 @@ impl Drivetrain {
             launching,
             shift: None,
             throttle: 0.0,
+            gearbox_throttle: 0.0,
             hold: 0.0,
             lag: 0.0,
             noise_time: 0.0,
@@ -354,6 +358,7 @@ impl Drivetrain {
         let race = p;
         let p = race.active(self.cruising);
         let thr = self.gearbox_state(p, throttle, brake, mph, dt);
+        self.gearbox_throttle = thr;
         self.gearbox_mode(race, throttle, brake, dt);
         let (up, down) = match self.shift {
             Some(s) => (s.up, !s.up),

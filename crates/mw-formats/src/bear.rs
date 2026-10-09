@@ -169,9 +169,11 @@ impl Curve5 {
 /// `_guess` are the least certain. Unlisted kinds stay [`Op::Other`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum Op {
-    /// 0x33 / 0x34 / 0x42: per-layer emission controller (update and render groups). Four curves
-    /// over the effect's inputs (`Intensity`, speeds, impact velocity); writes layer state `.1`.
-    Controller { inputs: Vec<Operand>, curves: [Curve5; 4], scales: [f32; 4] },
+    /// 0x33 `UpdateBindings` / 0x34 `UpdateBindings_Wheel` / 0x42 `UpdateWheelBindings`: per-layer
+    /// emission controller (update and render groups). Four curves over the effect's inputs
+    /// (`Intensity`, speeds, impact velocity, engine globals), combined into the layer's binding slots
+    /// that spawners read ([`Bindings`]; decoded for 0x33 / 0x34 only).
+    Controller { inputs: Vec<Operand>, curves: [Curve5; 4], scales: [f32; 4], bindings: Option<Bindings> },
     /// Spawners (update-group primaries with initialiser secondaries): 0x00 at the transform, 0x01
     /// from the collision mesh, 0x05 at a wheel, 0x07 at a wheel's ground contact.
     Spawn(Spawner),
@@ -210,9 +212,23 @@ pub enum Op {
     },
     /// 0x3C: `Radius* = Radius × bezier(Age; p0..p3)`.
     RadiusCurve { age: Operand, radius: Operand, out: Operand, bezier: [f32; 4] },
-    /// 0x1C: `Colour*.rgb = Σ rows[k] · Ageᵏ` (k = 0..4, columns r g b and a brightness factor
-    /// that multiplies rgb), `Colour*.a = alpha(Age) × alpha_scale`; a colour parameter may tint it.
-    ColourCurve { age: Operand, out: Operand, tint: Operand, rows: [[f32; 4]; 5], alpha: Curve5, alpha_scale: f32 },
+    /// 0x1C `ParametricSetColourGradient` (`FUN_00449030` compiles, `FUN_004553b0` runs it): a piecewise
+    /// linear gradient over the particle's age. With `u = frac(Age · rates[0])` and ramp weights
+    /// `w_k = clamp(u · ramp[0][k] + ramp[1][k], 0, 1)`, `c = rows[0] + Σ w_k · rows[k + 1]`; then
+    /// `Colour*.rgb = c.rgb · c.w` (the fourth column is a brightness) and `Colour*.a = alpha(frac(Age ·
+    /// rates[1])) · slot[alpha_slot]` (a binding slot of the layer). With `use_tint` the colour parameter
+    /// replaces rgb and multiplies the alpha.
+    ColourCurve {
+        age: Operand,
+        out: Operand,
+        tint: Operand,
+        rows: [[f32; 4]; 5],
+        ramp: [[f32; 4]; 2],
+        alpha: Curve5,
+        rates: [f32; 2],
+        alpha_slot: u8,
+        use_tint: bool,
+    },
     /// 0x17: `Colour*.a *= Alpha`.
     AlphaApply { alpha: Operand, colour: Operand },
     /// 0x38: camera-relative adjustments of `Radius*` / `Colour*`: near fade over `near_fade` metres.
@@ -226,8 +242,82 @@ pub enum Op {
     /// Renderers (render-group primaries): camera-facing quads (0x24, 0x27 with atlas frames, 0x28
     /// seeded) and motion-blurred sprites along the velocity (0x25, 0x29).
     Render(Renderer),
+    /// 0x1A `ParametricPosVelToWorldSpace` / 0x1B `...WithLocalTransform` (render group): the layer's
+    /// particles live in the emitter's space (spawned with 0x14 `InitialisePosOffset`) and are placed with
+    /// the current `Transform` each frame, so they follow a moving emitter (the exhaust flames); 0x1B first
+    /// applies its own rotation and offset.
+    ToWorld { rotation: [f32; 4], offset: [f32; 3] },
     /// Any other kind (kept as raw bytes in [`Action::data`]).
     Other,
+}
+
+/// How an `UpdateBindings` controller fills its layer's binding slots, from the game's code
+/// (`FUN_0045fc60` compiles the payload, `FUN_0045ffd0` runs it every update; research log 2026-10-09
+/// "exhaust effects"). Slot 0 is never written (read as 1 here: spawners scale by it where nothing is
+/// bound). Curve `i` writes slot `1 + i` = `curve_i(x_i) + offsets[i]`, where `x_i` comes from
+/// `sources[i]` (`FUN_00448620`; `s` = `scales[i]`, `t` = seconds since the layer started):
+///
+/// | source | x |
+/// |--------|---|
+/// | 0 | `s·t` |
+/// | 1 | `frac(s·t)` |
+/// | 3 | `s·|Velocity|` (the velocity input, m/s) |
+/// | 4 | `s·` distance from the transform to the camera (global +0x30) |
+/// | 7 / 8 | `0.5 + 0.5·sin / cos(2π·s·t)` |
+/// | 9 | a random number drawn when the action is compiled (it replaces the scale) |
+/// | 10 | `Intensity` |
+/// | 15 | `frac(s·(t + r))`, `r` a random phase drawn per layer |
+/// | 16 | `BearGlobalParameters` +0x74: the player car's engine load (vehicle +0x1f20) |
+/// | 17 / 18 | `ImpactClosingVelocity / s`, `MovementSinceLastFrame / s` |
+/// | 2, 5, 6, 11–14, 19 | other globals (+0x68 × 1/86400, `s` × +0x60, byte +0x7c, +0x6c, byte +0x7d (0), +0x70, byte +0x7e, +0x78) |
+///
+/// Then four combine steps (`FUN_004492a0`) write slot `5 + k` = clamp01(op(slot[b], slot[a])):
+/// op 0 `b·a`, 1 `max`, 2 `min`, 3 `(b + a) / 2`, 4 `b + a`, 5 `(1 − a)·b + a`, 6 `a − b`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Bindings {
+    pub sources: [u8; 4],
+    pub offsets: [f32; 4],
+    /// `[a, b, op]` per combine step.
+    pub combine: [[u8; 3]; 4],
+}
+
+impl Bindings {
+    pub const SLOTS: usize = 9;
+
+    /// Run the combine steps over `slot` (curves already in 1..=4).
+    pub fn combine(&self, slot: &mut [f32; Self::SLOTS]) {
+        for (k, &[a, b, op]) in self.combine.iter().enumerate() {
+            let a = slot.get(a as usize).copied().unwrap_or(0.0);
+            let b = slot.get(b as usize).copied().unwrap_or(0.0);
+            let v = match op {
+                0 => b * a,
+                1 => b.max(a),
+                2 => b.min(a),
+                3 => (b + a) * 0.5,
+                4 => b + a,
+                5 => (1.0 - a) * b + a,
+                6 => a - b,
+                _ => b,
+            };
+            slot[5 + k] = v.clamp(0.0, 1.0);
+        }
+    }
+}
+
+/// `EmitterConePlus` (spawner 0x00) fields beyond the common ones, from the game's code (`FUN_0044ccc0`
+/// compiles, `FUN_0044cf30` runs it): it emits only while `IsEmitting` is set, the layer's time is in
+/// `time_window`, the squared distance from the camera (`BearGlobalParameters` +0x30) is in `camera_window` and the
+/// velocity input's length is within `speed_window` (m/s). Per update it adds `(rate + per_metre ·
+/// |Velocity|) · dt · slot[state[0]]` (× the distance fade over `lod`) to an accumulator that starts at
+/// `burst + 0.9999` (× `slot[state[1]]` while it is above 1) and emits its rounded value; initial
+/// speeds are scaled by `slot[state[2]]`, the cone angles by `slot[state[3]]`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConeEmitter {
+    pub time_window: [f32; 2],
+    pub camera_window: [f32; 2],
+    pub speed_window: [f32; 2],
+    pub emitting: Operand,
+    pub state: [u8; 4],
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -250,6 +340,8 @@ pub struct Spawner {
     pub height: [f32; 2],
     pub position: Operand,
     pub velocity: Operand,
+    /// `EmitterConePlus` (0x00) only.
+    pub cone: Option<ConeEmitter>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -327,6 +419,15 @@ impl Layer {
     /// The layer's renderer, if it has one.
     pub fn renderer(&self) -> Option<&Renderer> {
         self.actions.iter().find_map(|a| if let Op::Render(r) = &a.op { Some(r) } else { None })
+    }
+
+    /// The emitter-space to world placement of a layer whose particles live in the emitter's space
+    /// ([`Op::ToWorld`]): rotation and offset applied before the `Transform`.
+    pub fn to_world(&self) -> Option<([f32; 4], [f32; 3])> {
+        self.actions.iter().find_map(|a| match a.op {
+            Op::ToWorld { rotation, offset } => Some((rotation, offset)),
+            _ => None,
+        })
     }
 
     pub fn spawner(&self) -> Option<&Spawner> {
@@ -503,7 +604,18 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
                 Curve5::read(&r, curves_at + 20)?,
                 Curve5::read(&r, curves_at + 30)?,
             ];
-            Op::Controller { inputs, curves, scales: vec4(curves_at + 40)? }
+            // `FUN_0045fc60`: offsets after the scales, then the source, `a`, `b` and op bytes.
+            let bindings = if kind != 0x42 && data.len() >= 0x70 {
+                let b = r.bytes(0x60, 16)?;
+                Some(Bindings {
+                    sources: [b[0], b[1], b[2], b[3]],
+                    offsets: vec4(0x50)?,
+                    combine: std::array::from_fn(|k| [b[4 + k], b[8 + k], b[12 + k]]),
+                })
+            } else {
+                None
+            };
+            Op::Controller { inputs, curves, scales: vec4(curves_at + 40)?, bindings }
         }
         0x05 => Op::Spawn(Spawner {
             kind,
@@ -517,6 +629,7 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
             height: pair(0x40)?,
             position: opnd(0x60)?,
             velocity: opnd(0x64)?,
+            cone: None,
         }),
         0x07 => Op::Spawn(Spawner {
             kind,
@@ -530,6 +643,7 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
             height: [0.0; 2],
             position: opnd(0x50)?,
             velocity: opnd(0x54)?,
+            cone: None,
         }),
         0x01 => Op::Spawn(Spawner {
             kind,
@@ -543,6 +657,7 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
             height: [0.0; 2],
             position: opnd(0x3C)?,
             velocity: opnd(0x40)?,
+            cone: None,
         }),
         0x00 => Op::Spawn(Spawner {
             kind,
@@ -556,7 +671,21 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
             height: [0.0; 2],
             position: opnd(0x58)?,
             velocity: opnd(0x5C)?,
+            cone: if data.len() >= 0x74 {
+                let b = r.bytes(0x70, 4)?;
+                Some(ConeEmitter {
+                    time_window: pair(0x10)?,
+                    camera_window: pair(0x18)?,
+                    speed_window: pair(0x40)?,
+                    emitting: Operand::decode(r.u32(0x50)?, nch, np).unwrap_or(Operand::None),
+                    state: [b[0], b[1], b[2], b[3]],
+                })
+            } else {
+                None
+            },
         }),
+        0x1A => Op::ToWorld { rotation: [0.0, 0.0, 0.0, 1.0], offset: [0.0; 3] },
+        0x1B => Op::ToWorld { rotation: vec4(0)?, offset: [f(16)?, f(20)?, f(24)?] },
         0x0C => Op::Lifetime { age: opnd(4)?, recip_lifetime: opnd(8)?, min: f(12)?, max: f(16)? },
         0x12 => Op::Radius { radius: opnd(4)?, min: f(8)?, max: f(12)? },
         0x0A => Op::Rotation2dInit {
@@ -608,8 +737,11 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
             out: opnd(8)?,
             tint: opnd(12)?,
             rows: [vec4(32)?, vec4(48)?, vec4(64)?, vec4(80)?, vec4(96)?],
+            ramp: [vec4(112)?, vec4(128)?],
             alpha: Curve5::read(&r, 144)?,
-            alpha_scale: f(156)?,
+            rates: [f(156)?, f(160)?],
+            alpha_slot: r.u8(154)?,
+            use_tint: r.u8(155)? != 0,
         },
         0x17 => Op::AlphaApply { alpha: opnd(0)?, colour: opnd(8)? },
         0x38 => Op::ViewFade { near_fade: f(80)?, far_guess: f(84)? },
