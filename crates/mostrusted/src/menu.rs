@@ -320,9 +320,10 @@ fn toggle_menu(
     easydrive: Option<Res<crate::easydrive::EasyDrive>>,
     cutscene: Option<Res<crate::cutscene::CutsceneState>>,
     pause: Option<Res<crate::pause::PauseMenu>>,
+    front: Option<Res<crate::frontend::FrontEnd>>,
 ) {
-    // Esc and Back are SKIP_CUTSCENE while a sequence plays.
-    if !menu.enabled || cutscene.is_some_and(|c| c.playing()) {
+    // Esc and Back are SKIP_CUTSCENE while a sequence plays; nothing opens over the front end's screens.
+    if !menu.enabled || cutscene.is_some_and(|c| c.playing()) || front.is_some_and(|f| !f.playing()) {
         return;
     }
     // With the game's pause menu (`pause.rs`), PAUSE (Esc / Start) is its key; Tab / F1 / pad Back stay ours.

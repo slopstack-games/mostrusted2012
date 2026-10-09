@@ -723,9 +723,6 @@ fn draw(
             info!("  quad {:?} rect {:?} rot {} colour {:?}", q.texture, q.rect, q.rotation, q.colour);
         }
     }
-    if let Some(n) = std::env::var("MW_FE_ONLY").ok().and_then(|v| v.parse::<usize>().ok()) {
-        quads.truncate(n);
-    }
     show_quads(&mut commands, *root, pool, &quads, textures, None, &mut nodes, &mut materials);
 }
 
