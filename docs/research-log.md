@@ -30,6 +30,33 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
   (≈2.0 g), ours 106.6 → 74.5 (≈2.9 g); from 2 s our front / rear slip angles run 8° above the original's
   (2.25 s: front 47 / 39°, rear 25.5 / 17.6°) and the speed hold then pushes twice as hard to catch up (20 kN
   against 10 kN). Next: the tyres' combined braking and side force at 20–45° of slip.
+- **Correction, same day: most of that was the replay, not the physics.** (1) Our replay logged `speed_mph` as
+  the forward component of the velocity, the game's +0x1620 is the ground speed signed by direction; in a
+  20–30° slide ours read 6–13 % low. (2) The approach eased off near the start speed and the MP4 ran into the
+  60 s limit at 125.8 mph (recording 128.7). (3) It started in whatever gear the approach left (4th at 8100
+  rpm; the original was in 5th at 6400). Fixed in replay.rs (the game's speed, full throttle to the start
+  speed, the recording's first gear engaged with the clutch closed: `Drivetrain::put_in_gear`). On 98.98 s:
+  speed RMS 7.7 → 3.1 mph; the braking in the slide is no longer far off.
+- **The 98.98 s window has a terrain event**: at 2.04 s the original's front-right wheel loses contact for one
+  tick (`w1_contact` 0), the next tick's drift yaw torque is 0 (it needs every wheel down) and the yaw rate
+  steps from −63 to −49 °/s in two ticks. Our flat-track replay cannot have it; the run is only comparable up to
+  2.03 s. Up to there the residual yaw moment (Iy dω/dt − the drift's torque, Iy = 2697 from the box) agrees
+  with ours within ~1 kN m; ours still peaks higher (−72 against −62 °/s with the 0.4, −79 without).
+- Five brake-tap windows of `ref/live1` (MP4), each cut at its first wheel-contact loss, yaw RMS against the
+  original with our 0.4 / with 0: 65.5 s 15.6 / 19.9, 69.0 s 5.5 / 7.6, 98.98 s (to 2.03 s) 6.4 / 7.8, 107.5 s
+  4.8 / 12.9 °/s; 146.0 and 156.2 s are poor either way (26 / 24 °/s: they start mid-manoeuvre, the original
+  already yawing). So the original does resist yaw more than our undamped car in these slides; the code puts
+  no damping there, so the cause is in the tyre or chassis model. Ruled out: the inertia (above), the blend
+  scale (below), the effective mass (we already solve wheel after wheel with the chassis's effective mass, as
+  the game), extra wheel bodies (the island's body list in the snapshot holds the chassis, other cars and props;
+  the wheels are spin-only records).
+- **Settled from the snapshots**: the wheel constraints are an array of 0x500-byte records at island +0x20
+  (the island object at 0x07b72a80 in both snapshots: bodies +0x00, 0x100 each; wheel records +0x08, 0x80 each;
+  found by scanning for that pointer pattern). The player's four hold +0x210 = (1, 0, 0, 0) and +0x4aa = 1:
+  the blend-input scale is 1 (`FUN_009c5da0` broadcasts lane 0), and the full tyre solve runs. Wheel records:
+  spin inertia (+0x54) 1.06 front, 2.125 rear on the SL 65 = ½ m r² from the data (19 kg, 0.334 m; 23 kg,
+  0.352 m) + 0.70 on the driven wheels, the same as ours. The constraint's +0x100 solve state does not hold the
+  caps between ticks (impulses are written over them), so the caps cannot be read from a snapshot.
 
 ### 2026-10-07: the anti-roll bar's solve found (`FUN_0092ee70`); `FUN_00932af0` is the sleep pass; 2 sub-steps
 - Prompted by the Vita cross-check ("Update constraints" ⊇ the island step). `FUN_00932af0`, which Ghidra could

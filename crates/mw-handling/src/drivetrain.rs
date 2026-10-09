@@ -594,6 +594,14 @@ impl Drivetrain {
         self.launching = true;
         self.clutch = 0.0;
     }
+
+    /// Puts the car in `gear` while rolling, clutch closed (`--replay` starts in the recording's gear).
+    pub fn put_in_gear(&mut self, gear: i32) {
+        self.gear = gear;
+        self.shift = None;
+        self.launching = false;
+        self.clutch = 1.0;
+    }
 }
 
 #[cfg(test)]

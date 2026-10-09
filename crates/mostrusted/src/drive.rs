@@ -350,6 +350,11 @@ impl Car {
         self.wheels.iter().map(|w| w.slip)
     }
 
+    /// Each wheel's spin (rad/s), in the order of [`Car::wheel_slips`].
+    pub fn wheel_spins(&self) -> impl Iterator<Item = f32> + '_ {
+        self.wheels.iter().map(|w| w.omega)
+    }
+
     /// The front wheels' steering angle (rad, positive = left) the next tick's tyres use.
     pub fn steer_angle(&self) -> f32 {
         self.steer

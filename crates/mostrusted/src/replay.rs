@@ -31,6 +31,8 @@ struct Row {
 pub struct Replay {
     rows: Vec<Row>,
     start_mph: f32,
+    /// The recording's gear on its first row, engaged when the playback starts.
+    start_gear: Option<i32>,
     /// Sign applied to the recorded steering: the game's axis may point the other way (ours: + = left). Found
     /// from the recording by correlating steering with yaw rate.
     steer_sign: f32,
@@ -54,10 +56,11 @@ impl Replay {
         let col = |name: &str| header.iter().position(|h| *h == name);
         let need = |name: &str| col(name).ok_or_else(|| anyhow::anyhow!("{} has no column {name}", path.display()));
         let (ct, cth, cbr, cst) = (need("t")?, need("in_throttle")?, need("in_brake")?, need("in_steer")?);
-        let (chb, cspeed) = (col("handbrake_a"), col("speed_mph"));
+        let (chb, cspeed, cgear) = (col("handbrake_a"), col("speed_mph"), col("gear"));
         let yaw_cols = ["body_wx", "body_wy", "body_wz", "body_upx", "body_upy", "body_upz"].map(col);
         let mut rows = Vec::new();
         let mut start_mph = None;
+        let mut start_gear = None;
         let mut corr = 0.0f64;
         for line in lines {
             let f: Vec<&str> = line.split(',').collect();
@@ -67,6 +70,9 @@ impl Replay {
             };
             let mph = cspeed.and_then(num).unwrap_or(0.0);
             start_mph.get_or_insert(mph);
+            if let Some(g) = cgear.and_then(num) {
+                start_gear.get_or_insert(g as i32);
+            }
             if let [Some(a), Some(b), Some(c), Some(d), Some(e), Some(g)] = yaw_cols
                 && let [Some(wx), Some(wy), Some(wz), Some(ux), Some(uy), Some(uz)] =
                     [num(a), num(b), num(c), num(d), num(e), num(g)]
@@ -98,6 +104,7 @@ impl Replay {
         Ok(Self {
             rows,
             start_mph: start_mph.unwrap_or(0.0),
+            start_gear,
             steer_sign,
             out_path,
             out: None,
@@ -130,17 +137,18 @@ impl Replay {
 
 const COLUMNS: &str = "t,speed_mph,in_throttle,in_brake,in_steer,handbrake,rpm,gear,drifting,drift_scale,\
 drift_rear_slip,yaw_rate,lat_accel,body_slip_deg,px,pz,w0_kappa,w0_alpha,w1_kappa,w1_alpha,w2_kappa,w2_alpha,\
-w3_kappa,w3_alpha,wheel_angle,tyre_yaw_front,tyre_yaw_rear,drift_yaw_tq,drift_side_f,drift_hold_f,drift_yaw_scale";
+w3_kappa,w3_alpha,wheel_angle,tyre_yaw_front,tyre_yaw_rear,drift_yaw_tq,drift_side_f,drift_hold_f,drift_yaw_scale,\
+clutch,w0_omega,w1_omega,w2_omega,w3_omega";
 
 /// Runs before `car_physics` in the fixed schedule: approach the start speed, then play the inputs back.
 pub fn run_replay(
     time: Res<Time>,
     replay: Option<ResMut<Replay>>,
     mut input: ResMut<crate::drive::CarInput>,
-    cars: Query<(&crate::drive::Car, &Transform, &LinearVelocity, &AngularVelocity)>,
+    mut cars: Query<(&mut crate::drive::Car, &Transform, &LinearVelocity, &AngularVelocity)>,
     mut exit: MessageWriter<AppExit>,
 ) {
-    let (Some(mut r), Ok((car, transform, velocity, angular))) = (replay, cars.single()) else { return };
+    let (Some(mut r), Ok((mut car, transform, velocity, angular))) = (replay, cars.single_mut()) else { return };
     if r.done {
         return;
     }
@@ -165,9 +173,13 @@ pub fn run_replay(
                 Err(e) => warn!("replay: cannot write {}: {e}", r.out_path.display()),
             }
             r.playing = Some(0.0);
+            if let Some(gear) = r.start_gear.filter(|&g| g > 0) {
+                car.drivetrain.put_in_gear(gear);
+            }
         } else {
-            let throttle = ((r.start_mph - mph) / 5.0).clamp(0.2, 1.0);
-            input.scripted = Some([throttle, 0.0, 0.0, 0.0]);
+            // Full throttle: easing off near the target left fast cars short of it (part throttle selects the
+            // cruising gearbox, which barely accelerates at 125 mph). One tick adds well under the 0.5 mph slack.
+            input.scripted = Some([1.0, 0.0, 0.0, 0.0]);
         }
         return;
     };
@@ -189,14 +201,18 @@ pub fn run_replay(
     let (rot, v) = (transform.rotation, velocity.0);
     let (forward, up) = (rot * Vec3::Z, rot * Vec3::Y);
     let speed = v.dot(forward);
-    let mph = speed / MPH;
+    // The game's speed (vehicle +0x1620): the speed over the ground signed by the direction of travel, not the
+    // forward component (which reads low in a slide).
+    let mph = v.length().copysign(speed) / MPH;
     let yaw_rate = angular.0.dot(up);
     let body_slip = v.dot(rot * Vec3::X).atan2(speed.abs().max(1.0));
     let slips: Vec<(f32, f32)> = car.wheel_slips().collect();
     let slip = |i: usize| slips.get(i).copied().unwrap_or_default();
+    let spins: Vec<f32> = car.wheel_spins().collect();
+    let spin = |i: usize| spins.get(i).copied().unwrap_or_default();
     let p = transform.translation;
     let line = format!(
-        "{t:.4},{mph:.3},{:.3},{:.3},{:.3},{:.0},{:.0},{},{},{:.3},{:.2},{:.4},{:.3},{:.2},{:.2},{:.2},{:.3},{:.2},{:.3},{:.2},{:.3},{:.2},{:.3},{:.2},{:.5},{:.0},{:.0},{:.0},{:.0},{:.0},{:.4}",
+        "{t:.4},{mph:.3},{:.3},{:.3},{:.3},{:.0},{:.0},{},{},{:.3},{:.2},{:.4},{:.3},{:.2},{:.2},{:.2},{:.3},{:.2},{:.3},{:.2},{:.3},{:.2},{:.3},{:.2},{:.5},{:.0},{:.0},{:.0},{:.0},{:.0},{:.4},{:.3},{:.2},{:.2},{:.2},{:.2}",
         inputs[0],
         inputs[1],
         inputs[2],
@@ -226,6 +242,11 @@ pub fn run_replay(
         car.drift.last.side_force,
         car.drift.last.hold_force,
         car.drift.last.yaw_rate_scale,
+        car.drivetrain.clutch,
+        spin(0),
+        spin(1),
+        spin(2),
+        spin(3),
     );
     if let Some(w) = &mut r.out {
         let _ = writeln!(w, "{line}");
