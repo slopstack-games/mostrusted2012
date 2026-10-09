@@ -482,8 +482,19 @@ but the record sizes and the flow / vehicle tables differ.
   vehicle picker `FUN_00608c80`). Adjacent lanes of one road are separate
   sections with their own flow.
 - **Rung** (0x20): two `[x, y, z, 0]` points across the lane, ~4.5 m apart; cumulative lengths restart at 0 in
-  each section. **Neighbour** (4): section, last rung. **Span** (12): max vehicles, its reciprocal, two `u16`.
-- Open: junction (0x150), stop line (2), static vehicle (0x50) records; see the research log.
+  each section. **Neighbour** (4): section, last rung. **Span** (12): max vehicles, its reciprocal, `u16` hull
+  and `u8` span it continues into (0xFFFF none; the route choice sums the load along that chain,
+  `FUN_00618470`).
+- **Stop line** (2, confirmed in `FUN_00439b60`): a `u16` rung position in 8.8 fixed point (rung in the high
+  byte, 1/256 fractions in the low byte). Section `+0x05` is the first stop line, `+0x06` how many.
+- **Junction** (0x150, confirmed in `FUN_00605d30`, the light cycle): `u16[16]` phase durations at 0x04 in
+  tenths of a second, `u8[16]` phase masks at 0x24 (bit k set: light group k holds its stop lines, i.e. red),
+  `u8` phase count at 0x34, `u8` group count at 0x35, groups of 0x20 bytes from 0x40: `u16` light object ids
+  at 0x00 (count `+0x17`), `u8` stop line indices at 0x04 and their `u16` hulls at 0x0A (count `+0x16`). All 189
+  stop lines are referenced by exactly the junction groups, each owned by a section. Typical cycle: 15 s / 2 s
+  all red / 15 s / 2 s all red.
+- **Static vehicle** (0x50): a matrix, then (from `FUN_0060db90`) `u16` flow type at 0x40, `u8` spawn chance in
+  percent at 0x42, flags at 0x43 (bit 0: not during a pursuit). Parked cars; not used yet.
 
 ## TriggerData (0x202)
 

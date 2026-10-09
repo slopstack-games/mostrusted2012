@@ -23,8 +23,9 @@
 //! Collision layers: the world (`PolygonSoupList` and anything without layers) is [`GameLayer::World`];
 //! the car's body is [`GameLayer::Car`] and a low bumper box that only meets props is
 //! [`GameLayer::CarBumper`] (the body box sits above the wheels, so low props would slip under it);
-//! props are [`GameLayer::Prop`] and collide with the world, the car and each other. The wheels' ray
-//! casts only see the world.
+//! props are [`GameLayer::Prop`] and collide with the world, the car and each other. Traffic cars are
+//! [`GameLayer::Traffic`] (`traffic.rs`): lane followers meet the car, props and traffic; crashed ones the world
+//! too. The wheels' ray casts only see the world.
 
 use std::sync::Arc;
 
@@ -48,17 +49,22 @@ pub enum GameLayer {
     /// A low box on the car that only collides with props.
     CarBumper,
     Prop,
+    /// Traffic cars (`traffic.rs`).
+    Traffic,
 }
 
 impl GameLayer {
     pub fn car() -> CollisionLayers {
-        CollisionLayers::new(GameLayer::Car, [GameLayer::World, GameLayer::Prop])
+        CollisionLayers::new(GameLayer::Car, [GameLayer::World, GameLayer::Prop, GameLayer::Traffic])
     }
     pub fn car_bumper() -> CollisionLayers {
-        CollisionLayers::new(GameLayer::CarBumper, [GameLayer::Prop])
+        CollisionLayers::new(GameLayer::CarBumper, [GameLayer::Prop, GameLayer::Traffic])
     }
     pub fn prop() -> CollisionLayers {
-        CollisionLayers::new(GameLayer::Prop, [GameLayer::World, GameLayer::Car, GameLayer::CarBumper, GameLayer::Prop])
+        CollisionLayers::new(
+            GameLayer::Prop,
+            [GameLayer::World, GameLayer::Car, GameLayer::CarBumper, GameLayer::Prop, GameLayer::Traffic],
+        )
     }
 }
 
@@ -299,10 +305,26 @@ fn stream_props(
 pub struct PropHooks<'w, 's> {
     props: Query<'w, 's, &'static PropBody>,
     bodies: Query<'w, 's, (&'static RigidBody, &'static ComputedMass, &'static LinearVelocity)>,
+    /// Lane-following traffic colliders, and the bodies that knock them off their lane (`traffic.rs`).
+    traffic: Query<'w, 's, (), With<crate::traffic::TrafficBody>>,
+    hitters: Query<'w, 's, (), Or<(With<Car>, With<crate::traffic::TrafficCar>)>>,
 }
 
 impl CollisionHooks for PropHooks<'_, '_> {
     fn modify_contacts(&self, contacts: &mut ContactPair, commands: &mut Commands) -> bool {
+        // A car (the player's, or crashed traffic) touching a lane follower turns it into a crashing car; the
+        // contact is dropped for this step and solved between two dynamic bodies from the next one.
+        for (collider, other) in [(contacts.collider1, contacts.body2), (contacts.collider2, contacts.body1)] {
+            if self.traffic.get(collider).is_ok() {
+                let Some(other) = other else { return true };
+                let dynamic = self.bodies.get(other).is_ok_and(|(rb, _, _)| rb.is_dynamic());
+                if dynamic && self.hitters.get(other).is_ok() {
+                    commands.entity(collider).insert(crate::traffic::TrafficHit);
+                    return false;
+                }
+                return true;
+            }
+        }
         let (prop_entity, prop, other, sign) = if let Ok(p) = self.props.get(contacts.collider1) {
             (contacts.collider1, p, contacts.body2, 1.0)
         } else if let Ok(p) = self.props.get(contacts.collider2) {

@@ -35,6 +35,7 @@ mod sfx;
 mod shadow_cull;
 mod sky;
 mod tonemap;
+mod traffic;
 mod tyre_marks;
 mod weather;
 
@@ -247,6 +248,12 @@ struct Cli {
     /// No driving HUD (the debug status text stays; F3 toggles it when the HUD is up).
     #[arg(long)]
     no_hud: bool,
+    /// No traffic cars (`traffic.rs`; traffic runs in `--drive` sessions in the world).
+    #[arg(long)]
+    no_traffic: bool,
+    /// Multiply the traffic density (1 = the game's; for tests).
+    #[arg(long, default_value_t = 1.0)]
+    traffic_density: f32,
 }
 
 #[derive(Resource)]
@@ -607,6 +614,10 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(tyre_marks::TyreMarksPlugin)
         .add_plugins(freeroam::FreeroamPlugin)
         .add_plugins(race::RacePlugin { setup: race.map(Arc::new) })
+        .add_plugins(traffic::TrafficPlugin {
+            enabled: !cli.no_traffic && matches!(request, Request::Drive { world: true, .. }),
+            density: cli.traffic_density.max(0.0),
+        })
         .add_plugins((garage::GaragePlugin { script }, menu::MenuPlugin { enabled: menu_enabled, open: cli.show_menu }))
         .add_plugins(easydrive::EasyDrivePlugin {
             enabled: menu_enabled || cli.show_easydrive,
@@ -744,6 +755,7 @@ fn receive_assets(
     lights: Res<materials::VehicleLights>,
     mut garage: ResMut<garage::Garage>,
     mut surfaces: ResMut<props::WorldSurfaces>,
+    mut traffic_models: Option<ResMut<traffic::TrafficModels>>,
 ) {
     let Some(channel) = channel else { return };
     let rx = channel.0.lock().unwrap();
@@ -841,6 +853,11 @@ fn receive_assets(
                     .collect();
                 // Placed by the garage: at `--spawn` at startup, later in place of the current car.
                 garage.arrived(spec, parts);
+            }
+            Msg::TrafficCar(spec) => {
+                if let Some(t) = traffic_models.as_mut() {
+                    t.arrived(spec, &loaded.models);
+                }
             }
             Msg::CarFailed(e) => garage.failed(e),
             Msg::Progress(s) => {
