@@ -207,8 +207,8 @@ impl AssetStore {
             let t = by_id.get(&id)?;
             match t.shape {
                 TriggerShape::Point { direction } => Some(Pose { trigger: id, position: t.position, direction }),
-                // Swap-spot cars are boxes around the parked car (length along local +Z): their direction is the
-                // box's +Z (`FUN_0042f250` reads the trigger's direction; that a box's is its +Z is our reading).
+                // Swap-spot cars are boxes around the parked car (length along local +Z): `FUN_0042f250` gives a
+                // trigger's direction, a point's vector or a box's local Z.
                 TriggerShape::Box { rotation: [x, y, z, w], .. } => Some(Pose {
                     trigger: id,
                     position: t.position,

@@ -1631,6 +1631,103 @@ session 5). The code side is not located yet: the callback names the data invoke
 `strings.csv`, but the dump has no references to them, so the functions that register the hooks, generate the
 manufacturer / model / race lists (`Signals.GetIntValue` sources) and map `easy_*` to keys are still to be found.
 
+### Boot, loading screens and the free-roam start (2026-10-09, `frontend.rs`, `pause.rs`, `mw_assets::frontend`)
+
+Notation: **G** = `*0x01177868`, **GMM** = G+0x2f3fc (game-mode manager), **UIM** = G+0x2f480 (UI manager),
+**LSM** = UIM+0x2d1b0 (loading-screen manager). Resident(p, r) = `FUN_0054b540` → `FUN_0054b340`: the `ZoneList`
+zone holding p is loaded and so is every neighbour zone within r of p (`FUN_00561660`, circle against zone).
+Code side from a sub-agent's trace of the dump and the live snapshot's disassembly; the flow is data
+(`mwtool hsm`, formats.md "HSMData").
+
+**Flow** (HSM "Top State" 21597 of `GAMELOGIC/GAMEMODES.BNDL`; it starts "Boot", "Run Always Active Systems",
+"Enable Black Background", the boot page and "Switch to 60Hz Mode" together):
+- "Run PageRunner2 Context - Boot Flow" (`CONTEXT_NAME` boot, `DEF_PAGE_REF` 491012): "Language Select" (a locale
+  check; on PC it exits) → "Press Start": "Activate Press Start Widget Group" (`GROUP` 491032) starts "Exit When
+  Intro Sequence Binding Is True" (`GeneralSequence.Triggers["BOOT"].IsTriggerSet[1]`) → "Press Start"
+  (`ANYBUTTON` False). The group's `Background` widget plays sequence 1022357: jump 0 → 28.1 s unless
+  `Language.IsJapanese`, intro movie 1689283 (28–34.4 s), music waves, the press-start layout 1274392 (34.38 s
+  on: the prompt pair "PRESS ANY KEY" / "PRESS START" that hide each other on `Controls.IsXInputControllerConnected`
+  through triggered idle steps, the autosave notice, the copyright), the looping title movie 1689287 (34.4 s on),
+  the general trigger "BOOT" at 37.4 s; the music loops 100.88 → 73.952 s. `WAITFORANYCO` (enter 0x741690, update
+  0x7416a0) polls every controller, arms on a press and finishes on the release; `BDELAY` takes its times from
+  the node's `EnterTime` / `UpdateTime` / `LeaveTime` parameters (no code constant). `LOAD_ALL` (0x740f00) sets the
+  gate `DAT_010f77ed` that world loading waits for.
+- Leaving the page plays the group's `ScreenTransition` 1836019 (exit condition `Signals.True`), sequence 1836020
+  (4.8 s): black quad, a fade from black (layout 1899282, 0–1 s), the car-picture sequence 1899171 conducted from
+  0.25 s (two layers `Transitions.Image1` / `Image2` streamed from `LoadingTipsConfig.TransitionImages`,
+  `Signals.GetIntValue[1]` picking; image 2 fades in at 9 s, the clock loops 20 → 0.1 s; holds at 8.75 → 8.5 /
+  18.75 → 18.5 on `TransitionImages.ImageNReady`), the strip with the logo and "LOADING..." (layout 1899042, its
+  scrolling text the tip `Transitions.Tip` when the item's `Text1` is empty), whooshes; **jump 4.25 → 4.05 while
+  `Screen.IsActive(NOT)`**, so the transition covers the loading until the next screen is up, and 0.1 → 0.017
+  while `Screen.TransitionsLoaded(NOT)`.
+- "Post Controller Bind Boot": "Autoselect and Load World" (`LOADWORLD`, factory 0x77bc40: enter 0x74e040 only
+  posts the load-world message with the world name from G+0x2f468), "Do Profile Load", controller watch → "InGame":
+  "Wait For Required Resources" (feedback group 97039 loaded, vehicle list loaded, `IsProgressionReady` polled every
+  0.25 s, `CalculateShouldShowRecapSequence`) → "Setup Start Point" ("HSM.Is Brand New Profile": YES → "Set Up New
+  Game" = `SetNewGame`, `SetSinglePlayerRollout`; NO → "Set Up Continue Game" = `SetNewGame`,
+  `SetRolloutFromProfile`) → TOGAME → "Should Play New Game Intro" (FALSE → "Playing", TRUE → "Set Intro Event
+  Next") / TOMAP → "AutoLog"; "Disable Black Background" → "Playing".
+- **World loaded** (`WorldLoaded` binding, `LAB_00712010` = GMM+0x2ce0 != 0 && GMM+0x2e77): GMM+0x2e77 is set
+  in `FUN_007090f0` (GMM per frame, offline path while 0; cleared again if the local player has no car) when (a)
+  the world is ready (`FUN_005470e0`: world+0xef858 == 12, the end of the load state machine `FUN_00556b60`, every
+  queued request in `FUN_00531bc0`'s list at status 4, streaming mode world+0xef868 not 4 / 5), (b) Resident(camera,
+  10 m) (`DAT_00fc9340` = 10; the active camera's position, medium confidence; online the car's), (c) traffic ready
+  (event byte 0xf0 = 0, or `FUN_005f2800`: traffic off or the hull at p and its lane neighbours loaded with the
+  models resident, or density world+0xa2b74 = 0) or 1.5 s passed (`DAT_00fc5aac`, scaled frame time).
+- **`ShowLoadingScreen`** binding (`LAB_00719bd0` → `FUN_006f49c0`): GMM+0x2e81 (Lua `SetAllowLoadingScreen`) and
+  not GMM+0x2e7f (`HasTransitionedEvents`) and (no event, or the online timer not synced, or the world not loaded,
+  or a request bit in GMM+0x2ea8: bit 0 = a respawn into a non-resident target while the mode timer runs, bit 1 =
+  `FUN_0074d040` with the black background until the world is ready and 15 frames passed). The HSM's "Manage
+  Loading Screen" toggles `HSB_TOG_LS` (vtable 0xfd96f8, `SHOW` / `LAYOUT` = 108177) on `Mode.ShowLoadingScreen`;
+  "Loading Screen Now Showing" starts "Mute All Sound" / "Mute All Rumble" (`MUTE_SOUND`, reason `LoadingScreen`,
+  table 0x010c5c28) and disables car control and Easydrive.
+- **The presenter** (`FUN_007a45f0`): a request mask LSM+0x54, one bit per reason (2 Lua `ShowLoadingScreen`, 3
+  `BPLAYIT`, 5 `HSB_TOG_LS`, 6, 8, 12 respawn helpers, 13 `UI\GROUPS` loads, 15 car select); the lowest pending
+  reason's layout shows in layer 0x17. Layout lists from `UIConfig` (UIM+0xb8): +0x80 `eee932fa` general, +0x74
+  `a65d5d07` reason 5, +0x84 `8c082a97` reason 8, shuffled once with a PCG-style LCG (multiplier
+  0x5851f42d4c957f2d, clock seed), at most 4 each; both general lists hold only **108177** (black, a 64 px
+  spinner at (640, 618) whose idle behaviour turns it 360° per 1000 ms). When requests end it hides the layout and
+  waits the layout's own out duration (layout+0x18) before unloading. No minimum display time, no fade constant.
+- **Streaming stall** (`FUN_006a2200` from `FUN_004766a0`): pauses the simulation (pause reason 3) while the world
+  is not ready or the car's surroundings are not Resident(car, 25 m) (`DAT_00faba94`; `FUN_00587120` per tick into
+  +0x1c33; free camera: the camera, `DAT_00fa8844` 25 m). Not ported (we stream everything).
+- **Start position** (`FUN_006d0180`, the respawn executor; offline, `IsFreedriveEvent` GMM+0x2e90): if not a new
+  game (`IsNewGame` GMM+0x2e87) and the event's kind == `GameLogicConfig` +0xd8 (390145, free drive): the profile's
+  last swap spot (stats 0x14 / 0x13 / 0xe) if its car is the current car, else `FUN_006c1840(car, 1)` then `(car,
+  0)`: the nearest swap spot holding this car (discovered first) from the car's position; else, and on a new
+  game, `FUN_006c19f0`: **`GameLogicConfig` +0x12c (`beab0bc2`) = start trigger 1156487** (1718.8, 31.7, 2220.9,
+  the Freedrive event 390703 "FAIRHAVEN" start). Swap spots are `CarSwapSpot`s (GAMEPLAY.BNDL, 183): `Placement`
+  = jack-spot box, `VehicleId`, `0e3bcabe` = the car's box trigger, whose direction is its local Z
+  (`FUN_0042f250`). Placement (`FUN_006cd550` → `FUN_006ca580`): the trigger's pose, zero velocity, no road search
+  or drop offset on this route (the crash reset's road search `FUN_0064b290` is separate). Safehouses are not used
+  (`SetSafehouseFromProfile` is an empty stub on PC, `SETSPAWNPOS` exits at once).
+- **Waiting for streaming** (`FUN_00647e00`): radius max(200 m, mph × 0.44704 × 3 s); a target not resident holds
+  the car, moves the streaming focus there (message 4) and sets the loading-screen bit 0; `FUN_0064b290` re-checks
+  every frame and places the car once resident (message 5 clears the focus).
+- **New game** (Lua `SetNewGame(true)` → `FUN_0068fd50`): resets the profile tables, the starting car from
+  `GameLogicConfig` +0xa4 = `DefaultRollout` 523000 (`Rollout.Vehicle` 122672, Aston Martin V12 Vantage),
+  IsNewGame, and the first unlocked event of kind 390145 as the pending event. `ShouldPlayNewGameIntro`
+  (`FUN_00675210`): profile stat 0xb < 1 and `FUN_006e60a0` fails (the intro event 1560354 "WELCOME TO FAIRHAVEN",
+  `GameLogicConfig.4b9afa9f`, not played here).
+- Camera at spawn: no snap found (`FUN_006d0180`, `FUN_0064b290`, `FUN_006bedb0`, `FUN_0063dad0`, `FUN_00845f50`
+  do not touch the camera director).
+- **Pause menu** (screen 431082): `Menu` widget, layout 431094 (element stack over `Widget.Menu.Items`, selected
+  row by `Widget.Menu.SelectedIndex(EQUALS:#)`, rows a nested stack over `{parent}`); items `StdData` (431091):
+  RESUME "CONTINUE", MWL "DRIVER DETAILS", MAP, MPLAYER, FRIENDS, TO_SETTINGS "SETTINGS", STORE; in an event `Data`
+  (431113) adds RETRY, RETRY_LAST, LEAVE_EVENT; actions previous / next, `ExitGroupVia` the item's action, RESUME
+  on cancel.
+
+**Port** (`frontend.rs`, `pause.rs`; model decisions marked in the code): plain runs go title → transition →
+playing (new game or `--profile` continue), interactive `--drive` runs show 108177 until ready; "ready" = car placed,
+Resident(car, 10 m), then the 1.5 s timeout (traffic readiness not checked); cars are placed only once
+Resident(target, 200 m) (`drive::spawn_car`); the loader streams nearest zone first and reports each unit. Ours:
+the title's backdrop and movie drawn full screen (movies through ffmpeg; no VP6 decoder), no title music or
+transition sounds (muted, as the loading screen mutes), four random pictures and eight random offline tips per
+run, the `ImageNReady` holds never wait, the strip's tip not scrolled, `UIRoadRibbonShader` elements left out,
+our profile file (car, position) saved every 10 s; the pause menu pauses the virtual clock, MAP lists the offline
+races (the map screen 899991 is not built), SETTINGS opens our volume panel, the online items are inert, pad A / B
+for accept / back.
+
 ### Race HUD, countdown and results (2026-10-09, `hud.rs`, `ui_quads.rs`)
 
 What is data (research log 2026-10-09): the screens and layouts, the countdown / results `Sequence`s and their
@@ -1862,7 +1959,9 @@ by `FUN_006b51a0`). Times are 64-bit ticks of 1/3,000,000 s (`DAT_00f9f604`). Co
   throttle still revs it. Player flags +0x27c..+0x280 zero throttle / brake / steering and force the handbrake
   ("Disable Car Controls"). The AI is held by `HSM.PauseAIForRaceStart` (not traced). False starts are checked
   only in the online flow.
-- **Starting grid**: `TPORTTOEVNT` (0x741270 → `FUN_006cd380`) sets the spawn trigger id and runs the reset
+- **Starting grid**: `TPORTTOEVNT` (0x741270 → `FUN_006cd380`) passes the current **event id** (GMM+4 +0xe4,
+  written by `FUN_006f06d0`; corrected 2026-10-09, it is not a trigger id: the respawn executor resolves the
+  position from the event) and runs the reset
   `FUN_006c9fb0`; `FUN_0042f250` gives a trigger's direction (a point's +0x14 vector, a box's local Z). AI
   (`FUN_00686f30`): per `AIPlayerInformation` (count OfflineEvent +0xd6) the car stands on its `Placement`
   point facing its direction, spawned with zero velocity (`FUN_006ce030`) into slots 12..23; racers without

@@ -10,6 +10,47 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-09: the start-up flow: title, boot transition, loading screen, free-roam start, pause menu
+User request: "work on getting the car spawns in, loading screens and menus". Before: the world assembled in
+view, the car dropped at a `--spawn` / hand-picked point as soon as its car loaded (on whatever collision had
+streamed in: planters, or nothing).
+- **`HSMData` decoded** (formats.md "HSMData", `mw_formats::hsm`, `mwtool hsm`): nodes, `ENTER` events, children
+  with exit-code transitions, parameters; keys base-40 packed (a sub-agent traced the interpreter: `FUN_00775ed0`,
+  `FUN_007760b0`, behaviour registry 0x776000–0x778300 keyed by `~crc32(code name)`). The flow is now read, not
+  guessed: "Top State" 21597 → boot page 491012 → "Press Start" (group 491032) → screen transition → "Post
+  Controller Bind Boot" (load world, profile) → "InGame": "Wait For Required Resources" → "Setup Start Point"
+  (new / continue) → "Playing"; the loading screen is "Manage Loading Screen" toggling layout 108177 on
+  `Mode.ShowLoadingScreen` (decomp.md "Boot, loading screens and the free-roam start" has the code side: the
+  world-loaded flag = world ready + Resident(camera, 10 m) + traffic or 1.5 s; placement waits for Resident(target,
+  max(200 m, 3 s)); start = last / nearest swap spot of the car or `GameLogicConfig.beab0bc2` = trigger 1156487).
+- **What the loading screens are** (data): the boot transition 1836020 (black, car pictures from
+  `LoadingTipsConfig.TransitionImages` cross-fading every ~10 s, the strip with "LOADING..." and the tip ticker
+  `Transitions.Tip`, holding at 4.05–4.25 s while `Screen.IsActive(NOT)`); in game, `UIConfig`'s lists hold only
+  108177 (black, spinner 360°/s from its idle behaviour). The `Events.Loading.*` layouts are the event-intro cards.
+- **New-game car**: `GameLogicConfig.DefaultRollout` 523000 → Aston Martin V12 Vantage (122672); start trigger
+  1156487 = the Freedrive event "FAIRHAVEN" start (the intro event "WELCOME TO FAIRHAVEN" ends next to it).
+- **Bevy UI bug found**: `ImageNode` with the default `NodeImageMode::Auto` keeps the texture's aspect inside the
+  node: solid full-screen quads (a 1×1 image) came out square, the 2:1 pictures letterboxed. UI quads now use
+  `Stretch` (`ui_quads.rs`; the HUD and Easydrive draw through it too: race HUD and Easydrive checked unchanged).
+- **UI runtime additions** (`mw_assets::ui`): idle spins (type 8), idle fades looping over their span, triggered
+  idle steps (the prompt pair's instant `OUT`), image bindings answered with a texture id (`#` = the instance's
+  `Binding_Replacement_Index`), nested stacks over `{parent}`, `#parent_index#` in template bindings, scrolling
+  texts' strings / data source. `mw_assets::sequence` reads movie, black quad, streamed image, general trigger and
+  conductor items (kept nested with their own jump controllers and enabled bindings).
+- **Timings** (release build, other agents building on the machine; `--front-end-shots`, `FRONTEND TIMING`): new
+  game: front-end screens 0.17 s, car placed and area resident 4.97 s, world loaded 6.67 s, "PRESS ANY KEY" 11.4 s
+  (the title sequence's own 9.3 s), key 12.5 s, playing 18.1 s (the 4.8 s transition). `--drive 911 --show-loading`:
+  resident 5.3 s, loading screen off 6.9 s. Continue (McLaren at its swap spot): resident 7.3 s, ready 9.3 s. The
+  full 169-unit world still takes ~40 s in the background.
+- **Model decisions**: title backdrop and movies drawn full screen, movies through ffmpeg (no VP6 decoder), no title
+  music / transition sounds (muted), four random pictures and eight random offline tips per run, the `ImageNReady`
+  holds never wait (polarity not traced), the strip's tip not scrolled, `UIRoadRibbonShader` streaks left out,
+  "ready" uses the 1.5 s timeout without the traffic check, our profile file, the pause menu's MAP page (a list of
+  the offline races), inert online items, pad A / B in menus, "any key" although the node says `ANYBUTTON=False`.
+- **Open**: the map screen 899991 (event selection on the map), car select / customise screens (1571371,
+  1135879), the new-game intro event (1560354), event-loading cards, the streaming stall, a capture of the
+  original's boot to compare the transition timing and what the screen shows between the transition and play.
+
 ### 2026-10-09: groundcover sprites face the camera (the `Groundcover` vertex program ported)
 User report: since the sprite-size fix (byte / 127 × 2^e m, so the e = 6 / 8 groups are 10–60 m tree cards) the
 cards showed as thin vertical slivers when seen edge-on: we drew each sprite as two crossed static quads.

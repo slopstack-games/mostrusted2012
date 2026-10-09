@@ -66,7 +66,7 @@ user's review after session 3, with where each gap is tracked:
 | Shading has a yellow tint over everything | `[~]` main cause fixed 2026-10-06: the ColourCube bytes were read with red and blue swapped, so the noon grade warmed instead of cooled (noon frame warm bias +33 → +13). Session 5: the cloud layer was decoded as sRGB (dark patches in the day sky), fixed; the bloom, vignette and colour-cube blend inputs are traced to renderer fields but each needs a live read before it can be ported without guessing (research log). Left: those live reads, a screenshot of the original, the provisional skylight, night warmth | M1.5, M1.7 |
 | Animations are missing | none play: driver, steering wheel, animated body parts (`PhysicsDrivenVehicleAnimationBehaviour`), world animations (`TriggerAnimationBehaviour`, `AnimatedDynamicEntityBehaviour`), tree wind | M3.8 |
 | Inputs are not mapped like the original | `[~]` 2026-10-06 (session 5): the original's action list, default keyboard / pad tables and mapping rule read from the code and made our defaults (`input.rs`: arrows / A / Z / Space, RT / LT / X, C / LB camera, numpad / d-pad Easydrive). Open: look back / look around have no default binding in the tables (ours: End / right stick), nitrous and horn have no runtime yet, remapping | M3.9 |
-| UI incomplete, no Easydrive | `[~]` 2026-10-06 (session 5): Easydrive's menu tree is read from the UI data (23 tiers in the free-roam screen) and shown in game (`easydrive.rs`, `--show-easydrive`); Change car works through it, every other entry is inert. Its look and position are our own (the game's layouts are not read), conditional entries are not filtered. The game's front end is not built | M7 |
+| UI incomplete, no Easydrive | `[~]` 2026-10-06 (session 5): Easydrive's menu tree is read from the UI data (23 tiers in the free-roam screen) and shown in game (`easydrive.rs`, `--show-easydrive`); Change car works through it, every other entry is inert. Its look and position are our own (the game's layouts are not read), conditional entries are not filtered. 2026-10-09: **start-up flow from the game's data** (`frontend.rs`): title screen (sequence 1022357, title movies through ffmpeg, PRESS ANY KEY), the boot transition holding over the loading (car pictures, tips), the in-game loading screen 108177, the free-roam start (new game: the default rollout at start trigger 1156487; continue: the saved car at its nearest swap spot), the pause menu 431082 (`pause.rs`: CONTINUE, MAP = the offline races, SETTINGS). Not built: the map screen 899991, car select / customise screens, the online and Autolog pages, the new-game intro event | M7 |
 | No crash camera | crash cam since 2026-10-06 (`crash.rs`): rules, slow motion, bystander shots, letterbox and rolling reset from the data; the shots' placement / FOV and the reset pose are model decisions until compared with a capture of the original | M3.3 |
 | No AI vehicles | `[~]` **Traffic runs** (2026-10-09, `traffic.rs`, `--no-traffic`, `--traffic-density`): the TR car models in their palette paints spawn, follow the lanes, stop at red lights, queue behind cars and the player and are removed by the game's rules (active cells, emitters, density = the event's base (free drive 1.0) × `Density`, load budget of crashing cars, fuzzy option choice, speed controller, route by span load, junction light cycles; decomp.md "Traffic runtime"); hit by the player they become crashed bodies; hard hits on traffic and AI cars crash by the game's car-against-car rules (2026-10-09, `car_impacts.rs`: crash camera for the player, AI reset, wrecked traffic). Model decisions: no manoeuvres (swerve / cut-up), crashed cars are boxes without wheels, models only within 250 m, no per-car lights, no parked cars; traffic engines sound since 2026-10-09 (the game's pool of five, `car_audio.rs`), horns and crash / skid sounds since 2026-10-09 (`car_sfx.rs`). No racers or cops 2026-10-09: **AI racers run**: every car steps the same physics from its own controls (`CarControls`, `Player` marker); the racer's driving law (state 8: steering PID on the look-ahead error with the car's `PIDController` gains, pedal PID, nitrous, emergency brake, crash recovery and reset) and the rubber band are ported (`ai_driver.rs`, `ai.rs`; decomp.md "AI racers"); `AIData` (the road graph) decoded. `--race <id>` puts opponents on the event's grid and they finish its laps; `--ai <cars>` / `--test ai` on a road-graph route. Open: the racing line (`FUN_004e70e0`), the lane planner, racer interaction, the opponents' own cars, a live check that physical racers really have no corner speed. No traffic or cops yet (traffic lanes decoded 2026-10-06) | M6.1, M6.4 |
 | Prop collisions | `[~]` **On by default** since 2026-10-09 (`--no-prop-physics` opts out): the game's car-against-object response (the car takes 0.1 / 0.05 of the contact impulse, `RaceCarVsDynamic`), the momentum break-free rule, reset when camera and car are past the reset distance, impact effects on `ForceToDamage` and impact sounds (decomp.md "Props"); props activate within 30 m of a car. Compounds break into their parts (`ForceToSmash` after `08c87eeb`, smash proxies, links; 2026-10-09) and loose props sound when they land. Open: the damaged model, the compound "Collision FX" effect, the sound threshold, the game's pools | M3.1 |
@@ -258,7 +258,9 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    landing rules (traffic / AI car impacts ported 2026-10-09, `car_impacts.rs`), a capture of the original to compare. Still open: the in-car cameras' unnamed fields (rigid now),
    the remaining acceleration / yaw-spring / gradient / height fields, FOV convention and calibration against
    the original (handling.md, "Cameras").
-4. `[~]` The world streams nearest-first from the spawn point (or the `--camera` pose). Still open: streaming that
+4. `[~]` The world streams nearest-first from the spawn point (or the `--camera` pose); since 2026-10-09 by
+   `ZoneList` zone distance, each unit reported when complete, and the player's car is placed only once the zone
+   at its target and the neighbours within 200 m are resident (the game's `FUN_00647e00` rule). Still open: streaming that
    follows the car (see M4).
 5. `[x]` **Car menu** (`menu.rs`, `garage.rs`; Tab / F1 / gamepad Start): pick any of the 93 drivable cars and
    one of its paints mid-session. The loader thread takes runtime `CarRequest`s (between track units, without
@@ -310,7 +312,8 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    (Left Shift / A) and horn (W / B) have no runtime, remapping through the settings file, whether the saved ini
    replaces or extends the defaults, the pad object's live dead zones.
 - Done when: you can pick a car from the catalogue, spawn on a road and drive around the city with collision.
-  **Basic version reached on 2026-10-03; in-game car picking since 2026-10-04 (item 5).** Remaining: handling feel, real tuning data, spawn points on roads
+  **Basic version reached on 2026-10-03; in-game car picking since 2026-10-04 (item 5).** Remaining: handling feel, real tuning data. Spawn points
+  from the data since 2026-10-09 (the free-roam start trigger, swap spots; `frontend.rs`)
   (from `RoadData` / AI data rather than hand-picked coordinates).
 
 ### M4: Streaming and performance `[ ]`
@@ -325,7 +328,11 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    whole map and everything"): load and unload track units, props, groundcover, traffic models and world
    effects by the player's zone and its neighbours as the game does (its streaming / PVS code, not a distance
    guess), including the cars and AI only when an event needs them.
-6. **Loading screens** (user, 2026-10-09): the game's own loading screens and their flow (UI screens with
+6. `[~]` **Loading screens** (user, 2026-10-09; done 2026-10-09 except the noted gaps, decomp.md "Boot, loading
+   screens and the free-roam start"): the boot transition 1836020 holds over the stream-in with the car pictures
+   and tips; the in-game loading screen 108177 (black, spinner) shows until the game's world-loaded rule holds; sound
+   muted and controls off meanwhile. Open: the event-loading cards (`Events.Loading.*` transitions), the streaming
+   stall (pause while the car's 25 m are not resident), the transition's sounds and road-ribbon streaks. Was: the game's own loading screens and their flow (UI screens with
    `LoadingProfile` / `LoadingIcon`, the tips / car shots they show) while the start area streams in, instead of
    showing the world assembling.
 - Target: steady 60 fps at 1080p while driving through downtown on mid-range hardware; startup to first frame
@@ -421,7 +428,10 @@ code side (game modes, HSMs, AI) next to the data. Roughly in dependency order:
   checkpoint-missed layouts, the countdown and results sequences' layouts (the online race mode's, model
   decision), triggered / transition-in behaviours animated, additive UI elements blended as the game's
   `MaterialState` says (the nitrous "dark box" fix); Easydrive's RACES tier starts a race (`race::StartRace`).
-  Missing: the game's front end. Open: those, the car menu in the game font, widget
+  **Front end** (2026-10-09, `frontend.rs`, `pause.rs`, `mw_assets::frontend`, `mw_formats::hsm`, `mwtool
+  frontend|hsm`): the boot flow read from the game-logic HSM (title, press start, transition, loading screen,
+  start point, new / continued game, `--profile`), the pause menu with CONTINUE / MAP (offline races) /
+  SETTINGS. Missing: the map screen, car select / customise, online pages, the intro event. Open: those, the car menu in the game font, widget
   adapters (which layouts show when), HUD polish (faint speed digits, odometer ".0 KM"), save data.
 - Movies: `UI/MOVIES/*.VP6` (EA `MVhd` container, VP6). Decode through ffmpeg or skip.
 - Packaging for Linux and Windows; CI with build + lint + game-less tests.

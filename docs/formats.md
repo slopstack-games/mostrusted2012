@@ -198,7 +198,7 @@ A clip is two (or a few) frames: frame 0 is the retracted pose (identity keys), 
 keys are offsets from the bind pose like the damage clips, on 1-4 bones (the 911's bone 36: 30° about X and
 2 cm up / 7 cm back). It plays at its own frame rate: the 911's 0.612 frames/s makes the deploy 1.63 s.
 
-The `HSMData` is a serialized property tree (apparently hashed keys with values as strings; layout not decoded).
+The `HSMData` is decoded (see "HSMData" below; `mwtool hsm --bundle <car bundle>`; values are strings).
 Its strings name states (`Spoiler Anim`, `Brake from Top Speed Anim`, `Reverse … Anim`, `Wait 0.4s`),
 conditions (`Speed above 70mph`, `Brake ON and Speed above 80mph`), their operands as decimal text (`70`,
 `40`), the variables `speedinmph` / `brake` / `steering` / `gas`, a clip by its resource id in decimal
@@ -721,6 +721,51 @@ states). A sequence is referenced by its own `655d3f5f` UniqueId, never by resou
   names], counts and flags. Its skeleton (18 bones, identity bind pose) animates bone 1 = the car (world space,
   codec-1 quaternions), 2–5 the wheels.
 - Camera skeleton (`0x6cc42`): two bones, identity bind pose; clips animate bone 1 with f32 quaternions at 30 fps.
+- UI sequences (the front end's title and screen transitions, 2026-10-09; `AssetStore::ui_sequence` keeps
+  conductor sequences nested): `MovieSequenceItem` `Movie` (a `UI/MOVIES/<id>.VP6`), `MovieBinding`, `Loop`, `Sound`;
+  `BlackQuadSequenceItem` (no fields); `SequenceItems.StreamedImageSequenceItem` `be87ac54` target binding
+  (`Transitions.Image1`), `cd5c111c` index binding (`Signals.GetIntValue[1]`), `SourceName`;
+  `GeneralTriggerSequenceItem` `Name` (hash; "BOOT" = 1112493908), `Trigger` (index read as
+  `GeneralSequence.Triggers["BOOT"].IsTriggerSet[1]`); `ConductorSequenceItem` `Sequence` (runs with its own
+  controllers); `SequenceItems.AdapterHost` `Name`, `Adapters`; `LayoutSequenceItem` `InstanceParams` (whose
+  `Binding_Replacement_Index` is the `#` of the layout's bindings), `Text1` (`bf1ce9a1`) / `Text2` / `Text3`.
+  `JumpTimelineController`s carry an `EnabledBinding`; their destination is the unnamed `b6a51260`.
+
+## HSMData (0x501, game-logic state machines, 2026-10-09)
+
+Parser `mw_formats::hsm` (layout table in its doc comment), `mwtool hsm [<node id>] [--find text]`; read like the
+interpreter reads it (docs/decomp.md "Boot, loading screens and the free-roam start"). Header: version 3, entry
+points (12 B {node, behaviour code, key}), nodes (32 B), an unread pair, behaviour types (32 B {packed key, name
+ptr, ...}: "Run Child Behaviour", "Activate Widget Group", ...). A node: behaviour code = `~crc32(code name)`
+(`HSB_RUNCHILD` 0x24c422b2, the most common), id, its events (the `ENTER` event lists the children it starts),
+its children with transitions (on a child's exit code, start these nodes), parameters (packed key → value text,
+e.g. `GROUP="491032"`, `BINDING="Mode.ShowLoadingScreen"`, `FUNCTION="SetNewGame"`), an optional inline Lua
+chunk, a name, u8 parameter / kind / event / child counts at +0x1c..0x1f. Keys and exit codes are names packed
+base 40 into a u64 (`EXIT`, `ENTER`, `TRUE` / `FALSE`, `YES` / `NO`, `TOGAME`, `PC` / `PS3` / `X360` / `VITA`).
+The cars' active-aero machines (`AnimationStateBehaviour`) are the same format.
+
+## Front-end data (2026-10-09, `mw_assets::frontend`, `mwtool frontend`)
+
+- `GameLogicConfig` (GLOBALCONFIG.BNDL): `DefaultRollout` (+0xa4) = 523000, a `Rollout` (GAMEPLAY.BNDL, 112 B:
+  `Vehicle`, `Name`, `Colour`, upgrades) for the Aston Martin V12 Vantage; `beab0bc2` (+0x12c) = 1156487, the
+  free-roam start point (a `TriggerData` point); `1b3c1ddc` (+0xd8) = 390145, the free-drive game mode.
+- `CarSwapSpot` (44 B, a list of 183 in GAMEPLAY.BNDL): `Placement` (the jack-spot location box), `VehicleId`,
+  `0e3bcabe` (the parked car's box trigger: centre ~1.5 m up, length along local Z), `ColourId`, `82e4f9fe`,
+  `0e1d66c7`, `e36e9d9d`.
+- `UIConfig` (UI/UICONFIG.BNDL): loading-screen layout lists `a65d5d07` (+0x74) and `eee932fa` (+0x80) = [108177],
+  `8c082a97` (+0x84) = [1549139]; `LoadingTips` → `UI.LoadingTipsConfig` (132 B): tip lists by category
+  (`Autolog`, `Cops`, `EasyDrive`, `Event`, `Mods`, `Nitrous`, `Online`, unnamed ones; 172 offline tips) with their
+  counts, `TransitionImages` [{`GamePack` (0 = base game), `Images` (60 streamed pictures,
+  `UI/IMAGES/STREAMED/<id>.BNDL`, one 1024×512 BC1 texture whose id is the picture's), `f9ebff2a` = 10 (seconds
+  per picture, our reading), count}]; `ComplianceTerms.Terms` [{`Name`, four platform strings: `042a361e` PC
+  ("PRESS ANY KEY"), `21901f63` PS3, `90ac0fb2` Vita, `0797e772` X360}]; `ControllerSettings.ButtonText` per
+  platform (`f12bac41` = PC) → per device (2 = keyboard) `UIListItems` {`Value` key name, `DisplayString`}.
+- `Widget_MenuData` (a screen's menus): `CustomItems` [{`Action` token, `Name` (language id), `Description`,
+  `Icon`, `Active`}], `Title`.
+- `UIElement_PrototypeScrollingText`: `ScrollingStrings` [{`Binding`, string id}], `DataSource` (used when both
+  are empty), `ScrollRate` (125).
+- Movies: `UI/MOVIES/*.VP6` are EA `MVhd` containers with VP6 video at 30 fps, 1280×720 (some 512×256); ffmpeg
+  decodes the title movies (1689283, 1689287) but fails on several of the 1.5 s clips ("Invalid data").
 
 ## ICE camera takes (`CameraTake` 0x20D, `CameraTakeList` 0x20E, 2026-10-09)
 
