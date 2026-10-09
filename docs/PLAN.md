@@ -337,12 +337,16 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    loudness normalised (research log "the engine plays the car's whole sound bank"). Ground truth checked
    against the raw recordings (research log "engine ground truth": decoder clean, grains are phase-aligned
    cycles, single-layer resynthesis at the recording's own floor). The game's own rules from its code (research
-   log "engine sound from the game code"): audible RPM = 1000..8000 × (idle..max fraction)^(2 − a) with `a`
-   from `EngineSound2`, load = speed-blended, smoothed and peak-held demand, harmonics from the firing frequency
+   log "engine sound from the game code"; 2026-10-09 "engine sound stuck in gear", decomp.md "Engine sound"):
+   audible RPM over the bank's Ginsu span (not 1000..8000) × ((idle..max fraction − 0.05) / 0.95)^(2 − a) with
+   `a` from `EngineSound2`, load = the engine's lagged throttle blended towards full by speed × clutch (0.5 per
+   tick), gear-change sequences on the game's shift clock with their RPM kick / shunt / power-cut effects, the
+   rev limiter only in the top two gears, harmonics from the firing frequency
    × cylinders, Ginsu RPM glide 33 ms, Peaking EQ confirmed RBJ (linear gain), per-car DspParam Frequency / send
    overrides, A/B env switches (`MW_AUDIO_DRY`, `_NO_DIST`, `_NO_SUB`, `_NO_EQ`, `_DIST=raw`, `_RPM_LINEAR`).
    Still open: the Distortion and SubHarmoniser laws (their code is not in the decompilation: stand-ins), the
-   remaining DspParam indices, the state lists (Burnout / Drift / In_air / Reversing), bus / LFO items,
+   remaining DspParam indices, the state lists (Burnout / Drift / In_air / Reversing), bus items, the LFO items'
+   writer, whether a sequence clamps its binding at `Binding_Max` (the XKR's first Ginsu set tops out at 5424),
    `EngineGainDueToPower`, reverb; a listening check of the new RPM curve.
 3. `[x]` Music: shuffled `UI/SONGS/*.SPS` playlist. Still open: radio/track names, ducking.
 4. `[~]` Vehicle sound effects from the sound data (`mw_assets::sfx`, `crates/mostrusted/src/sfx.rs`): tyre

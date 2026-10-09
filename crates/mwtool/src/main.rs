@@ -894,29 +894,44 @@ fn main() -> Result<()> {
             let (idle, redline) = (h.idle_rpm.unwrap_or(900.0), h.redline_rpm.unwrap_or(7000.0));
             // A recorded trace (`seconds rpm throttle [gear]`, stepwise as the game updates it), or a 4 s
             // rev-up on full throttle and a 4 s coast down, in physics RPM.
-            let points: Vec<[f32; 5]> = match &trace {
+            // Columns after the speed (`MW_ENGINE_TRACE` of the game): engine throttle, clutch, gear-change clock,
+            // shifts started, last shift up, cruising box, top gears; without them the driver makes them up.
+            let points: Vec<([f32; 5], Option<mw_assets::engine_driver::DriveState>)> = match &trace {
                 Some(p) => std::fs::read_to_string(p)?
                     .lines()
                     .filter_map(|l| {
                         let v: Vec<f32> = l.split_whitespace().filter_map(|x| x.parse().ok()).collect();
                         (v.len() >= 3).then(|| {
-                            [v[0], v[1], v[2], v.get(3).copied().unwrap_or(1.0), v.get(4).copied().unwrap_or(0.0)]
+                            let drive = (v.len() >= 12).then(|| mw_assets::engine_driver::DriveState {
+                                engine_throttle: v[5],
+                                clutch: v[6],
+                                gear_change_elapsed: v[7],
+                                shifts_started: v[8] as u32,
+                                last_shift_up: v[9] > 0.5,
+                                cruising: v[10] > 0.5,
+                                top_gears: v[11] > 0.5,
+                            });
+                            (
+                                [v[0], v[1], v[2], v.get(3).copied().unwrap_or(1.0), v.get(4).copied().unwrap_or(0.0)],
+                                drive,
+                            )
                         })
                     })
                     .collect(),
                 None => vec![],
             };
-            let duration = points.last().map_or(8.0, |p| p[0]);
-            let input_at = |t: f32, k: &mut usize| -> [f32; 4] {
+            let duration = points.last().map_or(8.0, |p| p.0[0]);
+            let input_at = |t: f32, k: &mut usize| -> ([f32; 4], Option<mw_assets::engine_driver::DriveState>) {
                 if !points.is_empty() {
-                    while *k + 1 < points.len() && points[*k + 1][0] <= t {
+                    while *k + 1 < points.len() && points[*k + 1].0[0] <= t {
                         *k += 1;
                     }
-                    [points[*k][1], points[*k][2], points[*k][3], points[*k][4]]
+                    let p = &points[*k];
+                    ([p.0[1], p.0[2], p.0[3], p.0[4]], p.1)
                 } else if t < 4.0 {
-                    [idle + (redline - idle) * t / 4.0, 1.0, 1.0, 0.0]
+                    ([idle + (redline - idle) * t / 4.0, 1.0, 1.0, 0.0], None)
                 } else {
-                    [redline - (redline - idle) * (t - 4.0) / 4.0, 0.0, 1.0, 0.0]
+                    ([redline - (redline - idle) * (t - 4.0) / 4.0, 0.0, 1.0, 0.0], None)
                 }
             };
             let voice = if legacy {
@@ -930,12 +945,15 @@ fn main() -> Result<()> {
                 mw_assets::engine_sound::EngineVoice::Bank(eb) => {
                     let rate = mw_audio::sequence::OUTPUT_RATE as usize;
                     println!(
-                        "engine bank: {} sequences, {} channels, rpm axis {:.0}-{:.0}, dominant order {}, physics {idle:.0}-{redline:.0} rpm",
+                        "engine bank: {} sequences, {} channels, rpm axis {:.0}-{:.0}, audible {:.0}-{:.0}, dominant order {}, physics {idle:.0}-{redline:.0} rpm, gear-change variants {:?}",
                         eb.bank.sequences.len(),
                         eb.bank.channels.len(),
                         eb.rpm_range.0,
                         eb.rpm_range.1,
-                        eb.harmonic_order
+                        eb.audible_range.0,
+                        eb.audible_range.1,
+                        eb.harmonic_order,
+                        eb.gear_changes
                     );
                     for s in &eb.bank.sequences {
                         println!(
@@ -950,6 +968,9 @@ fn main() -> Result<()> {
                     let params = std::sync::Arc::new(mw_audio::sequence::Params::new(eb.bank.param_names()));
                     let mut driver = mw_assets::engine_driver::EngineDriver::new(&eb, params.clone());
                     driver.set_pop_params(mw_assets::engine_driver::PopParams::from_handling(&h));
+                    if let Some(v) = h.param("Engine.937338e7") {
+                        driver.set_speed_load(v);
+                    }
                     let mut player = mw_audio::sequence::Player::new(eb.bank.clone(), params);
                     player.dry = dry;
                     player.bypass = mw_audio::sequence::Bypass::from_env();
@@ -962,7 +983,7 @@ fn main() -> Result<()> {
                     for i in 0..(rate as f32 * duration) as usize {
                         if i % tick == 0 {
                             let t = i as f32 / rate as f32;
-                            let [rpm, throttle, gear, speed] = input_at(t, &mut k);
+                            let ([rpm, throttle, gear, speed], drive) = input_at(t, &mut k);
                             let input = mw_assets::engine_driver::EngineInput {
                                 rpm,
                                 throttle,
@@ -971,8 +992,10 @@ fn main() -> Result<()> {
                                 idle_rpm: idle,
                                 redline_rpm: redline,
                                 top_speed_mph: h.top_speed_mph.unwrap_or(180.0),
+                                drive,
                             };
                             driver.update(tick as f32 / rate as f32, &input);
+                            sound_trace(t, rpm, driver.state());
                         }
                         samples.push((player.next_sample() * 32767.0).clamp(-32768.0, 32767.0) as i16);
                     }
@@ -1018,7 +1041,7 @@ fn main() -> Result<()> {
                     let mut mixer = mw_audio::ginsu::EngineMixer::new(layers, master);
                     for i in 0..(rate as f32 * duration) as usize {
                         let t = i as f32 / rate as f32;
-                        let [rpm, load, _, _] = input_at(t, &mut k);
+                        let ([rpm, load, _, _], _) = input_at(t, &mut k);
                         samples.push((mixer.next_sample(rpm, load) * 32767.0).clamp(-32768.0, 32767.0) as i16);
                     }
                     let pcm = mw_audio::Pcm { channels: 1, sample_rate: rate as u32, samples };
@@ -2319,4 +2342,27 @@ fn freeroam(store: &AssetStore, list: bool, kind: Option<&str>, all_kinds: bool)
         }
     }
     Ok(())
+}
+
+/// `MW_SOUND_TRACE=<file>` with `engine-sound`: one line per driver update, `seconds rpm load normalised audible
+/// gear_elapsed rpm_offset load_multiplier load_floor limiter` (as the game's `MW_SOUND_TRACE`).
+fn sound_trace(t: f32, rpm: f32, s: mw_assets::engine_driver::SoundState) {
+    use std::io::Write;
+    static FILE: std::sync::OnceLock<Option<std::sync::Mutex<std::fs::File>>> = std::sync::OnceLock::new();
+    let file =
+        FILE.get_or_init(|| std::fs::File::create(std::env::var_os("MW_SOUND_TRACE")?).ok().map(std::sync::Mutex::new));
+    if let Some(f) = file {
+        _ = writeln!(
+            f.lock().unwrap(),
+            "{t:.4} {rpm:.1} {:.4} {:.4} {:.1} {:.3} {:.4} {:.4} {:.4} {}",
+            s.load,
+            s.normalised,
+            s.audible,
+            s.gear_elapsed.min(99.0),
+            s.effects.rpm_offset,
+            s.effects.load_multiplier,
+            s.effects.load_floor,
+            u8::from(s.limiter)
+        );
+    }
 }

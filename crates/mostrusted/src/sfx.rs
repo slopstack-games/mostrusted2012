@@ -11,7 +11,7 @@ use bevy::prelude::*;
 use mw_assets::vehicle_driver::{TyreSoundParams, VehicleDriver, VehicleInput};
 use mw_audio::sfx_player::{Bank, OUTPUT_RATE, Params, Player};
 
-use crate::drive::{Car, CarInput};
+use crate::drive::{Car, CarControls};
 use crate::particles::ImpactEvent;
 
 pub struct SfxPlugin;
@@ -133,8 +133,7 @@ fn load_bank(
 fn update_params(
     time: Res<Time>,
     mut state: ResMut<SfxState>,
-    cars: Query<(Entity, &Car), With<crate::drive::Player>>,
-    input: Res<CarInput>,
+    cars: Query<(Entity, &Car, &CarControls), With<crate::drive::Player>>,
     mut impacts: MessageReader<ImpactEvent>,
 ) {
     let now = time.elapsed_secs();
@@ -159,10 +158,11 @@ fn update_params(
     }
     // Scrapes hold briefly between contact frames.
     state.scrape = if sliding > 0.0 { sliding } else { (state.scrape - dt * 40.0).max(0.0) };
-    let mut i =
-        VehicleInput { brake: input.brake, handbrake: input.handbrake, scrape_speed: state.scrape, ..default() };
+    // The player car's control block (its pedals also when the AI drives it in a cutscene).
+    let (brake, handbrake) = car.map_or((0.0, false), |(_, _, c)| (c.brake, c.handbrake));
+    let mut i = VehicleInput { brake, handbrake, scrape_speed: state.scrape, ..default() };
     let (mut landing, mut grounded) = (0f32, 0usize);
-    if let Some((_, car)) = car {
+    if let Some((_, car, _)) = car {
         i.speed_mph = car.speed.abs() / 0.447_04;
         i.skid_wheel = car.skid_wheel();
         for c in car.wheel_contacts().flatten() {

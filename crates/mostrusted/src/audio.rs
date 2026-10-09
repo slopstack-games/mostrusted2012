@@ -232,19 +232,34 @@ fn engine_sound(
 fn update_engine_params(
     time: Res<Time>,
     fixed: Res<Time<Fixed>>,
-    cars: Query<&crate::drive::Car, With<crate::drive::Player>>,
-    input: Res<crate::drive::CarInput>,
+    cars: Query<(&crate::drive::Car, &crate::drive::CarControls), With<crate::drive::Player>>,
     mut sounds: Query<&mut EngineSound>,
 ) {
-    let Ok(car) = cars.single() else { return };
-    let throttle = if car.gear < 0 { input.brake } else { input.throttle };
+    let Ok((car, controls)) = cars.single() else { return };
+    // The car's own control block (the player's input, or the AI's while it drives the player's car in a
+    // cutscene), with the pedals swapped in reverse as the physics does.
+    let throttle = if car.gear < 0 { controls.brake } else { controls.throttle };
     // The physics ticks at 60 Hz and the frames come at their own rate, so a frame sees one tick, then two, ...:
     // the raw rpm advances unevenly per frame and the engine note steps at the frame rate. Interpolate between
     // the last two ticks by how far the clock is into the next one (like the car's transform).
     let rpm = car.rpm_prev + (car.rpm - car.rpm_prev) * fixed.overstep_fraction();
+    let dt = &car.drivetrain;
+    let dp = &car.params.drivetrain;
+    let drive = mw_assets::engine_driver::DriveState {
+        engine_throttle: dt.throttle,
+        clutch: dt.clutch,
+        gear_change_elapsed: dt.gear_change_elapsed(),
+        shifts_started: dt.shifts_started,
+        last_shift_up: dt.last_shift_up,
+        cruising: dt.cruising,
+        top_gears: dt.in_top_gears(dp),
+    };
     for mut s in &mut sounds {
         s.legacy.set(rpm, throttle);
         if let Some(d) = &mut s.driver {
+            if let Some(v) = dp.handling.param("Engine.937338e7") {
+                d.set_speed_load(v);
+            }
             let i = EngineInput {
                 rpm,
                 throttle,
@@ -253,9 +268,33 @@ fn update_engine_params(
                 idle_rpm: car.params.idle_rpm,
                 redline_rpm: car.params.redline_rpm,
                 top_speed_mph: car.params.top_speed / 0.447_04,
+                drive: Some(drive),
             };
             d.update(time.delta_secs(), &i);
+            sound_trace(time.elapsed_secs(), car.rpm, d.state());
         }
+    }
+}
+
+/// `MW_SOUND_TRACE=<file>`: one line per frame, `seconds rpm load normalised audible gear_elapsed rpm_offset
+/// load_multiplier load_floor limiter` (what the engine sound plays from).
+pub fn sound_trace(t: f32, rpm: f32, s: mw_assets::engine_driver::SoundState) {
+    use std::io::Write;
+    static FILE: std::sync::OnceLock<Option<Mutex<std::fs::File>>> = std::sync::OnceLock::new();
+    let file = FILE.get_or_init(|| std::fs::File::create(std::env::var_os("MW_SOUND_TRACE")?).ok().map(Mutex::new));
+    if let Some(f) = file {
+        _ = writeln!(
+            f.lock().unwrap(),
+            "{t:.4} {rpm:.1} {:.4} {:.4} {:.1} {:.3} {:.4} {:.4} {:.4} {}",
+            s.load,
+            s.normalised,
+            s.audible,
+            s.gear_elapsed.min(99.0),
+            s.effects.rpm_offset,
+            s.effects.load_multiplier,
+            s.effects.load_floor,
+            u8::from(s.limiter)
+        );
     }
 }
 // --- Music -------------------------------------------------------------------

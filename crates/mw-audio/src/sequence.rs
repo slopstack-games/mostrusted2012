@@ -149,9 +149,30 @@ pub enum Target {
 // Items are built once per bank (a few hundred), so the size difference doesn't matter.
 #[allow(clippy::large_enum_variant)]
 pub enum ItemKind {
-    Wave { waves: Vec<Arc<Clip>>, gain: ModValue, pitch: ModValue, probability: Option<ModValue> },
-    Ginsu { ginsu: Arc<Ginsu> },
-    Mixer { params: Vec<(Target, ModValue)> },
+    Wave {
+        waves: Vec<Arc<Clip>>,
+        gain: ModValue,
+        pitch: ModValue,
+        probability: Option<ModValue>,
+    },
+    Ginsu {
+        ginsu: Arc<Ginsu>,
+    },
+    Mixer {
+        params: Vec<(Target, ModValue)>,
+    },
+    /// `RaceCarEffectSequenceItem`: `(Automated_Property, value)` pairs the game posts to the car's engine model
+    /// (message 0x2a, `FUN_008f5490`). The sound itself plays nothing for them; the engine driver evaluates them
+    /// (`mw_assets::engine_driver`): 1 adds to the normalised RPM, 3 multiplies the engine load, 4 is a floor
+    /// under it.
+    Effect {
+        values: Vec<(u32, ModValue)>,
+    },
+    /// `LfoSequenceItem`: `(Automated_Property, value)` pairs that drive the engine sound's LFO (0 = rate in Hz,
+    /// 1 = depth); evaluated by the engine driver, which supplies the `…Lfo` bindings.
+    Lfo {
+        values: Vec<(u32, ModValue)>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -286,6 +307,9 @@ impl Bank {
                         }
                     }
                     ItemKind::Mixer { params } => params.iter().for_each(|(_, m)| mod_names(m, &mut add)),
+                    ItemKind::Effect { values } | ItemKind::Lfo { values } => {
+                        values.iter().for_each(|(_, m)| mod_names(m, &mut add))
+                    }
                     ItemKind::Ginsu { .. } => {}
                 }
             }
@@ -927,6 +951,7 @@ impl Player {
                                     rate_ratio: g.pcm.sample_rate as f32 / sr,
                                 });
                             }
+                            ItemKind::Effect { .. } | ItemKind::Lfo { .. } => {}
                         }
                         st
                     })
@@ -1084,6 +1109,7 @@ impl Player {
                             v.dgain = (env - v.gain) / BLOCK as f32;
                         }
                     }
+                    ItemKind::Effect { .. } | ItemKind::Lfo { .. } => {}
                     ItemKind::Mixer { .. } => {
                         if inside {
                             for (target, m) in &st.params {

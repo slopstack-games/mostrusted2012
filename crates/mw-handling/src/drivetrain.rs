@@ -298,6 +298,16 @@ pub struct Drivetrain {
     /// component +0x10) and whether it burns (`FUN_009d4c20`: upshift on rpm alone, top gear unlocked).
     pub nitrous_scale: f32,
     pub nitrous: bool,
+    /// The gear-change clock the engine sound reads (`GetPlayerNormalisedGearChangeTimeElapsed`,
+    /// `FUN_00911650`: gearbox +0xb4 / +0xb0): the time since the last shift started, counted every tick
+    /// (`FUN_009da340`) and reset to 0 when a shift starts (`FUN_009d1560` up, `FUN_009d16f0` down), and that
+    /// shift's time (its `total`, halved for a downshift).
+    pub shift_elapsed: f32,
+    pub shift_time: f32,
+    /// Shifts started so far and whether the last one was an upshift (gearbox +0xd0 / +0xd4 flag the start
+    /// tick: the sound starts the gear-change sequence then, `FUN_0058ca50`).
+    pub shifts_started: u32,
+    pub last_shift_up: bool,
 }
 
 impl Drivetrain {
@@ -323,6 +333,10 @@ impl Drivetrain {
             nitrous_scale: 1.0,
             nitrous: false,
             up_rpm: p.max_rpm,
+            shift_elapsed: f32::MAX,
+            shift_time: 0.0,
+            shifts_started: 0,
+            last_shift_up: true,
         };
         d.set_up_rpm(p);
         d
@@ -357,6 +371,9 @@ impl Drivetrain {
     ) -> f32 {
         let race = p;
         let p = race.active(self.cruising);
+        // `FUN_009da340` counts the gear-change clock before running the state (a shift that starts now
+        // resets it to 0).
+        self.shift_elapsed += dt;
         let thr = self.gearbox_state(p, throttle, brake, mph, dt);
         self.gearbox_throttle = thr;
         self.gearbox_mode(race, throttle, brake, dt);
@@ -590,6 +607,23 @@ impl Drivetrain {
         let mut s = Shift { target, up, phase: Phase::Declutch, total, left: 0.0 };
         s.left = s.length(Phase::Declutch);
         self.shift = Some(s);
+        self.shift_elapsed = 0.0;
+        self.shift_time = total;
+        self.shifts_started = self.shifts_started.wrapping_add(1);
+        self.last_shift_up = up;
+    }
+
+    /// `GetPlayerNormalisedGearChangeTimeElapsed` (`FUN_00911650`): the time since the last shift started over
+    /// that shift's time, at least 0 (large before the first shift).
+    pub fn gear_change_elapsed(&self) -> f32 {
+        if self.shift_time > 0.0 { (self.shift_elapsed / self.shift_time).max(0.0) } else { f32::MAX }
+    }
+
+    /// The gear is one of the gearbox's last two (`FUN_00911690`: gear index = count − 1 or count − 2, reverse
+    /// being index 0): the engine sound's rev limiter only plays then.
+    pub fn in_top_gears(&self, p: &DrivetrainParams) -> bool {
+        let n = p.active(self.cruising).ratios.len() as i32;
+        self.gear > 0 && (self.gear == n || self.gear == n - 1)
     }
 
     /// Change straight into `gear` (reverse engagement, a reset): no shift phases, the clutch pulls away.

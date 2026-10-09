@@ -231,6 +231,22 @@ impl<'a> SoundLoader<'a> {
                     }
                     ItemKind::Mixer { params }
                 }
+                // `Automated_Values` of `RaceCarEffectSequenceItem.EffectDoubleValue { ModulatingValue,
+                // Automated_Property }` and `LfoSequenceItem.LfoDoubleValue { Value, Automated_Property }`.
+                "RaceCarEffectSequenceItem" | "LfoSequenceItem" => {
+                    let lfo = kind == "LfoSequenceItem";
+                    let value_field = field_hash(if lfo { "Value" } else { "ModulatingValue" });
+                    let values: Vec<(u32, ModValue)> = structs(it, field_hash("Automated_Values"))
+                        .filter_map(|v| {
+                            let prop = num(v, "Automated_Property").unwrap_or(0.0) as u32;
+                            Some((prop, mod_value(sub(v, value_field)?)))
+                        })
+                        .collect();
+                    if values.is_empty() {
+                        continue;
+                    }
+                    if lfo { ItemKind::Lfo { values } } else { ItemKind::Effect { values } }
+                }
                 _ => continue,
             };
             self.note_channel(channel);
@@ -323,6 +339,10 @@ pub struct EngineTuning {
     pub harmonic1: f32,
     pub harmonic2: f32,
     pub subharmonic: f32,
+    /// The rev limiter's cycle (`FUN_0058cdb0`): each cycle restarts the limiter sequence and draws its rate
+    /// between `6e6be213` (+0x94) and `9529a29e` (+0x8c) (cycles per second, assumed: the phase's advance is
+    /// not in the dump), 6..7 on the 911.
+    pub limiter_rate: (f32, f32),
 }
 
 impl Default for EngineTuning {
@@ -336,6 +356,7 @@ impl Default for EngineTuning {
             harmonic1: 1.0,
             harmonic2: 3.0,
             subharmonic: 1.0,
+            limiter_rate: (12.5, 12.5),
         }
     }
 }
@@ -346,9 +367,14 @@ pub struct EngineBank {
     pub bank: Bank,
     /// Axis of the Ginsu sequences (`Binding_Min..Binding_Max` of the RPM sequence, 1790..7500 on the 911).
     pub rpm_range: (f32, f32),
+    /// The audible RPM range (`GetPlayerAudibleRPM` = min + (max − min) × normalised RPM): the span of the Ginsu
+    /// items of `Sequences` (`FUN_00575340`).
+    pub audible_range: (f32, f32),
     /// Engine order (per crank revolution) with the most energy in the main recording (diagnostics).
     pub harmonic_order: f32,
     pub tuning: EngineTuning,
+    /// Variants in each gear-change list ([`gate::LISTS`] order).
+    pub gear_changes: [usize; 4],
 }
 
 /// RMS of the calibration render (full throttle at 75 % of the rev range) every engine is scaled to.
@@ -378,6 +404,7 @@ impl EngineBank {
             idle_rpm: 1000.0,
             redline_rpm: 7000.0,
             top_speed_mph: 180.0,
+            drive: None,
         };
         let mut sum = 0f64;
         let n = rate;
@@ -405,19 +432,33 @@ pub mod cue {
     pub const LIMITER: &str = "engine.limiter";
 }
 
-/// Gate bindings set by the game for the gear-change sequences (not game names: the data binds them all to
-/// the elapsed shift time, so one group is picked per shift).
+/// Gate bindings for the gear-change sequences (not game names: the game starts one sequence of a list per shift,
+/// `FUN_0058ca50`; here every variant is in the bank behind its own gate and the driver opens one).
 pub mod gate {
-    pub const UPSHIFT: &str = "Custom.Upshift";
-    pub const DOWNSHIFT: &str = "Custom.Downshift";
+    /// The four lists of `EngineSound2` (`FUN_0058ca50`): +0x50 upshifts and +0x48 downshifts with the race
+    /// gearbox in use (vehicle +0x1bdc = 0), +0x54 / +0x4c with the cruising one (+0x1bdc = 1).
+    pub const LISTS: [&str; 4] = ["Up", "Down", "CruiseUp", "CruiseDown"];
+
+    /// Gate of variant `k` of list `list` (an index into [`LISTS`]).
+    pub fn gear_change(list: usize, k: usize) -> String {
+        format!("Custom.GearChange.{}.{k}", LISTS[list])
+    }
+
+    /// The list and variant of a gate name.
+    pub fn parse(name: &str) -> Option<(usize, usize)> {
+        let rest = name.strip_prefix("Custom.GearChange.")?;
+        let (list, k) = rest.split_once('.')?;
+        Some((LISTS.iter().position(|l| *l == list)?, k.parse().ok()?))
+    }
 }
 
 const ENGINE_SEQUENCES: u32 = 0x1f64_dde4;
 const ENGINE_CHANNELS: u32 = 0x1d82_ab85;
 /// Gear-change sequence groups: three variants with clunk waves, LFO shunt and a power cut (upshift), two
 /// with clunks only (downshift). Which list is which state is not named in the data; picked by content.
-const UPSHIFT_LIST: u32 = 0x83ea_3a92;
-const DOWNSHIFT_LIST: u32 = 0xce81_9b08;
+/// `EngineSound2` +0x50, +0x48, +0x54, +0x4c: the gear-change lists in [`gate::LISTS`] order (field offsets from
+/// the type table; `FUN_0058ca50` picks by the shift's direction and the gearbox mode).
+const GEAR_CHANGE_LISTS: [u32; 4] = [0x83ea_3a92, 0xce81_9b08, 0x9492_327c, 0xc342_c096];
 const REV_LIMITER_SEQUENCE: u32 = 0xc62d_11ac;
 
 impl AssetStore {
@@ -442,6 +483,20 @@ impl AssetStore {
                 bank.sequences.push(s);
             }
         }
+        // The audible RPM range (`FUN_00575340`, run when the engine sound starts: `RaceCarEngineSound` +0x1c0 /
+        // +0x1c4): the lowest `StartTime` and the highest `EndTime` of the Ginsu items in `Sequences`, so the
+        // car's whole rev range plays across its recordings (1790..7500 on the 911, 1750..6000 on the XKR). The
+        // constructor's 1000..8000 is only the fallback for a bank without Ginsu items.
+        let audible_range = bank
+            .sequences
+            .iter()
+            .flat_map(|s| &s.items)
+            .filter(|i| matches!(i.kind, ItemKind::Ginsu { .. }))
+            .fold(None, |r: Option<(f32, f32)>, i| {
+                Some(r.map_or((i.start, i.end), |(lo, hi)| (lo.min(i.start), hi.max(i.end))))
+            })
+            .filter(|(lo, hi)| hi > lo)
+            .unwrap_or(crate::engine_driver::AUDIBLE_RPM_RANGE);
         // The engine's buses (so their chains are in the graph even before anything automates them).
         for id in handles(&es, ENGINE_CHANNELS) {
             loader.note_channel(Some(id));
@@ -473,11 +528,16 @@ impl AssetStore {
         add_cue(&mut bank, cue::IGNITION, s);
         let s = handle_of(es.get(REV_LIMITER_SEQUENCE)).and_then(|id| loader.sequence(id));
         add_cue(&mut bank, cue::LIMITER, s);
-        for (list, g) in [(UPSHIFT_LIST, gate::UPSHIFT), (DOWNSHIFT_LIST, gate::DOWNSHIFT)] {
-            // One variant per group (the first); the others differ in timing and level only.
-            if let Some(mut s) = handles(&es, list).into_iter().find_map(|id| loader.sequence(id)) {
-                s.gate = g.to_string();
-                bank.sequences.push(s);
+        // Every variant of the four gear-change lists, each behind its own gate; the driver opens the one the game
+        // would start (`FUN_0058ca50`: the next one of the list, round robin).
+        let mut gear_changes = [0usize; 4];
+        for (l, list) in GEAR_CHANGE_LISTS.into_iter().enumerate() {
+            for id in handles(&es, list) {
+                if let Some(mut s) = loader.sequence(id) {
+                    s.gate = gate::gear_change(l, gear_changes[l]);
+                    gear_changes[l] += 1;
+                    bank.sequences.push(s);
+                }
             }
         }
         bank.channels = loader.channels();
@@ -543,8 +603,9 @@ impl AssetStore {
             harmonic1: f(0x7cbc_11ca, d.harmonic1),
             harmonic2: f(0x7cbc_11c9, d.harmonic2),
             subharmonic: f(0x283e_07de, d.subharmonic),
+            limiter_rate: (f(0x6e6b_e213, d.limiter_rate.0), f(0x9529_a29e, d.limiter_rate.1)),
         };
-        let mut eb = EngineBank { bank, rpm_range, harmonic_order, tuning };
+        let mut eb = EngineBank { bank, rpm_range, audible_range, harmonic_order, tuning, gear_changes };
         eb.normalise();
         Ok(Some(eb))
     }
