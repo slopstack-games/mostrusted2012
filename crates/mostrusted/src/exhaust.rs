@@ -106,15 +106,19 @@ fn exhaust_tick(
     time: Res<Time>,
     first: Option<Res<FirstBackfire>>,
     mut globals: ResMut<BearGlobals>,
-    mut cars: Query<(&Car, &mut Exhaust)>,
+    mut cars: Query<(&Car, &mut Exhaust, Has<crate::drive::Player>)>,
 ) {
     let log = std::env::var_os("MW_EXHAUST_LOG").is_some();
-    for (car, mut ex) in &mut cars {
+    for (car, mut ex, player) in &mut cars {
         let p = &car.params;
         // The sound's engine load (vehicle +0x1f20) follows the engine's lagged throttle (+0x1d14,
         // `FUN_009b1f70`); the lagged throttle stands in for it (its smoothing is not ported here).
         let load = car.drivetrain.throttle;
-        globals.player_load = load;
+        // The Bear effects' engine-load input is the player's car (`BearGlobalParameters`); AI and traffic cars run
+        // the pop rule too but must not overwrite it.
+        if player {
+            globals.player_load = load;
+        }
         let input = PopInput {
             fraction: normalised_rpm(&ex.tuning, car.rpm, p.idle_rpm, p.redline_rpm, load),
             idle_rpm: p.idle_rpm,

@@ -1291,7 +1291,9 @@ pub(crate) fn car_physics(
         let driven_radius = car.wheels.iter().filter(|w| !w.front).map(|w| w.radius).next().unwrap_or(0.33);
         car.debug_forces = [drive_torque / driven_radius, tyre_long_total, drag.dot(forward) + resist_total];
         car.tyre_yaw = tyre_yaw;
-        trace_engine(time.elapsed_secs(), car.rpm, throttle, car.gear, speed);
+        if player {
+            trace_engine(time.elapsed_secs(), car, throttle, speed);
+        }
 
         // Fell out of the world: back to the spawn point.
         if pos.y < car.spawn.y - 200.0 {
@@ -1756,9 +1758,10 @@ impl TurnAssist {
     }
 }
 
-/// `MW_ENGINE_TRACE=<file>`: append `seconds rpm throttle gear speed` every
-/// physics tick, for `mwtool engine-sound --trace`.
-fn trace_engine(t: f32, rpm: f32, throttle: f32, gear: i32, speed: f32) {
+/// `MW_ENGINE_TRACE=<file>`: append `seconds rpm throttle gear speed engine_throttle clutch gear_change_elapsed
+/// shifts_started last_shift_up cruising top_gears` every physics tick of the player's car, for `mwtool
+/// engine-sound --trace` (the columns after the speed are what the engine sound reads from the drivetrain).
+fn trace_engine(t: f32, car: &Car, throttle: f32, speed: f32) {
     use std::io::Write;
     static FILE: std::sync::OnceLock<Option<std::sync::Mutex<std::fs::File>>> = std::sync::OnceLock::new();
     let file = FILE.get_or_init(|| {
@@ -1766,7 +1769,20 @@ fn trace_engine(t: f32, rpm: f32, throttle: f32, gear: i32, speed: f32) {
         std::fs::File::create(path).ok().map(std::sync::Mutex::new)
     });
     if let Some(f) = file {
-        _ = writeln!(f.lock().unwrap(), "{t:.4} {rpm:.1} {throttle:.3} {gear} {speed:.3}");
+        let d = &car.drivetrain;
+        _ = writeln!(
+            f.lock().unwrap(),
+            "{t:.4} {:.1} {throttle:.3} {} {speed:.3} {:.4} {:.4} {:.4} {} {} {} {}",
+            car.rpm,
+            car.gear,
+            d.throttle,
+            d.clutch,
+            d.gear_change_elapsed().min(1000.0),
+            d.shifts_started,
+            u8::from(d.last_shift_up),
+            u8::from(d.cruising),
+            u8::from(d.in_top_gears(&car.params.drivetrain)),
+        );
     }
 }
 
