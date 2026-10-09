@@ -116,6 +116,32 @@ pub struct ParticleMaterial {
     pub overbright: f32,
 }
 
+/// One `VehicleVfxBehaviour.SpotEffect`: an effect played at each locator of a group while the car's
+/// effect group bit is set (`FUN_005b28d0`; research log 2026-10-09 "exhaust effects").
+#[derive(Debug, Clone)]
+pub struct VehicleSpotEffect {
+    pub effect: ResourceId,
+    /// Bit in the car's effect mask (`FUN_0057a5e0`): 8 nitrous, 9 / 20 the nitrous upgrade's other modes,
+    /// 12 wrecked, 14 backfire, 19 engine running.
+    pub group: u8,
+    /// `da6ac384`: 0 always, 1 only while the world flag +0x1b934 is clear, 2 only while it is set.
+    pub condition: u8,
+    /// Restarted whenever it ends while the group is on (otherwise started on the group's rising edge).
+    pub looping: bool,
+    /// Also played mirrored across the car's centre line.
+    pub mirror: bool,
+    pub locator_group: u32,
+    pub locators: Vec<mw_formats::Locator>,
+}
+
+/// Effect group bits (`VehicleSpotEffect::group`).
+pub mod spot_group {
+    pub const NITROUS: u8 = 8;
+    pub const WRECKED: u8 = 12;
+    pub const BACKFIRE: u8 = 14;
+    pub const ENGINE_RUNNING: u8 = 19;
+}
+
 fn handle(o: &Object, name: &str) -> Option<ResourceId> {
     handle_hash(o, field_hash(name))
 }
@@ -281,6 +307,48 @@ impl AssetStore {
             }
         }
         Ok(lib)
+    }
+
+    /// A car's spot effects (`VehicleVfxBehaviour.SpotEffects` in its bundle), each with the locators of its
+    /// `LocatorGroup` from the car's `VehicleGraphicsSpec`.
+    pub fn vehicle_spot_effects(
+        &self,
+        bundle: &mw_bundle::Bundle,
+        spec: &mw_formats::VehicleGraphicsSpec,
+    ) -> Result<Vec<VehicleSpotEffect>> {
+        let mut out = Vec::new();
+        for e in bundle.entries_of_type(ResourceType::GenesysObject) {
+            let Ok(o) = self.decode_genesys(&bundle.load(e)?) else { continue };
+            if o.type_name != "Genesys.Gen.VehicleVfxBehaviour" {
+                continue;
+            }
+            let Some(Value::Array(list)) = o.get(field_hash("SpotEffects")) else { continue };
+            for v in list {
+                let Value::Struct(s) = v else { continue };
+                let Some(effect) = handle(s, "SpotEffect") else { continue };
+                let int = |name: &str| match s.get(field_hash(name)) {
+                    Some(Value::Int(i)) => *i as u64,
+                    Some(Value::UInt(u)) => *u,
+                    _ => 0,
+                };
+                let flag = |name: &str| matches!(s.get(field_hash(name)), Some(Value::Bool(true)));
+                let group_id = int("LocatorGroup") as u32;
+                out.push(VehicleSpotEffect {
+                    effect,
+                    group: int("Group") as u8,
+                    condition: match s.get(0xda6a_c384) {
+                        Some(Value::Int(i)) => *i as u8,
+                        Some(Value::UInt(u)) => *u as u8,
+                        _ => 0,
+                    },
+                    looping: flag("Looping"),
+                    mirror: flag("Mirror"),
+                    locator_group: group_id,
+                    locators: spec.locator_group(group_id).map(|g| g.locators.clone()).unwrap_or_default(),
+                });
+            }
+        }
+        Ok(out)
     }
 
     /// Decoded GeneSys objects of one type in a bundle.

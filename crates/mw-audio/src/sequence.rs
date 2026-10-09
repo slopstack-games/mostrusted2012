@@ -198,6 +198,10 @@ pub struct Sequence {
     /// One-shot items fire again whenever the previous one ends while the item is active, at a rate
     /// proportional to the binding (pops and crackles: `Gurgle_Sequence` is bound to a pop probability).
     pub retrigger: bool,
+    /// Started only by its cue, and a cue is ignored while the previous start still sounds (the game's
+    /// pop and backfire sequences, `FUN_0058ccb0`). A bound sequence started this way plays the one-shot
+    /// items whose range holds the binding at that moment.
+    pub exclusive_cue: bool,
 }
 
 /// Plug-in kinds the player implements. Others (pans, limiters, reverb) pass the signal through.
@@ -478,6 +482,8 @@ struct SeqState {
     t: f32,
     duration: f32,
     items: Vec<ItemState>,
+    /// A bound exclusive-cue sequence was started this block.
+    cued: bool,
 }
 
 struct WaveVoice {
@@ -882,6 +888,7 @@ impl Player {
                 bind: bind(&params, &s.binding),
                 gate: bind(&params, &s.gate),
                 playing: false,
+                cued: false,
                 t: 0.0,
                 duration: s.items.iter().map(|i| i.end).fold(s.max, f32::max),
                 items: s
@@ -1005,6 +1012,16 @@ impl Player {
                 continue;
             }
             let pick = cands[self.rng.next() as usize % cands.len()];
+            if self.bank.sequences[pick].exclusive_cue {
+                let busy = self.seqs[pick].playing || self.voices.iter().any(|v| v.owner.0 == pick && !v.done);
+                if busy {
+                    continue;
+                }
+                if self.seqs[pick].bind.is_some() {
+                    self.seqs[pick].cued = true;
+                    continue;
+                }
+            }
             let s = &mut self.seqs[pick];
             s.playing = true;
             s.t = 0.0;
@@ -1101,7 +1118,11 @@ impl Player {
                             }
                         } else {
                             // No one-shots while the game is still setting its values.
-                            let entering = inside && !was_active && !(warming && bound);
+                            let entering = if seq.exclusive_cue && bound {
+                                inside && self.seqs[si].cued
+                            } else {
+                                inside && !was_active && !(warming && bound)
+                            };
                             let retrigger = seq.retrigger
                                 && inside
                                 && !warming
@@ -1119,6 +1140,7 @@ impl Player {
                     }
                 }
             }
+            self.seqs[si].cued = false;
             // Timelines end once past their last item and silent.
             if !bound && self.seqs[si].playing && self.seqs[si].t > self.seqs[si].duration {
                 let busy = self.voices.iter().any(|v| v.owner.0 == si && !v.done);
@@ -1430,6 +1452,7 @@ mod tests {
                 items: vec![wave],
                 gate: String::new(),
                 retrigger: false,
+                exclusive_cue: false,
             }],
             cues: vec![],
             master_gain: 1.0,

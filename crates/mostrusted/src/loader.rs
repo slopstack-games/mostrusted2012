@@ -82,6 +82,8 @@ pub struct CarSpec {
     /// Deformation data; the body meshes carry joint attributes when this is set (`damage.rs`).
     pub damage: Option<Arc<mw_assets::damage::VehicleDamage>>,
     pub impact_graph: mw_assets::damage::ImpactGraph,
+    /// `VehicleVfxBehaviour` spot effects with their locators (exhaust flames, smoke, ...; `exhaust.rs`).
+    pub spot_effects: Vec<mw_assets::vfx::VehicleSpotEffect>,
 }
 
 #[derive(Clone)]
@@ -360,6 +362,7 @@ impl Worker {
             }
         }
         let engine = self.store.engine(&b).unwrap_or_default();
+        let spot_effects = self.store.vehicle_spot_effects(&b, &spec).unwrap_or_default();
         let damage = match self.store.vehicle_damage(&b) {
             Ok(d) => d.map(Arc::new),
             Err(e) => {
@@ -404,6 +407,7 @@ impl Worker {
             engine,
             damage,
             impact_graph,
+            spot_effects,
         };
         // Parts are listed by the key the main thread knows them by (paint variants differ).
         for &m in spec.parts.iter().flatten() {

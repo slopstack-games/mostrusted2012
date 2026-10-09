@@ -11,9 +11,14 @@
 //! | 0x13 | u8   | wheel count (4) |
 //! | 0x14 | u32  | effect locator count? |
 //! | 0x18 | ptr  | effect locators? (0x14-byte entries with in-place handles) |
-//! | 0x1C | u32  | count (≈ 0x16–0x1A) |
-//! | 0x20 | ptr  | u32[count] ids |
-//! | 0x24 | ptr  | `{u32 n, ptr, u32}`[count] |
+//! | 0x1C | u32  | locator group count (≈ 0x16–0x1A) |
+//! | 0x20 | ptr  | u32[count] locator group ids |
+//! | 0x24 | ptr  | `{u32 n, ptr locators, u32}`[count]; a locator is `f32 quat[4], f32 pos[4]` (car space) |
+//!
+//! The locator groups are the ids `VehicleVfxBehaviour` names (`Locator_group` / `LocatorGroup` of its
+//! coronas, lights and spot effects): the game looks a group up by id (`FUN_0042b870`, a linear search
+//! that falls back to the first group) and places one effect per locator (`FUN_005b28d0`). On the 911
+//! group 137267 holds the four tail pipes (quat = half a turn about X, so +Z points out backwards).
 //!
 //! Wheel (0x90 bytes):
 //!
@@ -38,6 +43,28 @@ pub struct VehicleGraphicsSpec {
     pub skeleton: Option<ResourceId>,
     pub collision: Option<ResourceId>,
     pub wheels: Vec<Wheel>,
+    pub locator_groups: Vec<LocatorGroup>,
+}
+
+/// Effect and light positions on the car (see the table above).
+#[derive(Debug, Clone)]
+pub struct LocatorGroup {
+    pub id: u32,
+    pub locators: Vec<Locator>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Locator {
+    /// Rotation quaternion (x, y, z, w) and position, car space.
+    pub rotation: [f32; 4],
+    pub position: [f32; 3],
+}
+
+impl VehicleGraphicsSpec {
+    /// A locator group by id (`None` when the car has no such group; the game would use its first).
+    pub fn locator_group(&self, id: u32) -> Option<&LocatorGroup> {
+        self.locator_groups.iter().find(|g| g.id == id)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -94,11 +121,26 @@ impl VehicleGraphicsSpec {
                     .collect(),
             });
         }
+        let n_groups = r.u32(0x1C)? as usize;
+        let (ids, groups) = (r.u32(0x20)? as usize, r.u32(0x24)? as usize);
+        let mut locator_groups = Vec::with_capacity(n_groups.min(256));
+        for g in 0..n_groups.min(256) {
+            let n = (r.u32(groups + g * 12)? as usize).min(64);
+            let at = r.u32(groups + g * 12 + 4)? as usize;
+            let locators = (0..n)
+                .map(|k| {
+                    let [x, y, z, _] = r.f32_array::<4>(at + k * 32 + 16)?;
+                    Ok(Locator { rotation: r.f32_array(at + k * 32)?, position: [x, y, z] })
+                })
+                .collect::<Result<_>>()?;
+            locator_groups.push(LocatorGroup { id: r.u32(ids + g * 4)?, locators });
+        }
         Ok(Self {
             parts: (0..n_parts).map(|i| res.import_at(models + i * 4)).collect(),
             skeleton: res.import_at(0x04),
             collision: res.import_at(0x08),
             wheels,
+            locator_groups,
         })
     }
 }

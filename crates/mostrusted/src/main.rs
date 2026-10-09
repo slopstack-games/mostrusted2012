@@ -15,6 +15,7 @@ mod damage;
 mod deferred;
 mod drive;
 mod easydrive;
+mod exhaust;
 mod freeroam;
 mod game_text;
 mod garage;
@@ -114,6 +115,9 @@ struct Cli {
     /// Hold the throttle at this value (0–1), for automated driving tests.
     #[arg(long)]
     auto_throttle: Option<f32>,
+    /// Hold nitrous (with `--auto-throttle`, for looking at the nitrous flames).
+    #[arg(long)]
+    nitrous: bool,
     /// Performance mods on the driven car: `slot=category[,…]`, indices as `mwtool mods <car>` prints them.
     #[arg(long, default_value = "")]
     mods: String,
@@ -169,6 +173,9 @@ struct Cli {
     /// 12 m/s), for checking collision effects.
     #[arg(long)]
     screenshot_after_impact: Option<f32>,
+    /// Capture `--screenshot` this many seconds of game time after the first exhaust backfire (`exhaust.rs`).
+    #[arg(long)]
+    screenshot_after_backfire: Option<f32>,
     /// Limit the number of streamed track units (nearest first).
     #[arg(long)]
     units: Option<usize>,
@@ -257,6 +264,7 @@ pub struct Game {
     screenshot_delay: u32,
     screenshot_time: Option<f32>,
     screenshot_after_impact: Option<f32>,
+    screenshot_after_backfire: Option<f32>,
     paint: Option<Color>,
     filter: loader::WorldFilter,
     mute: bool,
@@ -388,9 +396,10 @@ fn main() -> anyhow::Result<()> {
         Some("landing") => Some(drive::TestKind::Landing),
         Some("climb") => Some(drive::TestKind::Climb),
         Some("jitter") => Some(drive::TestKind::Jitter),
+        Some("exhaust") => Some(drive::TestKind::Exhaust),
         Some(other) => {
             anyhow::bail!(
-                "unknown --test {other} (accel, brake, corner, handbrake, drift, donut, engine, landing, climb, jitter, crash, smash)"
+                "unknown --test {other} (accel, brake, corner, handbrake, drift, donut, engine, exhaust, landing, climb, jitter, crash, smash)"
             )
         }
     };
@@ -555,6 +564,7 @@ fn main() -> anyhow::Result<()> {
         ))
         .add_plugins(camera::CameraPlugin { mode: camera_mode, look_back })
         .add_plugins(crash::CrashPlugin)
+        .add_plugins(exhaust::ExhaustPlugin)
         .add_plugins(tyre_marks::TyreMarksPlugin)
         .add_plugins(freeroam::FreeroamPlugin)
         .add_plugins((garage::GaragePlugin { script }, menu::MenuPlugin { enabled: menu_enabled, open: cli.show_menu }))
@@ -581,7 +591,7 @@ fn main() -> anyhow::Result<()> {
                 && !smash
                 && cli.replay.is_none(),
         })
-        .insert_resource(drive::CarInput { auto_throttle: cli.auto_throttle, ..default() })
+        .insert_resource(drive::CarInput { auto_throttle: cli.auto_throttle, auto_nitrous: cli.nitrous, ..default() })
         .insert_resource(mods_menu::ModSelection::parse(&cli.mods, &[]))
         .init_resource::<mods_menu::ModCatalogue>()
         .add_systems(Update, mods_menu::apply_live)
@@ -593,6 +603,7 @@ fn main() -> anyhow::Result<()> {
             screenshot_delay: cli.screenshot_delay,
             screenshot_time: cli.screenshot_time,
             screenshot_after_impact: cli.screenshot_after_impact,
+            screenshot_after_backfire: cli.screenshot_after_backfire,
             environment: weather::EnvironmentKey {
                 timeline: start_timeline,
                 hour: cli.hour.rem_euclid(24.0),
@@ -883,6 +894,7 @@ fn auto_screenshot(
     script: Option<Res<garage::SwapScript>>,
     time: Res<Time<Virtual>>,
     impact: Option<Res<particles::FirstImpact>>,
+    backfire: Option<Res<exhaust::FirstBackfire>>,
     mut frames_after_done: Local<u32>,
     mut exit: MessageWriter<AppExit>,
 ) {
@@ -891,9 +903,10 @@ fn auto_screenshot(
     if !loaded.done || script.is_some_and(|s| !s.finished()) {
         return;
     }
-    let at = match (game.screenshot_time, game.screenshot_after_impact) {
-        (_, Some(after)) => Some(impact.map_or(f32::MAX, |i| i.0 + after)),
-        (at, None) => at,
+    let at = match (game.screenshot_time, game.screenshot_after_impact, game.screenshot_after_backfire) {
+        (_, Some(after), _) => Some(impact.map_or(f32::MAX, |i| i.0 + after)),
+        (_, None, Some(after)) => Some(backfire.map_or(f32::MAX, |b| b.0 + after)),
+        (at, None, None) => at,
     };
     if let Some(at) = at {
         if *frames_after_done == 0 && time.elapsed_secs() >= at {
