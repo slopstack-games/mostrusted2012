@@ -23,8 +23,9 @@
 //! Collision layers: the world (`PolygonSoupList` and anything without layers) is [`GameLayer::World`];
 //! the car's body is [`GameLayer::Car`] and a low bumper box that only meets props is
 //! [`GameLayer::CarBumper`] (the body box sits above the wheels, so low props would slip under it);
-//! props are [`GameLayer::Prop`] and collide with the world, the car and each other. The wheels' ray
-//! casts only see the world.
+//! props are [`GameLayer::Prop`] and collide with the world, the car and each other. Traffic cars are
+//! [`GameLayer::Traffic`] (`traffic.rs`): lane followers meet the car, props and traffic; crashed ones the world
+//! too. The wheels' ray casts only see the world.
 
 use std::sync::Arc;
 

@@ -1209,8 +1209,8 @@ by `sys[0x98]` (0.7) per emitter and is wrapped to [0,1).
 **Spawn interval** (confirmed, `FUN_005fb120`):
 - `D` = the section's flow `Density`, `m` = the global multiplier `world+0xa2b7c`.
 - `d = max(m·D, min(D, sys[0xd0]=0))`, floored at `1e-15` (`DAT_00fb1e90`).
-- `interval = 60 / d × lerp(a, sys[0xb8]=1, u)`, with `u` uniform in [0,1). The decompiler lost the lerp's
-  start `a`.
+- `interval = 60 / d × lerp(sys[0xc8]=1, sys[0xb8]=1, u)`, with `u` uniform in [0,1) (the start was read from
+  the x87 code, see "Traffic runtime").
 
 So **`Density` is cars per minute per lane**, at multiplier 1.
 
@@ -1273,9 +1273,10 @@ Separately, `FUN_00602ce0` runs `FUN_005fd3f0` (not traced) once the player has 
 - These, with `prm[0x84]·x + (+0x34)` and `prm[0x80]` (only when the state byte `+0x22` = 1), go to
   `FUN_00617d00`.
 
-`FUN_00617d00` is a **behaviour arbiter**, not a plain speed controller (partly confirmed):
-- `FUN_005ea6a0` scores four options from the gap, the closing speed and the car state. The scoring is
-  probably the `FuzzyConfig` (inferred).
+`FUN_00617d00` is a **behaviour arbiter**, not a plain speed controller (confirmed; fully read in "Traffic
+runtime" below):
+- `FUN_005ea6a0` scores six options from the gap, the closing speed and the car state with the
+  `TrafficFuzzyLogicConfig` envelopes.
 - The scores are forced to zero while `world+0xa2be6` is set. They are also zeroed when `world+0xa2ba8 ≤ 16 −
   world+0x32b20`, a cap on concurrent manoeuvres (inferred); in a local game that test is skipped at a load of
   200 or more. A car whose state byte `+0x78` is 2 gets fixed scores (`DAT_00fb2330`).
@@ -1288,10 +1289,113 @@ Separately, `FUN_00602ce0` runs `FUN_005fd3f0` (not traced) once the player has 
 - The remaining branches were not read.
 
 `prm` names `MinAcceleration` (−20, offset 0x50) and `SwerveScale` (4, offset 0xb8), the only hashed names.
-Not traced: the controller itself (`FUN_00617d00`), the swerve and near-miss reactions, the horn, junction /
-stop-line handling (junction records are reached through the hull's `+0x28` pointer; `FUN_0060c9f0` walks a
-`u8` count at junction `+0x35` with entries near `+0x56`), the switch to a physical car (`FUN_005fcbd0` →
-`FUN_005f7cf0`) and the 150 / 24-slot ranges.
+The controller, the stop lines and traffic lights, the route choice and the 150-slot range (parked cars) were
+read later: "Traffic runtime" below. Still not traced: the swerve and near-miss reactions, the horn, the switch
+to a physical car and the 24-slot range.
+
+### Traffic runtime (2026-10-09, ported in `crates/mostrusted/src/traffic.rs`)
+
+Read from the dump and the disassembly for the runtime; `sys[x]` / `prm[x]` as above, `fuzzy[x]` = the block at
+`world+0x69810` that `FUN_005ea6a0` reads (`ECX` in `FUN_00617d00`'s call, from the disassembly). The traffic
+object `world` sits at `0x23f4e780` in `snap2` (16-aligned; the research log's `world+0xa2b74` is `+0xa2b70`
+from this base, which `FUN_005ef0f0` fills with `sys[0x80]`). All `prm` field names except `MinAcceleration` and
+`SwerveScale` are unhashed; `mw_assets::traffic` names them by use.
+
+- **Spawn interval** (`FUN_005fb120`, settled from the x87 code): `interval = 60 / d × lerp(sys[0xc8], sys[0xb8],
+  u)`; both are 1, so the interval is exactly `60 / d`.
+- **Placement** (`FUN_00608720`, confirmed): a car is not placed within `sys[0xd4]` = **50 m** of any player with
+  a vehicle (player kind `+0x9c` = 2). The paint is **round-robin per vehicle type** (`world+0xa0390[type]`
+  incremented modulo the palette's paint count, stored at car `+0x76`), unless the caller asks for one colour
+  (matched against the palette entries' ids; `TrafficFlowType.Colour` is 0 everywhere). The car's front / back
+  extents come from the vehicle type's `RaceCarPhysicalDefinition` box (`centre.z ± half.z`; a trailer adds
+  10 m behind). The random `u` drawn first is the car's **personality** `x` (car `+0x3c`).
+- **Hull population** (`FUN_0060db90`, called from `FUN_0060e5e0` for every newly active hull; confirmed): with a
+  carry `c = u · 0.99`, every section entered from another hull (backward hull ≠ this one) starts a chain
+  (`FUN_0060ce20`): the section, then its first forward link while it stays in the hull, then the starting
+  section's 2nd and 3rd links recursively. Per section (`FUN_0060afb0`): `n = length / (Speed·mph) / (60 / d) + c`
+  cars; `⌊n⌋` cars spaced `length / ⌊n⌋` apart from `spacing × frac(n)`, each moved on by `u × sys[0x84]` (0.3) ×
+  spacing; the fraction carries to the next section. The same function then places the hull's **parked cars**
+  (static vehicle records): byte `+0x42` is a percentage chance, bit 0 of `+0x43` skips them in a pursuit, `u16
+  +0x40` is the flow type; they go into the 150 slots after the traffic ones (the "256–405" range is parked
+  cars; not ported).
+- **Per-car decision** (`FUN_005fc220`, confirmed). Inputs to the scorer:
+  - *obstacle* (from the list `FUN_006024f0` builds: players' cars, 18 other objects, physical traffic): the one
+    in the cone `fwd·d ∈ [0, 50]`, `cos ≥ 0.7071` (`FUN_00511540`; heights scaled by 2.5) with the smallest
+    `|d| × weight × (1 − cos)` (weight 0.5 for the local player and for crashed traffic, 1 otherwise); its
+    distance ahead `fwd·d`, height `up·d`, closing speed `dir·(v_own − v_obs)`, lateral offset `right·d ×
+    (0.5 + 0.5 |right_obs·right|)`, and its speed along our heading;
+  - *lead*: distance to a held stop line (below), gap to the car ahead `max(0, dist − front − prm[0x10] −
+    prm[0xac]·x)`, closing speed `v − v_ahead`;
+  - *own*: impatience `prm[0x84]·x + wait`, a flag (1 in modes 0 / 2, or in mode 4 behind a car in mode 0 / 2),
+    and `prm[0x80]` (0.15) in mode 1.
+
+  Unset inputs are FLT_MAX. A block for the case of the player behind a slow car (`.bss` thresholds at
+  `0x0110f640` / `0x0110f780`) was not ported.
+- **The scorer** (`FUN_005ea6a0`, from the disassembly): memberships are trapezoids `clamp(min((x−a)/(b−a),
+  (d−x)/(d−c)), 0, 1)`, four lanes per input; the lanes match `TrafficFuzzyLogicConfig` envelopes by value
+  (obstacle distance: `07b6e570`, `DistanceNear`, `249c401d`, `3a5dd3ed`; height `HeightNear`; closing
+  `13ca8b67`, `01d18569`, `5483011b`, `0072dac3`, also used for the lead's closing; lateral `6eec31b8`; stop
+  line `87f03da4`; gap `050a5e6e`; impatience `3eddeb08`). Six scores:
+  `S1 = min(H, L, max(min(Dnear, Cclosing), min(Dclose, 1 − Copening)))` (stop for the obstacle),
+  `S2 = min(H, max(Dnear, Dmid), L, 1 − Cclosing)` (match it), `S0 = 1` if `max(S1, S2) > 0` and in mode 1, else
+  `min(impatience, max(flag, S1, S2)) + mode-1 bonus` (start a manoeuvre), `S3 = stop line`, `S4 = min(gap,
+  1 − leader opening)`, `S5 = fuzzy[0x510]` (0.2, read live; its writer was not found).
+- **The arbiter** (`FUN_00617d00`, confirmed): takes the first score that beats the best so far by 0.05
+  (`DAT_00fb2390`; all zero → option 0). Output (mode, target speed `A`, distance `B`), cruise `= Speed·mph ×
+  world+0xa2c00`: 0 → mode 5 plus a request in the 5-entry manoeuvre queue (`world+0x32bac`) with a rate
+  `lerp(prm[0x98], prm[0x94], x) × 2.23694`; 1 → mode 0, `A = 0`, `B = max(0, obstacle − prm[0x9c])` (10 m);
+  2 → mode 2, `A = min(cruise, max(min(v, v_obs), prm[0x3c]·gap))`, same `B`; 3 → mode 3, `A = 0`, `B = stop
+  line − prm[0xb4]·x`; 4 → mode 4, `A = min(cruise, max(min(v, v_ahead), prm[0x3c]·gap))`, `B = gap`; 5 → mode 5,
+  cruise. Two gates zero all scores: `world+0xa2be6`, and `world+0xa2ba8` (`sys[0x134]` = 7) ≤ 16 −
+  `world+0x32b20` (not identified; not ported).
+- **Speed controller** (`FUN_0061a190`, confirmed): the cruise is capped at 5 m/s (`DAT_00fb278c`) when the lane
+  direction `3v + 10` m ahead along the planned route (`FUN_005f11a0`) is at most `cos = 0.85` from the
+  heading. Mode 5 (and 1 with flag 8): `a = clamp(min(cruise, 500) − v, prm[0x64] = −8, prm[0x4c] = 4)`. Modes
+  0–4: `a = prm[0x50]` (−20) when `B < prm[0x78]` (0.05 m), else `(min(A, cruise)² − v²) / 2B` clamped to
+  `[−20, prm[0x44] = 8]`. Integration (`FUN_0061a450`): `v ← max(0, v + a·dt)`, 0 below `prm[0x70]` (0.05) when
+  not accelerating; brake lights (`+0x21` bit 0) when `a < −0.6` or `v < 2.5` without accelerating. Waiting time
+  (`FUN_00614c20`): grows by dt in modes 0 / 2 below 5 m/s unless the car directly ahead is traffic in mode
+  0 / 2 / 4, reset otherwise.
+- **Advance** (`FUN_0061a550`, confirmed): distance `a·dt²/2 + v₀·dt`, or the stopping distance `v₀² / 2|a|`
+  when shorter; the rung position moves over the cumulative rung lengths. At the section end the next section
+  is the planned route's head, else chosen now; none, or a hull outside the area, removes the car
+  (`FUN_005f04c0`).
+- **Route** (`FUN_00618470`, `FUN_005fc020`, confirmed): of the up to three forward links the car takes the one
+  with the lowest load: cars in the link section's span × the span's reciprocal capacity, summed along the
+  span's continuation chain (a tortoise-and-hare walk; the counts are read from the first hull's record), 1 for
+  a hull outside the area; ties go to the first link. The route is planned up to `prm[0x34]` (25 m) ahead, at
+  most 5 sections.
+- **The pose** (`FUN_005e7f20`, `FUN_006132d0`): the position interpolates the rung midpoints; the heading
+  blends 0.4 (`DAT_010c4d20`, `.data`) of the way to the rung segment's direction per update.
+- **Leader scan** (`FUN_005f1380`, confirmed): the next car on the same section (cars keep a sorted list,
+  `world+0x28f80`), the rearmost car on each forward link and on their forward links while within the
+  look-ahead, and (within `prm[0x5c]` = 14 m of the section end) cars on the other sections that feed the same
+  successor (`FUN_005f0b90`), unless stopped at a stop line slower than `prm[0x74]` (5 m/s). Distances end at
+  the other car's back extent.
+- **Stop lines** (`FUN_005f0d90`, `FUN_00439b60`, confirmed): stop lines are `u16` rung positions in 8.8 fixed
+  point; a section lists its first and count. The car looks for the first stop line ahead in its section, else
+  along its route; it stops for it only when the hull record's flag (`+0x250 + index`) is set, within
+  `prm[0xb0]` (100.3 m).
+- **Traffic lights** (`FUN_00605d30`, confirmed; formats.md has the junction record): per active hull and
+  junction a timer counts down; at 0 the phase advances (`(phase + 1) mod count`) and the timer gains the new
+  phase's duration × 0.1 s; each light group's stop-line flags are set to its bit in the phase mask (set =
+  red); the light props get messages 0xb / 0xc. Typical cycle: 15 s, 2 s all red, 15 s, 2 s all red.
+- **Spawn check** (`FUN_0060e5e0`): the headway test subtracts the last car's back extent from its position
+  (`pos − back − new ≥ Speed·mph × 2 s`), which measures to its front; ported as read.
+
+Not found or not ported: the manoeuvres (option 0's queue: swerve, cut-up, weave, panic, jack-knife), the
+game's own switch to a physical car (`FUN_005fcbd0` sets up the kinematic wheel job, not the crash; the crash
+entry was not found), the kinematic wheel and suspension pose (`FUN_005f7cf0`), the point the load budget
+measures from (`world+0x36110`, several hundred metres from the car in the snapshots), the world vehicle
+allocation for lane followers (`FUN_00608fb0`, 80 m / 30 m tests from `sys[0x118]` / `sys[0x11c]`), and per-car
+lights.
+
+**Runtime model decisions** (each marked `MODEL:` in traffic.rs): option 0 keeps a car stopping for its
+obstacle (no manoeuvres); the load budget and the draw range measure from the player's car; models and
+colliders only within 250 m of the player (performance); a crashed car is a dynamic box down to the ground
+(no wheels), turned physical when the player's car or another crashed car touches it; cars and crashed cars
+on hulls that leave the area are removed (inferred from the per-hull state going away); the heading blend is
+scaled to the fixed step; the random seed; junction timers start at zero; traffic waits for the player's car.
 
 ## Vehicle paint, liveries and dirt
 

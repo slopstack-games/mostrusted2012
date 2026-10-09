@@ -10,6 +10,34 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-09: traffic at runtime (spawn, lanes, lights, following, hits)
+Code findings are in decomp.md "Traffic runtime"; the runtime is `crates/mostrusted/src/traffic.rs`.
+- **Traffic cars are the `VEHICLES/VEH_<id>_TR.BNDL` bundles** (11, one per `TrafficVehicle.VehicleComponent`):
+  one LOD, a `VehicleGraphicsSpec` like the drivable cars, no paints inside. Their paints are the
+  `VehicleColourPalette` (`16671e74` handle array) of the `VehicleComponent` in `VEHICLES/TRAFFICATTRIBS.BNDL`,
+  1–7 per car, used round-robin per type (`FUN_00608720`). Box and mass come from `RaceCarPhysicalDefinition`
+  `0x01000002_<component>` (1135–2633 kg, the bus 392322 7000 kg). No trailers in the PC data.
+- **The fuzzy option choice is ported exactly**: the scorer's SIMD block (`world+0x69810`) was dumped from
+  `snap2` (traffic object at `0x23f4e780`, 16-aligned, so the research log's `+0xa2b74` is `+0xa2b70` from it).
+  Its lanes are `TrafficFuzzyLogicConfig` envelopes stored as `(a, d, 1/(b−a), −1/(d−c))`, matched field by
+  field; the cruise option's 0.2 at block `+0x510` has no data source found (live read).
+- **Traffic lights**: junction records decoded (formats.md); phase masks are "held" bits (red). Checked on
+  every junction: all 189 stop lines are referenced by light groups and owned by sections.
+- **Hull population**: newly active cells are filled along their lanes at the flow's density (one car per
+  `60 / (4.78 · Density)` s of lane at lane speed), no car within 50 m of the player; the 256-slot cap is
+  reached at once in the downtown area (9 cells active), after which cars only appear as others leave.
+- **Checks** (headless, `MW_TRAFFIC_LOG=1`): a car stops exactly 10 m behind the stationary player (mode 0,
+  `prm[0x9c]`), the next one queues behind it (mode 4) while the neighbouring lanes pass at 33 / 42 mph (lane
+  speeds); 3–13 cars wait at red lights at any time; hitting traffic at 30–100 km/h turns the car into a crashed
+  body that spins away (screenshots in the session scratchpad); the tick costs ~0.2 ms for 256 cars.
+- **Performance** (`--drive 911 --units 30 --spawn=815,60,1760,270 --auto-throttle 0.3 --bench 10`, other builds
+  running): 13.3 ms mean without traffic, 25.3 ms with every car drawn, 16.8–18.7 ms with models only within
+  250 m (the draw range is a model decision; most of the cost is the extra mesh entities in the render world).
+- **Dead ends / open**: the game's switch to a physical car (the crash entry for traffic; `FUN_005fcbd0` is the
+  kinematic wheel setup), the manoeuvres (option 0), the point the load budget measures from (`world+0x36110`),
+  the 24-slot vehicle range, the hour array's reader, per-car brake / indicator lights (our light state is one
+  global per material).
+
 ### 2026-10-09: no generic angular damping on a driving car; the chassis inertia is ours; post-impact yaw damping ported
 - Searched for the source of our unsourced `AngularDamping(0.4)` through the callers of the angular-damping
   routine `FUN_00907b50` (decomp.md "Angular damping"). The vehicle's damping constraint (`FUN_009aa700`, record

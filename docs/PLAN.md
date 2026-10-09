@@ -68,7 +68,7 @@ user's review after session 3, with where each gap is tracked:
 | Inputs are not mapped like the original | `[~]` 2026-10-06 (session 5): the original's action list, default keyboard / pad tables and mapping rule read from the code and made our defaults (`input.rs`: arrows / A / Z / Space, RT / LT / X, C / LB camera, numpad / d-pad Easydrive). Open: look back / look around have no default binding in the tables (ours: End / right stick), nitrous and horn have no runtime yet, remapping | M3.9 |
 | UI incomplete, no Easydrive | `[~]` 2026-10-06 (session 5): Easydrive's menu tree is read from the UI data (23 tiers in the free-roam screen) and shown in game (`easydrive.rs`, `--show-easydrive`); Change car works through it, every other entry is inert. Its look and position are our own (the game's layouts are not read), conditional entries are not filtered. The game's front end is not built | M7 |
 | No crash camera | crash cam since 2026-10-06 (`crash.rs`): rules, slow motion, bystander shots, letterbox and rolling reset from the data; the shots' placement / FOV and the reset pose are model decisions until compared with a capture of the original | M3.3 |
-| No AI vehicles | no traffic, racers or cops at runtime. 2026-10-06 (session 5): the traffic lane data is decoded (`mwtool traffic`: 374 km of lanes, flows, vehicle lists) and lanes can be queried by position; spawn / despawn and driving rules are not traced yet | M6.1, M6.4 |
+| No AI vehicles | `[~]` **Traffic runs** (2026-10-09, `traffic.rs`, `--no-traffic`, `--traffic-density`): the TR car models in their palette paints spawn, follow the lanes, stop at red lights, queue behind cars and the player and are removed by the game's rules (active cells, emitters, density 4.78 × `Density`, load budget, fuzzy option choice, speed controller, route by span load, junction light cycles; decomp.md "Traffic runtime"); hit by the player they become crashed bodies. Model decisions: no manoeuvres (swerve / cut-up), crashed cars are boxes without wheels, models only within 250 m, no per-car lights, no parked cars, no traffic sounds. No racers or cops | M6.1, M6.4 |
 | Prop collisions | decoded and simulated but opt-in (`--prop-physics`): the car wedges against knocked props | M3.1 |
 | Game logic in general | no events, pursuits, Most Wanted list, progression. 2026-10-06 (session 5): the free-roam objects are decoded (`mwtool freeroam`: 74 speed cameras, 216 billboards, 152 gates, 183 jack spots, 22 body shops) and speed cameras log the pass speed (`freeroam.rs`, the game's 50 mph threshold); no HUD message, Speed Points, smashes or jack-spot swaps yet | M6 |
 | Road / terrain textures scaled wrong, foliage in the wrong place (user, 2026-10-06) | `[~]` Texture scale: every ground family's UV maths, the mip chains, UV formats and detail strength match the game; three road decal variants (465 meshes) and the anisotropy (the game's 4×) fixed; **not resolved** (lead: the texture header's first-mip byte and a global quality flag, needs a live read and a capture of the original). Foliage: placement decodes are right (`mwtool placement-check`); groundcover uses the game's fields and group draw distance; **the cause was a forward redraw**: masked materials (trees) were drawn again without fog and with Bevy's lighting, fixed the same day; hills beyond 500 m are still flat fog colour (gradient texture alpha not traced) | M1.3, M1.4, M1.5 |
@@ -352,9 +352,12 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
 Nothing of the game's logic runs yet: no AI vehicles, events, pursuits, progression. The decomp now shows the
 code side (game modes, HSMs, AI) next to the data. Roughly in dependency order:
 1. `[~]` Traffic: `TrafficLaneData` (0x701) decoded (2026-10-06, session 5; formats.md, `mwtool traffic
-   [--png]`, `AssetStore::traffic_lanes()` / `lanes_near`): hulls, lane sections, rungs, flows and their vehicle
-   lists. Open: junction, stop-line and parked-vehicle records; the spawn / despawn, driving and reaction rules
-   in the code (first leads in decomp.md "Traffic and AI vehicles"); `TrafficGraphicsStub`; the runtime.
+   [--png] [--at x,z]`, `AssetStore::traffic_lanes()` / `lanes_near`, `traffic_data()`): hulls, lane sections,
+   rungs, flows and their vehicle lists, junction light cycles, stop lines. Runtime since 2026-10-09
+   (`traffic.rs`; decomp.md "Traffic runtime"): spawn / despawn, lanes, lights, following, hits. Open: the
+   manoeuvres, the game's own switch to a physical car and its wheel poses, parked cars (static vehicle records),
+   per-car lights and indicators, traffic engine sounds (`Game::Traffic::EngineSoundInstance`), the hour
+   array's reader, `TrafficGraphicsStub`.
 2. Road network and AI paths: `RoadData`, `RoadMapData`, `AIData`, `NavigationMesh`.
 3. `[~]` Triggers and events: `TriggerData` (0x202) decoded (2026-10-06, session 5; formats.md, `mwtool
    freeroam`): speed cameras, billboards, security gates, jack spots, body shops, with the collectable rules
@@ -431,6 +434,6 @@ original** (`.bss` constants and renderer fields; the list is in next-session.md
    WorldPBR `Horizontal_*` variants, sampler modes, and the game's groundcover draw distance.
 4. **Easydrive** (M7): the game's own layouts for its look, the conditional entries, the hooks (customise, paint,
    races) as their systems arrive; **input**: nitrous, horn, look back.
-5. **Traffic runtime** (M6.1): spawn / despawn and driving rules from the code (leads in decomp.md), then cars on
-   the decoded lanes. **Free-roam** (M6.3): HUD messages, Speed Points, billboard / gate smashes, jack spots.
+5. **Traffic** (M6.1): runtime landed 2026-10-09; next the manoeuvres, crashed cars on wheels, parked cars,
+   per-car lights and sounds, and a capture of the original's traffic to compare density and speeds. **Free-roam** (M6.3): HUD messages, Speed Points, billboard / gate smashes, jack spots.
 6. **Animations** (M3.8), **prop collisions** by default (M3.1), crash camera against a capture (M3.3).

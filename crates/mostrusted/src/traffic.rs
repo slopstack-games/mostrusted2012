@@ -305,6 +305,9 @@ pub struct TrafficSystem {
     density_scale: f32,
     pub spawned: usize,
     pub removed: usize,
+    /// Time spent in the tick (s) and ticks, for `MW_TRAFFIC_LOG`.
+    tick_time: f64,
+    ticks: u32,
 }
 
 impl TrafficSystem {
@@ -331,6 +334,8 @@ impl TrafficSystem {
             density_scale,
             spawned: 0,
             removed: 0,
+            tick_time: 0.0,
+            ticks: 0,
         }
     }
 
@@ -885,9 +890,27 @@ fn traffic_tick(
     if dt <= 0.0 {
         return;
     }
+    let started = std::time::Instant::now();
+    tick(sys, &mut commands, dt, &player, &camera, &crashed_q);
+    sys.tick_time += started.elapsed().as_secs_f64();
+    sys.ticks += 1;
+}
+
+fn tick(
+    sys: &mut TrafficSystem,
+    commands: &mut Commands,
+    dt: f32,
+    player: &PlayerQuery,
+    camera: &Query<&GlobalTransform, crate::MainCamera>,
+    crashed_q: &Query<(&Transform, &LinearVelocity), With<TrafficCar>>,
+) {
+    // MODEL: traffic waits for the player's car (in a drive session it spawns once the ground under it has
+    // streamed in; the camera stands elsewhere until then). Without a car (the free camera) it follows the
+    // camera.
     let (player_pos, player_vel, player_right) = match player.iter().next() {
         Some((t, v)) => (Some(t.translation), v.0, t.rotation * Vec3::X),
-        None => (camera.iter().next().map(|t| t.translation()), Vec3::ZERO, Vec3::X),
+        None if sys.last_hull.is_some() => (camera.iter().next().map(|t| t.translation()), Vec3::ZERO, Vec3::X),
+        None => return,
     };
     let Some(focus) = player_pos else { return };
 
@@ -909,7 +932,17 @@ fn traffic_tick(
     sys.multiplier = s.density_base * (s.fast_factor + (s.slow_factor - s.fast_factor) * t) * sys.density_scale;
 
     // The active area.
-    update_area(sys, &mut commands, focus);
+    update_area(sys, commands, focus);
+    // Crashed cars go with the area too (inferred, as lane followers do).
+    let data = sys.data.clone();
+    let active = sys.active.clone();
+    sys.crashed.retain(|c| {
+        let inside = active.iter().any(|&h| in_cell(&data.lanes.hulls[h as usize].points, c.position.x, c.position.z));
+        if !inside {
+            commands.entity(c.entity).despawn();
+        }
+        inside
+    });
 
     sys.index_sections();
 
@@ -952,7 +985,7 @@ fn traffic_tick(
     // 5. Motion.
     for i in 0..MAX_CARS {
         if sys.cars[i].is_some() {
-            move_car(sys, i, dt, &mut commands);
+            move_car(sys, i, dt, commands);
         }
     }
 
@@ -960,7 +993,7 @@ fn traffic_tick(
     cycle_lights(sys, dt);
 
     // 7. The load budget.
-    budget(sys, focus, dt, &mut commands);
+    budget(sys, focus, dt, commands);
 }
 
 /// Active hull set, hull population and removal of cars that left it (`FUN_005f0270`, `FUN_0060c9f0`).
@@ -1614,7 +1647,7 @@ fn crash_hit_cars(
 
 /// A count line every 5 s and the cars near the player every second (`MW_TRAFFIC_LOG=1`), for headless checks.
 fn count_log(
-    system: Option<Res<TrafficSystem>>,
+    system: Option<ResMut<TrafficSystem>>,
     time: Res<Time>,
     player: PlayerQuery,
     mut next: Local<f32>,
@@ -1659,13 +1692,17 @@ fn count_log(
         return;
     }
     *next = time.elapsed_secs() + 5.0;
+    let tick_ms = 1000.0 * sys.tick_time / sys.ticks.max(1) as f64;
+    let mut sys = sys;
+    sys.tick_time = 0.0;
+    sys.ticks = 0;
     let (lane, crashed) = sys.counts();
     let modes = sys.cars.iter().flatten().fold([0usize; 6], |mut m, c| {
         m[c.mode.min(5) as usize] += 1;
         m
     });
     info!(
-        "traffic: {lane} cars ({crashed} crashed), {} hulls active, {} emitters, load {:.0}, spawned {} removed {}, modes stop {} match {} stopline {} follow {} cruise {}",
+        "traffic: {lane} cars ({crashed} crashed), tick {tick_ms:.2} ms, {} hulls active, {} emitters, load {:.0}, spawned {} removed {}, modes stop {} match {} stopline {} follow {} cruise {}",
         sys.active.len(),
         sys.emitters.len(),
         sys.load,
