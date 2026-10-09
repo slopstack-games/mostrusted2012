@@ -37,11 +37,11 @@
 //! | 0x2C | u32  | total size |
 //! | 0x30 | f32  | frame rate |
 //! | 0x34 | u16  | quaternion codec: 0 = f32×4, 1 = 32-bit (vehicles) |
-//! | 0x36 | u16  | delta frame (0 in vehicle clips; not applied) |
+//! | 0x36 | u16  | reference frame: keys blend as changes from it (0 in vehicle clips) |
 //! | 0x38 | ptr  | root translations (f32×4 per frame) |
 //! | 0x3C | ptr  | translations (f32×4 per bone per frame) |
 //! | 0x40 | ptr  | IK positions |
-//! | 0x44 | ptr  | bone mask (f32 per bone, 1.0) |
+//! | 0x44 | ptr  | bone mask (f32 blend weight per bone) |
 //! | 0x48 | ptr  | translation remap (u8 per bone: channel or 0xFF) |
 //! | 0x4C | ptr  | rotations (codec-encoded, per bone per frame) |
 //! | 0x50 | ptr  | scale remap (u8 per bone) |
@@ -150,9 +150,21 @@ pub struct Animation {
     pub bone_count: usize,
     /// Bones with at least one channel.
     pub bones: Vec<usize>,
+    /// Which channels each of `bones` has: [`CHANNEL_TRANSLATION`] | [`CHANNEL_ROTATION`] | [`CHANNEL_SCALE`].
+    /// The game's blend leaves a channel a clip does not animate as it is (`FUN_009f3250`).
+    pub channels: Vec<u8>,
     /// `frames[f][i]` is the key of `bones[i]` at frame `f`.
     pub frames: Vec<Vec<BoneKey>>,
+    /// The reference frame (`Anim` +0x36): the game's blend adds each key's change from this frame
+    /// (`FUN_009f3250`, docs/decomp.md "Vehicle damage pose"). 0 in every vehicle clip.
+    pub reference_frame: usize,
+    /// Blend weight per skeleton bone (`Anim` +0x44); empty when the clip has no mask.
+    pub bone_mask: Vec<f32>,
 }
+
+pub const CHANNEL_TRANSLATION: u8 = 1;
+pub const CHANNEL_ROTATION: u8 = 2;
+pub const CHANNEL_SCALE: u8 = 4;
 
 /// Decode a codec-1 quaternion (see the module docs).
 pub fn decode_quat32(v: u32) -> [f32; 4] {
@@ -198,8 +210,17 @@ impl Animation {
         if ft < nt * 16 || fs < ns * 4 {
             return Err(Error::Malformed("frame sizes smaller than their channels".into()));
         }
-        let [root, trans, _ik, _mask, t_remap, rots, s_remap, r_remap, scales] =
+        let [root, trans, _ik, mask, t_remap, rots, s_remap, r_remap, scales] =
             r.u32_array::<9>(0x38)?.map(|v| v as usize);
+        let reference_frame = r.u16(0x36)? as usize;
+        if frames > 0 && reference_frame >= frames {
+            return Err(Error::Malformed(format!("reference frame {reference_frame} of {frames}")));
+        }
+        let bone_mask = if mask == 0 {
+            Vec::new()
+        } else {
+            (0..bone_count).map(|b| r.f32(mask + b * 4)).collect::<std::result::Result<_, _>>()?
+        };
         let id = r.i32(0x5C)?;
         let remap = |ptr: usize, channels: usize| -> Result<Vec<Option<usize>>> {
             (0..bone_count)
@@ -218,6 +239,14 @@ impl Animation {
         let s_map = remap(s_remap, ns)?;
         let bones: Vec<usize> =
             (0..bone_count).filter(|&b| t_map[b].is_some() || r_map[b].is_some() || s_map[b].is_some()).collect();
+        let channels: Vec<u8> = bones
+            .iter()
+            .map(|&b| {
+                (t_map[b].is_some() as u8) * CHANNEL_TRANSLATION
+                    | (r_map[b].is_some() as u8) * CHANNEL_ROTATION
+                    | (s_map[b].is_some() as u8) * CHANNEL_SCALE
+            })
+            .collect();
         let mut out = Vec::with_capacity(frames);
         for f in 0..frames {
             let mut keys = Vec::with_capacity(bones.len());
@@ -243,7 +272,7 @@ impl Animation {
             }
             out.push(keys);
         }
-        Ok(Self { id, frame_rate, bone_count, bones, frames: out })
+        Ok(Self { id, frame_rate, bone_count, bones, channels, frames: out, reference_frame, bone_mask })
     }
 
     /// Keys at a fractional frame position (clamped to the clip), for the bones in `self.bones`.

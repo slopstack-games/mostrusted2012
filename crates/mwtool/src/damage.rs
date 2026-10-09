@@ -36,8 +36,10 @@ pub fn run(store: &AssetStore, o: &Options) -> Result<()> {
     println!("skeleton: {} bones", dmg.skeleton.bones.len());
     for (i, bone) in dmg.skeleton.bones.iter().enumerate() {
         let p = bone.position;
+        let q = bone.rotation;
+        let rot = if q[3].abs() < 0.9999 { format!("  bind rotation {q:.3?}") } else { String::new() };
         println!(
-            "  bone {i:2}  parent {:>2}  pos ({:6.3} {:6.3} {:6.3})  id {:08x}",
+            "  bone {i:2}  parent {:>2}  pos ({:6.3} {:6.3} {:6.3})  id {:08x}{rot}",
             bone.parent.map_or("-".into(), |p| p.to_string()),
             p[0],
             p[1],
@@ -260,11 +262,34 @@ fn survey(store: &AssetStore) -> Result<()> {
                         }
                     }
                 }
-                let rest = if rest.is_empty() {
-                    String::new()
-                } else {
-                    format!("  frame-0 offsets on bones {rest:?} (up to {rest_max:.3} m)")
-                };
+                // Blend data the game's pose blend reads: reference frames, bone masks (distinct values over
+                // all clips, damage and parts) and bones with a non-identity bind rotation.
+                let parts = d.animations.iter().flat_map(|a| a.clips.iter().map(|c| &c.animation));
+                let all: Vec<&mw_formats::Animation> = d.clips.iter().map(|c| &c.animation).chain(parts).collect();
+                let refs: std::collections::BTreeSet<usize> = all.iter().map(|a| a.reference_frame).collect();
+                let mut masks: Vec<String> = all
+                    .iter()
+                    .map(|a| {
+                        if a.bone_mask.is_empty() {
+                            return "none".to_string();
+                        }
+                        let mut v: Vec<f32> = a.bone_mask.clone();
+                        v.sort_by(f32::total_cmp);
+                        v.dedup();
+                        format!("{v:?}")
+                    })
+                    .collect();
+                masks.sort();
+                masks.dedup();
+                let bind_rot = d.skeleton.bones.iter().filter(|b| b.rotation[3].abs() < 0.9999).count();
+                let rest = format!(
+                    "{rest_text}  ref {refs:?}  masks {masks:?}  rotated binds {bind_rot}",
+                    rest_text = if rest.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  frame-0 offsets on bones {rest:?} (up to {rest_max:.3} m)")
+                    }
+                );
                 println!(
                     "{:<40} {:2} bones  {} clips  frames {:?}  {:2} bodyparts  off-zone {:?}{rest}",
                     v.name,
