@@ -149,8 +149,13 @@ set of **skeletal animation clips whose frames are damage levels**:
 - The `VehicleDamageBehaviour` GeneSys object's `AnimationList` handle points to the damage `AnimationList`
   (0xB0): 8 clips (7 on one car) in a fixed zone order **front, rear, left, right, front-left, front-right,
   rear-left, rear-right** (+X is the car's left). Each clip has 21 frames (two cars have one clip of 5 or
-  202): frame 0 is the bind pose, the last frame fully wrecked. Translations are offsets from the bind
-  position in the parent's space; rotations are applied in the bone's own space. A part breaking off gets
+  202): frame 0 is the undamaged car, the last frame fully wrecked. Translations are offsets from the bind
+  position in the parent's space; rotations are applied in the bone's own space. Frame 0 is the identity on
+  almost every bone, but 30 cars have a few bones whose keys carry a constant offset in every frame, from a
+  rig that differed from the shipped skeleton (XKR boot lid and tail lights 12–14 cm in all 8 clips; R34
+  steering wheel 77 cm towards the left-hand-drive side in the front-left clip; Viper 0.57 m, F1 LM 0.38 m;
+  `mwtool damage all` lists them, `mwtool damage <car> --keys` prints the keys), so damage keys are used as
+  changes from their clip's frame 0 (research log 2026-10-09). A part breaking off gets
   scale 0 (and drops ~0.7 m) from the frame where it detaches (911 front clip: number plate at frame 2,
   a bumper piece at 7, a headlight at 20; side clips: mirror at 5).
 - `Animation` / clip layout (`CgsAnimation::Anim`, field names from burnout.wiki) is in
@@ -190,7 +195,8 @@ LP700-4 (spoiler + vents), McLaren MP4-12C and Venom GT Spyder (spoiler + air br
 top speed / air brake) and the Huayra (front / rear flaps on speed, steering and brake).
 
 A clip is two (or a few) frames: frame 0 is the retracted pose (identity keys), the last the deployed one;
-keys are offsets from the bind pose like the damage clips, on 1-4 bones (the 911's bone 36: 30° about X and
+keys are offsets from the bind pose (not from frame 0: the Veyron's transition clips, e.g. into the air
+brake, start from a deployed pose), on 1-4 bones (the 911's bone 36: 30° about X and
 2 cm up / 7 cm back). It plays at its own frame rate: the 911's 0.612 frames/s makes the deploy 1.63 s.
 
 The `HSMData` is a serialized property tree (apparently hashed keys with values as strings; layout not decoded).

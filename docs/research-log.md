@@ -10,6 +10,34 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-09: the Jaguar XKR's "broken spoiler" after contact (damage keys counted from frame 0)
+User report: after contact in a race (XKR, CONTINENTAL DRIFT) a large dark triangle stood up from the boot like a
+broken spoiler. Reproduced with `--drive xkr --test crash` (a frontal hit: front 28 %, front-left / front-right 11 %)
+and `mwtool damage xkr --level all=0.5 --preview` (the boot lid flies up and sideways); a single zone
+(`--level left=1`) looked almost right, which is why the earlier `rear=0.5` preview hid it.
+- **Cause (data)**: `mwtool damage xkr --keys` shows bones 6, 7, 8 (boot lid hinge, 556 vertices; the two tail-light
+  halves, 1,865 / 1,843 vertices) with the same non-identity key in **every frame of all 8 clips**: offsets
+  (−0.117, 0.014, −0.004), (0.133, 0.048, 0.013), (0.101, 0.048, 0.010). The clips were made on a rig whose bone 6
+  sat 12 cm further right (bones 7 / 8 then land ±0.286 m instead of the skeleton's ±0.270 m). `pose_with` added
+  every damaged zone's key to the bind pose, so the constant went in once per damaged zone (3 times after a frontal
+  hit: 35 cm, plus the rear clip's rotation of the same bones), and even one zone at 1 % jumped the boot lid 12 cm.
+- **Other cars** (`mwtool damage all`, new column): 30 of 72 cars have frame-0 offsets on some damage-clip bones;
+  most under 3 cm, but R34 Skyline 0.78 m (bone 16 = the steering wheel, 389 vertices: the front-left clip moves it
+  77 cm to the left-hand-drive position, so any front-left hit teleported the wheel), Viper GTS 0.57 m (bones
+  9–12, 35), McLaren F1 LM 0.38 m, MP4-12C 0.21 m, SLS 0.18 m, Evoque 0.14 m, XKR 0.14 m, Camaro ZL1 0.13 m,
+  Veyron Vitesse 0.07 m, Agera R 0.06 m, Impreza 0.05 m, 911 Turbo 0.05 m (M3 Coupé 3 cm). The 911 Carrera S and
+  Veyron Super Sport damage clips have none (their results are unchanged).
+- **Fix** (`mw_assets::damage::VehicleDamage::pose_with`): a damage key is taken as the change from its clip's frame
+  0, k ⊖ k0 = (t − t0, q0⁻¹ q, s / s0), then the zones add up as before. Frame 0 is the undamaged car, so this
+  keeps a zero-damage pose equal to the bind pose the vertices were modelled in, whichever rig the clip came from.
+  **Animated part clips are not changed**: the Veyron's mode and air-brake transition clips start from a deployed
+  pose (anim 2 / 7 frame 0 = the spoiler at 20.6°, 18 cm up), so their keys are offsets from the bind pose.
+- **Source status**: model decision from the data (the only reading under which the undamaged car keeps its
+  modelled shape on all 72 cars); the game's pose blend was searched for and not found (decomp.md "Vehicle
+  damage pose"). After: `--test crash` and `--damage all=0.5` show an intact boot, the R34's wheel stays put.
+- **Tools**: `mwtool damage <car> --keys` (every clip's keys at frames 0, 1 and last; every frame of part clips),
+  `damage all` lists frame-0 offsets, `mostrusted --damage zone=level,...` starts the player car damaged.
+
 ### 2026-10-09: groundcover sprites face the camera (the `Groundcover` vertex program ported)
 User report: since the sprite-size fix (byte / 127 × 2^e m, so the e = 6 / 8 groups are 10–60 m tree cards) the
 cards showed as thin vertical slivers when seen edge-on: we drew each sprite as two crossed static quads.
