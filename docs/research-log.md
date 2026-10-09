@@ -10,6 +10,69 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-09: frame drops: the render thread's multi-draw path, physics catch-up, bakes on every core
+User report: "optimize this game, it is weirdly dropping frames sometimes". Measured with a new per-frame log
+(`MW_FRAME_LOG=<file>`, `frame_log.rs`: main schedule segments First / PreUpdate / fixed loop / Update /
+PostUpdate / Last, the gap to the next frame, the render thread's segments assets / specialise / queue /
+prepare / graph, fixed steps, loader messages, entity / mesh / image / material counts), `--bench` now printing
+p95 / p99 / max / hitches > 50 ms plus `BENCH MESHES` (visible / total mesh entities by kind) and `BENCH
+MATERIALS` (distinct visible materials), and chrome traces (`--features bevy/trace_chrome`, one build).
+**Caveat**: the machine was shared all session (load 8–27: another agent running the original game, other
+builds, and for the first hour ~11 GB of this session's binaries / traces on the RAM-backed /tmp, which pushed
+the machine into swap); every A/B below is interleaved, same command, back to back, and the absolute numbers
+are high for that reason. Drive = `--drive 911 --units 30 --spawn=800,42,1688,62 --auto-throttle 0.4 --mute`.
+
+- **Where the time went** (drive trace, master): the render thread set the frame time (45.6 ms of render
+  schedule per frame against 22.9 ms main). Its biggest items were Bevy's multi-draw-indirect bookkeeping:
+  `write_binned_instance_buffers<Opaque3dDeferred>` 6.2 ms, `<Shadow>` 3.8, `prepare_preprocess_bind_groups`
+  5.9, the `unpack_bins` dispatch encoding 3.8, `queue_submit` 6.8. That path keeps, per **batch set** (one per
+  material bind group) and per view, two GPU buffers written with their own `write_buffer`, a bind group and a
+  compute dispatch; downtown **959 distinct materials** are visible (10 300 visible mesh entities: world 5 134,
+  props 3 465, alpha-tested 1 156, traffic ~300, backdrop 170), in the main view and three cascades.
+- **Fix 1 (committed): direct draws.** `NoIndirectDrawing` on the main and the planar-reflection cameras (the
+  shadow views inherit it): GPU mesh preprocessing stays, the per-batch-set machinery goes. `MW_INDIRECT=1`
+  restores the old path. Drive A/B (master → new, three rounds of 30 s at load 17–27): frame mean 108 / 63 /
+  51 → 33 / 41 / 18 ms; render prepare 52 / 29 / 24 → 7.1 / 9.4 / 3.9 ms; render graph 53 / 32 / 26 → 24 / 30 /
+  13 ms. Earlier rounds (20 s, load 9–15): 47 / 50 / 70 → 31 / 26 / 25 ms, frames > 50 ms per 20 s: 0–62 vs
+  108+ on master. Race (`--race 462174 --units 30`, 40 s): 79 → 21 ms (load 10–19), 38 → 39 ms (load 14,
+  disturbed). Free camera over the full map (city overview, 3 846 visible): 23.6 / 21.9 → 28.1 / 16.8 ms (noise;
+  fewer visible materials there). GPU utilisation with direct draws 34–79 % (median ~50 %): still CPU-bound.
+  **Pictures**: road, night + planar reflection, grass, city, car within run-to-run noise (road 0.28 MAD vs
+  0.50 between two master runs); one car shot differed in the glass, a rerun of the same mode matched master
+  bit for bit (a slow first frame, not the mode). Drive / drift shots are not deterministic.
+- **Dead end: CPU batching** (`PbrPlugin { use_gpu_instance_buffer_builder: false }`): looked 3× faster but
+  drew no world geometry at all (only sky and the car) with no error; not used.
+- **Fix 2 (committed): physics stalls on the async pool.** Avian optimises its collider trees on Bevy's async
+  compute pool and `block_on`s the result later in the same step; that pool also compiles pipelines. Under load
+  `block_on_optimize_trees` averaged 13.7 ms per frame (normally 0.01). Now inline (`ColliderTreeOptimization {
+  use_async_tasks: false }`, ~0.03–0.09 ms a step; `MW_AVIAN_ASYNC=1` = before). `--test accel|brake|corner|
+  drift` TEST RESULT lines identical to master.
+- **Fix 3 (committed): environment bakes off the frame's cores.** A bake (painted timeline change while driving,
+  F5–F7) built its cube maps on the global rayon pool: 108 ms with every core busy (the main and render threads
+  starved for that time). Now on a 2-thread pool of its own: 234 ms in the background, same texels
+  (`MW_BAKE_THREADS=n`, 0 = global pool). Bakes now log their duration.
+- **Small (committed)**: particle batches that stay empty are no longer re-uploaded each frame (every mesh
+  change makes Bevy walk all mesh entities in `mark_3d_meshes_as_changed_if_their_assets_changed`).
+- **The spiral**: fixed steps per frame follow the frame time (drive on master: 2–3 steps normally, up to 15
+  after a slow frame, ~3–8 ms each), so one slow frame makes the next ones slower; most clusters of > 50 ms
+  frames in the logs are this plus machine contention (main fixed loop and render graph slow together, no
+  loader messages). The game itself advances at most 2/60 s per frame (decomp.md "Update loop": one 2/60
+  catch-up step, even after a 4.7 s stall); Bevy catches up to 250 ms. A clamp of `Time<Virtual>` max delta to
+  2/60 s (before `--test`'s speed-up) was written but **not committed** (not measured yet; it changes play below
+  30 fps, deliberately, toward the original).
+- **Streaming events**: traffic model arrivals (+11–24 meshes, +1–10 materials, 3–16 loader messages) cost
+  ~5 ms of uploads in the render thread; not a hitch on their own. Race start: one 190 ms frame (render
+  specialise 60 ms + queue 49 ms) when the race's many new entities first become visible.
+- **Next, by the numbers** (direct draws, quiet-ish machine: render ~14–19 ms, main 8–11 ms): (1) the render
+  graph's draw encoding (deferred prepass ~5 ms + 2.4 apply, shadows ~5 ms over three cascades): fewer draws:
+  the game's model LOD / draw distances (`Model.lod_distances` unused: every placement is drawn at LOD0 at any
+  distance; 3 465 visible prop meshes downtown) need tracing in the decomp first; bindless `GameMaterial` would
+  let Bevy merge draws across materials (a `layered.wgsl` rewrite); (2) commit the 2/60 s clamp after an A/B
+  and the handling tests; (3) `GeneratedEnvironmentMapLight` re-filters the sky every frame for the forward
+  materials (~0.8 ms render CPU plus GPU): a static prefiltered map from the bake would do; (4) pre-warm the
+  pipelines and specialisations of the race's start area during loading; (5) per-step physics cost (~2.5–3.5
+  ms a step under load, mostly executor overhead of avian's 6 substeps).
+
 ### 2026-10-09: car badges and decals cut out (vehicle `_Alpha1bit` / `_Alpha_` shaders)
 User report: the 911's rear "PORSCHE" letters drew as solid rounded blocks and "911 Carrera S" sat on an opaque
 silver plate. An old bug: every car's badges, the traffic cars' grille logos and hub caps were opaque quads.
