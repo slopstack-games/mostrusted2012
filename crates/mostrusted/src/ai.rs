@@ -657,6 +657,9 @@ fn spawn_opponents(
                 damage: Some(crate::damage::DamageSource(spec.damage.clone().map(|d| (d, spec.impact_graph)))),
             },
         );
+        if let Some(engine) = &spec.competitor_engine {
+            commands.entity(car).insert(crate::car_audio::PendingCompetitorEngine(engine.clone()));
+        }
         let mut driver = AiDriver::new(race.route.clone());
         driver.rubber_band = race.balancing.get(slot).copied().flatten();
         commands.entity(car).insert(driver);

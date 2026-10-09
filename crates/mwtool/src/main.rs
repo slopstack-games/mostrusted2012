@@ -17,6 +17,7 @@ mod preview;
 mod props;
 mod survey;
 #[cfg(target_os = "linux")]
+mod traffic_sound;
 mod tune;
 mod ui;
 mod verify_handling;
@@ -303,6 +304,21 @@ enum Cmd {
         /// Bypass the mixer plug-ins (EQ, distortion, sub-harmoniser).
         #[arg(long)]
         dry: bool,
+        /// Render the car's AI-racer engine (`<id>_COMPETITORSOUND`) instead of the player's.
+        #[arg(long)]
+        competitor: bool,
+    },
+    /// Traffic engine sounds (`<component>_COMPETITORSOUND` in `VEHICLES/TRAFFICATTRIBS.BNDL`,
+    /// `mw_assets::car_sound`): lists each vehicle type's bank, its RPM against normalised speed and its 3D
+    /// placement; with an output file, renders a 0 → top speed → 0 sweep (14 s) of one type and then a
+    /// pass-by (`--passby mph`) through the game's falloff and doppler, printing the gain against distance.
+    TrafficSound {
+        /// A `VehicleComponent` id (e.g. 122816), or `all`.
+        component: String,
+        out: Option<PathBuf>,
+        /// Pass-by speed (mph) for the 3D render: the car drives past a listener 4 m to the side.
+        #[arg(long, default_value_t = 40.0)]
+        passby: f32,
     },
     /// Render a scripted drive (skids, wheelspin, locked brakes, impacts, a scrape, wind) through the
     /// vehicle sound bank (tyre / road / wind / collision sounds) to a .wav.
@@ -929,7 +945,7 @@ fn main() -> Result<()> {
             std::fs::write(&out, mw_audio::Pcm { channels: 1, sample_rate: sr, samples }.to_wav())?;
             println!("{} {:.0}-{:.0} rpm -> {}", e.id, g.min_rpm, g.max_rpm, out.display());
         }
-        Cmd::EngineSound { car, out, trace, legacy, dry } => {
+        Cmd::EngineSound { car, out, trace, legacy, dry, competitor } => {
             let store = AssetStore::new(game)?;
             let v = store.find_vehicle(&car)?.with_context(|| format!("no car matches {car}"))?;
             let b = store.bundle(v.hi_bundle.as_deref().context("no bundle")?).context("bundle")?;
@@ -977,7 +993,11 @@ fn main() -> Result<()> {
                     ([redline - (redline - idle) * (t - 4.0) / 4.0, 0.0, 1.0, 0.0], None)
                 }
             };
-            let voice = if legacy {
+            let voice = if competitor {
+                let c = store.competitor_engine(v.id)?.context("no competitor sound")?;
+                println!("competitor engine: 3D {:?}", c.spatial);
+                Some(mw_assets::engine_sound::EngineVoice::Bank(c.engine))
+            } else if legacy {
                 store.engine_voice(&b)?.map(|(l, g)| mw_assets::engine_sound::EngineVoice::Layers(l, g))
             } else {
                 store.engine(&b)?
@@ -1092,6 +1112,10 @@ fn main() -> Result<()> {
                 }
             }
             println!("{}: {:.1} s -> {}", v.name, duration, out.display());
+        }
+        Cmd::TrafficSound { component, out, passby } => {
+            let store = AssetStore::new(game)?;
+            traffic_sound::run(&store, &component, out.as_deref(), passby)?;
         }
         Cmd::VehicleSound { out, dry, sweep, mph } => {
             use mw_assets::vehicle_driver::{VehicleDriver, VehicleInput, WheelSlip};

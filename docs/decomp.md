@@ -841,6 +841,113 @@ and SubHarmoniser plug-ins fall in undecompiled gaps of the dump.
   wrecked and 13 for a non-zero vector of the player state; the coronas, lights and spot effects test
   `1 << Group` against it.
 
+## Other cars' engine sounds (2026-10-09)
+
+Read for the user's report "traffic sounds are also missing"; ported in `mw_assets::car_sound` (data, maths) and
+`crates/mostrusted/src/car_audio.rs` (runtime). `world` = the traffic object (`0x23f4e780` in `snap2`).
+
+- **Which bank** (confirmed): every car has two `VehicleSound` resources (type 0x207, id = CRC-32 of the lower-case
+  name): `<id>_VEHICLESOUND` (the player's; strings at 0x00fad464) and `<id>_COMPETITORSOUND` (0x00fad474; also
+  the only one in the `_LO` bundle). Layout: +0x10 `TyreSound` (the silent placeholder), +0x18 / +0x1c a handle list
+  (the player's only, 3 sequences), +0x48 `EngineSound2`, +0x50 `Vehicles.Sound.TransmissionWhine` (player's
+  only), +0x60 / +0x64 offset / count of the **horn** sequences (the 911's one wave item has `Snapshot_Property
+  "Player Vehicle Horn"`). The competitor `EngineSound2` is a reduced bank: one Ginsu set (the 911: 1790..7500),
+  the speed / load mixers, a `GetDistanceToListener` mixer (0..130 m: EQ and gains by distance; two channels
+  fade in over the first 12 m), idle loop, pops, backfire, limiter, one gear-change variant per direction. Its
+  raw level is 24..29 dB below full scale at full throttle over six cars (the player's banks: 2..11 dB).
+- **Traffic loading** (`FUN_006077c0`, confirmed): case 0 loads `Sound/MetalCar.bndl` (the collision set, to
+  `world+0xb17a8`) and `VEHICLES\WAVES.BNDL`; case 5 loads, for every vehicle id in the lane data's list (byte
+  +0x26 count, list +0x40), `"%d_COMPETITORSOUND"` by name hash (`FUN_00adaef0(hash, 10, …)`) into the table at
+  `world+0xa02f0` (8 bytes per type, indexed by the lane car's type byte +0x69). The 11 traffic `VehicleSound`s
+  are in `VEHICLES/TRAFFICATTRIBS.BNDL`; four distinct `EngineSound2` banks, each with two sequences: wave loops
+  bound to `Traffic.EngineSounds[#].RPM` and a `NormalisedSpeed` sequence (road / tyre layers gated by
+  `IsWetSurface`, `IsReversing`, `Random(LTEQ:0.2)`) holding a `TrafficEffectSequenceItem`.
+- **The instance** (`Game::Traffic::EngineSoundInstance`, 0x50 bytes, five at `world+0xa0ab0+0x1e0+i·0x50`; the
+  bindings `FUN_005ee480`, the `EngineSounds[#]` accessor `LAB_00617c00`): +0x00 `Idle_RPM`, +0x04 top speed
+  (mph), +0x10..+0x1c a ratio, +0x20 / +0x24 mixer-channel instances (`EngineSound2` +0x6c list, count +0x103,
+  `FUN_00600bb0`), +0x28.. one voice handle per sequence (count +0x102), +0x2c / +0x30 the `EngineSound2`
+  handle, +0x34 the car entity (kind byte +6 = 8 for traffic), +0x38 the slot index, +0x3c RPM, +0x40 / +0x44
+  occlusion (smoothed by 0.1 per frame towards +0x44, `DAT_00fb1a94`; kind-7 entities read `GetOcclusion`), +0x48
+  `Random`, +0x4c state (0 free, 1 releasing, 2 playing). `FUN_005ee550` fills it from the type's
+  `VehicleComponent.Handling` (+0x44): +0x00 = `Engine.Power_curve.Idle_RPM`, +0x04 = `Aerodynamics.f1538c51`
+  (+0x10 → +0x60; 150 / 154 / 180 mph), the ratio = gear 2's `Gear_ratio` × `Differential` of the gearbox at
+  `Engine` +0x114 (else +0x110). Snapshot (`snap2`): instance 0 idle 800, top 180, ratio 7.048, RPM 2081, random
+  0.127, state 2, voices 433 / 434; instance 4 state 1 (releasing).
+- **Bindings** (confirmed): `RPM` (`FUN_00617b20` / `FUN_005ec1a0`) = +0x3c, or when it is 0 (±1.2e-7) on a kind-8
+  car `max(Idle_RPM, entity +0x1fc × 9.5493 × ratio)` (`.bss` 0x0110f930 = 30/π read in `snap2`; entity +0x1fc
+  40.5 there). `NormalisedSpeed` (`FUN_005ec210`) = `clamp(|v · forward| × 0x0118a060 / top speed, 0, 1)` (the
+  constant is the mph factor of the skid code). `IsWetSurface` (`LAB_00614970`) = the world's wet counter > 0
+  (`FUN_00547170` → `FUN_00546c70`), the same for every car. `IsReversing` (`FUN_00614990`) = `v · forward < 0`.
+  `Random` = car +0x5c (when the car's +0x6b bit 0 is set) or a fresh draw of the traffic RNG.
+- **The RPM comes from the sound data** (inferred): the `TrafficEffectSequenceItem` (property 0, `EndTime` 1)
+  of the `NormalisedSpeed` sequence maps the speed through a curve with dips (gear changes) onto exactly the
+  RPM sequence's axis (2000..5550, 2000..5000, 2500..6500, 1000..5000 in the four banks), and the snapshot's +0x3c
+  (2081, 2961) differs from the wheel-spin fallback (2726), so the effect item writes +0x3c. Its handler was not
+  found (reached through a vtable).
+- **The pool** (`FUN_0060bc20`, from `FUN_0060d290`, confirmed): every 0.3 s (`.rdata` 0x00fb1db0) the traffic
+  cars within 85 m (`.bss` 0x0110f63c, read in `snap2`) of the local player's car (`FUN_00573420`) are scored
+  `min(|v|² × 1/400, 1) × 0.4 + (0.5 + 0.1 in view) × (1 − min(d² / 85², 1))` (0x0110f770, 0x0110f5f0,
+  0x0110f910, 0x0110f600, 0x0110fbc0; "in view" = `FUN_00443060`, a sphere of radius 4 (0x0110f5a0) against the
+  camera frustum's planes); cars whose type has no engine or whose +0x6a low nibble is 1 are skipped; the best
+  five (`FUN_0061cce0`) with a score above 0 keep their instance or get a free one (`FUN_005ec310`), which starts
+  with `Random`, the bank and the car. Instances whose car is beyond 85 m (0x0110f630) are released
+  (`FUN_005ee350`: their voices stop with a 1.5 s fade, `FUN_00a44e40(voice, 1.5)`, `.rdata` 0x00fb1bb0; the
+  slot frees when they have ended). If more of the five found no slot than instances are still fading, the
+  playing instance with the lowest voice handle (`FUN_005ec340`: the oldest) is released for each.
+- **Per frame** (`FUN_005ee720` → `FUN_005ee250` per instance): the channel instances get the car's transform and
+  velocity and the occlusion value; an instance whose entity is gone (+0x19 clear) stops its voices.
+- **Placement** (`FUN_00ab9ef0` / `FUN_00abb5f0` → `FUN_00ab9690`, `FUN_00ab9b90`, `FUN_00ab7260`; confirmed from
+  the code and the disassembly; which argument is the listener is inferred from the azimuth, which uses the
+  listener's axes): per voice, `d` = |emitter − listener|, `u` = the unit vector from the listener to
+  the emitter. The channel's `DistanceFalloff` (`MixerChannel` +0x0c → `SoundDistanceFalloff`; field offsets as in
+  the type) gives `G(d)`: inside `MinDistance` (+0x40) `PeakGain + (InitialGain − PeakGain) · t^CurveType` with
+  `t = 1 − d / MinDistance` (+0x28, +0x50, +0x10), outside `PeakGain · t^CurveType` with `t = clamp(1 − (d −
+  Min) / (f5bece87 − Min))` (+0x34); `FUN_00ed9e1b` is the CRT's SSE2 `pow` (exponent in xmm1, from the
+  disassembly). Direction terms: with `x` = emitter forward · u and `s = (d6365a79 − 0.5) · 2` (channel +0x28),
+  `E = (1 − x)/2 + (1 + x)/2 · (1 − s)` (or the first half × (1 + s) when s < 0); with `y` = listener forward · u
+  and `s₂ = (Focus − 0.5) · 2` (+0x2c), `L = (1 + y)/2 + (1 − y)/2 · k · (1 − s₂)` (k = listener +0x74). Output
+  slot 0 (the gain) = `clamp(E · L · G, 0, 1)`. Slot 6 = `E · L · G · H(d)` with a second curve `H` from
+  +0x54 at +0x48 to +0x58 at +0x3c, exponent +0x14 (its consumer was not found). Slot 2 = an azimuth from
+  `FUN_00ab5a60` (listener forward / up); slots 3 / 4 = `gain × +0x30 × +0x2c` and `(1 − gain) × +0x24 / +0x20`,
+  both moved towards other values by the voice's occlusion; slot 5 = +0x1c..+0x18 over +0x44..+0x38 of distance
+  (readers not found). **Doppler** (slot 1, `FUN_00ab7260`): `|c / ((v_emitter − v_listener) · u + c)|` clamped to
+  0..8 (0x0103451c) with `c` by the channel's `435ec694` (+0x54): 1 → 680, 2 → 340, 3 → 170 m/s (0x01034858,
+  0x01034504, 0x0103485c), otherwise none. The traffic engine channel (`…f9485`, falloff `…7277`: min 4 m, max
+  150 m, curve 5, gains 1, focus 0.7, doppler 340); the competitor engines' (`…726f`: min 8 m, max 250 m, curve
+  5, gains 2, focus 0.5, doppler 340); the competitor skids' (`…74cf`: min 4, max 280, curve 3.5).
+- **Voice pools** (`004B0000.c`, load state 7, `FUN_00ab9140`): `Voice3dShared` 10, `Voice3dMonoShared` 32,
+  `Voice3dDefragShared` 6, `VoiceMonoShared` 16 voices (profiler scope "Update Voice Pools"). How sequences take
+  voices from them was not read.
+- **AI racers**: one `RaceCarEngineSound` per race car entity (the same code as the player's, "Engine sound"
+  above), with the competitor bank. No limit on competitor engines was found. Their skids are the surface's
+  `Drift_Competitor` / `Spin_Competitor` / `Brake_Competitor` sequences (same skid bindings); the code that
+  starts them was not traced. The competitor gear-change sequences bind
+  `LocalPlayer.GetPlayerNormalisedGearChangeTimeElapsed`, the player's own shift clock by name.
+- **Traffic car events** (`FUN_006042c0`, from `FUN_0060d290` for every traffic car within 60 m, `.data`
+  0x010c4e04 = 3600 = 60²): collision sounds through the `MetalCar` set (`world+0xb17ac` +0x6c / +0x70); **horns**:
+  when the car's flags (+0x60) have bit 0 or 0x200 and not 0x800 and one of two horn slots (`world+0xa2b9c`) is
+  free, it plays horn `[car index % count]` of its `VehicleSound` list (`FUN_00600ed0`) and sets 0x800 (cleared
+  with bits 0 / 0x200). Bit 0x200 comes from `FUN_005ebb40` called by the traffic behaviour `FUN_00ebe8c0` when
+  a timer at car +0x48 exceeds 55 (`.rdata` 0x01082f08; unit not settled) against `TrafficConfig` +0x20 (with an
+  argument the decompiler dropped, likely a random draw); bit 0 from `FUN_005f77e0` (car +0x5c ≤ config +0x24 once
+  +0x200 passes 0.5) and `FUN_005f65a0`. **Skids** for physical traffic: six slots at `world+0xb174c`, the
+  nearest car with +0x6b bit 3 and flag 0x1000 (set by `FUN_00606210`) plays its surface's sound (`FUN_0054a5d0`,
+  `SurfaceSounds` +0x54 / +0x58). Not ported. The `PassbySequenceBehaviour` "TrafficPassby" objects (fast / slow
+  pass-by sequences) have no reader in the dump.
+- **Ported** (`car_audio.rs`): the traffic pool and instances as above, the bindings, the effect-item RPM, the
+  falloff, direction and doppler maths; AI engines through `EngineDriver` with `GetDistanceToListener`; AI skids
+  through `VehicleDriver`. Model decisions: the listener is the camera (its velocity from its movement, cuts
+  ignored); one placement per voice (the first channel of the bank's list, the first item channel of the
+  competitor drift sequence), not per channel; our pan (linear balance, centre at full level) instead of the
+  azimuth; slots 3–6 and occlusion not applied (no distance filter); listener scalar k = 1; `Random` = the lane
+  car's personality (crashed cars 0.5); `IsWetSurface` = the bad-weather keyframes; the RPM fallback is the idle
+  RPM (every bank has an effect item); the 1.5 s release is a linear gain ramp; voices at zero gain for a block are
+  not rendered (instead of the voice pools); one engine and one tyre voice per AI car; the other cars' banks play
+  at the data's own level (master and channel gains; the competitor banks are not normalised like the player's,
+  the competitor skids get none of our skid mix gains), so the level between the player's sounds and the others'
+  is a model relation (the player's normalisation is one); the AI gear-change clock is the player's, as the
+  binding names it. Not ported: horns, traffic collision and skid sounds, pass-bys, occlusion.
+
 ## Groundcover drawing (2026-10-09)
 
 - **Job**: `FUN_0089ffe0` (called from `FUN_008ad290` with the list at `+0x2e94` of its object) copies the
@@ -1755,7 +1862,8 @@ First pass (session 5); the lane format is in formats.md "TrafficLaneData (0x701
 - **Kinematic body** (`FUN_005f7cf0`, 5.7 kB): a traffic car with 4+ wheels and speed above `DAT_00fb1db8`
   gets per-wheel pose maths (suspension / body roll on rails); not traced further.
 - **Engine sound** (`FUN_005ee480`): registers `Game::Traffic::EngineSoundInstance` with RPM,
-  `NormalisedSpeed` (speed / top speed), `IsWetSurface`, `IsReversing` and a per-car `Random`.
+  `NormalisedSpeed` (speed / top speed), `IsWetSurface`, `IsReversing` and a per-car `Random`; the pool of five
+  instances and the banks: "Other cars' engine sounds" (2026-10-09).
 - **Impacts**: `FUN_00958130` (see "Crashes"), `TrafficRules`.
 
 Tuning lives in `GLOBALCONFIG.BNDL`: `TrafficConfig` (0x69443) → `SystemConfig` (0x69446), `ParamConfig`,

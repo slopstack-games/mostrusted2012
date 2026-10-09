@@ -254,6 +254,9 @@ enum Kind {
     Lfo,
     ShuntLfo,
     SkidLfo,
+    /// `RaceCars.Entities["Id"].GetDistanceToListener` (`FUN_0059b690`: metres from the primary listener to the
+    /// car), supplied by the caller for other cars ([`EngineDriver::set_listener_distance`]).
+    ListenerDistance,
     Random(u32),
     Other,
 }
@@ -276,6 +279,7 @@ fn classify(name: &str) -> Kind {
         "Lfo" => Kind::Lfo,
         "ShuntLfo" => Kind::ShuntLfo,
         "SkidLfo" => Kind::SkidLfo,
+        "GetDistanceToListener" => Kind::ListenerDistance,
         _ => {
             if let Some((list, k)) = gate::parse(name) {
                 return Kind::GearGate(list, k);
@@ -404,6 +408,7 @@ pub struct EngineDriver {
     rng: u32,
     started: bool,
     state: SoundState,
+    listener_distance: Option<f32>,
 }
 
 impl EngineDriver {
@@ -492,6 +497,7 @@ impl EngineDriver {
             rng: 0x1234_5678,
             started: false,
             state: SoundState::default(),
+            listener_distance: None,
         };
         // Values before the first update: engine on, gear-change sequences closed.
         d.write(
@@ -572,6 +578,12 @@ impl EngineDriver {
         self.open_gate = Some((list, self.gear_index));
     }
 
+    /// The distance from the listener to this car (`GetDistanceToListener`), for the banks of other cars; the
+    /// player's sound leaves it unset (the binding then stays at 0).
+    pub fn set_listener_distance(&mut self, d: Option<f32>) {
+        self.listener_distance = d;
+    }
+
     /// The value of a binding the effect items read (`None`: not provided, the value counts as absent).
     fn binding(&self, k: Kind, i: &EngineInput, elapsed: f32) -> Option<f32> {
         Some(match k {
@@ -580,6 +592,7 @@ impl EngineDriver {
             Kind::Lfo => self.lfo.value(),
             Kind::ShuntLfo => self.shunt.value(),
             Kind::Load => self.load_value,
+            Kind::ListenerDistance => self.listener_distance?,
             _ => return None,
         })
     }
@@ -803,6 +816,10 @@ impl EngineDriver {
                 // `FUN_00aabc60` (a sawtooth, not read): kept as a 9 Hz ramp.
                 Kind::SkidLfo => (self.time * 9.0).fract() - 0.5,
                 Kind::Random(n) => ((self.jitter * n as f32) as u32).min(n.saturating_sub(1)) as f32,
+                Kind::ListenerDistance => match self.listener_distance {
+                    Some(d) => d,
+                    None => continue,
+                },
                 Kind::Other => continue,
             };
             self.params.set(&names[slot], v);

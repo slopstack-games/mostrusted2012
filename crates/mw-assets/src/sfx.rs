@@ -255,4 +255,37 @@ impl AssetStore {
         bank.channels = loader.channels();
         Ok(bank)
     }
+
+    /// An AI racer's tyre sounds: the default surface's `Drift_Competitor`, `Spin_Competitor` and
+    /// `Brake_Competitor` sequences (dry, `Normal` contact; the same skid bindings as the player's) at the data's
+    /// own level (the other cars' sounds are not lifted by our mix gains, `car_sound`), and how their first
+    /// channel places them in the world (`car_sound::Spatial`).
+    pub fn competitor_tyre_bank(&self) -> crate::Result<(Bank, crate::car_sound::Spatial)> {
+        let mut loader = SoundLoader::new(self);
+        let mut bank = Bank { master_gain: 1.0, ..Default::default() };
+        let surfaces = first_object(self, "HAWAII/SURFACELIST.BNDL", "Genesys.Gen.Surfaces");
+        let sounds = surfaces
+            .as_ref()
+            .and_then(|s| handle(s, "Default_surface"))
+            .and_then(|id| loader.object(id))
+            .and_then(|t| {
+                let normal = sub(&t, SURFACE_DRY).and_then(|c| sub(c, field_hash("Normal")))?;
+                handle(normal, "Surface_Sounds")
+            })
+            .and_then(|id| loader.object(id));
+        let mut spatial = None;
+        if let Some(ss) = &sounds {
+            for name in ["Drift_Competitor", "Spin_Competitor", "Brake_Competitor"] {
+                let Some(Value::Handle(Some(id))) = ss.get(field_hash(name)) else { continue };
+                if spatial.is_none() {
+                    spatial = self.sequence_spatial(*id);
+                }
+                if let Some(s) = loader.sequence(*id) {
+                    bank.sequences.push(s);
+                }
+            }
+        }
+        bank.channels = loader.channels();
+        Ok((bank, spatial.unwrap_or_default()))
+    }
 }

@@ -45,7 +45,7 @@ fn text(o: &Object, hash: u32) -> String {
     }
 }
 
-fn handle_of(v: Option<&Value>) -> Option<ResourceId> {
+pub(crate) fn handle_of(v: Option<&Value>) -> Option<ResourceId> {
     match v? {
         Value::Handle(h) => *h,
         Value::Ref(r) => Some(*r),
@@ -166,7 +166,7 @@ impl<'a> SoundLoader<'a> {
         g
     }
 
-    fn note_channel(&mut self, id: Option<ResourceId>) {
+    pub(crate) fn note_channel(&mut self, id: Option<ResourceId>) {
         if let Some(id) = id
             && !self.channels.contains(&id)
         {
@@ -233,7 +233,9 @@ impl<'a> SoundLoader<'a> {
                 }
                 // `Automated_Values` of `RaceCarEffectSequenceItem.EffectDoubleValue { ModulatingValue,
                 // Automated_Property }` and `LfoSequenceItem.LfoDoubleValue { Value, Automated_Property }`.
-                "RaceCarEffectSequenceItem" | "LfoSequenceItem" => {
+                // `TrafficEffectSequenceItem` has the same layout; its property 0 is a traffic engine's RPM
+                // (`mw_assets::car_sound`).
+                "RaceCarEffectSequenceItem" | "LfoSequenceItem" | "TrafficEffectSequenceItem" => {
                     let lfo = kind == "LfoSequenceItem";
                     let value_field = field_hash(if lfo { "Value" } else { "ModulatingValue" });
                     let values: Vec<(u32, ModValue)> = structs(it, field_hash("Automated_Values"))
@@ -418,6 +420,13 @@ impl EngineBank {
             }
         }
         let rms = (sum / n as f64).sqrt() as f32;
+        if std::env::var_os("MW_AUDIO_METER").is_some() {
+            eprintln!(
+                "engine bank: calibration RMS {:.1} dBFS before normalising to {:.1}",
+                20.0 * rms.max(1e-9).log10(),
+                20.0 * ENGINE_LEVEL.log10()
+            );
+        }
         if rms > 1e-6 {
             self.bank.master_gain *= (ENGINE_LEVEL / rms).clamp(0.05, 50.0);
         }
@@ -476,6 +485,14 @@ impl AssetStore {
             }
         }
         let Some(es) = best else { return Ok(None) };
+        Ok(Some(self.engine_bank_from(&es, true)))
+    }
+
+    /// The engine bank of one `EngineSound2` object (the player's, from [`AssetStore::engine_bank`], or a
+    /// competitor's, `mw_assets::car_sound`); `normalise` scales it to the common engine level
+    /// ([`EngineBank::normalise`], the player's), otherwise it keeps the data's own mix level.
+    pub fn engine_bank_from(&self, es: &Object, normalise: bool) -> EngineBank {
+        let es = es.clone();
         let mut loader = SoundLoader::new(self);
         let mut bank = Bank { master_gain: num(&es, "MasterGain").unwrap_or(1.0), ..Default::default() };
         for id in handles(&es, ENGINE_SEQUENCES) {
@@ -606,8 +623,10 @@ impl AssetStore {
             limiter_rate: (f(0x6e6b_e213, d.limiter_rate.0), f(0x9529_a29e, d.limiter_rate.1)),
         };
         let mut eb = EngineBank { bank, rpm_range, audible_range, harmonic_order, tuning, gear_changes };
-        eb.normalise();
-        Ok(Some(eb))
+        if normalise {
+            eb.normalise();
+        }
+        eb
     }
 }
 

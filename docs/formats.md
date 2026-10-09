@@ -428,6 +428,16 @@ See `crates/mw-audio` (decoders reimplemented from vgmstream's documentation of 
   `ed754b99`), `11a77b36` / `64cbe1ff` tunnel gain / Q, `f0291dd3` comb-rasp delay divisor. `DspParam
   { Mixer_channel, PlugIn (unique id), Value, Parameter_name }`: index 1 on a filter reads as Frequency, 0 on a
   Send as its gain; 4 (Delay) and 5 (BandPass) are unresolved.
+- **`VehicleSound`** (resource type 0x207; one per car and role, id = CRC-32 of `<id>_VEHICLESOUND` for the
+  player's car, `<id>_COMPETITORSOUND` for AI racers and traffic): +0x10 `TyreSound` import, +0x18 / +0x1c offset /
+  count of a handle list (player's only), +0x48 `EngineSound2`, +0x50 `TransmissionWhine` (player's only), +0x60 /
+  +0x64 offset / count of the horn sequences (imports every 8 bytes). `mw_assets::car_sound`.
+- **3D placement**: `MixerChannel { DistanceFalloff (+0x0c), d6365a79 emitter directivity (+0x28), Focus (+0x2c,
+  listener), 435ec694 doppler mode (+0x54: 1/2/3 = 680/340/170 m/s) }` → `SoundDistanceFalloff { CurveType
+  (+0x10) and d13efb2a (+0x14) exponents, InitialGain (+0x28) at 0 m, PeakGain (+0x50) at MinDistance (+0x40),
+  0 at f5bece87 (+0x34); a second curve 1ede038c (+0x54) at 7d704038 (+0x48) to 04f8e36b (+0x58) at fc29b05f
+  (+0x3c); +0x18..+0x30, +0x38, +0x44, +0x4c feed filter-like outputs }` (decomp.md "Other cars' engine sounds").
+  `TrafficEffectSequenceItem` has the layout of `RaceCarEffectSequenceItem`; property 0 is the traffic RPM.
 - **Surface and collision sounds**: `Surfaces { Default_surface, Chevron_surface, Surfaces }` →
   `SurfaceType { two condition sets (dry / wet) { Flats, Normal, Offroad, Rims, Track: { Surface_Physics,
   Surface_Rumble, Surface_Sounds } } }` → `SurfaceSounds { Brake, Drift, Spin (+ _Competitor), Reflection, two

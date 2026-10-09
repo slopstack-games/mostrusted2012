@@ -101,6 +101,9 @@ pub struct CarSpec {
     pub mod_catalogue: crate::mods_menu::ModCatalogue,
     /// Engine sound (`AssetStore::engine`): the car's sequence bank, or Ginsu layers for cars without one.
     pub engine: Option<mw_assets::engine_sound::EngineVoice>,
+    /// An AI opponent's engine (`<id>_COMPETITORSOUND`, `mw_assets::car_sound`) and how it sits in the world;
+    /// loaded instead of [`CarSpec::engine`] for opponents.
+    pub competitor_engine: Option<Arc<mw_assets::car_sound::CompetitorEngine>>,
     /// Deformation data; the body meshes carry joint attributes when this is set (`damage.rs`).
     pub damage: Option<Arc<mw_assets::damage::VehicleDamage>>,
     pub impact_graph: mw_assets::damage::ImpactGraph,
@@ -426,7 +429,13 @@ impl Worker {
                 w.position[2] += new - old;
             }
         }
-        let engine = self.store.engine(&b).unwrap_or_default();
+        // An opponent plays its competitor engine (`car_audio.rs`); the player's bank is not built for it.
+        let competitor_engine = self
+            .opponent
+            .and_then(|_| bundle_vehicle_id(bundle))
+            .and_then(|id| self.store.competitor_engine(id).ok().flatten())
+            .map(Arc::new);
+        let engine = if self.opponent.is_some() { None } else { self.store.engine(&b).unwrap_or_default() };
         let spot_effects = self.store.vehicle_spot_effects(&b, &spec).unwrap_or_default();
         let damage = match self.store.vehicle_damage(&b) {
             Ok(d) => d.map(Arc::new),
@@ -473,6 +482,7 @@ impl Worker {
             wheels: Vec::new(),
             handling,
             engine,
+            competitor_engine,
             damage,
             impact_graph,
             spot_effects,

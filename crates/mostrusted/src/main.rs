@@ -9,6 +9,7 @@ mod audio;
 mod bench;
 mod camera;
 mod car_anim;
+mod car_audio;
 mod chassis;
 mod chevron;
 use mw_handling::{drift, drivetrain, tyre};
@@ -704,6 +705,7 @@ fn main() -> anyhow::Result<()> {
             settings: settings::load(cli.volume.as_deref()),
             open: cli.show_settings,
         })
+        .add_plugins(car_audio::CarAudioPlugin)
         .add_plugins(audio::GameAudioPlugin {
             music: !cli.no_music
                 && !cli.mute
