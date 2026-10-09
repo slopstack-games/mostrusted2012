@@ -428,7 +428,10 @@ impl Plugin for PropsPlugin {
             .init_resource::<PropSounds>()
             .add_message::<PropImpact>()
             .add_systems(FixedPostUpdate, prop_contacts.before(PhysicsSystems::StepSimulation))
-            .add_systems(FixedPostUpdate, (unpin_props, smash_compounds).chain().after(PhysicsSystems::StepSimulation))
+            .add_systems(
+                FixedPostUpdate,
+                (unpin_props, smash_compounds, prop_world_sounds).chain().after(PhysicsSystems::StepSimulation),
+            )
             .add_systems(Update, (index_props, reset_far_props, stream_props, track_car_surface, prop_sounds).chain());
     }
 }
@@ -1166,6 +1169,57 @@ type PhysicsComponents = (
     AngularDamping,
     ActiveCollisionHooks,
 );
+
+/// Distance (m) from the player's car within which a loose prop's knock against the world is heard. Model
+/// decision: the impact sounds are played without 3D placement (`prop_sounds`).
+const WORLD_SOUND_DISTANCE: f32 = 40.0;
+
+/// A knocked prop (or a compound's part) landing on the world plays its impact sound (`FUN_0054c680`: the
+/// object's `WCPlaySoundBehaviour`, or "World_Prop_Collision" without one, not played here; then 0.35 s quiet).
+/// Model decision: the game's threshold is a float in an audio object (+0x94 of the handle at +0xb270), not read;
+/// the speed the contact takes off the prop (normal impulse / mass) stands in for it, with the car contacts'
+/// [`IMPACT_SOUND_SPEED`].
+fn prop_world_sounds(
+    time: Res<Time>,
+    collisions: Collisions,
+    player: Query<&GlobalTransform, (With<Car>, With<crate::drive::Player>)>,
+    mut props: Query<(Entity, &mut PropBody, &Position)>,
+    world: Query<(), (Without<PropBody>, Without<Car>, Without<crate::traffic::TrafficBody>)>,
+    mut impacts: MessageWriter<PropImpact>,
+) {
+    let Ok(player) = player.single() else { return };
+    let player = player.translation();
+    let now = time.elapsed_secs();
+    for (e, mut prop, pos) in &mut props {
+        if prop.pinned || prop.physics.impact_sound.is_none() || pos.0.distance(player) > WORLD_SOUND_DISTANCE {
+            continue;
+        }
+        if now - prop.last_impact <= IMPACT_SOUND_GAP || prop.physics.mass <= 0.0 {
+            continue;
+        }
+        let hit = collisions
+            .collisions_with(e)
+            .filter(|p| world.contains(if p.collider1 == e { p.collider2 } else { p.collider1 }))
+            .flat_map(|p| p.manifolds.iter().map(move |m| (m, p.collider1 == e)))
+            .map(|(m, first)| (m.total_normal_impulse(), if first { -m.normal } else { m.normal }, m.points.first()))
+            .max_by(|a, b| a.0.total_cmp(&b.0));
+        let Some((impulse, normal, point)) = hit else { continue };
+        let speed = impulse / prop.physics.mass;
+        if speed < IMPACT_SOUND_SPEED {
+            continue;
+        }
+        prop.last_impact = now;
+        impacts.write(PropImpact {
+            position: point.map_or(pos.0, |p| p.point),
+            normal,
+            velocity: Vec3::ZERO,
+            closing_speed: speed,
+            effect: None,
+            sound: prop.physics.impact_sound,
+            by_player: true,
+        });
+    }
+}
 
 /// The largest contact force (N) on a body this step: its avian contact pairs (the world, traffic, other props)
 /// and a race car's contacts from [`prop_contacts`] (the game compares the world-contact record and each pair
