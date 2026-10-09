@@ -114,7 +114,10 @@ struct TrafficSettings {
 
 /// The data, loaded on a background thread.
 #[derive(Resource)]
-struct DataJob(std::sync::Mutex<Receiver<Option<(Arc<TrafficData>, Option<EventTraffic>)>>>);
+struct DataJob(std::sync::Mutex<Receiver<Option<LoadedTraffic>>>);
+
+/// The traffic data and the event's traffic setting, as the background job sends them.
+type LoadedTraffic = (Arc<TrafficData>, Option<EventTraffic>);
 
 /// What an event asks of the traffic (`FUN_0070caa0`, offline branch): `TrafficEnabled` (+0xf0), and the
 /// density base: the event's `ce4961e7` (+0xb0) when its `90f52617` (+0xf1) is set, else the hour-of-day

@@ -127,7 +127,7 @@ pub fn run(store: &AssetStore, bundles: &[String], verbose: bool) -> Result<()> 
                             unskinned += m.mesh.indices.len() / 3;
                             continue;
                         };
-                        for t in m.mesh.indices.chunks_exact(3) {
+                        for t in m.mesh.indices.as_chunks::<3>().0 {
                             let v = t[0] as usize;
                             let k = (0..4).max_by(|&a, &b| w[v][a].total_cmp(&w[v][b])).unwrap_or(0);
                             *per_bone.entry(j[v][k]).or_default() += 1;
@@ -179,6 +179,7 @@ pub fn run(store: &AssetStore, bundles: &[String], verbose: bool) -> Result<()> 
 
 /// The low steep faces (kerbs, steps) within `r` of (`x`, `z`): triangles steeper than 45° whose vertical extent
 /// is under 0.5 m, nearest first (at most 40), with the height they span, their surface and horizontal facing.
+#[allow(clippy::type_complexity)]
 fn steps_near(store: &AssetStore, [x, z, r]: [f32; 3]) -> Result<()> {
     use mw_bundle::ResourceType;
     use mw_formats::CollisionTag;

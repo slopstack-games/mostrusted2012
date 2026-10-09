@@ -113,6 +113,7 @@ impl Plugin for FrameLogPlugin {
                     Render,
                     (|m: Res<RenderMarks>| {
                         let now = Instant::now();
+                        #[allow(clippy::needless_range_loop)]
                         for i in 0..5 {
                             let (Some(a), b) = (m.0[i], if i < 4 { m.0[i + 1] } else { Some(now) }) else {
                                 continue;
@@ -172,7 +173,7 @@ fn write_line(
     );
     if let Ok(mut out) = m.out.lock() {
         let _ = writeln!(out, "{line}");
-        if m.frame % 300 == 0 {
+        if m.frame.is_multiple_of(300) {
             let _ = out.flush();
         }
     }

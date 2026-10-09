@@ -312,6 +312,7 @@ fn spawn_menu(mut commands: Commands, menu: Res<CarMenu>) {
 }
 
 /// Tab / F1 / Start / Select open and close the menu.
+#[allow(clippy::too_many_arguments)]
 fn toggle_menu(
     keys: Res<ButtonInput<KeyCode>>,
     pads: Query<&Gamepad>,

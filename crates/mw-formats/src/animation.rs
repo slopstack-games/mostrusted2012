@@ -242,9 +242,9 @@ impl Animation {
         let channels: Vec<u8> = bones
             .iter()
             .map(|&b| {
-                (t_map[b].is_some() as u8) * CHANNEL_TRANSLATION
-                    | (r_map[b].is_some() as u8) * CHANNEL_ROTATION
-                    | (s_map[b].is_some() as u8) * CHANNEL_SCALE
+                ((t_map[b].is_some() as u8) * CHANNEL_TRANSLATION)
+                    | ((r_map[b].is_some() as u8) * CHANNEL_ROTATION)
+                    | ((s_map[b].is_some() as u8) * CHANNEL_SCALE)
             })
             .collect();
         let mut out = Vec::with_capacity(frames);

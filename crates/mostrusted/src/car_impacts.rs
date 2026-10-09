@@ -149,7 +149,7 @@ fn location(p: &Party, point: Vec3) -> u8 {
     let local = p.rotation.inverse() * (point - p.position) - p.centre;
     let q = local / p.half.max(Vec3::splat(1e-3));
     let m = q.abs().max_element();
-    if !(m > f32::EPSILON) {
+    if m.is_nan() || m <= f32::EPSILON {
         return 10;
     }
     let (x, y, z) = (q.x / m, q.y / m, q.z / m);
@@ -245,7 +245,7 @@ fn race_damage(data: &CarImpactData, a: &Party, b: &Party, loc_a: u8, loc_b: u8,
     };
     let (pa, pb) = (share(wa, wd.dot(da)), share(wb, -wd.dot(db)));
     let sum = pa + pb;
-    if !(sum.abs() > 0.0) {
+    if sum.is_nan() || sum == 0.0 {
         return Damage::default();
     }
     let base = data.graphs.race_cars.damage(m);
@@ -565,6 +565,7 @@ fn evaluate_impacts(
 }
 
 /// Keep every car body's velocity for the next step's contacts.
+#[allow(clippy::type_complexity)]
 fn remember_velocities(
     mut commands: Commands,
     bodies: Query<(Entity, &LinearVelocity, Option<&mut StepVelocity>), Or<(With<Car>, With<TrafficCar>)>>,

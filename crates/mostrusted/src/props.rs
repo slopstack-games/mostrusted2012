@@ -527,6 +527,7 @@ fn grid_cell(p: Vec3) -> (i32, i32) {
 }
 
 /// Add new props to the grid.
+#[allow(clippy::type_complexity)]
 fn index_props(
     mut grid: ResMut<PropGrid>,
     props: Query<(Entity, &PropBody), (Added<PropBody>, Without<CompoundPiece>)>,
@@ -1199,6 +1200,7 @@ const WORLD_SOUND_DISTANCE: f32 = 40.0;
 /// Model decision: the game's threshold is a float in an audio object (+0x94 of the handle at +0xb270), not read;
 /// the speed the contact takes off the prop (normal impulse / mass) stands in for it, with the car contacts'
 /// [`IMPACT_SOUND_SPEED`].
+#[allow(clippy::type_complexity)]
 fn prop_world_sounds(
     time: Res<Time>,
     collisions: Collisions,

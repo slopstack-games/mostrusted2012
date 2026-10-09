@@ -265,7 +265,6 @@ fn contacts(
             }
         }
         let Some(point) = point else { continue };
-        let point = Vec3::from(point);
         for (me, other) in [(a, b), (b, a)] {
             match (me, other) {
                 (Body::Traffic(e, true), Body::World) => {
