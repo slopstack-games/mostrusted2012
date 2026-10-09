@@ -359,7 +359,15 @@ enum Cmd {
     },
     /// The collision surface list (`HAWAII/SURFACELIST.BNDL`) with each surface's triangle count and
     /// collision flags over the track units.
-    Surfaces,
+    Surfaces {
+        /// `x,z[,radius]`: list the surfaces of the triangles around this point instead (radius 30 m): per
+        /// surface the triangle count and the nearest triangle's centre, to find a spot to drive on.
+        #[arg(long, allow_hyphen_values = true)]
+        near: Option<String>,
+        /// With `--near`: list the 20 m cells with the most triangles of this surface index instead.
+        #[arg(long)]
+        find: Option<u8>,
+    },
     /// ICE camera takes (`CAMERAS.BNDL`, `mw_formats::camera_take`): one line each, or one take (name,
     /// UniqueId or resource id) with its channel layout and the camera evaluated every `--step` seconds.
     CameraTake {
@@ -687,7 +695,20 @@ fn main() -> Result<()> {
                 println!("torque (rpm:Nm): {}", samples.join("  "));
             }
         }
-        Cmd::Surfaces => props::surfaces(&AssetStore::new(game)?)?,
+        Cmd::Surfaces { near, find } => {
+            let near = match near.as_deref() {
+                Some(n) => {
+                    let v: Vec<f32> = n.split(',').map(|x| x.trim().parse()).collect::<Result<_, _>>()?;
+                    match v[..] {
+                        [x, z] => Some([x, z, 30.0]),
+                        [x, z, r] => Some([x, z, r]),
+                        _ => anyhow::bail!("--near expects x,z[,radius]"),
+                    }
+                }
+                None => None,
+            };
+            props::surfaces(&AssetStore::new(game)?, near, find)?
+        }
         Cmd::CameraTake { take, step } => {
             camera_take::run(&open_bundle(&game, "CAMERAS.BNDL")?, take.as_deref(), step)?
         }

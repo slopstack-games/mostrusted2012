@@ -1319,7 +1319,8 @@ struct WheelSurface {
 impl WheelSurface {
     /// The surface a wheel's ray (`origin`, `dir`, `reach`) hit on `entity`. World colliders carry per-triangle
     /// surface tags; anything else (the flat test track) counts as the game's `Surfaces.Default_surface`, the
-    /// list's first entry. Without a surface list at all the tyre gets full grip and no drag.
+    /// list's first entry (or the `--track-surface` entry). Without a surface list at all the tyre gets full grip
+    /// and no drag.
     fn at(
         surfaces: &crate::props::WorldSurfaces,
         world_tags: &Query<(&Collider, &crate::props::SurfaceTags)>,
@@ -1333,7 +1334,7 @@ impl WheelSurface {
             .ok()
             .and_then(|(collider, tags)| surfaces.surface_at(collider, tags, origin, *dir, reach))
             .and_then(|hit| hit.surface);
-        let info = tagged.or_else(|| surfaces.list.first().cloned());
+        let info = tagged.or_else(|| surfaces.list.get(surfaces.untagged).or(surfaces.list.first()).cloned());
         let base = info.as_ref().and_then(|s| s.grip).unwrap_or(1.0);
         let uid = info.as_ref().and_then(|s| s.physics_uid);
         let link = uid.and_then(|u| p.surface_links.iter().find(|l| l.surfaces.contains(&u)));

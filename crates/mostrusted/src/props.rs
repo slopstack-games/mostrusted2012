@@ -449,6 +449,9 @@ pub struct SurfaceTags(pub Arc<Vec<u32>>);
 #[derive(Resource, Default)]
 pub struct WorldSurfaces {
     pub list: Vec<SurfaceInfo>,
+    /// The list entry for ground without surface tags (the flat test track): 0, the game's `Default_surface`,
+    /// unless `--track-surface` picks another.
+    pub untagged: usize,
 }
 
 /// What a ray hit: the decoded collision tag and the surface entry it names.
