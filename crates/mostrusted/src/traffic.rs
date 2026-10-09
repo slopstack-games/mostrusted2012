@@ -7,7 +7,10 @@
 //! 1. **Active area** (`FUN_005f0270`, `FUN_0060c9f0`): the hull cell the player is in plus its neighbour list.
 //!    Newly active hulls are filled with cars along their lanes (`FUN_0060db90` → `FUN_0060ce20` →
 //!    `FUN_0060afb0`); cars whose hull left the area are removed.
-//! 2. **Density multiplier** (`FUN_005f0780`): `sys[0x80]` (4.78) × the player-speed ramp (×1.2 at ≤ 20 mph).
+//! 2. **Density multiplier** (`FUN_005f0780`): the base `world+0xa2b74` × the player-speed ramp (×1.2 at ≤ 20
+//!    mph). The event sets the base (`FUN_0070caa0`, message 4): its `ce4961e7` density (1 in free drive, 0.1–1 in
+//!    races), or the hour-of-day table when its `90f52617` is clear (`FUN_006e6380`); `TrafficEnabled` off clears
+//!    the traffic (message 0xf). `sys[0x80]` (4.78) is only the default before an event sets it.
 //! 3. **Decisions** (`FUN_005fc220` → `FUN_005ea6a0` / `FUN_00617d00`): the held stop line ahead
 //!    (`FUN_005f0d90`), the car ahead (`FUN_005f1380`), the nearest obstacle (the player, crashed traffic) in a
 //!    45° cone up to 50 m (`FUN_00511540`), scored with the fuzzy envelopes; the best option sets a mode, a
@@ -19,8 +22,9 @@
 //!    advance along the rungs, the route through junctions (least loaded span, `FUN_00618470`, planned 25 m
 //!    ahead by `FUN_005fc020`); a car leaving the area or the network is removed.
 //! 6. **Traffic lights** (`FUN_00605d30`): each junction cycles its phases; a phase's mask holds stop lines.
-//! 7. **Load budget** (`FUN_005fd6a0`): cars within 60 m count 30 (crashed) / 20 (moving) / 5 (slower than
-//!    6 m/s); at 200 or more the farthest is removed every 0.5 s.
+//! 7. **Load budget** (`FUN_005fd6a0`): only crashing cars count (the cars with a crash record, mask
+//!    `world+0x1afe8`): 30 each within 60 m of the player; at 200 or more spawning stops and the farthest crashing
+//!    car is removed every 0.5 s.
 //!
 //! Lane followers are kinematic bodies (moved by velocity to the lane pose). A dynamic body touching one (the
 //! player's car, a crashed traffic car) turns it into a dynamic rigid body with the car's mass and its lane
@@ -110,7 +114,27 @@ struct TrafficSettings {
 
 /// The data, loaded on a background thread.
 #[derive(Resource)]
-struct DataJob(std::sync::Mutex<Receiver<Option<Arc<TrafficData>>>>);
+struct DataJob(std::sync::Mutex<Receiver<Option<(Arc<TrafficData>, Option<EventTraffic>)>>>);
+
+/// What an event asks of the traffic (`FUN_0070caa0`, offline branch): `TrafficEnabled` (+0xf0), and the
+/// density base: the event's `ce4961e7` (+0xb0) when its `90f52617` (+0xf1) is set, else the hour-of-day
+/// table (`TrafficSystemConfig` +0x0c, indexed by the game's hour, re-sent on each new hour by `FUN_006e6380`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EventTraffic {
+    pub enabled: bool,
+    /// `None`: by the hour.
+    pub density: Option<f32>,
+}
+
+impl EventTraffic {
+    pub fn of(event: &mw_assets::events::Event) -> Self {
+        Self { enabled: event.traffic_enabled, density: event.traffic_density_fixed.then_some(event.traffic_density) }
+    }
+}
+
+/// Free drive (game mode 390145): every free-drive event has density 1, fixed, traffic on; the snapshots of
+/// free roam read 1.0 at `world+0xa2b74` (research log 2026-10-09).
+const FREE_DRIVE_MODE: u32 = 390145;
 
 /// Marks a lane follower's collider: `slot` is its index in [`TrafficSystem::cars`], `serial` tells reused
 /// slots apart. The contact hook (`props::PropHooks`) adds [`TrafficHit`] when a dynamic body touches it.
@@ -307,6 +331,12 @@ pub struct TrafficSystem {
     hulls: HashMap<u16, HullState>,
     emitters: Vec<Emitter>,
     emitter_phase: f32,
+    /// Density base (`world+0xa2b74`): set by the event (message 4), `sys[0x80]` until then.
+    base: f32,
+    /// The event setting applied last, the free-drive one, and the hour the base was taken for.
+    event: Option<EventTraffic>,
+    free_drive: Option<EventTraffic>,
+    hour: usize,
     /// Density multiplier (`world+0xa2b7c`).
     multiplier: f32,
     load: f32,
@@ -324,10 +354,15 @@ pub struct TrafficSystem {
 }
 
 impl TrafficSystem {
-    fn new(data: Arc<TrafficData>, density_scale: f32) -> Self {
+    fn new(data: Arc<TrafficData>, free_drive: Option<EventTraffic>, density_scale: f32) -> Self {
         let n_hulls = data.lanes.hulls.len();
         let n_vehicles = data.vehicles.len();
         Self {
+            // The reset value (`FUN_005e9a40`: `world+0xa2b74` = `+0xa2b70` = `sys[0x80]`).
+            base: data.system.density_base,
+            event: None,
+            free_drive,
+            hour: 0,
             data,
             rng: GameRng::new(0x2545_f491_4f6c_dd1d),
             cars: vec![None; MAX_CARS],
@@ -925,7 +960,14 @@ fn start_loading(
                     None
                 }
             };
-            let _ = tx.send(data);
+            let free_drive = match store.events() {
+                Ok(ev) => ev.events.iter().find(|e| e.game_mode == FREE_DRIVE_MODE).map(EventTraffic::of),
+                Err(e) => {
+                    warn!("traffic: no events ({e}); the density stays at the default base");
+                    None
+                }
+            };
+            let _ = tx.send(data.map(|d| (d, free_drive)));
         })
         .expect("spawn traffic thread");
     commands.insert_resource(DataJob(std::sync::Mutex::new(rx)));
@@ -941,14 +983,15 @@ fn receive_data(
         return;
     }
     let Some(job) = job else { return };
-    let Ok(Some(data)) = job.0.lock().unwrap().try_recv() else { return };
+    let Ok(Some((data, free_drive))) = job.0.lock().unwrap().try_recv() else { return };
     info!(
-        "traffic: {} hulls, {} vehicle types, density ×{}",
+        "traffic: {} hulls, {} vehicle types, free drive {:?}, density ×{}",
         data.lanes.hulls.len(),
         data.vehicles.len(),
-        data.system.density_base * settings.density
+        free_drive,
+        settings.density
     );
-    commands.insert_resource(TrafficSystem::new(data, settings.density));
+    commands.insert_resource(TrafficSystem::new(data, free_drive, settings.density));
 }
 
 /// Point-in-polygon on a hull cell's `[x, z]` outline.
@@ -976,6 +1019,8 @@ fn traffic_tick(
     player: PlayerQuery,
     camera: Query<&GlobalTransform, crate::MainCamera>,
     crashed_q: Query<(&Transform, &LinearVelocity), With<TrafficCar>>,
+    race: Option<Res<crate::race::RaceState>>,
+    env: Option<Res<crate::weather::EnvironmentState>>,
 ) {
     let Some(mut sys) = system else { return };
     let sys = &mut *sys;
@@ -984,6 +1029,13 @@ fn traffic_tick(
         return;
     }
     let started = std::time::Instant::now();
+    // The game's hour (`FUN_00897980`): the whole hour of the time of day.
+    let hour = env.map_or(12, |e| e.want.hour.rem_euclid(24.0) as usize % 24);
+    let want = match &race {
+        Some(r) => Some(EventTraffic::of(&r.event)),
+        None => sys.free_drive,
+    };
+    apply_event(sys, want, hour, &mut commands);
     tick(sys, &mut commands, dt, &player, &camera, &crashed_q);
     sys.tick_time += started.elapsed().as_secs_f64();
     sys.ticks += 1;
@@ -1022,7 +1074,7 @@ fn tick(
     let s = sys.data.system.clone();
     let speed_mph = player_vel.length() / MPH;
     let t = ((speed_mph - s.fast_mph) / (s.slow_mph - s.fast_mph)).clamp(0.0, 1.0);
-    sys.multiplier = s.density_base * (s.fast_factor + (s.slow_factor - s.fast_factor) * t) * sys.density_scale;
+    sys.multiplier = sys.base * (s.fast_factor + (s.slow_factor - s.fast_factor) * t) * sys.density_scale;
 
     // The active area.
     update_area(sys, commands, focus);
@@ -1087,6 +1139,36 @@ fn tick(
 
     // 7. The load budget.
     budget(sys, focus, dt, commands);
+}
+
+/// The event's traffic setting (`FUN_0070caa0` at the event's start, `FUN_006e6380` on each new hour; the traffic
+/// system receives them as messages 4 and 0xf in `FUN_0060a380`).
+fn apply_event(sys: &mut TrafficSystem, want: Option<EventTraffic>, hour: usize, commands: &mut Commands) {
+    let Some(want) = want else { return };
+    let hours = &sys.data.system.hours;
+    let by_hour = |h: usize| hours.get(h).copied().unwrap_or(sys.data.system.density_base);
+    if sys.event != Some(want) {
+        sys.event = Some(want);
+        sys.hour = hour;
+        if !want.enabled {
+            // Message 0xf: base 0 and a restart of the system (`FUN_00615020`): every car goes.
+            sys.base = 0.0;
+            for i in 0..MAX_CARS {
+                remove_car(sys, i, commands);
+            }
+            for c in std::mem::take(&mut sys.crashed) {
+                commands.entity(c.entity).despawn();
+                sys.removed += 1;
+            }
+        } else {
+            sys.base = want.density.unwrap_or_else(|| by_hour(hour));
+        }
+        info!("traffic: event setting {want:?} at hour {hour}: base {:.2}", sys.base);
+    } else if want.enabled && want.density.is_none() && sys.hour != hour {
+        sys.hour = hour;
+        sys.base = by_hour(hour);
+        info!("traffic: hour {hour}: base {:.2}", sys.base);
+    }
 }
 
 /// Active hull set, hull population and removal of cars that left it (`FUN_005f0270`, `FUN_0060c9f0`).
@@ -1472,30 +1554,22 @@ fn cycle_lights(sys: &mut TrafficSystem, dt: f32) {
     }
 }
 
-/// The load budget (`FUN_005fd6a0`).
+/// The load budget (`FUN_005fd6a0`). It walks the slots set in both the live mask (`world+0x1af40`) and the
+/// crash-record mask (`world+0x1afe8`, set by `FUN_0061cf50` when a physics contact promotes a car,
+/// `FUN_0060c3a0`): lane followers never count (both free-roam snapshots: no crash records, load 0 with 3 cars
+/// within 60 m). A crashing car within 60 m adds 30 when physical (record +0x1d2), else 5 / 20 by its speed;
+/// ours are all physical. The farthest crashing car, at any distance, is the one removed.
 fn budget(sys: &mut TrafficSystem, focus: Vec3, dt: f32, commands: &mut Commands) {
     let s = &sys.data.system;
     let mut load = 0.0;
-    let mut farthest: Option<(f32, Option<usize>, Option<Entity>)> = None;
-    for (i, c) in sys.cars.iter().enumerate() {
-        let Some(c) = c else { continue };
-        let d = c.position.distance(focus);
-        if d > LOAD_RADIUS {
-            continue;
-        }
-        load += if c.speed < s.slow_speed { s.load_slow } else { s.load_moving };
-        if farthest.is_none_or(|(f, _, _)| d > f) {
-            farthest = Some((d, Some(i), None));
-        }
-    }
+    let mut farthest: Option<(f32, Entity)> = None;
     for c in &sys.crashed {
         let d = c.position.distance(focus);
-        if d > LOAD_RADIUS {
-            continue;
+        if d <= LOAD_RADIUS {
+            load += s.load_physical;
         }
-        load += s.load_physical;
-        if farthest.is_none_or(|(f, _, _)| d > f) {
-            farthest = Some((d, None, Some(c.entity)));
+        if farthest.is_none_or(|(f, _)| d > f) {
+            farthest = Some((d, c.entity));
         }
     }
     sys.load = load;
@@ -1507,14 +1581,10 @@ fn budget(sys: &mut TrafficSystem, focus: Vec3, dt: f32, commands: &mut Commands
         return;
     }
     sys.cull_timer = s.cull_cooldown;
-    match farthest {
-        Some((_, Some(i), _)) => remove_car(sys, i, commands),
-        Some((_, None, Some(e))) => {
-            sys.crashed.retain(|c| c.entity != e);
-            commands.entity(e).despawn();
-            sys.removed += 1;
-        }
-        _ => {}
+    if let Some((_, e)) = farthest {
+        sys.crashed.retain(|c| c.entity != e);
+        commands.entity(e).despawn();
+        sys.removed += 1;
     }
 }
 
@@ -1800,6 +1870,21 @@ fn count_log(
     sys.tick_time = 0.0;
     sys.ticks = 0;
     let (lane, crashed) = sys.counts();
+    // Lane followers within fixed radii of the player, to compare with the original's vehicle table
+    // (research log 2026-10-09, "traffic density").
+    if let Some((t, _)) = player.iter().next() {
+        let within = |r: f32| sys.cars.iter().flatten().filter(|c| c.position.distance(t.translation) <= r).count();
+        info!(
+            "traffic within: 100 m {}, 200 m {}, 250 m {}, 400 m {}, 600 m {} (base {:.2}, multiplier {:.2})",
+            within(100.0),
+            within(200.0),
+            within(250.0),
+            within(400.0),
+            within(600.0),
+            sys.base,
+            sys.multiplier
+        );
+    }
     let modes = sys.cars.iter().flatten().fold([0usize; 6], |mut m, c| {
         m[c.mode.min(5) as usize] += 1;
         m

@@ -29,6 +29,7 @@
 //! | | 0xc4 | `d4b38a64` `AlternateRoutes`[] | `Checkpoint` + alternative checkpoint ids |
 //! | | 0x5c | `AllowedVehicleList` | id of a `Gameplay.AllowedVehicleList` (GAMEPLAY.BNDL) |
 //! | | 0xec / 0xf0 | `NitrousAllowed` / `TrafficEnabled` | bools |
+//! | | 0xb0 / 0xf1 | `ce4961e7` / `90f52617` | traffic density base / use it (else the hour-of-day table) |
 //! | | 0xf6 | `Laps` u8 | 1 for sprints, 2–3 for circuits |
 //! | | 0x60 / 0x70 / 0x74 | `AROutro` / `EventIntro` / `EventOutro` | sequence UniqueIds (`mw_assets::sequence`) |
 //! | | 0x78 / 0x80 | `FeedbackMessageGroup` / `IntroMessageGroup` | feedback group bundles (`EN_US/FEEDBACKGROUPS/<id>.BNDL`) |
@@ -62,6 +63,8 @@ mod h {
     pub const ALLOWED_VEHICLE_LIST: u32 = field_hash("AllowedVehicleList");
     pub const NITROUS_ALLOWED: u32 = field_hash("NitrousAllowed");
     pub const TRAFFIC_ENABLED: u32 = field_hash("TrafficEnabled");
+    pub const TRAFFIC_DENSITY: u32 = 0xce49_61e7;
+    pub const TRAFFIC_DENSITY_FIXED: u32 = 0x90f5_2617;
     pub const AI_PLAYERS: u32 = 0x1795_ca2a;
     pub const AI_PLAYER_TYPE: u32 = field_hash("AIPlayerType");
     pub const PLACEMENT: u32 = field_hash("Placement");
@@ -270,7 +273,14 @@ pub struct Event {
     pub target_speed: Vec<f32>,
     pub target_time: Vec<f32>,
     pub nitrous_allowed: bool,
+    /// `TrafficEnabled` (+0xf0): off, the event clears the traffic (message 0xf, `FUN_0070caa0`).
     pub traffic_enabled: bool,
+    /// `ce4961e7` (+0xb0): the traffic density base for the event (`world+0xa2b74`, multiplies every flow's
+    /// `Density`; message 4 from `FUN_0070caa0`). 1 in free drive, 0.1–1 in races.
+    pub traffic_density: f32,
+    /// `90f52617` (+0xf1): use `traffic_density`; when clear, the density follows the hour of day
+    /// (`TrafficSystemConfig` +0x0c, re-sent when the hour changes, `FUN_006e6380`). Set in all but two events.
+    pub traffic_density_fixed: bool,
     /// `c8f26580` (+0xe9): the event is won only in first place (else in the top three; `FUN_006b9d00`).
     /// Set on the Most Wanted races.
     pub first_place_only: bool,
@@ -529,6 +539,8 @@ impl AssetStore {
                         first_place_only: boolean(o.get(h::FIRST_PLACE_ONLY)),
                         skip_player_car_ai: boolean(o.get(h::SKIP_PLAYER_CAR_AI)),
                         traffic_enabled: boolean(o.get(h::TRAFFIC_ENABLED)),
+                        traffic_density: float(o.get(h::TRAFFIC_DENSITY)),
+                        traffic_density_fixed: boolean(o.get(h::TRAFFIC_DENSITY_FIXED)),
                         event_intro: uint(o.get(h::EVENT_INTRO)),
                         event_outro: uint(o.get(h::EVENT_OUTRO)),
                         ar_outro: uint(o.get(h::AR_OUTRO)),
