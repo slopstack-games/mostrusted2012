@@ -138,6 +138,7 @@ pub fn damage_grid(levels: impl Iterator<Item = (&'static str, f32)>, scale: f32
 }
 
 /// Give every new car its grime and its own copies of its paint materials.
+#[allow(clippy::type_complexity)]
 fn attach_paint(
     mut commands: Commands,
     cars: Query<(Entity, Option<&Player>, Option<&ScratchScale>), (With<Car>, Without<CarPaint>)>,

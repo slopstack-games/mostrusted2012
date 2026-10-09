@@ -458,7 +458,7 @@ pub fn column(store: &AssetStore, at: &str) -> Result<()> {
             zones.zone_at(x, z).map(|z| z.id),
             zones.nearest(x, z).map(|z| z.id)
         );
-        if let Some(list) = std::env::var("MW_COLUMN_ZONES").ok() {
+        if let Ok(list) = std::env::var("MW_COLUMN_ZONES") {
             for id in list.split(',').filter_map(|s| s.parse::<u32>().ok()) {
                 if let Some(zone) = zones.zones.iter().find(|z| z.id == id) {
                     let nb: Vec<u32> = zone.neighbours.iter().map(|&(i, f)| zones.zones[i].id * 10 + f).collect();
@@ -515,7 +515,7 @@ pub fn column(store: &AssetStore, at: &str) -> Result<()> {
             for sm in &meshes {
                 let pos: Vec<[f32; 3]> = sm.mesh.positions.iter().map(|&q| world(q)).collect();
                 let mut hits = Vec::new();
-                for t in sm.mesh.indices.chunks_exact(3) {
+                for t in sm.mesh.indices.as_chunks::<3>().0 {
                     let (Some(&a), Some(&b), Some(&c)) =
                         (pos.get(t[0] as usize), pos.get(t[1] as usize), pos.get(t[2] as usize))
                     else {

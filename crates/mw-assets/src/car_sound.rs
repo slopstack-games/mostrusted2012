@@ -333,6 +333,9 @@ pub fn traffic_normalised_speed(forward_speed: f32, top_speed_mph: f32) -> f32 {
     (forward_speed.abs() * 2.236_94 / top_speed_mph.max(1.0)).clamp(0.0, 1.0)
 }
 
+/// One effect binding's items: (start, end, value of property 0).
+type EffectItems = Vec<(f32, f32, ModValue)>;
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum TrafficKind {
     Rpm,
@@ -363,7 +366,7 @@ pub struct TrafficEngineDriver {
     params: Arc<Params>,
     slots: Vec<(usize, TrafficKind)>,
     /// Effect items: (sequence binding kind, axis, (start, end, value of property 0)).
-    effects: Vec<(TrafficKind, (f32, f32), Vec<(f32, f32, ModValue)>)>,
+    effects: Vec<(TrafficKind, (f32, f32), EffectItems)>,
     idle_rpm: f32,
     rpm: f32,
 }

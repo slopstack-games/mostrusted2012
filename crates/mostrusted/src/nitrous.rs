@@ -84,6 +84,7 @@ impl NitrousFeed {
 }
 
 #[allow(clippy::type_complexity)]
+#[allow(clippy::too_many_arguments)]
 fn feed_nitrous(
     roads: Res<Roads>,
     traffic: Option<Res<crate::traffic::TrafficSystem>>,
@@ -154,10 +155,10 @@ fn feed_nitrous(
                 }
                 let up = Vec3::Y * SLIP_RAY_HEIGHT;
                 let world = SpatialQueryFilter::default().with_mask(crate::props::GameLayer::World);
-                if let Ok(ray) = Dir3::new(d) {
-                    if spatial.cast_ray(pos + up, ray, len, true, &world).is_some() {
-                        continue;
-                    }
+                if let Ok(ray) = Dir3::new(d)
+                    && spatial.cast_ray(pos + up, ray, len, true, &world).is_some()
+                {
+                    continue;
                 }
                 best = best.max(dhat.dot(ov.normalize()));
             }

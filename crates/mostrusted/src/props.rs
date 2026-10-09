@@ -393,6 +393,7 @@ fn index_props(mut grid: ResMut<PropGrid>, props: Query<(Entity, &PropBody), Add
 
 /// Stream prop physics with the cars: tens of thousands of static bodies cost avian several ms a frame
 /// even when nothing touches them, so only props near a race car or a traffic car carry a rigid body.
+#[allow(clippy::too_many_arguments)]
 fn stream_props(
     mut commands: Commands,
     time: Res<Time>,
@@ -784,7 +785,7 @@ pub(crate) fn prop_contacts(
             let shape_rot = rot.0 * local.rotation;
             let probe = match shape.shape_scaled().as_cuboid() {
                 Some(c) => {
-                    let h = Vec3::from(c.half_extents) + Vec3::splat(margin);
+                    let h = c.half_extents + Vec3::splat(margin);
                     Collider::cuboid(2.0 * h.x, 2.0 * h.y, 2.0 * h.z)
                 }
                 None => shape.clone(),

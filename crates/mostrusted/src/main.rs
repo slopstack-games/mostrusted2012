@@ -588,7 +588,11 @@ fn main() -> anyhow::Result<()> {
     }
     if test_track {
         app.add_systems(Startup, spawn_test_track);
-        app.insert_resource(props::WorldSurfaces { list: Vec::new(), untagged: cli.track_surface, ..Default::default() });
+        app.insert_resource(props::WorldSurfaces {
+            list: Vec::new(),
+            untagged: cli.track_surface,
+            ..Default::default()
+        });
     }
     // Crash rules and the crash camera (driving only).
     if matches!(request, Request::Drive { .. }) {

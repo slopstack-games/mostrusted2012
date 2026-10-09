@@ -82,8 +82,7 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
               env: Option<Res<crate::weather::EnvironmentState>>,
               tonemap: Option<Res<crate::tonemap::GameTonemap>>| {
             let Ok(mut h) = history.lock() else { return };
-            let floats: Vec<f32> =
-                ev.data.chunks_exact(4).map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]])).collect();
+            let floats: Vec<f32> = ev.data.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
             let cells = (GRID * GRID) as usize;
             if floats.len() < cells * 4 {
                 return;
@@ -92,7 +91,7 @@ fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
             let mut white = 0;
             let mut bad = 0.0;
             let mut peak = 0.0f32;
-            for c in floats.chunks_exact(4).take(cells) {
+            for c in floats.as_chunks::<4>().0.iter().take(cells) {
                 mean += c[0];
                 white += usize::from(c[0] > 0.8);
                 bad += c[1];
