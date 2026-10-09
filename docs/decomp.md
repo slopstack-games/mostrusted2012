@@ -699,6 +699,92 @@ See the research log, "engine sound from the game code": the sound runs on its o
 harmonic multipliers come from `EngineSound2`. The Distortion and SubHarmoniser plug-ins fall in undecompiled
 gaps of the dump.
 
+## Exhaust pops and backfires (2026-10-09)
+
+- **`FUN_009b20b0`** (run by the engine-sound update `FUN_009b3030` every tick, after the gearbox `FUN_009da600`
+  and before `FUN_009aea50` refreshes the audible RPM, so it sees the previous tick's values). The audible RPM
+  `A` (vehicle +0x1f00) is `Idle_RPM + (Max_RPM − Idle_RPM) × f`, `f` (+0x1f10) the sound's RPM fraction raised
+  to `2 − a` (`FUN_009ae930` / `FUN_009aea50`, the `EngineSound2` curve terms; research log "engine sound from
+  the game code"). The car's own `Idle_RPM` / `Max_RPM` (Engine +0x2c / +0x38 through vehicle +0x4b0 /
+  +0x1d30 → +0x240, both the `Engine` struct; read live: 3609 = 1000 + 5200 × 0.5017), not a fixed 1000..8000.
+  1. `drop = max(A[t−2] − A[t−1], 0)` (+0x1eb0 keeps the previous `A`).
+  2. If the gearbox is past its start-up states (+0x1bd8 not 0 / 1), `A > 4000` (`.rdata` 0x010251e0), the
+     cruising gearbox is not in use (+0x1bdc ≠ 1) and a flag +0x1f45 is clear (set from `FUN_0069ffa0` on the
+     car's slot; not identified): `x = 1 − drop / (Max_RPM − Idle_RPM) × r × 10` (0x010250c0; `r` from
+     `FUN_00d5af50`, uniform 0..1 on the RNG at `.bss` 0x01186618). `Engine.Sound.38d82e04` (Engine +0x70) > x
+     → **backfire** (+0x1f42 = 1); else `Engine.Sound.99a16939` (+0x7c) > x → **pop** (+0x1f41 = 1).
+  3. A third flag (+0x1f43, `9305b427` at +0x74 against `1 − r`, gated by `61e24fd9` (+0x84) × a rev term
+     (`.bss` 0x01186660 = 0.4) against the gearbox throttle below 0.5) has no reader in the dump; not ported.
+  4. `GetPopProbability` (+0x1eb4, the getter `FUN_0059ee50` registered on `RaceCarEntity`, `FUN_0090d640`) =
+     `clamp(f / 0.8, 0, 1) × (1 − T)²` with `T` the gearbox throttle (+0x1aa0) and 0.8 from `.bss` 0x01186810
+     (read live).
+  The data: backfire 0.025–0.65 over the cars (0.1 on the 911, 0.65 on the BMW M3 GTR, the McLarens and the SWAT
+  van), pop 0–1 (0.9 on the 911). With our drivetrain the 911's upshifts drop at most 9 % of the rev range in a
+  tick, so it pops on upshifts but almost never backfires; the M3 GTR needs only 3.5 %.
+- **Sounds** (`FUN_005911d0` → `FUN_0058ccb0`, with the car's `EngineSound2` from the entity +0x1c / +0x20
+  → +0x48): +0x1f42 starts `Backfire_Sequence` (`EngineSound2` +0x0c) and +0x1f41 `Pop_Sequence` (+0x2c) through
+  `FUN_005866f0`, each only while its previous instance (slots +0x94 / +0x90, cleared by `FUN_00a422d0` when
+  ended) is gone. `Ignition_Sequence` (+0x1c) starts when the gearbox leaves its start-up states
+  (`FUN_0058c930`); `c62d11ac` (+0x34) is the rev limiter's (`FUN_0058cdb0`). `Gurgle_Sequence` (+0x14) and
+  `Pop_Sequence` are bound to `GetPopProbability` (items at 0.6–1 / 0.75–1); who starts the gurgle was not found.
+- **Effect group bits** (`FUN_0057a5e0`, per car, entity +0x3c8): bit 14 for two updates after a backfire
+  (entity +0x3f4 = 2, counted down when the world flag `FUN_00897b70` is up), bit 8 while the nitrous input
+  (+0x1944) is above 0 and the car is the one `FUN_006a0020` / `FUN_0069ff20` accept, bit 9 instead while the
+  nitrous mode byte +0x195b is 1, bit 20 while it is 3 (with `FUN_006a15c0(…, 13) == 2` and `FUN_008f5350`),
+  bit 19 while the engine runs (`FUN_00572c20`: gearbox state not 0 / 1), bits 0 / 4 / 6 / 7 (`0xd1`) for the
+  lights, 1 / 2 brake and reverse, 3 (+0x1c27), 15 (`0x80c7` group). `FUN_005b2740` adds bit 12 when the car is
+  wrecked and 13 for a non-zero vector of the player state; the coronas, lights and spot effects test
+  `1 << Group` against it.
+
+## Car spot effects (`FUN_005b28d0`, 2026-10-09)
+
+- Per `VehicleVfxBehaviour.SpotEffect` (0x20 bytes: effect handle +0x0c, `LocatorGroup` +0x14, `Group` +0x18,
+  `da6ac384` +0x1a, `Looping` +0x1c, `Mirror` +0x1d): the locator group comes from the car's
+  `VehicleGraphicsSpec` locator table (`FUN_0057c4b0` → `FUN_0042b870`: `{count, ids, {n, locators, ?}}`, a
+  linear search falling back to the first group; locators are a quaternion and a position, 0x20 bytes).
+  `da6ac384` gates by the world flag +0x1b934 (`FUN_008979d0`): 0 always, 1 while clear, 2 while set. One
+  effect instance per locator (twice with `Mirror`: the second pass negates the transform's X axis).
+- An instance is created (`FUN_0049f7c0`) when none is alive and either `Looping` or the group bit rose since
+  the last update (the previous mask is kept at +0x34); while alive its record gets the transform (vehicle ×
+  locator), the velocity at the locator (`v + ω × (p − centre)`), the plane under the car and `IsEmitting` =
+  the group bit. Groups 10–12 that switch off instead flip a "stop" bit in the record.
+- `FUN_0049bc60` copies the record into the effect's named parameters: `Transform`, `Velocity` (+0x40),
+  `PreCrashVelocity` (+0x50: a vector from vtable +0x4c), **`Intensity` = the velocity's w = 1.0**
+  (`DAT_00f8a820`; three effects `0x24f27`, `0x24f28`, `0xd4fe4` scale it), `IsEmitting` = 1,
+  `ColourOverride` (+0x60), `ImpactClosingVelocity` (+0x70: entity +0x1bdc), `MovementSinceLastFrame` (+0x74: a
+  float from vtable +0x48), `VehicleParams` (+0x80..+0xac: the plane and two more vectors).
+
+## Bear particle runtime (2026-10-09)
+
+- Action kinds index a table at `.data` 0x010c2d48 (`FUN_0043f8a0`): `{name, compile, run, info}` per kind,
+  names in `.rdata` from 0x00f9d664 (`EmitterConePlus` 0x00, `EmitterCollisionMesh` 0x01, ..., `EmitterWheel`
+  0x05, `EmitterWheelContactPlus` 0x07, `InitialisePosOffset` 0x14,
+  `InitialisePosVelToWorldSpaceWithLocalTransform` 0x15, `InitialiseVelocityInheritance` 0x16,
+  `ParametricPosVelToWorldSpace` 0x1A / `…WithLocalTransform` 0x1B, `ParametricSetColourGradient` 0x1C,
+  `RenderSprite` 0x24, `RenderSpriteSubUV` 0x27, `RenderSpriteUVDistortion` 0x28, `UpdateBindings` 0x33,
+  `UpdateBindings_Wheel` 0x34, `UpdateParametricFadeOverDistance` 0x38, `UpdatePosVel` 0x3D,
+  `UpdatePosVelWithBouncePlane` 0x3E, `UpdateWheelBindings` 0x42, ... `RenderSplatter` 0x4D; full list in
+  formats.md). Several run functions are outside the dump's functions (`disas.py` on the snapshots).
+- **`UpdateBindings`** (compile `FUN_0045fc60`, run `FUN_0045ffd0`): four curves, each over an input chosen by a
+  source byte (`FUN_00448620`), plus an offset, into the layer's binding slots 1–4, then four combine steps
+  (`FUN_004492a0`) into slots 5–8. The inputs include the layer's clock, the velocity's length, the distance
+  to the camera, `Intensity`, `ImpactClosingVelocity`, `MovementSinceLastFrame` and `BearGlobalParameters`
+  fields that `FUN_004a1470` fills every frame: +0x30 the camera position, +0x64 dt, +0x74 the **player car's
+  engine load** (vehicle +0x1f20 through `FUN_0090d6d0`), +0x60 a speed × 0.44704, +0x7d = 0. The curves are
+  `Curve5` bytes ÷ 255 (`FUN_0046af80`, `FUN_0046aee0`). Table: `mw_formats::bear::Bindings`.
+- **`EmitterConePlus`** (compile `FUN_0044ccc0`, run `FUN_0044cf30`): emits only with `IsEmitting` set, the
+  layer time within a window, the squared camera distance within a window (90 000 = 300 m on the car effects)
+  and the velocity's length within a window (0–6 m/s on the exhaust smoke); the count is
+  `(rate + per_metre × |Velocity|) × dt × slot[b0]` × the distance fade, accumulated from `burst + 0.9999`
+  and rounded; speeds × `slot[b2]`, cone angles × `slot[b3]` (bytes b0..b3 at +0x70). The cone's angle maths is
+  a vectorised sincos on symmetric randoms (−0.5..0.5) further down `FUN_0044cf30`; not decoded.
+- **`ParametricSetColourGradient`** (compile `FUN_00449030`, run `FUN_004553b0`): `rgb = c.rgb × c.w`,
+  `c = rows[0] + Σ clamp(u · A_k + B_k) · rows[k+1]` with `u = frac(age · rate)`; alpha from the `Curve5`
+  (converted to the same ramp form by `FUN_0046b090`) × a binding slot. The runtime read it as a polynomial in
+  the age with the fourth column in the alpha until now.
+- `InitialisePosOffset` (0x14) keeps a particle in the emitter's space; `ParametricPosVelToWorldSpace` (0x1A /
+  0x1B) places it with the current `Transform` when it is drawn, so the exhaust flames stay on the pipes.
+
 ## Post-processing and colour grade (2026-10-06)
 
 The final post-process shaders are not in `SHADERS.BNDL`: 74 DXBC programs sit in `NFS13.exe`'s `.rdata`

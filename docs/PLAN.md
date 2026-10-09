@@ -276,8 +276,12 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    groups (`particles.rs`) and drawn with ports of `VfxParticles_Diffuse*` (lit, premultiplied, atlas frames)
    and `VfxParticles_MotionBlurSpriteUntex` (analytic motion-blurred sparks). Done: tyre smoke from sliding
    tyres, kick-up behind rolling wheels, impact spark bursts and scrape sparks from the car body's contacts
-   (`ImpactEvent`). Open: what the game feeds `WheelParams` / `Intensity` (code) and the controllers' input
-   selectors; surface ids from collision tags (dirt / grass dust; everything is tarmac now) and wet surfaces;
+   (`ImpactEvent`); the car's spot effects (`exhaust.rs`, 2026-10-09): exhaust smoke at idle, nitrous flames,
+   backfire flames from the game's pop rule (`FUN_009b20b0`), with the `UpdateBindings` controller, the cone
+   emitter, emitter-space layers and the colour gradient read from the code. Open: what the game feeds
+   `WheelParams` / `Intensity` to the wheel effects and the wheel spawners' binding slots (0x42, 0x05, 0x07);
+   the nitrous modes' groups 9 / 20 and the wreck's 12; the cone emitter's angles; `UVDistortion`; the fade
+   over distance (0x38); a capture of the original's flames; surface ids from collision tags (dirt / grass dust; everything is tarmac now) and wet surfaces;
    mesh debris renderers (0x1E/0x1F/0x22/0x23 with the bundle's debris models), light particles (0x0F/0x30),
    splatter (0x4D), super-emitters (0x2B); `OnRims`, burst tyres, spike strips, `VehicleImpacts` /
    `VehicleScrapes` for car-to-car contacts; tyre marks (`Vfx_TyreMarksNew`, `TyreMarksMaterials`); smoke
@@ -321,7 +325,8 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
 2. `[~]` Engine sound: the car's whole `EngineSound2` bank plays through a generic sequence runtime
    (`mw_audio::sequence`, built by `mw_assets::sound`, driven by `mw_assets::engine_driver`): all six always-on
    sequences (Ginsu layers, idle loops, load crossfades, bus automation), the mixer graph with its EQ /
-   distortion / sub-harmoniser / sends, pops, backfires, ignition, rev limiter, gear-change clunks; per-car
+   distortion / sub-harmoniser / sends, pops, backfires (the game's rule since 2026-10-09: `FUN_009b20b0` starts
+   `Backfire_Sequence` / `Pop_Sequence`, `GetPopProbability` binds the gurgle), ignition, rev limiter, gear-change clunks; per-car
    loudness normalised (research log "the engine plays the car's whole sound bank"). Ground truth checked
    against the raw recordings (research log "engine ground truth": decoder clean, grains are phase-aligned
    cycles, single-layer resynthesis at the recording's own floor). The game's own rules from its code (research

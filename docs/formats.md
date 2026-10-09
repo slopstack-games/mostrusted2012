@@ -120,6 +120,9 @@ InstanceList ──> Model ──(LOD state)──> Renderable ──(per mesh)�
 `VehicleGraphicsSpec` (0x106) assembles a car: body part models at the origin, plus four wheels with
 position, quaternion, scale and 2–4 part models each (tyre, rim, disc, caliper; a bitmask marks which spin).
 Right-hand wheels reuse the left-hand models mirrored on X. Layout tables are in `mw-formats/src/vehicle.rs`.
+It also holds the car's **locator groups** (+0x1C count, +0x20 ids, +0x24 `{n, locators, ?}`; a locator is a
+quaternion and a position): where its coronas, lights and spot effects (`VehicleVfxBehaviour`) sit. The 911's
+group 137267 holds the four tail pipes, turned half a turn about X so +Z leaves each pipe backwards.
 
 ### Vehicle damage (deformation)
 
@@ -401,7 +404,7 @@ See `crates/mw-audio` (decoders reimplemented from vgmstream's documentation of 
   `BandPass (Bandwidth, Frequency)`, `Distortion (Distortion, Model)`, `SubHarmoniser (Interval)`, `Delay
   (Feedback, Time)`, pans, `GinsuDspPlugIn`. `EngineSound2 { Sequences (always on), Burnout, Drift, In_air,
   Reversing and six unnamed sequence lists (gear changes), Backfire_Sequence, Gurgle_Sequence (bound to
-  GetPopProbability), Pop_Sequence, Ignition_Sequence, c62d11ac (rev limiter), mixer channel list, DspParam
+  GetPopProbability), Pop_Sequence (bound to it too; started on a pop), Ignition_Sequence, c62d11ac (rev limiter), mixer channel list, DspParam
   lists (per-car plug-in overrides), Gains (per-car channel trims), MasterGain }`. Unnamed `EngineSound2`
   floats the game's code reads (research log "engine sound from the game code"): `99d4b91e` load response
   rate, `a33d84fe` / `cb44d82d` / `913bb900` RPM-curve terms (full load / off load / alternate; audible RPM =
@@ -439,6 +442,57 @@ wet) → `SurfaceVfx` (`WheelVfx` kick-up, `PlayerWheelEffects` / `AIWheelEffect
 Shaders: `VfxParticles_Diffuse*` draw CPU-expanded, per-vertex-lit quads with premultiplied output (atlas
 frames from `NumTiles` / `EnableLooping`); `VfxParticles_MotionBlurSpriteUntex` draws sparks as moving discs
 with analytic coverage, additive. Ports: `crates/mostrusted/src/particles.wgsl`, `sparks.wgsl`.
+`VfxParticles_UVDistortion` (the exhaust smoke's) is the diffuse sprite with its UVs offset by a scrolling
+distortion texture (`UVDistortionScrollScale`); drawn without the offset here.
+
+**Action kinds** are indices into the game's action table (`.data` 0x010c2d48, names from `.rdata` 0x00f9d664):
+00 `EmitterConePlus`, 01 `EmitterCollisionMesh`, 02 `EmitterNull`, 03 `EmitterTrail`, 04 `EmitterVolume`,
+05 `EmitterWheel`, 06 `EmitterWheelContacts`, 07 `EmitterWheelContactPlus`, 08 `EmitterWheelTrack`, 09
+`EmitterWheelTracks`, 0A `Initialise2dRotation`, 0B `Initialise3dRotation`, 0C `InitialiseAgeAndLifetime`, 0D
+`InitialiseAlpha`, 0E `InitialiseAndSubmitLight`, 0F `…LocalSpace`, 10 `InitialiseBakedLighting`, 11
+`InitialiseCollisionRadius`, 12 `InitialiseRadius`, 13 `InitialiseBouncePlane`, 14 `InitialisePosOffset`, 15
+`InitialisePosVelToWorldSpaceWithLocalTransform`, 16 `InitialiseVelocityInheritance`, 17
+`ParametricApplyPerParticleAlpha`, 18 `ParametricEmitterVolume`, 19 `…SubUV`, 1A `ParametricPosVelToWorldSpace`,
+1B `…WithLocalTransform`, 1C `ParametricSetColourGradient`, 1D `ParametricSetSubUV`, 1E `Render3dSprite`, 1F
+`Render3dSpriteSubUV`, 20 `RenderCubeMapSprite`, 21 `RenderLightBeam`, 22 `RenderMesh`, 23
+`RenderMeshNoPaintColour`, 24 `RenderSprite`, 25 `RenderSpriteMotionBlur`, 26 `RenderSpriteShadowMapSubUV`, 27
+`RenderSpriteSubUV`, 28 `RenderSpriteUVDistortion`, 29 `RenderSpriteVelocity`, 2A `RenderTrail`, 2B
+`SuperEmitter`, 2C `Update2dRotation`, 2D `Update3dRotation`, 2E `…BasedOnVelocity`, 2F `UpdateAge`, 30
+`UpdateAndSubmitLight`, 31 `UpdateAxis`, 32 `UpdateAxisLocalSpace`, 33 `UpdateBindings`, 34
+`UpdateBindings_Wheel`, 35 `UpdateOccluders`, 36 `UpdateParametric2dRotationAlignToVelocity`, 37
+`UpdateParametricColour`, 38 `UpdateParametricFadeOverDistance`, 39 `UpdateParametricLighting`, 3A
+`…WithOccluders`, 3B `…WithTunnels`, 3C `UpdateParametricRadius`, 3D `UpdatePosVel`, 3E
+`UpdatePosVelWithBouncePlane`, 3F `UpdatePosVelWithVortex`, 40 `UpdatePosVelWithWorldCollision`, 41 `UpdateTrail`,
+42 `UpdateWheelBindings`, 43 `RenderSpark`, 44 `UpdateBucketBoundingBox`, 45 `FrustumCullBucket`, 46
+`FreezeOffscreen`, 47 `InitialiseRandomSeed`, 48 `UpdateParametricRandomTint`, 49 `PackVelocity`, 4A
+`UnpackVelocity`, 4B `InitialisePackedVelocity`, 4C `EmitterSplatter`, 4D `RenderSplatter`.
+
+Decoded from the game's code (research log 2026-10-09 "exhaust effects"; layouts in `mw-formats/src/bear.rs`):
+- `UpdateBindings` (0x33 / 0x34; 6 input words, curves at +0x18, scales +0x40, offsets +0x50, then the source,
+  `a`, `b` and op bytes at +0x60 / +0x64 / +0x68 / +0x6c): four curves over chosen inputs into the layer's
+  binding slots 1–4, four combine steps into 5–8 (`Bindings`). Slot 0 is never written.
+- `EmitterConePlus` (0x00): windows on the layer time (+0x10), the squared camera distance (+0x18) and the
+  velocity's length (+0x40); `IsEmitting` operand +0x50; binding slots for the rate, burst, speed and cone angles
+  in the bytes at +0x70 (`ConeEmitter`). Its particles leave along the emitter's +Z (inferred, not decoded).
+- `ParametricSetColourGradient` (0x1C): rows at +0x20, ramp `A` / `B` at +0x70 / +0x80, alpha `Curve5` at +0x90,
+  alpha slot +0x9a, tint flag +0x9b, colour / alpha rates +0x9c / +0xa0 (`Op::ColourCurve`): rgb = c.rgb × c.w.
+- `InitialisePosOffset` (0x14) + `ParametricPosVelToWorldSpace` (0x1A, or 0x1B with its own rotation and offset
+  at +0x00 / +0x10): an emitter-space layer.
+
+**Car spot effects**: `VehicleVfxBehaviour` (one per car bundle) lists `Coronas` (0x50 bytes), `Lights` (0x40)
+and `SpotEffects` (0x20: `SpotEffect` handle, `LocatorGroup`, `Group`, `da6ac384`, `Looping`, `Mirror`; counts
+`9f8c05b0` / `e41cffe1` / `4c52a051`). `LocatorGroup` ids resolve in the car's `VehicleGraphicsSpec` locator
+table. `Group` is a bit of the car's effect mask (decomp.md "Exhaust pops and backfires"); every car carries the
+same set, from `GLOBALEFFECTS.BNDL` (`mwtool genesys all --type VehicleVfxBehaviour`):
+
+| Group | Effect | Layers | Plays |
+|-------|--------|--------|-------|
+| 19 | `…24f2f` exhaust smoke (one car puts it on group 0, one adds `…f5859`) | 1, `RenderSpriteUVDistortion` | while the engine runs and the car is below 6 m/s; rate over the player's engine load |
+| 8 | `…24f34` nitrous flame | 3, emitter-space, white → deep blue (brightness 2 → 8) | while nitrous burns |
+| 14 | `…24f2d` backfire | orange glow, blue / yellow flame flickers (0.5 s window), a light | two updates per backfire |
+| 9 | `…16205b` nitrous flame + backfire flames | 7 | nitrous mode 1 (+0x195b) |
+| 20 | `…22030b` at the pipes, `…220308` at locator 1207805 | 1 each | nitrous mode 3 (+0x195b), more conditions |
+| 12 | `…24f5a`, `…14023f` at the car's centre (locator 1311228) | 5 / 8 | wrecked |
 
 - **Tyre marks**: `SurfaceVfx.TyreMarksMaterials` (`75cb5de9`) = { `eff16a09`, `Offroad`, `Road`, `Sport`, `Track` }
   `Vfx_TyreMarksNew` materials (tyre class), plus `SurfaceVfx.RimMarksMaterial`. Each material: `RunDiffuse`

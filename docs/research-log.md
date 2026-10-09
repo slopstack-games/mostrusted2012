@@ -10,6 +10,43 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-09: exhaust effects: the game's pop rule, the car spot effects, and the Bear bindings decoded
+- **Start**: no exhaust / backfire / nitrous effect name in the data, but `strings.csv` has the sound getter
+  `GetPopProbability` ("the current exhaust pop probability") on `RaceCarEntity` and `GetPrimaryExhaustTransform`.
+  The getter reads vehicle +0x1eb4; its writer `FUN_009b20b0` is the pop rule (decomp.md "Exhaust pops and
+  backfires"), run every tick by the engine-sound update. It reads `Engine.Sound` (+0x70 `38d82e04` = backfire,
+  +0x7c `99a16939` = pop; the struct was found live: vehicle +0x4b0 → the `Engine` struct, idle 1000 / max 6200
+  on the snapshot car) and sets two flags: +0x1f42 starts `Backfire_Sequence` and holds effect group 14 for two
+  updates, +0x1f41 starts `Pop_Sequence`. Constants: 4000 audible rpm, × 10, 0.8 (`.bss` 0x01186810, read live).
+- **Effects**: `VehicleVfxBehaviour.SpotEffects` (every car) name `BearEffect`s by `Group`, a bit of the car's
+  effect mask that `FUN_0057a5e0` builds (nitrous 8, backfire 14, engine running 19; formats.md table). The
+  positions are `VehicleGraphicsSpec` locator groups (+0x1C table, decoded now: the 911's group 137267 = its four
+  pipes). `FUN_005b28d0` starts each effect at each locator on the group's rising edge and passes `Intensity` = 1
+  (`FUN_0049bc60`). So the exhaust effects are `…24f2f` (smoke at idle, below 6 m/s), `…24f34` (nitrous flame)
+  and `…24f2d` (backfire: orange glow, blue and yellow flames, a light).
+- **Bear runtime**: the action kinds are an index into the game's action table, whose names (`.rdata` 0x00f9d664)
+  name every kind (formats.md). Read from the code and ported: `UpdateBindings` (0x33; the "controller": curves
+  over chosen inputs, combine ops, binding slots; one input is the player car's engine load, a
+  `BearGlobalParameters` field), `EmitterConePlus` (0x00: windows on time, camera distance and speed, rate /
+  burst / speed scaled by binding slots), emitter-space layers (0x14 + 0x1A / 0x1B: the flames ride on the pipes;
+  before they were left behind the car as a faint trail), and `ParametricSetColourGradient` (0x1C): a piecewise
+  ramp, not a polynomial, with rgb × the fourth column (brightness 2 → 8 on the nitrous flame) instead of alpha.
+  The colour gradient change applies to every effect; the tyre smoke of `--test donut` looks the same as before.
+- **Result**: 911 `--test exhaust` (full throttle through the gears, a lift, nitrous): 22 pops, 0 backfires; its
+  upshifts drop the audible rpm by at most 9 % of the rev range in a tick, the backfire needs 9 % × 1/r. The BMW
+  M3 GTR (0.65) needs 3.5 %: its run had 0 by chance (P ≈ 0.3); `MW_EXHAUST_LOG=1` prints every drop and event.
+  The shift phases are ported from the game (decomp.md "Drivetrain and brakes", checked on `ref/xkr_launch`), so
+  the 911 rarely backfiring follows from its data; the M3 GTR, MP4-12C, F1 LM and the SWAT van carry the high
+  values.
+- **Dead ends / open**: the +0x1f43 flag (no reader); who starts `Gurgle_Sequence` (bound to the pop probability;
+  played by our retrigger model); the nitrous condition's second half (`FUN_006a0020` / `FUN_0069ff20`, taken as
+  "nitrous burns"); groups 9 / 20 (nitrous modes 1 / 3, not run) and 12 (wreck); `da6ac384` = 2's world flag
+  +0x1b934; the cone emitter's angle maths (+Z axis inferred from the pipe locators); the backfire light
+  (`InitialiseAndSubmitLightLocalSpace`, 0x0F) is not drawn; `UpdateParametricFadeOverDistance` (0x38) is still
+  the old near-fade guess, which dims the flames closer than 8 m; the `UVDistortion` offset of the smoke; the
+  other `BearGlobalParameters` inputs (+0x60, +0x68, +0x6c, +0x70, +0x78, bytes +0x7c / +0x7e). No capture of
+  the original was made: flame size, colour and frequency are unchecked against it.
+
 ### 2026-10-09: no generic angular damping on a driving car; the chassis inertia is ours; post-impact yaw damping ported
 - Searched for the source of our unsourced `AngularDamping(0.4)` through the callers of the angular-damping
   routine `FUN_00907b50` (decomp.md "Angular damping"). The vehicle's damping constraint (`FUN_009aa700`, record
@@ -340,9 +377,9 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 - Damage volume grid (3 × 5 crumple values per car) for the crumple normal map: the shader side is known;
   how the game fills it from the zone levels is not.
 ### Particles (BearEffect)
-- The emission controllers (0x33 / 0x34 / 0x42) hold four curves, four scales and selector bytes
-  (`14 03 00 18 | 01 05 05 01 | 02 03 06 04` on the tyre smoke): which input drives which curve and how the
-  curves combine is not decoded; the runtime uses curve 0 over `Intensity`.
+- The emission controllers: 0x33 / 0x34 decoded 2026-10-09 (`Bindings`); 0x42 (`UpdateWheelBindings`, 4 inputs)
+  is not, and the binding-slot bytes of the wheel and collision spawners (0x05, 0x07, 0x01) are not: those still
+  use curve 0 over `Intensity`.
 - What the game writes into `WheelParams` (0x40 bytes), `VehicleParams` (0x30), `CollisionMeshParams` and
   `WheelContact`, and what it means by `Velocity` / `Intensity` for each effect (code).
 - Spawner fields: the three angle ranges of the wheel spawner (0x05: `180,180 | 0,180 | 0,360`), its
@@ -363,8 +400,8 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 - World effects: `mwtool genesys all --type WCVfxBehaviour` finds 3,931 objects (3,911 in `TRK_UNIT*`): 2,302
   have `Spot_effects` (`Spot_effect` handle + `Locator_group` id; e.g. `…24f3d`, `…eee1b`, `…af136`), 1,095 an
   `ImpactEffect` (`…24f3d` 613×, `…1621e7` 410×: prop smashes), most have `Lights` (`LightDefinition`) or
-  `Coronas`. How a locator group resolves to positions (compound / world object parts?) is open. No
-  exhaust / backfire / nitrous flame effect or type was found (`NitrousParameters` is gameplay tuning).
+  `Coronas`. How a world locator group resolves to positions (compound / world object parts?) is open; a car's
+  resolve in its `VehicleGraphicsSpec` (2026-10-09). The exhaust effects are the cars' spot effects (2026-10-09).
 
 ---
 
