@@ -82,6 +82,14 @@ impl AssetStore {
         Ok(fmt::AiData::parse(&bundle.load(entry)?)?)
     }
 
+    /// The gameplay road network (`RoadData` in `HAWAII/GAMELOGIC/ROADDATA.BNDL`): roads, sections and points
+    /// with the oncoming-lane bounds the nitrous refill reads.
+    pub fn road_data(&self) -> Result<fmt::RoadData> {
+        let bundle = self.bundle("HAWAII/GAMELOGIC/ROADDATA.BNDL").ok_or(Error::Missing(ResourceId(0)))?;
+        let entry = bundle.entries_of_type(ResourceType::RoadData).next().ok_or(Error::Missing(ResourceId(0)))?;
+        Ok(fmt::RoadData::parse(&bundle.load(entry)?)?)
+    }
+
     /// A [`BackdropSelector`] for the given backdrop listings `(track unit, model, transform)`: loads the
     /// zones and indexes the drawn meshes of every listed model.
     pub fn backdrop_selector<'a>(

@@ -361,6 +361,33 @@ impl TrafficSystem {
         lane.chain(crashed).filter(|c| c.position.distance_squared(point) <= r2).collect()
     }
 
+    /// The nitrous near-miss query (`FUN_00665f30` → the world's sphere query `FUN_00aa0440` on broadphase
+    /// category 8, traffic only): cars whose bounding sphere meets the sphere (`point`, `radius`), with an id
+    /// (lane followers by spawn serial, crashed ones by entity) and their forward axis. The bounding sphere is
+    /// taken as the physical box's (centre, |half extents|) (model decision: the broadphase's own spheres measured
+    /// 2.32–2.58 m in a snapshot).
+    pub fn near_miss_query(&self, point: Vec3, radius: f32) -> Vec<(u32, Vec3)> {
+        let sphere = |vehicle: usize, origin: Vec3, forward: Vec3, up: Vec3| {
+            let v = &self.data.vehicles[vehicle];
+            let centre = origin + forward * v.box_centre[2] + up * v.box_centre[1];
+            (centre, Vec3::from(v.half_extents).length())
+        };
+        let meets = |(c, r): (Vec3, f32)| c.distance_squared(point) <= (r + radius) * (r + radius);
+        let lane = self
+            .cars
+            .iter()
+            .flatten()
+            .filter(|c| meets(sphere(c.vehicle, c.position, c.forward, c.up)))
+            .map(|c| (c.serial, c.forward));
+        let crashed = self.crashed.iter().filter_map(|c| {
+            // right = rotation × X, so forward = right × up (up taken as world up for a crashing car).
+            let forward = c.right.cross(Vec3::Y).normalize_or_zero();
+            meets(sphere(c.vehicle, c.position, forward, Vec3::Y))
+                .then_some((0x8000_0000 | c.entity.to_bits() as u32, forward))
+        });
+        lane.chain(crashed).collect()
+    }
+
     /// Remove every traffic car (lane followers and crashed ones) within `radius` of `point`
     /// (`ClearTrafficSequenceItem`, `cutscene.rs`).
     pub fn clear_near(&mut self, point: Vec3, radius: f32, commands: &mut Commands) -> usize {

@@ -19,6 +19,7 @@ pub mod groundcover;
 mod material;
 mod paint_map;
 mod renderable;
+pub mod road_data;
 mod sampler;
 mod text;
 mod texture;
@@ -41,6 +42,7 @@ pub use groundcover::{GroundcoverCollection, GroundcoverInstance, GroundcoverIns
 pub use material::{Material, MaterialParameter, MaterialSampler, Model, Shader, ShaderParameter, ShaderSampler};
 pub use paint_map::WorldPaintMap;
 pub use renderable::{DecodedMesh, Mesh, Renderable, SNORM_POSITION_SCALE, Topology, tangent_frame};
+pub use road_data::{Road, RoadData, RoadPoint, RoadPosition, RoadSection};
 pub use sampler::SamplerState;
 pub use text::{Language, VehicleEntry, VehicleList};
 pub use texture::{Dimension, Texture};

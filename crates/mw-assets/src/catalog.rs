@@ -50,6 +50,14 @@ impl AssetStore {
             .collect())
     }
 
+    /// The vehicle list's entry for a car id (`VEHICLES/VEHICLELIST.BNDL`).
+    pub fn vehicle_entry(&self, id: u32) -> Result<Option<fmt::VehicleEntry>> {
+        let b = self.bundle("VEHICLES/VEHICLELIST.BNDL").ok_or(Error::Missing(mw_bundle::ResourceId::NULL))?;
+        let e =
+            b.entries_of_type(ResourceType::VehicleList).next().ok_or(Error::Missing(mw_bundle::ResourceId::NULL))?;
+        Ok(fmt::VehicleList::parse(&b.load(e)?)?.entries.into_iter().find(|v| v.id == id))
+    }
+
     /// Find a car by (case-insensitive) name substring or numeric ID.
     pub fn find_vehicle(&self, query: &str) -> Result<Option<VehicleInfo>> {
         let lang = self.language(DEFAULT_LANGUAGE)?;

@@ -161,7 +161,7 @@ fn finite_or_zero(x: f32) -> f32 {
 const TYRE_NORMAL_MIN_UP: f32 = 0.5;
 /// Floor on the slide-drag ramp's slip-angle span (`DAT_01025ab0`, FLT_EPSILON in `FUN_009cdd90`).
 const DRAG_SLIP_SPAN_MIN: f32 = f32::EPSILON;
-const MPH: f32 = 0.44704;
+pub(crate) const MPH: f32 = 0.44704;
 /// Steering outwards at the full steer rate needs |raw input| ≥ this; below it the game uses the raw
 /// `High_speed_steer_rate` (`FUN_009d73f0`; `.bss` 0x01186e90, read from the running game).
 const STEER_FULL_INPUT: f32 = 0.99;
@@ -292,7 +292,7 @@ pub struct Car {
     /// Wheel rays must not hit the car's own collider (a child entity).
     pub(crate) body_collider: Entity,
     /// The low bumper box that only meets props; its contacts count as object contacts.
-    bumper_collider: Entity,
+    pub(crate) bumper_collider: Entity,
 }
 
 struct WheelState {
@@ -401,7 +401,7 @@ fn spawn_car(
 
     // Performance mods (`mods_menu.rs`): the selection applied to the stock handling.
     let catalogue = pending.spec.mod_catalogue.clone();
-    let (modded, nitrous_burn) = catalogue.modded(&selection);
+    let (modded, nitrous_rules) = catalogue.modded(&selection);
     info!("mods: {}", catalogue.describe(&selection));
     commands.insert_resource(catalogue);
     let car = build_car(
@@ -411,14 +411,22 @@ fn spawn_car(
             spec: &pending.spec,
             parts: &pending.parts,
             handling: &modded,
-            nitrous_burn,
+            nitrous_rules: Some(nitrous_rules),
             start,
             heading: pending.heading,
             velocity: pending.velocity,
             damage: None,
         },
     );
-    commands.entity(car).insert(Player);
+    commands.entity(car).insert((Player, crate::nitrous::NitrousFeed::new(pending.spec.top_speed_mph)));
+    info!(
+        "nitrous: burn {}/s, start from {} units and {} mph, top speed {} mph (HighSpeed above {}%)",
+        nitrous_rules.usage.burn,
+        nitrous_rules.min_amount,
+        nitrous_rules.min_mph,
+        pending.spec.top_speed_mph,
+        nitrous_rules.events[1].speed
+    );
     if let Ok(mut cam) = camera.single_mut() {
         let behind = Quat::from_rotation_y(pending.heading) * Vec3::new(0.0, 2.5, -7.0);
         *cam = Transform::from_translation(start + behind).looking_at(start, Vec3::Y);
@@ -434,8 +442,8 @@ pub struct CarBuild<'a> {
     pub parts: &'a CarParts,
     /// The handling the physics runs (the player's with its mods applied).
     pub handling: &'a VehicleHandling,
-    /// The nitrous variant's burn rate, when a mod picked one.
-    pub nitrous_burn: Option<f32>,
+    /// The nitrous rules (the car's `NitrousParameters` variant); `None` takes `NitrousRules::default()`.
+    pub nitrous_rules: Option<mw_handling::nitrous::NitrousRules>,
     /// Where the car's origin (road level) starts, its yaw (0 faces +Z) and velocity.
     pub start: Vec3,
     pub heading: f32,
@@ -646,7 +654,7 @@ pub fn build_car(commands: &mut Commands, b: &CarBuild) -> Entity {
             nitrous: Default::default(),
             nitrous_params: {
                 let mut n = mw_handling::nitrous::NitrousParams::new(b.handling);
-                n.burn = b.nitrous_burn.unwrap_or(n.burn);
+                n.rules = b.nitrous_rules.unwrap_or_default();
                 n
             },
             brake_ramp: 0.0,
@@ -785,7 +793,16 @@ pub(crate) fn car_physics(
     spatial: SpatialQuery,
     collisions: Collisions,
     layers: Query<&CollisionLayers>,
-    mut cars: Query<(Entity, &mut Car, Forces, &mut Transform, &mut CarControls, Has<Player>, Has<ExternalControls>)>,
+    mut cars: Query<(
+        Entity,
+        &mut Car,
+        Forces,
+        &mut Transform,
+        &mut CarControls,
+        Has<Player>,
+        Has<ExternalControls>,
+        Option<&crate::nitrous::NitrousFeed>,
+    )>,
     surfaces: Res<crate::props::WorldSurfaces>,
     world_tags: Query<(&Collider, &crate::props::SurfaceTags)>,
 ) {
@@ -797,13 +814,13 @@ pub(crate) fn car_physics(
         input.steer = 0.0;
         input.handbrake = false;
     }
-    for (entity, mut car, mut forces, mut transform, mut controls, player, external) in &mut cars {
+    for (entity, mut car, mut forces, mut transform, mut controls, player, external, feed) in &mut cars {
         // Every car runs the same tick from its own control block (the game writes each of its 16 race-car slots'
         // controls with `FUN_009aacc0` from `FUN_0091c5c0`); the player's comes from the input devices.
         if player && !external {
             *controls = CarControls::from_input(&mut input);
         }
-        let ctl = *controls;
+        let mut ctl = *controls;
         controls.reset = false;
         if ctl.reset {
             let yaw = transform.rotation.to_euler(EulerRot::YXZ).0;
@@ -841,6 +858,41 @@ pub(crate) fn car_physics(
         // The game's speed-banded lookups (steering, handbrake, drift) use the full speed signed by the
         // direction of travel, not the forward component (which reads low in a slide).
         let band_speed = velocity.length().copysign(speed);
+
+        // --- Nitrous tank (`mw_handling::nitrous`): the game logic's input, refill events and burn, then the
+        // control block (`FUN_006c1a80`): while the tank burns the throttle is 1 once the control amount is above
+        // 0, or below 15 mph.
+        let held = ctl.nitrous && !ctl.crashed;
+        let n_params = car.nitrous_params;
+        let world = match feed {
+            Some(f) => mw_handling::nitrous::World {
+                events: true,
+                top_mph: f.top_mph,
+                lane: f.lane,
+                shortcut: f.shortcut,
+                slipstream: f.slipstream,
+                touching_competitor: f.touching_competitor,
+                near_cars: &f.near_cars,
+                near_miss_cancel: f.near_miss_cancel,
+                near_miss_window: mw_handling::nitrous::NEAR_MISS_WINDOW,
+                ..Default::default()
+            },
+            None => mw_handling::nitrous::World::default(),
+        };
+        let world = mw_handling::nitrous::World {
+            mph: velocity.length() / MPH,
+            forward_mph: speed / MPH,
+            drifting: car.drift.active(),
+            donut_weight: car.drift.donut_weight,
+            air_time: car.air_time,
+            ..world
+        };
+        let nitrous_amount = car.nitrous.update(&n_params.rules, &world, held, dt);
+        if car.nitrous.mode != 0
+            && (nitrous_amount > 0.0 || speed / MPH < mw_handling::nitrous::FULL_THROTTLE_BELOW_MPH)
+        {
+            ctl.throttle = 1.0;
+        }
 
         // --- Pedals, reverse ---------------------------------------------------
         let (mut throttle, mut brake) = (ctl.throttle, ctl.brake);
@@ -903,9 +955,7 @@ pub(crate) fn car_physics(
         }
         let coupled = axle_share.iter().any(|&s| s > 0.0);
         // Update step 5 (FUN_009d2aa0, mode 0) before the engine: the tank and the torque multiplier.
-        let held = ctl.nitrous && !ctl.crashed;
-        let n_params = car.nitrous_params;
-        let amount = car.nitrous.step(&n_params, held, dt);
+        let amount = nitrous_amount;
         car.drivetrain.nitrous = amount > 0.0;
         car.drivetrain.nitrous_scale = n_params.multiplier(amount);
         let drive_torque = car.drivetrain.step(dp, throttle, brake, omega, mph, inv_inertia, coupled, dt);
@@ -1914,11 +1964,11 @@ fn run_test(
     time: Res<Time>,
     test: Option<ResMut<DriveTest>>,
     mut input: ResMut<CarInput>,
-    cars: Query<&Car, With<Player>>,
+    mut cars: Query<&mut Car, With<Player>>,
     exhaust: Query<&crate::exhaust::Exhaust>,
     mut exit: MessageWriter<AppExit>,
 ) {
-    let (Some(mut test), Ok(car)) = (test, cars.single()) else { return };
+    let (Some(mut test), Ok(mut car)) = (test, cars.single_mut()) else { return };
     if test.done {
         return;
     }
@@ -1930,6 +1980,10 @@ fn run_test(
     let t0 = 1.5;
     if now < t0 {
         input.scripted = Some([0.0; 4]);
+        // The nitrous tests start with a full tank (the game's tank starts empty, `FUN_00658c90`).
+        if matches!(test.kind, TestKind::Nitrous | TestKind::Exhaust) {
+            car.nitrous = mw_handling::nitrous::Nitrous::full();
+        }
         return;
     }
     let t = now - t0;
@@ -1955,7 +2009,8 @@ fn run_test(
         TestKind::Accel | TestKind::Nitrous => {
             input.scripted = Some([1.0, 0.0, 0.0, 0.0]);
             if test.kind == TestKind::Nitrous {
-                input.nitrous = true;
+                // A press starts the burn only from `Restrictions.d5b487c7` (10 mph) on: press once past it.
+                input.nitrous = v / MPH >= car.nitrous_params.rules.min_mph;
                 let dt = time.delta_secs();
                 if (t / 0.5).floor() != ((t - dt) / 0.5).floor() {
                     info!(

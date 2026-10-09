@@ -60,6 +60,8 @@ impl Language {
 /// | 0x04 | u32  | related vehicle ID (sometimes also a bundle ID) |
 /// | 0x08 | u32  | Language string ID: full name |
 /// | 0x10 | u32  | Language string ID: name (same text in English) |
+/// | 0x38 | f32  | a speed in mph (183 on the XKR; unknown) |
+/// | 0x3C | f32  | top speed in mph (174 on the XKR): the nitrous HighSpeed refill's reference (`FUN_00667c10`) |
 /// | 0x6C | u16  | model year |
 #[derive(Debug, Clone)]
 pub struct VehicleList {
@@ -72,6 +74,8 @@ pub struct VehicleEntry {
     pub related_id: u32,
     pub name_string: u32,
     pub short_name_string: u32,
+    /// +0x3C, mph.
+    pub top_speed: f32,
     pub year: u16,
     /// Raw entry bytes for fields not decoded yet.
     pub raw: Vec<u8>,
@@ -93,6 +97,7 @@ impl VehicleList {
                     related_id: r.u32(o + 0x04)?,
                     name_string: r.u32(o + 0x08)?,
                     short_name_string: r.u32(o + 0x10)?,
+                    top_speed: r.f32(o + 0x3C)?,
                     year: r.u16(o + 0x6C)?,
                     raw: r.bytes(o, 0x70)?.to_vec(),
                 })

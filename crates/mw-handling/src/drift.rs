@@ -358,6 +358,9 @@ pub struct DriftState {
     pub direction: f32,
     /// Drift scale (0..1, in `direction`).
     pub scale: f32,
+    /// Drift +0x80 (`FUN_009d0860`): 1 − the yaw torque's blend from the donut torque to the maximum (0 while
+    /// counter-steering), written on every drifting tick. The nitrous Donutting refill wants it at most 0.95.
+    pub donut_weight: f32,
     /// Current entry threshold (degrees of rear slip): drops after a brake tap and climbs back.
     threshold: f32,
     /// Brake-tap detector: time the brake has been down, and whether it went past the high mark.
@@ -392,6 +395,7 @@ impl Default for DriftState {
             phase: Phase::Off,
             direction: 1.0,
             scale: 0.0,
+            donut_weight: 0.0,
             threshold: f32::MAX,
             tap_time: 0.0,
             tap_high: false,
@@ -576,6 +580,9 @@ impl DriftState {
             1.0
         };
         out.yaw_torque += dir * slip_gate * factor * p.yaw_torque(self.scale, i.mph, counter_steering);
+        // Drift +0x80: the donut weight of the torque's top point (read by the nitrous Donutting refill).
+        self.donut_weight =
+            1.0 - if counter_steering { 1.0 } else { ramp(i.mph, p.donut_speeds[0], p.donut_speeds[1]) };
 
         // Side force (`FUN_009d0fb0`), only with every wheel down: along the body's side axis, away from the
         // inside of the drift (the game pushes with the sign of its drift scale, opposite to the yaw torque).
