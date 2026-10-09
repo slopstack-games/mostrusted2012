@@ -39,6 +39,9 @@ use mw_formats::CollisionTag;
 
 use crate::drive::Car;
 
+/// What can knock a prop or a traffic car loose: a race car or crashed traffic.
+type Hitter = Or<(With<Car>, With<crate::traffic::TrafficCar>)>;
+
 /// Collision layers. The default (first) layer is the world, so colliders spawned without layers are
 /// world geometry.
 #[derive(PhysicsLayer, Default, Clone, Copy, Debug)]
@@ -307,7 +310,7 @@ pub struct PropHooks<'w, 's> {
     bodies: Query<'w, 's, (&'static RigidBody, &'static ComputedMass, &'static LinearVelocity)>,
     /// Lane-following traffic colliders, and the bodies that knock them off their lane (`traffic.rs`).
     traffic: Query<'w, 's, (), With<crate::traffic::TrafficBody>>,
-    hitters: Query<'w, 's, (), Or<(With<Car>, With<crate::traffic::TrafficCar>)>>,
+    hitters: Query<'w, 's, (), Hitter>,
 }
 
 impl CollisionHooks for PropHooks<'_, '_> {

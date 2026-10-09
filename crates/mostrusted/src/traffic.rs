@@ -64,6 +64,8 @@ const BRAKE_SPEED: f32 = 2.5;
 const WAIT_SPEED: f32 = 5.0;
 /// Obstacle cone (`FUN_005fc220` → `FUN_00511540`): cos 45° (`DAT_00fb2410`), up to 50 m (`DAT_00fb23a0`)
 /// ahead, heights scaled by 2.5 (`DAT_00fb2420`); the local player weighs 0.5, crashed traffic 0.5.
+// The game's constant is 0.7071 (0x3f350481), not the float nearest 1/√2.
+#[allow(clippy::approx_constant)]
 const CONE_COS: f32 = 0.7071;
 const CONE_RANGE: f32 = 50.0;
 const CONE_HEIGHT_SCALE: f32 = 2.5;
@@ -151,7 +153,7 @@ struct TrafficModel {
 
 impl TrafficModels {
     /// Called by the loader-message pump (`Msg::TrafficCar`).
-    pub fn arrived(&mut self, spec: Box<TrafficCarSpec>, parts: &HashMap<ResourceId, crate::ModelParts>) {
+    pub fn arrived(&mut self, spec: &TrafficCarSpec, parts: &HashMap<ResourceId, crate::ModelParts>) {
         let get = |m: &ResourceId| parts.get(m).cloned().unwrap_or_default();
         let model = TrafficModel {
             body: spec.body.iter().flat_map(get).collect(),
@@ -585,8 +587,7 @@ impl TrafficSystem {
                 let (mut slow, mut fast) = ((h, first_span), (h, first_span));
                 let mut toggle = false;
                 let mut steps = 0;
-                loop {
-                    let Some((max, next_hull, next)) = span_of(fast.0, fast.1) else { break };
+                while let Some((max, next_hull, next)) = span_of(fast.0, fast.1) {
                     let recip = if max > 0.0 { 1.0 / max } else { 0.0 };
                     load += *counts.get(&(h, fast.1)).unwrap_or(&0) as f32 * recip;
                     if next_hull == 0xffff || steps > 64 {
@@ -1096,8 +1097,7 @@ fn populate_chain(
     visited[start] = true;
     carry = populate_section(sys, hull, start as u8, carry, player);
     let mut cur = start;
-    loop {
-        let Some(&(h, next)) = sys.data.lanes.hulls[hull as usize].sections[cur].forward.first() else { break };
+    while let Some(&(h, next)) = sys.data.lanes.hulls[hull as usize].sections[cur].forward.first() {
         if h != hull || visited.get(next as usize) != Some(&false) {
             break;
         }

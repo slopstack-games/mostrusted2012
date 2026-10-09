@@ -867,7 +867,7 @@ fn receive_assets(
             }
             Msg::TrafficCar(spec) => {
                 if let Some(t) = traffic_models.as_mut() {
-                    t.arrived(spec, &loaded.models);
+                    t.arrived(&spec, &loaded.models);
                 }
             }
             Msg::CarFailed(e) => garage.failed(e),
