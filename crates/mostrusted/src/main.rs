@@ -24,6 +24,7 @@ mod drive;
 mod easydrive;
 mod exhaust;
 mod flash_probe;
+mod frame_log;
 mod freeroam;
 mod game_text;
 mod garage;
@@ -657,6 +658,7 @@ fn main() -> anyhow::Result<()> {
     if cli.frame_stats {
         app.add_systems(Update, log_frame_stats);
     }
+    app.add_plugins(frame_log::FrameLogPlugin);
     if let Some(seconds) = cli.bench {
         let label = std::env::args().skip(1).filter(|a| a != "--mute").collect::<Vec<_>>().join(" ");
         app.add_plugins(bench::BenchPlugin { seconds, label });
@@ -810,6 +812,9 @@ fn setup(mut commands: Commands, game: Res<Game>, mut images: ResMut<Assets<Imag
             Projection::Perspective(PerspectiveProjection { far: 20_000.0, ..default() }),
         ))
         .id();
+    if indirect_drawing_off() {
+        commands.entity(camera).insert(bevy::render::view::NoIndirectDrawing);
+    }
     // Time of day and weather from the environment timeline (`weather.rs`): key light, ambient rig, sky,
     // fog and colour grade; rebuilt when the hour, the weather or the painted timeline changes.
     let state = weather::EnvironmentState::new(
@@ -829,6 +834,14 @@ fn setup(mut commands: Commands, game: Res<Game>, mut images: ResMut<Assets<Imag
         Node { position_type: PositionType::Absolute, top: Val::Px(8.0), left: Val::Px(8.0), ..default() },
         StatusText,
     ));
+}
+
+/// Draw every view with direct draws (GPU mesh preprocessing still on) instead of Bevy's multi-draw-indirect
+/// path. That path keeps per batch set (one per material bind group: ~950 materials are visible downtown) GPU
+/// buffers, a bin-unpacking dispatch and bind groups in every view, which cost most of the render thread's time
+/// (research log 2026-10-09, frame drops). `MW_INDIRECT=1` turns it back on for A/B runs.
+pub fn indirect_drawing_off() -> bool {
+    std::env::var_os("MW_INDIRECT").is_none()
 }
 
 /// Start streaming once the renderer reports which compressed formats work.
@@ -871,9 +884,12 @@ fn receive_assets(
 ) {
     let Some(channel) = channel else { return };
     let rx = channel.0.lock().unwrap();
-    let deadline = Instant::now() + Duration::from_millis(8);
+    let begin = Instant::now();
+    let deadline = begin + Duration::from_millis(8);
+    let mut applied = 0u64;
     while Instant::now() < deadline {
         let Ok(msg) = rx.try_recv() else { break };
+        applied += 1;
         match msg {
             Msg::Focus(p) => {
                 if let Ok(mut t) = camera.single_mut() {
@@ -1012,6 +1028,11 @@ fn receive_assets(
                 }
             }
         }
+    }
+    if applied > 0 {
+        use std::sync::atomic::Ordering;
+        frame_log::LOADER_MSGS.fetch_add(applied, Ordering::Relaxed);
+        frame_log::LOADER_NS.fetch_add(begin.elapsed().as_nanos() as u64, Ordering::Relaxed);
     }
 }
 
