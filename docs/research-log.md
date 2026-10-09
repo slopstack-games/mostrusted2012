@@ -10,6 +10,37 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-09: AI racers: same physics, the racer state ported, AIData decoded, the race hookup
+- **Multi-car physics**: `car_physics` runs every `Car` from its own `CarControls` (the game writes all 16
+  race-car slots' controls with `FUN_009aacc0` from per-player input records, `FUN_0091c5c0`); the player's come
+  from `CarInput`, single-car systems follow a `Player` marker, cars collide with each other and a car contact
+  sets the impact yaw damping's car timer. The 911's accel / brake / corner / drift test lines are identical
+  before and after (3.73 s, 38.1 m, 2.57 g, drift 37.6°).
+- **The AI driver is read from the dump** (decomp.md "AI racers"): AI racers run the full handling model; the
+  racer state (8) steers with a PID on the look-ahead lateral error (per-car gains from
+  `Vehicle_Gameplay.PIDController`), integrates a pedal from a speed PID, fires nitrous on straights below its
+  target, brakes on a 1.5 s time to contact, and recovers / resets after sticking. Ported in `ai_driver.rs`,
+  `AIConfig` read from `GLOBALCONFIG`.
+- **No corner speed for a physical racer**: its target is the rubber band (a speed cap from
+  `RaceBalancingData`), lowered only by obstacles; every reader of the path's corner speed byte is the virtual
+  progress of a car-less racer or an uncalled helper. Without a race (`--test ai`, no cap) cars crash where a
+  corner comes too fast (the Veyron at 280 km/h, ~800 m into the test route), recover and reset; with the
+  event's rubber band (125 mph × 0.5–1) all 8 opponents of race 462174 finish its 3 laps (lap times 87–115 s,
+  the player standing at the start, so the AI runs its "ahead" factors). A live read of the target speed during
+  a race should confirm this. The game's corner speed rule is ported for reference (`MW_AI_CORNER_SPEED=1`
+  applies the uncalled braking look-ahead; at 1.8 × √(gμR) with μ ≈ 3 it limits little).
+- **AIData (0x200) decoded** (formats.md): the AI's road graph, 9153 nodes with drivable widths in a 125 m grid,
+  1160 junctions, 284 jump links; no speeds or racing lines. The game A*-searches its junctions for routes and
+  relaxes a racing line inside the road width (not ported: we follow the centre-line spline).
+- **Pace on the same path** (`--test ai`, the player's 911 driven by the same driver as an AI 911 starting
+  20 m ahead): splits to 1300 m 25.8 s and 25.6 s (same car, same law, same physics), before both meet the
+  corner they take too fast without a rubber band.
+- Discrepancy to settle live: the rubber-band search found `FUN_00514590` copying the schedule speeds to driver
+  +0x5668; the path search listed only the init and the traffic substates as its writers.
+- Open: the racing line, the lane planner's obstacle scoring (`FUN_004febe0`), racer interaction (side swipe /
+  ram, `FUN_005050d0`), the opponents' own cars (`AIPlayerInformation` / `AIPlayerType` rollout), the rubber
+  band's time correction, AI engine sounds and tyre marks (both follow the player only).
+
 ### 2026-10-09: events decoded, race rules traced, races playable (`--race`)
 - **Where the events are**: not one resource each. `GAMELOGIC/GAMEMODES.BNDL` has one 240 KB GenesysObject
   (`0100000000045d5b`) whose polymorphic `Item` array holds the 111 `OfflineEvent`s next to the online events,

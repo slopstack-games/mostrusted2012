@@ -485,6 +485,27 @@ but the record sizes and the flow / vehicle tables differ.
   each section. **Neighbour** (4): section, last rung. **Span** (12): max vehicles, its reciprocal, two `u16`.
 - Open: junction (0x150), stop line (2), static vehicle (0x50) records; see the research log.
 
+## AIData (0x200)
+
+`HAWAII/AI/AIDATA.BNDL`, one resource (599 168 bytes, no imports); parser `mw_formats::ai_data` (layout table in
+its doc comment), checked by `mwtool verify` (links symmetric, every node in its cell). Names from burnout.wiki's
+symbol-derived "AI Data (NFS Most Wanted)" page; every offset was checked against the data and the decomp's
+readers (decomp.md "AI racers"). Not Burnout-style AI sections: a graph of road centre-line nodes.
+
+- **Node graph** at header +0x10: 9153 nodes of 0x28 bytes, sorted into a 41 × 77 grid of 125 m cells from
+  (−2573.4, −4304.4) (cell = `i16` count, `i16` first node). A node: up to 6 linked nodes (symmetric; link count
+  at +0x26: 2 on a road, 3–6 at a junction, no dead ends), position, a side vector across the road (y = 0, not
+  normalised), "fast" and drivable widths in 0.25 m units (median drivable width 9.5 m, 95 nodes 0 and skipped by
+  the path builders), flags (0x1 shortcut / secondary road on 48 %, 0x8 / 0x10 / 0x20 around jumps).
+- **Junctions**: 1160 records (0x30), one per node with a link count other than 2: per exit a cost (= edge
+  length / 200 m × 511, to 1 %), the target junction, an angle (× 2 degrees, folded to 0–180°) and flags (0x1
+  shortcut, 0x4 jump); a junction id and a road section id (0 in the file). Exits can be fewer than the links
+  (one-way and jump chains).
+- **Node mappings** (0x10 per node): the chain distances / 200 to the two end junctions and their indices.
+- **Jump links**: 284 × two points (position, a half-width vector, a zone id filled at load, a traversable byte).
+- Spans x −2573…2451, z −4304…5198, 274.8 km of links (median link 27 m). No speeds and no racing lines: the
+  game builds those at runtime.
+
 ## TriggerData (0x202)
 
 One instance, `HAWAII/TRIGGERS.BNDL`, version 8; loaded by `FUN_0053c2f0`. Parser `mw_formats::TriggerData`
