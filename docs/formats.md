@@ -139,8 +139,8 @@ There is no dedicated deformation resource. A car's body is **skinned to a small
 set of **skeletal animation clips whose frames are damage levels**:
 
 - `VehicleGraphicsSpec` +0x04 imports the `Skeleton` (0xB2, `CgsAnimation::AnimSkel`): 33–47 bones per car.
-  Bone positions are model space (they sit on the body), rotations are mostly identity, parents precede
-  children. Bone IDs are CRC-32s of names that are not shipped (not `field_hash`, zlib or BZIP2 CRC of
+  Bone positions are model space (they sit on the body), rotations are mostly identity (every car's steering
+  wheel is tilted, a few flaps too; the game never reads them), parents precede children. Bone IDs are CRC-32s of names that are not shipped (not `field_hash`, zlib or BZIP2 CRC of
   obvious names).
 - Body and glass vertices carry `BLENDINDICES` (skeleton bone indices directly) and `BLENDWEIGHT`; the vertex
   shaders ignore weight `.x` and use `1 − (y + z + w)` for the first bone, then skin with `gBoneMatrixArray`
@@ -154,8 +154,9 @@ set of **skeletal animation clips whose frames are damage levels**:
   almost every bone, but 30 cars have a few bones whose keys carry a constant offset in every frame, from a
   rig that differed from the shipped skeleton (XKR boot lid and tail lights 12–14 cm in all 8 clips; R34
   steering wheel 77 cm towards the left-hand-drive side in the front-left clip; Viper 0.57 m, F1 LM 0.38 m;
-  `mwtool damage all` lists them, `mwtool damage <car> --keys` prints the keys), so damage keys are used as
-  changes from their clip's frame 0 (research log 2026-10-09). A part breaking off gets
+  `mwtool damage all` lists them, `mwtool damage <car> --keys` prints the keys); the game's blend uses keys as
+  changes from the clip's reference frame (`Anim` +0x36, 0 here), so these cancel (decomp.md "Vehicle damage
+  pose"). A part breaking off gets
   scale 0 (and drops ~0.7 m) from the frame where it detaches (911 front clip: number plate at frame 2,
   a bumper piece at 7, a headlight at 20; side clips: mirror at 5).
 - `Animation` / clip layout (`CgsAnimation::Anim`, field names from burnout.wiki) is in
@@ -195,8 +196,8 @@ LP700-4 (spoiler + vents), McLaren MP4-12C and Venom GT Spyder (spoiler + air br
 top speed / air brake) and the Huayra (front / rear flaps on speed, steering and brake).
 
 A clip is two (or a few) frames: frame 0 is the retracted pose (identity keys), the last the deployed one;
-keys are offsets from the bind pose (not from frame 0: the Veyron's transition clips, e.g. into the air
-brake, start from a deployed pose), on 1-4 bones (the 911's bone 36: 30° about X and
+keys are offsets from the bind pose (the Veyron's transition clips, e.g. into the air brake, start from a
+deployed pose, so the game probably layers them; its aero player is not identified), on 1-4 bones (the 911's bone 36: 30° about X and
 2 cm up / 7 cm back). It plays at its own frame rate: the 911's 0.612 frames/s makes the deploy 1.63 s.
 
 The `HSMData` is a serialized property tree (apparently hashed keys with values as strings; layout not decoded).

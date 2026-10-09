@@ -2472,6 +2472,51 @@ rate both ways. Whether a deployed wing changes the handling is open: `Animation
 field, and no write from the animation side into what `FUN_009cf850` / `FUN_009cfaf0` read was found (the
 search could not start without the condition code).
 
+## Vehicle damage pose (2026-10-09)
+
+How the eight damage clips (and the skeleton) become the body's bone matrices; ported in
+`mw_assets::damage::VehicleDamage::pose_with` (status per item, from a sub-agent's trace of the dump).
+
+- **Per frame** (`FUN_00580200`, per race-car slot, confirmed): the pose is fetched through the entity's vtable
+  +0x40, given its skeleton (`FUN_009ecfd0`) and reset (`FUN_009ecfe0`: translation 0, scale 1, rotation identity),
+  so additive clips never accumulate over frames. The animation modules run (through `FUN_005a0480`), then
+  `FUN_009f4560` turns the local pose into model space (when the pose's +0x7ac flag is clear) and `FUN_0059fa70`
+  writes the skinning palette (0x30 entries).
+- **The damage update** (`FUN_005b62f0`, confirmed; reached through a vtable, inferred from the chain): clip i takes
+  the i-th zone level of the race-car entity (+0xbd0, +0xbe0, +0xbe8, +0xbd8, +0xbcc, +0xbd4, +0xbe4, +0xbdc; with 9
+  or more clips every clip uses the global value +0xbb4 × +0xbbc). Each level is capped at **0.99** while entity
+  +0xc20 is below data +0x74 (read as: used damage-bar segments below the profile's count, i.e. not wrecked;
+  `DamageBarProfile+0x74` is the wreck count, see "Crashes"), and multiplied by 1 − clamp((d − 40) k, 0, 1) with the
+  camera distance d (k at `.data` 0x0110d53c, not read); off screen or beyond 50 m every level is 0. A clip with
+  |level| ≤ `FLT_EPSILON` is skipped. Otherwise p = min(⌊100 level + 0.5⌋, 100), time = p × 0.01 × the clip's end
+  time (controller +0x20; that this is the last frame's time is inferred, its set-up was not found), snapped down
+  to a whole frame (`FUN_009ece70`: frame = ⌊time / frame duration⌋ mod frames), then the clip is applied with
+  weight (1, 1, 1, 1) by `FUN_009f3250`. Clips go in index order 0..7.
+- **The additive blend** (`FUN_009f3250`, confirmed): walks the bones through the skeleton's child / peer links
+  (root first; the root's translation comes from the root track +0x38 and is always applied). Per bone, w = bone
+  mask (Anim +0x44) × weight, skipped when w ≤ 0; each channel only when the clip animates it (remap byte not
+  0xFF; a channel the clip does not animate keeps its value). With f the sampled frame, r the reference frame
+  (Anim +0x36, decoded by `FUN_009f9d60` alongside f0 / f1; 0 in every vehicle clip):
+  t += w (T[f] − T[r]); D = Q[f] ⊗ Q[r]⁻¹, q = slerp(q, D ⊗ q, w) (shorter arc, nlerp under 5°: cos > 0.9961947);
+  s = lerp(s, S[f], w), absolute, so the last applied clip that scales a bone wins. So a key that is the same in
+  every frame adds nothing (the XKR's boot lid, research log 2026-10-09).
+- **Model space** (`FUN_009f4560`, confirmed): q = q_parent ⊗ q_local; t = t_parent + s_parent × rotate(q_parent,
+  (bind_b − bind_parent) + t_local); s = s_parent × s_local. Bind positions only: the skeleton's bind rotations
+  (AnimBone +0x10; e.g. the steering-wheel bones are tilted 18°) are never read.
+- **Skinning palette** (`FUN_0059fa70`, confirmed): bones whose remap field (AnimBone +0x2C) is −1 are skipped; the
+  others fill palette slot = remap, 0x40 bytes: 3 × 3 = R(q) × s (`FUN_00542240`), translation = t − bind_b · M
+  (bind position only). `FUN_0057c5a0` builds attached-part matrices the same way.
+- **Absolute blend**: `FUN_009f22a0` (t, q, s lerped / slerped towards the sample, no reference frame, decodes f0 /
+  f1 through `FUN_009fa720`) is used by the race-car modules `FUN_005b0990`, `FUN_005b4510`, `FUN_005b3900`,
+  `FUN_005b4750` on their own pose buffers (not identified).
+- **Active aero: not identified.** Candidate `FUN_0047bd00`, a four-state clip player (0 time 0; 1 play forward to
+  the end time at controller +0x20; 2 play back to the start at +0x1c; 3 time = end × a normalised parameter) that
+  calls the additive `FUN_009f3250` with weight (1, 1, 1, 1). Ours runs part clips through the same blend after
+  the damage (model decision until the player is confirmed).
+- Not read: the distance-fade constant k, the update's rate limiter (`FUN_00897b70`, time accumulated at +0xe0)
+  and what happens on frames it skips. Dead ends: `FUN_005bb770` and `FUN_00eaa990` apply procedural axis-angle
+  rotations, not damage; `FUN_00a09c60` and its callers (`FUN_00a0b6d0` …) are collision (GJK), not pose code.
+
 ## Tyre marks
 
 Not found. The skid mark code would read `TyreVfxBehaviour.{Front,Rear}_Tyres.Skid_Marks` (stride 0x130 per axle,
