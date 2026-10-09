@@ -80,8 +80,13 @@ InstanceList ──> Model ──(LOD state)──> Renderable ──(per mesh)�
   +0x20. Props, compounds and dynamics import a `PropObject` / `CompoundObject` / `WorldObject`; lights
   import a GeneSys handle (light definition, not decoded).
 - **PropObject (0x217)**: model imports at 0x04 and 0x08 (same model in practice). **CompoundObject (0x215)**:
-  model imports at 0x04 (high detail), 0x24 (lower-poly variant, same bbox) and sometimes 0x28; the rest
-  (part transforms, bounds, GeneSys handles) is not decoded. **WorldObject (0x205)**: model import at 0x04.
+  model imports at 0x04 (high detail, skinned to the skeleton at 0x08: one bone per part), 0x24 (lower-poly
+  variant, same bbox) and sometimes 0x28; behaviours at 0x0C (count at 0x01; 0x14-byte entries: GeneSys import
+  at +0x00, type id at +0x0C), joints at 0x2C (count 0x3C, none in the install), parts at 0x30 (count 0x38,
+  0x70 bytes: embedded `WorldObject` with its own behaviours and physical definition at +0x1C, skeleton bone
+  +0x60, replaces / next / first replacement u8 part indices +0x64..+0x66, linked parts +0x68 / +0x6C) and a
+  u32 hash per part at 0x34. Layout table in `mw_formats::ObjectDef`; how the game uses it in decomp.md
+  "Props". **WorldObject (0x205)**: model import at 0x04.
   Compound/world objects stand roughly upright from their instance matrix, so drawing slot 0 is enough for
   static scenery. `mw_formats::{ObjectInstanceList, ObjectDef}`.
 - **GroundcoverCollection (0x20F) / GroundcoverInstances (0x214)**: grass and plant sprites, no meshes (the

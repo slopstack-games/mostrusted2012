@@ -1326,10 +1326,40 @@ Runtime: `crates/mostrusted/src/props.rs`; data: `mw_assets::props` (`Additional
 - **Damage / effect** (`FUN_0054bf70`): when a body-pair record's force (`FUN_00901740` +0x3c = Σ normal impulse
   / dt, N) exceeds `ForceToDamage` (+0x18), once per knocked lifetime: damaged state (model `PropObject` +8)
   and, for a vehicle hitter, the impact effect (`PropObject` +0x14) oriented by the hitter's velocity.
-- **Compound smash** (`FUN_00555c90`): loose, its timer (`08c87eeb`, +0x34, seconds) run out, and the world
-  contact force or a pair force above `ForceToSmash` (+0x30) → messages 2 and 0x11, the body removed. Parts
-  are linked by joints (`FUN_005547f0`, `FUN_0054e120`, message 0x2f); a pinned part whose links are all loose
-  is unpinned (`FUN_0054e750`). The joint-break rule was not found.
+- **Compound smash** (`FUN_00555c90`, after physics): when a compound changes from pinned to loose its timer
+  (manager +0x59e0, per compound) is set to `08c87eeb` (`AdditionalInfo` +0x34, seconds); every frame while it
+  is loose the game first tests `timer <= 0` and then subtracts dt. With the timer run out, the body's
+  world-contact force (`FUN_008f6470` record +0x2c) or any pair record's force (`FUN_00901b60` array, 0x70
+  bytes, +0x3c) strictly above `ForceToSmash` (+0x30) smashes it: the compound object takes the body's
+  transform and velocities, message 2 (enable compound) and 0x11 are posted and the body is removed
+  (`FUN_0054e210`). `ForceToSmash` 0 (billboard / panel compounds, delay 0) smashes on the first contact
+  after the knock.
+- **Enable compound** (message 2 in `FUN_0055a680` → queue at streamer +0xc3d14 → `FUN_00558bb0`, at most 48
+  part slots in all, far compounds evicted): `FUN_00554500` creates one 0x140-byte part object per part
+  (`FUN_00535ff0` → `FUN_005341a0`: type 3, +0x90 part hash, +0x130 the compound, +0x134 = part +0x60 =
+  **skeleton bone**, +0x135/6/7 = part +0x64/5/6, linear and angular velocity **zeroed**), placed by
+  `FUN_00532b00` at bone bind matrix × compound world (`FUN_005321b0`: the bone's quaternion and model-space
+  position, no parent chain). `FUN_005547f0` then registers every part whose +0x64 is 0xFF in the part slots
+  0x5a0.. (`FUN_0054dfe0`: pinned from the part's own `AdditionalInfo` +0x28) and activates it
+  (`FUN_0054e390`); the others are parked at (0, −100, 0) (`FUN_00532c30`). The compound's model is skinned to
+  its skeleton (`CompoundObject` +0x08), one bone per part, so the parts draw the triangles of their bone.
+  Joints (`CompoundObject` +0x2c / +0x3c: GeneSys handles naming two part hashes at +0x10 / +0x14 and a value
+  at +0x18 → `FUN_0054e120`, message 0x2f) exist in the code but **no compound in the install has any**.
+  `EnableCompoundBehaviour` +0x1a (`543527d0`) would split a compound at stream-in (`FUN_00554230`); false on
+  all 52.
+- **Part replacement** (message 3, `FUN_0055a680`): a part smashed through its `SmashProxyBehaviour`
+  (`ForceToSmash` at behaviour +0x1c, read by the getter at 0x5b9800; the code that compares it was not
+  found) is replaced by the chain first = part +0x66, next = +0x65 of each new part, until 0xFF; each new part
+  is registered, activated and placed by `FUN_00536050`: old world × old bone⁻¹ × new bone, linear velocity =
+  old velocity + ω × (new position − old body's centre of mass), same ω. Then the old part is parked and its
+  body removed. Only the single-arm street lamps use it: the whole pole (120 kg, proxy 100000 N) splits into
+  a lower (50 kg) and an upper (70 kg) half.
+- **Links** (`FUN_0054e750`, every frame): a pinned part with links (part +0x68 pointer, +0x6c count, u8 part
+  indices) is unpinned (`FUN_0054e570` + `FUN_0054e390`) once none of its linked parts is registered and
+  pinned. Used by the 11-panel structures (20 kg panels pinned at 500 kg m/s, a 230 kg frame).
+- **Smash effects / sounds**: none in the smash path itself. The compound's `WCVfxBehaviour` "Collision FX"
+  (`ImpactEffect`) and the parts' `WCPlaySoundBehaviour`s are behaviour data; what triggers the compound's
+  effect was not traced.
 - **Reset** (`FUN_0055ae50`, every frame, no timer): a moving prop (64-slot pool, `FUN_00553fe0`) is put back
   (`FUN_00553540`) or removed (`FUN_00553740`, `mbRemoveInsteadOfReset` or a game flag) once **both** the camera
   and the player's car are farther than `mfResetDistanceSquared`. ResetProps (message 0x15, `FUN_0055a680`)
@@ -1348,6 +1378,16 @@ Runtime: `crates/mostrusted/src/props.rs`; data: `mw_assets::props` (`Additional
   the first touch; no `AdditionalInfo` = never loose; colliders within 30 m of a race car or crashed traffic (the game activates on
   box overlap, with pools); sound gain ∝ closing / 12 m/s, 2 m/s threshold; traffic and loose props break
   standing ones through the contact hook.
+- Compounds (`smash_compounds`): the rules above. The smash force is the largest of the race car's contact
+  force from `prop_contacts` and each avian contact pair's normal impulse / step; the loader splits the
+  compound model by dominant bone into one piece per part (`Variant::bones`), and a standing compound draws
+  the pieces of its first parts plus the triangles of bones no part owns. Model decisions: parts spawn awake
+  (the game creates bodies asleep, next to the moving compound); no delay for `SmashProxyBehaviour` (its
+  comparison was not found; read as a contact force like the compound's); a smashed compound and its parts go
+  back together once neither its home nor any part is within the reset distance of the car and camera (the
+  game resets each part slot on its own); bone-0 / unowned triangles vanish with the smash; world-contact
+  sounds of loose props and parts (`prop_world_sounds`) use the speed the contact takes off the prop
+  (impulse / mass ≥ 2 m/s) for the unread audio threshold, within 40 m of the player.
 
 ## Input and control bindings
 

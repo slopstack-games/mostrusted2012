@@ -10,6 +10,33 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-09: compound objects (street lamps, panels) break into their parts
+User request: lamps should come apart as in the original. Rules and functions in decomp.md "Props".
+- **Data**: `CompoundObject` +0x08 is a `Skeleton` (not a GeneSys handle); the model is skinned to it, one
+  bone per part (`mwtool props -v` prints the triangles per bone: every compound model is fully skinned).
+  Part record +0x60 = bone index, +0x64 / +0x65 / +0x66 = replaces / next / first replacement (0xFF = none),
+  +0x68 / +0x6c = linked part indices. Behaviour entries are 0x14 bytes with the type id at **+0x0C** (the
+  import at +0x00, its id again at +0x08; first read at +0x04, which gave 0 everywhere: dead end). Survey of
+  all 52 compounds: no joints (+0x3c = 0 everywhere), no `EnableCompoundBehaviour` with +0x1a set, 10
+  definitions (the single-arm street lamps, ~2600 placements) with a `SmashProxyBehaviour` part (the whole
+  pole, 100000 N, replaced by its lower and upper halves), the 11-panel structures with pinned linked panels.
+- **Common street lamp** (`fed64b97`, 934 placements): 150 kg compound, knocked at 5000 kg m/s, smashes after
+  0.5 s loose above 10000 N into arm (bone 1, 20 kg), head (bone 2, 15 kg) and pole (bone 5, 120 kg); parts
+  start loose, at rest (`FUN_005341a0` zeroes their velocity).
+- **Runtime**: `props.rs` `smash_compounds` / `spawn_part` / `prop_world_sounds`; loader splits models by bone
+  (`DecodedMesh::subset`, `Variant::bones`); `--test smash --smash-set compounds` (six compounds, camera beside
+  the last knock or smash, `-smash<n>` screenshots).
+- **Results** (`--test smash --smash-set compounds`, 60 km/h): all 6 smash: lamp after 1.25 s loose (12173 N),
+  double lamp 1.55 s (31924 N), `e547f377` 0.90 s, `f3afb6cd` 1.23 s (101801 N, 6 parts), `1e63a9d5` 1.18 s,
+  panels at once (smash force 0): 31 part bodies, no pole split (100000 N never reached; also not at
+  120 km/h: 5 smashes before the end, 26 parts). Default `--test smash` unchanged apart from the lamp, which
+  now smashes 1.75 s after the knock into 3 parts (speed losses 0.15 / 0.24 / 0.85 / 0.36 km/h as before).
+  World drive (`--spawn=800,42,1688,62 --no-traffic --auto-throttle 0.7`): the lamp knocked at 89 km/h smashes
+  1.0 s later on landing (80087 N); arm, head and pole lie on the pavement ~12 m on (screenshots looked at).
+- Open: the code that compares `SmashProxyBehaviour.ForceToSmash` (getter 0x5b9800, called through a runtime
+  table not found); what plays the compound's "Collision FX" effect; the world-contact sound threshold (audio
+  object +0x94 at `[DAT_010edb08+4]+0xb270`); the damaged model swap (`PropObject` +8) still unported.
+
 ### 2026-10-09: the "flashbang": the impact shake's noise spring diverged at low frame rates
 User report: "sometimes it randomly seems to flashbang" (the screen goes white for a moment while driving).
 - **Detector** (`flash_probe.rs` / `flash_probe.wgsl`, debug only): `MW_FLASH_LOG=1|<file>` reduces each
