@@ -384,7 +384,7 @@ code side (game modes, HSMs, AI) next to the data. Roughly in dependency order:
   each car's `VehiclePaint`, keyboard + mouse + gamepad). It uses Bevy's ASCII-only default font, so names are
   folded to ASCII ("Coupe"). Done (2026-10-04, paused WIP): the UI data (GeneSys screens / layouts / bindings,
   `mw_formats::ui`, `mwtool ui screens|show|render|font`), the game's bitmap fonts (`UI/FONTS`, `game_text.rs`)
-  and a free-roam driving HUD (`hud.rs`: speedometer, nitrous gauge (full: no nitrous yet), odometer, minimap
+  and a free-roam driving HUD (`hud.rs`: speedometer, nitrous gauge (the tank), odometer, minimap
   from the map tiles; `--mph`, `--no-hud`, F3 = debug text). Done: volume settings (F2). **Easydrive, first version** (2026-10-06,
   session 5; `mw_assets::easydrive`, `easydrive.rs`, `mwtool ui easydrive`, `--show-easydrive`): the menu tree
   (tiers, link and hook items, labels) comes from the free-roam screen's data; link items navigate, Change car
