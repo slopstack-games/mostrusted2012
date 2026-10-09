@@ -78,7 +78,11 @@ impl ModCatalogue {
 }
 
 /// Re-apply the selection to the driven car as soon as it changes (the game applies mods while driving).
-pub fn apply_live(sel: Res<ModSelection>, cat: Res<ModCatalogue>, mut cars: Query<&mut crate::drive::Car>) {
+pub fn apply_live(
+    sel: Res<ModSelection>,
+    cat: Res<ModCatalogue>,
+    mut cars: Query<&mut crate::drive::Car, With<crate::drive::Player>>,
+) {
     if !sel.is_changed() || sel.is_added() {
         return;
     }

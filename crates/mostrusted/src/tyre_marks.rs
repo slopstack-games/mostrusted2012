@@ -209,7 +209,7 @@ fn intensities(slip_angle_deg: f32, speed_mph: f32, tread_slip_mph: f32) -> (f32
     (lat, spin)
 }
 
-fn lay_marks(time: Res<Time>, cars: Query<&Car>, mut marks: ResMut<Marks>) {
+fn lay_marks(time: Res<Time>, cars: Query<&Car, With<crate::drive::Player>>, mut marks: ResMut<Marks>) {
     let now = time.elapsed_secs();
     let marks = &mut *marks;
     // The driven car (the first one).

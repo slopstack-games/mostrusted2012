@@ -815,7 +815,7 @@ fn update_status(
     loaded: Res<Loaded>,
     mut text: Query<&mut Text, With<StatusText>>,
     cam: Query<&Transform, MainCamera>,
-    car: Query<&drive::Car>,
+    car: Query<&drive::Car, With<drive::Player>>,
 ) {
     let Ok(mut text) = text.single_mut() else { return };
     let pos = cam.single().map(|t| t.translation).unwrap_or_default();
@@ -843,7 +843,7 @@ fn update_status(
 /// Brake lights follow the brake pedal and reversing lights the reverse gear while driving.
 fn drive_vehicle_lights(
     input: Res<drive::CarInput>,
-    car: Query<&drive::Car>,
+    car: Query<&drive::Car, With<drive::Player>>,
     mut lights: ResMut<materials::VehicleLights>,
 ) {
     let Ok(car) = car.single() else { return };
