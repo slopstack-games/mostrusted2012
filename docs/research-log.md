@@ -145,6 +145,44 @@ The user's reports from a race: "checkpoints aren't visible", "the minimap is ro
   rules plus the AIConfig refill); race-start fills (no writer of the amount other than the awards, the reset and the infinite flag was found); wiring the
   gate smash (+10) and gas stations (+100).
 
+### 2026-10-09: "floating grass" at the CONTINENTAL DRIFT start: groundcover residency and sprite size
+
+User report: dozens of small yellow-green tufts hang in the sky and in front of the hills at the start of
+event 462174 (camera −610, 56, 2310 looking east / north-east over the park fence at a smooth beige hill).
+- **What they were**: groundcover sprites of collection `5cfd7148` (e = 2 / 4 grass and bush sprites at
+  y ≈ 120 around (−380, 2345), ~240 m away). `mwtool placement-check --column=-380,2345` (new): the only
+  surface there is the backdrop terrain tile `322fcc77` at y 122.5, listed by units 86, 152, 153 and 936,
+  which are 2.5–3 km away (x ≈ 1400–2500, z ≈ 3100–3800). The place lies in zone 133 (the camera's zone),
+  whose view has no terrain between x −470 and −390 at all and draws the hill as unit 133's main terrain
+  `6ddfd1b1`, which ends at a lower ridge. Collection `5cfd7148` is listed by the same four far units: it is
+  their groundcover for that hill, placed on their backdrop tier. We loaded every unit's collections
+  everywhere, so it stood on terrain that the composed backdrop does not draw there.
+- **Which collections the game draws** (decomp.md "Groundcover drawing"): a list of 64 collection slots,
+  filled from the loaded units (the filler is not traced). `mwtool placement-check --owners` (new): 400
+  collections, 1–34 per unit (mean 12.2), one shared by 144 units; the zone + all its neighbours list at most
+  63 distinct collections in every zone (median 36), zone + edge neighbours at most 50. So the slots hold the
+  PVS neighbourhood. **Fix** (`crates/mostrusted/src/groundcover.rs`): a group is drawn only when its
+  collection is listed by the camera's zone (the nearest zone outside every polygon) or one of its
+  neighbours, rebuilt when the camera changes zone, on top of the 125·r distance test. A static per-place
+  rule was ruled out: of the groups whose place is in a zone not listing them, 39 % stand on collision (good
+  tufts near zone borders listed only by units farther away).
+- **Sprite size** (also fixed): `FUN_008c9aa0` writes `(float)(1 << e)` into `GroundcoverConstants`
+  (slot 0x7f) per draw record, so a sprite is byte / 127 × 2^e m, not × 4. e = 4 sprites were 4× too small,
+  e = 6 16×, e = 8 64×: the e = 6 / 8 groups are 10–60 m tree cards. With them the park hills are forested
+  (`--camera=-610,56,2310,-520,54,2310`): the "sand" hill is the forest floor (`6ddfd1b1`,
+  `TerrainPBR_Normal`), which the cards hide; its plain look was not looked into further. The live reads of
+  2026-10-06 (4 in most dumps, 256 in two) are e = 2 and e = 8 draws.
+- Not groundcover: the dark specks against the sky in `--camera=-650,260,1850,-1000,60,2150 --hour 12` stay with
+  `--no-groundcover` (another system; not identified).
+- Debug: `MW_GC_E=<e>` loads only the groups of one size exponent; `mwtool placement-check --view=<eye,target>`
+  lists the sprites in a 30° cone (`MW_VIEW_HIGH=1`: highest above the horizon first), `--column=x,z` every
+  placed mesh over a point with its zone (`MW_COLUMN_ZONES=133,86` prints zones, `MW_COLUMN_GC=1` the
+  collections per unit).
+- Open: camera-facing sprites (two crossed quads still stand in; with the real sizes the edge-on quad of a
+  tree card shows as a thin vertical sliver), the per-sprite range and shrink (merged group meshes draw every
+  sprite of a visible group at full size), who fills the 64-slot list (is it the player's zone or the
+  camera's, and with which neighbours), the layer flags `DAT_010c6f78`.
+
 ### 2026-10-09: race cutscenes: event intro / outro sequences, ICE camera takes, no offline countdown
 - **Where they are**: `OfflineEvent` fields cracked: `EventIntro`, `EventOutro`, `AROutro`, `IntroMessageGroup`,
   `FeedbackMessageGroup`; `GameMode`: `AROutro`, `CountdownSequence`, `HUD_HSM`, `Intro`, `ResultsSequence`,

@@ -24,6 +24,7 @@ mod freeroam;
 mod game_text;
 mod garage;
 mod gate_marker;
+mod groundcover;
 mod hud;
 mod input;
 mod loader;
@@ -312,29 +313,6 @@ pub struct Game {
 
 /// The player's view: every `Camera3d` except the planar reflection's mirrored camera (`reflection.rs`).
 pub type MainCamera = (With<Camera3d>, Without<reflection::PlanarReflectionCamera>);
-
-/// A groundcover group's box and draw distance (`loader::Msg::Groundcover`).
-#[derive(Component)]
-struct GroundcoverRange {
-    min: Vec3,
-    max: Vec3,
-    range: f32,
-}
-
-/// The game's group test (`FUN_00eb9500`): a group is drawn while the distance from the camera to the
-/// nearest point of its box is at most 125 x its radius (`Group::radius`). The game also drops and shrinks
-/// single sprites near their own range (`GroundcoverInstance::fade`); merged group meshes cannot do that.
-fn groundcover_distance(
-    camera: Query<&GlobalTransform, MainCamera>,
-    mut groups: Query<(&GroundcoverRange, &mut Visibility)>,
-) {
-    let Some(eye) = camera.iter().next().map(|t| t.translation()) else { return };
-    for (g, mut vis) in &mut groups {
-        let d = eye.clamp(g.min, g.max).distance(eye);
-        let want = if d <= g.range { Visibility::Inherited } else { Visibility::Hidden };
-        vis.set_if_neq(want);
-    }
-}
 
 /// GPU meshes and materials making up one game Model.
 pub type ModelParts = Vec<(Handle<Mesh>, Handle<GameMaterial>)>;
@@ -754,11 +732,13 @@ fn main() -> anyhow::Result<()> {
         })
         .insert_resource(ClearColor(Color::srgb(0.55, 0.68, 0.85)))
         .init_resource::<Loaded>()
+        .init_resource::<groundcover::GroundcoverResidency>()
         .add_systems(Startup, setup)
         .add_systems(Update, (start_loader, receive_assets, update_status, auto_screenshot))
         .add_systems(
             PostUpdate,
-            groundcover_distance.before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
+            groundcover::groundcover_visibility
+                .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
         )
         .add_systems(Update, (drive_vehicle_lights, apply_vehicle_lights).chain())
         .run();
@@ -842,6 +822,7 @@ fn receive_assets(
     mut opponents: ResMut<ai::Opponents>,
     mut surfaces: ResMut<props::WorldSurfaces>,
     mut traffic_models: Option<ResMut<traffic::TrafficModels>>,
+    mut residency: ResMut<groundcover::GroundcoverResidency>,
 ) {
     let Some(channel) = channel else { return };
     let rx = channel.0.lock().unwrap();
@@ -909,9 +890,11 @@ fn receive_assets(
                 });
                 loaded.instances += 1;
             }
-            Msg::Groundcover { model, min, max, range } => {
+            Msg::Zones(zones) => residency.set_zones(zones),
+            Msg::GroundcoverListing { unit, collections } => residency.add_listing(unit, collections),
+            Msg::Groundcover { model, collection, min, max, range } => {
                 let Some(parts) = loaded.models.get(&model) else { continue };
-                let range = GroundcoverRange { min, max, range };
+                let range = groundcover::GroundcoverRange { collection, min, max, range };
                 commands.spawn((Transform::IDENTITY, Visibility::Hidden, range)).with_children(|c| {
                     for (mesh, mat) in parts {
                         c.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat.clone()), bevy::light::NotShadowCaster));
