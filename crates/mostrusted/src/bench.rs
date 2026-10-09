@@ -169,7 +169,15 @@ fn report(
     mut bench: ResMut<Bench>,
     store: Res<DiagnosticsStore>,
     entities: Query<Entity>,
-    meshes: Query<(&ViewVisibility, &InheritedVisibility), With<Mesh3d>>,
+    meshes: Query<
+        (Entity, &ViewVisibility, &InheritedVisibility, Option<&crate::shadow_cull::ShadowClass>),
+        With<Mesh3d>,
+    >,
+    traffic: Query<Entity, With<crate::traffic::TrafficCar>>,
+    children: Query<&Children>,
+    groundcover: Query<(), With<crate::groundcover::GroundcoverRange>>,
+    parents: Query<&ChildOf>,
+    materials: Query<(&ViewVisibility, &MeshMaterial3d<crate::materials::GameMaterial>)>,
     adapter: Option<Res<RenderAdapterInfo>>,
     cascades: Query<&bevy::camera::visibility::CascadesVisibleEntities>,
     texels: Query<&bevy::light::Cascades>,
@@ -191,7 +199,37 @@ fn report(
     let worst = (n / 100).max(1);
     let low1 = ft.iter().rev().take(worst).sum::<f64>() / worst as f64;
     let main_mean = bench.main_ms.iter().sum::<f64>() / bench.main_ms.len().max(1) as f64;
-    let (visible, mesh_entities) = meshes.iter().fold((0, 0), |(v, m), (vv, _)| (v + usize::from(vv.get()), m + 1));
+    let (visible, mesh_entities) =
+        meshes.iter().fold((0, 0), |(v, m), (_, vv, _, _)| (v + usize::from(vv.get()), m + 1));
+    // Visible mesh entities by kind (traffic = descendants of a traffic car, groundcover = children of a group).
+    let mut traffic_meshes = std::collections::HashSet::new();
+    for t in &traffic {
+        traffic_meshes.extend(children.iter_descendants(t));
+    }
+    let mut kinds: std::collections::BTreeMap<&str, (usize, usize)> = Default::default();
+    for (e, vv, _, class) in &meshes {
+        let kind = if traffic_meshes.contains(&e) {
+            "traffic"
+        } else if parents.get(e).is_ok_and(|p| groundcover.contains(p.parent())) {
+            "groundcover"
+        } else {
+            match class {
+                Some(crate::shadow_cull::ShadowClass::World) => "world",
+                Some(crate::shadow_cull::ShadowClass::Alpha) => "alpha",
+                Some(crate::shadow_cull::ShadowClass::Backdrop) => "backdrop",
+                Some(crate::shadow_cull::ShadowClass::Prop) => "prop",
+                Some(crate::shadow_cull::ShadowClass::Car) => "car",
+                None => "other",
+            }
+        };
+        let k = kinds.entry(kind).or_default();
+        k.0 += usize::from(vv.get());
+        k.1 += 1;
+    }
+    let mats: std::collections::HashSet<_> = materials.iter().filter(|(v, _)| v.get()).map(|(_, m)| m.0.id()).collect();
+    println!("BENCH MATERIALS distinct game materials on visible meshes: {}", mats.len());
+    let kinds: Vec<String> = kinds.iter().map(|(k, (v, n))| format!("{k} {v}/{n}")).collect();
+    println!("BENCH MESHES visible/total by kind: {}", kinds.join(", "));
     let rf = RENDER_FRAMES.load(Ordering::Relaxed).max(1) as f64;
     let prep = RENDER_PREPARE_NS.load(Ordering::Relaxed) as f64 / rf / 1e6;
     let graph = RENDER_GRAPH_NS.load(Ordering::Relaxed) as f64 / rf / 1e6;
@@ -209,7 +247,7 @@ fn report(
     let gpu = adapter.map_or("unknown".to_string(), |a| format!("{} ({:?}, {window_system})", a.name, a.backend));
     println!(
         "BENCH RESULT {}: {} frames in {:.1} s, frame mean {:.2} ms, median {:.2} ms, 1% low {:.2} ms \
-         ({:.0} fps mean), main-world schedule {:.2} ms, render world {:.2} ms prepare + {:.2} ms graph, \
+         ({:.0} fps mean), p95 {:.2} ms, p99 {:.2} ms, max {:.2} ms, {} hitches > 50 ms, main-world schedule {:.2} ms, render world {:.2} ms prepare + {:.2} ms graph, \
          shadow casters per cascade {} (texel {} m), {} entities, {} mesh entities ({} visible), \
          {} instances, meshes {} -> {}, images {} -> {} during the run, RSS {:.0} MB, GPU {}",
         bench.label,
@@ -219,6 +257,10 @@ fn report(
         percentile(&ft, 0.5),
         low1,
         1000.0 / mean,
+        percentile(&ft, 0.95),
+        percentile(&ft, 0.99),
+        ft.last().copied().unwrap_or(0.0),
+        ft.iter().filter(|&&f| f > 50.0).count(),
         main_mean,
         prep,
         graph,

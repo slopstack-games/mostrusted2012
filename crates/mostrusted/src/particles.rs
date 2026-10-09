@@ -144,6 +144,9 @@ struct Batch {
     spark: bool,
     quads: Vec<QuadVertex>,
     sparks: Vec<SparkVertex>,
+    /// The mesh holds only the invisible placeholder (nothing drawn): an empty batch is not re-uploaded
+    /// (each mesh change makes Bevy re-check every mesh entity, `mark_3d_meshes_as_changed_if_their_assets_changed`).
+    placeholder: bool,
 }
 
 fn start_loading(
@@ -280,7 +283,7 @@ impl BatchMaker<'_, '_> {
                     irradiance: irradiance.clone(),
                 })));
             }
-            batches.insert(m.id, Batch { mesh, spark, quads: Vec::new(), sparks: Vec::new() });
+            batches.insert(m.id, Batch { mesh, spark, quads: Vec::new(), sparks: Vec::new(), placeholder: false });
         }
     }
 }
@@ -1281,6 +1284,11 @@ fn build_meshes(
         }
     }
     for b in vfx.batches.values_mut() {
+        let empty = if b.spark { b.sparks.is_empty() } else { b.quads.is_empty() };
+        if empty && b.placeholder {
+            continue;
+        }
+        b.placeholder = empty;
         // Empty vertex buffers upset Bevy's mesh allocator: keep one invisible quad.
         if b.spark && b.sparks.is_empty() {
             let corner = Vec2::ZERO;

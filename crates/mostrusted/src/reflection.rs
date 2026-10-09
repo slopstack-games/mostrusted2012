@@ -98,6 +98,9 @@ fn spawn(
         ColorGrading::default(),
         PlanarReflectionCamera,
     ));
+    if crate::indirect_drawing_off() {
+        e.insert(bevy::render::view::NoIndirectDrawing);
+    }
     if let Some(exposure) = exposure {
         e.insert(*exposure);
     }
