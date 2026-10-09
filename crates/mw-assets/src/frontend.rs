@@ -191,6 +191,13 @@ mod h {
 const KEYBOARD_BUTTON_TEXT: ResourceId = ResourceId(0x0100_0000_0001_bbaa);
 
 impl AssetStore {
+    /// The game logic's state machines (`HSMData` of `GAMELOGIC/GAMEMODES.BNDL`, or of another bundle).
+    pub fn hsm_data(&self, bundle: &str) -> Result<mw_formats::hsm::HsmData> {
+        let b = self.bundle(bundle).ok_or(Error::Missing(ResourceId::NULL))?;
+        let e = b.entries_of_type(ResourceType::HSMData).next().ok_or(Error::Missing(ResourceId::NULL))?;
+        Ok(mw_formats::hsm::HsmData::parse(&b.load(e)?)?)
+    }
+
     /// The free-roam start data (GLOBALCONFIG's `GameLogicConfig`, GAMEPLAY's rollouts and swap spots,
     /// TRIGGERS' points).
     pub fn start_config(&self) -> Result<StartConfig> {
