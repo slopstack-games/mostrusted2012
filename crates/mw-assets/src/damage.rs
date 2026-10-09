@@ -14,7 +14,7 @@
 
 use mw_bundle::{Bundle, ResourceId, ResourceType};
 use mw_formats::genesys::{Object, Value, field_hash};
-use mw_formats::{Animation, AnimationList, BoneKey, Skeleton};
+use mw_formats::{Animation, AnimationList, BoneKey, CHANNEL_ROTATION, CHANNEL_SCALE, CHANNEL_TRANSLATION, Skeleton};
 
 use crate::{AssetStore, Error, Result};
 
@@ -87,6 +87,40 @@ impl Similarity {
     }
 }
 
+/// Spherical interpolation along the shorter arc, normalised lerp when the angle is under 5° (cos > 0.9961947),
+/// as `FUN_009f3250` does.
+fn qslerp(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
+    let mut cos: f32 = (0..4).map(|i| a[i] * b[i]).sum();
+    let mut b = b;
+    if cos < 0.0 {
+        cos = -cos;
+        b = b.map(|c| -c);
+    }
+    let (wa, wb) = if cos > 0.996_194_7 {
+        (1.0 - t, t)
+    } else {
+        let angle = cos.clamp(-1.0, 1.0).acos();
+        let s = angle.sin();
+        (((1.0 - t) * angle).sin() / s, (t * angle).sin() / s)
+    };
+    let q: [f32; 4] = std::array::from_fn(|i| wa * a[i] + wb * b[i]);
+    let len = q.iter().map(|c| c * c).sum::<f32>().sqrt();
+    if len > 1e-6 { q.map(|c| c / len) } else { [0.0, 0.0, 0.0, 1.0] }
+}
+
+/// The damage level cap while the car is not wrecked (`FUN_005b62f0`: levels are capped at 0.99 while the
+/// vehicle's used damage-bar segments are below its profile's count, so the last frame shows only on a
+/// wrecked car). We have no wrecked state, so it always applies (as in `paint_wear.rs`).
+pub const LEVEL_CAP: f32 = 0.99;
+
+/// Frame of a damage clip at `level` (`FUN_005b62f0`): level → whole percent p = min(⌊100 level + 0.5⌋, 100),
+/// time p / 100 of the clip, snapped down to a whole frame (no blend between frames). The clip's end time
+/// being its last frame is inferred (the controller's set-up was not read).
+pub fn damage_frame(level: f32, frames: usize) -> usize {
+    let p = ((level * 100.0 + 0.5).floor() as usize).min(100);
+    (p * frames.saturating_sub(1) / 100).min(frames.saturating_sub(1))
+}
+
 /// Impact zones in clip order. Every car's damage `AnimationList` lists its clips in this order (on 50
 /// of the 72 cars the bones each clip moves point exactly this way; on the others a few clips move
 /// bones placed off-centre), so the clip index is the zone.
@@ -149,9 +183,9 @@ pub struct VehicleDamage {
     pub skeleton: Skeleton,
     pub clips: Vec<DamageClip>,
     pub bodyparts: Vec<Bodypart>,
+    /// Bind pose per bone: its position only. The game ignores the skeleton's bind rotations (`AnimBone`
+    /// +0x10) both when posing and when skinning (`FUN_009f4560`, `FUN_0059fa70`).
     pub bind: Vec<Similarity>,
-    /// Bind pose of each bone relative to its parent.
-    bind_local: Vec<Similarity>,
     /// Animated body parts (active aero) posed on the same skeleton (`crate::car_anim`).
     pub animations: Option<crate::car_anim::CarAnimations>,
 }
@@ -162,13 +196,7 @@ impl VehicleDamage {
         let bind: Vec<Similarity> = skeleton
             .bones
             .iter()
-            .map(|b| Similarity { scale: 1.0, rotation: b.rotation, translation: b.position })
-            .collect();
-        let bind_local = skeleton
-            .bones
-            .iter()
-            .enumerate()
-            .map(|(i, b)| b.parent.map_or(bind[i], |p| bind[p].inverse().then_after(&bind[i])))
+            .map(|b| Similarity { scale: 1.0, rotation: [0.0, 0.0, 0.0, 1.0], translation: b.position })
             .collect();
         // Car half size from the bones (they sit on the body surface).
         let half = |axis: usize| skeleton.bones.iter().map(|b| b.position[axis].abs()).fold(0.1f32, f32::max);
@@ -194,7 +222,7 @@ impl VehicleDamage {
                 Ok(DamageClip { zone, bones_direction: [x / len, z / len], animation })
             })
             .collect::<Result<_>>()?;
-        Ok(Self { skeleton, clips, bodyparts, bind, bind_local, animations: None })
+        Ok(Self { skeleton, clips, bodyparts, bind, animations: None })
     }
 
     /// Pose every bone (model space) with `levels[i]` (0..1) of damage in clip `i`.
@@ -203,31 +231,66 @@ impl VehicleDamage {
     }
 
     /// Like [`Self::pose`], plus animated body part clips at a position each (0 = first frame, 1 = last).
-    /// Their keys are offsets from the bind pose like the damage keys, so the two add up on shared bones.
+    ///
+    /// The game's pose (docs/decomp.md "Vehicle damage pose"): every bone starts at zero translation, identity
+    /// rotation and scale 1 each frame (`FUN_009ecfe0`); `FUN_005b62f0` applies the damage clips in index order
+    /// with weight 1 through the additive blend `FUN_009f3250`, skipping a clip whose level is 0. Per bone with
+    /// mask weight w > 0 and only for the channels the clip animates: t += w (T[f] − T[r]); q = slerp(q, D ⊗ q,
+    /// w) with D = Q[f] ⊗ Q[r]⁻¹; s = lerp(s, S[f], w) (absolute: the last clip that scales a bone wins); r is
+    /// the clip's reference frame (0 in vehicles). So a key that is the same in every frame (the XKR's boot lid)
+    /// adds nothing. Part clips go through the same blend after the damage (inferred: the aero player was not
+    /// identified; `FUN_0047bd00`, a forward / backward clip player calling the same blend, is the candidate),
+    /// at a fractional frame. Then `FUN_009f4560` builds model space without bind rotations.
     pub fn pose_with(&self, levels: &[f32], parts: &[(&Animation, f32)]) -> Vec<Similarity> {
         let n = self.skeleton.bones.len();
         let mut keys = vec![BoneKey::IDENTITY; n];
-        let damage = self.clips.iter().map(|c| &c.animation).zip(levels.iter().copied());
-        for (animation, level) in damage.chain(parts.iter().copied()) {
-            if level <= 0.0 || animation.bone_count != n {
+        let damage = self.clips.iter().zip(levels).filter_map(|(c, &level)| {
+            let a = &c.animation;
+            (level.abs() > f32::EPSILON).then(|| (a, damage_frame(level.min(LEVEL_CAP), a.frames.len()) as f32))
+        });
+        let parts = parts.iter().filter(|(_, p)| *p > 0.0).map(|&(a, p)| {
+            let last = a.frames.len().saturating_sub(1) as f32;
+            (a, p.min(1.0) * last)
+        });
+        for (animation, frame) in damage.chain(parts) {
+            if animation.bone_count != n || animation.frames.is_empty() {
                 continue;
             }
-            let frames = animation.frames.len().saturating_sub(1) as f32;
-            for (&b, k) in animation.bones.iter().zip(animation.sample(level.min(1.0) * frames)) {
+            let reference = &animation.frames[animation.reference_frame.min(animation.frames.len() - 1)];
+            let sampled = animation.sample(frame);
+            for (((&b, &channels), k), r) in animation.bones.iter().zip(&animation.channels).zip(sampled).zip(reference)
+            {
+                let w = animation.bone_mask.get(b).copied().unwrap_or(1.0);
+                if w <= 0.0 {
+                    continue;
+                }
                 let acc = &mut keys[b];
-                acc.translation = std::array::from_fn(|i| acc.translation[i] + k.translation[i]);
-                acc.rotation = qmul(acc.rotation, k.rotation);
-                acc.scale *= k.scale;
+                if channels & CHANNEL_TRANSLATION != 0 {
+                    acc.translation =
+                        std::array::from_fn(|i| acc.translation[i] + w * (k.translation[i] - r.translation[i]));
+                }
+                if channels & CHANNEL_ROTATION != 0 {
+                    let d = qmul(k.rotation, qconj(r.rotation));
+                    acc.rotation = qslerp(acc.rotation, qmul(d, acc.rotation), w.min(1.0));
+                }
+                if channels & CHANNEL_SCALE != 0 {
+                    acc.scale += (k.scale - acc.scale) * w;
+                }
             }
         }
+        // Model space (`FUN_009f4560`): q = q_parent ⊗ q_local; t = t_parent + s_parent rotate(q_parent,
+        // (bind_b − bind_parent) + t_local); s = s_parent s_local.
         let mut world: Vec<Similarity> = Vec::with_capacity(n);
         for (i, bone) in self.skeleton.bones.iter().enumerate() {
             let k = &keys[i];
-            let b = &self.bind_local[i];
+            let offset = match bone.parent {
+                Some(p) => std::array::from_fn(|c| bone.position[c] - self.skeleton.bones[p].position[c]),
+                None => bone.position,
+            };
             let local = Similarity {
-                scale: b.scale * k.scale,
-                rotation: qmul(b.rotation, k.rotation),
-                translation: std::array::from_fn(|c| b.translation[c] + k.translation[c]),
+                scale: k.scale,
+                rotation: k.rotation,
+                translation: std::array::from_fn(|c| offset[c] + k.translation[c]),
             };
             world.push(bone.parent.map_or(local, |p| world[p].then_after(&local)));
         }
@@ -428,8 +491,12 @@ mod tests {
             frame_rate: 6.0,
             bone_count: n,
             bones: vec![bone],
+            channels: vec![mw_formats::CHANNEL_TRANSLATION | mw_formats::CHANNEL_SCALE],
+            reference_frame: 0,
+            bone_mask: Vec::new(),
             frames: vec![
                 vec![BoneKey::IDENTITY],
+                vec![BoneKey { translation: [0.0, -0.05, 0.0], scale: 0.5, ..BoneKey::IDENTITY }],
                 vec![BoneKey { translation: [0.0, -0.1, 0.0], scale: 0.0, ..BoneKey::IDENTITY }],
             ],
         };
@@ -452,13 +519,33 @@ mod tests {
         let car = test_car();
         let pose = car.pose(&[0.0; 8]);
         assert_eq!(pose, car.bind);
-        // Half way through clip 0: bone 1 halfway down and half scale.
-        let pose = car.pose(&[0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        // Level 0.6 → 60 % → frame 1 of clip 0 (whole frames): bone 1 halfway down and half scale.
+        let pose = car.pose(&[0.6, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
         assert!(close(pose[1].translation, [1.0, 0.45, 2.0]), "{:?}", pose[1]);
         assert!((pose[1].scale - 0.5).abs() < 1e-6);
+        // Level 0.49 stays on frame 0, and full damage is capped at 0.99 → frame 1 of 3.
+        assert_eq!(car.pose(&[0.49, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]), car.bind);
+        assert!((car.pose(&[1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0])[1].scale - 0.5).abs() < 1e-6);
         // Skinning maps the bind position of a bone to its posed position.
         let skin = car.skin(&pose);
         assert!(close(skin[1].apply([1.0, 0.5, 2.0]), pose[1].translation));
+    }
+
+    #[test]
+    fn constant_keys_add_nothing_and_scale_is_last_wins() {
+        let mut car = test_car();
+        // A key that is the same in every frame (the XKR's boot lid) is the clip's reference: no change.
+        for c in &mut car.clips {
+            for f in &mut c.animation.frames {
+                f[0].translation[0] += 0.12;
+            }
+        }
+        assert_eq!(car.pose(&[0.6; 8]), test_car().pose(&[0.6; 8]));
+        // Clips 0 and 4 both move bone 1: translations add, the later clip's scale wins.
+        car.clips[4].animation.frames[1][0].scale = 0.8;
+        let pose = car.pose(&[1.0, 0.0, 0.0, 0.0, 0.6, 0.0, 0.0, 0.0]);
+        assert!(close(pose[1].translation, [1.0, 0.4, 2.0]), "{:?}", pose[1]);
+        assert!((pose[1].scale - 0.8).abs() < 1e-6);
     }
 
     #[test]

@@ -13,6 +13,8 @@ pub struct Options<'a> {
     /// `zone=level` pairs (zone name or clip index), or `all=level`.
     pub levels: &'a [String],
     pub preview: Option<&'a Path>,
+    /// Print each clip's last-frame keys.
+    pub keys: bool,
 }
 
 fn bundle_for(store: &AssetStore, car: &str) -> Result<String> {
@@ -34,8 +36,10 @@ pub fn run(store: &AssetStore, o: &Options) -> Result<()> {
     println!("skeleton: {} bones", dmg.skeleton.bones.len());
     for (i, bone) in dmg.skeleton.bones.iter().enumerate() {
         let p = bone.position;
+        let q = bone.rotation;
+        let rot = if q[3].abs() < 0.9999 { format!("  bind rotation {q:.3?}") } else { String::new() };
         println!(
-            "  bone {i:2}  parent {:>2}  pos ({:6.3} {:6.3} {:6.3})  id {:08x}",
+            "  bone {i:2}  parent {:>2}  pos ({:6.3} {:6.3} {:6.3})  id {:08x}{rot}",
             bone.parent.map_or("-".into(), |p| p.to_string()),
             p[0],
             p[1],
@@ -43,7 +47,7 @@ pub fn run(store: &AssetStore, o: &Options) -> Result<()> {
             dmg.skeleton.ids[i]
         );
     }
-    print_animations(&dmg);
+    print_animations(&dmg, o.keys);
     for (i, c) in dmg.clips.iter().enumerate() {
         let a = &c.animation;
         let last = a.frames.len().saturating_sub(1);
@@ -79,6 +83,30 @@ pub fn run(store: &AssetStore, o: &Options) -> Result<()> {
             .max_by(|a, b| a.1.total_cmp(&b.1));
         if let Some((bone, d)) = worst {
             println!("        at frame {last}: bone {bone} moved {:.3} m", d);
+        }
+        if o.keys {
+            // Bones whose first-frame key is not the identity (the clip moves them before any damage).
+            let moved0: Vec<usize> = a
+                .bones
+                .iter()
+                .enumerate()
+                .filter(|(k, _)| {
+                    let key = &a.frames[0][*k];
+                    key.translation.iter().any(|t| t.abs() > 1e-4) || key.rotation[3] < 0.9999 || key.scale != 1.0
+                })
+                .map(|(_, &b)| b)
+                .collect();
+            println!("          not identity at frame 0: bones {moved0:?}");
+            let frames = [0, 1, last];
+            for (k, &bone) in a.bones.iter().enumerate() {
+                for f in frames {
+                    if f != last && !moved0.contains(&bone) {
+                        continue;
+                    }
+                    let key = &a.frames[f][k];
+                    println!("          f{f:<2} bone {bone:2}: {}", key_text(key));
+                }
+            }
         }
     }
     for (i, p) in dmg.bodyparts.iter().enumerate() {
@@ -220,8 +248,50 @@ fn survey(store: &AssetStore) -> Result<()> {
                     .collect();
                 let frames: std::collections::BTreeSet<usize> =
                     d.clips.iter().map(|c| c.animation.frames.len()).collect();
+                // Bones whose first-frame key in a damage clip is not the identity (`pose_with` counts damage
+                // keys from frame 0), with the largest such offset.
+                let mut rest = std::collections::BTreeSet::new();
+                let mut rest_max = 0.0f32;
+                for a in d.clips.iter().map(|c| &c.animation) {
+                    let Some(f0) = a.frames.first() else { continue };
+                    for (&bone, key) in a.bones.iter().zip(f0) {
+                        let t = key.translation.iter().map(|t| t * t).sum::<f32>().sqrt();
+                        if t > 1e-3 || key.rotation[3] < 0.9999 || key.scale != 1.0 {
+                            rest.insert(bone);
+                            rest_max = rest_max.max(t);
+                        }
+                    }
+                }
+                // Blend data the game's pose blend reads: reference frames, bone masks (distinct values over
+                // all clips, damage and parts) and bones with a non-identity bind rotation.
+                let parts = d.animations.iter().flat_map(|a| a.clips.iter().map(|c| &c.animation));
+                let all: Vec<&mw_formats::Animation> = d.clips.iter().map(|c| &c.animation).chain(parts).collect();
+                let refs: std::collections::BTreeSet<usize> = all.iter().map(|a| a.reference_frame).collect();
+                let mut masks: Vec<String> = all
+                    .iter()
+                    .map(|a| {
+                        if a.bone_mask.is_empty() {
+                            return "none".to_string();
+                        }
+                        let mut v: Vec<f32> = a.bone_mask.clone();
+                        v.sort_by(f32::total_cmp);
+                        v.dedup();
+                        format!("{v:?}")
+                    })
+                    .collect();
+                masks.sort();
+                masks.dedup();
+                let bind_rot = d.skeleton.bones.iter().filter(|b| b.rotation[3].abs() < 0.9999).count();
+                let rest = format!(
+                    "{rest_text}  ref {refs:?}  masks {masks:?}  rotated binds {bind_rot}",
+                    rest_text = if rest.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  frame-0 offsets on bones {rest:?} (up to {rest_max:.3} m)")
+                    }
+                );
                 println!(
-                    "{:<40} {:2} bones  {} clips  frames {:?}  {:2} bodyparts  off-zone {:?}",
+                    "{:<40} {:2} bones  {} clips  frames {:?}  {:2} bodyparts  off-zone {:?}{rest}",
                     v.name,
                     d.skeleton.bones.len(),
                     d.clips.len(),
@@ -247,7 +317,7 @@ fn survey(store: &AssetStore) -> Result<()> {
 
 /// Animated body parts (active aero) of the car: clips, the bones they move, the state machine's
 /// variables and the speed rule when it is the simple form (`mw_assets::car_anim`).
-fn print_animations(dmg: &mw_assets::damage::VehicleDamage) {
+fn print_animations(dmg: &mw_assets::damage::VehicleDamage, keys: bool) {
     let Some(a) = &dmg.animations else {
         println!("animated parts: none");
         return;
@@ -268,8 +338,33 @@ fn print_animations(dmg: &mw_assets::damage::VehicleDamage) {
             c.duration(),
             c.animation.bones
         );
+        if keys {
+            for (f, frame) in c.animation.frames.iter().enumerate() {
+                for (&bone, key) in c.animation.bones.iter().zip(frame) {
+                    println!("          f{f:<2} bone {bone:2}: {}", key_text(key));
+                }
+            }
+        }
     }
     let names: Vec<&str> =
         a.hsm_strings.iter().filter(|s| s.len() > 3 || s.parse::<f32>().is_ok()).map(String::as_str).collect();
     println!("  hsm strings: {}", names.join(" | "));
+}
+
+/// A clip key as offset, rotation angle about its axis, and scale.
+fn key_text(key: &mw_formats::BoneKey) -> String {
+    let [x, y, z, w] = key.rotation;
+    let angle = 2.0 * w.clamp(-1.0, 1.0).acos().to_degrees();
+    let s = (1.0 - w * w).max(1e-12).sqrt();
+    let t = key.translation;
+    format!(
+        "offset ({:6.3} {:6.3} {:6.3})  rot {angle:6.1}° about ({:5.2} {:5.2} {:5.2})  scale {:.2}",
+        t[0],
+        t[1],
+        t[2],
+        x / s,
+        y / s,
+        z / s,
+        key.scale
+    )
 }

@@ -49,6 +49,44 @@ silver plate. An old bug: every car's badges, the traffic cars' grille logos and
   untextured `_Alpha1bit` meshes do not cut their shadows (Bevy's standard prepass reads the base colour texture
   only).
 
+### 2026-10-09: the Jaguar XKR's "broken spoiler" after contact (the game's damage pose blend ported)
+User report: after contact in a race (XKR, CONTINENTAL DRIFT) a large dark triangle stood up from the boot like a
+broken spoiler. Reproduced with `--drive xkr --test crash` (a frontal hit: front 28 %, front-left / front-right 11 %)
+and `mwtool damage xkr --level all=0.5 --preview` (the boot lid flies up and sideways); a single zone
+(`--level left=1`) looked almost right, which is why the earlier `rear=0.5` preview hid it.
+- **Cause (data + our blend)**: `mwtool damage xkr --keys` shows bones 6, 7, 8 (boot lid hinge, 556 vertices; the
+  two tail-light halves, 1,865 / 1,843 vertices) with the same non-identity key in **every frame of all 8 clips**:
+  offsets (−0.117, 0.014, −0.004), (0.133, 0.048, 0.013), (0.101, 0.048, 0.010) (the clips were made on a rig whose
+  bone 6 sat 12 cm further right). We added every damaged zone's key to the bind pose, so the constant went in once
+  per damaged zone (3 times after a frontal hit, plus the rear clip's rotation of the same bones), and one zone at
+  1 % already shifted the boot lid 12 cm.
+- **The game's rule (decomp.md "Vehicle damage pose", confirmed in the dump)**: `FUN_005b62f0` applies the clips in
+  index order through the additive blend `FUN_009f3250`, each key as its change from the clip's **reference frame**
+  (Anim +0x36, 0 in vehicles; our parser had it as "not applied"): t += T[f] − T[r], q = (Q[f] Q[r]⁻¹) q, but scale
+  absolute (the last clip that scales a bone wins), only on the channels a clip animates. Levels round to whole
+  percent and snap down to whole frames (no blend between frames), capped at 0.99 while not wrecked, skipped at 0.
+  Model space and skinning use bind positions only (`FUN_009f4560`, `FUN_0059fa70`): the bind rotations are ignored.
+  So the constant keys cancel in the original.
+- **Ported** in `VehicleDamage::pose_with` (`Animation` now carries `reference_frame`, `bone_mask`, `channels`).
+  Part clips (active aero) go through the same blend after the damage; their player is not identified
+  (candidate `FUN_0047bd00`, which calls the same additive blend), and the Veyron's transition clips start from a
+  deployed pose, so the HSM probably layers them; open.
+- **Other cars** (`mwtool damage all`, new column): 30 of 72 cars have frame-0 offsets on damage-clip bones; most
+  under 3 cm, but R34 Skyline 0.78 m (bone 16 = the steering wheel, 389 vertices: the front-left clip moved it 77 cm
+  to the left-hand-drive position on any front-left hit), Viper GTS 0.57 m (bones 9–12, 35), McLaren F1 LM 0.38 m,
+  MP4-12C 0.21 m, SLS 0.18 m, Evoque 0.14 m, XKR 0.14 m, Camaro ZL1 0.13 m, Veyron Vitesse 0.07 m, Agera R 0.06 m,
+  Impreza 0.05 m, 911 Turbo 0.05 m (M3 Coupé 3 cm). Every car changes slightly too: whole frames instead of
+  interpolated ones, the 0.99 cap (frame 19 of 20 at most until wrecked), last-wins scale (a part detached by one
+  zone's clip comes back if a later clip animates its scale), and tilted bind bones (every car has at least one,
+  the steering wheel; 18 cars have 2–5, e.g. Huayra flaps) now rotate about model axes. All 72 cars use reference
+  frame 0; bone masks are all 1.0 except on 9 cars, where some clips mask bones with 0.
+- **After**: `--test crash` and `--damage all=0.5` show an intact boot; 911 damage and `--anim all=1` spoiler as
+  before. Open: the distance fade (k at `.data` 0x0110d53c) for AI cars, the wrecked state (lifts the 0.99 cap),
+  the aero player.
+- **Tools**: `mwtool damage <car> --keys` (each clip's keys at frames 0, 1 and last; every frame of part clips;
+  bind rotations in the bone list), `damage all` lists frame-0 offsets, reference frames, masks and rotated binds;
+  `mostrusted --damage zone=level,...` starts the player car damaged.
+
 ### 2026-10-09: groundcover sprites face the camera (the `Groundcover` vertex program ported)
 User report: since the sprite-size fix (byte / 127 × 2^e m, so the e = 6 / 8 groups are 10–60 m tree cards) the
 cards showed as thin vertical slivers when seen edge-on: we drew each sprite as two crossed static quads.

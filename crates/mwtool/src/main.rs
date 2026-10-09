@@ -362,6 +362,9 @@ enum Cmd {
         /// Write a software-rendered preview of the posed body.
         #[arg(long)]
         preview: Option<PathBuf>,
+        /// Print every clip's keys at its last frame (offset, rotation angle and axis, scale per bone).
+        #[arg(long)]
+        keys: bool,
     },
     /// Show the handling data extracted from a car's GeneSys objects.
     Handling {
@@ -671,9 +674,9 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Cmd::Damage { car, level, preview } => {
+        Cmd::Damage { car, level, preview, keys } => {
             let store = AssetStore::new(game)?;
-            damage::run(&store, &damage::Options { car: &car, levels: &level, preview: preview.as_deref() })?
+            damage::run(&store, &damage::Options { car: &car, levels: &level, preview: preview.as_deref(), keys })?
         }
         Cmd::VerifyHandling { csv, vehicle, wheels } => verify_handling::verify_handling(
             &AssetStore::new(game)?,
