@@ -28,7 +28,9 @@ impl BindValue {
     pub fn num(&self) -> f64 {
         match self {
             Self::Num(n) => *n,
-            Self::Text(s) => s.trim().parse().unwrap_or(0.0),
+            // Text that is not a number compares unequal to every number (a formatted time is not 0).
+            Self::Text(s) if s.trim().is_empty() => 0.0,
+            Self::Text(s) => s.trim().parse().unwrap_or(f64::NAN),
         }
     }
 }
@@ -170,6 +172,45 @@ impl Binding {
             BindValue::Num(n) => format!("{}", n.round() as i64),
         }
     }
+}
+
+impl Binding {
+    /// [`format`](Self::format) plus the code-side formatters, which the data names but whose output the
+    /// dump does not show (model decisions, docs/decomp.md "Front end, HUD and Easydrive"): with `metric` known,
+    /// `DIST` takes metres and prints whole metres / yards, or with `LONG` kilometres / miles to one decimal;
+    /// `WITHORDINAL` prints `1ST`, `2ND`, ...; `TIME` prints seconds as `M:SS.hh`.
+    pub fn format_in(&self, v: &BindValue, metric: Option<bool>) -> String {
+        match (v, metric) {
+            (BindValue::Num(m), Some(metric)) if self.has("DIST") => {
+                if self.has("LONG") {
+                    format!("{:.1}", m / if metric { 1000.0 } else { 1609.344 })
+                } else {
+                    format!("{:.0}", m / if metric { 1.0 } else { 0.9144 })
+                }
+            }
+            (BindValue::Num(n), _) if self.has("WITHORDINAL") => with_ordinal(n.round() as i64),
+            (BindValue::Num(s), _) if self.has("TIME") => race_time(*s),
+            _ => self.format(v),
+        }
+    }
+}
+
+/// `1` → `1ST`, `22` → `22ND`, `13` → `13TH` (English; the UI fonts are upper case).
+pub fn with_ordinal(n: i64) -> String {
+    let suffix = match (n % 10, n % 100) {
+        (_, 11..=13) => "TH",
+        (1, _) => "ST",
+        (2, _) => "ND",
+        (3, _) => "RD",
+        _ => "TH",
+    };
+    format!("{n}{suffix}")
+}
+
+/// Seconds as `M:SS.hh` (`83.456` → `1:23.45`).
+pub fn race_time(seconds: f64) -> String {
+    let hundredths = (seconds.max(0.0) * 100.0).floor() as u64;
+    format!("{}:{:02}.{:02}", hundredths / 6000, hundredths / 100 % 60, hundredths % 100)
 }
 
 /// `12345` → `12,345`.

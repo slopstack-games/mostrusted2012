@@ -83,6 +83,14 @@ enum UiCmd {
         #[arg(long, value_delimiter = ',', allow_hyphen_values = true)]
         map: Vec<f32>,
     },
+    /// Print language strings by id, or every string containing `--grep` (case-insensitive).
+    Text {
+        ids: Vec<u32>,
+        #[arg(long)]
+        grep: Option<String>,
+        #[arg(long, default_value = mw_assets::DEFAULT_LANGUAGE)]
+        lang: String,
+    },
     /// Draw a text sample in a UI font.
     Font {
         number: u32,
@@ -561,6 +569,20 @@ fn main() -> Result<()> {
                         map: (map.len() == 3).then(|| [map[0], map[1], map[2]]),
                     };
                     ui::render(&store, &screen, &lang, &out, &options)?
+                }
+                UiCmd::Text { ids, grep, lang } => {
+                    let lang = store.language(&lang)?;
+                    for id in &ids {
+                        println!("{id}\t{:?}", lang.get(*id));
+                    }
+                    if let Some(g) = grep.map(|g| g.to_lowercase()) {
+                        let mut hits: Vec<_> =
+                            lang.strings.iter().filter(|(_, s)| s.to_lowercase().contains(&g)).collect();
+                        hits.sort();
+                        for (id, s) in hits {
+                            println!("{id}\t{s:?}");
+                        }
+                    }
                 }
                 UiCmd::Font { number, out, text, size } => {
                     ui::font_sample(&store, number, &text.replace("\\n", "\n"), size, &out)?

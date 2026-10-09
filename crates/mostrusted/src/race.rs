@@ -53,7 +53,8 @@
 //!   racer's `RacerFinished` the original sets its AI goal 3 (stop racing, `FUN_00843030`); when the player
 //!   finishes every remaining AI racer gets that goal too (`CHECKPTS` exit).
 //!
-//! Minimal text (countdown, lap, position, time) is drawn with `game_text` until the HUD wave replaces it.
+//! The race HUD, countdown and results are `hud.rs` (the game's layouts); `MW_RACE_TEXT=1` adds a one-line
+//! debug text (countdown, lap, position, time).
 //! `--test race` carries the player's car through every gate kinematically (no driving involved), prints
 //! `TEST RESULT race ...` and exits: it checks the race logic, not the handling.
 
@@ -89,16 +90,26 @@ impl Plugin for RacePlugin {
             .add_message::<CheckpointPassed>()
             .add_message::<LapCompleted>()
             .add_message::<RacerFinished>()
+            .add_message::<StartRace>()
             .init_resource::<RespawnFacing>();
-        let Some(setup) = &self.setup else { return };
+        // The race runs while `RaceState` exists: from `--race` (inserted here) or a runtime [`StartRace`]
+        // (Easydrive's RACES tier).
+        let racing = resource_exists::<RaceState>;
         app.add_plugins(crate::chevron::ChevronPlugin)
-            .add_systems(Startup, spawn_route_markers)
-            .insert_resource(RaceState::new(setup))
-            .add_systems(Update, (attach_player, spawn_text, update_text, log_messages))
+            .add_systems(Update, start_race)
+            .add_systems(Update, spawn_route_markers.run_if(resource_added::<RaceState>))
+            .add_systems(Update, (attach_player, log_messages).run_if(racing))
             .add_systems(
                 FixedUpdate,
-                (hold_at_start.before(crate::drive::car_physics), run_race.after(crate::drive::car_physics)),
+                (hold_at_start.before(crate::drive::car_physics), run_race.after(crate::drive::car_physics))
+                    .run_if(racing),
             );
+        // The race HUD is `hud.rs` (the game's race layouts); `MW_RACE_TEXT=1` adds the old one-line debug text.
+        if std::env::var_os("MW_RACE_TEXT").is_some() {
+            app.add_systems(Update, (spawn_text, update_text).run_if(racing));
+        }
+        let Some(setup) = &self.setup else { return };
+        app.insert_resource(RaceState::new(setup));
         if setup.test {
             app.insert_resource(RaceTest::default())
                 .add_systems(FixedUpdate, run_test.before(crate::drive::car_physics).before(hold_at_start))
@@ -465,6 +476,41 @@ pub struct RacerFinished {
     pub time: f32,
 }
 
+/// Start a race while driving (Easydrive's "START RACE"): the player's car is put on the event's start and the
+/// race begins as with `--race` (`Waiting` → intro → go). One race per run: the AI sets up its opponents once
+/// (`ai.rs`), so a second start is refused while or after a race.
+#[derive(Message, Clone)]
+pub struct StartRace(pub Arc<RaceSetup>);
+
+fn start_race(
+    mut commands: Commands,
+    mut starts: MessageReader<StartRace>,
+    race: Option<Res<RaceState>>,
+    mut cars: Query<
+        (&mut Transform, Option<&mut LinearVelocity>, Option<&mut AngularVelocity>),
+        (With<Car>, With<crate::drive::Player>),
+    >,
+) {
+    let Some(StartRace(setup)) = starts.read().last() else { return };
+    if race.is_some() {
+        warn!("race {}: a race was already run; restart the game to run another", setup.event.id);
+        return;
+    }
+    let state = RaceState::new(setup);
+    info!("race {}: {} started from Easydrive", setup.event.id, setup.name);
+    for (mut t, lin, ang) in &mut cars {
+        // A little above the start point (the car settles onto the road).
+        *t = state.player_start.with_translation(state.player_start.translation + Vec3::Y * 0.5);
+        if let Some(mut lin) = lin {
+            lin.0 = Vec3::ZERO;
+        }
+        if let Some(mut ang) = ang {
+            ang.0 = Vec3::ZERO;
+        }
+    }
+    commands.insert_resource(state);
+}
+
 fn spawn_route_markers(
     mut commands: Commands,
     game: Res<crate::Game>,
@@ -788,6 +834,8 @@ struct RaceTest {
     /// The wrong-way check: drive the first leg backwards first.
     reversed: bool,
     saw_wrong_way: bool,
+    /// `MW_RACE_TEST_HOLD=<s>`: keep running this long after the result (to screenshot the results).
+    exit_at: Option<u32>,
 }
 
 const TEST_SPEED: f32 = 40.0;
@@ -806,6 +854,11 @@ fn run_test(
     mut exit: MessageWriter<AppExit>,
 ) {
     if test.done {
+        test.ticks += 1;
+        if test.exit_at.is_some_and(|t| test.ticks >= t) {
+            test.exit_at = None;
+            exit.write(AppExit::Success);
+        }
         return;
     }
     test.ticks += 1;
@@ -839,7 +892,12 @@ fn run_test(
                 p.average_mph(p.finished.unwrap_or(race.clock)),
                 laps.join(","),
             );
-            exit.write(AppExit::Success);
+            match std::env::var("MW_RACE_TEST_HOLD").ok().and_then(|s| s.parse::<f32>().ok()) {
+                Some(hold) => test.exit_at = Some(test.ticks + (hold * 60.0) as u32),
+                None => {
+                    exit.write(AppExit::Success);
+                }
+            }
             return;
         }
         RacePhase::Racing => {}

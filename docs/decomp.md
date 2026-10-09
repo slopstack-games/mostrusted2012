@@ -1090,6 +1090,43 @@ session 5). The code side is not located yet: the callback names the data invoke
 `strings.csv`, but the dump has no references to them, so the functions that register the hooks, generate the
 manufacturer / model / race lists (`Signals.GetIntValue` sources) and map `easy_*` to keys are still to be found.
 
+### Race HUD, countdown and results (2026-10-09, `hud.rs`, `ui_quads.rs`)
+
+What is data (research log 2026-10-09): the screens and layouts, the countdown / results `Sequence`s and their
+`LayoutSequenceItem` times and texts, the UI blend states (`MaterialState` blocks: alpha-over for
+`FlaptGenericShader`, src alpha / one for `UIAdditiveShader`), the behaviour steps. What the dump gave: nothing
+new; `WITHORDINAL` / `ASORDINAL` exist only as strings (0x00f9e4e8, no code reference), the binding
+formatters, widget adapters and the tween code are not in the decompiled set. The HSM text order is the
+source for when the countdown starts (`Mode.IntroTime(LTEQ:3)`) and `FUN_006e2670` for `IntroTime` itself.
+
+Bindings filled from the race (`RaceState`, the player's `RacerProgress`): `Players.LocalPlayer.EventPosition`
+(hidden while 0), `.Lap` (clamped to 1..laps), `Event.Data.Laps`, `.DistanceLeft` (m), `Mode.Time` (race clock),
+`DistanceToFinishManager.IsGoingWrongWay` / `HasMissedCheckpoint` (racing only), `Mode.IntroTime` = trunc(start −
+now + 1 s), `ActiveGameMode.RaceLeaderboard[i].*` (finished racers by time, then by position), `Net.NumPlayersInGame`
+(racers), `Widget.HUD.SummaryHeadline` / `SummaryDetail` (582390's string palettes filled), `Event.GameMode.Name`.
+
+Model decisions (marked in `hud.rs`, `binding.rs`, `ui.rs`):
+- The countdown and results sequences are the **online** race mode's (275829, 1019828): the offline mode's
+  fields are 0. The countdown's items after 5 s ("FALSE START", 8–11 s) are left out. The results play after the
+  finish once no sequence hides the HUD (the event outro's `HideHudSequenceItem` comes first), for their 8 s.
+- Formatter output: `TIME` = `M:SS.hh`; `WITHORDINAL` = English `1ST` / `2ND` / `3RD` / `NTH`; `DIST` takes
+  metres and prints whole metres / yards, `DIST,LONG` km / miles to one decimal, no unit (the layouts have
+  their own unit labels where they show one).
+- Leaderboard: racer names are the AI cars' names (the original's racer names were not located); TKDN / WRCK /
+  SP columns are empty and `Widget.HUD.LocalPlayerScore` is 0 (no Speed Points); `~Signals.GetIntValue[#]` in a
+  row = row + 1.
+- Behaviour steps (the vocabulary is the data's, the meaning our reading of the names): each step runs from its
+  `Delay` over its `Duration` (ms) in list order; `IN` fades in from invisible (and holds the element invisible
+  until it starts), `OUT` fades out, `TO,INVISIBLE` hides, `dx,dy` approaches the rest position from that offset;
+  colour steps, four-number steps and bare ids are ignored. Triggered behaviours play on the trigger's edges (a
+  trigger that has not changed since first seen is settled); an element's own transition-in plays when it starts
+  being drawn (again after 0.25 s unseen). Not played: transition-out, idle behaviours, the layouts' instance
+  timelines (`APPROACH`, `FADE`).
+- Masks with a texture (soft edges, `MaskSampler0/1` in the shader) are axis-aligned rectangle clips.
+- Easydrive's RACES list: the offline races (730000) whose `AllowedVehicleList` holds the driven car (all races
+  when none does), nearest start first. "START RACE" puts the car on the event's start 0.5 m up; the start
+  must be inside the streamed world (`--units`), else the car falls and is reset. One race per run.
+
 ## Free-roam rules: collectibles, jack spots, events
 
 Speed cameras, billboards, security gates, jack spots and body shops are trigger volumes in the world's one

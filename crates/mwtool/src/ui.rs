@@ -82,16 +82,33 @@ fn text_of(lang: &Language, e: &Element) -> String {
 
 /// Print a screen's widgets, layouts and elements.
 pub fn show(store: &AssetStore, bundle: &str, widgets: Option<&[&str]>, lang: &Language) -> Result<()> {
-    let screen = store.ui_screen(bundle)?;
-    println!("screen {} ({} widgets)", screen.id, screen.widgets.len());
-    for w in &screen.widgets {
-        println!("  widget {:?} {} layer {} layouts {}", w.name, w.type_name, w.layer, w.layouts.len());
+    if !bundle.starts_with("layout:") {
+        let screen = store.ui_screen(bundle)?;
+        println!("screen {} ({} widgets)", screen.id, screen.widgets.len());
+        for w in &screen.widgets {
+            println!("  widget {:?} {} layer {} layouts {}", w.name, w.type_name, w.layer, w.layouts.len());
+        }
     }
     let mut cache = UiCache::default();
-    for pl in store.ui_screen_layouts(bundle, widgets)? {
+    for pl in layouts_of(store, bundle, widgets)? {
         print_layout(store, &mut cache, &pl, lang);
     }
     Ok(())
+}
+
+/// The layouts of a screen bundle, or `layout:<id>[@<instance id>],...`: layouts that sequences or element
+/// stacks place by UniqueId (the countdown, the event intro card), with an optional `UILayoutInstanceParams`.
+pub fn layouts_of(store: &AssetStore, arg: &str, widgets: Option<&[&str]>) -> Result<Vec<PlacedLayout>> {
+    let Some(list) = arg.strip_prefix("layout:") else { return Ok(store.ui_screen_layouts(arg, widgets)?) };
+    let mut out = Vec::new();
+    for item in list.split(',') {
+        let (l, i) = item.split_once('@').map_or((item, None), |(l, i)| (l, Some(i)));
+        let id = |s: &str| -> Result<ResourceId> { Ok(mw_formats::ui::object_id(s.trim().parse::<u32>()?)) };
+        let layout = store.ui_layout(id(l)?)?;
+        let instance = i.map(|i| -> Result<_> { Ok(store.ui_layout_instance(id(i)?)?) }).transpose()?;
+        out.push(PlacedLayout { widget_index: 0, widget: String::new(), widget_type: String::new(), layout, instance });
+    }
+    Ok(out)
 }
 
 fn print_layout(store: &AssetStore, cache: &mut UiCache, pl: &PlacedLayout, lang: &Language) {
@@ -135,6 +152,12 @@ fn print_element(store: &AssetStore, cache: &mut UiCache, e: &Element, lang: &La
     if let Some(bg) = e.background {
         line += &format!(" bg {bg:?}");
     }
+    if let Some(m) = e.material {
+        line += &format!(" material {m} ({})", store.ui_material_shader(m).unwrap_or_else(|| "?".into()));
+    }
+    if e.pop_mask {
+        line += " pop";
+    }
     if let Some(t) = &e.text {
         let style = t.style.and_then(|s| cache.style(store, s).cloned());
         line += &format!(" text {:?}", text_of(lang, e));
@@ -162,7 +185,10 @@ fn print_element(store: &AssetStore, cache: &mut UiCache, e: &Element, lang: &La
         }
     }
     for t in &e.triggered {
-        println!("{pad}   on {:?}: {} in / {} out", t.trigger, t.transition_in.len(), t.transition_out.len());
+        let list = |b: &[mw_formats::ui::Behaviour]| {
+            b.iter().map(|b| format!("{}@{}+{}", b.parameters, b.delay, b.duration)).collect::<Vec<_>>().join("; ")
+        };
+        println!("{pad}   on {:?}: in [{}] / out [{}]", t.trigger, list(&t.transition_in), list(&t.transition_out));
     }
     if let Some(s) = &e.sub_image {
         print_element(store, cache, s, lang, depth + 1);
@@ -174,13 +200,15 @@ pub struct Canvas {
     pub w: u32,
     pub h: u32,
     pub scale: f32,
+    /// Fill with the additive blend instead of alpha-over.
+    pub additive: bool,
     px: Vec<[f32; 4]>,
 }
 
 impl Canvas {
     pub fn new(scale: f32, background: [f32; 4]) -> Self {
         let (w, h) = ((REFERENCE_SIZE[0] * scale) as u32, (REFERENCE_SIZE[1] * scale) as u32);
-        Self { w, h, scale, px: vec![background; (w * h) as usize] }
+        Self { w, h, scale, additive: false, px: vec![background; (w * h) as usize] }
     }
 
     fn blend(&mut self, x: u32, y: u32, c: [f32; 4]) {
@@ -190,6 +218,15 @@ impl Canvas {
             p[i] = p[i] * (1.0 - a) + c[i] * a;
         }
         p[3] = p[3] + a * (1.0 - p[3]);
+    }
+
+    /// The UI's additive blend (`UIAdditiveShader`'s MaterialState: colour += src × src alpha).
+    fn add(&mut self, x: u32, y: u32, c: [f32; 4]) {
+        let p = &mut self.px[(y * self.w + x) as usize];
+        let a = c[3].clamp(0.0, 1.0);
+        for i in 0..3 {
+            p[i] += c[i] * a;
+        }
     }
 
     /// Fill a rotated rectangle (reference pixels; rotation in degrees about `pivot`), colour from `shade(u, v)`
@@ -223,7 +260,11 @@ impl Canvas {
                 if (0.0..1.0).contains(&u) && (0.0..1.0).contains(&v) {
                     let c = shade(u, v);
                     if c[3] > 0.0 {
-                        self.blend(x, y, c);
+                        if self.additive {
+                            self.add(x, y, c);
+                        } else {
+                            self.blend(x, y, c);
+                        }
                     }
                 }
             }
@@ -280,7 +321,7 @@ pub struct RenderOptions<'a> {
 pub fn render(store: &AssetStore, bundle: &str, lang: &Language, out: &Path, o: &RenderOptions) -> Result<()> {
     use mw_assets::ui::UiBlend;
     use mw_formats::binding::BindValue;
-    let mut layouts = store.ui_screen_layouts(bundle, o.widgets)?;
+    let mut layouts = layouts_of(store, bundle, o.widgets)?;
     if !o.layouts.is_empty() {
         layouts.retain(|l| o.layouts.contains(&l.layout.id));
     }
@@ -315,12 +356,8 @@ pub fn render(store: &AssetStore, bundle: &str, lang: &Language, out: &Path, o: 
         let r = [q.rect[0] / o.scale, q.rect[1] / o.scale, q.rect[2] / o.scale, q.rect[3] / o.scale];
         let pivot = [r[0] + r[2] * 0.5, r[1] + r[3] * 0.5];
         let c = [linear_to_srgb(q.colour[0]), linear_to_srgb(q.colour[1]), linear_to_srgb(q.colour[2]), q.colour[3]];
-        let additive = q.blend == UiBlend::Additive;
-        let shade = |s: [f32; 4]| -> [f32; 4] {
-            let px = [s[0] * c[0], s[1] * c[1], s[2] * c[2], s[3] * c[3]];
-            // Additive: fake it by scaling alpha with brightness.
-            if additive { [px[0], px[1], px[2], px[3] * (px[0] + px[1] + px[2]) / 3.0] } else { px }
-        };
+        canvas.additive = q.blend == UiBlend::Additive;
+        let shade = |s: [f32; 4]| -> [f32; 4] { [s[0] * c[0], s[1] * c[1], s[2] * c[2], s[3] * c[3]] };
         if q.map {
             let (Some(m), Some([x, z, heading])) = (&mosaic, o.map) else { continue };
             let (w, h) = (q.rect[2].max(1.0) as u32, q.rect[3].max(1.0) as u32);

@@ -1,28 +1,66 @@
 //! The driving HUD, drawn from the game's own UI data: the free-roam screen's layouts
-//! (`UI/SCREENS2/371670.BNDL`), its textures and bitmap fonts, with the bindings the layouts name filled
-//! from the car (`mw_assets::ui::UiScene::draw` turns them into quads; this module shows the quads as Bevy UI
+//! (`UI/SCREENS2/371670.BNDL`), the race HUD's (`UI/SCREENS2/604153.BNDL`), the countdown and results
+//! sequences' layouts, their textures and bitmap fonts, with the bindings the layouts name filled from the car
+//! and the race (`mw_assets::ui::UiScene::draw_with` turns them into quads; `ui_quads` shows them as Bevy UI
 //! nodes). The minimap is the game's map-tile grid, composited on the CPU heading-up.
 //!
-//! The game decides which layouts a widget shows in code (widget adapters); here a fixed free-roam set
-//! stands in: speedometer + nitrous gauge, odometer, minimap frame, road / district name. F3 toggles the
-//! debug status text.
+//! The game decides which layouts a widget shows in code (widget adapters); here fixed sets stand in:
+//! - free roam (always): speedometer + nitrous gauge, odometer, minimap frame, road / district name;
+//! - a race (`race::RaceState` present, intro and racing): position / lap or distance left, race time,
+//!   wrong way / checkpoint missed;
+//! - the countdown sequence over the intro's last seconds, and the results sequence after the finish.
+//!
+//! Triggered behaviours (fades, slides, flashes keyed to a binding's changes) are animated (`UiAnim`).
+//! F3 toggles the debug status text.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, channel};
 
 use bevy::prelude::*;
-use mw_assets::ui::{FREE_ROAM_HUD, MapMosaic, UiScene};
+use mw_assets::ui::{DrawOptions, FREE_ROAM_HUD, MapMosaic, PlacedLayout, Quad, SequenceLayout, UiAnim, UiScene};
 use mw_bundle::ResourceId;
-use mw_formats::binding::BindValue;
+use mw_formats::binding::{BindValue, Binding, race_time};
 
 use crate::game_text::{self, GameFonts, LoadedFont};
+use crate::race::{RacePhase, RaceState, Racer, RacerProgress};
+use crate::ui_quads::{AdditiveQuadMaterial, PoolNode, QuadNode, QuadPool, show_quads};
 
 /// Layouts shown while driving in free roam (UniqueIds in `FREE_ROAM_HUD`): the first `Nitrous` widget's
 /// speedometer + nitrous gauge (1670359) and odometer (1806698), and `AdditionalHUD`'s minimap frame
-/// (1206246) and road / district name plates (1990196). Pursuit, event and EasyDrive layouts need game
-/// modes we don't have yet.
+/// (1206246) and road / district name plates (1990196). Pursuit and EasyDrive layouts need game modes we
+/// don't have yet.
 pub const FREE_ROAM_LAYOUTS: [u32; 4] = [1_206_246, 1_990_196, 1_670_359, 1_806_698];
+
+/// The offline race HUD screen: the HSM's "Race HUD" state ("Activate Race HUD Styles Widget Group") names
+/// 604152 / 371726; this bundle is the screen whose widgets bind `DistanceToFinishManager`, `Event.Data.Laps`
+/// and `Players.LocalPlayer.EventPosition` (research log 2026-10-09).
+pub const RACE_HUD: &str = "UI/SCREENS2/604153.BNDL";
+
+/// Race layouts of `RACE_HUD`: `AdditionalHUD` 1470173 (POSITION, LAP x / y on circuits, DISTANCE on
+/// sprints), 1470152 (TIME, `Mode.Time`) and `HUD` 1106106 (WRONG WAY / CHECKPOINT MISSED banners).
+pub const RACE_LAYOUTS: [u32; 3] = [1_470_173, 1_470_152, 1_106_106];
+
+/// Countdown sequence: the online race mode's (GameMode 1019777) `4d1a6bfa`, a `Sequence` bound to
+/// `Mode.IntroTime` whose layouts are "GET READY..." and the "RACE / STARTING IN... / {Mode.IntroTime(INT)}"
+/// card with GO. The offline race mode (730000) has 0 in that field and in every other sequence field, and
+/// the offline flow's countdown was not located: using this one is a model decision.
+pub const COUNTDOWN_SEQUENCE: u32 = 275_829;
+/// The HSM starts the countdown when `Mode.IntroTime(LTEQ:3)` holds ("Wait For Countdown Start (Exit When
+/// Binding Is True)" → "Play countdown (Run Gamelogic Sequence)"); the sequence runs on its own clock from
+/// there. Its items after 5 s (the "FALSE START" card at 8–11 s, for the online false-start check) are left out.
+const COUNTDOWN_START_INTRO_TIME: f32 = 3.0;
+const COUNTDOWN_LAST_ITEM_START: f32 = 5.0;
+
+/// Results sequence: the online race mode's `ResultsSequence` (1019828): the RESULTS leaderboard (1335088, element
+/// stacks over `ActiveGameMode.RaceLeaderboard`) and the summary (1645120: "YOU FINISHED 1ST", "TIME ...") from
+/// 0.25 s to 8.25 s. The offline race mode's `ResultsSequence` is 0 (its results are the front end's
+/// `ArcResults` screen 1377068): model decision as for the countdown.
+pub const RESULTS_SEQUENCE: u32 = 1_019_828;
+/// `582390`'s string palettes: `FinishPosition` "YOU FINISHED {...FinishPosition(WITHORDINAL)}" and
+/// `FinishTime` "TIME {...LocalPlayerTime(TIME)}", what `Widget.HUD.SummaryHeadline` / `SummaryDetail` show.
+const FINISH_POSITION_TEXT: u32 = 1_589_986;
+const FINISH_TIME_TEXT: u32 = 1_693_016;
 
 /// Minimap scale in metres per reference pixel (1280×720 frame): the map tiles' own resolution
 /// (256 px per 1036 m tile). The game's map camera (`UIMapCameraConfig`: distance 600 m bound to
@@ -45,7 +83,7 @@ impl Plugin for HudPlugin {
         })
         .init_resource::<HudState>()
         .add_systems(Startup, start_loading)
-        .add_systems(Update, (receive_hud, toggle_debug, track_car, draw_hud).chain());
+        .add_systems(Update, (receive_hud, toggle_debug, track_car, track_race, draw_hud).chain());
     }
 }
 
@@ -69,10 +107,42 @@ pub struct HudState {
     /// Nitrous tank fill 0–1 and whether it burns (the driven car's `mw_handling::nitrous::Nitrous`).
     pub nitrous: f32,
     pub using_nitrous: bool,
+    /// Seconds the results sequence has played (the player finished and no sequence hides the HUD).
+    pub results_clock: Option<f32>,
+}
+
+/// What a layout of the HUD scene belongs to.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Group {
+    FreeRoam,
+    Race,
+    /// Item of the countdown / results sequence (index into `Hud::countdown` / `Hud::results`).
+    Countdown(usize),
+    Results(usize),
+}
+
+/// A sequence item's timing, enabling binding and texts.
+#[derive(Debug, Clone)]
+struct SeqItem {
+    start: f32,
+    end: f32,
+    enabled: String,
+    texts: [u32; 3],
+}
+
+impl SeqItem {
+    fn of(s: &SequenceLayout) -> Self {
+        Self { start: s.start, end: s.end, enabled: s.enabled.clone(), texts: s.texts }
+    }
 }
 
 struct HudAssets {
     scene: UiScene,
+    groups: Vec<Group>,
+    countdown: Vec<SeqItem>,
+    results: Vec<SeqItem>,
+    lang: mw_formats::Language,
+    car_names: HashMap<String, String>,
     images: Vec<(ResourceId, Image)>,
     fonts: Vec<(u32, mw_formats::Font)>,
     mosaic: Option<MapMosaic>,
@@ -84,9 +154,16 @@ struct HudLoading(Mutex<Receiver<HudAssets>>);
 #[derive(Resource)]
 struct Hud {
     scene: UiScene,
+    groups: Vec<Group>,
+    countdown: Vec<SeqItem>,
+    results: Vec<SeqItem>,
+    lang: mw_formats::Language,
+    /// Car names by bundle stem (`VEH_1085007_HI`): AI racers are named after their car's bundle.
+    car_names: HashMap<String, String>,
+    anim: UiAnim,
     textures: HashMap<ResourceId, (Handle<Image>, Vec2)>,
     root: Entity,
-    pool: Vec<Entity>,
+    pool: QuadPool,
     map: Option<MapView>,
 }
 
@@ -97,7 +174,24 @@ struct MapView {
     frame: u32,
 }
 
-/// Build the HUD scene on a thread: decode the screen's layouts, styles, fonts and textures.
+/// The layouts of `screen` named in `ids`, each once (screens repeat layouts across widget variants: the five
+/// `Nitrous` widgets all place the odometer).
+fn screen_layouts(store: &mw_assets::AssetStore, screen: &str, ids: &[u32]) -> Vec<PlacedLayout> {
+    let mut out: Vec<PlacedLayout> = Vec::new();
+    match store.ui_screen_layouts(screen, None) {
+        Ok(all) => {
+            for l in all {
+                if ids.contains(&l.layout.id) && !out.iter().any(|o| o.layout.id == l.layout.id) {
+                    out.push(l);
+                }
+            }
+        }
+        Err(e) => warn!("HUD: no screen {screen} ({e})"),
+    }
+    out
+}
+
+/// Build the HUD scene on a thread: decode the screens' layouts, the sequences', styles, fonts and textures.
 fn start_loading(mut commands: Commands, game: Res<crate::Game>, settings: Res<HudSettings>) {
     if !settings.enabled {
         return;
@@ -106,13 +200,6 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>, settings: Res<H
     let (tx, rx) = channel();
     std::thread::spawn(move || {
         let t = std::time::Instant::now();
-        let layouts = match store.ui_screen_layouts(FREE_ROAM_HUD, None) {
-            Ok(l) => l.into_iter().filter(|l| FREE_ROAM_LAYOUTS.contains(&l.layout.id)).collect(),
-            Err(e) => {
-                warn!("HUD: no screen {FREE_ROAM_HUD} ({e})");
-                return;
-            }
-        };
         let lang = match store.language(mw_assets::DEFAULT_LANGUAGE) {
             Ok(l) => l,
             Err(e) => {
@@ -120,19 +207,59 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>, settings: Res<H
                 return;
             }
         };
+        let mut layouts = Vec::new();
+        let mut groups = Vec::new();
+        for l in screen_layouts(&store, FREE_ROAM_HUD, &FREE_ROAM_LAYOUTS) {
+            layouts.push(l);
+            groups.push(Group::FreeRoam);
+        }
+        for l in screen_layouts(&store, RACE_HUD, &RACE_LAYOUTS) {
+            layouts.push(l);
+            groups.push(Group::Race);
+        }
+        let sequence = |id: u32| {
+            store.ui_sequence_layouts(id).unwrap_or_else(|e| {
+                warn!("HUD: no sequence {id} ({e})");
+                Vec::new()
+            })
+        };
+        let mut countdown = Vec::new();
+        for s in sequence(COUNTDOWN_SEQUENCE).into_iter().filter(|s| s.start < COUNTDOWN_LAST_ITEM_START) {
+            groups.push(Group::Countdown(countdown.len()));
+            countdown.push(SeqItem::of(&s));
+            layouts.push(s.layout);
+        }
+        let mut results = Vec::new();
+        for s in sequence(RESULTS_SEQUENCE) {
+            groups.push(Group::Results(results.len()));
+            results.push(SeqItem::of(&s));
+            layouts.push(s.layout);
+        }
         let scene = store.ui_scene(layouts, &lang);
+        let car_names = store
+            .vehicles(&lang)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|v| v.name != "?")
+            .flat_map(|v| {
+                let name = v.name.to_uppercase();
+                [(format!("VEH_{}_HI", v.id), name.clone()), (format!("VEH_{}_LO", v.id), name)]
+            })
+            .collect();
         let images =
             scene.textures().into_iter().filter_map(|id| Some((id, game_text::decode_texture(&store, id)?))).collect();
         let fonts = scene.fonts.iter().map(|(&n, f)| (n, f.clone())).collect();
         let mosaic = store.ui_map_grid().ok().map(|g| MapMosaic::build(&store, g));
         info!(
-            "HUD: {} layouts, {} fonts, minimap {} in {:.0?}",
+            "HUD: {} layouts ({} countdown, {} results items), {} fonts, minimap {} in {:.0?}",
             scene.layouts.len(),
+            countdown.len(),
+            results.len(),
             scene.fonts.len(),
             mosaic.is_some(),
             t.elapsed()
         );
-        let _ = tx.send(HudAssets { scene, images, fonts, mosaic });
+        let _ = tx.send(HudAssets { scene, groups, countdown, results, lang, car_names, images, fonts, mosaic });
     });
     commands.insert_resource(HudLoading(Mutex::new(rx)));
 }
@@ -177,7 +304,19 @@ fn receive_hud(
         size: UVec2::ONE,
         frame: 0,
     });
-    commands.insert_resource(Hud { scene: assets.scene, textures, root, pool: Vec::new(), map });
+    commands.insert_resource(Hud {
+        scene: assets.scene,
+        groups: assets.groups,
+        countdown: assets.countdown,
+        results: assets.results,
+        lang: assets.lang,
+        car_names: assets.car_names,
+        anim: UiAnim::default(),
+        textures,
+        root,
+        pool: QuadPool::default(),
+        map,
+    });
 }
 
 /// F3 shows the debug status text (hidden while the HUD is up).
@@ -222,6 +361,125 @@ fn track_car(
     state.using_nitrous = car.nitrous.burning;
 }
 
+/// The results sequence's clock: runs once the player has finished and nothing hides the HUD (the event
+/// outro's `HideHudSequenceItem` comes first in the original).
+fn track_race(mut state: ResMut<HudState>, race: Option<Res<RaceState>>, settings: Res<HudSettings>, time: Res<Time>) {
+    let finished = race.is_some_and(|r| r.phase == RacePhase::Finished);
+    state.results_clock = match (finished, state.results_clock) {
+        (false, _) => None,
+        (true, None) if settings.hidden_by_sequence => None,
+        (true, None) => {
+            info!("HUD: results sequence starts at {:.2} s game time", time.elapsed_secs());
+            Some(0.0)
+        }
+        (true, Some(t)) => Some(t + time.delta_secs()),
+    };
+}
+
+/// One racer's row of `ActiveGameMode.RaceLeaderboard`.
+struct BoardRow {
+    name: String,
+    finished: Option<f32>,
+    local: bool,
+}
+
+/// The race as the bindings see it this frame.
+struct RaceView<'a> {
+    race: &'a RaceState,
+    player: Option<&'a RacerProgress>,
+    board: Vec<BoardRow>,
+    mode_name: String,
+}
+
+/// `Mode.IntroTime` (`FUN_006e2670`): (start − now + 1 s) in whole seconds; after go it is 0 and below.
+fn intro_time(race: &RaceState) -> f32 {
+    match race.phase {
+        RacePhase::Waiting => race.intro + 1.0,
+        RacePhase::Intro => (race.intro_left() + 1.0).trunc(),
+        _ => (1.0 - race.clock).trunc(),
+    }
+}
+
+/// The countdown sequence's clock: seconds since `Mode.IntroTime(LTEQ:3)` became true.
+fn countdown_clock(race: &RaceState) -> Option<f32> {
+    match race.phase {
+        RacePhase::Intro if race.intro_left() < COUNTDOWN_START_INTRO_TIME => {
+            Some(COUNTDOWN_START_INTRO_TIME - race.intro_left())
+        }
+        RacePhase::Racing | RacePhase::Finished => Some(COUNTDOWN_START_INTRO_TIME + race.clock),
+        _ => None,
+    }
+}
+
+/// `ActiveGameMode.RaceLeaderboard[i].Field`: as a whole path (cell fields) or split by the binding parser at
+/// the `[` (template bindings: path `ActiveGameMode.RaceLeaderboard`, argument `i].Field`).
+fn board_field<'p>(path: &'p str, arg: Option<&'p str>) -> Option<(usize, &'p str)> {
+    const LIST: &str = "ActiveGameMode.RaceLeaderboard";
+    let rest = match path.strip_prefix(LIST)? {
+        "" => arg?,
+        r => r.strip_prefix('[')?,
+    };
+    let (index, field) = rest.split_once(']')?;
+    Some((index.trim().parse().ok()?, field.trim_start_matches('.')))
+}
+
+/// Fill `{binding}`s of a language string with `lookup` (the summary's palette strings, sequence texts).
+fn resolve(template: &str, metric: bool, lookup: &mut dyn FnMut(&str, Option<&str>) -> Option<BindValue>) -> String {
+    mw_formats::ui::substitute(template, |expr| {
+        let b = Binding::parse(expr)?;
+        let v = b.eval(lookup)?;
+        Some(b.format_in(&v, Some(metric)))
+    })
+}
+
+impl RaceView<'_> {
+    /// Values for the race layouts' bindings (`None`: not a race binding).
+    fn lookup(&self, path: &str, arg: Option<&str>, metric: bool) -> Option<BindValue> {
+        let race = self.race;
+        if let Some((i, field)) = board_field(path, arg) {
+            let row = self.board.get(i)?;
+            return Some(match field {
+                "Name" => row.name.clone().into(),
+                // DNF shows for 0.
+                "FinalTime" => row.finished.map_or(BindValue::Num(0.0), |t| race_time(t as f64).into()),
+                "LocalPlayer" => row.local.into(),
+                // Not modelled (speed points, takedowns, wrecks): empty labels.
+                "Score" | "Score1" | "Score2" => String::new().into(),
+                _ => false.into(),
+            });
+        }
+        Some(match path {
+            // 0 until the race has placed the racers: nothing shown.
+            "Players.LocalPlayer.EventPosition" => (Some(self.player?.position).filter(|&p| p > 0)? as f64).into(),
+            "Players.LocalPlayer.Lap" => (self.player?.lap.clamp(1, race.laps) as f64).into(),
+            "Event.Data.Laps" => (race.laps as f64).into(),
+            "Players.LocalPlayer.DistanceLeft" => (self.player?.to_finish.max(0.0) as f64).into(),
+            "Mode.Time" => race_time(race.clock as f64).into(),
+            "DistanceToFinishManager.IsGoingWrongWay" => {
+                (race.phase == RacePhase::Racing && self.player.is_some_and(|p| p.wrong_way)).into()
+            }
+            "DistanceToFinishManager.HasMissedCheckpoint" => {
+                (race.phase == RacePhase::Racing && self.player.is_some_and(|p| p.missed_checkpoint)).into()
+            }
+            "Mode.IntroTime" => (intro_time(race) as f64).into(),
+            "Mode.IsRaceEvent" => true.into(),
+            "Mode.DisplayTimeout" | "Mode.IsFreedriveEvent" | "Mode.Data.Online" => false.into(),
+            "Net.NumPlayersInGame" => (self.board.len() as f64).into(),
+            // Row numbers of the leaderboard (`~Signals.GetIntValue[#]`, `#` = the 0-based row).
+            "Signals.GetIntValue" => (arg?.trim().parse::<f64>().ok()? + 1.0).into(),
+            "Event.GameMode.Name" | "Widget.HUD.GameMode.Name" => self.mode_name.clone().into(),
+            "Widget.FinishPosition.FinishPosition" => (self.player?.position as f64).into(),
+            "Widget.FinishTime.LocalPlayerTime" => (self.player?.finished? as f64).into(),
+            // Speed points are not modelled.
+            "Widget.HUD.LocalPlayerScore" => 0.0.into(),
+            _ => {
+                let _ = metric;
+                return None;
+            }
+        })
+    }
+}
+
 /// Values for the bindings the free-roam layouts use.
 fn lookup(
     path: &str,
@@ -241,7 +499,8 @@ fn lookup(
         "Players.LocalPlayer.NitrousState.UsingNitrous" => state.using_nitrous.into(),
         "Players.LocalPlayer.NitrousState.InOverdrive" => false.into(),
         "Widget.Nitrous.ShowOdometer" => true.into(),
-        "Widget.Nitrous.Odometer" => (state.odometer / if metric { 1000.0 } else { 1609.344 }).into(),
+        // Metres: `DIST,LONG` prints km or miles.
+        "Widget.Nitrous.Odometer" => state.odometer.into(),
         "Signals.GetSineWave" => {
             let period = arg.and_then(|a| a.parse::<f64>().ok()).unwrap_or(1000.0) / 1000.0;
             (0.5 + 0.5 * (t / period.max(0.001) * std::f64::consts::TAU).sin()).into()
@@ -259,8 +518,6 @@ fn lookup(
     })
 }
 
-pub type PoolNode<'a> = (&'a mut Node, &'a mut ImageNode, &'a mut UiTransform, &'a mut Visibility);
-
 #[allow(clippy::too_many_arguments)]
 fn draw_hud(
     mut commands: Commands,
@@ -268,11 +525,14 @@ fn draw_hud(
     settings: Res<HudSettings>,
     state: Res<HudState>,
     car: Query<(&crate::drive::Car, &GlobalTransform), With<crate::drive::Player>>,
+    race: Option<Res<RaceState>>,
+    racers: Query<(&Racer, &RacerProgress)>,
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     time: Res<Time>,
-    mut nodes: Query<PoolNode>,
+    mut nodes: Query<PoolNode, With<QuadNode>>,
     mut images: ResMut<Assets<Image>>,
-    mut root_vis: Query<&mut Visibility, Without<ImageNode>>,
+    mut materials: ResMut<Assets<AdditiveQuadMaterial>>,
+    mut root_vis: Query<&mut Visibility, Without<QuadNode>>,
 ) {
     let Some(mut hud) = hud else { return };
     let car = car.single().ok();
@@ -290,7 +550,80 @@ fn draw_hud(
     let screen = [window.width(), window.height()];
     let t = time.elapsed_secs_f64();
     let metric = settings.metric;
-    let quads = hud.scene.draw(screen, &mut |path, arg| lookup(path, arg, car, &state, metric, t));
+
+    let Hud { scene, groups, countdown, results, lang, car_names, anim, .. } = &mut *hud;
+    scene.metric = Some(metric);
+    let view = race.as_deref().map(|race| {
+        let player = racers.iter().find(|(r, _)| r.player).map(|(_, p)| p);
+        // Finished racers by finish time, then the rest by position.
+        let mut rows: Vec<_> = racers.iter().collect();
+        rows.sort_by(|a, b| match (a.1.finished, b.1.finished) {
+            (Some(x), Some(y)) => x.total_cmp(&y),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.1.position.cmp(&b.1.position),
+        });
+        let board = rows
+            .into_iter()
+            .map(|(r, p)| BoardRow {
+                // Model decision: the car's name (the original's racer names were not located).
+                name: car_names.get(&r.name).cloned().unwrap_or_else(|| r.name.to_uppercase()),
+                finished: p.finished,
+                local: r.player,
+            })
+            .collect();
+        let mode_name = race.game_mode.and_then(|m| lang.get(m.name)).unwrap_or("RACE").to_uppercase();
+        RaceView { race, player, board, mode_name }
+    });
+    let race_hud = view.as_ref().is_some_and(|v| matches!(v.race.phase, RacePhase::Intro | RacePhase::Racing));
+
+    let mut base = |path: &str, arg: Option<&str>| -> Option<BindValue> {
+        view.as_ref().and_then(|v| v.lookup(path, arg, metric)).or_else(|| lookup(path, arg, car, &state, metric, t))
+    };
+    let mut draw = |only: &dyn Fn(Group) -> bool, lookup: &mut dyn FnMut(&str, Option<&str>) -> Option<BindValue>| {
+        let groups = &*groups;
+        let mut options =
+            DrawOptions::new(Some(Box::new(move |i| groups.get(i).is_some_and(|&g| only(g)))), Some(&mut *anim), t);
+        scene.draw_with(screen, lookup, &mut options)
+    };
+    let mut quads: Vec<Quad> = draw(&|g| g == Group::FreeRoam || (g == Group::Race && race_hud), &mut base);
+
+    // Sequence items: their texts come in as `UISequences.Params[#].TextN` (the parser splits the path at
+    // the `[`: argument `#].TextN`).
+    let mut sequence = |items: &[SeqItem], clock: f32, group: fn(usize) -> Group, quads: &mut Vec<Quad>| {
+        for (i, item) in items.iter().enumerate() {
+            if clock < item.start || clock >= item.end {
+                continue;
+            }
+            if !item.enabled.is_empty()
+                && !Binding::parse(&item.enabled).and_then(|b| b.eval(&mut base)).is_some_and(|v| v.truthy())
+            {
+                continue;
+            }
+            let texts = item.texts.map(|id| lang.get(id).map(|s| resolve(s, metric, &mut base)).unwrap_or_default());
+            let mut seq_lookup = |path: &str, arg: Option<&str>| -> Option<BindValue> {
+                if path == "UISequences.Params" {
+                    let n = arg?.rsplit("Text").next()?.trim().parse::<usize>().ok()?;
+                    return Some(texts.get(n.checked_sub(1)?)?.clone().into());
+                }
+                match path {
+                    "Widget.HUD.SummaryHeadline" => {
+                        Some(resolve(lang.get(FINISH_POSITION_TEXT)?, metric, &mut base).into())
+                    }
+                    "Widget.HUD.SummaryDetail" => Some(resolve(lang.get(FINISH_TIME_TEXT)?, metric, &mut base).into()),
+                    _ => base(path, arg),
+                }
+            };
+            let g = group(i);
+            quads.extend(draw(&|x| x == g, &mut seq_lookup));
+        }
+    };
+    if let Some(clock) = view.as_ref().and_then(|v| countdown_clock(v.race)) {
+        sequence(countdown, clock, Group::Countdown, &mut quads);
+    }
+    if let Some(clock) = state.results_clock {
+        sequence(results, clock, Group::Results, &mut quads);
+    }
 
     // The minimap: re-render the heading-up view into its image (every other frame).
     let mut map_image = None;
@@ -314,78 +647,5 @@ fn draw_hud(
     }
 
     let Hud { root, pool, textures, .. } = &mut *hud;
-    show_quads(&mut commands, *root, pool, &quads, textures, map_image, &mut nodes);
-}
-
-/// Show `quads` as absolutely placed image nodes under `root`, reusing (and growing) the node `pool`; the
-/// HUD and Easydrive both draw this way. `map_image` fills the minimap quad.
-pub fn show_quads(
-    commands: &mut Commands,
-    root: Entity,
-    pool: &mut Vec<Entity>,
-    quads: &[mw_assets::ui::Quad],
-    textures: &HashMap<ResourceId, (Handle<Image>, Vec2)>,
-    map_image: Option<Handle<Image>>,
-    nodes: &mut Query<PoolNode>,
-) {
-    // Grow the pool of quad nodes as needed.
-    while pool.len() < quads.len() {
-        let e = commands
-            .spawn((
-                Node { position_type: PositionType::Absolute, ..default() },
-                ImageNode::default(),
-                UiTransform::default(),
-                Visibility::Hidden,
-                Pickable::IGNORE,
-                ChildOf(root),
-            ))
-            .id();
-        pool.push(e);
-    }
-    for (i, &e) in pool.iter().enumerate() {
-        let Ok((mut node, mut image, mut transform, mut vis)) = nodes.get_mut(e) else { continue };
-        let Some(q) = quads.get(i) else {
-            if *vis != Visibility::Hidden {
-                *vis = Visibility::Hidden;
-            }
-            continue;
-        };
-        let (handle, rect, flip) = match (q.map, q.texture.and_then(|t| textures.get(&t))) {
-            (true, _) => (map_image.clone().unwrap_or_default(), None, (false, false)),
-            (false, Some((h, size))) => {
-                let [u0, v0, u1, v1] = q.uv;
-                let r = Rect::new(u0.min(u1) * size.x, v0.min(v1) * size.y, u0.max(u1) * size.x, v0.max(v1) * size.y);
-                (h.clone(), Some(r), (u0 > u1, v0 > v1))
-            }
-            (false, None) if q.texture.is_some() => {
-                *vis = Visibility::Hidden;
-                continue;
-            }
-            // Solid colour: Bevy's default image is one white pixel.
-            (false, None) => (Handle::default(), None, (false, false)),
-        };
-        let color = Color::linear_rgba(q.colour[0], q.colour[1], q.colour[2], q.colour[3]);
-        if image.image != handle
-            || image.color != color
-            || image.rect != rect
-            || image.flip_x != flip.0
-            || image.flip_y != flip.1
-        {
-            *image = ImageNode { image: handle, color, rect, flip_x: flip.0, flip_y: flip.1, ..default() };
-        }
-        let (left, top, w, h) = (Val::Px(q.rect[0]), Val::Px(q.rect[1]), Val::Px(q.rect[2]), Val::Px(q.rect[3]));
-        if node.left != left || node.top != top || node.width != w || node.height != h {
-            node.left = left;
-            node.top = top;
-            node.width = w;
-            node.height = h;
-        }
-        let rot = Rot2::degrees(q.rotation);
-        if transform.rotation != rot {
-            transform.rotation = rot;
-        }
-        if *vis != Visibility::Inherited {
-            *vis = Visibility::Inherited;
-        }
-    }
+    show_quads(&mut commands, *root, pool, &quads, textures, map_image, &mut nodes, &mut materials);
 }
