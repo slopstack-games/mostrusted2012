@@ -188,6 +188,13 @@ pub struct TrafficSoundCar {
     pub forward: Vec3,
     pub vehicle: usize,
     pub random: f32,
+    /// The lane follower's slot in the car table (the game's car index: horns are `list[slot % count]`).
+    pub slot: usize,
+    /// Behaviour mode (+0x22; 0 = stopping for an obstacle); `u8::MAX` for a crashed car.
+    pub mode: u8,
+    /// The car's entity (a crashed car's rigid body; a lane follower's root once it has a model).
+    pub entity: Option<Entity>,
+    pub crashed: bool,
 }
 
 /// The game's random source (`world+0x36190`): a 64-bit LCG whose high word feeds an 8-slot ring of floats
@@ -377,14 +384,21 @@ impl TrafficSystem {
     /// position, velocity and forward axis, the vehicle type and the car's random value (its personality).
     pub fn sound_cars(&self, point: Vec3, radius: f32) -> Vec<TrafficSoundCar> {
         let r2 = radius * radius;
-        let lane = self.cars.iter().flatten().map(|c| TrafficSoundCar {
-            key: c.serial,
-            position: c.position,
-            velocity: c.forward * c.speed,
-            forward: c.forward,
-            vehicle: c.vehicle,
-            random: c.personality,
-        });
+        let lane =
+            self.cars.iter().enumerate().filter_map(|(slot, c)| c.as_ref().map(|c| (slot, c))).map(|(slot, c)| {
+                TrafficSoundCar {
+                    key: c.serial,
+                    position: c.position,
+                    velocity: c.forward * c.speed,
+                    forward: c.forward,
+                    vehicle: c.vehicle,
+                    random: c.personality,
+                    slot,
+                    mode: c.mode,
+                    entity: c.entity,
+                    crashed: false,
+                }
+            });
         let crashed = self.crashed.iter().map(|c| TrafficSoundCar {
             key: 0x8000_0000 | c.entity.to_bits() as u32,
             position: c.position,
@@ -393,6 +407,10 @@ impl TrafficSystem {
             vehicle: c.vehicle,
             // MODEL: a crashed car keeps no personality here; any fixed value.
             random: 0.5,
+            slot: usize::MAX,
+            mode: u8::MAX,
+            entity: Some(c.entity),
+            crashed: true,
         });
         lane.chain(crashed).filter(|c| c.position.distance_squared(point) <= r2).collect()
     }
