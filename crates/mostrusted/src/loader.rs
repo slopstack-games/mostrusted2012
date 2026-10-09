@@ -47,6 +47,8 @@ pub struct CarRequest {
     pub bundle: String,
     /// Which of the car's `VehiclePaint` options to use (clamped to the ones it has).
     pub paint_index: usize,
+    /// An opponent's slot (`ai.rs`): the car comes back with [`CarSpec::opponent`] set instead of going to the garage.
+    pub opponent: Option<usize>,
 }
 
 /// Sends [`CarRequest`]s to the loader thread.
@@ -82,6 +84,8 @@ pub struct CarSpec {
     /// Deformation data; the body meshes carry joint attributes when this is set (`damage.rs`).
     pub damage: Option<Arc<mw_assets::damage::VehicleDamage>>,
     pub impact_graph: mw_assets::damage::ImpactGraph,
+    /// Set for an AI opponent's car (its slot in `ai::Opponents`); `None` for the player's.
+    pub opponent: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -195,6 +199,7 @@ pub fn spawn(
                 paintable: HashMap::new(),
                 requests: req_rx,
                 skin_bones: None,
+                opponent: None,
                 backdrop: None,
                 backdrop_sent: HashSet::new(),
                 prop_physics: HashMap::new(),
@@ -242,6 +247,8 @@ struct Worker {
     requests: Receiver<CarRequest>,
     /// While loading a drivable car's body: its skeleton size, so meshes get joint attributes.
     skin_bones: Option<usize>,
+    /// The opponent slot of the car being loaded (`CarRequest::opponent`).
+    opponent: Option<usize>,
     /// Backdrop composition for [`BackdropMode::Composed`].
     backdrop: Option<BackdropSelector>,
     /// Backdrop instances already sent (the same backdrop model is listed by many units).
@@ -313,7 +320,10 @@ impl Worker {
     /// channel is an error here.
     fn car_request(&mut self, req: CarRequest) -> anyhow::Result<()> {
         self.filter.paint_index = req.paint_index;
-        if let Err(e) = self.car(&req.bundle) {
+        self.opponent = req.opponent;
+        let loaded = self.car(&req.bundle);
+        self.opponent = None;
+        if let Err(e) = loaded {
             self.send(Msg::CarFailed(format!("{}: {e:#}", req.bundle)))?;
         }
         Ok(())
@@ -404,6 +414,7 @@ impl Worker {
             engine,
             damage,
             impact_graph,
+            opponent: self.opponent,
         };
         // Parts are listed by the key the main thread knows them by (paint variants differ).
         for &m in spec.parts.iter().flatten() {

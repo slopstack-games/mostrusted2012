@@ -689,6 +689,10 @@ pub(crate) fn read_input(keys: Res<ButtonInput<KeyCode>>, pads: Query<&Gamepad>,
 #[derive(Component, Debug, Default, Clone, Copy)]
 pub struct Player;
 
+/// The car's [`CarControls`] are written by another system (an AI driver, `ai.rs`) even on the player's car.
+#[derive(Component, Debug, Default, Clone, Copy)]
+pub struct ExternalControls;
+
 /// One car's controls for its next physics tick: the game's per-vehicle control block (steering +0x1bf0,
 /// throttle +0x1bf4, brake +0x1c00, nitrous +0x1c20, handbrake +0x1c40; decomp.md "Update loop"), written for
 /// every race car the same way. The player's are copied from [`CarInput`] each tick, an AI driver writes its own.
@@ -764,7 +768,7 @@ pub(crate) fn car_physics(
     spatial: SpatialQuery,
     collisions: Collisions,
     layers: Query<&CollisionLayers>,
-    mut cars: Query<(Entity, &mut Car, Forces, &mut Transform, &mut CarControls, Has<Player>)>,
+    mut cars: Query<(Entity, &mut Car, Forces, &mut Transform, &mut CarControls, Has<Player>, Has<ExternalControls>)>,
     surfaces: Res<crate::props::WorldSurfaces>,
     world_tags: Query<(&Collider, &crate::props::SurfaceTags)>,
 ) {
@@ -776,10 +780,10 @@ pub(crate) fn car_physics(
         input.steer = 0.0;
         input.handbrake = false;
     }
-    for (entity, mut car, mut forces, mut transform, mut controls, player) in &mut cars {
+    for (entity, mut car, mut forces, mut transform, mut controls, player, external) in &mut cars {
         // Every car runs the same tick from its own control block (the game writes each of its 16 race-car slots'
         // controls with `FUN_009aacc0` from `FUN_0091c5c0`); the player's comes from the input devices.
-        if player {
+        if player && !external {
             *controls = CarControls::from_input(&mut input);
         }
         let ctl = *controls;
