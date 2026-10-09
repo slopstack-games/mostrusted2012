@@ -179,6 +179,11 @@ set of **skeletal animation clips whose frames are damage levels**:
 for English).
 
 - Liveries and two-paint masks are bound in the car's Material as `DiffuseTextureSampler` of the `VehicleNFS13_BodyPaint_*Livery*` / `*TwoPaintMask*` shaders; `mPaintColourIndex` (material constant, 0 / 1) picks the secondary paint on `_TwoPaint` meshes. `VehiclePaint` carries `DustColour` / `DirtColour` (the paint shaders' `GenericVector4_B` / `_C`, in that order), `PbrScratchColour` and the scratch settings (`PbrScratchRoughness`, `0802d981` = scratch F0), no texture.
+- Badges, logos and decals are `VehicleNFS13_*_Alpha1bit_*` meshes: the G-buffer program discards where the mask's
+  alpha < 0.5, the mask being `DiffuseTextureSampler` (`_Textured`) or else `NormalTextureSampler`; blend off
+  (MaterialState `01000006d979a79a`, as opaque parts). `VehicleNFS13_*_Alpha_*` meshes have no G-buffer pass: forward,
+  alpha-over (`010000063eb1486e`, rt0 `7908498b`), alpha = the diffuse alpha; `Wheel_Alpha_Textured_Normalmap`
+  discards below 0.125 and `_BlurFade` scales the alpha by 1 − `g_wheelConstants.x` (research log 2026-10-09).
 - `Genesys.Gen.VehicleColourPalette` (one per car bundle): `Colours` (`16671e74`, list of `VehiclePaint` handles) and `ColourGroups`, each a `ColourGroup` { `PrimaryColour` (`2968e77a`), `SecondaryColour` (`750cf08e`), `WheelColour` } of paint handles; `17acabdb` / `db17b169` unnamed (1 on police cars). A secondary paint has `PaintColour` 1. `DustColour.w` / `DirtColour.w` scale the dust / dirt levels (`FUN_008e9c00`, docs/decomp.md).
 - `Genesys.Gen.SurfaceVehicleEffects` (72 bytes; the `VehicleEffects` handle of a `SurfaceType` weather block, `8db39261` at block +0xc8): `Dirt` (`44697274`, +0x0c) and `Dust` (`44757374`, +0x24) `Effect`s of (`ea1c1262` rate, `0979a504` time in s), `0d9ece32` full-effect speed (mph, 120 or 60), `f8bbba83` start speed (30 or 15). Four objects in `HAWAII/SURFACELIST.BNDL`: off-road (0.3 / 0.3), road (dirt 0.005, dust 0.05; the dry asphalt block has dirt 0), wash (−0.5 / −0.5, 15–60 mph: surfaces 27 and 43) and dust only (0 / 0.05). `mwtool surfaces` lists them per surface.
 - `Genesys.Gen.VehicleInfo.76bfd668` (float, +0x84): the zone damage → paint scratch scale (10 on 173 cars, 1 on 24).
@@ -739,9 +744,12 @@ named by its UniqueId (= the resource id's low 32 bits, e.g. 0x19c8b2 = 1689778 
 
 ## UI blend states and sequence layouts
 
-- **`MaterialState` (0x6)**, imported by a `Shader` (one per pass slot): u32 offsets of three blocks at +0 / +4 /
-  +8 (blend, depth-stencil, rasterizer; seen 0x1c / 0x58 / 0x98). The blend block: a hash and three key words, then
-  one packed u32 per render target (8), then the blend factor float4 (1, 1, 1, 1). Packed target: bit 0 enable,
+- **`MaterialState` (0x6)**, imported by a `Shader` (one per pass slot, at the program's slot + 4): u32 offsets of
+  three blocks at +0 / +4 / +8 (blend, depth-stencil, rasterizer; seen 0x1c / 0x58 / 0x98), then the three states'
+  hashes (+0xc blend, +0x10 depth-stencil, +0x14 rasterizer) and the size (0xc0). The blend block: one packed u32
+  per render target (8), then the blend factor float4 (1, 1, 1, 1), then `00450000` (`00450100` when blending)
+  and 1. The rasterizer block's second word is the D3D11 cull mode (1 none, 2 front, 3 back). `mwtool shader-asm`
+  prints each pass's state. Packed target: bit 0 enable,
   bits 1–5 src, 6–10 dst, 11–13 op, 14–18 src alpha, 19–23 dst alpha, 24–26 op alpha, 27–30 write mask (D3D11
   enum values: 1 zero, 2 one, 5 src alpha, 6 inv src alpha; op 1 add). `0x7931498a` = disabled default,
   `0x7931498b` = alpha-over (`FlaptGenericShader`), `0x7911488b` = src alpha / one (`UIAdditiveShader`).

@@ -449,8 +449,19 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let p2 = layered.p[2];
         let p3 = layered.p[3];
         var albedo = vec4(p3.rgb, 1.0);
+        // Coverage of the `_Alpha1bit` / `_Alpha_` variants (p8.w: 1 = diffuse alpha, 2 = normal map alpha):
+        // the 1-bit G-buffer programs discard below 0.5 (Bevy's alpha mask, `alpha_discard` below), the
+        // blended ones draw forward alpha-over, some discarding below p9.z first.
+        var coverage = 1.0;
         if p2.y > 0.5 {
-            albedo = textureSample(tex0, samp0, uv) * vec4(p3.rgb, 1.0);
+            let d = textureSample(tex0, samp0, uv);
+            albedo = vec4(d.rgb * p3.rgb, 1.0);
+            if layered.p[8].w > 0.5 && layered.p[8].w < 1.5 {
+                coverage = d.a;
+            }
+        }
+        if layered.p[8].w > 1.5 {
+            coverage = textureSample(tex2, samp2, uv).a;
         }
         // VehicleNFS13_BodyPaint* (p8 = (livery kind, mPaintColourIndex, has effects map), p9 = GenericVector4_A
         // = (dust level × DustColour.w, dirt level × DirtColour.w), p10 / p11 = GenericVector4_B / _C = the
@@ -498,7 +509,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             }
 #endif
         }
-        pbr_input.material.base_color = albedo;
+        if coverage < layered.p[9].z {
+            discard;
+        }
+        pbr_input.material.base_color = vec4(albedo.rgb, coverage);
         var f0 = (p0.rgb + layered.p[13].rgb * second) * (1.0 - cover);
         var rough = mix(p0.w, 1.0, cover);
         if p1.x > 0.5 {
@@ -737,8 +751,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         out.color = main_pass_post_lighting_processing(pbr_input, vehicle_glass(pbr_input, v_dir, extra));
     } else {
         out.color = apply_pbr_lighting(pbr_input);
-        out.color = main_pass_post_lighting_processing(pbr_input, out.color);
-    }
+        out.color = main_pass_post_lighting_processing(pbr_input, out.color);    }
 #endif
     return out;
 }

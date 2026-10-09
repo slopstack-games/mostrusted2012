@@ -10,6 +10,45 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-09: car badges and decals cut out (vehicle `_Alpha1bit` / `_Alpha_` shaders)
+User report: the 911's rear "PORSCHE" letters drew as solid rounded blocks and "911 Carrera S" sat on an opaque
+silver plate. An old bug: every car's badges, the traffic cars' grille logos and hub caps were opaque quads.
+- **Which material**: the badges are `VehicleNFS13_Body_Alpha1bit_NormalMap_Textured_NoDamage` (the 911: body
+  renderable `b5cdc877` mesh 2, 28 triangles, diffuse `01000000001026c2`, BC3, an atlas whose **alpha** holds the
+  letter shapes, rgb a chrome gradient). Over all `VEHICLES/*.BNDL` (`mwtool models --verbose`): Body_Alpha1bit
+  Textured 176 meshes, untextured Body_Alpha1bit 11, Wheel_Alpha1bit(_Textured) 1616, Body_Alpha_ 32,
+  Wheel_Alpha_* 808 (traffic cars mostly `Wheel_Alpha_Textured_Normalmap` / `_Blurred_Doublesided_PixelAO`).
+- **DXBC** (`mwtool shader-asm`): the `_Alpha1bit` G-buffer programs (4 render targets) start with `sample t0;
+  add r0.w, -0.5; lt; discard`: discard where the mask's alpha < 0.5. The mask is `DiffuseTextureSampler` in
+  the `_Textured` variants and `NormalTextureSampler` (its alpha) in `Body_Alpha1bit_NormalMap` /
+  `Wheel_Alpha1bit_Normalmap`. Their shadow / depth programs discard below 0.501961 (128/255). The `_Alpha_`
+  (blended) variants have **no G-buffer pass**: their main programs are forward (one target, lit with
+  `IrradianceQuadric`, `KeyLight*`, the shadow map and `g_PerVehicleFog`), o0.w = the diffuse alpha (untouched
+  by the fog), and `Wheel_Alpha_Textured_Normalmap` discards below 0.125 first; `_BlurFade` multiplies the
+  alpha by 1 − TEXCOORD2.z = 1 − `g_wheelConstants.x` (vertex program) and discards where that is < 0.125.
+- **Material states** (`shader-asm` now prints the `MaterialState` of each pass slot): the `_Alpha1bit` G-buffer
+  passes use the opaque G-buffer state `01000006d979a79a` (blend off, like `Body_Textured_NormalMap_NoDamage`):
+  no alpha-to-coverage, the cut-out is the discard alone. The `_Alpha_` forward passes use `010000063eb1486e`:
+  rt0 `7908498b` = colour src alpha / inv src alpha, add; alpha zero / zero; write mask rgba (alpha-over).
+  The rasterizer block's second word is the D3D11 cull mode (3 back on bodies, 2 front on wheels, 1 none on
+  `_Doublesided`), and the header's third word (+0x14) is the rasterizer state's hash (`dbe57716` / `2a3f72bc`
+  / `e3207a03`). formats.md's blend-block layout is corrected: the 8 packed targets start at the block offset.
+- **Cause**: our vehicle branch of `layered.wgsl` forced the albedo alpha to 1 (`vec4(albedo.rgb + ..., 1.0)`,
+  and the texture alpha was never the coverage), so `AlphaMode::Mask` never discarded; the `_Alpha_` variants
+  were `Blend::Opaque` (their names hold neither "alphablend" nor "1bit").
+- **Fix**: `materials.rs` sets p8.w = alpha source (1 diffuse, 2 normal map, by the rule above) and p9.z = the
+  forward discard threshold; `layered.wgsl` keeps that alpha in the base colour. `_Alpha1bit` vehicle looks use
+  `AlphaMode::Mask(0.5)` (G-buffer, the deferred prepass discards; the forward AlphaMask3d copy is discarded
+  as for trees), `_Alpha_` ones `AlphaMode::Blend`. Checked before / after (rear, front, wheel close-ups): 911
+  (PORSCHE / 911 Carrera S cut out, crest), XKR (JAGUAR letters), M3, Veyron (wheel centre text), Aventador
+  (Lamborghini script), R34 (TE37 spoke label, `_BlurFade`), Diablo SV (Diablo / SV badges), Police Interceptor,
+  traffic van `VEH_122819_TR` and hatchback `VEH_122816_TR` (grille rings and hub caps no longer on dark plates).
+- **Model decisions / open**: the `_Alpha_` parts are lit by Bevy's forward PBR, not a port of their forward
+  program (and they write no depth, where the game's depth state is the opaque one); `g_wheelConstants.x` (the
+  `_BlurFade` fade, presumably wheel spin blur) is taken as 0, the wheel at rest: its writer is not traced. The
+  untextured `_Alpha1bit` meshes do not cut their shadows (Bevy's standard prepass reads the base colour texture
+  only).
+
 ### 2026-10-09: groundcover sprites face the camera (the `Groundcover` vertex program ported)
 User report: since the sprite-size fix (byte / 127 × 2^e m, so the e = 6 / 8 groups are 10–60 m tree cards) the
 cards showed as thin vertical slivers when seen edge-on: we drew each sprite as two crossed static quads.

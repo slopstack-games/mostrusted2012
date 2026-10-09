@@ -641,6 +641,13 @@ fn main() -> Result<()> {
                 shader.imports.iter().map(|i| ("shader".to_string(), *i)).collect();
             while let Some((via, imp)) = queue.pop() {
                 if !seen.insert(imp.id) {
+                    // Pass slots share states: name each one again.
+                    if store.type_of(imp.id) == Some(ResourceType::MaterialState) {
+                        println!(
+                            "// ===== MaterialState {} (via {via} slot {:#x}): as above =====",
+                            imp.id, imp.offset
+                        );
+                    }
                     continue;
                 }
                 match store.type_of(imp.id) {
@@ -654,6 +661,11 @@ fn main() -> Result<()> {
                     Some(ResourceType::VertexProgramState) => {
                         let vps = store.load(imp.id)?;
                         queue.extend(vps.imports.iter().map(|i| (format!("VertexProgramState {}", imp.id), *i)));
+                    }
+                    Some(ResourceType::MaterialState) => {
+                        let ms = store.load(imp.id)?;
+                        println!("// ===== MaterialState {} (via {via} slot {:#x}) =====", imp.id, imp.offset);
+                        print_material_state(ms.header());
                     }
                     _ => {}
                 }
@@ -2089,6 +2101,40 @@ fn effect(store: &AssetStore, id: &str, raw: bool) -> Result<()> {
 
 /// `shader-asm --exe`: the DXBC programs stored in `NFS13.exe`, addressed by their virtual address (as in
 /// the decompiled dump). `.rdata` is not encrypted on disk, so the file is read as is; nothing is written.
+/// A `MaterialState` (0x6, docs/formats.md): u32 offsets of the blend, depth-stencil and rasterizer blocks at
+/// +0 / +4 / +8. The blend block's packed render targets are decoded (bit 0 enable, 1–5 src, 6–10 dst, 11–13 op,
+/// 14–18 src alpha, 19–23 dst alpha, 24–26 op alpha, 27–30 write mask; D3D11 enum values); the rest is hex.
+fn print_material_state(h: &[u8]) {
+    let u = |o: usize| h.get(o..o + 4).map_or(0, |b| u32::from_le_bytes(b.try_into().unwrap()));
+    let words = |a: usize, b: usize| {
+        (a..b.min(h.len())).step_by(4).map(|o| format!("{:08x}", u(o))).collect::<Vec<_>>().join(" ")
+    };
+    let (blend, depth, raster) = (u(0) as usize, u(4) as usize, u(8) as usize);
+    println!("//   blocks: blend {blend:#x}, depth-stencil {depth:#x}, rasterizer {raster:#x}, size {:#x}", h.len());
+    println!("//   head  {}", words(12, blend));
+    // Blend block: 8 packed targets, then the blend factor.
+    for rt in 0..8 {
+        let p = u(blend + rt * 4);
+        if rt > 0 && p == u(blend) {
+            continue;
+        }
+        println!(
+            "//   rt{rt} {p:08x}: enable {} src {} dst {} op {} | alpha src {} dst {} op {} | mask {:#x}",
+            p & 1,
+            (p >> 1) & 31,
+            (p >> 6) & 31,
+            (p >> 11) & 7,
+            (p >> 14) & 31,
+            (p >> 19) & 31,
+            (p >> 24) & 7,
+            (p >> 27) & 15
+        );
+    }
+    println!("//   blend factor / tail {}", words(blend + 32, depth));
+    println!("//   depth-stencil {}", words(depth, raster));
+    println!("//   rasterizer {}", words(raster, h.len()));
+}
+
 fn exe_shader_asm(game: &GameDir, filter: &str) -> Result<()> {
     let path = game.path(mw_gamedir::EXECUTABLE).context("NFS13.exe not found")?;
     let data = std::fs::read(&path)?;

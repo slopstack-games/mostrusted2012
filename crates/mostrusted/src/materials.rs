@@ -457,6 +457,23 @@ impl Look {
             let rough = if tyre { 0.9 } else { rough_const.unwrap_or(0.5) };
             let cc_spec = sm.parameter("PbrMaterialClearcoatSpecular").map_or(0.0, |v| v[0]);
             let cc_fresnel = sm.parameter("PbrMaterialClearcoatFresnel").map_or(0.0, |v| v[0]);
+            // Coverage (research log 2026-10-09, badges): the `_Alpha1bit` G-buffer programs discard where the
+            // mask's alpha < 0.5, the mask being DiffuseTextureSampler (`_Textured`) or else
+            // NormalTextureSampler; the `_Alpha_` variants have no G-buffer pass and draw forward with
+            // alpha-over (MaterialState 010000063eb1486e), o0.w = the diffuse alpha, and
+            // `Wheel_Alpha_Textured_Normalmap(_BlurFade)` also discard below 0.125. p8.w = alpha source
+            // (0 none, 1 diffuse, 2 normal map), p9.z = that discard threshold.
+            let alpha_source = if !name.contains("_alpha") {
+                0.0
+            } else if diffuse.is_some() {
+                1.0
+            } else if normal_tex.is_some() && name.contains("alpha1bit") {
+                2.0
+            } else {
+                0.0
+            };
+            let alpha_clip =
+                if name.contains("wheel_alpha_textured_normalmap") && !name.contains("blurred") { 0.125 } else { 0.0 };
             look.vals = pack(&[
                 [f0[0], f0[1], f0[2], rough],
                 [flag(spec.is_some()), rough_source, cc_spec, cc_fresnel],
@@ -466,6 +483,8 @@ impl Look {
                 lm.channels[1],
                 lm.channels[2],
                 lm.channels[3],
+                [0.0, 0.0, 0.0, alpha_source],
+                [0.0, 0.0, alpha_clip, 0.0],
             ]);
             look.vertex_colour = sm.mesh.colors.is_some();
             if lm.uv3 {
@@ -672,6 +691,9 @@ impl Look {
             Blend::Opaque
         } else if name.contains("1bit") || name.contains("alphatest") || name.contains("foliage") {
             Blend::Mask
+        } else if look.mode == Mode::Vehicle && name.contains("_alpha_") {
+            // VehicleNFS13_{Body,Wheel}_Alpha_*: forward, src alpha / inverse src alpha (see the vehicle branch).
+            Blend::Translucent
         } else if name.contains("glass")
             || name.contains("alphablend")
             || name.contains("decal")
@@ -682,7 +704,7 @@ impl Look {
         } else {
             Blend::Opaque
         };
-        if look.blend == Blend::Translucent && look.textures[0].is_none() {
+        if look.blend == Blend::Translucent && look.textures[0].is_none() && look.mode != Mode::Vehicle {
             let [r, g, b, _] = look.tint.map(dq);
             look.tint = [r * 0.3, g * 0.3, b * 0.35, 0.35].map(q);
         }
@@ -958,7 +980,9 @@ impl Look {
                 opaque_render_method: OpaqueRendererMethod::Deferred,
                 alpha_mode: match self.blend {
                     Blend::Opaque => AlphaMode::Opaque,
-                    // The 1-bit and tree shaders discard below 129/255.
+                    // The 1-bit and tree shaders discard below 129/255; the vehicle `_Alpha1bit` G-buffer
+                    // programs below 0.5 (`add r0.w, r0.w, -0.5; lt; discard`).
+                    Blend::Mask if self.mode == Mode::Vehicle => AlphaMode::Mask(0.5),
                     Blend::Mask => AlphaMode::Mask(0.505882),
                     Blend::Translucent => AlphaMode::Blend,
                     Blend::Premultiplied => AlphaMode::Premultiplied,
