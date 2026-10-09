@@ -163,6 +163,9 @@ pub enum Msg {
         model: ResourceId,
         transform: Mat4,
         physics: Arc<crate::props::PropPhysics>,
+        /// Compound objects: the model's geometry per part (its skeleton bone; `None` where a part has none),
+        /// then the triangles of bones no part owns.
+        pieces: Option<(Vec<Option<ResourceId>>, Option<ResourceId>)>,
     },
     /// Static world collision (one per `PolygonSoupList`) and the collision tag of each of its triangles.
     Collider(avian3d::prelude::Collider, Arc<Vec<u32>>),
@@ -314,6 +317,8 @@ struct Variant {
     strip_lod2: bool,
     /// Keep only the backdrop triangles the zone composition draws, for a placement with this transform.
     compose_backdrop: Option<[[f32; 4]; 4]>,
+    /// Keep only the triangles skinned to these skeleton bones (bit mask): one part of a compound object.
+    bones: Option<u64>,
 }
 
 impl Worker {
@@ -616,13 +621,36 @@ impl Worker {
             .clone()
     }
 
-    /// Send a placement: with physics when it is a world object that has some.
-    fn send_placement(&mut self, model: ResourceId, p: &mw_assets::Placement) -> anyhow::Result<()> {
+    /// Send a placement: with physics when it is a world object that has some. A compound object's model is
+    /// also sent split by skeleton bone, one piece per part, for when it breaks up (`props.rs`).
+    fn send_placement(
+        &mut self,
+        model: ResourceId,
+        p: &mw_assets::Placement,
+        variant: Variant,
+        look: InstanceLook,
+    ) -> anyhow::Result<()> {
         let transform = game_matrix(&p.transform);
-        match p.object.and_then(|(object, kind)| self.prop_physics(object, kind)) {
-            Some(physics) => self.send(Msg::Prop { model, transform, physics }),
-            None => self.send(Msg::Instance { model, transform }),
-        }
+        let Some(physics) = p.object.and_then(|(object, kind)| self.prop_physics(object, kind)) else {
+            return self.send(Msg::Instance { model, transform });
+        };
+        let pieces = match &physics.compound {
+            Some(c) => {
+                let owned = c.parts.iter().filter(|p| p.bone_index < 64).fold(0u64, |m, p| m | 1 << p.bone_index);
+                let mut parts = Vec::with_capacity(c.parts.len());
+                for part in &c.parts {
+                    let bones = (part.bone_index < 64).then(|| 1u64 << part.bone_index);
+                    parts.push(match bones {
+                        Some(mask) => self.model_variant(p.model, Variant { bones: Some(mask), ..variant }, look)?,
+                        None => None,
+                    });
+                }
+                let rest = self.model_variant(p.model, Variant { bones: Some(!owned), ..variant }, look)?;
+                Some((parts, rest))
+            }
+            None => None,
+        };
+        self.send(Msg::Prop { model, transform, physics, pieces })
     }
 
     /// Place one world object by hand (test track).
@@ -641,7 +669,7 @@ impl Worker {
             object: Some((t.object, t.kind)),
         };
         if let Some(key) = self.model_variant(model, Variant::default(), InstanceLook::default())? {
-            self.send_placement(key, &placement)?;
+            self.send_placement(key, &placement, Variant::default(), InstanceLook::default())?;
         }
         Ok(())
     }
@@ -736,8 +764,9 @@ impl Worker {
                     }
                     continue;
                 }
-                if let Some(model) = self.model_variant(p.model, variant, InstanceLook::from_placement(&p))? {
-                    self.send_placement(model, &p)?;
+                let look = InstanceLook::from_placement(&p);
+                if let Some(model) = self.model_variant(p.model, variant, look)? {
+                    self.send_placement(model, &p, variant, look)?;
                 }
             }
             self.send_merged(std::mem::take(&mut statics))?;
@@ -924,6 +953,11 @@ impl Worker {
             (key, t.as_flattened().iter().map(|v| v.to_bits()).collect::<Vec<_>>()).hash(&mut h);
             key = ResourceId(h.finish() | 1 << 63);
         }
+        if let Some(mask) = variant.bones {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (key, mask).hash(&mut h);
+            key = ResourceId(h.finish() & !(0xf << 59) | 1 << 59);
+        }
         // Body-paint models are baked with the current paint, so each paint is its own variant
         // (bit 60, a hash of the ID and the paint's values).
         if self.paintable.get(&id) == Some(&true) {
@@ -961,6 +995,14 @@ impl Worker {
             }
             if mw_assets::is_hidden_shader(&sm.shader_name) {
                 continue;
+            }
+            if let Some(mask) = variant.bones {
+                let m = &sm.mesh;
+                let in_mask = |v: u32| m.dominant_bone(v as usize).is_some_and(|b| b < 64 && mask & 1 << b != 0);
+                match m.subset(|t| in_mask(t[0])) {
+                    Some(kept) => sm.mesh = kept,
+                    None => continue,
+                }
             }
             let mut look = Look::from_scene_mesh(&sm).with_instance(&inst).with_paint(self.paint.as_ref());
             for key in look.all_textures().collect::<Vec<_>>() {

@@ -253,6 +253,48 @@ impl DecodedMesh {
     pub fn texcoord(&self, index: usize) -> Option<&[[f32; 4]]> {
         self.texcoords.get(index)?.as_deref()
     }
+
+    /// The skeleton bone a vertex follows most (its heaviest `BLENDINDICES` entry); `None` without skinning.
+    pub fn dominant_bone(&self, vertex: usize) -> Option<u16> {
+        let (j, w) = (self.joints.as_ref()?.get(vertex)?, self.weights.as_ref()?.get(vertex)?);
+        let k = (0..4).max_by(|&a, &b| w[a].total_cmp(&w[b]))?;
+        Some(j[k])
+    }
+
+    /// The triangles `keep` accepts, with only the vertices they use (`None` if none is kept).
+    pub fn subset(&self, keep: impl Fn(&[u32; 3]) -> bool) -> Option<DecodedMesh> {
+        let mut map = vec![u32::MAX; self.positions.len()];
+        let mut order = Vec::new();
+        let mut indices = Vec::new();
+        for t in self.indices.as_chunks::<3>().0.iter().filter(|t| keep(t)) {
+            for &i in t {
+                let slot = &mut map[i as usize];
+                if *slot == u32::MAX {
+                    *slot = order.len() as u32;
+                    order.push(i as usize);
+                }
+                indices.push(*slot);
+            }
+        }
+        if indices.is_empty() {
+            return None;
+        }
+        fn pick<T: Copy>(v: &[T], order: &[usize]) -> Vec<T> {
+            order.iter().map(|&i| v[i]).collect()
+        }
+        let opt = |v: &Option<Vec<[f32; 4]>>| v.as_ref().map(|v| pick(v, &order));
+        Some(DecodedMesh {
+            positions: pick(&self.positions, &order),
+            normals: opt(&self.normals),
+            tangents: opt(&self.tangents),
+            binormals: opt(&self.binormals),
+            colors: opt(&self.colors),
+            texcoords: self.texcoords.iter().map(opt).collect(),
+            indices,
+            joints: self.joints.as_ref().map(|v| pick(v, &order)),
+            weights: self.weights.as_ref().map(|v| pick(v, &order)),
+        })
+    }
 }
 
 #[cfg(test)]

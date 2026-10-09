@@ -128,7 +128,57 @@ pub struct ObjectPhysics {
     /// Props: the impact effect (`BearEffect`) and sound (`WCPlaySoundBehaviour`).
     pub impact_effect: Option<ResourceId>,
     pub impact_sound: Option<ResourceId>,
+    /// Compound objects: how the object breaks into its parts.
+    pub compound: Option<CompoundPhysics>,
 }
+
+/// How a compound object comes apart (docs/decomp.md, "Props": compound smash). The compound stands and
+/// falls as one body (its own `PhysicalDefinition`) until it smashes; then its parts replace it, each a body
+/// of its own placed at its skeleton bone (`FUN_00554500`, `FUN_00532b00`). Parts whose `replaces` is set
+/// appear only when that part smashes in turn (its `SmashProxyBehaviour`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompoundPhysics {
+    pub parts: Vec<CompoundPartPhysics>,
+    /// `EnableCompoundBehaviour` with `543527d0` (+0x1a) set: the compound is split into its parts as soon as
+    /// it streams in (`FUN_00554230` queues it for `FUN_00558bb0`).
+    pub enabled_at_start: bool,
+    /// Joint definitions between parts (GeneSys; `FUN_005547f0` → `FUN_0054e120` reads the two part hashes
+    /// at +0x10 / +0x14 and a value at +0x18). Not ported.
+    pub joints: Vec<ResourceId>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompoundPartPhysics {
+    pub definition: Option<PhysicalDefinition>,
+    /// The part's frame in the compound's object space: its skeleton bone's bind pose (row-major, `v * M`;
+    /// `FUN_005321b0` builds it from the bone's quaternion and position).
+    pub bone: [[f32; 4]; 4],
+    /// Skeleton bone index (+0x60).
+    pub bone_index: u32,
+    pub replaces: Option<usize>,
+    pub next: Option<usize>,
+    pub first_replacement: Option<usize>,
+    pub links: Vec<usize>,
+    /// `SmashProxyBehaviour.ForceToSmash` (`e7f6608b`, N): the contact force that replaces this part by its
+    /// replacement chain.
+    pub smash_force: Option<f32>,
+    /// The part's impact sound (its first `WCPlaySoundBehaviour`).
+    pub impact_sound: Option<ResourceId>,
+}
+
+/// Row-major matrix of a bone's bind pose (unit quaternion `x y z w`, position).
+fn bone_matrix(q: [f32; 4], p: [f32; 3]) -> [[f32; 4]; 4] {
+    let [x, y, z, w] = q;
+    [
+        [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y + z * w), 2.0 * (x * z - y * w), 0.0],
+        [2.0 * (x * y - z * w), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z + x * w), 0.0],
+        [2.0 * (x * z + y * w), 2.0 * (y * z - x * w), 1.0 - 2.0 * (x * x + y * y), 0.0],
+        [p[0], p[1], p[2], 1.0],
+    ]
+}
+
+/// `WCPlaySoundBehaviour` type id.
+const PLAY_SOUND_BEHAVIOUR: u32 = 0x2ad8;
 
 impl ObjectPhysics {
     /// Total mass of the main definition (kg).
@@ -380,15 +430,67 @@ impl AssetStore {
     pub fn object_physics(&self, object: ResourceId, kind: ObjectKind) -> Result<ObjectPhysics> {
         let def = self.object_def(object, kind)?;
         let load = |id: Option<ResourceId>| id.and_then(|id| self.physical_definition(id).ok());
+        let parts: Vec<Option<PhysicalDefinition>> = def.parts.iter().map(|p| load(*p)).collect();
+        let compound = (kind == ObjectKind::Compound && !def.compound_parts.is_empty())
+            .then(|| self.compound_physics(&def, &parts))
+            .transpose()?;
         Ok(ObjectPhysics {
             object,
             kind,
             definition: load(def.physics),
-            parts: def.parts.iter().map(|p| load(*p)).collect(),
+            parts,
             reset_distance: def.reset_distance_sq.filter(|d| *d > 0.0).map(f32::sqrt),
             remove_instead_of_reset: def.remove_instead_of_reset,
             impact_effect: def.impact_effect,
             impact_sound: def.impact_sound,
+            compound,
         })
+    }
+
+    /// The parts of a compound object, placed by its skeleton's bind pose.
+    fn compound_physics(&self, def: &ObjectDef, parts: &[Option<PhysicalDefinition>]) -> Result<CompoundPhysics> {
+        let skeleton = match def.skeleton {
+            Some(id) => Some(mw_formats::Skeleton::parse(&self.load(id)?)?),
+            None => None,
+        };
+        let behaviour = |b: &mw_formats::Behaviour| b.object.and_then(|id| self.genesys_object(id).ok());
+        let index = |i: u8| (usize::from(i) < def.compound_parts.len()).then_some(usize::from(i));
+        let out = def
+            .compound_parts
+            .iter()
+            .zip(parts)
+            .map(|(p, definition)| {
+                let bone = skeleton
+                    .as_ref()
+                    .and_then(|s| s.bones.get(p.bone as usize))
+                    .map_or(crate::IDENTITY, |b| bone_matrix(b.rotation, b.position));
+                let smash_force = p
+                    .behaviours
+                    .iter()
+                    .filter(|b| b.type_id == mw_formats::SMASH_PROXY_BEHAVIOUR)
+                    .find_map(|b| float(&behaviour(b)?, field_hash("ForceToSmash")));
+                let impact_sound =
+                    p.behaviours.iter().find(|b| b.type_id == PLAY_SOUND_BEHAVIOUR).and_then(|b| b.object);
+                CompoundPartPhysics {
+                    definition: definition.clone(),
+                    bone,
+                    bone_index: p.bone,
+                    replaces: p.replaces.and_then(index),
+                    next: p.next.and_then(index),
+                    first_replacement: p.first_replacement.and_then(index),
+                    links: p.links.iter().filter_map(|&l| index(l)).collect(),
+                    smash_force,
+                    impact_sound,
+                }
+            })
+            .collect();
+        // `EnableCompoundBehaviour` +0x1a (`543527d0`) set: split at stream-in (`FUN_00554230`).
+        let enabled_at_start = def
+            .behaviours
+            .iter()
+            .filter(|b| b.type_id == mw_formats::ENABLE_COMPOUND_BEHAVIOUR)
+            .any(|b| behaviour(b).is_some_and(|o| boolean(&o, 0x543527d0) == Some(true)));
+        let joints = def.joints.iter().flatten().copied().collect();
+        Ok(CompoundPhysics { parts: out, enabled_at_start, joints })
     }
 }

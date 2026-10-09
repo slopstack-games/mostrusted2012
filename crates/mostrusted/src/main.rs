@@ -118,6 +118,10 @@ struct Cli {
     /// Smash test: speed (km/h) the car holds through the props.
     #[arg(long, default_value_t = 60.0)]
     smash_speed: f32,
+    /// Smash test: what stands on the track: `props` (cone, sign, lamp, fence, wall) or `compounds` (six
+    /// compound objects that break into their parts, filmed from beside the last knock).
+    #[arg(long, default_value = "props")]
+    smash_set: String,
     /// Draw props, compound and dynamic objects without collision (smashable street furniture is on by
     /// default; `props.rs`). `--test smash` keeps it on.
     #[arg(long)]
@@ -461,7 +465,8 @@ fn main() -> anyhow::Result<()> {
         let street_test = race_test || cli.test.as_deref() == Some("ai");
         let track = cli.test_track || (cli.test.is_some() && !street_test) || cli.replay.is_some();
         let spawn = if track { Vec3::new(0.0, 1.0, 0.0) } else { spawn };
-        let props = if cli.test.as_deref() == Some("smash") { props::smash_test_props() } else { Vec::new() };
+        let props =
+            if cli.test.as_deref() == Some("smash") { props::smash_test_props(&cli.smash_set) } else { Vec::new() };
         Request::Drive { bundle: resolve(q)?, spawn, heading, max_units: cli.units, world: !track, props }
     } else if let Some(q) = &cli.vehicle {
         Request::Vehicle { bundle: resolve(q)? }
@@ -615,7 +620,11 @@ fn main() -> anyhow::Result<()> {
         ));
         None
     } else if smash {
-        app.insert_resource(props::SmashTest::new(cli.screenshot.clone(), cli.smash_speed / 3.6));
+        app.insert_resource(props::SmashTest::new(
+            cli.screenshot.clone(),
+            cli.smash_speed / 3.6,
+            cli.smash_set == "compounds",
+        ));
         app.add_plugins(props::SmashTestPlugin);
         app.add_systems(Startup, |mut t: ResMut<Time<Virtual>>| t.set_relative_speed(2.0));
         None
@@ -928,10 +937,15 @@ fn receive_assets(
                 });
                 loaded.instances += 1;
             }
-            Msg::Prop { model, transform, physics } => {
+            Msg::Prop { model, transform, physics, pieces } => {
                 let Some(parts) = loaded.models.get(&model) else { continue };
                 let range = loaded.shadow_ranges.get(&model).copied().map(shadow_cull::ShadowRange);
-                props::spawn_prop(&mut commands, physics, Transform::from_matrix(transform), parts, range);
+                let get = |k: &Option<mw_bundle::ResourceId>| k.and_then(|k| loaded.models.get(&k).cloned());
+                let pieces = pieces.map(|(parts, rest)| props::CompoundMeshes {
+                    parts: parts.iter().map(get).collect(),
+                    rest: get(&rest),
+                });
+                props::spawn_prop(&mut commands, physics, Transform::from_matrix(transform), parts, range, pieces);
                 loaded.instances += 1;
                 loaded.props += 1;
             }
