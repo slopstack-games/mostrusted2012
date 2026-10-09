@@ -1,3 +1,44 @@
+# Handoff: 2026-10-09 (session 6, part 2): races, AI, traffic, exhaust, race UI, cutscenes
+
+Six worktree agents, merged into master and checked together (clippy 0 warnings, 118 tests, `mwtool verify` 0
+failures, the 911's accel / brake / corner / drift results unchanged). Details and sources are in each
+system's decomp.md section and its dated research-log entry.
+
+- **Races** (`race.rs`, `mw_assets::events`, `chevron.rs`): 111 offline events from `GAMELOGIC/GAMEMODES.BNDL`
+  with checkpoints and starts from `HAWAII/TRIGGERS.BNDL`; gates, laps, ranking, wrong way / missed checkpoint,
+  win rules; the route chevrons. Offline races have **no 3-2-1**: the intro hands over a rolling start.
+- **AI racers** (`ai.rs`, `ai_driver.rs`, `mw_formats::ai_data`): every car runs the same physics from
+  `CarControls`; the player's car carries `Player` (filter on it). Driving law, rubber band and recovery from
+  the code; the route is the `AIData` road graph's centre line (not the racing line).
+- **Traffic** (`traffic.rs`): population, lane following, junction lights, queues, the fuzzy option scores; a hit
+  car turns into a loose body. No manoeuvres, parked cars or per-car lights yet.
+- **Exhaust** (`exhaust.rs`): the game's pop / backfire rule and sounds; spot effects at the tail-pipe locators
+  (nitrous flame, backfire, idle vapour); several Bear particle actions decoded.
+- **Race UI** (`hud.rs`, `ui_quads.rs`): UI blend states (the nitrous "dark box" was an additive flare drawn
+  alpha-over), the offline race HUD (screen 604153), countdown / results sequences (online stand-ins),
+  RACES in Easydrive starts a race at runtime.
+- **Cutscenes** (`cutscene.rs`, `mw_assets::sequence`, `mw_formats::camera_take`): each event's intro and the
+  mode's outro, ICE camera takes, teleports, slow motion, letterbox, skip (Esc / pad Back).
+
+Most important open items: **a capture of the original's race intro** (several intro shots come out rolled
+~40°; the camera-clip axis convention is a model decision, decomp.md "Cutscenes and sequences") and of its
+outro (ours frames an opponent top-down); the opponents' own cars and names; the AI racing line; traffic
+manoeuvres; the minimap arrow.
+
+Commands (not yet in CLAUDE.md, which has uncommitted local edits):
+```sh
+./target/release/mwtool events [<id> [--png f]] [--all]       # offline events, a route on the map
+./target/release/mwtool camera-take [take] [--step s]          # ICE camera takes
+./target/release/mwtool traffic --at x,z                       # lanes near a point (plain: junction cycles, data)
+./target/release/mostrusted --race 462174                      # CONTINENTAL DRIFT: intro, 8 AI, traffic
+./target/release/mostrusted --race 462174 --test race --units 12   # TEST RESULT race … (--no-cutscenes: frozen start)
+MW_CUTSCENE_SHOT=intro:9 ./target/release/mostrusted --race 462174 --units 12 --screenshot f.png --screenshot-delay 100000
+./target/release/mostrusted --drive 911 --units 20 --ai "911,veyron super" --test ai --ai-seconds 60
+./target/release/mostrusted --drive 911 --test exhaust         # pops / backfires; --nitrous holds nitrous
+./target/release/mostrusted --drive xkr --units 12 --spawn=-600,52,2300 --show-easydrive --easydrive-path 2,0,1
+# --no-traffic, --traffic-density x, --no-cutscenes, MW_TRAFFIC_LOG=1, MW_EXHAUST_LOG=1, MW_RACE_TEXT=1
+```
+
 # Handoff: 2026-10-09 (session 6), on top of session 5 below
 
 - **Angular damping traced** (commit 0102e9b): a driving car gets no general angular damping in the original
