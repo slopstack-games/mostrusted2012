@@ -74,6 +74,22 @@ mod h {
     pub const RESET_MIN_MPH: u32 = 0x75d8_2dd5;
     pub const RESET_SPEED_SCALE: u32 = 0xa44e_b2f3;
     pub const RESET_CRASH_MAX_MPH: u32 = 0x7452_1df4;
+    // Car against car (docs/decomp.md "Crashes", "Car against car")
+    pub const PROFILE_AI: u32 = 0x2ae1_7c10;
+    pub const PROFILE_TRAFFIC: u32 = field_hash("Traffic");
+    pub const PROFILE_LOCATION_SCALE: u32 = 0x9950_c913;
+    pub const LOCATION_SCALES: [u32; 7] =
+        [0x4450_ab62, 0x9249_ac64, 0x4387_7a60, 0xffa2_91a8, 0xbc4f_adb9, 0x459f_6c6c, 0xde41_1a20];
+    pub const GRAPH_GENERIC: u32 = 0x97aa_b742;
+    pub const GRAPH_RACE_CARS: u32 = 0x3fd6_9cce;
+    pub const GRAPH_REFERENCE_MPH: u32 = 0x674e_a963;
+    /// `ImpactDamageGraphs.Graph`: (high speed, damage), (mid speed, damage), (low speed, damage).
+    pub const GRAPH_POINTS: [u32; 6] = [0x64df_1ca1, 0xf107_cd5c, 0xa465_7c04, 0xa77b_7fdd, 0x5deb_cbe0, 0xaeea_c48a];
+    pub const STATS_AI: u32 = 0xac7a_3b27;
+    pub const STATS_OFFLINE: u32 = 0x8570_ce40;
+    pub const STATS_ONLINE: u32 = 0x304e_4b58;
+    pub const STATS: [u32; 6] = [0xbf2e_83db, 0x45f8_d01f, 0x07c6_b471, 0x4fbd_9ab4, 0x04df_1a2e, 0x074a_9349];
+    pub const STRENGTH: u32 = field_hash("Strength");
 }
 
 /// Where the data lives (resolved by type within these bundles, not by fixed resource IDs).
@@ -117,6 +133,154 @@ pub struct CrashingRules {
     /// The unnamed sets, by field hash.
     pub other: Vec<(u32, ImpactRule)>,
 }
+
+impl CrashingRules {
+    /// `22061460` (+0x10): "AI impact", against a race car that is not a player's (`FUN_009575e0`,
+    /// `FUN_009588c0`, `FUN_0095a680`).
+    pub fn ai(&self) -> Option<ImpactRule> {
+        self.other_rule(h::RULES_10)
+    }
+
+    /// `5ccf9942` (+0x18): "crashing traffic impact", against a traffic car that has crashed (`FUN_00959be0`).
+    pub fn crashing_traffic(&self) -> Option<ImpactRule> {
+        self.other_rule(h::RULES_18)
+    }
+
+    fn other_rule(&self, hash: u32) -> Option<ImpactRule> {
+        self.other.iter().find(|(h, _)| *h == hash).map(|(_, r)| *r)
+    }
+}
+
+/// One `ImpactDamageGraphs.Graph` (`FUN_009250d0`): damage against impact speed, linear from (low mph, low
+/// damage) to (mid mph, mid damage) with the speed floored at the low point, then on through (high mph, high
+/// damage) without a cap. Speeds in mph, damage in damage-bar units.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DamageGraph {
+    pub high: [f32; 2],
+    pub mid: [f32; 2],
+    pub low: [f32; 2],
+}
+
+impl DamageGraph {
+    /// Damage for an impact speed in m/s (`FUN_009250d0`; the game's mph → m/s factor is 0.44704).
+    pub fn damage(&self, speed: f32) -> f32 {
+        let (hi, mid, lo) = (self.high[0] * MPH, self.mid[0] * MPH, self.low[0] * MPH);
+        if speed < mid {
+            let t = ((speed - lo) / (mid - lo).max(1.0)).max(0.0);
+            self.low[1] + t * (self.mid[1] - self.low[1])
+        } else {
+            let t = (speed - mid) / (hi - mid).max(1.0);
+            self.mid[1] + t * (self.high[1] - self.mid[1])
+        }
+    }
+
+    fn read(o: &Object) -> Option<Self> {
+        let [a, b, c, d, e, f] = h::GRAPH_POINTS.map(|hash| float(o, hash));
+        Some(Self { high: [a?, b?], mid: [c?, d?], low: [e?, f?] })
+    }
+}
+
+/// `ImpactDamageGraphs` (PHYSICS/PHYSICSCONFIG, `CollisionInfo.Damage_Graphs`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ImpactDamageGraphs {
+    /// `97aab742`: every car-against-car impact except race car against race car (`FUN_00941a50`).
+    pub generic: DamageGraph,
+    /// `3fd69cce`: race car against race car (`FUN_0093c240`).
+    pub race_cars: DamageGraph,
+    /// `674ea963` (+0x58, mph): below this speed the damage scales down with the faster car's speed.
+    pub reference_mph: f32,
+}
+
+/// `Vehicle_Gameplay.DamageStats` as `FUN_008ffb20` copies it onto the vehicle (+0x15f0…+0x1608): all at least
+/// 1, the strength at least 0. Field names are unhashed; they are named after the vehicle offsets.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DamageStats {
+    /// `074a9349` → +0x15f0.
+    pub s15f0: f32,
+    /// `04df1a2e` → +0x15f4: the defence against traffic (and traffic's against traffic).
+    pub s15f4: f32,
+    /// `bf2e83db` → +0x15f8: the defence against AI / race cars (player against AI, AI against AI).
+    pub s15f8: f32,
+    /// `4fbd9ab4` → +0x15fc: the defence in player-against-player hits; traffic's against the player.
+    pub s15fc: f32,
+    /// `45f8d01f` → +0x1600.
+    pub s1600: f32,
+    /// `07c6b471` → +0x1604: the defence used when the other car's component flag `05cd1d74` is set.
+    pub s1604: f32,
+    /// `Strength` → +0x1608: the attack.
+    pub strength: f32,
+}
+
+impl Default for DamageStats {
+    fn default() -> Self {
+        Self { s15f0: 50.0, s15f4: 50.0, s15f8: 50.0, s15fc: 50.0, s1600: 50.0, s1604: 50.0, strength: 50.0 }
+    }
+}
+
+impl DamageStats {
+    fn read(o: &Object) -> Option<Self> {
+        let [s15f8, s1600, s1604, s15fc, s15f4, s15f0] = h::STATS.map(|hash| float(o, hash).unwrap_or(1.0).max(1.0));
+        Some(Self { s15f0, s15f4, s15f8, s15fc, s1600, s1604, strength: float(o, h::STRENGTH)?.max(0.0) })
+    }
+}
+
+/// The three `DamageStats` of a `Vehicle_Gameplay` (`FUN_008ffb20` picks one: +0x44 for an online player,
+/// +0xc for a car whose driver kind +0x30e0 is 2 (AI; read in a snapshot), +0x28 otherwise).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct VehicleDamageStats {
+    pub ai: DamageStats,
+    pub offline: DamageStats,
+    pub online: DamageStats,
+}
+
+impl VehicleDamageStats {
+    /// Read from a `Genesys.Gen.Vehicle_Gameplay` object.
+    pub fn from_gameplay(o: &Object) -> Option<Self> {
+        let get = |hash| sub(o, hash).and_then(DamageStats::read);
+        Some(Self { ai: get(h::STATS_AI)?, offline: get(h::STATS_OFFLINE)?, online: get(h::STATS_ONLINE)? })
+    }
+}
+
+/// A `Physics.DamageBarProfile`: the impact-location damage scales and the crashing rules.
+#[derive(Debug, Clone, Default)]
+pub struct DamageProfile {
+    pub id: ResourceId,
+    /// `ImpactLocationDamageScale` (+0x18…+0x30), in field order.
+    pub location_scale: [f32; 7],
+    pub rules: CrashingRules,
+}
+
+impl DamageProfile {
+    /// The scale for an impact location (`FUN_0092ebf0`; locations from `FUN_00929da0`, see `crash.rs`): 1 →
+    /// +0x18, front corners 2 / 4 → +0x1c, front 3 → +0x20, rear corners 6 / 8 → +0x24, rear 7 → +0x28, sides
+    /// 5 / 9 → +0x2c, roof 0 → +0x30, the centre (10) 1.
+    pub fn location_scale(&self, location: u8) -> f32 {
+        match location {
+            1 => self.location_scale[0],
+            2 | 4 => self.location_scale[1],
+            3 => self.location_scale[2],
+            6 | 8 => self.location_scale[3],
+            7 => self.location_scale[4],
+            5 | 9 => self.location_scale[5],
+            0 => self.location_scale[6],
+            _ => 1.0,
+        }
+    }
+}
+
+/// What the car-against-car impacts need (`FUN_00960f20`'s handlers).
+#[derive(Debug, Clone)]
+pub struct CarImpactData {
+    pub graphs: ImpactDamageGraphs,
+    /// `DamageBarProfiles.PlayerOffline`, `2ae17c10` (the AI cars' profile: a snapshot's AI car, driver kind 2,
+    /// held its location scales 1.125 / 1.65) and `Traffic`.
+    pub player: DamageProfile,
+    pub ai: DamageProfile,
+    pub traffic: DamageProfile,
+}
+
+/// The game's mph → m/s factor (`.bss` 0x0118a010, read in a snapshot).
+const MPH: f32 = 0.44704;
 
 /// `SlowMoSequenceItem`.
 #[derive(Debug, Clone, PartialEq)]
@@ -189,6 +353,8 @@ pub struct CrashData {
     pub rules: CrashingRules,
     pub camera: CrashCamera,
     pub reset: ResetSpeed,
+    /// Car-against-car impacts (`None` when the data is missing: those impacts never crash then).
+    pub impacts: Option<CarImpactData>,
 }
 
 fn num(v: &Value) -> Option<f32> {
@@ -410,12 +576,53 @@ impl AssetStore {
         })
     }
 
+    /// A `DamageBarProfiles` entry with its location scales and rules.
+    fn damage_profile(&self, profiles: &Object, field: u32) -> Result<DamageProfile> {
+        let id = handle(profiles.get(field)).ok_or(Error::Missing(ResourceId::NULL))?;
+        let profile = self.genesys_object(id)?;
+        let mut location_scale = [1.0; 7];
+        if let Some(s) = sub(&profile, h::PROFILE_LOCATION_SCALE) {
+            for (v, hash) in location_scale.iter_mut().zip(h::LOCATION_SCALES) {
+                *v = float(s, hash).unwrap_or(1.0);
+            }
+        }
+        let rules_id = handle(profile.get(h::CRASHING_RULES)).ok_or(Error::Missing(id))?;
+        let rules = CrashingRules::from_object(rules_id, &self.genesys_object(rules_id)?);
+        Ok(DamageProfile { id, location_scale, rules })
+    }
+
+    /// The damage graphs and the player / AI / traffic damage profiles for car-against-car impacts.
+    pub fn car_impact_data(&self) -> Result<CarImpactData> {
+        let (_, profiles) = self
+            .genesys_of_type(PHYSICS_CONFIG, "Genesys.Gen.DamageBarProfiles")?
+            .into_iter()
+            .next()
+            .ok_or(Error::Missing(ResourceId::NULL))?;
+        let (_, graphs) = self
+            .genesys_of_type(PHYSICS_CONFIG, "Genesys.Gen.ImpactDamageGraphs")?
+            .into_iter()
+            .next()
+            .ok_or(Error::Missing(ResourceId::NULL))?;
+        let graph = |hash| sub(&graphs, hash).and_then(DamageGraph::read).ok_or(Error::Missing(ResourceId::NULL));
+        Ok(CarImpactData {
+            graphs: ImpactDamageGraphs {
+                generic: graph(h::GRAPH_GENERIC)?,
+                race_cars: graph(h::GRAPH_RACE_CARS)?,
+                reference_mph: float(&graphs, h::GRAPH_REFERENCE_MPH).unwrap_or(25.0),
+            },
+            player: self.damage_profile(&profiles, h::PLAYER_OFFLINE)?,
+            ai: self.damage_profile(&profiles, h::PROFILE_AI)?,
+            traffic: self.damage_profile(&profiles, h::PROFILE_TRAFFIC)?,
+        })
+    }
+
     /// Rules, crash camera and reset speeds together.
     pub fn crash_data(&self) -> Result<CrashData> {
         Ok(CrashData {
             rules: self.player_crashing_rules()?,
             camera: self.crash_camera()?,
             reset: self.crash_reset_speed()?,
+            impacts: self.car_impact_data().ok(),
         })
     }
 }

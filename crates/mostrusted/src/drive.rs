@@ -117,6 +117,8 @@ pub struct CarParams {
     /// The AI driver's steering PID gains (Proportional, Integral, Derivative), `Vehicle_Gameplay.PIDController`
     /// (`ai_driver.rs`; the 911's 0.3 / 0.01 / 0.1 when a car has none).
     pub ai_steer_pid: [f32; 3],
+    /// `Vehicle_Gameplay` damage stats for car-against-car impacts (`car_impacts.rs`).
+    pub damage_stats: mw_assets::crash::VehicleDamageStats,
 }
 
 /// `HandbrakeAbility`: the handbrake's strength blends from its low-speed to its high-speed value between
@@ -234,6 +236,7 @@ impl CarParams {
             drift: DriftParams::new(h),
             surface_links: h.surface_links.clone(),
             ai_steer_pid: h.ai_steering_pid.unwrap_or([0.3, 0.01, 0.1]),
+            damage_stats: h.damage_stats.unwrap_or_default(),
         }
     }
 }

@@ -10,6 +10,7 @@ mod bench;
 mod camera;
 mod car_anim;
 mod car_audio;
+mod car_impacts;
 mod chassis;
 mod chevron;
 use mw_handling::{drift, drivetrain, tyre};
@@ -458,7 +459,8 @@ fn main() -> anyhow::Result<()> {
             _ => anyhow::bail!("--spawn expects x,y,z[,heading_degrees]"),
         };
         // `--test ai` and `--test race` drive the streets; the other tests run on the flat track.
-        let street_test = race_test || cli.test.as_deref() == Some("ai");
+        let street_test =
+            race_test || matches!(cli.test.as_deref(), Some("ai") | Some("crash-traffic") | Some("crash-ai"));
         let track = cli.test_track || (cli.test.is_some() && !street_test) || cli.replay.is_some();
         let spawn = if track { Vec3::new(0.0, 1.0, 0.0) } else { spawn };
         let props = if cli.test.as_deref() == Some("smash") { props::smash_test_props() } else { Vec::new() };
@@ -476,7 +478,9 @@ fn main() -> anyhow::Result<()> {
     };
     let smash = cli.test.as_deref() == Some("smash");
     let test = match cli.test.as_deref() {
-        None | Some("crash") | Some("smash") | Some("ai") | Some("race") => None,
+        None | Some("crash") | Some("smash") | Some("ai") | Some("race") | Some("crash-traffic") | Some("crash-ai") => {
+            None
+        }
         Some("accel") => Some(drive::TestKind::Accel),
         Some("nitrous") => Some(drive::TestKind::Nitrous),
         Some("brake") => Some(drive::TestKind::Brake),
@@ -491,7 +495,7 @@ fn main() -> anyhow::Result<()> {
         Some("exhaust") => Some(drive::TestKind::Exhaust),
         Some(other) => {
             anyhow::bail!(
-                "unknown --test {other} (accel, brake, corner, handbrake, drift, donut, engine, exhaust, landing, climb, jitter, crash, smash, ai, race)"
+                "unknown --test {other} (accel, brake, corner, handbrake, drift, donut, engine, exhaust, landing, climb, jitter, crash, smash, ai, race, crash-traffic, crash-ai)"
             )
         }
     };
@@ -612,6 +616,14 @@ fn main() -> anyhow::Result<()> {
             cli.crash_wall_width,
         ));
         None
+    } else if let Some(kind) = match cli.test.as_deref() {
+        Some("crash-traffic") => Some(car_impacts::ImpactTestKind::Traffic),
+        Some("crash-ai") => Some(car_impacts::ImpactTestKind::Ai),
+        _ => None,
+    } {
+        app.insert_resource(car_impacts::ImpactTest::new(kind, cli.screenshot.clone()));
+        app.add_plugins(car_impacts::ImpactTestPlugin);
+        None
     } else if smash {
         app.insert_resource(props::SmashTest::new(cli.screenshot.clone(), cli.smash_speed / 3.6));
         app.add_plugins(props::SmashTestPlugin);
@@ -681,6 +693,7 @@ fn main() -> anyhow::Result<()> {
         ))
         .add_plugins(camera::CameraPlugin { mode: camera_mode, look_back })
         .add_plugins(crash::CrashPlugin)
+        .add_plugins(car_impacts::CarImpactsPlugin)
         .add_plugins(nitrous::NitrousPlugin)
         .add_plugins(exhaust::ExhaustPlugin)
         .add_plugins(tyre_marks::TyreMarksPlugin)

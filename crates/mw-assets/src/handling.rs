@@ -328,6 +328,8 @@ pub struct VehicleHandling {
     pub ai_steering_pid: Option<[f32; 3]>,
     /// `Vehicle_Gameplay` +0xac (mph): the top speed the AI's virtual driving caps at.
     pub gameplay_top_speed_mph: Option<f32>,
+    /// `Vehicle_Gameplay` damage stats (car-against-car impacts, `FUN_008ffb20`).
+    pub damage_stats: Option<crate::crash::VehicleDamageStats>,
     pub mass: Option<f32>,
     /// Body rigid-body origin in car space (used as the centre of mass).
     pub centre_of_mass: Option<[f32; 3]>,
@@ -416,6 +418,7 @@ impl VehicleHandling {
                     out.ai_steering_pid = sub(&obj, h::GAMEPLAY_PID)
                         .and_then(|p| Some([float(p, h::PID_P)?, float(p, h::PID_I)?, float(p, h::PID_D)?]));
                     out.gameplay_top_speed_mph = float(&obj, h::GAMEPLAY_TOP_SPEED);
+                    out.damage_stats = crate::crash::VehicleDamageStats::from_gameplay(&obj);
                 }
                 "Genesys.Gen.WheelSuspensionSpringConstraint" => {
                     if let (Some(damper_ratio), Some(damping_ratio), Some(sag)) = (

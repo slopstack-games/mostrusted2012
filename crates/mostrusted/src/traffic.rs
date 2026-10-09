@@ -145,8 +145,16 @@ pub struct TrafficBody {
 }
 
 /// Inserted by the contact hook on a lane follower's collider: turn the car into a crashing (physical) car.
+/// It carries the impact for `car_impacts.rs`: the hitter's body, the contact point, the unit normal from the
+/// hitter to this car, and both velocities before the solve.
 #[derive(Component)]
-pub struct TrafficHit;
+pub struct TrafficHit {
+    pub hitter: Entity,
+    pub point: Vec3,
+    pub normal: Vec3,
+    pub v_hitter: Vec3,
+    pub v_traffic: Vec3,
+}
 
 /// The root entity of a traffic car (lane follower or crashed).
 #[derive(Component)]
@@ -285,6 +293,9 @@ struct Crashed {
     position: Vec3,
     velocity: Vec3,
     right: Vec3,
+    /// Its own crash rule fired (vehicle +0x1774, `car_impacts.rs`): later hits on it are "crashing traffic
+    /// impacts".
+    wrecked: bool,
 }
 
 #[derive(Default, Clone)]
@@ -384,6 +395,18 @@ impl TrafficSystem {
             removed: 0,
             tick_time: 0.0,
             ticks: 0,
+        }
+    }
+
+    /// A crashed traffic car's wrecked flag (`None` when `entity` is not a crashed traffic car).
+    pub fn wrecked(&self, entity: Entity) -> Option<bool> {
+        self.crashed.iter().find(|c| c.entity == entity).map(|c| c.wrecked)
+    }
+
+    /// Mark a crashed traffic car as wrecked (its crash rule fired).
+    pub fn wreck(&mut self, entity: Entity) {
+        if let Some(c) = self.crashed.iter_mut().find(|c| c.entity == entity) {
+            c.wrecked = true;
         }
     }
 
@@ -1787,12 +1810,13 @@ fn drive_bodies(
 fn crash_hit_cars(
     mut commands: Commands,
     system: Option<ResMut<TrafficSystem>>,
-    hits: Query<(Entity, &TrafficBody, &ChildOf), With<TrafficHit>>,
+    hits: Query<(Entity, &TrafficBody, &ChildOf, &TrafficHit)>,
+    mut impacts: Option<ResMut<crate::car_impacts::PendingImpacts>>,
 ) {
     let Some(mut sys) = system else {
         return;
     };
-    for (collider, body, parent) in &hits {
+    for (collider, body, parent, hit) in &hits {
         commands.entity(collider).remove::<(TrafficHit, TrafficBody, ActiveCollisionHooks)>();
         let Some(car) = sys.cars.get(body.slot).and_then(|c| c.as_ref()) else { continue };
         if car.serial != body.serial || car.entity != Some(parent.parent()) {
@@ -1814,7 +1838,18 @@ fn crash_hit_cars(
             position: car.position,
             velocity: car.forward * car.speed,
             right: car.up.cross(car.forward),
+            wrecked: false,
         });
+        if let Some(impacts) = impacts.as_mut() {
+            impacts.0.push(crate::car_impacts::RawImpact {
+                a: hit.hitter,
+                b: entity,
+                point: hit.point,
+                normal: hit.normal,
+                va: hit.v_hitter,
+                vb: hit.v_traffic,
+            });
+        }
     }
 }
 

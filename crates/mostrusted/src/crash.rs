@@ -2,8 +2,10 @@
 //!
 //! - **Decision** (`FUN_009a9fd0`): an impact on the car body against static scenery is a crash when its
 //!   closing speed in mph exceeds the offline player's `WorldRules` threshold (70) or its damage exceeds
-//!   the damage threshold (30). Our damage model has no damage-bar units yet, so only the closing speed
-//!   is tested; the game's own landing / traffic / prop rules have no counterpart here yet.
+//!   the damage threshold (30). Our damage model has no damage-bar units for world impacts yet, so only the
+//!   closing speed is tested there. Impacts with traffic and other cars are decided in `car_impacts.rs`
+//!   (the game's car-against-car damage and `TrafficRules` / "AI impact" / landing-on-a-car rules), which
+//!   hands a crash over through [`CrashState::car_crash`].
 //! - **While crashed** the player has no control (`Player.CanDriveAway`); the car keeps tumbling.
 //! - **The crash sequence** (`mw_assets::crash::CrashCamera`, a feedback `Sequence`) runs on real time:
 //!   slow motion from 1 to 0.1 over the first half second (the gameplay camera still shows), then the
@@ -96,9 +98,20 @@ struct ShotView {
     aim: Vec3,
 }
 
+/// A crash decided by a car-against-car impact (`car_impacts.rs`), started by [`detect_crash`] on the same tick.
+#[derive(Debug, Clone, Copy)]
+pub struct CarCrash {
+    pub closing_mph: f32,
+    pub damage: f32,
+    /// The rule that fired ("traffic impact", "AI impact", "landing on a car", ...).
+    pub rule: &'static str,
+}
+
 #[derive(Resource, Default)]
 pub struct CrashState {
     pub active: Option<ActiveCrash>,
+    /// Set by `car_impacts.rs` when the player's car crashed into another car this tick.
+    pub car_crash: Option<CarCrash>,
     pub crashes: u32,
     history: VecDeque<SafePose>,
     game_time: f32,
@@ -132,7 +145,7 @@ impl CrashState {
 
 /// Record safe poses and test body impacts against the world rule.
 #[allow(clippy::too_many_arguments)]
-fn detect_crash(
+pub(crate) fn detect_crash(
     time: Res<Time>,
     config: Option<Res<CrashConfig>>,
     mut state: ResMut<CrashState>,
@@ -147,6 +160,7 @@ fn detect_crash(
     let Ok((car, transform, velocity)) = cars.single() else { return };
     state.game_time += time.delta_secs();
     let now = state.game_time;
+    let car_crash = state.car_crash.take();
     if state.active.is_some() {
         return;
     }
@@ -163,9 +177,15 @@ fn detect_crash(
         .filter(|m| m.normal.y.abs() < MAX_WALL_NORMAL_Y)
         .flat_map(|m| m.points.iter().map(|p| -p.normal_speed))
         .fold(0.0f32, f32::max);
-    let closing_mph = closing / MPH;
+    let mut closing_mph = closing / MPH;
     let rule = config.0.rules.world;
-    let is_crash = rule.is_some_and(|r| r.is_crash(None, closing_mph));
+    let is_world_crash = rule.is_some_and(|r| r.is_crash(None, closing_mph));
+    if let Some(c) = car_crash
+        && !is_world_crash
+    {
+        closing_mph = c.closing_mph;
+    }
+    let is_crash = is_world_crash || car_crash.is_some();
     if closing_mph > TRACE_MIN_MPH {
         let limit = rule.and_then(|r| r.closing_mph).unwrap_or(f32::INFINITY);
         state.trace(format_args!("impact {now:.3} {closing_mph:.1} {limit:.1} {}", if is_crash { 1 } else { 0 }));
@@ -192,11 +212,17 @@ fn detect_crash(
     let travel = Vec3::new(heading.x, 0.0, heading.z).normalize_or(Vec3::Z);
     state.crashes += 1;
     state.trace(format_args!("crash {now:.3} {closing_mph:.1} {pre_mph:.1}"));
-    info!(
-        "CRASH: closing {closing_mph:.1} mph > WorldRules {:?} mph (pre-crash {pre_mph:.0} mph); crash camera {}",
-        rule.and_then(|r| r.closing_mph),
-        config.0.camera.id
-    );
+    match car_crash.filter(|_| !is_world_crash) {
+        Some(c) => info!(
+            "CRASH: {} (damage {:.1}, closing {:.1} mph, pre-crash {pre_mph:.0} mph); crash camera {}",
+            c.rule, c.damage, c.closing_mph, config.0.camera.id
+        ),
+        None => info!(
+            "CRASH: closing {closing_mph:.1} mph > WorldRules {:?} mph (pre-crash {pre_mph:.0} mph); crash camera {}",
+            rule.and_then(|r| r.closing_mph),
+            config.0.camera.id
+        ),
+    }
     state.active = Some(ActiveCrash {
         t: 0.0,
         closing_mph,

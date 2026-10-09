@@ -61,6 +61,8 @@ pub struct TrafficVehicleType {
     pub mass: f32,
     /// `TrafficVehicle.Trailer` is set: the back extent grows by 10 m (`DAT_00fb23c0`). None in the PC data.
     pub trailer: bool,
+    /// `VehicleComponent.Gameplay` → `Vehicle_Gameplay` damage stats (car-against-car impacts).
+    pub damage_stats: Option<crate::crash::VehicleDamageStats>,
 }
 
 /// `TrafficSystemConfig` (`GLOBALCONFIG.BNDL` 0100000000069446); offsets are instance offsets as decomp.md's
@@ -412,6 +414,12 @@ impl AssetStore {
             half_extents,
             mass,
             trailer: handle(o.get(field_hash("Trailer"))).is_some(),
+            damage_stats: self
+                .genesys_object(ResourceId(0x0100_0000_0000_0000 | component as u64))
+                .ok()
+                .and_then(|vc| handle(vc.get(field_hash("Gameplay"))))
+                .and_then(|g| self.genesys_object(g).ok())
+                .and_then(|g| crate::crash::VehicleDamageStats::from_gameplay(&g)),
         })
     }
 }
