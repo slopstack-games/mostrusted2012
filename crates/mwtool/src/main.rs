@@ -421,6 +421,9 @@ enum Cmd {
     Traffic {
         #[arg(long)]
         png: Option<PathBuf>,
+        /// List the lane sections within 80 m of `x,z` (start, end, length, speed, density, links).
+        #[arg(long, value_delimiter = ',', allow_hyphen_values = true)]
+        at: Vec<f32>,
     },
     /// Show a WorldPaintMap (what is painted where: environment timelines, layer fog, particle lighting),
     /// which entries each track unit's zone covers, and optionally render it with the zone outlines.
@@ -1171,7 +1174,7 @@ fn main() -> Result<()> {
         Cmd::World { out, bundles, size, obj, instances } => {
             export_world(&AssetStore::new(game)?, &bundles, &out, size, obj, &instances)?
         }
-        Cmd::Traffic { png } => traffic(&AssetStore::new(game)?, png.as_deref())?,
+        Cmd::Traffic { png, at } => traffic(&AssetStore::new(game)?, png.as_deref(), &at)?,
         Cmd::PaintMap { id, png, at } => paint_map(&AssetStore::new(game)?, &id, png.as_deref(), &at)?,
     }
     Ok(())
@@ -1271,8 +1274,34 @@ fn skid_sweep(
     Ok(())
 }
 
-fn traffic(store: &AssetStore, png: Option<&Path>) -> Result<()> {
+fn traffic(store: &AssetStore, png: Option<&Path>, at: &[f32]) -> Result<()> {
     let t = store.traffic_lanes()?;
+    if let [x, z] = at[..] {
+        let data = store.traffic_data()?;
+        for l in t.lanes_near(x, z, 80.0) {
+            let s = &t.hulls[l.hull].sections[l.section];
+            let f = data.flows.get(s.flow as usize).copied().unwrap_or_default();
+            let (a, b) = (l.points[0], l.points[l.points.len() - 1]);
+            println!(
+                "hull {:3} section {:3}: ({:.0}, {:.1}, {:.0}) -> ({:.0}, {:.1}, {:.0}), {:.0} m, {:.0} mph, {:.0}/min, fwd {:?} back {:?}{}",
+                l.hull,
+                l.section,
+                a[0],
+                a[1],
+                a[2],
+                b[0],
+                b[1],
+                b[2],
+                l.length,
+                f.speed_mph,
+                f.density,
+                s.forward,
+                s.backward,
+                if s.stop_line.is_some() { ", stop line" } else { "" }
+            );
+        }
+        return Ok(());
+    }
     let sum = |f: &dyn Fn(&mw_formats::TrafficHull) -> usize| t.hulls.iter().map(f).sum::<usize>();
     println!(
         "version {}, {} hulls ({} with lanes), {} sections, {} rungs, {} spans, {} neighbours, {} junctions, \
@@ -1305,9 +1334,19 @@ fn traffic(store: &AssetStore, png: Option<&Path>) -> Result<()> {
                     format!("[{}]", lines.join(" "))
                 })
                 .collect();
-            if ji == 0 && hi % 3 == 0 {
-                println!("  junction {hi}.{ji}: cycle {} groups {}", cycle.join(" "), groups.join(" "));
-            }
+            // Where: the first rung of the section owning the first stop line.
+            let at = j.groups.iter().flat_map(|g| &g.stop_lines).next().and_then(|&(h, line)| {
+                let hull = t.hulls.get(h as usize)?;
+                let sec = hull.sections.iter().find(|s| s.stop_line == Some(line))?;
+                let r = hull.rungs.get(sec.first_rung as usize)?;
+                Some(format!("({:.0}, {:.0}, {:.0})", r[0][0], r[0][1], r[0][2]))
+            });
+            println!(
+                "  junction {hi}.{ji} at {}: cycle {} groups {}",
+                at.unwrap_or_default(),
+                cycle.join(" "),
+                groups.join(" ")
+            );
             for &(h, s) in j.groups.iter().flat_map(|g| &g.stop_lines) {
                 let Some(target) = t.hulls.get(h as usize) else { continue };
                 if s as usize >= target.stop_lines.len() {

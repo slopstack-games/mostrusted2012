@@ -47,6 +47,26 @@ pub struct CarRequest {
     pub bundle: String,
     /// Which of the car's `VehiclePaint` options to use (clamped to the ones it has).
     pub paint_index: usize,
+    /// A traffic car's model instead of a drivable car (`traffic.rs`): answered with `Msg::TrafficCar`.
+    pub traffic: Option<TrafficModelRequest>,
+}
+
+/// A traffic car model in one paint (traffic cars keep their paints outside their bundle).
+#[derive(Debug, Clone)]
+pub struct TrafficModelRequest {
+    /// Index into `TrafficData::vehicles` and into that type's paints, echoed back.
+    pub vehicle: usize,
+    pub paint: usize,
+    pub colour: Option<mw_assets::paint::VehiclePaint>,
+}
+
+/// A loaded traffic car model: body parts and wheels in car space.
+#[derive(Debug, Clone)]
+pub struct TrafficCarSpec {
+    pub vehicle: usize,
+    pub paint: usize,
+    pub body: Vec<ResourceId>,
+    pub wheels: Vec<WheelSpec>,
 }
 
 /// Sends [`CarRequest`]s to the loader thread.
@@ -119,6 +139,8 @@ pub enum Msg {
     /// The game's collision surface list (`mw_assets::surfaces`).
     Surfaces(Vec<mw_assets::surfaces::SurfaceInfo>),
     Car(Box<CarSpec>),
+    /// A traffic car model ([`CarRequest::traffic`]).
+    TrafficCar(Box<TrafficCarSpec>),
     /// A runtime [`CarRequest`] could not be loaded.
     CarFailed(String),
     Progress(String),
@@ -312,6 +334,12 @@ impl Worker {
     /// Load a car asked for at runtime. Load errors go back to the main thread; only a closed
     /// channel is an error here.
     fn car_request(&mut self, req: CarRequest) -> anyhow::Result<()> {
+        if let Some(t) = &req.traffic {
+            if let Err(e) = self.traffic_car(&req.bundle, t) {
+                self.send(Msg::Progress(format!("traffic car {}: {e:#}", req.bundle)))?;
+            }
+            return Ok(());
+        }
         self.filter.paint_index = req.paint_index;
         if let Err(e) = self.car(&req.bundle) {
             self.send(Msg::CarFailed(format!("{}: {e:#}", req.bundle)))?;
@@ -437,6 +465,48 @@ impl Worker {
         self.send(Msg::Car(Box::new(car)))?;
         self.store.evict_all();
         Ok(())
+    }
+
+    /// A traffic car's body and wheel models in the given paint (no handling, sound or damage: the lane
+    /// follower is kinematic, `traffic.rs`).
+    fn traffic_car(&mut self, bundle: &str, req: &TrafficModelRequest) -> anyhow::Result<()> {
+        let b = self.store.bundle(bundle).ok_or_else(|| anyhow::anyhow!("bundle not found: {bundle}"))?;
+        let e = b
+            .entries_of_type(ResourceType::VehicleGraphicsSpec)
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("{bundle} has no VehicleGraphicsSpec"))?;
+        let mut spec = mw_formats::VehicleGraphicsSpec::parse(&b.load(e)?)?;
+        self.store.repair_wheel_layout(&mut spec);
+        let saved = (self.paint, self.paint_count);
+        self.paint = req.colour;
+        let mut body = Vec::new();
+        for &m in spec.parts.iter().flatten() {
+            if let Some(key) = self.model_variant(m, Variant::default(), InstanceLook::default())? {
+                body.push(key);
+            }
+        }
+        let mid_z = spec.wheels.iter().map(|w| w.position[2]).sum::<f32>() / spec.wheels.len().max(1) as f32;
+        let mut wheels = Vec::new();
+        for w in &spec.wheels {
+            let mut parts = Vec::new();
+            for p in &w.parts {
+                if let Some(m) = p.model
+                    && let Some(key) = self.model_variant(m, Variant::default(), InstanceLook::default())?
+                {
+                    parts.push((key, p.spins));
+                }
+            }
+            let [x, y, z, qw] = [w.rotation[0], w.rotation[1], w.rotation[2], w.rotation[3]];
+            wheels.push(WheelSpec {
+                position: Vec3::from(w.position),
+                rotation: Quat::from_xyzw(x, y, z, qw),
+                mirror: w.position[0] < 0.0,
+                front: w.position[2] > mid_z,
+                parts,
+            });
+        }
+        (self.paint, self.paint_count) = saved;
+        self.send(Msg::TrafficCar(Box::new(TrafficCarSpec { vehicle: req.vehicle, paint: req.paint, body, wheels })))
     }
 
     /// Static collision for a track unit, built off the main thread.
