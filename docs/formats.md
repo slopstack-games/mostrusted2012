@@ -630,6 +630,62 @@ route drawn over the lane map `mwtool events <id> --png <file>`. Settled 2026-10
 - **`GameMode`**: `09d6656d` (+0x44) = 10, the crash reset delay `FUN_006d39d0` reads (decomp.md "Crashes"; the
   earlier note that no `GameMode` instance exists on PC is wrong: they are items of the GAMEMODES container).
 
+- **Sequence ids** (names cracked 2026-10-09): `OfflineEvent` `AROutro` (+0x60), `EventIntro` (+0x70),
+  `EventOutro` (+0x74), `FeedbackMessageGroup` (+0x78), `IntroMessageGroup` (+0x80); `GameMode` `AROutro` (+0x0c),
+  `CountdownSequence` (+0x10), `HUD_HSM` (+0x20), `Intro` (+0x24), `ResultsSequence` (+0x34), `FeedbackGroupID`
+  (u8 +0x75). Where those sequences live: "Sequences" below.
+
+## Sequences (`Genesys.Gen.Sequence`, 2026-10-09)
+
+Reader `mw_assets::sequence` (layout table in its doc comment); `mwtool events <id>` prints an event's intro and
+outro item by item. Game-logic cutscenes (race intros and outros, the crash camera, tutorials) are `Sequence`s in
+feedback message groups: `EN_US/FEEDBACKGROUPS/<UniqueId>.BNDL` holds one `FeedbackMessageGroup` whose
+`Sequences2` lists them, plus everything they use (layouts, `Animation` / `Skeleton` clips, `Wave`s, post-FX
+states). A sequence is referenced by its own `655d3f5f` UniqueId, never by resource id.
+
+- `Sequence` (44 B): `Binding` (empty = a time axis in seconds), `655d3f5f`, `Binding_Min` / `_Max`,
+  `SequenceItems` (polymorphic, +0x20), `TimelineControllers` (+0x24), counts. Every item starts with the
+  `SequenceItem` base (36 B): `EnabledBinding`, `655d3f5f`, `StartTime` (+0x18), `EndTime` (+0x1c), a u16.
+- Item types seen in the 108 race intros (by how many intros use them): `LayoutSequenceItem` 108,
+  `BusMixerChannelSequenceItem` / `WaveSequenceItem` 106, `EventTriggerSequenceItem` 104 (no fields),
+  `TeleportPlayerSequenceItem` 100, `DriveLocalPlayerWithAISequenceItem` 93, `AnimatedCameraSequenceItem` 92,
+  `PostFXSequenceItem` 81, `HideHudSequenceItem` 74, `ClearTrafficSequenceItem` / `OverrideAvailableTraffic…` 61,
+  `CameraSequenceItem` 59 (all ICE takes), `AddBehaviourToRaceCarSequenceItem` 51, `AddRaceCarSequenceItem` 26,
+  `SlowMoSequenceItem` / `DynamicCameraSequenceItem` 25, `SpawnAICopCar` 21, `RaceCarEffectSequenceItem` 16,
+  `MovieSequenceItem` / `DisableWorldRenderingSequenceItem` 15, then environment, time of day, speech and others.
+- Field names cracked here: `AnimatedCameraSequenceItem` (240 B) `FocalDistance` / `FocalLength` / `FStop`
+  (modulated values, +0x24 / +0x5c / +0x94), `6f3ea350` relative-to binding, `ShakeBinding`, `CameraAnimation`,
+  `CameraSkeleton`; `TeleportPlayerSequenceItem` (112 B) `Direction`, `Position` (vec3), `37dea4a1` racer
+  binding (`Players.LocalPlayer.RaceCarIndex`, `Players.Racer[n].RaceCarIndex`), `TransformBinding`, `Trigger`
+  (a `TriggerData` point id), `Speed_MPH`; `DriveLocalPlayerWithAISequenceItem` `MaxSpeedMph`, `DrivingStyle`;
+  timeline controllers `TriggerType`, `TriggerTime`, `DestinationTime` (`JumpTimelineController`,
+  `JumpMonitorTimelineController`, `JumpNTimesTimelineController`, `QuitSequenceTimelineController`,
+  `JumpOnButtonPress` + `Action`); `WaveSequenceItem.15a52404` = `Transform_Override_Binding`.
+- `CameraSequenceItem.Camera` (60 B): `e996e4ce` / `44692821` strings, `Bystander_Params` handle (the crash
+  camera), `0bd6ff75` bool[] (sample the binding once), `01130178` string[] (bindings → ICE avatars 1..),
+  `7aef95c3` = the `CameraTake` UniqueId, `752a7ea9` f32, `650a0f6e` / `ca15aa55` u16, three bools,
+  `Enable_Collision`.
+- `AnimatedRaceCarBehaviour` (96 B): `Label`, three bools, three bone-name strings (`av_car`, `lv_car`, `car`),
+  `Animation`, `Skeleton`, `DrivingControls` [{`BoneName`, `Control`, `VectorComponent`}], `Wheels` [three bone
+  names], counts and flags. Its skeleton (18 bones, identity bind pose) animates bone 1 = the car (world space,
+  codec-1 quaternions), 2–5 the wheels.
+- Camera skeleton (`0x6cc42`): two bones, identity bind pose; clips animate bone 1 with f32 quaternions at 30 fps.
+
+## ICE camera takes (`CameraTake` 0x20D, `CameraTakeList` 0x20E, 2026-10-09)
+
+`CAMERAS.BNDL` holds 45 takes and the list ("IceList", loaded by `FUN_005c44b0`). Parser and evaluator
+`mw_formats::camera_take` (full layout and rules in its doc comment), listing `mwtool camera-take`. A take is
+named by its UniqueId (= the resource id's low 32 bits, e.g. 0x19c8b2 = 1689778 `Circuit_Race_Event_Outro_IC`).
+
+- Header 0x20 bytes (count 1, end offset, ICE group id and key, pointer to the take at 0x20). Take: UniqueId (+0x08),
+  name char[28] (+0x0c), length in s (+0x2c), 17 × (intervals u16, keys u16) per channel (+0x34), then per channel
+  the key index of the inner intervals and the interval boundaries (fraction × 65535), then the element values
+  (81 elements in a fixed order; floats as f32, the rest bit-packed MSB-first in 4-byte-padded blocks, decoded as
+  signed / unsigned / hash / fixed point). Every one of the 45 takes parses to exactly its end offset.
+- Channels: MAIN (eye, look, dutch, lens, spaces, avatars), LENS, EXPOSURE, RAWFOCUS, SHAKE, TIME, TAG, OVERLAY,
+  LETTERBOX, FADE, ASSEMBLY, SHAKE_DATA, GAMEPLAY (game-camera blend), MOTION_BLUR, LAG, BYSTANDERCAM, STEREO3D.
+- ICE axes: x forward, y left, z up (game = (y, z, x)). Behaviour: decomp.md "Cutscenes and sequences".
+
 ## Easydrive (inside `Screen2`, `UI/SCREENS2/*.BNDL`)
 
 Inline GeneSys structs in a driving screen's widget groups (group children: field `c7413006`); loader

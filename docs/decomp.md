@@ -1247,8 +1247,12 @@ by `FUN_006b51a0`). Times are 64-bit ticks of 1/3,000,000 s (`DAT_00f9f604`). Co
 - **Intro and countdown** (`FUN_0070caa0`, `FUN_006e2640`): `GAMEMODEINTR` sets the start time GMM+0x2d18 =
   now + GameMode +0x48 (`15f07dbf`): 10 s for races and ambushes, 0 for speed runs and two DLC modes (7.5 / 9
   online). `IntroTime` (`FUN_006e2670`) = (start − now + 1 s) in whole seconds (30 with no start set);
-  `FUN_006e00b0` "intro running" = now < start. *Inferred*: the 3-2-1 countdown sequence plays over the last
-  3 s of the intro (the HSM condition). At go the HSM calls `StartGameModeTimer` → `FUN_006f0f80`: starts the
+  `FUN_006e00b0` "intro running" = now < start. **Corrected 2026-10-09 (see "Cutscenes and sequences")**: the
+  3-2-1 is online only. The states "Wait For Countdown Start (Mode.IntroTime(LTEQ:3))", "Play countdown
+  (Mode.Data.CountdownSequence)" and "HSM.CheckForFalseStarts" sit in the HSM text under "In Game Flow Online
+  Event", and `CountdownSequence` (GameMode +0x10) is 0 for every offline mode. An offline race starts from its
+  `EventIntro` sequence, which ends with the cars teleported onto the grid already rolling (no freeze, no
+  countdown); the place of the `GAMEMODEINTR` 10 s in that flow is open. At go the HSM calls `StartGameModeTimer` → `FUN_006f0f80`: starts the
   event's `Timeline` sequences (OfflineEvent +0xa0), arms the timeout GameMode +0x50 (`fe4f2d8c`, 900 s),
   resets the wrong-way state (`FUN_006581c0`). The race clock is GMM+0x2d28; what advances it was not found.
 - **Holding the cars**: `FREEZE_CAR` sets PM+0xcba8 to 1 on enter, 0 on exit; the player input builder
@@ -1334,8 +1338,9 @@ by `FUN_006b51a0`). Times are 64-bit ticks of 1/3,000,000 s (`DAT_00f9f604`). Co
   drawn with the `Chevron` / `ChevronBlockRoad` materials of `CheckpointConfig` `53a76c21` / `beb301a3`, shaders
   ported in `chevron.wgsl`) and the GPS line come from the route (G+0x2f480); the strip builder was not found.
 - **Not found**: what advances the race clock; `HSM.PauseAIForRaceStart` and the false-start check; the AI goal
-  enum; the outro and the camera after the finish; the HSM transition table; which `GameMode` field is
-  `Mode.Data.CountdownSequence`; the chevron strip builder (height, UV scale, which flag picks which material).
+  enum; the HSM transition table; the chevron strip builder (height, UV scale, which flag picks which material).
+  Found since (2026-10-09, "Cutscenes and sequences"): `Mode.Data.CountdownSequence` is GameMode +0x10 (0 offline);
+  the outro is the event's `EventOutro` sequence, its camera an ICE take.
 
 ### Port and model decisions (`race.rs`, `chevron.rs`)
 
@@ -1350,6 +1355,91 @@ are kept for results; the speed run's average speed is the counted distance over
 advances by the fixed tick; the chevron boards are 2 m tall with one texture repeat per 2 m, `baseColour`
 white, premultiplied-over blending, `f8ccf73e` set = block-road crosses (from the data: those lines are short and
 cross side roads); the gate POI marker is not drawn (its visual is not located).
+
+## Cutscenes and sequences (2026-10-09)
+
+Data: `mw_assets::sequence` (formats.md "Sequences"), the ICE takes `mw_formats::camera_take` (formats.md "ICE
+camera takes"); runtime: `crates/mostrusted/src/cutscene.rs`; listing: `mwtool events <id>` prints both
+timelines, `mwtool camera-take [take]` evaluates a take. Confirmed unless marked.
+
+- **Which sequences an offline race plays** (data + HSM text). `OfflineEvent.EventIntro` (+0x70) is the intro, a
+  `Sequence` in the event's `IntroMessageGroup` (+0x80, `EN_US/FEEDBACKGROUPS/<id>.BNDL`; HSM: "Does Event Intro
+  Exist", "Run PageRunner2 Context - EventIntro" with `Event.Data.IntroMessageGroup`, "Disable Car Controls and
+  Easydrive", "Run intro sequence" with `Event.Data.EventIntro`, "Pause Intro When Skipping"). `EventOutro` (+0x74)
+  plays after the finish ("Event Outro Sequence", `Event.Data.EventOutro`), then the results; `AROutro` (+0x60,
+  the Autolog-recommendations outro, `Event.Data.AROutro` / `Mode.Data.AROutro` = GameMode +0x0c) is the same id
+  as `EventOutro` in every offline event. The outros live in the game mode's feedback group: the HSM state "Select
+  Game Mode Feedback Group" holds 604180 and 604179 and reads `Mode.Data.FeedbackGroupID` (GameMode +0x75: 2 for
+  races and speed runs, 1 for ambushes; which id goes with which value is *inferred* from the order). 457707 is
+  the global group. Shared outros: 1689787 (sprints), 1689791 / 1689795 (circuits), 995395 (speed runs),
+  1689780 (ambushes); the Most Wanted races have their own. Every one of the 108 intros is a bespoke
+  cinematic of 13–54 s; 104 end with an `EventTriggerSequenceItem` and carry a `JumpOnButtonPress` skip.
+- **No countdown offline**: GameMode `CountdownSequence` (+0x10), `Intro` (+0x24) and `ResultsSequence` (+0x34)
+  are 0 for every offline mode (set for the online ones), and the countdown states are in the online flow (see
+  "Races"). The intro instead ends on a rolling start: in 462174 at 18.733 s `TeleportPlayerSequenceItem`s put
+  the player on trigger 462172 at `Speed_MPH` 70 and `Players.Racer[1..8]` on the opponents' `Placement` points at
+  55, `DriveLocalPlayerWithAISequenceItem` (`MaxSpeedMph` 999) drives the player until 23.1 s, slow motion ramps
+  0.05 → 1 from 18.733 to 24 s, the dynamic camera blends to the chase camera from 22.5 to 24 s and the event
+  trigger fires at 24 s. *Inferred*: the race starts on that trigger (it is the only item that signals the game
+  logic; the HSM's "Exit When Timer Is Running" waits for `StartGameModeTimer`).
+- **Sequence clock**: real time, as the crash camera (the slow-motion items scale the simulation only).
+  `JumpOnButtonPress` {`TriggerType`, `TriggerTime`, `DestinationTime`, `Action`}: after `TriggerTime` a press
+  jumps the clock to `DestinationTime` (462174: from 1 s to 19.5 s, past the cinematic, just after the teleports).
+  The button is SKIP_CUTSCENE (34; Esc, pad Back, "Input and control bindings"); *inferred*, `Action` 1 is not
+  traced. `ConductorSequenceItem`s start nested sequences (the outros put all their content in one).
+- **`AnimatedCameraSequenceItem`**: a clip (`CameraAnimation`) of a two-bone camera skeleton (`CameraSkeleton`,
+  identity bind pose, bone 1 animated, 30 fps, f32 quaternions), in world space or, with the `6f3ea350` binding
+  `Players.LocalPlayer.GetTransform`, in the car's frame. Lens: the director camera at 0x2dc0 (`FUN_005c6c10`)
+  takes FOV = 2·atan(18 / focal length) in degrees (`.rdata` 0x00fb0e94 = 18, 0x00faf850 = 180/π) and an aperture
+  focal / f-stop (`DAT_00fb0ea8` = 64); `FocalLength`, `FStop`, `FocalDistance` are modulated values (462174 zooms
+  24 → 10.4 mm in its 3 s shot). The bone's axes are *inferred* from the clips: its X stays level (mean |y| 0.12
+  over 701 frames) and its +Y points down in 86 % of frames, so the camera looks along +Z with −Y up; renders
+  with that convention give level horizons and frame the animated car.
+- **ICE takes** (`CameraSequenceItem.Camera.7aef95c3` = a `CameraTake` UniqueId; all 59 camera items of the
+  intros and outros are takes, none bystander shots): EA's ICE library at 0x00e20000–0x00e31000, decoded in
+  `mw_formats::camera_take` (layout `FUN_00e26fb0`, 17 channels and 81 elements from `FUN_00e2ccc0` / `.rdata`
+  0x010e7858, cubic Hermite keys `FUN_00e28cc0` with tangents `FUN_00e28aa0`, fixed-point decode
+  `FUN_00e25d80`, camera `FUN_00e29c20` / `FUN_00e27a70` / `FUN_00e278c0`, FOV 2·atan(15.96 / lens) `FUN_00e27340`).
+  ICE axes are x forward, y left, z up; the game converts with game = (ice.y, ice.z, ice.x) (`FUN_00495b70`,
+  `FUN_00496560`, `FUN_004ad090`). Eye and look each live in a space per interval: Player (an avatar's transform,
+  `NOROLL` = heading only), World, Hybrid (world axes at the avatar), Scene (not modelled). The item's
+  `01130178` bindings become avatars 1.. (`FUN_005d22b0` → `FUN_0049b180` → `FUN_0049a3c0`, "BoundAvatar%i"); a
+  binding whose `0bd6ff75` flag is set is sampled once when the take starts (`FUN_0049a910` re-reads it every
+  frame only while the flag is clear): the race outros freeze the finishing car's frame. `GAME_CAM_BLEND` (read
+  back by `FUN_004962f0` case 0) blends to the gameplay camera, 1 = gameplay (*inferred* from the data). The race
+  outro take 0x19c8b2 looks almost straight down from 3.6 m above and 4.4 m ahead of the car (lens 19.3 mm) while
+  the outro's slow motion drops to 0.01 within 1.3 s and to 0 from 10.5 to 13.5 s; it blends to the chase camera
+  at 11.2–11.4 s.
+- **Other items played**: `SequenceItems.DynamicCameraSequenceItem` (a `Camera.DynamicCamera` whose process nodes
+  read `Camera.GameplayExternalCameraTransform` / `GameplayExternalFOV` and lerp to them; the item's channels drive
+  the `CameraTransformLerp` and `ProcessNodeFloat32Lerp` nodes by curve), `AddBehaviourToRaceCarSequenceItem` with
+  an `AnimatedRaceCarBehaviour` (an 18-bone clip: bone 1 the car, 2–5 the wheels, the rest `av_*` / `lv_*` velocity
+  bones and `controls_1` / `controls_2`; names in the behaviour, CRC ids in the skeleton), `HideHudSequenceItem`,
+  the letterbox layout 0x19c66, `SlowMoSequenceItem`, `ClearTrafficSequenceItem` (radius around triggers or a
+  binding), `HideRacecarSequenceItem`.
+- **Not traced**: the item handlers themselves (reached through vtables; only `CameraSequenceItem` is tested by type
+  id), so how the teleport sets the car's speed, what the AI drive's `DrivingStyle` does, whether a cut snaps the
+  gameplay camera; `DUTCH` (roll) in ICE takes: the code turns its +0.25 maximum into a 90° roll and 11 takes
+  (including 0x167b67 `Default_No_Race_Event_Outro`) hold it there, which looks wrong (unit or decode to check
+  against a capture); LAG, BUNGEE, shake and Scene space of takes; the take channels LETTERBOX / FADE / OVERLAY /
+  TIME_SCALE downstream; the outros' nested timeline controllers (jumps waiting for UI triggers).
+
+### Port and model decisions (`cutscene.rs`)
+
+Ported: the intro before the race (the race waits in `Waiting` on `RaceState::cutscene`, and the intro starts once
+the opponents are placed), the outro after the player's finish, the skip, animated cameras, ICE takes with their
+bindings and `GAME_CAM_BLEND`, the dynamic camera blend, teleports with their speed (and `RaceState::rolling_start`:
+no freeze), the AI driving the player (`ai.rs`'s driver on the player's car with `MaxSpeedMph` as its schedule
+speed), animated race cars, slow motion, the HUD, the letterbox (shared with the crash camera), traffic clearing.
+Model decisions: the race starts on the intro's event trigger (else at its end) with no countdown; the camera
+bone looks along +Z with −Y up; `GetTransform` bindings of animated cameras follow the car live; both FOVs are
+used as vertical (as camera.rs); the animated car is placed on its bone every tick with the clip's velocity
+(zero across a cut), the root motion ignored; an opponent teleported onto the player's own start is left where it
+is (462174's `Racer[8]`: the original seats fewer opponents, our opponents' cars are a model); `Racer[n]` = grid
+slot n − 1; after the finish the AI drives the player along a road-graph route from the finish (the race route
+ends there); nested timeline controllers are not run, so the outro plays straight through; audio, post-processing,
+image palettes, UI layouts other than the letterbox, speech and music items are not played; the outro's results
+panels are the HUD's.
 
 ## Traffic and AI vehicles
 

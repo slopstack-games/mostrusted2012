@@ -10,6 +10,35 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-09: race cutscenes: event intro / outro sequences, ICE camera takes, no offline countdown
+- **Where they are**: `OfflineEvent` fields cracked: `EventIntro`, `EventOutro`, `AROutro`, `IntroMessageGroup`,
+  `FeedbackMessageGroup`; `GameMode`: `AROutro`, `CountdownSequence`, `HUD_HSM`, `Intro`, `ResultsSequence`,
+  `FeedbackGroupID`. The values are `Sequence` UniqueIds; the intro sits in `EN_US/FEEDBACKGROUPS/<IntroMessageGroup>`,
+  the outros in the game mode's group (604180 for races, from the HSM's "Select Game Mode Feedback Group"
+  state). All 108 intros load (13–54 s bespoke cinematics); the outros are shared per event type.
+- **No countdown offline**: `CountdownSequence` is 0 for every offline mode and the HSM's countdown / false-start
+  states are in the online flow. The intro ends on a rolling start (teleports at `Speed_MPH` 70 / 55, AI drives
+  the player, slow motion ramps up, the camera blends to the chase camera) and an event trigger, on which we
+  start the race. The `GAMEMODEINTR` 10 s is still in the code; where it sits in the offline flow is open.
+- **Camera clips**: `AnimatedCameraSequenceItem` clips animate bone 1 of a two-bone camera skeleton; FOV =
+  2 atan(18 / `FocalLength`) (`FUN_005c6c10`). Dead end first: the look axis can't be read off one clip (a pure
+  pitch about X fits several conventions); over all 701 frames of 462174's clips the bone's X stays level and its
+  Y points down, and renders with "+Z forward, −Y up" give level horizons and frame the animated car.
+- **ICE takes decoded** (`CameraTake`, 45 in CAMERAS.BNDL; `mw_formats::camera_take`, `mwtool camera-take`): the
+  whole ICE player read from the dump's ICE library (layout, bit packing, fixed point, Hermite keys with the
+  game's tangent rule, spaces / avatars, lens FOV 2 atan(15.96 / lens)); all 45 parse to their exact end. Every
+  camera of the race intros / outros is a take. Binding flags mean "sample once" (the outro freezes the car's frame).
+  Doubt: `DUTCH` at its +0.25 maximum gives a 90° roll in 11 takes (the code says turns × 65536 as a 16-bit
+  angle); check against a capture of the original.
+- **Runtime** (`cutscene.rs`): intro before the race (`RaceState::cutscene`, `rolling_start`), outro on the
+  player's finish, the skip (Esc / Back after `TriggerTime`, 462174: 1 → 19.5 s), letterbox shared with the crash
+  camera. `--no-cutscenes`, `--cutscene outro`, `MW_CUTSCENE_TRACE`, `MW_CUTSCENE_SHOT=[intro:|outro:]<s>`.
+  Checked with screenshots at intro 1.5 / 4 / 11 / 15 / 20 / 22 / 23 / 25 s and outro 2 / 6 / 14 s, and
+  `--test race` (skips the intro, waits for the outro).
+- Open: a capture of the original's intro and outro to settle the camera-bone axes, the FOV convention and
+  `DUTCH`; the item handlers (vtables) for the teleport speed and the AI drive's style; nested timeline
+  controllers; the outro's UI layouts, audio and post-FX items.
+
 ### 2026-10-09: AI racers: same physics, the racer state ported, AIData decoded, the race hookup
 - **Multi-car physics**: `car_physics` runs every `Car` from its own `CarControls` (the game writes all 16
   race-car slots' controls with `FUN_009aacc0` from per-player input records, `FUN_0091c5c0`); the player's come
