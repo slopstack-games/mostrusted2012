@@ -50,7 +50,7 @@ impl Plugin for AiPlugin {
 struct AiBalancingArg(Option<(mw_bundle::ResourceId, mw_bundle::ResourceId)>);
 
 /// The route and start grid a race hands to its AI drivers. Insert it before the opponents arrive; without it
-/// `--ai` builds a test route along the traffic lanes from the player's spawn.
+/// `--ai` builds a test route along the AI road graph from the player's spawn.
 #[derive(Resource, Clone)]
 pub struct RaceSetup {
     pub route: Arc<AiRoute>,
@@ -523,7 +523,7 @@ fn race_from_event(
     commands.insert_resource(RaceSetup { route: Arc::new(route), grid, balancing });
 }
 
-/// Build the test race when there is none: once the player's car is on the road, a route along the lanes from
+/// Build the test race when there is none: once the player's car is on the road, a route along the AI road graph from
 /// it and grid slots ahead of it.
 fn setup_race(
     mut commands: Commands,
@@ -662,7 +662,9 @@ fn spawn_opponents(
         if event.is_some() {
             let name = spec.bundle.rsplit('/').next().unwrap_or(&spec.bundle).trim_end_matches(".BNDL").to_string();
             let ext = crate::drive::CarParams::new(&spec.handling).body_half_extents;
-            commands.entity(car).insert((crate::race::Racer::ai(name, slot, ext), crate::race::RacerProgress::default()));
+            commands
+                .entity(car)
+                .insert((crate::race::Racer::ai(name, slot, ext), crate::race::RacerProgress::default()));
         }
         opponents.spawned[slot] = true;
         info!("AI: opponent {slot} ({}) placed at {start:.1?}", spec.bundle);
@@ -716,9 +718,10 @@ fn ai_drive(
         let Some(mut ai) = ai else { continue };
         let ai = &mut *ai;
         // Before go the race freezes every car (`FREEZE_CAR`, `FUN_006c1a80`: handbrake held).
-        if event.as_ref().is_some_and(|e| {
-            matches!(e.phase, crate::race::RacePhase::Waiting | crate::race::RacePhase::Intro)
-        }) {
+        if event
+            .as_ref()
+            .is_some_and(|e| matches!(e.phase, crate::race::RacePhase::Waiting | crate::race::RacePhase::Intro))
+        {
             *ctl = CarControls { handbrake: true, ..default() };
             continue;
         }
