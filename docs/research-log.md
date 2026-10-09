@@ -10,6 +10,59 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-09: race HUD, countdown, results, UI blend states, Easydrive race start
+- **Nitrous "dark box" bug: UI blend states are data.** A `UIMaterial`'s `Material` names a render `Material`
+  (GLOBALMATERIALDICTIONARY) that only imports its `Shader`; the shader imports a `MaterialState` (type 0x6,
+  e.g. `01000006905172cc`): three pointers (+0 blend block, +4 depth-stencil, +8 rasterizer), the blend block a
+  hash / key word then one packed u32 per render target (8): bit 0 enable, 1–5 src, 6–10 dst, 11–13 op, 14–18 src
+  alpha, 19–23 dst alpha, 24–26 op alpha, 27–30 write mask (D3D11 enum values). `FlaptGenericShader` (259
+  elements of the HUD screens) = `0x7931498b` = src alpha / inv src alpha (alpha-over); `UIAdditiveShader`
+  (40) = `0x7911488b` = **src alpha / one**; the unused default is `0x7931498a` (disabled). Flares, glints and
+  streaks are authored on black (e.g. `0101000000160c92` is opaque, mean value 11/255) and were drawn alpha-over,
+  so the 639×216 nitrous flare of layout 1670359 covered the speedometer. Fixed for every element through a
+  Bevy `UiMaterial` with that blend (`ui_quads.rs`); `mwtool ui render` blends them additively too. Not
+  decoded: the depth-stencil / rasterizer blocks; the other UI shaders' states (`UIStretched`, `UIRibbonShader`,
+  `UINoiseShader`, `UIParticleShader`, `UIDepthTestedShader`) are drawn alpha-over (unchecked).
+- **Which screens the race uses** (HSM strings of `GAMELOGIC/GAMEMODES.BNDL`, the number after each "Activate
+  ... Widget Group"): 371670 free drive ("CostToState HUD"), 371678 time trial, 371720 online free drive,
+  371725 online team DM, 1019407 online speed test, 582390 online results, 1377068 `ArcResults` (the front
+  end's results / summary menus), 1014257 `EventIntro`, "Race HUD" names 371726 / 604152. Screen **604153** is
+  the one whose widgets bind the race: `AdditionalHUD` 1470173 (POSITION `EventPosition(WITHORDINAL)`, LAP
+  `{Lap} / {Event.Data.Laps}` on circuits, DISTANCE `DistanceLeft(DIST)` / `(DIST, LONG)` on sprints, the
+  short one shown below 500 m by triggered behaviours), 1470152 (TIME `Mode.Time`), `HUD` 1106106 (WRONG WAY /
+  CHECKPOINT MISSED banners on `DistanceToFinishManager.*`), 979749 (EVENT ENDING IN, `Mode.DisplayTimeout`).
+- **Countdown and results are `Sequence`s**, not screens: `LayoutSequenceItem`s (`Layout`, `InstanceParams`,
+  `StartTime` / `EndTime`, `EnabledBinding`, texts `bf1ce9a1` (Text1) / `Text2` / `Text3` read by the layout as
+  `UISequences.Params[#].TextN`). Online race mode 1019777: `4d1a6bfa` = 275829 (bound to `Mode.IntroTime`,
+  0–15): "GET READY..." 0–0.9 s, the countdown card ("RACE" / "STARTING IN..." / `{Mode.IntroTime(INT)}`, GO when
+  `IntroTime ≤ 0`) 1–5 s, beeps at 0.99 / 1.99 / 2.99 s, "FALSE START" 8–11 s; `ResultsSequence` 1019828:
+  leaderboard 1335088 (stacks over `ActiveGameMode.RaceLeaderboard`, columns TIME / TKDN / WRCK / SP, DNF when
+  `FinalTime` is 0) and summary 1645120 (`Widget.HUD.SummaryHeadline` / `SummaryDetail`, which 582390's string
+  palettes fill: "YOU FINISHED {FinishPosition(WITHORDINAL)}", "TIME {LocalPlayerTime(TIME)}") at 0.25–8.25 s.
+  **The offline race mode 730000 has 0 in `4d1a6bfa`, `c9ccb25c` and `ResultsSequence`**; the offline events'
+  own intros (e.g. 1439074 for 462174) are camera / teleport / drive-with-AI sequences with no layouts, so the
+  offline countdown and results layouts were not found. Ours uses the online race mode's (model decision).
+  Reading of the countdown clock: the HSM's "Wait For Countdown Start (Exit When Binding Is True)" with
+  `Mode.IntroTime(LTEQ:3)` then "Play countdown (Run Gamelogic Sequence)": the sequence runs on its own clock
+  from there (this order makes "GET READY" first, digits 2 and 1 with the beeps, GO at the start).
+- **Behaviour vocabulary** (screens 604153 / 371670, counts): triggered `in [OUT] / out [IN]` (22),
+  `TO,INVISIBLE` (24), approach offsets `384,0@0+0; -384,0@100+450` (35, also `-1000,0` with duration 0 before an
+  `IN`), `TO,WHITE`, `TO,<palette entry>` (HUD_PURSUIT_HEATFILL, HUD_FRIEND), four-number steps on masks
+  (`100,100,100,200`, under `UsingNitrous`) and bare ids (sounds). Elements also carry their own
+  transition-in (the countdown card's 2954×1794 white flare flashes for 300 ms then `TO,INVISIBLE`). Played now
+  in `UiScene::draw_with` (`UiAnim`); our reading of each step is listed in decomp.md.
+- **Smaller fixes**: the free-roam HUD drew the odometer five times (every `Nitrous` widget variant places
+  1806698); a `DisplayText` binding now wins over the authored string ("PLACEHOLDER"); text that is not a number
+  no longer compares equal to 0 in bindings (`FinalTime(EQUALS:0)` showed DNF for a time).
+- **Easydrive races**: the RACES tier (`TO_FMN`, item type `FMNEAREST` with callbacks
+  `CalculateDistanceToEventByIdString`, `SelectRecommendationDomByEventIdString`, `ExitTierVia(TO_FMN_OPT)`) and
+  its ACTIONS tier (`TO_FMN_OPT`: `WaypointItem`, `StartEventItem`) are generated in code; the labels "SET
+  DESTINATION" / "START RACE" are the `TO_BL_OPT` hook items' (`StartEventFromBinding`). Wired to a runtime
+  `race::StartRace`.
+- **Open**: the offline countdown / results / event-intro card; which screen the HUD widgets pick per mode
+  (`Widget_HudSelection`); racer names (results show the car names); masks with textures are rectangle clips;
+  transition-out of disappearing elements, idle behaviours, colour steps; the depth / rasterizer state blocks.
+
 ### 2026-10-09: AI racers: same physics, the racer state ported, AIData decoded, the race hookup
 - **Multi-car physics**: `car_physics` runs every `Car` from its own `CarControls` (the game writes all 16
   race-car slots' controls with `FUN_009aacc0` from per-player input records, `FUN_0091c5c0`); the player's come

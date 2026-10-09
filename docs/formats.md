@@ -630,6 +630,21 @@ route drawn over the lane map `mwtool events <id> --png <file>`. Settled 2026-10
 - **`GameMode`**: `09d6656d` (+0x44) = 10, the crash reset delay `FUN_006d39d0` reads (decomp.md "Crashes"; the
   earlier note that no `GameMode` instance exists on PC is wrong: they are items of the GAMEMODES container).
 
+## UI blend states and sequence layouts
+
+- **`MaterialState` (0x6)**, imported by a `Shader` (one per pass slot): u32 offsets of three blocks at +0 / +4 /
+  +8 (blend, depth-stencil, rasterizer; seen 0x1c / 0x58 / 0x98). The blend block: a hash and three key words, then
+  one packed u32 per render target (8), then the blend factor float4 (1, 1, 1, 1). Packed target: bit 0 enable,
+  bits 1–5 src, 6–10 dst, 11–13 op, 14–18 src alpha, 19–23 dst alpha, 24–26 op alpha, 27–30 write mask (D3D11
+  enum values: 1 zero, 2 one, 5 src alpha, 6 inv src alpha; op 1 add). `0x7931498a` = disabled default,
+  `0x7931498b` = alpha-over (`FlaptGenericShader`), `0x7911488b` = src alpha / one (`UIAdditiveShader`).
+  A `UIMaterial` reaches it through `Material` (render material UniqueId) → `Shader`.
+- **`Sequence`** (GeneSys): `Binding` (+ `Binding_Min` / `_Max`), `SequenceItems` (polymorphic). A
+  `LayoutSequenceItem` shows `Layout` with `InstanceParams` from `StartTime` to `EndTime` (s), gated by
+  `EnabledBinding`, with language ids `bf1ce9a1` (Text1), `Text2`, `Text3` that the layout reads as
+  `UISequences.Params[#].TextN`, and a `LayoutLayer`. Loader `AssetStore::ui_sequence_layouts`. `GameMode`
+  `4d1a6bfa` / `c9ccb25c` / `ResultsSequence` are sequence UniqueIds (0 for every offline mode).
+
 ## Easydrive (inside `Screen2`, `UI/SCREENS2/*.BNDL`)
 
 Inline GeneSys structs in a driving screen's widget groups (group children: field `c7413006`); loader
