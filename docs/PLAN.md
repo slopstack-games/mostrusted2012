@@ -75,6 +75,7 @@ user's review after session 3, with where each gap is tracked:
 | Cars stuck in the floor after jumps / steep climbs, jitter, "stuck in a gear" (user, 2026-10-06) | `[~]` sinking fixed (the game's hard strut stops; `--test landing`, `--test climb`); gear holding: the cruising gearbox and its mode switch ported, 1st gear at part throttle still revs high; jitter fixed (the anti-roll bar's damping coefficient from `FUN_00933a60`) | M3.2 |
 | Liveries, dirt, active aero, nitrous, mods (user, 2026-10-06) | `[~]` liveries drawn; dirt / dust build up per wheel from the surfaces' `VehicleEffects` and damage scratches the paint (2026-10-09, `paint_wear.rs`, decomp.md "Vehicle paint, liveries and dirt"; open: the per-wheel skid values, wet surface block, rain drops, crumple normal map); two-tone paint bound; active aero for the speed-only cars; nitrous (tank, refill events and burn from the code, 2026-10-09: decomp.md "Nitrous refill"; takedown / crash escape / gas station / gate awards not fed, speedbreaker and jump modes not run); mods chosen through Easydrive and applied (about half of the parameters identified) | M1.4, M3.2, M3.8 |
 | UI, tyre marks, optimisation, camera, water (user, 2026-10-06) | `[~]` Easydrive drawn from the game's layout (its RACES tier starts races, 2026-10-09); race HUD / countdown / results from the game's layouts and additive UI blending (2026-10-09); tyre marks drawn (lay rule is a model decision); `--bench` and a baseline (51 fps driving downtown, shadows cost 6.6 ms; mesh merging gave nothing), no optimisation landed yet; the chase camera's update found (`FUN_005d4970`): the followed frame, heights and distance lag ported, the rest and the avoidance still ours (the director's update is not in the dump); `Water_Opaque` ported; groundcover tufts lit | M7, M3.7, M4, M3.3, M1.4 |
+| Porsche badge text and texture broken (user, 2026-10-09) | fixed 2026-10-09: every car's `_Alpha1bit` badges / logos / hub caps now cut out at the shader's 0.5 (diffuse or normal-map alpha) and the `_Alpha_` parts blend alpha-over (MaterialState); those blended parts use Bevy's forward lighting, `g_wheelConstants.x` (`_BlurFade`) taken as 0 (research log) | M1.4 |
 
 ---
 
@@ -136,6 +137,8 @@ Make a static frame look like the game.
       lamp interiors (`Refraction`: parallax, LED channels, reflector), lens filters (`Glass_Colourise`,
       multiply), light state mask (`--lights`, brake / reverse follow the pedals). Glass done: `Glass*` with
       vertex-colour / override volume, Fresnel sky reflection, running light (forward, Bevy diffuse light).
+      Badges / decals done (2026-10-09): `_Alpha1bit` cut out at the program's 0.5 (diffuse or normal-map
+      alpha), `_Alpha_` forward alpha-over from their MaterialState (lit by Bevy, not their forward program).
       Open: metallic flakes / pearlescent, `LocalEmissive` (5 meshes), the paint's crumple normal map / AO
       (`CrumpleTextureSampler` at TEXCOORD1, weighted like the scratches) and rain drops (`GenericSamplerB`,
       `GenericVector4_A.zw`), cracked glass, tyre textures (bound at runtime?), the glass
