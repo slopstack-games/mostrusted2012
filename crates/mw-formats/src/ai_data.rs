@@ -207,6 +207,62 @@ impl AiData {
         best.map(|b| b.1)
     }
 
+    /// The shortest node path from `from` to `to` over the links (A* with 3D link lengths and the straight-line
+    /// distance as the heuristic). The game searches the junction graph (`FUN_00527300`: exit cost = length,
+    /// plus a turn penalty and optional ×5 / ×100 factors on shortcut / jump exits, not applied here) and expands
+    /// the junction edges back into nodes; over plain link lengths both give the same path.
+    pub fn path(&self, from: usize, to: usize) -> Option<Vec<usize>> {
+        use std::cmp::Ordering;
+        use std::collections::BinaryHeap;
+        #[derive(PartialEq)]
+        struct Open(f32, usize);
+        impl Eq for Open {}
+        impl PartialOrd for Open {
+            fn partial_cmp(&self, o: &Self) -> Option<Ordering> {
+                Some(self.cmp(o))
+            }
+        }
+        impl Ord for Open {
+            fn cmp(&self, o: &Self) -> Ordering {
+                o.0.total_cmp(&self.0)
+            }
+        }
+        let dist = |a: usize, b: usize| {
+            let (p, q) = (self.nodes[a].position, self.nodes[b].position);
+            ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2)).sqrt()
+        };
+        if from >= self.nodes.len() || to >= self.nodes.len() {
+            return None;
+        }
+        let mut cost = vec![f32::INFINITY; self.nodes.len()];
+        let mut came = vec![usize::MAX; self.nodes.len()];
+        let mut open = BinaryHeap::new();
+        cost[from] = 0.0;
+        open.push(Open(dist(from, to), from));
+        while let Some(Open(_, n)) = open.pop() {
+            if n == to {
+                let mut out = vec![to];
+                let mut c = to;
+                while c != from {
+                    c = came[c];
+                    out.push(c);
+                }
+                out.reverse();
+                return Some(out);
+            }
+            for &l in &self.nodes[n].links {
+                let l = l as usize;
+                let g = cost[n] + dist(n, l);
+                if g < cost[l] {
+                    cost[l] = g;
+                    came[l] = n;
+                    open.push(Open(g + dist(l, to), l));
+                }
+            }
+        }
+        None
+    }
+
     /// The neighbour of `node` best aligned with the ground-plane direction `dir` (`FUN_00436c00`): a first pass
     /// over neighbours without the shortcut flag, then any. `exclude` is skipped (the node we came from).
     pub fn next_node(&self, node: usize, dir: [f32; 2], exclude: Option<usize>) -> Option<usize> {

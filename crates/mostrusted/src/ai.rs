@@ -34,7 +34,7 @@ impl Plugin for AiPlugin {
         })
         .init_resource::<AiSettings>()
         .add_systems(Startup, |game: Res<crate::Game>, mut s: ResMut<AiSettings>| s.0 = load_ai_config(&game.store))
-        .add_systems(Update, (setup_race, request_opponents, spawn_opponents, log_ai).chain())
+        .add_systems(Update, (race_from_event, setup_race, request_opponents, spawn_opponents, log_ai).chain())
         .add_systems(FixedUpdate, ai_drive.before(crate::drive::car_physics));
         if let Some(seconds) = self.test {
             app.insert_resource(AiTest { seconds, ..default() });
@@ -290,7 +290,29 @@ pub fn route_from_ai_graph(ai: &mw_formats::AiData, start: Vec3, heading: f32, l
         cur = next;
         nodes.push(cur);
     }
-    let nodes: Vec<usize> = nodes.into_iter().filter(|&i| ai.nodes[i].width > 0.0).collect();
+    spline_through(ai, &nodes)
+}
+
+/// A race's path along the road graph through `waypoints` (the start, then every gate's ground point): between
+/// consecutive waypoints the shortest node path (`AiData::path`; the game asks its road network for each segment,
+/// `FUN_006423e0`, and A*-searches the junction graph, `FUN_00527300`), joined into one spline.
+pub fn route_through(ai: &mw_formats::AiData, waypoints: &[Vec3]) -> Option<AiRoute> {
+    let mut nodes: Vec<usize> = Vec::new();
+    for w in waypoints.windows(2) {
+        let a = ai.nearest_node(w[0].to_array(), false)?;
+        let b = ai.nearest_node(w[1].to_array(), false)?;
+        let path = ai.path(a, b)?;
+        let skip = usize::from(nodes.last() == path.first());
+        nodes.extend(path.into_iter().skip(skip));
+    }
+    spline_through(ai, &nodes)
+}
+
+/// The centre line through road-graph `nodes`: a Catmull-Rom spline (tangents 0.5 × (next − previous),
+/// `FUN_004e6160`) sampled every ~2 m, with the nodes' drivable half-widths; nodes of width 0 are skipped.
+fn spline_through(ai: &mw_formats::AiData, nodes: &[usize]) -> Option<AiRoute> {
+    let pos = |i: usize| Vec3::from(ai.nodes[i].position);
+    let nodes: Vec<usize> = nodes.iter().copied().filter(|&i| ai.nodes[i].width > 0.0).collect();
     if nodes.len() < 2 {
         return None;
     }
@@ -424,6 +446,83 @@ struct AiTest {
     started: bool,
 }
 
+/// `--race`: the opponents of the event. Model decisions: the race's AI route is the road graph's shortest
+/// path through the start and every gate of every lap (`route_through`); each grid slot drives the event's
+/// allowed cars in turn (or the `--ai` cars), as the opponents' own cars (`AIPlayerInformation` `9b4e35f7` /
+/// `2968e77a`, the `AIPlayerType`'s rollout) are not resolved yet. The rubber band is the event's
+/// (`OfflineEvent` +0x94 / +0x98).
+fn race_from_event(
+    mut commands: Commands,
+    event: Option<ResMut<crate::race::RaceState>>,
+    mut opponents: ResMut<Opponents>,
+    game: Res<crate::Game>,
+    mut done: Local<bool>,
+) {
+    let Some(mut event) = event else { return };
+    if *done {
+        return;
+    }
+    *done = true;
+    let graph = match game.store.ai_data() {
+        Ok(g) => g,
+        Err(e) => {
+            warn!("AI: no road graph ({e}); no opponents");
+            return;
+        }
+    };
+    let waypoints: Vec<Vec3> = event.entries.iter().map(|e| e.position).collect();
+    let Some(route) = route_through(&graph, &waypoints) else {
+        warn!("AI: no road-graph path through the race's gates; no opponents");
+        return;
+    };
+    let grid: Vec<Transform> = event.grid.iter().map(|g| g.transform).collect();
+    if opponents.bundles.is_empty() {
+        let cars: Vec<String> =
+            event.event.allowed_vehicles.iter().map(|v| format!("VEHICLES/VEH_{}_HI.BNDL", v.vehicle)).collect();
+        if cars.is_empty() {
+            return;
+        }
+        opponents.bundles = (0..grid.len()).map(|i| cars[i % cars.len()].clone()).collect();
+    } else {
+        let cars = opponents.bundles.clone();
+        opponents.bundles = (0..grid.len()).map(|i| cars[i % cars.len()].clone()).collect();
+    }
+    opponents.spawned = vec![false; opponents.bundles.len()];
+    info!(
+        "AI: race route {:.0} m through {} gates along the road graph, {} opponents",
+        route.length(),
+        waypoints.len() - 1,
+        grid.len()
+    );
+    event.hold = !grid.is_empty();
+    // The rubber band: `OpponentData[slot]` of the event's `RaceBalancingData`, with the pace multiplier of the
+    // allowed-vehicle entry matching the player's car.
+    let (data, profile) = event.event.balancing;
+    let player_bundle = match &game.request {
+        crate::loader::Request::Drive { bundle, .. } => bundle.to_ascii_uppercase(),
+        _ => String::new(),
+    };
+    let pace = event
+        .event
+        .allowed_vehicles
+        .iter()
+        .find(|v| player_bundle.contains(&format!("VEH_{}_", v.vehicle)))
+        .map_or(1.0, |v| v.ai_pace);
+    let id = |u: u32| mw_bundle::ResourceId(0x0100_0000_0000_0000 | u as u64);
+    let balancing: Vec<Option<RubberBand>> = (0..grid.len())
+        .map(|k| {
+            if data == 0 || profile == 0 {
+                return None;
+            }
+            rubber_band_from_data(&game.store, id(data), id(profile), k, pace)
+                .inspect(|rb| info!("AI: opponent {k} rubber band {rb:?}"))
+                .inspect_err(|e| warn!("AI: no rubber band for opponent {k}: {e:#}"))
+                .ok()
+        })
+        .collect();
+    commands.insert_resource(RaceSetup { route: Arc::new(route), grid, balancing });
+}
+
 /// Build the test race when there is none: once the player's car is on the road, a route along the lanes from
 /// it and grid slots ahead of it.
 fn setup_race(
@@ -434,9 +533,10 @@ fn setup_race(
     test: Option<Res<AiTest>>,
     player: Query<(Entity, &Transform), (With<Player>, With<Car>)>,
     balancing: Option<Res<AiBalancingArg>>,
+    event: Option<Res<crate::race::RaceState>>,
     mut done: Local<bool>,
 ) {
-    if *done || race.is_some() || (opponents.bundles.is_empty() && test.is_none()) {
+    if *done || race.is_some() || event.is_some() || (opponents.bundles.is_empty() && test.is_none()) {
         return;
     }
     let Ok((player_entity, t)) = player.single() else { return };
@@ -514,9 +614,19 @@ fn spawn_opponents(
     mut commands: Commands,
     mut opponents: ResMut<Opponents>,
     race: Option<Res<RaceSetup>>,
+    mut event: Option<ResMut<crate::race::RaceState>>,
+    time: Res<Time>,
     spatial: SpatialQuery,
 ) {
     let Some(race) = race else { return };
+    // `--race`: hold the start until every opponent is on the grid (or 60 s have passed: a car failed to load).
+    if let Some(ev) = event.as_mut()
+        && ev.hold
+        && (opponents.spawned.iter().all(|&s| s) || time.elapsed_secs() > 60.0)
+    {
+        ev.hold = false;
+        info!("AI: {} opponents on the grid; the race may start", opponents.spawned.iter().filter(|&&s| s).count());
+    }
     let mut waiting = Vec::new();
     for (slot, spec, parts) in std::mem::take(&mut opponents.arrived) {
         let grid = race.grid.get(slot).copied().unwrap_or_else(|| {
@@ -549,6 +659,11 @@ fn spawn_opponents(
         let mut driver = AiDriver::new(race.route.clone());
         driver.rubber_band = race.balancing.get(slot).copied().flatten();
         commands.entity(car).insert(driver);
+        if event.is_some() {
+            let name = spec.bundle.rsplit('/').next().unwrap_or(&spec.bundle).trim_end_matches(".BNDL").to_string();
+            let ext = crate::drive::CarParams::new(&spec.handling).body_half_extents;
+            commands.entity(car).insert((crate::race::Racer::ai(name, slot, ext), crate::race::RacerProgress::default()));
+        }
         opponents.spawned[slot] = true;
         info!("AI: opponent {slot} ({}) placed at {start:.1?}", spec.bundle);
     }
@@ -562,6 +677,8 @@ fn ai_drive(
     time: Res<Time>,
     settings: Res<AiSettings>,
     spatial: SpatialQuery,
+    event: Option<Res<crate::race::RaceState>>,
+    progress: Query<&crate::race::RacerProgress>,
     mut cars: Query<(
         Entity,
         &mut Car,
@@ -598,9 +715,22 @@ fn ai_drive(
     for (entity, mut car, mut t, mut v, mut w, ai, mut ctl, _) in &mut cars {
         let Some(mut ai) = ai else { continue };
         let ai = &mut *ai;
+        // Before go the race freezes every car (`FREEZE_CAR`, `FUN_006c1a80`: handbrake held).
+        if event.as_ref().is_some_and(|e| {
+            matches!(e.phase, crate::race::RacePhase::Waiting | crate::race::RacePhase::Intro)
+        }) {
+            *ctl = CarControls { handbrake: true, ..default() };
+            continue;
+        }
+        // A racer that has finished gets AI goal 3, stop racing (`FUN_00843030`): ours brakes to a stop.
+        if progress.get(entity).is_ok_and(|p| p.finished.is_some()) {
+            *ctl = CarControls { brake: 1.0, ..default() };
+            continue;
+        }
         ai.time += dt;
-        let hint = (ai.time > dt * 1.5).then_some(ai.progress);
-        let (s, lateral) = ai.route.project(t.translation, hint, 30.0);
+        // The first projection searches the route's start only: a race route repeats its laps.
+        let (hint, window) = if ai.time > dt * 1.5 { (Some(ai.progress), 30.0) } else { (Some(0.0), 300.0) };
+        let (s, lateral) = ai.route.project(t.translation, hint, window);
         ai.progress = s;
         ai.lateral = lateral;
         if ai.time > 1.0 {
@@ -643,11 +773,21 @@ fn ai_drive(
             velocity: v.0,
             radius: ext.x.max(ext.z),
             steer_gains: car.params.ai_steer_pid,
-            schedule_speed: match (ai.rubber_band, player_progress(&ai.route)) {
-                (Some(rb), Some(ps)) if player.is_some_and(|(e, _)| e != entity) => {
-                    let x = (s / ai.route.length().max(1.0)).clamp(0.0, 1.0);
+            schedule_speed: match ai.rubber_band {
+                Some(rb) if player.is_some_and(|(e, _)| e != entity) => {
                     let gap = player.map_or(0.0, |(_, p)| p.distance(t.translation));
-                    ai.schedule_speed = rb.speed(x, s - ps, gap);
+                    // In a race: the race tracker's distances to the finish (`FUN_0063ef30`, `FUN_00654110`);
+                    // otherwise both cars' progress along the AI route.
+                    let race = event.as_ref().zip(player).and_then(|(ev, (pe, _))| {
+                        let (me, them) = (progress.get(entity).ok()?, progress.get(pe).ok()?);
+                        let total = ev.total_distance().max(1.0);
+                        Some(((1.0 - me.to_finish / total).clamp(0.0, 1.0), them.to_finish - me.to_finish))
+                    });
+                    let (x, lead) = race.unwrap_or_else(|| {
+                        let ps = player_progress(&ai.route).unwrap_or(0.0);
+                        ((s / ai.route.length().max(1.0)).clamp(0.0, 1.0), s - ps)
+                    });
+                    ai.schedule_speed = rb.speed(x, lead, gap);
                     ai.schedule_speed
                 }
                 _ => ai.schedule_speed,
