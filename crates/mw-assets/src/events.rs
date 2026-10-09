@@ -30,7 +30,11 @@
 //! | | 0x5c | `AllowedVehicleList` | id of a `Gameplay.AllowedVehicleList` (GAMEPLAY.BNDL) |
 //! | | 0xec / 0xf0 | `NitrousAllowed` / `TrafficEnabled` | bools |
 //! | | 0xf6 | `Laps` u8 | 1 for sprints, 2–3 for circuits |
+//! | | 0x60 / 0x70 / 0x74 | `AROutro` / `EventIntro` / `EventOutro` | sequence UniqueIds (`mw_assets::sequence`) |
+//! | | 0x78 / 0x80 | `FeedbackMessageGroup` / `IntroMessageGroup` | feedback group bundles (`EN_US/FEEDBACKGROUPS/<id>.BNDL`) |
 //! | `GameMode` | 0x44 | `09d6656d` | crash reset delay, s (decomp.md "Crashes") |
+//! | | 0x0c / 0x10 / 0x24 / 0x34 | `AROutro` / `CountdownSequence` / `Intro` / `ResultsSequence` | sequence UniqueIds |
+//! | | 0x75 | `FeedbackGroupID` u8 | the game-mode feedback group (2 → 604180) |
 //! | `Gameplay.AllowedVehicleList` | | `193ad61b` `VehicleAndMods`[] | `Vehicle` (vehicle list id), `Mods` u8[], `Difficulty` |
 
 use std::collections::HashMap;
@@ -83,6 +87,16 @@ mod h {
     pub const MODS: u32 = field_hash("Mods");
     pub const DIFFICULTY: u32 = field_hash("Difficulty");
     pub const EVENT_LIST_ITEMS: u32 = 0xa1d5_23c0;
+    // Sequences (UniqueIds of `Sequence`s in feedback groups; names cracked, see sequence.rs)
+    pub const EVENT_INTRO: u32 = field_hash("EventIntro");
+    pub const EVENT_OUTRO: u32 = field_hash("EventOutro");
+    pub const AR_OUTRO: u32 = field_hash("AROutro");
+    pub const FEEDBACK_MESSAGE_GROUP: u32 = field_hash("FeedbackMessageGroup");
+    pub const INTRO_MESSAGE_GROUP: u32 = field_hash("IntroMessageGroup");
+    pub const COUNTDOWN_SEQUENCE: u32 = field_hash("CountdownSequence");
+    pub const MODE_INTRO: u32 = field_hash("Intro");
+    pub const RESULTS_SEQUENCE: u32 = field_hash("ResultsSequence");
+    pub const FEEDBACK_GROUP_ID: u32 = field_hash("FeedbackGroupID");
 }
 
 const GAME_MODES: &str = "GAMELOGIC/GAMEMODES.BNDL";
@@ -257,6 +271,15 @@ pub struct Event {
     pub first_place_only: bool,
     /// `c75c9d90` (+0xee): an opponent slot whose car is the player's own car is skipped (`FUN_00686f30`).
     pub skip_player_car_ai: bool,
+    /// `EventIntro` (+0x70): UniqueId of the intro `Sequence` (in `intro_message_group`), 0 = none.
+    pub event_intro: u32,
+    /// `EventOutro` (+0x74): the outro `Sequence` played after the finish (in the game mode's feedback group).
+    pub event_outro: u32,
+    /// `AROutro` (+0x60): the Autolog-recommendations outro (the same sequence as `EventOutro` in every event).
+    pub ar_outro: u32,
+    /// `FeedbackMessageGroup` (+0x78) and `IntroMessageGroup` (+0x80): `EN_US/FEEDBACKGROUPS/<id>.BNDL`.
+    pub feedback_message_group: u32,
+    pub intro_message_group: u32,
 }
 
 impl Event {
@@ -288,6 +311,14 @@ pub struct GameMode {
     pub gate_markers: bool,
     /// `bc5ea1ae` (+0x70): without a checkpoint list a respawn faces the nearest racer (`FUN_006c9fb0`).
     pub respawn_to_racer: bool,
+    /// `AROutro` (+0x0c), `CountdownSequence` (+0x10), `Intro` (+0x24) and `ResultsSequence` (+0x34): sequence
+    /// UniqueIds. Offline modes have no countdown, intro or results sequence (the online modes do).
+    pub ar_outro: u32,
+    pub countdown_sequence: u32,
+    pub intro_sequence: u32,
+    pub results_sequence: u32,
+    /// `FeedbackGroupID` (+0x75): which game-mode feedback group is loaded (2 → 604180, 1 → 604179).
+    pub feedback_group_id: u8,
 }
 
 /// Every offline event plus the game modes and the career's event lists.
@@ -418,6 +449,11 @@ impl AssetStore {
                     timeout: float(o.get(h::TIMEOUT)),
                     gate_markers: boolean(o.get(h::GATE_MARKERS)),
                     respawn_to_racer: boolean(o.get(h::RESPAWN_TO_RACER)),
+                    ar_outro: uint(o.get(h::AR_OUTRO)),
+                    countdown_sequence: uint(o.get(h::COUNTDOWN_SEQUENCE)),
+                    intro_sequence: uint(o.get(h::MODE_INTRO)),
+                    results_sequence: uint(o.get(h::RESULTS_SEQUENCE)),
+                    feedback_group_id: uint(o.get(h::FEEDBACK_GROUP_ID)) as u8,
                 }),
                 "OfflineEvent" => {
                     let game_mode = uint(o.get(h::GAME_MODE));
@@ -480,6 +516,11 @@ impl AssetStore {
                         first_place_only: boolean(o.get(h::FIRST_PLACE_ONLY)),
                         skip_player_car_ai: boolean(o.get(h::SKIP_PLAYER_CAR_AI)),
                         traffic_enabled: boolean(o.get(h::TRAFFIC_ENABLED)),
+                        event_intro: uint(o.get(h::EVENT_INTRO)),
+                        event_outro: uint(o.get(h::EVENT_OUTRO)),
+                        ar_outro: uint(o.get(h::AR_OUTRO)),
+                        feedback_message_group: uint(o.get(h::FEEDBACK_MESSAGE_GROUP)),
+                        intro_message_group: uint(o.get(h::INTRO_MESSAGE_GROUP)),
                     });
                 }
                 _ => {}

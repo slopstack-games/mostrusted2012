@@ -38,6 +38,7 @@ pub fn run(store: &AssetStore, id: Option<&str>, png: Option<&Path>, all: bool) 
     let id: u32 = id.parse()?;
     let Some(e) = events.get(id) else { bail!("no offline event {id} (mwtool events lists them)") };
     detail(&events, e, &text, &car);
+    sequences(store, &events, e);
     if let Some(png) = png {
         draw(store, e, png)?;
     }
@@ -252,4 +253,97 @@ fn draw(store: &AssetStore, e: &Event, png: &Path) -> Result<()> {
     img.save(png)?;
     println!("wrote {} ({w}x{h}, x {x0:.0}..{x1:.0}, z {z0:.0}..{z1:.0}, +z down)", png.display());
     Ok(())
+}
+
+/// The event's intro and outro sequences, item by item (`mw_assets::sequence`).
+fn sequences(store: &AssetStore, events: &Events, e: &Event) {
+    use mw_assets::sequence::{Controller, ItemKind};
+    let mode = events.game_mode(e.game_mode);
+    println!(
+        "  sequences: intro {} (group {}), outro {}, AR outro {}, feedback group {}; game mode: AR outro {}, \
+         countdown {}, feedback group id {}",
+        e.event_intro,
+        e.intro_message_group,
+        e.event_outro,
+        e.ar_outro,
+        e.feedback_message_group,
+        mode.map_or(0, |m| m.ar_outro),
+        mode.map_or(0, |m| m.countdown_sequence),
+        mode.map_or(0, |m| m.feedback_group_id),
+    );
+    let (intro, outro) = match store.event_sequences(e, mode) {
+        Ok(s) => s,
+        Err(err) => {
+            println!("  sequences: {err}");
+            return;
+        }
+    };
+    for (label, seq) in [("intro", intro), ("outro", outro)] {
+        let Some(seq) = seq else {
+            println!("  {label}: none");
+            continue;
+        };
+        println!("  {label} {} ({:016x}): {:.2} s, {} items", seq.unique_id, seq.id.0, seq.length, seq.items.len());
+        for c in &seq.controllers {
+            match c {
+                Controller::JumpOnButtonPress { trigger_time, destination, .. } => {
+                    println!("    skip: from {trigger_time:.2} s a press jumps to {destination:.2} s")
+                }
+                Controller::Jump { kind, trigger_time, destination, .. } => {
+                    println!("    {kind}: at {trigger_time:.2} s -> {destination:.2} s (not run)")
+                }
+            }
+        }
+        for i in &seq.items {
+            let what = match &i.kind {
+                ItemKind::AnimatedCamera(c) => {
+                    let k = c.key_at(0.0);
+                    format!(
+                        "animated camera {:?}, {} frames at {} fps, focal {:.1}..{:.1} mm, relative to {:?}, first key {:?}",
+                        c.animation_id.map(|a| format!("{:016x}", a.0)),
+                        c.keys.len(),
+                        c.frame_rate,
+                        c.focal_length.at(0.0),
+                        c.focal_length.at(1.0),
+                        c.relative_to,
+                        k.map(|k| k.translation)
+                    )
+                }
+                ItemKind::Camera(shots) => shots
+                    .iter()
+                    .map(|s| match &s.bystander {
+                        Some(b) => format!("bystander {}", b.camera_binding),
+                        None => format!("ICE take {} ({:#x}) bound to {:?}", s.take, s.take, s.bindings),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; "),
+                ItemKind::DynamicCamera(d) => format!(
+                    "blend to {:?}: {}",
+                    d.bindings,
+                    d.channels.iter().map(|c| format!("{:?}", c.target)).collect::<Vec<_>>().join(", ")
+                ),
+                ItemKind::Teleport(t) => format!(
+                    "teleport {:?} to trigger {} {:?} at {} mph{}",
+                    t.racer,
+                    t.trigger,
+                    t.position.map(|v| v.round()),
+                    t.speed_mph,
+                    if t.resolved { "" } else { " (unresolved)" }
+                ),
+                ItemKind::DriveWithAi { max_speed_mph, style } => {
+                    format!("AI drives the player (max {max_speed_mph} mph, style {style})")
+                }
+                ItemKind::AnimatedCar(c) => format!("{:?} follows {} ({} frames)", c.racer, c.label, c.keys.len()),
+                ItemKind::HideRacecar(r) => format!("hide {r:?}"),
+                ItemKind::HideHud => "hide HUD".into(),
+                ItemKind::Letterbox(l) => format!("letterbox {:?}", l.bars),
+                ItemKind::Layout { layout, layer } => format!("layout {:?} layer {layer}", layout.map(|l| l.0)),
+                ItemKind::SlowMo(m) => format!("slow motion {:.2} -> {:.2}", m.at(0.0), m.at(1.0)),
+                ItemKind::EventTrigger => "event trigger".into(),
+                ItemKind::ClearTraffic(c) => format!("clear traffic within {} m of {:?}", c.radius, c.points),
+                ItemKind::Other(n) => n.clone(),
+            };
+            println!("    {:6.2}-{:6.2} {}{what}", i.start, i.end, "  ".repeat(i.depth as usize));
+        }
+    }
 }

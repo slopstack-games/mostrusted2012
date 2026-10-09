@@ -25,6 +25,7 @@
 use mw_bundle::{ResourceId, ResourceType};
 use mw_formats::genesys::{Object, Value, field_hash};
 
+pub use crate::sequence::{Bystander, CurvePoint, Letterbox, Modulated, SceneAnalyser, Tracking, Zoom};
 use crate::{AssetStore, Error, Result};
 
 mod h {
@@ -63,48 +64,12 @@ mod h {
     pub const BYSTANDER_PARAMS: u32 = field_hash("Bystander_Params");
     pub const SCENE_ANALYSIS: u32 = field_hash("SceneAnalysis");
     pub const LAYOUT: u32 = field_hash("Layout");
-    // ModulatingDoubleValue
-    pub const VALUE: u32 = field_hash("Value");
-    pub const OUTPUT_MIN: u32 = field_hash("Output_Value_Min");
-    pub const OUTPUT_MAX: u32 = field_hash("Output_Value_Max");
-    pub const ANIM_POINTS: u32 = field_hash("AnimPoints");
-    pub const POSITION_X: u32 = field_hash("PositionX");
-    pub const POSITION_Y: u32 = field_hash("PositionY");
-    pub const TANGENT_IN_X: u32 = field_hash("TangentInX");
-    pub const TANGENT_IN_Y: u32 = field_hash("TangentInY");
-    pub const TANGENT_OUT_X: u32 = field_hash("TangentOutX");
-    pub const TANGENT_OUT_Y: u32 = field_hash("TangentOutY");
-    // BystanderCameraParams
-    pub const CAMERA_BINDING: u32 = field_hash("Camera_Transform_Binding");
-    pub const TARGET_BINDING: u32 = field_hash("Target_Transform_Binding");
-    pub const OFFSET: [u32; 3] = [field_hash("X_Offset"), field_hash("Y_Offset"), field_hash("Z_Offset")];
-    pub const TARGET_OFFSET: [u32; 3] =
-        [field_hash("Target_X_Offset"), field_hash("Target_Y_Offset"), field_hash("Target_Z_Offset")];
-    pub const UNKNOWN_86: u32 = 0x8698_0811;
-    pub const UNKNOWN_CC: u32 = 0xcc83_12fe;
-    pub const UNKNOWN_FLAG: u32 = 0x005c_8fc7;
-    pub const TRACKING: u32 = field_hash("Tracking_Params");
-    pub const SCREEN_OFFSET: [u32; 2] = [field_hash("Screen_Offset_X"), field_hash("Screen_Offset_Y")];
-    pub const TRACKING_SPEED: u32 = field_hash("Tracking_Speed");
-    pub const TRACKING_ACCELERATION: u32 = field_hash("TrackingAcceleration");
-    pub const ZOOM: u32 = field_hash("Zoom_Params");
-    pub const ZOOM_UNKNOWN: u32 = 0x72b0_9fef;
-    pub const MAXIMUM_FOV: u32 = field_hash("Maximum_FOV");
-    pub const MINIMUM_FOV: u32 = field_hash("Minimum_FOV");
-    pub const USE_ZOOM: u32 = field_hash("Use_Zoom");
     // SceneAnalysis
     pub const ANALYSERS: u32 = field_hash("Analysers");
     pub const OFFSET_STRUCT: u32 = field_hash("Offset");
     pub const NAME: u32 = field_hash("Name");
     pub const TRANSLATION: u32 = field_hash("Translation");
     pub const ROTATION: u32 = field_hash("Rotation");
-    // UILayout element geometry (the letterbox bars)
-    pub const ELEMENTS: u32 = field_hash("Elements");
-    pub const HEIGHT: u32 = field_hash("Height");
-    pub const ELEMENT_Y: u32 = field_hash("PositionY");
-    pub const ANCHOR: u32 = field_hash("Anchor");
-    pub const TRANSITION_OUT: u32 = field_hash("TransitionOutBehaviour");
-    pub const DURATION: u32 = field_hash("Duration");
     // GameLogicConfig: the rolling reset (FUN_006d0180 reads 0x220 / 0x224 / 0x24c)
     pub const RESET_MIN_MPH: u32 = 0x75d8_2dd5;
     pub const RESET_SPEED_SCALE: u32 = 0xa44e_b2f3;
@@ -153,46 +118,6 @@ pub struct CrashingRules {
     pub other: Vec<(u32, ImpactRule)>,
 }
 
-/// A key of a `ModulatingDoubleValue` curve (x = time through the item, 0..1).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct CurvePoint {
-    pub x: f32,
-    pub y: f32,
-    pub tangent_in: [f32; 2],
-    pub tangent_out: [f32; 2],
-}
-
-/// `SequenceItem.ModulatingDoubleValue` without its binding (the crash sequence binds nothing).
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Modulated {
-    pub value: f32,
-    pub output: [f32; 2],
-    pub curve: Vec<CurvePoint>,
-}
-
-impl Modulated {
-    /// Value at `t` (0..1 through the item). Keys are joined by cubic Hermite segments whose end slopes
-    /// are the keys' tangents (dy/dx); with no keys the constant `Value`.
-    pub fn at(&self, t: f32) -> f32 {
-        let Some(first) = self.curve.first() else { return self.value };
-        let t = t.clamp(0.0, 1.0);
-        let y = if t <= first.x {
-            first.y
-        } else if let Some(w) = self.curve.windows(2).find(|w| t <= w[1].x) {
-            let (a, b) = (w[0], w[1]);
-            let dx = (b.x - a.x).max(1e-6);
-            let s = (t - a.x) / dx;
-            let slope = |v: [f32; 2]| if v[0].abs() > 1e-6 { v[1] / v[0] } else { 0.0 };
-            let (m0, m1) = (slope(a.tangent_out) * dx, slope(b.tangent_in) * dx);
-            let (s2, s3) = (s * s, s * s * s);
-            (2.0 * s3 - 3.0 * s2 + 1.0) * a.y + (s3 - 2.0 * s2 + s) * m0 + (-2.0 * s3 + 3.0 * s2) * b.y + (s3 - s2) * m1
-        } else {
-            self.curve.last().map_or(self.value, |p| p.y)
-        };
-        self.output[0] + y * (self.output[1] - self.output[0])
-    }
-}
-
 /// `SlowMoSequenceItem`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SlowMo {
@@ -201,70 +126,12 @@ pub struct SlowMo {
     pub scale: Modulated,
 }
 
-/// `BystanderCameraParams.TrackingParameters`.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct Tracking {
-    pub screen_offset: [f32; 2],
-    pub speed: f32,
-    pub acceleration: f32,
-}
-
-/// `BystanderCameraParams.ZoomParameters`.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct Zoom {
-    /// `72b09fef` (10 / 3.07): sorts before `Maximum_FOV`; unknown (a framing size?).
-    pub unknown: f32,
-    pub max_fov: f32,
-    pub min_fov: f32,
-    pub use_zoom: bool,
-}
-
-/// `BystanderCameraParams`: where a crash shot's camera stands and what it watches.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Bystander {
-    pub id: ResourceId,
-    /// `Camera_Transform_Binding`: `SAS.Analyser["Freeway"].Transform` or `Players.CameraTarget.GetTransform`.
-    pub camera_binding: String,
-    pub target_binding: String,
-    /// `X/Y/Z_Offset`: added to the camera transform (m, in that transform's frame).
-    pub offset: [f32; 3],
-    /// `Target_X/Y/Z_Offset`: added to the target transform.
-    pub target_offset: [f32; 3],
-    /// `86980811` (10 / 1000) and `cc8312fe` (50 / 5.4): unknown (sort before `Target_X_Offset`).
-    pub unknown: [f32; 2],
-    /// `005c8fc7`: true on the scene-analyser shot, false on the car-relative one.
-    pub flag: bool,
-    pub tracking: Tracking,
-    pub zoom: Zoom,
-    /// The scene analyser the camera binding names (`SAS.Analyser["<name>"]`), if any.
-    pub analyser: Option<SceneAnalyser>,
-}
-
-/// A `SimpleSceneAnalyser`: a space defined by an offset from the player.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct SceneAnalyser {
-    pub name_hash: u32,
-    pub translation: [f32; 3],
-    pub rotation: [f32; 3],
-}
-
 /// One `CameraSequenceItem` with its (single, in the crash sequence) bystander camera.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Shot {
     pub start: f32,
     pub end: f32,
     pub camera: Bystander,
-}
-
-/// The letterbox `UILayout` the sequence shows (two black bars on the 1280×720 reference frame).
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
-pub struct Letterbox {
-    pub start: f32,
-    pub end: f32,
-    /// Visible bar heights (reference pixels of 720): top, bottom.
-    pub bars: [f32; 2],
-    /// Slide-out transition (seconds) after `end`.
-    pub transition_out: f32,
 }
 
 /// The crash camera sequence.
@@ -341,13 +208,6 @@ fn boolean(o: &Object, hash: u32) -> Option<bool> {
     match o.get(hash)? {
         Value::Bool(b) => Some(*b),
         v => num(v).map(|f| f != 0.0),
-    }
-}
-
-fn string(o: &Object, hash: u32) -> String {
-    match o.get(hash) {
-        Some(Value::Str(s)) => s.clone(),
-        _ => String::new(),
     }
 }
 
@@ -428,28 +288,6 @@ impl CrashingRules {
                 .into_iter()
                 .filter_map(|hash| rule(hash).map(|r| (hash, r)))
                 .collect(),
-        }
-    }
-}
-
-impl Modulated {
-    fn read(o: &Object) -> Self {
-        let curve = structs(o, h::ANIM_POINTS)
-            .into_iter()
-            .map(|p| {
-                let f = |hash| float(p, hash).unwrap_or(0.0);
-                CurvePoint {
-                    x: f(h::POSITION_X),
-                    y: f(h::POSITION_Y),
-                    tangent_in: [f(h::TANGENT_IN_X), f(h::TANGENT_IN_Y)],
-                    tangent_out: [f(h::TANGENT_OUT_X), f(h::TANGENT_OUT_Y)],
-                }
-            })
-            .collect();
-        Self {
-            value: float(o, h::VALUE).unwrap_or(1.0),
-            output: [float(o, h::OUTPUT_MIN).unwrap_or(0.0), float(o, h::OUTPUT_MAX).unwrap_or(1.0)],
-            curve,
         }
     }
 }
@@ -589,68 +427,4 @@ fn name_of(o: &Object) -> Option<u32> {
         Value::Int(i) => Some(*i as u32),
         _ => None,
     }
-}
-
-impl Bystander {
-    fn read(id: ResourceId, o: &Object) -> Self {
-        let f = |o: Option<&Object>, hash| o.and_then(|o| float(o, hash)).unwrap_or(0.0);
-        let tracking = sub(o, h::TRACKING);
-        let zoom = sub(o, h::ZOOM);
-        Self {
-            id,
-            camera_binding: string(o, h::CAMERA_BINDING),
-            target_binding: string(o, h::TARGET_BINDING),
-            offset: h::OFFSET.map(|hash| f(Some(o), hash)),
-            target_offset: h::TARGET_OFFSET.map(|hash| f(Some(o), hash)),
-            unknown: [f(Some(o), h::UNKNOWN_86), f(Some(o), h::UNKNOWN_CC)],
-            flag: boolean(o, h::UNKNOWN_FLAG).unwrap_or(false),
-            tracking: Tracking {
-                screen_offset: h::SCREEN_OFFSET.map(|hash| f(tracking, hash)),
-                speed: f(tracking, h::TRACKING_SPEED),
-                acceleration: f(tracking, h::TRACKING_ACCELERATION),
-            },
-            zoom: Zoom {
-                unknown: f(zoom, h::ZOOM_UNKNOWN),
-                max_fov: f(zoom, h::MAXIMUM_FOV),
-                min_fov: f(zoom, h::MINIMUM_FOV),
-                use_zoom: zoom.and_then(|z| boolean(z, h::USE_ZOOM)).unwrap_or(false),
-            },
-            analyser: None,
-        }
-    }
-}
-
-impl Letterbox {
-    /// Two full-width bars anchored at the top-centre (1) and bottom-centre (7) of their rectangles
-    /// (`Anchor` is row-major 3×3): the visible part is what lies inside the 720-pixel-high frame.
-    fn read(start: f32, end: f32, layout: &Object) -> Option<Self> {
-        let mut bars = [0.0f32; 2];
-        let mut transition_out = 0.0f32;
-        for e in structs(layout, h::ELEMENTS) {
-            let (y, height) = (float(e, h::ELEMENT_Y)?, float(e, h::HEIGHT)?);
-            let anchor_row = name_anchor(e) / 3;
-            let top = match anchor_row {
-                0 => y,
-                1 => y - height / 2.0,
-                _ => y - height,
-            };
-            let (a, b) = (top.max(0.0), (top + height).min(720.0));
-            if b <= a {
-                continue;
-            }
-            if a <= 0.0 {
-                bars[0] = bars[0].max(b);
-            } else if b >= 720.0 {
-                bars[1] = bars[1].max(720.0 - a);
-            }
-            for t in structs(e, h::TRANSITION_OUT) {
-                transition_out = transition_out.max(float(t, h::DURATION).unwrap_or(0.0) / 1000.0);
-            }
-        }
-        (bars[0] > 0.0 || bars[1] > 0.0).then_some(Self { start, end, bars, transition_out })
-    }
-}
-
-fn name_anchor(e: &Object) -> u32 {
-    float(e, h::ANCHOR).map_or(4, |a| a as u32)
 }
