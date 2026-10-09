@@ -233,6 +233,12 @@ pub struct RaceState {
     pub won: Option<bool>,
     /// Hold the start in `Waiting` (intro sequence, AI not spawned yet).
     pub hold: bool,
+    /// An intro / outro sequence is playing (`cutscene.rs`): the start stays in `Waiting` while it is set, and
+    /// `--test race` waits for the outro before it exits. Separate from `hold` (the AI's).
+    pub cutscene: bool,
+    /// The intro's teleports put the cars on the grid rolling (`TeleportPlayerSequenceItem.Speed_MPH`): the
+    /// offline flow has no freeze and no countdown (decomp.md "Cutscenes and sequences").
+    pub rolling_start: bool,
 }
 
 fn heading_rotation(direction: [f32; 3]) -> Quat {
@@ -299,6 +305,8 @@ impl RaceState {
             results: Vec::new(),
             won: None,
             hold: false,
+            cutscene: false,
+            rolling_start: false,
         }
     }
 
@@ -310,7 +318,9 @@ impl RaceState {
     /// The original's `IntroTime` (`FUN_006e2670`): whole seconds left plus one; the countdown shows it while
     /// it is 3 or less. `None` outside the intro.
     pub fn countdown_digit(&self) -> Option<u32> {
-        (self.phase == RacePhase::Intro).then(|| (self.intro_left() + 1.0).floor() as u32).filter(|&d| d <= 3)
+        (self.phase == RacePhase::Intro && self.intro > 0.0)
+            .then(|| (self.intro_left() + 1.0).floor() as u32)
+            .filter(|&d| d <= 3)
     }
 
     /// One lap as a polyline: the start, then every gate's ground point in order.
@@ -481,7 +491,7 @@ fn attach_player(mut commands: Commands, cars: Query<(Entity, &Car), (Without<Ra
 /// `FREEZE_CAR`: before go the handbrake is held (`FUN_006c1a80`: handbrake = max(input, 1)); the throttle
 /// still works.
 fn hold_at_start(race: Res<RaceState>, mut input: ResMut<CarInput>) {
-    if matches!(race.phase, RacePhase::Waiting | RacePhase::Intro) {
+    if matches!(race.phase, RacePhase::Waiting | RacePhase::Intro) && !race.rolling_start {
         input.handbrake = true;
     }
 }
@@ -507,7 +517,7 @@ fn run_race(
     };
     match race.phase {
         RacePhase::Waiting => {
-            if loaded.done && !players.is_empty() && !race.hold {
+            if loaded.done && !players.is_empty() && !race.hold && !race.cutscene {
                 race.intro_elapsed = 0.0;
                 set_phase(race, RacePhase::Intro, &mut phase_msg);
             }
@@ -807,6 +817,8 @@ fn run_test(
     }
     match race.phase {
         RacePhase::Waiting | RacePhase::Intro => return,
+        // The outro sequence plays to its end first (`cutscene.rs`).
+        RacePhase::Finished if race.cutscene => {}
         RacePhase::Finished => {
             test.done = true;
             let laps: Vec<String> = p.lap_times.iter().map(|l| format!("{l:.2}")).collect();

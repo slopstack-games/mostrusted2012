@@ -33,6 +33,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use mw_bundle::{ResourceId, ResourceType};
+use mw_formats::camera_take::CameraTake;
 use mw_formats::genesys::{Object, Value, field_hash};
 use mw_formats::{Animation, Trigger, TriggerShape};
 
@@ -422,9 +423,12 @@ pub struct CameraShot {
     pub bystander: Option<Bystander>,
     /// `7aef95c3`: the `CameraTake` UniqueId (its resource id's low 32 bits), 0 = none.
     pub take: u32,
+    /// The take itself (`mw_formats::camera_take`, CAMERAS.BNDL).
+    pub take_data: Option<Arc<CameraTake>>,
     /// `01130178`: the transforms the take is bound to (eye, target: `Players.LocalPlayer.GetTransform`).
     pub bindings: Vec<String>,
-    /// `0bd6ff75`: one flag per binding (true everywhere seen).
+    /// `0bd6ff75`: one flag per binding (true everywhere seen): sample the binding once, when the take starts
+    /// (`FUN_0049a910` re-reads a binding every frame only while its flag is clear).
     pub binding_flags: Vec<bool>,
     /// `752a7ea9` f32, `650a0f6e` / `ca15aa55` u16 (0, 2, 2 in the outros): unknown.
     pub unknown: (f32, u32, u32),
@@ -869,9 +873,16 @@ impl<'a> SequenceContext<'a> {
                             Some(Value::Array(a)) => a.iter().map(|v| matches!(v, Value::Bool(true))).collect(),
                             _ => Vec::new(),
                         };
+                        let take = uint(c, h::TAKE);
+                        let take_data = (take != 0)
+                            .then(|| self.store.load(ResourceId(0x0100_0000_0000_0000 | take as u64)).ok())
+                            .flatten()
+                            .and_then(|r| CameraTake::parse(&r).ok())
+                            .map(Arc::new);
                         CameraShot {
                             bystander,
-                            take: uint(c, h::TAKE),
+                            take,
+                            take_data,
                             bindings: strings,
                             binding_flags: flags,
                             unknown: (

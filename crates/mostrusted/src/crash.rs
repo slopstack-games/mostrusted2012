@@ -51,7 +51,6 @@ pub struct CrashPlugin;
 impl Plugin for CrashPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<CrashState>()
-            .add_systems(Startup, spawn_letterbox)
             .add_systems(FixedUpdate, (hold_and_reset).before(crate::drive::car_physics))
             .add_systems(FixedPostUpdate, detect_crash.after(PhysicsSystems::StepSimulation))
             .add_systems(Update, run_sequence.after(crate::camera::GameplayCamera));
@@ -259,34 +258,9 @@ fn hold_and_reset(
     state.trace(format_args!("reset {t:.3} {:.2} {:.2} {:.2} {:.1} {mph:.1}", p.x, p.y, p.z, yaw.to_degrees()));
 }
 
-/// The letterbox bars (`UILayout` 0x19c66: black, 1280×720 reference frame).
-#[derive(Component)]
-struct LetterboxBar {
-    top: bool,
-}
-
-fn spawn_letterbox(mut commands: Commands) {
-    for top in [true, false] {
-        let mut node = Node { position_type: PositionType::Absolute, width: Val::Percent(100.0), ..default() };
-        if top {
-            node.top = Val::Px(0.0);
-        } else {
-            node.bottom = Val::Px(0.0);
-        }
-        commands.spawn((
-            Name::new(if top { "letterbox top" } else { "letterbox bottom" }),
-            node,
-            BackgroundColor(Color::BLACK),
-            GlobalZIndex(10),
-            Visibility::Hidden,
-            LetterboxBar { top },
-        ));
-    }
-}
-
 /// Advance the sequence: time scale, HUD, letterbox, the shots' camera, and the reset when the cameras end.
 #[allow(clippy::too_many_arguments)]
-fn run_sequence(
+pub(crate) fn run_sequence(
     real: Res<Time<Real>>,
     mut virtual_time: ResMut<Time<Virtual>>,
     config: Option<Res<CrashConfig>>,
@@ -295,9 +269,9 @@ fn run_sequence(
     mut snap: ResMut<crate::camera::SnapCamera>,
     spatial: SpatialQuery,
     cars: Query<(Entity, &Transform, &LinearVelocity, &Car), (Without<Camera3d>, With<Player>)>,
-    mut car_visibility: Query<&mut Visibility, (With<Car>, Without<LetterboxBar>)>,
+    mut car_visibility: Query<&mut Visibility, With<Car>>,
     mut camera: Query<(&mut Transform, &mut Projection), crate::camera::DrivingCamera>,
-    mut bars: Query<(&LetterboxBar, &mut Node, &mut Visibility), Without<Car>>,
+    mut letterbox: ResMut<crate::cutscene::LetterboxBars>,
 ) {
     let Some(config) = config else { return };
     let cam_data = &config.0.camera;
@@ -311,24 +285,10 @@ fn run_sequence(
 
     // HUD and letterbox.
     hud.hidden_by_sequence = cam_data.hide_hud.is_some_and(|(a, b)| t >= a && t < b);
-    if let Some(lb) = cam_data.letterbox {
-        let out = ((t - lb.end) / lb.transition_out.max(1e-3)).clamp(0.0, 1.0);
-        let shown = t >= lb.start && out < 1.0;
-        for (bar, mut node, mut vis) in &mut bars {
-            let want = if shown { Visibility::Inherited } else { Visibility::Hidden };
-            if *vis != want {
-                *vis = want;
-            }
-            // Visible height of 720, and the slide-out (`TransitionOutBehaviour`: 150 px over its duration).
-            let h = if bar.top { lb.bars[0] } else { lb.bars[1] };
-            node.height = Val::Vh(h / 7.2);
-            let slide = Val::Vh(-out * 150.0 / 7.2);
-            if bar.top {
-                node.top = slide;
-            } else {
-                node.bottom = slide;
-            }
-        }
+    if let Some(lb) = cam_data.letterbox
+        && let Some(out) = lb.state(t)
+    {
+        letterbox.show(lb.bars, out);
     }
 
     // The reset when the gameplay camera comes back.
@@ -401,9 +361,6 @@ fn run_sequence(
     if t >= cam_data.length.max(letterbox_end) && active.reset_done {
         virtual_time.set_relative_speed(active.base_speed);
         hud.hidden_by_sequence = false;
-        for (_, _, mut vis) in &mut bars {
-            *vis = Visibility::Hidden;
-        }
         state.trace(format_args!("end {t:.3}"));
         info!("crash sequence over after {t:.2} s");
         return;

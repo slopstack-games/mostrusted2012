@@ -14,6 +14,7 @@ mod chevron;
 use mw_handling::{drift, drivetrain, tyre};
 mod convert;
 mod crash;
+mod cutscene;
 mod damage;
 mod deferred;
 mod drive;
@@ -80,6 +81,13 @@ struct Cli {
     /// scripted and exits.
     #[arg(long)]
     race: Option<u32>,
+    /// With --race: don't play the event's intro / outro sequences (`cutscene.rs`); the race then starts with
+    /// the game mode's frozen intro and 3-2-1.
+    #[arg(long)]
+    no_cutscenes: bool,
+    /// With --race: `outro` plays the event's outro sequence as soon as the car is placed (for screenshots).
+    #[arg(long)]
+    cutscene: Option<String>,
     /// Drive on an empty flat test track instead of the city (with --drive).
     #[arg(long)]
     test_track: bool,
@@ -418,6 +426,29 @@ fn main() -> anyhow::Result<()> {
             Some(race::RaceSetup { event, game_mode, name, test: race_test })
         }
     };
+    // The event's intro and outro sequences (`cutscene.rs`).
+    let cutscenes = match &race {
+        Some(r) if !cli.no_cutscenes => {
+            let (intro, outro) = store.event_sequences(&r.event, r.game_mode.as_ref()).unwrap_or_else(|e| {
+                println!("cutscenes: {e}");
+                (None, None)
+            });
+            println!(
+                "cutscenes: intro {} ({:.1} s), outro {} ({:.1} s)",
+                r.event.event_intro,
+                intro.as_ref().map_or(0.0, |s| s.length),
+                r.event.event_outro,
+                outro.as_ref().map_or(0.0, |s| s.length)
+            );
+            Some(Arc::new(cutscene::CutsceneSetup {
+                intro,
+                outro,
+                auto_skip: race_test,
+                force_outro: cli.cutscene.as_deref() == Some("outro"),
+            }))
+        }
+        _ => None,
+    };
     let drive = match (&cli.drive, &race) {
         (Some(q), _) => Some(q.clone()),
         (None, Some(r)) => Some(r.event.default_vehicle().map(|v| v.to_string()).ok_or_else(|| {
@@ -657,6 +688,7 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(tyre_marks::TyreMarksPlugin)
         .add_plugins(freeroam::FreeroamPlugin)
         .add_plugins(race::RacePlugin { setup: race.map(Arc::new) })
+        .add_plugins(cutscene::CutscenePlugin { setup: cutscenes })
         .add_plugins(traffic::TrafficPlugin {
             enabled: !cli.no_traffic && matches!(request, Request::Drive { world: true, .. }),
             density: cli.traffic_density.max(0.0),

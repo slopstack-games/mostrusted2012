@@ -361,6 +361,30 @@ impl TrafficSystem {
         lane.chain(crashed).filter(|c| c.position.distance_squared(point) <= r2).collect()
     }
 
+    /// Remove every traffic car (lane followers and crashed ones) within `radius` of `point`
+    /// (`ClearTrafficSequenceItem`, `cutscene.rs`).
+    pub fn clear_near(&mut self, point: Vec3, radius: f32, commands: &mut Commands) -> usize {
+        let r2 = radius * radius;
+        let mut n = 0;
+        for slot in 0..MAX_CARS {
+            if self.cars[slot].as_ref().is_some_and(|c| c.position.distance_squared(point) <= r2) {
+                remove_car(self, slot, commands);
+                n += 1;
+            }
+        }
+        let before = self.crashed.len();
+        self.crashed.retain(|c| {
+            let near = c.position.distance_squared(point) <= r2;
+            if near {
+                commands.entity(c.entity).despawn();
+            }
+            !near
+        });
+        n += before - self.crashed.len();
+        self.removed += before - self.crashed.len();
+        n
+    }
+
     /// Number of lane followers and crashed cars.
     pub fn counts(&self) -> (usize, usize) {
         (self.cars.iter().flatten().count(), self.crashed.len())

@@ -318,8 +318,10 @@ fn toggle_menu(
     mut menu: ResMut<CarMenu>,
     garage: Res<Garage>,
     easydrive: Option<Res<crate::easydrive::EasyDrive>>,
+    cutscene: Option<Res<crate::cutscene::CutsceneState>>,
 ) {
-    if !menu.enabled {
+    // Esc and Back are SKIP_CUTSCENE while a sequence plays.
+    if !menu.enabled || cutscene.is_some_and(|c| c.playing()) {
         return;
     }
     // Esc belongs to Easydrive while that is open (it closes it).

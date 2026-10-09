@@ -313,7 +313,15 @@ fn sequences(store: &AssetStore, events: &Events, e: &Event) {
                     .iter()
                     .map(|s| match &s.bystander {
                         Some(b) => format!("bystander {}", b.camera_binding),
-                        None => format!("ICE take {} ({:#x}) bound to {:?}", s.take, s.take, s.bindings),
+                        None => format!(
+                            "ICE take {} ({:#x}, {}) bound to {:?}",
+                            s.take,
+                            s.take,
+                            s.take_data
+                                .as_ref()
+                                .map_or("not found".into(), |t| format!("{:?} {:.2} s", t.name, t.length)),
+                            s.bindings
+                        ),
                     })
                     .collect::<Vec<_>>()
                     .join("; "),

@@ -714,19 +714,20 @@ fn ai_drive(
     let player = cars.iter().find(|c| c.7).map(|c| (c.0, c.2.translation));
     // The player's progress along each route (the race tracker's remaining distance, `world+0x2f47c` +0xdf0).
     let player_progress = |route: &AiRoute| player.map(|(_, p)| route.project(p, None, 0.0).0);
-    for (entity, mut car, mut t, mut v, mut w, ai, mut ctl, _) in &mut cars {
+    for (entity, mut car, mut t, mut v, mut w, ai, mut ctl, is_player) in &mut cars {
         let Some(mut ai) = ai else { continue };
         let ai = &mut *ai;
         // Before go the race freezes every car (`FREEZE_CAR`, `FUN_006c1a80`: handbrake held).
-        if event
-            .as_ref()
-            .is_some_and(|e| matches!(e.phase, crate::race::RacePhase::Waiting | crate::race::RacePhase::Intro))
-        {
+        // An intro sequence's rolling start (`cutscene.rs`) lets them drive.
+        if event.as_ref().is_some_and(|e| {
+            matches!(e.phase, crate::race::RacePhase::Waiting | crate::race::RacePhase::Intro) && !e.rolling_start
+        }) {
             *ctl = CarControls { handbrake: true, ..default() };
             continue;
         }
         // A racer that has finished gets AI goal 3, stop racing (`FUN_00843030`): ours brakes to a stop.
-        if progress.get(entity).is_ok_and(|p| p.finished.is_some()) {
+        // (Not the player's car: after its finish the outro sequence drives it, `cutscene.rs`.)
+        if !is_player && progress.get(entity).is_ok_and(|p| p.finished.is_some()) {
             *ctl = CarControls { brake: 1.0, ..default() };
             continue;
         }

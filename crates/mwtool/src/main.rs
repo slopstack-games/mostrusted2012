@@ -5,6 +5,7 @@ use std::sync::Mutex;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
+mod camera_take;
 mod compare;
 mod crack;
 mod damage;
@@ -351,6 +352,13 @@ enum Cmd {
     /// The collision surface list (`HAWAII/SURFACELIST.BNDL`) with each surface's triangle count and
     /// collision flags over the track units.
     Surfaces,
+    /// ICE camera takes (`CAMERAS.BNDL`, `mw_formats::camera_take`): one line each, or one take (name,
+    /// UniqueId or resource id) with its channel layout and the camera evaluated every `--step` seconds.
+    CameraTake {
+        take: Option<String>,
+        #[arg(long, default_value_t = 0.25)]
+        step: f32,
+    },
     /// Free-roam objects from the world's TriggerData (`HAWAII/TRIGGERS.BNDL`): speed cameras, billboards,
     /// security gates, jack spots (location + car), body shops; counts per kind, then one line each with
     /// `--list` (or `--kind SpeedCam` etc.). `--all-kinds` adds the counts of every trigger kind byte.
@@ -658,6 +666,9 @@ fn main() -> Result<()> {
             }
         }
         Cmd::Surfaces => props::surfaces(&AssetStore::new(game)?)?,
+        Cmd::CameraTake { take, step } => {
+            camera_take::run(&open_bundle(&game, "CAMERAS.BNDL")?, take.as_deref(), step)?
+        }
         Cmd::Freeroam { list, kind, all_kinds } => freeroam(&AssetStore::new(game)?, list, kind.as_deref(), all_kinds)?,
         Cmd::PlacementCheck { bundles, top, groups } => {
             let store = AssetStore::new(game)?;

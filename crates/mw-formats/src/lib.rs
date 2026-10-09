@@ -8,6 +8,7 @@ pub mod ai_data;
 mod animation;
 pub mod bear;
 pub mod binding;
+pub mod camera_take;
 mod collision;
 mod colour_cube;
 mod decode;

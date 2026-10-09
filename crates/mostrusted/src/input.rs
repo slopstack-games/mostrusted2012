@@ -79,6 +79,8 @@ pub mod defaults {
     /// opens the same menu.
     pub const PAUSE: &[Control] = &[Key(K::Escape), Button(B::Start)];
     pub const CHANGE_VEHICLE: &[Control] = &[Button(B::Select)];
+    /// SKIP_CUTSCENE (34): Escape; Back (slot 14). While a sequence plays it takes these keys (`cutscene.rs`).
+    pub const SKIP_CUTSCENE: &[Control] = &[Key(K::Escape), Button(B::Select)];
     /// EASY_LEFT / RIGHT / UP / DOWN (69–72): Num 4 / 6 / 8 / 2; d-pad (the pad bindings' min is 0.8, a digital
     /// d-pad reads 0 or 1 either way). Left = back a tier, right = select, up / down = previous / next
     /// (`EasyDrive_ScreenScript`'s `easy_*` mappings).
