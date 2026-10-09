@@ -2,8 +2,13 @@
 //! (`mw_assets::easydrive`, research log 2026-10-06 session 5): tiers, their link / hook items and labels
 //! from the language table. Link items open the tier their token names; the jack-spot tier (the one that
 //! has a `JSMANUFACT` entry source) lists the catalogue's manufacturers, then their models, and drives the
-//! chosen car through the garage (`GarageAction::Drive`). Hook items and tiers whose entries the game's code
-//! generates are shown and inert.
+//! chosen car through the garage (`GarageAction::Drive`). The RACES tier (`TO_FMN`, entries from the code's
+//! `Widget.FMNEAREST` list) lists the offline races (game mode 730000) offered with the driven car (their
+//! `AllowedVehicleList`'s cars; every race when the car has none), nearest start first (`FMNEAREST`,
+//! `CalculateDistanceToEventByIdString`); choosing one opens its ACTIONS tier (`TO_FMN_OPT`: "SET
+//! DESTINATION", inert, and "START RACE", which starts it through `race::StartRace`). Which events the code's
+//! list holds and its order are our reading of the names (model decision). Other hook items and generated tiers
+//! are shown and inert.
 //!
 //! The look is the `EasyDrive` widget's menu layout (`MENU_LAYOUT`): an element stack whose header lists the
 //! tier history, whose rows repeat the item layouts over `Widget.EasyDrive.Items` (the selected row's template
@@ -22,6 +27,7 @@ use bevy::prelude::*;
 use mw_assets::easydrive::{self as ed, EASYDRIVE_SCREEN};
 
 use crate::Game;
+use crate::race::{RaceSetup, StartRace};
 use std::collections::HashMap;
 
 use mw_assets::ui::UiScene;
@@ -71,6 +77,8 @@ enum Page {
     ModClass(usize),
     /// A mod type's two levels (the "MOD STANDARD" tier): (class, slot).
     ModType(usize, usize),
+    /// A race's ACTIONS tier (`TO_FMN_OPT`): index into `EasyDrive::races`.
+    RaceActions(usize),
 }
 
 #[derive(Resource, Default)]
@@ -87,10 +95,79 @@ pub struct EasyDrive {
     pub just_closed: bool,
     /// Rows still to enter (`--easydrive-path`), last first.
     script: Vec<usize>,
+    /// Offline races for the RACES tier.
+    races: Vec<RaceItem>,
+    /// "SET DESTINATION" / "START RACE" (the `TO_FMN_OPT` tier's RPC items, generated in code; labels from the
+    /// black-list tier's hook items `SetWaypointToEventFromBinding` / `StartEventFromBinding`).
+    race_actions: [String; 2],
+}
+
+/// An offline race Easydrive can start.
+#[derive(Clone)]
+struct RaceItem {
+    setup: Arc<RaceSetup>,
+    start: Vec3,
+    /// Vehicle list ids of the event's allowed cars.
+    vehicles: Vec<u32>,
+}
+
+/// Language ids of "SET DESTINATION" and "START RACE".
+const RACE_ACTION_LABELS: [u32; 2] = [1_222_255, 1_222_256];
+
+/// Where the player is and what they drive (for the RACES tier).
+#[derive(Default)]
+struct Here {
+    position: Option<Vec3>,
+    vehicle: Option<u32>,
+}
+
+impl Here {
+    fn new(garage: &Garage, game: &Game, player: Option<&GlobalTransform>) -> Self {
+        let bundle = match (&garage.current, &game.request) {
+            (Some(c), _) => c.bundle.clone(),
+            (None, crate::loader::Request::Drive { bundle, .. }) => bundle.clone(),
+            _ => String::new(),
+        };
+        let vehicle = bundle
+            .to_ascii_uppercase()
+            .rsplit('/')
+            .next()
+            .and_then(|b| b.strip_prefix("VEH_"))
+            .and_then(|b| b.split('_').next())
+            .and_then(|id| id.parse().ok());
+        Self { position: player.map(|t| t.translation()), vehicle }
+    }
 }
 
 /// What the loader thread hands over: the tiers and the menu layout's look.
-type Loaded = (Vec<Tier>, Option<Look>);
+type Loaded = (Vec<Tier>, Option<Look>, Vec<RaceItem>, [String; 2]);
+
+/// The offline races (game mode 730000) with a start and checkpoints.
+fn load_races(store: &mw_assets::AssetStore, lang: &mw_formats::Language) -> Vec<RaceItem> {
+    let events = match store.events() {
+        Ok(e) => e,
+        Err(e) => {
+            warn!("Easydrive: no events ({e})");
+            return Vec::new();
+        }
+    };
+    events
+        .events
+        .iter()
+        .filter(|e| e.game_mode == 730_000 && !e.checkpoints.is_empty())
+        .filter_map(|e| {
+            let start = Vec3::from_array(e.spawn?.position);
+            let name = lang.get(e.name).map_or_else(|| format!("EVENT {}", e.id), str::to_owned);
+            let setup =
+                RaceSetup { event: e.clone(), game_mode: events.game_mode(e.game_mode).copied(), name, test: false };
+            Some(RaceItem {
+                setup: Arc::new(setup),
+                start,
+                vehicles: e.allowed_vehicles.iter().map(|v| v.vehicle).collect(),
+            })
+        })
+        .collect()
+}
 
 /// The menu layout's scene and decoded textures (loader thread), then its Bevy side.
 struct Look {
@@ -129,7 +206,10 @@ fn start_load(mut menu: ResMut<EasyDrive>, game: Res<Game>) {
         let tiers = store
             .language(mw_assets::DEFAULT_LANGUAGE)
             .and_then(|lang| Ok((store.easydrive(EASYDRIVE_SCREEN)?, lang)))
-            .map(|(m, lang)| (resolve(&m, &lang), load_look(&store, &lang)))
+            .map(|(m, lang)| {
+                let actions = RACE_ACTION_LABELS.map(|id| lang.get(id).unwrap_or_default().to_string());
+                (resolve(&m, &lang), load_look(&store, &lang), load_races(&store, &lang), actions)
+            })
             .map_err(|e| warn!("Easydrive data unavailable: {e}"))
             .unwrap_or_default();
         *out.lock().unwrap() = Some(tiers);
@@ -159,7 +239,11 @@ fn resolve(m: &ed::EasyDrive, lang: &mw_formats::Language) -> Vec<Tier> {
 }
 
 fn poll_load(mut commands: Commands, mut menu: ResMut<EasyDrive>, mut images: ResMut<Assets<Image>>) {
-    let Some((tiers, look)) = menu.job.as_ref().and_then(|j| j.lock().unwrap().take()) else { return };
+    let Some((tiers, look, races, race_actions)) = menu.job.as_ref().and_then(|j| j.lock().unwrap().take()) else {
+        return;
+    };
+    menu.races = races;
+    menu.race_actions = race_actions;
     menu.job = None;
     menu.look = look.map(|mut look| {
         for (id, img) in std::mem::take(&mut look.images) {
@@ -200,6 +284,8 @@ enum Choice {
     ModType(usize, usize),
     /// Equip (class, Some((slot, category))) or return the class to stock.
     Mod(usize, Option<(usize, usize)>),
+    Race(usize),
+    StartRace(usize),
     Inert,
 }
 
@@ -210,6 +296,7 @@ fn rows(
     garage: &Garage,
     mods: &ModCatalogue,
     sel: &ModSelection,
+    here: &Here,
 ) -> Vec<(String, Choice)> {
     // The equipped row's mark (ours; the game's row template has its own equipped state, not read yet).
     let mark = |on: bool, label: String| if on { format!("{label} - ON") } else { label };
@@ -235,6 +322,22 @@ fn rows(
                 .into_iter()
                 .map(|c| (mark(on == Some((*s, c)), mods.name(*s, c)), Choice::Mod(*k, Some((*s, c)))))
                 .collect()
+        }
+        Page::Tier(i) if menu.tiers[*i].transition == "TO_FMN" => {
+            let offered = |r: &RaceItem| here.vehicle.is_some_and(|v| r.vehicles.contains(&v));
+            let any = menu.races.iter().any(offered);
+            let mut list: Vec<(f32, usize)> = menu
+                .races
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| !any || offered(r))
+                .map(|(k, r)| (here.position.map_or(0.0, |p| p.distance(r.start)), k))
+                .collect();
+            list.sort_by(|a, b| a.0.total_cmp(&b.0));
+            list.into_iter().map(|(_, k)| (menu.races[k].setup.name.clone(), Choice::Race(k))).collect()
+        }
+        Page::RaceActions(k) => {
+            vec![(menu.race_actions[0].clone(), Choice::Inert), (menu.race_actions[1].clone(), Choice::StartRace(*k))]
         }
         Page::Tier(i) if menu.tiers[*i].jack => {
             let mut makes: Vec<String> = garage.catalogue.iter().map(|c| c.make.clone()).collect();
@@ -267,6 +370,9 @@ fn navigate(
     mods: Res<ModCatalogue>,
     mut mod_sel: ResMut<ModSelection>,
     mut actions: MessageWriter<GarageAction>,
+    mut race_start: MessageWriter<StartRace>,
+    game: Res<Game>,
+    player: Query<&GlobalTransform, (With<crate::drive::Car>, With<crate::drive::Player>)>,
 ) {
     if !menu.enabled || menu.tiers.is_empty() {
         return;
@@ -303,7 +409,8 @@ fn navigate(
         return;
     }
     let Some((page, sel)) = menu.stack.last().cloned() else { return };
-    let list = rows(&menu, &page, &garage, &mods, &mod_sel);
+    let here = Here::new(&garage, &game, player.single().ok());
+    let list = rows(&menu, &page, &garage, &mods, &mod_sel, &here);
     if up || down {
         let n = list.len().max(1);
         let sel = if up { (sel + n - 1) % n } else { (sel + 1) % n };
@@ -331,6 +438,12 @@ fn navigate(
                 if matches!(page, Page::ModType(..)) {
                     menu.stack.pop();
                 }
+            }
+            Some(Choice::Race(k)) => menu.stack.push((Page::RaceActions(k), 0)),
+            Some(Choice::StartRace(k)) => {
+                race_start.write(StartRace(menu.races[k].setup.clone()));
+                menu.stack.clear();
+                menu.open = false;
             }
             Some(Choice::Inert) | None => {}
         }
@@ -386,6 +499,8 @@ fn redraw(
     windows: Query<&Window, With<bevy::window::PrimaryWindow>>,
     mut nodes: Query<PoolNode, With<QuadNode>>,
     mut materials: ResMut<Assets<AdditiveQuadMaterial>>,
+    game: Res<Game>,
+    player: Query<&GlobalTransform, (With<crate::drive::Car>, With<crate::drive::Player>)>,
 ) {
     if !menu.dirty && !garage.is_changed() && !mod_sel.is_changed() {
         return;
@@ -395,7 +510,8 @@ fn redraw(
     let page = menu.stack.last().cloned().filter(|_| menu.open);
     let (history, names, sel) = match &page {
         Some((page, sel)) => {
-            let list = rows(&menu, page, &garage, &mods, &mod_sel);
+            let here = Here::new(&garage, &game, player.single().ok());
+            let list = rows(&menu, page, &garage, &mods, &mod_sel, &here);
             let first = sel.saturating_sub(WINDOW - 1).min(list.len().saturating_sub(WINDOW));
             let names = list.into_iter().skip(first).take(WINDOW).map(|(l, _)| l).collect::<Vec<_>>();
             let history = menu
@@ -407,6 +523,11 @@ fn redraw(
                     // The titles of the game's `TO_OPT` tier and of the unnamed tier after it.
                     Page::ModClass(_) => "MOD TYPE".into(),
                     Page::ModType(..) => "MOD STANDARD".into(),
+                    Page::RaceActions(_) => menu
+                        .tiers
+                        .iter()
+                        .find(|t| t.transition == "TO_FMN_OPT")
+                        .map_or_else(String::new, |t| t.title.clone()),
                 })
                 .filter(|t| !t.is_empty())
                 .collect::<Vec<_>>();
