@@ -1,3 +1,19 @@
+# Handoff: 2026-10-09 (session 6), on top of session 5 below
+
+- **Angular damping traced** (commit 0102e9b): a driving car gets no general angular damping in the original
+  (its `DrivingVehicle` damping constraint is empty, read live); only the drift's and a post-collision yaw
+  damping (`FUN_008f7950`, now ported as `ImpactYawDamping`). The chassis inertia (a box, × `Inertia_Scale`) and
+  the wheel spin inertias were read live and equal ours; the tyre blend-input scale is 1 (settled).
+- **Our `AngularDamping(0.4)` stays as a listed model decision** (`MW_ANGULAR_DAMPING=<v>` for A/B): four clean
+  brake-tap windows of `ref/live1` match better with it, so the original resists yaw in a slide through
+  something in the tyre / chassis model we have not found. What is ruled out and the per-window numbers are in
+  the research log (2026-10-09). Best next step: a **clean capture** of a slide on a flat, open road (tools/orig)
+  with a second car, then the residual-yaw-moment comparison from that entry.
+- **Replay harness fixed** (65e2132): the game's speed definition, a full-throttle approach to the start speed,
+  the recording's starting gear. Earlier replay comparisons (session 5 numbers) used the forward-speed
+  column and may read worse than they were. Windows of `ref/live1` must be cut at the first `w*_contact` = 0
+  (the city has kerbs and seams; our replay runs on the flat track).
+
 # Handoff: end of 2026-10-06 (session 5)
 
 **State**: master builds and passes clippy, the tests and `mwtool verify`; the user was about to test it by
