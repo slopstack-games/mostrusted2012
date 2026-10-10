@@ -137,7 +137,7 @@ fn next_paint(palette: &[(usize, u32)], current: usize) -> usize {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn pass(
     mut shops: ResMut<BodyShops>,
     game: Option<Res<Game>>,
@@ -236,6 +236,7 @@ fn pass(
 
 /// The resprayed car has replaced the old one: it is the same car, so it keeps the tank and stays repaired and
 /// clean (the garage spawns a fresh car, with the run's `--damage` / `--dirt` start values).
+#[allow(clippy::type_complexity)]
 fn finish_respray(
     mut shops: ResMut<BodyShops>,
     time: Res<Time<Real>>,

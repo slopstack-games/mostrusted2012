@@ -386,6 +386,7 @@ fn spawn_point(
 }
 
 /// Place the cop cars that have arrived from the loader.
+#[allow(clippy::type_complexity)]
 fn spawn_cops(
     mut commands: Commands,
     mut police: ResMut<Police>,
