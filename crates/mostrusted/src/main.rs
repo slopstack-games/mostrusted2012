@@ -7,6 +7,7 @@ mod ai;
 mod ai_driver;
 mod audio;
 mod bench;
+mod bodyshop;
 mod camera;
 mod car_anim;
 mod car_audio;
@@ -33,6 +34,7 @@ mod gate_marker;
 mod groundcover;
 mod hud;
 mod input;
+mod jackspots;
 mod loader;
 mod lod;
 mod materials;
@@ -43,7 +45,9 @@ mod nitrous;
 mod paint_wear;
 mod particles;
 mod pause;
+mod police;
 mod props;
+mod pursuit;
 mod race;
 mod reflection;
 mod replay;
@@ -56,6 +60,7 @@ mod traffic;
 mod tyre_marks;
 mod ui_quads;
 mod weather;
+mod world_lights;
 mod world_ui;
 
 use std::collections::{HashMap, HashSet};
@@ -194,7 +199,8 @@ struct Cli {
     #[arg(long)]
     mute: bool,
     /// Volumes for this run, over the saved settings: `master=0.8,engine=1,sfx=0.5,music=0.3` (0..1 or %).
-    /// F2 / gamepad Select opens the volume settings in game (saved to ~/.config/mostrusted/settings.cfg).
+    /// F2 / gamepad Select opens the volume settings in game (saved to ~/.config/mostrusted/settings.cfg;
+    /// %APPDATA%\mostrusted on Windows).
     #[arg(long)]
     volume: Option<String>,
     /// Open the volume settings at startup (for screenshots).
@@ -296,6 +302,10 @@ struct Cli {
     /// No traffic cars (`traffic.rs`; traffic runs in `--drive` sessions in the world).
     #[arg(long)]
     no_traffic: bool,
+    /// No police (`police.rs`; cops patrol and chase in `--drive` sessions in the world, outside races, tests
+    /// and benchmarks). `--test pursuit` runs a pursuit start to end and prints TEST RESULT lines.
+    #[arg(long)]
+    no_police: bool,
     /// Multiply the traffic density (1 = the game's; for tests).
     #[arg(long, default_value_t = 1.0)]
     traffic_density: f32,
@@ -332,7 +342,7 @@ struct Cli {
     #[arg(long)]
     show_pause: bool,
     /// The profile file (the car and where it was, saved every 10 s while driving; read by the start-up flow to
-    /// continue). Default: ~/.config/mostrusted/profile.cfg.
+    /// continue). Default: ~/.config/mostrusted/profile.cfg (%APPDATA%\mostrusted\profile.cfg on Windows).
     #[arg(long)]
     profile: Option<PathBuf>,
     /// With --show-pause: open its MAP page (the offline races).
@@ -543,14 +553,24 @@ fn main() -> anyhow::Result<()> {
                 let s = r.event.spawn.expect("checked above");
                 (Vec3::from_array(s.position), s.direction[0].atan2(s.direction[2]))
             }
+            (None, []) if cli.test.as_deref() == Some("freeroam") => (Vec3::from_array(freeroam::TEST_SPAWN), 0.0),
             (None, []) => (Vec3::new(-1158.0, 17.5, 1700.0), 0.0),
             (_, [x, y, z]) => (Vec3::new(*x, *y, *z), 0.0),
             (_, [x, y, z, h]) => (Vec3::new(*x, *y, *z), h.to_radians()),
             _ => anyhow::bail!("--spawn expects x,y,z[,heading_degrees]"),
         };
         // `--test ai` and `--test race` drive the streets; the other tests run on the flat track.
-        let street_test =
-            race_test || matches!(cli.test.as_deref(), Some("ai") | Some("crash-traffic") | Some("crash-ai"));
+        let street_test = race_test
+            || matches!(
+                cli.test.as_deref(),
+                Some("ai")
+                    | Some("crash-traffic")
+                    | Some("crash-ai")
+                    | Some("freeroam")
+                    | Some("jackspot")
+                    | Some("bodyshop")
+                    | Some("pursuit")
+            );
         let track = cli.test_track || (cli.test.is_some() && !street_test) || cli.replay.is_some();
         let spawn = if track { Vec3::new(0.0, 1.0, 0.0) } else { spawn };
         let props =
@@ -570,9 +590,17 @@ fn main() -> anyhow::Result<()> {
     };
     let smash = cli.test.as_deref() == Some("smash");
     let test = match cli.test.as_deref() {
-        None | Some("crash") | Some("smash") | Some("ai") | Some("race") | Some("crash-traffic") | Some("crash-ai") => {
-            None
-        }
+        None
+        | Some("crash")
+        | Some("smash")
+        | Some("ai")
+        | Some("race")
+        | Some("crash-traffic")
+        | Some("crash-ai")
+        | Some("freeroam")
+        | Some("jackspot")
+        | Some("bodyshop")
+        | Some("pursuit") => None,
         Some("accel") => Some(drive::TestKind::Accel),
         Some("nitrous") => Some(drive::TestKind::Nitrous),
         Some("brake") => Some(drive::TestKind::Brake),
@@ -588,7 +616,7 @@ fn main() -> anyhow::Result<()> {
         Some("exhaust") => Some(drive::TestKind::Exhaust),
         Some(other) => {
             anyhow::bail!(
-                "unknown --test {other} (accel, brake, corner, handbrake, drift, donut, engine, exhaust, landing, climb, jitter, kerb, crash, smash, ai, race, crash-traffic, crash-ai)"
+                "unknown --test {other} (accel, brake, corner, handbrake, drift, donut, engine, exhaust, landing, climb, jitter, kerb, crash, smash, ai, race, crash-traffic, crash-ai, freeroam, jackspot, bodyshop, pursuit)"
             )
         }
     };
@@ -640,6 +668,11 @@ fn main() -> anyhow::Result<()> {
             .collect::<anyhow::Result<_>>()?,
     };
     let ai_test = cli.test.as_deref() == Some("ai");
+    let police_enabled = !cli.no_police
+        && matches!(request, Request::Drive { world: true, .. })
+        && race.is_none()
+        && cli.bench.is_none()
+        && matches!(cli.test.as_deref(), None | Some("pursuit"));
     let world_drive = matches!(request, Request::Drive { world: true, .. });
     let front_phase = if boot_start.is_some() && (cli.screenshot.is_none() || cli.front_end) {
         frontend::Phase::Title
@@ -649,6 +682,19 @@ fn main() -> anyhow::Result<()> {
         frontend::Phase::Playing
     };
     let ai_cars = cli.ai.iter().map(|q| resolve(q)).collect::<anyhow::Result<Vec<_>>>()?;
+    // The profile file this run writes (the car and its place: `frontend.rs`; free-roam progress: `freeroam.rs`).
+    let save_profile = (cli.profile.is_some()
+        || (world_drive
+            && (menu_enabled || boot)
+            && cli.front_end_shots.is_none()
+            && cli.auto_start.is_none()
+            // Runs without a human must not move the saved car.
+            && cli.bench.is_none()
+            && cli.auto_throttle.is_none()
+            && cli.swap_to.is_empty()))
+    .then(|| profile_file.clone())
+    .flatten();
+    let freeroam_profile = save_profile.clone();
     let mut app = App::new();
     app.insert_resource(car_anim::AnimOverride::parse(&cli.anim)?);
     app.insert_resource(damage::InitialDamage::parse(&cli.damage)?);
@@ -711,6 +757,8 @@ fn main() -> anyhow::Result<()> {
             Err(e) => warn!("no crash data ({e}): crashes and the crash camera are off"),
         }
     }
+    let freeroam_test = cli.test.as_deref() == Some("freeroam");
+    let freeroam_shots = if freeroam_test { cli.screenshot.clone() } else { None };
     // The crash and smash tests take their own before / after screenshots.
     let screenshot = if crash {
         app.insert_resource(damage::CrashTest::new(
@@ -728,6 +776,9 @@ fn main() -> anyhow::Result<()> {
         app.insert_resource(car_impacts::ImpactTest::new(kind, cli.screenshot.clone()));
         app.add_plugins(car_impacts::ImpactTestPlugin);
         None
+    } else if freeroam_test {
+        // The free-roam test takes its own screenshots (one after each collectable).
+        None
     } else if smash {
         app.insert_resource(props::SmashTest::new(
             cli.screenshot.clone(),
@@ -737,8 +788,11 @@ fn main() -> anyhow::Result<()> {
         app.add_plugins(props::SmashTestPlugin);
         app.add_systems(Startup, |mut t: ResMut<Time<Virtual>>| t.set_relative_speed(2.0));
         None
+    } else if matches!(cli.test.as_deref(), Some("jackspot") | Some("bodyshop")) {
+        // These tests take their own before / after screenshots (`jackspots.rs`, `bodyshop.rs`).
+        None
     } else {
-        cli.screenshot
+        cli.screenshot.clone()
     };
     // `--camera` with `--drive`: a fixed camera instead of the chase camera.
     if let (Some(c), Request::Drive { world: true, .. }) = (camera, &request) {
@@ -788,6 +842,7 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(FreeCameraPlugin)
         .add_plugins(MaterialPlugin::<GameMaterial>::default())
         .add_plugins(deferred::GameLightingPlugin)
+        .add_plugins(world_lights::WorldLightsPlugin)
         .add_plugins(tonemap::GameTonemapPlugin)
         .add_plugins(flash_probe::FlashProbePlugin)
         .init_resource::<GameEnvironment>()
@@ -815,7 +870,27 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(exhaust::ExhaustPlugin)
         .add_plugins(tyre_marks::TyreMarksPlugin)
         .add_plugins(paint_wear::PaintWearPlugin)
-        .add_plugins(freeroam::FreeroamPlugin)
+        .add_plugins(freeroam::FreeroamPlugin {
+            profile: freeroam_profile,
+            new_game: cli.new_game,
+            test: freeroam_test.then(|| freeroam::FreeroamTest::new(freeroam_shots)),
+        })
+        // Jack spots and body shops; their finds live in the profile (`frontend::Collected`).
+        .insert_resource(
+            profile_file
+                .as_deref()
+                .filter(|_| !cli.new_game)
+                .and_then(frontend::load_profile)
+                .map(|p| p.collected)
+                .unwrap_or_default(),
+        )
+        .add_plugins(jackspots::JackSpotsPlugin {
+            test: (cli.test.as_deref() == Some("jackspot")).then(|| cli.screenshot.clone()),
+        })
+        .add_plugins(bodyshop::BodyShopPlugin {
+            test: (cli.test.as_deref() == Some("bodyshop")).then(|| cli.screenshot.clone()),
+        })
+        .add_plugins(police::PolicePlugin { enabled: police_enabled, test: cli.test.as_deref() == Some("pursuit") })
         .add_plugins(race::RacePlugin { setup: race.map(Arc::new) })
         .add_plugins(cutscene::CutscenePlugin { setup: cutscenes })
         .add_plugins(traffic::TrafficPlugin {
@@ -831,15 +906,10 @@ fn main() -> anyhow::Result<()> {
         .insert_resource(frontend::Residency::new(world_drive || matches!(request, Request::World { .. })))
         .add_plugins(frontend::FrontEndPlugin {
             start: front_phase,
-            auto_start: cli.auto_start,
+            // The shots run has nobody to press a key: it starts 1 s after the prompt unless told otherwise.
+            auto_start: cli.auto_start.or(cli.front_end_shots.as_ref().map(|_| 1.0)),
             shots: cli.front_end_shots.clone(),
-            profile: (cli.profile.is_some()
-                || (world_drive
-                    && (menu_enabled || boot)
-                    && cli.front_end_shots.is_none()
-                    && cli.auto_start.is_none()))
-            .then(|| profile_file.clone())
-            .flatten(),
+            profile: save_profile.clone(),
         })
         .add_plugins(pause::PausePlugin {
             enabled: (menu_enabled || cli.show_pause) && matches!(request, Request::Drive { .. }),
@@ -996,7 +1066,7 @@ fn receive_assets(
     mut garage: ResMut<garage::Garage>,
     mut opponents: ResMut<ai::Opponents>,
     mut surfaces: ResMut<props::WorldSurfaces>,
-    mut traffic_models: Option<ResMut<traffic::TrafficModels>>,
+    (mut traffic_models, mut parked_models): (Option<ResMut<traffic::TrafficModels>>, ResMut<jackspots::ParkedModels>),
     mut residency: ResMut<groundcover::GroundcoverResidency>,
     mut streamed: ResMut<frontend::Residency>,
 ) {
@@ -1138,6 +1208,9 @@ fn receive_assets(
                 commands.spawn((avian3d::prelude::RigidBody::Static, c, props::SurfaceTags(tags)));
             }
             Msg::Surfaces(list) => surfaces.list = list,
+            Msg::Lights(lights) => {
+                commands.queue(move |world: &mut World| world.resource_mut::<world_lights::LightSources>().add(lights));
+            }
             Msg::PropResponses(r) => {
                 info!("prop contact responses: {r:?}");
                 surfaces.responses = r;
@@ -1157,7 +1230,10 @@ fn receive_assets(
                 }
             }
             Msg::TrafficCar(spec) => {
-                if let Some(t) = traffic_models.as_mut() {
+                // A jack spot's parked car (`jackspots.rs`) or a traffic model.
+                if spec.vehicle >= jackspots::MODEL_KEY_BASE {
+                    parked_models.arrived(&spec, &loaded.models);
+                } else if let Some(t) = traffic_models.as_mut() {
                     t.arrived(&spec, &loaded.models);
                 }
             }
@@ -1261,6 +1337,8 @@ fn auto_screenshot(
     impact: Option<Res<particles::FirstImpact>>,
     backfire: Option<Res<exhaust::FirstBackfire>>,
     mut frames_after_done: Local<u32>,
+    real: Res<Time<Real>>,
+    mut since_done: Local<f32>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Some(path) = &game.screenshot else { return };
@@ -1291,6 +1369,12 @@ fn auto_screenshot(
             }
             _ => {}
         }
+        return;
+    }
+    // The delay counts frames at 60 per second: on a machine that renders faster it also waits that long in
+    // real time, so late arrivals (the viewer's car, textures) are in the picture.
+    *since_done += real.delta_secs();
+    if *frames_after_done + 1 == game.screenshot_delay && *since_done < game.screenshot_delay as f32 / 60.0 {
         return;
     }
     *frames_after_done += 1;

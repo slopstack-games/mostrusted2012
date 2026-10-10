@@ -148,4 +148,44 @@ impl AssetStore {
             out.iter().map(|(id, _)| pairs.iter().find(|(a, _)| a == id).and_then(|&(_, b)| find(b))).collect();
         Ok(out.into_iter().zip(secondaries).map(|((_, p), secondary)| VehiclePaint { secondary, ..p }).collect())
     }
+
+    /// The car's colour palette in the game's order: for each entry its index into
+    /// [`AssetStore::vehicle_paints`] and its colour id (the paint's UniqueId = the low half of its resource
+    /// id). `VehicleColourPalette` holds either a plain paint list (`16671e74`, count byte +0x19) or
+    /// `ColourGroups` (count byte +0x18) whose `PrimaryColour` is the entry (`FUN_0058b9a0`, `FUN_0058bc60`).
+    /// Empty when the car has no palette.
+    pub fn vehicle_palette(&self, bundle: &Bundle) -> Result<Vec<(usize, u32)>> {
+        let mut entries: Vec<_> = bundle.entries_of_type(ResourceType::GenesysObject).collect();
+        entries.sort_by_key(|e| e.id.0);
+        let mut paints = Vec::new();
+        let mut order: Vec<ResourceId> = Vec::new();
+        let handle = |v: Option<&Value>| match v {
+            Some(Value::Handle(Some(id))) => Some(*id),
+            _ => None,
+        };
+        for e in entries {
+            let Ok(obj) = self.decode_genesys(&bundle.load(e)?) else { continue };
+            if obj.type_name == "Genesys.Gen.VehiclePaint" && VehiclePaint::from_object(&obj).is_some() {
+                paints.push(e.id);
+            } else if obj.type_name == "Genesys.Gen.VehicleColourPalette" {
+                match obj.get(field_hash("ColourGroups")) {
+                    Some(Value::Array(groups)) if !groups.is_empty() => {
+                        for g in groups {
+                            if let Value::Struct(g) = g
+                                && let Some(id) = handle(g.get(field_hash("PrimaryColour")))
+                            {
+                                order.push(id);
+                            }
+                        }
+                    }
+                    _ => {
+                        if let Some(Value::Array(list)) = obj.get(0x1667_1e74) {
+                            order.extend(list.iter().filter_map(|v| handle(Some(v))));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(order.iter().filter_map(|id| Some((paints.iter().position(|p| p == id)?, id.0 as u32))).collect())
+    }
 }

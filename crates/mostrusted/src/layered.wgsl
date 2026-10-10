@@ -54,7 +54,9 @@ struct Layered {
     _pad1: u32,
     _pad2: u32,
     // road:    p0 = (has road + detail normal maps, has SpecColour, has line normal, 0),
-    //          p1.xy = DetailMapUvScale, p2 = Line_Diffuse, p3 = Line_Roughness_Specular_Fresnel
+    //          p1.xy = DetailMapUvScale, p2 = Line_Diffuse (mode 4) or (edge alpha test, baked vertex light in
+    //          UV_1.xy + COLOR.z, lightMapIntensity of the lightmap in slot 9, 0), p3 =
+    //          Line_Roughness_Specular_Fresnel
     //          textures: colour, detail, line, normal, detail normal, SpecColour, line normal+spec
     // terrain: p0 = Tiling_Ratios_X (w = noise ratio), p1 = Tiling_Ratios_Y, p2..p4 = Layer RSF,
     //          p5 = (has world-space macro normal, has tiling normals)
@@ -63,7 +65,10 @@ struct Layered {
     //          p3..p5 = tiling1..3Diffuse, p6 = decal_Diffuse (w = strength), p7..p9 = Layer RSF,
     //          p10 = (has tiling normals, has AO map, instance AO, has decal)
     //          textures: mask, layer 1..3, decal, tiling normal 1..3, AO map
-    // WorldPBR: p0 = (has SpecularColour map, instance AO scale, has AO map, planar only), p1 = MaterialDiffuse
+    // WorldPBR: p0 = (has SpecularColour map, instance AO scale, has AO map, planar only), p1 = MaterialDiffuse,
+    //          p2 = (LitWindowColour or LightmapColour rgb, glow kind: 1 building windows, 2 LOD2 windows,
+    //          3 illuminance map), p3 = (AdditiveIntensities.xy, takes the global night level, has lightmap)
+    //          textures: diffuse, specular, AO map, SpecularColour, illuminance, lightmap
     // vehicle: p0 = (F0 rgb, roughness), p1 = (has spec map, roughness source: 0 constant, 1 normal
     //          alpha, 2 normal green, coat F0, coat fresnel), p2 = (has vertex colour (x = AO,
     //          y = specular occlusion), has diffuse map, lightmapped-lights kind, multiplier),
@@ -88,6 +93,8 @@ struct Layered {
     env: vec4<f32>,
     // vehicle light state (g_selfIlluminationMask): x = brake, y = headlights / running, z = reverse, w = tail
     lights: vec4<f32>,
+    // x = DynamicLighting_GlobalLightMapIntensities.x (0 by day, 1 at night; `world_lights.rs`)
+    night: vec4<f32>,
 }
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> layered: Layered;
@@ -278,6 +285,25 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let colour = textureSample(tex0, samp0, uv).rgb;
         let detail = textureSample(tex1, samp1, world_uv).rgb;
         var albedo = colour * detail * 2.0;
+        // Light the road programs add to RT3 as light × this albedo (before the wet darkening):
+        //   DriveableSurface (no lightmap): COLOR.rgb² × 0.318 × DynamicLighting_GlobalLightMapIntensities.x,
+        //     computed in its vertex program (baked lamp light, at night);
+        //   DriveableSurface_Lightmap: LightMapTextureSampler(uv1).rgb × lightMapIntensity (no global factor).
+        if layered.mode == 1u {
+            let road_light = layered.p[2];
+            if road_light.y > 0.5 {
+                var baked = vec3(0.0);
+#ifdef VERTEX_UVS_B
+#ifdef VERTEX_COLORS
+                baked = vec3(uv_b, in.color.z);
+#endif
+#endif
+                extra += albedo * baked * baked * 0.318 * layered.night.x * layered.env.x;
+            }
+            if road_light.z > 0.0 {
+                extra += albedo * textureSample(tex9, samp9, uv_b).rgb * road_light.z * layered.env.x;
+            }
+        }
         let flags = layered.p[0];
         var rough = 1.0;
         var f0 = 0.02;
@@ -430,12 +456,44 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         }
         set_specular(&pbr_input, f0, spec.y);
         var ao = p.y;
+        // A missing AO map reads white for the AO (as before), but 0 for the window mask in its alpha
+        // (the game's unbound slot reads 0).
+        var ao_tex = vec4(1.0, 1.0, 1.0, 0.0);
         if p.z > 0.5 {
-            ao *= textureSample(tex2, samp2, uv_b).y;
+            ao_tex = textureSample(tex2, samp2, uv_b);
+            ao *= ao_tex.y;
         }
         set_ao(&pbr_input, ao);
         if p.w > 0.5 {
             pbr_input.specular_occlusion = 0.0;
+        }
+        // Light given off at night, added to RT3 as light × albedo (the G-buffer programs of the
+        // LitWindows / Illuminance variants, e.g. `mwtool shader-asm
+        // WorldPBR_Building_LitWindows_SliderBlend_Reflective_AO_Singlesided`):
+        //   building windows: spec.w² × AO map.w × LitWindowColour × AdditiveIntensities.y
+        //   LOD2 windows:     diffuse.w² × LitWindowColour × AdditiveIntensities.y
+        //   illuminated sign: Illuminance(uv0).y × LightmapColour × AdditiveIntensities.x
+        // each × DynamicLighting_GlobalLightMapIntensities.x unless the variant is `Persistent`.
+        // The `Lightmap` variants also add LightMapTextureSampler(uv1).rgb × AdditiveIntensities.x, × the
+        // global level unless `PersistentLightmap` (the model binds the texture: baked lamp light).
+        let glow = layered.p[2];
+        let k = layered.p[3];
+        if k.w > 0.5 {
+            let lm = textureSample(tex5, samp5, uv_b).rgb * k.x * mix(1.0, layered.night.x, k.z);
+            extra += lm * pbr_input.material.base_color.rgb * layered.env.x;
+        }
+        if glow.w > 0.5 {
+            var e = 0.0;
+            if glow.w < 1.5 {
+                e = spec.w * spec.w * ao_tex.w * k.y;
+            } else if glow.w < 2.5 {
+                let a = pbr_input.material.base_color.a;
+                e = a * a * k.y;
+            } else {
+                e = textureSample(tex4, samp4, uv).y * k.x;
+            }
+            e *= mix(1.0, layered.night.x, k.z);
+            extra += glow.rgb * e * pbr_input.material.base_color.rgb * layered.env.x;
         }
     } else if layered.mode == 6u {
         // VehicleNFS13 G-buffer pass: o1 = albedo (diffuse texture or PbrMaterialDiffuseColour),

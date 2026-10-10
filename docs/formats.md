@@ -83,7 +83,14 @@ InstanceList ──> Model ──(LOD state)──> Renderable ──(per mesh)�
   +0x40, an instance id at +0x48 (+0x4C for compound/light) followed by the f32 LOD distance scale (+0x4C / +0x50), and (props) a pointer at +0x50 into a second per-instance
   block after the records (props: `InstanceAdditiveAndAO`). Unlike `InstanceList` the matrix is at +0x00, not
   +0x20. Props, compounds and dynamics import a `PropObject` / `CompoundObject` / `WorldObject`; lights
-  import a GeneSys handle (light definition, not decoded).
+  import a GeneSys `Light_Point` / `Light_Cone` / `Light_Spot` / `Light_Line` (`mw_assets::lights::LightDef`:
+  `Colour`, `Intensity`, `AttenuationThreshold`, cone angles, `OnDuringDay` / `Night` / `Twilight`); the
+  matrix's translation is the light's position and its z axis the beam direction. Compound and world objects
+  carry `mLocators` at +0x10 (count, ids, `{n, ptr, 0}`; a locator is a quaternion and a position in object
+  space), where their `WCVfxBehaviour` lights and coronas sit (street lamps).
+- **Model (0x51) +0x10**: a pointer to a sampler-override block laid out like an `InstanceList` instance's
+  (+0x10 there): it binds `AOMapTextureSampler` and `LightMapTextureSampler` (the engine's global samplers)
+  for every mesh of the model (`mw_formats::Model::overrides`).
 - **PropObject (0x217)**: model imports at 0x04 and 0x08 (same model in practice). **CompoundObject (0x215)**:
   model imports at 0x04 (high detail, skinned to the skeleton at 0x08: one bone per part), 0x24 (lower-poly
   variant, same bbox) and sometimes 0x28; behaviours at 0x0C (count at 0x01; 0x14-byte entries: GeneSys import
@@ -656,7 +663,13 @@ One instance, `HAWAII/TRIGGERS.BNDL`, version 8; loaded by `FUN_0053c2f0`. Parse
 - The code indexes the three arrays as one list in that order and keys it by id. Kind codes of the free-roam
   collectables (`FUN_006e4920`): '0' security gate, '2' billboard, '4' speed camera, '<' jack spot,
   '=' jack spot car, 6 body shop (letters 'A'..'O' = the same in other content packs). Base game: 152 / 216 /
-  74 / 183 / 185 / 22. Rules in decomp.md "Free-roam rules".
+  74 / 183 / 185 / 22. Rules in decomp.md "Free-roam rules". A billboard's `CompoundInstanceList` record
+  carries its trigger's id at +0x4c (all 216; `mwtool freeroam --objects`).
+- Scoring (`mw_assets::scoring`, `mwtool scoring`): `ScoringConfig` (`GLOBALCONFIG.BNDL`, 390964) names
+  `ScoringAction`s (list 390077 in `GAMELOGIC/GAMEPLAY.BNDL`) by field; an action's Speed Points are its
+  `8c1feb6d` array (count `SPCount`), its HUD message `Sequence` + `Title`, its `GameplayTrigger` (list 457533)
+  more sequences. `CollectablesConfig` (908780) `d89eeda4` = the speed cameras' 50 mph. decomp.md "Speed
+  Points".
 
 ## Events (`OfflineEvent`, GeneSys in `GAMELOGIC/GAMEMODES.BNDL`)
 
@@ -773,8 +786,12 @@ The cars' active-aero machines (`AnimationStateBehaviour`) are the same format.
   `Vehicle`, `Name`, `Colour`, upgrades) for the Aston Martin V12 Vantage; `beab0bc2` (+0x12c) = 1156487, the
   free-roam start point (a `TriggerData` point); `1b3c1ddc` (+0xd8) = 390145, the free-drive game mode.
 - `CarSwapSpot` (44 B, a list of 183 in GAMEPLAY.BNDL): `Placement` (the jack-spot location box), `VehicleId`,
-  `0e3bcabe` (the parked car's box trigger: centre ~1.5 m up, length along local Z), `ColourId`, `82e4f9fe`,
-  `0e1d66c7`, `e36e9d9d`.
+  `0e3bcabe` (the parked car's box trigger: centre ~1.5 m up, length along local Z), `ColourId` (+0x10: a
+  `VehiclePaint` UniqueId of the car's palette), `e36e9d9d` (+0x1c: a second parking place, a trigger about 3 m
+  beside the car's; decomp.md "Jack spots"), `82e4f9fe`, `0e1d66c7` (unread by the swap code).
+- `VehicleColourPalette` (in each vehicle bundle): `16671e74` = the paints in palette order (handles; count byte
+  `db17b169`), or `ColourGroups` (count byte `17acabdb`) with `PrimaryColour` / `SecondaryColour` / `WheelColour`;
+  a paint's colour id is the low half of its resource id (`AssetStore::vehicle_palette`).
 - `UIConfig` (UI/UICONFIG.BNDL): loading-screen layout lists `a65d5d07` (+0x74) and `eee932fa` (+0x80) = [108177],
   `8c082a97` (+0x84) = [1549139]; `LoadingTips` → `UI.LoadingTipsConfig` (132 B): tip lists by category
   (`Autolog`, `Cops`, `EasyDrive`, `Event`, `Mods`, `Nitrous`, `Online`, unnamed ones; 172 offline tips) with their

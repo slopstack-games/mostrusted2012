@@ -938,8 +938,7 @@ pub(crate) fn car_physics(
         }
         let mph = speed / MPH;
         // Standstill hold (`FUN_009d6170` writes vehicle +0x1aa8, `FUN_009b1180` reads it): below a speed
-        // threshold (`.bss` 0x01186e60, signed forward speed, not read; assumed 0, see handling.md "Model
-        // decisions") the input is the brake pedal (1 with the handbrake up), raised to the throttle in a forward
+        // threshold (`STANDSTILL_HOLD_MPH`: signed forward speed, so only when rolling backwards) the input is the brake pedal (1 with the handbrake up), raised to the throttle in a forward
         // gear. The body's velocity then changes by −sign(speed) × `Brakes.99407bbc` × input × dt along the car's
         // forward axis, every tick, with no clamp at zero.
         let hold_in = if mph < STANDSTILL_HOLD_MPH {

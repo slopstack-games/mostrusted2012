@@ -34,10 +34,13 @@ pub struct Movie {
 }
 
 fn spawn(path: &Path) -> Option<(Child, Receiver<Vec<u8>>)> {
-    // A clean environment: the inherited one can exceed the exec limit (E2BIG seen in some sessions).
-    let mut child = Command::new("ffmpeg")
-        .env_clear()
-        .env("PATH", std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into()))
+    let mut command = Command::new("ffmpeg");
+    // A clean environment: the inherited one can exceed the exec limit (E2BIG seen in some sessions). Not on
+    // Windows, where programs need the system's variables (SystemRoot, TEMP) to start.
+    if cfg!(not(windows)) {
+        command.env_clear().env("PATH", std::env::var_os("PATH").unwrap_or_else(|| "/usr/bin:/bin".into()));
+    }
+    let mut child = command
         .args(["-v", "error", "-nostdin", "-i"])
         .arg(path)
         .args(["-vf", &format!("scale={WIDTH}:{HEIGHT}"), "-f", "rawvideo", "-pix_fmt", "rgba", "-"])

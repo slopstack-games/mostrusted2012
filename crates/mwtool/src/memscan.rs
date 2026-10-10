@@ -1,13 +1,14 @@
-//! Memory scanner, telemetry recorder and data poker for the running original game (Linux / Proton).
+//! Memory scanner, telemetry recorder and data poker for the running original game (Linux / Proton, or Windows).
 //!
 //! This watches the game's *data* while it runs (car speed, drift state, ...) to measure behaviour the
-//! handling model has to reproduce, through `/proc/<pid>/mem` of a process the user owns. Scanning and
+//! handling model has to reproduce, through `/proc/<pid>/mem` of a process the user owns (`ReadProcessMemory`
+//! on Windows: `memscan/windows.rs`). Scanning and
 //! telemetry only read. `poke` writes a data value (to learn what a constant does; docs/probe.md "Tier 0")
 //! and remembers the original, which `unpoke` or exit restores; it refuses addresses outside writable,
 //! non-executable mappings, so code is never touched (docs/reverse-engineering.md, "Code inside the running
 //! game"). Code is never read or disassembled here.
 //!
-//! Reading another process needs ptrace permission. With `kernel.yama.ptrace_scope = 1` (the usual default)
+//! On Linux, reading another process needs ptrace permission. With `kernel.yama.ptrace_scope = 1` (the usual default)
 //! either run `sudo sysctl kernel.yama.ptrace_scope=0` for the session, or give the binary the capability:
 //! `sudo setcap cap_sys_ptrace+ep target/release/mwtool` (redo after each build).
 //!
@@ -25,75 +26,57 @@
 
 use std::fs::File;
 use std::io::{BufRead, BufWriter, Write};
-use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 
-/// One mapping from `/proc/<pid>/maps`.
+/// How the other process is reached: `/proc/<pid>/mem` on Linux, `ReadProcessMemory` and friends on Windows.
+#[cfg_attr(windows, path = "memscan/windows.rs")]
+#[cfg_attr(not(windows), path = "memscan/procfs.rs")]
+mod os;
+
+/// One mapping of the process (a line of `/proc/<pid>/maps`, or a `VirtualQueryEx` region on Windows).
 #[derive(Debug, Clone)]
 pub struct Region {
     pub start: u64,
     pub end: u64,
     pub writable: bool,
     pub executable: bool,
+    /// The mapped file, if any (a Unix path, or an NT device path on Windows).
     pub path: String,
+}
+
+impl Region {
+    /// The mapped file's name without its directory.
+    pub fn file_name(&self) -> &str {
+        self.path.rsplit(['/', '\\']).next().unwrap_or(&self.path)
+    }
 }
 
 pub struct Process {
     pub pid: u32,
-    mem: File,
-    /// `/proc/<pid>/mem` opened for writing, only once something is poked.
-    mem_rw: std::sync::Mutex<Option<File>>,
+    mem: os::Memory,
 }
 
 impl Process {
     pub fn open(pid: u32) -> Result<Self> {
-        let path = format!("/proc/{pid}/mem");
-        let mem = File::open(&path).map_err(|e| {
-            if e.kind() == std::io::ErrorKind::PermissionDenied {
-                anyhow::anyhow!(
-                    "permission denied reading {path}. Allow ptrace for this session with \
-                     `sudo sysctl kernel.yama.ptrace_scope=0`, or `sudo setcap cap_sys_ptrace+ep <mwtool binary>`"
-                )
-            } else {
-                anyhow::Error::new(e).context(path.clone())
-            }
-        })?;
-        Ok(Self { pid, mem, mem_rw: std::sync::Mutex::new(None) })
+        Ok(Self { pid, mem: os::Memory::open(pid)? })
     }
 
-    /// The process whose command line names `name` (case-insensitive basename match); with several, the
-    /// one using the most memory (the game rather than a launcher stub).
+    /// The process named `name` (case-insensitive basename match); with several, the one using the most
+    /// memory (the game rather than a launcher stub).
     pub fn find(name: &str) -> Result<Self> {
-        let want = name.to_ascii_lowercase();
-        let mut best: Option<(u64, u32)> = None;
-        for entry in std::fs::read_dir("/proc")? {
-            let Ok(pid) = entry?.file_name().to_string_lossy().parse::<u32>() else { continue };
-            let Ok(cmdline) = std::fs::read(format!("/proc/{pid}/cmdline")) else { continue };
-            let hit = cmdline.split(|&b| b == 0).any(|arg| {
-                let arg = String::from_utf8_lossy(arg).to_ascii_lowercase();
-                arg.rsplit(['/', '\\']).next() == Some(want.as_str())
-            });
-            if !hit {
-                continue;
-            }
-            let rss = std::fs::read_to_string(format!("/proc/{pid}/statm"))
-                .ok()
-                .and_then(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok())
-                .unwrap_or(0);
-            if best.is_none_or(|(r, _)| rss > r) {
-                best = Some((rss, pid));
-            }
-        }
-        let Some((_, pid)) = best else { bail!("no running process named {name} (is the game running?)") };
-        Self::open(pid)
+        Self::open(os::Memory::find(name)?)
     }
 
     pub fn regions(&self) -> Result<Vec<Region>> {
-        let maps = std::fs::read_to_string(format!("/proc/{}/maps", self.pid))?;
-        Ok(maps.lines().filter_map(parse_maps_line).collect())
+        self.mem.regions()
+    }
+
+    /// Is the process still running?
+    pub fn alive(&self) -> bool {
+        self.mem.alive()
     }
 
     /// Writable regions worth scanning: below 4 GiB (the 32-bit game's address space) unless `all`, and
@@ -109,17 +92,16 @@ impl Process {
 
     /// Lowest mapped address of a file whose basename matches `module` (case-insensitive).
     pub fn module_base(&self, module: &str) -> Result<u64> {
-        let want = module.to_ascii_lowercase();
         self.regions()?
             .iter()
-            .filter(|r| r.path.rsplit('/').next().is_some_and(|b| b.to_ascii_lowercase() == want))
+            .filter(|r| r.file_name().eq_ignore_ascii_case(module))
             .map(|r| r.start)
             .min()
             .with_context(|| format!("module {module} is not mapped"))
     }
 
     pub fn read(&self, addr: u64, buf: &mut [u8]) -> bool {
-        self.mem.read_exact_at(buf, addr).is_ok()
+        self.mem.read(addr, buf)
     }
 
     pub fn read_u32(&self, addr: u64) -> Option<u32> {
@@ -134,8 +116,7 @@ impl Process {
     }
 
     /// Write `data` at `addr`, only inside a writable, non-executable mapping below 4 GiB (the game's data;
-    /// never its code, never host libraries). `/proc/<pid>/mem` itself would write anywhere, so this check is
-    /// the rule.
+    /// never its code, never host libraries). The OS itself would write anywhere, so this check is the rule.
     pub fn write(&self, addr: u64, data: &[u8]) -> Result<()> {
         let end = addr + data.len() as u64;
         let ok = self
@@ -145,16 +126,7 @@ impl Process {
         if !ok {
             bail!("{addr:#010x} is not in a writable, non-executable data mapping of the game: refusing to write");
         }
-        let mut guard = self.mem_rw.lock().unwrap_or_else(|e| e.into_inner());
-        if guard.is_none() {
-            let f = std::fs::OpenOptions::new()
-                .read(true)
-                .write(true)
-                .open(format!("/proc/{}/mem", self.pid))
-                .context("opening the process memory for writing")?;
-            *guard = Some(f);
-        }
-        guard.as_ref().unwrap().write_all_at(data, addr).with_context(|| format!("writing {addr:#010x}"))
+        self.mem.write(addr, data).with_context(|| format!("writing {addr:#010x}"))
     }
 }
 
@@ -215,21 +187,6 @@ impl Pokes {
     pub fn original(&self, addr: u64) -> Option<f64> {
         self.0.iter().find(|(a, _, _)| *a == addr).map(|(_, ty, old)| ty.decode(old))
     }
-}
-
-fn parse_maps_line(line: &str) -> Option<Region> {
-    // address perms offset dev inode [path]; the path may contain spaces ("Need for Speed(TM) Most Wanted").
-    let mut parts = line.splitn(6, ' ');
-    let (start, end) = parts.next()?.split_once('-')?;
-    let perms = parts.next()?;
-    let path = parts.nth(3).unwrap_or("").trim().to_string();
-    Some(Region {
-        start: u64::from_str_radix(start, 16).ok()?,
-        end: u64::from_str_radix(end, 16).ok()?,
-        writable: perms.as_bytes().get(1) == Some(&b'w'),
-        executable: perms.as_bytes().get(2) == Some(&b'x'),
-        path,
-    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -576,7 +533,7 @@ pub fn apply_pokes(p: &Process, watches: &[Watch], specs: &[String]) -> Result<P
 fn describe(regions: &[Region], addr: u64) -> String {
     match regions.iter().find(|r| (r.start..r.end).contains(&addr) && !r.path.is_empty()) {
         Some(r) => {
-            let name = r.path.rsplit('/').next().unwrap_or(&r.path);
+            let name = r.file_name();
             let base = regions.iter().filter(|x| x.path == r.path).map(|x| x.start).min().unwrap_or(r.start);
             format!("{addr:#010x} ({name}+{:#x})", addr - base)
         }
@@ -866,7 +823,7 @@ pub fn telemetry_until(
     loop {
         let t = start.elapsed().as_secs_f64();
         let stopped = stop.is_some_and(|s| s.load(std::sync::atomic::Ordering::Relaxed));
-        if stopped || seconds.is_some_and(|s| t >= s) || !Path::new(&format!("/proc/{}", p.pid)).exists() {
+        if stopped || seconds.is_some_and(|s| t >= s) || !p.alive() {
             break;
         }
         let vals: Vec<String> = watches
@@ -929,12 +886,6 @@ mod tests {
 
     #[test]
     fn watch_lines() {
-        let r = parse_maps_line(
-            "00401000-00f82000 r-xp 00001000 103:03 78521981                          /home/t/Need for Speed(TM) Most Wanted/NFS13.exe",
-        )
-        .unwrap();
-        assert_eq!(r.path, "/home/t/Need for Speed(TM) Most Wanted/NFS13.exe");
-        assert_eq!(parse_maps_line("010eb000-011be000 rw-p 00000000 00:00 0 ").unwrap().path, "");
         let w = Watch::parse("drift f32 NFS13.exe+0x9f1234 0x10 0x48  # comment").unwrap().unwrap();
         assert_eq!(w.to_line(), "drift f32 NFS13.exe+0x9f1234 0x10 0x48");
         assert!(Watch::parse("   # only a comment").unwrap().is_none());

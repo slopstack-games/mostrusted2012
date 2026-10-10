@@ -1,3 +1,40 @@
+# Handoff: 2026-10-10 (session 7, Windows): start here
+
+**State**: branch `windows-port` (not merged into master, not pushed): the workspace builds and runs on Windows
+(clippy 0 warnings, 141 tests, `mwtool verify` 0 failures, the 911's accel numbers as on Linux); the Linux
+side was only type-checked for the non-Bevy crates from Windows, so run build / clippy / tests once on Linux.
+Details: the 2026-10-10 research-log entry and the Windows paragraph in CLAUDE.md.
+
+## Paused work: four agent worktrees with uncommitted changes (stopped mid-task by the user)
+
+Nothing of these is committed, built or checked; each worktree is `.claude/worktrees/agent-<id>` on branch
+`worktree-agent-<id>`, based on `windows-port`. Resume each agent, or read its diff and finish it by hand.
+
+| Worktree | Feature | What is there |
+|---|---|---|
+| `agent-a76d4bd5cc796831f` | police, pursuits, heat | new `police.rs`, `pursuit.rs`, `mw-assets/src/police.rs`; edits in `ai.rs`, `main.rs`, mwtool (a stray `build.log` to delete) |
+| `agent-a7e84698a6ee37b0c` | speed cameras, billboards, gates, Speed Points | new `mw-assets/src/scoring.rs`; edits in `freeroam.rs`, `hud.rs`, `props.rs`, `frontend.rs`, `mw-formats/src/world.rs` |
+| `agent-a63370b2e36b9cd8f` | night lighting (world lights, lit windows) | new `world_lights.rs`, `mw-assets/src/lights.rs`; edits in `deferred.rs`, `game_lighting.wgsl`, `layered.wgsl`, `materials.rs`, `loader.rs` |
+| `agent-a2ccbae6cc907f425` | jack spots, body shops | new `jackspots.rs`, `bodyshop.rs`; edits in `damage.rs`, `garage.rs`, `input.rs`, `hud.rs`, `easydrive.rs`, `frontend.rs`, `mw-assets/src/paint.rs` |
+
+Expect merge conflicts in `main.rs`, `hud.rs`, `frontend.rs`, `mw-assets/src/lib.rs`, `mw-formats/src/world.rs`,
+`genesys_names.txt` and mwtool's `main.rs`. The decompiled dump on the Windows machine is under the game
+install, in `opencode_extract/NFS13_dump` (not `re/`).
+
+## Open from this session
+
+- The user: **"waterlevel is too low"** (place not given yet). At `water-river` ours shows mostly the river bed
+  with caustics; needs a matched screenshot of the original there (method in the research log).
+- Matched pair downtown: the wet road's reflection is a bright tan band at grazing angles (the original's is
+  dark grey); brick paving bright and dry-looking; no lit windows / lamps (the night-lighting worktree).
+- The original's time of day is not located in memory, so pairs cannot be made at the same hour yet.
+- `ref/win-live1/handling.watch` lacks the wheel contact / spin / slip columns (copy the Linux machine's file).
+- The default `--drive` spawn knocks a street lamp over; `--test crash-ai` needs `--spawn=925,23,-101,10`.
+- A visual audit agent was stopped before reporting; its screenshots are in the session scratchpad only.
+- The user's original-game save was rewritten by the game at 01:26 during the driven run; the copy from before
+  is in `ref/savebackup-2026-10-10/` (not restored).
+- Not started: map / car-select screens, Most Wanted list, streaming, traffic manoeuvres.
+
 # Handoff: end of 2026-10-09 (session 6, part 3): start here
 
 **State**: master (c11c9db and later) builds; clippy 0 warnings, 140 tests, `mwtool verify` 0 failures; the 911's
@@ -111,7 +148,7 @@ Commands (not yet in CLAUDE.md, which has uncommitted local edits):
 ./target/release/mostrusted --race 462174                      # CONTINENTAL DRIFT: intro, 8 AI, traffic
 ./target/release/mostrusted --race 462174 --test race --units 12   # TEST RESULT race … (--no-cutscenes: frozen start)
 MW_CUTSCENE_SHOT=intro:9 ./target/release/mostrusted --race 462174 --units 12 --screenshot f.png --screenshot-delay 100000
-./target/release/mostrusted --drive 911 --units 20 --ai "911,veyron super" --test ai --ai-seconds 60
+./target/release/mostrusted --drive 911 --ai "911,veyron super" --test ai --ai-seconds 60
 ./target/release/mostrusted --drive 911 --test exhaust         # pops / backfires; --nitrous holds nitrous
 ./target/release/mostrusted --drive xkr --units 12 --spawn=-600,52,2300 --show-easydrive --easydrive-path 2,0,1
 # --no-traffic, --traffic-density x, --no-cutscenes, MW_TRAFFIC_LOG=1, MW_EXHAUST_LOG=1, MW_RACE_TEXT=1

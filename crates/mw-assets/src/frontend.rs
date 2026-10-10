@@ -62,6 +62,12 @@ pub struct SwapSpot {
     pub location: u32,
     /// `0e3bcabe`: the car's trigger point.
     pub car: Option<Pose>,
+    /// `ColourId` (+0x10): the parked car's paint, a `VehiclePaint` UniqueId of the car's palette
+    /// (`FUN_00747aa0` copies it into the swap slot, `FUN_0075d290` spawns the car with it).
+    pub colour: u32,
+    /// `e36e9d9d` (+0x1c): the spot's second parking place, where the car the player arrived in is left
+    /// (`FUN_00761d70` state 3 alternates between it and the car trigger); `None` when the id is no trigger.
+    pub second: Option<Pose>,
 }
 
 /// Where and in what free roam starts.
@@ -72,6 +78,9 @@ pub struct StartConfig {
     /// `GameLogicConfig.beab0bc2`: the default start point.
     pub default_start: Option<Pose>,
     pub swap_spots: Vec<SwapSpot>,
+    /// `GameLogicConfig.ff4aef6f` (+0x284, 70): the speed in mph up to which a parked car can be swapped
+    /// into (`FUN_007615f0`).
+    pub swap_max_mph: Option<f32>,
 }
 
 impl StartConfig {
@@ -168,6 +177,9 @@ mod h {
     pub const VEHICLE_ID: u32 = field_hash("VehicleId");
     pub const PLACEMENT: u32 = field_hash("Placement");
     pub const SWAP_CAR: u32 = 0x0e3b_cabe;
+    pub const COLOUR_ID: u32 = field_hash("ColourId");
+    pub const SWAP_SECOND: u32 = 0xe36e_9d9d;
+    pub const SWAP_MAX_MPH: u32 = 0xff4a_ef6f;
     pub const GENERAL_LAYOUTS: u32 = 0xeee9_32fa;
     pub const TOGGLE_LAYOUTS: u32 = 0xa65d_5d07;
     pub const TRANSITION_IMAGES: u32 = field_hash("TransitionImages");
@@ -226,6 +238,10 @@ impl AssetStore {
             {
                 rollout = uint(g, h::DEFAULT_ROLLOUT);
                 cfg.default_start = pose(uint(g, h::DEFAULT_START));
+                cfg.swap_max_mph = match g.get(h::SWAP_MAX_MPH) {
+                    Some(Value::Float(f)) => Some(*f),
+                    _ => None,
+                };
             }
         }
         for o in items(self, GAMEPLAY)? {
@@ -241,6 +257,8 @@ impl AssetStore {
                 vehicle: uint(s, h::VEHICLE_ID),
                 location: uint(s, h::PLACEMENT),
                 car: pose(uint(s, h::SWAP_CAR)),
+                colour: uint(s, h::COLOUR_ID),
+                second: pose(uint(s, h::SWAP_SECOND)),
             }));
         }
         Ok(cfg)

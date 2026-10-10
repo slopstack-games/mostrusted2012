@@ -78,12 +78,15 @@ impl GameDir {
         resolve_case_insensitive(&self.root, relative)
     }
 
-    /// All files with the given extension (e.g. `"BNDL"`), relative to the root.
+    /// All files with the given extension (e.g. `"BNDL"`), relative to the root. The paths use `/` on every
+    /// platform, so they compare equal to game-relative strings such as `VEHICLES/VEH_1085007_HI.BNDL`.
     pub fn files_with_extension(&self, ext: &str) -> Vec<PathBuf> {
         let mut out = Vec::new();
         walk(&self.root, &mut |p| {
             if p.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext)) {
-                out.push(p.strip_prefix(&self.root).unwrap_or(p).to_path_buf());
+                let rel = p.strip_prefix(&self.root).unwrap_or(p);
+                let parts: Vec<_> = rel.components().map(|c| c.as_os_str().to_string_lossy()).collect();
+                out.push(PathBuf::from(parts.join("/")));
             }
         });
         out.sort();
@@ -130,12 +133,19 @@ pub fn candidates() -> Vec<PathBuf> {
             out.push(lib.join("steamapps").join("common").join(STEAM_FOLDER_NAME));
         }
     }
+    // The EA app / Origin record where they installed the game.
+    #[cfg(windows)]
+    out.extend(registry::string(
+        registry::HKEY_LOCAL_MACHINE,
+        "SOFTWARE\\EA Games\\Need for Speed(TM) Most Wanted",
+        "Install Dir",
+    ));
     if cfg!(windows) {
-        for base in
-            ["C:\\Program Files\\EA Games", "C:\\Program Files (x86)\\Origin Games", "C:\\Program Files\\Origin Games"]
-        {
-            out.push(Path::new(base).join(STEAM_FOLDER_NAME));
-            out.push(Path::new(base).join("Need for Speed Most Wanted"));
+        for base in program_files() {
+            for vendor in ["EA Games", "Origin Games"] {
+                out.push(base.join(vendor).join(STEAM_FOLDER_NAME));
+                out.push(base.join(vendor).join("Need for Speed Most Wanted"));
+            }
         }
     }
     let mut seen = std::collections::HashSet::new();
@@ -152,12 +162,81 @@ fn steam_roots() -> Vec<PathBuf> {
         roots.push(home.join(".var/app/com.valvesoftware.Steam/.local/share/Steam"));
         roots.push(home.join("Library/Application Support/Steam"));
     }
-    if cfg!(windows) {
-        roots.push(PathBuf::from("C:\\Program Files (x86)\\Steam"));
-        roots.push(PathBuf::from("C:\\Program Files\\Steam"));
+    #[cfg(windows)]
+    {
+        // Where Steam says it is installed, then the default locations.
+        roots.extend(registry::string(registry::HKEY_CURRENT_USER, "Software\\Valve\\Steam", "SteamPath"));
+        roots.extend(registry::string(registry::HKEY_LOCAL_MACHINE, "SOFTWARE\\Valve\\Steam", "InstallPath"));
+        roots.extend(program_files().into_iter().map(|p| p.join("Steam")));
     }
     roots.retain(|p| p.is_dir());
     roots
+}
+
+/// The `Program Files` directories (Windows), 32-bit first: Steam and the EA app install there by default.
+fn program_files() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = ["ProgramFiles(x86)", "ProgramFiles", "ProgramW6432"]
+        .iter()
+        .filter_map(std::env::var_os)
+        .map(PathBuf::from)
+        .collect();
+    dirs.push(PathBuf::from("C:\\Program Files (x86)"));
+    dirs.push(PathBuf::from("C:\\Program Files"));
+    let mut seen = std::collections::HashSet::new();
+    dirs.retain(|p| seen.insert(p.clone()));
+    dirs
+}
+
+/// Reading a string from the registry, declared by hand (no dependency on the windows crates).
+#[cfg(windows)]
+mod registry {
+    use std::ffi::c_void;
+    use std::path::PathBuf;
+
+    // Predefined keys are sign-extended 32-bit values.
+    pub const HKEY_CURRENT_USER: isize = 0x8000_0001u32 as i32 as isize;
+    pub const HKEY_LOCAL_MACHINE: isize = 0x8000_0002u32 as i32 as isize;
+    const RRF_RT_REG_SZ: u32 = 0x2;
+    /// Steam is a 32-bit program: its machine-wide keys are in the 32-bit view.
+    const RRF_SUBKEY_WOW6432KEY: u32 = 0x0002_0000;
+
+    #[link(name = "advapi32")]
+    unsafe extern "system" {
+        fn RegGetValueW(
+            key: *mut c_void,
+            subkey: *const u16,
+            value: *const u16,
+            flags: u32,
+            ty: *mut u32,
+            data: *mut c_void,
+            len: *mut u32,
+        ) -> i32;
+    }
+
+    pub fn string(root: isize, subkey: &str, value: &str) -> Option<PathBuf> {
+        let wide = |s: &str| s.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>();
+        let (subkey, value) = (wide(subkey), wide(value));
+        let mut buf = [0u16; 1024];
+        let mut len = std::mem::size_of_val(&buf) as u32;
+        // SAFETY: NUL-terminated names, and an output buffer passed with its size in bytes.
+        let status = unsafe {
+            RegGetValueW(
+                root as *mut c_void,
+                subkey.as_ptr(),
+                value.as_ptr(),
+                RRF_RT_REG_SZ | RRF_SUBKEY_WOW6432KEY,
+                std::ptr::null_mut(),
+                buf.as_mut_ptr().cast(),
+                &mut len,
+            )
+        };
+        if status != 0 {
+            return None;
+        }
+        let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        let text = String::from_utf16_lossy(&buf[..end]);
+        (!text.is_empty()).then(|| PathBuf::from(text))
+    }
 }
 
 /// The Steam root itself plus every library listed in `libraryfolders.vdf`.

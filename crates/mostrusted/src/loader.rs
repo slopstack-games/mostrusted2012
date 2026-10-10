@@ -178,6 +178,8 @@ pub enum Msg {
     Collider(avian3d::prelude::Collider, Arc<Vec<u32>>),
     /// The game's collision surface list (`mw_assets::surfaces`).
     Surfaces(Vec<mw_assets::surfaces::SurfaceInfo>),
+    /// A track unit's lights (`LightInstanceList`; `world_lights.rs`).
+    Lights(Vec<mw_assets::lights::WorldLight>),
     /// How cars' contacts with knocked props are solved (`mw_assets::props::DynamicResponses`).
     PropResponses(mw_assets::props::DynamicResponses),
     Car(Box<CarSpec>),
@@ -259,6 +261,7 @@ pub fn spawn(
                 paintable: HashMap::new(),
                 requests: req_rx,
                 skin_bones: None,
+                unskinned: false,
                 opponent: None,
                 backdrop: None,
                 backdrop_sent: HashSet::new(),
@@ -309,6 +312,9 @@ struct Worker {
     requests: Receiver<CarRequest>,
     /// While loading a drivable car's body: its skeleton size, so meshes get joint attributes.
     skin_bones: Option<usize>,
+    /// While loading a jack spot's parked car (`jackspots.rs`): a drivable car's model drawn without its damage
+    /// skeleton, so its meshes are their own variant (no joint attributes), apart from the drivable car's.
+    unskinned: bool,
     /// The opponent slot of the car being loaded (`CarRequest::opponent`).
     opponent: Option<usize>,
     /// Backdrop composition for [`BackdropMode::Composed`].
@@ -561,6 +567,7 @@ impl Worker {
         self.store.repair_wheel_layout(&mut spec);
         let saved = (self.paint, self.paint_count);
         self.paint = req.colour;
+        self.unskinned = req.vehicle >= crate::jackspots::MODEL_KEY_BASE;
         let mut body = Vec::new();
         for &m in spec.parts.iter().flatten() {
             if let Some(key) = self.model_variant(m, Variant::default(), InstanceLook::default())? {
@@ -588,6 +595,7 @@ impl Worker {
             });
         }
         (self.paint, self.paint_count) = saved;
+        self.unskinned = false;
         self.send(Msg::TrafficCar(Box::new(TrafficCarSpec { vehicle: req.vehicle, paint: req.paint, body, wheels })))
     }
 
@@ -802,6 +810,11 @@ impl Worker {
             self.send(Msg::Progress(format!("streaming {name} ({}/{total})", i + 1)))?;
             if let Some(b) = self.store.bundle(&name) {
                 self.collision(&b)?;
+                match self.store.bundle_lights(&b) {
+                    Ok(lights) if !lights.is_empty() => self.send(Msg::Lights(lights))?,
+                    Ok(_) => {}
+                    Err(e) => self.send(Msg::Progress(format!("no lights for {name}: {e}")))?,
+                }
                 if !self.filter.no_groundcover {
                     self.groundcover(&b, track_unit_number(&name))?;
                 }
@@ -1044,6 +1057,9 @@ impl Worker {
         // (bit 60, a hash of the ID and the paint's values).
         if self.paintable.get(&id) == Some(&true) {
             key = self.paint_key(key);
+        }
+        if self.unskinned {
+            key = ResourceId(key.0 ^ (1 << 58));
         }
         if self.parts.contains_key(&key) || !need_parts && self.models.contains(&key) {
             return Ok(Some(key));

@@ -1408,6 +1408,86 @@ sampled at the screen u.
   `GradientTextureA` (rgb and the alpha that caps the fog opacity; `Colour.w` and `ColourSun[3]` are 1 at noon,
   `ColourSun[4]` 0.395 and `02799979` 10, `078c9088` 0.562, `14d20653` 1 are unexplained).
 
+## World lights (2026-10-10)
+
+Point, cone, spot and line lights are GeneSys `Light_Point` / `Light_Cone` / `Light_Spot` / `Light_Line`
+objects (all extend `Light_Base`: `Colour`, `Intensity`, `AttenuationThreshold`, `FlashPattern`, five
+`OnDuring…` bools). They reach the renderer in three steps.
+
+- **Submission** (`FUN_0054ade0`, per active light record, 0xa0 bytes each at world +0x7b8a0): by the
+  definition's type id (0x285b point, 0x2859 cone, 0x841d8 spot, 0x841ec line, 0x285c projected texture) it
+  calls `FUN_008ce920` (point), `FUN_008ce9c0` (cone), `FUN_008cebf0` (spot) or `FUN_008cee40` (line) with the
+  light's matrix translation (+0x30) as position, the matrix's z axis (+0x20) as direction, `Colour`, the
+  record's current intensity (+0x14), the definition's `AttenuationThreshold` (+0x48) and, in degrees,
+  `ConeAngle` (+0x60) and `ConeInnerAngle` (+0x70). Those store colour.rgb = Colour × intensity, colour.w =
+  the threshold (below 0.001, `.rdata` 0x00f8bb34, a renderer default at +0xa40 / +0xa44 / +0xa48 instead),
+  the direction normalised, and the angles in radians (× 0.0174533, 0x00ffc01c). `FUN_008dfa00` /
+  `FUN_008dfbf0` / `FUN_008dfdf0` append to per-type lists with the squared distance to the camera; a full
+  list is handed to `FUN_008df590` (not read; presumably it keeps the nearest; the list sizes are runtime values).
+- **Constants** (the light pass `FUN_008b8840`): for a point light `FUN_008b0940` takes m = the largest of
+  colour.rgb and writes `deferred_lightColour` = (rgb, threshold / m) and a volume matrix scaled by
+  sqrt(m / threshold); the shader's `saturate(1 / d² − colour.w)` so reaches zero exactly at that radius. Cone
+  (`FUN_008af930`) and spot lights (`FUN_008afee0`) do the same and add `deferred_lightDirection` = (−direction,
+  s) and `deferred_lightPosition.w` = c from a table of 45 volumes 2° apart (`FUN_008ae860`, renderer +0xad0,
+  step 0.0349066 at 0x0100e760; index = angle in degrees × 0.5, at most 44): c = cos(i × 2°); a cone light's s =
+  1 / (1 − c), a spot light's s = 1 / (cos(ConeInnerAngle) − c), or FLT_MAX (0x0100ce20) when the inner cone is
+  not inside the edge. A light whose volume the camera is outside of is drawn at once as a volume; the others
+  are batched into full-screen passes (`FUN_008b0650`, `FUN_008af2f0`, `FUN_008af610`: the `Point2…4`
+  programs). Slots: `deferred_lightPosition` 0x50, `deferred_lightColour` 0x51, `deferred_lightDirection` 0x52.
+- **Shaders** (`LightBuffer_Point`, `_Cone`, `_Spot`; blend ONE, ONE): L = light − pixel, d² = |L|² + 0.001,
+  light = colour.rgb × saturate(1 / d² − colour.w) × saturate((L̂ · direction.xyz − position.w) × direction.w)
+  (the cone factor only for cone and spot lights), times the key light program's BRDF: Lambert albedo (1 − F0)
+  N·L / π for the world and the Ashikhmin-Shirley diffuse for cars (RT3.w), plus the same normalised
+  Blinn-Phong specular. No shadow and no AO term.
+
+**Where lights come from.** `LightInstanceList` records (3,628: matrix, definition import at +0x40, an id at
++0x4c) and the `Lights` of objects' `WCVfxBehaviour`s (4,921 placements: street lamps, traffic lights): a
+light definition plus a `LocatorGroup`, resolved in the object's `mLocators` (formats.md). The submission above
+also divides the current intensity by the definition's `Intensity` and passes the ratio with the record's
++0x48 handle to `FUN_00497200` (the light's corona, when it has one).
+
+**What switches a light by hour** (traced 2026-10-10 in the decrypted image; addresses as in the dump).
+- *Environment state* (`FUN_008a8480`, state E = environment manager +0x1b8c0; t = time of day in seconds,
+  `EnvironmentSettings` S): with A = S+0x124 and B = S+0x128 (`SunMoonPath.a5caac0f` = 8 and `644383ee` = 20,
+  × 3600), **E+0x76 "day" = A < t < B**. The distance to a boundary is the smaller of frac((X − t) / 86400)
+  and frac((t − X) / 86400), × 24 (`.rdata` 0x0100e75c); d = the smaller of the two boundaries' distances.
+  **E+0x7c "night level" = 0 by day, else clamp((d − `LightTransitionOffset`) / max(`LightTransitionDuration`,
+  1e-4), 0, 1)** (S+0x174, S+0x170), so it ramps up from 20:00 to 21:00 and down from 07:00 to 08:00. E+0x84
+  is the same with the Shadow… pair; E+0x74 = night and level 1, E+0x75 = night and level < 1, E+0x79 = t <
+  14400 or t > 79200 (04:00, 22:00). The function then runs `DayNightTransition`'s other two hours (S+0x178 =
+  8.5, S+0x17c = 20) through the same arithmetic (what that stores was not followed). E+0x77 / E+0x78 (rain,
+  wet) come from weather bits at manager +0x1b61c (`FUN_00893c80`).
+- *Per light* (`FUN_0055ae50`, the world update, loops the 0x460 light records and calls `FUN_0054d980`):
+  record +0x14 = base × `FUN_0089b400`(E, flags, id). The base is the definition's `Intensity`, or
+  `FUN_00547470`(Intensity, FlashPattern) when `FlashPattern.Type` ≠ 0 (record flag 0x20). The flags are
+  record +0x19, filled in `FUN_00548eb0` from the definition: 1 = `OnDuringNight`, 2 = `OnDuringTwilight`, 4 =
+  `OnDuringDay`, 8 = `OnDuringRain`, 0x10 = `OnDuringWet`; plus 0x20 when the record's flag 0x10 is clear and
+  4 when its flag 8 is set. `FUN_0089b400` returns 1 if (day and flag 4) or (rain and flag 8) or (wet and
+  flag 0x10), and 1 if flags 1 and 4 are both set; otherwise x = the night level, or, without flag 0x20,
+  clamp((level − r / 92) × 92, 0, 1) with r = (id × 119) mod 91 (id = record +0x1a); the result is 1 − x with
+  flag 4, else x. The twilight bit is never tested there. Record flag 0x10 and the id are set only for
+  lights that objects carry (`FUN_005328c0`: the id is the owner's 16-bit handle), so street lamps come on
+  one after another through the transition and `LightInstanceList` lights fade with the level. A record
+  whose intensity rises above 0 is activated (`FUN_0054be40`), one that falls to 0 is removed.
+- *Flash patterns* (`FUN_00547470`): t = game clock + `Offset`, period = `Duration` + `Frequency`; phase
+  p = t mod period − `Frequency`. Type 1: p < 0 full, else level = max(|p / Duration − 0.5| × 2, floor);
+  type 2: p < 0 full, else a random level (LCG table at 0x0110bf80) of at least the floor; type 3: p < 0 the
+  floor, else full; output = (I − floor) × level + floor with floor = `3ac4f0ce`.
+- *`DynamicLighting_GlobalLightMapIntensities`* (slot 0x11) is written in `FUN_008c2080` through the second
+  constant accessor `FUN_00a621a0(0x1191030, slot)`: (level, level or 1 while it rains, level, 0) with level =
+  E+0x7c. The same code writes zero vectors to `DynamicLighting_LightMapChannels0123_Red/Green/Blue` (0x12 to
+  0x14, the 4567 set is never written) and (1, 1, 1, 1) to `DynamicLighting_Illuminance` (0x10).
+- *Light lists* (`FUN_008dfa00` and siblings): `FUN_008df590` is an introsort of the 0x40-byte entries
+  (depth 2·log2(n) − 2, insertion sort below 29); when a list reaches its capacity it is sorted and its count
+  cut to the list's keep size, so the nearest lights survive. Both sizes are set at run time (not read).
+- *Cone table index*: `FUN_00ede840` is the CRT `ceil` (truncate, add 1 when positive with a fraction), so a
+  cone uses the next volume up: index = ceil(angle / 2), at most 44.
+- *Lightmap and AO map samplers*: `LightMapTextureSampler` and `AOMapTextureSampler` are the engine's global
+  sampler ids 0x1a and 0x1b (`FUN_008c34b0`, registered through `FUN_00a5def0`; `puddleMapSampler` is 0xb). No
+  code names those ids with a literal; the textures come from data: a `Model` resource's block at +0x10 (the
+  layout of an `InstanceList` instance's overrides: names + texture and sampler-state imports) and the
+  instances' own override blocks.
+
 ## Crashes (2026-10-06)
 
 Data: `mw_assets::crash` (layouts in its doc comment); runtime: `crates/mostrusted/src/crash.rs`; values and model
@@ -1906,9 +1986,8 @@ are. `mwtool freeroam [--list|--kind SpeedCam]` lists them.
 - **Who calls the handler**: `FUN_006ab390` (the game-logic message loop over the queue at `DAT_010edb10`)
   and `FUN_007061d0`, `FUN_00707510`, `FUN_0065fc00`, and the overlap path `FUN_00707650` (see "Trigger
   hits" below).
-- **Speed Points**: not found in this pass. The handler only sends events (ids in the config at global
-  +0x44); the points are presumably awarded by whatever listens to them (`FUN_006a8050` dispatch).
-  `CollectablesConfig` holds no point values (its floats are 2.5 at 0x60 and the 50 mph threshold).
+- **Speed Points**: found 2026-10-10, see "Speed Points" below. The events the handler sends are scoring
+  events naming `ScoringConfig` actions (the config at global +0x44 is the `ScoringConfig`).
 
 ### Trigger hits: streaming, overlap and firing (session 5, round 2)
 
@@ -1985,17 +2064,213 @@ reading the code unless marked *inferred*.
   hit recursively (`FUN_007059b0(…, 0, 0, 0)`), otherwise the 4 s queue timer is reset to 4. Whether the gate
   prop must break as well was not found (no gate kind in `FUN_005b5340`).
 - **Body shop** (kind 6): in `FUN_007059b0` it only sets a local flag and falls through to the common tail;
-  what it does (repair, repaint, heat) was not traced. Next: the tail of `FUN_007059b0` after that flag.
+  that is only the "found" bookkeeping. What a pass does is the `DOBODYSHOP` behaviour's handler: "Body shops"
+  below (2026-10-10).
 - **Hints**: `FUN_006ef070(4)` (speed camera), `FUN_006f3f30(5)` (billboard), `FUN_006f3f30(7)` (gate) are
   show-once tutorial hints; their texts were not resolved.
 - **Speed camera record** (`FUN_008749e0(id, player, centi_mph, 0, id)`): stores the values and, when online
   (`FUN_007e9360`), builds a leaderboard request with `"eventId"` = the camera id and the board name
   `"RoadRules"` (or `"Survival"` in another mode): the Autolog **speed camera leaderboard**. Offline it only
   calls `FUN_00874830(id)` (*inferred*: local best) and a virtual callback. No points are given here.
-- **Speed Points**: still not found. `BillboardWorth`, `ItemWorth`, `HighValueWorth` and `Score` are
-  variables of `HSMBehaviourHSMDoSmashAndGrabScoring` (a Smash-and-Grab event mode), not free roam (dead
-  end). Leads: the strings `CurrentSpeedPoints`, `SpeedPoints`, `SPEEDPOINTS`, `upload_sp_buckets`,
-  `SP_%d_%d`, and the listeners of the events the handler sends (`FUN_006a8050`).
+- **Speed Points**: found 2026-10-10 (next section). `BillboardWorth`, `ItemWorth`, `HighValueWorth` and
+  `Score` are variables of `HSMBehaviourHSMDoSmashAndGrabScoring` (the Smash-and-Grab game mode), not free roam.
+- **Does a billboard's volume alone count?** Yes (2026-10-10): `FUN_006e42f0` passes the billboard kinds
+  ('2' 'A' 'D' 'J' 'M') like cameras and gates (offline always; online only with the free-roam flag +0x2e90),
+  so entering the box queues the billboard and `FUN_007059b0` counts it. The prop's break (message 0x14) calls
+  the handler as well, without the queue. Whichever comes first is the first find; the other only sends the
+  0-point `HitJump` action.
+- **The linked trigger of a billboard prop** is in the data: a `CompoundInstanceList` record's word at +0x4c is
+  the id of the billboard's `TriggerData` record, at the same position, on all 216 billboards (`mwtool freeroam
+  --objects`). Security gates have no such link (their fence props are plain props 1–2 m from the trigger) and
+  are counted by the volume only.
+
+### Speed Points (2026-10-10)
+
+Speed Points (SP) are data plus one short code path. Confirmed by reading the code unless marked *inferred*.
+
+- **Data.** `ScoringConfig` (`GLOBALCONFIG.BNDL`, UniqueId 390964, the object at global +0x44) has ~190
+  UniqueId fields, one per thing code can score; code names an action by the field's offset. Each id is a
+  `ScoringAction` (72 bytes; all 223 sit in one list object of `GAMELOGIC/GAMEPLAY.BNDL`, UniqueId 390077):
+  `Predicate` (+0xc, a binding that must hold), id (+0x14), `GameplayTrigger` (+0x18), `Sequence` (+0x1c) and
+  `Title` (+0x20) of its HUD message, a heat amount (+0x24, `1a88cb4c`), a per-player-count bonus array (+0x2c,
+  count +0x3c), **`Score`** (+0x30, count +0x40 `ScoreCount`) and **the Speed Points array** (+0x34, field
+  `8c1feb6d`, count +0x42 `SPCount`), `Scope` (+0x38), `Queue`, `Priority`. That +0x34 is SP is settled by
+  three things: its count field's name, the titles' text ("Billboard +{sp}" followed by the SP glyph), and the
+  code below. `mwtool scoring` prints the table.
+- **A scoring event** (`FUN_006552a0` builds one entry, `FUN_0066c1b0` an empty event of 8): 9 words per
+  entry: action id, a float (default: a sentinel, `DAT_00f8f340`), then −1s; word 2 overrides the score and
+  word 3 the SP when they are not −1. Every collectable event leaves them at −1.
+- **Sending** (`FUN_006a8050(action id, …, player, …)`): dropped offline unless the game mode's byte +0x2e74
+  is set (the "timer running" flag of `StartGameModeTimer`; *inferred*: set in free roam); then `FUN_006a75f0`
+  → the player's `FUN_006d08a0`.
+- **Awarding** (`FUN_006d08a0(player, event)`), per entry: find the action by id in the player's action list
+  (+0x3ac / +0x3b0); its `Predicate` must hold (`FUN_0063e470`); count it in the player's per-action counters.
+  Offline (the mode's online byte `FUN_006dfed0` clear): score = `Score[0]`, or `Score[level − 1]` with the
+  pursuit level `FUN_0066a7b0` when 0 < level ≤ `ScoreCount`; **SP = the entry's word 3, or `SP[0]` when it is
+  −1; when SP > 0, `FUN_00735ca0(SP, the player's car id)`**. (Online the score comes from `FUN_006a4820` /
+  `FUN_006a48c0`: indexed by finishing position or streak, plus the player-count bonus, with server patches
+  `FUN_006a3530`.) Then the heat amount goes to `FUN_006bdac0`, the score is doubled while a double-score
+  timer runs on `Scope` 1 actions, and is added to the player's score (+0x418) and stats.
+- **The total** (`FUN_00735ca0` → `FUN_00734f60(SP, bucket, car)`): the bucket is 3, 1, 5 (free roam) or 0 by
+  game-state flags and only feeds statistics (`SPBucket` rows, telemetry `GAME EVNT SPBK` with `epts` / `spbk`
+  / `tpts`). `FUN_00734400(SP)` stores **total + SP** as the new total (`FUN_00726bb0`; the current total at
+  +0x1c, the next Most Wanted event's requirement at +0x20, whose crossing in free roam sends a message). No
+  multiplier offline. `ScoringViewModel.CurrentSpeedPoints` (view model +0x8c, `FUN_006a4960`) is the HUD's
+  binding.
+- **The collectables' actions** (offsets in `FUN_007059b0`, `FUN_006ed0a0`, `FUN_006ed330`; names cracked,
+  all sort into their fields' places):
+
+  | Offset | Field | When | SP |
+  |--------|-------|------|----|
+  | +0x294 | `SpeedCameraTriggered` | every counted camera pass (≥ 50 mph) | 0 |
+  | +0x28c | `SpeedCamDiscovered` | a camera's first counted pass | 500 |
+  | +0x260 | `SecurityGateHit` | a gate's first hit, in free roam (mode +0x2e90) | 0 |
+  | +0x288 | `SmashGateDiscovered` | with it | 250 |
+  | +0xfc | `HitJump` | every billboard hit, offline | 0 |
+  | +0x1c | `BillboardFound` | a billboard's first hit | 0 |
+  | +0x18 | `BillboardDiscovered` | with it | 500 |
+  | +0x3c | `CarSwapFound` | a jack spot location's first find | 0 |
+  | +0x38 | `CarSwapDiscovered` | a jack spot car's first find | 350 |
+
+  Other offline actions with SP in the data (their triggering code was not traced): takedowns 115–155 by
+  kind (head-on 115, slam / shunt 125, T-bone 135, plain 150, traffic 155, "Splashdown" 155), `CrashEscape` 150, shunt / slam / ram 15,
+  "First Place" 50, an unnamed "COLLECTABLE" 55. Event results (place, medals) are not `ScoringAction`s with
+  offline SP: the 900 / 650 / … position tables are `Scope` 1 (online) actions. Where an offline event's SP
+  comes from ("End of event awards", `EventAward`, `ProgressionAwardPoints` strings) was not traced.
+- **HUD messages.** An action with a `Sequence` and a `Title` shows the title with `{sp}` filled: the four
+  "Discovered" actions use sequence 995814 (layout 1470322 for 1 s plus a sound; "Billboard +500"). An
+  action's `GameplayTrigger` (list object 457533 in `GAMEPLAY.BNDL`) names output sequences:
+  `SpeedCameraTriggered` → 1107082 (6 s: a PostFX flash, a world-space plate "SPEED CAMERA" with
+  `Collectables.LastCameraSpeed(SPEED, DECIMAL)` whose layout instance is scaled 0.005, and speedwall stacks
+  that only show with friends' entries), `SecurityGateHit` → 995322 (the "SPEEDWALL / SECURITY GATES
+  {Collectables.SpeedwallColFound} / {SpeedwallColAmt}" panel, 0.5–6 s). *Inferred*: the trigger fires its
+  outputs when the action scores (its inputs were not read).
+- **The total's label** (free-roam HUD layout 979928, `{ScoringViewModel.CurrentSpeedPoints}`): visible with
+  the widget `SPVisible`, which the game-logic state machine "SP Visibility" (HSM node 1695370) drives: "Show
+  SP Points" for `TIME` 8 s at the start, then again for 8 s whenever the binding
+  `ScoringViewModel.CurrentSpeedPoints` changes, and through a pursuit.
+- **No nitrous from security gates.** `FUN_0074cf40(this, worth, action)` (sends the action, adds `worth` to
+  `this+0x1224`, awards `DAT_00fa929c` nitrous through `FUN_00658ad0`) is a method of the Smash-and-Grab mode's
+  scoring behaviour: +0x1224 is its `Score` variable, and its four callers (`FUN_0075ba30`, `FUN_0075ec80`
+  and two in `FUN_00760xxx`) read its `ItemWorth` / `BillboardWorth` / `HighValueWorth` (+0x1248..+0x1250).
+  `HSM.DoSmashAndGrabScoring` only runs under "Smash And Grab Mode" (HSM 2210003). `FUN_00658ad0` has no
+  other caller but the gas station (`FUN_00748ff0`). The free-roam gate branch of `FUN_007059b0` sends the two
+  actions above, a hint and two stats, nothing else.
+
+### Jack spots: the parked cars and the swap (2026-10-10, `jackspots.rs`)
+
+The HSM's "Freedrive States" start five behaviours: "Do Body Shop" (979770), "Car Swap Logic" (979767), "Regular
+Autosave" (a `SaveProfile` every 120 s), "Speech Manager" and "Do Blacklist Shutdowns". "Car Swap Logic" is
+`HSMBehaviourCarSwapLogic`, registered as the script object `JackSpots` (`FUN_0075d510`; variables
+`IsSwapSpotVehicleSpawned`, `IsSwapSpotFound`, `HasCarInSwapSpotBeenDriven`, `UsedSpotBefore`, `OriginalCar`,
+`IsSwapComplete`, `SwapTargetManufacturerMovie`, `SwapSpotBadgeId`, `BadgeIds`, `GamePackImageIds`). Read from
+the code unless marked. **B** = the behaviour object.
+
+- **Slots** (`FUN_00747aa0`): one 0xa0-byte slot per `CarSwapSpot` (the list at collectables manager +0x41b0,
+  which settles that list's type), from B+0x50, count B+0x73f0, plus one empty slot (index B+0x74b4). Slot
+  +0x60 = `Placement` (the location trigger), +0x64 = `VehicleId`, +0x68 = `0e3bcabe` (the car's trigger), +0x6c
+  = `e36e9d9d` (a **second parking place**: in the data a trigger 2.3–3.8 m beside the car's, facing the same
+  way), +0x70 = `ColourId`, +0x40 / +0x50 = the car trigger's position and direction (`FUN_0042f250`), +0x74 the
+  parked vehicle's handle, +0x78 its state (0 none, 1 requested, 2 spawning, 3 standing), +0x90 the squared
+  distance, +0x98 eligible, +0x99 in range. Spots whose car's game pack is not owned are left out
+  (`FUN_00643c10` … `FUN_00647700`).
+- **Distances** (`FUN_007615f0` → `FUN_007610c0`): a physics query for triggers (type 0x20, up to 150) in a
+  sphere of **300 m** (`.rdata` 0x00fd6800) around the player's vehicle keeps the jack spot location kinds
+  (`FUN_006e16c0`: '<' 'B' 'E' 'K' 'N'), sorted by squared distance. The nearest **five** give their slot its
+  distance; every other slot gets FLT_MAX (`.rdata` 0x00fd1304). The nearest one's vehicle is preloaded
+  (`FUN_0071c8e0`); the nearest two fill the badge / game-pack image lists for the UI.
+- **Which cars stand** (`FUN_0075d290`, per slot each frame): wanted = eligible and ((400 ≤ d² ≤ R) or
+  (standing and d² ≤ R)) with R = **90000** (`.data` 0x010c5ca4; 1e6 at 0x010c5ca8 in the intro free drive) and
+  400 at `.data` 0x010c5cac: a car is requested between **20 m and 300 m**, never closer, and a standing one
+  stays inside 300 m. Wanted and state 0: spawn request `FUN_0066bf90(vehicle id, colour, position, direction,
+  zero velocity)`; not wanted and state ≠ 0: removed (`FUN_00758b00`), so a car still loading when the player
+  comes within 20 m is dropped. Eligibility (`FUN_00742400`, refreshed on entering range and one slot per frame):
+  the slot has a vehicle, the profile has the car (`FUN_0068f190`), and it is not the slot named by
+  `DAT_010c5bb4` (set from Lua: Easydrive's `JackIt`); in the intro free drive (game-mode manager +0x2e91) only
+  location 1212078 (the 911 of "Exit When In Jack Spot Car") is eligible.
+- **Prompt and input** (`FUN_007615f0`): per slot, if the player is not in a pursuit (police table +0x874 ≤ 0)
+  and player +0x23f is clear, |speed| (`FUN_006ba3e0`, mph) ≤ `GameLogicConfig` +0x284 (`ff4aef6f`) = **70**,
+  the slot's car stands, and the player's vehicle is **in the slot's location trigger** (`FUN_00742210` with
+  flag 1: the vehicle's trigger-hit list holds the `Placement` id, `FUN_00537190`; in the intro instead within
+  22.5 m, `.rdata` 0x00fd6b70): unless the just-swapped latch B+0x74c9 is set, the prompt is shown
+  (game-mode manager +0x2ca7 = 1, +0x2c70 = `GameLogicConfig` +0x16c `a1e83efa` = language 955092 "PRESS
+  {Controls.ButtonPrompt["SWAP_CARS"]} TO DRIVE CAR", or +0x168 `PromptStore` 2094166 "… TO GO TO STORE" for
+  a car the profile lacks; the HUD's `Mode.PromptString` bar, layout 604307). The input is player 0's action
+  record at +0xc4 = action **14 SWAP_CARS** (state int at 0x1c + 12 × action; E / pad Y / mouse button 1) in
+  state 2. A press starts the swap (B+0x7428 = slot, B+0x7458 = car trigger, player +0x784 = location;
+  `FUN_0075d590`) or, for a locked car, opens the store (`FUN_00748090`). The latch clears once no slot passes
+  the test.
+- **The swap** (`FUN_00761d70`, state at B+0x74a0): 1 wait for B+0x74c4 (set outside the decompiled set;
+  *inferred*: the manufacturer movie / transition has covered the screen; `FUN_0075d590` starts the config's
+  sequences `GameLogicConfig` +0x8c 995872 and +0x90 1016424 and posts message 0x1f) → 2 make sure the slot's
+  car stands, then `FUN_00758f00`: the player's vehicle becomes the slot's car and colour (`FUN_006c2020` →
+  vehicle-manager message 3 and the repair 0x16; the profile's saved rollout for that car is applied,
+  `FUN_00730ec0`), the parked vehicle becomes the car the player came in (`FUN_00844580`), the slot's vehicle
+  id becomes that car's and the two vehicles exchange their physical state (message 0x17 twice) → 3 poses
+  (`FUN_00647e00`): the player's vehicle on the parked car's pose (`FUN_00742530` / `FUN_00742580`), the
+  parked vehicle on the second place (slot +0x6c) the first time and on the car trigger (+0x68) the next,
+  alternating by slot byte +0x97; with no second place, where the player's car was → 4 wait until both are
+  placed → 5 sequences → 6 both triggers of the slot are hit as found (`FUN_007059b0(…, 0, 0, 1)`: the car
+  trigger and the location), first use sends the score event `ScoringConfig` +0x40 (955227, "CAR JACK USED") → 7
+  the colours are exchanged too (`FUN_00844660`: the player's car gets the slot's `ColourId`, the parked one
+  the player's old colour, which the slot keeps), B+0x74c9 = 1, back to 0.
+- **Reset**: B+0x74b8 is the slot last swapped at; when the player is more than 300 m (d² > 90000, `.rdata`
+  0x00fd67e0) from its car trigger, `FUN_007596b0` removes its car and rebuilds the slot from the data
+  (`FUN_0075d800`). When the profile's car changes any other way, all cars are removed and all slots rebuilt
+  (`FUN_00761d70`: `FUN_007592a0`, `FUN_00747aa0`).
+- **Found**: as above, the location trigger counts on entry once the slot's car stands, in free drive.
+  `FUN_00759410` tracks the nearest standing car (a sequence, `GameLogicConfig` +0x104 = 1560090, attached to
+  it, and `FUN_006a2480(d², found)`; *inferred*: the HUD's jack spot indicator).
+- Not traced: the script-variable getters (the registration function is not in the decompiled set), who sets
+  B+0x74c4, the store path, which point-of-interest look jack spots use on the map.
+
+**Port** (`jackspots.rs`; model decisions listed in its header): the slots, the 300 m / nearest-five distances,
+the 20–300 m standing rule, the prompt (layout 604307 with `Mode.PromptString`), SWAP_CARS, the swap's result
+(car, colour, poses, the car left on the second place, both triggers found, last swap spot), the latch and both
+resets. Ours: origin-in-box for "in the trigger", every car available, an immediate swap with no movie, static
+parked cars with one box collider, no pursuit gate, no map icon, no score event.
+
+### Body shops (2026-10-10, `bodyshop.rs`)
+
+- The HSM has a "Do Body Shop" behaviour (type `4985a74f`, code `DOBODYSHOP`, `FUN_0077b600`) in ten places:
+  free drive's "Freedrive States" and the other driving modes. Its per-pass handler is `FUN_00748ff0(this,
+  player index)`, called only from the behaviour's update `FUN_00749220` (missing from the pseudo-C; read
+  from a disassembly of the user's dump image).
+- **When a pass counts** (`FUN_00749220`, every frame, for each of the 24 player slots with a vehicle that is
+  the local player or of kind 2 (+0x9c), with player bytes +0x23e / +0x23f clear, not `FUN_006ba8b0`, not the
+  player at manager +0xa698; a kind-0 player with +0x250 set is skipped): it walks the vehicle's trigger-hit
+  list (`FUN_005372f0`) for records of **kind 6**. If the shop's id is in the cooldown list (this+0x60: up to 4
+  × {id, seconds}, count this+0x80) the player's inside byte (this+0x48 + slot) just stays set. Otherwise the
+  shop is put on the list with **5 s** (`.rdata` 0x00fd2120; kind-0 players only, while fewer than 4 entries)
+  and, **if the inside byte was clear** (and the global byte 0x01179dde, a one-shot "skip the next pass", is
+  clear), the handler runs; the byte is set. In no shop the byte clears. So: a pass on entering, each shop at
+  most once per 5 s; no speed or damage condition. The timers count down by the scaled frame time and expired
+  entries are removed. After a pass (this+0x84) once the colour id differs from the one kept in this+0x88, the
+  new colour is stored in the profile's rollout for the car (`FUN_006b96f0`, `FUN_00729f20`; offline only).
+- **The handler**: unless the game-mode byte +0xe8 is set (`FUN_006dfed0`; *inferred* online), vehicle-manager
+  message **0xc** (`FUN_008446a0`); it returns for a player whose +0x9c is not 0; stats 0x4a and 0x49 +1; then
+  `FUN_00639b00` (pursuit side), `FUN_006beb70` (zeroes five player words at +0x7c), message **0x16**
+  (`FUN_00844940`), `FUN_00658ad0(player, 100)` (`.rdata` 0x00fd2104: a full nitrous tank), `FUN_006b97e0` when
+  `FUN_006c2360` (player +0x3d8 = a table's u16 +0x10e; *inferred* the heat value), and the score events
+  `ScoringConfig` +0x164 (955328) and +0x28 (955329).
+- **Messages** (the vehicle manager's queue, dispatched by `FUN_00596880`): **0x16 → `FUN_0058f060`**, the
+  repair (damage grid zeroed, physics messages 0x12 = wash and 0x11): the link that was inferred before is
+  direct. **0xc → `FUN_00590cb0`** = `FUN_0058bc60` then `FUN_0058edd0`: the vehicle's colour id (+0x164) becomes
+  the **next entry of its `VehicleColourPalette`, cyclic**: with `ColourGroups` (count byte +0x18) the groups'
+  primary colours, else the plain list `16671e74` (count +0x19); a colour that is not in the palette stays. Not
+  random. A second counter (+0x18e, modulo `GameLogicConfig` byte +0x2de) advances with it (use not traced).
+  `FUN_0058edd0` copies the paint's values into the render instance. Message 3 (`FUN_00596200`) is "become
+  vehicle id / colour", used by the swap.
+- **Found**: the collectable hit (`FUN_007059b0`, kind 6) marks the shop in its kind's bitset (profile stat
+  `bodyshops_found`; language 1444768 "BODY SHOP FOUND").
+- Texts: 1444769 "Body Shops will repair your car, or spray it a different colour if it's undamaged",
+  1682561 "Bodyshops repair your scrapes in an instant, just drive through". The code does both on every
+  pass: neither the update nor the handler reads the damage.
+
+**Port** (`bodyshop.rs`): on entering a kind-6 box (the inside byte and the 5 s list as above; ours tests the
+car's origin against the box) the car is repaired and washed,
+gets a full tank and the next palette colour (`AssetStore::vehicle_palette`); the shop is kept as found in the
+profile. Not ported: the pursuit side, the score events, stats.
 
 ## Races (2026-10-09)
 
@@ -2727,6 +3002,163 @@ reader; the car comes from its rollout (0x14). Not used yet.
 - Not ported: the racer interaction (side swipe / ram), the virtual progress, the time correction of the
   rubber band, the slipstream.
 
+## Police and pursuits (2026-10-10)
+
+Read from the dump (pseudo-C; a few getters the decompiler left as labels from the disassembly of the dumped
+image), `.rdata` constants from the exe on disk, data with `mwtool police` / `mwtool genesys`. Ported in
+`crates/mostrusted/src/pursuit.rs` (the rules) and `police.rs` (cops), data in `mw_assets::police`. Labels:
+**confirmed** = read in the code or data, **inferred** otherwise. `rec` = the player's pursuit record (0x8b0
+bytes each, at `*(world + 0x2f410)`), `P` = the player object (0x5e0 bytes), `GLC` = `GameLogicConfig`
+(`GlobalConfig` +0x24; `GlobalConfig` is `DAT_010edac0` / `DAT_010edac4`, +0x0c `AIConfig`, +0x44
+`ScoringConfig`), `H` = the player's current `HeatLevel` record (`FUN_006bdc00`), `AIC` = `AIConfig`.
+
+### The data (confirmed)
+
+- **`HeatLevel`** (0x118 bytes; 40 rows in the list 390428 of `GAMELOGIC/GAMEPLAY.BNDL`, `GLC` +0xf8). Free
+  roam uses the seven rows `GLC` +0xa0 names (count +0x2d0): level numbers 0–6 (`b2266b6e`, +0x116) with
+  `Threshold` (+0x10e, the heat at which the level *ends*) 0 / 2 / 8 / 16 / 26 / 38 / 52. The other rows are
+  the events' levels (fixed level flag +0x113).
+- **Heat** is a float on the player (`P` +0x3d8, `Player.ChaseHeat`). The level for a heat value
+  (`FUN_00669640`): level 0 when the heat is 0 and the player is not chased, else the first row from the second
+  on whose threshold is above the heat. The row below it (`FUN_00669860`) gives the lower bound of the level's
+  band. Heat is capped 0.001 below the highest unlocked row's threshold (`FUN_006673a0`).
+- **What adds heat** (`FUN_006d08a0`, the scoring-action processor → `FUN_006bdac0`): every `ScoringAction`
+  has a heat value (`1a88cb4c`, +0x24). In the data: chase initiated 0.5, back from cooldown into the chase
+  0.5 (`ScoringConfig` +0x58, no title), a cop takedown 1 (the cop's `AIPlayerType.23f2735d` action), roadblock
+  1, roadblock smash 0.25, slam / ram 0.2, traffic hit 0.1. And time (`FUN_00657e60`): while chased, `Threshold
+  / 2d163b85` (+0x100, seconds: 300 / 330 / 380 / 430 / 530 on levels 1–5, −1 = none on 0 and 6) per second.
+- **Per-level fields read by the code** (values of free-roam levels 0 / 1 …): cooldown time `c422193a`
+  (+0x8c: 14 / 20 / 20 / 20 / 19 / 18 / 17 s), lose radius `ed9f5c6a` (+0xdc, 150 m), cooldown allowed
+  `249ed427` (+0x110), level-up message `a504e53b` (+0x6c), cop spawn distance free / chase / cooldown (+0xd4 /
+  +0x80 / +0x88: 350 / 200 / 400 m at level 0, 300 / 175 / 300 at level 1), removal distance (+0xd0 / +0x7c /
+  +0x84: 425 / 250 / 450; 350 / 350 / 400), sight ranges (+0xa4 chasing 100 / 140, +0xa0 alert 90 / 130, +0xa8
+  other 50 / 75 m), no-cone range (+0x90 for a target under 5 mph, +0x94: 50 m), cone half-angle (+0x98 /
+  +0x9c, 40°), memory `ac12feb2` (+0xbc, 2–3 s), drive-to-point timeout (+0xc0, 10 s), speeding limit
+  `78f472fa` (+0xd8: **110 mph at level 0**, 300 above), search / go-to speed cap (+0x104, 60–75 mph),
+  low-speed-chase limit (`Coordination.7a65b100`, 40–50 mph).
+- **Cops per level**: `Coordination` (+0x0c) holds the main `PursuitBehaviour` (`dd6594c8`, +0x30), a fallback
+  (`e8cb6438`, +0x0c) and a cycle array (+0x58). A behaviour lists `CopBehaviours`: `10a80aa8` a
+  `Gameplay.CopType` id (list 1056172; → `AIPlayerType` → `Rollout` → `Vehicle`), `a7620186` a speed cap in
+  mph, `CopBehaviour` (0 / 1 Chasing, 2 ChasingBruiser, 3 Rhino, 4 Interceptor, 5 Idle, else keep,
+  `FUN_005139a0`), `Positioning` (int8). Level 0: one Ford Police Interceptor (122713) that keeps its type's
+  default behaviour (patrol); level 1: two; level 2: three and roadblocks; level 3: Dodge Chargers (122706,
+  160 mph cap); level 4: heavy Interceptors (510072) and a Rhino; level 5: Corvettes (122699, 200 mph); level 6:
+  six cops with S.W.A.T. vans (1467242). `mwtool police` prints the table.
+- **The bust rule's constants**: `GLC` +0x288 = 20 m, +0x28c = 25 mph, +0x290 = 4 s; cop radar range +0x218 =
+  200 m.
+
+### The pursuit manager (`FUN_0066b900` → `FUN_0066ae60` per player per frame; confirmed)
+
+State `rec` +0x89c: 0 none, 1 chase, 2 busted, 3 cooldown, 4 escaped (`Player.IsInChase` … read it; the
+telemetry event names them "Busted" / "Escaped", `FUN_0066a820`). Each update first counts the cops chasing
+the player (`FUN_0065ba70` → `rec` +0x88c: cop-type players (`AIPlayerType` byte +0xb5) with a physical car,
+not crashed, for which `FUN_006bbb70` holds: the cop is in state 0, 0x10, 0x12, 0x16, 0x17, 0x18 or 0x1a, or
+its coordinator record is marked), then runs the bust meter, then the state:
+
+- **0 → chase** when a cop chases the player or the player took a cop down (`FUN_006ccd20` → `FUN_006b8d00`
+  sets `rec` +0x8a4) or touches a roadblock's car (`FUN_0065b930`); in modes without a cooldown at once.
+  `FUN_0065c550` stores the player's position as the last-seen point and one of four "CHASE INITIATED" scoring
+  actions is posted (`ScoringConfig` +0x48 / +0x4c / +0x50 / +0x54, by who spotted the player; all add 0.5
+  heat).
+- **Chase**: the last-seen point (`rec` +0x860) follows the coordinator's freshest sighting while a cop
+  knows where the player is, or the player while a roadblock stands within 100 m (`FUN_0065bca0`); the player
+  is *out of range* (+0x8a5) when farther than `H` +0xdc (150 m) from it. Heat rises with time. A player
+  wrecked by an AI car is busted (`FUN_0065c880`). Out of range → **cooldown** (`FUN_00661810` →
+  `FUN_0065cbe0`). The map shows a circle of twice the lose radius at the last-seen point (`FUN_0065be70`).
+- **Cooldown** (`FUN_006615c0`): unless a cop is within 20 m (0x00fb74c8), the heat falls by (band width of
+  the level, at least 1) / `H` +0x8c per second (× 4, 0x00fb74b0, when the player's vehicle field +0x1a84 is
+  0: **not identified**, see open points). `Player.TimeTilEvaded` (`P` +0x3e8) = heat / rate below level 2,
+  else the level's cooldown time, 0 with no heat. A chasing cop or a roadblock within 100 m → chase again
+  (`FUN_0065c970`, +0.5 heat); otherwise at `TimeTilEvaded` ≤ 0 → **escaped** (`FUN_0065ca70`). So a cooldown
+  from level 1 takes up to 20 s, from level 3 up to 60 s.
+- **Bust meter** (`rec` +0x874, `Player.StaticBustProgress`; `FUN_00664d60` → `FUN_0065cda0`, chase only):
+  with the nearest chasing cop (not crashed): it fills by dt / 4 s while the cop's car touches the player's
+  and the player is slower than 25 mph, or while the cop is within 20 m (and 4 m of height, 0x00fb82d0) and
+  the player slower than 12.5 mph (× 0.5, 0x00f8a810); otherwise it drains at the same rate. The BUSTING bar
+  shows above 0.3 until it is back at 0 (`FUN_006bdf50`).
+- **Pursuit bar** (`rec` +0x870, −1 … 1): with d = that cop's distance (≤ 100 m), far = clamp((d − 20) / 80),
+  close = 1 − clamp((d − 20) / 30), fast = clamp((mph − 25) / 275): clamp(0.8 far − 0.3 − 0.2 (1 − fast) close,
+  ±0.5); with a bust meter ≥ 0.01 instead min(0, −0.5 − 0.5 × meter). Three ranges (`FUN_00661500`: −1…−0.5,
+  −0.65…0, 0…1) give `Player.PursuitBarEnum` / `PursuitBarProgress`. At −1 (meter full) the manager posts
+  camera event 0x1a with the two cars; state 2 is set by the game-logic state machine's action 0xf
+  (`FUN_00854990` → `FUN_00658140`). **Inferred**: that the event leads to that action.
+- **After the outcome** (HSM 457517 "Do Pursuits", data): BUSTED → busted sequence 1014946,
+  `ResetLocalPlayerHeat`, `ResetProps`, `RemoveAllCops`, `RemoveRoadblocks`, `ResetChaseStats`; ESCAPED →
+  escaped sequence 1394359 (if `ShouldShowEscapeSequence`), `ResetChaseStats`. The coordinator spawns no cops
+  for 90 s after a pursuit (0x00fa2cc0).
+- Getters: `HeatLevelInt` = the level number, `HeatLevelFloat` = it plus the band progress (`FUN_006bdc50`,
+  also `HeatProgress`), `IsHiddenFromCops` = coordinator byte +0x418 clear, `CopRadarProgress` = nearest cop's
+  distance / 200 m (`FUN_0065d470`), `ShowCopRadar` = that below 1 with no pursuit.
+
+### Cops (the AI coordinator `FUN_00526c30`; from a sub-agent's trace, confirmed unless stated)
+
+- Behaviour commands (name table at 0x010c4360, mapped to driver states by `FUN_004efc40`): Chasing → state 0,
+  ChasingGoTo 1, GoTo 4, Idle 5, Searching 0xc, Patrolling 0xd, Waiting 0xe, WaitingOnPlayer 0x10,
+  WaitingInterceptor 0x11, Rhino 0x12, HeadOn 0x13, LowSpeedChasing 0x16, LowSpeedChasingAhead 0x17,
+  ChasingBruiser 0x18, Interceptor 0x1a, RollingRoadBlock 0x1b. A cop type without a behaviour patrols.
+- **Count and cars** (`FUN_00526e30`, once a second): one cop per `CopBehaviours` entry of the current
+  behaviour, at most 3 new per pass, only while the behaviour's `f3d7aeeb` holds; surplus cops (farthest
+  first) are marked unwanted. The sequencer (`FUN_0051f010`) runs the main behaviour for `4fea2957` seconds,
+  then the cycle items, with the fallback after `f58d1d54` events.
+- **Where**: a road-graph node between d and √2·d from the player, d = `H` +0xd4 / +0x80 / +0x88 (no pursuit
+  / chase / cooldown; `FUN_00513e80`); ahead, behind or from a side road by weights of the `GameMode`
+  (`FUN_005261d0`, not decoded); spawn speed `AIPlayerType.SpawnSpeed` (90 mph). Removed (when off screen)
+  beyond `H` +0xd0 / +0x7c / +0x84 (`FUN_00522c40`). No catch-up teleport: despawn and respawn is the rubber
+  band (inferred).
+- **Sight** (`FUN_006c5810`, `FUN_006c6280`): the range by the cop's state; within the no-cone range or the
+  cone, then a raycast; a clear line sets "sees", the last-seen point and the memory timer.
+- **Wanted** (`FUN_005192b0`): a cop has the player in its cone and the player is faster than `H` +0xd8 mph
+  (110 at level 0: **speeding past a cop starts a pursuit**); or two collision-type events within 10 s in a
+  cop's cone (inferred meaning); or a cop was rammed (contact impact above `AIC`[0x60] = 2); or the pursuit
+  already runs. A cop that knows a wanted player chases; when the target is no longer known it drives to the
+  last-seen point and searches (`FUN_005156c0`, `FUN_0051a4e0`), else patrols.
+- **Chasing** (state 0): slot = `AIC`[0x1c4] (−5) − `Positioning` × `AIC`[0x5c] (12) metres behind the
+  target, ±3.5 m to the side; target speed = the target's − (lead + slot) × 1.5 mph/m within ±60 mph, at least
+  30 mph, only when within 20 s of the target, else flat out, under the entry's cap (`FUN_004fa580`,
+  `FUN_004fa480`); within 40 m it aims 0.5 s ahead of the target (ram mode, `FUN_004ffcb0`). Bruisers steer
+  into the car from alongside; a Rhino comes head-on; below the level's low-speed limit within 60 m cops pin,
+  ram or stop (state 0x16). Roadblocks: at a trigger region 300–600 m ahead on the player's predicted route,
+  `ae2d8f7d` s after the behaviour starts and every `cbbeb3e0` s. No cop spike-strip logic and no helicopter
+  reader were found (`Helicopter` is 0 on all 40 levels).
+
+### The HUD (data)
+
+Free-roam screen 371670, `AdditionalHUD`: layout 1213038 (HEAT / COOLDOWN labels, the stepped level bar bound
+to `HeatLevelInt` over 0–6, a fill bound to `Widget.HUD.Heat`; elements gated by `IsInChase` / `IsInCooldown`),
+581357 (the BUSTING bar, `StaticBustProgress` in sevenths), 955232 ("PURSUIT: {score}"), and the minimap frame's
+pursuit tints. Speed Points: the pursuit code posts scoring actions through `FUN_006a8050` (chase initiated
++0x48…+0x54, heat level up +0xe8 / down +0xe4, escaped +0x1a8, roadblock +0x250): that is where pursuit
+outcomes award SP once scoring exists.
+
+### Port and model decisions (`pursuit.rs`, `police.rs`, `hud.rs`)
+
+Ported as read: heat and levels, time heat, chase start, last-seen / lose radius, cooldown, escape, bust
+meter, pursuit bar, cop count and types per level (main behaviour), spawn and removal distances, sight
+(range, cone, raycast, memory), wanted by speeding or ramming, the chase speed law, slots, the 90 s pause.
+Model decisions (not from the game):
+- Cops follow road-graph routes rebuilt every 0.5 s with the AI racers' driver (the game's chase path /
+  avoidance `FUN_0050e370` is not read); ram steering, Bruiser, Rhino, HeadOn, Interceptor are not ported.
+- The low-speed chase: closing at up to 30 mph and stopping 10 m from the player (the game's pin / ram / stop
+  substates are not ported). The patrol: along the road graph at the level's go-to speed cap (the game's
+  patrol drives traffic lanes, `FUN_005101e0`, not read). Searching: drive to the last-seen point, then patrol.
+- Spawn point: a random road point of the ring whose ground has streamed in (the ring shrinks when none),
+  facing the player along the road; one cop per 15 m. Removal by distance alone (no off-screen test).
+- "Touching" = the cop's centre within the player's box grown by the cop's half width + 0.3 m; "rammed" =
+  touching with more than 5 m/s relative speed; a cop crash within 30 m of the player counts as a takedown.
+- The time-to-reach of the chase speed law = distance over the cop's own speed.
+- Only the main behaviour of a level (no sequencer, fallback or cycle); every heat level counts as unlocked.
+- The outcome stands 5 s (the game plays its sequences); after an escape cops beyond 100 m are removed.
+- The cooldown's × 4 factor is left out; `Widget.HUD.Heat` = the level's band progress; which HUD layouts
+  show when (the widget's code was not read).
+- Not there at all: roadblocks, spike strips, wrecked-by-cop busts (our crashes have no wrecker), the
+  two-collisions rule, cooldown spots / engine off, Speed Points, the busted / escaped sequences, sirens and
+  light bars (`coplights`), police radio, pursuits inside events, the PostFX heat / cooldown colour cubes.
+
+Open points and what would settle them: vehicle +0x1a84 (the × 4 cooldown: a live read while cooling with the
+engine off / parked); the link from camera event 0x1a to HSM action 0xf (a probe hook on `FUN_00658140`); the
+spawn weights (`GameMode` +0x5a…+0x64: decode the type); `FUN_0050e370`, 0x0050f970, 0x0050dd40 (disassembly);
+a capture of a real pursuit (`mwtool capture`: cop distances, heat and bust timing) to compare the whole.
+
 ## Vehicle paint, liveries and dirt
 
 The paint shaders' object constants are registered by name with slot numbers in one table function in the 0x8c4xxx range (a run of `FUN_00a5d490` calls; slot → name: 0x29 `VehicleID`, 0x2a `PbrPaintDiffuseColour`, 0x2c `PbrPaintSpecularSettings`, 0x2d `PbrPaintClearcoatSettings`, 0x2e `PbrPaintScratchColour`, 0x2f `PbrPaintScratchSettings`, 0x30 / 0x31 secondary diffuse / specular, 0x33 `gvDamageVolumeParam`, 0x34 `g_damageConstants`, 0x35 `g_selfIlluminationMask`, 0x37 `g_PerVehicleFog`, 0x49 `g_SelfIllumLocal_RecipRadiusSq`, 0x9c `GenericVector4_A`, B / C follow). They are per-object constants, written through `FUN_00a621a0(slot)` in `FUN_008e9c00` from a render record (stride 0x2b0) and its paint block `P` (record word 0xa2 = the render instance + 0x20).
@@ -2740,7 +3172,7 @@ The paint shaders' object constants are registered by name with slot numbers in 
 - dirt (+0x2c84) += max(w₀, w₁, w₂, t) × dt / max(`Dirt.0979a504`, dt) × `Dirt.ea1c1262` / 4, clamped to 0..1, with w the wheel's three values at this +0x10 + i × 0x30 (smoothed per-wheel skid ramps written by `FUN_009cef90` from a tyre-sound-like parameter object, not ported);
 - dust (+0x2c80) += t × dt / max(`Dust.0979a504`, dt) × `Dust.ea1c1262` / 4, clamped to 0..1.
 A negative rate washes the car (surfaces 27 and 43: −0.5, 15–60 mph). At 120 mph on grass (0.3, 5 s) each level gains 0.06 / s; on dry asphalt only dust grows (0.05 → 0.01 / s at full speed). `FUN_009ce7b0` (car spawn) starts both at the render instance's words 0x1bd8 / 0x1bd0 (zeroed by `FUN_00586810`).
-- **Set and wash**: message 0x13 of the physics queue (`FUN_00919240`) sets +0x2c80..+0x2c8c to one value (sent by `FUN_00589770`, which also sets the instance's levels; no direct caller), message 0x12 zeroes them. `FUN_0058f060` (a vtable method: zeroes the 15 damage-grid values, `FUN_009b2430(1)`, posts 0x12 and 0x11) is the repair; that the gas stations reach it (their handler `FUN_00748ff0` posts manager messages 0xc and 0x16) is inferred.
+- **Set and wash**: message 0x13 of the physics queue (`FUN_00919240`) sets +0x2c80..+0x2c8c to one value (sent by `FUN_00589770`, which also sets the instance's levels; no direct caller), message 0x12 zeroes them. `FUN_0058f060` (a vtable method: zeroes the 15 damage-grid values, `FUN_009b2430(1)`, posts 0x12 and 0x11) is the repair; the body shops reach it through vehicle-manager message 0x16 (`FUN_00596880` case 0x16; their handler `FUN_00748ff0` posts 0xc = next palette colour and 0x16; "Body shops", 2026-10-10).
 
 **Scratches** (`VehicleNFS13_BodyPaint` vertex program, the damage variant): TEXCOORD5.w = max(Σ bilinear `gavDamageVolumeValues[row × 3 + col].x`, `g_damageConstants.x`) at (col, row) = `gvDamageVolumeParam.xy` × (10 × POSITION.xz) + `.zw`, the unskinned bind-pose position (POSITION is R16G16B16A16 Snorm, × 10 = metres). The pixel program (longest `ps_4_0`): s = (1 − 2 |e(uv × (2, 3)).z − 0.5|) × sat(2 e.z − 1) × TEXCOORD5.w with e the effects map at TEXCOORD2; the colour lerps to `PbrPaintScratchColour` by s, roughness to `ScratchSettings.x`, F0 to `ScratchSettings.y`, the clear coat's reflection × (1 − s)(1 − coverage)⁴; the same weight blends the `CrumpleTextureSampler` normal (TEXCOORD1) into the normal and its alpha into the AO (not ported). `FUN_0057e840` sets `gvDamageVolumeParam` = (2 / (max.x − min.x), 4 / (max.z − min.z), −min.x × that, −min.z × that) from the render instance's box (+0x140 / +0x150, `FUN_0057c120`: the model's mesh boxes); the snapshot's car: (0.889, 0.786, 1.0, 2.005), a 2.25 × 5.09 m box. `FUN_00585030` (from `FUN_00591ac0`, when the vehicle's +0x1181 flag is set) fills the 15 values from the vehicle's eight zone levels at +0x112c..+0x1148, each capped at 0.99 (`.rdata` 0x00f9cad4) while the car is not wrecked (damage bar byte +0x1180 below the profile's segment count), times `VehicleInfo.76bfd668` (+0x84 of the object the instance's vtable +0x34 handle leads to, read in the snapshot: 10), capped at 1. Rows run from min z (back) to max z, columns from min x (the car's right) to max x: back row twice (+0x113c, +0x1140, +0x1144), middle row (+0x1138, min(+0x1148, +0x1138), +0x1148), front row twice (+0x1134, +0x1130, +0x112c). The zone order on the vehicle is therefore front-left, front, front-right, right, rear-right, rear, rear-left, left (+0x112c …), consistent with `FUN_005b1680`, whose zone switch (cases 1..8) reads +0x1130, +0x1140, +0x1148, +0x1138, +0x112c, +0x1134, +0x1144, +0x113c: front, rear, left, right, front-left, front-right, rear-left, rear-right, our damage clip order (inferred: the enum's names are not in the dump). Ported in `paint_wear.rs` / `layered.wgsl`.
 
@@ -2875,8 +3307,9 @@ Traced 2026-10-09 (`mw_handling::nitrous`, `mostrusted/src/nitrous.rs`). Times a
   10 each. The first car opens a 0.5 s window (`.rdata` 0x00fb8660 = 1.5e6 ticks); when it closes, each kind
   with a count > 0 awards its `d63cff99` once (2.5 / 3 / 4.5 and 5 / 6 / 9) if the speed is above its
   `d629c55f` (80 mph both).
-  Fixed awards: 100 at a gas station (`FUN_00748ff0`, an object of type 6 in the car's contacts) and 10 per
-  smashed gate in free roam (`FUN_0074cf40`), both through `FUN_00658ad0`.
+  Fixed awards through `FUN_00658ad0`: 100 at a gas station (`FUN_00748ff0`, an object of type 6 in the car's
+  contacts) and `DAT_00fa929c` per item smashed in the Smash-and-Grab game mode (`FUN_0074cf40`; corrected
+  2026-10-10: this is that mode's scoring behaviour, not free-roam security gates, see "Speed Points").
 - **Road position** (`FUN_00668650` → `FUN_00666200`, one of 24 player slots per tick): road, section and
   segment on `RoadData` (formats: `mw_formats::road_data`): the first road and section (file order) whose
   boxes contain the car and whose Hermite segment (`FUN_00a3ba80`, basis from `.bss` 0x0118a640) the car is

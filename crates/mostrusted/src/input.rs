@@ -81,6 +81,9 @@ pub mod defaults {
     pub const CHANGE_VEHICLE: &[Control] = &[Button(B::Select)];
     /// SKIP_CUTSCENE (34): Escape; Back (slot 14). While a sequence plays it takes these keys (`cutscene.rs`).
     pub const SKIP_CUTSCENE: &[Control] = &[Key(K::Escape), Button(B::Select)];
+    /// SWAP_CARS (14): E; Y (slot 19): the jack spots' "PRESS … TO DRIVE CAR" (`jackspots.rs`). The original's
+    /// mouse button 1 for it is left out (the right button looks around here).
+    pub const SWAP_CARS: &[Control] = &[Key(K::KeyE), Button(B::North)];
     /// EASY_LEFT / RIGHT / UP / DOWN (69–72): Num 4 / 6 / 8 / 2; d-pad (the pad bindings' min is 0.8, a digital
     /// d-pad reads 0 or 1 either way). Left = back a tier, right = select, up / down = previous / next
     /// (`EasyDrive_ScreenScript`'s `easy_*` mappings).

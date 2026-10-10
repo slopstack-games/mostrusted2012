@@ -62,7 +62,7 @@ pub struct InstanceOverrides {
 }
 
 impl InstanceOverrides {
-    fn parse(res: &Resource, o: usize) -> Result<Self> {
+    pub(crate) fn parse(res: &Resource, o: usize) -> Result<Self> {
         let r = Reader(res.header());
         let mut out = Self::default();
         if o == 0 {
@@ -156,6 +156,11 @@ pub struct ObjectInstance {
     pub object: Option<ResourceId>,
     /// Row-major with column 3 forced to (0, 0, 0, 1); row 3 is the translation.
     pub transform: [[f32; 4]; 4],
+    /// The words at +0x48 and +0x4c: the instance id (props / dynamics in the first, compounds / lights in the
+    /// second). On a billboard's or a security gate's compound it is the id of the object's `TriggerData`
+    /// record (checked on every billboard and gate, `mwtool freeroam --objects`): the "linked trigger" the game
+    /// reads at the smashable object's +0x90 (`FUN_005b5340`).
+    pub ids: [u32; 2],
     /// The float after the instance id: the props' LOD distance scale (`FUN_00550020` passes record +0x4C of
     /// the prop list to the model draw `FUN_008a02f0`, like `InstanceList` +0x04).
     pub lod_scale: f32,
@@ -197,6 +202,7 @@ impl ObjectInstanceList {
             instances.push(ObjectInstance {
                 object: res.import_at(o as u32 + 0x40),
                 transform,
+                ids: [r.u32(o + 0x48)?, r.u32(o + 0x4c)?],
                 lod_scale: r.f32(o + scale_at)?,
             });
         }
@@ -266,6 +272,43 @@ pub struct ObjectDef {
     pub impact_effect: Option<ResourceId>,
     /// Props: the impact sound (+0x1c, a `WCPlaySoundBehaviour` GeneSys object with `Collision_Waves`).
     pub impact_sound: Option<ResourceId>,
+    /// Compound and world objects: `mLocators` (0x10: u32 count, ptr ids, ptr `{u32 n, ptr locators, u32}`;
+    /// a locator is a quaternion and a position in object space, the layout of a car's locator groups):
+    /// where the object's `WCVfxBehaviour` lights, coronas and spot effects sit (a double street lamp has one
+    /// group with a locator at each head, pointing down).
+    pub locator_groups: Vec<crate::vehicle::LocatorGroup>,
+    /// Compound objects: the same per part (same order as [`Self::parts`]).
+    pub part_locator_groups: Vec<Vec<crate::vehicle::LocatorGroup>>,
+}
+
+/// `WCVfxBehaviour` type id.
+pub const WC_VFX_BEHAVIOUR: u32 = 0x2ae0;
+
+/// The `mLocators` block of the (embedded) `WorldObject` at `base`. Unreadable blocks give no groups.
+fn locator_groups(res: &Resource, base: usize) -> Vec<crate::vehicle::LocatorGroup> {
+    use crate::vehicle::{Locator, LocatorGroup};
+    let r = Reader(res.header());
+    let read = || -> Result<Vec<LocatorGroup>> {
+        let (count, ids, groups) =
+            (r.u32(base + 0x10)? as usize, r.u32(base + 0x14)? as usize, r.u32(base + 0x18)? as usize);
+        if count == 0 || count > 256 || ids == 0 || groups == 0 {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::with_capacity(count);
+        for g in 0..count {
+            let n = (r.u32(groups + g * 12)? as usize).min(64);
+            let at = r.u32(groups + g * 12 + 4)? as usize;
+            let locators = (0..n)
+                .map(|k| {
+                    let [x, y, z, _] = r.f32_array::<4>(at + k * 32 + 16)?;
+                    Ok(Locator { rotation: r.f32_array(at + k * 32)?, position: [x, y, z] })
+                })
+                .collect::<Result<_>>()?;
+            out.push(LocatorGroup { id: r.u32(ids + g * 4)?, locators });
+        }
+        Ok(out)
+    };
+    read().unwrap_or_default()
 }
 
 /// A behaviour of a world object or compound part (`maBehaviourSpecs`).
@@ -336,6 +379,8 @@ impl ObjectDef {
             remove_instead_of_reset: false,
             impact_effect: None,
             impact_sound: None,
+            locator_groups: Vec::new(),
+            part_locator_groups: Vec::new(),
         })
     }
 
@@ -357,11 +402,13 @@ impl ObjectDef {
         }
         def.skeleton = res.import_at(0x08);
         def.behaviours = behaviours(res, 0)?;
+        def.locator_groups = locator_groups(res, 0);
         let hashes = r.u32(0x34)? as usize;
         for i in 0..count {
             let o = base + i * COMPOUND_PART_SIZE;
             r.u32(o + COMPOUND_PART_SIZE - 4)?;
             def.parts.push(res.import_at((o + 0x1C) as u32));
+            def.part_locator_groups.push(locator_groups(res, o));
             let (links_ptr, links) = (r.u32(o + 0x68)? as usize, r.u8(o + 0x6c)? as usize);
             def.compound_parts.push(CompoundPart {
                 hash: if hashes == 0 { 0 } else { r.u32(hashes + 4 * i)? },
@@ -383,6 +430,7 @@ impl ObjectDef {
     pub fn parse_world_object(res: &Resource) -> Result<Self> {
         let mut def = Self::parse_slots(res, &[0x04], 0x1C)?;
         def.behaviours = behaviours(res, 0).unwrap_or_default();
+        def.locator_groups = locator_groups(res, 0);
         Ok(def)
     }
 

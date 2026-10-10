@@ -10,6 +10,239 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-10: Speed Points found; collectables run (speed cameras, gates, billboards)
+Third pass at Speed Points, from the data first. Details in decomp.md "Speed Points"; runtime `freeroam.rs`,
+data `mw_assets::scoring`, tool `mwtool scoring`.
+
+- **Found.** `mwtool genesys-types` has `ScoringAction` / `ScoringConfig`; `genesys all --type ScoringAction`
+  finds nothing because the 223 actions are structs inside one untyped list object of `GAMEPLAY.BNDL`
+  (390077). `ScoringConfig`'s field offsets are exactly the "event ids at +0x18 / +0x1c / +0x260 / +0x288 /
+  +0x28c / +0x294 of the config at global +0x44" that the hit handler `FUN_007059b0` sends, so those events
+  are scoring actions. The action's array at +0x34 (`8c1feb6d`, count field cracked as `SPCount`) is the SP:
+  the titles read "Billboard +{sp}". Code: `FUN_006a8050` → `FUN_006a75f0` → `FUN_006d08a0` (offline: SP =
+  `SP[0]`) → `FUN_00735ca0` → `FUN_00734f60` → `FUN_00734400` (total += SP). Values: speed camera 500,
+  billboard 500, security gate 250, jack spot car 350, each on the first find.
+- **Names cracked** (`genesys-crack` with a scoring word list, 3 words): 23 `ScoringConfig` fields
+  (`BillboardDiscovered`, `SpeedCamDiscovered`, `SmashGateDiscovered`, `SecurityGateHit`,
+  `SpeedCameraTriggered`, `CarSwapDiscovered`, `Takedown` …), all sorting into their fields' places, and
+  `SPCount` / `ScoreCount` / `OnlineFeedbackCount`. The SP array's own name was not found ("SP" does not hash
+  to it).
+- **Billboards**: a compound instance's word at +0x4c is its trigger's id (216 of 216, 0.0 m apart); and the
+  volume alone counts too (`FUN_006e42f0` passes billboard kinds). Gates have no linked prop.
+- **Correction**: the "+10 nitrous per smashed gate in free roam" (`FUN_0074cf40`, logged 2026-10-06) is the
+  Smash-and-Grab game mode's item scoring; free-roam gates give no nitrous. Not wired.
+- **HUD from data**: the SP total (layout 979928) is shown by the HSM "SP Visibility" (node 1695370: 8 s at the
+  start and after each change of `ScoringViewModel.CurrentSpeedPoints`); the "+SP" message is sequence 995814;
+  the gate's panel "SPEEDWALL / SECURITY GATES n / 152" is sequence 995322 from `SecurityGateHit`'s
+  `GameplayTrigger`. The speed camera's plate (sequence 1107082) is a world-space layout (instance scale
+  0.005) and is not drawn yet; nor is its PostFX flash.
+- **Test** (`--test freeroam`, 911, camera 1025449 / billboard 1496888 / gate 1274961): 37 mph pass not
+  counted; 84.7 mph pass counted, first find, +500; 97.7 mph pass again, +0, best raised; billboard +500
+  (handled by its volume, then by its prop); gate +250; total 1250; the profile reads back equal. A second run
+  on that profile awards nothing (the found gate is dropped at the firing rule, the found billboard only sends
+  the 0-point action).
+- **Model decisions** (marked in the code): the overlap's narrow phase (box against box by separating axes,
+  the car's box centred on its origin; `FUN_00da2e50`'s job was not read); "the prop breaks" = our prop coming
+  loose; totals = the triggers of each kind in `TriggerData` (74 / 152 / 216); a `GameplayTrigger` fires its
+  sequences whenever its action scores; the total's backing trigger read as "just changed"; `SPEED` prints mph
+  or km/h without a unit; no speedwall rows (Autolog friends); the HUD message slides into the total's plate
+  as our behaviour-step reading places it (y 22 after its steps, authored at 52).
+- **Dead ends / open**: `upload_sp_buckets`, `SP_%d_%d` and `SPEEDPOINTS` are upload / formatter strings
+  (no rule behind them); `CurrentSpeedPoints` is the view-model field only. Not traced: the SP of offline
+  events (strings `EventAward`, `ProgressionAwardPoints`; the `ScoringAction` position tables are online),
+  what triggers the takedown / near-miss style actions, the hints (`FUN_006ef070`, `FUN_006f3f30`), the
+  billboard's jump-distance record (`FUN_006ed900`, `FUN_0073cef0`), the `+0x2e74` flag in free roam, whether
+  the real collectable totals leave some triggers out. A capture of the original at a billboard, a gate and a
+  camera (HUD, 0–8 s) would settle the message placement, the plate and the totals.
+
+### 2026-10-10: jack spots (parked cars, the swap) and body shops
+
+From the dump's pseudo-C, the game data and `.rdata` / `.data` constants of the exe on disk; no live reads (the
+original was off-limits). Details in decomp.md "Jack spots: the parked cars and the swap" and "Body shops".
+
+- **Found.** The HSM's "Freedrive States" (469936) start "Do Body Shop" (979770, `DOBODYSHOP`) and "Car Swap
+  Logic" (979767 = `HSMBehaviourCarSwapLogic`, script object `JackSpots`). The swap behaviour's functions are
+  in the decompiled set: slots `FUN_00747aa0`, idle / prompt / input `FUN_007615f0`, per-slot car
+  `FUN_0075d290`, the swap's state machine `FUN_00761d70` with `FUN_0075d590` / `FUN_00758f00`, resets
+  `FUN_0075d800` / `FUN_007596b0`. The list at collectables manager +0x41b0 is the `CarSwapSpot` list
+  (confirmed by the slot builder reading +0x10 `ColourId`, +0x1c `e36e9d9d`, +0x20 `Placement`, +0x24
+  `VehicleId`, +0x28 `0e3bcabe`).
+- **Rules with their constants**: location triggers within 300 m, the nearest five get a distance; a car is
+  requested from 20 m to 300 m and stays inside 300 m (`.data` 0x010c5ca4 = 90000, 0x010c5cac = 400); swap
+  while in the location trigger at ≤ 70 mph (`GameLogicConfig.ff4aef6f`), prompt = language 955092
+  (`GameLogicConfig.a1e83efa`) in `Mode.PromptString` (HUD layout 604307), input SWAP_CARS (action 14: the
+  per-action state ints sit at 0x1c + 12 × action in the player's input block, checked against LOOK_BACK 37 at
+  +0x1d8 and the dialog actions 90 / 91 at +0x454 / +0x460).
+- **`CarSwapSpot.e36e9d9d`** is a second parking place: in all 182 spots that have one it lies 2.3–3.8 m
+  beside the car trigger (one 6.5 m ahead), facing the same way (two reversed) (`MW_JACKSPOT_LOG=1` prints
+  them). The car the player came in is left there, the next one on the car trigger, alternating. `ColourId` is
+  a `VehiclePaint` UniqueId = the low half of the paint's resource id, an entry of the car's
+  `VehicleColourPalette` (`16671e74` list, or `ColourGroups`' `PrimaryColour`).
+- **Body shop**: handler `FUN_00748ff0` = next palette colour (message 0xc → `FUN_0058bc60`, cyclic, not
+  random), repair + wash (message 0x16 → `FUN_0058f060`, now a direct link through `FUN_00596880`), nitrous
+  +100, stats, two score events, pursuit calls.
+- **Runtime**: `jackspots.rs`, `bodyshop.rs`, `--test jackspot`, `--test bodyshop`; finds in the profile
+  (`jackspots=`, `jackcars=`, `bodyshops=`, `swapspot=` lines; older files load unchanged).
+  Bug found on the way: a drivable car's model and the same model loaded without a skeleton shared one loader
+  key, so a parked copy of a car already driven drew skinned meshes without a skin (a wgpu validation error);
+  parked cars are their own variant now (`Worker::unskinned`).
+- **The body shop's update** `FUN_00749220` (0x00749220–0x00749569) is missing from the pseudo-C (no caller
+  of `FUN_00748ff0` there); disassembled from the dump image (`rest/NFS13_dump.exe`, capstone; a call scan
+  finds the one caller at 0x007493df). Rule: a pass on entering a kind-6 trigger, each shop at most once per
+  5 s (`.rdata` 0x00fd2120), no damage or speed test.
+- **Dead ends.** `FUN_00748e50` / `FUN_00748900` next to it belong to another behaviour (a list with
+  priorities at +0x2a).
+  The `JackSpots` variable getters and the function registering them are not decompiled either (their strings
+  have one reference each, from undecompiled code). `mwtool hsm` shows no parameters on either node.
+- **Open.** (1) The tip text 1444769 says body shops repair "or" respray; the code does both on every pass. A
+  capture of the original driving through damaged would confirm the reading. (2) The swap's transition (manufacturer movie,
+  sequences 995872 / 1016424, who sets B+0x74c4). (3) Which cars the profile has (`FUN_0068f190`): Most Wanted
+  cars and DLC spots are shown here although the original hides or locks them. (4) The jack spot's map / HUD
+  icon (`FUN_006a2480`, the badge ids). (5) Whether input state 2 is "pressed" or "held". (6) The score events
+  955227 / 955328 / 955329 belong to the Speed Points work.
+
+### 2026-10-10: Police, pursuits and heat traced; first playable pursuit
+- **Where the rules live**: a pursuit manager with a 0x8b0-byte record per player at `*(world + 0x2f410)`
+  (`FUN_0066ae60`), fed by the AI cop coordinator (`FUN_00526c30`); all tuning is data: `GameLogicConfig`
+  (bust 20 m / 25 mph / 4 s), 40 `HeatLevel` rows (7 for free roam, heat thresholds 0 / 2 / 8 / 16 / 26 / 38 /
+  52), `Gameplay.CopType` → `AIPlayerType` → `Rollout` → car, and a heat value on every `ScoringAction`
+  (decomp.md "Police and pursuits"; `mwtool police`).
+- **Findings that differ from the expectation**: there is no heat "meter" filled by infractions; heat is one
+  float raised by scoring actions (chase start 0.5, takedown 1, ram 0.2 …) and by time while chased, and the
+  cooldown runs the *heat* back down to 0: escaping means cooling to zero, not waiting out a timer. A pursuit
+  starts when a cop *sees* the player above the heat level's speed limit (110 mph at level 0), is rammed, or
+  after collisions in its view; speed cameras are not involved. Busting is a 4 s meter that fills near a cop
+  below 12.5 mph (25 mph when touching), not "stopped".
+- **Method notes**: the script-binding registrations (`FUN_00a4e350("Player", "IsInChase", …)`) map every HUD
+  binding to a field or getter and were the way in; getters left as `LAB_` in the pseudo-C are five-instruction
+  stubs readable with capstone from the dumped image. `GlobalConfig` (`DAT_010edac0`) +0x24 / +0x44 are
+  `GameLogicConfig` / `ScoringConfig`, so `+ 0x288` style constants in the pursuit code are their field offsets.
+- **Dead ends**: the cooldown's × 4 factor tests vehicle +0x1a84 == 0, written by several vehicle functions
+  (0, 2, 0x80000000) without a readable meaning; `mwtool genesys all --type HeatLevel` finds nothing because
+  the rows sit inside an untyped list object (dump `GAMELOGIC/GAMEPLAY.BNDL` instead); `Helicopter` is 0 on all
+  rows and no cop spike-strip code was found.
+- **Port**: `pursuit.rs`, `police.rs`, HUD heat / BUSTING bars; `--test pursuit` (escape and bust). Cops lose a
+  911 from a standing start (the Interceptor is slow and our cops follow the road centre without the game's
+  chase path), which is why the test caps the player at 60 mph.
+
+### 2026-10-10 (later): night lighting settled from the decrypted image
+With `opencode_extract/rest/NFS13_dump.exe` (capstone scans for struct displacements and call sites; scratch
+scripts under `target/night/`) the open items of the entry below resolved (decomp.md "World lights" has the
+rules and addresses):
+- **Per-hour switch**: day = 8 h < t < 20 h (`SunMoonPath`'s two hours, not `DayNightTransition`'s 8.5 / 20);
+  night level = hours to the nearer boundary / `LightTransitionDuration`, clamped (`FUN_008a8480`); a light's
+  factor from `OnDuringDay` / `OnDuringNight` (`FUN_0089b400`), staggered per owner for object lights.
+  `OnDuringTwilight` is not read by that function. The earlier model ramp (lights off 08:30 to 09:30) was
+  wrong: they go off 07:00 to 08:00.
+- **Slot 0x11** = (night level, …) (`FUN_008c2080`, through `FUN_00a621a0`): the modelled night level for lit
+  windows was right in kind and now uses the traced value.
+- **`LightMapTextureSampler`** is bound by the **Model** (+0x10 override block, missed by the parser; also by
+  instance overrides): 2,557 world models name one, 117 distinct textures, the default `…0957a7` a 16×16 black
+  one, the others baked warm lamp light on facades (128², BC1 / RGBA8). The same block binds
+  `AOMapTextureSampler` (2,441 models, 422 textures), so many models had no AO map in the port until now.
+- **`FUN_008df590`** = sort by distance, keep the nearest (sizes not read); **`FUN_00ede840`** = ceil (the cone
+  edge was rounded down before; now up).
+- **Specular power** is 2^(11.0001 − 11 roughness): confirmed in the listing (`exp` after the `mad`, and the
+  power itself applied as `exp(log(N·H) × power)`, both base 2 in DXBC). Fixed for the key light and the lights.
+- **Flash patterns** decoded (`FUN_00547470`); the port draws those lights steady.
+- **Roads**: plain `DriveableSurface` adds albedo × COLOR.rgb² × 0.318 × night level (ported: the baked colour
+  rides in UV_1.xy + COLOR.z); the `_Lightmap` road variants add LightMap(uv1).rgb × `lightMapIntensity` ×
+  albedo with no night factor (ported).
+- Still open: the light lists' sizes; what the second hour pair (8.5 / 20) drives; `PlotPBR` lightmaps (same
+  kind of term, `lightMapIntensity`, sampler 13; not ported); line lights; coronas; the "SetLightsOn" trigger.
+
+### 2026-10-10: night lighting: world lights, street lamps, lit windows
+Task: the original at dusk downtown has lit windows and lamps casting pools of light; ours had neither.
+- **Light definitions cracked** (`genesys-crack`, a lighting word list; every name sorts into its field's
+  place): `AttenuationThreshold` (13b601dc), `OnDuringDay` / `OnDuringNight` / `OnDuringRain` /
+  `OnDuringTwilight` / `OnDuringWet` (the five bools, in that order), `ConeInnerAngle` (bf16f152);
+  `EnvironmentSettings.DayNightTransition`: `LightTransitionDuration` 1, `LightTransitionOffset` 0,
+  `ShadowTransitionDuration` 1, `ShadowTransitionOffset` 0, and two hours 8.5 / 20 (`1ab46d30` / `0e2be130`,
+  not cracked; they sort between the Light… and Shadow… names, like `Night…End` / `Night…Start`).
+- **The light model** (decomp.md "World lights"): colour = `Colour` × `Intensity`, falling off as
+  saturate(1 / d² − threshold / max channel), so a light ends at sqrt(max / threshold) metres (a street lamp:
+  62 × (1, 0.85, 0.38), threshold 0.3: 14.4 m); spot cone = saturate((cos − cos edge) / (cos inner − cos edge))
+  with the edge quantised to 2°; the key light's BRDF, no shadows.
+- **Counts** (`mwtool lights`): 3,628 in `LightInstanceList`s (2,454 spot, 1,108 point, 66 line), 4,921
+  carried by compound / world objects through `WCVfxBehaviour.Lights` (3,628 spot, 1,293 point). 602 have a
+  flash pattern. 2,368 are also `OnDuringDay`.
+- **Street lamps are object lights**: a compound object's `mLocators` (+0x10: count, ids, `{n, ptr, 0}`; quat +
+  position per locator, the car locator layout) holds a group per lamp head (double lamp `…621c484f`: two
+  locators at (±2.94, 8.76, 0), rotated so +z points down), and its "SetLightsOn" `WCVfxBehaviour` names the
+  light definition and that group (plus two `Corona_definition`s on the same group).
+- **Lit windows**: emissive × albedo into RT3. Building variants: spec.w² × AO map.w × `LitWindowColour` ×
+  `AdditiveIntensities.y`; LOD2: diffuse.w² instead of the two masks; Illuminance / Emissive signs:
+  Illuminance(uv0).y × `LightmapColour` × `AdditiveIntensities.x`; all × `GlobalLightMapIntensities.x` except
+  the `Persistent` variants. `InstanceIntensity` variants read `AdditiveIntensities` from the instance block.
+- **Implemented**: `mw_assets::lights`, `world_lights.rs`, the light-volume programs in `game_lighting.wgsl`
+  (instanced cubes after the key light pass, additive, fogged by the fog's transmittance), mode 5 of
+  `layered.wgsl`. Bench (downtown spawn, 01:30, 30 units, 2,171 lights on): 7.25 → 7.89 ms mean, on a machine
+  shared with three other builds.
+- **Model decisions**: the day / night ramp (linear over `LightTransitionDuration` from each boundary hour;
+  `OnDuringTwilight` holds a light on through it); `GlobalLightMapIntensities.x` = that night level (0…1);
+  object lights are on whenever their definition's flags say so (the "SetLightsOn" trigger is not traced, and
+  a knocked-over lamp keeps its light); lights with a flash pattern stay off; no cap on the number of lights;
+  the cone table index rounds down (`FUN_00ede840` taken as floor).
+- **Dead ends / open**: the writer of a light record's intensity and of constant slot 0x11 (decomp.md);
+  `LightMapTextureSampler` is still unbound: the `_Lightmap` programs sample it at TEXCOORD1 and scale it by
+  `AdditiveIntensities.x` (roads: `lightMapIntensity`), but no material, instance override or `ZoneHeader`
+  slot names a texture for it, and the dump search for its binder was not done (a frame capture of the
+  original would show what is bound in slot 9). Plain `DriveableSurface` adds albedo × COLOR.rgb² × 0.318 ×
+  `GlobalLightMapIntensities.x` (baked vertex light on roads): decoded, not drawn (the road path repacks the
+  vertex colour). Line lights (66), coronas (`Vfx_Corona`, the lamps' `Corona_definition`s) and car lights
+  are not drawn. Seen but not changed: the key light program's specular power is `exp(11.0001 − 11 rough)` in
+  DXBC, where `exp` is 2^x; `game_lighting.wgsl` uses e^x for it (both the key light and the new lights).
+  At `--hour 21` the downtown view is washed out by bloom / exposure, before and after this work.
+
+### 2026-10-10: Windows host; first live read of the original from Windows (chase-camera `.bss`)
+The workspace builds and runs on Windows (MSVC): `mwtool memscan` / `telemetry` / `tune` / `capture` reach the
+game through `ReadProcessMemory` (`memscan/windows.rs`), the install is found through the EA app's registry key
+(`C:\EA\...` here: the EA app build, `VERSION.TXT` = 1.4.0.0, 2,020 bundles, `mwtool verify` 0 failures) or
+Steam's. The 911's accel test gives the Linux numbers (0-100 km/h 3.73 s). `tools/orig` is not ported: there is
+no input / screenshot harness for the original on Windows yet, so gameplay captures need a person driving.
+
+Live read with the game started from the EA app and left at its start-up screens (`NFS13.exe` at 0x00400000;
+no elevation needed). Values already known read the same as on Linux / Proton: 0x01186b74 = 9.81,
+0x01186bf0 = 0x01186b10 = 0.1, 0x01186630 = 1.8, 0x01186f60 = 0.5, 0x0118a018 = 0.44704, 0x0118a060 =
+0x0118a090 = 2.23694, 0x0110f590 = 3600, `_DAT_0110e8f0` = 45. **New** (the chase camera's `.bss` constants, decomp.md "Cameras"
+listed them as not read):
+
+| Address | Value | Where it is used (decomp.md) |
+|---|---|---|
+| `DAT_0110e770` | 22.352 (= 50 mph in m/s) | normaliser and clamp of the longitudinal acceleration `a_long` |
+| `DAT_0110e4d0` | 0.75 | the step clamp of `target - cam[+0x588]` |
+| `DAT_0110e680` | 4.0 | the offset clamp |
+| `DAT_0110e610` | 0.01 | squared-length threshold of the local vector |
+| `DAT_0110e640` | 5.0 | speed threshold `S` of the 1.85 term |
+
+Each is the first lane of a vector of four equal values. Applied the same day in `camera.rs`: the
+acceleration normaliser (was a model value of 20 mph/s), the 0.75 m step clamp and the 4 m offset clamp. Also read: 0x0110f940 holds
+a pointer (0x1a199970), 0x0110f944 = 0 and 0x010eac98 = 0x001ae534 at this state (objects; their fields need
+gameplay).
+
+**Telemetry works too**: a `handling.watch` rebuilt from the offsets in `mwtool tune` and decomp.md "Update
+loop" (vehicle = `[[[[NFS13.exe+0xcedb04]+4]+0x53220]+0x184]`, index 48; git-ignored
+`ref/win-live1/handling.watch`) sampled the idling free-roam car: 1,010-1,020 rpm, gear 1, wheel loads 3,950 /
+3,959 / 3,805 / 3,796 N, grip 1. It has the car, drift, input (+0x1bf0 / +0x1bf4 / +0x1c00) and wheel-load
+columns; the body pose / velocity, wheel contact, spin and slip columns that `--replay` and `mwtool compare`
+need were then found live: the rigid body is `[vehicle + 0x1760]` with right / up / forward at +0x00 / +0x10 /
++0x20, position at +0x30, velocity at +0xb0 and angular velocity at +0xc0 (1.2-1.5 rad/s about y in a left
+turn at 45 mph, 0 at rest). Wheel contact, spin and slip columns are still missing.
+
+**Driving the original from Windows** (`tools/orig/orig.ps1`: focus, scancode keys through `SendInput`, a
+screenshot of the game's client area; keys are only sent while the game is the foreground window). The
+keyboard drives without changing the controller setting: A / Left / Z show up as `in_throttle` 1, `in_steer`
+-1 (left is negative), `in_brake` 1. First recorded run (`ref/win-live1/drive1.csv`, the Aston V12 Vantage on
+grass then brick downtown, so not a clean reference): 0 to 47 mph in 4 s through 1st and 2nd, then a wall.
+
+**Matched screenshots**: the chase camera's matrix (camera +0x10) and FOV (+0x90) read at the moment of a
+screenshot give the same view in ours (`--camera=<position>,<position + 20 x third row>`). The third row
+points **forward** (from the eye to the car), not back as the 2026-10-06 entry says. First pair, downtown
+(camera 2221.45, 21.43, 2611.26; FOV 70; the original's hour is not known, an overcast dusk or dawn): in ours
+the road beyond the lawn is a bright tan band (the wet road's sky reflection at a grazing angle; the
+original's is dark grey), the brick paving is bright and dry-looking (the original's is dark and glossy), no
+lit windows or street lamps. Open: where the original keeps its time of day, so pairs can be made at the same
+hour.
 ### 2026-10-10: model LODs and draw distances (the game's rule, `lod.rs`)
 Performance item "fewer draws" (handoff of 2026-10-09): every world placement was drawn at LOD0 at any distance.
 - **The rule, traced** (decomp.md "Model LOD and draw distance"): `FUN_008a02f0` draws one placement:

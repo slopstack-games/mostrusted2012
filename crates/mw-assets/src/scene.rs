@@ -84,7 +84,16 @@ impl AssetStore {
     pub fn model_meshes(&self, model: ResourceId, lod: usize) -> Result<(Vec<SceneMesh>, Vec<String>)> {
         let model = self.model(model)?;
         let rid = model.renderable_for_lod(lod).ok_or(Error::Missing(model.id))?;
-        self.renderable_meshes(rid)
+        let (mut meshes, errors) = self.renderable_meshes(rid)?;
+        // The model's own bindings of the global samplers (AO map, lightmap) reach every mesh of it.
+        for m in &mut meshes {
+            for (name, texture) in &model.overrides.textures {
+                if m.texture(name).is_none() {
+                    m.textures.push((name.clone(), *texture));
+                }
+            }
+        }
+        Ok((meshes, errors))
     }
 
     pub fn renderable_meshes(&self, rid: ResourceId) -> Result<(Vec<SceneMesh>, Vec<String>)> {

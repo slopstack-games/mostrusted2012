@@ -31,6 +31,7 @@ impl Plugin for AiPlugin {
             requested: false,
             arrived: Vec::new(),
             spawned: vec![false; self.cars.len()],
+            cops: Vec::new(),
         })
         .init_resource::<AiSettings>()
         .add_systems(Startup, |game: Res<crate::Game>, mut s: ResMut<AiSettings>| s.0 = load_ai_config(&game.store))
@@ -99,11 +100,17 @@ pub struct Opponents {
     requested: bool,
     arrived: Vec<(usize, Box<CarSpec>, CarParts)>,
     spawned: Vec<bool>,
+    /// Cop cars that have arrived (slots from `police::SLOT_BASE` up, less the base): `police.rs` takes them.
+    pub cops: Vec<(usize, Box<CarSpec>, CarParts)>,
 }
 
 impl Opponents {
     /// Called by the loader-message pump when an opponent's car is ready.
     pub fn arrived(&mut self, slot: usize, spec: Box<CarSpec>, parts: CarParts) {
+        if let Some(cop) = slot.checked_sub(crate::police::SLOT_BASE) {
+            self.cops.push((cop, spec, parts));
+            return;
+        }
         self.arrived.push((slot, spec, parts));
     }
 }
@@ -310,7 +317,7 @@ pub fn route_through(ai: &mw_formats::AiData, waypoints: &[Vec3]) -> Option<AiRo
 
 /// The centre line through road-graph `nodes`: a Catmull-Rom spline (tangents 0.5 × (next − previous),
 /// `FUN_004e6160`) sampled every ~2 m, with the nodes' drivable half-widths; nodes of width 0 are skipped.
-fn spline_through(ai: &mw_formats::AiData, nodes: &[usize]) -> Option<AiRoute> {
+pub(crate) fn spline_through(ai: &mw_formats::AiData, nodes: &[usize]) -> Option<AiRoute> {
     let pos = |i: usize| Vec3::from(ai.nodes[i].position);
     let nodes: Vec<usize> = nodes.iter().copied().filter(|&i| ai.nodes[i].width > 0.0).collect();
     if nodes.len() < 2 {
@@ -376,6 +383,8 @@ pub struct AiDriver {
     pub resets: u32,
     /// Crashes from car impacts (`car_impacts.rs`).
     pub crashes: u32,
+    /// A car the emergency brake does not react to: a cop's target (`police.rs`).
+    pub ignore: Option<Entity>,
     touching: bool,
 }
 
@@ -396,6 +405,7 @@ impl AiDriver {
             hits: 0,
             resets: 0,
             crashes: 0,
+            ignore: None,
             touching: false,
         }
     }
@@ -683,7 +693,7 @@ fn spawn_opponents(
 /// before the player manager and the world step, `FUN_004766a0`).
 #[allow(clippy::type_complexity)]
 #[allow(clippy::too_many_arguments)]
-fn ai_drive(
+pub(crate) fn ai_drive(
     mut commands: Commands,
     time: Res<Time>,
     settings: Res<AiSettings>,
@@ -801,7 +811,7 @@ fn ai_drive(
                 .and_then(|d| spatial.cast_ray(t.translation + Vec3::Y * 0.5, d, PROBE_LENGTH, true, &filter))
                 .is_some()
         });
-        let others: Vec<_> = all.iter().filter(|o| o.0 != entity).map(|o| o.1).collect();
+        let others: Vec<_> = all.iter().filter(|o| o.0 != entity && Some(o.0) != ai.ignore).map(|o| o.1).collect();
         let player_ahead = player.is_some_and(|(e, p)| e != entity && (p - t.translation).dot(fwd) > 0.0);
         let ext = car.params.body_half_extents;
         let corner = corner_speed(ai, s, v.0.length(), &car, &settings.0);

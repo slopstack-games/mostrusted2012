@@ -29,9 +29,21 @@ use crate::ui_quads::{AdditiveQuadMaterial, PoolNode, QuadNode, QuadPool, show_q
 
 /// Layouts shown while driving in free roam (UniqueIds in `FREE_ROAM_HUD`): the first `Nitrous` widget's
 /// speedometer + nitrous gauge (1670359) and odometer (1806698), and `AdditionalHUD`'s minimap frame
-/// (1206246) and road / district name plates (1990196). Pursuit and EasyDrive layouts need game modes we
-/// don't have yet.
-pub const FREE_ROAM_LAYOUTS: [u32; 4] = [1_206_246, 1_990_196, 1_670_359, 1_806_698];
+/// (1206246) and road / district name plates (1990196), and `HUD`'s Speed Points total (979928: shown when the
+/// total changes, `freeroam.rs`). Pursuit and EasyDrive layouts need game modes we don't have yet. 604307 is
+/// `EngineOffHud`'s prompt bar (`{Mode.PromptString}`, e.g. the jack spots' "PRESS … TO DRIVE CAR"), drawn
+/// while [`HudState::prompt`] is set.
+pub const FREE_ROAM_LAYOUTS: [u32; 6] = [1_206_246, 1_990_196, 1_670_359, 1_806_698, 979_928, 604_307];
+
+/// Pursuit layouts of the free-roam screen (`AdditionalHUD`): 1213038, the HEAT / COOLDOWN bars beside the
+/// minimap (the stepped level bar bound to `Players.LocalPlayer.HeatLevelInt` over 0–6 and the fill bound to
+/// `Widget.HUD.Heat`), shown in a chase or cooldown, and 581357, the BUSTING bar
+/// (`Players.LocalPlayer.StaticBustProgress`), shown while `Players.LocalPlayer.ShowStaticBustBar` holds
+/// (`police.rs`; docs/decomp.md "Police and pursuits"). MODEL: which layouts the widget shows when is decided
+/// by the widget's code, not read; `Widget.HUD.Heat` is taken as the progress through the heat level
+/// (`FUN_006bdc50`).
+pub const PURSUIT_LAYOUT: u32 = 1_213_038;
+pub const BUSTING_LAYOUT: u32 = 581_357;
 
 /// The offline race HUD screen: the HSM's "Race HUD" state ("Activate Race HUD Styles Widget Group") names
 /// 604152 / 371726; this bundle is the screen whose widgets bind `DistanceToFinishManager`, `Event.Data.Laps`
@@ -110,6 +122,11 @@ pub struct HudState {
     pub using_nitrous: bool,
     /// Seconds the results sequence has played (the player finished and no sequence hides the HUD).
     pub results_clock: Option<f32>,
+    /// Speed Points, the collectables' counts and the message sequences they started (`freeroam.rs`).
+    pub freeroam: crate::freeroam::FreeroamHud,
+    /// `Mode.PromptString` (game-mode manager +0x2c70 with its flag +0x2ca7): the prompt bar's text, set each
+    /// frame by whoever prompts (`jackspots.rs`); `None` hides the bar.
+    pub prompt: Option<String>,
 }
 
 /// What a layout of the HUD scene belongs to.
@@ -117,9 +134,14 @@ pub struct HudState {
 enum Group {
     FreeRoam,
     Race,
+    /// The heat bars / the BUSTING bar (`PURSUIT_LAYOUT`, `BUSTING_LAYOUT`).
+    Pursuit,
+    Busting,
     /// Item of the countdown / results sequence (index into `Hud::countdown` / `Hud::results`).
     Countdown(usize),
     Results(usize),
+    /// Item of a scoring message sequence (index into `Hud::feedback`, then into its items).
+    Feedback(usize, usize),
     /// A point-of-interest icon drawn on the minimap (the race HUD's `Widget_PointOfInterest` looks).
     MapIcon(MapIcon),
 }
@@ -155,6 +177,7 @@ struct HudAssets {
     groups: Vec<Group>,
     countdown: Vec<SeqItem>,
     results: Vec<SeqItem>,
+    feedback: Vec<(u32, Vec<SeqItem>)>,
     lang: mw_formats::Language,
     car_names: HashMap<String, String>,
     images: Vec<(ResourceId, Image)>,
@@ -171,6 +194,9 @@ struct Hud {
     groups: Vec<Group>,
     countdown: Vec<SeqItem>,
     results: Vec<SeqItem>,
+    /// The collectables' message sequences by UniqueId (`freeroam::hud_sequences`): the "+SP" line, the speed
+    /// camera's plate, the security gate's speedwall panel.
+    feedback: Vec<(u32, Vec<SeqItem>)>,
     lang: mw_formats::Language,
     /// Car names by bundle stem (`VEH_1085007_HI`): AI racers are named after their car's bundle.
     car_names: HashMap<String, String>,
@@ -227,6 +253,10 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>, settings: Res<H
             layouts.push(l);
             groups.push(Group::FreeRoam);
         }
+        for l in screen_layouts(&store, FREE_ROAM_HUD, &[PURSUIT_LAYOUT, BUSTING_LAYOUT]) {
+            groups.push(if l.layout.id == PURSUIT_LAYOUT { Group::Pursuit } else { Group::Busting });
+            layouts.push(l);
+        }
         for l in screen_layouts(&store, RACE_HUD, &RACE_LAYOUTS) {
             layouts.push(l);
             groups.push(Group::Race);
@@ -274,6 +304,16 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>, settings: Res<H
             results.push(SeqItem::of(&s));
             layouts.push(s.layout);
         }
+        let mut feedback = Vec::new();
+        for id in store.scoring().map(|s| crate::freeroam::hud_sequences(&s)).unwrap_or_default() {
+            let mut items = Vec::new();
+            for s in sequence(id) {
+                groups.push(Group::Feedback(feedback.len(), items.len()));
+                items.push(SeqItem::of(&s));
+                layouts.push(s.layout);
+            }
+            feedback.push((id, items));
+        }
         let scene = store.ui_scene(layouts, &lang);
         let car_names = store
             .vehicles(&lang)
@@ -298,7 +338,8 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>, settings: Res<H
             mosaic.is_some(),
             t.elapsed()
         );
-        let _ = tx.send(HudAssets { scene, groups, countdown, results, lang, car_names, images, fonts, mosaic });
+        let _ =
+            tx.send(HudAssets { scene, groups, countdown, results, feedback, lang, car_names, images, fonts, mosaic });
     });
     commands.insert_resource(HudLoading(Mutex::new(rx)));
 }
@@ -348,6 +389,7 @@ fn receive_hud(
         groups: assets.groups,
         countdown: assets.countdown,
         results: assets.results,
+        feedback: assets.feedback,
         lang: assets.lang,
         car_names: assets.car_names,
         anim: UiAnim::default(),
@@ -621,6 +663,7 @@ fn lookup(
     arg: Option<&str>,
     car: Option<(&crate::drive::Car, &GlobalTransform)>,
     state: &HudState,
+    pursuit: &crate::police::PursuitHud,
     metric: bool,
     t: f64,
 ) -> Option<BindValue> {
@@ -641,11 +684,36 @@ fn lookup(
             (0.5 + 0.5 * (t / period.max(0.001) * std::f64::consts::TAU).sin()).into()
         }
         "Players.LocalPlayer.GetPlayerDirection" => (player_direction(xf?) as f64).into(),
-        "Players.LocalPlayer.IsInChase"
-        | "Players.LocalPlayer.IsInCooldown"
-        | "Players.LocalPlayer.IsInChaseOrCooldown"
-        | "Players.LocalPlayer.Jammed"
-        | "Players.LocalPlayer.IsInTunnel" => false.into(),
+        // Speed Points and collectables (`freeroam.rs`). The total's label (layout 979928) shows while the
+        // widget `SPVisible` is visible: 8 s at the start and after each change (HSM "SP Visibility", 1695370).
+        // Its backing is triggered by `MostWantedListManager.LocalPlayerSpeedPoints` (steps: white, invisible
+        // after 8 s).
+        // Model decisions: that trigger is read as "the total just changed" (true for 0.1 s after a change; the
+        // game's trigger evaluation was not traced), and the speedwalls have no rows (they list Autolog
+        // friends).
+        "ScoringViewModel.CurrentSpeedPoints" => (state.freeroam.speed_points as f64).into(),
+        "MostWantedListManager.LocalPlayerSpeedPoints" => state.freeroam.sp_changed.is_some_and(|c| t - c < 0.1).into(),
+        "SPVisible.IsVisible" => state.freeroam.sp_visible_until.is_some_and(|until| t < until).into(),
+        "LocalPlayer.IsInChaseOrCooldown" | "Mode.Data.Online" => false.into(),
+        // `(SPEED, DECIMAL)`: mph, or km/h with metric units (model decision, as the other code-side formatters).
+        "Collectables.LastCameraSpeed" => {
+            (state.freeroam.last_camera_mph as f64 * if metric { 1.609_34 } else { 1.0 }).into()
+        }
+        "Collectables.SpeedwallColFound" => (state.freeroam.wall_found as f64).into(),
+        "Collectables.SpeedwallColAmt" => (state.freeroam.wall_total as f64).into(),
+        "Collectables.SpeedCamsFoundFromSpeedwall" => (state.freeroam.cameras_found as f64).into(),
+        "Collectables.SpeedCamAmountFromSpeedwall" => (state.freeroam.cameras_total as f64).into(),
+        "CollectablesVM.CameraSpeedwall.ShowMiniWall" | "Camera.IsInternalDrivingCam" => false.into(),
+        "CollectablesVM.Collectables.speedwall.Items._length" => 0.0.into(),
+        // An empty text is false: the bar's elements are visible on this binding.
+        "Mode.PromptString" => state.prompt.clone().unwrap_or_default().into(),
+        "Players.LocalPlayer.IsInChase" => pursuit.in_chase.into(),
+        "Players.LocalPlayer.IsInCooldown" => pursuit.in_cooldown.into(),
+        "Players.LocalPlayer.IsInChaseOrCooldown" => (pursuit.in_chase || pursuit.in_cooldown).into(),
+        "Players.LocalPlayer.HeatLevelInt" => (pursuit.heat_level as f64).into(),
+        "Widget.HUD.Heat" => (pursuit.heat_progress as f64).into(),
+        "Players.LocalPlayer.StaticBustProgress" => (pursuit.bust_progress as f64).into(),
+        "Players.LocalPlayer.Jammed" | "Players.LocalPlayer.IsInTunnel" => false.into(),
         _ => return None,
     })
 }
@@ -667,6 +735,7 @@ fn draw_hud(
     mut materials: ResMut<Assets<AdditiveQuadMaterial>>,
     mut root_vis: Query<&mut Visibility, Without<QuadNode>>,
     pause: Option<Res<crate::pause::PauseMenu>>,
+    pursuit: Res<crate::police::PursuitHud>,
 ) {
     let Some(mut hud) = hud else { return };
     let car = car.single().ok();
@@ -687,7 +756,7 @@ fn draw_hud(
     let t = time.elapsed_secs_f64();
     let metric = settings.metric;
 
-    let Hud { scene, groups, countdown, results, lang, car_names, anim, map, .. } = &mut *hud;
+    let Hud { scene, groups, countdown, results, feedback, lang, car_names, anim, map, .. } = &mut *hud;
     scene.metric = Some(metric);
     let view = race.as_deref().map(|race| {
         let player = racers.iter().find(|(r, _)| r.player).map(|(_, p)| p);
@@ -714,7 +783,9 @@ fn draw_hud(
     let race_hud = view.as_ref().is_some_and(|v| matches!(v.race.phase, RacePhase::Intro | RacePhase::Racing));
 
     let mut base = |path: &str, arg: Option<&str>| -> Option<BindValue> {
-        view.as_ref().and_then(|v| v.lookup(path, arg, metric)).or_else(|| lookup(path, arg, car, &state, metric, t))
+        view.as_ref()
+            .and_then(|v| v.lookup(path, arg, metric))
+            .or_else(|| lookup(path, arg, car, &state, &pursuit, metric, t))
     };
     let mut draw = |only: &dyn Fn(Group) -> bool, lookup: &mut dyn FnMut(&str, Option<&str>) -> Option<BindValue>| {
         let groups = &*groups;
@@ -722,7 +793,15 @@ fn draw_hud(
             DrawOptions::new(Some(Box::new(move |i| groups.get(i).is_some_and(|&g| only(g)))), Some(&mut *anim), t);
         scene.draw_with(screen, lookup, &mut options)
     };
-    let mut quads: Vec<Quad> = draw(&|g| g == Group::FreeRoam || (g == Group::Race && race_hud), &mut base);
+    let mut quads: Vec<Quad> = draw(
+        &|g| {
+            g == Group::FreeRoam
+                || (g == Group::Race && race_hud)
+                || (g == Group::Pursuit && (pursuit.in_chase || pursuit.in_cooldown))
+                || (g == Group::Busting && pursuit.show_bust_bar)
+        },
+        &mut base,
+    );
 
     // Sequence items: their texts come in as `UISequences.Params[#].TextN` (the parser splits the path at
     // the `[`: argument `#].TextN`).
@@ -759,6 +838,34 @@ fn draw_hud(
     }
     if let Some(clock) = state.results_clock {
         sequence(results, clock, Group::Results, &mut quads);
+    }
+    // The collectables' messages: each playing sequence's items in their time range; a scoring action's title
+    // replaces the item's `Text1`.
+    for playing in &state.freeroam.playing {
+        let Some(si) = feedback.iter().position(|(id, _)| *id == playing.sequence) else { continue };
+        for (i, item) in feedback[si].1.iter().enumerate() {
+            if playing.clock < item.start || playing.clock >= item.end {
+                continue;
+            }
+            if !item.enabled.is_empty()
+                && !Binding::parse(&item.enabled).and_then(|b| b.eval(&mut base)).is_some_and(|v| v.truthy())
+            {
+                continue;
+            }
+            let mut texts =
+                item.texts.map(|id| lang.get(id).map(|s| resolve(s, metric, &mut base)).unwrap_or_default());
+            if let Some(t1) = &playing.text1 {
+                texts[0] = t1.clone();
+            }
+            let mut seq_lookup = |path: &str, arg: Option<&str>| -> Option<BindValue> {
+                if path == "UISequences.Params" {
+                    let n = arg?.rsplit("Text").next()?.trim().parse::<usize>().ok()?;
+                    return Some(texts.get(n.checked_sub(1)?)?.clone().into());
+                }
+                base(path, arg)
+            };
+            quads.extend(draw(&|x| x == Group::Feedback(si, i), &mut seq_lookup));
+        }
     }
 
     // The minimap: re-render the heading-up view into its image (every other frame). The map camera looks at
@@ -797,6 +904,8 @@ fn draw_hud(
                 .filter(|(r, _)| !r.player)
                 .map(|(_, x)| (MapIcon::Opponent, x.translation(), car_facing(x))),
         );
+        // Cops: the same arrow (`MapPoiConfig.5bfb3553`, "racer / cop arrows").
+        icons.extend(pursuit.cops.iter().map(|&(p, f)| (MapIcon::Opponent, p, f)));
         let icon_quads = map_icons(scene, groups, anim, t, screen, &q, p, f, metres_per_px, &icons, &mut base);
         quads.splice(qi + 1..qi + 1, icon_quads);
     }

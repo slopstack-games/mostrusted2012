@@ -343,10 +343,10 @@ and the eye / look-at heights (direct, linear in `h`), and the eye's z offset: a
 (`z += (target − z) · rate · dt`) towards `0a78c15f · h + (bd3a7cfc | 7c9039e2) · |a_long| / a_full`, rate
 `fdd25ee3` accelerating / `285f2260` decelerating, `a_long` the acceleration along the velocity (signed by
 the speed's direction in our port). This replaces our critically damped spring (ω = 2.5) and the 1.5 m
-braking limit (`8e1310f6` belongs to the vertical stage). Model decisions in that rule: `a_full` = 20 mph/s
-(`ACCEL_FULL_MPHS`, stands for `.bss` `DAT_0110e770`), the offset clamp ±3 m (`ACCEL_Z_LIMIT`, for
-`DAT_0110e680`), no step clamp (`DAT_0110e4d0`), the rate's `g · k · (1 − w)` term (vehicle + 0x2b20)
-and the 1.85 low-pass above `DAT_0110e640` left out. Still ours: the vertical acceleration stage, roll,
+braking limit (`8e1310f6` belongs to the vertical stage). From a live read (2026-10-10): `a_full` = 50 mph/s
+(`ACCEL_FULL_MPHS`, `.bss` `DAT_0110e770` = 22.352 m/s²), the step clamp 0.75 m (`ACCEL_Z_STEP`,
+`DAT_0110e4d0`) and the offset clamp ±4 m (`ACCEL_Z_LIMIT`, `DAT_0110e680`). Left out: the rate's
+`g · k · (1 − w)` term (vehicle + 0x2b20) and the 1.85 low-pass above `DAT_0110e640` (5.0). Still ours: the vertical acceleration stage, roll,
 deceleration pitch, the yaw spring's value (0.075 → 0.05 by speed), the drift lean, the bob
 (`FUN_005c8880`), the gradient spring, FOV, shakes and the collision push-in (no world query exists in the
 decompiled camera code; the director update `FUN_005d5e20` is not in the dump). `FUN_005d0b90`,
@@ -474,7 +474,7 @@ stands 10 m past the impact); a 2 m pillar shows the car.
 | nitrous modes 3 / 4 | not started | speedbreaker and jump nitrous (`FUN_00662fa0`, `FUN_00663020`) not ported; their usage blocks have no word at +0x1c; mode 2 (punch) runs in the tank with the mode-0 engine multiplier only |
 | near-miss traffic spheres | box centre, radius \|half extents\| | the game's broadphase bounding spheres (2.32–2.58 m in a snapshot) were not traced to their source |
 | slipstream line of sight | a world ray between the car origins + 0.5 m | `FUN_0063c790` casts from objects at vehicle +0xac (`FUN_00514a40`); their points were not traced |
-| nitrous events not fed | takedowns, crash escapes, gas stations, gates | the runtime has no takedowns, police or gas stations; the gate smash award (+10, `FUN_0074cf40`) is not wired to `freeroam.rs` |
+| nitrous events not fed | takedowns, crash escapes, gas stations | the runtime has no takedowns, police or gas stations. Free-roam security gates give no nitrous: the award of `FUN_0074cf40` belongs to the Smash-and-Grab game mode (decomp.md "Speed Points", 2026-10-10) |
 | punch / jump force scale | 0.44704 (`nitrous::PUNCH_SCALE`) | **from the game**: `.bss` 0x0118a018 (read live), mph → m/s, so `0798d257` is mph/s; the modes 1 / 3 are still not run |
 | ~~blend-input scale~~ | 1, from the game | settled 2026-10-09: the player's four wheel constraints (island +0x20 array, 0x500 bytes each, at 0x07c27280 in the snapshots) hold +0x210 = (1, 0, 0, 0) and +0x4aa = 1 (the full tyre solve `FUN_009c75b0` runs only with that byte set) in both snapshots; `FUN_009c5da0` broadcasts lane 0 onto κ and α |
 | ~~surface-change fade~~ | ported 2026-10-09 | `FUN_009d4460`, `FUN_009ceb00`, `FUN_009cec40`, `FUN_009cece0` (`mw_handling::surface::SurfaceGrip`); constants 3 (0x01025dcc), 0.5 (0x00f8a810), 2 s (0x01026028) from the exe |
@@ -663,7 +663,7 @@ running game's memory and log it every frame. `mwtool memscan` and `mwtool telem
 (`crates/mwtool/src/memscan.rs`) read data values from `/proc/<pid>/mem` of the game process the user is
 running; the protected code is never read, traced or disassembled (docs/reverse-engineering.md). Since
 2026-10-05 `poke` (and `--poke name=value` on `telemetry` / `capture`) writes a *data* value for an experiment
-and restores it afterwards; code mappings are refused (docs/probe.md "Tier 0"). Linux / Proton only for now.
+and restores it afterwards; code mappings are refused (docs/probe.md "Tier 0"). Linux / Proton and Windows.
 
 **Setup (once per boot):** `sudo sysctl kernel.yama.ptrace_scope=0` (or `sudo setcap cap_sys_ptrace+ep
 target/release/mwtool` after each build). Start the game, enter free roam, then in a terminal:

@@ -671,7 +671,13 @@ fn run_impact_test(
             let ground = |p: Vec3| {
                 let filter = SpatialQueryFilter::from_mask(crate::props::GameLayer::World);
                 let from = p + Vec3::Y * 10.0;
-                spatial.cast_ray(from, Dir3::NEG_Y, 40.0, true, &filter).map_or(p.y, |h| from.y - h.distance)
+                // The surface nearest the reference height: the first hit can be a bridge or a canopy overhead.
+                spatial
+                    .ray_hits(from, Dir3::NEG_Y, 40.0, 16, false, &filter)
+                    .into_iter()
+                    .map(|h| from.y - h.distance)
+                    .min_by(|a, b| (a - p.y).abs().total_cmp(&(b - p.y).abs()))
+                    .unwrap_or(p.y)
             };
             let course = match test.kind {
                 ImpactTestKind::Traffic => {

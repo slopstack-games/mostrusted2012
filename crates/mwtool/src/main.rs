@@ -17,7 +17,6 @@ mod placement;
 mod preview;
 mod props;
 mod survey;
-#[cfg(target_os = "linux")]
 mod traffic_sound;
 mod tune;
 mod ui;
@@ -411,7 +410,14 @@ enum Cmd {
         kind: Option<String>,
         #[arg(long)]
         all_kinds: bool,
+        /// For every billboard, security gate and speed camera: the nearest placed object (prop / compound /
+        /// dynamic instance of the track units) with its instance ids, to check the object ↔ trigger link.
+        #[arg(long)]
+        objects: bool,
     },
+    /// Police and pursuit data (`mw_assets::police`): the bust rule, the free-roam heat levels (thresholds, heat
+    /// and cooldown times, the cops each fields) and the cop types' cars (docs/decomp.md "Police and pursuits").
+    Police,
     /// Drop every placement (instances, props, compounds, dynamics, groundcover) onto the track units'
     /// collision and report per layer / model / unit how far it stands off the ground.
     PlacementCheck {
@@ -505,6 +511,15 @@ enum Cmd {
         #[arg(long)]
         all: bool,
     },
+    /// World lights (`LightInstanceList` + GeneSys `Light_*`, `mw_assets::lights`): counts per type and
+    /// `OnDuring…` flags, the day / night transition; `--near x,z[,r]` lists the lights around a point,
+    /// `--hour` adds how bright each is then.
+    Lights {
+        #[arg(long, value_delimiter = ',', allow_hyphen_values = true)]
+        near: Vec<f32>,
+        #[arg(long)]
+        hour: Option<f32>,
+    },
     /// The front end's data (`mw_assets::frontend`): the free-roam start (default car, start point, swap
     /// spots), the loading screens (layouts, pictures, tips), the pause menu's items and the title / transition
     /// sequences' items.
@@ -521,6 +536,18 @@ enum Cmd {
         /// Tree depth for `hsm <id>`.
         #[arg(long, default_value_t = 3)]
         depth: usize,
+    },
+    /// Scoring actions (`ScoringAction`s of GAMELOGIC/GAMEPLAY.BNDL named by `ScoringConfig`): Speed Points,
+    /// pursuit score, heat, HUD message sequence and title per action. `--all` includes the actions worth no
+    /// Speed Points; `--sequence <id>` prints a message sequence's layouts instead.
+    Scoring {
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        sequence: Option<u32>,
+        /// Print these language strings (ids, comma separated) instead.
+        #[arg(long, value_delimiter = ',')]
+        text: Vec<u32>,
     },
     /// Show a WorldPaintMap (what is painted where: environment timelines, layer fog, particle lighting),
     /// which entries each track unit's zone covers, and optionally render it with the zone outlines.
@@ -785,7 +812,15 @@ fn main() -> Result<()> {
         Cmd::CameraTake { take, step } => {
             camera_take::run(&open_bundle(&game, "CAMERAS.BNDL")?, take.as_deref(), step)?
         }
-        Cmd::Freeroam { list, kind, all_kinds } => freeroam(&AssetStore::new(game)?, list, kind.as_deref(), all_kinds)?,
+        Cmd::Freeroam { list, kind, all_kinds, objects } => {
+            let store = AssetStore::new(game)?;
+            if objects {
+                freeroam_objects(&store, kind.as_deref())?
+            } else {
+                freeroam(&store, list, kind.as_deref(), all_kinds)?
+            }
+        }
+        Cmd::Police => police(&AssetStore::new(game)?)?,
         Cmd::PlacementCheck { bundles, top, groups, view, column, owners } => {
             let store = AssetStore::new(game)?;
             if owners {
@@ -1372,6 +1407,8 @@ fn main() -> Result<()> {
             events::hsm(&AssetStore::new(game)?, &bundle, node, find.as_deref(), depth)?
         }
         Cmd::Traffic { png, at } => traffic(&AssetStore::new(game)?, png.as_deref(), &at)?,
+        Cmd::Scoring { all, sequence, text } => scoring(&AssetStore::new(game)?, all, sequence, &text)?,
+        Cmd::Lights { near, hour } => lights(&AssetStore::new(game)?, &near, hour)?,
         Cmd::PaintMap { id, png, at } => paint_map(&AssetStore::new(game)?, &id, png.as_deref(), &at)?,
     }
     Ok(())
@@ -1468,6 +1505,71 @@ fn skid_sweep(
     let pcm = mw_audio::Pcm { channels: 1, sample_rate: rate as u32, samples };
     std::fs::write(out, pcm.to_wav())?;
     println!("13 s sweep of {suffix} at {mph} mph -> {}", out.display());
+    Ok(())
+}
+
+fn lights(store: &AssetStore, near: &[f32], hour: Option<f32>) -> Result<()> {
+    let transition = store.day_night_transition()?;
+    println!("{transition:?}");
+    let phase = hour.map(|h| transition.phase(h));
+    if let (Some(h), Some(p)) = (hour, phase) {
+        println!("at {h} h: night level {:.2}, day {}", p.night, p.day);
+    }
+    let units: Vec<_> = store
+        .bundle_paths()
+        .iter()
+        .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("TRK_UNIT")))
+        .cloned()
+        .collect();
+    // (carried by an object, shape, day, night, twilight, flash type) -> (instances, summed range)
+    type Class = (bool, &'static str, bool, bool, bool, u32);
+    let mut classes: std::collections::BTreeMap<Class, (usize, f32)> = Default::default();
+    let mut total = 0;
+    for u in units {
+        let Some(b) = store.bundle(&u) else { continue };
+        for l in store.bundle_lights(&b)? {
+            total += 1;
+            let d = &l.def;
+            let class = (l.object.is_some(), d.shape.name(), d.on_day, d.on_night, d.on_twilight, d.flash.kind);
+            let e = classes.entry(class).or_default();
+            e.0 += 1;
+            e.1 += d.range();
+            let [x, y, z] = l.position;
+            let within = match near {
+                [nx, nz] => (x - nx).hypot(z - nz) < 60.0,
+                [nx, nz, r] => (x - nx).hypot(z - nz) < *r,
+                _ => false,
+            };
+            if within {
+                println!(
+                    "{} {}{:x} {:?} at ({x:.1}, {y:.1}, {z:.1}) dir ({:.2}, {:.2}, {:.2}) colour {:.2?} x {} threshold {}                      range {:.1} m day {} night {} twilight {} flash {}{}",
+                    u.file_name().unwrap_or_default().to_string_lossy(),
+                    l.object.map(|o| format!("on {:x} ", o.0 & 0xFFFF_FFFF)).unwrap_or_default(),
+                    d.id.0 & 0xFF_FFFF,
+                    d.shape,
+                    l.direction[0],
+                    l.direction[1],
+                    l.direction[2],
+                    d.colour,
+                    d.intensity,
+                    d.attenuation_threshold,
+                    d.range(),
+                    d.on_day,
+                    d.on_night,
+                    d.on_twilight,
+                    d.flash.kind,
+                    phase.map(|p| format!(" level {:.2}", p.light_level(d, l.stagger))).unwrap_or_default(),
+                );
+            }
+        }
+        store.evict_all();
+    }
+    println!("{total} lights");
+    println!("from   shape  day   night twilight flash  count  mean range");
+    for ((object, shape, day, night, twilight, flash), (n, range)) in classes {
+        let from = if object { "object" } else { "list" };
+        println!("{from:6} {shape:6} {day:5} {night:5} {twilight:8} {flash:5} {n:6}  {:.1} m", range / n as f32);
+    }
     Ok(())
 }
 
@@ -2288,7 +2390,6 @@ fn print_genesys(obj: &fmt::genesys::Object, depth: usize, max_items: usize) {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn attach(process: &str, pid: Option<u32>) -> Result<memscan::Process> {
     match pid {
         Some(pid) => memscan::Process::open(pid),
@@ -2296,17 +2397,14 @@ fn attach(process: &str, pid: Option<u32>) -> Result<memscan::Process> {
     }
 }
 
-#[cfg(target_os = "linux")]
 fn memscan_cmd(process: &str, pid: Option<u32>, watch: &Path, all_regions: bool) -> Result<()> {
     memscan::repl(&attach(process, pid)?, watch, all_regions)
 }
 
-#[cfg(target_os = "linux")]
 fn tune_cmd(process: &str, pid: Option<u32>, preset: &Path, apply: bool, print: bool) -> Result<()> {
     tune::run(&attach(process, pid)?, preset, apply, print)
 }
 
-#[cfg(target_os = "linux")]
 fn telemetry_cmd(
     watch: &Path,
     out: &PathBuf,
@@ -2325,7 +2423,6 @@ fn telemetry_cmd(
 }
 
 /// Index of the original's PulseAudio / PipeWire playback stream (`application.name` "Need for Speed™ Most Wanted").
-#[cfg(target_os = "linux")]
 fn game_audio_stream() -> Option<String> {
     let out = std::process::Command::new("pactl").args(["list", "sink-inputs"]).output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout);
@@ -2349,7 +2446,6 @@ fn game_audio_stream() -> Option<String> {
     None
 }
 
-#[cfg(target_os = "linux")]
 #[allow(clippy::too_many_arguments)]
 fn capture_cmd(
     name: &str,
@@ -2379,6 +2475,9 @@ fn capture_cmd(
     )?;
     // The game's own audio stream only (not the desktop's), through parecord.
     let mut recorder = if no_audio {
+        None
+    } else if cfg!(windows) {
+        eprintln!("no audio: recording the game's own stream goes through pactl / parecord (Linux only)");
         None
     } else if let Some(stream) = game_audio_stream() {
         let wav = dir.join("audio.wav");
@@ -2424,33 +2523,51 @@ fn capture_cmd(
     result
 }
 
-#[cfg(not(target_os = "linux"))]
-fn capture_cmd(
-    _: &str,
-    _: &Path,
-    _: f64,
-    _: Option<f64>,
-    _: bool,
-    _: &str,
-    _: Option<u32>,
-    _: &[String],
-) -> Result<()> {
-    bail!("capture reads /proc/<pid>/mem and is Linux-only for now")
-}
-
-#[cfg(not(target_os = "linux"))]
-fn memscan_cmd(_: &str, _: Option<u32>, _: &Path, _: bool) -> Result<()> {
-    bail!("memscan reads /proc/<pid>/mem and is Linux-only for now")
-}
-
-#[cfg(not(target_os = "linux"))]
-fn tune_cmd(_: &str, _: Option<u32>, _: &Path, _: bool, _: bool) -> Result<()> {
-    bail!("tune writes /proc/<pid>/mem and is Linux-only for now")
-}
-
-#[cfg(not(target_os = "linux"))]
-fn telemetry_cmd(_: &Path, _: &PathBuf, _: f64, _: Option<f64>, _: &str, _: Option<u32>, _: &[String]) -> Result<()> {
-    bail!("telemetry reads /proc/<pid>/mem and is Linux-only for now")
+/// `mwtool police`: the pursuit rules' data.
+fn police(store: &AssetStore) -> Result<()> {
+    let cfg = store.police_config()?;
+    println!(
+        "bust: within {} m, below {} mph, {} s; cop radar {} m",
+        cfg.bust_distance, cfg.bust_speed_mph, cfg.bust_time, cfg.radar_range
+    );
+    println!(
+        "heat of scoring actions: chase started {}, cooldown back to chase {}",
+        cfg.chase_started_heat, cfg.chase_resumed_heat
+    );
+    println!(
+        "level  id       heat<  heat s  cool s  lose m  speeding mph  spawn m (free/chase/cooldown)  main / fallback cops (type@mph:behaviour:positioning)"
+    );
+    for l in &cfg.levels {
+        let cops = |b: &mw_assets::police::Behaviour| {
+            let list: Vec<String> = b
+                .cops
+                .iter()
+                .map(|c| format!("{}@{}:{}:{}", c.cop_type, c.speed_mph, c.behaviour, c.positioning))
+                .collect();
+            let roadblock = if b.roadblock != 0 { format!(" roadblock {}", b.roadblock) } else { String::new() };
+            format!("{} [{}]{roadblock}", b.cop_count, list.join(" "))
+        };
+        println!(
+            "{:5}  {:7}  {:5}  {:6}  {:6}  {:6}  {:12}  {:?}  {} / {}",
+            l.level,
+            l.id,
+            l.threshold,
+            l.heat_time,
+            l.cooldown_time,
+            l.lose_radius,
+            l.speeding_mph,
+            l.spawn_distance,
+            cops(&l.main),
+            cops(&l.fallback)
+        );
+    }
+    let mut types: Vec<_> = cfg.cop_vehicles.iter().collect();
+    types.sort();
+    println!("cop types (id -> vehicle, takedown heat):");
+    for (id, vehicle) in types {
+        println!("  {id} -> VEH_{vehicle} ({})", cfg.takedown_heat.get(id).copied().unwrap_or(0.0));
+    }
+    Ok(())
 }
 
 /// `mwtool freeroam`: the free-roam collectables in TriggerData (docs/formats.md "TriggerData").
@@ -2502,6 +2619,120 @@ fn freeroam(store: &AssetStore, list: bool, kind: Option<&str>, all_kinds: bool)
             };
             println!("{:<17} {:>8} {x:9.1} {y:7.1} {z:9.1}  flags {:#04x}  {shape}", c.name(), t.id, t.flags);
         }
+    }
+    Ok(())
+}
+
+/// `scoring`: the scoring actions, or one message sequence's layouts.
+fn scoring(store: &AssetStore, all: bool, sequence: Option<u32>, text: &[u32]) -> Result<()> {
+    let lang = store.language(mw_assets::DEFAULT_LANGUAGE)?;
+    if !text.is_empty() {
+        for &id in text {
+            println!("{id}: {:?}", lang.get(id));
+        }
+        return Ok(());
+    }
+    if let Some(id) = sequence {
+        for s in store.ui_sequence_layouts(id)? {
+            println!(
+                "layout {} {:.2}..{:.2} s enabled {:?} texts {:?} instance {}",
+                s.layout.layout.id,
+                s.start,
+                s.end,
+                s.enabled,
+                s.texts,
+                s.layout.instance.is_some()
+            );
+        }
+        return Ok(());
+    }
+    let scoring = store.scoring()?;
+    let cfg = store.collectables_config()?;
+    println!("speed camera minimum: {} mph", cfg.speed_camera_min_mph);
+    println!("{} actions, {} ScoringConfig fields", scoring.actions.len(), scoring.config.len());
+    let mut rows: Vec<_> = scoring.actions.values().collect();
+    rows.sort_by_key(|a| a.id);
+    for a in rows {
+        if !all && a.speed_points.iter().all(|&p| p == 0) {
+            continue;
+        }
+        let fields: Vec<String> = scoring
+            .config
+            .iter()
+            .filter(|(_, id)| *id == a.id)
+            .map(|(h, _)| fmt::genesys::field_name(*h).map_or_else(|| format!("{h:08x}"), str::to_owned))
+            .collect();
+        println!(
+            "{:>8} {:<28} SP {:?} score {:?} heat {} scope {} queue {} prio {} trigger {}{} sequence {} title {} {:?}{}",
+            a.id,
+            if fields.is_empty() { "-".to_owned() } else { fields.join(",") },
+            a.speed_points,
+            a.score,
+            a.heat,
+            a.scope,
+            a.queue,
+            a.priority,
+            a.gameplay_trigger,
+            scoring.trigger_sequences.get(&a.gameplay_trigger).map_or(String::new(), |s| format!(" (sequences {s:?})")),
+            a.sequence,
+            a.title,
+            lang.get(a.title).unwrap_or(""),
+            if a.predicate.is_empty() { String::new() } else { format!(" if {}", a.predicate) }
+        );
+    }
+    Ok(())
+}
+
+/// `freeroam --objects`: the placed object nearest to each billboard / gate / speed camera trigger, and whether
+/// an instance id of it equals the trigger's id.
+fn freeroam_objects(store: &AssetStore, kind: Option<&str>) -> Result<()> {
+    let data = store.trigger_data()?;
+    let mut objects: Vec<([f32; 3], &'static str, ResourceId, [u32; 2])> = Vec::new();
+    for path in store.bundle_paths().to_vec() {
+        if !path.file_name().is_some_and(|n| n.to_string_lossy().starts_with("TRK_UNIT")) {
+            continue;
+        }
+        let Some(bundle) = store.bundle(&path) else { continue };
+        for (ty, name) in [
+            (ResourceType::PropInstanceList, "prop"),
+            (ResourceType::CompoundInstanceList, "compound"),
+            (ResourceType::DynamicInstanceList, "dynamic"),
+        ] {
+            for e in bundle.entries_of_type(ty) {
+                let Ok(list) = fmt::ObjectInstanceList::parse(&bundle.load(e)?) else { continue };
+                for i in list.instances {
+                    let [x, y, z, _] = i.transform[3];
+                    objects.push(([x, y, z], name, i.object.unwrap_or(ResourceId::NULL), i.ids));
+                }
+            }
+        }
+    }
+    println!("{} placed objects", objects.len());
+    let mut linked: BTreeMap<(fmt::Collectable, &str), (usize, usize)> = BTreeMap::new();
+    for t in &data.triggers {
+        let Some(c) = t.collectable() else { continue };
+        if !matches!(c, fmt::Collectable::Billboard | fmt::Collectable::SecurityGate | fmt::Collectable::SpeedCamera) {
+            continue;
+        }
+        let by_id = objects.iter().find(|o| o.3.contains(&t.id));
+        let d2 =
+            |o: &([f32; 3], &str, ResourceId, [u32; 2])| (0..3).map(|k| (o.0[k] - t.position[k]).powi(2)).sum::<f32>();
+        let nearest = objects.iter().min_by(|a, b| d2(a).total_cmp(&d2(b)));
+        let slot = linked.entry((c, by_id.map_or("-", |o| o.1))).or_default();
+        slot.0 += 1;
+        if let Some(o) = by_id {
+            slot.1 += (d2(o).sqrt() < 15.0) as usize;
+        }
+        if kind.is_some_and(|k| k.eq_ignore_ascii_case(c.name())) {
+            let show = |o: Option<&([f32; 3], &str, ResourceId, [u32; 2])>| match o {
+                Some(o) => format!("{} {} ids {:?} at {:.1} m", o.1, o.2, o.3, d2(o).sqrt()),
+                None => "-".into(),
+            };
+            println!("{:<9} {:>8}  by id: {}  nearest: {}", c.name(), t.id, show(by_id), show(nearest));
+        }
+    }
+    for ((c, layer), (n, near)) in linked {
+        println!("{:<9} linked object: {layer:<8} {n} triggers ({near} within 15 m)", c.name());
     }
     Ok(())
 }
