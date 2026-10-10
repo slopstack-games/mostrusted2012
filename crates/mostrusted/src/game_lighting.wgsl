@@ -115,7 +115,8 @@ fn read_surface(position: vec4<f32>) -> Surface {
 //   Ashikhmin-Shirley term 28/(23π) albedo (1 − F0) (1 − (1 − N·L/2)^5) (1 − (1 − N·V/2)^5) N·L.
 //   Specular: normalised Blinn-Phong, D = (power + 1) × 0.039789 × N·H^power, a
 //   1 / (saturate(max(N·V, N·L) × V·H) + 0.0013) visibility term and Schlick Fresnel whose (1 − F0) part
-//   is scaled by the Fresnel strength. The power is `exp(11.0001 − 11 roughness)` in the disassembly.
+//   is scaled by the Fresnel strength. The power is 2^(11.0001 − 11 roughness): the program computes it with
+//   the DXBC `exp` instruction, which is base 2 (as its `log`; N·H^power is `exp(log(N·H) × power)` there).
 fn surface_response(s: Surface, l: vec3<f32>) -> vec3<f32> {
     let one_minus_f0 = 1.0 - s.f0;
     let nl_raw = dot(s.n, l);
@@ -125,7 +126,7 @@ fn surface_response(s: Surface, l: vec3<f32>) -> vec3<f32> {
     let as_v = 1.0 - pow(1.0 - 0.5 * nv, 5.0);
     let as_l = 1.0 - pow(1.0 - 0.5 * nl_raw, 5.0);
     let ashikhmin = s.albedo * one_minus_f0 * (as_v * as_l * 0.387508) * nl;
-    let power = exp(11.0001 - 11.0 * s.rough);
+    let power = exp2(11.0001 - 11.0 * s.rough);
     let h = normalize(s.v + l);
     let nh = min(saturate(dot(s.n, h)) + 0.0001, 1.0);
     let vh = dot(s.v, h);
