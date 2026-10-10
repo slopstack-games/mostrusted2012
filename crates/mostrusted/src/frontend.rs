@@ -751,6 +751,37 @@ fn mute(front: Res<FrontEnd>, settings: Option<ResMut<crate::settings::AudioSett
 pub struct Profile {
     pub bundle: String,
     pub position: Option<Vec3>,
+    pub collected: Collected,
+}
+
+/// Free-roam finds kept in the profile (`jackspots.rs`, `bodyshop.rs`), as `TriggerData` ids: the lines
+/// `jackspots=`, `jackcars=`, `bodyshops=` (comma-separated ids) and `swapspot=` (older files have none).
+#[derive(Resource, Debug, Clone, Default, PartialEq)]
+pub struct Collected {
+    /// Jack spot locations found and jack spot cars found (driven).
+    pub jack_spots: std::collections::BTreeSet<u32>,
+    pub jack_cars: std::collections::BTreeSet<u32>,
+    pub body_shops: std::collections::BTreeSet<u32>,
+    /// The location trigger of the jack spot last swapped at (the game's profile stats 0x14 / 0x13 / 0xe).
+    pub swap_spot: Option<u32>,
+    /// Changed since the last save: saved at once instead of with the next autosave.
+    pub dirty: bool,
+}
+
+impl Collected {
+    fn lines(&self) -> String {
+        let ids = |s: &std::collections::BTreeSet<u32>| s.iter().map(u32::to_string).collect::<Vec<_>>().join(",");
+        let mut out = format!(
+            "jackspots={}\njackcars={}\nbodyshops={}\n",
+            ids(&self.jack_spots),
+            ids(&self.jack_cars),
+            ids(&self.body_shops)
+        );
+        if let Some(s) = self.swap_spot {
+            out += &format!("swapspot={s}\n");
+        }
+        out
+    }
 }
 
 pub fn default_profile_path() -> Option<PathBuf> {
@@ -770,6 +801,15 @@ pub fn load_profile(path: &std::path::Path) -> Option<Profile> {
                     p.position = Some(Vec3::new(x, y, z));
                 }
             }
+            Some((key @ ("jackspots" | "jackcars" | "bodyshops"), v)) => {
+                let ids = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                match key {
+                    "jackspots" => p.collected.jack_spots = ids,
+                    "jackcars" => p.collected.jack_cars = ids,
+                    _ => p.collected.body_shops = ids,
+                }
+            }
+            Some(("swapspot", v)) => p.collected.swap_spot = v.trim().parse().ok(),
             _ => {}
         }
     }
@@ -786,24 +826,36 @@ fn save_profile(
     time: Res<Time<Real>>,
     garage: Res<crate::garage::Garage>,
     car: Query<&GlobalTransform, (With<crate::drive::Car>, With<crate::drive::Player>)>,
+    mut collected: Option<ResMut<Collected>>,
 ) {
     if front.profile.is_none() || !front.playing() {
         return;
     }
     let t = time.elapsed_secs();
-    if t - front.autosave < AUTOSAVE {
+    // A new find is saved at once (the game saves its profile on these events too: `SaveProfile`).
+    let dirty = collected.as_ref().is_some_and(|c| c.dirty);
+    if t - front.autosave < AUTOSAVE && !dirty {
         return;
     }
-    front.autosave = t;
     let (Some(current), Ok(xf)) = (garage.current.as_ref(), car.single()) else { return };
+    front.autosave = t;
     let Some(path) = front.profile.clone() else { return };
     let p = xf.translation();
     let mut text = format!("bundle={}\nposition={:.2},{:.2},{:.2}\n", current.bundle, p.x, p.y, p.z);
     // Lines of other modules (the free-roam progress, `freeroam.rs`) are kept as they are.
+    let mut owned = vec!["bundle=", "position="];
+    if let Some(c) = collected.as_mut() {
+        text += &c.lines();
+        owned.extend(["jackspots=", "jackcars=", "bodyshops=", "swapspot="]);
+        if dirty {
+            c.dirty = false;
+        }
+    }
     if let Ok(old) = std::fs::read_to_string(&path) {
-        for line in old.lines().filter(|l| !l.starts_with("bundle=") && !l.starts_with("position=")) {
+        for line in old.lines().filter(|l| !owned.iter().any(|k| l.starts_with(k))) {
             text.push_str(line);
-            text.push('\n');
+            text.push('
+');
         }
     }
     if let Some(dir) = path.parent() {

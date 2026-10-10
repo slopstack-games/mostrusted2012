@@ -375,11 +375,14 @@ fn navigate(
     game: Res<Game>,
     player: Query<&GlobalTransform, (With<crate::drive::Car>, With<crate::drive::Player>)>,
     front: Option<Res<crate::frontend::FrontEnd>>,
+    jack: Option<Res<crate::jackspots::JackSpots>>,
 ) {
     // Not over the front end's screens ("Disable Car Control and Easydrive").
     if !menu.enabled || menu.tiers.is_empty() || front.is_some_and(|f| !f.playing()) {
         return;
     }
+    // `E` is the original's SWAP_CARS key: beside a parked car it swaps (`jackspots.rs`).
+    let swap_key = jack.is_some_and(|j| j.prompting());
     // The original's EASY_* actions (Num 4 / 6 / 8 / 2, d-pad; input.rs). EASY_OPEN has no default binding in the
     // original's tables; opening with "right" is the console layout, `E` is ours for keyboards without a numpad.
     use crate::input::defaults as act;
@@ -398,7 +401,7 @@ fn navigate(
         right = true;
     }
     if !menu.open {
-        if keys.just_pressed(KeyCode::KeyE) || right {
+        if (keys.just_pressed(KeyCode::KeyE) && !swap_key) || right {
             open_root(&mut menu);
         }
         return;

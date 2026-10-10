@@ -30,8 +30,10 @@ use crate::ui_quads::{AdditiveQuadMaterial, PoolNode, QuadNode, QuadPool, show_q
 /// Layouts shown while driving in free roam (UniqueIds in `FREE_ROAM_HUD`): the first `Nitrous` widget's
 /// speedometer + nitrous gauge (1670359) and odometer (1806698), and `AdditionalHUD`'s minimap frame
 /// (1206246) and road / district name plates (1990196), and `HUD`'s Speed Points total (979928: shown when the
-/// total changes, `freeroam.rs`). Pursuit and EasyDrive layouts need game modes we don't have yet.
-pub const FREE_ROAM_LAYOUTS: [u32; 5] = [1_206_246, 1_990_196, 1_670_359, 1_806_698, 979_928];
+/// total changes, `freeroam.rs`). Pursuit and EasyDrive layouts need game modes we don't have yet. 604307 is
+/// `EngineOffHud`'s prompt bar (`{Mode.PromptString}`, e.g. the jack spots' "PRESS … TO DRIVE CAR"), drawn
+/// while [`HudState::prompt`] is set.
+pub const FREE_ROAM_LAYOUTS: [u32; 6] = [1_206_246, 1_990_196, 1_670_359, 1_806_698, 979_928, 604_307];
 
 /// The offline race HUD screen: the HSM's "Race HUD" state ("Activate Race HUD Styles Widget Group") names
 /// 604152 / 371726; this bundle is the screen whose widgets bind `DistanceToFinishManager`, `Event.Data.Laps`
@@ -112,6 +114,9 @@ pub struct HudState {
     pub results_clock: Option<f32>,
     /// Speed Points, the collectables' counts and the message sequences they started (`freeroam.rs`).
     pub freeroam: crate::freeroam::FreeroamHud,
+    /// `Mode.PromptString` (game-mode manager +0x2c70 with its flag +0x2ca7): the prompt bar's text, set each
+    /// frame by whoever prompts (`jackspots.rs`); `None` hides the bar.
+    pub prompt: Option<String>,
 }
 
 /// What a layout of the HUD scene belongs to.
@@ -682,6 +687,8 @@ fn lookup(
         "Collectables.SpeedCamAmountFromSpeedwall" => (state.freeroam.cameras_total as f64).into(),
         "CollectablesVM.CameraSpeedwall.ShowMiniWall" | "Camera.IsInternalDrivingCam" => false.into(),
         "CollectablesVM.Collectables.speedwall.Items._length" => 0.0.into(),
+        // An empty text is false: the bar's elements are visible on this binding.
+        "Mode.PromptString" => state.prompt.clone().unwrap_or_default().into(),
         "Players.LocalPlayer.IsInChase"
         | "Players.LocalPlayer.IsInCooldown"
         | "Players.LocalPlayer.IsInChaseOrCooldown"

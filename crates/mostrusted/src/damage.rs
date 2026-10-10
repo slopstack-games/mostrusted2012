@@ -84,6 +84,13 @@ impl CarDamage {
         &self.parts
     }
 
+    /// The game's repair (`FUN_0058f060`, vehicle-manager message 0x16): every damage level back to 0.
+    pub fn repair(&mut self) {
+        self.levels.iter_mut().for_each(|l| *l = 0.0);
+        self.worst_impact = None;
+        self.dirty = true;
+    }
+
     /// Set the animated body part positions; re-poses the skeleton when they changed.
     pub fn set_parts(&mut self, parts: &[f32]) {
         if self.parts != parts {

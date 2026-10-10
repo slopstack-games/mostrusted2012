@@ -55,6 +55,52 @@ data `mw_assets::scoring`, tool `mwtool scoring`.
   the real collectable totals leave some triggers out. A capture of the original at a billboard, a gate and a
   camera (HUD, 0–8 s) would settle the message placement, the plate and the totals.
 
+### 2026-10-10: jack spots (parked cars, the swap) and body shops
+
+From the dump's pseudo-C, the game data and `.rdata` / `.data` constants of the exe on disk; no live reads (the
+original was off-limits). Details in decomp.md "Jack spots: the parked cars and the swap" and "Body shops".
+
+- **Found.** The HSM's "Freedrive States" (469936) start "Do Body Shop" (979770, `DOBODYSHOP`) and "Car Swap
+  Logic" (979767 = `HSMBehaviourCarSwapLogic`, script object `JackSpots`). The swap behaviour's functions are
+  in the decompiled set: slots `FUN_00747aa0`, idle / prompt / input `FUN_007615f0`, per-slot car
+  `FUN_0075d290`, the swap's state machine `FUN_00761d70` with `FUN_0075d590` / `FUN_00758f00`, resets
+  `FUN_0075d800` / `FUN_007596b0`. The list at collectables manager +0x41b0 is the `CarSwapSpot` list
+  (confirmed by the slot builder reading +0x10 `ColourId`, +0x1c `e36e9d9d`, +0x20 `Placement`, +0x24
+  `VehicleId`, +0x28 `0e3bcabe`).
+- **Rules with their constants**: location triggers within 300 m, the nearest five get a distance; a car is
+  requested from 20 m to 300 m and stays inside 300 m (`.data` 0x010c5ca4 = 90000, 0x010c5cac = 400); swap
+  while in the location trigger at ≤ 70 mph (`GameLogicConfig.ff4aef6f`), prompt = language 955092
+  (`GameLogicConfig.a1e83efa`) in `Mode.PromptString` (HUD layout 604307), input SWAP_CARS (action 14: the
+  per-action state ints sit at 0x1c + 12 × action in the player's input block, checked against LOOK_BACK 37 at
+  +0x1d8 and the dialog actions 90 / 91 at +0x454 / +0x460).
+- **`CarSwapSpot.e36e9d9d`** is a second parking place: in all 182 spots that have one it lies 2.3–3.8 m
+  beside the car trigger (one 6.5 m ahead), facing the same way (two reversed) (`MW_JACKSPOT_LOG=1` prints
+  them). The car the player came in is left there, the next one on the car trigger, alternating. `ColourId` is
+  a `VehiclePaint` UniqueId = the low half of the paint's resource id, an entry of the car's
+  `VehicleColourPalette` (`16671e74` list, or `ColourGroups`' `PrimaryColour`).
+- **Body shop**: handler `FUN_00748ff0` = next palette colour (message 0xc → `FUN_0058bc60`, cyclic, not
+  random), repair + wash (message 0x16 → `FUN_0058f060`, now a direct link through `FUN_00596880`), nitrous
+  +100, stats, two score events, pursuit calls.
+- **Runtime**: `jackspots.rs`, `bodyshop.rs`, `--test jackspot`, `--test bodyshop`; finds in the profile
+  (`jackspots=`, `jackcars=`, `bodyshops=`, `swapspot=` lines; older files load unchanged).
+  Bug found on the way: a drivable car's model and the same model loaded without a skeleton shared one loader
+  key, so a parked copy of a car already driven drew skinned meshes without a skin (a wgpu validation error);
+  parked cars are their own variant now (`Worker::unskinned`).
+- **The body shop's update** `FUN_00749220` (0x00749220–0x00749569) is missing from the pseudo-C (no caller
+  of `FUN_00748ff0` there); disassembled from the dump image (`rest/NFS13_dump.exe`, capstone; a call scan
+  finds the one caller at 0x007493df). Rule: a pass on entering a kind-6 trigger, each shop at most once per
+  5 s (`.rdata` 0x00fd2120), no damage or speed test.
+- **Dead ends.** `FUN_00748e50` / `FUN_00748900` next to it belong to another behaviour (a list with
+  priorities at +0x2a).
+  The `JackSpots` variable getters and the function registering them are not decompiled either (their strings
+  have one reference each, from undecompiled code). `mwtool hsm` shows no parameters on either node.
+- **Open.** (1) The tip text 1444769 says body shops repair "or" respray; the code does both on every pass. A
+  capture of the original driving through damaged would confirm the reading. (2) The swap's transition (manufacturer movie,
+  sequences 995872 / 1016424, who sets B+0x74c4). (3) Which cars the profile has (`FUN_0068f190`): Most Wanted
+  cars and DLC spots are shown here although the original hides or locks them. (4) The jack spot's map / HUD
+  icon (`FUN_006a2480`, the badge ids). (5) Whether input state 2 is "pressed" or "held". (6) The score events
+  955227 / 955328 / 955329 belong to the Speed Points work.
+
 ### 2026-10-10: Windows host; first live read of the original from Windows (chase-camera `.bss`)
 The workspace builds and runs on Windows (MSVC): `mwtool memscan` / `telemetry` / `tune` / `capture` reach the
 game through `ReadProcessMemory` (`memscan/windows.rs`), the install is found through the EA app's registry key
