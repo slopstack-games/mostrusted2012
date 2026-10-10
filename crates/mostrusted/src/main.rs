@@ -911,8 +911,35 @@ fn main() -> anyhow::Result<()> {
             groundcover::groundcover_visibility
                 .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
         )
-        .add_systems(Update, (drive_vehicle_lights, apply_vehicle_lights).chain())
-        .run();
+        .add_systems(Update, (drive_vehicle_lights, apply_vehicle_lights).chain());
+    // The main world's schedules run their systems one after another on the main thread (the render world and
+    // the systems' own parallel queries still use the task pool). Spreading the main world's many small systems
+    // over the pool only paid off on an idle machine (equal there); under contention every dispatch waits for a
+    // worker to be scheduled: main world 16.7 -> 12.8 ms, a physics step 5.1 -> 3.6 ms with 16 niced busy loops
+    // (research log 2026-10-10). Same results (handling and race tests). `MW_MAIN_MULTI=1`: Bevy's default.
+    if std::env::var_os("MW_MAIN_MULTI").is_none() {
+        use bevy::ecs::schedule::{ScheduleLabel, SingleThreadedExecutor};
+        let labels: [bevy::ecs::intern::Interned<dyn ScheduleLabel>; 12] = [
+            First.intern(),
+            PreUpdate.intern(),
+            RunFixedMainLoop.intern(),
+            FixedFirst.intern(),
+            FixedPreUpdate.intern(),
+            FixedUpdate.intern(),
+            FixedPostUpdate.intern(),
+            FixedLast.intern(),
+            Update.intern(),
+            SpawnScene.intern(),
+            PostUpdate.intern(),
+            Last.intern(),
+        ];
+        for label in labels {
+            app.edit_schedule(label, |s| {
+                s.set_executor(SingleThreadedExecutor::new());
+            });
+        }
+    }
+    app.run();
     Ok(())
 }
 
