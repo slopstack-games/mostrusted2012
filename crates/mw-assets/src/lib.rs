@@ -24,6 +24,7 @@ pub mod frontend;
 pub mod handling;
 pub mod mods;
 pub mod paint;
+pub mod police;
 pub mod props;
 mod scene;
 pub mod sequence;
