@@ -115,6 +115,13 @@ default locations).
 If a controller's triggers or buttons don't respond, run with `--gamepad-debug` and check what it reports; a
 current SDL GameControllerDB is bundled, and custom mappings can be added via `SDL_GAMECONTROLLERCONFIG`.
 
+The Steam Controller (2026; USB, Bluetooth or its wireless puck) is read directly from its HID interface, since
+the OS does not list it as a game controller: it works without Steam, with the pad bindings above (the trackpads,
+gyro and back grips are not used). While Steam runs and the game was not started through it, Steam's desktop layout
+keeps sending keys and mouse moves from the same controller: either add `mostrusted` to Steam as a non-Steam game
+(Steam Input then provides a virtual pad and the direct reader steps aside), or pick an empty desktop layout, or
+quit Steam. `MW_STEAM_CONTROLLER=0` turns the direct reader off, `=1` forces it on.
+
 Format notes live in [docs/formats.md](docs/formats.md), open questions and findings in
 [docs/research-log.md](docs/research-log.md), and the full milestone plan in [docs/PLAN.md](docs/PLAN.md). Notes on
 reverse engineering the executable are in [docs/reverse-engineering.md](docs/reverse-engineering.md), and what
