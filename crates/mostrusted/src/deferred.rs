@@ -290,7 +290,6 @@ impl SpecializedRenderPipeline for GameLightingLayout {
                     blend,
                     write_mask: ColorWrites::ALL,
                 })],
-                ..default()
             }),
             depth_stencil: Some(DepthStencilState {
                 format: DEFERRED_LIGHTING_PASS_ID_DEPTH_FORMAT,
