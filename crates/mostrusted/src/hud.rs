@@ -35,6 +35,16 @@ use crate::ui_quads::{AdditiveQuadMaterial, PoolNode, QuadNode, QuadPool, show_q
 /// while [`HudState::prompt`] is set.
 pub const FREE_ROAM_LAYOUTS: [u32; 6] = [1_206_246, 1_990_196, 1_670_359, 1_806_698, 979_928, 604_307];
 
+/// Pursuit layouts of the free-roam screen (`AdditionalHUD`): 1213038, the HEAT / COOLDOWN bars beside the
+/// minimap (the stepped level bar bound to `Players.LocalPlayer.HeatLevelInt` over 0–6 and the fill bound to
+/// `Widget.HUD.Heat`), shown in a chase or cooldown, and 581357, the BUSTING bar
+/// (`Players.LocalPlayer.StaticBustProgress`), shown while `Players.LocalPlayer.ShowStaticBustBar` holds
+/// (`police.rs`; docs/decomp.md "Police and pursuits"). MODEL: which layouts the widget shows when is decided
+/// by the widget's code, not read; `Widget.HUD.Heat` is taken as the progress through the heat level
+/// (`FUN_006bdc50`).
+pub const PURSUIT_LAYOUT: u32 = 1_213_038;
+pub const BUSTING_LAYOUT: u32 = 581_357;
+
 /// The offline race HUD screen: the HSM's "Race HUD" state ("Activate Race HUD Styles Widget Group") names
 /// 604152 / 371726; this bundle is the screen whose widgets bind `DistanceToFinishManager`, `Event.Data.Laps`
 /// and `Players.LocalPlayer.EventPosition` (research log 2026-10-09).
@@ -124,6 +134,9 @@ pub struct HudState {
 enum Group {
     FreeRoam,
     Race,
+    /// The heat bars / the BUSTING bar (`PURSUIT_LAYOUT`, `BUSTING_LAYOUT`).
+    Pursuit,
+    Busting,
     /// Item of the countdown / results sequence (index into `Hud::countdown` / `Hud::results`).
     Countdown(usize),
     Results(usize),
@@ -239,6 +252,10 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>, settings: Res<H
         for l in screen_layouts(&store, FREE_ROAM_HUD, &FREE_ROAM_LAYOUTS) {
             layouts.push(l);
             groups.push(Group::FreeRoam);
+        }
+        for l in screen_layouts(&store, FREE_ROAM_HUD, &[PURSUIT_LAYOUT, BUSTING_LAYOUT]) {
+            groups.push(if l.layout.id == PURSUIT_LAYOUT { Group::Pursuit } else { Group::Busting });
+            layouts.push(l);
         }
         for l in screen_layouts(&store, RACE_HUD, &RACE_LAYOUTS) {
             layouts.push(l);
@@ -646,6 +663,7 @@ fn lookup(
     arg: Option<&str>,
     car: Option<(&crate::drive::Car, &GlobalTransform)>,
     state: &HudState,
+    pursuit: &crate::police::PursuitHud,
     metric: bool,
     t: f64,
 ) -> Option<BindValue> {
@@ -689,11 +707,13 @@ fn lookup(
         "CollectablesVM.Collectables.speedwall.Items._length" => 0.0.into(),
         // An empty text is false: the bar's elements are visible on this binding.
         "Mode.PromptString" => state.prompt.clone().unwrap_or_default().into(),
-        "Players.LocalPlayer.IsInChase"
-        | "Players.LocalPlayer.IsInCooldown"
-        | "Players.LocalPlayer.IsInChaseOrCooldown"
-        | "Players.LocalPlayer.Jammed"
-        | "Players.LocalPlayer.IsInTunnel" => false.into(),
+        "Players.LocalPlayer.IsInChase" => pursuit.in_chase.into(),
+        "Players.LocalPlayer.IsInCooldown" => pursuit.in_cooldown.into(),
+        "Players.LocalPlayer.IsInChaseOrCooldown" => (pursuit.in_chase || pursuit.in_cooldown).into(),
+        "Players.LocalPlayer.HeatLevelInt" => (pursuit.heat_level as f64).into(),
+        "Widget.HUD.Heat" => (pursuit.heat_progress as f64).into(),
+        "Players.LocalPlayer.StaticBustProgress" => (pursuit.bust_progress as f64).into(),
+        "Players.LocalPlayer.Jammed" | "Players.LocalPlayer.IsInTunnel" => false.into(),
         _ => return None,
     })
 }
@@ -715,6 +735,7 @@ fn draw_hud(
     mut materials: ResMut<Assets<AdditiveQuadMaterial>>,
     mut root_vis: Query<&mut Visibility, Without<QuadNode>>,
     pause: Option<Res<crate::pause::PauseMenu>>,
+    pursuit: Res<crate::police::PursuitHud>,
 ) {
     let Some(mut hud) = hud else { return };
     let car = car.single().ok();
@@ -762,7 +783,9 @@ fn draw_hud(
     let race_hud = view.as_ref().is_some_and(|v| matches!(v.race.phase, RacePhase::Intro | RacePhase::Racing));
 
     let mut base = |path: &str, arg: Option<&str>| -> Option<BindValue> {
-        view.as_ref().and_then(|v| v.lookup(path, arg, metric)).or_else(|| lookup(path, arg, car, &state, metric, t))
+        view.as_ref()
+            .and_then(|v| v.lookup(path, arg, metric))
+            .or_else(|| lookup(path, arg, car, &state, &pursuit, metric, t))
     };
     let mut draw = |only: &dyn Fn(Group) -> bool, lookup: &mut dyn FnMut(&str, Option<&str>) -> Option<BindValue>| {
         let groups = &*groups;
@@ -770,7 +793,15 @@ fn draw_hud(
             DrawOptions::new(Some(Box::new(move |i| groups.get(i).is_some_and(|&g| only(g)))), Some(&mut *anim), t);
         scene.draw_with(screen, lookup, &mut options)
     };
-    let mut quads: Vec<Quad> = draw(&|g| g == Group::FreeRoam || (g == Group::Race && race_hud), &mut base);
+    let mut quads: Vec<Quad> = draw(
+        &|g| {
+            g == Group::FreeRoam
+                || (g == Group::Race && race_hud)
+                || (g == Group::Pursuit && (pursuit.in_chase || pursuit.in_cooldown))
+                || (g == Group::Busting && pursuit.show_bust_bar)
+        },
+        &mut base,
+    );
 
     // Sequence items: their texts come in as `UISequences.Params[#].TextN` (the parser splits the path at
     // the `[`: argument `#].TextN`).
@@ -873,6 +904,8 @@ fn draw_hud(
                 .filter(|(r, _)| !r.player)
                 .map(|(_, x)| (MapIcon::Opponent, x.translation(), car_facing(x))),
         );
+        // Cops: the same arrow (`MapPoiConfig.5bfb3553`, "racer / cop arrows").
+        icons.extend(pursuit.cops.iter().map(|&(p, f)| (MapIcon::Opponent, p, f)));
         let icon_quads = map_icons(scene, groups, anim, t, screen, &q, p, f, metres_per_px, &icons, &mut base);
         quads.splice(qi + 1..qi + 1, icon_quads);
     }

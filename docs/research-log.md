@@ -101,6 +101,30 @@ original was off-limits). Details in decomp.md "Jack spots: the parked cars and 
   icon (`FUN_006a2480`, the badge ids). (5) Whether input state 2 is "pressed" or "held". (6) The score events
   955227 / 955328 / 955329 belong to the Speed Points work.
 
+### 2026-10-10: Police, pursuits and heat traced; first playable pursuit
+- **Where the rules live**: a pursuit manager with a 0x8b0-byte record per player at `*(world + 0x2f410)`
+  (`FUN_0066ae60`), fed by the AI cop coordinator (`FUN_00526c30`); all tuning is data: `GameLogicConfig`
+  (bust 20 m / 25 mph / 4 s), 40 `HeatLevel` rows (7 for free roam, heat thresholds 0 / 2 / 8 / 16 / 26 / 38 /
+  52), `Gameplay.CopType` → `AIPlayerType` → `Rollout` → car, and a heat value on every `ScoringAction`
+  (decomp.md "Police and pursuits"; `mwtool police`).
+- **Findings that differ from the expectation**: there is no heat "meter" filled by infractions; heat is one
+  float raised by scoring actions (chase start 0.5, takedown 1, ram 0.2 …) and by time while chased, and the
+  cooldown runs the *heat* back down to 0: escaping means cooling to zero, not waiting out a timer. A pursuit
+  starts when a cop *sees* the player above the heat level's speed limit (110 mph at level 0), is rammed, or
+  after collisions in its view; speed cameras are not involved. Busting is a 4 s meter that fills near a cop
+  below 12.5 mph (25 mph when touching), not "stopped".
+- **Method notes**: the script-binding registrations (`FUN_00a4e350("Player", "IsInChase", …)`) map every HUD
+  binding to a field or getter and were the way in; getters left as `LAB_` in the pseudo-C are five-instruction
+  stubs readable with capstone from the dumped image. `GlobalConfig` (`DAT_010edac0`) +0x24 / +0x44 are
+  `GameLogicConfig` / `ScoringConfig`, so `+ 0x288` style constants in the pursuit code are their field offsets.
+- **Dead ends**: the cooldown's × 4 factor tests vehicle +0x1a84 == 0, written by several vehicle functions
+  (0, 2, 0x80000000) without a readable meaning; `mwtool genesys all --type HeatLevel` finds nothing because
+  the rows sit inside an untyped list object (dump `GAMELOGIC/GAMEPLAY.BNDL` instead); `Helicopter` is 0 on all
+  rows and no cop spike-strip code was found.
+- **Port**: `pursuit.rs`, `police.rs`, HUD heat / BUSTING bars; `--test pursuit` (escape and bust). Cops lose a
+  911 from a standing start (the Interceptor is slow and our cops follow the road centre without the game's
+  chase path), which is why the test caps the player at 60 mph.
+
 ### 2026-10-10: Windows host; first live read of the original from Windows (chase-camera `.bss`)
 The workspace builds and runs on Windows (MSVC): `mwtool memscan` / `telemetry` / `tune` / `capture` reach the
 game through `ReadProcessMemory` (`memscan/windows.rs`), the install is found through the EA app's registry key

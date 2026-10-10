@@ -413,6 +413,9 @@ enum Cmd {
         #[arg(long)]
         objects: bool,
     },
+    /// Police and pursuit data (`mw_assets::police`): the bust rule, the free-roam heat levels (thresholds, heat
+    /// and cooldown times, the cops each fields) and the cop types' cars (docs/decomp.md "Police and pursuits").
+    Police,
     /// Drop every placement (instances, props, compounds, dynamics, groundcover) onto the track units'
     /// collision and report per layer / model / unit how far it stands off the ground.
     PlacementCheck {
@@ -798,6 +801,7 @@ fn main() -> Result<()> {
                 freeroam(&store, list, kind.as_deref(), all_kinds)?
             }
         }
+        Cmd::Police => police(&AssetStore::new(game)?)?,
         Cmd::PlacementCheck { bundles, top, groups, view, column, owners } => {
             let store = AssetStore::new(game)?;
             if owners {
@@ -2420,6 +2424,53 @@ fn capture_cmd(
     poked.restore(&p, None);
     eprintln!("saved {}", dir.display());
     result
+}
+
+/// `mwtool police`: the pursuit rules' data.
+fn police(store: &AssetStore) -> Result<()> {
+    let cfg = store.police_config()?;
+    println!(
+        "bust: within {} m, below {} mph, {} s; cop radar {} m",
+        cfg.bust_distance, cfg.bust_speed_mph, cfg.bust_time, cfg.radar_range
+    );
+    println!(
+        "heat of scoring actions: chase started {}, cooldown back to chase {}",
+        cfg.chase_started_heat, cfg.chase_resumed_heat
+    );
+    println!(
+        "level  id       heat<  heat s  cool s  lose m  speeding mph  spawn m (free/chase/cooldown)  main / fallback cops (type@mph:behaviour:positioning)"
+    );
+    for l in &cfg.levels {
+        let cops = |b: &mw_assets::police::Behaviour| {
+            let list: Vec<String> = b
+                .cops
+                .iter()
+                .map(|c| format!("{}@{}:{}:{}", c.cop_type, c.speed_mph, c.behaviour, c.positioning))
+                .collect();
+            let roadblock = if b.roadblock != 0 { format!(" roadblock {}", b.roadblock) } else { String::new() };
+            format!("{} [{}]{roadblock}", b.cop_count, list.join(" "))
+        };
+        println!(
+            "{:5}  {:7}  {:5}  {:6}  {:6}  {:6}  {:12}  {:?}  {} / {}",
+            l.level,
+            l.id,
+            l.threshold,
+            l.heat_time,
+            l.cooldown_time,
+            l.lose_radius,
+            l.speeding_mph,
+            l.spawn_distance,
+            cops(&l.main),
+            cops(&l.fallback)
+        );
+    }
+    let mut types: Vec<_> = cfg.cop_vehicles.iter().collect();
+    types.sort();
+    println!("cop types (id -> vehicle, takedown heat):");
+    for (id, vehicle) in types {
+        println!("  {id} -> VEH_{vehicle} ({})", cfg.takedown_heat.get(id).copied().unwrap_or(0.0));
+    }
+    Ok(())
 }
 
 /// `mwtool freeroam`: the free-roam collectables in TriggerData (docs/formats.md "TriggerData").

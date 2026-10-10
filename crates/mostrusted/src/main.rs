@@ -44,7 +44,9 @@ mod nitrous;
 mod paint_wear;
 mod particles;
 mod pause;
+mod police;
 mod props;
+mod pursuit;
 mod race;
 mod reflection;
 mod replay;
@@ -298,6 +300,10 @@ struct Cli {
     /// No traffic cars (`traffic.rs`; traffic runs in `--drive` sessions in the world).
     #[arg(long)]
     no_traffic: bool,
+    /// No police (`police.rs`; cops patrol and chase in `--drive` sessions in the world, outside races, tests
+    /// and benchmarks). `--test pursuit` runs a pursuit start to end and prints TEST RESULT lines.
+    #[arg(long)]
+    no_police: bool,
     /// Multiply the traffic density (1 = the game's; for tests).
     #[arg(long, default_value_t = 1.0)]
     traffic_density: f32,
@@ -561,6 +567,7 @@ fn main() -> anyhow::Result<()> {
                     | Some("freeroam")
                     | Some("jackspot")
                     | Some("bodyshop")
+                    | Some("pursuit")
             );
         let track = cli.test_track || (cli.test.is_some() && !street_test) || cli.replay.is_some();
         let spawn = if track { Vec3::new(0.0, 1.0, 0.0) } else { spawn };
@@ -590,7 +597,8 @@ fn main() -> anyhow::Result<()> {
         | Some("crash-ai")
         | Some("freeroam")
         | Some("jackspot")
-        | Some("bodyshop") => None,
+        | Some("bodyshop")
+        | Some("pursuit") => None,
         Some("accel") => Some(drive::TestKind::Accel),
         Some("nitrous") => Some(drive::TestKind::Nitrous),
         Some("brake") => Some(drive::TestKind::Brake),
@@ -606,7 +614,7 @@ fn main() -> anyhow::Result<()> {
         Some("exhaust") => Some(drive::TestKind::Exhaust),
         Some(other) => {
             anyhow::bail!(
-                "unknown --test {other} (accel, brake, corner, handbrake, drift, donut, engine, exhaust, landing, climb, jitter, kerb, crash, smash, ai, race, crash-traffic, crash-ai, freeroam, jackspot, bodyshop)"
+                "unknown --test {other} (accel, brake, corner, handbrake, drift, donut, engine, exhaust, landing, climb, jitter, kerb, crash, smash, ai, race, crash-traffic, crash-ai, freeroam, jackspot, bodyshop, pursuit)"
             )
         }
     };
@@ -658,6 +666,11 @@ fn main() -> anyhow::Result<()> {
             .collect::<anyhow::Result<_>>()?,
     };
     let ai_test = cli.test.as_deref() == Some("ai");
+    let police_enabled = !cli.no_police
+        && matches!(request, Request::Drive { world: true, .. })
+        && race.is_none()
+        && cli.bench.is_none()
+        && matches!(cli.test.as_deref(), None | Some("pursuit"));
     let world_drive = matches!(request, Request::Drive { world: true, .. });
     let front_phase = if boot_start.is_some() && (cli.screenshot.is_none() || cli.front_end) {
         frontend::Phase::Title
@@ -873,6 +886,7 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(bodyshop::BodyShopPlugin {
             test: (cli.test.as_deref() == Some("bodyshop")).then(|| cli.screenshot.clone()),
         })
+        .add_plugins(police::PolicePlugin { enabled: police_enabled, test: cli.test.as_deref() == Some("pursuit") })
         .add_plugins(race::RacePlugin { setup: race.map(Arc::new) })
         .add_plugins(cutscene::CutscenePlugin { setup: cutscenes })
         .add_plugins(traffic::TrafficPlugin {
