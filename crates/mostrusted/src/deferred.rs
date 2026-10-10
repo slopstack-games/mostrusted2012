@@ -8,6 +8,10 @@
 //! Inputs come from the main world as a [`GameLighting`] resource: the key light and the irradiance
 //! cube. The pass reuses the mesh view bind group (view, depth, deferred texture, fog) as Bevy's
 //! deferred lighting does.
+//!
+//! The same render pass then adds the world's point, cone and spot lights ([`WorldLightList`], filled by
+//! `world_lights.rs`): the port of the game's `LightBuffer_Point` / `_Cone` / `_Spot` programs, one
+//! instanced light volume each, blended additively as the game does.
 
 use bevy::asset::{embedded_asset, load_embedded_asset};
 use bevy::core_pipeline::core_3d::main_opaque_pass_3d;
@@ -21,7 +25,7 @@ use bevy::prelude::*;
 use bevy::render::camera::ExtractedCamera;
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
 use bevy::render::render_asset::RenderAssets;
-use bevy::render::render_resource::binding_types::{sampler, texture_cube, uniform_buffer};
+use bevy::render::render_resource::binding_types::{sampler, storage_buffer_read_only, texture_cube, uniform_buffer};
 use bevy::render::render_resource::*;
 use bevy::render::renderer::{RenderContext, RenderDevice, RenderQueue, ViewQuery};
 use bevy::render::texture::GpuImage;
@@ -106,18 +110,37 @@ struct GameLightingUniform {
     scattering_params: Vec4,
 }
 
+/// A world light in the layout of `game_lighting.wgsl`'s `WorldLight` (see there).
+#[derive(ShaderType, Clone, Copy, Debug, Default, PartialEq)]
+pub struct GpuWorldLight {
+    pub position: Vec4,
+    pub colour: Vec4,
+    pub direction: Vec4,
+    pub cone: Vec4,
+}
+
+/// The lights to draw (`world_lights.rs`); `generation` changes whenever the list does.
+#[derive(Resource, Clone, Default, ExtractResource)]
+pub struct WorldLightList {
+    pub lights: std::sync::Arc<Vec<GpuWorldLight>>,
+    pub generation: u64,
+}
+
 pub struct GameLightingPlugin;
 
 impl Plugin for GameLightingPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "game_lighting.wgsl");
-        app.add_plugins(ExtractResourcePlugin::<GameLighting>::default());
+        app.add_plugins(ExtractResourcePlugin::<GameLighting>::default())
+            .add_plugins(ExtractResourcePlugin::<WorldLightList>::default())
+            .init_resource::<WorldLightList>();
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else { return };
         render_app
             .init_resource::<SpecializedRenderPipelines<GameLightingLayout>>()
             .init_resource::<GameLightingBuffer>()
+            .init_resource::<WorldLightBuffer>()
             .add_systems(RenderStartup, init_layout.after(MeshPipelineSystems))
-            .add_systems(Render, (prepare_pipelines, prepare_buffer).in_set(RenderSystems::Prepare))
+            .add_systems(Render, (prepare_pipelines, prepare_buffer, prepare_lights).in_set(RenderSystems::Prepare))
             .add_systems(
                 Core3d,
                 // Before Bevy's pass: it discards the lighting-ID depth when done.
@@ -129,15 +152,26 @@ impl Plugin for GameLightingPlugin {
 #[derive(Resource, Default)]
 struct GameLightingBuffer(UniformBuffer<GameLightingUniform>);
 
+/// The light list on the GPU: rewritten when [`WorldLightList::generation`] changes.
+#[derive(Resource, Default)]
+struct WorldLightBuffer {
+    buffer: StorageBuffer<Vec<GpuWorldLight>>,
+    generation: Option<u64>,
+    count: u32,
+}
+
 #[derive(Resource)]
 struct GameLightingLayout {
     mesh_pipeline: MeshPipeline,
     layout: BindGroupLayoutDescriptor,
+    /// The light-volume pipeline's: the same plus the light list.
+    light_layout: BindGroupLayoutDescriptor,
     shader: Handle<Shader>,
 }
 
+/// The full-screen key light + ambient pipeline and the light-volume pipeline.
 #[derive(Component)]
-struct GameLightingPipeline(CachedRenderPipelineId);
+struct GameLightingPipeline(CachedRenderPipelineId, CachedRenderPipelineId);
 
 fn init_layout(mut commands: Commands, mesh_pipeline: Res<MeshPipeline>, asset_server: Res<AssetServer>) {
     let layout = BindGroupLayoutDescriptor::new(
@@ -151,17 +185,31 @@ fn init_layout(mut commands: Commands, mesh_pipeline: Res<MeshPipeline>, asset_s
             ),
         ),
     );
+    let light_layout = BindGroupLayoutDescriptor::new(
+        "world_light_layout",
+        &BindGroupLayoutEntries::sequential(
+            ShaderStages::VERTEX_FRAGMENT,
+            (
+                uniform_buffer::<GameLightingUniform>(false),
+                texture_cube(TextureSampleType::Float { filterable: true }),
+                sampler(SamplerBindingType::Filtering),
+                storage_buffer_read_only::<Vec<GpuWorldLight>>(false),
+            ),
+        ),
+    );
     commands.insert_resource(GameLightingLayout {
         mesh_pipeline: mesh_pipeline.clone(),
         layout,
+        light_layout,
         shader: load_embedded_asset!(asset_server.as_ref(), "game_lighting.wgsl"),
     });
 }
 
 impl SpecializedRenderPipeline for GameLightingLayout {
-    type Key = MeshPipelineKey;
+    /// The view's key, and whether this is the light-volume pipeline.
+    type Key = (MeshPipelineKey, bool);
 
-    fn specialize(&self, key: Self::Key) -> RenderPipelineDescriptor {
+    fn specialize(&self, (key, volumes): Self::Key) -> RenderPipelineDescriptor {
         // The mesh view bind group's layout depends on these keys; declare the matching defs.
         let mut defs: Vec<ShaderDefVal> = vec!["DEFERRED_LIGHTING_PIPELINE".into(), "DEFERRED_PREPASS".into()];
         for (flag, def) in [
@@ -204,16 +252,42 @@ impl SpecializedRenderPipeline for GameLightingLayout {
         defs.push("BLUE_NOISE_TEXTURE".into());
         defs.push("DFG_LUT".into());
         let view_layout = self.mesh_pipeline.get_view_layout(key.into());
+        // Light volumes: `light_vertex` / `light_fragment`, added to the light buffer (the game's blend
+        // state for its light programs is ONE, ONE), back faces only so the camera may stand inside one.
+        let add = BlendComponent {
+            src_factor: BlendFactor::One,
+            dst_factor: BlendFactor::One,
+            operation: BlendOperation::Add,
+        };
+        let (label, group, vs, fs, blend, cull_mode) = if volumes {
+            (
+                "world_light_pipeline",
+                self.light_layout.clone(),
+                "light_vertex",
+                "light_fragment",
+                Some(BlendState { color: add, alpha: add }),
+                Some(Face::Front),
+            )
+        } else {
+            ("game_lighting_pipeline", self.layout.clone(), "vertex", "fragment", None, None)
+        };
         RenderPipelineDescriptor {
-            label: Some("game_lighting_pipeline".into()),
-            layout: vec![view_layout.main_layout, view_layout.binding_array_layout, self.layout.clone()],
-            vertex: VertexState { shader: self.shader.clone(), shader_defs: defs.clone(), ..default() },
+            label: Some(label.into()),
+            layout: vec![view_layout.main_layout, view_layout.binding_array_layout, group],
+            vertex: VertexState {
+                shader: self.shader.clone(),
+                shader_defs: defs.clone(),
+                entry_point: Some(vs.into()),
+                ..default()
+            },
+            primitive: PrimitiveState { cull_mode, ..default() },
             fragment: Some(FragmentState {
                 shader: self.shader.clone(),
                 shader_defs: defs,
+                entry_point: Some(fs.into()),
                 targets: vec![Some(ColorTargetState {
                     format: key.target_format(),
-                    blend: None,
+                    blend,
                     write_mask: ColorWrites::ALL,
                 })],
                 ..default()
@@ -244,8 +318,9 @@ fn prepare_pipelines(
     let Some(layout) = layout else { return };
     for (entity, view) in &cameras {
         let Some(key) = view_key_cache.get(&view.retained_view_entity) else { continue };
-        let id = pipelines.specialize(&pipeline_cache, &layout, *key);
-        commands.entity(entity).insert(GameLightingPipeline(id));
+        let id = pipelines.specialize(&pipeline_cache, &layout, (*key, false));
+        let volumes = pipelines.specialize(&pipeline_cache, &layout, (*key, true));
+        commands.entity(entity).insert(GameLightingPipeline(id, volumes));
     }
 }
 
@@ -277,12 +352,36 @@ fn prepare_buffer(
     buffer.0.write_buffer(&device, &queue);
 }
 
+/// Upload the light list when it has changed.
+fn prepare_lights(
+    list: Option<Res<WorldLightList>>,
+    mut buffer: ResMut<WorldLightBuffer>,
+    device: Res<RenderDevice>,
+    queue: Res<RenderQueue>,
+) {
+    let Some(list) = list else { return };
+    if buffer.generation == Some(list.generation) {
+        return;
+    }
+    buffer.generation = Some(list.generation);
+    buffer.count = list.lights.len() as u32;
+    let mut lights = (*list.lights).clone();
+    if lights.is_empty() {
+        // A runtime-sized array needs an element to bind.
+        lights.push(GpuWorldLight::default());
+    }
+    buffer.buffer.set(lights);
+    buffer.buffer.write_buffer(&device, &queue);
+}
+
+#[allow(clippy::too_many_arguments)]
 fn game_lighting(
     view: ViewQuery<(&MeshViewBindGroup, &ViewTarget, &DeferredLightingIdDepthTexture, &GameLightingPipeline)>,
     pipeline_cache: Res<PipelineCache>,
     layout: Res<GameLightingLayout>,
     lighting: Option<Res<GameLighting>>,
     buffer: Res<GameLightingBuffer>,
+    lights: Res<WorldLightBuffer>,
     images: Res<RenderAssets<GpuImage>>,
     mut ctx: RenderContext,
 ) {
@@ -293,8 +392,22 @@ fn game_lighting(
     let bind_group = ctx.render_device().create_bind_group(
         "game_lighting_bind_group",
         &pipeline_cache.get_bind_group_layout(&layout.layout),
-        &BindGroupEntries::sequential((uniform, &irradiance.texture_view, &irradiance.sampler)),
+        &BindGroupEntries::sequential((uniform.clone(), &irradiance.texture_view, &irradiance.sampler)),
     );
+    // The light volumes, once their pipeline has compiled and there is something to draw.
+    let volumes = if lights.count > 0
+        && let Some(volume_pipeline) = pipeline_cache.get_render_pipeline(pipeline.1)
+        && let Some(list) = lights.buffer.binding()
+    {
+        let group = ctx.render_device().create_bind_group(
+            "world_light_bind_group",
+            &pipeline_cache.get_bind_group_layout(&layout.light_layout),
+            &BindGroupEntries::sequential((uniform, &irradiance.texture_view, &irradiance.sampler, list)),
+        );
+        Some((volume_pipeline, group))
+    } else {
+        None
+    };
     let mut pass = ctx.begin_tracked_render_pass(RenderPassDescriptor {
         label: Some("game_lighting"),
         color_attachments: &[Some(target.get_color_attachment())],
@@ -313,4 +426,9 @@ fn game_lighting(
     pass.set_bind_group(1, &mesh_view_bind_group.binding_array, &[]);
     pass.set_bind_group(2, &bind_group, &[]);
     pass.draw(0..3, 0..1);
+    if let Some((volume_pipeline, group)) = &volumes {
+        pass.set_render_pipeline(volume_pipeline);
+        pass.set_bind_group(2, group, &[]);
+        pass.draw(0..36, 0..lights.count);
+    }
 }

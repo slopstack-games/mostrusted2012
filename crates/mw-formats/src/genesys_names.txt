@@ -1504,3 +1504,17 @@ Wrecked_Passbys
 Racer_And_Cop_Passbys
 Passbys
 Player_Vehicle_Ignition
+# World lights (2026-10-10, night lighting): Light_Base and EnvironmentSettings.DayNightTransition, genesys-crack
+# with a lighting word list. Each sorts into its field's place (the five bools in the order Day, Night, Rain,
+# Twilight, Wet; AttenuationThreshold before Intensity; ConeInnerAngle after ConeAngle).
+OnDuringDay
+OnDuringNight
+OnDuringRain
+OnDuringTwilight
+OnDuringWet
+AttenuationThreshold
+ConeInnerAngle
+LightTransitionDuration
+LightTransitionOffset
+ShadowTransitionDuration
+ShadowTransitionOffset

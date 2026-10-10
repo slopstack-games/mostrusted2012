@@ -74,11 +74,14 @@ pub struct InstanceLook {
     tint: [u16; 3],
     ao: u16,
     pub ao_map: Option<ResourceId>,
+    /// `AdditiveIntensities` from the instance's override block (the `InstanceIntensity` shader variants
+    /// read it from the instance constants instead of the material's), × 1000.
+    additive: Option<[i32; 2]>,
 }
 
 impl Default for InstanceLook {
     fn default() -> Self {
-        Self { tint: [q(1.0); 3], ao: q(1.0), ao_map: None }
+        Self { tint: [q(1.0); 3], ao: q(1.0), ao_map: None, additive: None }
     }
 }
 
@@ -93,6 +96,11 @@ impl InstanceLook {
             tint: [w[0] * t[0], w[1] * t[1], w[2] * t[2]].map(q),
             ao: q(w[3]),
             ao_map: p.overrides.as_deref().and_then(|o| o.texture("AOMapTextureSampler")),
+            additive: p
+                .overrides
+                .as_deref()
+                .and_then(|o| o.constant("AdditiveIntensities"))
+                .map(|a| [qi(a[0]), qi(a[1])]),
         }
     }
 
@@ -405,14 +413,34 @@ impl Look {
             // The AO map sits in sampler slot 1: `OverlayTextureSampler` in the material, or a
             // per-instance `AOMapTextureSampler` override (see `with_instance`).
             let ao = linear("OverlayTextureSampler").filter(|_| has_uv(1));
+            // Light the surface gives off at night, added to RT3 × albedo (see `layered.wgsl` mode 5):
+            // lit windows (`LitWindowColour` × `AdditiveIntensities.y`, masked by the specular map's alpha ×
+            // the AO map's alpha, or by the diffuse map's alpha in the LOD2 variants) and illuminated signs
+            // (`IlluminanceTextureSampler`.y × `LightmapColour` × `AdditiveIntensities.x`). The `Persistent`
+            // variants leave out the global `DynamicLighting_GlobalLightMapIntensities.x` (always lit).
+            let additive = sm.parameter("AdditiveIntensities").unwrap_or([0.0; 4]);
+            let illuminance = linear("IlluminanceTextureSampler")
+                .filter(|_| name.contains("illuminance") || name.contains("emissive"));
+            let (glow, glow_kind) = if name.contains("lod2litwindows") {
+                (sm.parameter("LitWindowColour"), 2.0)
+            } else if name.contains("litwindows") {
+                (sm.parameter("LitWindowColour"), 1.0)
+            } else if illuminance.is_some() {
+                (sm.parameter("LightmapColour"), 3.0)
+            } else {
+                (None, 0.0)
+            };
+            let glow = glow.unwrap_or([0.0; 4]);
             look.mode = Mode::WorldPbr;
-            look.textures = slots(&[Some(diffuse), Some(spec), ao, coloured]);
+            look.textures = slots(&[Some(diffuse), Some(spec), ao, coloured, illuminance]);
             look.normal = linear("NormalTextureSampler").filter(|_| sm.mesh.tangents.is_some());
             look.tint = [c[0], c[1], c[2], 1.0].map(q);
             look.vals = pack(&[
                 // w: planar-reflection variants have no cube reflection (only the wet planar one).
                 [flag(coloured.is_some()), 1.0, flag(ao.is_some()), flag(name.contains("planarreflection"))],
                 [c[0], c[1], c[2], 0.0],
+                [glow[0], glow[1], glow[2], glow_kind],
+                [additive[0], additive[1], flag(!name.contains("persistent")), 0.0],
             ]);
             if has_uv(1) {
                 look.uv_b = Some(1);
@@ -777,6 +805,10 @@ impl Look {
         if self.mode == Mode::WorldPbr {
             self.vals[0] = qi(self.textures[3].is_some() as u8 as f32);
             self.vals[2] = qi(self.textures[2].is_some() as u8 as f32);
+            // An illuminated sign needs its illuminance map.
+            if self.vals[11] == qi(3.0) && self.textures[4].is_none() {
+                self.vals[11] = 0;
+            }
         }
         if self.paint {
             // Body paint keeps the flags `from_scene_mesh` / `with_paint` wrote: its slot 0 is the livery or
@@ -830,6 +862,10 @@ impl Look {
             *c = q(dq(*c) * dq(t));
         }
         self.vals[1] = qi(dq(inst.ao));
+        if let Some([x, y]) = inst.additive {
+            self.vals[12] = x;
+            self.vals[13] = y;
+        }
         if let Some(ao) = inst.ao_map
             && self.uv_b == Some(1)
         {
@@ -924,6 +960,12 @@ impl Look {
     /// Body paint whose effects map (TEXCOORD2) rides in UV_0 (`convert::add_paint_grid`).
     pub fn effects_in_uv0(&self) -> bool {
         self.paint && self.vals[20 * 4 + 2] != 0
+    }
+
+    /// Whether the look reads the night level (`world_lights::NightLevel`): lit windows and signs of the
+    /// variants that take `DynamicLighting_GlobalLightMapIntensities`.
+    pub fn uses_night(&self) -> bool {
+        self.mode == Mode::WorldPbr && self.vals[11] != 0 && self.vals[14] != 0
     }
 
     /// Whether the material reads the vehicle light state.
@@ -1034,6 +1076,8 @@ pub struct LayeredParams {
     pub env: Vec4,
     /// Vehicle light state ([`VehicleLights::mask`]).
     pub lights: Vec4,
+    /// x = `DynamicLighting_GlobalLightMapIntensities.x` (`world_lights::NightLevel`, which sets it).
+    pub night: Vec4,
 }
 
 /// A groundcover sprite corner (`loader::groundcover_mesh`): (width byte, height byte, 2^e, corner index 0..3).

@@ -55,6 +55,7 @@ mod traffic;
 mod tyre_marks;
 mod ui_quads;
 mod weather;
+mod world_lights;
 mod world_ui;
 
 use std::collections::{HashMap, HashSet};
@@ -787,6 +788,7 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(FreeCameraPlugin)
         .add_plugins(MaterialPlugin::<GameMaterial>::default())
         .add_plugins(deferred::GameLightingPlugin)
+        .add_plugins(world_lights::WorldLightsPlugin)
         .add_plugins(tonemap::GameTonemapPlugin)
         .add_plugins(flash_probe::FlashProbePlugin)
         .init_resource::<GameEnvironment>()
@@ -1114,6 +1116,9 @@ fn receive_assets(
                 commands.spawn((avian3d::prelude::RigidBody::Static, c, props::SurfaceTags(tags)));
             }
             Msg::Surfaces(list) => surfaces.list = list,
+            Msg::Lights(lights) => {
+                commands.queue(move |world: &mut World| world.resource_mut::<world_lights::LightSources>().add(lights));
+            }
             Msg::PropResponses(r) => {
                 info!("prop contact responses: {r:?}");
                 surfaces.responses = r;

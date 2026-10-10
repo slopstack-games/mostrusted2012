@@ -494,6 +494,15 @@ enum Cmd {
         #[arg(long)]
         all: bool,
     },
+    /// World lights (`LightInstanceList` + GeneSys `Light_*`, `mw_assets::lights`): counts per type and
+    /// `OnDuring…` flags, the day / night transition; `--near x,z[,r]` lists the lights around a point,
+    /// `--hour` adds how bright each is then.
+    Lights {
+        #[arg(long, value_delimiter = ',', allow_hyphen_values = true)]
+        near: Vec<f32>,
+        #[arg(long)]
+        hour: Option<f32>,
+    },
     /// The front end's data (`mw_assets::frontend`): the free-roam start (default car, start point, swap
     /// spots), the loading screens (layouts, pictures, tips), the pause menu's items and the title / transition
     /// sequences' items.
@@ -1350,6 +1359,7 @@ fn main() -> Result<()> {
             events::hsm(&AssetStore::new(game)?, &bundle, node, find.as_deref(), depth)?
         }
         Cmd::Traffic { png, at } => traffic(&AssetStore::new(game)?, png.as_deref(), &at)?,
+        Cmd::Lights { near, hour } => lights(&AssetStore::new(game)?, &near, hour)?,
         Cmd::PaintMap { id, png, at } => paint_map(&AssetStore::new(game)?, &id, png.as_deref(), &at)?,
     }
     Ok(())
@@ -1446,6 +1456,67 @@ fn skid_sweep(
     let pcm = mw_audio::Pcm { channels: 1, sample_rate: rate as u32, samples };
     std::fs::write(out, pcm.to_wav())?;
     println!("13 s sweep of {suffix} at {mph} mph -> {}", out.display());
+    Ok(())
+}
+
+fn lights(store: &AssetStore, near: &[f32], hour: Option<f32>) -> Result<()> {
+    let transition = store.day_night_transition()?;
+    println!("{transition:?}");
+    let phase = hour.map(|h| transition.phase(h));
+    if let (Some(h), Some(p)) = (hour, phase) {
+        println!("at {h} h: night {:.2}, twilight {}", p.night, p.twilight);
+    }
+    let units: Vec<_> = store
+        .bundle_paths()
+        .iter()
+        .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("TRK_UNIT")))
+        .cloned()
+        .collect();
+    // (shape, day, night, twilight, flash type) -> (instances, summed range)
+    let mut classes: std::collections::BTreeMap<(&str, bool, bool, bool, u32), (usize, f32)> = Default::default();
+    let mut total = 0;
+    for u in units {
+        let Some(b) = store.bundle(&u) else { continue };
+        for l in store.bundle_lights(&b)? {
+            total += 1;
+            let d = &l.def;
+            let e = classes.entry((d.shape.name(), d.on_day, d.on_night, d.on_twilight, d.flash.kind)).or_default();
+            e.0 += 1;
+            e.1 += d.range();
+            let [x, y, z] = l.position;
+            let within = match near {
+                [nx, nz] => (x - nx).hypot(z - nz) < 60.0,
+                [nx, nz, r] => (x - nx).hypot(z - nz) < *r,
+                _ => false,
+            };
+            if within {
+                println!(
+                    "{} {:x} {:?} at ({x:.1}, {y:.1}, {z:.1}) dir ({:.2}, {:.2}, {:.2}) colour {:.2?} x {} threshold {}                      range {:.1} m day {} night {} twilight {} flash {}{}",
+                    u.file_name().unwrap_or_default().to_string_lossy(),
+                    d.id.0 & 0xFF_FFFF,
+                    d.shape,
+                    l.direction[0],
+                    l.direction[1],
+                    l.direction[2],
+                    d.colour,
+                    d.intensity,
+                    d.attenuation_threshold,
+                    d.range(),
+                    d.on_day,
+                    d.on_night,
+                    d.on_twilight,
+                    d.flash.kind,
+                    phase.map(|p| format!(" level {:.2}", p.light_level(d))).unwrap_or_default(),
+                );
+            }
+        }
+        store.evict_all();
+    }
+    println!("{total} lights");
+    println!("shape  day   night twilight flash  count  mean range");
+    for ((shape, day, night, twilight, flash), (n, range)) in classes {
+        println!("{shape:6} {day:5} {night:5} {twilight:8} {flash:5} {n:6}  {:.1} m", range / n as f32);
+    }
     Ok(())
 }
 

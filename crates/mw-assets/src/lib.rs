@@ -22,6 +22,7 @@ pub mod environment;
 pub mod events;
 pub mod frontend;
 pub mod handling;
+pub mod lights;
 pub mod mods;
 pub mod paint;
 pub mod props;
