@@ -64,7 +64,8 @@ impl Plugin for FreeroamPlugin {
             state.progress = Progress::load(path);
         }
         app.insert_resource(state)
-            .add_systems(Update, (load, overlaps, billboards, handle_hits, publish, save).chain());
+            .add_message::<ScoreAction>()
+            .add_systems(Update, (load, overlaps, billboards, handle_hits, score_actions, publish, save).chain());
         if let Some(test) = &self.test {
             app.insert_resource(test.clone()).add_systems(Update, run_test.after(save));
         }
@@ -507,6 +508,27 @@ fn handle_hits(
         {
             handle(state, &mut hud.freeroam, kind, id, mph, free_roam, now, false);
         }
+    }
+}
+
+/// A scoring event posted by another module (the game's `FUN_006a8050` with a `ScoringConfig` field): the
+/// field's name hash, `mw_assets::scoring::action`. Its Speed Points, message and sequences run as for the
+/// collectables' own events.
+#[derive(Message, Clone, Copy, Debug)]
+pub struct ScoreAction(pub u32);
+
+fn score_actions(
+    mut state: ResMut<Collectables>,
+    mut hud: ResMut<crate::hud::HudState>,
+    time: Res<Time>,
+    mut actions: MessageReader<ScoreAction>,
+) {
+    let state = &mut *state;
+    for ScoreAction(field) in actions.read().copied() {
+        let Some(a) = state.scoring.by_field(field).cloned() else { continue };
+        let sp = score(state, &mut hud.freeroam, &a, time.elapsed_secs_f64());
+        state.dirty = true;
+        info!("scoring action {field:08x}: +{sp} SP (total {})", state.progress.speed_points);
     }
 }
 

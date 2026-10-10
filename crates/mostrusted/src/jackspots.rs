@@ -611,6 +611,7 @@ fn swap(
     mut garage: ResMut<Garage>,
     mut collected: ResMut<Collected>,
     mut actions: MessageWriter<GarageAction>,
+    mut scoring: MessageWriter<crate::freeroam::ScoreAction>,
     mut hud: Option<ResMut<crate::hud::HudState>>,
     input: Res<CarInput>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -661,8 +662,11 @@ fn swap(
             s.parked = Parked::None;
             // State 6: both triggers found, the slot is the last swap spot.
             collected.jack_spots.insert(s.data.location);
-            if let Some(car) = s.data.car {
-                collected.jack_cars.insert(car.trigger);
+            // The car's first find scores `CarSwapDiscovered` (350 SP in the data; decomp.md "Speed Points").
+            if let Some(car) = s.data.car
+                && collected.jack_cars.insert(car.trigger)
+            {
+                scoring.write(crate::freeroam::ScoreAction(mw_assets::scoring::action::CAR_SWAP_DISCOVERED));
             }
             collected.swap_spot = Some(s.data.location);
             collected.dirty = true;
