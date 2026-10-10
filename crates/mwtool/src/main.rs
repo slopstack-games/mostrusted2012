@@ -408,6 +408,10 @@ enum Cmd {
         kind: Option<String>,
         #[arg(long)]
         all_kinds: bool,
+        /// For every billboard, security gate and speed camera: the nearest placed object (prop / compound /
+        /// dynamic instance of the track units) with its instance ids, to check the object ↔ trigger link.
+        #[arg(long)]
+        objects: bool,
     },
     /// Drop every placement (instances, props, compounds, dynamics, groundcover) onto the track units'
     /// collision and report per layer / model / unit how far it stands off the ground.
@@ -510,6 +514,18 @@ enum Cmd {
         /// Tree depth for `hsm <id>`.
         #[arg(long, default_value_t = 3)]
         depth: usize,
+    },
+    /// Scoring actions (`ScoringAction`s of GAMELOGIC/GAMEPLAY.BNDL named by `ScoringConfig`): Speed Points,
+    /// pursuit score, heat, HUD message sequence and title per action. `--all` includes the actions worth no
+    /// Speed Points; `--sequence <id>` prints a message sequence's layouts instead.
+    Scoring {
+        #[arg(long)]
+        all: bool,
+        #[arg(long)]
+        sequence: Option<u32>,
+        /// Print these language strings (ids, comma separated) instead.
+        #[arg(long, value_delimiter = ',')]
+        text: Vec<u32>,
     },
     /// Show a WorldPaintMap (what is painted where: environment timelines, layer fog, particle lighting),
     /// which entries each track unit's zone covers, and optionally render it with the zone outlines.
@@ -774,7 +790,14 @@ fn main() -> Result<()> {
         Cmd::CameraTake { take, step } => {
             camera_take::run(&open_bundle(&game, "CAMERAS.BNDL")?, take.as_deref(), step)?
         }
-        Cmd::Freeroam { list, kind, all_kinds } => freeroam(&AssetStore::new(game)?, list, kind.as_deref(), all_kinds)?,
+        Cmd::Freeroam { list, kind, all_kinds, objects } => {
+            let store = AssetStore::new(game)?;
+            if objects {
+                freeroam_objects(&store, kind.as_deref())?
+            } else {
+                freeroam(&store, list, kind.as_deref(), all_kinds)?
+            }
+        }
         Cmd::PlacementCheck { bundles, top, groups, view, column, owners } => {
             let store = AssetStore::new(game)?;
             if owners {
@@ -1350,6 +1373,7 @@ fn main() -> Result<()> {
             events::hsm(&AssetStore::new(game)?, &bundle, node, find.as_deref(), depth)?
         }
         Cmd::Traffic { png, at } => traffic(&AssetStore::new(game)?, png.as_deref(), &at)?,
+        Cmd::Scoring { all, sequence, text } => scoring(&AssetStore::new(game)?, all, sequence, &text)?,
         Cmd::PaintMap { id, png, at } => paint_map(&AssetStore::new(game)?, &id, png.as_deref(), &at)?,
     }
     Ok(())
@@ -2447,6 +2471,120 @@ fn freeroam(store: &AssetStore, list: bool, kind: Option<&str>, all_kinds: bool)
             };
             println!("{:<17} {:>8} {x:9.1} {y:7.1} {z:9.1}  flags {:#04x}  {shape}", c.name(), t.id, t.flags);
         }
+    }
+    Ok(())
+}
+
+/// `scoring`: the scoring actions, or one message sequence's layouts.
+fn scoring(store: &AssetStore, all: bool, sequence: Option<u32>, text: &[u32]) -> Result<()> {
+    let lang = store.language(mw_assets::DEFAULT_LANGUAGE)?;
+    if !text.is_empty() {
+        for &id in text {
+            println!("{id}: {:?}", lang.get(id));
+        }
+        return Ok(());
+    }
+    if let Some(id) = sequence {
+        for s in store.ui_sequence_layouts(id)? {
+            println!(
+                "layout {} {:.2}..{:.2} s enabled {:?} texts {:?} instance {}",
+                s.layout.layout.id,
+                s.start,
+                s.end,
+                s.enabled,
+                s.texts,
+                s.layout.instance.is_some()
+            );
+        }
+        return Ok(());
+    }
+    let scoring = store.scoring()?;
+    let cfg = store.collectables_config()?;
+    println!("speed camera minimum: {} mph", cfg.speed_camera_min_mph);
+    println!("{} actions, {} ScoringConfig fields", scoring.actions.len(), scoring.config.len());
+    let mut rows: Vec<_> = scoring.actions.values().collect();
+    rows.sort_by_key(|a| a.id);
+    for a in rows {
+        if !all && a.speed_points.iter().all(|&p| p == 0) {
+            continue;
+        }
+        let fields: Vec<String> = scoring
+            .config
+            .iter()
+            .filter(|(_, id)| *id == a.id)
+            .map(|(h, _)| fmt::genesys::field_name(*h).map_or_else(|| format!("{h:08x}"), str::to_owned))
+            .collect();
+        println!(
+            "{:>8} {:<28} SP {:?} score {:?} heat {} scope {} queue {} prio {} trigger {}{} sequence {} title {} {:?}{}",
+            a.id,
+            if fields.is_empty() { "-".to_owned() } else { fields.join(",") },
+            a.speed_points,
+            a.score,
+            a.heat,
+            a.scope,
+            a.queue,
+            a.priority,
+            a.gameplay_trigger,
+            scoring.trigger_sequences.get(&a.gameplay_trigger).map_or(String::new(), |s| format!(" (sequences {s:?})")),
+            a.sequence,
+            a.title,
+            lang.get(a.title).unwrap_or(""),
+            if a.predicate.is_empty() { String::new() } else { format!(" if {}", a.predicate) }
+        );
+    }
+    Ok(())
+}
+
+/// `freeroam --objects`: the placed object nearest to each billboard / gate / speed camera trigger, and whether
+/// an instance id of it equals the trigger's id.
+fn freeroam_objects(store: &AssetStore, kind: Option<&str>) -> Result<()> {
+    let data = store.trigger_data()?;
+    let mut objects: Vec<([f32; 3], &'static str, ResourceId, [u32; 2])> = Vec::new();
+    for path in store.bundle_paths().to_vec() {
+        if !path.file_name().is_some_and(|n| n.to_string_lossy().starts_with("TRK_UNIT")) {
+            continue;
+        }
+        let Some(bundle) = store.bundle(&path) else { continue };
+        for (ty, name) in [
+            (ResourceType::PropInstanceList, "prop"),
+            (ResourceType::CompoundInstanceList, "compound"),
+            (ResourceType::DynamicInstanceList, "dynamic"),
+        ] {
+            for e in bundle.entries_of_type(ty) {
+                let Ok(list) = fmt::ObjectInstanceList::parse(&bundle.load(e)?) else { continue };
+                for i in list.instances {
+                    let [x, y, z, _] = i.transform[3];
+                    objects.push(([x, y, z], name, i.object.unwrap_or(ResourceId::NULL), i.ids));
+                }
+            }
+        }
+    }
+    println!("{} placed objects", objects.len());
+    let mut linked: BTreeMap<(fmt::Collectable, &str), (usize, usize)> = BTreeMap::new();
+    for t in &data.triggers {
+        let Some(c) = t.collectable() else { continue };
+        if !matches!(c, fmt::Collectable::Billboard | fmt::Collectable::SecurityGate | fmt::Collectable::SpeedCamera) {
+            continue;
+        }
+        let by_id = objects.iter().find(|o| o.3.contains(&t.id));
+        let d2 =
+            |o: &([f32; 3], &str, ResourceId, [u32; 2])| (0..3).map(|k| (o.0[k] - t.position[k]).powi(2)).sum::<f32>();
+        let nearest = objects.iter().min_by(|a, b| d2(a).total_cmp(&d2(b)));
+        let slot = linked.entry((c, by_id.map_or("-", |o| o.1))).or_default();
+        slot.0 += 1;
+        if let Some(o) = by_id {
+            slot.1 += (d2(o).sqrt() < 15.0) as usize;
+        }
+        if kind.is_some_and(|k| k.eq_ignore_ascii_case(c.name())) {
+            let show = |o: Option<&([f32; 3], &str, ResourceId, [u32; 2])>| match o {
+                Some(o) => format!("{} {} ids {:?} at {:.1} m", o.1, o.2, o.3, d2(o).sqrt()),
+                None => "-".into(),
+            };
+            println!("{:<9} {:>8}  by id: {}  nearest: {}", c.name(), t.id, show(by_id), show(nearest));
+        }
+    }
+    for ((c, layer), (n, near)) in linked {
+        println!("{:<9} linked object: {layer:<8} {n} triggers ({near} within 15 m)", c.name());
     }
     Ok(())
 }

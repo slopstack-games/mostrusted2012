@@ -152,6 +152,11 @@ pub struct ObjectInstance {
     pub object: Option<ResourceId>,
     /// Row-major with column 3 forced to (0, 0, 0, 1); row 3 is the translation.
     pub transform: [[f32; 4]; 4],
+    /// The words at +0x48 and +0x4c: the instance id (props / dynamics in the first, compounds / lights in the
+    /// second). On a billboard's or a security gate's compound it is the id of the object's `TriggerData`
+    /// record (checked on every billboard and gate, `mwtool freeroam --objects`): the "linked trigger" the game
+    /// reads at the smashable object's +0x90 (`FUN_005b5340`).
+    pub ids: [u32; 2],
 }
 
 #[derive(Debug, Clone)]
@@ -182,7 +187,11 @@ impl ObjectInstanceList {
                 let [x, y, z, _] = r.f32_array(o + row * 16)?;
                 *t = [x, y, z, if row == 3 { 1.0 } else { 0.0 }];
             }
-            instances.push(ObjectInstance { object: res.import_at(o as u32 + 0x40), transform });
+            instances.push(ObjectInstance {
+                object: res.import_at(o as u32 + 0x40),
+                transform,
+                ids: [r.u32(o + 0x48)?, r.u32(o + 0x4c)?],
+            });
         }
         Ok(Self { version, instances })
     }
