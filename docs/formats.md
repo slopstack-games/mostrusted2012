@@ -51,8 +51,13 @@ InstanceList ──> Model ──(LOD state)──> Renderable ──(per mesh)�
   sampler carries a `u16` key that matches the key of the same-named sampler in the Shader.
 - **Shader (0x53)**: name at ptr 0x08, sampler names at ptr 0x68, vertex descriptor import at 0x9C (true for all
   373 shaders).
-- **Model (0x51)**: renderable imports and an 8-entry state table (LOD0–5, shadow, occlusion).
-- **InstanceList (0x50)**: 0x60-byte instances, each a model import plus a row-major D3D matrix at +0x20
+- **Model (0x51)**: renderable imports and an 8-entry state table (LOD0–5, shadow, occlusion); LOD distances
+  squared at ptr +0x08 (count at +0x18, at most 4 used), the shadow distance squared at +0x0C, a pass-mask byte
+  at +0x19. The game draws a placement at the first LOD whose distance is not exceeded by `max(0, |c − eye| −
+  r) / (placement scale · view scale)` (c, r = LOD0 renderable's bounding sphere) and not at all past the last
+  (decomp.md "Model LOD and draw distance"; `Model::lod_for_distance`, `mwtool lods`).
+- **InstanceList (0x50)**: 0x60-byte instances, each a model import, an f32 LOD distance scale at +0x04, plus a
+  row-major D3D matrix at +0x20
   (`v * M`, translation in row 3). The matrix's w column is per-instance data: the world vertex shaders pass it
   to the pixel shader, which multiplies albedo by its xyz (tint) and the AO map by its w (AO scale,
   0.90–1.0). +0x10 points to a per-instance **material override** block (11,974 of 35,431 instances): named
@@ -75,7 +80,7 @@ InstanceList ──> Model ──(LOD state)──> Renderable ──(per mesh)�
 - **Prop/Compound/Dynamic/LightInstanceList (0x218 / 0x216 / 0x204 / 0x213)**: header `u32 version`
   (2/2/3/1), `ptr` 0x10, `u32 count`, 0; then 0x60-byte records: a 3x4 row-major matrix at +0x00 (axis rows,
   translation row 3; column 3 ignored, row 3 w is often 0.94, maybe a packed tint byte), an object import at
-  +0x40, an instance id at +0x48 (+0x4C for compound/light), and a pointer at +0x50 into a second per-instance
+  +0x40, an instance id at +0x48 (+0x4C for compound/light) followed by the f32 LOD distance scale (+0x4C / +0x50), and (props) a pointer at +0x50 into a second per-instance
   block after the records (props: `InstanceAdditiveAndAO`). Unlike `InstanceList` the matrix is at +0x00, not
   +0x20. Props, compounds and dynamics import a `PropObject` / `CompoundObject` / `WorldObject`; lights
   import a GeneSys `Light_Point` / `Light_Cone` / `Light_Spot` / `Light_Line` (`mw_assets::lights::LightDef`:

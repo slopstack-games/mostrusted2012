@@ -36,6 +36,7 @@ mod hud;
 mod input;
 mod jackspots;
 mod loader;
+mod lod;
 mod materials;
 mod menu;
 mod mods_menu;
@@ -836,6 +837,7 @@ fn main() -> anyhow::Result<()> {
         && matches!(request, Request::World { .. } | Request::Drive { world: true, .. });
     app.add_plugins(weather::WeatherPlugin { hud: menu_enabled })
         .add_plugins(shadow_cull::ShadowCullPlugin)
+        .add_plugins(lod::LodPlugin)
         .add_plugins(reflection::PlanarReflectionPlugin { enabled: reflection })
         .add_plugins(FreeCameraPlugin)
         .add_plugins(MaterialPlugin::<GameMaterial>::default())
@@ -1112,29 +1114,42 @@ fn receive_assets(
             Msg::ShadowRange(id, d) => {
                 loaded.shadow_ranges.insert(id, d);
             }
-            Msg::Instance { model, transform } => {
+            Msg::Instance { model, transform, lod } => {
                 let Some(parts) = loaded.models.get(&model) else { continue };
                 // Groundcover (model keys 0x6…, `loader::groundcover`) casts no shadows.
                 let casts_shadow = model.0 >> 60 != 6;
-                let range = loaded.shadow_ranges.get(&model).copied().map(shadow_cull::ShadowRange);
-                commands.spawn((Transform::from_matrix(transform), Visibility::default())).with_children(|c| {
-                    for (mesh, mat) in parts {
-                        let class = if loaded.mask_materials.contains(&mat.id()) {
-                            shadow_cull::ShadowClass::Alpha
-                        } else if model.0 >> 62 != 0 {
-                            shadow_cull::ShadowClass::Backdrop
-                        } else {
-                            shadow_cull::ShadowClass::World
-                        };
-                        let mut e = c.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat.clone()), class));
-                        if let Some(r) = range {
-                            e.insert(r);
-                        }
-                        if !casts_shadow {
-                            e.insert(bevy::light::NotShadowCaster);
+                // The LODs' meshes, each with the mask of LODs it is drawn at (`lod.rs`).
+                let sets = lod::mesh_sets(lod.as_ref(), (model, parts), &loaded.models);
+                let mut lod_meshes = Vec::new();
+                let mut root = commands.spawn((Transform::from_matrix(transform), Visibility::default()));
+                root.with_children(|c| {
+                    for (key, parts, mask) in &sets {
+                        let range = loaded.shadow_ranges.get(key).copied().map(shadow_cull::ShadowRange);
+                        for (mesh, mat) in parts {
+                            let class = if loaded.mask_materials.contains(&mat.id()) {
+                                shadow_cull::ShadowClass::Alpha
+                            } else if key.0 >> 62 != 0 {
+                                shadow_cull::ShadowClass::Backdrop
+                            } else {
+                                shadow_cull::ShadowClass::World
+                            };
+                            let mut e = c.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(mat.clone()), class));
+                            if let Some(r) = range {
+                                e.insert(r);
+                            }
+                            if !casts_shadow {
+                                e.insert(bevy::light::NotShadowCaster);
+                            }
+                            if lod.is_some() {
+                                e.insert((lod::LodShadow(true), lod::initial_visibility(*mask)));
+                                lod_meshes.push((e.id(), *mask));
+                            }
                         }
                     }
                 });
+                if let Some(l) = lod {
+                    root.insert(lod::ModelLod::new(l.table, l.scale, lod_meshes));
+                }
                 loaded.instances += 1;
             }
             Msg::Zones(zones) => {
@@ -1162,7 +1177,7 @@ fn receive_assets(
                 });
                 loaded.instances += 1;
             }
-            Msg::Prop { model, transform, physics, pieces } => {
+            Msg::Prop { model, transform, physics, pieces, lod } => {
                 let Some(parts) = loaded.models.get(&model) else { continue };
                 let range = loaded.shadow_ranges.get(&model).copied().map(shadow_cull::ShadowRange);
                 let get = |k: &Option<mw_bundle::ResourceId>| k.and_then(|k| loaded.models.get(&k).cloned());
@@ -1170,7 +1185,22 @@ fn receive_assets(
                     parts: parts.iter().map(get).collect(),
                     rest: get(&rest),
                 });
-                props::spawn_prop(&mut commands, physics, Transform::from_matrix(transform), parts, range, pieces);
+                let sets = lod::mesh_sets(lod.as_ref(), (model, parts), &loaded.models);
+                let sets: Vec<_> = sets
+                    .into_iter()
+                    .map(|(k, parts, mask)| {
+                        (parts, mask, loaded.shadow_ranges.get(&k).copied().map(shadow_cull::ShadowRange))
+                    })
+                    .collect();
+                props::spawn_prop(
+                    &mut commands,
+                    physics,
+                    Transform::from_matrix(transform),
+                    &sets,
+                    range,
+                    pieces,
+                    lod.map(|l| (l.table, l.scale)),
+                );
                 loaded.instances += 1;
                 loaded.props += 1;
             }

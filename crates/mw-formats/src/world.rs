@@ -12,8 +12,8 @@
 //! | off  | type     | field |
 //! |------|----------|-------|
 //! | 0x00 | ptr      | model (import) |
-//! | 0x04 | f32      | unknown (draw distance / LOD bias?) |
-//! | 0x08 | u32      | unknown |
+//! | 0x04 | f32      | LOD distance scale ([`Instance::lod_scale`]; 1.0 for most, up to 8) |
+//! | 0x08 | u32      | unknown (unique per instance) |
 //! | 0x10 | ptr      | per-instance material overrides ([`InstanceOverrides`]), or 0 |
 //! | 0x20 | f32×4×4  | transform, row-major, rows = x/y/z axes then translation |
 //!
@@ -45,7 +45,10 @@ pub struct Instance {
     /// Row-major; row 3 is the translation (D3D convention, `v * M`).
     pub transform: [[f32; 4]; 4],
     pub always_loaded: bool,
-    pub unknown_04: f32,
+    /// Multiplies the camera distance limits of the model's LODs for this placement: the draw path
+    /// (`FUN_008a02f0`, called from `FUN_00550020` with this field) divides the distance by it before
+    /// comparing with [`crate::Model::lod_distances`] (docs/decomp.md "Model LOD and draw distance").
+    pub lod_scale: f32,
     pub unknown_08: u32,
     pub overrides: InstanceOverrides,
 }
@@ -126,7 +129,7 @@ impl InstanceList {
                 model: res.import_at(o),
                 transform,
                 always_loaded: i < always,
-                unknown_04: r.f32(o as usize + 4)?,
+                lod_scale: r.f32(o as usize + 4)?,
                 unknown_08: r.u32(o as usize + 8)?,
                 overrides: InstanceOverrides::parse(res, r.u32(o as usize + 0x10)? as usize)?,
             });
@@ -142,7 +145,8 @@ impl InstanceList {
 /// |------|---------|-------|
 /// | 0x00 | f32×4×4 | transform: x/y/z axis rows then translation (same convention as `InstanceList`); column 3 is not 0/0/0/1 and is ignored (translation-row w is often 0.94, probably a packed tint/AO byte) |
 /// | 0x40 | ptr     | object (import): `PropObject`, `CompoundObject`, `WorldObject`, or (lights) a GeneSys handle |
-/// | 0x48/0x4C | u32 | instance id (prop/dynamic at 0x48, compound/light at 0x4C), then f32 1.0 or 0 |
+/// | 0x48/0x4C | u32 | instance id (prop/dynamic at 0x48, compound/light at 0x4C) |
+/// | 0x4C/0x50 | f32 | LOD distance scale after the id ([`ObjectInstance::lod_scale`]; 1.0 for most, 0.9–10) |
 /// | 0x50 | ptr     | extra per-instance data in the second half of the chunk (props: a `InstanceAdditiveAndAO` block); not decoded |
 ///
 /// List header (0x10 bytes): `u32 version` (prop 2, compound 2, dynamic 3, light 1), `ptr` to the
@@ -157,6 +161,9 @@ pub struct ObjectInstance {
     /// record (checked on every billboard and gate, `mwtool freeroam --objects`): the "linked trigger" the game
     /// reads at the smashable object's +0x90 (`FUN_005b5340`).
     pub ids: [u32; 2],
+    /// The float after the instance id: the props' LOD distance scale (`FUN_00550020` passes record +0x4C of
+    /// the prop list to the model draw `FUN_008a02f0`, like `InstanceList` +0x04).
+    pub lod_scale: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -179,6 +186,11 @@ impl ObjectInstanceList {
         if count > MAX_OBJECT_INSTANCES {
             return Err(crate::Error::Malformed(format!("object instance count {count}")));
         }
+        // The id sits at +0x48 in prop / dynamic lists and at +0x4C in compound / light lists; the scale follows.
+        let scale_at = match res.resource_type() {
+            mw_bundle::ResourceType::CompoundInstanceList | mw_bundle::ResourceType::LightInstanceList => 0x50,
+            _ => 0x4C,
+        };
         let mut instances = Vec::with_capacity(count);
         for i in 0..count {
             let o = base + i * OBJECT_INSTANCE_SIZE;
@@ -191,6 +203,7 @@ impl ObjectInstanceList {
                 object: res.import_at(o as u32 + 0x40),
                 transform,
                 ids: [r.u32(o + 0x48)?, r.u32(o + 0x4c)?],
+                lod_scale: r.f32(o + scale_at)?,
             });
         }
         Ok(Self { version, instances })

@@ -139,6 +139,8 @@ pub enum Msg {
     Instance {
         model: ResourceId,
         transform: Mat4,
+        /// World placements: the game's LODs and draw distance (`lod.rs`).
+        lod: Option<crate::lod::LodPlacement>,
     },
     /// The streaming zones (`ZoneList`), for the groundcover residency (`groundcover.rs`).
     Zones(mw_formats::ZoneList),
@@ -169,6 +171,8 @@ pub enum Msg {
         /// Compound objects: the model's geometry per part (its skeleton bone; `None` where a part has none),
         /// then the triangles of bones no part owns.
         pieces: Option<(Vec<Option<ResourceId>>, Option<ResourceId>)>,
+        /// The game's LODs and draw distance (`lod.rs`).
+        lod: Option<crate::lod::LodPlacement>,
     },
     /// Static world collision (one per `PolygonSoupList`) and the collision tag of each of its triangles.
     Collider(avian3d::prelude::Collider, Arc<Vec<u32>>),
@@ -262,6 +266,8 @@ pub fn spawn(
                 backdrop: None,
                 backdrop_sent: HashSet::new(),
                 prop_physics: HashMap::new(),
+                lod_tables: HashMap::new(),
+                lods: crate::lod::LodSettings::from_env().enabled,
             };
             if let Err(e) = w.run(request) {
                 let _ = w.tx.send(Msg::Progress(format!("loader error: {e:#}")));
@@ -317,6 +323,10 @@ struct Worker {
     backdrop_sent: HashSet<(ResourceId, [u32; 16])>,
     /// Physics per object definition (shared by its placements).
     prop_physics: HashMap<(ResourceId, mw_assets::props::ObjectKind), Option<Arc<crate::props::PropPhysics>>>,
+    /// LOD table per model (`lod.rs`), `None` for models without one.
+    lod_tables: HashMap<ResourceId, Option<Arc<crate::lod::LodTable>>>,
+    /// Apply the game's LOD rule to world placements (off with `MW_NO_LOD=1`).
+    lods: bool,
 }
 
 /// How a model is turned into drawable parts.
@@ -328,6 +338,8 @@ struct Variant {
     compose_backdrop: Option<[[f32; 4]; 4]>,
     /// Keep only the triangles skinned to these skeleton bones (bit mask): one part of a compound object.
     bones: Option<u64>,
+    /// Which LOD state's renderable (0 = LOD0, `lod.rs`).
+    lod: u8,
 }
 
 impl Worker {
@@ -351,12 +363,13 @@ impl Worker {
                             backdrop: false,
                             overrides: None,
                             object: None,
+                            lod_scale: 1.0,
                         })
                         .collect(),
                 };
                 for p in placements {
                     if let Some(model) = self.model_variant(p.model, Variant::default(), InstanceLook::default())? {
-                        self.send(Msg::Instance { model, transform: game_matrix(&p.transform) })?;
+                        self.send(Msg::Instance { model, transform: game_matrix(&p.transform), lod: None })?;
                     }
                 }
                 self.send(Msg::Progress(format!("loaded {bundle}")))?;
@@ -642,8 +655,12 @@ impl Worker {
         look: InstanceLook,
     ) -> anyhow::Result<()> {
         let transform = game_matrix(&p.transform);
-        let Some(physics) = p.object.and_then(|(object, kind)| self.prop_physics(object, kind)) else {
-            return self.send(Msg::Instance { model, transform });
+        let physics = p.object.and_then(|(object, kind)| self.prop_physics(object, kind));
+        // Compounds that can break draw their LOD0 pieces at every LOD (only the draw distance applies).
+        let breakable = physics.as_ref().is_some_and(|ph| ph.compound.is_some());
+        let lod = self.placement_lods(p, model, variant, look, !breakable)?;
+        let Some(physics) = physics else {
+            return self.send(Msg::Instance { model, transform, lod });
         };
         let pieces = match &physics.compound {
             Some(c) => {
@@ -661,7 +678,51 @@ impl Worker {
             }
             None => None,
         };
-        self.send(Msg::Prop { model, transform, physics, pieces })
+        self.send(Msg::Prop { model, transform, physics, pieces, lod })
+    }
+
+    /// A model's LOD table (`lod.rs`): its LOD distances, shadow distance and LOD0 bounding sphere.
+    fn lod_table(&mut self, id: ResourceId) -> Option<Arc<crate::lod::LodTable>> {
+        let store = &self.store;
+        self.lod_tables
+            .entry(id)
+            .or_insert_with(|| {
+                let model = store.model(id).ok()?;
+                let sphere = store.renderable(model.renderable_for_state(0)?).ok()?.bounding_sphere;
+                crate::lod::LodTable::from_model(&model, sphere).map(Arc::new)
+            })
+            .clone()
+    }
+
+    /// The LODs of a world placement (not backdrops): the model's table and, with `levels`, the model key
+    /// drawn at each LOD (`lod0` = the key of the LOD0 variant already sent; other LODs are decoded the same
+    /// way from their own renderables and sent).
+    fn placement_lods(
+        &mut self,
+        p: &mw_assets::Placement,
+        lod0: ResourceId,
+        variant: Variant,
+        look: InstanceLook,
+        levels: bool,
+    ) -> anyhow::Result<Option<crate::lod::LodPlacement>> {
+        if !self.lods || p.backdrop || variant.compose_backdrop.is_some() || variant.bones.is_some() {
+            return Ok(None);
+        }
+        let Some(table) = self.lod_table(p.model) else { return Ok(None) };
+        let mut keys = Vec::new();
+        if levels {
+            let model = self.store.model(p.model)?;
+            let mut prev = (model.renderable_for_state(0), Some(lod0));
+            keys.push(Some(lod0));
+            for l in 1..table.distances.len() {
+                let r = model.renderable_for_state(l);
+                if r.is_some() && r != prev.0 {
+                    prev = (r, self.model_variant(p.model, Variant { lod: l as u8, ..variant }, look)?);
+                }
+                keys.push(prev.1);
+            }
+        }
+        Ok(Some(crate::lod::LodPlacement { table, scale: p.lod_scale, levels: keys }))
     }
 
     /// Place one world object by hand (test track).
@@ -678,6 +739,7 @@ impl Worker {
             backdrop: false,
             overrides: None,
             object: Some((t.object, t.kind)),
+            lod_scale: 1.0,
         };
         if let Some(key) = self.model_variant(model, Variant::default(), InstanceLook::default())? {
             self.send_placement(key, &placement, Variant::default(), InstanceLook::default())?;
@@ -829,7 +891,7 @@ impl Worker {
             let all = uses[&key] == 1 && self.parts.get(&key).is_some_and(|parts| parts.iter().all(mergeable));
             if !all {
                 self.send_model(key)?;
-                self.send(Msg::Instance { model: key, transform })?;
+                self.send(Msg::Instance { model: key, transform, lod: None })?;
                 continue;
             }
             for (i, part) in self.parts[&key].iter().enumerate() {
@@ -863,7 +925,7 @@ impl Worker {
                 let key = ResourceId(0x7000_0000_0000_0000 | self.merged);
                 self.models.insert(key);
                 self.send(Msg::Model(key, vec![Part { mesh, look: g.0 }]))?;
-                self.send(Msg::Instance { model: key, transform: Mat4::IDENTITY })?;
+                self.send(Msg::Instance { model: key, transform: Mat4::IDENTITY, lod: None })?;
                 start = end;
             }
         }
@@ -986,6 +1048,11 @@ impl Worker {
             (key, mask).hash(&mut h);
             key = ResourceId(h.finish() & !(0xf << 59) | 1 << 59);
         }
+        if variant.lod != 0 {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (key, "lod", variant.lod).hash(&mut h);
+            key = ResourceId(h.finish() & ((1 << 58) - 1) | 1 << 58);
+        }
         // Body-paint models are baked with the current paint, so each paint is its own variant
         // (bit 60, a hash of the ID and the paint's values).
         if self.paintable.get(&id) == Some(&true) {
@@ -1006,7 +1073,16 @@ impl Worker {
         {
             self.shadow_ranges.insert(key, m.shadow_distance);
         }
-        let meshes = match self.store.model_meshes(id, 0) {
+        let meshes = match variant.lod {
+            0 => self.store.model_meshes(id, 0).map_err(anyhow::Error::from),
+            l => self
+                .store
+                .model(id)
+                .map_err(anyhow::Error::from)
+                .and_then(|m| m.renderable_for_state(l as usize).ok_or_else(|| anyhow::anyhow!("no LOD {l}")))
+                .and_then(|r| Ok(self.store.renderable_meshes(r)?)),
+        };
+        let meshes = match meshes {
             Ok((m, _errors)) => m,
             Err(_) => {
                 self.empty_models.insert(key);

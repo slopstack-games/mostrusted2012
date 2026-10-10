@@ -1280,6 +1280,57 @@ Consequence for the ColourCube layout: a straight weighted blend keeps the store
 are the texture's own (x = input red fastest, bytes B, G, R + alpha), not "blue fastest, stored R, G, B"
 (inferred; the kernels themselves are missing from the dump; `mw_formats::ColourCube`).
 
+## Model LOD and draw distance (2026-10-10, ported in `crates/mostrusted/src/lod.rs`)
+
+**The per-placement rule** (`FUN_008a02f0`, reached through the thunk `FUN_008ae140`; read in full). Arguments:
+the `Model` header, the placement's 4×4 matrix, a shadow-pass flag, the camera position, the view's LOD scale
+**squared** and the placement's own LOD scale. It:
+1. takes the bounding sphere of the renderable that state 0 (LOD0) maps to (the `Renderable` header's first
+   float4), transforms the centre by the placement matrix (`v · M`), and measures `d = max(0, |c − eye| − r)`;
+   the radius is used as stored (not scaled by the matrix);
+2. forms `v = d² / (s_inst² · S²)` (S² the view scale squared, `s_inst` the placement's scale);
+3. in the shadow pass returns when `v > Model+0x0C` (the shadow distance, stored squared);
+4. returns (draws nothing) when `v > lod[n − 1]`, `lod` = `Model+0x08` (squared distances), `n` = `Model+0x18`;
+5. otherwise picks the first LOD with `v ≤ lod[i]` (an SSE compare of four entries and a fall-through switch
+   on `n` = 4..1, so at most four LODs are ever chosen) and draws the renderable that state maps to
+   (`Model+0x04` table into `Model+0x00`). The shadow pass draws state 6 (SHADOW) instead when the state count
+   (`Model+0x16`) is at least 7 and state 6 is not 0xFF.
+
+**Callers and the per-placement scale.** `FUN_00550020` (its main-view and shadow-pass calls; `FUN_005691b0`,
+`FUN_0056ae50`, `FUN_00564d30` and others make the same call, not read) walks six index lists and passes, per kind: `InstanceList` entries
+(model at +0x00, **scale at +0x04**, +0x08 / +0x0C the next two arguments, overrides at +0x10, matrix at +0x20);
+the prop list's 0x60-byte records (object +0x40 → `PropObject` +0x04 = model, **scale at +0x4C**, overrides at
++0x50, matrix at +0x00); runtime world objects (compounds / dynamics: model at object +0x10, scale at +0x14,
+matrix at +0x30). The object lists' float after the instance id is that scale (survey, `mwtool lods`: compounds
++0x50, dynamics +0x4C; 1.0 for most placements, 0.5–10 for a few hundred). `FUN_00538b00` (behind
+`FUN_00539530`) is another list walker with the same call; it skips models whose byte `Model+0x19` has a bit of
+the pass's mask set (the mask's meaning not traced).
+
+**The view's LOD scale** (`FUN_008b5fe0`, per frame; stored squared at renderer +0x1ee8c, also uploaded as
+shader constant 0x95 = (S², 1/S², 0, 0)): `S = max(L · 0.75 / tan(fov / 2), 1)`, `fov` = renderer +0x17050, the
+camera's horizontal FOV in radians (the same value `FUN_005d7260` turns into the projection: tan of half,
+`DAT_00f8a810` 0.5; `DAT_00fb69f4` 0.75; the clamp `DAT_00f8a820` 1.0). `L` comes from the "LodScaling"
+display option (`FUN_00414a80` reads settings +0x124; written to `config.NFS13Save` by `FUN_00414e50`): 0 → 1,
+1 → `DAT_00faecec` 1.5, 2 → width · height · `DAT_0100e908` (1/720) · `DAT_00fa2fbc` (1/1280), capped at 1.5.
+The default (`FUN_00414b40`) is 0, or 1 when the machine has ≥ 3 processors, adapter class 6 and more than
+0x30000000 bytes (768 MB, presumably video memory); this install's
+config has `LodScaling=1`. At the chase camera's resting 70° horizontal FOV, S = 1.5 · 0.75 / tan 35° = 1.61.
+
+**Vehicles** have their own rule (`FUN_008aa970`, 16 car slots): the distance from the camera to each car
+(+0x30..0x38 of its render object) against four thresholds `(T − x) · S` with T = 15, 30, 60, 150 m
+(`DAT_010c6f4c..58`, `.data`) and x a per-call offset; the LOD index is the number of thresholds passed (4 =
+beyond 150 m), clamped to 2 for cars whose render object has bit 4 of +0x1a40 set, 0 for all while `FUN_006a0140` holds; a
+debug override
+(`DAT_0118315e` / `DAT_01183160`) forces one LOD. Not ported (our cars draw their LOD0).
+
+**Port and model decisions** (`lod.rs`): the rule above per placement root, on `InstanceList` (non-backdrop),
+prop, compound and dynamic placements, each LOD's own renderable decoded and spawned (hidden until chosen).
+Model decisions: the eye for the shadow decision is the main camera (the shadow views' caller passes a view
+position whose origin was not traced); the SHADOW state's renderable is not drawn (casters are the visible LOD's
+meshes; 1835 of the 3668 world models have one); compounds that can break draw their LOD0 pieces at every LOD
+(only the cull applies); backdrops keep the zone composition (no LOD rule); `--merge-static` merges LOD0 without
+the rule; L = 1 (`MW_LOD_SCALING`), the render target's pixels for L = 2.
+
 ## Sky, sun and shadows
 
 Shader constants are registered by name and slot in `FUN_008c34b0` (one `FUN_00a5d490` call per name, e.g.

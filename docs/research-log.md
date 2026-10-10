@@ -243,6 +243,49 @@ the road beyond the lawn is a bright tan band (the wet road's sky reflection at 
 original's is dark grey), the brick paving is bright and dry-looking (the original's is dark and glossy), no
 lit windows or street lamps. Open: where the original keeps its time of day, so pairs can be made at the same
 hour.
+### 2026-10-10: model LODs and draw distances (the game's rule, `lod.rs`)
+Performance item "fewer draws" (handoff of 2026-10-09): every world placement was drawn at LOD0 at any distance.
+- **The rule, traced** (decomp.md "Model LOD and draw distance"): `FUN_008a02f0` draws one placement:
+  `d = max(0, |M·c − eye| − r)` from the LOD0 renderable's bounding sphere, `v = d² / (s² · S²)`, nothing past
+  the model's last LOD distance (`Model` +0x08, squared, count +0x18), else the first LOD with `v ≤ lod[i]`
+  (at most four); the shadow pass also stops past `Model` +0x0C and draws the SHADOW state when there is one.
+  `s` is per placement: `InstanceList` +0x04 (was "unknown"), the prop list's +0x4C, compounds +0x50,
+  dynamics +0x4C (the float after the instance id; `FUN_00550020` passes them). `S` is the view's
+  (`FUN_008b5fe0`): `max(L · 0.75 / tan(fov_h / 2), 1)`, L from the "LodScaling" option (0 → 1, 1 → 1.5,
+  2 → pixels / 1280×720 capped at 1.5; `.rdata` 0.5, 0.75, 1.0, 1.5, 1/720, 1/1280 read from the exe); this
+  install's `config.NFS13Save` has `LodScaling=1` (also the game's default on a fast machine, `FUN_00414b40`).
+  Cars have a separate rule (`FUN_008aa970`, 15 / 30 / 60 / 150 m × S), not ported.
+- **Data** (new `mwtool lods [--at x,y,z] [--scale S]`): 3668 models placed in the world; LOD counts 1: 820,
+  2: 224, 3: 2623, 4: 1; LOD1 / LOD2 have their own renderables in 2848 / 2624 models; 1835 have a SHADOW
+  renderable. Common tables 100/200/400, 200, 80/150/200, 200/400, 80/150/2000 m. Placement scales: 1.0 for
+  31 774 instances, 12 201 props, 4257 compounds, 4364 dynamics; the rest 0.01–10 (instances 0.5–8 mostly).
+  From (815, 60, 1760) at S 1.5 the game draws 159 of the 12 290 props and 3437 of 33 524 non-backdrop
+  instances (all units loaded, before frustum culling).
+- **Ported** (`lod.rs`; `mw_formats::Model::lod_for_distance`, `Instance::lod_scale`, `ObjectInstance::lod_scale`,
+  `Placement::lod_scale`): the loader decodes each placement's LOD1..3 renderables as their own model variants and
+  sends the LOD table; every placement's mesh children carry the LODs they belong to; `choose_lods` (PostUpdate,
+  before visibility propagation) applies the rule each frame from the main camera with S from its horizontal
+  FOV, changing visibility only when the choice changes (≈0.4 ms a frame for ≈11 400 placements, `MW_LOD_LOG=1`).
+  Shadows: casters past the shadow distance are dropped in `shadow_cull` (`LodShadow`). A/B: `MW_NO_LOD=1`;
+  `MW_LOD_SCALING=0|1|2`.
+- **Model decisions**: the SHADOW renderable is not drawn (the visible LOD casts); the shadow decision uses the
+  main camera's position; breakable compounds keep their LOD0 pieces at every LOD (cull only); backdrops keep the
+  zone composition; `--merge-static` merges LOD0 without the rule; L = 1.
+- **Bench** (same binary, `MW_NO_LOD=1` → default, interleaved; machine shared with other agents, load 5–13):
+  `--drive 911 --units 30 --spawn=815,60,1760,270 --auto-throttle 0.3 --mute --bench 10`, two rounds: frame mean
+  15.71 / 16.73 → 10.57 / 8.98 ms, p95 23.1 / 22.5 → 17.1 / 11.7 ms, p99 28.2 / 26.8 → 24.1 / 16.1 ms, render
+  graph 11.0 / 8.2 → 7.1 / 5.9 ms, visible mesh entities 4789 → 1688 (props 1207 → 124, world 2682 → 958, alpha
+  590 → 295), distinct visible materials 507 → 372, outer shadow cascade 404 → 356 casters. `--spawn=800,42,1688,62
+  --auto-throttle 0.4 --bench 20`: visible 7289 → 2338 (props 2509 → 348), outer cascade 881 → 740, render graph
+  9.9 / 11.7 → 8.3 / 9.4 ms, frame mean 16.8 / 18.3 → 16.8 / 14.8 ms (load 8–13: noisy).
+  **Costs**: mesh entities 25 800 → 54 400 (the LOD meshes, hidden until chosen) and meshes 8.5k → 15.7k; the
+  main-world schedule did not drop (5.9–9.4 ms either way, noisy), RSS too noisy to compare (1.25–2.05 GB).
+- **Pictures**: `--camera=-1131,27,1627,-1190,15,1720 --units 20`: MAD 0.58/255, 1.8 % of pixels > 8/255, all in
+  distant trees and shrubs (their LOD1/2 now), nothing missing near the camera; downtown drive start
+  (815, 60, 1760): MAD 0.86, the difference is foliage shimmer and exhaust vapour only.
+- **Open**: the SHADOW state's renderables (a shadow-only entity per placement; Bevy has no per-view mesh swap);
+  swapping mesh handles on one set of entities instead of an entity per LOD (needs the AABB updated with the
+  mesh); car LODs (`FUN_008aa970`) for traffic / AI; the `Model` +0x19 pass mask; the shadow views' eye position.
 
 ### 2026-10-09: frame drops: the render thread's multi-draw path, physics catch-up, bakes on every core
 User report: "optimize this game, it is weirdly dropping frames sometimes". Measured with a new per-frame log

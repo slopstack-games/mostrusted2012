@@ -73,6 +73,9 @@ pub struct Placement {
     pub overrides: Option<std::sync::Arc<fmt::InstanceOverrides>>,
     /// Prop / compound / dynamic placements: the object definition (physics, `crate::props`).
     pub object: Option<(ResourceId, crate::props::ObjectKind)>,
+    /// The placement's LOD distance scale (`InstanceList` +0x04, object lists' float after the id): the
+    /// model's LOD distances are multiplied by it ([`fmt::Model::lod_for_distance`]).
+    pub lod_scale: f32,
 }
 
 impl AssetStore {
@@ -172,6 +175,7 @@ impl AssetStore {
                     backdrop: !i.always_loaded,
                     overrides,
                     object: None,
+                    lod_scale: i.lod_scale,
                 })
             }));
         }
@@ -210,6 +214,7 @@ impl AssetStore {
                             backdrop: false,
                             overrides: None,
                             object: Some((obj, kind)),
+                            lod_scale: inst.lod_scale,
                         }),
                         None => unresolved += 1,
                     }
@@ -358,7 +363,14 @@ impl AssetStore {
             .parts
             .iter()
             .flatten()
-            .map(|&model| Placement { model, transform: IDENTITY, backdrop: false, overrides: None, object: None })
+            .map(|&model| Placement {
+                model,
+                transform: IDENTITY,
+                backdrop: false,
+                overrides: None,
+                object: None,
+                lod_scale: 1.0,
+            })
             .collect();
         for wheel in &spec.wheels {
             // Wheel models are authored for the left side (+X); right wheels
@@ -370,7 +382,14 @@ impl AssetStore {
             }
             let transform = trs_matrix(wheel.position, wheel.rotation, scale);
             out.extend(wheel.parts.iter().filter_map(|p| {
-                Some(Placement { model: p.model?, transform, backdrop: false, overrides: None, object: None })
+                Some(Placement {
+                    model: p.model?,
+                    transform,
+                    backdrop: false,
+                    overrides: None,
+                    object: None,
+                    lod_scale: 1.0,
+                })
             }));
         }
         Ok(Some(out))

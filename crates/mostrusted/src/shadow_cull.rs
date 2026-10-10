@@ -55,6 +55,9 @@ pub struct ShadowCull {
     pub model_ranges: bool,
     /// The receiver-footprint cull (module docs).
     pub footprint: bool,
+    /// Drop casters whose placement is past its model's shadow distance by the game's LOD measure
+    /// (`lod::LodShadow`, docs/decomp.md "Model LOD and draw distance"); on unless `MW_NO_LOD=1`.
+    pub lod_shadows: bool,
 }
 
 impl ShadowCull {
@@ -86,6 +89,7 @@ impl ShadowCull {
         }
         s.footprint = std::env::var("MW_SHADOW_FOOTPRINT").map_or(true, |v| v != "0");
         s.model_ranges = std::env::var("MW_SHADOW_MODEL_RANGE").is_ok_and(|v| v != "0");
+        s.lod_shadows = crate::lod::LodSettings::from_env().enabled;
         s
     }
 
@@ -96,6 +100,7 @@ impl ShadowCull {
             || self.min_texels > 0.0
             || self.model_ranges
             || self.footprint
+            || self.lod_shadows
     }
 }
 
@@ -127,8 +132,13 @@ fn clip_rect(clip_from_world: &Mat4, points: impl Iterator<Item = Vec3>) -> (Vec
 }
 
 /// What the cull reads of a caster.
-type Caster =
-    (Option<&'static ShadowClass>, Option<&'static Aabb>, &'static GlobalTransform, Option<&'static ShadowRange>);
+type Caster = (
+    Option<&'static ShadowClass>,
+    Option<&'static Aabb>,
+    &'static GlobalTransform,
+    Option<&'static ShadowRange>,
+    Option<&'static crate::lod::LodShadow>,
+);
 fn cull_casters(
     cfg: Res<ShadowCull>,
     shadow_map: Res<DirectionalLightShadowMap>,
@@ -169,7 +179,10 @@ fn cull_casters(
                     (lo - m, hi + m, c.clip_from_world)
                 });
                 list.entities.retain(|&e| {
-                    let Ok((class, aabb, gt, range)) = casters.get(e) else { return true };
+                    let Ok((class, aabb, gt, range, lod_shadow)) = casters.get(e) else { return true };
+                    if cfg.lod_shadows && lod_shadow.is_some_and(|s| !s.0) {
+                        return false;
+                    }
                     match class {
                         Some(c) if cfg.class_off.contains(c) => return false,
                         None if cfg.other_off => return false,
