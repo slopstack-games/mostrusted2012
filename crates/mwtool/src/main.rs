@@ -11,6 +11,7 @@ mod crack;
 mod damage;
 mod events;
 #[cfg(target_os = "linux")]
+mod lods;
 mod memscan;
 mod placement;
 mod preview;
@@ -435,6 +436,14 @@ enum Cmd {
         #[arg(long)]
         owners: bool,
     },
+    /// The world's model LOD tables and placement LOD scales (docs/decomp.md "Model LOD and draw distance");
+    /// `--at x,y,z` counts what the game would draw from there at view scale `--scale`.
+    Lods {
+        #[arg(long, allow_hyphen_values = true)]
+        at: Option<String>,
+        #[arg(long, default_value_t = 1.5)]
+        scale: f32,
+    },
     /// Physics of the world's props, compound and dynamic objects (`PhysicalDefinition`): volume kinds,
     /// masses and break forces over the track units (or the given bundles).
     Props {
@@ -790,6 +799,17 @@ fn main() -> Result<()> {
             } else {
                 placement::run(&store, &bundles, top)?
             }
+        }
+        Cmd::Lods { at, scale } => {
+            let at = match at {
+                Some(s) => {
+                    let v: Vec<f32> = s.split(',').map(|x| x.trim().parse()).collect::<Result<_, _>>()?;
+                    anyhow::ensure!(v.len() == 3, "--at x,y,z");
+                    Some([v[0], v[1], v[2]])
+                }
+                None => None,
+            };
+            lods::run(&AssetStore::new(game)?, at, scale)?
         }
         Cmd::Props { bundles, verbose } => props::run(&AssetStore::new(game)?, &bundles, verbose)?,
         Cmd::Vehicles => {
@@ -1748,6 +1768,7 @@ fn export_models(store: &AssetStore, b: &Bundle, out: &Path, verbose: bool) -> R
                 backdrop: false,
                 overrides: None,
                 object: None,
+                lod_scale: 1.0,
             })
             .collect(),
     };

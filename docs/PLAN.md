@@ -322,7 +322,8 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
 ### M4: Streaming and performance `[ ]`
 1. Load and *unload* track units by distance; budget memory (bundles are dropped after decode already).
 2. Partial bundle reads: load only needed resources instead of whole files (offsets are in the TOC).
-3. Model LOD distances (`Model.lod_distances`) and `HAWAII/PVS.BNDL` visibility. The ZoneList is decoded
+3. `[~]` Model LOD distances: `[x]` the game's per-placement LOD choice and draw distance (2026-10-10, `lod.rs`,
+   decomp.md "Model LOD and draw distance"; open: SHADOW renderables, car LODs); `[ ]` `HAWAII/PVS.BNDL` visibility. The ZoneList is decoded
    (zones = track units, polygons, neighbours); a streaming world would load the current zone and its
    neighbours and draw only the current zone's backdrop (`--backdrop-zone N` shows one), instead of the
    static composition used while everything is loaded.
@@ -341,8 +342,8 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
 7. `[~]` **Frame drops** (user, 2026-10-09; research log "frame drops"): views draw with direct draws instead of
    Bevy's multi-draw-indirect bookkeeping (render thread 2–3× cheaper downtown, ~950 visible materials), avian's
    tree optimisation inline (no stalls on the async pool), environment bakes on their own 2 threads, `MW_FRAME_LOG`
-   per-frame log. Open: clamp game time to 2/60 s per frame as the game does (written, not committed), model LOD /
-   draw distances from the decomp, bindless materials, a static environment map for forward materials, pipeline
+   per-frame log, the game's model LODs and draw distances (2026-10-10: visible meshes downtown 4789 → 1688).
+   Open: clamp game time to 2/60 s per frame as the game does (written, not committed), bindless materials, a static environment map for forward materials, pipeline
    pre-warm at race start.
 - Target: steady 60 fps at 1080p while driving through downtown on mid-range hardware; startup to first frame
   under 3 s.

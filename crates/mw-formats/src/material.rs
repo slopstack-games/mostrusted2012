@@ -172,7 +172,8 @@ impl Shader {
 /// | 0x15 | u8   | flags |
 /// | 0x16 | u8   | state count |
 /// | 0x17 | u8   | version (5) |
-/// | 0x18 | u8   | LOD count |
+/// | 0x18 | u8   | LOD count (the draw path uses at most 4) |
+/// | 0x19 | u8   | pass mask: `FUN_00538b00` skips the model when it shares a bit with the pass's mask |
 #[derive(Debug, Clone)]
 pub struct Model {
     pub id: ResourceId,
@@ -205,6 +206,26 @@ impl Model {
             shadow_distance: r.f32(0x0C)?.sqrt(),
             flags: r.u8(0x15)?,
         })
+    }
+
+    /// The game's LOD choice for one placement (`FUN_008a02f0`, docs/decomp.md "Model LOD and draw
+    /// distance"). `distance` is the effective distance: from the camera to the placed centre of the LOD0
+    /// renderable's bounding sphere, minus its radius (not below 0), divided by the placement's LOD scale and
+    /// the view's LOD scale. `None` = beyond the last LOD distance: not drawn. Otherwise the first LOD whose
+    /// distance is not exceeded (the game compares squared values; the switch handles up to four LODs).
+    pub fn lod_for_distance(&self, distance: f32) -> Option<usize> {
+        let n = self.lod_distances.len().min(4);
+        let last = *self.lod_distances.get(n.checked_sub(1)?)?;
+        if distance > last {
+            return None;
+        }
+        self.lod_distances[..n].iter().position(|&d| distance <= d)
+    }
+
+    /// The renderable a model state (LOD index, or [`Self::STATE_SHADOW`]) maps to, without fallback.
+    pub fn renderable_for_state(&self, state: usize) -> Option<ResourceId> {
+        let i = (*self.state_renderables.get(state)?)?;
+        self.renderables.get(i as usize).copied().flatten()
     }
 
     /// Renderable for a given LOD (0 = highest detail), falling back to the

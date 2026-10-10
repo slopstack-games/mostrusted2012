@@ -443,29 +443,57 @@ pub fn spawn_prop(
     commands: &mut Commands,
     physics: Arc<PropPhysics>,
     transform: Transform,
-    parts: &crate::ModelParts,
+    sets: &[(crate::ModelParts, u8, Option<crate::shadow_cull::ShadowRange>)],
     range: Option<crate::shadow_cull::ShadowRange>,
     pieces: Option<CompoundMeshes>,
+    lod: Option<(Arc<crate::lod::LodTable>, f32)>,
 ) {
     let pieces = pieces.filter(|p| physics.compound.as_ref().is_some_and(|c| c.parts.len() == p.parts.len()));
     let mut e = commands.spawn((transform, Visibility::default(), PropBody::new(physics.clone(), transform, true)));
-    let Some(pieces) = pieces else {
-        e.with_children(|c| spawn_meshes(c, parts, Transform::IDENTITY, range));
-        return;
-    };
-    let compound = physics.compound.as_ref().expect("checked above");
-    e.with_children(|c| {
-        for (part, meshes) in compound.parts.iter().zip(&pieces.parts) {
-            if let (None, Some(meshes)) = (part.replaces, meshes) {
-                spawn_meshes(c, meshes, Transform::IDENTITY, range);
-            }
+    // The meshes under the game's LOD rule (`lod.rs`) and the LODs each is drawn at.
+    let mut lod_meshes = Vec::new();
+    let managed = lod.is_some();
+    match pieces {
+        None => {
+            e.with_children(|c| {
+                for (parts, mask, range) in sets {
+                    for id in spawn_meshes(c, parts, Transform::IDENTITY, *range) {
+                        if managed {
+                            let state = (crate::lod::LodShadow(true), crate::lod::initial_visibility(*mask));
+                            c.commands().entity(id).insert(state);
+                            lod_meshes.push((id, *mask));
+                        }
+                    }
+                }
+            });
         }
-        if let Some(rest) = &pieces.rest {
-            spawn_meshes(c, rest, Transform::IDENTITY, range);
+        Some(pieces) => {
+            let compound = physics.compound.as_ref().expect("checked above");
+            e.with_children(|c| {
+                let mut ids = Vec::new();
+                for (part, meshes) in compound.parts.iter().zip(&pieces.parts) {
+                    if let (None, Some(meshes)) = (part.replaces, meshes) {
+                        ids.extend(spawn_meshes(c, meshes, Transform::IDENTITY, range));
+                    }
+                }
+                if let Some(rest) = &pieces.rest {
+                    ids.extend(spawn_meshes(c, rest, Transform::IDENTITY, range));
+                }
+                // The pieces are LOD0's: drawn at every LOD, only the draw distance applies.
+                if managed {
+                    for id in ids {
+                        c.commands().entity(id).insert(crate::lod::LodShadow(true));
+                        lod_meshes.push((id, crate::lod::ALL_LODS));
+                    }
+                }
+            });
+            let n = compound.parts.len();
+            e.insert(Compound { meshes: pieces, range, parts: vec![None; n], smashed: false });
         }
-    });
-    let n = compound.parts.len();
-    e.insert(Compound { meshes: pieces, range, parts: vec![None; n], smashed: false });
+    }
+    if let Some((table, scale)) = lod {
+        e.insert(crate::lod::ModelLod::new(table, scale, lod_meshes));
+    }
 }
 
 fn spawn_meshes(
@@ -473,7 +501,8 @@ fn spawn_meshes(
     parts: &crate::ModelParts,
     transform: Transform,
     range: Option<crate::shadow_cull::ShadowRange>,
-) {
+) -> Vec<Entity> {
+    let mut ids = Vec::with_capacity(parts.len());
     for (mesh, mat) in parts {
         let mut e = c.spawn((
             Mesh3d(mesh.clone()),
@@ -484,7 +513,9 @@ fn spawn_meshes(
         if let Some(r) = range {
             e.insert(r);
         }
+        ids.push(e.id());
     }
+    ids
 }
 
 /// The rigid body and collider of a prop, inserted while it is near a car.
@@ -1418,7 +1449,9 @@ fn spawn_part(
     }
     if let Some(Some(meshes)) = compound.meshes.parts.get(i) {
         let local = Transform::from_matrix(part.bone.inverse());
-        e.with_children(|c| spawn_meshes(c, meshes, local, compound.range));
+        e.with_children(|c| {
+            spawn_meshes(c, meshes, local, compound.range);
+        });
     }
     Some(e.id())
 }
