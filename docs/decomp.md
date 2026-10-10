@@ -2000,8 +2000,8 @@ Speed Points (SP) are data plus one short code path. Confirmed by reading the co
   | +0x3c | `CarSwapFound` | a jack spot location's first find | 0 |
   | +0x38 | `CarSwapDiscovered` | a jack spot car's first find | 350 |
 
-  Other offline actions with SP in the data (their triggering code was not traced): takedowns 115–300 by
-  kind (`JumpTakedown` 300, `TrafficTakedown` 300, T-bone 135, …), `CrashEscape` 150, shunt / slam / ram 15,
+  Other offline actions with SP in the data (their triggering code was not traced): takedowns 115–155 by
+  kind (head-on 115, slam / shunt 125, T-bone 135, plain 150, traffic 155, "Splashdown" 155), `CrashEscape` 150, shunt / slam / ram 15,
   "First Place" 50, an unnamed "COLLECTABLE" 55. Event results (place, medals) are not `ScoringAction`s with
   offline SP: the 900 / 650 / … position tables are `Scope` 1 (online) actions. Where an offline event's SP
   comes from ("End of event awards", `EventAward`, `ProgressionAwardPoints` strings) was not traced.
