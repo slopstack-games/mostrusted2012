@@ -1464,7 +1464,7 @@ fn lights(store: &AssetStore, near: &[f32], hour: Option<f32>) -> Result<()> {
     println!("{transition:?}");
     let phase = hour.map(|h| transition.phase(h));
     if let (Some(h), Some(p)) = (hour, phase) {
-        println!("at {h} h: night {:.2}, twilight {}", p.night, p.twilight);
+        println!("at {h} h: night level {:.2}, day {}", p.night, p.day);
     }
     let units: Vec<_> = store
         .bundle_paths()
@@ -1509,7 +1509,7 @@ fn lights(store: &AssetStore, near: &[f32], hour: Option<f32>) -> Result<()> {
                     d.on_night,
                     d.on_twilight,
                     d.flash.kind,
-                    phase.map(|p| format!(" level {:.2}", p.light_level(d))).unwrap_or_default(),
+                    phase.map(|p| format!(" level {:.2}", p.light_level(d, l.stagger))).unwrap_or_default(),
                 );
             }
         }

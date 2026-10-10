@@ -49,8 +49,11 @@ impl LightShape {
     }
 }
 
-/// `Light_Base.FlashPattern`. `Type` 0 on steady lights (most definitions), 2 on blinking ones (beacons,
-/// signs), 1 once. How the game evaluates it is not traced.
+/// `Light_Base.FlashPattern` (`FUN_00547470`, applied to the intensity of lights whose `Type` is not 0).
+/// With t = the game clock + `Offset` and a period of `Duration` + `Frequency` seconds, the light is at
+/// full intensity for the first `Frequency` seconds of each period; for the remaining `Duration` seconds
+/// type 1 dips linearly to the floor `3ac4f0ce` and back, type 2 flickers at a random level (at least the
+/// floor) and type 3 drops to the floor. The port draws these lights steady (most are 10 ms every 5 s).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct FlashPattern {
     pub kind: u32,
@@ -158,6 +161,10 @@ pub struct WorldLight {
     pub direction: [f32; 3],
     /// Set for a light that an object carries (a street lamp's): the object's definition.
     pub object: Option<ResourceId>,
+    /// Lights that objects carry switch on at staggered night levels by their owner's 16-bit handle
+    /// ([`DayPhase::light_level`]). **Model decision**: the handle is a runtime allocation; here it is the
+    /// placement's index in its bundle, so which lamp comes on when differs from the game, not how.
+    pub stagger: Option<u16>,
 }
 
 /// A light an object carries: its definition and where it sits on the object.
@@ -178,93 +185,116 @@ fn normalised(v: [f32; 3]) -> [f32; 3] {
     v.map(|c| c / len)
 }
 
-/// `EnvironmentSettings.DayNightTransition`: when the world's lights (and the shadows) change between
-/// their day and night states. Hours on the 24-hour clock.
+/// When the world's lights change between their day and night states: `EnvironmentSettings`'
+/// `SunMoonPath` hours and `DayNightTransition` (the environment update `FUN_008a8480`, docs/decomp.md
+/// "World lights"). Hours on the 24-hour clock.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DayNightTransition {
-    /// `1ab46d30` (8.5) and `0e2be130` (20): read as the hours the night ends and starts, from their
-    /// values, their place between `LightTransitionOffset` and `ShadowTransitionDuration` in the name-sorted
-    /// field order, and `SunMoonPath`'s moon hours (20 to 8). Names not cracked.
-    pub night_end: f32,
-    pub night_start: f32,
+    /// `SunMoonPath.a5caac0f` (8) and `SunMoonPath.644383ee` (20): it is day strictly between them.
+    pub day_start: f32,
+    pub day_end: f32,
     /// `LightTransitionDuration` (1) and `LightTransitionOffset` (0), hours.
     pub light_duration: f32,
     pub light_offset: f32,
-    /// `ShadowTransitionDuration` (1) and `ShadowTransitionOffset` (0), hours.
+    /// `ShadowTransitionDuration` (1) and `ShadowTransitionOffset` (0), hours: the same ramp for a second
+    /// value (state +0x84; its use is not followed).
     pub shadow_duration: f32,
     pub shadow_offset: f32,
+    /// `1ab46d30` (8.5) and `0e2be130` (20): a second pair of hours that the same function runs through the
+    /// same nearest-boundary arithmetic afterwards (what it stores is not followed; not the lights).
+    pub second_start: f32,
+    pub second_end: f32,
 }
 
 impl Default for DayNightTransition {
     /// The values of the game's one `EnvironmentSettings` object.
     fn default() -> Self {
         Self {
-            night_end: 8.5,
-            night_start: 20.0,
+            day_start: 8.0,
+            day_end: 20.0,
             light_duration: 1.0,
             light_offset: 0.0,
             shadow_duration: 1.0,
             shadow_offset: 0.0,
+            second_start: 8.5,
+            second_end: 20.0,
         }
     }
 }
 
-/// Day, night or the change between them, as the lights' `OnDuring…` flags name them.
+/// The environment's day / night state at an hour (`FUN_008a8480`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DayPhase {
-    /// 0 by day, 1 at night, in between during a light transition.
+    /// State +0x76: the hour lies strictly between day start and day end.
+    pub day: bool,
+    /// State +0x7c: 0 by day; at night `clamp((hours to the nearer day boundary − LightTransitionOffset) /
+    /// LightTransitionDuration, 0, 1)`, so the lights' night level ramps up over the first hour of the
+    /// night and down over its last. Also `DynamicLighting_GlobalLightMapIntensities.x` (`FUN_008c2080`).
     pub night: f32,
-    /// Inside a light transition.
-    pub twilight: bool,
 }
 
 impl DayNightTransition {
     pub fn from_settings(settings: &Object) -> Self {
         let d = Self::default();
-        let Some(Value::Struct(s)) = settings.get(field_hash("DayNightTransition")) else { return d };
-        let f = |hash: u32, or: f32| float(s, hash).unwrap_or(or);
+        let sub = |name: &str| match settings.get(field_hash(name)) {
+            Some(Value::Struct(s)) => Some(s),
+            _ => None,
+        };
+        let f = |o: Option<&Object>, hash: u32, or: f32| o.and_then(|o| float(o, hash)).unwrap_or(or);
+        let (path, t) = (sub("SunMoonPath"), sub("DayNightTransition"));
         Self {
-            night_end: f(0x1ab4_6d30, d.night_end),
-            night_start: f(0x0e2b_e130, d.night_start),
-            light_duration: f(field_hash("LightTransitionDuration"), d.light_duration),
-            light_offset: f(field_hash("LightTransitionOffset"), d.light_offset),
-            shadow_duration: f(field_hash("ShadowTransitionDuration"), d.shadow_duration),
-            shadow_offset: f(field_hash("ShadowTransitionOffset"), d.shadow_offset),
+            day_start: f(path, 0xa5ca_ac0f, d.day_start),
+            day_end: f(path, 0x6443_83ee, d.day_end),
+            light_duration: f(t, field_hash("LightTransitionDuration"), d.light_duration),
+            light_offset: f(t, field_hash("LightTransitionOffset"), d.light_offset),
+            shadow_duration: f(t, field_hash("ShadowTransitionDuration"), d.shadow_duration),
+            shadow_offset: f(t, field_hash("ShadowTransitionOffset"), d.shadow_offset),
+            second_start: f(t, 0x1ab4_6d30, d.second_start),
+            second_end: f(t, 0x0e2b_e130, d.second_end),
         }
     }
 
-    /// The phase at an hour (0–24).
-    ///
-    /// **Model decision** (the code that reads these fields was not found in the dump; docs/decomp.md
-    /// "World lights"): the lights' transition is a linear ramp of `LightTransitionDuration` hours that
-    /// starts `LightTransitionOffset` hours after each of the two boundary hours, so with the data's values
-    /// the lights come on from 20:00 to 21:00 and go off from 08:30 to 09:30.
+    /// The state at an hour (0–24), as `FUN_008a8480` computes it from the time of day in seconds: the
+    /// distance to each boundary is the smaller of frac((boundary − t) / 86400) and frac((t − boundary) /
+    /// 86400), times 24; the duration is at least 1e-4 (`.rdata` 0x00f9d464).
     pub fn phase(&self, hour: f32) -> DayPhase {
         let hour = hour.rem_euclid(24.0);
-        let d = self.light_duration.max(1e-3);
-        // Hours since each boundary, wrapping; the one passed most recently decides.
-        let since = |boundary: f32| (hour - boundary - self.light_offset).rem_euclid(24.0);
-        let (up, down) = (since(self.night_start), since(self.night_end));
-        if up <= down {
-            DayPhase { night: (up / d).min(1.0), twilight: up < d }
-        } else {
-            DayPhase { night: 1.0 - (down / d).min(1.0), twilight: down < d }
-        }
+        let day = hour > self.day_start && self.day_end > hour;
+        let to = |boundary: f32| {
+            let d = (hour - boundary).rem_euclid(24.0);
+            d.min(24.0 - d)
+        };
+        let nearest = to(self.day_start).min(to(self.day_end));
+        let night =
+            if day { 0.0 } else { ((nearest - self.light_offset) / self.light_duration.max(1e-4)).clamp(0.0, 1.0) };
+        DayPhase { day, night }
     }
 }
 
 impl DayPhase {
-    /// How bright a light with these `OnDuring…` flags is (0–1).
+    /// How bright a light is (0–1), the factor on its `Intensity` (`FUN_0089b400`, called per light by
+    /// `FUN_0054d980`):
+    /// - 1 by day for an `OnDuringDay` light, and at any hour for one that is on by day and by night;
+    /// - otherwise x = the night level, or for a light with a `stagger` id (lights that objects carry:
+    ///   their owner's 16-bit handle, `FUN_005328c0`) `clamp((night − r / 92) × 92, 0, 1)` with r =
+    ///   (id × 119) mod 91, so the lamps come on one after another through the transition;
+    /// - an `OnDuringDay`-only light gets 1 − x, any other light x.
     ///
-    /// **Model decision**, as [`DayNightTransition::phase`]: outside a transition a light is on or off by
-    /// `OnDuringDay` / `OnDuringNight`; inside one, `OnDuringTwilight` holds a light that is on at either
-    /// end fully on, and a light without it follows the ramp between its day and night states.
-    pub fn light_level(&self, def: &LightDef) -> f32 {
-        let (day, night) = (def.on_day as u8 as f32, def.on_night as u8 as f32);
-        if self.twilight && def.on_twilight {
-            return day.max(night);
+    /// `OnDuringRain` / `OnDuringWet` force 1 while the environment's rain / wet flags are set (state
+    /// +0x77 / +0x78, from weather bits the port does not have: taken as clear). `OnDuringTwilight` is
+    /// copied into the light record but that function does not read it.
+    pub fn light_level(&self, def: &LightDef, stagger: Option<u16>) -> f32 {
+        if (self.day && def.on_day) || (def.on_day && def.on_night) {
+            return 1.0;
         }
-        day + (night - day) * self.night
+        let x = match stagger {
+            Some(id) => {
+                let r = (id as u32 * 0x77 % 0x5b) as f32;
+                ((self.night - r * (1.0 / 92.0)) * 92.0).clamp(0.0, 1.0)
+            }
+            None => self.night,
+        };
+        if def.on_day { 1.0 - x } else { x }
     }
 }
 
@@ -320,6 +350,7 @@ impl AssetStore {
             (ResourceType::DynamicInstanceList, fmt::ObjectDef::parse_world_object),
         ];
         let mut carried: HashMap<ResourceId, Vec<ObjectLight>> = HashMap::new();
+        let mut placement = 0u16;
         for (ty, parse) in carriers {
             for e in bundle.entries_of_type(ty) {
                 let list = fmt::ObjectInstanceList::parse(&bundle.load(e)?)?;
@@ -330,6 +361,7 @@ impl AssetStore {
                         def.map_or(Vec::new(), |d| self.object_lights(&d))
                     });
                     let t = &inst.transform;
+                    placement = placement.wrapping_add(1);
                     for l in lights.iter() {
                         let p = l.locator.position;
                         let a = locator_axis(l.locator.rotation);
@@ -341,6 +373,7 @@ impl AssetStore {
                             position: [at(0), at(1), at(2)],
                             direction: normalised([dir(0), dir(1), dir(2)]),
                             object: Some(object),
+                            stagger: Some(placement),
                         });
                     }
                 }
@@ -361,6 +394,7 @@ impl AssetStore {
                     position: [t[3][0], t[3][1], t[3][2]],
                     direction: normalised([t[2][0], t[2][1], t[2][2]]),
                     object: None,
+                    stagger: None,
                 });
             }
         }
@@ -373,15 +407,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn phase_follows_the_boundaries() {
+    fn night_level_ramps_inside_the_night() {
         let t = DayNightTransition::default();
-        assert_eq!(t.phase(13.0), DayPhase { night: 0.0, twilight: false });
-        assert_eq!(t.phase(1.5), DayPhase { night: 1.0, twilight: false });
-        assert_eq!(t.phase(23.0), DayPhase { night: 1.0, twilight: false });
-        let dusk = t.phase(20.5);
-        assert!(dusk.twilight && (dusk.night - 0.5).abs() < 1e-5);
-        let dawn = t.phase(8.75);
-        assert!(dawn.twilight && (dawn.night - 0.75).abs() < 1e-5);
-        assert_eq!(t.phase(21.0), DayPhase { night: 1.0, twilight: false });
+        assert_eq!(t.phase(13.0), DayPhase { day: true, night: 0.0 });
+        assert_eq!(t.phase(1.5), DayPhase { day: false, night: 1.0 });
+        assert!((t.phase(20.5).night - 0.5).abs() < 1e-5);
+        assert!((t.phase(7.25).night - 0.75).abs() < 1e-5);
+        assert_eq!(t.phase(8.5), DayPhase { day: true, night: 0.0 });
+        assert_eq!(t.phase(21.0).night, 1.0);
     }
 }

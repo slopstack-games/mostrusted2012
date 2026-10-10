@@ -8,14 +8,14 @@
 //! cone lights and `FUN_008afee0` for spot lights, docs/decomp.md "World lights") and hands the list to
 //! the lighting pass (`deferred.rs`), which draws one light volume per light.
 //!
-//! What switches a light on is its definition's `OnDuringDay` / `OnDuringNight` / `OnDuringTwilight`
-//! flags against `EnvironmentSettings.DayNightTransition` (`mw_assets::lights::DayNightTransition`; the
-//! ramp between the states is a model decision documented there).
+//! What switches a light on is traced (`mw_assets::lights::DayPhase::light_level`, the game's
+//! `FUN_0089b400`): its definition's `OnDuringDay` / `OnDuringNight` flags against the environment's day flag
+//! and night level, which ramps over `LightTransitionDuration` at both ends of the night (`FUN_008a8480`).
 //!
-//! Not drawn: line lights (66 instances; `LightBuffer_Line` not ported), lights with a flash pattern (602
-//! instances: beacons, traffic lights), the lights cars carry (`VehicleVfxBehaviour`), and the game's own cap on
-//! lights per frame (it keeps the nearest ones in a fixed-size list, `FUN_008dfa00`; the size is a runtime
-//! value).
+//! Not drawn: line lights (66 instances; `LightBuffer_Line` not ported), the lights cars carry
+//! (`VehicleVfxBehaviour`) and the game's own cap on lights per frame (it keeps a fixed-size list per type,
+//! `FUN_008dfa00`). Flash patterns are not animated (those lights are steady). A knocked-over lamp keeps its
+//! light.
 
 use std::sync::Arc;
 
@@ -45,12 +45,9 @@ impl LightSources {
     }
 }
 
-/// `DynamicLighting_GlobalLightMapIntensities.x`, the global factor on the world shaders' lightmap and
-/// lit-window terms (`layered.wgsl`).
-///
-/// **Model decision**: the game sets it from code that was not found (global constant slot 0x11, no
-/// literal writer in the dump; docs/decomp.md "World lights"); here it is the night level of the light
-/// transition, 0 by day and 1 at night.
+/// `DynamicLighting_GlobalLightMapIntensities.x`, the global factor on the world shaders' lightmap, lit-window
+/// and baked-light terms (`layered.wgsl`): the environment's night level (`DayPhase::night`). The game writes
+/// the constant as (night, night or 1 while it rains, night, 0) in `FUN_008c2080`.
 #[derive(Resource, Clone, Copy, PartialEq, Default)]
 pub struct NightLevel(pub f32);
 
@@ -141,15 +138,7 @@ fn update_lights(
     let lights: Vec<GpuWorldLight> = if off {
         Vec::new()
     } else {
-        // Lights with a flash pattern (beacons, traffic lights, blinking signs) stay off: how the game
-        // evaluates `FlashPattern` and which messages switch them is not traced, and all of them on
-        // at once would be wrong.
-        sources
-            .lights
-            .iter()
-            .filter(|l| l.def.flash.kind == 0)
-            .filter_map(|l| gpu_light(l, phase.light_level(&l.def)))
-            .collect()
+        sources.lights.iter().filter_map(|l| gpu_light(l, phase.light_level(&l.def, l.stagger))).collect()
     };
     if !sources.lights.is_empty() {
         info!(
@@ -157,7 +146,7 @@ fn update_lights(
             lights.len(),
             sources.lights.len(),
             phase.night,
-            if phase.twilight { ", twilight" } else { "" }
+            if phase.day { ", day" } else { "" }
         );
     }
     list.lights = Arc::new(lights);
@@ -210,6 +199,7 @@ mod tests {
             position: [1.0, 2.0, 3.0],
             direction: [0.0, -1.0, 0.0],
             object: None,
+            stagger: None,
         }
     }
 
