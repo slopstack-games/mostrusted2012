@@ -228,6 +228,11 @@ fn load_police(game: Res<crate::Game>, mut police: ResMut<Police>) {
         Ok(g) => police.graph = Some(Arc::new(g)),
         Err(e) => warn!("police: no road graph ({e}); no police"),
     }
+    // `MW_PURSUIT_DEMO=1`: the player counts as wanted and cops are placed close by (for screenshots of the HUD).
+    if std::env::var("MW_PURSUIT_DEMO").is_ok() {
+        police.force_wanted = true;
+        police.spawn_distance_override = Some(TEST_SPAWN_DISTANCE);
+    }
     police.pursuit.radar = 1.0;
     police.rng = 0x2545_f491_4f6c_dd1d;
 }
