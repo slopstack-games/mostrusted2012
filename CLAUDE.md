@@ -142,6 +142,8 @@ MW_NO_VIGNETTE=1 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,172
 #   --near x,z[,r] (surfaces around a point), --find <index> (where a surface is), --steps (kerbs / steps nearby)
 ./target/release/mwtool ui screens                  # game UI: screens / widgets (ui show <screen>, ui render <screen> out.png, ui font <n> out.png, ui easydrive)
 ./target/release/mwtool traffic --png <scratch>/lanes.png   # TrafficLaneData: counts, flows, vehicle lists, lane map
+./target/release/mwtool lights --near x,z[,r] --hour 21     # world lights (lists + street lamps): types, flags, ranges
+#   night lighting (world_lights.rs): lamps and lit windows follow --hour; MW_NO_WORLD_LIGHTS=1 for A/B
 ./target/release/mwtool freeroam --list --kind SpeedCam     # TriggerData: speed cameras, billboards, gates, jack spots
 ./target/release/mwtool placement-check --top 10             # placements vs the collision under them, per layer / model
 ./target/release/mwtool mods 911                             # performance upgrades: slot -> parameter changes

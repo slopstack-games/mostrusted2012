@@ -1357,6 +1357,57 @@ sampled at the screen u.
   `GradientTextureA` (rgb and the alpha that caps the fog opacity; `Colour.w` and `ColourSun[3]` are 1 at noon,
   `ColourSun[4]` 0.395 and `02799979` 10, `078c9088` 0.562, `14d20653` 1 are unexplained).
 
+## World lights (2026-10-10)
+
+Point, cone, spot and line lights are GeneSys `Light_Point` / `Light_Cone` / `Light_Spot` / `Light_Line`
+objects (all extend `Light_Base`: `Colour`, `Intensity`, `AttenuationThreshold`, `FlashPattern`, five
+`OnDuring…` bools). They reach the renderer in three steps.
+
+- **Submission** (`FUN_0054ade0`, per active light record, 0xa0 bytes each at world +0x7b8a0): by the
+  definition's type id (0x285b point, 0x2859 cone, 0x841d8 spot, 0x841ec line, 0x285c projected texture) it
+  calls `FUN_008ce920` (point), `FUN_008ce9c0` (cone), `FUN_008cebf0` (spot) or `FUN_008cee40` (line) with the
+  light's matrix translation (+0x30) as position, the matrix's z axis (+0x20) as direction, `Colour`, the
+  record's current intensity (+0x14), the definition's `AttenuationThreshold` (+0x48) and, in degrees,
+  `ConeAngle` (+0x60) and `ConeInnerAngle` (+0x70). Those store colour.rgb = Colour × intensity, colour.w =
+  the threshold (below 0.001, `.rdata` 0x00f8bb34, a renderer default at +0xa40 / +0xa44 / +0xa48 instead),
+  the direction normalised, and the angles in radians (× 0.0174533, 0x00ffc01c). `FUN_008dfa00` /
+  `FUN_008dfbf0` / `FUN_008dfdf0` append to per-type lists with the squared distance to the camera; a full
+  list is handed to `FUN_008df590` (not read; presumably it keeps the nearest; the list sizes are runtime values).
+- **Constants** (the light pass `FUN_008b8840`): for a point light `FUN_008b0940` takes m = the largest of
+  colour.rgb and writes `deferred_lightColour` = (rgb, threshold / m) and a volume matrix scaled by
+  sqrt(m / threshold); the shader's `saturate(1 / d² − colour.w)` so reaches zero exactly at that radius. Cone
+  (`FUN_008af930`) and spot lights (`FUN_008afee0`) do the same and add `deferred_lightDirection` = (−direction,
+  s) and `deferred_lightPosition.w` = c from a table of 45 volumes 2° apart (`FUN_008ae860`, renderer +0xad0,
+  step 0.0349066 at 0x0100e760; index = angle in degrees × 0.5, at most 44): c = cos(i × 2°); a cone light's s =
+  1 / (1 − c), a spot light's s = 1 / (cos(ConeInnerAngle) − c), or FLT_MAX (0x0100ce20) when the inner cone is
+  not inside the edge. A light whose volume the camera is outside of is drawn at once as a volume; the others
+  are batched into full-screen passes (`FUN_008b0650`, `FUN_008af2f0`, `FUN_008af610`: the `Point2…4`
+  programs). Slots: `deferred_lightPosition` 0x50, `deferred_lightColour` 0x51, `deferred_lightDirection` 0x52.
+- **Shaders** (`LightBuffer_Point`, `_Cone`, `_Spot`; blend ONE, ONE): L = light − pixel, d² = |L|² + 0.001,
+  light = colour.rgb × saturate(1 / d² − colour.w) × saturate((L̂ · direction.xyz − position.w) × direction.w)
+  (the cone factor only for cone and spot lights), times the key light program's BRDF: Lambert albedo (1 − F0)
+  N·L / π for the world and the Ashikhmin-Shirley diffuse for cars (RT3.w), plus the same normalised
+  Blinn-Phong specular. No shadow and no AO term.
+
+**Where lights come from.** `LightInstanceList` records (3,628: matrix, definition import at +0x40, an id at
++0x4c) and the `Lights` of objects' `WCVfxBehaviour`s (4,921 placements: street lamps, traffic lights): a
+light definition plus a `LocatorGroup`, resolved in the object's `mLocators` (formats.md). The submission above
+also divides the current intensity by the definition's `Intensity` and passes the ratio with the record's
++0x48 handle to `FUN_00497200` (the light's corona, when it has one).
+
+**Open: what switches a light by hour.** The data has it (`OnDuringDay` / `OnDuringNight` / `OnDuringTwilight`
+/ `OnDuringRain` / `OnDuringWet` on every definition; `EnvironmentSettings.DayNightTransition` with
+`LightTransitionDuration` 1, `LightTransitionOffset` 0, two unnamed hours 8.5 and 20,
+`ShadowTransitionDuration` 1, `ShadowTransitionOffset` 0), but the code that writes a record's current
+intensity (+0x14) was not found: the records are reset in `FUN_00554b50`, read in `FUN_0054ade0`, and nothing
+in the dump stores to +0x14 through the 0x7b8a0 array with a literal offset; no function reads
+`EnvironmentSettings` +0x170…+0x184 (the settings are probably copied into the environment manager first). The
+same holds for `DynamicLighting_GlobalLightMapIntensities` (global constant slot 0x11, registered in
+`FUN_008c34b0`): no `FUN_00a5d660(0x11)` or `FUN_004ad9f0(0x11, …)` call exists, so its writer goes through a
+variable slot. The port's ramp is a model decision (`mw_assets::lights::DayNightTransition::phase`). A live
+read of slot 0x11 and of a lamp's record at a few hours would settle both. `FlashPattern` evaluation
+(`Type` 1 / 2, `Duration`, `Frequency`, `Offset`) is not traced either.
+
 ## Crashes (2026-10-06)
 
 Data: `mw_assets::crash` (layouts in its doc comment); runtime: `crates/mostrusted/src/crash.rs`; values and model

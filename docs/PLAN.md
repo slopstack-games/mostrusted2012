@@ -101,7 +101,7 @@ Make a static frame look like the game.
 3. `[x]` **Remaining world layers** from `ZoneHeader` (0x206): CompoundInstanceList / CompoundObject,
    PropInstanceList / PropObject, DynamicInstanceList, LightInstanceList, GroundcoverCollection / Instances.
    - Done: props, compound objects and dynamic objects are placed (+21068 placements over the map, 0
-     unresolved; `mwtool world` prints counts per layer); lights are parsed (3628) but not rendered.
+     unresolved; `mwtool world` prints counts per layer); lights are drawn since 2026-10-10 (point / cone / spot, plus the street lamps' own lights; `world_lights.rs`).
      Groundcover is decoded and drawn (1.36 M sprites over the map, one mesh per group, `--no-groundcover` to
      skip); since 2026-10-09 by the port of the game's `Groundcover` vertex program (camera-facing about world
      up, wind sway, the CPU builder's per-sprite range drop and shrink, `groundcover.wgsl`). Still open: light
@@ -148,8 +148,9 @@ Make a static frame look like the game.
       time-driven only, the keyframe wind does not reach it; needs a vertex shader for `Layered`). Water:
       scrolling wave normals, algae albedo, near-mirror reflection. Open: river
       floor (TEXCOORD2), foam, caustics.
-   7. `[ ]` Lightmaps: the lightmap shaders read `LightMapTextureSampler` (TEXCOORD1) but neither the material
-      nor the instance overrides bind it; find the source. Lit windows (night emissive) not drawn.
+   7. `[~]` Lightmaps: the lightmap shaders read `LightMapTextureSampler` (TEXCOORD1) but neither the material
+      nor the instance overrides bind it; find the source. Lit windows and illuminated signs are drawn
+      (2026-10-10; the night level that scales them is a model decision). Open: the roads' baked vertex light.
    - Longer term: translate DXBC to WGSL automatically (DXBC → SPIR-V via dxil-spirv/vkd3d, then naga), as IW4L
      does for SM3, instead of hand-porting each family.
 5. `[~]` **Environment**: the timeline is GeneSys (`EnvironmentTimeline` / `EnvironmentKeyframe`,
@@ -174,7 +175,7 @@ Make a static frame look like the game.
    into `NFS13.exe` (`mwtool shader-asm --exe`, decomp.md "Post-processing and colour grade"), cube channel
    order fixed 2026-10-06. Not yet: the TintBlend weights (one cube, nearest keyframe, for now).
    Open: the game's cascade fit / split distances, shadow-only proxy casters (`WorldShadow_*`), the irradiance quadric / second
-   irradiance cube, point / spot / cop lights (`LightBuffer_*`, `TiledLighting_*`), planar reflection
+   irradiance cube, cop / line lights and the per-hour light switch (point / cone / spot lights ported 2026-10-10), planar reflection
    (`[~]` opt-in mirrored camera for wet roads; not yet for `WorldPBR_Horizontal_PlanarReflection`),
    bloom and the composite tint in `GBufferComposite` (`[~]` the vignette A·v + D is ported, 2026-10-06; bloom
    ported 2026-10-07 with untraced level sizes, `MW_NO_BLOOM=1`), motion blur, `PostAA`.

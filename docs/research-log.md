@@ -10,6 +10,49 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-10: night lighting: world lights, street lamps, lit windows
+Task: the original at dusk downtown has lit windows and lamps casting pools of light; ours had neither.
+- **Light definitions cracked** (`genesys-crack`, a lighting word list; every name sorts into its field's
+  place): `AttenuationThreshold` (13b601dc), `OnDuringDay` / `OnDuringNight` / `OnDuringRain` /
+  `OnDuringTwilight` / `OnDuringWet` (the five bools, in that order), `ConeInnerAngle` (bf16f152);
+  `EnvironmentSettings.DayNightTransition`: `LightTransitionDuration` 1, `LightTransitionOffset` 0,
+  `ShadowTransitionDuration` 1, `ShadowTransitionOffset` 0, and two hours 8.5 / 20 (`1ab46d30` / `0e2be130`,
+  not cracked; they sort between the Light… and Shadow… names, like `Night…End` / `Night…Start`).
+- **The light model** (decomp.md "World lights"): colour = `Colour` × `Intensity`, falling off as
+  saturate(1 / d² − threshold / max channel), so a light ends at sqrt(max / threshold) metres (a street lamp:
+  62 × (1, 0.85, 0.38), threshold 0.3: 14.4 m); spot cone = saturate((cos − cos edge) / (cos inner − cos edge))
+  with the edge quantised to 2°; the key light's BRDF, no shadows.
+- **Counts** (`mwtool lights`): 3,628 in `LightInstanceList`s (2,454 spot, 1,108 point, 66 line), 4,921
+  carried by compound / world objects through `WCVfxBehaviour.Lights` (3,628 spot, 1,293 point). 602 have a
+  flash pattern. 2,368 are also `OnDuringDay`.
+- **Street lamps are object lights**: a compound object's `mLocators` (+0x10: count, ids, `{n, ptr, 0}`; quat +
+  position per locator, the car locator layout) holds a group per lamp head (double lamp `…621c484f`: two
+  locators at (±2.94, 8.76, 0), rotated so +z points down), and its "SetLightsOn" `WCVfxBehaviour` names the
+  light definition and that group (plus two `Corona_definition`s on the same group).
+- **Lit windows**: emissive × albedo into RT3. Building variants: spec.w² × AO map.w × `LitWindowColour` ×
+  `AdditiveIntensities.y`; LOD2: diffuse.w² instead of the two masks; Illuminance / Emissive signs:
+  Illuminance(uv0).y × `LightmapColour` × `AdditiveIntensities.x`; all × `GlobalLightMapIntensities.x` except
+  the `Persistent` variants. `InstanceIntensity` variants read `AdditiveIntensities` from the instance block.
+- **Implemented**: `mw_assets::lights`, `world_lights.rs`, the light-volume programs in `game_lighting.wgsl`
+  (instanced cubes after the key light pass, additive, fogged by the fog's transmittance), mode 5 of
+  `layered.wgsl`. Bench (downtown spawn, 01:30, 30 units, 2,171 lights on): 7.25 → 7.89 ms mean, on a machine
+  shared with three other builds.
+- **Model decisions**: the day / night ramp (linear over `LightTransitionDuration` from each boundary hour;
+  `OnDuringTwilight` holds a light on through it); `GlobalLightMapIntensities.x` = that night level (0…1);
+  object lights are on whenever their definition's flags say so (the "SetLightsOn" trigger is not traced, and
+  a knocked-over lamp keeps its light); lights with a flash pattern stay off; no cap on the number of lights;
+  the cone table index rounds down (`FUN_00ede840` taken as floor).
+- **Dead ends / open**: the writer of a light record's intensity and of constant slot 0x11 (decomp.md);
+  `LightMapTextureSampler` is still unbound: the `_Lightmap` programs sample it at TEXCOORD1 and scale it by
+  `AdditiveIntensities.x` (roads: `lightMapIntensity`), but no material, instance override or `ZoneHeader`
+  slot names a texture for it, and the dump search for its binder was not done (a frame capture of the
+  original would show what is bound in slot 9). Plain `DriveableSurface` adds albedo × COLOR.rgb² × 0.318 ×
+  `GlobalLightMapIntensities.x` (baked vertex light on roads): decoded, not drawn (the road path repacks the
+  vertex colour). Line lights (66), coronas (`Vfx_Corona`, the lamps' `Corona_definition`s) and car lights
+  are not drawn. Seen but not changed: the key light program's specular power is `exp(11.0001 − 11 rough)` in
+  DXBC, where `exp` is 2^x; `game_lighting.wgsl` uses e^x for it (both the key light and the new lights).
+  At `--hour 21` the downtown view is washed out by bloom / exposure, before and after this work.
+
 ### 2026-10-10: Windows host; first live read of the original from Windows (chase-camera `.bss`)
 The workspace builds and runs on Windows (MSVC): `mwtool memscan` / `telemetry` / `tune` / `capture` reach the
 game through `ReadProcessMemory` (`memscan/windows.rs`), the install is found through the EA app's registry key
