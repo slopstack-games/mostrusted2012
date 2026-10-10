@@ -16,4 +16,6 @@ clap.workspace = true
 rayon.workspace = true
 bevy = { version = "0.19", features = ["free_camera", "dfg_lut", "bluenoise_texture"] }
 avian3d = "0.7"
+# The Steam Controller is read from its HID interface (steam_controller.rs); pure-Rust backends, no C build.
+hidapi = { version = "2.6", default-features = false, features = ["linux-native", "windows-native"] }
 mw-audio.workspace = true

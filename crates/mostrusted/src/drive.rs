@@ -808,8 +808,10 @@ pub fn install_gamepad_mappings() {
 pub fn log_gamepad_events(mut events: MessageReader<RawGamepadEvent>) {
     for e in events.read() {
         match e {
-            RawGamepadEvent::Axis(a) if a.value.abs() > 0.05 => info!("gamepad axis {:?} = {:.2}", a.axis, a.value),
-            RawGamepadEvent::Button(b) => info!("gamepad button {:?} = {:.2}", b.button, b.value),
+            RawGamepadEvent::Axis(a) if a.value.abs() > 0.05 => {
+                info!("gamepad {} axis {:?} = {:.2}", a.gamepad, a.axis, a.value)
+            }
+            RawGamepadEvent::Button(b) => info!("gamepad {} button {:?} = {:.2}", b.gamepad, b.button, b.value),
             RawGamepadEvent::Connection(c) => info!("gamepad connection {:?}", c),
             _ => {}
         }

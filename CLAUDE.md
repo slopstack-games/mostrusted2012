@@ -165,6 +165,7 @@ MW_NO_VIGNETTE=1 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,172
 MW_ENGINE_TRACE=<scratch>/rpm.trace ./target/release/mostrusted --drive 911 --test engine
 # Driving without a human: fixed throttle, logs "car at x y z, speed, compression" once a second
 ./target/release/mostrusted --drive 911 --units 12 --auto-throttle 0.4 --screenshot <scratch>/drive.png --screenshot-delay 400
+# The Steam Controller is read from HID (steam_controller.rs; MW_STEAM_CONTROLLER=0 off); --gamepad-debug logs pads
 # Controls are the original's defaults (input.rs): arrows steer, A accelerate, Z brake, Space handbrake; pad left
 # stick, RT / LT, X. Easydrive (easydrive.rs): numpad 6 or d-pad right opens (E too), 8 / 2 move, 4 back; headless:
 ./target/release/mostrusted --drive 911 --units 12 --show-easydrive --screenshot <scratch>/easydrive.png --screenshot-delay 60

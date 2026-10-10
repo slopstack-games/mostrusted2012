@@ -10,6 +10,24 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-10: the Steam Controller (2026) as a pad
+The controller (here on its wireless puck, `28DE:1304`) is a mouse, a keyboard and a vendor-defined HID
+interface to the OS, so gilrs never lists it; only Steam Input makes an XInput pad of it, for games started
+through Steam. `steam_controller.rs` reads the vendor interface on a thread (`hidapi`, pure-Rust backends) and
+writes the raw gamepad messages `bevy_gilrs` writes, so `input.rs` and the menus need no change.
+- Protocol from SDL's `SDL_hidapi_steam_triton.c` / `steam/controller_structs.h` (layout knowledge only): state
+  reports 0x42 / 0x45 / 0x47 (buttons `u32`, triggers and sticks `i16`), puck connect / disconnect reports
+  0x79 / 0x46, the lizard-mode-off feature report every 3 s. The puck's interfaces 2..=5 are one slot each; on
+  Windows each splits into mouse / keyboard / vendor collections and only the vendor one (usage page 0xFF00) is
+  opened.
+- Checked on Windows with Steam running: the pad connects as "Steam Controller" next to an Xbox pad, and triggers,
+  both sticks and A arrive from it (`--gamepad-debug`, which now prints the pad's entity).
+- Open: with Steam running and the game not started through it, Steam's desktop layout still sends keys and mouse
+  moves from the controller (README has the ways around it); Linux is not tried (hidraw needs Steam's udev
+  rules); USB and Bluetooth product ids 0x1302 / 0x1303 are from SDL's list, not seen here; trackpads, gyro, back
+  grips and rumble are not used. The reader steps aside when `SteamVirtualGamepadInfo` is set (assumed to be how
+  Steam Input announces its virtual pad, as SDL reads it; not checked with a non-Steam shortcut).
+
 ### 2026-10-10: Speed Points found; collectables run (speed cameras, gates, billboards)
 Third pass at Speed Points, from the data first. Details in decomp.md "Speed Points"; runtime `freeroam.rs`,
 data `mw_assets::scoring`, tool `mwtool scoring`.

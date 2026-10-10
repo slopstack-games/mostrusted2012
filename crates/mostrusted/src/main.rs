@@ -55,6 +55,7 @@ mod settings;
 mod sfx;
 mod shadow_cull;
 mod sky;
+mod steam_controller;
 mod tonemap;
 mod traffic;
 mod tyre_marks;
@@ -813,6 +814,7 @@ fn main() -> anyhow::Result<()> {
     if cli.gamepad_debug {
         app.add_systems(Update, drive::log_gamepad_events);
     }
+    app.add_plugins(steam_controller::SteamControllerPlugin);
     // The environment timeline: `--timeline`, else the one painted where the view starts (the camera
     // pose or the drive spawn; the default timeline until the world view has a focus).
     let fixed_timeline =
