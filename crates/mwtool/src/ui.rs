@@ -190,6 +190,19 @@ fn print_element(store: &AssetStore, cache: &mut UiCache, e: &Element, lang: &La
         };
         println!("{pad}   on {:?}: in [{}] / out [{}]", t.trigger, list(&t.transition_in), list(&t.transition_out));
     }
+    if let Some(s) = &e.stack {
+        let ids = |l: &[mw_bundle::ResourceId]| l.iter().map(|i| (i.0 & 0xffff_ffff).to_string()).collect::<Vec<_>>();
+        println!(
+            "{pad}   stack over {:?} length {:?} default {:?} direction {}",
+            s.data_source,
+            s.length,
+            ids(&s.default),
+            s.direction
+        );
+        for (b, cells) in &s.templates {
+            println!("{pad}     template {b:?}: {:?}", ids(cells));
+        }
+    }
     if let Some(s) = &e.sub_image {
         print_element(store, cache, s, lang, depth + 1);
     }

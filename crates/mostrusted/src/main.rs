@@ -22,6 +22,7 @@ mod damage;
 mod deferred;
 mod drive;
 mod easydrive;
+mod event_card;
 mod exhaust;
 mod flash_probe;
 mod frame_log;
@@ -34,6 +35,7 @@ mod groundcover;
 mod hud;
 mod input;
 mod loader;
+mod map_screen;
 mod materials;
 mod menu;
 mod mods_menu;
@@ -334,9 +336,21 @@ struct Cli {
     /// continue). Default: ~/.config/mostrusted/profile.cfg.
     #[arg(long)]
     profile: Option<PathBuf>,
-    /// With --show-pause: open its MAP page (the offline races).
+    /// With --show-pause: choose its MAP item (the map screen 899991).
     #[arg(long)]
     pause_map: bool,
+    /// Open the map screen (899991, the pause menu's MAP) once the car is placed (also in `--screenshot` runs).
+    #[arg(long)]
+    show_map: bool,
+    /// With --show-map: select this event (`mwtool events` ids).
+    #[arg(long)]
+    map_select: Option<u32>,
+    /// With --show-map --map-select: open the event's options (SET DESTINATION / START RACE).
+    #[arg(long)]
+    map_options: bool,
+    /// Choose START RACE for this event on the map: the event-loading card, then the race with its intro.
+    #[arg(long)]
+    map_start: Option<u32>,
 }
 
 #[derive(Resource)]
@@ -841,9 +855,18 @@ fn main() -> anyhow::Result<()> {
         })
         .add_plugins(pause::PausePlugin {
             enabled: (menu_enabled || cli.show_pause) && matches!(request, Request::Drive { .. }),
-            open: cli.show_pause,
-            map: cli.pause_map,
+            open: cli.show_pause && !cli.pause_map,
+            map: false,
         })
+        .add_plugins(map_screen::MapScreenPlugin {
+            enabled: (menu_enabled || cli.show_pause || cli.show_map || cli.map_start.is_some())
+                && matches!(request, Request::Drive { .. }),
+            open: cli.show_map || (cli.show_pause && cli.pause_map),
+            select: cli.map_select,
+            options: cli.map_options,
+            start: cli.map_start,
+        })
+        .add_plugins(event_card::EventCardPlugin)
         .add_plugins(game_text::GameTextPlugin)
         .add_plugins(ui_quads::UiQuadsPlugin)
         .add_plugins((world_ui::WorldUiPlugin, gate_marker::GateMarkerPlugin))

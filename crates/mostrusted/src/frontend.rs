@@ -51,9 +51,9 @@ pub const LOADING_LAYOUT: u32 = 108_177;
 /// The car pictures preloaded for the transition.
 const PICTURES: usize = 4;
 /// Loading tips picked for a run (one per picture).
-const TIPS: usize = 8;
+pub(crate) const TIPS: usize = 8;
 /// UI shaders not ported: their elements are not drawn.
-const UNPORTED_SHADERS: [&str; 1] = ["UIRoadRibbonShader"];
+pub(crate) const UNPORTED_SHADERS: [&str; 1] = ["UIRoadRibbonShader"];
 /// The world-loaded flag's traffic wait (`DAT_00fc5aac`).
 const TRAFFIC_TIMEOUT: f32 = 1.5;
 /// Radius around the camera whose neighbour zones must be resident (`DAT_00fc9340`).
@@ -208,7 +208,7 @@ impl FrontEnd {
 }
 
 /// A layout the screens use: its scene index per (layout, instance).
-type SlotKey = (u32, Option<ResourceId>);
+pub(crate) type SlotKey = (u32, Option<ResourceId>);
 
 struct Loaded {
     scene: UiScene,
@@ -242,7 +242,7 @@ struct Screens {
 }
 
 /// Layouts of a sequence (recursing into conductors) with their layers.
-fn sequence_layouts(seq: &Sequence, out: &mut Vec<(SlotKey, u32)>) {
+pub(crate) fn sequence_layouts(seq: &Sequence, out: &mut Vec<(SlotKey, u32)>) {
     for i in &seq.items {
         match &i.kind {
             ItemKind::Layout { layout: Some(l), layer, instance, .. } => {
@@ -307,21 +307,15 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>, front: Res<Fron
                 .collect();
             // Car pictures: a random few of the base game's (`Signals.GetIntValue[1]` picks them in the game).
             let cfg = store.loading_config().unwrap_or_default();
-            let mut pool = cfg.images.clone();
-            let mut seed =
-                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64);
-            let mut pictures = Vec::new();
-            while pictures.len() < PICTURES && !pool.is_empty() {
-                seed = seed.wrapping_mul(0x5851_f42d_4c95_7f2d).wrapping_add(1442695040888963407);
-                let k = (seed >> 33) as usize % pool.len();
-                let id = pool.swap_remove(k);
-                if let Some(tex) = store.streamed_image(id)
-                    && let Some(img) = game_text::decode_texture(&store, tex)
-                {
-                    images.push((tex, img));
-                    pictures.push(tex);
-                }
-            }
+            let mut seed = clock_seed();
+            let pictures = pick_pictures(&store, &cfg, PICTURES, &mut seed);
+            let pictures: Vec<ResourceId> = pictures
+                .into_iter()
+                .map(|(id, img)| {
+                    images.push((id, img));
+                    id
+                })
+                .collect();
             let fonts = scene.fonts.iter().map(|(&n, f)| (n, f.clone())).collect();
             let text = |id: Option<u32>| id.and_then(|i| lang.get(i)).unwrap_or_default().to_string();
             let mut strings = HashMap::new();
@@ -329,17 +323,9 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>, front: Res<Fron
                 strings.insert(format!("term:{term}"), text(store.compliance_term(term)));
             }
             strings.insert("key:AUTOLOG_ACCEPT".into(), text(store.keyboard_button_text("KEY_RETURN")));
-            // Loading tips for the strip's `Transitions.Tip` (the offline categories, a random order; how the
-            // game's `GameTipsViewModel` picks them was not traced).
-            let mut tips = cfg.tips.clone();
-            let mut n = 0;
-            while !tips.is_empty() && n < TIPS {
-                seed = seed.wrapping_mul(0x5851_f42d_4c95_7f2d).wrapping_add(1442695040888963407);
-                let id = tips.swap_remove((seed >> 33) as usize % tips.len());
-                if let Some(s) = lang.get(id) {
-                    strings.insert(format!("tip:{n}"), s.to_uppercase());
-                    n += 1;
-                }
+            // Loading tips for the strip's `Transitions.Tip`.
+            for (n, tip) in pick_tips(&cfg, &lang, &mut seed).into_iter().enumerate() {
+                strings.insert(format!("tip:{n}"), tip);
             }
             info!(
                 "front end: {} layouts, {} textures, {} pictures in {:.0?}",
@@ -429,9 +415,54 @@ fn track_ready(
     }
 }
 
+/// A seed for the random picks (the game seeds its PCG-style generator from the clock too).
+pub(crate) fn clock_seed() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64)
+}
+
+fn next_random(seed: &mut u64) -> usize {
+    *seed = seed.wrapping_mul(0x5851_f42d_4c95_7f2d).wrapping_add(1442695040888963407);
+    (*seed >> 33) as usize
+}
+
+/// `n` car pictures for the transitions, picked at random from `LoadingTipsConfig.TransitionImages`'s base-game
+/// list, decoded.
+pub(crate) fn pick_pictures(
+    store: &mw_assets::AssetStore,
+    cfg: &fe::LoadingConfig,
+    n: usize,
+    seed: &mut u64,
+) -> Vec<(ResourceId, Image)> {
+    let mut pool = cfg.images.clone();
+    let mut out = Vec::new();
+    while out.len() < n && !pool.is_empty() {
+        let id = pool.swap_remove(next_random(seed) % pool.len());
+        if let Some(tex) = store.streamed_image(id)
+            && let Some(img) = game_text::decode_texture(store, tex)
+        {
+            out.push((tex, img));
+        }
+    }
+    out
+}
+
+/// [`TIPS`] loading tips for the strip's `Transitions.Tip` (the offline categories, a random order; how the game's
+/// `GameTipsViewModel` picks them was not traced).
+pub(crate) fn pick_tips(cfg: &fe::LoadingConfig, lang: &mw_formats::Language, seed: &mut u64) -> Vec<String> {
+    let mut tips = cfg.tips.clone();
+    let mut out = Vec::new();
+    while !tips.is_empty() && out.len() < TIPS {
+        let id = tips.swap_remove(next_random(seed) % tips.len());
+        if let Some(s) = lang.get(id) {
+            out.push(s.to_uppercase());
+        }
+    }
+    out
+}
+
 /// Clock with the sequence's jump controllers: crossing a jump's trigger time while its binding holds (empty =
 /// always) jumps to its destination. Returns the new clock and whether it jumped.
-fn step(seq: &Sequence, clock: f32, dt: f32, holds: &mut dyn FnMut(&str) -> bool) -> (f32, bool) {
+pub(crate) fn step(seq: &Sequence, clock: f32, dt: f32, holds: &mut dyn FnMut(&str) -> bool) -> (f32, bool) {
     let next = clock + dt;
     for c in &seq.controllers {
         if let Controller::Jump { trigger_time, destination, enabled, .. } = c
@@ -445,7 +476,7 @@ fn step(seq: &Sequence, clock: f32, dt: f32, holds: &mut dyn FnMut(&str) -> bool
     (next, false)
 }
 
-fn binding_true(b: &str, lookup: &mut dyn FnMut(&str, Option<&str>) -> Option<BindValue>) -> bool {
+pub(crate) fn binding_true(b: &str, lookup: &mut dyn FnMut(&str, Option<&str>) -> Option<BindValue>) -> bool {
     Binding::parse(b).and_then(|b| b.eval(lookup)).is_some_and(|v| v.truthy())
 }
 

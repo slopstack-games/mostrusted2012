@@ -166,6 +166,12 @@ MW_ENGINE_TRACE=<scratch>/rpm.trace ./target/release/mostrusted --drive 911 --te
 # skip it. --new-game, --profile <file> (~/.config/mostrusted/profile.cfg), --front-end-shots <dir>, --show-loading
 ./target/release/mostrusted
 ./target/release/mwtool hsm [<node id>] [--find text]     # game-logic state machines (HSMData); mwtool frontend
+./target/release/mwtool hsm <id> --parents               # which nodes start a node (child or transition)
+./target/release/mwtool frontend --sequence 1014321      # one UI sequence's items; --spots lists every jack spot
+# The map screen (map_screen.rs; pause menu MAP): arrows select, Enter options, START RACE plays the event-loading
+# card (event_card.rs) and starts the race with its intro; Backspace back to the pause menu, Esc drives on
+./target/release/mostrusted --drive "v12 vantage" --units 12 --show-map --map-select 1909234 --map-options --screenshot <scratch>/map.png --screenshot-delay 120
+MW_CARD_SHOTS=<dir> ./target/release/mostrusted --drive "v12 vantage" --units 20 --spawn=1600,40,2350 --map-start 1909234   # card shots, intro, exit
 # Races (race.rs, ai.rs, cutscene.rs): the event's intro, AI opponents on the grid, gates, laps, results
 ./target/release/mwtool events [<id> [--png f]] [--all]  # offline events; mwtool camera-take [take] (ICE cameras)
 ./target/release/mostrusted --race 462174                # CONTINENTAL DRIFT; --no-cutscenes, --spawn= overrides the start

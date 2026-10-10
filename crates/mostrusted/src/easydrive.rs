@@ -375,9 +375,16 @@ fn navigate(
     game: Res<Game>,
     player: Query<&GlobalTransform, (With<crate::drive::Car>, With<crate::drive::Player>)>,
     front: Option<Res<crate::frontend::FrontEnd>>,
+    screens: (Option<Res<crate::map_screen::MapScreen>>, Option<Res<crate::event_card::EventCard>>),
 ) {
-    // Not over the front end's screens ("Disable Car Control and Easydrive").
-    if !menu.enabled || menu.tiers.is_empty() || front.is_some_and(|f| !f.playing()) {
+    // Not over the front end's screens ("Disable Car Control and Easydrive"), the map or the event card.
+    let (map, card) = screens;
+    if !menu.enabled
+        || menu.tiers.is_empty()
+        || front.is_some_and(|f| !f.playing())
+        || map.is_some_and(|m| m.open || m.just_closed)
+        || card.is_some_and(|c| c.showing())
+    {
         return;
     }
     // The original's EASY_* actions (Num 4 / 6 / 8 / 2, d-pad; input.rs). EASY_OPEN has no default binding in the

@@ -498,13 +498,21 @@ enum Cmd {
     },
     /// The front end's data (`mw_assets::frontend`): the free-roam start (default car, start point, swap
     /// spots), the loading screens (layouts, pictures, tips), the pause menu's items and the title / transition
-    /// sequences' items.
-    Frontend,
+    /// sequences' items. `frontend --sequence <id>` prints one UI sequence's items (layouts, texts, timings).
+    Frontend {
+        #[arg(long)]
+        sequence: Option<u32>,
+        /// List every swap spot (jack spot), not the first five.
+        #[arg(long)]
+        spots: bool,
+    },
     /// The game logic's state machines (`HSMData`, `mw_formats::hsm`): `hsm` lists the root nodes, `hsm <id>`
     /// prints a node's tree (children, what each child's exit codes start, parameters), `hsm --find <text>`
-    /// searches node names.
+    /// searches node names, `hsm <id> --parents` lists the nodes that start it (as a child or a transition).
     Hsm {
         node: Option<u32>,
+        #[arg(long)]
+        parents: bool,
         #[arg(long, default_value = "GAMELOGIC/GAMEMODES.BNDL")]
         bundle: String,
         #[arg(long)]
@@ -1347,9 +1355,10 @@ fn main() -> Result<()> {
             export_world(&AssetStore::new(game)?, &bundles, &out, size, obj, &instances)?
         }
         Cmd::Events { id, png, all } => events::run(&AssetStore::new(game)?, id.as_deref(), png.as_deref(), all)?,
-        Cmd::Frontend => events::frontend(&AssetStore::new(game)?)?,
-        Cmd::Hsm { node, bundle, find, depth } => {
-            events::hsm(&AssetStore::new(game)?, &bundle, node, find.as_deref(), depth)?
+        Cmd::Frontend { sequence: Some(id), .. } => events::print_sequence(&AssetStore::new(game)?, id)?,
+        Cmd::Frontend { sequence: None, spots } => events::frontend(&AssetStore::new(game)?, spots)?,
+        Cmd::Hsm { node, bundle, find, depth, parents } => {
+            events::hsm(&AssetStore::new(game)?, &bundle, node, find.as_deref(), depth, parents)?
         }
         Cmd::Traffic { png, at } => traffic(&AssetStore::new(game)?, png.as_deref(), &at)?,
         Cmd::PaintMap { id, png, at } => paint_map(&AssetStore::new(game)?, &id, png.as_deref(), &at)?,

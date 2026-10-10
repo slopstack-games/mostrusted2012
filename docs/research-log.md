@@ -10,6 +10,90 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-10: the map screen (event selection), the event-loading card, key-box prompts
+Handoff item 4 (front end). New: `map_screen.rs` (screen 899991, MAP tab), `event_card.rs` (the PLAY_EVENT
+transition), races started at runtime now get their intro / outro (`cutscene::run_event_cutscenes`).
+- **How the original reaches the map** (HSM, `mwtool hsm <id> --parents`, new): the pause screen's MAP item
+  exits `SHOW_MAP` → "In Game Menu" 469008 → "Suppress Prefetched Screens -> Run Map Screen" 1695290 → "Run PauseMap
+  Screen" 1695291 → "Show Main Map" → "Run PageRunner2 Context - Main Map" 899996 (`DEF_PAGE_REF` 899991) → "Run
+  Map Screen" 1607028 (`Screen.Session.NavTabName` = MAP) → "Run Map Options" 1676747: widget groups 899993
+  (`MapControls` + `TabActions`), 1676900 / 1676899 (persistent map, map layouts 1695072), 2012629 (map title).
+  `MapControls` exits `TO_OPTIONS` → group 1222205 (`Options`, script `MainMapOptions`), whose list for an event
+  is the `Event` menu data 1222202: "SET DESTINATION" (`Map:OnSetWaypoint`), "START RACE"
+  (`Event:OnJumpToEvent:PLAY_EVENT`). Group 1222205's `ScreenTransition`s: `CAR_SELECT` → 1524151 (sequence 1524152),
+  `PLAY_EVENT` → 1453803 (sequence 1014321). Its other exits: `EVENT_CARSEL` → "Event Car Select" (group 1695023:
+  menus 1695026 / 1695037 "SELECT CAR", `CarStats`, `CarImages`; `PLAY_EVENT` there runs
+  `SetEventFromAvailableVehicles`), `TO_JKSPOT`, `NEW_GAME`, `QUIT`. The multiplayer garage reaches screen 1571371
+  ("Customise Rollouts Multiplayer": manufacturer → model → mod type → mod groups 1571372 / 1571382 / 1571389 /
+  1571390); 1135879 was not reached from these trees.
+- **Capture of the original** (`tools/orig`, audio muted, save backed up to `ref/savebackup-2026-10-10/` and
+  restored byte-identical afterwards; screenshots kept in `ref/frontend-2026-10-10/`): pause menu (o4), map with
+  the player selected (o5), an event selected (o6, "MOST WANTED 8": a transient red glow on every road), its options
+  (o7: SET DESTINATION / START RACE replace the card's SELECT row), START RACE → the event card (o8–o10: transition
+  pictures, the Most Wanted list on the left, then the speedwall, the event strip "MOST WANTED 8" with "BEAT THE
+  MERCEDES-BENZ SL 65 AMG", the tip strip) → the intro (o11). The map's left panel is the Most Wanted list (group
+  899992, `MwlLayouts` 1470720), the bottom the navigation tabs (PGUP, five icon tabs, MAP selected, PGDN) and the
+  Autolog ticker, top right the player's header, bottom right the filter "RACES" between Z and A.
+- **What the RACES filter shows** (fitted, see below): the current car's events in green (the F-150 Raptor's TURF
+  WAR, LIBERTY PARK (an ambush), ROLLING STOCK matched icons) and the Most Wanted races in red. The icon is the
+  `POI` look 1222133 (key 1135497) = layout 816139, the green diamond `01010000000f789a`, with a triggered step
+  `TO,MAP_EVENT_DONE` on `~LiveMapManager.ShowEventComplete[#]`: red = beaten (the user's save had beaten every
+  Most Wanted race). The selected event's card is look 1135809 (key 1135808) = layout 1481372 (type, name,
+  difficulty, `Events.Loading.Difficulty`, route length, the SELECT row on `LiveMapManager.SelectedIndex(EQUALS:#)`,
+  ten elements `OUT` on `~Widget.Options.IsActive`); the cursor look 1135304 (key 1135303) = layout 1470763 (three
+  additive rings while `MapControls` is active, and the option list: a stack over `~Widget.Options.Items` at
+  y = `~Widget.Options.MainMapOptions.OptionHeight`); the player's arrow look 1222137 = layout 371789 (`rot: Rot`).
+  The Most Wanted events' own card (the capture's, with the rival car and the speedwall) is probably 1481445 /
+  1481350 (keys 1135735 / 1135737); not used.
+- **The map image**: the `POI` widget's map layout 1222145 draws `01010000002195ca` (1024², BC1: terrain, roads,
+  city blocks) as a 2000 × 2412 map-unit rectangle. Registered against the `UIMapGrid` tiles (whose world
+  placement is data: origin (−4129, −4920), 1036 m tiles, 8 × 10) by maximising the correlation of their road lines:
+  it covers x −4000…3990, z −4581…5406 (registration, error ≲ 10 m).
+- **Camera** (`UIMapCameraConfig` of the screen's `POI`: look-at `Widget.MapManager.SelectedPosition`, offset
+  `LiveMapManager.ScreenLookAtOffset` (0.25), distance 7000, FOV / tilt from `Widget.POI.MainMapZoom.Fov` /
+  `Widget.POI.ZoomAngle`, `LookAtRotation` 0): the selection sits at (836, 360) of the 1280×720 frame in both o5
+  and o7. A least-squares fit of eight icons of o7 (the green and red diamonds) against the events' start points,
+  with Most Wanted 8 at the anchor: world +X points 94.4° clockwise from screen-right (≈ down), +Z ≈ left, 6.29 m per
+  reference pixel, residuals 1–15 px (one Most Wanted icon 36 px off: its icon may not sit at its start). A
+  pure 90° turn fits clearly worse (cost 3268 against 1322). Image registration of the screenshot against the
+  map image failed (the original's road rendering differs; several spurious mirrored optima) — the icon fit is the
+  measurement.
+- **Event-loading card** (sequence 1014321, 8.5 s): black shape 26458 and the conducted card 1014274 (0–8.25 s),
+  black 1689864 (8.25–8.5 s); controllers: 0.067 → 0.017 while `Screen.TransitionsLoaded(NOT)`,
+  **`JumpMonitorTimelineController` 0.15 → 8.0 with no binding**, 8.233 → 8.017 while `Screen.IsActive(NOT)`.
+  Our reading of the monitor: the outer clock waits at 0.15 s until the conducted card has played out (a plain jump
+  would cut the card at 0.15 s). The card 1014274 (8.5 s): picture sequence 1899171 (as in the boot transition),
+  black quad, tip strip 1899089, header strips 1675179, the Most Wanted list (conducted 2041453, 0.75–4.5 s,
+  `SequenceMwl.Items`), the event panel (1675921, or 2041418 for `Event.Data.IsBlacklistEvent` = Most Wanted
+  events), rewards 1014298 (`Events.Loading.Reward` / `SecondReward` / `ThirdReward`, `TargetSpeed[n]`), the
+  speedwall (conducted 1675879, 4.5–8.5 s), holds 7.733 → 7.517 while `Screen.IsActive(NOT)` (8.0 → 7.767 on
+  `UIMessages.NISStalled` / `System.IsSimulationPausedForStreaming`) and the general trigger 3361386002 at 7.75 s:
+  the EventIntro context's "Screen Transition Voodoo" waits for `GeneralSequence.Triggers["TRANSITION"]` before "Run
+  intro sequence", so the intro starts under the card's last 0.75 s.
+- **Element stacks run across too**: `UIElement_ElementStack.ae583a9a` (+236, a 2-byte enum) is 1 on every list
+  (pause, HUD, Easydrive, map) and 0 on the navigation tabs: our reading, 0 = cells left to right (formats.md).
+- **Key-box prompts**: the keyboard's button prompts are `UIListItems` 113577 (plain names: 113578):
+  `U+F092 U+F040 U+E047 U+E048 ESC U+E049 U+F012 U+F093`; the font's `U+E047` / `U+E048` / `U+E049` are the box's
+  left cap, fill and right cap; Return is `U+E06B`. `Font::layout` now stretches the fill under the name; the box is
+  drawn light and the name dark (the `U+F0xx` style codes are not decoded).
+- **Runtime races**: the cutscene systems run while a `Setup` resource exists (`--race`, or inserted by the
+  card), so races started from the map get their intro and outro; `CutsceneState.hold_intro` keeps the intro
+  until "TRANSITION". Checked: KEYS TO THE CITY from the map, card 0–7.75 s, held for the opponents and the start
+  area (0.1 s with the start area loaded, ~18 s while the full world streamed), TRANSITION, intro 1912702 plays
+  (`MW_CARD_SHOTS`). A full-world run on the shared GPU (other agents' 5 GB) quit with a wgpu out-of-memory error
+  as the intro began; with `--units 20` near the start it runs through.
+- **Model decisions**: the flat orthographic camera with the fitted turn and scale and our easing (8/s); arrows
+  pick the nearest item within ±60° of the direction (the `LiveMapManager` Lua script is not decoded); no
+  completion state (all green); the Most Wanted list, the player header and card, the speedwall rows, rewards,
+  the road glow (layouts 1222163 / 1222558) and the tab icons are left out; SET DESTINATION, ambushes / speed runs
+  and the other filters are inactive; the option list is moved off screen while the options group is inactive;
+  the race is started 0.25 s into the card; the card's difficulty is the event's first allowed car's; key-box inks.
+- **Open**: car select for events the car may not enter (`EVENT_CARSEL`, group 1695023) and the customise screens
+  (1571371, 1135879); the event-intro card for Easydrive's START RACE (does the original play 1014321 there too?);
+  `MAP_EVENT_DONE` from the save's progression; the Most Wanted card / speedwall; why the map turns 94.4° (the
+  map camera's `LookAtRotation` is 0; tilt?); the map's 3D projection (`ProjectionAngle`), zoom; the AI placing both
+  opponents of KEYS TO THE CITY at one point (seen in the runtime race, `ai.rs`).
+
 ### 2026-10-09: frame drops: the render thread's multi-draw path, physics catch-up, bakes on every core
 User report: "optimize this game, it is weirdly dropping frames sometimes". Measured with a new per-frame log
 (`MW_FRAME_LOG=<file>`, `frame_log.rs`: main schedule segments First / PreUpdate / fixed loop / Update /

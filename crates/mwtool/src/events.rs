@@ -382,14 +382,14 @@ fn sequences(store: &AssetStore, events: &Events, e: &Event) {
 }
 
 /// `mwtool frontend`: the front end's data (`mw_assets::frontend`).
-pub fn frontend(store: &AssetStore) -> Result<()> {
+pub fn frontend(store: &AssetStore, all_spots: bool) -> Result<()> {
     use mw_assets::frontend as fe;
     let lang = store.language(mw_assets::DEFAULT_LANGUAGE).ok();
     let text = |id: u32| lang.as_ref().and_then(|l| l.get(id)).map_or_else(|| format!("#{id}"), str::to_owned);
     let start = store.start_config()?;
     println!("new game car: {:?}; default start: {:?}", start.default_vehicle, start.default_start);
-    println!("{} swap spots (jack spots); first 5:", start.swap_spots.len());
-    for s in start.swap_spots.iter().take(5) {
+    println!("{} swap spots (jack spots){}:", start.swap_spots.len(), if all_spots { "" } else { "; first 5" });
+    for s in start.swap_spots.iter().take(if all_spots { usize::MAX } else { 5 }) {
         println!("  spot {} car {} location {} pose {:?}", s.id, s.vehicle, s.location, s.car);
     }
     let lc = store.loading_config()?;
@@ -421,6 +421,13 @@ pub fn frontend(store: &AssetStore) -> Result<()> {
         print_ui_sequence(&seq, 0);
         layout_shaders(store, &seq);
     }
+    Ok(())
+}
+
+/// `mwtool frontend --sequence <id>`: one UI sequence.
+pub fn print_sequence(store: &AssetStore, id: u32) -> Result<()> {
+    let seq = store.ui_sequence(id)?;
+    print_ui_sequence(&seq, 0);
     Ok(())
 }
 
@@ -479,9 +486,37 @@ fn print_ui_sequence(seq: &mw_assets::sequence::Sequence, depth: usize) {
 }
 
 /// `mwtool hsm`: the game logic's state machines.
-pub fn hsm(store: &AssetStore, bundle: &str, node: Option<u32>, find: Option<&str>, depth: usize) -> Result<()> {
+pub fn hsm(
+    store: &AssetStore,
+    bundle: &str,
+    node: Option<u32>,
+    find: Option<&str>,
+    depth: usize,
+    parents: bool,
+) -> Result<()> {
     use mw_formats::hsm::key_name;
     let data = store.hsm_data(bundle)?;
+    if let (true, Some(id)) = (parents, node) {
+        // Who starts this node: a parent's child list / ENTER event, or a sibling's transition.
+        for n in &data.nodes {
+            let child = n.children.iter().any(|c| c.id == id);
+            let enter = n.events.iter().any(|e| e.nodes.contains(&id));
+            for c in &n.children {
+                for t in c.transitions.iter().filter(|t| t.targets.contains(&id)) {
+                    println!("{:8} {:?}: child {} on {} starts it", n.id, n.name, c.id, key_name(t.exit));
+                }
+            }
+            if child || enter {
+                println!(
+                    "{:8} {:?}: {}",
+                    n.id,
+                    n.name,
+                    if enter { "starts it on an event" } else { "has it as a child" }
+                );
+            }
+        }
+        return Ok(());
+    }
     if let Some(text) = find {
         for n in data.nodes.iter().filter(|n| n.name.to_lowercase().contains(&text.to_lowercase())) {
             println!("{:8} [{:08x}] {}", n.id, n.code, n.name);

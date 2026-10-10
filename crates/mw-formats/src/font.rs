@@ -128,16 +128,60 @@ impl Font {
 
     /// Lay out one line of text at `size` (em, output units). Returns the quads (atlas rectangle, output
     /// rectangle relative to the pen start and line top) and the advance width. Unknown characters use `?`.
+    ///
+    /// Key boxes: the button prompts are `U+E047` (left cap), `U+E048` (fill), the key's name, `U+E049` (right
+    /// cap), e.g. "ESC" for Esc (`UIListItems` 113577). The fill is stretched under the name, which is marked
+    /// [`GlyphQuad::key`]: 1 for the box, 2 for the name (drawn in the box's ink).
     pub fn layout(&self, text: &str, size: f32, spacing: f32) -> (Vec<GlyphQuad>, f32) {
+        const FILL: char = '\u{e048}';
+        const RIGHT: char = '\u{e049}';
+        const PROMPTS: char = '\u{e000}';
+        const PROMPTS_END: char = '\u{e0ff}';
         let scale = size / self.point_size;
         let mut pen = 0.0;
-        let mut quads = Vec::new();
+        let mut quads: Vec<GlyphQuad> = Vec::new();
+        // An open key box: where its fill goes in `quads` and the pen there.
+        let mut key_box: Option<(usize, f32)> = None;
         for c in text.chars() {
+            if c == FILL && self.glyph(FILL).is_some() {
+                key_box = Some((quads.len(), pen));
+                continue;
+            }
+            if c == RIGHT
+                && let Some((at, start)) = key_box.take()
+                && let Some(fill) = self.glyph(FILL)
+                && let Some(rect) = fill.rect
+            {
+                let natural = fill.advance * scale;
+                let width = (pen - start).max(natural);
+                // A name narrower than the box sits in its middle.
+                let shift = (width - (pen - start)) * 0.5;
+                for q in &mut quads[at..] {
+                    q.rect[0] += shift;
+                }
+                quads.insert(
+                    at,
+                    GlyphQuad {
+                        atlas: rect,
+                        rect: [start + fill.offset[0] * scale, fill.offset[1] * scale, width, rect[3] * scale],
+                        key: 1,
+                    },
+                );
+                pen = start + width;
+            }
             let Some(g) = self.glyph(c).or_else(|| self.glyph('?')) else { continue };
             if let Some(rect) = g.rect {
                 quads.push(GlyphQuad {
                     atlas: rect,
                     rect: [pen + g.offset[0] * scale, g.offset[1] * scale, rect[2] * scale, rect[3] * scale],
+                    // Prompt glyphs (the private-use U+E0xx range: box caps, the Enter key) are light.
+                    key: if key_box.is_some() {
+                        2
+                    } else if (PROMPTS..=PROMPTS_END).contains(&c) {
+                        1
+                    } else {
+                        0
+                    },
                 });
             }
             pen += g.advance * scale + spacing;
@@ -151,6 +195,8 @@ impl Font {
 pub struct GlyphQuad {
     pub atlas: [f32; 4],
     pub rect: [f32; 4],
+    /// Key boxes (see [`Font::layout`]): 1 = part of the box, 2 = the key's name in it, 0 = text.
+    pub key: u8,
 }
 
 #[cfg(test)]
