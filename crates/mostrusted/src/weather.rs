@@ -251,6 +251,7 @@ pub fn spawn_environment(
     commands.entity(camera).insert((
         Skybox { image: Some(handles.sky.clone()), brightness: GAME_UNIT, ..default() },
         GeneratedEnvironmentMapLight { environment_map: handles.sky.clone(), intensity: GAME_UNIT, ..default() },
+        SkyFilter { sky: handles.sky.clone() },
     ));
     // Lights the forward (translucent) materials; the game's lighting pass takes the key light from
     // `GameLighting`. Its cascaded shadow maps are rendered by Bevy and sampled by the game's lighting
@@ -283,10 +284,95 @@ pub struct WeatherPlugin {
 
 impl Plugin for WeatherPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (weather_keys, follow_timeline, request_bake, apply_bake).chain());
+        app.add_systems(Update, (weather_keys, follow_timeline, request_bake, apply_bake, settle_sky_filter).chain());
+        let runs = SkyFilterRuns::default();
+        app.insert_resource(runs.clone());
+        if let Some(render) = app.get_sub_app_mut(bevy::render::RenderApp) {
+            render.insert_resource(runs).add_systems(
+                bevy::render::Render,
+                count_sky_filter_runs
+                    .after(bevy::pbr::generate::filtering_system)
+                    .before(bevy::render::RenderSystems::Render),
+            );
+        }
         if self.hud {
             app.add_systems(Startup, spawn_hud).add_systems(Update, update_hud);
         }
+    }
+}
+
+/// The forward materials' image-based light (Bevy's `EnvironmentMapLight`) is filtered from the sky cube by
+/// Bevy's `GeneratedEnvironmentMapLight`, which runs its whole filter every frame (copy, downsample, GGX
+/// radiance for each of the 512² cube's 10 mips, irradiance) although the sky only changes with a bake. The
+/// camera keeps [`SkyFilter`]; the generator component stays until the filter has run
+/// [`SKY_FILTER_RUNS`] times on the current sky and is then removed: the `EnvironmentMapLight` it created
+/// keeps the filtered cubes. A changed sky image (a bake) puts it back. `MW_SKY_FILTER_EVERY_FRAME=1` keeps
+/// Bevy's per-frame filtering (A/B).
+#[derive(Component)]
+struct SkyFilter {
+    sky: Handle<Image>,
+}
+
+/// Filter passes run since the sky last changed (written by the render world, reset by the main world).
+#[derive(Resource, Clone, Default)]
+struct SkyFilterRuns(Arc<std::sync::atomic::AtomicU32>);
+
+/// Render frames that ran the filter before it is removed. The new sky's GPU image is used from the second
+/// render frame after the change (extraction reads the previous frame's render assets) and the render frame
+/// in flight may still count once for the old one, so four leave margin.
+const SKY_FILTER_RUNS: u32 = 4;
+
+fn settle_sky_filter(
+    mut commands: Commands,
+    mut events: MessageReader<AssetEvent<Image>>,
+    runs: Res<SkyFilterRuns>,
+    cameras: Query<(Entity, &SkyFilter, Option<&GeneratedEnvironmentMapLight>)>,
+) {
+    use std::sync::atomic::Ordering;
+    let changed: Vec<AssetId<Image>> = events
+        .read()
+        .filter_map(|e| match e {
+            AssetEvent::Added { id } | AssetEvent::Modified { id } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    for (entity, filter, generated) in &cameras {
+        if changed.contains(&filter.sky.id()) {
+            runs.0.store(0, Ordering::Relaxed);
+            if generated.is_none() {
+                commands.entity(entity).insert(GeneratedEnvironmentMapLight {
+                    environment_map: filter.sky.clone(),
+                    intensity: GAME_UNIT,
+                    ..default()
+                });
+            }
+        } else if generated.is_some()
+            && runs.0.load(Ordering::Relaxed) >= SKY_FILTER_RUNS
+            && std::env::var_os("MW_SKY_FILTER_EVERY_FRAME").is_none()
+        {
+            debug!("sky filter settled");
+            commands.entity(entity).remove::<GeneratedEnvironmentMapLight>();
+        }
+    }
+}
+
+/// Counts render frames in which Bevy's environment-map filter dispatched (its pipelines are ready and a
+/// camera has its bind groups), right after its `filtering_system`.
+fn count_sky_filter_runs(
+    runs: Res<SkyFilterRuns>,
+    probes: Query<
+        (),
+        (With<bevy::pbr::generate::GeneratorBindGroups>, With<bevy::pbr::generate::RenderEnvironmentMap>),
+    >,
+    pipelines: Option<Res<bevy::pbr::generate::GeneratorPipelines>>,
+    cache: Res<bevy::render::render_resource::PipelineCache>,
+) {
+    let Some(p) = pipelines else { return };
+    let ready = [p.downsample_first, p.downsample_second, p.copy, p.radiance, p.irradiance]
+        .into_iter()
+        .all(|id| cache.get_compute_pipeline(id).is_some());
+    if ready && !probes.is_empty() {
+        runs.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
