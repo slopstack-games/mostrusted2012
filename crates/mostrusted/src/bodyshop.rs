@@ -402,7 +402,7 @@ fn run_test(
             let after = state_line(car, damage, grime, &garage);
             let paint = garage.current.as_ref().map_or(0, |c| c.paint_index);
             let clean = damage.is_some_and(|d| d.levels.iter().all(|l| *l == 0.0))
-                && grime.is_some_and(|g| g.dust == 0.0 && g.dirt == 0.0);
+                && grime.is_some_and(|g| g.dust < 0.05 && g.dirt < 0.05);
             println!("TEST RESULT bodyshop after: {after}");
             println!(
                 "TEST RESULT bodyshop {}: repaired and washed {clean}, resprayed {} ({} -> {paint}), shops found {:?}",

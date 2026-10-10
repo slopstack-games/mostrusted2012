@@ -44,7 +44,7 @@ use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use avian3d::prelude::*;
-use bevy::camera::primitives::MeshAabb;
+use bevy::camera::primitives::Aabb;
 use bevy::prelude::*;
 use mw_assets::AssetStore;
 use mw_assets::frontend::SwapSpot;
@@ -90,7 +90,7 @@ impl Plugin for JackSpotsPlugin {
             .init_resource::<ParkedModels>()
             .init_resource::<Collected>()
             .add_systems(Startup, start_loading)
-            .add_systems(Update, (receive, track_cars, swap).chain().after(crate::drive::read_input));
+            .add_systems(Update, (receive, track_cars, fit_boxes, swap).chain().after(crate::drive::read_input));
         if let Some(out) = &self.test {
             app.insert_resource(JackTest { out: out.clone(), phase: 0, timer: 0.0, spot: None, old: String::new() })
                 .add_systems(Update, run_test.before(receive));
@@ -318,6 +318,23 @@ fn receive(mut jack: ResMut<JackSpots>) {
         init.max_mph,
         init.prompt_text
     );
+    if std::env::var_os("MW_JACKSPOT_LOG").is_some() {
+        for (s, ..) in &init.spots {
+            if let (Some(c), Some(o)) = (s.car, s.second) {
+                let f = Vec3::from(c.direction);
+                let d = Vec3::from(o.position) - Vec3::from(c.position);
+                let turn = f.dot(Vec3::from(o.direction));
+                info!(
+                    "jack spot {}: second place {} is {:.1} m ahead, {:.1} m to the side, {:.1} m up, facing dot {turn:.2}",
+                    s.id,
+                    o.trigger,
+                    d.dot(f),
+                    d.dot(Vec3::Y.cross(f)),
+                    d.y
+                );
+            }
+        }
+    }
     jack.homes = init.spots.iter().map(|s| s.2.clone()).collect();
     jack.inside = vec![false; init.spots.len()];
     jack.spots = init.spots.into_iter().map(|(s, t, b)| Spot::new(s, t, b)).collect();
@@ -349,7 +366,7 @@ fn track_cars(
     garage: Res<Garage>,
     requests: Option<Res<LoaderRequests>>,
     player: Query<&Transform, (With<Car>, With<Player>)>,
-    meshes: Res<Assets<Mesh>>,
+
     spatial: SpatialQuery,
 ) {
     let jack = &mut *jack;
@@ -485,17 +502,9 @@ fn track_cars(
             ))
             .id();
         // MODEL: one static box around the body meshes (the game's parked cars are physical vehicles).
-        let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
-        for (mesh, _) in &model.body {
-            if let Some(b) = meshes.get(mesh).and_then(|m| m.compute_aabb()) {
-                lo = lo.min(Vec3::from(b.min()));
-                hi = hi.max(Vec3::from(b.max()));
-            }
-        }
-        if lo.x > hi.x {
-            (lo, hi) = (Vec3::new(-0.95, 0.0, -2.2), Vec3::new(0.95, 1.3, 2.2));
-        }
-        let size = (hi - lo).max(Vec3::splat(0.2));
+        // A stand-in size until Bevy has the meshes' bounds (`fit_boxes`).
+        let (lo, hi) = (Vec3::new(-0.95, 0.0, -2.2), Vec3::new(0.95, 1.3, 2.2));
+        let size = hi - lo;
         let collider = commands
             .spawn((
                 Collider::cuboid(size.x, size.y, size.z),
@@ -504,6 +513,7 @@ fn track_cars(
                 ChildOf(root),
             ))
             .id();
+        commands.entity(root).insert(ParkedBox { collider });
         let part = |commands: &mut Commands, parts: &ModelParts, parent: Entity| {
             for (mesh, material) in parts {
                 commands.spawn((
@@ -537,6 +547,43 @@ fn track_cars(
             s.d2.sqrt()
         );
         s.parked = Parked::Spawned { root, collider, at, heading };
+    }
+}
+
+/// A parked car whose box collider still has the stand-in size.
+#[derive(Component)]
+struct ParkedBox {
+    collider: Entity,
+}
+
+/// Size each parked car's box to its body meshes' bounds once Bevy has computed them (the body meshes are the
+/// root's own children, in car space).
+fn fit_boxes(
+    mut commands: Commands,
+    cars: Query<(Entity, &ParkedBox, &Children)>,
+    bodies: Query<Option<&Aabb>, With<Mesh3d>>,
+) {
+    'cars: for (root, parked, children) in &cars {
+        let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+        for kid in children.iter() {
+            match bodies.get(kid) {
+                Ok(Some(b)) => {
+                    lo = lo.min(Vec3::from(b.min()));
+                    hi = hi.max(Vec3::from(b.max()));
+                }
+                Ok(None) => continue 'cars,
+                Err(_) => {}
+            }
+        }
+        commands.entity(root).remove::<ParkedBox>();
+        if lo.x > hi.x {
+            continue;
+        }
+        let size = (hi - lo).max(Vec3::splat(0.2));
+        if let Ok(mut collider) = commands.get_entity(parked.collider) {
+            collider
+                .try_insert((Collider::cuboid(size.x, size.y, size.z), Transform::from_translation((lo + hi) * 0.5)));
+        }
     }
 }
 
@@ -647,7 +694,10 @@ fn swap(
         for i in 0..jack.spots.len() {
             let s = &jack.spots[i];
             let inside = s.d2 < f32::MAX && s.location.contains(p);
-            let entered = inside && !std::mem::replace(&mut jack.inside[i], inside);
+            let entered = !std::mem::replace(&mut jack.inside[i], inside) && inside;
+            // The car the player left stands for the game from the moment of the swap (ours is still loading):
+            // the swap latch holds meanwhile.
+            near_any |= inside && can && s.force;
             let Parked::Spawned { root, collider, at, heading } = s.parked else { continue };
             if !inside {
                 continue;
