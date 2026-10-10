@@ -15,6 +15,10 @@ pub const UV_FROM_COLOUR: u8 = 0xC0;
 /// TEXCOORD3 is the packed tangent frame).
 pub const WATER_UVS: u8 = 0xA1;
 
+/// `uv_b` value for the plain road shaders: the vertex colour's rg (baked light) rides in UV_1; its blue
+/// goes into COLOR.z next to the wetness mask and AO ([`add_road_wetness`]).
+pub const ROAD_BAKED_LIGHT: u8 = 0xB0;
+
 /// Build a Bevy mesh from a decoded game mesh. Game TEXCOORD0 becomes UV_0
 /// and `uv_b` (if any) selects the game TEXCOORD that becomes UV_1. Normals
 /// are taken from the vertex data when present, otherwise computed. `colour` adds the vertex
@@ -37,7 +41,7 @@ pub fn mesh(m: &mw_formats::DecodedMesh, uv_b: Option<u8>, colour: bool) -> Opti
         mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, uv.iter().map(|t| [t[0], t[1], 0.0, 1.0]).collect::<Vec<_>>());
     }
     let uv_b = match uv_b {
-        Some(UV_FROM_COLOUR) => m.colors.as_deref(),
+        Some(UV_FROM_COLOUR | ROAD_BAKED_LIGHT) => m.colors.as_deref(),
         Some(WATER_UVS) => m.texcoord(1),
         _ => uv_b.and_then(|i| m.texcoord(i as usize)),
     };
@@ -188,15 +192,16 @@ pub fn merge(meshes: &[(&Mesh, bevy::math::Mat4)]) -> Mesh {
 
 /// Road meshes (`DriveableSurface*`): put the vertex wetness mask TEXCOORD5.x (saturated, as the vertex
 /// shader does; 0 or ≥ 1 on real roads) and the vertex AO (colour alpha) in Bevy's COLOR attribute as
-/// (wetness, AO, 0, 1). The road shader reads them itself; road materials have no other use for COLOR.
+/// (wetness, AO, baked light blue, 1). The road shader reads them itself; road materials have no other use
+/// for COLOR. (The baked light's red and green are in UV_1, [`ROAD_BAKED_LIGHT`].)
 pub fn add_road_wetness(mesh: &mut Mesh, m: &mw_formats::DecodedMesh) {
     let n = m.positions.len();
     let wet = m.texcoord(5);
     let colour: Vec<[f32; 4]> = (0..n)
         .map(|i| {
             let w = wet.and_then(|t| t.get(i)).map_or(0.0, |t| t[0].clamp(0.0, 1.0));
-            let ao = m.colors.as_ref().and_then(|c| c.get(i)).map_or(1.0, |c| c[3]);
-            [w, ao, 0.0, 1.0]
+            let c = m.colors.as_ref().and_then(|c| c.get(i));
+            [w, c.map_or(1.0, |c| c[3]), c.map_or(0.0, |c| c[2]), 1.0]
         })
         .collect();
     mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colour);

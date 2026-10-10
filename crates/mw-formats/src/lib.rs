@@ -56,7 +56,7 @@ pub use vehicle::{Locator, LocatorGroup, VehicleGraphicsSpec, Wheel, WheelPart};
 pub use vertex::{Semantic, VertexAttribute, VertexDescriptor};
 pub use world::{
     Behaviour, CompoundPart, ENABLE_COMPOUND_BEHAVIOUR, Instance, InstanceList, InstanceOverrides, ObjectDef,
-    ObjectInstance, ObjectInstanceList, SMASH_PROXY_BEHAVIOUR,
+    ObjectInstance, ObjectInstanceList, SMASH_PROXY_BEHAVIOUR, WC_VFX_BEHAVIOUR,
 };
 pub use zone::{Zone, ZoneList};
 

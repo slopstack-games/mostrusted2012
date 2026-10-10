@@ -183,6 +183,11 @@ pub struct Model {
     /// Distance (metres, stored squared) up to which the model casts shadows; FLT_MAX-squared = always.
     pub shadow_distance: f32,
     pub flags: u8,
+    /// The model's own sampler bindings (+0x10: a block laid out like an `InstanceList` instance's
+    /// overrides): `AOMapTextureSampler` and `LightMapTextureSampler`, the engine's global sampler ids 0x1b
+    /// and 0x1a (registered in `FUN_008c34b0`), which no material binds. 2,558 of the world's 10,764 models
+    /// have one; most name the 16×16 black default lightmap `…0957a7`, 116 others are baked night light.
+    pub overrides: crate::world::InstanceOverrides,
 }
 
 impl Model {
@@ -204,6 +209,11 @@ impl Model {
             lod_distances: (0..n_lods).map(|i| r.f32(lods + i * 4).map(f32::sqrt)).collect::<mw_bundle::Result<_>>()?,
             shadow_distance: r.f32(0x0C)?.sqrt(),
             flags: r.u8(0x15)?,
+            overrides: r
+                .u32(0x10)
+                .ok()
+                .and_then(|o| crate::world::InstanceOverrides::parse(res, o as usize).ok())
+                .unwrap_or_default(),
         })
     }
 

@@ -174,6 +174,8 @@ pub enum Msg {
     Collider(avian3d::prelude::Collider, Arc<Vec<u32>>),
     /// The game's collision surface list (`mw_assets::surfaces`).
     Surfaces(Vec<mw_assets::surfaces::SurfaceInfo>),
+    /// A track unit's lights (`LightInstanceList`; `world_lights.rs`).
+    Lights(Vec<mw_assets::lights::WorldLight>),
     /// How cars' contacts with knocked props are solved (`mw_assets::props::DynamicResponses`).
     PropResponses(mw_assets::props::DynamicResponses),
     Car(Box<CarSpec>),
@@ -746,6 +748,11 @@ impl Worker {
             self.send(Msg::Progress(format!("streaming {name} ({}/{total})", i + 1)))?;
             if let Some(b) = self.store.bundle(&name) {
                 self.collision(&b)?;
+                match self.store.bundle_lights(&b) {
+                    Ok(lights) if !lights.is_empty() => self.send(Msg::Lights(lights))?,
+                    Ok(_) => {}
+                    Err(e) => self.send(Msg::Progress(format!("no lights for {name}: {e}")))?,
+                }
                 if !self.filter.no_groundcover {
                     self.groundcover(&b, track_unit_number(&name))?;
                 }
