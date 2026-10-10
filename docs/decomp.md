@@ -2676,6 +2676,163 @@ reader; the car comes from its rollout (0x14). Not used yet.
 - Not ported: the racer interaction (side swipe / ram), the virtual progress, the time correction of the
   rubber band, the slipstream.
 
+## Police and pursuits (2026-10-10)
+
+Read from the dump (pseudo-C; a few getters the decompiler left as labels from the disassembly of the dumped
+image), `.rdata` constants from the exe on disk, data with `mwtool police` / `mwtool genesys`. Ported in
+`crates/mostrusted/src/pursuit.rs` (the rules) and `police.rs` (cops), data in `mw_assets::police`. Labels:
+**confirmed** = read in the code or data, **inferred** otherwise. `rec` = the player's pursuit record (0x8b0
+bytes each, at `*(world + 0x2f410)`), `P` = the player object (0x5e0 bytes), `GLC` = `GameLogicConfig`
+(`GlobalConfig` +0x24; `GlobalConfig` is `DAT_010edac0` / `DAT_010edac4`, +0x0c `AIConfig`, +0x44
+`ScoringConfig`), `H` = the player's current `HeatLevel` record (`FUN_006bdc00`), `AIC` = `AIConfig`.
+
+### The data (confirmed)
+
+- **`HeatLevel`** (0x118 bytes; 40 rows in the list 390428 of `GAMELOGIC/GAMEPLAY.BNDL`, `GLC` +0xf8). Free
+  roam uses the seven rows `GLC` +0xa0 names (count +0x2d0): level numbers 0–6 (`b2266b6e`, +0x116) with
+  `Threshold` (+0x10e, the heat at which the level *ends*) 0 / 2 / 8 / 16 / 26 / 38 / 52. The other rows are
+  the events' levels (fixed level flag +0x113).
+- **Heat** is a float on the player (`P` +0x3d8, `Player.ChaseHeat`). The level for a heat value
+  (`FUN_00669640`): level 0 when the heat is 0 and the player is not chased, else the first row from the second
+  on whose threshold is above the heat. The row below it (`FUN_00669860`) gives the lower bound of the level's
+  band. Heat is capped 0.001 below the highest unlocked row's threshold (`FUN_006673a0`).
+- **What adds heat** (`FUN_006d08a0`, the scoring-action processor → `FUN_006bdac0`): every `ScoringAction`
+  has a heat value (`1a88cb4c`, +0x24). In the data: chase initiated 0.5, back from cooldown into the chase
+  0.5 (`ScoringConfig` +0x58, no title), a cop takedown 1 (the cop's `AIPlayerType.23f2735d` action), roadblock
+  1, roadblock smash 0.25, slam / ram 0.2, traffic hit 0.1. And time (`FUN_00657e60`): while chased, `Threshold
+  / 2d163b85` (+0x100, seconds: 300 / 330 / 380 / 430 / 530 on levels 1–5, −1 = none on 0 and 6) per second.
+- **Per-level fields read by the code** (values of free-roam levels 0 / 1 …): cooldown time `c422193a`
+  (+0x8c: 14 / 20 / 20 / 20 / 19 / 18 / 17 s), lose radius `ed9f5c6a` (+0xdc, 150 m), cooldown allowed
+  `249ed427` (+0x110), level-up message `a504e53b` (+0x6c), cop spawn distance free / chase / cooldown (+0xd4 /
+  +0x80 / +0x88: 350 / 200 / 400 m at level 0, 300 / 175 / 300 at level 1), removal distance (+0xd0 / +0x7c /
+  +0x84: 425 / 250 / 450; 350 / 350 / 400), sight ranges (+0xa4 chasing 100 / 140, +0xa0 alert 90 / 130, +0xa8
+  other 50 / 75 m), no-cone range (+0x90 for a target under 5 mph, +0x94: 50 m), cone half-angle (+0x98 /
+  +0x9c, 40°), memory `ac12feb2` (+0xbc, 2–3 s), drive-to-point timeout (+0xc0, 10 s), speeding limit
+  `78f472fa` (+0xd8: **110 mph at level 0**, 300 above), search / go-to speed cap (+0x104, 60–75 mph),
+  low-speed-chase limit (`Coordination.7a65b100`, 40–50 mph).
+- **Cops per level**: `Coordination` (+0x0c) holds the main `PursuitBehaviour` (`dd6594c8`, +0x30), a fallback
+  (`e8cb6438`, +0x0c) and a cycle array (+0x58). A behaviour lists `CopBehaviours`: `10a80aa8` a
+  `Gameplay.CopType` id (list 1056172; → `AIPlayerType` → `Rollout` → `Vehicle`), `a7620186` a speed cap in
+  mph, `CopBehaviour` (0 / 1 Chasing, 2 ChasingBruiser, 3 Rhino, 4 Interceptor, 5 Idle, else keep,
+  `FUN_005139a0`), `Positioning` (int8). Level 0: one Ford Police Interceptor (122713) that keeps its type's
+  default behaviour (patrol); level 1: two; level 2: three and roadblocks; level 3: Dodge Chargers (122706,
+  160 mph cap); level 4: heavy Interceptors (510072) and a Rhino; level 5: Corvettes (122699, 200 mph); level 6:
+  six cops with S.W.A.T. vans (1467242). `mwtool police` prints the table.
+- **The bust rule's constants**: `GLC` +0x288 = 20 m, +0x28c = 25 mph, +0x290 = 4 s; cop radar range +0x218 =
+  200 m.
+
+### The pursuit manager (`FUN_0066b900` → `FUN_0066ae60` per player per frame; confirmed)
+
+State `rec` +0x89c: 0 none, 1 chase, 2 busted, 3 cooldown, 4 escaped (`Player.IsInChase` … read it; the
+telemetry event names them "Busted" / "Escaped", `FUN_0066a820`). Each update first counts the cops chasing
+the player (`FUN_0065ba70` → `rec` +0x88c: cop-type players (`AIPlayerType` byte +0xb5) with a physical car,
+not crashed, for which `FUN_006bbb70` holds: the cop is in state 0, 0x10, 0x12, 0x16, 0x17, 0x18 or 0x1a, or
+its coordinator record is marked), then runs the bust meter, then the state:
+
+- **0 → chase** when a cop chases the player or the player took a cop down (`FUN_006ccd20` → `FUN_006b8d00`
+  sets `rec` +0x8a4) or touches a roadblock's car (`FUN_0065b930`); in modes without a cooldown at once.
+  `FUN_0065c550` stores the player's position as the last-seen point and one of four "CHASE INITIATED" scoring
+  actions is posted (`ScoringConfig` +0x48 / +0x4c / +0x50 / +0x54, by who spotted the player; all add 0.5
+  heat).
+- **Chase**: the last-seen point (`rec` +0x860) follows the coordinator's freshest sighting while a cop
+  knows where the player is, or the player while a roadblock stands within 100 m (`FUN_0065bca0`); the player
+  is *out of range* (+0x8a5) when farther than `H` +0xdc (150 m) from it. Heat rises with time. A player
+  wrecked by an AI car is busted (`FUN_0065c880`). Out of range → **cooldown** (`FUN_00661810` →
+  `FUN_0065cbe0`). The map shows a circle of twice the lose radius at the last-seen point (`FUN_0065be70`).
+- **Cooldown** (`FUN_006615c0`): unless a cop is within 20 m (0x00fb74c8), the heat falls by (band width of
+  the level, at least 1) / `H` +0x8c per second (× 4, 0x00fb74b0, when the player's vehicle field +0x1a84 is
+  0: **not identified**, see open points). `Player.TimeTilEvaded` (`P` +0x3e8) = heat / rate below level 2,
+  else the level's cooldown time, 0 with no heat. A chasing cop or a roadblock within 100 m → chase again
+  (`FUN_0065c970`, +0.5 heat); otherwise at `TimeTilEvaded` ≤ 0 → **escaped** (`FUN_0065ca70`). So a cooldown
+  from level 1 takes up to 20 s, from level 3 up to 60 s.
+- **Bust meter** (`rec` +0x874, `Player.StaticBustProgress`; `FUN_00664d60` → `FUN_0065cda0`, chase only):
+  with the nearest chasing cop (not crashed): it fills by dt / 4 s while the cop's car touches the player's
+  and the player is slower than 25 mph, or while the cop is within 20 m (and 4 m of height, 0x00fb82d0) and
+  the player slower than 12.5 mph (× 0.5, 0x00f8a810); otherwise it drains at the same rate. The BUSTING bar
+  shows above 0.3 until it is back at 0 (`FUN_006bdf50`).
+- **Pursuit bar** (`rec` +0x870, −1 … 1): with d = that cop's distance (≤ 100 m), far = clamp((d − 20) / 80),
+  close = 1 − clamp((d − 20) / 30), fast = clamp((mph − 25) / 275): clamp(0.8 far − 0.3 − 0.2 (1 − fast) close,
+  ±0.5); with a bust meter ≥ 0.01 instead min(0, −0.5 − 0.5 × meter). Three ranges (`FUN_00661500`: −1…−0.5,
+  −0.65…0, 0…1) give `Player.PursuitBarEnum` / `PursuitBarProgress`. At −1 (meter full) the manager posts
+  camera event 0x1a with the two cars; state 2 is set by the game-logic state machine's action 0xf
+  (`FUN_00854990` → `FUN_00658140`). **Inferred**: that the event leads to that action.
+- **After the outcome** (HSM 457517 "Do Pursuits", data): BUSTED → busted sequence 1014946,
+  `ResetLocalPlayerHeat`, `ResetProps`, `RemoveAllCops`, `RemoveRoadblocks`, `ResetChaseStats`; ESCAPED →
+  escaped sequence 1394359 (if `ShouldShowEscapeSequence`), `ResetChaseStats`. The coordinator spawns no cops
+  for 90 s after a pursuit (0x00fa2cc0).
+- Getters: `HeatLevelInt` = the level number, `HeatLevelFloat` = it plus the band progress (`FUN_006bdc50`,
+  also `HeatProgress`), `IsHiddenFromCops` = coordinator byte +0x418 clear, `CopRadarProgress` = nearest cop's
+  distance / 200 m (`FUN_0065d470`), `ShowCopRadar` = that below 1 with no pursuit.
+
+### Cops (the AI coordinator `FUN_00526c30`; from a sub-agent's trace, confirmed unless stated)
+
+- Behaviour commands (name table at 0x010c4360, mapped to driver states by `FUN_004efc40`): Chasing → state 0,
+  ChasingGoTo 1, GoTo 4, Idle 5, Searching 0xc, Patrolling 0xd, Waiting 0xe, WaitingOnPlayer 0x10,
+  WaitingInterceptor 0x11, Rhino 0x12, HeadOn 0x13, LowSpeedChasing 0x16, LowSpeedChasingAhead 0x17,
+  ChasingBruiser 0x18, Interceptor 0x1a, RollingRoadBlock 0x1b. A cop type without a behaviour patrols.
+- **Count and cars** (`FUN_00526e30`, once a second): one cop per `CopBehaviours` entry of the current
+  behaviour, at most 3 new per pass, only while the behaviour's `f3d7aeeb` holds; surplus cops (farthest
+  first) are marked unwanted. The sequencer (`FUN_0051f010`) runs the main behaviour for `4fea2957` seconds,
+  then the cycle items, with the fallback after `f58d1d54` events.
+- **Where**: a road-graph node between d and √2·d from the player, d = `H` +0xd4 / +0x80 / +0x88 (no pursuit
+  / chase / cooldown; `FUN_00513e80`); ahead, behind or from a side road by weights of the `GameMode`
+  (`FUN_005261d0`, not decoded); spawn speed `AIPlayerType.SpawnSpeed` (90 mph). Removed (when off screen)
+  beyond `H` +0xd0 / +0x7c / +0x84 (`FUN_00522c40`). No catch-up teleport: despawn and respawn is the rubber
+  band (inferred).
+- **Sight** (`FUN_006c5810`, `FUN_006c6280`): the range by the cop's state; within the no-cone range or the
+  cone, then a raycast; a clear line sets "sees", the last-seen point and the memory timer.
+- **Wanted** (`FUN_005192b0`): a cop has the player in its cone and the player is faster than `H` +0xd8 mph
+  (110 at level 0: **speeding past a cop starts a pursuit**); or two collision-type events within 10 s in a
+  cop's cone (inferred meaning); or a cop was rammed (contact impact above `AIC`[0x60] = 2); or the pursuit
+  already runs. A cop that knows a wanted player chases; when the target is no longer known it drives to the
+  last-seen point and searches (`FUN_005156c0`, `FUN_0051a4e0`), else patrols.
+- **Chasing** (state 0): slot = `AIC`[0x1c4] (−5) − `Positioning` × `AIC`[0x5c] (12) metres behind the
+  target, ±3.5 m to the side; target speed = the target's − (lead + slot) × 1.5 mph/m within ±60 mph, at least
+  30 mph, only when within 20 s of the target, else flat out, under the entry's cap (`FUN_004fa580`,
+  `FUN_004fa480`); within 40 m it aims 0.5 s ahead of the target (ram mode, `FUN_004ffcb0`). Bruisers steer
+  into the car from alongside; a Rhino comes head-on; below the level's low-speed limit within 60 m cops pin,
+  ram or stop (state 0x16). Roadblocks: at a trigger region 300–600 m ahead on the player's predicted route,
+  `ae2d8f7d` s after the behaviour starts and every `cbbeb3e0` s. No cop spike-strip logic and no helicopter
+  reader were found (`Helicopter` is 0 on all 40 levels).
+
+### The HUD (data)
+
+Free-roam screen 371670, `AdditionalHUD`: layout 1213038 (HEAT / COOLDOWN labels, the stepped level bar bound
+to `HeatLevelInt` over 0–6, a fill bound to `Widget.HUD.Heat`; elements gated by `IsInChase` / `IsInCooldown`),
+581357 (the BUSTING bar, `StaticBustProgress` in sevenths), 955232 ("PURSUIT: {score}"), and the minimap frame's
+pursuit tints. Speed Points: the pursuit code posts scoring actions through `FUN_006a8050` (chase initiated
++0x48…+0x54, heat level up +0xe8 / down +0xe4, escaped +0x1a8, roadblock +0x250): that is where pursuit
+outcomes award SP once scoring exists.
+
+### Port and model decisions (`pursuit.rs`, `police.rs`, `hud.rs`)
+
+Ported as read: heat and levels, time heat, chase start, last-seen / lose radius, cooldown, escape, bust
+meter, pursuit bar, cop count and types per level (main behaviour), spawn and removal distances, sight
+(range, cone, raycast, memory), wanted by speeding or ramming, the chase speed law, slots, the 90 s pause.
+Model decisions (not from the game):
+- Cops follow road-graph routes rebuilt every 0.5 s with the AI racers' driver (the game's chase path /
+  avoidance `FUN_0050e370` is not read); ram steering, Bruiser, Rhino, HeadOn, Interceptor are not ported.
+- The low-speed chase: closing at up to 30 mph and stopping 10 m from the player (the game's pin / ram / stop
+  substates are not ported). The patrol: along the road graph at the level's go-to speed cap (the game's
+  patrol drives traffic lanes, `FUN_005101e0`, not read). Searching: drive to the last-seen point, then patrol.
+- Spawn point: a random road point of the ring whose ground has streamed in (the ring shrinks when none),
+  facing the player along the road; one cop per 15 m. Removal by distance alone (no off-screen test).
+- "Touching" = the cop's centre within the player's box grown by the cop's half width + 0.3 m; "rammed" =
+  touching with more than 5 m/s relative speed; a cop crash within 30 m of the player counts as a takedown.
+- The time-to-reach of the chase speed law = distance over the cop's own speed.
+- Only the main behaviour of a level (no sequencer, fallback or cycle); every heat level counts as unlocked.
+- The outcome stands 5 s (the game plays its sequences); after an escape cops beyond 100 m are removed.
+- The cooldown's × 4 factor is left out; `Widget.HUD.Heat` = the level's band progress; which HUD layouts
+  show when (the widget's code was not read).
+- Not there at all: roadblocks, spike strips, wrecked-by-cop busts (our crashes have no wrecker), the
+  two-collisions rule, cooldown spots / engine off, Speed Points, the busted / escaped sequences, sirens and
+  light bars (`coplights`), police radio, pursuits inside events, the PostFX heat / cooldown colour cubes.
+
+Open points and what would settle them: vehicle +0x1a84 (the × 4 cooldown: a live read while cooling with the
+engine off / parked); the link from camera event 0x1a to HSM action 0xf (a probe hook on `FUN_00658140`); the
+spawn weights (`GameMode` +0x5a…+0x64: decode the type); `FUN_0050e370`, 0x0050f970, 0x0050dd40 (disassembly);
+a capture of a real pursuit (`mwtool capture`: cop distances, heat and bust timing) to compare the whole.
+
 ## Vehicle paint, liveries and dirt
 
 The paint shaders' object constants are registered by name with slot numbers in one table function in the 0x8c4xxx range (a run of `FUN_00a5d490` calls; slot → name: 0x29 `VehicleID`, 0x2a `PbrPaintDiffuseColour`, 0x2c `PbrPaintSpecularSettings`, 0x2d `PbrPaintClearcoatSettings`, 0x2e `PbrPaintScratchColour`, 0x2f `PbrPaintScratchSettings`, 0x30 / 0x31 secondary diffuse / specular, 0x33 `gvDamageVolumeParam`, 0x34 `g_damageConstants`, 0x35 `g_selfIlluminationMask`, 0x37 `g_PerVehicleFog`, 0x49 `g_SelfIllumLocal_RecipRadiusSq`, 0x9c `GenericVector4_A`, B / C follow). They are per-object constants, written through `FUN_00a621a0(slot)` in `FUN_008e9c00` from a render record (stride 0x2b0) and its paint block `P` (record word 0xa2 = the render instance + 0x20).
