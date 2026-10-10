@@ -543,14 +543,15 @@ fn main() -> anyhow::Result<()> {
                 let s = r.event.spawn.expect("checked above");
                 (Vec3::from_array(s.position), s.direction[0].atan2(s.direction[2]))
             }
+            (None, []) if cli.test.as_deref() == Some("freeroam") => (Vec3::from_array(freeroam::TEST_SPAWN), 0.0),
             (None, []) => (Vec3::new(-1158.0, 17.5, 1700.0), 0.0),
             (_, [x, y, z]) => (Vec3::new(*x, *y, *z), 0.0),
             (_, [x, y, z, h]) => (Vec3::new(*x, *y, *z), h.to_radians()),
             _ => anyhow::bail!("--spawn expects x,y,z[,heading_degrees]"),
         };
         // `--test ai` and `--test race` drive the streets; the other tests run on the flat track.
-        let street_test =
-            race_test || matches!(cli.test.as_deref(), Some("ai") | Some("crash-traffic") | Some("crash-ai"));
+        let street_test = race_test
+            || matches!(cli.test.as_deref(), Some("ai") | Some("crash-traffic") | Some("crash-ai") | Some("freeroam"));
         let track = cli.test_track || (cli.test.is_some() && !street_test) || cli.replay.is_some();
         let spawn = if track { Vec3::new(0.0, 1.0, 0.0) } else { spawn };
         let props =
@@ -570,9 +571,14 @@ fn main() -> anyhow::Result<()> {
     };
     let smash = cli.test.as_deref() == Some("smash");
     let test = match cli.test.as_deref() {
-        None | Some("crash") | Some("smash") | Some("ai") | Some("race") | Some("crash-traffic") | Some("crash-ai") => {
-            None
-        }
+        None
+        | Some("crash")
+        | Some("smash")
+        | Some("ai")
+        | Some("race")
+        | Some("crash-traffic")
+        | Some("crash-ai")
+        | Some("freeroam") => None,
         Some("accel") => Some(drive::TestKind::Accel),
         Some("nitrous") => Some(drive::TestKind::Nitrous),
         Some("brake") => Some(drive::TestKind::Brake),
@@ -588,7 +594,7 @@ fn main() -> anyhow::Result<()> {
         Some("exhaust") => Some(drive::TestKind::Exhaust),
         Some(other) => {
             anyhow::bail!(
-                "unknown --test {other} (accel, brake, corner, handbrake, drift, donut, engine, exhaust, landing, climb, jitter, kerb, crash, smash, ai, race, crash-traffic, crash-ai)"
+                "unknown --test {other} (accel, brake, corner, handbrake, drift, donut, engine, exhaust, landing, climb, jitter, kerb, crash, smash, ai, race, crash-traffic, crash-ai, freeroam)"
             )
         }
     };
@@ -649,6 +655,19 @@ fn main() -> anyhow::Result<()> {
         frontend::Phase::Playing
     };
     let ai_cars = cli.ai.iter().map(|q| resolve(q)).collect::<anyhow::Result<Vec<_>>>()?;
+    // The profile file this run writes (the car and its place: `frontend.rs`; free-roam progress: `freeroam.rs`).
+    let save_profile = (cli.profile.is_some()
+        || (world_drive
+            && (menu_enabled || boot)
+            && cli.front_end_shots.is_none()
+            && cli.auto_start.is_none()
+            // Runs without a human must not move the saved car.
+            && cli.bench.is_none()
+            && cli.auto_throttle.is_none()
+            && cli.swap_to.is_empty()))
+    .then(|| profile_file.clone())
+    .flatten();
+    let freeroam_profile = save_profile.clone();
     let mut app = App::new();
     app.insert_resource(car_anim::AnimOverride::parse(&cli.anim)?);
     app.insert_resource(damage::InitialDamage::parse(&cli.damage)?);
@@ -711,6 +730,8 @@ fn main() -> anyhow::Result<()> {
             Err(e) => warn!("no crash data ({e}): crashes and the crash camera are off"),
         }
     }
+    let freeroam_test = cli.test.as_deref() == Some("freeroam");
+    let freeroam_shots = if freeroam_test { cli.screenshot.clone() } else { None };
     // The crash and smash tests take their own before / after screenshots.
     let screenshot = if crash {
         app.insert_resource(damage::CrashTest::new(
@@ -727,6 +748,9 @@ fn main() -> anyhow::Result<()> {
     } {
         app.insert_resource(car_impacts::ImpactTest::new(kind, cli.screenshot.clone()));
         app.add_plugins(car_impacts::ImpactTestPlugin);
+        None
+    } else if freeroam_test {
+        // The free-roam test takes its own screenshots (one after each collectable).
         None
     } else if smash {
         app.insert_resource(props::SmashTest::new(
@@ -814,7 +838,11 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(exhaust::ExhaustPlugin)
         .add_plugins(tyre_marks::TyreMarksPlugin)
         .add_plugins(paint_wear::PaintWearPlugin)
-        .add_plugins(freeroam::FreeroamPlugin)
+        .add_plugins(freeroam::FreeroamPlugin {
+            profile: freeroam_profile,
+            new_game: cli.new_game,
+            test: freeroam_test.then(|| freeroam::FreeroamTest::new(freeroam_shots)),
+        })
         .add_plugins(race::RacePlugin { setup: race.map(Arc::new) })
         .add_plugins(cutscene::CutscenePlugin { setup: cutscenes })
         .add_plugins(traffic::TrafficPlugin {
@@ -833,17 +861,7 @@ fn main() -> anyhow::Result<()> {
             // The shots run has nobody to press a key: it starts 1 s after the prompt unless told otherwise.
             auto_start: cli.auto_start.or(cli.front_end_shots.as_ref().map(|_| 1.0)),
             shots: cli.front_end_shots.clone(),
-            profile: (cli.profile.is_some()
-                || (world_drive
-                    && (menu_enabled || boot)
-                    && cli.front_end_shots.is_none()
-                    && cli.auto_start.is_none()
-                    // Runs without a human must not move the saved car.
-                    && cli.bench.is_none()
-                    && cli.auto_throttle.is_none()
-                    && cli.swap_to.is_empty()))
-            .then(|| profile_file.clone())
-            .flatten(),
+            profile: save_profile.clone(),
         })
         .add_plugins(pause::PausePlugin {
             enabled: (menu_enabled || cli.show_pause) && matches!(request, Request::Drive { .. }),

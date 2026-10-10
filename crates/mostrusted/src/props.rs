@@ -394,6 +394,15 @@ pub struct PropImpact {
     pub by_player: bool,
 }
 
+/// A standing prop (or a part of a split compound) was knocked loose. `freeroam.rs` counts billboards with it
+/// (the game's smashable object posts game-logic message 0x14 with "by the local player's vehicle",
+/// `FUN_005b5340`).
+#[derive(Message, Clone, Copy, Debug)]
+pub struct PropKnocked {
+    pub prop: Entity,
+    pub by_player: bool,
+}
+
 /// Counts for logs and tests.
 #[derive(Resource, Default, Debug)]
 pub struct PropStats {
@@ -427,6 +436,7 @@ impl Plugin for PropsPlugin {
             .init_resource::<PropGrid>()
             .init_resource::<PropSounds>()
             .add_message::<PropImpact>()
+            .add_message::<PropKnocked>()
             .add_systems(FixedPostUpdate, prop_contacts.before(PhysicsSystems::StepSimulation))
             .add_systems(
                 FixedPostUpdate,
@@ -716,6 +726,7 @@ fn unpin_props(
     mut props: Query<(Entity, &mut PropBody, &Unpin, &Transform)>,
     mut stats: ResMut<PropStats>,
     mut impacts: MessageWriter<PropImpact>,
+    mut knocked: MessageWriter<PropKnocked>,
 ) {
     for (e, mut prop, unpin, t) in &mut props {
         commands.entity(e).remove::<Unpin>();
@@ -723,6 +734,7 @@ fn unpin_props(
             continue;
         }
         prop.pinned = false;
+        knocked.write(PropKnocked { prop: e, by_player: false });
         prop.last_impact = time.elapsed_secs();
         stats.knocked += 1;
         let p = &prop.physics;
@@ -929,6 +941,7 @@ pub(crate) fn prop_contacts(
     >,
     mut stats: ResMut<PropStats>,
     mut impacts: MessageWriter<PropImpact>,
+    mut knocked: MessageWriter<PropKnocked>,
 ) {
     let dt = time.delta_secs();
     if dt <= 0.0 {
@@ -965,6 +978,7 @@ pub(crate) fn prop_contacts(
                         continue;
                     }
                     prop.pinned = false;
+                    knocked.write(PropKnocked { prop: e, by_player: player });
                     stats.knocked += 1;
                     let p = &prop.physics;
                     info!(

@@ -10,6 +10,51 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-10: Speed Points found; collectables run (speed cameras, gates, billboards)
+Third pass at Speed Points, from the data first. Details in decomp.md "Speed Points"; runtime `freeroam.rs`,
+data `mw_assets::scoring`, tool `mwtool scoring`.
+
+- **Found.** `mwtool genesys-types` has `ScoringAction` / `ScoringConfig`; `genesys all --type ScoringAction`
+  finds nothing because the 223 actions are structs inside one untyped list object of `GAMEPLAY.BNDL`
+  (390077). `ScoringConfig`'s field offsets are exactly the "event ids at +0x18 / +0x1c / +0x260 / +0x288 /
+  +0x28c / +0x294 of the config at global +0x44" that the hit handler `FUN_007059b0` sends, so those events
+  are scoring actions. The action's array at +0x34 (`8c1feb6d`, count field cracked as `SPCount`) is the SP:
+  the titles read "Billboard +{sp}". Code: `FUN_006a8050` → `FUN_006a75f0` → `FUN_006d08a0` (offline: SP =
+  `SP[0]`) → `FUN_00735ca0` → `FUN_00734f60` → `FUN_00734400` (total += SP). Values: speed camera 500,
+  billboard 500, security gate 250, jack spot car 350, each on the first find.
+- **Names cracked** (`genesys-crack` with a scoring word list, 3 words): 23 `ScoringConfig` fields
+  (`BillboardDiscovered`, `SpeedCamDiscovered`, `SmashGateDiscovered`, `SecurityGateHit`,
+  `SpeedCameraTriggered`, `CarSwapDiscovered`, `Takedown` …), all sorting into their fields' places, and
+  `SPCount` / `ScoreCount` / `OnlineFeedbackCount`. The SP array's own name was not found ("SP" does not hash
+  to it).
+- **Billboards**: a compound instance's word at +0x4c is its trigger's id (216 of 216, 0.0 m apart); and the
+  volume alone counts too (`FUN_006e42f0` passes billboard kinds). Gates have no linked prop.
+- **Correction**: the "+10 nitrous per smashed gate in free roam" (`FUN_0074cf40`, logged 2026-10-06) is the
+  Smash-and-Grab game mode's item scoring; free-roam gates give no nitrous. Not wired.
+- **HUD from data**: the SP total (layout 979928) is shown by the HSM "SP Visibility" (node 1695370: 8 s at the
+  start and after each change of `ScoringViewModel.CurrentSpeedPoints`); the "+SP" message is sequence 995814;
+  the gate's panel "SPEEDWALL / SECURITY GATES n / 152" is sequence 995322 from `SecurityGateHit`'s
+  `GameplayTrigger`. The speed camera's plate (sequence 1107082) is a world-space layout (instance scale
+  0.005) and is not drawn yet; nor is its PostFX flash.
+- **Test** (`--test freeroam`, 911, camera 1025449 / billboard 1496888 / gate 1274961): 37 mph pass not
+  counted; 84.7 mph pass counted, first find, +500; 97.7 mph pass again, +0, best raised; billboard +500
+  (handled by its volume, then by its prop); gate +250; total 1250; the profile reads back equal. A second run
+  on that profile awards nothing (the found gate is dropped at the firing rule, the found billboard only sends
+  the 0-point action).
+- **Model decisions** (marked in the code): the overlap's narrow phase (box against box by separating axes,
+  the car's box centred on its origin; `FUN_00da2e50`'s job was not read); "the prop breaks" = our prop coming
+  loose; totals = the triggers of each kind in `TriggerData` (74 / 152 / 216); a `GameplayTrigger` fires its
+  sequences whenever its action scores; the total's backing trigger read as "just changed"; `SPEED` prints mph
+  or km/h without a unit; no speedwall rows (Autolog friends); the HUD message slides into the total's plate
+  as our behaviour-step reading places it (y 22 after its steps, authored at 52).
+- **Dead ends / open**: `upload_sp_buckets`, `SP_%d_%d` and `SPEEDPOINTS` are upload / formatter strings
+  (no rule behind them); `CurrentSpeedPoints` is the view-model field only. Not traced: the SP of offline
+  events (strings `EventAward`, `ProgressionAwardPoints`; the `ScoringAction` position tables are online),
+  what triggers the takedown / near-miss style actions, the hints (`FUN_006ef070`, `FUN_006f3f30`), the
+  billboard's jump-distance record (`FUN_006ed900`, `FUN_0073cef0`), the `+0x2e74` flag in free roam, whether
+  the real collectable totals leave some triggers out. A capture of the original at a billboard, a gate and a
+  camera (HUD, 0–8 s) would settle the message placement, the plate and the totals.
+
 ### 2026-10-10: Windows host; first live read of the original from Windows (chase-camera `.bss`)
 The workspace builds and runs on Windows (MSVC): `mwtool memscan` / `telemetry` / `tune` / `capture` reach the
 game through `ReadProcessMemory` (`memscan/windows.rs`), the install is found through the EA app's registry key

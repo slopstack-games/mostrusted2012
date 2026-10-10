@@ -26,6 +26,7 @@ pub mod mods;
 pub mod paint;
 pub mod props;
 mod scene;
+pub mod scoring;
 pub mod sequence;
 pub mod sfx;
 mod sfx_loader;

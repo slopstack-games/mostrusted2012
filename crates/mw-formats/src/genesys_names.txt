@@ -1504,3 +1504,33 @@ Wrecked_Passbys
 Racer_And_Cop_Passbys
 Passbys
 Player_Vehicle_Ignition
+
+# Scoring (2026-10-10, free-roam session): ScoringConfig's action fields and ScoringAction's counts,
+# genesys-crack with a scoring word list. All 23 ScoringConfig names sort into their fields' places (size, then
+# name), and the collectable ones sit at the offsets the hit handler reads (docs/decomp.md "Speed Points").
+BillboardDiscovered
+BillboardFound
+CarSwapDiscovered
+CarSwapFound
+CopHitPlayer
+DriftGatePassed
+HitByCop
+JumpTakedown
+OfflineTakedownStreak
+PlayerEscaped
+ProModUnlocked
+RoadblockCopHit
+RoadblockPassed
+SecurityGateHit
+SmashGateDiscovered
+SpeedCamDiscovered
+SpeedCameraFound
+SpeedCameraTriggered
+Takedown
+TakedownOnMostWanted
+TakedownStreak
+TeamRaceComplete
+TrafficTakedown
+SPCount
+ScoreCount
+OnlineFeedbackCount

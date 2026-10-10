@@ -798,7 +798,14 @@ fn save_profile(
     let (Some(current), Ok(xf)) = (garage.current.as_ref(), car.single()) else { return };
     let Some(path) = front.profile.clone() else { return };
     let p = xf.translation();
-    let text = format!("bundle={}\nposition={:.2},{:.2},{:.2}\n", current.bundle, p.x, p.y, p.z);
+    let mut text = format!("bundle={}\nposition={:.2},{:.2},{:.2}\n", current.bundle, p.x, p.y, p.z);
+    // Lines of other modules (the free-roam progress, `freeroam.rs`) are kept as they are.
+    if let Ok(old) = std::fs::read_to_string(&path) {
+        for line in old.lines().filter(|l| !l.starts_with("bundle=") && !l.starts_with("position=")) {
+            text.push_str(line);
+            text.push('\n');
+        }
+    }
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
