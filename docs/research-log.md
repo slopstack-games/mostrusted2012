@@ -10,6 +10,94 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-10: frame time: the 2/60 s cap, the sky filter, pre-warm, single-threaded main world, CPU clustering
+Follow-up of the 2026-10-09 list ("Next, by the numbers"); model LOD / draw distances / placement culling were
+another agent's and are not touched here. Method: every A/B interleaved (same command back to back, 2–3 rounds),
+load average given per number. The machine was shared (load 3–28); for "under load" numbers 16 niced busy
+loops (`burn.py`, nice 19) ran beside the game. Drive = `--drive 911 --units 30 --spawn=815,60,1760,270
+--auto-throttle 0.3 --mute --bench 10`, race = `--race 462174 --units 30 --mute --bench 20`. One chrome trace
+(`--features bevy/trace_chrome`, race, 4.2 GB) was aggregated with a streaming script (span totals per name,
+per parent, per window).
+- **Reading the numbers**: the bench's frame mean is bimodal on this desktop: Wayland paces some runs at the
+  display (16.67 ms) and leaves others unthrottled (~7.5–8.5 ms) in the same configuration, so means are only
+  comparable within a mode; the per-segment times (main world, render prepare / graph, ms per fixed step) are
+  what the A/Bs compare. In the frame log, frames with `r_spec` ≈ 10.5 ms are the swapchain acquire waiting for
+  the display (`prepare_windows` 10.4 ms in the trace), not CPU work.
+- **1. The 2/60 s cap (committed)**: `Time<Virtual>` max delta 250 ms → 2/60 s (decomp.md "Update loop"); Bevy
+  applies it to real time before the relative speed, so `--test` (4x) gets 8 steps. At most two fixed steps per
+  frame at normal speed: race start (load 10–15) 9 / 7 / 5 steps after the slow frames before, 2 after; drive
+  under load up to 4 → 2. Steady-state frame times unchanged (60 fps the cap never acts). `--test
+  accel|brake|corner|drift` lines identical. Below 30 fps the game now runs slower than real time, as the
+  original does. `MW_UNCAPPED_DELTA=1` = before.
+- **2. The sky's environment light (committed)**: Bevy's `GeneratedEnvironmentMapLight` re-ran its whole filter
+  every frame (copy, SPD downsample, GGX radiance for each of the 512² cube's 10 mips with 32–512 samples, 1024-
+  sample irradiance: ~75 M filtered samples a frame, plus ~15 bind groups and uniform buffers created per frame).
+  The camera now keeps it until the filter has dispatched 4 times on the current sky (counted in the render
+  world after `filtering_system`), then drops it; the `EnvironmentMapLight` it made keeps the filtered cubes. An
+  `AssetEvent` on the sky image (a bake) puts it back. Pictures: road 13 h new vs old 0.14 MAD (two runs of the
+  old mode differ by 0.53: foliage sway), wet night + planar reflection 0.20, a run-time rebake 13 h → 19 h 0.06
+  against per-frame filtering. GPU utilisation at a vsync-paced 60 fps (road view, 8 s sampled after loading,
+  load 13–18): 64 % vs 73 % (≈ 1.5 ms of GPU a frame); whole drive set below 56 → 43 %. Its passes never showed
+  in `MW_BENCH_PASSES` (they are recorded outside the diagnostics Bevy prints). `MW_SKY_FILTER_EVERY_FRAME=1` =
+  before.
+- **Found on the way (not fixed)**: after a run-time rebake (13 h → 19 h on a fixed camera) the road looks
+  different from a fresh start at 19 h (MAD 13: bright, yellow road; same with per-frame sky filtering, so
+  older than this change): something the road samples is not refreshed by `store_images` (reflection cube or
+  wetness inputs in a material bind group?). And `--vehicle 911 --screenshot` (car viewer) crashes at exit on
+  master too ("Failed to send screenshot: sending on a closed channel", then SIGSEGV / abort), no file written.
+- **3. Pre-warm (committed, `prewarm.rs`)**: Bevy specialises a mesh's pipeline per view (main, deferred prepass,
+  each cascade) the first time it is visible there and keeps it for the entity's life
+  (`SpecializedMaterialPipelineCache`, `specialize_shadows`: entries go only on a mesh / material change), so a
+  camera cut pays for every entity that view has not seen. The race-start cut (trace): `specialize_shadows`
+  21.9 ms + `queue_shadows` 11.3 ms; frame log (load 3–5, three rounds): specialise 13–21 ms + queue 8–14 ms, a
+  34–44 ms frame (190 ms under heavy load on 2026-10-09). Pre-warm: when loading is done, and only where the
+  frame is hidden (a race: the intro now waits for it; a front-end title / transition / loading screen), the 3D
+  cameras get an all-pass frustum (half-spaces (0, 0, 0, 1)) and every visible caster goes into every cascade
+  for 3 frames. Cost: one 104–117 ms frame at the loading view (specialise ~50, queue ~28, graph ~27 ms), 133–153
+  ms in all. After it the race-start cut specialises ~0.5 ms (queue 7–11 ms stays: binning newly visible
+  entities is per visibility change) and no frame after loading exceeds 30 ms (before: the 34–44 ms cut). Plain
+  free roam (`--drive`) had no start hitch (no frame > 34 ms after the first second, two rounds) and is left
+  alone: there `Loaded::done` can arrive while driving. Race test (`--test race`) unchanged. Screenshots equal
+  (road 0.16, wet 0.20 MAD). Model decision: the 3-frame count. `MW_NO_PREWARM=1` = before.
+- **4. Physics step cost**: the trace (race, ~60 steps/s): `PhysicsSchedule` 2.85 ms a step, `SubstepSchedule`
+  6 × 0.29 ms. Avian's schedules are already single-threaded executors; the cost is its queries' `par_iter`
+  (`integrate_positions` / `_velocities`, `update_solver_body_angular_inertia`, `prepare_solver_bodies`,
+  `writeback_solver_bodies`, the AABB updates, `propagate_collider_transforms`): each call fans ~9 tasks of
+  1–2 µs out to the compute pool and waits, ~65 µs wall each, and on a busy machine much more: the main thread
+  sat idle 2.96 ms in one `integrate_velocities` while a worker was busy elsewhere, and inside other scopes it
+  ran render-world tasks (a 4.4 ms shadow pass inside `clear_velocity_increments`). Our own fixed systems are
+  small (`car_physics` 0.18 ms, the rest < 0.01 ms).
+  - **Tried, not committed: serial avian.** A copy of avian3d 0.7.0 with its 10 `par_iter` calls made `iter`
+    (git-ignored `[patch.crates-io]`, removed again): handling tests identical; quiet (load 5) 0.96–1.08 →
+    0.91–0.93 ms a step; with 16 busy loops 5.4–5.7 → 4.4–4.7 ms a step, frame 20.4 → 19.7 ms. Worth it only
+    with a maintained fork / vendored avian (a project decision: ~52 k lines).
+  - **Tried, no effect: fewer compute threads** (`TaskPoolOptions.compute.max_threads` 4 instead of 8): equal
+    within noise under load.
+- **5. Single-threaded main world (committed)**: all main-world schedules (First … Last, the fixed ones) on
+  `SingleThreadedExecutor`; the render world and queries' own `par_iter` stay parallel. Idle machine: equal
+  (drive main world 3.7–4.3 ms either way); race at load 8–22: main world 4.02 / 3.55 → 3.32 / 3.30 ms, step
+  1.19 → 1.03 ms. With 16 busy loops (three rounds): main world 16.7 → 12.8 ms, step 5.1 → 3.6 ms, frame mean
+  19.3 → 17.4 ms, p95 26 → 22.6 ms. Handling and race tests identical. `MW_MAIN_MULTI=1` = before.
+- **6. CPU light clustering (committed)**: no point / spot / probe lights exist, but GPU clustering rebuilt
+  per-view buffers and bind groups and encoded its passes every frame (`prepare_clusters_for_gpu_clustering`
+  0.59 ms + `cluster_on_gpu` 0.25 ms traced). `GlobalClusterSettings.gpu_clustering = None` at startup (Bevy's
+  CPU fallback; the render world copies the setting each frame). `ClusterConfig::None` on the cameras instead
+  is a wgpu validation error with GPU clustering (zero-sized buffers). Drive, load 3–5: render prepare 1.93 →
+  1.66 ms, graph 5.05 → 4.77 ms; road 0.04 / wet 0.01 MAD. `MW_GPU_CLUSTERING=1` = before.
+- **All together** (drive, master-equivalent switches vs new, three interleaved rounds): load 3–4: main world
+  4.04 → 3.62 ms, render prepare 2.05 → 1.69 ms, ms per step 1.02 → 0.80, GPU 56 → 43 % at 60 fps; with 16 busy
+  loops (load 5–22): frame mean 20.3 → 17.0 ms (49 → 59 fps), p95 26.7 → 22.2 ms, main world 17.3 → 12.3 ms,
+  render prepare 6.7 → 5.4 ms, step 5.3 → 3.5 ms.
+- **What is left, by cost** (race trace, ~53 fps, ms per frame with tracing overhead): render-world draw encoding
+  `render_system` 9.7 (deferred prepass 2.6, shadow cascades 1.6, submit 1.0: draw counts, the LOD / culling
+  work; bindless materials would merge draws), per-mesh-entity render bookkeeping ~1.5 (`write_batched_
+  instance_buffers` 0.6, `write_indirect_parameters_buffers` 0.5, `collect_meshes_for_gpu_building` 0.4,
+  `extract_meshes_for_gpu_building` 0.25: scale with mesh entities), physics ~2.9 a step (above), transform
+  propagation 0.35 × 2 (PostUpdate and the fixed loop), visibility 0.33 + 0.27 (cascades), `prepare_skins` 0.24,
+  the four small material types' `check_entities_needing_specialization` ~0.1 each (Chevron, tyre marks,
+  particle quads, sparks: per-type `AssetChanged` scans; merging them into one material type would remove three),
+  our tonemap / bloom node 0.27 (12 bind groups created per frame; cacheable), `cull_casters` 0.13.
+
 ### 2026-10-09: frame drops: the render thread's multi-draw path, physics catch-up, bakes on every core
 User report: "optimize this game, it is weirdly dropping frames sometimes". Measured with a new per-frame log
 (`MW_FRAME_LOG=<file>`, `frame_log.rs`: main schedule segments First / PreUpdate / fixed loop / Update /
