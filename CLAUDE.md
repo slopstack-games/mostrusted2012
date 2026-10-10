@@ -114,6 +114,10 @@ tools/orig/orig run-in -- ./target/release/mostrusted --drive 911 --test-track  
 # stick fully back looks back; right stick / right mouse drag looks around; the free camera looks with the
 # right stick too). MW_CAMERA_TRACE=<file> logs the camera every frame
 MW_CAMERA_TRACE=<scratch>/cam.trace ./target/release/mostrusted --drive 911 --test drift
+# Chase camera against the original, frame by frame: our camera code over a recording's car motion (ref/live1)
+MW_TOOLS=.claude/tools python3 tools/camcompare.py inputs ref/live1 <dir>/in.csv
+./target/release/mostrusted --camera-replay <dir>/in.csv,<dir>/ours.csv
+MW_TOOLS=.claude/tools python3 tools/camcompare.py compare ref/live1 <dir>/ours.csv   # per-component RMS / lag
 ./target/release/mostrusted --drive 911 --units 12 --auto-throttle 0.6 --camera-mode bonnet --screenshot <scratch>/bonnet.png --screenshot-delay 400
 # Time of day and weather (weather.rs; interactive: F5/F6 hour, F7 weather). The timeline is the one painted
 # under the camera (--timeline <id|default> overrides); --weather = the Alternate (bad-weather) keyframes.

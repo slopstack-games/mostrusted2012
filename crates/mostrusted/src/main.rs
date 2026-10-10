@@ -121,6 +121,10 @@ struct Cli {
     /// `mwtool compare <file> <file>.ours.csv`.
     #[arg(long)]
     replay: Option<PathBuf>,
+    /// `<inputs.csv>,<out.csv>`: run the chase camera offline over a recorded car motion and exit, no window
+    /// (`camera::replay_recording`; `tools/camcompare.py` makes the inputs from a recording of the original).
+    #[arg(long, value_delimiter = ',')]
+    camera_replay: Vec<PathBuf>,
     /// Smash test: speed (km/h) the car holds through the props.
     #[arg(long, default_value_t = 60.0)]
     smash_speed: f32,
@@ -405,6 +409,9 @@ fn main() -> anyhow::Result<()> {
     let t = Instant::now();
     let store = Arc::new(AssetStore::new(game)?);
     println!("indexed {} resources in {:?}", store.resource_count(), t.elapsed());
+    if let [input, output] = cli.camera_replay.as_slice() {
+        return camera::replay_recording(&store, input, output);
+    }
 
     if cli.camera.as_ref().is_some_and(|c| c.len() != 6) {
         anyhow::bail!("--camera expects 6 comma-separated values: x,y,z,look_x,look_y,look_z");

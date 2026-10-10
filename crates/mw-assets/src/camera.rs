@@ -75,6 +75,14 @@ mod h {
     pub const PITCH_CURVE_POWER: u32 = field_hash("Pitch_change_curve_power");
     pub const PITCH_INTENSITY: u32 = field_hash("Pitch_change_intensity");
     pub const GLOBAL_PARAMS: u32 = field_hash("Global_params");
+    pub const GRADIENT: u32 = field_hash("Gradient_Adjustments");
+    pub const GRADIENT_DOWN: u32 = field_hash("Downwards");
+    pub const GRADIENT_UP: u32 = field_hash("Upwards");
+    /// `CameraGameplayGradientAdjustments.Params` +0x10 / +0x14 (unnamed): `FUN_005c7a80`'s look pitch and eye
+    /// height per radian of slope.
+    pub const GRADIENT_PITCH: u32 = 0x5b17_50df;
+    pub const GRADIENT_HEIGHT: u32 = 0x47a5_0f4c;
+    pub const MAX_GRADIENT: u32 = field_hash("Maximum_Gradient");
     pub const IMPACT_SHAKE: u32 = field_hash("Impact_shake");
     pub const MAX_AMPLITUDE: u32 = field_hash("Maximum_amplitude");
     pub const SHAKE_EFFECT: u32 = 0xf50dccb9;
@@ -138,7 +146,21 @@ pub struct ExternalCamera {
     pub roll: CameraRoll,
     pub yaw_spring: YawSpring,
     pub pitch: DecelerationPitch,
+    pub gradient: GradientAdjustments,
     pub impact: ImpactShake,
+}
+
+/// `Gradient_Adjustments` (`CameraGameplayGradientAdjustments`, handle +0x178), read by `FUN_005c7a80`: on a slope
+/// (the car frame's pitch, clamped to ±`Maximum_Gradient`) the look direction turns back by `pitch` × slope
+/// and the eye rises by `height` × slope (radians), eased at 0.1 per update and held in the air.
+#[derive(Debug, Clone, Copy)]
+pub struct GradientAdjustments {
+    /// `Downwards` (nose down): `5b1750df` (0.5), `47a50f4c` (1.5).
+    pub downwards: [f32; 2],
+    /// `Upwards` (nose up): `5b1750df` (0.5), `47a50f4c` (4).
+    pub upwards: [f32; 2],
+    /// `Maximum_Gradient` (degrees, 10).
+    pub max_gradient: f32,
 }
 
 /// `Speed_based_movement` (unnamed fields; meanings from how they track the eye and look-at points).
@@ -215,10 +237,11 @@ pub struct YawSpring {
     pub decay_rate: f32,
 }
 
-/// `Deceleration_pitch_change`: nose-down tilt under braking.
+/// `Deceleration_pitch_change`: nose-down tilt of the look direction under braking (`FUN_005c7a80`).
 #[derive(Debug, Clone, Copy)]
 pub struct DecelerationPitch {
-    /// `Minimum_` / `Maximum_deceleration_for_pitch_change` (2 / 11–12 mph/s).
+    /// `Minimum_` / `Maximum_deceleration_for_pitch_change` (2 / 11–12 m/s², `FUN_005d9610`'s acceleration along
+    /// the velocity).
     pub deceleration: [f32; 2],
     /// `Maximum_Pitch_Change` (2.5–6°).
     pub max_change: f32,
@@ -353,6 +376,7 @@ impl Default for ExternalCamera {
             },
             yaw_spring: YawSpring { speed: [0.0, 100.0], spring: [0.075, 0.05], decay_rate: 0.01 },
             pitch: DecelerationPitch { deceleration: [2.0, 12.0], max_change: 4.5, curve_power: 2.25, intensity: 2.0 },
+            gradient: GradientAdjustments { downwards: [0.5, 1.5], upwards: [0.5, 4.0], max_gradient: 10.0 },
             impact: ImpactShake {
                 translation: [ShakeAxis::default(), ShakeAxis::default(), axis(100.0, 0.5, 100.0, [-0.2, 0.2])],
                 rotation: [axis(250.0, 0.4, 450.0, [-20.0, 20.0]), ShakeAxis::default(), ShakeAxis::default()],
@@ -381,6 +405,11 @@ impl ExternalCamera {
         let roll = sub(e, h::CAMERA_ROLL);
         let yaw = sub(e, h::YAW_SPRING);
         let pitch = sub(e, h::DECEL_PITCH);
+        let gradient = sub(e, h::GRADIENT);
+        let grad = |name: u32, default: [f32; 2]| {
+            let p = gradient.and_then(|g| sub(g, name));
+            [f(p, h::GRADIENT_PITCH, default[0]), f(p, h::GRADIENT_HEIGHT, default[1])]
+        };
         let globals = sub(e, h::GLOBAL_PARAMS);
         let impact = globals.and_then(|g| sub(g, h::IMPACT_SHAKE));
         let effect = globals.and_then(|g| sub(g, h::SHAKE_EFFECT));
@@ -450,6 +479,11 @@ impl ExternalCamera {
                 max_change: f(pitch, h::MAX_PITCH_CHANGE, 0.0),
                 curve_power: f(pitch, h::PITCH_CURVE_POWER, 1.0),
                 intensity: f(pitch, h::PITCH_INTENSITY, 2.0),
+            },
+            gradient: GradientAdjustments {
+                downwards: grad(h::GRADIENT_DOWN, d.gradient.downwards),
+                upwards: grad(h::GRADIENT_UP, d.gradient.upwards),
+                max_gradient: f(gradient, h::MAX_GRADIENT, d.gradient.max_gradient),
             },
             impact: ImpactShake {
                 translation: axes(
