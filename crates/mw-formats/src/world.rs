@@ -59,7 +59,7 @@ pub struct InstanceOverrides {
 }
 
 impl InstanceOverrides {
-    fn parse(res: &Resource, o: usize) -> Result<Self> {
+    pub(crate) fn parse(res: &Resource, o: usize) -> Result<Self> {
         let r = Reader(res.header());
         let mut out = Self::default();
         if o == 0 {

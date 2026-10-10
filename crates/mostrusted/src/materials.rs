@@ -74,6 +74,8 @@ pub struct InstanceLook {
     tint: [u16; 3],
     ao: u16,
     pub ao_map: Option<ResourceId>,
+    /// A `LightMapTextureSampler` override (baked lamp light; replaces the model's own binding).
+    pub lightmap: Option<ResourceId>,
     /// `AdditiveIntensities` from the instance's override block (the `InstanceIntensity` shader variants
     /// read it from the instance constants instead of the material's), × 1000.
     additive: Option<[i32; 2]>,
@@ -81,7 +83,7 @@ pub struct InstanceLook {
 
 impl Default for InstanceLook {
     fn default() -> Self {
-        Self { tint: [q(1.0); 3], ao: q(1.0), ao_map: None, additive: None }
+        Self { tint: [q(1.0); 3], ao: q(1.0), ao_map: None, lightmap: None, additive: None }
     }
 }
 
@@ -96,6 +98,7 @@ impl InstanceLook {
             tint: [w[0] * t[0], w[1] * t[1], w[2] * t[2]].map(q),
             ao: q(w[3]),
             ao_map: p.overrides.as_deref().and_then(|o| o.texture("AOMapTextureSampler")),
+            lightmap: p.overrides.as_deref().and_then(|o| o.texture("LightMapTextureSampler")),
             additive: p
                 .overrides
                 .as_deref()
@@ -132,6 +135,8 @@ pub struct Look {
     pub paint: bool,
     /// The mesh keeps its vertex colour as Bevy's COLOR attribute (vehicle shaders read it raw).
     pub vertex_colour: bool,
+    /// A WorldPBR `Lightmap` / `PersistentLightmap` variant (its program samples `LightMapTextureSampler`).
+    lightmap_variant: bool,
 }
 
 fn q(v: f32) -> u16 {
@@ -237,6 +242,7 @@ impl Look {
             double_sided: name.contains("doublesided"),
             paint: name.contains("bodypaint"),
             vertex_colour: false,
+            lightmap_variant: false,
         };
 
         // Road normal maps and F0 (SpecColour green); they need the decoded tangent frame.
@@ -412,7 +418,10 @@ impl Look {
             let coloured = linear("SpecularColourTextureSampler").filter(|_| name.contains("colouredspecular"));
             // The AO map sits in sampler slot 1: `OverlayTextureSampler` in the material, or a
             // per-instance `AOMapTextureSampler` override (see `with_instance`).
-            let ao = linear("OverlayTextureSampler").filter(|_| has_uv(1));
+            let ao = linear("OverlayTextureSampler").or(linear("AOMapTextureSampler")).filter(|_| has_uv(1));
+            // The `Lightmap` variants add LightMapTextureSampler(uv1).rgb × AdditiveIntensities.x × albedo (baked
+            // lamp light on facades; the model binds the texture, `mw_formats::Model::overrides`).
+            let lightmap = linear("LightMapTextureSampler").filter(|_| name.contains("lightmap") && has_uv(1));
             // Light the surface gives off at night, added to RT3 × albedo (see `layered.wgsl` mode 5):
             // lit windows (`LitWindowColour` × `AdditiveIntensities.y`, masked by the specular map's alpha ×
             // the AO map's alpha, or by the diffuse map's alpha in the LOD2 variants) and illuminated signs
@@ -432,7 +441,8 @@ impl Look {
             };
             let glow = glow.unwrap_or([0.0; 4]);
             look.mode = Mode::WorldPbr;
-            look.textures = slots(&[Some(diffuse), Some(spec), ao, coloured, illuminance]);
+            look.lightmap_variant = name.contains("lightmap") && has_uv(1);
+            look.textures = slots(&[Some(diffuse), Some(spec), ao, coloured, illuminance, lightmap]);
             look.normal = linear("NormalTextureSampler").filter(|_| sm.mesh.tangents.is_some());
             look.tint = [c[0], c[1], c[2], 1.0].map(q);
             look.vals = pack(&[
@@ -440,7 +450,7 @@ impl Look {
                 [flag(coloured.is_some()), 1.0, flag(ao.is_some()), flag(name.contains("planarreflection"))],
                 [c[0], c[1], c[2], 0.0],
                 [glow[0], glow[1], glow[2], glow_kind],
-                [additive[0], additive[1], flag(!name.contains("persistent")), 0.0],
+                [additive[0], additive[1], flag(!name.contains("persistent")), flag(lightmap.is_some())],
             ]);
             if has_uv(1) {
                 look.uv_b = Some(1);
@@ -809,6 +819,9 @@ impl Look {
             if self.vals[11] == qi(3.0) && self.textures[4].is_none() {
                 self.vals[11] = 0;
             }
+            if self.textures[5].is_none() {
+                self.vals[15] = 0;
+            }
         }
         if self.paint {
             // Body paint keeps the flags `from_scene_mesh` / `with_paint` wrote: its slot 0 is the livery or
@@ -871,6 +884,14 @@ impl Look {
         {
             self.textures[2] = Some((ao, false));
             self.vals[2] = qi(1.0);
+        }
+        // Only the `Lightmap` variants sample it (p3.w was set for them when the model bound one).
+        if let Some(lm) = inst.lightmap
+            && self.uv_b == Some(1)
+            && self.lightmap_variant
+        {
+            self.textures[5] = Some((lm, false));
+            self.vals[15] = qi(1.0);
         }
         self
     }
@@ -965,7 +986,7 @@ impl Look {
     /// Whether the look reads the night level (`world_lights::NightLevel`): lit windows and signs of the
     /// variants that take `DynamicLighting_GlobalLightMapIntensities`.
     pub fn uses_night(&self) -> bool {
-        self.mode == Mode::WorldPbr && self.vals[11] != 0 && self.vals[14] != 0
+        self.mode == Mode::WorldPbr && (self.vals[11] != 0 || self.vals[15] != 0) && self.vals[14] != 0
     }
 
     /// Whether the material reads the vehicle light state.

@@ -65,8 +65,8 @@ struct Layered {
     //          textures: mask, layer 1..3, decal, tiling normal 1..3, AO map
     // WorldPBR: p0 = (has SpecularColour map, instance AO scale, has AO map, planar only), p1 = MaterialDiffuse,
     //          p2 = (LitWindowColour or LightmapColour rgb, glow kind: 1 building windows, 2 LOD2 windows,
-    //          3 illuminance map), p3 = (AdditiveIntensities.xy, takes the global night level, 0)
-    //          textures: diffuse, specular, AO map, SpecularColour, illuminance
+    //          3 illuminance map), p3 = (AdditiveIntensities.xy, takes the global night level, has lightmap)
+    //          textures: diffuse, specular, AO map, SpecularColour, illuminance, lightmap
     // vehicle: p0 = (F0 rgb, roughness), p1 = (has spec map, roughness source: 0 constant, 1 normal
     //          alpha, 2 normal green, coat F0, coat fresnel), p2 = (has vertex colour (x = AO,
     //          y = specular occlusion), has diffuse map, lightmapped-lights kind, multiplier),
@@ -453,11 +453,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         //   LOD2 windows:     diffuse.w² × LitWindowColour × AdditiveIntensities.y
         //   illuminated sign: Illuminance(uv0).y × LightmapColour × AdditiveIntensities.x
         // each × DynamicLighting_GlobalLightMapIntensities.x unless the variant is `Persistent`.
-        // The `_Lightmap` variants also add LightMapTextureSampler(uv1).rgb × AdditiveIntensities.x × the
-        // global level; nothing in the data binds that sampler (it reads 0 here).
+        // The `Lightmap` variants also add LightMapTextureSampler(uv1).rgb × AdditiveIntensities.x, × the
+        // global level unless `PersistentLightmap` (the model binds the texture: baked lamp light).
         let glow = layered.p[2];
+        let k = layered.p[3];
+        if k.w > 0.5 {
+            let lm = textureSample(tex5, samp5, uv_b).rgb * k.x * mix(1.0, layered.night.x, k.z);
+            extra += lm * pbr_input.material.base_color.rgb * layered.env.x;
+        }
         if glow.w > 0.5 {
-            let k = layered.p[3];
             var e = 0.0;
             if glow.w < 1.5 {
                 e = spec.w * spec.w * ao_tex.w * k.y;

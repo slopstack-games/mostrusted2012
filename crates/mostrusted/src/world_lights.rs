@@ -72,9 +72,9 @@ fn load_transition(game: Option<Res<crate::Game>>, mut sources: ResMut<LightSour
 
 /// The game's light volumes come in 45 cone angles, 2° apart (`FUN_008ae860`, the table at renderer
 /// +0xad0: entry i holds cos(i × 2°) and 1 / (1 − cos(i × 2°)); step `.rdata` 0x0100e760 = 0.0349 rad). A
-/// light uses entry `angle / 2` rounded down, at most 44 (`FUN_008b8840`), so its edge is quantised.
+/// light uses entry `angle / 2` rounded up (`FUN_00ede840` is the CRT ceil), at most 44 (`FUN_008b8840`): the edge is quantised outwards.
 fn table_cos(angle_degrees: f32) -> f32 {
-    let index = (angle_degrees * 0.5).floor().clamp(0.0, 44.0);
+    let index = (angle_degrees * 0.5).ceil().clamp(0.0, 44.0);
     (index * 2.0).to_radians().cos()
 }
 
@@ -216,8 +216,8 @@ mod tests {
     #[test]
     fn spot_cone_is_quantised_at_the_edge_only() {
         let g = gpu_light(&light(LightShape::Spot { angle: 61.033, inner: 11.989 }), 1.0).unwrap();
-        assert!((g.direction.w - 60f32.to_radians().cos()).abs() < 1e-6);
-        let scale = 1.0 / (11.989f32.to_radians().cos() - 0.5);
+        assert!((g.direction.w - 62f32.to_radians().cos()).abs() < 1e-6);
+        let scale = 1.0 / (11.989f32.to_radians().cos() - 62f32.to_radians().cos());
         assert!((g.cone.x - scale).abs() < 1e-4);
         assert_eq!(g.direction.truncate(), Vec3::Y);
     }
