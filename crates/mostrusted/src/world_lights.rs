@@ -1,7 +1,8 @@
 //! The world's lights at night: street lamps, flood lights, signs (`LightInstanceList` + GeneSys
 //! `Light_*`, `mw_assets::lights`) and the night level that the lit-window and lightmap shaders take.
 //!
-//! The loader sends each track unit's lights ([`crate::loader::Msg::Lights`]). Whenever the hour or the
+//! The loader sends each track unit's lights ([`crate::loader::Msg::Lights`]): those of its light lists and
+//! those its objects carry (street lamps: a `WCVfxBehaviour` light at each locator of a locator group). Whenever the hour or the
 //! set of lights changes, [`update_lights`] turns them into the constants of the game's light programs
 //! (`deferred::GpuWorldLight`; the game's CPU side is `FUN_008b0940` for point lights, `FUN_008af930` for
 //! cone lights and `FUN_008afee0` for spot lights, docs/decomp.md "World lights") and hands the list to
@@ -11,9 +12,8 @@
 //! flags against `EnvironmentSettings.DayNightTransition` (`mw_assets::lights::DayNightTransition`; the
 //! ramp between the states is a model decision documented there).
 //!
-//! Not drawn: line lights (66 instances; `LightBuffer_Line` not ported), flash patterns (157 blinking
-//! instances are steady), the lights that props and cars carry through their `WCVfxBehaviour` /
-//! `VehicleVfxBehaviour` (their locators are not resolved for world objects), and the game's own cap on
+//! Not drawn: line lights (66 instances; `LightBuffer_Line` not ported), lights with a flash pattern (602
+//! instances: beacons, traffic lights), the lights cars carry (`VehicleVfxBehaviour`), and the game's own cap on
 //! lights per frame (it keeps the nearest ones in a fixed-size list, `FUN_008dfa00`; the size is a runtime
 //! value).
 
@@ -141,7 +141,15 @@ fn update_lights(
     let lights: Vec<GpuWorldLight> = if off {
         Vec::new()
     } else {
-        sources.lights.iter().filter_map(|l| gpu_light(l, phase.light_level(&l.def))).collect()
+        // Lights with a flash pattern (beacons, traffic lights, blinking signs) stay off: how the game
+        // evaluates `FlashPattern` and which messages switch them is not traced, and all of them on
+        // at once would be wrong.
+        sources
+            .lights
+            .iter()
+            .filter(|l| l.def.flash.kind == 0)
+            .filter_map(|l| gpu_light(l, phase.light_level(&l.def)))
+            .collect()
     };
     if !sources.lights.is_empty() {
         info!(
@@ -201,6 +209,7 @@ mod tests {
             }),
             position: [1.0, 2.0, 3.0],
             direction: [0.0, -1.0, 0.0],
+            object: None,
         }
     }
 

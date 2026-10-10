@@ -1472,15 +1472,17 @@ fn lights(store: &AssetStore, near: &[f32], hour: Option<f32>) -> Result<()> {
         .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("TRK_UNIT")))
         .cloned()
         .collect();
-    // (shape, day, night, twilight, flash type) -> (instances, summed range)
-    let mut classes: std::collections::BTreeMap<(&str, bool, bool, bool, u32), (usize, f32)> = Default::default();
+    // (carried by an object, shape, day, night, twilight, flash type) -> (instances, summed range)
+    type Class = (bool, &'static str, bool, bool, bool, u32);
+    let mut classes: std::collections::BTreeMap<Class, (usize, f32)> = Default::default();
     let mut total = 0;
     for u in units {
         let Some(b) = store.bundle(&u) else { continue };
         for l in store.bundle_lights(&b)? {
             total += 1;
             let d = &l.def;
-            let e = classes.entry((d.shape.name(), d.on_day, d.on_night, d.on_twilight, d.flash.kind)).or_default();
+            let class = (l.object.is_some(), d.shape.name(), d.on_day, d.on_night, d.on_twilight, d.flash.kind);
+            let e = classes.entry(class).or_default();
             e.0 += 1;
             e.1 += d.range();
             let [x, y, z] = l.position;
@@ -1491,8 +1493,9 @@ fn lights(store: &AssetStore, near: &[f32], hour: Option<f32>) -> Result<()> {
             };
             if within {
                 println!(
-                    "{} {:x} {:?} at ({x:.1}, {y:.1}, {z:.1}) dir ({:.2}, {:.2}, {:.2}) colour {:.2?} x {} threshold {}                      range {:.1} m day {} night {} twilight {} flash {}{}",
+                    "{} {}{:x} {:?} at ({x:.1}, {y:.1}, {z:.1}) dir ({:.2}, {:.2}, {:.2}) colour {:.2?} x {} threshold {}                      range {:.1} m day {} night {} twilight {} flash {}{}",
                     u.file_name().unwrap_or_default().to_string_lossy(),
+                    l.object.map(|o| format!("on {:x} ", o.0 & 0xFFFF_FFFF)).unwrap_or_default(),
                     d.id.0 & 0xFF_FFFF,
                     d.shape,
                     l.direction[0],
@@ -1513,9 +1516,10 @@ fn lights(store: &AssetStore, near: &[f32], hour: Option<f32>) -> Result<()> {
         store.evict_all();
     }
     println!("{total} lights");
-    println!("shape  day   night twilight flash  count  mean range");
-    for ((shape, day, night, twilight, flash), (n, range)) in classes {
-        println!("{shape:6} {day:5} {night:5} {twilight:8} {flash:5} {n:6}  {:.1} m", range / n as f32);
+    println!("from   shape  day   night twilight flash  count  mean range");
+    for ((object, shape, day, night, twilight, flash), (n, range)) in classes {
+        let from = if object { "object" } else { "list" };
+        println!("{from:6} {shape:6} {day:5} {night:5} {twilight:8} {flash:5} {n:6}  {:.1} m", range / n as f32);
     }
     Ok(())
 }

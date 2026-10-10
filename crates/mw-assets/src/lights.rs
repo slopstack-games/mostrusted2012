@@ -5,12 +5,17 @@
 //! the renderer by type (`FUN_0054ade0`) with their position (the instance matrix's translation), the
 //! matrix's z axis as the beam direction and `Colour × intensity`; the renderer turns them into the
 //! `LightBuffer_Point` / `_Cone` / `_Spot` constants (`FUN_008b0940`, `FUN_008af930`, `FUN_008afee0`).
+//!
+//! Street lamps are not in the light lists: they are compound objects (and a few world objects) whose
+//! `WCVfxBehaviour` ("SetLightsOn") names a light definition and a locator group of the object
+//! ([`AssetStore::object_lights`]); one light sits at each locator of the group.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use mw_bundle::{Bundle, ResourceId, ResourceType};
 use mw_formats as fmt;
+use mw_formats::Locator;
 use mw_formats::genesys::{Object, Value, field_hash};
 
 use crate::{AssetStore, Result};
@@ -151,6 +156,26 @@ pub struct WorldLight {
     /// The instance matrix's z axis (row 2), normalised: the beam direction of cone and spot lights, the
     /// axis of line lights.
     pub direction: [f32; 3],
+    /// Set for a light that an object carries (a street lamp's): the object's definition.
+    pub object: Option<ResourceId>,
+}
+
+/// A light an object carries: its definition and where it sits on the object.
+#[derive(Debug, Clone)]
+pub struct ObjectLight {
+    pub def: Arc<LightDef>,
+    pub locator: Locator,
+}
+
+/// The z axis of a locator's rotation (quaternion x, y, z, w).
+fn locator_axis(q: [f32; 4]) -> [f32; 3] {
+    let [x, y, z, w] = q;
+    [2.0 * (x * z + w * y), 2.0 * (y * z - w * x), 1.0 - 2.0 * (x * x + y * y)]
+}
+
+fn normalised(v: [f32; 3]) -> [f32; 3] {
+    let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-6);
+    v.map(|c| c / len)
 }
 
 /// `EnvironmentSettings.DayNightTransition`: when the world's lights (and the shadows) change between
@@ -249,11 +274,78 @@ impl AssetStore {
         Ok(DayNightTransition::from_settings(&settings))
     }
 
-    /// The lights a bundle's `LightInstanceList`s place. Instances whose definition is missing or not a
-    /// light are skipped.
+    /// The lights an object definition carries through its `WCVfxBehaviour`s (the object's own and, for a
+    /// compound object, its parts'): each `Lights` entry is a light definition and a `LocatorGroup`, looked
+    /// up among the part's locator groups and then the object's; one light per locator.
+    ///
+    /// Not modelled: what switches such a behaviour ("SetLightsOn") on and off in the game (the lights
+    /// are taken as on, subject to their definition's `OnDuring…` flags), and the bone pose of a part's own
+    /// locators (taken as object space; the street lamps' groups are object-level).
+    pub fn object_lights(&self, def: &fmt::ObjectDef) -> Vec<ObjectLight> {
+        let mut out = Vec::new();
+        let no_part: &[fmt::LocatorGroup] = &[];
+        let parts =
+            def.compound_parts.iter().enumerate().map(|(i, p)| {
+                (p.behaviours.as_slice(), def.part_locator_groups.get(i).map_or(no_part, |g| g.as_slice()))
+            });
+        for (behaviours, own) in std::iter::once((def.behaviours.as_slice(), no_part)).chain(parts) {
+            for b in behaviours.iter().filter(|b| b.type_id == fmt::WC_VFX_BEHAVIOUR) {
+                let Some(o) = b.object.and_then(|id| self.genesys_object(id).ok()) else { continue };
+                let Some(Value::Array(lights)) = o.get(field_hash("Lights")) else { continue };
+                for l in lights {
+                    let Value::Struct(l) = l else { continue };
+                    let Some(Value::Handle(Some(id))) = l.get(field_hash("LightDefinition")) else { continue };
+                    let group = float(l, field_hash("LocatorGroup")).unwrap_or(0.0) as u32;
+                    let Some(light) = self.genesys_object(*id).ok().and_then(|o| LightDef::from_object(*id, &o)) else {
+                        continue;
+                    };
+                    let light = Arc::new(light);
+                    let Some(group) = own.iter().chain(&def.locator_groups).find(|g| g.id == group) else { continue };
+                    out.extend(group.locators.iter().map(|&locator| ObjectLight { def: light.clone(), locator }));
+                }
+            }
+        }
+        out
+    }
+
+    /// The lights of a bundle: those its `LightInstanceList`s place, and those its compound and dynamic
+    /// objects carry ([`Self::object_lights`]) at each placement. Instances whose definition is missing or
+    /// not a light are skipped.
     pub fn bundle_lights(&self, bundle: &Bundle) -> Result<Vec<WorldLight>> {
         let mut defs: HashMap<ResourceId, Option<Arc<LightDef>>> = HashMap::new();
         let mut out = Vec::new();
+        type ParseDef = fn(&mw_bundle::Resource) -> fmt::Result<fmt::ObjectDef>;
+        let carriers: [(ResourceType, ParseDef); 2] = [
+            (ResourceType::CompoundInstanceList, fmt::ObjectDef::parse_compound),
+            (ResourceType::DynamicInstanceList, fmt::ObjectDef::parse_world_object),
+        ];
+        let mut carried: HashMap<ResourceId, Vec<ObjectLight>> = HashMap::new();
+        for (ty, parse) in carriers {
+            for e in bundle.entries_of_type(ty) {
+                let list = fmt::ObjectInstanceList::parse(&bundle.load(e)?)?;
+                for inst in list.instances {
+                    let Some(object) = inst.object else { continue };
+                    let lights = carried.entry(object).or_insert_with(|| {
+                        let def = self.load(object).ok().and_then(|res| parse(&res).ok());
+                        def.map_or(Vec::new(), |d| self.object_lights(&d))
+                    });
+                    let t = &inst.transform;
+                    for l in lights.iter() {
+                        let p = l.locator.position;
+                        let a = locator_axis(l.locator.rotation);
+                        // Row vectors: v × M.
+                        let at = |c: usize| p[0] * t[0][c] + p[1] * t[1][c] + p[2] * t[2][c] + t[3][c];
+                        let dir = |c: usize| a[0] * t[0][c] + a[1] * t[1][c] + a[2] * t[2][c];
+                        out.push(WorldLight {
+                            def: l.def.clone(),
+                            position: [at(0), at(1), at(2)],
+                            direction: normalised([dir(0), dir(1), dir(2)]),
+                            object: Some(object),
+                        });
+                    }
+                }
+            }
+        }
         for e in bundle.entries_of_type(ResourceType::LightInstanceList) {
             let list = fmt::ObjectInstanceList::parse(&bundle.load(e)?)?;
             for inst in list.instances {
@@ -264,9 +356,12 @@ impl AssetStore {
                 });
                 let Some(def) = def.clone() else { continue };
                 let t = &inst.transform;
-                let z = [t[2][0], t[2][1], t[2][2]];
-                let len = (z[0] * z[0] + z[1] * z[1] + z[2] * z[2]).sqrt().max(1e-6);
-                out.push(WorldLight { def, position: [t[3][0], t[3][1], t[3][2]], direction: z.map(|c| c / len) });
+                out.push(WorldLight {
+                    def,
+                    position: [t[3][0], t[3][1], t[3][2]],
+                    direction: normalised([t[2][0], t[2][1], t[2][2]]),
+                    object: None,
+                });
             }
         }
         Ok(out)
