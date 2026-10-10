@@ -7,6 +7,7 @@ mod ai;
 mod ai_driver;
 mod audio;
 mod bench;
+mod bodyshop;
 mod camera;
 mod car_anim;
 mod car_audio;
@@ -33,6 +34,7 @@ mod gate_marker;
 mod groundcover;
 mod hud;
 mod input;
+mod jackspots;
 mod loader;
 mod materials;
 mod menu;
@@ -549,8 +551,11 @@ fn main() -> anyhow::Result<()> {
             _ => anyhow::bail!("--spawn expects x,y,z[,heading_degrees]"),
         };
         // `--test ai` and `--test race` drive the streets; the other tests run on the flat track.
-        let street_test =
-            race_test || matches!(cli.test.as_deref(), Some("ai") | Some("crash-traffic") | Some("crash-ai"));
+        let street_test = race_test
+            || matches!(
+                cli.test.as_deref(),
+                Some("ai") | Some("crash-traffic") | Some("crash-ai") | Some("jackspot") | Some("bodyshop")
+            );
         let track = cli.test_track || (cli.test.is_some() && !street_test) || cli.replay.is_some();
         let spawn = if track { Vec3::new(0.0, 1.0, 0.0) } else { spawn };
         let props =
@@ -570,9 +575,15 @@ fn main() -> anyhow::Result<()> {
     };
     let smash = cli.test.as_deref() == Some("smash");
     let test = match cli.test.as_deref() {
-        None | Some("crash") | Some("smash") | Some("ai") | Some("race") | Some("crash-traffic") | Some("crash-ai") => {
-            None
-        }
+        None
+        | Some("crash")
+        | Some("smash")
+        | Some("ai")
+        | Some("race")
+        | Some("crash-traffic")
+        | Some("crash-ai")
+        | Some("jackspot")
+        | Some("bodyshop") => None,
         Some("accel") => Some(drive::TestKind::Accel),
         Some("nitrous") => Some(drive::TestKind::Nitrous),
         Some("brake") => Some(drive::TestKind::Brake),
@@ -588,7 +599,7 @@ fn main() -> anyhow::Result<()> {
         Some("exhaust") => Some(drive::TestKind::Exhaust),
         Some(other) => {
             anyhow::bail!(
-                "unknown --test {other} (accel, brake, corner, handbrake, drift, donut, engine, exhaust, landing, climb, jitter, kerb, crash, smash, ai, race, crash-traffic, crash-ai)"
+                "unknown --test {other} (accel, brake, corner, handbrake, drift, donut, engine, exhaust, landing, climb, jitter, kerb, crash, smash, ai, race, crash-traffic, crash-ai, jackspot, bodyshop)"
             )
         }
     };
@@ -737,8 +748,11 @@ fn main() -> anyhow::Result<()> {
         app.add_plugins(props::SmashTestPlugin);
         app.add_systems(Startup, |mut t: ResMut<Time<Virtual>>| t.set_relative_speed(2.0));
         None
+    } else if matches!(cli.test.as_deref(), Some("jackspot") | Some("bodyshop")) {
+        // These tests take their own before / after screenshots (`jackspots.rs`, `bodyshop.rs`).
+        None
     } else {
-        cli.screenshot
+        cli.screenshot.clone()
     };
     // `--camera` with `--drive`: a fixed camera instead of the chase camera.
     if let (Some(c), Request::Drive { world: true, .. }) = (camera, &request) {
@@ -815,6 +829,21 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(tyre_marks::TyreMarksPlugin)
         .add_plugins(paint_wear::PaintWearPlugin)
         .add_plugins(freeroam::FreeroamPlugin)
+        // Jack spots and body shops; their finds live in the profile (`frontend::Collected`).
+        .insert_resource(
+            profile_file
+                .as_deref()
+                .filter(|_| !cli.new_game)
+                .and_then(frontend::load_profile)
+                .map(|p| p.collected)
+                .unwrap_or_default(),
+        )
+        .add_plugins(jackspots::JackSpotsPlugin {
+            test: (cli.test.as_deref() == Some("jackspot")).then(|| cli.screenshot.clone()),
+        })
+        .add_plugins(bodyshop::BodyShopPlugin {
+            test: (cli.test.as_deref() == Some("bodyshop")).then(|| cli.screenshot.clone()),
+        })
         .add_plugins(race::RacePlugin { setup: race.map(Arc::new) })
         .add_plugins(cutscene::CutscenePlugin { setup: cutscenes })
         .add_plugins(traffic::TrafficPlugin {
@@ -1000,7 +1029,7 @@ fn receive_assets(
     mut garage: ResMut<garage::Garage>,
     mut opponents: ResMut<ai::Opponents>,
     mut surfaces: ResMut<props::WorldSurfaces>,
-    mut traffic_models: Option<ResMut<traffic::TrafficModels>>,
+    (mut traffic_models, mut parked_models): (Option<ResMut<traffic::TrafficModels>>, ResMut<jackspots::ParkedModels>),
     mut residency: ResMut<groundcover::GroundcoverResidency>,
     mut streamed: ResMut<frontend::Residency>,
 ) {
@@ -1133,7 +1162,10 @@ fn receive_assets(
                 }
             }
             Msg::TrafficCar(spec) => {
-                if let Some(t) = traffic_models.as_mut() {
+                // A jack spot's parked car (`jackspots.rs`) or a traffic model.
+                if spec.vehicle >= jackspots::MODEL_KEY_BASE {
+                    parked_models.arrived(&spec, &loaded.models);
+                } else if let Some(t) = traffic_models.as_mut() {
                     t.arrived(&spec, &loaded.models);
                 }
             }

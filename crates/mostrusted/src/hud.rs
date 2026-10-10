@@ -30,8 +30,9 @@ use crate::ui_quads::{AdditiveQuadMaterial, PoolNode, QuadNode, QuadPool, show_q
 /// Layouts shown while driving in free roam (UniqueIds in `FREE_ROAM_HUD`): the first `Nitrous` widget's
 /// speedometer + nitrous gauge (1670359) and odometer (1806698), and `AdditionalHUD`'s minimap frame
 /// (1206246) and road / district name plates (1990196). Pursuit and EasyDrive layouts need game modes we
-/// don't have yet.
-pub const FREE_ROAM_LAYOUTS: [u32; 4] = [1_206_246, 1_990_196, 1_670_359, 1_806_698];
+/// don't have yet. 604307 is `EngineOffHud`'s prompt bar (`{Mode.PromptString}`, e.g. the jack spots' "PRESS
+/// … TO DRIVE CAR"), drawn while [`HudState::prompt`] is set.
+pub const FREE_ROAM_LAYOUTS: [u32; 5] = [1_206_246, 1_990_196, 1_670_359, 1_806_698, 604_307];
 
 /// The offline race HUD screen: the HSM's "Race HUD" state ("Activate Race HUD Styles Widget Group") names
 /// 604152 / 371726; this bundle is the screen whose widgets bind `DistanceToFinishManager`, `Event.Data.Laps`
@@ -110,6 +111,9 @@ pub struct HudState {
     pub using_nitrous: bool,
     /// Seconds the results sequence has played (the player finished and no sequence hides the HUD).
     pub results_clock: Option<f32>,
+    /// `Mode.PromptString` (game-mode manager +0x2c70 with its flag +0x2ca7): the prompt bar's text, set each
+    /// frame by whoever prompts (`jackspots.rs`); `None` hides the bar.
+    pub prompt: Option<String>,
 }
 
 /// What a layout of the HUD scene belongs to.
@@ -641,6 +645,8 @@ fn lookup(
             (0.5 + 0.5 * (t / period.max(0.001) * std::f64::consts::TAU).sin()).into()
         }
         "Players.LocalPlayer.GetPlayerDirection" => (player_direction(xf?) as f64).into(),
+        // An empty text is false: the bar's elements are visible on this binding.
+        "Mode.PromptString" => state.prompt.clone().unwrap_or_default().into(),
         "Players.LocalPlayer.IsInChase"
         | "Players.LocalPlayer.IsInCooldown"
         | "Players.LocalPlayer.IsInChaseOrCooldown"

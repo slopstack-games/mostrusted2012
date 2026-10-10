@@ -97,6 +97,9 @@ pub struct Garage {
     /// Paint swatches (linear diffuse colours) per bundle, read on a helper thread.
     paints: HashMap<String, Vec<[f32; 3]>>,
     paint_job: Option<(String, Job<Vec<[f32; 3]>>)>,
+    /// Where the next requested car is put down (position at road level, yaw), at rest, instead of in place
+    /// of the current car: a jack-spot swap puts the player's car on the parked car's pose (`jackspots.rs`).
+    pub place_at: Option<(Vec3, f32)>,
 }
 
 impl Default for Garage {
@@ -115,6 +118,7 @@ impl Default for Garage {
             arrived: None,
             paints: HashMap::new(),
             paint_job: None,
+            place_at: None,
         }
     }
 }
@@ -367,7 +371,10 @@ fn place_arrived_car(
             (spawn, heading, game.start_probe, Vec3::ZERO)
         }
         Some(name) => {
-            if let Some((_, t, v)) = cars.iter().next() {
+            if let Some((at, heading)) = garage.place_at.take() {
+                garage.set_status(format!("{name} placed at {at:.1}"), now);
+                (at, heading, 1.5, Vec3::ZERO)
+            } else if let Some((_, t, v)) = cars.iter().next() {
                 let fwd = t.rotation * Vec3::Z;
                 garage.set_status(format!("{name} swapped in at {:.0} km/h", v.length() * 3.6), now);
                 // The car's origin is at road level: a short probe finds the road it is on.
