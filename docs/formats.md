@@ -83,6 +83,9 @@ InstanceList ──> Model ──(LOD state)──> Renderable ──(per mesh)�
   matrix's translation is the light's position and its z axis the beam direction. Compound and world objects
   carry `mLocators` at +0x10 (count, ids, `{n, ptr, 0}`; a locator is a quaternion and a position in object
   space), where their `WCVfxBehaviour` lights and coronas sit (street lamps).
+- **Model (0x51) +0x10**: a pointer to a sampler-override block laid out like an `InstanceList` instance's
+  (+0x10 there): it binds `AOMapTextureSampler` and `LightMapTextureSampler` (the engine's global samplers)
+  for every mesh of the model (`mw_formats::Model::overrides`).
 - **PropObject (0x217)**: model imports at 0x04 and 0x08 (same model in practice). **CompoundObject (0x215)**:
   model imports at 0x04 (high detail, skinned to the skeleton at 0x08: one bone per part), 0x24 (lower-poly
   variant, same bbox) and sometimes 0x28; behaviours at 0x0C (count at 0x01; 0x14-byte entries: GeneSys import

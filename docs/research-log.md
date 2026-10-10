@@ -10,6 +10,32 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-10 (later): night lighting settled from the decrypted image
+With `opencode_extract/rest/NFS13_dump.exe` (capstone scans for struct displacements and call sites; scratch
+scripts under `target/night/`) the open items of the entry below resolved (decomp.md "World lights" has the
+rules and addresses):
+- **Per-hour switch**: day = 8 h < t < 20 h (`SunMoonPath`'s two hours, not `DayNightTransition`'s 8.5 / 20);
+  night level = hours to the nearer boundary / `LightTransitionDuration`, clamped (`FUN_008a8480`); a light's
+  factor from `OnDuringDay` / `OnDuringNight` (`FUN_0089b400`), staggered per owner for object lights.
+  `OnDuringTwilight` is not read by that function. The earlier model ramp (lights off 08:30 to 09:30) was
+  wrong: they go off 07:00 to 08:00.
+- **Slot 0x11** = (night level, …) (`FUN_008c2080`, through `FUN_00a621a0`): the modelled night level for lit
+  windows was right in kind and now uses the traced value.
+- **`LightMapTextureSampler`** is bound by the **Model** (+0x10 override block, missed by the parser; also by
+  instance overrides): 2,557 world models name one, 117 distinct textures, the default `…0957a7` a 16×16 black
+  one, the others baked warm lamp light on facades (128², BC1 / RGBA8). The same block binds
+  `AOMapTextureSampler` (2,441 models, 422 textures), so many models had no AO map in the port until now.
+- **`FUN_008df590`** = sort by distance, keep the nearest (sizes not read); **`FUN_00ede840`** = ceil (the cone
+  edge was rounded down before; now up).
+- **Specular power** is 2^(11.0001 − 11 roughness): confirmed in the listing (`exp` after the `mad`, and the
+  power itself applied as `exp(log(N·H) × power)`, both base 2 in DXBC). Fixed for the key light and the lights.
+- **Flash patterns** decoded (`FUN_00547470`); the port draws those lights steady.
+- **Roads**: plain `DriveableSurface` adds albedo × COLOR.rgb² × 0.318 × night level (ported: the baked colour
+  rides in UV_1.xy + COLOR.z); the `_Lightmap` road variants add LightMap(uv1).rgb × `lightMapIntensity` ×
+  albedo with no night factor (ported).
+- Still open: the light lists' sizes; what the second hour pair (8.5 / 20) drives; `PlotPBR` lightmaps (same
+  kind of term, `lightMapIntensity`, sampler 13; not ported); line lights; coronas; the "SetLightsOn" trigger.
+
 ### 2026-10-10: night lighting: world lights, street lamps, lit windows
 Task: the original at dusk downtown has lit windows and lamps casting pools of light; ours had neither.
 - **Light definitions cracked** (`genesys-crack`, a lighting word list; every name sorts into its field's

@@ -148,9 +148,9 @@ Make a static frame look like the game.
       time-driven only, the keyframe wind does not reach it; needs a vertex shader for `Layered`). Water:
       scrolling wave normals, algae albedo, near-mirror reflection. Open: river
       floor (TEXCOORD2), foam, caustics.
-   7. `[~]` Lightmaps: the lightmap shaders read `LightMapTextureSampler` (TEXCOORD1) but neither the material
-      nor the instance overrides bind it; find the source. Lit windows and illuminated signs are drawn
-      (2026-10-10; the night level that scales them is a model decision). Open: the roads' baked vertex light.
+   7. `[~]` Lightmaps: `LightMapTextureSampler` (TEXCOORD1) is bound by the Model (+0x10) and by instance
+      overrides (found 2026-10-10); drawn for WorldPBR and the roads, not yet for PlotPBR. Lit windows and illuminated signs are drawn
+      (2026-10-10; scaled by the game's night level). The roads' baked vertex light is drawn.
    - Longer term: translate DXBC to WGSL automatically (DXBC → SPIR-V via dxil-spirv/vkd3d, then naga), as IW4L
      does for SM3, instead of hand-porting each family.
 5. `[~]` **Environment**: the timeline is GeneSys (`EnvironmentTimeline` / `EnvironmentKeyframe`,
@@ -175,7 +175,7 @@ Make a static frame look like the game.
    into `NFS13.exe` (`mwtool shader-asm --exe`, decomp.md "Post-processing and colour grade"), cube channel
    order fixed 2026-10-06. Not yet: the TintBlend weights (one cube, nearest keyframe, for now).
    Open: the game's cascade fit / split distances, shadow-only proxy casters (`WorldShadow_*`), the irradiance quadric / second
-   irradiance cube, cop / line lights and the per-hour light switch (point / cone / spot lights ported 2026-10-10), planar reflection
+   irradiance cube, cop / line lights (point / cone / spot lights and their per-hour switch ported 2026-10-10), planar reflection
    (`[~]` opt-in mirrored camera for wet roads; not yet for `WorldPBR_Horizontal_PlanarReflection`),
    bloom and the composite tint in `GBufferComposite` (`[~]` the vignette A·v + D is ported, 2026-10-06; bloom
    ported 2026-10-07 with untraced level sizes, `MW_NO_BLOOM=1`), motion blur, `PostAA`.

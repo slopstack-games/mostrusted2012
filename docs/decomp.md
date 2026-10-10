@@ -1395,18 +1395,47 @@ light definition plus a `LocatorGroup`, resolved in the object's `mLocators` (fo
 also divides the current intensity by the definition's `Intensity` and passes the ratio with the record's
 +0x48 handle to `FUN_00497200` (the light's corona, when it has one).
 
-**Open: what switches a light by hour.** The data has it (`OnDuringDay` / `OnDuringNight` / `OnDuringTwilight`
-/ `OnDuringRain` / `OnDuringWet` on every definition; `EnvironmentSettings.DayNightTransition` with
-`LightTransitionDuration` 1, `LightTransitionOffset` 0, two unnamed hours 8.5 and 20,
-`ShadowTransitionDuration` 1, `ShadowTransitionOffset` 0), but the code that writes a record's current
-intensity (+0x14) was not found: the records are reset in `FUN_00554b50`, read in `FUN_0054ade0`, and nothing
-in the dump stores to +0x14 through the 0x7b8a0 array with a literal offset; no function reads
-`EnvironmentSettings` +0x170…+0x184 (the settings are probably copied into the environment manager first). The
-same holds for `DynamicLighting_GlobalLightMapIntensities` (global constant slot 0x11, registered in
-`FUN_008c34b0`): no `FUN_00a5d660(0x11)` or `FUN_004ad9f0(0x11, …)` call exists, so its writer goes through a
-variable slot. The port's ramp is a model decision (`mw_assets::lights::DayNightTransition::phase`). A live
-read of slot 0x11 and of a lamp's record at a few hours would settle both. `FlashPattern` evaluation
-(`Type` 1 / 2, `Duration`, `Frequency`, `Offset`) is not traced either.
+**What switches a light by hour** (traced 2026-10-10 in the decrypted image; addresses as in the dump).
+- *Environment state* (`FUN_008a8480`, state E = environment manager +0x1b8c0; t = time of day in seconds,
+  `EnvironmentSettings` S): with A = S+0x124 and B = S+0x128 (`SunMoonPath.a5caac0f` = 8 and `644383ee` = 20,
+  × 3600), **E+0x76 "day" = A < t < B**. The distance to a boundary is the smaller of frac((X − t) / 86400)
+  and frac((t − X) / 86400), × 24 (`.rdata` 0x0100e75c); d = the smaller of the two boundaries' distances.
+  **E+0x7c "night level" = 0 by day, else clamp((d − `LightTransitionOffset`) / max(`LightTransitionDuration`,
+  1e-4), 0, 1)** (S+0x174, S+0x170), so it ramps up from 20:00 to 21:00 and down from 07:00 to 08:00. E+0x84
+  is the same with the Shadow… pair; E+0x74 = night and level 1, E+0x75 = night and level < 1, E+0x79 = t <
+  14400 or t > 79200 (04:00, 22:00). The function then runs `DayNightTransition`'s other two hours (S+0x178 =
+  8.5, S+0x17c = 20) through the same arithmetic (what that stores was not followed). E+0x77 / E+0x78 (rain,
+  wet) come from weather bits at manager +0x1b61c (`FUN_00893c80`).
+- *Per light* (`FUN_0055ae50`, the world update, loops the 0x460 light records and calls `FUN_0054d980`):
+  record +0x14 = base × `FUN_0089b400`(E, flags, id). The base is the definition's `Intensity`, or
+  `FUN_00547470`(Intensity, FlashPattern) when `FlashPattern.Type` ≠ 0 (record flag 0x20). The flags are
+  record +0x19, filled in `FUN_00548eb0` from the definition: 1 = `OnDuringNight`, 2 = `OnDuringTwilight`, 4 =
+  `OnDuringDay`, 8 = `OnDuringRain`, 0x10 = `OnDuringWet`; plus 0x20 when the record's flag 0x10 is clear and
+  4 when its flag 8 is set. `FUN_0089b400` returns 1 if (day and flag 4) or (rain and flag 8) or (wet and
+  flag 0x10), and 1 if flags 1 and 4 are both set; otherwise x = the night level, or, without flag 0x20,
+  clamp((level − r / 92) × 92, 0, 1) with r = (id × 119) mod 91 (id = record +0x1a); the result is 1 − x with
+  flag 4, else x. The twilight bit is never tested there. Record flag 0x10 and the id are set only for
+  lights that objects carry (`FUN_005328c0`: the id is the owner's 16-bit handle), so street lamps come on
+  one after another through the transition and `LightInstanceList` lights fade with the level. A record
+  whose intensity rises above 0 is activated (`FUN_0054be40`), one that falls to 0 is removed.
+- *Flash patterns* (`FUN_00547470`): t = game clock + `Offset`, period = `Duration` + `Frequency`; phase
+  p = t mod period − `Frequency`. Type 1: p < 0 full, else level = max(|p / Duration − 0.5| × 2, floor);
+  type 2: p < 0 full, else a random level (LCG table at 0x0110bf80) of at least the floor; type 3: p < 0 the
+  floor, else full; output = (I − floor) × level + floor with floor = `3ac4f0ce`.
+- *`DynamicLighting_GlobalLightMapIntensities`* (slot 0x11) is written in `FUN_008c2080` through the second
+  constant accessor `FUN_00a621a0(0x1191030, slot)`: (level, level or 1 while it rains, level, 0) with level =
+  E+0x7c. The same code writes zero vectors to `DynamicLighting_LightMapChannels0123_Red/Green/Blue` (0x12 to
+  0x14, the 4567 set is never written) and (1, 1, 1, 1) to `DynamicLighting_Illuminance` (0x10).
+- *Light lists* (`FUN_008dfa00` and siblings): `FUN_008df590` is an introsort of the 0x40-byte entries
+  (depth 2·log2(n) − 2, insertion sort below 29); when a list reaches its capacity it is sorted and its count
+  cut to the list's keep size, so the nearest lights survive. Both sizes are set at run time (not read).
+- *Cone table index*: `FUN_00ede840` is the CRT `ceil` (truncate, add 1 when positive with a fraction), so a
+  cone uses the next volume up: index = ceil(angle / 2), at most 44.
+- *Lightmap and AO map samplers*: `LightMapTextureSampler` and `AOMapTextureSampler` are the engine's global
+  sampler ids 0x1a and 0x1b (`FUN_008c34b0`, registered through `FUN_00a5def0`; `puddleMapSampler` is 0xb). No
+  code names those ids with a literal; the textures come from data: a `Model` resource's block at +0x10 (the
+  layout of an `InstanceList` instance's overrides: names + texture and sampler-state imports) and the
+  instances' own override blocks.
 
 ## Crashes (2026-10-06)
 
