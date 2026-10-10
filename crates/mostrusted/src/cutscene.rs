@@ -237,6 +237,7 @@ fn start_cutscenes(
     race: Option<ResMut<RaceState>>,
     virtual_time: Res<Time<Virtual>>,
     player: Query<(Entity, Option<&crate::race::RacerProgress>), (With<Car>, With<Player>)>,
+    prewarm: Option<Res<crate::prewarm::Prewarm>>,
 ) {
     let Some(mut race) = race else { return };
     // During the race the flag says an outro is still to come (`--test race` waits for it).
@@ -273,7 +274,13 @@ fn start_cutscenes(
         }
         return;
     }
-    if state.intro_started || race.phase != RacePhase::Waiting || !loaded.done || race.hold {
+    // The pipeline pre-warm (`prewarm.rs`) runs before the intro, while the world is still the loading view.
+    if state.intro_started
+        || race.phase != RacePhase::Waiting
+        || !loaded.done
+        || race.hold
+        || prewarm.is_some_and(|p| p.pending())
+    {
         return;
     }
     state.intro_started = true;

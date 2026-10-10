@@ -42,6 +42,7 @@ mod nitrous;
 mod paint_wear;
 mod particles;
 mod pause;
+mod prewarm;
 mod props;
 mod race;
 mod reflection;
@@ -789,6 +790,7 @@ fn main() -> anyhow::Result<()> {
         && matches!(request, Request::World { .. } | Request::Drive { world: true, .. });
     app.add_plugins(weather::WeatherPlugin { hud: menu_enabled })
         .add_plugins(shadow_cull::ShadowCullPlugin)
+        .add_plugins(prewarm::PrewarmPlugin)
         .add_plugins(reflection::PlanarReflectionPlugin { enabled: reflection })
         .add_plugins(FreeCameraPlugin)
         .add_plugins(MaterialPlugin::<GameMaterial>::default())
