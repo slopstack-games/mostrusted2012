@@ -125,10 +125,11 @@ MW_NO_VIGNETTE=1 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,172
 ./target/release/mwtool paint-map 010000000002823d --png <scratch>/timelines.png --at=-1158,1700   # WorldPaintMap + zone outlines
 # Handling tests on a flat track (4x real time), prints TEST RESULT lines and exits
 ./target/release/mostrusted --drive 911 --test accel     # or brake, corner (skidpad g), handbrake, drift, engine,
-#   nitrous, landing, climb, jitter (MW_SUSP_TRACE=<file> logs the suspension every tick)
+#   nitrous, landing, climb, jitter (MW_SUSP_TRACE=<file> logs the suspension every tick,
+#   MW_WHEEL_TRACE=<file> the point-mass wheels: compression, velocity, contact impulse, flags)
 ./target/release/mostrusted --drive 911 --test smash --smash-speed 60 --screenshot <scratch>/smash.png   # props: cone, lamp, fence, wall
 #   --smash-set compounds: lamps etc. breaking into parts. Props collide in the world by default (--no-prop-physics)
-./target/release/mostrusted --drive 911 --test kerb        # kerb strike (MW_TEST_KERB_H / _DEPTH / _ANGLE, MW_TEST_KMH)
+./target/release/mostrusted --drive 911 --test kerb        # kerb strike (MW_TEST_KERB_H / _DEPTH / _ANGLE / _UP, MW_TEST_KMH)
 ./target/release/mostrusted --drive 911 --test-track --track-surface 4 --test accel   # the flat track as any surface (4 = grass)
 ./target/release/mwtool props -v                    # physics of every prop / compound / dynamic object
 ./target/release/mwtool surfaces                    # surfaces: grip, rolling, drag, dirt build-up, triangle counts

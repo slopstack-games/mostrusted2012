@@ -17,6 +17,7 @@ use bevy::prelude::*;
 use mw_assets::camera::VehicleCameras;
 use mw_assets::handling::{LateralCurve, LongCurve, SlipBlend, Steering, SurfaceLink, TyreAxle, VehicleHandling};
 use mw_handling::surface::{self, SurfaceGrip};
+use mw_handling::suspension;
 
 use crate::chassis::ChassisParams;
 use crate::drift::{self, DriftInput, DriftParams, DriftState};
@@ -328,13 +329,26 @@ struct WheelState {
     /// Slip ratio after the tyre pass and slip angle (degrees) at the last tick, for telemetry (`--replay`) and
     /// the slide drag.
     slip: (f32, f32),
-    /// Current suspension compression (m), and its rate (m/s, positive = compressing).
+    /// Current suspension compression (m): where the wheel's point mass stands on its strut, `sag` at rest (the
+    /// wheel at its spec position); and its rate (m/s, positive = compressing).
     compression: f32,
     compression_rate: f32,
-    /// How far the ground reached past full compression on the last tick (m): the wheel inside the ground.
+    /// How far the ground reached past full compression on the last tick (m): the ground inside a tyre centred at
+    /// the strut's end.
     overtravel: f32,
     /// The strut stop's slack (m): the tyre's sidewall, wheel radius − rim radius (constraint +0x470).
     stop_slack: f32,
+    /// The wheel as the game's solver has it (`mw_handling::suspension`): a point mass (the wheel body's data mass,
+    /// wheel record +0x50) on the strut. Its centre in the world after the last tick's integration (`None` until the
+    /// first tick: at rest), its velocity along the car's up axis (m/s), whether its ground contact was
+    /// activated by the last contact pass (`FUN_009c5a90` / `FUN_009c52d0`), the strut stop's share from that pass
+    /// (constraint +0x474 while +0x4ae is set) and the ground's normal impulse on it this tick (N s).
+    mass: f32,
+    world: Option<Vec3>,
+    vel: f32,
+    touching: bool,
+    stop_share: Option<f32>,
+    normal_impulse: f32,
     spin: f32,
     pivot: Entity,
     spinner: Entity,
@@ -632,10 +646,16 @@ pub fn build_car(commands: &mut Commands, b: &CarBuild) -> Entity {
             inertia,
             corner_mass,
             slip: (0.0, 0.0),
-            compression: 0.0,
+            compression: sag,
             compression_rate: 0.0,
             overtravel: 0.0,
             stop_slack,
+            mass: wheel_mass,
+            world: None,
+            vel: b.velocity.y,
+            touching: false,
+            stop_share: None,
+            normal_impulse: 0.0,
             spin: 0.0,
             pivot,
             spinner,
@@ -1076,26 +1096,37 @@ pub(crate) fn car_physics(
         let mut wheels_down = 0;
         let mut rear_slip = (0.0, 0);
         let mut ground_normal = Vec3::ZERO;
-        // The wheels' strut stops: (strut end, ground normal, signed overtravel, slack).
-        let mut stops: Vec<(Vec3, Vec3, f32, f32)> = Vec::new();
-        for (wheel, mut brake_left) in car.wheels.iter_mut().zip(brake_budget) {
-            // The mount sits `travel - sag` above the rest position, so the wheel is at its spec position
-            // (in its arch) under the static load.
-            let mount = pos + rot * (wheel.centre + Vec3::Y * (wheel.travel - wheel.sag));
-            let reach = wheel.travel + wheel.radius;
-            let ray_dir = Dir3::new(-up).unwrap_or(Dir3::NEG_Y);
-            // The ray starts one wheel radius above the mount so that ground which has come up past the strut
-            // still registers (from inside a solid it returns a zero normal, through a trimesh's back face
-            // nothing). Stopgap, handling.md "Model decisions": the game's wheel collides as a body.
+        // --- The wheels' point masses and the ground under them (decomp.md "Suspension, wheels, aerodynamics") -----
+        // Each wheel is a point mass on its strut (the game's wheel record: centre, velocity, the wheel body's data
+        // mass) that the island step integrates like a body; ours moves along the car's up axis only (handling.md
+        // "Model decisions"). Where the last tick's integration left it gives the compression, and a ray from above
+        // the strut's end finds the ground under it: this tick's contact record.
+        let ray_dir = Dir3::new(-up).unwrap_or(Dir3::NEG_Y);
+        let mut grounds: Vec<Option<Ground>> = Vec::with_capacity(car.wheels.len());
+        for wheel in car.wheels.iter_mut() {
+            let rest = pos + rot * wheel.centre;
+            // The strut's end sits `travel - sag` above the rest position, so at rest (compression = sag) the wheel
+            // is at its spec position (in its arch).
+            let mount = rest + up * (wheel.travel - wheel.sag);
+            let y = wheel.world.map_or(f32::NAN, |w| (w - rest).dot(up));
+            // A wheel far from its strut (the first tick, a teleport or reset) starts again at rest, moving with the
+            // body.
+            if !y.is_finite() || y.abs() > WHEEL_RESYNC {
+                wheel.vel = forces.velocity_at_point(rest).dot(up);
+                wheel.touching = false;
+                wheel.stop_share = None;
+                wheel.compression = wheel.sag;
+            } else {
+                wheel.compression = y + wheel.sag;
+            }
+            wheel.overtravel = 0.0;
+            let reach = wheel.travel + wheel.radius + WHEEL_DROOP_REACH;
+            // The ray starts one wheel radius above the strut's end so that ground which has come up past it still
+            // registers (from inside a solid it returns a zero normal, through a trimesh's back face nothing).
+            // Stopgap, handling.md "Model decisions": the game's wheel collides as a cylinder.
             let lift = wheel.radius;
             let Some(mut hit) = spatial.cast_ray(mount + up * lift, ray_dir, reach + lift, true, &filter) else {
-                wheel.compression_rate = 0.0;
-                wheel.compression = 0.0;
-                wheel.overtravel = 0.0;
-                wheel.contact = None;
-                let step = (brake_left / wheel.inertia).min(wheel.omega.abs());
-                wheel.omega -= step * wheel.omega.signum();
-                wheel.spin += wheel.omega * dt;
+                grounds.push(None);
                 continue;
             };
             hit.distance -= lift;
@@ -1117,28 +1148,86 @@ pub(crate) fn car_physics(
                     hit.normal = tilted;
                 }
             }
-            // The game's wheel stays on the ground (the constraint's contact pass pushes the wheel record out of
-            // it, `FUN_009c5a90`) and its spring runs from the chassis anchor to the wheel centre
-            // (`FUN_0092f510`): no limit at the strut's end was found, so past it the spring keeps compressing
-            // while the stop below takes the rest.
-            let compression = (reach - hit.distance).max(0.0);
-            wheel.compression = compression;
-            wheel.overtravel = (reach - hit.distance - wheel.travel).max(0.0);
-            stops.push((mount, hit.normal, reach - hit.distance - wheel.travel, wheel.stop_slack));
+            wheel.overtravel = (wheel.radius - hit.distance).max(0.0);
+            grounds.push(Some(Ground {
+                distance: hit.distance,
+                normal: hit.normal,
+                point: mount - up * hit.distance,
+                surface,
+            }));
+        }
+
+        // --- The island's sub-steps (`FUN_0093f200`: world +0x464 = 2, at dt / 2) ------------------------------------
+        // Each runs the wheel contacts' impulse pass (`FUN_009c2670`: a touching wheel's approach to the ground is
+        // stopped; the strut stop that the last contact pass set takes its share of the chassis's closing speed at
+        // the strut's end), then the force elements (`FUN_00932f90`): every damper, then every spring, then the
+        // anti-roll bars; then gravity (`FUN_009282d0`: the wheels' tiny one here, the chassis's is avian's).
+        let h = dt / SOLVER_SUBSTEPS as f32;
+        let mut stop_total = 0.0;
+        let mut ch =
+            Chassis { v: forces.linear_velocity(), w: forces.angular_velocity(), com, mass: p.mass, inv_inertia };
+        for wheel in car.wheels.iter_mut() {
+            wheel.normal_impulse = 0.0;
+        }
+        for _ in 0..SOLVER_SUBSTEPS {
+            for (wheel, ground) in car.wheels.iter_mut().zip(&grounds) {
+                let Some(g) = ground else { continue };
+                if wheel.touching {
+                    let centre = wheel.world_centre(pos, rot);
+                    let vn = ch.wheel_velocity(centre, up, wheel.vel).dot(g.normal);
+                    let dvn = suspension::contact_impulse(vn);
+                    wheel.normal_impulse += wheel_ground_impulse(wheel, &mut ch, centre, g.normal, up, dvn);
+                }
+                if let Some(share) = wheel.stop_share {
+                    let mount = wheel.strut_end(pos, rot);
+                    let vn = ch.velocity_at(mount).dot(g.normal);
+                    let impulse = share * ch.effective_mass(mount, g.normal) * (-vn).max(0.0);
+                    ch.push(mount, g.normal * impulse);
+                    stop_total += impulse;
+                }
+            }
+            // The dampers (`FUN_0092f160`) act on the chassis alone (the wheel's share is masked by its record's
+            // +0x0c, which is 1), the springs (`FUN_0092f510`) on both; both along the strut, from the anchor on the
+            // chassis to the wheel centre (here the car's −up axis), the chassis taking −λ n at the anchor.
+            for wheel in car.wheels.iter() {
+                let anchor = wheel.strut_end(pos, rot);
+                let v_rel = ch.velocity_at(anchor).dot(up) - wheel.vel;
+                let coef = if v_rel > 0.0 { wheel.rebound } else { wheel.damper };
+                let lambda = suspension::damper_impulse(v_rel, coef, ch.inv_mass_at(anchor, up), h);
+                ch.push(anchor, up * lambda);
+            }
+            for wheel in car.wheels.iter_mut() {
+                let anchor = wheel.strut_end(pos, rot);
+                let v_rel = ch.velocity_at(anchor).dot(up) - wheel.vel;
+                let inv_mass = ch.inv_mass_at(anchor, up) + 1.0 / wheel.mass;
+                let lambda = suspension::spring_impulse(v_rel, -wheel.compression, wheel.spring, inv_mass, h, 1.0 / dt);
+                ch.push(anchor, up * lambda);
+                wheel.vel -= lambda / wheel.mass;
+            }
+            // The anti-roll bars (`FUN_0092ee70`), after the springs in the same element pass.
+            anti_roll(&car.wheels, p, (pos, rot), &mut ch, dt, h);
+            for wheel in car.wheels.iter_mut() {
+                wheel.vel += suspension::wheel_gravity(h) * up.y;
+            }
+        }
+        *forces.linear_velocity_mut() = ch.v;
+        *forces.angular_velocity_mut() = ch.w;
+
+        for ((wheel, mut brake_left), ground) in car.wheels.iter_mut().zip(brake_budget).zip(&grounds) {
+            // The tyre acts where the wheel's contact carries a normal impulse (`FUN_009c75b0` skips it otherwise).
+            let Some(g) = ground.as_ref().filter(|_| wheel.touching && wheel.normal_impulse > 0.0) else {
+                wheel.contact = None;
+                let step = (brake_left / wheel.inertia).min(wheel.omega.abs());
+                wheel.omega -= step * wheel.omega.signum();
+                wheel.spin += wheel.omega * dt;
+                continue;
+            };
+            let surface = &g.surface;
             grounded = true;
             wheels_down += 1;
-            ground_normal += hit.normal;
-            // Damp with the mount's velocity along the ground normal: using the
-            // car's up axis couples forward speed into the damper whenever the
-            // body pitches, and the car porpoises at speed.
-            let compression_speed = -forces.velocity_at_point(mount).dot(hit.normal);
-            wheel.compression_rate = compression_speed;
-            let max_load = wheel.corner_mass * 9.81 * 4.0;
-            let damper = if compression_speed >= 0.0 { wheel.damper } else { wheel.rebound };
-            let load = (wheel.spring * compression + damper * compression_speed).clamp(0.0, max_load);
-            let contact = mount - up * hit.distance;
-            let normal = hit.normal;
-            forces.apply_force_at_point(normal * load, contact);
+            ground_normal += g.normal;
+            let contact = g.point;
+            let normal = g.normal;
 
             // Tyre frame on the ground plane.
             let yaw = if wheel.front { Quat::from_axis_angle(up, steer) } else { Quat::IDENTITY };
@@ -1248,7 +1337,7 @@ pub(crate) fn car_physics(
             tyre_yaw[axle] += torque.dot(up);
             if tyre_debug() && (time.elapsed_secs() * 2.0).fract() < dt * 2.0 {
                 info!(
-                    "tyre front={} α {slip_deg:.1}° κ {kappa:.2} μ {mu_long:.2}/{mu_lat:.2} load {load:.0} N {n_grip:.0} long {f_long:.0} side {f_side:.0} resist {f_resist:.0} surface {} grip {:.3?} (own {:.3?}) steer {:.1}°",
+                    "tyre front={} α {slip_deg:.1}° κ {kappa:.2} μ {mu_long:.2}/{mu_lat:.2} N {n_grip:.0} long {f_long:.0} side {f_side:.0} resist {f_resist:.0} surface {} grip {:.3?} (own {:.3?}) steer {:.1}°",
                     wheel.front,
                     surface.uid,
                     grip,
@@ -1369,20 +1458,6 @@ pub(crate) fn car_physics(
         }
         // The game's per-axis drag (with its over-speed ramp) and lift (downforce). Rolling resistance is per
         // wheel, from the surface (above).
-        car.stop_impulse = 0.0;
-        if stops.iter().any(|s| s.2 > -0.5) {
-            let (mut v, mut w) = (forces.linear_velocity(), forces.angular_velocity());
-            car.stop_impulse = strut_stops(&stops, com, p.mass, &inv_inertia, dt, (&mut v, &mut w));
-            *forces.linear_velocity_mut() = v;
-            *forces.angular_velocity_mut() = w;
-        }
-        // The anti-roll bars, after the strut stops as in the game's sub-step (`FUN_0093f200`).
-        {
-            let (mut v, mut w) = (forces.linear_velocity(), forces.angular_velocity());
-            anti_roll(&car.wheels, p, (pos, rot, com), &inv_inertia, dt, (&mut v, &mut w));
-            *forces.linear_velocity_mut() = v;
-            *forces.angular_velocity_mut() = w;
-        }
         let drag = p.chassis.drag_force(rot, velocity);
         forces.apply_force(drag);
         let (lift, lift_at) = p.chassis.lift(rot, velocity, p.centre_of_mass);
@@ -1397,11 +1472,63 @@ pub(crate) fn car_physics(
                 *forces.angular_velocity_mut() = rot * (w * k);
             }
         }
+        // --- The contact passes and the integration that open the game's next tick ------------------------------
+        // The game's tick runs two contact passes (`FUN_00932190` → `FUN_009c5a90`), integrates the positions
+        // (`FUN_009324f0`), then the sub-steps and the tyres; ours runs from its sub-steps, so these come last, before
+        // avian integrates the chassis. Per pass and wheel: the penetration of the ground into the tyre predicted for
+        // the end of the tick; where it is not negative the contact is activated and the wheel's velocity along the
+        // normal rises by it / dt, and the strut stop moves the chassis by its excess past the sidewall.
+        if wheels_down < car.wheels.len() {
+            // The in-air gravity pulls the wheels too (decomp.md "Suspension, wheels, aerodynamics", airborne).
+            for wheel in car.wheels.iter_mut() {
+                wheel.vel -= (p.chassis.in_air_gravity - 1.0) * 9.81 * dt * up.y;
+            }
+        }
+        let mut ch =
+            Chassis { v: forces.linear_velocity(), w: forces.angular_velocity(), com, mass: p.mass, inv_inertia };
+        for wheel in car.wheels.iter_mut() {
+            wheel.touching = false;
+        }
+        for _ in 0..STOP_CONTACT_PASSES {
+            for (wheel, ground) in car.wheels.iter_mut().zip(&grounds) {
+                // The stop's flag (+0x4ae) is cleared at the top of every call.
+                wheel.stop_share = None;
+                let Some(g) = ground else { continue };
+                let along = g.normal.dot(up).max(TYRE_NORMAL_MIN_UP);
+                // The gap between the tyre's bottom and the ground along the ray, as a depth along the normal.
+                let gap = g.distance - (wheel.travel - wheel.compression + wheel.radius);
+                let centre = wheel.world_centre(pos, rot);
+                let vn = ch.wheel_velocity(centre, up, wheel.vel).dot(g.normal);
+                let Some(dvn) = suspension::contact_correction(-gap * along - vn * dt, dt) else { continue };
+                wheel.touching = true;
+                wheel_ground_impulse(wheel, &mut ch, centre, g.normal, up, dvn);
+                // The strut stop (+0x4ac): the ground's penetration into a tyre centred at the strut's end.
+                let mount = wheel.strut_end(pos, rot);
+                let vn = ch.velocity_at(mount).dot(g.normal);
+                let over = wheel.radius - g.distance - vn * dt;
+                if let Some((excess, share)) = suspension::stop_excess(over, wheel.stop_slack) {
+                    wheel.stop_share = Some(share);
+                    let impulse = ch.effective_mass(mount, g.normal) * excess / dt;
+                    ch.push(mount, g.normal * impulse);
+                    stop_total += impulse;
+                }
+            }
+        }
+        // The wheels' integration (x += v dt; the chassis is avian's).
+        for wheel in car.wheels.iter_mut() {
+            let centre = wheel.world_centre(pos, rot);
+            wheel.compression_rate = wheel.vel - ch.velocity_at(centre).dot(up);
+            wheel.world = Some(centre + ch.wheel_velocity(centre, up, wheel.vel) * dt);
+        }
+        *forces.linear_velocity_mut() = ch.v;
+        *forces.angular_velocity_mut() = ch.w;
+        car.stop_impulse = stop_total;
         let driven_radius = car.wheels.iter().filter(|w| !w.front).map(|w| w.radius).next().unwrap_or(0.33);
         car.debug_forces = [drive_torque / driven_radius, tyre_long_total, drag.dot(forward) + resist_total];
         car.tyre_yaw = tyre_yaw;
         if player {
             trace_engine(time.elapsed_secs(), car, throttle, speed);
+            trace_wheels(time.elapsed_secs(), car);
         }
 
         // Fell out of the world: back to the spawn point.
@@ -1512,88 +1639,108 @@ fn limited_slip(wheels: &mut [WheelState], diff: &[f32; 2]) {
     }
 }
 
-/// The strut's end stop (`FUN_009c5a90` → `FUN_009c2670`, decomp.md "Suspension, wheels, aerodynamics"). Each
-/// stop is (strut end, ground normal, `over`, slack): the strut end is the wheel centre at full bump on the chassis
-/// (constraint +0x460), `over` how far the ground reaches past a tyre centred there (m, negative = travel left) and
-/// the slack the tyre's sidewall (+0x470). In each of the island's contact passes (`FUN_00932190`, world +0x460 = 2)
-/// the game predicts that penetration at the end of the tick, d = over − v_n dt with the chassis's velocity at the
-/// strut end, and where d > 0 moves the chassis there along the normal by e / dt through its effective mass, with
-/// e = max(d − min(d, slack, 0.1), 0.1 d): only a tenth of the penetration while the ground is within the sidewall,
-/// all of the excess once it reaches the rim. It keeps e / d (+0x474) and a flag (+0x4ae, cleared at the start of
-/// every pass). Each impulse sub-step (`FUN_0093f200`, 2) then stops the strut end closing on the ground, scaled by
-/// that share: the chassis gets share × m_eff × max(−v_n, 0) (the wheel takes the full contact impulse). Returns the
-/// total impulse on the chassis (N s).
-fn strut_stops(
-    stops: &[(Vec3, Vec3, f32, f32)],
+/// The ground under a wheel this tick (its contact record): the ray's distance from the strut's end (m), the
+/// ground normal, the ground point under the strut and the surface there.
+struct Ground {
+    distance: f32,
+    normal: Vec3,
+    point: Vec3,
+    surface: WheelSurface,
+}
+
+impl WheelState {
+    /// The strut's end on the chassis (the wheel centre at full bump), which is also where ours anchors the
+    /// spring-damper element (the game's anchor is higher up the same line: element +0x20, 0.353 m above rest on
+    /// the XKR; along the strut only the rest length minus that distance, the sag, matters).
+    fn strut_end(&self, pos: Vec3, rot: Quat) -> Vec3 {
+        pos + rot * (self.centre + Vec3::Y * (self.travel - self.sag))
+    }
+
+    /// The wheel's point mass in the world: `compression - sag` above its rest position along the car's up axis.
+    fn world_centre(&self, pos: Vec3, rot: Quat) -> Vec3 {
+        pos + rot * (self.centre + Vec3::Y * (self.compression - self.sag))
+    }
+}
+
+/// The chassis's velocity state while the island's passes change it with impulses (applied at once, as the
+/// game's `FUN_0097e440` + `FUN_00907840` do).
+struct Chassis {
+    v: Vec3,
+    w: Vec3,
     com: Vec3,
     mass: f32,
-    inv_inertia: &Mat3,
-    dt: f32,
-    (v, w): (&mut Vec3, &mut Vec3),
-) -> f32 {
-    let mut total = 0.0;
-    let mut share = vec![None; stops.len()];
-    let mut push = |v: &mut Vec3, w: &mut Vec3, point: Vec3, n: Vec3, impulse: f32| {
-        let arm = (point - com).cross(n);
-        *v += n * impulse / mass;
-        *w += *inv_inertia * (arm * impulse);
-        total += impulse;
-    };
-    let effective_mass = |point: Vec3, n: Vec3| {
-        let arm = (point - com).cross(n);
-        1.0 / (1.0 / mass + arm.dot(*inv_inertia * arm)).max(1e-6)
-    };
-    for _ in 0..STOP_CONTACT_PASSES {
-        for (&(point, n, over, slack), share) in stops.iter().zip(&mut share) {
-            *share = None;
-            let vn = (*v + w.cross(point - com)).dot(n);
-            let d = over - vn * dt;
-            if d <= 0.0 {
-                continue;
-            }
-            let excess = (d - d.min(slack).min(STOP_SLACK_MAX)).max(0.0).max(d * STOP_MIN_SHARE);
-            *share = Some((excess / d.max(f32::EPSILON)).clamp(0.0, 1.0));
-            push(v, w, point, n, effective_mass(point, n) * excess / dt);
-        }
-    }
-    for _ in 0..SOLVER_SUBSTEPS {
-        for (&(point, n, _, _), share) in stops.iter().zip(&share) {
-            let Some(share) = *share else { continue };
-            let vn = (*v + w.cross(point - com)).dot(n);
-            push(v, w, point, n, share * effective_mass(point, n) * (-vn).max(0.0));
-        }
-    }
-    total
+    inv_inertia: Mat3,
 }
+
+impl Chassis {
+    fn velocity_at(&self, point: Vec3) -> Vec3 {
+        self.v + self.w.cross(point - self.com)
+    }
+
+    /// A wheel record's velocity: the chassis's at its centre across the strut, its own along it.
+    fn wheel_velocity(&self, centre: Vec3, up: Vec3, along: f32) -> Vec3 {
+        self.velocity_at(centre).reject_from(up) + up * along
+    }
+
+    /// The inverse effective mass at a point along a direction (`FUN_009e8230`).
+    fn inv_mass_at(&self, point: Vec3, dir: Vec3) -> f32 {
+        let arm = (point - self.com).cross(dir);
+        1.0 / self.mass + arm.dot(self.inv_inertia * arm)
+    }
+
+    fn effective_mass(&self, point: Vec3, dir: Vec3) -> f32 {
+        1.0 / self.inv_mass_at(point, dir).max(1e-6)
+    }
+
+    fn push(&mut self, point: Vec3, impulse: Vec3) {
+        self.v += impulse / self.mass;
+        self.w += self.inv_inertia * (point - self.com).cross(impulse);
+    }
+}
+
+/// The ground raises a wheel's velocity along its normal by `dvn` (the contact pass's correction or the impulse
+/// pass's stop). Ours slides along the car's up axis only, so it takes the change along that axis, and the part of
+/// the ground's impulse across the strut goes into the chassis at the wheel centre (the strut joints' reaction,
+/// which keep the game's wheel in place on its strut; ours, handling.md "Model decisions"). Returns the ground's
+/// impulse (N s).
+fn wheel_ground_impulse(
+    wheel: &mut WheelState,
+    ch: &mut Chassis,
+    centre: Vec3,
+    normal: Vec3,
+    up: Vec3,
+    dvn: f32,
+) -> f32 {
+    let along = normal.dot(up).max(TYRE_NORMAL_MIN_UP);
+    let du = dvn / along;
+    wheel.vel += du;
+    let impulse = wheel.mass * du / along;
+    ch.push(centre, (normal - up * normal.dot(up)) * impulse);
+    impulse
+}
+
 /// Sub-steps of the game's island solve (`FUN_0093f200` loops world +0x464 = 2 times, set by the world's
-/// constructor `FUN_009330d0` and read live): each runs the strut stops' impulse pass (`FUN_009c2670`) and the
+/// constructor `FUN_009330d0` and read live): each runs the wheel contacts' impulse pass (`FUN_009c2670`) and the
 /// force elements (`FUN_00932f90`: dampers, springs, anti-roll bars) at dt / 2.
 const SOLVER_SUBSTEPS: usize = 2;
 /// The island's contact passes (`FUN_00932190` loops world +0x460 = 2 times; same constructor, read live): each
-/// runs the wheel constraints' contact pass `FUN_009c5a90`, where the strut stop moves the chassis.
+/// runs the wheel constraints' contact pass `FUN_009c5a90` (the wheel onto the ground, the strut stop).
 const STOP_CONTACT_PASSES: usize = 2;
-/// The stop's slack is at most 0.1 m and the chassis takes at least a tenth of the predicted penetration
-/// (`.bss` 0x01186bf0 and 0x01186b10, both 0.1 in all four lanes, read in the snapshots).
-const STOP_SLACK_MAX: f32 = 0.1;
-const STOP_MIN_SHARE: f32 = 0.1;
+/// A wheel further than this from its rest position (m) is put back there: the car was moved (ours).
+const WHEEL_RESYNC: f32 = 1.0;
+/// How far below the fully drooped wheel the ground ray still looks (m; ours): a contact record exists for ground
+/// the wheel can reach within a tick.
+const WHEEL_DROOP_REACH: f32 = 0.3;
 
-/// The anti-roll bars (`FUN_0092ee70`, reached through `FUN_00932f90` for the type-2 elements that
-/// `FUN_00933a60` builds; decomp.md "Suspension, wheels, aerodynamics"). Per axle: the two wheel centres in the
-/// body's frame give the axle line's roll against the chassis, θ = atan(Δy / Δx); the bar's force is
+/// The anti-roll bars, one sub-step of `h` (`FUN_0092ee70`, reached through `FUN_00932f90` for the type-2 elements
+/// that `FUN_00933a60` builds; decomp.md "Suspension, wheels, aerodynamics"). Per axle: the two wheel centres in
+/// the body's frame give the axle line's roll against the chassis, θ = atan(Δy / Δx); the bar's force is
 /// F = (k θ − c ω·forward) / Δx with the chassis's own roll rate (not relative to the axle), k = data × 60 and
 /// c = 2 ζ √(k_data I) (element +0x20 / +0x30). Each wheel's share is capped at |Δy| / (4 W dt²) with W the
-/// chassis's inverse effective mass along its up axis at the wheel (`FUN_009275b0`), then +F up at one wheel
-/// centre and −F at the other act on the chassis only (the wheel records' +0x0c is 1 in every read, which masks
-/// the wheels' share). Explicit, once per sub-step at dt / 2 with the roll rate updated in between; θ is taken
-/// once per tick (positions are integrated after the sub-steps). It acts whether the wheels touch or not.
-fn anti_roll(
-    wheels: &[WheelState],
-    p: &CarParams,
-    (pos, rot, com): (Vec3, Quat, Vec3),
-    inv_inertia: &Mat3,
-    dt: f32,
-    (v, w): (&mut Vec3, &mut Vec3),
-) {
+/// chassis's inverse effective mass along its up axis at the wheel (`FUN_009275b0`, the full tick's dt), then +F up
+/// at one wheel centre and −F at the other act on the chassis only (the wheel records' +0x0c is 1 in every read,
+/// which masks the wheels' share). θ is taken from the positions, which the sub-steps do not move.
+fn anti_roll(wheels: &[WheelState], p: &CarParams, (pos, rot): (Vec3, Quat), ch: &mut Chassis, dt: f32, h: f32) {
     let (up, forward) = (rot * Vec3::Y, rot * Vec3::Z);
     let centre = |wheel: &WheelState| wheel.centre + Vec3::Y * (wheel.compression - wheel.sag);
     for front in [true, false] {
@@ -1608,20 +1755,10 @@ fn anti_roll(
         let i = usize::from(!front);
         let k = p.chassis.anti_roll[i];
         let c = p.chassis.roll_damping[i] * p.inertia.z.max(0.0).sqrt();
-        // (world point, sign, cap) per wheel.
-        let ends = [(pos + rot * ca, 1.0), (pos + rot * cb, -1.0)].map(|(point, sign)| {
-            let arm = (point - com).cross(up);
-            let m = 1.0 / (1.0 / p.mass + arm.dot(*inv_inertia * arm)).max(1e-6);
-            (point, sign, dy.abs() * m / (4.0 * dt * dt))
-        });
-        let h = dt / SOLVER_SUBSTEPS as f32;
-        for _ in 0..SOLVER_SUBSTEPS {
-            let force = (k * theta - c * w.dot(forward)) / dx;
-            for &(point, sign, cap) in &ends {
-                let impulse = up * (sign * force.clamp(-cap, cap) * h);
-                *v += impulse / p.mass;
-                *w += *inv_inertia * (point - com).cross(impulse);
-            }
+        let force = (k * theta - c * ch.w.dot(forward)) / dx;
+        for (point, sign) in [(pos + rot * ca, 1.0), (pos + rot * cb, -1.0)] {
+            let cap = dy.abs() * ch.effective_mass(point, up) / (4.0 * dt * dt);
+            ch.push(point, up * (sign * force.clamp(-cap, cap) * h));
         }
     }
 }
@@ -1940,6 +2077,37 @@ fn trace_engine(t: f32, car: &Car, throttle: f32, speed: f32) {
     }
 }
 
+/// `MW_WHEEL_TRACE=<file>`: the player's wheel point masses every tick: time, speed (m/s), then per wheel the
+/// compression (m), its rate (m/s), the wheel's velocity along the car's up axis (m/s), the ground's normal impulse
+/// this tick (N s) and flags (t = contact activated, s = strut stop set, g = tyre acting).
+fn trace_wheels(t: f32, car: &Car) {
+    use std::io::Write;
+    static FILE: std::sync::OnceLock<Option<std::sync::Mutex<std::fs::File>>> = std::sync::OnceLock::new();
+    let file = FILE.get_or_init(|| {
+        let path = std::env::var_os("MW_WHEEL_TRACE")?;
+        std::fs::File::create(path).ok().map(std::sync::Mutex::new)
+    });
+    if let Some(f) = file {
+        let wheels: Vec<String> = car
+            .wheels
+            .iter()
+            .map(|w| {
+                format!(
+                    "{:.4} {:.3} {:.3} {:.1} {}{}{}",
+                    w.compression,
+                    w.compression_rate,
+                    w.vel,
+                    w.normal_impulse,
+                    if w.touching { "t" } else { "-" },
+                    if w.stop_share.is_some() { "s" } else { "-" },
+                    if w.contact.is_some() { "g" } else { "-" },
+                )
+            })
+            .collect();
+        _ = writeln!(f.lock().unwrap(), "{t:.4} {:.3} | {}", car.speed, wheels.join(" | "));
+    }
+}
+
 /// `MW_TYRE_DEBUG=1`: log each tyre's slip angle and forces twice a second.
 fn tyre_debug() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -2040,6 +2208,8 @@ pub enum TestKind {
     /// kerbs' faces, `mwtool surfaces --near 800,1688 --steps`) and `MW_TEST_KERB_DEPTH` deep (3 m) with vertical
     /// faces, its edge turned `MW_TEST_KERB_ANGLE` degrees (30) from square to the car's path: peak vertical
     /// speed, pitch / roll rates and swings, time with a wheel off the ground, strut-stop impulses.
+    /// `MW_TEST_KERB_UP` (lower than the slab) makes the near face that high, the road before it raised by the
+    /// difference: an island the car climbs onto and drops off (`ref/live1` at 66.4 s: 0.122 m up, 0.153 m down).
     Kerb,
     /// Exhaust pops and backfires (`exhaust.rs`): full throttle through the gears, a lift at high revs, nitrous;
     /// counts the backfires and pops.
@@ -2424,7 +2594,14 @@ pub fn test_obstacle(kind: TestKind) -> Option<(Vec<Vec3>, Vec<[u32; 3]>)> {
         }
         TestKind::Kerb => {
             let (h, depth) = (test_env("MW_TEST_KERB_H", KERB_HEIGHT), test_env("MW_TEST_KERB_DEPTH", 3.0));
-            &*Box::leak(Box::new([(KERB_Z, 0.0), (KERB_Z, h), (KERB_Z + depth, h), (KERB_Z + depth, 0.0)]))
+            // `MW_TEST_KERB_UP` lower than the slab: the near face is that high, on a plateau of the difference
+            // that starts 100 m before it (an island between roads of two levels).
+            let base = (h - test_env("MW_TEST_KERB_UP", h)).max(0.0);
+            let mut profile = vec![(KERB_Z, base), (KERB_Z, h), (KERB_Z + depth, h), (KERB_Z + depth, 0.0)];
+            if base > 0.0 {
+                profile.splice(0..0, [(KERB_Z - 100.0, 0.0), (KERB_Z - 100.0, base)]);
+            }
+            &*Box::leak(profile.into_boxed_slice())
         }
         _ => return None,
     };
