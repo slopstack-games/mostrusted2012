@@ -854,8 +854,7 @@ fn save_profile(
     if let Ok(old) = std::fs::read_to_string(&path) {
         for line in old.lines().filter(|l| !owned.iter().any(|k| l.starts_with(k))) {
             text.push_str(line);
-            text.push('
-');
+            text.push('\n');
         }
     }
     if let Some(dir) = path.parent() {
