@@ -85,6 +85,8 @@ impl Plugin for ParticlesPlugin {
 #[derive(Message, Clone, Copy, Debug)]
 pub struct ImpactEvent {
     pub car: Entity,
+    /// The other body of the pair (`None`: a collider without a body, the world).
+    pub other: Option<Entity>,
     pub position: Vec3,
     pub normal: Vec3,
     pub impulse: f32,
@@ -995,9 +997,9 @@ fn wheel_emitters(
 /// Collect the car bodies' contacts after each physics step.
 fn detect_impacts(collisions: Collisions, cars: Query<(), With<Car>>, mut out: MessageWriter<ImpactEvent>) {
     for pair in collisions.iter() {
-        let (car, sign) = match (pair.body1, pair.body2) {
-            (Some(b), _) if cars.contains(b) => (b, -1.0),
-            (_, Some(b)) if cars.contains(b) => (b, 1.0),
+        let (car, other, sign) = match (pair.body1, pair.body2) {
+            (Some(b), o) if cars.contains(b) => (b, o, -1.0),
+            (o, Some(b)) if cars.contains(b) => (b, o, 1.0),
             _ => continue,
         };
         for m in &pair.manifolds {
@@ -1013,6 +1015,7 @@ fn detect_impacts(collisions: Collisions, cars: Query<(), With<Car>>, mut out: M
             let normal = (m.normal * sign).normalize_or_zero();
             out.write(ImpactEvent {
                 car,
+                other,
                 position: point.point,
                 normal,
                 impulse,

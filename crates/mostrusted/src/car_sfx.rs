@@ -69,31 +69,31 @@ const MAX_IMPACTS: usize = 8;
 
 /// What a voice follows.
 #[derive(Clone, Copy)]
-enum Follow {
+pub(crate) enum Follow {
     /// A lane follower or crashed car by its sound key.
     Traffic(u32),
     /// A race car (or crashed traffic) by entity.
     Entity(Entity),
 }
 
-struct Voice {
-    entity: Entity,
-    params: Arc<mw_audio::sfx_player::Params>,
-    place: Arc<SpatialParams>,
-    stats: Arc<VoiceStats>,
-    spatial: mw_assets::car_sound::Spatial,
-    follow: Follow,
-    kind: &'static str,
+pub(crate) struct Voice {
+    pub(crate) entity: Entity,
+    pub(crate) params: Arc<mw_audio::sfx_player::Params>,
+    pub(crate) place: Arc<SpatialParams>,
+    pub(crate) stats: Arc<VoiceStats>,
+    pub(crate) spatial: mw_assets::car_sound::Spatial,
+    pub(crate) follow: Follow,
+    pub(crate) kind: &'static str,
     /// Released (a skid whose car stopped skidding).
-    stopping: bool,
+    pub(crate) stopping: bool,
     /// The car's last known state (position, velocity, forward).
-    car: (Vec3, Vec3, Vec3),
+    pub(crate) car: (Vec3, Vec3, Vec3),
     /// Distance, gain, pan, doppler last set.
-    last: (f32, f32, f32, f32),
+    pub(crate) last: (f32, f32, f32, f32),
 }
 
 impl Voice {
-    fn done(&self) -> bool {
+    pub(crate) fn done(&self) -> bool {
         self.params.finished()
     }
 }
@@ -172,9 +172,27 @@ fn start(
     car: (Vec3, Vec3, Vec3),
     impact_gain: Option<f32>,
 ) -> Voice {
+    let set = impact_gain.map(|g| (IMPACT_GAIN, g));
+    start_with(commands, assets, listener, volume, shot, kind, follow, car, set.as_slice())
+}
+
+/// Start a one-shot voice at a car with some of its bindings set first.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn start_with(
+    commands: &mut Commands,
+    assets: &mut Assets<SpatialAudio>,
+    listener: &Listener,
+    volume: f32,
+    shot: &OneShot,
+    kind: &'static str,
+    follow: Follow,
+    car: (Vec3, Vec3, Vec3),
+    set: &[(&str, f32)],
+) -> Voice {
     let params = Arc::new(mw_audio::sfx_player::Params::new(shot.bank.param_names()));
-    if let Some(g) = impact_gain {
-        params.set(IMPACT_GAIN, g);
+    for (k, v) in set {
+        params.set(k, *v);
+        params.set_smoothing(k, 0.0);
     }
     params.trigger(CUE);
     let (entity, place_params, stats) = spawn_one_shot(commands, assets, shot.bank.clone(), params.clone(), volume);
@@ -197,7 +215,7 @@ fn start(
     }
 }
 
-fn volume(settings: &Option<Res<crate::settings::AudioSettings>>) -> f32 {
+pub(crate) fn volume(settings: &Option<Res<crate::settings::AudioSettings>>) -> f32 {
     settings.as_ref().map_or(1.0, |s| s.gain(crate::settings::Channel::Sfx))
 }
 

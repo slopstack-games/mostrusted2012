@@ -610,8 +610,12 @@ but the record sizes and the flow / vehicle tables differ.
   at 0x00 (count `+0x17`), `u8` stop line indices at 0x04 and their `u16` hulls at 0x0A (count `+0x16`). All 189
   stop lines are referenced by exactly the junction groups, each owned by a section. Typical cycle: 15 s / 2 s
   all red / 15 s / 2 s all red.
-- **Static vehicle** (0x50): a matrix, then (from `FUN_0060db90`) `u16` flow type at 0x40, `u8` spawn chance in
-  percent at 0x42, flags at 0x43 (bit 0: not during a pursuit). Parked cars; not used yet.
+- **Static vehicle** (0x50, parked cars; `mw_formats::TrafficStaticVehicle`): a world matrix (D3D row-major, row 3
+  the position at the car's floor), then (from `FUN_0060db90`) `u16` flow type at 0x40 (a `TrafficFlowType`
+  index; the 11 used, 6–22, each name one vehicle type), `u8` spawn chance in percent at 0x42, flags at 0x43
+  (bit 0: not during a pursuit), 12 zero bytes. Survey of all 392 records (`mwtool traffic`): chance 100 in
+  every one, flags 1 in 34, the tail always 0, axes orthonormal within 0.0016. Many stand in yards and car-park
+  decks without collision (scenery); runtime in `traffic.rs` (2026-10-10).
 
 ## AIData (0x200)
 

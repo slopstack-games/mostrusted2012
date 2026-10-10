@@ -15,7 +15,6 @@ enum Kind {
     Spin,
     SpinBraking,
     Speed,
-    Scrape,
     ImpactVelocity,
     CrashMass,
     One,
@@ -24,9 +23,6 @@ enum Kind {
 }
 
 fn classify(name: &str) -> Option<Kind> {
-    if name == names::SCRAPE_SPEED {
-        return Some(Kind::Scrape);
-    }
     Some(match name.rsplit('.').next().unwrap_or(name) {
         "LatSlipIntensityForSkidSound" => Kind::LatSlip,
         "SpinIntensityForSkidSound" => Kind::Spin,
@@ -64,8 +60,6 @@ pub struct VehicleInput {
     pub brake: f32,
     /// Handbrake pulled.
     pub handbrake: bool,
-    /// Sliding speed of a body contact with the world (m/s), 0 when none.
-    pub scrape_speed: f32,
 }
 
 /// One ramp of `TyreSoundParams` (`LatSlip`, `LongSpin`, `LongSpinBraking`): the input's start and full values,
@@ -161,8 +155,7 @@ pub struct VehicleDriver {
     jitter: f32,
     jitter_timer: f32,
     rng: u32,
-    scraping: bool,
-    last: [f32; 5],
+    last: [f32; 4],
 }
 
 impl VehicleDriver {
@@ -187,8 +180,7 @@ impl VehicleDriver {
             jitter: 0.5,
             jitter_timer: 0.0,
             rng: 0x51ed_270b,
-            scraping: false,
-            last: [0.0; 5],
+            last: [0.0; 4],
         };
         d.set(Kind::One, 1.0);
         d.set(Kind::CrashMass, 0.5);
@@ -203,8 +195,8 @@ impl VehicleDriver {
         }
     }
 
-    /// The last update's speed (mph), lateral / spin / braking skid intensities and scrape speed (m/s).
-    pub fn last(&self) -> [f32; 5] {
+    /// The last update's speed (mph) and lateral / spin / braking skid intensities.
+    pub fn last(&self) -> [f32; 4] {
         self.last
     }
 
@@ -231,16 +223,11 @@ impl VehicleDriver {
         self.skid[1] = t.long_spin.approach(self.skid[1], spin, dt);
         self.skid[2] = t.long_spin_braking.approach(self.skid[2], braking, dt);
         let [lat, spin, braking] = self.skid;
-        self.last = [i.speed_mph, lat, spin, braking, i.scrape_speed];
+        self.last = [i.speed_mph, lat, spin, braking];
         self.set(Kind::LatSlip, lat);
         self.set(Kind::Spin, spin);
         self.set(Kind::SpinBraking, braking);
         self.set(Kind::Speed, i.speed_mph);
-        self.set(Kind::Scrape, i.scrape_speed);
-        if i.scrape_speed > 5.0 && !self.scraping {
-            self.params.trigger(names::SPARKS);
-        }
-        self.scraping = i.scrape_speed > 1.5;
         self.jitter_timer -= dt;
         if self.jitter_timer <= 0.0 {
             self.jitter_timer = 0.05;
@@ -273,8 +260,5 @@ impl VehicleDriver {
             names::IMPACT_HEAVY
         };
         self.params.trigger(cue);
-        if closing_speed > 8.0 {
-            self.params.trigger(names::SPARKS);
-        }
     }
 }

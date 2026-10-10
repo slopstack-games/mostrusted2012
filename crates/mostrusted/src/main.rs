@@ -42,6 +42,7 @@ mod nitrous;
 mod paint_wear;
 mod particles;
 mod pause;
+mod player_sfx;
 mod props;
 mod race;
 mod reflection;
@@ -548,8 +549,11 @@ fn main() -> anyhow::Result<()> {
             _ => anyhow::bail!("--spawn expects x,y,z[,heading_degrees]"),
         };
         // `--test ai` and `--test race` drive the streets; the other tests run on the flat track.
-        let street_test =
-            race_test || matches!(cli.test.as_deref(), Some("ai") | Some("crash-traffic") | Some("crash-ai"));
+        let street_test = race_test
+            || matches!(
+                cli.test.as_deref(),
+                Some("ai") | Some("crash-traffic") | Some("crash-ai") | Some("crash-parked")
+            );
         let track = cli.test_track || (cli.test.is_some() && !street_test) || cli.replay.is_some();
         let spawn = if track { Vec3::new(0.0, 1.0, 0.0) } else { spawn };
         let props =
@@ -569,9 +573,14 @@ fn main() -> anyhow::Result<()> {
     };
     let smash = cli.test.as_deref() == Some("smash");
     let test = match cli.test.as_deref() {
-        None | Some("crash") | Some("smash") | Some("ai") | Some("race") | Some("crash-traffic") | Some("crash-ai") => {
-            None
-        }
+        None
+        | Some("crash")
+        | Some("smash")
+        | Some("ai")
+        | Some("race")
+        | Some("crash-traffic")
+        | Some("crash-ai")
+        | Some("crash-parked") => None,
         Some("accel") => Some(drive::TestKind::Accel),
         Some("nitrous") => Some(drive::TestKind::Nitrous),
         Some("brake") => Some(drive::TestKind::Brake),
@@ -587,7 +596,7 @@ fn main() -> anyhow::Result<()> {
         Some("exhaust") => Some(drive::TestKind::Exhaust),
         Some(other) => {
             anyhow::bail!(
-                "unknown --test {other} (accel, brake, corner, handbrake, drift, donut, engine, exhaust, landing, climb, jitter, kerb, crash, smash, ai, race, crash-traffic, crash-ai)"
+                "unknown --test {other} (accel, brake, corner, handbrake, drift, donut, engine, exhaust, landing, climb, jitter, kerb, crash, smash, ai, race, crash-traffic, crash-ai, crash-parked)"
             )
         }
     };
@@ -722,6 +731,7 @@ fn main() -> anyhow::Result<()> {
     } else if let Some(kind) = match cli.test.as_deref() {
         Some("crash-traffic") => Some(car_impacts::ImpactTestKind::Traffic),
         Some("crash-ai") => Some(car_impacts::ImpactTestKind::Ai),
+        Some("crash-parked") => Some(car_impacts::ImpactTestKind::Parked),
         _ => None,
     } {
         app.insert_resource(car_impacts::ImpactTest::new(kind, cli.screenshot.clone()));
@@ -855,7 +865,7 @@ fn main() -> anyhow::Result<()> {
             settings: settings::load(cli.volume.as_deref()),
             open: cli.show_settings,
         })
-        .add_plugins((car_audio::CarAudioPlugin, car_sfx::CarSfxPlugin))
+        .add_plugins((car_audio::CarAudioPlugin, car_sfx::CarSfxPlugin, player_sfx::PlayerSfxPlugin))
         .add_plugins(audio::GameAudioPlugin {
             music: !cli.no_music
                 && !cli.mute

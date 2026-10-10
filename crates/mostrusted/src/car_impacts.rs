@@ -597,6 +597,8 @@ pub struct ImpactTest {
 pub enum ImpactTestKind {
     Traffic,
     Ai,
+    /// Into the front of the nearest parked car with a model (`traffic.rs`).
+    Parked,
 }
 
 impl ImpactTest {
@@ -635,6 +637,11 @@ const TEST_SPEED_AI: f32 = 35.0;
 /// The AI car is placed this far ahead of the player's car (m), across the road at this speed (m/s).
 const TEST_AI_AHEAD: f32 = 20.0;
 const TEST_AI_ROLL: f32 = 0.0;
+/// The player's car starts this far in front of a parked car (m), at this speed (m/s; about 27 mph).
+const TEST_PARKED_AHEAD: f32 = 10.0;
+/// A shot this long after the setup (s), to see the parked car moving.
+const TEST_PARKED_SHOT: f32 = 1.5;
+const TEST_SPEED_PARKED: f32 = 12.0;
 /// Crash-camera screenshots (real seconds after the impact), as `--test crash` takes them.
 const TEST_SHOTS: [(f32, &str); 4] =
     [(0.3, "crashcam-0-slowmo"), (1.25, "crashcam-1-freeway"), (3.25, "crashcam-2-car"), (5.5, "crashcam-3-reset")];
@@ -689,6 +696,31 @@ fn run_impact_test(
                         (c.entity.expect("filtered"), Vec3::new(p.x, ground(p) + 0.6, p.z), -dir, TEST_SPEED_TRAFFIC)
                     })
                 }
+                ImpactTestKind::Parked => {
+                    let Some(sys) = traffic.as_ref() else { return };
+                    // Only a car standing on drivable ground with drivable ground in front of it at its height
+                    // (many parked cars stand in yards that have no collision); the record's height is its floor
+                    // (a ray from far above would find a car park's upper deck).
+                    let floor = |p: Vec3| {
+                        let filter = SpatialQueryFilter::from_mask(crate::props::GameLayer::World);
+                        let from = p + Vec3::Y * 1.5;
+                        spatial.cast_ray(from, Dir3::NEG_Y, 3.0, true, &filter).map(|h| from.y - h.distance)
+                    };
+                    let on_floor = |p: Vec3| floor(p).is_some_and(|y| (y - p.y).abs() < 0.5);
+                    let ahead = |pos: Vec3, rot: Quat| {
+                        let fwd = (rot * Vec3::Z).with_y(0.0).normalize_or(Vec3::Z);
+                        (fwd, pos + fwd * TEST_PARKED_AHEAD)
+                    };
+                    let near = sys.parked_near(t.translation, 400.0);
+                    let target = near
+                        .into_iter()
+                        .filter(|&(_, pos, rot)| on_floor(pos) && on_floor(ahead(pos, rot).1))
+                        .min_by(|a, b| a.1.distance(t.translation).total_cmp(&b.1.distance(t.translation)));
+                    target.map(|(e, pos, rot)| {
+                        let (fwd, p) = ahead(pos, rot);
+                        (e, Vec3::new(p.x, pos.y + 0.6, p.z), -fwd, TEST_SPEED_PARKED)
+                    })
+                }
                 // The AI car is put across the road ahead of the player's car, rolling slowly; the player's car
                 // drives into its side.
                 ImpactTestKind::Ai => {
@@ -737,6 +769,12 @@ fn run_impact_test(
                     av.0.length(),
                     t.translation.distance(at.translation)
                 );
+            }
+            if test.kind == ImpactTestKind::Parked
+                && test.timer >= TEST_PARKED_SHOT
+                && test.timer - time.delta_secs() < TEST_PARKED_SHOT
+            {
+                test.shoot(&mut commands, "hit");
             }
             let ai_crashed = test.target.and_then(|e| ai_cars.get(e).ok()).is_some_and(|c| c.3.is_some());
             if crash.active.is_some() || ai_crashed {

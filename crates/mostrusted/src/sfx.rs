@@ -1,7 +1,7 @@
-//! The player car's tyre, road, wind, impact and scrape sounds, from the game's sound data
-//! (`mw_assets::sfx`): one sequence bank rendered by `mw_audio::sfx_player::Player`, driven by the skid wheel
-//! (`Car::skid_wheel`, as the game picks it), the wheels' ground contacts (landings) and the body's contacts
-//! (`particles::ImpactEvent`).
+//! The player car's tyre, road, wind and landing sounds, from the game's sound data (`mw_assets::sfx`): one
+//! sequence bank rendered by `mw_audio::sfx_player::Player`, driven by the skid wheel (`Car::skid_wheel`, as
+//! the game picks it) and the wheels' ground contacts (landings). The body's impacts, the grind against other
+//! cars and the damage sounds are `player_sfx.rs`.
 
 use std::num::NonZero;
 use std::sync::{Arc, Mutex};
@@ -12,7 +12,6 @@ use mw_assets::vehicle_driver::{TyreSoundParams, VehicleDriver, VehicleInput};
 use mw_audio::sfx_player::{Bank, OUTPUT_RATE, Params, Player};
 
 use crate::drive::{Car, CarControls};
-use crate::particles::ImpactEvent;
 
 pub struct SfxPlugin;
 
@@ -73,12 +72,11 @@ struct SfxState {
     started: bool,
     driver: Option<VehicleDriver>,
     last_impact: f32,
-    scrape: f32,
     /// Time with no wheel on the ground (s).
     air_time: f32,
 }
 
-/// Closing speed (m/s) that counts as an impact, and the minimum time between impact sounds.
+/// Touchdown speed (m/s) that counts as a landing thump, and the minimum time between them (model values).
 const IMPACT_SPEED: f32 = 2.0;
 const IMPACT_COOLDOWN: f32 = 0.2;
 
@@ -134,33 +132,15 @@ fn update_params(
     time: Res<Time>,
     mut state: ResMut<SfxState>,
     cars: Query<(Entity, &Car, &CarControls), With<crate::drive::Player>>,
-    mut impacts: MessageReader<ImpactEvent>,
 ) {
     let now = time.elapsed_secs();
     let dt = time.delta_secs();
     let state = &mut *state;
-    let Some(driver) = state.driver.as_mut() else {
-        impacts.clear();
-        return;
-    };
+    let Some(driver) = state.driver.as_mut() else { return };
     let car = cars.single().ok();
-    // Body contacts this frame: the hardest closing speed and the fastest slide.
-    let (mut closing, mut sliding) = (0f32, 0f32);
-    for e in impacts.read() {
-        if car.is_some_and(|(c, ..)| c == e.car) && e.impulse > 0.0 {
-            closing = closing.max(e.closing_speed);
-            sliding = sliding.max(e.sliding_speed);
-        }
-    }
-    if closing > IMPACT_SPEED && now - state.last_impact > IMPACT_COOLDOWN {
-        state.last_impact = now;
-        driver.impact(closing);
-    }
-    // Scrapes hold briefly between contact frames.
-    state.scrape = if sliding > 0.0 { sliding } else { (state.scrape - dt * 40.0).max(0.0) };
     // The player car's control block (its pedals also when the AI drives it in a cutscene).
     let (brake, handbrake) = car.map_or((0.0, false), |(_, _, c)| (c.brake, c.handbrake));
-    let mut i = VehicleInput { brake, handbrake, scrape_speed: state.scrape, ..default() };
+    let mut i = VehicleInput { brake, handbrake, ..default() };
     let (mut landing, mut grounded) = (0f32, 0usize);
     if let Some((_, car, _)) = car {
         i.speed_mph = car.speed.abs() / 0.447_04;
@@ -182,24 +162,16 @@ fn update_params(
         state.air_time = 0.0;
     }
     driver.update(dt, &i);
-    trace(now, driver.last(), closing);
+    trace(now, driver.last(), landing);
 }
 
-/// `MW_SFX_TRACE=<file>`: one line per frame, `seconds mph lateral spin braking scrape closing` (skid
-/// intensities 0..1, speeds m/s).
-fn trace(t: f32, v: [f32; 5], closing: f32) {
+/// `MW_SFX_TRACE=<file>`: one line per frame, `seconds mph lateral spin braking landing` (skid intensities 0..1,
+/// the wheels' touchdown speed in m/s).
+fn trace(t: f32, v: [f32; 4], landing: f32) {
     use std::io::Write;
     static FILE: std::sync::OnceLock<Option<Mutex<std::fs::File>>> = std::sync::OnceLock::new();
     let file = FILE.get_or_init(|| std::fs::File::create(std::env::var_os("MW_SFX_TRACE")?).ok().map(Mutex::new));
     if let Some(f) = file {
-        _ = writeln!(
-            f.lock().unwrap(),
-            "{t:.4} {:.1} {:.3} {:.3} {:.3} {:.2} {closing:.2}",
-            v[0],
-            v[1],
-            v[2],
-            v[3],
-            v[4]
-        );
+        _ = writeln!(f.lock().unwrap(), "{t:.4} {:.1} {:.3} {:.3} {:.3} {landing:.2}", v[0], v[1], v[2], v[3]);
     }
 }

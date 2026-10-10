@@ -150,8 +150,8 @@ MW_NO_VIGNETTE=1 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,172
 MW_ENGINE_TRACE=<scratch>/rpm.trace ./target/release/mostrusted --drive 911 --test engine
 # Driving without a human: fixed throttle, logs "car at x y z, speed, compression" once a second
 ./target/release/mostrusted --drive 911 --units 12 --auto-throttle 0.4 --screenshot <scratch>/drive.png --screenshot-delay 400
-# Controls are the original's defaults (input.rs): arrows steer, A accelerate, Z brake, Space handbrake; pad left
-# stick, RT / LT, X. Easydrive (easydrive.rs): numpad 6 or d-pad right opens (E too), 8 / 2 move, 4 back; headless:
+# Controls are the original's defaults (input.rs): arrows steer, A accelerate, Z brake, Space handbrake, W horn; pad
+# left stick, RT / LT, X, B horn. Easydrive (easydrive.rs): numpad 6 or d-pad right opens (E too), 8 / 2 move, 4 back; headless:
 ./target/release/mostrusted --drive 911 --units 12 --show-easydrive --screenshot <scratch>/easydrive.png --screenshot-delay 60
 # Car menu (Esc / Tab / F1 / gamepad Start or Back in interactive runs). Headless: swap cars in turn (`name@paint`, `free` =
 # free camera), screenshot after the last; logs model / mesh / material / entity counts per step (leak check)
@@ -173,13 +173,16 @@ MW_ENGINE_TRACE=<scratch>/rpm.trace ./target/release/mostrusted --drive 911 --te
 MW_CUTSCENE_SHOT=intro:9 ./target/release/mostrusted --race 462174 --units 12 --screenshot <scratch>/i.png --screenshot-delay 100000
 ./target/release/mostrusted --drive 911 --units 20 --ai "911,veyron super" --test ai --ai-seconds 60   # AI racers
 # Traffic (traffic.rs; density from the event): --no-traffic, --traffic-density x, MW_TRAFFIC_LOG=1
-./target/release/mwtool traffic --at x,z                 # lanes near a point (plain: junction cycles, decoded data)
+./target/release/mwtool traffic --at x,z[,r]             # lanes and parked cars near a point (plain: junctions, data, parked survey)
 ./target/release/mostrusted --drive 911 --test crash-traffic       # head-on with traffic: crash camera (car_impacts.rs)
+./target/release/mostrusted --drive 911 --test crash-parked --units 20 --spawn=925,24,-101 --screenshot <scratch>/p.png  # into a parked car
 ./target/release/mostrusted --drive 911 --test crash-ai --ai 911 --no-traffic
 # Car state: --nitrous holds nitrous, --damage all=0.5 starts damaged, R washes the car, --dirt 0.6,0.3
 ./target/release/mostrusted --drive 911 --test exhaust   # pops / backfires (MW_EXHAUST_LOG=1)
 ./target/release/mwtool damage <car> --keys              # damage clip keys; --level all=0.5 --preview <png>
 ./target/release/mwtool traffic-sound all|sfx out.wav    # traffic engines / horns / impacts offline; engine-sound <car> --competitor
+./target/release/mwtool traffic-sound player[:<id>] out.wav  # the player's horn, impacts, grind, sparks, glass, scratch (player_sfx.rs)
+# MW_HORN_AT=t0,t1 holds the horn between game times (headless); MW_AUDIO_METER=1 lists the player's voices too
 # Debug logs: MW_NITROUS_LOG=1, MW_DIRT_LOG=1, MW_GATE_LOG=1, MW_TYRE_DEBUG=1, MW_FLASH_LOG=1 [MW_FLASH_SHOTS=dir]
 # Performance: MW_FRAME_LOG=<file> (per-frame schedule / render times), --bench prints p95 / p99 / hitches;
 # A/B switches MW_INDIRECT=1 (Bevy's multi-draw-indirect), MW_AVIAN_ASYNC=1, MW_BAKE_THREADS=0, MW_FOV_VERTICAL=1
