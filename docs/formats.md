@@ -651,7 +651,13 @@ One instance, `HAWAII/TRIGGERS.BNDL`, version 8; loaded by `FUN_0053c2f0`. Parse
 - The code indexes the three arrays as one list in that order and keys it by id. Kind codes of the free-roam
   collectables (`FUN_006e4920`): '0' security gate, '2' billboard, '4' speed camera, '<' jack spot,
   '=' jack spot car, 6 body shop (letters 'A'..'O' = the same in other content packs). Base game: 152 / 216 /
-  74 / 183 / 185 / 22. Rules in decomp.md "Free-roam rules".
+  74 / 183 / 185 / 22. Rules in decomp.md "Free-roam rules". A billboard's `CompoundInstanceList` record
+  carries its trigger's id at +0x4c (all 216; `mwtool freeroam --objects`).
+- Scoring (`mw_assets::scoring`, `mwtool scoring`): `ScoringConfig` (`GLOBALCONFIG.BNDL`, 390964) names
+  `ScoringAction`s (list 390077 in `GAMELOGIC/GAMEPLAY.BNDL`) by field; an action's Speed Points are its
+  `8c1feb6d` array (count `SPCount`), its HUD message `Sequence` + `Title`, its `GameplayTrigger` (list 457533)
+  more sequences. `CollectablesConfig` (908780) `d89eeda4` = the speed cameras' 50 mph. decomp.md "Speed
+  Points".
 
 ## Events (`OfflineEvent`, GeneSys in `GAMELOGIC/GAMEMODES.BNDL`)
 

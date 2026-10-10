@@ -1855,9 +1855,8 @@ are. `mwtool freeroam [--list|--kind SpeedCam]` lists them.
 - **Who calls the handler**: `FUN_006ab390` (the game-logic message loop over the queue at `DAT_010edb10`)
   and `FUN_007061d0`, `FUN_00707510`, `FUN_0065fc00`, and the overlap path `FUN_00707650` (see "Trigger
   hits" below).
-- **Speed Points**: not found in this pass. The handler only sends events (ids in the config at global
-  +0x44); the points are presumably awarded by whatever listens to them (`FUN_006a8050` dispatch).
-  `CollectablesConfig` holds no point values (its floats are 2.5 at 0x60 and the 50 mph threshold).
+- **Speed Points**: found 2026-10-10, see "Speed Points" below. The events the handler sends are scoring
+  events naming `ScoringConfig` actions (the config at global +0x44 is the `ScoringConfig`).
 
 ### Trigger hits: streaming, overlap and firing (session 5, round 2)
 
@@ -1941,10 +1940,90 @@ reading the code unless marked *inferred*.
   (`FUN_007e9360`), builds a leaderboard request with `"eventId"` = the camera id and the board name
   `"RoadRules"` (or `"Survival"` in another mode): the Autolog **speed camera leaderboard**. Offline it only
   calls `FUN_00874830(id)` (*inferred*: local best) and a virtual callback. No points are given here.
-- **Speed Points**: still not found. `BillboardWorth`, `ItemWorth`, `HighValueWorth` and `Score` are
-  variables of `HSMBehaviourHSMDoSmashAndGrabScoring` (a Smash-and-Grab event mode), not free roam (dead
-  end). Leads: the strings `CurrentSpeedPoints`, `SpeedPoints`, `SPEEDPOINTS`, `upload_sp_buckets`,
-  `SP_%d_%d`, and the listeners of the events the handler sends (`FUN_006a8050`).
+- **Speed Points**: found 2026-10-10 (next section). `BillboardWorth`, `ItemWorth`, `HighValueWorth` and
+  `Score` are variables of `HSMBehaviourHSMDoSmashAndGrabScoring` (the Smash-and-Grab game mode), not free roam.
+- **Does a billboard's volume alone count?** Yes (2026-10-10): `FUN_006e42f0` passes the billboard kinds
+  ('2' 'A' 'D' 'J' 'M') like cameras and gates (offline always; online only with the free-roam flag +0x2e90),
+  so entering the box queues the billboard and `FUN_007059b0` counts it. The prop's break (message 0x14) calls
+  the handler as well, without the queue. Whichever comes first is the first find; the other only sends the
+  0-point `HitJump` action.
+- **The linked trigger of a billboard prop** is in the data: a `CompoundInstanceList` record's word at +0x4c is
+  the id of the billboard's `TriggerData` record, at the same position, on all 216 billboards (`mwtool freeroam
+  --objects`). Security gates have no such link (their fence props are plain props 1–2 m from the trigger) and
+  are counted by the volume only.
+
+### Speed Points (2026-10-10)
+
+Speed Points (SP) are data plus one short code path. Confirmed by reading the code unless marked *inferred*.
+
+- **Data.** `ScoringConfig` (`GLOBALCONFIG.BNDL`, UniqueId 390964, the object at global +0x44) has ~190
+  UniqueId fields, one per thing code can score; code names an action by the field's offset. Each id is a
+  `ScoringAction` (72 bytes; all 223 sit in one list object of `GAMELOGIC/GAMEPLAY.BNDL`, UniqueId 390077):
+  `Predicate` (+0xc, a binding that must hold), id (+0x14), `GameplayTrigger` (+0x18), `Sequence` (+0x1c) and
+  `Title` (+0x20) of its HUD message, a heat amount (+0x24, `1a88cb4c`), a per-player-count bonus array (+0x2c,
+  count +0x3c), **`Score`** (+0x30, count +0x40 `ScoreCount`) and **the Speed Points array** (+0x34, field
+  `8c1feb6d`, count +0x42 `SPCount`), `Scope` (+0x38), `Queue`, `Priority`. That +0x34 is SP is settled by
+  three things: its count field's name, the titles' text ("Billboard +{sp}" followed by the SP glyph), and the
+  code below. `mwtool scoring` prints the table.
+- **A scoring event** (`FUN_006552a0` builds one entry, `FUN_0066c1b0` an empty event of 8): 9 words per
+  entry: action id, a float (default: a sentinel, `DAT_00f8f340`), then −1s; word 2 overrides the score and
+  word 3 the SP when they are not −1. Every collectable event leaves them at −1.
+- **Sending** (`FUN_006a8050(action id, …, player, …)`): dropped offline unless the game mode's byte +0x2e74
+  is set (the "timer running" flag of `StartGameModeTimer`; *inferred*: set in free roam); then `FUN_006a75f0`
+  → the player's `FUN_006d08a0`.
+- **Awarding** (`FUN_006d08a0(player, event)`), per entry: find the action by id in the player's action list
+  (+0x3ac / +0x3b0); its `Predicate` must hold (`FUN_0063e470`); count it in the player's per-action counters.
+  Offline (the mode's online byte `FUN_006dfed0` clear): score = `Score[0]`, or `Score[level − 1]` with the
+  pursuit level `FUN_0066a7b0` when 0 < level ≤ `ScoreCount`; **SP = the entry's word 3, or `SP[0]` when it is
+  −1; when SP > 0, `FUN_00735ca0(SP, the player's car id)`**. (Online the score comes from `FUN_006a4820` /
+  `FUN_006a48c0`: indexed by finishing position or streak, plus the player-count bonus, with server patches
+  `FUN_006a3530`.) Then the heat amount goes to `FUN_006bdac0`, the score is doubled while a double-score
+  timer runs on `Scope` 1 actions, and is added to the player's score (+0x418) and stats.
+- **The total** (`FUN_00735ca0` → `FUN_00734f60(SP, bucket, car)`): the bucket is 3, 1, 5 (free roam) or 0 by
+  game-state flags and only feeds statistics (`SPBucket` rows, telemetry `GAME EVNT SPBK` with `epts` / `spbk`
+  / `tpts`). `FUN_00734400(SP)` stores **total + SP** as the new total (`FUN_00726bb0`; the current total at
+  +0x1c, the next Most Wanted event's requirement at +0x20, whose crossing in free roam sends a message). No
+  multiplier offline. `ScoringViewModel.CurrentSpeedPoints` (view model +0x8c, `FUN_006a4960`) is the HUD's
+  binding.
+- **The collectables' actions** (offsets in `FUN_007059b0`, `FUN_006ed0a0`, `FUN_006ed330`; names cracked,
+  all sort into their fields' places):
+
+  | Offset | Field | When | SP |
+  |--------|-------|------|----|
+  | +0x294 | `SpeedCameraTriggered` | every counted camera pass (≥ 50 mph) | 0 |
+  | +0x28c | `SpeedCamDiscovered` | a camera's first counted pass | 500 |
+  | +0x260 | `SecurityGateHit` | a gate's first hit, in free roam (mode +0x2e90) | 0 |
+  | +0x288 | `SmashGateDiscovered` | with it | 250 |
+  | +0xfc | `HitJump` | every billboard hit, offline | 0 |
+  | +0x1c | `BillboardFound` | a billboard's first hit | 0 |
+  | +0x18 | `BillboardDiscovered` | with it | 500 |
+  | +0x3c | `CarSwapFound` | a jack spot location's first find | 0 |
+  | +0x38 | `CarSwapDiscovered` | a jack spot car's first find | 350 |
+
+  Other offline actions with SP in the data (their triggering code was not traced): takedowns 115–300 by
+  kind (`JumpTakedown` 300, `TrafficTakedown` 300, T-bone 135, …), `CrashEscape` 150, shunt / slam / ram 15,
+  "First Place" 50, an unnamed "COLLECTABLE" 55. Event results (place, medals) are not `ScoringAction`s with
+  offline SP: the 900 / 650 / … position tables are `Scope` 1 (online) actions. Where an offline event's SP
+  comes from ("End of event awards", `EventAward`, `ProgressionAwardPoints` strings) was not traced.
+- **HUD messages.** An action with a `Sequence` and a `Title` shows the title with `{sp}` filled: the four
+  "Discovered" actions use sequence 995814 (layout 1470322 for 1 s plus a sound; "Billboard +500"). An
+  action's `GameplayTrigger` (list object 457533 in `GAMEPLAY.BNDL`) names output sequences:
+  `SpeedCameraTriggered` → 1107082 (6 s: a PostFX flash, a world-space plate "SPEED CAMERA" with
+  `Collectables.LastCameraSpeed(SPEED, DECIMAL)` whose layout instance is scaled 0.005, and speedwall stacks
+  that only show with friends' entries), `SecurityGateHit` → 995322 (the "SPEEDWALL / SECURITY GATES
+  {Collectables.SpeedwallColFound} / {SpeedwallColAmt}" panel, 0.5–6 s). *Inferred*: the trigger fires its
+  outputs when the action scores (its inputs were not read).
+- **The total's label** (free-roam HUD layout 979928, `{ScoringViewModel.CurrentSpeedPoints}`): visible with
+  the widget `SPVisible`, which the game-logic state machine "SP Visibility" (HSM node 1695370) drives: "Show
+  SP Points" for `TIME` 8 s at the start, then again for 8 s whenever the binding
+  `ScoringViewModel.CurrentSpeedPoints` changes, and through a pursuit.
+- **No nitrous from security gates.** `FUN_0074cf40(this, worth, action)` (sends the action, adds `worth` to
+  `this+0x1224`, awards `DAT_00fa929c` nitrous through `FUN_00658ad0`) is a method of the Smash-and-Grab mode's
+  scoring behaviour: +0x1224 is its `Score` variable, and its four callers (`FUN_0075ba30`, `FUN_0075ec80`
+  and two in `FUN_00760xxx`) read its `ItemWorth` / `BillboardWorth` / `HighValueWorth` (+0x1248..+0x1250).
+  `HSM.DoSmashAndGrabScoring` only runs under "Smash And Grab Mode" (HSM 2210003). `FUN_00658ad0` has no
+  other caller but the gas station (`FUN_00748ff0`). The free-roam gate branch of `FUN_007059b0` sends the two
+  actions above, a hint and two stats, nothing else.
 
 ## Races (2026-10-09)
 
@@ -2824,8 +2903,9 @@ Traced 2026-10-09 (`mw_handling::nitrous`, `mostrusted/src/nitrous.rs`). Times a
   10 each. The first car opens a 0.5 s window (`.rdata` 0x00fb8660 = 1.5e6 ticks); when it closes, each kind
   with a count > 0 awards its `d63cff99` once (2.5 / 3 / 4.5 and 5 / 6 / 9) if the speed is above its
   `d629c55f` (80 mph both).
-  Fixed awards: 100 at a gas station (`FUN_00748ff0`, an object of type 6 in the car's contacts) and 10 per
-  smashed gate in free roam (`FUN_0074cf40`), both through `FUN_00658ad0`.
+  Fixed awards through `FUN_00658ad0`: 100 at a gas station (`FUN_00748ff0`, an object of type 6 in the car's
+  contacts) and `DAT_00fa929c` per item smashed in the Smash-and-Grab game mode (`FUN_0074cf40`; corrected
+  2026-10-10: this is that mode's scoring behaviour, not free-roam security gates, see "Speed Points").
 - **Road position** (`FUN_00668650` → `FUN_00666200`, one of 24 player slots per tick): road, section and
   segment on `RoadData` (formats: `mw_formats::road_data`): the first road and section (file order) whose
   boxes contain the car and whose Hermite segment (`FUN_00a3ba80`, basis from `.bss` 0x0118a640) the car is

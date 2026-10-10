@@ -143,6 +143,10 @@ MW_NO_VIGNETTE=1 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,172
 ./target/release/mwtool ui screens                  # game UI: screens / widgets (ui show <screen>, ui render <screen> out.png, ui font <n> out.png, ui easydrive)
 ./target/release/mwtool traffic --png <scratch>/lanes.png   # TrafficLaneData: counts, flows, vehicle lists, lane map
 ./target/release/mwtool freeroam --list --kind SpeedCam     # TriggerData: speed cameras, billboards, gates, jack spots
+#   --objects: each collectable's nearest placed object and its instance ids (billboard compound = trigger id)
+./target/release/mwtool scoring                     # ScoringActions: Speed Points, message sequence / title (--all, --sequence <id>, --text <ids>)
+# Collectables and Speed Points (freeroam.rs): a speed camera, a billboard and a gate; TEST RESULT freeroam ...
+./target/release/mostrusted --drive 911 --units 12 --mute --no-traffic --test freeroam --profile <scratch>/p.cfg --screenshot <scratch>/fr.png
 ./target/release/mwtool placement-check --top 10             # placements vs the collision under them, per layer / model
 ./target/release/mwtool mods 911                             # performance upgrades: slot -> parameter changes
 ./target/release/mwtool sampler-usage --filter Driveable     # the game's sampler states per shader slot

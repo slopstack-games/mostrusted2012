@@ -410,9 +410,12 @@ code side (game modes, HSMs, AI) next to the data. Roughly in dependency order:
 2. Road network and AI paths: `RoadData` (decoded 2026-10-09, `mw_formats::road_data`), `RoadMapData`, `AIData`, `NavigationMesh`.
 3. `[~]` Triggers and events: `TriggerData` (0x202) decoded (2026-10-06, session 5; formats.md, `mwtool
    freeroam`): speed cameras, billboards, security gates, jack spots, body shops, with the collectable rules
-   from the code (decomp.md "Free-roam rules"); speed cameras run (`freeroam.rs`: logs the pass speed above the
-   game's 50 mph, best per camera). Open: Speed Points, the hit test's overlap rule, smashes, jack-spot swaps,
-   HUD messages; `GAMELOGIC/GAMEMODES.BNDL`, `GAMEPLAY.BNDL`, the Most Wanted list.
+   from the code (decomp.md "Free-roam rules"); speed cameras, security gates and billboards
+   run with their Speed Points (`freeroam.rs`, 2026-10-10: the firing rule and 4 s queue, 500 / 250 / 500 SP on
+   the first find from the `ScoringAction` data, the SP total and "+SP" message on the HUD, progress in the
+   profile; `--test freeroam`, `mwtool scoring`). Open: the overlap's narrow phase, the speed camera's
+   world-space plate and flash, the billboard's jump-distance speedwall, SP of events / takedowns, hints,
+   jack-spot swaps; `GAMELOGIC/GAMEMODES.BNDL`, `GAMEPLAY.BNDL`, the Most Wanted list.
 4. Cops / pursuit, takedowns, wrecks (deformation itself landed under M3.5: there is no `DeformationModel`;
    damage is skeletal animation).
 5. `HSMData` (0x501): hierarchical state machines that drive game flow. Interpret, or reimplement by hand.
