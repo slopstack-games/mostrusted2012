@@ -680,6 +680,13 @@ fn main() -> anyhow::Result<()> {
         }),
         ..default()
     }));
+    // The game advances at most 2/60 s per frame (decomp.md "Update loop": one 2/60 catch-up step, even after
+    // a stall). Bevy's default catches up 250 ms of fixed steps after a slow frame, which makes the next frames
+    // slower too. The clamp is on real time, before the relative speed (`--test` runs 4x, so 8 steps there).
+    // `MW_UNCAPPED_DELTA=1` restores Bevy's default (A/B).
+    if std::env::var_os("MW_UNCAPPED_DELTA").is_none() {
+        app.add_systems(Startup, |mut t: ResMut<Time<Virtual>>| t.set_max_delta(Duration::from_secs_f64(2.0 / 60.0)));
+    }
     bevy::asset::embedded_asset!(app, "layered.wgsl");
     bevy::asset::embedded_asset!(app, "groundcover.wgsl");
     app.add_systems(Startup, materials::load_groundcover_shader);
