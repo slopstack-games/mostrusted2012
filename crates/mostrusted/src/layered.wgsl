@@ -54,7 +54,9 @@ struct Layered {
     _pad1: u32,
     _pad2: u32,
     // road:    p0 = (has road + detail normal maps, has SpecColour, has line normal, 0),
-    //          p1.xy = DetailMapUvScale, p2 = Line_Diffuse, p3 = Line_Roughness_Specular_Fresnel
+    //          p1.xy = DetailMapUvScale, p2 = Line_Diffuse (mode 4) or (edge alpha test, baked vertex light in
+    //          UV_1.xy + COLOR.z, lightMapIntensity of the lightmap in slot 9, 0), p3 =
+    //          Line_Roughness_Specular_Fresnel
     //          textures: colour, detail, line, normal, detail normal, SpecColour, line normal+spec
     // terrain: p0 = Tiling_Ratios_X (w = noise ratio), p1 = Tiling_Ratios_Y, p2..p4 = Layer RSF,
     //          p5 = (has world-space macro normal, has tiling normals)
@@ -283,6 +285,25 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let colour = textureSample(tex0, samp0, uv).rgb;
         let detail = textureSample(tex1, samp1, world_uv).rgb;
         var albedo = colour * detail * 2.0;
+        // Light the road programs add to RT3 as light × this albedo (before the wet darkening):
+        //   DriveableSurface (no lightmap): COLOR.rgb² × 0.318 × DynamicLighting_GlobalLightMapIntensities.x,
+        //     computed in its vertex program (baked lamp light, at night);
+        //   DriveableSurface_Lightmap: LightMapTextureSampler(uv1).rgb × lightMapIntensity (no global factor).
+        if layered.mode == 1u {
+            let road_light = layered.p[2];
+            if road_light.y > 0.5 {
+                var baked = vec3(0.0);
+#ifdef VERTEX_UVS_B
+#ifdef VERTEX_COLORS
+                baked = vec3(uv_b, in.color.z);
+#endif
+#endif
+                extra += albedo * baked * baked * 0.318 * layered.night.x * layered.env.x;
+            }
+            if road_light.z > 0.0 {
+                extra += albedo * textureSample(tex9, samp9, uv_b).rgb * road_light.z * layered.env.x;
+            }
+        }
         let flags = layered.p[0];
         var rough = 1.0;
         var f0 = 0.02;

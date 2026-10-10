@@ -281,7 +281,26 @@ impl Look {
             ]);
             // p2.x: discard where tex2(uv0).y < 0.5 (FloatingDecal_1Bit).
             let edge_test = if edge.is_some() { 1.0 } else { 0.0 };
-            look.vals = pack(&[[0.0; 4], [s[0], s[1], 0.0, 0.0], [edge_test, 0.0, 0.0, 0.0], [0.0; 4], wet_scale]);
+            // Light added to RT3 × albedo. The variants without a lightmap add the vertex colour's baked light,
+            // COLOR.rgb² × 0.318 × DynamicLighting_GlobalLightMapIntensities.x (their vertex program; p2.y). The
+            // `Lightmap` variants add LightMapTextureSampler(uv1).rgb × lightMapIntensity instead (p2.z; the
+            // model binds the texture).
+            let lightmap = linear("LightMapTextureSampler").filter(|_| name.contains("lightmap") && has_uv(1));
+            let lm_intensity = sm.parameter("lightMapIntensity").map_or(0.0, |v| v[0]);
+            let baked = !name.contains("lightmap") && sm.mesh.colors.is_some();
+            if lightmap.is_some() {
+                look.textures[9] = lightmap;
+                look.uv_b = Some(1);
+            } else if baked {
+                look.uv_b = Some(crate::convert::ROAD_BAKED_LIGHT);
+            }
+            look.vals = pack(&[
+                [0.0; 4],
+                [s[0], s[1], 0.0, 0.0],
+                [edge_test, flag(baked), if lightmap.is_some() { lm_intensity } else { 0.0 }, 0.0],
+                [0.0; 4],
+                wet_scale,
+            ]);
         } else if name.starts_with("driveablesurface")
             && name.contains("decal")
             && let (Some(colour), Some(detail), Some(decal)) =
@@ -793,6 +812,10 @@ impl Look {
                 // p0.w: 0 = no wet path (no puddle map), 1 = puddle map only (a missing RoadDepth map
                 // reads 0 in the game: no flattening), 2 = both.
                 self.vals[3] = qi(has(8) * (1.0 + has(7)));
+                // The road's lightmap (p2.z = its intensity) needs its texture.
+                if self.mode == Mode::Road && self.textures[9].is_none() {
+                    self.vals[10] = 0;
+                }
             }
             Mode::Terrain => {
                 self.vals[20] = qi(has(5));
@@ -986,7 +1009,8 @@ impl Look {
     /// Whether the look reads the night level (`world_lights::NightLevel`): lit windows and signs of the
     /// variants that take `DynamicLighting_GlobalLightMapIntensities`.
     pub fn uses_night(&self) -> bool {
-        self.mode == Mode::WorldPbr && (self.vals[11] != 0 || self.vals[15] != 0) && self.vals[14] != 0
+        (self.mode == Mode::WorldPbr && (self.vals[11] != 0 || self.vals[15] != 0) && self.vals[14] != 0)
+            || (self.mode == Mode::Road && self.vals[9] != 0)
     }
 
     /// Whether the material reads the vehicle light state.
