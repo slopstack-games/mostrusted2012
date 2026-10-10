@@ -17,19 +17,25 @@
 //! Finding a shop is the collectable hit (`FUN_007059b0`, kind 6: the per-kind "found" bitset, language string
 //! 1444768 "BODY SHOP FOUND").
 //!
+//! **When a pass counts** is the behaviour's update `FUN_00749220` (not in the pseudo-C; read from the
+//! disassembly of the user's dump image): for each player with a vehicle, it walks the vehicle's trigger-hit
+//! list for kind 6. A shop that is in the behaviour's cooldown list (this+0x60: up to four {id, seconds}) only
+//! keeps the player's "inside" byte (this+0x48 + player) set. Any other shop is put on the list for **5 s**
+//! (`.rdata` 0x00fd2120; the local player only), and the handler runs if the inside byte was clear, i.e. **on
+//! entering**. The byte clears when the car is in no shop. The list's timers run down with the game's frame
+//! time. Nothing there looks at the damage or the speed: every pass repairs and resprays, whatever the game's
+//! tip (language string 1444769, "repair your car, or spray it a different colour if it's undamaged") says.
+//! Afterwards, once the colour id has changed (this+0x84 / +0x88), the new colour is written to the profile's
+//! rollout of the car (`FUN_006b96f0`, `FUN_00729f20`).
+//!
 //! Model decisions (not from the game):
-//! - **When a pass counts**: the behaviour's update (code between 0x0074921b and 0x00749570) is not in the
-//!   decompiled set, so the rule here is the trigger system's usual one: once on entering the box (the car's
-//!   origin inside it, as `freeroam.rs`), again after leaving it. A cooldown or a speed gate, if the game has
-//!   one, is in that function.
-//! - The handler resprays and repairs on every pass; the game's own tip (language string 1444769) says "repair
-//!   your car, or spray it a different colour if it's undamaged". If that either / or exists it is decided in
-//!   the same untraced function. Ours follows the handler.
+//! - "In the trigger" is the car's origin inside the box (the game uses the car's trigger-hit list, whose
+//!   narrow phase was not read; as `freeroam.rs`).
+//! - The player gates of the update (player bytes +0x23e / +0x23f, word +0x250) are not modelled.
 //! - The respray reloads the car through the garage (as the car menu's paint choice does), which takes a
 //!   moment; the nitrous tank is carried over, damage and dirt stay off.
 //! - No effect or sound: none is named by the handler (the events above go to the scoring / HUD listeners).
 
-use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -47,6 +53,10 @@ use crate::{Game, Loaded};
 
 /// The nitrous a pass awards (`FUN_00748ff0`: `FUN_00658ad0(player, DAT_00fd2104)`, `.rdata` = 100.0).
 const NITROUS_AWARD: f32 = 100.0;
+/// Seconds a shop stays on the cooldown list after a pass (`FUN_00749220`, `.rdata` 0x00fd2120) and the
+/// list's size.
+const COOLDOWN: f32 = 5.0;
+const COOLDOWN_SLOTS: usize = 4;
 /// "BODY SHOP FOUND" (language string; logged).
 const FOUND_TEXT: &str = "BODY SHOP FOUND";
 
@@ -82,7 +92,9 @@ struct Respray {
 pub struct BodyShops {
     loaded: bool,
     shops: Vec<Trigger>,
-    inside: HashSet<u32>,
+    /// The behaviour's "inside" byte of the player (this+0x48) and its cooldown list (this+0x60).
+    inside: bool,
+    cooldowns: Vec<(u32, f32)>,
     /// The driven car's palette in the game's order (index into its paints, colour id), read on a thread
     /// when the car changes.
     palette: Option<(String, Palette)>,
@@ -134,6 +146,7 @@ fn pass(
     mut actions: MessageWriter<GarageAction>,
     pending: Option<Res<PendingCar>>,
     time: Res<Time<Real>>,
+    game_time: Res<Time>,
     mut cars: Query<(Entity, &mut Car, &Transform, Option<&mut CarDamage>, Option<&mut CarGrime>), With<Player>>,
 ) {
     let Some(game) = game else { return };
@@ -148,14 +161,30 @@ fn pass(
     }
     let Some((entity, mut car, transform, damage, grime)) = cars.iter_mut().next() else { return };
     let p = transform.translation.to_array();
+    // `FUN_00749220`: a shop on the cooldown list only keeps the inside byte; another one goes on the list and,
+    // if the byte was clear, is a pass.
     let mut entered = None;
-    for shop in &shops.shops {
-        if !shop.contains(p) {
-            shops.inside.remove(&shop.id);
-        } else if shops.inside.insert(shop.id) {
+    let mut inside = false;
+    for shop in shops.shops.iter().filter(|s| s.contains(p)) {
+        if shops.cooldowns.iter().any(|(id, _)| *id == shop.id) {
+            inside = true;
+            continue;
+        }
+        if shops.cooldowns.len() < COOLDOWN_SLOTS {
+            shops.cooldowns.push((shop.id, COOLDOWN));
+        }
+        inside = true;
+        if !shops.inside {
             entered = Some(shop.id);
         }
+        break;
     }
+    shops.inside = inside;
+    let dt = game_time.delta_secs();
+    shops.cooldowns.retain_mut(|(_, left)| {
+        *left -= dt;
+        *left >= 0.0
+    });
     let Some(id) = entered else { return };
     // The handler does nothing more for a car that is being replaced.
     if shops.respray.is_some() || pending.is_some() || garage.loading.is_some() {

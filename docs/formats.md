@@ -768,8 +768,12 @@ The cars' active-aero machines (`AnimationStateBehaviour`) are the same format.
   `Vehicle`, `Name`, `Colour`, upgrades) for the Aston Martin V12 Vantage; `beab0bc2` (+0x12c) = 1156487, the
   free-roam start point (a `TriggerData` point); `1b3c1ddc` (+0xd8) = 390145, the free-drive game mode.
 - `CarSwapSpot` (44 B, a list of 183 in GAMEPLAY.BNDL): `Placement` (the jack-spot location box), `VehicleId`,
-  `0e3bcabe` (the parked car's box trigger: centre ~1.5 m up, length along local Z), `ColourId`, `82e4f9fe`,
-  `0e1d66c7`, `e36e9d9d`.
+  `0e3bcabe` (the parked car's box trigger: centre ~1.5 m up, length along local Z), `ColourId` (+0x10: a
+  `VehiclePaint` UniqueId of the car's palette), `e36e9d9d` (+0x1c: a second parking place, a trigger about 3 m
+  beside the car's; decomp.md "Jack spots"), `82e4f9fe`, `0e1d66c7` (unread by the swap code).
+- `VehicleColourPalette` (in each vehicle bundle): `16671e74` = the paints in palette order (handles; count byte
+  `db17b169`), or `ColourGroups` (count byte `17acabdb`) with `PrimaryColour` / `SecondaryColour` / `WheelColour`;
+  a paint's colour id is the low half of its resource id (`AssetStore::vehicle_palette`).
 - `UIConfig` (UI/UICONFIG.BNDL): loading-screen layout lists `a65d5d07` (+0x74) and `eee932fa` (+0x80) = [108177],
   `8c082a97` (+0x84) = [1549139]; `LoadingTips` → `UI.LoadingTipsConfig` (132 B): tip lists by category
   (`Autolog`, `Cops`, `EasyDrive`, `Event`, `Mods`, `Nitrous`, `Online`, unnamed ones; 172 offline tips) with their

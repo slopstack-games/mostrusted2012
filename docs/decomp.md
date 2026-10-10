@@ -1934,7 +1934,8 @@ reading the code unless marked *inferred*.
   hit recursively (`FUN_007059b0(…, 0, 0, 0)`), otherwise the 4 s queue timer is reset to 4. Whether the gate
   prop must break as well was not found (no gate kind in `FUN_005b5340`).
 - **Body shop** (kind 6): in `FUN_007059b0` it only sets a local flag and falls through to the common tail;
-  what it does (repair, repaint, heat) was not traced. Next: the tail of `FUN_007059b0` after that flag.
+  that is only the "found" bookkeeping. What a pass does is the `DOBODYSHOP` behaviour's handler: "Body shops"
+  below (2026-10-10).
 - **Hints**: `FUN_006ef070(4)` (speed camera), `FUN_006f3f30(5)` (billboard), `FUN_006f3f30(7)` (gate) are
   show-once tutorial hints; their texts were not resolved.
 - **Speed camera record** (`FUN_008749e0(id, player, centi_mph, 0, id)`): stores the values and, when online
@@ -1945,6 +1946,121 @@ reading the code unless marked *inferred*.
   variables of `HSMBehaviourHSMDoSmashAndGrabScoring` (a Smash-and-Grab event mode), not free roam (dead
   end). Leads: the strings `CurrentSpeedPoints`, `SpeedPoints`, `SPEEDPOINTS`, `upload_sp_buckets`,
   `SP_%d_%d`, and the listeners of the events the handler sends (`FUN_006a8050`).
+
+### Jack spots: the parked cars and the swap (2026-10-10, `jackspots.rs`)
+
+The HSM's "Freedrive States" start five behaviours: "Do Body Shop" (979770), "Car Swap Logic" (979767), "Regular
+Autosave" (a `SaveProfile` every 120 s), "Speech Manager" and "Do Blacklist Shutdowns". "Car Swap Logic" is
+`HSMBehaviourCarSwapLogic`, registered as the script object `JackSpots` (`FUN_0075d510`; variables
+`IsSwapSpotVehicleSpawned`, `IsSwapSpotFound`, `HasCarInSwapSpotBeenDriven`, `UsedSpotBefore`, `OriginalCar`,
+`IsSwapComplete`, `SwapTargetManufacturerMovie`, `SwapSpotBadgeId`, `BadgeIds`, `GamePackImageIds`). Read from
+the code unless marked. **B** = the behaviour object.
+
+- **Slots** (`FUN_00747aa0`): one 0xa0-byte slot per `CarSwapSpot` (the list at collectables manager +0x41b0,
+  which settles that list's type), from B+0x50, count B+0x73f0, plus one empty slot (index B+0x74b4). Slot
+  +0x60 = `Placement` (the location trigger), +0x64 = `VehicleId`, +0x68 = `0e3bcabe` (the car's trigger), +0x6c
+  = `e36e9d9d` (a **second parking place**: in the data a trigger 2.3–3.8 m beside the car's, facing the same
+  way), +0x70 = `ColourId`, +0x40 / +0x50 = the car trigger's position and direction (`FUN_0042f250`), +0x74 the
+  parked vehicle's handle, +0x78 its state (0 none, 1 requested, 2 spawning, 3 standing), +0x90 the squared
+  distance, +0x98 eligible, +0x99 in range. Spots whose car's game pack is not owned are left out
+  (`FUN_00643c10` … `FUN_00647700`).
+- **Distances** (`FUN_007615f0` → `FUN_007610c0`): a physics query for triggers (type 0x20, up to 150) in a
+  sphere of **300 m** (`.rdata` 0x00fd6800) around the player's vehicle keeps the jack spot location kinds
+  (`FUN_006e16c0`: '<' 'B' 'E' 'K' 'N'), sorted by squared distance. The nearest **five** give their slot its
+  distance; every other slot gets FLT_MAX (`.rdata` 0x00fd1304). The nearest one's vehicle is preloaded
+  (`FUN_0071c8e0`); the nearest two fill the badge / game-pack image lists for the UI.
+- **Which cars stand** (`FUN_0075d290`, per slot each frame): wanted = eligible and ((400 ≤ d² ≤ R) or
+  (standing and d² ≤ R)) with R = **90000** (`.data` 0x010c5ca4; 1e6 at 0x010c5ca8 in the intro free drive) and
+  400 at `.data` 0x010c5cac: a car is requested between **20 m and 300 m**, never closer, and a standing one
+  stays inside 300 m. Wanted and state 0: spawn request `FUN_0066bf90(vehicle id, colour, position, direction,
+  zero velocity)`; not wanted and state ≠ 0: removed (`FUN_00758b00`), so a car still loading when the player
+  comes within 20 m is dropped. Eligibility (`FUN_00742400`, refreshed on entering range and one slot per frame):
+  the slot has a vehicle, the profile has the car (`FUN_0068f190`), and it is not the slot named by
+  `DAT_010c5bb4` (set from Lua: Easydrive's `JackIt`); in the intro free drive (game-mode manager +0x2e91) only
+  location 1212078 (the 911 of "Exit When In Jack Spot Car") is eligible.
+- **Prompt and input** (`FUN_007615f0`): per slot, if the player is not in a pursuit (police table +0x874 ≤ 0)
+  and player +0x23f is clear, |speed| (`FUN_006ba3e0`, mph) ≤ `GameLogicConfig` +0x284 (`ff4aef6f`) = **70**,
+  the slot's car stands, and the player's vehicle is **in the slot's location trigger** (`FUN_00742210` with
+  flag 1: the vehicle's trigger-hit list holds the `Placement` id, `FUN_00537190`; in the intro instead within
+  22.5 m, `.rdata` 0x00fd6b70): unless the just-swapped latch B+0x74c9 is set, the prompt is shown
+  (game-mode manager +0x2ca7 = 1, +0x2c70 = `GameLogicConfig` +0x16c `a1e83efa` = language 955092 "PRESS
+  {Controls.ButtonPrompt["SWAP_CARS"]} TO DRIVE CAR", or +0x168 `PromptStore` 2094166 "… TO GO TO STORE" for
+  a car the profile lacks; the HUD's `Mode.PromptString` bar, layout 604307). The input is player 0's action
+  record at +0xc4 = action **14 SWAP_CARS** (state int at 0x1c + 12 × action; E / pad Y / mouse button 1) in
+  state 2. A press starts the swap (B+0x7428 = slot, B+0x7458 = car trigger, player +0x784 = location;
+  `FUN_0075d590`) or, for a locked car, opens the store (`FUN_00748090`). The latch clears once no slot passes
+  the test.
+- **The swap** (`FUN_00761d70`, state at B+0x74a0): 1 wait for B+0x74c4 (set outside the decompiled set;
+  *inferred*: the manufacturer movie / transition has covered the screen; `FUN_0075d590` starts the config's
+  sequences `GameLogicConfig` +0x8c 995872 and +0x90 1016424 and posts message 0x1f) → 2 make sure the slot's
+  car stands, then `FUN_00758f00`: the player's vehicle becomes the slot's car and colour (`FUN_006c2020` →
+  vehicle-manager message 3 and the repair 0x16; the profile's saved rollout for that car is applied,
+  `FUN_00730ec0`), the parked vehicle becomes the car the player came in (`FUN_00844580`), the slot's vehicle
+  id becomes that car's and the two vehicles exchange their physical state (message 0x17 twice) → 3 poses
+  (`FUN_00647e00`): the player's vehicle on the parked car's pose (`FUN_00742530` / `FUN_00742580`), the
+  parked vehicle on the second place (slot +0x6c) the first time and on the car trigger (+0x68) the next,
+  alternating by slot byte +0x97; with no second place, where the player's car was → 4 wait until both are
+  placed → 5 sequences → 6 both triggers of the slot are hit as found (`FUN_007059b0(…, 0, 0, 1)`: the car
+  trigger and the location), first use sends the score event `ScoringConfig` +0x40 (955227, "CAR JACK USED") → 7
+  the colours are exchanged too (`FUN_00844660`: the player's car gets the slot's `ColourId`, the parked one
+  the player's old colour, which the slot keeps), B+0x74c9 = 1, back to 0.
+- **Reset**: B+0x74b8 is the slot last swapped at; when the player is more than 300 m (d² > 90000, `.rdata`
+  0x00fd67e0) from its car trigger, `FUN_007596b0` removes its car and rebuilds the slot from the data
+  (`FUN_0075d800`). When the profile's car changes any other way, all cars are removed and all slots rebuilt
+  (`FUN_00761d70`: `FUN_007592a0`, `FUN_00747aa0`).
+- **Found**: as above, the location trigger counts on entry once the slot's car stands, in free drive.
+  `FUN_00759410` tracks the nearest standing car (a sequence, `GameLogicConfig` +0x104 = 1560090, attached to
+  it, and `FUN_006a2480(d², found)`; *inferred*: the HUD's jack spot indicator).
+- Not traced: the script-variable getters (the registration function is not in the decompiled set), who sets
+  B+0x74c4, the store path, which point-of-interest look jack spots use on the map.
+
+**Port** (`jackspots.rs`; model decisions listed in its header): the slots, the 300 m / nearest-five distances,
+the 20–300 m standing rule, the prompt (layout 604307 with `Mode.PromptString`), SWAP_CARS, the swap's result
+(car, colour, poses, the car left on the second place, both triggers found, last swap spot), the latch and both
+resets. Ours: origin-in-box for "in the trigger", every car available, an immediate swap with no movie, static
+parked cars with one box collider, no pursuit gate, no map icon, no score event.
+
+### Body shops (2026-10-10, `bodyshop.rs`)
+
+- The HSM has a "Do Body Shop" behaviour (type `4985a74f`, code `DOBODYSHOP`, `FUN_0077b600`) in ten places:
+  free drive's "Freedrive States" and the other driving modes. Its per-pass handler is `FUN_00748ff0(this,
+  player index)`, called only from the behaviour's update `FUN_00749220` (missing from the pseudo-C; read
+  from a disassembly of the user's dump image).
+- **When a pass counts** (`FUN_00749220`, every frame, for each of the 24 player slots with a vehicle that is
+  the local player or of kind 2 (+0x9c), with player bytes +0x23e / +0x23f clear, not `FUN_006ba8b0`, not the
+  player at manager +0xa698; a kind-0 player with +0x250 set is skipped): it walks the vehicle's trigger-hit
+  list (`FUN_005372f0`) for records of **kind 6**. If the shop's id is in the cooldown list (this+0x60: up to 4
+  × {id, seconds}, count this+0x80) the player's inside byte (this+0x48 + slot) just stays set. Otherwise the
+  shop is put on the list with **5 s** (`.rdata` 0x00fd2120; kind-0 players only, while fewer than 4 entries)
+  and, **if the inside byte was clear** (and the global byte 0x01179dde, a one-shot "skip the next pass", is
+  clear), the handler runs; the byte is set. In no shop the byte clears. So: a pass on entering, each shop at
+  most once per 5 s; no speed or damage condition. The timers count down by the scaled frame time and expired
+  entries are removed. After a pass (this+0x84) once the colour id differs from the one kept in this+0x88, the
+  new colour is stored in the profile's rollout for the car (`FUN_006b96f0`, `FUN_00729f20`; offline only).
+- **The handler**: unless the game-mode byte +0xe8 is set (`FUN_006dfed0`; *inferred* online), vehicle-manager
+  message **0xc** (`FUN_008446a0`); it returns for a player whose +0x9c is not 0; stats 0x4a and 0x49 +1; then
+  `FUN_00639b00` (pursuit side), `FUN_006beb70` (zeroes five player words at +0x7c), message **0x16**
+  (`FUN_00844940`), `FUN_00658ad0(player, 100)` (`.rdata` 0x00fd2104: a full nitrous tank), `FUN_006b97e0` when
+  `FUN_006c2360` (player +0x3d8 = a table's u16 +0x10e; *inferred* the heat value), and the score events
+  `ScoringConfig` +0x164 (955328) and +0x28 (955329).
+- **Messages** (the vehicle manager's queue, dispatched by `FUN_00596880`): **0x16 → `FUN_0058f060`**, the
+  repair (damage grid zeroed, physics messages 0x12 = wash and 0x11): the link that was inferred before is
+  direct. **0xc → `FUN_00590cb0`** = `FUN_0058bc60` then `FUN_0058edd0`: the vehicle's colour id (+0x164) becomes
+  the **next entry of its `VehicleColourPalette`, cyclic**: with `ColourGroups` (count byte +0x18) the groups'
+  primary colours, else the plain list `16671e74` (count +0x19); a colour that is not in the palette stays. Not
+  random. A second counter (+0x18e, modulo `GameLogicConfig` byte +0x2de) advances with it (use not traced).
+  `FUN_0058edd0` copies the paint's values into the render instance. Message 3 (`FUN_00596200`) is "become
+  vehicle id / colour", used by the swap.
+- **Found**: the collectable hit (`FUN_007059b0`, kind 6) marks the shop in its kind's bitset (profile stat
+  `bodyshops_found`; language 1444768 "BODY SHOP FOUND").
+- Texts: 1444769 "Body Shops will repair your car, or spray it a different colour if it's undamaged",
+  1682561 "Bodyshops repair your scrapes in an instant, just drive through". The code does both on every
+  pass: neither the update nor the handler reads the damage.
+
+**Port** (`bodyshop.rs`): on entering a kind-6 box (the inside byte and the 5 s list as above; ours tests the
+car's origin against the box) the car is repaired and washed,
+gets a full tank and the next palette colour (`AssetStore::vehicle_palette`); the shop is kept as found in the
+profile. Not ported: the pursuit side, the score events, stats.
 
 ## Races (2026-10-09)
 
@@ -2689,7 +2805,7 @@ The paint shaders' object constants are registered by name with slot numbers in 
 - dirt (+0x2c84) += max(w₀, w₁, w₂, t) × dt / max(`Dirt.0979a504`, dt) × `Dirt.ea1c1262` / 4, clamped to 0..1, with w the wheel's three values at this +0x10 + i × 0x30 (smoothed per-wheel skid ramps written by `FUN_009cef90` from a tyre-sound-like parameter object, not ported);
 - dust (+0x2c80) += t × dt / max(`Dust.0979a504`, dt) × `Dust.ea1c1262` / 4, clamped to 0..1.
 A negative rate washes the car (surfaces 27 and 43: −0.5, 15–60 mph). At 120 mph on grass (0.3, 5 s) each level gains 0.06 / s; on dry asphalt only dust grows (0.05 → 0.01 / s at full speed). `FUN_009ce7b0` (car spawn) starts both at the render instance's words 0x1bd8 / 0x1bd0 (zeroed by `FUN_00586810`).
-- **Set and wash**: message 0x13 of the physics queue (`FUN_00919240`) sets +0x2c80..+0x2c8c to one value (sent by `FUN_00589770`, which also sets the instance's levels; no direct caller), message 0x12 zeroes them. `FUN_0058f060` (a vtable method: zeroes the 15 damage-grid values, `FUN_009b2430(1)`, posts 0x12 and 0x11) is the repair; that the gas stations reach it (their handler `FUN_00748ff0` posts manager messages 0xc and 0x16) is inferred.
+- **Set and wash**: message 0x13 of the physics queue (`FUN_00919240`) sets +0x2c80..+0x2c8c to one value (sent by `FUN_00589770`, which also sets the instance's levels; no direct caller), message 0x12 zeroes them. `FUN_0058f060` (a vtable method: zeroes the 15 damage-grid values, `FUN_009b2430(1)`, posts 0x12 and 0x11) is the repair; the body shops reach it through vehicle-manager message 0x16 (`FUN_00596880` case 0x16; their handler `FUN_00748ff0` posts 0xc = next palette colour and 0x16; "Body shops", 2026-10-10).
 
 **Scratches** (`VehicleNFS13_BodyPaint` vertex program, the damage variant): TEXCOORD5.w = max(Σ bilinear `gavDamageVolumeValues[row × 3 + col].x`, `g_damageConstants.x`) at (col, row) = `gvDamageVolumeParam.xy` × (10 × POSITION.xz) + `.zw`, the unskinned bind-pose position (POSITION is R16G16B16A16 Snorm, × 10 = metres). The pixel program (longest `ps_4_0`): s = (1 − 2 |e(uv × (2, 3)).z − 0.5|) × sat(2 e.z − 1) × TEXCOORD5.w with e the effects map at TEXCOORD2; the colour lerps to `PbrPaintScratchColour` by s, roughness to `ScratchSettings.x`, F0 to `ScratchSettings.y`, the clear coat's reflection × (1 − s)(1 − coverage)⁴; the same weight blends the `CrumpleTextureSampler` normal (TEXCOORD1) into the normal and its alpha into the AO (not ported). `FUN_0057e840` sets `gvDamageVolumeParam` = (2 / (max.x − min.x), 4 / (max.z − min.z), −min.x × that, −min.z × that) from the render instance's box (+0x140 / +0x150, `FUN_0057c120`: the model's mesh boxes); the snapshot's car: (0.889, 0.786, 1.0, 2.005), a 2.25 × 5.09 m box. `FUN_00585030` (from `FUN_00591ac0`, when the vehicle's +0x1181 flag is set) fills the 15 values from the vehicle's eight zone levels at +0x112c..+0x1148, each capped at 0.99 (`.rdata` 0x00f9cad4) while the car is not wrecked (damage bar byte +0x1180 below the profile's segment count), times `VehicleInfo.76bfd668` (+0x84 of the object the instance's vtable +0x34 handle leads to, read in the snapshot: 10), capped at 1. Rows run from min z (back) to max z, columns from min x (the car's right) to max x: back row twice (+0x113c, +0x1140, +0x1144), middle row (+0x1138, min(+0x1148, +0x1138), +0x1148), front row twice (+0x1134, +0x1130, +0x112c). The zone order on the vehicle is therefore front-left, front, front-right, right, rear-right, rear, rear-left, left (+0x112c …), consistent with `FUN_005b1680`, whose zone switch (cases 1..8) reads +0x1130, +0x1140, +0x1148, +0x1138, +0x112c, +0x1134, +0x1144, +0x113c: front, rear, left, right, front-left, front-right, rear-left, rear-right, our damage clip order (inferred: the enum's names are not in the dump). Ported in `paint_wear.rs` / `layered.wgsl`.
 
