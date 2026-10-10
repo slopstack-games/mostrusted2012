@@ -904,7 +904,7 @@ fn main() -> anyhow::Result<()> {
         .insert_resource(ClearColor(Color::srgb(0.55, 0.68, 0.85)))
         .init_resource::<Loaded>()
         .init_resource::<groundcover::GroundcoverResidency>()
-        .add_systems(Startup, setup)
+        .add_systems(Startup, (setup, cpu_light_clustering))
         .add_systems(Update, (start_loader, receive_assets, update_status, auto_screenshot))
         .add_systems(
             PostUpdate,
@@ -944,6 +944,16 @@ fn main() -> anyhow::Result<()> {
 }
 
 use weather::GAME_UNIT;
+
+/// Light clustering on the CPU (Bevy's fallback for devices without compute) instead of the GPU: there are no
+/// point, spot or probe lights to cluster (the key light is directional, the sky light is the view's environment
+/// map), but GPU clustering rebuilt its per-view buffers and bind groups and encoded its passes every frame.
+/// The render world copies the setting from the main world each frame. `MW_GPU_CLUSTERING=1`: Bevy's default.
+fn cpu_light_clustering(mut settings: ResMut<bevy::light::cluster::GlobalClusterSettings>) {
+    if std::env::var_os("MW_GPU_CLUSTERING").is_none() {
+        settings.gpu_clustering = None;
+    }
+}
 
 fn setup(mut commands: Commands, game: Res<Game>, mut images: ResMut<Assets<Image>>) {
     // The game renders deferred: the camera keeps a depth + deferred G-buffer prepass (which the game
