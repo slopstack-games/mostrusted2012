@@ -349,7 +349,11 @@ impl AssetStore {
             return Ok(None);
         };
         let mut spec = fmt::VehicleGraphicsSpec::parse(&bundle.load(entry)?)?;
-        self.repair_wheel_layout(&mut spec);
+        // Wheels where the game puts them (`wheel_layout`), not at the spec's positions.
+        if let Some(layout) = self.vehicle_wheel_layout(bundle) {
+            let positions: Vec<[f32; 3]> = layout.wheels.iter().map(|w| w.position).collect();
+            crate::wheel_layout::place_spec_wheels(&mut spec, &positions);
+        }
         let mut out: Vec<Placement> = spec
             .parts
             .iter()

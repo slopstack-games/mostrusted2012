@@ -69,6 +69,9 @@ pub struct TrafficCarSpec {
     pub paint: usize,
     pub body: Vec<ResourceId>,
     pub wheels: Vec<WheelSpec>,
+    /// Height of the model origin above the road (`VehicleInfo.509931cd` translation y): the body and wheels
+    /// are drawn this much above the lane.
+    pub ride_height: f32,
 }
 
 /// Sends [`CarRequest`]s to the loader thread.
@@ -443,15 +446,11 @@ impl Worker {
             .next()
             .ok_or_else(|| anyhow::anyhow!("{bundle} has no VehicleGraphicsSpec"))?;
         let mut spec = mw_formats::VehicleGraphicsSpec::parse(&b.load(e)?)?;
-        let mut handling = mw_assets::handling::VehicleHandling::from_bundle(&self.store, &b).unwrap_or_default();
-        // Broken wheel data (the Venom's front axle): move the axle onto the body's arches, for the
-        // physics wheels as well (`mw_assets::wheel_arches`).
-        for (old, new) in self.store.repair_wheel_layout(&mut spec) {
-            self.send(Msg::Progress(format!("{bundle}: axle at z {old:.3} moved to the body's arch at z {new:.3}")))?;
-            for w in handling.wheels.iter_mut().filter(|w| (w.position[2] - old).abs() < 0.05) {
-                w.position[2] += new - old;
-            }
-        }
+        let handling = mw_assets::handling::VehicleHandling::from_bundle(&self.store, &b).unwrap_or_default();
+        // The wheels go where the game's vehicle build puts its wheel bodies (`mw_assets::wheel_layout`,
+        // `FUN_009b40c0`), already in `handling.wheels`; the spec's positions are placeholders on many cars.
+        let positions: Vec<[f32; 3]> = handling.wheels.iter().map(|w| w.position).collect();
+        mw_assets::wheel_layout::place_spec_wheels(&mut spec, &positions);
         // An opponent plays its competitor engine (`car_audio.rs`); the player's bank is not built for it.
         let competitor_engine = self
             .opponent
@@ -558,7 +557,13 @@ impl Worker {
             .next()
             .ok_or_else(|| anyhow::anyhow!("{bundle} has no VehicleGraphicsSpec"))?;
         let mut spec = mw_formats::VehicleGraphicsSpec::parse(&b.load(e)?)?;
-        self.store.repair_wheel_layout(&mut spec);
+        // The kinematic traffic pose (`FUN_005ee7f0`): the axles' positions with the front-left radius, in the
+        // frame `VehicleInfo.509931cd`, whose translation lifts the model above the road (`wheel_layout`).
+        let layout = self.store.vehicle_wheel_layout(&b);
+        if let Some(l) = &layout {
+            mw_assets::wheel_layout::place_spec_wheels(&mut spec, &l.traffic_positions());
+        }
+        let ride_height = layout.as_ref().map_or(0.0, |l| l.traffic_ride_height());
         let saved = (self.paint, self.paint_count);
         self.paint = req.colour;
         let mut body = Vec::new();
@@ -588,7 +593,13 @@ impl Worker {
             });
         }
         (self.paint, self.paint_count) = saved;
-        self.send(Msg::TrafficCar(Box::new(TrafficCarSpec { vehicle: req.vehicle, paint: req.paint, body, wheels })))
+        self.send(Msg::TrafficCar(Box::new(TrafficCarSpec {
+            vehicle: req.vehicle,
+            paint: req.paint,
+            body,
+            wheels,
+            ride_height,
+        })))
     }
 
     /// Static collision for a track unit, built off the main thread.

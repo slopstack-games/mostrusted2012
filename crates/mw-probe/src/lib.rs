@@ -249,6 +249,64 @@ fn log(msg: &str) {
     }
 }
 
+// --- memory dumps on request ---------------------------------------------------------------------------
+
+/// Parse an address term: `NFS13.exe+0x…` (image-relative), or a plain hex / decimal number.
+fn parse_addr(s: &str) -> Option<usize> {
+    let s = s.trim();
+    if let Some(rest) = s.strip_prefix("NFS13.exe+").or_else(|| s.strip_prefix("nfs13.exe+")) {
+        return parse_addr(rest).map(|a| IMAGE_BASE + a);
+    }
+    match s.strip_prefix("0x") {
+        Some(hex) => usize::from_str_radix(hex, 16).ok(),
+        None => s.parse().ok(),
+    }
+}
+
+/// Serve `dump.req` in the output directory: each line `name base [offset ...] length` reads `length` bytes at
+/// the address the chain gives (the `handling.watch` convention: `base`, then for each offset read a pointer
+/// there and add the offset) into `name.bin`, plus a line in `dump.txt`. The request is renamed `dump.done`.
+/// Read-only: game memory is only read, through the same `readable` check as everything else.
+fn serve_dump_requests() {
+    let Some(dir) = out_dir() else { return };
+    let req = format!("{dir}\\dump.req");
+    let Ok(text) = std::fs::read_to_string(&req) else { return };
+    let _ = std::fs::rename(&req, format!("{dir}\\dump.done"));
+    let mut report = String::new();
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        if words.len() < 3 {
+            let _ = writeln!(report, "{line}: needs `name base [offset ...] length`");
+            continue;
+        }
+        let name = words[0];
+        let parsed: Option<Vec<usize>> = words[1..].iter().map(|w| parse_addr(w)).collect();
+        let Some(nums) = parsed else {
+            let _ = writeln!(report, "{name}: bad number in `{line}`");
+            continue;
+        };
+        let (len, chain) = (nums[nums.len() - 1].min(1 << 22), &nums[..nums.len() - 1]);
+        let addr = if chain.len() == 1 { Some(chain[0]) } else { follow(chain[0], &chain[1..]) };
+        match addr {
+            Some(a) if readable(a, len) => {
+                let mut buf = vec![0u8; len];
+                // SAFETY: the range was checked readable just above.
+                unsafe { std::ptr::copy_nonoverlapping(a as *const u8, buf.as_mut_ptr(), len) };
+                let ok = std::fs::write(format!("{dir}\\{name}.bin"), &buf).is_ok();
+                let _ = writeln!(report, "{name} {a:#010x} {len:#x} {}", if ok { "ok" } else { "write failed" });
+            }
+            Some(a) => {
+                let _ = writeln!(report, "{name} {a:#010x} {len:#x} unreadable");
+            }
+            None => {
+                let _ = writeln!(report, "{name}: chain did not resolve");
+            }
+        }
+    }
+    let _ = std::fs::write(format!("{dir}\\dump.txt"), &report);
+    log(&format!("served dump request: {} line(s)", report.lines().count()));
+}
+
 // --- the hello thread ---------------------------------------------------------------------------------
 
 fn hello(real_loaded: bool, missing: Vec<&'static str>) {
@@ -278,6 +336,7 @@ fn hello(real_loaded: bool, missing: Vec<&'static str>) {
     let mut reported_stable = false;
     let mut reported_gameplay = false;
     let mut next_beat = Duration::from_secs(5);
+    let mut next_request = Duration::ZERO;
     log(&format!("tick fn {TICK_FN:#010x}: initial hash {last_hash:08x?}"));
     loop {
         std::thread::sleep(Duration::from_millis(10));
@@ -298,6 +357,10 @@ fn hello(real_loaded: bool, missing: Vec<&'static str>) {
         } else if reported_gameplay && table.is_none() {
             log("vehicle table gone (menu / loading)");
             reported_gameplay = false;
+        }
+        if start.elapsed() >= next_request {
+            serve_dump_requests();
+            next_request = start.elapsed() + Duration::from_millis(200);
         }
         if start.elapsed() >= next_beat {
             log(&format!(
