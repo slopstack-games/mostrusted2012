@@ -1,3 +1,25 @@
+# Handoff: 2026-10-14 (session 8): start here
+
+**State**: master (4c0e08e) has the six 2026-10-10 worktree branches merged (suspension point masses, wheel
+placement, chase camera port, player horn / grind / impact sounds and parked cars, frame time, map screen and
+event card); clippy 0 warnings, 155 tests, `mwtool verify` 0 failures, 911 tests as the suspension branch
+recorded (wheels moved 4–8 mm by the placement rule). All worktrees removed; the camera agent's `ref/cam`
+and the probe's `ref/probe/wheels` were kept. Not pushed.
+
+- **REA** (MCP server `rea`, Ghidra provider) is installed. `tools/snapimage.py` carves the decrypted image from
+  `re/out/live/snap1` and exports the **16,257 function starts the dump missed** (vtable-only methods); open
+  `re/out/live/NFS13_snap1_vt.exe` with `open_binary` (first query waits ~10+ min for Ghidra's analysis;
+  `REA_GHIDRA_STARTUP_TIMEOUT_MS` = 1 h). `re/out/live/text.asm` is an objdump of all `.text` for operand scans.
+  reverse-engineering.md "Functions the dump is missing".
+- **Chase camera**: the original's per-frame camera path is fully read and has no world query; our wall push-in
+  is off (`MW_CAMERA_PUSH_IN=1` for A/B). A capture of the original backed into a wall would confirm.
+- **Next with REA**: the remaining "not in the dump" / "writer not found" items (research log 2026-10-14):
+  `LAB_005a22e0` (a wave's gain), `AIPlayer::FillInput` 0x006c0890, the constraint +0x210 writer, the
+  `world+0xa2bee` start-over flag, `0x0118a060`'s writer, `FUN_008fcd60` (an undocumented body orientation
+  controller); the steering q's writer was searched and not found.
+- Still open from session 7 below: water level, the wet road's grazing reflection, the original's time of day
+  in memory, a user play test of everything merged since 2026-10-09.
+
 # Handoff: 2026-10-10 (session 7, Windows): start here
 
 **State**: branch `windows-port` (not merged into master, not pushed): the workspace builds and runs on Windows
