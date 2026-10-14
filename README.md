@@ -135,27 +135,43 @@ Summary below; see [docs/PLAN.md](docs/PLAN.md) for milestones, the gap list aga
 Done:
 - [x] Bundle reader, verified against all 2,020 bundles (432k resources); GeneSys reader with ~1,200 recovered
   field names
-- [x] World streaming: instances, props, compounds, dynamic objects, groundcover, collision; zone-composed backdrops
+- [x] World streaming: instances, props, compounds, dynamic objects, groundcover, collision; zone-composed
+  backdrops; model LODs and draw distances by the game's rule
 - [x] Game shaders ported from their DXBC (roads, terrain, world, trees, water, vehicle paint, lights and glass),
-  the game's G-buffer, key light, shadows, fog, exposure and tonemap; the environment timeline (hour, weather)
-- [x] Cars from VehicleGraphicsSpec, a car menu with every car and paint, crash damage from the damage skeleton
-- [x] Audio: EA decoders, the engine's full sound bank and mixer, tyre / road / wind / impact sounds, music,
-  volume settings
-- [x] Particle effects (tyre smoke, kick-up, sparks), data-driven chase / bonnet / bumper cameras, a basic HUD
+  the game's G-buffer, key light, shadows, fog, exposure and tonemap; the environment timeline (hour, weather),
+  the game's sun path and sky; night lighting (street lamps, lit windows)
+- [x] Post-processing from the game's code: bloom, depth of field, colour cube and grade, vignette
+- [x] Cars from VehicleGraphicsSpec, a car menu with every car and paint, crash damage from the damage skeleton,
+  dirt and scratches, wheel placement by the game's rule
+- [x] Handling read from the game's code (drivetrain, tyres, point-mass suspension, aero, steering, drift,
+  nitrous, surfaces) and compared against recordings of the running original
+- [x] Audio: EA decoders, the engine's full sound bank and mixer, tyre / road / wind / impact / grind sounds, the
+  horn, traffic and AI engines, music, volume settings
+- [x] Particle effects (tyre smoke, kick-up, sparks, exhaust pops), chase / bonnet / bumper cameras ported from
+  the game's code, the race intro cutscenes, the crash camera
+- [x] Input mapping like the original (keyboard, gamepads, Steam Controller), menu input with the original's
+  repeat and map controls
+- [x] Front end: title, loading, pause menu, Easydrive, the map screen (event selection) and event-loading card
+- [x] Traffic and parked cars, AI racers, races (gates, laps, results), speed cameras, billboards, gates, jack
+  spots, body shops, a first playable pursuit
 
-In progress or missing (user review, 2026-10-04):
-- [~] Handling: rebuilt from the game's own code (drivetrain, tyres, suspension, aero, steering, drift; notes in
-  [docs/decomp.md](docs/decomp.md), [docs/handling.md](docs/handling.md)) but it **does not drive like the
-  original yet**; next is measuring the running game (`mwtool memscan` / `telemetry`)
-- [ ] Tyre screech sounds like a horn held at the same time
-- [ ] Shading: a yellow tint over the whole image
-- [ ] Animations (driver, steering wheel, animated body parts, world animations)
-- [ ] Input mapping like the original game
-- [ ] UI: Easydrive and the game's front end (only a HUD and our own menus so far)
-- [ ] Crash camera
-- [~] Prop collisions: simulated, but opt-in (`--prop-physics`) because the car wedges against knocked props
-- [ ] AI vehicles: traffic, racers, cops
-- [ ] Game logic: events, pursuits, the Most Wanted list, jack spots, progression
+Still missing or not like the original (user play test, 2026-10-14; details in
+[docs/next-session.md](docs/next-session.md)):
+- [ ] Physics: some trash bags are indestructible; road collisions sometimes harsh; sidewalks affect the car too
+  much; brake-to-drift understeers at higher speeds
+- [ ] World: water floating above where it should be in places; terrain sticking through the road in places
+- [ ] Navigation (route to a destination); map icons (jack spots, race locations, cops; Most Wanted races shown
+  as normal races)
+- [~] Police: chase behaviour reworked from the game's code (not merged yet); no sirens or light bars, no radio
+  chatter, roadblocks and spike strips missing; crashing racers and cops does not work yet
+- [ ] Music on the loading screen, music matched to free roam / races
+- [ ] Front end and UI: the start screen overlaps its two prompts; race end screen; the UI in general
+- [ ] Cutscenes: changing cars, the start-up cutscene (entering the car, with its stats)
+- [~] Crash camera: there, but not quite like the original
+- [ ] Progression: mods unlocked by races, Most Wanted cars unlocked by beating them; takedowns / wrecks from
+  car-to-car crashes in races
+- [ ] Billboards: intact with their artwork by default (broken only once smashed), showing the Easydrive records
+- [ ] Animations: driver, steering wheel, animated body parts, world animations, tree wind
 
 ## Credits
 
