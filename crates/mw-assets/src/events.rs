@@ -123,6 +123,12 @@ pub enum EventKind {
     Other(u32),
 }
 
+impl Default for EventKind {
+    fn default() -> Self {
+        Self::Other(0)
+    }
+}
+
 impl EventKind {
     pub fn from_ids(game_mode: u32, type_name: u32) -> Self {
         match (game_mode, type_name) {
@@ -248,7 +254,7 @@ pub struct AlternateRoute {
 }
 
 /// One offline event, resolved against the world's triggers.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Event {
     pub id: u32,
     pub kind: EventKind,

@@ -13,6 +13,7 @@
 
 use bevy::input::gamepad::{GamepadAxis, GamepadButton};
 use bevy::input::keyboard::KeyCode;
+use bevy::prelude::{Query, Real, Res, ResMut, Resource, Time};
 
 /// Pad stick dead zone per axis (`FUN_004119c0`, this+0x140 = `.rdata` 0x00f9156c).
 pub const STICK_DEAD_ZONE: f32 = 0.2;
@@ -95,6 +96,195 @@ pub mod defaults {
     pub const EASY_DOWN: &[Control] = &[Key(K::Numpad2), Button(B::DPadDown)];
 }
 
+/// The Autolog menu actions (ids 42–61) the front-end screens' user actions name by input mapping (`menu_left`,
+/// `accept`, …; the name → id table at `.rdata` 0x00fe58c0, lookup `FUN_007dbc30` / `FUN_007e7910`), with the
+/// original's default bindings (keyboard `FUN_00483470`, pad `FUN_00482250`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MenuAction {
+    Left,
+    Right,
+    Up,
+    Down,
+    Accept,
+    Cancel,
+    Settings,
+    Alt,
+    TabLeft,
+    TabRight,
+    TriggerLeft,
+    TriggerRight,
+    Start,
+}
+
+impl MenuAction {
+    pub const ALL: [MenuAction; 13] = [
+        Self::Left,
+        Self::Right,
+        Self::Up,
+        Self::Down,
+        Self::Accept,
+        Self::Cancel,
+        Self::Settings,
+        Self::Alt,
+        Self::TabLeft,
+        Self::TabRight,
+        Self::TriggerLeft,
+        Self::TriggerRight,
+        Self::Start,
+    ];
+
+    /// The action's bindings and, for the four directions, those of its `_ALT` twin (46–49: the d-pad).
+    pub fn bindings(self) -> (&'static [Control], &'static [Control]) {
+        use Control::*;
+        use GamepadAxis as A;
+        use GamepadButton as B;
+        use KeyCode as K;
+        match self {
+            // AUTOLOG_MENU_LEFT / RIGHT (42 / 43): arrows, left stick X (max −1 / +1); _ALT: d-pad.
+            Self::Left => (&[Key(K::ArrowLeft), Axis(A::LeftStickX, -1.0)], &[Button(B::DPadLeft)]),
+            Self::Right => (&[Key(K::ArrowRight), Axis(A::LeftStickX, 1.0)], &[Button(B::DPadRight)]),
+            // AUTOLOG_MENU_UP / DOWN (44 / 45): arrows, left stick Y (max +1 / −1); _ALT: d-pad.
+            Self::Up => (&[Key(K::ArrowUp), Axis(A::LeftStickY, 1.0)], &[Button(B::DPadUp)]),
+            Self::Down => (&[Key(K::ArrowDown), Axis(A::LeftStickY, -1.0)], &[Button(B::DPadDown)]),
+            // AUTOLOG_ACCEPT (52): Enter (VK_RETURN, both keys); A.
+            Self::Accept => (&[Key(K::Enter), Key(K::NumpadEnter), Button(B::South)], &[]),
+            // AUTOLOG_CANCEL (53): Backspace; B.
+            Self::Cancel => (&[Key(K::Backspace), Button(B::East)], &[]),
+            // AUTOLOG_SETTINGS (54): Right Ctrl; Y. AUTOLOG_ALT (55): E; X.
+            Self::Settings => (&[Key(K::ControlRight), Button(B::North)], &[]),
+            Self::Alt => (&[Key(K::KeyE), Button(B::West)], &[]),
+            // AUTOLOG_TAB_LEFT / RIGHT (56 / 57): Page Up / Down; LB / RB.
+            Self::TabLeft => (&[Key(K::PageUp), Button(B::LeftTrigger)], &[]),
+            Self::TabRight => (&[Key(K::PageDown), Button(B::RightTrigger)], &[]),
+            // AUTOLOG_TRIGGER_LEFT / RIGHT (58 / 59): Z / A; LT / RT.
+            Self::TriggerLeft => (&[Key(K::KeyZ), Trigger(B::LeftTrigger2, A::LeftZ)], &[]),
+            Self::TriggerRight => (&[Key(K::KeyA), Trigger(B::RightTrigger2, A::RightZ)], &[]),
+            // AUTOLOG_START (61): Escape; Start.
+            Self::Start => (&[Key(K::Escape), Button(B::Start)], &[]),
+        }
+    }
+
+    fn directional(self) -> bool {
+        matches!(self, Self::Left | Self::Right | Self::Up | Self::Down)
+    }
+}
+
+/// First auto-repeat after this long held, then every `REPEAT_NEXT` (`FUN_0047c3xx`: `.rdata` 0x00f9fb7c 0.2 s,
+/// 0x00f9fb78 0.1 s).
+pub const REPEAT_FIRST: f32 = 0.2;
+pub const REPEAT_NEXT: f32 = 0.1;
+/// A directional menu action fires (pressed or repeated) only above this value (`FUN_007f50e0`, actions 0x2a–0x31).
+pub const DIRECTION_FIRE_MIN: f32 = 0.05;
+/// Which of an action and its `_ALT` twin is read (`FUN_0047a3f0`): `TABLE[main state × 4 + alt state]` is the
+/// combined state (`.rdata` 0x00f9fab0; states idle 0, held 1, pressed 2, released 3); the main action is read
+/// when it has that state, else the twin.
+const STATE_PRIORITY: [u8; 16] = [0, 1, 2, 3, 1, 1, 1, 1, 2, 1, 2, 2, 3, 1, 2, 3];
+
+/// One action's value over two frames and its auto-repeat timer (the binding value pair of `FUN_00ac6850`).
+#[derive(Clone, Copy, Default)]
+struct Track {
+    value: f32,
+    prev: f32,
+    timer: f32,
+    repeated: bool,
+    repeat: bool,
+}
+
+impl Track {
+    /// idle 0, held 1, pressed 2, released 3.
+    fn state(&self) -> u8 {
+        match (self.prev > 0.0, self.value > 0.0) {
+            (false, false) => 0,
+            (true, true) => 1,
+            (false, true) => 2,
+            (true, false) => 3,
+        }
+    }
+
+    fn update(&mut self, v: f32, dt: f32) {
+        self.prev = self.value;
+        self.value = v;
+        self.repeat = false;
+        match self.state() {
+            1 | 2 => {
+                self.timer += dt;
+                let wait = if self.repeated { REPEAT_NEXT } else { REPEAT_FIRST };
+                if self.timer >= wait {
+                    self.timer = 0.0;
+                    self.repeat = true;
+                    self.repeated = true;
+                }
+            }
+            3 => {
+                self.timer = 0.0;
+                self.repeated = false;
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The menu actions this frame, as the front-end screens read them (`menu_screens` systems run after
+/// `update_menu_input`).
+#[derive(Resource, Default)]
+pub struct MenuInput {
+    tracks: [(Track, Track); 13],
+}
+
+impl MenuInput {
+    fn resolved(&self, a: MenuAction) -> &Track {
+        let (main, alt) = &self.tracks[a as usize];
+        let combined = STATE_PRIORITY[(main.state() * 4 + alt.state()) as usize];
+        if main.state() == combined { main } else { alt }
+    }
+
+    /// The action's value (analogue: the stick's, keys and buttons 0 / 1).
+    pub fn value(&self, a: MenuAction) -> f32 {
+        self.resolved(a).value
+    }
+
+    /// Pressed this frame (a plain user action fires on this).
+    pub fn pressed(&self, a: MenuAction) -> bool {
+        self.resolved(a).state() == 2
+    }
+
+    /// Pressed or auto-repeated this frame (a user action with the repeat flag, `2da735e3`, fires on this).
+    pub fn fired(&self, a: MenuAction) -> bool {
+        let t = self.resolved(a);
+        (t.state() == 2 || t.repeat) && (!a.directional() || t.value > DIRECTION_FIRE_MIN)
+    }
+}
+
+/// Read the menu actions from the keys and pads (real time: menus run while the game clock is paused).
+pub fn update_menu_input(
+    mut menu: ResMut<MenuInput>,
+    keys: Res<bevy::input::ButtonInput<KeyCode>>,
+    pads: Query<&bevy::input::gamepad::Gamepad>,
+    time: Res<Time<Real>>,
+) {
+    let pad_list: Vec<&bevy::input::gamepad::Gamepad> = pads.iter().collect();
+    let dev = Devices { keys: &keys, pads: &pad_list };
+    let dt = time.delta_secs();
+    for a in MenuAction::ALL {
+        let (main, alt) = a.bindings();
+        let (m, t) = &mut menu.tracks[a as usize];
+        m.update(dev.value(main), dt);
+        t.update(dev.value(alt), dt);
+    }
+}
+
+/// Reads the menu actions each frame, after Bevy's input systems (and after the Steam Controller's and the input
+/// script's raw events, which come before them).
+pub struct MenuInputPlugin;
+
+impl bevy::app::Plugin for MenuInputPlugin {
+    fn build(&self, app: &mut bevy::app::App) {
+        use bevy::prelude::IntoScheduleConfigs;
+        app.init_resource::<MenuInput>()
+            .add_systems(bevy::app::PreUpdate, update_menu_input.after(bevy::input::InputSystems));
+    }
+}
+
 /// Raw device state the bindings read: keys and the pads.
 pub struct Devices<'a> {
     pub keys: &'a bevy::input::ButtonInput<KeyCode>,
@@ -175,6 +365,38 @@ mod tests {
         // EASY_* use min 0.8 (.rdata 0x00fa1db8), max 1: a pressed d-pad gives 1, a half value 0.
         assert!((binding_value(1.0, 0.8, 1.0) - 1.0).abs() < 1e-5);
         assert_eq!(binding_value(0.5, 0.8, 1.0), 0.0);
+    }
+
+    #[test]
+    fn menu_repeat_timing() {
+        // Held: fires on the press, again after 0.2 s, then every 0.1 s (FUN_0047c3xx); reset on release.
+        let mut t = Track::default();
+        let mut fired = Vec::new();
+        for i in 0..10 {
+            t.update(1.0, 0.0625);
+            if t.state() == 2 || t.repeat {
+                fired.push(i);
+            }
+        }
+        assert_eq!(fired, vec![0, 3, 5, 7, 9]);
+        t.update(0.0, 0.01);
+        assert_eq!(t.state(), 3);
+        assert!(!t.repeated && t.timer == 0.0);
+    }
+
+    #[test]
+    fn menu_alt_twin_is_read_when_main_is_idle() {
+        // The d-pad (MENU_*_ALT) drives menu_up when the stick / arrow is idle (FUN_0047a3f0).
+        let mut m = MenuInput::default();
+        let (main, alt) = &mut m.tracks[MenuAction::Up as usize];
+        main.update(0.0, 0.01);
+        alt.update(1.0, 0.01);
+        assert!(m.pressed(MenuAction::Up) && m.fired(MenuAction::Up));
+        assert_eq!(m.value(MenuAction::Up), 1.0);
+        // A stick barely past its dead zone presses but does not fire a direction (> 0.05 needed).
+        let mut m = MenuInput::default();
+        m.tracks[MenuAction::Down as usize].0.update(0.03, 0.01);
+        assert!(m.pressed(MenuAction::Down) && !m.fired(MenuAction::Down));
     }
 
     #[test]

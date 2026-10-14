@@ -10,6 +10,46 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-14: the map screen's controls and menu input, from the code
+User report: "I cannot navigate around the map (in the pause menu) properly, especially with the controller."
+Cause: our map read only `just_pressed` arrows and d-pad and stepped between icons by our own ±60° rule; the left
+stick did nothing, and the pause menu had no stick and no auto-repeat. The original's rules are now read and
+ported (decomp.md "Menu input and the map screen's controls"):
+- **Where the rules are**: the screen data (`mwtool genesys UI/SCREENS2/899991.BNDL --max-items 1000`; the
+  default 16-item cap hid 77 of the 93 widget groups) gives each widget's `UserActionInstance`s: the map's
+  `MapManager` widget takes `MainMapNav_*` (analogue `menu_*`) as `OnMenuUp` / … of the native `LiveMapManager`
+  script; accept → `TO_OPTIONS`, cancel and start → `TO_GAME`, tabs `tab_left` / `right`, filters `trigger_left` /
+  `right`. The screen's Lua scripts are compiled Lua 5.1 chunks (`TextFile` resources, 4-byte length + `\x1bLuaQ`,
+  4-byte `size_t`): re-encoding `size_t` to 8 bytes lets the host's `luac5.1 -l -l` list them. `MainMapControls`
+  only calls `MapManager:OnControlsActivate` / `Deactivate`; `MainMapZoom` holds the zoom states (below).
+- **The code** (REA on the decrypted image; none of it is in the dump): `OnMenu*` dispatch `FUN_00803ce0`, the
+  per-frame update `FUN_008170d0` (dead zone 0.4, hold 0.1 s before the cursor moves at 1500 m/s, release ≤ 0.4 s
+  = flick `FUN_00814f60` within 30° then 45°, else snap `FUN_00813e60` within 0.4 screen heights), the glide
+  `FUN_00807a60` with the ease `FUN_00630980` (0.8 s), the cursor = `SelectedPosition` = camera look-at. Its
+  tuning is the GeneSys `MainMapConfig` 1135320 (`UI/UICONFIG.BNDL`), found by its field offsets in the type
+  table (`mwtool genesys-types`). Input mapping names → action ids (`FUN_007e7910`), the `_alt` (d-pad) twin
+  rule (`FUN_0047a3f0`), firing and auto-repeat 0.2 / 0.1 s (`FUN_007f50e0`, `FUN_0047c3xx`).
+- **No zoom or pan on PC**: `MainMapZoom.ToggleZoomState` (states distance 8000 / 3400) has no caller in the data
+  or the exe (it is the Vita's pinch zoom); the right stick (`scroll_*`) is not used by the map. The map "pans"
+  only by moving the cursor, which the camera follows.
+- **Back from the map goes to the game**, not to the pause menu: `Back_MapScreen` (cancel) exits `TO_GAME`, which
+  ends the in-game menu (HSM 1695290 → 469008). Our map sent Backspace to the pause menu (a `NAV_BACK` guess).
+- **Port**: `input::MenuInput` (the 13 menu actions with the original's keyboard / pad defaults, the d-pad twin
+  rule, pressed / repeat), used by `pause.rs` and `map_screen.rs`; `map_screen::nav_update` ports the update,
+  snap, flick and glide with the data's `MainMapConfig`. New `MW_INPUT_SCRIPT` (keys and a virtual pad sending
+  raw gamepad messages, screenshots; `input_script.rs`) and `MW_MAP_LOG`.
+- **Checked** (headless, `ref/mapnav/run1.sh`, `run2.sh`; screenshots in the worktree's `ref/mapnav/r1`, `r2`):
+  pad stick tap right → the next event right of the player; stick held up 1 s → free cursor (no card), release
+  → snapped to the nearest event; d-pad left → the event 64 px left; A → options, d-pad down → START RACE, B →
+  back to the map, B → driving. Pause menu: stick held down 0.55 s → five rows (press + repeats at 0.2, 0.3,
+  0.4, 0.5 s), d-pad up one row, keyboard Esc / arrows / Enter into MAP; keyboard tap → flick, hold → free
+  cursor then snap, Backspace → driving.
+- **Model decisions / open**: the cursor moves along our flat map's screen axes (the camera rows at view +0x2f370
+  and the up axis's foreshortening are not read); `FUN_0078f1d0` (a gate before moving) taken as true; the view's
+  +0x2f5a8 (0.2 / 0.5 s written on moves / flicks) has no reader found, so the camera follows the cursor without
+  lag; the failed left flick's `TO_MWL` (threshold `DAT_0117f578` in .bss) snaps instead; tabs and filters are
+  inert; accept on the player opens nothing (the `LocalPlayer` options list is not identified).
+
 ### 2026-10-14: a third of the game's functions are missing from the dump
 
 - **Found**: scanning `.rdata` / `.data` of the decrypted image for pointers into `.text` that land after padding

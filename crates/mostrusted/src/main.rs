@@ -35,6 +35,7 @@ mod gate_marker;
 mod groundcover;
 mod hud;
 mod input;
+mod input_script;
 mod jackspots;
 mod loader;
 mod lod;
@@ -847,7 +848,7 @@ fn main() -> anyhow::Result<()> {
     if cli.gamepad_debug {
         app.add_systems(Update, drive::log_gamepad_events);
     }
-    app.add_plugins(steam_controller::SteamControllerPlugin);
+    app.add_plugins((steam_controller::SteamControllerPlugin, input::MenuInputPlugin, input_script::InputScriptPlugin));
     // The environment timeline: `--timeline`, else the one painted where the view starts (the camera
     // pose or the drive spawn; the default timeline until the world view has a focus).
     let fixed_timeline =

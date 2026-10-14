@@ -2036,6 +2036,71 @@ our profile file (car, position) saved every 10 s; the pause menu pauses the vir
 races (the map screen 899991 is not built), SETTINGS opens our volume panel, the online items are inert, pad A / B
 for accept / back.
 
+### Menu input and the map screen's controls (2026-10-14, `input.rs`, `pause.rs`, `map_screen.rs`)
+
+- **Menu actions**: a screen widget's `UserActionInstance` names a `UserActionDefinition` whose `InputMapping`
+  string (`menu_up`, `accept`, `cancel`, `start`, `tab_left`, `trigger_left`, …) is turned into an action id by
+  `FUN_007e7910` (table at `.rdata` 0x00fe7260; the Autolog browser's copy is `FUN_007dbc30` / 0x00fe58c0):
+  `menu_left` / `right` / `up` / `down` 42–45, their `_alt` twins 46–49, `scroll_up` / `down` 50–51, `accept` 52,
+  `cancel` 53, `settings` 54, `alt` 55, `tab_left` / `right` 56–57, `trigger_left` / `right` 58–59,
+  `view_profile` 60, `start` 61. Default bindings (keyboard `FUN_00483470`, pad `FUN_00482250`): 42–45 arrows /
+  left stick X, Y (max ∓1 / ±1); 46–49 none / d-pad; 50–51 Num 8 / 2, right stick Y; 52 Enter / A; 53 Backspace /
+  B; 54 Right Ctrl / Y; 55 E / X; 56–57 Page Up / Down, LB / RB; 58–59 Z / A, LT / RT; 60 Tab / Back; 61 Esc /
+  Start.
+- **The `_alt` twin**: reading 42–45 goes through `FUN_0047a3f0`, which returns the twin (46–49) unless the main
+  action's state equals `TABLE[main × 4 + alt]` (`.rdata` 0x00f9fab0: states idle 0, held 1, pressed 2, released
+  3; held wins over pressed / released, pressed over released). So every `menu_*` mapping reads the arrows, the
+  left stick and the d-pad.
+- **Firing** (`FUN_007f50e0`, per user action each frame): the definition's `Analogue` flag (+0x34) calls the
+  handler every frame with the value; else its repeat flag (+0x35, field `2da735e3`) fires on pressed or on the
+  auto-repeat tick, and for the direction actions 0x2a–0x31 only when the value is > 0.05; else it fires on
+  pressed. Auto-repeat (`FUN_0047c3xx`, per action): while held a timer runs; the first tick at 0.2 s
+  (`.rdata` 0x00f9fb7c), then every 0.1 s (0x00f9fb78); released resets it.
+- **Pause menu** (431082, `Menu`): `menu_up` / `menu_down` (repeat) → `OnPrevious` / `OnNext`; `accept` → the
+  item's action; `cancel` and `start` → `RESUME`.
+- **Map screen** (899991): group 1222343's `MapManager` widget (native script `LiveMapManager`) takes
+  `MainMapNav_Up` / `Right` / `Left` / `Down` (`menu_*`, **analogue**, only while `Widget.MapControls.IsActive`)
+  as `OnMenuUp` / … (`FUN_00803ce0` stores the four values at +0x269c / +0x2698 / +0x2694 / +0x26a0); group
+  899993: `accept` → `TO_OPTIONS`, `cancel` (`Back_MapScreen`) → `TO_GAME`; the tabs group 1607001: `tab_left` /
+  `right` → `Tabs::OnTabLeft` / `Right`, `start` (`Drive`) → `TO_GAME`; filters 1135638 / 1135667: `trigger_left`
+  / `right` → `MapManager::OnPrevFilter` / `OnNextFilter`; options 1222205: `menu_up` / `down` (repeat) →
+  `OnPrevious` / `OnNext`, `accept` → `InvokeOption`, `cancel` → `Back` (`BACK` → the map group again).
+  `TO_GAME` ends "Show Main Map" and the in-game menu: back to driving (HSM 469008 / 1695290).
+- **The map controls' update** (`FUN_008170d0`, every frame while active; config `C` = `MainMapConfig` 1135320 in
+  `UI/UICONFIG.BNDL`, reached through a GeneSys handle at +0x5c of the UI config): input `(x, y)` = (right − left,
+  up − down). If `x² + y² > C+0x60²` (0.4): the first such frame stores the cursor (+0x2630) as the start
+  (+0x2660); the hold time (+0x26b0) accumulates; once it exceeds `C+0x78` (0.1 s) the cursor moves by
+  `C+0x74` (1500) × dt along the camera's rows (`y` up the screen, `x` across), is clamped to the box `C+0x20`
+  (−3500, −4319) … `C+0x10` (2500, 5040), the selection is cleared (`+0x2610 = 0`, `FUN_00813a20`) and +0x26d6
+  (moved by hand) is set. When the input drops back into the dead zone after being out: if the hold was ≤
+  `C+0x6c` (0.4 s) and the last length > `C+0x70` (0.1) (and the flick flag +0x26d7, set at construction), a
+  **flick** (`FUN_00814f60`): from the start point's screen position, items other than the selected one, on screen
+  or up to `C+0x90` widths / `C+0x8c + C+0x94` heights off it, whose screen direction (x scaled by the view's
+  aspect) is within `C+0x64` (30°) of the input direction, else within `C+0x68` (45°); the one nearest the start in
+  the world is selected. A failed flick to the left (normalised x < −`DAT_0117f578`, .bss) exits `TO_MWL` (the Most
+  Wanted list panel); otherwise, and for longer holds, a **snap** (`FUN_00813e60`): the item nearest the cursor on
+  screen within `C+0x58` (0.4 screen heights). A successful snap or flick clears +0x26d6 and the glide clock.
+  Projection (`FUN_00803fc0`): `(ndc + 1) / 2` in x and y (y up).
+- **The glide** (`FUN_00807a60`): while +0x26d6 is clear and an item is selected, the glide clock (+0x26b4) runs
+  and each frame `cursor += E(t / C+0x5c) × (item − cursor)` (`C+0x5c` = 0.8 s), then the cursor sits on the item.
+  `E` (`FUN_00630980`): symmetric about (0.5, 0.5) (`E(x) = 1 − E(1 − x)` below 0.5), `1.25 (x − 0.2) + 0.125` up to
+  0.8, then `0.875 + 0.625 (6.25 (1 − x) + 1)(x − 0.8)`.
+- **Camera**: `Widget.MapManager.SelectedPosition` (the map camera's `LookAt` binding) is the cursor itself
+  (getter at 0x807e94). +0x2650 is the cursor clamped to `C+0x40` … `C+0x30` (set on activation, `FUN_008078a0`).
+  The view's +0x2f5a8 gets `C+0x84` (0.2) on activation / moves / snaps and `C+0xb0` (0.5) after a flick; its
+  reader was not found. On activation with nothing selected, the local player's item is selected and the cursor
+  put on it (0x817046).
+- **Zoom**: `MainMapZoom` (Lua, compiled 5.1 chunk in the screen bundle) holds three states (distance 8000 / 5500 /
+  3400, angle 30 / 38 / 46, FOV 50) but its PC list is the first and third; `ToggleZoomState` has no caller in the
+  screen data or the exe (it is the Vita's touch zoom), so on PC the map stays at state 1. `LiveMapManager.
+  ZoomOverride` switches the camera to the code's `ZoomDistance` / `ZoomAngle` (+0x26b8 = 8000, +0x26bc = 30)
+  while +0x26d9 is set; any navigation clears it. No action scrolls or zooms the map by the right stick.
+
+**Port** (`map_screen.rs`, `pause.rs`, `input.rs` `MenuInput`): all of the above except: the map is drawn flat (the
+cursor moves at 1500 m/s along the screen's axes, no foreshortening of the up axis; the camera rows at the view's
++0x2f370 were not read), `FUN_0078f1d0` (a gate on moving) taken as true, the failed left flick snaps instead of
+opening the Most Wanted list (not built), the tabs and filters are inert, accept opens options only on events.
+
 ### Race HUD, countdown and results (2026-10-09, `hud.rs`, `ui_quads.rs`)
 
 What is data (research log 2026-10-09): the screens and layouts, the countdown / results `Sequence`s and their
