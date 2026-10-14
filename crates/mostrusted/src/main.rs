@@ -46,6 +46,7 @@ mod paint_wear;
 mod particles;
 mod pause;
 mod police;
+mod prewarm;
 mod props;
 mod pursuit;
 mod race;
@@ -728,6 +729,13 @@ fn main() -> anyhow::Result<()> {
         }),
         ..default()
     }));
+    // The game advances at most 2/60 s per frame (decomp.md "Update loop": one 2/60 catch-up step, even after
+    // a stall). Bevy's default catches up 250 ms of fixed steps after a slow frame, which makes the next frames
+    // slower too. The clamp is on real time, before the relative speed (`--test` runs 4x, so 8 steps there).
+    // `MW_UNCAPPED_DELTA=1` restores Bevy's default (A/B).
+    if std::env::var_os("MW_UNCAPPED_DELTA").is_none() {
+        app.add_systems(Startup, |mut t: ResMut<Time<Virtual>>| t.set_max_delta(Duration::from_secs_f64(2.0 / 60.0)));
+    }
     bevy::asset::embedded_asset!(app, "layered.wgsl");
     bevy::asset::embedded_asset!(app, "groundcover.wgsl");
     app.add_systems(Startup, materials::load_groundcover_shader);
@@ -840,6 +848,7 @@ fn main() -> anyhow::Result<()> {
     app.add_plugins(weather::WeatherPlugin { hud: menu_enabled })
         .add_plugins(shadow_cull::ShadowCullPlugin)
         .add_plugins(lod::LodPlugin)
+        .add_plugins(prewarm::PrewarmPlugin)
         .add_plugins(reflection::PlanarReflectionPlugin { enabled: reflection })
         .add_plugins(FreeCameraPlugin)
         .add_plugins(MaterialPlugin::<GameMaterial>::default())
@@ -969,19 +978,56 @@ fn main() -> anyhow::Result<()> {
         .insert_resource(ClearColor(Color::srgb(0.55, 0.68, 0.85)))
         .init_resource::<Loaded>()
         .init_resource::<groundcover::GroundcoverResidency>()
-        .add_systems(Startup, setup)
+        .add_systems(Startup, (setup, cpu_light_clustering))
         .add_systems(Update, (start_loader, receive_assets, update_status, auto_screenshot))
         .add_systems(
             PostUpdate,
             groundcover::groundcover_visibility
                 .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
         )
-        .add_systems(Update, (drive_vehicle_lights, apply_vehicle_lights).chain())
-        .run();
+        .add_systems(Update, (drive_vehicle_lights, apply_vehicle_lights).chain());
+    // The main world's schedules run their systems one after another on the main thread (the render world and
+    // the systems' own parallel queries still use the task pool). Spreading the main world's many small systems
+    // over the pool only paid off on an idle machine (equal there); under contention every dispatch waits for a
+    // worker to be scheduled: main world 16.7 -> 12.8 ms, a physics step 5.1 -> 3.6 ms with 16 niced busy loops
+    // (research log 2026-10-10). Same results (handling and race tests). `MW_MAIN_MULTI=1`: Bevy's default.
+    if std::env::var_os("MW_MAIN_MULTI").is_none() {
+        use bevy::ecs::schedule::{ScheduleLabel, SingleThreadedExecutor};
+        let labels: [bevy::ecs::intern::Interned<dyn ScheduleLabel>; 12] = [
+            First.intern(),
+            PreUpdate.intern(),
+            RunFixedMainLoop.intern(),
+            FixedFirst.intern(),
+            FixedPreUpdate.intern(),
+            FixedUpdate.intern(),
+            FixedPostUpdate.intern(),
+            FixedLast.intern(),
+            Update.intern(),
+            SpawnScene.intern(),
+            PostUpdate.intern(),
+            Last.intern(),
+        ];
+        for label in labels {
+            app.edit_schedule(label, |s| {
+                s.set_executor(SingleThreadedExecutor::new());
+            });
+        }
+    }
+    app.run();
     Ok(())
 }
 
 use weather::GAME_UNIT;
+
+/// Light clustering on the CPU (Bevy's fallback for devices without compute) instead of the GPU: there are no
+/// point, spot or probe lights to cluster (the key light is directional, the sky light is the view's environment
+/// map), but GPU clustering rebuilt its per-view buffers and bind groups and encoded its passes every frame.
+/// The render world copies the setting from the main world each frame. `MW_GPU_CLUSTERING=1`: Bevy's default.
+fn cpu_light_clustering(mut settings: ResMut<bevy::light::cluster::GlobalClusterSettings>) {
+    if std::env::var_os("MW_GPU_CLUSTERING").is_none() {
+        settings.gpu_clustering = None;
+    }
+}
 
 fn setup(mut commands: Commands, game: Res<Game>, mut images: ResMut<Assets<Image>>) {
     // The game renders deferred: the camera keeps a depth + deferred G-buffer prepass (which the game

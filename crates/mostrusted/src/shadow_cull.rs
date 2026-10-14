@@ -139,7 +139,7 @@ type Caster = (
     Option<&'static ShadowRange>,
     Option<&'static crate::lod::LodShadow>,
 );
-fn cull_casters(
+pub(crate) fn cull_casters(
     cfg: Res<ShadowCull>,
     shadow_map: Res<DirectionalLightShadowMap>,
     mut lights: Query<(&mut CascadesVisibleEntities, &Cascades, &CascadeShadowConfig)>,

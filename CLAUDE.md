@@ -198,7 +198,9 @@ MW_CUTSCENE_SHOT=intro:9 ./target/release/mostrusted --race 462174 --units 12 --
 ./target/release/mwtool traffic-sound all|sfx out.wav    # traffic engines / horns / impacts offline; engine-sound <car> --competitor
 # Debug logs: MW_NITROUS_LOG=1, MW_DIRT_LOG=1, MW_GATE_LOG=1, MW_TYRE_DEBUG=1, MW_FLASH_LOG=1 [MW_FLASH_SHOTS=dir]
 # Performance: MW_FRAME_LOG=<file> (per-frame schedule / render times), --bench prints p95 / p99 / hitches;
-# A/B switches MW_INDIRECT=1 (Bevy's multi-draw-indirect), MW_AVIAN_ASYNC=1, MW_BAKE_THREADS=0, MW_FOV_VERTICAL=1
+# A/B switches MW_INDIRECT=1 (Bevy's multi-draw-indirect), MW_AVIAN_ASYNC=1, MW_BAKE_THREADS=0, MW_FOV_VERTICAL=1,
+# MW_UNCAPPED_DELTA=1 (Bevy's 250 ms catch-up), MW_SKY_FILTER_EVERY_FRAME=1, MW_NO_PREWARM=1, MW_MAIN_MULTI=1
+# (multi-threaded main-world schedules), MW_GPU_CLUSTERING=1 (research log 2026-10-10)
 ```
 
 Use `--camera=` with `=` when the first value is negative. Release builds are needed: dependencies are
