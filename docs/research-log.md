@@ -10,6 +10,47 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-14: how cops drive, spawn and attack: read from the full image (REA); a real pursuit captured (WIP)
+- **Method**: the cop driver states are vtable classes in `.rdata` 0x00fa8510–0x00fa88b0 (slot +8 update, +0xc
+  state id, +0x18 path builder, +0x1c speed law; Chasing has a +0x20 aim point). Ids: 0 Chasing `FUN_00510420`,
+  1 ChasingGoTo, 0xc Searching `vt_0050dd40`, 0xd Patrolling `FUN_005101e0`, 0x12 Rhino `FUN_005102f0`, 0x13
+  HeadOn `FUN_0050b7f0`, 0x16 LowSpeedChasing `FUN_0050fe80`, 0x17 LowSpeedChasingAhead, 0x18 ChasingBruiser
+  `FUN_0050f5f0`, 0x1a Interceptor `vt_0050f970`; the shared chase core is `FUN_0050e370`.
+- **Correction**: `FUN_004fa480` discards the gap law's result (`fstp st0` at 0x004fa56b) and returns FLT_MAX: a
+  cop with a physical car drives **flat out** under its CopBehaviours mph cap; the 1.5 mph/m gap law only paces
+  cops without a physical car (far away). The aim point is target + 1 s lead (≤ 50 m) + ±3.5 m along the cop's
+  own right axis; within 40 m of the player (substate 2) 0.5 s ahead, driven straight when the nav line is clear,
+  braking when > 20° off at > 20 mph or a wall is near (`AIConfig` 0x48–0x88, 0xec–0x12c).
+- **LowSpeedChasing** substates (block spin with handbrake and 0.7 lock, creep to 7 m at ≤ 20 mph, brake 0.6,
+  ram) and the box-in (one blocking cop pulls the others in; after 1 s they creep); **Bruiser** steers 0.2/m into
+  the car once alongside; **Rhino** aims 0.5 s ahead, becomes a Bruiser once behind; **HeadOn** = handbrake +
+  full lock when closing > 110 mph within 90 m.
+- **Spawns** (`FUN_005261d0`): outside a chase on the ring r (random direction, nearest road, 20 mph,
+  patrolling); in a chase by the Freedrive game mode's weights (side 10 / ahead 10 / behind 10 / wait 0) gated by
+  `CopType` flags +0x14..+0x19, a region with no cop counting double; ahead/behind = a road node between r and
+  √2·r facing the player at SpawnSpeed 90 mph. **Removal only off screen** (4 m sphere vs frustum); surplus cops
+  at 100 m, crashed ones at 125 m; all off-screen cops when a pursuit ends, then 90 s without spawns.
+- **Patrol** follows a traffic-lane ghost car (modes 0–4 of `FUN_005101e0`); **search** legs: five 72° sectors,
+  +20 m per leg, around the player's actual position. Roadblocks (kind-0x12 trigger boxes 300–600 m along the
+  predicted route, layered cars / cones / sawhorses, a spike strip at level 5), siren / light-bar data, the busted
+  (13 s, controls off) and escaped (13 s, UI) sequences were read (details in the session's agent reports, to be
+  moved into decomp.md).
+- **Capture of the original** (orig, a keyboard autopilot over the road graph `mwtool ai-graph`, logger reading
+  the pursuit record `[[0x10edad0]+8]+0x2f410`, the player `[[..]+0x2f3dc]+0x10+i·0x7f0`, AI vehicle states
+  `[[[0x10edb50]+4]]+0x42d60+i·0x94` with flags 0x4 cop / 0x8 physical): ramming the level-0 cop started the chase
+  (heat 0.5, +1 for its takedown); heat rose 0.0067/s at level 1 and 0.024/s at level 2 (= threshold / time, as
+  ported) plus +0.2 at each cop contact (SLAM 955544), +0.1 per traffic hit; crashed cops were replaced; new cops
+  arrived at 90 mph (SpawnSpeed) and rammed repeatedly at 80–95 mph; the bust meter filled in **4.0 s** with the
+  player stopped and cops 12–19 m away. Vehicle +0x1a84 of the player is **2** (not 0), so the cooldown's ×4 does
+  not apply to the player (settles the open point). Save backed up to `ref/savebackup-2026-10-14-police/`, changed
+  by the run (bust), restored byte-identical.
+- **Port (WIP, branch of this worktree)**: `cop_driver.rs` (Chasing, LowSpeedChasing + box-in, Bruiser, Rhino,
+  HeadOn), `police.rs` (spawn kinds and weights, off-screen removal, crashed-cop replacement, search legs, GoTo,
+  waiting side-road cops, SLAM / traffic-hit heat, 13 s outcomes), `AiDriver::overrides` / `keep_wrecked`,
+  `mwtool ai-graph`. `--test pursuit`: chase, cooldown, escape pass; the bust run timed out in the last run
+  (spawn ring around the reset start; unverified). Not ported: patrol on traffic lanes, Interceptor, roadblocks,
+  spike strips, sirens / light bars, the busted / escaped sequences' cameras.
+
 ### 2026-10-14: a third of the game's functions are missing from the dump
 
 - **Found**: scanning `.rdata` / `.data` of the decrypted image for pointers into `.text` that land after padding

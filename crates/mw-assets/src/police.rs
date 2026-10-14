@@ -60,6 +60,13 @@ mod h {
     pub const SEARCH_SPEED: u32 = 0xe6da_b8d2; // +0x104
     pub const SPAWN_SPEED: u32 = field_hash("SpawnSpeed"); // AIPlayerType +0x6c
     pub const SPAWN_ALLOWED: u32 = 0xf3d7_aeeb; // PursuitBehaviour +0x22
+    pub const SURPLUS_REMOVE: u32 = 0x1076_9f53; // HeatLevel +0xac
+    pub const CRASHED_REMOVE: u32 = 0x534e_9625; // HeatLevel +0xb8
+    pub const GOTO_TIMEOUT: u32 = 0xbe25_ae81; // HeatLevel +0xc0
+    // Gameplay.CopType +0x14 .. +0x19 (spawn kinds, `FUN_005261d0`)
+    pub const COP_FLAGS: [u32; 6] = [0x1dda_314a, 0x5834_848c, 0x7b83_78db, 0x08b7_85d5, 0xe191_fc4c, 0x9c3e_6a66];
+    // GameMode +0x5a / +0x60 / +0x62 / +0x64: spawn weights side road, ahead, behind, waiting
+    pub const SPAWN_WEIGHTS: [u32; 4] = [0x3c0d_b900, 0xe616_3878, 0x85bf_10ab, 0x6022_63d2];
     // HeatLevel.BehaviourCoordination
     pub const FALLBACK: u32 = 0xe8cb_6438; // +0x0c
     pub const MAIN: u32 = 0xdd65_94c8; // +0x30
@@ -154,7 +161,37 @@ pub struct HeatLevel {
     pub low_speed_mph: f32,
     /// `e6dab8d2` (+0x104): a cop's speed limit while it drives to a point or searches (mph, `FUN_004f76c0`).
     pub search_speed_mph: f32,
+    /// `10769f53` (+0xac, 100 m): a cop the behaviour no longer wants is removed beyond this (off screen,
+    /// `FUN_00522c40`).
+    pub surplus_remove_distance: f32,
+    /// `534e9625` (+0xb8, 125 m): a crashed cop off screen is removed this far away (`FUN_00522f40`).
+    pub crashed_remove_distance: f32,
+    /// `be25ae81` (+0xc0, 10 s): a cop sent to the last-seen point searches after this long (`FUN_0051a4e0`).
+    pub goto_timeout: f32,
 }
+
+/// `Gameplay.CopType` +0x14 .. +0x19: which spawn kinds a cop type may use in a pursuit (`FUN_005261d0`).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct CopSpawnFlags {
+    /// +0x14 `1dda314a`: ahead, on the player's route and facing the same way (mode 0x10); also enables "ahead".
+    pub ahead_along: bool,
+    /// +0x15 `5834848c`: behind the player.
+    pub behind: bool,
+    /// +0x16 `7b8378db`: ahead, oncoming.
+    pub ahead: bool,
+    /// +0x17 `08b785d5`: from a side road.
+    pub side: bool,
+    /// +0x18 `e191fc4c`: an extra waiting spawn first.
+    pub extra_wait: bool,
+    /// +0x19 `9c3e6a66`: a waiting (parked) cop.
+    pub wait: bool,
+}
+
+/// The free-roam game mode ("Freedrive") in `GAMELOGIC/GAMEMODES.BNDL`.
+const FREE_ROAM_GAME_MODE: u32 = 390145;
+/// The scoring actions "SLAM" (posted in a chase or cooldown) and "TrafficHit".
+const SLAM_ACTION: u32 = 955544;
+const TRAFFIC_HIT_ACTION: u32 = 390556;
 
 /// What the pursuit rules read.
 #[derive(Debug, Clone, Default)]
@@ -180,6 +217,14 @@ pub struct PoliceConfig {
     /// +0x54 hold the same 0.5) and of +0x58, posted when a cooldown turns back into a chase.
     pub chase_started_heat: f32,
     pub chase_resumed_heat: f32,
+    /// `Gameplay.CopType` id → its spawn kinds.
+    pub cop_flags: HashMap<u32, CopSpawnFlags>,
+    /// The free-roam `GameMode` (390145, "Freedrive") +0x5a / +0x60 / +0x62 / +0x64: weights of the side-road,
+    /// ahead, behind and waiting spawns in a pursuit (`FUN_005261d0`; 10 / 10 / 10 / 0).
+    pub spawn_weights: [f32; 4],
+    /// Heat of the "SLAM" scoring action (955544, 0.2) and of "TrafficHit" (390556, 0.1).
+    pub slam_heat: f32,
+    pub traffic_hit_heat: f32,
 }
 
 fn uint(o: &Object, hash: u32) -> u32 {
@@ -266,6 +311,9 @@ fn heat_level(o: &Object) -> HeatLevel {
         speeding_mph: float(o, h::SPEEDING),
         search_speed_mph: float(o, h::SEARCH_SPEED),
         low_speed_mph: coordination.map_or(0.0, |c| float(c, h::LOW_SPEED)),
+        surplus_remove_distance: float(o, h::SURPLUS_REMOVE),
+        crashed_remove_distance: float(o, h::CRASHED_REMOVE),
+        goto_timeout: float(o, h::GOTO_TIMEOUT),
     }
 }
 
@@ -299,7 +347,19 @@ impl AssetStore {
                 "Genesys.Gen.HeatLevel" => {
                     levels.insert(uint(&o, h::ID), heat_level(&o));
                 }
-                "Genesys.Gen.Gameplay.CopType" => cop_types.push((uint(&o, h::ID), uint(&o, h::AI_PLAYER_TYPE))),
+                "Genesys.Gen.Gameplay.CopType" => {
+                    let f = |k: usize| boolean(&o, h::COP_FLAGS[k]);
+                    let flags = CopSpawnFlags {
+                        ahead_along: f(0),
+                        behind: f(1),
+                        ahead: f(2),
+                        side: f(3),
+                        extra_wait: f(4),
+                        wait: f(5),
+                    };
+                    cfg.cop_flags.insert(uint(&o, h::ID), flags);
+                    cop_types.push((uint(&o, h::ID), uint(&o, h::AI_PLAYER_TYPE)))
+                }
                 "Genesys.Gen.AIPlayerType" => {
                     player_types.insert(
                         uint(&o, h::ID),
@@ -325,6 +385,13 @@ impl AssetStore {
             if let Some(&heat) = action_heat.get(&takedown) {
                 cfg.takedown_heat.insert(id, heat);
             }
+        }
+        cfg.slam_heat = action_heat.get(&SLAM_ACTION).copied().unwrap_or(0.0);
+        cfg.traffic_hit_heat = action_heat.get(&TRAFFIC_HIT_ACTION).copied().unwrap_or(0.0);
+        if let Ok(modes) = items(self, "GAMELOGIC/GAMEMODES.BNDL")
+            && let Some(m) = modes.iter().find(|o| uint(o, h::ID) == FREE_ROAM_GAME_MODE)
+        {
+            cfg.spawn_weights = h::SPAWN_WEIGHTS.map(|k| float(m, k));
         }
         if let Ok(scoring) = self.genesys_object(SCORING_CONFIG) {
             let heat = |hash: u32| action_heat.get(&uint(&scoring, hash)).copied().unwrap_or(0.0);

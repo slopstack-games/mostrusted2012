@@ -17,6 +17,7 @@ mod chassis;
 mod chevron;
 use mw_handling::{drift, drivetrain, tyre};
 mod convert;
+mod cop_driver;
 mod crash;
 mod cutscene;
 mod damage;

@@ -511,6 +511,9 @@ enum Cmd {
         #[arg(long, value_delimiter = ',', allow_hyphen_values = true)]
         at: Vec<f32>,
     },
+    /// The AI road graph (`AIData`): one line per node (index, x, y, z, drivable width, flags, linked nodes), for
+    /// scripts that drive the original along the roads (`tools/orig`).
+    AiGraph,
     /// Offline events (`OfflineEvent` in GAMELOGIC/GAMEMODES.BNDL, resolved against HAWAII/TRIGGERS.BNDL): one
     /// line per event (id, kind, laps, checkpoints, opponents, name, car); `events <id>` prints one in detail,
     /// `--png` draws its route over the lane map (yellow route, white gates, green start, red opponents).
@@ -1424,6 +1427,14 @@ fn main() -> Result<()> {
         Cmd::Frontend { sequence: None, spots } => events::frontend(&AssetStore::new(game)?, spots)?,
         Cmd::Hsm { node, bundle, find, depth, parents } => {
             events::hsm(&AssetStore::new(game)?, &bundle, node, find.as_deref(), depth, parents)?
+        }
+        Cmd::AiGraph => {
+            let ai = AssetStore::new(game)?.ai_data()?;
+            for (i, n) in ai.nodes.iter().enumerate() {
+                let links: Vec<String> = n.links.iter().map(|l| l.to_string()).collect();
+                let [x, y, z] = n.position;
+                println!("{i}\t{x:.2}\t{y:.2}\t{z:.2}\t{:.2}\t{}\t{}", n.width, n.flags, links.join(","));
+            }
         }
         Cmd::Traffic { png, at } => traffic(&AssetStore::new(game)?, png.as_deref(), &at)?,
         Cmd::Scoring { all, sequence, text } => scoring(&AssetStore::new(game)?, all, sequence, &text)?,
