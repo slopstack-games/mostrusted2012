@@ -41,6 +41,26 @@ model first, and equally the renderer, audio, AI and game rules (point 3 above).
   the system's own doc ([handling.md](handling.md) for physics) and the research log.
 - Write our own Rust from those descriptions.
 
+### Functions the dump is missing (2026-10-14)
+
+The dump's Ghidra run only found functions reached by calls: **16,257 code addresses that a data section points
+at are not function starts in `functions.csv`** (53,501 functions), almost all of them methods reached only
+through vtables or callback / state tables. Each sits after int3 / nop / ret padding and starts with a normal
+prologue. That is why several systems' docs say "not in the dump" or "writer not found": the camera director's
+update `0x005d5e20` (the chase camera's wall avoidance, decomp.md "Cameras") is one, referenced from the vtable at
+`0x00f99d1c`. Treat "not in any decompiled function" as "not decompiled yet", not "does not exist".
+
+`tools/snapimage.py` carves the decrypted image out of a memory snapshot (`re/out/live/snap1`, `.text` identical in
+snap2) into a PE Ghidra loads (sections in their memory layout, `.data` / `.bss` as they were in game), and with
+`--functions re/NFS13_dump/functions.csv` exports every such address as `vt_<address>` so Ghidra's analysis starts
+a function there and follows its calls. The output stays in `re/out/live/`.
+
+**REA** (MCP server `rea`, Ghidra provider, `/opt/ghidra` 12.1.2) opens it with `open_binary` and gives
+pseudocode, assembly, cross-references and call paths per address. Its default deadline for import + analysis is
+5.5 min, enough for the plain carved image but not for the one with the exports: `REA_GHIDRA_STARTUP_TIMEOUT_MS`
+in the `rea` server's env (`~/.claude.json`) is set to 3600000. A timed-out request kills the Ghidra process and
+the next one starts the analysis again. Pseudocode from REA follows the dump's rules above: prose in the docs only.
+
 ## The PS Vita build: a statically analysable ARM binary (2026-10-07)
 
 The user owns the PS Vita release (PCSB00183, EU, v01.00, built 2012-09-24) and, on their own modded console,

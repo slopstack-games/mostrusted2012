@@ -10,6 +10,21 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-14: a third of the game's functions are missing from the dump
+
+- **Found**: scanning `.rdata` / `.data` of the decrypted image for pointers into `.text` that land after padding
+  (int3 / nop / ret) gives 25,319 targets; 16,257 of them are not function starts in the dump's `functions.csv`
+  (53,501). They are methods reached only through vtables and tables, which the dump's Ghidra run never turned
+  into functions, so their code was never decompiled. The camera director's update `0x005d5e20` is one
+  (vtable slot `0x00f99d1c`; the bytes there are `push ecx; push esi; mov esi, ecx` after int3 padding).
+- **Tooling**: `tools/snapimage.py` (carve the image from a snapshot, memory layout, optional exports for those
+  starts); REA (MCP, Ghidra provider) opens the result. reverse-engineering.md "Functions the dump is missing".
+- **Status**: the plain carved image analyses within REA's default 5.5 min; the one with 16,257 exports does not,
+  so the deadline is raised (`REA_GHIDRA_STARTUP_TIMEOUT_MS`), effective after the MCP server restarts. Not yet
+  read: the director update (wall avoidance, decomp.md "Avoidance: where the search ended"), and the other
+  "not in the dump" / "writer not found" items: `0x0118a060`'s writer (decomp.md, drift), the `LAB_005a22e0` wave
+  gain, `AIPlayer::FillInput` 0x006c0890, the constraint +0x210 writer, the `world+0xa2bee` start-over flag.
+
 ### 2026-10-10: the Steam Controller (2026) as a pad
 The controller (here on its wireless puck, `28DE:1304`) is a mouse, a keyboard and a vendor-defined HID
 interface to the OS, so gilrs never lists it; only Steam Input makes an XInput pad of it, for games started
