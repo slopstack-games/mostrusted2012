@@ -33,8 +33,10 @@
 //! - **Shake**: a high-speed shake (`High_Speed_Shake`: a slow quaternion curve scaled by
 //!   `Amplitude · f^Power / 10`, turning the view about a point 10 m behind the eye; `FUN_005e2a70`) and an
 //!   impact shake (`FUN_005cd040` level, `FUN_005dfe90` noise spring).
-//! - **Collision** (ours: no world query exists in the original's chase code): a ray from the look-at point to
-//!   the eye keeps the camera on this side of walls.
+//! - **No collision**: the original's camera update has no world query anywhere (the manager `FUN_005d2cd0`, the
+//!   director `0x005d5e20` and its message handler `FUN_005d5800`, the chase update and every callee; decomp.md
+//!   "Avoidance"), so the eye goes through walls as there. `MW_CAMERA_PUSH_IN=1` turns on our old push-in (a ray
+//!   from the look-at point to the eye keeps the camera on this side of walls) for A/B.
 //! - **Look around**: the right stick (and right mouse button + drag) orbits the camera; it springs
 //!   back behind the car when released.
 //!
@@ -149,7 +151,8 @@ const UPDATE_HZ: f32 = 60.0;
 /// drops time behind its 2/60 s catch-up step (decomp.md "Update loop"). The noise is stationary, so dropped
 /// updates change nothing but its phase.
 const SHAKE_MAX_STEPS: u32 = 8;
-/// Keep the eye this far in front of a wall (m), and never nearer to the look-at point than this.
+/// `MW_CAMERA_PUSH_IN=1` (ours, not the original's): keep the eye this far in front of a wall (m), and never nearer
+/// to the look-at point than this.
 const CLIP_MARGIN: f32 = 0.25;
 const CLIP_MIN: f32 = 0.8;
 /// Rate (1/s) at which the eye moves back out after a wall stops blocking it.
@@ -884,9 +887,10 @@ fn follow_car(
     }
     let View { pos, target, up, in_car } = view;
 
-    // Walls between the look-at point and the eye pull the eye in (in-car views sit inside the body).
+    // `MW_CAMERA_PUSH_IN=1`: walls between the look-at point and the eye pull the eye in (in-car views sit inside
+    // the body). The original has no such step.
     let mut pos = pos;
-    if !in_car {
+    if !in_car && std::env::var_os("MW_CAMERA_PUSH_IN").is_some() {
         let to_eye = pos - target;
         let full = to_eye.length();
         let filter = SpatialQueryFilter::from_excluded_entities([entity, car.body_collider])

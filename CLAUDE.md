@@ -121,7 +121,8 @@ tools/orig/orig run-in -- ./target/release/mostrusted --drive 911 --test-track  
 ./target/release/mostrusted --vehicle "911" --camera 4.5,1.4,4.0,0,0.4,0 --screenshot <scratch>/car.png
 # Driving cameras: --camera-mode chase|bonnet|bumper|lookback (C / gamepad LB cycles; End or the right
 # stick fully back looks back; right stick / right mouse drag looks around; the free camera looks with the
-# right stick too). MW_CAMERA_TRACE=<file> logs the camera every frame
+# right stick too). MW_CAMERA_TRACE=<file> logs the camera every frame; MW_CAMERA_PUSH_IN=1 keeps the eye out of
+# walls (ours: the original's camera has no world query)
 MW_CAMERA_TRACE=<scratch>/cam.trace ./target/release/mostrusted --drive 911 --test drift
 # Chase camera against the original, frame by frame: our camera code over a recording's car motion (ref/live1)
 MW_TOOLS=.claude/tools python3 tools/camcompare.py inputs ref/live1 <dir>/in.csv

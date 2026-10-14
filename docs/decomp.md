@@ -4039,20 +4039,36 @@ snapshot `re/out/live/snap2` (`live.py -s snap2 <va>`), which contains the exe's
   landings; the air-time height offset written to cam + 0x574 is overwritten by `FUN_005d12b0` (0x574 = 0x554)
   before any read.
 
-### Avoidance: where the search ended (round 7)
+### Avoidance: the original has none (round 7; settled 2026-10-14)
 
-- The director's update `FUN_005d5e20` is **not in the dump** ("not a function start; not in any decompiled
-  function"), so a post-step after the active sub-camera cannot be read there; it needs the disassembly of the
-  unpacked exe (probe) at 0x005d5e20.
-- Callees of every remaining chase-update helper, none of which is a physics or world query:
-  `FUN_005c76a0` (`0046ee20`, `0057a010`, `005d9610`, `005734a0`, `0046ee10`, `005d9590`), `FUN_005c8ad0`
-  (`0057a010` only), `FUN_005c3af0` (`005d9610`, `005734a0`, `00513200`: a 181-byte leaf), `FUN_005e05a0`
-  (`005bd470`, `005d9740`), `FUN_005c0c80` (`005dfe90`), `FUN_005c8420` (`004aeb10`, a 73-byte leaf,
-  `0057a010`), `FUN_005c82c0` (`00491050` → `00490e30` → `0048c090`; a speed-scaled maths helper, by its
-  inputs), the manager `FUN_005e23c0` (`0046ee10`, `005423d0`, a 231-byte leaf) and `FUN_005d2cd0`.
-- Conclusion: within the decompiled code the chase camera has **no world, car or prop query**; if the
-  original avoids walls it is in the undecompiled director update or a later render-side stage. Our push-in
-  along the boom stays a model decision.
+- Round 7 stopped at the director's update `0x005d5e20`: not a function start in the dump. It is one of the
+  16,257 vtable-only functions the dump's analysis missed (reverse-engineering.md "Functions the dump is
+  missing"); read with REA from the carved image (`tools/snapimage.py`, 232 bytes, vtable slot `0x00f99d1c`).
+- **The whole per-frame camera path is now read, and none of it queries the world, a car's surroundings or
+  props**:
+  - the manager `FUN_005d2cd0`: makes sure `CAMERAS.BNDL` is loaded, updates the target history, calls director
+    method +8, then clears the camera message queue (`DAT_010edb24`: count at +0x10, +0x20) and its flag bits.
+    Nothing runs after the director.
+  - the director update `0x005d5e20`: clears +0x3040, copies the active camera resource's settings into the
+    director (`FUN_005cf040`: four values from the `CameraGameplayExternal` sub-blocks, splatted to +0x1c40..
+    +0x1c7c, through `FUN_005c4810` / `005c4ea0` / `005c6f00` / `005cc940`), runs the message handler, handles
+    slot 11 (a scripted camera whose blend `FUN_004962f0(0)` channel is copied, else `FUN_005cf160` /
+    `FUN_005c3420`), then calls method +8 (the update) of all 15 sub-cameras at +0x2ff0 in order.
+  - the message handler `FUN_005d5800`: walks the queued camera messages for this player (type at +0, player at
+    +8) and switches on 24 types: select a camera (through the table `DAT_00fafb60`), set flags, scripted
+    shots with blend matrices (`FUN_005d28b0`, `FUN_005bfcb0`, `FUN_005bf990`), shake / FOV / settings calls
+    (`FUN_005d2d50`, `005d2e10`, `005d2ed0`, `005d40e0`, `005c46e0`, `005bfba0`, `005d4650`, `00a01f60`), a
+    four-float setting at +0x1254, and method +0x24 on every sub-camera for type 16. No geometry.
+  - the chase update `FUN_005d4970`: 43 direct callees, all read now; the five not covered before are an
+    orthonormalising matrix builder (`FUN_0053fee0`), two state initialisers (`FUN_0041c8a0`: identity
+    matrices, 90°, 0.15, 15000, 1; `FUN_005dd680`), a blend of two values by `CameraGameplayExternal` +0xa0
+    (`FUN_006c5270`) and a lookup of a linked object in state 4 (`FUN_006c76b0`). Its one indirect call
+    (0x005d4a29) is virtual method +0 of the followed object (`FUN_005734a0`), whose result is read as a
+    transform.
+- No `ProcessNode.CameraTransformCollider` / `EntityAvoider` instance exists in the data (below).
+- **Result**: the chase camera does not avoid walls; the eye passes through them. Ours did a push-in along
+  the boom (a model decision); it is now off, `MW_CAMERA_PUSH_IN=1` for A/B. Not checked: a render-side step
+  (near plane only, by `FUN_0041c8a0`'s 0.15). A capture of the original backed into a wall would confirm.
 
 ### Other leads checked in round 5
 

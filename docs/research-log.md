@@ -19,9 +19,12 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
   (vtable slot `0x00f99d1c`; the bytes there are `push ecx; push esi; mov esi, ecx` after int3 padding).
 - **Tooling**: `tools/snapimage.py` (carve the image from a snapshot, memory layout, optional exports for those
   starts); REA (MCP, Ghidra provider) opens the result. reverse-engineering.md "Functions the dump is missing".
+- **First use, the camera director** (`0x005d5e20`, 232 bytes): with it, every function the chase camera runs per
+  frame is read, and none queries the world (decomp.md "Avoidance: the original has none"). The chase camera
+  has no wall avoidance; our push-in is off (`MW_CAMERA_PUSH_IN=1` for A/B). Open: a capture of the original
+  backed into a wall, to rule out a render-side step.
 - **Status**: the plain carved image analyses within REA's default 5.5 min; the one with 16,257 exports does not,
-  so the deadline is raised (`REA_GHIDRA_STARTUP_TIMEOUT_MS`), effective after the MCP server restarts. Not yet
-  read: the director update (wall avoidance, decomp.md "Avoidance: where the search ended"), and the other
+  so the deadline is raised (`REA_GHIDRA_STARTUP_TIMEOUT_MS`), with it the image with the exports analyses (2026-10-14). Not yet read: the other
   "not in the dump" / "writer not found" items: `0x0118a060`'s writer (decomp.md, drift), the `LAB_005a22e0` wave
   gain, `AIPlayer::FillInput` 0x006c0890, the constraint +0x210 writer, the `world+0xa2bee` start-over flag.
 

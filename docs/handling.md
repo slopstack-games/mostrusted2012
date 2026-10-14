@@ -438,6 +438,12 @@ RMS against the original, before → after: eye swing 0.14 → 0.04 m, eye heigh
 0.37 → 0.03 m, view yaw 0.64 → 0.47°, **view pitch 2.22 → 0.23°**, FOV 2.31 → 0.23°; over the four recorded
 jumps the world pitch range is 21.5° (original), 34.0° before, 19.7° after.
 
+**Round 13 (2026-10-14): no wall push-in.** The director update `0x005d5e20` and the rest of the per-frame
+camera path were read (decomp.md "Avoidance: the original has none"): no step queries the world, so the
+eye passes through walls in the original. Our push-in along the boom (a ray from the look-at point, 0.25 m
+margin, 0.8 m minimum, 3/s relax) was a model decision and is now off; `MW_CAMERA_PUSH_IN=1` turns it on for A/B.
+The earlier rounds' "still ours: the collision push-in" no longer applies.
+
 ## Crash camera (`mw_assets::crash`, `crates/mostrusted/src/crash.rs`, 2026-10-06)
 
 What the code does is in [decomp.md](decomp.md) ("Crashes"); here the data and what we made of it.
