@@ -1,3 +1,32 @@
+# Handoff: 2026-10-14 (session 8, part 2): start here
+
+**State**: master has three agent branches merged on top of part 1: the post chain (bloom levels fixed
+320×176 / 80×44 / 20×11, depth of field + colour cube final pass, sun-facing grade, vignette from the code, cube
+blend), menu input and the map screen's controls (the original's 13 menu actions, stick / d-pad / auto-repeat,
+flick / free cursor / snap from `MainMapConfig`), and lighting (the game's sun path, sky constants, ambient from
+the sky, fences, 325 m shadows; the original's time of day found at environment manager + 0x1b604). Clippy 0
+warnings, 166 tests, `mwtool verify` 0 failures, 911 accel / corner unchanged. Not pushed. Each area's
+research-log entry (2026-10-14) lists its sources and what is open.
+
+- **Police: NOT merged.** Branch `worktree-agent-a6c7a3ed5babae9f8` (worktree kept, commit 4d9bd0d, WIP):
+  `cop_driver.rs` (chase aim / lead, LowSpeedChasing block / creep / ram, box-in, Bruiser, Rhino, HeadOn from the
+  code), spawns / removal / search / heat per contact from the code, `mwtool ai-graph`. **`--test pursuit`'s bust
+  phase timed out in its last run**: find why, run clippy / tests, then merge. decomp.md still says the 1.5 mph/m
+  speed law applies to every cop; the code (`FUN_004fa480`) applies it only to cops without a car (fix the doc).
+  Next there: roadblocks (rules read, research log), traffic-lane patrol (`FUN_005101e0`), sirens / light bars.
+- **Lighting open**: the ambient's brightness (the game's `IrradianceQuadric` CPU build not traced; ours ~0.3–0.5
+  vs 0.8–1.0 upward), wet surfaces without `--planar-reflection` reflect the sky cube (blue pavements, white road
+  blotches: consider the planar pass by default, measure its cost), trees 2–4× too dark, 18:30 cascade fit,
+  materials' own reflection cubes, a second distant matched place. Matched shots of the original:
+  `ref/shots/{fairhaven,fence}-<hour>/` (with every shader constant at the moment).
+- **Post open**: 22:00 frames blown out (upstream: exposure / lighting), the composite's motion blur (small),
+  exposure metering from the 80×44 level, the sun lens flare (no reader found).
+- **Map open**: tabs (PgUp / PgDn, LB / RB) and filters, the Most Wanted list panel, pad glyphs in prompts, the
+  pause menu's QUIT item.
+- The user's original-game save was rewritten by the game on load in several runs; the agents restored it or kept
+  backups in `ref/savebackup-2026-10-14-*` (the post agent did not restore: its pre-run copy is
+  `ref/savebackup-2026-10-14-post/`).
+
 # Handoff: 2026-10-14 (session 8): start here
 
 **State**: master (4c0e08e) has the six 2026-10-10 worktree branches merged (suspension point masses, wheel
