@@ -1,7 +1,9 @@
 # Most Rusted: working notes
 
 Rust reimplementation of NFS Most Wanted (2012) that runs on the original assets, read at runtime from the
-user's install (IW4L-style). Read these before starting work:
+user's install (IW4L-style). **The end goal is a game as close as possible to the original in every respect**
+(how it drives, looks, sounds and plays, its UI, cutscenes and game logic): see "Fidelity rule" below. Read these
+before starting work:
 
 - [docs/PLAN.md](docs/PLAN.md): milestones and what to do next. Update the checkboxes when things land.
 - [docs/research-log.md](docs/research-log.md): open format questions and dated findings. Add to it whenever

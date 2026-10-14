@@ -5,10 +5,13 @@ An open-source runtime for **Need for Speed: Most Wanted (2012)**, written in Ru
 Most Rusted ships **no game data**. Like [IW4L](https://github.com/vladtrc/iw4L) does for MW2, it reads every
 model, texture and map directly from your own installed copy of the game at runtime, without modifying it.
 
-> Status: early and experimental. You can explore Fairhaven in a free camera, or pick any of the 93 cars and
-> drive it through the city with collision, crash damage, engine and tyre sounds, music and a basic HUD. It does
-> not play like Most Wanted yet: the handling still differs from the original, there are no AI vehicles, no
-> events or pursuits, no Easydrive or front end, and the image has a yellow tint. See the [roadmap](#roadmap).
+**The goal is a game that plays, looks and sounds as close to the original as possible**: every rule (handling,
+AI, cameras, rendering, audio, game logic) is read from the original's code and data or measured in the running
+original, not approximated.
+
+> Status: in progress. The front end, free roam in Fairhaven with all 93 cars, traffic, races with AI racers,
+> collectables and a first version of pursuits work, with handling, cameras, lighting and post-processing read from
+> the game's code. Many parts are still missing or differ from the original. See the [roadmap](#roadmap).
 
 ## Requirements
 

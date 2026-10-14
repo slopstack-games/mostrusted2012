@@ -1,3 +1,9 @@
+> **Standing goal (every session):** the game must end up as close as possible to the original NFS Most Wanted
+> (2012) in every respect: driving, look, sound, AI, UI, cutscenes and game logic. Work from the original's code
+> (the dump, REA on the carved image), its data, and measurements / captures of the running original (CLAUDE.md
+> "Fidelity rule"); never settle for "plausible". Open differences are tracked below, in docs/PLAN.md and the
+> README roadmap.
+
 # Handoff: 2026-10-14 (session 8, part 2): start here
 
 ## User play test (end of 2026-10-14): what is still wrong, by area
