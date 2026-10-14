@@ -153,7 +153,8 @@ pub struct Gearbox {
 
 #[derive(Debug, Clone, Copy)]
 pub struct WheelBody {
-    /// Wheel centre in car space.
+    /// Wheel centre in car space where the game builds it (`wheel_layout`; the body's own transform when the
+    /// car lacks the axle data).
     pub position: [f32; 3],
     pub radius: f32,
     pub half_width: f32,
@@ -422,7 +423,18 @@ impl VehicleHandling {
         for e in bundle.entries_of_type(ResourceType::GenesysObject) {
             let Ok(obj) = store.decode_genesys(&bundle.load(e)?) else { continue };
             match obj.type_name.as_str() {
-                "Genesys.Gen.RaceCarPhysicalDefinition" => out.read_bodies(&obj),
+                "Genesys.Gen.RaceCarPhysicalDefinition" => {
+                    out.read_bodies(&obj);
+                    // The vehicle build moves each wheel body to its axle's position (`FUN_009b40c0`,
+                    // `wheel_layout`); the bodies' own transforms are placeholders on many cars.
+                    if let Some(layout) = store.wheel_layout(&obj) {
+                        for w in &layout.wheels {
+                            if let Some(b) = w.body.checked_sub(1).and_then(|i| out.wheels.get_mut(i)) {
+                                b.position = w.position;
+                            }
+                        }
+                    }
+                }
                 "Genesys.Gen.HandlingBehaviour" => out.read_handling(&obj),
                 "Genesys.Gen.VehicleCameraContainer" => out.camera = VehicleCameras::from_container(&obj),
                 "Genesys.Gen.Vehicle_Gameplay" => {

@@ -183,6 +183,8 @@ pub struct TrafficModels {
 
 struct TrafficModel {
     body: crate::ModelParts,
+    /// The model origin's height above the road (`TrafficCarSpec::ride_height`).
+    ride_height: f32,
     wheels: Vec<(WheelSpec, Vec<(crate::ModelParts, bool)>)>,
 }
 
@@ -192,6 +194,7 @@ impl TrafficModels {
         let get = |m: &ResourceId| parts.get(m).cloned().unwrap_or_default();
         let model = TrafficModel {
             body: spec.body.iter().flat_map(get).collect(),
+            ride_height: spec.ride_height,
             wheels: spec
                 .wheels
                 .iter()
@@ -1721,25 +1724,29 @@ fn spawn_entities(
             Restitution::new(0.0),
             ChildOf(body),
         ));
+        // The model sits `ride_height` above the lane (the road is at y = -T.y in model space, `wheel_layout`).
+        let lift = Vec3::Y * model.ride_height;
         for (mesh, mat) in &model.body {
             commands.spawn((
                 Mesh3d(mesh.clone()),
                 MeshMaterial3d::<GameMaterial>(mat.clone()),
+                Transform::from_translation(lift),
                 crate::shadow_cull::ShadowClass::Car,
                 ChildOf(body),
             ));
         }
         for (w, parts) in &model.wheels {
-            let pivot =
-                commands.spawn((Transform::from_translation(w.position), Visibility::default(), ChildOf(body))).id();
+            let pivot = commands
+                .spawn((Transform::from_translation(w.position + lift), Visibility::default(), ChildOf(body)))
+                .id();
             let mirror = if w.mirror { Vec3::new(-1.0, 1.0, 1.0) } else { Vec3::ONE };
-            // MODEL: wheels spin at speed / radius with the radius taken as the wheel's height (the
-            // kinematic wheel pose `FUN_005f7cf0` was not read).
+            // Wheels spin at speed / radius; the kinematic pose puts every wheel's centre at the front-left
+            // radius above the road (`FUN_005ee7f0`), so that height is the radius.
             let spinner = commands
                 .spawn((
                     Transform::from_rotation(w.rotation).with_scale(mirror),
                     Visibility::default(),
-                    TrafficWheel { radius: w.position.y.max(0.2), left: w.mirror },
+                    TrafficWheel { radius: (w.position.y + model.ride_height).max(0.2), left: w.mirror },
                     ChildOf(pivot),
                 ))
                 .id();

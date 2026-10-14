@@ -38,7 +38,7 @@ pub mod traffic;
 pub mod ui;
 pub mod vehicle_driver;
 pub mod vfx;
-pub mod wheel_arches;
+pub mod wheel_layout;
 
 pub use catalog::{DEFAULT_LANGUAGE, VehicleInfo};
 

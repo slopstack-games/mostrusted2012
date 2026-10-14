@@ -91,6 +91,7 @@ cargo fmt                                    # rustfmt.toml: max_width 120
 ./target/release/mwtool engine-sound 911 out.wav   # rev sweep through the engine synth (--trace: `seconds rpm load` lines)
 # Crash damage (skeletal damage clips): inspect / preview a car, or drive into a wall and save before/after shots
 ./target/release/mwtool damage 911 --level front=0.5 --preview <scratch>/dmg.png
+./target/release/mwtool wheels all --png <dir>     # wheels: spec vs the game's VehicleInfo axle rule, side views
 ./target/release/mostrusted --drive 911 --test crash --screenshot <scratch>/crash.png
 # Measuring the original game (read-only, Linux/Proton; docs/handling.md "Measuring the original")
 ./target/release/mwtool memscan --watch handling.watch        # interactive value scanner; `help`
@@ -101,6 +102,7 @@ cargo fmt                                    # rustfmt.toml: max_width 120
 # The probe DLL (docs/probe.md): loads into the running original for one run and logs to ref/probe/<name>/
 cargo build --release -p mw-probe --target i686-pc-windows-gnu    # needs mingw-w64-gcc + the rustup target
 tools/orig/orig launch --probe hello   # orig modules lists the game's DLLs; orig quit removes the copied DLL
+#   memory reads without ptrace: write ref/probe/hello/dump.req (`label base [offset ...] length`, docs/probe.md)
 # Drive the original yourself (tools/orig/orig --help): it runs headless in gamescope (always focused, input
 # only through gamescope's display, screenshots via gamescopectl); one-time: `tools/orig/orig setup` and set the
 # printed Steam launch option. Look at each screenshot before choosing the next input.

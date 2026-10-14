@@ -716,6 +716,10 @@ the same inputs through `--test`, compare the traces, and record each fitted rul
 
 ### Suspension rest position (2026-10-04)
 
-The graphics spec's wheel position is the wheel **at rest**. The game's spring is set so it holds the static
+The wheel's built position is the wheel **at rest**. Since 2026-10-10 that is the game's, not the graphics
+spec's: the vehicle build places each wheel body from `VehicleInfo`'s axles (x `SuspensionWheel.dcbe38af`, y
+`caac331c` + R − `Axle.2f5fb582`, z `Axle.eaee225f`; `mw_assets::wheel_layout`, decomp.md "Wheel placement"), which
+on many cars is centimetres (Raptor −8 / −11 cm, Focus ST +16 cm) from the spec's placeholder; verified live on
+the Raptor. The game's spring is set so it holds the static
 corner load exactly at the data's sag (`41543f85`), so the wheel sits in its arch under the car's weight, droops
 by up to the sag and compresses at most `BUMP_TRAVEL` above rest.

@@ -96,7 +96,9 @@ Make a static frame look like the game.
    a resource type, flagging constants, pointers (values inside chunk 0), counts and import slots. Most format
    work after this is "survey → hypothesise → verify across all instances".
 2. `[x]` **Vehicle assembly**: `VehicleGraphicsSpec` (0x106) gives part models, wheel placement and the skeleton.
-   - Done: wheels sit in the arches (right side mirrored), and `--vehicle` accepts a car name. Still open: LOD
+   - Done: wheels sit in the arches (right side mirrored), and `--vehicle` accepts a car name. Wheel positions
+     follow the game's rule from `VehicleInfo`'s axles, not the spec (2026-10-10, `mw_assets::wheel_layout`;
+     player, traffic, viewer; checked live on the Raptor). Still open: LOD
      selection by distance, and skinning to the skeleton.
 3. `[x]` **Remaining world layers** from `ZoneHeader` (0x206): CompoundInstanceList / CompoundObject,
    PropInstanceList / PropObject, DynamicInstanceList, LightInstanceList, GroundcoverCollection / Instances.

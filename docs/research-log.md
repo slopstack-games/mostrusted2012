@@ -261,6 +261,63 @@ the road beyond the lawn is a bright tan band (the wet road's sky reflection at 
 original's is dark grey), the brick paving is bright and dry-looking (the original's is dark and glossy), no
 lit windows or street lamps. Open: where the original keeps its time of day, so pairs can be made at the same
 hour.
+
+### 2026-10-10: wheel placement: the game builds its wheels from VehicleInfo's axles, not the spec
+
+- **Report**: "wheel placement of some cars is still off". `mwtool wheels all [--png <dir>]` (new) prints every
+  car's spec wheel position next to where the game puts it, and draws side views (spec position as a blue ring).
+  Over all 104 car bundles (73 named, cop variants, 11 traffic `_TR`): no spec wheel has a rotation or a scale
+  other than 1, and the physics `RigidBody` wheel transforms equal the spec everywhere. But the spec's wheel y
+  is a placeholder on many cars: 0.311 front / 0.316 rear on the Challenger, Crown Victoria, Impreza Cosworth,
+  Caterham, M3 GTR (whatever the tyre radius, 0.27–0.37 m), 0.325 on every traffic car (tyres 0.31–0.44 m: the
+  box truck's sank 11 cm into the road), and the Venom's front axle is at z 0.125 (the old arch heuristic).
+- **The rule (dump, sub-agent trace, confidence high)**: the vehicle build `FUN_009b40c0` (from `FUN_009b4e60`)
+  loops over `VehicleInfo.Axles` (+0x98, 0x28 each; `VehicleInfo` = the physical definition's `AdditionalInfo`)
+  and each axle's `SuspensionWheel` handles (`1048818a`) and **overwrites** the wheel body's position with
+  x = `SuspensionWheel.dcbe38af`, y = `VehicleInfo.caac331c` + R − `Axle.2f5fb582`, z = `Axle.eaee225f`, R = the
+  wheel body's cylinder `Radius` (the body named by `SuspensionWheel.Child`). The spring is then built at that
+  geometry (`FUN_009b29b0`: rest length = distance + W / k, so the wheel rests there). Drawing: the spawn
+  matrix `FUN_00593ac0` takes the spec position and scale once; each frame `FUN_005798a0` replaces it with the
+  physics wheel's world matrix (vehicle +0x870 + i × 0x1d0, rows +0x60.., translation +0x90, built by
+  `FUN_00902930` from the wheel record's centre, no offsets) times the inverse of the car's render matrix
+  (vehicle +0x160 local offset × chassis). The spec quaternion is never read and the spec scale only reaches
+  the spawn matrix. Kinematic traffic (`FUN_005ee7f0`, from `FUN_005f7cf0` / `FUN_005fcbd0`): the same axles,
+  every wheel at the front-left radius, R·((x, R_FL, z) − T) with `VehicleInfo.509931cd` (rows R, translation T).
+- **Live check (probe, 2026-10-10)**: `mw-probe` now serves memory dump requests (`dump.req`, docs/probe.md).
+  The player's F-150 Raptor in free roam, parked and again after driving and stopping: drawn wheel centres
+  (wheel matrix × inverse render matrix) (±0.9275, 0.353 / 0.356, 1.675) and (±0.933, 0.324 / 0.325, −1.725);
+  the rule gives (±0.925, 0.354, 1.675) / (±0.93, 0.324, −1.725), the spec (±0.935, 0.436, 1.68 / −1.72). The
+  wheel object's +0xc0 (the built rest position in the chassis frame) is the rule's minus the chassis body
+  origin (0, 0.75, 0.203). Screenshots of the Raptor from the side (camera rotated with Delete / Page Down)
+  show the original's lower wheels in the arches. The XKR snapshot `snap1` (2026-10-06) has the rule at +0xc0
+  as well (its live wheels were 3–5 cm higher: that car was not at rest).
+- **The ground**: at rest the tyre's bottom is at y = `caac331c` − `2f5fb582` ≈ −T.y in model space (Raptor −0.08 /
+  −0.11, T.y 0.097; Challenger +0.028, T.y −0.033). So the player's body height comes out of the physics as
+  before; for traffic we lift the model by T.y above the lane (inferred from the same relation; the traffic car
+  frame's writer was not traced).
+- **Mirroring settled**: the game turns right wheels half a turn about Y (`FUN_00593ac0`, `FUN_00902930` negate
+  rows 0 and 2) and draws them with the wheel shaders' flipped technique, whose vertex programs scale the
+  position by (10, 10, −10) instead of (10, 10, 10) with front-face culling (`mwtool shader-asm
+  VehicleNFS13_Wheel_Textured_Roughness`; `g_flipUvsOnFlippedTechnique`): together a mirror on X, as ours.
+- **Port**: `mw_assets::wheel_layout` (the rule; `place_spec_wheels` moves spec wheels by side and axle).
+  `VehicleHandling` wheel bodies take the rule's positions (physics and drawing, `loader.rs`), the static viewer
+  (`vehicle_placements`) too, traffic gets the kinematic pose and `ride_height` (`traffic.rs`). The arch
+  heuristic `mw_assets::wheel_arches` (2026-10-04, a model decision for the Venom) is removed: the Venom's
+  VehicleInfo puts its front axle at z 1.3.
+- **Per car (rule − spec)**: Venom front z +1.175; Focus ST y +0.16 (wheels hung below the body); Raptor y −0.08 /
+  −0.11; M3 GTR (and its 4 variants) z ±0.10, y +0.03; box truck 392322 y +0.10, traffic 122821 −0.08,
+  122822 +0.07, 122824 (pickup) +0.06, 122819 (van) −0.055; 911 GT2 x −0.09, y −0.02..−0.05; A1 clubsport y −0.05..−0.09;
+  Challenger y +0.08, z ±0.02; Evoque y −0.06..−0.07; Diablo, 350Z, Maserati, Marussia, Charger R/T, Firebird
+  4–6 cm; most others under 3 cm (911 Carrera S 5–8 mm, Veyrons ~1 cm). Images: `extracted/vis/*_{before,after}.png`
+  (worktree, git-ignored).
+- **Handling tests unchanged** (before = master build): 911 accel 3.58 s 0–60 / 307.6 → 307.4 km/h top, brake
+  38.1 m, corner 2.57 g; Focus ST and Raptor identical but for 0.02–0.08 s at 0–200 km/h (the grip load is the
+  static corner load, not the spring's).
+- **Open**: the traffic frame's height (T.y lift) is inferred; what wheel record +0x3c and traffic car +0x1fc
+  are; the names of `caac331c` (a body reference height) and `2f5fb582` (an axle's ground offset); a per-axle
+  scale on the strut-top-to-wheel distance in `FUN_009b40c0` (1 by default, `FUN_008f9120`; likely an upgrade
+  hook) is not applied.
+
 ### 2026-10-10: model LODs and draw distances (the game's rule, `lod.rs`)
 Performance item "fewer draws" (handoff of 2026-10-09): every world placement was drawn at LOD0 at any distance.
 - **The rule, traced** (decomp.md "Model LOD and draw distance"): `FUN_008a02f0` draws one placement:
@@ -4037,7 +4094,8 @@ against the raw recordings instead of against its own metrics. Scripts are in th
   −1.21); Venom: front arch +1.05…+1.55 (centre +1.30), rear around −1.5 (data −1.505).
 - Fix (`mw_assets::wheel_arches`): an axle whose overhang exceeds 1.6 m moves to the arch nearest to a
   0.95 m overhang (within 0.6 m); applied to the spec wheels (viewer and drive) and the physics wheels. Only
-  the Venom triggers it.
+  the Venom triggers it. (Superseded 2026-10-10: the game takes wheel positions from `VehicleInfo.Axles`, whose
+  front axle on the Venom is at z 1.3; the heuristic is removed, see "wheel placement".)
 - Unrelated: the dark rectangle near the horizon in `--vehicle` shots is in the sky / cloud panorama (it
   shows behind the 911 too).
 ### 2026-10-04 (particles): BearEffect decoded, tyre smoke, kick-up and sparks

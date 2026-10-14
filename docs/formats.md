@@ -146,6 +146,19 @@ InstanceList ──> Model ──(LOD state)──> Renderable ──(per mesh)�
 `VehicleGraphicsSpec` (0x106) assembles a car: body part models at the origin, plus four wheels with
 position, quaternion, scale and 2–4 part models each (tyre, rim, disc, caliper; a bitmask marks which spin).
 Right-hand wheels reuse the left-hand models mirrored on X. Layout tables are in `mw-formats/src/vehicle.rs`.
+
+**Wheel placement (2026-10-10)**: the spec's wheel positions (and the identical physics `RigidBody` wheel
+transforms) are **not** where the game puts the wheels; on many cars they are placeholders (y 0.311 / 0.316 on
+the Challenger, Crown Victoria, Caterham, Impreza, M3 GTR; 0.325 on every traffic car; the Venom's front axle at
+z 0.125). The game builds each wheel from the physical definition's `AdditionalInfo` (`VehicleInfo`): per
+`Axles[i]` (`2f5fb582` ground offset, `eaee225f` z, `1048818a` its `SuspensionWheel` handles), x =
+`SuspensionWheel.dcbe38af`, y = `VehicleInfo.caac331c` + R − `2f5fb582`, z = `eaee225f`, R = the cylinder radius of
+the body `SuspensionWheel.Child` names (`RaceCarPhysicalDefinition` body names list `6d10b948`). At rest the tyre's
+bottom is at y = `caac331c` − `2f5fb582` ≈ −T.y, T = the translation of `VehicleInfo.509931cd`. Traffic: the same
+axles with the front-left radius for every wheel, R·((x, R_FL, z) − T). Spec quaternions are all identity and
+scales 1. Right wheels: half a turn about Y on the CPU plus the shaders' flipped technique (z × −1, front-face
+culling) = a mirror on X. `mw_assets::wheel_layout`, `mwtool wheels <car|all> [--png dir]`; decomp.md "Wheel
+placement".
 It also holds the car's **locator groups** (+0x1C count, +0x20 ids, +0x24 `{n, locators, ?}`; a locator is a
 quaternion and a position): where its coronas, lights and spot effects (`VehicleVfxBehaviour`) sit. The 911's
 group 137267 holds the four tail pipes, turned half a turn about X so +Z leaves each pipe backwards.

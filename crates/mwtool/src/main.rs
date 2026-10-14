@@ -21,6 +21,7 @@ mod traffic_sound;
 mod tune;
 mod ui;
 mod verify_handling;
+mod wheels;
 
 use mw_assets::AssetStore;
 use mw_bundle::{Bundle, ResourceId, ResourceType};
@@ -365,6 +366,15 @@ enum Cmd {
         /// Print every clip's keys at its last frame (offset, rotation angle and axis, scale per bone).
         #[arg(long)]
         keys: bool,
+    },
+    /// Check each car's wheels against its body: arch centre, clearance, track, scale, physics wheels
+    /// (`wheels all` for every car).
+    Wheels {
+        /// Car name, vehicle ID, or `all`.
+        car: String,
+        /// Write a side view per car (body grey, tyres red, other wheel parts yellow, ground green) here.
+        #[arg(long)]
+        png: Option<PathBuf>,
     },
     /// Show the handling data extracted from a car's GeneSys objects.
     Handling {
@@ -741,6 +751,7 @@ fn main() -> Result<()> {
             vehicle.as_str(),
             wheels.as_deref(),
         )?,
+        Cmd::Wheels { car, png } => wheels::run(&AssetStore::new(game)?, &car, png.as_deref())?,
         Cmd::Mods { car } => {
             let store = AssetStore::new(game)?;
             let bundle = if car.to_ascii_uppercase().ends_with(".BNDL") {

@@ -619,6 +619,44 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
   object's on-ground byte (+0x24, vehicle +0x894 for wheel 0; `ref/live1`'s `w*_contact`), so whether it means an
   active contact record is not known. Ported in `mw_handling::suspension` and drive.rs (handling.md item 5).
 
+## Wheel placement (2026-10-10, ported in `mw_assets::wheel_layout`)
+
+- **Vehicle build** (`FUN_009b40c0`, called by `FUN_009b4e60`; confidence high): the head fills each wheel's
+  cylinder `Radius` and `HalfLength`; then for every `VehicleInfo.Axles` entry (+0x98, u16 count +0xa0, 0x28
+  bytes each) and each of its `SuspensionWheel` handles (axle +0x18, count +0x24) it **overwrites** the wheel
+  body's position (`FUN_009add40`) with x = `SuspensionWheel.dcbe38af` (+0x38), y = `VehicleInfo.caac331c` (+0x90)
+  + R − axle `2f5fb582` (+0x1c), z = axle `eaee225f` (+0x20). The strut top is (x, `caac331c` + constraint +0x24,
+  z), direction (0, 1, 0) (0x01025030); a per-axle scale (`param_9` / `param_10`, 1.0 from `FUN_008f9120`, likely
+  an upgrade hook) multiplies the strut-top-to-wheel distance. The springs are then made at this geometry
+  (`FUN_009b29b0`: rest length = |anchor − wheel| + W / k), so this is where the wheel rests. The wheel
+  `RigidBody` transforms (`0d0c29b4`) in the data are never used for position.
+- **Spawn matrix** (`FUN_00593ac0`): per race-car slot and wheel (count = spec +0x13, record remapped by
+  slot +0x14 + i) the render object gets the spec's part models (+0x78, count +0x80, spin mask +0x7c) and a rest
+  matrix of the spec position (+0x00) and scale (+0x20); x < 0 turns it by π about Y (0x00fad9e0) and sets
+  +0x81. The quaternion (+0x10) is never read. Stored at `mgr + 0x23b50 + slot × 0x240 + i × 0x90`.
+- **Per frame** (`FUN_005798a0` from `FUN_00594870`, slots with a physics vehicle, `FUN_00572810`): the rows and
+  translation are replaced by the physics wheel's world matrix (vehicle +0x870 + i × 0x1d0: rows +0x60/+0x70/+0x80,
+  translation +0x90) times the inverse of the car's render matrix (`FUN_005423d0`: local offset vehicle
+  +0x160..+0x19c × chassis body); no scale. Render +0x74 = |wheel object +0xd0| (wheel record +0x2c, likely the
+  spin speed for the blur choice). The wheel matrix is built in `FUN_00902930`: translation = wheel record +0x00
+  (the body's world centre, `FUN_009dd280`), rotation = chassis × a damage bend (`SuspensionWheel.Damage` +0x18 /
+  +0x20 / +0x2c), wheel record +0x1c (spin), +0x3c (unknown) and the steer on front wheels; right wheels (rest x at
+  wheel object +0xc0 < 0) get rows 0 and 2 negated; `FUN_00491050` blends towards another pose by |+0x15c|
+  (normally 0).
+- **Right wheels are mirrored**, not only turned: the wheel shaders' flipped technique (`g_flipUvsOnFlippedTechnique`)
+  has vertex programs that scale the position by (10, 10, −10) instead of (10, 10, 10) and a rasterizer state
+  with front-face culling (2) instead of back (3), so turn × flip = a mirror on X.
+- **Traffic** (`FUN_005f7cf0` → `FUN_005ee7f0`, from `FUN_005fcbd0`, when the LOD at job +0x28c < 4 or +0x268 ≤ 400):
+  per wheel, the axle with the larger `eaee225f` is the front; within it the larger `dcbe38af` is the unmirrored
+  wheel; translation = R·((x, R_FL, z) − T) with R / T the rows / translation of `VehicleInfo.509931cd` and R_FL
+  the front-left body's radius (body index from `RaceCarPhysicalDefinition` +0x18) for every wheel, then times the
+  body pose (car +0xe0 rows, +0x110 translation, angles +0x1f0 / +0x1f4); spec byte +0x8e = right side (Ry(π)),
+  +0x8f = steered (angle car +0x1f8). No raycast per wheel. Ground probes (`FUN_005f52b0`) sit at `VehicleInfo`
+  +0x8c / +0x94 (the axle z) with w = R_FL. Not traced: how the car frame is placed over the road (we take the
+  road at y = −T.y in model space, as the player's tyres rest there).
+- **Live** (probe dump, the Raptor, 2026-10-10): drawn wheel centres within 2 mm of the rule, parked and after
+  driving and stopping (research log).
+
 ## Tyres (`FUN_009c75b0` per-wheel solve, `FUN_009c5da0` caps, `FUN_00905910` per-tick inputs)
 
 Traced 2026-10-06 to the end of every factor; values checked against the reference run `ref/xkr_launch`, whose

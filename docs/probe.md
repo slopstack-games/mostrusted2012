@@ -35,6 +35,23 @@ in [PLAN.md](PLAN.md) (M3.2 and "Testing").
   pad input needs no hook at all, since the game polls `XInputGetState` through our proxy (`FUN_0040f140`,
   `FUN_004119c0`). The fallback the user named, an external menu, is built: `mwtool tune` ("Tuning menu").
 
+## Memory dumps on request (2026-10-10)
+
+The probe reads memory in-process, so it needs no ptrace permission (`kernel.yama.ptrace_scope` = 1 blocks
+`memscan` / `snapshot.py` on this machine). While the game runs with `orig launch --probe <name>`, write
+`ref/probe/<name>/dump.req`; within 200 ms the probe reads it, renames it `dump.done`, writes one `<label>.bin`
+per line and a report `dump.txt` (address, length, ok / unreadable). A line is `label base [offset ...] length`
+in the `handling.watch` convention (`base`, then for each offset: read a pointer there and add the offset):
+
+```
+veh     NFS13.exe+0xcedb04 0x4 0x53220 0x184 0x0 0x3000     # the player's vehicle object
+chassis NFS13.exe+0xcedb04 0x4 0x53220 0x184 0x10 0x0 0x200 # its chassis body
+```
+
+Read-only (every range is checked with `VirtualQuery` first). Used for the wheel placement check (research log
+2026-10-10: wheel matrices at vehicle +0x870 + i × 0x1d0 +0x60, chassis rows / position at body +0x00 / +0x30,
+render local offset at vehicle +0x160).
+
 ## Tuning menu: `mwtool tune` (2026-10-05)
 
 A terminal menu that runs next to the game (`tools/orig/orig launch`, then `mwtool tune` in another terminal)
