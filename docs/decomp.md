@@ -444,11 +444,13 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
 
 ## Suspension, wheels, aerodynamics
 
-- **Wheels**: the definition has 24–27 kg cylinder bodies on a strut with a spring-damper; in the solver each
-  wheel is a compact record (spin, spin inertia) tied to the chassis by a wheel constraint holding its ground
-  contact points, whose normal impulses are iterated in sub-steps (`FUN_0093f200` → `FUN_009c2670`,
-  `FUN_00932190` → `FUN_009c5a90`); the tyre friction comes after, once per tick ("Tyres"). The tyre's grip load
-  is **not** the spring's force but the static corner load plus a downforce share ("Tyres").
+- **Wheels**: the definition has 20–27 kg cylinder bodies on a strut with a spring-damper; in the solver each
+  wheel is a compact record (centre, velocity, mass = the data's wheel mass, spin, spin inertia): a **point mass**
+  that the island step integrates (2026-10-10), held off the ground by a wheel constraint's contact record and
+  tied to the chassis by its spring-damper element (`FUN_0092f160`, `FUN_0092f510` below); the contact's
+  normal impulses are iterated in sub-steps (`FUN_0093f200` → `FUN_009c2670`, `FUN_00932190` → `FUN_009c5a90`);
+  the tyre friction comes after, once per tick ("Tyres"). The tyre's grip load is **not** the spring's force but
+  the static corner load plus a downforce share ("Tyres").
 - **Spring**: k = W / `41543f85`, with W the static load of the chassis (wheels excluded) on that wheel, solved
   from the geometry. So `41543f85` is the **static sag** (0.08 m front / 0.07 m rear), and every car's suspension
   frequency is √(g / sag) / 2π (911: 1.76 / 1.88 Hz). `df57b7ad` (true everywhere) selects this; `dadfbfc8` is
@@ -457,9 +459,8 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
   front, ×1.6 rear; probably rebound). `0c5f89b3` is not a frequency. The setup (`FUN_009b29b0`, through
   `FUN_00933930` / `FUN_00925620`) stores rest length, k, `0c5f89b3` × c, W and c at spring +0x10, +0x14, +0x18,
   +0x1c, +0x2c (the in-air blend in `FUN_008fe200` rewrites +0x14, +0x18 and +0x2c); a per-axle factor (an
-  upgrade input, 1 by default) multiplies k. The function that applies the two dampers was not found (the island
-  solver files hold no spring solve that reads +0x18 and +0x2c as plain floats; it uses vector loads), so which
-  slot is rebound is still open.
+  upgrade input, 1 by default) multiplies k. +0x18 is used while the strut extends (rebound): the damper element's
+  solve `FUN_0092f160` (below; settled 2026-10-07, read in full 2026-10-10).
 - **Anti-roll bars** per axle, built when the vehicle is (`FUN_008fda70` → `FUN_00933a60`, twice: the front
   pair of wheel objects at vehicle +0xa08 / +0xbd8, the rear pair at +0xda8 / +0xf78, with the chassis body at
   vehicle +0x10). `FUN_00933a60` takes a constraint element of type 2 from the world's element pools (registered
@@ -506,21 +507,33 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
   applies the non-negative normal impulse (target from the record's bias and n · +0x490, accumulated, clamped
   at 0) to the wheel, and while +0x4ae is set also to the chassis at the strut point through the chassis's
   inverse mass and inertia, scaled by +0x474. So the end of the strut is a hard contact on the chassis, not a
-  spring: a landing cannot drive the body into the ground. Ported as `strut_stops` (handling.md item 5).
+  spring: a landing cannot drive the body into the ground. Ported in drive.rs (`mw_handling::suspension::stop_excess`; handling.md item 5).
 - **Island step and sub-steps** (2026-10-07, from the disassembly in the live snapshots). `FUN_0093f5a0` calls
   each pass once; the iterations live in two callees, both counted by the world (constructor `FUN_009330d0`,
   same values live): `FUN_00932190` loops world +0x460 = 2 times (joints `FUN_009c62e0` / `FUN_009c5840`, the
   wheel constraints' contact pass `FUN_009c5a90`, contacts `FUN_009be060`, `FUN_00928cd0`), and `FUN_0093f200`
   loops world +0x464 = 2 times at dt / 2 (joints `FUN_009c4e10` / `FUN_009c1fb0`, contacts `FUN_009be420`,
   `FUN_00928fb0`, the wheel constraints' impulse pass `FUN_009c2670`, the force elements `FUN_00932f90`, then
-  gravity and velocity integration `FUN_009282d0`). Positions appear to be integrated once afterwards
-  (`FUN_009328a0`; inferred).
+  gravity and velocity integration `FUN_009282d0`). Positions are integrated **between** the two, by
+  `FUN_009324f0` (2026-10-10, read): each awake body through `FUN_0091f380` with dt, and each wheel record's centre
+  x += v dt with the velocity the contact passes left; so the order of a tick is contact passes → integration →
+  sub-steps → tyres (`FUN_009289f0`) → wheel spin angle (`FUN_009325e0`: +0x1c += spin × dt, wrapped) →
+  `FUN_009328a0` (not read in full: it calls `FUN_0091f380` on each body with its linear velocity zeroed and caps
+  the speeds; earlier taken for the position integration) → sleep. The step's context (`this` of `FUN_0093f200`;
+  snap1 0x07b72b80, the earlier "island at 0x07b72a80" was 0x100 off) is the world + 0x2b0: +0x00 bodies, +0x08
+  wheel records, +0x20 wheel constraints (8), +0x1b0 / +0x1b4 the two loop counts (2, 2; world +0x460 / +0x464),
+  +0x1bc dt (1/60), then the sleep thresholds. The sub-step's dt is context +0x1d0 × 1 / count and the force
+  elements' last argument context +0x1e0 (1/dt); neither was read live (outside the step they hold other data),
+  but h = dt / 2 is confirmed by the wheels' velocities (below).
 - **`FUN_00932af0` is the island sleep pass**, not a force: the island sleeps once every body stays under 0.4 m/s
   (world +0x46c) and 0.3 rad/s (+0x470) and every wheel's spin under 1 rad/s (+0x474) for 2 s (+0x468) of
   accumulated dt; then it zeroes the bodies' velocities and accumulators, sets body +0xf4 bit 0 and wheel record
   +0x64, and flags the island's elements (+0xc bit 0) so the solver skips them (parked cars in the snapshots).
-- **Force elements** (`FUN_00932f90`, three island lists): +0x68 dampers (`FUN_0092f160`, then `FUN_0092f510`,
-  likely the springs), +0x70 anti-roll bars (`FUN_0092ee70`). Elements with +0xc bit 0 set are skipped.
+- **Force elements** (`FUN_00932f90`, three island lists): the +0x68 list holds one spring-damper element per
+  wheel (type 0, `FUN_00933930`); a first loop runs every damper (`FUN_0092f160`), a second every spring
+  (`FUN_0092f510`) on the same elements, then the +0x70 anti-roll bars (`FUN_0092ee70`). Elements with +0xc bit 0
+  set are skipped. Arguments: chassis (× 0x100 from element +4), wheel record (× 0x80 from +8), the sub-step's dt,
+  two unused, context +0x1e0 (1/dt).
 - **Anti-roll bar** (`FUN_0092ee70`, read from the disassembly; element from `FUN_00933a60`: wheel record
   indices at +4 / +8 (× 0x80), chassis at int16 +0x10 (× 0x100), k × 60 at +0x20 (`.bss` 0x01185d70 = 60,
   four lanes, live), damping at +0x30). Both wheel centres (wheel record +0x00, world space) are taken into the
@@ -534,14 +547,44 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
   row at wheel A's centre and −F_B at wheel B's to the chassis accumulators, and `FUN_00907840` integrates them
   at once with dt / 2; the wheels get their share only under the same +0x0c mask. Net torque about the forward
   axis k θ − c ω_roll, towards the axle line. Ported as `anti_roll` in drive.rs.
-- **Damper** (`FUN_0092f160`, from its pseudo-C, whose selection logic is clean): chassis at element +4, wheel record at
-  +8, a chassis-local anchor at +0x20. n = the unit vector from the anchor (in world space) to the wheel centre;
-  the relative velocity is the wheel's velocity along n minus the chassis's at the anchor. Positive (the wheel
-  moving away from the mount: the strut extending, rebound) takes element +0x18 (`0c5f89b3` × c from
-  `FUN_009b29b0`), otherwise +0x2c (c); the impulse is −coefficient × relative velocity × 0.5 (0x010245b0) ×
-  the sub-step's scale, capped through the same effective mass (`FUN_009e8230`) so the relative velocity cannot
-  change sign, applied to the chassis (`FUN_0097e440`) and to the wheel only under the +0x0c mask. The spring is
-  likely `FUN_0092f510` (the same list, elements +0x10 / +0x14 / +0x20..+0x3c), not read.
+- **Damper** (`FUN_0092f160`, read in full from the disassembly 2026-10-10): A = the chassis-local anchor
+  (element +0x20) in world space, n = (wheel centre − A) / |…| (zero below FLT_EPSILON, 0x010246b0), v_rel =
+  v_wheel · n − v_chassis(A) · n (positive: the strut extending). Coefficient: element +0x18 (`0c5f89b3` × c,
+  rebound) while v_rel > 0, else +0x2c (c). W = the chassis's inverse effective mass at A along n (`FUN_009e8230`)
+  plus the wheel's 1/m only where wheel record +0x0c ≠ 1.0 (`.rdata` 0x010245c0). λ = −coef × v_rel × 0.5
+  (`.rdata` 0x010245b0) × h; the predicted v_rel + λ W is kept if its sign (1, −1 or 0, the −1 from 0x01024570)
+  equals v_rel's, else replaced by 0; the impulse that reaches it, through W (rcpps + two Newton steps), goes −λ n
+  to the chassis at A (`FUN_0097e440`, `FUN_00907840` with h) and +λ n / m to the wheel under the same +0x0c mask.
+  Element +0x3c accumulates λ / dt. **+0x0c is the w of the wheel centre**, a point (1.0 in all 124 wheel records
+  of snap1), so the damper acts on the chassis alone. Its × 0.5 halves the damping the data gives.
+- **Spring** (`FUN_0092f510`, read in full from the disassembly 2026-10-10): same A, n, v_rel; x = |wheel centre −
+  A| − element +0x10 (rest length); k = +0x14. W = the chassis's inverse effective mass at A along n + the wheel's
+  1/m (always). The free result v_rel − k x h W is kept while x < 0 and +0x0c = 1.0 (compressed); otherwise it is
+  limited by M = max(−x, x) × (1/dt) (the −1 at 0x01024570): extended (x > 0) to at least −M, at x = 0 to at most
+  M (= 0). λ = (target − v_rel) / W goes −λ n to the chassis at A and +λ n / m to the wheel (no mask); +0x3c += λ /
+  dt. So a compressed spring is a plain explicit impulse k |x| h per sub-step on both, and an extended one may pull
+  the wheel back to its rest length no faster than in one tick.
+- **Wheel contact** (2026-10-10, from the disassembly of `FUN_009c5a90`, `FUN_009c52d0`, `FUN_009c2670`). Each
+  wheel constraint uses one contact record (0x40 bytes at constraint +0x80 + +0x4a0 × 0x40: normal (its w the
+  accumulated normal impulse), ground point, contact offset from the wheel centre (its w = 1.0 once active), +0x30
+  the wheel's normal velocity, mass, −1). In each contact pass: d = (ground point + ground velocity (+0x480) × dt −
+  (wheel centre + offset + v_wheel × dt)) · n; nothing when d < 0; else `FUN_009c52d0` activates the record (w = 1,
+  counts at +0x5a / +0x5b) and the **wheel's** velocity rises by n d / dt, after which the strut stop runs (its own
+  d from the strut end, above). The impulse pass gives the wheel max((record +0x30 + n · v_ground (+0x490)) ×
+  constraint +0x0c − n · v_wheel, 0) along n, on active records only; constraint +0x0c is 0 in all four of snap1, so
+  it only stops the wheel approaching the ground. The record's normal w and constraint +0x3c accumulate mass × that.
+- **Wheel gravity** (`FUN_009282d0`, second loop, from the disassembly): each awake wheel record's velocity gains
+  (0, 1, 0) (`.rdata` 0x01024590) × 9.81 (`.bss` 0x01185f30) × h × h, both factors the sub-step's dt argument:
+  +0.0007 m/s up per sub-step. The chassis's loop adds body +0x9c (−9.81) × (0, 1, 0) × h. So the wheels fall only
+  through their springs.
+- **Checked in snap1** (XKR at 51 m/s): the spring elements (found by their anchors at 0x07bc7880 + i × 0x80) hold
+  k 41603 / 41784 / 47896 / 47663, rebound c 6344 / 6371 / 6420 / 6389, W 4576 / 4596 / 4071 / 4051 N, c 3524 /
+  3540 / 4013 / 3993; ours from the data: k 41671 / 47750, c 3530 / 4000, rebound 6354 / 6401 (0.3 %). The
+  wheels are compressed x = −0.1646 / −0.1659 / −0.1123 / −0.1140 (from the chassis pose and the wheel records),
+  so one sub-step's spring kick k |x| h / m is 2.283 / 2.301 / 1.792 / 1.820 m/s with h = 1/120 (twice that with
+  1/60); the wheel records' velocities along their contact normals read −2.279 / −2.307 / −1.791 / −1.813. That is
+  the state a tick leaves: the second impulse pass stopped the wheel, the second spring kicked it (the damper does
+  not touch it). Parked cars' wheel records read −1.0 to −1.3 m/s the same way.
 - **Strut stop, read in full (2026-10-09)**. `FUN_009c5a90` runs per wheel constraint in each of the island's
   contact passes (`FUN_00932190`, `this` = constraint, then wheel record, chassis body, dt, 1/dt). With d = the
   predicted penetration of the ground into the tyre placed at the strut end (+0x460, chassis-local; d = (ground
@@ -549,8 +592,9 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
   e = max(max(d − min(d, s), 0), 0.1 d) (0x01186b10), share +0x474 = clamp(e / max(d, FLT_EPSILON), 0, 1), flag
   +0x4ae (cleared at the top of every call); the chassis gets n × e × (1/dt) through its inverse effective mass
   at the strut end (`FUN_009e8230`, rcpps + Newton), accumulated by `FUN_009ca290` and applied by
-  `FUN_00907840`. The wheel record itself gets its velocity raised by d / dt along n (+0x40 += n d / dt), so the
-  wheel follows the ground fully. `FUN_009c2670` (each impulse sub-step) gives the wheel max((bias + n · v_ground)
+  `FUN_00907840`. The wheel record itself gets its velocity raised by its own predicted penetration / dt along n
+  before that (+0x40 += n d_wheel / dt; the stop runs only when that d_wheel ≥ 0; "Wheel contact" below, corrected
+  2026-10-10), so the wheel follows the ground fully. `FUN_009c2670` (each impulse sub-step) gives the wheel max((bias + n · v_ground)
   − n · v_wheel, 0) (+0x50 = mass accumulates the impulse) and, while +0x4ae is set, the chassis share × m_eff ×
   max(−v_n, 0) at the strut end. **+0x470 is the tyre's sidewall**: the builder `FUN_009c24b0` copies it from its
   sixth argument, which `FUN_0095b4d0` computes as max(wheel shape radius (wheel object +0x19c → +0x40) − wheel
@@ -569,10 +613,11 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
   47896, +0x18 rebound c, +0x1c W, +0x20 anchor (0.795, 0.22, 1.291), +0x2c c) puts the rest position at the sag
   (0.463 − (0.22 + 0.133) = 0.11 ✓). Where the strut top (−0.077 chassis-local on both axles) comes from in the
   data was not found.
-- Unknown: the spring element `FUN_0092f510`, the strut travel (+0x460 is set
-  by the builder's caller; not traced), the stop's slack (+0x470, `.bss` 0x01186bf0, 0x01186b10; not touched by
-  the sleep pass or the bar, whose context offsets +0x210 / +0x470 only coincide), what wheel record +0x0c is and
-  whether it ever changes (e.g. in the air).
+- Unknown: the strut travel (+0x460 is set by the builder's caller; not traced); what holds the wheel record on
+  its strut across (the joints `FUN_009c62e0` / `FUN_009c4e10` were not read; ours moves the wheel along the body's
+  up axis only); the collision detection's margin for making a wheel's contact record; the writer of the wheel
+  object's on-ground byte (+0x24, vehicle +0x894 for wheel 0; `ref/live1`'s `w*_contact`), so whether it means an
+  active contact record is not known. Ported in `mw_handling::suspension` and drive.rs (handling.md item 5).
 
 ## Tyres (`FUN_009c75b0` per-wheel solve, `FUN_009c5da0` caps, `FUN_00905910` per-tick inputs)
 

@@ -7,4 +7,5 @@ pub mod drift;
 pub mod drivetrain;
 pub mod nitrous;
 pub mod surface;
+pub mod suspension;
 pub mod tyre;

@@ -393,6 +393,74 @@ per parent, per window).
   particle quads, sparks: per-type `AssetChanged` scans; merging them into one material type would remove three),
   our tonemap / bloom node 0.27 (12 bind groups created per frame; cacheable), `cull_casters` 0.13.
 
+### 2026-10-10: the wheels are the game's point masses (spring, damper and contact passes ported)
+Handoff item 3 ("Kerbs part 2"). Read from the disassembly of the snapshot's decrypted code (`re/out/live/snap1`),
+constants from NFS13.exe on disk (`exe-const`), checked against the snapshot's objects; details in decomp.md
+"Suspension, wheels, aerodynamics".
+- **Spring `FUN_0092f510`** (read in full): along anchor (element +0x20) → wheel centre, x = length − rest length
+  (+0x10), λ = −k x h through the chassis's effective mass at the anchor plus the wheel's 1/m, on both; while
+  extended the result may close at most |x| / dt (the ±1 is `.rdata` 0x01024570 = −1). **Damper `FUN_0092f160`**:
+  λ = −coef × v_rel × 0.5 (0x010245b0) × h, rebound slot (+0x18) while extending, cut at v_rel = 0 where it would
+  change sign; the wheel's share is masked by wheel record +0x0c = 1.0, which is the w of the wheel centre (a point;
+  1.0 in all 124 records of snap1): **the damper acts on the chassis alone**, and its × 0.5 halves the damping the
+  data gives. Same element list: all dampers, then all springs, then the bars (`FUN_00932f90`).
+- **Wheel contact**: `FUN_009c5a90` raises the wheel's velocity by its own predicted penetration / dt (the record
+  is activated by `FUN_009c52d0` only when d ≥ 0; the strut stop runs only then), `FUN_009c2670` stops the wheel
+  approaching the ground (the bias term is × constraint +0x0c = 0 in snap1). Positions are integrated by
+  `FUN_009324f0` **between** the contact passes and the sub-steps (bodies and wheel centres; `FUN_009328a0`,
+  taken for it before, is something else). Wheel gravity (`FUN_009282d0`) is +9.81 h² **up** per sub-step: the
+  wheels fall only through their springs.
+- **Checks in snap1**: the XKR's four spring elements (at 0x07bc7880 + i × 0x80) hold k 41603 / 41784 / 47896 /
+  47663, c 3524 / 3540 / 4013 / 3993, rebound 6344 / 6371 / 6420 / 6389: ours from the data k 41671 / 47750, c 3530
+  / 4000, rebound 6354 / 6401 (0.3 %). The wheel records' velocities along their contact normals, −2.279 / −2.307 /
+  −1.791 / −1.813 m/s, equal one sub-step's spring kick k |x| h / m with the compressions read from the same
+  snapshot (2.283 / 2.301 / 1.792 / 1.820) only with h = 1/120: the sub-step dt is dt / 2. The step's context is
+  at 0x07b72b80 (the earlier note's 0x07b72a80 is 0x100 off): +0x08 wheel records, +0x20 constraints, +0x1b0 /
+  +0x1b4 = 2 / 2, +0x1bc = 1/60.
+- **Ported** (`mw_handling::suspension`, 4 unit tests; drive.rs): each wheel a point mass of the data's wheel mass
+  moving along the car's up axis; per tick two sub-steps (contact impulse, strut-stop share, dampers, springs,
+  anti-roll bars, wheel gravity), the tyres (acting where the contact carried a normal impulse), then the two
+  contact passes (wheel + strut stop) and the wheels' integration, which open the game's next tick; the 4 ×
+  corner-weight cap and the spring's clamp at 0 are gone. `strut_stops` is replaced; `anti_roll` runs per sub-step
+  inside the same pass. `MW_WHEEL_TRACE=<file>` logs the wheels per tick. First try without the strut joints'
+  reaction: a pitched car's springs pushed it back along its tilted up axis (0–200 km/h 11.12 → 11.38 s, top
+  307.6 → 306.4 km/h, brake 38.1 → 38.8 m); with the across-axis part of the ground's impulse on the wheel passed to
+  the chassis (model decision, handling.md) all three are back.
+- **911 tests, before → after**: accel 0–100 3.73 / 0–200 11.12 s unchanged, top 307.6 → 307.3 km/h; brake
+  38.1 m, corner 2.57 g, drift (peak 37.6°, held 4.75 s) unchanged. Landing deepest 0.104 → 0.125 m, overtravel
+  0.051 → 0.071 m, body contact 0.82 s, settle 2.72 → 3.50 s; climb deepest 0.098 → 0.104 m, overtravel 0.069 →
+  0.171 m, body contact 1.70 → 0.78 s, settle 4.72 → 5.00 s; kerb (50 km/h, 0.168 m, 30°) vy peak 1.36 → 1.78 m/s,
+  pitch rate 41.4 → 36.3 °/s, roll rate 105.5 → 85.1 °/s, pitch −4.11..0.37 → −2.80..0.57°, roll −4.27..2.48 →
+  −3.49..2.21°, rise 0.185 → 0.181 m, a wheel off 0.383 → 0.467 s, all four never, stop 3022 → 3116 N s; jitter at
+  100 km/h pitch 0.81 → 0.92° p-p (1 Hz), roll 0.0092 → 0.0003°, vy 0.021 → 0.027 m/s p-p. The slower settles are
+  the damper's × 0.5.
+- **`ref/live1` at 66.5 s** (XKR, 118 km/h): it is a **drop-off only** (`mwtool surfaces --near 1572.5,551,6
+  --steps`: the 0.153 m face at z ≈ 553–554, normal (0.18–0.20, 0, 0.98), lies across the path; the 0.122 m face
+  listed near it is 4 m to the side). Aligned at the front axle's middle crossing it (t 66.532): the +X front wheel
+  is 0.72 m past, the −X one 0.12 m short (32° to the axle); body heading −21.6°, velocity −10.4° (drifting).
+  `--test kerb` got `MW_TEST_KERB_UP` (here 0: the car comes on a 0.153 m plateau and drops off) and the same
+  binary geometry was built on master's physics for the "before": `MW_TEST_KERB_H=0.153 MW_TEST_KERB_UP=0
+  MW_TEST_KERB_ANGLE=-31 MW_TEST_KMH=118 --drive xkr --test kerb`. Before → after: vy peak 1.18 → 1.54 m/s, pitch
+  rate 10.5 → 12.8 °/s, roll rate 17.4 → 22.1 °/s, pitch −0.11..0.58 → −0.24..0.71°, roll −1.29..0.21 →
+  −1.33..0.18°, a wheel off 0.167 → 0.133 s (each wheel 1–3 ticks), stop 26 → 1372 N s (the body lands on the
+  stops); −21° (the velocity's angle) gives the same within 1 °/s. The original over ticks 0–35: pitch rate up
+  to 16.8 °/s, roll rate swings −33 / +44 / −46 °/s, and its on-ground bytes (`w*_contact`) stay 1 on all four.
+  Not a clean reference: the original was drifting (yaw rate ≈ −55 °/s), flicked the steering (0.99 → 0 at
+  66.46 s, back to 0.94 at 66.66 s) and came over a crest (vy +1.5 → 0 m/s in the 0.3 s before the edge); its roll
+  rate swings ±40–49 °/s again 0.5 s later on open road. So: pitch rates of the same order, our roll response to
+  the drop smaller than the original's total, and the original keeps its on-ground flags where ours lose a wheel
+  for a few ticks; what that byte means is not traced (its writer was not found; over all of `ref/live1` it drops
+  for one 120 Hz sample about 650 times at speed, a mid-tick read, and for longer only 20 times).
+- **Model decisions** (handling.md): the wheel moves along the car's up axis only, the strut joints' reaction
+  stands in for what holds the game's wheel on its strut; the spring's anchor is our strut end (only the sag
+  matters along the strut); a contact record exists where the ray finds ground within 0.3 m below full droop;
+  wheels resync to rest beyond 1 m; steep ground's normal change is taken along up / max(n · up, 0.5); the in-air
+  extra gravity reaches the wheels once per tick.
+- **Open**: a clean capture of the original over a kerb or drop at a known speed, straight, with the wheel records
+  (+0x00 centre, +0x40 velocity) and the spring elements' +0x3c (spring + damper force) in the watch list, to
+  compare tick by tick; the on-ground byte's writer; the strut joints; the cylinder's ride-up on a kerb edge (our
+  ray meets the step at once); the original's landing settle against ours (3.50 s now).
+
 ### 2026-10-09: frame drops: the render thread's multi-draw path, physics catch-up, bakes on every core
 User report: "optimize this game, it is weirdly dropping frames sometimes". Measured with a new per-frame log
 (`MW_FRAME_LOG=<file>`, `frame_log.rs`: main schedule segments First / PreUpdate / fixed loop / Update /
