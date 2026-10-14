@@ -499,7 +499,7 @@ fn prepare_buffer(
     // MW_POST_LOG=1: the final pass's grade and the depth-of-field constants, about once a second.
     if std::env::var_os("MW_POST_LOG").is_some() {
         static FRAMES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        if FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 60 == 0 {
+        if FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed).is_multiple_of(60) {
             info!(
                 "post: contrast {contrast:.4} brightness {brightness:.4} (env {:.4} / {:.4}), near {near:.3}, \
                  CoC at infinity {:.4}, focus {DOF_FOCUS} m",
