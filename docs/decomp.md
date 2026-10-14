@@ -3853,8 +3853,8 @@ read), stiffness K (0x564 = 20, `_DAT_00fb07f0`), damping c (0x568 and 0x56c, al
   and cam + 0x6b0 = max(itself, a.y); after 0.3 s (`_DAT_00fafb8c`) all three reset. Recorded: 0x716 is set
   for 0.30 s after every touch-down; 0x6b0 reached 192 / 221 / 784 after 0.8 / 1.0 / 1.7 s in the air.
 - **Use**: the eye's height in the followed frame is cam + 0x5a4 + x (recorded residual 0.018 m after
-  subtracting x, from 0.136); the look-at point does not move with it (adding x to it triples the view's pitch
-  residual), so the view tilts as the eye bobs.
+  subtracting x, from 0.136); the look-at point follows about half of it (corrected in round 12:
+  `FUN_005c7a80` adds cam + 0x550 × cam + 0x6a4, ~0.5, to cam + 0x5c4), so the view still tilts as the eye bobs.
 - Replay (`tools/camreplay.py`; body velocity, its per-frame difference as a, airborne = vehicle + 0x1630 > 0,
   the landing window simulated): 5.8 mm RMS against cam + 0x550, correlation 0.999; std per band recorded /
   replayed 0.018 / 0.019 (1-40 mph), 0.148 / 0.148 (40-80), 0.212 / 0.210 (80-140). With the recorded 0x716 /
@@ -3891,7 +3891,63 @@ source of x and the `.bss` reference. Recorded K − K1 is 0.002 RMS while movin
 K1 alone). The standing value 0.09 (= state + 0x74) is not produced by this formula with s from motion; it
 is likely `FUN_005c89c0`'s reset path. Not changed in camera.rs (its moving part already equals K1).
 
-**Deceleration pitch**: not read this round.
+**Deceleration pitch**: not read this round (round 12: in `FUN_005c7a80`, below).
+
+### The followed frame, the composition, slopes and braking (round 12, 2026-10-10; ported)
+
+Checked frame by frame with `mostrusted --camera-replay` / `tools/camcompare.py` (research log 2026-10-10: our
+code over the recorded car motion of `ref/live1`, which holds three cars). `.bss` values come from the memory
+snapshot `re/out/live/snap2` (`live.py -s snap2 <va>`), which contains the exe's data and bss.
+
+- **The car frame is the wheels' plane.** `FUN_005dbe80` copies vehicle + 0x2db0..0x2dec, written each update by
+  `FUN_0090a5f0`: forward = normalize((p1 − p2) + (p3 − p4)), row 0 = normalize((p3 − p1) + (p4 − p2)), up their
+  cross product, of the four points at vehicle + 0x14..+0x20 (by the frame's behaviour the wheels: against the
+  body it has 3° RMS less roll and none of its pitch under acceleration, correlation −0.56), the position the
+  body's (model origin = body − R · centre of mass); 0x2e30 / 0x2e34 are the body's angles relative to it.
+- **`FUN_005d4970`'s head**: cam + 0x4f4 (the stored forward's height) = `clamp(lerp(old, fwd.y, 0.12),
+  fwd.y ± 0.3)` per update (`_DAT_00fb0a20`, `_DAT_00fafb8c`; replay 1.6e−4). The followed frame (fStack_190 →
+  `FUN_005c8420` / `FUN_005c82c0` → cam + 0x510) is rebuilt from that forward and the world's up (0, 1, 0)
+  (`_DAT_00fb05c0`): no roll, so cam + 0x598 stays ~0. Its Euler angles are the target of round 6's smoothing.
+- **`FUN_005c2130`, the composition** (args: target angles, lag angles, lag for the cosine, S, the bob vector
+  of `FUN_005c8880`, the followed frame, the output): a look-at matrix from cam + 0x5a0 (eye) to + 0x5c0, rolled by
+  cam + 0x668 (= 0x660, the roll); its position += `|cos(yaw lag)|` × cam + 0x580..0x58c (the range-reduced
+  polynomial at `01075470..` is sin(2π(|round(u) − u − 0.5| − 0.25)) with u = −x/2π: a cosine) and −= the pivot
+  cam + 0x5b0 (state + 0x50); turned by the lag angles then the target angles; += `|cos lag|` × pivot z × the
+  frame's forward, += the bob in the frame; **forward = the frame × look-at (cam + 0x5c0) − that eye**, i.e. the
+  look-at point rides in the followed frame (current yaw), not the smoothed one; rows 0 / 1 rebuilt from the
+  turned up. Rebuilt from the recorded fields: eye 1–2 cm, view 0.15° (the high-speed shake) / 0.035° RMS.
+- **`FUN_005c7a80`** (args dt, k60; runs right after cam + 0x5a0 / 0x5b0 are reset from state + 0x40 / + 0x50):
+  - *Deceleration pitch*, cam + 0x670: with `Deceleration_pitch_change` at instance + 0xe8: + 0xf8 maximum (12),
+    + 0xfc `Maximum_Pitch_Change` (4.5°), + 0x100 minimum (2), + 0x104 curve power (2.25), + 0x108 intensity (2).
+    While the frame's forward is within 10° of the velocity (`.bss` 0x0110e4e0 = 0.9848) and â·v̂ < 0, target =
+    `powf(clamp((|a|·|â·v̂| − min) / (max − min)), power) × k60 × max° × π/180`, a in m/s² (`FUN_005d9610`), else
+    0; cam + 0x670 += `min(step, max(−step, gap))`, step = dt × intensity × gap. Replay 0.0003 rad RMS.
+  - *Gradient*: s = the frame's Euler pitch (nose down +) clamped to ±`Maximum_Gradient` (`Gradient_Adjustments`,
+    handle + 0x178: `Downwards` at + 0x0c (floats + 0x1c `5b1750df` 0.5, + 0x20 `47a50f4c` 1.5), `Upwards` at
+    + 0x24 (+ 0x34 0.5, + 0x38 4), `Maximum_Gradient` + 0x40 10°). cam + 0x680 → (s < 0 ? + 0x34 : + 0x1c) × s,
+    cam + 0x690 → (s < 0 ? + 0x38 : + 0x20) × s, each by `clamp(0.1 k60) × k60` per update, 0 while airborne.
+    Replay 0.0007 rad / 0.005 m.
+  - *Look-at bob share* cam + 0x6a0: target 0.5 (`_DAT_00fb05e0`), 0.4 airborne (`_DAT_00fb0850`), `0.4 + 2.6 u k60`
+    (`_DAT_00fb0840`) while the landing flag 0x716 is set and the spring (0x550, 0x554) is below zero and falling,
+    u = `clamp((cam[+0x6b0] − 10) × 0.00204)`; rate 0.05 (`.bss` 0x0110e790) or `lerp(0.05, 1 (0x0110e550), u)`
+    in that case, × k60. Recorded mean 0.507.
+  - *Results*: cam + 0x5c0 = eye + Rx(0x670 − 0x680) × (state + 0x60 − eye) (positive = looking down); cam + 0x5c4
+    += cam + 0x550 × 0x6a4 (the previous update's spring: the look-at point **does** follow half of the eye's
+    spring, correcting round 11); cam + 0x5a4 −= cam + 0x694. Look-at height replay 0.03 m.
+- **`FUN_005d12b0`'s z stage** with the `.bss` values (22.352, 0.75, 4, 0.01, 5): cam + 0x588 replays to 0.011 m
+  RMS (0.028 m without the `g` term, vehicle + 0x2b20: a broadcast value in [−1, 1], 0 on 94 % of updates, not
+  identified). The rate is `(g · k60 · (1 − w) + w) × clamp(gap, ±0.75)`; the airborne term (cam + 0x6c8) eases
+  0.1 × k60 per update towards 1.85 while FUN_008f5350 says airborne and mph > 5.
+- **FOV (`FUN_005c76a0`)**: the speed fraction goes through `powf(f, state + 0x80 / state + 0x7c)` (95 / 70; the
+  call at 0x5c7721, its result dropped by the decompiler); with it the acceleration term's factor fits 1.00 per
+  update (so `(+0x14 of FUN_0046ee10) × FUN_0046ee20()` is 1/60 at normal speed).
+- **Yaw stiffness**: s of `FUN_005c90a0` = `clamp(|x| / 45)` (`.bss` 0x0110e8f0 = 45) with x the slip angle in
+  degrees and m = `YawDriftSpring` (fit 0.0603 against the McLaren's 0.06; 0.00035 RMS). The standing value 0.09
+  holds below ~1.0–1.4 m/s (switch not read).
+- **`FUN_005c8e40`**: while airborne (air time > 0, no contact, `FUN_00911430` check) K_pitch eases to 0.1; the
+  landing request uses lane 1 of `FUN_005d9610` (the vertical acceleration, m/s²) and fits the four recorded
+  landings; the air-time height offset written to cam + 0x574 is overwritten by `FUN_005d12b0` (0x574 = 0x554)
+  before any read.
 
 ### Avoidance: where the search ended (round 7)
 
@@ -3920,14 +3976,13 @@ is likely `FUN_005c89c0`'s reset path. Not changed in camera.rs (its moving part
 
 ### Next steps for the port
 
-Read, in this order, with the field map above: `FUN_005c90a0` to its end (the local that blends y28 / y18),
-`FUN_005c9380` (roll), `FUN_005c7a80` (gradient spring on cam + 0x670), `FUN_005c8420` / `FUN_005c82c0`
-(likely the boom and the accelerations), `FUN_005c76a0` / `FUN_005c8ad0` / `FUN_005c2130` (look for ray casts:
-callees in the 0x00a6xxxx collision range or `FUN_005e34e0`), `FUN_005d0b90`. `.bss` values a live read must
-supply: `_DAT_0110e8f0` (the yaw-spring reference speed / rates vector), `_DAT_0110e4e0` (used in
-`FUN_005c7a80`). In the running game the director is at `M + 0x6a0` with `M = u32 at (u32 at 0x010edaf4) + 4`, so the chase
-camera is at that + 0x8d0, its state pointer at + 0x290, the yaw state at + 0x6d4 / + 0x6d8 and the gradient
-spring at + 0x670: a probe watch on those gives reference traces to port against.
+The chase update is read and ported apart from: `FUN_005c8880`'s object (the bob; 7 mm, left out), vehicle +
+0x2b20 (the z rate's `g`), the standing yaw-stiffness switch (car + 0x3c in `FUN_005c89c0`), `FUN_005c8420` /
+`FUN_005c82c0` (they modify the followed frame before cam + 0x510; the recorded 0x510 equals the world-up
+frame of cam + 0x4d0 to 0.07° yaw, so their effect is small) and the four points of `FUN_0090a5f0`. Compare
+any change with `mostrusted --camera-replay` / `tools/camcompare.py` (research log 2026-10-10). In the running
+game the director is at `M + 0x6a0` with `M = u32 at (u32 at 0x010edaf4) + 4`, the chase camera at + 0x8d0, its
+state pointer at + 0x290.
 
 ### Earlier search (round 4)
 

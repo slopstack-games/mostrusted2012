@@ -260,26 +260,26 @@ meaning is read from values or position; values are the 911's, ranges are across
 | `6e08f788` | (0, 1.6, −4.6) | **data** eye in car space (also the bonnet / bumper eye) |
 | `006e1686` | (0, 1.2, 0.75) | **data** look-at point |
 | `d68bbc59` | (0, 0, 0.75) | *hyp.* pivot: always (0, 0, look-at z); the yaw and look-around orbit turn around it |
-| `MinFieldOfView` / `MaxFieldOfView` | 70 / 95 | **data** FOV, `lerp(min, max, clamp(mph / 125))` (`FUN_005c76a0`); horizontal (capture 2026-10-09, see below) |
+| `MinFieldOfView` / `MaxFieldOfView` | 70 / 95 | **code** FOV = `min + (max − min) · clamp(mph / 125)^(max / min)` + the acceleration term (`FUN_005c76a0`; the power from the disassembly, 2026-10-10); horizontal (capture 2026-10-09, see below) |
 | `Speed_based_movement.0a78c15f` | −1 (−1.2…0) | **code** (`FUN_005d12b0`) eye z target at full speed, smoothed with the acceleration offset below |
 | `….7d4ec535` | 1.7 (1.45…4.4) | **code** eye height at full speed: `eye.y += (this − eye.y) · h`, unsmoothed |
 | `….b028673b` | 1.5 (1.35…3.1) | **code** look-at height at full speed, the same form |
 | `….b6010ee1` / `53e4b4f9` | 0 / 50 (50/75/100) | **code** speed band (mph): `h = clamp((v − b6010ee1) / (53e4b4f9 − b6010ee1), 0, 1)` |
 | `High_Speed_Shake.Amplitude`, `Frequency`, `Power` | 1.2, 1, 1.5 | **code** `FUN_005d0b90` (instance 0x28 / 0x2c / 0x38): scale = Amplitude × f^Power / 10 on a curve played at Frequency (decomp.md "High-speed shake") |
 | `….Minimum_Speed_for_Shake` / `Maximum_Speed_for_Shake` | 0 / 180 (125…208) | **code** (0x34 / 0x30) f = clamp((mph − Min) / (Max − Min), 0, 1) |
-| `Acceleration_movement.bd3a7cfc` / `7c9039e2` | −2 (−2.5…−1.9) / 0.5 | **code** eye z offset at full acceleration / deceleration (m), × `|a_long|` / a_full |
+| `Acceleration_movement.bd3a7cfc` / `7c9039e2` | −2 (−2.5…−1.9) / 0.5 | **code** eye z offset at full acceleration / deceleration (m), × `|a_long|` / 22.352 m/s² (`.bss` `DAT_0110e770`, read 2026-10-10; the gap clamped to ±0.75 m, the offset to ±4 m) |
 | `….fdd25ee3` / `285f2260` | 2 / 2.5 | **code** rate (1/s) of the first-order lag of the z offset while accelerating / decelerating |
 | `….8e1310f6`, `a8cc9c9b`, `65b4f9c6`, `0da33093` | 1.5, 1.75, −1.2, 2.5 | **code** the eye's height spring (`FUN_005d12b0`, camera.rs `HeightSpring`): gain on the car's vertical acceleration while it is upwards / not, and the spring's lower / upper limit (m) |
 | `Camera_Roll.Minimum_Lateral_Acceleration_for_Roll`, `3f8ced67` | 10, 30 (30…40) | **code** (`FUN_005c9380`) lateral range, m/s² (the body velocity's change per update along the car's right) |
 | `….Minimum_Angular_Velocity_for_Roll`, `02dd11bc` | 0.2, 2.5 (2.5…3) | **code** yaw-rate range, rad/s |
 | `….Maximum_Roll_Angle` | 4.7 (3…6) | **code** roll = max × max(f_lat^P, f_yaw^P), P = `Camera_Roll_Factor_Power` (2.5); the camera leans out of the turn |
 | `….Roll_Angle_Change_Intensity` | 2 (2…2.5) | **code** the roll moves by intensity × π/180 × 20 × dt of its gap per update (0.70/s) |
-| `Deceleration_pitch_change.Minimum_` / `Maximum_deceleration_for_pitch_change` | 2 / 12 (11…12) | **data** deceleration range, mph/s |
+| `Deceleration_pitch_change.Minimum_` / `Maximum_deceleration_for_pitch_change` | 2 / 12 (11…12) | **code** (`FUN_005c7a80`) deceleration range, m/s² along the velocity, while travelling within 10° of the nose |
 | `….Maximum_Pitch_Change`, `Pitch_change_curve_power` | 4.5 (2.5…6), 2.25 | **data** pitch = max × f^power (nose down) |
-| `….Pitch_change_intensity` | 2 (1.75…2) | *hyp.* rate (1/s) the pitch follows its target |
+| `….Pitch_change_intensity` | 2 (1.75…2) | **code** rate (1/s) the pitch follows its target; the pitch turns the look-at point about the eye (looking down), it does not rotate the camera |
 | `Yaw_spring_modification.Low_speed` / `High_speed` | 0 / 100 | **data** speed band (mph) |
 | `….5a74d44d` / `63fb2207` | 0.075 / 0.05 | yaw spring at **high / low** speed (recorded cam + 0x6d4: 0.05 at low speed rising to 0.075 at 100 mph), a fraction per 60 Hz tick (sorted after `Low_speed` / `High_speed`): 4.7/s at rest, 3.1/s at 100 mph |
-| `YawDriftSpring` | 0.055 (0.045…0.07) | **data** name; *hyp.* the yaw spring while drifting (3.4/s) |
+| `YawDriftSpring` | 0.055 (0.045…0.07) | **code** (`FUN_005c90a0`, the mods profile's value 0x29) the yaw spring is `K1 + (this − K1) · clamp(|slip°| / 45)` (fit on `ref/live1`: 0.0603 for the McLaren's 0.06, 0.00035 RMS) |
 | `Global_params.f50dccb9` (`CameraGameplayShakeEffect`) | see below | **data**, not used by the chase camera's impact shake |
 | `Global_params.Impact_shake.*` | see below | **code** `FUN_005cd040` / `FUN_005dfe90` (decomp.md "Camera effects") |
 
@@ -304,8 +304,7 @@ views are rigid. The bumper eye sits inside the body's nose, so the car is hidde
 Unused and unnamed: the `Acceleration_movement` floats `b40b3fb7` (0), `77e7de37` (50), `f393abd1` (0/−0.9) and the
 vertical stage's four (above), `Yaw_spring_modification.78527964` / `397fce82` (10 / 10) and `Decay_rate` (0.01),
 `Speed_based_movement.b6010ee1` (0), `Speed_based_height_change` (1.59 / 1.973; heights, but they do not
-track the eye as closely as `7d4ec535`), `Gradient_Adjustments` (`Downwards` 0.5 / 1.5, `Upwards` 0.5 / 4,
-`Maximum_Gradient` 10°), the top-level `c6ca2dc7` (5 / 10), `6d906d74` (4) and `67660e20` ((0.55, 0.09, 1)),
+track the eye as closely as `7d4ec535`), the top-level `c6ca2dc7` (5 / 10), `6d906d74` (4) and `67660e20` ((0.55, 0.09, 1)),
 `Lens_Properties` (`FocalDistance` 90, 1.4, false: depth of field, off), and the rest of `Impact_shake`
 (`ShakeMagnitude` / `WobbleMagnitude` vectors, frequencies).
 
@@ -350,9 +349,10 @@ and the eye / look-at heights (direct, linear in `h`), and the eye's z offset: a
 `fdd25ee3` accelerating / `285f2260` decelerating, `a_long` the acceleration along the velocity (signed by
 the speed's direction in our port). This replaces our critically damped spring (ω = 2.5) and the 1.5 m
 braking limit (`8e1310f6` belongs to the vertical stage). From a live read (2026-10-10): `a_full` = 50 mph/s
-(`ACCEL_FULL_MPHS`, `.bss` `DAT_0110e770` = 22.352 m/s²), the step clamp 0.75 m (`ACCEL_Z_STEP`,
-`DAT_0110e4d0`) and the offset clamp ±4 m (`ACCEL_Z_LIMIT`, `DAT_0110e680`). Left out: the rate's
-`g · k · (1 − w)` term (vehicle + 0x2b20) and the 1.85 low-pass above `DAT_0110e640` (5.0). Still ours: the vertical acceleration stage, roll,
+(`ACCEL_FULL`, `.bss` `DAT_0110e770` = 22.352 m/s²), the step clamp 0.75 m (`ACCEL_Z_STEP`,
+`DAT_0110e4d0`) and the offset clamp ±4 m (`ACCEL_Z_LIMIT`, `DAT_0110e680`); round 12 below ports the rest of
+the stage (the airborne 1.85 term above `DAT_0110e640`; the rate's `g · k · (1 − w)` term stays out). Still
+ours at round 7: the vertical acceleration stage, roll,
 deceleration pitch, the yaw spring's value (0.075 → 0.05 by speed), the drift lean, the bob
 (`FUN_005c8880`), the gradient spring, FOV, shakes and the collision push-in (no world query exists in the
 decompiled camera code; the director update `FUN_005d5e20` is not in the dump). `FUN_005d0b90`,
@@ -403,7 +403,8 @@ rest in the chase view, FOV `MinFieldOfView` 70) frames the car at the same size
 horizontal FOV (≈ 400 px wide), and 1.8× smaller read as vertical; the cinematic lenses' `2 atan(18 / f)` is
 the horizontal FOV of a 36 mm frame. `camera::projection_fov` converts for Bevy's vertical one
 (`MW_FOV_VERTICAL=1` for A/B). Model decisions (not data): acceleration is measured from the car's
-speed between physics ticks; the drift lean (`DRIFT_LEAN` 0.5 of the slip angle);
+speed between physics ticks; the yaw spring's standing value below 1.15 m/s (2026-10-10 fit; the switch is
+not read); the z rate's `g` term (vehicle + 0x2b20) left out; the wheel plane built from our wheel hubs;
 the high-speed shake's curve (the original's 199-sample table is run-time data at `0x01188300`; ours is
 smoothed noise with its recorded per-lane mean −0.0049 / −0.0063 / −0.0059, standard deviation 0.0123 /
 0.0106 / 0.0028 and Gaussian width 3.8 / 7.6 / 4 samples) and its random-walk factor (1.0693, the recorded
@@ -421,6 +422,21 @@ the speed term), easing to −0.35 m at 200 km/h; FOV 70 → 88.6° at 265 km/h.
 eye closes 1.5 m in and pitches 4.5° nose down at 1.1 g. `--test drift`: the camera's yaw sits 15.5° off the
 car's in a 19.7° drift (half the slip angle plus 6° of spring lag), the eye 1.5 m to the side; roll peaks at
 3.4° at the 1 g entry.
+
+**Round 12 (2026-10-10): compared frame by frame with the original** (research log 2026-10-10; decomp.md "The
+followed frame, the composition, slopes and braking"). `mostrusted --camera-replay` runs our camera over
+`ref/live1`'s car motion (three cars: Jaguar XKR, McLaren MP4-12C, Mercedes SL 65 AMG) and `tools/camcompare.py`
+compares it with the recorded camera. Ported from the code: the followed frame is the **wheels' plane**
+(vehicle + 0x2db0; `Car::wheel_frame`) with its forward's height low-passed 0.12 per update, not the sprung body;
+the **look-at point rides in that frame** while the eye swings with the smoothed angles (`FUN_005c2130`, offsets
+× |cos yaw lag|); **`Gradient_Adjustments`** (`Downwards` / `Upwards` `5b1750df` 0.5 / 0.5: look turned back by
+that × the slope; `47a50f4c` 1.5 / 4: eye lowered / raised by that × the slope; `Maximum_Gradient` 10°; held
+in the air); the **deceleration pitch** in m/s² as a look-direction turn; the look-at point following half the
+eye's spring; the z offset's `.bss` constants (it was 2.5× too strong); the FOV's power; K_pitch → 0.1 in the
+air; the landing shake from the vertical acceleration; the slip-angle yaw spring (the drift lean is gone).
+RMS against the original, before → after: eye swing 0.14 → 0.04 m, eye height 0.13 → 0.02 m, eye distance
+0.37 → 0.03 m, view yaw 0.64 → 0.47°, **view pitch 2.22 → 0.23°**, FOV 2.31 → 0.23°; over the four recorded
+jumps the world pitch range is 21.5° (original), 34.0° before, 19.7° after.
 
 ## Crash camera (`mw_assets::crash`, `crates/mostrusted/src/crash.rs`, 2026-10-06)
 

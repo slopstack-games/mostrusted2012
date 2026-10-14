@@ -518,6 +518,78 @@ constants from NFS13.exe on disk (`exe-const`), checked against the snapshot's o
   compare tick by tick; the on-ground byte's writer; the strut joints; the cylinder's ride-up on a kerb edge (our
   ray meets the step at once); the original's landing settle against ours (3.50 s now).
 
+### 2026-10-10: chase camera: frame-by-frame against the original, and the missing stages ported
+User report: "the camera still isn't like the original" (lag / swing, distance / height; "the original feels more
+physics based"; "stiffly attached, while the original kind of looks ahead sometimes and moves a lot more over
+jumps"). Method: a replay harness that runs **our camera code** over **the original's recorded car motion**, so
+the motion is identical and only the camera rules differ:
+`tools/camcompare.py inputs ref/live1 <in.csv>` (one line per camera update: the car frame cam + 0x500 / the
+body's rotation / the wheel-plane frame cam + 0x4d0, body velocity, air time, the car's id) →
+`mostrusted --camera-replay <in.csv>,<out.csv>` (`camera::replay_recording`, the same `CameraState::update` /
+`finish` the game runs, no window) → `tools/camcompare.py compare ref/live1 <out.csv>` (both cameras in the car's
+frame; look-around / look-back updates (cam + 0x6f0 ≠ 0, + 1 s), 41 torn records and impact-shake updates (random
+noise in both) left out; 11 668 moving updates).
+
+- **`ref/live1` holds three cars**, not one: Jaguar XKR 1399602 (0–20 s, 1762 kg), McLaren MP4-12C 122765
+  (20–145 s, 1350 kg), Mercedes SL 65 AMG 122769 (145–258 s, 1807 kg), told apart by the body's mass (+0x7c) and
+  confirmed by state + 0x44 / + 0x60 (the data eye / look-at) and the centre of mass (body − cam + 0x500, exactly
+  the data's `centre_of_mass` each). Earlier single-car fits (round 8-11: eye (0, 1.575, −4.6), WL_RATIO 0.425)
+  mixed them. The followed point cam + 0x500 is the model origin (body position − R · centre of mass), the same
+  point as our car transform.
+- **`.bss` values read from the memory snapshot `re/out/live/snap2`** (it holds the exe's whole data and bss; no
+  need to run the game): `DAT_0110e770` 22.352 (= 50 mph in m/s), `0110e4d0` 0.75, `0110e680` 4, `0110e610`
+  0.01, `0110e640` 5, `0110e8f0` 45, `0110e4e0` 0.9848 (cos 10°), `0118a060` 2.23694, `01189f60` π,
+  `0110e550` 1, `0110e790` 0.05; `.rdata` `00fb0a20` 0.12, `00fafb8c` 0.3, `00fb0840` 2.6, `00fb0850` 0.4.
+- **Before → after, RMS difference ours − original (original's std)**: eye x (swing) 0.139 → 0.042 m (0.90),
+  eye height 0.130 → 0.023 m (0.17; correlation 0.69 → 0.99), eye z 0.361 → 0.038 m (0.54; 0.83 → 0.998),
+  distance 0.366 → 0.030 m, view yaw relative to the car 0.64° → 0.47° (8.4°; 0.997 → 0.999), **view pitch
+  relative to the car 2.22° → 0.23°** (1.67°; correlation 0.20 → 0.99), world pitch 2.22° → 0.23°, roll 0.19°
+  → 0.19° (0.66°), **FOV 2.31° → 0.23°**. No lag between the two in any component (cross-correlation delay 0).
+  Responses (original / before / after): eye z while accelerating > 4 m/s² −5.63 / −5.92 / −5.65 m; view pitch
+  while braking < −6 m/s² −1.76 / −3.98 / −1.77°; eye swing per rad/s of yaw rate 1.337 / 1.172 / 1.330 m;
+  at rest per car (eye height / view pitch): Jaguar 1.398 m 0.19° / 1.667 m −4.43° / 1.402 m 0.11° (it was
+  parked on a slope: the gradient stage), McLaren −2.60° / −3.36° / −2.52°. **Jumps** (the recording's four,
+  0.8–1.7 s in the air): range of the world pitch over take-off … landing + 1 s, original 21.5°, before 34.0°,
+  after 19.7°; pitch difference 6.7–10.1° RMS before, 0.4–1.4° after. **Look-ahead**: the original's view turns
+  towards the direction of travel by 13.2° at 10–30° slip (mean 17°); ours 12.0 → 12.2°; per rad/s of yaw rate
+  −11.7 / −11.3°. It is the yaw lag (no separate look-ahead term exists); the "stiff" feel came from the pitch:
+  ours followed the sprung body's pitch and the decel pitch 2.2× too strongly, and lacked the slope stage.
+- **What was wrong / missing, each from the code** (decomp.md "Cameras", round 12):
+  - the followed frame is vehicle + 0x2db0, the **wheels' plane** (`FUN_0090a5f0`), not the body: 3° RMS less
+    roll, no squat / dive; its forward's height is low-passed (0.12 per update, within ±0.3) and the frame
+    rebuilt round the world's up (fit of cam + 0x4f4: 1.6e−4). Ours followed the body's pitch.
+  - the **composition** (`FUN_005c2130`): the look-at point rides in that frame, not in the smoothed one; the
+    eye's offsets (spring, z) and the pivot are scaled by |cos(yaw lag)| (the range-reduced polynomial is a
+    cosine); rebuilt from the fields it gives the recorded eye to 1–2 cm and the view to 0.15° / 0.035°.
+  - **`FUN_005c7a80`** (not read before): the **deceleration pitch** (a look-direction turn, deceleration in
+    m/s² along the velocity, only within 10° of the nose, a 2/s lag; ours used mph/s and a camera rotation), the
+    **gradient adjustments** (slope ±10°: look turned back by 0.5 × slope, eye raised 4 × slope uphill / lowered
+    1.5 × slope downhill, eased 0.1 per update, held in the air) and the look-at point following **half the eye's
+    vertical spring** (0.4 in the air, 0.4 + 2.6u while a landing squashes it). Replayed: cam + 0x670 0.0003 rad,
+    0x680 0.0007, 0x694 0.005 m (correlations 0.999); the look-at height to 0.03 m.
+  - the z offset's constants (above): 22.352 m/s² full scale (we had 8.94: our offset was 2.5× too big), the gap
+    clamp 0.75 m, ±4 m, and the airborne 1.85 m/s term. Replay of cam + 0x588: 0.011 m RMS (0.389 with ours).
+  - the **FOV**: `powf(speed fraction, max / min)` (the decompiler dropped the call; from the disassembly), then the
+    acceleration term's factor is exactly 1 per 60 Hz update (FOV RMS 0.44° in the field replay).
+  - the **yaw stiffness**: `K1 + (YawDriftSpring − K1) · clamp(|slip°| / 45)`: 0.00035 RMS against cam + 0x6d4
+    (0.0013 K1 alone); best-fit m 0.0603 = the McLaren's `YawDriftSpring` 0.06. Our drift switch and the 0.5
+    drift lean (model decisions) are gone.
+  - airborne: K_pitch eases to 0.1 (recorded 0.10–0.34 in the air); the landing shake request is
+    `clamp((|a_y| − 10) · 0.00204) · 6.5` with a_y the vertical acceleration in m/s² (the four landings: the
+    recorded level is the request after one update's decay); cam + 0x574's "landing height offset" is dead (it
+    is overwritten with 0x554 before any use: 99.7 % of updates equal).
+- **Still different / model decisions**: the yaw stiffness's standing value below 1.15 m/s (fit: the recorded
+  switch lies between 1.0 and 1.4 m/s; `FUN_005c89c0`'s reset flag car + 0x3c not read); the z rate's
+  `g · k60 · (1 − w)` term (vehicle + 0x2b20, a value in [−1, 1], 0 on 94 % of updates; 0.028 m RMS without it,
+  0.011 with); the bob `FUN_005c8880` (recorded output std 7 mm: left out); the side-on ratio's box (ours the
+  body box); the impact / high-speed shake noise (random in both); our wall push-in (no world query in the
+  original's chase code). The wheel plane in our game is built from the four hubs (the original's four points
+  at vehicle + 0x14..+0x20 are not identified; their behaviour fits the wheels). In the replay the landing
+  request fires one update earlier than the original's (air time vs contacts; 1 of 4 landings missed its shake).
+- Our game (911): `--test landing` level 0.87 at touch-down, eye dips 1.1 m on the spring, pitch held in the air;
+  `--test brake` eye z −1.54 → +0.06 m; `--test drift` yaw lag up to 23° (no lean), FOV up to 94.8° from the
+  acceleration term (|a| includes the lateral part, as in the code).
+
 ### 2026-10-09: frame drops: the render thread's multi-draw path, physics catch-up, bakes on every core
 User report: "optimize this game, it is weirdly dropping frames sometimes". Measured with a new per-frame log
 (`MW_FRAME_LOG=<file>`, `frame_log.rs`: main schedule segments First / PreUpdate / fixed loop / Update /

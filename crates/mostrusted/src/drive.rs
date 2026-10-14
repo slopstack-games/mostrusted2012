@@ -380,6 +380,25 @@ impl Car {
         self.wheels.iter().filter(|w| w.contact.is_some()).count()
     }
 
+    /// The car frame the game's cameras follow (vehicle + 0x2db0, built each update by `FUN_0090a5f0`, read
+    /// by `FUN_005dbe80`): forward = (front − rear) summed over both sides, across = (one side − the other)
+    /// summed over both axles, of four points (vehicle + 0x14..+0x20; by the frame's behaviour in `ref/live1`
+    /// the wheels: it leaves out the body's roll, 3° RMS, and its pitch under acceleration, which the
+    /// physics body carries). Here the wheel hubs (rest position plus the suspension's compression).
+    pub(crate) fn wheel_frame(&self, t: &Transform) -> Quat {
+        let (mut fwd, mut across) = (Vec3::ZERO, Vec3::ZERO);
+        for w in &self.wheels {
+            let p = t.transform_point(w.centre + Vec3::Y * (w.compression - w.sag));
+            fwd += if w.front { p } else { -p };
+            across += if w.centre.x > 0.0 { p } else { -p };
+        }
+        let (Some(z), Some(x)) = (fwd.try_normalize(), across.try_normalize()) else { return t.rotation };
+        // Bevy's car space: +Z forward, +Y up, +X = Y × Z.
+        let Some(y) = z.cross(x).try_normalize() else { return t.rotation };
+        let x = y.cross(z);
+        Quat::from_mat3(&Mat3::from_cols(x, y, z))
+    }
+
     /// Each wheel's (slip ratio, slip angle in degrees) from the last physics step, front wheels first in spec
     /// order.
     pub fn wheel_slips(&self) -> impl Iterator<Item = (f32, f32)> + '_ {
