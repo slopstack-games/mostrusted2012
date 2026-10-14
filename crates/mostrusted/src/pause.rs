@@ -8,8 +8,8 @@
 //! pad Start) opens it; the Autolog menu keys (arrows, Enter, Backspace; decomp.md "Input") move, choose and back.
 //! The game pauses (`Game Paused Behaviour`): our virtual clock stops while it is open.
 //!
-//! What works here: CONTINUE; MAP lists the offline races (as Easydrive's RACES tier does) and starts the chosen
-//! one (`race::StartRace`) — the game's map screen (899991) is not built; SETTINGS opens our volume settings.
+//! What works here: CONTINUE; MAP (`SHOW_MAP`) opens the map screen 899991 (`map_screen.rs`; until that is
+//! loaded, a list of the offline races that starts the chosen one); SETTINGS opens our volume settings.
 //! DRIVER DETAILS, MULTIPLAYER, FRIENDS and STORE are online / Autolog screens: shown inactive. Model decisions:
 //! the inactive rows' look (the row template's `Active` field), the race list page, pad A / B for accept / back
 //! (the pad's Autolog bindings were not decoded).
@@ -78,6 +78,8 @@ pub struct PauseMenu {
     /// The virtual clock was running when the menu opened.
     unpause: bool,
     open_map: bool,
+    /// Reopen (the map screen went back, "NAV_BACK"), with the clock to restart on close.
+    pub reopen: Option<bool>,
 }
 
 struct Loaded {
@@ -221,7 +223,7 @@ fn rows(menu: &PauseMenu) -> Vec<(String, bool)> {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn navigate(
+pub(crate) fn navigate(
     mut menu: ResMut<PauseMenu>,
     keys: Res<ButtonInput<KeyCode>>,
     pads: Query<&Gamepad>,
@@ -231,9 +233,19 @@ fn navigate(
     front: Option<Res<crate::frontend::FrontEnd>>,
     easydrive: Option<Res<crate::easydrive::EasyDrive>>,
     cutscene: Option<Res<crate::cutscene::CutsceneState>>,
+    mut map: Option<ResMut<crate::map_screen::MapScreen>>,
+    card: Option<Res<crate::event_card::EventCard>>,
 ) {
     menu.just_closed = false;
     if !menu.enabled || menu.look.is_none() {
+        return;
+    }
+    if let Some(unpause) = menu.reopen.take() {
+        open(&mut menu, None);
+        menu.unpause = unpause;
+        return;
+    }
+    if map.as_ref().is_some_and(|m| m.open || m.just_closed) || card.is_some_and(|c| c.showing()) {
         return;
     }
     use crate::input::defaults as act;
@@ -278,10 +290,20 @@ fn navigate(
             }
             _ => match menu.items.get(menu.selected).filter(|i| i.active).map(|i| i.action.clone()).as_deref() {
                 Some("RESUME") => close(&mut menu, &mut time),
-                Some("MAP") => {
-                    menu.page = Some(Page::Races);
-                    menu.selected = 0;
-                }
+                // `SHOW_MAP`: the map screen (899991); our race list while it is not loaded.
+                Some("MAP") => match map.as_mut().filter(|m| m.ready()) {
+                    Some(m) => {
+                        let unpause = std::mem::take(&mut menu.unpause);
+                        menu.open = false;
+                        menu.page = None;
+                        menu.just_closed = true;
+                        m.open(&mut time, unpause);
+                    }
+                    None => {
+                        menu.page = Some(Page::Races);
+                        menu.selected = 0;
+                    }
+                },
                 Some("TO_SETTINGS") => {
                     close(&mut menu, &mut time);
                     settings.open = true;

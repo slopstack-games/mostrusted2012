@@ -201,6 +201,8 @@ mod h {
 /// The keyboard's button texts (`UIConfig.ControllerSettings.ButtonText`, the PC platform `f12bac41`, device
 /// 2 = keyboard): `UIListItems` of `Value` (key name) → `DisplayString`.
 const KEYBOARD_BUTTON_TEXT: ResourceId = ResourceId(0x0100_0000_0001_bbaa);
+/// `UIListItems` 113577: the keyboard keys' button prompts (boxed key names, glyphs).
+const KEYBOARD_BUTTON_PROMPT: ResourceId = ResourceId(0x0100_0000_0001_bba9);
 
 impl AssetStore {
     /// The game logic's state machines (`HSMData` of `GAMELOGIC/GAMEMODES.BNDL`, or of another bundle).
@@ -317,6 +319,19 @@ impl AssetStore {
     /// The keyboard's text for a key (`KEY_RETURN` → "RETURN"): a language id.
     pub fn keyboard_button_text(&self, key: &str) -> Option<u32> {
         let o = self.genesys_object(KEYBOARD_BUTTON_TEXT).ok()?;
+        let Some(Value::Array(items)) = o.get(h::ITEMS) else { return None };
+        items.iter().find_map(|i| match i {
+            Value::Struct(i) if matches!(i.get(h::VALUE), Some(Value::Str(v)) if v == key) => {
+                Some(uint(i, h::DISPLAY_STRING))
+            }
+            _ => None,
+        })
+    }
+
+    /// The keyboard's button prompt for a key (`KEY_ESCAPE` → "ESC" in a key box, `KEY_RETURN` → the Enter glyph):
+    /// a language id from the `UIListItems` 113577 (the boxed form; 113578 holds the plain names).
+    pub fn keyboard_button_prompt(&self, key: &str) -> Option<u32> {
+        let o = self.genesys_object(KEYBOARD_BUTTON_PROMPT).ok()?;
         let Some(Value::Array(items)) = o.get(h::ITEMS) else { return None };
         items.iter().find_map(|i| match i {
             Value::Struct(i) if matches!(i.get(h::VALUE), Some(Value::Str(v)) if v == key) => {

@@ -12,6 +12,10 @@ use crate::{AssetStore, Error, Result};
 /// counter, minimap, nitrous gauge (research log, 2026-10-04 UI section).
 pub const FREE_ROAM_HUD: &str = "UI/SCREENS2/371670.BNDL";
 
+/// Ink of a key's name inside a key box and of the box (the prompt labels' dark and light, linear).
+const KEY_INK: [f32; 3] = [0.005_181_5, 0.005_181_5, 0.005_181_5];
+const KEY_BOX: [f32; 3] = [0.830_77, 0.830_77, 0.830_77];
+
 /// A point-of-interest look ([`fmt::ui::PoiVisuals`]) with its layouts.
 #[derive(Debug, Clone)]
 pub struct PoiVisual {
@@ -624,7 +628,15 @@ impl UiScene {
             for q in quads {
                 let r = place.rect([x0 + q.rect[0], y0 + q.rect[1], q.rect[2], q.rect[3]]);
                 let a = q.atlas;
-                push(Some(atlas), [a[0] / aw, a[1] / ah, (a[0] + a[2]) / aw, (a[1] + a[3]) / ah], r, colour, false);
+                // Key boxes: a light box with the key's name dark, whatever the label's colour (the prompt
+                // strings' `U+F040` / `U+F092` codes are not decoded; the prompt labels' light and dark, model
+                // decision).
+                let ink = match q.key {
+                    1 => [KEY_BOX[0], KEY_BOX[1], KEY_BOX[2], colour[3]],
+                    2 => [KEY_INK[0], KEY_INK[1], KEY_INK[2], colour[3]],
+                    _ => colour,
+                };
+                push(Some(atlas), [a[0] / aw, a[1] / ah, (a[0] + a[2]) / aw, (a[1] + a[3]) / ah], r, ink, false);
             }
         }
     }
@@ -636,6 +648,11 @@ impl UiScene {
 /// lower). Our reading: the stack's own cell-size fields (`CellSizeDefinition`, empty here) are
 /// not decoded; for Easydrive this gives 26 px rows, against the 26.42 px per item the `EasyDrivePanel` layout
 /// moves by (`Widget.EasyDrive.ItemsAbovePanel(MULT:26.42)`).
+/// Width of a cell of a stack running across: the rightmost element edge (reference pixels).
+fn cell_width(layout: &Layout) -> f32 {
+    layout.elements.iter().map(|e| e.top_left()[0] + e.size[0]).fold(0.0, f32::max)
+}
+
 fn cell_height(scene: &UiScene, layout: &Layout, depth: u32, lookup: &mut Lookup) -> f32 {
     let mut h: f32 = 0.0;
     for e in &layout.elements {
@@ -689,7 +706,9 @@ impl UiScene {
         {
             source = source.replace("{parent}", &item);
         }
-        let mut y = origin[1];
+        // Cells follow each other down, or across for `direction` 0 (the navigation tabs).
+        let across = st.direction == 0 && list;
+        let mut y = if across { origin[0] } else { origin[1] };
         let mut cell = |this: &Self,
                         ids: &[ResourceId],
                         index: Option<usize>,
@@ -721,11 +740,12 @@ impl UiScene {
                         // Behaviour state per cell: entry index + 1 (0 = header / footer).
                         let outer = options.cell;
                         options.cell = index.map_or(0, |i| i as u32 + 1);
-                        this.element(e, place, Some([origin[0], *y]), clip, &mut inner, options, out);
+                        let at = if across { [*y, origin[1]] } else { [origin[0], *y] };
+                        this.element(e, place, Some(at), clip, &mut inner, options, out);
                         options.cell = outer;
                     }
                 }
-                h = h.max(cell_height(this, l, 0, &mut inner));
+                h = h.max(if across { cell_width(l) } else { cell_height(this, l, 0, &mut inner) });
             }
             *y += h;
         };

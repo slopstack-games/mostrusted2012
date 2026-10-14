@@ -376,9 +376,16 @@ fn navigate(
     player: Query<&GlobalTransform, (With<crate::drive::Car>, With<crate::drive::Player>)>,
     front: Option<Res<crate::frontend::FrontEnd>>,
     jack: Option<Res<crate::jackspots::JackSpots>>,
+    screens: (Option<Res<crate::map_screen::MapScreen>>, Option<Res<crate::event_card::EventCard>>),
 ) {
-    // Not over the front end's screens ("Disable Car Control and Easydrive").
-    if !menu.enabled || menu.tiers.is_empty() || front.is_some_and(|f| !f.playing()) {
+    // Not over the front end's screens ("Disable Car Control and Easydrive"), the map or the event card.
+    let (map, card) = screens;
+    if !menu.enabled
+        || menu.tiers.is_empty()
+        || front.is_some_and(|f| !f.playing())
+        || map.is_some_and(|m| m.open || m.just_closed)
+        || card.is_some_and(|c| c.showing())
+    {
         return;
     }
     // `E` is the original's SWAP_CARS key: beside a parked car it swaps (`jackspots.rs`).

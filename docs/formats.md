@@ -817,6 +817,15 @@ The cars' active-aero machines (`AnimationStateBehaviour`) are the same format.
   per picture, our reading), count}]; `ComplianceTerms.Terms` [{`Name`, four platform strings: `042a361e` PC
   ("PRESS ANY KEY"), `21901f63` PS3, `90ac0fb2` Vita, `0797e772` X360}]; `ControllerSettings.ButtonText` per
   platform (`f12bac41` = PC) → per device (2 = keyboard) `UIListItems` {`Value` key name, `DisplayString`}.
+  The keyboard has two such lists (2026-10-10): 113578 (`01000000_0001bbaa`) the plain names ("ESCAPE", "PAGE UP")
+  and 113577 (`…bba9`) the **button prompts** the screens show: a key box `U+E047` (left cap) `U+E048` (fill) name
+  `U+E049` (right cap), wrapped in `U+F092 U+F040` … `U+F012 U+F093` (style codes, not decoded), e.g. "ESC",
+  "PGUP", "Z"; Return is the single glyph `U+E06B`. The fonts hold the box glyphs; the fill is stretched under the
+  name (`mw_formats::Font::layout`).
+- `ScreenTransition` (a widget group's `Transitions` list, 16 B): `ExitPoint` (the exit code that plays it, empty =
+  the group's `DefaultTransition`), `Sequence` (a UI `Sequence`), `df397acb` (a string, empty). The map screen's
+  options group 1222205: `CAR_SELECT` → 1524151 (sequence 1524152: layout 108186, holds while `CarSelect.IsLoading`),
+  `PLAY_EVENT` → 1453803 (sequence 1014321, the event-loading card); the persistent group's default 1014868.
 - `Widget_MenuData` (a screen's menus): `CustomItems` [{`Action` token, `Name` (language id), `Description`,
   `Icon`, `Active`}], `Title`.
 - `UIElement_PrototypeScrollingText`: `ScrollingStrings` [{`Binding`, string id}], `DataSource` (used when both
@@ -907,6 +916,23 @@ S(`TileSize(DIV:100)`) · R(`MapRot`) · T(`MapOrigin`) · R(90, 0, 0): the map 
 camera looks down on. `MapOrigin` (`FUN_007977c0`) is the corner of the tile one column and one row before the
 current one, `MapRot` (`FUN_00797760`) the grid's own yaw (`UIMapGrid.Rotation`, identity).
 
+### The map screen's looks (screen 899991 "MainMap", 2026-10-10)
+
+The screen's `POI` widget lists 38 looks and a `UIMapCameraConfig` (look-at `Widget.MapManager.SelectedPosition`,
+`4ecde6e2` look-at offset 0.25 bound to `LiveMapManager.ScreenLookAtOffset`, distance 7000 bound to
+`Widget.POI.ZoomDistance`, FOV `Widget.POI.MainMapZoom.Fov`, `ProjectionAngle` `Widget.POI.ZoomAngle`,
+`LookAtRotation` 0, `23c59c62` 20000, `82cf35f3` 0.1, `029f7de0` 0.925) and three map layouts (`0e7b0e38`): 1222145
+(a black 2000² shape and the city image `01010000002195ca`, 2000 × 2412 map units at (0, 106); world x −4000…3990,
+z −4581…5406 by registration against the `UIMapGrid` tiles), 1222163 and 1222558 (glows at
+`LiveMapManager.MapGridLookAtPosX/Z(DIV:16)`, masks `0101000000221b06/07`). Looks used for races: key 1135497 →
+816139 (event icon, green diamond, `TO,MAP_EVENT_DONE` when beaten), 1135808 → 1481372 (the selected event's
+card), 1135303 → 1470763 (cursor rings + the option list), 1135501 → 371789 (the player's arrow), 1013506 → 1470762
+(the player's card). Widget groups: 899994 persistent (black backdrop 491565), 1222343 (`MapManager`, `POI`,
+`MapAnimations`), 1695072 (`MapLayouts` 2002143 with a `Map` element, `MapOverlay` 1206401 = the title header),
+899993 (`MapControls`), 1222205 (`Options`), 1135638 (`Filters` 1470726), 1607001 (`Tabs` 1470689 / 1470704,
+`Header` 1470711), 899992 (the Most Wanted list 1470720), 1135580 (the option lists: `Event` 1222202,
+`SinglePlayer`, `Jackspot`, …).
+
 ## Easydrive (inside `Screen2`, `UI/SCREENS2/*.BNDL`)
 
 Inline GeneSys structs in a driving screen's widget groups (group children: field `c7413006`); loader
@@ -932,9 +958,10 @@ An element stack repeats `UILayout`s (resource IDs in `Cell.Content`) over a dat
 | `Header` / `DefaultTemplate` / `Footer` | `Cell`[] {`Content` layout, `CellIndex`, `Span`} |
 | `TemplateLayouts` | {`Binding`, `Cells`[]}: the first whose binding holds (with `#` = the entry index) replaces the default for that entry (`Widget.EasyDrive.SelectedIndex(EQUALS:#)` = the selected row; `Widget.PAINTITEM.IsActive` & co. = the item type's row) |
 | `Width`, `Height` | the stack's box; nested row stacks have Height 25 (selected row) or 0 (from their content) |
+| `ae583a9a` (+236, 2-byte enum) | direction (2026-10-10): 1 = cells go down (every list on the pause, HUD, Easydrive and map screens), 0 = across (the map screen's navigation tabs over `Widget.Tabs.TabList`; also the single-cell header stack); our reading of the values |
 
 Not decoded: `CellSizeDefinition` (empty in Easydrive), `Padding`, `Shift`, `ScrollSpeed`, the unnamed counts
-(`280402f1` = 3 on the menu stack). Inside a cell, bindings without a dot (`Name`, `Locked`, `DLCIconID`,
+(`280402f1` = 3 on the menu stack, 6 on the tabs). Inside a cell, bindings without a dot (`Name`, `Locked`, `DLCIconID`,
 `PositionNotNull`, `Shutdown`, `New`) are fields of the entry.
 
 Easydrive (`UI/SCREENS2/371621.BNDL`, widget `EasyDrive`): layout **1773380** = the menu, one stack at (3, 43)

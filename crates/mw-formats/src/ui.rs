@@ -489,6 +489,9 @@ pub struct Stack {
     pub footer: Vec<ResourceId>,
     /// (`Binding`, cell layouts) in order.
     pub templates: Vec<(String, Vec<ResourceId>)>,
+    /// `ae583a9a` (+236, a 2-byte enum): the direction cells follow each other in; 0 across (left to right,
+    /// the navigation tabs), 1 down (menus, lists). Our reading of the values (research log 2026-10-10).
+    pub direction: u8,
 }
 
 impl Stack {
@@ -505,6 +508,7 @@ impl Stack {
             templates: structs(o, crate::genesys::field_hash("TemplateLayouts"))
                 .map(|t| (string(t, field::BINDING), cells(t, "Cells")))
                 .collect(),
+            direction: uint(o, 0xae58_3a9a) as u8,
         }
     }
 }

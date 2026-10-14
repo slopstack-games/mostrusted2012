@@ -76,19 +76,30 @@ impl Plugin for CutscenePlugin {
             .init_resource::<LetterboxBars>()
             .add_systems(Startup, spawn_letterbox)
             .add_systems(Update, draw_letterbox.after(crate::camera::GameplayCamera).after(crate::crash::run_sequence));
+        // The systems run while a setup exists: from `--race` (inserted here) or a race started at runtime
+        // ([`run_event_cutscenes`], the map's event card).
+        let running = resource_exists::<Setup>;
+        app.add_systems(
+            Update,
+            (start_cutscenes, run_cutscene)
+                .chain()
+                .run_if(running)
+                .after(crate::camera::GameplayCamera)
+                .before(draw_letterbox),
+        )
+        .add_systems(FixedUpdate, apply_cars.run_if(running).before(crate::drive::car_physics));
         let Some(setup) = &self.setup else { return };
-        app.insert_resource(Setup(setup.clone()))
-            .add_systems(Startup, hold_for_intro)
-            .add_systems(
-                Update,
-                (start_cutscenes, run_cutscene).chain().after(crate::camera::GameplayCamera).before(draw_letterbox),
-            )
-            .add_systems(FixedUpdate, apply_cars.before(crate::drive::car_physics));
+        app.insert_resource(Setup(setup.clone())).add_systems(Startup, hold_for_intro);
     }
 }
 
 #[derive(Resource)]
 struct Setup(Arc<CutsceneSetup>);
+
+/// The intro and outro of a race started at runtime (`event_card.rs`): the cutscene systems run from now on.
+pub fn run_event_cutscenes(commands: &mut Commands, intro: Option<Arc<Sequence>>, outro: Option<Arc<Sequence>>) {
+    commands.insert_resource(Setup(Arc::new(CutsceneSetup { intro, outro, auto_skip: false, force_outro: false })));
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Which {
@@ -125,6 +136,8 @@ enum Pending {
 
 #[derive(Resource, Default)]
 pub struct CutsceneState {
+    /// Don't start the intro yet (the event card's "TRANSITION" has not been set).
+    pub hold_intro: bool,
     playing: Option<Playing>,
     intro_started: bool,
     outro_started: bool,
@@ -280,6 +293,7 @@ fn start_cutscenes(
         || !loaded.done
         || race.hold
         || prewarm.is_some_and(|p| p.pending())
+        || state.hold_intro
     {
         return;
     }

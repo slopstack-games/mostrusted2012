@@ -322,9 +322,17 @@ fn toggle_menu(
     cutscene: Option<Res<crate::cutscene::CutsceneState>>,
     pause: Option<Res<crate::pause::PauseMenu>>,
     front: Option<Res<crate::frontend::FrontEnd>>,
+    screens: (Option<Res<crate::map_screen::MapScreen>>, Option<Res<crate::event_card::EventCard>>),
 ) {
-    // Esc and Back are SKIP_CUTSCENE while a sequence plays; nothing opens over the front end's screens.
-    if !menu.enabled || cutscene.is_some_and(|c| c.playing()) || front.is_some_and(|f| !f.playing()) {
+    // Esc and Back are SKIP_CUTSCENE while a sequence plays; nothing opens over the front end's screens, the map
+    // or the event card.
+    let (map, card) = screens;
+    if !menu.enabled
+        || cutscene.is_some_and(|c| c.playing())
+        || front.is_some_and(|f| !f.playing())
+        || map.is_some_and(|m| m.open || m.just_closed)
+        || card.is_some_and(|c| c.showing())
+    {
         return;
     }
     // With the game's pause menu (`pause.rs`), PAUSE (Esc / Start) is its key; Tab / F1 / pad Back stay ours.
