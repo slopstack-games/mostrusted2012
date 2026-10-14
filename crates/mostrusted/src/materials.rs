@@ -64,6 +64,10 @@ pub enum Mode {
     /// × sqrt(2 · tint), so albedo = (rgb / a)² in gamma space × 2 · tint (vertex colour); the normal is the
     /// vertex normal (built on the CPU from the ground normal), never flipped for back faces; no specular.
     Groundcover = 12,
+    /// Fence_GreyScale_Doublesided (railings): the forward program discards where the diffuse texture's alpha
+    /// is below 0.588235 and writes the flat `materialDiffuse` colour, unlit (fogged by the gradient; here by
+    /// the Fog pass), into the light buffer (`mwtool shader-asm Fence_GreyScale_Doublesided`).
+    Fence = 13,
 }
 
 /// Per-placement inputs the world shaders take from the instance rather than the material: the world
@@ -651,6 +655,12 @@ impl Look {
             }
         }
 
+        if name.starts_with("fence_") && look.textures[0].is_some() {
+            look.mode = Mode::Fence;
+            let c = sm.parameter("materialDiffuse").unwrap_or([0.0, 0.0, 0.0, 1.0]);
+            look.vals = pack(&[[c[0], c[1], c[2], 0.0]]);
+        }
+
         if name.starts_with("groundcover") && look.textures[0].is_some() {
             look.mode = Mode::Groundcover;
             // `groundcover.wgsl` reads the shader's wind constants (`gMaterialCB`) from p0.
@@ -746,7 +756,11 @@ impl Look {
         } else if look.mode == Mode::RoadLine {
             // Lines and DriveableSurface_Decal write the whole road, the overlay lerped in by its alpha.
             Blend::Opaque
-        } else if name.contains("1bit") || name.contains("alphatest") || name.contains("foliage") {
+        } else if name.contains("1bit")
+            || name.contains("alphatest")
+            || name.contains("foliage")
+            || look.mode == Mode::Fence
+        {
             Blend::Mask
         } else if look.mode == Mode::Vehicle && name.contains("_alpha_") {
             // VehicleNFS13_{Body,Wheel}_Alpha_*: forward, src alpha / inverse src alpha (see the vehicle branch).
@@ -786,7 +800,7 @@ impl Look {
         let essential = match self.mode {
             Mode::Standard | Mode::Vehicle | Mode::Glass | Mode::Colourise => 0,
             Mode::Refraction => 5,
-            Mode::Tree | Mode::Groundcover => 1,
+            Mode::Tree | Mode::Groundcover | Mode::Fence => 1,
             Mode::Water => 0,
             Mode::Road | Mode::Terrain | Mode::Plot | Mode::WorldPbr => 2,
             Mode::RoadLine => 3,
@@ -1052,7 +1066,7 @@ impl Look {
                 base_color,
                 base_color_texture: if matches!(
                     self.mode,
-                    Mode::Standard | Mode::WorldPbr | Mode::Vehicle | Mode::Tree | Mode::Groundcover
+                    Mode::Standard | Mode::WorldPbr | Mode::Vehicle | Mode::Tree | Mode::Groundcover | Mode::Fence
                 ) {
                     tex(self.textures[0])
                 } else {
@@ -1070,6 +1084,8 @@ impl Look {
                     // The 1-bit and tree shaders discard below 129/255; the vehicle `_Alpha1bit` G-buffer
                     // programs below 0.5 (`add r0.w, r0.w, -0.5; lt; discard`).
                     Blend::Mask if self.mode == Mode::Vehicle => AlphaMode::Mask(0.5),
+                    // Fence_GreyScale: `add r0.x, r0.w, l(-0.588235); lt; discard`.
+                    Blend::Mask if self.mode == Mode::Fence => AlphaMode::Mask(0.588235),
                     Blend::Mask => AlphaMode::Mask(0.505882),
                     Blend::Translucent => AlphaMode::Blend,
                     Blend::Premultiplied => AlphaMode::Premultiplied,

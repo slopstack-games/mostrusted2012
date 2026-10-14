@@ -49,10 +49,11 @@ fn shadow_distance() -> f32 {
     static D: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
     *D.get_or_init(|| std::env::var("MW_SHADOW_DISTANCE").ok().and_then(|v| v.parse().ok()).unwrap_or(SHADOW_DISTANCE))
 }
-/// Shadows end here (metres of view depth) and fade out over the last `SHADOW_FADE` metres. The game sets
-/// both through `ShadowMap_Constants{,2}.w` from code; these values are provisional.
-const SHADOW_DISTANCE: f32 = 180.0;
-const SHADOW_FADE: f32 = 30.0;
+/// Shadows end here (metres of view depth) and fade out over the last `SHADOW_FADE` metres: the game's
+/// fade is saturate(`ShadowMap_Constants.w` − depth × `ShadowMap_Constants2.w`)², read live as 6.5 and 0.02 at
+/// every hour (2026-10-14, `ref/shots/*/slots.tsv`), i.e. full shadows to 275 m, none from 325 m.
+const SHADOW_DISTANCE: f32 = 325.0;
+const SHADOW_FADE: f32 = 50.0;
 
 /// The key light's cascades: three, as the game's shadow atlas has. Split distances are provisional (the
 /// game computes `ShadowMap_ScaleOffset` on the CPU).

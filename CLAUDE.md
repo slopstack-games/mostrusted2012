@@ -119,6 +119,9 @@ tools/orig/orig run-in -- ./target/release/mostrusted --drive 911 --test-track  
 # Visual check without a human: renders, saves, exits
 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,1720 --screenshot <scratch>/road.png   # see docs/viewpoints.md
 ./target/release/mostrusted --vehicle "911" --camera 4.5,1.4,4.0,0,0.4,0 --screenshot <scratch>/car.png
+# Matched pairs with captures of the original (ref/shots/<place>-<hour>/notes.txt): same camera, horizontal FOV
+./target/release/mostrusted --camera=197.1,50.1,1482.7,202.4,48.7,1491.1 --fov 70 --hour 13 --units 20 --no-traffic --screenshot <scratch>/p.png
+# MW_ENV_REPORT=1 logs the environment bake against the original's shader constants; MW_RIG_AMBIENT=1 = old ambient (A/B)
 # Driving cameras: --camera-mode chase|bonnet|bumper|lookback (C / gamepad LB cycles; End or the right
 # stick fully back looks back; right stick / right mouse drag looks around; the free camera looks with the
 # right stick too). MW_CAMERA_TRACE=<file> logs the camera every frame; MW_CAMERA_PUSH_IN=1 keeps the eye out of

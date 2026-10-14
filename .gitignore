@@ -20,3 +20,6 @@
 
 # Reference runs of the original (mwtool capture): game audio and measurements
 /ref/
+
+# Agent scratch space (screenshots, traces, binaries)
+/scratch/
