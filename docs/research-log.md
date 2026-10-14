@@ -106,6 +106,56 @@ ported (decomp.md "Menu input and the map screen's controls"):
   lag; the failed left flick's `TO_MWL` (threshold `DAT_0117f578` in .bss) snaps instead; tabs and filters are
   inert; accept on the player opens nothing (the `LocalPlayer` options list is not identified).
 
+### 2026-10-14: lighting against the original: time of day found, sun path, NewSky constants, fences
+- **Time of day in memory**: environment manager M (= frame object G + 0x2bc400 = renderer − 0x80) + 0x1b604 =
+  time of day in seconds (`FUN_008b3f10`, this = M + 0x18b80, field +0x2a84), followed by 86400.0, a float, the
+  rate (+0x1b610, 24 game s per real s in free roam) and the hour as an int. Signature scan + poke:
+  `scratch/todscan.py` (git-ignored, in the lighting worktree). The `ref/live1/ren` dumps were at 14:13–14:34,
+  not ~12:15 as the old sun model said.
+- **Matched captures** of the original: `ref/shots/{fairhaven,fence}-<hour>/` (9.5, 13, 18.5, 21.5, 1 h; time
+  frozen by poking rate 0), with `slots.tsv` (all shader constants), `camera.txt` (chase camera; its matrix
+  row 2 is the view direction, not "back"), `notes.txt`. Keep the original out of its idle attract mode by
+  tapping a key. `mostrusted --camera=… --fov 70` (new flag, horizontal degrees) renders the same view.
+- **Sun path** (`FUN_008a8480`, ported in `SunMoonPath`): bearing = BearingCentre + Variation × cos(2π((t −
+  14 h + 6 h)/24 h − PhaseOffset)); two elevation curves cos²p·(cos p·h + h + (noon − horizon)) + horizon with
+  the day phase p of `FUN_00893620` (08:00–20:00 → π/2…3π/2): the key light (50° at 14:00, 28° at 08/20, 40° at
+  02:00; `0bb64ed2`/`c915f96d`/`1dc20d63`) and the sky's sun (35/0/25°; `ac4fe424`/`138500fe`/`ffbdcf8b`) used by
+  `KeyLightDirAndXZLength` (NewSky glow) and `SunCoronaDirection` (fog). `a5caac0f`/`644383ee` are the day's
+  hours 8 / 20 (not moonrise/set). Matches every live read (unit test). The old model was up to 18° off in bearing.
+- **NewSky constants** (live 14:13 vs data, exact): `SunColour` = (SunColour.rgb × SunColour.w, `Sky.2ec8df83`
+  exponent 32…1027, was used as 0.65); `BaseCloudColour` = (Clouds.LightColour, `Sky.6acb8a54`²);
+  `DomeRanges.w` = `Sky.2ec8df82`; `CloudParamsPS` = (t, 1 − t, 1, 1): the two keyframes' cloud textures cross-
+  fade by threshold; `CloudParamsPS2.y` = BaseCloudIntensity (Opacity / Feathering are not these). Gradient B
+  (`FUN_008a5a90`/`FUN_008a5560`, 64 texels at i/64) = gradient A with the two lowest stops replaced by the third
+  and the first three positions × 0.01 (renderer flag +0xbd80 = 1). Keyframe blends are linear between
+  timeline entries and the sky gradient blends stop by stop (positions too). All ported in `sky.rs`.
+- **Ambient**: the deferred pass's irradiance cube is GPU-filtered (exe program `0x01004eb8`, normalised
+  cos-power average, stored sqrt(x/4)) from a runtime cube; `IrradianceQuadric` (slot 0x18) is built on the
+  CPU in `FUN_008c0f30` → `FUN_008b4d90` from the LightRig fills (× |state +0x2474|) as directional lights in L2
+  SH (`FUN_008a7bf0`), plus terms not traced. Live 14:13 quadric: up (0.80, 0.94, 1.04), down 0.20, towards the
+  sun's azimuth (0.63, 0.50, 0.48), away (0.14, 0.26, 0.32). The rig alone does not fit it (best permutation
+  rms 0.09). Model now: cosine convolution of the ported sky + a ground of albedo 0.1 (model value); it gives
+  up ≈ 0.30–0.51, i.e. still about half the quadric's. Old rig + sky-average cube: up (1.27, 1.88, 2.63).
+  `MW_RIG_AMBIENT=1` = the old cube; `MW_ENV_REPORT=1` logs the bake's constants and irradiance at the rig axes.
+- **Shadows**: live `ShadowMap_Constants.w` 6.5 / `Constants2.w` 0.02 at every hour → shadows to 275 m fading out
+  by 325 m (ours was 180 / 30; changed). `Constants2.y` (value beyond the fade) = 1 / 0.75 / 0.7 / 0 at 9.5 / 13 /
+  18.5 / night: source not found. At 18:30 the original's car park is sunlit where ours is shadowed by the
+  buildings behind the camera: the game's cascade fit (not located) may not include those casters. Open.
+- **Fences** (`Fence_GreyScale_Doublesided`) drew as opaque black panels: the forward program alpha-tests at
+  0.588235 and writes a flat unlit `materialDiffuse`. Ported as mode 13; railings now see-through, bar shadows.
+- **Wet stand-in**: without `--planar-reflection` wet roads / plots reflect the sky cube; this turns pavements
+  blue and roads white-blotched where the original (always planar) is warm and dry-looking. With
+  `--planar-reflection` or `--road-wetness 0` our fence-13 pavement matches the original's warmth. Not
+  changed (cost of a default planar pass not measured yet).
+- **Numbers** (sRGB region means, `scratch/regions.py`): fairhaven 13 h shaded facade orig (54,78,88) / before
+  (105,145,155) / now (72,88,96); road (129,130,122) / (184,188,172) / (118,131,137); night 01:00 pavement Y
+  0.021 / 0.201 / 0.021; fence 01:00 most regions 19–30× too bright before, 1–3× now. Trees are 2–4× too dark
+  by day in ours (open: tree lighting), night facades show a warm lit area the original lacks (open).
+- Not done: the materials' data reflection cubes (`ReflectionTextureSampler`, BC3 cubes; the game reflects
+  cube.a × SkyReflectionAverageColour + cube.rgb × SkyReflectionAverageLight, we reflect the HDR sky), the
+  secondary cloud layer, the cloud dome coordinates, the shadow-far value, `--weather` pairs (what selects the
+  Alternates in the original is unknown), a second, distant place.
+
 ### 2026-10-14: a third of the game's functions are missing from the dump
 
 - **Found**: scanning `.rdata` / `.data` of the decrypted image for pointers into `.text` that land after padding

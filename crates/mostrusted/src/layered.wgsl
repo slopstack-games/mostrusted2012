@@ -18,6 +18,8 @@
 // mode 9: vehicle lamp interior (Refraction): parallax-offset reflector, LED emissive channels
 // mode 10: vehicle glass     forward, premultiplied: tinted volume + Fresnel sky reflection
 // mode 11: vehicle lens filter (Glass_Colourise): multiply blend
+// mode 12: groundcover sprites
+// mode 13: Fence_GreyScale   alpha-tested railings in a flat, unlit materialDiffuse
 
 #import bevy_pbr::{
     pbr_fragment::pbr_input_from_standard_material,
@@ -697,6 +699,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         }
         pbr_input.diffuse_occlusion *= vec3(ao);
         pbr_input.specular_occlusion *= ao;
+    }
+
+    else if layered.mode == 13u {
+        // Fence_GreyScale_Doublesided: unlit, the flat materialDiffuse (p0.rgb, game units) as light; the alpha
+        // test (texel alpha >= 0.588235) is Bevy's alpha mask below. No albedo, no specular.
+        pbr_input.material.base_color = vec4(vec3(0.0), pbr_input.material.base_color.a);
+        set_specular(&pbr_input, vec3(0.0), 1.0);
+        pbr_input.specular_occlusion = 0.0;
+        extra = layered.p[0].rgb * layered.env.x;
     }
 
     else if layered.mode == 12u {

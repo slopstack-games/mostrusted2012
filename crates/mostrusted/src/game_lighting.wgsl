@@ -32,7 +32,7 @@ struct GameLighting {
     fog_coeffs: vec4<f32>,
     // rgb, w = strength
     scattering: vec4<f32>,
-    // x = phase
+    // x = phase, yzw = towards the sky's sun (SunCoronaDirection = minus this)
     scattering_params: vec4<f32>,
 }
 
@@ -153,7 +153,7 @@ fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     // Indirect light from the G-buffer pass (sky reflection, lightmaps, lit windows), already exposed.
     colour += s.indirect;
 
-    return vec4(apply_fog(colour, s.world, l), 1.0);
+    return vec4(apply_fog(colour, s.world, normalize(lighting.scattering_params.yzw)), 1.0);
 }
 
 // The game's point, cone and spot lights (`mwtool shader-asm LightBuffer_Point` / `_Cone` / `_Spot`, the

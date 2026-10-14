@@ -240,6 +240,11 @@ struct Cli {
     /// fixed camera instead of the chase camera).
     #[arg(long, value_delimiter = ',', allow_hyphen_values = true)]
     camera: Option<Vec<f32>>,
+    /// With --camera: the fixed camera's horizontal field of view in degrees, as the game measures it (its chase
+    /// camera at rest: 70; for matched pairs with captures of the original, `ref/shots/*/camera.txt`). Without it
+    /// Bevy's default 45° vertical is used.
+    #[arg(long)]
+    fov: Option<f32>,
     /// Body paint colour as `r,g,b` in 0–255 sRGB, overriding the car's own paint colour.
     #[arg(long, value_delimiter = ',')]
     paint: Option<Vec<u8>>,
@@ -383,6 +388,8 @@ pub struct Game {
     pub store: Arc<AssetStore>,
     request: Request,
     camera: Option<Transform>,
+    /// `--fov`: horizontal degrees for the fixed camera.
+    fov: Option<f32>,
     screenshot: Option<PathBuf>,
     screenshot_delay: u32,
     screenshot_time: Option<f32>,
@@ -992,6 +999,7 @@ fn main() -> anyhow::Result<()> {
             store,
             request,
             camera,
+            fov: cli.fov,
             screenshot,
             screenshot_delay: cli.screenshot_delay,
             screenshot_time: cli.screenshot_time,
@@ -1079,7 +1087,12 @@ fn setup(mut commands: Commands, game: Res<Game>, mut images: ResMut<Assets<Imag
             bevy::camera::Exposure { ev100: (GAME_UNIT / 1.2).log2() },
             Msaa::Off,
             Transform::from_xyz(6.0, 2.5, 6.0).looking_at(Vec3::new(0.0, 0.6, 0.0), Vec3::Y),
-            Projection::Perspective(PerspectiveProjection { far: 20_000.0, ..default() }),
+            Projection::Perspective(PerspectiveProjection {
+                far: 20_000.0,
+                // `--fov` is horizontal (the game's convention); the window is 16:9 (1280 × 720).
+                fov: game.fov.map_or(std::f32::consts::FRAC_PI_4, |f| camera::projection_fov(f, 16.0 / 9.0)),
+                ..default()
+            }),
         ))
         .id();
     if indirect_drawing_off() {
