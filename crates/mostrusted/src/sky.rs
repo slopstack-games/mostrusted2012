@@ -22,7 +22,7 @@ use bevy::render::render_resource::{
     Extent3d, TextureDimension, TextureFormat, TextureViewDescriptor, TextureViewDimension,
 };
 use mw_assets::AssetStore;
-use mw_assets::environment::EnvironmentKeyframe;
+use mw_assets::environment::{EnvironmentKeyframe, gradient_at};
 use mw_bundle::ResourceId;
 
 /// An RGBA float image sampled bilinearly, wrapping in u and clamping in v.
@@ -92,47 +92,137 @@ fn f32_to_f16(v: f32) -> u16 {
 /// The sky as a function of direction, in the game's HDR units (scale by the sky brightness).
 pub struct Sky {
     key: EnvironmentKeyframe,
+    /// NewSky's `GradientTextureB` (away from the sun).
+    gradient_b: Vec<(f32, [f32; 3])>,
+    /// The cloud layers: the keyframe's texture and the one of the keyframe it is blending towards.
     clouds: Option<Panorama>,
-    /// Towards the sun.
+    clouds_b: Option<Panorama>,
+    /// Towards the sky's sun (`SunMoonPath::sky_sun_direction`).
     sun: Vec3,
+    /// The key light's colour × sin(elevation) / π: what lights the model ground (see [`Sky::ground`]).
+    key_on_ground: [f32; 3],
+    /// The cosine-weighted mean of the sky over the upper hemisphere (filled by [`Sky::new`]).
+    sky_up: [f32; 3],
 }
 
+/// Albedo of the ground the irradiance and reflection cubes see below the horizon. The game convolves its
+/// irradiance cube from a cube rendered at run time (exe program `0x01004eb8`: a normalised cosine-power
+/// average of 32 taps), which shows the lit world below the horizon; the world is not rendered into our
+/// cubes, so a flat ground of this albedo, lit by the key light and the sky, stands in for it. Model value,
+/// chosen against the live `IrradianceQuadric`'s downward value at 14:13 (research log 2026-10-14).
+const GROUND_ALBEDO: f32 = 0.1;
+
 impl Sky {
-    pub fn new(store: &AssetStore, key: &EnvironmentKeyframe, sun: Vec3) -> Self {
+    /// `sun`: towards the sky's sun; `key_dir`: towards the key light.
+    pub fn new(store: &AssetStore, key: &EnvironmentKeyframe, sun: Vec3, key_dir: Vec3) -> Self {
         let clouds = key.clouds.texture.and_then(|t| load_clouds(store, t));
-        Self { key: key.clone(), clouds, sun: sun.normalize() }
+        let clouds_b = key
+            .clouds
+            .texture_b
+            .filter(|t| key.clouds.crossfade > 0.0 && Some(*t) != key.clouds.texture)
+            .and_then(|t| load_clouds(store, t));
+        let lift = key_dir.normalize().y.max(0.0) * std::f32::consts::FRAC_1_PI;
+        let mut sky = Self {
+            key: key.clone(),
+            gradient_b: key.sky_gradient_b(),
+            clouds,
+            clouds_b,
+            sun: sun.normalize(),
+            key_on_ground: key.key_light.map(|c| c * lift),
+            sky_up: [0.0; 3],
+        };
+        sky.sky_up = sky.upper_hemisphere_mean();
+        sky
     }
 
-    pub fn radiance(&self, d: Vec3, clouds: bool) -> [f32; 3] {
+    /// The `NewSky` pixel program (`mwtool shader-asm NewSky`, the main-view variant) above the horizon:
+    /// gradient = lerp(B, A, saturate(dot(dir.xz, sun.xz) + DomeRanges.w)) sampled at |dir.y|, ×
+    /// BaseCloudColour.w, plus the glow pow(saturate(dir · sun), SunColour.w) × SunColour.rgb; then each cloud
+    /// layer is blended over it by saturate((alpha − threshold) × CloudParamsPS2.y) towards cloud.rgb ×
+    /// BaseCloudColour.rgb. The constants as the live dumps show them (research log 2026-10-14):
+    /// `DomeRanges.w` = `Sky.2ec8df82`, `BaseCloudColour` = (`Clouds.LightColour`, `Sky.6acb8a54`²),
+    /// `SunColour` = (`SunColour.rgb` × `SunColour.w`, `Sky.2ec8df83`), `CloudParamsPS` = (t, 1 − t) for the
+    /// two keyframes' layers, `CloudParamsPS2.y` = `BaseCloudIntensity`. Cloud coordinates: [`cloud_uv`].
+    fn above(&self, d: Vec3, clouds: bool) -> [f32; 3] {
         let k = &self.key;
-        if d.y < 0.0 {
-            // Below the horizon: the horizon colour fading into dark ground.
-            let h = k.sky_gradient_at(0.0);
-            let f = (-d.y / 0.25).min(1.0);
-            return [0, 1, 2].map(|i| h[i] * (1.0 - 0.8 * f));
-        }
-        let mut c = k.sky_gradient_at(d.y);
-        // NewSky: pow(saturate(dir · L), SunColour.w) × SunColour.rgb, a broad glow over the sun's side of
-        // the dome (the exponent is 0.65 at noon). The sun disc is a separate draw (not done).
-        let glow = d.dot(self.sun).max(0.0).powf(k.sun_colour[3].max(0.01));
-        for (c, sun) in c.iter_mut().zip(k.sun_colour) {
-            *c += sun * glow;
-        }
-        if let Some(cl) = self.clouds.as_ref().filter(|_| clouds) {
-            // NewSky: lerp(sky, cloud.rgb × BaseCloudColour, saturate((cloud.a - threshold) × sharpness));
-            // threshold = 1 - Opacity and sharpness = 1 / Feathering here.
-            let elevation = d.y.clamp(0.0, 1.0).asin();
-            let u = (d.x.atan2(d.z) - self.sun.x.atan2(self.sun.z)) / std::f32::consts::TAU + 0.5;
-            let v = 1.0 - elevation / std::f32::consts::FRAC_PI_2;
-            let t = cl.sample(u, v);
-            let a = ((t[3] - (1.0 - k.clouds.opacity)) / k.clouds.feathering.max(0.02)).clamp(0.0, 1.0);
-            for i in 0..3 {
-                let cloud = t[i] * k.clouds.light[i] * k.clouds.intensity;
-                c[i] += (cloud - c[i]) * a;
+        let y = d.y.abs();
+        let (a, b) = (gradient_at(&k.sky_gradient, y), gradient_at(&self.gradient_b, y));
+        let flat = |v: Vec3| Vec3::new(v.x, 0.0, v.z).try_normalize().unwrap_or(Vec3::ZERO);
+        let w = (flat(d).dot(flat(self.sun)) + k.gradient_sun_offset).clamp(0.0, 1.0);
+        let scale = k.sky_scale * k.sky_scale;
+        let glow = d.dot(self.sun).clamp(0.0, 1.0).powf(k.sun_glow_exponent.max(1.0));
+        let mut c = [0, 1, 2].map(|i| (b[i] + (a[i] - b[i]) * w) * scale + k.sun_colour[i] * k.sun_colour[3] * glow);
+        if clouds {
+            let (u, v) = cloud_uv(d, self.sun);
+            let layers =
+                [(self.clouds.as_ref(), k.clouds.crossfade), (self.clouds_b.as_ref(), 1.0 - k.clouds.crossfade)];
+            for (layer, threshold) in layers {
+                let Some(cl) = layer else { continue };
+                let t = cl.sample(u, v);
+                let cover = ((t[3] - threshold) * k.clouds.intensity).clamp(0.0, 1.0);
+                for i in 0..3 {
+                    c[i] += (t[i] * k.clouds.light[i] - c[i]) * cover;
+                }
             }
         }
         c
     }
+
+    /// Below the horizon: a flat ground of [`GROUND_ALBEDO`] lit by the key light (unshadowed) and the sky
+    /// (model; the game's cubes show the rendered world there).
+    fn ground(&self) -> [f32; 3] {
+        [0, 1, 2].map(|i| GROUND_ALBEDO * (self.key_on_ground[i] + self.sky_up[i]))
+    }
+
+    pub fn radiance(&self, d: Vec3, clouds: bool) -> [f32; 3] {
+        if d.y < 0.0 { self.ground() } else { self.above(d, clouds) }
+    }
+
+    /// Cosine-weighted mean of the sky (with clouds) over the upper hemisphere.
+    fn upper_hemisphere_mean(&self) -> [f32; 3] {
+        let n = 4096;
+        let golden = std::f32::consts::PI * (3.0 - 5f32.sqrt());
+        let mut sum = [0.0f32; 3];
+        for i in 0..n {
+            let u = (i as f32 + 0.5) / n as f32;
+            let (sin, cos) = (u.sqrt(), (1.0 - u).sqrt());
+            let phi = i as f32 * golden;
+            let c = self.above(Vec3::new(sin * phi.cos(), cos, sin * phi.sin()), true);
+            for k in 0..3 {
+                sum[k] += c[k];
+            }
+        }
+        sum.map(|v| v / n as f32)
+    }
+
+    /// The irradiance (normalised cosine-weighted mean radiance) around a direction, for comparisons with the
+    /// original's `IrradianceQuadric` (`mwtool environment`).
+    pub fn irradiance(&self, n: Vec3) -> [f32; 3] {
+        let (t, b) = frame(n);
+        let count = 8192;
+        let golden = std::f32::consts::PI * (3.0 - 5f32.sqrt());
+        let mut sum = [0.0f32; 3];
+        for i in 0..count {
+            let u = (i as f32 + 0.5) / count as f32;
+            let (sin, cos) = (u.sqrt(), (1.0 - u).sqrt());
+            let phi = i as f32 * golden;
+            let d = (t * (sin * phi.cos()) + b * (sin * phi.sin()) + n * cos).normalize();
+            let c = self.radiance(d, true);
+            for k in 0..3 {
+                sum[k] += c[k];
+            }
+        }
+        sum.map(|v| v / count as f32)
+    }
+}
+
+/// Where a direction samples the cloud texture (2048 × 512): u by azimuth relative to the sun, v by elevation.
+/// Model: the game's dome carries its own cloud coordinates (an OBJ parsed in `FUN_008bca20`, scaled and
+/// scrolled by `BaseCloud*ParamsVS`), not decoded.
+fn cloud_uv(d: Vec3, sun: Vec3) -> (f32, f32) {
+    let elevation = d.y.clamp(0.0, 1.0).asin();
+    let u = (d.x.atan2(d.z) - sun.x.atan2(sun.z)) / std::f32::consts::TAU + 0.5;
+    (u, 1.0 - elevation / std::f32::consts::FRAC_PI_2)
 }
 
 /// A cube map (`size` per face, `mips` levels, RGBA16F) filled per texel direction and mip level.
@@ -242,20 +332,53 @@ pub fn reflection_cube(sky: &Sky) -> Image {
         if mip == 0 {
             return sky.radiance(d, true);
         }
-        // Blinn-Phong power of the game's key-light model at this roughness: exp(11 - 11 r).
+        // Blinn-Phong power of the game's key-light model at this roughness: 2^(11.0001 - 11 r).
         let r = (mip as f32 / 5.5).min(1.0);
-        let power = (11.0 - 11.0 * r).exp() * 0.25;
+        let power = (11.0001 - 11.0 * r).exp2() * 0.25;
         lobe(sky, d, power.max(1.0), 64 << mip.min(3))
     })
 }
 
-/// Weight of the skylight term in [`irradiance_cube`] (provisional).
-const SKY_FILL: f32 = 1.0;
+/// The irradiance cube of the lighting pass (`cubeIrradianceSampler`). The game filters it on the GPU from a
+/// cube rendered at run time (exe program `0x01004eb8`: Σ L × cos^p / Σ cos^p over 32 taps around the normal,
+/// stored as sqrt(x / 4); the lighting pass squares it and multiplies by 4). Here: the normalised cosine
+/// average of [`Sky::radiance`] (the sky above, the model ground below) around each texel's direction. The
+/// keyframe's six-direction `LightRig` is not in it: the live `IrradianceQuadric` is 5× the rig upwards and
+/// follows the sky (research log 2026-10-14). `MW_RIG_AMBIENT=1` builds the old rig + sky-average cube (A/B).
+pub fn irradiance_cube(sky: &Sky, key: &EnvironmentKeyframe, to_key: Vec3) -> Image {
+    if std::env::var_os("MW_RIG_AMBIENT").is_some() {
+        return rig_irradiance_cube(key, to_key);
+    }
+    // The radiance on a latitude-longitude grid, then the cosine-weighted mean per texel.
+    let (w, h) = (96usize, 48usize);
+    let mut samples = Vec::with_capacity(w * h);
+    for j in 0..h {
+        let theta = (j as f32 + 0.5) / h as f32 * std::f32::consts::PI;
+        let (st, ct) = theta.sin_cos();
+        for i in 0..w {
+            let phi = (i as f32 + 0.5) / w as f32 * std::f32::consts::TAU;
+            let d = Vec3::new(st * phi.cos(), ct, st * phi.sin());
+            samples.push((d, st, sky.radiance(d, true)));
+        }
+    }
+    cube_image(16, 1, move |n, _| {
+        let mut sum = [0.0f32; 3];
+        let mut weight = 0.0;
+        for (d, area, c) in &samples {
+            let wgt = n.dot(*d).max(0.0) * area;
+            weight += wgt;
+            for k in 0..3 {
+                sum[k] += c[k] * wgt;
+            }
+        }
+        sum.map(|v| v / weight.max(1e-6))
+    })
+}
 
-/// Irradiance cube for the ambient term, from the keyframe's six-direction light rig: an ambient cube
-/// oriented to the key light's azimuth (key fill towards it, shadow fill away, left / right across, up,
-/// down), weighted by the squared cosine to each axis, × `AmbientIrradianceScale`. Multiply by albedo.
-pub fn irradiance_cube(key: &EnvironmentKeyframe, sun: Vec3) -> Image {
+/// The earlier stand-in (`MW_RIG_AMBIENT=1`): the keyframe's six-direction light rig oriented to the key light's
+/// azimuth, weighted by the squared cosine to each axis, × `AmbientIrradianceScale`, plus the upper hemisphere
+/// at `SkyReflectionAverageColour`, cosine-weighted.
+fn rig_irradiance_cube(key: &EnvironmentKeyframe, sun: Vec3) -> Image {
     let fwd = Vec3::new(sun.x, 0.0, sun.z).try_normalize().unwrap_or(Vec3::Z);
     let side = Vec3::Y.cross(fwd);
     let r = &key.ambient;
@@ -269,12 +392,7 @@ pub fn irradiance_cube(key: &EnvironmentKeyframe, sun: Vec3) -> Image {
                 c[i] += fill[i] * w * r.scale;
             }
         }
-        // Skylight: the upper hemisphere at the keyframe's average sky colour, cosine-weighted
-        // ((1 + n.y) / 2 of it reaches a surface facing n). Provisional: the game builds this cube on the
-        // CPU. It was added while the colour cube was read with red and blue swapped (research log
-        // 2026-10-06); with the cube fixed, noon shade reads blue-grey with it and neutral but darker
-        // without it. Kept until the original's shade colour is measured.
-        let w = 0.5 * (1.0 + d.y) * SKY_FILL;
+        let w = 0.5 * (1.0 + d.y);
         for i in 0..3 {
             c[i] += sky[i] * w;
         }

@@ -99,6 +99,8 @@ pub struct Baked {
     keyframe: EnvironmentKeyframe,
     /// Towards the key light.
     to_sun: Vec3,
+    /// Towards the sky's sun (sky glow, fog corona).
+    sky_sun: Vec3,
     sky: Image,
     reflection: Image,
     irradiance: Image,
@@ -121,15 +123,21 @@ fn bake_inner(store: &AssetStore, key: EnvironmentKey) -> Option<Baked> {
             return None;
         }
     };
-    let to_sun = match store.sun_moon_path() {
-        Ok(path) => Vec3::from(path.key_light_direction(key.hour.rem_euclid(24.0))),
+    // The game's sun path (`FUN_008a8480`): the key light and the sky's sun share a bearing, each with its own
+    // elevation curve (`SunMoonPath`).
+    let hour = key.hour.rem_euclid(24.0);
+    let (to_sun, sky_sun) = match store.sun_moon_path() {
+        Ok(path) => (Vec3::from(path.key_light_direction(hour)), Vec3::from(path.sky_sun_direction(hour))),
         Err(e) => {
             warn!("no sun path ({e})");
-            Vec3::new(0.45, 0.78, 0.43)
+            (Vec3::new(0.45, 0.78, 0.43), Vec3::new(0.45, 0.78, 0.43))
         }
+    };
+    let (to_sun, sky_sun) = (to_sun.normalize(), sky_sun.normalize());
+    let s = sky::Sky::new(store, &keyframe, sky_sun, to_sun);
+    if std::env::var_os("MW_ENV_REPORT").is_some() {
+        report(&s, &keyframe, to_sun, sky_sun);
     }
-    .normalize();
-    let s = sky::Sky::new(store, &keyframe, to_sun);
     let colour_cube = keyframe
         .colour_cube
         .and_then(|id| store.load(id).ok())
@@ -138,12 +146,43 @@ fn bake_inner(store: &AssetStore, key: EnvironmentKey) -> Option<Baked> {
     Some(Baked {
         key,
         to_sun,
+        sky_sun,
         sky: sky::sky_cube(&s),
         reflection: sky::reflection_cube(&s),
-        irradiance: sky::irradiance_cube(&keyframe, to_sun),
+        irradiance: sky::irradiance_cube(&s, &keyframe, to_sun),
         colour_cube,
         keyframe,
     })
+}
+
+/// `MW_ENV_REPORT=1`: the bake's inputs in the original's shader-constant terms, to compare with live reads of
+/// the original (`KeyLightColour`, `KeyLightDirection`, `SunColour`, `BaseCloudColour`, `IrradianceQuadric` at
+/// the rig's axes; research log 2026-10-14).
+fn report(s: &sky::Sky, k: &EnvironmentKeyframe, to_sun: Vec3, sky_sun: Vec3) {
+    let fmt = |c: [f32; 3]| format!("({:.4}, {:.4}, {:.4})", c[0], c[1], c[2]);
+    info!("ENV key colour {} direction (travel) {:.4?}", fmt(k.key_light), -to_sun);
+    info!(
+        "ENV sky sun {:.4?} sun colour {} × {:.3}, exponent {:.1}",
+        sky_sun,
+        fmt([k.sun_colour[0], k.sun_colour[1], k.sun_colour[2]]),
+        k.sun_colour[3],
+        k.sun_glow_exponent
+    );
+    info!(
+        "ENV sky scale² {:.4} gradient offset {:.4} clouds: light {} intensity {:.4} crossfade {:.4}",
+        k.sky_scale * k.sky_scale,
+        k.gradient_sun_offset,
+        fmt(k.clouds.light),
+        k.clouds.intensity,
+        k.clouds.crossfade
+    );
+    let fwd = Vec3::new(to_sun.x, 0.0, to_sun.z).normalize_or_zero();
+    let side = Vec3::new(fwd.z, 0.0, -fwd.x);
+    for (name, n) in
+        [("key az", fwd), ("shadow", -fwd), ("up", Vec3::Y), ("down", -Vec3::Y), ("left", side), ("right", -side)]
+    {
+        info!("ENV irradiance {name:7} {}", fmt(s.irradiance(n)));
+    }
 }
 
 fn to_bevy(c: [f32; 3]) -> Vec3 {
@@ -157,6 +196,7 @@ fn game_lighting(b: &Baked, irradiance: Handle<Image>) -> deferred::GameLighting
     deferred::GameLighting {
         key_colour: to_bevy(k.key_light),
         key_direction: -b.to_sun,
+        sky_sun: b.sky_sun,
         sky_brightness: GAME_UNIT,
         irradiance,
         fog: deferred::FogSettings {

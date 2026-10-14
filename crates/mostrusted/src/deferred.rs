@@ -74,6 +74,9 @@ pub struct GameLighting {
     pub key_colour: Vec3,
     /// Direction the key light travels (towards the ground).
     pub key_direction: Vec3,
+    /// Towards the sky's sun (`SunMoonPath::sky_sun_direction`): the fog's corona (`SunCoronaDirection` = minus
+    /// this) and its sun-side colour.
+    pub sky_sun: Vec3,
     /// cd/m² per unit of the irradiance cube.
     pub sky_brightness: f32,
     /// Irradiance cube (`sky::irradiance_cube`).
@@ -341,12 +344,13 @@ fn prepare_buffer(
         fog_colour_sun: f.colour_sun.extend(0.0),
         fog_coeffs: Vec4::new(1.0 / span, f.near / span, f.power, 0.0),
         // ScatteringSettings = (g, (1 - g²) × strength / 4π) as the game writes it per frame (decomp.md
-        // "Fog"); g = ScatteringPhase and strength = ScatteringStrength by inference (the state copy that
-        // fills those two slots is not traced).
+        // "Fog"); g = ScatteringPhase and strength = ScatteringStrength (the live slot 0x27 at 14:13, (0.96412,
+        // 0.0047362), is exactly the 14 h / 17 h keyframes' blend of both).
         scattering: f.scattering_colour.extend(
             (1.0 - f.scattering_phase * f.scattering_phase) * f.scattering_strength / (4.0 * std::f32::consts::PI),
         ),
-        scattering_params: Vec4::new(f.scattering_phase, 0.0, 0.0, 0.0),
+        // x = g, yzw = towards the sky's sun (the game's SunCoronaDirection is minus this).
+        scattering_params: Vec4::new(f.scattering_phase, l.sky_sun.x, l.sky_sun.y, l.sky_sun.z),
     });
     buffer.0.write_buffer(&device, &queue);
 }

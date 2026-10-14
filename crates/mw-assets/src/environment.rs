@@ -72,6 +72,11 @@ pub struct Clouds {
     /// scroll speed are set from these on the CPU (mapping not decoded).
     pub scale: f32,
     pub speed: f32,
+    /// The keyframe the environment is blending towards: its cloud texture and how far the blend is (0 = only
+    /// `texture`). NewSky draws both as layers, fading by threshold: `CloudParamsPS` = (t, 1 − t, 1, 1) live
+    /// at t = 0.0757 (research log 2026-10-14), so layer A covers where alpha > t, layer B where alpha > 1 − t.
+    pub texture_b: Option<ResourceId>,
+    pub crossfade: f32,
 }
 
 /// `EnvironmentKeyframe.Weather`. There is no precipitation anywhere in the data (no rain field, texture,
@@ -133,8 +138,17 @@ pub struct EnvironmentKeyframe {
     pub id: ResourceId,
     pub key_light: [f32; 3],
     pub ambient: AmbientRig,
-    /// rgb, and w (0.65 at noon; probably the glow exponent or size, not decoded).
+    /// rgb, and w (0.65 or 1): NewSky's `SunColour.rgb` is rgb × w (live 2.737 = 4.210 × 0.65 at 14:13).
     pub sun_colour: [f32; 4],
+    /// `Sky.2ec8df83` (32…1027, 500 at noon): the sun glow's exponent, NewSky's `SunColour.w` (live 483.7 =
+    /// the 14 h / 17 h keyframes' 500 / 284.65 blended).
+    pub sun_glow_exponent: f32,
+    /// `Sky.2ec8df82` (1.067 at noon): added to the sun-side blend of the two sky gradients, `DomeRanges.w`
+    /// (live 1.043 = 1.067 / 0.75 blended).
+    pub gradient_sun_offset: f32,
+    /// `Sky.6acb8a54` (1.25 at noon): the sky gradient is scaled by its square, `BaseCloudColour.w` (live
+    /// 1.5296 = 1.2368²; the state's +0xe44 = 1.2368 = 1.25 / 1.075 blended).
+    pub sky_scale: f32,
     /// Sky gradient stops `(position 0 = horizon .. 1 = zenith, rgb)`, sorted by position.
     pub sky_gradient: Vec<(f32, [f32; 3])>,
     pub sky_reflection_colour: [f32; 3],
@@ -348,6 +362,9 @@ impl EnvironmentKeyframe {
             out.sky_gradient = g.as_chunks::<5>().0.iter().map(|c| (c[0], [c[1], c[2], c[3]])).collect();
             out.sky_gradient.sort_by(|a, b| a.0.total_cmp(&b.0));
             out.clouds.intensity = float(sky, h("BaseCloudIntensity"));
+            out.sun_glow_exponent = float(sky, 0x2ec8df83);
+            out.gradient_sun_offset = float(sky, 0x2ec8df82);
+            out.sky_scale = float(sky, 0x6acb8a54);
         }
         if let Some(c) = sub(o, h("Clouds")) {
             // The texture is stored as the low bits of its resource ID.
@@ -378,45 +395,73 @@ impl EnvironmentKeyframe {
 
     /// Sky gradient colour at a position (0 = horizon, 1 = zenith).
     pub fn sky_gradient_at(&self, t: f32) -> [f32; 3] {
+        gradient_at(&self.sky_gradient, t)
+    }
+
+    /// NewSky's second gradient (`GradientTextureB`, the side away from the sun), as `FUN_008a5a90` builds
+    /// it from the blended stops: the first two (sorted) stops are replaced by the third, and the first three
+    /// positions are scaled by 0.01 (the renderer flag +0xbd80 that selects this was 1 in free roam), so the
+    /// bright horizon band of gradient A is missing.
+    pub fn sky_gradient_b(&self) -> Vec<(f32, [f32; 3])> {
         let g = &self.sky_gradient;
-        let Some(first) = g.first() else { return [0.0; 3] };
-        if t <= first.0 {
-            return first.1;
+        if g.len() < 3 {
+            return g.clone();
         }
-        for w in g.windows(2) {
-            let ((a, ca), (b, cb)) = (w[0], w[1]);
-            if t <= b {
-                let f = if b > a { (t - a) / (b - a) } else { 0.0 };
-                return [0, 1, 2].map(|i| ca[i] + (cb[i] - ca[i]) * f);
-            }
+        let third = g[2];
+        let mut b = g.clone();
+        for s in b.iter_mut().take(3) {
+            *s = (third.0 * 0.01, third.1);
         }
-        g.last().map_or([0.0; 3], |l| l.1)
+        b
     }
 }
 
-/// `EnvironmentSettings.SunMoonPath`: where the key light comes from over the day. Only the bearing fields
-/// have names; the elevation model and the bearing's reference axis are provisional (research log
-/// "sun and moon path").
-#[derive(Debug, Clone)]
-pub struct SunMoonPath {
-    /// Degrees.
-    pub bearing_centre: f32,
-    pub bearing_variation: f32,
-    /// Fraction of a day.
-    pub bearing_phase_offset: f32,
-    /// `0bb64ed2` (50): the sun's highest elevation, degrees.
-    pub sun_max_elevation: f32,
-    /// `c915f96d` (40): the moon's highest elevation, degrees.
-    pub moon_max_elevation: f32,
-    /// `644383ee` (20) / `a5caac0f` (8): moonrise and moonset hours.
-    pub moonrise: f32,
-    pub moonset: f32,
+/// A piecewise linear gradient (stops sorted by position) at `t`, clamped at both ends: the texel rule of
+/// `FUN_008a5560` (64 texels at i / 64).
+pub fn gradient_at(g: &[(f32, [f32; 3])], t: f32) -> [f32; 3] {
+    let Some(first) = g.first() else { return [0.0; 3] };
+    if t <= first.0 {
+        return first.1;
+    }
+    for w in g.windows(2) {
+        let ((a, ca), (b, cb)) = (w[0], w[1]);
+        if t <= b {
+            let f = if b > a { (t - a) / (b - a) } else { 0.0 };
+            return [0, 1, 2].map(|i| ca[i] + (cb[i] - ca[i]) * f);
+        }
+    }
+    g.last().map_or([0.0; 3], |l| l.1)
 }
 
-/// Sunrise and sunset hours. Not in the data as far as found: the default timeline's key light turns on at
-/// 05:00 (red dawn keyframe) and peaks at 13:00, which a sine arc from 05:00 to 21:00 matches.
-const SUNRISE: f32 = 5.0;
-const SUNSET: f32 = 21.0;
+/// `EnvironmentSettings.SunMoonPath`: where the key light and the sky's sun come from over the day, as the
+/// environment update `FUN_008a8480` computes them (docs/decomp.md "Sun and key light path"; struct
+/// offsets are those of `EnvironmentSettings`, 0x100…0x128). Two directions share one bearing: the **key
+/// light** (shading, shadows; constant slot `KeyLightDirection`) and the **sky sun** (the NewSky glow and the
+/// fog's corona: `KeyLightDirAndXZLength`, `SunCoronaDirection`), each with its own elevation curve. Both
+/// were checked against the live renderer dumps of 2026-10-06 (14:13–14:34, research log 2026-10-14).
+#[derive(Debug, Clone)]
+pub struct SunMoonPath {
+    /// +0x100, degrees.
+    pub bearing_centre: f32,
+    /// +0x104, fraction of a day.
+    pub bearing_phase_offset: f32,
+    /// +0x108, degrees.
+    pub bearing_variation: f32,
+    /// Key light elevations in degrees at noon (+0x10c `0bb64ed2`, 50), midnight (+0x110 `c915f96d`, 40) and
+    /// at the day's two boundary hours (+0x114 `1dc20d63`, 28): the key light never sets (the moon by night).
+    pub key_noon: f32,
+    pub key_midnight: f32,
+    pub key_horizon: f32,
+    /// Sky sun elevations: midnight (+0x118 `ffbdcf8b`, 25), noon (+0x11c `ac4fe424`, 35), the boundary hours
+    /// (+0x120 `138500fe`, 0).
+    pub sky_midnight: f32,
+    pub sky_noon: f32,
+    pub sky_horizon: f32,
+    /// +0x124 `a5caac0f` (8) and +0x128 `644383ee` (20): the hours the day runs between ("day" for the
+    /// world lights, `FUN_008a8480`); their midpoint (14:00) is the path's noon.
+    pub day_start: f32,
+    pub day_end: f32,
+}
 
 impl SunMoonPath {
     pub fn from_settings(o: &Object) -> Self {
@@ -424,37 +469,77 @@ impl SunMoonPath {
         let f = |hash: u32| p.map_or(0.0, |p| float(p, hash));
         Self {
             bearing_centre: f(field_hash("BearingCentre")),
-            bearing_variation: f(field_hash("BearingVariation")),
             bearing_phase_offset: f(field_hash("BearingPhaseOffset")),
-            sun_max_elevation: f(0x0bb64ed2),
-            moon_max_elevation: f(0xc915f96d),
-            moonrise: f(0x644383ee),
-            moonset: f(0xa5caac0f),
+            bearing_variation: f(field_hash("BearingVariation")),
+            key_noon: f(0x0bb64ed2),
+            key_midnight: f(0xc915f96d),
+            key_horizon: f(0x1dc20d63),
+            sky_midnight: f(0xffbdcf8b),
+            sky_noon: f(0xac4fe424),
+            sky_horizon: f(0x138500fe),
+            day_start: f(0xa5caac0f),
+            day_end: f(0x644383ee),
         }
     }
 
-    /// Unit vector towards the key light (the sun by day, the moon by night) at an hour, in game
-    /// coordinates (Y up). Bearing: `BearingCentre + BearingVariation × sin(2π (hour / 24 +
-    /// BearingPhaseOffset))`, measured from +X towards +Z: the original's key light direction (constant
-    /// slot 0x0d, live read 2026-10-06, research log) points from (−0.41, 0.765, 0.495) to the sun, a
-    /// bearing of 129.7° in this convention (reached at ~12:13), while the earlier +Z-towards-+X reading
-    /// could not produce it at any hour. Elevation: a sine arc peaking at the max elevation between rise
-    /// and set (assumed; the live read suggests a peak near 12:00, not 13:00).
-    pub fn key_light_direction(&self, hour: f32) -> [f32; 3] {
-        let bearing = self.bearing_centre
-            + self.bearing_variation * (std::f32::consts::TAU * (hour / 24.0 + self.bearing_phase_offset)).sin();
-        let arc = |t: f32, max: f32| max * (std::f32::consts::PI * t.clamp(0.0, 1.0)).sin();
-        let elevation = if (SUNRISE..=SUNSET).contains(&hour) {
-            arc((hour - SUNRISE) / (SUNSET - SUNRISE), self.sun_max_elevation)
+    /// The day phase `FUN_00893620` gives an hour: with m = the day's midpoint + 12 h and frac() the
+    /// fraction of a day after m, the day (`day_start` … `day_end`) maps linearly onto π/2 … 3π/2 (π at its
+    /// middle) and the night onto 3π/2 … 2π, 0 … π/2 (the night's half-length taken as `a` below, as the
+    /// game does).
+    fn phase(&self, hour: f32) -> f32 {
+        use std::f32::consts::{FRAC_PI_2, PI};
+        let m = (self.day_start + self.day_end) * 0.5 + 12.0;
+        let frac = |h: f32| {
+            let x = (h - m) / 24.0;
+            x - x.floor()
+        };
+        let (a, b, x) = (frac(self.day_start), frac(self.day_end), frac(hour));
+        if x > a && x < b {
+            (x - a) / (b - a) * PI + FRAC_PI_2
+        } else if x < 0.5 {
+            x / a.max(1e-6) * FRAC_PI_2
         } else {
-            // The moon is up from moonrise through midnight to moonset.
-            let span = (self.moonset + 24.0 - self.moonrise).max(1.0);
-            let t = (hour - self.moonrise).rem_euclid(24.0) / span;
-            arc(t, self.moon_max_elevation)
+            (x - b) / a.max(1e-6) * FRAC_PI_2 + 3.0 * FRAC_PI_2
         }
-        .max(3.0);
+    }
+
+    /// `FUN_008a8480`'s elevation curve (degrees): cos²(p) × (cos(p) × h + h + (noon − horizon)) + horizon
+    /// with h = (midnight − noon) / 2, so noon at p = π, midnight at p = 0, the horizon value at the day's
+    /// boundary hours.
+    fn elevation(&self, hour: f32, noon: f32, midnight: f32, horizon: f32) -> f32 {
+        let p = self.phase(hour);
+        let half = (midnight - noon) * 0.5;
+        let c = p.cos();
+        // The game computes cos(2p) × 0.5 + 0.5, which is cos²(p).
+        let c2 = (2.0 * p).cos() * 0.5 + 0.5;
+        c2 * (c * half + half + (noon - horizon)) + horizon
+    }
+
+    /// `FUN_008a8480`'s bearing (degrees): `BearingCentre + BearingVariation × cos(2π × ((t − noon + 6 h) /
+    /// 24 h − BearingPhaseOffset))` with noon the midpoint of the day's hours.
+    fn bearing(&self, hour: f32) -> f32 {
+        let noon = (self.day_start + self.day_end) * 0.5;
+        let x = (hour - noon + 6.0) / 24.0 - self.bearing_phase_offset;
+        self.bearing_centre + self.bearing_variation * (std::f32::consts::TAU * x).cos()
+    }
+
+    fn direction(bearing: f32, elevation: f32) -> [f32; 3] {
         let (b, e) = (bearing.to_radians(), elevation.to_radians());
         [b.cos() * e.cos(), e.sin(), b.sin() * e.cos()]
+    }
+
+    /// Unit vector towards the key light at an hour (game coordinates, Y up): the bearing above, measured
+    /// from +X towards +Z, and the key elevation curve (50° at 14:00, 28° at 08:00 / 20:00, 40° at 02:00).
+    /// The game moves the light used for shading only when it has turned by more than a threshold
+    /// (`DAT_011840e0`, `.bss`, not read); this is the continuous direction.
+    pub fn key_light_direction(&self, hour: f32) -> [f32; 3] {
+        Self::direction(self.bearing(hour), self.elevation(hour, self.key_noon, self.key_midnight, self.key_horizon))
+    }
+
+    /// Unit vector towards the sky's sun (the NewSky glow, the fog's corona): the same bearing, the sky
+    /// elevation curve (35° at 14:00, 0° at 08:00 / 20:00, 25° at 02:00).
+    pub fn sky_sun_direction(&self, hour: f32) -> [f32; 3] {
+        Self::direction(self.bearing(hour), self.elevation(hour, self.sky_noon, self.sky_midnight, self.sky_horizon))
     }
 }
 
@@ -473,11 +558,21 @@ impl EnvironmentKeyframe {
     pub fn lerp(&self, other: &Self, t: f32) -> Self {
         let t = t.clamp(0.0, 1.0);
         let near = if t < 0.5 { self } else { other };
-        let mut positions: Vec<f32> = self.sky_gradient.iter().chain(&other.sky_gradient).map(|s| s.0).collect();
-        positions.sort_by(f32::total_cmp);
-        positions.dedup_by(|a, b| (*a - *b).abs() < 1e-4);
-        let sky_gradient =
-            positions.iter().map(|&p| (p, mix3(self.sky_gradient_at(p), other.sky_gradient_at(p), t))).collect();
+        // The game blends the sorted gradient stop by stop, positions too (the renderer's state at
+        // +0x1270…: positions 0.047 / 0.065 blend to 0.0484 at t = 0.0757); a gradient of another length
+        // (none in the install) is resampled at the stop positions instead.
+        let sky_gradient = if self.sky_gradient.len() == other.sky_gradient.len() {
+            self.sky_gradient
+                .iter()
+                .zip(&other.sky_gradient)
+                .map(|(a, b)| (mix(a.0, b.0, t), mix3(a.1, b.1, t)))
+                .collect()
+        } else {
+            let mut positions: Vec<f32> = self.sky_gradient.iter().chain(&other.sky_gradient).map(|s| s.0).collect();
+            positions.sort_by(f32::total_cmp);
+            positions.dedup_by(|a, b| (*a - *b).abs() < 1e-4);
+            positions.iter().map(|&p| (p, mix3(self.sky_gradient_at(p), other.sky_gradient_at(p), t))).collect()
+        };
         let (a, b) = (&self.ambient, &other.ambient);
         let (fa, fb) = (&self.fog, &other.fog);
         let (ea, eb) = (&self.exposure, &other.exposure);
@@ -496,11 +591,16 @@ impl EnvironmentKeyframe {
                 scale: mix(a.scale, b.scale, t),
             },
             sun_colour: [0, 1, 2, 3].map(|i| mix(self.sun_colour[i], other.sun_colour[i], t)),
+            sun_glow_exponent: mix(self.sun_glow_exponent, other.sun_glow_exponent, t),
+            gradient_sun_offset: mix(self.gradient_sun_offset, other.gradient_sun_offset, t),
+            sky_scale: mix(self.sky_scale, other.sky_scale, t),
             sky_gradient,
             sky_reflection_colour: mix3(self.sky_reflection_colour, other.sky_reflection_colour, t),
             sky_reflection_light: mix3(self.sky_reflection_light, other.sky_reflection_light, t),
             clouds: Clouds {
-                texture: near.clouds.texture,
+                texture: self.clouds.texture,
+                texture_b: other.clouds.texture,
+                crossfade: t,
                 dark: mix3(ca.dark, cb.dark, t),
                 light: mix3(ca.light, cb.light, t),
                 opacity: mix(ca.opacity, cb.opacity, t),
@@ -640,5 +740,60 @@ impl AssetStore {
 
     pub fn environment_keyframe(&self, id: ResourceId) -> Result<EnvironmentKeyframe> {
         EnvironmentKeyframe::from_object(id, &self.decode_genesys(&self.load(id)?)?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SunMoonPath;
+
+    /// `EnvironmentSettings.SunMoonPath` as the install holds it.
+    fn path() -> SunMoonPath {
+        SunMoonPath {
+            bearing_centre: -232.3661,
+            bearing_phase_offset: -0.5,
+            bearing_variation: 35.056538,
+            key_noon: 50.0,
+            key_midnight: 40.0,
+            key_horizon: 28.0,
+            sky_midnight: 25.0,
+            sky_noon: 35.0,
+            sky_horizon: 0.0,
+            day_start: 8.0,
+            day_end: 20.0,
+        }
+    }
+
+    fn close(a: [f32; 3], b: [f32; 3]) -> bool {
+        a.iter().zip(b).all(|(x, y)| (x - y).abs() < 2e-3)
+    }
+
+    /// The original's renderer dumps (`ref/live1/ren`, 2026-10-06): time of day (manager +0x1b604) against
+    /// `KeyLightDirection` (slot 0x0d, the direction light travels) and `KeyLightDirAndXZLength` (0x89).
+    #[test]
+    fn matches_the_live_reads() {
+        let p = path();
+        for (hour, key, sky) in [
+            (51216.4 / 3600.0, [0.41135, -0.76509, -0.49542], [-0.52423, 0.57169, 0.63115]),
+            (52461.7 / 3600.0, [0.4414, -0.7601, -0.4769], [-0.5640, 0.5614, 0.6055]),
+        ] {
+            let k = p.key_light_direction(hour).map(|v| -v);
+            assert!(close(k, key), "key at {hour}: {k:?} vs {key:?}");
+            if hour < 14.3 {
+                let s = p.sky_sun_direction(hour);
+                assert!(close(s, sky), "sky sun at {hour}: {s:?} vs {sky:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn elevation_curve_ends() {
+        let p = path();
+        let elev = |d: [f32; 3]| d[1].asin().to_degrees();
+        assert!((elev(p.key_light_direction(14.0)) - 50.0).abs() < 0.01);
+        assert!((elev(p.key_light_direction(8.0)) - 28.0).abs() < 0.01);
+        assert!((elev(p.key_light_direction(2.0)) - 40.0).abs() < 0.01);
+        assert!((elev(p.sky_sun_direction(20.0)) - 0.0).abs() < 0.01);
+        assert!((elev(p.sky_sun_direction(14.0)) - 35.0).abs() < 0.01);
     }
 }
