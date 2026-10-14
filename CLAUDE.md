@@ -135,6 +135,9 @@ MW_TOOLS=.claude/tools python3 tools/camcompare.py compare ref/live1 <dir>/ours.
 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,1720 --units 20 --hour 1.5 --weather --planar-reflection --screenshot <scratch>/wet.png
 # Post-processing (tonemap.rs): the original's vignette from the default PostFX keyframe; MW_NO_VIGNETTE=1 for A/B.
 # Bloom (bloom.wgsl, colour / intensity / level weights from the environment keyframe): MW_NO_BLOOM=1 for A/B
+# (MW_BLOOM_DIVISORS=4,8,16: other level sizes). Final pass (post.wgsl, the original's free-roam variant): depth
+# of field MW_NO_DOF=1, sun-facing brightness / contrast MW_NO_SUN_CONTRAST=1, keyframe cube blend
+# MW_NO_CUBE_BLEND=1; MW_POST_LOG=1 prints the grade and DOF constants
 MW_NO_VIGNETTE=1 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,1720 --units 20 --hour 13 --screenshot <scratch>/novig.png
 ./target/release/mwtool paint-map 010000000002823d --png <scratch>/timelines.png --at=-1158,1700   # WorldPaintMap + zone outlines
 # Handling tests on a flat track (4x real time), prints TEST RESULT lines and exits

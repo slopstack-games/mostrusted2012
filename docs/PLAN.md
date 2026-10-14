@@ -175,12 +175,16 @@ Make a static frame look like the game.
    Fog pass (`deferred.rs`, `game_lighting.wgsl`), the game's 3-cascade shadow lookup on Bevy-rendered cascades.
    The game's auto exposure, tonemap and ColourCube grade (`tonemap.rs`); the grade is the final pass built
    into `NFS13.exe` (`mwtool shader-asm --exe`, decomp.md "Post-processing and colour grade"), cube channel
-   order fixed 2026-10-06. Not yet: the TintBlend weights (one cube, nearest keyframe, for now).
+   order fixed 2026-10-06. 2026-10-14: the TintBlend blends the two keyframes' cubes with the timeline weights
+   (live read), the final pass is the free-roam variant (depth of field + tint) with the sun-facing brightness /
+   contrast, the bloom levels have the original's sizes (1/6, 1/24, 1/96 of the screen) and the vignette's k / s
+   come from the code (`MW_NO_DOF`, `MW_NO_SUN_CONTRAST`, `MW_NO_CUBE_BLEND`, `MW_BLOOM_DIVISORS`).
    Open: the game's cascade fit / split distances, shadow-only proxy casters (`WorldShadow_*`), the irradiance quadric / second
    irradiance cube, cop / line lights (point / cone / spot lights and their per-hour switch ported 2026-10-10), planar reflection
    (`[~]` opt-in mirrored camera for wet roads; not yet for `WorldPBR_Horizontal_PlanarReflection`),
-   bloom and the composite tint in `GBufferComposite` (`[~]` the vignette A·v + D is ported, 2026-10-06; bloom
-   ported 2026-10-07 with untraced level sizes, `MW_NO_BLOOM=1`), motion blur, `PostAA`.
+   bloom and the composite tint in `GBufferComposite` (`[x]` vignette 2026-10-06, bloom 2026-10-07, level sizes
+   2026-10-14), the composite's motion blur (traced, ≤ 2 px at 200 km/h, not ported), the depth-of-field blur
+   passes' sub-texel offsets, the sun lens flare (`LensFlareColour`), `PostAA`.
 
 ### M2: Game data layer `[ ]`
 Unlocks names, tuning and rules. Can run in parallel with M1.

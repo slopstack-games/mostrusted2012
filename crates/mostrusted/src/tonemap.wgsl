@@ -7,13 +7,10 @@
 //   tonemap: `GBufferComposite` without motion blur: the bloom term (bloom.wgsl builds its texture;
 //            `MW_NO_BLOOM=1` turns it off), the vignette (A × v + D from the default
 //            PostFX keyframe, `MW_NO_VIGNETTE=1` turns it off), then 1 - exp(-hdr × E), E = 2^(exposure + bias), gamma-encoded
-//            with the game's polynomial fit of sRGB. Then the grade of the final post pass built into
-//            NFS13.exe (pixel shader at 0x01016148, research log 2026-10-06): the "TintBlend" volume
-//            sampled at rgb × ColourCubeScalesOffsets.xyz + .w (15/16, 1/32), here the keyframe's
-//            ColourCube alone. The result is decoded back to linear for Bevy's sRGB swapchain.
+//            with the game's polynomial fit of sRGB, into an 8-bit target. The final pass (post.wgsl:
+//            depth of field, brightness / contrast, the colour cube) reads it.
 //            Bloom off is the game's own off path: `FUN_0089d5c0` then sets B (slot 0x9d) to
-//            (1, 1, 1, 0), and B.w = 0 removes the bloom term. The TintBlend slot weights
-//            (`FUN_008c9e40`) wait for live reads (decomp.md "Post-processing").
+//            (1, 1, 1, 0), and B.w = 0 removes the bloom term.
 // The light buffer holds the game's HDR units: the camera's exposure is set so that Bevy's
 // `view.exposure` is 1 / GAME_UNIT (`main.rs`).
 
@@ -36,6 +33,9 @@ struct Tonemap {
     vignette_angle: vec4<f32>,
     // B: BloomColour.rgb, bloom intensity (0 = bloom off)
     bloom: vec4<f32>,
+    // The final pass (post.wgsl): contrast, brightness, depth of field on; and the DOF constants.
+    grade: vec4<f32>,
+    dof: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> tm: Tonemap;
@@ -140,13 +140,5 @@ fn tonemap(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
     let bloom = textureSampleLevel(bloom_texture, hdr_sampler, in.uv, 0.0).rgb;
     let lit = c.rgb + bloom * tm.bloom.rgb * saturate(bloom * k * 1.442695) * tm.bloom.w;
     let vignette = tm.vignette_a.rgb * vignette_weight(in.uv) + tm.vignette_d.rgb;
-    var g = gamma_fit(max(1.0 - exp(-lit * vignette * k), vec3(0.0)));
-    if tm.flags.y > 0.5 {
-        g = textureSampleLevel(colour_cube, cube_sampler, saturate(g) * (15.0 / 16.0) + 1.0 / 32.0, 0.0).rgb;
-    }
-    return vec4(srgb_to_linear(g), c.a);
-}
-
-fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
-    return select(pow((c + 0.055) / 1.055, vec3(2.4)), c / 12.92, c <= vec3(0.04045));
+    return vec4(gamma_fit(max(1.0 - exp(-lit * vignette * k), vec3(0.0))), c.a);
 }

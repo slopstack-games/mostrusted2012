@@ -1338,12 +1338,13 @@ chain, from the light buffer (HDR game units) to the screen:
    `FUN_008c9e40` passes +0xa9b0, +0xa9a0 and +0xa990 to the bloom set-up `FUN_008eaaf0`: they are the add
    pass's `kVignetteCentreXyScaleXy`, `kVignetteAngle` and `kVignetteOuterRgbPlusAdd` (its .w is the weight
    offset). So v = smoothstep(saturate(k·|p₀| + 1 − k)) with p₀ the unscaled offset: the weight rises from
-   0 at |p₀| = 1 − 1/k to 1 at |p₀| = 1. k = 1.8245 in every dump (also under another PostFX state, which
-   changed centre and Scale), so it is not derived from a blended field; `Sharpness` (0.34) is the likely
-   source but no formula was found. s drifts 1.0025…1.0385 over the run (2.81 in the dump taken during a
-   state change). Ported in `tonemap.rs` with k = 1.8245 as a measured constant and s = 1 (model
-   decision). No instruction in the renderer code (0x880000…0x900000 of the snapshot) stores to
-   +0xa980 / +0xa990 with a literal displacement: the writer goes through another base and is still unknown.
+   0 at |p₀| = 1 − 1/k to 1 at |p₀| = 1. **Writer found 2026-10-14**: the block is the post object's +0xc00
+   (post object = renderer +0x9d80), written by the final-pass set-up `FUN_008e8c40` from the Vignette block
+   at post +0x11d0: k = 1 + 500 × (0.5 + 0.5 × `Sharpness`)^16 (`pow` with the `.rdata` double 16 at
+   0x01021988, × the float 500 at 0x01021980) = 1.82445 for 0.34, the live 1.8245; s is the final pass's
+   contrast c (below, "Final pass"), which explains its drift with the camera heading. Ported with both.
+   (Earlier note: no instruction in the renderer code (0x880000…0x900000 of the snapshot) stores to
+   +0xa980 / +0xa990 with a literal displacement, because the writer addresses them as post +0xc00 / +0xc10.)
    **Bloom copy**: the copy at 0x008ccbdc (inside `FUN_008c9e40`) sets bit 1 of +0xaa9c and moves 13 words
    from the blended set (+0x80…+0xb0 of its source) to +0xac74…+0xaca4 with x87 load/store pairs, so integer
    GeneSys fields arrive as raw bit patterns: live, the words at +0xac80, +0xac88, +0xac8c, +0xac94 are the
@@ -1392,7 +1393,13 @@ chain, from the light buffer (HDR game units) to the screen:
    `0x01010d38`): taps at x + {0, ±1.407333, ±3.294215} × `kScale`, decoded rgb × a × the weights (sum 32),
    ÷ T.w, alpha 1 (a float target). Add (VS `0x01011280`, PS `0x010117c0`): the same taps along y with the
    weights ÷ 32 on t0, × `kColorAddWeight.z`, + t1 (sampled at the same uv) × `.w`. The composite samples
-   the finest combined level. Model decisions in the port: the level sizes 1/4, 1/8, 1/16 of the screen (the
+   the finest combined level. **Level sizes (2026-10-14)**: `FUN_008eaaf0` hands `FUN_008e6f40` the
+   renderer's target list (R + 0xa8) entries 0x50, 0x51, 0x52 as L1…L3 and 0x4c…0x4f, 0x22 as the blur /
+   combine temporaries; in snap1 (renderer at 0x2404ce00, found from its DOF block) those are 320 × 176,
+   80 × 44 and 20 × 11 at a 1920 × 1080 screen (temporaries the same sizes, pairwise): a sixth of the screen
+   rounded down to 16, then quarters. Ported so (the creating code was not found, so the rule for other
+   resolutions is a model decision; 1080p is exact). The bloom is therefore 4–6× wider than the first
+   port's 1/4, 1/8, 1/16 levels. Remaining model decisions in the port (originally: the level sizes (the
    targets are passed in through `*(renderer + 0x220)` +0x130…+0x148 at the call `0x008cc828`, created
    elsewhere; the snapshot `snap2` is another run than the renderer dumps, where that pointer is
    0x04ca25f0, and the renderer was not located in it within the time spent; the first step's taps make an
@@ -1410,7 +1417,8 @@ chain, from the light buffer (HDR game units) to the screen:
    distortion texture, optionally blend depth of field, composite the "splatter" overlay (premultiplied:
    src × (1 − a) + rgb), then **out = TintBlend(rgb × `ColourCubeScalesOffsets`.xyz + .w)** (3-D texture,
    x = red). No other colour operation follows; the `BloomColour` constant in that buffer is unused by these
-   variants.
+   variants. Which variant, its constants, the depth of field and the brightness / contrast: "Final pass,
+   depth of field and grade (2026-10-14)" below.
 4. **TintBlend** (the grade volume, 16³ × 4 bytes): `FUN_008e5f80` allocates the 0x4000-byte buffer and names
    it; `FUN_008e0930` starts a job with up to seven source cubes (ColourCube resource data) and a weight each;
    the job dispatches through the table at `0x010e8f70` by cube count (kernels `0x00eb56d0`…`0x00eb64c0`, not
@@ -1426,9 +1434,75 @@ chain, from the light buffer (HDR game units) to the screen:
    last two slots. Which slot holds the environment keyframe's cube, and with which weight, was not found
    (needs a live read of the frame state).
 
+**TintBlend slots, live (2026-10-14).** `FUN_008c9e40` stores the seven cube data pointers at renderer
++0xac00…+0xac18 and the weights at +0xac1c (base) … +0xac34. In all 20 `ref/live1` dumps and in snap1: base =
+the identity cube (weight 0), slots 1 and 2 = the two environment keyframes' cubes with weights (1 − t, t) of
+the timeline blend (dumps: 0.924 / 0.076 sliding to 0.809 / 0.191 over the minute; snap1: the noon cube
+`…4e220` in both, 0.352 / 0.648), slots 3 and 4 = the same pair at weight 0 (very likely the Alternate /
+weather pair), slot 5 an unidentified cube and slot 6 the heat cube `…789d`, both 0 in free roam (the PostFX
+states' `ColourCubeSettings`; dump 15, during a state change, gives slot 5 weight 0.56). Cubes identified by
+matching the data pointer's bytes (header (16, data pointer), then the entries) against the extracted
+resources. Ported: the bake blends the two keyframes' cubes (`tonemap::blend_colour_cubes`).
+
 Consequence for the ColourCube layout: a straight weighted blend keeps the stored order, so the stored entries
 are the texture's own (x = input red fastest, bytes B, G, R + alpha), not "blue fastest, stored R, G, B"
 (inferred; the kernels themselves are missing from the dump; `mw_formats::ColourCube`).
+
+### Final pass, depth of field and grade (2026-10-14)
+
+From the dump, the full `.text` objdump and live reads (the 20 `ref/live1/ren` renderer dumps; snap1, where the
+renderer is at 0x2404ce00). The post object is renderer +0x9d80 (`FUN_008eae00`'s `this`, from the call at
+0x008cdaf3 in `FUN_008c9e40`).
+
+- **Post flags** (post +0xd1c = renderer +0xaa9c; virtual setters 0x00890c90…0x00890d50): bit 1 depth of
+  field, 2 bloom, 4 vignette (the post +0xc00 block), 8 tint (the colour cube), 0x10 fisheye warp, 0x20 the
+  final pass's motion blur, 0x40 cube scale / offset. Live: 0x7f, all on, in every dump.
+- **Variant choice** (`FUN_008e8c40`, assembly at 0x008e90b8, as the decompiler dropped it): index = (motion
+  blur ? 4 × mode + 4 : 0) | (depth of field ? 2 : 0) | (tint ? 1 : 0), mode = the view's +0x290 (+0x1220 +
+  0x290 of the post object, 2 live); with mode 2 the motion-blur bit is only set when the depth of field is
+  off. Entries are 0xe8 apart from post +0x0: 0 `0x01016a08`, 1 `0x01016148`, 2 `0x01017aa0`, 3
+  `0x01017050`, 4 / 5 `0x01019620` / `0x01018698` (camera motion blur), 6 / 7 the same with depth of field,
+  8 / 9 `0x0101dff8` / `0x0101c4f0` (motion blur + mini depth of field), 10 / 11 their depth-of-field forms.
+  **Free roam runs index 3, `0x01017050`: depth of field + tint, no motion blur.**
+- **Constants** (post +0xae0, VS: `BlurMatrixXXX/YYY/WWW`, `HeatHazeOffsetScale`, `HeatHazeLayerTransform`,
+  `ScreenSize`; post +0xb40, PS: `DofParamsA`, `DofParamsB`, `BloomColour`, `FisheyeWarpScalePowerOffset`,
+  `MotionBlurAmounts`, `BlurMatrixZZZ`, `ColourCubeScalesOffsets`, `g_DOF_True_K4K5K6`, `HeatHazeCoeffs`,
+  `ScreenSize`, `MiniDOFScales1/2`; the name tables at 0x010214b4 / 0x01021524). `MotionBlurAmounts` =
+  (max − min, min, −(max − min), −min) of `PostFxKeyframe.General` `a548ceb6` / `26e9df6b` (0 / 0.053; min
+  clamped to 1/1024; live (0.052, 0.00098, …)), unused by variant 3.
+- **ColourCubeScalesOffsets** = (c × 15/16 three times, b + 0.5 − c / 2 + 1/32) (0x0100d714 = 0.9375,
+  0x00fa9324 = 1/32) with b / c the brightness / contrast `FUN_008c9e40` passes: b = options brightness ×
+  0.01 − 0.5 + PostFX state +0x1660 + renderer +0x2cd0 × (1 − t), c = options contrast × 0.01 + 0.5 + PostFX
+  state +0x1664 + renderer +0x2cd4 × (1 − t), where t = (1 + normalize(s.x, 0.001, s.z) · renderer +0x1b70) / 2,
+  s = renderer +0x2930 (the to-sun vector: same heading as the key light, another elevation) and +0x1b70 the
+  camera's forward. Renderer +0x2cd0 / +0x2cd4 are the time-blended `EnvironmentKeyframe.Camera` `d1fd3a11` /
+  `e49dc52c` (0.015 / 0.03 at noon; live 0.0139 / 0.0334). With the options at 50 and the PostFX terms 0 the
+  live constants follow exactly: dump 0 (t = 0.466) c = 1.0178, dump 10 (t = 0.828) c = 1.0063, b ≈ 0.007 /
+  0.002. So looking away from the sun adds up to 3 % contrast and 1.5 % brightness; the same c scales the
+  vignette's A / D (the "s" above).
+- **Depth of field** (`FUN_008e8760` → `FUN_008e7530`, `FUN_008e7900`; programs `0x01012858`, `0x010130f0`
+  family): K = `g_DOF_True_K4K5K6` (post +0x10a0) from the camera's block (camera +0x130…+0x13c via renderer
+  +0xae10…+0xae1c, when the camera's DOF mode +0x170 is 1 or 2; else from the view override +0x15c0, else
+  defaults 10000 / 35): A = 73.448, B = 90 (focus distance), C = 102.83 (× 0.001 = the focal length f in
+  metres), all three live in every read; their source (data or code) was not found. x0 = A / 2 × f / (B − f) =
+  0.0420; K.x = −x0 B / proj.m32, K.y = x0 − …, so CoC = max(K.x d + K.y, 0) = max(x0 (1 − B / z), 0) in view
+  depth z (live K = (12.602, −12.56): K.x + K.y = 0.042, zero at d = 0.99667 = 90 m with the projection's 0.3).
+  Downsample (`FUN_008e7530`, target 0x1f, 960 × 540): 4 taps at ± half a source texel, weights |CoC| × 0.99 +
+  0.01, alpha = their mean. Blur (`FUN_008e7900`, targets 0x20 / 0x21; mode 4 / 8 / 12 by the target's size
+  against 640 × 360, mode 8 at 1080p): 4 taps along an offset, tap i weighted by saturate((alpha − i / 4) ×
+  10), so under the free-roam CoC (< 0.25) only tap 0 counts. Final pass: lerp(frame, dof, min(15 |CoC|, 1)):
+  nothing within 90 m, up to 63 % of the half-resolution copy at infinity. Ported in `post.wgsl` without the
+  blur passes (their one surviving tap's sub-texel offset was not traced).
+- **The composite's motion blur** (`GBufferComposite`, slots 0x8a `MotionBlurVertexConstant` / 0x8b
+  `MotionBlurPixelConstant`, registered at 0x008c49a8): on when renderer +0xb230 == 2 and the view's +0x1500 is
+  set (live: on). The four vectors are renderer +0xb1f0…+0xb220 (a linearised one-frame reprojection: vel =
+  uv × P.z + P.xy with P = M0 u + M1 v + M2 d + M3) times s = General `26e9df6b` (0.053 live; the code divides a
+  value by 2 or 1 and by 1, 3 or 16 depending on view flags, the live product matches 0.053). The shader blurs
+  7 taps along vel / 42 per step, weighted by the light buffer's alpha. Measured size: (1 − d) × 0.068 × (0.5 −
+  u) UV at 51 mph, i.e. ≈ 0.5 px at the screen edge 5 m away and ≤ 2 px at 200 km/h: not ported (invisible at
+  this amount). The writer of +0xb1f0 was not found by displacement.
+- **Distortion and splatter**: `FUN_008e1510` clears the distortion target and draws a render list into it
+  (heat haze); `FUN_008e2cb0` draws the splatter overlay. Both are empty in clear free roam; not ported.
 
 ## Model LOD and draw distance (2026-10-10, ported in `crates/mostrusted/src/lod.rs`)
 

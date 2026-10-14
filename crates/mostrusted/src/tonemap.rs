@@ -7,15 +7,21 @@
 //! CameraExposure`) through the [`GameTonemap`] resource. Between the adaptation and the tonemap the game's
 //! bloom chain runs (`bloom.wgsl`): three downsampled RGBM levels, blurred and combined coarse to fine, added
 //! in the composite. `MW_NO_BLOOM=1` turns it off (the game's bloom-off path: B = (1, 1, 1, 0)).
+//!
+//! The composite writes the gamma-encoded frame to an 8-bit target; the final pass (the exe's `0x01017050`,
+//! the variant the original runs in free roam: depth of field + tint) then blends in the depth-of-field
+//! image (`MW_NO_DOF=1` off), applies the brightness / contrast of `ColourCubeScalesOffsets` (the sun-facing
+//! boost, `MW_NO_SUN_CONTRAST=1` off) and the colour cube (decomp.md "Post-processing").
 
 use bevy::asset::{embedded_asset, load_embedded_asset};
 use bevy::core_pipeline::FullscreenShader;
+use bevy::core_pipeline::prepass::ViewPrepassTextures;
 use bevy::core_pipeline::schedule::{Core3d, Core3dSystems};
 use bevy::core_pipeline::tonemapping::tonemapping;
 use bevy::prelude::*;
 use bevy::render::extract_resource::{ExtractResource, ExtractResourcePlugin};
 use bevy::render::render_asset::RenderAssets;
-use bevy::render::render_resource::binding_types::{sampler, texture_2d, texture_3d, uniform_buffer};
+use bevy::render::render_resource::binding_types::{sampler, texture_2d, texture_3d, texture_depth_2d, uniform_buffer};
 use bevy::render::render_resource::*;
 use bevy::render::renderer::{RenderContext, RenderDevice, RenderQueue, ViewQuery};
 use bevy::render::texture::{FallbackImage, GpuImage};
@@ -65,6 +71,44 @@ pub fn colour_cube_image(cube: &mw_formats::ColourCube) -> Image {
     image
 }
 
+/// The game's TintBlend (`FUN_008e0930`): a weighted sum of cubes (the kernels are not in the dump, so the
+/// rounding is ours). A missing cube stands for the base slot, the identity in free roam. Weights are used
+/// as given (the caller passes ones that sum to 1, as `FUN_008c9e40` makes them).
+pub fn blend_colour_cubes(cubes: &[(Option<mw_formats::ColourCube>, f32)]) -> Option<Image> {
+    let n = cubes.iter().find_map(|(c, _)| c.as_ref().map(|c| c.size))?;
+    let identity = |i: usize| (i * 255 / (n - 1).max(1)) as f32;
+    let mut sum = vec![[0.0f32; 3]; n * n * n];
+    for (cube, w) in cubes {
+        let cube = cube.as_ref().filter(|c| c.size == n);
+        for b in 0..n {
+            for g in 0..n {
+                for r in 0..n {
+                    let v = cube.map_or([identity(r), identity(g), identity(b)], |c| c.at(r, g, b).map(f32::from));
+                    let o = &mut sum[r + n * (g + n * b)];
+                    for k in 0..3 {
+                        o[k] += v[k] * w;
+                    }
+                }
+            }
+        }
+    }
+    let bgr = sum.iter().flat_map(|c| [2, 1, 0].map(|k| c[k].round().clamp(0.0, 255.0) as u8)).collect();
+    Some(colour_cube_image(&mw_formats::ColourCube { size: n, bgr }))
+}
+
+/// What the post chain needs of the view besides the environment: the key light (towards the sun) for the
+/// sun-facing grade boost. Updated every frame from the key light entity.
+#[derive(Resource, Clone, Default, ExtractResource)]
+pub struct PostView {
+    pub to_sun: Vec3,
+}
+
+fn update_post_view(mut view: ResMut<PostView>, key_light: Query<&GlobalTransform, With<crate::weather::KeyLight>>) {
+    if let Some(t) = key_light.iter().next() {
+        view.to_sun = -t.forward().as_vec3();
+    }
+}
+
 #[derive(ShaderType, Clone, Copy, Default)]
 struct TonemapUniform {
     camera: Vec4,
@@ -79,6 +123,12 @@ struct TonemapUniform {
     vignette_angle: Vec4,
     /// Bloom B = renderer slot 0x9d (`GenericVector4_B`): `BloomColour`.rgb, intensity in w (0 = off).
     bloom: Vec4,
+    /// The final pass: x = contrast c, y = brightness b (`ColourCubeScalesOffsets` = (c·15/16, b + 0.5 −
+    /// c/2 + 1/32)), z = 1 with depth of field.
+    grade: Vec4,
+    /// Depth of field: x = the camera's near plane (Bevy's reversed depth = near / view depth), y = the
+    /// circle of confusion at infinity x0, z = the focus distance (CoC = max(x0 (1 − focus / z), 0)).
+    dof: Vec4,
 }
 
 /// One bloom pass's constants (bloom.wgsl): x = `kColorAddWeight.z`, y = `.w`, z = the exposure bias.
@@ -90,11 +140,54 @@ struct BloomUniform {
 /// The lower bound `FUN_008e6f40` clamps the three level weights to (`DAT_00f9d474`, `.rdata`).
 const BLOOM_MIN_WEIGHT: f32 = 0.01;
 
-/// Bloom level sizes as fractions of the screen, finest first. Not traced (the targets are created outside
-/// the bloom code, `FUN_008eaaf0` receives them in a struct at +0x130…+0x148): a model decision. The first
-/// downsample's taps at ±1 source texel on both diagonals average a 4 × 4 block exactly when it divides by
-/// 4; the later ones then divide by 2.
-const BLOOM_DIVISORS: [u32; 3] = [4, 8, 16];
+/// Bloom level sizes. The original's levels are the renderer's targets 0x50, 0x51, 0x52 (`FUN_008eaaf0`
+/// passes R + 0xa8 + 0x140…0x148 to `FUN_008e6f40`), 320 × 176, 80 × 44 and 20 × 11 at 1920 × 1080 (live
+/// read of snap1, 2026-10-14): a sixth of the screen rounded down to 16 pixels, then quarters. How the size
+/// follows other resolutions was not traced (the creating code was not found): the 1/6, 16-pixel rounding
+/// and the quarters are a model decision that reproduces 1080p exactly. `MW_BLOOM_DIVISORS=4,8,16` gives
+/// the old fixed fractions for A/B.
+fn bloom_sizes((w, h): (u32, u32)) -> [(u32, u32); 3] {
+    if let Some(d) = std::env::var("MW_BLOOM_DIVISORS").ok().and_then(|v| {
+        let d: Vec<u32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+        (d.len() == 3 && d.iter().all(|&x| x > 0)).then(|| [d[0], d[1], d[2]])
+    }) {
+        return d.map(|d| ((w / d).max(1), (h / d).max(1)));
+    }
+    let first = (((w / 6) & !15).max(16), ((h / 6) & !15).max(16));
+    let quarter = |(w, h): (u32, u32)| ((w / 4).max(1), (h / 4).max(1));
+    [first, quarter(first), quarter(quarter(first))]
+}
+
+/// The camera's depth-of-field block (camera +0x130…+0x13c, copied to renderer +0xae10 by `FUN_008c9e40`
+/// when the camera's DOF mode +0x170 is 1 or 2, as in free roam): 73.448, focus 90 m, 102.83 (× 0.001 =
+/// the lens's focal length in metres). Read live (snap1 and all 20 `ref/live1` dumps); which data or code
+/// sets them was not found, so they are measured constants.
+const DOF_APERTURE: f32 = 73.448;
+const DOF_FOCUS: f32 = 90.0;
+const DOF_FOCAL: f32 = 102.83 * 0.001;
+
+/// The CoC at infinity, `FUN_008c9e40`: A / 2 × f / (B − f) (0.0420; live K = (12.602, −12.56) gives
+/// K.x + K.y = 0.042).
+fn dof_coc_infinity() -> f32 {
+    DOF_APERTURE * 0.5 * DOF_FOCAL / (DOF_FOCUS - DOF_FOCAL)
+}
+
+fn dof_enabled() -> bool {
+    std::env::var_os("MW_NO_DOF").is_none()
+}
+
+/// Contrast and brightness of the final pass (`FUN_008c9e40` → `FUN_008eae00` → `FUN_008e8c40`): the
+/// options' 50 % give c = 1, b = 0; the environment adds `contrast` / `brightness` × (1 − t) with t = (1 +
+/// forward · the flat to-sun heading) / 2, so the boost is full looking away from the sun and gone looking
+/// into it. The PostFX state's +0x1660 / +0x1664 terms (0 in free roam, live) are left out.
+fn sun_grade(s: &mw_assets::environment::CameraExposure, forward: Vec3, to_sun: Vec3) -> (f32, f32) {
+    if std::env::var_os("MW_NO_SUN_CONTRAST").is_some() {
+        return (1.0, 0.0);
+    }
+    let heading = Vec3::new(to_sun.x, 0.001, to_sun.z).normalize_or_zero();
+    let away = 1.0 - 0.5 * (1.0 + heading.dot(forward));
+    (1.0 + s.contrast * away, s.brightness * away)
+}
 
 /// `kColorAddWeight.z` / `.w` of the three add passes, finest level first (`FUN_008e6f40`, decomp.md
 /// "Level combine"): C3 = blur(L3); C2 = (b·blur(L2) + a·C3) / (a + b); C1 = (c·blur(L1) + (a + b)·C2) / Σ.
@@ -107,22 +200,25 @@ fn bloom_enabled() -> bool {
     std::env::var_os("MW_NO_BLOOM").is_none()
 }
 
-/// The vignette's falloff gain k, read live (renderer +0xa980.w = k, +0xa990.w = 1 − k, +0xa9b0.zw =
-/// `Scale` × k; constant over all 20 dumps of 2026-10-06 and with both PostFX states seen). Which code
-/// derives it (from `Sharpness` = 0.34?) was not found: a measured constant, not a keyframe field yet.
-const VIGNETTE_K: f32 = 1.8245;
+/// The vignette's falloff gain k = 1 + 500 (0.5 + 0.5 `Sharpness`)^16 (`FUN_008e8c40`: `pow` with the
+/// `.rdata` double 16 at 0x01021988 and the float 500 at 0x01021980): 1.82445 for the default keyframe's
+/// 0.34, the live 1.8245.
+fn vignette_k(sharpness: f32) -> f32 {
+    1.0 + 500.0 * (0.5 + 0.5 * sharpness).powi(16)
+}
 
-/// The vignette constants the original's pass reads, from the PostFX keyframe. The live renderer holds
-/// D = inner × s and A = (outer − inner) × s with s = 1.0025…1.0385 (drifting over the run, 2.81 during a
-/// state change); s is not derived yet and is taken as 1 here (a model decision, ≤ 4 % brightness).
-fn vignette_constants(v: &mw_assets::environment::Vignette) -> [Vec4; 4] {
+/// The vignette constants the original's pass reads, from the PostFX keyframe (`FUN_008e8c40`, the block at
+/// post object +0xc00 = renderer +0xa980): D = inner × s, A = (outer − inner) × s with s the final pass's
+/// contrast c (the live s = 1.0025…1.0385 is c, decomp.md "Post-processing"), k in their w.
+fn vignette_constants(v: &mw_assets::environment::Vignette, s: f32) -> [Vec4; 4] {
+    let k = vignette_k(v.sharpness);
     let inner = Vec3::from(v.inner);
     let a = Vec3::from(v.outer) - inner;
     [
-        a.extend(1.0 - VIGNETTE_K),
-        inner.extend(VIGNETTE_K),
-        Vec4::new(v.centre[0], v.centre[1], v.scale[0] * VIGNETTE_K, v.scale[1] * VIGNETTE_K),
-        // +0xa9a0.x (kVignetteAngle) read 0; no keyframe field is known to feed it.
+        (a * s).extend(1.0 - k),
+        (inner * s).extend(k),
+        Vec4::new(v.centre[0], v.centre[1], v.scale[0] * k, v.scale[1] * k),
+        // +0xc20.x (kVignetteAngle) = the Vignette block's second word, 0 in the default keyframe.
         Vec4::ZERO,
     ]
 }
@@ -137,8 +233,14 @@ impl Plugin for GameTonemapPlugin {
     fn build(&self, app: &mut App) {
         embedded_asset!(app, "tonemap.wgsl");
         embedded_asset!(app, "bloom.wgsl");
+        embedded_asset!(app, "post.wgsl");
         embedded_asset!(app, "flash_probe.wgsl");
-        app.add_plugins(ExtractResourcePlugin::<GameTonemap>::default()).add_systems(Last, update_time);
+        app.add_plugins((
+            ExtractResourcePlugin::<GameTonemap>::default(),
+            ExtractResourcePlugin::<PostView>::default(),
+        ))
+        .init_resource::<PostView>()
+        .add_systems(Last, (update_time, update_post_view));
         let Some(render_app) = app.get_sub_app_mut(RenderApp) else { return };
         render_app
             .init_resource::<TonemapBuffer>()
@@ -170,27 +272,31 @@ struct TonemapBuffer(UniformBuffer<TonemapUniform>);
 #[derive(Resource, Default)]
 struct BloomBuffers([UniformBuffer<BloomUniform>; 3]);
 
-/// Bloom render targets for one screen size: RGBM levels (Rgba8Unorm, as the game's encode), the horizontal
-/// blur and the combined result of each level (float, HDR game units). Finest first.
+/// Post render targets for one screen size: bloom RGBM levels (Rgba8Unorm, as the game's encode), the
+/// horizontal blur and the combined result of each level (float, HDR game units), finest first; the
+/// composite's gamma-encoded frame (8 bit) and the half-resolution depth-of-field image (the renderer's
+/// 960 × 540 targets 0x1f…0x21 at 1080p).
 struct BloomTargets {
     size: (u32, u32),
     levels: [TextureView; 3],
     blurred: [TextureView; 3],
     combined: [TextureView; 3],
+    composite: TextureView,
+    dof: TextureView,
 }
 
 impl BloomTargets {
     fn new(device: &RenderDevice, (w, h): (u32, u32)) -> Self {
-        let make = |label: &'static str, d: u32, format: TextureFormat| {
-            target_2d(device, label, ((w / d).max(1), (h / d).max(1)), format)
-        };
+        let sizes = bloom_sizes((w, h));
         let per_level =
-            |label: &'static str, format: TextureFormat| [0, 1, 2].map(|i| make(label, BLOOM_DIVISORS[i], format));
+            |label: &'static str, format: TextureFormat| [0, 1, 2].map(|i| target_2d(device, label, sizes[i], format));
         Self {
             size: (w, h),
             levels: per_level("bloom_level", TextureFormat::Rgba8Unorm),
             blurred: per_level("bloom_blur_h", TextureFormat::Rgba16Float),
             combined: per_level("bloom_combined", TextureFormat::Rgba16Float),
+            composite: target_2d(device, "game_composite", (w, h), TextureFormat::Rgba8Unorm),
+            dof: target_2d(device, "game_dof", ((w / 2).max(1), (h / 2).max(1)), TextureFormat::Rgba16Float),
         }
     }
 }
@@ -207,6 +313,12 @@ struct TonemapPipelines {
     meter: CachedRenderPipelineId,
     adapt: CachedRenderPipelineId,
     tonemap: CachedRenderPipelineId,
+    /// The final pass and the depth-of-field downsample (layout `post_layout`).
+    post_layout: BindGroupLayoutDescriptor,
+    dof_down: CachedRenderPipelineId,
+    final_pass: CachedRenderPipelineId,
+    /// Bound in place of the prepass depth when a view has none.
+    depth_fallback: TextureView,
     meter_view: TextureView,
     /// The `MW_FLASH_LOG` probe (flash_probe.rs): layout and pipeline.
     probe_layout: BindGroupLayoutDescriptor,
@@ -270,6 +382,21 @@ fn init_pipelines(
             ),
         ),
     );
+    let post_layout = BindGroupLayoutDescriptor::new(
+        "game_post_layout",
+        &BindGroupLayoutEntries::sequential(
+            ShaderStages::FRAGMENT,
+            (
+                uniform_buffer::<TonemapUniform>(false),
+                texture_2d(TextureSampleType::Float { filterable: true }),
+                sampler(SamplerBindingType::Filtering),
+                texture_2d(TextureSampleType::Float { filterable: true }),
+                texture_depth_2d(),
+                texture_3d(TextureSampleType::Float { filterable: true }),
+                sampler(SamplerBindingType::Filtering),
+            ),
+        ),
+    );
     let probe_layout = BindGroupLayoutDescriptor::new(
         "flash_probe_layout",
         &BindGroupLayoutEntries::sequential(
@@ -284,6 +411,7 @@ fn init_pipelines(
     let probe_shader = load_embedded_asset!(asset_server.as_ref(), "flash_probe.wgsl");
     let shader = load_embedded_asset!(asset_server.as_ref(), "tonemap.wgsl");
     let bloom_shader = load_embedded_asset!(asset_server.as_ref(), "bloom.wgsl");
+    let post_shader = load_embedded_asset!(asset_server.as_ref(), "post.wgsl");
     let queue = |label: &'static str,
                  layout: &BindGroupLayoutDescriptor,
                  shader: &Handle<Shader>,
@@ -321,7 +449,22 @@ fn init_pipelines(
         probe_layout,
         meter: pipeline("game_tonemap_meter", "meter", TextureFormat::R32Float),
         adapt: pipeline("game_tonemap_adapt", "adapt", TextureFormat::Rgba32Float),
-        tonemap: pipeline("game_tonemap", "tonemap", TextureFormat::Rgba16Float),
+        tonemap: pipeline("game_tonemap", "tonemap", TextureFormat::Rgba8Unorm),
+        dof_down: queue("game_dof_down", &post_layout, &post_shader, "dof_down", TextureFormat::Rgba16Float),
+        final_pass: queue("game_final", &post_layout, &post_shader, "final_pass", TextureFormat::Rgba16Float),
+        post_layout,
+        depth_fallback: device
+            .create_texture(&TextureDescriptor {
+                label: Some("game_post_depth_fallback"),
+                size: Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: TextureDimension::D2,
+                format: TextureFormat::Depth32Float,
+                usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&TextureViewDescriptor::default()),
         layout,
         sampler,
         meter_view: render_target(&device, "game_tonemap_meter", METER_SIZE, TextureFormat::R32Float),
@@ -334,6 +477,11 @@ fn init_pipelines(
 
 fn prepare_buffer(
     tonemap: Option<Res<GameTonemap>>,
+    post_view: Option<Res<PostView>>,
+    views: Query<
+        &bevy::render::view::ExtractedView,
+        (With<ViewTarget>, Without<crate::reflection::PlanarReflectionCamera>),
+    >,
     mut buffer: ResMut<TonemapBuffer>,
     mut bloom_buffers: ResMut<BloomBuffers>,
     device: Res<RenderDevice>,
@@ -341,9 +489,30 @@ fn prepare_buffer(
 ) {
     let Some(t) = tonemap else { return };
     let s = &t.settings;
+    // The main view: its forward for the sun-facing grade, its near plane for the depth of field (Bevy's
+    // reversed infinite projection: clip_from_view.w_axis.z = near).
+    let (forward, near) = views
+        .iter()
+        .next()
+        .map_or((Vec3::NEG_Z, 0.1), |v| (v.world_from_view.forward().as_vec3(), v.clip_from_view.w_axis.z));
+    let to_sun = post_view.map_or(Vec3::Y, |p| p.to_sun);
+    let (contrast, brightness) = sun_grade(s, forward, to_sun);
+    // MW_POST_LOG=1: the final pass's grade and the depth-of-field constants, about once a second.
+    if std::env::var_os("MW_POST_LOG").is_some() {
+        static FRAMES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        if FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 60 == 0 {
+            info!(
+                "post: contrast {contrast:.4} brightness {brightness:.4} (env {:.4} / {:.4}), near {near:.3}, \
+                 CoC at infinity {:.4}, focus {DOF_FOCUS} m",
+                s.contrast,
+                s.brightness,
+                dof_coc_infinity()
+            );
+        }
+    }
     let vignette_on = std::env::var_os("MW_NO_VIGNETTE").is_none() && t.post_fx.vignette.scale != [0.0; 2];
     let [vignette_a, vignette_d, vignette_centre_scale, vignette_angle] = if vignette_on {
-        vignette_constants(&t.post_fx.vignette)
+        vignette_constants(&t.post_fx.vignette, contrast)
     } else {
         // Weight 0 everywhere and factor 1: A = 0, D = 1.
         [Vec4::new(0.0, 0.0, 0.0, -1.0), Vec4::ONE, Vec4::new(0.5, 0.5, 0.0, 0.0), Vec4::ZERO]
@@ -364,6 +533,8 @@ fn prepare_buffer(
         exposure: Vec4::new(0.0, s.tolerance, s.speed, t.dt),
         setting: Vec4::new(s.target_high, s.target_low, s.luminance_high, s.luminance_low),
         flags: Vec4::new(f32::from(u8::from(t.reset)), f32::from(u8::from(t.colour_cube.is_some())), 0.0, 0.0),
+        grade: Vec4::new(contrast, brightness, f32::from(u8::from(dof_enabled())), 0.0),
+        dof: Vec4::new(near, dof_coc_infinity(), DOF_FOCUS, 0.0),
     });
     buffer.0.write_buffer(&device, &queue);
     for (b, [z, w]) in bloom_buffers.0.iter_mut().zip(bloom_add_weights(s.bloom_weights)) {
@@ -375,7 +546,7 @@ fn prepare_buffer(
 #[allow(clippy::too_many_arguments)]
 fn game_tonemap(
     // Not the planar reflection: it keeps HDR game units for the road shader to sample.
-    view: ViewQuery<&ViewTarget, Without<crate::reflection::PlanarReflectionCamera>>,
+    view: ViewQuery<(&ViewTarget, Option<&ViewPrepassTextures>), Without<crate::reflection::PlanarReflectionCamera>>,
     pipelines: Option<Res<TonemapPipelines>>,
     cache: Res<PipelineCache>,
     buffer: Res<TonemapBuffer>,
@@ -388,16 +559,20 @@ fn game_tonemap(
     flash_probe: Option<Res<crate::flash_probe::FlashProbe>>,
     mut ctx: RenderContext,
 ) {
-    let target = view.into_inner();
+    let (target, prepass) = view.into_inner();
     let Some(p) = pipelines else { return };
-    let (Some(meter), Some(adapt), Some(tonemap), Some(uniform)) = (
+    let (Some(meter), Some(adapt), Some(tonemap), Some(dof_down), Some(final_pass), Some(uniform)) = (
         cache.get_render_pipeline(p.meter),
         cache.get_render_pipeline(p.adapt),
         cache.get_render_pipeline(p.tonemap),
+        cache.get_render_pipeline(p.dof_down),
+        cache.get_render_pipeline(p.final_pass),
         buffer.0.binding(),
     ) else {
         return;
     };
+    let post_layout = cache.get_bind_group_layout(&p.post_layout);
+    let depth = prepass.and_then(|p| p.depth_view()).unwrap_or(&p.depth_fallback);
     let layout = cache.get_bind_group_layout(&p.layout);
     let bloom_layout = cache.get_bind_group_layout(&p.bloom_layout);
     let bloom_pipelines = (
@@ -503,7 +678,21 @@ fn game_tonemap(
         }
     }
     let post = target.post_process_write();
-    run(post.destination, tonemap, &bind(post.source, write));
+    // Composite (`GBufferComposite`): bloom, vignette, exposure and the curve into the 8-bit frame.
+    run(&bt.composite, tonemap, &bind(post.source, write));
+    // Final pass (`0x01017050`): depth of field from a half-resolution copy (`FUN_008e7530`), brightness /
+    // contrast and the colour cube.
+    let post_bind = |colour: &TextureView, dof: &TextureView| {
+        device.create_bind_group(
+            "game_post_bind_group",
+            &post_layout,
+            &BindGroupEntries::sequential((uniform.clone(), colour, &p.sampler, dof, depth, cube_view, cube_sampler)),
+        )
+    };
+    if dof_enabled() {
+        run(&bt.dof, dof_down, &post_bind(&bt.composite, &fallback.d2.texture_view));
+    }
+    run(post.destination, final_pass, &post_bind(&bt.composite, &bt.dof));
     // MW_FLASH_LOG: reduce the HDR and the tonemapped frame onto the probe grid (flash_probe.rs).
     if let (Some(probe), Some(pipeline)) = (flash_probe, cache.get_render_pipeline(p.probe))
         && let Some(gpu) = images.get(&probe.0)
@@ -514,5 +703,41 @@ fn game_tonemap(
             &BindGroupEntries::sequential((post.source, post.destination, write)),
         );
         run(&gpu.texture_view, pipeline, &group);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bloom_levels_match_the_originals_targets_at_1080p() {
+        assert_eq!(bloom_sizes((1920, 1080)), [(320, 176), (80, 44), (20, 11)]);
+    }
+
+    #[test]
+    fn vignette_gain_from_sharpness() {
+        // The live renderer held k = 1.8245 with the default keyframe's Sharpness 0.34.
+        assert!((vignette_k(0.34) - 1.8245).abs() < 1e-3);
+    }
+
+    #[test]
+    fn dof_coc_at_infinity_matches_the_live_constants() {
+        // K = (12.602, -12.56): K.x + K.y is the CoC at depth 1.
+        assert!((dof_coc_infinity() - 0.042).abs() < 5e-4);
+    }
+
+    #[test]
+    fn cube_blend_weights_entries() {
+        let n = 2;
+        let a = mw_formats::ColourCube { size: n, bgr: vec![0; n * n * n * 3] };
+        let b = mw_formats::ColourCube { size: n, bgr: vec![200; n * n * n * 3] };
+        let img = blend_colour_cubes(&[(Some(a), 0.75), (Some(b), 0.25)]).expect("cube");
+        assert!(img.data.as_ref().expect("data").chunks(4).all(|p| p[..3] == [50, 50, 50]));
+        // A missing cube is the identity: the last entry is white.
+        let zero = mw_formats::ColourCube { size: n, bgr: vec![0; n * n * n * 3] };
+        let img = blend_colour_cubes(&[(Some(zero), 0.5), (None, 0.5)]).expect("cube");
+        let last = img.data.as_ref().expect("data").chunks(4).last().expect("texel").to_vec();
+        assert_eq!(&last[..3], &[128, 128, 128]);
     }
 }

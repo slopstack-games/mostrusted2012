@@ -126,6 +126,13 @@ pub struct CameraExposure {
     /// live 0.009) for the finest level, then `2b7c4634` and `e59ff4ec` (1, 1 by day). Which of the last two is
     /// word 10 or 11 is not traced (equal by day).
     pub bloom_weights: [f32; 3],
+    /// `d1fd3a11` / `e49dc52c` (0.015 / 0.03 at noon): the final pass's brightness and contrast boost when
+    /// looking away from the sun. `FUN_008c9e40` adds `value × (1 − t)` (t = (1 + the camera's forward ·
+    /// the flat to-sun heading) / 2) to brightness (options − 0.5) and contrast (options + 0.5), which become
+    /// `ColourCubeScalesOffsets` and the vignette's scale (decomp.md "Post-processing", live 2026-10-14:
+    /// renderer +0x2cd0 / +0x2cd4 hold the time-blended pair, the final constants match to 4 digits).
+    pub brightness: f32,
+    pub contrast: f32,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -142,6 +149,11 @@ pub struct EnvironmentKeyframe {
     pub clouds: Clouds,
     pub fog: Fog,
     pub colour_cube: Option<ResourceId>,
+    /// The next keyframe's `ColourCube` and its weight when blended between two keyframes: the game's
+    /// TintBlend gives the two keyframes' cubes the timeline weights (1 − t, t) (renderer +0xac04 / +0xac08
+    /// with weights +0xac20 / +0xac24, live 2026-10-14; decomp.md "Post-processing"). `colour_cube` is then
+    /// the earlier keyframe's.
+    pub colour_cube_blend: Option<(Option<ResourceId>, f32)>,
     pub exposure: CameraExposure,
     /// The keyframe's bad-weather twin. 154 of the 175 keyframes name one of only 7 Alternates, one per
     /// time-of-day band (night, dawn ×2, morning, noon, evening, plus one for the front-end timeline
@@ -168,7 +180,8 @@ pub struct Vignette {
     pub inner: [f32; 3],
     /// `5f000214`: colour where the weight is 1.
     pub outer: [f32; 3],
-    /// `Sharpness` (0.34): not matched to the live k = 1.8245 yet.
+    /// `Sharpness` (0.34): the falloff gain k = 1 + 500 (0.5 + 0.5 Sharpness)^16 = 1.8245 (`FUN_008e8c40`,
+    /// the live k).
     pub sharpness: f32,
 }
 
@@ -337,6 +350,8 @@ impl EnvironmentKeyframe {
                 bloom_colour: rgb(c, 0x96a4b35b),
                 bloom_intensity: float(c, 0x99436e68),
                 bloom_weights: [float(c, 0x9dd29928), float(c, 0x2b7c4634), float(c, 0xe59ff4ec)],
+                brightness: float(c, 0xd1fd3a11),
+                contrast: float(c, 0xe49dc52c),
             };
         }
         if let Some(sky) = sub(o, SKY) {
@@ -524,7 +539,8 @@ impl EnvironmentKeyframe {
                 scattering_phase: mix(fa.scattering_phase, fb.scattering_phase, t),
                 scattering_strength: mix(fa.scattering_strength, fb.scattering_strength, t),
             },
-            colour_cube: near.colour_cube,
+            colour_cube: self.colour_cube,
+            colour_cube_blend: (self.colour_cube != other.colour_cube && t > 0.0).then_some((other.colour_cube, t)),
             exposure: CameraExposure {
                 min: mix(ea.min, eb.min, t),
                 max: mix(ea.max, eb.max, t),
@@ -538,6 +554,8 @@ impl EnvironmentKeyframe {
                 bloom_colour: mix3(ea.bloom_colour, eb.bloom_colour, t),
                 bloom_intensity: mix(ea.bloom_intensity, eb.bloom_intensity, t),
                 bloom_weights: mix3(ea.bloom_weights, eb.bloom_weights, t),
+                brightness: mix(ea.brightness, eb.brightness, t),
+                contrast: mix(ea.contrast, eb.contrast, t),
             },
             alternate: near.alternate,
             weather: Weather {

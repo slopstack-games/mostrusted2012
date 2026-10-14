@@ -130,11 +130,18 @@ fn bake_inner(store: &AssetStore, key: EnvironmentKey) -> Option<Baked> {
     }
     .normalize();
     let s = sky::Sky::new(store, &keyframe, to_sun);
-    let colour_cube = keyframe
-        .colour_cube
-        .and_then(|id| store.load(id).ok())
-        .and_then(|res| mw_formats::ColourCube::parse(&res).ok())
-        .map(|c| tonemap::colour_cube_image(&c));
+    // TintBlend (`FUN_008e0930`): the two keyframes' cubes with the timeline weights; a keyframe without one
+    // falls back to the base slot (the identity cube in free roam).
+    let load_cube = |id: Option<ResourceId>| {
+        id.and_then(|id| store.load(id).ok()).and_then(|res| mw_formats::ColourCube::parse(&res).ok())
+    };
+    // `MW_NO_CUBE_BLEND=1`: the earlier keyframe's cube alone (A/B).
+    let colour_cube = match keyframe.colour_cube_blend.filter(|_| std::env::var_os("MW_NO_CUBE_BLEND").is_none()) {
+        Some((next, t)) if keyframe.colour_cube.is_some() || next.is_some() => {
+            tonemap::blend_colour_cubes(&[(load_cube(keyframe.colour_cube), 1.0 - t), (load_cube(next), t)])
+        }
+        _ => load_cube(keyframe.colour_cube).map(|c| tonemap::colour_cube_image(&c)),
+    };
     Some(Baked {
         key,
         to_sun,
