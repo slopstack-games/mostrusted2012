@@ -458,7 +458,9 @@ code side (game modes, HSMs, AI) next to the data. Roughly in dependency order:
   SETTINGS. 2026-10-10: **the map screen** 899991 from the pause menu's MAP (`map_screen.rs`: the city image,
   the car's and the Most Wanted events, the event card, SET DESTINATION / START RACE, the original's turn and
   scale measured from a capture) and **the event-loading card** (`event_card.rs`, transition 1014321) before the
-  race and its intro. Missing: car select / customise, online pages, the intro event, the Most Wanted list panel,
+  race and its intro. 2026-10-14: menu input as the original reads it (`input::MenuInput`: the Autolog menu
+  actions with their d-pad twins and auto-repeat) and the map's controls ported from `LiveMapManager` (flick /
+  free cursor / snap / glide, `MainMapConfig`), pad and keyboard. Missing: car select / customise, online pages, the intro event, the Most Wanted list panel,
   completion state. Open: those, the car menu in the game font, widget
   adapters (which layouts show when), HUD polish (faint speed digits, odometer ".0 KM"), save data.
 - Movies: `UI/MOVIES/*.VP6` (EA `MVhd` container, VP6). Decode through ffmpeg or skip.

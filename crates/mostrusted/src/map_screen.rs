@@ -22,8 +22,16 @@
 //! (research log 2026-10-10). The game draws the map with a 3D camera (`UIMapCameraConfig`: look-at
 //! `Widget.MapManager.SelectedPosition`, distance 7000, field of view and tilt from bindings); here it is flat.
 //!
-//! Model decisions: the camera is orthographic with the measured scale and turn and eases to the selection
-//! (rate ours); arrows pick the nearest item in that direction (the `LiveMapManager` script was not decoded);
+//! Controls, as the original's `LiveMapManager` code runs them (decomp.md "Menu input and the map screen's
+//! controls", tuning from `MainMapConfig`): the arrows, the left stick and the d-pad push a cursor (the camera's
+//! look-at); a short push (≤ 0.4 s) flicks to the next item that way, a longer one moves the cursor freely at
+//! 1500 m/s after 0.1 s and snaps to the nearest item on release; the cursor then glides onto the selection
+//! (0.8 s). Accept opens an event's options, cancel goes back from them; cancel on the map and start (Esc, pad
+//! Start) return to the game (`TO_GAME`). No zoom or pan on PC (the zoom states are the Vita's touch zoom).
+//!
+//! Model decisions: the camera is orthographic with the measured scale and turn (cursor moves along the screen's
+//! axes, no foreshortening); the tabs (Page Up / Down, LB / RB) and filters (Z / A, LT / RT) are inert; a failed
+//! left flick snaps instead of opening the Most Wanted list;
 //! no completion state (every event shows green); the Most Wanted list panel, the player's header (name,
 //! points), the speedwall entries, the map's road glow (layouts 1222163 / 1222558) and the tabs' icons are left
 //! out; SET DESTINATION is inactive, as are events whose game mode we do not run (speed runs, ambushes).
@@ -70,8 +78,101 @@ const MAP_WORLD: [f32; 4] = [-4000.0, -4581.0, 7990.0, 9987.0];
 const ANCHOR: Vec2 = Vec2::new(836.0, 360.0);
 const TURN_DEG: f32 = 94.4;
 const METRES_PER_PX: f32 = 6.29;
-/// Camera easing towards the selection (1/s; ours).
-const EASE: f32 = 8.0;
+/// The main map's navigation tuning (`MainMapConfig` 1135320, `UI/UICONFIG.BNDL`), read by the
+/// `LiveMapManager` code (research log 2026-10-14). Field offsets are the code's.
+const MAIN_MAP_CONFIG: u64 = 0x0100_0000_0011_52d8;
+
+/// `MainMapConfig` values the navigation uses; `Default` holds the shipped data (used if the record does not load).
+#[derive(Clone, Copy, Debug)]
+struct MapConfig {
+    /// +0x10 / +0x20: the cursor's world box (max / min x, z).
+    cursor_max: Vec2,
+    cursor_min: Vec2,
+    /// +0x58: snap radius on release (screen heights).
+    snap_radius: f32,
+    /// +0x5c: the cursor's glide to the selection (s).
+    glide_time: f32,
+    /// +0x60: input dead zone (length of (right − left, up − down)).
+    dead_zone: f32,
+    /// +0x64 / +0x68: flick cones (degrees), the narrow one first.
+    flick_cone: [f32; 2],
+    /// +0x6c: a release within this hold time (s) is a flick.
+    flick_time: f32,
+    /// +0x70: a flick needs at least this input length.
+    flick_min: f32,
+    /// +0x74: cursor speed (m/s at full input).
+    speed: f32,
+    /// +0x78: hold this long (s) before the cursor moves.
+    move_delay: f32,
+    /// +0x8c, +0x90, +0x94: how far off screen a flick target may be (screen widths / heights).
+    flick_margin_y: f32,
+    flick_margin_x: f32,
+    flick_margin_y2: f32,
+}
+
+impl Default for MapConfig {
+    fn default() -> Self {
+        Self {
+            cursor_max: Vec2::new(2500.0, 5040.0),
+            cursor_min: Vec2::new(-3500.0, -4319.0),
+            snap_radius: 0.4,
+            glide_time: 0.8,
+            dead_zone: 0.4,
+            flick_cone: [30.0, 45.0],
+            flick_time: 0.4,
+            flick_min: 0.1,
+            speed: 1500.0,
+            move_delay: 0.1,
+            flick_margin_y: 1.0,
+            flick_margin_x: 1.0,
+            flick_margin_y2: 0.0,
+        }
+    }
+}
+
+impl MapConfig {
+    fn load(store: &mw_assets::AssetStore) -> Self {
+        use mw_formats::genesys::Value;
+        let mut c = Self::default();
+        let obj = match store.genesys_object(ResourceId(MAIN_MAP_CONFIG)) {
+            Ok(o) => o,
+            Err(e) => {
+                warn!("map screen: MainMapConfig: {e}; using the shipped values");
+                return c;
+            }
+        };
+        let f = |h: u32| match obj.get(h) {
+            Some(Value::Float(v)) => Some(*v),
+            _ => None,
+        };
+        let v = |h: u32| match obj.get(h) {
+            Some(Value::Vector(v)) => Some(Vec2::new(v[0], v[2])),
+            _ => None,
+        };
+        let set = |dst: &mut f32, h: u32| {
+            if let Some(x) = f(h) {
+                *dst = x;
+            }
+        };
+        if let (Some(max), Some(min)) = (v(0xf0fc_3707), v(0x104f_8c6f)) {
+            c.cursor_max = max;
+            c.cursor_min = min;
+        }
+        set(&mut c.snap_radius, 0x33aa_95af);
+        set(&mut c.glide_time, 0xd7ea_64ad);
+        set(&mut c.dead_zone, 0xa8ab_14f7);
+        set(&mut c.flick_cone[0], 0x20df_81d4);
+        set(&mut c.flick_cone[1], 0xd1e7_9229);
+        set(&mut c.flick_time, 0xba1a_0da6);
+        set(&mut c.flick_min, 0x2e0e_62f3);
+        set(&mut c.speed, 0x528e_1731);
+        set(&mut c.move_delay, 0xd1a5_d10d);
+        set(&mut c.flick_margin_y, 0x3fa7_9c23);
+        set(&mut c.flick_margin_x, 0x3dfe_660a);
+        set(&mut c.flick_margin_y2, 0x3c5e_6456);
+        c
+    }
+}
 
 pub struct MapScreenPlugin {
     pub enabled: bool,
@@ -125,6 +226,31 @@ struct OptionItem {
     label: String,
 }
 
+/// What the map has selected (`LiveMapManager` +0x2610: one of its items, or none while the cursor is free).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Sel {
+    /// The local player's item (`MapItemType` 0, `LocalPlayer`).
+    Player,
+    /// An entry of `shown`.
+    Event(usize),
+}
+
+/// The cursor's navigation state (`LiveMapManager` fields, research log 2026-10-14).
+#[derive(Default)]
+struct Nav {
+    /// +0x2660: the cursor when the input left the dead zone (a flick starts from here).
+    start: Vec2,
+    /// +0x26a4 / +0x26a8 / +0x26ac: last frame's input (right − left, up − down) and its squared length.
+    prev: Vec2,
+    prev_len2: f32,
+    /// +0x26b0: time the input has been out of the dead zone.
+    held: f32,
+    /// +0x26b4: the glide's clock.
+    glide: f32,
+    /// +0x26d6: the cursor was moved by hand and has not snapped to an item since.
+    moving: bool,
+}
+
 #[derive(Resource, Default)]
 pub struct MapScreen {
     pub enabled: bool,
@@ -134,13 +260,14 @@ pub struct MapScreen {
     items: Vec<MapItem>,
     /// The events shown (indices into `items`) for the current car.
     shown: Vec<usize>,
-    /// Selected entry of `shown`; `None` = the player.
-    selected: Option<usize>,
+    selected: Option<Sel>,
     /// The options list is open, with this row selected.
     options: Option<usize>,
     option_items: Vec<OptionItem>,
-    /// Camera look-at (world x, z).
-    centre: Vec2,
+    /// The cursor (world x, z; +0x2630): `Widget.MapManager.SelectedPosition`, the map camera's look-at.
+    cursor: Vec2,
+    nav: Nav,
+    config: MapConfig,
     player: Vec2,
     strings: HashMap<&'static str, String>,
     job: Option<Arc<Mutex<Option<Loaded>>>>,
@@ -163,8 +290,9 @@ impl MapScreen {
             return;
         }
         self.open = true;
-        self.selected = None;
+        self.selected = Some(Sel::Player);
         self.options = None;
+        self.nav = Nav::default();
         self.refresh = true;
         self.unpause = unpause;
         time.pause();
@@ -186,16 +314,28 @@ impl MapScreen {
     }
 
     fn selected_item(&self) -> Option<&MapItem> {
-        self.selected.and_then(|s| self.shown.get(s)).and_then(|&i| self.items.get(i))
+        match self.selected {
+            Some(Sel::Event(s)) => self.shown.get(s).and_then(|&i| self.items.get(i)),
+            _ => None,
+        }
     }
 
-    /// The selection's world position (the player when nothing is selected).
-    fn target(&self) -> Vec2 {
-        self.selected_item().map_or(self.player, |i| i.pos)
+    fn sel_pos(&self, sel: Sel) -> Vec2 {
+        match sel {
+            Sel::Player => self.player,
+            Sel::Event(s) => self.items[self.shown[s]].pos,
+        }
+    }
+
+    /// Every selectable item: the player and the events shown.
+    fn candidates(&self) -> impl Iterator<Item = (Sel, Vec2)> + '_ {
+        std::iter::once((Sel::Player, self.player))
+            .chain(self.shown.iter().enumerate().map(|(s, &i)| (Sel::Event(s), self.items[i].pos)))
     }
 }
 
 struct Loaded {
+    config: MapConfig,
     items: Vec<MapItem>,
     options: Vec<OptionItem>,
     strings: HashMap<&'static str, String>,
@@ -229,6 +369,7 @@ fn start_load(mut map: ResMut<MapScreen>, game: Res<crate::Game>) {
             let Ok(lang) = store.language(mw_assets::DEFAULT_LANGUAGE) else { return };
             let text = |id: u32| lang.get(id).unwrap_or_default().to_string();
             let items = load_items(&store, &lang);
+            let config = MapConfig::load(&store);
             let options = store
                 .menu_items(MAP_SCREEN, EVENT_OPTIONS)
                 .map_err(|e| warn!("map screen: event options: {e}"))
@@ -281,7 +422,7 @@ fn start_load(mut map: ResMut<MapScreen>, game: Res<crate::Game>) {
             images.dedup_by_key(|(id, _)| *id);
             let fonts = scene.fonts.iter().map(|(&n, f)| (n, f.clone())).collect();
             info!("map screen: {} events, {} textures in {:.0?}", items.len(), images.len(), t.elapsed());
-            *out.lock().unwrap() = Some(Loaded { items, options, strings, scene, map_texture, images, fonts });
+            *out.lock().unwrap() = Some(Loaded { config, items, options, strings, scene, map_texture, images, fonts });
         })
         .expect("spawn map-screen loader");
     map.job = Some(job);
@@ -350,6 +491,10 @@ fn poll_load(
     let root = commands.spawn((node, Pickable::IGNORE, GlobalZIndex(16))).id();
     let slots = loaded.scene.layouts.iter().enumerate().map(|(i, l)| (l.layout.id, i)).collect();
     map.items = loaded.items;
+    map.config = loaded.config;
+    if std::env::var_os("MW_MAP_LOG").is_some() {
+        info!("map screen: {:?}", map.config);
+    }
     map.option_items = loaded.options;
     map.strings = loaded.strings;
     map.look = Some(Look {
@@ -388,7 +533,7 @@ fn open_at_start(
         map.refresh = false;
         let p = xf.translation();
         map.player = Vec2::new(p.x, p.z);
-        map.centre = map.player;
+        map.cursor = map.player;
         let vehicle = garage.current.as_ref().and_then(|c| crate::frontend::vehicle_id(&c.bundle));
         map.shown = shown_items(&map.items, vehicle);
     }
@@ -404,7 +549,7 @@ fn open_at_start(
     let unpause = !time.is_paused();
     map.open(&mut time, unpause);
     map.refresh = false;
-    map.centre = map.player;
+    map.cursor = map.player;
     if let Some(id) = map.select {
         // A selected event that the car's list does not hold is shown too (headless checks).
         let k = match map.items.iter().position(|i| i.setup.event.id == id) {
@@ -418,10 +563,10 @@ fn open_at_start(
             map.shown.push(k);
             map.shown.len() - 1
         });
-        map.selected = Some(s);
-        map.centre = map.items[k].pos;
+        map.selected = Some(Sel::Event(s));
+        map.cursor = map.items[k].pos;
     }
-    if map.options_at_start && map.selected.is_some() {
+    if map.options_at_start && map.selected_item().is_some() {
         map.options = Some(0);
     }
     if map.start_at_start
@@ -432,69 +577,144 @@ fn open_at_start(
     }
 }
 
-/// Screen position (reference pixels) of a world point with the camera at `centre`.
+/// Screen position (reference pixels) of a world point with the camera looking at `centre`.
 fn to_screen(world: Vec2, centre: Vec2) -> Vec2 {
     let d = (world - centre) / METRES_PER_PX;
     let (s, c) = TURN_DEG.to_radians().sin_cos();
     ANCHOR + Vec2::new(c * d.x - s * d.y, s * d.x + c * d.y)
 }
 
-/// The shown item nearest to the selection in a screen direction (within ±60°), for the arrows.
-fn step_selection(map: &MapScreen, dir: Vec2) -> Option<Option<usize>> {
-    let from = to_screen(map.target(), map.centre);
-    let mut best: Option<(f32, Option<usize>)> = None;
-    let candidates = map
-        .shown
-        .iter()
-        .enumerate()
-        .map(|(s, &i)| (Some(s), map.items[i].pos))
-        .chain(std::iter::once((None, map.player)));
-    for (s, pos) in candidates {
-        if s == map.selected {
-            continue;
-        }
-        let d = to_screen(pos, map.centre) - from;
-        let along = d.dot(dir);
-        if along <= 1.0 || along < d.length() * 0.5 {
-            continue;
-        }
-        // Prefer close items near the direction.
-        let score = d.length() * (2.0 - along / d.length());
-        if best.is_none_or(|(b, _)| score < b) {
-            best = Some((score, s));
+/// World direction of a screen offset (reference pixels): the inverse of `to_screen`'s turn and scale.
+fn screen_to_world(d: Vec2) -> Vec2 {
+    let (s, c) = TURN_DEG.to_radians().sin_cos();
+    Vec2::new(c * d.x + s * d.y, -s * d.x + c * d.y) * METRES_PER_PX
+}
+
+/// The game's projected screen position (`FUN_00803fc0`: x right and y up, 0..1 across the frame).
+fn projected(world: Vec2, centre: Vec2) -> Vec2 {
+    let p = to_screen(world, centre);
+    Vec2::new(p.x / 1280.0, 1.0 - p.y / 720.0)
+}
+
+/// The frame's width over its height (the view's aspect, view +0x2f3c8).
+const ASPECT: f32 = 1280.0 / 720.0;
+
+/// The ease the cursor glides with (`FUN_00630980`): linear with slope 1.25 between 0.2 and 0.8 of the way,
+/// quadratic ends, symmetric about (0.5, 0.5).
+fn glide_ease(x: f32) -> f32 {
+    if x < 0.5 {
+        return 1.0 - glide_ease(1.0 - x);
+    }
+    if x > 0.8 { 0.875 + 0.625 * (6.25 * (1.0 - x) + 1.0) * (x - 0.8) } else { 1.25 * (x - 0.2) + 0.125 }
+}
+
+/// On release: the item nearest the cursor on screen within the snap radius (`FUN_00813e60`).
+fn snap(map: &MapScreen) -> Option<Sel> {
+    let c = projected(map.cursor, map.cursor);
+    let r2 = map.config.snap_radius * map.config.snap_radius;
+    map.candidates()
+        .map(|(sel, pos)| {
+            let p = projected(pos, map.cursor);
+            (sel, (ASPECT * (c.x - p.x)).powi(2) + (c.y - p.y).powi(2))
+        })
+        .filter(|&(_, d2)| d2 <= r2)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(sel, _)| sel)
+}
+
+/// A flick (a short push): the item in the input's direction from where the push started, within the 30° cone,
+/// else the 45° one, on or near the screen; of those the nearest in the world (`FUN_00814f60`).
+fn flick(map: &MapScreen, from: Vec2, dir: Vec2) -> Option<Sel> {
+    let c = &map.config;
+    let p0 = projected(from, map.cursor);
+    let d = dir.normalize_or_zero();
+    let in_window = |p: Vec2| {
+        let my = c.flick_margin_y2 + c.flick_margin_y;
+        (-c.flick_margin_x..=c.flick_margin_x + 1.0).contains(&p.x) && (-my..=my + 1.0).contains(&p.y)
+    };
+    for cone in c.flick_cone {
+        let cos = cone.to_radians().cos();
+        let best = map
+            .candidates()
+            .filter(|&(sel, _)| Some(sel) != map.selected)
+            .filter(|&(_, pos)| {
+                let p = projected(pos, map.cursor);
+                in_window(p) && Vec2::new(ASPECT * (p.x - p0.x), p.y - p0.y).normalize_or_zero().dot(d) > cos
+            })
+            .min_by(|a, b| a.1.distance_squared(from).total_cmp(&b.1.distance_squared(from)));
+        if let Some((sel, _)) = best {
+            return Some(sel);
         }
     }
-    best.map(|b| b.1)
+    None
+}
+
+/// One frame of the map controls (`FUN_008170d0` with the `OnMenuLeft` / `Right` / `Up` / `Down` values of
+/// `FUN_00803ce0`, then the glide `FUN_00807a60`). `input` = (right − left, up − down).
+fn nav_update(map: &mut MapScreen, input: Vec2, dt: f32) {
+    let c = map.config;
+    let dz2 = c.dead_zone * c.dead_zone;
+    let len2 = input.length_squared();
+    if len2 <= dz2 {
+        if dz2 < map.nav.prev_len2 {
+            // Released: a short push flicks to the next item that way, anything else snaps to the nearest.
+            let is_flick = map.nav.prev_len2 > c.flick_min * c.flick_min && map.nav.held <= c.flick_time;
+            let picked = is_flick.then(|| flick(map, map.nav.start, map.nav.prev)).flatten().or_else(|| snap(map));
+            // A flick left with nothing there opens the Most Wanted list (`TO_MWL`; that panel is not built).
+            if let Some(sel) = picked {
+                map.selected = Some(sel);
+                map.nav.glide = 0.0;
+                map.nav.moving = false;
+            }
+        }
+        map.nav.held = 0.0;
+    } else {
+        if map.nav.prev_len2 <= dz2 {
+            map.nav.start = map.cursor;
+        }
+        map.nav.held += dt;
+        if map.nav.held > c.move_delay {
+            // Screen direction (x right, y up) at `speed` m/s per unit of input, kept in the cursor's box.
+            let step = screen_to_world(Vec2::new(input.x, -input.y)) / METRES_PER_PX * c.speed * dt;
+            map.cursor = (map.cursor + step).clamp(c.cursor_min, c.cursor_max);
+            map.selected = None;
+            map.nav.moving = true;
+        }
+    }
+    map.nav.prev = input;
+    map.nav.prev_len2 = len2;
+    // The glide onto the selection.
+    if !map.nav.moving
+        && let Some(sel) = map.selected
+    {
+        let target = map.sel_pos(sel);
+        map.nav.glide += dt;
+        if map.nav.glide < c.glide_time {
+            map.cursor += glide_ease(map.nav.glide / c.glide_time) * (target - map.cursor);
+        } else {
+            map.cursor = target;
+            map.nav.glide = c.glide_time;
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn navigate(
     mut map: ResMut<MapScreen>,
-    keys: Res<ButtonInput<KeyCode>>,
-    pads: Query<&Gamepad>,
+    menu: Res<crate::input::MenuInput>,
     mut time: ResMut<Time<Virtual>>,
     real: Res<Time<Real>>,
     mut play: MessageWriter<crate::event_card::PlayEvent>,
-    mut pause: ResMut<crate::pause::PauseMenu>,
 ) {
+    use crate::input::MenuAction as A;
     map.just_closed = false;
     if !map.open {
         return;
     }
     let dt = real.delta_secs().min(0.1);
-    let target = map.target();
-    let k = 1.0 - (-EASE * dt).exp();
-    map.centre = map.centre.lerp(target, k);
-    let pad = |b: GamepadButton| pads.iter().any(|p| p.just_pressed(b));
-    let up = keys.just_pressed(KeyCode::ArrowUp) || pad(GamepadButton::DPadUp);
-    let down = keys.just_pressed(KeyCode::ArrowDown) || pad(GamepadButton::DPadDown);
-    let left = keys.just_pressed(KeyCode::ArrowLeft) || pad(GamepadButton::DPadLeft);
-    let right = keys.just_pressed(KeyCode::ArrowRight) || pad(GamepadButton::DPadRight);
-    let accept =
-        keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::NumpadEnter) || pad(GamepadButton::South);
-    let back = keys.just_pressed(KeyCode::Backspace) || pad(GamepadButton::East);
-    // DRIVE (Esc / pad Start): back to the game.
-    let drive = keys.just_pressed(KeyCode::Escape) || pad(GamepadButton::Start);
+    // The navigation tabs' `Drive` (start) and the map group's `Back_MapScreen` (cancel) both exit `TO_GAME`;
+    // in the options group cancel goes `BACK` to the map (899991's widget groups 1607001, 899993, 1222205).
+    let drive = menu.pressed(A::Start) || (map.options.is_none() && menu.pressed(A::Cancel));
     if drive {
         if map.close() {
             time.unpause();
@@ -503,13 +723,14 @@ fn navigate(
     }
     if let Some(row) = map.options {
         let n = map.option_items.len().max(1);
-        if back {
+        // `SubMenuUp` / `Down` (repeating) → `OnPrevious` / `OnNext`, bounded by `CanSelectPrevious` / `Next`.
+        if menu.pressed(A::Cancel) {
             map.options = None;
-        } else if up {
-            map.options = Some((row + n - 1) % n);
-        } else if down {
-            map.options = Some((row + 1) % n);
-        } else if accept {
+        } else if menu.fired(A::Up) {
+            map.options = Some(row.saturating_sub(1));
+        } else if menu.fired(A::Down) {
+            map.options = Some((row + 1).min(n - 1));
+        } else if menu.pressed(A::Accept) {
             let action = map.option_items.get(row).map(|o| o.action.clone()).unwrap_or_default();
             let playable = map.selected_item().is_some_and(|i| i.playable);
             if action.ends_with(":PLAY_EVENT") && playable {
@@ -522,20 +743,23 @@ fn navigate(
                 }
             }
         }
+        // `MapControls` is inactive: its analogue actions read nothing.
+        nav_update(&mut map, Vec2::ZERO, dt);
         return;
     }
-    if back {
-        // Back to the pause menu ("NAV_BACK").
-        let unpause = map.close();
-        pause.reopen = Some(unpause);
-        return;
+    // `MainMapNav_*` (analogue, every frame): menu_left / right / up / down (arrows, left stick, d-pad).
+    let input = Vec2::new(menu.value(A::Right) - menu.value(A::Left), menu.value(A::Up) - menu.value(A::Down));
+    let before = (map.selected, map.nav.moving);
+    nav_update(&mut map, input, dt);
+    if std::env::var_os("MW_MAP_LOG").is_some() && before != (map.selected, map.nav.moving) {
+        let name = map.selected_item().map(|i| i.setup.name.clone());
+        info!(
+            "map: {:?} {:?} moving {} cursor ({:.0}, {:.0})",
+            map.selected, name, map.nav.moving, map.cursor.x, map.cursor.y
+        );
     }
-    for (pressed, dir) in [(up, Vec2::NEG_Y), (down, Vec2::Y), (left, Vec2::NEG_X), (right, Vec2::X)] {
-        if pressed && let Some(next) = step_selection(&map, dir) {
-            map.selected = next;
-        }
-    }
-    if accept && map.selected.is_some() {
+    // `Options` (accept) → `TO_OPTIONS`; ours: only events have options.
+    if menu.pressed(A::Accept) && map.selected_item().is_some() {
         map.options = Some(0);
     }
 }
@@ -696,7 +920,7 @@ fn draw(
         // The city image, turned and scaled about the camera.
         if let Some(tex) = look.map_texture {
             let [x0, z0, w, h] = MAP_WORLD;
-            let centre = to_px(to_screen(Vec2::new(x0 + w * 0.5, z0 + h * 0.5), m.centre));
+            let centre = to_px(to_screen(Vec2::new(x0 + w * 0.5, z0 + h * 0.5), m.cursor));
             let size = Vec2::new(w, h) / METRES_PER_PX * k;
             quads.push(Quad {
                 texture: Some(tex),
@@ -711,24 +935,32 @@ fn draw(
         let visible = |p: Vec2| p.x > -40.0 && p.x < 1320.0 && p.y > -40.0 && p.y < 760.0;
         for (s, &i) in m.shown.iter().enumerate() {
             let item = &m.items[i];
-            let p = to_screen(item.pos, m.centre);
+            let p = to_screen(item.pos, m.cursor);
             if visible(p) {
-                draw_at(&mut look, &mut quads, EVENT_ICON, Some(p), Some(item), m.selected == Some(s), &none);
+                draw_at(
+                    &mut look,
+                    &mut quads,
+                    EVENT_ICON,
+                    Some(p),
+                    Some(item),
+                    m.selected == Some(Sel::Event(s)),
+                    &none,
+                );
             }
         }
         // The player's arrow, turned with the car (`Rot`, degrees clockwise on the map).
         let rot = player_facing.map_or(0.0, |f| {
-            let d = to_screen(m.player + Vec2::new(f.x, f.z), m.centre) - to_screen(m.player, m.centre);
+            let d = to_screen(m.player + Vec2::new(f.x, f.z), m.cursor) - to_screen(m.player, m.cursor);
             d.x.atan2(-d.y).to_degrees()
         });
-        let player_at = to_screen(m.player, m.centre);
+        let player_at = to_screen(m.player, m.cursor);
         let rot_lookup = move |p: &str| (p == "Rot").then_some(BindValue::Num(rot as f64));
         draw_at(&mut look, &mut quads, PLAYER_ICON, Some(player_at), None, false, &rot_lookup);
-        let target = to_screen(m.target(), m.centre);
+        // The selected event's card sits on its icon; the cursor's rings on the cursor (the camera's look-at).
         if let Some(item) = m.selected_item() {
-            draw_at(&mut look, &mut quads, EVENT_CARD, Some(target), Some(item), true, &none);
+            draw_at(&mut look, &mut quads, EVENT_CARD, Some(to_screen(item.pos, m.cursor)), Some(item), true, &none);
         }
-        draw_at(&mut look, &mut quads, CURSOR, Some(target), m.selected_item(), true, &none);
+        draw_at(&mut look, &mut quads, CURSOR, Some(ANCHOR), m.selected_item(), true, &none);
         for id in [TITLE, TABS[0], TABS[1], FILTERS] {
             draw_at(&mut look, &mut quads, id, None, None, false, &none);
         }
@@ -738,4 +970,81 @@ fn draw(
     let Look { root, pool, textures, .. } = &mut look;
     show_quads(&mut commands, *root, pool, &quads, textures, None, &mut nodes, &mut materials);
     map.look = Some(look);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn glide_ease_shape() {
+        // FUN_00630980: 0 → 0, 0.5 → 0.5, 1 → 1, linear (slope 1.25) between 0.2 and 0.8, continuous at the joins.
+        assert!(glide_ease(0.0).abs() < 1e-6);
+        assert!((glide_ease(0.5) - 0.5).abs() < 1e-6);
+        assert!((glide_ease(1.0) - 1.0).abs() < 1e-6);
+        assert!((glide_ease(0.8) - 0.875).abs() < 1e-6);
+        assert!((glide_ease(0.8001) - glide_ease(0.7999)).abs() < 1e-3);
+        assert!((glide_ease(0.2) - 0.125).abs() < 1e-5);
+    }
+
+    #[test]
+    fn screen_directions_round_trip() {
+        let c = Vec2::new(100.0, -200.0);
+        for d in [Vec2::X, Vec2::Y, Vec2::new(-3.0, 7.0)] {
+            let w = c + screen_to_world(d);
+            assert!((to_screen(w, c) - ANCHOR - d).length() < 1e-3, "{d}");
+        }
+    }
+
+    fn map_with(events: &[Vec2]) -> MapScreen {
+        let mut m = MapScreen { config: MapConfig::default(), ..default() };
+        for (k, &pos) in events.iter().enumerate() {
+            let setup =
+                Arc::new(RaceSetup { event: Default::default(), game_mode: None, name: format!("E{k}"), test: false });
+            m.items.push(MapItem {
+                setup,
+                pos,
+                type_name: String::new(),
+                length: 0.0,
+                vehicles: Vec::new(),
+                difficulty: Vec::new(),
+                most_wanted: false,
+                playable: false,
+            });
+            m.shown.push(k);
+        }
+        m.selected = Some(Sel::Player);
+        m
+    }
+
+    #[test]
+    fn tap_flicks_hold_moves_then_snaps() {
+        // Events 100 px right and 100 px up of the player on screen.
+        let right = screen_to_world(Vec2::new(100.0, 0.0));
+        let up = screen_to_world(Vec2::new(0.0, -100.0));
+        let mut m = map_with(&[right, up]);
+        let dt = 1.0 / 60.0;
+        // A 50 ms tap right: no movement (move delay 0.1 s), a flick on release.
+        for _ in 0..3 {
+            nav_update(&mut m, Vec2::X, dt);
+        }
+        assert_eq!(m.cursor, Vec2::ZERO);
+        nav_update(&mut m, Vec2::ZERO, dt);
+        assert_eq!(m.selected, Some(Sel::Event(0)));
+        // The cursor glides there within the glide time.
+        for _ in 0..60 {
+            nav_update(&mut m, Vec2::ZERO, dt);
+        }
+        assert!((m.cursor - right).length() < 1e-3);
+        // Held up for a second: free cursor (nothing selected) moving at the configured speed.
+        for _ in 0..60 {
+            nav_update(&mut m, Vec2::Y, dt);
+        }
+        assert_eq!(m.selected, None);
+        let moved = (m.cursor - right).length();
+        assert!((moved - 1500.0 * (1.0 - 0.1)).abs() < 60.0, "{moved}");
+        // Released after the flick time: snaps to the nearest item within 0.4 screen heights.
+        nav_update(&mut m, Vec2::ZERO, dt);
+        assert!(m.selected.is_some());
+    }
 }

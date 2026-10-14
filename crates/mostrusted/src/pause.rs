@@ -5,14 +5,15 @@
 //! offline item list is the `StdData` `Widget_MenuData` (431091): RESUME "CONTINUE", MWL "DRIVER DETAILS", MAP,
 //! MPLAYER "MULTIPLAYER", FRIENDS, TO_SETTINGS "SETTINGS", STORE. The widget's actions: previous / next, the
 //! current item's `Action` through `ExitGroupVia`, and RESUME on cancel. Controls: the original's PAUSE (Esc,
-//! pad Start) opens it; the Autolog menu keys (arrows, Enter, Backspace; decomp.md "Input") move, choose and back.
+//! pad Start) opens it; the widget's user actions (decomp.md "Menu input and the map screen's controls") move with
+//! `menu_up` / `menu_down` (arrows, left stick, d-pad; auto-repeat 0.2 s then every 0.1 s), choose with `accept`
+//! (Enter, A) and resume with `cancel` (Backspace, B) or `start` (Esc, Start).
 //! The game pauses (`Game Paused Behaviour`): our virtual clock stops while it is open.
 //!
 //! What works here: CONTINUE; MAP (`SHOW_MAP`) opens the map screen 899991 (`map_screen.rs`; until that is
 //! loaded, a list of the offline races that starts the chosen one); SETTINGS opens our volume settings.
 //! DRIVER DETAILS, MULTIPLAYER, FRIENDS and STORE are online / Autolog screens: shown inactive. Model decisions:
-//! the inactive rows' look (the row template's `Active` field), the race list page, pad A / B for accept / back
-//! (the pad's Autolog bindings were not decoded).
+//! the inactive rows' look (the row template's `Active` field), the race list page, the list wrapping around.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -78,8 +79,6 @@ pub struct PauseMenu {
     /// The virtual clock was running when the menu opened.
     unpause: bool,
     open_map: bool,
-    /// Reopen (the map screen went back, "NAV_BACK"), with the clock to restart on close.
-    pub reopen: Option<bool>,
 }
 
 struct Loaded {
@@ -235,14 +234,10 @@ pub(crate) fn navigate(
     cutscene: Option<Res<crate::cutscene::CutsceneState>>,
     mut map: Option<ResMut<crate::map_screen::MapScreen>>,
     card: Option<Res<crate::event_card::EventCard>>,
+    input: Res<crate::input::MenuInput>,
 ) {
     menu.just_closed = false;
     if !menu.enabled || menu.look.is_none() {
-        return;
-    }
-    if let Some(unpause) = menu.reopen.take() {
-        open(&mut menu, None);
-        menu.unpause = unpause;
         return;
     }
     if map.as_ref().is_some_and(|m| m.open || m.just_closed) || card.is_some_and(|c| c.showing()) {
@@ -251,7 +246,6 @@ pub(crate) fn navigate(
     use crate::input::defaults as act;
     let pad_list: Vec<&Gamepad> = pads.iter().collect();
     let dev = crate::input::Devices { keys: &keys, pads: &pad_list };
-    let pad = |b: GamepadButton| pad_list.iter().any(|p| p.just_pressed(b));
     if !menu.open {
         // PAUSE (Esc / Start) while driving; not over the front end's screens, a cutscene or open Easydrive.
         let busy = front.is_some_and(|f| !f.playing())
@@ -263,9 +257,12 @@ pub(crate) fn navigate(
         }
         return;
     }
+    // The `Menu` widget's user actions (431082): menu_up / menu_down (repeating) → previous / next, accept → the
+    // item's action, cancel and start → RESUME. Directions read the arrows, the left stick and the d-pad.
+    use crate::input::MenuAction as M;
     let n = rows(&menu).len().max(1);
-    let back = keys.just_pressed(KeyCode::Backspace) || pad(GamepadButton::East);
-    if dev.just_pressed(act::PAUSE) || (back && matches!(menu.page, Some(Page::Root))) {
+    let back = input.pressed(M::Cancel);
+    if input.pressed(M::Start) || (back && matches!(menu.page, Some(Page::Root))) {
         close(&mut menu, &mut time);
         return;
     }
@@ -274,13 +271,13 @@ pub(crate) fn navigate(
         menu.selected = menu.items.iter().position(|i| i.action == "MAP").unwrap_or(0);
         return;
     }
-    if keys.just_pressed(KeyCode::ArrowUp) || pad(GamepadButton::DPadUp) {
+    if input.fired(M::Up) {
         menu.selected = (menu.selected + n - 1) % n;
     }
-    if keys.just_pressed(KeyCode::ArrowDown) || pad(GamepadButton::DPadDown) {
+    if input.fired(M::Down) {
         menu.selected = (menu.selected + 1) % n;
     }
-    if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::NumpadEnter) || pad(GamepadButton::South) {
+    if input.pressed(M::Accept) {
         match menu.page.clone() {
             Some(Page::Races) => {
                 if let Some(r) = menu.races.get(menu.selected).cloned() {
