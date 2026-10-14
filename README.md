@@ -171,6 +171,9 @@ Still missing or not like the original (user play test, 2026-10-14; details in
 - [ ] Progression: mods unlocked by races, Most Wanted cars unlocked by beating them; takedowns / wrecks from
   car-to-car crashes in races
 - [ ] Billboards: intact with their artwork by default (broken only once smashed), showing the Easydrive records
+- [ ] Car sounds and effects: idle sound, nitrous sound, backfires, engine start / stop; tyre marks and nitrous
+  flames look off; grass / dirt still give road smoke and marks
+- [ ] Traffic reactions: horns, headlight flashing when you drive towards them
 - [ ] Animations: driver, steering wheel, animated body parts, world animations, tree wind
 
 ## Credits

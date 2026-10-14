@@ -44,6 +44,18 @@ capture of the original) before a fix (CLAUDE.md fidelity rule).
 - Unlocking Most Wanted cars by beating them is missing.
 - In races, neither the player nor the racers are affected by crashing into other cars (takedowns, wrecks).
 
+**Car sounds and effects**
+- Cars' idle sounds are still missing.
+- Nitrous sounds are still missing.
+- Backfire sounds and effects are still missing (the exhaust pop code exists: check why it is not heard / seen).
+- Turning the car on and off (engine start / stop) is missing.
+- Tyre marks and nitrous flames still look off.
+- Surfaces: driving on grass / dirt still behaves like road: tyre smoke clouds and road-style tyre marks instead
+  of the surface's own effects.
+
+**Traffic**
+- Traffic sounds and effects are mostly missing: horns and headlight flashing when you drive towards them, etc.
+
 **Billboards**
 - Billboards show the broken version by default; they should be intact with their artwork, and broken only
   after being smashed.
