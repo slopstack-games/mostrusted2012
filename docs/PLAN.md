@@ -177,7 +177,7 @@ Make a static frame look like the game.
    into `NFS13.exe` (`mwtool shader-asm --exe`, decomp.md "Post-processing and colour grade"), cube channel
    order fixed 2026-10-06. 2026-10-14: the TintBlend blends the two keyframes' cubes with the timeline weights
    (live read), the final pass is the free-roam variant (depth of field + tint) with the sun-facing brightness /
-   contrast, the bloom levels have the original's sizes (1/6, 1/24, 1/96 of the screen) and the vignette's k / s
+   contrast, the bloom levels have the original's fixed sizes (320 × 176, 80 × 44, 20 × 11) and the vignette's k / s
    come from the code (`MW_NO_DOF`, `MW_NO_SUN_CONTRAST`, `MW_NO_CUBE_BLEND`, `MW_BLOOM_DIVISORS`).
    Open: the game's cascade fit / split distances, shadow-only proxy casters (`WorldShadow_*`), the irradiance quadric / second
    irradiance cube, cop / line lights (point / cone / spot lights and their per-hour switch ported 2026-10-10), planar reflection

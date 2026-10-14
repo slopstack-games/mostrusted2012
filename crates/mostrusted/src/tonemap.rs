@@ -141,11 +141,12 @@ struct BloomUniform {
 const BLOOM_MIN_WEIGHT: f32 = 0.01;
 
 /// Bloom level sizes. The original's levels are the renderer's targets 0x50, 0x51, 0x52 (`FUN_008eaaf0`
-/// passes R + 0xa8 + 0x140…0x148 to `FUN_008e6f40`), 320 × 176, 80 × 44 and 20 × 11 at 1920 × 1080 (live
-/// read of snap1, 2026-10-14): a sixth of the screen rounded down to 16 pixels, then quarters. How the size
-/// follows other resolutions was not traced (the creating code was not found): the 1/6, 16-pixel rounding
-/// and the quarters are a model decision that reproduces 1080p exactly. `MW_BLOOM_DIVISORS=4,8,16` gives
-/// the old fixed fractions for A/B.
+/// passes R + 0xa8 + 0x140…0x148 to `FUN_008e6f40`): 320 × 176, 80 × 44 and 20 × 11 whatever the screen
+/// size (live reads 2026-10-14: snap1 at 1920 × 1080 and a probe dump at 1280 × 720 hold the same three),
+/// so the bloom's reach is a fixed fraction of the frame. `MW_BLOOM_DIVISORS=4,8,16` gives screen fractions
+/// instead, for A/B (the first port's levels).
+const BLOOM_LEVELS: [(u32, u32); 3] = [(320, 176), (80, 44), (20, 11)];
+
 fn bloom_sizes((w, h): (u32, u32)) -> [(u32, u32); 3] {
     if let Some(d) = std::env::var("MW_BLOOM_DIVISORS").ok().and_then(|v| {
         let d: Vec<u32> = v.split(',').filter_map(|x| x.trim().parse().ok()).collect();
@@ -153,9 +154,7 @@ fn bloom_sizes((w, h): (u32, u32)) -> [(u32, u32); 3] {
     }) {
         return d.map(|d| ((w / d).max(1), (h / d).max(1)));
     }
-    let first = (((w / 6) & !15).max(16), ((h / 6) & !15).max(16));
-    let quarter = |(w, h): (u32, u32)| ((w / 4).max(1), (h / 4).max(1));
-    [first, quarter(first), quarter(quarter(first))]
+    BLOOM_LEVELS
 }
 
 /// The camera's depth-of-field block (camera +0x130…+0x13c, copied to renderer +0xae10 by `FUN_008c9e40`
@@ -711,8 +710,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bloom_levels_match_the_originals_targets_at_1080p() {
+    fn bloom_levels_are_the_originals_fixed_targets() {
         assert_eq!(bloom_sizes((1920, 1080)), [(320, 176), (80, 44), (20, 11)]);
+        assert_eq!(bloom_sizes((1280, 720)), [(320, 176), (80, 44), (20, 11)]);
     }
 
     #[test]

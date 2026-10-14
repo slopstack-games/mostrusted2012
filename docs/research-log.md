@@ -10,6 +10,52 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-14: the post chain against the original's code: bloom sizes, final pass, depth of field, grade
+
+The user: "postfx [is still off]". Compared our chain with the original's, stage by stage, from the full `.text`
+(`re/out/live/text.asm`), the dump, the exe's DXBC and live reads: the 20 renderer dumps of `ref/live1/ren` and
+snap1, where the renderer is at 0x2404ce00 (found from its depth-of-field block; the static pointer to it is
+`.bss` 0x01183168). Details in decomp.md "Final pass, depth of field and grade (2026-10-14)".
+
+- **What the original runs in free roam**: post flags (renderer +0xaa9c) = 0x7f: depth of field, bloom,
+  vignette, tint, fisheye (identity values), motion blur, cube scale / offset. The final pass is variant 3,
+  `0x01017050` (depth of field + tint); its camera motion blur variants are never chosen while the depth of
+  field is on. The composite (`GBufferComposite`) has its own motion blur; it is on, but its vectors are
+  0.053 × a one-frame reprojection: ≈ 0.5 px at 51 mph, ≤ 2 px at 200 km/h. No sharpen, film grain, chromatic
+  aberration or FXAA program exists among the exe's 74 post programs; distortion / splatter are empty in clear
+  free roam; no lens-flare string or program was found (`LensFlareColour` in the keyframes has no reader yet).
+- **Bloom levels were 4–6× too small.** The original's are the renderer targets 0x50…0x52: 320 × 176, 80 × 44,
+  20 × 11, fixed (the same at 1920 × 1080 in snap1 and at 1280 × 720 in a probe dump this session; ours were
+  1/4, 1/8, 1/16 of the screen). Ported as fixed sizes. Reach of the blur's outer taps (±3.29 texels) at 1080p:
+  ±20 / ±79 / ±316 px (was ±13 / ±26 / ±53), at 720p ±13 / ±53 / ±211 px; with the day weights the bloom is
+  the mean of the two coarse levels, so its glow now spreads over a sixth of the frame. Coastal-road view
+  (1280 × 720, noon, linear light added by the bloom): dark centre 0.0117 → 0.0143, frame mean 0.0297 → 0.0286.
+  (The first fix this session used 1/6 of the screen rounded to 16, which matched 1080p only; the probe dump
+  at 720p showed the sizes are fixed.)
+- **Depth of field (new)**: CoC = max(x0 (1 − 90 m / z), 0), x0 = 0.042 (camera block A = 73.448, focus 90, f =
+  0.10283 m, live in every read, source not found); a half-resolution CoC-weighted copy is blended in with
+  min(15 CoC, 1): nothing within 90 m, 63 % at infinity. The two blur passes reduce to one tap under this CoC
+  and are left out (offset untraced). Coastal view, high-frequency energy of the far band (0.3–0.5 h), all
+  changes together: 29.2 → 28.1.
+- **Brightness / contrast (new)**: `ColourCubeScalesOffsets` = (c · 15/16, b + 0.5 − c/2 + 1/32), c = 1 +
+  `e49dc52c` × (1 − t), b = `d1fd3a11` × (1 − t), t = (1 + forward · flat to-sun) / 2 (options at 50). Reproduces
+  the live constants to 4 digits (c = 1.0178 / 1.0063 in dumps 0 / 10; this session's probe dump at another
+  keyframe, env 0.032 / 0.05, t = 0.8915: c = 1.00543, offset 0.032007, live 1.00543 / 0.032010). Looking away from the sun at noon: c =
+  1.0295, b = 0.0148, frame +4 levels, luma std 53.1 → 55.3; into the sun nothing changes.
+- **Vignette solved**: the writer is `FUN_008e8c40` (post object +0xc00): k = 1 + 500 (0.5 + 0.5 Sharpness)^16
+  (1.82445), s = the contrast c. Both were a measured constant / model decision before.
+- **TintBlend slots read**: base identity (0), the two keyframes' cubes with the timeline weights (1 − t, t),
+  the Alternate pair at 0, two PostFX-state cubes (heat `…789d`) at 0. Ported: the bake blends the pair
+  (before: the earlier keyframe's cube switched at t = 0.5).
+- **Dead ends / open**: the writer of the composite blur matrix (+0xb1f0) and of the camera's DOF block; the
+  bloom targets' creation code; the DOF blur's tap offset (`FUN_008ee250` for modes 8 / 12); the
+  meter's input (the original meters L2, 80 × 44, through `FUN_008e36d0` / `FUN_008e2f80`; ours a 32² grid of
+  the frame); the sun lens flare.
+- **Probe read (this session)**: `.bss` 0x01183168 points at the renderer (used through the probe's dump.req;
+  `ref/shots/fairhaven-post-probe/`). The user's save was rewritten by the game on load (as in earlier runs);
+  the copy from before is `ref/savebackup-2026-10-14-post/`.
+- New switches: `MW_NO_DOF`, `MW_NO_SUN_CONTRAST`, `MW_NO_CUBE_BLEND`, `MW_BLOOM_DIVISORS=4,8,16`, `MW_POST_LOG`.
+
 ### 2026-10-14: a third of the game's functions are missing from the dump
 
 - **Found**: scanning `.rdata` / `.data` of the decrypted image for pointers into `.text` that land after padding

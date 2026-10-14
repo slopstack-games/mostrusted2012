@@ -1395,11 +1395,11 @@ chain, from the light buffer (HDR game units) to the screen:
    weights ÷ 32 on t0, × `kColorAddWeight.z`, + t1 (sampled at the same uv) × `.w`. The composite samples
    the finest combined level. **Level sizes (2026-10-14)**: `FUN_008eaaf0` hands `FUN_008e6f40` the
    renderer's target list (R + 0xa8) entries 0x50, 0x51, 0x52 as L1…L3 and 0x4c…0x4f, 0x22 as the blur /
-   combine temporaries; in snap1 (renderer at 0x2404ce00, found from its DOF block) those are 320 × 176,
-   80 × 44 and 20 × 11 at a 1920 × 1080 screen (temporaries the same sizes, pairwise): a sixth of the screen
-   rounded down to 16, then quarters. Ported so (the creating code was not found, so the rule for other
-   resolutions is a model decision; 1080p is exact). The bloom is therefore 4–6× wider than the first
-   port's 1/4, 1/8, 1/16 levels. Remaining model decisions in the port (originally: the level sizes (the
+   combine temporaries; in snap1 (renderer at 0x2404ce00, found from its DOF block; 1920 × 1080) and in a
+   probe dump at 1280 × 720 (renderer at 0x2464ce00 through the `.bss` pointer 0x01183168) those are the same
+   fixed 320 × 176, 80 × 44 and 20 × 11 (temporaries the same sizes, pairwise), while the depth-of-field
+   targets follow the screen (960 × 540 / 640 × 360). Ported as fixed sizes. The bloom is therefore 4–6×
+   wider than the first port's 1/4, 1/8, 1/16 levels at 1080p. Remaining model decisions in the port (originally: the level sizes (the
    targets are passed in through `*(renderer + 0x220)` +0x130…+0x148 at the call `0x008cc828`, created
    elsewhere; the snapshot `snap2` is another run than the renderer dumps, where that pointer is
    0x04ca25f0, and the renderer was not located in it within the time spent; the first step's taps make an
