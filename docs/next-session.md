@@ -1,5 +1,55 @@
 # Handoff: 2026-10-14 (session 8, part 2): start here
 
+## User play test (end of 2026-10-14): what is still wrong, by area
+
+Reported by the user after session 8; none of it is investigated yet. Each needs its source (code, data or a
+capture of the original) before a fix (CLAUDE.md fidelity rule).
+
+**Physics and world**
+- Some trash bags are indestructible and very solid (props: their physics / breakable data).
+- Road collisions are sometimes a bit harsh (seams / steps in the road collision; suspension contact).
+- Sidewalks affect the car too much (kerb / step response).
+- Brake-to-drift does not work enough at higher speeds: the car just understeers.
+- In some places the water floats above where it should be (water height; see also session 7's "water level
+  is too low" elsewhere).
+- Terrain still sticks through the road in some places.
+
+**Navigation, map and HUD**
+- Navigation (SET DESTINATION route / GPS) does not work yet.
+- Cops are not shown as cops on the map / minimap.
+- Many map icons are missing: jack spots, race locations, etc.
+- Most Wanted races are shown like normal races on the map.
+
+**Police**
+- Cops have no sirens (sound) or light bars.
+- No police chatter / radio sounds in chases.
+- Crashing into other racers and police does not work yet (see the police branch, still unmerged).
+
+**Audio**
+- No music on the loading screen.
+- Music is not matched to the situation (free roam vs races, etc.).
+
+**Front end, UI and cutscenes**
+- The start screen overlaps "press button to start" and "press any key to start".
+- The race end screen is not quite like the original.
+- The UI in general still needs work.
+- The cutscenes for changing cars are missing.
+- The game's start-up cutscene (entering the car, with its stats) is missing.
+
+**Cameras**
+- The crash camera is not yet quite like the original.
+
+**Game logic and progression**
+- Car mods do not work like the original (unlocked by winning races per car, etc.).
+- Unlocking Most Wanted cars by beating them is missing.
+- In races, neither the player nor the racers are affected by crashing into other cars (takedowns, wrecks).
+
+**Billboards**
+- Billboards show the broken version by default; they should be intact with their artwork, and broken only
+  after being smashed.
+- Billboards do not show the Easydrive / Autolog records on them.
+
+
 **State**: master has three agent branches merged on top of part 1: the post chain (bloom levels fixed
 320×176 / 80×44 / 20×11, depth of field + colour cube final pass, sun-facing grade, vignette from the code, cube
 blend), menu input and the map screen's controls (the original's 13 menu actions, stick / d-pad / auto-repeat,
