@@ -1689,7 +1689,7 @@ fn traffic(store: &AssetStore, png: Option<&Path>, at: &[f32]) -> Result<()> {
             "parked cars: flow types {flow:?}, chance % {chance:?}, flags {flags:?}, {} distinct tails (most common \
              {:x?}), worst axis error {worst_ortho:.4}",
             rest.len(),
-            rest.iter().max_by_key(|(_, n)| **n).map(|(r, n)| (r, n))
+            rest.iter().max_by_key(|(_, n)| **n)
         );
     }
     let length: f32 = t.hulls.iter().flat_map(|h| &h.sections).map(|s| s.length).sum();

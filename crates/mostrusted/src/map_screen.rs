@@ -722,7 +722,7 @@ fn draw(
             d.x.atan2(-d.y).to_degrees()
         });
         let player_at = to_screen(m.player, m.centre);
-        let rot_lookup = move |p: &str| (p == "Rot").then(|| BindValue::Num(rot as f64));
+        let rot_lookup = move |p: &str| (p == "Rot").then_some(BindValue::Num(rot as f64));
         draw_at(&mut look, &mut quads, PLAYER_ICON, Some(player_at), None, false, &rot_lookup);
         let target = to_screen(m.target(), m.centre);
         if let Some(item) = m.selected_item() {

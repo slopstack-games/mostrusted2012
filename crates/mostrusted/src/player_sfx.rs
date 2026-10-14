@@ -181,6 +181,7 @@ fn car_state(t: &Transform, v: &LinearVelocity) -> (Vec3, Vec3, Vec3) {
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
 fn horn(
     mut commands: Commands,
     time: Res<Time>,
@@ -200,7 +201,8 @@ fn horn(
     }
     let pad_list: Vec<&Gamepad> = pads.iter().collect();
     let dev = crate::input::Devices { keys: &keys, pads: &pad_list };
-    let mut held = !menu.is_some_and(|m| m.open) && !pause.is_some_and(|p| p.open) && dev.held(crate::input::defaults::HORN);
+    let mut held =
+        !menu.is_some_and(|m| m.open) && !pause.is_some_and(|p| p.open) && dev.held(crate::input::defaults::HORN);
     if let Some((t0, t1)) = scripted_horn() {
         let now = time.elapsed_secs();
         held |= now >= t0 && now < t1;
@@ -223,11 +225,12 @@ fn horn(
         );
         sfx.horn_voice = Some(voice);
         *sfx.started.entry("player horn").or_default() += 1;
-    } else if !held && sounding {
-        if let Some(v) = sfx.horn_voice.as_mut() {
-            v.params.stop(HORN_RELEASE);
-            v.stopping = true;
-        }
+    } else if !held
+        && sounding
+        && let Some(v) = sfx.horn_voice.as_mut()
+    {
+        v.params.stop(HORN_RELEASE);
+        v.stopping = true;
     }
 }
 
@@ -476,6 +479,7 @@ fn contacts(
 }
 
 /// Every frame: the voices follow the player's car.
+#[allow(clippy::type_complexity)]
 fn follow(
     listener: Res<Listener>,
     mut sfx: ResMut<PlayerSfx>,

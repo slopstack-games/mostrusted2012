@@ -442,7 +442,6 @@ fn update_ai_tyres(
             skid_wheel: car.skid_wheel(),
             brake: controls.brake,
             handbrake: controls.handbrake,
-            ..default()
         };
         v.driver.update(time.delta_secs(), &i);
         let placed = place(&v.spatial, &listener, t.translation, vel.0, t.rotation * Vec3::Z);

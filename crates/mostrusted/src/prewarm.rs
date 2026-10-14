@@ -98,6 +98,7 @@ fn open_frusta(p: Res<Prewarm>, mut cameras: Query<&mut Frustum, With<Camera3d>>
 }
 
 /// Every visible shadow caster in every cascade of every light.
+#[allow(clippy::type_complexity)]
 fn fill_cascades(
     p: Res<Prewarm>,
     mut lights: Query<&mut CascadesVisibleEntities>,
