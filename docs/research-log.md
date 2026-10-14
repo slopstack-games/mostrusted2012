@@ -23,6 +23,15 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
   frame is read, and none queries the world (decomp.md "Avoidance: the original has none"). The chase camera
   has no wall avoidance; our push-in is off (`MW_CAMERA_PUSH_IN=1` for A/B). Open: a capture of the original
   backed into a wall, to rule out a render-side step.
+- **The steering's q (vehicle +0x2c70), searched again, not found**: an objdump sweep of the whole `.text`
+  (`re/out/live/text.asm`, so the 16k missing functions are included) has eight stores with displacement
+  +0x2c70, all in non-vehicle code (game mode, `FUN_00422640`, `FUN_008a7590`), and no 16-byte store near it;
+  the field is written through another base or an out-parameter. The constants q would need (35° = 0.6109 rad,
+  1/35) occur once each: 1/35 at `0x00fa92f0` (read only in `0x004fbe27`, not vehicle code) and 35° at `.data`
+  `0x010cf610`, read only by **`FUN_008fcd60`** (in the dump, undocumented): not q, but an orientation
+  controller on a rigid body (inputs at +0x240..+0x24c times `DAT_010cf604..614`, impulses with 37.5, 20, 170,
+  80, 40 and 30; possibly air control or a scripted pose; lead for later). q = slip / `Maximum_steering_angle`
+  (35° on the XKR) would need no constant, which fits; a second car's capture still tells.
 - **Status**: the plain carved image analyses within REA's default 5.5 min; the one with 16,257 exports does not,
   so the deadline is raised (`REA_GHIDRA_STARTUP_TIMEOUT_MS`), with it the image with the exports analyses (2026-10-14). Not yet read: the other
   "not in the dump" / "writer not found" items: `0x0118a060`'s writer (decomp.md, drift), the `LAB_005a22e0` wave
