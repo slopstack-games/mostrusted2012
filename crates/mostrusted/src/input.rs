@@ -169,10 +169,12 @@ impl MenuAction {
     }
 }
 
-/// First auto-repeat after this long held, then every `REPEAT_NEXT` (`FUN_0047c3xx`: `.rdata` 0x00f9fb7c 0.2 s,
-/// 0x00f9fb78 0.1 s).
+/// First auto-repeat after this long held, then every `REPEAT_NEXT`. The code (`FUN_0047c360`) reads 0.2 s
+/// (`.rdata` 0x00f9fb7c) for the first and 0.1 s (0x00f9fb78) for the next ones, but the original's pause menu
+/// repeats every 0.2 s throughout (2026-10-14: Down held 0.45 / 0.55 / 1.0 / 1.25 s moved 3 / 3 / 6 / 7 rows, as
+/// presses at 0, 0.2, 0.4, … s): the measurement is used (why the 0.1 s step does not show is open).
 pub const REPEAT_FIRST: f32 = 0.2;
-pub const REPEAT_NEXT: f32 = 0.1;
+pub const REPEAT_NEXT: f32 = 0.2;
 /// A directional menu action fires (pressed or repeated) only above this value (`FUN_007f50e0`, actions 0x2a–0x31).
 pub const DIRECTION_FIRE_MIN: f32 = 0.05;
 /// Which of an action and its `_ALT` twin is read (`FUN_0047a3f0`): `TABLE[main state × 4 + alt state]` is the
@@ -369,7 +371,7 @@ mod tests {
 
     #[test]
     fn menu_repeat_timing() {
-        // Held: fires on the press, again after 0.2 s, then every 0.1 s (FUN_0047c3xx); reset on release.
+        // Held: fires on the press, then every 0.2 s (measured on the original); reset on release.
         let mut t = Track::default();
         let mut fired = Vec::new();
         for i in 0..10 {
@@ -378,7 +380,7 @@ mod tests {
                 fired.push(i);
             }
         }
-        assert_eq!(fired, vec![0, 3, 5, 7, 9]);
+        assert_eq!(fired, vec![0, 3, 7]);
         t.update(0.0, 0.01);
         assert_eq!(t.state(), 3);
         assert!(!t.repeated && t.timer == 0.0);

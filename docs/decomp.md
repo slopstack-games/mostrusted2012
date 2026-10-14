@@ -2054,8 +2054,10 @@ for accept / back.
 - **Firing** (`FUN_007f50e0`, per user action each frame): the definition's `Analogue` flag (+0x34) calls the
   handler every frame with the value; else its repeat flag (+0x35, field `2da735e3`) fires on pressed or on the
   auto-repeat tick, and for the direction actions 0x2a–0x31 only when the value is > 0.05; else it fires on
-  pressed. Auto-repeat (`FUN_0047c3xx`, per action): while held a timer runs; the first tick at 0.2 s
-  (`.rdata` 0x00f9fb7c), then every 0.1 s (0x00f9fb78); released resets it.
+  pressed. Auto-repeat (`FUN_0047c360`, per action): while held a timer runs; the first tick at 0.2 s
+  (`.rdata` 0x00f9fb7c), then (flag +0x67c set) every 0.1 s (0x00f9fb78); released resets it. **Measured on the
+  original** (2026-10-14, keyboard Down held in the pause menu 0.45 / 0.55 / 1.0 / 1.25 s → 3 / 3 / 6 / 7 rows):
+  every 0.2 s throughout; the port uses the measurement (why the 0.1 s step does not show is open).
 - **Pause menu** (431082, `Menu`): `menu_up` / `menu_down` (repeat) → `OnPrevious` / `OnNext`; `accept` → the
   item's action; `cancel` and `start` → `RESUME`.
 - **Map screen** (899991): group 1222343's `MapManager` widget (native script `LiveMapManager`) takes

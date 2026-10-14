@@ -41,9 +41,19 @@ ported (decomp.md "Menu input and the map screen's controls"):
 - **Checked** (headless, `ref/mapnav/run1.sh`, `run2.sh`; screenshots in the worktree's `ref/mapnav/r1`, `r2`):
   pad stick tap right → the next event right of the player; stick held up 1 s → free cursor (no card), release
   → snapped to the nearest event; d-pad left → the event 64 px left; A → options, d-pad down → START RACE, B →
-  back to the map, B → driving. Pause menu: stick held down 0.55 s → five rows (press + repeats at 0.2, 0.3,
-  0.4, 0.5 s), d-pad up one row, keyboard Esc / arrows / Enter into MAP; keyboard tap → flick, hold → free
+  back to the map, B → driving. Pause menu: stick held down 0.55 s → three rows (CONTINUE → MULTIPLAYER, as
+  the original with the key held as long), d-pad up one row, keyboard Esc / arrows / Enter into MAP; keyboard tap → flick, hold → free
   cursor then snap, Backspace → driving.
+- **Checked on the original** (`tools/orig`, keyboard and the virtual pad, which the game did see this time:
+  its prompts switched to pad glyphs; save backed up to `ref/savebackup-2026-10-14-mapnav/`, the game rewrote
+  `MUD.29.NFS13Save` on load and it was restored; shots in the worktree's `ref/mapnav/orig/`): tap Right on
+  the map → the next event to the right (flick); Up held 0.8 s → free cursor without card, the map scrolling
+  ≈ 221 px/s (ours 1500 m/s ÷ 6.29 m/px = 238 px/s; the key press latency is a few frames), release → snapped
+  to the event under the cursor; pad d-pad left → flick left; pad left stick right 0.6 s → free cursor, then a
+  snap; **Backspace on the map → driving** (TO_GAME). Pause menu: wraps (Up on CONTINUE → QUIT); Down held
+  0.45 / 0.55 / 1.0 / 1.25 s moved 3 / 3 / 6 / 7 rows = **a repeat every 0.2 s**, not 0.2 then 0.1 as
+  `FUN_0047c360` reads; the measurement is used. The original's offline pause list also has QUIT (ours lists 7
+  items) and switches its key-box prompts to pad glyphs after pad input (ours always shows keys).
 - **Model decisions / open**: the cursor moves along our flat map's screen axes (the camera rows at view +0x2f370
   and the up axis's foreshortening are not read); `FUN_0078f1d0` (a gate before moving) taken as true; the view's
   +0x2f5a8 (0.2 / 0.5 s written on moves / flicks) has no reader found, so the camera follows the cursor without
