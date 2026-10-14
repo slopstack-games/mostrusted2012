@@ -46,6 +46,11 @@ use crate::materials::GameMaterial;
 
 /// Lane-follower slots (`FUN_006024f0(first, 0x100)`; the world's vehicle table keeps slots 0–255 for traffic).
 const MAX_CARS: usize = 256;
+/// Parked-car slots (`world+0x2bbd8`, 12 bytes each; their vehicles are table slots 256..405).
+const PARKED_SLOTS: usize = 150;
+/// `world+0x35f94` (900 = 30², read in `snap2`): when the area starts over (`world+0xa2bee`), parked cars within
+/// 30 m of a race car are not placed (`FUN_0060b2f0`, flag 0x18).
+const PARKED_CLEARANCE: f32 = 30.0;
 /// Spawning stops at this load (`DAT_00fb1ab0`).
 const LOAD_BUDGET: f32 = 200.0;
 /// The load counts cars within this distance: `sqrt(DAT_0110f590)`, 3600 read live (research log).
@@ -253,6 +258,13 @@ impl GameRng {
         r
     }
 
+    /// The LCG's high word before the step, without the ring (`FUN_0060db90`'s parked-car chance).
+    fn raw(&mut self) -> u32 {
+        let high = (self.state >> 32) as u32;
+        self.state = self.state.wrapping_mul(0x5851_f42d_4c95_7f2d).wrapping_add(1);
+        high
+    }
+
     fn next(&mut self) -> f32 {
         let out = self.ring[self.index];
         let high = (self.state >> 32) as u32;
@@ -311,6 +323,20 @@ struct Crashed {
     wrecked: bool,
 }
 
+/// A parked car (`FUN_0060db90` places the hull's static vehicle records when the hull becomes active,
+/// `FUN_0060b2f0` spawns them at the record's matrix). It stands until a dynamic body touches it, then it is a
+/// crashed car like hit traffic.
+struct ParkedCar {
+    hull: u16,
+    record: u8,
+    vehicle: usize,
+    paint: usize,
+    position: Vec3,
+    rotation: Quat,
+    serial: u32,
+    entity: Option<Entity>,
+}
+
 #[derive(Default, Clone)]
 struct JunctionState {
     timer: f32,
@@ -349,6 +375,7 @@ pub struct TrafficSystem {
     cars: Vec<Option<LaneCar>>,
     serial: u32,
     crashed: Vec<Crashed>,
+    parked: Vec<Option<ParkedCar>>,
     active: Vec<u16>,
     active_set: Vec<bool>,
     last_hull: Option<usize>,
@@ -392,6 +419,7 @@ impl TrafficSystem {
             cars: vec![None; MAX_CARS],
             serial: 0,
             crashed: Vec::new(),
+            parked: (0..PARKED_SLOTS).map(|_| None).collect(),
             active: Vec::new(),
             active_set: vec![false; n_hulls],
             last_hull: None,
@@ -536,6 +564,34 @@ impl TrafficSystem {
     }
 
     /// Number of lane followers and crashed cars.
+    /// The entity of a lane follower (`slot` < `MAX_CARS`) or a parked car (`MAX_CARS` + its slot).
+    fn set_entity(&mut self, slot: usize, entity: Option<Entity>) {
+        if slot < MAX_CARS {
+            if let Some(c) = self.cars[slot].as_mut() {
+                c.entity = entity;
+            }
+        } else if let Some(p) = self.parked.get_mut(slot - MAX_CARS).and_then(|p| p.as_mut()) {
+            p.entity = entity;
+        }
+    }
+
+    /// Parked cars with a model within `radius` of `point`: entity, position, rotation.
+    pub fn parked_near(&self, point: Vec3, radius: f32) -> Vec<(Entity, Vec3, Quat)> {
+        let r2 = radius * radius;
+        self.parked
+            .iter()
+            .flatten()
+            .filter(|p| p.position.distance_squared(point) <= r2)
+            .filter_map(|p| Some((p.entity?, p.position, p.rotation)))
+            .collect()
+    }
+
+    /// Parked cars placed, and those with a model.
+    pub fn parked_counts(&self) -> (usize, usize) {
+        let placed = self.parked.iter().flatten();
+        (placed.clone().count(), placed.filter(|p| p.entity.is_some()).count())
+    }
+
     pub fn counts(&self) -> (usize, usize) {
         (self.cars.iter().flatten().count(), self.crashed.len())
     }
@@ -1203,6 +1259,9 @@ fn apply_event(sys: &mut TrafficSystem, want: Option<EventTraffic>, hour: usize,
             for i in 0..MAX_CARS {
                 remove_car(sys, i, commands);
             }
+            for i in 0..PARKED_SLOTS {
+                remove_parked(sys, i, commands);
+            }
             for c in std::mem::take(&mut sys.crashed) {
                 commands.entity(c.entity).despawn();
                 sys.removed += 1;
@@ -1253,6 +1312,11 @@ fn update_area(sys: &mut TrafficSystem, commands: &mut Commands, focus: Vec3) {
             remove_car(sys, i, commands);
         }
     }
+    for i in 0..PARKED_SLOTS {
+        if sys.parked[i].as_ref().is_some_and(|p| !new.contains(&p.hull)) {
+            remove_parked(sys, i, commands);
+        }
+    }
     sys.active = active.clone();
     // Emitters (`FUN_0061c780`): sections with a density whose first backward link is missing or outside
     // the area; persisting emitters keep their timers (inferred).
@@ -1284,9 +1348,72 @@ fn update_area(sys: &mut TrafficSystem, commands: &mut Commands, focus: Vec3) {
     sys.emitters = emitters;
     // Newly active hulls are filled along their lanes (`FUN_0060db90`).
     sys.index_sections();
+    // MODEL: the game's "start over" flag (`world+0xa2bee`, its writer not found) is read as "no hull was active".
+    let restart = old.is_empty();
     for &h in active.iter().filter(|h| !old.contains(h)) {
         sys.hull_state(h);
         populate_hull(sys, h, Some(focus));
+        populate_parked(sys, h, restart.then_some(focus));
+    }
+}
+
+/// A newly active hull's parked cars (`FUN_0060db90` after the lanes; spawned by `FUN_0060b2f0`): each static
+/// vehicle record is placed when the LCG's high word `% 100 + 1` is at most its chance (all 392 records: 100),
+/// unless a pursuit is on and its flag bit 0 is set (no pursuits here), with a vehicle drawn from its flow type
+/// (`FUN_00608c80`) and the type's next paint (`FUN_006080d0` with no colour asked: round robin, as traffic);
+/// when the area starts over, records within 30 m of the player (the game: of any race car) are left out (flag
+/// 0x18). The game's tick does this only while the density multiplier is not 0 (traffic off). MODEL: the
+/// pursuit test (`world+0xa2bf1` or `FUN_006a1200`, not identified) is false.
+fn populate_parked(sys: &mut TrafficSystem, hull: u16, clear_of: Option<Vec3>) {
+    if sys.multiplier == 0.0 {
+        return;
+    }
+    let data = sys.data.clone();
+    let Some(h) = data.lanes.hulls.get(hull as usize) else { return };
+    for (k, rec) in h.static_vehicles.iter().enumerate() {
+        let draw = sys.rng.raw();
+        if draw % 100 + 1 > rec.chance as u32 {
+            continue;
+        }
+        let Some(pick) = sys.pick_vehicle(rec.flow_type as u8) else { continue };
+        let Some(slot) = sys.parked.iter().position(Option::is_none) else { return };
+        let m = mw_formats_matrix(&rec.matrix);
+        let position = m.w_axis.truncate();
+        if clear_of.is_some_and(|f| position.distance(f) < PARKED_CLEARANCE) {
+            continue;
+        }
+        let rotation = Quat::from_mat3(&Mat3::from_cols(
+            m.x_axis.truncate().normalize_or_zero(),
+            m.y_axis.truncate().normalize_or_zero(),
+            m.z_axis.truncate().normalize_or_zero(),
+        ));
+        sys.serial = sys.serial.wrapping_add(1);
+        sys.parked[slot] = Some(ParkedCar {
+            hull,
+            record: k as u8,
+            vehicle: pick.0,
+            paint: pick.1,
+            position,
+            rotation,
+            serial: sys.serial,
+            entity: None,
+        });
+        sys.spawned += 1;
+    }
+}
+
+/// A record's D3D row-major world matrix (`v * M`; rows 0..2 the axes, row 3 the position) as a `Mat4`.
+fn mw_formats_matrix(m: &[f32; 16]) -> Mat4 {
+    let row = |r: usize| [m[4 * r], m[4 * r + 1], m[4 * r + 2], m[4 * r + 3]];
+    crate::loader::game_matrix(&[row(0), row(1), row(2), row(3)])
+}
+
+fn remove_parked(sys: &mut TrafficSystem, slot: usize, commands: &mut Commands) {
+    if let Some(p) = sys.parked[slot].take() {
+        if let Some(e) = p.entity {
+            commands.entity(e).despawn();
+        }
+        sys.removed += 1;
     }
 }
 
@@ -1644,7 +1771,8 @@ fn remove_car(sys: &mut TrafficSystem, slot: usize, commands: &mut Commands) {
     }
 }
 
-/// Request models for cars that need one and build the entities of cars whose model has arrived.
+/// Request models for cars that need one and build the entities of cars whose model has arrived: lane followers
+/// (collider slot = their car slot) and parked cars (collider slot = `MAX_CARS` + their parked slot).
 fn spawn_entities(
     mut commands: Commands,
     system: Option<ResMut<TrafficSystem>>,
@@ -1662,45 +1790,50 @@ fn spawn_entities(
             None => return,
         },
     };
-    for slot in 0..MAX_CARS {
-        let Some(car) = sys.cars[slot].as_ref() else { continue };
-        let d = car.position.distance(focus);
-        if let Some(e) = car.entity {
+    // (collider slot, position, rotation, vehicle, paint, serial, entity)
+    let lane = sys.cars.iter().enumerate().filter_map(|(slot, c)| {
+        let c = c.as_ref()?;
+        let rotation = Quat::from_mat3(&Mat3::from_cols(c.up.cross(c.forward), c.up, c.forward));
+        Some((slot, c.position, rotation, c.vehicle, c.paint, c.serial, c.entity))
+    });
+    let parked = sys.parked.iter().enumerate().filter_map(|(slot, p)| {
+        let p = p.as_ref()?;
+        Some((MAX_CARS + slot, p.position, p.rotation, p.vehicle, p.paint, p.serial, p.entity))
+    });
+    let wanted: Vec<_> = lane.chain(parked).collect();
+    for (slot, position, rotation, vehicle, paint, serial, entity) in wanted {
+        let d = position.distance(focus);
+        if let Some(e) = entity {
             if d > DRAW_RANGE + 50.0 {
                 commands.entity(e).despawn();
-                sys.cars[slot].as_mut().expect("live car").entity = None;
+                sys.set_entity(slot, None);
             }
             continue;
         }
         if d > DRAW_RANGE {
             continue;
         }
-        let key = (car.vehicle, car.paint);
+        let key = (vehicle, paint);
         let Some(model) = models.models.get(&key).cloned() else {
             if models.requested.insert(key)
                 && let Some(req) = &requests
             {
-                let v = &sys.data.vehicles[car.vehicle];
+                let v = &sys.data.vehicles[vehicle];
                 let _ = req.0.send(CarRequest {
                     bundle: v.bundle.clone(),
                     paint_index: 0,
-                    traffic: Some(TrafficModelRequest {
-                        vehicle: car.vehicle,
-                        paint: car.paint,
-                        colour: v.paints.get(car.paint).map(|(_, p)| *p),
-                    }),
+                    traffic: Some(TrafficModelRequest { vehicle, paint, colour: v.paints.get(paint).map(|(_, p)| *p) }),
                     opponent: None,
                 });
             }
             continue;
         };
-        let v = &sys.data.vehicles[car.vehicle];
-        let rotation = Quat::from_mat3(&Mat3::from_cols(car.up.cross(car.forward), car.up, car.forward));
-        let transform = Transform::from_translation(car.position).with_rotation(rotation);
+        let v = &sys.data.vehicles[vehicle];
+        let transform = Transform::from_translation(position).with_rotation(rotation);
         let body = commands
             .spawn((
-                Name::new("traffic car"),
-                TrafficCar { vehicle: car.vehicle },
+                Name::new(if slot >= MAX_CARS { "parked car" } else { "traffic car" }),
+                TrafficCar { vehicle },
                 transform,
                 Visibility::default(),
                 RigidBody::Kinematic,
@@ -1718,7 +1851,7 @@ fn spawn_entities(
             traffic_layers(false),
             // The collider carries the car's mass, so a crashed car gets its box's inertia.
             ColliderDensity(v.mass / (size.x * size.y * size.z).max(0.1)),
-            TrafficBody { slot, serial: car.serial },
+            TrafficBody { slot, serial },
             ActiveCollisionHooks::MODIFY_CONTACTS,
             Friction::new(CRASH_FRICTION),
             Restitution::new(0.0),
@@ -1764,9 +1897,7 @@ fn spawn_entities(
                 }
             }
         }
-        if let Some(c) = sys.cars[slot].as_mut() {
-            c.entity = Some(body);
-        }
+        sys.set_entity(slot, Some(body));
     }
 }
 
@@ -1846,6 +1977,49 @@ fn crash_hit_cars(
     };
     for (collider, body, parent, hit) in &hits {
         commands.entity(collider).remove::<(TrafficHit, TrafficBody, ActiveCollisionHooks)>();
+        if body.slot >= MAX_CARS {
+            // A parked car: it stands still, then crashes like hit traffic.
+            let i = body.slot - MAX_CARS;
+            let ok = sys
+                .parked
+                .get(i)
+                .and_then(|p| p.as_ref())
+                .is_some_and(|p| p.serial == body.serial && p.entity == Some(parent.parent()));
+            if !ok {
+                continue;
+            }
+            let p = sys.parked[i].take().expect("checked above");
+            let entity = parent.parent();
+            commands.entity(entity).insert((
+                RigidBody::Dynamic,
+                LinearVelocity(Vec3::ZERO),
+                AngularVelocity(Vec3::ZERO),
+            ));
+            commands.entity(collider).insert(traffic_layers(true));
+            info!(
+                "traffic: parked car {i} (hull {} record {}, {}) hit, now crashing",
+                p.hull, p.record, sys.data.vehicles[p.vehicle].bundle
+            );
+            sys.crashed.push(Crashed {
+                entity,
+                vehicle: p.vehicle,
+                position: p.position,
+                velocity: Vec3::ZERO,
+                right: p.rotation * Vec3::X,
+                wrecked: false,
+            });
+            if let Some(impacts) = impacts.as_mut() {
+                impacts.0.push(crate::car_impacts::RawImpact {
+                    a: hit.hitter,
+                    b: entity,
+                    point: hit.point,
+                    normal: hit.normal,
+                    va: hit.v_hitter,
+                    vb: hit.v_traffic,
+                });
+            }
+            continue;
+        }
         let Some(car) = sys.cars.get(body.slot).and_then(|c| c.as_ref()) else { continue };
         if car.serial != body.serial || car.entity != Some(parent.parent()) {
             continue;
@@ -1933,6 +2107,9 @@ fn count_log(
     sys.tick_time = 0.0;
     sys.ticks = 0;
     let (lane, crashed) = sys.counts();
+    let (parked, parked_drawn) = sys.parked_counts();
+    let hulls: Vec<String> = sys.active.iter().map(|h| h.to_string()).collect();
+    info!("traffic parked: {parked} placed ({parked_drawn} with a model), active hulls [{}]", hulls.join(" "));
     // Lane followers within fixed radii of the player, to compare with the original's vehicle table
     // (research log 2026-10-09, "traffic density").
     if let Some((t, _)) = player.iter().next() {

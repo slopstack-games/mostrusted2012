@@ -590,6 +590,78 @@ noise in both) left out; 11 668 moving updates).
   `--test brake` eye z −1.54 → +0.06 m; `--test drift` yaw lag up to 23° (no lean), FOV up to 94.8° from the
   acceleration term (|a| includes the lateral part, as in the code).
 
+### 2026-10-10: the player's horn, impacts, grind and damage sounds (`player_sfx.rs`)
+Request: the player's horn, and the scrape / grind sound against walls and other cars with its level rule.
+Everything with its function and constant is in decomp.md "The player's horn, impacts and scrapes"; data
+`mw_assets::car_sfx::PlayerCarSfx`, runtime `crates/mostrusted/src/player_sfx.rs`.
+- **Horn**: HORN = action 5, W / pad B (`FUN_00483470` / `FUN_00482250`, already in decomp.md), now
+  `input::defaults::HORN`. The sound is the first sequence of the car's `<id>_VEHICLESOUND` horn list (+0x60 /
+  +0x64; the 911's `…1d1c69`: one wave item 0..5 s, gain 1.75, snapshot channel `Player Vehicle Horn`, gain 0.7 in
+  `Mix_Main`). Dead ends for the runtime: no code reads a player horn list; `HORN_SOUND` is two 64-bit ids hashed at
+  start-up (0x0117a4f0, 0x0117beb8) with no reader in the dump, `HORN_PRESS` an HSM node type. MODEL: plays while
+  held, 0.1 s release.
+- **There is no wall-scrape loop in the game.** The research log's "scrape branch `FUN_00929da0`" was wrong:
+  `FUN_00929da0` classifies a point against the car's box, used by `FUN_0057caf0`'s *crash* branch (entity
+  vtable +0x58 = byte +0x1c2b, the crash state) to play tumbling sounds by zone (+0x154..+0x164; not ported).
+  What the player hears scraping a wall is `FUN_0057caf0`'s impact waves (at most every 0.1 s above 2.235 m/s)
+  plus the damage sounds; the continuous grind (`FUN_0057f2e0`) is only against vehicles (race cars, traffic,
+  parked cars): MetalCar pool `97b6a045` on `Player Vehicle Scraping`, waves chained 0.278 s before their end, gain
+  `1.09^(−t)` from the grind's start (`powf` = `FUN_00ed9e1b`, base `.bss` 0x0110ce70 = 1.09), a 0.1 s fade after
+  the last contact, then a 0.05 s release; pitch `R^(2x−1)` with R = 1 (constant). A new grind plays a `Sparks`
+  wave (pitch 1..1.3, ≥ 0.1 s apart). The old `sfx.rs` scrape loop (looped `Scratch` waves by sliding speed, sparks
+  above 5 m/s) had no source and was removed.
+- **Damage sounds** (`FUN_00585030` → `FUN_00576220`): the damage grid (`paint_wear::damage_grid`) drives them: a
+  cell's zone level first passing its threshold (`.bss` 0x0110c990: 0.01 at the four light corners) plays a
+  `1ae351a5` wave on `Player Vehicle Glass Smash` (light glass breaking); with a race car in contact, a cell's
+  scratch level rising by > 0.106 in a frame plays a `Scratch` wave (`Player Vehicle Debris`, gain 0.196).
+- **Impacts** now use the traced player slot table (light / medium / heavy × front / side / rear, heavy adds a
+  +0x108 wave) and the surface wave on `Player Vehicle World Collision`; `sfx.rs`'s loudness-sorted cues remain only
+  for landing thumps (a model). The surface sets' player slot +0xf4 is a `RaceCarEffectSequenceItem` timeline (no
+  sound). The contacts come from every physics step (`particles::ImpactEvent`, now with the other body): reading
+  the last step's `Collisions` once per frame missed the impact step at 24 fps (a 14 km/h wall tap played nothing).
+- **Offline** (`mwtool traffic-sound player out.wav`, before placement): horn 5.09 s, −23.4 dBFS RMS (stopped after
+  1 s: 1.46 s with the release); player impact slots 2.5–2.85 s, −29.4..−34.8 dBFS; heavy extra −27.8; world waves
+  0.65–1.48 s, −28..−34 dBFS (gain 0.714 at 10 m/s, 1 at 50 m/s); grind waves 0.68–1.13 s, −24.8..−27.8 dBFS;
+  sparks 0.51–0.91 s, −43..−44 dBFS; glass 0.66–0.92 s, −29..−32 dBFS; scratch 3.0–3.2 s, −45 dBFS.
+- **In game** (`MW_AUDIO_METER=1 MW_CAR_SFX_LOG=1`, `--volume master=0`; out = rendered RMS before the volume):
+  - `--drive 911 --units 30 --spawn=800,42,1688,71 --auto-throttle 0.6 --bench 45 MW_HORN_AT=6,7.5`: the horn at
+    6 m, gain −0.3 dB, out −23.6 dBFS, released at 7.5 s; ramming traffic car 25 at 9.6 s: a player car impact
+    (light front, −26.4 dBFS), the grind and sparks together; the 911 keeps pushing the car: 98 grind waves in
+    35 s (one every ~0.45 s: 0.68–1.13 s waves handed over 0.278 s early), out −26.1 dBFS at the start falling to
+    −37.7 dBFS after 14 s (1.09^−14 = −10.5 dB, predicted −36.6), 4 car impacts, 2 sparks.
+  - into a wall at 14 km/h (`--spawn=-1045,25,1598,0 --auto-throttle 1`): front-left zone 2 % > 0.01 → one glass
+    wave, −26.2 dBFS at 3 m; another wall run: one world impact wave.
+- MODEL decisions: horn held / released, the contact value read as "the pair pushed this step", closing speed for
+  the impact level, the default surface, voices placed at the car, 12 one-shot voices, the grind's x from speed /
+  top speed. Open: the horn's runtime, the crashing car's zone sounds, landing sounds (`FUN_00576b40`, the surface
+  set's +0x124 / +0x158 pools, `Landings_Large`), the AI racers' contacts still read once per frame
+  (`car_sfx.rs`), the `VfxGlobals.VehicleScrapes` effects for car-to-car contacts (the code that picks one of
+  its 36 slots was not found; our scrape sparks stay the surface's side-impact effect).
+
+### 2026-10-10: parked cars (static vehicle records) placed and spawned as the game does
+Request: spawn the parked cars where the game places them, with the right models and paints, as loose bodies.
+Details in decomp.md "Traffic runtime" → "Parked cars", the record in formats.md (`mw_formats::TrafficStaticVehicle`).
+- **Records**: 392 over the hulls, all with chance 100, 34 pursuit-flagged, the 12-byte tail always 0; each flow
+  type (6–22) names one vehicle type. `mwtool traffic` prints the survey, `mwtool traffic --at x,z,r` lists them.
+- **Placement** (`FUN_0060db90`, with the hull's lanes): an LCG draw per record against the chance, the flow type's
+  vehicle (`FUN_00608c80`), the type's next paint (round robin, `FUN_006080d0` with no colour), 150 slots
+  (`world+0x2bbd8`). **Spawn** (`FUN_0060b2f0`) at the record's matrix; when the area starts over, records within
+  30 m of a race car are skipped (`world+0x35f94` = 900, read in `snap2`).
+- **Snapshots**: the live record table read in both. `snap2`: the same active hulls as ours, 77 live against our 79
+  (missing in the original: hull 232's records 3 and 4, both pursuit-flagged; open). `snap1`: 66 placed (60 spawned,
+  6 skipped by the 30 m rule on the car park's upper decks), ours 72 (missing: hull 255's ground-floor records 5–7,
+  13, 15, 16; open: `FUN_005f09a0` → `FUN_005ec6b0` releases records flagged 4, its condition not read).
+- **Runtime** (`traffic.rs`): kinematic bodies with the traffic models (same loader requests, 250 m draw range),
+  removed with their hull; a dynamic body's touch turns one into a crashed car (as hit traffic, and the impact goes
+  to `car_impacts.rs`). Checked: `--test crash-parked` (new) at (925, 24, −101) puts the 911 10 m in front of the
+  nearest parked car standing on collision: "parked car 0 (hull 213 record 0, VEH_122819_TR) hit, now crashing", the
+  van pushed across the lot (screenshot). Screenshots of the lot at (−981, 28, 1626): four cars in their paints
+  sitting on the yard (`--camera=-990,38,1598,-982,28,1627`).
+- **Found**: many records stand where there is no collision (yards, behind walls, car-park decks: the hull 131 yard
+  has none at the cars' height, its only nearby surface is at 30.7 m); they are scenery the player cannot reach.
+- MODEL decisions: the start-over flag (`world+0xa2bee`, writer not found) read as the first area after loading,
+  the clearance against the player only, no pursuits.
+
 ### 2026-10-09: frame drops: the render thread's multi-draw path, physics catch-up, bakes on every core
 User report: "optimize this game, it is weirdly dropping frames sometimes". Measured with a new per-frame log
 (`MW_FRAME_LOG=<file>`, `frame_log.rs`: main schedule segments First / PreUpdate / fixed loop / Update /

@@ -14,6 +14,10 @@ pub fn run(store: &AssetStore, component: &str, out: Option<&Path>, passby_mph: 
     if component == "sfx" {
         return sfx(store, out);
     }
+    if let Some(rest) = component.strip_prefix("player") {
+        let vehicle = rest.trim_start_matches(':').parse().unwrap_or(1_085_007);
+        return player(store, vehicle, out);
+    }
     let data = store.traffic_data()?;
     let mut picked: Option<(u32, TrafficEngine)> = None;
     for v in &data.vehicles {
@@ -251,6 +255,110 @@ fn sfx(store: &AssetStore, out: Option<&Path>) -> Result<()> {
     }
     if let Some(out) = out {
         let pcm = mw_audio::Pcm { channels: 1, sample_rate: rate as u32, samples: wav };
+        std::fs::write(out, pcm.to_wav())?;
+        println!("wrote {}", out.display());
+    }
+    Ok(())
+}
+
+/// One one-shot rendered once (to its end, or stopped with a 0.1 s release after `stop_after` s), with its
+/// bindings set first; prints its length, RMS and peak and appends it (then 0.25 s of silence) to `wav`.
+fn render_shot(
+    name: &str,
+    o: &mw_assets::car_sfx::OneShot,
+    set: &[(&str, f32)],
+    stop_after: Option<f32>,
+    wav: &mut Vec<i16>,
+) {
+    let rate = mw_audio::sfx_player::OUTPUT_RATE as usize;
+    let params = Arc::new(mw_audio::sfx_player::Params::new(o.bank.param_names()));
+    for (k, v) in set {
+        params.set(k, *v);
+    }
+    let mut p = mw_audio::sfx_player::Player::new(o.bank.clone(), params.clone());
+    params.trigger(mw_assets::car_sfx::CUE);
+    let (mut acc, mut peak, mut n) = (0f64, 0f32, 0usize);
+    let mut stopped = false;
+    while n < rate * 20 {
+        let s = p.next_sample();
+        acc += (s * s) as f64;
+        peak = peak.max(s.abs());
+        n += 1;
+        wav.push((s * 32767.0).clamp(-32768.0, 32767.0) as i16);
+        if let Some(t) = stop_after
+            && !stopped
+            && n as f32 / rate as f32 >= t
+        {
+            params.stop(0.1);
+            stopped = true;
+        }
+        if n % 64 == 0 && params.finished() {
+            break;
+        }
+    }
+    wav.extend(std::iter::repeat_n(0i16, rate / 4));
+    let f = &o.spatial.falloff;
+    println!(
+        "  {name} {:016x}: {:.2} s (data {:.2} s), RMS {:.1} dBFS, peak {:.1} dBFS; falloff min {} m max {} m peak \
+         gain {}",
+        o.id,
+        n as f32 / rate as f32,
+        o.duration(),
+        10.0 * (acc / n.max(1) as f64 + 1e-12).log10(),
+        20.0 * (peak + 1e-9).log10(),
+        f.min_distance,
+        f.max_distance,
+        f.peak_gain,
+    );
+}
+
+/// `traffic-sound player[:<vehicle>]`: the player car's horn, impacts, grind and damage sounds
+/// (`mw_assets::car_sfx::PlayerCarSfx`), each rendered once.
+fn player(store: &AssetStore, vehicle: u32, out: Option<&Path>) -> Result<()> {
+    use mw_assets::car_sfx::{IMPACT_GAIN, VOICE_GAIN, VOICE_PITCH, world_impact_gain};
+    let mut wav: Vec<i16> = Vec::new();
+    match store.player_horn(vehicle) {
+        Some(h) => {
+            render_shot("horn (held 1 s)", &h, &[], Some(1.0), &mut wav);
+            render_shot("horn (to its end)", &h, &[], None, &mut wav);
+        }
+        None => println!("  {vehicle}: no horn"),
+    }
+    let sfx = store.player_car_sfx();
+    println!("rules: {:?}", sfx.rules);
+    println!("impacts (player slots, level x front / side / rear):");
+    for (level, row) in sfx.impacts.iter().enumerate() {
+        for (dir, o) in row.iter().enumerate() {
+            match o {
+                Some(o) => render_shot(&format!("level {level} dir {dir}"), o, &[], None, &mut wav),
+                None => println!("  level {level} dir {dir}: none"),
+            }
+        }
+    }
+    for (k, o) in sfx.heavy.iter().enumerate() {
+        render_shot(&format!("heavy extra {k}"), o, &[], None, &mut wav);
+    }
+    for (k, o) in sfx.world_impact.iter().enumerate() {
+        for v in [10.0, 50.0] {
+            let g = world_impact_gain(v);
+            render_shot(&format!("world impact {k} at {v} m/s (gain {g:.3})"), o, &[(IMPACT_GAIN, g)], None, &mut wav);
+        }
+    }
+    for (k, o) in sfx.grind.iter().enumerate() {
+        render_shot(&format!("grind {k}"), o, &[(VOICE_GAIN, 1.0), (VOICE_PITCH, 1.0)], None, &mut wav);
+    }
+    for (k, o) in sfx.sparks.iter().enumerate() {
+        render_shot(&format!("sparks {k}"), o, &[(VOICE_PITCH, 1.0)], None, &mut wav);
+    }
+    for (k, o) in sfx.glass.iter().enumerate() {
+        render_shot(&format!("glass {k}"), o, &[(VOICE_GAIN, 1.0)], None, &mut wav);
+    }
+    for (k, o) in sfx.scratch.iter().enumerate() {
+        render_shot(&format!("scratch {k}"), o, &[(VOICE_GAIN, 1.0)], None, &mut wav);
+    }
+    if let Some(out) = out {
+        let rate = mw_audio::sfx_player::OUTPUT_RATE;
+        let pcm = mw_audio::Pcm { channels: 1, sample_rate: rate, samples: wav };
         std::fs::write(out, pcm.to_wav())?;
         println!("wrote {}", out.display());
     }

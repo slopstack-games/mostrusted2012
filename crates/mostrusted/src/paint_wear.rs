@@ -117,6 +117,12 @@ fn build_up(time: Res<Time>, mut cars: Query<(&Car, &mut CarGrime)>) {
 /// sides, left side). Each value is min(zone level (≤ 0.99) × `scale`, 1). Zone order on the vehicle (+0x112c
 /// …): front-left, front, front-right, right, rear-right, rear, rear-left, left; matched to our clips by name.
 pub fn damage_grid(levels: impl Iterator<Item = (&'static str, f32)>, scale: f32) -> [f32; 15] {
+    damage_grid_raw(levels).map(|v| (v * scale).min(1.0))
+}
+
+/// [`damage_grid`] before the scale: each cell's zone level (≤ 0.99). `FUN_00585030` compares these with the
+/// cells' glass thresholds (`player_sfx.rs`).
+pub fn damage_grid_raw(levels: impl Iterator<Item = (&'static str, f32)>) -> [f32; 15] {
     let mut z = [0.0f32; 8];
     for (name, l) in levels {
         let i = match name {
@@ -133,8 +139,7 @@ pub fn damage_grid(levels: impl Iterator<Item = (&'static str, f32)>, scale: f32
         z[i] = l.min(ZONE_CAP);
     }
     let [fl, f, fr, r, rr, b, rl, l] = z;
-    let raw = [rr, b, rl, rr, b, rl, r, l.min(r), l, fr, f, fl, fr, f, fl];
-    raw.map(|v| (v * scale).min(1.0))
+    [rr, b, rl, rr, b, rl, r, l.min(r), l, fr, f, fl, fr, f, fl]
 }
 
 /// Give every new car its grime and its own copies of its paint materials.

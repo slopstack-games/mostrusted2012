@@ -45,6 +45,7 @@ mod nitrous;
 mod paint_wear;
 mod particles;
 mod pause;
+mod player_sfx;
 mod police;
 mod prewarm;
 mod props;
@@ -575,6 +576,7 @@ fn main() -> anyhow::Result<()> {
                 Some("ai")
                     | Some("crash-traffic")
                     | Some("crash-ai")
+                    | Some("crash-parked")
                     | Some("freeroam")
                     | Some("jackspot")
                     | Some("bodyshop")
@@ -606,6 +608,7 @@ fn main() -> anyhow::Result<()> {
         | Some("race")
         | Some("crash-traffic")
         | Some("crash-ai")
+        | Some("crash-parked")
         | Some("freeroam")
         | Some("jackspot")
         | Some("bodyshop")
@@ -625,7 +628,7 @@ fn main() -> anyhow::Result<()> {
         Some("exhaust") => Some(drive::TestKind::Exhaust),
         Some(other) => {
             anyhow::bail!(
-                "unknown --test {other} (accel, brake, corner, handbrake, drift, donut, engine, exhaust, landing, climb, jitter, kerb, crash, smash, ai, race, crash-traffic, crash-ai, freeroam, jackspot, bodyshop, pursuit)"
+                "unknown --test {other} (accel, brake, corner, handbrake, drift, donut, engine, exhaust, landing, climb, jitter, kerb, crash, smash, ai, race, crash-traffic, crash-ai, crash-parked, freeroam, jackspot, bodyshop, pursuit)"
             )
         }
     };
@@ -787,6 +790,7 @@ fn main() -> anyhow::Result<()> {
     } else if let Some(kind) = match cli.test.as_deref() {
         Some("crash-traffic") => Some(car_impacts::ImpactTestKind::Traffic),
         Some("crash-ai") => Some(car_impacts::ImpactTestKind::Ai),
+        Some("crash-parked") => Some(car_impacts::ImpactTestKind::Parked),
         _ => None,
     } {
         app.insert_resource(car_impacts::ImpactTest::new(kind, cli.screenshot.clone()));
@@ -945,7 +949,7 @@ fn main() -> anyhow::Result<()> {
             settings: settings::load(cli.volume.as_deref()),
             open: cli.show_settings,
         })
-        .add_plugins((car_audio::CarAudioPlugin, car_sfx::CarSfxPlugin))
+        .add_plugins((car_audio::CarAudioPlugin, car_sfx::CarSfxPlugin, player_sfx::PlayerSfxPlugin))
         .add_plugins(audio::GameAudioPlugin {
             music: !cli.no_music
                 && !cli.mute

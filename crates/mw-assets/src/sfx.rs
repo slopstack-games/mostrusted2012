@@ -7,14 +7,12 @@
 //!   are not decoded yet, so every road is the default surface.
 //! - **Wind**: the speed-bound player sequences of `VehicleSound.Player_Sequences` (`SOUND/GLOBAL.BNDL`):
 //!   wind layers crossfaded over 45–250 mph.
-//! - **Impacts and scrapes**: the `CollisionSoundSet` (`SOUND/METALCAR.BNDL`) every car's `Vehicle_Sound`
-//!   points to. Its 31 sequence slots are not named; they are timelines of crunch / debris waves, sorted here
-//!   into light, medium and heavy cues by their loudness. Its `Scratch` waves become a scrape loop bound to
-//!   the sliding speed, and its `Sparks` waves a cue.
+//! - **Landings**: the `CollisionSoundSet` (`SOUND/METALCAR.BNDL`) every car's `Vehicle_Sound` points to, its
+//!   31 sequence slots sorted into light, medium and heavy cues by their loudness (a model: the game's landing
+//!   sounds, `FUN_00576b40`, are not ported). The body's impacts, the grind and the damage sounds follow the
+//!   game's tables in `mostrusted::player_sfx` (`AssetStore::player_car_sfx`).
 
-use std::sync::Arc;
-
-use mw_audio::sfx_player::{Bank, Fade, Item, ItemKind, ModValue, Sequence};
+use mw_audio::sfx_player::{Bank, ItemKind, Sequence};
 use mw_bundle::ResourceType;
 use mw_formats::genesys::{Object, Value, field_hash};
 
@@ -22,14 +20,11 @@ use crate::AssetStore;
 use crate::sfx_loader::{SoundLoader, handle, handles};
 use crate::vehicle_driver::{SkidRamp, TyreSoundParams};
 
-/// Cue and binding names of the vehicle bank. The `Custom.` bindings are ours (the scrape layer is
-/// assembled here from the collision set's `Scratch` waves).
+/// Cue names of the vehicle bank.
 pub mod names {
     pub const IMPACT_LIGHT: &str = "impact.light";
     pub const IMPACT_MEDIUM: &str = "impact.medium";
     pub const IMPACT_HEAVY: &str = "impact.heavy";
-    pub const SPARKS: &str = "impact.sparks";
-    pub const SCRAPE_SPEED: &str = "Custom.ScrapeSpeed";
 }
 
 /// Sequence fields of `CollisionSoundSet` (unnamed hashes, offset order) and its wave pools.
@@ -52,7 +47,6 @@ const SURFACE_ROAD: [u32; 2] = [0x4648_873a, 0x1376_f03b];
 const MASTER_GAIN: f32 = 1.4;
 const SKID_GAINS: [(&str, f32); 3] = [("Drift", 4.0), ("Spin", 3.5), ("Brake", 2.5)];
 const IMPACT_GAIN: f32 = 3.0;
-const SCRAPE_GAIN: f32 = 2.5;
 
 fn first_object(store: &AssetStore, bundle: &str, type_name: &str) -> Option<Object> {
     let b = store.bundle(bundle)?;
@@ -66,18 +60,6 @@ fn sub(o: &Object, hash: u32) -> Option<&Object> {
         Value::Struct(s) => Some(s),
         _ => None,
     }
-}
-
-/// A one-shot made into a loop: its last 30 ms are crossfaded into its start, so the wrap is seamless.
-fn seamless_loop(c: &mw_audio::sfx_player::Clip) -> mw_audio::sfx_player::Clip {
-    let k = (c.rate as usize * 3 / 100).min(c.samples.len() / 4);
-    let n = c.samples.len() - k;
-    let mut samples = c.samples[..n].to_vec();
-    for (i, s) in samples.iter_mut().take(k).enumerate() {
-        let w = i as f32 / k as f32;
-        *s = (*s as f32 * w + c.samples[n + i] as f32 * (1.0 - w)) as i16;
-    }
-    mw_audio::sfx_player::Clip { samples, rate: c.rate, looping: true }
 }
 
 /// A sequence with every wave item's gain scaled (its static value and output range), our mix level.
@@ -181,7 +163,7 @@ impl AssetStore {
             }
         }
 
-        // Impacts, scrapes, sparks.
+        // Landing thumps (`sfx.rs`; the body's contact sounds are `player_sfx.rs`).
         if let Some(cs) = first_object(self, "SOUND/METALCAR.BNDL", "Genesys.Gen.CollisionSoundSet") {
             let mut crashes: Vec<(f32, Sequence)> = COLLISION_SEQUENCES
                 .iter()
@@ -206,52 +188,6 @@ impl AssetStore {
                     Some((_, v)) => v.push(i),
                     None => bank.cues.push((cue.to_string(), vec![i])),
                 }
-            }
-            let pool = |name: &str| -> Vec<Arc<mw_audio::sfx_player::Clip>> {
-                handles(&cs, field_hash(name)).into_iter().filter_map(|w| loader.wave(w)).collect()
-            };
-            let wave_item = |waves, start: f32, end: f32, fade: Fade, gain: ModValue| Item {
-                start,
-                end,
-                fade_in: fade,
-                fade_out: Fade::default(),
-                enabled: String::new(),
-                channel: None,
-                kind: ItemKind::Wave { waves, gain, pitch: ModValue::constant(1.0), probability: None },
-            };
-            // The scratch waves are 3 s one-shots; played as loops they hold for as long as the body slides.
-            let scratch: Vec<_> = pool("Scratch").into_iter().map(|c| Arc::new(seamless_loop(&c))).collect();
-            if !scratch.is_empty() {
-                // Sliding contact (m/s): fades in from 1 to 3 m/s, louder up to 20.
-                let mut gain = ModValue::constant(1.0);
-                gain.binding = names::SCRAPE_SPEED.to_string();
-                gain.range = (1.0, 20.0);
-                gain.out = (0.25 * SCRAPE_GAIN, SCRAPE_GAIN);
-                let fade = Fade { time: 2.0, curve: 1.0 };
-                bank.sequences.push(Sequence {
-                    id: 0,
-                    binding: names::SCRAPE_SPEED.to_string(),
-                    min: 0.0,
-                    max: 60.0,
-                    items: vec![wave_item(scratch, 1.0, 60.0, fade, gain)],
-                    gate: String::new(),
-                    retrigger: false,
-                    jumps: Vec::new(),
-                });
-            }
-            let sparks = pool("Sparks");
-            if !sparks.is_empty() {
-                bank.sequences.push(Sequence {
-                    id: 0,
-                    binding: String::new(),
-                    min: 0.0,
-                    max: 0.0,
-                    items: vec![wave_item(sparks, 0.0, 1.0, Fade::default(), ModValue::constant(0.7))],
-                    gate: String::new(),
-                    retrigger: false,
-                    jumps: Vec::new(),
-                });
-                bank.cues.push((names::SPARKS.to_string(), vec![bank.sequences.len() - 1]));
             }
         }
         bank.channels = loader.channels();

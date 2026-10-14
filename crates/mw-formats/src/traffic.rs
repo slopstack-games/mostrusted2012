@@ -35,7 +35,7 @@
 //! | 0x02 | u8   | junctions (0x150 bytes each, [`TrafficJunction`]) |
 //! | 0x03 | u8   | stop lines (`u16` each: a rung position in 8.8 fixed point, `FUN_00439b60`) |
 //! | 0x04 | u8   | neighbours (4 bytes each) |
-//! | 0x05 | u8   | static (parked) vehicles (0x50 bytes each) |
+//! | 0x05 | u8   | static (parked) vehicles (0x50 bytes each, [`TrafficStaticVehicle`]) |
 //! | 0x06 | u16  | rungs |
 //! | 0x08 | u16, u16 | unknown, nearly always equal (light range?) |
 //! | 0x0E | u16  | entries of the u8 list at 0x30 (0, 1, 2, ...) |
@@ -90,8 +90,24 @@ pub struct TrafficHull {
     pub junctions: Vec<TrafficJunction>,
     /// Stop line positions: rung index in the high byte, fraction (1/256) in the low byte.
     pub stop_lines: Vec<u16>,
-    /// Raw 0x50-byte records (a world matrix plus 0x10 bytes, layout open).
-    pub static_vehicles: Vec<[f32; 20]>,
+    /// Parked cars ([`TrafficStaticVehicle`], 0x50 bytes each).
+    pub static_vehicles: Vec<TrafficStaticVehicle>,
+}
+
+/// A parked car's record (0x50 bytes; read by `FUN_0060db90`, which places the hull's parked cars when the hull
+/// becomes active, and `FUN_0060b2f0`, which spawns them at the matrix).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct TrafficStaticVehicle {
+    /// World matrix, D3D row-major (rows 0..2 the axes, row 3 the position).
+    pub matrix: [f32; 16],
+    /// `u16` at 0x40: the `TrafficFlowType` the vehicle is drawn from (`FUN_00608c80`).
+    pub flow_type: u16,
+    /// `u8` at 0x42: the chance (percent) that the car is there (`LCG % 100 + 1 <= chance`).
+    pub chance: u8,
+    /// `u8` at 0x43: bit 0 = not during a pursuit.
+    pub flags: u8,
+    /// 0x44..0x50, not read by the placement code.
+    pub rest: [u32; 3],
 }
 
 /// A traffic-light junction: a cycle of phases, each holding some light groups' stop lines.
@@ -191,7 +207,14 @@ impl TrafficLaneData {
             hull.spans.push((r.f32(o)?, r.u16(o + 8)?, r.u16(o + 10)?));
         }
         for k in 0..n_static {
-            hull.static_vehicles.push(r.f32_array::<20>(p[5] + 0x50 * k)?);
+            let o = p[5] + 0x50 * k;
+            hull.static_vehicles.push(TrafficStaticVehicle {
+                matrix: r.f32_array::<16>(o)?,
+                flow_type: r.u16(o + 0x40)?,
+                chance: r.u8(o + 0x42)?,
+                flags: r.u8(o + 0x43)?,
+                rest: r.u32_array::<3>(o + 0x44)?,
+            });
         }
         for k in 0..n_junctions {
             hull.junctions.push(Self::parse_junction(r, p[6] + 0x150 * k, n_hulls)?);

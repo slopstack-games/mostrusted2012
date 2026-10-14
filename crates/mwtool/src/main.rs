@@ -321,7 +321,7 @@ enum Cmd {
         #[arg(long, default_value_t = 40.0)]
         passby: f32,
     },
-    /// Render a scripted drive (skids, wheelspin, locked brakes, impacts, a scrape, wind) through the
+    /// Render a scripted drive (skids, wheelspin, locked brakes, landing thumps, wind) through the
     /// vehicle sound bank (tyre / road / wind / collision sounds) to a .wav.
     VehicleSound {
         out: PathBuf,
@@ -506,7 +506,8 @@ enum Cmd {
     Traffic {
         #[arg(long)]
         png: Option<PathBuf>,
-        /// List the lane sections within 80 m of `x,z` (start, end, length, speed, density, links).
+        /// List the lane sections within 80 m of `x,z` (start, end, length, speed, density, links) and the parked
+        /// cars within 80 m (or `x,z,r`: within r).
         #[arg(long, value_delimiter = ',', allow_hyphen_values = true)]
         at: Vec<f32>,
     },
@@ -1245,7 +1246,7 @@ fn main() -> Result<()> {
             }
             let mut player = mw_audio::sfx_player::Player::new(bank, params);
             player.dry = dry;
-            // Scripted 12 s: accelerate to 60 mph, cruise, drift, wheelspin, locked brakes, impacts, a scrape,
+            // Scripted 12 s: accelerate to 60 mph, cruise, drift, wheelspin, locked brakes, landing thumps,
             // then speed up to 160 mph for the wind.
             let rate = mw_audio::sfx_player::OUTPUT_RATE as usize;
             let tick = rate / 64;
@@ -1269,7 +1270,6 @@ fn main() -> Result<()> {
                         t if (6.5..7.5).contains(&t) => (0.0, -v, 1.0),
                         _ => (0.0, 0.0, 0.0),
                     };
-                    let scrape = if (9.0..10.0).contains(&t) { 8.0 } else { 0.0 };
                     driver.update(
                         1.0 / 64.0,
                         &VehicleInput {
@@ -1277,7 +1277,6 @@ fn main() -> Result<()> {
                             skid_wheel: Some(WheelSlip { slip_angle, slip_speed }),
                             brake,
                             handbrake: false,
-                            scrape_speed: scrape,
                         },
                     );
                     for (k, (at, speed)) in [(8.0, 15.0), (8.5, 6.0), (8.8, 2.0)].into_iter().enumerate() {
@@ -1586,9 +1585,10 @@ fn lights(store: &AssetStore, near: &[f32], hour: Option<f32>) -> Result<()> {
 
 fn traffic(store: &AssetStore, png: Option<&Path>, at: &[f32]) -> Result<()> {
     let t = store.traffic_lanes()?;
-    if let [x, z] = at[..] {
+    if let [x, z, ..] = at[..] {
+        let radius = at.get(2).copied().unwrap_or(80.0);
         let data = store.traffic_data()?;
-        for l in t.lanes_near(x, z, 80.0) {
+        for l in t.lanes_near(x, z, radius.min(80.0)) {
             let s = &t.hulls[l.hull].sections[l.section];
             let f = data.flows.get(s.flow as usize).copied().unwrap_or_default();
             let (a, b) = (l.points[0], l.points[l.points.len() - 1]);
@@ -1610,6 +1610,36 @@ fn traffic(store: &AssetStore, png: Option<&Path>, at: &[f32]) -> Result<()> {
                 if s.stop_line.is_some() { ", stop line" } else { "" }
             );
         }
+        // Parked cars (static vehicle records) within the radius.
+        for (hi, h) in t.hulls.iter().enumerate() {
+            for (k, v) in h.static_vehicles.iter().enumerate() {
+                let m = &v.matrix;
+                if (m[12] - x).hypot(m[14] - z) > radius {
+                    continue;
+                }
+                let picks: Vec<String> = data
+                    .flow_types
+                    .get(v.flow_type as usize)
+                    .map(|f| f.iter().map(|e| data.vehicles[e.vehicle].bundle.clone()).collect())
+                    .unwrap_or_default();
+                println!(
+                    "hull {hi:3} parked {k:2}: ({:.1}, {:.2}, {:.1}) heading {:.0}°, up ({:.2} {:.2} {:.2}), flow type {}, \
+                     {}%, flags {:#x}, rest {:x?}: {}",
+                    m[12],
+                    m[13],
+                    m[14],
+                    m[8].atan2(m[10]).to_degrees(),
+                    m[4],
+                    m[5],
+                    m[6],
+                    v.flow_type,
+                    v.chance,
+                    v.flags,
+                    v.rest,
+                    picks.join(" ")
+                );
+            }
+        }
         return Ok(());
     }
     let sum = |f: &dyn Fn(&mw_formats::TrafficHull) -> usize| t.hulls.iter().map(f).sum::<usize>();
@@ -1627,6 +1657,32 @@ fn traffic(store: &AssetStore, png: Option<&Path>, at: &[f32]) -> Result<()> {
         sum(&|h| h.stop_lines.len()),
         sum(&|h| h.static_vehicles.len()),
     );
+    // Parked cars: flow types, chances, flags and the unread tail, over every record.
+    {
+        let mut flow = std::collections::BTreeMap::<u16, usize>::new();
+        let mut chance = std::collections::BTreeMap::<u8, usize>::new();
+        let mut flags = std::collections::BTreeMap::<u8, usize>::new();
+        let mut rest = std::collections::BTreeMap::<[u32; 3], usize>::new();
+        let mut worst_ortho = 0f32;
+        for v in t.hulls.iter().flat_map(|h| &h.static_vehicles) {
+            *flow.entry(v.flow_type).or_default() += 1;
+            *chance.entry(v.chance).or_default() += 1;
+            *flags.entry(v.flags).or_default() += 1;
+            *rest.entry(v.rest).or_default() += 1;
+            let m = &v.matrix;
+            let dot = |i: usize, j: usize| (0..3).map(|k| m[4 * i + k] * m[4 * j + k]).sum::<f32>();
+            for i in 0..3 {
+                worst_ortho = worst_ortho.max((dot(i, i).sqrt() - 1.0).abs());
+            }
+            worst_ortho = worst_ortho.max(dot(0, 1).abs()).max(dot(1, 2).abs());
+        }
+        println!(
+            "parked cars: flow types {flow:?}, chance % {chance:?}, flags {flags:?}, {} distinct tails (most common \
+             {:x?}), worst axis error {worst_ortho:.4}",
+            rest.len(),
+            rest.iter().max_by_key(|(_, n)| **n).map(|(r, n)| (r, n))
+        );
+    }
     let length: f32 = t.hulls.iter().flat_map(|h| &h.sections).map(|s| s.length).sum();
     println!("total lane length {:.1} km", length / 1000.0);
     // Traffic-light junctions: phase cycle and the stop lines each light group holds (checked against the

@@ -50,7 +50,10 @@ pub use road_data::{Road, RoadData, RoadPoint, RoadPosition, RoadSection};
 pub use sampler::SamplerState;
 pub use text::{Language, VehicleEntry, VehicleList};
 pub use texture::{Dimension, Texture};
-pub use traffic::{LanePolyline, TrafficHull, TrafficJunction, TrafficLaneData, TrafficLightGroup, TrafficSection};
+pub use traffic::{
+    LanePolyline, TrafficHull, TrafficJunction, TrafficLaneData, TrafficLightGroup, TrafficSection,
+    TrafficStaticVehicle,
+};
 pub use trigger::{Collectable, Trigger, TriggerData, TriggerShape};
 pub use vehicle::{Locator, LocatorGroup, VehicleGraphicsSpec, Wheel, WheelPart};
 pub use vertex::{Semantic, VertexAttribute, VertexDescriptor};

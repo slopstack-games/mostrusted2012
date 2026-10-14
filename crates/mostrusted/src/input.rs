@@ -62,6 +62,8 @@ pub mod defaults {
     pub const BRAKE: &[Control] = &[Key(K::KeyZ), Trigger(B::LeftTrigger2, A::LeftZ)];
     /// HANDBRAKE (4): Space; X (pad slot 18).
     pub const HANDBRAKE: &[Control] = &[Key(K::Space), Button(B::West)];
+    /// HORN (5): W; B (pad slot 17). Held: the player's horn (`player_sfx.rs`).
+    pub const HORN: &[Control] = &[Key(K::KeyW), Button(B::East)];
     /// NITROUS (32): Left Shift; A (decomp.md, "Input").
     pub const NITROUS: &[Control] = &[Key(K::ShiftLeft), Button(B::South)];
     /// CHANGECAMERA (6): C; LB (pad slot 12).

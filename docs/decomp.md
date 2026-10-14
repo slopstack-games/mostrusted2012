@@ -1102,11 +1102,11 @@ vehicle slot at `world + i·0x80` (+0x00 speed, +0x48 horn timer, +0x58 blink ti
   competitor light front impact) through the emitter's `vtable+0x54`. World contacts (bitset `+0x5de10`) go to
   `FUN_0057caf0`.
 - **World impacts** (`FUN_0057caf0`, traffic and race cars): the contact's surface (`record[3] >> 13 & 0x7f`) gives
-  `SurfaceType.Collision_Sounds` (+0x1e0, `FUN_0054a4f0`; seven sets over the surfaces). Not scraping (emitter
-  `vtable+0x58` false): an impact above 2.235 plays one wave of the set's pool `7e01f1e6` (+0x118, round robin) on
-  the channel set's +0x60 with gain `0.714 + 0.286 × clamp((|v| − 30 mph) / 70 mph)` (|v| the car's speed;
+  `SurfaceType.Collision_Sounds` (+0x1e0, `FUN_0054a4f0`; seven sets over the surfaces). Not crashing (entity
+  `vtable+0x58`, byte +0x1c2b, false): an impact above 2.235 plays one wave of the set's pool `7e01f1e6` (+0x118,
+  round robin) on the channel set's +0x60 with gain `0.714 + 0.286 × clamp((|v| − 30 mph) / 70 mph)` (|v| the car's speed;
   `.data` 0x010c4730 = 0.44704, `.rdata` 0x00faba74 / 0x00faba78 / 0x00fae1c8 / 0x00faba7c), and for the player
-  the set's slot +0xf4. Scraping: a state machine over the pools +0x154..+0x164 (`FUN_00929da0`; not ported).
+  the set's slot +0xf4. While the car is crashing: zone sounds from +0x154..+0x164 (next section; not ported).
   The traffic channel set (`world2 + 0x12a00`) equals the competitors' (`+0x12950`) in `snap2`; the names come from
   `FUN_004b5f40` (+0x60 = `Competitor_World_Collision`, a channel of the mix snapshot `Mix_Main`).
 - **Race car impacts** (`FUN_00591ac0` per race car → `FUN_0057e920`), thresholds in the global `VehicleSound`:
@@ -1154,9 +1154,76 @@ vehicle slot at `world + i·0x80` (+0x00 speed, +0x48 horn timer, +0x58 blink ti
   (their own sounds, `props.rs`); a crashed car "skids" when it touches the world faster than 5 m/s (our crashed
   cars have no wheels to mark); the behaviour radius measured from the player's car; at most 8 impact voices,
   impacts at zero gain not started; one placement per voice (its first wave item's channel or snapshot channel).
-  Not ported: manoeuvre horns (no manoeuvres), wrecked-traffic sounds, car alarms, the player's horn (HORN = action
-  5, W / pad B; the player's horn list plays on `Player Vehicle Horn`, its runtime not traced), the AI skid state
-  machine, the player's impacts by this table (`sfx.rs` still sorts the 31 slots by loudness).
+  Not ported: manoeuvre horns (no manoeuvres), wrecked-traffic sounds, car alarms, the AI skid state machine. The
+  player's horn and impacts by this table: next section (2026-10-10).
+
+## The player's horn, impacts and scrapes (2026-10-10)
+
+Read for the requests "the player's horn" and "scrape / grind sounds against walls and other cars"; data
+`mw_assets::car_sfx::PlayerCarSfx`, runtime `crates/mostrusted/src/player_sfx.rs`. "Entity" = the 0x1c40-byte
+`RaceCarEntity` (`*(*0x010edae4 + 4) + 0x3050 + i·0x1c40`, vtable 0x00f99f98 in `snap2`); its vtable +0x50 plays a
+wave (`FUN_005756e0`), +0x54 a sequence (`FUN_005874e0`), +0x58 = byte +0x1c2b (the crash state, set by message 0
+through `FUN_00570bf0`), +0x5c = |+0xc84| > ε. `FUN_00594870` (per frame) builds a block for `FUN_00591ac0` from the
+global `VehicleSound` (`SOUND/GLOBAL.BNDL`): +0x00 `1dc7d3aa` (0.247), +0x10 `f5ddbc19` (0.106), +0x20 `bf4ff152`
+(1), +0x30 `e3d31382` / 2 (4), +0x40 `e40a7d46` (0.278), +0x50 the round-robin bytes, +0x5c the `VehicleSound`.
+The channel set for the player (`FUN_004b5f40`, base +0x127f0) is +0x00 `Landings_Large`, +0x08
+`Roll_Whoosh_Player`, +0x10 `Player_Vehicle_Collision_Big`, +0x18 `Player_Wrecking_Collision`, +0x20 `…_Bass_Hit`,
++0x28 `…_Glass_Smash`, +0x30 `…_Prop_Collision`, +0x38 `…_Scraping`, +0x40 `…_Sirens`, +0x48 `Sirens_Roadblock`,
++0x50 `…_Debris`, +0x58 `…_Suspension_Hits`, +0x60 `…_World_Collision` (all channels of the mix snapshot
+`Mix_Main`). `CollisionSoundSet` pools are `u32` pointers at +0x108.. with `u16` counts at +0x168..: +0x118
+`7e01f1e6`, +0x11c `1ae351a5`, +0x140 `97b6a045`, +0x148 `Scratch`, +0x14c `Sparks`, +0x154 `3578b364`, +0x158
+`5da2551f`, +0x15c `1db229d6`, +0x164 `1cb422d5`.
+
+- **Horn**: HORN is action 5 (keyboard W, pad B; "Input and control bindings"). The player's list is
+  `<id>_VEHICLESOUND` +0x60 / +0x64 (the 911: one sequence `…1d1c69`, a 0..5 s wave item, gain 1.75, on `Player
+  Vehicle Horn`). The runtime that plays it was not found: no code reads a `VehicleSound` horn list but the traffic
+  one (`FUN_006042c0`); the strings `HORN_SOUND` (two 64-bit ids hashed at start-up, 0x0117a4f0 / 0x0117beb8, no
+  readers in the dump) and `HORN_PRESS` (an HSM node type, `FUN_0077f820`) lead nowhere. MODEL: held = playing,
+  released = stop with a 0.1 s release.
+- **Impacts** (`FUN_00591ac0` for the player's entity): as the AI racers' (previous section) with the player's half
+  of the slot table: heavy front / rear / side +0x0c / +0x1c / +0x24, medium +0x9c / +0xa4 / +0xac, light +0xd4 /
+  +0xe4 / +0xec; a heavy one adds a wave of +0x108 (`a8f44b4f`). A world contact runs `FUN_0057caf0` with the
+  player's channel set (the wave on `Player_Vehicle_World_Collision`) and, for the player, the surface set's +0xf4
+  (`fd3bb937` = `…0b3935` in every surface set: a `RaceCarEffectSequenceItem` timeline automating race-car
+  properties 1 and 3, no sound; not ported).
+- **The crash branch of `FUN_0057caf0`** (the old note "scraping: a state machine over +0x154..+0x164,
+  `FUN_00929da0`" was wrong): it runs when the entity is crashing (vtable +0x58) and the surface has a set.
+  `FUN_00929da0` classifies the contact point against the car's box (0..10); with the car upright (`row2 · c ≥
+  .bss 0x0110cfe0`) and |`row0 · c`| above `.bss 0x0110c900` the zone is 5, not upright 0; a zone plays when it
+  differs from the last (+0x18d) or, upright, on an impact above 2.235: 0 → +0x15c, 1 → +0x158, 2–4 → +0x118, 5 / 9
+  → +0x164, 6–8 → +0x154, on the channel set's +0x18. Tumbling sounds; not ported.
+- **The grind** (`FUN_0057f2e0`, after the contacts): for each of the car's object contacts (`FUN_00904880` /
+  `FUN_00904850` on vehicle +0x5e098, 0x70-byte records, other object = shorts +0x60 + +0x62) with |+0x2c| ≥ `.bss`
+  0x0110cac0 (0.05 in `snap2`): the same object as the playing grind (+0x1a68) keeps it (timer +0x1afc = 0); a new
+  object that is a race car (`FUN_005766f0`, one of the 16) or in the traffic vehicle table (`FUN_005ea300`,
+  `world+0xa2bcc` .. +0x1af: traffic and parked cars), when this is the player (+0x1c18) or the other is no human
+  player, stops the old voices (`FUN_00aba570`, fade 0.05 s, `.rdata` 0x00fac2b4), starts a wave of +0x140
+  (`FUN_00576a20` case 0, round robin byte +5) on the set's +0x38 (`Player_Vehicle_Scraping`), sets +0xc30 =
+  −block+0x30 and plays sparks (`FUN_00575750`: when +0x1ae0 > `567b6cc3` (0.1 s), a `Sparks` wave on +0x50, pitch
+  `1 + (r − 1) · 0.3` with r ∈ [1, 2) from the random ring, +0x1ae0 = 0). Keeping it: pitch (voice vtable +0x34) =
+  clamp(R^(2x − 1), 1/R, R) with R = block+0x20 (1) and x = clamp(vehicle +0x1620 / +0x7e8, 0, 1) (`FUN_0059f6a0`;
+  read as speed / top speed); gain (+0x28) = `powf(1.09, −(+0xc30) − block+0x30)` (`FUN_00ed9e1b` is the CRT
+  `powf`; `.bss` 0x0110ce70 = 1.09); +0xc30 grows by dt every frame (`FUN_00591ac0`), so the gain is 1.09^(−t), t
+  since the grind started. When the voice's remaining time (voice +0x24 − +0x20) is under block+0x40 (0.278 s) a
+  new wave starts and the old one fades over that time (state 2, +0x50 / +0x54). After the loop, while +0x1afc <
+  0.1 s the gain is that × (0.1 − +0x1afc) / 0.1; after it both voices fade out over 0.05 s.
+- **Damage sounds** (`FUN_00585030` → `FUN_00576220`, when the vehicle's damage block (+0x1110) has +0x71 set and
+  this frame has a world contact (bitset +0x5ddec) or the last vehicle contact of kind 1 / 7 / 8 was kind 7 (a race
+  car: the object table `DAT_010edb68` entry's `u16` +6, low byte; 0x307 = race car, 0x208 = traffic slot, read in
+  `snap2`)): `FUN_00585030` keeps per damage-grid cell (15, entity +0xab0) the last scratch level min(raw × scale,
+  1) and a sticky flag `raw > threshold[cell]` (`.bss` 0x0110c990: 0.01 / 0.15 / 0.01, 0.25 / 0.15 / 0.25, 0.25 ×
+  6, 0.01 / 0.25 / 0.01 by row from the back), and returns the largest rises with the cell centres (0x0110cc90,
+  x −1..1, z −2..2) mapped onto the car's box. `FUN_00576220` (player only, +0x1c18): a flag rise above
+  `b0407c0b` (0.121) plays a wave of +0x11c on the set's +0x28 (`Player_Vehicle_Glass_Smash`), gain `(Δ − 0.121) /
+  (1 − 0.121)`; with a race car the last contact, a scratch rise above block+0x10 (0.106) plays a `Scratch` wave on
+  +0x50 (`Player_Vehicle_Debris`), gain `(Δ − 0.106) / (1 − 0.106)`, both at the cell's position.
+- **No wall-scrape loop**: walls give only `FUN_0057caf0` impact waves, at most every 0.1 s while the contact value
+  is above 2.235, and the damage sounds. The old `sfx.rs` scrape loop (the `Scratch` waves looped by the sliding
+  speed, sparks above 5 m/s) had no source and is gone.
+- MODEL decisions (`player_sfx.rs`): the contact value (record +0x2c, unit not traced) is "the pair pushed this
+  physics step" (a positive normal impulse); closing speed for the impact level; the default surface; per-step
+  contacts spaced 0.1 s; the voices at the car (the game places them at the contact or cell); 12 one-shot voices
+  at most; the grind's `x` from the car's speed and top speed.
 
 ## Groundcover drawing (2026-10-09)
 
@@ -2832,7 +2899,30 @@ from this base, which `FUN_005ef0f0` fills with `sys[0x80]`). All `prm` field na
   spacing; the fraction carries to the next section. The same function then places the hull's **parked cars**
   (static vehicle records): byte `+0x42` is a percentage chance, bit 0 of `+0x43` skips them in a pursuit, `u16
   +0x40` is the flow type; they go into the 150 slots after the traffic ones (the "256–405" range is parked
-  cars; not ported).
+  cars; ported 2026-10-10, "Parked cars" below).
+- **Parked cars** (2026-10-10, ported in `traffic.rs`; confirmed unless marked):
+  - *Placement* (`FUN_0060db90`, after the lanes; the whole function returns while the multiplier
+    `world+0xa2b7c` is 0): per record, one LCG step whose high word (taken before the step, without the ring)
+    gives `h % 100 + 1 ≤ chance`; skipped when `world+0xa2bf1` or `FUN_006a1200()` (a pursuit, inferred) holds
+    and flag bit 0 is set; `FUN_00608c80(flow type)` draws the vehicle; a slot from the free list
+    `world+0x34bd7`/`+0x34c70` gets the 12-byte record at `world+0x2bbd8 + slot·12` (`u16` hull, `u8` record,
+    `u8` state = 1, then the pick).
+  - *Spawn* (`FUN_0060b2f0`): each placed record (state bit 0, not 8) is spawned at the record's matrix by
+    `FUN_006080d0` into vehicle slot `256 + slot` with no colour asked, so the paint is the type's round robin
+    (`world+0xa0390`), as for traffic. While `world+0xa2bee` is set (cleared at the end; its writer not
+    found), a record within `sqrt(world+0x35f94)` = 30 m (900 in `snap2`) of any of the 16 race cars
+    (`FUN_00573390` / `FUN_00573420`; the player, AI racers and, inferred, the jack-spot cars) is flagged 0x18 and not
+    spawned. `FUN_005f0aa0` releases records flagged 4 (`FUN_005ec6b0`).
+  - *Snapshots* (the record table read live): `snap2` active hulls 179, 212–214, 232–234 (ours the same set): 77
+    records live, ours 79 (the original lacks hull 232's records 3 and 4, both pursuit-flagged, at (1535, −527);
+    why is open). `snap1` hulls 237–239, 253–255, 269: 66 placed (60 spawned, 6 flagged 0x18 by a race car
+    within 30 m: upper decks of the car park at (1800, 30, 1990)), ours 72 (the original also lacks hull 255's
+    ground-floor records 5–7, 13, 15, 16; open).
+  - MODEL: the "start over" flag is read as "no hull was active" (the first area after loading), the clearance
+    is tested against the player only, the pursuit test is false; parked cars are removed with their hull (as
+    lane cars). A parked car is a kinematic body until a dynamic body touches it, then a crashed car like hit
+    traffic (the same contact hook, `car_impacts.rs` impact). Records without collision under them (yards,
+    car-park decks: many of the 392) are scenery the player cannot reach.
 - **Per-car decision** (`FUN_005fc220`, confirmed). Inputs to the scorer:
   - *obstacle* (from the list `FUN_006024f0` builds: players' cars, 18 other objects, physical traffic): the one
     in the cone `fwd·d ∈ [0, 50]`, `cos ≥ 0.7071` (`FUN_00511540`; heights scaled by 2.5) with the smallest
