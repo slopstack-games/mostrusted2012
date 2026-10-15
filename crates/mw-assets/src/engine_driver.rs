@@ -257,6 +257,8 @@ enum Kind {
     /// `RaceCars.Entities["Id"].GetDistanceToListener` (`FUN_0059b690`: metres from the primary listener to the
     /// car), supplied by the caller for other cars ([`EngineDriver::set_listener_distance`]).
     ListenerDistance,
+    /// `Players.LocalPlayer.NitrousState.UsingNitrous` (the nitrous timeline's controllers).
+    UsingNitrous,
     Random(u32),
     Other,
 }
@@ -280,6 +282,7 @@ fn classify(name: &str) -> Kind {
         "ShuntLfo" => Kind::ShuntLfo,
         "SkidLfo" => Kind::SkidLfo,
         "GetDistanceToListener" => Kind::ListenerDistance,
+        "UsingNitrous" => Kind::UsingNitrous,
         _ => {
             if let Some((list, k)) = gate::parse(name) {
                 return Kind::GearGate(list, k);
@@ -407,6 +410,12 @@ pub struct EngineDriver {
     time: f32,
     rng: u32,
     started: bool,
+    /// The caller runs the engine's start-up states and starts the ignition itself ([`EngineDriver::crank`]).
+    manual_ignition: bool,
+    /// `EngineOn` (vehicle +0x1ef0): 1 for a running engine unless the caller ramps it ([`EngineDriver::set_engine_on`]).
+    engine_on: f32,
+    /// Nitrous in use (`Players.LocalPlayer.NitrousState.UsingNitrous`).
+    nitrous: bool,
     state: SoundState,
     listener_distance: Option<f32>,
 }
@@ -496,6 +505,9 @@ impl EngineDriver {
             time: 0.0,
             rng: 0x1234_5678,
             started: false,
+            manual_ignition: false,
+            engine_on: 1.0,
+            nitrous: false,
             state: SoundState::default(),
             listener_distance: None,
         };
@@ -666,7 +678,9 @@ impl EngineDriver {
         let d = self.drive_state(dt, i);
         if !self.started {
             self.started = true;
-            self.params.trigger(cue::IGNITION);
+            if !self.manual_ignition {
+                self.params.trigger(cue::IGNITION);
+            }
             self.shifts_seen = Some(d.shifts_started);
         }
         if self.shifts_seen != Some(d.shifts_started) {
@@ -753,6 +767,33 @@ impl EngineDriver {
         self.state
     }
 
+    /// The caller runs the engine's start-up states: no ignition on the first update, [`EngineDriver::crank`]
+    /// starts it and [`EngineDriver::set_engine_on`] sets `EngineOn`.
+    pub fn set_manual_ignition(&mut self) {
+        self.manual_ignition = true;
+    }
+
+    /// The gearbox entered its cranking state (1): `FUN_0058c930` starts `Ignition_Sequence`.
+    pub fn crank(&self) {
+        self.params.trigger(cue::IGNITION);
+    }
+
+    /// `EngineOn` (vehicle +0x1ef0, `FUN_009b3030`: +0.05 per tick towards 1 while the engine runs, −0.05 towards 0
+    /// while the gearbox is in its start-up states); the engine buses' gains are bound to it.
+    pub fn set_engine_on(&mut self, v: f32) {
+        self.engine_on = v.clamp(0.0, 1.0);
+    }
+
+    /// Nitrous in use: the binding of the nitrous timeline's controllers. A new use starts the timeline when it is
+    /// not already playing (assumed: its starter is not in the dump; the timeline's own controllers restart a
+    /// playing one).
+    pub fn set_nitrous(&mut self, on: bool) {
+        if on && !self.nitrous {
+            self.params.trigger(cue::NITROUS);
+        }
+        self.nitrous = on;
+    }
+
     /// The car's pop rule data (`Engine.Sound`).
     pub fn set_pop_params(&mut self, p: PopParams) {
         self.pop_params = p;
@@ -799,7 +840,8 @@ impl EngineDriver {
                 Kind::AudibleRpm => audible,
                 Kind::NormalisedRpm => norm,
                 Kind::Load => load,
-                Kind::EngineOn => 1.0,
+                Kind::EngineOn => self.engine_on,
+                Kind::UsingNitrous => f32::from(u8::from(self.nitrous)),
                 Kind::Speed => i.speed_mph,
                 Kind::Harmonic1 => firing * self.tuning.harmonic1,
                 Kind::Harmonic2 => firing * self.tuning.harmonic2,

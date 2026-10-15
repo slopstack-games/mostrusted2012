@@ -226,10 +226,13 @@ fn engine_sound(
 fn update_engine_params(
     time: Res<Time>,
     fixed: Res<Time<Fixed>>,
-    cars: Query<(&crate::drive::Car, &crate::drive::CarControls), With<crate::drive::Player>>,
+    cars: Query<
+        (&crate::drive::Car, &crate::drive::CarControls, Option<&crate::ignition::EngineStart>),
+        With<crate::drive::Player>,
+    >,
     mut sounds: Query<&mut EngineSound>,
 ) {
-    let Ok((car, controls)) = cars.single() else { return };
+    let Ok((car, controls, start)) = cars.single() else { return };
     // The car's own control block (the player's input, or the AI's while it drives the player's car in a
     // cutscene), with the pedals swapped in reverse as the physics does.
     let throttle = if car.gear < 0 { controls.brake } else { controls.throttle };
@@ -254,6 +257,13 @@ fn update_engine_params(
             if let Some(v) = dp.handling.param("Engine.937338e7") {
                 d.set_speed_load(v);
             }
+            // The engine's start-up states (`ignition.rs`): `EngineOn` gates the engine buses; the ignition
+            // sequence plays on its snapshot channel at the car (`player_sfx.rs`), not in the engine bank.
+            if let Some(e) = start {
+                d.set_manual_ignition();
+                d.set_engine_on(e.on);
+            }
+            d.set_nitrous(car.drivetrain.nitrous);
             let i = EngineInput {
                 rpm,
                 throttle,
