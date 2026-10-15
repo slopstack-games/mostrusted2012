@@ -92,8 +92,9 @@ InstanceList ──> Model ──(LOD state)──> Renderable ──(per mesh)�
   (+0x10 there): it binds `AOMapTextureSampler` and `LightMapTextureSampler` (the engine's global samplers)
   for every mesh of the model (`mw_formats::Model::overrides`).
 - **PropObject (0x217)**: model imports at 0x04 and 0x08 (same model in practice). **CompoundObject (0x215)**:
-  model imports at 0x04 (high detail, skinned to the skeleton at 0x08: one bone per part), 0x24 (lower-poly
-  variant, same bbox) and sometimes 0x28; behaviours at 0x0C (count at 0x01; 0x14-byte entries: GeneSys import
+  model imports at 0x04 (high detail, skinned to the skeleton at 0x08: one bone per part), 0x24 (the unskinned
+  model it stands as, same bbox) and on billboards 0x28 (the found billboard's model; decomp.md "Compound
+  models"); behaviours at 0x0C (count at 0x01; 0x14-byte entries: GeneSys import
   at +0x00, type id at +0x0C), joints at 0x2C (count 0x3C, none in the install), parts at 0x30 (count 0x38,
   0x70 bytes: embedded `WorldObject` with its own behaviours and physical definition at +0x1C, skeleton bone
   +0x60, replaces / next / first replacement u8 part indices +0x64..+0x66, linked parts +0x68 / +0x6C) and a

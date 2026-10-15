@@ -207,12 +207,15 @@ impl AssetStore {
                         let res = self.load(obj).ok()?;
                         parse_def(&res).ok()?.model()
                     });
+                    // Compounds' per-instance material overrides (the billboards' picture, `ObjectInstance`).
+                    let overrides = (!inst.overrides.constants.is_empty() || !inst.overrides.textures.is_empty())
+                        .then(|| std::sync::Arc::new(inst.overrides));
                     match model {
                         Some(model) => dest.push(Placement {
                             model,
                             transform: inst.transform,
                             backdrop: false,
-                            overrides: None,
+                            overrides,
                             object: Some((obj, kind)),
                             lod_scale: inst.lod_scale,
                         }),

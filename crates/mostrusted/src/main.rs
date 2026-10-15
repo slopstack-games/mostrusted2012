@@ -142,8 +142,9 @@ struct Cli {
     /// Smash test: speed (km/h) the car holds through the props.
     #[arg(long, default_value_t = 60.0)]
     smash_speed: f32,
-    /// Smash test: what stands on the track: `props` (cone, sign, lamp, fence, wall) or `compounds` (six
-    /// compound objects that break into their parts, filmed from beside the last knock).
+    /// Smash test: what stands on the track: `props` (cone, sign, lamp, fence, wall), `compounds` (six
+    /// compound objects that break into their parts, filmed from beside the last knock) or `bags` (a trash bag
+    /// and crates without an `AdditionalInfo`).
     #[arg(long, default_value = "props")]
     smash_set: String,
     /// Draw props, compound and dynamic objects without collision (smashable street furniture is on by
@@ -828,6 +829,7 @@ fn main() -> anyhow::Result<()> {
             cli.screenshot.clone(),
             cli.smash_speed / 3.6,
             cli.smash_set == "compounds",
+            props::smash_test_props(&cli.smash_set).len(),
         ));
         app.add_plugins(props::SmashTestPlugin);
         app.add_systems(Startup, |mut t: ResMut<Time<Virtual>>| t.set_relative_speed(2.0));
@@ -1278,7 +1280,7 @@ fn receive_assets(
                 });
                 loaded.instances += 1;
             }
-            Msg::Prop { model, transform, physics, pieces, lod } => {
+            Msg::Prop { model, transform, physics, pieces, lod, standing, found } => {
                 let Some(parts) = loaded.models.get(&model) else { continue };
                 let range = loaded.shadow_ranges.get(&model).copied().map(shadow_cull::ShadowRange);
                 let get = |k: &Option<mw_bundle::ResourceId>| k.and_then(|k| loaded.models.get(&k).cloned());
@@ -1286,13 +1288,22 @@ fn receive_assets(
                     parts: parts.iter().map(get).collect(),
                     rest: get(&rest),
                 });
-                let sets = lod::mesh_sets(lod.as_ref(), (model, parts), &loaded.models);
-                let sets: Vec<_> = sets
-                    .into_iter()
-                    .map(|(k, parts, mask)| {
-                        (parts, mask, loaded.shadow_ranges.get(&k).copied().map(shadow_cull::ShadowRange))
+                let with_ranges = |sets: Vec<(mw_bundle::ResourceId, ModelParts, u8)>| -> Vec<_> {
+                    sets.into_iter()
+                        .map(|(k, parts, mask)| {
+                            (parts, mask, loaded.shadow_ranges.get(&k).copied().map(shadow_cull::ShadowRange))
+                        })
+                        .collect()
+                };
+                let sets = with_ranges(lod::mesh_sets(lod.as_ref(), (model, parts), &loaded.models));
+                // A billboard's second standing model (the found one), with its own LODs.
+                let found = found.and_then(|(key, lod)| {
+                    let parts = loaded.models.get(&key)?;
+                    Some(props::MeshSets {
+                        sets: with_ranges(lod::mesh_sets(lod.as_ref(), (key, parts), &loaded.models)),
+                        lod: lod.map(|l| (l.table, l.scale)),
                     })
-                    .collect();
+                });
                 props::spawn_prop(
                     &mut commands,
                     physics,
@@ -1301,6 +1312,8 @@ fn receive_assets(
                     range,
                     pieces,
                     lod.map(|l| (l.table, l.scale)),
+                    standing,
+                    found,
                 );
                 loaded.instances += 1;
                 loaded.props += 1;
