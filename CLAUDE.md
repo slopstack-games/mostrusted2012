@@ -181,6 +181,9 @@ MW_NO_VIGNETTE=1 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,172
 MW_ENGINE_TRACE=<scratch>/rpm.trace ./target/release/mostrusted --drive 911 --test engine
 # Driving without a human: fixed throttle, logs "car at x y z, speed, compression" once a second
 ./target/release/mostrusted --drive 911 --units 12 --auto-throttle 0.4 --screenshot <scratch>/drive.png --screenshot-delay 400
+# Session 9 (2026-10-15): mwtool music (song lists, --wave <id> --out <dir>), mwtool ui map-items (the map's item looks),
+# --smash-set bags, --map-waypoint <event> (GPS route; MW_GPS_LOG=1), MW_XINPUT_CONNECTED=0|1 (title prompt pair),
+# MW_CAR_SFX_LOG=1 (other cars' horns / alarms), MW_NITROUS_AT=t0,t1 on mwtool engine-sound; I / L3 engine off / on
 # The Steam Controller is read from HID (steam_controller.rs; MW_STEAM_CONTROLLER=0 off); --gamepad-debug logs pads
 # Controls are the original's defaults (input.rs): arrows steer, A accelerate, Z brake, Space handbrake, W horn; pad
 # left stick, RT / LT, X, B horn. Easydrive (easydrive.rs): numpad 6 or d-pad right opens (E too), 8 / 2 move, 4 back; headless:
