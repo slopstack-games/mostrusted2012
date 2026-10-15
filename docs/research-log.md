@@ -10,6 +10,37 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-15: navigation (SET DESTINATION, the GPS route) from the code
+User play test: "Navigation (SET DESTINATION route / GPS) does not work yet". Details in decomp.md "Navigation: SET
+DESTINATION and the GPS route".
+- **Found**: `Map:OnSetWaypoint` is dispatched by its name hash (static initialiser 0x00f68cf0 → `.bss` 0x0117f49c)
+  in the map's action handler (0x008188e0) to `FUN_0080eb60`: events route to their start trigger, collectables
+  to their trigger. The route lives in `UIMapManager` (G+0x2f480) +0x1f8f0: three route objects (waypoint, the
+  race's GPS line, the shown one). The search is the AI's A* (path request type 9, `FUN_00843240`, both route
+  options on); when moving, the start is moved two road nodes ahead along the velocity. Line: ≤ 512 points
+  with the node's drivable width, u along the path and side vectors. Every 0.5 s the car is projected onto the
+  path; 15 m off → re-route; progress refined per frame within ±50 m; arrival within 5 m clears all routes.
+  The A* turn penalty is 5·max(0, 0.98 − cos Δ)³ (the trig was open: it is a cosine), multiplied by the × 5 / × 100
+  route-option factors; the exit-angle reference is still open.
+- **Ported** (`gps.rs`): SET DESTINATION on the map for events and (new) every collectable's option menu, the
+  route on a worker thread, the line, re-routing, progress, arrival, and drawing on the world map and the minimap.
+  `--map-waypoint <event id>` chooses SET DESTINATION headlessly (with `--show-map` the map stays open);
+  `MW_GPS_LOG=1` logs requests, routes, the 0.5 s checks and re-routes.
+- **Checked**: CONTINENTAL DRIFT (1.2 km) and HARBOR RUN (6.4 km) from the default spawn: the map screen draws
+  the route along the roads to the event, the minimap shows it from the car; with the car moving up the road
+  the progress follows (logged every 0.5 s: along / off / left). At the default spawn the car is 22 m from the
+  first route's nearest point (it starts at a node behind), so the first check re-routes, as the code would.
+  Unit tests: line decimation / u / side, nearest point and progress.
+- **Open**: (1) how the original draws the route (colour, width, texture, whether the driven part is hidden):
+  the renderer was not found in the decompiled set; **capture wanted**: a Steam F12 screenshot of the original's
+  minimap and map with a destination set (e.g. HARBOR RUN from the start point). (2) The A* turn penalty's angle
+  reference (data check: AIData junction exit angles against the exits' geometric headings), then the penalty and
+  the route-option factors can be ported; without them our routes may make U-turns the original avoids (seen once
+  after the start-point re-route). (3) The path expansion `FUN_00520a50` (ours: the AI's spline samples). (4) The
+  race GPS line (second route, `FUN_007a0e40`, next min(8, perLap − 1) gates) and its chaining into the shown
+  route are not ported. (5) Lua hooks `SetRouteFromPlayerToEvent` / `ToSafehouse` / `ClearTargetRoute` /
+  `SetWaypointToJackspot` not read.
+
 ### 2026-10-15: surface effects and tyre marks from the code (smoke, kick-up, marks per wheel surface)
 
 The play test said grass and dirt behave like road for the effects and the tyre marks look off. Cause: every

@@ -2337,6 +2337,80 @@ decisions: `Collect3` taken as every trigger of the kind (74 speed cameras, 216 
 then); the packs' jack spots use the base look; RECOMMENDS lists nothing; the filter index is not saved;
 collectables have no options; on the HUD every jack spot counts as unlocked.
 
+### Navigation: SET DESTINATION and the GPS route (2026-10-15, `gps.rs`, `map_screen.rs`, `hud.rs`)
+
+Notation: UIM = G+0x2f480 (`UIMapManager`, 0xd550 bytes); RC = UIM+0x1f8f0, the route container, three route
+objects of 0x4450 bytes: RC+0 (the waypoint route), RC+0x4450 (a second route, the race's GPS line over the next
+gates, `FUN_007a0e40`), RC+0x88a0 (the **shown** route, the one followed and drawn). Route fields: +0x0000 up to
+512 line points of 0x20 bytes, +0x4000 point count, +0x4008 the path request's done flag, +0x4018 the path
+(nodes as `i16` at +2.., count +0xf0, length +0x2dc), +0x4300 / +0x4400 a list of chained paths and its count
+(race segments), +0x4404 start, +0x4410 velocity, +0x441c destination, +0x4428..+0x4434 the line's bounding box,
++0x4438 the check timer, +0x443c progress (u), +0x4440 remaining distance, +0x4444 state (1 pending, 2 built),
++0x4449 no re-routing, +0x444a no progress tracking.
+
+- **Setting** (`Map:OnSetWaypoint`; the action's name hash at `.bss` 0x0117f49c, matched in the map's action
+  handler at 0x008188e0 → `FUN_0080eb60`): the selected item (`LiveMapManager` +0x2610) of type 1, 9 or 10
+  (events) → `FUN_00796ff0(RC, G, event id)`: the destination is the event's start trigger position
+  (`FUN_006e56f0` → `FUN_0053c020`), UIM+0x2c8e4 = the event id; any other item → its position
+  (`FUN_007ed6e0` on the POI list at UIM+0x14c50, else `FUN_008091d0`: collectables (3–7, 13–18) the trigger
+  position, the player (0) its car) → `FUN_007970e0`; the second route is cleared first (`FUN_00792390`),
+  UIM+0x2c5e0 = −1, `LiveMapManager` +0x26db / +0x26d8 = 1. The menu item has no exit token: the options stay
+  open. `SetWaypointToEventFromBinding` (Lua, `LAB_006767d0` → `FUN_00674c60`) does the same for an event id;
+  `SetWaypointToJackspot`, `SetRouteFromPlayerToEvent` (`FUN_006802d0`), `SetRouteFromPlayerToSafehouse`,
+  `ClearTargetRoute` are Lua hooks (not read). Every collectable's option menu (`SpeedCamera`, `Jump`,
+  `SecurityGate`, `BodyShop`, `Jackspot`, `JackspotDlc1`, `JackspotLocked`) starts with SET DESTINATION.
+- **Request** (`FUN_00796df0(route, G, start, velocity, destination, 1)`): the start is the local player's
+  position (`FUN_006e02f0`); when the velocity is not zero (any component beyond ±1.19e-7) it is moved onto the
+  road graph: the nearest node (`FUN_004375b0`), then `FUN_00436c00` twice along the velocity (two nodes
+  ahead); then `FUN_00843240(start, destination, 1, 1, route+0x4008)` queues a path request of type 9 (0x28-byte
+  message, `FUN_0084b640`) for the AI's A* worker. The two option bytes are the A* route options: in
+  `FUN_00527300` they switch the × 5 (`.rdata` 0x00fa97dc) shortcut and × 100 (0x00fa300c) jump factors, which
+  multiply the **turn penalty only** (step = exit cost × 1/511 (0x00fa9ea4) + penalty × factors). The penalty
+  `FUN_0052e250(a, b)` is 5 (0x00f9c588) · max(0, 0.98 (0x00fa9eac) − cos(b − a))³ with angles in degrees ×
+  π/180 (the polynomial with `.rdata` 0x01075470.. is a cosine: 1 at 0, −1 at π); a = the angle (×2°) of the
+  exit at the next junction leading back to the current one, b = the exit's angle; 0xff means none (no penalty).
+  What the exit angle measures (heading out, or in) was not resolved, so the penalty's effect on straight vs
+  U-turn is open.
+- **Line** (`FUN_007a0f20` state 1: when the path is in, `FUN_0079e4f0`; a failed build asks again):
+  `FUN_0079b890` walks the path's spline points (`FUN_00520a50`, per node pair), keeping every
+  ((count >> 9) + 1)th so at most 512, plus the last node; each point: position, (0, 0, 1), the width = node
+  +0x25 × 0.25 (`.rdata` 0x00f9c584; leading nodes under 0.001 m skipped, a zero width takes the previous),
+  interpolated between the nodes, u = distance along × 1 / path length. `FUN_0079e4f0` then (single path or
+  chained race segments) recomputes u over the kept points, replaces the side with normalise(−dz, 0, dx) of
+  p[i+1] − p[i−1] (the last point its own segment), pushes points out by 10 m (0x00fa929c) sideways where the line
+  doubles back on itself (p[i] = p[i−2]), appends the destination when it differs from the last point, and
+  stores the bounding box.
+- **Following** (`FUN_007a0f20` state 2, every frame from the container update `FUN_007a2aa0`, which first
+  copies the car's position into +0x4404 and its velocity into +0x4410 of all three routes, the velocity zeroed
+  when it points backwards along the shown line): the timer (+0x4438, 0.5 s `.rdata` 0x00f8a810) runs down with
+  the game clock; at 0: reload, `FUN_005232f0` = the nearest point on the path to the car in 3D (over every
+  spline piece) and the distance along it; progress = along / length, remaining (+0x4440) = length − along
+  (the `UIMapManager.RouteDistance` binding, `LAB_007a7350`, reads the shown route's); unless +0x4449, with a
+  single path, a car 15 m or more from that point (squared ≥ 225, `.rdata` 0x00fd6b48) asks for the route again
+  (`FUN_00796df0` from the car, with its velocity). Then (unless +0x444a) the progress is refined each frame: the
+  line point nearest the car with |u − progress| < 50 m (0x00fa9ed8) / length, heights × 1.25 (0x00fe0f90), then
+  the car projected (`FUN_009f7ef0`, ground plane) onto the nearer neighbouring segment, u interpolated.
+- **Shown route** (`FUN_007a2aa0`): when no route was pending at the start of the frame's update but one was
+  and is now built, the shown route (RC+0x88a0) becomes a copy of the waypoint route (`FUN_007aa050`), with the
+  second route's paths chained on when both are built (`FUN_0079ef00`, joining paths whose ends meet within
+  1 m); RC+0xccd8 = −1, flags +0xcce9 / +0xd542 = 1.
+- **Arrival** (`FUN_007a2aa0`): with the shown route built, a single path (count +0xcca0 = 0), RC+0xd543 clear
+  and `FUN_006e0430` false (game-mode manager +0x2e91), a car within 5 m on the ground plane of the shown route's
+  destination (squared < `.data` 0x010c61c8 = 25, the initial value) → `FUN_00673770`: every route cleared. The
+  same function is called from the event code (0x0075e100, 0x00761d70, 0x00781b70, 0x00787c20). Starting an
+  event near its start (`FUN_0074ad50`) clears UIM+0x2c8e4 when it is the waypoint's event.
+- **Drawing: not found.** The shown route's points are read by code outside the decompiled set (no reference to
+  RC+0x88a0 / +0xc8a0 / +0x443c besides the ones above). Not the `UIRoadRibbonShader` (the front end's light
+  streaks, `frontend.rs`), not a `PointOfInterestVisuals` look, not `TextStyle` data (`FUN_0079a2f0`, which reads
+  colours, is a text style reader). `Widget_PointOfInterest` +80 (`062ec799`) is `MarginProportion` (by its
+  name hash at `.bss` 0x0117f9a8, `FUN_0080b570`), not a line colour.
+
+**Port**: `gps.rs` as above; the path is `AiData::path` (A* on link lengths, no turn penalty) through
+`ai::spline_through`'s samples; the map screen draws the route over the city image and the minimap into its
+pixels. Model decisions: the line's look (light blue, the road's drivable width, at least 2 px on the minimap and
+3 px on the map, only from the car's progress on); a failed search clears the destination; an event start
+clears the route when a race starts (`RaceState` appears); the 5 m arrival test runs whenever a destination is set.
+
 ### Race HUD, countdown and results (2026-10-09, `hud.rs`, `ui_quads.rs`)
 
 What is data (research log 2026-10-09): the screens and layouts, the countdown / results `Sequence`s and their
@@ -3430,7 +3504,7 @@ off-screen check passes, the driver asks for a reset (`FUN_0083d4b0`).
 
 - Routes: an A* search on a worker thread (`"AStarWorker"`, `FUN_00528fe0`) over the **AIData** road graph's
   junctions (`FUN_00527300`: step cost = exit cost / 511 (= length / 200 m), plus a turn penalty
-  5·max(0, 0.98 − trig(Δ))³ (`FUN_0052e250`; sin or cos unresolved), × 5 on shortcut exits and × 100 on jump
+  5·max(0, 0.98 − cos Δ)³ (`FUN_0052e250`, 2026-10-15: a cosine; the angle reference is open), × 5 on shortcut exits and × 100 on jump
   exits when route options are set; heuristic the straight distance / 200), expanded back into nodes
   (`FUN_00524e20`). The format is in formats.md "AIData (0x200)".
 - A race path (`FUN_005075e0` → `FUN_004edb80` → `FUN_004e7d80`) takes one node per route point (closer than

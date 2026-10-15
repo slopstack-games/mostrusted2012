@@ -803,7 +803,11 @@ fn draw_hud(
     mut materials: ResMut<Assets<AdditiveQuadMaterial>>,
     mut root_vis: Query<&mut Visibility, Without<QuadNode>>,
     pause: Option<Res<crate::pause::PauseMenu>>,
-    (pursuit, collected): (Res<crate::police::PursuitHud>, Option<Res<crate::frontend::Collected>>),
+    (pursuit, collected, gps): (
+        Res<crate::police::PursuitHud>,
+        Option<Res<crate::frontend::Collected>>,
+        Res<crate::gps::Gps>,
+    ),
 ) {
     let Some(mut hud) = hud else { return };
     let car = car.single().ok();
@@ -954,6 +958,8 @@ fn draw_hud(
         if size != map.size || map.frame % 2 == 0 {
             let mut px = vec![0u8; (size.x * size.y * 4) as usize];
             map.mosaic.render(p.x, p.z, [f.x, f.z], metres_per_px / scale, size.x, size.y, &mut px);
+            // The SET DESTINATION route over the roads (`gps.rs`).
+            crate::gps::draw_on_minimap(gps.ahead(), p, f, metres_per_px / scale, size.x, size.y, &mut px);
             map.size = size;
             if let Some(mut img) = images.get_mut(&map.image) {
                 *img = game_text::ui_image(size.x, size.y, px);
