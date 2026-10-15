@@ -1955,7 +1955,7 @@ fn reaction_lamps(
             }
             o.gain = gain;
             for (_, shared, mine) in &o.lamps {
-                let Some(base) = materials.get(shared).map(|m| m.extension.params.clone()) else { continue };
+                let Some(base) = materials.get(shared).map(|m| m.extension.params) else { continue };
                 if let Some(mut m) = materials.get_mut(mine) {
                     m.extension.params.lights = base.lights;
                     m.extension.params.p[5] = (base.p[5].truncate() * gain).extend(base.p[5].w);

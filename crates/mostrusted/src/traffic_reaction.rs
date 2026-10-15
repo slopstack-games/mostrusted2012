@@ -87,7 +87,7 @@ impl CarLights {
             self.step = step as u8;
             self.step_time = t;
             let active = d > 0.0 && step <= 8;
-            if active && step % 2 == 0 {
+            if active && step.is_multiple_of(2) {
                 self.flags &= !LIT;
             } else {
                 self.flags |= LIT;
