@@ -3698,12 +3698,64 @@ How the eight damage clips (and the skeleton) become the body's bone matrices; p
   and what happens on frames it skips. Dead ends: `FUN_005bb770` and `FUN_00eaa990` apply procedural axis-angle
   rotations, not damage; `FUN_00a09c60` and its callers (`FUN_00a0b6d0` …) are collision (GJK), not pose code.
 
-## Tyre marks
+## Tyre marks and tyre smoke
 
-Not found. The skid mark code would read `TyreVfxBehaviour.{Front,Rear}_Tyres.Skid_Marks` (stride 0x130 per axle,
-`LatParams` floats at +0x10..+0x2c) and `SurfaceVfx.TyreMarksMaterials` (+0x18 + 8 x tyre class); none of these
-offsets, the field hashes, or a tyre-mark string turns up in the dump (research log 2026-10-06 round 4). The
-runtime borrows the per-wheel form of the skid sound intensities (`FUN_009d1bf0`, above) as a model decision.
+**Found (2026-10-15).** Two paths, both per wheel (wheel object = vehicle +0x870 + 0x1d0 i; +0x20 its contact's
+collision tag: surface = bits 13–19, bit 1 = the `ROAD` flag; +0x24 on the ground; +0x1c1 on rims, +0x1c2 flat).
+
+- **The race car's effects** (`FUN_00589e20`, per car and frame, four wheels; `bVar37` = an AI car): the surface's
+  `SurfaceVfx` (`FUN_0054aaa0`: `SurfaceType` weather block +0xc0, the wet block's when the surface manager's state
+  is ≥ 1, the car's +0x1c17 is clear and it is set, else the dry one's) gives
+  - the smoke: `AIWheelEffects` (+0x40) or `PlayerWheelEffects` (+0xa0) → `VfxWheelEffects`: `OnRims` (+0x1c)
+    when the car's wheel state +0x1aa8 + 4i is 1, else `61ac1863` (+0x14) when `FUN_006a15c0(…, 0xb)` returns 2,
+    else `DefaultTyre` (+0x0c). On while the wheel is down and the largest of its three smoke ramps (below) is
+    above 0.01 (`.rdata` 0x00fad910), or on rims, or while the car moves on a surface whose byte +0x156 (front
+    wheels) / +0x157 (rear) is set (false on every surface). The ramps are written into the effect's parameter
+    block (+0x84..+0x8c, the `WheelParams` intensities). Four effect slots per wheel.
+  - a second kick-up: `WheelVfx` (+0x138; AI `4cf3cf8f` +0x140) when a condition on the wheel's contact
+    velocities holds (not read in full).
+  - `bb02333c` (+0x100) for the local player's rear wheels, placed with the camera's matrix (lens dirt or
+    similar; not ported); `5830a883` (+0x58) is copied to car +0x3c0.
+  - the **tyre marks**: material = `RimMarksMaterial` (+0xe8) on rims, else `TyreMarksMaterials` by the car's
+    tyre class (car +0x1a88: classes 0/1, 2, 3/4 read a short at +0x6c / +0x6e / +0x70 of a per-car object that
+    picks the slot: 0 `Offroad` (+0x20), 1 `eff16a09` (+0x18), 2 `Road` (+0x28), 3 `Sport` (+0x30), 4 `Track`
+    (+0x38)). A strip point is added **every update while the wheel is down and the material exists**
+    (`FUN_004a3b80` starts a strip, `FUN_004a3c60` continues it, `FUN_004a3d10` ends it when the wheel lifts),
+    with position = contact + `fStack_220` × the across vector, the wheel's +0x10 vector, Slip weight = the
+    `Skid_Marks` lateral ramp (lane 5), Spin weight = max(spin, lock) (lanes 4, 7), wheel +0xbc (read as the
+    tyre width; set per wheel by the vehicle build next to the normal / rim / flat radii +0xac / +0xcc / +0xec)
+    and the material. The points go into a queue of 0x50-byte records (`FUN_004af040`); the vertex builder
+    that consumes them was not found.
+- **The ramps** (`FUN_009cef90`, `this` = vehicle +0x2c90 + 0x30 i, called four times per tick from
+  `FUN_009d6e30` between the dirt build-up `FUN_009d19c0` and the skid sound `FUN_009d1bf0`). The record's +0x20
+  points at an object whose +0x08 / +0x10 are the axle's `TyreVfxBehaviour` `Smoke` / `Skid_Marks` blocks (by
+  which readers use lanes 0..2 and 4, 5, 7). For a block S (offsets inside `SkidMarkParams` / `SmokeParams`):
+  s = |wheel +0xe4 − +0xe0| × 2.236936 (mph), v = |vehicle +0x1620| (mph), α = |wheel +0x114| (degrees);
+  spin = clamp((s − S+0x5c) / max(S+0x58 − S+0x5c, 2⁻²³))^S+0x4c × S+0x54, zero while wheel +0x108 < −0.1;
+  lateral = clamp((α − S+0x30) / (S+0x24 − S+0x30))^S+0x1c × clamp((v − S+0x34) / (S+0x28 − S+0x34)) × S+0x2c;
+  lock = clamp((s − S+0x84) / (S+0x80 − S+0x84))^S+0x74 × S+0x7c, only while wheel +0x108 < −0.1 (`.data`
+  0x011870d0, −0.1 in every lane). Each lane moves by rate × dt × 60 (0x01187200) of the gap to its target, the
+  rate S+0x60 / +0x38 / +0x88 (`6274d1ad`) rising and S+0x50 / +0x20 / +0x78 (`27c5dd70`) falling. Offsets →
+  fields: `Lat_Slip` at +0x0c (`Curve_Power` +0x1c, `27c5dd70` +0x20, `53b71e27` +0x24, `2c72e92a` +0x28,
+  `35caad30` +0x2c, `6a83c966` +0x30, `26028ef5` +0x34, `6274d1ad` +0x38), `Long_Spin` at +0x3c (+0x4c … +0x60),
+  `64222c3f` at +0x64 (+0x74 … +0x88). Ported as `mw_handling::tyre_vfx` (+0x108 taken as κ: inferred).
+- **Other vehicles** (`FUN_00606210`, up to 431 vehicle slots; per wheel, also extra contacts beyond four): the
+  surface's `SurfaceVfx` via `FUN_0054aaa0`; a kick-up `01d1b4fd` (+0x118) or `f967c1ce` (+0x120, by a byte
+  +0x3d of the slot's object) into the shared `SurfaceFx` wheel-contact list (`FUN_00497450` → `FUN_0049ba00`,
+  ≤ 256 contacts per frame) when wheel +0x1bf is set and the car's speed (max of +0x1fc0, +0x1fb8) > 0; tyre
+  marks with `TyreMarksMaterials.Road` (+0x28) while wheel +0x1be is set, weight wheel +0x138. Those come from
+  `FUN_009dfd40` (from `FUN_009e00c0`, the simplified wheel update of `FUN_008f7e10` / `FUN_008f8cd0` and three
+  more): m = max(+0x130, clamp((+0x118 − 0.5) / 0.5) × 0.55, clamp((+0x134 − 0.1) / 0.9)), raised to at least
+  max(+0x130, 0.5) on polygons without the `ROAD` flag; +0x1be = m > 0.1 and not on rims, +0x138 = m when above
+  0.1 (constants: `.rdata` 0x01026830 / 0x01026b70 / 0x01026990 / 0x01026840 copied by static initialisers at
+  0x00f772f0..0x00f77340). +0x134 = clamp(|wheel +0xdc|, 0, 15) / 15; +0x130 = clamp(|+0x110| − the axle tyre
+  object's +0x4c, 0, 1), zero while the wheel is at rest (`FUN_009df090`); +0x118 = a curve
+  (`TyreVfxBehaviour` `64222c3f` fields through the object at wheel +0x190) over |+0xd8| × 2.236936, times
+  clamp((p − F) / (1 − F)) of an input vector p (`FUN_009df2e0` / `FUN_009d4f20`). +0xd8, +0xdc, +0x110 are
+  written through vector lane setters that have no callers in the dump; not identified. Not ported.
+- Dead ends: the earlier search (2026-10-06) looked for the field hashes and `TyreMarksMaterials` × 8 + 0x18;
+  the code indexes the inline struct with a switch instead. The lane setters at 0x008f2c70..0x008f2fc0 and
+  0x00908650..0x009087c0 have no callers or vtable entries in the snapshot.
 
 ## Cameras
 

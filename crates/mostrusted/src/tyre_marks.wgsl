@@ -37,7 +37,7 @@ struct Vertex {
     @location(1) normal: vec3<f32>,
     // x = along the strip (game TEXCOORD.w), y = side 0 / 1 (game COLOR.z)
     @location(2) uv: vec2<f32>,
-    // unit vector across the strip (game TEXCOORD.xyz)
+    // vector across the strip, the tyre's width long (game TEXCOORD.xyz)
     @location(3) side: vec4<f32>,
     // x = slip weight, y = spin weight, w = opacity (game COLOR.xyw)
     @location(5) colour: vec4<f32>,

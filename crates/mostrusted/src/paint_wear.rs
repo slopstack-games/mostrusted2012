@@ -10,8 +10,8 @@
 //! - dust += t × dt / max(Dust.time, dt) × Dust.rate / 4;
 //!
 //! each clamped to 0..1 after every wheel. Negative rates (the two water surfaces) wash the car. The wheel
-//! intensities are three smoothed per-wheel skid values (`FUN_009cef90`, not ported): here the skid sound's
-//! lateral and spin ramps per wheel stand in (model decision, `tyre_marks::intensities`).
+//! intensities are the wheel's three smoothed smoke ramps (`FUN_009cef90`, lanes 0..2 of vehicle +0x2c90 +
+//! 0x30 i, `mw_handling::tyre_vfx`; `WheelContact::smoke`).
 //!
 //! **Drawing**: `FUN_00583290` puts dust × 2 and dirt × 3 in the render record, `FUN_008e9c00` multiplies them by
 //! `DustColour.w` / `DirtColour.w` into `GenericVector4_A.xy` ([`shader_levels`]); `layered.wgsl` has the maths.
@@ -92,14 +92,11 @@ fn build_up(time: Res<Time>, mut cars: Query<(&Car, &mut CarGrime)>) {
     for (car, mut grime) in &mut cars {
         let mph = car.speed.abs() * MS_TO_MPH;
         let (mut dust, mut dirt) = (grime.dust, grime.dirt);
-        for (contact, (_ratio, angle)) in car.wheel_contacts().zip(car.wheel_slips()) {
+        for contact in car.wheel_contacts() {
             let Some(c) = contact else { continue };
             let Some(fx) = c.effects else { continue };
             let t = ((mph - fx.speed_start) / (fx.speed_full - fx.speed_start).max(MIN_SPAN)).clamp(0.0, 1.0);
-            // Stand-in for the wheel's three smoothed skid values (`FUN_009cef90`).
-            let (lat, spin) =
-                crate::tyre_marks::intensities(angle, c.velocity.length() * MS_TO_MPH, c.tread_slip * MS_TO_MPH);
-            let s = lat.max(spin).max(t);
+            let s = c.smoke.max().max(t);
             let (rate, secs) = fx.dirt;
             dirt = (dirt + s * dt / secs.max(dt) * rate / WHEELS).clamp(0.0, 1.0);
             let (rate, secs) = fx.dust;

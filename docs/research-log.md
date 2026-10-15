@@ -10,6 +10,64 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-15: surface effects and tyre marks from the code (smoke, kick-up, marks per wheel surface)
+
+The play test said grass and dirt behave like road for the effects and the tyre marks look off. Cause: every
+effect used surface 0 / the first surface with marks, although the wheels already know their surface (the
+collision tag). Now traced in the dump (docs/decomp.md "Tyre marks and tyre smoke") and ported:
+
+- **Which effect** (`FUN_00589e20`, the race car's per-wheel effect update; `FUN_0054aaa0` looks up the
+  surface's `SurfaceVfx`, dry block, the wet one in the wet state): smoke = `PlayerWheelEffects` (+0xa0; AI cars
+  `AIWheelEffects` +0x40) `DefaultTyre` (`OnRims` on rims, the `61ac1863` variant when `FUN_006a15c0(…, 0xb) ==
+  2`); a second kick-up = `WheelVfx` (+0x138; AI `4cf3cf8f` +0x140); tyre marks = `TyreMarksMaterials` by the
+  car's tyre class (0 `Offroad`, 1 `eff16a09`, 2 `Road`, 3 `Sport`, 4 `Track`; class from car +0x1a88 through a
+  per-car short at +0x6c / +0x6e / +0x70), `RimMarksMaterial` (+0xe8) on rims. `SurfaceVfx` field offsets
+  (handles from +0x40, 8 bytes each, sorted by name) are in formats.md.
+- **When** (same function): smoke while the wheel is on the ground and any of its three smoke ramps is above
+  0.01 (`.rdata` 0x00fad910); the ramps go to the effect as its `WheelParams`. Tyre marks are laid by **every
+  wheel on the ground**, all the time; the strip's per-point weights are Slip = the `Skid_Marks` lateral ramp,
+  Spin = max(spin ramp, lock ramp). What shows is decided by the material: tarmac's `Run` layer is fully
+  transparent (marks only from slip / spin), grass and dirt use `…117f02` (`Run` transparent too, brown `Slip`
+  `…f58ca` / `Spin` `…117f26` layers).
+- **The ramps** (`FUN_009cef90`, per wheel and tick, record at vehicle +0x2c90 + 0x30 i; lanes 0..2 from the
+  axle's `TyreVfxBehaviour.Smoke`, lanes 4, 5, 7 from `Skid_Marks`, identified by which reader uses which
+  lanes): spin = clamp((s − `1281cf25`) / (`6a55fbd2` − `1281cf25`))^`Curve_Power` × `35caad30`, s = |tread −
+  ground| mph; lateral = the same over |α| (`6a83c966` → `53b71e27`) × a window on the car's mph (`26028ef5` →
+  `2c72e92a`); lock (`64222c3f`) = the spin form, counted only while wheel +0x108 < −0.1 (spin only at or above
+  it; `.data` 0x011870d0, all lanes −0.1); each smoothed by `6274d1ad` (rising) / `27c5dd70` (falling) × dt × 60
+  of the gap. `LatParams` / `LongParams` field roles are from these offsets (names beyond `Curve_Power` not
+  cracked). The dirt build-up (`FUN_009d19c0`) reads the smoke lanes.
+- **Other vehicles** (`FUN_00606210` over up to 431 slots, likely traffic): marks only when `FUN_009dfd40` says
+  so: m = max(wheel +0x130, clamp((+0x118 − 0.5) / 0.5) × 0.55, clamp((+0x134 − 0.1) / 0.9)), and on polygons
+  without the `ROAD` collision flag (bit 1 of the tag) at least max(+0x130, 0.5); laid while m > 0.1 and the wheel
+  is not on rims; material = `TyreMarksMaterials.Road` (+0x28) always. Its kick-up is `SurfaceVfx` +0x118
+  (`01d1b4fd`) or +0x120 (`f967c1ce`) into the shared `SurfaceFx` wheel-contact list (`FUN_0049ba00`). Inputs
+  +0x118 / +0x130 / +0x134 (from wheel +0xd8, +0x110, +0xdc) are not identified. Not ported (we draw marks for
+  the player only).
+- **Built**: `mw_handling::tyre_vfx` (the ramps, unit tests on the 911's numbers), `mw_assets::handling`
+  reads `TyreVfxBehaviour` (one per vehicle bundle, 188 over the install, 93 of them `…68fe4`), `drive.rs` carries surface index, ramps,
+  tyre width and lateral axis per contact, `particles.rs` / `tyre_marks.rs` / `paint_wear.rs` use them.
+  Model decisions: wheel +0x108 read as κ (the sign test against −0.1 splits spin from lock); the effect's
+  `Intensity` = max of the three smoke ramps (the spawner's binding slots are not decoded); a strip point every
+  0.25 m; the strip's across vector = the tyre's lateral axis × the tyre width (2 × the wheel body's half
+  extent; the game passes wheel +0xbc with each point and its vertex builder was not found), so the drawn width
+  is `WidthScale` (0.65) × the width (0.19 m on a 911 rear instead of 0.65 m); strips break on a change of
+  material; zero-weight points on a transparent-`Run` material are not stored; ramps of a wheel in the air head
+  for 0; impacts still use the default surface.
+- **Checked**: `--test drift --track-surface 8`: marks from launch wheelspin (spin 0.15) and through the drift
+  (rear slip 0.6, spin 0.4–0.5), dense white smoke; `--track-surface 4` (grass): brown dust clumps
+  (`…a39d7`) and brown strips; surface 0 (the default track): smoke, no marks (its `SurfaceVfx` has none, so a
+  test needing marks wants `--track-surface 8`); world launch on surface 2 (paving) gives its dusty smoke.
+  Screenshots in `ref/fx/` (not committed). Drift test result unchanged (peak 36.4°, held 4.73 s).
+- Open: the tarmac smoke looks very dense next to the original (compare with a capture); the grass marks' colour
+  against real grass; the tyre-mark vertex builder (consumer of the 0x50-byte records queued by
+  `FUN_004af040`: the meaning of wheel +0xbc, U, the age in POSITION.w and the `Animation` fade); the tyre
+  class → mark slot table (+0x6c..0x70 of the object at car +0xd0); `SurfaceVfx` +0x100 (`bb02333c`, started for
+  the local player's rear wheels with a camera-space transform: maybe lens dirt) and +0x58 (`5830a883`, copied to
+  the car at +0x3c0). **Live read wanted** (not done: the original was not to be launched this session): wheel
+  +0x108 / +0x110 / +0xd8 / +0xdc and the ramp record at vehicle +0x2c90 while launching, locking and drifting,
+  to confirm κ and the inputs of `FUN_009dfd40`.
+
 ### 2026-10-14: the post chain against the original's code: bloom sizes, final pass, depth of field, grade
 
 The user: "postfx [is still off]". Compared our chain with the original's, stage by stage, from the full `.text`
