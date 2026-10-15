@@ -1153,9 +1153,17 @@ fn main() -> Result<()> {
                     // player sees then only change once per buffer.
                     let burst: usize = std::env::var("MW_AUDIO_BURST").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
                     let tick = if burst > 0 { burst } else { rate / 64 };
+                    // `MW_NITROUS_AT=t0,t1`: nitrous in use between these times (the nitrous timeline).
+                    let nitrous_at = std::env::var("MW_NITROUS_AT").ok().and_then(|s| {
+                        let (a, b) = s.split_once(',')?;
+                        Some((a.trim().parse::<f32>().ok()?, b.trim().parse::<f32>().ok()?))
+                    });
                     for i in 0..(rate as f32 * duration) as usize {
                         if i % tick == 0 {
                             let t = i as f32 / rate as f32;
+                            if let Some((t0, t1)) = nitrous_at {
+                                driver.set_nitrous(t >= t0 && t < t1);
+                            }
                             let ([rpm, throttle, gear, speed], drive) = input_at(t, &mut k);
                             let input = mw_assets::engine_driver::EngineInput {
                                 rpm,

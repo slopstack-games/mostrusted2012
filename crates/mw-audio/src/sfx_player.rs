@@ -939,7 +939,7 @@ impl Player {
         let nch = self.channels.len();
         let mut gain_mul = vec![1.0f32; nch];
         let mut overrides: Vec<(usize, Target, f32)> = Vec::new();
-        let mut starts: Vec<(usize, usize)> = Vec::new();
+        let mut starts: Vec<(usize, usize, f32)> = Vec::new();
         for si in 0..self.seqs.len() {
             let seq = &self.bank.sequences[si];
             let gate_ok = self.value(self.seqs[si].gate).is_none_or(|v| v > 0.5);
@@ -1024,7 +1024,7 @@ impl Player {
                                     voice.step = pitch.max(0.05) as f64 * voice.clip.rate as f64 / self.sr as f64;
                                     voice.stopping = env <= 0.0;
                                 }
-                                _ if env > 0.0 => starts.push((si, ii)),
+                                _ if env > 0.0 => starts.push((si, ii, t_item)),
                                 _ => {}
                             }
                         } else {
@@ -1035,12 +1035,12 @@ impl Player {
                                 && !warming
                                 && !st.voice.is_some_and(|v| v < self.voices.len() && self.voices[v].owner == (si, ii));
                             if entering && !seq.retrigger {
-                                starts.push((si, ii));
+                                starts.push((si, ii, t_item));
                             } else if retrigger {
                                 // About 12 per second at full binding value.
                                 let rate = 12.0 * raw.unwrap_or(1.0).clamp(0.0, 1.0) * env.max(0.2);
                                 if self.rng.unit() < rate * dt {
-                                    starts.push((si, ii));
+                                    starts.push((si, ii, t_item));
                                 }
                             }
                             // Retriggered one-shots stop when the binding leaves the item's range.
@@ -1066,8 +1066,8 @@ impl Player {
                 }
             }
         }
-        for (si, ii) in starts {
-            self.start_voice(si, ii);
+        for (si, ii, t) in starts {
+            self.start_voice(si, ii, t);
         }
         // Voice gain ramps; drop finished voices (indices held by items are re-checked by owner).
         for v in &mut self.voices {
@@ -1138,7 +1138,9 @@ impl Player {
         }
     }
 
-    fn start_voice(&mut self, si: usize, ii: usize) {
+    /// `t`: the item's normalised position on the sequence axis, where the trigger probability, gain and pitch
+    /// curves are read (as `sequence::Player::start_voice`).
+    fn start_voice(&mut self, si: usize, ii: usize, t: f32) {
         let item = &self.bank.sequences[si].items[ii];
         let ItemKind::Wave { waves, .. } = &item.kind else { return };
         if waves.is_empty() {
@@ -1146,13 +1148,13 @@ impl Player {
         }
         let st = &self.seqs[si].items[ii];
         if let Some(p) = &st.probability {
-            let pr = p.m.eval(0.0, self.value(p.bind));
+            let pr = p.m.eval(t, self.value(p.bind));
             if self.rng.unit() >= pr {
                 return;
             }
         }
-        let gain = st.gain.as_ref().map_or(1.0, |m| m.m.eval(0.0, self.value(m.bind)));
-        let pitch = st.pitch.as_ref().map_or(1.0, |m| m.m.eval(0.0, self.value(m.bind)));
+        let gain = st.gain.as_ref().map_or(1.0, |m| m.m.eval(t, self.value(m.bind)));
+        let pitch = st.pitch.as_ref().map_or(1.0, |m| m.m.eval(t, self.value(m.bind)));
         let channel = st.channel;
         let pick = self.rng.next() as usize % waves.len();
         let clip = waves[pick].clone();

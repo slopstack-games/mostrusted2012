@@ -51,7 +51,7 @@ impl Plugin for PlayerSfxPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PlayerSfx>().add_systems(
             Update,
-            (load, horn, contacts, follow, meter).chain().after(crate::car_audio::update_listener),
+            (load, horn, ignition, contacts, follow, meter).chain().after(crate::car_audio::update_listener),
         );
     }
 }
@@ -88,6 +88,10 @@ struct PlayerSfx {
     horn: Option<Arc<OneShot>>,
     horn_job: Option<Job<Option<OneShot>>>,
     horn_voice: Option<Voice>,
+    /// The ignition of the car being driven, and the cranking starts already played (`ignition.rs`).
+    ignition: Option<Arc<OneShot>>,
+    ignition_job: Option<Job<Option<OneShot>>>,
+    cranks_played: Option<(Entity, u32)>,
     grind: Option<Grind>,
     voices: Vec<Voice>,
     /// Round-robin indices (the per-pool bytes at `+0x50` of the per-frame block): grind, sparks, glass,
@@ -172,7 +176,59 @@ fn load(game: Res<crate::Game>, garage: Option<Res<crate::garage::Garage>>, mut 
         let out = job.clone();
         std::thread::spawn(move || *out.lock().unwrap() = Some(store.player_horn(id)));
         sfx.horn_job = Some(job);
+        sfx.ignition = None;
+        let store = game.store.clone();
+        let job: Job<Option<OneShot>> = Arc::new(Mutex::new(None));
+        let out = job.clone();
+        std::thread::spawn(move || *out.lock().unwrap() = Some(store.player_ignition(id)));
+        sfx.ignition_job = Some(job);
     }
+    if let Some(job) = sfx.ignition_job.clone()
+        && let Some(ignition) = job.lock().unwrap().take()
+    {
+        sfx.ignition = ignition.map(Arc::new);
+        sfx.ignition_job = None;
+    }
+}
+
+/// The ignition (`FUN_0058c930`): each time the player's engine enters its cranking state, `Ignition_Sequence`
+/// plays once at the car. A start that comes before the sound has loaded is played when it arrives, while the
+/// engine is still cranking.
+#[allow(clippy::too_many_arguments)]
+fn ignition(
+    mut commands: Commands,
+    listener: Res<Listener>,
+    settings: Option<Res<crate::settings::AudioSettings>>,
+    mut assets: ResMut<Assets<SpatialAudio>>,
+    mut sfx: ResMut<PlayerSfx>,
+    player: Query<(Entity, &Transform, &LinearVelocity, &crate::ignition::EngineStart), (With<Car>, With<Player>)>,
+) {
+    let sfx = &mut *sfx;
+    let Ok((car, t, v, start)) = player.single() else { return };
+    let played = sfx.cranks_played.filter(|(e, _)| *e == car).map_or(0, |(_, n)| n);
+    if start.cranks == played {
+        return;
+    }
+    if start.state != crate::ignition::EngineState::Cranking {
+        sfx.cranks_played = Some((car, start.cranks));
+        return;
+    }
+    let Some(shot) = sfx.ignition.clone() else { return };
+    let vol = volume(&settings);
+    let voice = start_with(
+        &mut commands,
+        &mut assets,
+        &listener,
+        vol,
+        &shot,
+        "player ignition",
+        Follow::Entity(car),
+        car_state(t, v),
+        &[],
+    );
+    sfx.voices.push(voice);
+    sfx.cranks_played = Some((car, start.cranks));
+    *sfx.started.entry("player ignition").or_default() += 1;
 }
 
 /// The car's state for a voice: position, velocity, forward.

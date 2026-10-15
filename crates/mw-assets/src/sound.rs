@@ -8,7 +8,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use mw_audio::sequence::{
-    Bank, Channel, Clip, Fade, Item, ItemKind, ModValue, Plugin, PluginKind, Sequence, Target, field,
+    Bank, Channel, Clip, Controller, ControllerAction, Fade, Item, ItemKind, ModValue, Plugin, PluginKind, Sequence,
+    Target, field,
 };
 use mw_bundle::ResourceId;
 use mw_formats::genesys::{Object, Value, field_hash};
@@ -23,6 +24,12 @@ const POINT_Y: u32 = 0x12d3_a8ab;
 const MIXER_CHANNEL_CHAIN: u32 = 0x1a00_9288;
 const CHAIN_PLUGINS: u32 = 0x1d8b_4b21;
 const TRIGGER_PROBABILITY: u32 = 0xdb46_6b79;
+/// `JumpTimelineController.DestinationTime` (cracked 2026-10-15; it sorts before `TriggerTime` as the field order
+/// requires).
+const DESTINATION_TIME: u32 = 0xb6a5_1260;
+/// `SequenceTimelineController.2d0e4348` (bool, name not cracked): read as "monitor the binding"
+/// ([`mw_audio::sequence::Controller`]).
+const CONTROLLER_MONITOR: u32 = 0x2d0e_4348;
 
 pub(crate) fn number(v: Option<&Value>) -> Option<f32> {
     match v? {
@@ -271,6 +278,22 @@ impl<'a> SoundLoader<'a> {
             gate: String::new(),
             retrigger: false,
             exclusive_cue: false,
+            controllers: structs(&o, field_hash("TimelineControllers"))
+                .filter_map(|c| {
+                    let kind = c.type_name.rsplit('.').next().unwrap_or("");
+                    let action = match kind {
+                        "JumpTimelineController" => ControllerAction::Jump(number(c.get(DESTINATION_TIME))?),
+                        "QuitSequenceTimelineController" => ControllerAction::Quit,
+                        _ => return None,
+                    };
+                    Some(Controller {
+                        at: num(c, "TriggerTime")?,
+                        enabled: text(c, field_hash("EnabledBinding")),
+                        monitor: number(c.get(CONTROLLER_MONITOR)).unwrap_or(0.0) > 0.5,
+                        action,
+                    })
+                })
+                .collect(),
         })
     }
 
@@ -377,6 +400,11 @@ pub struct EngineBank {
     pub tuning: EngineTuning,
     /// Variants in each gear-change list ([`gate::LISTS`] order).
     pub gear_changes: [usize; 4],
+    /// `Ignition_Sequence` timing: (seconds until it posts effect property 7, its length). Property 7 sets the
+    /// engine-start flag +0x1be5 (`FUN_008f5490`) and the gearbox leaves its cranking state 1 for 2 when that
+    /// flag or the "ignition finished" flag (+0x1be4, from `RaceCarEngineSound` +0x1c8) is up (`FUN_009cd7a0`,
+    /// `FUN_00900120`); `None` = no ignition sequence, the engine catches at once (`FUN_0058c930`).
+    pub ignition: Option<(f32, f32)>,
 }
 
 /// RMS of the calibration render (full throttle at 75 % of the rev range) every engine is scaled to.
@@ -439,6 +467,8 @@ pub mod cue {
     pub const POP: &str = "engine.pop";
     pub const IGNITION: &str = "engine.ignition";
     pub const LIMITER: &str = "engine.limiter";
+    /// The local player's nitrous timeline ([`AssetStore::nitrous_bank`]).
+    pub const NITROUS: &str = "engine.nitrous";
 }
 
 /// Gate bindings for the gear-change sequences (not game names: the game starts one sequence of a list per shift,
@@ -485,7 +515,50 @@ impl AssetStore {
             }
         }
         let Some(es) = best else { return Ok(None) };
-        Ok(Some(self.engine_bank_from(&es, true)))
+        let mut eb = self.engine_bank_from(&es, true);
+        // The local player's nitrous sound (`HeatLevelSoundSet.NitrousLocal`), merged into the engine bank: it
+        // ducks the engine's own channels and plays on the bank's master level.
+        if let Some(nitrous) = self.nitrous_bank() {
+            eb.bank.merge(nitrous);
+        }
+        Ok(Some(eb))
+    }
+
+    /// The local player's nitrous timeline as a one-cue bank ([`cue::NITROUS`]): `HeatLevelSoundSet.NitrousLocal`
+    /// of the heat-level sound bundle (`GAMELOGIC/HL_%d.BNDL`, `FUN_0065fee0`; the install has one, `HL_31208`,
+    /// for every heat level). A 12 s timeline: the burn wave (1..8.885 s) and its tail (8.7..10.594 s) on
+    /// channel `…7533`, the engine channels ducked while it plays, and jump / quit controllers on
+    /// `Players.LocalPlayer.NitrousState.UsingNitrous` that loop the burn while nitrous is used and play the
+    /// tail on release. The code that starts it is not in the dump; the driver starts it when nitrous starts
+    /// (`EngineDriver::set_nitrous`).
+    pub fn nitrous_bank(&self) -> Option<Bank> {
+        let mut bundles: Vec<_> = self
+            .game()
+            .files_with_extension("BNDL")
+            .into_iter()
+            .filter(|p| p.to_string_lossy().to_ascii_uppercase().replace('\\', "/").starts_with("GAMELOGIC/HL_"))
+            .collect();
+        bundles.sort();
+        for path in bundles {
+            let Some(b) = self.bundle(&path) else { continue };
+            for e in b.entries_of_type(mw_bundle::ResourceType::GenesysObject) {
+                let Ok(res) = b.load(e) else { continue };
+                let Ok(obj) = self.decode_genesys(&res) else { continue };
+                if obj.type_name != "Genesys.Gen.HeatLevelSoundSet" {
+                    continue;
+                }
+                let mut loader = SoundLoader::new(self);
+                let mut s = handle(&obj, "NitrousLocal").and_then(|id| loader.sequence(id))?;
+                s.exclusive_cue = true;
+                return Some(Bank {
+                    channels: loader.channels(),
+                    sequences: vec![s],
+                    cues: vec![(cue::NITROUS.to_string(), vec![0])],
+                    master_gain: 1.0,
+                });
+            }
+        }
+        None
     }
 
     /// The engine bank of one `EngineSound2` object (the player's, from [`AssetStore::engine_bank`], or a
@@ -622,7 +695,25 @@ impl AssetStore {
             subharmonic: f(0x283e_07de, d.subharmonic),
             limiter_rate: (f(0x6e6b_e213, d.limiter_rate.0), f(0x9529_a29e, d.limiter_rate.1)),
         };
-        let mut eb = EngineBank { bank, rpm_range, audible_range, harmonic_order, tuning, gear_changes };
+        let ignition = bank.cues.iter().find(|(n, _)| n == cue::IGNITION).and_then(|(_, v)| v.first()).map(|&i| {
+            let s = &bank.sequences[i];
+            let length = s.items.iter().map(|it| it.end).fold(s.max, f32::max);
+            // Property 7 posts a non-zero value from the item's start (`FUN_008f5490`: |v| > FLT_EPSILON sets
+            // the flag).
+            let catch = s
+                .items
+                .iter()
+                .filter(|it| match &it.kind {
+                    ItemKind::Effect { values } => {
+                        values.iter().any(|(p, m)| *p == 7 && m.eval(0.0, None).abs() > 1e-6)
+                    }
+                    _ => false,
+                })
+                .map(|it| it.start)
+                .fold(length, f32::min);
+            (catch, length)
+        });
+        let mut eb = EngineBank { bank, rpm_range, audible_range, harmonic_order, tuning, gear_changes, ignition };
         if normalise {
             eb.normalise();
         }

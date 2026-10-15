@@ -438,6 +438,17 @@ impl AssetStore {
         vs.horns.iter().find_map(|&h| self.one_shot(&snapshot, h))
     }
 
+    /// The player car's ignition: `Ignition_Sequence` of the `EngineSound2` of `<vehicle>_VEHICLESOUND` (+0x48),
+    /// started by `FUN_0058c930` when the gearbox enters its cranking state (`ignition.rs`). The 911's is one
+    /// 0.59 s wave on the snapshot channel `Player Vehicle Ignition` plus the effect item that starts the engine
+    /// (property 7), which has no sound.
+    pub fn player_ignition(&self, vehicle: u32) -> Option<OneShot> {
+        let vs = self.vehicle_sound(&format!("{vehicle}_VEHICLESOUND"))?;
+        let es = self.genesys_object(vs.engine?).ok()?;
+        let seq = handle(&es, "Ignition_Sequence")?;
+        self.one_shot(&Snapshot::load(self), seq)
+    }
+
     /// The player car's impact, grind and damage sounds ([`PlayerCarSfx`]).
     pub fn player_car_sfx(&self) -> PlayerCarSfx {
         let snapshot = Snapshot::load(self);

@@ -438,6 +438,7 @@ fn spawn_car(
     spatial: SpatialQuery,
     mut camera: Query<&mut Transform, crate::MainCamera>,
     residency: Option<Res<crate::frontend::Residency>>,
+    crank: Option<Res<crate::ignition::CrankAtSpawn>>,
 ) {
     let Some(pending) = pending else { return };
     // A placement waits until its target is resident within max(200 m, 3 s of travel) (`FUN_00647e00`), so
@@ -475,6 +476,12 @@ fn spawn_car(
         },
     );
     commands.entity(car).insert((Player, crate::nitrous::NitrousFeed::new(pending.spec.top_speed_mph)));
+    // The engine's start-up states (`ignition.rs`), timed by the car's ignition sequence.
+    let ignition = match &pending.spec.engine {
+        Some(mw_assets::engine_sound::EngineVoice::Bank(b)) => b.ignition,
+        _ => None,
+    };
+    commands.entity(car).insert(crate::ignition::EngineStart::new(crank.is_some_and(|c| c.0), ignition));
     info!(
         "nitrous: burn {}/s, start from {} units and {} mph, top speed {} mph (HighSpeed above {}%)",
         nitrous_rules.usage.burn,

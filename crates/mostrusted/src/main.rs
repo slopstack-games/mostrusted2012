@@ -34,6 +34,7 @@ mod garage;
 mod gate_marker;
 mod groundcover;
 mod hud;
+mod ignition;
 mod input;
 mod input_script;
 mod jackspots;
@@ -912,6 +913,7 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(car_impacts::CarImpactsPlugin)
         .add_plugins(nitrous::NitrousPlugin)
         .add_plugins(exhaust::ExhaustPlugin)
+        .add_plugins(ignition::IgnitionPlugin { crank_at_spawn: cli.test.is_none() && cli.replay.is_none() })
         .add_plugins(tyre_marks::TyreMarksPlugin)
         .add_plugins(paint_wear::PaintWearPlugin)
         .add_plugins(freeroam::FreeroamPlugin {

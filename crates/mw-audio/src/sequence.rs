@@ -223,6 +223,31 @@ pub struct Sequence {
     /// pop and backfire sequences, `FUN_0058ccb0`). A bound sequence started this way plays the one-shot
     /// items whose range holds the binding at that moment.
     pub exclusive_cue: bool,
+    /// The timeline's `TimelineControllers` (jumps and quits), evaluated in list order.
+    pub controllers: Vec<Controller>,
+}
+
+/// What a timeline controller does when it fires.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ControllerAction {
+    /// `JumpTimelineController`: the clock moves to `DestinationTime` (`b6a51260`, name cracked).
+    Jump(f32),
+    /// `QuitSequenceTimelineController`: the timeline ends (its voices are released).
+    Quit,
+}
+
+/// A `TimelineControllers` entry (`TriggerType` 1, the only kind the sound timelines use). It fires when the
+/// clock crosses `TriggerTime` while its `EnabledBinding` holds; with `monitor` (`2d0e4348`, name not cracked)
+/// it also fires whenever the binding turns true later on, once the clock is past `TriggerTime`. That reading
+/// of `2d0e4348` is inferred from the nitrous timeline (`HeatLevelSoundSet.NitrousLocal`), the only reading
+/// under which all eight of its controllers make sense (loop while held, tail on release, quit on a short tap,
+/// restart on a new press); the controller code is not in the dump.
+#[derive(Debug, Clone)]
+pub struct Controller {
+    pub at: f32,
+    pub enabled: String,
+    pub monitor: bool,
+    pub action: ControllerAction,
 }
 
 /// Plug-in kinds the player implements. Others (pans, limiters, reverb) pass the signal through.
@@ -296,6 +321,9 @@ impl Bank {
         for s in &self.sequences {
             add(&s.binding);
             add(&s.gate);
+            for c in &s.controllers {
+                add(&c.enabled);
+            }
             for it in &s.items {
                 add(&it.enabled);
                 match &it.kind {
@@ -508,6 +536,8 @@ struct SeqState {
     items: Vec<ItemState>,
     /// A bound exclusive-cue sequence was started this block.
     cued: bool,
+    /// Timeline controllers: resolved condition (`None` = always) and whether it held last block.
+    controllers: Vec<(Option<Bind>, bool)>,
 }
 
 struct WaveVoice {
@@ -520,8 +550,13 @@ struct WaveVoice {
     channel: Option<usize>,
     owner: (usize, usize),
     stopping: bool,
+    /// Gain taken off per control block while stopping (0 = within one block).
+    release: f32,
     done: bool,
 }
+
+/// Shortest release of a voice a timeline controller lets go (s; assumed).
+const RELEASE_SECONDS: f32 = 0.05;
 
 struct GinsuVoice {
     synth: GinsuSynth,
@@ -913,6 +948,7 @@ impl Player {
                 gate: bind(&params, &s.gate),
                 playing: false,
                 cued: false,
+                controllers: s.controllers.iter().map(|c| (bind(&params, &c.enabled), false)).collect(),
                 t: 0.0,
                 duration: s.items.iter().map(|i| i.end).fold(s.max, f32::max),
                 items: s
@@ -1047,6 +1083,8 @@ impl Player {
                     continue;
                 }
             }
+            let conditions: Vec<bool> =
+                self.seqs[pick].controllers.iter().map(|(b, _)| self.value(*b).is_none_or(|v| v > 0.5)).collect();
             let s = &mut self.seqs[pick];
             s.playing = true;
             s.t = 0.0;
@@ -1054,12 +1092,16 @@ impl Player {
                 it.active = false;
                 it.held = None;
             }
+            for (c, held) in s.controllers.iter_mut().zip(conditions) {
+                c.1 = held;
+            }
         }
 
         let nch = self.channels.len();
         let mut gain_mul = vec![1.0f32; nch];
         let mut overrides: Vec<(usize, Target, f32)> = Vec::new();
-        let mut starts: Vec<(usize, usize)> = Vec::new();
+        let mut starts: Vec<(usize, usize, f32)> = Vec::new();
+        let mut releases: Vec<(usize, Option<usize>)> = Vec::new();
         for si in 0..self.seqs.len() {
             let seq = &self.bank.sequences[si];
             let gate_ok = self.value(self.seqs[si].gate).is_none_or(|v| v > 0.5);
@@ -1069,8 +1111,43 @@ impl Player {
                 let v = raw.unwrap_or(0.0);
                 if seq.max > seq.min { Some(v.clamp(seq.min, seq.max)) } else { Some(v) }
             } else if self.seqs[si].playing {
+                let t0 = self.seqs[si].t;
                 self.seqs[si].t += dt;
-                Some(self.seqs[si].t - dt)
+                // Timeline controllers: the first one that fires this block moves the clock (to exactly its
+                // destination, so a controller at that time fires on the next block) or ends the timeline.
+                // The items see the old time this block.
+                let mut fired = None;
+                for k in 0..seq.controllers.len() {
+                    let c = &seq.controllers[k];
+                    let (b, was) = self.seqs[si].controllers[k];
+                    let holds = self.value(b).is_none_or(|v| v > 0.5);
+                    self.seqs[si].controllers[k].1 = holds;
+                    if fired.is_some() || !holds {
+                        continue;
+                    }
+                    let crossed = t0 <= c.at && c.at < t0 + dt;
+                    let turned = c.monitor && !was && t0 >= c.at;
+                    if crossed || turned {
+                        fired = Some(c.action);
+                    }
+                }
+                match fired {
+                    Some(ControllerAction::Jump(to)) => {
+                        self.seqs[si].t = to;
+                        // Voices of items the jump leaves are released over their fade-out.
+                        for (ii, it) in seq.items.iter().enumerate() {
+                            if !(to >= it.start && to <= it.end) {
+                                releases.push((si, Some(ii)));
+                            }
+                        }
+                    }
+                    Some(ControllerAction::Quit) => {
+                        self.seqs[si].t = self.seqs[si].duration + 1.0;
+                        releases.push((si, None));
+                    }
+                    None => {}
+                }
+                Some(t0)
             } else {
                 None
             };
@@ -1139,7 +1216,7 @@ impl Player {
                                     voice.step = pitch.max(0.05) as f64 * voice.clip.rate as f64 / self.sr as f64;
                                     voice.stopping = env <= 0.0;
                                 }
-                                _ if env > 0.0 => starts.push((si, ii)),
+                                _ if env > 0.0 => starts.push((si, ii, t_item)),
                                 _ => {}
                             }
                         } else {
@@ -1154,12 +1231,12 @@ impl Player {
                                 && !warming
                                 && !st.voice.is_some_and(|v| v < self.voices.len() && self.voices[v].owner == (si, ii));
                             if entering && !seq.retrigger {
-                                starts.push((si, ii));
+                                starts.push((si, ii, t_item));
                             } else if retrigger {
                                 // About 12 per second at full binding value.
                                 let rate = 12.0 * raw.unwrap_or(1.0).clamp(0.0, 1.0) * env.max(0.2);
                                 if self.rng.unit() < rate * dt {
-                                    starts.push((si, ii));
+                                    starts.push((si, ii, t_item));
                                 }
                             }
                         }
@@ -1178,12 +1255,22 @@ impl Player {
                 }
             }
         }
-        for (si, ii) in starts {
-            self.start_voice(si, ii);
+        for (si, ii, t) in starts {
+            self.start_voice(si, ii, t);
+        }
+        // Voices a timeline controller let go: released over their item's fade-out (at least 50 ms, assumed:
+        // the controller code is not in the dump).
+        for (si, item) in releases {
+            for v in self.voices.iter_mut().filter(|v| v.owner.0 == si && item.is_none_or(|ii| v.owner.1 == ii)) {
+                let fade = self.bank.sequences[si].items[v.owner.1].fade_out.time.max(RELEASE_SECONDS);
+                v.stopping = true;
+                v.release = v.gain.max(1e-3) * dt / fade;
+            }
         }
         // Voice gain ramps; drop finished voices (indices held by items are re-checked by owner).
         for v in &mut self.voices {
-            let target = if v.stopping { 0.0 } else { v.target };
+            let target =
+                if v.stopping { if v.release > 0.0 { (v.gain - v.release).max(0.0) } else { 0.0 } } else { v.target };
             v.dgain = (target - v.gain) / BLOCK as f32;
             if v.stopping && v.gain <= 1e-4 {
                 v.done = true;
@@ -1244,7 +1331,10 @@ impl Player {
         }
     }
 
-    fn start_voice(&mut self, si: usize, ii: usize) {
+    /// Start a voice of wave item `ii` of sequence `si`, `t` being the item's normalised position (0..1) on the
+    /// sequence axis: the trigger probability, gain and pitch curves are read there (a one-shot of the pop
+    /// probability's 0.75..1 range entered at 0.9 fires with the curve's value at 0.6, not at 0).
+    fn start_voice(&mut self, si: usize, ii: usize, t: f32) {
         let item = &self.bank.sequences[si].items[ii];
         let ItemKind::Wave { waves, .. } = &item.kind else { return };
         if waves.is_empty() {
@@ -1252,13 +1342,13 @@ impl Player {
         }
         let st = &self.seqs[si].items[ii];
         if let Some(p) = &st.probability {
-            let pr = p.m.eval(0.0, self.value(p.bind));
+            let pr = p.m.eval(t, self.value(p.bind));
             if self.rng.unit() >= pr {
                 return;
             }
         }
-        let gain = st.gain.as_ref().map_or(1.0, |m| m.m.eval(0.0, self.value(m.bind)));
-        let pitch = st.pitch.as_ref().map_or(1.0, |m| m.m.eval(0.0, self.value(m.bind)));
+        let gain = st.gain.as_ref().map_or(1.0, |m| m.m.eval(t, self.value(m.bind)));
+        let pitch = st.pitch.as_ref().map_or(1.0, |m| m.m.eval(t, self.value(m.bind)));
         let channel = st.channel;
         let pick = self.rng.next() as usize % waves.len();
         let clip = waves[pick].clone();
@@ -1278,6 +1368,7 @@ impl Player {
             channel,
             owner: (si, ii),
             stopping: false,
+            release: 0.0,
             done: false,
         });
         self.seqs[si].items[ii].voice = Some(self.voices.len() - 1);
@@ -1479,6 +1570,7 @@ mod tests {
                 gate: String::new(),
                 retrigger: false,
                 exclusive_cue: false,
+                controllers: vec![],
             }],
             cues: vec![],
             master_gain: 1.0,
@@ -1497,5 +1589,107 @@ mod tests {
         let loud = rms(&mut p);
         // Sine of amplitude 16000/32768 (RMS 0.345) × channel 0.5 × MIX_SCALE: RMS ≈ 0.0207.
         assert!((loud - 0.345 * 0.5 * MIX_SCALE).abs() < 0.003, "{loud}");
+    }
+
+    fn wave(start: f32, end: f32, clip: Arc<Clip>, probability: Option<ModValue>) -> Item {
+        Item {
+            start,
+            end,
+            fade_in: Fade::default(),
+            fade_out: Fade::default(),
+            enabled: String::new(),
+            channel: None,
+            kind: ItemKind::Wave {
+                waves: vec![clip],
+                gain: ModValue::constant(1.0),
+                pitch: ModValue::constant(1.0),
+                probability,
+            },
+        }
+    }
+
+    fn rms(p: &mut Player, seconds: f32) -> f32 {
+        let n = (seconds * OUTPUT_RATE as f32) as usize;
+        let v: Vec<f32> = (0..n).map(|_| p.next_sample()).collect();
+        (v.iter().map(|x| x * x).sum::<f32>() / n.max(1) as f32).sqrt()
+    }
+
+    /// The nitrous timeline's pattern (`HeatLevelSoundSet.NitrousLocal`): a long one-shot looped by jumps while
+    /// "Use" holds, released into a tail when it lets go.
+    #[test]
+    fn timeline_controllers_loop_and_release() {
+        let ctl = |at: f32, enabled: &str, monitor: bool, action: ControllerAction| Controller {
+            at,
+            enabled: enabled.into(),
+            monitor,
+            action,
+        };
+        let controllers = vec![
+            // Released after 0.2 s: jump to the tail; still held at 0.65 s: loop back to the start.
+            ctl(0.2, "Use(NOT)", true, ControllerAction::Jump(0.8)),
+            ctl(0.65, "Use", false, ControllerAction::Jump(0.0)),
+        ];
+        let long = Arc::new(Clip { samples: vec![16000; 48_000], rate: 48_000, looping: false });
+        let short = Arc::new(Clip { samples: vec![16000; 4_800], rate: 48_000, looping: false });
+        let bank = Bank {
+            channels: vec![],
+            sequences: vec![Sequence {
+                id: 0,
+                binding: String::new(),
+                min: 0.0,
+                max: 1.0,
+                items: vec![wave(0.1, 0.6, long, None), wave(0.8, 0.9, short, None)],
+                gate: String::new(),
+                retrigger: false,
+                exclusive_cue: true,
+                controllers,
+            }],
+            cues: vec![("go".into(), vec![0])],
+            master_gain: 1.0,
+        };
+        let params = Arc::new(Params::new(bank.param_names()));
+        assert!(params.index("Use").is_some());
+        params.set_smoothing("Use", 0.0);
+        let mut p = Player::new(bank, params.clone());
+        params.set("Use", 1.0);
+        params.trigger("go");
+        // Held for 2 s: the 0.6 s item keeps playing (looped at 0.5 s), well past the timeline's 1 s length.
+        rms(&mut p, 1.5);
+        assert!(rms(&mut p, 0.5) > 0.05, "looping while held");
+        // Released: the jump to the tail, the first item released over 50 ms, then silence once the tail ends.
+        params.set("Use", 0.0);
+        rms(&mut p, 1.2);
+        assert!(rms(&mut p, 0.5) < 1e-3, "ended after the release");
+    }
+
+    /// A one-shot's trigger probability is read at the position where the binding entered its item.
+    #[test]
+    fn trigger_probability_is_read_at_the_item_position() {
+        let mut ramp = ModValue::constant(1.0);
+        ramp.curve = vec![(0.0, 0.0), (1.0, 1.0)];
+        let item = wave(0.5, 1.0, sine_clip(300.0, false), Some(ramp));
+        let bank = Bank {
+            channels: vec![],
+            sequences: vec![Sequence {
+                id: 0,
+                binding: "Prob".into(),
+                min: 0.0,
+                max: 1.0,
+                items: vec![item],
+                gate: String::new(),
+                retrigger: false,
+                exclusive_cue: false,
+                controllers: vec![],
+            }],
+            cues: vec![],
+            master_gain: 1.0,
+        };
+        let params = Arc::new(Params::new(bank.param_names()));
+        params.set_smoothing("Prob", 0.0);
+        let mut p = Player::new(bank, params.clone());
+        rms(&mut p, 0.3);
+        // Entering at the top of the item (curve value 1): it fires. Read at position 0 it never would.
+        params.set("Prob", 1.0);
+        assert!(rms(&mut p, 0.2) > 0.01);
     }
 }
