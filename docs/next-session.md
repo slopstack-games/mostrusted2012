@@ -26,6 +26,15 @@ capture of the original) before a fix (CLAUDE.md fidelity rule).
 - Many map icons are missing: jack spots, race locations, etc.
 - Most Wanted races are shown like normal races on the map.
 
+**Input: the Steam Controller** (`steam_controller.rs`, PR #3, research log 2026-10-10)
+- Works on Windows over its wireless puck. Not tried: Linux (hidraw needs Steam's udev rules), USB and Bluetooth.
+- With Steam running and the game not started through it, Steam's desktop layout also sends keys and mouse moves
+  from the controller (README); which keys, and whether they clash with the driving keys, is not checked.
+- The reader steps aside on `SteamVirtualGamepadInfo` (Steam Input's virtual pad); not checked with the game
+  added to Steam as a non-Steam game.
+- `cargo clippy --release --workspace` fails on Windows: mwtool's `lods` module is `#[cfg(target_os = "linux")]`
+  but called unconditionally (`crates/mwtool/src/main.rs`).
+
 **Police**
 - Cops have no sirens (sound) or light bars.
 - No police chatter / radio sounds in chases.
