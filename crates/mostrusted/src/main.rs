@@ -63,6 +63,7 @@ mod sky;
 mod steam_controller;
 mod tonemap;
 mod traffic;
+mod traffic_reaction;
 mod tyre_marks;
 mod ui_quads;
 mod weather;

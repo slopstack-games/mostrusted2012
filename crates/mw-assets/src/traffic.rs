@@ -61,6 +61,9 @@ pub struct TrafficVehicleType {
     pub mass: f32,
     /// `TrafficVehicle.Trailer` is set: the back extent grows by 10 m (`DAT_00fb23c0`). None in the PC data.
     pub trailer: bool,
+    /// `TrafficVehicle` +0x3c (`172df888`, true on 7 of the 11 types): the car has an alarm (`FUN_006042c0` plays
+    /// `MiscSound.c1109b6e` only for these).
+    pub alarm: bool,
     /// `VehicleComponent.Gameplay` → `Vehicle_Gameplay` damage stats (car-against-car impacts).
     pub damage_stats: Option<crate::crash::VehicleDamageStats>,
 }
@@ -200,6 +203,9 @@ pub struct TrafficData {
     pub system: SystemConfig,
     pub params: ParamConfig,
     pub fuzzy: FuzzyConfig,
+    /// `TrafficVehicleConfig` +0x28 (`06231d04`, 5000): the light brightness byte's ramp per second (`FUN_005f53b0`
+    /// steps the car's +0x64 by `int(this × dt)` towards 255 or 0).
+    pub light_fade: f32,
 }
 
 fn num(v: &Value) -> Option<f32> {
@@ -376,6 +382,7 @@ impl AssetStore {
             system: SystemConfig::read(&self.global_config("Genesys.Gen.TrafficSystemConfig")?),
             params: ParamConfig::read(&self.global_config("Genesys.Gen.TrafficParamConfig")?),
             fuzzy: FuzzyConfig::read(&self.global_config("Genesys.Gen.TrafficFuzzyLogicConfig")?),
+            light_fade: self.global_config("Genesys.Gen.TrafficVehicleConfig").map_or(0.0, |o| float(&o, 0x0623_1d04)),
         }))
     }
 
@@ -423,6 +430,7 @@ impl AssetStore {
             half_extents,
             mass,
             trailer: handle(o.get(field_hash("Trailer"))).is_some(),
+            alarm: matches!(o.get(0x172d_f888), Some(Value::Bool(true))),
             damage_stats: self
                 .genesys_object(ResourceId(0x0100_0000_0000_0000 | component as u64))
                 .ok()

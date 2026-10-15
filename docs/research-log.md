@@ -10,6 +10,63 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-15: traffic reactions: the headlight flash, the hit horn and car alarms (manoeuvre 1) ported
+User report (play test 2026-10-14): traffic sounds and effects mostly missing, "horns and headlight flashing when
+you drive towards them". Read from the dump and the disassembly; details in decomp.md "Traffic reactions
+(2026-10-15)"; ported in `traffic_reaction.rs` (engine-free, 3 unit tests), `traffic.rs` (`crash_hit_cars`,
+`reaction_lamps`) and `car_sfx.rs` (hit horn, alarm).
+- **Manoeuvres** are only for physical traffic: a car that gets a world vehicle (`FUN_0061cf50` →
+  `FUN_00609b70`) with a *request type* scores 11 manoeuvres (`FUN_006071d0` / `FUN_005eac20`). The 11 objects at
+  `world+0x339d0` (vtables set by `FUN_00420720`) map index → update: 0 `FUN_00604290`, 1 `FUN_005f5c40`, 2
+  `FUN_005f77e0` (swerve), 3 `FUN_005f6150`, 4 `FUN_005f6e30`, 5 `FUN_005f65a0` (jack-knife), 6 `FUN_005ffc10`, 7
+  `FUN_005f6aa0`, 8 `FUN_005f73a0`, 9 `FUN_005ebca0`, 10 `FUN_005e9260` (wrecked). Car byte +0x6f holds the index.
+- **Who reacts how**: a contact turns a lane follower physical (`FUN_0060c3a0`'s loop) with request 4 or 6
+  (`FUN_005f2eb0`): 4 when the contact closes faster than 30 mph, the traffic car moves faster than 40 mph and the
+  contact lies in its box zone 5–9 (side / rear, `FUN_00929da0`); else 6. Request 6 (and 2: every parked car, and 0
+  for a car with a trailer) picks **manoeuvre 1**; request 4 picks 6 / 2 / 4 by an input at +0xd0 (> 0.66 / > 0.33 /
+  else; input not traced). The arbiter's option 0 queues request 0 → manoeuvre 0 (no flash). So the flash and the
+  "hit horn" belong to cars bumped from the front or slowly, not to cars merely approached; approaching cars only
+  get the existing "stop for obstacle" horn (40 %, once per 55 s; ported 2026-10-09).
+- **Manoeuvre 1** (`FUN_005f5c40`): brakes / steers away; the car's horn timer is reset and it wants its horn (bit
+  0) when its random +0x5c ≤ `TrafficParamConfig` +0x20 (0.4); a parked car that is moving sets the alarm bit
+  0x10 instead. It ends when the car's physical time (+0x200, += dt in `FUN_005ffa10`) passes 5 s (`.rdata`
+  0x00fb278c) for a lane car (→ manoeuvre 0, or 10 when the damage bar is full); parked cars stay in it.
+- **Headlight flash**: while +0x6f = 1, `FUN_00ebe8c0` starts `FUN_00614620` (pattern = LCG high word % 3), restarted
+  whenever a pattern ends. Patterns (`.rdata` 0x00fb2168, seconds; even steps dark, odd steps lit, −1 = end):
+  0.15 0.30 0.13 0.25 0.14 0.25 0.18 | 0.12 0.20 0.10 0.20 0.09 0.16 0.21 0.20 0.18 (holds dark at step 8) | 0.16
+  0.75 0.22 0.25 0.16 0.32 0.13. `FUN_005f53b0` ramps the brightness byte +0x64 to 255 / 0 by
+  `TrafficVehicleConfig` +0x28 (5000 /s) × dt. The car's light sources are drawn (`FUN_005fd190`) at intensity
+  `0.7 + 0.5 × b/255` (0 for parked cars and manoeuvre 10), per car × `0.9 + 0.2 × random`. Our renderer draws no
+  car light sources (world_lights.rs: `VehicleVfxBehaviour.Lights` not drawn), so the flash needs those first.
+- **Car alarm** (`FUN_006042c0`): bit 0x10 (or a proximity test `FUN_005f2740`, 10.5 m, not traced) plays
+  `MiscSound.c1109b6e` when the car's `TrafficVehicle` +0x3c flag (`172df888`, true on 7 of 11 types) is set and
+  `(car index % 10) × 0.1 ≤ MiscSound` +0xe0 (0.4), then hazard-blinks (0x20: bit 8 toggles every 0.4 s between
+  0.5 s and 15 s of +0x4c).
+- **Indicators** (same functions): lane car +0x72 / +0x8 / +0xc pick left (0x40 → bit 2) / right (0x80 → bit 4),
+  brightness +0x65; the blink period reads `TrafficVehicleConfig` +0x80 / +0xac (0.012 / 0.022, too short for
+  seconds: unit open).
+- **Ported**: a crashed lane car gets its request from the hit's zone on its box and the closing speed; requests
+  2 / 6 run manoeuvre 1 (5 s for lane cars, for ever for parked ones): the flash patterns and the brightness
+  ramp as read, the hit horn through the two horn slots, the alarm (8 s, `(slot % 10) × 0.1 ≤ 0.4`, types with
+  the flag, once per car). Model decisions: the random +0x5c and the pattern draws come from one second LCG with
+  our seed; the contact speed is the closing speed along the contact normal; "moving" is the 0.5 m/s standing
+  test without the direction term; the behaviour's 150 m radius is not applied to the lights; request 4 gets no
+  reaction (manoeuvres 2 / 4 / 6 not ported); and, since car light sources are not drawn, the flash scales the
+  lamps' `HeadlightColour` emission by the game's intensity ratio `(0.7 + 0.5 b/255) / 0.7` (up to 1.71) on the
+  flashing car's own material copies.
+- **Checks**: unit tests (pattern 0 = three lit phases ending dark, zones, request rule, manoeuvre 1 ends at 5 s).
+  `--test crash-traffic`: head-on, zone 3, closing 128 km/h, request 6, the pickup's 3 lamp materials flash (its
+  random 0.62 > 0.4: no hit horn). Free roam at full throttle (`--spawn=800,42,1688,71 --auto-throttle 1
+  --bench 75`): five hits (zones 2, 4, 4, 5, 7; all request 6, the zone-5 one closed at 3 km/h), every car
+  flashes; the two with random 0.10 / 0.13 honk right after (horn at 16 m / 32 m, gain 0 dB). Alarm data loads
+  (`MiscSound.c1109b6e`, share 0.4); no parked car was hit in these runs (alarm not seen in game).
+- Open: the per-player request list (`world+0x36120 + p·0x680`, entries at +0x6b0, count +0x770) consumed by
+  `FUN_0060e030` (its writer, and so request types 1 / 3 / 5, not found: possibly the near-miss / panic reactions to
+  an approaching player); message 0x10 requests (`FUN_005efdd0`); manoeuvre 0's behaviour; how +0x64 / bit 8 reach
+  the lamp materials (hazard lights of parked cars); the input +0xd0; the hazard
+  blink and indicators; car light sources (then the flash drives their intensity instead of the lamp glow). A
+  capture of the original (bump a stopped car head-on at night, F12 burst) would confirm the flash look.
+
 ### 2026-10-15: surface effects and tyre marks from the code (smoke, kick-up, marks per wheel surface)
 
 The play test said grass and dirt behave like road for the effects and the tyre marks look off. Cause: every

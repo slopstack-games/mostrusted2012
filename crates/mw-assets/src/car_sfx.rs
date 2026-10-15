@@ -159,6 +159,10 @@ pub struct OtherCarSfx {
     pub horns: Vec<Arc<OneShot>>,
     /// Per traffic `VehicleComponent` id: its horn list (indices into `horns`, in the resource's order).
     pub horn_lists: HashMap<u32, Vec<usize>>,
+    /// The car alarm (`MiscSound.c1109b6e`, an 8 s timeline; `FUN_006042c0`).
+    pub alarm: Option<Arc<OneShot>>,
+    /// `MiscSound` +0xe0 (`7f18169d`, 0.4): a car sounds its alarm when `(car index % 10) × 0.1` is at most this.
+    pub alarm_share: f32,
 }
 
 /// `CollisionSoundSet` competitor slots by `[level][direction]` (field hashes; offsets in the module doc).
@@ -426,6 +430,10 @@ impl AssetStore {
                 list.push(k);
             }
             out.horn_lists.insert(c, list);
+        }
+        if let Some(misc) = first_object(self, "SOUND/GLOBAL.BNDL", "Genesys.Gen.MiscSound") {
+            out.alarm = handle_at(&misc, 0xc110_9b6e).and_then(|id| self.one_shot(&snapshot, id)).map(Arc::new);
+            out.alarm_share = number(misc.get(0x7f18_169d)).unwrap_or(0.0);
         }
         out
     }
