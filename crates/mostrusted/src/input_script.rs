@@ -54,6 +54,7 @@ fn key_code(name: &str) -> Option<KeyCode> {
         "KeyZ" => K::KeyZ,
         "KeyA" => K::KeyA,
         "KeyE" => K::KeyE,
+        "KeyM" => K::KeyM,
         "ControlRight" => K::ControlRight,
         "Numpad2" => K::Numpad2,
         "Numpad4" => K::Numpad4,

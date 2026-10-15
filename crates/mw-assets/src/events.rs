@@ -100,6 +100,7 @@ mod h {
     pub const MODE_INTRO: u32 = field_hash("Intro");
     pub const RESULTS_SEQUENCE: u32 = field_hash("ResultsSequence");
     pub const FEEDBACK_GROUP_ID: u32 = field_hash("FeedbackGroupID");
+    pub const MUSIC_PLAYLIST: u32 = field_hash("MusicPlaylist");
 }
 
 const GAME_MODES: &str = "GAMELOGIC/GAMEMODES.BNDL";
@@ -340,6 +341,9 @@ pub struct GameMode {
     pub results_sequence: u32,
     /// `FeedbackGroupID` (+0x75): which game-mode feedback group is loaded (2 → 604180, 1 → 604179).
     pub feedback_group_id: u8,
+    /// `MusicPlaylist`: the `SongList` the HSM's "Play Default Game Mode Music" (`PLAYSONGLIST`, `USEDEFAULT`)
+    /// plays: 1622455 on every offline mode (`mw_assets::music`).
+    pub music_playlist: u32,
 }
 
 /// Every offline event plus the game modes and the career's event lists.
@@ -481,6 +485,7 @@ impl AssetStore {
                     intro_sequence: uint(o.get(h::MODE_INTRO)),
                     results_sequence: uint(o.get(h::RESULTS_SEQUENCE)),
                     feedback_group_id: uint(o.get(h::FEEDBACK_GROUP_ID)) as u8,
+                    music_playlist: uint(o.get(h::MUSIC_PLAYLIST)),
                 }),
                 "OfflineEvent" => {
                     let game_mode = uint(o.get(h::GAME_MODE));

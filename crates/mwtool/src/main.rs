@@ -563,6 +563,15 @@ enum Cmd {
     /// Scoring actions (`ScoringAction`s of GAMELOGIC/GAMEPLAY.BNDL named by `ScoringConfig`): Speed Points,
     /// pursuit score, heat, HUD message sequence and title per action. `--all` includes the actions worth no
     /// Speed Points; `--sequence <id>` prints a message sequence's layouts instead.
+    /// Music (`mw_assets::music`): every `SongList` of `UI/SONGS/SONGS.BNDL` with its songs (artist, title,
+    /// stream), the game modes' `MusicPlaylist`; `--wave <resource id> --out <dir>` decodes one `Wave`'s whole
+    /// stream (prefetch + streamed file) to .wav.
+    Music {
+        #[arg(long)]
+        wave: Option<String>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     Scoring {
         #[arg(long)]
         all: bool,
@@ -1431,9 +1440,52 @@ fn main() -> Result<()> {
             events::hsm(&AssetStore::new(game)?, &bundle, node, find.as_deref(), depth, parents)?
         }
         Cmd::Traffic { png, at } => traffic(&AssetStore::new(game)?, png.as_deref(), &at)?,
+        Cmd::Music { wave, out } => music(&AssetStore::new(game)?, wave.as_deref(), out.as_deref())?,
         Cmd::Scoring { all, sequence, text } => scoring(&AssetStore::new(game)?, all, sequence, &text)?,
         Cmd::Lights { near, hour } => lights(&AssetStore::new(game)?, &near, hour)?,
         Cmd::PaintMap { id, png, at } => paint_map(&AssetStore::new(game)?, &id, png.as_deref(), &at)?,
+    }
+    Ok(())
+}
+
+/// `mwtool music`.
+fn music(store: &AssetStore, wave: Option<&str>, out: Option<&Path>) -> Result<()> {
+    if let Some(w) = wave {
+        let id = ResourceId(u64::from_str_radix(w.trim_start_matches("0x"), 16)?);
+        let (pcm, gain, looping) = store.wave_stream(id)?;
+        println!(
+            "{id}: {} ch, {} Hz, {:.2} s, gain {gain}, loop {looping}",
+            pcm.channels,
+            pcm.sample_rate,
+            pcm.duration_secs()
+        );
+        if let Some(out) = out {
+            std::fs::create_dir_all(out)?;
+            std::fs::write(out.join(format!("{id}.wav")), pcm.to_wav())?;
+        }
+        return Ok(());
+    }
+    let lang = store.language(mw_assets::DEFAULT_LANGUAGE)?;
+    let text = |id: u32| lang.get(id).unwrap_or_default().to_string();
+    let b = open_bundle(store.game(), "UI/SONGS/SONGS.BNDL")?;
+    for e in b.entries_of_type(ResourceType::GenesysObject) {
+        let Ok(list) = store.song_list((e.id.0 & 0xffff_ffff) as u32) else { continue };
+        println!(
+            "song list {} ({} songs) feedback {} flags 22={} 23={} {}",
+            list.id,
+            list.songs.len(),
+            list.feedback_message,
+            list.flag_22,
+            list.flag_23,
+            list.url
+        );
+        for s in &list.songs {
+            println!("  {:>8} wave {} {:>7.3}  {} - {}", s.id, s.wave, s.bc7081c6, text(s.artist), text(s.title));
+        }
+    }
+    let events = store.events()?;
+    for m in &events.game_modes {
+        println!("game mode {} ({}): MusicPlaylist {}", m.id, text(m.name), m.music_playlist);
     }
     Ok(())
 }

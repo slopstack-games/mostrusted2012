@@ -441,6 +441,28 @@ See `crates/mw-audio` (decoders reimplemented from vgmstream's documentation of 
   samples).
 - **Wave** resources: 0x80-byte header (f32 1.0 at 0x10, duration in ms as f32 at 0x14), then an SPS stream; its
   `H` block's loop flag separates loops (engine idle, skid, wind) from one-shots (pops, clunks, impacts).
+- **Wave header, more** (2026-10-15): +0x00 = 0x80 when an SPS prefetch follows the header, +0x10 f32 = the
+  wave's gain (1.0 mostly; 0.499 on the 14729 / 14730 loops, 0.562 = -5 dB on the boot transition's bed),
+  +0x18 = the prefetch's length. A prefetched wave holds the stream's `H` block and first `D` blocks; the rest is
+  the file `<UniqueId>.SPS` (e.g. `UI/SEQUENCES/STREAMS/1772189.SPS`, starting with a `D` block; the
+  concatenation decodes to exactly the item's span). Without a prefetch (64-byte resources in
+  `UI/SONGS/SONGS.BNDL`) +0x28 is the stream's path (`UI\SONGS\14729.SPS`). `mw_assets::music`,
+  `mwtool music --wave <id>`.
+- **Music** (`UI/SONGS/SONGS.BNDL`, `mw_assets::music`, `mwtool music`): `SongList { f6b7d3df (string: a
+  Spotify URL on 1084858), FeedbackMessage (+0x14, the "now playing" popup; 30567 on the licensed lists),
+  UniqueId (+0x18), Songs (+0x1c), count (+0x20 u16), 341d0a95 (+0x22: skippable with MUSIC_ADVANCE, and a new
+  song on resume), 3fdcf508 (+0x23: licensed: its position is kept in the profile, user music may replace it) }`;
+  `Song { Sequence (+0x0c, unused), Sound (+0x14, a Wave), AlbumName c95dc017 (+0x1c), Artist (+0x20),
+  UniqueId (+0x24), TrackName e4b95981 (+0x28), bc7081c6 (+0x2c, f32 -0.92..0.99: the situation bias, > 0 the
+  rock songs, < 0 the electronic ones; decomp.md "Music") }`. Lists: 1622455 (42 licensed songs; every
+  `GameMode.MusicPlaylist`), 1845669 (the same 42 in another order) and 1836280 (12) unreferenced in data,
+  116490 (3 short loops, the Autolog player's), 116491 (6), 1084858 (Picture Paradise "Soothing Music", 4),
+  2026345 (the intro race: Baba O'Riley), 1870156 / 1870247 / 1870362 / 1836664 (sequences' `SetSongList`
+  items: credits and cutscenes).
+- **Music sequence items**: `SetSongListSequenceItem { SongList (+0x24), 3c4e5e2b (+0x28: a song may start
+  while the game clock is paused), f28251e6 (+0x29: preload, 1 s lead), cb97beb9 (+0x2a: use default, the
+  event's / mode's list) }`, `MusicStateSequenceItem { State (string: "Mapscreen", "Multiplayer") }` (only
+  exposed as `DynamicMusic.MusicState`).
 - **Sound sequences** (GeneSys, `mw_audio::sequence` has the full model): `Sequence { Binding (StringBase: a game
   value such as "Players.LocalPlayer.GetPlayerAudibleRPM", optionally with a test "(NOT)", "(GTEQ:100)",
   "(BETWEEN,20,60)"), Binding_Min, Binding_Max, SequenceItems }`; an empty binding makes a timeline in seconds.

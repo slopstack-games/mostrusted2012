@@ -90,6 +90,9 @@ pub mod defaults {
     /// EASY_LEFT / RIGHT / UP / DOWN (69–72): Num 4 / 6 / 8 / 2; d-pad (the pad bindings' min is 0.8, a digital
     /// d-pad reads 0 or 1 either way). Left = back a tier, right = select, up / down = previous / next
     /// (`EasyDrive_ScreenScript`'s `easy_*` mappings).
+    /// MUSIC_ADVANCE (0x59, entry 0x010c3ad0): M (VK 0x4D, `FUN_00483470`); pad slot 13 (`FUN_00482250`): RB,
+    /// read from its neighbours (LB = 12, Back = 14). A tap (released within 1 s) skips the song (`music.rs`).
+    pub const MUSIC_ADVANCE: &[Control] = &[Key(K::KeyM), Button(B::RightTrigger)];
     pub const EASY_LEFT: &[Control] = &[Key(K::Numpad4), Button(B::DPadLeft)];
     pub const EASY_RIGHT: &[Control] = &[Key(K::Numpad6), Button(B::DPadRight)];
     pub const EASY_UP: &[Control] = &[Key(K::Numpad8), Button(B::DPadUp)];

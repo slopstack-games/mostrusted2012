@@ -111,6 +111,35 @@ items and filters; the minimap's free-roam icons".
   card and its options; (6) where the in-world jack spot marker (look 1013508's world layouts 186088 / 195581) and
   the speed camera / billboard world looks (1013522, 1013491) are drawn: not ported.
 
+### 2026-10-15: title prompt pair, music by situation (user play test: front end, audio)
+
+- **Prompt overlap**: layout 1274392's labels 1597779 ("PRESS START", hidden on
+  `Controls.IsXInputControllerConnected(NOT)`) and 1274432 (`ComplianceTerm.Value["PressStart"]` = "PRESS ANY
+  KEY", hidden on `Controls.IsXInputControllerConnected`) hide each other with an instant `OUT` idle step on a
+  triggered behaviour; our tween applied the element's own looping pulse after it, whose `IN` undid the hide, so
+  both showed. Triggered idles now apply last (our reading of the order: the tween code is not traced). Checked
+  with front-end shots with and without a pad (`MW_XINPUT_CONNECTED=0|1` overrides the check; no pad was
+  connected to this machine during the runs).
+- **Music**: decomp.md "Music" has the code (song manager states, start index, play order, the situation bias of
+  the song float `bc7081c6`, `PLAYSONGLIST`, `MUTE_SOUND` = the world bus only, `MUSIC_ADVANCE` = M, the
+  DynamicMusicManager does nothing for pursuits); formats.md "Audio" the data (`SongList`, `Song`, Wave prefetch +
+  streamed file, the music sequence items). Before: every `UI/SONGS/*.SPS` shuffled (UI loops, credits and the
+  Picture Paradise list included), all sound muted on the front end. Now: the title's own waves, the
+  transition's whoosh and looping bed, free roam and events on list 1622455 with the game's ordering, M / RB
+  skips, the in-game menu fades the music, music stays on over loading screens.
+- **Verified**: `mwtool music` (lists, game modes' `MusicPlaylist`), wave decodes (title intro 45.39 s = its
+  45.385 s item, loop 26.10 s with the `H` loop flag, no silent seconds; prefetch + file concatenated), a unit
+  test of the ordering (a pass plays every song once; free drive puts the f < 0 songs first, events the f > 0),
+  runs with `MW_MUSIC_LOG=1`: front end (title intro -> transition whoosh + bed -> list 1622455, first song index
+  1 on a new profile), `--drive --show-pause` with a scripted M tap (skipped; a 1.5 s hold did not), the pause
+  menu fading the level to 0 and back.
+- **Open / wanted from the original**: an audio capture of the boot (title -> transition -> first song) and of a
+  pause / resume to confirm levels and the fade back; whether a new profile's first song is list index 1 (Calvin
+  Harris) as the code reads; profile option 5 (shuffle) default (a live read of the profile options); event
+  +0x68 (an event's own song list); the "now playing" popup (FeedbackMessage 30567) is not shown; the Autolog
+  player's music (116490 / sequence 1402320), credits and cutscene `SetSongList` items are not played; the
+  in-game loading screen's 0.1 s mute ramp.
+
 ### 2026-10-14: the post chain against the original's code: bloom sizes, final pass, depth of field, grade
 
 The user: "postfx [is still off]". Compared our chain with the original's, stage by stage, from the full `.text`

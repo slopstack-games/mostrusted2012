@@ -1,5 +1,5 @@
-//! Game audio: the car's engine from its sound data (sequence bank, `mw_audio::sequence`), and music
-//! from the game's `UI/SONGS` streams. Decoding and the sound runtime live in `mw-audio` / `mw-assets`.
+//! Game audio: the car's engine from its sound data (sequence bank, `mw_audio::sequence`). Music is
+//! `music.rs`. Decoding and the sound runtime live in `mw-audio` / `mw-assets`.
 
 use std::num::NonZero;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -13,19 +13,13 @@ use mw_audio::Pcm;
 use mw_audio::ginsu::EngineMixer;
 use mw_audio::sequence::{Params, Player};
 
-pub struct GameAudioPlugin {
-    pub music: bool,
-}
+pub struct GameAudioPlugin;
 
 impl Plugin for GameAudioPlugin {
     fn build(&self, app: &mut App) {
         app.add_audio_source::<PcmAudio>()
             .add_audio_source::<EngineAudio>()
-            .init_resource::<MusicState>()
             .add_systems(Update, (engine_sound, update_engine_params));
-        if self.music {
-            app.add_systems(Update, music);
-        }
     }
 }
 
@@ -295,83 +289,5 @@ pub fn sound_trace(t: f32, rpm: f32, s: mw_assets::engine_driver::SoundState) {
             s.effects.load_floor,
             u8::from(s.limiter)
         );
-    }
-}
-// --- Music -------------------------------------------------------------------
-
-#[derive(Resource, Default)]
-pub struct MusicState {
-    decoding: Option<Arc<Mutex<Option<Pcm>>>>,
-    playlist: Vec<std::path::PathBuf>,
-    next: usize,
-}
-
-#[derive(Component)]
-struct Music;
-
-/// Plays the game's songs one after another, decoding each on a worker
-/// thread just before it is needed.
-fn music(
-    mut commands: Commands,
-    mut state: ResMut<MusicState>,
-    mut assets: ResMut<Assets<PcmAudio>>,
-    game: Res<crate::Game>,
-    playing: Query<(), With<Music>>,
-) {
-    if !playing.is_empty() {
-        return;
-    }
-    if state.playlist.is_empty() {
-        let mut songs: Vec<_> = game
-            .store
-            .game()
-            .files_with_extension("SPS")
-            .into_iter()
-            .filter(|p| p.to_string_lossy().to_ascii_uppercase().starts_with("UI/SONGS"))
-            .collect();
-        if songs.is_empty() {
-            return;
-        }
-        // Shuffle with a time-based seed.
-        let mut seed =
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64);
-        for i in (1..songs.len()).rev() {
-            seed ^= seed << 13;
-            seed ^= seed >> 7;
-            seed ^= seed << 17;
-            songs.swap(i, (seed % (i as u64 + 1)) as usize);
-        }
-        state.playlist = songs;
-    }
-    match state.decoding.clone() {
-        None => {
-            let path = game.store.game().root().join(&state.playlist[state.next % state.playlist.len()]);
-            state.next += 1;
-            let slot = Arc::new(Mutex::new(None));
-            let out = slot.clone();
-            std::thread::spawn(move || {
-                let pcm = std::fs::read(&path).ok().and_then(|d| mw_audio::sps::decode(&d).ok());
-                if pcm.is_none() {
-                    warn!("could not decode {}", path.display());
-                }
-                *out.lock().unwrap() = Some(pcm.unwrap_or_default());
-            });
-            state.decoding = Some(slot);
-        }
-        Some(slot) => {
-            let Some(pcm) = slot.lock().unwrap().take() else { return };
-            state.decoding = None;
-            if pcm.samples.is_empty() {
-                return;
-            }
-            info!("music: {:.0} s, {} Hz, {} ch", pcm.duration_secs(), pcm.sample_rate, pcm.channels);
-            let handle = assets.add(PcmAudio { pcm: Arc::new(pcm) });
-            commands.spawn((
-                AudioPlayer::<PcmAudio>(handle),
-                PlaybackSettings::DESPAWN.with_volume(Volume::Linear(0.0)),
-                crate::settings::Channel::Music,
-                Music,
-            ));
-        }
     }
 }

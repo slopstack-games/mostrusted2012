@@ -24,6 +24,7 @@ pub mod frontend;
 pub mod handling;
 pub mod lights;
 pub mod mods;
+pub mod music;
 pub mod paint;
 pub mod police;
 pub mod props;

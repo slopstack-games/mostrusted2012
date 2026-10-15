@@ -2103,12 +2103,68 @@ Code side from a sub-agent's trace of the dump and the live snapshot's disassemb
 playing (new game or `--profile` continue), interactive `--drive` runs show 108177 until ready; "ready" = car placed,
 Resident(car, 10 m), then the 1.5 s timeout (traffic readiness not checked); cars are placed only once
 Resident(target, 200 m) (`drive::spawn_car`); the loader streams nearest zone first and reports each unit. Ours:
-the title's backdrop and movie drawn full screen (movies through ffmpeg; no VP6 decoder), no title music or
-transition sounds (muted, as the loading screen mutes), four random pictures and eight random offline tips per
+the title's backdrop and movie drawn full screen (movies through ffmpeg; no VP6 decoder), the sequences' waves
+played by `music.rs` (2026-10-15, "Music" below), four random pictures and eight random offline tips per
 run, the `ImageNReady` holds never wait, the strip's tip not scrolled, `UIRoadRibbonShader` elements left out,
 our profile file (car, position) saved every 10 s; the pause menu pauses the virtual clock, MAP lists the offline
 races (the map screen 899991 is not built), SETTINGS opens our volume panel, the online items are inert, pad A / B
 for accept / back.
+
+### Music (2026-10-15, `music.rs`, `mw_assets::music`)
+
+From a sub-agent's trace of the dump (high confidence unless marked). mgr = the `UISongManager` at
+UIM+0x30370 (UIM = G+0x2f480).
+- **Manager states** (`FUN_007a4010`, state at mgr+0x408): 2 loads `UI\SONGS\SONGS.BNDL`; 3 resolves list
+  0x1c70a (the Autolog player's list); 6 resolves the requested list (+0x400) into +0x410; 7 picks the start
+  index and builds the play order (`FUN_00798980`); 8 plays (`FUN_007a1750` every frame); a different request
+  goes to 5: the same list as before clears the pause, a new one switches at once (`FUN_0079d0d0`) unless
+  "allow playout" (+5), when state 9 lets the song end first (`FUN_00aba790`); 10-12 unload.
+- **Start index** (state 7): the session table at mgr+0x08 (`FUN_00792900`: list -> next index + 1); else, for a
+  list with +0x23 and a FeedbackMessage, the profile's "SongLists" table (`SongListID` -> `SongIndex`,
+  `FUN_0072efb0`); else random. The RNG at +0x3a0: `s = s * 0x5851f42d4c957f2d + 1`, output the high word before
+  the step, seeded from a timer (`FUN_00415fc0`); floats come through an 8-deep delay line at +0x380.
+- **Play order** (`FUN_00798980(shuffle)`): bytes at +0x48, 0..n-1, Fisher-Yates when shuffle (profile option
+  5, applied by `FUN_0073daf0`; its default not found). The next song (`FUN_0079d1e0`): index + 1, wrapping
+  re-builds the order; offline, `FUN_00798a90` tests the candidate: rejected if among the last 4 played (ring
+  +0xc8); a song with |`bc7081c6`| <= 1.19e-7 is accepted; else with r uniform, in free drive (GMM+0x2e90,
+  `IsFreedriveEvent`) a song with f > 0 is rejected when r <= f, in events a song with f < 0 when r <= -f; a
+  reject swaps the candidate with order[idx + rnd % (n - idx)], after n - idx tries the last is taken. So a pass
+  still plays every song once; the bias orders it (electronic first in free roam, rock first in events).
+- **Playback**: songs stream on the mixer channel "Music_UI" (`FUN_00aba490`); no crossfade (the next song starts
+  the frame after one ends; a skip or a list switch stops the stream); while the game clock is paused no new song
+  starts unless a `SetSongListSequenceItem` allowed it (mgr+7). Leaving a list stores (cur + 1) % n in the session
+  table and the profile (`FUN_00729330`).
+- **MUSIC_ADVANCE** (action 0x59): M on the keyboard (`FUN_00483470`), pad slot 13 (`FUN_00482250`; RB by its
+  neighbours, medium confidence); a tap (released within 1 s) skips (`FUN_007a15c0` -> `FUN_0079f760`), only on
+  lists with +0x22.
+- **`PLAYSONGLIST`** (factory 0x77c610, enter 0x757e90, update 0x744b50, leave 0x744b00): enter calls
+  `FUN_0079f7b0(list, ALLOWPLAYOUT)`; the list (`FUN_0074f540`) is SONGLIST, else with USEDEFAULT the event's
+  list (event +0x68, when the world is in state 4) else the current GameMode's `MusicPlaylist`. List 0 pauses
+  (moves the request to +0x404; "Pause Music", "Clear Credits Songlist"). STOPONLEAVE False: the node exits at
+  once and the music goes on; True: leaving pauses. The HSM: "Freedrive Update" -> "Play Freedrive Song List"
+  (USEDEFAULT, ALLOWPLAYOUT, STOPONLEAVE); "Show World Offline Event" -> after the intros "Is Intro Race" ->
+  "Play Intro Race Music" (2026345) or "Play Default Game Mode Music"; RETRY -> "Pause Music"; leaving the
+  in-game menu -> "Resume Music"; the in-game menu ("In Game Menu" 469008) starts "Mute World And Music"
+  (sequence 1870238: bus 259952 and the "Music UI" snapshot property 1 -> 0 within 0.28 s, held while open).
+- **`MUTE_SOUND`** (factory 0x77c0f0, enter 0x73e220; reasons table 0x010c5c28, counters `FUN_00790920`): a 0.1 s
+  fade (0x01104740), 0.1 s hold after release (0x01104630), applied by `FUN_00abb520` only to buses with
+  `BusRoute` 6 ("Master World"). Music (route 4 -> Final -> Master) is not muted: a song keeps playing on the
+  loading screens. Bus volumes (`FUN_004b8b90`): Music = MusicVolume * 0.1, Speech = SpeechVolume * 0.1, World /
+  UI / Movie = SfxVolume * 0.1.
+- **`DynamicMusicManager`** (B+0x47544, `FUN_00831d80`): only sequence-based songs (none in data) and the
+  `DynamicMusic.MusicState` string set by `MusicStateSequenceItem` (start 0x833900, end 0x830940); no code
+  changes the music for pursuits, cooldowns or races (searched).
+- **Title**: not the song manager: the title sequence 1022357's own waves (intro 1772189 28-73.385 s gain 0.7,
+  bridge 1870153 73-73.9 s, loop 1772190 from 73.385 s, a looping stream, while the clock jumps 100.88 ->
+  73.952 s); the boot transition 1836020 plays a whoosh (0.1-3.989 s) and a 2.5 s looping bed 14e291
+  (0.75-4.8 s, so it covers the hold while the world loads).
+- **Port** (model decisions in `music.rs` / `music/songs.rs`): no shuffle, the event's own list not read, the
+  intro race recognised by its mode (1560350), the in-game menu's fade back is the same 0.28 s ramp, the title's
+  intro starts ~0.8 s into the stream (decoding) instead of the clock waiting, the 0.1 s mute ramps not ported,
+  the "now playing" popup not shown.
+- **Not found**: the reader of the pause flag A+0x2c3b8, whether a stopped stream ramps, profile option 5's
+  default, the caller that starts the manager at boot (`FUN_00790770`), the unmute after a preloaded list, what
+  event +0x68 is.
 
 ### Menu input and the map screen's controls (2026-10-14, `input.rs`, `pause.rs`, `map_screen.rs`)
 
