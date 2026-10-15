@@ -176,6 +176,10 @@ pub enum Msg {
         pieces: Option<(Vec<Option<ResourceId>>, Option<ResourceId>)>,
         /// The game's LODs and draw distance (`lod.rs`).
         lod: Option<crate::lod::LodPlacement>,
+        /// Compounds: `model` is the standing model (`CompoundObject` +0x24), not the pieces' (+0x04).
+        standing: bool,
+        /// Billboard compounds: the model they stand as once found (+0x28) and its LODs.
+        found: Option<(ResourceId, Option<crate::lod::LodPlacement>)>,
     },
     /// Static world collision (one per `PolygonSoupList`) and the collision tag of each of its triangles.
     Collider(avian3d::prelude::Collider, Arc<Vec<u32>>),
@@ -270,6 +274,7 @@ pub fn spawn(
                 backdrop_sent: HashSet::new(),
                 prop_physics: HashMap::new(),
                 lod_tables: HashMap::new(),
+                standing_models: HashMap::new(),
                 lods: crate::lod::LodSettings::from_env().enabled,
             };
             if let Err(e) = w.run(request) {
@@ -328,8 +333,18 @@ struct Worker {
     prop_physics: HashMap<(ResourceId, mw_assets::props::ObjectKind), Option<Arc<crate::props::PropPhysics>>>,
     /// LOD table per model (`lod.rs`), `None` for models without one.
     lod_tables: HashMap<ResourceId, Option<Arc<crate::lod::LodTable>>>,
+    /// Per compound definition: the models it draws while standing (see [`Self::compound_standing`]).
+    standing_models: HashMap<ResourceId, StandingModels>,
     /// Apply the game's LOD rule to world placements (off with `MW_NO_LOD=1`).
     lods: bool,
+}
+
+/// The models a compound definition draws while it stands (`Loader::compound_standing`): `CompoundObject`
+/// +0x24 and +0x28.
+#[derive(Clone, Copy, Default)]
+struct StandingModels {
+    advert: Option<ResourceId>,
+    found: Option<ResourceId>,
 }
 
 /// How a model is turned into drawable parts.
@@ -656,8 +671,27 @@ impl Worker {
             .clone()
     }
 
+    /// The models a compound definition draws while it stands (`FUN_005396d0` at stream-in, `FUN_00533a00`
+    /// later; the draw passes `FUN_00538b00` / `FUN_00550020` draw the object's +0x10): with the object's flag
+    /// +0x10f clear, `CompoundObject` +0x24 (`advert`), with it set +0x28 (`found`), either falling back to
+    /// +0x04 when empty. +0x10f is whether the instance's id (= its trigger id) is in the save's list of found
+    /// billboards (`FUN_00554230`'s last argument, a search of the list `FUN_006a0400` returns; that list is
+    /// built from the profile's `Collect3` "TriggerID" table, billboard kinds only). Once broken (+0x10d,
+    /// `FUN_00532430`) the object draws +0x04, the model skinned to the parts.
+    fn compound_standing(&mut self, object: ResourceId) -> StandingModels {
+        let store = &self.store;
+        *self.standing_models.entry(object).or_insert_with(|| {
+            let Ok(def) = store.object_def(object, mw_assets::props::ObjectKind::Compound) else {
+                return StandingModels::default();
+            };
+            let slot = |i: usize| def.models.get(i).copied().flatten();
+            StandingModels { advert: slot(1), found: slot(2) }
+        })
+    }
+
     /// Send a placement: with physics when it is a world object that has some. A compound object's model is
-    /// also sent split by skeleton bone, one piece per part, for when it breaks up (`props.rs`).
+    /// also sent split by skeleton bone, one piece per part, for when it breaks up (`props.rs`), and its
+    /// standing models ([`Self::compound_standing`]) as what it draws until then.
     fn send_placement(
         &mut self,
         model: ResourceId,
@@ -667,12 +701,30 @@ impl Worker {
     ) -> anyhow::Result<()> {
         let transform = game_matrix(&p.transform);
         let physics = p.object.and_then(|(object, kind)| self.prop_physics(object, kind));
-        // Compounds that can break draw their LOD0 pieces at every LOD (only the draw distance applies).
+        let standing = match p.object {
+            Some((object, mw_assets::props::ObjectKind::Compound)) => self.compound_standing(object),
+            _ => StandingModels::default(),
+        };
+        // A model of its own and its LODs, for a standing model other than the pieces' (`p.model`, +0x04).
+        let mut standing_model = |m: Option<ResourceId>| -> anyhow::Result<Option<(ResourceId, _)>> {
+            let Some(m) = m.filter(|&m| m != p.model) else { return Ok(None) };
+            let Some(key) = self.model_variant(m, variant, look)? else { return Ok(None) };
+            let at = mw_assets::Placement { model: m, ..p.clone() };
+            Ok(Some((key, self.placement_lods(&at, key, variant, look, true)?)))
+        };
+        let advert = standing_model(standing.advert)?;
+        let found = standing_model(standing.found)?;
+        // Compounds that can break and stand as their pieces draw LOD0's at every LOD (only the draw distance
+        // applies).
         let breakable = physics.as_ref().is_some_and(|ph| ph.compound.is_some());
-        let lod = self.placement_lods(p, model, variant, look, !breakable)?;
+        let (model, lod, standing) = match advert {
+            Some((key, lod)) => (key, lod, true),
+            _ => (model, self.placement_lods(p, model, variant, look, !breakable)?, false),
+        };
         let Some(physics) = physics else {
             return self.send(Msg::Instance { model, transform, lod });
         };
+        let found = found.filter(|_| standing);
         let pieces = match &physics.compound {
             Some(c) => {
                 let owned = c.parts.iter().filter(|p| p.bone_index < 64).fold(0u64, |m, p| m | 1 << p.bone_index);
@@ -689,7 +741,7 @@ impl Worker {
             }
             None => None,
         };
-        self.send(Msg::Prop { model, transform, physics, pieces, lod })
+        self.send(Msg::Prop { model, transform, physics, pieces, lod, standing, found })
     }
 
     /// A model's LOD table (`lod.rs`): its LOD distances, shadow distance and LOD0 bounding sphere.
@@ -857,7 +909,14 @@ impl Worker {
                 // Static placements (no physics, not a backdrop) are merged per material below.
                 let physics = p.object.and_then(|(object, kind)| self.prop_physics(object, kind));
                 if !self.filter.no_merge && !p.backdrop && physics.is_none() {
-                    if let Some(model) = self.model_parts(p.model, variant, InstanceLook::from_placement(&p), true)? {
+                    // A compound without physics only ever stands: its standing model (`compound_standing`).
+                    let model = match p.object {
+                        Some((object, mw_assets::props::ObjectKind::Compound)) => {
+                            self.compound_standing(object).advert.unwrap_or(p.model)
+                        }
+                        _ => p.model,
+                    };
+                    if let Some(model) = self.model_parts(model, variant, InstanceLook::from_placement(&p), true)? {
                         statics.push((model, game_matrix(&p.transform)));
                     }
                     continue;
@@ -1121,6 +1180,15 @@ impl Worker {
                     Some(kept) => sm.mesh = kept,
                     None => continue,
                 }
+            }
+            // `InstanceDiffuse` shaders (the found billboard's picture, `World_SmashedBillboard_InstanceDiffuse`)
+            // read their diffuse texture (`DiffuseSampler`, t0) from the placement, not the material.
+            if let Some(t) = inst.diffuse
+                && sm.shader_name.contains("InstanceDiffuse")
+                && sm.texture("DiffuseTextureSampler").is_none()
+            {
+                sm.textures.push(("DiffuseTextureSampler".into(), t));
+                sm.diffuse = Some(t);
             }
             let mut look = Look::from_scene_mesh(&sm).with_instance(&inst).with_paint(self.paint.as_ref());
             for key in look.all_textures().collect::<Vec<_>>() {

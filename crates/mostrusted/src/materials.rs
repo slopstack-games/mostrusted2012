@@ -83,11 +83,14 @@ pub struct InstanceLook {
     /// `AdditiveIntensities` from the instance's override block (the `InstanceIntensity` shader variants
     /// read it from the instance constants instead of the material's), × 1000.
     additive: Option<[i32; 2]>,
+    /// A `DiffuseSampler` override: the texture `InstanceDiffuse` shaders draw (a billboard compound's picture,
+    /// `mw_formats::ObjectInstance::overrides`).
+    pub diffuse: Option<ResourceId>,
 }
 
 impl Default for InstanceLook {
     fn default() -> Self {
-        Self { tint: [q(1.0); 3], ao: q(1.0), ao_map: None, lightmap: None, additive: None }
+        Self { tint: [q(1.0); 3], ao: q(1.0), ao_map: None, lightmap: None, additive: None, diffuse: None }
     }
 }
 
@@ -108,6 +111,7 @@ impl InstanceLook {
                 .as_deref()
                 .and_then(|o| o.constant("AdditiveIntensities"))
                 .map(|a| [qi(a[0]), qi(a[1])]),
+            diffuse: p.overrides.as_deref().and_then(|o| o.texture("DiffuseSampler")),
         }
     }
 
@@ -431,11 +435,15 @@ impl Look {
                 // Flags (has macro normal, has tiling normals), set in `retain_textures`.
                 [0.0; 4],
             ]);
-        } else if (name.contains("worldpbr_") || name.starts_with("world_diffuse_specular"))
+        } else if (name.contains("worldpbr_")
+            || name.starts_with("world_diffuse_specular")
+            || name.starts_with("world_smashedbillboard"))
             && let (Some(diffuse), Some(spec)) = (srgb("DiffuseTextureSampler"), linear("SpecularTextureSampler"))
         {
             // Every WorldPBR variant (buildings, vertex-lit, LOD2 windows, ...) and World_Diffuse_Specular
             // writes the same G-buffer inputs; variants without a normal map use the vertex normal.
+            // World_SmashedBillboard_InstanceDiffuse_Specular's G-buffer program is World_Diffuse_Specular's,
+            // instruction for instruction, with the diffuse texture bound per instance (see `loader.rs`).
             let c = sm.parameter("MaterialDiffuse").unwrap_or([1.0; 4]);
             // ColouredSpecular: F0 = SpecularColour(uv0).rgb * MaterialDiffuse (linear, no cubic).
             let coloured = linear("SpecularColourTextureSampler").filter(|_| name.contains("colouredspecular"));

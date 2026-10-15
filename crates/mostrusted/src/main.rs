@@ -1273,7 +1273,7 @@ fn receive_assets(
                 });
                 loaded.instances += 1;
             }
-            Msg::Prop { model, transform, physics, pieces, lod } => {
+            Msg::Prop { model, transform, physics, pieces, lod, standing, found } => {
                 let Some(parts) = loaded.models.get(&model) else { continue };
                 let range = loaded.shadow_ranges.get(&model).copied().map(shadow_cull::ShadowRange);
                 let get = |k: &Option<mw_bundle::ResourceId>| k.and_then(|k| loaded.models.get(&k).cloned());
@@ -1281,13 +1281,22 @@ fn receive_assets(
                     parts: parts.iter().map(get).collect(),
                     rest: get(&rest),
                 });
-                let sets = lod::mesh_sets(lod.as_ref(), (model, parts), &loaded.models);
-                let sets: Vec<_> = sets
-                    .into_iter()
-                    .map(|(k, parts, mask)| {
-                        (parts, mask, loaded.shadow_ranges.get(&k).copied().map(shadow_cull::ShadowRange))
+                let with_ranges = |sets: Vec<(mw_bundle::ResourceId, ModelParts, u8)>| -> Vec<_> {
+                    sets.into_iter()
+                        .map(|(k, parts, mask)| {
+                            (parts, mask, loaded.shadow_ranges.get(&k).copied().map(shadow_cull::ShadowRange))
+                        })
+                        .collect()
+                };
+                let sets = with_ranges(lod::mesh_sets(lod.as_ref(), (model, parts), &loaded.models));
+                // A billboard's second standing model (the found one), with its own LODs.
+                let found = found.and_then(|(key, lod)| {
+                    let parts = loaded.models.get(&key)?;
+                    Some(props::MeshSets {
+                        sets: with_ranges(lod::mesh_sets(lod.as_ref(), (key, parts), &loaded.models)),
+                        lod: lod.map(|l| (l.table, l.scale)),
                     })
-                    .collect();
+                });
                 props::spawn_prop(
                     &mut commands,
                     physics,
@@ -1296,6 +1305,8 @@ fn receive_assets(
                     range,
                     pieces,
                     lod.map(|l| (l.table, l.scale)),
+                    standing,
+                    found,
                 );
                 loaded.instances += 1;
                 loaded.props += 1;

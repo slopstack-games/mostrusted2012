@@ -37,7 +37,7 @@ use mw_formats::{Collectable, Trigger, TriggerShape};
 
 use crate::Game;
 use crate::drive::{Car, Player};
-use crate::props::{CompoundPiece, PropBody, PropKnocked};
+use crate::props::{BillboardFaces, Compound, CompoundPiece, PropBody, PropKnocked};
 
 /// Seconds the Speed Points total shows after it changed, and at the start (the HSM's "SP Visibility" states
 /// "Show SP Points", `TIME` = 8: `mwtool hsm 1695370`).
@@ -63,9 +63,10 @@ impl Plugin for FreeroamPlugin {
         if let (Some(path), false) = (&self.profile, self.new_game) {
             state.progress = Progress::load(path);
         }
-        app.insert_resource(state)
-            .add_message::<ScoreAction>()
-            .add_systems(Update, (load, overlaps, billboards, handle_hits, score_actions, publish, save).chain());
+        app.insert_resource(state).add_message::<ScoreAction>().add_systems(
+            Update,
+            (load, overlaps, billboards, handle_hits, score_actions, publish, save, billboard_faces).chain(),
+        );
         if let Some(test) = &self.test {
             app.insert_resource(test.clone()).add_systems(Update, run_test.after(save));
         }
@@ -476,6 +477,45 @@ fn billboards(
         if state.broken.insert(id) && k.by_player {
             state.smashed.push(id);
         }
+    }
+}
+
+/// Which face a billboard compound stands with (`props::BillboardFaces`): the advert until its trigger is in
+/// the found list, then the "WANTED" poster with its picture (`loader::Loader::compound_standing`: the game
+/// picks the model when it creates the object at stream-in, from the save's found list). Offline the picture
+/// is the instance's own texture (a silhouette): the game's `BillboardImages` downloads are online content.
+/// Model decision: the game does not stream our compounds out and in again, so the face is picked when the
+/// found list is first known and again while the compound is broken (it is hidden then: the new face shows
+/// when it is put back), not while it stands.
+fn billboard_faces(
+    state: Res<Collectables>,
+    mut faces: Query<(&PropBody, &mut BillboardFaces, Option<&Compound>)>,
+    mut vis: Query<&mut Visibility, Without<PropBody>>,
+) {
+    if !state.ready() {
+        return;
+    }
+    for (prop, mut f, compound) in &mut faces {
+        if f.shown.is_some() && !compound.is_some_and(Compound::is_smashed) {
+            continue;
+        }
+        let at = prop.home.translation;
+        let found = state
+            .triggers
+            .iter()
+            .find(|t| {
+                t.collectable() == Some(Collectable::Billboard) && Vec3::from_array(t.position).distance(at) < 0.5
+            })
+            .is_some_and(|t| state.progress.billboards.contains(&t.id));
+        if f.shown == Some(found) {
+            continue;
+        }
+        for (e, show) in [(f.advert, !found), (f.found, found)] {
+            if let Ok(mut v) = vis.get_mut(e) {
+                *v = if show { Visibility::Inherited } else { Visibility::Hidden };
+            }
+        }
+        f.shown = Some(found);
     }
 }
 
