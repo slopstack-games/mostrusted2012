@@ -8,6 +8,9 @@
 //!   timer restarts at 0 and the car wants its horn when its personality is at most `TrafficParamConfig.
 //!   831be501` (0.4). Within 60 m of the player (`.data` 0x010c4e04 = 60²) a car that wants its horn and has not
 //!   sounded it plays `horns[slot % count]` of its type when one of the two horn slots (`world+0xa2b9c`) is free.
+//!   A crashed car in manoeuvre 1 (`traffic_reaction.rs`) wants its horn while its random value is at most the
+//!   same chance; a crashed parked car that moves sounds its alarm once (`MiscSound.c1109b6e`, types with the
+//!   alarm flag, `(car index % 10) × 0.1 ≤ MiscSound +0xe0`).
 //! - **Traffic crashes** (`FUN_006042c0`, crashed cars within 60 m): the strongest contact with another car that
 //!   closes faster than `VehicleSound.392b1040` (2.235 m/s) plays `CollisionSoundSet` slot 12 (the competitor
 //!   light front impact) on this car, unless the other car is nearer to the player (the nearer car of a pair
@@ -124,6 +127,8 @@ struct CarSfx {
     /// Crashed traffic cars touching the world this frame.
     grounded: Vec<Entity>,
     started: HashMap<&'static str, u64>,
+    /// Cars whose alarm has sounded (the game's hazard bit 0x20 stays set after it).
+    alarmed: std::collections::HashSet<u32>,
     /// Impacts not started because [`MAX_IMPACTS`] voices were playing, by kind.
     skipped: HashMap<&'static str, u64>,
 }
@@ -135,11 +140,13 @@ fn load(game: Res<crate::Game>, mut sfx: ResMut<CarSfx>) {
     if let Some(job) = sfx.job.clone() {
         if let Some((data, chance)) = job.lock().unwrap().take() {
             info!(
-                "other cars' sounds: {} horns, {} impact slots, world impact {}, traffic skid {}; rules {:?}",
+                "other cars' sounds: {} horns, {} impact slots, world impact {}, traffic skid {}, alarm {} (share {}); rules {:?}",
                 data.horns.len(),
                 data.impacts.iter().flatten().flatten().count(),
                 data.world_impact.is_some(),
                 data.skid.is_some(),
+                data.alarm.is_some(),
+                data.alarm_share,
                 data.rules
             );
             sfx.data = Some(Arc::new(data));
@@ -428,11 +435,39 @@ fn traffic_horns(
     }
     let vol = volume(&settings);
     let vehicles = traffic.vehicles();
-    for car in traffic.sound_cars(centre, BEHAVIOUR_RADIUS).iter().filter(|c| !c.crashed) {
+    for car in traffic.sound_cars(centre, BEHAVIOUR_RADIUS) {
         let h = sfx.horns.entry(car.key).or_insert(Horn { timer: f32::MAX, wants: false, sounded: false, seen: now });
         h.seen = now;
-        // `FUN_00ebe8c0`: the timer runs while it is below 55 s or the car is not stopping for an obstacle.
-        if h.timer <= HORN_PERIOD || car.mode != 0 {
+        if car.crashed {
+            // A physical car's reaction (manoeuvre 1, `FUN_005f5c40`): bit 0 while its random value is at most
+            // `TrafficParamConfig` +0x20; it also resets the timer (+0x48).
+            h.timer = 0.0;
+            h.wants = car.horn;
+            if car.alarm
+                && !sfx.alarmed.contains(&car.key)
+                && car.position.distance_squared(centre) <= EVENT_RADIUS * EVENT_RADIUS
+            {
+                // `FUN_006042c0`: bit 0x10 plays the alarm when `(car index % 10) × 0.1 ≤ MiscSound +0xe0`; the
+                // hazard blink it starts (0x20) keeps the bit from coming back, so a car sounds it once.
+                if let Some(shot) = data.alarm.as_ref().filter(|_| (car.slot % 10) as f32 * 0.1 <= data.alarm_share) {
+                    sfx.alarmed.insert(car.key);
+                    let v = start(
+                        &mut commands,
+                        &mut assets,
+                        &listener,
+                        vol,
+                        shot,
+                        "alarm",
+                        Follow::Traffic(car.key),
+                        (car.position, car.velocity, car.forward),
+                        None,
+                    );
+                    sfx.impacts.push(v);
+                    *sfx.started.entry("alarm").or_default() += 1;
+                }
+            }
+        } else if h.timer <= HORN_PERIOD || car.mode != 0 {
+            // `FUN_00ebe8c0`: the timer runs while it is below 55 s or the car is not stopping for an obstacle.
             h.wants = false;
             h.timer += dt;
         } else {

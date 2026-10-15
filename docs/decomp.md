@@ -1191,6 +1191,50 @@ vehicle slot at `world + i·0x80` (+0x00 speed, +0x48 horn timer, +0x58 blink ti
   Not ported: manoeuvre horns (no manoeuvres), wrecked-traffic sounds, car alarms, the AI skid state machine. The
   player's horn and impacts by this table: next section (2026-10-10).
 
+## Traffic reactions (2026-10-15)
+
+Read for "horns and headlight flashing when you drive towards them"; ported in `traffic_reaction.rs`. Car = the
+0x80-byte slot as above; "AI vehicle" = the 0x620-byte physical-traffic object at `world+0x2c910 + k·0x620`
+(+0x4c car index, +0x1fc request, +0x1fd manoeuvre, +0x1d3 trailer, +0x200 physical time).
+
+- **Becoming physical**: `FUN_0061cf50(car, link, player, …, request, …)` takes a free AI vehicle (`world+0x32b20`
+  list, 16), sets car +0x6b bit 3 and calls `FUN_00609b70`, which forces request 2 for any car whose +0x6a low
+  nibble is not 0 (parked) and runs `FUN_006071d0(request)`. Callers: the contact loop in `FUN_0060c3a0` (world
+  vehicles with contacts; request from `FUN_005f2eb0`), the queues in `FUN_0060e030` (the arbiter's option 0 →
+  `world+0x32bac` with request 0; a per-player list at `world+0x36120 + p·0x680` +0x6b0 / count +0x770 whose writer
+  was not found; message 0x10 entries from `FUN_005efdd0` → `world+0x32b30`).
+- **`FUN_005f2eb0`** (the contact's request): `FUN_00929da0` zone of the contact point (+0x10 of the contact
+  record) on this car's box, stored at car +0x71; 4 when the record's +0x2c > 30 mph (`.rdata` 0x00fb1ec0), the car's
+  speed (+0x00) > 40 mph (0x00fb1ec4) and the zone is 5–9; else 6.
+- **Manoeuvre choice** (`FUN_006071d0` → scores `FUN_005eac20`, the best of 11 wins; the objects at
+  `world+0x339d0` get their vtables in `FUN_00420720`): request 2 / 6 → 1; request 1 → 1 by fuzzy memberships;
+  3 / 4 / 5 → 6 (input +0xd0 > 0.66), 2 (> 0.33) or 4; with a trailer 3 / 4 / 5 at speed → 5 (jack-knife) and 0 →
+  1; score 0 is always `fuzzy[0x510]` (0.2), so request 0 gives manoeuvre 0. Update functions (vtable +8): 0
+  `FUN_00604290`, 1 `FUN_005f5c40`, 2 `FUN_005f77e0`, 3 `FUN_005f6150`, 4 `FUN_005f6e30`, 5 `FUN_005f65a0`, 6
+  `FUN_005ffc10`, 7 `FUN_005f6aa0`, 8 `FUN_005f73a0`, 9 `FUN_005ebca0`, 10 `FUN_005e9260`; start +0xc. Each
+  update returns −1 (stay) or the next index (`FUN_005eb500`); `FUN_005ffa10` adds dt to +0x200 first and switches
+  to 10 when the damage bar is full.
+- **Manoeuvre 1** (`FUN_005f5c40`): standing (|v| components ≤ 0.5 or moving away) → stop flags; else steering /
+  speed targets, and "moving" when parked or faster than 30 mph (`.data` 0x010c4d0c). Parked and moving → bit 0x10
+  (unless 0x20); otherwise car +0x48 = 0 and bit 0 when car +0x5c ≤ `TrafficParamConfig` +0x20. Returns 0 once
+  +0x200 > 5 s for a lane car; a parked car stays.
+- **Car +0x5c**: a draw of the second generator (`world+0x361c0`, ring `+0x361a0`) when `FUN_00608fb0` gives the
+  car its world vehicle (`FUN_005f50b0`), separate from the lane car's personality (+0x3c).
+- **Lights** (`FUN_00ebe8c0`, then `FUN_005f53b0(dt, int(TrafficVehicleConfig +0x28 × dt))`; parked cars:
+  `FUN_0060b9a0`): +0x6f = 1 → `FUN_00614620(1, rng)` (sets 0x100 | 8, step 0, pattern = high word % 3), else
+  0x100 cleared; a non-physical lane car clears 8 and 0x100. `FUN_005f53b0`: bits 0x30 count +0x4c; 0x20
+  (hazard) between 0.5 and 15 s toggles 8 every 0.4 s (`.rdata` 0x00fae200); 0x100 steps the pattern table
+  (`.rdata` 0x00fb2168, 3 × 9 floats; even steps clear 8, odd steps set it, a step ≤ 0 ends and clears 0x100 | 8);
+  +0x64 moves by the step towards 255 (bit 8) or 0, held at 0 for a parked car outside the hazard. 0x40 / 0x80
+  (indicators, from lane car +0x72 / +0x8 / +0xc in `FUN_00ebe8c0`) toggle 2 / 4 at a period from
+  `TrafficVehicleConfig` +0x80 / +0xac and drive +0x65.
+- **Drawing** (`FUN_005fd190`): per car, its light objects (type 0x2aab, up to two) are queued (`FUN_004970b0`,
+  96 records of 0x70) with intensity `+0x64 / 255 × 0.5 + 0.7` (0 for parked cars and manoeuvre 10) and a per-car
+  factor `0.9 + 0.2 × +0x5c`.
+- **Alarm** (`FUN_006042c0`): bit 0x10 (or `FUN_005f2740`, a 10.5 m proximity test) plays `MiscSound` +0xb8
+  (`c1109b6e`) when the car's `TrafficVehicle` +0x3c flag is set and `(car index % 10) × 0.1 ≤ MiscSound` +0xe0;
+  then starts the hazard (0x20, +0x58 = 0.4) and clears 0x10.
+
 ## The player's horn, impacts and scrapes (2026-10-10)
 
 Read for the requests "the player's horn" and "scrape / grind sounds against walls and other cars"; data
