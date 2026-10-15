@@ -564,9 +564,27 @@ same set, from `GLOBALEFFECTS.BNDL` (`mwtool genesys all --type VehicleVfxBehavi
 
 - **Tyre marks**: `SurfaceVfx.TyreMarksMaterials` (`75cb5de9`) = { `eff16a09`, `Offroad`, `Road`, `Sport`, `Track` }
   `Vfx_TyreMarksNew` materials (tyre class), plus `SurfaceVfx.RimMarksMaterial`. Each material: `RunDiffuse`
-  (rolling; transparent on tarmac), `SlipDiffuse` (sideways), `SpinDiffuse` (wheelspin / lock) layers, `WidthScale`
-  (0.65 on tarmac), `Animation`, `Specular`. Per car `TyreVfxBehaviour.{Front,Rear}_Tyres.Skid_Marks` holds the
-  intensity curves (`Lat_Slip`, `Long_Spin`, `64222c3f`; mostly unnamed). Shader: research log 2026-10-06 round 4.
+  (rolling; transparent on tarmac and on the grass / dirt material `…117f02`), `SlipDiffuse` (sideways), `SpinDiffuse`
+  (wheelspin / lock) layers, `WidthScale` (0.65), `Animation`, `Specular`. Three materials over the 48 surfaces
+  with marks: `…117f16` (tarmac, black), `…117f02` (grass and dirt, brown layers), `…117f1b` (wet, `Animation`
+  0.25, specular 0.6). Per car `TyreVfxBehaviour.{Front,Rear}_Tyres.{Skid_Marks,Smoke}` hold the intensity ramps
+  (`Lat_Slip`, `Long_Spin`, `64222c3f` = lock; field roles from the code: decomp.md "Tyre marks and tyre smoke").
+  Shader: research log 2026-10-06 round 4.
+- **`SurfaceVfx` layout** (data offsets as the code reads them; handles 8 bytes, fields sorted by name):
+  +0x0c `TyreMarksMaterials` (inline: +0x18 `eff16a09`, +0x20 `Offroad`, +0x28 `Road`, +0x30 `Sport`, +0x38
+  `Track`), +0x40 `AIWheelEffects`, +0x48 `BottomImpactEffect`, +0x50 `4bbc1cfa`, +0x58 `5830a883`, +0x60
+  `FrontImpactEffect`, +0x68 `ddc2da41`, +0x70 `FrontLeftImpactEffect`, +0x78 `62c63175`, +0x80
+  `FrontRightImpactEffect`, +0x88 `59a0c60a`, +0x90 `LeftImpactEffect`, +0x98 `47bdeeeb`, +0xa0
+  `PlayerWheelEffects`, +0xa8 `RearImpactEffect`, +0xb0 `111c9619`, +0xb8 `RearLeftImpactEffect`, +0xc0
+  `cd782520`, +0xc8 `RearRightImpactEffect`, +0xd0 `2ed478b9`, +0xd8 `RightImpactEffect`, +0xe0 `ad998581`,
+  +0xe8 `RimMarksMaterial`, +0xf0 `ac9d89ca`, +0xf8 `984d36bf`, +0x100 `bb02333c`, +0x108 `TopImpactEffect`,
+  +0x110 `1e8f2708`, +0x118 `01d1b4fd`, +0x120 `f967c1ce`, +0x128 `e4c49c3c`, +0x130 `4431b68d`, +0x138
+  `WheelVfx`, +0x140 `4cf3cf8f` (the AI cars' `WheelVfx`), +0x148 `669cc68d`, +0x150 UniqueId, +0x154..+0x157
+  bools (+0x156 / +0x157: smoke on the front / rear wheels whenever the car moves; false everywhere).
+  `FUN_0049fe80` picks impact effects in pairs (named one / the unnamed one after it). `VfxWheelEffects`: +0x0c
+  `DefaultTyre`, +0x14 `61ac1863`, +0x1c `OnRims`, +0x24 `e7a7150c`. `SurfaceType` weather block (+0x20 dry,
+  +0xf0 wet): `Contact_Type` `Flats`, `Normal`, `Offroad`, `Rims`, `Track` (each `Surface_Physics`,
+  `Surface_Rumble`, `Surface_Sounds`), +0xc0 `Surface_vfx`, +0xc8 `VehicleEffects`.
 
 ## World object physics (`PhysicalDefinition`, `DynamicAdditionalInfo`, collision responses)
 
