@@ -9,10 +9,10 @@
 //! (`sparks.wgsl`, `VfxParticles_MotionBlurSpriteUntex`).
 //!
 //! Which effect plays where comes from the game's tables (`mw_assets::vfx`): tyre smoke from the
-//! surface's `PlayerWheelEffects.DefaultTyre` while a tyre slides, the surface's `WheelVfx` kick-up
-//! behind rolling wheels, and the surface's directional impact effects (`FrontImpactEffect`, ...) for
-//! collisions of the car body (sparks; side contacts scrape continuously). Surface types are not decoded
-//! from the collision mesh yet, so every contact uses the default surface (tarmac).
+//! `PlayerWheelEffects.DefaultTyre` of the surface under each wheel (the collision tag's surface) while the
+//! wheel's smoke ramps are up (`wheel_emitters`), that surface's `WheelVfx` kick-up behind rolling wheels, and
+//! the default surface's directional impact effects (`FrontImpactEffect`, ...) for collisions of the car body
+//! (sparks; side contacts scrape continuously; the surface of the body's contact is not looked up yet).
 //!
 //! What the game feeds its effect parameters is code, so the inputs here are stand-ins: `Intensity` is
 //! the tyre's sliding speed / 15 m/s (or the impact speed / 15 m/s), `Velocity` the car's velocity at the
@@ -181,7 +181,11 @@ fn load_vfx(store: &AssetStore, bc: bool) -> anyhow::Result<VfxLoaded> {
         .surfaces
         .iter()
         .flat_map(|s| [&s.dry, &s.wet])
-        .flat_map(|e| [e.wheel, e.player_wheels.default_tyre, e.player_wheels.on_rims].into_iter().chain(e.impacts))
+        .flat_map(|e| {
+            [e.wheel, e.player_wheels.default_tyre, e.ai_wheels.default_tyre, e.player_wheels.on_rims]
+                .into_iter()
+                .chain(e.impacts)
+        })
         .chain(lib.vehicle_impacts.iter().copied())
         .chain(lib.vehicle_scrapes.iter().copied())
         .flatten()
@@ -625,7 +629,15 @@ impl Instances {
 
     /// Refresh (or start) a persistent emitter.
     pub(crate) fn emit(&mut self, vfx: &Vfx, key: EmitterKey, effect: Option<ResourceId>, params: Params) {
-        let Some(def) = effect.and_then(|id| vfx.effects.get(&id)) else { return };
+        let def = effect.and_then(|id| vfx.effects.get(&id));
+        // A slot that now plays another effect (or none: a wheel onto a surface without one) stops the old one;
+        // its particles live on.
+        for inst in self.list.iter_mut().filter(|i| i.key == Some(key)) {
+            if !def.is_some_and(|d| Arc::ptr_eq(&inst.def, d)) {
+                inst.params.emitting = false;
+            }
+        }
+        let Some(def) = def else { return };
         if let Some(inst) = self.list.iter_mut().find(|i| i.key == Some(key) && Arc::ptr_eq(&i.def, def)) {
             inst.params = params;
             return;
@@ -945,31 +957,48 @@ fn local_birth(sp: &Spawner, rng: &mut Rng, speed_scale: f32, angle_scale: f32) 
 // Emitters
 
 /// Tyre smoke while a tyre slides, kick-up behind rolling wheels.
+///
+/// Per wheel, from the surface under it (`FUN_00589e20`: the collision tag's surface → its `SurfaceVfx`, dry
+/// block as for the grip): the smoke is the `PlayerWheelEffects` (the player's car) or `AIWheelEffects` (any
+/// other) `DefaultTyre` effect, on while the wheel touches the ground and any of its three smoke ramps
+/// (`mw_handling::tyre_vfx`, the car's `TyreVfxBehaviour.Smoke`) is above 0.01. The game passes the three ramps to
+/// the effect (`WheelParams`); here their maximum is the `Intensity` (the 0x05 spawner's binding slots are not
+/// decoded). Not ported: the on-rims (`OnRims`) and the `61ac1863` variant (picked by a profile setting,
+/// `FUN_006a15c0(…, 0xb) == 2`), and the surface's per-axle "always" flags (`SurfaceVfx` +0x156 / +0x157, false
+/// on every surface).
 fn wheel_emitters(
     time: Res<Time>,
     vfx: Res<Vfx>,
     mut instances: ResMut<Instances>,
-    cars: Query<(Entity, &Car, &GlobalTransform)>,
+    cars: Query<(Entity, &Car, &GlobalTransform, Has<crate::drive::Player>)>,
 ) {
     let dt = time.delta_secs();
-    let Some(surface) = vfx.lib.surfaces.first() else { return };
-    let fx = &surface.dry;
-    for (entity, car, transform) in &cars {
+    let Some(default_surface) = vfx.lib.surfaces.first() else { return };
+    for (entity, car, transform, player) in &cars {
         let rot = transform.compute_transform().rotation;
         for (i, contact) in car.wheel_contacts().enumerate() {
-            let Some(c) = contact else { continue };
+            let Some(c) = contact else {
+                // Off the ground: the wheel's emitters stop (their particles live on).
+                for slot in [SLOT_TYRE, SLOT_KICKUP] {
+                    instances.emit(&vfx, EmitterKey { owner: entity, slot: slot + i as u32 }, None, default());
+                }
+                continue;
+            };
+            let fx = &c.surface.and_then(|s| vfx.lib.surfaces.get(s)).unwrap_or(default_surface).dry;
+            let wheels = if player { &fx.player_wheels } else { &fx.ai_wheels };
             let frame = Mat4::from_rotation_translation(rot, c.point);
             let ground = c.normal.extend(-c.normal.dot(c.point));
             let slip = c.slip.length();
+            let smoke = c.smoke.max();
             instances.emit(
                 &vfx,
                 EmitterKey { owner: entity, slot: SLOT_TYRE + i as u32 },
-                fx.player_wheels.default_tyre,
+                wheels.default_tyre,
                 Params {
                     transform: frame,
                     velocity: c.velocity,
-                    intensity: (slip / 15.0).clamp(0.0, 1.0),
-                    emitting: slip > 2.5,
+                    intensity: smoke.clamp(0.0, 1.0),
+                    emitting: smoke > mw_handling::tyre_vfx::SMOKE_ON,
                     moved: slip * dt,
                     ground,
                     ..default()

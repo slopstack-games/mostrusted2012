@@ -1,17 +1,22 @@
-//! Tyre marks: strips laid on the road behind sliding and spinning tyres, drawn with the game's
+//! Tyre marks: strips laid on the ground under the driven car's wheels, drawn with the game's
 //! `Vfx_TyreMarksNew` material (`tyre_marks.wgsl`).
 //!
-//! Data: the surface's `SurfaceVfx.TyreMarksMaterials` (one material per tyre: `Road`, `Sport`, `Track`,
-//! `Offroad`, one unnamed; `vfx::SurfaceEffects::tyre_marks`). Each material has three diffuse layers: `Run`
-//! (always drawn), `Slip` (weighted by the lateral intensity) and `Spin` (weighted by the spin intensity).
-//! Surface types are not decoded from the collision mesh yet, so every wheel uses the default surface
-//! (tarmac, dry) and the `Road` tyre, as the particles do.
+//! The rule (`FUN_00589e20`, the race car's per-wheel effect update; docs/decomp.md "Tyre marks and tyre smoke"):
+//! every wheel on the ground lays a strip with the tyre-mark material of the surface under it (the collision
+//! tag's surface → its `SurfaceVfx.TyreMarksMaterials`, the slot of the car's tyre class: `Road` for the default
+//! class 2), with two weights per point: the `Slip` layer's = the wheel's lateral ramp and the `Spin` layer's =
+//! the larger of its spin and lock ramps, both from the car's `TyreVfxBehaviour.Skid_Marks` (lanes 5 and 4 / 7
+//! of the wheel's ramp record, `mw_handling::tyre_vfx`). The material's `Run` layer is drawn always: it is
+//! transparent on tarmac (no marks from rolling) and shows on grass and dirt (rolling tracks). A wheel in the air
+//! or on a surface without marks ends its strip.
 //!
-//! Rule: the code that lays the marks was not found in the dump (docs/decomp.md "Tyre marks"). The
-//! intensities reuse the traced tyre skid *sound* rule (`FUN_009d1bf0`, docs/decomp.md): lateral =
-//! clamp((|α| − 0.05°) / (40° − 0.05°)) × clamp(v / 10 mph), spin = clamp((|tread − ground| − 2 mph) /
-//! (20 − 2 mph)), here per wheel instead of one reference wheel. Strip building, the minimum intensity, the
-//! lifetime and the segment limit are model decisions (research log, 2026-10-06 round 4).
+//! Each material has three diffuse layers: `Run`, `Slip` and `Spin` (`vfx::SurfaceEffects::tyre_marks`).
+//! Model decisions (research log 2026-10-15): a strip point every `SEGMENT` m (the game adds one per update and
+//! its vertex builder was not found), the strip's across vector = the tyre's lateral axis × the tyre's width (the
+//! game passes wheel +0xbc with each point, read as the width; the shader scales it by `WidthScale`), the linear
+//! fade over `LIFETIME` and the segment limit; points whose weights are 0 on a material whose `Run` layer is
+//! fully transparent are not stored (they draw nothing); a change of material starts a new strip. The rim marks
+//! (`RimMarksMaterial`, on rims) and the other tyre classes are not used.
 //!
 //! `MW_TYRE_MARKS_LOG=1` logs the number of live segments once a second.
 
@@ -34,15 +39,15 @@ use mw_assets::vfx::{TYRE_MARKS_ROAD, TyreMarkMaterial as GameMaterial};
 
 use crate::drive::Car;
 
-/// Model decisions (not traced; research log): a new strip point every `SEGMENT` metres, marks laid while the
-/// intensity is at least `MIN_INTENSITY`, faded out linearly over `LIFETIME` seconds, at most `MAX_SEGMENTS`
-/// live (the oldest go first). Texture U advances by one per `U_LENGTH` metres of strip.
+/// Model decisions (not traced; research log): a new strip point every `SEGMENT` metres, faded out linearly over
+/// `LIFETIME` seconds, at most `MAX_SEGMENTS` live (the oldest go first). Texture U advances by one per
+/// `U_LENGTH` metres of strip.
 const SEGMENT: f32 = 0.25;
-const MIN_INTENSITY: f32 = 0.05;
 const LIFETIME: f32 = 60.0;
 const MAX_SEGMENTS: usize = 4000;
 const U_LENGTH: f32 = 1.0;
-const MS_TO_MPH: f32 = 2.236_936;
+/// Weights below this draw nothing (the pixel program discards below 1/2550 of coverage).
+const MIN_WEIGHT: f32 = 1.0 / 255.0;
 
 pub struct TyreMarksPlugin;
 
@@ -56,9 +61,18 @@ impl Plugin for TyreMarksPlugin {
     }
 }
 
-struct Loaded {
+/// One tyre-mark material, decoded on the loader thread.
+struct LoadedMaterial {
     material: GameMaterial,
     images: [Option<Image>; 3],
+    /// Whether the `Run` layer has any coverage (it is fully transparent on tarmac).
+    run_visible: bool,
+}
+
+struct Loaded {
+    materials: Vec<LoadedMaterial>,
+    /// By surface index: the slot in `materials` of the surface's mark material (`Road` tyre class).
+    by_surface: Vec<Option<usize>>,
 }
 
 #[derive(Resource)]
@@ -66,7 +80,10 @@ struct Loading(Mutex<mpsc::Receiver<anyhow::Result<Loaded>>>);
 
 #[derive(Resource)]
 struct MarkDraw {
-    mesh: Handle<Mesh>,
+    /// One mesh per material.
+    meshes: Vec<Handle<Mesh>>,
+    by_surface: Vec<Option<usize>>,
+    run_visible: Vec<bool>,
 }
 
 /// One point of a strip.
@@ -74,29 +91,30 @@ struct MarkDraw {
 struct Point {
     pos: Vec3,
     normal: Vec3,
-    side: Vec3,
+    /// Across the strip, the tyre's width long.
+    across: Vec3,
     u: f32,
     slip: f32,
     spin: f32,
-    opacity: f32,
 }
 
-/// A quad between two strip points, with the time it was laid.
+/// A quad between two strip points, with the time it was laid and its material.
 #[derive(Clone, Copy)]
 struct Segment {
     a: Point,
     b: Point,
     born: f32,
+    material: usize,
 }
 
 #[derive(Resource, Default)]
 struct Marks {
     segments: VecDeque<Segment>,
-    /// Per wheel of the driven car: the strip's last point while it is being laid.
-    strips: Vec<Option<Point>>,
+    /// Per wheel of the driven car: the strip's last point and material while it is being laid.
+    strips: Vec<Option<(Point, usize)>>,
     log: bool,
     last_log: f32,
-    /// Bumped whenever a segment is added or dropped; the mesh is rebuilt then and every `REFADE` seconds.
+    /// Bumped whenever a segment is added or dropped; the meshes are rebuilt then and every `REFADE` seconds.
     generation: u64,
 }
 
@@ -128,29 +146,47 @@ fn start_loading(
 
 fn load(store: &AssetStore, bc: bool) -> anyhow::Result<Loaded> {
     let lib = store.vfx_library()?;
-    // Surfaces 0 and 1 have no tyre mark materials; with surface types not decoded yet, the first surface
-    // that has one stands in for the road (model decision).
-    let with_marks: Vec<usize> = lib
+    let mut ids = Vec::new();
+    let by_surface: Vec<Option<usize>> = lib
         .surfaces
         .iter()
-        .enumerate()
-        .filter(|(_, s)| s.dry.tyre_marks[TYRE_MARKS_ROAD].is_some())
-        .map(|(i, _)| i)
+        .map(|s| {
+            let id = s.dry.tyre_marks[TYRE_MARKS_ROAD]?;
+            Some(ids.iter().position(|&i| i == id).unwrap_or_else(|| {
+                ids.push(id);
+                ids.len() - 1
+            }))
+        })
         .collect();
-    let (index, id) = with_marks
-        .first()
-        .and_then(|&i| Some((i, lib.surfaces[i].dry.tyre_marks[TYRE_MARKS_ROAD]?)))
-        .ok_or_else(|| anyhow::anyhow!("no surface has a tyre marks material"))?;
-    info!("tyre marks: {} of {} surfaces have marks; using surface {index}", with_marks.len(), lib.surfaces.len());
-    let material = store.tyre_mark_material(id)?;
-    let images = material
-        .textures
-        .map(|t| t.and_then(|t| store.texture(t).ok()).and_then(|t| crate::convert::image(&t, true, bc)));
+    if ids.is_empty() {
+        anyhow::bail!("no surface has a tyre marks material");
+    }
+    let mut materials = Vec::with_capacity(ids.len());
+    for id in ids {
+        let material = store.tyre_mark_material(id)?;
+        let textures = material.textures.map(|t| t.and_then(|t| store.texture(t).ok()));
+        let run_visible = textures[0]
+            .as_ref()
+            .and_then(|t| t.decode_rgba8(0))
+            .is_none_or(|(_, _, px)| px.chunks_exact(4).any(|p| p[3] > 0));
+        let images = textures.map(|t| t.and_then(|t| crate::convert::image(&t, true, bc)));
+        info!(
+            "tyre marks: material {id} textures {:?} width scale {:?} animation {:?} specular {:?} run layer {}",
+            material.textures,
+            material.width_scale,
+            material.animation,
+            material.specular,
+            if run_visible { "visible" } else { "transparent" }
+        );
+        materials.push(LoadedMaterial { material, images, run_visible });
+    }
     info!(
-        "tyre marks: material {id} textures {:?} width scale {:?} animation {:?} specular {:?}",
-        material.textures, material.width_scale, material.animation, material.specular
+        "tyre marks: {} of {} surfaces have marks, {} materials",
+        by_surface.iter().flatten().count(),
+        by_surface.len(),
+        materials.len()
     );
-    Ok(Loaded { material, images })
+    Ok(Loaded { materials, by_surface })
 }
 
 fn receive(
@@ -183,69 +219,72 @@ fn receive(
         Some(l) => (l.key_colour, l.key_direction, l.sky_brightness, Some(l.irradiance.clone())),
         None => (Vec3::splat(9000.0), Vec3::new(-0.4, -0.8, -0.4).normalize(), 1200.0, None),
     };
-    let [run, slip, spin] = loaded.images.map(|i| i.map(|i| images.add(i)));
-    let m = &loaded.material;
-    let material = materials.add(MarkMaterial {
-        params: MarkParams {
-            material: Vec4::new(m.width_scale.unwrap_or(0.0), m.specular.unwrap_or(0.0), 0.0, 0.0),
-            key_colour: key_colour.extend(sky),
-            key_direction: key_direction.extend(0.0),
-        },
-        run,
-        slip,
-        spin,
-        irradiance,
-    });
-    let mesh = meshes.add(empty_mesh());
-    commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material), Transform::IDENTITY, NoFrustumCulling));
+    let mut draw = MarkDraw { meshes: Vec::new(), by_surface: loaded.by_surface, run_visible: Vec::new() };
+    for l in loaded.materials {
+        let [run, slip, spin] = l.images.map(|i| i.map(|i| images.add(i)));
+        let m = &l.material;
+        let material = materials.add(MarkMaterial {
+            params: MarkParams {
+                material: Vec4::new(m.width_scale.unwrap_or(0.0), m.specular.unwrap_or(0.0), 0.0, 0.0),
+                key_colour: key_colour.extend(sky),
+                key_direction: key_direction.extend(0.0),
+            },
+            run,
+            slip,
+            spin,
+            irradiance: irradiance.clone(),
+        });
+        let mesh = meshes.add(empty_mesh());
+        commands.spawn((Mesh3d(mesh.clone()), MeshMaterial3d(material), Transform::IDENTITY, NoFrustumCulling));
+        draw.meshes.push(mesh);
+        draw.run_visible.push(l.run_visible);
+    }
     marks.log = std::env::var_os("MW_TYRE_MARKS_LOG").is_some();
-    commands.insert_resource(MarkDraw { mesh });
+    commands.insert_resource(draw);
 }
 
-/// Lateral and spin intensities of one wheel (the skid sound rule of `FUN_009d1bf0`, per wheel).
-pub(crate) fn intensities(slip_angle_deg: f32, speed_mph: f32, tread_slip_mph: f32) -> (f32, f32) {
-    let lat = ((slip_angle_deg.abs() - 0.05) / (40.0 - 0.05)).clamp(0.0, 1.0) * (speed_mph / 10.0).clamp(0.0, 1.0);
-    let spin = ((tread_slip_mph.abs() - 2.0) / (20.0 - 2.0)).clamp(0.0, 1.0);
-    (lat, spin)
-}
-
-fn lay_marks(time: Res<Time>, cars: Query<&Car, With<crate::drive::Player>>, mut marks: ResMut<Marks>) {
+fn lay_marks(
+    time: Res<Time>,
+    draw: Res<MarkDraw>,
+    cars: Query<&Car, With<crate::drive::Player>>,
+    mut marks: ResMut<Marks>,
+) {
     let now = time.elapsed_secs();
     let marks = &mut *marks;
     // The driven car (the first one).
     if let Some(car) = cars.iter().next() {
-        let wheels: Vec<_> = car.wheel_contacts().zip(car.wheel_slips()).collect();
-        marks.strips.resize(wheels.len(), None);
-        for (i, (contact, (_ratio, angle))) in wheels.into_iter().enumerate() {
+        let contacts: Vec<_> = car.wheel_contacts().collect();
+        marks.strips.resize(contacts.len(), None);
+        for (i, contact) in contacts.into_iter().enumerate() {
             let Some(c) = contact else {
                 marks.strips[i] = None;
                 continue;
             };
-            let speed = c.velocity.length() * MS_TO_MPH;
-            let (lat, spin) = intensities(angle, speed, c.tread_slip * MS_TO_MPH);
-            let opacity = lat.max(spin);
-            if opacity < MIN_INTENSITY || c.velocity.length() < 0.1 {
+            let Some(material) = c.surface.and_then(|s| draw.by_surface.get(s).copied().flatten()) else {
+                marks.strips[i] = None;
+                continue;
+            };
+            let (slip, spin) = (c.marks.lat, c.marks.spin.max(c.marks.lock));
+            if !draw.run_visible[material] && slip < MIN_WEIGHT && spin < MIN_WEIGHT {
                 marks.strips[i] = None;
                 continue;
             }
-            let along = c.velocity.normalize();
-            let side = c.normal.cross(along).normalize_or_zero();
-            // The intensities weight the Slip / Spin layers (COLOR.xy); the opacity (COLOR.w) carries only the fade.
-            let mut p = Point { pos: c.point, normal: c.normal, side, u: 0.0, slip: lat, spin, opacity: 1.0 };
+            let across = c.across.reject_from(c.normal).normalize_or_zero() * c.width;
+            let mut p = Point { pos: c.point, normal: c.normal, across, u: 0.0, slip, spin };
             match marks.strips[i] {
-                None => marks.strips[i] = Some(p),
-                Some(last) => {
+                Some((last, m)) if m == material => {
                     let d = p.pos.distance(last.pos);
                     if d >= SEGMENT {
                         p.u = last.u + d / U_LENGTH;
-                        marks.segments.push_back(Segment { a: last, b: p, born: now });
+                        marks.segments.push_back(Segment { a: last, b: p, born: now, material });
                         marks.generation += 1;
                         while marks.segments.len() > MAX_SEGMENTS {
                             marks.segments.pop_front();
                         }
-                        marks.strips[i] = Some(p);
+                        marks.strips[i] = Some((p, material));
                     }
                 }
+                _ => marks.strips[i] = Some((p, material)),
             }
         }
     }
@@ -255,7 +294,29 @@ fn lay_marks(time: Res<Time>, cars: Query<&Car, With<crate::drive::Player>>, mut
     }
     if marks.log && now - marks.last_log >= 1.0 {
         marks.last_log = now;
-        info!("tyre marks: {} segments alive (limit {MAX_SEGMENTS}, lifetime {LIFETIME} s)", marks.segments.len());
+        let wheels: Vec<String> = cars
+            .iter()
+            .next()
+            .map(|car| {
+                car.wheel_contacts()
+                    .map(|c| match c {
+                        Some(c) => format!(
+                            "s{} slip {:.2} spin {:.2} lock {:.2}",
+                            c.surface.map_or(-1, |s| s as i64),
+                            c.marks.lat,
+                            c.marks.spin,
+                            c.marks.lock
+                        ),
+                        None => "air".into(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        info!(
+            "tyre marks: {} segments alive (limit {MAX_SEGMENTS}, lifetime {LIFETIME} s); wheels: {}",
+            marks.segments.len(),
+            wheels.join(" | ")
+        );
     }
 }
 
@@ -271,12 +332,18 @@ fn build_mesh(
         return;
     }
     *built = (marks.generation, now);
-    if marks.segments.is_empty() {
-        // Empty vertex buffers upset Bevy's mesh allocator (particles.rs): keep one degenerate triangle.
-        let _ = meshes.insert(&draw.mesh, empty_mesh());
-        return;
+    for (material, handle) in draw.meshes.iter().enumerate() {
+        let segments: Vec<&Segment> = marks.segments.iter().filter(|s| s.material == material).collect();
+        let _ = meshes.insert(handle, strip_mesh(&segments, now));
     }
-    let n = marks.segments.len() * 4;
+}
+
+fn strip_mesh(segments: &[&Segment], now: f32) -> Mesh {
+    if segments.is_empty() {
+        // Empty vertex buffers upset Bevy's mesh allocator (particles.rs): keep one degenerate triangle.
+        return empty_mesh();
+    }
+    let n = segments.len() * 4;
     let (mut pos, mut normal, mut uv, mut side, mut colour) = (
         Vec::with_capacity(n),
         Vec::with_capacity(n),
@@ -284,8 +351,8 @@ fn build_mesh(
         Vec::with_capacity(n),
         Vec::with_capacity(n),
     );
-    let mut indices = Vec::with_capacity(marks.segments.len() * 6);
-    for s in &marks.segments {
+    let mut indices = Vec::with_capacity(segments.len() * 6);
+    for s in segments {
         let fade = (1.0 - (now - s.born) / LIFETIME).clamp(0.0, 1.0);
         let base = pos.len() as u32;
         for p in [s.a, s.b] {
@@ -293,8 +360,8 @@ fn build_mesh(
                 pos.push(p.pos.to_array());
                 normal.push(p.normal.to_array());
                 uv.push([p.u, v]);
-                side.push(p.side.extend(0.0).to_array());
-                colour.push([p.slip, p.spin, v, p.opacity * fade]);
+                side.push(p.across.extend(0.0).to_array());
+                colour.push([p.slip, p.spin, v, fade]);
             }
         }
         indices.extend([base, base + 1, base + 2, base + 1, base + 3, base + 2]);
@@ -309,7 +376,7 @@ fn build_mesh(
     m.insert_attribute(Mesh::ATTRIBUTE_TANGENT, side);
     m.insert_attribute(Mesh::ATTRIBUTE_COLOR, colour);
     m.insert_indices(Indices::U32(indices));
-    let _ = meshes.insert(&draw.mesh, m);
+    m
 }
 
 fn empty_mesh() -> Mesh {
