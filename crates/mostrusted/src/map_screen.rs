@@ -44,12 +44,13 @@
 //! left flick snaps instead of opening the Most Wanted list;
 //! no completion state (`ShowEventComplete` false); the Most Wanted list panel, the player's header (name,
 //! points), the speedwall entries, the map's road glow (layouts 1222163 / 1222558) and the tabs' icons are left
-//! out; SET DESTINATION is inactive, as are events whose game mode we do not run (speed runs, ambushes).
+//! out; SET DESTINATION routes there (`gps.rs`); events whose game mode we do not run (speed runs, ambushes)
+//! cannot be started.
 //! RECOMMENDS lists nothing (Autolog). Collectables are every trigger of their kinds (the code keeps those in
 //! the world database's `Collect3` table, not read); jack spots are item type 7 (the `FUN_006fcf90` profile
 //! list that makes them type 14 is not modelled), whose icon shows once the spot is found
-//! (`JackSpots.IsSwapSpotFound[#]`), and spots not found are left out of the selectable items; collectables
-//! have no options (their option menus `SpeedCamera` / `Jump` / `Jackspot` are not wired); the chosen filter is
+//! (`JackSpots.IsSwapSpotFound[#]`), and spots not found are left out of the selectable items; collectables'
+//! options are their menus (`SpeedCamera`, `Jump`, ...) with only SET DESTINATION wired; the chosen filter is
 //! not saved to the profile (`MapFilterIndex`).
 
 use std::collections::HashMap;
@@ -82,6 +83,19 @@ const CURSOR: u32 = 1_470_763;
 const PLAYER_ICON: u32 = 371_789;
 /// The `Event` menu data (options for an event).
 const EVENT_OPTIONS: u32 = 1_222_202;
+/// The collectables' option menus: the map screen's `Widget_MenuData` whose `Name` is the item type's
+/// `DataSource` (`SpeedCamera`, `Jump`, `SecurityGate`, `Jackspot`, `BodyShop`); each starts with SET DESTINATION
+/// (`Map:OnSetWaypoint`).
+const POINT_OPTIONS: [(u16, u32); 6] = [
+    (map_item::SPEED_CAMERA, 1_135_362),
+    (map_item::BILLBOARD, 1_135_373),
+    (map_item::SECURITY_GATE, 1_135_374),
+    (map_item::JACK_SPOT, 1_135_375),
+    (map_item::JACK_SPOT_OWNED, 1_135_375),
+    (map_item::BODY_SHOP, 1_524_675),
+];
+/// The option that sets the destination (`FUN_0080eb60`).
+const SET_WAYPOINT: &str = "Map:OnSetWaypoint";
 /// "MAP", "RACES", "You are not connected to the Autolog Servers".
 const TITLE_TEXT: u32 = 565_900;
 const FILTER_TEXT: u32 = 1_135_274;
@@ -203,16 +217,20 @@ pub struct MapScreenPlugin {
     pub options: bool,
     /// `--map-start <event id>`: select the event and choose START RACE.
     pub start: Option<u32>,
+    /// `--map-waypoint <event id>`: select the event and choose SET DESTINATION (the map stays open with `open`).
+    pub waypoint: Option<u32>,
 }
 
 impl Plugin for MapScreenPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(MapScreen {
             enabled: self.enabled,
-            open_at_start: self.open || self.start.is_some(),
-            select: self.start.or(self.select),
-            options_at_start: self.options || self.start.is_some(),
+            open_at_start: self.open || self.start.is_some() || self.waypoint.is_some(),
+            select: self.start.or(self.waypoint).or(self.select),
+            options_at_start: self.options || self.start.is_some() || self.waypoint.is_some(),
             start_at_start: self.start.is_some(),
+            waypoint_at_start: self.waypoint.is_some(),
+            close_after_waypoint: !self.open,
             ..default()
         })
         .add_systems(Startup, start_load)
@@ -253,6 +271,8 @@ struct MapPoint {
     /// The trigger's id.
     id: u32,
     pos: Vec2,
+    /// The trigger's position (the destination SET DESTINATION routes to, `FUN_008091d0`).
+    world: Vec3,
 }
 
 /// An entry of the current filter's list.
@@ -324,7 +344,9 @@ pub struct MapScreen {
     selected: Option<Sel>,
     /// The options list is open, with this row selected.
     options: Option<usize>,
+    /// The open list's options, and every item type's (`MapItemTypes[t].DataSource`'s menu).
     option_items: Vec<OptionItem>,
+    menus: HashMap<u16, Vec<OptionItem>>,
     /// The cursor (world x, z; +0x2630): `Widget.MapManager.SelectedPosition`, the map camera's look-at.
     cursor: Vec2,
     nav: Nav,
@@ -341,6 +363,8 @@ pub struct MapScreen {
     select: Option<u32>,
     options_at_start: bool,
     start_at_start: bool,
+    waypoint_at_start: bool,
+    close_after_waypoint: bool,
 }
 
 impl MapScreen {
@@ -394,6 +418,28 @@ impl MapScreen {
             Entry::Event(i) => self.items[i].pos,
             Entry::Point(i) => self.points[i].pos,
         }
+    }
+
+    /// Open the selected item's options (`TO_OPTIONS`), if its item type has a menu.
+    fn open_options(&mut self) -> bool {
+        let Some(items) = self.selected_entry().and_then(|e| self.menus.get(&self.entry_type(e))) else {
+            return false;
+        };
+        self.option_items = items.clone();
+        self.options = Some(0);
+        true
+    }
+
+    /// `Map:OnSetWaypoint` (`FUN_0080eb60`): an event routes to its start (`FUN_00796ff0`), a collectable to its
+    /// trigger (`FUN_008091d0`).
+    fn waypoint(&self) -> Option<crate::gps::SetDestination> {
+        Some(match self.selected_entry()? {
+            Entry::Event(i) => {
+                let e = &self.items[i].setup.event;
+                crate::gps::SetDestination { position: Vec3::from(e.spawn?.position), event: Some(e.id) }
+            }
+            Entry::Point(i) => crate::gps::SetDestination { position: self.points[i].world, event: None },
+        })
     }
 
     fn entry_type(&self, e: Entry) -> u16 {
@@ -490,7 +536,7 @@ struct Loaded {
     cards: HashMap<u16, u32>,
     cop_icon: Option<u32>,
     point_names: HashMap<u16, String>,
-    options: Vec<OptionItem>,
+    menus: HashMap<u16, Vec<OptionItem>>,
     strings: HashMap<&'static str, String>,
     scene: UiScene,
     map_texture: Option<ResourceId>,
@@ -523,13 +569,19 @@ fn start_load(mut map: ResMut<MapScreen>, game: Res<crate::Game>) {
             let text = |id: u32| lang.get(id).unwrap_or_default().to_string();
             let items = load_items(&store, &lang);
             let config = MapConfig::load(&store);
-            let options = store
-                .menu_items(MAP_SCREEN, EVENT_OPTIONS)
-                .map_err(|e| warn!("map screen: event options: {e}"))
-                .unwrap_or_default()
-                .into_iter()
-                .map(|(action, name, _)| OptionItem { action, label: text(name).to_uppercase() })
-                .collect();
+            let menu = |id: u32| -> Vec<OptionItem> {
+                store
+                    .menu_items(MAP_SCREEN, id)
+                    .map_err(|e| warn!("map screen: options {id}: {e}"))
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|(action, name, _)| OptionItem { action, label: text(name).to_uppercase() })
+                    .collect()
+            };
+            let mut menus: HashMap<u16, Vec<OptionItem>> = POINT_OPTIONS.iter().map(|&(t, id)| (t, menu(id))).collect();
+            let events = menu(EVENT_OPTIONS);
+            menus.insert(map_item::EVENT, events.clone());
+            menus.insert(map_item::MOST_WANTED_EVENT, events);
             // The keyboard's button prompts (the original's default keys for the actions: MENU_ACCEPT Enter,
             // DRIVE Esc, the filters Z / A, the tabs Page Up / Down; decomp.md "Input").
             let key = |k: &str| store.keyboard_button_prompt(k).map(text).unwrap_or_default();
@@ -590,6 +642,7 @@ fn start_load(mut map: ResMut<MapScreen>, game: Res<crate::Game>) {
                                 item_type: point_type(t.kind)?,
                                 id: t.id,
                                 pos: Vec2::new(t.position[0], t.position[2]),
+                                world: Vec3::from(t.position),
                             })
                         })
                         .collect()
@@ -656,7 +709,7 @@ fn start_load(mut map: ResMut<MapScreen>, game: Res<crate::Game>) {
                 cards,
                 cop_icon,
                 point_names,
-                options,
+                menus,
                 strings,
                 scene,
                 map_texture,
@@ -743,7 +796,7 @@ fn poll_load(
     if std::env::var_os("MW_MAP_LOG").is_some() {
         info!("map screen: {:?}", map.config);
     }
-    map.option_items = loaded.options;
+    map.menus = loaded.menus;
     map.strings = loaded.strings;
     map.look = Some(Look {
         scene: loaded.scene,
@@ -776,6 +829,7 @@ fn open_at_start(
     collected: Option<Res<crate::frontend::Collected>>,
     pursuit: Option<Res<crate::police::PursuitHud>>,
     mut play: MessageWriter<crate::event_card::PlayEvent>,
+    mut waypoint: MessageWriter<crate::gps::SetDestination>,
 ) {
     // What the lists depend on: the driven car, the jack spots found, the cops of a pursuit.
     let sync = |map: &mut MapScreen| {
@@ -825,8 +879,20 @@ fn open_at_start(
         map.selected = Some(Sel::Item(s));
         map.cursor = map.items[k].pos;
     }
-    if map.options_at_start && map.selected_item().is_some() {
-        map.options = Some(0);
+    if map.options_at_start {
+        map.open_options();
+    }
+    if map.waypoint_at_start {
+        if let Some(row) = map.option_items.iter().position(|o| o.action == SET_WAYPOINT) {
+            map.options = Some(row);
+        }
+        if let Some(set) = map.waypoint() {
+            info!("map screen: SET DESTINATION {}", set.position);
+            waypoint.write(set);
+        }
+        if map.close_after_waypoint && map.close() {
+            time.unpause();
+        }
     }
     if map.start_at_start
         && let Some(item) = map.selected_item().cloned()
@@ -964,6 +1030,7 @@ fn navigate(
     mut time: ResMut<Time<Virtual>>,
     real: Res<Time<Real>>,
     mut play: MessageWriter<crate::event_card::PlayEvent>,
+    mut waypoint: MessageWriter<crate::gps::SetDestination>,
 ) {
     use crate::input::MenuAction as A;
     map.just_closed = false;
@@ -992,7 +1059,13 @@ fn navigate(
         } else if menu.pressed(A::Accept) {
             let action = map.option_items.get(row).map(|o| o.action.clone()).unwrap_or_default();
             let playable = map.selected_item().is_some_and(|i| i.playable);
-            if action.ends_with(":PLAY_EVENT") && playable {
+            // No exit token follows `Map:OnSetWaypoint`: the options stay open.
+            if action == SET_WAYPOINT
+                && let Some(set) = map.waypoint()
+            {
+                info!("map screen: SET DESTINATION {}", set.position);
+                waypoint.write(set);
+            } else if action.ends_with(":PLAY_EVENT") && playable {
                 let setup = map.selected_item().map(|i| i.setup.clone());
                 // The event card restarts the clock when the race starts.
                 map.close();
@@ -1024,9 +1097,9 @@ fn navigate(
             map.selected, name, map.nav.moving, map.cursor.x, map.cursor.y
         );
     }
-    // `Options` (accept) → `TO_OPTIONS`; ours: only events have options.
-    if menu.pressed(A::Accept) && map.selected_item().is_some() {
-        map.options = Some(0);
+    // `Options` (accept) → `TO_OPTIONS`: the selected item type's menu.
+    if menu.pressed(A::Accept) {
+        map.open_options();
     }
 }
 
@@ -1171,10 +1244,12 @@ fn draw(
     car: Query<&GlobalTransform, (With<crate::drive::Car>, With<crate::drive::Player>)>,
     mut nodes: Query<PoolNode, With<QuadNode>>,
     mut materials: ResMut<Assets<AdditiveQuadMaterial>>,
+    gps: Res<crate::gps::Gps>,
 ) {
     let Ok(window) = windows.single() else { return };
     let screen = [window.width(), window.height()];
     let open = map.open;
+    let route = gps.ahead();
     let vehicle = garage.current.as_ref().and_then(|c| crate::frontend::vehicle_id(&c.bundle));
     let player_facing = car.single().ok().map(|xf| xf.back().as_vec3());
     let Some(mut look) = map.look.take() else { return };
@@ -1217,6 +1292,30 @@ fn draw(
                 rect: [centre.x - size.x * 0.5, centre.y - size.y * 0.5, size.x, size.y],
                 rotation: TURN_DEG,
                 colour: [1.0; 4],
+                blend: UiBlend::Alpha,
+                map: false,
+            });
+        }
+        // The SET DESTINATION route (`gps.rs`): a band of the road's width along the line, at least 3 px.
+        for s in route.windows(2) {
+            let (a, b) = (
+                to_screen(Vec2::new(s[0].pos.x, s[0].pos.z), m.cursor),
+                to_screen(Vec2::new(s[1].pos.x, s[1].pos.z), m.cursor),
+            );
+            let len = a.distance(b);
+            if len < 1e-3 {
+                continue;
+            }
+            let width = (0.5 * (s[0].width + s[1].width) / METRES_PER_PX).max(3.0) * k;
+            let c = to_px((a + b) * 0.5);
+            // Overlap the joints by the band's width.
+            let l = len * k + width;
+            quads.push(Quad {
+                texture: None,
+                uv: [0.0, 0.0, 1.0, 1.0],
+                rect: [c.x - l * 0.5, c.y - width * 0.5, l, width],
+                rotation: (b.y - a.y).atan2(b.x - a.x).to_degrees(),
+                colour: crate::gps::LINE_COLOUR,
                 blend: UiBlend::Alpha,
                 map: false,
             });

@@ -32,6 +32,7 @@ mod frontend;
 mod game_text;
 mod garage;
 mod gate_marker;
+mod gps;
 mod groundcover;
 mod hud;
 mod input;
@@ -375,6 +376,9 @@ struct Cli {
     /// Choose START RACE for this event on the map: the event-loading card, then the race with its intro.
     #[arg(long)]
     map_start: Option<u32>,
+    /// Choose SET DESTINATION for this event on the map (the GPS route; the map closes again unless --show-map).
+    #[arg(long)]
+    map_waypoint: Option<u32>,
 }
 
 #[derive(Resource)]
@@ -961,14 +965,20 @@ fn main() -> anyhow::Result<()> {
             map: false,
         })
         .add_plugins(map_screen::MapScreenPlugin {
-            enabled: (menu_enabled || cli.show_pause || cli.show_map || cli.map_start.is_some())
+            enabled: (menu_enabled
+                || cli.show_pause
+                || cli.show_map
+                || cli.map_start.is_some()
+                || cli.map_waypoint.is_some())
                 && matches!(request, Request::Drive { .. }),
             open: cli.show_map || (cli.show_pause && cli.pause_map),
             select: cli.map_select,
             options: cli.map_options,
             start: cli.map_start,
+            waypoint: cli.map_waypoint,
         })
         .add_plugins(event_card::EventCardPlugin)
+        .add_plugins(gps::GpsPlugin)
         .add_plugins(game_text::GameTextPlugin)
         .add_plugins(ui_quads::UiQuadsPlugin)
         .add_plugins((world_ui::WorldUiPlugin, gate_marker::GateMarkerPlugin))
