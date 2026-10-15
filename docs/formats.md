@@ -933,6 +933,21 @@ card), 1135303 → 1470763 (cursor rings + the option list), 1135501 → 371789 
 `Header` 1470711), 899992 (the Most Wanted list 1470720), 1135580 (the option lists: `Event` 1222202,
 `SinglePlayer`, `Jackspot`, …).
 
+The map's item kinds (2026-10-15): `LiveMapManager_ScreenScript` 1135185 (96 bytes) → `MapItemTypes` (field
+`4bcf868d`) [] `UI.MapItemType` (48 bytes: +12 `DataSource` string, +32 `650f3bfb` icon key, +36 `c3f39ca3` card
+key, +40 `ItemType` u16, +42 `OptionsHeight` u16, +44 bool, +45 i8), `CollectablesName` [] {`CollectableName`
+language id, `ItemType`}, and single keys `SelectionPOI`, `AIPlayerPOI`, `AICopPOI`, `BlackListDriver`,
+`CheckpointPOI`, `FinishLinePOI`, `MeetupPOI`, `MeetupAreaPOI` (loader `AssetStore::map_manager_config`, listing
+`mwtool ui map-items`; table in decomp.md "The world map's items and filters"). `Widget_MapFilters` (92 bytes):
+`Filters` (`ee1bbf49`) [] {`6e0ada84`, `FilterName` language id, `FilterType` = what is listed, `SpeechCommand`}
+(`AssetStore::map_filters`). The event icon 1135497 is item type 1; the Most Wanted races are item type 9, look
+955947 (red diamond): the red icons of the 2026-10-10 capture.
+
+`CollectablesConfig` 908780 point-of-interest keys (free-roam HUD, `FUN_006ffba0`): +0x10 `d71dba55` body shop
+1444895, +0x34 `a1b2d86a` jack spot 955694, +0x38…+0x44 the packs' jack spots, +0x48 `507e9d87` jack spot 1013508,
++0x54 `ced801cd` speed camera 1013522 (world look only). `MapPoiConfig` +0xc `a32aa8bd` = billboard 1013491 (world
+look only), +0x54 the local player, +0x5c the pursuit's search circle, +0x60 other players.
+
 ## Easydrive (inside `Screen2`, `UI/SCREENS2/*.BNDL`)
 
 Inline GeneSys structs in a driving screen's widget groups (group children: field `c7413006`); loader

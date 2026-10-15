@@ -10,6 +10,49 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-15: map and minimap icons: item types, filters, Most Wanted races, jack spots, cops
+User play test: "many map icons are missing: jack spots, race locations, etc.", "Most Wanted races are shown like
+normal races on the map", "cops are not shown as cops on the map / minimap". Details in decomp.md "The world map's
+items and filters; the minimap's free-roam icons".
+- **Where the map's item kinds live**: not in the exe and not in `MainMapConfig`: the screen script
+  `LiveMapManager_ScreenScript` 1135185 (found by scanning a dump of every GenesysObject for the look key
+  1135494) has `MapItemTypes` (icon and card key per item type), `CollectablesName`, `AICopPOI` / `AIPlayerPOI` /
+  `BlackListDriver` / `CheckpointPOI` / `FinishLinePOI` / `SelectionPOI`; `FUN_0080ec90` reads them by these names
+  (strings in the pseudo-C; the hashes match the dump's field hashes). New: `AssetStore::map_manager_config`,
+  `map_filters`, `mwtool ui map-items`.
+- **Most Wanted races**: `FUN_008154f0` files an event as `MapItemTypes[9]` (key 955947, the red diamond `0e962f`)
+  when its +0xe9 (`c8f26580`, first place only) is set, else `[1]` (the green diamond). The 2026-10-10 reading
+  ("red = beaten", the `MAP_EVENT_DONE` step) was wrong for the capture's red icons: they are the Most Wanted
+  races' own look. Fixed: our map drew every event green.
+- **Filters**: the map shows one list at a time: RACES, JACK SPOTS, RECOMMENDS, SPEED CAMERAS, BILLBOARDS (group
+  1135638), Z / A (LT / RT) step through them (`FUN_00818550`); each filter's list from `FUN_008181b0` (trigger
+  kinds per filter). Ported; jack spots appear once found (the icon's `JackSpots.IsSwapSpotFound[#]`).
+- **Minimap**: free-roam collectables get a point of interest within 400 m (removed beyond 450 m; `FUN_006ffd90`,
+  `FUN_006ffba0`): body shops (the wrench, always) and jack spots (the wheel, once found) have map icons; speed
+  cameras and billboards have world looks only. Ported. Cops were drawn with the racers' orange arrow because
+  `Players.PlayerBase[#].IsCop` was forced false; the look's own cop elements (blue / red) now show.
+- **Checked** (headless, screenshots in the worktree's git-ignored `ref/map1/`, looked at): the map's RACES
+  (green and red diamonds; the cops of a `MW_PURSUIT_DEMO` chase beside the player), JACK SPOTS (the three found
+  spots of a test profile), SPEED CAMERAS (74 orange dots; a flick selects one and shows its card "SPEEDWALL /
+  SPEED CAMERA" with SELECT), BILLBOARDS (216); the minimap at (310, 420): the body shop's wrench under the car, a
+  found jack spot's wheel 170 m away, the patrol cop's red arrow. `mwtool ui map-items` prints the table.
+- **Dead ends**: the HUD screens' event looks with world layouts (1013512, 955952, 955955, 1013520, 1132924) are
+  named by no code (image scan for the immediates) and no GenesysObject (full dump scan): no event icons on the
+  minimap. `FUN_00ac54c0(0x5f3f3)` is a type test (the event's type chain contains 390131), not a game flag.
+- **Model decisions**: the `Collect3` table (`FUN_00728b20`, the collectables the map lists) is not read: every
+  trigger of the kinds counts (74 speed cameras and 216 billboards include the packs' kinds; the base game has
+  fewer); `FUN_006fcf90` (a profile list by the spot's +0x24; puts a spot into item 14 on the map and hides it
+  from the HUD) never holds; jack spots not found are not selectable; RECOMMENDS is empty; the filter index is not
+  saved; collectables' option menus (`SpeedCamera`, `Jump`, `Jackspot`) are not wired; events keep the measured
+  card 1481372 rather than item type 1's 1013511.
+- **Open / captures wanted from the original**: (1) the map's SPEED CAMERAS and BILLBOARDS lists on a known save
+  (count and which, to settle `Collect3` and the packs' kinds); (2) JACK SPOTS on a save with found and swapped
+  spots (what item 14 / `FUN_006fcf90` is: is a found spot shown before its car is driven); (3) the minimap near a
+  body shop and a found jack spot (icon size and the 400 m range); (4) the minimap and map in a pursuit (cop
+  arrow: blue / red alternation; whether patrolling cops show outside a pursuit); (5) the selected speed camera's
+  card and its options; (6) where the in-world jack spot marker (look 1013508's world layouts 186088 / 195581) and
+  the speed camera / billboard world looks (1013522, 1013491) are drawn: not ported.
+
 ### 2026-10-14: the post chain against the original's code: bloom sizes, final pass, depth of field, grade
 
 The user: "postfx [is still off]". Compared our chain with the original's, stage by stage, from the full `.text`
