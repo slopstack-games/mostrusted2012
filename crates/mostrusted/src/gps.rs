@@ -263,6 +263,7 @@ impl GpsRoute {
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn request(
     mut sets: MessageReader<SetDestination>,
     mut gps: ResMut<Gps>,
@@ -294,6 +295,7 @@ fn poll(mut gps: ResMut<Gps>) {
     }
 }
 
+#[allow(clippy::type_complexity)]
 fn follow(
     mut gps: ResMut<Gps>,
     game: Res<crate::Game>,

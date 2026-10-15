@@ -821,6 +821,7 @@ fn shown_items(items: &[MapItem], vehicle: Option<u32>) -> Vec<usize> {
 
 /// The player's position and the events shown for the driven car, when the map opens; then
 /// `--show-map` / `--map-select` / `--map-options` / `--map-start` once the map and the player's car are in.
+#[allow(clippy::too_many_arguments)]
 fn open_at_start(
     mut map: ResMut<MapScreen>,
     mut time: ResMut<Time<Virtual>>,

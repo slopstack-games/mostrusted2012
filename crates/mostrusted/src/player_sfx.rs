@@ -195,6 +195,7 @@ fn load(game: Res<crate::Game>, garage: Option<Res<crate::garage::Garage>>, mut 
 /// plays once at the car. A start that comes before the sound has loaded is played when it arrives, while the
 /// engine is still cranking.
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::type_complexity)]
 fn ignition(
     mut commands: Commands,
     listener: Res<Listener>,

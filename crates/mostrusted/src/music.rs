@@ -98,10 +98,13 @@ impl Decodable for MusicClip {
     }
 }
 
+/// One stream's decode: (pcm, header gain, looping); outer `None` while decoding, inner `None` when it failed.
+type DecodeSlot = Arc<Mutex<Option<Option<(Arc<Pcm>, f32, bool)>>>>;
+
 /// Decoded `Wave` streams by resource id (decoded on worker threads; `None` while decoding or when it failed).
 #[derive(Resource, Default)]
 pub struct Decoded {
-    slots: std::collections::HashMap<ResourceId, Arc<Mutex<Option<Option<(Arc<Pcm>, f32, bool)>>>>>,
+    slots: std::collections::HashMap<ResourceId, DecodeSlot>,
 }
 
 impl Decoded {

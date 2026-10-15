@@ -168,7 +168,7 @@ fn load(store: &AssetStore, bc: bool) -> anyhow::Result<Loaded> {
         let run_visible = textures[0]
             .as_ref()
             .and_then(|t| t.decode_rgba8(0))
-            .is_none_or(|(_, _, px)| px.chunks_exact(4).any(|p| p[3] > 0));
+            .is_none_or(|(_, _, px)| px.as_chunks::<4>().0.iter().any(|p| p[3] > 0));
         let images = textures.map(|t| t.and_then(|t| crate::convert::image(&t, true, bc)));
         info!(
             "tyre marks: material {id} textures {:?} width scale {:?} animation {:?} specular {:?} run layer {}",
