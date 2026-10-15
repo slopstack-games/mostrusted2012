@@ -140,8 +140,9 @@ struct Cli {
     /// Smash test: speed (km/h) the car holds through the props.
     #[arg(long, default_value_t = 60.0)]
     smash_speed: f32,
-    /// Smash test: what stands on the track: `props` (cone, sign, lamp, fence, wall) or `compounds` (six
-    /// compound objects that break into their parts, filmed from beside the last knock).
+    /// Smash test: what stands on the track: `props` (cone, sign, lamp, fence, wall), `compounds` (six
+    /// compound objects that break into their parts, filmed from beside the last knock) or `bags` (a trash bag
+    /// and crates without an `AdditionalInfo`).
     #[arg(long, default_value = "props")]
     smash_set: String,
     /// Draw props, compound and dynamic objects without collision (smashable street furniture is on by
@@ -826,6 +827,7 @@ fn main() -> anyhow::Result<()> {
             cli.screenshot.clone(),
             cli.smash_speed / 3.6,
             cli.smash_set == "compounds",
+            props::smash_test_props(&cli.smash_set).len(),
         ));
         app.add_plugins(props::SmashTestPlugin);
         app.add_systems(Startup, |mut t: ResMut<Time<Virtual>>| t.set_relative_speed(2.0));

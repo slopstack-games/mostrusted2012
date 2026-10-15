@@ -2338,6 +2338,25 @@ reading the code unless marked *inferred*.
   `0e3bcabe`): jack spot location and car trigger ids with the car's id as key, so owning a car marks its
   jack spot pair found. `FUN_0065fc00` hits the trigger of a 0x34-byte record list (`+0x20` = trigger id).
 
+### Compound models: standing, found, broken (2026-10-15)
+
+- The standing compound object (type 2, created by `FUN_005396d0` at stream-in or `FUN_00533980`) keeps
+  `CompoundObject` +0x24 at +0x100 and +0x04 at +0x104 and draws its +0x10 (draw passes `FUN_00538b00`,
+  `FUN_00550020` pass the object's +0x10 to `FUN_008ae140`). +0x10 = +0x28 when the flag +0x10f is set, else
+  +0x24; an empty slot falls back to +0x04. `FUN_00533a00` repeats the choice (with +0x10d set: +0x04) for every
+  compound when `DAT_0110bfb0` is raised (by 0x546ff0, a callback registered at init through `FUN_00adb5e0`).
+  `FUN_00532430` (the break) sets +0x10d and +0x10 = +0x104 (+0x04, skinned to the parts).
+- +0x10f is the last argument of `FUN_00554230`: whether the instance id (record +0x4c) is in the sorted list at
+  progress +0x22c8 (`FUN_006a0400`), which a function near 0x700080 (start not resolved; guarded by `FUN_00532dc0`) fills from the profile's collected
+  triggers (`FUN_00728b20`: table `Collect3`, column "TriggerID") of billboard kinds; kinds 7 / 'I' go to
+  +0x1194 (`FUN_006a03f0`, the list checked first: found there, the object is not created).
+- Per-object material overrides: the draw copies the object's override block (+0x20 of the runtime object,
+  from the instance record) into the constant and sampler slots (`FUN_00a621a0`, `FUN_00a62820`) before the
+  model draw. Billboards bind `DiffuseSampler` this way (formats: `ObjectInstance::overrides`).
+- No `AdditionalInfo`: `FUN_0054dfe0` clears the object's pinned bit when the physical definition's info
+  pointer (+0x30) is null; the break test `FUN_0054e570` and the damage test `FUN_0054bf70` only read the info
+  when it is there (no damage threshold then).
+
 ### Billboards, gates and other kinds (session 5, round 2)
 
 - **Billboards are counted by the prop breaking**, confirmed: game-logic message 0x14 (handled in

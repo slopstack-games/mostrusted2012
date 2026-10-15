@@ -247,8 +247,8 @@ impl ObjectInstanceList {
 ///
 /// `CompoundObject` (0x240-0x1150 bytes) starts like a `WorldObject` (version 8, behaviour count at
 /// 0x01, model at 0x04, `mpSkeleton` at 0x08 (the model is skinned to it: one bone per part), behaviours at
-/// 0x0C, locators at 0x10, physical definition at 0x1C), plus a second model at 0x24 (lower-poly twin of
-/// 0x04, same bbox) and sometimes 0x28, a pointer to 8-byte joint handles at 0x2C (count at 0x3C), and at
+/// 0x0C, locators at 0x10, physical definition at 0x1C), plus the model it stands as at 0x24 (unskinned,
+/// same bbox as 0x04, which is drawn only once broken) and on billboards 0x28 (the found billboard), a pointer to 8-byte joint handles at 0x2C (count at 0x3C), and at
 /// 0x30 a pointer to `u32` part count at 0x38 parts; 0x34 points to one u32 hash per part (the joints name
 /// their two parts by these). A part is 0x70 bytes: an embedded `WorldObject` (no model of its own,
 /// behaviours at +0x0C with their count at +0x01, its own physical definition at +0x1C, locators),

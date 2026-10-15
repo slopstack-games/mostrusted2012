@@ -10,6 +10,45 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-15: billboards' three looks and props without an AdditionalInfo (play-test items)
+
+Read from the dump and the data (no live reads; the original was not run). Details in decomp.md "Compound
+models: standing, found, broken".
+
+- **Billboards showed their broken model.** A `CompoundObject` carries three models: +0x04 (skinned to the
+  parts, the billboard's torn-poster panels), +0x24 and sometimes +0x28. The standing object draws its +0x10,
+  which `FUN_005396d0` (stream-in) / `FUN_00533a00` set to +0x24 while the object's flag +0x10f is clear and
+  to +0x28 when it is set (each falling back to +0x04 when empty); `FUN_00532430` (the break, +0x10d = 1)
+  switches to +0x04. We drew +0x04 standing. Now every standing compound draws +0x24 under its own LODs
+  (so street lamps etc. too: +0x24 is not a distance LOD as guessed on 2026-09; it is the standing model) and
+  the pieces only after the smash. Checked: screenshots of billboard 1496888 (BioWare advert), the
+  `--smash-set compounds` run (lamps stand, the billboard 0xac10f734 shows its DICE/BioWare advert and breaks
+  into torn panels), `--test freeroam` results unchanged.
+- **+0x10f is "found"**: `FUN_00554230`'s last argument is a binary search of the instance id (+0x4c, the
+  trigger id) in the list `FUN_006a0400` returns; that list (`+0x22c8`, count `+0x26b0`) is filled from the
+  profile's `Collect3` table ("TriggerID" column, `FUN_00728b20`) with billboard kinds ('2' 'A' 'D' 'J' 'M')
+  only. So a found billboard stands as +0x28: a "WANTED / Fairhaven Police Department" poster whose picture is
+  `World_SmashedBillboard_InstanceDiffuse_Specular_Singlesided` (G-buffer program identical to
+  World_Diffuse_Specular's) with its diffuse from the **instance**: every billboard's `CompoundInstanceList`
+  record has an override block at +0x54 (same layout as `InstanceList`'s) binding `DiffuseSampler` = texture
+  `0100000000141784`, a silhouette on a torn poster (216 of 216; no other compound has a block). That is what
+  the game draws offline / without Autolog friends; online pictures come through the `BillboardImages`
+  allocator and the `billboards` / `advert_contentid` online settings (not traced). Done in `freeroam.rs`
+  (`billboard_faces`): found = in the profile's billboard list. Model decision: the game picks the face at
+  stream-in only; ours picks it when the list is first known and while the compound is broken (so a newly
+  found billboard shows the poster once it is put back).
+- **Indestructible trash bags**: 19 prop and 3 dynamic definitions have no `AdditionalInfo` (the trash bag
+  `PropObject` 03102fec, 10 kg, 353 placements; crates of 0.2-15 kg; two 35 kg 2.6 m objects; one 2500 kg).
+  We treated them as never knockable (a model decision). `FUN_0054dfe0` clears the pinned bit when the
+  definition's info pointer (+0x30) is null, and `FUN_0054e570` / `FUN_0054bf70` skip their info reads: they
+  are loose (asleep) dynamic bodies from the start. Fixed (`PropPhysics::break_force` 0); `--smash-set bags`
+  drives through the bag and two crates: all three knocked, 0.6 km/h lost. (The set also fixed the smash test
+  waiting for 5 props when a set places fewer.)
+- Open: the `World_GbufferBlend` frame mesh over the poster's picture draws as our generic translucent
+  material (a bright frame; its blend program is not ported). Whether 0x546ff0's callback (re-picks every
+  compound's model, registered through `FUN_00adb5e0`) fires on a profile change was not resolved. A capture
+  of the original at a found and an unfound billboard would confirm the faces.
+
 ### 2026-10-14: the post chain against the original's code: bloom sizes, final pass, depth of field, grade
 
 The user: "postfx [is still off]". Compared our chain with the original's, stage by stage, from the full `.text`
