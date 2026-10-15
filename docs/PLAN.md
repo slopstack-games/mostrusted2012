@@ -377,7 +377,7 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    remaining DspParam indices, the state lists (Burnout / Drift / In_air / Reversing), bus items, the LFO items'
    writer, whether a sequence clamps its binding at `Binding_Max` (the XKR's first Ginsu set tops out at 5424),
    `EngineGainDueToPower`, reverb; a listening check of the new RPM curve.
-3. `[x]` Music: shuffled `UI/SONGS/*.SPS` playlist. Still open: radio/track names, ducking.
+3. `[x]` Music: the game's song manager (2026-10-15: list 1622455 in free roam and events with the code's ordering, title / transition waves, MUSIC_ADVANCE, in-game menu fade; decomp.md "Music"). Still open: the "now playing" popup, Autolog / credits / cutscene lists.
 4. `[~]` Vehicle sound effects from the sound data (`mw_assets::sfx`, `crates/mostrusted/src/sfx.rs`): tyre
    screech (the default surface's Drift / Spin / Brake sequences driven by wheel slip), road noise, wind,
    impacts and scrapes from the `CollisionSoundSet`, landings (research log "tyre screech, road, wind,
