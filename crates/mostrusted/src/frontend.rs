@@ -480,6 +480,18 @@ pub(crate) fn binding_true(b: &str, lookup: &mut dyn FnMut(&str, Option<&str>) -
     Binding::parse(b).and_then(|b| b.eval(lookup)).is_some_and(|v| v.truthy())
 }
 
+/// `Controls.IsXInputControllerConnected`: a pad is connected (any Bevy gamepad: XInput pads through gilrs, the
+/// Steam Controller through `steam_controller.rs`). The title's prompt pair hides on it: "PRESS START" (label
+/// 1597779) shows with a pad, "PRESS ANY KEY" (label 1274432, `ComplianceTerm.Value["PressStart"]`) without
+/// (layout 1274392's triggered behaviours). `MW_XINPUT_CONNECTED=0|1` overrides it (headless checks).
+pub(crate) fn xinput_connected(pads: &Query<&Gamepad>) -> bool {
+    match std::env::var("MW_XINPUT_CONNECTED").as_deref() {
+        Ok("1") => true,
+        Ok("0") => false,
+        _ => pads.iter().next().is_some(),
+    }
+}
+
 /// The bindings the boot screens read.
 fn lookup(
     path: &str,
@@ -534,7 +546,7 @@ fn advance(
         return;
     }
     let Some(mut screens) = screens else { return };
-    let pad = pads.iter().next().is_some();
+    let pad = xinput_connected(&pads);
     match front.phase {
         Phase::Title => {
             let Some(seq) = screens.title.clone() else {
@@ -668,7 +680,7 @@ fn draw(
     let Some(mut screens) = screens else { return };
     let Ok(window) = windows.single() else { return };
     let screen = [window.width(), window.height()];
-    let pad = pads.iter().next().is_some();
+    let pad = xinput_connected(&pads);
     let full = |colour: [f32; 4], texture: Option<ResourceId>| Quad {
         texture,
         uv: [0.0, 0.0, 1.0, 1.0],

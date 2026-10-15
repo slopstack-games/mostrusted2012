@@ -937,6 +937,7 @@ impl<'a> DrawOptions<'a> {
             };
             t.apply(&e.transition_in, since);
         }
+        let mut held: Vec<(usize, f32)> = Vec::new();
         for (k, tb) in e.triggered.iter().enumerate() {
             if tb.trigger.is_empty() {
                 continue;
@@ -953,10 +954,8 @@ impl<'a> DrawOptions<'a> {
                 None => f32::INFINITY,
             };
             t.apply(if on { &tb.transition_in } else { &tb.transition_out }, since);
-            // A triggered behaviour's idle steps run while its trigger holds (the title's "PRESS START" /
-            // "PRESS ANY KEY" pair hide each other with an instant `OUT` on the pad-connected binding).
             if on {
-                t.apply_started(&tb.idle, since);
+                held.push((k, since));
             }
         }
         // The element's own idle fades loop over their span (the prompt's pulse: `OUT` 0–0.8 s, `IN` 0.8–1.8 s),
@@ -970,6 +969,15 @@ impl<'a> DrawOptions<'a> {
             let since = (((now - appeared) * 1000.0) as f32).rem_euclid(period);
             let steps: Vec<fmt::ui::Behaviour> = e.idle.iter().filter(fades).cloned().collect();
             t.apply_started(&steps, since);
+        }
+        // A triggered behaviour's idle steps run while its trigger holds, on top of the element's own idle: the
+        // title's prompt pair (layout 1274392: label 1597779 "PRESS START" hides on
+        // `Controls.IsXInputControllerConnected(NOT)`, label 1274432 "PRESS ANY KEY" on
+        // `Controls.IsXInputControllerConnected`) hide each other with an instant `OUT`, which the looping pulse's
+        // `IN` must not undo (it did: both prompts showed over each other). The order is our reading: the tween
+        // code was not traced.
+        for (k, since) in held {
+            t.apply_started(&e.triggered[k].idle, since);
         }
         t
     }
