@@ -16,7 +16,7 @@
 //! 1470704) and the filter selector (`Filters` 1470726, "RACES").
 //!
 //! Measured on the original (2026-10-10 capture, `ref/frontend-2026-10-10/`): the RACES filter shows the
-//! current car's events (green) and the Most Wanted events (red when beaten, the icon's `MAP_EVENT_DONE` step);
+//! current car's events (green) and the Most Wanted events (red: their own look, item type 9);
 //! the selection sits at (836, 360) of the 1280×720 frame and the map turns so that world +X points down and
 //! +Z left (94.4°), 6.29 m per pixel: fitted to eight icons of the capture against the events' start points
 //! (research log 2026-10-10). The game draws the map with a 3D camera (`UIMapCameraConfig`: look-at
@@ -29,18 +29,34 @@
 //! (0.8 s). Accept opens an event's options, cancel goes back from them; cancel on the map and start (Esc, pad
 //! Start) return to the game (`TO_GAME`). No zoom or pan on PC (the zoom states are the Vita's touch zoom).
 //!
+//! What the map lists, as the `LiveMapManager` code builds it (decomp.md "The world map's items and filters"):
+//! one filter at a time, from the offline filter widget (group 1135638: RACES, JACK SPOTS, RECOMMENDS, SPEED
+//! CAMERAS, BILLBOARDS; `DefaultFilterIndex` 1 = RACES), switched with `trigger_left` / `right` (Z / A, LT / RT:
+//! `OnPrevFilter` / `OnNextFilter`, `FUN_00818550`, wrapping, then a snap from the cursor). Each filter's items
+//! (`FUN_008181b0`): RACES the events (`FUN_008154f0`; a Most Wanted race, `c8f26580` set, is item type 9 with
+//! its own red icon), SPEED CAMERAS the `TriggerData` kinds '4' / 'G', BILLBOARDS '2' / 'A' / 'D' / 'J' / 'M',
+//! JACK SPOTS the locations '<' / 'B' / 'E' / 'K' / 'N'. The icon and the card of each item type are the looks
+//! the screen script's `MapItemTypes` name (`LiveMapManager_ScreenScript` 1135185); cops in a pursuit are
+//! `AICopPOI` (the arrow that turns blue on `Players.PlayerBase[#].IsCop`, `FUN_00808290`).
+//!
 //! Model decisions: the camera is orthographic with the measured scale and turn (cursor moves along the screen's
-//! axes, no foreshortening); the tabs (Page Up / Down, LB / RB) and filters (Z / A, LT / RT) are inert; a failed
+//! axes, no foreshortening); the tabs (Page Up / Down, LB / RB) are inert; a failed
 //! left flick snaps instead of opening the Most Wanted list;
-//! no completion state (every event shows green); the Most Wanted list panel, the player's header (name,
+//! no completion state (`ShowEventComplete` false); the Most Wanted list panel, the player's header (name,
 //! points), the speedwall entries, the map's road glow (layouts 1222163 / 1222558) and the tabs' icons are left
 //! out; SET DESTINATION is inactive, as are events whose game mode we do not run (speed runs, ambushes).
+//! RECOMMENDS lists nothing (Autolog). Collectables are every trigger of their kinds (the code keeps those in
+//! the world database's `Collect3` table, not read); jack spots are item type 7 (the `FUN_006fcf90` profile
+//! list that makes them type 14 is not modelled), whose icon shows once the spot is found
+//! (`JackSpots.IsSwapSpotFound[#]`), and spots not found are left out of the selectable items; collectables
+//! have no options (their option menus `SpeedCamera` / `Jump` / `Jackspot` are not wired); the chosen filter is
+//! not saved to the profile (`MapFilterIndex`).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
-use mw_assets::ui::{DrawOptions, PlacedLayout, Quad, UiAnim, UiBlend, UiScene};
+use mw_assets::ui::{DrawOptions, PlacedLayout, Quad, UiAnim, UiBlend, UiScene, map_filter, map_item};
 use mw_bundle::ResourceId;
 use mw_formats::binding::BindValue;
 
@@ -56,9 +72,12 @@ const BLACK_BACKGROUND: u32 = 491_565;
 const TITLE: u32 = 1_206_401;
 const TABS: [u32; 2] = [1_470_689, 1_470_704];
 const FILTERS: u32 = 1_470_726;
-/// Point-of-interest map looks (keys 1135497, 1135808, 1135303, 1135501).
+/// Point-of-interest map looks (keys 1135497, 1135808, 1135303, 1135501). The event icon is the fallback of
+/// the item types' icons (`MapItemTypes`).
 const EVENT_ICON: u32 = 816_139;
 const EVENT_CARD: u32 = 1_481_372;
+/// The widget group of the offline map's filters (`Filters`, `Widget_MapFilters` 1135664).
+const FILTER_GROUP: u32 = 1_135_638;
 const CURSOR: u32 = 1_470_763;
 const PLAYER_ICON: u32 = 371_789;
 /// The `Event` menu data (options for an event).
@@ -220,6 +239,31 @@ struct MapItem {
     playable: bool,
 }
 
+impl MapItem {
+    /// `MapItemTypes[9]` for an offline event with `c8f26580` (+0xe9) set, else `[1]` (`FUN_008154f0`).
+    fn item_type(&self) -> u16 {
+        if self.setup.event.first_place_only { map_item::MOST_WANTED_EVENT } else { map_item::EVENT }
+    }
+}
+
+/// A collectable on the map: a `TriggerData` record of a kind a filter lists (`FUN_00817500`).
+#[derive(Clone, Debug)]
+struct MapPoint {
+    item_type: u16,
+    /// The trigger's id.
+    id: u32,
+    pos: Vec2,
+}
+
+/// An entry of the current filter's list.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Entry {
+    /// An event (index into `items`).
+    Event(usize),
+    /// A collectable (index into `points`).
+    Point(usize),
+}
+
 #[derive(Clone)]
 struct OptionItem {
     action: String,
@@ -232,7 +276,7 @@ enum Sel {
     /// The local player's item (`MapItemType` 0, `LocalPlayer`).
     Player,
     /// An entry of `shown`.
-    Event(usize),
+    Item(usize),
 }
 
 /// The cursor's navigation state (`LiveMapManager` fields, research log 2026-10-14).
@@ -258,8 +302,25 @@ pub struct MapScreen {
     /// Closed this frame (other menus must not take the same key).
     pub just_closed: bool,
     items: Vec<MapItem>,
-    /// The events shown (indices into `items`) for the current car.
-    shown: Vec<usize>,
+    /// Every collectable a filter can list.
+    points: Vec<MapPoint>,
+    /// The current filter's list (`FUN_008181b0`).
+    shown: Vec<Entry>,
+    /// The filters (`FilterType`, name) and the current one (`LiveMapManager` +0x26c4, 1-based there).
+    filters: Vec<(u16, String)>,
+    filter: usize,
+    /// The driven car (`VehicleList` id), for the RACES filter.
+    vehicle: Option<u32>,
+    /// Jack spot locations found (`JackSpots.IsSwapSpotFound`).
+    found: std::collections::BTreeSet<u32>,
+    /// Cops (position, facing) while a pursuit runs (`FUN_00808290`: `AICopPOI`).
+    cops: Vec<(Vec2, Vec3)>,
+    /// Icon / card layout per item type (`MapItemTypes` → the screen's point-of-interest looks), the cops' icon.
+    icons: HashMap<u16, u32>,
+    cards: HashMap<u16, u32>,
+    cop_icon: Option<u32>,
+    /// `CollectablesName`: the collectables' names by item type.
+    point_names: HashMap<u16, String>,
     selected: Option<Sel>,
     /// The options list is open, with this row selected.
     options: Option<usize>,
@@ -313,30 +374,122 @@ impl MapScreen {
         std::mem::take(&mut self.unpause)
     }
 
+    /// The selected event.
     fn selected_item(&self) -> Option<&MapItem> {
+        match self.selected_entry()? {
+            Entry::Event(i) => self.items.get(i),
+            Entry::Point(_) => None,
+        }
+    }
+
+    fn selected_entry(&self) -> Option<Entry> {
         match self.selected {
-            Some(Sel::Event(s)) => self.shown.get(s).and_then(|&i| self.items.get(i)),
+            Some(Sel::Item(s)) => self.shown.get(s).copied(),
             _ => None,
+        }
+    }
+
+    fn entry_pos(&self, e: Entry) -> Vec2 {
+        match e {
+            Entry::Event(i) => self.items[i].pos,
+            Entry::Point(i) => self.points[i].pos,
+        }
+    }
+
+    fn entry_type(&self, e: Entry) -> u16 {
+        match e {
+            Entry::Event(i) => self.items[i].item_type(),
+            Entry::Point(i) => self.points[i].item_type,
         }
     }
 
     fn sel_pos(&self, sel: Sel) -> Vec2 {
         match sel {
             Sel::Player => self.player,
-            Sel::Event(s) => self.items[self.shown[s]].pos,
+            Sel::Item(s) => self.entry_pos(self.shown[s]),
         }
     }
 
-    /// Every selectable item: the player and the events shown.
+    /// Every selectable item: the player and the entries shown.
     fn candidates(&self) -> impl Iterator<Item = (Sel, Vec2)> + '_ {
         std::iter::once((Sel::Player, self.player))
-            .chain(self.shown.iter().enumerate().map(|(s, &i)| (Sel::Event(s), self.items[i].pos)))
+            .chain(self.shown.iter().enumerate().map(|(s, &e)| (Sel::Item(s), self.entry_pos(e))))
     }
+
+    /// The current filter's type (`FilterType`); RACES before the filters are loaded.
+    fn filter_type(&self) -> u16 {
+        self.filters.get(self.filter).map_or(map_filter::RACES, |f| f.0)
+    }
+
+    /// Rebuild the list for the current filter (`FUN_008181b0`).
+    fn refresh_list(&mut self) {
+        self.shown = match self.filter_type() {
+            map_filter::RACES => shown_items(&self.items, self.vehicle).into_iter().map(Entry::Event).collect(),
+            t => self
+                .points
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| point_filter(p.item_type) == Some(t))
+                // MODEL: a jack spot's icon is visible once found; hidden spots are not selectable.
+                .filter(|(_, p)| p.item_type != map_item::JACK_SPOT || self.found.contains(&p.id))
+                .map(|(i, _)| Entry::Point(i))
+                .collect(),
+        };
+    }
+
+    /// `OnPrevFilter` / `OnNextFilter` (`FUN_00818550`): the next filter, wrapping; the list for it; a snap
+    /// from the cursor.
+    fn step_filter(&mut self, forward: bool) {
+        let n = self.filters.len();
+        if n == 0 {
+            return;
+        }
+        self.filter = if forward { (self.filter + 1) % n } else { (self.filter + n - 1) % n };
+        self.refresh_list();
+        self.selected = snap(self);
+        self.nav.glide = 0.0;
+        self.nav.moving = self.selected.is_none();
+        if let Some(l) = self.look.as_mut() {
+            l.anim.reset();
+        }
+    }
+}
+
+/// The filter that lists a collectable item type (`FUN_008181b0`).
+fn point_filter(item_type: u16) -> Option<u16> {
+    Some(match item_type {
+        map_item::SPEED_CAMERA => map_filter::SPEED_CAMERAS,
+        map_item::BILLBOARD => map_filter::BILLBOARDS,
+        map_item::SECURITY_GATE => map_filter::SECURITY_GATES,
+        map_item::JACK_SPOT | map_item::JACK_SPOT_OWNED => map_filter::JACK_SPOTS,
+        map_item::BODY_SHOP => map_filter::BODY_SHOPS,
+        _ => return None,
+    })
+}
+
+/// The map item type of a `TriggerData` kind (`FUN_008181b0` → `FUN_00817500`): speed cameras '4' / 'G',
+/// billboards '2' / 'A' / 'D' / 'J' / 'M', security gates '0', jack spot locations '<' and the packs' 'B' /
+/// 'E' / 'K' / 'N' (item types 15–18 there, whose looks are the packs'; ours: the base look), body shops 6.
+fn point_type(kind: u8) -> Option<u16> {
+    Some(match kind {
+        b'4' | b'G' => map_item::SPEED_CAMERA,
+        b'2' | b'A' | b'D' | b'J' | b'M' => map_item::BILLBOARD,
+        b'0' => map_item::SECURITY_GATE,
+        b'<' | b'B' | b'E' | b'K' | b'N' => map_item::JACK_SPOT,
+        6 => map_item::BODY_SHOP,
+        _ => return None,
+    })
 }
 
 struct Loaded {
     config: MapConfig,
     items: Vec<MapItem>,
+    points: Vec<MapPoint>,
+    filters: Vec<(u16, String)>,
+    icons: HashMap<u16, u32>,
+    cards: HashMap<u16, u32>,
+    cop_icon: Option<u32>,
+    point_names: HashMap<u16, String>,
     options: Vec<OptionItem>,
     strings: HashMap<&'static str, String>,
     scene: UiScene,
@@ -393,8 +546,72 @@ fn start_load(mut map: ResMut<MapScreen>, game: Res<crate::Game>) {
             ]
             .into_iter()
             .collect();
+            // The item types' icons and cards (`MapItemTypes` keys → the screen's point-of-interest looks), the
+            // filters and the collectables.
+            let manager = store.map_manager_config().map_err(|e| warn!("map screen: map item types: {e}")).ok();
+            let pois =
+                store.ui_poi_visuals(MAP_SCREEN).map_err(|e| warn!("map screen: looks: {e}")).unwrap_or_default();
+            let look = |key: u32| pois.iter().find(|p| p.key == key).and_then(|p| p.map.as_ref()).map(|m| m.layout.id);
+            let mut icons = HashMap::new();
+            let mut cards = HashMap::new();
+            let mut point_names = HashMap::new();
+            let mut cop_icon = None;
+            if let Some(m) = &manager {
+                for t in &m.item_types {
+                    if let Some(l) = look(t.icon) {
+                        icons.insert(t.item_type, l);
+                    }
+                    if let Some(l) = look(t.card) {
+                        cards.insert(t.item_type, l);
+                    }
+                }
+                for &(t, name) in &m.collectable_names {
+                    point_names.insert(t, text(name).to_uppercase());
+                }
+                cop_icon = look(m.ai_cop_poi);
+            }
+            // Events keep the card measured on the capture (look 1135809; research log 2026-10-10).
+            cards.insert(map_item::EVENT, EVENT_CARD);
+            cards.insert(map_item::MOST_WANTED_EVENT, EVENT_CARD);
+            let filters: Vec<(u16, String)> = store
+                .map_filters(MAP_SCREEN, FILTER_GROUP)
+                .map_err(|e| warn!("map screen: filters: {e}"))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|f| (f.filter_type, text(f.name).to_uppercase()))
+                .collect();
+            let points: Vec<MapPoint> = store
+                .trigger_data()
+                .map(|td| {
+                    td.triggers
+                        .iter()
+                        .filter_map(|t| {
+                            Some(MapPoint {
+                                item_type: point_type(t.kind)?,
+                                id: t.id,
+                                pos: Vec2::new(t.position[0], t.position[2]),
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
             // The layouts drawn, in draw order.
-            let ids = [BLACK_BACKGROUND, EVENT_ICON, PLAYER_ICON, EVENT_CARD, CURSOR, TITLE, TABS[0], TABS[1], FILTERS];
+            let mut ids = vec![BLACK_BACKGROUND, EVENT_ICON];
+            let add = |ids: &mut Vec<u32>, id: u32| {
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            };
+            for &l in icons.values().chain(cop_icon.iter()) {
+                add(&mut ids, l);
+            }
+            add(&mut ids, PLAYER_ICON);
+            for &l in cards.values() {
+                add(&mut ids, l);
+            }
+            for id in [CURSOR, TITLE, TABS[0], TABS[1], FILTERS] {
+                add(&mut ids, id);
+            }
             let mut layouts = Vec::new();
             for id in ids {
                 match store.ui_layout(mw_formats::ui::object_id(id)) {
@@ -421,8 +638,31 @@ fn start_load(mut map: ResMut<MapScreen>, game: Res<crate::Game>) {
                 .collect();
             images.dedup_by_key(|(id, _)| *id);
             let fonts = scene.fonts.iter().map(|(&n, f)| (n, f.clone())).collect();
-            info!("map screen: {} events, {} textures in {:.0?}", items.len(), images.len(), t.elapsed());
-            *out.lock().unwrap() = Some(Loaded { config, items, options, strings, scene, map_texture, images, fonts });
+            info!(
+                "map screen: {} events, {} collectables, {} filters, {} item looks, {} textures in {:.0?}",
+                items.len(),
+                points.len(),
+                filters.len(),
+                icons.len(),
+                images.len(),
+                t.elapsed()
+            );
+            *out.lock().unwrap() = Some(Loaded {
+                config,
+                items,
+                points,
+                filters,
+                icons,
+                cards,
+                cop_icon,
+                point_names,
+                options,
+                strings,
+                scene,
+                map_texture,
+                images,
+                fonts,
+            });
         })
         .expect("spawn map-screen loader");
     map.job = Some(job);
@@ -491,6 +731,14 @@ fn poll_load(
     let root = commands.spawn((node, Pickable::IGNORE, GlobalZIndex(16))).id();
     let slots = loaded.scene.layouts.iter().enumerate().map(|(i, l)| (l.layout.id, i)).collect();
     map.items = loaded.items;
+    map.points = loaded.points;
+    map.filters = loaded.filters;
+    // `DefaultFilterIndex` 1 (1-based): the first, RACES.
+    map.filter = 0;
+    map.icons = loaded.icons;
+    map.cards = loaded.cards;
+    map.cop_icon = loaded.cop_icon;
+    map.point_names = loaded.point_names;
     map.config = loaded.config;
     if std::env::var_os("MW_MAP_LOG").is_some() {
         info!("map screen: {:?}", map.config);
@@ -525,8 +773,21 @@ fn open_at_start(
     mut time: ResMut<Time<Virtual>>,
     car: Query<&GlobalTransform, (With<crate::drive::Car>, With<crate::drive::Player>)>,
     garage: Res<crate::garage::Garage>,
+    collected: Option<Res<crate::frontend::Collected>>,
+    pursuit: Option<Res<crate::police::PursuitHud>>,
     mut play: MessageWriter<crate::event_card::PlayEvent>,
 ) {
+    // What the lists depend on: the driven car, the jack spots found, the cops of a pursuit.
+    let sync = |map: &mut MapScreen| {
+        map.vehicle = garage.current.as_ref().and_then(|c| crate::frontend::vehicle_id(&c.bundle));
+        map.found = collected.as_ref().map(|c| c.jack_spots.clone()).unwrap_or_default();
+        map.cops = pursuit
+            .as_ref()
+            .filter(|p| p.in_chase || p.in_cooldown)
+            .map(|p| p.cops.iter().map(|&(pos, f)| (Vec2::new(pos.x, pos.z), f)).collect())
+            .unwrap_or_default();
+        map.refresh_list();
+    };
     if map.refresh
         && let Ok(xf) = car.single()
     {
@@ -534,8 +795,7 @@ fn open_at_start(
         let p = xf.translation();
         map.player = Vec2::new(p.x, p.z);
         map.cursor = map.player;
-        let vehicle = garage.current.as_ref().and_then(|c| crate::frontend::vehicle_id(&c.bundle));
-        map.shown = shown_items(&map.items, vehicle);
+        sync(&mut map);
     }
     if !map.open_at_start || map.look.is_none() {
         return;
@@ -544,8 +804,7 @@ fn open_at_start(
     map.open_at_start = false;
     let p = xf.translation();
     map.player = Vec2::new(p.x, p.z);
-    let vehicle = garage.current.as_ref().and_then(|c| crate::frontend::vehicle_id(&c.bundle));
-    map.shown = shown_items(&map.items, vehicle);
+    sync(&mut map);
     let unpause = !time.is_paused();
     map.open(&mut time, unpause);
     map.refresh = false;
@@ -559,11 +818,11 @@ fn open_at_start(
                 return;
             }
         };
-        let s = map.shown.iter().position(|&i| i == k).unwrap_or_else(|| {
-            map.shown.push(k);
+        let s = map.shown.iter().position(|&e| e == Entry::Event(k)).unwrap_or_else(|| {
+            map.shown.push(Entry::Event(k));
             map.shown.len() - 1
         });
-        map.selected = Some(Sel::Event(s));
+        map.selected = Some(Sel::Item(s));
         map.cursor = map.items[k].pos;
     }
     if map.options_at_start && map.selected_item().is_some() {
@@ -747,6 +1006,13 @@ fn navigate(
         nav_update(&mut map, Vec2::ZERO, dt);
         return;
     }
+    // The filters group (1135638): `trigger_left` / `right` → `MapManager::OnPrevFilter` / `OnNextFilter`.
+    if menu.pressed(A::TriggerLeft) || menu.pressed(A::TriggerRight) {
+        map.step_filter(menu.pressed(A::TriggerRight));
+        if std::env::var_os("MW_MAP_LOG").is_some() {
+            info!("map: filter {:?}, {} items", map.filters.get(map.filter), map.shown.len());
+        }
+    }
     // `MainMapNav_*` (analogue, every frame): menu_left / right / up / down (arrows, left stick, d-pad).
     let input = Vec2::new(menu.value(A::Right) - menu.value(A::Left), menu.value(A::Up) - menu.value(A::Down));
     let before = (map.selected, map.nav.moving);
@@ -764,17 +1030,25 @@ fn navigate(
     }
 }
 
-/// Values for the screen's bindings. `item` is the event the layout being drawn belongs to.
+/// Values for the screen's bindings. `entry` is the item the layout being drawn belongs to.
 #[allow(clippy::too_many_arguments)]
 fn lookup(
     path: &str,
     arg: Option<&str>,
     map: &MapScreen,
-    item: Option<&MapItem>,
+    entry: Option<Entry>,
     selected: bool,
     vehicle: Option<u32>,
 ) -> Option<BindValue> {
     let s = |k: &str| BindValue::Text(map.strings.get(k).cloned().unwrap_or_default());
+    let item = match entry {
+        Some(Entry::Event(i)) => map.items.get(i),
+        _ => None,
+    };
+    let point = match entry {
+        Some(Entry::Point(i)) => map.points.get(i),
+        _ => None,
+    };
     let field = arg.and_then(|a| a.split_once("].")).map(|(_, f)| f);
     Some(match path {
         "Widget.Menu.Title" => s("title"),
@@ -789,7 +1063,10 @@ fn lookup(
         "Widget.Filters.IsActive" => (map.options.is_none()).into(),
         "Widget.Filters.Action.MapFilterLeft" => s("z"),
         "Widget.Filters.Action.MapFilterRight" => s("a"),
-        "Widget.MapManager.LiveMapManager.FilterName" => s("filter"),
+        "Widget.MapManager.LiveMapManager.FilterName" => match map.filters.get(map.filter) {
+            Some((_, name)) => BindValue::Text(name.clone()),
+            None => s("filter"),
+        },
         "Widget.MapControls.ShowTunePrompt" | "Widget.Awards.AwardsBackActive" | "Widget.Awards.ShowProfileOpt" => {
             false.into()
         }
@@ -839,6 +1116,18 @@ fn lookup(
             BindValue::Text(if selected && map.options.is_none() { "#" } else { "-" }.into())
         }
         "LiveMapManager.ShowEventComplete" => false.into(),
+        "LiveMapManager.Items" | "Widget.MapManager.Items" if point.is_some() => {
+            let p = point?;
+            match field? {
+                "Name" => BindValue::Text(map.point_names.get(&p.item_type).cloned().unwrap_or_default()),
+                "EventType" | "EventTypeWithDistance" => BindValue::Text(String::new()),
+                "ScreenDistance" => (if selected { 1.0 } else { 0.0 }).into(),
+                "IsActive" => true.into(),
+                _ => return None,
+            }
+        }
+        // The jack spot icon's visibility (`JackSpots.IsSwapSpotFound[#]`).
+        "JackSpots.IsSwapSpotFound" => point.is_some_and(|p| map.found.contains(&p.id)).into(),
         "LiveMapManager.Items" | "Widget.MapManager.Items" => {
             let it = item?;
             match field? {
@@ -902,7 +1191,7 @@ fn draw(
                        out: &mut Vec<Quad>,
                        id: u32,
                        at: Option<Vec2>,
-                       item: Option<&MapItem>,
+                       item: Option<Entry>,
                        selected: bool,
                        extra: &dyn Fn(&str) -> Option<BindValue>| {
             let Some(&s) = look.slots.get(&id) else { return };
@@ -933,19 +1222,30 @@ fn draw(
             });
         }
         let visible = |p: Vec2| p.x > -40.0 && p.x < 1320.0 && p.y > -40.0 && p.y < 760.0;
-        for (s, &i) in m.shown.iter().enumerate() {
-            let item = &m.items[i];
-            let p = to_screen(item.pos, m.cursor);
+        // The current filter's items, each with its item type's icon (`MapItemTypes`).
+        for (s, &e) in m.shown.iter().enumerate() {
+            let p = to_screen(m.entry_pos(e), m.cursor);
             if visible(p) {
-                draw_at(
-                    &mut look,
-                    &mut quads,
-                    EVENT_ICON,
-                    Some(p),
-                    Some(item),
-                    m.selected == Some(Sel::Event(s)),
-                    &none,
-                );
+                let icon = m.icons.get(&m.entry_type(e)).copied().unwrap_or(EVENT_ICON);
+                draw_at(&mut look, &mut quads, icon, Some(p), Some(e), m.selected == Some(Sel::Item(s)), &none);
+            }
+        }
+        // Cops in a pursuit (`AICopPOI`, the arrow's cop variant on `Players.PlayerBase[#].IsCop`), turned with
+        // their cars.
+        if let Some(icon) = m.cop_icon {
+            for &(pos, f) in &m.cops {
+                let at = to_screen(pos, m.cursor);
+                if !visible(at) {
+                    continue;
+                }
+                let d = to_screen(pos + Vec2::new(f.x, f.z), m.cursor) - at;
+                let rot = d.x.atan2(-d.y).to_degrees();
+                let cop = move |p: &str| match p {
+                    "Rot" => Some(BindValue::Num(rot as f64)),
+                    "Players.PlayerBase" => Some(true.into()),
+                    _ => None,
+                };
+                draw_at(&mut look, &mut quads, icon, Some(at), None, false, &cop);
             }
         }
         // The player's arrow, turned with the car (`Rot`, degrees clockwise on the map).
@@ -956,11 +1256,15 @@ fn draw(
         let player_at = to_screen(m.player, m.cursor);
         let rot_lookup = move |p: &str| (p == "Rot").then_some(BindValue::Num(rot as f64));
         draw_at(&mut look, &mut quads, PLAYER_ICON, Some(player_at), None, false, &rot_lookup);
-        // The selected event's card sits on its icon; the cursor's rings on the cursor (the camera's look-at).
-        if let Some(item) = m.selected_item() {
-            draw_at(&mut look, &mut quads, EVENT_CARD, Some(to_screen(item.pos, m.cursor)), Some(item), true, &none);
+        // The selected item's card (its item type's, `MapItemTypes`) sits on its icon; the cursor's rings on the
+        // cursor (the camera's look-at).
+        let selected = m.selected_entry();
+        if let Some(e) = selected
+            && let Some(&card) = m.cards.get(&m.entry_type(e))
+        {
+            draw_at(&mut look, &mut quads, card, Some(to_screen(m.entry_pos(e), m.cursor)), Some(e), true, &none);
         }
-        draw_at(&mut look, &mut quads, CURSOR, Some(ANCHOR), m.selected_item(), true, &none);
+        draw_at(&mut look, &mut quads, CURSOR, Some(ANCHOR), selected, true, &none);
         for id in [TITLE, TABS[0], TABS[1], FILTERS] {
             draw_at(&mut look, &mut quads, id, None, None, false, &none);
         }
@@ -1011,7 +1315,7 @@ mod tests {
                 most_wanted: false,
                 playable: false,
             });
-            m.shown.push(k);
+            m.shown.push(Entry::Event(k));
         }
         m.selected = Some(Sel::Player);
         m
@@ -1030,7 +1334,7 @@ mod tests {
         }
         assert_eq!(m.cursor, Vec2::ZERO);
         nav_update(&mut m, Vec2::ZERO, dt);
-        assert_eq!(m.selected, Some(Sel::Event(0)));
+        assert_eq!(m.selected, Some(Sel::Item(0)));
         // The cursor glides there within the glide time.
         for _ in 0..60 {
             nav_update(&mut m, Vec2::ZERO, dt);

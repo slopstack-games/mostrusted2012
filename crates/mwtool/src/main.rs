@@ -42,6 +42,11 @@ struct Cli {
 enum UiCmd {
     /// One line per screen bundle with its widgets (and their layout counts).
     Screens,
+    /// The world map's item kinds (icon / card looks, option menus), filters and point-of-interest looks.
+    MapItems {
+        #[arg(long, default_value = mw_assets::DEFAULT_LANGUAGE)]
+        lang: String,
+    },
     /// The Easydrive menu model of a driving screen: item types, tiers, sources and items.
     Easydrive {
         #[arg(default_value = mw_assets::easydrive::EASYDRIVE_SCREEN)]
@@ -665,6 +670,7 @@ fn main() -> Result<()> {
             }
             match cmd {
                 UiCmd::Screens => ui::screens(&store)?,
+                UiCmd::MapItems { lang } => ui::map_items(&store, &store.language(&lang)?)?,
                 UiCmd::Easydrive { screen, lang } => ui::easydrive(&store, &screen, &store.language(&lang)?)?,
                 UiCmd::Show { screen, widget, lang } => {
                     let lang = store.language(&lang)?;

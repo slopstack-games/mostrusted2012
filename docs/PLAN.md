@@ -460,7 +460,10 @@ code side (game modes, HSMs, AI) next to the data. Roughly in dependency order:
   scale measured from a capture) and **the event-loading card** (`event_card.rs`, transition 1014321) before the
   race and its intro. 2026-10-14: menu input as the original reads it (`input::MenuInput`: the Autolog menu
   actions with their d-pad twins and auto-repeat) and the map's controls ported from `LiveMapManager` (flick /
-  free cursor / snap / glide, `MainMapConfig`), pad and keyboard. Missing: car select / customise, online pages, the intro event, the Most Wanted list panel,
+  free cursor / snap / glide, `MainMapConfig`), pad and keyboard. 2026-10-15: the map's filters (RACES, JACK
+  SPOTS, RECOMMENDS, SPEED CAMERAS, BILLBOARDS) and item looks from `LiveMapManager_ScreenScript` (Most Wanted
+  races red, collectables' icons and cards, cops in a pursuit), the minimap's body shops / found jack spots
+  within 400 m and the cop arrow. Missing: car select / customise, online pages, the intro event, the Most Wanted list panel,
   completion state. Open: those, the car menu in the game font, widget
   adapters (which layouts show when), HUD polish (faint speed digits, odometer ".0 KM"), save data.
 - Movies: `UI/MOVIES/*.VP6` (EA `MVhd` container, VP6). Decode through ffmpeg or skip.

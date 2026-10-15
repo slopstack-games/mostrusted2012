@@ -2175,7 +2175,77 @@ for accept / back.
 **Port** (`map_screen.rs`, `pause.rs`, `input.rs` `MenuInput`): all of the above except: the map is drawn flat (the
 cursor moves at 1500 m/s along the screen's axes, no foreshortening of the up axis; the camera rows at the view's
 +0x2f370 were not read), `FUN_0078f1d0` (a gate on moving) taken as true, the failed left flick snaps instead of
-opening the Most Wanted list (not built), the tabs and filters are inert, accept opens options only on events.
+opening the Most Wanted list (not built), the tabs are inert, accept opens options only on events. The filters
+work since 2026-10-15 (next section).
+
+### The world map's items and filters; the minimap's free-roam icons (2026-10-15, `map_screen.rs`, `hud.rs`)
+
+**Configuration** (`FUN_0080ec90`, the `LiveMapManager` reading its screen script by field name): the screen
+script `LiveMapManager_ScreenScript` 1135185 holds `MapItemTypes` (16 `UI.MapItemType` {`DataSource` = the
+option menu's name, `650f3bfb` icon key, `c3f39ca3` card key, `ItemType`, `OptionsHeight`, two flags}), filed by
+`ItemType` at +0x2298 + 4 × type; `CollectablesName` (item type → language id) at +0x22e4; `SelectionPOI` (+0x2608),
+`AIPlayerPOI` (+0x2330), `AICopPOI` (+0x2334), `CheckpointPOI` (+0x2338), `FinishLinePOI` (+0x233c),
+`BlackListDriver` (+0x2340), `MeetupPOI` / `MeetupAreaPOI` (+0x2344 / +0x2348), `DefaultFilterIndex`,
+`FilterListBinding`. Field names were confirmed by hashing them (`field_hash`). Keys resolve to the screen POI
+widget's `PointOfInterestVisuals` (`mwtool ui map-items` lists all of it).
+
+| type | source | icon key → texture | card key |
+|---|---|---|---|
+| 0 | LocalPlayer | 1135501 → arrow | 1013506 |
+| 1 | Event | 1135497 → green diamond `0f789a` | 1013511 |
+| 3 | SpeedCamera ("SPEED CAMERA") | 1135495 → `1d0861` | 1135735 (speedwall card) |
+| 4 | Jump ("BILLBOARD") | 1135493 → `1d0817` | 1135737 |
+| 5 | SecurityGate | 1135497 | 1135353 |
+| 7 / 14 | Jackspot ("JACK SPOT") | 1135494 (icon visible on `JackSpots.IsSwapSpotFound[#]`) / 955695 (always) → wheel `160c27` | 1524715 |
+| 9 | Event (Most Wanted) | 955947 → red diamond `0e962f` | 1013511 |
+| 13 | BodyShop ("BODYSHOP") | 1524672 → wrench `160bfc` | 1135353 |
+| 15–18 | JackspotDlc1 | 2113015, 2241160–2 (the packs' wheels) | 1524715 |
+
+**Filters** (`FUN_00818550` next filter: index +0x26c4 counts 1…n and wraps to 1, then `FUN_008181b0` rebuilds the
+list, `FUN_00813e60` snaps from the cursor, the index is saved as `MapFilterIndex`). The offline map's filter
+widget (group 1135638, `Widget_MapFilters` 1135664) lists RACES (type 1), JACK SPOTS (7), RECOMMENDS (9), SPEED
+CAMERAS (3), BILLBOARDS (4); `DefaultFilterIndex` = 1. `FUN_008181b0` by filter type: 1 → events
+(`FUN_008154f0`); 3 → `TriggerData` kinds '4', 'G' as item 3; 4 → '2', 'A', 'D', 'J', 'M' as item 4; 5 → '0' as
+item 5; 6 → 0x17 as item 6; 7 → '<' as item 7 and as item 14, 'B' / 'E' / 'K' / 'N' as 15–18; 9 → events with
+other rules (Autolog recommendations); 0xc → body shops (kind 6) as item 13; 0xb → `FUN_00808d30`.
+- **Collectables** (`FUN_00817500(kind, item type)`): every trigger of the kind whose id is in the world database's
+  `Collect3` table (`FUN_00728b20`, column `TriggerID`; body shops skip the test); jack spots skip spots of a pack
+  (`FUN_00643c10`), need `FUN_006fd0a0`, and go to item 14 when `FUN_006fcf90` holds (a profile list looked up by
+  the spot's +0x24), else to item 7.
+- **Events** (`FUN_008154f0`, test `FUN_00808e60`): every event of the world's list
+  (`world+0x2f3fc → +4 → +0x11c`) that is an offline event, has its start trigger, is not of the excluded game
+  mode (`GameLogicConfig` +0xd8), is not a locked pack's; with the RACES arguments, events the driven car may not
+  enter (`FUN_006eca10` on `AllowedVehicleList`) and Most Wanted races not yet available (`FUN_006f9640`) are
+  "locked" and hidden (`MainMapConfig.d9572ca3`, +0xb4, = false would show them). The item type is
+  `MapItemTypes[1]`, or **`MapItemTypes[9]` when the event's +0xe9 (`c8f26580`, first place only: the Most Wanted
+  races) is set** (and the event's type is 390131, `OfflineEvent`).
+- **Dynamic items** (`FUN_00808290`): racers (`AIPlayerPOI`; `BlackListDriver` for a racer whose +0x578 → +0xb4 flag
+  is set) while an event runs, cops (`AICopPOI`) while an event runs or in a pursuit (`FUN_006c2410`), the race's
+  checkpoints and finish, meet-ups (online). The racer / cop look 1135614 has both arrows and switches on
+  `Players.PlayerBase[#].IsCop` (racer `160b30` orange; cop `160b32` blue and `160b33` red).
+
+**The free-roam HUD's collectable icons** (`FUN_006ffd90`, called per collectable from the game-mode update at
+0x007030f6): a point of interest is created within 400 m of the player (`.rdata` 0x00fcb044) and removed beyond
+450 m (`.data` 0x010c5944, initial value); the look by kind (`FUN_006ffba0`): speed cameras → `CollectablesConfig`
++0x54 (`ced801cd` 1013522, a world look without a map icon), shown when collected and in free roam; billboards →
+`MapPoiConfig` +0xc (`a32aa8bd` 1013491, world look only); body shops → `CollectablesConfig` +0x10 (`d71dba55`
+1444895, the wrench), always; jack spots → by pack +0x38…+0x44, else +0x48 (`507e9d87` 1013508, the wheel, visible
+on `JackSpots.IsSwapSpotFound[#]`) or, when `FUN_006fcf90` holds, +0x34 (`a1b2d86a` 955694); a jack spot whose car
+is locked for the profile (`FUN_006ed400` → `FUN_0068f190`) is shown only while `FUN_006fcf90` does not hold and its
+car can be offered. The local player's look is `MapPoiConfig` +0x54 (`29401278`, 1013507) and another player's
++0x60 (`86c1695b`, 1013487) (`FUN_006440a0`: compares the record's player index with
+`world+0xa6b4`); the pursuit's search area is +0x5c (`52b0c553`, 1013492, the 128² circle).
+- **Dead end**: the HUD screens hold event looks with world layouts (1013512 green, 955952 / 955955 red,
+  1013520, 1132924) but no code or GeneSys data names those keys (searched the image for the immediates and
+  every GenesysObject dump); events are not drawn on the minimap here.
+
+**Port**: the world map lists one filter at a time with the data's icons and cards (events keep the card measured
+on the 2026-10-10 capture, look 1135809), Most Wanted races in red, cops of a pursuit with the cop arrow; the HUD
+draws body shops and found jack spots within 400 m (450 m hysteresis) and cops with their own arrow. Model
+decisions: `Collect3` taken as every trigger of the kind (74 speed cameras, 216 billboards with the packs' kinds);
+`FUN_006fcf90` never holds (jack spots are item 7: on the map only found spots are listed, as their icon shows only
+then); the packs' jack spots use the base look; RECOMMENDS lists nothing; the filter index is not saved;
+collectables have no options; on the HUD every jack spot counts as unlocked.
 
 ### Race HUD, countdown and results (2026-10-09, `hud.rs`, `ui_quads.rs`)
 
@@ -2230,8 +2300,8 @@ the target and next gates and the finish (the keys of "Races" → "Markers": bar
 604240) and the other racers (1013521, `MapPoiConfig.5bfb3553`: the orange arrow 816012). Model decisions: an
 icon's turn is its heading relative to the map (the player's arrow points up); icons keep their reference-pixel
 size × the HUD scale; icons whose centre is off the map are left out (the widget's `EnableClamping` /
-`IsClamped` is code not traced); which `MapPoiConfig` field the code uses for the player and for racers was not
-traced (the two named hold the matching arrows). Still ours: the map scale (4 m per reference pixel from the
+`IsClamped` is code not traced); the player's field is +0x54 (`FUN_006440a0`, 2026-10-15), the racers' was not
+traced (`5bfb3553` holds the matching arrow; cops are drawn with it and `IsCop` true since 2026-10-15). Still ours: the map scale (4 m per reference pixel from the
 tile resolution, not the 600 m / 90° camera) and the tiles drawn opaque grey (the game adds them, opacity 0.7).
 - Easydrive's RACES list: the offline races (730000) whose `AllowedVehicleList` holds the driven car (all races
   when none does), nearest start first. "START RACE" puts the car on the event's start 0.5 m up; the start

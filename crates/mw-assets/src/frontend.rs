@@ -152,7 +152,7 @@ fn roots(store: &AssetStore, bundle: &str) -> Result<Vec<Object>> {
 }
 
 /// Every struct of `type_name` under `o` (fields, arrays, nested structs).
-fn collect<'a>(o: &'a Object, type_name: &str, out: &mut Vec<&'a Object>) {
+pub(crate) fn collect<'a>(o: &'a Object, type_name: &str, out: &mut Vec<&'a Object>) {
     fn walk<'a>(v: &'a Value, name: &str, out: &mut Vec<&'a Object>) {
         match v {
             Value::Struct(o) => collect(o, name, out),
