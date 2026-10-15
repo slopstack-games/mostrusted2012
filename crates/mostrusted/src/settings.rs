@@ -34,8 +34,9 @@ pub struct AudioSettings {
     pub engine: f32,
     pub sfx: f32,
     pub music: f32,
-    /// Every sound muted for now (not saved): the game's `MUTE_SOUND` behaviour with reason `LoadingScreen`
-    /// while the boot flow's screens and the loading screen show (`frontend.rs`).
+    /// The world's sounds muted for now (not saved): the game's `MUTE_SOUND` behaviour with reason
+    /// `LoadingScreen` while the boot flow's screens and the loading screen show (`frontend.rs`); music is not
+    /// on that bus.
     pub muted: bool,
 }
 
@@ -69,7 +70,9 @@ impl AudioSettings {
             Channel::Sfx => self.sfx,
             Channel::Music => self.music,
         };
-        if self.muted {
+        // `MUTE_SOUND` (`FUN_00790920`, gain ramp in `FUN_004b1670`) acts only on the buses routed as "Master
+        // World" (`BusRoute` 6, `FUN_00abb520`): music (route 4) stays audible on the loading screens.
+        if self.muted && channel != Channel::Music {
             return 0.0;
         }
         channel.base() * v * self.master

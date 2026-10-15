@@ -44,6 +44,7 @@ mod materials;
 mod menu;
 mod mods_menu;
 mod movie;
+mod music;
 mod nitrous;
 mod paint_wear;
 mod particles;
@@ -981,15 +982,17 @@ fn main() -> anyhow::Result<()> {
             open: cli.show_settings,
         })
         .add_plugins((car_audio::CarAudioPlugin, car_sfx::CarSfxPlugin, player_sfx::PlayerSfxPlugin))
-        .add_plugins(audio::GameAudioPlugin {
-            music: !cli.no_music
-                && !cli.mute
-                && screenshot.is_none()
-                && test.is_none()
-                && !race_test
-                && !crash
-                && !smash
-                && cli.replay.is_none(),
+        .add_plugins(audio::GameAudioPlugin)
+        .add_plugins(music::MusicPlugin {
+            enabled: std::env::var("MW_MUSIC").is_ok_and(|v| v == "1")
+                || (!cli.no_music
+                    && !cli.mute
+                    && screenshot.is_none()
+                    && test.is_none()
+                    && !race_test
+                    && !crash
+                    && !smash
+                    && cli.replay.is_none()),
         })
         .insert_resource(drive::CarInput { auto_throttle: cli.auto_throttle, auto_nitrous: cli.nitrous, ..default() })
         .insert_resource(mods_menu::ModSelection::parse(&cli.mods, &[]))
