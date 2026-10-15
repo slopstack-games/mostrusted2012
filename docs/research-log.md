@@ -10,6 +10,69 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-15: car sounds: idle, nitrous, backfires, engine start / stop (play test "Car sounds and effects")
+- **Backfires never happened in normal driving** (cause found, fixed): the pop rule `FUN_009b20b0` reads the
+  sound's audible RPM +0x1f00 = `Idle + (Max − Idle) × +0x1f10`, and +0x1f10 already holds the RPM offsets the
+  engine sequences post (effect property 1, `FUN_009aea50`). Our rule used the physics curve without them. The 911's
+  upshift variant `…1d1a22` kicks the RPM +0.2 at engagement (shift clock 1..1.25) and drops it from ~0.13 to 0 in
+  one tick at the item's end, which is the drop that backfires (`1 − 0.13 · r · 10 < 0.1` for r > 0.69). Now the
+  player's rule gets the engine driver's offset and load (`Exhaust::set_sound`). Full throttle on the test track
+  (20 s, 911): 0 → 1 backfire, 40 pops; the kick's frame shows the normalised RPM 0.796 → 0.660. Every third
+  911 upshift has the kick (round robin), so ~1 in 9 upshifts backfires with its 0.1; the BMW M3 GTR (0.65) and
+  the McLarens far more. `--test exhaust` is muted (no engine sound, so no offsets): still 0 backfires there.
+- **Pops / crackles were silent** (fixed): the 911 has no `Pop_Sequence` (101 of 283 banks lack one; `dacf5fd5`,
+  between `Ignition_Sequence` and `Pop_Sequence`, is never set). Its pops are the `Gurgle_Sequence` (`…1d1c96`,
+  bound to `GetPopProbability`: pop waves 0.75..1, crackles 0.05..0.85), which the engine sound starts with the
+  bank's `Sequences` at sound start (the sound's state 2 → 3 code in `00580000.c` after `FUN_00575340`: `FUN_005866f0` of
+  `EngineSound2` +0x14, kept at +0x1ac). Its items have `Trigger_Probability` curves that start at 0, and the
+  player read every one-shot's probability (and gain / pitch) at item position 0, so they never fired. Now read
+  at the item position (`sequence::Player::start_voice`, same in `sfx_player`). Off-throttle at 6500 rpm the
+  crackle channels play (−30 / −34 dB average) ~33 dB under the engine; the retrigger rate (12/s × value) is
+  still our model. `6001d10d` on wave items (1 on every item with a probability curve, 2 / 3 elsewhere) is unread.
+- **Nitrous sound** (new): `HeatLevelSoundSet.NitrousLocal` (`…181ffc` in `GAMELOGIC/HL_31208.BNDL`, the only
+  heat-level sound bundle; `FUN_0065fee0` builds `HL_%d`): a 12 s timeline, burn wave `…1b0ab3` (1..8.885 s,
+  gain fading in over ~0.9 s) and tail `…1b0ab2` (8.7..10.594) on channel `…7533`, ducking the engine channels
+  (`…b381c` ×0.67, harmonic EQs, comb rasp, whine), +0.03 RPM, PostFX items, and eight timeline controllers on
+  `Players.LocalPlayer.NitrousState.UsingNitrous`. `JumpTimelineController.b6a51260` = **DestinationTime**
+  (cracked; sorts before `TriggerTime`). `2d0e4348` (bool, not cracked) read as "monitor": fire on the binding
+  turning true at any time past `TriggerTime`, else only when the clock crosses it; the only reading under which
+  all eight make sense (loop the burn 8.75 → 10.25 → 1 while held, quit on a tap under 1.5 s, tail on release
+  after 2 s, restart on a new press). Merged into the player's engine bank; started on the rising edge of the
+  nitrous input (its starter is not in the dump: model). Offline (`MW_NITROUS_AT=t0,t1 mwtool engine-sound`):
+  a 1 s use plays and quits by +1.25 s; a 4 s use plays the burn and the tail ~1 s after release.
+  `9b519cdb` (cracks as `NitrousDump`, unchecked) holds `…0b3a2a`, a 3 s timeline (wave `…1b0a36`); not used.
+- **Engine start / stop** (new, `ignition.rs`): the gearbox's start-up states 0 (off) and 1 (cranking)
+  (`FUN_009ce3d0`, `FUN_009cd7a0`): off → cranking after 0.5 s off (`.bss` 0x01186ef0 ← `.rdata` 0x01026050) on
+  throttle / brake; cranking → running when `Ignition_Sequence` posts property 7 (+0x1be5, `FUN_008f5490` case 7)
+  or has ended (+0x1be4 ← sound +0x1c8, `FUN_00900120`); `FUN_0058c930` starts the ignition in state 1 and stops
+  it in state 0. `EngineOn` (+0x1ef0, the engine buses' gain binding) moves 0.05 per tick (`.bss` 0x011866c0 ←
+  `.rdata` 0x01025370) towards 1 while running, 0 otherwise (`FUN_009b3030`). Catch times over the 283 banks:
+  0.25..1.5 s (the 911 0.25). The ignition wave plays as a one-shot on its snapshot channel `Player Vehicle
+  Ignition` like the horn (`AssetStore::player_ignition`); in the bank it reached the master at −48 dBFS, under
+  the idle. Checked: runtime log "player ignition" started at spawn, out −42 dBFS at 6 m, "engine running" 0.24 s
+  later. Model decisions: the player's car spawns cranking in play (running in `--test` / `--replay`); IGNITION
+  (action 17: I / L3) turns the engine off and starts it again (its reader was not found; ENGINE_START / OFF
+  39 / 40 are unbound); while off / cranking the throttle is held at 0 (the clutch never closes there) and the
+  physics engine idles silently. Message 0x1e (`FUN_00587490`, script `FUN_0068b070`) forces state 0 with
+  +0x1be3 (the "held off" flag); not wired.
+- **Idle** (measured, not changed): the idle loop plays (911: `…1d1c7a` / `…1d1c7b` at 1790..2290 audible rpm,
+  gain 0.3, faded out over 500 rpm), but in game the load sits at ~0.19 (the idle governor) and the whole engine
+  is −39.5 dBFS at idle against −7.6 at full throttle (bus inputs −15 vs +12 dB: the data's own balance). With
+  the engine volume (0.6) and music at −28 dBFS the idle is ~16 dB under the music, which is likely what reads as
+  "missing". Open: the engine-vs-music mix and the `SendDspPlugIn.Bus_Routing` (0 / 1 / 3) buses (we sum only the
+  first send to "none" into the master; `472497`, routing 1, is muted between load 0.2 and 0.54 by the load
+  curves); a capture of the original standing still (audio) settles it.
+- **Nitrous flames** (looked at, not changed): `--test nitrous` shows the flame effect `…24f34` at both pipes, but
+  sitting low and short behind the tips; the original's cone emitter axis (+Z inferred, 2026-10-09) and the
+  Bear emitter maths are still unread. Needs a screenshot of the original under nitrous at a known spot.
+- **Also found**: `FUN_0058d1c0` plays a random sequence of `EngineSound2` `c99783d2` (+0x60) when the throttle
+  pedal (entity +0x192c) rises by more than 0.3 in a frame and `6fd79c8d` (+0x5c) when it falls by more than 0.3
+  (`.rdata` 0x00fac27c / 0x00fae1f8), in gears above 1 (`FUN_0090d460`): driveline shunt clunks; not ported.
+- **Open / live reads wanted**: (1) entity +0x1a84 (requested engine state 0 / 1 / 2) and vehicle +0x1bd8 right
+  after a car spawn and after a jack-spot swap, to confirm the spawn state; (2) the IGNITION key's effect in the
+  original (does I stop the engine?); (3) audio capture at standstill for the idle level; (4) a nitrous
+  screenshot for the flames.
+
 ### 2026-10-14: the post chain against the original's code: bloom sizes, final pass, depth of field, grade
 
 The user: "postfx [is still off]". Compared our chain with the original's, stage by stage, from the full `.text`

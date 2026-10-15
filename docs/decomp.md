@@ -862,7 +862,8 @@ posts their effects back for the next tick.
   undamaged car; not ported), clamped 0..1; then `FUN_009aea50` raises it to `2 − a` (`.rdata` 0x01025080 = 2;
   `a` = `EngineSound2` +0xb0 `cb44d82d` → +0xac `a33d84fe` by the load +0x1f20, or +0xb4 `913bb900` with flag
   +0x1f45), adds the property-1 effect list (+0x1e78, `FUN_00926330`) and clamps to 0..1 (`.rdata` 0x010245c0).
-  Vehicle +0x1f00 = `Idle_RPM + (Max_RPM − Idle_RPM) × +0x1f10` (the pop rule's RPM). Both run only while the
+  Vehicle +0x1f00 = `Idle_RPM + (Max_RPM − Idle_RPM) × +0x1f10` (the pop rule's RPM, so the pop rule sees the
+  sequences' RPM offsets too: the gear-change kick's end is what backfires, research log 2026-10-15). Both run only while the
   world flag `FUN_004b1a70` is set. Snapshot check (XKR, `snap2`): 4040.6 rpm → 0.5017 against 0.5040 computed
   with `a` = 1.
 - **Engine load** (`FUN_009b1f70`, `GetPlayerEngineLoad` = +0x1f20, state +0x1f24): `h` = the engine's lagged
@@ -941,7 +942,8 @@ and SubHarmoniser plug-ins fall in undecompiled gaps of the dump.
   `FUN_005866f0`, each only while its previous instance (slots +0x94 / +0x90, cleared by `FUN_00a422d0` when
   ended) is gone. `Ignition_Sequence` (+0x1c) starts when the gearbox leaves its start-up states
   (`FUN_0058c930`); `c62d11ac` (+0x34) is the rev limiter's (`FUN_0058cdb0`). `Gurgle_Sequence` (+0x14) and
-  `Pop_Sequence` are bound to `GetPopProbability` (items at 0.6–1 / 0.75–1); who starts the gurgle was not found.
+  `Pop_Sequence` are bound to `GetPopProbability` (items at 0.6–1 / 0.75–1); the gurgle is started with the bank's
+  `Sequences` when the sound starts ("Engine start and stop" below).
 - **Effect group bits** (`FUN_0057a5e0`, per car, entity +0x3c8): bit 14 for two updates after a backfire
   (entity +0x3f4 = 2, counted down when the world flag `FUN_00897b70` is up), bit 8 while the nitrous input
   (+0x1944) is above 0 and the car is the one `FUN_006a0020` / `FUN_0069ff20` accept, bit 9 instead while the
@@ -950,6 +952,38 @@ and SubHarmoniser plug-ins fall in undecompiled gaps of the dump.
   lights, 1 / 2 brake and reverse, 3 (+0x1c27), 15 (`0x80c7` group). `FUN_005b2740` adds bit 12 when the car is
   wrecked and 13 for a non-zero vector of the player state; the coronas, lights and spot effects test
   `1 << Group` against it.
+
+## Engine start and stop (2026-10-15, ported in `crates/mostrusted/src/ignition.rs`)
+
+- **Gearbox start-up states** (`FUN_009da340`, gearbox +0x168 = vehicle +0x1bd8): 0 off, 1 cranking. State 0
+  (`FUN_009ce3d0`): a timer (gearbox +0xe0 = vehicle +0x1b50) counts up; once past 0.5 s (`.bss` 0x01186ef0, from
+  `.rdata` 0x01026050 by `00f76430`; `009a9bc0` returns the time left) a throttle or brake input (control block
+  +0x04 / +0x10 lanes) or a set flag lane (+0x60, latched on release at +0x70) moves it to 1. State 1
+  (`FUN_009cd7a0`): moves to 2 when +0x174 (vehicle +0x1be4) or +0x175 (+0x1be5) is set, unless +0x173 (+0x1be3,
+  "held off") is set; clears the brake lanes. Both set the control block's +0x50..+0x5c lanes to −1 (their reader
+  is the state machine's "any lane set → state 9" test). Resets: `FUN_009cd620(char)` (0 → state 0, else 2),
+  `FUN_009cd790` (state 1), from `FUN_008f7b40` syncing entity +0x1a84 (0 / 1 / 2) for remote cars.
+- **Flags**: +0x1be5 = effect property 7 of a sound sequence (`FUN_008f5490`: |value| > FLT_EPSILON); property 6
+  sets +0x1be3 the same way and forces state 0. +0x1be4 = `RaceCarEngineSound` +0x1c8 (ignition played) or
+  vehicle +0x30ff (`FUN_00900120`). Message 0x1e {car, flag} (`FUN_00587490` sets entity +0x1c32 and sends it;
+  `FUN_005886a0` for entity message 0x10; script binding `FUN_0068b070`) sets +0x1be3 = flag and state 0.
+- **Ignition sound** (`FUN_0058c930`, per frame from `FUN_005911d0`): in state 1 with +0x1c8 clear it starts
+  `Ignition_Sequence` (`EngineSound2` +0x1c) once (slot +0x134) and sets +0x1c8 when that instance has ended (or
+  at once without a sequence); in state 0 it clears +0x1c8 and stops the instance.
+- **EngineOn** (vehicle +0x1ef0, `RaceCarEngineSound.EngineOn` via `FUN_0059ba00` / `FUN_0090d760`): end of
+  `FUN_009b3030`, +0.05 per tick (`.bss` 0x011866c0, `.rdata` 0x01025370) up to 1 while the state is not 0 / 1,
+  −0.05 down to 0 otherwise. `00830000.c` returns audible RPM × EngineOn (a getter). `Player.IsEngineOn`
+  (`FUN_006d8ab0`) = `FUN_00572c20` (state not 0 / 1).
+- **Sound start** (`RaceCarEngineSound` state 2 → 3, `00580000.c` near `FUN_00575340`): starts every sequence of
+  `EngineSound2.Sequences` (`FUN_00586550`, handles at +0x17c..), then `Gurgle_Sequence` (+0x14) with
+  `FUN_005866f0` (handle +0x1ac): the gurgle runs from the start like the bound sequences.
+- **Throttle shunts** (`FUN_0058d1c0`): pedal (entity +0x192c, the raw throttle input; in reverse it lights the
+  brake lamps, `FUN_0057a5e0`) up by more than 0.3 since the last frame → a random sequence of `EngineSound2`
+  +0x60 (`c99783d2`, count +0xff); down by more than 0.3 → one of +0x5c (`6fd79c8d`, count +0xfe), both only in
+  gears above 1 (`FUN_0090d460` = the gear, 0 at a standstill); a fall also starts +0x24 (`dacf5fd5`, empty in all
+  banks) in slot +0x98. Not ported.
+- **Nitrous sound**: `HeatLevelSoundSet` (bundle `GAMELOGIC\HL_%d.BNDL`, `FUN_0065fee0`, loaded per heat level
+  by the pursuit code `FUN_00663cd0`) +0x14 `NitrousLocal`; its player was not found. Research log 2026-10-15.
 
 ## Other cars' engine sounds (2026-10-09)
 
