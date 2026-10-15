@@ -10,7 +10,6 @@ mod compare;
 mod crack;
 mod damage;
 mod events;
-#[cfg(target_os = "linux")]
 mod lods;
 mod memscan;
 mod placement;
