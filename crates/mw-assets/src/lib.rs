@@ -13,6 +13,7 @@ pub mod car_anim;
 pub mod car_sfx;
 pub mod car_sound;
 mod catalog;
+pub mod coronas;
 pub mod crash;
 pub mod damage;
 pub mod easydrive;

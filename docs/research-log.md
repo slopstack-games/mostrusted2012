@@ -10,6 +10,38 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-16: vehicle coronas (glows, beams, flares) for every car
+Integrator request after the light-bar review (the bar was a few pixels at 30 m). Read from the dump with three
+research sub-agents; details in decomp.md "Coronas"; ported in `coronas.rs` + `corona.wgsl` (data
+`mw_assets::coronas`), on by default (`MW_NO_CORONAS=1` turns them off).
+- **Ported**: the definitions (`Genesys.Gen.Corona`: curve block, `Glows` / `Beams` / `Flares`, the 0x70 runtime
+  def of `FUN_0049d950` read directly), the curve `FUN_004ab450`, the per-entry rule `FUN_004a5f70` (group mask,
+  gate `da6ac384` 0 / 1 = 1 − night / 2 = night, `Brightness` × L² × the group's night scale, size, `Animation`,
+  `Mirror` through (−1, 1, 1)), the per-corona rule `FUN_004a5790` (θ = acos(p̂′ · dir), curve at (θ, s·d, s·d, s·d),
+  I = C.x · C.z · anim > 0.05, S = size · C.y, the one-pixel size cull, the 0.01 colour cull), glows
+  `FUN_004a4cf0` (camera-facing, rotated by `RotationOffset` − roll, depth bias `a9531774`, depth-tested), beams
+  `FUN_004a5040` (axial quads along the lamp axis), flares `FUN_004a52e0` (ghosts at `Position` × p.xy, radial
+  turn, no depth test, the 7 × 7-tap visibility of the point 0.5 m nearer the camera, `Vfx_CoronaVisibilityTest`,
+  evaluated per pixel from the depth prepass instead of a texture). Cars: the race-car path for the player, AI
+  racers and cops (groups 0, 4, 6, 7 always, 1 brake, 2 reverse, 3 the cop bar) and traffic (`FUN_005fd190`: groups
+  0 and 4, L = 0.7, parked cars none, flash rate 0.9 + 0.2 × random). The cop bar's day (gate 1) and night (gate 2)
+  definitions and its flash patterns come through the same entries.
+- **Checked**: `MW_VIEW_BEHIND=30 MW_COP_LIGHTS=1` with the cop car: at night red / blue glows with horizontal
+  flare streaks alternating on the bar at 30 m (`extracted/shots/cv1/strip.png`), at noon faint (`cv12/strip.png`);
+  the player's 911 headlights from the front (glows + blue anamorphic streaks); a traffic car's headlights at night
+  (`MW_VIEW_BEHIND=15,1.5,1`, `traffic_front.png` against `traffic_front_nocor.png`). `MW_CORONA_LOG=1` counts.
+- **Model decisions**: s (the view's +0x8b908) = tan(half the horizontal field of view), inferred from the one-pixel
+  cull; flares (layer 8, drawn after the tonemap with the exposure applied and gamma-encoded) are added to the HDR
+  scene like the glows; the visibility test is evaluated per pixel (the game renders it into a texture the next
+  draw reads); camera roll from the camera's right axis.
+- **Not ported / open**: world-lamp coronas (`FUN_00497200` light coronas, `WCVfxBehaviour` coronas through
+  `FUN_004a6d50` / `FUN_004a6b00`: same `FUN_004a5790`, colour / intensity / size 1, anim = the lamp level), the
+  headlight glint (`VfxGlobals.20feab72` for `…251bd`, intensity source +0x3d0 open), the other views' lists (cube
+  `60c1d15f` via `FUN_004a4e90`, `2392d7f2` / `9ee381ab` for view types 2 / 3), `ExposureScaleCoronas` (0.4),
+  the crowded-pass distance cull (`88b68533` + 1 m above 100 queued coronas), traffic headlight flashes routed into L,
+  the brake hold timer (0.5 s), the electrical flicker (bit 15). Captures wanted: a night chase behind a cop at
+  20–40 m and an oncoming traffic car, to settle s and the flare layer.
+
 ### 2026-10-16: terrain through the road: the main view skips models with pass-mask bit 4
 User play test 2026-10-14 ("terrain still sticks through the road in some places", after the 2026-10-04 backdrop
 composition fix).

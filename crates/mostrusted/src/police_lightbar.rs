@@ -58,11 +58,6 @@ struct BarLights {
     had: bool,
 }
 
-fn forced() -> bool {
-    static ON: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("MW_COP_LIGHTS").is_some());
-    *ON
-}
-
 /// Give each car with cop lights its own copy of every light-bar material on its body.
 #[allow(clippy::type_complexity)]
 fn own_materials(
@@ -105,7 +100,7 @@ fn update_bars(
     let eye = camera.iter().next().map_or(Vec3::ZERO, |c| c.translation());
     bar_lights.lights.clear();
     for (f, t, mats) in &cars {
-        let on = f.bar_on() || forced();
+        let on = f.bar_on();
         let clock = time.elapsed_secs() * f.rate;
         let affine = t.affine();
         // The bar's local lights.
@@ -185,7 +180,7 @@ fn shots(
     let eye = camera.iter().next().map_or(Vec3::ZERO, |c| c.translation());
     let Some((f, t)) = cars
         .iter()
-        .filter(|(f, _)| f.bar_on() || forced())
+        .filter(|(f, _)| f.bar_on())
         .min_by(|a, b| a.1.translation().distance(eye).total_cmp(&b.1.translation().distance(eye)))
     else {
         return;

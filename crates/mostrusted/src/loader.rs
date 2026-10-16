@@ -72,6 +72,8 @@ pub struct TrafficCarSpec {
     /// Height of the model origin above the road (`VehicleInfo.509931cd` translation y): the body and wheels
     /// are drawn this much above the lane.
     pub ride_height: f32,
+    /// The car's coronas (`VehicleVfxBehaviour.Coronas`, `coronas.rs`).
+    pub coronas: Arc<Vec<mw_assets::coronas::CarCorona>>,
 }
 
 /// Sends [`CarRequest`]s to the loader thread.
@@ -114,6 +116,8 @@ pub struct CarSpec {
     pub spot_effects: Vec<mw_assets::vfx::VehicleSpotEffect>,
     /// The cop lights and siren flag (`mw_assets::police_lights`; `police_fx.rs`), when the car has any.
     pub flash_lights: Option<Arc<mw_assets::police_lights::CarFlashLights>>,
+    /// The car's coronas (`VehicleVfxBehaviour.Coronas`, `coronas.rs`).
+    pub coronas: Arc<Vec<mw_assets::coronas::CarCorona>>,
     /// Set for an AI opponent's car (its slot in `ai::Opponents`); `None` for the player's.
     pub opponent: Option<usize>,
     /// The vehicle list's top speed (entry +0x3C, mph): the nitrous HighSpeed refill's reference.
@@ -489,6 +493,7 @@ impl Worker {
         let engine = if self.opponent.is_some() { None } else { self.store.engine(&b).unwrap_or_default() };
         let spot_effects = self.store.vehicle_spot_effects(&b, &spec).unwrap_or_default();
         let flash_lights = Some(self.store.car_flash_lights(&b, &spec)).filter(|l| !l.is_empty()).map(Arc::new);
+        let coronas = Arc::new(self.store.car_coronas(&b, &spec));
         let damage = match self.store.vehicle_damage(&b) {
             Ok(d) => d.map(Arc::new),
             Err(e) => {
@@ -539,6 +544,7 @@ impl Worker {
             impact_graph,
             spot_effects,
             flash_lights,
+            coronas,
             opponent: self.opponent,
             top_speed_mph: bundle_vehicle_id(bundle)
                 .and_then(|id| self.store.vehicle_entry(id).ok().flatten())
@@ -595,6 +601,7 @@ impl Worker {
             mw_assets::wheel_layout::place_spec_wheels(&mut spec, &l.traffic_positions());
         }
         let ride_height = layout.as_ref().map_or(0.0, |l| l.traffic_ride_height());
+        let coronas = Arc::new(self.store.car_coronas(&b, &spec));
         let saved = (self.paint, self.paint_count);
         self.paint = req.colour;
         self.unskinned = req.vehicle >= crate::jackspots::MODEL_KEY_BASE;
@@ -632,6 +639,7 @@ impl Worker {
             body,
             wheels,
             ride_height,
+            coronas,
         })))
     }
 
