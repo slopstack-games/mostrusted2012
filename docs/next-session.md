@@ -6,11 +6,15 @@
 
 # Handoff: 2026-10-16 (session 10, Linux): start here
 
-**State**: branch `session-10` (from master after PR #5): five worktree branches merged (the police one includes
-session 8's unmerged WIP branch `worktree-agent-a6c7a3ed5babae9f8`). Clippy 0 warnings, 186 tests, `mwtool verify`
-0 failures; the 911's accel unchanged (0–60 mph 3.58 s, quarter mile 11.60 s); `--test pursuit`, `--test cops`
-(new), `--test smash` and the race test pass. The original was not run this session: everything below comes from
-the dump / REA and the data, and each area's 2026-10-16 research-log entry lists the captures that would confirm it.
+**State**: branch `session-10` (from master after PR #5), two rounds of worktree agents merged: round 1 (water,
+terrain, prop-break particles, police driving incl. session 8's WIP branch, sirens / light bars / radio / coronas)
+and round 2 (world sounds, car lights, speed camera flash + world coronas, crash particles + particle drag,
+particle opacity + dirt cloud). Clippy 0 warnings, 192 tests, `mwtool verify` 0 failures; the 911's accel
+unchanged (0–60 mph 3.58 s, quarter mile 11.60 s); `--test pursuit --units 30` (with `--units 12` the car does not
+reach speed and the escape run is skipped), `--test cops`, `--test smash`, `--test freeroam`, the crash tests and
+the race test pass. The original was not run this session: everything below comes from the dump / REA and the
+data, and each area's 2026-10-16 research-log entry lists the captures that would confirm it. Context economy:
+CLAUDE.md is slim, every command is in docs/commands.md, old handoffs in handoffs-archive.md.
 
 | User item | State | Main open item |
 |---|---|---|
@@ -19,11 +23,16 @@ the dump / REA and the data, and each area's 2026-10-16 research-log entry lists
 | Particles when props break | added (`prop_vfx.rs`): `WCVfxBehaviour`s (impact, spot effects at locators, ground-slide sparks, lights out) by `FUN_0053cba0`; super emitter (action 0x2B) decoded; sparks were invisible (alpha) | renderer opacity word confirmed (`FUN_004a40a0`, research log 2026-10-16); dirt cloud fade / size from the code; impact light flash, ambient world effects |
 | Police drive anywhere, chase too easily | fixed: patrol rides a traffic ghost in the lanes (`cop_patrol.rs`, `FUN_005101e0` modes 0–4); wanted / sight rules (`cop_sight.rs`, `FUN_005192b0`, `FUN_006c5810`); WIP chase states merged | `.bss` 0x011061f8 / 0x01106228 live reads; two wanted terms unidentified; ghost catch-up often takes two tries |
 | Cops: no sounds, lights | added: sirens (`police_audio.rs`), light bars and their light (`police_lightbar.rs`, cop-light shader), radio (`police_speech.rs`, 110 events), coronas at every car's lamps (`coronas.rs`) | **who turns AI sirens on is a model** (chasing / searching in a pursuit); world-lamp coronas, headlight glint, corona distance scale s, flare layer; radio static / car-model lines; the sign glare under a cop light matches the code but needs a night capture |
+| Missing one-off sounds | added (`world_sfx.rs`): `WCPlaySoundBehaviour` of lamps / signs / gates, props' sounds by `FUN_0054bf70`, a car's first prop touch (billboards), landings `FUN_00576b40`, crash zone contacts, the collectables' message waves | the crash camera's bus ducking (bus ids unmapped) and slow-motion audio; AI racers' crash zones |
+| Car lights don't light the world | added (`car_lights.rs`): race cars' `VehicleVfxBehaviour.Lights` (projector, spots, cones) by `FUN_005818f0`; the player's projector with its shadow map (`HeadlightShadows`); traffic has coronas only, as in the code | ~1–2 ms render thread for the headlight shadow map; electrical flicker; group 17 projector |
+| Speed cameras always lit; no flash | fixed (`sequence_fx.rs`): behaviour lights start off; the HUD sequence 1107082 switches them on twice, brightness flash (`PostFxOverride`), sounds; world coronas (`world_coronas.rs`); 0.5 s brake-light hold | **traffic-light lamps went dark** (behaviours start off) until their controller lands (agent working on it); PostFX property 2 |
+| Crash particles | added (`crash_vfx.rs`, `particle_mesh.rs`): `VfxVehicleCollisions` by zone and car type (`FUN_00584260`, `FUN_00600220`), glass cards, mesh debris, collision-mesh emitter; exponential drag and bounce for 0x3D / 0x3E | crash dust looks heavy in daylight (data; needs a capture); the wind term; a rare segfault on exit seen twice by the agent, not reproduced in 4 runs here |
+| Dirt cloud too big | fixed: the game's near-camera fade (`FUN_00460970`), piecewise radius curve, wheel-controller emission slots; renderer lighting words were one off | tarmac launch smoke bigger now (by the code; capture); kick-up → `WheelContact` mapping |
 
 Model decisions worth a capture first: the siren rule, the nitrous flame colour (lit by the irradiance only), the
 corona distance scale, the 128 m water gap distance.
 
-Added by the user (2026-10-16), not investigated yet:
+Added by the user (2026-10-16); the ones marked (2026-10-16: ...) were worked on this session:
 - **Collectable effects**: the speed camera's flash when the player passes one is missing.
 - **Gas stations**: driving through one has no clean transition: the original fades / cuts through the repair and
   respray (and refills nitrous, `FUN_00748ff0`, decomp.md "Speed Points").
