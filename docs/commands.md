@@ -107,6 +107,10 @@ MW_NO_VIGNETTE=1 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,172
 ./target/release/mwtool freeroam --list --kind SpeedCam     # TriggerData: speed cameras, billboards, gates, jack spots
 #   --objects: each collectable's nearest placed object and its instance ids (billboard compound = trigger id)
 ./target/release/mwtool scoring                     # ScoringActions: Speed Points, message sequence / title (--all, --sequence <id>, --text <ids>)
+# HUD sequences' world items (sequence_fx.rs: the speed camera's flash light, brightness flash, sounds):
+# MW_SEQUENCE_FX_LOG=1, MW_SEQUENCE_FX_SHOTS=<dir> (shots at 0.05 / 0.34 / 0.6 / 1.05 s of each sequence).
+# World coronas (world_coronas.rs: street lamps, speed cameras): MW_NO_WORLD_CORONAS=1 (A/B); MW_CORONA_LOG=1 also
+# prints the world queue's size and cost
 # Collectables and Speed Points (freeroam.rs): a speed camera, a billboard and a gate; TEST RESULT freeroam ...
 ./target/release/mostrusted --drive 911 --units 12 --mute --no-traffic --test freeroam --profile <scratch>/p.cfg --screenshot <scratch>/fr.png
 ./target/release/mwtool placement-check --top 10             # placements vs the collision under them, per layer / model
