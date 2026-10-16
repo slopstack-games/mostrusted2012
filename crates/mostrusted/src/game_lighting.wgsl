@@ -12,12 +12,16 @@
 #import bevy_pbr::{
     mesh_view_bindings::{
         view, deferred_prepass_texture, lights, directional_shadow_textures,
-        directional_shadow_textures_comparison_sampler,
+        directional_shadow_textures_comparison_sampler, clustered_lights,
     },
-    mesh_view_types::DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT,
+    mesh_view_types::{
+        DIRECTIONAL_LIGHT_FLAGS_SHADOWS_ENABLED_BIT, POINT_LIGHT_FLAGS_SHADOWS_ENABLED_BIT,
+        POINT_LIGHT_FLAGS_SPOT_LIGHT_BIT, POINT_LIGHT_FLAGS_SPOT_LIGHT_Y_NEGATIVE,
+    },
     prepass_utils,
     view_transformations::{position_ndc_to_world, frag_coord_to_ndc},
 }
+#import bevy_render::maths::orthonormalize
 
 struct GameLighting {
     // Key light colour × illuminance (lux), and the direction it travels.
@@ -56,6 +60,28 @@ struct WorldLight {
 }
 // Only the light-volume pipeline binds this.
 @group(2) @binding(3) var<storage, read> world_lights: array<WorldLight>;
+
+// A projected-texture light (`LightBuffer_ProjectedTexture`; constants built on the CPU by the game's FUN_008b1860,
+// here by `car_lights.rs`).
+struct ProjectedLight {
+    // World → the light's clip space (`deferred_lightProjectionMatrix`): x, y scaled by 1 / tan(half-angle),
+    // z from the near plane (0.1 m) to where the light falls to its threshold, w = depth along the beam.
+    clip_from_world: mat4x4<f32>,
+    // xyz = position (`deferred_lightPosition`)
+    position: vec4<f32>,
+    // rgb = colour × intensity (× cd/m² per game unit) (`deferred_lightColour`)
+    colour: vec4<f32>,
+    // a, b, c of 1 / (a d² + b d + c) (`deferred_attenuation`)
+    attenuation: vec4<f32>,
+    // The lit window of the light's clip space: left, bottom, right, top
+    window: vec4<f32>,
+    // x = 1: the `HeadlightShadows` programs (diffuse only, shadowed by the headlight's shadow map)
+    params: vec4<f32>,
+}
+@group(2) @binding(4) var<storage, read> projected_lights: array<ProjectedLight>;
+// `ProjectiveTextureSampler`: the light's cookie.
+@group(2) @binding(5) var projector_texture: texture_2d<f32>;
+@group(2) @binding(6) var projector_sampler: sampler;
 
 // Must match `GAME_LIGHTING_PASS_ID` in layered.wgsl: the pass draws at this depth and only touches
 // pixels whose deferred lighting ID matches.
@@ -219,6 +245,95 @@ fn light_fragment(in: LightVertexOutput) -> @location(0) vec4<f32> {
         response = mix(s.albedo * nl * 0.31831, s.albedo * (0.3875 * as_v * as_l) * nl, s.car);
     }
     let colour = light.colour.rgb * atten * view.exposure * response;
+    return vec4(colour * (1.0 - fog_amount(s.world)), 0.0);
+}
+
+// The game's projected-texture lights (`mwtool shader-asm LightBuffer_ProjectedTexture`): the car headlights'
+// projectors. Per pixel:
+//   c     = deferred_lightProjectionMatrix × pixel; lit only where |c.xyz| < c.w
+//   cookie = ProjectiveTextureSampler at c.xy / c.w × 0.5 + 0.5 (not flipped: the texture's top row is the bottom
+//           of the beam)
+//   L     = light position − pixel, d = |L|
+//   atten = saturate(1 / (a d² + b √(d² + 0.001) + c)), (a, b, c) = deferred_attenuation
+// Two of the program's variants, chosen by the `HeadlightShadows` option (`FUN_008b1860`: material states 0x31 /
+// 0x32 when the frame rendered the headlight shadow map, `FUN_008cfe20`):
+//   with shadows (shader slot 0x788): out = cookie × colour × atten × shadow × diffuse, where shadow = the headlight
+//     shadow map compared at (c.x / c.w, −c.y / c.w) and diffuse = albedo N·L / π for the world, the
+//     Ashikhmin-Shirley 0.387508 albedo (1 − (1 − N·V/2)⁵)(1 − (1 − N·L/2)⁵) N·L for cars; no F0, no specular;
+//   without (slot 0x338): out = cookie × colour × atten × surface_response (the other lights' BRDF).
+// The game draws the light's volume clipped to the lit window of its clip space (`FUN_008a1c10`: x in
+// [left, right], y in [bottom, top]); here a full-screen triangle per light tests the window per pixel. No AO.
+// Fogged like the volumes. The shadow map here is Bevy's for a shadow-only spot light at the projector
+// (`car_lights.rs`), looked up as Bevy's `fetch_spot_shadow` does, with one hardware 2×2 PCF tap like the game's
+// `sample_c_lz`.
+@vertex
+fn projected_vertex(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) instance: u32) -> LightVertexOutput {
+    let uv = vec2<f32>(f32(vertex_index >> 1u), f32(vertex_index & 1u)) * 2.0;
+    let clip = vec4<f32>(uv * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), PASS_ID / 255.0, 1.0);
+    return LightVertexOutput(clip, instance);
+}
+
+// The shadow of the Bevy spot light standing at `position` (the headlight's shadow caster), 1 when there is none.
+fn headlight_shadow(position: vec3<f32>, world: vec3<f32>, n: vec3<f32>) -> f32 {
+    for (var i = 0u; i < 4u; i += 1u) {
+        let light = &clustered_lights.data[i];
+        let flags = (*light).flags;
+        let wanted = POINT_LIGHT_FLAGS_SPOT_LIGHT_BIT | POINT_LIGHT_FLAGS_SHADOWS_ENABLED_BIT;
+        if (flags & wanted) != wanted || distance((*light).position_radius.xyz, position) > 0.01 {
+            continue;
+        }
+        let surface_to_light = (*light).position_radius.xyz - world;
+        var spot_dir = vec3<f32>((*light).light_custom_data.x, 0.0, (*light).light_custom_data.y);
+        spot_dir.y = sqrt(max(0.0, 1.0 - spot_dir.x * spot_dir.x - spot_dir.z * spot_dir.z));
+        if (flags & POINT_LIGHT_FLAGS_SPOT_LIGHT_Y_NEGATIVE) != 0u {
+            spot_dir.y = -spot_dir.y;
+        }
+        let fwd = -spot_dir;
+        let distance_to_light = dot(fwd, surface_to_light);
+        let offset_position = -surface_to_light + (*light).shadow_depth_bias * normalize(surface_to_light)
+            + n * (*light).shadow_normal_bias * distance_to_light;
+        let projected = offset_position * orthonormalize(fwd);
+        let f_div_minus_z = 1.0 / ((*light).spot_light_tan_angle * -projected.z);
+        let uv = projected.xy * f_div_minus_z * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5);
+        let depth = (*light).shadow_map_near_z / -projected.z;
+        let layer = i32(i) + lights.spot_light_shadowmap_offset;
+        return textureSampleCompareLevel(
+            directional_shadow_textures, directional_shadow_textures_comparison_sampler, uv, layer, depth
+        );
+    }
+    return 1.0;
+}
+
+@fragment
+fn projected_fragment(in: LightVertexOutput) -> @location(0) vec4<f32> {
+    let light = projected_lights[in.index];
+    let depth = prepass_utils::prepass_depth(in.position, 0u);
+    let world = position_ndc_to_world(frag_coord_to_ndc(vec4(in.position.xy, depth, 1.0)));
+    let c = light.clip_from_world * vec4(world, 1.0);
+    let ndc = c.xyz / c.w;
+    let cookie = textureSample(projector_texture, projector_sampler, ndc.xy * 0.5 + 0.5).rgb;
+    let w = light.window;
+    if any(abs(c.xyz) >= vec3(c.w)) || ndc.x < w.x || ndc.y < w.y || ndc.x > w.z || ndc.y > w.w {
+        discard;
+    }
+    let s = read_surface(in.position);
+    let to_light = light.position.xyz - s.world;
+    let d2 = dot(to_light, to_light);
+    let a = light.attenuation;
+    let atten = saturate(1.0 / (a.x * d2 + a.y * sqrt(d2 + 0.001) + a.z));
+    let l = to_light / sqrt(d2 + 0.001);
+    var response: vec3<f32>;
+    if light.params.x > 0.5 {
+        let nl_raw = dot(s.n, l);
+        let nl = saturate(nl_raw);
+        let as_v = 1.0 - pow(1.0 - 0.5 * saturate(dot(s.n, s.v)), 5.0);
+        let as_l = 1.0 - pow(1.0 - 0.5 * nl_raw, 5.0);
+        let diffuse = mix(s.albedo * nl * 0.31831, s.albedo * (as_v * as_l * 0.387508) * nl, s.car);
+        response = diffuse * headlight_shadow(light.position.xyz, s.world, s.n);
+    } else {
+        response = surface_response(s, l);
+    }
+    let colour = cookie * light.colour.rgb * atten * view.exposure * response;
     return vec4(colour * (1.0 - fog_amount(s.world)), 0.0);
 }
 

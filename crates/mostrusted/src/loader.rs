@@ -118,6 +118,8 @@ pub struct CarSpec {
     pub flash_lights: Option<Arc<mw_assets::police_lights::CarFlashLights>>,
     /// The car's coronas (`VehicleVfxBehaviour.Coronas`, `coronas.rs`).
     pub coronas: Arc<Vec<mw_assets::coronas::CarCorona>>,
+    /// The light sources the car carries (`VehicleVfxBehaviour.Lights`, `car_lights.rs`).
+    pub light_sources: Arc<Vec<mw_assets::car_lights::CarLightSource>>,
     /// Set for an AI opponent's car (its slot in `ai::Opponents`); `None` for the player's.
     pub opponent: Option<usize>,
     /// The vehicle list's top speed (entry +0x3C, mph): the nitrous HighSpeed refill's reference.
@@ -545,6 +547,7 @@ impl Worker {
             spot_effects,
             flash_lights,
             coronas,
+            light_sources: Arc::new(self.store.car_light_sources(&b, &spec)),
             opponent: self.opponent,
             top_speed_mph: bundle_vehicle_id(bundle)
                 .and_then(|id| self.store.vehicle_entry(id).ok().flatten())

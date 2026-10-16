@@ -12,9 +12,10 @@
 //! `FUN_0089b400`): its definition's `OnDuringDay` / `OnDuringNight` flags against the environment's day flag
 //! and night level, which ramps over `LightTransitionDuration` at both ends of the night (`FUN_008a8480`).
 //!
-//! Not drawn: line lights (66 instances; `LightBuffer_Line` not ported), the lights cars carry
-//! (`VehicleVfxBehaviour`) and the game's own cap on lights per frame (it keeps a fixed-size list per type,
-//! `FUN_008dfa00`). Flash patterns are not animated (those lights are steady). A knocked-over lamp's light goes
+//! Not drawn: line lights (66 instances; `LightBuffer_Line` not ported) and the game's own cap on lights per
+//! frame (it keeps the nearest of a fixed-size list per type, `FUN_008dfa00`: the main view's spot and cone lists
+//! keep 224 of 256, the point list 128 of 160, `.data` 0x010c6fd0 / 0x010c6f88 / 0x010c7060). The lights cars carry
+//! are `car_lights.rs`'s. Flash patterns are not animated (those lights are steady). A knocked-over lamp's light goes
 //! out (`prop_vfx.rs`: its "SetLightsOn" behaviour is switched off by the contact).
 
 use std::sync::Arc;

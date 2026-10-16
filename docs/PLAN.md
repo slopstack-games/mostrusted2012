@@ -155,6 +155,11 @@ Make a static frame look like the game.
    7. `[~]` Lightmaps: `LightMapTextureSampler` (TEXCOORD1) is bound by the Model (+0x10) and by instance
       overrides (found 2026-10-10); drawn for WorldPBR and the roads, not yet for PlotPBR. Lit windows and illuminated signs are drawn
       (2026-10-10; scaled by the game's night level). The roads' baked vertex light is drawn.
+   8. `[x]` Car lights on the world (2026-10-16, `car_lights.rs`; decomp.md "Car lights on the world"): race cars'
+      `VehicleVfxBehaviour.Lights` by the game's rules (viewed car: headlight projector
+      `LightBuffer_ProjectedTexture` with its cookie and the `HeadlightShadows` shadow map; others: head / tail /
+      brake / reverse spots and cones; traffic casts none). Open: the shadow map is Bevy's spot shadow (square,
+      Bevy biases), the electrical flicker, the 0.5 s brake hold, the light lists' nearest-N caps.
    - Longer term: translate DXBC to WGSL automatically (DXBC → SPIR-V via dxil-spirv/vkd3d, then naga), as IW4L
      does for SM3, instead of hand-porting each family.
 5. `[~]` **Environment**: the timeline is GeneSys (`EnvironmentTimeline` / `EnvironmentKeyframe`,

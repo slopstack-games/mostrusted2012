@@ -167,6 +167,61 @@ decomp.md "Speed camera flash" and "Coronas" (world objects, brake hold).
   a night pass at 85 mph past camera 1025449 with F12 bursts at 0–0.4 s and 1.0–1.1 s (the light's reach, the
   white-out's strength, whether the plate and the 1.333 s sound come offline), and a night street with
   `da44501b` lamps (glow and beam strength).
+### 2026-10-16: car lights on the world (headlight projector, its shadow map, tail / brake / reverse lights)
+User report (session 10): "vehicle lights don't yet properly light up the world". Read from the dump, the full
+listing (`re/out/live/text.asm`), snap1 / snap2 and the data; details in decomp.md "Car lights on the world",
+layouts in formats.md "Car light sources". Ported in `car_lights.rs` (+ `mw_assets::car_lights`, the
+`LightBuffer_ProjectedTexture` port and a dynamic-light list in `deferred.rs` / `game_lighting.wgsl`);
+`mwtool car-lights <car|all>` lists a car's light sources.
+- **Found**: cars' lights are `VehicleVfxBehaviour.Lights` (0x40-byte entries: colour, animation, definition,
+  locator group, `a3de907e` scale, `Group`, gate `da6ac384`), submitted per race-car slot by `FUN_005818f0`
+  (from `FUN_00588da0`: the player, AI racers, cops). Traffic and parked cars cast **no** light: `FUN_005fd190`
+  only queues coronas, and no other caller of the six light-submission functions exists in the full listing.
+  The **viewed car** (the player) skips the group-6 head spot, is the only car whose `Light_ProjectedTexture`
+  (group 4) is drawn, and skips the day / night gate (its head and tail lights shine by day too, faint at noon);
+  the others light the group-6 `Light_Spot` (intensity 3, threshold 0.333: a 3 m pool) at night. Tail (group 7,
+  dropped while braking), brake (1), reverse (2) are small red / white spots and cones (~1–1.5 m). Cone, point and
+  projected lamps go out with any damage at their corner (`FUN_0049fda0`, threshold global 0.01 read in snap1;
+  never the viewed car's front).
+- **The headlight projector**: `Light_ProjectedTexture` `…253a9` (11.5, threshold 0.05, `FovScale` (1.23, 0.85),
+  attenuation 1 / (0.001 d² + 0.25 d + 10), lit window (−1, −1, 1, 0.098), cookie `…77f9`): half-angles atan(Rxx)
+  × FovScale (CRT `atanf` 0x00edc7b2, identified by its constants) = 55.35° × 38.25°, near 0.1 m, far = where the
+  light falls to its threshold (360 m, `FUN_008a0a20`), GL-style projection; constants and programs from
+  `FUN_008b1860` and `mwtool shader-asm LightBuffer_ProjectedTexture` (six variants: volume / full screen ×
+  diffuse / diffuse + headlight shadow / specular).
+- **Headlight shadows**: the PC display option `HeadlightShadows` (true in this machine's `config.NFS13Save`)
+  makes `FUN_008cfe20` render a shadow map from the viewed car's projector every frame (`FUN_008b7a20`,
+  `SortShadowHeadlightWorld` / `…CarsMisc`) and draw the projector with the diffuse-only shadowed program
+  (states 0x31 / 0x32). Ported as the default; the map is a shadow-only Bevy spot light at the projector.
+- **Checked** (screenshots in the worktree's `extracted/hl/shots/`): 01:30 at the default spawn, A/B
+  `on2.png` / `off2.png` (the beam on the road, the guard rail and the bank; the tail lights' red on the road
+  behind), `shadow_on.png` / `shadow_off.png` (the guard rail shadows the bank), the plaza at 815, 1760
+  `plaza_shadow.png` / `plaza_noshadow.png` (a lamp post's shadow on the wall), the race grid of 462174
+  `race.png` / `race_off.png` (the AI cars' tail lights on the road; the player's beam on the pillars), noon
+  `noon_on.png` / `noon_off.png` (mean pixel difference 3.7 / 255: barely visible). Bench (downtown 815, 1760,
+  01:30, 30 units, machine shared with other builds, so ± 1 ms): render world 1.5 + 4.2 ms → 2.0 + 5.3–6.0 ms
+  without and 3.2 + 7.3 ms with the headlight shadow map (~500 casters after the LOD shadow cull); the lighting
+  pass's GPU time (`MW_BENCH_PASSES=1`, `render/game_lighting/elapsed_gpu`, new span) stays within its noise
+  (0.16–0.5 ms).
+- **Model decisions**: (1) the shadow map is Bevy's spot shadow (square, 2 × the wider half-angle, Bevy's default
+  biases and its 2048² size) looked up with one hardware 2×2 PCF tap; its casters are culled by the key light's
+  per-model shadow distance (`lod::LodShadow`); the game's own culling for the headlight passes is not traced;
+  (2) the option-off path uses the specular program (0x338) — which of 0x338 / 0x6a8 states 0x1a / 0x1b select was
+  not traced; (3) the cookie is read as stored (`BC1_UNORM`, no sRGB decode), like the cloud textures; (4) the
+  light volume clipped to the lit window is replaced by a full-screen pass that tests the window per pixel (the
+  game does that only when the camera is inside the volume, where it may not clip to the window); (5) race cars'
+  lights are always on (mask 0xd1; +0x1a8c is set at spawn and only cutscene cars change it); group 7 off while
+  braking reads instance +0x1930 as the brake (same 0x1c40 structure as the mask builder's, inferred);
+  (6) the per-type light lists' nearest-N caps (spot / cone 224, point 128, projected 8) are not applied (the
+  world lights have none either); (7) the stencil / flag byte that separates headlight-flagged lights
+  (`cVar15`, renderer +0x217a) is not modelled: every light lights every surface.
+- **Not ported / open**: the electrical flicker (bit 0x8000, `FUN_0057b4b0`), the 0.5 s brake hold (+0x3e8 with
+  `FUN_006a0110`), +0x192c (brake light in reverse), `FUN_0090d460` read as reverse, group 17 (never in the mask),
+  traffic headlight flashes (they only scale coronas / emissives). `LocalEmissive` and the "gPlayerHeadlight" /
+  `g_headlightConstants` strings (a car-paint headlight term?) not followed. Captures wanted: the original at
+  night at the default spawn and at 815, 1760 from the chase camera (the beam's shape, brightness and cut-off,
+  shadows of the lamp posts), with `HeadlightShadows` off for the other program, and an AI car / cop at 3–10 m at
+  night (the group-6 pool).
 
 ### 2026-10-16: vehicle coronas (glows, beams, flares) for every car
 Integrator request after the light-bar review (the bar was a few pixels at 30 m). Read from the dump with three
