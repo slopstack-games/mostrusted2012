@@ -163,6 +163,7 @@ Still missing or not like the original (user play test, 2026-10-14; details in
 - [ ] Physics: some trash bags are indestructible; road collisions sometimes harsh; sidewalks affect the car too
   much; brake-to-drift understeers at higher speeds
 - [x] World: water floating above where it should be; terrain sticking through the road (2026-10-16)
+- [ ] World: trees and foliage floating near the street exit to the airport area
 - [ ] Navigation (route to a destination); map icons (jack spots, race locations, cops; Most Wanted races shown
   as normal races)
 - [~] Police: chase behaviour, patrol in the traffic lanes and the pursuit-start rules from the game's code;
@@ -172,6 +173,7 @@ Still missing or not like the original (user play test, 2026-10-14; details in
 - [ ] Front end and UI: the start screen overlaps its two prompts; race end screen; the UI in general
 - [ ] Cutscenes: changing cars, the start-up cutscene (entering the car, with its stats)
 - [~] Crash camera: there, but not quite like the original
+- [~] Chase camera: close to the original, but clips into buildings and other objects
 - [ ] Progression: mods unlocked by races, Most Wanted cars unlocked by beating them; takedowns / wrecks from
   car-to-car crashes in races
 - [ ] Billboards: intact with their artwork by default (broken only once smashed), showing the Easydrive records
@@ -182,8 +184,8 @@ Still missing or not like the original (user play test, 2026-10-14; details in
 - [ ] Lights: car lights do not light up the world properly (their coronas draw since 2026-10-16); speed cameras
   light the world all the time, not only when they flash
 - [ ] Crash particles: broken glass when crashing into traffic, other crash debris and sparks
-- [ ] Sound effects: smashing billboards, hitting light poles and other props, light crashes, jump landings,
-  and many other one-off sounds
+- [ ] Sound effects: smashing billboards, hitting light poles and other props, light crashes, jump landings, the
+  cinematic crash sound, and many other one-off sounds
 - [ ] Dirt: the dirt cloud is too big and blocks the view; driving on dirt does not feel like the original
 - [ ] Car sounds and effects: idle sound, nitrous sound, backfires, engine start / stop; tyre marks and nitrous
   flames look off; grass / dirt still give road smoke and marks

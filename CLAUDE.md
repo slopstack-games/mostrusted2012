@@ -2,8 +2,9 @@
 
 Rust reimplementation of NFS Most Wanted (2012) that runs on the original assets, read at runtime from the
 user's install (IW4L-style). **The end goal is a game as close as possible to the original in every respect**
-(how it drives, looks, sounds and plays, its UI, cutscenes and game logic): see "Fidelity rule" below. Read these
-before starting work:
+(how it drives, looks, sounds and plays, its UI, cutscenes and game logic): see "Fidelity rule" below. Start with
+the first section of docs/next-session.md; the other docs are references to search, not to read whole (see
+"Working economically"):
 
 - [docs/PLAN.md](docs/PLAN.md): milestones and what to do next. Update the checkboxes when things land.
 - [docs/research-log.md](docs/research-log.md): open format questions and dated findings. Add to it whenever
@@ -15,7 +16,9 @@ before starting work:
 - [docs/handling.md](docs/handling.md): GeneSys handling field mappings, model constants, test results.
 - [docs/probe.md](docs/probe.md): code inside the running original (measurement hooks, pokes, in-place
   verification of ports); its policy is in reverse-engineering.md "Code inside the running game".
-- [docs/next-session.md](docs/next-session.md): handoff from the last session (if present): start there.
+- [docs/next-session.md](docs/next-session.md): handoff from the last session (if present): start there. Older
+  handoffs: [docs/handoffs-archive.md](docs/handoffs-archive.md).
+- [docs/commands.md](docs/commands.md): every tool, flag, test and switch.
 
 ## Hard rules
 
@@ -67,198 +70,47 @@ memscan` / `telemetry` / `tune` / `capture` read the game through `ReadProcessMe
 
 ## Commands
 
+The full list (every mwtool subcommand, runtime flag, test and `MW_*` switch) is in
+[docs/commands.md](docs/commands.md): grep it for the system you work on instead of reading it whole. The ones
+used in nearly every session:
+
 ```sh
 cargo build --release --workspace
 cargo clippy --release --workspace          # keep at 0 warnings
 cargo test --release --workspace
 cargo fmt                                    # rustfmt.toml: max_width 120
-
 ./target/release/mwtool verify               # must report 0 failures
-./target/release/mwtool list <bundle>        # bundle paths are relative to the game dir
-./target/release/mwtool extract <bundle> <dir>
-./target/release/mwtool models <bundle> <dir>      # writes preview.png (software render, viewable)
-./target/release/mwtool world <dir> --bundle HAWAII/TRK_UNIT1.BNDL
-./target/release/mwtool shaders                    # samplers, parameters, vertex layout per shader
-./target/release/mwtool shader-asm DriveableSurface # DXBC disassembly of a shader's programs
-./target/release/mwtool survey VehicleGraphicsSpec --len 0x60   # per-field stats across all instances
-./target/release/mwtool vehicles                   # car catalogue (id, year, name, bundle)
-./target/release/mwtool texture <id> out.png
-./target/release/mwtool genesys VEHICLES/VEH_1085007_HI.BNDL --type HandlingBehaviour   # or: genesys all --type X
-./target/release/mwtool handling 911                # typed handling parameters (docs/handling.md)
-./target/release/mwtool genesys-types > types.tsv    # every GeneSys type and field (hash, offset, type)
-./target/release/mwtool genesys-crack --words a.txt --max-words 4 --type Steering   # guess field names (check hits!)
-#   fields are stored sorted by size then name: a real hit sorts between its neighbours (formats.md, GeneSys)
-./target/release/mwtool shader-usage               # world triangles per shader (prioritise ports)
-./target/release/mwtool audio UI/SONGS/116502.SPS <dir>   # or a bundle: its Ginsu/Wave resources -> .wav
-./target/release/mwtool engine-sound 911 out.wav   # rev sweep through the engine synth (--trace: `seconds rpm load` lines)
-# Crash damage (skeletal damage clips): inspect / preview a car, or drive into a wall and save before/after shots
-./target/release/mwtool damage 911 --level front=0.5 --preview <scratch>/dmg.png
-./target/release/mwtool wheels all --png <dir>     # wheels: spec vs the game's VehicleInfo axle rule, side views
-./target/release/mostrusted --drive 911 --test crash --screenshot <scratch>/crash.png
-# Measuring the original game (read-only, Linux/Proton; docs/handling.md "Measuring the original")
-./target/release/mwtool memscan --watch handling.watch        # interactive value scanner; `help`
-./target/release/mwtool telemetry handling.watch -o run.csv --hz 120
-#   poke / unpoke in memscan, or --poke NFS13.exe+0xd872a0=0.6 on telemetry / capture: change a data value for a run
-./target/release/mwtool tune                  # live tuning menu next to the running game (docs/probe.md "Tuning menu");
-#   pages of handling constants + the player car's fields, restored on quit; --print lists them, --apply loads a preset
-# The probe DLL (docs/probe.md): loads into the running original for one run and logs to ref/probe/<name>/
-cargo build --release -p mw-probe --target i686-pc-windows-gnu    # needs mingw-w64-gcc + the rustup target
-tools/orig/orig launch --probe hello   # orig modules lists the game's DLLs; orig quit removes the copied DLL
-#   memory reads without ptrace: write ref/probe/hello/dump.req (`label base [offset ...] length`, docs/probe.md)
-# Drive the original yourself (tools/orig/orig --help): it runs headless in gamescope (always focused, input
-# only through gamescope's display, screenshots via gamescopectl); one-time: `tools/orig/orig setup` and set the
-# printed Steam launch option. Look at each screenshot before choosing the next input.
-tools/orig/orig launch                 # start the game through Steam inside headless gamescope
-tools/orig/orig shot <scratch>/o.png   # screenshot; key Return / hold w 3 / click x y / read speed_mph gear
-tools/orig/orig run script.orig        # steps: key, hold, pad steer=0.5 throttle=1, waitfor speed_mph > 60, capture
-tools/orig/orig quit
-tools/orig/orig run-in -- ./target/release/mostrusted --drive 911 --test-track   # same harness on our game
-# Reference runs: record the original (car state + its own audio, Enter stops), replay the inputs, compare
-./target/release/mwtool capture corner1                     # -> ref/corner1/{telemetry.csv,audio.wav}
-./target/release/mostrusted --drive 911 --replay ref/corner1/telemetry.csv   # -> telemetry.ours.csv
-./target/release/mwtool compare ref/corner1/telemetry.csv ref/corner1/telemetry.ours.csv
 
-# Visual check without a human: renders, saves, exits
-./target/release/mostrusted --camera=-1131,27,1627,-1190,15,1720 --screenshot <scratch>/road.png   # see docs/viewpoints.md
-./target/release/mostrusted --vehicle "911" --camera 4.5,1.4,4.0,0,0.4,0 --screenshot <scratch>/car.png
-# Matched pairs with captures of the original (ref/shots/<place>-<hour>/notes.txt): same camera, horizontal FOV
-./target/release/mostrusted --camera=197.1,50.1,1482.7,202.4,48.7,1491.1 --fov 70 --hour 13 --units 20 --no-traffic --screenshot <scratch>/p.png
-# MW_ENV_REPORT=1 logs the environment bake against the original's shader constants; MW_RIG_AMBIENT=1 = old ambient (A/B)
-# Driving cameras: --camera-mode chase|bonnet|bumper|lookback (C / gamepad LB cycles; End or the right
-# stick fully back looks back; right stick / right mouse drag looks around; the free camera looks with the
-# right stick too). MW_CAMERA_TRACE=<file> logs the camera every frame; MW_CAMERA_PUSH_IN=1 keeps the eye out of
-# walls (ours: the original's camera has no world query)
-MW_CAMERA_TRACE=<scratch>/cam.trace ./target/release/mostrusted --drive 911 --test drift
-# Chase camera against the original, frame by frame: our camera code over a recording's car motion (ref/live1)
-MW_TOOLS=.claude/tools python3 tools/camcompare.py inputs ref/live1 <dir>/in.csv
-./target/release/mostrusted --camera-replay <dir>/in.csv,<dir>/ours.csv
-MW_TOOLS=.claude/tools python3 tools/camcompare.py compare ref/live1 <dir>/ours.csv   # per-component RMS / lag
-./target/release/mostrusted --drive 911 --units 12 --auto-throttle 0.6 --camera-mode bonnet --screenshot <scratch>/bonnet.png --screenshot-delay 400
-# Time of day and weather (weather.rs; interactive: F5/F6 hour, F7 weather). The timeline is the one painted
-# under the camera (--timeline <id|default> overrides); --weather = the Alternate (bad-weather) keyframes.
-# Roads are always wet as in the game (--road-wetness 0 dries them); --planar-reflection mirrors the scene in them
-./target/release/mostrusted --camera=-1131,27,1627,-1190,15,1720 --units 20 --hour 1.5 --weather --planar-reflection --screenshot <scratch>/wet.png
-# Post-processing (tonemap.rs): the original's vignette from the default PostFX keyframe; MW_NO_VIGNETTE=1 for A/B.
-# Bloom (bloom.wgsl, colour / intensity / level weights from the environment keyframe): MW_NO_BLOOM=1 for A/B
-# (MW_BLOOM_DIVISORS=4,8,16: other level sizes). Final pass (post.wgsl, the original's free-roam variant): depth
-# of field MW_NO_DOF=1, sun-facing brightness / contrast MW_NO_SUN_CONTRAST=1, keyframe cube blend
-# MW_NO_CUBE_BLEND=1; MW_POST_LOG=1 prints the grade and DOF constants
-MW_NO_VIGNETTE=1 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,1720 --units 20 --hour 13 --screenshot <scratch>/novig.png
-./target/release/mwtool paint-map 010000000002823d --png <scratch>/timelines.png --at=-1158,1700   # WorldPaintMap + zone outlines
-# Handling tests on a flat track (4x real time), prints TEST RESULT lines and exits
-./target/release/mostrusted --drive 911 --test accel     # or brake, corner (skidpad g), handbrake, drift, engine,
-#   nitrous, landing, climb, jitter (MW_SUSP_TRACE=<file> logs the suspension every tick,
-#   MW_WHEEL_TRACE=<file> the point-mass wheels: compression, velocity, contact impulse, flags)
-./target/release/mostrusted --drive 911 --test smash --smash-speed 60 --screenshot <scratch>/smash.png   # props: cone, lamp, fence, wall
-#   --smash-set compounds: lamps etc. breaking into parts. Props collide in the world by default (--no-prop-physics)
-./target/release/mostrusted --drive 911 --test kerb        # kerb strike (MW_TEST_KERB_H / _DEPTH / _ANGLE / _UP, MW_TEST_KMH)
-./target/release/mostrusted --drive 911 --test-track --track-surface 4 --test accel   # the flat track as any surface (4 = grass)
-./target/release/mwtool props -v                    # physics of every prop / compound / dynamic object (+ WCVfxBehaviours)
-#   prop-break effects (prop_vfx.rs): MW_PROP_VFX_LOG=1 logs impact / spot / contact effects and lights out;
-#   MW_VFX_DEMO=<effect id>,<every s>,<speed> plays any effect ahead of the camera (loads it on demand)
-#   car collision effects (crash_vfx.rs: glass, sparks, debris, dust): MW_CRASH_VFX_LOG=1 logs each started
-#   effect (zone, contact value; =2 also refreshes), a CRASH VFX count line at exit
-./target/release/mwtool lods --at=815,60,1760          # model LOD tables / placement LOD scales; what the game draws from a point
-#   runtime: MW_NO_LOD=1 (everything at LOD0, A/B), MW_LOD_SCALING=0|1|2 (the game's LodScaling option), MW_LOD_LOG=1
-./target/release/mwtool surfaces                    # surfaces: grip, rolling, drag, dirt build-up, triangle counts
-#   --near x,z[,r] (surfaces around a point), --find <index> (where a surface is), --steps (kerbs / steps nearby)
-./target/release/mwtool ui screens                  # game UI: screens / widgets (ui show <screen>, ui render <screen> out.png, ui font <n> out.png, ui easydrive)
-./target/release/mwtool traffic --png <scratch>/lanes.png   # TrafficLaneData: counts, flows, vehicle lists, lane map
-./target/release/mwtool lights --near x,z[,r] --hour 21     # world lights (lists + street lamps): types, flags, ranges
-#   night lighting (world_lights.rs): lamps and lit windows follow --hour; MW_NO_WORLD_LIGHTS=1 for A/B
-./target/release/mwtool freeroam --list --kind SpeedCam     # TriggerData: speed cameras, billboards, gates, jack spots
-#   --objects: each collectable's nearest placed object and its instance ids (billboard compound = trigger id)
-./target/release/mwtool scoring                     # ScoringActions: Speed Points, message sequence / title (--all, --sequence <id>, --text <ids>)
-# Collectables and Speed Points (freeroam.rs): a speed camera, a billboard and a gate; TEST RESULT freeroam ...
-./target/release/mostrusted --drive 911 --units 12 --mute --no-traffic --test freeroam --profile <scratch>/p.cfg --screenshot <scratch>/fr.png
-./target/release/mwtool placement-check --top 10             # placements vs the collision under them, per layer / model
-./target/release/mwtool terrain-check --top 30               # drawn ground above road meshes (terrain through the road), ranked
-#   --all-passes / runtime MW_ALL_PASSES=1: also the models whose pass mask (Model +0x19) skips the main view (A/B)
-./target/release/mwtool water                                # water meshes: height, listing zones, drawn water over dry ground (MW_WATER_AT=x,z ...)
-./target/release/mwtool mods 911                             # performance upgrades: slot -> parameter changes
-./target/release/mwtool sampler-usage --filter Driveable     # the game's sampler states per shader slot
-# Car options: --dirt 0.6,0.3 (dirt, dust), --anim all=1 (pose animated parts in --drive), --mods 12=0 (slot=level
-# as `mwtool mods` prints them; also through Easydrive: Customize car); nitrous is Left Shift / pad A
-./target/release/mostrusted --drive 911 --units 6 --show-easydrive --easydrive-path 4,4,1,1 --screenshot <scratch>/mods.png --screenshot-delay 200
-# Frame-time benchmark (prints a BENCH RESULT line; --no-shadows, MW_BENCH_PASSES=1 for per-pass GPU times)
-./target/release/mostrusted --drive 911 --units 30 --spawn=815,60,1760,270 --auto-throttle 0.3 --mute --bench 10   # --merge-static: A/B the mesh merge
-# MW_TYRE_MARKS_LOG=1 (tyre-mark segments alive), MW_WATER_DEBUG=1 (lists the water meshes)
-# The driving HUD (hud.rs) is on in --drive runs except tests: --no-hud, --mph, F3 shows the debug status text
-# Engine RPM every physics tick, for `mwtool engine-sound --trace` (use with --test engine)
-MW_ENGINE_TRACE=<scratch>/rpm.trace ./target/release/mostrusted --drive 911 --test engine
-# Driving without a human: fixed throttle, logs "car at x y z, speed, compression" once a second
+# Handling tests on a flat track (4x real time): TEST RESULT lines, then exit (accel, brake, corner, drift, ...)
+./target/release/mostrusted --drive 911 --test accel
+# Visual check without a human: renders, saves, exits (viewpoints: docs/viewpoints.md)
+./target/release/mostrusted --camera=-1131,27,1627,-1190,15,1720 --units 20 --hour 13 --screenshot <scratch>/road.png
 ./target/release/mostrusted --drive 911 --units 12 --auto-throttle 0.4 --screenshot <scratch>/drive.png --screenshot-delay 400
-# Session 9 (2026-10-15): mwtool music (song lists, --wave <id> --out <dir>), mwtool ui map-items (the map's item looks),
-# --smash-set bags, --map-waypoint <event> (GPS route; MW_GPS_LOG=1), MW_XINPUT_CONNECTED=0|1 (title prompt pair),
-# MW_CAR_SFX_LOG=1 (other cars' horns / alarms), MW_NITROUS_AT=t0,t1 on mwtool engine-sound; I / L3 engine off / on
-# Police sirens / light bars / radio (police_fx.rs, police_audio.rs, police_lightbar.rs, police_speech.rs):
-./target/release/mwtool siren <scratch>/siren.wav --car "Ford Police Interceptor"   # sets, channels, a render; cop lights
-./target/release/mwtool speech [<event id>] [--out <dir>]                           # radio events; decode an event's lines
-# MW_SIREN_LOG=1, MW_SPEECH_LOG=1 (MW_AUDIO_METER=1 lists the sirens); a cop car driven by the player: the horn
-# steps its siren (MW_SIREN_PRESS=t0,t1,... presses it headless); MW_LIGHTBAR_SHOTS=<dir> (16 shots 1/8 s apart),
-# MW_COP_LIGHTS=1 (every bar on), MW_NO_LIGHTBAR=1 (A/B), MW_LIGHTBAR_SHOTS_AFTER=<s> (delay the shots)
-# Coronas (coronas.rs: glows / beams / flares at every car's lamps): MW_NO_CORONAS=1 (A/B), MW_CORONA_LOG=1 (counts),
-# MW_CORONA_TRACE=1 (glows), MW_VIEW_BEHIND=<m>[,<h>[,1]] (camera m behind the player's car, or in front of the nearest
-# traffic car with ,1)
-MW_SIREN_PRESS=12 MW_LIGHTBAR_SHOTS=<dir> ./target/release/mostrusted --drive "Ford Police Interceptor" --units 12 --hour 1 --no-traffic --screenshot <scratch>/bar.png --screenshot-delay 1500
-# The Steam Controller is read from HID (steam_controller.rs; MW_STEAM_CONTROLLER=0 off); --gamepad-debug logs pads
-# Controls are the original's defaults (input.rs): arrows steer, A accelerate, Z brake, Space handbrake, W horn; pad
-# left stick, RT / LT, X, B horn. Easydrive (easydrive.rs): numpad 6 or d-pad right opens (E too), 8 / 2 move, 4 back; headless:
-./target/release/mostrusted --drive 911 --units 12 --show-easydrive --screenshot <scratch>/easydrive.png --screenshot-delay 60
-# Car menu (Esc / Tab / F1 / gamepad Start or Back in interactive runs). Headless: swap cars in turn (`name@paint`, `free` =
-# free camera), screenshot after the last; logs model / mesh / material / entity counts per step (leak check)
-./target/release/mostrusted --drive 911 --units 12 --auto-throttle 0.3 --swap-to "veyron super,aventador@2" --swap-delay 200 --screenshot <scratch>/swap.png
-./target/release/mostrusted --camera=-1131,27,1627,-1190,15,1720 --units 12 --swap-to 911,free,veyron --screenshot <scratch>/spawn.png
-./target/release/mostrusted --drive 911 --units 12 --show-menu --screenshot <scratch>/menu.png --screenshot-delay 60
-# Volumes: F2 / gamepad Select in game (saved to ~/.config/mostrusted/settings.cfg); per run:
-./target/release/mostrusted --drive 911 --volume master=0.8,engine=1,sfx=0.6,music=30%
-
-# Game flow (frontend.rs, pause.rs): no mode flag starts the game's front end (title, loading, free roam in the
-# default car at the game's start point; Esc / pad Start pauses). --drive / --race / --test / --camera / --replay
-# skip it. --new-game, --profile <file> (~/.config/mostrusted/profile.cfg), --front-end-shots <dir>, --show-loading
-./target/release/mostrusted
-./target/release/mwtool hsm [<node id>] [--find text]     # game-logic state machines (HSMData); mwtool frontend
-./target/release/mwtool hsm <id> --parents               # which nodes start a node (child or transition)
-./target/release/mwtool frontend --sequence 1014321      # one UI sequence's items; --spots lists every jack spot
-# The map screen (map_screen.rs; pause menu MAP): arrows / left stick / d-pad push the cursor (tap: flick to the
-# next event that way; hold: free cursor, snaps on release), Enter / A options, START RACE plays the event-loading
-# card (event_card.rs) and starts the race with its intro; Backspace / B (or Esc / Start) back to driving
-./target/release/mostrusted --drive "v12 vantage" --units 12 --show-map --map-select 1909234 --map-options --screenshot <scratch>/map.png --screenshot-delay 120
-MW_CARD_SHOTS=<dir> ./target/release/mostrusted --drive "v12 vantage" --units 20 --spawn=1600,40,2350 --map-start 1909234   # card shots, intro, exit
-# Scripted keys / virtual pad for the menus (input_script.rs): `<s> key|keyup|pad|padup|lx|ly|rx|ry|shot|quit [arg]`
-# steps, clock from when the pause menu or map is on screen; MW_MAP_LOG=1 logs the map's selection and cursor
-MW_MAP_LOG=1 MW_INPUT_SCRIPT="0.5 lx 1; 0.6 lx 0; 1.5 shot <scratch>/m.png; 2 quit" ./target/release/mostrusted --drive "v12 vantage" --units 12 --spawn=1600,40,2350 --show-map
-# Races (race.rs, ai.rs, cutscene.rs): the event's intro, AI opponents on the grid, gates, laps, results
-./target/release/mwtool events [<id> [--png f]] [--all]  # offline events; mwtool camera-take [take] (ICE cameras)
-./target/release/mostrusted --race 462174                # CONTINENTAL DRIFT; --no-cutscenes, --spawn= overrides the start
-./target/release/mostrusted --race 462174 --test race --units 12   # TEST RESULT race ... (gates, laps, wrong way)
-MW_CUTSCENE_SHOT=intro:9 ./target/release/mostrusted --race 462174 --units 12 --screenshot <scratch>/i.png --screenshot-delay 100000
-./target/release/mostrusted --drive 911 --ai "911,veyron super" --test ai --ai-seconds 60   # AI racers
-# Traffic (traffic.rs; density from the event): --no-traffic, --traffic-density x, MW_TRAFFIC_LOG=1
-./target/release/mwtool traffic --at x,z[,r]             # lanes and parked cars near a point (plain: junctions, data, parked survey)
-./target/release/mwtool ai-graph > graph.tsv           # the AI road graph (node, x y z, width, flags, links), e.g. for tools/orig autopilots
-MW_POLICE_LOG=1 ./target/release/mostrusted --drive 911 --test pursuit --units 12 --no-traffic   # cops: state, aim, stop flags
-# When a pursuit starts (cop_sight.rs) and the patrol on a traffic ghost (cop_patrol.rs): slow pass, speeding, ram, patrol
-MW_COPS_SHOTS=<dir> ./target/release/mostrusted --drive 911 --test cops --units 30 --mute   # TEST RESULT cops ...
-MW_POLICE_LOG=1 MW_COP_DISTANCE=80 ./target/release/mostrusted --drive 911 --units 20   # free-roam cops spawn 80 m away
-./target/release/mostrusted --drive 911 --test crash-traffic       # head-on with traffic: crash camera (car_impacts.rs)
-./target/release/mostrusted --drive 911 --test crash-parked --units 20 --spawn=925,24,-101 --screenshot <scratch>/p.png  # into a parked car
-./target/release/mostrusted --drive 911 --test crash-ai --ai 911 --no-traffic --spawn=925,23,-101,10   # (the default spawn has a barrier ahead)
-# Car state: --nitrous holds nitrous, --damage all=0.5 starts damaged, R washes the car, --dirt 0.6,0.3
-./target/release/mostrusted --drive 911 --test exhaust   # pops / backfires (MW_EXHAUST_LOG=1)
-./target/release/mwtool damage <car> --keys              # damage clip keys; --level all=0.5 --preview <png>
-./target/release/mwtool traffic-sound all|sfx out.wav    # traffic engines / horns / impacts offline; engine-sound <car> --competitor
-./target/release/mwtool traffic-sound player[:<id>] out.wav  # the player's horn, impacts, grind, sparks, glass, scratch (player_sfx.rs)
-# MW_HORN_AT=t0,t1 holds the horn between game times (headless); MW_AUDIO_METER=1 lists the player's voices too
-# Debug logs: MW_NITROUS_LOG=1, MW_DIRT_LOG=1, MW_GATE_LOG=1, MW_TYRE_DEBUG=1, MW_FLASH_LOG=1 [MW_FLASH_SHOTS=dir]
-# Performance: MW_FRAME_LOG=<file> (per-frame schedule / render times), --bench prints p95 / p99 / hitches;
-# A/B switches MW_INDIRECT=1 (Bevy's multi-draw-indirect), MW_AVIAN_ASYNC=1, MW_BAKE_THREADS=0, MW_FOV_VERTICAL=1,
-# MW_UNCAPPED_DELTA=1 (Bevy's 250 ms catch-up), MW_SKY_FILTER_EVERY_FRAME=1, MW_NO_PREWARM=1, MW_MAIN_MULTI=1
-# (multi-threaded main-world schedules), MW_GPU_CLUSTERING=1 (research log 2026-10-10)
+# Reference runs of the original: record, replay the inputs, compare
+./target/release/mwtool capture corner1
+./target/release/mostrusted --drive 911 --replay ref/corner1/telemetry.csv
+./target/release/mwtool compare ref/corner1/telemetry.csv ref/corner1/telemetry.ours.csv
+# The dump (git-ignored helpers in .claude/tools): fn <addr>, callers <addr>, exe-const <va> [n] [f32|u32|str]
 ```
 
 Use `--camera=` with `=` when the first value is negative. Release builds are needed: dependencies are
 optimised in dev too, but world loading is slow without `--release`.
+
+## Working economically (context is the budget)
+
+Accuracy comes from reading the right source, not from reading everything. Habits that keep context small:
+- The docs are large (research-log ~580 KB, decomp ~470 KB, formats ~100 KB, PLAN ~60 KB): never read them
+  whole. List headings (`grep -n '^##' docs/decomp.md`, `grep -n '^### ' docs/research-log.md`: dated, newest
+  first) or grep for the function / type / flag, then read that section with an offset and limit.
+- Filter build and run output: `cargo build ... 2>&1 | grep -E '^(warning|error)|Finished'`,
+  `... 2>&1 | grep -o 'TEST RESULT.*'`. `NO_COLOR=1` (set in `.claude/settings.json`) drops ANSI codes from logs;
+  Bevy's INFO start-up lines are noise: grep for what you need.
+- Screenshots: look at the ones that decide something. For A/B, stack before / after into one downscaled image
+  (`python3 tools/stack.py out.png a.png b.png`) instead of reading two full-size ones.
+- Dump: `fn <addr>` / `callers <addr>` for one function at a time; don't read whole decompiled files.
+- Agents: a subagent's report is all the integrator sees, so it should hold the result, the sources, the model
+  decisions and what's open; no step-by-step narration. Long tables / logs go into the research log or a
+  git-ignored file, and the report points to them.
 
 ## Workflow for a new resource format
 
@@ -292,12 +144,13 @@ sequences' effect items off, `MW_SOUND_TRACE=<file>` logs what the engine sound 
 
 ## Parallel agents
 
-Worktree agents work well here if builds are throttled (docs/next-session.md has the details):
+Worktree agents work well here if builds are throttled (docs/handoffs-archive.md "Working with parallel agents"):
 - At most ~4 agents building at once; each worktree gets a real copy of a finished dependency build
   (`.claude/tools/copy-deps.sh <main checkout> <worktree>`, never hard links) and builds only
   `nice -n 19 cargo build --release -p mostrusted -p mwtool`. Agents skip clippy / tests; the integrator runs them
   once on the merged tree. `.claude/worktrees/.cargo/config.toml` caps build jobs.
-- Worktrees may start from an older commit: agents `git merge --ff-only master` first.
+- Worktrees may start from an older commit: agents `git merge --ff-only <integration branch>` first.
+- Agents add new commands to docs/commands.md (not CLAUDE.md) and keep their reports short (see above).
 - /tmp (and the session scratchpad) is a RAM-backed tmpfs: binaries, traces and captures go into the worktree.
 - Agents that run the original (`tools/orig`) mute its audio stream (`pactl set-sink-input-mute`) and quit it after.
 - Remove merged worktrees and their branches at the end of a session (≈12 GB each).

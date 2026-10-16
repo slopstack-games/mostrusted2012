@@ -119,6 +119,7 @@ pub fn run(store: &AssetStore, bundles: &[String], verbose: bool) -> Result<()> 
                 println!("   impact effect {e}");
             }
             print_vfx("   ", &phys.vfx);
+            print_sounds("   ", &phys.sounds);
             if let Some(c) = &phys.compound {
                 println!("   compound: enabled at start {}, joints {:?}", c.enabled_at_start, c.joints);
                 // The model's triangles per skeleton bone (a triangle belongs to the bone of its first vertex's
@@ -161,6 +162,7 @@ pub fn run(store: &AssetStore, bundles: &[String], verbose: bool) -> Result<()> 
                         p.impact_sound.is_some(),
                     );
                     print_vfx("      ", &p.vfx);
+                    print_sounds("      ", &p.sounds);
                 }
             }
         }
@@ -401,6 +403,27 @@ pub fn surfaces(store: &AssetStore, near: Option<[f32; 3]>, find: Option<u8>, st
 }
 
 /// One line per `WCVfxBehaviour`: label, what contacts do to it, its effects and what it switches.
+/// The `WCPlaySoundBehaviour`s (`mw_assets::world_sfx::WcSound`): label, flags, channel and list sizes.
+fn print_sounds(indent: &str, sounds: &[mw_assets::world_sfx::WcSound]) {
+    for s in sounds {
+        println!(
+            "{indent}sound {:?} {}: on contact {}, off {}, offset {:?}, channel {}, car hit {} (many {}), world {}, \
+             slide {}, damage {}",
+            s.label,
+            s.object,
+            s.on_collision,
+            s.off_on_collision,
+            s.offset,
+            s.mixer_channel.map_or_else(|| "-".to_string(), |h| h.to_string()),
+            s.collision_waves.len(),
+            s.many_waves.len(),
+            s.world_waves.len(),
+            s.slide_waves.len(),
+            s.damage_waves.len(),
+        );
+    }
+}
+
 fn print_vfx(indent: &str, vfx: &[mw_assets::props::WcVfx]) {
     for v in vfx {
         let id = |h: Option<ResourceId>| h.map_or_else(|| "-".to_string(), |h| h.to_string());

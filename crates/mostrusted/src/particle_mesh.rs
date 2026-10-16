@@ -233,7 +233,7 @@ pub(super) fn push_card(out: &mut Vec<super::QuadVertex>, d: &super::Drawn, r: &
     let left = (x * -S + y * -C).normalize_or_zero();
     let right = (x * S + y * -C).normalize_or_zero();
     let spine = y * C;
-    let frame = Vec2::new(d.subuv, r.depth_fade_guess.max(0.0));
+    let frame = Vec2::new(d.subuv, if r.soft { r.depth_fade.max(0.0) } else { 0.0 });
     let light = |wrap: f32| Vec4::new(r.lighting[0], r.lighting[1], wrap, r.opacity);
     let verts = [
         (corner(-C, S, -1.0), Vec2::new(0.0, 0.0), left, -2.0 * k),
@@ -378,6 +378,7 @@ pub(super) fn build_debris(
     mut commands: Commands,
     game: Res<crate::Game>,
     instances: Res<super::Instances>,
+    view: Res<super::BearView>,
     camera: Query<&GlobalTransform, crate::MainCamera>,
     mut debris: ResMut<DebrisModels>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -403,7 +404,8 @@ pub(super) fn build_debris(
             debris.pending = Some(rx);
         }
     }
-    let eye = camera.iter().next().map(|t| t.translation()).unwrap_or_default();
+    let Some(cam) = camera.iter().next() else { return };
+    let view = super::BearView { eye: cam.translation(), forward: cam.forward().as_vec3(), ..*view };
     type Batched = (Option<Vec3>, Vec<DebrisVertex>);
     let mut verts: HashMap<(mw_bundle::ResourceId, u32), Batched> = HashMap::new();
     for inst in &instances.list {
@@ -427,7 +429,7 @@ pub(super) fn build_debris(
             });
             let out = &mut verts.entry((model_id, key)).or_insert_with(|| (paint, Vec::new())).1;
             for q in &sim.particles {
-                let Some(d) = super::render_particle(layer, q, eye, &sim.slots) else { continue };
+                let Some(d) = super::render_particle(layer, q, &view, &sim.slots) else { continue };
                 let piece = &model.pieces[q.serial as usize & 15];
                 let rot = q.quat.normalize();
                 for v in piece {

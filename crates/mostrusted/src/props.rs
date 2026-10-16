@@ -131,12 +131,12 @@ pub struct PropPhysics {
     pub smash_delay: f32,
     pub reset_distance: f32,
     pub remove_instead_of_reset: bool,
-    /// Props: the impact effect (`BearEffect`) and sound (`WCPlaySoundBehaviour`); compound parts: the part's
-    /// sound behaviour.
+    /// Props: the impact effect (`BearEffect`).
     pub impact_effect: Option<ResourceId>,
-    pub impact_sound: Option<ResourceId>,
     /// Compound / dynamic objects and compound parts: their `WCVfxBehaviour`s (`prop_vfx.rs`).
     pub vfx: Vec<mw_assets::props::WcVfx>,
+    /// Their `WCPlaySoundBehaviour`s (`world_sfx.rs`).
+    pub sounds: Vec<mw_assets::world_sfx::WcSound>,
     /// Compound objects: the parts that replace it when it smashes.
     pub compound: Option<CompoundBreak>,
 }
@@ -171,8 +171,8 @@ impl PropPhysics {
         out.reset_distance = p.reset_distance.unwrap_or(100.0);
         out.remove_instead_of_reset = p.remove_instead_of_reset;
         out.impact_effect = p.impact_effect;
-        out.impact_sound = p.impact_sound;
         out.vfx = p.vfx.clone();
+        out.sounds = p.sounds.clone();
         let reset = out.reset_distance;
         out.compound = p.compound.as_ref().map(|c| CompoundBreak {
             parts: c
@@ -184,8 +184,8 @@ impl PropPhysics {
                         ph.reset_distance = reset;
                         ph.smash_force = part.smash_force;
                         ph.smash_delay = 0.0;
-                        ph.impact_sound = part.impact_sound;
                         ph.vfx = part.vfx.clone();
+                        ph.sounds = part.sounds.clone();
                         Some(Arc::new(ph))
                     }),
                     bone: crate::loader::game_matrix(&part.bone),
@@ -299,8 +299,8 @@ impl PropPhysics {
             reset_distance: 100.0,
             remove_instead_of_reset: false,
             impact_effect: None,
-            impact_sound: None,
             vfx: Vec::new(),
+            sounds: Vec::new(),
             compound: None,
         })
     }
@@ -323,8 +323,6 @@ pub struct PropBody {
     pub pinned: bool,
     /// Carries a rigid body and collider (near a car; [`stream_props`]).
     pub active: bool,
-    /// Game time of the last impact sound.
-    last_impact: f32,
     /// The impact effect has played since the prop was last put back (the game's damage state +0xb4).
     damaged: bool,
     /// Speed (m/s) the player's car lost to this prop's contacts (shared by normal impulse; `--test smash`).
@@ -337,17 +335,7 @@ pub struct PropBody {
 
 impl PropBody {
     fn new(physics: Arc<PropPhysics>, home: Transform, pinned: bool) -> Self {
-        Self {
-            physics,
-            home,
-            pinned,
-            active: false,
-            last_impact: f32::NEG_INFINITY,
-            damaged: false,
-            speed_loss: 0.0,
-            loose_for: 0.0,
-            car_force: 0.0,
-        }
+        Self { physics, home, pinned, active: false, damaged: false, speed_loss: 0.0, loose_for: 0.0, car_force: 0.0 }
     }
 }
 
@@ -388,13 +376,11 @@ pub struct CompoundPiece {
 /// cars' hits are handled in [`prop_contacts`]).
 #[derive(Component)]
 struct Unpin {
-    /// The hitter's closing speed (m/s) and the contact point.
+    /// The hitter's closing speed (m/s), for the log.
     closing: f32,
-    point: Vec3,
 }
 
-/// A car hit a prop hard enough to show: the prop's impact effect and sound (`particles.rs`,
-/// [`prop_sounds`]).
+/// A car hit a prop hard enough to show its impact effect (`particles.rs`; the sounds are `world_sfx.rs`).
 #[derive(Message, Clone, Copy, Debug)]
 pub struct PropImpact {
     pub position: Vec3,
@@ -402,8 +388,6 @@ pub struct PropImpact {
     pub velocity: Vec3,
     pub closing_speed: f32,
     pub effect: Option<ResourceId>,
-    pub sound: Option<ResourceId>,
-    pub by_player: bool,
 }
 
 /// A race car touched a prop this physics step ([`prop_contacts`], the strongest contact per prop): what the
@@ -415,6 +399,10 @@ pub struct PropCarContact {
     /// The car's velocity before the contact.
     pub car_velocity: Vec3,
     pub closing_speed: f32,
+    /// The car (`world_sfx.rs`: whose channel the prop's sound plays on).
+    pub car: Entity,
+    /// The contact passed `ForceToDamage` for the first time since the prop was placed (its impact effect).
+    pub damaging: bool,
 }
 
 /// A standing prop (or a part of a split compound) was knocked loose. `freeroam.rs` counts billboards with it
@@ -457,16 +445,12 @@ impl Plugin for PropsPlugin {
         app.init_resource::<PropStats>()
             .init_resource::<WorldSurfaces>()
             .init_resource::<PropGrid>()
-            .init_resource::<PropSounds>()
             .add_message::<PropImpact>()
             .add_message::<PropKnocked>()
             .add_message::<PropCarContact>()
             .add_systems(FixedPostUpdate, prop_contacts.before(PhysicsSystems::StepSimulation))
-            .add_systems(
-                FixedPostUpdate,
-                (unpin_props, smash_compounds, prop_world_sounds).chain().after(PhysicsSystems::StepSimulation),
-            )
-            .add_systems(Update, (index_props, reset_far_props, stream_props, track_car_surface, prop_sounds).chain());
+            .add_systems(FixedPostUpdate, (unpin_props, smash_compounds).chain().after(PhysicsSystems::StepSimulation))
+            .add_systems(Update, (index_props, reset_far_props, stream_props, track_car_surface).chain());
     }
 }
 
@@ -815,12 +799,12 @@ impl CollisionHooks for PropHooks<'_, '_> {
         if !rb.is_dynamic() || self.race_cars.get(other).is_ok() || (self.hitters.get(other).is_err() && !loose_prop) {
             return true;
         }
-        // Approach speed along the normal (normal_speed < 0 while closing), for effects and logs.
-        let Some((closing, point)) = contacts
+        // Approach speed along the normal (normal_speed < 0 while closing), for the log.
+        let Some(closing) = contacts
             .manifolds
             .iter()
-            .flat_map(|m| m.points.iter().map(|p| (-p.normal_speed, p.point)))
-            .max_by(|a, b| a.0.total_cmp(&b.0))
+            .flat_map(|m| m.points.iter().map(|p| -p.normal_speed))
+            .max_by(|a, b| a.total_cmp(b))
         else {
             return true;
         };
@@ -829,7 +813,7 @@ impl CollisionHooks for PropHooks<'_, '_> {
             return true;
         }
 
-        commands.entity(prop_entity).insert(Unpin { closing, point });
+        commands.entity(prop_entity).insert(Unpin { closing });
         contacts.manifolds.clear();
         false
     }
@@ -837,10 +821,8 @@ impl CollisionHooks for PropHooks<'_, '_> {
 
 fn unpin_props(
     mut commands: Commands,
-    time: Res<Time>,
     mut props: Query<(Entity, &mut PropBody, &Unpin, &Transform)>,
     mut stats: ResMut<PropStats>,
-    mut impacts: MessageWriter<PropImpact>,
     mut knocked: MessageWriter<PropKnocked>,
 ) {
     for (e, mut prop, unpin, t) in &mut props {
@@ -850,7 +832,6 @@ fn unpin_props(
         }
         prop.pinned = false;
         knocked.write(PropKnocked { prop: e, by_player: false });
-        prop.last_impact = time.elapsed_secs();
         stats.knocked += 1;
         let p = &prop.physics;
         info!(
@@ -858,18 +839,6 @@ fn unpin_props(
             p.object, p.kind, p.mass, t.translation.x, t.translation.y, t.translation.z, unpin.closing, p.smash_force
         );
         commands.entity(e).insert((RigidBody::Dynamic, GameLayer::loose_prop()));
-        // The knock's sound; the impact effect follows from the contact force on the next step
-        // ([`prop_contacts`]).
-        if unpin.closing >= IMPACT_SOUND_SPEED {
-            impacts.write(PropImpact {
-                position: unpin.point,
-                velocity: Vec3::ZERO,
-                closing_speed: unpin.closing,
-                effect: None,
-                sound: p.impact_sound,
-                by_player: false,
-            });
-        }
     }
 }
 
@@ -877,16 +846,10 @@ fn unpin_props(
 /// sub-steps (world +0x464 = 2, `FUN_0093f200` → `FUN_009be420`).
 const CONTACT_PASSES: usize = 2;
 /// Model decisions: how fast an overlap is pushed apart (fraction per step, the speed cap in m/s, the
-/// overlap allowed) and the closing speed an impact effect / sound needs, with the time between two on one
-/// prop. The game's contact targets (point +0x30..+0x3c) were not traced.
+/// overlap allowed). The game's contact targets (point +0x30..+0x3c) were not traced.
 const PUSH_OUT: f32 = 0.2;
 const PUSH_OUT_MAX: f32 = 4.0;
 const PUSH_OUT_SLOP: f32 = 0.01;
-/// The closing speed (m/s) a car's contact needs to play the prop's impact sound (model decision: the
-/// game's threshold for world contacts is a float in an audio object, [DAT_010edb08+4] + 0xb270, not read),
-/// and the quiet time before the next one (0.35 s, `.rdata` 0xfaaf2c, `FUN_0054c680`).
-const IMPACT_SOUND_SPEED: f32 = 2.0;
-const IMPACT_SOUND_GAP: f32 = 0.35;
 /// A crashed race car's contacts with objects get the default record (`FUN_00960f20`, category 2 against
 /// 4: `FUN_009251f0`, every scale 1).
 const FULL_RESPONSE: DynamicResponse =
@@ -1027,6 +990,7 @@ pub(crate) fn prop_contacts(
     crash: Option<Res<crate::crash::CrashState>>,
     mut cars: Query<
         (
+            Entity,
             &mut Car,
             &Position,
             &Rotation,
@@ -1067,7 +1031,7 @@ pub(crate) fn prop_contacts(
     let crashed = crash.is_some_and(|c| c.active.is_some());
     // `MW_PROP_TRACE=1`: log every solved car-against-prop contact.
     let trace = *TRACE.get_or_init(|| std::env::var_os("MW_PROP_TRACE").is_some());
-    for (mut car, pos, rot, mut v, mut w, mass, inertia, com, player) in &mut cars {
+    for (car_entity, mut car, pos, rot, mut v, mut w, mass, inertia, com, player) in &mut cars {
         car.prop_impact = 0.0;
         let speed = v.0.length();
         // Look ahead by the step's travel so a thin sign is not jumped over.
@@ -1213,7 +1177,6 @@ pub(crate) fn prop_contacts(
             let force: f32 = touching.map(|(c, _)| c.normal_impulse).sum::<f32>() / dt;
             car.prop_impact = car.prop_impact.max(*s);
             prop.car_force = prop.car_force.max(force);
-            car_contacts.write(PropCarContact { prop: e, point: c.point, car_velocity: before, closing_speed: *s });
             // `ForceToDamage` passed by a vehicle's contact: the prop's impact effect, once per knocked lifetime
             // (`FUN_0054bf70`).
             let effect = (!prop.damaged && force > prop.physics.force_to_damage).then(|| {
@@ -1221,18 +1184,20 @@ pub(crate) fn prop_contacts(
                 stats.effects += prop.physics.impact_effect.is_some() as usize;
                 prop.physics.impact_effect
             });
-            let sound = *s >= IMPACT_SOUND_SPEED && now - prop.last_impact > IMPACT_SOUND_GAP;
-            if sound {
-                prop.last_impact = now;
-            }
-            if effect.is_some() || sound {
+            car_contacts.write(PropCarContact {
+                prop: e,
+                point: c.point,
+                car_velocity: before,
+                closing_speed: *s,
+                car: car_entity,
+                damaging: effect.is_some(),
+            });
+            if let Some(Some(effect)) = effect {
                 impacts.write(PropImpact {
                     position: c.point,
                     velocity: before,
                     closing_speed: *s,
-                    effect: effect.flatten(),
-                    sound: if sound { prop.physics.impact_sound } else { None },
-                    by_player: player,
+                    effect: Some(effect),
                 });
             }
         }
@@ -1319,57 +1284,6 @@ type PhysicsComponents = (
     AngularDamping,
     ActiveCollisionHooks,
 );
-
-/// Distance (m) from the player's car within which a loose prop's knock against the world is heard. Model
-/// decision: the impact sounds are played without 3D placement (`prop_sounds`).
-const WORLD_SOUND_DISTANCE: f32 = 40.0;
-
-/// A knocked prop (or a compound's part) landing on the world plays its impact sound (`FUN_0054c680`: the
-/// object's `WCPlaySoundBehaviour`, or "World_Prop_Collision" without one, not played here; then 0.35 s quiet).
-/// Model decision: the game's threshold is a float in an audio object (+0x94 of the handle at +0xb270), not read;
-/// the speed the contact takes off the prop (normal impulse / mass) stands in for it, with the car contacts'
-/// [`IMPACT_SOUND_SPEED`].
-#[allow(clippy::type_complexity)]
-fn prop_world_sounds(
-    time: Res<Time>,
-    collisions: Collisions,
-    player: Query<&GlobalTransform, (With<Car>, With<crate::drive::Player>)>,
-    mut props: Query<(Entity, &mut PropBody, &Position)>,
-    world: Query<(), (Without<PropBody>, Without<Car>, Without<crate::traffic::TrafficBody>)>,
-    mut impacts: MessageWriter<PropImpact>,
-) {
-    let Ok(player) = player.single() else { return };
-    let player = player.translation();
-    let now = time.elapsed_secs();
-    for (e, mut prop, pos) in &mut props {
-        if prop.pinned || prop.physics.impact_sound.is_none() || pos.0.distance(player) > WORLD_SOUND_DISTANCE {
-            continue;
-        }
-        if now - prop.last_impact <= IMPACT_SOUND_GAP || prop.physics.mass <= 0.0 {
-            continue;
-        }
-        let hit = collisions
-            .collisions_with(e)
-            .filter(|p| world.contains(if p.collider1 == e { p.collider2 } else { p.collider1 }))
-            .flat_map(|p| p.manifolds.iter().map(move |m| (m, p.collider1 == e)))
-            .map(|(m, _)| (m.total_normal_impulse(), m.points.first()))
-            .max_by(|a, b| a.0.total_cmp(&b.0));
-        let Some((impulse, point)) = hit else { continue };
-        let speed = impulse / prop.physics.mass;
-        if speed < IMPACT_SOUND_SPEED {
-            continue;
-        }
-        prop.last_impact = now;
-        impacts.write(PropImpact {
-            position: point.map_or(pos.0, |p| p.point),
-            velocity: Vec3::ZERO,
-            closing_speed: speed,
-            effect: None,
-            sound: prop.physics.impact_sound,
-            by_player: true,
-        });
-    }
-}
 
 /// The largest contact force (N) on a body this step: its avian contact pairs (the world, traffic, other props)
 /// and a race car's contacts from [`prop_contacts`] (the game compares the world-contact record and each pair
@@ -1551,68 +1465,6 @@ fn spawn_part(
         });
     }
     Some(e.id())
-}
-
-/// Decoded impact sounds, per `WCPlaySoundBehaviour` and per wave.
-#[derive(Resource, Default)]
-struct PropSounds {
-    waves: HashMap<ResourceId, Vec<ResourceId>>,
-    pcm: HashMap<ResourceId, Option<Arc<mw_audio::Pcm>>>,
-    next: usize,
-}
-
-/// Closing speed (m/s) of a full-volume prop impact sound. Model decision: the behaviour's own volume
-/// rules (`WCPlaySoundBehaviour` fields `0228a2f8` and others) are not decoded.
-const PROP_SOUND_FULL_SPEED: f32 = 12.0;
-
-/// Play the impact sound of a prop the player's car hits: one of its `Collision_Waves` in turn.
-fn prop_sounds(
-    mut commands: Commands,
-    game: Res<crate::Game>,
-    mut impacts: MessageReader<PropImpact>,
-    mut sounds: ResMut<PropSounds>,
-    audio: Option<ResMut<Assets<crate::audio::PcmAudio>>>,
-) {
-    let Some(mut audio) = audio else {
-        impacts.clear();
-        return;
-    };
-    for hit in impacts.read() {
-        if game.mute || !hit.by_player {
-            continue;
-        }
-        let Some(sound) = hit.sound else { continue };
-        let store = game.store.clone();
-        let waves =
-            sounds.waves.entry(sound).or_insert_with(|| store.impact_sound_waves(sound).unwrap_or_default()).clone();
-        if waves.is_empty() {
-            continue;
-        }
-        sounds.next = sounds.next.wrapping_add(1);
-        let wave = waves[sounds.next % waves.len()];
-        let pcm = sounds
-            .pcm
-            .entry(wave)
-            .or_insert_with(|| {
-                let res = store.load(wave).ok()?;
-                let pcm = mw_audio::sps::decode(res.header().get(0x80..)?).ok()?;
-                (!pcm.samples.is_empty()).then(|| Arc::new(pcm))
-            })
-            .clone();
-        let Some(pcm) = pcm else { continue };
-        let gain = (hit.closing_speed / PROP_SOUND_FULL_SPEED).clamp(0.15, 1.0);
-        let scaled = mw_audio::Pcm {
-            channels: pcm.channels,
-            sample_rate: pcm.sample_rate,
-            samples: pcm.samples.iter().map(|&s| (s as f32 * gain) as i16).collect(),
-        };
-        let handle = audio.add(crate::audio::PcmAudio { pcm: Arc::new(scaled) });
-        commands.spawn((
-            AudioPlayer::<crate::audio::PcmAudio>(handle),
-            PlaybackSettings::DESPAWN.with_volume(bevy::audio::Volume::Linear(0.0)),
-            crate::settings::Channel::Sfx,
-        ));
-    }
 }
 
 /// Per-triangle collision tags of one world collider (`Msg::Collider`), in the trimesh's triangle order.

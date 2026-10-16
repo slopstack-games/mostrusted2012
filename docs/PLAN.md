@@ -297,17 +297,20 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    tyres, kick-up behind rolling wheels, impact spark bursts and scrape sparks from the car body's contacts
    (`ImpactEvent`); the car's spot effects (`exhaust.rs`, 2026-10-09): exhaust smoke at idle, nitrous flames,
    backfire flames from the game's pop rule (`FUN_009b20b0`), with the `UpdateBindings` controller, the cone
-   emitter, emitter-space layers and the colour gradient read from the code. Open: what the game feeds
-   `WheelParams` / `Intensity` to the wheel effects and the wheel spawners' binding slots (0x42, 0x05, 0x07);
-   the nitrous modes' groups 9 / 20 and the wreck's 12; the cone emitter's angles; `UVDistortion`; the fade
-   over distance (0x38); a capture of the original's flames; surface ids from collision tags (dirt / grass dust; everything is tarmac now) and wet surfaces;
+   emitter, emitter-space layers and the colour gradient read from the code; 2026-10-16: the opacity word
+   (`gVfxConstants.z`) confirmed, the fade over distance (0x38), the radius curve (0x3C), the renderers'
+   lighting words, size cap and aspect, the wheel spawners' binding slots (0x05 / 0x07 with 0x34 / 0x42). Open:
+   which `WheelContact` fields the 0x42 sources read (modelled as the smoke ramps); the layer-6 draws (LDR
+   constants, likely after the tonemap; drawn in HDR here); the nitrous modes' groups 9 / 20 and the wreck's 12;
+   the cone emitter's angles; `UVDistortion`; a capture of the original's flames; surface ids from collision tags (dirt / grass dust; everything is tarmac now) and wet surfaces;
    light particles (0x0F/0x30), splatter (0x4D); `OnRims`, burst tyres, spike strips; tyre marks (`Vfx_TyreMarksNew`, `TyreMarksMaterials`); smoke
    colour (`Vehicles.SmokeColour`); world effects that are on from the start (`WCVfxBehaviour` ambient spot
-   effects; the contact-driven ones and super-emitters landed 2026-10-16); soft-particle depth fade check;
+   effects; the contact-driven ones and super-emitters landed 2026-10-16); the soft-particle depth fade (only
+   on soft passes now; its constants `FUN_004976d0` not compared);
    `gVfxSparkBrightness` and the exposure term; sort groups. Car collision effects landed 2026-10-16
    (`crash_vfx.rs`: `VehicleImpacts` / `VehicleScrapes` / the surfaces' zone effects by the game's rules, the
-   collision-mesh emitter, glass cards 0x1E/0x1F, mesh debris 0x22/0x23, 3-D rotation, debris world collision);
-   open there: the drag of 0x3D / 0x3E is exponential in the game (`(1 − drag)^dt`), still quadratic here.
+   collision-mesh emitter, glass cards 0x1E/0x1F, mesh debris 0x22/0x23, 3-D rotation, debris world collision;
+   the exponential drag and bounce rules of 0x3D / 0x3E).
 8. `[ ]` **Animations**: nothing animates yet besides wheels and damage poses. Car: the driver and steering
    wheel, animated body parts (`PhysicsDrivenVehicleAnimationBehaviour` / `.AnimatedBodyPart`: spoilers, flaps,
    suspension parts), `Genesys.Vehicles.AnimationStateBehaviour`, `AnimatedRaceCarBehaviour` (scripted cars).
@@ -394,7 +397,10 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    and compare its spectrum with `mostrusted --replay` of the same run: no narrow lines more than ~15 dB over
    their third-octave in the drift. Open: `GetPlayerSuspensionLoad` (vehicle +0x1f28) for the skid channels'
    gains, the runtime constants of the spin ramp, per-surface sounds (collision tags), bumps, ambience, wall
-   reflections, horn, nitrous, speech.
+   reflections, horn, nitrous, speech. 2026-10-16: the world's one-off sounds (`world_sfx.rs`): props',
+   lamps', signs' and gates' `WCPlaySoundBehaviour`s by the game's rules, a car's first touch of a prop, wheel
+   landings and landing sequences (`FUN_00576b40`), the crash's contact sounds by zone, the collectables'
+   message waves (decomp.md "World-component sounds"). Open: the crash camera's bus / mixer automation.
 5. `[x]` Volume settings (F2 / gamepad Select overlay, `--volume`, `~/.config/mostrusted/settings.cfg`) and the
    live sources play with `ONCE` (LOOP buffered them 0.74 s at a time: the engine held each rpm, then jumped).
 6. `[~]` Other cars' sounds (2026-10-09, `car_audio.rs`, `mw_assets::car_sound`; decomp.md "Other cars' engine
@@ -515,7 +521,7 @@ SNORM ×10 scale).
 
 **Start with [next-session.md](next-session.md).** State after session 5 (2026-10-06): nine systems were re-read
 from the decompiled code in parallel; what is blocked now is mostly blocked on **live reads of the running
-original** (`.bss` constants and renderer fields; the list is in next-session.md).
+original** (`.bss` constants and renderer fields; the list is in handoffs-archive.md, session 5).
 
 1. **A live-read session** with the original running (`sudo sysctl kernel.yama.ptrace_scope=0`, `tools/orig/orig
    launch`): the handling `.bss` constants, the post-processing fields (bloom flag and set, vignette A / D, the

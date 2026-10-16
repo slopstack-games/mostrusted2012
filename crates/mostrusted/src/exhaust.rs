@@ -265,6 +265,7 @@ fn spot_effects(
                         movement: 0.0,
                         mesh: None,
                         paint: Vec3::ZERO,
+                        wheel: [0.0; 3],
                     };
                     let key = EmitterKey { owner: entity, slot: SLOT_SPOT + 0x10 * i as u32 + 8 * m as u32 + k as u32 };
                     instances.refresh_or_start(&vfx, key, fx.effect, params, start);

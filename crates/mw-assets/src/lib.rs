@@ -44,6 +44,7 @@ pub mod ui;
 pub mod vehicle_driver;
 pub mod vfx;
 pub mod wheel_layout;
+pub mod world_sfx;
 
 pub use catalog::{DEFAULT_LANGUAGE, VehicleInfo};
 

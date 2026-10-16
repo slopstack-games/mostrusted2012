@@ -1302,6 +1302,91 @@ The channel set for the player (`FUN_004b5f40`, base +0x127f0) is +0x00 `Landing
   contacts spaced 0.1 s; the voices at the car (the game places them at the contact or cell); 12 one-shot voices
   at most; the grind's `x` from the car's speed and top speed.
 
+## World-component sounds, landings and the crash's contact sounds (2026-10-16)
+
+Read for the play-test item "missing sound effects" (billboards, light poles, light crashes, landings); data
+`mw_assets::world_sfx`, runtime `crates/mostrusted/src/world_sfx.rs`. The thresholds come from the global
+`VehicleSound` at `[DAT_010edb08 + 4] + 0xb270` (confirmed: `FUN_00594870` reads +0xa8 = `1dc7d3aa` from the
+same handle): +0x94 `0925bb50` = 1, +0x98 `392b1040` = 2.235. The "contact value" every rule compares is the w
+of a contact record's second vector (a pair record's +0x2c, the world record's +0x1c), not traced; read as the
+closing speed (2.235 m/s = 5 mph) as before.
+
+- **`WCPlaySoundBehaviour`** (type 0x2ad8, 80 bytes; layout in formats.md): 41 objects in the install. A
+  `PropObject` names one at +0x1c (`FUN_0054e8d0` hands it the prop's contacts); compound objects (58 of them),
+  dynamic objects (46) and compound parts (125) carry them in their behaviour lists (the old port played only
+  props' and parts' `Collision_Waves`, on no channel, gain by speed: no source). The 11-part panel compounds (the
+  216 billboards) have none.
+- **Props** (`FUN_0054e8d0` per frame): each body-pair record → `FUN_0054bf70`: (1) the first record whose force
+  passes `ForceToDamage` with a vehicle (`FUN_00573360`, the 16 race cars) starts the impact effect, and when the
+  prop has a sound (`FUN_0055f310`), the vehicle's speed² is above `.bss` 0x0110c420 (400, `snap2`) and |value|
+  > +0x98, queues type 2; (2) while the prop's timer +0xbc is 0, |value| > +0x98 with a vehicle queues type 5;
+  every record sets the timer to 0.6 s (`.rdata` 0x00faaf30). The world record → `FUN_0054c680`: while +0xc0 is
+  0 and |value| > +0x94: type 3 when the prop's speed² (vtable +0x10) is above `.bss` 0x0110c1a0 (25) and the
+  first surface entry's `e8986e0a` list is not empty, else type 4 when its `Waves` are not; +0xc0 = 0.35 s
+  (`.rdata` 0x00faaf2c). Both timers count down per frame (the tail of the prop update `FUN_00548ff0`). The channel
+  is the behaviour's `MixerChannel` (+0x30), else, for car hits, the vehicle's channel set +0x30
+  (`FUN_00572430`: the player's `Player_Vehicle_Prop_Collision`, else the set at +0x12950) and, for world
+  contacts, `"World_Prop_Collision"` (`FUN_00410440` / `FUN_009ed180` hash the name). `FUN_005491a0` queues the
+  request at the object's position + the behaviour's `Offset` (+0x20), gain 1.
+- **The behaviour's runtime** (vtable 0x00faf308: slot 2 `FUN_005a7d20` off, slot 3 `FUN_005b8490` update,
+  slot 8 `FUN_005ab070` pair, slot 9 `FUN_005b10f0` world): with +0x16 (`0228a2f8`, set on all 41) and state
+  +0x28 ≤ 1: a pair contact above +0x98 with a vehicle queues type 5 (state 2) and raises "activate"; a world
+  contact above +0x94 queues type 4 (state 3). Slot 3 returns the state to 1 once no emitter lists the object
+  (`FUN_004b26b0`), i.e. when its wave ended. No pinned test: a standing lamp a car bumps plays.
+- **Emitters** (`FUN_004b37e0` queues 0x30-byte entries at `+0x5e50` (count byte +0x6a50): object id, type,
+  behaviour, position, channel, gain; `FUN_004ba990` sorts and hands them out; `FUN_004b2530` keeps 8 emitters
+  of 0x180 bytes): an entry joins the emitter of the same (type, behaviour) started less than 0.1 s ago
+  (`.rdata` 0x00fa339c) without a new wave (the position moves to the newest object); else a free emitter, else
+  the one with the lowest type below the new type is stolen. `FUN_004b7b20` starts the wave: type 2 the first
+  `PropSurfaceSound`'s `71f062ee` (+0x18), 3 `e8986e0a` (+0x14), 4 `Waves` (+0x1c), 5 `Collision_Waves` (+0x38;
+  `8dfd5f40` +0x3c instead when three or more objects share the emitter, empty on all 41); the index is a global
+  counter (mod 1024) modulo the list's length. `FUN_004ba1c0` keeps the voice's position and gain each frame and
+  frees the emitter when it ends.
+- **A car's first touch of a prop** (`FUN_00591ac0` → `FUN_00587960` per object contact of the vehicle): above
+  +0x98, for a non-traffic object (`FUN_005ea300`), when more than 0.1 s (+0x110) passed since the last
+  (+0x1adc) and the touch has just started (+0xc78 = 0: `FUN_005767a0` tracks the touched object at +0x1a6c,
+  resets the time +0xc78 for a new one, drops it 0.1 s after the last contact; race cars are not tracked) →
+  `FUN_00576440`: MetalCar `CollisionSoundSet` pool +0x130 `939c92be` (front, `FUN_00574150` with cos 30°),
+  +0x138 `d02a49d8` (rear, `FUN_00571c20`), else +0x134 `ae166d1e`, on the set's channel +0xc4 (`b26e4dfe` =
+  `…7357a`), gain 1, at the contact point; the player also starts sequence +0xbc (`…b3934`: race-car effects
+  only); while crashing, the player once per crash (+0x70b) pool +0x150 `0960076c` on channel set +0x18
+  (`Player_Wrecking_Collision`) and sequence +0xb4.
+- **Landings** (`FUN_00576b40`, per frame after the contacts): per wheel (sim +0x870, 0x1d0 apart; grounded
+  byte +0x24) a hold timer at entity +0x1b6c.. set to 0.05 s (`.rdata` 0x00fac2b4) while grounded and counted
+  down otherwise (`FUN_00591ac0` tail). The first wheel that is grounded with its hold at 0, for the player or a
+  crashing car (+0x1c18 / +0x1c2d), plays a wave of its surface's `CollisionSoundSet` (`FUN_0054a4f0`, the tag's
+  bits 13–19): `Landing` (+0x124) on the channel set's +0x00 (`Landings_Large`) or, crashing, +0x158
+  `5da2551f` on +0x18 (plus `FUN_00575880`: pool +0x128 `d03c72cd`, empty in every surface set), gain
+  `(1 − a) · 0.35 + a`, `a = min(s, 2.5) / 2.5` (`.bss` 0x0110cd80 / 0x0110d0c0, `snap2`), `s` = the larger of
+  the last frame's velocity (+0xc90, written after the call) along the wheel frame's rows 0 and 2
+  (`FUN_005423d0`). When no wheel's hold was running (all four were in the air) and one landed, `TimeInAir`
+  (+0x1ae4, reflected "RaceCarEntity"/"TimeInAir") picks a sequence of that set: the player ≥ +0x88
+  (`3453bdbb`, 1 s) → +0x14 `d12772a1`, above +0x110 (0.1 s) → +0xdc `929af217`; others above 0.1 s → +0x4c.
+  `TimeInAir` grows while no wheel is grounded and is 0 otherwise. Data: the default set's long sequence
+  (`…73590`) is a 3 s `Landings Large` wave plus bus / race-car items; its short one (`…95b27`) has no wave.
+- **The crash branch of `FUN_0057caf0`** (the crash state, vtable +0x58, and a surface set): `FUN_00929da0`
+  classifies the contact against the car's box (point in the box frame / half extents, scaled to the largest
+  axis: |p| ≤ 1.2e-7 → 10; x > 0.5: front (z > 0.7) 2, rear (z < −0.7) 8, else 1 on the underside edge (y < −0.8
+  and |y| > 0.8 + 0.4 (|x| − 0.5), `.data` 0x010cf910 × 0x010cf914) or 9; |x| ≤ 0.5: 3 / 7, y > 0.8 → 0,
+  y < −0.8 → 1, else 10; x < −0.5: 4 / 6, 1 or 5). With the car's up axis y below −0.9 (`.bss` 0x0110cfe0) the
+  zone is 0, with |right.y| above 0.9 (0x0110c900) 5, each played only when it differs from the last (+0x18d);
+  otherwise the classified zone plays when the value is above +0x98. 0 → +0x15c `1db229d6`, 1 → +0x158, 2–4 →
+  +0x118 (the world-impact pool), 5 / 9 → +0x164 `1cb422d5`, 6–8 → +0x154 `3578b364`, on +0x18, gain by speed
+  (the world wave's). The non-crash branch (the world wave, the player's slot) does not run then.
+- **The crash camera's sequence** (`…68b43`) has no wave items: its audio is automation, slow motion aside: three
+  `BusMixerChannelSequenceItem`s (buses `9469eeda` = 556003 to 0 between 0.32 and 3.8 s, 259953 down to 0.6,
+  259945 held at 0.6) and two `MixerChannelSequenceItem`s (`…74d2` parameter 0 at 0 for 5 s, `…735a3` property
+  5 by a curve). Which buses those ids name was not found (the 23 `BusMixerChannel` objects carry other unique
+  ids); not ported.
+- **Collectable messages**: the scoring actions' sequences carry waves (`995814` "+SP" line: `…18c1fd` at 0 s;
+  `1107082` speed camera: `…f690e` at 1.333 s, `…f690d` at 5.967 s; `995322` gate panel: the same two at 0.5 /
+  5.967 s); played at their item times with the item's gain.
+- Model decisions (`world_sfx.rs`): the contact value = closing speed; the AI's prop channel =
+  `Competitor_Prop_Collision` (its channel set +0x30 not read); the landing gain's axes = the car's right and
+  forward (the wheel frame's rows were not identified); the crash zones use the default surface's set and the
+  body collider as the box; the collectables' waves are 2D; a prop's "damaging" contact is our impact-effect
+  test (`ForceToDamage`).
+
 ## Groundcover drawing (2026-10-09)
 
 - **Job**: `FUN_0089ffe0` (called from `FUN_008ad290` with the list at `+0x2e94` of its object) copies the
@@ -1393,12 +1478,59 @@ The channel set for the player (`FUN_004b5f40`, base +0x127f0) is +0x00 `Landing
   position − u·v·dt; direction at polar angle `rand(w0, w1)`° from Z = normalize(−v·dt) (fallback +Y) about a
   uniform azimuth (X = normalize(Z × up)), speed `rand(w2, w3)`, plus `rand(w4, w5)` × the parent's velocity;
   radius `rand(w6, w7)` × `(1 + (w18 − 1)·t′)` with t′ the parent's age `u` steps back.
-- **Renderer draw words** (`FUN_00458e90` 0x24, `FUN_0045ab10` 0x27, `FUN_0045b620`): two words per renderer
-  go to the draw state +0x23c / +0x240 (reset to 0 / 1.0 per draw): 0x24 words 7 / 8, 0x27 words 9 / 10. +0x23c
-  = the soft-particle fade distance (as read before), +0x240 read as `gVfxConstants.z` (the pixel programs'
-  alpha factor and alpha test, the vertex program's key-light factor; inferred, the constant's writer for these
-  draws was not found). `RenderSpriteMotionBlur` (`FUN_004598e0`) writes the colour's rgb with alpha 1.0
-  (`.rdata` 0x00f9d13c) and the renderer's word 11 at the streak's other end; its colour curves' alpha is unused.
+- **Renderer draw words** (`FUN_00458e90` 0x24, `FUN_0045ab10` 0x27, `FUN_0045b620` 0x28): two words per
+  renderer go to the draw state +0x23c / +0x240 (reset to 0 / 1.0 per draw): 0x24 words 7 / 8, 0x27 words 9 / 10,
+  0x28 words 0x11 / 0x12. `FUN_0046ce40` copies them into a 0x80-byte draw record (+0x50 / +0x54, with the
+  matrix at +0x00, +0x200 at +0x40, the min depth +0x220 at +0x58, the layer byte +0x60, the pass byte +0x61, a
+  priority +0x62) queued through `FUN_00a1a180`. **The particle draw loop** `FUN_004a40a0` ("BearRenderWait_Render",
+  from `FUN_004a4940`, render stage 6) sorts the records by depth and, per record: for passes 0x23 / 0x24 / 0x29 /
+  0x2a `FUN_004976d0(+0x50)` writes `gDepthFadeConstantsA` / `B` (slots 0x72 / 0x73; the soft programs' depth
+  fade); if +0x5c, slot 0x77 = +0x40; then **`gVfxConstants` (slot 0x75) = base + (0, 0, +0x54, 1)** with base
+  `.data` 0x01104120 = (0, 1, 0, 0) or, for layer 6, 0x011035e0 = (1, 0, 0, 0) (snapshot reads), and
+  `gVfxSparkBrightness` (0x79) = view +0x13a0 (layer 0x1a goes to `FUN_00497800`). So the +0x240 word is
+  `gVfxConstants.z` (confirmed 2026-10-16): the pixel programs' alpha factor and alpha test, and the vertex program's
+  key-light factor; .x blends the colour towards × the exposure texture's w, .y blends the vertex program's LDR
+  encode (sRGB-like curve of colour × 0.5) to the linear result.
+- **Layer and pass** (`FUN_0046a430`, called by the compile functions `FUN_00447e40` 0x24, `FUN_00448020`
+  0x27, `FUN_00448110` 0x28, `FUN_00448220` 0x29): layer = [5, 6][blend byte], pass = soft ? [0x23, 0x2a] :
+  alt ? [0x25, 0x26] : [0x00, 0x28]. Most smoke and dust layers are layer 6 (LDR constants), the nitrous glows
+  and sparks layer 5 (HDR). Like the coronas' layers 7 / 8, layer 6 is very likely drawn after the tonemap; its
+  target was not traced.
+- **Other renderer words**: half extents radius × aspect / radius / aspect (0x24 word 10, 0x27 word 11, 0x28 word
+  0x14); a size cap radius ≤ cap × (view depth + view +0x218) × view +0x220 (0x24 word 9; 0x27 word 19 × the
+  binding slot of byte +0x5b; 0x28 word 0x13); `FUN_00440100` writes TEXCOORD1 = (shadow-map u, v, translucency,
+  key light as ambient) from words (15, 17) / (16, 18) / (0x19, 0x1b) and `FUN_0043fc30` the wrap (TEXCOORD3.w)
+  from 16 / 17 / 0x1a. The view block (`FUN_0046adb0`: +0x218 = 0, +0x21c = 0, +0x220 = 1, +0x224 = 1;
+  `FUN_004a1470` sets +0x21c = |Δcamera · forward| / dt each frame) is the block the render actions' first
+  operand points at (+0x20 forward, +0x30 position, +0x60.. the globals). `FUN_0043fa40` sorts by depth from
+  camera + +0x218 × forward and culls particles behind it.
+- **`RenderSpriteVelocity`** (0x29, run `FUN_0045c2f0`): streak = velocity × 1/30 (`.bss` 0x010ed2a0) × word 18 ×
+  slot[byte +0x4c], length clamped to words 12–13; head colour = the colour channel (alpha kept), tail × (1, 1, 1,
+  word 16) (`.rdata` 0x00f9d1c0); in view mode +0x228 == 1 the colour is (0, 0, 0, word 17).
+  `RenderSpriteMotionBlur` (0x25, `FUN_004598e0`) writes the colour's rgb with alpha 1.0 (`.rdata` 0x00f9d13c)
+  and the renderer's word 11 at the streak's other end; its colour curves' alpha is unused.
+- **`UpdateParametricRadius`** (0x3C, compile `0x0044bbb0`, run `FUN_004612d0`): the compile turns words 5–8
+  (knee k, values a, b, c) into an offset and two slopes; r(x) = a + x(b − a)/k below k, b + (x − k)(c − b)/(1 − k)
+  above, x = age × 1/lifetime; radius × r × (w9 + (1 − w9)·slot[byte +0x28]). (Read as a cubic Bézier before.)
+- **`UpdateParametricFadeOverDistance`** (0x38, compile `0x0044ba90` → `FUN_004493f0`, run `FUN_00460970`):
+  d = (position − (camera + (max(w19, view +0x218) + n)·forward)) · forward (− radius with byte +0x69),
+  n = w20 + (w22 − w20)·min(view +0x21c / w23, 1) with byte +0x68 (else w20); colour × (B + clamp(−d/n)(A − B) +
+  clamp(d/(w21 − w20))(C − B)) with A, B, C = words 0–3, 4–7, 8–11 (`.rdata` −1.0 at 0x00f8f340), then a
+  luminance blend by view +0x224 (weights `.data` 0x01104150 = 0.299, 0.587, 0.114; 1.0 = none); bytes +0x6b /
+  +0x6a: alpha / radius × clamp((|v|² − w25²) / (w24² − w25²)).
+- **Wheel controllers and spawners**: `UpdateWheelBindings` (0x42, run `FUN_00463330`): sources 0 / 1 time,
+  2 view +0x68, 3 |Velocity|, 4 camera distance, 5 view +0x60, 6 byte +0x7c, 7 / 8 sin / cos, 9 the scale, 10–13
+  view +0x6c / byte +0x7d / +0x70 / byte +0x7e, 0x0e–0x11 the `WheelContact` parameter's +0x40..+0x4c, 0x12
+  clamp(|WC +0x1c| / s), 0x13 view +0x78; no offsets; the same combine ops. `UpdateBindings_Wheel` (0x34, run
+  `FUN_004601a0`): the 0x33 table plus 0x14–0x16 = W[1..3], 0x17 = clamp(|W[0]| / s), 0x18 = the byte at W +0x30
+  for its `WheelParams` operand W. `EmitterWheel` (0x05, `FUN_004498e0` / `FUN_0044fb20`) and
+  `EmitterWheelContactPlus` (0x07, `FUN_00449a90` / `FUN_00450760`): count = (rate·dt + per-metre·|speed|·dt) ×
+  slot[byte +0x78 / +0x68], a LOD factor (`FUN_0043ecd0`, words 6–7 / 10–11) and a carry rounded to nearest.
+  The per-wheel update (`FUN_00589e20`) fills the wheel effects' parameter blocks (0xf0 bytes at pool +0x500):
+  the smoke's +0x80 = (`uStack_4c0`, spin, lateral, lock ramps); the kick-up's (`FUN_004acd80` at start,
+  `FUN_0059bb50` per frame) = contact point, (lateral, ·, longitudinal ground speed, ·), contact normal + a clock,
+  (0, the three ramps), the wheel's velocity + a front-axle flag, the car's matrix with the colour override in w.
+  How the Bear runtime maps that block onto an effect's `WheelContact` was not found.
 - `InitialisePosOffset` (0x14) keeps a particle in the emitter's space; `ParametricPosVelToWorldSpace` (0x1A /
   0x1B) places it with the current `Transform` when it is drawn, so the exhaust flames stay on the pipes.
 
@@ -2111,9 +2243,9 @@ Runtime: `crates/mostrusted/src/props.rs`; data: `mw_assets::props` (`Additional
   (`FUN_00553540`) or removed (`FUN_00553740`, `mbRemoveInsteadOfReset` or a game flag) once **both** the camera
   and the player's car are farther than `mfResetDistanceSquared`. ResetProps (message 0x15, `FUN_0055a680`)
   re-creates everything.
-- **Sound**: a prop's world contact plays its `PropObject` +0x1c sound (`WCPlaySoundBehaviour`) or
-  "World_Prop_Collision" above a threshold from an audio object, then waits 0.35 s (`.rdata` 0xfaaf2c,
-  `FUN_0054c680`).
+- **Sound**: a prop's contacts play its `PropObject` +0x1c `WCPlaySoundBehaviour` (`FUN_0054bf70` for pair
+  contacts, `FUN_0054c680` for the world contact); compounds, dynamic objects and parts run the same behaviour
+  through its runtime object. Settled 2026-10-16: "World-component sounds" below.
 
 ### World-component behaviours: what a contact shows (2026-10-16)
 - **Dispatch**: `FUN_0053cba0` walks the world-component table (0xe4 entries at +0x20, 8 bytes: flag, object
@@ -2170,9 +2302,8 @@ Runtime: `crates/mostrusted/src/props.rs`; data: `mw_assets::props` (`Additional
   (the game creates bodies asleep, next to the moving compound); no delay for `SmashProxyBehaviour` (its
   comparison was not found; read as a contact force like the compound's); a smashed compound and its parts go
   back together once neither its home nor any part is within the reset distance of the car and camera (the
-  game resets each part slot on its own); bone-0 / unowned triangles vanish with the smash; world-contact
-  sounds of loose props and parts (`prop_world_sounds`) use the speed the contact takes off the prop
-  (impulse / mass ≥ 2 m/s) for the unread audio threshold, within 40 m of the player.
+  game resets each part slot on its own); bone-0 / unowned triangles vanish with the smash. The sounds moved to
+  `world_sfx.rs` (2026-10-16, "World-component sounds").
 
 ## Input and control bindings
 

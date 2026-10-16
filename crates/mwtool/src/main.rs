@@ -339,7 +339,8 @@ enum Cmd {
         out: Option<PathBuf>,
     },
     TrafficSound {
-        /// A `VehicleComponent` id (e.g. 122816), or `all`.
+        /// A `VehicleComponent` id (e.g. 122816), or `all`; `sfx` (traffic / AI one-shots), `player[:<id>]`
+        /// (the player car's horn, impacts, grind, damage), `world` (landings, crash contacts, prop sounds).
         component: String,
         out: Option<PathBuf>,
         /// Pass-by speed (mph) for the 3D render: the car drives past a listener 4 m to the side.

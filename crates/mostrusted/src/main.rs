@@ -81,6 +81,7 @@ mod tyre_marks;
 mod ui_quads;
 mod weather;
 mod world_lights;
+mod world_sfx;
 mod world_ui;
 
 use std::collections::{HashMap, HashSet};
@@ -1015,7 +1016,12 @@ fn main() -> anyhow::Result<()> {
             settings: settings::load(cli.volume.as_deref()),
             open: cli.show_settings,
         })
-        .add_plugins((car_audio::CarAudioPlugin, car_sfx::CarSfxPlugin, player_sfx::PlayerSfxPlugin))
+        .add_plugins((
+            car_audio::CarAudioPlugin,
+            car_sfx::CarSfxPlugin,
+            player_sfx::PlayerSfxPlugin,
+            world_sfx::WorldSfxPlugin,
+        ))
         .add_plugins(police_fx::PoliceFxPlugin)
         .add_plugins(coronas::CoronasPlugin)
         .add_plugins(audio::GameAudioPlugin)

@@ -130,6 +130,9 @@ pub struct ObjectPhysics {
     pub impact_sound: Option<ResourceId>,
     /// Compound and dynamic objects: their `WCVfxBehaviour`s (effects and lights that contacts start / stop).
     pub vfx: Vec<WcVfx>,
+    /// The object's `WCPlaySoundBehaviour`s: a prop's +0x1c, a compound's / dynamic object's own behaviours
+    /// (`crate::world_sfx`).
+    pub sounds: Vec<crate::world_sfx::WcSound>,
     /// Compound objects: how the object breaks into its parts.
     pub compound: Option<CompoundPhysics>,
 }
@@ -210,6 +213,8 @@ pub struct CompoundPartPhysics {
     pub impact_sound: Option<ResourceId>,
     /// The part's own `WCVfxBehaviour`s.
     pub vfx: Vec<WcVfx>,
+    /// The part's `WCPlaySoundBehaviour`s (`crate::world_sfx`).
+    pub sounds: Vec<crate::world_sfx::WcSound>,
 }
 
 /// Row-major matrix of a bone's bind pose (unit quaternion `x y z w`, position).
@@ -490,6 +495,10 @@ impl AssetStore {
             impact_effect: def.impact_effect,
             impact_sound: def.impact_sound,
             vfx: self.wc_vfx(&def.behaviours, &[], &def.locator_groups),
+            sounds: match kind {
+                ObjectKind::Prop => def.impact_sound.and_then(|id| self.wc_sound(id)).into_iter().collect(),
+                _ => self.wc_sounds(&def.behaviours),
+            },
             compound,
         })
     }
@@ -578,6 +587,7 @@ impl AssetStore {
                     links: p.links.iter().filter_map(|&l| index(l)).collect(),
                     smash_force,
                     impact_sound,
+                    sounds: self.wc_sounds(&p.behaviours),
                     vfx: self.wc_vfx(
                         &p.behaviours,
                         def.part_locator_groups.get(i).map_or(&[][..], |g| g.as_slice()),

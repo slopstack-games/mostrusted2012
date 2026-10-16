@@ -502,6 +502,7 @@ fn play_effects(
             movement: o.velocity.length() * dt,
             mesh: Some(MeshContact { mesh, point: to_local(c.point), normal: o.rotation.inverse() * c.normal }),
             paint: o.paint,
+            wheel: [0.0; 3],
         };
         // The slot already playing this effect, else an empty one, else the one refreshed longest ago.
         let i = state
