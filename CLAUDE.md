@@ -168,6 +168,7 @@ MW_NO_VIGNETTE=1 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,172
 # Collectables and Speed Points (freeroam.rs): a speed camera, a billboard and a gate; TEST RESULT freeroam ...
 ./target/release/mostrusted --drive 911 --units 12 --mute --no-traffic --test freeroam --profile <scratch>/p.cfg --screenshot <scratch>/fr.png
 ./target/release/mwtool placement-check --top 10             # placements vs the collision under them, per layer / model
+./target/release/mwtool water                                # water meshes: height, listing zones, drawn water over dry ground (MW_WATER_AT=x,z ...)
 ./target/release/mwtool mods 911                             # performance upgrades: slot -> parameter changes
 ./target/release/mwtool sampler-usage --filter Driveable     # the game's sampler states per shader slot
 # Car options: --dirt 0.6,0.3 (dirt, dust), --anim all=1 (pose animated parts in --drive), --mods 12=0 (slot=level

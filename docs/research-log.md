@@ -10,6 +10,58 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-16: water level: far water planes flooded zones that do not list them
+User reports: "in some places the water floats above where it should be" (2026-10-14 play test) and "water level
+is too low" (session 7, place not given). Survey tool: `mwtool water` (every water mesh, main and backdrop: height,
+extent, listing units; where the drawn water lies above dry collision; per-zone table of water drawn in zones that
+do not list it; debug variables in `crates/mwtool/src/water.rs`).
+- **The water meshes** (53 placed water meshes: 15 backdrop, 38 main): the main ones (ponds, fountains,
+  `PlotPBR_AO_StandingWater` puddles) are small and sit on their beds. The backdrop ones are per-zone views of
+  the same water at different detail: a river-shaped `Water_Opaque_Singlesided` mesh `d0015e61` at y −36.8 (the
+  water at the bottom of the gorge under the suspension bridge, x 200–1600, z 2600–3300, with surf along its
+  banks; the gorge's collision slopes reach −37) is listed by the gorge's own zones 17, 19, 20, 78, 87, 88, 89,
+  91, and *only* by them; the other 23 zones that see that water list `f13f8dde` instead, whose mesh 1 is a
+  plain 2 × 1.1 km rectangle at y 13.1 over the whole gorge and its hills. `752a314c` (`Water_Proto_Cheap`,
+  listed by 13 western / southern zones) is a sloped sea plane reaching y 30.4 over the northern coast, where
+  the industrial area (zones 24, 25, 69, 85) stands at y 6–20. Every backdrop water mesh is drawn over dry
+  drivable ground in **no** zone that lists it (the `own` column of `mwtool water` is 0 for all of them).
+- **Cause**: our composition (2026-10-04) let water "fill in" from the nearest listing zone wherever a zone lists
+  no water of its own. That rule was ours, added for "the river beside downtown" (zone 13). It put the 30.4 m sea
+  plane over the industrial area (a sheet across the buildings' third floors, full map load), the 13.1 m
+  rectangle half way up the gorge and over its hills (the "floating" water), and in the gorge's own zones,
+  which list water, left the gorge at −36.8 between flooded neighbours. Drawn 8 m samples over dry collision
+  went from 3,561 / 5,102 / 12,760 (meshes `ee1e0389` 1, `206af143`, `752a314c`) to 0 / 0 / 14; 64 m cells with
+  drawn water over drivable collision from about 250 to 2 (a main-geometry puddle, and `9fd6d20a` at y 10.0
+  over a road at 5.7 near 2376, 2672 in zone 158, which lists it itself: not looked at).
+- **Zone 13** ("river beside downtown") is not a river: zone 13 is a downtown street at y 51 whose polygon
+  includes unmodelled block interiors; the "river" was the sloped sea plane seen through them from a free
+  camera. The `water-river` viewpoint (1610, 22, 2935) is inside the hill of zone 155 (terrain at y 107): its
+  "river" was the 13.1 m rectangle seen from inside the hill. Replaced by `water-gorge` (viewpoints.md).
+- **Fix** (`mw_assets::backdrop`): inside a loaded zone a backdrop triangle, water included, is drawn when that
+  zone lists its model (the rule solid geometry already followed). Outside every zone, water stays composed
+  apart from solid geometry, from the nearest listing zone, except in the gaps between zone polygons: within
+  `WATER_GAP` (128 m) of a loaded zone that lists water, that zone's water alone is drawn (the gorge runs along
+  such gaps; every remaining floating sample outside the zones was within 65 m of one). **Model decisions**:
+  the 128 m gap distance; a zone that lists no water does not own the gaps beside it (so the sea off coastal
+  zones that list none stays filled). The water tables are unchanged when units are streamed (`--units`).
+- **Source**: data only (instance lists, `ZoneList`, collision); the code path that picks which zone's backdrop
+  is drawn was not traced (open). The shader table that sorts meshes into passes (`0x10d1350`, live snapshot:
+  `Water_` → bucket 7) only orders passes. The water vertex programs (`mwtool shader-asm Water_Proto_Cheap`)
+  are a plain world transform: no height offset or wave displacement, so the heights are the data's.
+- **Verification** (before = master, after = this branch; screenshots in the worktree's `extracted/water/shots/`):
+  industrial coast full load `--camera=-150,80,3300,50,10,3560` (flooded → dry); gorge from the bank
+  `--camera=1000,-25,3080,1150,-36,3150 --units 20` (sheet across the right slope gone, river at the bottom
+  unchanged); suspension bridge `--camera=1060,60,2950,700,-30,3050` and the north view
+  `--camera=700,160,2300,300,0,3500` (full load: sheet and striped slivers over the hill gone); pond, road-cliff and
+  coast views unchanged; full-map load time unchanged (30 s).
+- **Open**: (1) a zone that lists no water and stands next to the sea outside the zones still gets the nearest
+  listing's sea in the 128 m strip beside it (zone 135 / 20 gap near 40, 2280: the 30.4 m plane over a gorge
+  at −29, a few cells). (2) What the original draws in the gaps and which zone's backdrop it draws at all (the
+  per-zone model is from the data, 2026-10-04). (3) **Captures of the original that would settle it**: the gorge
+  from the suspension bridge deck (camera about 1060, 60, 2950 looking west along the gorge) — water at the gorge
+  bottom only, no sheet at y 13 on the slopes; the industrial coast (−150, 80, 3300 towards 50, 10, 3560) — dry;
+  and the suspension bridge's pier fender (y ≈ 13) to see whether water reaches it from the eastern side.
+
 ### 2026-10-15: navigation (SET DESTINATION, the GPS route) from the code
 User play test: "Navigation (SET DESTINATION route / GPS) does not work yet". Details in decomp.md "Navigation: SET
 DESTINATION and the GPS route".
@@ -2546,7 +2598,8 @@ Code findings are in decomp.md "Traffic runtime"; the runtime is `crates/mostrus
   (2026-10-04, TRK_UNIT1). No visibility data in it. Not parsed yet.
 - How the game draws near water (city rivers, the airfield lake): no zone lists a water mesh over the river
   next to downtown (unit 13), and no main geometry covers it. A separate water system? (`--backdrop-zone 13`
-  shows the gap.)
+  shows the gap.) Answered 2026-10-16: zone 13 has no river (unmodelled block interiors); every zone lists the
+  water it shows.
 - ZoneList zone byte 0x40 (0 or 1) and the header u32 at 0x18 (3).
 - What does `WORLDLIST.BNDL` contain, and how does it relate to `HAWAII/MAPS/*.BNDL`?
 

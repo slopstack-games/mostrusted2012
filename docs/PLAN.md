@@ -113,7 +113,8 @@ Make a static frame look like the game.
    - `[x]` **Backdrop composition** (2026-10-04): InstanceList backdrops are per-unit LOD views; drawing all
      169 stacked every tier ("buildings on streets, mountains"). `ZoneList` (PVS.BNDL) is decoded and
      `mw_assets::backdrop` keeps, per place, what the owning zone lists. Still open: cut faces where zone
-     views meet, near water (rivers) that no instance list draws.
+     views meet. 2026-10-16: water follows the same rule (no fill-in from other zones' far planes, which
+     flooded the industrial coast and the gorge); `mwtool water`.
 4. **Shader families: G-buffer inputs** `[~]` (WGSL in `layered.wgsl`, selected by `materials::Look`). Each
    family computes exactly what the game's G-buffer pass writes (normal, roughness, sqrt albedo, AO, F0,
    Fresnel); today these feed Bevy's PBR lighting, later the ported deferred pipeline (item 7). Per-family

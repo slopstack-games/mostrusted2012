@@ -69,7 +69,9 @@ InstanceList ──> Model ──(LOD state)──> Renderable ──(per mesh)�
   geometry the game draws while the player is *in that unit* (terrain tiles, building blocks, water planes,
   horizon) at the LOD that suits the distance; other units list other tiers of the same tiles. Drawing every
   unit's backdrop stacks the tiers. `mw_assets::backdrop` composes one backdrop per place from the zone that
-  owns it (research log 2026-10-04, night).
+  owns it (research log 2026-10-04, night). Water is per zone too: far zones list coarse planes (a rectangle at
+  y 13.1 over the gorge whose own zones list its water at y −36.8; a sloped sea plane up to y 30.4 over the
+  coastal industrial area) that flood a zone that does not list them (research log 2026-10-16).
 - **ZoneList (0x90)**, the only resource in `HAWAII/PVS.BNDL`: one zone per track unit. Header: ptr points
   (16 bytes each: x, z, 0, 0), ptr zones (0x50 each), ptr per-zone first-point index (u32), ptr per-zone
   point count (u16), u32 zone count (169), u32 point count (941), u32 3. Zone: ptr points, bounds min/max at
