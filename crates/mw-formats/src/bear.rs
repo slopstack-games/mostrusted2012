@@ -194,21 +194,75 @@ pub enum Op {
     InheritVelocity { velocity_param: Operand, min: f32, max: f32, velocity: Operand },
     /// 0x2F: `Age += dt × RecipLifetime`; the particle dies at 1.
     Age { age: Operand, recip_lifetime: Operand },
+    /// 0x0B `Initialise3dRotation` (compile `0x00449e20`, run `0x00453ee0` → `FUN_00453070`): a quaternion
+    /// (x, y, z, w) and a world angular velocity (rad/s). `random_rotation` (byte +0x45): `normalize(2r − 1)` of four
+    /// uniform randoms, else the Euler offset (radians, `qz ⊗ qy ⊗ qx`) ⊗ the `Transform`'s rotation.
+    /// `random_spin` (byte +0x44): a uniform random axis at `revs` × 2π rad/s, else `local_spin` (rad/s, emitter
+    /// space) turned by the `Transform`.
+    Rotation3dInit {
+        rotation: Operand,
+        angular_velocity: Operand,
+        euler: [f32; 3],
+        local_spin: [f32; 3],
+        revs: f32,
+        random_spin: bool,
+        random_rotation: bool,
+    },
+    /// 0x2D `Update3dRotation` (run `0x0045e2d0` → `FUN_0045ddf0`): unless every |ω| component is ≤ `FLT_EPSILON`,
+    /// `q ← (ω̂ sin(|ω| dt / 2), cos(|ω| dt / 2)) ⊗ q` (not renormalised), then `ω ×= (1 − damping)^dt` (`powf`):
+    /// `damping` is the fraction lost per second.
+    Rotation3d { rotation: Operand, angular_velocity: Operand, damping: f32 },
+    /// 0x40 `UpdatePosVelWithWorldCollision` (compile `0x0044bec0`, a plain copy; run `0x00462f00` → `FUN_00462750`):
+    /// rigid debris. A particle whose collision radius is negative is at rest and skipped. Otherwise `p += dt·v`,
+    /// `v = R·v + Δ` with `R = (1 − drag)^dt` and `Δ = (1 − R)·wind·W + (0, gravity·dt, 0) + turbulence·dt·(2r − 1)`;
+    /// the segment from the old position to the new one plus `v̂ · CR` is tested against the world triangles cached
+    /// around the player's car (front faces); on a hit the particle is put `CR` above the plane, `Δ` is taken out of
+    /// its velocity, the tangential part kept by `k = rand(1 − keep[1] .. 1 − keep[0])`, the normal part reflected
+    /// by `restitution`, and it comes to rest (velocity and spin 0, `CR` negated) when its speed is at most
+    /// `rest_speed` on ground whose normal has y > 0.9; else its spin is scaled by `k`.
+    WorldCollide {
+        position: Operand,
+        velocity: Operand,
+        collision_radius: Operand,
+        keep: [f32; 2],
+        gravity: f32,
+        drag: f32,
+        wind: f32,
+        turbulence: f32,
+        restitution: f32,
+        rest_speed: f32,
+    },
+    /// 0x11 `InitialiseCollisionRadius` (run `0x0044a380` → `FUN_0044a200`): `CR = 0.01 + table[serial & 15] · 0.99 /
+    /// 255` (`.rdata` 0x00f9d474 / 0x00f9d478).
+    CollisionRadiusInit { table: [u8; 16], radius: Operand },
     /// 0x2C: `Rotation += AngularVelocity × dt`, with damping.
     Rotation2d { rotation: Operand, angular_velocity: Operand, damping: f32 },
     /// 0x3D: integrate: vertical acceleration (m/s², -9.8 for debris), drag (1/s).
-    Integrate { position: Operand, velocity: Operand, gravity: f32, drag: f32, extra_guess: [f32; 2] },
-    /// 0x3E: integrate and collide with the bounce plane: restitution and friction ranges, then
-    /// gravity and drag as in 0x3D.
+    /// (Compile `0x0044bda0`, a plain copy; run `FUN_004615f0`.) `p += dt·v` (the old velocity), then `v = v·(1 −
+    /// drag)^dt + (1 − R)·wind·W + (0, gravity·dt, 0) + turbulence·dt·(2r − 1)` with `R = (1 − drag)^dt` (`powf`)
+    /// and `W` the engine block's +0x50 vector (not identified, wind?); bytes +0x1c / +0x1d index a float table
+    /// (engine +0x84, not read) that scales gravity and turbulence.
+    Integrate { position: Operand, velocity: Operand, gravity: f32, drag: f32, wind: f32, turbulence: f32 },
+    /// 0x3E `UpdatePosVelWithBouncePlane` (compile `0x0044be00` → `FUN_00448c40`, run `0x004620a0` → `FUN_004618d0`):
+    /// `v' = R·v + Δ` as 0x3D, then `p' = p + dt·v'`. The plane is `lerp(Pg, Pp, clamp((|p' − C|² − 4)·0.2, 0, 1))`
+    /// (`global_plane` parameter within 2 m of `reference`'s translation, the particle's own plane beyond 3 m;
+    /// `.bss` 0x010ed2c0 / 0x010ed2d0). With `s = plane·p' − (radius if subtract_radius)` ≤ 0: `p = p' − s·n`,
+    /// `v = (v' − vn·n)·f − (j if |j|² > |Δ|² else 0)`, `vn = v'·n`, `j = e·vn·n`; `e = rand(restitution)` and `f = 1 −
+    /// rand(friction)` drawn once per update for all particles.
     Bounce {
+        reference: Operand,
+        global_plane: Operand,
         position: Operand,
         velocity: Operand,
+        radius: Operand,
         plane: Operand,
         restitution: [f32; 2],
         friction: [f32; 2],
         gravity: f32,
         drag: f32,
-        extra_guess: [f32; 2],
+        wind: f32,
+        turbulence: f32,
+        subtract_radius: bool,
     },
     /// 0x3C `UpdateParametricRadius` (compile `0x0044bbb0`, run `FUN_004612d0`): `Radius* = Radius × r(Age) ×
     /// s`, with `r` piecewise linear through `(0, values[0])`, `(knee, values[1])` and `(1, values[2])` (the
@@ -391,6 +445,38 @@ pub struct Spawner {
     /// by this binding slot (data byte +0x68 / +0x78), the output of the layer's `UpdateWheelBindings` (0x42) /
     /// `UpdateBindings_Wheel` (0x34) controller.
     pub count_slot: Option<u8>,
+    /// `EmitterCollisionMesh` (0x01) only.
+    pub mesh: Option<MeshEmitter>,
+}
+
+/// `EmitterCollisionMesh` (0x01; compile `FUN_00449630`, run `0x0044ccb0` → `FUN_0044bf90`): particles born on the
+/// triangles of a car's collision mesh (the `PolygonSoupList` of its bundle, car space) around a contact point.
+/// The compile step copies data word i to compiled word i + 4 for the speed and angle ranges and turns the angle
+/// ranges into turns (`c0 = a_lo / 360`, `c1 = 4 (a_hi − a_lo) / 360`, `c2 = b_lo / 360 − c0`,
+/// `c3 = 4 (b_hi − b_lo) / 360 − c1`; `.rdata` 0x00f9d1b0 = 1 / 360, 0x00f9c610 = 4).
+///
+/// Each update (while `IsEmitting` is set and the layer clock is within `time_window`, or the burst is still to
+/// come): `n = burst · slot[burst] + rate · dt · slot[rate]` (the burst is spent), then for every polygon (its
+/// first three vertices) whose centroid `C` lies within `radius · slot[radius]` of the contact point `P`, with
+/// `(C − P) · N ≤ plane` and `(n̂ · N + 1) / 2 > facing` (`n̂` = the triangle's normal, `N` = the contact normal,
+/// both in mesh space): `area · n · camera fade` particles (the fraction carried over, starting at 0.9999).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MeshEmitter {
+    /// Words 6 / 7 (+0x18): the layer clock window; past its end only a burst not yet spent emits.
+    pub time_window: [f32; 2],
+    /// Word 11 (+0x2c): the `IsEmitting` parameter; word 14 (+0x38): the `CollisionMeshParams` parameter.
+    pub emitting: Operand,
+    pub mesh: Operand,
+    /// Words 18..20 (+0x48): the radius around the contact point (m), the largest offset of a triangle's centroid
+    /// along the contact normal (m) and the facing threshold.
+    pub radius: f32,
+    pub plane: f32,
+    pub facing: f32,
+    /// Bytes +0x5c..+0x60: the binding slots that scale the radius, the rate, the burst, the speed and the
+    /// angles (slot 0 reads 1).
+    pub slots: [u8; 5],
+    /// Byte +0x61: the emitter's LOD level (`.rdata` 0x00f9cf9c table; not used here).
+    pub lod_level: u8,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -732,6 +818,7 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
             position: opnd(0x60)?,
             velocity: opnd(0x64)?,
             cone: None,
+            mesh: None,
             // `EmitterWheel` (compile `FUN_004498e0`, run `FUN_0044fb20`): the count × slot[data byte +0x78].
             count_slot: Some(r.u8(0x78)?),
         }),
@@ -748,6 +835,7 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
             position: opnd(0x50)?,
             velocity: opnd(0x54)?,
             cone: None,
+            mesh: None,
             count_slot: Some(r.u8(0x68)?),
         }),
         0x01 => Op::Spawn(Spawner {
@@ -763,6 +851,21 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
             position: opnd(0x3C)?,
             velocity: opnd(0x40)?,
             cone: None,
+            mesh: if data.len() >= 0x64 {
+                let b = r.bytes(0x5c, 6)?;
+                Some(MeshEmitter {
+                    time_window: pair(0x18)?,
+                    emitting: Operand::decode(r.u32(0x2c)?, nch, np).unwrap_or(Operand::None),
+                    mesh: Operand::decode(r.u32(0x38)?, nch, np).unwrap_or(Operand::None),
+                    radius: f(0x48)?,
+                    plane: f(0x4c)?,
+                    facing: f(0x50)?,
+                    slots: [b[0], b[1], b[2], b[3], b[4]],
+                    lod_level: b[5],
+                })
+            } else {
+                None
+            },
             count_slot: None,
         }),
         0x00 => Op::Spawn(Spawner {
@@ -789,6 +892,7 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
             } else {
                 None
             },
+            mesh: None,
             count_slot: None,
         }),
         0x1A => Op::ToWorld { rotation: [0.0, 0.0, 0.0, 1.0], offset: [0.0; 3] },
@@ -821,22 +925,57 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
         0x16 => Op::InheritVelocity { min: f(0)?, max: f(4)?, velocity_param: opnd(8)?, velocity: opnd(28)? },
         0x2F => Op::Age { age: opnd(4)?, recip_lifetime: opnd(8)? },
         0x2C => Op::Rotation2d { angular_velocity: opnd(4)?, rotation: opnd(8)?, damping: f(12)? },
+        0x0B if data.len() >= 0x48 => {
+            let b = r.bytes(0x44, 2)?;
+            Op::Rotation3dInit {
+                rotation: opnd(4)?,
+                angular_velocity: opnd(8)?,
+                euler: [f(0x20)?, f(0x24)?, f(0x28)?],
+                local_spin: [f(0x30)?, f(0x34)?, f(0x38)?],
+                revs: f(0x40)?,
+                random_spin: b[0] != 0,
+                random_rotation: b[1] != 0,
+            }
+        }
+        0x40 if data.len() >= 0x38 => Op::WorldCollide {
+            position: opnd(8)?,
+            velocity: opnd(12)?,
+            collision_radius: opnd(20)?,
+            keep: pair(24)?,
+            gravity: f(32)?,
+            drag: f(36)?,
+            wind: f(40)?,
+            turbulence: f(44)?,
+            restitution: f(48)?,
+            rest_speed: f(52)?,
+        },
+        0x11 if data.len() >= 0x14 => {
+            let b = r.bytes(0, 16)?;
+            Op::CollisionRadiusInit { table: std::array::from_fn(|i| b[i]), radius: opnd(16)? }
+        }
+        0x2D => Op::Rotation3d { rotation: opnd(4)?, angular_velocity: opnd(8)?, damping: f(12)? },
         0x3D => Op::Integrate {
             position: opnd(4)?,
             velocity: opnd(8)?,
             gravity: f(12)?,
             drag: f(16)?,
-            extra_guess: pair(20)?,
+            wind: f(20)?,
+            turbulence: f(24)?,
         },
         0x3E => Op::Bounce {
+            reference: opnd(4)?,
+            global_plane: opnd(8)?,
             position: opnd(12)?,
             velocity: opnd(16)?,
+            radius: opnd(20)?,
             plane: opnd(24)?,
             restitution: pair(28)?,
             friction: pair(36)?,
             gravity: f(44)?,
             drag: f(48)?,
-            extra_guess: pair(52)?,
+            wind: f(52)?,
+            turbulence: f(56)?,
+            subtract_radius: data.len() > 60 && r.u8(60)? != 0,
         },
         0x3C => Op::RadiusCurve {
             age: opnd(4)?,
@@ -933,6 +1072,61 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
                 soft: r.u8(soft_at)? != 0,
             })
         }
+        // 3-D sprites (`Render3dSprite` 0x1E, `Render3dSpriteSubUV` 0x1F; run `FUN_00455670` / `FUN_00456110`): words
+        // view, position, age, 1 / lifetime, radius, colour, rotation (quaternion), [SubUV], then the draw state's
+        // +0x23c / +0x240 pair, a view-kind alpha factor, translucency, wrap, key as ambient and the material.
+        0x1E | 0x1F => {
+            let k = if kind == 0x1F { 1 } else { 0 };
+            Op::Render(Renderer {
+                kind,
+                position: opnd(4)?,
+                velocity: Operand::None,
+                radius: opnd(16)?,
+                rotation: opnd(24)?,
+                colour: opnd(20)?,
+                subuv: if kind == 0x1F { opnd(28)? } else { Operand::None },
+                material: import(0x34 + 4 * k),
+                pivot: [0.5; 2],
+                lighting: [f(40 + 4 * k)?, f(48 + 4 * k)?, f(44 + 4 * k)?],
+                depth_fade: f(28 + 4 * k)?,
+                opacity: f(32 + 4 * k)?,
+                aspect: 1.0,
+                size_cap: 0.0,
+                size_cap_slot: 0,
+                streak: [0.0, f32::MAX],
+                streak_scale: 1.0,
+                streak_slot: 0,
+                tail_alpha: 1.0,
+                // The last word's bytes through `FUN_0046a430`: blend → layer 5 / 6, soft → the soft passes.
+                layer: if r.u8(60 + 4 * k)? != 0 { 6 } else { 5 },
+                soft: r.u8(61 + 4 * k)? != 0,
+            })
+        }
+        // Meshes (`RenderMesh` 0x22 with the car's paint colour, `RenderMeshNoPaintColour` 0x23; run `FUN_00457720`):
+        // view, position, rotation, age, 1 / lifetime, radius, the Model import (+0x18; `material` holds it).
+        0x22 | 0x23 => Op::Render(Renderer {
+            kind,
+            position: opnd(4)?,
+            velocity: Operand::None,
+            radius: opnd(20)?,
+            rotation: opnd(8)?,
+            colour: Operand::None,
+            subuv: Operand::None,
+            material: import(0x18),
+            pivot: [0.5; 2],
+            lighting: [0.0; 3],
+            depth_fade: 0.0,
+            opacity: 1.0,
+            aspect: 1.0,
+            size_cap: 0.0,
+            size_cap_slot: 0,
+            streak: [0.0, f32::MAX],
+            streak_scale: 1.0,
+            streak_slot: 0,
+            tail_alpha: 1.0,
+            layer: 5,
+            soft: false,
+        }),
         0x25 | 0x29 => Op::Render(Renderer {
             kind,
             position: opnd(8)?,

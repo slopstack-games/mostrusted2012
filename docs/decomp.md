@@ -1534,6 +1534,66 @@ closing speed (2.235 m/s = 5 mph) as before.
 - `InitialisePosOffset` (0x14) keeps a particle in the emitter's space; `ParametricPosVelToWorldSpace` (0x1A /
   0x1B) places it with the current `Transform` when it is drawn, so the exhaust flames stay on the pipes.
 
+## Car collision effects (2026-10-16, ported in `crash_vfx.rs`, `particle_mesh.rs`)
+
+Read for the request "broken glass when crashing into traffic, crash particles in general".
+- **Race cars** (`FUN_00584260`, per frame per race-car slot; `param_3/4` = the `VfxGlobals` handle): when the
+  car's velocity (vehicle +0x14b0) is longer than `VehicleImpacts.34429d6c` (+0x130, 1.0), it walks the car's object
+  contacts (`FUN_00904880` / `FUN_00904850`, 0x70-byte records: point +0x10, value +0x2c, normal +0x30, object
+  shorts +0x60 / +0x62). The time since the last effect (+0x3f0, += dt) above `VehicleCollisionSettings.19458ef1`
+  (+0x9c, 0.2 s) and a value above `e9ff2375` (+0x98, 5) pick `VehicleImpacts` (+0xd0) and force a new instance,
+  anything else `VehicleScrapes` (+0xd8). The other object's type byte (table `DAT_010edb68` entry u16 +6) 7 (race
+  car) uses `FUN_004a02b0`, 8 (traffic / parked) `FUN_004a0600`; both take the impact zone of the contact
+  (`FUN_00929da0`) and whether this car is the local player (`FUN_006a10d0`). `VfxVehicleCollisions` field index
+  (declaration order): player vs race car 2 + k, player vs traffic 10 + k, others vs race car 20 + k, vs traffic
+  28 + k, with k = 0 front (zone 3), 1 front left (2), 2 front right (4), 3 left (9), 4 rear (7), 5 rear left (8),
+  6 rear right (6), 7 right (5); zones 0 / 1 / 10 and fields 0, 1, 18, 19 play nothing. The data: impacts front
+  `…117eca` (flash, sparks, dust, glass cards, debris meshes), front corners `…1402f0` (the same with painted
+  debris), sides / rear `…14021c` (no glass); scrapes `…140279` / `…7bcd0` (continuous sparks, painted bits). The
+  first contact with an effect wins.
+- **World contacts** (when no vehicle contact played): the bitsets at world +0x5ddf8 then +0x5ddec (0x80-byte
+  records at +0x5ddfc / +0x5ddf0: point, normal, a value in [7], the collision tag in [0xc]) → `FUN_0057b0a0`: the
+  surface's `SurfaceVfx` (`FUN_00547170` / `FUN_0054aaa0`, wet block by entity +0x1c17), `FUN_0049fe80` maps the
+  zone to an impact field pair (0 top, 1 bottom, 2 front left, 3 front, 4 front right, 5 right, 6 rear right, 7 rear,
+  8 rear left, 9 left) and takes the named one for the local player, the unnamed one after it otherwise. Its contact
+  frame (`param_9`) is not what the effect gets.
+- **Instances** (4 slots: handles +0x370, frames since refreshed +0x390, instances +0x28c): each frame every live
+  instance's `IsEmitting` bit (record byte +0x5e8 bit 1, inferred) is cleared and its `Transform` / velocity set to
+  the car's; the chosen effect refreshes the slot holding it (bit set, parameters copied) unless a new impact is
+  forced or the instance died, else it goes to an empty slot or the one refreshed longest ago (`FUN_0049f880`
+  creates). +0x3f0 and the slot's counter reset whenever an effect plays.
+- **Parameters** (`FUN_004a9f70` via vtable +0x4c): `Transform` = the car's matrix (`FUN_005423d0`: body matrix ×
+  the centre-of-mass offset rows), `Velocity` = v + ω × (p − centre) at the contact, `CollisionMeshParams` = the
+  entity's mesh handle (+0x184) and the contact point and normal in car space, `ImpactClosingVelocity` = the
+  contact value (the effects' controllers divide it by 22.35 m/s), `MovementSinceLastFrame` (vtable +0x48),
+  `PreCrashVelocity` (vtable +0x4c), `VehicleParams` (+0x3a0; vec4 1 read as the paint colour by `RenderMesh`).
+- **Traffic** (`FUN_00600220` → `FUN_005f58b0` for the world): the same with the traffic picker always
+  (`FUN_004a0600`), "player" meaning the other car is the local player's race car; the speed gate uses the traffic
+  car's own velocity.
+- **`EmitterCollisionMesh` 0x01** (compile `FUN_00449630`: data word i → compiled i + 4 for speed / angles, angles to
+  turns with ranges × 4 (`.rdata` 0x00f9d1b0 = 1/360, 0x00f9c610 = 4); run `FUN_0044bf90`): only while
+  `IsEmitting`; the layer clock window (data +0x18) or an unspent burst; `n = burst·slot + rate·dt·slot` (slot bytes
+  +0x5c..+0x60: radius, rate, burst, speed, angle); per polygon of the car's `PolygonSoupList` (first three
+  vertices) whose centroid is within radius (+0x48) of the contact, at most +0x4c along the normal and facing it
+  (`(n̂·N + 1)/2 > +0x50`): `area · n · camera fade` particles (carry from 0.9999, rounded); position
+  `v0 + a(v2 − v0) + b(1 − a)(v1 − v0)`; direction about the triangle normal (polar angle from the compiled angle
+  words and `min(|φ|, ½ − |φ|)`, `.bss` sin/cos polynomials = cos 2πx); speed `rand(speed)·slot`. The third channel
+  gets `CollisionMeshParams` +0x20 (a local light colour).
+- **`Initialise3dRotation` 0x0B** (`FUN_00453070`), **`Update3dRotation` 0x2D** (`FUN_0045ddf0`),
+  **`UpdatePosVelWithWorldCollision` 0x40** (`FUN_00462750`), **`InitialiseCollisionRadius` 0x11** (`FUN_0044a200`),
+  **`Render3dSprite(SubUV)` 0x1E / 0x1F** (`FUN_00455670` / `FUN_00456110`), **`RenderMesh(NoPaintColour)` 0x22 /
+  0x23** (`FUN_00457720`): layouts and maths in `mw_formats::bear` (`Op::Rotation3dInit`, `Op::Rotation3d`,
+  `Op::WorldCollide`, `Op::CollisionRadiusInit`, the renderers) and `particle_mesh.rs`. The glass is the 3-D sprite:
+  a card folded 22.5° along its local Z (8 vertices, `.rdata` 0x00f9d220 / 0x00f9d230), centre pushed `r` towards
+  the camera, wrap ±2k on edges / spine. Debris models in `GLOBALEFFECTS.BNDL` hold 16 pieces each
+  (`BLENDINDICES`, `gaTransforms[3·i]`); a particle draws piece `serial & 15` with `R(q)·r` (deferred `VfxMesh*`
+  programs; `VfxMeshCarPaint`: albedo = tex.rgb + paint·(1 − tex.a)).
+- **0x3D / 0x3E drag** (`FUN_004615f0`, `FUN_004618d0`): `v ← v·(1 − drag)^dt + Δ` (`powf`), Δ = gravity·dt +
+  wind (`(1 − R)·c·W`, engine block +0x50) + turbulence·dt·(2r − 1); 0x3E bounces only when the bounce impulse beats
+  Δ, its restitution / friction are drawn once per update, and its plane blends from a parameter plane (within 2 m
+  of a point) to the particle's own beyond 3 m. Ported (`particles.rs` `retain` / `acceleration`); the wind term
+  and 0x3D's table scales are left out (model decision).
+
 ## Post-processing and colour grade (2026-10-06)
 
 The final post-process shaders are not in `SHADERS.BNDL`: 74 DXBC programs sit in `NFS13.exe`'s `.rdata`

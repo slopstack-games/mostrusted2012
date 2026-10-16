@@ -180,6 +180,8 @@ pub struct TrafficCar {
     /// Index into `TrafficData::vehicles` (for other systems: sounds, HUD).
     #[allow(dead_code)]
     pub vehicle: usize,
+    /// Its paint (index into the type's `paints`).
+    pub paint: usize,
 }
 
 /// A wheel spinner of a traffic car: radius (m) for the spin.
@@ -2113,7 +2115,7 @@ fn spawn_entities(
         let body = commands
             .spawn((
                 Name::new(if slot >= MAX_CARS { "parked car" } else { "traffic car" }),
-                TrafficCar { vehicle },
+                TrafficCar { vehicle, paint },
                 transform,
                 Visibility::default(),
                 RigidBody::Kinematic,

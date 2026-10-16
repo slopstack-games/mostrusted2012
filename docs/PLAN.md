@@ -308,13 +308,14 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    which `WheelContact` fields the 0x42 sources read (modelled as the smoke ramps); the layer-6 draws (LDR
    constants, likely after the tonemap; drawn in HDR here); the nitrous modes' groups 9 / 20 and the wreck's 12;
    the cone emitter's angles; `UVDistortion`; a capture of the original's flames; surface ids from collision tags (dirt / grass dust; everything is tarmac now) and wet surfaces;
-   mesh debris renderers (0x1E/0x1F/0x22/0x23 with the bundle's debris models), light particles (0x0F/0x30),
-   splatter (0x4D); `OnRims`, burst tyres, spike strips, `VehicleImpacts` /
-   `VehicleScrapes` for car-to-car contacts; tyre marks (`Vfx_TyreMarksNew`, `TyreMarksMaterials`); smoke
+   light particles (0x0F/0x30), splatter (0x4D); `OnRims`, burst tyres, spike strips; tyre marks (`Vfx_TyreMarksNew`, `TyreMarksMaterials`); smoke
    colour (`Vehicles.SmokeColour`); world effects that are on from the start (`WCVfxBehaviour` ambient spot
    effects; the contact-driven ones and super-emitters landed 2026-10-16); the soft-particle depth fade (only
    on soft passes now; its constants `FUN_004976d0` not compared);
-   `gVfxSparkBrightness` and the exposure term; sort groups.
+   `gVfxSparkBrightness` and the exposure term; sort groups. Car collision effects landed 2026-10-16
+   (`crash_vfx.rs`: `VehicleImpacts` / `VehicleScrapes` / the surfaces' zone effects by the game's rules, the
+   collision-mesh emitter, glass cards 0x1E/0x1F, mesh debris 0x22/0x23, 3-D rotation, debris world collision;
+   the exponential drag and bounce rules of 0x3D / 0x3E).
 8. `[ ]` **Animations**: nothing animates yet besides wheels and damage poses. Car: the driver and steering
    wheel, animated body parts (`PhysicsDrivenVehicleAnimationBehaviour` / `.AnimatedBodyPart`: spoilers, flaps,
    suspension parts), `Genesys.Vehicles.AnimationStateBehaviour`, `AnimatedRaceCarBehaviour` (scripted cars).
