@@ -10,6 +10,54 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-16: speed camera flash; world-object coronas; brake-light hold
+User reports (session 10): "speed cameras always seem to light up the world, not just on flashes" and "effects
+like speed camera flashes are missing"; plus the coronas entry's open item, world-lamp coronas. Details in
+decomp.md "Speed camera flash" and "Coronas" (world objects, brake hold).
+- **Why cameras lit the world**: each speed camera compound (`1e63a9d5`, 74 placements) carries the behaviour
+  "SpeedCameraLight" (`…f8729`) with a 500 × white point light (`…f872d`, 70.7 m, on day and night) and a corona.
+  The behaviour has `543527d0` (on at start) clear; `world_lights` drew every object light regardless. Now lights of
+  behaviours that start off are left out of the bundle's lights (`ObjectLight::switched`) and come only when the
+  behaviour is switched on. Side effect: traffic lights' colour lights (behaviours "TrafficLight_*", mostly off at
+  start) go dark until their controller is ported; before, all three colours shone at once.
+- **The flash** is sequence 1107082 (the `SpeedCameraTriggered` action's output, already on the HUD for its
+  plate): two `ModifyBehavioursInAreaSequenceItem`s switch "SpeedCameraLight" behaviours within 50 m of the player
+  on for 0.1 s at 0 s and 1 s (`FUN_00856370` / `0x00851e20` → messages 0xd / 0xe → the object's activate /
+  deactivate), a `PostFxOverrideSequenceItem` adds a brightness term (property 0 × 0.6 into the PostFX state's
+  +0x1660, `FUN_008ecf80`) with spikes of 0.5 at 77 ms and 0.656 at 0.34 s, and two waves play at 1.333 s and
+  5.967 s. Found by the sequence's item type ids (0xf7a5c, 0xf7d8c) as immediates in the decrypted `.text`
+  (`re/out/live/text.asm`): the `(type id, factory)` table → the runtime items' vtables → REA on the carved image.
+  Ported in `sequence_fx.rs` (data `mw_assets::sequence_fx`) for every HUD message sequence, so the "+SP" message
+  (995814) and the speedwall panel (995322) now play their waves too.
+- **World-object coronas** (`world_coronas.rs`, data `mw_assets::coronas::ObjectCoronas`): the behaviour's five
+  corona bools (`FUN_005b0220`), the update's environment / hour test (`FUN_005b31a0`, `FUN_005a7850`), the object
+  reach (largest |locator| + `88b68533`), the lamp level `FUN_0089b400`(flags, owner handle), and `FUN_004a6b00`'s
+  call of the shared corona rule with colour / intensity / size 1 and anim = level. Street lamps (flags 3: night
+  and twilight) light at night; the speed camera's corona only during its flash.
+- **Brake hold** (`FUN_0057a5e0`): brake group lit until 0.5 s after the brake is released. Ported in `coronas.rs`.
+- **Checked**: `--test freeroam --hour 2` with `MW_SEQUENCE_FX_SHOTS` (`extracted/shots/scam/seq1107082-005.png`:
+  the road white under the camera's light; `-034.png`: the picture washed out by the brightness spike; `-060.png`:
+  dark again; `extracted/shots/scamvb/` the same from 35 m behind the car with the camera's corona and flare in
+  view; `scam13/` by day, where the spike whites out the frame); before any pass the camera is dark at 02:00
+  (`extracted/shots/scam/cam02.png`); the test's results are unchanged (cameras / gates / billboards 1250 SP). Street
+  at 01:00 (`--camera=765,43,1672,980,41,1748 --units 20`): lamp glows and their beam cones against
+  `MW_NO_CORONAS=1` (`extracted/shots/cor/st01*.png`); the industrial lamp (`cor/ind02*.png`). Bench (downtown
+  spawn, 01:00, 30 units): the world queue costs 0.04 ms per frame (1,213 objects, 132 coronas queued,
+  `MW_CORONA_LOG=1`); frame means 12–17 ms on and off, dominated by other builds on the machine.
+- **Model decisions**: enabled bindings false (`(NOT)` → true: offline there is no friends' speed wall, so
+  `ShowMiniWall` is false); the sequence's timeline controllers (wait for the speed wall's download, time out) not
+  run: the clock runs straight as the HUD's (if the original waits for the download offline, the waves and plate
+  come later or not at all); the area query by object origin (the game's query shape not read); a behaviour that
+  goes off at a contact is off while its object is loose (coronas); the lamp coronas' stagger id is the lamp
+  light's; the brake hold's player-state test taken as true for race cars.
+- **Open / not ported**: PostFX property 2 (+0x1504 / +0x1508); the "Dominant 3D" bus duck (0.435 → 1 over 4 s);
+  the behaviours' own light bools (+0x2e; the definitions' flags are used); traffic light controllers; the
+  behaviour blink (`c8d7741f`); rain / wet environment bits; light-record coronas (`FUN_00497200`); the electrical
+  flicker (bit 15, its setters not read); `ExposureScaleCoronas`. Captures of the original that would settle it:
+  a night pass at 85 mph past camera 1025449 with F12 bursts at 0–0.4 s and 1.0–1.1 s (the light's reach, the
+  white-out's strength, whether the plate and the 1.333 s sound come offline), and a night street with
+  `da44501b` lamps (glow and beam strength).
+
 ### 2026-10-16: vehicle coronas (glows, beams, flares) for every car
 Integrator request after the light-bar review (the bar was a few pixels at 30 m). Read from the dump with three
 research sub-agents; details in decomp.md "Coronas"; ported in `coronas.rs` + `corona.wgsl` (data

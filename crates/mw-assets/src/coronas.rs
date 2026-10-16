@@ -205,7 +205,106 @@ pub struct CarCorona {
     pub locators: Vec<Locator>,
 }
 
+/// The coronas of one `WCVfxBehaviour` of a world object (street lamps, traffic lights, speed cameras; docs/decomp.md
+/// "Coronas", world objects). The runtime behaviour (`FUN_005b3350`) packs the five corona bools into a flags byte
+/// (`FUN_005b0220`) that the queue (`FUN_004a6fa0`) hands to `FUN_0089b400` for the lamp's level.
+#[derive(Debug, Clone)]
+pub struct ObjectCoronas {
+    /// The behaviour's GeneSys object and `Label` ("SetLightsOn", "SpeedCameraLight", ...).
+    pub behaviour: ResourceId,
+    pub label: String,
+    /// Runtime +0x2c: 1 `62f1c8f6` (night), 2 `6e32f7bb` (twilight), 4 `74f925cc` (day), 8 `ad62f71e` (rain),
+    /// 0x10 `74ea21c1` (wet); the bool offsets 0x5c / 0x5e / 0x5b / 0x5d / 0x5f.
+    pub flags: u8,
+    /// `543527d0`: on from the start; `713589ad`: off at a contact; `0228a2f8`: on at a contact.
+    pub active_at_start: bool,
+    pub off_by_contact: bool,
+    pub on_by_contact: bool,
+    /// `392e10d5` / `19e7191a` (+0x50 / +0x4c, runtime +0x55 / +0x56): the hours [from, to) it may show
+    /// (`FUN_005a7850`; 0 / 24 = always).
+    pub hours: (u8, u8),
+    /// `c8d7741f` (+0x2c): above 0 the behaviour blinks (runtime +0x66; `FUN_005b31a0`). Not ported.
+    pub blink: f32,
+    /// Each `Coronas` entry: its definition and the locators of its `Locator_group` (object space).
+    pub entries: Vec<(Arc<CoronaDef>, Vec<mw_formats::Locator>)>,
+    /// Runtime +0x28: the largest |locator| + `88b68533` (the definition's +0xa8): the object's coronas are
+    /// queued while the camera is within this of it (`FUN_00532a80`, `FUN_00533780`).
+    pub reach: f32,
+}
+
+impl ObjectCoronas {
+    /// Shown by the time of day (`FUN_005b31a0`), or only while switched on: runtime +0x6a is set when some flag
+    /// is clear, and a behaviour with all five set (0x1f) shows its coronas only from its activation
+    /// (`FUN_005b30d0` → `FUN_00532760`).
+    pub fn by_time(&self) -> bool {
+        self.flags & 0x1f != 0x1f
+    }
+}
+
+fn flag(o: &Object, hash: u32) -> bool {
+    matches!(o.get(hash), Some(Value::Bool(true)))
+}
+
 impl AssetStore {
+    /// The corona-carrying `WCVfxBehaviour`s of an object definition (its own and its compound parts'), with their
+    /// locator groups resolved as for its lights (`AssetStore::object_lights`): the part's groups, then the
+    /// object's; part locators are taken as object space.
+    pub fn object_coronas(&self, def: &mw_formats::ObjectDef) -> Vec<ObjectCoronas> {
+        let mut defs: HashMap<ResourceId, Option<Arc<CoronaDef>>> = HashMap::new();
+        let mut out = Vec::new();
+        let no_part: &[mw_formats::LocatorGroup] = &[];
+        let parts =
+            def.compound_parts.iter().enumerate().map(|(i, p)| {
+                (p.behaviours.as_slice(), def.part_locator_groups.get(i).map_or(no_part, |g| g.as_slice()))
+            });
+        for (behaviours, own) in std::iter::once((def.behaviours.as_slice(), no_part)).chain(parts) {
+            for b in behaviours.iter().filter(|b| b.type_id == mw_formats::WC_VFX_BEHAVIOUR) {
+                let Some(behaviour) = b.object else { continue };
+                let Ok(o) = self.genesys_object(behaviour) else { continue };
+                let mut entries = Vec::new();
+                let mut reach = 0.0f32;
+                for c in structs(&o, field_hash("Coronas")) {
+                    let Some(cdef) = handle(c, field_hash("Corona_definition"))
+                        .and_then(|id| defs.entry(id).or_insert_with(|| self.corona_def(id).map(Arc::new)).clone())
+                    else {
+                        continue;
+                    };
+                    let group = num(c, field_hash("Locator_group")) as u32;
+                    let Some(g) = own.iter().chain(&def.locator_groups).find(|g| g.id == group) else { continue };
+                    for l in &g.locators {
+                        let [x, y, z] = l.position;
+                        reach = reach.max((x * x + y * y + z * z).sqrt() + cdef.values[1]);
+                    }
+                    entries.push((cdef, g.locators.clone()));
+                }
+                if entries.is_empty() {
+                    continue;
+                }
+                let flags = u8::from(flag(&o, 0x62f1_c8f6))
+                    | u8::from(flag(&o, 0x6e32_f7bb)) << 1
+                    | u8::from(flag(&o, 0x74f9_25cc)) << 2
+                    | u8::from(flag(&o, 0xad62_f71e)) << 3
+                    | u8::from(flag(&o, 0x74ea_21c1)) << 4;
+                out.push(ObjectCoronas {
+                    behaviour,
+                    label: match o.get(field_hash("Label")) {
+                        Some(Value::Str(s)) => s.clone(),
+                        _ => String::new(),
+                    },
+                    flags,
+                    active_at_start: flag(&o, 0x5435_27d0),
+                    off_by_contact: flag(&o, 0x7135_89ad),
+                    on_by_contact: flag(&o, 0x0228_a2f8),
+                    hours: (num(&o, 0x392e_10d5) as u8, num(&o, 0x19e7_191a) as u8),
+                    blink: num(&o, 0xc8d7_741f),
+                    entries,
+                    reach,
+                });
+            }
+        }
+        out
+    }
+
     /// A corona definition.
     pub fn corona_def(&self, id: ResourceId) -> Option<CoronaDef> {
         CoronaDef::from_object(id, &self.genesys_object(id).ok()?)

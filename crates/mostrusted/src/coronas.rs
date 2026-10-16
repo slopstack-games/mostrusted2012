@@ -29,8 +29,10 @@
 //!
 //! MODEL / open: s = tan(half the horizontal field of view) (the view's +0x8b908, inferred from the one-pixel
 //! cull); the flares are added to the HDR scene like the glows (the game draws them after the tonemap with the
-//! exposure applied, layer 8); the headlight glint (`VfxGlobals.20feab72`), `ExposureScaleCoronas` and world-lamp
-//! coronas are not drawn. `MW_NO_CORONAS=1` turns them off; `MW_CORONA_LOG=1` logs the sprite counts.
+//! exposure applied, layer 8); the headlight glint (`VfxGlobals.20feab72`) and `ExposureScaleCoronas` are not
+//! drawn. World objects' coronas (street lamps, traffic lights, speed cameras) come from `world_coronas.rs` through
+//! [`WorldCoronas`]. `MW_NO_CORONAS=1` turns them all off (`MW_NO_WORLD_CORONAS=1` only the world's);
+//! `MW_CORONA_LOG=1` logs the sprite counts.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, mpsc};
@@ -63,6 +65,7 @@ impl Plugin for CoronasPlugin {
             return;
         }
         app.init_resource::<Coronas>()
+            .init_resource::<WorldCoronas>()
             .add_systems(Startup, load_globals)
             .add_systems(Update, (request_materials, receive_materials))
             .add_systems(PostUpdate, build.after(bevy::transform::TransformSystems::Propagate));
@@ -102,6 +105,23 @@ fn view_behind(
     *cam = Transform::from_translation(eye).looking_at(t.translation + Vec3::Y * 1.2, Vec3::Y);
 }
 
+/// Coronas of world objects for this frame (`world_coronas.rs`: street lamps, traffic lights, speed cameras;
+/// `FUN_00497180` → `FUN_004a6fa0` → `FUN_004a6b00`). They go through the same `FUN_004a5790` with colour,
+/// intensity and size 1 and the lamp's level as the animation value.
+#[derive(Resource, Default)]
+pub struct WorldCoronas {
+    pub items: Vec<WorldCorona>,
+    /// Definitions whose sprite materials may not be loaded yet.
+    pub new_defs: Vec<Arc<CoronaDef>>,
+}
+
+pub struct WorldCorona {
+    pub def: Arc<CoronaDef>,
+    pub pos: Vec3,
+    pub dir: Vec3,
+    pub anim: f32,
+}
+
 /// `FUN_004a5790`: coronas below this strength are skipped (`.bss` 0x011040b0).
 const MIN_STRENGTH: f32 = 0.05;
 /// Sprites whose colour is at most this in every channel are culled (`.bss` 0x011042d0).
@@ -114,6 +134,8 @@ const TRAFFIC_LEVEL: f32 = 0.7;
 const TRAFFIC_MASK: u32 = 0x11;
 /// Race cars: 0x1a8c set on every car → groups 0, 4, 6, 7 (`FUN_0057a5e0`).
 const RACE_MASK: u32 = 0xd1;
+/// Seconds the brake group stays lit after the brake is released (`FUN_0057a5e0`, `.rdata` 0x00f8a810).
+const BRAKE_HOLD: f32 = 0.5;
 
 /// A car's coronas.
 #[derive(Component)]
@@ -305,6 +327,7 @@ fn request_materials(
     support: Option<Res<CompressedImageFormatSupport>>,
     cars: Query<&CarCoronas, Added<CarCoronas>>,
     mut coronas: ResMut<Coronas>,
+    mut world: ResMut<WorldCoronas>,
 ) {
     let (Some(game), Some(support)) = (game, support) else { return };
     let mut want = Vec::new();
@@ -314,6 +337,13 @@ fn request_materials(
                 if coronas.requested.insert(m) {
                     want.push(m);
                 }
+            }
+        }
+    }
+    for d in std::mem::take(&mut world.new_defs) {
+        for m in sprite_materials(&d) {
+            if coronas.requested.insert(m) {
+                want.push(m);
             }
         }
     }
@@ -430,6 +460,7 @@ fn build(
     scales: Option<Res<NightScales>>,
     camera: Query<(&GlobalTransform, &Projection), crate::MainCamera>,
     cars: Query<(
+        Entity,
         &GlobalTransform,
         &CarCoronas,
         Option<&Car>,
@@ -438,9 +469,11 @@ fn build(
         &InheritedVisibility,
     )>,
     mut coronas: ResMut<Coronas>,
+    world: Res<WorldCoronas>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut visibility: Query<&mut Visibility>,
     batch_entities: Query<(Entity, &Mesh3d)>,
+    mut braked: Local<HashMap<Entity, f32>>,
 ) {
     let coronas = &mut *coronas;
     let Some((cam, projection)) = camera.iter().next() else { return };
@@ -460,13 +493,20 @@ fn build(
     }
     let now = time.elapsed_secs();
     let mut counts = [0usize; 3];
-    for (t, c, car, controls, flash, vis) in &cars {
+    braked.retain(|e, _| cars.contains(*e));
+    for (e, t, c, car, controls, flash, vis) in &cars {
         if !vis.get() || c.level <= 0.0 {
             continue;
         }
         let mut mask = if c.traffic { TRAFFIC_MASK } else { RACE_MASK };
         if !c.traffic {
+            // The brake lights stay on for 0.5 s (`.rdata` 0x00f8a810) after the brake is let go: car +1000 is
+            // zeroed while braking and counts the scaled frame time, group 1 lit below 0.5 (`FUN_0057a5e0`; its
+            // player-state test `FUN_006c37e0` taken as true for every race car).
             if controls.is_some_and(|k| k.brake > 0.0) {
+                braked.insert(e, now);
+            }
+            if braked.get(&e).is_some_and(|&at| now - at < BRAKE_HOLD) {
                 mask |= 1 << 1;
             }
             if car.is_some_and(|car| car.gear < 0) {
@@ -512,6 +552,10 @@ fn build(
                 }
             }
         }
+    }
+    // World objects (`FUN_004a6b00`): colour, intensity and size 1, the lamp level as the animation value.
+    for w in &world.items {
+        corona(&view, &w.def, [1.0; 4], 1.0, Vec2::ONE, w.anim, w.pos, w.dir, &mut coronas.batches, &mut counts);
     }
     for (entity, mesh3d) in &batch_entities {
         let Some(b) = coronas.batches.values_mut().find(|b| b.mesh == mesh3d.0) else { continue };

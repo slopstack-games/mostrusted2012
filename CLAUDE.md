@@ -169,6 +169,9 @@ MW_NO_VIGNETTE=1 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,172
 ./target/release/mwtool scoring                     # ScoringActions: Speed Points, message sequence / title (--all, --sequence <id>, --text <ids>)
 # Collectables and Speed Points (freeroam.rs): a speed camera, a billboard and a gate; TEST RESULT freeroam ...
 ./target/release/mostrusted --drive 911 --units 12 --mute --no-traffic --test freeroam --profile <scratch>/p.cfg --screenshot <scratch>/fr.png
+# HUD sequences' world items (sequence_fx.rs: the speed camera's flash light, brightness flash, sounds):
+# MW_SEQUENCE_FX_LOG=1, MW_SEQUENCE_FX_SHOTS=<dir> (shots at 0.05 / 0.34 / 0.6 / 1.05 s of each sequence).
+# Coronas: MW_NO_CORONAS=1 (all), MW_NO_WORLD_CORONAS=1 (street lamps etc., world_coronas.rs), MW_CORONA_LOG=1
 ./target/release/mwtool placement-check --top 10             # placements vs the collision under them, per layer / model
 ./target/release/mwtool terrain-check --top 30               # drawn ground above road meshes (terrain through the road), ranked
 #   --all-passes / runtime MW_ALL_PASSES=1: also the models whose pass mask (Model +0x19) skips the main view (A/B)

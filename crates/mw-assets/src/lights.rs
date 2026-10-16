@@ -172,6 +172,11 @@ pub struct WorldLight {
 pub struct ObjectLight {
     pub def: Arc<LightDef>,
     pub locator: Locator,
+    /// The `WCVfxBehaviour` that carries it.
+    pub behaviour: ResourceId,
+    /// The behaviour is not on from the start (`543527d0` clear): its lights are off until something switches
+    /// it on (a sequence's `ModifyBehavioursInAreaSequenceItem`: decomp.md "Speed camera flash").
+    pub switched: bool,
 }
 
 /// The z axis of a locator's rotation (quaternion x, y, z, w).
@@ -284,7 +289,13 @@ impl DayPhase {
     /// +0x77 / +0x78, from weather bits the port does not have: taken as clear). `OnDuringTwilight` is
     /// copied into the light record but that function does not read it.
     pub fn light_level(&self, def: &LightDef, stagger: Option<u16>) -> f32 {
-        if (self.day && def.on_day) || (def.on_day && def.on_night) {
+        self.switch_level(def.on_day, def.on_night, stagger)
+    }
+
+    /// `FUN_0089b400` on its two flags that matter here (day 4, night 1); the world objects' coronas call it
+    /// with their behaviour's flags ([`Self::light_level`] has the rule).
+    pub fn switch_level(&self, on_day: bool, on_night: bool, stagger: Option<u16>) -> f32 {
+        if (self.day && on_day) || (on_day && on_night) {
             return 1.0;
         }
         let x = match stagger {
@@ -294,7 +305,20 @@ impl DayPhase {
             }
             None => self.night,
         };
-        if def.on_day { 1.0 - x } else { x }
+        if on_day { 1.0 - x } else { x }
+    }
+
+    /// The environment's state bits as the world-object behaviours test them (`DAT_0110d5d0` in
+    /// `FUN_005b31a0`; the state bytes of `FUN_008a8480`): 4 by day, 1 at night with the level at 1, 2 at night
+    /// below it (twilight). Rain (8) and wet (0x10) are not modelled.
+    pub fn env_mask(&self) -> u8 {
+        if self.day {
+            4
+        } else if self.night >= 1.0 {
+            1
+        } else {
+            2
+        }
     }
 }
 
@@ -308,9 +332,11 @@ impl AssetStore {
     /// compound object, its parts'): each `Lights` entry is a light definition and a `LocatorGroup`, looked
     /// up among the part's locator groups and then the object's; one light per locator.
     ///
-    /// Not modelled: what switches such a behaviour ("SetLightsOn") on and off in the game (the lights
-    /// are taken as on, subject to their definition's `OnDuring…` flags), and the bone pose of a part's own
-    /// locators (taken as object space; the street lamps' groups are object-level).
+    /// A behaviour without `543527d0` starts switched off (`ObjectLight::switched`): its lights come with its
+    /// activation (`FUN_005b30d0` → `FUN_005328c0`), e.g. a speed camera's flash. Not modelled: the behaviour's
+    /// own five light bools (runtime +0x2e, `FUN_005b0220`; with some clear the update `FUN_005b31a0` switches
+    /// the lights by the time of day; the definition's `OnDuring…` flags are used instead), and the bone pose of
+    /// a part's own locators (taken as object space; the street lamps' groups are object-level).
     pub fn object_lights(&self, def: &fmt::ObjectDef) -> Vec<ObjectLight> {
         let mut out = Vec::new();
         let no_part: &[fmt::LocatorGroup] = &[];
@@ -320,7 +346,10 @@ impl AssetStore {
             });
         for (behaviours, own) in std::iter::once((def.behaviours.as_slice(), no_part)).chain(parts) {
             for b in behaviours.iter().filter(|b| b.type_id == fmt::WC_VFX_BEHAVIOUR) {
-                let Some(o) = b.object.and_then(|id| self.genesys_object(id).ok()) else { continue };
+                let Some(behaviour) = b.object else { continue };
+                let Ok(o) = self.genesys_object(behaviour) else { continue };
+                // `543527d0` (+0x1a): on from the start.
+                let switched = !matches!(o.get(0x5435_27d0), Some(Value::Bool(true)));
                 let Some(Value::Array(lights)) = o.get(field_hash("Lights")) else { continue };
                 for l in lights {
                     let Value::Struct(l) = l else { continue };
@@ -331,7 +360,12 @@ impl AssetStore {
                     };
                     let light = Arc::new(light);
                     let Some(group) = own.iter().chain(&def.locator_groups).find(|g| g.id == group) else { continue };
-                    out.extend(group.locators.iter().map(|&locator| ObjectLight { def: light.clone(), locator }));
+                    out.extend(group.locators.iter().map(|&locator| ObjectLight {
+                        def: light.clone(),
+                        locator,
+                        behaviour,
+                        switched,
+                    }));
                 }
             }
         }
@@ -339,8 +373,9 @@ impl AssetStore {
     }
 
     /// The lights of a bundle: those its `LightInstanceList`s place, and those its compound and dynamic
-    /// objects carry ([`Self::object_lights`]) at each placement. Instances whose definition is missing or
-    /// not a light are skipped.
+    /// objects carry ([`Self::object_lights`]) at each placement, except the lights of behaviours that start
+    /// switched off (`ObjectLight::switched`). Instances whose definition is missing or not a light are
+    /// skipped.
     pub fn bundle_lights(&self, bundle: &Bundle) -> Result<Vec<WorldLight>> {
         let mut defs: HashMap<ResourceId, Option<Arc<LightDef>>> = HashMap::new();
         let mut out = Vec::new();
@@ -358,7 +393,11 @@ impl AssetStore {
                     let Some(object) = inst.object else { continue };
                     let lights = carried.entry(object).or_insert_with(|| {
                         let def = self.load(object).ok().and_then(|res| parse(&res).ok());
-                        def.map_or(Vec::new(), |d| self.object_lights(&d))
+                        // Lights of behaviours that start switched off stay out: they come and go with their
+                        // behaviour (a speed camera's flash light; traffic lights' colours).
+                        let mut lights = def.map_or(Vec::new(), |d| self.object_lights(&d));
+                        lights.retain(|l| !l.switched);
+                        lights
                     });
                     let t = &inst.transform;
                     placement = placement.wrapping_add(1);

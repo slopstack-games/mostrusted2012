@@ -68,6 +68,7 @@ mod pursuit;
 mod race;
 mod reflection;
 mod replay;
+mod sequence_fx;
 mod settings;
 mod sfx;
 mod shadow_cull;
@@ -79,6 +80,7 @@ mod traffic_reaction;
 mod tyre_marks;
 mod ui_quads;
 mod weather;
+mod world_coronas;
 mod world_lights;
 mod world_ui;
 
@@ -1016,6 +1018,7 @@ fn main() -> anyhow::Result<()> {
         .add_plugins((car_audio::CarAudioPlugin, car_sfx::CarSfxPlugin, player_sfx::PlayerSfxPlugin))
         .add_plugins(police_fx::PoliceFxPlugin)
         .add_plugins(coronas::CoronasPlugin)
+        .add_plugins((world_coronas::WorldCoronasPlugin, sequence_fx::SequenceFxPlugin))
         .add_plugins(audio::GameAudioPlugin)
         .add_plugins(music::MusicPlugin {
             enabled: std::env::var("MW_MUSIC").is_ok_and(|v| v == "1")
