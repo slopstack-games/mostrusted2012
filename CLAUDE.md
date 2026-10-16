@@ -170,6 +170,7 @@ MW_NO_VIGNETTE=1 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,172
 ./target/release/mwtool placement-check --top 10             # placements vs the collision under them, per layer / model
 ./target/release/mwtool terrain-check --top 30               # drawn ground above road meshes (terrain through the road), ranked
 #   --all-passes / runtime MW_ALL_PASSES=1: also the models whose pass mask (Model +0x19) skips the main view (A/B)
+./target/release/mwtool water                                # water meshes: height, listing zones, drawn water over dry ground (MW_WATER_AT=x,z ...)
 ./target/release/mwtool mods 911                             # performance upgrades: slot -> parameter changes
 ./target/release/mwtool sampler-usage --filter Driveable     # the game's sampler states per shader slot
 # Car options: --dirt 0.6,0.3 (dirt, dust), --anim all=1 (pose animated parts in --drive), --mods 12=0 (slot=level

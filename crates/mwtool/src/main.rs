@@ -21,6 +21,7 @@ mod traffic_sound;
 mod tune;
 mod ui;
 mod verify_handling;
+mod water;
 mod wheels;
 
 use mw_assets::AssetStore;
@@ -433,6 +434,21 @@ enum Cmd {
     /// Police and pursuit data (`mw_assets::police`): the bust rule, the free-roam heat levels (thresholds, heat
     /// and cooldown times, the cops each fields) and the cop types' cars (docs/decomp.md "Police and pursuits").
     Police,
+    /// Every water surface (main and backdrop): height, extent, listing units, and where it lies above dry
+    /// collision (floating water) while the composed backdrop draws it.
+    Water {
+        /// Surfaces counted as water beds (the wash surfaces).
+        #[arg(long, value_delimiter = ',', default_values_t = [27u8, 43])]
+        wash: Vec<u8>,
+        /// Sample spacing in metres.
+        #[arg(long, default_value_t = 8.0)]
+        step: f32,
+        #[arg(long, default_value_t = 40)]
+        top: usize,
+        /// Ignore the backdrop composition (count every backdrop sample as drawn).
+        #[arg(long)]
+        all_backdrops: bool,
+    },
     /// Drop every placement (instances, props, compounds, dynamics, groundcover) onto the track units'
     /// collision and report per layer / model / unit how far it stands off the ground.
     PlacementCheck {
@@ -877,6 +893,9 @@ fn main() -> Result<()> {
         Cmd::TerrainCheck { step, eps, top, only, all_passes } => {
             let store = AssetStore::new(game)?;
             terrain_check::run(&store, step, eps, top, only.as_deref(), all_passes)?
+        }
+        Cmd::Water { wash, step, top, all_backdrops } => {
+            water::run(&AssetStore::new(game)?, &wash, step, top, !all_backdrops)?
         }
         Cmd::PlacementCheck { bundles, top, groups, view, column, owners } => {
             let store = AssetStore::new(game)?;
