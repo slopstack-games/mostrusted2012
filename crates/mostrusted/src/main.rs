@@ -78,6 +78,7 @@ mod sky;
 mod steam_controller;
 mod tonemap;
 mod traffic;
+mod traffic_lamps;
 mod traffic_reaction;
 mod tyre_marks;
 mod ui_quads;
@@ -1027,7 +1028,11 @@ fn main() -> anyhow::Result<()> {
         ))
         .add_plugins(police_fx::PoliceFxPlugin)
         .add_plugins(coronas::CoronasPlugin)
-        .add_plugins((world_coronas::WorldCoronasPlugin, sequence_fx::SequenceFxPlugin))
+        .add_plugins((
+            world_coronas::WorldCoronasPlugin,
+            sequence_fx::SequenceFxPlugin,
+            traffic_lamps::TrafficLampsPlugin,
+        ))
         .add_plugins(car_lights::CarLightsPlugin)
         .add_plugins(audio::GameAudioPlugin)
         .add_plugins(music::MusicPlugin {

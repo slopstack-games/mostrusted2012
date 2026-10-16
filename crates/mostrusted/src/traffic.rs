@@ -468,7 +468,35 @@ pub struct TrafficSystem {
     /// Time spent in the tick (s) and ticks, for `MW_TRAFFIC_LOG`.
     tick_time: f64,
     ticks: u32,
+    /// The junction lamps' records by light id (`world+0x65e20 + id × 8`).
+    lamps: HashMap<u16, LampRecord>,
+    /// What the light cycle told the lamps since `traffic_lamps.rs` last read it: (object handle, colour) =
+    /// messages 0xb (switch on the behaviours labelled `TrafficLight_<colour>`) and 0xc (the other two off).
+    pub lamp_events: Vec<(u32, LampColour)>,
 }
+
+/// A junction lamp's colour (`FUN_00605d30`, `FUN_0061bbd0`, `FUN_006037f0`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum LampColour {
+    /// State 0 (the record starts zeroed).
+    #[default]
+    Red,
+    /// State 1: 2 s (the timer starts at 200 and counts down by dt × 100, `.rdata` 0x00fb2890 = −100).
+    Amber,
+    /// State 2.
+    Green,
+}
+
+/// A lamp record: the object handle (`FUN_005ef950`), the amber timer and the colour.
+#[derive(Clone, Copy, Default)]
+struct LampRecord {
+    handle: u32,
+    timer: f32,
+    colour: LampColour,
+}
+
+/// The amber's length: 200 counted down by dt × 100 (`FUN_0061bbd0`, `FUN_006037f0`).
+const AMBER_SECONDS: f32 = 2.0;
 
 impl TrafficSystem {
     fn new(data: Arc<TrafficData>, free_drive: Option<EventTraffic>, density_scale: f32) -> Self {
@@ -499,6 +527,8 @@ impl TrafficSystem {
             cull_timer: 0.0,
             paint_cursor: vec![0; n_vehicles],
             by_section: HashMap::new(),
+            lamps: HashMap::new(),
+            lamp_events: Vec::new(),
             density_scale,
             hits: Vec::new(),
             cop_obstacles: Vec::new(),
@@ -1976,11 +2006,13 @@ fn move_car(sys: &mut TrafficSystem, slot: usize, dt: f32, commands: &mut Comman
 }
 
 /// Junction light cycles (`FUN_00605d30`): the phase advances when its timer runs out; each light group's
-/// stop lines are held while the phase's mask has the group's bit.
+/// stop lines are held while the phase's mask has the group's bit, and its lamps change colour (green, or amber
+/// for 2 s then red; [`TrafficSystem::lamp_events`], shown by `traffic_lamps.rs`).
 fn cycle_lights(sys: &mut TrafficSystem, dt: f32) {
     let data = sys.data.clone();
     let active = sys.active.clone();
     let mut held: Vec<(u16, u8, bool)> = Vec::new();
+    let mut lamp_changes: Vec<(u16, u32, bool)> = Vec::new();
     for h in active {
         let hull = &data.lanes.hulls[h as usize];
         let state = sys.hull_state(h);
@@ -1998,8 +2030,45 @@ fn cycle_lights(sys: &mut TrafficSystem, dt: f32) {
                 for &(sh, sl) in &group.stop_lines {
                     held.push((sh, sl, red));
                 }
+                // The group's lamps: a held group's lit lamps go amber (`FUN_0061bbd0(1)`, also restarting an
+                // amber), the others green (state 2), each change sent to the lamp's object.
+                for (&id, &handle) in group.lights.iter().zip(&group.light_objects) {
+                    lamp_changes.push((id, handle, red));
+                }
             }
         }
+    }
+    for (id, handle, red) in lamp_changes {
+        let lamp = sys.lamps.entry(id).or_insert(LampRecord { handle, ..Default::default() });
+        if red {
+            if lamp.colour == LampColour::Red {
+                continue;
+            }
+            lamp.colour = LampColour::Amber;
+            lamp.timer = AMBER_SECONDS;
+        } else {
+            lamp.colour = LampColour::Green;
+        }
+        if handle != 0 {
+            sys.lamp_events.push((handle, lamp.colour));
+        }
+    }
+    // Ambers run out into red (`FUN_006037f0` per active hull, `FUN_0061bae0`).
+    for lamp in sys.lamps.values_mut() {
+        if lamp.colour == LampColour::Amber {
+            lamp.timer -= dt;
+            if lamp.timer <= 0.0 {
+                lamp.colour = LampColour::Red;
+                lamp.timer = 0.0;
+                if lamp.handle != 0 {
+                    sys.lamp_events.push((lamp.handle, LampColour::Red));
+                }
+            }
+        }
+    }
+    // Nobody reads them without `traffic_lamps.rs`'s system (a bound against growth).
+    if sys.lamp_events.len() > 4096 {
+        sys.lamp_events.drain(..2048);
     }
     for (h, line, red) in held {
         if let Some(s) = sys.hulls.get_mut(&h)

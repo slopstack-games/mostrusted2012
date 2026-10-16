@@ -116,6 +116,10 @@ MW_NO_VIGNETTE=1 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,172
 # MW_SEQUENCE_FX_LOG=1, MW_SEQUENCE_FX_SHOTS=<dir> (shots at 0.05 / 0.34 / 0.6 / 1.05 s of each sequence).
 # World coronas (world_coronas.rs: street lamps, speed cameras): MW_NO_WORLD_CORONAS=1 (A/B); MW_CORONA_LOG=1 also
 # prints the world queue's size and cost
+# Junction traffic lights (traffic_lamps.rs, colours from the traffic cycle; needs traffic, --traffic-density 0 keeps
+# the cycle without cars): MW_TRAFFIC_LAMP_LOG=1 (lamp positions, colour changes),
+# MW_TRAFFIC_LAMP_SHOTS=<dir>[,<period s>[,<count>]] (shots from the car's arrival, then exit)
+MW_TRAFFIC_LAMP_SHOTS=<dir>,2.5,12 ./target/release/mostrusted --drive 911 --units 12 --spawn=-265,49,1819,128 --traffic-density 0 --camera-mode bonnet --mute --hour 1
 # Collectables and Speed Points (freeroam.rs): a speed camera, a billboard and a gate; TEST RESULT freeroam ...
 ./target/release/mostrusted --drive 911 --units 12 --mute --no-traffic --test freeroam --profile <scratch>/p.cfg --screenshot <scratch>/fr.png
 ./target/release/mwtool placement-check --top 10             # placements vs the collision under them, per layer / model

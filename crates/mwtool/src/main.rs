@@ -1860,7 +1860,9 @@ fn traffic(store: &AssetStore, png: Option<&Path>, at: &[f32]) -> Result<()> {
                 .iter()
                 .map(|g| {
                     let lines: Vec<String> = g.stop_lines.iter().map(|(h, s)| format!("{h}/{s}")).collect();
-                    format!("[{}]", lines.join(" "))
+                    let lights: Vec<String> =
+                        g.lights.iter().zip(&g.light_objects).map(|(l, o)| format!("L{l}={o}")).collect();
+                    format!("[{} | {}]", lines.join(" "), lights.join(" "))
                 })
                 .collect();
             // Where: the first rung of the section owning the first stop line.
@@ -1891,6 +1893,7 @@ fn traffic(store: &AssetStore, png: Option<&Path>, at: &[f32]) -> Result<()> {
         }
     }
     println!("junction stop line references: {owned} owned by a section, {bad_refs} out of range");
+    traffic_light_objects(store, &t)?;
     // Query check at the docs/viewpoints.md road spot.
     let near = t.lanes_near(-1131.0, 1627.0, 200.0);
     println!("{} lane sections within 200 m of (-1131, 1627)", near.len());
@@ -2910,6 +2913,52 @@ fn scoring(store: &AssetStore, all: bool, sequence: Option<u32>, text: &[u32]) -
             if a.predicate.is_empty() { String::new() } else { format!(" if {}", a.predicate) }
         );
     }
+    Ok(())
+}
+
+/// The junction lights' object handles (`TrafficLightGroup::light_objects`) against the placed compound and
+/// dynamic objects' instance ids: how many name a placed object, with which object definitions.
+fn traffic_light_objects(store: &AssetStore, t: &fmt::TrafficLaneData) -> Result<()> {
+    let mut by_id: std::collections::HashMap<u32, (ResourceId, [f32; 3])> = Default::default();
+    for path in store.bundle_paths().to_vec() {
+        if !path.file_name().is_some_and(|n| n.to_string_lossy().starts_with("TRK_UNIT")) {
+            continue;
+        }
+        let Some(bundle) = store.bundle(&path) else { continue };
+        for ty in [ResourceType::CompoundInstanceList, ResourceType::DynamicInstanceList] {
+            for e in bundle.entries_of_type(ty) {
+                let Ok(list) = fmt::ObjectInstanceList::parse(&bundle.load(e)?) else { continue };
+                for i in list.instances {
+                    let [x, y, z, _] = i.transform[3];
+                    for id in i.ids.into_iter().filter(|&id| id != 0) {
+                        by_id.insert(id, (i.object.unwrap_or(ResourceId::NULL), [x, y, z]));
+                    }
+                }
+            }
+        }
+        store.evict_all();
+    }
+    let (mut exact, mut low, mut missing) = (0, 0, 0);
+    let mut defs: BTreeMap<ResourceId, usize> = BTreeMap::new();
+    let mut tops: BTreeMap<u32, usize> = BTreeMap::new();
+    for g in t.hulls.iter().flat_map(|h| &h.junctions).flat_map(|j| &j.groups) {
+        for &o in &g.light_objects {
+            *tops.entry(o >> 28).or_default() += 1;
+            if let Some((d, _)) = by_id.get(&o) {
+                exact += 1;
+                *defs.entry(*d).or_default() += 1;
+            } else if let Some((d, _)) = by_id.get(&(o & 0x0fff_ffff)) {
+                low += 1;
+                *defs.entry(*d).or_default() += 1;
+            } else {
+                missing += 1;
+            }
+        }
+    }
+    println!(
+        "junction light objects: {exact} name an instance id, {low} by their low 28 bits, {missing} not found; \
+         top nibbles {tops:?}; definitions {defs:?}"
+    );
     Ok(())
 }
 

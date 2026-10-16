@@ -63,6 +63,29 @@ sub-agents decoded 0x0B / 0x2D, 0x40 / 0x11 / 0x3E / 0x3D and the 0x1E / 0x1F / 
   writer (record +0x2c), the normal's sign, `IsEmitting` = record bit 1 (inferred), whether a dead instance is
   recreated every frame for a sliding wreck, the dust's size and brightness, the debris lighting, the hanging bumper
   sparks (`VfxGlobals.HangingBumperSparks`, not traced), `PreCrashVelocity`.
+### 2026-10-16: junction traffic lights on the lamp posts
+Integrator follow-up to the speed camera entry below (traffic-light colours went dark once lights of behaviours
+that start off were left out). Details in decomp.md "Traffic lights: the lamps".
+- **Found**: the traffic system's own light cycle `FUN_00605d30` keeps a record per lamp (world +0x65e20) and
+  sends the lamp's object "on TrafficLight_<colour>" / "off" the other two (messages 0xb / 0xc, label hashes set in
+  `FUN_005eb060`); held groups go amber (`FUN_0061bbd0`, timer 200) and 2 s later red (`FUN_006037f0`, dt × 100),
+  free groups green. The lamp's object is named by a `u32` in the junction data (group − 8 + 4k, copied by
+  `FUN_005ef950`), which is the traffic-light compound's placed instance id: 101 of 104 found (`mwtool traffic`
+  now lists `L<id>=<handle>` per group and the match). So the lamp ↔ junction link is in the data; no model.
+- **Ported**: `cycle_lights` keeps the records and emits colour changes; `traffic_lamps.rs` finds each lamp's
+  object by its instance's position (`mw_assets::traffic_lamps`) and switches its `TrafficLight_*` behaviours'
+  lights and coronas (`world_coronas.rs`, now per behaviour). The lamps change at the moment the cars' stop lines
+  are held or freed.
+- **Checked**: junction 164.0 (cycle 15 s / 2 s all red / 17 s) at 01:00, `MW_TRAFFIC_LAMP_LOG=1`: group 2 green,
+  17 s later groups 0 and 1 green with group 2 amber, red 2 s later, as the data says; shots every 2.5 s from the
+  approach (`MW_TRAFFIC_LAMP_SHOTS`, bonnet camera, `--traffic-density 0`): the facing lamp red, then green
+  (`extracted/shots/tl/stack.png`, `stack2.png`).
+- **Model decisions**: a lamp never told (record zero, state red) is shown red (the game sends nothing for that
+  state, so its behaviours keep their start state until the first change); the colour is reapplied when a lamp's
+  object reappears (the game only sends changes); the lamp's object is found by position (within 1 m).
+- **Open**: with `--no-traffic` or the free camera the traffic system does not run, so the lamps keep their
+  start state (mostly dark); 3 handles name no placed object; record flag bit 7 (no messages) was not seen set.
+  A capture of the original at a junction at night (F12 every 2 s over a cycle) would confirm the look.
 
 ### 2026-10-16: particle opacity settled; the dirt cloud's fade, radius curve and emission from the code
 
