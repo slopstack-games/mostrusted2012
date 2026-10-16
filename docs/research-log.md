@@ -237,6 +237,14 @@ removal, search legs) is merged into this work.
   20 mph × d / 33 m, so the bust takes a while. The test now teleports the car with Position / Rotation (a
   Transform write alone did not always move a body: the cops test's cop stayed put that way) and reports the
   last uninterrupted fill.
+- **`--test pursuit` on the merged session-10 tree** (integrator: busted 6 s into the chase phase, then a
+  timeout in phase 3): the test's fault, not an interaction with the merged branches. The test placed its cops
+  30 m away in any direction while the car was still pulling away from rest; a cop ahead rams head-on (ram mode
+  within 40 m), the car drops below the 25 mph bust speed with cops touching it, and the game's bust rule
+  catches it; the test then waited for a cooldown that never came. Now the cops are sent only once the car does
+  50 mph and are placed behind it (falling back to the ring), and a bust during the chase phase skips to the
+  bust run instead of timing out. Six runs on the merged tree: all complete (escaped and busted; the bust meter
+  filled in 4.0 s in five of them, the original's time); `--test cops` 4/4 three times.
 - **Public state for the siren / light-bar work**: `police::CopStatus` (component: activity, driver state id,
   patrol mode, the game's chasing predicate `FUN_006bbb70`, in pursuit, sees the player, wrecked), plus
   `CopMode`, `Cop::mode()`, `Cop::slot()`. The siren switch was not found in the code (only the mix groups
