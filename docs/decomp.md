@@ -1829,6 +1829,87 @@ also divides the current intensity by the definition's `Intensity` and passes th
   code names those ids with a literal; the textures come from data: a `Model` resource's block at +0x10 (the
   layout of an `InstanceList` instance's overrides: names + texture and sampler-state imports) and the
   instances' own override blocks.
+- *List sizes* (`FUN_008ae1d0`, per view, keep / capacity from `.data` pairs; view 0 = the main view): point
+  (renderer +0x000, `0x010c7060`) 128 / 160, cone (+0x360, `0x010c6f88`) 224 / 256, projected texture (+0x1b0,
+  `0x010c70a8`) 8 / 12, spot (+0x6c0, `0x010c6fd0`) 224 / 256, the 0x40-byte list at +0x510 (`0x010c70f0`) 32 / 40,
+  the 0x60-byte list at +0x870 (`0x010c7018`) 128 / 160; the point / cone / spot lists of views 1, 2 and 3–5 keep 4 / 6, 128 / 160 and 24 / 32. Renderer
+  +0x2165..+0x216e (per-type enables: +0x2167 cone, +0x2168 point, +0x2169 projected, +0x216a cop, +0x216b spot)
+  are all set to 1 there; +0x217a + view is 1 for view 0 only.
+
+## Car lights on the world (2026-10-16, ported in `car_lights.rs`)
+
+Read for "vehicle lights don't light up the world". Data: `VehicleVfxBehaviour.Lights` (formats.md "Car light
+sources"; `mwtool car-lights <car|all>`).
+
+- **Who**: `FUN_00588da0` loops the 16 race-car slots (render instances 0x1c40 apart from manager +0x3050) and
+  calls `FUN_005818f0` for each slot whose instance bytes +0x19/+0x18 (`+0x3069`/`+0x3068`) are set, with the
+  slot's effect mask (`+0x1f818 + slot × 0x400` = block +0x3c8), light level L (+0x3cc), headlight level H
+  (+0x3d4), flash clock (game time × +0x3e4) and **viewed** = the slot is the local player's (`FUN_006a10d0`) or,
+  when `FUN_006a11e0`, the watched car. Traffic (`FUN_005fd190`) queues coronas only (`FUN_004970b0`); the six
+  light-submission functions (`FUN_008ce920` point, `…9c0` cone, `…cebf0` spot, `…cee40` line, `…cf0c0` projected,
+  `…cf1d0` cop) are called only from `FUN_0054ade0` (world), `FUN_005818f0` (cars), `FUN_004a2920` (effects) and
+  `FUN_008cef70` (checked over the full listing), so traffic and parked cars cast no light.
+- **Levels** (`FUN_0057a5e0` writes the slot block's +0x3c8; the levels are written next to it, `00570000.c` ~line 8600): +0x3cc = +0x3d4 = 1 on a
+  running car (+0x3d4 = +0x3dc when that is > 0; bit 0x8000 replaces +0x3cc by a flicker noise). The mask: 0xd1
+  (groups 0, 4, 6, 7) when entity +0x1a8c (set at spawn by `FUN_00591350`; request +0x194c at 0x587254: 2 on / 1 off,
+  written only by cutscene cars `FUN_005b4750` from their data byte +0x5b; the script function
+  `SetHeadlightsState` (0x6781f0) is a stub), | 8 with the cop bar, | 2 brake (+0x1930 > 0, held 0.5 s by
+  +0x3e8), | 4 when `FUN_0090d460`(slot) = −1 (read as reverse; not followed) and | 6 then when +0x192c > 0; groups 0, 1, 2, 4, 6, 7 cleared when
+  +0x1a84 = 0 and +0x1a40 bit 2 is clear. In `FUN_005818f0`, bit 7 (tail) is cleared when instance +0x1930 > 0
+  (the brake; same 0x1c40 structure, inferred). Snapshot: slot 1 (a cop) mask 0xd1, slot 0 0x80000 (lights off;
+  the player's car was not driving).
+- **Per entry** (0x40 bytes: +0x10 `Colour`, +0x20 `Animation`, +0x28 `LightDefinition`, +0x30 `LocatorGroup`,
+  +0x34 `a3de907e`, +0x38 `Group`, +0x3a `da6ac384`): skipped unless the group bit is in the mask, and group 6
+  when viewed. Groups 4, 6, 17 are headlights (level H, flag `cVar15`); others level L × the animation
+  (`FUN_0049ef00`). Not viewed: × `FUN_0089b400`(flags, 0) with flags 0x61 (gate 2: night level), 0x64 (gate 1:
+  1 − night), 0x65 (gate 0: 1). Viewed: no gate (the player's head and tail lights are lit by day too); with
+  instance +0x1c17 and group 4, H = 1. Colour = definition `Colour` × entry `Colour`; intensity = `Intensity` ×
+  `a3de907e` × level, each locator's world matrix = the quaternion's rotation (`√2 q` expansion, rows as
+  `FUN_005818f0` builds them) × the car's matrix. By definition type: spot 0x841d8 → `FUN_008cebf0` (renderer
+  +0x216b; direction = row 2, `ConeAngle` +0x60, `ConeInnerAngle` +0x70, threshold +0x48); cone 0x2859 →
+  `FUN_008ce9c0` (+0x2167; × the damage factor, skipped at ≤ 1.19e-7 `.rdata` 0x00fab7ac); point 0x285b →
+  `FUN_008ce920` (+0x2168, × damage); custom 0x285a → `FUN_008cf1d0` (the cop path, research log
+  2026-10-16); projected 0x285c **only when viewed** → `FUN_008cf0c0` (+0x2169, × damage).
+- **Damage factor** `FUN_0049fda0`(local position, FL, FR, RL, RR): the zone levels +0x112c / +0x1134 / +0x1144 /
+  +0x113c (capped 0.99 while not wrecked) × 100 + 0.5 rounded (x87, to even) as bytes (FL / FR stay 0 for the
+  viewed car); a lamp with local z in (−0.6, 0.1) is never out; |x| < 0.1 → 0.5 per side lit; else the side's
+  byte (x > 0 = left) against the global object's +0x94 (0.01 in snap1, × 100 + 0.5 truncated = 1): any damage
+  turns cone, point and projected lamps off. Spot lights take no damage factor.
+- **Projected light** (`FUN_005818f0` → `FUN_008cf0c0` → list +0x1b0 → `FUN_008b1860`): the projector frame is
+  a look-at (`FUN_00a639c0`) from the locator's world position along its row 2 with row 1 up; half-angles
+  atan(Rxx) × `FovScale.x` and atan(Ryy) × `FovScale.y` (Rxx / Ryy = the locator's local rotation diagonal; CRT
+  `atanf` at 0x00edc7b2, confirmed by its constants π/2, −1/3, 1/5 in snap1; × 2 × 57.2958, then × 0.0174533 ×
+  0.5); every car's projector locator is unrotated, so 45° × FovScale (the main beam: 55.35° × 38.25°). Entry
+  (0xc0 bytes): +0x00 position, +0x10 colour × intensity and threshold, +0x20 flag byte, +0x30..+0x6f the frame,
+  +0x70 `Attenuation`, +0x80 the half-angles, +0x90 `664ab465`, +0xa0 the material, +0xa4 0, +0xa5
+  `FUN_00897bf0()` (renderer +0x1f004: the headlight shadow map was rendered this frame). `FUN_008b1860`: far = the
+  larger root of a t d² + b t d + (c t − max rgb) = 0 (`FUN_008a0a20`; t = threshold), near 0.1 (`.rdata`
+  0x00f9f660); projection rows (1/tan hx, 0, 0, 0), (0, 1/tan hy, 0, 0), (0, 0, (f + n)/(f − n), 1),
+  (0, 0, −2 f n /(f − n), 0) (`.rdata` 0x00f9d488 = −2); constants: `deferred_lightPosition` (0x50) = position −
+  camera, `deferred_attenuation` (0x53) = `Attenuation`, `deferred_lightColour` (0x51), and
+  `deferred_lightProjectionMatrix` (0x5b) = the camera-relative view × projection. The volume (`FUN_008a1c10`):
+  a 4 × 4 × 4 grid over clip x ∈ [`664ab465`.x, .z], y ∈ [.y, .w], z ∈ [−1, 1] (z fractions 0, 0.002, 0.01, 1),
+  drawn through the inverse view-projection; a camera inside (its position + 0.2 × view direction projects within
+  the volume) draws full screen instead. Material states: 0x19 / 0x1a (inside) and 0 / 0x1b (outside) by the
+  entry's flag byte, **0x31 / 0x32 when +0xa5 is set** (the `HeadlightShadows` programs).
+- **Headlight shadows**: `FUN_008cfe20` sets renderer +0x1f004 = 1 and renders the map (`FUN_008b7a20`;
+  `SortShadowHeadlightWorld` / `SortShadowHeadlightCarsMisc`) when +0x1cc23 (the display option `HeadlightShadows`,
+  `param_1[0x118]` of the config writer at 0x414f7f; 1 in snap1, `true` in this machine's `config.NFS13Save`),
+  +0x1f005 (= `FUN_005837e0`: the viewed car has a lit projected light, no gate; 0 in both snapshots, whose
+  player slot had its lights off), +0x1cc10/11 and +0xe1f9 hold. Programs (`mwtool shader-asm
+  LightBuffer_ProjectedTexture`): slot 0x788 (volume) / 0x5c8 (full screen) = diffuse only × the headlight
+  shadow (`shadowMapHeadlightSampler`, slot 15: one `sample_c_lz` at (c.x / w × 0.5 + 0.5, 1 − (c.y / w × 0.5 +
+  0.5)) against c.z / w); 0x6a8 / 0x4e8 diffuse without shadow; 0x338 / 0x418 with the specular term, no shadow.
+  The diffuse-only programs take no (1 − F0): Lambert albedo N·L / π, cars 0.387508 albedo (1 − (1 − N·V/2)⁵)
+  (1 − (1 − N·L/2)⁵) N·L. All: lit where |c.xyz| < c.w, cookie = `ProjectiveTextureSampler` at
+  c.xy / w × 0.5 + 0.5 (not flipped), attenuation saturate(1 / (a d² + b √(d² + 0.001) + c)) with d² = |L|².
+- **The cars' data** (`mwtool car-lights all`, 104 bundles): group 4 = `Light_ProjectedTexture` `…253a9`
+  (intensity 11.5, threshold 0.05, `FovScale` (1.23, 0.85), attenuation (0.001, 0.25, 10), window (−1, −1, 1,
+  0.098): reaches 360 m), group 17 = `…253aa` (10, 0.3, (1.27, 1), (0, 0.2, 0), (−0.8, −1, 0.8, 0.65); its bit is
+  never set by `FUN_0057a5e0`), group 6 = `Light_Spot` `…f0821` (3, threshold 0.333 → 3 m, 61.6° / 46.2°),
+  group 7 = red spot `…1246fa` (0.55, 0.4; 1 m), group 1 = red spot `…1246f9` (1.25, 0.47), group 2 = cone
+  `…253af` (1 × 0.5, 0.2, 65°); every projector's material is `…6ccb`, its cookie the 512² `BC1_UNORM` `…77f9`
+  (two lobes and a sharp cut-off in the top half).
 
 ## Crashes (2026-10-06)
 

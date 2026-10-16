@@ -780,6 +780,10 @@ pub fn build_car(commands: &mut Commands, b: &CarBuild) -> Entity {
     if !b.spec.coronas.is_empty() {
         e.insert(crate::coronas::CarCoronas::new(b.spec.coronas.clone(), Vec3::ZERO));
     }
+    // The light sources it casts on the world (`car_lights.rs`).
+    if !b.spec.light_sources.is_empty() {
+        e.insert(crate::car_lights::CarLights(b.spec.light_sources.clone()));
+    }
     // Sirens and light bars (`police_fx.rs`).
     if let Some(l) = &b.spec.flash_lights {
         e.insert(crate::police_fx::FlashCar::new(l.clone()));

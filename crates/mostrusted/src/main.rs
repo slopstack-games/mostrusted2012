@@ -16,6 +16,7 @@ mod car_sfx;
 mod chassis;
 mod chevron;
 use mw_handling::{drift, drivetrain, tyre};
+mod car_lights;
 mod convert;
 mod cop_driver;
 mod cop_patrol;
@@ -1016,6 +1017,7 @@ fn main() -> anyhow::Result<()> {
         .add_plugins((car_audio::CarAudioPlugin, car_sfx::CarSfxPlugin, player_sfx::PlayerSfxPlugin))
         .add_plugins(police_fx::PoliceFxPlugin)
         .add_plugins(coronas::CoronasPlugin)
+        .add_plugins(car_lights::CarLightsPlugin)
         .add_plugins(audio::GameAudioPlugin)
         .add_plugins(music::MusicPlugin {
             enabled: std::env::var("MW_MUSIC").is_ok_and(|v| v == "1")

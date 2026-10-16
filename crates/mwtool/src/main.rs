@@ -6,6 +6,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
 mod camera_take;
+mod car_lights;
 mod compare;
 mod crack;
 mod damage;
@@ -316,6 +317,9 @@ enum Cmd {
         #[arg(long)]
         competitor: bool,
     },
+    /// The light sources a car carries (`VehicleVfxBehaviour.Lights`, `mw_assets::car_lights`): group, gate,
+    /// type, colour, intensity, cone or projector, locators. `all` surveys every car bundle.
+    CarLights { car: String },
     /// Traffic engine sounds (`<component>_COMPETITORSOUND` in `VEHICLES/TRAFFICATTRIBS.BNDL`,
     /// `mw_assets::car_sound`): lists each vehicle type's bank, its RPM against normalised speed and its 3D
     /// placement; with an output file, renders a 0 → top speed → 0 sweep (14 s) of one type and then a
@@ -1309,6 +1313,10 @@ fn main() -> Result<()> {
                 }
             }
             println!("{}: {:.1} s -> {}", v.name, duration, out.display());
+        }
+        Cmd::CarLights { car } => {
+            let store = AssetStore::new(game)?;
+            car_lights::run(&store, &car)?;
         }
         Cmd::Siren { out, set, car } => {
             let store = AssetStore::new(game)?;

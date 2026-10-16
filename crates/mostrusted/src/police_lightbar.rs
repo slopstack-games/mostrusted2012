@@ -22,7 +22,7 @@ use std::sync::Arc;
 use bevy::prelude::*;
 use mw_assets::lights::{LightShape, WorldLight};
 
-use crate::deferred::{GpuWorldLight, WorldLightList};
+use crate::deferred::{DynamicLights, GpuWorldLight};
 use crate::materials::{GameMaterial, LOCAL_EMISSIVE_SLOTS, is_local_emissive};
 use crate::police_fx::FlashCar;
 
@@ -48,14 +48,10 @@ const LOCAL_MIN: f32 = 1e-4;
 #[derive(Component)]
 struct BarMaterials(Vec<Handle<GameMaterial>>);
 
-/// The bars' world lights this frame, and the static list they are added to.
+/// The bars' world lights this frame.
 #[derive(Resource, Default)]
 struct BarLights {
     lights: Vec<GpuWorldLight>,
-    /// The world's own lights (`world_lights.rs`) as last seen, and the generation written here.
-    base: Arc<Vec<GpuWorldLight>>,
-    written: u64,
-    had: bool,
 }
 
 /// Give each car with cop lights its own copy of every light-bar material on its body.
@@ -206,21 +202,7 @@ fn shots(
     state.1 += 1;
 }
 
-/// Add the bars' lights to the world's light list (kept by `world_lights.rs`, rebuilt there when the hour
-/// changes).
-fn merge_lights(mut bar: ResMut<BarLights>, mut list: ResMut<WorldLightList>) {
-    if list.generation != bar.written {
-        bar.base = list.lights.clone();
-    }
-    if bar.lights.is_empty() && !bar.had {
-        bar.written = list.generation;
-        return;
-    }
-    let mut all = Vec::with_capacity(bar.base.len() + bar.lights.len());
-    all.extend_from_slice(&bar.base);
-    all.extend_from_slice(&bar.lights);
-    list.lights = Arc::new(all);
-    list.generation += 1;
-    bar.written = list.generation;
-    bar.had = !bar.lights.is_empty();
+/// Add the bars' lights to the frame's dynamic lights (`deferred::DynamicLights`, drawn after the world's).
+fn merge_lights(bar: Res<BarLights>, mut list: ResMut<DynamicLights>) {
+    list.lights.extend_from_slice(&bar.lights);
 }

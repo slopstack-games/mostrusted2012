@@ -612,6 +612,18 @@ Decoded from the game's code (research log 2026-10-09 "exhaust effects"; layouts
 - Quad renderers: the word after the depth fade (0x24 word 8, 0x27 word 10, 0x28 word 0x12) is the draw's
   opacity (`Renderer::opacity`; 0 on the nitrous glows and two flare quads, 1 almost everywhere).
 
+**Car light sources** (`mw_assets::car_lights`, `mwtool car-lights <car|all>`; how the game uses them: decomp.md
+"Car lights on the world"): `VehicleVfxBehaviour.Lights` entries (0x40 bytes) = +0x10 `Colour` (Vector4, × the
+definition's), +0x20 `Animation` (`FlashAnimation`), +0x28 `LightDefinition`, +0x30 `LocatorGroup`, +0x34
+`a3de907e` (intensity scale), +0x38 `Group` (u16), +0x3a `da6ac384` (u16 gate). `Light_ProjectedTexture`
+(type 0x285c, 160 bytes) = `Light_Base` (+0x10 `Colour`, +0x20 `FlashPattern`, +0x48 `AttenuationThreshold`,
++0x4c `Intensity`, +0x50.. the `OnDuring…` bools) + +0x60 `ed20dbe4` (Vector2: field-of-view scale, × 45° per half
+axis), +0x70 `8745e6dd` (Vector3: a, b, c of 1 / (a d² + b d + c)), +0x80 `664ab465` (Vector4: lit window of the
+light's clip space, left / bottom / right / top), +0x90 `Material` (its texture is the cookie). Almost every car carries
+the same set: group 4 projector `…253a9`, group 17 projector `…253aa`, group 6 head spot
+`…f0821`, groups 7 / 1 tail / brake spots `…1246fa` / `…1246f9`, group 2 reverse cone `…253af` (the traffic
+bundles have cones `…253ae` / `…253a3` instead, unused: traffic casts no light).
+
 **Car spot effects**: `VehicleVfxBehaviour` (one per car bundle) lists `Coronas` (0x50 bytes), `Lights` (0x40)
 and `SpotEffects` (0x20: `SpotEffect` handle, `LocatorGroup`, `Group`, `da6ac384`, `Looping`, `Mirror`; counts
 `9f8c05b0` / `e41cffe1` / `4c52a051`). `LocatorGroup` ids resolve in the car's `VehicleGraphicsSpec` locator

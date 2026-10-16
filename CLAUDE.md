@@ -164,6 +164,9 @@ MW_NO_VIGNETTE=1 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,172
 ./target/release/mwtool traffic --png <scratch>/lanes.png   # TrafficLaneData: counts, flows, vehicle lists, lane map
 ./target/release/mwtool lights --near x,z[,r] --hour 21     # world lights (lists + street lamps): types, flags, ranges
 #   night lighting (world_lights.rs): lamps and lit windows follow --hour; MW_NO_WORLD_LIGHTS=1 for A/B
+./target/release/mwtool car-lights 911                      # a car's light sources (VehicleVfxBehaviour.Lights; `all` surveys)
+#   car_lights.rs: race cars light the world (the player: headlight projector + its shadow map); MW_NO_CAR_LIGHTS=1
+#   (A/B), MW_HEADLIGHT_SHADOWS=0 (the original's HeadlightShadows option off), MW_CAR_LIGHTS_LOG=1
 ./target/release/mwtool freeroam --list --kind SpeedCam     # TriggerData: speed cameras, billboards, gates, jack spots
 #   --objects: each collectable's nearest placed object and its instance ids (billboard compound = trigger id)
 ./target/release/mwtool scoring                     # ScoringActions: Speed Points, message sequence / title (--all, --sequence <id>, --text <ids>)

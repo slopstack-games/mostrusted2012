@@ -10,6 +10,7 @@
 pub mod backdrop;
 pub mod camera;
 pub mod car_anim;
+pub mod car_lights;
 pub mod car_sfx;
 pub mod car_sound;
 mod catalog;
