@@ -430,10 +430,14 @@ code side (game modes, HSMs, AI) next to the data. Roughly in dependency order:
    jack-spot swaps; `GAMELOGIC/GAMEMODES.BNDL`, `GAMEPLAY.BNDL`, the Most Wanted list.
 4. `[~]` Cops / pursuit (2026-10-10, `police.rs`, `pursuit.rs`, decomp.md "Police and pursuits"): patrol cop in
    free roam, pursuit by speeding past or ramming a cop, heat levels with their cops, chase / cooldown / escaped
-   / busted, the HUD's heat and BUSTING bars; `--test pursuit`, `--no-police`, `mwtool police`. Sirens, light
-   bars and the police radio (2026-10-16, `police_fx.rs` and friends; the AI sirens' switch is a model). Open:
-   roadblocks, spike strips, the cops' ram / Bruiser / Rhino driving, coronas, busted / escaped sequences, Speed
-   Points, cooldown spots. Takedowns, wrecks (deformation itself landed under M3.5: there is no
+   / busted, the HUD's heat and BUSTING bars; `--test pursuit`, `--no-police`, `mwtool police`. 2026-10-14/16:
+   the cops' pursuit states (`cop_driver.rs`: Chasing, LowSpeedChasing + box-in, Bruiser, Rhino, HeadOn), spawn
+   kinds, off-screen removal; patrolling cops ride a traffic ghost in the lanes (`cop_patrol.rs`); the pursuit
+   starts only by the game's rules: speeding past a cop in its cone, two traffic hits in its view within 10 s, or
+   ramming it (`cop_sight.rs`, `--test cops`). Sirens, light bars and the police radio (2026-10-16,
+   `police_fx.rs` and friends; the AI sirens' switch is a model). Open: roadblocks, spike strips, the
+   Interceptor, coronas, busted / escaped sequences, Speed Points, cooldown spots. Takedowns, wrecks (deformation
+   itself landed under M3.5: there is no
    `DeformationModel`; damage is skeletal animation).
 5. `HSMData` (0x501): hierarchical state machines that drive game flow. Interpret, or reimplement by hand.
 6. `[~]` Cutscenes: game-logic `Sequence`s play (2026-10-09, `cutscene.rs`, decomp.md "Cutscenes and sequences"):
