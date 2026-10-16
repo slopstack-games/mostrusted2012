@@ -41,6 +41,10 @@ Added by the user (2026-10-16), not investigated yet:
   light crashes, landing after a jump, the cinematic crash (crash camera) sound, and many other one-off sounds.
 - **Dirt**: the dirt cloud effect is too big and blocks the view too much; driving on dirt still does not feel
   like dirt the way the original does (handling on the surface, not only the effects).
+- **Camera clipping**: the chase camera is pretty good but clips into buildings and other objects. Note: session
+  8 read the original's per-frame camera path and found no world query (our push-in is `MW_CAMERA_PUSH_IN=1`,
+  off by default); find what the original does instead (near-plane / fade of occluding geometry, a collision
+  step outside the camera code, or the camera simply clipping too) and confirm with a capture backed into a wall.
 - **Floating trees**: some trees and foliage float near the street exit leading to the large airport area (place
   not measured; compare the research log's backdrop entry, "trees in a few far places float where no zone lists
   ground under them", and `mwtool placement-check`).
