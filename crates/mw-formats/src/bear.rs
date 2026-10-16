@@ -210,8 +210,11 @@ pub enum Op {
         drag: f32,
         extra_guess: [f32; 2],
     },
-    /// 0x3C: `Radius* = Radius × bezier(Age; p0..p3)`.
-    RadiusCurve { age: Operand, radius: Operand, out: Operand, bezier: [f32; 4] },
+    /// 0x3C `UpdateParametricRadius` (compile `0x0044bbb0`, run `FUN_004612d0`): `Radius* = Radius × r(Age) ×
+    /// s`, with `r` piecewise linear through `(0, values[0])`, `(knee, values[1])` and `(1, values[2])` (the
+    /// compile turns the three values into two slopes and an offset) and `s = floor + (1 − floor) ·
+    /// slot[slot]` (a binding slot of the layer; slot 0 reads 1).
+    RadiusCurve { age: Operand, radius: Operand, out: Operand, knee: f32, values: [f32; 3], floor: f32, slot: u8 },
     /// 0x1C `ParametricSetColourGradient` (`FUN_00449030` compiles, `FUN_004553b0` runs it): a piecewise
     /// linear gradient over the particle's age. With `u = frac(Age · rates[0])` and ramp weights
     /// `w_k = clamp(u · ramp[0][k] + ramp[1][k], 0, 1)`, `c = rows[0] + Σ w_k · rows[k + 1]`; then
@@ -231,8 +234,29 @@ pub enum Op {
     },
     /// 0x17: `Colour*.a *= Alpha`.
     AlphaApply { alpha: Operand, colour: Operand },
-    /// 0x38: camera-relative adjustments of `Radius*` / `Colour*`: near fade over `near_fade` metres.
-    ViewFade { near_fade: f32, far_guess: f32 },
+    /// 0x38 `UpdateParametricFadeOverDistance` (compile `0x0044ba90` → `FUN_004493f0`, run `FUN_00460970`):
+    /// colour over the view depth. With `d` = the particle's depth along the camera's forward axis −
+    /// (`offset` + `n`) (− its radius with `subtract_radius`), where `n = near + (near_fast − near) ·
+    /// min(camera speed / fast_speed, 1)` with `speed_near` (else `near`; the camera speed is its motion along
+    /// its forward axis per second, `FUN_004a1470` → view +0x21c), the colour (rgba) is multiplied by
+    /// `colours[1] + clamp(−d / n) · (colours[0] − colours[1]) + clamp(d / (far − near)) · (colours[2] −
+    /// colours[1])`: `colours[0]` at the camera, `colours[1]` at depth `n`, towards `colours[2]` far away.
+    /// Then, with `speed_alpha` / `speed_radius`, the alpha / radius are multiplied by `clamp((|v|² −
+    /// speed_zero²) / (speed_full² − speed_zero²))`.
+    ViewFade {
+        colours: [[f32; 4]; 3],
+        offset: f32,
+        near: f32,
+        far: f32,
+        near_fast: f32,
+        fast_speed: f32,
+        speed_full: f32,
+        speed_zero: f32,
+        speed_near: bool,
+        subtract_radius: bool,
+        speed_radius: bool,
+        speed_alpha: bool,
+    },
     /// 0x1D: `SubUV* = Age` (the shader picks and blends atlas frames from it).
     SubUv { out: Operand, age: Operand },
     /// 0x47: a random seed per particle.
@@ -362,6 +386,11 @@ pub struct Spawner {
     pub velocity: Operand,
     /// `EmitterConePlus` (0x00) only.
     pub cone: Option<ConeEmitter>,
+    /// `EmitterWheelContactPlus` (0x07, compile `FUN_00449a90`, run `FUN_00450760`) and `EmitterWheel` (0x05,
+    /// `FUN_004498e0` / `FUN_0044fb20`): the count `(rate · dt + per_metre · |contact speed| · dt)` is multiplied
+    /// by this binding slot (data byte +0x68 / +0x78), the output of the layer's `UpdateWheelBindings` (0x42) /
+    /// `UpdateBindings_Wheel` (0x34) controller.
+    pub count_slot: Option<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -376,18 +405,47 @@ pub struct Renderer {
     pub material: Option<ResourceId>,
     /// Sprite pivot (0.5, 0.5 = centred) for the quad renderers.
     pub pivot: [f32; 2],
-    /// Lighting inputs passed to the particle shader for the quad renderers: (translucency, key
-    /// light as ambient, wrap); the vertex program reads them as TEXCOORD1.zw and TEXCOORD3.w.
+    /// Lighting inputs passed to the particle shader for the quad renderers: (translucency, key light as
+    /// ambient, wrap). The run functions hand the first two to `FUN_00440100`, which writes them as
+    /// TEXCOORD1.zw, and the wrap to `FUN_0043fc30` (TEXCOORD3.w): words (15, 17, 16) of 0x24
+    /// (`FUN_00458e90`), (16, 18, 17) of 0x27 (`FUN_0045ab10`), (25, 27, 26) of 0x28 (`FUN_0045b620`).
     pub lighting: [f32; 3],
-    /// First parameter word (0.01–4; soft-particle depth fade distance in metres, a guess).
-    pub depth_fade_guess: f32,
-    /// The word after it: the draw's opacity. The run functions store the pair at the draw state's +0x23c /
-    /// +0x240 (`FUN_00458e90` for 0x24 words 7 / 8, `FUN_0045ab10` for 0x27 words 9 / 10, `FUN_0045b620`
-    /// words 0x11 / 0x12), whose defaults are 0 and 1.0 (`FUN_004a…` reset); read as `gVfxConstants.z`,
-    /// which the pixel programs multiply into the output alpha and alpha-test (inferred: the constant's
-    /// writer for particle draws was not found). 0 on the nitrous glows (a `NoAlphaTest` material, so they
-    /// add) and on a few alpha-tested layers (which then draw nothing); 1 almost everywhere else.
+    /// Soft-particle depth fade distance (m): the draw record's +0x50, which `FUN_004a40a0` hands to
+    /// `FUN_004976d0` (`gDepthFadeConstantsA` / `B`) for the soft passes 0x23, 0x24, 0x29 and 0x2a.
+    pub depth_fade: f32,
+    /// The word after it: the draw's opacity, `gVfxConstants.z`. The run functions store the pair at the
+    /// draw state's +0x23c / +0x240 (`FUN_00458e90` for 0x24 words 7 / 8, `FUN_0045ab10` for 0x27 words 9 /
+    /// 10, `FUN_0045b620` words 0x11 / 0x12; defaults 0 / 1.0), `FUN_0046ce40` copies them into the draw
+    /// record (+0x50 / +0x54), and the particle draw loop `FUN_004a40a0` writes `gVfxConstants` (slot 0x75)
+    /// = (0, 1, record +0x54, 1) before each draw ((1, 0, word, 1) in view 6). The pixel programs multiply
+    /// the output alpha by it and alpha-test at 1/255 (not the `_NoAlphaTest` variants); premultiplied under
+    /// (ONE, INV_SRC_ALPHA), 0 makes a layer additive. 0 on the nitrous glows (a `NoAlphaTest` material, so
+    /// they add) and on a few alpha-tested layers (which then draw nothing); 1 almost everywhere else.
     pub opacity: f32,
+    /// Quad renderers: the half extents are `radius × aspect` and `radius / aspect` (0x24 word 10, 0x27
+    /// word 11, 0x28 word 0x14).
+    pub aspect: f32,
+    /// Quad renderers: the drawn radius is at most `size_cap × slot[size_cap_slot] × view depth` (the view's
+    /// +0x220 scale, 1.0 from `FUN_0046adb0`): 0x24 word 9, 0x27 word 19 × the binding slot of the byte
+    /// at +0x5b, 0x28 word 0x13 (its slot is not applied). 0 = no cap.
+    pub size_cap: f32,
+    pub size_cap_slot: u8,
+    /// `RenderSpriteVelocity` (0x29, `FUN_0045c2f0`): the streak is the velocity × 1/30 s (`.bss`
+    /// 0x010ed2a0) × `streak_scale` × slot[`streak_slot`], its length clamped to `streak`; the head takes
+    /// the colour (alpha included), the tail the colour × (1, 1, 1, `tail_alpha`).
+    pub streak: [f32; 2],
+    pub streak_scale: f32,
+    pub streak_slot: u8,
+    pub tail_alpha: f32,
+    /// The draw's render layer and pass, from two data bytes through `FUN_0046a430` (called by each renderer's
+    /// compile function): layer = [5, 6][blend byte]; pass = [0x23, 0x2a][blend byte] with the soft byte set
+    /// (the soft-particle programs; `FUN_004a40a0` then sets the depth fade constants), else [0x00, 0x28]
+    /// (0x29: [0x25, 0x26]). Bytes: 0x24 data +0x50 / +0x53, 0x27 +0x58 / +0x5c, 0x28 +0x78 / +0x7b, 0x29 +0x4d /
+    /// none. Layer 6 draws get `gVfxConstants` (1, 0, opacity, 1): the colour × the exposure texture's w and
+    /// the vertex program's LDR encode (sRGB-like curve of colour × 0.5), like the coronas' flare layer 8, which
+    /// the game draws after the tonemap; layer 5 draws (0, 1, opacity, 1), linear HDR.
+    pub layer: u8,
+    pub soft: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -646,6 +704,16 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
                     offsets: vec4(0x50)?,
                     combine: std::array::from_fn(|k| [b[4 + k], b[8 + k], b[12 + k]]),
                 })
+            } else if kind == 0x42 && data.len() >= 0x58 {
+                // `UpdateWheelBindings` (`FUN_00463330`): the source bytes after the scales, then the combine
+                // steps' `a`, `b` and op bytes; no offsets. Its source table differs from 0x33's
+                // (`Bindings::wheel_source`).
+                let b = r.bytes(0x48, 16)?;
+                Some(Bindings {
+                    sources: [b[0], b[1], b[2], b[3]],
+                    offsets: [0.0; 4],
+                    combine: std::array::from_fn(|k| [b[4 + k], b[8 + k], b[12 + k]]),
+                })
             } else {
                 None
             };
@@ -664,6 +732,8 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
             position: opnd(0x60)?,
             velocity: opnd(0x64)?,
             cone: None,
+            // `EmitterWheel` (compile `FUN_004498e0`, run `FUN_0044fb20`): the count × slot[data byte +0x78].
+            count_slot: Some(r.u8(0x78)?),
         }),
         0x07 => Op::Spawn(Spawner {
             kind,
@@ -678,6 +748,7 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
             position: opnd(0x50)?,
             velocity: opnd(0x54)?,
             cone: None,
+            count_slot: Some(r.u8(0x68)?),
         }),
         0x01 => Op::Spawn(Spawner {
             kind,
@@ -692,6 +763,7 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
             position: opnd(0x3C)?,
             velocity: opnd(0x40)?,
             cone: None,
+            count_slot: None,
         }),
         0x00 => Op::Spawn(Spawner {
             kind,
@@ -717,6 +789,7 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
             } else {
                 None
             },
+            count_slot: None,
         }),
         0x1A => Op::ToWorld { rotation: [0.0, 0.0, 0.0, 1.0], offset: [0.0; 3] },
         0x1B => Op::ToWorld { rotation: vec4(0)?, offset: [f(16)?, f(20)?, f(24)?] },
@@ -765,7 +838,15 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
             drag: f(48)?,
             extra_guess: pair(52)?,
         },
-        0x3C => Op::RadiusCurve { age: opnd(4)?, radius: opnd(12)?, out: opnd(16)?, bezier: vec4(20)? },
+        0x3C => Op::RadiusCurve {
+            age: opnd(4)?,
+            radius: opnd(12)?,
+            out: opnd(16)?,
+            knee: f(20)?,
+            values: [f(24)?, f(28)?, f(32)?],
+            floor: f(36)?,
+            slot: r.u8(40)?,
+        },
         0x1C => Op::ColourCurve {
             age: opnd(0)?,
             out: opnd(8)?,
@@ -778,7 +859,23 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
             use_tint: r.u8(155)? != 0,
         },
         0x17 => Op::AlphaApply { alpha: opnd(0)?, colour: opnd(8)? },
-        0x38 => Op::ViewFade { near_fade: f(80)?, far_guess: f(84)? },
+        0x38 => {
+            let b = r.bytes(0x68, 4)?;
+            Op::ViewFade {
+                colours: [vec4(0)?, vec4(16)?, vec4(32)?],
+                offset: f(76)?,
+                near: f(80)?,
+                far: f(84)?,
+                near_fast: f(88)?,
+                fast_speed: f(92)?,
+                speed_full: f(96)?,
+                speed_zero: f(100)?,
+                speed_near: b[0] != 0,
+                subtract_radius: b[1] != 0,
+                speed_radius: b[2] != 0,
+                speed_alpha: b[3] != 0,
+            }
+        }
         0x1D => Op::SubUv { out: opnd(0)?, age: opnd(4)? },
         0x47 => Op::SeedInit { seed: opnd(4)? },
         0x48 => Op::SeedTint { min: f(0)?, max: f(4)?, colour: opnd(16)?, seed: opnd(20)? },
@@ -796,10 +893,22 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
                 0x27 => (at(0)?, at(3)?, at(4)?, at(5)?, at(6)?),
                 _ => (at(0)?, at(3)?, at(4)?, at(5)?, Operand::None),
             };
-            let (pivot_at, light_at) = match kind {
-                0x27 => (params + 16, params + 24),
-                _ => (params + 20, params + 28),
+            // Word offsets from the depth fade: (aspect, pivot, translucency, wrap, key as ambient, size cap).
+            let (aspect, pivot_at, light_at, cap_at) = match kind {
+                0x24 => (12, 20, 32, 8),
+                0x27 => (8, 16, 28, 40),
+                _ => (12, 20, 32, 8),
             };
+            let (size_cap, size_cap_slot) = match kind {
+                0x27 => (f(params + cap_at)?, r.u8(0x5b)?),
+                _ => (f(params + cap_at)?, 0),
+            };
+            let (blend_at, soft_at) = match kind {
+                0x24 => (0x50, 0x53),
+                0x27 => (0x58, 0x5c),
+                _ => (0x78, 0x7b),
+            };
+            let blend = r.u8(blend_at)?;
             Op::Render(Renderer {
                 kind,
                 position,
@@ -809,10 +918,19 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
                 colour,
                 subuv,
                 material: import(material),
-                pivot: pair(pivot_at)?,
-                lighting: [f(light_at)?, f(light_at + 4)?, f(light_at + 8)?],
-                depth_fade_guess: f(params)?,
+                pivot: pair(params + pivot_at)?,
+                lighting: [f(params + light_at)?, f(params + light_at + 8)?, f(params + light_at + 4)?],
+                depth_fade: f(params)?,
                 opacity: f(params + 4)?,
+                aspect: f(params + aspect)?,
+                size_cap,
+                size_cap_slot,
+                streak: [0.0, f32::MAX],
+                streak_scale: 1.0,
+                streak_slot: 0,
+                tail_alpha: 1.0,
+                layer: if blend == 0 { 5 } else { 6 },
+                soft: r.u8(soft_at)? != 0,
             })
         }
         0x25 | 0x29 => Op::Render(Renderer {
@@ -826,8 +944,17 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
             material: import(32),
             pivot: [0.5; 2],
             lighting: [0.0; 3],
-            depth_fade_guess: 0.0,
+            depth_fade: 0.0,
             opacity: 1.0,
+            aspect: 1.0,
+            size_cap: 0.0,
+            size_cap_slot: 0,
+            streak: if kind == 0x29 { pair(48)? } else { [0.0, f32::MAX] },
+            streak_scale: if kind == 0x29 { f(72)? } else { 1.0 },
+            streak_slot: if kind == 0x29 { r.u8(76)? } else { 0 },
+            tail_alpha: if kind == 0x29 { f(64)? } else { 1.0 },
+            layer: if kind == 0x29 && r.u8(0x4d)? != 0 { 6 } else { 5 },
+            soft: false,
         }),
         0x2B => Op::SuperEmitter {
             parent: (r.u32(0x24)? >> 23) as u8,

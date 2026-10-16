@@ -16,11 +16,11 @@ the dump / REA and the data, and each area's 2026-10-16 research-log entry lists
 |---|---|---|
 | Water floats above where it should | fixed: a zone draws only the water it lists (our nearest-zone fill-in flooded the industrial coast and hung a 13 m sheet over the river gorge); `mwtool water` | the rule is inferred from the data (zone selection code not traced); leftovers near (40, 2280) and `9fd6d20a` in zone 158; captures listed |
 | Terrain through the road | fixed: `Model` +0x19 is a per-view skip mask (`FUN_00553810`, `FUN_008cffa0`); 230 shadow / cube / reflection stand-ins no longer drawn in the main view; `mwtool terrain-check` | skipped stand-ins cast no shadow here; mask bits 1 / 2 / 8 unused; view 0x10 unknown; the 0x1f models |
-| Particles when props break | added (`prop_vfx.rs`): `WCVfxBehaviour`s (impact, spot effects at locators, ground-slide sparks, lights out) by `FUN_0053cba0`; super emitter (action 0x2B) decoded; sparks were invisible (alpha) | **renderer opacity word is inferred**: it turned nitrous glows blue-white and hides the lamp-foot flares; impact light flash, ambient world effects |
+| Particles when props break | added (`prop_vfx.rs`): `WCVfxBehaviour`s (impact, spot effects at locators, ground-slide sparks, lights out) by `FUN_0053cba0`; super emitter (action 0x2B) decoded; sparks were invisible (alpha) | renderer opacity word confirmed (`FUN_004a40a0`, research log 2026-10-16); dirt cloud fade / size from the code; impact light flash, ambient world effects |
 | Police drive anywhere, chase too easily | fixed: patrol rides a traffic ghost in the lanes (`cop_patrol.rs`, `FUN_005101e0` modes 0–4); wanted / sight rules (`cop_sight.rs`, `FUN_005192b0`, `FUN_006c5810`); WIP chase states merged | `.bss` 0x011061f8 / 0x01106228 live reads; two wanted terms unidentified; ghost catch-up often takes two tries |
 | Cops: no sounds, lights | added: sirens (`police_audio.rs`), light bars and their light (`police_lightbar.rs`, cop-light shader), radio (`police_speech.rs`, 110 events), coronas at every car's lamps (`coronas.rs`) | **who turns AI sirens on is a model** (chasing / searching in a pursuit); world-lamp coronas, headlight glint, corona distance scale s, flare layer; radio static / car-model lines; the sign glare under a cop light matches the code but needs a night capture |
 
-Model decisions worth a capture first: the siren rule, the particle opacity word (nitrous flame colour), the
+Model decisions worth a capture first: the siren rule, the nitrous flame colour (lit by the irradiance only), the
 corona distance scale, the 128 m water gap distance.
 
 Added by the user (2026-10-16), not investigated yet:

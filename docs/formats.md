@@ -609,8 +609,26 @@ Decoded from the game's code (research log 2026-10-09 "exhaust effects"; layouts
   index), 13–15 own position / velocity / radius, 16 rate (1/s), 17 per metre of the parent's travel, 18 radius
   scale at the parent's end of life, 19 rate scale at its end, 20 a LOD byte. Layers fed this way have no
   spawner (`mwtool effect all` shows `spawn -`).
-- Quad renderers: the word after the depth fade (0x24 word 8, 0x27 word 10, 0x28 word 0x12) is the draw's
-  opacity (`Renderer::opacity`; 0 on the nitrous glows and two flare quads, 1 almost everywhere).
+- Quad renderers (2026-10-16; `Op::Render` / `Renderer`, word = 4-byte index into the payload; compiled forms
+  are straight copies): 0x24 `RenderSprite` words 7 depth fade, 8 opacity (`gVfxConstants.z`, confirmed), 9 size
+  cap, 10 aspect, 12–13 pivot, 15 translucency, 16 wrap, 17 key light as ambient, 18 material, 20 bytes (0
+  blend / layer, 3 soft); 0x27 `RenderSpriteSubUV` words 9 depth fade, 10 opacity, 11 aspect, 13–14 pivot, 16
+  translucency, 17 wrap, 18 key as ambient, 19 size cap (× the binding slot of byte +0x5b), 22 byte 0 blend /
+  layer, 23 byte 0 soft; 0x28 words 0x11 / 0x12 / 0x13 / 0x14, pivot 0x16–0x17, 0x19 / 0x1a / 0x1b, bytes +0x78
+  / +0x7b. Layer = [5, 6][blend], pass = soft ? [0x23, 0x2a] : [0x00, 0x28] (`FUN_0046a430`). Words 11 / 14 of
+  0x24 and 12 / 15 of 0x27 are not read by the run functions. 0x29 `RenderSpriteVelocity`: words 12–13 streak
+  length range, 16 tail alpha, 18 streak scale (× slot of byte +0x4c), byte +0x4d blend / layer.
+- `UpdateParametricRadius` (0x3C): words 5 knee, 6–8 radius factor at age 0, knee, 1 (piecewise linear), 9 floor,
+  byte +0x28 slot (`Op::RadiusCurve`).
+- `UpdateParametricFadeOverDistance` (0x38): words 0–11 three rgba multipliers (at the camera, at the near
+  distance, far), 12–18 operands (view block, position, radius, colour in, velocity, radius out, colour out), 19
+  depth offset, 20 near, 21 far, 22 near at speed, 23 that camera speed (m/s), 24–25 speed fade full / zero
+  (m/s), bytes +0x68 speed-dependent near, +0x69 subtract the radius, +0x6a speed fade of the radius, +0x6b of
+  the alpha (`Op::ViewFade`).
+- Wheel spawners: `EmitterWheel` (0x05) scales its count by the binding slot of byte +0x78, `EmitterWheelContactPlus`
+  (0x07) by that of byte +0x68 (`Spawner::count_slot`). `UpdateWheelBindings` (0x42): operands 0–3, four
+  `Curve5` from +0x10, scales +0x38, source bytes +0x48, combine `a` / `b` / op bytes +0x4c / +0x50 / +0x54, no
+  offsets.
 
 **Car spot effects**: `VehicleVfxBehaviour` (one per car bundle) lists `Coronas` (0x50 bytes), `Lights` (0x40)
 and `SpotEffects` (0x20: `SpotEffect` handle, `LocatorGroup`, `Group`, `da6ac384`, `Looping`, `Mirror`; counts
