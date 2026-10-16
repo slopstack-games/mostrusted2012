@@ -92,7 +92,7 @@ fn animate_parts(
         state.log += dt;
         if state.log >= 0.5 && pins.0.is_empty() {
             state.log = 0.0;
-            info!("anim parts at {mph:.1} mph: {parts:.2?}");
+            debug!("anim parts at {mph:.1} mph: {parts:.2?}");
         }
         dmg.set_parts(&parts);
     }

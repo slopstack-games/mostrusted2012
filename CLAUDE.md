@@ -61,12 +61,7 @@ crates/mw-probe     DLL loaded into the running original (docs/probe.md; i686-pc
 Game install on this machine: `~/.local/share/Steam/steamapps/common/Need for Speed(TM) Most Wanted`
 (found automatically).
 
-Windows hosts build and run the same workspace (MSVC toolchain). The install is found through Steam's registry
-key and the default Steam / EA app folders; settings and the profile go to `%APPDATA%\mostrusted`. `mwtool
-memscan` / `telemetry` / `tune` / `capture` read the game through `ReadProcessMemory` (`memscan/windows.rs`);
-`capture` records no audio there (it uses pactl / parecord). The probe DLL builds with
-`rustup target add i686-pc-windows-msvc` and `cargo build --release -p mw-probe --target i686-pc-windows-msvc`.
-`tools/orig` (gamescope) is Linux-only.
+Windows hosts build and run the same workspace: docs/commands.md "Windows".
 
 ## Commands
 
@@ -75,7 +70,8 @@ The full list (every mwtool subcommand, runtime flag, test and `MW_*` switch) is
 used in nearly every session:
 
 ```sh
-cargo build --release --workspace
+tools/b                                      # quiet build of mostrusted + mwtool (warnings / errors only)
+tools/t --drive 911 --test accel --mute      # quiet run: result lines + exit code (full log: scratch/run.log)
 cargo clippy --release --workspace          # keep at 0 warnings
 cargo test --release --workspace
 cargo fmt                                    # rustfmt.toml: max_width 120
@@ -102,9 +98,11 @@ Accuracy comes from reading the right source, not from reading everything. Habit
 - The docs are large (research-log ~580 KB, decomp ~470 KB, formats ~100 KB, PLAN ~60 KB): never read them
   whole. List headings (`grep -n '^##' docs/decomp.md`, `grep -n '^### ' docs/research-log.md`: dated, newest
   first) or grep for the function / type / flag, then read that section with an offset and limit.
-- Filter build and run output: `cargo build ... 2>&1 | grep -E '^(warning|error)|Finished'`,
-  `... 2>&1 | grep -o 'TEST RESULT.*'`. `NO_COLOR=1` (set in `.claude/settings.json`) drops ANSI codes from logs;
-  Bevy's INFO start-up lines are noise: grep for what you need.
+- Build with `tools/b` (only warnings / errors and the result) and run with `tools/t <mostrusted args>` (only the
+  TEST / BENCH RESULT lines, errors, panics and the exit code; the full log is in scratch/run.log for when you
+  need it). `NO_COLOR=1` (set in `.claude/settings.json`) drops ANSI codes. Per-frame logging stays at `debug!`.
+- Open items have one home: the newest section of docs/next-session.md. The README roadmap and PLAN.md
+  checkboxes are updated once at the end of a session, not after every change.
 - Screenshots: look at the ones that decide something. For A/B, stack before / after into one downscaled image
   (`python3 tools/stack.py out.png a.png b.png`) instead of reading two full-size ones.
 - Dump: `fn <addr>` / `callers <addr>` for one function at a time; don't read whole decompiled files.
@@ -137,23 +135,16 @@ in `crates/mostrusted/src/layered.wgsl`, selected by `materials::Look`.
 I can't listen to audio, so verify decoders numerically (see the research log): spectral flatness against
 white noise, sample-to-sample smoothness (diff/RMS), discontinuities at codec frame or grain boundaries, and
 spectral centroid against RPM for engine sounds. Export with `mwtool audio` and analyse the `.wav` in Python.
-Engine A/B switches (runtime and `mwtool engine-sound`): `MW_AUDIO_DRY=1` (plug-ins off), `MW_AUDIO_NO_DIST`,
-`MW_AUDIO_NO_SUB`, `MW_AUDIO_NO_EQ`, `MW_AUDIO_DIST=raw`, `MW_AUDIO_RPM_LINEAR=1` (audible RPM = physics RPM);
-`MW_AUDIO_METER=1` prints channel levels and plug-in chains (and other cars' voices), `MW_AUDIO_NO_FX=1` turns the
-sequences' effect items off, `MW_SOUND_TRACE=<file>` logs what the engine sound plays from.
+The engine's A/B switches (`MW_AUDIO_*`, `MW_SOUND_TRACE`) are in docs/commands.md "Audio".
 
 ## Parallel agents
 
-Worktree agents work well here if builds are throttled (docs/handoffs-archive.md "Working with parallel agents"):
-- At most ~4 agents building at once; each worktree gets a real copy of a finished dependency build
-  (`.claude/tools/copy-deps.sh <main checkout> <worktree>`, never hard links) and builds only
-  `nice -n 19 cargo build --release -p mostrusted -p mwtool`. Agents skip clippy / tests; the integrator runs them
-  once on the merged tree. `.claude/worktrees/.cargo/config.toml` caps build jobs.
-- Worktrees may start from an older commit: agents `git merge --ff-only <integration branch>` first.
-- Agents add new commands to docs/commands.md (not CLAUDE.md) and keep their reports short (see above).
-- /tmp (and the session scratchpad) is a RAM-backed tmpfs: binaries, traces and captures go into the worktree.
-- Agents that run the original (`tools/orig`) mute its audio stream (`pactl set-sink-input-mute`) and quit it after.
-- Remove merged worktrees and their branches at the end of a session (≈12 GB each).
+Worktree agents get [docs/agent-brief.md](docs/agent-brief.md) (setup, rules, report) plus a short task: the
+integration branch, the task, what the other agents work on, the co-author line. Builds must be throttled
+(handoffs-archive.md "Working with parallel agents"): at most ~4 agents building at once,
+`.claude/worktrees/.cargo/config.toml` caps their jobs, each worktree gets a real copy of the dependency build.
+The integrator merges, runs clippy / tests / `mwtool verify` once on the merged tree, moves stray command lines
+into docs/commands.md, and removes merged worktrees and branches (≈12 GB each).
 
 ## Conventions
 

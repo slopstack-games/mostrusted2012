@@ -1,0 +1,7 @@
+#!/bin/sh
+# Quiet release build of the runtime and the tools (the package set every worktree uses): prints only warnings /
+# errors with their locations and the result line. Extra arguments go to cargo (e.g. tools/b --workspace).
+R="$(dirname "$0")/.."
+nice -n 19 cargo build --manifest-path "$R/Cargo.toml" --release -p mostrusted -p mwtool --message-format short "$@" 2>&1 \
+  | grep -E '^[^ ]+\.rs:[0-9]+:[0-9]+: (warning|error)|^(warning|error)(\[|:)|Finished|could not compile' \
+  | grep -v 'generated [0-9]* warning'

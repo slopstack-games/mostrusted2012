@@ -210,3 +210,19 @@ MW_POLICE_LOG=1 MW_COP_DISTANCE=80 ./target/release/mostrusted --drive 911 --uni
 # MW_UNCAPPED_DELTA=1 (Bevy's 250 ms catch-up), MW_SKY_FILTER_EVERY_FRAME=1, MW_NO_PREWARM=1, MW_MAIN_MULTI=1
 # (multi-threaded main-world schedules), MW_GPU_CLUSTERING=1 (research log 2026-10-10)
 ```
+
+## Audio
+
+Engine A/B switches (runtime and `mwtool engine-sound`): `MW_AUDIO_DRY=1` (plug-ins off), `MW_AUDIO_NO_DIST`,
+`MW_AUDIO_NO_SUB`, `MW_AUDIO_NO_EQ`, `MW_AUDIO_DIST=raw`, `MW_AUDIO_RPM_LINEAR=1` (audible RPM = physics RPM);
+`MW_AUDIO_METER=1` prints channel levels and plug-in chains (and other cars' voices), `MW_AUDIO_NO_FX=1` turns the
+sequences' effect items off, `MW_SOUND_TRACE=<file>` logs what the engine sound plays from.
+
+## Windows
+
+Windows hosts build and run the same workspace (MSVC toolchain). The install is found through Steam's registry
+key and the default Steam / EA app folders; settings and the profile go to `%APPDATA%\mostrusted`. `mwtool
+memscan` / `telemetry` / `tune` / `capture` read the game through `ReadProcessMemory` (`memscan/windows.rs`);
+`capture` records no audio there (it uses pactl / parecord). The probe DLL builds with
+`rustup target add i686-pc-windows-msvc` and `cargo build --release -p mw-probe --target i686-pc-windows-msvc`.
+`tools/orig` (gamescope) is Linux-only.
