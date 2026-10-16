@@ -10,6 +10,56 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-16: terrain through the road: the main view skips models with pass-mask bit 4
+User play test 2026-10-14 ("terrain still sticks through the road in some places", after the 2026-10-04 backdrop
+composition fix).
+- **Finding the places**: new `mwtool terrain-check` rasterises on a 1 m grid every road mesh
+  (`DriveableSurface*` of the main instances) against every drawn ground mesh (main `TerrainPBR*` / `PlotPBR*` at
+  LOD0 and each lower LOD, plus the composed backdrop) and ranks clusters where ground stands more than 5 cm
+  above the highest road within ±3 m. Before the fix: 12,524 m² of LOD0 ground above roads, the worst a grass hill
+  3 m over the junction at (-919, 20, 3232) (unit 11, model `11e76144`), a rock mountain over the roads at
+  (212, 48, -1974) (unit 700, `cdd14f40`), a hillside over the road at (-1341, 26, 2567) (unit 16); the composed
+  backdrop is only 407 m² (it was not the cause). The worst model is a 108-vertex, 100-triangle terrain tile with
+  ~90 m triangles, an always-loaded main instance with no collision under it (`mwtool surfaces --near`).
+- **The rule** (decomp.md "Model pass mask"): `Model` +0x19 is a per-view **exclude** mask. `FUN_00553810`
+  inserts each `InstanceList` instance into the culling structure (via `FUN_00541850`) with flags
+  `(Model+0x19) << 24 | 0x840`; the frame setup in `FUN_008cffa0` queues one query per view (`FUN_008dbd90`) with
+  the bits that view excludes: the main view (camera frustum, LOD scale renderer +0x1ee8c) `0x4000000`, the six
+  cube-map faces `0x2000000`, the three shadow cascades `0x1000000` and the far one `0x3000000`, a view at +0x172e0
+  (probably the planar reflection) `0x8000000`, a view at +0x17150 `0x10000000`. The object walker `FUN_00538b00` tests the
+  same byte directly (`Model+0x19 & mask != 0` → skip) and is called with mask 4 for the main view, 1 for shadows,
+  8 / 0x10 for the other two views. The query's consumer (a job) is not in the dump; the exclude reading follows
+  from the walker and from the data: roads are 0x09 (no shadow, not in the +0x172e0 view: a road does not reflect itself), lit
+  signs 0x01.
+- **Data** (survey of all placements): 230 models carry bit 4 (`0x04`), one placement each, 192 `TerrainPBR_Normal`,
+  54 `TerrainPBR_TangentSpaceNormal`, a few `PlotPBR` / `WorldShadow`: coarse stand-ins of the detailed ground,
+  drawn by the game only in the shadow, cube-map and reflection views. Also 1007 instances of `80505b9d` and 1337
+  dynamics (1169 × `79a1dfbc`, `Diffuse_1Bit`) with 0x1f (in no view), 9 instances with 0x0f (below ground),
+  1 dynamic each with 0x07 / 0x0f. No backdrop model has bit 4.
+- **Fix** (`mw_formats::Model::pass_mask` / `in_main_view`, loader): placements whose model has bit 4 are not
+  spawned. Placements with physics keep their model (model decision: we have no collision-only body; none of the
+  0x1f dynamics has a physical definition, `mwtool props -v`). `MW_ALL_PASSES=1` draws them again (A/B);
+  `mwtool terrain-check --all-passes` scans as before.
+- **After**: LOD0 ground above roads 12,524 → 5,356 m²; the remaining top clusters are authored (grass inside the
+  same model as a reflective floor under a building at (-1564, 58, -3342), bridge decks over roads in lower LODs);
+  the composed backdrop's 407 m² is unchanged. Screenshots (`extracted/terrain/<name>_{before,after}.png`,
+  before = `MW_ALL_PASSES=1`): s1 `--camera=-860,75,3170,-919.5,20,3232.5 --units 20` (the hill gone, the slip road
+  and its groundcover visible: MAD 17.7/255), s2 `--camera=250,80,-1930,212.5,47.6,-1974.5` (rock over four
+  carriageways gone, MAD 42), s3 `--camera=-1300,60,2530,-1341.5,26.2,2567.5` (MAD 18). Regressions:
+  road-cliff MAD 0.57 (the coarse dark-green patch on the lawn bottom left is gone, rest is foliage shimmer),
+  city-lod-check 0.02, airfield-arch 0.11. Holes: of 12.1 km² the skipped models cover, 10,900 m² (0.09 %) is not
+  covered by any other drawn mesh (main or composed backdrop); the largest (4,100 m², model `89f0148f` at
+  (-704, 236, -272)) is a mountain river canyon whose water we do not draw anyway (the grey void already showed
+  next to it).
+- **Model decisions**: the skipped models also cast no shadow in our renderer (the game draws them in the shadow
+  cascades: bit 1 is clear; Bevy has no shadow-only mesh); the shadow / cube-map / planar-reflection bits (1, 2,
+  8) are not applied yet (our shadow casters, the reflection probe and `--planar-reflection` still draw those
+  models).
+- **Open / captures that would confirm**: a Steam F12 screenshot of the original at s1 and s2 (same camera, 13 h)
+  shows the road and no hill; `tools/orig` free roam to (-919, 20, 3232) shows the slip road open. Not checked:
+  what view +0x17150 is (mask 0x10; `FUN_00798840` gates it), and whether the 0x1f models are drawn by another
+  system (all five view bits set).
+
 ### 2026-10-15: navigation (SET DESTINATION, the GPS route) from the code
 User play test: "Navigation (SET DESTINATION route / GPS) does not work yet". Details in decomp.md "Navigation: SET
 DESTINATION and the GPS route".

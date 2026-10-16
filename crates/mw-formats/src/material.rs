@@ -173,7 +173,7 @@ impl Shader {
 /// | 0x16 | u8   | state count |
 /// | 0x17 | u8   | version (5) |
 /// | 0x18 | u8   | LOD count (the draw path uses at most 4) |
-/// | 0x19 | u8   | pass mask: `FUN_00538b00` skips the model when it shares a bit with the pass's mask |
+/// | 0x19 | u8   | pass mask: the views that do **not** draw the model ([`Model::PASS_MAIN`] etc.) |
 #[derive(Debug, Clone)]
 pub struct Model {
     pub id: ResourceId,
@@ -184,6 +184,12 @@ pub struct Model {
     /// Distance (metres, stored squared) up to which the model casts shadows; FLT_MAX-squared = always.
     pub shadow_distance: f32,
     pub flags: u8,
+    /// +0x19: the views that skip the model, one bit per view ([`Self::PASS_SHADOW`], [`Self::PASS_CUBE`],
+    /// [`Self::PASS_MAIN`], [`Self::PASS_PLANAR`], [`Self::PASS_0X10`]). The instance insert (`FUN_00553810`)
+    /// copies it into the top byte of the culling entry's flags; each view's query (`FUN_008dbd90`, queued
+    /// from `FUN_008cffa0`'s view setup) passes the bits it excludes, and the object walker `FUN_00538b00`
+    /// skips a model with `Model+0x19 & mask != 0` (docs/decomp.md "Model pass mask").
+    pub pass_mask: u8,
     /// The model's own sampler bindings (+0x10: a block laid out like an `InstanceList` instance's
     /// overrides): `AOMapTextureSampler` and `LightMapTextureSampler`, the engine's global sampler ids 0x1b
     /// and 0x1a (registered in `FUN_008c34b0`), which no material binds. 2,558 of the world's 10,764 models
@@ -194,6 +200,16 @@ pub struct Model {
 impl Model {
     pub const STATE_LOD0: usize = 0;
     pub const STATE_SHADOW: usize = 6;
+    /// Pass-mask bit of the sun's shadow cascades (query exclude `0x1000000`; the far cascade `0x3000000`).
+    pub const PASS_SHADOW: u8 = 0x01;
+    /// Pass-mask bit of the six cube-map faces (`0x2000000`).
+    pub const PASS_CUBE: u8 = 0x02;
+    /// Pass-mask bit of the main view (`0x4000000`, the camera's frustum and LOD scale).
+    pub const PASS_MAIN: u8 = 0x04;
+    /// Pass-mask bit of the view at renderer +0x172e0 (`0x8000000`), probably the planar reflection.
+    pub const PASS_PLANAR: u8 = 0x08;
+    /// Pass-mask bit of a fifth view (`0x10000000`, renderer +0x17150; not identified).
+    pub const PASS_0X10: u8 = 0x10;
 
     pub fn parse(res: &Resource) -> Result<Self> {
         let r = Reader(res.header());
@@ -210,12 +226,20 @@ impl Model {
             lod_distances: (0..n_lods).map(|i| r.f32(lods + i * 4).map(f32::sqrt)).collect::<mw_bundle::Result<_>>()?,
             shadow_distance: r.f32(0x0C)?.sqrt(),
             flags: r.u8(0x15)?,
+            pass_mask: r.u8(0x19)?,
             overrides: r
                 .u32(0x10)
                 .ok()
                 .and_then(|o| crate::world::InstanceOverrides::parse(res, o as usize).ok())
                 .unwrap_or_default(),
         })
+    }
+
+    /// Whether the main view draws the model (its pass mask has no [`Self::PASS_MAIN`] bit). 230 coarse
+    /// terrain tiles (100-odd triangles each, one placement per model) carry the bit: they stand in for the
+    /// ground in the shadow, cube-map and reflection views and cut through roads if drawn in the main view.
+    pub fn in_main_view(&self) -> bool {
+        self.pass_mask & Self::PASS_MAIN == 0
     }
 
     /// The game's LOD choice for one placement (`FUN_008a02f0`, docs/decomp.md "Model LOD and draw

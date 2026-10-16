@@ -16,6 +16,7 @@ mod placement;
 mod preview;
 mod props;
 mod survey;
+mod terrain_check;
 mod traffic_sound;
 mod tune;
 mod ui;
@@ -456,6 +457,24 @@ enum Cmd {
         #[arg(long)]
         owners: bool,
     },
+    /// Terrain through the road: drawn ground (main terrain / plot meshes at every LOD, the composed backdrop)
+    /// above a road mesh at the same spot, ranked by area (`terrain_check.rs`).
+    TerrainCheck {
+        /// Grid step in metres.
+        #[arg(long, default_value_t = 1.0)]
+        step: f32,
+        /// Heights within this of the road do not count (metres).
+        #[arg(long, default_value_t = 0.05)]
+        eps: f32,
+        #[arg(long, default_value_t = 30)]
+        top: usize,
+        /// Only one kind of ground: main, lod, backdrop.
+        #[arg(long)]
+        only: Option<String>,
+        /// Also count models the main view skips (`Model` +0x19 pass mask), as drawn before 2026-10-16.
+        #[arg(long)]
+        all_passes: bool,
+    },
     /// The world's model LOD tables and placement LOD scales (docs/decomp.md "Model LOD and draw distance");
     /// `--at x,y,z` counts what the game would draw from there at view scale `--scale`.
     Lods {
@@ -855,6 +874,10 @@ fn main() -> Result<()> {
             }
         }
         Cmd::Police => police(&AssetStore::new(game)?)?,
+        Cmd::TerrainCheck { step, eps, top, only, all_passes } => {
+            let store = AssetStore::new(game)?;
+            terrain_check::run(&store, step, eps, top, only.as_deref(), all_passes)?
+        }
         Cmd::PlacementCheck { bundles, top, groups, view, column, owners } => {
             let store = AssetStore::new(game)?;
             if owners {
