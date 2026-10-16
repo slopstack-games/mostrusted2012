@@ -17,10 +17,12 @@ mod preview;
 mod props;
 mod siren;
 mod survey;
+mod terrain_check;
 mod traffic_sound;
 mod tune;
 mod ui;
 mod verify_handling;
+mod water;
 mod wheels;
 
 use mw_assets::AssetStore;
@@ -451,6 +453,21 @@ enum Cmd {
     /// Police and pursuit data (`mw_assets::police`): the bust rule, the free-roam heat levels (thresholds, heat
     /// and cooldown times, the cops each fields) and the cop types' cars (docs/decomp.md "Police and pursuits").
     Police,
+    /// Every water surface (main and backdrop): height, extent, listing units, and where it lies above dry
+    /// collision (floating water) while the composed backdrop draws it.
+    Water {
+        /// Surfaces counted as water beds (the wash surfaces).
+        #[arg(long, value_delimiter = ',', default_values_t = [27u8, 43])]
+        wash: Vec<u8>,
+        /// Sample spacing in metres.
+        #[arg(long, default_value_t = 8.0)]
+        step: f32,
+        #[arg(long, default_value_t = 40)]
+        top: usize,
+        /// Ignore the backdrop composition (count every backdrop sample as drawn).
+        #[arg(long)]
+        all_backdrops: bool,
+    },
     /// Drop every placement (instances, props, compounds, dynamics, groundcover) onto the track units'
     /// collision and report per layer / model / unit how far it stands off the ground.
     PlacementCheck {
@@ -474,6 +491,24 @@ enum Cmd {
         /// Groundcover only: per group, whether the zone that owns its place lists its collection.
         #[arg(long)]
         owners: bool,
+    },
+    /// Terrain through the road: drawn ground (main terrain / plot meshes at every LOD, the composed backdrop)
+    /// above a road mesh at the same spot, ranked by area (`terrain_check.rs`).
+    TerrainCheck {
+        /// Grid step in metres.
+        #[arg(long, default_value_t = 1.0)]
+        step: f32,
+        /// Heights within this of the road do not count (metres).
+        #[arg(long, default_value_t = 0.05)]
+        eps: f32,
+        #[arg(long, default_value_t = 30)]
+        top: usize,
+        /// Only one kind of ground: main, lod, backdrop.
+        #[arg(long)]
+        only: Option<String>,
+        /// Also count models the main view skips (`Model` +0x19 pass mask), as drawn before 2026-10-16.
+        #[arg(long)]
+        all_passes: bool,
     },
     /// The world's model LOD tables and placement LOD scales (docs/decomp.md "Model LOD and draw distance");
     /// `--at x,y,z` counts what the game would draw from there at view scale `--scale`.
@@ -534,6 +569,9 @@ enum Cmd {
         #[arg(long, value_delimiter = ',', allow_hyphen_values = true)]
         at: Vec<f32>,
     },
+    /// The AI road graph (`AIData`): one line per node (index, x, y, z, drivable width, flags, linked nodes), for
+    /// scripts that drive the original along the roads (`tools/orig`).
+    AiGraph,
     /// Offline events (`OfflineEvent` in GAMELOGIC/GAMEMODES.BNDL, resolved against HAWAII/TRIGGERS.BNDL): one
     /// line per event (id, kind, laps, checkpoints, opponents, name, car); `events <id>` prints one in detail,
     /// `--png` draws its route over the lane map (yellow route, white gates, green start, red opponents).
@@ -874,6 +912,13 @@ fn main() -> Result<()> {
             }
         }
         Cmd::Police => police(&AssetStore::new(game)?)?,
+        Cmd::TerrainCheck { step, eps, top, only, all_passes } => {
+            let store = AssetStore::new(game)?;
+            terrain_check::run(&store, step, eps, top, only.as_deref(), all_passes)?
+        }
+        Cmd::Water { wash, step, top, all_backdrops } => {
+            water::run(&AssetStore::new(game)?, &wash, step, top, !all_backdrops)?
+        }
         Cmd::PlacementCheck { bundles, top, groups, view, column, owners } => {
             let store = AssetStore::new(game)?;
             if owners {
@@ -1473,6 +1518,14 @@ fn main() -> Result<()> {
         Cmd::Frontend { sequence: None, spots } => events::frontend(&AssetStore::new(game)?, spots)?,
         Cmd::Hsm { node, bundle, find, depth, parents } => {
             events::hsm(&AssetStore::new(game)?, &bundle, node, find.as_deref(), depth, parents)?
+        }
+        Cmd::AiGraph => {
+            let ai = AssetStore::new(game)?.ai_data()?;
+            for (i, n) in ai.nodes.iter().enumerate() {
+                let links: Vec<String> = n.links.iter().map(|l| l.to_string()).collect();
+                let [x, y, z] = n.position;
+                println!("{i}\t{x:.2}\t{y:.2}\t{z:.2}\t{:.2}\t{}\t{}", n.width, n.flags, links.join(","));
+            }
         }
         Cmd::Traffic { png, at } => traffic(&AssetStore::new(game)?, png.as_deref(), &at)?,
         Cmd::Music { wave, out } => music(&AssetStore::new(game)?, wave.as_deref(), out.as_deref())?,

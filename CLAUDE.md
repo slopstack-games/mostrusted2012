@@ -153,7 +153,9 @@ MW_NO_VIGNETTE=1 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,172
 #   --smash-set compounds: lamps etc. breaking into parts. Props collide in the world by default (--no-prop-physics)
 ./target/release/mostrusted --drive 911 --test kerb        # kerb strike (MW_TEST_KERB_H / _DEPTH / _ANGLE / _UP, MW_TEST_KMH)
 ./target/release/mostrusted --drive 911 --test-track --track-surface 4 --test accel   # the flat track as any surface (4 = grass)
-./target/release/mwtool props -v                    # physics of every prop / compound / dynamic object
+./target/release/mwtool props -v                    # physics of every prop / compound / dynamic object (+ WCVfxBehaviours)
+#   prop-break effects (prop_vfx.rs): MW_PROP_VFX_LOG=1 logs impact / spot / contact effects and lights out;
+#   MW_VFX_DEMO=<effect id>,<every s>,<speed> plays any effect ahead of the camera (loads it on demand)
 ./target/release/mwtool lods --at=815,60,1760          # model LOD tables / placement LOD scales; what the game draws from a point
 #   runtime: MW_NO_LOD=1 (everything at LOD0, A/B), MW_LOD_SCALING=0|1|2 (the game's LodScaling option), MW_LOD_LOG=1
 ./target/release/mwtool surfaces                    # surfaces: grip, rolling, drag, dirt build-up, triangle counts
@@ -168,6 +170,9 @@ MW_NO_VIGNETTE=1 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,172
 # Collectables and Speed Points (freeroam.rs): a speed camera, a billboard and a gate; TEST RESULT freeroam ...
 ./target/release/mostrusted --drive 911 --units 12 --mute --no-traffic --test freeroam --profile <scratch>/p.cfg --screenshot <scratch>/fr.png
 ./target/release/mwtool placement-check --top 10             # placements vs the collision under them, per layer / model
+./target/release/mwtool terrain-check --top 30               # drawn ground above road meshes (terrain through the road), ranked
+#   --all-passes / runtime MW_ALL_PASSES=1: also the models whose pass mask (Model +0x19) skips the main view (A/B)
+./target/release/mwtool water                                # water meshes: height, listing zones, drawn water over dry ground (MW_WATER_AT=x,z ...)
 ./target/release/mwtool mods 911                             # performance upgrades: slot -> parameter changes
 ./target/release/mwtool sampler-usage --filter Driveable     # the game's sampler states per shader slot
 # Car options: --dirt 0.6,0.3 (dirt, dust), --anim all=1 (pose animated parts in --drive), --mods 12=0 (slot=level
@@ -226,6 +231,11 @@ MW_CUTSCENE_SHOT=intro:9 ./target/release/mostrusted --race 462174 --units 12 --
 ./target/release/mostrusted --drive 911 --ai "911,veyron super" --test ai --ai-seconds 60   # AI racers
 # Traffic (traffic.rs; density from the event): --no-traffic, --traffic-density x, MW_TRAFFIC_LOG=1
 ./target/release/mwtool traffic --at x,z[,r]             # lanes and parked cars near a point (plain: junctions, data, parked survey)
+./target/release/mwtool ai-graph > graph.tsv           # the AI road graph (node, x y z, width, flags, links), e.g. for tools/orig autopilots
+MW_POLICE_LOG=1 ./target/release/mostrusted --drive 911 --test pursuit --units 12 --no-traffic   # cops: state, aim, stop flags
+# When a pursuit starts (cop_sight.rs) and the patrol on a traffic ghost (cop_patrol.rs): slow pass, speeding, ram, patrol
+MW_COPS_SHOTS=<dir> ./target/release/mostrusted --drive 911 --test cops --units 30 --mute   # TEST RESULT cops ...
+MW_POLICE_LOG=1 MW_COP_DISTANCE=80 ./target/release/mostrusted --drive 911 --units 20   # free-roam cops spawn 80 m away
 ./target/release/mostrusted --drive 911 --test crash-traffic       # head-on with traffic: crash camera (car_impacts.rs)
 ./target/release/mostrusted --drive 911 --test crash-parked --units 20 --spawn=925,24,-101 --screenshot <scratch>/p.png  # into a parked car
 ./target/release/mostrusted --drive 911 --test crash-ai --ai 911 --no-traffic --spawn=925,23,-101,10   # (the default spawn has a barrier ahead)

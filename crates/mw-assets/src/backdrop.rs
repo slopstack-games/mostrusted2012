@@ -19,10 +19,13 @@
 //!   it and stand-ins for buildings elsewhere drop out.
 //! - Outside every zone (distant hills, sea, horizon), of the backdrop models covering a spot the ones
 //!   listed by the zone nearest to it are drawn: the finest tier anyone uses there.
-//! - Water surfaces (`Water_*` shaders) are composed separately from solid geometry, so a lake bed listed
-//!   by a near zone does not hide the water plane a farther zone lists over it. Where a zone lists no
-//!   water of its own (city rivers: the game does not draw near water from instance lists), the water
-//!   plane of the nearest zone that lists one fills in.
+//! - Water surfaces (`Water_*` shaders) follow the same rule inside a zone: a zone draws only the water it
+//!   lists. Far zones list coarse water planes (a 2 x 1 km rectangle at y 13.1 over the river gorge whose
+//!   water the gorge's own zones list at y -36.8, a sloped sea plane at y 30.4 over the coastal industrial
+//!   area at y 6-20): drawn inside a zone that does not list them they flood it. Outside the zones, water is
+//!   composed separately from solid geometry, so a lake bed listed by a near zone does not hide the water
+//!   plane a farther zone lists over it, except in the gaps between zone polygons: within `WATER_GAP` (128 m) of a
+//!   zone that lists water, only that zone's water is drawn (research log 2026-10-16).
 //!
 //! Long triangles are split before their centroid decides, so tiles are cut along zone borders. When only
 //! some track units are streamed ([`BackdropSelector::set_loaded`]), the other zones count as outside and
@@ -49,6 +52,10 @@ const CELL: f32 = 128.0;
 const MARGIN: f32 = 6000.0;
 /// Models whose listing zones are this much farther away than the best still count as tied.
 const TIE: f32 = 1.0;
+/// Water outside every zone but this close to the nearest loaded zone lies in a gap between zone polygons
+/// (the river gorge runs along such gaps): if that zone lists water, it owns the spot. Model decision: every
+/// floating water sample outside the zones was within 65 m of one (`mwtool water`, 2026-10-16).
+const WATER_GAP: f32 = 128.0;
 
 impl AssetStore {
     /// The world's trigger volumes (`TriggerData` in `HAWAII/TRIGGERS.BNDL`, loaded by `FUN_0053c2f0`):
@@ -154,6 +161,8 @@ pub struct BackdropSelector {
     distances: Mutex<HashMap<(ResourceId, i32, i32), f32>>,
     /// Zones whose main geometry is drawn (all by default).
     loaded: Vec<bool>,
+    /// Zones that list at least one water mesh (filled by [`Self::build_index`]).
+    lists_water: Vec<bool>,
 }
 
 impl BackdropSelector {
@@ -183,6 +192,7 @@ impl BackdropSelector {
             cells: Vec::new(),
             distances: Mutex::new(HashMap::new()),
             loaded: vec![true; zones_len],
+            lists_water: vec![false; zones_len],
         }
     }
 
@@ -239,6 +249,12 @@ impl BackdropSelector {
 
     /// Bin the indexed triangles into the coverage grid.
     pub fn build_index(&mut self) {
+        self.lists_water = vec![false; self.zones.zones.len()];
+        for cov in self.meshes.iter().filter(|c| c.water) {
+            for &zone in self.listed.get(&cov.model).into_iter().flatten() {
+                self.lists_water[zone] = true;
+            }
+        }
         let [w, h] = self.size;
         let mut cells = vec![Vec::new(); w * h];
         for (m, cov) in self.meshes.iter().enumerate() {
@@ -303,18 +319,41 @@ impl BackdropSelector {
         })
     }
 
+    /// The nearest loaded zone within `range` of `(x, z)` and its distance.
+    fn nearest_loaded_zone(&self, x: f32, z: f32, range: f32) -> Option<(usize, f32)> {
+        self.zones
+            .zones
+            .iter()
+            .enumerate()
+            .filter(|&(i, zone)| {
+                let [x0, z0, x1, z1] = zone.bounds;
+                self.loaded[i] && x > x0 - range && x < x1 + range && z > z0 - range && z < z1 + range
+            })
+            .map(|(i, zone)| (i, zone.distance(x, z)))
+            .filter(|&(_, d)| d < range)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+    }
+
     /// Whether mesh `mesh_index` of backdrop `model` is drawn at ground position `(x, z)`.
     pub fn keeps(&self, model: ResourceId, mesh_index: usize, x: f32, z: f32) -> bool {
         let Some(listing) = self.listed.get(&model) else { return false };
         let this = self.mesh_of.get(&(model, mesh_index)).copied();
-        // Water surfaces and solid geometry are composed separately: a lake bed listed by a near zone
-        // does not hide the water plane a farther zone lists over it.
-        let water = this.is_some_and(|m| self.meshes[m].water);
+        // Inside a loaded zone exactly what that zone lists is drawn, water included.
         let zone = self.zones.zones.iter().position(|zone| zone.contains(x, z));
-        match zone {
-            Some(zone) if self.loaded[zone] && listing.contains(&zone) => return true,
-            Some(zone) if self.loaded[zone] && !water => return false,
-            _ => {}
+        if let Some(zone) = zone
+            && self.loaded[zone]
+        {
+            return listing.contains(&zone);
+        }
+        // Elsewhere water surfaces and solid geometry are composed separately: a lake bed listed by a near
+        // zone does not hide the water plane a farther zone lists over it.
+        let water = this.is_some_and(|m| self.meshes[m].water);
+        if water
+            && zone.is_none()
+            && let Some((owner, _)) = self.nearest_loaded_zone(x, z, WATER_GAP)
+            && self.lists_water[owner]
+        {
+            return listing.contains(&owner);
         }
         let mut cands: Vec<usize> =
             self.covering(x, z).into_iter().filter(|&m| self.meshes[m].water == water).collect();
@@ -341,16 +380,8 @@ impl BackdropSelector {
                 .fold(f32::INFINITY, f32::min);
             mine <= best + TIE
         };
-        match zone {
-            // Inside a loaded zone that does not list this water mesh, water fills in only where the zone
-            // lists no water of its own (the game does not draw near rivers from instance lists).
-            Some(zone) if self.loaded[zone] => {
-                !cands.iter().any(|&m| self.listed.get(&self.meshes[m].model).is_some_and(|l| l.contains(&zone)))
-                    && nearest_listing()
-            }
-            // A zone that is not streamed is seen from outside, like the area beyond all zones.
-            _ => nearest_listing(),
-        }
+        // Outside the zones, and in a zone that is not streamed (seen from outside), the nearest listing wins.
+        nearest_listing()
     }
 
     /// The part of mesh `mesh_index` of backdrop `model` that [`Self::keeps`] at each triangle's centroid,
@@ -597,8 +628,8 @@ mod tests {
         assert!(!s.keeps(FINE_A, 0, 150.0, 50.0));
         assert!(s.keeps(FINE_B, 0, 150.0, 50.0));
         assert!(!s.keeps(COARSE, 0, 50.0, 50.0));
-        // Zone 1 lists no water, so the water plane of the nearest zone listing one fills in.
-        assert!(s.keeps(WATER, 0, 50.0, 50.0));
+        // Zone 1 lists no water: a farther zone's water plane does not flood it.
+        assert!(!s.keeps(WATER, 0, 50.0, 50.0));
     }
 
     #[test]
@@ -611,6 +642,27 @@ mod tests {
         // Water is composed on its own: the only water plane there stays.
         assert!(s.keeps(WATER, 0, -300.0, 50.0));
         assert!(s.keeps(WATER, 0, -100.0, 50.0));
+    }
+
+    #[test]
+    fn water_in_a_gap_between_zones_belongs_to_the_nearest_zone() {
+        const RIVER: ResourceId = ResourceId(0x10);
+        let zones = vec![zone(1, 0.0, 100.0), zone(2, 100.0, 200.0), zone(3, 1000.0, 1100.0)];
+        let mut s = BackdropSelector::new(fmt::ZoneList { zones });
+        let id = crate::IDENTITY;
+        for (unit, model, mesh) in [(3, WATER, strip(-500.0, 500.0)), (2, RIVER, strip(150.0, 260.0))] {
+            s.add_listing(unit, model);
+            s.add_mesh(model, 0, true, &mesh, &id);
+        }
+        s.build_index();
+        // 30 m past zone 2, which lists water of its own: only that water is drawn there.
+        assert!(s.keeps(RIVER, 0, 230.0, 50.0));
+        assert!(!s.keeps(WATER, 0, 230.0, 50.0));
+        // Zone 2 itself lists only its river: the far plane does not flood it.
+        assert!(!s.keeps(WATER, 0, 150.0, 50.0));
+        // Next to zone 1 (no water listed) and far from every zone, the nearest listing still fills in.
+        assert!(s.keeps(WATER, 0, -30.0, 50.0));
+        assert!(s.keeps(WATER, 0, 400.0, 50.0));
     }
 
     #[test]

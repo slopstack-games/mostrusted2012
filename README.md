@@ -174,6 +174,13 @@ Still missing or not like the original (user play test, 2026-10-14; details in
 - [ ] Progression: mods unlocked by races, Most Wanted cars unlocked by beating them; takedowns / wrecks from
   car-to-car crashes in races
 - [ ] Billboards: intact with their artwork by default (broken only once smashed), showing the Easydrive records
+- [ ] Collectables: the speed camera flash; the stats UI (top speed per speed camera, gates smashed, jack spots
+  found, etc.)
+- [ ] Gas stations: the clean transition when driving through one
+- [ ] Landing on the roof or out of bounds: crash camera, then a reset onto the nearest road
+- [ ] Lights: car lights do not light up the world properly; speed cameras light the world all the time, not only
+  when they flash
+- [ ] Crash particles: broken glass when crashing into traffic, other crash debris and sparks
 - [ ] Car sounds and effects: idle sound, nitrous sound, backfires, engine start / stop; tyre marks and nitrous
   flames look off; grass / dirt still give road smoke and marks
 - [ ] Traffic reactions: horns, headlight flashing when you drive towards them

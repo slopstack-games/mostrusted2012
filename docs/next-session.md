@@ -35,6 +35,21 @@ Not started (still open from the list): police items (the branch is on the Linux
 brake-to-drift at speed, water height, terrain through the road, race end screen, car-change and start-up
 cutscenes, crash camera, mods / Most Wanted unlocks, takedowns in races.
 
+Added by the user (2026-10-16), not investigated yet:
+- **Collectable effects**: the speed camera's flash when the player passes one is missing.
+- **Gas stations**: driving through one has no clean transition: the original fades / cuts through the repair and
+  respray (and refills nitrous, `FUN_00748ff0`, decomp.md "Speed Points").
+- **Collectable stats UI**: the speed lists and progress counts are missing. Examples: the player's top speed at
+  each speed camera, how many gates are smashed, how many jack spots are found, billboards, etc. (in the HUD
+  pop-ups and the map / Easydrive screens).
+- **Roof landings and out of bounds**: landing on the roof must end in the crash camera and a reset onto the
+  nearest road; the same when the car lands out of bounds.
+- **Car lights**: vehicles' headlights / tail lights do not light up the world properly yet.
+- **Speed camera lights**: speed cameras seem to light up the world all the time instead of only during a flash.
+- **Crash particles**: car crashes have few or none of the original's particle effects, e.g. broken glass when
+  crashing into traffic cars and other crash debris / sparks in general (the prop-break effects of session 10's
+  `prop_vfx.rs` and its super-emitter port may be reusable).
+
 New this session: `mwtool music`, `mwtool ui map-items`, `--smash-set bags`, `--map-waypoint <event>`,
 `MW_GPS_LOG=1`, `MW_XINPUT_CONNECTED=0|1`, `MW_CAR_SFX_LOG=1`, `MW_NITROUS_AT=t0,t1` (`mwtool engine-sound`).
 

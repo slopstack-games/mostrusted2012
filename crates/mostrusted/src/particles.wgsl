@@ -26,7 +26,7 @@ struct ParticleParams {
     atlas: vec4<f32>,
     // rgb = key light colour (cd/m2), w = sky brightness (cd/m2 per irradiance-cube unit)
     key_colour: vec4<f32>,
-    // xyz = direction the key light travels
+    // xyz = direction the key light travels, w = alpha test on (1) / off (0, `_NoAlphaTest`)
     key_direction: vec4<f32>,
 };
 
@@ -105,7 +105,9 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         alpha *= saturate((scene - particle) / in.misc.x);
     }
 #endif
-    if alpha * in.misc.y < 0.003922 {
+    // The alpha test (all variants but `_NoAlphaTest`): with opacity 0 such a layer draws nothing, while a
+    // `NoAlphaTest` one adds its colour (alpha 0 under ONE, INV_SRC_ALPHA).
+    if params.key_direction.w > 0.5 && alpha * in.misc.y < 0.003922 {
         discard;
     }
     return vec4<f32>(c.rgb * alpha, alpha * in.misc.y);

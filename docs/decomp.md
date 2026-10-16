@@ -1384,6 +1384,21 @@ The channel set for the player (`FUN_004b5f40`, base +0x127f0) is +0x00 `Landing
   `c = rows[0] + Σ clamp(u · A_k + B_k) · rows[k+1]` with `u = frac(age · rate)`; alpha from the `Curve5`
   (converted to the same ramp form by `FUN_0046b090`) × a binding slot. The runtime read it as a polynomial in
   the age with the fourth column in the alpha until now.
+- **`SuperEmitter`** (0x2B; compile `0x0044b2c0` → `FUN_00448370`, a copy of words 0..0x13 plus the byte of
+  word 0x14 at +0x54; run `0x0045dc40` → `FUN_0045d020`, read with REA): the parent layer is the high bits
+  (>> 23) of the parent-channel operands at words 9..12 (0x80 | 4·channel: position, velocity, age, 1 /
+  lifetime); own position / velocity / radius at words 13..15. Per live parent (`t = age · recip < 1`, a LOD
+  byte against `.rdata` 0x00f9cf9c): `n = round((1 + (w19 − 1)·t)·(w17·|v·dt| + w16·dt) + carry)`, the
+  remainder carried in the compiled word 0x14 (one for the action). Each child: `u` uniform, position = parent
+  position − u·v·dt; direction at polar angle `rand(w0, w1)`° from Z = normalize(−v·dt) (fallback +Y) about a
+  uniform azimuth (X = normalize(Z × up)), speed `rand(w2, w3)`, plus `rand(w4, w5)` × the parent's velocity;
+  radius `rand(w6, w7)` × `(1 + (w18 − 1)·t′)` with t′ the parent's age `u` steps back.
+- **Renderer draw words** (`FUN_00458e90` 0x24, `FUN_0045ab10` 0x27, `FUN_0045b620`): two words per renderer
+  go to the draw state +0x23c / +0x240 (reset to 0 / 1.0 per draw): 0x24 words 7 / 8, 0x27 words 9 / 10. +0x23c
+  = the soft-particle fade distance (as read before), +0x240 read as `gVfxConstants.z` (the pixel programs'
+  alpha factor and alpha test, the vertex program's key-light factor; inferred, the constant's writer for these
+  draws was not found). `RenderSpriteMotionBlur` (`FUN_004598e0`) writes the colour's rgb with alpha 1.0
+  (`.rdata` 0x00f9d13c) and the renderer's word 11 at the streak's other end; its colour curves' alpha is unused.
 - `InitialisePosOffset` (0x14) keeps a particle in the emitter's space; `ParametricPosVelToWorldSpace` (0x1A /
   0x1B) places it with the current `Transform` when it is drawn, so the exhaust flames stay on the pipes.
 
@@ -1631,6 +1646,32 @@ position whose origin was not traced); the SHADOW state's renderable is not draw
 meshes; 1835 of the 3668 world models have one); compounds that can break draw their LOD0 pieces at every LOD
 (only the cull applies); backdrops keep the zone composition (no LOD rule); `--merge-static` merges LOD0 without
 the rule; L = 1 (`MW_LOD_SCALING`), the render target's pixels for L = 2.
+
+## Model pass mask (2026-10-16, applied to the main view in `loader.rs`)
+
+`Model` +0x19 is a bit mask of the **views that skip the model**. Instances: `FUN_00553810` inserts each
+`InstanceList` instance into the culling structure (a 0x30-byte record through `FUN_00541850`: bounding sphere
+from the LOD0 renderable, flags `(Model+0x19) << 24 | 0x840`, `| 0x80` with the renderable's flag bit; the other
+inserters `FUN_00553540`, `FUN_00553b10`, `FUN_00553cb0`, `FUN_00554230` put the byte in the same place). The
+frame setup in `FUN_008cffa0` queues one query per view (`FUN_008dbd90(query, required flags, excluded flags,
+…, frustum, LOD scale)`):
+
+| view | query | excluded | bit |
+|------|-------|----------|-----|
+| main (camera frustum +0x16f90, LOD scale +0x1ee8c) | `DAT_01183254` | `0x4000000` | 0x04 |
+| cube-map faces (six, `DAT_01183258..`) | | `0x2000000` | 0x02 |
+| sun shadow cascades (three, `DAT_01183270..`) | | `0x1000000` | 0x01 |
+| far shadow (`DAT_0118327c`) | | `0x3000000` | 0x01, 0x02 |
+| view at +0x172e0, probably the planar reflection (roads are excluded) | `DAT_01183284` | `0x8000000` | 0x08 |
+| a view at +0x17150 (gated by `FUN_00798840`) | `DAT_01183280` | `0x10000000` | 0x10 |
+| another main-scale view (+0x1c9e0) | `DAT_01183288` | `0x4000000` | 0x04 |
+
+The consumer of the queries is a job not in the dump. Runtime objects (compounds, dynamics) go through
+`FUN_00538b00`, which skips a model when `Model+0x19 & mask != 0`; its callers pass 4 (main view, LOD scale
++0x1ee8c), 1 (shadow, state 6), 2, 8 and 0x10. Data: roads 0x09, lit signs 0x01, props / fences 0x08 / 0x1a,
+230 coarse terrain tiles 0x04 (shadow, cube-map and reflection stand-ins: drawn in the main view they cut through
+roads), 1007 instances and 1337 dynamics 0x1f. Port: placements of models with bit 4 are not spawned
+(`mw_formats::Model::in_main_view`); bits 1, 2, 8 are not applied (model decision, research log 2026-10-16).
 
 ## Sky, sun and shadows
 
@@ -2005,9 +2046,8 @@ Runtime: `crates/mostrusted/src/props.rs`; data: `mw_assets::props` (`Additional
 - **Links** (`FUN_0054e750`, every frame): a pinned part with links (part +0x68 pointer, +0x6c count, u8 part
   indices) is unpinned (`FUN_0054e570` + `FUN_0054e390`) once none of its linked parts is registered and
   pinned. Used by the 11-panel structures (20 kg panels pinned at 500 kg m/s, a 230 kg frame).
-- **Smash effects / sounds**: none in the smash path itself. The compound's `WCVfxBehaviour` "Collision FX"
-  (`ImpactEffect`) and the parts' `WCPlaySoundBehaviour`s are behaviour data; what triggers the compound's
-  effect was not traced.
+- **Smash effects / sounds**: none in the smash path itself. The effects come from the objects' behaviours
+  ("World-component behaviours" below); the parts' `WCPlaySoundBehaviour`s are behaviour data.
 - **Reset** (`FUN_0055ae50`, every frame, no timer): a moving prop (64-slot pool, `FUN_00553fe0`) is put back
   (`FUN_00553540`) or removed (`FUN_00553740`, `mbRemoveInsteadOfReset` or a game flag) once **both** the camera
   and the player's car are farther than `mfResetDistanceSquared`. ResetProps (message 0x15, `FUN_0055a680`)
@@ -2015,6 +2055,44 @@ Runtime: `crates/mostrusted/src/props.rs`; data: `mw_assets::props` (`Additional
 - **Sound**: a prop's world contact plays its `PropObject` +0x1c sound (`WCPlaySoundBehaviour`) or
   "World_Prop_Collision" above a threshold from an audio object, then waits 0.35 s (`.rdata` 0xfaaf2c,
   `FUN_0054c680`).
+
+### World-component behaviours: what a contact shows (2026-10-16)
+- **Dispatch**: `FUN_0053cba0` walks the world-component table (0xe4 entries at +0x20, 8 bytes: flag, object
+  with its physics id at +4); for each object with a body it passes every body-pair record (`FUN_00901ab0`,
+  0x70 bytes: +0x10 point, +0x2c, +0x30, +0x3c force; the other body = +0x60 + +0x62 − own id) to
+  `FUN_005461c0` and the world-contact record (`FUN_008f6470`: +0x10 point, +0x20 normal, +0x1c, +0x2c) to
+  `FUN_005462d0`. Both run the object's (up to 16) behaviours' vtable slot 8 / 9 with two out flags: "activate"
+  → slot 1 unless already on, "deactivate" → slot 2 if on (on-mask at entry +0x42).
+- **`WCVfxBehaviour`** (type 0x2ae0; handler vtable 0x00faaa58 whose slot 1 `FUN_005b3350` builds the runtime
+  behaviour, vtable 0x00faf238): GeneSys +0x18 `0228a2f8` / +0x19 `713589ad` / +0x1a `543527d0` (the base
+  behaviour's bools; copied to runtime +0x16 / +0x17), +0x1c `ImpactEffect` (+0x5e "pending"), +0x24
+  `4524a2be` (+0x5f), +0x2c `c8d7741f` (> 0: a random flash timer, +0x4c / +0x50), +0x30 `29436f61`, +0x34
+  `5af50d49` (a probability against a random number, +0x5c), +0x38 `17b6b189` (a distance, squared into
+  +0x30..+0x3c), +0x40 / +0x44 / +0x48 the `Coronas` / `Lights` / `Spot_effects` arrays with counts at +0x54 /
+  +0x56 / +0x58, +0x4c `19e7191a` / +0x50 `392e10d5` (hours: 24 / 0), the bools after +0x5a unread.
+- **Slot 8 `FUN_005af3e0`** (pair contact): only when the object's body is not pinned (body +0xf4 bit 2): +0x16
+  set → clear it, activate; +0x17 set → clear it, deactivate. If its effect is alive (+0x60) the effect record
+  gets a new frame (`FUN_005a7750` from the contact point and the body's velocity, zero while asleep); else, with
+  +0x5e set: clear +0x5e and, when the other body is a vehicle (`FUN_00573360`: an active entry of the 16-slot
+  vehicle table), start `ImpactEffect` (`FUN_0049f750`) with velocity = the vehicle's body velocity
+  (`FUN_004acd40`) and the frame of `FUN_005a7750`: position = point + (0, 0.5, 0) (`.rdata` 0x00fae8f0), Z =
+  normalize(velocity) (fallback: the object's row 2), X = normalize((0, 1, 0) × Z) (fallback +X), Y = Z × X.
+  `FUN_0054bf70` (plain props) builds the same frame from the hitter's velocity (vehicle +0x120), fallback
+  identity, position + (0, 0.5, 0) (`.rdata` 0x00fab370).
+- **Slot 9 `FUN_005af630`** (world contact): with `4524a2be` set, when the body's velocity at the contact point
+  (`FUN_0059eb20`) is longer than `29436f61`, the effect starts at the point (or, while one is alive, gets the
+  new frame): Z = the contact normal, X = normalize(+X × Z), Y = Z × X.
+- **Slot 1 `FUN_005b30d0`** (on): when +0x5c (the probability roll) and neither the timer nor the flash mode:
+  spot effects (`FUN_005af900`: one effect per locator of each `Spot_effects` group, at locator × the object's
+  matrix, velocity = a vector from the object's vtable +8), lights `FUN_00532760`, coronas `FUN_005328c0`.
+  **Slot 2 `FUN_005b3150`** (off): lights `FUN_005327b0`, coronas `FUN_00534080`, spot effects `FUN_005afb30`.
+  Slot 3 `FUN_005b31a0` runs the time-of-day / flash switching every frame.
+- Data: a street lamp switches its "SetLightsOn" behaviours (light, coronas) off and "Collision FX" /
+  "StreetlampSingle_WC VFX" on at its first loose contact: sparks where the car hit and the `…7a95f` burst at its
+  foot; its parts throw `…1621e7` sparks on their first vehicle contact and while sliding along the ground.
+- Port (`prop_vfx.rs`): the rules above for compounds, their parts and dynamic objects; pair contacts are the
+  race cars' (`props::PropCarContact`, from `prop_contacts`) and avian's with other props and traffic. Model
+  decisions in the module docs and the research log (2026-10-16).
 
 ### Port and model decisions (`props.rs`)
 - Knocked props are outside the race cars' avian layers; `prop_contacts` solves car–prop contacts with the
@@ -3296,9 +3374,11 @@ Separately, `FUN_00602ce0` runs `FUN_005fd3f0` (not traced) once the player has 
 runtime" below):
 - `FUN_005ea6a0` scores six options from the gap, the closing speed and the car state with the
   `TrafficFuzzyLogicConfig` envelopes.
-- The scores are forced to zero while `world+0xa2be6` is set. They are also zeroed when `world+0xa2ba8 ≤ 16 −
-  world+0x32b20`, a cap on concurrent manoeuvres (inferred); in a local game that test is skipped at a load of
-  200 or more. A car whose state byte `+0x78` is 2 gets fixed scores (`DAT_00fb2330`).
+- While `world+0xa2be6` is set, score 0 (the manoeuvre) is forced to zero (corrected 2026-10-16: the scores are
+  16-byte SIMD vectors and the mask `DAT_00fb2330` clears only the first lane). Scores are also zeroed when
+  `world+0xa2ba8 ≤ 16 − world+0x32b20`, a cap on concurrent manoeuvres (inferred); in a local game that test is
+  skipped at a load of 200 or more. A car whose state byte `+0x78` is 2 (a patrolling cop's ghost, "How a cop
+  patrols") gets score 0 zeroed the same way: a ghost never starts a manoeuvre.
 - The best score picks the branch.
 - The cruise target in every branch is `Speed·mph·world+0xa2bfc` (a runtime speed scale).
 - Branch 0 sets the car's mode to 5 and a rate of `lerp(prm[0x98]=4, prm[0x94]=8, x(+0x3c)) ×
@@ -3388,8 +3468,8 @@ from this base, which `FUN_005ef0f0` fills with `sys[0x80]`). All `prm` field na
   `lerp(prm[0x98], prm[0x94], x) × 2.23694`; 1 → mode 0, `A = 0`, `B = max(0, obstacle − prm[0x9c])` (10 m);
   2 → mode 2, `A = min(cruise, max(min(v, v_obs), prm[0x3c]·gap))`, same `B`; 3 → mode 3, `A = 0`, `B = stop
   line − prm[0xb4]·x`; 4 → mode 4, `A = min(cruise, max(min(v, v_ahead), prm[0x3c]·gap))`, `B = gap`; 5 → mode 5,
-  cruise. Two gates zero all scores: `world+0xa2be6`, and `world+0xa2ba8` (`sys[0x134]` = 7) ≤ 16 −
-  `world+0x32b20` (not identified; not ported).
+  cruise. `world+0xa2be6` zeroes score 0 only (2026-10-16), and `world+0xa2ba8` (`sys[0x134]` = 7) ≤ 16 −
+  `world+0x32b20` gates the scores (not identified; not ported).
 - **Speed controller** (`FUN_0061a190`, confirmed): the cruise is capped at 5 m/s (`DAT_00fb278c`) when the lane
   direction `3v + 10` m ahead along the planned route (`FUN_005f11a0`) is at most `cos = 0.85` from the
   heading. Mode 5 (and 1 with flag 8): `a = clamp(min(cruise, 500) − v, prm[0x64] = −8, prm[0x4c] = 4)`. Modes
@@ -3717,19 +3797,99 @@ its coordinator record is marked), then runs the bust meter, then the state:
   band (inferred).
 - **Sight** (`FUN_006c5810`, `FUN_006c6280`): the range by the cop's state; within the no-cone range or the
   cone, then a raycast; a clear line sets "sees", the last-seen point and the memory timer.
-- **Wanted** (`FUN_005192b0`): a cop has the player in its cone and the player is faster than `H` +0xd8 mph
-  (110 at level 0: **speeding past a cop starts a pursuit**); or two collision-type events within 10 s in a
-  cop's cone (inferred meaning); or a cop was rammed (contact impact above `AIC`[0x60] = 2); or the pursuit
-  already runs. A cop that knows a wanted player chases; when the target is no longer known it drives to the
-  last-seen point and searches (`FUN_005156c0`, `FUN_0051a4e0`), else patrols.
+- **Wanted** (`FUN_005192b0`): see "When a pursuit starts (2026-10-16)" below. A cop that knows a wanted
+  player chases; when the target is no longer known it drives to the last-seen point and searches
+  (`FUN_005156c0`, `FUN_0051a4e0`), else patrols ("How a cop patrols (2026-10-16)").
 - **Chasing** (state 0): slot = `AIC`[0x1c4] (−5) − `Positioning` × `AIC`[0x5c] (12) metres behind the
-  target, ±3.5 m to the side; target speed = the target's − (lead + slot) × 1.5 mph/m within ±60 mph, at least
-  30 mph, only when within 20 s of the target, else flat out, under the entry's cap (`FUN_004fa580`,
-  `FUN_004fa480`); within 40 m it aims 0.5 s ahead of the target (ram mode, `FUN_004ffcb0`). Bruisers steer
+  target, ±3.5 m to the side. **Speed** (corrected 2026-10-14/16): `FUN_004fa480` computes the gap law of
+  `FUN_004fa580` (the target's speed − (lead + slot) × 1.5 mph/m within ±60 mph, at least 30 mph, within 20 s
+  of the target) but, for a cop **with a physical car**, discards it (`fstp st0` at 0x004fa56b) and returns
+  FLT_MAX: a physical chasing cop drives flat out under its `CopBehaviours` mph cap. The gap law only paces cops
+  without a physical car (far from the player, advanced along their path). Within 40 m it aims 0.5 s ahead of
+  the target (ram mode, `FUN_004ffcb0`); `cop_driver.rs` has the states. Bruisers steer
   into the car from alongside; a Rhino comes head-on; below the level's low-speed limit within 60 m cops pin,
   ram or stop (state 0x16). Roadblocks: at a trigger region 300–600 m ahead on the player's predicted route,
   `ae2d8f7d` s after the behaviour starts and every `cbbeb3e0` s. No cop spike-strip logic and no helicopter
   reader were found (`Helicopter` is 0 on all 40 levels).
+
+### When a pursuit starts (2026-10-16; confirmed unless stated)
+
+Nothing starts a pursuit by proximity. The pursuit manager starts the chase when a cop *chases* the player
+(`FUN_0065ba70`'s count) or the player took a cop down / hit a roadblock car (above); the coordinator puts a
+cop into a chasing state only when the player is **wanted** and the cop **knows** where the player is.
+
+- **Perception** (`FUN_006c5810` per cop, one target player per call round-robin; block = AI player + 0x250,
+  per target slot i): seen-age +0x0 + 4i, memory +0x60 + 4i (= `H` +0xbc on sight; while above 0 the
+  last-seen point +0x170 + 0x10i follows the target's true position), "sees" +0x105 + i, "in cone"
+  +0x11d + i. Range: `H` +0xa4 (chasing: the driver in state 0, 0x10, 0x12, 0x16, 0x17, 0x18, 0x1a,
+  `FUN_004f2b20`, or the coordinator's chase role `FUN_00516390`), else `H` +0xa0 when the coordinator marks the
+  cop alerted (`FUN_00516400`, coordinator record bytes +0x1c / +0x1f, writer not traced), else `H` +0xa8
+  (level 0: 100 / 90 / 50 m). `H` is the *target's* heat level (`FUN_0066aa30`). Beyond the range, or beyond
+  the no-cone range (`H` +0x90 for a target at ≤ 5 mph, 0x00fa8538, else +0x94; 50 m) and outside the cone
+  (half angle `H` +0x98 alerted / +0x9c otherwise, 40°, × 0x00fbfe0c deg→rad): "in cone" = 0, "sees" =
+  `FUN_00657ee0` (the target within 100 m, 0x00fb77e4, of one of the two 0xff0-byte records of world +0x2f484:
+  **not identified**), and the rammed flag +0x104 is cleared. Otherwise a ray is queued from the cop to the target
+  (`FUN_006c6280` reads it back): a clear line sets "sees" (sticky); while it sees, "in cone" = the target
+  inside the cone angle (`FUN_006c05b0`), the last-seen point and the memory are refreshed. A target within 20 m
+  (0x00fc4f70) of the last-seen point counts as seen.
+- **Rammed** (same function): each physical vehicle in the cop's contact list (world +0x5de2c count, +0x5de3c
+  records of 0xa0 bytes, other vehicle at +0x80) whose 0.5 s timer (+0xc0 + 4v, 0x00fc0600) has run out adds
+  the contact list's value at record +0x1c (units not traced) to +0x100; vehicles for which `FUN_0057a050`
+  holds are skipped (a vehicle-type flag, not identified). Past `AIConfig` +0x60 (`a7a0cd14`, 2) the cop is
+  rammed (+0x104 = 1) and the sum restarts.
+- **Wanted** (`FUN_005192b0`, per player, any of): (1) a cop has the player "in cone" and the player's speed
+  (`FUN_0083ea90`, mph) exceeds `H` +0xd8 (`78f472fa`: **110 mph** at level 0, 300 above); (2) traffic hits
+  seen: `FUN_00515090` runs a window (coordinator +0x3e0 + 4i) down by dt and clears the count (+0x3e4 + 4i)
+  when it runs out; while any cop has the player in cone, every entry of the frame's list at traffic world
+  +0x33144 (count +0x331bc, max 20; filled by `FUN_0060c3a0` when the player's contact turns a lane follower or
+  parked car physical, `FUN_005e9800`) counts one, the first opening a 10 s window (0x00fa99d0): **two traffic
+  cars hit within 10 s in a cop's view** make the player wanted; (3) any cop rammed (+0x354 of the AI player);
+  (4) `FUN_00656140` false (the pursuit system not set up, or the level without `249ed427`; never in free roam);
+  (5) a chase or cooldown runs; (6) `FUN_006a0340` && `FUN_006a1570` (a per-player float at world +0x2f47c
+  +0xdf0 not FLT_MAX: **not identified**); (7) coordinator byte +0x665 (**not identified**). "Known"
+  (+0x400 + i) = a cop sees the player, remembers it, or has +0x385 / +0x39d set.
+- Ported in `cop_sight.rs` (perception, wanted) and `police.rs`; `--test cops` checks a slow pass (no
+  pursuit), speeding past (chase) and a ram (chase); the traffic-hit window has unit tests.
+
+### How a cop patrols (2026-10-16; from a sub-agent's trace, confirmed unless stated)
+
+Patrolling (state 0xd; vtable 0x00fa8694: enter 0x5060e0 → reset `FUN_00504fd0`, exit `FUN_00506120` releases
+the ghost with traffic message 0x1c; update `FUN_005101e0`, dispatch on +0x90). The game drives a patrolling
+cop **with traffic**: the cop gets a *ghost*, a lane follower with car +0x78 = 2 and +0x79 = the cop's
+vehicle, never drawn and without a body (`FUN_00608fb0` skips the model for it), and rides it.
+
+- **Mode 0** (`FUN_00501460`): the nearest lane point (`FUN_004fd790` → `FUN_005f3350`: nearest rung segment
+  that the point projects onto, any lane direction) to the cop, or with +0x97 (set by Searching when it hands
+  over) to a point 150 m (0x00fa8eec) away in a random direction, not within 60 m of another player's car;
+  radius / height by the failure count +0x78: 400 m / 5 m, 400 m / any, 1000 m / 5 m, 1000 m / any.
+- **Mode 1** (`FUN_0050bdd0`): drive there over the road graph (A*, the racers' command builder); every 4 s
+  (0x00fa92b8) look the point up again, take it when 30 m off; within 30 m the speed ramps from 10 mph to 0,
+  within 6 m the handbrake, within 8 m mode 2. Three 50 m probes (0°, ±15°) force full lock on a hit; a crash
+  check sends the cop to the crash recovery state 11. Beyond the ramp the speed is read from D+0x5668 (not
+  traced for this mode).
+- **Mode 2** (`FUN_00509df0`): stopped; traffic message 0x1a asks for a ghost 5 m (0x00fa92f8) ahead of the
+  cop; the traffic tick (`FUN_0060aba0`, one request a frame) places it at the nearest rung within 20 m
+  (0x00fb2470), |dy| ≤ 5 m, in an active hull, with no player clearance, at the lane's cruise speed
+  (`FUN_005f4d10`); asked again after 2 s (0x00f8a808) or on failure.
+- **Mode 3** (`FUN_0050ce00`): merge: drive to the ghost; while the ghost is ahead and more than 15 m away it
+  crawls (override +0x7a = 3: 10 mph; message 0x1b; values 1 stop, 2 5 mph, 3 10 mph in `FUN_0061a450`);
+  behind the cop it drives normally; caught up when the cop's position + 1.5 s of travel is within 2 m of it
+  with the ghost ahead; more than 40 m from the player and off screen: caught up at once; 8 s (0x00fa8e64):
+  back to mode 0. The cop's speed is `.bss` 0x011061f8 (**not read**).
+- **Mode 4** (`FUN_0050d490`): ride: the racers' steering, target speed the ghost's, brake while the ghost
+  stands; within 5 m of the ghost's pose the body is set to it (physics message 0x2e, transform and velocity,
+  every frame); farther, a pose request on the driver (D+0x584c, reader not traced). The ghost gone: mode 0.
+- The ghost obeys traffic's rules: lane speed, the 5 m/s turn cap, junction routes by load, red lights, the car
+  ahead, obstacles; only score 0 (the manoeuvre) is zeroed.
+- **Spawn** (`FUN_0051b4e0`, up to 10 tries): the ring point snapped to the nearest road node, then the nearest
+  lane point within 60 m / 5 m, facing **the lane's direction**; at least r from the player and 200 m (0x010c44cc)
+  from every player's car; spawned with message 0xd at forward × `.bss` 0x01106228 (the "20 mph" is not
+  verified). The cop type's default command (`FUN_006b8a40`: 12 → Patrolling) applies; `CopBehaviour` 6 keeps it.
+- **Siren**: no switch was found tied to the driver states (the mix groups `Player_Vehicle_Sirens`,
+  `Sirens_Roadblock`, `Sirens_Competitor` exist); the natural candidate is the chasing predicate
+  `FUN_006bbb70` (inferred). `police::CopStatus` exposes it as `chasing`.
+- Ported in `cop_patrol.rs` and `traffic.rs` (ghosts: `add_ghost`, `ghost`, `set_ghost_override`,
+  `remove_ghost`, `nearest_lane`).
 
 ### The HUD (data)
 
@@ -3744,28 +3904,37 @@ outcomes award SP once scoring exists.
 
 Ported as read: heat and levels, time heat, chase start, last-seen / lose radius, cooldown, escape, bust
 meter, pursuit bar, cop count and types per level (main behaviour), spawn and removal distances, sight
-(range, cone, raycast, memory), wanted by speeding or ramming, the chase speed law, slots, the 90 s pause.
+(range, cone, raycast, memory, rams; 2026-10-16), wanted by speeding, two traffic hits in view or ramming,
+the patrol on a traffic ghost, slots, spawn kinds, off-screen removal, the 90 s pause.
 Model decisions (not from the game):
-- Cops follow road-graph routes rebuilt every 0.5 s with the AI racers' driver (the game's chase path /
-  avoidance `FUN_0050e370` is not read); ram steering, Bruiser, Rhino, HeadOn, Interceptor are not ported.
-- The low-speed chase: closing at up to 30 mph and stopping 10 m from the player (the game's pin / ram / stop
-  substates are not ported). The patrol: along the road graph at the level's go-to speed cap (the game's
-  patrol drives traffic lanes, `FUN_005101e0`, not read). Searching: drive to the last-seen point, then patrol.
-- Spawn point: a random road point of the ring whose ground has streamed in (the ring shrinks when none),
-  facing the player along the road; one cop per 15 m. Removal by distance alone (no off-screen test).
-- "Touching" = the cop's centre within the player's box grown by the cop's half width + 0.3 m; "rammed" =
-  touching with more than 5 m/s relative speed; a cop crash within 30 m of the player counts as a takedown.
-- The time-to-reach of the chase speed law = distance over the cop's own speed.
+- Pursuit driving: `cop_driver.rs` (Chasing, LowSpeedChasing + box-in, Bruiser, Rhino, HeadOn) on road-graph
+  or straight paths with the AI racers' driver; the Interceptor drives as Chasing; world queries are physics
+  rays (the game asks its nav mesh).
+- The patrol (2026-10-16): the ghost is ported as read; MODEL: the merge speed is the lane's cruise speed (at
+  least 20 mph; `.bss` 0x011061f8 unread), a cop within 5 m of its ghost has caught up too, mode 1 beyond the
+  ramp is capped at the level's go-to / search speed, the ride steers the body onto the ghost's pose by
+  velocity in the ground plane and yaw (the game sets the full transform), a cop more than 5 m off its ghost is
+  put on it when unseen and away from the player, else starts over (the D+0x584c reader is not traced), a
+  ghost its cop no longer asks for goes after 2 s, and every cop not riding a ghost is an obstacle for traffic
+  like a crashed car. Without traffic (`--no-traffic`) the patrol drives the road graph at the go-to speed.
+- Perception: the alerted flag (`FUN_00516400`) is taken as "in a pursuit and going to the last-seen point,
+  searching or waiting"; `FUN_00657ee0` (out-of-range sight) is false; the ram sum adds the closing speed in m/s
+  of each new contact with the player's car (the game's +0x1c value is not traced; other vehicles not counted);
+  wanted terms (6) and (7) are false.
+- "Touching" = the cop's centre within the player's box grown by the cop's half width + 0.3 m; a cop crash within
+  30 m of the player counts as a takedown.
 - Only the main behaviour of a level (no sequencer, fallback or cycle); every heat level counts as unlocked.
-- The outcome stands 5 s (the game plays its sequences); after an escape cops beyond 100 m are removed.
-- The cooldown's × 4 factor is left out; `Widget.HUD.Heat` = the level's band progress; which HUD layouts
+- The outcome stands 13 s (the sequences' length; their cameras are not ported); after a pursuit every cop off
+  screen is removed.
+- The cooldown's × 4 factor does not apply to the player (+0x1a84 = 2, live read 2026-10-14); `Widget.HUD.Heat` = the level's band progress; which HUD layouts
   show when (the widget's code was not read).
-- Not there at all: roadblocks, spike strips, wrecked-by-cop busts (our crashes have no wrecker), the
-  two-collisions rule, cooldown spots / engine off, Speed Points, the busted / escaped sequences (sirens,
-  light bars and the radio: next section), pursuits inside events, the PostFX heat / cooldown colour cubes.
+- Not there at all: roadblocks, spike strips, wrecked-by-cop busts (our crashes have no wrecker), cooldown
+  spots / engine off, Speed Points, the busted / escaped sequences (sirens, light bars and the radio: next
+  section), pursuits inside events, the PostFX heat / cooldown colour cubes.
 
-Open points and what would settle them: vehicle +0x1a84 (the × 4 cooldown: a live read while cooling with the
-engine off / parked); the link from camera event 0x1a to HSM action 0xf (a probe hook on `FUN_00658140`); the
+Open points and what would settle them: the patrol's `.bss` speeds 0x011061f8 (merge) and 0x01106228 (spawn)
+and the contact record's +0x1c (ram sum) by a live read (probe `dump.req`); the out-of-range sight records
+(world +0x2f484) and wanted terms (6) / (7); the link from camera event 0x1a to HSM action 0xf (a probe hook on `FUN_00658140`); the
 spawn weights (`GameMode` +0x5a…+0x64: decode the type); `FUN_0050e370`, 0x0050f970, 0x0050dd40 (disassembly);
 a capture of a real pursuit (`mwtool capture`: cop distances, heat and bust timing) to compare the whole.
 

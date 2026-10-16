@@ -278,6 +278,8 @@ pub fn spawn(
                 lod_tables: HashMap::new(),
                 standing_models: HashMap::new(),
                 lods: crate::lod::LodSettings::from_env().enabled,
+                main_view: HashMap::new(),
+                all_passes: std::env::var_os("MW_ALL_PASSES").is_some(),
             };
             if let Err(e) = w.run(request) {
                 let _ = w.tx.send(Msg::Progress(format!("loader error: {e:#}")));
@@ -335,6 +337,10 @@ struct Worker {
     prop_physics: HashMap<(ResourceId, mw_assets::props::ObjectKind), Option<Arc<crate::props::PropPhysics>>>,
     /// LOD table per model (`lod.rs`), `None` for models without one.
     lod_tables: HashMap<ResourceId, Option<Arc<crate::lod::LodTable>>>,
+    /// Whether the game's main view draws a model (`Model` +0x19 pass mask, [`Self::in_main_view`]).
+    main_view: HashMap<ResourceId, bool>,
+    /// `MW_ALL_PASSES=1`: also draw models the main view skips (A/B).
+    all_passes: bool,
     /// Per compound definition: the models it draws while standing (see [`Self::compound_standing`]).
     standing_models: HashMap<ResourceId, StandingModels>,
     /// Apply the game's LOD rule to world placements (off with `MW_NO_LOD=1`).
@@ -912,6 +918,12 @@ impl Worker {
                 }
                 // Static placements (no physics, not a backdrop) are merged per material below.
                 let physics = p.object.and_then(|(object, kind)| self.prop_physics(object, kind));
+                // Models whose pass mask excludes the main view (coarse terrain for the shadow, cube-map
+                // and reflection views) are not drawn. Placements with physics keep their model (model
+                // decision: no collision-only body yet).
+                if physics.is_none() && !self.in_main_view(p.model) {
+                    continue;
+                }
                 if !self.filter.no_merge && !p.backdrop && physics.is_none() {
                     // A compound without physics only ever stands: its standing model (`compound_standing`).
                     let model = match p.object {
@@ -939,6 +951,17 @@ impl Worker {
         }
         self.send(Msg::Progress(format!("world loaded: {total} track units")))?;
         Ok(())
+    }
+
+    /// Whether the game's main view draws `model`: its pass mask (`Model` +0x19) has no main-view bit
+    /// (`mw_formats::Model::PASS_MAIN`; the main view's query excludes `0x4000000`, docs/decomp.md "Model pass
+    /// mask"). Always true with `MW_ALL_PASSES=1`.
+    fn in_main_view(&mut self, model: ResourceId) -> bool {
+        if self.all_passes {
+            return true;
+        }
+        let store = &self.store;
+        *self.main_view.entry(model).or_insert_with(|| store.model(model).ok().is_none_or(|m| m.in_main_view()))
     }
 
     /// Send a track unit's static placements: models placed once in the unit whose parts can all share a
