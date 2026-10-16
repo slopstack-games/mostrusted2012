@@ -15,6 +15,7 @@ mod memscan;
 mod placement;
 mod preview;
 mod props;
+mod siren;
 mod survey;
 mod traffic_sound;
 mod tune;
@@ -317,6 +318,24 @@ enum Cmd {
     /// `mw_assets::car_sound`): lists each vehicle type's bank, its RPM against normalised speed and its 3D
     /// placement; with an output file, renders a 0 → top speed → 0 sweep (14 s) of one type and then a
     /// pass-by (`--passby mph`) through the game's falloff and doppler, printing the gain against distance.
+    /// Police sirens (`CopSoundSet` in `VEHICLES/WAVES.BNDL`, `mw_assets::police_sound`): the siren sets,
+    /// their waves and channels; with an output file, renders set `--set` (of list `9f467b30`) through off,
+    /// levels 1–3, a blip and level 1 again. `--car <name>` also lists that car's cop lights (group 3 coronas
+    /// and lights with their flash patterns, 1/8 s per character).
+    Siren {
+        out: Option<PathBuf>,
+        #[arg(long, default_value_t = 0)]
+        set: usize,
+        #[arg(long)]
+        car: Option<String>,
+    },
+    /// Police radio (`EN_US/SPEECH/SPEECHEVENTSEQUENCES.BNDL` + the SWC0 container, `mw_assets::police_speech`):
+    /// the speech events; with an event id its items, and with `--out <dir>` its lines decoded to .wav.
+    Speech {
+        event: Option<u32>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     TrafficSound {
         /// A `VehicleComponent` id (e.g. 122816), or `all`.
         component: String,
@@ -1245,6 +1264,14 @@ fn main() -> Result<()> {
                 }
             }
             println!("{}: {:.1} s -> {}", v.name, duration, out.display());
+        }
+        Cmd::Siren { out, set, car } => {
+            let store = AssetStore::new(game)?;
+            siren::run(&store, set, out.as_deref(), car.as_deref())?;
+        }
+        Cmd::Speech { event, out } => {
+            let store = AssetStore::new(game)?;
+            siren::speech(&store, event, out.as_deref())?;
         }
         Cmd::TrafficSound { component, out, passby } => {
             let store = AssetStore::new(game)?;

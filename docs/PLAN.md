@@ -429,8 +429,9 @@ code side (game modes, HSMs, AI) next to the data. Roughly in dependency order:
    jack-spot swaps; `GAMELOGIC/GAMEMODES.BNDL`, `GAMEPLAY.BNDL`, the Most Wanted list.
 4. `[~]` Cops / pursuit (2026-10-10, `police.rs`, `pursuit.rs`, decomp.md "Police and pursuits"): patrol cop in
    free roam, pursuit by speeding past or ramming a cop, heat levels with their cops, chase / cooldown / escaped
-   / busted, the HUD's heat and BUSTING bars; `--test pursuit`, `--no-police`, `mwtool police`. Open: roadblocks,
-   spike strips, the cops' ram / Bruiser / Rhino driving, sirens and lights, busted / escaped sequences, Speed
+   / busted, the HUD's heat and BUSTING bars; `--test pursuit`, `--no-police`, `mwtool police`. Sirens, light
+   bars and the police radio (2026-10-16, `police_fx.rs` and friends; the AI sirens' switch is a model). Open:
+   roadblocks, spike strips, the cops' ram / Bruiser / Rhino driving, coronas, busted / escaped sequences, Speed
    Points, cooldown spots. Takedowns, wrecks (deformation itself landed under M3.5: there is no
    `DeformationModel`; damage is skeletal animation).
 5. `HSMData` (0x501): hierarchical state machines that drive game flow. Interpret, or reimplement by hand.

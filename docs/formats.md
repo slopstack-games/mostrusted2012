@@ -513,6 +513,37 @@ See `crates/mw-audio` (decoders reimplemented from vgmstream's documentation of 
   sequence slots and 24 wave pools (`Scratch`, `Sparks`, `Landing`). `TyreSound` in `VEHICLES/WAVES.BNDL`
   holds only the silent placeholder wave `…79ff`.
 
+### Police sounds, lights and speech (2026-10-16; `mw_assets::police_sound` / `police_lights` / `police_speech`)
+
+- **`CopSoundSet`** (`VEHICLES/WAVES.BNDL` `…23013`, 28 bytes): +0x10 / +0x18 `efd7715f` siren sets (no reader),
+  +0x14 / +0x1a `9f467b30` siren sets (the default list, `[slot % count]`). **`SirenSoundSet`** (60 bytes):
+  +0x0c `3b47deee` (empty), +0x14 `403328c3` a `MixerChannel` (`…76b17`, used by +0x1c's items), +0x1c
+  `89ecdfc4` the dying-siren `Sequence`, +0x28 `Malfunctions` (empty), +0x2c `Blips` (`{Wave}`, one-shots),
+  +0x30 `Sirens` (`SirenLevel {Wave[], count d58c3eb1}`, looped waves), +0x34 / +0x36 the counts, +0x38
+  `21cee134` (0; probably the malfunction count). A car's `VehicleSound` +0x40 may name its own set. The
+  voices play on the mix snapshot channels `Sirens_Competitor` / `Player_Vehicle_Sirens` / `Sirens_Roadblock`
+  (`SOUND/MIXER_CHANNELS.BNDL`; `1653b84c` = 3 / 10 / 1). `mwtool siren [out.wav] [--car <name>]`.
+- **`VehicleComponent.54eb210e`** (+0x8e, bool): the car has a siren (the five cop components).
+- **`FlashAnimation`** (+0x10 / +0x14 `Animations` of `FlashAnimation.Animation` 0x24 bytes: +0x0c `Pattern`
+  handle, +0x18 `Duration`, +0x1c `Frequency`, +0x20 `Phase`); **`FlashPattern`** (+0x10 / +0x14 `Pattern`:
+  floats). Named by `VehicleVfxBehaviour.Corona.Animation` / `Light.Animation`; the cop lights are group 3
+  (`Ford_Crown_Victoria_COP_Coronas`).
+- **Speech** (`EN_US/SPEECH/SPEECHEVENTSEQUENCES.BNDL`, 290 resources: 110 `Speech.SpeechEventSequence`, 81
+  `Speech.VehicleVocab`, 20 `Character.AudioSettings`, mixer channels, 17 radio click / bed `Wave`s, a
+  `SpeechEventList`, a `WaveContainerTable` and a `WaveDictionary`). `SpeechEventSequence` (76 bytes): +0x20
+  `SequenceItems`, +0x2c `a137b739` condition strings, +0x30 `Delay`, +0x34 / +0x38 mode-time window (minutes),
+  +0x3c `Period` (minutes), +0x40 `Cutscene_Behaviour`, +0x44 `47906457` all conditions, +0x46 `c78f4f4a`
+  one-off, +0x47 `a40bb99b` needs a car, +0x48 `Priority`, +0x49 `27e5d881` max plays. Items:
+  `ScriptLineSequenceItem` (+0x24 lines `cea5cd0e`, +0x28 containers `39050096` → `ScriptLineContainer` {+0x0c
+  character, lines}, +0x2c `Context`, +0x2e `Speaker`, +0x30 `9f199cf7` vocabulary kind, +0x32 `6366398d`
+  probability) and `SpeechEventSequenceItem` (+0x24 `8239ac66` event ids). `ScriptLine`: `Character` handle (an
+  `AudioSettings`: `Mixer_Channel`, a bed wave, three clicks), `f8b496b9.LocalisedWave` = the low 32 bits of a
+  container id. **`WaveContainerTable`** (type 0x82): `"wct "`, u32 2, u32 header size 0x18, u32 count, u32
+  name offset (`"SpeechEventSequences.swc0"`), u32 0, then `{u64 id, u32 offset, u32 size}`; the SWC0
+  (`EN_US/SWC/SPEECHEVENTSEQUENCES.SWC0`, 225 MB) holds plain SPS streams (EALayer3, mono, 48 kHz) at those
+  offsets (32-byte aligned). **`WaveDictionary`** (0x84): u32 0, u32 2, u32 tail offset, u32 entries offset
+  (0x14), u32 count, then `{f32 duration ms, u32 id}`. `mwtool speech [<event>] [--out dir]`.
+
 ## Particle effects (`BearEffect` 0x301)
 
 All 214 effects are in `GLOBALEFFECTS.BNDL`. An effect has named parameters the game sets per instance
