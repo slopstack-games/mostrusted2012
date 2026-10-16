@@ -44,12 +44,20 @@ sub-agents decoded 0x0B / 0x2D, 0x40 / 0x11 / 0x3E / 0x3D and the 0x1E / 0x1F / 
   surface block; the debris world collision as a ray against the world colliders; debris lit by Bevy's PBR (the
   game's deferred `VfxMesh*` programs: normal maps, roughness / AO maps not used); the 3-D sprites' view-kind alpha
   word and their shadow test not ported; the particle serial for the mesh pieces counts the layer's births.
-- **Found, not changed** (other agents' area, `particles.rs`): the drag of `UpdatePosVel` 0x3D and
-  `…WithBouncePlane` 0x3E is exponential, `v ← v·(1 − drag)^dt` (`powf`), not the quadratic stand-in; 0x3E bounces
-  only when the bounce impulse beats the update's acceleration, draws restitution / friction once per update, and
-  blends a parameter plane into the particle's own between 2 and 3 m from a point; both add wind (engine +0x50)
-  and turbulence terms. The crash dust layer (`…1311286`: 8 sprites of 2.5–3.5 m radius growing ×1.85) looks very
-  heavy in daylight, likely the same size / opacity question as the dirt cloud.
+- **Drag and bounce ported** (after merging the opacity / dirt-cloud work; integrator request): `UpdatePosVel` 0x3D
+  (`FUN_004615f0`) and `…WithBouncePlane` 0x3E (`FUN_004618d0`) keep `(1 − drag)^dt` of the velocity per update
+  (`powf`), not the old quadratic stand-in; 0x3D moves with the old velocity, 0x3E with the new one; both add
+  turbulence `dt·(2r − 1)` per component; 0x3E draws restitution / friction once per update, bounces only when the
+  bounce impulse beats the update's acceleration, subtracts the radius only with its flag byte (the old "quarter
+  radius up" guess is gone) and blends the emitter's plane into the particle's own between 2 and 3 m from the
+  emitter. Model decisions: the wind term `(1 − R)·wind·W` is left out (`W` = engine +0x50, copied from
+  `obj+0x1b120`, not identified; 127 actions couple to it, up to 1.25), 0x3D's gravity / turbulence table scales
+  (engine +0x84) are 1. A/B (`ref/dragfx/*-stack.png`, old binary above): drift smoke (`--test drift --track-surface
+  8`, t = 9 s) spreads wider and lower, the railway-gravel dust (`--spawn=1164,21,-210,0 --auto-throttle 0.6`)
+  stays a moderate cloud behind the wheels, the crash-traffic shots look alike (runs with `--screenshot-time`
+  are not frame-identical, so the dirt pairs are not exact matches). The crash dust (`…1311286`: 8 sprites of
+  2.5–3.5 m radius) still reads heavy and bright in daylight; its size and alpha come from the data and the
+  session's renderer port, so a capture of the original is what would settle it.
 - **Open** (captures of the original that would settle them: a head-on with a traffic car at 60 mph from the chase
   camera, frame by frame; a side swipe along a parked car; a wall hit at 50 mph): the contact value's unit and
   writer (record +0x2c), the normal's sign, `IsEmitting` = record bit 1 (inferred), whether a dead instance is

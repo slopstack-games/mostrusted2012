@@ -1591,7 +1591,8 @@ Read for the request "broken glass when crashing into traffic, crash particles i
 - **0x3D / 0x3E drag** (`FUN_004615f0`, `FUN_004618d0`): `v ← v·(1 − drag)^dt + Δ` (`powf`), Δ = gravity·dt +
   wind (`(1 − R)·c·W`, engine block +0x50) + turbulence·dt·(2r − 1); 0x3E bounces only when the bounce impulse beats
   Δ, its restitution / friction are drawn once per update, and its plane blends from a parameter plane (within 2 m
-  of a point) to the particle's own beyond 3 m. Our `integrate` still uses quadratic drag (not changed here).
+  of a point) to the particle's own beyond 3 m. Ported (`particles.rs` `retain` / `acceleration`); the wind term
+  and 0x3D's table scales are left out (model decision).
 
 ## Post-processing and colour grade (2026-10-06)
 
