@@ -745,7 +745,9 @@ but the record sizes and the flow / vehicle tables differ.
 - **Junction** (0x150, confirmed in `FUN_00605d30`, the light cycle): `u16[16]` phase durations at 0x04 in
   tenths of a second, `u8[16]` phase masks at 0x24 (bit k set: light group k holds its stop lines, i.e. red),
   `u8` phase count at 0x34, `u8` group count at 0x35, groups of 0x20 bytes from 0x40: `u16` light object ids
-  at 0x00 (count `+0x17`), `u8` stop line indices at 0x04 and their `u16` hulls at 0x0A (count `+0x16`). All 189
+  at 0x00 (count `+0x17`), `u8` stop line indices at 0x04 and their `u16` hulls at 0x0A (count `+0x16`); light k's
+  object is the `u32` at group − 8 + 4k (`FUN_005ef950`; the placed traffic-light compound's instance id, 101 of
+  104 found, decomp.md "Traffic lights: the lamps"). All 189
   stop lines are referenced by exactly the junction groups, each owned by a section. Typical cycle: 15 s / 2 s
   all red / 15 s / 2 s all red.
 - **Static vehicle** (0x50, parked cars; `mw_formats::TrafficStaticVehicle`): a world matrix (D3D row-major, row 3

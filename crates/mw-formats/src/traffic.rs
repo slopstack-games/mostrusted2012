@@ -57,7 +57,8 @@
 //! (tenths of a second, `DAT_00fb1a94` = 0.1), `u8[16]` phase masks at 0x24 (bit k set: light group k
 //! holds its stop lines), `u8` phase count at 0x34, `u8` group count at 0x35, groups of 0x20 bytes from
 //! 0x40: `u16` light object ids at 0x00, `u8` stop line indices at 0x04, `u16` their hulls at 0x0A,
-//! `u8` stop line count at 0x16, `u8` light count at 0x17.
+//! `u8` stop line count at 0x16, `u8` light count at 0x17; light k's object handle (the lamp's placed instance id)
+//! is the `u32` at group − 8 + 4k (`FUN_005ef950`).
 use mw_bundle::{Reader, Resource, ResourceId};
 
 use crate::{Error, Result};
@@ -125,6 +126,9 @@ pub struct TrafficJunction {
 pub struct TrafficLightGroup {
     pub stop_lines: Vec<(u16, u8)>,
     pub lights: Vec<u16>,
+    /// Per light: the u32 at group − 8 + 4k (`FUN_005ef950` copies it into the light's record, the object the
+    /// light-cycle messages name).
+    pub light_objects: Vec<u32>,
 }
 
 #[derive(Debug, Clone)]
@@ -288,6 +292,8 @@ impl TrafficLaneData {
             }
             for k in 0..(r.u8(b + 0x17)? as usize).min(2) {
                 group.lights.push(r.u16(b + 2 * k)?);
+                // `FUN_005ef950` copies the u32 at group − 8 + 4k into the light's record (its object).
+                group.light_objects.push(r.u32(b - 8 + 4 * k)?);
             }
             j.groups.push(group);
         }

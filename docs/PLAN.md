@@ -104,7 +104,7 @@ Make a static frame look like the game.
 3. `[x]` **Remaining world layers** from `ZoneHeader` (0x206): CompoundInstanceList / CompoundObject,
    PropInstanceList / PropObject, DynamicInstanceList, LightInstanceList, GroundcoverCollection / Instances.
    - Done: props, compound objects and dynamic objects are placed (+21068 placements over the map, 0
-     unresolved; `mwtool world` prints counts per layer); lights are drawn since 2026-10-10 (point / cone / spot, plus the street lamps' own lights; `world_lights.rs`); the world objects' coronas since 2026-10-16 (street lamps, traffic lights, speed cameras; `world_coronas.rs`), lights of behaviours that start switched off stay off (traffic light colours: their controller is not ported).
+     unresolved; `mwtool world` prints counts per layer); lights are drawn since 2026-10-10 (point / cone / spot, plus the street lamps' own lights; `world_lights.rs`); the world objects' coronas since 2026-10-16 (street lamps, traffic lights, speed cameras; `world_coronas.rs`), lights of behaviours that start switched off stay off until switched; the junctions' traffic lights show the traffic cycle's colours since 2026-10-16 (`traffic_lamps.rs`).
      Groundcover is decoded and drawn (1.36 M sprites over the map, one mesh per group, `--no-groundcover` to
      skip); since 2026-10-09 by the port of the game's `Groundcover` vertex program (camera-facing about world
      up, wind sway, the CPU builder's per-sprite range drop and shrink, `groundcover.wgsl`). Still open: light

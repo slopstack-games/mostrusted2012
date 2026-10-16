@@ -42,6 +42,22 @@ pub struct ObjectFx {
     pub coronas: Vec<ObjectCoronas>,
     /// Every light of the object's behaviours (the switched ones are not in `LightSources` until switched on).
     pub lights: Vec<ObjectLight>,
+    /// Every `WCVfxBehaviour` of the object and its parts: id, `Label`, on from the start (`543527d0`).
+    pub behaviours: Vec<(ResourceId, String, bool)>,
+}
+
+impl ObjectFx {
+    fn read(store: &mw_assets::AssetStore, def: &mw_formats::ObjectDef) -> Self {
+        let mut behaviours: Vec<(ResourceId, String, bool)> = Vec::new();
+        let own = store.wc_vfx(&def.behaviours, &[], &def.locator_groups);
+        let parts = def.compound_parts.iter().flat_map(|p| store.wc_vfx(&p.behaviours, &[], &[]));
+        for v in own.into_iter().chain(parts) {
+            if !behaviours.iter().any(|b| b.0 == v.object) {
+                behaviours.push((v.object, v.label, v.active_at_start));
+            }
+        }
+        Self { coronas: store.object_coronas(def), lights: store.object_lights(def), behaviours }
+    }
 }
 
 type Job = Arc<Mutex<Option<Option<Arc<ObjectFx>>>>>;
@@ -57,11 +73,45 @@ struct ObjectFxCache {
 pub struct ObjectBehaviours {
     pub object: ResourceId,
     pub fx: Arc<ObjectFx>,
-    /// Per `fx.coronas` entry: switched on (from `543527d0`, then by sequences).
+    /// Per `fx.behaviours` entry: switched on (from `543527d0`, then by sequences and the traffic lights' cycle).
     pub on: Vec<bool>,
     /// The lamp's stagger id (its light's, `WorldLight::stagger`), once found.
     stagger: Option<u16>,
     stagger_tries: u16,
+}
+
+impl ObjectBehaviours {
+    pub fn is_on(&self, behaviour: ResourceId) -> bool {
+        self.fx.behaviours.iter().position(|b| b.0 == behaviour).is_some_and(|i| self.on[i])
+    }
+
+    /// The behaviours labelled `label` (indices into `fx.behaviours`).
+    pub fn labelled<'a>(&'a self, label: &'a str) -> impl Iterator<Item = usize> + 'a {
+        self.fx.behaviours.iter().enumerate().filter(move |(_, b)| b.1 == label).map(|(i, _)| i)
+    }
+
+    /// Switch behaviour `i` on or off (`FUN_005b30d0` / `FUN_005b3150`): its coronas follow [`Self::on`], its
+    /// lights are added to or taken out of the world's (`FUN_005328c0` creates the light records,
+    /// `FUN_00534080` removes them). `radius`: how far from `t` the object's lights may stand.
+    pub fn switch(&mut self, i: usize, on: bool, t: &GlobalTransform, radius: f32, lights: &mut LightSources) {
+        if self.on[i] == on {
+            return;
+        }
+        self.on[i] = on;
+        let behaviour = self.fx.behaviours[i].0;
+        let mine = behaviour_lights(&self.fx, self.object, behaviour, t);
+        if mine.is_empty() {
+            return;
+        }
+        if on {
+            lights.add(mine);
+        } else {
+            // Take the object's lights out and put back those of its other behaviours.
+            let ids: Vec<_> = self.fx.lights.iter().filter(|l| l.behaviour == behaviour).map(|l| l.def.id).collect();
+            let taken = lights.take_object_lights(self.object, t.translation(), radius);
+            lights.add(taken.into_iter().filter(|l| !ids.contains(&l.def.id)).collect());
+        }
+    }
 }
 
 /// Props without switchable behaviours (checked once).
@@ -103,7 +153,7 @@ fn attach(
         let object = prop.physics.object;
         match cache.done.get(&object) {
             Some(Some(fx)) => {
-                let on = fx.coronas.iter().map(|c| c.active_at_start).collect();
+                let on = fx.behaviours.iter().map(|b| b.2).collect();
                 commands.entity(e).insert(ObjectBehaviours {
                     object,
                     fx: fx.clone(),
@@ -121,9 +171,7 @@ fn attach(
                 let store = game.store.clone();
                 let kind = prop.physics.kind;
                 std::thread::spawn(move || {
-                    let fx = store.object_def(object, kind).ok().map(|def| {
-                        Arc::new(ObjectFx { coronas: store.object_coronas(&def), lights: store.object_lights(&def) })
-                    });
+                    let fx = store.object_def(object, kind).ok().map(|def| Arc::new(ObjectFx::read(&store, &def)));
                     *out.lock().unwrap() = Some(fx);
                 });
                 cache.jobs.insert(object, job);
@@ -219,7 +267,7 @@ fn queue_coronas(
                 staggers.1.get(&b.object).and_then(|v| v.iter().find(|(p, _)| p.distance(home) <= r)).map(|&(_, s)| s);
         }
         let m = t.affine();
-        for (i, c) in b.fx.coronas.iter().enumerate() {
+        for c in b.fx.coronas.iter() {
             if d >= c.reach {
                 continue;
             }
@@ -227,7 +275,8 @@ fn queue_coronas(
             if c.off_by_contact && !prop.pinned {
                 continue;
             }
-            let shown = if c.by_time() { c.flags & mask != 0 && in_hours(c.hours, hour_byte) } else { b.on[i] };
+            let shown =
+                if c.by_time() { c.flags & mask != 0 && in_hours(c.hours, hour_byte) } else { b.is_on(c.behaviour) };
             if !shown {
                 continue;
             }

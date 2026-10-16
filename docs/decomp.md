@@ -3523,6 +3523,30 @@ The controller, the stop lines and traffic lights, the route choice and the 150-
 read later: "Traffic runtime" below. Still not traced: the swerve and near-miss reactions, the horn, the switch
 to a physical car and the 24-slot range.
 
+### Traffic lights: the lamps (2026-10-16, ported in `traffic.rs` `cycle_lights` and `traffic_lamps.rs`)
+
+The light cycle (`FUN_00605d30`) drives the lamp posts as well as the stop lines; confirmed by reading the code.
+- **Records**: one 8-byte record per lamp at traffic world +0x65e20 + light id × 8: +0 the lamp object's handle,
+  +4 an `i16` timer, +6 the state (0 red, 1 amber, 2 green), +7 flags (bit 7 set: no messages; not seen set).
+  `FUN_005ef950` fills +0 from the junction group: for light k of a group the `u32` at group − 8 + 4k (formats.md
+  "Junction"). The handle is the lamp's placed instance id (the `CompoundInstanceList` record's +0x4c word): 101
+  of the 104 handles name a placed traffic-light compound (`aa60bafa` ×62, `241bbd82` ×24, `e86efde1` ×15;
+  `mwtool traffic`), the top nibble varying 1–4 between the lamps of a junction.
+- **At a phase change**, per group and per lamp: a group the new mask holds → if the lamp's state is not 0,
+  `FUN_0061bbd0(1)`: state 1 (amber), timer 200, messages "on Amber, off Red, off Green"; a free group → state 2,
+  "on Green, off Amber, off Red". So a green lamp turns amber when its stop lines are held (the cars stop at that
+  moment), and a red one is not told again.
+- **Amber runs out** (`FUN_006037f0` per active hull over its lamps, the same rule in `FUN_0061bae0`): the timer
+  falls by dt × 100 (`.rdata` 0x00fb2890 = −100), at ≤ 0 state 0 and "on Red, off Amber, off Green": amber lasts 2 s.
+- **Messages** 0xb (on) / 0xc (off) carry (handle, label hash) to the world's message loop (`FUN_0055a680`) →
+  `FUN_00553a70` / `FUN_00553ac0`: `FUN_005539b0` looks the handle up in the world's id map (`FUN_00562700`, 99
+  buckets) and calls the object's virtual +4 / +8 with the hash: the object's behaviours with that label switch.
+  The hashes are of "TrafficLight_Red" / "TrafficLight_Amber" / "TrafficLight_Green" (`FUN_005eb060`:
+  `DAT_0110f384` / `388` / `38c`).
+- **Start**: the records start zeroed (state 0, red) and nothing is sent for that state, so a lamp shows its
+  behaviours' start state until its first change. MODEL (port): shown as red from the start, and the current
+  colour is reapplied whenever a lamp's object (re)appears.
+
 ### Traffic runtime (2026-10-09, ported in `crates/mostrusted/src/traffic.rs`)
 
 Read from the dump and the disassembly for the runtime; `sys[x]` / `prm[x]` as above, `fuzzy[x]` = the block at

@@ -26,7 +26,7 @@ use mw_assets::sequence_fx::{FxItem, FxKind};
 
 use crate::drive::{Car, Player};
 use crate::props::PropBody;
-use crate::world_coronas::{ObjectBehaviours, behaviour_lights};
+use crate::world_coronas::ObjectBehaviours;
 use crate::world_lights::LightSources;
 
 pub struct SequenceFxPlugin;
@@ -212,11 +212,7 @@ fn run(
                             if t.translation().distance(at) >= *radius {
                                 continue;
                             }
-                            for (k, c) in b.fx.coronas.iter().enumerate() {
-                                if c.label == *label {
-                                    hit.push((e, k));
-                                }
-                            }
+                            hit.extend(b.labelled(label).map(|k| (e, k)));
                         }
                         hit.truncate(10);
                         let on = *action != 1;
@@ -268,7 +264,7 @@ fn end_all(
     let keys: Vec<(u64, usize)> = fx.switched.keys().copied().filter(|k| k.0 == run).collect();
     for k in keys {
         for (e, b) in fx.switched.remove(&k).unwrap_or_default() {
-            let back = objects.get(e).ok().map(|(.., ob)| ob.fx.coronas[b].active_at_start);
+            let back = objects.get(e).ok().map(|(.., ob)| ob.fx.behaviours[b].2);
             if let Some(back) = back {
                 switch(e, b, back, objects, lights);
             }
@@ -276,8 +272,7 @@ fn end_all(
     }
 }
 
-/// Switch behaviour `k` of object `e` on or off: its coronas (`ObjectBehaviours::on`) and its lights
-/// (`FUN_005328c0` creates the light records, `FUN_00534080` removes them).
+/// Switch behaviour `k` of object `e` on or off ([`ObjectBehaviours::switch`]).
 #[allow(clippy::type_complexity)]
 fn switch(
     e: Entity,
@@ -287,22 +282,6 @@ fn switch(
     lights: &mut LightSources,
 ) {
     let Ok((_, t, prop, mut b)) = objects.get_mut(e) else { return };
-    if b.on[k] == on {
-        return;
-    }
-    b.on[k] = on;
-    let behaviour = b.fx.coronas[k].behaviour;
-    let mine = behaviour_lights(&b.fx, b.object, behaviour, t);
-    if mine.is_empty() {
-        return;
-    }
     let radius = prop.physics.radius + 2.0;
-    if on {
-        lights.add(mine);
-    } else {
-        // Take the object's lights out and put back those of its other behaviours.
-        let ids: Vec<_> = b.fx.lights.iter().filter(|l| l.behaviour == behaviour).map(|l| l.def.id).collect();
-        let taken = lights.take_object_lights(b.object, t.translation(), radius);
-        lights.add(taken.into_iter().filter(|l| !ids.contains(&l.def.id)).collect());
-    }
+    b.switch(k, on, t, radius, lights);
 }

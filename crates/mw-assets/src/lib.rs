@@ -41,6 +41,7 @@ mod sfx_loader;
 pub mod sound;
 pub mod surfaces;
 pub mod traffic;
+pub mod traffic_lamps;
 pub mod ui;
 pub mod vehicle_driver;
 pub mod vfx;
