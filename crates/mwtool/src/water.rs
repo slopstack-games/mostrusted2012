@@ -256,7 +256,9 @@ pub fn run(store: &AssetStore, wash: &[u8], step: f32, top: usize, composed: boo
         let (a, b) = v.split_once(':')?;
         Some((a.parse().ok()?, b.parse().ok()?))
     });
-    let mut spots: Vec<(usize, f32, [f32; 3], f32, fmt::CollisionTag, Option<u32>)> = Vec::new();
+    /// A sample: mesh index, water height, point, ground height, ground tag, owning zone.
+    type Sample = (usize, f32, [f32; 3], f32, fmt::CollisionTag, Option<u32>);
+    let mut spots: Vec<Sample> = Vec::new();
     println!(
         "{:<3} {:<18} {:>2} {:<34} {:<4} {:>3} {:>7} {:>7} {:>16} {:>16} {:>6} | {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6}  units",
         "#",
@@ -289,8 +291,7 @@ pub fn run(store: &AssetStore, wash: &[u8], step: f32, top: usize, composed: boo
         let (sx0, sx1) = (x0.max(lo[0]), x1.min(hi[0]));
         let (sz0, sz1) = (z0.max(lo[1]), z1.min(hi[1]));
         let [mut n, mut wet, mut dry, mut drawn, mut cover, mut none, mut own] = [0usize; 7];
-        let mut cells: HashMap<(i32, i32), (usize, f32, [f32; 3], f32, fmt::CollisionTag, Option<u32>)> =
-            HashMap::new();
+        let mut cells: HashMap<(i32, i32), Sample> = HashMap::new();
         if sx0 < sx1 && sz0 < sz1 {
             let mut z = (sz0 / step).ceil() * step;
             while z <= sz1 {

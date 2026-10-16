@@ -302,7 +302,8 @@ pub fn run(store: &AssetStore, step: f32, eps: f32, top: usize, only: Option<&st
         println!("  ground above road: {c:?}: {:.0} m²", *k as f32 * cell_area);
     }
     // Merge 8 m cells into clusters per source (flood over neighbouring cells).
-    let mut by_src: HashMap<u32, Vec<((i32, i32), &Spot)>> = HashMap::new();
+    type Cells<'a> = Vec<((i32, i32), &'a Spot)>;
+    let mut by_src: HashMap<u32, Cells> = HashMap::new();
     for ((cx, cz, src), s) in &spots {
         by_src.entry(*src).or_default().push(((*cx, *cz), s));
     }

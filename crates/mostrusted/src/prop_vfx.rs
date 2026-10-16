@@ -105,7 +105,7 @@ pub struct PropVfxStats {
 }
 
 /// What a contact does to an object's behaviours (`FUN_005af3e0` / `FUN_005af630`).
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn behaviour_contacts(
     mut commands: Commands,
     time: Res<Time>,
