@@ -423,7 +423,7 @@ struct Ctx {
     k: f32,
 }
 
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn build(
     time: Res<Time>,
     night: Option<Res<crate::world_lights::NightLevel>>,
@@ -516,10 +516,8 @@ fn build(
     for (entity, mesh3d) in &batch_entities {
         let Some(b) = coronas.batches.values_mut().find(|b| b.mesh == mesh3d.0) else { continue };
         let show = !b.vertices.is_empty();
-        if show {
-            if let Some(mut mesh) = meshes.get_mut(&b.mesh) {
-                *mesh = mesh_of(&b.vertices);
-            }
+        if show && let Some(mut mesh) = meshes.get_mut(&b.mesh) {
+            *mesh = mesh_of(&b.vertices);
         }
         if show != b.shown {
             b.shown = show;

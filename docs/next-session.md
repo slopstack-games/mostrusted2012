@@ -4,7 +4,51 @@
 > "Fidelity rule"); never settle for "plausible". Open differences are tracked below, in docs/PLAN.md and the
 > README roadmap.
 
-# Handoff: 2026-10-15 (session 9, Windows): start here
+# Handoff: 2026-10-16 (session 10, Linux): start here
+
+**State**: branch `session-10` (from master after PR #5): five worktree branches merged (the police one includes
+session 8's unmerged WIP branch `worktree-agent-a6c7a3ed5babae9f8`). Clippy 0 warnings, 186 tests, `mwtool verify`
+0 failures; the 911's accel unchanged (0–60 mph 3.58 s, quarter mile 11.60 s); `--test pursuit`, `--test cops`
+(new), `--test smash` and the race test pass. The original was not run this session: everything below comes from
+the dump / REA and the data, and each area's 2026-10-16 research-log entry lists the captures that would confirm it.
+
+| User item | State | Main open item |
+|---|---|---|
+| Water floats above where it should | fixed: a zone draws only the water it lists (our nearest-zone fill-in flooded the industrial coast and hung a 13 m sheet over the river gorge); `mwtool water` | the rule is inferred from the data (zone selection code not traced); leftovers near (40, 2280) and `9fd6d20a` in zone 158; captures listed |
+| Terrain through the road | fixed: `Model` +0x19 is a per-view skip mask (`FUN_00553810`, `FUN_008cffa0`); 230 shadow / cube / reflection stand-ins no longer drawn in the main view; `mwtool terrain-check` | skipped stand-ins cast no shadow here; mask bits 1 / 2 / 8 unused; view 0x10 unknown; the 0x1f models |
+| Particles when props break | added (`prop_vfx.rs`): `WCVfxBehaviour`s (impact, spot effects at locators, ground-slide sparks, lights out) by `FUN_0053cba0`; super emitter (action 0x2B) decoded; sparks were invisible (alpha) | **renderer opacity word is inferred**: it turned nitrous glows blue-white and hides the lamp-foot flares; impact light flash, ambient world effects |
+| Police drive anywhere, chase too easily | fixed: patrol rides a traffic ghost in the lanes (`cop_patrol.rs`, `FUN_005101e0` modes 0–4); wanted / sight rules (`cop_sight.rs`, `FUN_005192b0`, `FUN_006c5810`); WIP chase states merged | `.bss` 0x011061f8 / 0x01106228 live reads; two wanted terms unidentified; ghost catch-up often takes two tries |
+| Cops: no sounds, lights | added: sirens (`police_audio.rs`), light bars and their light (`police_lightbar.rs`, cop-light shader), radio (`police_speech.rs`, 110 events), coronas at every car's lamps (`coronas.rs`) | **who turns AI sirens on is a model** (chasing / searching in a pursuit); world-lamp coronas, headlight glint, corona distance scale s, flare layer; radio static / car-model lines; the sign glare under a cop light matches the code but needs a night capture |
+
+Model decisions worth a capture first: the siren rule, the particle opacity word (nitrous flame colour), the
+corona distance scale, the 128 m water gap distance.
+
+Added by the user (2026-10-16), not investigated yet:
+- **Collectable effects**: the speed camera's flash when the player passes one is missing.
+- **Gas stations**: driving through one has no clean transition: the original fades / cuts through the repair and
+  respray (and refills nitrous, `FUN_00748ff0`, decomp.md "Speed Points").
+- **Collectable stats UI**: the speed lists and progress counts are missing. Examples: the player's top speed at
+  each speed camera, how many gates are smashed, how many jack spots are found, billboards, etc. (in the HUD
+  pop-ups and the map / Easydrive screens).
+- **Roof landings and out of bounds**: landing on the roof must end in the crash camera and a reset onto the
+  nearest road; the same when the car lands out of bounds.
+- **Car lights**: vehicles' headlights / tail lights do not light up the world properly yet.
+- **Speed camera lights**: speed cameras seem to light up the world all the time instead of only during a flash.
+- **Crash particles**: car crashes have few or none of the original's particle effects, e.g. broken glass when
+  crashing into traffic cars and other crash debris / sparks in general (the prop-break effects of session 10's
+  `prop_vfx.rs` and its super-emitter port may be reusable).
+- **Missing sound effects**: smashing through billboards, hitting light poles (and props in general), some
+  light crashes, landing after a jump, and many other one-off sounds.
+- **Dirt**: the dirt cloud effect is too big and blocks the view too much; driving on dirt still does not feel
+  like dirt the way the original does (handling on the surface, not only the effects).
+
+
+New this session: `mwtool water`, `mwtool terrain-check`, `mwtool siren`, `mwtool speech`, `mwtool ai-graph`,
+`--test cops`, `MW_ALL_PASSES=1`, `MW_PROP_VFX_LOG=1`, `MW_VFX_DEMO`, `MW_SIREN_LOG` / `MW_SPEECH_LOG` /
+`MW_SIREN_PRESS`, `MW_LIGHTBAR_SHOTS` / `MW_COP_LIGHTS` / `MW_NO_LIGHTBAR`, `MW_NO_CORONAS` / `MW_CORONA_LOG` /
+`MW_VIEW_BEHIND`, `MW_POLICE_LOG`, `MW_COPS_SHOTS`, `MW_COP_DISTANCE` (CLAUDE.md).
+
+# Handoff: 2026-10-15 (session 9, Windows)
 
 **State**: branch `session-9` (PR to master): six worktree branches merged, each working on items of the
 2026-10-14 play-test list below. Clippy 0 warnings, 178 tests, `mwtool verify` 0 failures; the 911's accel /
@@ -34,23 +78,6 @@ decisions, open items) and a decomp.md section. Also: `mwtool lods` builds on Wi
 Not started (still open from the list): police items (the branch is on the Linux machine), road / kerb harshness,
 brake-to-drift at speed, water height, terrain through the road, race end screen, car-change and start-up
 cutscenes, crash camera, mods / Most Wanted unlocks, takedowns in races.
-
-Added by the user (2026-10-16), not investigated yet:
-- **Collectable effects**: the speed camera's flash when the player passes one is missing.
-- **Gas stations**: driving through one has no clean transition: the original fades / cuts through the repair and
-  respray (and refills nitrous, `FUN_00748ff0`, decomp.md "Speed Points").
-- **Collectable stats UI**: the speed lists and progress counts are missing. Examples: the player's top speed at
-  each speed camera, how many gates are smashed, how many jack spots are found, billboards, etc. (in the HUD
-  pop-ups and the map / Easydrive screens).
-- **Roof landings and out of bounds**: landing on the roof must end in the crash camera and a reset onto the
-  nearest road; the same when the car lands out of bounds.
-- **Car lights**: vehicles' headlights / tail lights do not light up the world properly yet.
-- **Speed camera lights**: speed cameras seem to light up the world all the time instead of only during a flash.
-- **Crash particles**: car crashes have few or none of the original's particle effects, e.g. broken glass when
-  crashing into traffic cars and other crash debris / sparks in general (the prop-break effects of session 10's
-  `prop_vfx.rs` and its super-emitter port may be reusable).
-- **Missing sound effects**: smashing through billboards, hitting light poles (and props in general), some
-  light crashes, landing after a jump, and many other one-off sounds.
 
 New this session: `mwtool music`, `mwtool ui map-items`, `--smash-set bags`, `--map-waypoint <event>`,
 `MW_GPS_LOG=1`, `MW_XINPUT_CONNECTED=0|1`, `MW_CAR_SFX_LOG=1`, `MW_NITROUS_AT=t0,t1` (`mwtool engine-sound`).

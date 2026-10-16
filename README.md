@@ -162,11 +162,12 @@ Still missing or not like the original (user play test, 2026-10-14; details in
 [docs/next-session.md](docs/next-session.md)):
 - [ ] Physics: some trash bags are indestructible; road collisions sometimes harsh; sidewalks affect the car too
   much; brake-to-drift understeers at higher speeds
-- [ ] World: water floating above where it should be in places; terrain sticking through the road in places
+- [x] World: water floating above where it should be; terrain sticking through the road (2026-10-16)
 - [ ] Navigation (route to a destination); map icons (jack spots, race locations, cops; Most Wanted races shown
   as normal races)
-- [~] Police: chase behaviour reworked from the game's code (not merged yet); no sirens or light bars, no radio
-  chatter, roadblocks and spike strips missing; crashing racers and cops does not work yet
+- [~] Police: chase behaviour, patrol in the traffic lanes and the pursuit-start rules from the game's code;
+  sirens, light bars (with coronas) and radio chatter (2026-10-16). Missing: roadblocks, spike strips, the
+  Interceptor, busted / escaped sequences; crashing racers and cops does not work yet
 - [ ] Music on the loading screen, music matched to free roam / races
 - [ ] Front end and UI: the start screen overlaps its two prompts; race end screen; the UI in general
 - [ ] Cutscenes: changing cars, the start-up cutscene (entering the car, with its stats)
@@ -178,11 +179,12 @@ Still missing or not like the original (user play test, 2026-10-14; details in
   found, etc.)
 - [ ] Gas stations: the clean transition when driving through one
 - [ ] Landing on the roof or out of bounds: crash camera, then a reset onto the nearest road
-- [ ] Lights: car lights do not light up the world properly; speed cameras light the world all the time, not only
-  when they flash
+- [ ] Lights: car lights do not light up the world properly (their coronas draw since 2026-10-16); speed cameras
+  light the world all the time, not only when they flash
 - [ ] Crash particles: broken glass when crashing into traffic, other crash debris and sparks
 - [ ] Sound effects: smashing billboards, hitting light poles and other props, light crashes, jump landings,
   and many other one-off sounds
+- [ ] Dirt: the dirt cloud is too big and blocks the view; driving on dirt does not feel like the original
 - [ ] Car sounds and effects: idle sound, nitrous sound, backfires, engine start / stop; tyre marks and nitrous
   flames look off; grass / dirt still give road smoke and marks
 - [ ] Traffic reactions: horns, headlight flashing when you drive towards them
