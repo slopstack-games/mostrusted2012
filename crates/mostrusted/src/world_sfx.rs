@@ -148,6 +148,9 @@ struct Touch {
     since_sound: f32,
 }
 
+/// The HUD waves being decoded on a worker thread.
+type HudJob = Arc<Mutex<Option<HashMap<u32, Vec<HudWave>>>>>;
+
 #[derive(Resource, Default)]
 struct WorldSfxState {
     data: Option<Arc<WorldSfx>>,
@@ -174,7 +177,7 @@ struct WorldSfxState {
     rr: [usize; 8],
     voices: Vec<Placed>,
     hud: HashMap<u32, Vec<HudWave>>,
-    hud_job: Option<Arc<Mutex<Option<HashMap<u32, Vec<HudWave>>>>>>,
+    hud_job: Option<HudJob>,
     hud_clock: HashMap<u32, f32>,
     started: HashMap<&'static str, u64>,
 }
@@ -811,7 +814,7 @@ fn crash_contacts(
         let (centre, half) = shapes
             .get(car.body_collider)
             .ok()
-            .and_then(|(c, lt)| c.shape_scaled().as_cuboid().map(|b| (lt.translation, Vec3::from(b.half_extents))))
+            .and_then(|(c, lt)| c.shape_scaled().as_cuboid().map(|b| (lt.translation, b.half_extents)))
             .unwrap_or((Vec3::ZERO, Vec3::new(0.9, 0.6, 2.2)));
         let local = t.rotation.inverse() * (hit.position - t.translation) - centre;
         box_zone(local / half.max(Vec3::splat(1e-3)))

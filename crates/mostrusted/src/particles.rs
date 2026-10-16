@@ -832,6 +832,7 @@ fn hash01(seed: u32) -> f32 {
     (x >> 8) as f32 / (1u32 << 24) as f32
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn simulate(
     time: Res<Time>,
     debug: Res<VfxDebug>,

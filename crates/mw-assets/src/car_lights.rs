@@ -115,7 +115,8 @@ impl AssetStore {
         bundle: &mw_bundle::Bundle,
         spec: &mw_formats::VehicleGraphicsSpec,
     ) -> Vec<CarLightSource> {
-        let mut defs: HashMap<ResourceId, Option<(Arc<LightDef>, Option<Arc<Projector>>)>> = HashMap::new();
+        type Def = Option<(Arc<LightDef>, Option<Arc<Projector>>)>;
+        let mut defs: HashMap<ResourceId, Def> = HashMap::new();
         let mut anims: HashMap<ResourceId, Option<Arc<FlashAnimation>>> = HashMap::new();
         let mut out = Vec::new();
         for e in bundle.entries_of_type(ResourceType::GenesysObject) {
