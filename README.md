@@ -177,16 +177,17 @@ Still missing or not like the original (user play test, 2026-10-14; details in
 - [ ] Progression: mods unlocked by races, Most Wanted cars unlocked by beating them; takedowns / wrecks from
   car-to-car crashes in races
 - [ ] Billboards: intact with their artwork by default (broken only once smashed), showing the Easydrive records
-- [ ] Collectables: the speed camera flash; the stats UI (top speed per speed camera, gates smashed, jack spots
+- [~] Collectables: the speed camera flash (done 2026-10-16); the stats UI (top speed per speed camera, gates smashed, jack spots
   found, etc.)
 - [ ] Gas stations: the clean transition when driving through one
 - [ ] Landing on the roof or out of bounds: crash camera, then a reset onto the nearest road
-- [ ] Lights: car lights do not light up the world properly (their coronas draw since 2026-10-16); speed cameras
-  light the world all the time, not only when they flash
-- [ ] Crash particles: broken glass when crashing into traffic, other crash debris and sparks
-- [ ] Sound effects: smashing billboards, hitting light poles and other props, light crashes, jump landings, the
-  cinematic crash sound, and many other one-off sounds
-- [ ] Dirt: the dirt cloud is too big and blocks the view; driving on dirt does not feel like the original
+- [~] Lights: race cars' headlights / tail lights light the world, coronas at car lamps and street lamps, speed
+  cameras lit only when they flash (2026-10-16); traffic lights' lamps need their controller
+- [x] Crash particles: glass, debris, sparks and dust from the game's crash effects (2026-10-16)
+- [~] Sound effects: props, lamps, signs, gates, billboards, landings and crash contacts added (2026-10-16); the
+  cinematic crash's ducking and slow-motion audio still missing
+- [~] Dirt: the dirt cloud follows the game's fade and size now (2026-10-16); driving on dirt does not feel like
+  the original
 - [ ] Nitrous: makes the car downshift and barely go faster, then the gearbox has trouble shifting
 - [ ] Car sounds and effects: idle sound, nitrous sound, backfires, engine start / stop; tyre marks and nitrous
   flames look off; grass / dirt still give road smoke and marks
