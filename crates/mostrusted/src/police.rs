@@ -237,8 +237,7 @@ pub enum CopActivity {
     Waiting,
 }
 
-// Read by the siren / light-bar module (`police_fx`, branch session-10) and the map.
-#[allow(dead_code)]
+// Read by the siren / light-bar / radio modules (`police_fx`, `police_speech`) and the map.
 impl Cop {
     /// What the cop does.
     pub fn mode(&self) -> CopMode {
@@ -249,18 +248,9 @@ impl Cop {
         self.slot
     }
     /// The patrol's mode number (+0x90) while patrolling (`cop_patrol.rs`).
+    #[allow(dead_code)]
     pub fn patrol_mode(&self) -> Option<u8> {
         (self.mode == CopMode::Patrol).then(|| self.patrol.number())
-    }
-}
-
-impl Cop {
-    /// For `police_fx.rs` (sirens, light bars, radio): what the cop is doing, and its slot.
-    pub fn mode(&self) -> CopMode {
-        self.mode
-    }
-    pub fn slot(&self) -> usize {
-        self.slot
     }
 }
 
