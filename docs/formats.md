@@ -53,7 +53,8 @@ InstanceList ──> Model ──(LOD state)──> Renderable ──(per mesh)�
   373 shaders).
 - **Model (0x51)**: renderable imports and an 8-entry state table (LOD0–5, shadow, occlusion); LOD distances
   squared at ptr +0x08 (count at +0x18, at most 4 used), the shadow distance squared at +0x0C, a pass-mask byte
-  at +0x19. The game draws a placement at the first LOD whose distance is not exceeded by `max(0, |c − eye| −
+  at +0x19 (the views that skip the model: 1 shadow, 2 cube map, 4 main view, 8 reflection, 0x10 one more view;
+  decomp.md "Model pass mask"; 230 coarse terrain tiles have 4 and are never seen directly). The game draws a placement at the first LOD whose distance is not exceeded by `max(0, |c − eye| −
   r) / (placement scale · view scale)` (c, r = LOD0 renderable's bounding sphere) and not at all past the last
   (decomp.md "Model LOD and draw distance"; `Model::lod_for_distance`, `mwtool lods`).
 - **InstanceList (0x50)**: 0x60-byte instances, each a model import, an f32 LOD distance scale at +0x04, plus a

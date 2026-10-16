@@ -1633,6 +1633,32 @@ meshes; 1835 of the 3668 world models have one); compounds that can break draw t
 (only the cull applies); backdrops keep the zone composition (no LOD rule); `--merge-static` merges LOD0 without
 the rule; L = 1 (`MW_LOD_SCALING`), the render target's pixels for L = 2.
 
+## Model pass mask (2026-10-16, applied to the main view in `loader.rs`)
+
+`Model` +0x19 is a bit mask of the **views that skip the model**. Instances: `FUN_00553810` inserts each
+`InstanceList` instance into the culling structure (a 0x30-byte record through `FUN_00541850`: bounding sphere
+from the LOD0 renderable, flags `(Model+0x19) << 24 | 0x840`, `| 0x80` with the renderable's flag bit; the other
+inserters `FUN_00553540`, `FUN_00553b10`, `FUN_00553cb0`, `FUN_00554230` put the byte in the same place). The
+frame setup in `FUN_008cffa0` queues one query per view (`FUN_008dbd90(query, required flags, excluded flags,
+…, frustum, LOD scale)`):
+
+| view | query | excluded | bit |
+|------|-------|----------|-----|
+| main (camera frustum +0x16f90, LOD scale +0x1ee8c) | `DAT_01183254` | `0x4000000` | 0x04 |
+| cube-map faces (six, `DAT_01183258..`) | | `0x2000000` | 0x02 |
+| sun shadow cascades (three, `DAT_01183270..`) | | `0x1000000` | 0x01 |
+| far shadow (`DAT_0118327c`) | | `0x3000000` | 0x01, 0x02 |
+| view at +0x172e0, probably the planar reflection (roads are excluded) | `DAT_01183284` | `0x8000000` | 0x08 |
+| a view at +0x17150 (gated by `FUN_00798840`) | `DAT_01183280` | `0x10000000` | 0x10 |
+| another main-scale view (+0x1c9e0) | `DAT_01183288` | `0x4000000` | 0x04 |
+
+The consumer of the queries is a job not in the dump. Runtime objects (compounds, dynamics) go through
+`FUN_00538b00`, which skips a model when `Model+0x19 & mask != 0`; its callers pass 4 (main view, LOD scale
++0x1ee8c), 1 (shadow, state 6), 2, 8 and 0x10. Data: roads 0x09, lit signs 0x01, props / fences 0x08 / 0x1a,
+230 coarse terrain tiles 0x04 (shadow, cube-map and reflection stand-ins: drawn in the main view they cut through
+roads), 1007 instances and 1337 dynamics 0x1f. Port: placements of models with bit 4 are not spawned
+(`mw_formats::Model::in_main_view`); bits 1, 2, 8 are not applied (model decision, research log 2026-10-16).
+
 ## Sky, sun and shadows
 
 Shader constants are registered by name and slot in `FUN_008c34b0` (one `FUN_00a5d490` call per name, e.g.

@@ -29,3 +29,5 @@ the camera unless `--timeline <id|default>` is given (screenshots taken before 2
 | planter-groundcover | `--camera=1545,30,1435,1562,22.5,1456 --mute` | groundcover tufts on a raised lawn planter that has no collision (worst unit of `mwtool placement-check`, TRK_UNIT165): checker outliers there are collision gaps, not placement errors |
 | water-river | `--camera=1610,22,2935,1660,12,2990 --mute --hour 12` | river water (Water_Opaque_Singlesided) close and low: waves, river floor with caustics in the shallow part, sky reflection; `--hour 1.5` for night |
 | water-pond | `--camera=-650,60,1850,-1000,40,2150 --mute --hour 12` | park pond from above: algae patches, floor near the banks, sky reflection in the middle |
+| terrain-road | `--camera=-860,75,3170,-919.5,20,3232.5 --units 20` | slip road and junction in unit 11; with `MW_ALL_PASSES=1` a coarse grass hill (pass-mask stand-in `11e76144`) covers the road (fixed 2026-10-16) |
+| terrain-road-2 | `--camera=250,80,-1930,212.5,47.6,-1974.5` | four carriageways beside a cliff; with `MW_ALL_PASSES=1` a coarse rock tile covers them |
