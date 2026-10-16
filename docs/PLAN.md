@@ -514,7 +514,7 @@ SNORM ×10 scale).
 
 **Start with [next-session.md](next-session.md).** State after session 5 (2026-10-06): nine systems were re-read
 from the decompiled code in parallel; what is blocked now is mostly blocked on **live reads of the running
-original** (`.bss` constants and renderer fields; the list is in next-session.md).
+original** (`.bss` constants and renderer fields; the list is in handoffs-archive.md, session 5).
 
 1. **A live-read session** with the original running (`sudo sysctl kernel.yama.ptrace_scope=0`, `tools/orig/orig
    launch`): the handling `.bss` constants, the post-processing fields (bloom flag and set, vignette A / D, the
