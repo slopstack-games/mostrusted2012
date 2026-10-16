@@ -219,6 +219,11 @@ MW_CUTSCENE_SHOT=intro:9 ./target/release/mostrusted --race 462174 --units 12 --
 ./target/release/mostrusted --drive 911 --ai "911,veyron super" --test ai --ai-seconds 60   # AI racers
 # Traffic (traffic.rs; density from the event): --no-traffic, --traffic-density x, MW_TRAFFIC_LOG=1
 ./target/release/mwtool traffic --at x,z[,r]             # lanes and parked cars near a point (plain: junctions, data, parked survey)
+./target/release/mwtool ai-graph > graph.tsv           # the AI road graph (node, x y z, width, flags, links), e.g. for tools/orig autopilots
+MW_POLICE_LOG=1 ./target/release/mostrusted --drive 911 --test pursuit --units 12 --no-traffic   # cops: state, aim, stop flags
+# When a pursuit starts (cop_sight.rs) and the patrol on a traffic ghost (cop_patrol.rs): slow pass, speeding, ram, patrol
+MW_COPS_SHOTS=<dir> ./target/release/mostrusted --drive 911 --test cops --units 30 --mute   # TEST RESULT cops ...
+MW_POLICE_LOG=1 MW_COP_DISTANCE=80 ./target/release/mostrusted --drive 911 --units 20   # free-roam cops spawn 80 m away
 ./target/release/mostrusted --drive 911 --test crash-traffic       # head-on with traffic: crash camera (car_impacts.rs)
 ./target/release/mostrusted --drive 911 --test crash-parked --units 20 --spawn=925,24,-101 --screenshot <scratch>/p.png  # into a parked car
 ./target/release/mostrusted --drive 911 --test crash-ai --ai 911 --no-traffic --spawn=925,23,-101,10   # (the default spawn has a barrier ahead)

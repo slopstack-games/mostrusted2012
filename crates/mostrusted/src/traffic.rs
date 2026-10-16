@@ -44,6 +44,16 @@ use mw_bundle::ResourceId;
 use crate::loader::{CarRequest, LoaderRequests, TrafficCarSpec, TrafficModelRequest, WheelSpec};
 use crate::materials::GameMaterial;
 
+/// A cop's ghost request takes the nearest rung within this distance (m; `.rdata` 0x00fb2470) and height (m) of the
+/// point 5 m ahead of the cop (`FUN_0060aba0`).
+const GHOST_SNAP: f32 = 20.0;
+const GHOST_DY: f32 = 5.0;
+/// MODEL: a ghost its cop has not asked for in this long (s) is removed (the game releases it from the state's
+/// exit; ours also covers a cop that was despawned).
+const GHOST_ORPHAN: f32 = 2.0;
+/// `FUN_0061a450`: the ghost speed overrides 2 and 3 (mph).
+const OVERRIDE_MPH: [f32; 2] = [5.0, 10.0];
+
 /// Lane-follower slots (`FUN_006024f0(first, 0x100)`; the world's vehicle table keeps slots 0–255 for traffic).
 const MAX_CARS: usize = 256;
 /// Parked-car slots (`world+0x2bbd8`, 12 bytes each; their vehicles are table slots 256..405).
@@ -313,6 +323,41 @@ struct LaneCar {
     up: Vec3,
     entity: Option<Entity>,
     leader: Option<usize>,
+    /// A patrolling cop's ghost (car +0x78 = 2, +0x79 = the cop): never drawn, no body; the cop rides it
+    /// (`cop_patrol.rs`). Seconds since the cop last asked for it (a ghost nobody asks for goes).
+    ghost: Option<(Entity, f32)>,
+    /// The ghost's speed override (car +0x7a, traffic message 0x1b; `FUN_0061a450`): 0 none, 1 stopped, 2 at most
+    /// 5 mph, 3 at most 10 mph.
+    speed_override: u8,
+}
+
+/// A patrolling cop's ghost: its lane-follower slot and spawn serial.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GhostId {
+    slot: usize,
+    serial: u32,
+}
+
+/// A ghost's pose for its cop.
+#[derive(Debug, Clone, Copy)]
+pub struct GhostPose {
+    pub position: Vec3,
+    pub forward: Vec3,
+    pub up: Vec3,
+    pub speed: f32,
+    /// Its lane's cruise speed (m/s; `TrafficFlow.Speed`).
+    pub cruise: f32,
+}
+
+/// A point on a traffic lane (`FUN_005f3350`).
+#[derive(Debug, Clone, Copy)]
+pub struct LanePoint {
+    pub position: Vec3,
+    /// The lane's own direction there.
+    pub direction: Vec3,
+    hull: u16,
+    section: u8,
+    dist: f32,
 }
 
 /// A crashed traffic car (a dynamic rigid body), still counted by the load budget.
@@ -409,6 +454,11 @@ pub struct TrafficSystem {
     /// Cars per (hull, section), sorted by distance along the section; rebuilt every tick.
     by_section: HashMap<(u16, u8), Vec<usize>>,
     density_scale: f32,
+    /// The hitters of the traffic cars (lane followers, parked cars) a contact turned physical since the police
+    /// last asked (the game's per-frame list at world +0x33144, `FUN_0060c3a0`; `police.rs` reads it).
+    hits: Vec<Entity>,
+    /// Cops not riding a ghost, as obstacles for the lane followers (`police.rs`).
+    cop_obstacles: Vec<(Entity, Vec3, Vec3, Vec3)>,
     pub spawned: usize,
     pub removed: usize,
     /// Time spent in the tick (s) and ticks, for `MW_TRAFFIC_LOG`.
@@ -446,11 +496,183 @@ impl TrafficSystem {
             paint_cursor: vec![0; n_vehicles],
             by_section: HashMap::new(),
             density_scale,
+            hits: Vec::new(),
+            cop_obstacles: Vec::new(),
             spawned: 0,
             removed: 0,
             tick_time: 0.0,
             ticks: 0,
         }
+    }
+
+    /// The nearest point on a traffic lane to `point` (`FUN_005f3350` → `FUN_0043a8b0` / `FUN_0043a430`): the
+    /// nearest rung segment that `point` projects onto, within `radius`, with |dy| at most `max_dy` when given;
+    /// any lane direction (the callers' heading tolerance is cos π). `active_only`: only hulls of the active area
+    /// (the ghost request, `FUN_0060aba0`).
+    pub fn nearest_lane(&self, point: Vec3, radius: f32, max_dy: Option<f32>, active_only: bool) -> Option<LanePoint> {
+        let r2 = radius * radius;
+        let mut best: Option<(f32, LanePoint)> = None;
+        for (hi, h) in self.data.lanes.hulls.iter().enumerate() {
+            if active_only && self.active_set.get(hi) != Some(&true) {
+                continue;
+            }
+            for (si, sec) in h.sections.iter().enumerate() {
+                let first = sec.first_rung as usize;
+                let n = sec.rung_count as usize;
+                for r in 0..n.saturating_sub(1) {
+                    let (Some(a), Some(b)) = (h.rungs.get(first + r), h.rungs.get(first + r + 1)) else { break };
+                    let pa = (Vec3::from(a[0]) + Vec3::from(a[1])) * 0.5;
+                    let pb = (Vec3::from(b[0]) + Vec3::from(b[1])) * 0.5;
+                    let seg = pb - pa;
+                    let len2 = seg.length_squared();
+                    if len2 < 1e-6 {
+                        continue;
+                    }
+                    let t = (point - pa).dot(seg) / len2;
+                    if !(0.0..=1.0).contains(&t) {
+                        continue;
+                    }
+                    let q = pa + seg * t;
+                    let d2 = q.distance_squared(point);
+                    if d2 > r2 || max_dy.is_some_and(|m| (q.y - point.y).abs() > m) {
+                        continue;
+                    }
+                    if best.as_ref().is_none_or(|(b, _)| d2 < *b) {
+                        let cum = |k: usize| h.cumulative_lengths.get(first + k).copied().unwrap_or(0.0);
+                        let dist = cum(r) + t * (cum(r + 1) - cum(r));
+                        best = Some((
+                            d2,
+                            LanePoint {
+                                position: q,
+                                direction: seg / len2.sqrt(),
+                                hull: hi as u16,
+                                section: si as u8,
+                                dist,
+                            },
+                        ));
+                    }
+                }
+            }
+        }
+        best.map(|b| b.1)
+    }
+
+    /// Place a cop's ghost (traffic message 0x1a, `FUN_0060aba0` → `FUN_00608720` with kind 2): a lane follower
+    /// at the nearest rung within 20 m (0x00fb2470) of `at`, |dy| ≤ 5 m, in an active hull, with no clearance
+    /// from the player. `half_length`: its box along the lane (MODEL: the cop car's; the game takes a vehicle
+    /// type's, `FUN_005f2fc0`, not identified).
+    pub fn add_ghost(&mut self, at: Vec3, cop: Entity, half_length: f32) -> Option<GhostId> {
+        let lane = self.nearest_lane(at, GHOST_SNAP, Some(GHOST_DY), true)?;
+        let slot = self.cars.iter().position(Option::is_none)?;
+        let speed = self.cruise(lane.hull, lane.section);
+        let personality = self.rng.next();
+        self.serial = self.serial.wrapping_add(1);
+        let (position, forward, right) =
+            self.lane_pose(lane.hull, lane.section, lane.dist).unwrap_or((lane.position, lane.direction, Vec3::X));
+        self.cars[slot] = Some(LaneCar {
+            serial: self.serial,
+            hull: lane.hull,
+            section: lane.section,
+            dist: lane.dist,
+            speed,
+            accel: 0.0,
+            prev_speed: speed,
+            personality,
+            vehicle: 0,
+            paint: 0,
+            front: half_length,
+            back: -half_length,
+            mode: 5,
+            target_speed: speed,
+            target_dist: f32::MAX,
+            wait: 0.0,
+            path: VecDeque::new(),
+            braking: false,
+            position,
+            forward,
+            up: up_from(forward, right),
+            entity: None,
+            leader: None,
+            ghost: Some((cop, 0.0)),
+            speed_override: 0,
+        });
+        self.plan(slot);
+        self.index_sections();
+        Some(GhostId { slot, serial: self.serial })
+    }
+
+    fn ghost_mut(&mut self, id: GhostId) -> Option<&mut LaneCar> {
+        self.cars.get_mut(id.slot)?.as_mut().filter(|c| c.serial == id.serial && c.ghost.is_some())
+    }
+
+    /// The ghost's pose (`None` once it is gone: off the network, out of the area). Asking keeps it alive.
+    pub fn ghost(&mut self, id: GhostId) -> Option<GhostPose> {
+        let c = self.ghost_mut(id)?;
+        if let Some(g) = c.ghost.as_mut() {
+            g.1 = 0.0;
+        }
+        let (hull, section) = (c.hull, c.section);
+        let (position, forward, up, speed) = (c.position, c.forward, c.up, c.speed);
+        Some(GhostPose { position, forward, up, speed, cruise: self.cruise(hull, section) })
+    }
+
+    /// The ghost's pose without keeping it alive (for logs).
+    pub fn ghost_peek(&self, id: GhostId) -> Option<GhostPose> {
+        let c = self.cars.get(id.slot)?.as_ref().filter(|c| c.serial == id.serial && c.ghost.is_some())?;
+        let (hull, section) = (c.hull, c.section);
+        let (position, forward, up, speed) = (c.position, c.forward, c.up, c.speed);
+        Some(GhostPose { position, forward, up, speed, cruise: self.cruise(hull, section) })
+    }
+
+    /// Lane points from the ghost on along its planned route, `ahead` metres (for its cop's steering).
+    pub fn ghost_path(&self, id: GhostId, ahead: f32) -> Vec<Vec3> {
+        let Some(c) = self.cars.get(id.slot).and_then(|c| c.as_ref()).filter(|c| c.serial == id.serial) else {
+            return Vec::new();
+        };
+        let mut out = vec![c.position];
+        let (mut h, mut s, mut d) = (c.hull, c.section, c.dist);
+        let mut path = c.path.iter();
+        let mut done = 0.0;
+        while done < ahead {
+            d += 5.0;
+            done += 5.0;
+            while d > self.section_length(h, s) {
+                let Some(&(nh, ns)) = path.next() else { return out };
+                d -= self.section_length(h, s);
+                (h, s) = (nh, ns);
+            }
+            if let Some((p, _, _)) = self.lane_pose(h, s, d) {
+                out.push(p);
+            }
+        }
+        out
+    }
+
+    /// The ghost's speed override (traffic message 0x1b).
+    pub fn set_ghost_override(&mut self, id: GhostId, value: u8) {
+        if let Some(c) = self.ghost_mut(id) {
+            c.speed_override = value;
+        }
+    }
+
+    /// Release a ghost (traffic message 0x1c, the Patrolling state's exit `FUN_00506120`).
+    pub fn remove_ghost(&mut self, id: GhostId) {
+        if self.ghost_mut(id).is_some() {
+            self.cars[id.slot] = None;
+            self.index_sections();
+        }
+    }
+
+    /// Cops on the road that the lane followers must see as obstacles (position, velocity, right axis).
+    pub fn set_cop_obstacles(&mut self, cops: Vec<(Entity, Vec3, Vec3, Vec3)>) {
+        self.cop_obstacles = cops;
+    }
+
+    /// How many traffic cars `hitter` turned physical since the last call (the list is emptied).
+    pub fn take_hits(&mut self, hitter: Entity) -> u32 {
+        let n = self.hits.iter().filter(|&&h| h == hitter).count() as u32;
+        self.hits.clear();
+        n
     }
 
     /// A crashed traffic car's wrecked flag (`None` when `entity` is not a crashed traffic car).
@@ -468,7 +690,7 @@ impl TrafficSystem {
     /// Traffic cars within `radius` of `point` (lane followers and crashed ones).
     pub fn cars_near(&self, point: Vec3, radius: f32) -> Vec<TrafficCarInfo> {
         let r2 = radius * radius;
-        let lane = self.cars.iter().flatten().map(|c| TrafficCarInfo {
+        let lane = self.cars.iter().flatten().filter(|c| c.ghost.is_none()).map(|c| TrafficCarInfo {
             entity: c.entity,
             position: c.position,
             velocity: c.forward * c.speed,
@@ -490,22 +712,24 @@ impl TrafficSystem {
     /// position, velocity and forward axis, the vehicle type and the car's random value (its personality).
     pub fn sound_cars(&self, point: Vec3, radius: f32) -> Vec<TrafficSoundCar> {
         let r2 = radius * radius;
-        let lane =
-            self.cars.iter().enumerate().filter_map(|(slot, c)| c.as_ref().map(|c| (slot, c))).map(|(slot, c)| {
-                TrafficSoundCar {
-                    key: c.serial,
-                    position: c.position,
-                    velocity: c.forward * c.speed,
-                    forward: c.forward,
-                    vehicle: c.vehicle,
-                    random: c.personality,
-                    slot,
-                    mode: c.mode,
-                    entity: c.entity,
-                    crashed: false,
-                    horn: false,
-                    alarm: false,
-                }
+        let lane = self
+            .cars
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, c)| c.as_ref().filter(|c| c.ghost.is_none()).map(|c| (slot, c)))
+            .map(|(slot, c)| TrafficSoundCar {
+                key: c.serial,
+                position: c.position,
+                velocity: c.forward * c.speed,
+                forward: c.forward,
+                vehicle: c.vehicle,
+                random: c.personality,
+                slot,
+                mode: c.mode,
+                entity: c.entity,
+                crashed: false,
+                horn: false,
+                alarm: false,
             });
         let crashed = self.crashed.iter().map(|c| TrafficSoundCar {
             key: 0x8000_0000 | c.entity.to_bits() as u32,
@@ -546,7 +770,7 @@ impl TrafficSystem {
             .cars
             .iter()
             .flatten()
-            .filter(|c| meets(sphere(c.vehicle, c.position, c.forward, c.up)))
+            .filter(|c| c.ghost.is_none() && meets(sphere(c.vehicle, c.position, c.forward, c.up)))
             .map(|c| (c.serial, c.forward));
         let crashed = self.crashed.iter().filter_map(|c| {
             // right = rotation × X, so forward = right × up (up taken as world up for a crashing car).
@@ -780,6 +1004,8 @@ impl TrafficSystem {
             up,
             entity: None,
             leader: None,
+            ghost: None,
+            speed_override: 0,
         });
         self.spawned += 1;
         self.plan(slot);
@@ -1239,6 +1465,23 @@ fn tick(
             entity: Some(c.entity),
         });
     }
+    // MODEL: cops that are not riding a ghost are obstacles like crashed cars (the game's scan `FUN_00511540`
+    // over the AI vehicles was not read for cops).
+    for &(e, position, velocity, right) in &sys.cop_obstacles {
+        obstacles.push(Obstacle { position, velocity, right, weight: CRASHED_WEIGHT, entity: Some(e) });
+    }
+    // Ghosts nobody asks for go.
+    for i in 0..MAX_CARS {
+        if let Some(c) = sys.cars[i].as_mut()
+            && let Some(g) = c.ghost.as_mut()
+        {
+            g.1 += dt;
+            if g.1 > GHOST_ORPHAN {
+                sys.cars[i] = None;
+            }
+        }
+    }
+    sys.index_sections();
     let decisions: Vec<Option<Decision>> =
         (0..MAX_CARS).map(|i| sys.cars[i].as_ref().map(|_| decide(sys, i, &obstacles))).collect();
     for (i, d) in decisions.into_iter().enumerate() {
@@ -1539,7 +1782,7 @@ fn decide(sys: &TrafficSystem, slot: usize, obstacles: &[Obstacle]) -> Decision 
     let right = car.up.cross(car.forward).normalize_or(Vec3::X);
     let mut best = f32::MAX;
     for o in obstacles {
-        if o.entity.is_some() && o.entity == car.entity {
+        if o.entity.is_some() && (o.entity == car.entity || o.entity == car.ghost.map(|g| g.0)) {
             continue;
         }
         let diff = o.position - car.position;
@@ -1569,7 +1812,11 @@ fn decide(sys: &TrafficSystem, slot: usize, obstacles: &[Obstacle]) -> Decision 
         if waiting { 1.0 } else { 0.0 },
         if car.mode == 1 { p.mode1_bonus } else { 0.0 },
     ];
-    let s = scores(&sys.data.fuzzy, obstacle, [stop, gap, closing, obstacle_speed], own);
+    let mut s = scores(&sys.data.fuzzy, obstacle, [stop, gap, closing, obstacle_speed], own);
+    // A ghost never starts a manoeuvre (`FUN_00617d00`: car +0x78 == 2 zeroes score 0).
+    if car.ghost.is_some() {
+        s[0] = 0.0;
+    }
     let margin = (obstacle[0] - p.obstacle_margin).max(0.0);
     let follow = |other: f32, g: f32| cruise.min(v.min(other).max(p.gap_speed * g));
     let (mode, target_speed, target_dist) = match choose(s) {
@@ -1638,6 +1885,12 @@ fn move_car(sys: &mut TrafficSystem, slot: usize, dt: f32, commands: &mut Comman
     }
     // The controller (`FUN_0061a190`).
     let mut cruise = sys.cruise(car.hull, car.section);
+    // A ghost's speed override (`FUN_0061a450`).
+    match car.speed_override {
+        1 => cruise = 0.0,
+        2 | 3 => cruise = cruise.min(OVERRIDE_MPH[car.speed_override as usize - 2] * MPH),
+        _ => {}
+    }
     if let Some(dir) = sys.direction_ahead(&car, car.speed * CORNER_LOOK_TIME + CORNER_LOOK_BASE)
         && car.forward.dot(dir) <= CORNER_COS
     {
@@ -1817,7 +2070,7 @@ fn spawn_entities(
     };
     // (collider slot, position, rotation, vehicle, paint, serial, entity)
     let lane = sys.cars.iter().enumerate().filter_map(|(slot, c)| {
-        let c = c.as_ref()?;
+        let c = c.as_ref().filter(|c| c.ghost.is_none())?;
         let rotation = Quat::from_mat3(&Mat3::from_cols(c.up.cross(c.forward), c.up, c.forward));
         Some((slot, c.position, rotation, c.vehicle, c.paint, c.serial, c.entity))
     });
@@ -2062,6 +2315,10 @@ fn crash_hit_cars(
     let Some(mut sys) = system else {
         return;
     };
+    // Nobody reads the list without police.
+    if sys.hits.len() > 64 {
+        sys.hits.clear();
+    }
     for (collider, body, parent, hit) in &hits {
         commands.entity(collider).remove::<(TrafficHit, TrafficBody, ActiveCollisionHooks)>();
         if body.slot >= MAX_CARS {
@@ -2088,6 +2345,7 @@ fn crash_hit_cars(
                 p.hull, p.record, sys.data.vehicles[p.vehicle].bundle
             );
             let random = sys.vehicle_rng.next();
+            sys.hits.push(hit.hitter);
             sys.crashed.push(Crashed {
                 entity,
                 vehicle: p.vehicle,
@@ -2142,6 +2400,7 @@ fn crash_hit_cars(
             closing * 3.6
         );
 
+        sys.hits.push(hit.hitter);
         sys.crashed.push(Crashed {
             entity,
             vehicle: car.vehicle,
