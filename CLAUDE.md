@@ -187,6 +187,13 @@ MW_ENGINE_TRACE=<scratch>/rpm.trace ./target/release/mostrusted --drive 911 --te
 # Session 9 (2026-10-15): mwtool music (song lists, --wave <id> --out <dir>), mwtool ui map-items (the map's item looks),
 # --smash-set bags, --map-waypoint <event> (GPS route; MW_GPS_LOG=1), MW_XINPUT_CONNECTED=0|1 (title prompt pair),
 # MW_CAR_SFX_LOG=1 (other cars' horns / alarms), MW_NITROUS_AT=t0,t1 on mwtool engine-sound; I / L3 engine off / on
+# Police sirens / light bars / radio (police_fx.rs, police_audio.rs, police_lightbar.rs, police_speech.rs):
+./target/release/mwtool siren <scratch>/siren.wav --car "Ford Police Interceptor"   # sets, channels, a render; cop lights
+./target/release/mwtool speech [<event id>] [--out <dir>]                           # radio events; decode an event's lines
+# MW_SIREN_LOG=1, MW_SPEECH_LOG=1 (MW_AUDIO_METER=1 lists the sirens); a cop car driven by the player: the horn
+# steps its siren (MW_SIREN_PRESS=t0,t1,... presses it headless); MW_LIGHTBAR_SHOTS=<dir> (16 shots 1/8 s apart),
+# MW_COP_LIGHTS=1 (every bar on), MW_NO_LIGHTBAR=1 (A/B)
+MW_SIREN_PRESS=12 MW_LIGHTBAR_SHOTS=<dir> ./target/release/mostrusted --drive "Ford Police Interceptor" --units 12 --hour 1 --no-traffic --screenshot <scratch>/bar.png --screenshot-delay 1500
 # The Steam Controller is read from HID (steam_controller.rs; MW_STEAM_CONTROLLER=0 off); --gamepad-debug logs pads
 # Controls are the original's defaults (input.rs): arrows steer, A accelerate, Z brake, Space handbrake, W horn; pad
 # left stick, RT / LT, X, B horn. Easydrive (easydrive.rs): numpad 6 or d-pad right opens (E too), 8 / 2 move, 4 back; headless:

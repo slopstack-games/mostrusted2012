@@ -112,6 +112,8 @@ pub struct CarSpec {
     pub impact_graph: mw_assets::damage::ImpactGraph,
     /// `VehicleVfxBehaviour` spot effects with their locators (exhaust flames, smoke, ...; `exhaust.rs`).
     pub spot_effects: Vec<mw_assets::vfx::VehicleSpotEffect>,
+    /// The cop lights and siren flag (`mw_assets::police_lights`; `police_fx.rs`), when the car has any.
+    pub flash_lights: Option<Arc<mw_assets::police_lights::CarFlashLights>>,
     /// Set for an AI opponent's car (its slot in `ai::Opponents`); `None` for the player's.
     pub opponent: Option<usize>,
     /// The vehicle list's top speed (entry +0x3C, mph): the nitrous HighSpeed refill's reference.
@@ -486,6 +488,7 @@ impl Worker {
             .map(Arc::new);
         let engine = if self.opponent.is_some() { None } else { self.store.engine(&b).unwrap_or_default() };
         let spot_effects = self.store.vehicle_spot_effects(&b, &spec).unwrap_or_default();
+        let flash_lights = Some(self.store.car_flash_lights(&b, &spec)).filter(|l| !l.is_empty()).map(Arc::new);
         let damage = match self.store.vehicle_damage(&b) {
             Ok(d) => d.map(Arc::new),
             Err(e) => {
@@ -535,6 +538,7 @@ impl Worker {
             damage,
             impact_graph,
             spot_effects,
+            flash_lights,
             opponent: self.opponent,
             top_speed_mph: bundle_vehicle_id(bundle)
                 .and_then(|id| self.store.vehicle_entry(id).ok().flatten())

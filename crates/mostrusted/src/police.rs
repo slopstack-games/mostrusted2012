@@ -121,7 +121,7 @@ pub struct PursuitHud {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum CopMode {
+pub enum CopMode {
     /// Driving the roads (the game's Patrolling, state 0xd).
     Patrol,
     /// Chasing (state 0).
@@ -149,6 +149,16 @@ pub struct Cop {
     route_timer: f32,
     mode_time: f32,
     crashed: bool,
+}
+
+impl Cop {
+    /// For `police_fx.rs` (sirens, light bars, radio): what the cop is doing, and its slot.
+    pub fn mode(&self) -> CopMode {
+        self.mode
+    }
+    pub fn slot(&self) -> usize {
+        self.slot
+    }
 }
 
 /// A cop car on order or on the road.

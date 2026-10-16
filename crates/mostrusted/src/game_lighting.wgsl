@@ -50,7 +50,8 @@ struct WorldLight {
     colour: vec4<f32>,
     // xyz = towards the light along its axis (−beam direction), w = cos(cone edge)
     direction: vec4<f32>,
-    // x = 1 / (cos(inner) − cos(edge)); y = 1 for cone and spot lights, 0 for point lights
+    // x = 1 / (cos(inner) − cos(edge)); y = 1 for cone and spot lights, 0 for point lights; z = 1 for the cop
+    // light bars (`LightBuffer_Cop`)
     cone: vec4<f32>,
 }
 // Only the light-volume pipeline binds this.
@@ -201,10 +202,23 @@ fn light_fragment(in: LightVertexOutput) -> @location(0) vec4<f32> {
     if light.cone.y > 0.5 {
         atten *= saturate((dot(l, light.direction.xyz) - light.direction.w) * light.cone.x);
     }
+    // `LightBuffer_Cop` (cone.z = 1: the cop light bars, `police_lightbar.rs`): diffuse only, and faded towards
+    // the vertical: (1 − L̂.y)⁶ when the light is above the pixel, 1 + 0.75 L̂.y below it.
+    let cop = light.cone.z > 0.5;
+    if cop {
+        atten *= select(1.0 + 0.75 * l.y, pow(1.0 - l.y, 6.0), l.y > 0.0);
+    }
     if atten <= 0.0 {
         discard;
     }
-    let colour = light.colour.rgb * atten * view.exposure * surface_response(s, l);
+    var response = surface_response(s, l);
+    if cop {
+        let nl = saturate(dot(s.n, l));
+        let as_v = 1.0 - pow(1.0 - 0.5 * saturate(dot(s.n, s.v)), 5.0);
+        let as_l = 1.0 - pow(1.0 - 0.5 * nl, 5.0);
+        response = mix(s.albedo * nl * 0.31831, s.albedo * (0.3875 * as_v * as_l) * nl, s.car);
+    }
+    let colour = light.colour.rgb * atten * view.exposure * response;
     return vec4(colour * (1.0 - fog_amount(s.world)), 0.0);
 }
 

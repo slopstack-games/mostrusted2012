@@ -53,6 +53,10 @@ mod particles;
 mod pause;
 mod player_sfx;
 mod police;
+mod police_audio;
+mod police_fx;
+mod police_lightbar;
+mod police_speech;
 mod prewarm;
 mod props;
 mod pursuit;
@@ -997,6 +1001,7 @@ fn main() -> anyhow::Result<()> {
             open: cli.show_settings,
         })
         .add_plugins((car_audio::CarAudioPlugin, car_sfx::CarSfxPlugin, player_sfx::PlayerSfxPlugin))
+        .add_plugins(police_fx::PoliceFxPlugin)
         .add_plugins(audio::GameAudioPlugin)
         .add_plugins(music::MusicPlugin {
             enabled: std::env::var("MW_MUSIC").is_ok_and(|v| v == "1")

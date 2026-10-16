@@ -1254,10 +1254,9 @@ The channel set for the player (`FUN_004b5f40`, base +0x127f0) is +0x00 `Landing
 
 - **Horn**: HORN is action 5 (keyboard W, pad B; "Input and control bindings"). The player's list is
   `<id>_VEHICLESOUND` +0x60 / +0x64 (the 911: one sequence `…1d1c69`, a 0..5 s wave item, gain 1.75, on `Player
-  Vehicle Horn`). The runtime that plays it was not found: no code reads a `VehicleSound` horn list but the traffic
-  one (`FUN_006042c0`); the strings `HORN_SOUND` (two 64-bit ids hashed at start-up, 0x0117a4f0 / 0x0117beb8, no
-  readers in the dump) and `HORN_PRESS` (an HSM node type, `FUN_0077f820`) lead nowhere. MODEL: held = playing,
-  released = stop with a 0.1 s release.
+  Vehicle Horn`). Found 2026-10-16: `FUN_00587720` plays list [0] on the horn input (+0x1c25) through
+  `FUN_00587650` and releases it with a 0.1 s fade (0x00fad540); a car with a siren steps its siren instead
+  ("Police sirens, light bars and radio").
 - **Impacts** (`FUN_00591ac0` for the player's entity): as the AI racers' (previous section) with the player's half
   of the slot table: heavy front / rear / side +0x0c / +0x1c / +0x24, medium +0x9c / +0xa4 / +0xac, light +0xd4 /
   +0xe4 / +0xec; a heavy one adds a wave of +0x108 (`a8f44b4f`). A world contact runs `FUN_0057caf0` with the
@@ -3788,13 +3787,95 @@ Model decisions (not from the game):
 - The cooldown's × 4 factor is left out; `Widget.HUD.Heat` = the level's band progress; which HUD layouts
   show when (the widget's code was not read).
 - Not there at all: roadblocks, spike strips, wrecked-by-cop busts (our crashes have no wrecker), the
-  two-collisions rule, cooldown spots / engine off, Speed Points, the busted / escaped sequences, sirens and
-  light bars (`coplights`), police radio, pursuits inside events, the PostFX heat / cooldown colour cubes.
+  two-collisions rule, cooldown spots / engine off, Speed Points, the busted / escaped sequences (sirens,
+  light bars and the radio: next section), pursuits inside events, the PostFX heat / cooldown colour cubes.
 
 Open points and what would settle them: vehicle +0x1a84 (the × 4 cooldown: a live read while cooling with the
 engine off / parked); the link from camera event 0x1a to HSM action 0xf (a probe hook on `FUN_00658140`); the
 spawn weights (`GameMode` +0x5a…+0x64: decode the type); `FUN_0050e370`, 0x0050f970, 0x0050dd40 (disassembly);
 a capture of a real pursuit (`mwtool capture`: cop distances, heat and bust timing) to compare the whole.
+
+## Police sirens, light bars and radio (2026-10-16)
+
+Read for "cops have no sounds, lights etc."; ported in `police_fx.rs`, `police_audio.rs`, `police_lightbar.rs`,
+`police_speech.rs` (data `mw_assets::police_sound` / `police_lights` / `police_speech`). "Entity" = the
+0x1c40-byte race-car entity; S = entity +0x17f0 (the siren voice object), B = entity +0x1840 (its parameters).
+
+**Siren data and set choice** (confirmed): `FUN_005776a0` loads `CopSoundSet` `…23013` from
+`VEHICLES\WAVES.BNDL` into manager +0x339e4. `FUN_00593ac0` (car creation) reads the car's `VehicleSound`
++0x40: a set of its own (510072, the SWAT car: `…b3af6`), else `CopSoundSet` +0x14 `9f467b30`
+`[slot % count(+0x1a)]` (122713, 122699, 122706: `…23039` / `…23014` by slot parity); `efd7715f` has no reader.
+The set handle lands at entity +0x1850 (`FUN_00591350`). Only cars with `VehicleComponent.54eb210e` (+0x8e) run
+the siren (`FUN_00594870`).
+
+**Requests** (`FUN_0058d770`, once per update, then zeroed): entity +0x1950 = 1 → level 0, 2 / 3 / 4 → level
+1 / 2 / 3 (B+0x2c), 5 → blip timer B+0x1c = 0.8 s (`.rdata` 0x00fac278, counted down by dt); +0x1954 = 1 / 2 →
+light flag +0x1c27 off / on. While the car is wrecked (damage byte +0xc20 ≥ the limit +0x74 of the object at
++0xc18) or crashing (vtable +0x58) the light flag is cleared and the siren stops. Writers of the requests:
+- `FUN_00587720` (from `FUN_00591ac0`): for a siren car with a player owner, not crashing, each rising edge of
+  the horn input (+0x1c25) steps off → level 1 + lights → 2 → 3 → off + lights off. For other cars the same
+  function **plays the horn**: `VehicleSound` +0x60 list [0] through `FUN_00587650` (start 0.025 s, `.rdata`
+  0x00fac294), released with a 0.1 s fade (`FUN_00a44e40`, 0x00fad540) — the player's horn runtime.
+- Message 0xd (`FUN_00844300` → `FUN_00572d50`): byte 8 → lights on / off, byte 9 → siren level 1 / off. Sent by
+  the script binding `SetSirenState(vehicle, on)` (handler 0x0067c3d0, registered at 0x0068d798; both bytes =
+  `on`), `FUN_008470d0` (a game-mode routine: on), and `FUN_006c65f0` 1 s after a cop's takedown
+  (`FUN_006ccd20`: lights off, siren level 1, then the car is reset).
+- `FUN_005b4750` (cutscene cars, `AnimatedRaceCarBehaviour` +0x54: 0 off, 1–3 level, 5 blip; +0x5a lights).
+- **Not found**: what switches the AI pursuit cops' sirens on (none of the above in the code read). MODEL
+  (`police_fx::cop_fx_state`): cops that chase or search in a pursuit or cooldown have `SetSirenState(on)`.
+
+**The voice** (`FUN_0058bdc0`, this = S): with the blip timer running and no wave pending, a random `Blips` wave
+(LCG at 0x0110c690); else with a level, `Sirens[min(level − 1, n − 1)].Wave[slot % count]` (looped). A change
+while playing: `FUN_00571ef0` (state 4); `FUN_00574510` keeps two voice slots: the new wave starts at once
+(`FUN_00572070`) with gain = min(1, play time / 0.2 s) (`.bss` 0x0110d020), the old one at 1 − that; a stop fades
+over 0.15 s (`.bss` 0x0110c940). `FUN_00571f30` sets each voice's gain = 1.6 (0x00fad920) × the fade and its
+pitch = ((0.5 + 0.5 sin φ)·D + 1 − D) · B+0x28 (`FUN_00aabc10`; φ += global `VehicleSound.73e48fd4` (9.253) ·
+dt · 2π, D = B+0x24 · clamp(1 − B+0x20 / `75ec96d4` (0.375 s)); an impact sets B+0x24 to 0.067 / 0.042 / 0.009
+and B+0x20 = 0; not ported). Channel (`FUN_00572430`): the local player's car `Player_Vehicle_Sirens`, others
+`Sirens_Competitor`, roadblock cars (+0xa40 bit 2) `Sirens_Roadblock`. When a car whose level was non-zero is
+wrecked and no other car holds the slot at manager +0x339d0, `SirenSoundSet` +0x1c (`…b3883`, the dying
+siren: the yelp 0–0.5 s, then one of four 2 s wind-downs, gains 3 / 3.5, channel `…76b17`) plays once.
+
+**Light bar** (effect group 3 = +0x1c27, `FUN_0057a5e0`; `coplights` = 1.0 when +0x1954 == 2, getter 0x5a744a):
+- `FlashAnimation` (`FUN_0049ef00`): T = Σ `Duration`; the segment is the one where frac(t / T) minus the
+  segments' shares in order reaches ≤ 0 (else the last); f = (`Frequency` · t + `Phase`) · n with the absolute t;
+  value = lerp(P[trunc f mod n], P[(trunc f + 1) mod n], f − floor f). t = the clock × entity +0x3e4, the
+  per-car rate frac(slot × 0.39 + 0.5) × 0.2 + 0.9 (`FUN_00593ac0`). The Interceptor's bar: 8 s of a 20-sample
+  pattern at 0.4 Hz then 8 s of 16 samples at 0.5 Hz (8 samples / s), outer → inner → centre, the sides 2
+  samples apart.
+- `_LocalEmissive` (G-buffer program at shader slot 0x878): S = Σᵢ Iᵢ (1 − sat(|Pᵢ − p|² · M² · Rᵢ))² over 16
+  lights (`gaSelfIllumLocal_PosIntensity` slot 0x48, `g_SelfIllumLocal_RecipRadiusSq` 0x49, p = the skinned
+  bind-pose position), emission = S · `EmissiveColour` · `mSelfIlluminationMultiplier` ·
+  EmissiveTexture(uv0).x into RT3. `FUN_00583290` → `FUN_0057fcf0`: with group 3 on, the coronas of group 3
+  with an `Animation` (both day and night entries) give v = anim(t)^10 (0x00f9f698), kept above 1e-4, the 16
+  strongest; each locator whose +Z axis faces the camera is one light (P = its position, I = v, R = 222.767,
+  `.data` 0x010c4794). The colour comes from the `Glass_Colourise` lenses (red (0.60, 0.07, 0.006), blue
+  (0.07, 0.13, 1.48)). Side finding: `g_selfIlluminationMask` = 4.0 (0x00fad8c0) × entity +0x3cc × the
+  brake / headlight / reverse bits there (our `--lights` default may be 4× low; not changed).
+- The bar's light: group-3 `Light_Custom`s (blue `…253a4` / red `…253a5`: intensity 35, threshold 0.05), in
+  `FUN_005818f0` intensity × `a3de907e` × entity +0x3cc × the animation (linear), through `FUN_008cf1d0` into
+  the `LightBuffer_Cop` program: att = sat(1 / d² − c.w) × ((1 − L̂.y)⁶ above the pixel, 1 + 0.75 L̂.y below),
+  diffuse only (Lambert for the world, the Ashikhmin-Shirley diffuse 0.3875 for cars).
+- Coronas (`FUN_00581640` → `FUN_004970b0` → `FUN_004a6630`, per entry `FUN_004a5f70`): intensity = gate
+  (`da6ac384`: 0 always, 1 by day fading with the night level, 2 at night; `FUN_0089b400`) × `Brightness` × L² ×
+  the group's night scale × the linear animation value; size `f65c1f07` × `f65c1f06`; the draw `FUN_004a5790` /
+  curves `FUN_004ab450` were not decoded (not drawn).
+- Head and tail lights are on for every car (+0x1a8c = 1, `FUN_00591350`), off when +0x1a84 == 0 and +0x1a40
+  bit 2 is clear.
+
+**Radio** (speech manager: init `FUN_00840390`, update `FUN_00842ba0`, load `FUN_008404c0` / `FUN_008423a0`):
+- Request `FUN_008408a0(UniqueId)`: the event (`FUN_0083d1e0`), its conditions (all or any by +0x44), then
+  `FUN_0083d270` rejects it when played ≥ its maximum, outside its mode-time window, less than `Period` minutes
+  since it last ended, needing a car without one, `Cutscene_Behaviour` 2 in a cutscene, or a one-off heard;
+  `FUN_008406a0`: one speech at a time, no queue; a new one interrupts only with a lower `Priority` number.
+- Per event (vtable 0xf994d8, `vt_00845b10`): `Delay`, then the items at their `StartTime`; a line item picks
+  one line uniformly over all its lines and containers (`FUN_0083c5a0`).
+- Triggers: `GameplayTrigger`s of the scoring actions (`FUN_006f9670` → `FUN_006e0a90`: the first event of the
+  output whose conditions hold): chase started (`ScoringConfig` +0x48 / +0x4c / +0x50 / +0x54), resumed (+0x58),
+  heat up (+0xe8 / +0xec), takedown (trigger 1378651), cooldown (+0xc4), escaped, roadblocks, hits, respray;
+  HSM 983342 "Speech Manager": in a chase every 5 s by `GetRandomNumber[4]` (1186587 / 1378016 / 1871411 /
+  1378788; within 25 m of a chasing cop 1186587 / 1378788 / 1186559 ×2), in the cooldown 1871531 (1871318 in a
+  building). Event ids per trigger: `police_speech.rs` and the research log.
 
 ## Vehicle paint, liveries and dirt
 

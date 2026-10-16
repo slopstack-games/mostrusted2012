@@ -110,6 +110,52 @@ do not list it; debug variables in `crates/mwtool/src/water.rs`).
   from the suspension bridge deck (camera about 1060, 60, 2950 looking west along the gorge) — water at the gorge
   bottom only, no sheet at y 13 on the slopes; the industrial coast (−150, 80, 3300 towards 50, 10, 3560) — dry;
   and the suspension bridge's pier fender (y ≈ 13) to see whether water reaches it from the eastern side.
+### 2026-10-16: police sirens, light bars and radio chatter
+User report (play test): "cops have no sounds, lights etc.". Read from the dump, REA on the decrypted image and
+the data (three research sub-agents plus checks); details in decomp.md "Police sirens, light bars and radio",
+layouts in formats.md "Police sounds, lights and speech". Ported in `police_fx.rs` (state, the interface),
+`police_audio.rs`, `police_lightbar.rs`, `police_speech.rs`; data `mw_assets::police_{sound,lights,speech}`.
+- **Sirens (found)**: `CopSoundSet` `…23013` (`VEHICLES/WAVES.BNDL`, loaded by `FUN_005776a0`); a car's set is
+  its `VehicleSound` +0x40 or else `9f467b30[slot % 2]` (`FUN_00593ac0`). Siren level byte (entity +0x186c,
+  0 off / 1–3 = `Sirens[level − 1].Wave[slot % n]`, looped), blip (request 5: random `Blips` for 0.8 s),
+  crossfade 0.2 s / stop 0.15 s (`.bss` 0x0110d020 / 0x0110c940 read in snap1), gain 1.6, on the snapshot channel
+  `Sirens_Competitor` (gain 0.501, 4–400 m, doppler c = 680 m/s) or `Player_Vehicle_Sirens` (`FUN_0058bdc0`,
+  `FUN_00574510`, `FUN_00571f30`, `FUN_00572070`, `FUN_0058d770`). Requests: `SetSirenState` (message 0xd,
+  `FUN_00844300` → `FUN_00572d50`: siren level 1 + bar together), the horn of a siren car (`FUN_00587720`: off →
+  1 → 2 → 3 → off; also the **player's horn runtime**, the old "not found"), cutscene cars
+  (`AnimatedRaceCarBehaviour` +0x54 / +0x5a, `FUN_005b4750`). Dying siren `89ecdfc4` (`…b3883`) once when a car
+  with its siren on is wrecked. Waves (pitch tracks): wail `…2301e` (5 s, 656 → 1641 → 680 Hz), yelps `…23016` /
+  `…23022` / `…23023` (600–1700 Hz, ~3 sweeps / s), hi-lo `…2301b` / `…2301c` (1031 / 1559 Hz).
+- **Light bars (found)**: effect group 3 (entity +0x1c27); `VehicleVfxBehaviour` `…_COP_Coronas` (19 coronas
+  with `FlashAnimation`s) and two `Light_Custom`s (blue / red, intensity 35). Flash: `FUN_0049ef00` (segment by
+  `frac(t / ΣDuration)`, sample at `(Frequency · t + Phase) · n`, linear), per-car rate
+  `frac(slot × 0.39 + 0.5) × 0.2 + 0.9`. The bar mesh's `_LocalEmissive` program: 16 local lights (slot 0x48 /
+  0x49) from the coronas' values ^10 at camera-facing locators (`FUN_0057fcf0`), R = 222.767. The bar's world
+  light uses `LightBuffer_Cop` (diffuse only, vertical fade). Cops' head / tail lights are always on (+0x1a8c).
+- **Radio (found)**: `EN_US/SPEECH/SPEECHEVENTSEQUENCES.BNDL` (110 events) + the SWC0 container (7,665 SPS
+  streams, `WaveContainerTable` index), one speech at a time by priority (`FUN_008408a0`, `FUN_008406a0`,
+  `FUN_0083d270`), triggers from the scoring actions' `GameplayTrigger`s and the HSM "Speech Manager" (983342).
+- **Model decisions**: (1) what switches an AI cop's siren in a pursuit was not found (only the paths above write
+  the requests): chasing / searching cops in a pursuit or cooldown have `SetSirenState(on)`, others off; (2) the
+  three nearest sirens sound (`Sirens_Competitor.1653b84c` = 3 read as a voice limit); (3) speech conditions
+  whose binding we lack read 0; lines play on the effects volume; (4) the busted lines 1186445 / 1186447
+  (priority 0, play-once, no trigger found).
+- **Checked**: `mwtool siren out.wav` (set `…23039`: off, levels 1–3, blip, level 1: peaks follow the waves,
+  no clicks at the switches: max |Δ| 0.25 vs p99.99 0.13); `MW_SIREN_PRESS=5,10,15,20,25,30` with the cop car
+  as the player's: levels 1 → 2 → 3 → off → 1, the voice at −12 dBFS at 7.6 m, silent when off;
+  `--test pursuit` with `MW_SIREN_LOG=1 MW_AUDIO_METER=1 MW_SPEECH_LOG=1`: each chasing cop's siren starts with
+  the chase (sets by slot parity), placed (gain −7..−12 dB at 7–60 m, doppler 0.95–1.05), a wrecked cop's
+  dying siren, the chase-start radio event, chatter every 5 s after a line; speech lines decode band-limited
+  (99.4–99.9 % of the energy in 300–3400 Hz, peaks −0.3 dBFS, no discontinuities). Night screenshots of the bar
+  (`MW_LIGHTBAR_SHOTS`, 1/8 s apart): blue / red hotspots alternating on the bar and the rear deck, the bar's
+  blue / red light on the road and a sign.
+- **Open / captures wanted**: (a) a probe watch on entity +0x1950 / +0x186c during a chase (who turns the AI
+  sirens on); (b) a capture of a chase at night (light bar look, the bar's light on the road and signs: ours may
+  be too strong on the retroreflective signs; the coronas are not drawn: `FUN_004a5790` / `FUN_004ab450` not
+  decoded); (c) the siren's pitch wobble after impacts (`FUN_00aabc10`) and its factor B+0x28; (d) the speech's
+  radio clicks and static bed (`AudioSettings` +0x18 / +0x1c), vocabulary slots (car model / colour), narrator
+  one-offs, the loudhailer's 3D placement, the busted lines, and whether a line item waits for the previous line
+  (ours: items start at their `StartTime` and may overlap); (e) the `Racer_Cop_Radio` parameters (no reader).
 
 ### 2026-10-15: navigation (SET DESTINATION, the GPS route) from the code
 User play test: "Navigation (SET DESTINATION route / GPS) does not work yet". Details in decomp.md "Navigation: SET

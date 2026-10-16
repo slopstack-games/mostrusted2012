@@ -80,8 +80,10 @@ capture of the original) before a fix (CLAUDE.md fidelity rule).
   added to Steam as a non-Steam game.
 
 **Police**
-- Cops have no sirens (sound) or light bars.
-- No police chatter / radio sounds in chases.
+- Cops have no sirens (sound) or light bars. (2026-10-16: sirens, light bars and their light added; who turns
+  the AI sirens on is a model; coronas not drawn. Research log 2026-10-16.)
+- No police chatter / radio sounds in chases. (2026-10-16: the radio's main events and the 5 s chatter added;
+  clicks / static bed, vocabulary lines and the narrator open.)
 - Crashing into other racers and police does not work yet (see the police branch, still unmerged).
 
 **Audio**

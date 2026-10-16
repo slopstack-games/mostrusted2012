@@ -776,6 +776,10 @@ pub fn build_car(commands: &mut Commands, b: &CarBuild) -> Entity {
             stop_impulse: 0.0,
         },
     ));
+    // Sirens and light bars (`police_fx.rs`).
+    if let Some(l) = &b.spec.flash_lights {
+        e.insert(crate::police_fx::FlashCar::new(l.clone()));
+    }
     // Exhaust pops and the car's spot effects (`exhaust.rs`).
     let tuning = match &b.spec.engine {
         Some(mw_assets::engine_sound::EngineVoice::Bank(b)) => b.tuning,
