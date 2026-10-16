@@ -101,6 +101,10 @@ pub fn blend_colour_cubes(cubes: &[(Option<mw_formats::ColourCube>, f32)]) -> Op
 #[derive(Resource, Clone, Default, ExtractResource)]
 pub struct PostView {
     pub to_sun: Vec3,
+    /// A sequence's `PostFxOverrideSequenceItem` (`sequence_fx.rs`): added to the final pass's brightness b and
+    /// contrast c. `FUN_008ecf80` writes the PostFX state's +0x1660 = property 0 × 0.6 (`.rdata` 0x010219a4) and
+    /// +0x1664 = property 1 × (0.8 above 0, else 0.4; 0x010219a0 / 0x00fae200), the terms `FUN_008c9e40` adds.
+    pub override_grade: Vec2,
 }
 
 fn update_post_view(mut view: ResMut<PostView>, key_light: Query<&GlobalTransform, With<crate::weather::KeyLight>>) {
@@ -494,8 +498,10 @@ fn prepare_buffer(
         .iter()
         .next()
         .map_or((Vec3::NEG_Z, 0.1), |v| (v.world_from_view.forward().as_vec3(), v.clip_from_view.w_axis.z));
-    let to_sun = post_view.map_or(Vec3::Y, |p| p.to_sun);
+    let to_sun = post_view.as_ref().map_or(Vec3::Y, |p| p.to_sun);
     let (contrast, brightness) = sun_grade(s, forward, to_sun);
+    let extra = post_view.map_or(Vec2::ZERO, |p| p.override_grade);
+    let (contrast, brightness) = (contrast + extra.y, brightness + extra.x);
     // MW_POST_LOG=1: the final pass's grade and the depth-of-field constants, about once a second.
     if std::env::var_os("MW_POST_LOG").is_some() {
         static FRAMES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);

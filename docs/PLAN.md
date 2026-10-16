@@ -104,7 +104,7 @@ Make a static frame look like the game.
 3. `[x]` **Remaining world layers** from `ZoneHeader` (0x206): CompoundInstanceList / CompoundObject,
    PropInstanceList / PropObject, DynamicInstanceList, LightInstanceList, GroundcoverCollection / Instances.
    - Done: props, compound objects and dynamic objects are placed (+21068 placements over the map, 0
-     unresolved; `mwtool world` prints counts per layer); lights are drawn since 2026-10-10 (point / cone / spot, plus the street lamps' own lights; `world_lights.rs`).
+     unresolved; `mwtool world` prints counts per layer); lights are drawn since 2026-10-10 (point / cone / spot, plus the street lamps' own lights; `world_lights.rs`); the world objects' coronas since 2026-10-16 (street lamps, traffic lights, speed cameras; `world_coronas.rs`), lights of behaviours that start switched off stay off (traffic light colours: their controller is not ported).
      Groundcover is decoded and drawn (1.36 M sprites over the map, one mesh per group, `--no-groundcover` to
      skip); since 2026-10-09 by the port of the game's `Groundcover` vertex program (camera-facing about world
      up, wind sway, the CPU builder's per-sprite range drop and shrink, `groundcover.wgsl`). Still open: light
@@ -431,8 +431,10 @@ code side (game modes, HSMs, AI) next to the data. Roughly in dependency order:
    from the code (decomp.md "Free-roam rules"); speed cameras, security gates and billboards
    run with their Speed Points (`freeroam.rs`, 2026-10-10: the firing rule and 4 s queue, 500 / 250 / 500 SP on
    the first find from the `ScoringAction` data, the SP total and "+SP" message on the HUD, progress in the
-   profile; `--test freeroam`, `mwtool scoring`). Open: the overlap's narrow phase, the speed camera's
-   world-space plate and flash, the billboard's jump-distance speedwall, SP of events / takedowns, hints,
+   profile; `--test freeroam`, `mwtool scoring`). The speed camera's flash (2026-10-16, `sequence_fx.rs`: the
+   camera's light and corona twice for 0.1 s, the picture's brightness flash, its sounds; the HUD sequences'
+   waves). Open: the overlap's narrow phase, the speed camera's
+   world-space plate, the billboard's jump-distance speedwall, SP of events / takedowns, hints,
    jack-spot swaps; `GAMELOGIC/GAMEMODES.BNDL`, `GAMEPLAY.BNDL`, the Most Wanted list.
 4. `[~]` Cops / pursuit (2026-10-10, `police.rs`, `pursuit.rs`, decomp.md "Police and pursuits"): patrol cop in
    free roam, pursuit by speeding past or ramming a cop, heat levels with their cops, chase / cooldown / escaped

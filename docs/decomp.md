@@ -4099,6 +4099,70 @@ a capture of a real pursuit (`mwtool capture`: cop distances, heat and bust timi
   per slot, 7 × 7 depth taps one texel apart, fraction behind). Effect masks: decomp.md "Exhaust pops and
   backfires" and research log 2026-10-16 (traffic: groups 0 and 4, L = 0.7 + 0.5 × flash / 255, rate 0.9 + 0.2 ×
   random).
+- **Brake hold** (`FUN_0057a5e0`): car +1000 is zeroed while the brake is applied (+0x1930 > 0; in reverse with
+  +0x192c > 0 it is zeroed too and groups 1 and 2 light) and adds the scaled frame time otherwise; while it is
+  below 0.5 (`.rdata` 0x00f8a810) and `FUN_006a0110` (`FUN_006c37e0`: the player's state +0x9c is 2) holds, group 1
+  stays lit. **Electrical flicker**: with car +0x3f5 or +0x1c19 set the mask gets 0x80c7 (bit 15 plus groups 0, 1,
+  2, 6, 7); the setters of those two bytes and what bit 15 does in `FUN_004a5f70` were not read.
+- **World objects** (2026-10-16, ported in `world_coronas.rs`): the runtime `WCVfxBehaviour` (`FUN_005b3350`,
+  vtable 0x00faf238: +4 activate `FUN_005b30d0`, +8 deactivate `FUN_005b3150`, update `FUN_005b31a0`) packs its
+  bools with `FUN_005b0220`: corona flags +0x2c = 1 `62f1c8f6` (data +0x5c), 2 `6e32f7bb` (+0x5e), 4 `74f925cc`
+  (+0x5b), 8 `ad62f71e` (+0x5d), 0x10 `74ea21c1` (+0x5f), zero without coronas; light flags +0x2e = 1 `553d49f7`
+  (+0x63), 2 `2dcdc3c8` (+0x65), 4 `45803296` (+0x62), 8 `0486dd39` (+0x64), 0x10 `4593369b` (+0x66), zero without
+  lights. The counts are `9f8c05b0` (coronas, +0x54) and `e41cffe1` (lights, +0x56); +0x69 / +0x6b = they are non-zero.
+  +0x6a (+0x6c) = coronas (lights) whose flags are not all five set: those are switched by the update, the rest only
+  by activation. The update (`FUN_005b31a0`, round robin by +0x57): +0x6e = the hour (`DAT_0110d5d1`) in [+0x55,
+  +0x56) = [`392e10d5`, `19e7191a`) (`FUN_005a7850`, wrapping), +0x70 = (+0x2c & the environment bits
+  `DAT_0110d5d0`) ≠ 0, +0x6f the same for +0x2e; coronas are in the object's list (`FUN_00532760` add,
+  `FUN_005327b0` remove; object +0xc4, at most 4) while +0x6e, +0x70 and the blink (+0x66: `c8d7741f` > 0, a
+  random-rate square wave on +0x50) allow; lights likewise (`FUN_005328c0` / `FUN_00534080`). Activation adds both
+  at once when the flags are all set and there is no hour window or blink. The object is queued (`FUN_00532a80`,
+  `FUN_00533780` → `FUN_00497180`) while the camera is within +0xe8 = (the largest |locator| + the definition's
+  +0xa8 `88b68533`)²; `FUN_004a6fa0` then takes each listed behaviour whose view bit (+0x2d, from the definitions'
+  sprite counts, `FUN_005af1f0`) matches, level = `FUN_0089b400`(+0x2c, the object handle) (skipped below 0.001),
+  and queues each locator (object matrix × locator; direction = the locator's z axis) with that level;
+  `FUN_004a6b00` sorts by definition, skips coronas beyond the runtime definition's +0x64, and calls `FUN_004a5790`
+  with anim = (level × 4), colour (1, 1, 1, 1), intensity 1, size (1, 1). Data: 37 corona behaviours; street
+  lamps ("SetLightsOn") mostly night + twilight (flags 3), traffic lights and the speed camera all five (0x1f, by
+  activation only), `…171cc4` none (never shown). **Light coronas** (`FUN_00497200`, ≤ 0xc0 per frame): from the
+  light submission with a handle at +0x48 of the GeneSys object the record's +0xc / +0x10 names (not the light
+  definition: its +0x48 is `AttenuationThreshold`) and current / definition intensity; that object was not traced
+  (not ported).
+
+## Speed camera flash (2026-10-16, ported in `sequence_fx.rs`)
+
+A counted pass sends `SpeedCameraTriggered`, whose `GameplayTrigger` starts sequence 1107082 (`GAMEPLAY.BNDL`,
+the sequence object `0x10e48a`; items listed by `mwtool frontend --sequence 1107082`). Its world items:
+
+- **`GameLogic.ModifyBehavioursInAreaSequenceItem`** ×2 (0–0.1 s and 1.0–1.1 s; `Label` "SpeedCameraLight",
+  `TransformBinding` `Players.LocalPlayer.GetPosition`, `Radius` 50, `ActionType` 0). Type id 0xf7a5c; the factory
+  table at 0x00856271 → `0x008612a0` (runtime item, vtable 0x00ff2088). Start (slot 3, `FUN_00856370`): the
+  binding's position + `TranslationOffset`, `FUN_004f4b00`(pos, `Radius`, type 0x2000, list of 10) for the
+  objects around it, the label hashed (`FUN_00a1d5c0`), and per object `FUN_008467d0`(handle, hash, `ActionType` ≠
+  1) which queues game-logic message 0xd (on) or 0xe (off); end (slot 9, `0x00851e20`): the reverse for the same
+  objects. The world's message loop (`FUN_0055a680`, cases 0xd / 0xe) calls `FUN_00548510` /
+  `FUN_00548560` → the object's virtual +4 / +8 with (index, hash): the behaviours with that label activate /
+  deactivate. The speed camera compound `1e63a9d5` (74 placements) carries behaviour `…f8729` "SpeedCameraLight"
+  (`543527d0` clear: off from the start; all flags set: lights and corona by activation only) with light `…f872d`
+  (`Light_Point`, white × 500, threshold 0.1: 70.7 m) and corona `…f872c` at locator group 1017639. So the camera
+  lights the world twice for 0.1 s and is dark otherwise.
+- **`SequenceItems.PostFxOverrideSequenceItem`** (0–1.54 s, property 0; type 0xf7d8c, factory `0x0086a690`,
+  vtable 0x00ff3020): each frame (`FUN_008635a0`) every `Automated_Values` entry's curve is evaluated at the
+  item's time and stored by `Automated_Property` 0 / 1 / 2 into a 14-word block with flag bytes +0x32 / +0x33 /
+  +0x34, handed to `FUN_0083b7a0` on game logic +0x2ef70 (flag +0x38). The PostFX manager (`FUN_008ecf80`) reads
+  it: property 0 → its +0x1660 = value × 0.6 (`.rdata` 0x010219a4), property 1 → +0x1664 = value × 0.8 above 0,
+  × 0.4 otherwise (0x010219a0, 0x00fae200), property 2 → +0x1508 and +0x1504 × value × 2 unless +0x1501.
+  +0x1660 / +0x1664 are the final pass's brightness b / contrast c terms (above, "Final pass"). The curve here:
+  0 → 0.5 at 0.05 (77 ms) → 0 at 0.095, 0 → 0.656 at 0.219 (0.34 s) → 0 at 0.279: two white-outs of b ≈ +0.3 /
+  +0.39. The block is cleared every frame (`FUN_0083c9f0` at 0x006ab1d0). Other users of the item: the nitrous
+  sequences (`…b3a2a`, property 2 then 0), `…f5fc1` (properties 1 and 2), `…f8ec8` (the same flash curve,
+  0.55 s).
+- **Sound**: `WaveSequenceItem`s at 1.333 s (`…f690e`) and 5.967 s (`…f690d`) on mixer channel `…7538` (gain
+  0.224); a `BusMixerChannelSequenceItem` on bus route 259950 "Dominant 3D" (gain 0.435 rising to 1 over 4 s,
+  not ported).
+- **Timeline controllers**: at 1.3 s jump back to 1.15 s while `CollectablesVM.CameraSpeedwall.HasDownloaded`
+  is false, at 1.233 s jump to 6.5 s once `…TimedOut`: the plate waits for the speed wall. Items are gated by
+  `ShowMiniWall(NOT)`. Not run in the port (the clock runs straight, as the HUD's).
 
 ## Police sirens, light bars and radio (2026-10-16)
 
