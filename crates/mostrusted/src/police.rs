@@ -804,6 +804,11 @@ fn spawn_cops(
         // `AIPlayerType.SpawnSpeed` (mph; `FUN_005220b0`).
         let spawn_speed = cfg.cop_spawn_speed.get(&entry.cop_type).copied().unwrap_or(0.0).max(0.0) * MPH;
         let mut kind = spawn_kind(police, entry.cop_type, player, &taken);
+        // `--test pursuit` places its cops close: behind the car, not on the road ahead of it (a cop ahead rams
+        // it head-on, the car drops below the bust speed and the escape run ends busted).
+        if police.force_wanted && police.spawn_distance_override.is_some() && kind == SpawnKind::Generic {
+            kind = SpawnKind::Behind;
+        }
         let lanes = traffic.as_deref();
         let mut found = spawn_point(police, &graph, kind, player, distance, spawn_speed, &taken, &spatial, lanes);
         if found.is_none() && police.spawn_distance_override.is_some() {
@@ -1658,6 +1663,8 @@ struct PursuitTest {
 }
 
 const TEST_CHASE_SECONDS: f32 = 25.0;
+/// The cops are sent once the player's car is this fast (mph).
+const TEST_RELEASE_MPH: f32 = 50.0;
 /// Within the level-0 sight range of a cop that is not chasing (50 m).
 const TEST_SPAWN_DISTANCE: f32 = 30.0;
 const TEST_TIMEOUT: f32 = 240.0;
@@ -1706,8 +1713,17 @@ fn run_pursuit_test(
             }
             test.nearest = [f32::MAX, 0.0];
             test.start = Some(*pt);
+            // No cops until the car is under way: cops placed around a car that is still pulling away find it
+            // below the bust speed and box it in (the game's rules), and the escape run never gets going.
+            police.hold_spawns = true;
             test.phase = 1;
             test.timer = 0.0;
+        }
+        1 if police.hold_spawns => {
+            if pv.0.length() >= TEST_RELEASE_MPH * MPH || test.timer > 30.0 {
+                police.hold_spawns = false;
+                test.timer = 0.0;
+            }
         }
         // Wait for the chase.
         1 if p.state == PursuitState::Chase => {
@@ -1738,7 +1754,20 @@ fn run_pursuit_test(
                 test.heat_rate.1 = Some(p.heat);
             }
             test.max_heat = test.max_heat.max(p.heat);
-            if test.timer >= TEST_CHASE_SECONDS || p.state != PursuitState::Chase {
+            if p.state == PursuitState::Busted {
+                // The cops caught the car (it was slowed below the bust speed with a cop at it): the escape run is
+                // over; on to the bust run.
+                info!(
+                    "TEST RESULT pursuit chase: BUSTED after {:.0} s (player {:.0} mph, {} slams); the escape run is skipped",
+                    test.timer,
+                    pv.0.length() / MPH,
+                    police.slams
+                );
+                police.hold_spawns = true;
+                police.force_wanted = false;
+                test.phase = 5;
+                test.timer = 0.0;
+            } else if test.timer >= TEST_CHASE_SECONDS || p.state != PursuitState::Chase {
                 info!(
                     "TEST RESULT pursuit chase: {:.0} s, state {:?}, {} cops ({} chasing), nearest cop {:.0} to {:.0} m, fastest chasing cop {:.0} mph, heat {:.2} (level {}), {} slams, bust meter {:.2}, player {:.0} mph",
                     test.timer,
