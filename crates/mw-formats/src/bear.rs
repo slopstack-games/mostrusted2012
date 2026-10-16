@@ -238,18 +238,31 @@ pub enum Op {
     /// 0x2C: `Rotation += AngularVelocity × dt`, with damping.
     Rotation2d { rotation: Operand, angular_velocity: Operand, damping: f32 },
     /// 0x3D: integrate: vertical acceleration (m/s², -9.8 for debris), drag (1/s).
-    Integrate { position: Operand, velocity: Operand, gravity: f32, drag: f32, extra_guess: [f32; 2] },
-    /// 0x3E: integrate and collide with the bounce plane: restitution and friction ranges, then
-    /// gravity and drag as in 0x3D.
+    /// (Compile `0x0044bda0`, a plain copy; run `FUN_004615f0`.) `p += dt·v` (the old velocity), then `v = v·(1 −
+    /// drag)^dt + (1 − R)·wind·W + (0, gravity·dt, 0) + turbulence·dt·(2r − 1)` with `R = (1 − drag)^dt` (`powf`)
+    /// and `W` the engine block's +0x50 vector (not identified, wind?); bytes +0x1c / +0x1d index a float table
+    /// (engine +0x84, not read) that scales gravity and turbulence.
+    Integrate { position: Operand, velocity: Operand, gravity: f32, drag: f32, wind: f32, turbulence: f32 },
+    /// 0x3E `UpdatePosVelWithBouncePlane` (compile `0x0044be00` → `FUN_00448c40`, run `0x004620a0` → `FUN_004618d0`):
+    /// `v' = R·v + Δ` as 0x3D, then `p' = p + dt·v'`. The plane is `lerp(Pg, Pp, clamp((|p' − C|² − 4)·0.2, 0, 1))`
+    /// (`global_plane` parameter within 2 m of `reference`'s translation, the particle's own plane beyond 3 m;
+    /// `.bss` 0x010ed2c0 / 0x010ed2d0). With `s = plane·p' − (radius if subtract_radius)` ≤ 0: `p = p' − s·n`,
+    /// `v = (v' − vn·n)·f − (j if |j|² > |Δ|² else 0)`, `vn = v'·n`, `j = e·vn·n`; `e = rand(restitution)` and `f = 1 −
+    /// rand(friction)` drawn once per update for all particles.
     Bounce {
+        reference: Operand,
+        global_plane: Operand,
         position: Operand,
         velocity: Operand,
+        radius: Operand,
         plane: Operand,
         restitution: [f32; 2],
         friction: [f32; 2],
         gravity: f32,
         drag: f32,
-        extra_guess: [f32; 2],
+        wind: f32,
+        turbulence: f32,
+        subtract_radius: bool,
     },
     /// 0x3C `UpdateParametricRadius` (compile `0x0044bbb0`, run `FUN_004612d0`): `Radius* = Radius × r(Age) ×
     /// s`, with `r` piecewise linear through `(0, values[0])`, `(knee, values[1])` and `(1, values[2])` (the
@@ -946,17 +959,23 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
             velocity: opnd(8)?,
             gravity: f(12)?,
             drag: f(16)?,
-            extra_guess: pair(20)?,
+            wind: f(20)?,
+            turbulence: f(24)?,
         },
         0x3E => Op::Bounce {
+            reference: opnd(4)?,
+            global_plane: opnd(8)?,
             position: opnd(12)?,
             velocity: opnd(16)?,
+            radius: opnd(20)?,
             plane: opnd(24)?,
             restitution: pair(28)?,
             friction: pair(36)?,
             gravity: f(44)?,
             drag: f(48)?,
-            extra_guess: pair(52)?,
+            wind: f(52)?,
+            turbulence: f(56)?,
+            subtract_radius: data.len() > 60 && r.u8(60)? != 0,
         },
         0x3C => Op::RadiusCurve {
             age: opnd(4)?,

@@ -958,26 +958,41 @@ fn step_layer(
                         q.spin *= (1.0 - damping * dt).max(0.0);
                     }
                 }
-                Op::Integrate { gravity, drag, .. } => {
+                Op::Integrate { gravity, drag, turbulence, .. } => {
+                    // `FUN_004615f0`: the position moves with the old velocity.
                     for q in &mut sim.particles {
-                        integrate(q, *gravity, *drag, dt);
+                        q.pos += q.vel * dt;
+                        q.vel = q.vel * retain(*drag, dt) + acceleration(*gravity, *turbulence, dt, rng);
                     }
                 }
-                Op::Bounce { gravity, drag, friction, restitution, .. } => {
+                Op::Bounce { gravity, drag, turbulence, friction, restitution, subtract_radius, .. } => {
+                    // `FUN_004618d0`: semi-implicit; restitution and friction drawn once per update.
+                    let e = rng.range(*restitution);
+                    let f = 1.0 - rng.range(*friction);
+                    let keep = retain(*drag, dt);
+                    let centre = p.transform.w_axis.truncate();
                     for q in &mut sim.particles {
-                        integrate(q, *gravity, *drag, dt);
-                        // Collide with the bounce plane a quarter radius up, so big smoke sprites stay
-                        // mostly above the ground (a guess; the game's plane offset is not decoded).
-                        let n = q.plane.truncate();
-                        let d = n.dot(q.pos) + q.plane.w - q.radius * 0.25;
-                        if q.plane.w != f32::MAX && d < 0.0 {
-                            q.pos -= n * d;
+                        let delta = acceleration(*gravity, *turbulence, dt, rng);
+                        q.vel = q.vel * keep + delta;
+                        q.pos += q.vel * dt;
+                        // The emitter's plane within 2 m of the emitter, the particle's own beyond 3 m.
+                        let b = ((q.pos.distance_squared(centre) - 4.0) * 0.2).clamp(0.0, 1.0);
+                        let plane = if p.ground.w == f32::MAX || q.plane.w == f32::MAX {
+                            if q.plane.w == f32::MAX { p.ground } else { q.plane }
+                        } else {
+                            p.ground.lerp(q.plane, b)
+                        };
+                        if plane.w == f32::MAX {
+                            continue;
+                        }
+                        let n = plane.truncate();
+                        let s = plane.w + n.dot(q.pos) - if *subtract_radius { q.radius } else { 0.0 };
+                        if s <= 0.0 {
+                            q.pos -= n * s;
                             let vn = q.vel.dot(n);
-                            if vn < 0.0 {
-                                let tangent = q.vel - n * vn;
-                                let keep = 1.0 - rng.range(*friction).clamp(0.0, 1.0);
-                                q.vel = tangent * keep - n * vn * rng.range(*restitution);
-                            }
+                            let j = n * (e * vn);
+                            let bounce = if j.length_squared() > delta.length_squared() { j } else { Vec3::ZERO };
+                            q.vel = (q.vel - n * vn) * f - bounce;
                         }
                     }
                 }
@@ -1019,11 +1034,22 @@ fn step_layer(
     sim.particles.retain(|q| q.age < 1.0);
 }
 
-fn integrate(q: &mut Particle, gravity: f32, drag: f32, dt: f32) {
-    q.vel.y += gravity * dt;
-    // Quadratic drag, implicit (a guess at the coefficient's meaning: smoke stops within metres).
-    q.vel /= 1.0 + drag * q.vel.length() * dt;
-    q.pos += q.vel * dt;
+/// The share of the velocity an update keeps: `(1 − drag)^dt` (`powf`, `FUN_00ed9e1b`): `drag` is the fraction
+/// lost per second.
+fn retain(drag: f32, dt: f32) -> f32 {
+    (1.0 - drag).max(0.0).powf(dt)
+}
+
+/// An update's velocity increment of 0x3D / 0x3E: gravity and turbulence (`dt·(2r − 1)` per component). The
+/// wind term `(1 − R)·wind·W` is left out (model decision: `W`, engine block +0x50 copied from `obj+0x1b120` by
+/// `FUN_004a1470`, is not identified; 127 of the 0x3D / 0x3E actions have a non-zero wind coupling, up to 1.25). The
+/// float table that scales 0x3D's gravity and turbulence (engine +0x84, bytes +0x1c / +0x1d) is taken as 1.
+fn acceleration(gravity: f32, turbulence: f32, dt: f32, rng: &mut Rng) -> Vec3 {
+    let mut a = Vec3::new(0.0, gravity * dt, 0.0);
+    if turbulence != 0.0 {
+        a += (Vec3::new(rng.next(), rng.next(), rng.next()) * 2.0 - Vec3::ONE) * (turbulence * dt);
+    }
+    a
 }
 
 #[allow(clippy::too_many_arguments)]
