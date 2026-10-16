@@ -181,6 +181,8 @@ Still missing or not like the original (user play test, 2026-10-14; details in
 - [ ] Lights: car lights do not light up the world properly; speed cameras light the world all the time, not only
   when they flash
 - [ ] Crash particles: broken glass when crashing into traffic, other crash debris and sparks
+- [ ] Sound effects: smashing billboards, hitting light poles and other props, light crashes, jump landings,
+  and many other one-off sounds
 - [ ] Car sounds and effects: idle sound, nitrous sound, backfires, engine start / stop; tyre marks and nitrous
   flames look off; grass / dirt still give road smoke and marks
 - [ ] Traffic reactions: horns, headlight flashing when you drive towards them

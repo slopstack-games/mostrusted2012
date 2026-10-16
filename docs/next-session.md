@@ -49,6 +49,8 @@ Added by the user (2026-10-16), not investigated yet:
 - **Crash particles**: car crashes have few or none of the original's particle effects, e.g. broken glass when
   crashing into traffic cars and other crash debris / sparks in general (the prop-break effects of session 10's
   `prop_vfx.rs` and its super-emitter port may be reusable).
+- **Missing sound effects**: smashing through billboards, hitting light poles (and props in general), some
+  light crashes, landing after a jump, and many other one-off sounds.
 
 New this session: `mwtool music`, `mwtool ui map-items`, `--smash-set bags`, `--map-waypoint <event>`,
 `MW_GPS_LOG=1`, `MW_XINPUT_CONNECTED=0|1`, `MW_CAR_SFX_LOG=1`, `MW_NITROUS_AT=t0,t1` (`mwtool engine-sound`).
