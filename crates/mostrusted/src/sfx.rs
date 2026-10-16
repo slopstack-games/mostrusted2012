@@ -1,7 +1,7 @@
-//! The player car's tyre, road, wind and landing sounds, from the game's sound data (`mw_assets::sfx`): one
-//! sequence bank rendered by `mw_audio::sfx_player::Player`, driven by the skid wheel (`Car::skid_wheel`, as
-//! the game picks it) and the wheels' ground contacts (landings). The body's impacts, the grind against other
-//! cars and the damage sounds are `player_sfx.rs`.
+//! The player car's tyre, road and wind sounds, from the game's sound data (`mw_assets::sfx`): one sequence bank
+//! rendered by `mw_audio::sfx_player::Player`, driven by the skid wheel (`Car::skid_wheel`, as the game picks
+//! it). The body's impacts, the grind against other cars and the damage sounds are `player_sfx.rs`; landings
+//! are `world_sfx.rs` (`FUN_00576b40`; the old loudness-sorted landing thump here was a model).
 
 use std::num::NonZero;
 use std::sync::{Arc, Mutex};
@@ -71,14 +71,7 @@ struct SfxState {
     building: Option<Arc<Mutex<Option<Built>>>>,
     started: bool,
     driver: Option<VehicleDriver>,
-    last_impact: f32,
-    /// Time with no wheel on the ground (s).
-    air_time: f32,
 }
-
-/// Touchdown speed (m/s) that counts as a landing thump, and the minimum time between them (model values).
-const IMPACT_SPEED: f32 = 2.0;
-const IMPACT_COOLDOWN: f32 = 0.2;
 
 fn load_bank(
     mut commands: Commands,
@@ -141,25 +134,13 @@ fn update_params(
     // The player car's control block (its pedals also when the AI drives it in a cutscene).
     let (brake, handbrake) = car.map_or((0.0, false), |(_, _, c)| (c.brake, c.handbrake));
     let mut i = VehicleInput { brake, handbrake, ..default() };
-    let (mut landing, mut grounded) = (0f32, 0usize);
+    let mut landing = 0f32;
     if let Some((_, car, _)) = car {
         i.speed_mph = car.speed.abs() / 0.447_04;
         i.skid_wheel = car.skid_wheel();
         for c in car.wheel_contacts().flatten() {
-            grounded += 1;
             landing = landing.max(-c.velocity.dot(c.normal));
         }
-    }
-    // Landings: wheels back on the ground after a jump thump like a body impact at the touchdown speed.
-    if grounded == 0 {
-        state.air_time += dt;
-    } else {
-        if state.air_time > 0.25 && grounded >= 2 && landing > IMPACT_SPEED && now - state.last_impact > IMPACT_COOLDOWN
-        {
-            state.last_impact = now;
-            driver.impact(landing);
-        }
-        state.air_time = 0.0;
     }
     driver.update(dt, &i);
     trace(now, driver.last(), landing);

@@ -187,6 +187,9 @@ MW_POLICE_LOG=1 MW_COP_DISTANCE=80 ./target/release/mostrusted --drive 911 --uni
 ./target/release/mwtool damage <car> --keys              # damage clip keys; --level all=0.5 --preview <png>
 ./target/release/mwtool traffic-sound all|sfx out.wav    # traffic engines / horns / impacts offline; engine-sound <car> --competitor
 ./target/release/mwtool traffic-sound player[:<id>] out.wav  # the player's horn, impacts, grind, sparks, glass, scratch (player_sfx.rs)
+./target/release/mwtool traffic-sound world out.wav  # landings, crash contacts, a car's prop touch, props' own sounds (world_sfx.rs)
+# MW_WORLD_SFX_LOG=1: every world / prop / landing / crash / collectable sound started (also loads them in muted
+# test runs, as MW_CAR_SFX_LOG=1 does for player_sfx.rs): --test smash, --smash-set compounds, --test landing
 # MW_HORN_AT=t0,t1 holds the horn between game times (headless); MW_AUDIO_METER=1 lists the player's voices too
 # Debug logs: MW_NITROUS_LOG=1, MW_DIRT_LOG=1, MW_GATE_LOG=1, MW_TYRE_DEBUG=1, MW_FLASH_LOG=1 [MW_FLASH_SHOTS=dir]
 # Performance: MW_FRAME_LOG=<file> (per-frame schedule / render times), --bench prints p95 / p99 / hitches;

@@ -14,6 +14,9 @@ pub fn run(store: &AssetStore, component: &str, out: Option<&Path>, passby_mph: 
     if component == "sfx" {
         return sfx(store, out);
     }
+    if component == "world" {
+        return world(store, out);
+    }
     if let Some(rest) = component.strip_prefix("player") {
         let vehicle = rest.trim_start_matches(':').parse().unwrap_or(1_085_007);
         return player(store, vehicle, out);
@@ -355,6 +358,74 @@ fn player(store: &AssetStore, vehicle: u32, out: Option<&Path>) -> Result<()> {
     }
     for (k, o) in sfx.scratch.iter().enumerate() {
         render_shot(&format!("scratch {k}"), o, &[(VOICE_GAIN, 1.0)], None, &mut wav);
+    }
+    if let Some(out) = out {
+        let rate = mw_audio::sfx_player::OUTPUT_RATE;
+        let pcm = mw_audio::Pcm { channels: 1, sample_rate: rate, samples: wav };
+        std::fs::write(out, pcm.to_wav())?;
+        println!("wrote {}", out.display());
+    }
+    Ok(())
+}
+
+/// `traffic-sound world`: the world's one-off sounds (`mw_assets::world_sfx`): the default surface's landing,
+/// crash and landing-sequence sounds, a car's first touch of a prop, and a few props' `WCPlaySoundBehaviour`
+/// lists on their channels, each rendered once.
+fn world(store: &AssetStore, out: Option<&Path>) -> Result<()> {
+    use mw_assets::car_sfx::VOICE_GAIN;
+    use mw_assets::world_sfx::{SfxChannel, WaveShots};
+    use mw_bundle::ResourceId;
+    let mut wav: Vec<i16> = Vec::new();
+    let data = store.world_sfx();
+    println!("rules: {:?}", data.rules);
+    if let Some(set) = data.default_set.and_then(|k| data.sets.get(k)) {
+        println!("default surface set:");
+        let pools = [
+            ("landing (gain 0.35)", &set.landing, 0.35),
+            ("landing (gain 1)", &set.landing, 1.0),
+            ("crash landing / underside", &set.crash_landing, 1.0),
+            ("crash roof", &set.crash_roof, 0.714),
+            ("crash front", &set.crash_front, 0.714),
+            ("crash side", &set.crash_side, 0.714),
+            ("crash rear", &set.crash_rear, 0.714),
+        ];
+        for (name, pool, g) in pools {
+            for o in pool.iter() {
+                render_shot(name, o, &[(VOICE_GAIN, g)], None, &mut wav);
+            }
+        }
+        for (name, seq) in
+            [("landing sequence (long)", &set.long_landing), ("landing sequence (short)", &set.short_landing)]
+        {
+            match seq {
+                Some(o) => render_shot(name, o, &[], None, &mut wav),
+                None => println!("  {name}: no sound"),
+            }
+        }
+    }
+    println!("car's first touch of a prop (front / side / rear), crash:");
+    for (name, pool) in [("front", &data.prop_hit[0]), ("side", &data.prop_hit[1]), ("rear", &data.prop_hit[2])] {
+        for o in pool.iter() {
+            render_shot(name, o, &[], None, &mut wav);
+        }
+    }
+    for o in &data.crash_prop_hit {
+        render_shot("crash prop hit", o, &[], None, &mut wav);
+    }
+    // A cone, a metal sign, a street lamp, the crash gate.
+    let shots = WaveShots::new(store);
+    for id in [0x0100_0000_0009_5acd_u64, 0x0100_0000_0009_5ac1, 0x0100_0000_000f_67c1, 0x0100_0000_000f_676e] {
+        let Some(s) = store.wc_sound(ResourceId(id)) else { continue };
+        println!("{:?} ({}):", s.label, s.object);
+        let car = s.mixer_channel.map_or(SfxChannel::Snapshot("Player Vehicle Prop Collision"), SfxChannel::Mixer);
+        let world = s.mixer_channel.map_or(SfxChannel::Snapshot("World Prop Collision"), SfxChannel::Mixer);
+        for (name, list, ch) in [("car hit", &s.collision_waves, car), ("world contact", &s.world_waves, world)] {
+            for w in list {
+                if let Some(o) = shots.shot(*w, ch, None) {
+                    render_shot(name, &o, &[], None, &mut wav);
+                }
+            }
+        }
     }
     if let Some(out) = out {
         let rate = mw_audio::sfx_player::OUTPUT_RATE;

@@ -396,7 +396,10 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    and compare its spectrum with `mostrusted --replay` of the same run: no narrow lines more than ~15 dB over
    their third-octave in the drift. Open: `GetPlayerSuspensionLoad` (vehicle +0x1f28) for the skid channels'
    gains, the runtime constants of the spin ramp, per-surface sounds (collision tags), bumps, ambience, wall
-   reflections, horn, nitrous, speech.
+   reflections, horn, nitrous, speech. 2026-10-16: the world's one-off sounds (`world_sfx.rs`): props',
+   lamps', signs' and gates' `WCPlaySoundBehaviour`s by the game's rules, a car's first touch of a prop, wheel
+   landings and landing sequences (`FUN_00576b40`), the crash's contact sounds by zone, the collectables'
+   message waves (decomp.md "World-component sounds"). Open: the crash camera's bus / mixer automation.
 5. `[x]` Volume settings (F2 / gamepad Select overlay, `--volume`, `~/.config/mostrusted/settings.cfg`) and the
    live sources play with `ONCE` (LOOP buffered them 0.74 s at a time: the engine held each rpm, then jumped).
 6. `[~]` Other cars' sounds (2026-10-09, `car_audio.rs`, `mw_assets::car_sound`; decomp.md "Other cars' engine
