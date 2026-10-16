@@ -36,11 +36,15 @@ use bevy::render::render_resource::{
 };
 use bevy::shader::ShaderRef;
 use mw_assets::AssetStore;
-use mw_assets::vfx::{self, ParticleMaterial as GameMaterial, VfxLibrary};
+use mw_assets::vfx::{ParticleMaterial as GameMaterial, VfxLibrary};
 use mw_bundle::ResourceId;
 use mw_formats::bear::{BearEffect, Bindings, ConeEmitter, Layer, Op, Renderer, Spawner};
 
 use crate::drive::Car;
+
+#[path = "particle_mesh.rs"]
+mod mesh;
+pub(crate) use mesh::{CollisionMeshes, MeshContact};
 
 pub struct ParticlesPlugin;
 
@@ -52,7 +56,10 @@ impl Plugin for ParticlesPlugin {
             .add_message::<ImpactEvent>()
             .init_resource::<Instances>()
             .init_resource::<BearGlobals>()
+            .init_resource::<BearView>()
             .init_resource::<EffectRequests>()
+            .init_resource::<CollisionMeshes>()
+            .init_resource::<mesh::DebrisModels>()
             .insert_resource(VfxDebug::from_env())
             .add_systems(Update, (start_loading, receive_vfx))
             .add_systems(FixedPostUpdate, detect_impacts.after(PhysicsSystems::Writeback))
@@ -66,6 +73,7 @@ impl Plugin for ParticlesPlugin {
                     demo_emitter,
                     simulate,
                     build_meshes,
+                    mesh::build_debris,
                 )
                     .chain()
                     .after(receive_vfx)
@@ -83,6 +91,7 @@ impl Plugin for ParticlesPlugin {
 /// contact (m/s). The world's colliders are one trimesh per track unit and stay "touching" (speculative
 /// contacts) while the car is near them, so a new impact shows as a high closing speed, not as a new pair.
 #[derive(Message, Clone, Copy, Debug)]
+#[allow(dead_code)]
 pub struct ImpactEvent {
     pub car: Entity,
     /// The other body of the pair (`None`: a collider without a body, the world).
@@ -139,6 +148,10 @@ impl Vfx {
     pub(crate) fn has_effect(&self, id: ResourceId) -> bool {
         self.effects.contains_key(&id)
     }
+
+    pub(crate) fn lib(&self) -> &VfxLibrary {
+        &self.lib
+    }
 }
 
 struct Batch {
@@ -185,6 +198,7 @@ fn load_vfx(store: &AssetStore, bc: bool) -> anyhow::Result<VfxLoaded> {
             [e.wheel, e.player_wheels.default_tyre, e.ai_wheels.default_tyre, e.player_wheels.on_rims]
                 .into_iter()
                 .chain(e.impacts)
+                .chain(e.ai_impacts)
         })
         .chain(lib.vehicle_impacts.iter().copied())
         .chain(lib.vehicle_scrapes.iter().copied())
@@ -283,7 +297,8 @@ impl BatchMaker<'_, '_> {
                             blend,
                         ),
                         key_colour: key_colour.extend(sky),
-                        key_direction: key_direction.extend(0.0),
+                        // w: the pixel program alpha-tests (all but the `NoAlphaTest` variants).
+                        key_direction: key_direction.extend(if m.shader.contains("NoAlphaTest") { 0.0 } else { 1.0 }),
                     },
                     texture: image.map(|i| self.images.add(i)),
                     irradiance: irradiance.clone(),
@@ -397,7 +412,8 @@ pub(crate) struct EmitterKey {
 
 const SLOT_TYRE: u32 = 0;
 const SLOT_KICKUP: u32 = 0x100;
-const SLOT_SCRAPE: u32 = 0x200;
+/// Car collision effects (`crash_vfx.rs`): this + the slot (0..4).
+pub(crate) const SLOT_CRASH: u32 = 0x200;
 /// Car spot effects (`exhaust.rs`): this + 0x10 × effect index + locator index.
 pub(crate) const SLOT_SPOT: u32 = 0x1000;
 
@@ -416,6 +432,13 @@ pub(crate) struct Params {
     /// `ImpactClosingVelocity` and `MovementSinceLastFrame` (binding sources 17 / 18).
     pub impact: f32,
     pub movement: f32,
+    /// `CollisionMeshParams`: the car's collision mesh and the contact in its space (`EmitterCollisionMesh`).
+    pub mesh: Option<MeshContact>,
+    /// `VehicleParams` +0x10: the car's paint colour (linear rgb), for `RenderMesh` (0x22) debris.
+    pub paint: Vec3,
+    /// The wheel's smoke ramps (spin, lateral, lock; `mw_handling::tyre_vfx`) for `UpdateWheelBindings`
+    /// sources 0x0F..0x11 (see [`wheel_source`]).
+    pub wheel: [f32; 3],
 }
 
 impl Default for Params {
@@ -429,8 +452,23 @@ impl Default for Params {
             ground: Vec4::new(0.0, 1.0, 0.0, f32::MAX),
             impact: 0.0,
             movement: 0.0,
+            mesh: None,
+            paint: Vec3::ZERO,
+            wheel: [0.0; 3],
         }
     }
+}
+
+/// The parts of the game's Bear view block (`FUN_0046adb0` sets it up, `FUN_004a1470` refreshes it each frame)
+/// that the render actions read: the camera's forward axis and its speed along it (+0x21c, `|Δposition ·
+/// forward| / dt`, which stretches `UpdateParametricFadeOverDistance`'s near fade). The block's +0x218 (depth
+/// origin offset, 0), +0x220 (size cap scale, 1.0) and +0x224 (saturation, 1.0) keep their initial values here.
+#[derive(Resource, Default, Clone, Copy)]
+pub(crate) struct BearView {
+    pub eye: Vec3,
+    pub forward: Vec3,
+    pub speed: f32,
+    prev: Option<Vec3>,
 }
 
 /// The game's `BearGlobalParameters` the binding controllers read (`FUN_004a1470` fills them each frame).
@@ -454,6 +492,13 @@ struct Particle {
     alpha: f32,
     seed: u32,
     plane: Vec4,
+    /// `Rotation` as a quaternion and `AngularVelocity` (rad/s, world) of the 3-D layers (0x0B / 0x2D).
+    quat: Quat,
+    omega: Vec3,
+    /// `CollisionRadius` of the debris that collides with the world (0x40); negative once at rest.
+    cr: f32,
+    /// The particle's number in its layer (the mesh renderers pick one of a model's 16 pieces by it).
+    serial: u32,
 }
 
 struct LayerSim {
@@ -471,6 +516,12 @@ struct LayerSim {
     /// `EmitterConePlus`: its own clock and particle accumulator (`burst + 0.9999` at the start).
     cone_time: f32,
     accum: f32,
+    /// `EmitterCollisionMesh`: its clock, whether the burst is spent and the carried fraction (0.9999 at the start).
+    mesh_clock: f32,
+    mesh_burst_spent: bool,
+    mesh_carry: f32,
+    /// Particles born so far (their serials).
+    spawned: u32,
 }
 
 impl LayerSim {
@@ -481,6 +532,11 @@ impl LayerSim {
 }
 
 /// One `UpdateBindings` run (`FUN_0045ffd0`): each curve over its source, then the combine steps.
+/// `UpdateBindings_Wheel` (0x34, `FUN_004601a0`) adds sources 0x14..0x18 over its `WheelParams` parameter W:
+/// W[1], W[2], W[3], `clamp(|W[0]| / s)` and the flag byte at W +0x30. The per-wheel update fills W with
+/// (`uStack_4c0`, the three smoke ramps) (`FUN_00589e20`, block +0x80): 0x14..0x16 read spin, lateral, lock here;
+/// W[0] and the flag are not identified and read 0.
+#[allow(clippy::too_many_arguments)]
 fn run_bindings(
     b: &Bindings,
     curves: &[mw_formats::bear::Curve5; 4],
@@ -489,6 +545,7 @@ fn run_bindings(
     p: &Params,
     globals: &BearGlobals,
     camera_distance: f32,
+    kind: u8,
 ) {
     let t = sim.time;
     for i in 0..4 {
@@ -509,12 +566,70 @@ fn run_bindings(
             16 => globals.player_load,
             17 => ratio(p.impact),
             18 => ratio(p.movement),
+            k @ 0x14..=0x16 if kind == 0x34 => p.wheel[(k - 0x14) as usize],
             // Other globals (time of day, weather and quality bytes, ...): not traced; byte +0x7d is 0.
             _ => 0.0,
         };
         sim.slots[1 + i] = curves[i].eval(x) + b.offsets[i];
     }
     b.combine(&mut sim.slots);
+}
+
+/// One `UpdateWheelBindings` run (0x42, `FUN_00463330`): each curve over its source (no offsets), into slots
+/// 1..=4, then the combine steps into 5..=8. Sources (`s` = the curve's scale, `t` the layer's clock):
+///
+/// | source | input |
+/// |---|---|
+/// | 0 / 1 | `s·t` / `frac(s·t)` |
+/// | 3 | `s·|Velocity|` |
+/// | 4 | `s·` distance from the transform to the camera |
+/// | 7 / 8 | `0.5 + 0.5·sin / cos(2π·s·t)` |
+/// | 9 | `s` |
+/// | 0x0E..0x11 | the `WheelContact` parameter's +0x40..+0x4c ([`wheel_source`]) |
+/// | 0x12 | `clamp(|WheelContact +0x1c| / s)` (not identified: 0) |
+/// | 2, 5, 6, 10..13, 0x13 | view-block globals (+0x68, +0x60, byte +0x7c, +0x6c, +0x7d, +0x70, +0x7e, +0x78; 0 here) |
+fn run_wheel_bindings(
+    b: &Bindings,
+    curves: &[mw_formats::bear::Curve5; 4],
+    scales: &[f32; 4],
+    sim: &mut LayerSim,
+    p: &Params,
+    camera_distance: f32,
+) {
+    let t = sim.time;
+    for i in 0..4 {
+        let s = scales[i];
+        let frac = |x: f32| x - x.floor();
+        let x = match b.sources[i] {
+            0 => s * t,
+            1 => frac(s * t),
+            3 => s * p.velocity.length(),
+            4 => s * camera_distance,
+            7 => 0.5 + 0.5 * (s * t * TAU).sin(),
+            8 => 0.5 + 0.5 * (s * t * TAU).cos(),
+            9 => s,
+            k @ 0x0e..=0x11 => wheel_source(p, k),
+            _ => 0.0,
+        };
+        sim.slots[1 + i] = curves[i].eval(x);
+    }
+    b.combine(&mut sim.slots);
+}
+
+/// `UpdateWheelBindings` sources 0x0E..0x11 read the `WheelContact` parameter's +0x40..+0x4c. Model
+/// decision: they are taken as (0, spin, lateral, lock), the wheel's smoke ramps. The block the per-wheel
+/// update fills (`FUN_00589e20` → `FUN_004acd80` / `FUN_0059bb50`) holds (`fStack_4b0` = 0, the three ramps) one
+/// row earlier, at +0x30, and the wheel's velocity at +0x40; how the Bear runtime copies the block into the
+/// effect's `WheelContact` was not found. The data favours the ramps: over the 34 `UpdateWheelBindings`
+/// actions sources 0x0F..0x11 are common and 0x0E (which would be the constant 0 or the world X velocity)
+/// never appears.
+fn wheel_source(p: &Params, source: u8) -> f32 {
+    match source {
+        0x0f => p.wheel[0],
+        0x10 => p.wheel[1],
+        0x11 => p.wheel[2],
+        _ => 0.0,
+    }
 }
 
 /// `EmitterConePlus` (`FUN_0044cf30`): how many particles this update emits, or `None` when it does not.
@@ -590,6 +705,10 @@ impl EffectInstance {
                     phase: std::array::from_fn(|_| rng.next()),
                     cone_time: 0.0,
                     accum: burst + 0.9999,
+                    mesh_clock: 0.0,
+                    mesh_burst_spent: false,
+                    mesh_carry: mesh::CARRY_START,
+                    spawned: 0,
                 }
             })
             .collect();
@@ -651,7 +770,31 @@ impl Instances {
         self.list.push(inst);
     }
 
-    fn one_shot(&mut self, vfx: &Vfx, effect: Option<ResourceId>, params: Params) {
+    /// Start `effect` afresh on `key` (bursts included), letting whatever played there live on unowned.
+    pub(crate) fn restart(&mut self, vfx: &Vfx, key: EmitterKey, effect: ResourceId, params: Params) -> bool {
+        let Some(def) = vfx.effects.get(&effect) else { return false };
+        self.release(key);
+        self.seed = self.seed.wrapping_mul(747796405).wrapping_add(2891336453);
+        self.list.push(EffectInstance::new(def.clone(), Some(key), params, self.seed));
+        true
+    }
+
+    /// Stop the emission of the instance on `key` and give up the key (its particles live on).
+    pub(crate) fn release(&mut self, key: EmitterKey) {
+        for inst in self.list.iter_mut().filter(|i| i.key == Some(key)) {
+            inst.params.emitting = false;
+            inst.key = None;
+            inst.burst_done = true;
+            inst.emit_for = 0.0;
+        }
+    }
+
+    /// The parameters of the live instance on `key`, if any.
+    pub(crate) fn keyed_mut(&mut self, key: EmitterKey) -> Option<&mut Params> {
+        self.list.iter_mut().find(|i| i.key == Some(key)).map(|i| &mut i.params)
+    }
+
+    pub(crate) fn one_shot(&mut self, vfx: &Vfx, effect: Option<ResourceId>, params: Params) {
         let Some(def) = effect.and_then(|id| vfx.effects.get(&id)) else { return };
         if self.list.len() > 64 {
             return;
@@ -689,22 +832,63 @@ fn hash01(seed: u32) -> f32 {
     (x >> 8) as f32 / (1u32 << 24) as f32
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn simulate(
     time: Res<Time>,
     debug: Res<VfxDebug>,
     globals: Res<BearGlobals>,
+    meshes: Res<CollisionMeshes>,
+    spatial: avian3d::prelude::SpatialQuery,
     mut instances: ResMut<Instances>,
+    mut view: ResMut<BearView>,
     camera: Query<&GlobalTransform, crate::MainCamera>,
 ) {
     let dt = time.delta_secs().min(0.1);
+    // The debris' world collision (0x40): the game tests a cache of the world triangles around the player's car;
+    // a ray against the world's colliders stands in for it (front faces only, as the game's test).
+    let ground = avian3d::prelude::SpatialQueryFilter::default().with_mask(crate::props::GameLayer::World);
+    let world = |from: Vec3, to: Vec3| -> Option<(f32, Vec3)> {
+        let d = to - from;
+        let len = d.length();
+        let dir = Dir3::new(d).ok()?;
+        let hit = spatial.cast_ray(from, dir, len, false, &ground)?;
+        (hit.normal.dot(d) < 0.0).then_some((hit.distance / len, hit.normal))
+    };
     if dt <= 0.0 {
         return;
     }
     let eye = camera.iter().next().map(|t| t.translation()).unwrap_or_default();
+    if let Some(cam) = camera.iter().next() {
+        // `FUN_004a1470`: view +0x21c = |(position − last position) · forward| / dt.
+        let forward = cam.forward().as_vec3();
+        view.speed = view.prev.map_or(0.0, |p| ((eye - p).dot(forward) / dt).abs());
+        view.prev = Some(eye);
+        view.eye = eye;
+        view.forward = forward;
+    }
     for inst in &mut instances.list {
         let def = inst.def.clone();
-        for (layer, sim) in def.layers.iter().zip(&mut inst.layers) {
-            step_layer(layer, sim, &inst.params, &globals, inst.burst_done, eye, dt, &mut inst.rng);
+        for (i, layer) in def.layers.iter().enumerate() {
+            // A `SuperEmitter` layer reads the particles of its parent layer (an earlier one, already updated).
+            let parent = layer
+                .super_emitter_parent()
+                .filter(|&j| j != i)
+                .and_then(|j| inst.layers.get(j))
+                .map(|l| l.particles.clone());
+            let sim = &mut inst.layers[i];
+            step_layer(
+                layer,
+                sim,
+                &inst.params,
+                &globals,
+                &meshes,
+                &world,
+                inst.burst_done,
+                eye,
+                dt,
+                &mut inst.rng,
+                parent.as_deref(),
+            );
         }
         inst.burst_done = true;
         if inst.key.is_some() {
@@ -737,10 +921,13 @@ fn step_layer(
     sim: &mut LayerSim,
     p: &Params,
     globals: &BearGlobals,
+    meshes: &CollisionMeshes,
+    world: mesh::WorldCast,
     burst_done: bool,
     eye: Vec3,
     dt: f32,
     rng: &mut Rng,
+    parent: Option<&[Particle]>,
 ) {
     let Some(group) = &layer.groups[0] else { return };
     let origin = p.transform.w_axis.truncate();
@@ -750,11 +937,15 @@ fn step_layer(
             let Some(action) = layer.actions.get(step.action as usize) else { continue };
             match &action.op {
                 Op::Controller { curves, scales, bindings, .. } => {
-                    // Spawners other than the cone emitter: the first curve over the effect's intensity
-                    // (their binding-slot bytes are not decoded).
+                    // Spawners other than the cone emitter and 0x07: the first curve over the effect's
+                    // intensity (their binding-slot bytes are not decoded).
                     sim.rate_scale = curves[0].eval(p.intensity.clamp(0.0, 1.0));
                     if let Some(b) = bindings {
-                        run_bindings(b, curves, scales, sim, p, globals, camera_distance);
+                        if action.kind == 0x42 {
+                            run_wheel_bindings(b, curves, scales, sim, p, camera_distance);
+                        } else {
+                            run_bindings(b, curves, scales, sim, p, globals, camera_distance, action.kind);
+                        }
                     }
                 }
                 Op::Age { .. } => {
@@ -768,31 +959,60 @@ fn step_layer(
                         q.spin *= (1.0 - damping * dt).max(0.0);
                     }
                 }
-                Op::Integrate { gravity, drag, .. } => {
+                Op::Integrate { gravity, drag, turbulence, .. } => {
+                    // `FUN_004615f0`: the position moves with the old velocity.
                     for q in &mut sim.particles {
-                        integrate(q, *gravity, *drag, dt);
+                        q.pos += q.vel * dt;
+                        q.vel = q.vel * retain(*drag, dt) + acceleration(*gravity, *turbulence, dt, rng);
                     }
                 }
-                Op::Bounce { gravity, drag, friction, restitution, .. } => {
+                Op::Bounce { gravity, drag, turbulence, friction, restitution, subtract_radius, .. } => {
+                    // `FUN_004618d0`: semi-implicit; restitution and friction drawn once per update.
+                    let e = rng.range(*restitution);
+                    let f = 1.0 - rng.range(*friction);
+                    let keep = retain(*drag, dt);
+                    let centre = p.transform.w_axis.truncate();
                     for q in &mut sim.particles {
-                        integrate(q, *gravity, *drag, dt);
-                        // Collide with the bounce plane a quarter radius up, so big smoke sprites stay
-                        // mostly above the ground (a guess; the game's plane offset is not decoded).
-                        let n = q.plane.truncate();
-                        let d = n.dot(q.pos) + q.plane.w - q.radius * 0.25;
-                        if q.plane.w != f32::MAX && d < 0.0 {
-                            q.pos -= n * d;
+                        let delta = acceleration(*gravity, *turbulence, dt, rng);
+                        q.vel = q.vel * keep + delta;
+                        q.pos += q.vel * dt;
+                        // The emitter's plane within 2 m of the emitter, the particle's own beyond 3 m.
+                        let b = ((q.pos.distance_squared(centre) - 4.0) * 0.2).clamp(0.0, 1.0);
+                        let plane = if p.ground.w == f32::MAX || q.plane.w == f32::MAX {
+                            if q.plane.w == f32::MAX { p.ground } else { q.plane }
+                        } else {
+                            p.ground.lerp(q.plane, b)
+                        };
+                        if plane.w == f32::MAX {
+                            continue;
+                        }
+                        let n = plane.truncate();
+                        let s = plane.w + n.dot(q.pos) - if *subtract_radius { q.radius } else { 0.0 };
+                        if s <= 0.0 {
+                            q.pos -= n * s;
                             let vn = q.vel.dot(n);
-                            if vn < 0.0 {
-                                let tangent = q.vel - n * vn;
-                                let keep = 1.0 - rng.range(*friction).clamp(0.0, 1.0);
-                                q.vel = tangent * keep - n * vn * rng.range(*restitution);
-                            }
+                            let j = n * (e * vn);
+                            let bounce = if j.length_squared() > delta.length_squared() { j } else { Vec3::ZERO };
+                            q.vel = (q.vel - n * vn) * f - bounce;
                         }
                     }
                 }
-                Op::Spawn(sp) => {
-                    spawn(layer, sim, sp, &step.secondaries, p, burst_done, eye, dt, rng);
+                Op::Spawn(sp) => match (&sp.mesh, p.mesh.and_then(|m| Some((m, meshes.get(m.mesh)?)))) {
+                    (Some(me), Some((contact, tris))) => {
+                        mesh::spawn(layer, sim, sp, me, &step.secondaries, p, contact, tris, eye, dt, rng);
+                    }
+                    _ => spawn(layer, sim, sp, &step.secondaries, p, burst_done, eye, dt, rng),
+                },
+                op @ Op::WorldCollide { .. } => mesh::world_collide(op, &mut sim.particles, dt, rng, world),
+                Op::Rotation3d { damping, .. } => {
+                    for q in &mut sim.particles {
+                        mesh::rotate(q, *damping, dt);
+                    }
+                }
+                op @ Op::SuperEmitter { .. } => {
+                    if let Some(parent) = parent {
+                        super_emit(layer, sim, op, &step.secondaries, parent, p, dt, rng);
+                    }
                 }
                 _ => {}
             }
@@ -801,10 +1021,13 @@ fn step_layer(
     // The render group's controllers (`ParametricSetColourGradient` reads their slots for the alpha).
     for seq in layer.groups[1].iter().flat_map(|g| &g.sequences) {
         for step in &seq.steps {
-            if let Some(Op::Controller { curves, scales, bindings: Some(b), .. }) =
-                layer.actions.get(step.action as usize).map(|a| &a.op)
-            {
-                run_bindings(b, curves, scales, sim, p, globals, camera_distance);
+            let Some(action) = layer.actions.get(step.action as usize) else { continue };
+            if let Op::Controller { curves, scales, bindings: Some(b), .. } = &action.op {
+                if action.kind == 0x42 {
+                    run_wheel_bindings(b, curves, scales, sim, p, camera_distance);
+                } else {
+                    run_bindings(b, curves, scales, sim, p, globals, camera_distance, action.kind);
+                }
             }
         }
     }
@@ -812,11 +1035,22 @@ fn step_layer(
     sim.particles.retain(|q| q.age < 1.0);
 }
 
-fn integrate(q: &mut Particle, gravity: f32, drag: f32, dt: f32) {
-    q.vel.y += gravity * dt;
-    // Quadratic drag, implicit (a guess at the coefficient's meaning: smoke stops within metres).
-    q.vel /= 1.0 + drag * q.vel.length() * dt;
-    q.pos += q.vel * dt;
+/// The share of the velocity an update keeps: `(1 − drag)^dt` (`powf`, `FUN_00ed9e1b`): `drag` is the fraction
+/// lost per second.
+fn retain(drag: f32, dt: f32) -> f32 {
+    (1.0 - drag).max(0.0).powf(dt)
+}
+
+/// An update's velocity increment of 0x3D / 0x3E: gravity and turbulence (`dt·(2r − 1)` per component). The
+/// wind term `(1 − R)·wind·W` is left out (model decision: `W`, engine block +0x50 copied from `obj+0x1b120` by
+/// `FUN_004a1470`, is not identified; 127 of the 0x3D / 0x3E actions have a non-zero wind coupling, up to 1.25). The
+/// float table that scales 0x3D's gravity and turbulence (engine +0x84, bytes +0x1c / +0x1d) is taken as 1.
+fn acceleration(gravity: f32, turbulence: f32, dt: f32, rng: &mut Rng) -> Vec3 {
+    let mut a = Vec3::new(0.0, gravity * dt, 0.0);
+    if turbulence != 0.0 {
+        a += (Vec3::new(rng.next(), rng.next(), rng.next()) * 2.0 - Vec3::ONE) * (turbulence * dt);
+    }
+    a
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -839,7 +1073,10 @@ fn spawn(
     };
     let mut count = sim.carry;
     if p.emitting {
-        count += (sp.rate * dt + sp.per_metre * p.moved) * sim.rate_scale * lod;
+        // `EmitterWheelContactPlus` (0x07, `FUN_00450760`) scales its count by a binding slot (the layer's
+        // `UpdateWheelBindings` output); the other spawners by the controller stand-in.
+        let scale = sp.count_slot.map_or(sim.rate_scale, |k| sim.slot(k));
+        count += (sp.rate * dt + sp.per_metre * p.moved) * scale * lod;
     }
     if !burst_done && sp.burst > 0 {
         count += sp.burst as f32 * p.intensity.clamp(0.1, 1.0) * lod;
@@ -866,54 +1103,150 @@ fn spawn(
         }
         // Spread births over the step so streams stay continuous.
         let sub = (i as f32 + rng.next()) / n.max(1) as f32;
-        let mut q = Particle { alpha: 1.0, recip_life: 1.0, radius: 0.1, plane: p.ground, ..default() };
-        let (mut pos, mut vel) = local_birth(sp, rng, speed_scale, angle_scale);
-        let mut placed = false;
-        for &s in secondaries {
-            let Some(a) = layer.actions.get(s as usize) else { continue };
-            match &a.op {
-                Op::Lifetime { min, max, .. } => q.recip_life = 1.0 / rng.range([*min, *max]).max(0.001),
-                Op::Radius { min, max, .. } => q.radius = rng.range([*min, *max]),
-                Op::Rotation2dInit { min, max, spin, .. } => {
-                    q.rot = rng.range([*min, *max]) * TAU;
-                    q.spin = *spin;
-                }
-                Op::AlphaInit { min, max, .. } => q.alpha = rng.range([*min, *max]),
-                Op::PlaceInFrame { rotation, offset, transform, .. } => {
-                    let r = Quat::from_array(*rotation).normalize();
-                    pos = r * pos + Vec3::from(*offset);
-                    vel = r * vel;
-                    // 0x14 (`InitialisePosOffset`, no transform) leaves a local layer's particle in emitter space.
-                    if !(local && *transform == mw_formats::bear::Operand::None) {
-                        pos = p.transform.transform_point3(pos);
-                        vel = p.transform.transform_vector3(vel);
-                    }
-                    placed = true;
-                }
-                Op::InheritVelocity { min, max, .. } => {
-                    if !placed {
-                        pos = p.transform.transform_point3(pos);
-                        vel = p.transform.transform_vector3(vel);
-                        placed = true;
-                    }
-                    vel += p.velocity * rng.range([*min, *max]);
-                }
-                Op::PlaneInit { .. } => q.plane = p.ground,
-                Op::SeedInit { .. } => q.seed = (rng.next() * u32::MAX as f32) as u32,
-                _ => {}
-            }
-        }
-        if !placed && !local {
-            pos = p.transform.transform_point3(pos);
-            vel = p.transform.transform_vector3(vel);
-        }
+        let (pos, vel) = local_birth(sp, rng, speed_scale, angle_scale);
+        let (mut q, pos, vel) = birth(layer, secondaries, p, pos, vel, local, rng);
         // Age the particle by its share of the step (a local layer moves with its emitter).
         let back = (1.0 - sub) * dt;
         let carried = if local { Vec3::ZERO } else { p.velocity };
         q.pos = pos - carried * back + vel * back;
         q.vel = vel;
         q.age = back * q.recip_life;
+        q.serial = sim.spawned;
+        sim.spawned = sim.spawned.wrapping_add(1);
         sim.particles.push(q);
+    }
+}
+
+/// A new particle from its emitter-space position and velocity: the spawner's secondaries (lifetime, radius,
+/// rotations, the move into the emitter's frame, inherited velocity, ...). Returns the particle and its world (or,
+/// for a local layer, emitter-space) position and velocity.
+fn birth(
+    layer: &Layer,
+    secondaries: &[u8],
+    p: &Params,
+    mut pos: Vec3,
+    mut vel: Vec3,
+    local: bool,
+    rng: &mut Rng,
+) -> (Particle, Vec3, Vec3) {
+    let mut q = Particle { alpha: 1.0, recip_life: 1.0, radius: 0.1, plane: p.ground, ..default() };
+    let mut placed = false;
+    for &s in secondaries {
+        let Some(a) = layer.actions.get(s as usize) else { continue };
+        match &a.op {
+            Op::Lifetime { min, max, .. } => q.recip_life = 1.0 / rng.range([*min, *max]).max(0.001),
+            Op::Radius { min, max, .. } => q.radius = rng.range([*min, *max]),
+            Op::Rotation2dInit { min, max, spin, .. } => {
+                q.rot = rng.range([*min, *max]) * TAU;
+                q.spin = *spin;
+            }
+            Op::AlphaInit { min, max, .. } => q.alpha = rng.range([*min, *max]),
+            Op::PlaceInFrame { rotation, offset, transform, .. } => {
+                let r = Quat::from_array(*rotation).normalize();
+                pos = r * pos + Vec3::from(*offset);
+                vel = r * vel;
+                // 0x14 (`InitialisePosOffset`, no transform) leaves a local layer's particle in emitter space.
+                if !(local && *transform == mw_formats::bear::Operand::None) {
+                    pos = p.transform.transform_point3(pos);
+                    vel = p.transform.transform_vector3(vel);
+                }
+                placed = true;
+            }
+            Op::InheritVelocity { min, max, .. } => {
+                if !placed {
+                    pos = p.transform.transform_point3(pos);
+                    vel = p.transform.transform_vector3(vel);
+                    placed = true;
+                }
+                vel += p.velocity * rng.range([*min, *max]);
+            }
+            Op::PlaneInit { .. } => q.plane = p.ground,
+            Op::SeedInit { .. } => q.seed = (rng.next() * u32::MAX as f32) as u32,
+            op @ Op::Rotation3dInit { .. } => mesh::init_rotation(op, &mut q, p, rng),
+            // `FUN_0044a200`: indexed by the particle's serial in the game (a random entry here).
+            Op::CollisionRadiusInit { table, .. } => {
+                q.cr = 0.01 + table[(rng.next() * 16.0) as usize & 15] as f32 * (0.99 / 255.0);
+            }
+            _ => {}
+        }
+    }
+    if !placed && !local {
+        pos = p.transform.transform_point3(pos);
+        vel = p.transform.transform_vector3(vel);
+    }
+    (q, pos, vel)
+}
+
+/// `SuperEmitter` (0x2B, run `FUN_0045d020`; `mw_formats::bear::Op::SuperEmitter`): children along each live
+/// parent particle's path this update. The count's fraction is carried over in one accumulator for the whole
+/// action and rounded to nearest, as the game does (its carry can go negative); the secondaries initialise
+/// lifetime, rotation and the like, the super emitter sets position, velocity and radius itself.
+#[allow(clippy::too_many_arguments)]
+fn super_emit(
+    layer: &Layer,
+    sim: &mut LayerSim,
+    op: &Op,
+    secondaries: &[u8],
+    parent: &[Particle],
+    p: &Params,
+    dt: f32,
+    rng: &mut Rng,
+) {
+    let &Op::SuperEmitter { cone, speed, inherit, radius, rate, per_metre, radius_end, rate_end, .. } = op else {
+        return;
+    };
+    let overwrite = layer.flags & 2 != 0;
+    for parent in parent.iter().filter(|q| q.age < 1.0) {
+        let t = parent.age;
+        let back = parent.vel * -dt;
+        let distance = back.length();
+        let count = (1.0 + (rate_end - 1.0) * t) * (per_metre * distance + rate * dt) + sim.carry;
+        let n = count.round();
+        sim.carry = count - n;
+        if n < 1.0 {
+            continue;
+        }
+        // The frame about the backward direction (fallback +Y when the parent stands still).
+        let z = if distance > 0.001 { back / distance } else { Vec3::Y };
+        let x = z.cross(Vec3::Y).try_normalize().unwrap_or(Vec3::X);
+        let y = x.cross(z);
+        for _ in 0..n as usize {
+            if sim.particles.len() >= layer.max_particles as usize {
+                if !overwrite {
+                    return;
+                }
+                sim.particles.remove(0);
+            }
+            let u = rng.next();
+            let azimuth = rng.next() * TAU;
+            let polar = rng.range(cone).to_radians();
+            let dir = (azimuth.sin() * y + azimuth.cos() * x) * polar.sin() + polar.cos() * z;
+            let mut q = Particle { alpha: 1.0, recip_life: 1.0, plane: p.ground, ..default() };
+            init_secondaries(layer, secondaries, &mut q, rng);
+            q.pos = parent.pos + back * u;
+            q.vel = dir * rng.range(speed) + parent.vel * rng.range(inherit);
+            // The parent's age at the birth time (`u` of the update back).
+            let born = (t - u * dt * parent.recip_life).max(0.0);
+            q.radius = rng.range(radius) * (1.0 + (radius_end - 1.0) * born);
+            sim.particles.push(q);
+        }
+    }
+}
+
+/// The initialisers of a spawned particle that do not depend on the emitter (lifetime, rotation, alpha, seed).
+fn init_secondaries(layer: &Layer, secondaries: &[u8], q: &mut Particle, rng: &mut Rng) {
+    for &s in secondaries {
+        match layer.actions.get(s as usize).map(|a| &a.op) {
+            Some(Op::Lifetime { min, max, .. }) => q.recip_life = 1.0 / rng.range([*min, *max]).max(0.001),
+            Some(Op::Rotation2dInit { min, max, spin, .. }) => {
+                q.rot = rng.range([*min, *max]) * TAU;
+                q.spin = *spin;
+            }
+            Some(Op::AlphaInit { min, max, .. }) => q.alpha = rng.range([*min, *max]),
+            Some(Op::SeedInit { .. }) => q.seed = (rng.next() * u32::MAX as f32) as u32,
+            Some(op @ Op::Rotation3dInit { .. }) => mesh::init_rotation(op, q, &Params::default(), rng),
+            _ => {}
+        }
     }
 }
 
@@ -1001,6 +1334,7 @@ fn wheel_emitters(
                     emitting: smoke > mw_handling::tyre_vfx::SMOKE_ON,
                     moved: slip * dt,
                     ground,
+                    wheel: [c.smoke.spin, c.smoke.lat, c.smoke.lock],
                     ..default()
                 },
             );
@@ -1013,9 +1347,13 @@ fn wheel_emitters(
                     transform: frame,
                     velocity: c.velocity,
                     intensity: (speed / 60.0).clamp(0.0, 1.0),
-                    emitting: speed > 2.0,
+                    // Model decision: on while the wheel touches the ground and rolls (the game's IsEmitting
+                    // for the kick-up was not traced); the kick-up's `EmitterWheelContactPlus` scales its count
+                    // by the contact speed and its `UpdateWheelBindings` slot, which starts near 1 m/s.
+                    emitting: speed > 0.5,
                     moved: speed * dt,
                     ground,
+                    wheel: [c.smoke.spin, c.smoke.lat, c.smoke.lock],
                     ..default()
                 },
             );
@@ -1059,94 +1397,26 @@ fn detect_impacts(collisions: Collisions, cars: Query<(), With<Car>>, mut out: M
 #[derive(Resource)]
 pub struct FirstImpact(pub f32);
 
-/// Closing speed (m/s) above which a contact counts as an impact, and the minimum time between bursts.
-const IMPACT_SPEED: f32 = 3.0;
-const IMPACT_COOLDOWN: f32 = 0.25;
-
-/// Sparks: a burst for each new impact, continuous sparks while a side scrapes.
-#[allow(clippy::too_many_arguments)]
+/// The first hard impact's time, for `--screenshot-after-impact`. The cars' collision effects themselves are
+/// `crash_vfx.rs` (the game's `FUN_00584260` / `FUN_00600220`).
 fn impact_emitters(
     mut commands: Commands,
     first: Option<Res<FirstImpact>>,
     time: Res<Time>,
-    vfx: Res<Vfx>,
-    mut instances: ResMut<Instances>,
     mut events: MessageReader<ImpactEvent>,
-    cars: Query<(&GlobalTransform, &avian3d::prelude::LinearVelocity)>,
-    mut last_burst: Local<HashMap<Entity, f32>>,
 ) {
-    let now = time.elapsed_secs();
-    let Some(surface) = vfx.lib.surfaces.first() else { return };
-    let fx = &surface.dry;
     for ev in events.read() {
-        let Ok((t, v)) = cars.get(ev.car) else { continue };
-        let rot = t.compute_transform().rotation;
-        // Which side of the car was hit: the contact normal points into the car, so the hit side faces -n.
-        let local = rot.inverse() * -ev.normal;
-        let side = if local.y.abs() > local.x.abs().max(local.z.abs()) {
-            if local.y > 0.0 { vfx::IMPACT_TOP } else { vfx::IMPACT_BOTTOM }
-        } else if local.z.abs() >= local.x.abs() {
-            if local.z > 0.0 { vfx::IMPACT_FRONT } else { vfx::IMPACT_REAR }
-        } else if local.x > 0.0 {
-            vfx::IMPACT_LEFT
-        } else {
-            vfx::IMPACT_RIGHT
-        };
-        // Emitter frame: Y along the contact normal, Z along the car's travel.
-        let y = ev.normal;
-        let travel = v.0;
-        let z = (travel - y * travel.dot(y)).try_normalize().unwrap_or_else(|| y.any_orthonormal_vector());
-        let frame = Mat4::from_cols(y.cross(z).extend(0.0), y.extend(0.0), z.extend(0.0), ev.position.extend(1.0));
-        let ground = y.extend(-y.dot(ev.position));
-        let last = last_burst.entry(ev.car).or_insert(f32::MIN);
-        if ev.closing_speed > IMPACT_SPEED && now - *last > IMPACT_COOLDOWN {
-            *last = now;
-            if first.is_none() && ev.closing_speed > 12.0 {
-                commands.insert_resource(FirstImpact(now));
-            }
-            debug!(
-                "impact at {:.1} (t {now:.2} s): {:.1} m/s closing, impulse {:.0} N·s, side {side}",
-                ev.position, ev.closing_speed, ev.impulse
-            );
-            instances.one_shot(
-                &vfx,
-                fx.impacts[side],
-                Params {
-                    transform: frame,
-                    velocity: travel,
-                    intensity: (ev.closing_speed / 15.0).clamp(0.0, 1.0),
-                    emitting: false,
-                    moved: 0.0,
-                    ground,
-                    impact: ev.closing_speed,
-                    movement: 0.0,
-                },
-            );
-        }
-        if ev.sliding_speed > 2.0 && ev.impulse > 20.0 {
-            // Scraping: the side effect is the one with a continuous rate (the others are bursts).
-            let effect = fx.impacts[vfx::IMPACT_LEFT].or(fx.impacts[side]);
-            instances.emit(
-                &vfx,
-                EmitterKey { owner: ev.car, slot: SLOT_SCRAPE },
-                effect,
-                Params {
-                    transform: frame,
-                    velocity: travel,
-                    intensity: (ev.sliding_speed / 20.0).clamp(0.0, 1.0),
-                    emitting: true,
-                    moved: 0.0,
-                    ground,
-                    ..default()
-                },
-            );
+        if first.is_none() && ev.closing_speed > 12.0 {
+            commands.insert_resource(FirstImpact(time.elapsed_secs()));
+            return;
         }
     }
 }
 
 /// A prop's impact effect (`PropObject` +0x14) when a car's contact passes its `ForceToDamage`
-/// (`props::prop_contacts`, the game's `FUN_0054bf70`, which orients it by the hitter's velocity). Effects
-/// load on first use; an impact waits up to half a second for its effect.
+/// (`props::prop_contacts`, the game's `FUN_0054bf70`): half a metre above the contact point, Z along the hitter's
+/// velocity, X = up × Z (`prop_vfx::impact_frame`). Effects load on first use; an impact waits up to half a second
+/// for its effect.
 fn prop_impact_effects(
     time: Res<Time>,
     vfx: Res<Vfx>,
@@ -1167,10 +1437,8 @@ fn prop_impact_effects(
         if !vfx.has_effect(id) {
             return now - t < 0.5;
         }
-        // Emitter frame: Y along the contact normal (out of the prop), Z along the car's travel.
-        let y = hit.normal.try_normalize().unwrap_or(Vec3::Y);
-        let z = (hit.velocity - y * hit.velocity.dot(y)).try_normalize().unwrap_or_else(|| y.any_orthonormal_vector());
-        let frame = Mat4::from_cols(y.cross(z).extend(0.0), y.extend(0.0), z.extend(0.0), hit.position.extend(1.0));
+        // `FUN_0054bf70` falls back to the identity rotation when the hitter's velocity has no direction.
+        let frame = crate::prop_vfx::impact_frame(hit.position, hit.velocity, Vec3::Z);
         instances.one_shot(
             &vfx,
             Some(id),
@@ -1180,10 +1448,13 @@ fn prop_impact_effects(
                 intensity: (hit.closing_speed / 15.0).clamp(0.0, 1.0),
                 emitting: false,
                 moved: 0.0,
-                // Model decision: the ground is taken as level, half a metre under the contact.
-                ground: Vec4::new(0.0, 1.0, 0.0, -(hit.position.y - 0.5)),
+                // Model decision: the ground is taken as level through the contact point.
+                ground: Vec4::new(0.0, 1.0, 0.0, -hit.position.y),
                 impact: hit.closing_speed,
                 movement: 0.0,
+                mesh: None,
+                paint: Vec3::ZERO,
+                wheel: [0.0; 3],
             },
         );
         false
@@ -1199,10 +1470,13 @@ fn demo_emitter(
     vfx: Res<Vfx>,
     debug: Res<VfxDebug>,
     mut instances: ResMut<Instances>,
+    mut requests: ResMut<EffectRequests>,
     camera: Query<&GlobalTransform, crate::MainCamera>,
     mut next: Local<f32>,
 ) {
     let Some((id, every, speed)) = debug.demo else { return };
+    // Effects outside the start-up set load on demand.
+    requests.request(id);
     let now = time.elapsed_secs();
     if now < *next {
         return;
@@ -1256,6 +1530,10 @@ struct Drawn {
     rot: f32,
     colour: Vec4,
     subuv: f32,
+    quat: Quat,
+    /// `RenderSpriteVelocity` (0x29): the streak's tail point and its alpha factor; otherwise unused.
+    tail: Vec3,
+    tail_alpha: f32,
 }
 
 /// Stand-in for `gVfxSparkBrightness`, a global the game's code sets (not in the data found so far): the
@@ -1269,12 +1547,14 @@ const SPARK_SHUTTER: f32 = 1.0 / 30.0;
 fn build_meshes(
     mut vfx: ResMut<Vfx>,
     instances: Res<Instances>,
+    view: Res<BearView>,
     camera: Query<&GlobalTransform, crate::MainCamera>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let Some(cam) = camera.iter().next() else { return };
     let eye = cam.translation();
     let (right, up) = (cam.right().as_vec3(), cam.up().as_vec3());
+    let view = BearView { eye, forward: cam.forward().as_vec3(), ..*view };
     let vfx = &mut *vfx;
     for b in vfx.batches.values_mut() {
         b.quads.clear();
@@ -1299,7 +1579,7 @@ fn build_meshes(
                     }
                     None => q,
                 };
-                if let Some(d) = render_particle(layer, q, eye, &sim.slots) {
+                if let Some(d) = render_particle(layer, q, &view, &sim.slots) {
                     drawn.push(d);
                 }
             }
@@ -1309,8 +1589,17 @@ fn build_meshes(
                 }
             } else {
                 drawn.sort_by(|a, b| b.pos.distance_squared(eye).total_cmp(&a.pos.distance_squared(eye)));
+                // The renderers' size cap (`FUN_00458e90` / `FUN_0045ab10` / `FUN_0045b620`): the radius is at
+                // most the cap × the view depth (from the view's depth origin, +0x218 = 0; its scale +0x220 = 1).
+                let cap = r.size_cap * sim.slot(r.size_cap_slot);
                 for d in &drawn {
-                    push_quad(&mut batch.quads, d, r, eye, right, up);
+                    let depth = (d.pos - eye).dot(view.forward);
+                    let radius = if cap > 0.0 { d.radius.min(cap * depth.max(0.0)) } else { d.radius };
+                    if matches!(r.kind, 0x1E | 0x1F) {
+                        mesh::push_card(&mut batch.quads, d, r, eye);
+                    } else {
+                        push_quad(&mut batch.quads, d, radius, r, eye, right, up);
+                    }
                 }
             }
         }
@@ -1347,19 +1636,34 @@ fn build_meshes(
 /// The layer's render group for one particle: size and colour curves, alpha, fades, atlas frame.
 /// `slots` are the layer's binding slots; the colour override parameter (`use_tint`) is not set by any
 /// emitter here and reads white.
-fn render_particle(layer: &Layer, q: &Particle, eye: Vec3, slots: &[f32]) -> Option<Drawn> {
+fn render_particle(layer: &Layer, q: &Particle, view: &BearView, slots: &[f32]) -> Option<Drawn> {
     let tint = Vec4::ONE;
-    let mut d = Drawn { pos: q.pos, vel: q.vel, radius: q.radius, rot: q.rot, colour: Vec4::ONE, subuv: q.age };
+    let slot = |k: u8| slots.get(k as usize).copied().unwrap_or(0.0);
+    let mut d = Drawn {
+        pos: q.pos,
+        vel: q.vel,
+        radius: q.radius,
+        rot: q.rot,
+        colour: Vec4::ONE,
+        subuv: q.age,
+        tail: q.pos,
+        tail_alpha: 1.0,
+        quat: q.quat,
+    };
     let t = q.age.clamp(0.0, 1.0);
     let group = layer.groups[1].as_ref()?;
     for seq in &group.sequences {
         for step in &seq.steps {
             let Some(a) = layer.actions.get(step.action as usize) else { continue };
             match &a.op {
-                Op::RadiusCurve { bezier: b, .. } => {
-                    let u = 1.0 - t;
-                    let s = u * u * u * b[0] + 3.0 * u * u * t * b[1] + 3.0 * u * t * t * b[2] + t * t * t * b[3];
-                    d.radius = q.radius * s;
+                &Op::RadiusCurve { knee, values: v, floor, slot: k, .. } => {
+                    // `FUN_004612d0` with the slopes `0x0044bbb0` compiles from the three values.
+                    let r = if t < knee || knee >= 1.0 {
+                        v[0] + (v[1] - v[0]) * t / knee.max(1e-6)
+                    } else {
+                        v[1] + (v[2] - v[1]) * (t - knee) / (1.0 - knee)
+                    };
+                    d.radius = q.radius * r * (floor + (1.0 - floor) * slot(k));
                 }
                 Op::ColourCurve { rows, ramp, alpha, rates, alpha_slot, use_tint, .. } => {
                     // `FUN_004553b0`: ramp weights over the (wrapped) age, rgb times the brightness column.
@@ -1384,27 +1688,98 @@ fn render_particle(layer: &Layer, q: &Particle, eye: Vec3, slots: &[f32]) -> Opt
                     let k = min + (max - min) * hash01(q.seed);
                     d.colour = (d.colour.truncate() * k).extend(d.colour.w);
                 }
-                Op::ViewFade { near_fade, .. } => {
-                    if *near_fade > 0.0 {
-                        d.colour.w *= (q.pos.distance(eye) / near_fade).clamp(0.0, 1.0);
-                    }
-                }
+                Op::ViewFade { .. } => view_fade(&a.op, &mut d, view),
                 Op::SubUv { .. } => d.subuv = t,
                 _ => {}
             }
         }
     }
+    match layer.renderer() {
+        // `RenderSpriteMotionBlur` (0x25, `FUN_004598e0`) writes the colour's rgb with alpha 1.0 (`.rdata`
+        // 0x00f9d13c) into the streak's vertices: the colour curve's alpha (all zero on the impact sparks) is
+        // not used. (The streak's other end takes the renderer's word 11 in the game; not ported, both ends 1.)
+        Some(r) if r.kind == 0x25 => {
+            d.colour.w = 1.0;
+            d.tail = d.pos - d.vel * SPARK_SHUTTER;
+        }
+        // `RenderSpriteVelocity` (0x29, `FUN_0045c2f0`): the colour keeps its alpha; the streak is the velocity
+        // × 1/30 s × the renderer's scale × a binding slot, its length clamped, and its tail's alpha × a word.
+        Some(r) if r.kind == 0x29 => {
+            let v = d.vel * SPARK_SHUTTER * r.streak_scale * slot(r.streak_slot);
+            let len = v.length();
+            let clamped = len.clamp(r.streak[0], r.streak[1]);
+            d.tail = d.pos - if len > 1e-6 { v * (clamped / len) } else { Vec3::ZERO };
+            d.tail_alpha = r.tail_alpha;
+        }
+        _ => {}
+    }
     (d.colour.w > 1e-3 && d.radius > 1e-4).then_some(d)
 }
 
-fn push_quad(out: &mut Vec<QuadVertex>, d: &Drawn, r: &Renderer, eye: Vec3, right: Vec3, up: Vec3) {
+/// `UpdateParametricFadeOverDistance` (0x38, `FUN_00460970`; `mw_formats::bear::Op::ViewFade`): the colour
+/// over the depth along the camera's forward axis: `colours[0]` at the camera, `colours[1]` at the near
+/// distance (which grows with the camera's speed on layers that ask for it), towards `colours[2]` at `far`;
+/// then optional speed fades of the alpha and the radius.
+fn view_fade(op: &Op, d: &mut Drawn, view: &BearView) {
+    let &Op::ViewFade {
+        colours,
+        offset,
+        near,
+        far,
+        near_fast,
+        fast_speed,
+        speed_full,
+        speed_zero,
+        speed_near,
+        subtract_radius,
+        speed_radius,
+        speed_alpha,
+    } = op
+    else {
+        return;
+    };
+    let n = if speed_near && fast_speed > 0.0 {
+        near + (near_fast - near) * (view.speed / fast_speed).min(1.0)
+    } else {
+        near
+    };
+    // The depth origin: the camera + (max(offset, view +0x218 = 0) + n) along its forward axis.
+    let origin = view.eye + view.forward * (offset.max(0.0) + n);
+    let mut depth = (d.pos - origin).dot(view.forward);
+    if subtract_radius {
+        depth -= d.radius;
+    }
+    let near_w = if n != 0.0 { (-depth / n).clamp(0.0, 1.0) } else { 0.0 };
+    let far_w = if far != near { (depth / (far - near)).clamp(0.0, 1.0) } else { 0.0 };
+    let (a, b, c) = (Vec4::from(colours[0]), Vec4::from(colours[1]), Vec4::from(colours[2]));
+    d.colour *= b + (a - b) * near_w + (c - b) * far_w;
+    if speed_alpha || speed_radius {
+        let range = speed_full * speed_full - speed_zero * speed_zero;
+        let k = if range != 0.0 {
+            ((d.vel.length_squared() - speed_zero * speed_zero) / range).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        if speed_alpha {
+            d.colour.w *= k;
+        }
+        if speed_radius {
+            d.radius *= k;
+        }
+    }
+}
+
+fn push_quad(out: &mut Vec<QuadVertex>, d: &Drawn, radius: f32, r: &Renderer, eye: Vec3, right: Vec3, up: Vec3) {
     let (s, c) = d.rot.sin_cos();
-    let rx = (right * c + up * s) * d.radius;
-    let ry = (up * c - right * s) * d.radius;
+    let aspect = if r.aspect > 0.0 { r.aspect } else { 1.0 };
+    let rx = (right * c + up * s) * radius * aspect;
+    let ry = (up * c - right * s) * radius / aspect;
     let centre = d.pos + rx * (1.0 - 2.0 * r.pivot[0]) + ry * (2.0 * r.pivot[1] - 1.0);
     let toward = (eye - d.pos).normalize_or_zero();
-    let light = Vec4::new(r.lighting[0], r.lighting[1], r.lighting[2], 1.0);
-    let frame = Vec2::new(d.subuv, r.depth_fade_guess.max(0.0));
+    // w: the draw's opacity (`gVfxConstants.z`, the renderer's word after the depth fade).
+    let light = Vec4::new(r.lighting[0], r.lighting[1], r.lighting[2], r.opacity);
+    // The depth fade only on the soft passes (0x23 / 0x2a: `FUN_004a40a0` → `FUN_004976d0`).
+    let frame = Vec2::new(d.subuv, if r.soft { r.depth_fade.max(0.0) } else { 0.0 });
     for (cx, cy) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
         let offset = rx * cx + ry * cy;
         out.push(QuadVertex {
@@ -1420,9 +1795,11 @@ fn push_quad(out: &mut Vec<QuadVertex>, d: &Drawn, r: &Renderer, eye: Vec3, righ
 }
 
 fn push_spark(out: &mut Vec<SparkVertex>, d: &Drawn) {
-    let end = d.pos - d.vel * SPARK_SHUTTER;
+    let tail = d.colour * Vec4::new(1.0, 1.0, 1.0, d.tail_alpha);
     for corner in [Vec2::new(-1.0, -1.0), Vec2::new(1.0, -1.0), Vec2::new(1.0, 1.0), Vec2::new(-1.0, 1.0)] {
-        out.push(SparkVertex { start: d.pos, end, corner, radius: d.radius, colour: d.colour });
+        // corner.x < 0: the end (tail) disc.
+        let colour = if corner.x < 0.0 { tail } else { d.colour };
+        out.push(SparkVertex { start: d.pos, end: d.tail, corner, radius: d.radius, colour });
     }
 }
 

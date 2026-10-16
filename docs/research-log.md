@@ -10,6 +10,620 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-16: car collision effects: glass, sparks, dust and debris from the game's rules
+User request (session 10): "particle effects for crashing are missing somewhat, stuff like broken glass when crashing
+into traffic vehicles, and other crash particles in general". Before: every body contact of a race car played the
+default surface's directional impact effect with a guessed side and a ±0.3 m patch; no glass, no debris, nothing on
+traffic. Now the game's selection and emitters, read from the dump (decomp.md "Car collision effects"; three research
+sub-agents decoded 0x0B / 0x2D, 0x40 / 0x11 / 0x3E / 0x3D and the 0x1E / 0x1F / 0x22 / 0x23 renderers).
+- **Selection** (`FUN_00584260` race cars, `FUN_00600220` traffic): above 1 m/s (`VehicleImpacts.34429d6c`), a
+  vehicle contact with value > 5 (`VehicleCollisionSettings.e9ff2375`) after 0.2 s (`19458ef1`) plays from
+  `VehicleImpacts`, else `VehicleScrapes`, field by the other car's type, the local player and the impact zone
+  (`FUN_004a02b0` / `FUN_004a0600`, all 32 used fields mapped); without one, a world contact plays its surface's zone
+  effect (`FUN_0049fe80`: named for the player, the unnamed field after it for AI and traffic, now loaded as
+  `SurfaceEffects::ai_impacts`). Four instances per car with the game's refresh / replace rules. Front impacts carry
+  the glass (`…117eca`, `…1402f0`), sides and rear do not (`…14021c`).
+- **Emitters and renderers ported**: `EmitterCollisionMesh` over the car's `PolygonSoupList` (new
+  `AssetStore::vehicle_collision_mesh`), 3-D rotation init / update, debris world collision (an avian ray stands in
+  for the game's 80-triangle cache around the player's car), collision radius, the folded glass cards (0x1E / 0x1F,
+  drawn with the existing particle shader), mesh debris (0x22 / 0x23: the 16 pieces of each `GLOBALEFFECTS` model by
+  `BLENDINDICES`, CPU-built per frame, `StandardMaterial` with the diffuse; `VfxMeshCarPaint` baked with the car's
+  paint, `tex.rgb + paint·(1 − tex.a)`). `TrafficCar` now keeps its paint index.
+- **Checked** (screenshots in `ref/crashfx/`, not committed; `MW_CRASH_VFX_LOG=1`): `--test crash-traffic`: the
+  player's front-left zone plays `…1402f0`, the traffic car's front `…117eca` at 35.7 m/s, all nine layers fill
+  (glass 16 + 120 cards, debris 48 + 70); the crash-camera shots show glass cards in the air and on the road, dark
+  debris pieces and a dust cloud. `--test crash-parked`: `…1402f0` both ways at 11.9 m/s, then scrapes `…7bcd0`;
+  `--test crash-ai`: player `…1402f0`, the AI's side `…14021c`; `--test crash` (wall): the test track surface's
+  front-left effect `…7bd97` (sparks only, as the game: walls give surface effects); a city wall at 13 m/s: paving's
+  `…1401f7` dust. Tumbling traffic restarts its surface effect whenever the last instance has died (as the code
+  does).
+- **Model decisions**: the contact value is the closing speed before the solve (m/s; the effects' controllers scale
+  it by 22.35 = 50 mph, which fits); the contact normal points from the car to what it hit (sign not traced; this
+  way the struck face passes the emitter's facing test); one contact per other body per frame (the largest value);
+  `MovementSinceLastFrame` = speed × frame time; traffic cars' ground plane level through their origin; the dry
+  surface block; the debris world collision as a ray against the world colliders; debris lit by Bevy's PBR (the
+  game's deferred `VfxMesh*` programs: normal maps, roughness / AO maps not used); the 3-D sprites' view-kind alpha
+  word and their shadow test not ported; the particle serial for the mesh pieces counts the layer's births.
+- **Drag and bounce ported** (after merging the opacity / dirt-cloud work; integrator request): `UpdatePosVel` 0x3D
+  (`FUN_004615f0`) and `…WithBouncePlane` 0x3E (`FUN_004618d0`) keep `(1 − drag)^dt` of the velocity per update
+  (`powf`), not the old quadratic stand-in; 0x3D moves with the old velocity, 0x3E with the new one; both add
+  turbulence `dt·(2r − 1)` per component; 0x3E draws restitution / friction once per update, bounces only when the
+  bounce impulse beats the update's acceleration, subtracts the radius only with its flag byte (the old "quarter
+  radius up" guess is gone) and blends the emitter's plane into the particle's own between 2 and 3 m from the
+  emitter. Model decisions: the wind term `(1 − R)·wind·W` is left out (`W` = engine +0x50, copied from
+  `obj+0x1b120`, not identified; 127 actions couple to it, up to 1.25), 0x3D's gravity / turbulence table scales
+  (engine +0x84) are 1. A/B (`ref/dragfx/*-stack.png`, old binary above): drift smoke (`--test drift --track-surface
+  8`, t = 9 s) spreads wider and lower, the railway-gravel dust (`--spawn=1164,21,-210,0 --auto-throttle 0.6`)
+  stays a moderate cloud behind the wheels, the crash-traffic shots look alike (runs with `--screenshot-time`
+  are not frame-identical, so the dirt pairs are not exact matches). The crash dust (`…1311286`: 8 sprites of
+  2.5–3.5 m radius) still reads heavy and bright in daylight; its size and alpha come from the data and the
+  session's renderer port, so a capture of the original is what would settle it.
+- **Open** (captures of the original that would settle them: a head-on with a traffic car at 60 mph from the chase
+  camera, frame by frame; a side swipe along a parked car; a wall hit at 50 mph): the contact value's unit and
+  writer (record +0x2c), the normal's sign, `IsEmitting` = record bit 1 (inferred), whether a dead instance is
+  recreated every frame for a sliding wreck, the dust's size and brightness, the debris lighting, the hanging bumper
+  sparks (`VfxGlobals.HangingBumperSparks`, not traced), `PreCrashVelocity`.
+### 2026-10-16: junction traffic lights on the lamp posts
+Integrator follow-up to the speed camera entry below (traffic-light colours went dark once lights of behaviours
+that start off were left out). Details in decomp.md "Traffic lights: the lamps".
+- **Found**: the traffic system's own light cycle `FUN_00605d30` keeps a record per lamp (world +0x65e20) and
+  sends the lamp's object "on TrafficLight_<colour>" / "off" the other two (messages 0xb / 0xc, label hashes set in
+  `FUN_005eb060`); held groups go amber (`FUN_0061bbd0`, timer 200) and 2 s later red (`FUN_006037f0`, dt × 100),
+  free groups green. The lamp's object is named by a `u32` in the junction data (group − 8 + 4k, copied by
+  `FUN_005ef950`), which is the traffic-light compound's placed instance id: 101 of 104 found (`mwtool traffic`
+  now lists `L<id>=<handle>` per group and the match). So the lamp ↔ junction link is in the data; no model.
+- **Ported**: `cycle_lights` keeps the records and emits colour changes; `traffic_lamps.rs` finds each lamp's
+  object by its instance's position (`mw_assets::traffic_lamps`) and switches its `TrafficLight_*` behaviours'
+  lights and coronas (`world_coronas.rs`, now per behaviour). The lamps change at the moment the cars' stop lines
+  are held or freed.
+- **Checked**: junction 164.0 (cycle 15 s / 2 s all red / 17 s) at 01:00, `MW_TRAFFIC_LAMP_LOG=1`: group 2 green,
+  17 s later groups 0 and 1 green with group 2 amber, red 2 s later, as the data says; shots every 2.5 s from the
+  approach (`MW_TRAFFIC_LAMP_SHOTS`, bonnet camera, `--traffic-density 0`): the facing lamp red, then green
+  (`extracted/shots/tl/stack.png`, `stack2.png`).
+- **Model decisions**: a lamp never told (record zero, state red) is shown red (the game sends nothing for that
+  state, so its behaviours keep their start state until the first change); the colour is reapplied when a lamp's
+  object reappears (the game only sends changes); the lamp's object is found by position (within 1 m).
+- **Open**: with `--no-traffic` or the free camera the traffic system does not run, so the lamps keep their
+  start state (mostly dark); 3 handles name no placed object; record flag bit 7 (no messages) was not seen set.
+  A capture of the original at a junction at night (F12 every 2 s over a cycle) would confirm the look.
+
+### 2026-10-16: particle opacity settled; the dirt cloud's fade, radius curve and emission from the code
+
+Two items: the renderer opacity word left inferred by the prop-break entry below, and the user's "the dirt cloud
+is too big and obstructs the view". Details and addresses in decomp.md "Bear particle runtime", layouts in
+formats.md (Bear actions); runtime `particles.rs`, parser `mw_formats::bear`.
+- **Opacity: confirmed.** `FUN_0046ce40` copies the draw state's +0x23c / +0x240 into a draw record (+0x50 /
+  +0x54); the particle draw loop `FUN_004a40a0` (found from its `FUN_00a5d660(0x72)` call in `FUN_004976d0`, the
+  depth fade constants; `gVfxConstants` is slot 0x75, `gDepthFadeConstantsA` / `B` 0x72 / 0x73, registered in
+  `FUN_008c34b0`) writes `gVfxConstants` = (0, 1, word, 1) per record, (1, 0, word, 1) for layer 6 (`.data`
+  0x01104120 / 0x011035e0 read in snap1 / snap2). So the nitrous glows (word 0, `_NoAlphaTest`) are additive and
+  `…7a95f`'s alpha-tested flare quads draw nothing, as ported.
+- **Renderer words corrected**: the lighting inputs were read one word early. `FUN_00440100` writes TEXCOORD1.zw
+  = (translucency, key light as ambient) from 0x24 words (15, 17) / 0x27 (16, 18) / 0x28 (0x19, 0x1b) and the wrap
+  is 16 / 17 / 0x1a; the nitrous glows have key-as-ambient 0, not 1, so with opacity 0 (which also removes the
+  key light in the vertex program) they are lit by the irradiance × 1.3 alone: a blue flame, dimmer than before,
+  dim at night. New: aspect (0x24 word 10, 0x27 word 11), a size cap radius ≤ cap × view depth (0x24 word 9, 0x27
+  word 19 × a binding slot), the layer / pass bytes (`FUN_0046a430`: soft passes only get the depth fade now; the
+  nitrous glows are not soft). `RenderSpriteVelocity` (0x29) keeps the colour's alpha, × word 16 at the tail, and
+  its streak is velocity / 30 × word 18 × a slot, clamped (words 12–13): 0.1–1, so most of its streaks are shorter.
+- **The dirt cloud** (`WheelVfx` `…24f46` on surface 7; layer 1311141: radius 2–11 m, 4–6 s, up to 100 per wheel):
+  1. `UpdateParametricFadeOverDistance` (0x38) was a guess (alpha × distance / word 20). The code: colour ×
+     lerp(A, B, C) over the view depth: the big layer is × 0 at the camera, × 0.567 at the near distance, which
+     grows from 1 m to 10 m with the camera's forward speed (full at 22.35 m/s), × 0.294 towards 60 m. The chase
+     camera no longer sits inside opaque dust.
+  2. `UpdateParametricRadius` (0x3C) is piecewise linear through three values (the compile `0x0044bbb0` turns
+     them into slopes), not a cubic Bézier: particles are larger mid-life than before (also the tarmac smoke).
+  3. Emission: `EmitterWheelContactPlus` (0x07) multiplies its count by binding slot 6, the output of the layer's
+     `UpdateWheelBindings` (0x42), now run: for the dust min(1, step(source 0x11) + 0.4·ramp(source 0x10) +
+     ramp(|v| / 15.35 m/s)). `EmitterWheel` (0x05, the tyre smoke) likewise by its `UpdateBindings_Wheel` (0x34)
+     slot, whose sources 0x14..0x16 read the smoke ramps (`FUN_004601a0`; the smoke block +0x80 = (·, spin,
+     lateral, lock), `FUN_00589e20`); this replaces the stand-in "first curve over the intensity".
+  Screenshots (`ref/fx-dirt/`, not committed): world run on the railway gravel (`--spawn=1164,21,-210,0
+  --auto-throttle 0.6 --units 12 --no-traffic`, `world-before-300.png` / `world-after-300.png`, `-520`): the
+  haze across the right half is gone, the dust stays at the wheels; `--test drift --track-surface 7`
+  (`before-drift-s7.png` / `after1-drift-s7.png`); drift on tarmac 8 (`drift-s8-*`): similar smoke, softer;
+  `--test nitrous` (`nitrous-after3.png`): blue glows at the pipes; `MW_VFX_DEMO` of `…24f34` and `…7bd97`.
+- **Model decisions**: `UpdateWheelBindings` sources 0x0F..0x11 read the wheel's (spin, lateral, lock) ramps,
+  0x0E and 0x12 read 0: the per-wheel update puts (0, the ramps) at the kick-up block's +0x30 and the wheel's
+  velocity at +0x40, and how the Bear runtime maps that block onto the effect's `WheelContact` (+0x40..+0x4c for
+  these sources) was not found; the data favours the ramps (34 such actions use 0x0F..0x11 often, 0x0E never).
+  `UpdateBindings_Wheel` 0x17 / 0x18 read 0. The kick-up emits while the wheel touches the ground at over 0.5 m/s
+  (its `IsEmitting` not traced). The view block's +0x218 / +0x220 / +0x224 keep their initial 0 / 1 / 1. Layer-6
+  particles are drawn in the HDR scene with the layer-5 constants.
+- **Open**: the layer-6 target (by its constants an LDR draw: colour × the exposure, encoded × 0.5, like the
+  coronas' layer 8; probably after the tonemap, without bloom); the kick-up block → `WheelContact` mapping (a live
+  read of an effect instance's parameter buffer while driving on dirt would settle it); `FUN_0043ecd0` (the wheel
+  spawners' LOD factor, words 6–7: 15000 / 15999, likely squared metres); a smoke particle passing through the
+  camera can fill the screen for a frame (layers without a near fade, by the data; seen once in `--test nitrous`).
+  Captures that would confirm: the original driving on a dirt or gravel stretch at 60–100 km/h in the chase
+  camera (cloud size, fade near the camera), a nitrous burst by day and by night (flame colour and brightness),
+  and a sliding car on grass from a fixed camera.
+### 2026-10-16: the missing one-off sounds: props and lamps, a car's touch of a prop, landings, crash contacts
+Play-test item: "the sfx for smashing through billboards and many other sound effects, for example some light
+crashes, landing of a jump, hitting light poles etc are missing", and (integrator) the cinematic crash's sound.
+Everything with addresses and constants is in decomp.md "World-component sounds, landings and the crash's contact
+sounds"; data `mw_assets::world_sfx` (`WcSound`, `WorldSfx`, `WaveShots`), runtime `world_sfx.rs`.
+- **Why props were (mostly) quiet**: only `PropObject` +0x1c sounds and compound *parts* were read, played as
+  plain PCM with a gain by speed (no source) and only for the player's car. The street lamps' (and traffic
+  lights', 58 compounds) and the signs' (46 dynamic objects) `WCPlaySoundBehaviour`s sit in the objects' own
+  behaviour lists and were never read. Now every behaviour of props, compounds, dynamic objects and parts is
+  decoded (`mwtool props -v` prints `sound` lines) and played by the game's rules: props through
+  `FUN_0054bf70` / `FUN_0054c680` (0.6 s / 0.35 s timers, damage list from a car faster than 20 m/s, slide list
+  above 5 m/s; `.bss` 400 and 25 read in `snap2`), the others through the behaviour's runtime (vtable
+  0x00faf308, found by searching `.rdata` for the slot addresses) with one wave at a time per object; the eight
+  emitters of `FUN_004b2530` (join within 0.1 s, steal the lowest type) and the global wave counter.
+- **Billboards have no sound behaviour** (the 216 eleven-panel compounds): what is heard is the car's first touch
+  of a prop (`FUN_00587960` → `FUN_00576440`: MetalCar pools `939c92be` / `ae166d1e` / `d02a49d8` by direction on
+  channel `…7357a`, found while reading why billboards are quiet) and the "Billboard +500" message's wave
+  (sequence 995814, wave `…18c1fd`); the speed camera's plate and the gate's panel sequences carry waves too.
+  All of these were silent before (the HUD drew the sequences but nobody played their wave items).
+- **Landings** (`FUN_00576b40`): the old landing thump in `sfx.rs` (a loudness-sorted cue above a touchdown speed:
+  a model) is replaced by the game's rule: per wheel a 0.05 s ground hold, the surface set's `Landing` wave on
+  `Landings_Large` (gain 0.35..1 over 0..2.5 m/s), and after all four wheels were airborne the `TimeInAir`
+  sequence (≥ 1 s: `d12772a1`, the default surface's `…73590` 3 s wave; 0.1–1 s: `929af217`, no wave on the
+  default surface, waves on surface set `…95b29`).
+- **Crash** (integrator's request): the crash camera's own sequence (`…68b43`) has **no wave items**; its audio
+  is bus / mixer automation (ducking; ids in decomp.md) whose bus mapping was not found: not ported, open. What
+  the original plays during a crash is the vehicle sound code's crash branch, now ported: `FUN_0057caf0`'s zone
+  sounds by where the world touches the car (`FUN_00929da0` decoded: roof, underside, front, sides, rear; upside
+  down / on its side once per change) on `Player_Wrecking_Collision`, crash wheel landings (pool `5da2551f`), and
+  a crash's first prop touch (`0960076c`). `player_sfx.rs` skips its world impact while crashing (the non-crash
+  branch). The slow motion does not slow the audio here (the `SlowMoSequenceItem` handler was not found).
+- **"Light crashes"**: the world-impact rule (`FUN_0057caf0`, above 2.235 m/s closing, ≥ 0.1 s apart) was already
+  ported; checked with a glancing hit (`--test crash --crash-angle 75 --crash-wall-width 200 --crash-distance 40`
+  with `MW_CAR_SFX_LOG=1`, which now loads the player's sounds in muted tests): 78 km/h at 15° = 13 mph closing →
+  two player world-impact waves. Below 2.235 m/s the game is silent too; the contact value is still read as the
+  closing speed (unit not traced). What was missing on light hits of street furniture were the objects' own
+  sounds and the prop-touch pool above.
+- **Checks** (`MW_WORLD_SFX_LOG=1 MW_AUDIO_METER=1`, muted tests): `--test smash` (60 km/h): cone car hit
+  (`PlayConeCollisionSound`, 26 m, −0.1 dB), metal sign car hit, lamp `fed64b97` car hit (`…f67c1`), sign world
+  contact, fence (`Play_Chainlink_Fence`), 7 prop-touch waves; voices −34..−43 dBFS out at 11–14 m (player
+  impacts −26..−35). `--smash-set compounds`: lamp hits play the lamp's MetalLarge and ElectricalSpark behaviours
+  together (two behaviours, two emitters, as in the game), parts' world contacts: 8 object car hits, 6 world
+  contacts, 14 prop touches. `--test landing`: wheel landings gain 1.0 at speed, touchdowns after 0.39 / 0.54 s in the air
+  (short sequence: no wave on the default surface). `--test crash`: crash zone 2 (front right) at 31.8 m/s,
+  `…22694` on the wrecking channel. `--test freeroam`: "+SP" wave on the camera, billboard and gate, the speed
+  camera plate's two waves, the crash gate's own `Play_CrashGate` sound on its `MixerChannel` `…14e01f`.
+  Offline: `mwtool traffic-sound world out.wav` renders every pool (landing −29..−31 dBFS at gain 1, crash zones
+  −28..−34, long landing sequence −28.4, prop touches −35..−38, prop lists −29..−44).
+- **Model decisions**: the contact value = closing speed; the AI's prop channel `Competitor_Prop_Collision`
+  (its channel set +0x30 not read); the landing gain's axes (the wheel frame's rows 0 / 2 read as the car's right
+  and forward); crash zones from the default surface's set and the body collider's box; the HUD waves 2D;
+  "damaging" = our `ForceToDamage` test; a standing prop's car contacts from avian's `ImpactEvent`s (loose ones
+  from `prop_contacts`).
+- **Open** (captures that would settle them: knock a lamp, a sign and a cone at ~60 km/h with `mwtool capture`
+  and compare the audio onsets; a ≥ 1 s jump; a crash with music playing): the crash camera's bus ducking (bus ids
+  556003 / 259953 / 259945 → which buses), the AI channel set, the wheel frame's axes, `SlowMoSequenceItem`, the
+  contact value's unit, the AI racers' landings (non-player, not crashing: no sound in the code) and crashing AI
+  (zone sounds need their channel set +0x18).
+
+### 2026-10-16: speed camera flash; world-object coronas; brake-light hold
+User reports (session 10): "speed cameras always seem to light up the world, not just on flashes" and "effects
+like speed camera flashes are missing"; plus the coronas entry's open item, world-lamp coronas. Details in
+decomp.md "Speed camera flash" and "Coronas" (world objects, brake hold).
+- **Why cameras lit the world**: each speed camera compound (`1e63a9d5`, 74 placements) carries the behaviour
+  "SpeedCameraLight" (`…f8729`) with a 500 × white point light (`…f872d`, 70.7 m, on day and night) and a corona.
+  The behaviour has `543527d0` (on at start) clear; `world_lights` drew every object light regardless. Now lights of
+  behaviours that start off are left out of the bundle's lights (`ObjectLight::switched`) and come only when the
+  behaviour is switched on. Side effect: traffic lights' colour lights (behaviours "TrafficLight_*", mostly off at
+  start) go dark until their controller is ported; before, all three colours shone at once.
+- **The flash** is sequence 1107082 (the `SpeedCameraTriggered` action's output, already on the HUD for its
+  plate): two `ModifyBehavioursInAreaSequenceItem`s switch "SpeedCameraLight" behaviours within 50 m of the player
+  on for 0.1 s at 0 s and 1 s (`FUN_00856370` / `0x00851e20` → messages 0xd / 0xe → the object's activate /
+  deactivate), a `PostFxOverrideSequenceItem` adds a brightness term (property 0 × 0.6 into the PostFX state's
+  +0x1660, `FUN_008ecf80`) with spikes of 0.5 at 77 ms and 0.656 at 0.34 s, and two waves play at 1.333 s and
+  5.967 s. Found by the sequence's item type ids (0xf7a5c, 0xf7d8c) as immediates in the decrypted `.text`
+  (`re/out/live/text.asm`): the `(type id, factory)` table → the runtime items' vtables → REA on the carved image.
+  Ported in `sequence_fx.rs` (data `mw_assets::sequence_fx`) for every HUD message sequence, so the "+SP" message
+  (995814) and the speedwall panel (995322) now play their waves too.
+- **World-object coronas** (`world_coronas.rs`, data `mw_assets::coronas::ObjectCoronas`): the behaviour's five
+  corona bools (`FUN_005b0220`), the update's environment / hour test (`FUN_005b31a0`, `FUN_005a7850`), the object
+  reach (largest |locator| + `88b68533`), the lamp level `FUN_0089b400`(flags, owner handle), and `FUN_004a6b00`'s
+  call of the shared corona rule with colour / intensity / size 1 and anim = level. Street lamps (flags 3: night
+  and twilight) light at night; the speed camera's corona only during its flash.
+- **Brake hold** (`FUN_0057a5e0`): brake group lit until 0.5 s after the brake is released. Ported in `coronas.rs`.
+- **Checked**: `--test freeroam --hour 2` with `MW_SEQUENCE_FX_SHOTS` (`extracted/shots/scam/seq1107082-005.png`:
+  the road white under the camera's light; `-034.png`: the picture washed out by the brightness spike; `-060.png`:
+  dark again; `extracted/shots/scamvb/` the same from 35 m behind the car with the camera's corona and flare in
+  view; `scam13/` by day, where the spike whites out the frame); before any pass the camera is dark at 02:00
+  (`extracted/shots/scam/cam02.png`); the test's results are unchanged (cameras / gates / billboards 1250 SP). Street
+  at 01:00 (`--camera=765,43,1672,980,41,1748 --units 20`): lamp glows and their beam cones against
+  `MW_NO_CORONAS=1` (`extracted/shots/cor/st01*.png`); the industrial lamp (`cor/ind02*.png`). Bench (downtown
+  spawn, 01:00, 30 units): the world queue costs 0.04 ms per frame (1,213 objects, 132 coronas queued,
+  `MW_CORONA_LOG=1`); frame means 12–17 ms on and off, dominated by other builds on the machine.
+- **Model decisions**: enabled bindings false (`(NOT)` → true: offline there is no friends' speed wall, so
+  `ShowMiniWall` is false); the sequence's timeline controllers (wait for the speed wall's download, time out) not
+  run: the clock runs straight as the HUD's (if the original waits for the download offline, the waves and plate
+  come later or not at all); the area query by object origin (the game's query shape not read); a behaviour that
+  goes off at a contact is off while its object is loose (coronas); the lamp coronas' stagger id is the lamp
+  light's; the brake hold's player-state test taken as true for race cars.
+- **Open / not ported**: PostFX property 2 (+0x1504 / +0x1508); the "Dominant 3D" bus duck (0.435 → 1 over 4 s);
+  the behaviours' own light bools (+0x2e; the definitions' flags are used); traffic light controllers; the
+  behaviour blink (`c8d7741f`); rain / wet environment bits; light-record coronas (`FUN_00497200`); the electrical
+  flicker (bit 15, its setters not read); `ExposureScaleCoronas`. Captures of the original that would settle it:
+  a night pass at 85 mph past camera 1025449 with F12 bursts at 0–0.4 s and 1.0–1.1 s (the light's reach, the
+  white-out's strength, whether the plate and the 1.333 s sound come offline), and a night street with
+  `da44501b` lamps (glow and beam strength).
+### 2026-10-16: car lights on the world (headlight projector, its shadow map, tail / brake / reverse lights)
+User report (session 10): "vehicle lights don't yet properly light up the world". Read from the dump, the full
+listing (`re/out/live/text.asm`), snap1 / snap2 and the data; details in decomp.md "Car lights on the world",
+layouts in formats.md "Car light sources". Ported in `car_lights.rs` (+ `mw_assets::car_lights`, the
+`LightBuffer_ProjectedTexture` port and a dynamic-light list in `deferred.rs` / `game_lighting.wgsl`);
+`mwtool car-lights <car|all>` lists a car's light sources.
+- **Found**: cars' lights are `VehicleVfxBehaviour.Lights` (0x40-byte entries: colour, animation, definition,
+  locator group, `a3de907e` scale, `Group`, gate `da6ac384`), submitted per race-car slot by `FUN_005818f0`
+  (from `FUN_00588da0`: the player, AI racers, cops). Traffic and parked cars cast **no** light: `FUN_005fd190`
+  only queues coronas, and no other caller of the six light-submission functions exists in the full listing.
+  The **viewed car** (the player) skips the group-6 head spot, is the only car whose `Light_ProjectedTexture`
+  (group 4) is drawn, and skips the day / night gate (its head and tail lights shine by day too, faint at noon);
+  the others light the group-6 `Light_Spot` (intensity 3, threshold 0.333: a 3 m pool) at night. Tail (group 7,
+  dropped while braking), brake (1), reverse (2) are small red / white spots and cones (~1–1.5 m). Cone, point and
+  projected lamps go out with any damage at their corner (`FUN_0049fda0`, threshold global 0.01 read in snap1;
+  never the viewed car's front).
+- **The headlight projector**: `Light_ProjectedTexture` `…253a9` (11.5, threshold 0.05, `FovScale` (1.23, 0.85),
+  attenuation 1 / (0.001 d² + 0.25 d + 10), lit window (−1, −1, 1, 0.098), cookie `…77f9`): half-angles atan(Rxx)
+  × FovScale (CRT `atanf` 0x00edc7b2, identified by its constants) = 55.35° × 38.25°, near 0.1 m, far = where the
+  light falls to its threshold (360 m, `FUN_008a0a20`), GL-style projection; constants and programs from
+  `FUN_008b1860` and `mwtool shader-asm LightBuffer_ProjectedTexture` (six variants: volume / full screen ×
+  diffuse / diffuse + headlight shadow / specular).
+- **Headlight shadows**: the PC display option `HeadlightShadows` (true in this machine's `config.NFS13Save`)
+  makes `FUN_008cfe20` render a shadow map from the viewed car's projector every frame (`FUN_008b7a20`,
+  `SortShadowHeadlightWorld` / `…CarsMisc`) and draw the projector with the diffuse-only shadowed program
+  (states 0x31 / 0x32). Ported as the default; the map is a shadow-only Bevy spot light at the projector.
+- **Checked** (screenshots in the worktree's `extracted/hl/shots/`): 01:30 at the default spawn, A/B
+  `on2.png` / `off2.png` (the beam on the road, the guard rail and the bank; the tail lights' red on the road
+  behind), `shadow_on.png` / `shadow_off.png` (the guard rail shadows the bank), the plaza at 815, 1760
+  `plaza_shadow.png` / `plaza_noshadow.png` (a lamp post's shadow on the wall), the race grid of 462174
+  `race.png` / `race_off.png` (the AI cars' tail lights on the road; the player's beam on the pillars), noon
+  `noon_on.png` / `noon_off.png` (mean pixel difference 3.7 / 255: barely visible). Bench (downtown 815, 1760,
+  01:30, 30 units, machine shared with other builds, so ± 1 ms): render world 1.5 + 4.2 ms → 2.0 + 5.3–6.0 ms
+  without and 3.2 + 7.3 ms with the headlight shadow map (~500 casters after the LOD shadow cull); the lighting
+  pass's GPU time (`MW_BENCH_PASSES=1`, `render/game_lighting/elapsed_gpu`, new span) stays within its noise
+  (0.16–0.5 ms).
+- **Model decisions**: (1) the shadow map is Bevy's spot shadow (square, 2 × the wider half-angle, Bevy's default
+  biases and its 2048² size) looked up with one hardware 2×2 PCF tap; its casters are culled by the key light's
+  per-model shadow distance (`lod::LodShadow`); the game's own culling for the headlight passes is not traced;
+  (2) the option-off path uses the specular program (0x338) — which of 0x338 / 0x6a8 states 0x1a / 0x1b select was
+  not traced; (3) the cookie is read as stored (`BC1_UNORM`, no sRGB decode), like the cloud textures; (4) the
+  light volume clipped to the lit window is replaced by a full-screen pass that tests the window per pixel (the
+  game does that only when the camera is inside the volume, where it may not clip to the window); (5) race cars'
+  lights are always on (mask 0xd1; +0x1a8c is set at spawn and only cutscene cars change it); group 7 off while
+  braking reads instance +0x1930 as the brake (same 0x1c40 structure as the mask builder's, inferred);
+  (6) the per-type light lists' nearest-N caps (spot / cone 224, point 128, projected 8) are not applied (the
+  world lights have none either); (7) the stencil / flag byte that separates headlight-flagged lights
+  (`cVar15`, renderer +0x217a) is not modelled: every light lights every surface.
+- **Not ported / open**: the electrical flicker (bit 0x8000, `FUN_0057b4b0`), the 0.5 s brake hold (+0x3e8 with
+  `FUN_006a0110`), +0x192c (brake light in reverse), `FUN_0090d460` read as reverse, group 17 (never in the mask),
+  traffic headlight flashes (they only scale coronas / emissives). `LocalEmissive` and the "gPlayerHeadlight" /
+  `g_headlightConstants` strings (a car-paint headlight term?) not followed. Captures wanted: the original at
+  night at the default spawn and at 815, 1760 from the chase camera (the beam's shape, brightness and cut-off,
+  shadows of the lamp posts), with `HeadlightShadows` off for the other program, and an AI car / cop at 3–10 m at
+  night (the group-6 pool).
+
+### 2026-10-16: vehicle coronas (glows, beams, flares) for every car
+Integrator request after the light-bar review (the bar was a few pixels at 30 m). Read from the dump with three
+research sub-agents; details in decomp.md "Coronas"; ported in `coronas.rs` + `corona.wgsl` (data
+`mw_assets::coronas`), on by default (`MW_NO_CORONAS=1` turns them off).
+- **Ported**: the definitions (`Genesys.Gen.Corona`: curve block, `Glows` / `Beams` / `Flares`, the 0x70 runtime
+  def of `FUN_0049d950` read directly), the curve `FUN_004ab450`, the per-entry rule `FUN_004a5f70` (group mask,
+  gate `da6ac384` 0 / 1 = 1 − night / 2 = night, `Brightness` × L² × the group's night scale, size, `Animation`,
+  `Mirror` through (−1, 1, 1)), the per-corona rule `FUN_004a5790` (θ = acos(p̂′ · dir), curve at (θ, s·d, s·d, s·d),
+  I = C.x · C.z · anim > 0.05, S = size · C.y, the one-pixel size cull, the 0.01 colour cull), glows
+  `FUN_004a4cf0` (camera-facing, rotated by `RotationOffset` − roll, depth bias `a9531774`, depth-tested), beams
+  `FUN_004a5040` (axial quads along the lamp axis), flares `FUN_004a52e0` (ghosts at `Position` × p.xy, radial
+  turn, no depth test, the 7 × 7-tap visibility of the point 0.5 m nearer the camera, `Vfx_CoronaVisibilityTest`,
+  evaluated per pixel from the depth prepass instead of a texture). Cars: the race-car path for the player, AI
+  racers and cops (groups 0, 4, 6, 7 always, 1 brake, 2 reverse, 3 the cop bar) and traffic (`FUN_005fd190`: groups
+  0 and 4, L = 0.7, parked cars none, flash rate 0.9 + 0.2 × random). The cop bar's day (gate 1) and night (gate 2)
+  definitions and its flash patterns come through the same entries.
+- **Checked**: `MW_VIEW_BEHIND=30 MW_COP_LIGHTS=1` with the cop car: at night red / blue glows with horizontal
+  flare streaks alternating on the bar at 30 m (`extracted/shots/cv1/strip.png`), at noon faint (`cv12/strip.png`);
+  the player's 911 headlights from the front (glows + blue anamorphic streaks); a traffic car's headlights at night
+  (`MW_VIEW_BEHIND=15,1.5,1`, `traffic_front.png` against `traffic_front_nocor.png`). `MW_CORONA_LOG=1` counts.
+- **Model decisions**: s (the view's +0x8b908) = tan(half the horizontal field of view), inferred from the one-pixel
+  cull; flares (layer 8, drawn after the tonemap with the exposure applied and gamma-encoded) are added to the HDR
+  scene like the glows; the visibility test is evaluated per pixel (the game renders it into a texture the next
+  draw reads); camera roll from the camera's right axis.
+- **Not ported / open**: world-lamp coronas (`FUN_00497200` light coronas, `WCVfxBehaviour` coronas through
+  `FUN_004a6d50` / `FUN_004a6b00`: same `FUN_004a5790`, colour / intensity / size 1, anim = the lamp level), the
+  headlight glint (`VfxGlobals.20feab72` for `…251bd`, intensity source +0x3d0 open), the other views' lists (cube
+  `60c1d15f` via `FUN_004a4e90`, `2392d7f2` / `9ee381ab` for view types 2 / 3), `ExposureScaleCoronas` (0.4),
+  the crowded-pass distance cull (`88b68533` + 1 m above 100 queued coronas), traffic headlight flashes routed into L,
+  the brake hold timer (0.5 s), the electrical flicker (bit 15). Captures wanted: a night chase behind a cop at
+  20–40 m and an oncoming traffic car, to settle s and the flare layer.
+
+### 2026-10-16: terrain through the road: the main view skips models with pass-mask bit 4
+User play test 2026-10-14 ("terrain still sticks through the road in some places", after the 2026-10-04 backdrop
+composition fix).
+- **Finding the places**: new `mwtool terrain-check` rasterises on a 1 m grid every road mesh
+  (`DriveableSurface*` of the main instances) against every drawn ground mesh (main `TerrainPBR*` / `PlotPBR*` at
+  LOD0 and each lower LOD, plus the composed backdrop) and ranks clusters where ground stands more than 5 cm
+  above the highest road within ±3 m. Before the fix: 12,524 m² of LOD0 ground above roads, the worst a grass hill
+  3 m over the junction at (-919, 20, 3232) (unit 11, model `11e76144`), a rock mountain over the roads at
+  (212, 48, -1974) (unit 700, `cdd14f40`), a hillside over the road at (-1341, 26, 2567) (unit 16); the composed
+  backdrop is only 407 m² (it was not the cause). The worst model is a 108-vertex, 100-triangle terrain tile with
+  ~90 m triangles, an always-loaded main instance with no collision under it (`mwtool surfaces --near`).
+- **The rule** (decomp.md "Model pass mask"): `Model` +0x19 is a per-view **exclude** mask. `FUN_00553810`
+  inserts each `InstanceList` instance into the culling structure (via `FUN_00541850`) with flags
+  `(Model+0x19) << 24 | 0x840`; the frame setup in `FUN_008cffa0` queues one query per view (`FUN_008dbd90`) with
+  the bits that view excludes: the main view (camera frustum, LOD scale renderer +0x1ee8c) `0x4000000`, the six
+  cube-map faces `0x2000000`, the three shadow cascades `0x1000000` and the far one `0x3000000`, a view at +0x172e0
+  (probably the planar reflection) `0x8000000`, a view at +0x17150 `0x10000000`. The object walker `FUN_00538b00` tests the
+  same byte directly (`Model+0x19 & mask != 0` → skip) and is called with mask 4 for the main view, 1 for shadows,
+  8 / 0x10 for the other two views. The query's consumer (a job) is not in the dump; the exclude reading follows
+  from the walker and from the data: roads are 0x09 (no shadow, not in the +0x172e0 view: a road does not reflect itself), lit
+  signs 0x01.
+- **Data** (survey of all placements): 230 models carry bit 4 (`0x04`), one placement each, 192 `TerrainPBR_Normal`,
+  54 `TerrainPBR_TangentSpaceNormal`, a few `PlotPBR` / `WorldShadow`: coarse stand-ins of the detailed ground,
+  drawn by the game only in the shadow, cube-map and reflection views. Also 1007 instances of `80505b9d` and 1337
+  dynamics (1169 × `79a1dfbc`, `Diffuse_1Bit`) with 0x1f (in no view), 9 instances with 0x0f (below ground),
+  1 dynamic each with 0x07 / 0x0f. No backdrop model has bit 4.
+- **Fix** (`mw_formats::Model::pass_mask` / `in_main_view`, loader): placements whose model has bit 4 are not
+  spawned. Placements with physics keep their model (model decision: we have no collision-only body; none of the
+  0x1f dynamics has a physical definition, `mwtool props -v`). `MW_ALL_PASSES=1` draws them again (A/B);
+  `mwtool terrain-check --all-passes` scans as before.
+- **After**: LOD0 ground above roads 12,524 → 5,356 m²; the remaining top clusters are authored (grass inside the
+  same model as a reflective floor under a building at (-1564, 58, -3342), bridge decks over roads in lower LODs);
+  the composed backdrop's 407 m² is unchanged. Screenshots (`extracted/terrain/<name>_{before,after}.png`,
+  before = `MW_ALL_PASSES=1`): s1 `--camera=-860,75,3170,-919.5,20,3232.5 --units 20` (the hill gone, the slip road
+  and its groundcover visible: MAD 17.7/255), s2 `--camera=250,80,-1930,212.5,47.6,-1974.5` (rock over four
+  carriageways gone, MAD 42), s3 `--camera=-1300,60,2530,-1341.5,26.2,2567.5` (MAD 18). Regressions:
+  road-cliff MAD 0.57 (the coarse dark-green patch on the lawn bottom left is gone, rest is foliage shimmer),
+  city-lod-check 0.02, airfield-arch 0.11. Holes: of 12.1 km² the skipped models cover, 10,900 m² (0.09 %) is not
+  covered by any other drawn mesh (main or composed backdrop); the largest (4,100 m², model `89f0148f` at
+  (-704, 236, -272)) is a mountain river canyon whose water we do not draw anyway (the grey void already showed
+  next to it).
+- **Model decisions**: the skipped models also cast no shadow in our renderer (the game draws them in the shadow
+  cascades: bit 1 is clear; Bevy has no shadow-only mesh); the shadow / cube-map / planar-reflection bits (1, 2,
+  8) are not applied yet (our shadow casters, the reflection probe and `--planar-reflection` still draw those
+  models).
+- **Open / captures that would confirm**: a Steam F12 screenshot of the original at s1 and s2 (same camera, 13 h)
+  shows the road and no hill; `tools/orig` free roam to (-919, 20, 3232) shows the slip road open. Not checked:
+  what view +0x17150 is (mask 0x10; `FUN_00798840` gates it), and whether the 0x1f models are drawn by another
+  system (all five view bits set).
+### 2026-10-16: water level: far water planes flooded zones that do not list them
+User reports: "in some places the water floats above where it should be" (2026-10-14 play test) and "water level
+is too low" (session 7, place not given). Survey tool: `mwtool water` (every water mesh, main and backdrop: height,
+extent, listing units; where the drawn water lies above dry collision; per-zone table of water drawn in zones that
+do not list it; debug variables in `crates/mwtool/src/water.rs`).
+- **The water meshes** (53 placed water meshes: 15 backdrop, 38 main): the main ones (ponds, fountains,
+  `PlotPBR_AO_StandingWater` puddles) are small and sit on their beds. The backdrop ones are per-zone views of
+  the same water at different detail: a river-shaped `Water_Opaque_Singlesided` mesh `d0015e61` at y −36.8 (the
+  water at the bottom of the gorge under the suspension bridge, x 200–1600, z 2600–3300, with surf along its
+  banks; the gorge's collision slopes reach −37) is listed by the gorge's own zones 17, 19, 20, 78, 87, 88, 89,
+  91, and *only* by them; the other 23 zones that see that water list `f13f8dde` instead, whose mesh 1 is a
+  plain 2 × 1.1 km rectangle at y 13.1 over the whole gorge and its hills. `752a314c` (`Water_Proto_Cheap`,
+  listed by 13 western / southern zones) is a sloped sea plane reaching y 30.4 over the northern coast, where
+  the industrial area (zones 24, 25, 69, 85) stands at y 6–20. Every backdrop water mesh is drawn over dry
+  drivable ground in **no** zone that lists it (the `own` column of `mwtool water` is 0 for all of them).
+- **Cause**: our composition (2026-10-04) let water "fill in" from the nearest listing zone wherever a zone lists
+  no water of its own. That rule was ours, added for "the river beside downtown" (zone 13). It put the 30.4 m sea
+  plane over the industrial area (a sheet across the buildings' third floors, full map load), the 13.1 m
+  rectangle half way up the gorge and over its hills (the "floating" water), and in the gorge's own zones,
+  which list water, left the gorge at −36.8 between flooded neighbours. Drawn 8 m samples over dry collision
+  went from 3,561 / 5,102 / 12,760 (meshes `ee1e0389` 1, `206af143`, `752a314c`) to 0 / 0 / 14; 64 m cells with
+  drawn water over drivable collision from about 250 to 2 (a main-geometry puddle, and `9fd6d20a` at y 10.0
+  over a road at 5.7 near 2376, 2672 in zone 158, which lists it itself: not looked at).
+- **Zone 13** ("river beside downtown") is not a river: zone 13 is a downtown street at y 51 whose polygon
+  includes unmodelled block interiors; the "river" was the sloped sea plane seen through them from a free
+  camera. The `water-river` viewpoint (1610, 22, 2935) is inside the hill of zone 155 (terrain at y 107): its
+  "river" was the 13.1 m rectangle seen from inside the hill. Replaced by `water-gorge` (viewpoints.md).
+- **Fix** (`mw_assets::backdrop`): inside a loaded zone a backdrop triangle, water included, is drawn when that
+  zone lists its model (the rule solid geometry already followed). Outside every zone, water stays composed
+  apart from solid geometry, from the nearest listing zone, except in the gaps between zone polygons: within
+  `WATER_GAP` (128 m) of a loaded zone that lists water, that zone's water alone is drawn (the gorge runs along
+  such gaps; every remaining floating sample outside the zones was within 65 m of one). **Model decisions**:
+  the 128 m gap distance; a zone that lists no water does not own the gaps beside it (so the sea off coastal
+  zones that list none stays filled). The water tables are unchanged when units are streamed (`--units`).
+- **Source**: data only (instance lists, `ZoneList`, collision); the code path that picks which zone's backdrop
+  is drawn was not traced (open). The shader table that sorts meshes into passes (`0x10d1350`, live snapshot:
+  `Water_` → bucket 7) only orders passes. The water vertex programs (`mwtool shader-asm Water_Proto_Cheap`)
+  are a plain world transform: no height offset or wave displacement, so the heights are the data's.
+- **Verification** (before = master, after = this branch; screenshots in the worktree's `extracted/water/shots/`):
+  industrial coast full load `--camera=-150,80,3300,50,10,3560` (flooded → dry); gorge from the bank
+  `--camera=1000,-25,3080,1150,-36,3150 --units 20` (sheet across the right slope gone, river at the bottom
+  unchanged); suspension bridge `--camera=1060,60,2950,700,-30,3050` and the north view
+  `--camera=700,160,2300,300,0,3500` (full load: sheet and striped slivers over the hill gone); pond, road-cliff and
+  coast views unchanged; full-map load time unchanged (30 s).
+- **Open**: (1) a zone that lists no water and stands next to the sea outside the zones still gets the nearest
+  listing's sea in the 128 m strip beside it (zone 135 / 20 gap near 40, 2280: the 30.4 m plane over a gorge
+  at −29, a few cells). (2) What the original draws in the gaps and which zone's backdrop it draws at all (the
+  per-zone model is from the data, 2026-10-04). (3) **Captures of the original that would settle it**: the gorge
+  from the suspension bridge deck (camera about 1060, 60, 2950 looking west along the gorge) — water at the gorge
+  bottom only, no sheet at y 13 on the slopes; the industrial coast (−150, 80, 3300 towards 50, 10, 3560) — dry;
+  and the suspension bridge's pier fender (y ≈ 13) to see whether water reaches it from the eastern side.
+### 2026-10-16: police sirens, light bars and radio chatter
+User report (play test): "cops have no sounds, lights etc.". Read from the dump, REA on the decrypted image and
+the data (three research sub-agents plus checks); details in decomp.md "Police sirens, light bars and radio",
+layouts in formats.md "Police sounds, lights and speech". Ported in `police_fx.rs` (state, the interface),
+`police_audio.rs`, `police_lightbar.rs`, `police_speech.rs`; data `mw_assets::police_{sound,lights,speech}`.
+- **Sirens (found)**: `CopSoundSet` `…23013` (`VEHICLES/WAVES.BNDL`, loaded by `FUN_005776a0`); a car's set is
+  its `VehicleSound` +0x40 or else `9f467b30[slot % 2]` (`FUN_00593ac0`). Siren level byte (entity +0x186c,
+  0 off / 1–3 = `Sirens[level − 1].Wave[slot % n]`, looped), blip (request 5: random `Blips` for 0.8 s),
+  crossfade 0.2 s / stop 0.15 s (`.bss` 0x0110d020 / 0x0110c940 read in snap1), gain 1.6, on the snapshot channel
+  `Sirens_Competitor` (gain 0.501, 4–400 m, doppler c = 680 m/s) or `Player_Vehicle_Sirens` (`FUN_0058bdc0`,
+  `FUN_00574510`, `FUN_00571f30`, `FUN_00572070`, `FUN_0058d770`). Requests: `SetSirenState` (message 0xd,
+  `FUN_00844300` → `FUN_00572d50`: siren level 1 + bar together), the horn of a siren car (`FUN_00587720`: off →
+  1 → 2 → 3 → off; also the **player's horn runtime**, the old "not found"), cutscene cars
+  (`AnimatedRaceCarBehaviour` +0x54 / +0x5a, `FUN_005b4750`). Dying siren `89ecdfc4` (`…b3883`) once when a car
+  with its siren on is wrecked. Waves (pitch tracks): wail `…2301e` (5 s, 656 → 1641 → 680 Hz), yelps `…23016` /
+  `…23022` / `…23023` (600–1700 Hz, ~3 sweeps / s), hi-lo `…2301b` / `…2301c` (1031 / 1559 Hz).
+- **Light bars (found)**: effect group 3 (entity +0x1c27); `VehicleVfxBehaviour` `…_COP_Coronas` (19 coronas
+  with `FlashAnimation`s) and two `Light_Custom`s (blue / red, intensity 35). Flash: `FUN_0049ef00` (segment by
+  `frac(t / ΣDuration)`, sample at `(Frequency · t + Phase) · n`, linear), per-car rate
+  `frac(slot × 0.39 + 0.5) × 0.2 + 0.9`. The bar mesh's `_LocalEmissive` program: 16 local lights (slot 0x48 /
+  0x49) from the coronas' values ^10 at camera-facing locators (`FUN_0057fcf0`), R = 222.767. The bar's world
+  light uses `LightBuffer_Cop` (diffuse only, vertical fade). Cops' head / tail lights are always on (+0x1a8c).
+- **Radio (found)**: `EN_US/SPEECH/SPEECHEVENTSEQUENCES.BNDL` (110 events) + the SWC0 container (7,665 SPS
+  streams, `WaveContainerTable` index), one speech at a time by priority (`FUN_008408a0`, `FUN_008406a0`,
+  `FUN_0083d270`), triggers from the scoring actions' `GameplayTrigger`s and the HSM "Speech Manager" (983342).
+- **Model decisions**: (1) what switches an AI cop's siren in a pursuit was not found (only the paths above write
+  the requests): chasing / searching cops in a pursuit or cooldown have `SetSirenState(on)`, others off; (2) the
+  three nearest sirens sound (`Sirens_Competitor.1653b84c` = 3 read as a voice limit); (3) speech conditions
+  whose binding we lack read 0; lines play on the effects volume; (4) the busted lines 1186445 / 1186447
+  (priority 0, play-once, no trigger found).
+- **Checked**: `mwtool siren out.wav` (set `…23039`: off, levels 1–3, blip, level 1: peaks follow the waves,
+  no clicks at the switches: max |Δ| 0.25 vs p99.99 0.13); `MW_SIREN_PRESS=5,10,15,20,25,30` with the cop car
+  as the player's: levels 1 → 2 → 3 → off → 1, the voice at −12 dBFS at 7.6 m, silent when off;
+  `--test pursuit` with `MW_SIREN_LOG=1 MW_AUDIO_METER=1 MW_SPEECH_LOG=1`: each chasing cop's siren starts with
+  the chase (sets by slot parity), placed (gain −7..−12 dB at 7–60 m, doppler 0.95–1.05), a wrecked cop's
+  dying siren, the chase-start radio event, chatter every 5 s after a line; speech lines decode band-limited
+  (99.4–99.9 % of the energy in 300–3400 Hz, peaks −0.3 dBFS, no discontinuities). Night screenshots of the bar
+  (`MW_LIGHTBAR_SHOTS`, 1/8 s apart): blue / red hotspots alternating on the bar and the rear deck, the bar's
+  blue / red light on the road and a sign.
+- **Follow-up: the chevron sign blown out beside the bar** (integrator review). Traced, not changed: every step
+  is the game's.
+  1. *Intensity and units*: `FUN_005818f0` submits a group-3 `Light_Custom` with colour = `Light.Colour` (1) ×
+     the definition's `Colour`, intensity = `Intensity` (+0x4c, 35) × `a3de907e` (1) × entity +0x3cc (1 unless
+     bit 0x8000 of +0x3c8 is set: then a noise flicker, `FUN_0057b4b0`) × the animation (linear) ×
+     `FUN_0089b400(0x65)` (1, on day and night) × `FUN_0049fda0` (1), gated by renderer +0x216a (initialised 1
+     by the renderer set-up `FUN_008ae1d0`, which writes +0x2169 = 0x101) and `DAT_010c47f4` (1 on disk and in both snapshots), through `FUN_008cf1d0` /
+     `FUN_008dfcf0` into the cop list; `FUN_008b1670` writes `deferred_lightColour` = (colour × intensity,
+     threshold / max) exactly like the point lights' `FUN_008b0940`. Same game units as the street lamps
+     (e.g. the spot lamps by the spawn: intensity 62 from 9 m up, 62 / 81 ≈ 0.77 on the road).
+  2. *Attenuation*: `LightBuffer_Cop` (checked instruction by instruction): sat(1 / (d² + 0.001) − 0.05 / 35)
+     × the vertical fade; at 1.5–3 m from the bar that is 35 × (0.44 … 0.11) ≈ 4–15 units (≈ 5–20 × a street
+     lamp's on the road), the vertical fade ≈ 0.6–1 at the sign's height.
+  3. *The sign's material*: `World_Diffuse_Specular_Singlesided_InstanceAdditive` (not `Sign_RetroReflective`):
+     albedo = diffuse × `MaterialDiffuse` (1); its specular map is its diffuse texture, so F0 =
+     poly(spec.x) ≈ 0.7–0.8 and every other light (key, ambient, lamps) lights its diffuse × (1 − F0) ≈ 0.25,
+     while `LightBuffer_Cop` reads no F0 and no specular buffer (samplers: depth, normal, albedo, the car flag):
+     the cop light shows the full albedo, ~4× what another light of the same strength would. No material flag
+     excludes it (the cop list's stencil choice `0x1b` / `0` in `FUN_008b1670` depends on the light's own flag
+     byte, not on the surface).
+  4. *Hue*: blue (0.09, 0.33, 1.0) on the near-white board, tonemapped by 1 − 2^(−x) per channel (`GBufferComposite`),
+     saturates blue, then green, then red: cyan-white, not a colour bug; the full-frame glare is the bloom of
+     that over-range area (with `MW_NO_BLOOM=1` the sign stays a bright, sharp panel:
+     `extracted/shots/nobloom/strip.png` against `extracted/shots/bar/strip.png`, same camera).
+  So no change was made; whether the original reaches this brightness on such a sign is a capture question
+  (a night capture of a cop stopped beside a chevron, e.g. at the default spawn −1158, 1700).
+- **Follow-up: the bar from a chase distance**: at 35–45 m behind an AI cop (`MW_COP_LIGHTS=1`, `--ai`) the
+  bar's emissive hotspots (radius 1 / √222.8 ≈ 0.07 m) cover a few pixels at night and nothing visible at noon;
+  its world light colours the roadside within ~15 m. In the original the coronas (19 group-3 entries, day and
+  night definitions) make the bar read at a distance: porting the corona draw (`FUN_004a5790`: view-space
+  angle and distance through the definition's two-segment curves `FUN_004ab450`, glows `FUN_004a5040`, flares
+  `FUN_004a4cf0`, beams `FUN_004a52e0` / `FUN_004a4e90`, the visibility test) is the next step for the cop
+  lights. `MW_LIGHTBAR_SHOTS` now logs the nearest lit car's distance; `MW_LIGHTBAR_SHOTS_AFTER=<s>` delays it.
+- **Open / captures wanted**: (a) a probe watch on entity +0x1950 / +0x186c during a chase (who turns the AI
+  sirens on); (b) a capture of a chase at night (light bar look, the bar's light on the road and signs: ours may
+  be too strong on the retroreflective signs; the coronas are not drawn: `FUN_004a5790` / `FUN_004ab450` not
+  decoded); (c) the siren's pitch wobble after impacts (`FUN_00aabc10`) and its factor B+0x28; (d) the speech's
+  radio clicks and static bed (`AudioSettings` +0x18 / +0x1c), vocabulary slots (car model / colour), narrator
+  one-offs, the loudhailer's 3D placement, the busted lines, and whether a line item waits for the previous line
+  (ours: items start at their `StartTime` and may overlap); (e) the `Racer_Cop_Radio` parameters (no reader).
+### 2026-10-16: prop-break effects: compound / part behaviours, super emitters, the renderers' opacity
+User request: "add particles to destroying props like the light pole". Plain props already started their
+`PropObject` +0x14 effect; compounds (lamps, traffic lights, billboards) and their parts showed nothing and a
+knocked lamp kept its light. Details and addresses in decomp.md "Props" ("World-component behaviours") and
+"Bear particle runtime"; runtime `prop_vfx.rs`, data `mw_assets::props::WcVfx`.
+- **Trigger** (traced): `FUN_0053cba0` hands every body-pair record (`FUN_005461c0`, behaviour vtable slot 8 =
+  `FUN_005af3e0`) and the world-contact record (`FUN_005462d0`, slot 9 = `FUN_005af630`) of each world-component
+  object to its `WCVfxBehaviour`s (runtime object `FUN_005b3350`, vtable 0x00faf238). While the body is not
+  pinned, the first pair contact spends the `ImpactEffect` (+0x1c; plays only when the other body is a vehicle,
+  `FUN_00573360`), and the base flags `0228a2f8` / `713589ad` switch the behaviour on (`FUN_005b30d0`: spot
+  effects at their locators `FUN_005af900`, lights, coronas) or off (`FUN_005b3150`). A world contact whose point
+  moves faster than `29436f61` (+0x30, 1 m/s) starts `4524a2be` (+0x24) at the point, Z = contact normal, again
+  once the last instance has ended. Effect frames: `FUN_005a7750` / `FUN_0054bf70` = contact point + (0, 0.5, 0),
+  Z = hitter velocity, X = up × Z (our plain-prop impacts used the contact normal as Y: corrected).
+- **Data** (`mwtool props -v` now lists each object's and part's behaviours): the common street lamp
+  (`fed64b97`, 934 placements) has "Collision FX" (sparks `…24f3d`), "StreetlampSingle_WC VFX" (spot effect
+  `…7a95f` at its foot), three "SetLightsOn" (light, two coronas, an empty spot effect) all off by contact; its
+  parts carry `…1621e7` sparks as impact and contact effect and empty `…1621e9` spot effects, the head part
+  `…7a95f`. 330 `WCVfxBehaviour` objects over the install.
+- **Super emitter** (0x2B, compile `0x0044b2c0` → `FUN_00448370`, run `0x0045dc40` → `FUN_0045d020`, both read
+  with REA): children along each parent particle's path (parent layer = high bits of the parent-channel
+  operands); count `(1 + (w19 − 1)·t)·(w17·|v·dt| + w16·dt)`, carry rounded to nearest; cone `w0..1`° about
+  −v̂, speed `w2..3`, inherit `w4..5`, radius `w6..7` × `(1 + (w18 − 1)·t)`. Ported (`particles::super_emit`);
+  `…7a95f`'s 12 debris particles now trail sparks (its sprite layer has rate and per-metre 0: nothing, as in the
+  data).
+- **Renderer opacity** (inferred here; confirmed by the entry "particle opacity settled" above): the run functions copy the word after the depth fade into the draw state
+  +0x240 (default 1.0): 0x24 word 8 (`FUN_00458e90`), 0x27 word 10 (`FUN_0045ab10`), and words 0x11 / 0x12 in
+  `FUN_0045b620` (taken for 0x28, whose depth fade is word 0x11; its table entry was not checked). Read as `gVfxConstants.z` (pixel programs: alpha × z, alpha-tested at 1/255 except the
+  `_NoAlphaTest` variants). The writer of the particle draws' constant was not found (slot 0x75 writes in the
+  dump are other draws). Effect: the nitrous glows (`…18092f`, `_NoAlphaTest`, 0) draw additively; `…7a95f`'s two
+  flare quads (BC1 flares on opaque black, alpha-tested, 0) draw nothing instead of dark squares.
+- **Spark alpha** (traced): `RenderSpriteMotionBlur` (0x25, `FUN_004598e0`) writes the colour's rgb with alpha
+  1.0 (`.rdata` 0x00f9d13c) into its vertices; `…24f3d` / `…1621e7`'s colour curves have alpha 0 and drew
+  nothing in our port. Now alpha 1 (the streak's tail word 11 not ported).
+- **Lights**: a "SetLightsOn" with lights switched off by a contact takes the object's lights out of
+  `LightSources` until the object is put back (`world_lights::take_object_lights`). Checked: world drive
+  (`--spawn=872,40,1731.9,90 --hour 1 --auto-throttle 0.6`) knocks lamp `da44501b` at (895.6, 1731.9): "lights
+  off: 1", impact sparks, part contact sparks.
+- **Results**: `--test smash` (60 km/h): `behaviour effects: 1 impact, 4 spot, 5 contact-effect frames, 1 light
+  switch-offs`, speed losses unchanged (685 contacts, 0.53 %); `--smash-set compounds`: 4 impact, 19 spot, 4
+  contact, 4 lights; screenshots looked at (`-knock<n>`: sparks along the car's travel, no dark quads;
+  `MW_VFX_DEMO=010000000007a95f,0.3,8`: debris spark trails; `…24f3d`: orange sparks); nitrous test: the flame
+  is blue-white and additive.
+- **Model decisions**: hitters that count as vehicles = race cars (`prop_contacts`); the effects' `Intensity`
+  (the w of a velocity the game passes: props' closing / 15 for impacts, 1 for spot effects); spot effects'
+  `Velocity` = the body's; the world contact's point velocity about the centre of mass after the step; one
+  avian manifold point per pair stands in for the pair record's point; behaviours "on at start" do not start
+  their spot effects (only ambient ones would: "AmbFX Dummy", power-plant smoke); the super emitter's LOD byte
+  (+0x50) and the renderer opacity mapping above.
+- **Open** (captures of the original that would settle them: a lamp knocked at night beside a fixed camera, a
+  close-up of the hit at 60 km/h): what the flare quads look like in the game (if they show, the opacity mapping
+  is wrong); `gVfxSparkBrightness` (the sparks are faint in daylight); the light particle layers (0x0F/0x30, the
+  impact flash `872058`); coronas are not drawn at all; dynamic objects' behaviours (handled the same way,
+  unchecked); 0x29 `RenderSpriteVelocity`'s alpha (`0x0045c970`, not read).
+### 2026-10-16: cops patrol in the traffic lanes and a pursuit starts only by the game's rules
+User report: "the police drive just somewhere and not in line with traffic, and [should] swap to chasing mode
+only when hit or a harder traffic violation happens". Details in decomp.md "When a pursuit starts (2026-10-16)"
+and "How a cop patrols (2026-10-16)". The WIP branch of 2026-10-14 (cop driver states, spawn kinds, off-screen
+removal, search legs) is merged into this work.
+- **Patrol = a traffic ghost** (sub-agent trace of `FUN_005101e0` modes 0–4): a patrolling cop asks traffic for an
+  invisible lane follower (car +0x78 = 2) 5 m ahead of it (message 0x1a, nearest rung within 20 m), merges with
+  it (the ghost crawls at 10 mph while the cop is more than 15 m behind) and then rides it: its body is set to
+  the ghost's pose every frame within 5 m. The ghost obeys traffic (lane speed, junction route by load, red
+  lights, the car ahead) except that it never starts a manoeuvre (score 0 zeroed). Free-roam cops are spawned on
+  the nearest lane point to the ring point, facing the lane's direction (`FUN_0051b4e0`). Ported: `cop_patrol.rs`,
+  `traffic.rs` ghosts (`add_ghost`, `ghost`, `set_ghost_override`, `remove_ghost`, `nearest_lane`).
+- **Pursuit start**: perception per cop (`FUN_006c5810`, `FUN_006c6280`: ranges 100 / 90 / 50 m by chasing /
+  alerted / other, the 40° cone outside 50 m, a ray, 2 s memory, "in cone"), rams (contacts summed past
+  `AIConfig` +0x60 = 2, each vehicle once per 0.5 s), and the wanted pass `FUN_005192b0`: speeding (> 110 mph at
+  level 0) in a cop's cone, **two traffic cars hit within 10 s while a cop has the player in its cone**
+  (`FUN_00515090` over the list at traffic world +0x33144, filled by `FUN_0060c3a0`), a rammed cop, or a running
+  pursuit. Ported: `cop_sight.rs` (with unit tests), `police.rs`; `traffic.rs` records who turned traffic
+  physical (`take_hits`).
+- **Corrections**: decomp.md said the 1.5 mph/m gap law paces every chasing cop; `FUN_004fa480` discards it for
+  cops with a physical car (they drive flat out under their mph cap); fixed. The traffic arbiter's `world+0xa2be6`
+  gate zeroes only score 0, not all scores (the scores are SIMD vectors); fixed.
+- **`--test pursuit` bust timeout** (WIP): not reproduced in three runs (busted after 20–36 s); the bust meter
+  drains whenever no cop is within 20 m, and the low-speed chase's creep approaches a stopped player at up to
+  20 mph × d / 33 m, so the bust takes a while. The test now teleports the car with Position / Rotation (a
+  Transform write alone did not always move a body: the cops test's cop stayed put that way) and reports the
+  last uninterrupted fill.
+- **`--test pursuit` on the merged session-10 tree** (integrator: busted 6 s into the chase phase, then a
+  timeout in phase 3): the test's fault, not an interaction with the merged branches. The test placed its cops
+  30 m away in any direction while the car was still pulling away from rest; a cop ahead rams head-on (ram mode
+  within 40 m), the car drops below the 25 mph bust speed with cops touching it, and the game's bust rule
+  catches it; the test then waited for a cooldown that never came. Now the cops are sent only once the car does
+  50 mph and are placed behind it (falling back to the ring), and a bust during the chase phase skips to the
+  bust run instead of timing out. Six runs on the merged tree: all complete (escaped and busted; the bust meter
+  filled in 4.0 s in five of them, the original's time); `--test cops` 4/4 three times.
+- **Public state for the siren / light-bar work**: `police::CopStatus` (component: activity, driver state id,
+  patrol mode, the game's chasing predicate `FUN_006bbb70`, in pursuit, sees the player, wrecked), plus
+  `CopMode`, `Cop::mode()`, `Cop::slot()`. The siren switch was not found in the code (only the mix groups
+  `Player_Vehicle_Sirens`, `Sirens_Roadblock`, `Sirens_Competitor`); the chasing predicate is the natural
+  candidate (inferred).
+- **Verified**: `--test cops` 4/4 (slow pass at 30 mph: seen, no pursuit; 125 mph past the cop: wanted for
+  speeding 50 m from it, chase; 35 mph into it: rammed, chase; patrol: modes 0 → 1 → 2 → 3 → 4, riding the
+  ghost ≤ 0.03 m off the lane centre, screenshots `ref/police/shots/patrol*.png` show the cop in its lane ahead);
+  free roam with `MW_POLICE_LOG=1`: the level-0 cop spawns on a lane, rides its ghost at the lane's 40–55 mph,
+  passes the standing player without a pursuit.
+- **Model decisions**: the merge speed (`.bss` 0x011061f8, unread: the lane's cruise speed, at least 20 mph), a
+  cop within 5 m of its ghost has caught up, mode 1's speed beyond its ramp (level go-to cap), the ride by
+  velocity in the ground plane and yaw instead of a full transform set, a cop more than 5 m off its ghost (put on
+  it when unseen, else starts over: the D+0x584c reader is not traced), orphaned ghosts go after 2 s, cops not
+  riding a ghost are obstacles for traffic like crashed cars, the "alerted" flag (`FUN_00516400`) = in a pursuit
+  and searching / going / waiting, the ram value = closing speed in m/s of a new contact with the player's car,
+  out-of-range sight (`FUN_00657ee0`, records at world +0x2f484) and wanted terms `FUN_006a1570` / coordinator
+  +0x665 false, the stop / hold commands use the handbrake (our brake pedal selects reverse at a standstill).
+- **Captures that would confirm** (not run: another agent drives the original): a live read of `.bss`
+  0x011061f8 / 0x01106228 and of a cop's contact record +0x1c after a nudge (probe `dump.req`); a capture of a
+  patrol cop near the player (AI vehicle states, flags 0x4 / 0x8) to compare the merge time and the lane offset;
+  driving past a level-0 cop at 100 and 120 mph (no chase / chase), hitting two traffic cars in front of a cop
+  (chase) and one (no chase); nudging a cop at walking pace (how many touches start the chase).
+
 ### 2026-10-15: navigation (SET DESTINATION, the GPS route) from the code
 User play test: "Navigation (SET DESTINATION route / GPS) does not work yet". Details in decomp.md "Navigation: SET
 DESTINATION and the GPS route".
@@ -475,6 +1089,47 @@ ported (decomp.md "Menu input and the map screen's controls"):
   cube.a × SkyReflectionAverageColour + cube.rgb × SkyReflectionAverageLight, we reflect the HDR sky), the
   secondary cloud layer, the cloud dome coordinates, the shadow-far value, `--weather` pairs (what selects the
   Alternates in the original is unknown), a second, distant place.
+
+### 2026-10-14: how cops drive, spawn and attack: read from the full image (REA); a real pursuit captured (WIP)
+- **Method**: the cop driver states are vtable classes in `.rdata` 0x00fa8510–0x00fa88b0 (slot +8 update, +0xc
+  state id, +0x18 path builder, +0x1c speed law; Chasing has a +0x20 aim point). Ids: 0 Chasing `FUN_00510420`,
+  1 ChasingGoTo, 0xc Searching `vt_0050dd40`, 0xd Patrolling `FUN_005101e0`, 0x12 Rhino `FUN_005102f0`, 0x13
+  HeadOn `FUN_0050b7f0`, 0x16 LowSpeedChasing `FUN_0050fe80`, 0x17 LowSpeedChasingAhead, 0x18 ChasingBruiser
+  `FUN_0050f5f0`, 0x1a Interceptor `vt_0050f970`; the shared chase core is `FUN_0050e370`.
+- **Correction**: `FUN_004fa480` discards the gap law's result (`fstp st0` at 0x004fa56b) and returns FLT_MAX: a
+  cop with a physical car drives **flat out** under its CopBehaviours mph cap; the 1.5 mph/m gap law only paces
+  cops without a physical car (far away). The aim point is target + 1 s lead (≤ 50 m) + ±3.5 m along the cop's
+  own right axis; within 40 m of the player (substate 2) 0.5 s ahead, driven straight when the nav line is clear,
+  braking when > 20° off at > 20 mph or a wall is near (`AIConfig` 0x48–0x88, 0xec–0x12c).
+- **LowSpeedChasing** substates (block spin with handbrake and 0.7 lock, creep to 7 m at ≤ 20 mph, brake 0.6,
+  ram) and the box-in (one blocking cop pulls the others in; after 1 s they creep); **Bruiser** steers 0.2/m into
+  the car once alongside; **Rhino** aims 0.5 s ahead, becomes a Bruiser once behind; **HeadOn** = handbrake +
+  full lock when closing > 110 mph within 90 m.
+- **Spawns** (`FUN_005261d0`): outside a chase on the ring r (random direction, nearest road, 20 mph,
+  patrolling); in a chase by the Freedrive game mode's weights (side 10 / ahead 10 / behind 10 / wait 0) gated by
+  `CopType` flags +0x14..+0x19, a region with no cop counting double; ahead/behind = a road node between r and
+  √2·r facing the player at SpawnSpeed 90 mph. **Removal only off screen** (4 m sphere vs frustum); surplus cops
+  at 100 m, crashed ones at 125 m; all off-screen cops when a pursuit ends, then 90 s without spawns.
+- **Patrol** follows a traffic-lane ghost car (modes 0–4 of `FUN_005101e0`); **search** legs: five 72° sectors,
+  +20 m per leg, around the player's actual position. Roadblocks (kind-0x12 trigger boxes 300–600 m along the
+  predicted route, layered cars / cones / sawhorses, a spike strip at level 5), siren / light-bar data, the busted
+  (13 s, controls off) and escaped (13 s, UI) sequences were read (details in the session's agent reports, to be
+  moved into decomp.md).
+- **Capture of the original** (orig, a keyboard autopilot over the road graph `mwtool ai-graph`, logger reading
+  the pursuit record `[[0x10edad0]+8]+0x2f410`, the player `[[..]+0x2f3dc]+0x10+i·0x7f0`, AI vehicle states
+  `[[[0x10edb50]+4]]+0x42d60+i·0x94` with flags 0x4 cop / 0x8 physical): ramming the level-0 cop started the chase
+  (heat 0.5, +1 for its takedown); heat rose 0.0067/s at level 1 and 0.024/s at level 2 (= threshold / time, as
+  ported) plus +0.2 at each cop contact (SLAM 955544), +0.1 per traffic hit; crashed cops were replaced; new cops
+  arrived at 90 mph (SpawnSpeed) and rammed repeatedly at 80–95 mph; the bust meter filled in **4.0 s** with the
+  player stopped and cops 12–19 m away. Vehicle +0x1a84 of the player is **2** (not 0), so the cooldown's ×4 does
+  not apply to the player (settles the open point). Save backed up to `ref/savebackup-2026-10-14-police/`, changed
+  by the run (bust), restored byte-identical.
+- **Port (WIP, branch of this worktree)**: `cop_driver.rs` (Chasing, LowSpeedChasing + box-in, Bruiser, Rhino,
+  HeadOn), `police.rs` (spawn kinds and weights, off-screen removal, crashed-cop replacement, search legs, GoTo,
+  waiting side-road cops, SLAM / traffic-hit heat, 13 s outcomes), `AiDriver::overrides` / `keep_wrecked`,
+  `mwtool ai-graph`. `--test pursuit`: chase, cooldown, escape pass; the bust run timed out in the last run
+  (spawn ring around the reset start; unverified). Not ported: patrol on traffic lanes, Interceptor, roadblocks,
+  spike strips, sirens / light bars, the busted / escaped sequences' cameras.
 
 ### 2026-10-14: a third of the game's functions are missing from the dump
 
@@ -2546,7 +3201,8 @@ Code findings are in decomp.md "Traffic runtime"; the runtime is `crates/mostrus
   (2026-10-04, TRK_UNIT1). No visibility data in it. Not parsed yet.
 - How the game draws near water (city rivers, the airfield lake): no zone lists a water mesh over the river
   next to downtown (unit 13), and no main geometry covers it. A separate water system? (`--backdrop-zone 13`
-  shows the gap.)
+  shows the gap.) Answered 2026-10-16: zone 13 has no river (unmodelled block interiors); every zone lists the
+  water it shows.
 - ZoneList zone byte 0x40 (0 or 1) and the header u32 at 0x18 (3).
 - What does `WORLDLIST.BNDL` contain, and how does it relate to `HAWAII/MAPS/*.BNDL`?
 
@@ -2623,8 +3279,9 @@ Code findings are in decomp.md "Traffic runtime"; the runtime is `crates/mostrus
 - World effects: `mwtool genesys all --type WCVfxBehaviour` finds 3,931 objects (3,911 in `TRK_UNIT*`): 2,302
   have `Spot_effects` (`Spot_effect` handle + `Locator_group` id; e.g. `…24f3d`, `…eee1b`, `…af136`), 1,095 an
   `ImpactEffect` (`…24f3d` 613×, `…1621e7` 410×: prop smashes), most have `Lights` (`LightDefinition`) or
-  `Coronas`. How a world locator group resolves to positions (compound / world object parts?) is open; a car's
-  resolve in its `VehicleGraphicsSpec` (2026-10-09). The exhaust effects are the cars' spot effects (2026-10-09).
+  `Coronas`. Contact-driven ones (impact, contact and spot effects, lights off) are ported since 2026-10-16
+  (`prop_vfx.rs`); ambient ones that are on from the start (power-plant smoke, "AmbFX Dummy") are not. The
+  exhaust effects are the cars' spot effects (2026-10-09).
 
 ---
 

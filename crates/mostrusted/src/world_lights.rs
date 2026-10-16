@@ -12,10 +12,11 @@
 //! `FUN_0089b400`): its definition's `OnDuringDay` / `OnDuringNight` flags against the environment's day flag
 //! and night level, which ramps over `LightTransitionDuration` at both ends of the night (`FUN_008a8480`).
 //!
-//! Not drawn: line lights (66 instances; `LightBuffer_Line` not ported), the lights cars carry
-//! (`VehicleVfxBehaviour`) and the game's own cap on lights per frame (it keeps a fixed-size list per type,
-//! `FUN_008dfa00`). Flash patterns are not animated (those lights are steady). A knocked-over lamp keeps its
-//! light.
+//! Not drawn: line lights (66 instances; `LightBuffer_Line` not ported) and the game's own cap on lights per
+//! frame (it keeps the nearest of a fixed-size list per type, `FUN_008dfa00`: the main view's spot and cone lists
+//! keep 224 of 256, the point list 128 of 160, `.data` 0x010c6fd0 / 0x010c6f88 / 0x010c7060). The lights cars carry
+//! are `car_lights.rs`'s. Flash patterns are not animated (those lights are steady). A knocked-over lamp's light goes
+//! out (`prop_vfx.rs`: its "SetLightsOn" behaviour is switched off by the contact).
 
 use std::sync::Arc;
 
@@ -37,6 +38,17 @@ pub struct LightSources {
 }
 
 impl LightSources {
+    /// Take out the lights object definition `object` carries within `radius` of `near` (a knocked lamp's,
+    /// `prop_vfx.rs`); [`Self::add`] puts them back.
+    pub fn take_object_lights(&mut self, object: mw_bundle::ResourceId, near: Vec3, radius: f32) -> Vec<WorldLight> {
+        let (taken, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut self.lights)
+            .into_iter()
+            .partition(|l| l.object == Some(object) && Vec3::from(l.position).distance(near) <= radius);
+        self.lights = kept;
+        self.dirty |= !taken.is_empty();
+        taken
+    }
+
     pub fn add(&mut self, lights: Vec<WorldLight>) {
         if !lights.is_empty() {
             self.lights.extend(lights);

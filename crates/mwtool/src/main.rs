@@ -6,6 +6,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
 mod camera_take;
+mod car_lights;
 mod compare;
 mod crack;
 mod damage;
@@ -15,11 +16,14 @@ mod memscan;
 mod placement;
 mod preview;
 mod props;
+mod siren;
 mod survey;
+mod terrain_check;
 mod traffic_sound;
 mod tune;
 mod ui;
 mod verify_handling;
+mod water;
 mod wheels;
 
 use mw_assets::AssetStore;
@@ -313,12 +317,34 @@ enum Cmd {
         #[arg(long)]
         competitor: bool,
     },
+    /// The light sources a car carries (`VehicleVfxBehaviour.Lights`, `mw_assets::car_lights`): group, gate,
+    /// type, colour, intensity, cone or projector, locators. `all` surveys every car bundle.
+    CarLights { car: String },
     /// Traffic engine sounds (`<component>_COMPETITORSOUND` in `VEHICLES/TRAFFICATTRIBS.BNDL`,
     /// `mw_assets::car_sound`): lists each vehicle type's bank, its RPM against normalised speed and its 3D
     /// placement; with an output file, renders a 0 → top speed → 0 sweep (14 s) of one type and then a
     /// pass-by (`--passby mph`) through the game's falloff and doppler, printing the gain against distance.
+    /// Police sirens (`CopSoundSet` in `VEHICLES/WAVES.BNDL`, `mw_assets::police_sound`): the siren sets,
+    /// their waves and channels; with an output file, renders set `--set` (of list `9f467b30`) through off,
+    /// levels 1–3, a blip and level 1 again. `--car <name>` also lists that car's cop lights (group 3 coronas
+    /// and lights with their flash patterns, 1/8 s per character).
+    Siren {
+        out: Option<PathBuf>,
+        #[arg(long, default_value_t = 0)]
+        set: usize,
+        #[arg(long)]
+        car: Option<String>,
+    },
+    /// Police radio (`EN_US/SPEECH/SPEECHEVENTSEQUENCES.BNDL` + the SWC0 container, `mw_assets::police_speech`):
+    /// the speech events; with an event id its items, and with `--out <dir>` its lines decoded to .wav.
+    Speech {
+        event: Option<u32>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     TrafficSound {
-        /// A `VehicleComponent` id (e.g. 122816), or `all`.
+        /// A `VehicleComponent` id (e.g. 122816), or `all`; `sfx` (traffic / AI one-shots), `player[:<id>]`
+        /// (the player car's horn, impacts, grind, damage), `world` (landings, crash contacts, prop sounds).
         component: String,
         out: Option<PathBuf>,
         /// Pass-by speed (mph) for the 3D render: the car drives past a listener 4 m to the side.
@@ -432,6 +458,21 @@ enum Cmd {
     /// Police and pursuit data (`mw_assets::police`): the bust rule, the free-roam heat levels (thresholds, heat
     /// and cooldown times, the cops each fields) and the cop types' cars (docs/decomp.md "Police and pursuits").
     Police,
+    /// Every water surface (main and backdrop): height, extent, listing units, and where it lies above dry
+    /// collision (floating water) while the composed backdrop draws it.
+    Water {
+        /// Surfaces counted as water beds (the wash surfaces).
+        #[arg(long, value_delimiter = ',', default_values_t = [27u8, 43])]
+        wash: Vec<u8>,
+        /// Sample spacing in metres.
+        #[arg(long, default_value_t = 8.0)]
+        step: f32,
+        #[arg(long, default_value_t = 40)]
+        top: usize,
+        /// Ignore the backdrop composition (count every backdrop sample as drawn).
+        #[arg(long)]
+        all_backdrops: bool,
+    },
     /// Drop every placement (instances, props, compounds, dynamics, groundcover) onto the track units'
     /// collision and report per layer / model / unit how far it stands off the ground.
     PlacementCheck {
@@ -455,6 +496,24 @@ enum Cmd {
         /// Groundcover only: per group, whether the zone that owns its place lists its collection.
         #[arg(long)]
         owners: bool,
+    },
+    /// Terrain through the road: drawn ground (main terrain / plot meshes at every LOD, the composed backdrop)
+    /// above a road mesh at the same spot, ranked by area (`terrain_check.rs`).
+    TerrainCheck {
+        /// Grid step in metres.
+        #[arg(long, default_value_t = 1.0)]
+        step: f32,
+        /// Heights within this of the road do not count (metres).
+        #[arg(long, default_value_t = 0.05)]
+        eps: f32,
+        #[arg(long, default_value_t = 30)]
+        top: usize,
+        /// Only one kind of ground: main, lod, backdrop.
+        #[arg(long)]
+        only: Option<String>,
+        /// Also count models the main view skips (`Model` +0x19 pass mask), as drawn before 2026-10-16.
+        #[arg(long)]
+        all_passes: bool,
     },
     /// The world's model LOD tables and placement LOD scales (docs/decomp.md "Model LOD and draw distance");
     /// `--at x,y,z` counts what the game would draw from there at view scale `--scale`.
@@ -515,6 +574,9 @@ enum Cmd {
         #[arg(long, value_delimiter = ',', allow_hyphen_values = true)]
         at: Vec<f32>,
     },
+    /// The AI road graph (`AIData`): one line per node (index, x, y, z, drivable width, flags, linked nodes), for
+    /// scripts that drive the original along the roads (`tools/orig`).
+    AiGraph,
     /// Offline events (`OfflineEvent` in GAMELOGIC/GAMEMODES.BNDL, resolved against HAWAII/TRIGGERS.BNDL): one
     /// line per event (id, kind, laps, checkpoints, opponents, name, car); `events <id>` prints one in detail,
     /// `--png` draws its route over the lane map (yellow route, white gates, green start, red opponents).
@@ -855,6 +917,13 @@ fn main() -> Result<()> {
             }
         }
         Cmd::Police => police(&AssetStore::new(game)?)?,
+        Cmd::TerrainCheck { step, eps, top, only, all_passes } => {
+            let store = AssetStore::new(game)?;
+            terrain_check::run(&store, step, eps, top, only.as_deref(), all_passes)?
+        }
+        Cmd::Water { wash, step, top, all_backdrops } => {
+            water::run(&AssetStore::new(game)?, &wash, step, top, !all_backdrops)?
+        }
         Cmd::PlacementCheck { bundles, top, groups, view, column, owners } => {
             let store = AssetStore::new(game)?;
             if owners {
@@ -1246,6 +1315,18 @@ fn main() -> Result<()> {
             }
             println!("{}: {:.1} s -> {}", v.name, duration, out.display());
         }
+        Cmd::CarLights { car } => {
+            let store = AssetStore::new(game)?;
+            car_lights::run(&store, &car)?;
+        }
+        Cmd::Siren { out, set, car } => {
+            let store = AssetStore::new(game)?;
+            siren::run(&store, set, out.as_deref(), car.as_deref())?;
+        }
+        Cmd::Speech { event, out } => {
+            let store = AssetStore::new(game)?;
+            siren::speech(&store, event, out.as_deref())?;
+        }
         Cmd::TrafficSound { component, out, passby } => {
             let store = AssetStore::new(game)?;
             traffic_sound::run(&store, &component, out.as_deref(), passby)?;
@@ -1446,6 +1527,14 @@ fn main() -> Result<()> {
         Cmd::Frontend { sequence: None, spots } => events::frontend(&AssetStore::new(game)?, spots)?,
         Cmd::Hsm { node, bundle, find, depth, parents } => {
             events::hsm(&AssetStore::new(game)?, &bundle, node, find.as_deref(), depth, parents)?
+        }
+        Cmd::AiGraph => {
+            let ai = AssetStore::new(game)?.ai_data()?;
+            for (i, n) in ai.nodes.iter().enumerate() {
+                let links: Vec<String> = n.links.iter().map(|l| l.to_string()).collect();
+                let [x, y, z] = n.position;
+                println!("{i}\t{x:.2}\t{y:.2}\t{z:.2}\t{:.2}\t{}\t{}", n.width, n.flags, links.join(","));
+            }
         }
         Cmd::Traffic { png, at } => traffic(&AssetStore::new(game)?, png.as_deref(), &at)?,
         Cmd::Music { wave, out } => music(&AssetStore::new(game)?, wave.as_deref(), out.as_deref())?,
@@ -1771,7 +1860,9 @@ fn traffic(store: &AssetStore, png: Option<&Path>, at: &[f32]) -> Result<()> {
                 .iter()
                 .map(|g| {
                     let lines: Vec<String> = g.stop_lines.iter().map(|(h, s)| format!("{h}/{s}")).collect();
-                    format!("[{}]", lines.join(" "))
+                    let lights: Vec<String> =
+                        g.lights.iter().zip(&g.light_objects).map(|(l, o)| format!("L{l}={o}")).collect();
+                    format!("[{} | {}]", lines.join(" "), lights.join(" "))
                 })
                 .collect();
             // Where: the first rung of the section owning the first stop line.
@@ -1802,6 +1893,7 @@ fn traffic(store: &AssetStore, png: Option<&Path>, at: &[f32]) -> Result<()> {
         }
     }
     println!("junction stop line references: {owned} owned by a section, {bad_refs} out of range");
+    traffic_light_objects(store, &t)?;
     // Query check at the docs/viewpoints.md road spot.
     let near = t.lanes_near(-1131.0, 1627.0, 200.0);
     println!("{} lane sections within 200 m of (-1131, 1627)", near.len());
@@ -2821,6 +2913,52 @@ fn scoring(store: &AssetStore, all: bool, sequence: Option<u32>, text: &[u32]) -
             if a.predicate.is_empty() { String::new() } else { format!(" if {}", a.predicate) }
         );
     }
+    Ok(())
+}
+
+/// The junction lights' object handles (`TrafficLightGroup::light_objects`) against the placed compound and
+/// dynamic objects' instance ids: how many name a placed object, with which object definitions.
+fn traffic_light_objects(store: &AssetStore, t: &fmt::TrafficLaneData) -> Result<()> {
+    let mut by_id: std::collections::HashMap<u32, (ResourceId, [f32; 3])> = Default::default();
+    for path in store.bundle_paths().to_vec() {
+        if !path.file_name().is_some_and(|n| n.to_string_lossy().starts_with("TRK_UNIT")) {
+            continue;
+        }
+        let Some(bundle) = store.bundle(&path) else { continue };
+        for ty in [ResourceType::CompoundInstanceList, ResourceType::DynamicInstanceList] {
+            for e in bundle.entries_of_type(ty) {
+                let Ok(list) = fmt::ObjectInstanceList::parse(&bundle.load(e)?) else { continue };
+                for i in list.instances {
+                    let [x, y, z, _] = i.transform[3];
+                    for id in i.ids.into_iter().filter(|&id| id != 0) {
+                        by_id.insert(id, (i.object.unwrap_or(ResourceId::NULL), [x, y, z]));
+                    }
+                }
+            }
+        }
+        store.evict_all();
+    }
+    let (mut exact, mut low, mut missing) = (0, 0, 0);
+    let mut defs: BTreeMap<ResourceId, usize> = BTreeMap::new();
+    let mut tops: BTreeMap<u32, usize> = BTreeMap::new();
+    for g in t.hulls.iter().flat_map(|h| &h.junctions).flat_map(|j| &j.groups) {
+        for &o in &g.light_objects {
+            *tops.entry(o >> 28).or_default() += 1;
+            if let Some((d, _)) = by_id.get(&o) {
+                exact += 1;
+                *defs.entry(*d).or_default() += 1;
+            } else if let Some((d, _)) = by_id.get(&(o & 0x0fff_ffff)) {
+                low += 1;
+                *defs.entry(*d).or_default() += 1;
+            } else {
+                missing += 1;
+            }
+        }
+    }
+    println!(
+        "junction light objects: {exact} name an instance id, {low} by their low 28 bits, {missing} not found; \
+         top nibbles {tops:?}; definitions {defs:?}"
+    );
     Ok(())
 }
 

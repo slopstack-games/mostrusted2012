@@ -194,24 +194,81 @@ pub enum Op {
     InheritVelocity { velocity_param: Operand, min: f32, max: f32, velocity: Operand },
     /// 0x2F: `Age += dt × RecipLifetime`; the particle dies at 1.
     Age { age: Operand, recip_lifetime: Operand },
+    /// 0x0B `Initialise3dRotation` (compile `0x00449e20`, run `0x00453ee0` → `FUN_00453070`): a quaternion
+    /// (x, y, z, w) and a world angular velocity (rad/s). `random_rotation` (byte +0x45): `normalize(2r − 1)` of four
+    /// uniform randoms, else the Euler offset (radians, `qz ⊗ qy ⊗ qx`) ⊗ the `Transform`'s rotation.
+    /// `random_spin` (byte +0x44): a uniform random axis at `revs` × 2π rad/s, else `local_spin` (rad/s, emitter
+    /// space) turned by the `Transform`.
+    Rotation3dInit {
+        rotation: Operand,
+        angular_velocity: Operand,
+        euler: [f32; 3],
+        local_spin: [f32; 3],
+        revs: f32,
+        random_spin: bool,
+        random_rotation: bool,
+    },
+    /// 0x2D `Update3dRotation` (run `0x0045e2d0` → `FUN_0045ddf0`): unless every |ω| component is ≤ `FLT_EPSILON`,
+    /// `q ← (ω̂ sin(|ω| dt / 2), cos(|ω| dt / 2)) ⊗ q` (not renormalised), then `ω ×= (1 − damping)^dt` (`powf`):
+    /// `damping` is the fraction lost per second.
+    Rotation3d { rotation: Operand, angular_velocity: Operand, damping: f32 },
+    /// 0x40 `UpdatePosVelWithWorldCollision` (compile `0x0044bec0`, a plain copy; run `0x00462f00` → `FUN_00462750`):
+    /// rigid debris. A particle whose collision radius is negative is at rest and skipped. Otherwise `p += dt·v`,
+    /// `v = R·v + Δ` with `R = (1 − drag)^dt` and `Δ = (1 − R)·wind·W + (0, gravity·dt, 0) + turbulence·dt·(2r − 1)`;
+    /// the segment from the old position to the new one plus `v̂ · CR` is tested against the world triangles cached
+    /// around the player's car (front faces); on a hit the particle is put `CR` above the plane, `Δ` is taken out of
+    /// its velocity, the tangential part kept by `k = rand(1 − keep[1] .. 1 − keep[0])`, the normal part reflected
+    /// by `restitution`, and it comes to rest (velocity and spin 0, `CR` negated) when its speed is at most
+    /// `rest_speed` on ground whose normal has y > 0.9; else its spin is scaled by `k`.
+    WorldCollide {
+        position: Operand,
+        velocity: Operand,
+        collision_radius: Operand,
+        keep: [f32; 2],
+        gravity: f32,
+        drag: f32,
+        wind: f32,
+        turbulence: f32,
+        restitution: f32,
+        rest_speed: f32,
+    },
+    /// 0x11 `InitialiseCollisionRadius` (run `0x0044a380` → `FUN_0044a200`): `CR = 0.01 + table[serial & 15] · 0.99 /
+    /// 255` (`.rdata` 0x00f9d474 / 0x00f9d478).
+    CollisionRadiusInit { table: [u8; 16], radius: Operand },
     /// 0x2C: `Rotation += AngularVelocity × dt`, with damping.
     Rotation2d { rotation: Operand, angular_velocity: Operand, damping: f32 },
     /// 0x3D: integrate: vertical acceleration (m/s², -9.8 for debris), drag (1/s).
-    Integrate { position: Operand, velocity: Operand, gravity: f32, drag: f32, extra_guess: [f32; 2] },
-    /// 0x3E: integrate and collide with the bounce plane: restitution and friction ranges, then
-    /// gravity and drag as in 0x3D.
+    /// (Compile `0x0044bda0`, a plain copy; run `FUN_004615f0`.) `p += dt·v` (the old velocity), then `v = v·(1 −
+    /// drag)^dt + (1 − R)·wind·W + (0, gravity·dt, 0) + turbulence·dt·(2r − 1)` with `R = (1 − drag)^dt` (`powf`)
+    /// and `W` the engine block's +0x50 vector (not identified, wind?); bytes +0x1c / +0x1d index a float table
+    /// (engine +0x84, not read) that scales gravity and turbulence.
+    Integrate { position: Operand, velocity: Operand, gravity: f32, drag: f32, wind: f32, turbulence: f32 },
+    /// 0x3E `UpdatePosVelWithBouncePlane` (compile `0x0044be00` → `FUN_00448c40`, run `0x004620a0` → `FUN_004618d0`):
+    /// `v' = R·v + Δ` as 0x3D, then `p' = p + dt·v'`. The plane is `lerp(Pg, Pp, clamp((|p' − C|² − 4)·0.2, 0, 1))`
+    /// (`global_plane` parameter within 2 m of `reference`'s translation, the particle's own plane beyond 3 m;
+    /// `.bss` 0x010ed2c0 / 0x010ed2d0). With `s = plane·p' − (radius if subtract_radius)` ≤ 0: `p = p' − s·n`,
+    /// `v = (v' − vn·n)·f − (j if |j|² > |Δ|² else 0)`, `vn = v'·n`, `j = e·vn·n`; `e = rand(restitution)` and `f = 1 −
+    /// rand(friction)` drawn once per update for all particles.
     Bounce {
+        reference: Operand,
+        global_plane: Operand,
         position: Operand,
         velocity: Operand,
+        radius: Operand,
         plane: Operand,
         restitution: [f32; 2],
         friction: [f32; 2],
         gravity: f32,
         drag: f32,
-        extra_guess: [f32; 2],
+        wind: f32,
+        turbulence: f32,
+        subtract_radius: bool,
     },
-    /// 0x3C: `Radius* = Radius × bezier(Age; p0..p3)`.
-    RadiusCurve { age: Operand, radius: Operand, out: Operand, bezier: [f32; 4] },
+    /// 0x3C `UpdateParametricRadius` (compile `0x0044bbb0`, run `FUN_004612d0`): `Radius* = Radius × r(Age) ×
+    /// s`, with `r` piecewise linear through `(0, values[0])`, `(knee, values[1])` and `(1, values[2])` (the
+    /// compile turns the three values into two slopes and an offset) and `s = floor + (1 − floor) ·
+    /// slot[slot]` (a binding slot of the layer; slot 0 reads 1).
+    RadiusCurve { age: Operand, radius: Operand, out: Operand, knee: f32, values: [f32; 3], floor: f32, slot: u8 },
     /// 0x1C `ParametricSetColourGradient` (`FUN_00449030` compiles, `FUN_004553b0` runs it): a piecewise
     /// linear gradient over the particle's age. With `u = frac(Age · rates[0])` and ramp weights
     /// `w_k = clamp(u · ramp[0][k] + ramp[1][k], 0, 1)`, `c = rows[0] + Σ w_k · rows[k + 1]`; then
@@ -231,8 +288,29 @@ pub enum Op {
     },
     /// 0x17: `Colour*.a *= Alpha`.
     AlphaApply { alpha: Operand, colour: Operand },
-    /// 0x38: camera-relative adjustments of `Radius*` / `Colour*`: near fade over `near_fade` metres.
-    ViewFade { near_fade: f32, far_guess: f32 },
+    /// 0x38 `UpdateParametricFadeOverDistance` (compile `0x0044ba90` → `FUN_004493f0`, run `FUN_00460970`):
+    /// colour over the view depth. With `d` = the particle's depth along the camera's forward axis −
+    /// (`offset` + `n`) (− its radius with `subtract_radius`), where `n = near + (near_fast − near) ·
+    /// min(camera speed / fast_speed, 1)` with `speed_near` (else `near`; the camera speed is its motion along
+    /// its forward axis per second, `FUN_004a1470` → view +0x21c), the colour (rgba) is multiplied by
+    /// `colours[1] + clamp(−d / n) · (colours[0] − colours[1]) + clamp(d / (far − near)) · (colours[2] −
+    /// colours[1])`: `colours[0]` at the camera, `colours[1]` at depth `n`, towards `colours[2]` far away.
+    /// Then, with `speed_alpha` / `speed_radius`, the alpha / radius are multiplied by `clamp((|v|² −
+    /// speed_zero²) / (speed_full² − speed_zero²))`.
+    ViewFade {
+        colours: [[f32; 4]; 3],
+        offset: f32,
+        near: f32,
+        far: f32,
+        near_fast: f32,
+        fast_speed: f32,
+        speed_full: f32,
+        speed_zero: f32,
+        speed_near: bool,
+        subtract_radius: bool,
+        speed_radius: bool,
+        speed_alpha: bool,
+    },
     /// 0x1D: `SubUV* = Age` (the shader picks and blends atlas frames from it).
     SubUv { out: Operand, age: Operand },
     /// 0x47: a random seed per particle.
@@ -247,6 +325,26 @@ pub enum Op {
     /// the current `Transform` each frame, so they follow a moving emitter (the exhaust flames); 0x1B first
     /// applies its own rotation and offset.
     ToWorld { rotation: [f32; 4], offset: [f32; 3] },
+    /// 0x2B `SuperEmitter` (compile `0x0044b2c0` → `FUN_00448370`, a plain copy; run `0x0045dc40` →
+    /// `FUN_0045d020`, both outside the dump's functions): a layer whose particles are born along the
+    /// particles of another layer (`parent`, from the high bits of the parent-channel operands at +0x24..+0x30,
+    /// which carry 0x80 | 4·channel). Per parent particle with `t = Age · RecipLifetime < 1`, each update emits
+    /// `(1 + (rate_end − 1)·t) · (per_metre · |v·dt| + rate · dt)` children (the fraction carried to the
+    /// next update), each at `parent position − u·v·dt` (`u` uniform, along the parent's path this update),
+    /// leaving at `cone` degrees (uniform, about a uniform azimuth) from the parent's backward direction
+    /// `−v̂` with `rand(speed)` m/s, plus `rand(inherit)` × the parent's velocity; radius `rand(radius)` ×
+    /// `(1 + (radius_end − 1)·t)` at the birth time. The byte at +0x50 picks a LOD class (not ported).
+    SuperEmitter {
+        parent: u8,
+        cone: [f32; 2],
+        speed: [f32; 2],
+        inherit: [f32; 2],
+        radius: [f32; 2],
+        rate: f32,
+        per_metre: f32,
+        radius_end: f32,
+        rate_end: f32,
+    },
     /// Any other kind (kept as raw bytes in [`Action::data`]).
     Other,
 }
@@ -342,6 +440,43 @@ pub struct Spawner {
     pub velocity: Operand,
     /// `EmitterConePlus` (0x00) only.
     pub cone: Option<ConeEmitter>,
+    /// `EmitterWheelContactPlus` (0x07, compile `FUN_00449a90`, run `FUN_00450760`) and `EmitterWheel` (0x05,
+    /// `FUN_004498e0` / `FUN_0044fb20`): the count `(rate · dt + per_metre · |contact speed| · dt)` is multiplied
+    /// by this binding slot (data byte +0x68 / +0x78), the output of the layer's `UpdateWheelBindings` (0x42) /
+    /// `UpdateBindings_Wheel` (0x34) controller.
+    pub count_slot: Option<u8>,
+    /// `EmitterCollisionMesh` (0x01) only.
+    pub mesh: Option<MeshEmitter>,
+}
+
+/// `EmitterCollisionMesh` (0x01; compile `FUN_00449630`, run `0x0044ccb0` → `FUN_0044bf90`): particles born on the
+/// triangles of a car's collision mesh (the `PolygonSoupList` of its bundle, car space) around a contact point.
+/// The compile step copies data word i to compiled word i + 4 for the speed and angle ranges and turns the angle
+/// ranges into turns (`c0 = a_lo / 360`, `c1 = 4 (a_hi − a_lo) / 360`, `c2 = b_lo / 360 − c0`,
+/// `c3 = 4 (b_hi − b_lo) / 360 − c1`; `.rdata` 0x00f9d1b0 = 1 / 360, 0x00f9c610 = 4).
+///
+/// Each update (while `IsEmitting` is set and the layer clock is within `time_window`, or the burst is still to
+/// come): `n = burst · slot[burst] + rate · dt · slot[rate]` (the burst is spent), then for every polygon (its
+/// first three vertices) whose centroid `C` lies within `radius · slot[radius]` of the contact point `P`, with
+/// `(C − P) · N ≤ plane` and `(n̂ · N + 1) / 2 > facing` (`n̂` = the triangle's normal, `N` = the contact normal,
+/// both in mesh space): `area · n · camera fade` particles (the fraction carried over, starting at 0.9999).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MeshEmitter {
+    /// Words 6 / 7 (+0x18): the layer clock window; past its end only a burst not yet spent emits.
+    pub time_window: [f32; 2],
+    /// Word 11 (+0x2c): the `IsEmitting` parameter; word 14 (+0x38): the `CollisionMeshParams` parameter.
+    pub emitting: Operand,
+    pub mesh: Operand,
+    /// Words 18..20 (+0x48): the radius around the contact point (m), the largest offset of a triangle's centroid
+    /// along the contact normal (m) and the facing threshold.
+    pub radius: f32,
+    pub plane: f32,
+    pub facing: f32,
+    /// Bytes +0x5c..+0x60: the binding slots that scale the radius, the rate, the burst, the speed and the
+    /// angles (slot 0 reads 1).
+    pub slots: [u8; 5],
+    /// Byte +0x61: the emitter's LOD level (`.rdata` 0x00f9cf9c table; not used here).
+    pub lod_level: u8,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -356,11 +491,47 @@ pub struct Renderer {
     pub material: Option<ResourceId>,
     /// Sprite pivot (0.5, 0.5 = centred) for the quad renderers.
     pub pivot: [f32; 2],
-    /// Lighting inputs passed to the particle shader for the quad renderers: (translucency, key
-    /// light as ambient, wrap); the vertex program reads them as TEXCOORD1.zw and TEXCOORD3.w.
+    /// Lighting inputs passed to the particle shader for the quad renderers: (translucency, key light as
+    /// ambient, wrap). The run functions hand the first two to `FUN_00440100`, which writes them as
+    /// TEXCOORD1.zw, and the wrap to `FUN_0043fc30` (TEXCOORD3.w): words (15, 17, 16) of 0x24
+    /// (`FUN_00458e90`), (16, 18, 17) of 0x27 (`FUN_0045ab10`), (25, 27, 26) of 0x28 (`FUN_0045b620`).
     pub lighting: [f32; 3],
-    /// First parameter word (0.01–4; soft-particle depth fade distance in metres, a guess).
-    pub depth_fade_guess: f32,
+    /// Soft-particle depth fade distance (m): the draw record's +0x50, which `FUN_004a40a0` hands to
+    /// `FUN_004976d0` (`gDepthFadeConstantsA` / `B`) for the soft passes 0x23, 0x24, 0x29 and 0x2a.
+    pub depth_fade: f32,
+    /// The word after it: the draw's opacity, `gVfxConstants.z`. The run functions store the pair at the
+    /// draw state's +0x23c / +0x240 (`FUN_00458e90` for 0x24 words 7 / 8, `FUN_0045ab10` for 0x27 words 9 /
+    /// 10, `FUN_0045b620` words 0x11 / 0x12; defaults 0 / 1.0), `FUN_0046ce40` copies them into the draw
+    /// record (+0x50 / +0x54), and the particle draw loop `FUN_004a40a0` writes `gVfxConstants` (slot 0x75)
+    /// = (0, 1, record +0x54, 1) before each draw ((1, 0, word, 1) in view 6). The pixel programs multiply
+    /// the output alpha by it and alpha-test at 1/255 (not the `_NoAlphaTest` variants); premultiplied under
+    /// (ONE, INV_SRC_ALPHA), 0 makes a layer additive. 0 on the nitrous glows (a `NoAlphaTest` material, so
+    /// they add) and on a few alpha-tested layers (which then draw nothing); 1 almost everywhere else.
+    pub opacity: f32,
+    /// Quad renderers: the half extents are `radius × aspect` and `radius / aspect` (0x24 word 10, 0x27
+    /// word 11, 0x28 word 0x14).
+    pub aspect: f32,
+    /// Quad renderers: the drawn radius is at most `size_cap × slot[size_cap_slot] × view depth` (the view's
+    /// +0x220 scale, 1.0 from `FUN_0046adb0`): 0x24 word 9, 0x27 word 19 × the binding slot of the byte
+    /// at +0x5b, 0x28 word 0x13 (its slot is not applied). 0 = no cap.
+    pub size_cap: f32,
+    pub size_cap_slot: u8,
+    /// `RenderSpriteVelocity` (0x29, `FUN_0045c2f0`): the streak is the velocity × 1/30 s (`.bss`
+    /// 0x010ed2a0) × `streak_scale` × slot[`streak_slot`], its length clamped to `streak`; the head takes
+    /// the colour (alpha included), the tail the colour × (1, 1, 1, `tail_alpha`).
+    pub streak: [f32; 2],
+    pub streak_scale: f32,
+    pub streak_slot: u8,
+    pub tail_alpha: f32,
+    /// The draw's render layer and pass, from two data bytes through `FUN_0046a430` (called by each renderer's
+    /// compile function): layer = [5, 6][blend byte]; pass = [0x23, 0x2a][blend byte] with the soft byte set
+    /// (the soft-particle programs; `FUN_004a40a0` then sets the depth fade constants), else [0x00, 0x28]
+    /// (0x29: [0x25, 0x26]). Bytes: 0x24 data +0x50 / +0x53, 0x27 +0x58 / +0x5c, 0x28 +0x78 / +0x7b, 0x29 +0x4d /
+    /// none. Layer 6 draws get `gVfxConstants` (1, 0, opacity, 1): the colour × the exposure texture's w and
+    /// the vertex program's LDR encode (sRGB-like curve of colour × 0.5), like the coronas' flare layer 8, which
+    /// the game draws after the tonemap; layer 5 draws (0, 1, opacity, 1), linear HDR.
+    pub layer: u8,
+    pub soft: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -428,6 +599,13 @@ impl Layer {
             Op::ToWorld { rotation, offset } => Some((rotation, offset)),
             _ => None,
         })
+    }
+
+    /// The layer whose particles this layer's `SuperEmitter` follows, if it has one.
+    pub fn super_emitter_parent(&self) -> Option<usize> {
+        self.actions
+            .iter()
+            .find_map(|a| if let Op::SuperEmitter { parent, .. } = a.op { Some(parent as usize) } else { None })
     }
 
     pub fn spawner(&self) -> Option<&Spawner> {
@@ -612,6 +790,16 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
                     offsets: vec4(0x50)?,
                     combine: std::array::from_fn(|k| [b[4 + k], b[8 + k], b[12 + k]]),
                 })
+            } else if kind == 0x42 && data.len() >= 0x58 {
+                // `UpdateWheelBindings` (`FUN_00463330`): the source bytes after the scales, then the combine
+                // steps' `a`, `b` and op bytes; no offsets. Its source table differs from 0x33's
+                // (`Bindings::wheel_source`).
+                let b = r.bytes(0x48, 16)?;
+                Some(Bindings {
+                    sources: [b[0], b[1], b[2], b[3]],
+                    offsets: [0.0; 4],
+                    combine: std::array::from_fn(|k| [b[4 + k], b[8 + k], b[12 + k]]),
+                })
             } else {
                 None
             };
@@ -630,6 +818,9 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
             position: opnd(0x60)?,
             velocity: opnd(0x64)?,
             cone: None,
+            mesh: None,
+            // `EmitterWheel` (compile `FUN_004498e0`, run `FUN_0044fb20`): the count × slot[data byte +0x78].
+            count_slot: Some(r.u8(0x78)?),
         }),
         0x07 => Op::Spawn(Spawner {
             kind,
@@ -644,6 +835,8 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
             position: opnd(0x50)?,
             velocity: opnd(0x54)?,
             cone: None,
+            mesh: None,
+            count_slot: Some(r.u8(0x68)?),
         }),
         0x01 => Op::Spawn(Spawner {
             kind,
@@ -658,6 +851,22 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
             position: opnd(0x3C)?,
             velocity: opnd(0x40)?,
             cone: None,
+            mesh: if data.len() >= 0x64 {
+                let b = r.bytes(0x5c, 6)?;
+                Some(MeshEmitter {
+                    time_window: pair(0x18)?,
+                    emitting: Operand::decode(r.u32(0x2c)?, nch, np).unwrap_or(Operand::None),
+                    mesh: Operand::decode(r.u32(0x38)?, nch, np).unwrap_or(Operand::None),
+                    radius: f(0x48)?,
+                    plane: f(0x4c)?,
+                    facing: f(0x50)?,
+                    slots: [b[0], b[1], b[2], b[3], b[4]],
+                    lod_level: b[5],
+                })
+            } else {
+                None
+            },
+            count_slot: None,
         }),
         0x00 => Op::Spawn(Spawner {
             kind,
@@ -683,6 +892,8 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
             } else {
                 None
             },
+            mesh: None,
+            count_slot: None,
         }),
         0x1A => Op::ToWorld { rotation: [0.0, 0.0, 0.0, 1.0], offset: [0.0; 3] },
         0x1B => Op::ToWorld { rotation: vec4(0)?, offset: [f(16)?, f(20)?, f(24)?] },
@@ -714,24 +925,67 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
         0x16 => Op::InheritVelocity { min: f(0)?, max: f(4)?, velocity_param: opnd(8)?, velocity: opnd(28)? },
         0x2F => Op::Age { age: opnd(4)?, recip_lifetime: opnd(8)? },
         0x2C => Op::Rotation2d { angular_velocity: opnd(4)?, rotation: opnd(8)?, damping: f(12)? },
+        0x0B if data.len() >= 0x48 => {
+            let b = r.bytes(0x44, 2)?;
+            Op::Rotation3dInit {
+                rotation: opnd(4)?,
+                angular_velocity: opnd(8)?,
+                euler: [f(0x20)?, f(0x24)?, f(0x28)?],
+                local_spin: [f(0x30)?, f(0x34)?, f(0x38)?],
+                revs: f(0x40)?,
+                random_spin: b[0] != 0,
+                random_rotation: b[1] != 0,
+            }
+        }
+        0x40 if data.len() >= 0x38 => Op::WorldCollide {
+            position: opnd(8)?,
+            velocity: opnd(12)?,
+            collision_radius: opnd(20)?,
+            keep: pair(24)?,
+            gravity: f(32)?,
+            drag: f(36)?,
+            wind: f(40)?,
+            turbulence: f(44)?,
+            restitution: f(48)?,
+            rest_speed: f(52)?,
+        },
+        0x11 if data.len() >= 0x14 => {
+            let b = r.bytes(0, 16)?;
+            Op::CollisionRadiusInit { table: std::array::from_fn(|i| b[i]), radius: opnd(16)? }
+        }
+        0x2D => Op::Rotation3d { rotation: opnd(4)?, angular_velocity: opnd(8)?, damping: f(12)? },
         0x3D => Op::Integrate {
             position: opnd(4)?,
             velocity: opnd(8)?,
             gravity: f(12)?,
             drag: f(16)?,
-            extra_guess: pair(20)?,
+            wind: f(20)?,
+            turbulence: f(24)?,
         },
         0x3E => Op::Bounce {
+            reference: opnd(4)?,
+            global_plane: opnd(8)?,
             position: opnd(12)?,
             velocity: opnd(16)?,
+            radius: opnd(20)?,
             plane: opnd(24)?,
             restitution: pair(28)?,
             friction: pair(36)?,
             gravity: f(44)?,
             drag: f(48)?,
-            extra_guess: pair(52)?,
+            wind: f(52)?,
+            turbulence: f(56)?,
+            subtract_radius: data.len() > 60 && r.u8(60)? != 0,
         },
-        0x3C => Op::RadiusCurve { age: opnd(4)?, radius: opnd(12)?, out: opnd(16)?, bezier: vec4(20)? },
+        0x3C => Op::RadiusCurve {
+            age: opnd(4)?,
+            radius: opnd(12)?,
+            out: opnd(16)?,
+            knee: f(20)?,
+            values: [f(24)?, f(28)?, f(32)?],
+            floor: f(36)?,
+            slot: r.u8(40)?,
+        },
         0x1C => Op::ColourCurve {
             age: opnd(0)?,
             out: opnd(8)?,
@@ -744,7 +998,23 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
             use_tint: r.u8(155)? != 0,
         },
         0x17 => Op::AlphaApply { alpha: opnd(0)?, colour: opnd(8)? },
-        0x38 => Op::ViewFade { near_fade: f(80)?, far_guess: f(84)? },
+        0x38 => {
+            let b = r.bytes(0x68, 4)?;
+            Op::ViewFade {
+                colours: [vec4(0)?, vec4(16)?, vec4(32)?],
+                offset: f(76)?,
+                near: f(80)?,
+                far: f(84)?,
+                near_fast: f(88)?,
+                fast_speed: f(92)?,
+                speed_full: f(96)?,
+                speed_zero: f(100)?,
+                speed_near: b[0] != 0,
+                subtract_radius: b[1] != 0,
+                speed_radius: b[2] != 0,
+                speed_alpha: b[3] != 0,
+            }
+        }
         0x1D => Op::SubUv { out: opnd(0)?, age: opnd(4)? },
         0x47 => Op::SeedInit { seed: opnd(4)? },
         0x48 => Op::SeedTint { min: f(0)?, max: f(4)?, colour: opnd(16)?, seed: opnd(20)? },
@@ -762,10 +1032,22 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
                 0x27 => (at(0)?, at(3)?, at(4)?, at(5)?, at(6)?),
                 _ => (at(0)?, at(3)?, at(4)?, at(5)?, Operand::None),
             };
-            let (pivot_at, light_at) = match kind {
-                0x27 => (params + 16, params + 24),
-                _ => (params + 20, params + 28),
+            // Word offsets from the depth fade: (aspect, pivot, translucency, wrap, key as ambient, size cap).
+            let (aspect, pivot_at, light_at, cap_at) = match kind {
+                0x24 => (12, 20, 32, 8),
+                0x27 => (8, 16, 28, 40),
+                _ => (12, 20, 32, 8),
             };
+            let (size_cap, size_cap_slot) = match kind {
+                0x27 => (f(params + cap_at)?, r.u8(0x5b)?),
+                _ => (f(params + cap_at)?, 0),
+            };
+            let (blend_at, soft_at) = match kind {
+                0x24 => (0x50, 0x53),
+                0x27 => (0x58, 0x5c),
+                _ => (0x78, 0x7b),
+            };
+            let blend = r.u8(blend_at)?;
             Op::Render(Renderer {
                 kind,
                 position,
@@ -775,11 +1057,76 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
                 colour,
                 subuv,
                 material: import(material),
-                pivot: pair(pivot_at)?,
-                lighting: [f(light_at)?, f(light_at + 4)?, f(light_at + 8)?],
-                depth_fade_guess: f(params)?,
+                pivot: pair(params + pivot_at)?,
+                lighting: [f(params + light_at)?, f(params + light_at + 8)?, f(params + light_at + 4)?],
+                depth_fade: f(params)?,
+                opacity: f(params + 4)?,
+                aspect: f(params + aspect)?,
+                size_cap,
+                size_cap_slot,
+                streak: [0.0, f32::MAX],
+                streak_scale: 1.0,
+                streak_slot: 0,
+                tail_alpha: 1.0,
+                layer: if blend == 0 { 5 } else { 6 },
+                soft: r.u8(soft_at)? != 0,
             })
         }
+        // 3-D sprites (`Render3dSprite` 0x1E, `Render3dSpriteSubUV` 0x1F; run `FUN_00455670` / `FUN_00456110`): words
+        // view, position, age, 1 / lifetime, radius, colour, rotation (quaternion), [SubUV], then the draw state's
+        // +0x23c / +0x240 pair, a view-kind alpha factor, translucency, wrap, key as ambient and the material.
+        0x1E | 0x1F => {
+            let k = if kind == 0x1F { 1 } else { 0 };
+            Op::Render(Renderer {
+                kind,
+                position: opnd(4)?,
+                velocity: Operand::None,
+                radius: opnd(16)?,
+                rotation: opnd(24)?,
+                colour: opnd(20)?,
+                subuv: if kind == 0x1F { opnd(28)? } else { Operand::None },
+                material: import(0x34 + 4 * k),
+                pivot: [0.5; 2],
+                lighting: [f(40 + 4 * k)?, f(48 + 4 * k)?, f(44 + 4 * k)?],
+                depth_fade: f(28 + 4 * k)?,
+                opacity: f(32 + 4 * k)?,
+                aspect: 1.0,
+                size_cap: 0.0,
+                size_cap_slot: 0,
+                streak: [0.0, f32::MAX],
+                streak_scale: 1.0,
+                streak_slot: 0,
+                tail_alpha: 1.0,
+                // The last word's bytes through `FUN_0046a430`: blend → layer 5 / 6, soft → the soft passes.
+                layer: if r.u8(60 + 4 * k)? != 0 { 6 } else { 5 },
+                soft: r.u8(61 + 4 * k)? != 0,
+            })
+        }
+        // Meshes (`RenderMesh` 0x22 with the car's paint colour, `RenderMeshNoPaintColour` 0x23; run `FUN_00457720`):
+        // view, position, rotation, age, 1 / lifetime, radius, the Model import (+0x18; `material` holds it).
+        0x22 | 0x23 => Op::Render(Renderer {
+            kind,
+            position: opnd(4)?,
+            velocity: Operand::None,
+            radius: opnd(20)?,
+            rotation: opnd(8)?,
+            colour: Operand::None,
+            subuv: Operand::None,
+            material: import(0x18),
+            pivot: [0.5; 2],
+            lighting: [0.0; 3],
+            depth_fade: 0.0,
+            opacity: 1.0,
+            aspect: 1.0,
+            size_cap: 0.0,
+            size_cap_slot: 0,
+            streak: [0.0, f32::MAX],
+            streak_scale: 1.0,
+            streak_slot: 0,
+            tail_alpha: 1.0,
+            layer: 5,
+            soft: false,
+        }),
         0x25 | 0x29 => Op::Render(Renderer {
             kind,
             position: opnd(8)?,
@@ -791,8 +1138,29 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
             material: import(32),
             pivot: [0.5; 2],
             lighting: [0.0; 3],
-            depth_fade_guess: 0.0,
+            depth_fade: 0.0,
+            opacity: 1.0,
+            aspect: 1.0,
+            size_cap: 0.0,
+            size_cap_slot: 0,
+            streak: if kind == 0x29 { pair(48)? } else { [0.0, f32::MAX] },
+            streak_scale: if kind == 0x29 { f(72)? } else { 1.0 },
+            streak_slot: if kind == 0x29 { r.u8(76)? } else { 0 },
+            tail_alpha: if kind == 0x29 { f(64)? } else { 1.0 },
+            layer: if kind == 0x29 && r.u8(0x4d)? != 0 { 6 } else { 5 },
+            soft: false,
         }),
+        0x2B => Op::SuperEmitter {
+            parent: (r.u32(0x24)? >> 23) as u8,
+            cone: pair(0x00)?,
+            speed: pair(0x08)?,
+            inherit: pair(0x10)?,
+            radius: pair(0x18)?,
+            rate: f(0x40)?,
+            per_metre: f(0x44)?,
+            radius_end: f(0x48)?,
+            rate_end: f(0x4c)?,
+        },
         _ => Op::Other,
     })
 }

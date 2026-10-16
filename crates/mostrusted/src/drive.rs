@@ -776,11 +776,25 @@ pub fn build_car(commands: &mut Commands, b: &CarBuild) -> Entity {
             stop_impulse: 0.0,
         },
     ));
+    // Lamp coronas (`coronas.rs`).
+    if !b.spec.coronas.is_empty() {
+        e.insert(crate::coronas::CarCoronas::new(b.spec.coronas.clone(), Vec3::ZERO));
+    }
+    // The light sources it casts on the world (`car_lights.rs`).
+    if !b.spec.light_sources.is_empty() {
+        e.insert(crate::car_lights::CarLights(b.spec.light_sources.clone()));
+    }
+    // Sirens and light bars (`police_fx.rs`).
+    if let Some(l) = &b.spec.flash_lights {
+        e.insert(crate::police_fx::FlashCar::new(l.clone()));
+    }
     // Exhaust pops and the car's spot effects (`exhaust.rs`).
     let tuning = match &b.spec.engine {
         Some(mw_assets::engine_sound::EngineVoice::Bank(b)) => b.tuning,
         _ => Default::default(),
     };
+    // Its collision mesh for the collision effects (`crash_vfx.rs`).
+    e.insert(crate::crash_vfx::CrashVfxCar { bundle: b.spec.bundle.clone(), paint_index: b.spec.paint_index });
     e.insert(crate::exhaust::Exhaust::new(
         b.spec.spot_effects.clone(),
         mw_assets::engine_driver::PopParams::from_handling(b.handling),

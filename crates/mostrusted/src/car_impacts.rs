@@ -66,11 +66,15 @@ const PAIR_COOLDOWN: f32 = 0.5;
 
 pub struct CarImpactsPlugin;
 
+/// The pair evaluation, which consumes [`PendingImpacts`] (`crash_vfx.rs` reads them before it).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct EvaluateImpacts;
+
 impl Plugin for CarImpactsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PendingImpacts>().add_systems(
             FixedPostUpdate,
-            (evaluate_impacts.before(crate::crash::detect_crash), remember_velocities)
+            (evaluate_impacts.in_set(EvaluateImpacts).before(crate::crash::detect_crash), remember_velocities)
                 .chain()
                 .after(PhysicsSystems::StepSimulation),
         );
@@ -146,8 +150,14 @@ struct Damage {
 /// The impact zone (`FUN_00929da0`): 0 roof, 1 underside, 2 / 4 front corners, 3 front, 5 / 9 sides, 6 / 8 rear
 /// corners, 7 rear, 10 centre.
 fn location(p: &Party, point: Vec3) -> u8 {
-    let local = p.rotation.inverse() * (point - p.position) - p.centre;
-    let q = local / p.half.max(Vec3::splat(1e-3));
+    impact_zone(p.rotation.inverse() * (point - p.position), p.centre, p.half)
+}
+
+/// [`location`] for a point in car space and the car's physical box (centre, half extents): also the zone the
+/// collision effects use (`crash_vfx.rs`).
+pub(crate) fn impact_zone(local: Vec3, centre: Vec3, half: Vec3) -> u8 {
+    let local = local - centre;
+    let q = local / half.max(Vec3::splat(1e-3));
     let m = q.abs().max_element();
     if m.is_nan() || m <= f32::EPSILON {
         return 10;

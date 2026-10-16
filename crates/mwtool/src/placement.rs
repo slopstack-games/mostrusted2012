@@ -528,9 +528,10 @@ pub fn column(store: &AssetStore, at: &str) -> Result<()> {
                 if !hits.is_empty() {
                     hits.sort_by(f32::total_cmp);
                     println!(
-                        "{name} model {} backdrop {} {} y {:?}",
+                        "{name} model {} backdrop {} mesh {} {} y {:?}",
                         p.model,
                         p.backdrop,
+                        sm.mesh_index,
                         sm.shader_name,
                         hits.iter().map(|y| format!("{y:.1}")).collect::<Vec<_>>()
                     );

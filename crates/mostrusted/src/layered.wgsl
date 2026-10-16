@@ -90,7 +90,7 @@ struct Layered {
     //          has surf), p4 = (surfTile.xy, surfAnimationSpeed, 0), p5 = (causticTile.xy, 0, 0); textures: -,
     //          normal, DiffuseAndCaustics, SpecDepthAndRefraction, RiverFloor, Surf, SurfMask, SurfNormal
     // RSF = Roughness_Specular_Fresnel (x = roughness scale, y = F0, z = Fresnel strength)
-    p: array<vec4<f32>, 21>,
+    p: array<vec4<f32>, 28>,
     // x = sky brightness (cd/m² per panorama unit), y = reflection cube mip count
     env: vec4<f32>,
     // vehicle light state (g_selfIlluminationMask): x = brake, y = headlights / running, z = reverse, w = tail
@@ -608,7 +608,21 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // Lightmapped lights (LightmapLightsTextureSampler), switched by the light state mask:
         // four channels sat(texel² × mask.xyzy) × multiplier against the red / green / blue / alpha
         // colours, or the green channel alone (the `Lightmap` variants also tint it by the albedo).
-        if p2.z > 0.5 {
+        if p2.z > 3.5 {
+            // `_LocalEmissive` (cop light bars): S = Σ Iᵢ (1 − sat(|Pᵢ − p|² · M² · R))² over the 16 local
+            // lights (p10..p18, p21..p27: world position, intensity; p4.w = M² · R), emission = S ×
+            // EmissiveColour (p4.rgb) × mSelfIlluminationMultiplier (p2.w) × EmissiveTexture(uv0).x.
+            var s = 0.0;
+            for (var i = 0u; i < 16u; i++) {
+                let l = layered.p[select(10u + i, 12u + i, i >= 9u)];
+                let d = l.xyz - in.world_position.xyz;
+                let k = 1.0 - saturate(dot(d, d) * layered.p[4].w);
+                s += l.w * k * k;
+            }
+            let emit = s * layered.p[4].rgb * p2.w * textureSample(tex3, samp3, uv).x * layered.env.x;
+            extra += emit;
+            pbr_input.material.emissive = vec4(emit, 1.0);
+        } else if p2.z > 0.5 {
             let t = textureSample(tex3, samp3, select(uv, uv_b, p3.w > 0.5));
             let m = layered.lights;
             var emit: vec3<f32>;

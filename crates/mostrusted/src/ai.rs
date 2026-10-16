@@ -385,7 +385,25 @@ pub struct AiDriver {
     pub crashes: u32,
     /// A car the emergency brake does not react to: a cop's target (`police.rs`).
     pub ignore: Option<Entity>,
+    /// Controls a state writes over the command builder's after it ran (a cop's ram steering, block spin,
+    /// braking: `police.rs`, the game's per-state overrides such as `FUN_004fcc10`). Not applied in the crash
+    /// recovery.
+    pub overrides: ControlOverride,
+    /// A crashed car stays where it stopped (a cop: the game removes it later, `FUN_00522f40`) instead of the
+    /// racers' crash reset.
+    pub keep_wrecked: bool,
     touching: bool,
+}
+
+/// Per-tick control overrides of an AI state (`AiDriver::overrides`); `None` keeps the driver's value.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ControlOverride {
+    /// Steering, ours: positive = left.
+    pub steer: Option<f32>,
+    pub throttle: Option<f32>,
+    pub brake: Option<f32>,
+    pub handbrake: Option<bool>,
+    pub nitrous: Option<bool>,
 }
 
 impl AiDriver {
@@ -406,6 +424,8 @@ impl AiDriver {
             resets: 0,
             crashes: 0,
             ignore: None,
+            overrides: ControlOverride::default(),
+            keep_wrecked: false,
             touching: false,
         }
     }
@@ -749,7 +769,7 @@ pub(crate) fn ai_drive(
             c.time += dt;
             *ctl = CarControls::default();
             let delay = crash_config.as_ref().map_or(4.5, |cfg| cfg.0.camera.cameras_end());
-            if c.time >= delay {
+            if c.time >= delay && !ai.keep_wrecked {
                 let mph = crash_config.as_ref().map_or(30.0, |cfg| cfg.0.reset.after_crash(c.pre_mph));
                 let (p, tangent) = ai.route.at(ai.progress);
                 let rotation = Quat::from_rotation_y(tangent.x.atan2(tangent.z));
@@ -854,6 +874,24 @@ pub(crate) fn ai_drive(
         };
         let out = ai.state.tick(&settings.0, &input);
         *ctl = out.controls;
+        if ai.state.recovering.is_none() {
+            let o = ai.overrides;
+            if let Some(s) = o.steer {
+                ctl.steer = s.clamp(-1.0, 1.0);
+            }
+            if let Some(t) = o.throttle {
+                ctl.throttle = t;
+            }
+            if let Some(b) = o.brake {
+                ctl.brake = b;
+            }
+            if let Some(h) = o.handbrake {
+                ctl.handbrake = h;
+            }
+            if let Some(n) = o.nitrous {
+                ctl.nitrous = n;
+            }
+        }
         if ai.finished.is_some() || (!ai.route.closed && ai.route.length() - s < 15.0) {
             // End of an open route: stop (ours; a race's finish logic will take over).
             *ctl = CarControls { brake: 1.0, ..default() };

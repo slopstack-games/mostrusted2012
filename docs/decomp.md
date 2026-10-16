@@ -1254,10 +1254,9 @@ The channel set for the player (`FUN_004b5f40`, base +0x127f0) is +0x00 `Landing
 
 - **Horn**: HORN is action 5 (keyboard W, pad B; "Input and control bindings"). The player's list is
   `<id>_VEHICLESOUND` +0x60 / +0x64 (the 911: one sequence `…1d1c69`, a 0..5 s wave item, gain 1.75, on `Player
-  Vehicle Horn`). The runtime that plays it was not found: no code reads a `VehicleSound` horn list but the traffic
-  one (`FUN_006042c0`); the strings `HORN_SOUND` (two 64-bit ids hashed at start-up, 0x0117a4f0 / 0x0117beb8, no
-  readers in the dump) and `HORN_PRESS` (an HSM node type, `FUN_0077f820`) lead nowhere. MODEL: held = playing,
-  released = stop with a 0.1 s release.
+  Vehicle Horn`). Found 2026-10-16: `FUN_00587720` plays list [0] on the horn input (+0x1c25) through
+  `FUN_00587650` and releases it with a 0.1 s fade (0x00fad540); a car with a siren steps its siren instead
+  ("Police sirens, light bars and radio").
 - **Impacts** (`FUN_00591ac0` for the player's entity): as the AI racers' (previous section) with the player's half
   of the slot table: heavy front / rear / side +0x0c / +0x1c / +0x24, medium +0x9c / +0xa4 / +0xac, light +0xd4 /
   +0xe4 / +0xec; a heavy one adds a wave of +0x108 (`a8f44b4f`). A world contact runs `FUN_0057caf0` with the
@@ -1302,6 +1301,91 @@ The channel set for the player (`FUN_004b5f40`, base +0x127f0) is +0x00 `Landing
   physics step" (a positive normal impulse); closing speed for the impact level; the default surface; per-step
   contacts spaced 0.1 s; the voices at the car (the game places them at the contact or cell); 12 one-shot voices
   at most; the grind's `x` from the car's speed and top speed.
+
+## World-component sounds, landings and the crash's contact sounds (2026-10-16)
+
+Read for the play-test item "missing sound effects" (billboards, light poles, light crashes, landings); data
+`mw_assets::world_sfx`, runtime `crates/mostrusted/src/world_sfx.rs`. The thresholds come from the global
+`VehicleSound` at `[DAT_010edb08 + 4] + 0xb270` (confirmed: `FUN_00594870` reads +0xa8 = `1dc7d3aa` from the
+same handle): +0x94 `0925bb50` = 1, +0x98 `392b1040` = 2.235. The "contact value" every rule compares is the w
+of a contact record's second vector (a pair record's +0x2c, the world record's +0x1c), not traced; read as the
+closing speed (2.235 m/s = 5 mph) as before.
+
+- **`WCPlaySoundBehaviour`** (type 0x2ad8, 80 bytes; layout in formats.md): 41 objects in the install. A
+  `PropObject` names one at +0x1c (`FUN_0054e8d0` hands it the prop's contacts); compound objects (58 of them),
+  dynamic objects (46) and compound parts (125) carry them in their behaviour lists (the old port played only
+  props' and parts' `Collision_Waves`, on no channel, gain by speed: no source). The 11-part panel compounds (the
+  216 billboards) have none.
+- **Props** (`FUN_0054e8d0` per frame): each body-pair record → `FUN_0054bf70`: (1) the first record whose force
+  passes `ForceToDamage` with a vehicle (`FUN_00573360`, the 16 race cars) starts the impact effect, and when the
+  prop has a sound (`FUN_0055f310`), the vehicle's speed² is above `.bss` 0x0110c420 (400, `snap2`) and |value|
+  > +0x98, queues type 2; (2) while the prop's timer +0xbc is 0, |value| > +0x98 with a vehicle queues type 5;
+  every record sets the timer to 0.6 s (`.rdata` 0x00faaf30). The world record → `FUN_0054c680`: while +0xc0 is
+  0 and |value| > +0x94: type 3 when the prop's speed² (vtable +0x10) is above `.bss` 0x0110c1a0 (25) and the
+  first surface entry's `e8986e0a` list is not empty, else type 4 when its `Waves` are not; +0xc0 = 0.35 s
+  (`.rdata` 0x00faaf2c). Both timers count down per frame (the tail of the prop update `FUN_00548ff0`). The channel
+  is the behaviour's `MixerChannel` (+0x30), else, for car hits, the vehicle's channel set +0x30
+  (`FUN_00572430`: the player's `Player_Vehicle_Prop_Collision`, else the set at +0x12950) and, for world
+  contacts, `"World_Prop_Collision"` (`FUN_00410440` / `FUN_009ed180` hash the name). `FUN_005491a0` queues the
+  request at the object's position + the behaviour's `Offset` (+0x20), gain 1.
+- **The behaviour's runtime** (vtable 0x00faf308: slot 2 `FUN_005a7d20` off, slot 3 `FUN_005b8490` update,
+  slot 8 `FUN_005ab070` pair, slot 9 `FUN_005b10f0` world): with +0x16 (`0228a2f8`, set on all 41) and state
+  +0x28 ≤ 1: a pair contact above +0x98 with a vehicle queues type 5 (state 2) and raises "activate"; a world
+  contact above +0x94 queues type 4 (state 3). Slot 3 returns the state to 1 once no emitter lists the object
+  (`FUN_004b26b0`), i.e. when its wave ended. No pinned test: a standing lamp a car bumps plays.
+- **Emitters** (`FUN_004b37e0` queues 0x30-byte entries at `+0x5e50` (count byte +0x6a50): object id, type,
+  behaviour, position, channel, gain; `FUN_004ba990` sorts and hands them out; `FUN_004b2530` keeps 8 emitters
+  of 0x180 bytes): an entry joins the emitter of the same (type, behaviour) started less than 0.1 s ago
+  (`.rdata` 0x00fa339c) without a new wave (the position moves to the newest object); else a free emitter, else
+  the one with the lowest type below the new type is stolen. `FUN_004b7b20` starts the wave: type 2 the first
+  `PropSurfaceSound`'s `71f062ee` (+0x18), 3 `e8986e0a` (+0x14), 4 `Waves` (+0x1c), 5 `Collision_Waves` (+0x38;
+  `8dfd5f40` +0x3c instead when three or more objects share the emitter, empty on all 41); the index is a global
+  counter (mod 1024) modulo the list's length. `FUN_004ba1c0` keeps the voice's position and gain each frame and
+  frees the emitter when it ends.
+- **A car's first touch of a prop** (`FUN_00591ac0` → `FUN_00587960` per object contact of the vehicle): above
+  +0x98, for a non-traffic object (`FUN_005ea300`), when more than 0.1 s (+0x110) passed since the last
+  (+0x1adc) and the touch has just started (+0xc78 = 0: `FUN_005767a0` tracks the touched object at +0x1a6c,
+  resets the time +0xc78 for a new one, drops it 0.1 s after the last contact; race cars are not tracked) →
+  `FUN_00576440`: MetalCar `CollisionSoundSet` pool +0x130 `939c92be` (front, `FUN_00574150` with cos 30°),
+  +0x138 `d02a49d8` (rear, `FUN_00571c20`), else +0x134 `ae166d1e`, on the set's channel +0xc4 (`b26e4dfe` =
+  `…7357a`), gain 1, at the contact point; the player also starts sequence +0xbc (`…b3934`: race-car effects
+  only); while crashing, the player once per crash (+0x70b) pool +0x150 `0960076c` on channel set +0x18
+  (`Player_Wrecking_Collision`) and sequence +0xb4.
+- **Landings** (`FUN_00576b40`, per frame after the contacts): per wheel (sim +0x870, 0x1d0 apart; grounded
+  byte +0x24) a hold timer at entity +0x1b6c.. set to 0.05 s (`.rdata` 0x00fac2b4) while grounded and counted
+  down otherwise (`FUN_00591ac0` tail). The first wheel that is grounded with its hold at 0, for the player or a
+  crashing car (+0x1c18 / +0x1c2d), plays a wave of its surface's `CollisionSoundSet` (`FUN_0054a4f0`, the tag's
+  bits 13–19): `Landing` (+0x124) on the channel set's +0x00 (`Landings_Large`) or, crashing, +0x158
+  `5da2551f` on +0x18 (plus `FUN_00575880`: pool +0x128 `d03c72cd`, empty in every surface set), gain
+  `(1 − a) · 0.35 + a`, `a = min(s, 2.5) / 2.5` (`.bss` 0x0110cd80 / 0x0110d0c0, `snap2`), `s` = the larger of
+  the last frame's velocity (+0xc90, written after the call) along the wheel frame's rows 0 and 2
+  (`FUN_005423d0`). When no wheel's hold was running (all four were in the air) and one landed, `TimeInAir`
+  (+0x1ae4, reflected "RaceCarEntity"/"TimeInAir") picks a sequence of that set: the player ≥ +0x88
+  (`3453bdbb`, 1 s) → +0x14 `d12772a1`, above +0x110 (0.1 s) → +0xdc `929af217`; others above 0.1 s → +0x4c.
+  `TimeInAir` grows while no wheel is grounded and is 0 otherwise. Data: the default set's long sequence
+  (`…73590`) is a 3 s `Landings Large` wave plus bus / race-car items; its short one (`…95b27`) has no wave.
+- **The crash branch of `FUN_0057caf0`** (the crash state, vtable +0x58, and a surface set): `FUN_00929da0`
+  classifies the contact against the car's box (point in the box frame / half extents, scaled to the largest
+  axis: |p| ≤ 1.2e-7 → 10; x > 0.5: front (z > 0.7) 2, rear (z < −0.7) 8, else 1 on the underside edge (y < −0.8
+  and |y| > 0.8 + 0.4 (|x| − 0.5), `.data` 0x010cf910 × 0x010cf914) or 9; |x| ≤ 0.5: 3 / 7, y > 0.8 → 0,
+  y < −0.8 → 1, else 10; x < −0.5: 4 / 6, 1 or 5). With the car's up axis y below −0.9 (`.bss` 0x0110cfe0) the
+  zone is 0, with |right.y| above 0.9 (0x0110c900) 5, each played only when it differs from the last (+0x18d);
+  otherwise the classified zone plays when the value is above +0x98. 0 → +0x15c `1db229d6`, 1 → +0x158, 2–4 →
+  +0x118 (the world-impact pool), 5 / 9 → +0x164 `1cb422d5`, 6–8 → +0x154 `3578b364`, on +0x18, gain by speed
+  (the world wave's). The non-crash branch (the world wave, the player's slot) does not run then.
+- **The crash camera's sequence** (`…68b43`) has no wave items: its audio is automation, slow motion aside: three
+  `BusMixerChannelSequenceItem`s (buses `9469eeda` = 556003 to 0 between 0.32 and 3.8 s, 259953 down to 0.6,
+  259945 held at 0.6) and two `MixerChannelSequenceItem`s (`…74d2` parameter 0 at 0 for 5 s, `…735a3` property
+  5 by a curve). Which buses those ids name was not found (the 23 `BusMixerChannel` objects carry other unique
+  ids); not ported.
+- **Collectable messages**: the scoring actions' sequences carry waves (`995814` "+SP" line: `…18c1fd` at 0 s;
+  `1107082` speed camera: `…f690e` at 1.333 s, `…f690d` at 5.967 s; `995322` gate panel: the same two at 0.5 /
+  5.967 s); played at their item times with the item's gain.
+- Model decisions (`world_sfx.rs`): the contact value = closing speed; the AI's prop channel =
+  `Competitor_Prop_Collision` (its channel set +0x30 not read); the landing gain's axes = the car's right and
+  forward (the wheel frame's rows were not identified); the crash zones use the default surface's set and the
+  body collider as the box; the collectables' waves are 2D; a prop's "damaging" contact is our impact-effect
+  test (`ForceToDamage`).
 
 ## Groundcover drawing (2026-10-09)
 
@@ -1385,8 +1469,130 @@ The channel set for the player (`FUN_004b5f40`, base +0x127f0) is +0x00 `Landing
   `c = rows[0] + Σ clamp(u · A_k + B_k) · rows[k+1]` with `u = frac(age · rate)`; alpha from the `Curve5`
   (converted to the same ramp form by `FUN_0046b090`) × a binding slot. The runtime read it as a polynomial in
   the age with the fourth column in the alpha until now.
+- **`SuperEmitter`** (0x2B; compile `0x0044b2c0` → `FUN_00448370`, a copy of words 0..0x13 plus the byte of
+  word 0x14 at +0x54; run `0x0045dc40` → `FUN_0045d020`, read with REA): the parent layer is the high bits
+  (>> 23) of the parent-channel operands at words 9..12 (0x80 | 4·channel: position, velocity, age, 1 /
+  lifetime); own position / velocity / radius at words 13..15. Per live parent (`t = age · recip < 1`, a LOD
+  byte against `.rdata` 0x00f9cf9c): `n = round((1 + (w19 − 1)·t)·(w17·|v·dt| + w16·dt) + carry)`, the
+  remainder carried in the compiled word 0x14 (one for the action). Each child: `u` uniform, position = parent
+  position − u·v·dt; direction at polar angle `rand(w0, w1)`° from Z = normalize(−v·dt) (fallback +Y) about a
+  uniform azimuth (X = normalize(Z × up)), speed `rand(w2, w3)`, plus `rand(w4, w5)` × the parent's velocity;
+  radius `rand(w6, w7)` × `(1 + (w18 − 1)·t′)` with t′ the parent's age `u` steps back.
+- **Renderer draw words** (`FUN_00458e90` 0x24, `FUN_0045ab10` 0x27, `FUN_0045b620` 0x28): two words per
+  renderer go to the draw state +0x23c / +0x240 (reset to 0 / 1.0 per draw): 0x24 words 7 / 8, 0x27 words 9 / 10,
+  0x28 words 0x11 / 0x12. `FUN_0046ce40` copies them into a 0x80-byte draw record (+0x50 / +0x54, with the
+  matrix at +0x00, +0x200 at +0x40, the min depth +0x220 at +0x58, the layer byte +0x60, the pass byte +0x61, a
+  priority +0x62) queued through `FUN_00a1a180`. **The particle draw loop** `FUN_004a40a0` ("BearRenderWait_Render",
+  from `FUN_004a4940`, render stage 6) sorts the records by depth and, per record: for passes 0x23 / 0x24 / 0x29 /
+  0x2a `FUN_004976d0(+0x50)` writes `gDepthFadeConstantsA` / `B` (slots 0x72 / 0x73; the soft programs' depth
+  fade); if +0x5c, slot 0x77 = +0x40; then **`gVfxConstants` (slot 0x75) = base + (0, 0, +0x54, 1)** with base
+  `.data` 0x01104120 = (0, 1, 0, 0) or, for layer 6, 0x011035e0 = (1, 0, 0, 0) (snapshot reads), and
+  `gVfxSparkBrightness` (0x79) = view +0x13a0 (layer 0x1a goes to `FUN_00497800`). So the +0x240 word is
+  `gVfxConstants.z` (confirmed 2026-10-16): the pixel programs' alpha factor and alpha test, and the vertex program's
+  key-light factor; .x blends the colour towards × the exposure texture's w, .y blends the vertex program's LDR
+  encode (sRGB-like curve of colour × 0.5) to the linear result.
+- **Layer and pass** (`FUN_0046a430`, called by the compile functions `FUN_00447e40` 0x24, `FUN_00448020`
+  0x27, `FUN_00448110` 0x28, `FUN_00448220` 0x29): layer = [5, 6][blend byte], pass = soft ? [0x23, 0x2a] :
+  alt ? [0x25, 0x26] : [0x00, 0x28]. Most smoke and dust layers are layer 6 (LDR constants), the nitrous glows
+  and sparks layer 5 (HDR). Like the coronas' layers 7 / 8, layer 6 is very likely drawn after the tonemap; its
+  target was not traced.
+- **Other renderer words**: half extents radius × aspect / radius / aspect (0x24 word 10, 0x27 word 11, 0x28 word
+  0x14); a size cap radius ≤ cap × (view depth + view +0x218) × view +0x220 (0x24 word 9; 0x27 word 19 × the
+  binding slot of byte +0x5b; 0x28 word 0x13); `FUN_00440100` writes TEXCOORD1 = (shadow-map u, v, translucency,
+  key light as ambient) from words (15, 17) / (16, 18) / (0x19, 0x1b) and `FUN_0043fc30` the wrap (TEXCOORD3.w)
+  from 16 / 17 / 0x1a. The view block (`FUN_0046adb0`: +0x218 = 0, +0x21c = 0, +0x220 = 1, +0x224 = 1;
+  `FUN_004a1470` sets +0x21c = |Δcamera · forward| / dt each frame) is the block the render actions' first
+  operand points at (+0x20 forward, +0x30 position, +0x60.. the globals). `FUN_0043fa40` sorts by depth from
+  camera + +0x218 × forward and culls particles behind it.
+- **`RenderSpriteVelocity`** (0x29, run `FUN_0045c2f0`): streak = velocity × 1/30 (`.bss` 0x010ed2a0) × word 18 ×
+  slot[byte +0x4c], length clamped to words 12–13; head colour = the colour channel (alpha kept), tail × (1, 1, 1,
+  word 16) (`.rdata` 0x00f9d1c0); in view mode +0x228 == 1 the colour is (0, 0, 0, word 17).
+  `RenderSpriteMotionBlur` (0x25, `FUN_004598e0`) writes the colour's rgb with alpha 1.0 (`.rdata` 0x00f9d13c)
+  and the renderer's word 11 at the streak's other end; its colour curves' alpha is unused.
+- **`UpdateParametricRadius`** (0x3C, compile `0x0044bbb0`, run `FUN_004612d0`): the compile turns words 5–8
+  (knee k, values a, b, c) into an offset and two slopes; r(x) = a + x(b − a)/k below k, b + (x − k)(c − b)/(1 − k)
+  above, x = age × 1/lifetime; radius × r × (w9 + (1 − w9)·slot[byte +0x28]). (Read as a cubic Bézier before.)
+- **`UpdateParametricFadeOverDistance`** (0x38, compile `0x0044ba90` → `FUN_004493f0`, run `FUN_00460970`):
+  d = (position − (camera + (max(w19, view +0x218) + n)·forward)) · forward (− radius with byte +0x69),
+  n = w20 + (w22 − w20)·min(view +0x21c / w23, 1) with byte +0x68 (else w20); colour × (B + clamp(−d/n)(A − B) +
+  clamp(d/(w21 − w20))(C − B)) with A, B, C = words 0–3, 4–7, 8–11 (`.rdata` −1.0 at 0x00f8f340), then a
+  luminance blend by view +0x224 (weights `.data` 0x01104150 = 0.299, 0.587, 0.114; 1.0 = none); bytes +0x6b /
+  +0x6a: alpha / radius × clamp((|v|² − w25²) / (w24² − w25²)).
+- **Wheel controllers and spawners**: `UpdateWheelBindings` (0x42, run `FUN_00463330`): sources 0 / 1 time,
+  2 view +0x68, 3 |Velocity|, 4 camera distance, 5 view +0x60, 6 byte +0x7c, 7 / 8 sin / cos, 9 the scale, 10–13
+  view +0x6c / byte +0x7d / +0x70 / byte +0x7e, 0x0e–0x11 the `WheelContact` parameter's +0x40..+0x4c, 0x12
+  clamp(|WC +0x1c| / s), 0x13 view +0x78; no offsets; the same combine ops. `UpdateBindings_Wheel` (0x34, run
+  `FUN_004601a0`): the 0x33 table plus 0x14–0x16 = W[1..3], 0x17 = clamp(|W[0]| / s), 0x18 = the byte at W +0x30
+  for its `WheelParams` operand W. `EmitterWheel` (0x05, `FUN_004498e0` / `FUN_0044fb20`) and
+  `EmitterWheelContactPlus` (0x07, `FUN_00449a90` / `FUN_00450760`): count = (rate·dt + per-metre·|speed|·dt) ×
+  slot[byte +0x78 / +0x68], a LOD factor (`FUN_0043ecd0`, words 6–7 / 10–11) and a carry rounded to nearest.
+  The per-wheel update (`FUN_00589e20`) fills the wheel effects' parameter blocks (0xf0 bytes at pool +0x500):
+  the smoke's +0x80 = (`uStack_4c0`, spin, lateral, lock ramps); the kick-up's (`FUN_004acd80` at start,
+  `FUN_0059bb50` per frame) = contact point, (lateral, ·, longitudinal ground speed, ·), contact normal + a clock,
+  (0, the three ramps), the wheel's velocity + a front-axle flag, the car's matrix with the colour override in w.
+  How the Bear runtime maps that block onto an effect's `WheelContact` was not found.
 - `InitialisePosOffset` (0x14) keeps a particle in the emitter's space; `ParametricPosVelToWorldSpace` (0x1A /
   0x1B) places it with the current `Transform` when it is drawn, so the exhaust flames stay on the pipes.
+
+## Car collision effects (2026-10-16, ported in `crash_vfx.rs`, `particle_mesh.rs`)
+
+Read for the request "broken glass when crashing into traffic, crash particles in general".
+- **Race cars** (`FUN_00584260`, per frame per race-car slot; `param_3/4` = the `VfxGlobals` handle): when the
+  car's velocity (vehicle +0x14b0) is longer than `VehicleImpacts.34429d6c` (+0x130, 1.0), it walks the car's object
+  contacts (`FUN_00904880` / `FUN_00904850`, 0x70-byte records: point +0x10, value +0x2c, normal +0x30, object
+  shorts +0x60 / +0x62). The time since the last effect (+0x3f0, += dt) above `VehicleCollisionSettings.19458ef1`
+  (+0x9c, 0.2 s) and a value above `e9ff2375` (+0x98, 5) pick `VehicleImpacts` (+0xd0) and force a new instance,
+  anything else `VehicleScrapes` (+0xd8). The other object's type byte (table `DAT_010edb68` entry u16 +6) 7 (race
+  car) uses `FUN_004a02b0`, 8 (traffic / parked) `FUN_004a0600`; both take the impact zone of the contact
+  (`FUN_00929da0`) and whether this car is the local player (`FUN_006a10d0`). `VfxVehicleCollisions` field index
+  (declaration order): player vs race car 2 + k, player vs traffic 10 + k, others vs race car 20 + k, vs traffic
+  28 + k, with k = 0 front (zone 3), 1 front left (2), 2 front right (4), 3 left (9), 4 rear (7), 5 rear left (8),
+  6 rear right (6), 7 right (5); zones 0 / 1 / 10 and fields 0, 1, 18, 19 play nothing. The data: impacts front
+  `…117eca` (flash, sparks, dust, glass cards, debris meshes), front corners `…1402f0` (the same with painted
+  debris), sides / rear `…14021c` (no glass); scrapes `…140279` / `…7bcd0` (continuous sparks, painted bits). The
+  first contact with an effect wins.
+- **World contacts** (when no vehicle contact played): the bitsets at world +0x5ddf8 then +0x5ddec (0x80-byte
+  records at +0x5ddfc / +0x5ddf0: point, normal, a value in [7], the collision tag in [0xc]) → `FUN_0057b0a0`: the
+  surface's `SurfaceVfx` (`FUN_00547170` / `FUN_0054aaa0`, wet block by entity +0x1c17), `FUN_0049fe80` maps the
+  zone to an impact field pair (0 top, 1 bottom, 2 front left, 3 front, 4 front right, 5 right, 6 rear right, 7 rear,
+  8 rear left, 9 left) and takes the named one for the local player, the unnamed one after it otherwise. Its contact
+  frame (`param_9`) is not what the effect gets.
+- **Instances** (4 slots: handles +0x370, frames since refreshed +0x390, instances +0x28c): each frame every live
+  instance's `IsEmitting` bit (record byte +0x5e8 bit 1, inferred) is cleared and its `Transform` / velocity set to
+  the car's; the chosen effect refreshes the slot holding it (bit set, parameters copied) unless a new impact is
+  forced or the instance died, else it goes to an empty slot or the one refreshed longest ago (`FUN_0049f880`
+  creates). +0x3f0 and the slot's counter reset whenever an effect plays.
+- **Parameters** (`FUN_004a9f70` via vtable +0x4c): `Transform` = the car's matrix (`FUN_005423d0`: body matrix ×
+  the centre-of-mass offset rows), `Velocity` = v + ω × (p − centre) at the contact, `CollisionMeshParams` = the
+  entity's mesh handle (+0x184) and the contact point and normal in car space, `ImpactClosingVelocity` = the
+  contact value (the effects' controllers divide it by 22.35 m/s), `MovementSinceLastFrame` (vtable +0x48),
+  `PreCrashVelocity` (vtable +0x4c), `VehicleParams` (+0x3a0; vec4 1 read as the paint colour by `RenderMesh`).
+- **Traffic** (`FUN_00600220` → `FUN_005f58b0` for the world): the same with the traffic picker always
+  (`FUN_004a0600`), "player" meaning the other car is the local player's race car; the speed gate uses the traffic
+  car's own velocity.
+- **`EmitterCollisionMesh` 0x01** (compile `FUN_00449630`: data word i → compiled i + 4 for speed / angles, angles to
+  turns with ranges × 4 (`.rdata` 0x00f9d1b0 = 1/360, 0x00f9c610 = 4); run `FUN_0044bf90`): only while
+  `IsEmitting`; the layer clock window (data +0x18) or an unspent burst; `n = burst·slot + rate·dt·slot` (slot bytes
+  +0x5c..+0x60: radius, rate, burst, speed, angle); per polygon of the car's `PolygonSoupList` (first three
+  vertices) whose centroid is within radius (+0x48) of the contact, at most +0x4c along the normal and facing it
+  (`(n̂·N + 1)/2 > +0x50`): `area · n · camera fade` particles (carry from 0.9999, rounded); position
+  `v0 + a(v2 − v0) + b(1 − a)(v1 − v0)`; direction about the triangle normal (polar angle from the compiled angle
+  words and `min(|φ|, ½ − |φ|)`, `.bss` sin/cos polynomials = cos 2πx); speed `rand(speed)·slot`. The third channel
+  gets `CollisionMeshParams` +0x20 (a local light colour).
+- **`Initialise3dRotation` 0x0B** (`FUN_00453070`), **`Update3dRotation` 0x2D** (`FUN_0045ddf0`),
+  **`UpdatePosVelWithWorldCollision` 0x40** (`FUN_00462750`), **`InitialiseCollisionRadius` 0x11** (`FUN_0044a200`),
+  **`Render3dSprite(SubUV)` 0x1E / 0x1F** (`FUN_00455670` / `FUN_00456110`), **`RenderMesh(NoPaintColour)` 0x22 /
+  0x23** (`FUN_00457720`): layouts and maths in `mw_formats::bear` (`Op::Rotation3dInit`, `Op::Rotation3d`,
+  `Op::WorldCollide`, `Op::CollisionRadiusInit`, the renderers) and `particle_mesh.rs`. The glass is the 3-D sprite:
+  a card folded 22.5° along its local Z (8 vertices, `.rdata` 0x00f9d220 / 0x00f9d230), centre pushed `r` towards
+  the camera, wrap ±2k on edges / spine. Debris models in `GLOBALEFFECTS.BNDL` hold 16 pieces each
+  (`BLENDINDICES`, `gaTransforms[3·i]`); a particle draws piece `serial & 15` with `R(q)·r` (deferred `VfxMesh*`
+  programs; `VfxMeshCarPaint`: albedo = tex.rgb + paint·(1 − tex.a)).
+- **0x3D / 0x3E drag** (`FUN_004615f0`, `FUN_004618d0`): `v ← v·(1 − drag)^dt + Δ` (`powf`), Δ = gravity·dt +
+  wind (`(1 − R)·c·W`, engine block +0x50) + turbulence·dt·(2r − 1); 0x3E bounces only when the bounce impulse beats
+  Δ, its restitution / friction are drawn once per update, and its plane blends from a parameter plane (within 2 m
+  of a point) to the particle's own beyond 3 m. Ported (`particles.rs` `retain` / `acceleration`); the wind term
+  and 0x3D's table scales are left out (model decision).
 
 ## Post-processing and colour grade (2026-10-06)
 
@@ -1633,6 +1839,32 @@ meshes; 1835 of the 3668 world models have one); compounds that can break draw t
 (only the cull applies); backdrops keep the zone composition (no LOD rule); `--merge-static` merges LOD0 without
 the rule; L = 1 (`MW_LOD_SCALING`), the render target's pixels for L = 2.
 
+## Model pass mask (2026-10-16, applied to the main view in `loader.rs`)
+
+`Model` +0x19 is a bit mask of the **views that skip the model**. Instances: `FUN_00553810` inserts each
+`InstanceList` instance into the culling structure (a 0x30-byte record through `FUN_00541850`: bounding sphere
+from the LOD0 renderable, flags `(Model+0x19) << 24 | 0x840`, `| 0x80` with the renderable's flag bit; the other
+inserters `FUN_00553540`, `FUN_00553b10`, `FUN_00553cb0`, `FUN_00554230` put the byte in the same place). The
+frame setup in `FUN_008cffa0` queues one query per view (`FUN_008dbd90(query, required flags, excluded flags,
+…, frustum, LOD scale)`):
+
+| view | query | excluded | bit |
+|------|-------|----------|-----|
+| main (camera frustum +0x16f90, LOD scale +0x1ee8c) | `DAT_01183254` | `0x4000000` | 0x04 |
+| cube-map faces (six, `DAT_01183258..`) | | `0x2000000` | 0x02 |
+| sun shadow cascades (three, `DAT_01183270..`) | | `0x1000000` | 0x01 |
+| far shadow (`DAT_0118327c`) | | `0x3000000` | 0x01, 0x02 |
+| view at +0x172e0, probably the planar reflection (roads are excluded) | `DAT_01183284` | `0x8000000` | 0x08 |
+| a view at +0x17150 (gated by `FUN_00798840`) | `DAT_01183280` | `0x10000000` | 0x10 |
+| another main-scale view (+0x1c9e0) | `DAT_01183288` | `0x4000000` | 0x04 |
+
+The consumer of the queries is a job not in the dump. Runtime objects (compounds, dynamics) go through
+`FUN_00538b00`, which skips a model when `Model+0x19 & mask != 0`; its callers pass 4 (main view, LOD scale
++0x1ee8c), 1 (shadow, state 6), 2, 8 and 0x10. Data: roads 0x09, lit signs 0x01, props / fences 0x08 / 0x1a,
+230 coarse terrain tiles 0x04 (shadow, cube-map and reflection stand-ins: drawn in the main view they cut through
+roads), 1007 instances and 1337 dynamics 0x1f. Port: placements of models with bit 4 are not spawned
+(`mw_formats::Model::in_main_view`); bits 1, 2, 8 are not applied (model decision, research log 2026-10-16).
+
 ## Sky, sun and shadows
 
 Shader constants are registered by name and slot in `FUN_008c34b0` (one `FUN_00a5d490` call per name, e.g.
@@ -1789,6 +2021,87 @@ also divides the current intensity by the definition's `Intensity` and passes th
   code names those ids with a literal; the textures come from data: a `Model` resource's block at +0x10 (the
   layout of an `InstanceList` instance's overrides: names + texture and sampler-state imports) and the
   instances' own override blocks.
+- *List sizes* (`FUN_008ae1d0`, per view, keep / capacity from `.data` pairs; view 0 = the main view): point
+  (renderer +0x000, `0x010c7060`) 128 / 160, cone (+0x360, `0x010c6f88`) 224 / 256, projected texture (+0x1b0,
+  `0x010c70a8`) 8 / 12, spot (+0x6c0, `0x010c6fd0`) 224 / 256, the 0x40-byte list at +0x510 (`0x010c70f0`) 32 / 40,
+  the 0x60-byte list at +0x870 (`0x010c7018`) 128 / 160; the point / cone / spot lists of views 1, 2 and 3–5 keep 4 / 6, 128 / 160 and 24 / 32. Renderer
+  +0x2165..+0x216e (per-type enables: +0x2167 cone, +0x2168 point, +0x2169 projected, +0x216a cop, +0x216b spot)
+  are all set to 1 there; +0x217a + view is 1 for view 0 only.
+
+## Car lights on the world (2026-10-16, ported in `car_lights.rs`)
+
+Read for "vehicle lights don't light up the world". Data: `VehicleVfxBehaviour.Lights` (formats.md "Car light
+sources"; `mwtool car-lights <car|all>`).
+
+- **Who**: `FUN_00588da0` loops the 16 race-car slots (render instances 0x1c40 apart from manager +0x3050) and
+  calls `FUN_005818f0` for each slot whose instance bytes +0x19/+0x18 (`+0x3069`/`+0x3068`) are set, with the
+  slot's effect mask (`+0x1f818 + slot × 0x400` = block +0x3c8), light level L (+0x3cc), headlight level H
+  (+0x3d4), flash clock (game time × +0x3e4) and **viewed** = the slot is the local player's (`FUN_006a10d0`) or,
+  when `FUN_006a11e0`, the watched car. Traffic (`FUN_005fd190`) queues coronas only (`FUN_004970b0`); the six
+  light-submission functions (`FUN_008ce920` point, `…9c0` cone, `…cebf0` spot, `…cee40` line, `…cf0c0` projected,
+  `…cf1d0` cop) are called only from `FUN_0054ade0` (world), `FUN_005818f0` (cars), `FUN_004a2920` (effects) and
+  `FUN_008cef70` (checked over the full listing), so traffic and parked cars cast no light.
+- **Levels** (`FUN_0057a5e0` writes the slot block's +0x3c8; the levels are written next to it, `00570000.c` ~line 8600): +0x3cc = +0x3d4 = 1 on a
+  running car (+0x3d4 = +0x3dc when that is > 0; bit 0x8000 replaces +0x3cc by a flicker noise). The mask: 0xd1
+  (groups 0, 4, 6, 7) when entity +0x1a8c (set at spawn by `FUN_00591350`; request +0x194c at 0x587254: 2 on / 1 off,
+  written only by cutscene cars `FUN_005b4750` from their data byte +0x5b; the script function
+  `SetHeadlightsState` (0x6781f0) is a stub), | 8 with the cop bar, | 2 brake (+0x1930 > 0, held 0.5 s by
+  +0x3e8), | 4 when `FUN_0090d460`(slot) = −1 (read as reverse; not followed) and | 6 then when +0x192c > 0; groups 0, 1, 2, 4, 6, 7 cleared when
+  +0x1a84 = 0 and +0x1a40 bit 2 is clear. In `FUN_005818f0`, bit 7 (tail) is cleared when instance +0x1930 > 0
+  (the brake; same 0x1c40 structure, inferred). Snapshot: slot 1 (a cop) mask 0xd1, slot 0 0x80000 (lights off;
+  the player's car was not driving).
+- **Per entry** (0x40 bytes: +0x10 `Colour`, +0x20 `Animation`, +0x28 `LightDefinition`, +0x30 `LocatorGroup`,
+  +0x34 `a3de907e`, +0x38 `Group`, +0x3a `da6ac384`): skipped unless the group bit is in the mask, and group 6
+  when viewed. Groups 4, 6, 17 are headlights (level H, flag `cVar15`); others level L × the animation
+  (`FUN_0049ef00`). Not viewed: × `FUN_0089b400`(flags, 0) with flags 0x61 (gate 2: night level), 0x64 (gate 1:
+  1 − night), 0x65 (gate 0: 1). Viewed: no gate (the player's head and tail lights are lit by day too); with
+  instance +0x1c17 and group 4, H = 1. Colour = definition `Colour` × entry `Colour`; intensity = `Intensity` ×
+  `a3de907e` × level, each locator's world matrix = the quaternion's rotation (`√2 q` expansion, rows as
+  `FUN_005818f0` builds them) × the car's matrix. By definition type: spot 0x841d8 → `FUN_008cebf0` (renderer
+  +0x216b; direction = row 2, `ConeAngle` +0x60, `ConeInnerAngle` +0x70, threshold +0x48); cone 0x2859 →
+  `FUN_008ce9c0` (+0x2167; × the damage factor, skipped at ≤ 1.19e-7 `.rdata` 0x00fab7ac); point 0x285b →
+  `FUN_008ce920` (+0x2168, × damage); custom 0x285a → `FUN_008cf1d0` (the cop path, research log
+  2026-10-16); projected 0x285c **only when viewed** → `FUN_008cf0c0` (+0x2169, × damage).
+- **Damage factor** `FUN_0049fda0`(local position, FL, FR, RL, RR): the zone levels +0x112c / +0x1134 / +0x1144 /
+  +0x113c (capped 0.99 while not wrecked) × 100 + 0.5 rounded (x87, to even) as bytes (FL / FR stay 0 for the
+  viewed car); a lamp with local z in (−0.6, 0.1) is never out; |x| < 0.1 → 0.5 per side lit; else the side's
+  byte (x > 0 = left) against the global object's +0x94 (0.01 in snap1, × 100 + 0.5 truncated = 1): any damage
+  turns cone, point and projected lamps off. Spot lights take no damage factor.
+- **Projected light** (`FUN_005818f0` → `FUN_008cf0c0` → list +0x1b0 → `FUN_008b1860`): the projector frame is
+  a look-at (`FUN_00a639c0`) from the locator's world position along its row 2 with row 1 up; half-angles
+  atan(Rxx) × `FovScale.x` and atan(Ryy) × `FovScale.y` (Rxx / Ryy = the locator's local rotation diagonal; CRT
+  `atanf` at 0x00edc7b2, confirmed by its constants π/2, −1/3, 1/5 in snap1; × 2 × 57.2958, then × 0.0174533 ×
+  0.5); every car's projector locator is unrotated, so 45° × FovScale (the main beam: 55.35° × 38.25°). Entry
+  (0xc0 bytes): +0x00 position, +0x10 colour × intensity and threshold, +0x20 flag byte, +0x30..+0x6f the frame,
+  +0x70 `Attenuation`, +0x80 the half-angles, +0x90 `664ab465`, +0xa0 the material, +0xa4 0, +0xa5
+  `FUN_00897bf0()` (renderer +0x1f004: the headlight shadow map was rendered this frame). `FUN_008b1860`: far = the
+  larger root of a t d² + b t d + (c t − max rgb) = 0 (`FUN_008a0a20`; t = threshold), near 0.1 (`.rdata`
+  0x00f9f660); projection rows (1/tan hx, 0, 0, 0), (0, 1/tan hy, 0, 0), (0, 0, (f + n)/(f − n), 1),
+  (0, 0, −2 f n /(f − n), 0) (`.rdata` 0x00f9d488 = −2); constants: `deferred_lightPosition` (0x50) = position −
+  camera, `deferred_attenuation` (0x53) = `Attenuation`, `deferred_lightColour` (0x51), and
+  `deferred_lightProjectionMatrix` (0x5b) = the camera-relative view × projection. The volume (`FUN_008a1c10`):
+  a 4 × 4 × 4 grid over clip x ∈ [`664ab465`.x, .z], y ∈ [.y, .w], z ∈ [−1, 1] (z fractions 0, 0.002, 0.01, 1),
+  drawn through the inverse view-projection; a camera inside (its position + 0.2 × view direction projects within
+  the volume) draws full screen instead. Material states: 0x19 / 0x1a (inside) and 0 / 0x1b (outside) by the
+  entry's flag byte, **0x31 / 0x32 when +0xa5 is set** (the `HeadlightShadows` programs).
+- **Headlight shadows**: `FUN_008cfe20` sets renderer +0x1f004 = 1 and renders the map (`FUN_008b7a20`;
+  `SortShadowHeadlightWorld` / `SortShadowHeadlightCarsMisc`) when +0x1cc23 (the display option `HeadlightShadows`,
+  `param_1[0x118]` of the config writer at 0x414f7f; 1 in snap1, `true` in this machine's `config.NFS13Save`),
+  +0x1f005 (= `FUN_005837e0`: the viewed car has a lit projected light, no gate; 0 in both snapshots, whose
+  player slot had its lights off), +0x1cc10/11 and +0xe1f9 hold. Programs (`mwtool shader-asm
+  LightBuffer_ProjectedTexture`): slot 0x788 (volume) / 0x5c8 (full screen) = diffuse only × the headlight
+  shadow (`shadowMapHeadlightSampler`, slot 15: one `sample_c_lz` at (c.x / w × 0.5 + 0.5, 1 − (c.y / w × 0.5 +
+  0.5)) against c.z / w); 0x6a8 / 0x4e8 diffuse without shadow; 0x338 / 0x418 with the specular term, no shadow.
+  The diffuse-only programs take no (1 − F0): Lambert albedo N·L / π, cars 0.387508 albedo (1 − (1 − N·V/2)⁵)
+  (1 − (1 − N·L/2)⁵) N·L. All: lit where |c.xyz| < c.w, cookie = `ProjectiveTextureSampler` at
+  c.xy / w × 0.5 + 0.5 (not flipped), attenuation saturate(1 / (a d² + b √(d² + 0.001) + c)) with d² = |L|².
+- **The cars' data** (`mwtool car-lights all`, 104 bundles): group 4 = `Light_ProjectedTexture` `…253a9`
+  (intensity 11.5, threshold 0.05, `FovScale` (1.23, 0.85), attenuation (0.001, 0.25, 10), window (−1, −1, 1,
+  0.098): reaches 360 m), group 17 = `…253aa` (10, 0.3, (1.27, 1), (0, 0.2, 0), (−0.8, −1, 0.8, 0.65); its bit is
+  never set by `FUN_0057a5e0`), group 6 = `Light_Spot` `…f0821` (3, threshold 0.333 → 3 m, 61.6° / 46.2°),
+  group 7 = red spot `…1246fa` (0.55, 0.4; 1 m), group 1 = red spot `…1246f9` (1.25, 0.47), group 2 = cone
+  `…253af` (1 × 0.5, 0.2, 65°); every projector's material is `…6ccb`, its cookie the 512² `BC1_UNORM` `…77f9`
+  (two lobes and a sharp cut-off in the top half).
 
 ## Crashes (2026-10-06)
 
@@ -2006,16 +2319,53 @@ Runtime: `crates/mostrusted/src/props.rs`; data: `mw_assets::props` (`Additional
 - **Links** (`FUN_0054e750`, every frame): a pinned part with links (part +0x68 pointer, +0x6c count, u8 part
   indices) is unpinned (`FUN_0054e570` + `FUN_0054e390`) once none of its linked parts is registered and
   pinned. Used by the 11-panel structures (20 kg panels pinned at 500 kg m/s, a 230 kg frame).
-- **Smash effects / sounds**: none in the smash path itself. The compound's `WCVfxBehaviour` "Collision FX"
-  (`ImpactEffect`) and the parts' `WCPlaySoundBehaviour`s are behaviour data; what triggers the compound's
-  effect was not traced.
+- **Smash effects / sounds**: none in the smash path itself. The effects come from the objects' behaviours
+  ("World-component behaviours" below); the parts' `WCPlaySoundBehaviour`s are behaviour data.
 - **Reset** (`FUN_0055ae50`, every frame, no timer): a moving prop (64-slot pool, `FUN_00553fe0`) is put back
   (`FUN_00553540`) or removed (`FUN_00553740`, `mbRemoveInsteadOfReset` or a game flag) once **both** the camera
   and the player's car are farther than `mfResetDistanceSquared`. ResetProps (message 0x15, `FUN_0055a680`)
   re-creates everything.
-- **Sound**: a prop's world contact plays its `PropObject` +0x1c sound (`WCPlaySoundBehaviour`) or
-  "World_Prop_Collision" above a threshold from an audio object, then waits 0.35 s (`.rdata` 0xfaaf2c,
-  `FUN_0054c680`).
+- **Sound**: a prop's contacts play its `PropObject` +0x1c `WCPlaySoundBehaviour` (`FUN_0054bf70` for pair
+  contacts, `FUN_0054c680` for the world contact); compounds, dynamic objects and parts run the same behaviour
+  through its runtime object. Settled 2026-10-16: "World-component sounds" below.
+
+### World-component behaviours: what a contact shows (2026-10-16)
+- **Dispatch**: `FUN_0053cba0` walks the world-component table (0xe4 entries at +0x20, 8 bytes: flag, object
+  with its physics id at +4); for each object with a body it passes every body-pair record (`FUN_00901ab0`,
+  0x70 bytes: +0x10 point, +0x2c, +0x30, +0x3c force; the other body = +0x60 + +0x62 − own id) to
+  `FUN_005461c0` and the world-contact record (`FUN_008f6470`: +0x10 point, +0x20 normal, +0x1c, +0x2c) to
+  `FUN_005462d0`. Both run the object's (up to 16) behaviours' vtable slot 8 / 9 with two out flags: "activate"
+  → slot 1 unless already on, "deactivate" → slot 2 if on (on-mask at entry +0x42).
+- **`WCVfxBehaviour`** (type 0x2ae0; handler vtable 0x00faaa58 whose slot 1 `FUN_005b3350` builds the runtime
+  behaviour, vtable 0x00faf238): GeneSys +0x18 `0228a2f8` / +0x19 `713589ad` / +0x1a `543527d0` (the base
+  behaviour's bools; copied to runtime +0x16 / +0x17), +0x1c `ImpactEffect` (+0x5e "pending"), +0x24
+  `4524a2be` (+0x5f), +0x2c `c8d7741f` (> 0: a random flash timer, +0x4c / +0x50), +0x30 `29436f61`, +0x34
+  `5af50d49` (a probability against a random number, +0x5c), +0x38 `17b6b189` (a distance, squared into
+  +0x30..+0x3c), +0x40 / +0x44 / +0x48 the `Coronas` / `Lights` / `Spot_effects` arrays with counts at +0x54 /
+  +0x56 / +0x58, +0x4c `19e7191a` / +0x50 `392e10d5` (hours: 24 / 0), the bools after +0x5a unread.
+- **Slot 8 `FUN_005af3e0`** (pair contact): only when the object's body is not pinned (body +0xf4 bit 2): +0x16
+  set → clear it, activate; +0x17 set → clear it, deactivate. If its effect is alive (+0x60) the effect record
+  gets a new frame (`FUN_005a7750` from the contact point and the body's velocity, zero while asleep); else, with
+  +0x5e set: clear +0x5e and, when the other body is a vehicle (`FUN_00573360`: an active entry of the 16-slot
+  vehicle table), start `ImpactEffect` (`FUN_0049f750`) with velocity = the vehicle's body velocity
+  (`FUN_004acd40`) and the frame of `FUN_005a7750`: position = point + (0, 0.5, 0) (`.rdata` 0x00fae8f0), Z =
+  normalize(velocity) (fallback: the object's row 2), X = normalize((0, 1, 0) × Z) (fallback +X), Y = Z × X.
+  `FUN_0054bf70` (plain props) builds the same frame from the hitter's velocity (vehicle +0x120), fallback
+  identity, position + (0, 0.5, 0) (`.rdata` 0x00fab370).
+- **Slot 9 `FUN_005af630`** (world contact): with `4524a2be` set, when the body's velocity at the contact point
+  (`FUN_0059eb20`) is longer than `29436f61`, the effect starts at the point (or, while one is alive, gets the
+  new frame): Z = the contact normal, X = normalize(+X × Z), Y = Z × X.
+- **Slot 1 `FUN_005b30d0`** (on): when +0x5c (the probability roll) and neither the timer nor the flash mode:
+  spot effects (`FUN_005af900`: one effect per locator of each `Spot_effects` group, at locator × the object's
+  matrix, velocity = a vector from the object's vtable +8), lights `FUN_00532760`, coronas `FUN_005328c0`.
+  **Slot 2 `FUN_005b3150`** (off): lights `FUN_005327b0`, coronas `FUN_00534080`, spot effects `FUN_005afb30`.
+  Slot 3 `FUN_005b31a0` runs the time-of-day / flash switching every frame.
+- Data: a street lamp switches its "SetLightsOn" behaviours (light, coronas) off and "Collision FX" /
+  "StreetlampSingle_WC VFX" on at its first loose contact: sparks where the car hit and the `…7a95f` burst at its
+  foot; its parts throw `…1621e7` sparks on their first vehicle contact and while sliding along the ground.
+- Port (`prop_vfx.rs`): the rules above for compounds, their parts and dynamic objects; pair contacts are the
+  race cars' (`props::PropCarContact`, from `prop_contacts`) and avian's with other props and traffic. Model
+  decisions in the module docs and the research log (2026-10-16).
 
 ### Port and model decisions (`props.rs`)
 - Knocked props are outside the race cars' avian layers; `prop_contacts` solves car–prop contacts with the
@@ -2034,9 +2384,8 @@ Runtime: `crates/mostrusted/src/props.rs`; data: `mw_assets::props` (`Additional
   (the game creates bodies asleep, next to the moving compound); no delay for `SmashProxyBehaviour` (its
   comparison was not found; read as a contact force like the compound's); a smashed compound and its parts go
   back together once neither its home nor any part is within the reset distance of the car and camera (the
-  game resets each part slot on its own); bone-0 / unowned triangles vanish with the smash; world-contact
-  sounds of loose props and parts (`prop_world_sounds`) use the speed the contact takes off the prop
-  (impulse / mass ≥ 2 m/s) for the unread audio threshold, within 40 m of the player.
+  game resets each part slot on its own); bone-0 / unowned triangles vanish with the smash. The sounds moved to
+  `world_sfx.rs` (2026-10-16, "World-component sounds").
 
 ## Input and control bindings
 
@@ -3297,9 +3646,11 @@ Separately, `FUN_00602ce0` runs `FUN_005fd3f0` (not traced) once the player has 
 runtime" below):
 - `FUN_005ea6a0` scores six options from the gap, the closing speed and the car state with the
   `TrafficFuzzyLogicConfig` envelopes.
-- The scores are forced to zero while `world+0xa2be6` is set. They are also zeroed when `world+0xa2ba8 ≤ 16 −
-  world+0x32b20`, a cap on concurrent manoeuvres (inferred); in a local game that test is skipped at a load of
-  200 or more. A car whose state byte `+0x78` is 2 gets fixed scores (`DAT_00fb2330`).
+- While `world+0xa2be6` is set, score 0 (the manoeuvre) is forced to zero (corrected 2026-10-16: the scores are
+  16-byte SIMD vectors and the mask `DAT_00fb2330` clears only the first lane). Scores are also zeroed when
+  `world+0xa2ba8 ≤ 16 − world+0x32b20`, a cap on concurrent manoeuvres (inferred); in a local game that test is
+  skipped at a load of 200 or more. A car whose state byte `+0x78` is 2 (a patrolling cop's ghost, "How a cop
+  patrols") gets score 0 zeroed the same way: a ghost never starts a manoeuvre.
 - The best score picks the branch.
 - The cruise target in every branch is `Speed·mph·world+0xa2bfc` (a runtime speed scale).
 - Branch 0 sets the car's mode to 5 and a rate of `lerp(prm[0x98]=4, prm[0x94]=8, x(+0x3c)) ×
@@ -3312,6 +3663,30 @@ runtime" below):
 The controller, the stop lines and traffic lights, the route choice and the 150-slot range (parked cars) were
 read later: "Traffic runtime" below. Still not traced: the swerve and near-miss reactions, the horn, the switch
 to a physical car and the 24-slot range.
+
+### Traffic lights: the lamps (2026-10-16, ported in `traffic.rs` `cycle_lights` and `traffic_lamps.rs`)
+
+The light cycle (`FUN_00605d30`) drives the lamp posts as well as the stop lines; confirmed by reading the code.
+- **Records**: one 8-byte record per lamp at traffic world +0x65e20 + light id × 8: +0 the lamp object's handle,
+  +4 an `i16` timer, +6 the state (0 red, 1 amber, 2 green), +7 flags (bit 7 set: no messages; not seen set).
+  `FUN_005ef950` fills +0 from the junction group: for light k of a group the `u32` at group − 8 + 4k (formats.md
+  "Junction"). The handle is the lamp's placed instance id (the `CompoundInstanceList` record's +0x4c word): 101
+  of the 104 handles name a placed traffic-light compound (`aa60bafa` ×62, `241bbd82` ×24, `e86efde1` ×15;
+  `mwtool traffic`), the top nibble varying 1–4 between the lamps of a junction.
+- **At a phase change**, per group and per lamp: a group the new mask holds → if the lamp's state is not 0,
+  `FUN_0061bbd0(1)`: state 1 (amber), timer 200, messages "on Amber, off Red, off Green"; a free group → state 2,
+  "on Green, off Amber, off Red". So a green lamp turns amber when its stop lines are held (the cars stop at that
+  moment), and a red one is not told again.
+- **Amber runs out** (`FUN_006037f0` per active hull over its lamps, the same rule in `FUN_0061bae0`): the timer
+  falls by dt × 100 (`.rdata` 0x00fb2890 = −100), at ≤ 0 state 0 and "on Red, off Amber, off Green": amber lasts 2 s.
+- **Messages** 0xb (on) / 0xc (off) carry (handle, label hash) to the world's message loop (`FUN_0055a680`) →
+  `FUN_00553a70` / `FUN_00553ac0`: `FUN_005539b0` looks the handle up in the world's id map (`FUN_00562700`, 99
+  buckets) and calls the object's virtual +4 / +8 with the hash: the object's behaviours with that label switch.
+  The hashes are of "TrafficLight_Red" / "TrafficLight_Amber" / "TrafficLight_Green" (`FUN_005eb060`:
+  `DAT_0110f384` / `388` / `38c`).
+- **Start**: the records start zeroed (state 0, red) and nothing is sent for that state, so a lamp shows its
+  behaviours' start state until its first change. MODEL (port): shown as red from the start, and the current
+  colour is reapplied whenever a lamp's object (re)appears.
 
 ### Traffic runtime (2026-10-09, ported in `crates/mostrusted/src/traffic.rs`)
 
@@ -3389,8 +3764,8 @@ from this base, which `FUN_005ef0f0` fills with `sys[0x80]`). All `prm` field na
   `lerp(prm[0x98], prm[0x94], x) × 2.23694`; 1 → mode 0, `A = 0`, `B = max(0, obstacle − prm[0x9c])` (10 m);
   2 → mode 2, `A = min(cruise, max(min(v, v_obs), prm[0x3c]·gap))`, same `B`; 3 → mode 3, `A = 0`, `B = stop
   line − prm[0xb4]·x`; 4 → mode 4, `A = min(cruise, max(min(v, v_ahead), prm[0x3c]·gap))`, `B = gap`; 5 → mode 5,
-  cruise. Two gates zero all scores: `world+0xa2be6`, and `world+0xa2ba8` (`sys[0x134]` = 7) ≤ 16 −
-  `world+0x32b20` (not identified; not ported).
+  cruise. `world+0xa2be6` zeroes score 0 only (2026-10-16), and `world+0xa2ba8` (`sys[0x134]` = 7) ≤ 16 −
+  `world+0x32b20` gates the scores (not identified; not ported).
 - **Speed controller** (`FUN_0061a190`, confirmed): the cruise is capped at 5 m/s (`DAT_00fb278c`) when the lane
   direction `3v + 10` m ahead along the planned route (`FUN_005f11a0`) is at most `cos = 0.85` from the
   heading. Mode 5 (and 1 with flag 8): `a = clamp(min(cruise, 500) − v, prm[0x64] = −8, prm[0x4c] = 4)`. Modes
@@ -3718,19 +4093,99 @@ its coordinator record is marked), then runs the bust meter, then the state:
   band (inferred).
 - **Sight** (`FUN_006c5810`, `FUN_006c6280`): the range by the cop's state; within the no-cone range or the
   cone, then a raycast; a clear line sets "sees", the last-seen point and the memory timer.
-- **Wanted** (`FUN_005192b0`): a cop has the player in its cone and the player is faster than `H` +0xd8 mph
-  (110 at level 0: **speeding past a cop starts a pursuit**); or two collision-type events within 10 s in a
-  cop's cone (inferred meaning); or a cop was rammed (contact impact above `AIC`[0x60] = 2); or the pursuit
-  already runs. A cop that knows a wanted player chases; when the target is no longer known it drives to the
-  last-seen point and searches (`FUN_005156c0`, `FUN_0051a4e0`), else patrols.
+- **Wanted** (`FUN_005192b0`): see "When a pursuit starts (2026-10-16)" below. A cop that knows a wanted
+  player chases; when the target is no longer known it drives to the last-seen point and searches
+  (`FUN_005156c0`, `FUN_0051a4e0`), else patrols ("How a cop patrols (2026-10-16)").
 - **Chasing** (state 0): slot = `AIC`[0x1c4] (−5) − `Positioning` × `AIC`[0x5c] (12) metres behind the
-  target, ±3.5 m to the side; target speed = the target's − (lead + slot) × 1.5 mph/m within ±60 mph, at least
-  30 mph, only when within 20 s of the target, else flat out, under the entry's cap (`FUN_004fa580`,
-  `FUN_004fa480`); within 40 m it aims 0.5 s ahead of the target (ram mode, `FUN_004ffcb0`). Bruisers steer
+  target, ±3.5 m to the side. **Speed** (corrected 2026-10-14/16): `FUN_004fa480` computes the gap law of
+  `FUN_004fa580` (the target's speed − (lead + slot) × 1.5 mph/m within ±60 mph, at least 30 mph, within 20 s
+  of the target) but, for a cop **with a physical car**, discards it (`fstp st0` at 0x004fa56b) and returns
+  FLT_MAX: a physical chasing cop drives flat out under its `CopBehaviours` mph cap. The gap law only paces cops
+  without a physical car (far from the player, advanced along their path). Within 40 m it aims 0.5 s ahead of
+  the target (ram mode, `FUN_004ffcb0`); `cop_driver.rs` has the states. Bruisers steer
   into the car from alongside; a Rhino comes head-on; below the level's low-speed limit within 60 m cops pin,
   ram or stop (state 0x16). Roadblocks: at a trigger region 300–600 m ahead on the player's predicted route,
   `ae2d8f7d` s after the behaviour starts and every `cbbeb3e0` s. No cop spike-strip logic and no helicopter
   reader were found (`Helicopter` is 0 on all 40 levels).
+
+### When a pursuit starts (2026-10-16; confirmed unless stated)
+
+Nothing starts a pursuit by proximity. The pursuit manager starts the chase when a cop *chases* the player
+(`FUN_0065ba70`'s count) or the player took a cop down / hit a roadblock car (above); the coordinator puts a
+cop into a chasing state only when the player is **wanted** and the cop **knows** where the player is.
+
+- **Perception** (`FUN_006c5810` per cop, one target player per call round-robin; block = AI player + 0x250,
+  per target slot i): seen-age +0x0 + 4i, memory +0x60 + 4i (= `H` +0xbc on sight; while above 0 the
+  last-seen point +0x170 + 0x10i follows the target's true position), "sees" +0x105 + i, "in cone"
+  +0x11d + i. Range: `H` +0xa4 (chasing: the driver in state 0, 0x10, 0x12, 0x16, 0x17, 0x18, 0x1a,
+  `FUN_004f2b20`, or the coordinator's chase role `FUN_00516390`), else `H` +0xa0 when the coordinator marks the
+  cop alerted (`FUN_00516400`, coordinator record bytes +0x1c / +0x1f, writer not traced), else `H` +0xa8
+  (level 0: 100 / 90 / 50 m). `H` is the *target's* heat level (`FUN_0066aa30`). Beyond the range, or beyond
+  the no-cone range (`H` +0x90 for a target at ≤ 5 mph, 0x00fa8538, else +0x94; 50 m) and outside the cone
+  (half angle `H` +0x98 alerted / +0x9c otherwise, 40°, × 0x00fbfe0c deg→rad): "in cone" = 0, "sees" =
+  `FUN_00657ee0` (the target within 100 m, 0x00fb77e4, of one of the two 0xff0-byte records of world +0x2f484:
+  **not identified**), and the rammed flag +0x104 is cleared. Otherwise a ray is queued from the cop to the target
+  (`FUN_006c6280` reads it back): a clear line sets "sees" (sticky); while it sees, "in cone" = the target
+  inside the cone angle (`FUN_006c05b0`), the last-seen point and the memory are refreshed. A target within 20 m
+  (0x00fc4f70) of the last-seen point counts as seen.
+- **Rammed** (same function): each physical vehicle in the cop's contact list (world +0x5de2c count, +0x5de3c
+  records of 0xa0 bytes, other vehicle at +0x80) whose 0.5 s timer (+0xc0 + 4v, 0x00fc0600) has run out adds
+  the contact list's value at record +0x1c (units not traced) to +0x100; vehicles for which `FUN_0057a050`
+  holds are skipped (a vehicle-type flag, not identified). Past `AIConfig` +0x60 (`a7a0cd14`, 2) the cop is
+  rammed (+0x104 = 1) and the sum restarts.
+- **Wanted** (`FUN_005192b0`, per player, any of): (1) a cop has the player "in cone" and the player's speed
+  (`FUN_0083ea90`, mph) exceeds `H` +0xd8 (`78f472fa`: **110 mph** at level 0, 300 above); (2) traffic hits
+  seen: `FUN_00515090` runs a window (coordinator +0x3e0 + 4i) down by dt and clears the count (+0x3e4 + 4i)
+  when it runs out; while any cop has the player in cone, every entry of the frame's list at traffic world
+  +0x33144 (count +0x331bc, max 20; filled by `FUN_0060c3a0` when the player's contact turns a lane follower or
+  parked car physical, `FUN_005e9800`) counts one, the first opening a 10 s window (0x00fa99d0): **two traffic
+  cars hit within 10 s in a cop's view** make the player wanted; (3) any cop rammed (+0x354 of the AI player);
+  (4) `FUN_00656140` false (the pursuit system not set up, or the level without `249ed427`; never in free roam);
+  (5) a chase or cooldown runs; (6) `FUN_006a0340` && `FUN_006a1570` (a per-player float at world +0x2f47c
+  +0xdf0 not FLT_MAX: **not identified**); (7) coordinator byte +0x665 (**not identified**). "Known"
+  (+0x400 + i) = a cop sees the player, remembers it, or has +0x385 / +0x39d set.
+- Ported in `cop_sight.rs` (perception, wanted) and `police.rs`; `--test cops` checks a slow pass (no
+  pursuit), speeding past (chase) and a ram (chase); the traffic-hit window has unit tests.
+
+### How a cop patrols (2026-10-16; from a sub-agent's trace, confirmed unless stated)
+
+Patrolling (state 0xd; vtable 0x00fa8694: enter 0x5060e0 → reset `FUN_00504fd0`, exit `FUN_00506120` releases
+the ghost with traffic message 0x1c; update `FUN_005101e0`, dispatch on +0x90). The game drives a patrolling
+cop **with traffic**: the cop gets a *ghost*, a lane follower with car +0x78 = 2 and +0x79 = the cop's
+vehicle, never drawn and without a body (`FUN_00608fb0` skips the model for it), and rides it.
+
+- **Mode 0** (`FUN_00501460`): the nearest lane point (`FUN_004fd790` → `FUN_005f3350`: nearest rung segment
+  that the point projects onto, any lane direction) to the cop, or with +0x97 (set by Searching when it hands
+  over) to a point 150 m (0x00fa8eec) away in a random direction, not within 60 m of another player's car;
+  radius / height by the failure count +0x78: 400 m / 5 m, 400 m / any, 1000 m / 5 m, 1000 m / any.
+- **Mode 1** (`FUN_0050bdd0`): drive there over the road graph (A*, the racers' command builder); every 4 s
+  (0x00fa92b8) look the point up again, take it when 30 m off; within 30 m the speed ramps from 10 mph to 0,
+  within 6 m the handbrake, within 8 m mode 2. Three 50 m probes (0°, ±15°) force full lock on a hit; a crash
+  check sends the cop to the crash recovery state 11. Beyond the ramp the speed is read from D+0x5668 (not
+  traced for this mode).
+- **Mode 2** (`FUN_00509df0`): stopped; traffic message 0x1a asks for a ghost 5 m (0x00fa92f8) ahead of the
+  cop; the traffic tick (`FUN_0060aba0`, one request a frame) places it at the nearest rung within 20 m
+  (0x00fb2470), |dy| ≤ 5 m, in an active hull, with no player clearance, at the lane's cruise speed
+  (`FUN_005f4d10`); asked again after 2 s (0x00f8a808) or on failure.
+- **Mode 3** (`FUN_0050ce00`): merge: drive to the ghost; while the ghost is ahead and more than 15 m away it
+  crawls (override +0x7a = 3: 10 mph; message 0x1b; values 1 stop, 2 5 mph, 3 10 mph in `FUN_0061a450`);
+  behind the cop it drives normally; caught up when the cop's position + 1.5 s of travel is within 2 m of it
+  with the ghost ahead; more than 40 m from the player and off screen: caught up at once; 8 s (0x00fa8e64):
+  back to mode 0. The cop's speed is `.bss` 0x011061f8 (**not read**).
+- **Mode 4** (`FUN_0050d490`): ride: the racers' steering, target speed the ghost's, brake while the ghost
+  stands; within 5 m of the ghost's pose the body is set to it (physics message 0x2e, transform and velocity,
+  every frame); farther, a pose request on the driver (D+0x584c, reader not traced). The ghost gone: mode 0.
+- The ghost obeys traffic's rules: lane speed, the 5 m/s turn cap, junction routes by load, red lights, the car
+  ahead, obstacles; only score 0 (the manoeuvre) is zeroed.
+- **Spawn** (`FUN_0051b4e0`, up to 10 tries): the ring point snapped to the nearest road node, then the nearest
+  lane point within 60 m / 5 m, facing **the lane's direction**; at least r from the player and 200 m (0x010c44cc)
+  from every player's car; spawned with message 0xd at forward × `.bss` 0x01106228 (the "20 mph" is not
+  verified). The cop type's default command (`FUN_006b8a40`: 12 → Patrolling) applies; `CopBehaviour` 6 keeps it.
+- **Siren**: no switch was found tied to the driver states (the mix groups `Player_Vehicle_Sirens`,
+  `Sirens_Roadblock`, `Sirens_Competitor` exist); the natural candidate is the chasing predicate
+  `FUN_006bbb70` (inferred). `police::CopStatus` exposes it as `chasing`.
+- Ported in `cop_patrol.rs` and `traffic.rs` (ghosts: `add_ghost`, `ghost`, `set_ghost_override`,
+  `remove_ghost`, `nearest_lane`).
 
 ### The HUD (data)
 
@@ -3745,30 +4200,216 @@ outcomes award SP once scoring exists.
 
 Ported as read: heat and levels, time heat, chase start, last-seen / lose radius, cooldown, escape, bust
 meter, pursuit bar, cop count and types per level (main behaviour), spawn and removal distances, sight
-(range, cone, raycast, memory), wanted by speeding or ramming, the chase speed law, slots, the 90 s pause.
+(range, cone, raycast, memory, rams; 2026-10-16), wanted by speeding, two traffic hits in view or ramming,
+the patrol on a traffic ghost, slots, spawn kinds, off-screen removal, the 90 s pause.
 Model decisions (not from the game):
-- Cops follow road-graph routes rebuilt every 0.5 s with the AI racers' driver (the game's chase path /
-  avoidance `FUN_0050e370` is not read); ram steering, Bruiser, Rhino, HeadOn, Interceptor are not ported.
-- The low-speed chase: closing at up to 30 mph and stopping 10 m from the player (the game's pin / ram / stop
-  substates are not ported). The patrol: along the road graph at the level's go-to speed cap (the game's
-  patrol drives traffic lanes, `FUN_005101e0`, not read). Searching: drive to the last-seen point, then patrol.
-- Spawn point: a random road point of the ring whose ground has streamed in (the ring shrinks when none),
-  facing the player along the road; one cop per 15 m. Removal by distance alone (no off-screen test).
-- "Touching" = the cop's centre within the player's box grown by the cop's half width + 0.3 m; "rammed" =
-  touching with more than 5 m/s relative speed; a cop crash within 30 m of the player counts as a takedown.
-- The time-to-reach of the chase speed law = distance over the cop's own speed.
+- Pursuit driving: `cop_driver.rs` (Chasing, LowSpeedChasing + box-in, Bruiser, Rhino, HeadOn) on road-graph
+  or straight paths with the AI racers' driver; the Interceptor drives as Chasing; world queries are physics
+  rays (the game asks its nav mesh).
+- The patrol (2026-10-16): the ghost is ported as read; MODEL: the merge speed is the lane's cruise speed (at
+  least 20 mph; `.bss` 0x011061f8 unread), a cop within 5 m of its ghost has caught up too, mode 1 beyond the
+  ramp is capped at the level's go-to / search speed, the ride steers the body onto the ghost's pose by
+  velocity in the ground plane and yaw (the game sets the full transform), a cop more than 5 m off its ghost is
+  put on it when unseen and away from the player, else starts over (the D+0x584c reader is not traced), a
+  ghost its cop no longer asks for goes after 2 s, and every cop not riding a ghost is an obstacle for traffic
+  like a crashed car. Without traffic (`--no-traffic`) the patrol drives the road graph at the go-to speed.
+- Perception: the alerted flag (`FUN_00516400`) is taken as "in a pursuit and going to the last-seen point,
+  searching or waiting"; `FUN_00657ee0` (out-of-range sight) is false; the ram sum adds the closing speed in m/s
+  of each new contact with the player's car (the game's +0x1c value is not traced; other vehicles not counted);
+  wanted terms (6) and (7) are false.
+- "Touching" = the cop's centre within the player's box grown by the cop's half width + 0.3 m; a cop crash within
+  30 m of the player counts as a takedown.
 - Only the main behaviour of a level (no sequencer, fallback or cycle); every heat level counts as unlocked.
-- The outcome stands 5 s (the game plays its sequences); after an escape cops beyond 100 m are removed.
-- The cooldown's × 4 factor is left out; `Widget.HUD.Heat` = the level's band progress; which HUD layouts
+- The outcome stands 13 s (the sequences' length; their cameras are not ported); after a pursuit every cop off
+  screen is removed.
+- The cooldown's × 4 factor does not apply to the player (+0x1a84 = 2, live read 2026-10-14); `Widget.HUD.Heat` = the level's band progress; which HUD layouts
   show when (the widget's code was not read).
-- Not there at all: roadblocks, spike strips, wrecked-by-cop busts (our crashes have no wrecker), the
-  two-collisions rule, cooldown spots / engine off, Speed Points, the busted / escaped sequences, sirens and
-  light bars (`coplights`), police radio, pursuits inside events, the PostFX heat / cooldown colour cubes.
+- Not there at all: roadblocks, spike strips, wrecked-by-cop busts (our crashes have no wrecker), cooldown
+  spots / engine off, Speed Points, the busted / escaped sequences (sirens, light bars and the radio: next
+  section), pursuits inside events, the PostFX heat / cooldown colour cubes.
 
-Open points and what would settle them: vehicle +0x1a84 (the × 4 cooldown: a live read while cooling with the
-engine off / parked); the link from camera event 0x1a to HSM action 0xf (a probe hook on `FUN_00658140`); the
+Open points and what would settle them: the patrol's `.bss` speeds 0x011061f8 (merge) and 0x01106228 (spawn)
+and the contact record's +0x1c (ram sum) by a live read (probe `dump.req`); the out-of-range sight records
+(world +0x2f484) and wanted terms (6) / (7); the link from camera event 0x1a to HSM action 0xf (a probe hook on `FUN_00658140`); the
 spawn weights (`GameMode` +0x5a…+0x64: decode the type); `FUN_0050e370`, 0x0050f970, 0x0050dd40 (disassembly);
 a capture of a real pursuit (`mwtool capture`: cop distances, heat and bust timing) to compare the whole.
+
+## Coronas (2026-10-16, ported in `coronas.rs`, `corona.wgsl`)
+
+- **Queues** (per view, `FUN_004a73b0`): race cars `FUN_00581640` / traffic `FUN_005fd190` → `FUN_004970b0`
+  (≤ 0x60 cars) → `FUN_004a6630` → `FUN_004a6490` (sort by definition, skip at |car − camera| − 2.5 ≥
+  `793b2691`) → `FUN_004a5f70`; world objects `FUN_00497180` → `FUN_004a6fa0` → `FUN_004a6b00`; lights
+  `FUN_00497200` → `FUN_004a7290` → `FUN_004a6d50`; all end in `FUN_004a5790` (this = corona manager +0x50).
+- **Definition** (`Genesys.Gen.Corona`, 224 bytes; runtime copy `FUN_0049d950`): +0x10 curve, +0xa4 `793b2691`
+  max distance, +0xa8 `88b68533` crowded max distance, +0xac `c4e3e3a7` test-point offset (−0.5), +0xb0 Beams,
+  +0xb4 Flares, +0xb8 `60c1d15f` (cube views), +0xbc Glows, +0xc0 / +0xc4 view types 2 / 3, counts at
+  +0xca..+0xd4. Sub-entries (224 bytes): +0x10 curve, +0xa0 Colour, +0xb0 vector (glow `2d6e41d4`, flare
+  `2b9cc12c` = (Position, Position, 1, radial), beam `034c050f` = (start, end, ·, w)), +0xc0 Material, +0xc8 (glow
+  depth bias `a9531774`), +0xcc RotationOffset, +0xd0 `be0fbea3` (layer 7 / 8).
+- **Curve** `FUN_004ab450`: per channel, below `c2cad262` t = `a2a9209e` + `c08c80f4`·x else `1eb30847` +
+  `7c96a82d`·x; t = min(t, 1); out = (t · (`0b494d31` below, `b75365e8` above) + `d95ae391`) × scale.
+- **Per entry** `FUN_004a5f70`: intensity = gate × `Brightness` × L² × night scale (group 1, 4/6, 7 →
+  `VehicleCoronaScalesForNight` pairs, lerp(1, v, night)); size = (`f65c1f07`, `f65c1f06`) × size scale; per
+  locator the `Animation` (linear) at the record's flash time, skipped ≤ 0; `Mirror` → second draw with x negated
+  (`.bss` 0x011036a0 = (−1, 1, 1, −1)).
+- **Per corona** `FUN_004a5790`: p, dir in view space; θ = acos(clamp(−p̂ · dir)); C = curve(θ, s·d, s·d, s·d) with
+  s the view's +0x8b908; I = C.x·C.z·anim, skipped ≤ 0.05 (`.bss` 0x011040b0); S = size·C.y; size cull k = 2
+  (0x010c3e10) / 1280 (0x00fa2fbc) · s · d; colour cull 0.01 (0x011042d0). Glows `FUN_004a4cf0` (curve at (I, I, I,
+  d), half extents G.w·S·G.xy, colour G.z · colours · intensity), beams `FUN_004a5040` (curve at I × 4, widths B.x /
+  B.y along the axis), flares `FUN_004a52e0` (curve at I × 4, ghosts at Position × p.xy, one visibility slot of
+  ≤ 0x400 per corona; test point p + p̂·`c4e3e3a7`).
+- **Drawing**: `Vfx_Corona` (glows, beams; layer 7, `gVfxConstants` (0, 1): linear HDR, depth-tested LESS_EQUAL
+  without writes, the depth pulled by position.w), `Vfx_CoronaFlare` (layer 8, (1, 0): × the tonemap's exposure,
+  gamma-encoded, no depth test, alpha × the visibility texel), `Vfx_CoronaVisibilityTest` (`FUN_004a5560`: one point
+  per slot, 7 × 7 depth taps one texel apart, fraction behind). Effect masks: decomp.md "Exhaust pops and
+  backfires" and research log 2026-10-16 (traffic: groups 0 and 4, L = 0.7 + 0.5 × flash / 255, rate 0.9 + 0.2 ×
+  random).
+- **Brake hold** (`FUN_0057a5e0`): car +1000 is zeroed while the brake is applied (+0x1930 > 0; in reverse with
+  +0x192c > 0 it is zeroed too and groups 1 and 2 light) and adds the scaled frame time otherwise; while it is
+  below 0.5 (`.rdata` 0x00f8a810) and `FUN_006a0110` (`FUN_006c37e0`: the player's state +0x9c is 2) holds, group 1
+  stays lit. **Electrical flicker**: with car +0x3f5 or +0x1c19 set the mask gets 0x80c7 (bit 15 plus groups 0, 1,
+  2, 6, 7); the setters of those two bytes and what bit 15 does in `FUN_004a5f70` were not read.
+- **World objects** (2026-10-16, ported in `world_coronas.rs`): the runtime `WCVfxBehaviour` (`FUN_005b3350`,
+  vtable 0x00faf238: +4 activate `FUN_005b30d0`, +8 deactivate `FUN_005b3150`, update `FUN_005b31a0`) packs its
+  bools with `FUN_005b0220`: corona flags +0x2c = 1 `62f1c8f6` (data +0x5c), 2 `6e32f7bb` (+0x5e), 4 `74f925cc`
+  (+0x5b), 8 `ad62f71e` (+0x5d), 0x10 `74ea21c1` (+0x5f), zero without coronas; light flags +0x2e = 1 `553d49f7`
+  (+0x63), 2 `2dcdc3c8` (+0x65), 4 `45803296` (+0x62), 8 `0486dd39` (+0x64), 0x10 `4593369b` (+0x66), zero without
+  lights. The counts are `9f8c05b0` (coronas, +0x54) and `e41cffe1` (lights, +0x56); +0x69 / +0x6b = they are non-zero.
+  +0x6a (+0x6c) = coronas (lights) whose flags are not all five set: those are switched by the update, the rest only
+  by activation. The update (`FUN_005b31a0`, round robin by +0x57): +0x6e = the hour (`DAT_0110d5d1`) in [+0x55,
+  +0x56) = [`392e10d5`, `19e7191a`) (`FUN_005a7850`, wrapping), +0x70 = (+0x2c & the environment bits
+  `DAT_0110d5d0`) ≠ 0, +0x6f the same for +0x2e; coronas are in the object's list (`FUN_00532760` add,
+  `FUN_005327b0` remove; object +0xc4, at most 4) while +0x6e, +0x70 and the blink (+0x66: `c8d7741f` > 0, a
+  random-rate square wave on +0x50) allow; lights likewise (`FUN_005328c0` / `FUN_00534080`). Activation adds both
+  at once when the flags are all set and there is no hour window or blink. The object is queued (`FUN_00532a80`,
+  `FUN_00533780` → `FUN_00497180`) while the camera is within +0xe8 = (the largest |locator| + the definition's
+  +0xa8 `88b68533`)²; `FUN_004a6fa0` then takes each listed behaviour whose view bit (+0x2d, from the definitions'
+  sprite counts, `FUN_005af1f0`) matches, level = `FUN_0089b400`(+0x2c, the object handle) (skipped below 0.001),
+  and queues each locator (object matrix × locator; direction = the locator's z axis) with that level;
+  `FUN_004a6b00` sorts by definition, skips coronas beyond the runtime definition's +0x64, and calls `FUN_004a5790`
+  with anim = (level × 4), colour (1, 1, 1, 1), intensity 1, size (1, 1). Data: 37 corona behaviours; street
+  lamps ("SetLightsOn") mostly night + twilight (flags 3), traffic lights and the speed camera all five (0x1f, by
+  activation only), `…171cc4` none (never shown). **Light coronas** (`FUN_00497200`, ≤ 0xc0 per frame): from the
+  light submission with a handle at +0x48 of the GeneSys object the record's +0xc / +0x10 names (not the light
+  definition: its +0x48 is `AttenuationThreshold`) and current / definition intensity; that object was not traced
+  (not ported).
+
+## Speed camera flash (2026-10-16, ported in `sequence_fx.rs`)
+
+A counted pass sends `SpeedCameraTriggered`, whose `GameplayTrigger` starts sequence 1107082 (`GAMEPLAY.BNDL`,
+the sequence object `0x10e48a`; items listed by `mwtool frontend --sequence 1107082`). Its world items:
+
+- **`GameLogic.ModifyBehavioursInAreaSequenceItem`** ×2 (0–0.1 s and 1.0–1.1 s; `Label` "SpeedCameraLight",
+  `TransformBinding` `Players.LocalPlayer.GetPosition`, `Radius` 50, `ActionType` 0). Type id 0xf7a5c; the factory
+  table at 0x00856271 → `0x008612a0` (runtime item, vtable 0x00ff2088). Start (slot 3, `FUN_00856370`): the
+  binding's position + `TranslationOffset`, `FUN_004f4b00`(pos, `Radius`, type 0x2000, list of 10) for the
+  objects around it, the label hashed (`FUN_00a1d5c0`), and per object `FUN_008467d0`(handle, hash, `ActionType` ≠
+  1) which queues game-logic message 0xd (on) or 0xe (off); end (slot 9, `0x00851e20`): the reverse for the same
+  objects. The world's message loop (`FUN_0055a680`, cases 0xd / 0xe) calls `FUN_00548510` /
+  `FUN_00548560` → the object's virtual +4 / +8 with (index, hash): the behaviours with that label activate /
+  deactivate. The speed camera compound `1e63a9d5` (74 placements) carries behaviour `…f8729` "SpeedCameraLight"
+  (`543527d0` clear: off from the start; all flags set: lights and corona by activation only) with light `…f872d`
+  (`Light_Point`, white × 500, threshold 0.1: 70.7 m) and corona `…f872c` at locator group 1017639. So the camera
+  lights the world twice for 0.1 s and is dark otherwise.
+- **`SequenceItems.PostFxOverrideSequenceItem`** (0–1.54 s, property 0; type 0xf7d8c, factory `0x0086a690`,
+  vtable 0x00ff3020): each frame (`FUN_008635a0`) every `Automated_Values` entry's curve is evaluated at the
+  item's time and stored by `Automated_Property` 0 / 1 / 2 into a 14-word block with flag bytes +0x32 / +0x33 /
+  +0x34, handed to `FUN_0083b7a0` on game logic +0x2ef70 (flag +0x38). The PostFX manager (`FUN_008ecf80`) reads
+  it: property 0 → its +0x1660 = value × 0.6 (`.rdata` 0x010219a4), property 1 → +0x1664 = value × 0.8 above 0,
+  × 0.4 otherwise (0x010219a0, 0x00fae200), property 2 → +0x1508 and +0x1504 × value × 2 unless +0x1501.
+  +0x1660 / +0x1664 are the final pass's brightness b / contrast c terms (above, "Final pass"). The curve here:
+  0 → 0.5 at 0.05 (77 ms) → 0 at 0.095, 0 → 0.656 at 0.219 (0.34 s) → 0 at 0.279: two white-outs of b ≈ +0.3 /
+  +0.39. The block is cleared every frame (`FUN_0083c9f0` at 0x006ab1d0). Other users of the item: the nitrous
+  sequences (`…b3a2a`, property 2 then 0), `…f5fc1` (properties 1 and 2), `…f8ec8` (the same flash curve,
+  0.55 s).
+- **Sound**: `WaveSequenceItem`s at 1.333 s (`…f690e`) and 5.967 s (`…f690d`) on mixer channel `…7538` (gain
+  0.224); a `BusMixerChannelSequenceItem` on bus route 259950 "Dominant 3D" (gain 0.435 rising to 1 over 4 s,
+  not ported).
+- **Timeline controllers**: at 1.3 s jump back to 1.15 s while `CollectablesVM.CameraSpeedwall.HasDownloaded`
+  is false, at 1.233 s jump to 6.5 s once `…TimedOut`: the plate waits for the speed wall. Items are gated by
+  `ShowMiniWall(NOT)`. Not run in the port (the clock runs straight, as the HUD's).
+
+## Police sirens, light bars and radio (2026-10-16)
+
+Read for "cops have no sounds, lights etc."; ported in `police_fx.rs`, `police_audio.rs`, `police_lightbar.rs`,
+`police_speech.rs` (data `mw_assets::police_sound` / `police_lights` / `police_speech`). "Entity" = the
+0x1c40-byte race-car entity; S = entity +0x17f0 (the siren voice object), B = entity +0x1840 (its parameters).
+
+**Siren data and set choice** (confirmed): `FUN_005776a0` loads `CopSoundSet` `…23013` from
+`VEHICLES\WAVES.BNDL` into manager +0x339e4. `FUN_00593ac0` (car creation) reads the car's `VehicleSound`
++0x40: a set of its own (510072, the SWAT car: `…b3af6`), else `CopSoundSet` +0x14 `9f467b30`
+`[slot % count(+0x1a)]` (122713, 122699, 122706: `…23039` / `…23014` by slot parity); `efd7715f` has no reader.
+The set handle lands at entity +0x1850 (`FUN_00591350`). Only cars with `VehicleComponent.54eb210e` (+0x8e) run
+the siren (`FUN_00594870`).
+
+**Requests** (`FUN_0058d770`, once per update, then zeroed): entity +0x1950 = 1 → level 0, 2 / 3 / 4 → level
+1 / 2 / 3 (B+0x2c), 5 → blip timer B+0x1c = 0.8 s (`.rdata` 0x00fac278, counted down by dt); +0x1954 = 1 / 2 →
+light flag +0x1c27 off / on. While the car is wrecked (damage byte +0xc20 ≥ the limit +0x74 of the object at
++0xc18) or crashing (vtable +0x58) the light flag is cleared and the siren stops. Writers of the requests:
+- `FUN_00587720` (from `FUN_00591ac0`): for a siren car with a player owner, not crashing, each rising edge of
+  the horn input (+0x1c25) steps off → level 1 + lights → 2 → 3 → off + lights off. For other cars the same
+  function **plays the horn**: `VehicleSound` +0x60 list [0] through `FUN_00587650` (start 0.025 s, `.rdata`
+  0x00fac294), released with a 0.1 s fade (`FUN_00a44e40`, 0x00fad540) — the player's horn runtime.
+- Message 0xd (`FUN_00844300` → `FUN_00572d50`): byte 8 → lights on / off, byte 9 → siren level 1 / off. Sent by
+  the script binding `SetSirenState(vehicle, on)` (handler 0x0067c3d0, registered at 0x0068d798; both bytes =
+  `on`), `FUN_008470d0` (a game-mode routine: on), and `FUN_006c65f0` 1 s after a cop's takedown
+  (`FUN_006ccd20`: lights off, siren level 1, then the car is reset).
+- `FUN_005b4750` (cutscene cars, `AnimatedRaceCarBehaviour` +0x54: 0 off, 1–3 level, 5 blip; +0x5a lights).
+- **Not found**: what switches the AI pursuit cops' sirens on (none of the above in the code read). MODEL
+  (`police_fx::cop_fx_state`): cops that chase or search in a pursuit or cooldown have `SetSirenState(on)`.
+
+**The voice** (`FUN_0058bdc0`, this = S): with the blip timer running and no wave pending, a random `Blips` wave
+(LCG at 0x0110c690); else with a level, `Sirens[min(level − 1, n − 1)].Wave[slot % count]` (looped). A change
+while playing: `FUN_00571ef0` (state 4); `FUN_00574510` keeps two voice slots: the new wave starts at once
+(`FUN_00572070`) with gain = min(1, play time / 0.2 s) (`.bss` 0x0110d020), the old one at 1 − that; a stop fades
+over 0.15 s (`.bss` 0x0110c940). `FUN_00571f30` sets each voice's gain = 1.6 (0x00fad920) × the fade and its
+pitch = ((0.5 + 0.5 sin φ)·D + 1 − D) · B+0x28 (`FUN_00aabc10`; φ += global `VehicleSound.73e48fd4` (9.253) ·
+dt · 2π, D = B+0x24 · clamp(1 − B+0x20 / `75ec96d4` (0.375 s)); an impact sets B+0x24 to 0.067 / 0.042 / 0.009
+and B+0x20 = 0; not ported). Channel (`FUN_00572430`): the local player's car `Player_Vehicle_Sirens`, others
+`Sirens_Competitor`, roadblock cars (+0xa40 bit 2) `Sirens_Roadblock`. When a car whose level was non-zero is
+wrecked and no other car holds the slot at manager +0x339d0, `SirenSoundSet` +0x1c (`…b3883`, the dying
+siren: the yelp 0–0.5 s, then one of four 2 s wind-downs, gains 3 / 3.5, channel `…76b17`) plays once.
+
+**Light bar** (effect group 3 = +0x1c27, `FUN_0057a5e0`; `coplights` = 1.0 when +0x1954 == 2, getter 0x5a744a):
+- `FlashAnimation` (`FUN_0049ef00`): T = Σ `Duration`; the segment is the one where frac(t / T) minus the
+  segments' shares in order reaches ≤ 0 (else the last); f = (`Frequency` · t + `Phase`) · n with the absolute t;
+  value = lerp(P[trunc f mod n], P[(trunc f + 1) mod n], f − floor f). t = the clock × entity +0x3e4, the
+  per-car rate frac(slot × 0.39 + 0.5) × 0.2 + 0.9 (`FUN_00593ac0`). The Interceptor's bar: 8 s of a 20-sample
+  pattern at 0.4 Hz then 8 s of 16 samples at 0.5 Hz (8 samples / s), outer → inner → centre, the sides 2
+  samples apart.
+- `_LocalEmissive` (G-buffer program at shader slot 0x878): S = Σᵢ Iᵢ (1 − sat(|Pᵢ − p|² · M² · Rᵢ))² over 16
+  lights (`gaSelfIllumLocal_PosIntensity` slot 0x48, `g_SelfIllumLocal_RecipRadiusSq` 0x49, p = the skinned
+  bind-pose position), emission = S · `EmissiveColour` · `mSelfIlluminationMultiplier` ·
+  EmissiveTexture(uv0).x into RT3. `FUN_00583290` → `FUN_0057fcf0`: with group 3 on, the coronas of group 3
+  with an `Animation` (both day and night entries) give v = anim(t)^10 (0x00f9f698), kept above 1e-4, the 16
+  strongest; each locator whose +Z axis faces the camera is one light (P = its position, I = v, R = 222.767,
+  `.data` 0x010c4794). The colour comes from the `Glass_Colourise` lenses (red (0.60, 0.07, 0.006), blue
+  (0.07, 0.13, 1.48)). Side finding: `g_selfIlluminationMask` = 4.0 (0x00fad8c0) × entity +0x3cc × the
+  brake / headlight / reverse bits there (our `--lights` default may be 4× low; not changed).
+- The bar's light: group-3 `Light_Custom`s (blue `…253a4` / red `…253a5`: intensity 35, threshold 0.05), in
+  `FUN_005818f0` intensity × `a3de907e` × entity +0x3cc × the animation (linear), through `FUN_008cf1d0` into
+  the `LightBuffer_Cop` program: att = sat(1 / d² − c.w) × ((1 − L̂.y)⁶ above the pixel, 1 + 0.75 L̂.y below),
+  diffuse only (Lambert for the world, the Ashikhmin-Shirley diffuse 0.3875 for cars).
+- Coronas (`FUN_00581640` → `FUN_004970b0` → `FUN_004a6630`, per entry `FUN_004a5f70`): intensity = gate
+  (`da6ac384`: 0 always, 1 by day fading with the night level, 2 at night; `FUN_0089b400`) × `Brightness` × L² ×
+  the group's night scale × the linear animation value; size `f65c1f07` × `f65c1f06`; the draw `FUN_004a5790` /
+  curves `FUN_004ab450` were not decoded (not drawn).
+- Head and tail lights are on for every car (+0x1a8c = 1, `FUN_00591350`), off when +0x1a84 == 0 and +0x1a40
+  bit 2 is clear.
+
+**Radio** (speech manager: init `FUN_00840390`, update `FUN_00842ba0`, load `FUN_008404c0` / `FUN_008423a0`):
+- Request `FUN_008408a0(UniqueId)`: the event (`FUN_0083d1e0`), its conditions (all or any by +0x44), then
+  `FUN_0083d270` rejects it when played ≥ its maximum, outside its mode-time window, less than `Period` minutes
+  since it last ended, needing a car without one, `Cutscene_Behaviour` 2 in a cutscene, or a one-off heard;
+  `FUN_008406a0`: one speech at a time, no queue; a new one interrupts only with a lower `Priority` number.
+- Per event (vtable 0xf994d8, `vt_00845b10`): `Delay`, then the items at their `StartTime`; a line item picks
+  one line uniformly over all its lines and containers (`FUN_0083c5a0`).
+- Triggers: `GameplayTrigger`s of the scoring actions (`FUN_006f9670` → `FUN_006e0a90`: the first event of the
+  output whose conditions hold): chase started (`ScoringConfig` +0x48 / +0x4c / +0x50 / +0x54), resumed (+0x58),
+  heat up (+0xe8 / +0xec), takedown (trigger 1378651), cooldown (+0xc4), escaped, roadblocks, hits, respray;
+  HSM 983342 "Speech Manager": in a chase every 5 s by `GetRandomNumber[4]` (1186587 / 1378016 / 1871411 /
+  1378788; within 25 m of a chasing cop 1186587 / 1378788 / 1186559 ×2), in the cooldown 1871531 (1871318 in a
+  building). Event ids per trigger: `police_speech.rs` and the research log.
 
 ## Vehicle paint, liveries and dirt
 

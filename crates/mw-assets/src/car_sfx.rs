@@ -308,12 +308,12 @@ fn collision_rules(vs: &Object) -> CollisionRules {
 }
 
 /// The mix snapshot's channels by name hash (`field_hash` of the name with underscores).
-struct Snapshot {
+pub(crate) struct Snapshot {
     channels: HashMap<u32, Object>,
 }
 
 impl Snapshot {
-    fn load(store: &AssetStore) -> Self {
+    pub(crate) fn load(store: &AssetStore) -> Self {
         let channels = (|| {
             let misc = first_object(store, "SOUND/GLOBAL.BNDL", "Genesys.Gen.MiscSound")?;
             let set = store.genesys_object(handle_at(&misc, SNAPSHOT_SET)?).ok()?;
@@ -333,7 +333,7 @@ impl Snapshot {
         Self { channels }
     }
 
-    fn channel(&self, property: &str) -> Option<&Object> {
+    pub(crate) fn channel(&self, property: &str) -> Option<&Object> {
         self.channels.get(&field_hash(&property.replace(' ', "_")))
     }
 
@@ -341,7 +341,7 @@ impl Snapshot {
         self.channels.iter().map(|(h, o)| (*h, number(o.get(field_hash("Gain"))).unwrap_or(1.0))).collect()
     }
 
-    fn spatial(&self, store: &AssetStore, property: &str) -> Option<Spatial> {
+    pub(crate) fn spatial(&self, store: &AssetStore, property: &str) -> Option<Spatial> {
         let ch = self.channel(property)?;
         let falloff = handle_at(ch, field_hash("DistanceFalloff")).and_then(|f| store.genesys_object(f).ok());
         Some(Spatial::from_channel(ch, falloff.as_ref()))
@@ -351,7 +351,7 @@ impl Snapshot {
 impl AssetStore {
     /// One sequence as a [`OneShot`]: its items' snapshot channels applied, placed by its first wave item's
     /// channel (a `Mixer_Channel`, else the snapshot channel it names).
-    fn one_shot(&self, snapshot: &Snapshot, id: ResourceId) -> Option<OneShot> {
+    pub(crate) fn one_shot(&self, snapshot: &Snapshot, id: ResourceId) -> Option<OneShot> {
         let mut loader = SoundLoader::new(self).with_snapshot(snapshot.gains());
         let seq = loader.sequence(id)?;
         if seq.items.is_empty() {

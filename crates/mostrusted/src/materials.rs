@@ -161,7 +161,7 @@ fn qi(v: f32) -> i32 {
 
 /// Extension texture slots and constant vec4s (keep in sync with `layered.wgsl`).
 const N_TEX: usize = 10;
-const N_VEC: usize = 21;
+const N_VEC: usize = 28;
 
 /// Fill the texture slots in order.
 fn slots(v: &[Option<TexKey>]) -> [Option<TexKey>; N_TEX] {
@@ -197,6 +197,16 @@ pub fn dirt_level() -> [f32; 2] {
     DIRT.each_ref().map(|a| f32::from_bits(a.load(std::sync::atomic::Ordering::Relaxed)))
 }
 
+/// `g_SelfIllumLocal_RecipRadiusSq` of every local light (`FUN_0057fcf0`, `.data` 0x010c4794).
+pub const LOCAL_EMISSIVE_RECIP_RADIUS_SQ: f32 = 222.767;
+/// The local emissive lights' slots in `Layered::params.p` (kind 4): xyz = world position, w = intensity.
+pub const LOCAL_EMISSIVE_SLOTS: [usize; 16] = [10, 11, 12, 13, 14, 15, 16, 17, 18, 21, 22, 23, 24, 25, 26, 27];
+
+/// Is this a vehicle material with local emissive lights (the cop light bar)?
+pub fn is_local_emissive(m: &GameMaterial) -> bool {
+    m.extension.params.mode == Mode::Vehicle as u32 && m.extension.params.p[2].z > 3.5
+}
+
 /// The lightmapped lights of a vehicle body / paint shader (`LightmapLightsTextureSampler`).
 struct VehicleLightmap {
     texture: Option<TexKey>,
@@ -212,6 +222,28 @@ struct VehicleLightmap {
 }
 
 fn vehicle_lightmap(sm: &SceneMesh, name: &str) -> VehicleLightmap {
+    // `_LocalEmissive` (the cop light bar, research log 2026-10-16): emission = S × EmissiveColour ×
+    // mSelfIlluminationMultiplier × EmissiveTexture(uv0).x with S = Σ Iᵢ (1 − sat(|Pᵢ − p|² · M² · Rᵢ))² over the
+    // 16 local lights the car's flashing coronas give (`FUN_0057fcf0`; written per car by `police_lightbar.rs`).
+    // Kind 4; channel 0 = (EmissiveColour, M² · R) with M = mSelfIlluminationRadiusMultiplier and R the
+    // constant 1 / radius² of every light (`.data` 0x010c4794 = 222.767).
+    if name.contains("localemissive") {
+        let colour = sm.parameter("EmissiveColour").unwrap_or([0.0; 4]);
+        let m = sm.parameter("mSelfIlluminationRadiusMultiplier").map_or(1.0, |v| v[0]);
+        let texture = sm.texture("EmissiveTextureSampler").map(|t| (t, false));
+        return VehicleLightmap {
+            kind: if texture.is_some() { 4.0 } else { 0.0 },
+            texture,
+            multiplier: sm.parameter("mSelfIlluminationMultiplier").map_or(1.0, |v| v[0]),
+            channels: [
+                [colour[0], colour[1], colour[2], m * m * LOCAL_EMISSIVE_RECIP_RADIUS_SQ],
+                [0.0; 4],
+                [0.0; 4],
+                [0.0; 4],
+            ],
+            uv3: false,
+        };
+    }
     let texture = sm.texture("LightmapLightsTextureSampler").map(|t| (t, false));
     let kind = match texture {
         None => 0.0,

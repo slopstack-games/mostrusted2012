@@ -3,10 +3,9 @@
 //! (`car_sfx::start_with`), placed by its snapshot channel.
 //!
 //! - **Horn**: HORN (action 5; W / pad B, `input.rs`) plays the first horn sequence of the car's
-//!   `<id>_VEHICLESOUND` while held. MODEL: the runtime that plays the player's horn list was not found (the
-//!   `HORN_SOUND` / `HORN_PRESS` names are an event id and an HSM condition); the voice starts on the press and
-//!   stops with a 0.1 s release (the game's skid release, `.rdata` 0x00fb1a94) on the release; the 911's horn
-//!   item ends after 5 s.
+//!   `<id>_VEHICLESOUND` while held (`FUN_00587720` → `FUN_00587650`): the voice starts on the press and
+//!   stops with a 0.1 s release (`.rdata` 0x00fad540) on the release; the 911's horn item ends after 5 s. A car
+//!   with a siren steps its siren instead and its horn stays quiet (`police_fx.rs`).
 //! - **Impacts** (`FUN_00591ac0` → `FUN_0057caf0` / `FUN_0057e920` with the player's half of the table): a world
 //!   contact closing faster than 2.235 m/s plays a wave of the surface's pool on `Player Vehicle World
 //!   Collision` (gain by speed; the set's player slot +0xf4 is a race-car effect timeline, no sound), then the
@@ -27,7 +26,8 @@
 //!   `Player Vehicle Glass Smash`; with a race car in contact, a cell's scratch level rising by more than
 //!   `f5ddbc19` (0.106) in a frame plays a `Scratch` wave, gain `(Δ − 0.106) / (1 − 0.106)`.
 //!
-//! `MW_AUDIO_METER=1` lists the voices once a second; `MW_CAR_SFX_LOG=1` logs every start; `MW_HORN_AT=t0,t1`
+//! `MW_AUDIO_METER=1` lists the voices once a second; `MW_CAR_SFX_LOG=1` logs every start (and loads the sounds
+//! in muted test runs); `MW_HORN_AT=t0,t1`
 //! holds the horn from t0 to t1 seconds of game time (headless checks).
 
 use std::collections::HashMap;
@@ -60,7 +60,7 @@ impl Plugin for PlayerSfxPlugin {
 /// right to left, …, front row).
 const GLASS_THRESHOLDS: [f32; 15] =
     [0.01, 0.15, 0.01, 0.25, 0.15, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.01, 0.25, 0.01];
-/// MODEL: the horn's release when the button lets go (the traffic skid's release, `.rdata` 0x00fb1a94).
+/// The horn's release when the button lets go (`FUN_00587720` → `FUN_00a44e40(voice, 0.1)`, `.rdata` 0x00fad540).
 const HORN_RELEASE: f32 = 0.1;
 /// MODEL: one-shot voices of the player's car alive at once (the game's voice pools were not traced).
 const MAX_VOICES: usize = 12;
@@ -123,7 +123,8 @@ impl PlayerSfx {
 }
 
 fn load(game: Res<crate::Game>, garage: Option<Res<crate::garage::Garage>>, mut sfx: ResMut<PlayerSfx>) {
-    if game.mute {
+    // Muted runs (tests) load nothing unless `MW_CAR_SFX_LOG` asks for the sounds (headless checks).
+    if game.mute && std::env::var_os("MW_CAR_SFX_LOG").is_none() {
         return;
     }
     let sfx = &mut *sfx;
@@ -251,6 +252,7 @@ fn horn(
     mut assets: ResMut<Assets<SpatialAudio>>,
     mut sfx: ResMut<PlayerSfx>,
     player: Query<(Entity, &Transform, &LinearVelocity), (With<Car>, With<Player>)>,
+    siren: Option<Res<crate::police_fx::PlayerSiren>>,
 ) {
     let sfx = &mut *sfx;
     if sfx.horn_voice.as_ref().is_some_and(|v| v.done()) {
@@ -263,6 +265,10 @@ fn horn(
     if let Some((t0, t1)) = scripted_horn() {
         let now = time.elapsed_secs();
         held |= now >= t0 && now < t1;
+    }
+    // A car with a siren: the horn is the siren switch and does not sound (`FUN_00587720`, `police_fx.rs`).
+    if siren.is_some_and(|s| s.0) {
+        held = false;
     }
     let Ok((car, t, v)) = player.single() else { return };
     let sounding = sfx.horn_voice.as_ref().is_some_and(|v| !v.stopping);
@@ -328,6 +334,7 @@ fn contacts(
     racers: Query<(), (With<Car>, Without<Player>)>,
     traffic: Query<(), With<TrafficCar>>,
     bodies: Query<&RigidBody>,
+    crash: Option<Res<crate::crash::CrashState>>,
 ) {
     let sfx = &mut *sfx;
     let Some(data) = sfx.data.clone() else { return };
@@ -398,8 +405,11 @@ fn contacts(
         }
     };
     let (c, a) = (&mut commands, &mut *assets);
-    // World impacts (`FUN_0057caf0` with the player's channel set, then `FUN_0057e920`).
+    // World impacts (`FUN_0057caf0` with the player's channel set, then `FUN_0057e920`); while the car crashes
+    // the function takes its crash branch instead (`world_sfx.rs`).
+    let crashing = crash.is_some_and(|c| c.active.is_some());
     if let Some((closing, point)) = world
+        && !crashing
         && closing > coll.threshold
         && sfx.since_world >= coll.cooldown
     {

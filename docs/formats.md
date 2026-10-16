@@ -53,7 +53,8 @@ InstanceList ──> Model ──(LOD state)──> Renderable ──(per mesh)�
   373 shaders).
 - **Model (0x51)**: renderable imports and an 8-entry state table (LOD0–5, shadow, occlusion); LOD distances
   squared at ptr +0x08 (count at +0x18, at most 4 used), the shadow distance squared at +0x0C, a pass-mask byte
-  at +0x19. The game draws a placement at the first LOD whose distance is not exceeded by `max(0, |c − eye| −
+  at +0x19 (the views that skip the model: 1 shadow, 2 cube map, 4 main view, 8 reflection, 0x10 one more view;
+  decomp.md "Model pass mask"; 230 coarse terrain tiles have 4 and are never seen directly). The game draws a placement at the first LOD whose distance is not exceeded by `max(0, |c − eye| −
   r) / (placement scale · view scale)` (c, r = LOD0 renderable's bounding sphere) and not at all past the last
   (decomp.md "Model LOD and draw distance"; `Model::lod_for_distance`, `mwtool lods`).
 - **InstanceList (0x50)**: 0x60-byte instances, each a model import, an f32 LOD distance scale at +0x04, plus a
@@ -69,7 +70,9 @@ InstanceList ──> Model ──(LOD state)──> Renderable ──(per mesh)�
   geometry the game draws while the player is *in that unit* (terrain tiles, building blocks, water planes,
   horizon) at the LOD that suits the distance; other units list other tiers of the same tiles. Drawing every
   unit's backdrop stacks the tiers. `mw_assets::backdrop` composes one backdrop per place from the zone that
-  owns it (research log 2026-10-04, night).
+  owns it (research log 2026-10-04, night). Water is per zone too: far zones list coarse planes (a rectangle at
+  y 13.1 over the gorge whose own zones list its water at y −36.8; a sloped sea plane up to y 30.4 over the
+  coastal industrial area) that flood a zone that does not list them (research log 2026-10-16).
 - **ZoneList (0x90)**, the only resource in `HAWAII/PVS.BNDL`: one zone per track unit. Header: ptr points
   (16 bytes each: x, z, 0, 0), ptr zones (0x50 each), ptr per-zone first-point index (u32), ptr per-zone
   point count (u16), u32 zone count (169), u32 point count (941), u32 3. Zone: ptr points, bounds min/max at
@@ -513,6 +516,37 @@ See `crates/mw-audio` (decoders reimplemented from vgmstream's documentation of 
   sequence slots and 24 wave pools (`Scratch`, `Sparks`, `Landing`). `TyreSound` in `VEHICLES/WAVES.BNDL`
   holds only the silent placeholder wave `…79ff`.
 
+### Police sounds, lights and speech (2026-10-16; `mw_assets::police_sound` / `police_lights` / `police_speech`)
+
+- **`CopSoundSet`** (`VEHICLES/WAVES.BNDL` `…23013`, 28 bytes): +0x10 / +0x18 `efd7715f` siren sets (no reader),
+  +0x14 / +0x1a `9f467b30` siren sets (the default list, `[slot % count]`). **`SirenSoundSet`** (60 bytes):
+  +0x0c `3b47deee` (empty), +0x14 `403328c3` a `MixerChannel` (`…76b17`, used by +0x1c's items), +0x1c
+  `89ecdfc4` the dying-siren `Sequence`, +0x28 `Malfunctions` (empty), +0x2c `Blips` (`{Wave}`, one-shots),
+  +0x30 `Sirens` (`SirenLevel {Wave[], count d58c3eb1}`, looped waves), +0x34 / +0x36 the counts, +0x38
+  `21cee134` (0; probably the malfunction count). A car's `VehicleSound` +0x40 may name its own set. The
+  voices play on the mix snapshot channels `Sirens_Competitor` / `Player_Vehicle_Sirens` / `Sirens_Roadblock`
+  (`SOUND/MIXER_CHANNELS.BNDL`; `1653b84c` = 3 / 10 / 1). `mwtool siren [out.wav] [--car <name>]`.
+- **`VehicleComponent.54eb210e`** (+0x8e, bool): the car has a siren (the five cop components).
+- **`FlashAnimation`** (+0x10 / +0x14 `Animations` of `FlashAnimation.Animation` 0x24 bytes: +0x0c `Pattern`
+  handle, +0x18 `Duration`, +0x1c `Frequency`, +0x20 `Phase`); **`FlashPattern`** (+0x10 / +0x14 `Pattern`:
+  floats). Named by `VehicleVfxBehaviour.Corona.Animation` / `Light.Animation`; the cop lights are group 3
+  (`Ford_Crown_Victoria_COP_Coronas`).
+- **Speech** (`EN_US/SPEECH/SPEECHEVENTSEQUENCES.BNDL`, 290 resources: 110 `Speech.SpeechEventSequence`, 81
+  `Speech.VehicleVocab`, 20 `Character.AudioSettings`, mixer channels, 17 radio click / bed `Wave`s, a
+  `SpeechEventList`, a `WaveContainerTable` and a `WaveDictionary`). `SpeechEventSequence` (76 bytes): +0x20
+  `SequenceItems`, +0x2c `a137b739` condition strings, +0x30 `Delay`, +0x34 / +0x38 mode-time window (minutes),
+  +0x3c `Period` (minutes), +0x40 `Cutscene_Behaviour`, +0x44 `47906457` all conditions, +0x46 `c78f4f4a`
+  one-off, +0x47 `a40bb99b` needs a car, +0x48 `Priority`, +0x49 `27e5d881` max plays. Items:
+  `ScriptLineSequenceItem` (+0x24 lines `cea5cd0e`, +0x28 containers `39050096` → `ScriptLineContainer` {+0x0c
+  character, lines}, +0x2c `Context`, +0x2e `Speaker`, +0x30 `9f199cf7` vocabulary kind, +0x32 `6366398d`
+  probability) and `SpeechEventSequenceItem` (+0x24 `8239ac66` event ids). `ScriptLine`: `Character` handle (an
+  `AudioSettings`: `Mixer_Channel`, a bed wave, three clicks), `f8b496b9.LocalisedWave` = the low 32 bits of a
+  container id. **`WaveContainerTable`** (type 0x82): `"wct "`, u32 2, u32 header size 0x18, u32 count, u32
+  name offset (`"SpeechEventSequences.swc0"`), u32 0, then `{u64 id, u32 offset, u32 size}`; the SWC0
+  (`EN_US/SWC/SPEECHEVENTSEQUENCES.SWC0`, 225 MB) holds plain SPS streams (EALayer3, mono, 48 kHz) at those
+  offsets (32-byte aligned). **`WaveDictionary`** (0x84): u32 0, u32 2, u32 tail offset, u32 entries offset
+  (0x14), u32 count, then `{f32 duration ms, u32 id}`. `mwtool speech [<event>] [--out dir]`.
+
 ## Particle effects (`BearEffect` 0x301)
 
 All 214 effects are in `GLOBALEFFECTS.BNDL`. An effect has named parameters the game sets per instance
@@ -529,6 +563,16 @@ Which effect plays where is GeneSys: `HAWAII/SURFACELIST.BNDL` `Surfaces.Surface
 wet) → `SurfaceVfx` (`WheelVfx` kick-up, `PlayerWheelEffects` / `AIWheelEffects` → `VfxWheelEffects`
 `DefaultTyre` smoke / `OnRims` sparks, ten `*ImpactEffect` by direction); `GLOBALEFFECTS.BNDL` `VfxGlobals`
 (`VehicleImpacts`, `VehicleScrapes`, `Misc`). `mw_assets::vfx`.
+
+`VfxGlobals` (228 bytes): +0x0c `Rendering`, +0x38 `VehicleCoronaScalesForNight`, +0x60 `HangingBumperSparks`, +0x84
+`VehicleCollisionSettings` (inline: +0x94 `90c657d8` 0.01, +0x98 `e9ff2375` 5 = the contact value above which a
+vehicle contact is an impact, +0x9c `19458ef1` 0.2 s = the time between new effects), handles +0xa0 `Debug`, +0xa8
+`20feab72`, +0xb0 `Misc`, +0xb8 `MoonCorona`, +0xc0 `5e608031`, +0xc8 `SunCorona`, +0xd0 `VehicleImpacts`, +0xd8
+`VehicleScrapes`. `VfxVehicleCollisions` (308 bytes): 36 effect handles from +0x0c (field i at +0x0c + 8i, unnamed),
++0x12c UniqueId, +0x130 `34429d6c` (1.0, the car speed in m/s above which collision effects play). Which field
+plays: decomp.md "Car collision effects" (2 + k player vs race car, 10 + k player vs traffic, 20 + k / 28 + k the
+others; k by impact zone). The car's collision mesh the effects emit from is its bundle's `PolygonSoupList` (car
+space; 166 triangles on the 911).
 
 Shaders: `VfxParticles_Diffuse*` draw CPU-expanded, per-vertex-lit quads with premultiplied output (atlas
 frames from `NumTiles` / `EnableLooping`); `VfxParticles_MotionBlurSpriteUntex` draws sparks as moving discs
@@ -569,6 +613,44 @@ Decoded from the game's code (research log 2026-10-09 "exhaust effects"; layouts
   alpha slot +0x9a, tint flag +0x9b, colour / alpha rates +0x9c / +0xa0 (`Op::ColourCurve`): rgb = c.rgb × c.w.
 - `InitialisePosOffset` (0x14) + `ParametricPosVelToWorldSpace` (0x1A, or 0x1B with its own rotation and offset
   at +0x00 / +0x10): an emitter-space layer.
+- `SuperEmitter` (0x2B, 2026-10-16; `Op::SuperEmitter`): words 0–1 cone (degrees about the parent's backward
+  direction), 2–3 speed, 4–5 velocity inheritance, 6–7 radius, 8 engine operand (dt), 9–12 the parent layer's
+  position / velocity / age / 1 / lifetime operands (hi = 0x80 | 4·channel, bits 23+ = the parent layer's
+  index), 13–15 own position / velocity / radius, 16 rate (1/s), 17 per metre of the parent's travel, 18 radius
+  scale at the parent's end of life, 19 rate scale at its end, 20 a LOD byte. Layers fed this way have no
+  spawner (`mwtool effect all` shows `spawn -`).
+- Quad renderers (2026-10-16; `Op::Render` / `Renderer`, word = 4-byte index into the payload; compiled forms
+  are straight copies): 0x24 `RenderSprite` words 7 depth fade, 8 opacity (`gVfxConstants.z`, confirmed), 9 size
+  cap, 10 aspect, 12–13 pivot, 15 translucency, 16 wrap, 17 key light as ambient, 18 material, 20 bytes (0
+  blend / layer, 3 soft); 0x27 `RenderSpriteSubUV` words 9 depth fade, 10 opacity, 11 aspect, 13–14 pivot, 16
+  translucency, 17 wrap, 18 key as ambient, 19 size cap (× the binding slot of byte +0x5b), 22 byte 0 blend /
+  layer, 23 byte 0 soft; 0x28 words 0x11 / 0x12 / 0x13 / 0x14, pivot 0x16–0x17, 0x19 / 0x1a / 0x1b, bytes +0x78
+  / +0x7b. Layer = [5, 6][blend], pass = soft ? [0x23, 0x2a] : [0x00, 0x28] (`FUN_0046a430`). Words 11 / 14 of
+  0x24 and 12 / 15 of 0x27 are not read by the run functions. 0x29 `RenderSpriteVelocity`: words 12–13 streak
+  length range, 16 tail alpha, 18 streak scale (× slot of byte +0x4c), byte +0x4d blend / layer.
+- `UpdateParametricRadius` (0x3C): words 5 knee, 6–8 radius factor at age 0, knee, 1 (piecewise linear), 9 floor,
+  byte +0x28 slot (`Op::RadiusCurve`).
+- `UpdateParametricFadeOverDistance` (0x38): words 0–11 three rgba multipliers (at the camera, at the near
+  distance, far), 12–18 operands (view block, position, radius, colour in, velocity, radius out, colour out), 19
+  depth offset, 20 near, 21 far, 22 near at speed, 23 that camera speed (m/s), 24–25 speed fade full / zero
+  (m/s), bytes +0x68 speed-dependent near, +0x69 subtract the radius, +0x6a speed fade of the radius, +0x6b of
+  the alpha (`Op::ViewFade`).
+- Wheel spawners: `EmitterWheel` (0x05) scales its count by the binding slot of byte +0x78, `EmitterWheelContactPlus`
+  (0x07) by that of byte +0x68 (`Spawner::count_slot`). `UpdateWheelBindings` (0x42): operands 0–3, four
+  `Curve5` from +0x10, scales +0x38, source bytes +0x48, combine `a` / `b` / op bytes +0x4c / +0x50 / +0x54, no
+  offsets.
+
+**Car light sources** (`mw_assets::car_lights`, `mwtool car-lights <car|all>`; how the game uses them: decomp.md
+"Car lights on the world"): `VehicleVfxBehaviour.Lights` entries (0x40 bytes) = +0x10 `Colour` (Vector4, × the
+definition's), +0x20 `Animation` (`FlashAnimation`), +0x28 `LightDefinition`, +0x30 `LocatorGroup`, +0x34
+`a3de907e` (intensity scale), +0x38 `Group` (u16), +0x3a `da6ac384` (u16 gate). `Light_ProjectedTexture`
+(type 0x285c, 160 bytes) = `Light_Base` (+0x10 `Colour`, +0x20 `FlashPattern`, +0x48 `AttenuationThreshold`,
++0x4c `Intensity`, +0x50.. the `OnDuring…` bools) + +0x60 `ed20dbe4` (Vector2: field-of-view scale, × 45° per half
+axis), +0x70 `8745e6dd` (Vector3: a, b, c of 1 / (a d² + b d + c)), +0x80 `664ab465` (Vector4: lit window of the
+light's clip space, left / bottom / right / top), +0x90 `Material` (its texture is the cookie). Almost every car carries
+the same set: group 4 projector `…253a9`, group 17 projector `…253aa`, group 6 head spot
+`…f0821`, groups 7 / 1 tail / brake spots `…1246fa` / `…1246f9`, group 2 reverse cone `…253af` (the traffic
+bundles have cones `…253ae` / `…253a3` instead, unused: traffic casts no light).
 
 **Car spot effects**: `VehicleVfxBehaviour` (one per car bundle) lists `Coronas` (0x50 bytes), `Lights` (0x40)
 and `SpotEffects` (0x20: `SpotEffect` handle, `LocatorGroup`, `Group`, `da6ac384`, `Looping`, `Mirror`; counts
@@ -612,8 +694,20 @@ same set, from `GLOBALEFFECTS.BNDL` (`mwtool genesys all --type VehicleVfxBehavi
 ## World object physics (`PhysicalDefinition`, `DynamicAdditionalInfo`, collision responses)
 
 `mw_assets::props`; how the game uses the values: decomp.md "Props".
+- `WCVfxBehaviour` (2026-10-16; `mw_assets::props::WcVfx`, `mwtool props -v` lists them per object and part):
+  +0x0c `Label`, +0x18 `0228a2f8` on by contact, +0x19 `713589ad` off by contact, +0x1a `543527d0` on at start,
+  +0x1c `ImpactEffect`, +0x24 `4524a2be` contact effect, +0x30 `29436f61` its point speed (m/s), +0x40 /
+  +0x44 / +0x48 `Coronas` / `Lights` / `Spot_effects` (0x18-byte entries: handle +0x0c, locator group +0x14)
+  with counts at +0x54 / +0x56 / +0x58 (decomp.md "World-component behaviours"). A part's spot-effect locator
+  groups are in the part's (bone's) space.
+- `WCPlaySoundBehaviour` (2026-10-16; `mw_assets::world_sfx::WcSound`, `mwtool props -v` lists them): +0x0c
+  `Label`, +0x18 `0228a2f8` (contacts play it), +0x19 `713589ad`, +0x1a `543527d0`, +0x20 `Offset` (vector),
+  +0x30 `MixerChannel`, +0x38 `Collision_Waves` / +0x3c `8dfd5f40` / +0x40 `Surface_Collisions` with counts at
+  +0x44 / +0x46 / +0x48. `Surface_Collisions` are 40-byte `PropSurfaceSound`s: +0x0c / +0x10 unique ids
+  (`Surface`), +0x14 `e8986e0a`, +0x18 `71f062ee`, +0x1c `Waves`, counts +0x20 / +0x22 / +0x24. What each list
+  is for: decomp.md "World-component sounds".
 - `PropObject` +0x0C `PhysicalDefinition`, +0x14 impact effect (a `BearEffect`, 81% of props), +0x1C impact
-  sound (a `WCPlaySoundBehaviour`: `Collision_Waves` handles, per-surface `Surface_Collisions`), +0x24
+  sound (a `WCPlaySoundBehaviour`, above), +0x24
   `mfResetDistanceSquared` (10000 everywhere), +0x28 `mbRemoveInsteadOfReset`.
 - `PhysicalDefinition`: +0x10 bounds centre, +0x20 half extents, +0x30 `AdditionalInfo`, +0x40 `RigidBodies`
   (0xe0 bytes each: +0x10 transform, `ComOffset`, `Inertia_Scale`, bounds, +0x98 `AngularDrag`, +0x9c
@@ -673,7 +767,9 @@ but the record sizes and the flow / vehicle tables differ.
 - **Junction** (0x150, confirmed in `FUN_00605d30`, the light cycle): `u16[16]` phase durations at 0x04 in
   tenths of a second, `u8[16]` phase masks at 0x24 (bit k set: light group k holds its stop lines, i.e. red),
   `u8` phase count at 0x34, `u8` group count at 0x35, groups of 0x20 bytes from 0x40: `u16` light object ids
-  at 0x00 (count `+0x17`), `u8` stop line indices at 0x04 and their `u16` hulls at 0x0A (count `+0x16`). All 189
+  at 0x00 (count `+0x17`), `u8` stop line indices at 0x04 and their `u16` hulls at 0x0A (count `+0x16`); light k's
+  object is the `u32` at group − 8 + 4k (`FUN_005ef950`; the placed traffic-light compound's instance id, 101 of
+  104 found, decomp.md "Traffic lights: the lamps"). All 189
   stop lines are referenced by exactly the junction groups, each owned by a section. Typical cycle: 15 s / 2 s
   all red / 15 s / 2 s all red.
 - **Static vehicle** (0x50, parked cars; `mw_formats::TrafficStaticVehicle`): a world matrix (D3D row-major, row 3

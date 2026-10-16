@@ -46,6 +46,9 @@ pub struct SurfaceEffects {
     /// Impact effects by direction: front, front left, front right, rear, rear left, rear right,
     /// left, right, top, bottom.
     pub impacts: [Option<ResourceId>; 10],
+    /// The unnamed field after each of `impacts` (in the same order): what AI cars play (`FUN_0049fe80` picks the
+    /// named one for the local player, the one after it otherwise).
+    pub ai_impacts: [Option<ResourceId>; 10],
     /// `TyreMarksMaterials` (`Vfx_TyreMarksNew` materials) by tyre: field `eff16a09`, `Offroad`, `Road`,
     /// `Sport`, `Track` (field order).
     pub tyre_marks: [Option<ResourceId>; 5],
@@ -71,6 +74,12 @@ pub const IMPACT_LEFT: usize = 6;
 pub const IMPACT_RIGHT: usize = 7;
 pub const IMPACT_TOP: usize = 8;
 pub const IMPACT_BOTTOM: usize = 9;
+
+/// The unnamed `SurfaceVfx` handle after each of [`IMPACT_FIELDS`] (field offset + 8; formats.md "SurfaceVfx").
+const AI_IMPACT_FIELDS: [u32; 10] = [
+    0xddc2da41, 0x62c63175, 0x59a0c60a, 0x111c9619, 0xcd782520, 0x2ed478b9, 0x47bdeeeb, 0xad998581, 0x1e8f2708,
+    0x4bbc1cfa,
+];
 
 const IMPACT_FIELDS: [&str; 10] = [
     "FrontImpactEffect",
@@ -100,6 +109,28 @@ pub struct VfxLibrary {
     pub vehicle_impacts: Vec<Option<ResourceId>>,
     pub vehicle_scrapes: Vec<Option<ResourceId>>,
     pub burst_tyre: WheelEffects,
+    pub collisions: VehicleCollisionVfx,
+}
+
+/// The thresholds of the race cars' and traffic cars' collision effects (`FUN_00584260`, `FUN_00600220`).
+#[derive(Debug, Clone, Copy)]
+pub struct VehicleCollisionVfx {
+    /// `VfxVehicleCollisions` `34429d6c` of `VehicleImpacts` (+0x130, 1.0): no collision effect while the car's
+    /// speed (m/s) is at or below it.
+    pub min_speed: f32,
+    /// `VfxGlobals.VehicleCollisionSettings` `e9ff2375` (+0x98, 5): a vehicle contact whose value is above this
+    /// plays from `VehicleImpacts` (when [`Self::retrigger`] has passed), otherwise from `VehicleScrapes`.
+    pub impact_value: f32,
+    /// `19458ef1` (+0x9c, 0.2 s): the time since the car's last collision effect after which a new one may start.
+    pub retrigger: f32,
+    /// `90c657d8` (+0x94, 0.01): not read by the functions traced.
+    pub unknown_94: f32,
+}
+
+impl Default for VehicleCollisionVfx {
+    fn default() -> Self {
+        Self { min_speed: 1.0, impact_value: 5.0, retrigger: 0.2, unknown_94: 0.01 }
+    }
 }
 
 /// A particle material: the `VfxParticles_*` shader and its diffuse texture / atlas settings.
@@ -165,6 +196,26 @@ fn handles(o: &Object) -> Vec<Option<ResourceId>> {
 }
 
 impl AssetStore {
+    /// The car's collision mesh as the collision-mesh emitter reads it (`FUN_0044bf90` over the soups of the
+    /// vehicle bundle's `PolygonSoupList`, car space): the first three vertices of every polygon (quads give only
+    /// their first triangle, as the emitter's three-vertex loop does). `None` when the bundle has no soup list.
+    pub fn vehicle_collision_mesh(&self, bundle: &str) -> Result<Option<Vec<[[f32; 3]; 3]>>> {
+        let Some(b) = self.bundle(bundle) else { return Ok(None) };
+        let Some(e) = b.entries_of_type(ResourceType::PolygonSoupList).next() else { return Ok(None) };
+        let list = mw_formats::PolygonSoupList::parse(&b.load(e)?)?;
+        let mut tris = Vec::new();
+        for soup in &list.soups {
+            for p in &soup.polygons {
+                let [a, b, c, _] = p.indices;
+                let v = |i: u8| soup.vertices.get(i as usize).copied();
+                if let (Some(a), Some(b), Some(c)) = (v(a), v(b), v(c)) {
+                    tris.push([a, b, c]);
+                }
+            }
+        }
+        Ok(Some(tris))
+    }
+
     pub fn bear_effect(&self, id: ResourceId) -> Result<BearEffect> {
         let res = self.load(id)?;
         if res.resource_type() != ResourceType::BearEffect {
@@ -271,6 +322,7 @@ impl AssetStore {
                         player_wheels,
                         ai_wheels,
                         impacts: IMPACT_FIELDS.map(|n| handle(&vfx, n)),
+                        ai_impacts: AI_IMPACT_FIELDS.map(|h| handle_hash(&vfx, h)),
                         tyre_marks: match vfx.get(0x75cb5de9) {
                             Some(Value::Struct(t)) => [
                                 0xeff16a09,
@@ -295,6 +347,18 @@ impl AssetStore {
                 handle(g, name).and_then(object).map(|o| handles(&o)).unwrap_or_default()
             };
             lib.vehicle_impacts = list("VehicleImpacts", &mut object);
+            let float = |o: &Object, h: u32| match o.get(h) {
+                Some(Value::Float(v)) => Some(*v),
+                _ => None,
+            };
+            if let Some(o) = handle(g, "VehicleImpacts").and_then(&mut object) {
+                lib.collisions.min_speed = float(&o, 0x34429d6c).unwrap_or(lib.collisions.min_speed);
+            }
+            if let Some(Value::Struct(c)) = g.get(0x61681322) {
+                lib.collisions.impact_value = float(c, 0xe9ff2375).unwrap_or(lib.collisions.impact_value);
+                lib.collisions.retrigger = float(c, 0x19458ef1).unwrap_or(lib.collisions.retrigger);
+                lib.collisions.unknown_94 = float(c, 0x90c657d8).unwrap_or(lib.collisions.unknown_94);
+            }
             lib.vehicle_scrapes = list("VehicleScrapes", &mut object);
             if let Some(misc) = handle(g, "Misc").and_then(&mut object)
                 && let Some(w) = handle(&misc, "BurstTyreWheelEffects").and_then(&mut object)

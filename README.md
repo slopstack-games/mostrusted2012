@@ -162,18 +162,33 @@ Still missing or not like the original (user play test, 2026-10-14; details in
 [docs/next-session.md](docs/next-session.md)):
 - [ ] Physics: some trash bags are indestructible; road collisions sometimes harsh; sidewalks affect the car too
   much; brake-to-drift understeers at higher speeds
-- [ ] World: water floating above where it should be in places; terrain sticking through the road in places
+- [x] World: water floating above where it should be; terrain sticking through the road (2026-10-16)
+- [ ] World: trees and foliage floating near the street exit to the airport area
 - [ ] Navigation (route to a destination); map icons (jack spots, race locations, cops; Most Wanted races shown
   as normal races)
-- [~] Police: chase behaviour reworked from the game's code (not merged yet); no sirens or light bars, no radio
-  chatter, roadblocks and spike strips missing; crashing racers and cops does not work yet
+- [~] Police: chase behaviour, patrol in the traffic lanes and the pursuit-start rules from the game's code;
+  sirens, light bars (with coronas) and radio chatter (2026-10-16). Missing: roadblocks, spike strips, the
+  Interceptor, busted / escaped sequences; crashing racers and cops does not work yet
 - [ ] Music on the loading screen, music matched to free roam / races
 - [ ] Front end and UI: the start screen overlaps its two prompts; race end screen; the UI in general
 - [ ] Cutscenes: changing cars, the start-up cutscene (entering the car, with its stats)
 - [~] Crash camera: there, but not quite like the original
+- [~] Chase camera: close to the original, but clips into buildings and other objects
 - [ ] Progression: mods unlocked by races, Most Wanted cars unlocked by beating them; takedowns / wrecks from
   car-to-car crashes in races
 - [ ] Billboards: intact with their artwork by default (broken only once smashed), showing the Easydrive records
+- [~] Collectables: the speed camera flash (done 2026-10-16); the stats UI (top speed per speed camera, gates smashed, jack spots
+  found, etc.)
+- [ ] Gas stations: the clean transition when driving through one
+- [ ] Landing on the roof or out of bounds: crash camera, then a reset onto the nearest road
+- [~] Lights: race cars' headlights / tail lights light the world, coronas at car lamps and street lamps, speed
+  cameras lit only when they flash, traffic lights' lamps follow the junction cycle (2026-10-16)
+- [x] Crash particles: glass, debris, sparks and dust from the game's crash effects (2026-10-16)
+- [~] Sound effects: props, lamps, signs, gates, billboards, landings and crash contacts added (2026-10-16); the
+  cinematic crash's ducking and slow-motion audio still missing
+- [~] Dirt: the dirt cloud follows the game's fade and size now (2026-10-16); driving on dirt does not feel like
+  the original
+- [ ] Nitrous: makes the car downshift and barely go faster, then the gearbox has trouble shifting
 - [ ] Car sounds and effects: idle sound, nitrous sound, backfires, engine start / stop; tyre marks and nitrous
   flames look off; grass / dirt still give road smoke and marks
 - [ ] Traffic reactions: horns, headlight flashing when you drive towards them

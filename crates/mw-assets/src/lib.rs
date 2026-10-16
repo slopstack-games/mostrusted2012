@@ -10,9 +10,11 @@
 pub mod backdrop;
 pub mod camera;
 pub mod car_anim;
+pub mod car_lights;
 pub mod car_sfx;
 pub mod car_sound;
 mod catalog;
+pub mod coronas;
 pub mod crash;
 pub mod damage;
 pub mod easydrive;
@@ -27,19 +29,25 @@ pub mod mods;
 pub mod music;
 pub mod paint;
 pub mod police;
+pub mod police_lights;
+pub mod police_sound;
+pub mod police_speech;
 pub mod props;
 mod scene;
 pub mod scoring;
 pub mod sequence;
+pub mod sequence_fx;
 pub mod sfx;
 mod sfx_loader;
 pub mod sound;
 pub mod surfaces;
 pub mod traffic;
+pub mod traffic_lamps;
 pub mod ui;
 pub mod vehicle_driver;
 pub mod vfx;
 pub mod wheel_layout;
+pub mod world_sfx;
 
 pub use catalog::{DEFAULT_LANGUAGE, VehicleInfo};
 

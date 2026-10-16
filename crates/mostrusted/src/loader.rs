@@ -72,6 +72,8 @@ pub struct TrafficCarSpec {
     /// Height of the model origin above the road (`VehicleInfo.509931cd` translation y): the body and wheels
     /// are drawn this much above the lane.
     pub ride_height: f32,
+    /// The car's coronas (`VehicleVfxBehaviour.Coronas`, `coronas.rs`).
+    pub coronas: Arc<Vec<mw_assets::coronas::CarCorona>>,
 }
 
 /// Sends [`CarRequest`]s to the loader thread.
@@ -112,6 +114,12 @@ pub struct CarSpec {
     pub impact_graph: mw_assets::damage::ImpactGraph,
     /// `VehicleVfxBehaviour` spot effects with their locators (exhaust flames, smoke, ...; `exhaust.rs`).
     pub spot_effects: Vec<mw_assets::vfx::VehicleSpotEffect>,
+    /// The cop lights and siren flag (`mw_assets::police_lights`; `police_fx.rs`), when the car has any.
+    pub flash_lights: Option<Arc<mw_assets::police_lights::CarFlashLights>>,
+    /// The car's coronas (`VehicleVfxBehaviour.Coronas`, `coronas.rs`).
+    pub coronas: Arc<Vec<mw_assets::coronas::CarCorona>>,
+    /// The light sources the car carries (`VehicleVfxBehaviour.Lights`, `car_lights.rs`).
+    pub light_sources: Arc<Vec<mw_assets::car_lights::CarLightSource>>,
     /// Set for an AI opponent's car (its slot in `ai::Opponents`); `None` for the player's.
     pub opponent: Option<usize>,
     /// The vehicle list's top speed (entry +0x3C, mph): the nitrous HighSpeed refill's reference.
@@ -276,6 +284,8 @@ pub fn spawn(
                 lod_tables: HashMap::new(),
                 standing_models: HashMap::new(),
                 lods: crate::lod::LodSettings::from_env().enabled,
+                main_view: HashMap::new(),
+                all_passes: std::env::var_os("MW_ALL_PASSES").is_some(),
             };
             if let Err(e) = w.run(request) {
                 let _ = w.tx.send(Msg::Progress(format!("loader error: {e:#}")));
@@ -333,6 +343,10 @@ struct Worker {
     prop_physics: HashMap<(ResourceId, mw_assets::props::ObjectKind), Option<Arc<crate::props::PropPhysics>>>,
     /// LOD table per model (`lod.rs`), `None` for models without one.
     lod_tables: HashMap<ResourceId, Option<Arc<crate::lod::LodTable>>>,
+    /// Whether the game's main view draws a model (`Model` +0x19 pass mask, [`Self::in_main_view`]).
+    main_view: HashMap<ResourceId, bool>,
+    /// `MW_ALL_PASSES=1`: also draw models the main view skips (A/B).
+    all_passes: bool,
     /// Per compound definition: the models it draws while standing (see [`Self::compound_standing`]).
     standing_models: HashMap<ResourceId, StandingModels>,
     /// Apply the game's LOD rule to world placements (off with `MW_NO_LOD=1`).
@@ -480,6 +494,8 @@ impl Worker {
             .map(Arc::new);
         let engine = if self.opponent.is_some() { None } else { self.store.engine(&b).unwrap_or_default() };
         let spot_effects = self.store.vehicle_spot_effects(&b, &spec).unwrap_or_default();
+        let flash_lights = Some(self.store.car_flash_lights(&b, &spec)).filter(|l| !l.is_empty()).map(Arc::new);
+        let coronas = Arc::new(self.store.car_coronas(&b, &spec));
         let damage = match self.store.vehicle_damage(&b) {
             Ok(d) => d.map(Arc::new),
             Err(e) => {
@@ -529,6 +545,9 @@ impl Worker {
             damage,
             impact_graph,
             spot_effects,
+            flash_lights,
+            coronas,
+            light_sources: Arc::new(self.store.car_light_sources(&b, &spec)),
             opponent: self.opponent,
             top_speed_mph: bundle_vehicle_id(bundle)
                 .and_then(|id| self.store.vehicle_entry(id).ok().flatten())
@@ -585,6 +604,7 @@ impl Worker {
             mw_assets::wheel_layout::place_spec_wheels(&mut spec, &l.traffic_positions());
         }
         let ride_height = layout.as_ref().map_or(0.0, |l| l.traffic_ride_height());
+        let coronas = Arc::new(self.store.car_coronas(&b, &spec));
         let saved = (self.paint, self.paint_count);
         self.paint = req.colour;
         self.unskinned = req.vehicle >= crate::jackspots::MODEL_KEY_BASE;
@@ -622,6 +642,7 @@ impl Worker {
             body,
             wheels,
             ride_height,
+            coronas,
         })))
     }
 
@@ -908,6 +929,12 @@ impl Worker {
                 }
                 // Static placements (no physics, not a backdrop) are merged per material below.
                 let physics = p.object.and_then(|(object, kind)| self.prop_physics(object, kind));
+                // Models whose pass mask excludes the main view (coarse terrain for the shadow, cube-map
+                // and reflection views) are not drawn. Placements with physics keep their model (model
+                // decision: no collision-only body yet).
+                if physics.is_none() && !self.in_main_view(p.model) {
+                    continue;
+                }
                 if !self.filter.no_merge && !p.backdrop && physics.is_none() {
                     // A compound without physics only ever stands: its standing model (`compound_standing`).
                     let model = match p.object {
@@ -935,6 +962,17 @@ impl Worker {
         }
         self.send(Msg::Progress(format!("world loaded: {total} track units")))?;
         Ok(())
+    }
+
+    /// Whether the game's main view draws `model`: its pass mask (`Model` +0x19) has no main-view bit
+    /// (`mw_formats::Model::PASS_MAIN`; the main view's query excludes `0x4000000`, docs/decomp.md "Model pass
+    /// mask"). Always true with `MW_ALL_PASSES=1`.
+    fn in_main_view(&mut self, model: ResourceId) -> bool {
+        if self.all_passes {
+            return true;
+        }
+        let store = &self.store;
+        *self.main_view.entry(model).or_insert_with(|| store.model(model).ok().is_none_or(|m| m.in_main_view()))
     }
 
     /// Send a track unit's static placements: models placed once in the unit whose parts can all share a

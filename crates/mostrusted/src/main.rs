@@ -16,8 +16,14 @@ mod car_sfx;
 mod chassis;
 mod chevron;
 use mw_handling::{drift, drivetrain, tyre};
+mod car_lights;
 mod convert;
+mod cop_driver;
+mod cop_patrol;
+mod cop_sight;
+mod coronas;
 mod crash;
+mod crash_vfx;
 mod cutscene;
 mod damage;
 mod deferred;
@@ -53,12 +59,18 @@ mod particles;
 mod pause;
 mod player_sfx;
 mod police;
+mod police_audio;
+mod police_fx;
+mod police_lightbar;
+mod police_speech;
 mod prewarm;
+mod prop_vfx;
 mod props;
 mod pursuit;
 mod race;
 mod reflection;
 mod replay;
+mod sequence_fx;
 mod settings;
 mod sfx;
 mod shadow_cull;
@@ -66,11 +78,14 @@ mod sky;
 mod steam_controller;
 mod tonemap;
 mod traffic;
+mod traffic_lamps;
 mod traffic_reaction;
 mod tyre_marks;
 mod ui_quads;
 mod weather;
+mod world_coronas;
 mod world_lights;
+mod world_sfx;
 mod world_ui;
 
 use std::collections::{HashMap, HashSet};
@@ -323,7 +338,8 @@ struct Cli {
     #[arg(long)]
     no_traffic: bool,
     /// No police (`police.rs`; cops patrol and chase in `--drive` sessions in the world, outside races, tests
-    /// and benchmarks). `--test pursuit` runs a pursuit start to end and prints TEST RESULT lines.
+    /// and benchmarks). `--test pursuit` runs a pursuit start to end and prints TEST RESULT lines; `--test cops` checks when a
+    /// pursuit starts (passing a cop slowly, speeding past it, ramming it).
     #[arg(long)]
     no_police: bool,
     /// Multiply the traffic density (1 = the game's; for tests).
@@ -611,6 +627,7 @@ fn main() -> anyhow::Result<()> {
                     | Some("jackspot")
                     | Some("bodyshop")
                     | Some("pursuit")
+                    | Some("cops")
             );
         let track = cli.test_track || (cli.test.is_some() && !street_test) || cli.replay.is_some();
         let spawn = if track { Vec3::new(0.0, 1.0, 0.0) } else { spawn };
@@ -642,7 +659,8 @@ fn main() -> anyhow::Result<()> {
         | Some("freeroam")
         | Some("jackspot")
         | Some("bodyshop")
-        | Some("pursuit") => None,
+        | Some("pursuit")
+        | Some("cops") => None,
         Some("accel") => Some(drive::TestKind::Accel),
         Some("nitrous") => Some(drive::TestKind::Nitrous),
         Some("brake") => Some(drive::TestKind::Brake),
@@ -658,7 +676,7 @@ fn main() -> anyhow::Result<()> {
         Some("exhaust") => Some(drive::TestKind::Exhaust),
         Some(other) => {
             anyhow::bail!(
-                "unknown --test {other} (accel, brake, corner, handbrake, drift, donut, engine, exhaust, landing, climb, jitter, kerb, crash, smash, ai, race, crash-traffic, crash-ai, crash-parked, freeroam, jackspot, bodyshop, pursuit)"
+                "unknown --test {other} (accel, brake, corner, handbrake, drift, donut, engine, exhaust, landing, climb, jitter, kerb, crash, smash, ai, race, crash-traffic, crash-ai, crash-parked, freeroam, jackspot, bodyshop, pursuit, cops)"
             )
         }
     };
@@ -714,7 +732,7 @@ fn main() -> anyhow::Result<()> {
         && matches!(request, Request::Drive { world: true, .. })
         && race.is_none()
         && cli.bench.is_none()
-        && matches!(cli.test.as_deref(), None | Some("pursuit"));
+        && matches!(cli.test.as_deref(), None | Some("pursuit") | Some("cops"));
     let world_drive = matches!(request, Request::Drive { world: true, .. });
     let front_phase = if boot_start.is_some() && (cli.screenshot.is_none() || cli.front_end) {
         frontend::Phase::Title
@@ -907,6 +925,8 @@ fn main() -> anyhow::Result<()> {
             car_anim::CarAnimPlugin,
             props::PropsPlugin,
             particles::ParticlesPlugin,
+            prop_vfx::PropVfxPlugin,
+            crash_vfx::CrashVfxPlugin,
             sfx::SfxPlugin,
         ))
         // Avian optimises its collider trees on the async compute pool and blocks on the result later in the
@@ -944,7 +964,11 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(bodyshop::BodyShopPlugin {
             test: (cli.test.as_deref() == Some("bodyshop")).then(|| cli.screenshot.clone()),
         })
-        .add_plugins(police::PolicePlugin { enabled: police_enabled, test: cli.test.as_deref() == Some("pursuit") })
+        .add_plugins(police::PolicePlugin {
+            enabled: police_enabled,
+            test: cli.test.as_deref() == Some("pursuit"),
+            start_test: cli.test.as_deref() == Some("cops"),
+        })
         .add_plugins(race::RacePlugin { setup: race.map(Arc::new) })
         .add_plugins(cutscene::CutscenePlugin { setup: cutscenes })
         .add_plugins(traffic::TrafficPlugin {
@@ -996,7 +1020,20 @@ fn main() -> anyhow::Result<()> {
             settings: settings::load(cli.volume.as_deref()),
             open: cli.show_settings,
         })
-        .add_plugins((car_audio::CarAudioPlugin, car_sfx::CarSfxPlugin, player_sfx::PlayerSfxPlugin))
+        .add_plugins((
+            car_audio::CarAudioPlugin,
+            car_sfx::CarSfxPlugin,
+            player_sfx::PlayerSfxPlugin,
+            world_sfx::WorldSfxPlugin,
+        ))
+        .add_plugins(police_fx::PoliceFxPlugin)
+        .add_plugins(coronas::CoronasPlugin)
+        .add_plugins((
+            world_coronas::WorldCoronasPlugin,
+            sequence_fx::SequenceFxPlugin,
+            traffic_lamps::TrafficLampsPlugin,
+        ))
+        .add_plugins(car_lights::CarLightsPlugin)
         .add_plugins(audio::GameAudioPlugin)
         .add_plugins(music::MusicPlugin {
             enabled: std::env::var("MW_MUSIC").is_ok_and(|v| v == "1")
