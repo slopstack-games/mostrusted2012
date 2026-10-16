@@ -182,7 +182,7 @@ Still missing or not like the original (user play test, 2026-10-14; details in
 - [ ] Gas stations: the clean transition when driving through one
 - [ ] Landing on the roof or out of bounds: crash camera, then a reset onto the nearest road
 - [~] Lights: race cars' headlights / tail lights light the world, coronas at car lamps and street lamps, speed
-  cameras lit only when they flash (2026-10-16); traffic lights' lamps need their controller
+  cameras lit only when they flash, traffic lights' lamps follow the junction cycle (2026-10-16)
 - [x] Crash particles: glass, debris, sparks and dust from the game's crash effects (2026-10-16)
 - [~] Sound effects: props, lamps, signs, gates, billboards, landings and crash contacts added (2026-10-16); the
   cinematic crash's ducking and slow-motion audio still missing
