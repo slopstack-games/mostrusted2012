@@ -36,11 +36,15 @@ use bevy::render::render_resource::{
 };
 use bevy::shader::ShaderRef;
 use mw_assets::AssetStore;
-use mw_assets::vfx::{self, ParticleMaterial as GameMaterial, VfxLibrary};
+use mw_assets::vfx::{ParticleMaterial as GameMaterial, VfxLibrary};
 use mw_bundle::ResourceId;
 use mw_formats::bear::{BearEffect, Bindings, ConeEmitter, Layer, Op, Renderer, Spawner};
 
 use crate::drive::Car;
+
+#[path = "particle_mesh.rs"]
+mod mesh;
+pub(crate) use mesh::{CollisionMeshes, MeshContact};
 
 pub struct ParticlesPlugin;
 
@@ -53,6 +57,8 @@ impl Plugin for ParticlesPlugin {
             .init_resource::<Instances>()
             .init_resource::<BearGlobals>()
             .init_resource::<EffectRequests>()
+            .init_resource::<CollisionMeshes>()
+            .init_resource::<mesh::DebrisModels>()
             .insert_resource(VfxDebug::from_env())
             .add_systems(Update, (start_loading, receive_vfx))
             .add_systems(FixedPostUpdate, detect_impacts.after(PhysicsSystems::Writeback))
@@ -66,6 +72,7 @@ impl Plugin for ParticlesPlugin {
                     demo_emitter,
                     simulate,
                     build_meshes,
+                    mesh::build_debris,
                 )
                     .chain()
                     .after(receive_vfx)
@@ -83,6 +90,7 @@ impl Plugin for ParticlesPlugin {
 /// contact (m/s). The world's colliders are one trimesh per track unit and stay "touching" (speculative
 /// contacts) while the car is near them, so a new impact shows as a high closing speed, not as a new pair.
 #[derive(Message, Clone, Copy, Debug)]
+#[allow(dead_code)]
 pub struct ImpactEvent {
     pub car: Entity,
     /// The other body of the pair (`None`: a collider without a body, the world).
@@ -139,6 +147,10 @@ impl Vfx {
     pub(crate) fn has_effect(&self, id: ResourceId) -> bool {
         self.effects.contains_key(&id)
     }
+
+    pub(crate) fn lib(&self) -> &VfxLibrary {
+        &self.lib
+    }
 }
 
 struct Batch {
@@ -185,6 +197,7 @@ fn load_vfx(store: &AssetStore, bc: bool) -> anyhow::Result<VfxLoaded> {
             [e.wheel, e.player_wheels.default_tyre, e.ai_wheels.default_tyre, e.player_wheels.on_rims]
                 .into_iter()
                 .chain(e.impacts)
+                .chain(e.ai_impacts)
         })
         .chain(lib.vehicle_impacts.iter().copied())
         .chain(lib.vehicle_scrapes.iter().copied())
@@ -398,7 +411,8 @@ pub(crate) struct EmitterKey {
 
 const SLOT_TYRE: u32 = 0;
 const SLOT_KICKUP: u32 = 0x100;
-const SLOT_SCRAPE: u32 = 0x200;
+/// Car collision effects (`crash_vfx.rs`): this + the slot (0..4).
+pub(crate) const SLOT_CRASH: u32 = 0x200;
 /// Car spot effects (`exhaust.rs`): this + 0x10 × effect index + locator index.
 pub(crate) const SLOT_SPOT: u32 = 0x1000;
 
@@ -417,6 +431,10 @@ pub(crate) struct Params {
     /// `ImpactClosingVelocity` and `MovementSinceLastFrame` (binding sources 17 / 18).
     pub impact: f32,
     pub movement: f32,
+    /// `CollisionMeshParams`: the car's collision mesh and the contact in its space (`EmitterCollisionMesh`).
+    pub mesh: Option<MeshContact>,
+    /// `VehicleParams` +0x10: the car's paint colour (linear rgb), for `RenderMesh` (0x22) debris.
+    pub paint: Vec3,
 }
 
 impl Default for Params {
@@ -430,6 +448,8 @@ impl Default for Params {
             ground: Vec4::new(0.0, 1.0, 0.0, f32::MAX),
             impact: 0.0,
             movement: 0.0,
+            mesh: None,
+            paint: Vec3::ZERO,
         }
     }
 }
@@ -455,6 +475,13 @@ struct Particle {
     alpha: f32,
     seed: u32,
     plane: Vec4,
+    /// `Rotation` as a quaternion and `AngularVelocity` (rad/s, world) of the 3-D layers (0x0B / 0x2D).
+    quat: Quat,
+    omega: Vec3,
+    /// `CollisionRadius` of the debris that collides with the world (0x40); negative once at rest.
+    cr: f32,
+    /// The particle's number in its layer (the mesh renderers pick one of a model's 16 pieces by it).
+    serial: u32,
 }
 
 struct LayerSim {
@@ -472,6 +499,12 @@ struct LayerSim {
     /// `EmitterConePlus`: its own clock and particle accumulator (`burst + 0.9999` at the start).
     cone_time: f32,
     accum: f32,
+    /// `EmitterCollisionMesh`: its clock, whether the burst is spent and the carried fraction (0.9999 at the start).
+    mesh_clock: f32,
+    mesh_burst_spent: bool,
+    mesh_carry: f32,
+    /// Particles born so far (their serials).
+    spawned: u32,
 }
 
 impl LayerSim {
@@ -591,6 +624,10 @@ impl EffectInstance {
                     phase: std::array::from_fn(|_| rng.next()),
                     cone_time: 0.0,
                     accum: burst + 0.9999,
+                    mesh_clock: 0.0,
+                    mesh_burst_spent: false,
+                    mesh_carry: mesh::CARRY_START,
+                    spawned: 0,
                 }
             })
             .collect();
@@ -652,6 +689,30 @@ impl Instances {
         self.list.push(inst);
     }
 
+    /// Start `effect` afresh on `key` (bursts included), letting whatever played there live on unowned.
+    pub(crate) fn restart(&mut self, vfx: &Vfx, key: EmitterKey, effect: ResourceId, params: Params) -> bool {
+        let Some(def) = vfx.effects.get(&effect) else { return false };
+        self.release(key);
+        self.seed = self.seed.wrapping_mul(747796405).wrapping_add(2891336453);
+        self.list.push(EffectInstance::new(def.clone(), Some(key), params, self.seed));
+        true
+    }
+
+    /// Stop the emission of the instance on `key` and give up the key (its particles live on).
+    pub(crate) fn release(&mut self, key: EmitterKey) {
+        for inst in self.list.iter_mut().filter(|i| i.key == Some(key)) {
+            inst.params.emitting = false;
+            inst.key = None;
+            inst.burst_done = true;
+            inst.emit_for = 0.0;
+        }
+    }
+
+    /// The parameters of the live instance on `key`, if any.
+    pub(crate) fn keyed_mut(&mut self, key: EmitterKey) -> Option<&mut Params> {
+        self.list.iter_mut().find(|i| i.key == Some(key)).map(|i| &mut i.params)
+    }
+
     pub(crate) fn one_shot(&mut self, vfx: &Vfx, effect: Option<ResourceId>, params: Params) {
         let Some(def) = effect.and_then(|id| vfx.effects.get(&id)) else { return };
         if self.list.len() > 64 {
@@ -694,10 +755,22 @@ pub(crate) fn simulate(
     time: Res<Time>,
     debug: Res<VfxDebug>,
     globals: Res<BearGlobals>,
+    meshes: Res<CollisionMeshes>,
+    spatial: avian3d::prelude::SpatialQuery,
     mut instances: ResMut<Instances>,
     camera: Query<&GlobalTransform, crate::MainCamera>,
 ) {
     let dt = time.delta_secs().min(0.1);
+    // The debris' world collision (0x40): the game tests a cache of the world triangles around the player's car;
+    // a ray against the world's colliders stands in for it (front faces only, as the game's test).
+    let ground = avian3d::prelude::SpatialQueryFilter::default().with_mask(crate::props::GameLayer::World);
+    let world = |from: Vec3, to: Vec3| -> Option<(f32, Vec3)> {
+        let d = to - from;
+        let len = d.length();
+        let dir = Dir3::new(d).ok()?;
+        let hit = spatial.cast_ray(from, dir, len, false, &ground)?;
+        (hit.normal.dot(d) < 0.0).then_some((hit.distance / len, hit.normal))
+    };
     if dt <= 0.0 {
         return;
     }
@@ -712,7 +785,19 @@ pub(crate) fn simulate(
                 .and_then(|j| inst.layers.get(j))
                 .map(|l| l.particles.clone());
             let sim = &mut inst.layers[i];
-            step_layer(layer, sim, &inst.params, &globals, inst.burst_done, eye, dt, &mut inst.rng, parent.as_deref());
+            step_layer(
+                layer,
+                sim,
+                &inst.params,
+                &globals,
+                &meshes,
+                &world,
+                inst.burst_done,
+                eye,
+                dt,
+                &mut inst.rng,
+                parent.as_deref(),
+            );
         }
         inst.burst_done = true;
         if inst.key.is_some() {
@@ -745,6 +830,8 @@ fn step_layer(
     sim: &mut LayerSim,
     p: &Params,
     globals: &BearGlobals,
+    meshes: &CollisionMeshes,
+    world: mesh::WorldCast,
     burst_done: bool,
     eye: Vec3,
     dt: f32,
@@ -800,8 +887,17 @@ fn step_layer(
                         }
                     }
                 }
-                Op::Spawn(sp) => {
-                    spawn(layer, sim, sp, &step.secondaries, p, burst_done, eye, dt, rng);
+                Op::Spawn(sp) => match (&sp.mesh, p.mesh.and_then(|m| Some((m, meshes.get(m.mesh)?)))) {
+                    (Some(me), Some((contact, tris))) => {
+                        mesh::spawn(layer, sim, sp, me, &step.secondaries, p, contact, tris, eye, dt, rng);
+                    }
+                    _ => spawn(layer, sim, sp, &step.secondaries, p, burst_done, eye, dt, rng),
+                },
+                op @ Op::WorldCollide { .. } => mesh::world_collide(op, &mut sim.particles, dt, rng, world),
+                Op::Rotation3d { damping, .. } => {
+                    for q in &mut sim.particles {
+                        mesh::rotate(q, *damping, dt);
+                    }
                 }
                 op @ Op::SuperEmitter { .. } => {
                     if let Some(parent) = parent {
@@ -880,55 +976,78 @@ fn spawn(
         }
         // Spread births over the step so streams stay continuous.
         let sub = (i as f32 + rng.next()) / n.max(1) as f32;
-        let mut q = Particle { alpha: 1.0, recip_life: 1.0, radius: 0.1, plane: p.ground, ..default() };
-        let (mut pos, mut vel) = local_birth(sp, rng, speed_scale, angle_scale);
-        let mut placed = false;
-        for &s in secondaries {
-            let Some(a) = layer.actions.get(s as usize) else { continue };
-            match &a.op {
-                Op::Lifetime { min, max, .. } => q.recip_life = 1.0 / rng.range([*min, *max]).max(0.001),
-                Op::Radius { min, max, .. } => q.radius = rng.range([*min, *max]),
-                Op::Rotation2dInit { min, max, spin, .. } => {
-                    q.rot = rng.range([*min, *max]) * TAU;
-                    q.spin = *spin;
-                }
-                Op::AlphaInit { min, max, .. } => q.alpha = rng.range([*min, *max]),
-                Op::PlaceInFrame { rotation, offset, transform, .. } => {
-                    let r = Quat::from_array(*rotation).normalize();
-                    pos = r * pos + Vec3::from(*offset);
-                    vel = r * vel;
-                    // 0x14 (`InitialisePosOffset`, no transform) leaves a local layer's particle in emitter space.
-                    if !(local && *transform == mw_formats::bear::Operand::None) {
-                        pos = p.transform.transform_point3(pos);
-                        vel = p.transform.transform_vector3(vel);
-                    }
-                    placed = true;
-                }
-                Op::InheritVelocity { min, max, .. } => {
-                    if !placed {
-                        pos = p.transform.transform_point3(pos);
-                        vel = p.transform.transform_vector3(vel);
-                        placed = true;
-                    }
-                    vel += p.velocity * rng.range([*min, *max]);
-                }
-                Op::PlaneInit { .. } => q.plane = p.ground,
-                Op::SeedInit { .. } => q.seed = (rng.next() * u32::MAX as f32) as u32,
-                _ => {}
-            }
-        }
-        if !placed && !local {
-            pos = p.transform.transform_point3(pos);
-            vel = p.transform.transform_vector3(vel);
-        }
+        let (pos, vel) = local_birth(sp, rng, speed_scale, angle_scale);
+        let (mut q, pos, vel) = birth(layer, secondaries, p, pos, vel, local, rng);
         // Age the particle by its share of the step (a local layer moves with its emitter).
         let back = (1.0 - sub) * dt;
         let carried = if local { Vec3::ZERO } else { p.velocity };
         q.pos = pos - carried * back + vel * back;
         q.vel = vel;
         q.age = back * q.recip_life;
+        q.serial = sim.spawned;
+        sim.spawned = sim.spawned.wrapping_add(1);
         sim.particles.push(q);
     }
+}
+
+/// A new particle from its emitter-space position and velocity: the spawner's secondaries (lifetime, radius,
+/// rotations, the move into the emitter's frame, inherited velocity, ...). Returns the particle and its world (or,
+/// for a local layer, emitter-space) position and velocity.
+fn birth(
+    layer: &Layer,
+    secondaries: &[u8],
+    p: &Params,
+    mut pos: Vec3,
+    mut vel: Vec3,
+    local: bool,
+    rng: &mut Rng,
+) -> (Particle, Vec3, Vec3) {
+    let mut q = Particle { alpha: 1.0, recip_life: 1.0, radius: 0.1, plane: p.ground, ..default() };
+    let mut placed = false;
+    for &s in secondaries {
+        let Some(a) = layer.actions.get(s as usize) else { continue };
+        match &a.op {
+            Op::Lifetime { min, max, .. } => q.recip_life = 1.0 / rng.range([*min, *max]).max(0.001),
+            Op::Radius { min, max, .. } => q.radius = rng.range([*min, *max]),
+            Op::Rotation2dInit { min, max, spin, .. } => {
+                q.rot = rng.range([*min, *max]) * TAU;
+                q.spin = *spin;
+            }
+            Op::AlphaInit { min, max, .. } => q.alpha = rng.range([*min, *max]),
+            Op::PlaceInFrame { rotation, offset, transform, .. } => {
+                let r = Quat::from_array(*rotation).normalize();
+                pos = r * pos + Vec3::from(*offset);
+                vel = r * vel;
+                // 0x14 (`InitialisePosOffset`, no transform) leaves a local layer's particle in emitter space.
+                if !(local && *transform == mw_formats::bear::Operand::None) {
+                    pos = p.transform.transform_point3(pos);
+                    vel = p.transform.transform_vector3(vel);
+                }
+                placed = true;
+            }
+            Op::InheritVelocity { min, max, .. } => {
+                if !placed {
+                    pos = p.transform.transform_point3(pos);
+                    vel = p.transform.transform_vector3(vel);
+                    placed = true;
+                }
+                vel += p.velocity * rng.range([*min, *max]);
+            }
+            Op::PlaneInit { .. } => q.plane = p.ground,
+            Op::SeedInit { .. } => q.seed = (rng.next() * u32::MAX as f32) as u32,
+            op @ Op::Rotation3dInit { .. } => mesh::init_rotation(op, &mut q, p, rng),
+            // `FUN_0044a200`: indexed by the particle's serial in the game (a random entry here).
+            Op::CollisionRadiusInit { table, .. } => {
+                q.cr = 0.01 + table[(rng.next() * 16.0) as usize & 15] as f32 * (0.99 / 255.0);
+            }
+            _ => {}
+        }
+    }
+    if !placed && !local {
+        pos = p.transform.transform_point3(pos);
+        vel = p.transform.transform_vector3(vel);
+    }
+    (q, pos, vel)
 }
 
 /// `SuperEmitter` (0x2B, run `FUN_0045d020`; `mw_formats::bear::Op::SuperEmitter`): children along each live
@@ -998,6 +1117,7 @@ fn init_secondaries(layer: &Layer, secondaries: &[u8], q: &mut Particle, rng: &m
             }
             Some(Op::AlphaInit { min, max, .. }) => q.alpha = rng.range([*min, *max]),
             Some(Op::SeedInit { .. }) => q.seed = (rng.next() * u32::MAX as f32) as u32,
+            Some(op @ Op::Rotation3dInit { .. }) => mesh::init_rotation(op, q, &Params::default(), rng),
             _ => {}
         }
     }
@@ -1145,87 +1265,18 @@ fn detect_impacts(collisions: Collisions, cars: Query<(), With<Car>>, mut out: M
 #[derive(Resource)]
 pub struct FirstImpact(pub f32);
 
-/// Closing speed (m/s) above which a contact counts as an impact, and the minimum time between bursts.
-const IMPACT_SPEED: f32 = 3.0;
-const IMPACT_COOLDOWN: f32 = 0.25;
-
-/// Sparks: a burst for each new impact, continuous sparks while a side scrapes.
-#[allow(clippy::too_many_arguments)]
+/// The first hard impact's time, for `--screenshot-after-impact`. The cars' collision effects themselves are
+/// `crash_vfx.rs` (the game's `FUN_00584260` / `FUN_00600220`).
 fn impact_emitters(
     mut commands: Commands,
     first: Option<Res<FirstImpact>>,
     time: Res<Time>,
-    vfx: Res<Vfx>,
-    mut instances: ResMut<Instances>,
     mut events: MessageReader<ImpactEvent>,
-    cars: Query<(&GlobalTransform, &avian3d::prelude::LinearVelocity)>,
-    mut last_burst: Local<HashMap<Entity, f32>>,
 ) {
-    let now = time.elapsed_secs();
-    let Some(surface) = vfx.lib.surfaces.first() else { return };
-    let fx = &surface.dry;
     for ev in events.read() {
-        let Ok((t, v)) = cars.get(ev.car) else { continue };
-        let rot = t.compute_transform().rotation;
-        // Which side of the car was hit: the contact normal points into the car, so the hit side faces -n.
-        let local = rot.inverse() * -ev.normal;
-        let side = if local.y.abs() > local.x.abs().max(local.z.abs()) {
-            if local.y > 0.0 { vfx::IMPACT_TOP } else { vfx::IMPACT_BOTTOM }
-        } else if local.z.abs() >= local.x.abs() {
-            if local.z > 0.0 { vfx::IMPACT_FRONT } else { vfx::IMPACT_REAR }
-        } else if local.x > 0.0 {
-            vfx::IMPACT_LEFT
-        } else {
-            vfx::IMPACT_RIGHT
-        };
-        // Emitter frame: Y along the contact normal, Z along the car's travel.
-        let y = ev.normal;
-        let travel = v.0;
-        let z = (travel - y * travel.dot(y)).try_normalize().unwrap_or_else(|| y.any_orthonormal_vector());
-        let frame = Mat4::from_cols(y.cross(z).extend(0.0), y.extend(0.0), z.extend(0.0), ev.position.extend(1.0));
-        let ground = y.extend(-y.dot(ev.position));
-        let last = last_burst.entry(ev.car).or_insert(f32::MIN);
-        if ev.closing_speed > IMPACT_SPEED && now - *last > IMPACT_COOLDOWN {
-            *last = now;
-            if first.is_none() && ev.closing_speed > 12.0 {
-                commands.insert_resource(FirstImpact(now));
-            }
-            debug!(
-                "impact at {:.1} (t {now:.2} s): {:.1} m/s closing, impulse {:.0} N·s, side {side}",
-                ev.position, ev.closing_speed, ev.impulse
-            );
-            instances.one_shot(
-                &vfx,
-                fx.impacts[side],
-                Params {
-                    transform: frame,
-                    velocity: travel,
-                    intensity: (ev.closing_speed / 15.0).clamp(0.0, 1.0),
-                    emitting: false,
-                    moved: 0.0,
-                    ground,
-                    impact: ev.closing_speed,
-                    movement: 0.0,
-                },
-            );
-        }
-        if ev.sliding_speed > 2.0 && ev.impulse > 20.0 {
-            // Scraping: the side effect is the one with a continuous rate (the others are bursts).
-            let effect = fx.impacts[vfx::IMPACT_LEFT].or(fx.impacts[side]);
-            instances.emit(
-                &vfx,
-                EmitterKey { owner: ev.car, slot: SLOT_SCRAPE },
-                effect,
-                Params {
-                    transform: frame,
-                    velocity: travel,
-                    intensity: (ev.sliding_speed / 20.0).clamp(0.0, 1.0),
-                    emitting: true,
-                    moved: 0.0,
-                    ground,
-                    ..default()
-                },
-            );
+        if first.is_none() && ev.closing_speed > 12.0 {
+            commands.insert_resource(FirstImpact(time.elapsed_secs()));
+            return;
         }
     }
 }
@@ -1269,6 +1320,8 @@ fn prop_impact_effects(
                 ground: Vec4::new(0.0, 1.0, 0.0, -hit.position.y),
                 impact: hit.closing_speed,
                 movement: 0.0,
+                mesh: None,
+                paint: Vec3::ZERO,
             },
         );
         false
@@ -1344,6 +1397,7 @@ struct Drawn {
     rot: f32,
     colour: Vec4,
     subuv: f32,
+    quat: Quat,
 }
 
 /// Stand-in for `gVfxSparkBrightness`, a global the game's code sets (not in the data found so far): the
@@ -1398,7 +1452,11 @@ fn build_meshes(
             } else {
                 drawn.sort_by(|a, b| b.pos.distance_squared(eye).total_cmp(&a.pos.distance_squared(eye)));
                 for d in &drawn {
-                    push_quad(&mut batch.quads, d, r, eye, right, up);
+                    if matches!(r.kind, 0x1E | 0x1F) {
+                        mesh::push_card(&mut batch.quads, d, r, eye);
+                    } else {
+                        push_quad(&mut batch.quads, d, r, eye, right, up);
+                    }
                 }
             }
         }
@@ -1437,7 +1495,8 @@ fn build_meshes(
 /// emitter here and reads white.
 fn render_particle(layer: &Layer, q: &Particle, eye: Vec3, slots: &[f32]) -> Option<Drawn> {
     let tint = Vec4::ONE;
-    let mut d = Drawn { pos: q.pos, vel: q.vel, radius: q.radius, rot: q.rot, colour: Vec4::ONE, subuv: q.age };
+    let mut d =
+        Drawn { pos: q.pos, vel: q.vel, radius: q.radius, rot: q.rot, colour: Vec4::ONE, subuv: q.age, quat: q.quat };
     let t = q.age.clamp(0.0, 1.0);
     let group = layer.groups[1].as_ref()?;
     for seq in &group.sequences {

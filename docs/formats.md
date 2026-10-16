@@ -564,6 +564,16 @@ wet) → `SurfaceVfx` (`WheelVfx` kick-up, `PlayerWheelEffects` / `AIWheelEffect
 `DefaultTyre` smoke / `OnRims` sparks, ten `*ImpactEffect` by direction); `GLOBALEFFECTS.BNDL` `VfxGlobals`
 (`VehicleImpacts`, `VehicleScrapes`, `Misc`). `mw_assets::vfx`.
 
+`VfxGlobals` (228 bytes): +0x0c `Rendering`, +0x38 `VehicleCoronaScalesForNight`, +0x60 `HangingBumperSparks`, +0x84
+`VehicleCollisionSettings` (inline: +0x94 `90c657d8` 0.01, +0x98 `e9ff2375` 5 = the contact value above which a
+vehicle contact is an impact, +0x9c `19458ef1` 0.2 s = the time between new effects), handles +0xa0 `Debug`, +0xa8
+`20feab72`, +0xb0 `Misc`, +0xb8 `MoonCorona`, +0xc0 `5e608031`, +0xc8 `SunCorona`, +0xd0 `VehicleImpacts`, +0xd8
+`VehicleScrapes`. `VfxVehicleCollisions` (308 bytes): 36 effect handles from +0x0c (field i at +0x0c + 8i, unnamed),
++0x12c UniqueId, +0x130 `34429d6c` (1.0, the car speed in m/s above which collision effects play). Which field
+plays: decomp.md "Car collision effects" (2 + k player vs race car, 10 + k player vs traffic, 20 + k / 28 + k the
+others; k by impact zone). The car's collision mesh the effects emit from is its bundle's `PolygonSoupList` (car
+space; 166 triangles on the 911).
+
 Shaders: `VfxParticles_Diffuse*` draw CPU-expanded, per-vertex-lit quads with premultiplied output (atlas
 frames from `NumTiles` / `EnableLooping`); `VfxParticles_MotionBlurSpriteUntex` draws sparks as moving discs
 with analytic coverage, additive. Ports: `crates/mostrusted/src/particles.wgsl`, `sparks.wgsl`.

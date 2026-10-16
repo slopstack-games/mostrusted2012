@@ -10,6 +10,52 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-16: car collision effects: glass, sparks, dust and debris from the game's rules
+User request (session 10): "particle effects for crashing are missing somewhat, stuff like broken glass when crashing
+into traffic vehicles, and other crash particles in general". Before: every body contact of a race car played the
+default surface's directional impact effect with a guessed side and a ±0.3 m patch; no glass, no debris, nothing on
+traffic. Now the game's selection and emitters, read from the dump (decomp.md "Car collision effects"; three research
+sub-agents decoded 0x0B / 0x2D, 0x40 / 0x11 / 0x3E / 0x3D and the 0x1E / 0x1F / 0x22 / 0x23 renderers).
+- **Selection** (`FUN_00584260` race cars, `FUN_00600220` traffic): above 1 m/s (`VehicleImpacts.34429d6c`), a
+  vehicle contact with value > 5 (`VehicleCollisionSettings.e9ff2375`) after 0.2 s (`19458ef1`) plays from
+  `VehicleImpacts`, else `VehicleScrapes`, field by the other car's type, the local player and the impact zone
+  (`FUN_004a02b0` / `FUN_004a0600`, all 32 used fields mapped); without one, a world contact plays its surface's zone
+  effect (`FUN_0049fe80`: named for the player, the unnamed field after it for AI and traffic, now loaded as
+  `SurfaceEffects::ai_impacts`). Four instances per car with the game's refresh / replace rules. Front impacts carry
+  the glass (`…117eca`, `…1402f0`), sides and rear do not (`…14021c`).
+- **Emitters and renderers ported**: `EmitterCollisionMesh` over the car's `PolygonSoupList` (new
+  `AssetStore::vehicle_collision_mesh`), 3-D rotation init / update, debris world collision (an avian ray stands in
+  for the game's 80-triangle cache around the player's car), collision radius, the folded glass cards (0x1E / 0x1F,
+  drawn with the existing particle shader), mesh debris (0x22 / 0x23: the 16 pieces of each `GLOBALEFFECTS` model by
+  `BLENDINDICES`, CPU-built per frame, `StandardMaterial` with the diffuse; `VfxMeshCarPaint` baked with the car's
+  paint, `tex.rgb + paint·(1 − tex.a)`). `TrafficCar` now keeps its paint index.
+- **Checked** (screenshots in `ref/crashfx/`, not committed; `MW_CRASH_VFX_LOG=1`): `--test crash-traffic`: the
+  player's front-left zone plays `…1402f0`, the traffic car's front `…117eca` at 35.7 m/s, all nine layers fill
+  (glass 16 + 120 cards, debris 48 + 70); the crash-camera shots show glass cards in the air and on the road, dark
+  debris pieces and a dust cloud. `--test crash-parked`: `…1402f0` both ways at 11.9 m/s, then scrapes `…7bcd0`;
+  `--test crash-ai`: player `…1402f0`, the AI's side `…14021c`; `--test crash` (wall): the test track surface's
+  front-left effect `…7bd97` (sparks only, as the game: walls give surface effects); a city wall at 13 m/s: paving's
+  `…1401f7` dust. Tumbling traffic restarts its surface effect whenever the last instance has died (as the code
+  does).
+- **Model decisions**: the contact value is the closing speed before the solve (m/s; the effects' controllers scale
+  it by 22.35 = 50 mph, which fits); the contact normal points from the car to what it hit (sign not traced; this
+  way the struck face passes the emitter's facing test); one contact per other body per frame (the largest value);
+  `MovementSinceLastFrame` = speed × frame time; traffic cars' ground plane level through their origin; the dry
+  surface block; the debris world collision as a ray against the world colliders; debris lit by Bevy's PBR (the
+  game's deferred `VfxMesh*` programs: normal maps, roughness / AO maps not used); the 3-D sprites' view-kind alpha
+  word and their shadow test not ported; the particle serial for the mesh pieces counts the layer's births.
+- **Found, not changed** (other agents' area, `particles.rs`): the drag of `UpdatePosVel` 0x3D and
+  `…WithBouncePlane` 0x3E is exponential, `v ← v·(1 − drag)^dt` (`powf`), not the quadratic stand-in; 0x3E bounces
+  only when the bounce impulse beats the update's acceleration, draws restitution / friction once per update, and
+  blends a parameter plane into the particle's own between 2 and 3 m from a point; both add wind (engine +0x50)
+  and turbulence terms. The crash dust layer (`…1311286`: 8 sprites of 2.5–3.5 m radius growing ×1.85) looks very
+  heavy in daylight, likely the same size / opacity question as the dirt cloud.
+- **Open** (captures of the original that would settle them: a head-on with a traffic car at 60 mph from the chase
+  camera, frame by frame; a side swipe along a parked car; a wall hit at 50 mph): the contact value's unit and
+  writer (record +0x2c), the normal's sign, `IsEmitting` = record bit 1 (inferred), whether a dead instance is
+  recreated every frame for a sliding wreck, the dust's size and brightness, the debris lighting, the hanging bumper
+  sparks (`VfxGlobals.HangingBumperSparks`, not traced), `PreCrashVelocity`.
+
 ### 2026-10-16: vehicle coronas (glows, beams, flares) for every car
 Integrator request after the light-bar review (the bar was a few pixels at 30 m). Read from the dump with three
 research sub-agents; details in decomp.md "Coronas"; ported in `coronas.rs` + `corona.wgsl` (data

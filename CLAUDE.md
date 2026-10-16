@@ -156,6 +156,8 @@ MW_NO_VIGNETTE=1 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,172
 ./target/release/mwtool props -v                    # physics of every prop / compound / dynamic object (+ WCVfxBehaviours)
 #   prop-break effects (prop_vfx.rs): MW_PROP_VFX_LOG=1 logs impact / spot / contact effects and lights out;
 #   MW_VFX_DEMO=<effect id>,<every s>,<speed> plays any effect ahead of the camera (loads it on demand)
+#   car collision effects (crash_vfx.rs: glass, sparks, debris, dust): MW_CRASH_VFX_LOG=1 logs each started
+#   effect (zone, contact value; =2 also refreshes), a CRASH VFX count line at exit
 ./target/release/mwtool lods --at=815,60,1760          # model LOD tables / placement LOD scales; what the game draws from a point
 #   runtime: MW_NO_LOD=1 (everything at LOD0, A/B), MW_LOD_SCALING=0|1|2 (the game's LodScaling option), MW_LOD_LOG=1
 ./target/release/mwtool surfaces                    # surfaces: grip, rolling, drag, dirt build-up, triangle counts

@@ -789,6 +789,8 @@ pub fn build_car(commands: &mut Commands, b: &CarBuild) -> Entity {
         Some(mw_assets::engine_sound::EngineVoice::Bank(b)) => b.tuning,
         _ => Default::default(),
     };
+    // Its collision mesh for the collision effects (`crash_vfx.rs`).
+    e.insert(crate::crash_vfx::CrashVfxCar { bundle: b.spec.bundle.clone(), paint_index: b.spec.paint_index });
     e.insert(crate::exhaust::Exhaust::new(
         b.spec.spot_effects.clone(),
         mw_assets::engine_driver::PopParams::from_handling(b.handling),

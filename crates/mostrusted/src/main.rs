@@ -22,6 +22,7 @@ mod cop_patrol;
 mod cop_sight;
 mod coronas;
 mod crash;
+mod crash_vfx;
 mod cutscene;
 mod damage;
 mod deferred;
@@ -920,6 +921,7 @@ fn main() -> anyhow::Result<()> {
             props::PropsPlugin,
             particles::ParticlesPlugin,
             prop_vfx::PropVfxPlugin,
+            crash_vfx::CrashVfxPlugin,
             sfx::SfxPlugin,
         ))
         // Avian optimises its collider trees on the async compute pool and blocks on the result later in the
