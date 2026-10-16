@@ -41,6 +41,9 @@ Added by the user (2026-10-16), not investigated yet:
   light crashes, landing after a jump, and many other one-off sounds.
 - **Dirt**: the dirt cloud effect is too big and blocks the view too much; driving on dirt still does not feel
   like dirt the way the original does (handling on the surface, not only the effects).
+- **Floating trees**: some trees and foliage float near the street exit leading to the large airport area (place
+  not measured; compare the research log's backdrop entry, "trees in a few far places float where no zone lists
+  ground under them", and `mwtool placement-check`).
 
 
 New this session: `mwtool water`, `mwtool terrain-check`, `mwtool siren`, `mwtool speech`, `mwtool ai-graph`,

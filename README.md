@@ -163,6 +163,7 @@ Still missing or not like the original (user play test, 2026-10-14; details in
 - [ ] Physics: some trash bags are indestructible; road collisions sometimes harsh; sidewalks affect the car too
   much; brake-to-drift understeers at higher speeds
 - [x] World: water floating above where it should be; terrain sticking through the road (2026-10-16)
+- [ ] World: trees and foliage floating near the street exit to the airport area
 - [ ] Navigation (route to a destination); map icons (jack spots, race locations, cops; Most Wanted races shown
   as normal races)
 - [~] Police: chase behaviour, patrol in the traffic lanes and the pursuit-start rules from the game's code;
