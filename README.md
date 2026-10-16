@@ -187,6 +187,7 @@ Still missing or not like the original (user play test, 2026-10-14; details in
 - [ ] Sound effects: smashing billboards, hitting light poles and other props, light crashes, jump landings, the
   cinematic crash sound, and many other one-off sounds
 - [ ] Dirt: the dirt cloud is too big and blocks the view; driving on dirt does not feel like the original
+- [ ] Nitrous: makes the car downshift and barely go faster, then the gearbox has trouble shifting
 - [ ] Car sounds and effects: idle sound, nitrous sound, backfires, engine start / stop; tyre marks and nitrous
   flames look off; grass / dirt still give road smoke and marks
 - [ ] Traffic reactions: horns, headlight flashing when you drive towards them

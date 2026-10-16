@@ -48,6 +48,9 @@ Added by the user (2026-10-16), not investigated yet:
   8 read the original's per-frame camera path and found no world query (our push-in is `MW_CAMERA_PUSH_IN=1`,
   off by default); find what the original does instead (near-plane / fade of occluding geometry, a collision
   step outside the camera code, or the camera simply clipping too) and confirm with a capture backed into a wall.
+- **Nitrous**: does not work like the original yet: using it makes the car downshift and not really go faster,
+  and the gearbox then has trouble shifting (nitrous in the drivetrain / shift logic: `nitrous.rs`,
+  `mw-handling`, decomp.md "Nitrous"; compare `--test nitrous` with a capture of the original).
 - **Floating trees**: some trees and foliage float near the street exit leading to the large airport area (place
   not measured; compare the research log's backdrop entry, "trees in a few far places float where no zone lists
   ground under them", and `mwtool placement-check`).
