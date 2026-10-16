@@ -1385,6 +1385,21 @@ The channel set for the player (`FUN_004b5f40`, base +0x127f0) is +0x00 `Landing
   `c = rows[0] + Σ clamp(u · A_k + B_k) · rows[k+1]` with `u = frac(age · rate)`; alpha from the `Curve5`
   (converted to the same ramp form by `FUN_0046b090`) × a binding slot. The runtime read it as a polynomial in
   the age with the fourth column in the alpha until now.
+- **`SuperEmitter`** (0x2B; compile `0x0044b2c0` → `FUN_00448370`, a copy of words 0..0x13 plus the byte of
+  word 0x14 at +0x54; run `0x0045dc40` → `FUN_0045d020`, read with REA): the parent layer is the high bits
+  (>> 23) of the parent-channel operands at words 9..12 (0x80 | 4·channel: position, velocity, age, 1 /
+  lifetime); own position / velocity / radius at words 13..15. Per live parent (`t = age · recip < 1`, a LOD
+  byte against `.rdata` 0x00f9cf9c): `n = round((1 + (w19 − 1)·t)·(w17·|v·dt| + w16·dt) + carry)`, the
+  remainder carried in the compiled word 0x14 (one for the action). Each child: `u` uniform, position = parent
+  position − u·v·dt; direction at polar angle `rand(w0, w1)`° from Z = normalize(−v·dt) (fallback +Y) about a
+  uniform azimuth (X = normalize(Z × up)), speed `rand(w2, w3)`, plus `rand(w4, w5)` × the parent's velocity;
+  radius `rand(w6, w7)` × `(1 + (w18 − 1)·t′)` with t′ the parent's age `u` steps back.
+- **Renderer draw words** (`FUN_00458e90` 0x24, `FUN_0045ab10` 0x27, `FUN_0045b620`): two words per renderer
+  go to the draw state +0x23c / +0x240 (reset to 0 / 1.0 per draw): 0x24 words 7 / 8, 0x27 words 9 / 10. +0x23c
+  = the soft-particle fade distance (as read before), +0x240 read as `gVfxConstants.z` (the pixel programs'
+  alpha factor and alpha test, the vertex program's key-light factor; inferred, the constant's writer for these
+  draws was not found). `RenderSpriteMotionBlur` (`FUN_004598e0`) writes the colour's rgb with alpha 1.0
+  (`.rdata` 0x00f9d13c) and the renderer's word 11 at the streak's other end; its colour curves' alpha is unused.
 - `InitialisePosOffset` (0x14) keeps a particle in the emitter's space; `ParametricPosVelToWorldSpace` (0x1A /
   0x1B) places it with the current `Transform` when it is drawn, so the exhaust flames stay on the pipes.
 
@@ -2006,9 +2021,8 @@ Runtime: `crates/mostrusted/src/props.rs`; data: `mw_assets::props` (`Additional
 - **Links** (`FUN_0054e750`, every frame): a pinned part with links (part +0x68 pointer, +0x6c count, u8 part
   indices) is unpinned (`FUN_0054e570` + `FUN_0054e390`) once none of its linked parts is registered and
   pinned. Used by the 11-panel structures (20 kg panels pinned at 500 kg m/s, a 230 kg frame).
-- **Smash effects / sounds**: none in the smash path itself. The compound's `WCVfxBehaviour` "Collision FX"
-  (`ImpactEffect`) and the parts' `WCPlaySoundBehaviour`s are behaviour data; what triggers the compound's
-  effect was not traced.
+- **Smash effects / sounds**: none in the smash path itself. The effects come from the objects' behaviours
+  ("World-component behaviours" below); the parts' `WCPlaySoundBehaviour`s are behaviour data.
 - **Reset** (`FUN_0055ae50`, every frame, no timer): a moving prop (64-slot pool, `FUN_00553fe0`) is put back
   (`FUN_00553540`) or removed (`FUN_00553740`, `mbRemoveInsteadOfReset` or a game flag) once **both** the camera
   and the player's car are farther than `mfResetDistanceSquared`. ResetProps (message 0x15, `FUN_0055a680`)
@@ -2016,6 +2030,44 @@ Runtime: `crates/mostrusted/src/props.rs`; data: `mw_assets::props` (`Additional
 - **Sound**: a prop's world contact plays its `PropObject` +0x1c sound (`WCPlaySoundBehaviour`) or
   "World_Prop_Collision" above a threshold from an audio object, then waits 0.35 s (`.rdata` 0xfaaf2c,
   `FUN_0054c680`).
+
+### World-component behaviours: what a contact shows (2026-10-16)
+- **Dispatch**: `FUN_0053cba0` walks the world-component table (0xe4 entries at +0x20, 8 bytes: flag, object
+  with its physics id at +4); for each object with a body it passes every body-pair record (`FUN_00901ab0`,
+  0x70 bytes: +0x10 point, +0x2c, +0x30, +0x3c force; the other body = +0x60 + +0x62 − own id) to
+  `FUN_005461c0` and the world-contact record (`FUN_008f6470`: +0x10 point, +0x20 normal, +0x1c, +0x2c) to
+  `FUN_005462d0`. Both run the object's (up to 16) behaviours' vtable slot 8 / 9 with two out flags: "activate"
+  → slot 1 unless already on, "deactivate" → slot 2 if on (on-mask at entry +0x42).
+- **`WCVfxBehaviour`** (type 0x2ae0; handler vtable 0x00faaa58 whose slot 1 `FUN_005b3350` builds the runtime
+  behaviour, vtable 0x00faf238): GeneSys +0x18 `0228a2f8` / +0x19 `713589ad` / +0x1a `543527d0` (the base
+  behaviour's bools; copied to runtime +0x16 / +0x17), +0x1c `ImpactEffect` (+0x5e "pending"), +0x24
+  `4524a2be` (+0x5f), +0x2c `c8d7741f` (> 0: a random flash timer, +0x4c / +0x50), +0x30 `29436f61`, +0x34
+  `5af50d49` (a probability against a random number, +0x5c), +0x38 `17b6b189` (a distance, squared into
+  +0x30..+0x3c), +0x40 / +0x44 / +0x48 the `Coronas` / `Lights` / `Spot_effects` arrays with counts at +0x54 /
+  +0x56 / +0x58, +0x4c `19e7191a` / +0x50 `392e10d5` (hours: 24 / 0), the bools after +0x5a unread.
+- **Slot 8 `FUN_005af3e0`** (pair contact): only when the object's body is not pinned (body +0xf4 bit 2): +0x16
+  set → clear it, activate; +0x17 set → clear it, deactivate. If its effect is alive (+0x60) the effect record
+  gets a new frame (`FUN_005a7750` from the contact point and the body's velocity, zero while asleep); else, with
+  +0x5e set: clear +0x5e and, when the other body is a vehicle (`FUN_00573360`: an active entry of the 16-slot
+  vehicle table), start `ImpactEffect` (`FUN_0049f750`) with velocity = the vehicle's body velocity
+  (`FUN_004acd40`) and the frame of `FUN_005a7750`: position = point + (0, 0.5, 0) (`.rdata` 0x00fae8f0), Z =
+  normalize(velocity) (fallback: the object's row 2), X = normalize((0, 1, 0) × Z) (fallback +X), Y = Z × X.
+  `FUN_0054bf70` (plain props) builds the same frame from the hitter's velocity (vehicle +0x120), fallback
+  identity, position + (0, 0.5, 0) (`.rdata` 0x00fab370).
+- **Slot 9 `FUN_005af630`** (world contact): with `4524a2be` set, when the body's velocity at the contact point
+  (`FUN_0059eb20`) is longer than `29436f61`, the effect starts at the point (or, while one is alive, gets the
+  new frame): Z = the contact normal, X = normalize(+X × Z), Y = Z × X.
+- **Slot 1 `FUN_005b30d0`** (on): when +0x5c (the probability roll) and neither the timer nor the flash mode:
+  spot effects (`FUN_005af900`: one effect per locator of each `Spot_effects` group, at locator × the object's
+  matrix, velocity = a vector from the object's vtable +8), lights `FUN_00532760`, coronas `FUN_005328c0`.
+  **Slot 2 `FUN_005b3150`** (off): lights `FUN_005327b0`, coronas `FUN_00534080`, spot effects `FUN_005afb30`.
+  Slot 3 `FUN_005b31a0` runs the time-of-day / flash switching every frame.
+- Data: a street lamp switches its "SetLightsOn" behaviours (light, coronas) off and "Collision FX" /
+  "StreetlampSingle_WC VFX" on at its first loose contact: sparks where the car hit and the `…7a95f` burst at its
+  foot; its parts throw `…1621e7` sparks on their first vehicle contact and while sliding along the ground.
+- Port (`prop_vfx.rs`): the rules above for compounds, their parts and dynamic objects; pair contacts are the
+  race cars' (`props::PropCarContact`, from `prop_contacts`) and avian's with other props and traffic. Model
+  decisions in the module docs and the research log (2026-10-16).
 
 ### Port and model decisions (`props.rs`)
 - Knocked props are outside the race cars' avian layers; `prop_contacts` solves car–prop contacts with the

@@ -10,6 +10,61 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-16: prop-break effects: compound / part behaviours, super emitters, the renderers' opacity
+User request: "add particles to destroying props like the light pole". Plain props already started their
+`PropObject` +0x14 effect; compounds (lamps, traffic lights, billboards) and their parts showed nothing and a
+knocked lamp kept its light. Details and addresses in decomp.md "Props" ("World-component behaviours") and
+"Bear particle runtime"; runtime `prop_vfx.rs`, data `mw_assets::props::WcVfx`.
+- **Trigger** (traced): `FUN_0053cba0` hands every body-pair record (`FUN_005461c0`, behaviour vtable slot 8 =
+  `FUN_005af3e0`) and the world-contact record (`FUN_005462d0`, slot 9 = `FUN_005af630`) of each world-component
+  object to its `WCVfxBehaviour`s (runtime object `FUN_005b3350`, vtable 0x00faf238). While the body is not
+  pinned, the first pair contact spends the `ImpactEffect` (+0x1c; plays only when the other body is a vehicle,
+  `FUN_00573360`), and the base flags `0228a2f8` / `713589ad` switch the behaviour on (`FUN_005b30d0`: spot
+  effects at their locators `FUN_005af900`, lights, coronas) or off (`FUN_005b3150`). A world contact whose point
+  moves faster than `29436f61` (+0x30, 1 m/s) starts `4524a2be` (+0x24) at the point, Z = contact normal, again
+  once the last instance has ended. Effect frames: `FUN_005a7750` / `FUN_0054bf70` = contact point + (0, 0.5, 0),
+  Z = hitter velocity, X = up × Z (our plain-prop impacts used the contact normal as Y: corrected).
+- **Data** (`mwtool props -v` now lists each object's and part's behaviours): the common street lamp
+  (`fed64b97`, 934 placements) has "Collision FX" (sparks `…24f3d`), "StreetlampSingle_WC VFX" (spot effect
+  `…7a95f` at its foot), three "SetLightsOn" (light, two coronas, an empty spot effect) all off by contact; its
+  parts carry `…1621e7` sparks as impact and contact effect and empty `…1621e9` spot effects, the head part
+  `…7a95f`. 330 `WCVfxBehaviour` objects over the install.
+- **Super emitter** (0x2B, compile `0x0044b2c0` → `FUN_00448370`, run `0x0045dc40` → `FUN_0045d020`, both read
+  with REA): children along each parent particle's path (parent layer = high bits of the parent-channel
+  operands); count `(1 + (w19 − 1)·t)·(w17·|v·dt| + w16·dt)`, carry rounded to nearest; cone `w0..1`° about
+  −v̂, speed `w2..3`, inherit `w4..5`, radius `w6..7` × `(1 + (w18 − 1)·t)`. Ported (`particles::super_emit`);
+  `…7a95f`'s 12 debris particles now trail sparks (its sprite layer has rate and per-metre 0: nothing, as in the
+  data).
+- **Renderer opacity** (inferred): the run functions copy the word after the depth fade into the draw state
+  +0x240 (default 1.0): 0x24 word 8 (`FUN_00458e90`), 0x27 word 10 (`FUN_0045ab10`), and words 0x11 / 0x12 in
+  `FUN_0045b620` (taken for 0x28, whose depth fade is word 0x11; its table entry was not checked). Read as `gVfxConstants.z` (pixel programs: alpha × z, alpha-tested at 1/255 except the
+  `_NoAlphaTest` variants). The writer of the particle draws' constant was not found (slot 0x75 writes in the
+  dump are other draws). Effect: the nitrous glows (`…18092f`, `_NoAlphaTest`, 0) draw additively; `…7a95f`'s two
+  flare quads (BC1 flares on opaque black, alpha-tested, 0) draw nothing instead of dark squares.
+- **Spark alpha** (traced): `RenderSpriteMotionBlur` (0x25, `FUN_004598e0`) writes the colour's rgb with alpha
+  1.0 (`.rdata` 0x00f9d13c) into its vertices; `…24f3d` / `…1621e7`'s colour curves have alpha 0 and drew
+  nothing in our port. Now alpha 1 (the streak's tail word 11 not ported).
+- **Lights**: a "SetLightsOn" with lights switched off by a contact takes the object's lights out of
+  `LightSources` until the object is put back (`world_lights::take_object_lights`). Checked: world drive
+  (`--spawn=872,40,1731.9,90 --hour 1 --auto-throttle 0.6`) knocks lamp `da44501b` at (895.6, 1731.9): "lights
+  off: 1", impact sparks, part contact sparks.
+- **Results**: `--test smash` (60 km/h): `behaviour effects: 1 impact, 4 spot, 5 contact-effect frames, 1 light
+  switch-offs`, speed losses unchanged (685 contacts, 0.53 %); `--smash-set compounds`: 4 impact, 19 spot, 4
+  contact, 4 lights; screenshots looked at (`-knock<n>`: sparks along the car's travel, no dark quads;
+  `MW_VFX_DEMO=010000000007a95f,0.3,8`: debris spark trails; `…24f3d`: orange sparks); nitrous test: the flame
+  is blue-white and additive.
+- **Model decisions**: hitters that count as vehicles = race cars (`prop_contacts`); the effects' `Intensity`
+  (the w of a velocity the game passes: props' closing / 15 for impacts, 1 for spot effects); spot effects'
+  `Velocity` = the body's; the world contact's point velocity about the centre of mass after the step; one
+  avian manifold point per pair stands in for the pair record's point; behaviours "on at start" do not start
+  their spot effects (only ambient ones would: "AmbFX Dummy", power-plant smoke); the super emitter's LOD byte
+  (+0x50) and the renderer opacity mapping above.
+- **Open** (captures of the original that would settle them: a lamp knocked at night beside a fixed camera, a
+  close-up of the hit at 60 km/h): what the flare quads look like in the game (if they show, the opacity mapping
+  is wrong); `gVfxSparkBrightness` (the sparks are faint in daylight); the light particle layers (0x0F/0x30, the
+  impact flash `872058`); coronas are not drawn at all; dynamic objects' behaviours (handled the same way,
+  unchecked); 0x29 `RenderSpriteVelocity`'s alpha (`0x0045c970`, not read).
+
 ### 2026-10-15: navigation (SET DESTINATION, the GPS route) from the code
 User play test: "Navigation (SET DESTINATION route / GPS) does not work yet". Details in decomp.md "Navigation: SET
 DESTINATION and the GPS route".
@@ -2623,8 +2678,9 @@ Code findings are in decomp.md "Traffic runtime"; the runtime is `crates/mostrus
 - World effects: `mwtool genesys all --type WCVfxBehaviour` finds 3,931 objects (3,911 in `TRK_UNIT*`): 2,302
   have `Spot_effects` (`Spot_effect` handle + `Locator_group` id; e.g. `…24f3d`, `…eee1b`, `…af136`), 1,095 an
   `ImpactEffect` (`…24f3d` 613×, `…1621e7` 410×: prop smashes), most have `Lights` (`LightDefinition`) or
-  `Coronas`. How a world locator group resolves to positions (compound / world object parts?) is open; a car's
-  resolve in its `VehicleGraphicsSpec` (2026-10-09). The exhaust effects are the cars' spot effects (2026-10-09).
+  `Coronas`. Contact-driven ones (impact, contact and spot effects, lights off) are ported since 2026-10-16
+  (`prop_vfx.rs`); ambient ones that are on from the start (power-plant smoke, "AmbFX Dummy") are not. The
+  exhaust effects are the cars' spot effects (2026-10-09).
 
 ---
 

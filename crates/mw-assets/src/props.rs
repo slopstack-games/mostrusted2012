@@ -128,8 +128,52 @@ pub struct ObjectPhysics {
     /// Props: the impact effect (`BearEffect`) and sound (`WCPlaySoundBehaviour`).
     pub impact_effect: Option<ResourceId>,
     pub impact_sound: Option<ResourceId>,
+    /// Compound and dynamic objects: their `WCVfxBehaviour`s (effects and lights that contacts start / stop).
+    pub vfx: Vec<WcVfx>,
     /// Compound objects: how the object breaks into its parts.
     pub compound: Option<CompoundPhysics>,
+}
+
+/// A `WCVfxBehaviour` of a compound / dynamic object or a compound part, as far as contacts drive it
+/// (docs/decomp.md, "Props": world-component effects). The runtime behaviour (built by `FUN_005b3350`,
+/// vtable 0x00faf238) is told about every contact of the object's body each frame (`FUN_0053cba0` →
+/// `FUN_005461c0` for each body-pair record, `FUN_005462d0` for the world contact):
+/// - a pair contact while the body is **not pinned** (`FUN_005af3e0`): the first one starts
+///   [`Self::impact_effect`] once (only when the other body is a vehicle; the flag is spent either way),
+///   [`Self::activate_on_collision`] switches the behaviour on (lights, coronas, spot effects;
+///   `FUN_005b30d0`) and [`Self::deactivate_on_collision`] off (`FUN_005b3150`);
+/// - a world contact whose point moves faster than [`Self::contact_speed`] starts [`Self::contact_effect`]
+///   at the contact point, Z along the contact normal, again whenever the last one has ended (`FUN_005af630`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct WcVfx {
+    /// The behaviour's GeneSys object and its `Label` ("Collision FX", "SetLightsOn", ...).
+    pub object: ResourceId,
+    pub label: String,
+    /// +0x18 `0228a2f8`, +0x19 `713589ad`, +0x1a `543527d0` (on from the start), the behaviour base fields.
+    pub activate_on_collision: bool,
+    pub deactivate_on_collision: bool,
+    pub active_at_start: bool,
+    /// +0x1c `ImpactEffect` (a `BearEffect`).
+    pub impact_effect: Option<ResourceId>,
+    /// +0x24 `4524a2be` (a `BearEffect`) and +0x30 `29436f61`, the contact point speed (m/s) it needs.
+    pub contact_effect: Option<ResourceId>,
+    pub contact_speed: f32,
+    /// `Lights` and `Coronas` entries (what activation switches on, deactivation off).
+    pub lights: usize,
+    pub coronas: usize,
+    /// `Spot_effects`: started at their locators when the behaviour activates (`FUN_005b30d0` → `FUN_005af900`).
+    pub spot_effects: Vec<WcSpotEffect>,
+}
+
+/// A `WCVfxBehaviour.SpotEffects` entry: a `BearEffect` (`9a31d141`, +0x0c) at each locator of a locator group
+/// (`c53e416d`, +0x14), looked up among the part's own groups and then the object's (as for the lights).
+#[derive(Debug, Clone, PartialEq)]
+pub struct WcSpotEffect {
+    pub effect: Option<ResourceId>,
+    pub group: u32,
+    /// The group's locators (quaternion `x y z w`, position), in the space of the object that owns the group;
+    /// empty when the group is not found.
+    pub locators: Vec<([f32; 4], [f32; 3])>,
 }
 
 /// How a compound object comes apart (docs/decomp.md, "Props": compound smash). The compound stands and
@@ -164,6 +208,8 @@ pub struct CompoundPartPhysics {
     pub smash_force: Option<f32>,
     /// The part's impact sound (its first `WCPlaySoundBehaviour`).
     pub impact_sound: Option<ResourceId>,
+    /// The part's own `WCVfxBehaviour`s.
+    pub vfx: Vec<WcVfx>,
 }
 
 /// Row-major matrix of a bone's bind pose (unit quaternion `x y z w`, position).
@@ -443,8 +489,58 @@ impl AssetStore {
             remove_instead_of_reset: def.remove_instead_of_reset,
             impact_effect: def.impact_effect,
             impact_sound: def.impact_sound,
+            vfx: self.wc_vfx(&def.behaviours, &[], &def.locator_groups),
             compound,
         })
+    }
+
+    /// The `WCVfxBehaviour`s among an object's (or a compound part's) behaviours; ones that fail to decode are
+    /// left out.
+    pub fn wc_vfx(
+        &self,
+        behaviours: &[mw_formats::Behaviour],
+        own_groups: &[mw_formats::LocatorGroup],
+        object_groups: &[mw_formats::LocatorGroup],
+    ) -> Vec<WcVfx> {
+        let count = |o: &Object, name: &str| match o.get(field_hash(name)) {
+            Some(Value::Array(a)) => a.len(),
+            _ => 0,
+        };
+        behaviours
+            .iter()
+            .filter(|b| b.type_id == mw_formats::WC_VFX_BEHAVIOUR)
+            .filter_map(|b| {
+                let id = b.object?;
+                let o = self.genesys_object(id).ok()?;
+                Some(WcVfx {
+                    object: id,
+                    label: match o.get(field_hash("Label")) {
+                        Some(Value::Str(s)) => s.clone(),
+                        _ => String::new(),
+                    },
+                    activate_on_collision: boolean(&o, 0x0228a2f8) == Some(true),
+                    deactivate_on_collision: boolean(&o, 0x713589ad) == Some(true),
+                    active_at_start: boolean(&o, 0x543527d0) == Some(true),
+                    impact_effect: handle(&o, field_hash("ImpactEffect")),
+                    contact_effect: handle(&o, 0x4524a2be),
+                    contact_speed: float(&o, 0x29436f61).unwrap_or(0.0),
+                    lights: count(&o, "Lights"),
+                    coronas: count(&o, "Coronas"),
+                    spot_effects: structs(&o, field_hash("Spot_effects"))
+                        .map(|e| {
+                            let group = uint(e, 0xc53e416d).unwrap_or(0) as u32;
+                            let locators = own_groups
+                                .iter()
+                                .chain(object_groups)
+                                .find(|g| g.id == group)
+                                .map(|g| g.locators.iter().map(|l| (l.rotation, l.position)).collect())
+                                .unwrap_or_default();
+                            WcSpotEffect { effect: handle(e, 0x9a31d141), group, locators }
+                        })
+                        .collect(),
+                })
+            })
+            .collect()
     }
 
     /// The parts of a compound object, placed by its skeleton's bind pose.
@@ -459,7 +555,8 @@ impl AssetStore {
             .compound_parts
             .iter()
             .zip(parts)
-            .map(|(p, definition)| {
+            .enumerate()
+            .map(|(i, (p, definition))| {
                 let bone = skeleton
                     .as_ref()
                     .and_then(|s| s.bones.get(p.bone as usize))
@@ -481,6 +578,11 @@ impl AssetStore {
                     links: p.links.iter().filter_map(|&l| index(l)).collect(),
                     smash_force,
                     impact_sound,
+                    vfx: self.wc_vfx(
+                        &p.behaviours,
+                        def.part_locator_groups.get(i).map_or(&[][..], |g| g.as_slice()),
+                        &def.locator_groups,
+                    ),
                 }
             })
             .collect();

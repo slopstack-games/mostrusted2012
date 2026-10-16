@@ -54,6 +54,7 @@ mod pause;
 mod player_sfx;
 mod police;
 mod prewarm;
+mod prop_vfx;
 mod props;
 mod pursuit;
 mod race;
@@ -907,6 +908,7 @@ fn main() -> anyhow::Result<()> {
             car_anim::CarAnimPlugin,
             props::PropsPlugin,
             particles::ParticlesPlugin,
+            prop_vfx::PropVfxPlugin,
             sfx::SfxPlugin,
         ))
         // Avian optimises its collider trees on the async compute pool and blocks on the result later in the

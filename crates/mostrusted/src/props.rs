@@ -135,6 +135,8 @@ pub struct PropPhysics {
     /// sound behaviour.
     pub impact_effect: Option<ResourceId>,
     pub impact_sound: Option<ResourceId>,
+    /// Compound / dynamic objects and compound parts: their `WCVfxBehaviour`s (`prop_vfx.rs`).
+    pub vfx: Vec<mw_assets::props::WcVfx>,
     /// Compound objects: the parts that replace it when it smashes.
     pub compound: Option<CompoundBreak>,
 }
@@ -170,6 +172,7 @@ impl PropPhysics {
         out.remove_instead_of_reset = p.remove_instead_of_reset;
         out.impact_effect = p.impact_effect;
         out.impact_sound = p.impact_sound;
+        out.vfx = p.vfx.clone();
         let reset = out.reset_distance;
         out.compound = p.compound.as_ref().map(|c| CompoundBreak {
             parts: c
@@ -182,6 +185,7 @@ impl PropPhysics {
                         ph.smash_force = part.smash_force;
                         ph.smash_delay = 0.0;
                         ph.impact_sound = part.impact_sound;
+                        ph.vfx = part.vfx.clone();
                         Some(Arc::new(ph))
                     }),
                     bone: crate::loader::game_matrix(&part.bone),
@@ -296,6 +300,7 @@ impl PropPhysics {
             remove_instead_of_reset: false,
             impact_effect: None,
             impact_sound: None,
+            vfx: Vec::new(),
             compound: None,
         })
     }
@@ -393,14 +398,23 @@ struct Unpin {
 #[derive(Message, Clone, Copy, Debug)]
 pub struct PropImpact {
     pub position: Vec3,
-    /// Out of the prop, towards the car.
-    pub normal: Vec3,
     /// The car's velocity.
     pub velocity: Vec3,
     pub closing_speed: f32,
     pub effect: Option<ResourceId>,
     pub sound: Option<ResourceId>,
     pub by_player: bool,
+}
+
+/// A race car touched a prop this physics step ([`prop_contacts`], the strongest contact per prop): what the
+/// game's per-object behaviours hear about a body-pair contact (`FUN_0053cba0` → `FUN_005461c0`; `prop_vfx.rs`).
+#[derive(Message, Clone, Copy, Debug)]
+pub struct PropCarContact {
+    pub prop: Entity,
+    pub point: Vec3,
+    /// The car's velocity before the contact.
+    pub car_velocity: Vec3,
+    pub closing_speed: f32,
 }
 
 /// A standing prop (or a part of a split compound) was knocked loose. `freeroam.rs` counts billboards with it
@@ -446,6 +460,7 @@ impl Plugin for PropsPlugin {
             .init_resource::<PropSounds>()
             .add_message::<PropImpact>()
             .add_message::<PropKnocked>()
+            .add_message::<PropCarContact>()
             .add_systems(FixedPostUpdate, prop_contacts.before(PhysicsSystems::StepSimulation))
             .add_systems(
                 FixedPostUpdate,
@@ -848,7 +863,6 @@ fn unpin_props(
         if unpin.closing >= IMPACT_SOUND_SPEED {
             impacts.write(PropImpact {
                 position: unpin.point,
-                normal: (unpin.point - t.translation).normalize_or(Vec3::Y),
                 velocity: Vec3::ZERO,
                 closing_speed: unpin.closing,
                 effect: None,
@@ -1042,6 +1056,7 @@ pub(crate) fn prop_contacts(
     mut stats: ResMut<PropStats>,
     mut impacts: MessageWriter<PropImpact>,
     mut knocked: MessageWriter<PropKnocked>,
+    mut car_contacts: MessageWriter<PropCarContact>,
 ) {
     let dt = time.delta_secs();
     if dt <= 0.0 {
@@ -1198,6 +1213,7 @@ pub(crate) fn prop_contacts(
             let force: f32 = touching.map(|(c, _)| c.normal_impulse).sum::<f32>() / dt;
             car.prop_impact = car.prop_impact.max(*s);
             prop.car_force = prop.car_force.max(force);
+            car_contacts.write(PropCarContact { prop: e, point: c.point, car_velocity: before, closing_speed: *s });
             // `ForceToDamage` passed by a vehicle's contact: the prop's impact effect, once per knocked lifetime
             // (`FUN_0054bf70`).
             let effect = (!prop.damaged && force > prop.physics.force_to_damage).then(|| {
@@ -1212,7 +1228,6 @@ pub(crate) fn prop_contacts(
             if effect.is_some() || sound {
                 impacts.write(PropImpact {
                     position: c.point,
-                    normal: -c.normal,
                     velocity: before,
                     closing_speed: *s,
                     effect: effect.flatten(),
@@ -1337,9 +1352,9 @@ fn prop_world_sounds(
             .collisions_with(e)
             .filter(|p| world.contains(if p.collider1 == e { p.collider2 } else { p.collider1 }))
             .flat_map(|p| p.manifolds.iter().map(move |m| (m, p.collider1 == e)))
-            .map(|(m, first)| (m.total_normal_impulse(), if first { -m.normal } else { m.normal }, m.points.first()))
+            .map(|(m, _)| (m.total_normal_impulse(), m.points.first()))
             .max_by(|a, b| a.0.total_cmp(&b.0));
-        let Some((impulse, normal, point)) = hit else { continue };
+        let Some((impulse, point)) = hit else { continue };
         let speed = impulse / prop.physics.mass;
         if speed < IMPACT_SOUND_SPEED {
             continue;
@@ -1347,7 +1362,6 @@ fn prop_world_sounds(
         prop.last_impact = now;
         impacts.write(PropImpact {
             position: point.map_or(pos.0, |p| p.point),
-            normal,
             velocity: Vec3::ZERO,
             closing_speed: speed,
             effect: None,
@@ -1781,6 +1795,7 @@ fn run_smash_test(
     cars: Query<(&Car, &Transform), With<crate::drive::Player>>,
     props: Query<(&PropBody, &Transform), Without<Car>>,
     stats: Res<PropStats>,
+    vfx: Option<Res<crate::prop_vfx::PropVfxStats>>,
     mut exit: MessageWriter<AppExit>,
 ) {
     use bevy::render::view::screenshot::{Screenshot, save_to_disk};
@@ -1854,6 +1869,13 @@ fn run_smash_test(
                     "TEST RESULT smash: {} compounds smashed, {} parts smashed by their proxy, {} part bodies spawned",
                     stats.smashed, stats.splits, stats.pieces
                 );
+                if let Some(v) = &vfx {
+                    info!(
+                        "TEST RESULT smash: behaviour effects (prop_vfx.rs): {} impact, {} spot, {} contact-effect \
+                         frames, {} light switch-offs",
+                        v.impacts, v.spot_effects, v.contact_effects, v.lights_off
+                    );
+                }
                 info!(
                     "TEST RESULT smash: target {:.0} km/h, top {:.0} km/h, car at z {:.1} ({}), {} props knocked",
                     test.speed * 3.6,
