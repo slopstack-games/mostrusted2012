@@ -46,6 +46,9 @@ Added by the user (2026-10-16), not investigated yet:
   nearest road; the same when the car lands out of bounds.
 - **Car lights**: vehicles' headlights / tail lights do not light up the world properly yet.
 - **Speed camera lights**: speed cameras seem to light up the world all the time instead of only during a flash.
+- **Crash particles**: car crashes have few or none of the original's particle effects, e.g. broken glass when
+  crashing into traffic cars and other crash debris / sparks in general (the prop-break effects of session 10's
+  `prop_vfx.rs` and its super-emitter port may be reusable).
 
 New this session: `mwtool music`, `mwtool ui map-items`, `--smash-set bags`, `--map-waypoint <event>`,
 `MW_GPS_LOG=1`, `MW_XINPUT_CONNECTED=0|1`, `MW_CAR_SFX_LOG=1`, `MW_NITROUS_AT=t0,t1` (`mwtool engine-sound`).

@@ -180,6 +180,7 @@ Still missing or not like the original (user play test, 2026-10-14; details in
 - [ ] Landing on the roof or out of bounds: crash camera, then a reset onto the nearest road
 - [ ] Lights: car lights do not light up the world properly; speed cameras light the world all the time, not only
   when they flash
+- [ ] Crash particles: broken glass when crashing into traffic, other crash debris and sparks
 - [ ] Car sounds and effects: idle sound, nitrous sound, backfires, engine start / stop; tyre marks and nitrous
   flames look off; grass / dirt still give road smoke and marks
 - [ ] Traffic reactions: horns, headlight flashing when you drive towards them
