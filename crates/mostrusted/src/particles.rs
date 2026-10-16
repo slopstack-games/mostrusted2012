@@ -52,6 +52,7 @@ impl Plugin for ParticlesPlugin {
             .add_message::<ImpactEvent>()
             .init_resource::<Instances>()
             .init_resource::<BearGlobals>()
+            .init_resource::<BearView>()
             .init_resource::<EffectRequests>()
             .insert_resource(VfxDebug::from_env())
             .add_systems(Update, (start_loading, receive_vfx))
@@ -417,6 +418,9 @@ pub(crate) struct Params {
     /// `ImpactClosingVelocity` and `MovementSinceLastFrame` (binding sources 17 / 18).
     pub impact: f32,
     pub movement: f32,
+    /// The wheel's smoke ramps (spin, lateral, lock; `mw_handling::tyre_vfx`) for `UpdateWheelBindings`
+    /// sources 0x0F..0x11 (see [`wheel_source`]).
+    pub wheel: [f32; 3],
 }
 
 impl Default for Params {
@@ -430,8 +434,21 @@ impl Default for Params {
             ground: Vec4::new(0.0, 1.0, 0.0, f32::MAX),
             impact: 0.0,
             movement: 0.0,
+            wheel: [0.0; 3],
         }
     }
+}
+
+/// The parts of the game's Bear view block (`FUN_0046adb0` sets it up, `FUN_004a1470` refreshes it each frame)
+/// that the render actions read: the camera's forward axis and its speed along it (+0x21c, `|Δposition ·
+/// forward| / dt`, which stretches `UpdateParametricFadeOverDistance`'s near fade). The block's +0x218 (depth
+/// origin offset, 0), +0x220 (size cap scale, 1.0) and +0x224 (saturation, 1.0) keep their initial values here.
+#[derive(Resource, Default, Clone, Copy)]
+pub(crate) struct BearView {
+    pub eye: Vec3,
+    pub forward: Vec3,
+    pub speed: f32,
+    prev: Option<Vec3>,
 }
 
 /// The game's `BearGlobalParameters` the binding controllers read (`FUN_004a1470` fills them each frame).
@@ -482,6 +499,11 @@ impl LayerSim {
 }
 
 /// One `UpdateBindings` run (`FUN_0045ffd0`): each curve over its source, then the combine steps.
+/// `UpdateBindings_Wheel` (0x34, `FUN_004601a0`) adds sources 0x14..0x18 over its `WheelParams` parameter W:
+/// W[1], W[2], W[3], `clamp(|W[0]| / s)` and the flag byte at W +0x30. The per-wheel update fills W with
+/// (`uStack_4c0`, the three smoke ramps) (`FUN_00589e20`, block +0x80): 0x14..0x16 read spin, lateral, lock here;
+/// W[0] and the flag are not identified and read 0.
+#[allow(clippy::too_many_arguments)]
 fn run_bindings(
     b: &Bindings,
     curves: &[mw_formats::bear::Curve5; 4],
@@ -490,6 +512,7 @@ fn run_bindings(
     p: &Params,
     globals: &BearGlobals,
     camera_distance: f32,
+    kind: u8,
 ) {
     let t = sim.time;
     for i in 0..4 {
@@ -510,12 +533,70 @@ fn run_bindings(
             16 => globals.player_load,
             17 => ratio(p.impact),
             18 => ratio(p.movement),
+            k @ 0x14..=0x16 if kind == 0x34 => p.wheel[(k - 0x14) as usize],
             // Other globals (time of day, weather and quality bytes, ...): not traced; byte +0x7d is 0.
             _ => 0.0,
         };
         sim.slots[1 + i] = curves[i].eval(x) + b.offsets[i];
     }
     b.combine(&mut sim.slots);
+}
+
+/// One `UpdateWheelBindings` run (0x42, `FUN_00463330`): each curve over its source (no offsets), into slots
+/// 1..=4, then the combine steps into 5..=8. Sources (`s` = the curve's scale, `t` the layer's clock):
+///
+/// | source | input |
+/// |---|---|
+/// | 0 / 1 | `s·t` / `frac(s·t)` |
+/// | 3 | `s·|Velocity|` |
+/// | 4 | `s·` distance from the transform to the camera |
+/// | 7 / 8 | `0.5 + 0.5·sin / cos(2π·s·t)` |
+/// | 9 | `s` |
+/// | 0x0E..0x11 | the `WheelContact` parameter's +0x40..+0x4c ([`wheel_source`]) |
+/// | 0x12 | `clamp(|WheelContact +0x1c| / s)` (not identified: 0) |
+/// | 2, 5, 6, 10..13, 0x13 | view-block globals (+0x68, +0x60, byte +0x7c, +0x6c, +0x7d, +0x70, +0x7e, +0x78; 0 here) |
+fn run_wheel_bindings(
+    b: &Bindings,
+    curves: &[mw_formats::bear::Curve5; 4],
+    scales: &[f32; 4],
+    sim: &mut LayerSim,
+    p: &Params,
+    camera_distance: f32,
+) {
+    let t = sim.time;
+    for i in 0..4 {
+        let s = scales[i];
+        let frac = |x: f32| x - x.floor();
+        let x = match b.sources[i] {
+            0 => s * t,
+            1 => frac(s * t),
+            3 => s * p.velocity.length(),
+            4 => s * camera_distance,
+            7 => 0.5 + 0.5 * (s * t * TAU).sin(),
+            8 => 0.5 + 0.5 * (s * t * TAU).cos(),
+            9 => s,
+            k @ 0x0e..=0x11 => wheel_source(p, k),
+            _ => 0.0,
+        };
+        sim.slots[1 + i] = curves[i].eval(x);
+    }
+    b.combine(&mut sim.slots);
+}
+
+/// `UpdateWheelBindings` sources 0x0E..0x11 read the `WheelContact` parameter's +0x40..+0x4c. Model
+/// decision: they are taken as (0, spin, lateral, lock), the wheel's smoke ramps. The block the per-wheel
+/// update fills (`FUN_00589e20` → `FUN_004acd80` / `FUN_0059bb50`) holds (`fStack_4b0` = 0, the three ramps) one
+/// row earlier, at +0x30, and the wheel's velocity at +0x40; how the Bear runtime copies the block into the
+/// effect's `WheelContact` was not found. The data favours the ramps: over the 34 `UpdateWheelBindings`
+/// actions sources 0x0F..0x11 are common and 0x0E (which would be the constant 0 or the world X velocity)
+/// never appears.
+fn wheel_source(p: &Params, source: u8) -> f32 {
+    match source {
+        0x0f => p.wheel[0],
+        0x10 => p.wheel[1],
+        0x11 => p.wheel[2],
+        _ => 0.0,
+    }
 }
 
 /// `EmitterConePlus` (`FUN_0044cf30`): how many particles this update emits, or `None` when it does not.
@@ -695,6 +776,7 @@ pub(crate) fn simulate(
     debug: Res<VfxDebug>,
     globals: Res<BearGlobals>,
     mut instances: ResMut<Instances>,
+    mut view: ResMut<BearView>,
     camera: Query<&GlobalTransform, crate::MainCamera>,
 ) {
     let dt = time.delta_secs().min(0.1);
@@ -702,6 +784,14 @@ pub(crate) fn simulate(
         return;
     }
     let eye = camera.iter().next().map(|t| t.translation()).unwrap_or_default();
+    if let Some(cam) = camera.iter().next() {
+        // `FUN_004a1470`: view +0x21c = |(position − last position) · forward| / dt.
+        let forward = cam.forward().as_vec3();
+        view.speed = view.prev.map_or(0.0, |p| ((eye - p).dot(forward) / dt).abs());
+        view.prev = Some(eye);
+        view.eye = eye;
+        view.forward = forward;
+    }
     for inst in &mut instances.list {
         let def = inst.def.clone();
         for (i, layer) in def.layers.iter().enumerate() {
@@ -759,11 +849,15 @@ fn step_layer(
             let Some(action) = layer.actions.get(step.action as usize) else { continue };
             match &action.op {
                 Op::Controller { curves, scales, bindings, .. } => {
-                    // Spawners other than the cone emitter: the first curve over the effect's intensity
-                    // (their binding-slot bytes are not decoded).
+                    // Spawners other than the cone emitter and 0x07: the first curve over the effect's
+                    // intensity (their binding-slot bytes are not decoded).
                     sim.rate_scale = curves[0].eval(p.intensity.clamp(0.0, 1.0));
                     if let Some(b) = bindings {
-                        run_bindings(b, curves, scales, sim, p, globals, camera_distance);
+                        if action.kind == 0x42 {
+                            run_wheel_bindings(b, curves, scales, sim, p, camera_distance);
+                        } else {
+                            run_bindings(b, curves, scales, sim, p, globals, camera_distance, action.kind);
+                        }
                     }
                 }
                 Op::Age { .. } => {
@@ -815,10 +909,13 @@ fn step_layer(
     // The render group's controllers (`ParametricSetColourGradient` reads their slots for the alpha).
     for seq in layer.groups[1].iter().flat_map(|g| &g.sequences) {
         for step in &seq.steps {
-            if let Some(Op::Controller { curves, scales, bindings: Some(b), .. }) =
-                layer.actions.get(step.action as usize).map(|a| &a.op)
-            {
-                run_bindings(b, curves, scales, sim, p, globals, camera_distance);
+            let Some(action) = layer.actions.get(step.action as usize) else { continue };
+            if let Op::Controller { curves, scales, bindings: Some(b), .. } = &action.op {
+                if action.kind == 0x42 {
+                    run_wheel_bindings(b, curves, scales, sim, p, camera_distance);
+                } else {
+                    run_bindings(b, curves, scales, sim, p, globals, camera_distance, action.kind);
+                }
             }
         }
     }
@@ -853,7 +950,10 @@ fn spawn(
     };
     let mut count = sim.carry;
     if p.emitting {
-        count += (sp.rate * dt + sp.per_metre * p.moved) * sim.rate_scale * lod;
+        // `EmitterWheelContactPlus` (0x07, `FUN_00450760`) scales its count by a binding slot (the layer's
+        // `UpdateWheelBindings` output); the other spawners by the controller stand-in.
+        let scale = sp.count_slot.map_or(sim.rate_scale, |k| sim.slot(k));
+        count += (sp.rate * dt + sp.per_metre * p.moved) * scale * lod;
     }
     if !burst_done && sp.burst > 0 {
         count += sp.burst as f32 * p.intensity.clamp(0.1, 1.0) * lod;
@@ -1087,6 +1187,7 @@ fn wheel_emitters(
                     emitting: smoke > mw_handling::tyre_vfx::SMOKE_ON,
                     moved: slip * dt,
                     ground,
+                    wheel: [c.smoke.spin, c.smoke.lat, c.smoke.lock],
                     ..default()
                 },
             );
@@ -1099,9 +1200,13 @@ fn wheel_emitters(
                     transform: frame,
                     velocity: c.velocity,
                     intensity: (speed / 60.0).clamp(0.0, 1.0),
-                    emitting: speed > 2.0,
+                    // Model decision: on while the wheel touches the ground and rolls (the game's IsEmitting
+                    // for the kick-up was not traced); the kick-up's `EmitterWheelContactPlus` scales its count
+                    // by the contact speed and its `UpdateWheelBindings` slot, which starts near 1 m/s.
+                    emitting: speed > 0.5,
                     moved: speed * dt,
                     ground,
+                    wheel: [c.smoke.spin, c.smoke.lat, c.smoke.lock],
                     ..default()
                 },
             );
@@ -1206,6 +1311,7 @@ fn impact_emitters(
                     ground,
                     impact: ev.closing_speed,
                     movement: 0.0,
+                    wheel: [0.0; 3],
                 },
             );
         }
@@ -1269,6 +1375,7 @@ fn prop_impact_effects(
                 ground: Vec4::new(0.0, 1.0, 0.0, -hit.position.y),
                 impact: hit.closing_speed,
                 movement: 0.0,
+                wheel: [0.0; 3],
             },
         );
         false
@@ -1344,6 +1451,9 @@ struct Drawn {
     rot: f32,
     colour: Vec4,
     subuv: f32,
+    /// `RenderSpriteVelocity` (0x29): the streak's tail point and its alpha factor; otherwise unused.
+    tail: Vec3,
+    tail_alpha: f32,
 }
 
 /// Stand-in for `gVfxSparkBrightness`, a global the game's code sets (not in the data found so far): the
@@ -1357,12 +1467,14 @@ const SPARK_SHUTTER: f32 = 1.0 / 30.0;
 fn build_meshes(
     mut vfx: ResMut<Vfx>,
     instances: Res<Instances>,
+    view: Res<BearView>,
     camera: Query<&GlobalTransform, crate::MainCamera>,
     mut meshes: ResMut<Assets<Mesh>>,
 ) {
     let Some(cam) = camera.iter().next() else { return };
     let eye = cam.translation();
     let (right, up) = (cam.right().as_vec3(), cam.up().as_vec3());
+    let view = BearView { eye, forward: cam.forward().as_vec3(), ..*view };
     let vfx = &mut *vfx;
     for b in vfx.batches.values_mut() {
         b.quads.clear();
@@ -1387,7 +1499,7 @@ fn build_meshes(
                     }
                     None => q,
                 };
-                if let Some(d) = render_particle(layer, q, eye, &sim.slots) {
+                if let Some(d) = render_particle(layer, q, &view, &sim.slots) {
                     drawn.push(d);
                 }
             }
@@ -1397,8 +1509,13 @@ fn build_meshes(
                 }
             } else {
                 drawn.sort_by(|a, b| b.pos.distance_squared(eye).total_cmp(&a.pos.distance_squared(eye)));
+                // The renderers' size cap (`FUN_00458e90` / `FUN_0045ab10` / `FUN_0045b620`): the radius is at
+                // most the cap × the view depth (from the view's depth origin, +0x218 = 0; its scale +0x220 = 1).
+                let cap = r.size_cap * sim.slot(r.size_cap_slot);
                 for d in &drawn {
-                    push_quad(&mut batch.quads, d, r, eye, right, up);
+                    let depth = (d.pos - eye).dot(view.forward);
+                    let radius = if cap > 0.0 { d.radius.min(cap * depth.max(0.0)) } else { d.radius };
+                    push_quad(&mut batch.quads, d, radius, r, eye, right, up);
                 }
             }
         }
@@ -1435,19 +1552,33 @@ fn build_meshes(
 /// The layer's render group for one particle: size and colour curves, alpha, fades, atlas frame.
 /// `slots` are the layer's binding slots; the colour override parameter (`use_tint`) is not set by any
 /// emitter here and reads white.
-fn render_particle(layer: &Layer, q: &Particle, eye: Vec3, slots: &[f32]) -> Option<Drawn> {
+fn render_particle(layer: &Layer, q: &Particle, view: &BearView, slots: &[f32]) -> Option<Drawn> {
     let tint = Vec4::ONE;
-    let mut d = Drawn { pos: q.pos, vel: q.vel, radius: q.radius, rot: q.rot, colour: Vec4::ONE, subuv: q.age };
+    let slot = |k: u8| slots.get(k as usize).copied().unwrap_or(0.0);
+    let mut d = Drawn {
+        pos: q.pos,
+        vel: q.vel,
+        radius: q.radius,
+        rot: q.rot,
+        colour: Vec4::ONE,
+        subuv: q.age,
+        tail: q.pos,
+        tail_alpha: 1.0,
+    };
     let t = q.age.clamp(0.0, 1.0);
     let group = layer.groups[1].as_ref()?;
     for seq in &group.sequences {
         for step in &seq.steps {
             let Some(a) = layer.actions.get(step.action as usize) else { continue };
             match &a.op {
-                Op::RadiusCurve { bezier: b, .. } => {
-                    let u = 1.0 - t;
-                    let s = u * u * u * b[0] + 3.0 * u * u * t * b[1] + 3.0 * u * t * t * b[2] + t * t * t * b[3];
-                    d.radius = q.radius * s;
+                &Op::RadiusCurve { knee, values: v, floor, slot: k, .. } => {
+                    // `FUN_004612d0` with the slopes `0x0044bbb0` compiles from the three values.
+                    let r = if t < knee || knee >= 1.0 {
+                        v[0] + (v[1] - v[0]) * t / knee.max(1e-6)
+                    } else {
+                        v[1] + (v[2] - v[1]) * (t - knee) / (1.0 - knee)
+                    };
+                    d.radius = q.radius * r * (floor + (1.0 - floor) * slot(k));
                 }
                 Op::ColourCurve { rows, ramp, alpha, rates, alpha_slot, use_tint, .. } => {
                     // `FUN_004553b0`: ramp weights over the (wrapped) age, rgb times the brightness column.
@@ -1472,34 +1603,98 @@ fn render_particle(layer: &Layer, q: &Particle, eye: Vec3, slots: &[f32]) -> Opt
                     let k = min + (max - min) * hash01(q.seed);
                     d.colour = (d.colour.truncate() * k).extend(d.colour.w);
                 }
-                Op::ViewFade { near_fade, .. } => {
-                    if *near_fade > 0.0 {
-                        d.colour.w *= (q.pos.distance(eye) / near_fade).clamp(0.0, 1.0);
-                    }
-                }
+                Op::ViewFade { .. } => view_fade(&a.op, &mut d, view),
                 Op::SubUv { .. } => d.subuv = t,
                 _ => {}
             }
         }
     }
-    // `RenderSpriteMotionBlur` (0x25, `FUN_004598e0`) writes the colour's rgb with alpha 1.0 (`.rdata`
-    // 0x00f9d13c) into the streak's vertices: the colour curve's alpha (all zero on the impact sparks) is not
-    // used. (The streak's other end takes the renderer's word 11 in the game; not ported, both ends 1.)
-    if layer.renderer().is_some_and(|r| r.kind == 0x25) {
-        d.colour.w = 1.0;
+    match layer.renderer() {
+        // `RenderSpriteMotionBlur` (0x25, `FUN_004598e0`) writes the colour's rgb with alpha 1.0 (`.rdata`
+        // 0x00f9d13c) into the streak's vertices: the colour curve's alpha (all zero on the impact sparks) is
+        // not used. (The streak's other end takes the renderer's word 11 in the game; not ported, both ends 1.)
+        Some(r) if r.kind == 0x25 => {
+            d.colour.w = 1.0;
+            d.tail = d.pos - d.vel * SPARK_SHUTTER;
+        }
+        // `RenderSpriteVelocity` (0x29, `FUN_0045c2f0`): the colour keeps its alpha; the streak is the velocity
+        // × 1/30 s × the renderer's scale × a binding slot, its length clamped, and its tail's alpha × a word.
+        Some(r) if r.kind == 0x29 => {
+            let v = d.vel * SPARK_SHUTTER * r.streak_scale * slot(r.streak_slot);
+            let len = v.length();
+            let clamped = len.clamp(r.streak[0], r.streak[1]);
+            d.tail = d.pos - if len > 1e-6 { v * (clamped / len) } else { Vec3::ZERO };
+            d.tail_alpha = r.tail_alpha;
+        }
+        _ => {}
     }
     (d.colour.w > 1e-3 && d.radius > 1e-4).then_some(d)
 }
 
-fn push_quad(out: &mut Vec<QuadVertex>, d: &Drawn, r: &Renderer, eye: Vec3, right: Vec3, up: Vec3) {
+/// `UpdateParametricFadeOverDistance` (0x38, `FUN_00460970`; `mw_formats::bear::Op::ViewFade`): the colour
+/// over the depth along the camera's forward axis: `colours[0]` at the camera, `colours[1]` at the near
+/// distance (which grows with the camera's speed on layers that ask for it), towards `colours[2]` at `far`;
+/// then optional speed fades of the alpha and the radius.
+fn view_fade(op: &Op, d: &mut Drawn, view: &BearView) {
+    let &Op::ViewFade {
+        colours,
+        offset,
+        near,
+        far,
+        near_fast,
+        fast_speed,
+        speed_full,
+        speed_zero,
+        speed_near,
+        subtract_radius,
+        speed_radius,
+        speed_alpha,
+    } = op
+    else {
+        return;
+    };
+    let n = if speed_near && fast_speed > 0.0 {
+        near + (near_fast - near) * (view.speed / fast_speed).min(1.0)
+    } else {
+        near
+    };
+    // The depth origin: the camera + (max(offset, view +0x218 = 0) + n) along its forward axis.
+    let origin = view.eye + view.forward * (offset.max(0.0) + n);
+    let mut depth = (d.pos - origin).dot(view.forward);
+    if subtract_radius {
+        depth -= d.radius;
+    }
+    let near_w = if n != 0.0 { (-depth / n).clamp(0.0, 1.0) } else { 0.0 };
+    let far_w = if far != near { (depth / (far - near)).clamp(0.0, 1.0) } else { 0.0 };
+    let (a, b, c) = (Vec4::from(colours[0]), Vec4::from(colours[1]), Vec4::from(colours[2]));
+    d.colour *= b + (a - b) * near_w + (c - b) * far_w;
+    if speed_alpha || speed_radius {
+        let range = speed_full * speed_full - speed_zero * speed_zero;
+        let k = if range != 0.0 {
+            ((d.vel.length_squared() - speed_zero * speed_zero) / range).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        if speed_alpha {
+            d.colour.w *= k;
+        }
+        if speed_radius {
+            d.radius *= k;
+        }
+    }
+}
+
+fn push_quad(out: &mut Vec<QuadVertex>, d: &Drawn, radius: f32, r: &Renderer, eye: Vec3, right: Vec3, up: Vec3) {
     let (s, c) = d.rot.sin_cos();
-    let rx = (right * c + up * s) * d.radius;
-    let ry = (up * c - right * s) * d.radius;
+    let aspect = if r.aspect > 0.0 { r.aspect } else { 1.0 };
+    let rx = (right * c + up * s) * radius * aspect;
+    let ry = (up * c - right * s) * radius / aspect;
     let centre = d.pos + rx * (1.0 - 2.0 * r.pivot[0]) + ry * (2.0 * r.pivot[1] - 1.0);
     let toward = (eye - d.pos).normalize_or_zero();
     // w: the draw's opacity (`gVfxConstants.z`, the renderer's word after the depth fade).
     let light = Vec4::new(r.lighting[0], r.lighting[1], r.lighting[2], r.opacity);
-    let frame = Vec2::new(d.subuv, r.depth_fade_guess.max(0.0));
+    // The depth fade only on the soft passes (0x23 / 0x2a: `FUN_004a40a0` → `FUN_004976d0`).
+    let frame = Vec2::new(d.subuv, if r.soft { r.depth_fade.max(0.0) } else { 0.0 });
     for (cx, cy) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
         let offset = rx * cx + ry * cy;
         out.push(QuadVertex {
@@ -1515,9 +1710,11 @@ fn push_quad(out: &mut Vec<QuadVertex>, d: &Drawn, r: &Renderer, eye: Vec3, righ
 }
 
 fn push_spark(out: &mut Vec<SparkVertex>, d: &Drawn) {
-    let end = d.pos - d.vel * SPARK_SHUTTER;
+    let tail = d.colour * Vec4::new(1.0, 1.0, 1.0, d.tail_alpha);
     for corner in [Vec2::new(-1.0, -1.0), Vec2::new(1.0, -1.0), Vec2::new(1.0, 1.0), Vec2::new(-1.0, 1.0)] {
-        out.push(SparkVertex { start: d.pos, end, corner, radius: d.radius, colour: d.colour });
+        // corner.x < 0: the end (tail) disc.
+        let colour = if corner.x < 0.0 { tail } else { d.colour };
+        out.push(SparkVertex { start: d.pos, end: d.tail, corner, radius: d.radius, colour });
     }
 }
 

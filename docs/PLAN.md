@@ -297,15 +297,18 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    tyres, kick-up behind rolling wheels, impact spark bursts and scrape sparks from the car body's contacts
    (`ImpactEvent`); the car's spot effects (`exhaust.rs`, 2026-10-09): exhaust smoke at idle, nitrous flames,
    backfire flames from the game's pop rule (`FUN_009b20b0`), with the `UpdateBindings` controller, the cone
-   emitter, emitter-space layers and the colour gradient read from the code. Open: what the game feeds
-   `WheelParams` / `Intensity` to the wheel effects and the wheel spawners' binding slots (0x42, 0x05, 0x07);
-   the nitrous modes' groups 9 / 20 and the wreck's 12; the cone emitter's angles; `UVDistortion`; the fade
-   over distance (0x38); a capture of the original's flames; surface ids from collision tags (dirt / grass dust; everything is tarmac now) and wet surfaces;
+   emitter, emitter-space layers and the colour gradient read from the code; 2026-10-16: the opacity word
+   (`gVfxConstants.z`) confirmed, the fade over distance (0x38), the radius curve (0x3C), the renderers'
+   lighting words, size cap and aspect, the wheel spawners' binding slots (0x05 / 0x07 with 0x34 / 0x42). Open:
+   which `WheelContact` fields the 0x42 sources read (modelled as the smoke ramps); the layer-6 draws (LDR
+   constants, likely after the tonemap; drawn in HDR here); the nitrous modes' groups 9 / 20 and the wreck's 12;
+   the cone emitter's angles; `UVDistortion`; a capture of the original's flames; surface ids from collision tags (dirt / grass dust; everything is tarmac now) and wet surfaces;
    mesh debris renderers (0x1E/0x1F/0x22/0x23 with the bundle's debris models), light particles (0x0F/0x30),
    splatter (0x4D); `OnRims`, burst tyres, spike strips, `VehicleImpacts` /
    `VehicleScrapes` for car-to-car contacts; tyre marks (`Vfx_TyreMarksNew`, `TyreMarksMaterials`); smoke
    colour (`Vehicles.SmokeColour`); world effects that are on from the start (`WCVfxBehaviour` ambient spot
-   effects; the contact-driven ones and super-emitters landed 2026-10-16); soft-particle depth fade check;
+   effects; the contact-driven ones and super-emitters landed 2026-10-16); the soft-particle depth fade (only
+   on soft passes now; its constants `FUN_004976d0` not compared);
    `gVfxSparkBrightness` and the exposure term; sort groups.
 8. `[ ]` **Animations**: nothing animates yet besides wheels and damage poses. Car: the driver and steering
    wheel, animated body parts (`PhysicsDrivenVehicleAnimationBehaviour` / `.AnimatedBodyPart`: spoilers, flaps,

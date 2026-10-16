@@ -10,6 +10,58 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-16: particle opacity settled; the dirt cloud's fade, radius curve and emission from the code
+
+Two items: the renderer opacity word left inferred by the prop-break entry below, and the user's "the dirt cloud
+is too big and obstructs the view". Details and addresses in decomp.md "Bear particle runtime", layouts in
+formats.md (Bear actions); runtime `particles.rs`, parser `mw_formats::bear`.
+- **Opacity: confirmed.** `FUN_0046ce40` copies the draw state's +0x23c / +0x240 into a draw record (+0x50 /
+  +0x54); the particle draw loop `FUN_004a40a0` (found from its `FUN_00a5d660(0x72)` call in `FUN_004976d0`, the
+  depth fade constants; `gVfxConstants` is slot 0x75, `gDepthFadeConstantsA` / `B` 0x72 / 0x73, registered in
+  `FUN_008c34b0`) writes `gVfxConstants` = (0, 1, word, 1) per record, (1, 0, word, 1) for layer 6 (`.data`
+  0x01104120 / 0x011035e0 read in snap1 / snap2). So the nitrous glows (word 0, `_NoAlphaTest`) are additive and
+  `…7a95f`'s alpha-tested flare quads draw nothing, as ported.
+- **Renderer words corrected**: the lighting inputs were read one word early. `FUN_00440100` writes TEXCOORD1.zw
+  = (translucency, key light as ambient) from 0x24 words (15, 17) / 0x27 (16, 18) / 0x28 (0x19, 0x1b) and the wrap
+  is 16 / 17 / 0x1a; the nitrous glows have key-as-ambient 0, not 1, so with opacity 0 (which also removes the
+  key light in the vertex program) they are lit by the irradiance × 1.3 alone: a blue flame, dimmer than before,
+  dim at night. New: aspect (0x24 word 10, 0x27 word 11), a size cap radius ≤ cap × view depth (0x24 word 9, 0x27
+  word 19 × a binding slot), the layer / pass bytes (`FUN_0046a430`: soft passes only get the depth fade now; the
+  nitrous glows are not soft). `RenderSpriteVelocity` (0x29) keeps the colour's alpha, × word 16 at the tail, and
+  its streak is velocity / 30 × word 18 × a slot, clamped (words 12–13): 0.1–1, so most of its streaks are shorter.
+- **The dirt cloud** (`WheelVfx` `…24f46` on surface 7; layer 1311141: radius 2–11 m, 4–6 s, up to 100 per wheel):
+  1. `UpdateParametricFadeOverDistance` (0x38) was a guess (alpha × distance / word 20). The code: colour ×
+     lerp(A, B, C) over the view depth: the big layer is × 0 at the camera, × 0.567 at the near distance, which
+     grows from 1 m to 10 m with the camera's forward speed (full at 22.35 m/s), × 0.294 towards 60 m. The chase
+     camera no longer sits inside opaque dust.
+  2. `UpdateParametricRadius` (0x3C) is piecewise linear through three values (the compile `0x0044bbb0` turns
+     them into slopes), not a cubic Bézier: particles are larger mid-life than before (also the tarmac smoke).
+  3. Emission: `EmitterWheelContactPlus` (0x07) multiplies its count by binding slot 6, the output of the layer's
+     `UpdateWheelBindings` (0x42), now run: for the dust min(1, step(source 0x11) + 0.4·ramp(source 0x10) +
+     ramp(|v| / 15.35 m/s)). `EmitterWheel` (0x05, the tyre smoke) likewise by its `UpdateBindings_Wheel` (0x34)
+     slot, whose sources 0x14..0x16 read the smoke ramps (`FUN_004601a0`; the smoke block +0x80 = (·, spin,
+     lateral, lock), `FUN_00589e20`); this replaces the stand-in "first curve over the intensity".
+  Screenshots (`ref/fx-dirt/`, not committed): world run on the railway gravel (`--spawn=1164,21,-210,0
+  --auto-throttle 0.6 --units 12 --no-traffic`, `world-before-300.png` / `world-after-300.png`, `-520`): the
+  haze across the right half is gone, the dust stays at the wheels; `--test drift --track-surface 7`
+  (`before-drift-s7.png` / `after1-drift-s7.png`); drift on tarmac 8 (`drift-s8-*`): similar smoke, softer;
+  `--test nitrous` (`nitrous-after3.png`): blue glows at the pipes; `MW_VFX_DEMO` of `…24f34` and `…7bd97`.
+- **Model decisions**: `UpdateWheelBindings` sources 0x0F..0x11 read the wheel's (spin, lateral, lock) ramps,
+  0x0E and 0x12 read 0: the per-wheel update puts (0, the ramps) at the kick-up block's +0x30 and the wheel's
+  velocity at +0x40, and how the Bear runtime maps that block onto the effect's `WheelContact` (+0x40..+0x4c for
+  these sources) was not found; the data favours the ramps (34 such actions use 0x0F..0x11 often, 0x0E never).
+  `UpdateBindings_Wheel` 0x17 / 0x18 read 0. The kick-up emits while the wheel touches the ground at over 0.5 m/s
+  (its `IsEmitting` not traced). The view block's +0x218 / +0x220 / +0x224 keep their initial 0 / 1 / 1. Layer-6
+  particles are drawn in the HDR scene with the layer-5 constants.
+- **Open**: the layer-6 target (by its constants an LDR draw: colour × the exposure, encoded × 0.5, like the
+  coronas' layer 8; probably after the tonemap, without bloom); the kick-up block → `WheelContact` mapping (a live
+  read of an effect instance's parameter buffer while driving on dirt would settle it); `FUN_0043ecd0` (the wheel
+  spawners' LOD factor, words 6–7: 15000 / 15999, likely squared metres); a smoke particle passing through the
+  camera can fill the screen for a frame (layers without a near fade, by the data; seen once in `--test nitrous`).
+  Captures that would confirm: the original driving on a dirt or gravel stretch at 60–100 km/h in the chase
+  camera (cloud size, fade near the camera), a nitrous burst by day and by night (flame colour and brightness),
+  and a sliding car on grass from a fixed camera.
+
 ### 2026-10-16: vehicle coronas (glows, beams, flares) for every car
 Integrator request after the light-bar review (the bar was a few pixels at 30 m). Read from the dump with three
 research sub-agents; details in decomp.md "Coronas"; ported in `coronas.rs` + `corona.wgsl` (data
@@ -246,7 +298,7 @@ knocked lamp kept its light. Details and addresses in decomp.md "Props" ("World-
   −v̂, speed `w2..3`, inherit `w4..5`, radius `w6..7` × `(1 + (w18 − 1)·t)`. Ported (`particles::super_emit`);
   `…7a95f`'s 12 debris particles now trail sparks (its sprite layer has rate and per-metre 0: nothing, as in the
   data).
-- **Renderer opacity** (inferred): the run functions copy the word after the depth fade into the draw state
+- **Renderer opacity** (inferred here; confirmed by the entry "particle opacity settled" above): the run functions copy the word after the depth fade into the draw state
   +0x240 (default 1.0): 0x24 word 8 (`FUN_00458e90`), 0x27 word 10 (`FUN_0045ab10`), and words 0x11 / 0x12 in
   `FUN_0045b620` (taken for 0x28, whose depth fade is word 0x11; its table entry was not checked). Read as `gVfxConstants.z` (pixel programs: alpha × z, alpha-tested at 1/255 except the
   `_NoAlphaTest` variants). The writer of the particle draws' constant was not found (slot 0x75 writes in the

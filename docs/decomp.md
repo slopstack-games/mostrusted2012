@@ -1393,12 +1393,59 @@ The channel set for the player (`FUN_004b5f40`, base +0x127f0) is +0x00 `Landing
   position − u·v·dt; direction at polar angle `rand(w0, w1)`° from Z = normalize(−v·dt) (fallback +Y) about a
   uniform azimuth (X = normalize(Z × up)), speed `rand(w2, w3)`, plus `rand(w4, w5)` × the parent's velocity;
   radius `rand(w6, w7)` × `(1 + (w18 − 1)·t′)` with t′ the parent's age `u` steps back.
-- **Renderer draw words** (`FUN_00458e90` 0x24, `FUN_0045ab10` 0x27, `FUN_0045b620`): two words per renderer
-  go to the draw state +0x23c / +0x240 (reset to 0 / 1.0 per draw): 0x24 words 7 / 8, 0x27 words 9 / 10. +0x23c
-  = the soft-particle fade distance (as read before), +0x240 read as `gVfxConstants.z` (the pixel programs'
-  alpha factor and alpha test, the vertex program's key-light factor; inferred, the constant's writer for these
-  draws was not found). `RenderSpriteMotionBlur` (`FUN_004598e0`) writes the colour's rgb with alpha 1.0
-  (`.rdata` 0x00f9d13c) and the renderer's word 11 at the streak's other end; its colour curves' alpha is unused.
+- **Renderer draw words** (`FUN_00458e90` 0x24, `FUN_0045ab10` 0x27, `FUN_0045b620` 0x28): two words per
+  renderer go to the draw state +0x23c / +0x240 (reset to 0 / 1.0 per draw): 0x24 words 7 / 8, 0x27 words 9 / 10,
+  0x28 words 0x11 / 0x12. `FUN_0046ce40` copies them into a 0x80-byte draw record (+0x50 / +0x54, with the
+  matrix at +0x00, +0x200 at +0x40, the min depth +0x220 at +0x58, the layer byte +0x60, the pass byte +0x61, a
+  priority +0x62) queued through `FUN_00a1a180`. **The particle draw loop** `FUN_004a40a0` ("BearRenderWait_Render",
+  from `FUN_004a4940`, render stage 6) sorts the records by depth and, per record: for passes 0x23 / 0x24 / 0x29 /
+  0x2a `FUN_004976d0(+0x50)` writes `gDepthFadeConstantsA` / `B` (slots 0x72 / 0x73; the soft programs' depth
+  fade); if +0x5c, slot 0x77 = +0x40; then **`gVfxConstants` (slot 0x75) = base + (0, 0, +0x54, 1)** with base
+  `.data` 0x01104120 = (0, 1, 0, 0) or, for layer 6, 0x011035e0 = (1, 0, 0, 0) (snapshot reads), and
+  `gVfxSparkBrightness` (0x79) = view +0x13a0 (layer 0x1a goes to `FUN_00497800`). So the +0x240 word is
+  `gVfxConstants.z` (confirmed 2026-10-16): the pixel programs' alpha factor and alpha test, and the vertex program's
+  key-light factor; .x blends the colour towards × the exposure texture's w, .y blends the vertex program's LDR
+  encode (sRGB-like curve of colour × 0.5) to the linear result.
+- **Layer and pass** (`FUN_0046a430`, called by the compile functions `FUN_00447e40` 0x24, `FUN_00448020`
+  0x27, `FUN_00448110` 0x28, `FUN_00448220` 0x29): layer = [5, 6][blend byte], pass = soft ? [0x23, 0x2a] :
+  alt ? [0x25, 0x26] : [0x00, 0x28]. Most smoke and dust layers are layer 6 (LDR constants), the nitrous glows
+  and sparks layer 5 (HDR). Like the coronas' layers 7 / 8, layer 6 is very likely drawn after the tonemap; its
+  target was not traced.
+- **Other renderer words**: half extents radius × aspect / radius / aspect (0x24 word 10, 0x27 word 11, 0x28 word
+  0x14); a size cap radius ≤ cap × (view depth + view +0x218) × view +0x220 (0x24 word 9; 0x27 word 19 × the
+  binding slot of byte +0x5b; 0x28 word 0x13); `FUN_00440100` writes TEXCOORD1 = (shadow-map u, v, translucency,
+  key light as ambient) from words (15, 17) / (16, 18) / (0x19, 0x1b) and `FUN_0043fc30` the wrap (TEXCOORD3.w)
+  from 16 / 17 / 0x1a. The view block (`FUN_0046adb0`: +0x218 = 0, +0x21c = 0, +0x220 = 1, +0x224 = 1;
+  `FUN_004a1470` sets +0x21c = |Δcamera · forward| / dt each frame) is the block the render actions' first
+  operand points at (+0x20 forward, +0x30 position, +0x60.. the globals). `FUN_0043fa40` sorts by depth from
+  camera + +0x218 × forward and culls particles behind it.
+- **`RenderSpriteVelocity`** (0x29, run `FUN_0045c2f0`): streak = velocity × 1/30 (`.bss` 0x010ed2a0) × word 18 ×
+  slot[byte +0x4c], length clamped to words 12–13; head colour = the colour channel (alpha kept), tail × (1, 1, 1,
+  word 16) (`.rdata` 0x00f9d1c0); in view mode +0x228 == 1 the colour is (0, 0, 0, word 17).
+  `RenderSpriteMotionBlur` (0x25, `FUN_004598e0`) writes the colour's rgb with alpha 1.0 (`.rdata` 0x00f9d13c)
+  and the renderer's word 11 at the streak's other end; its colour curves' alpha is unused.
+- **`UpdateParametricRadius`** (0x3C, compile `0x0044bbb0`, run `FUN_004612d0`): the compile turns words 5–8
+  (knee k, values a, b, c) into an offset and two slopes; r(x) = a + x(b − a)/k below k, b + (x − k)(c − b)/(1 − k)
+  above, x = age × 1/lifetime; radius × r × (w9 + (1 − w9)·slot[byte +0x28]). (Read as a cubic Bézier before.)
+- **`UpdateParametricFadeOverDistance`** (0x38, compile `0x0044ba90` → `FUN_004493f0`, run `FUN_00460970`):
+  d = (position − (camera + (max(w19, view +0x218) + n)·forward)) · forward (− radius with byte +0x69),
+  n = w20 + (w22 − w20)·min(view +0x21c / w23, 1) with byte +0x68 (else w20); colour × (B + clamp(−d/n)(A − B) +
+  clamp(d/(w21 − w20))(C − B)) with A, B, C = words 0–3, 4–7, 8–11 (`.rdata` −1.0 at 0x00f8f340), then a
+  luminance blend by view +0x224 (weights `.data` 0x01104150 = 0.299, 0.587, 0.114; 1.0 = none); bytes +0x6b /
+  +0x6a: alpha / radius × clamp((|v|² − w25²) / (w24² − w25²)).
+- **Wheel controllers and spawners**: `UpdateWheelBindings` (0x42, run `FUN_00463330`): sources 0 / 1 time,
+  2 view +0x68, 3 |Velocity|, 4 camera distance, 5 view +0x60, 6 byte +0x7c, 7 / 8 sin / cos, 9 the scale, 10–13
+  view +0x6c / byte +0x7d / +0x70 / byte +0x7e, 0x0e–0x11 the `WheelContact` parameter's +0x40..+0x4c, 0x12
+  clamp(|WC +0x1c| / s), 0x13 view +0x78; no offsets; the same combine ops. `UpdateBindings_Wheel` (0x34, run
+  `FUN_004601a0`): the 0x33 table plus 0x14–0x16 = W[1..3], 0x17 = clamp(|W[0]| / s), 0x18 = the byte at W +0x30
+  for its `WheelParams` operand W. `EmitterWheel` (0x05, `FUN_004498e0` / `FUN_0044fb20`) and
+  `EmitterWheelContactPlus` (0x07, `FUN_00449a90` / `FUN_00450760`): count = (rate·dt + per-metre·|speed|·dt) ×
+  slot[byte +0x78 / +0x68], a LOD factor (`FUN_0043ecd0`, words 6–7 / 10–11) and a carry rounded to nearest.
+  The per-wheel update (`FUN_00589e20`) fills the wheel effects' parameter blocks (0xf0 bytes at pool +0x500):
+  the smoke's +0x80 = (`uStack_4c0`, spin, lateral, lock ramps); the kick-up's (`FUN_004acd80` at start,
+  `FUN_0059bb50` per frame) = contact point, (lateral, ·, longitudinal ground speed, ·), contact normal + a clock,
+  (0, the three ramps), the wheel's velocity + a front-axle flag, the car's matrix with the colour override in w.
+  How the Bear runtime maps that block onto an effect's `WheelContact` was not found.
 - `InitialisePosOffset` (0x14) keeps a particle in the emitter's space; `ParametricPosVelToWorldSpace` (0x1A /
   0x1B) places it with the current `Transform` when it is drawn, so the exhaust flames stay on the pipes.
 
