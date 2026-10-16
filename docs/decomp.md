@@ -3938,6 +3938,37 @@ and the contact record's +0x1c (ram sum) by a live read (probe `dump.req`); the 
 spawn weights (`GameMode` +0x5a…+0x64: decode the type); `FUN_0050e370`, 0x0050f970, 0x0050dd40 (disassembly);
 a capture of a real pursuit (`mwtool capture`: cop distances, heat and bust timing) to compare the whole.
 
+## Coronas (2026-10-16, ported in `coronas.rs`, `corona.wgsl`)
+
+- **Queues** (per view, `FUN_004a73b0`): race cars `FUN_00581640` / traffic `FUN_005fd190` → `FUN_004970b0`
+  (≤ 0x60 cars) → `FUN_004a6630` → `FUN_004a6490` (sort by definition, skip at |car − camera| − 2.5 ≥
+  `793b2691`) → `FUN_004a5f70`; world objects `FUN_00497180` → `FUN_004a6fa0` → `FUN_004a6b00`; lights
+  `FUN_00497200` → `FUN_004a7290` → `FUN_004a6d50`; all end in `FUN_004a5790` (this = corona manager +0x50).
+- **Definition** (`Genesys.Gen.Corona`, 224 bytes; runtime copy `FUN_0049d950`): +0x10 curve, +0xa4 `793b2691`
+  max distance, +0xa8 `88b68533` crowded max distance, +0xac `c4e3e3a7` test-point offset (−0.5), +0xb0 Beams,
+  +0xb4 Flares, +0xb8 `60c1d15f` (cube views), +0xbc Glows, +0xc0 / +0xc4 view types 2 / 3, counts at
+  +0xca..+0xd4. Sub-entries (224 bytes): +0x10 curve, +0xa0 Colour, +0xb0 vector (glow `2d6e41d4`, flare
+  `2b9cc12c` = (Position, Position, 1, radial), beam `034c050f` = (start, end, ·, w)), +0xc0 Material, +0xc8 (glow
+  depth bias `a9531774`), +0xcc RotationOffset, +0xd0 `be0fbea3` (layer 7 / 8).
+- **Curve** `FUN_004ab450`: per channel, below `c2cad262` t = `a2a9209e` + `c08c80f4`·x else `1eb30847` +
+  `7c96a82d`·x; t = min(t, 1); out = (t · (`0b494d31` below, `b75365e8` above) + `d95ae391`) × scale.
+- **Per entry** `FUN_004a5f70`: intensity = gate × `Brightness` × L² × night scale (group 1, 4/6, 7 →
+  `VehicleCoronaScalesForNight` pairs, lerp(1, v, night)); size = (`f65c1f07`, `f65c1f06`) × size scale; per
+  locator the `Animation` (linear) at the record's flash time, skipped ≤ 0; `Mirror` → second draw with x negated
+  (`.bss` 0x011036a0 = (−1, 1, 1, −1)).
+- **Per corona** `FUN_004a5790`: p, dir in view space; θ = acos(clamp(−p̂ · dir)); C = curve(θ, s·d, s·d, s·d) with
+  s the view's +0x8b908; I = C.x·C.z·anim, skipped ≤ 0.05 (`.bss` 0x011040b0); S = size·C.y; size cull k = 2
+  (0x010c3e10) / 1280 (0x00fa2fbc) · s · d; colour cull 0.01 (0x011042d0). Glows `FUN_004a4cf0` (curve at (I, I, I,
+  d), half extents G.w·S·G.xy, colour G.z · colours · intensity), beams `FUN_004a5040` (curve at I × 4, widths B.x /
+  B.y along the axis), flares `FUN_004a52e0` (curve at I × 4, ghosts at Position × p.xy, one visibility slot of
+  ≤ 0x400 per corona; test point p + p̂·`c4e3e3a7`).
+- **Drawing**: `Vfx_Corona` (glows, beams; layer 7, `gVfxConstants` (0, 1): linear HDR, depth-tested LESS_EQUAL
+  without writes, the depth pulled by position.w), `Vfx_CoronaFlare` (layer 8, (1, 0): × the tonemap's exposure,
+  gamma-encoded, no depth test, alpha × the visibility texel), `Vfx_CoronaVisibilityTest` (`FUN_004a5560`: one point
+  per slot, 7 × 7 depth taps one texel apart, fraction behind). Effect masks: decomp.md "Exhaust pops and
+  backfires" and research log 2026-10-16 (traffic: groups 0 and 4, L = 0.7 + 0.5 × flash / 255, rate 0.9 + 0.2 ×
+  random).
+
 ## Police sirens, light bars and radio (2026-10-16)
 
 Read for "cops have no sounds, lights etc."; ported in `police_fx.rs`, `police_audio.rs`, `police_lightbar.rs`,

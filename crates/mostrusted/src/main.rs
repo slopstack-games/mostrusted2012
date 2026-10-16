@@ -20,6 +20,7 @@ mod convert;
 mod cop_driver;
 mod cop_patrol;
 mod cop_sight;
+mod coronas;
 mod crash;
 mod cutscene;
 mod damage;
@@ -1014,6 +1015,7 @@ fn main() -> anyhow::Result<()> {
         })
         .add_plugins((car_audio::CarAudioPlugin, car_sfx::CarSfxPlugin, player_sfx::PlayerSfxPlugin))
         .add_plugins(police_fx::PoliceFxPlugin)
+        .add_plugins(coronas::CoronasPlugin)
         .add_plugins(audio::GameAudioPlugin)
         .add_plugins(music::MusicPlugin {
             enabled: std::env::var("MW_MUSIC").is_ok_and(|v| v == "1")

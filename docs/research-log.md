@@ -10,6 +10,38 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-16: vehicle coronas (glows, beams, flares) for every car
+Integrator request after the light-bar review (the bar was a few pixels at 30 m). Read from the dump with three
+research sub-agents; details in decomp.md "Coronas"; ported in `coronas.rs` + `corona.wgsl` (data
+`mw_assets::coronas`), on by default (`MW_NO_CORONAS=1` turns them off).
+- **Ported**: the definitions (`Genesys.Gen.Corona`: curve block, `Glows` / `Beams` / `Flares`, the 0x70 runtime
+  def of `FUN_0049d950` read directly), the curve `FUN_004ab450`, the per-entry rule `FUN_004a5f70` (group mask,
+  gate `da6ac384` 0 / 1 = 1 − night / 2 = night, `Brightness` × L² × the group's night scale, size, `Animation`,
+  `Mirror` through (−1, 1, 1)), the per-corona rule `FUN_004a5790` (θ = acos(p̂′ · dir), curve at (θ, s·d, s·d, s·d),
+  I = C.x · C.z · anim > 0.05, S = size · C.y, the one-pixel size cull, the 0.01 colour cull), glows
+  `FUN_004a4cf0` (camera-facing, rotated by `RotationOffset` − roll, depth bias `a9531774`, depth-tested), beams
+  `FUN_004a5040` (axial quads along the lamp axis), flares `FUN_004a52e0` (ghosts at `Position` × p.xy, radial
+  turn, no depth test, the 7 × 7-tap visibility of the point 0.5 m nearer the camera, `Vfx_CoronaVisibilityTest`,
+  evaluated per pixel from the depth prepass instead of a texture). Cars: the race-car path for the player, AI
+  racers and cops (groups 0, 4, 6, 7 always, 1 brake, 2 reverse, 3 the cop bar) and traffic (`FUN_005fd190`: groups
+  0 and 4, L = 0.7, parked cars none, flash rate 0.9 + 0.2 × random). The cop bar's day (gate 1) and night (gate 2)
+  definitions and its flash patterns come through the same entries.
+- **Checked**: `MW_VIEW_BEHIND=30 MW_COP_LIGHTS=1` with the cop car: at night red / blue glows with horizontal
+  flare streaks alternating on the bar at 30 m (`extracted/shots/cv1/strip.png`), at noon faint (`cv12/strip.png`);
+  the player's 911 headlights from the front (glows + blue anamorphic streaks); a traffic car's headlights at night
+  (`MW_VIEW_BEHIND=15,1.5,1`, `traffic_front.png` against `traffic_front_nocor.png`). `MW_CORONA_LOG=1` counts.
+- **Model decisions**: s (the view's +0x8b908) = tan(half the horizontal field of view), inferred from the one-pixel
+  cull; flares (layer 8, drawn after the tonemap with the exposure applied and gamma-encoded) are added to the HDR
+  scene like the glows; the visibility test is evaluated per pixel (the game renders it into a texture the next
+  draw reads); camera roll from the camera's right axis.
+- **Not ported / open**: world-lamp coronas (`FUN_00497200` light coronas, `WCVfxBehaviour` coronas through
+  `FUN_004a6d50` / `FUN_004a6b00`: same `FUN_004a5790`, colour / intensity / size 1, anim = the lamp level), the
+  headlight glint (`VfxGlobals.20feab72` for `…251bd`, intensity source +0x3d0 open), the other views' lists (cube
+  `60c1d15f` via `FUN_004a4e90`, `2392d7f2` / `9ee381ab` for view types 2 / 3), `ExposureScaleCoronas` (0.4),
+  the crowded-pass distance cull (`88b68533` + 1 m above 100 queued coronas), traffic headlight flashes routed into L,
+  the brake hold timer (0.5 s), the electrical flicker (bit 15). Captures wanted: a night chase behind a cop at
+  20–40 m and an oncoming traffic car, to settle s and the flare layer.
+
 ### 2026-10-16: terrain through the road: the main view skips models with pass-mask bit 4
 User play test 2026-10-14 ("terrain still sticks through the road in some places", after the 2026-10-04 backdrop
 composition fix).
@@ -149,6 +181,39 @@ layouts in formats.md "Police sounds, lights and speech". Ported in `police_fx.r
   (99.4–99.9 % of the energy in 300–3400 Hz, peaks −0.3 dBFS, no discontinuities). Night screenshots of the bar
   (`MW_LIGHTBAR_SHOTS`, 1/8 s apart): blue / red hotspots alternating on the bar and the rear deck, the bar's
   blue / red light on the road and a sign.
+- **Follow-up: the chevron sign blown out beside the bar** (integrator review). Traced, not changed: every step
+  is the game's.
+  1. *Intensity and units*: `FUN_005818f0` submits a group-3 `Light_Custom` with colour = `Light.Colour` (1) ×
+     the definition's `Colour`, intensity = `Intensity` (+0x4c, 35) × `a3de907e` (1) × entity +0x3cc (1 unless
+     bit 0x8000 of +0x3c8 is set: then a noise flicker, `FUN_0057b4b0`) × the animation (linear) ×
+     `FUN_0089b400(0x65)` (1, on day and night) × `FUN_0049fda0` (1), gated by renderer +0x216a (initialised 1
+     by the renderer set-up `FUN_008ae1d0`, which writes +0x2169 = 0x101) and `DAT_010c47f4` (1 on disk and in both snapshots), through `FUN_008cf1d0` /
+     `FUN_008dfcf0` into the cop list; `FUN_008b1670` writes `deferred_lightColour` = (colour × intensity,
+     threshold / max) exactly like the point lights' `FUN_008b0940`. Same game units as the street lamps
+     (e.g. the spot lamps by the spawn: intensity 62 from 9 m up, 62 / 81 ≈ 0.77 on the road).
+  2. *Attenuation*: `LightBuffer_Cop` (checked instruction by instruction): sat(1 / (d² + 0.001) − 0.05 / 35)
+     × the vertical fade; at 1.5–3 m from the bar that is 35 × (0.44 … 0.11) ≈ 4–15 units (≈ 5–20 × a street
+     lamp's on the road), the vertical fade ≈ 0.6–1 at the sign's height.
+  3. *The sign's material*: `World_Diffuse_Specular_Singlesided_InstanceAdditive` (not `Sign_RetroReflective`):
+     albedo = diffuse × `MaterialDiffuse` (1); its specular map is its diffuse texture, so F0 =
+     poly(spec.x) ≈ 0.7–0.8 and every other light (key, ambient, lamps) lights its diffuse × (1 − F0) ≈ 0.25,
+     while `LightBuffer_Cop` reads no F0 and no specular buffer (samplers: depth, normal, albedo, the car flag):
+     the cop light shows the full albedo, ~4× what another light of the same strength would. No material flag
+     excludes it (the cop list's stencil choice `0x1b` / `0` in `FUN_008b1670` depends on the light's own flag
+     byte, not on the surface).
+  4. *Hue*: blue (0.09, 0.33, 1.0) on the near-white board, tonemapped by 1 − 2^(−x) per channel (`GBufferComposite`),
+     saturates blue, then green, then red: cyan-white, not a colour bug; the full-frame glare is the bloom of
+     that over-range area (with `MW_NO_BLOOM=1` the sign stays a bright, sharp panel:
+     `extracted/shots/nobloom/strip.png` against `extracted/shots/bar/strip.png`, same camera).
+  So no change was made; whether the original reaches this brightness on such a sign is a capture question
+  (a night capture of a cop stopped beside a chevron, e.g. at the default spawn −1158, 1700).
+- **Follow-up: the bar from a chase distance**: at 35–45 m behind an AI cop (`MW_COP_LIGHTS=1`, `--ai`) the
+  bar's emissive hotspots (radius 1 / √222.8 ≈ 0.07 m) cover a few pixels at night and nothing visible at noon;
+  its world light colours the roadside within ~15 m. In the original the coronas (19 group-3 entries, day and
+  night definitions) make the bar read at a distance: porting the corona draw (`FUN_004a5790`: view-space
+  angle and distance through the definition's two-segment curves `FUN_004ab450`, glows `FUN_004a5040`, flares
+  `FUN_004a4cf0`, beams `FUN_004a52e0` / `FUN_004a4e90`, the visibility test) is the next step for the cop
+  lights. `MW_LIGHTBAR_SHOTS` now logs the nearest lit car's distance; `MW_LIGHTBAR_SHOTS_AFTER=<s>` delays it.
 - **Open / captures wanted**: (a) a probe watch on entity +0x1950 / +0x186c during a chase (who turns the AI
   sirens on); (b) a capture of a chase at night (light bar look, the bar's light on the road and signs: ours may
   be too strong on the retroreflective signs; the coronas are not drawn: `FUN_004a5790` / `FUN_004ab450` not

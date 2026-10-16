@@ -201,6 +201,7 @@ struct TrafficModel {
     /// The model origin's height above the road (`TrafficCarSpec::ride_height`).
     ride_height: f32,
     wheels: Vec<(WheelSpec, Vec<(crate::ModelParts, bool)>)>,
+    coronas: Arc<Vec<mw_assets::coronas::CarCorona>>,
 }
 
 impl TrafficModels {
@@ -215,6 +216,7 @@ impl TrafficModels {
                 .iter()
                 .map(|w| (w.clone(), w.parts.iter().map(|(m, spins)| (get(m), *spins)).collect()))
                 .collect(),
+            coronas: spec.coronas.clone(),
         };
         self.models.insert((spec.vehicle, spec.paint), Arc::new(model));
     }
@@ -2137,6 +2139,15 @@ fn spawn_entities(
         ));
         // The model sits `ride_height` above the lane (the road is at y = -T.y in model space, `wheel_layout`).
         let lift = Vec3::Y * model.ride_height;
+        // Head / tail lamp coronas (`coronas.rs`), placed in model space.
+        if !model.coronas.is_empty() {
+            commands.entity(body).insert(crate::coronas::CarCoronas::traffic(
+                model.coronas.clone(),
+                lift,
+                slot >= MAX_CARS,
+                serial,
+            ));
+        }
         for (mesh, mat) in &model.body {
             commands.spawn((
                 Mesh3d(mesh.clone()),

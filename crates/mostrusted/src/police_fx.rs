@@ -88,7 +88,10 @@ impl FlashCar {
 
     /// The light bar shows (effect group 3): requested and not wrecked.
     pub fn bar_on(&self) -> bool {
-        self.light_bar && !self.disabled
+        // `MW_COP_LIGHTS=1`: every bar on (screenshots).
+        static FORCED: std::sync::LazyLock<bool> =
+            std::sync::LazyLock::new(|| std::env::var_os("MW_COP_LIGHTS").is_some());
+        (self.light_bar || *FORCED) && !self.disabled
     }
 
     /// Siren and bar are wanted (for the cop rule: posts only on a change, as the game's script would).
