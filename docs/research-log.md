@@ -10,6 +10,66 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-16: the missing one-off sounds: props and lamps, a car's touch of a prop, landings, crash contacts
+Play-test item: "the sfx for smashing through billboards and many other sound effects, for example some light
+crashes, landing of a jump, hitting light poles etc are missing", and (integrator) the cinematic crash's sound.
+Everything with addresses and constants is in decomp.md "World-component sounds, landings and the crash's contact
+sounds"; data `mw_assets::world_sfx` (`WcSound`, `WorldSfx`, `WaveShots`), runtime `world_sfx.rs`.
+- **Why props were (mostly) quiet**: only `PropObject` +0x1c sounds and compound *parts* were read, played as
+  plain PCM with a gain by speed (no source) and only for the player's car. The street lamps' (and traffic
+  lights', 58 compounds) and the signs' (46 dynamic objects) `WCPlaySoundBehaviour`s sit in the objects' own
+  behaviour lists and were never read. Now every behaviour of props, compounds, dynamic objects and parts is
+  decoded (`mwtool props -v` prints `sound` lines) and played by the game's rules: props through
+  `FUN_0054bf70` / `FUN_0054c680` (0.6 s / 0.35 s timers, damage list from a car faster than 20 m/s, slide list
+  above 5 m/s; `.bss` 400 and 25 read in `snap2`), the others through the behaviour's runtime (vtable
+  0x00faf308, found by searching `.rdata` for the slot addresses) with one wave at a time per object; the eight
+  emitters of `FUN_004b2530` (join within 0.1 s, steal the lowest type) and the global wave counter.
+- **Billboards have no sound behaviour** (the 216 eleven-panel compounds): what is heard is the car's first touch
+  of a prop (`FUN_00587960` → `FUN_00576440`: MetalCar pools `939c92be` / `ae166d1e` / `d02a49d8` by direction on
+  channel `…7357a`, found while reading why billboards are quiet) and the "Billboard +500" message's wave
+  (sequence 995814, wave `…18c1fd`); the speed camera's plate and the gate's panel sequences carry waves too.
+  All of these were silent before (the HUD drew the sequences but nobody played their wave items).
+- **Landings** (`FUN_00576b40`): the old landing thump in `sfx.rs` (a loudness-sorted cue above a touchdown speed:
+  a model) is replaced by the game's rule: per wheel a 0.05 s ground hold, the surface set's `Landing` wave on
+  `Landings_Large` (gain 0.35..1 over 0..2.5 m/s), and after all four wheels were airborne the `TimeInAir`
+  sequence (≥ 1 s: `d12772a1`, the default surface's `…73590` 3 s wave; 0.1–1 s: `929af217`, no wave on the
+  default surface, waves on surface set `…95b29`).
+- **Crash** (integrator's request): the crash camera's own sequence (`…68b43`) has **no wave items**; its audio
+  is bus / mixer automation (ducking; ids in decomp.md) whose bus mapping was not found: not ported, open. What
+  the original plays during a crash is the vehicle sound code's crash branch, now ported: `FUN_0057caf0`'s zone
+  sounds by where the world touches the car (`FUN_00929da0` decoded: roof, underside, front, sides, rear; upside
+  down / on its side once per change) on `Player_Wrecking_Collision`, crash wheel landings (pool `5da2551f`), and
+  a crash's first prop touch (`0960076c`). `player_sfx.rs` skips its world impact while crashing (the non-crash
+  branch). The slow motion does not slow the audio here (the `SlowMoSequenceItem` handler was not found).
+- **"Light crashes"**: the world-impact rule (`FUN_0057caf0`, above 2.235 m/s closing, ≥ 0.1 s apart) was already
+  ported; checked with a glancing hit (`--test crash --crash-angle 75 --crash-wall-width 200 --crash-distance 40`
+  with `MW_CAR_SFX_LOG=1`, which now loads the player's sounds in muted tests): 78 km/h at 15° = 13 mph closing →
+  two player world-impact waves. Below 2.235 m/s the game is silent too; the contact value is still read as the
+  closing speed (unit not traced). What was missing on light hits of street furniture were the objects' own
+  sounds and the prop-touch pool above.
+- **Checks** (`MW_WORLD_SFX_LOG=1 MW_AUDIO_METER=1`, muted tests): `--test smash` (60 km/h): cone car hit
+  (`PlayConeCollisionSound`, 26 m, −0.1 dB), metal sign car hit, lamp `fed64b97` car hit (`…f67c1`), sign world
+  contact, fence (`Play_Chainlink_Fence`), 7 prop-touch waves; voices −34..−43 dBFS out at 11–14 m (player
+  impacts −26..−35). `--smash-set compounds`: lamp hits play the lamp's MetalLarge and ElectricalSpark behaviours
+  together (two behaviours, two emitters, as in the game), parts' world contacts: 8 object car hits, 6 world
+  contacts, 14 prop touches. `--test landing`: wheel landings gain 1.0 at speed, touchdowns after 0.39 / 0.54 s in the air
+  (short sequence: no wave on the default surface). `--test crash`: crash zone 2 (front right) at 31.8 m/s,
+  `…22694` on the wrecking channel. `--test freeroam`: "+SP" wave on the camera, billboard and gate, the speed
+  camera plate's two waves, the crash gate's own `Play_CrashGate` sound on its `MixerChannel` `…14e01f`.
+  Offline: `mwtool traffic-sound world out.wav` renders every pool (landing −29..−31 dBFS at gain 1, crash zones
+  −28..−34, long landing sequence −28.4, prop touches −35..−38, prop lists −29..−44).
+- **Model decisions**: the contact value = closing speed; the AI's prop channel `Competitor_Prop_Collision`
+  (its channel set +0x30 not read); the landing gain's axes (the wheel frame's rows 0 / 2 read as the car's right
+  and forward); crash zones from the default surface's set and the body collider's box; the HUD waves 2D;
+  "damaging" = our `ForceToDamage` test; a standing prop's car contacts from avian's `ImpactEvent`s (loose ones
+  from `prop_contacts`).
+- **Open** (captures that would settle them: knock a lamp, a sign and a cone at ~60 km/h with `mwtool capture`
+  and compare the audio onsets; a ≥ 1 s jump; a crash with music playing): the crash camera's bus ducking (bus ids
+  556003 / 259953 / 259945 → which buses), the AI channel set, the wheel frame's axes, `SlowMoSequenceItem`, the
+  contact value's unit, the AI racers' landings (non-player, not crashing: no sound in the code) and crashing AI
+  (zone sounds need their channel set +0x18).
+
+
 ### 2026-10-16: vehicle coronas (glows, beams, flares) for every car
 Integrator request after the light-bar review (the bar was a few pixels at 30 m). Read from the dump with three
 research sub-agents; details in decomp.md "Coronas"; ported in `coronas.rs` + `corona.wgsl` (data

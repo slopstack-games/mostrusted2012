@@ -26,7 +26,8 @@
 //!   `Player Vehicle Glass Smash`; with a race car in contact, a cell's scratch level rising by more than
 //!   `f5ddbc19` (0.106) in a frame plays a `Scratch` wave, gain `(Δ − 0.106) / (1 − 0.106)`.
 //!
-//! `MW_AUDIO_METER=1` lists the voices once a second; `MW_CAR_SFX_LOG=1` logs every start; `MW_HORN_AT=t0,t1`
+//! `MW_AUDIO_METER=1` lists the voices once a second; `MW_CAR_SFX_LOG=1` logs every start (and loads the sounds
+//! in muted test runs); `MW_HORN_AT=t0,t1`
 //! holds the horn from t0 to t1 seconds of game time (headless checks).
 
 use std::collections::HashMap;
@@ -122,7 +123,8 @@ impl PlayerSfx {
 }
 
 fn load(game: Res<crate::Game>, garage: Option<Res<crate::garage::Garage>>, mut sfx: ResMut<PlayerSfx>) {
-    if game.mute {
+    // Muted runs (tests) load nothing unless `MW_CAR_SFX_LOG` asks for the sounds (headless checks).
+    if game.mute && std::env::var_os("MW_CAR_SFX_LOG").is_none() {
         return;
     }
     let sfx = &mut *sfx;
@@ -332,6 +334,7 @@ fn contacts(
     racers: Query<(), (With<Car>, Without<Player>)>,
     traffic: Query<(), With<TrafficCar>>,
     bodies: Query<&RigidBody>,
+    crash: Option<Res<crate::crash::CrashState>>,
 ) {
     let sfx = &mut *sfx;
     let Some(data) = sfx.data.clone() else { return };
@@ -402,8 +405,11 @@ fn contacts(
         }
     };
     let (c, a) = (&mut commands, &mut *assets);
-    // World impacts (`FUN_0057caf0` with the player's channel set, then `FUN_0057e920`).
+    // World impacts (`FUN_0057caf0` with the player's channel set, then `FUN_0057e920`); while the car crashes
+    // the function takes its crash branch instead (`world_sfx.rs`).
+    let crashing = crash.is_some_and(|c| c.active.is_some());
     if let Some((closing, point)) = world
+        && !crashing
         && closing > coll.threshold
         && sfx.since_world >= coll.cooldown
     {

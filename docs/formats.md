@@ -660,8 +660,14 @@ same set, from `GLOBALEFFECTS.BNDL` (`mwtool genesys all --type VehicleVfxBehavi
   +0x44 / +0x48 `Coronas` / `Lights` / `Spot_effects` (0x18-byte entries: handle +0x0c, locator group +0x14)
   with counts at +0x54 / +0x56 / +0x58 (decomp.md "World-component behaviours"). A part's spot-effect locator
   groups are in the part's (bone's) space.
+- `WCPlaySoundBehaviour` (2026-10-16; `mw_assets::world_sfx::WcSound`, `mwtool props -v` lists them): +0x0c
+  `Label`, +0x18 `0228a2f8` (contacts play it), +0x19 `713589ad`, +0x1a `543527d0`, +0x20 `Offset` (vector),
+  +0x30 `MixerChannel`, +0x38 `Collision_Waves` / +0x3c `8dfd5f40` / +0x40 `Surface_Collisions` with counts at
+  +0x44 / +0x46 / +0x48. `Surface_Collisions` are 40-byte `PropSurfaceSound`s: +0x0c / +0x10 unique ids
+  (`Surface`), +0x14 `e8986e0a`, +0x18 `71f062ee`, +0x1c `Waves`, counts +0x20 / +0x22 / +0x24. What each list
+  is for: decomp.md "World-component sounds".
 - `PropObject` +0x0C `PhysicalDefinition`, +0x14 impact effect (a `BearEffect`, 81% of props), +0x1C impact
-  sound (a `WCPlaySoundBehaviour`: `Collision_Waves` handles, per-surface `Surface_Collisions`), +0x24
+  sound (a `WCPlaySoundBehaviour`, above), +0x24
   `mfResetDistanceSquared` (10000 everywhere), +0x28 `mbRemoveInsteadOfReset`.
 - `PhysicalDefinition`: +0x10 bounds centre, +0x20 half extents, +0x30 `AdditionalInfo`, +0x40 `RigidBodies`
   (0xe0 bytes each: +0x10 transform, `ComOffset`, `Inertia_Scale`, bounds, +0x98 `AngularDrag`, +0x9c

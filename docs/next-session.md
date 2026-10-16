@@ -38,7 +38,9 @@ Added by the user (2026-10-16), not investigated yet:
   crashing into traffic cars and other crash debris / sparks in general (the prop-break effects of session 10's
   `prop_vfx.rs` and its super-emitter port may be reusable).
 - **Missing sound effects**: smashing through billboards, hitting light poles (and props in general), some
-  light crashes, landing after a jump, and many other one-off sounds.
+  light crashes, landing after a jump, and many other one-off sounds. (2026-10-16: props', lamps', signs' and gates' sound
+  behaviours, a car's touch of a prop, landings, crash contacts and the collectables' message waves added,
+  `world_sfx.rs`; the crash camera's ducking is open: research log.)
 - **Dirt**: the dirt cloud effect is too big and blocks the view too much; driving on dirt still does not feel
   like dirt the way the original does (handling on the surface, not only the effects).
 
