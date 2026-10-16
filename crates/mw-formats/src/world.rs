@@ -148,6 +148,7 @@ impl InstanceList {
 /// | 0x48/0x4C | u32 | instance id (prop/dynamic at 0x48, compound/light at 0x4C) |
 /// | 0x4C/0x50 | f32 | LOD distance scale after the id ([`ObjectInstance::lod_scale`]; 1.0 for most, 0.9–10) |
 /// | 0x50 | ptr     | extra per-instance data in the second half of the chunk (props: a `InstanceAdditiveAndAO` block); not decoded |
+/// | 0x54 | ptr     | compounds: a material-override block ([`ObjectInstance::overrides`]), 0 for most |
 ///
 /// List header (0x10 bytes): `u32 version` (prop 2, compound 2, dynamic 3, light 1), `ptr` to the
 /// instances (0x10), `u32 count`, `u32 0`. Empty lists have a 0x10-byte chunk with a null pointer.
@@ -164,6 +165,12 @@ pub struct ObjectInstance {
     /// The float after the instance id: the props' LOD distance scale (`FUN_00550020` passes record +0x4C of
     /// the prop list to the model draw `FUN_008a02f0`, like `InstanceList` +0x04).
     pub lod_scale: f32,
+    /// Compound lists only: the material overrides of the block at +0x54 (laid out like an `InstanceList`
+    /// instance's, see the module docs). The 216 billboards are the only compounds with one: `DiffuseSampler` =
+    /// texture `0100000000141784` (a silhouette on a torn poster), the picture slot of the found billboard's
+    /// `World_SmashedBillboard_InstanceDiffuse` material. The game binds the block's constants and textures
+    /// per object before the model draw (`FUN_00550020`: `FUN_00a621a0` / `FUN_00a62820` per entry).
+    pub overrides: InstanceOverrides,
 }
 
 #[derive(Debug, Clone)]
@@ -191,6 +198,7 @@ impl ObjectInstanceList {
             mw_bundle::ResourceType::CompoundInstanceList | mw_bundle::ResourceType::LightInstanceList => 0x50,
             _ => 0x4C,
         };
+        let compound = res.resource_type() == mw_bundle::ResourceType::CompoundInstanceList;
         let mut instances = Vec::with_capacity(count);
         for i in 0..count {
             let o = base + i * OBJECT_INSTANCE_SIZE;
@@ -204,6 +212,11 @@ impl ObjectInstanceList {
                 transform,
                 ids: [r.u32(o + 0x48)?, r.u32(o + 0x4c)?],
                 lod_scale: r.f32(o + scale_at)?,
+                // Compound lists: the material-override block after the scale (unreadable blocks: none).
+                overrides: match (compound, r.u32(o + 0x54)) {
+                    (true, Ok(block)) => InstanceOverrides::parse(res, block as usize).unwrap_or_default(),
+                    _ => InstanceOverrides::default(),
+                },
             });
         }
         Ok(Self { version, instances })
@@ -234,8 +247,8 @@ impl ObjectInstanceList {
 ///
 /// `CompoundObject` (0x240-0x1150 bytes) starts like a `WorldObject` (version 8, behaviour count at
 /// 0x01, model at 0x04, `mpSkeleton` at 0x08 (the model is skinned to it: one bone per part), behaviours at
-/// 0x0C, locators at 0x10, physical definition at 0x1C), plus a second model at 0x24 (lower-poly twin of
-/// 0x04, same bbox) and sometimes 0x28, a pointer to 8-byte joint handles at 0x2C (count at 0x3C), and at
+/// 0x0C, locators at 0x10, physical definition at 0x1C), plus the model it stands as at 0x24 (unskinned,
+/// same bbox as 0x04, which is drawn only once broken) and on billboards 0x28 (the found billboard), a pointer to 8-byte joint handles at 0x2C (count at 0x3C), and at
 /// 0x30 a pointer to `u32` part count at 0x38 parts; 0x34 points to one u32 hash per part (the joints name
 /// their two parts by these). A part is 0x70 bytes: an embedded `WorldObject` (no model of its own,
 /// behaviours at +0x0C with their count at +0x01, its own physical definition at +0x1C, locators),

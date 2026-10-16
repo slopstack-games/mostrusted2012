@@ -10,7 +10,6 @@ mod compare;
 mod crack;
 mod damage;
 mod events;
-#[cfg(target_os = "linux")]
 mod lods;
 mod memscan;
 mod placement;
@@ -43,6 +42,11 @@ struct Cli {
 enum UiCmd {
     /// One line per screen bundle with its widgets (and their layout counts).
     Screens,
+    /// The world map's item kinds (icon / card looks, option menus), filters and point-of-interest looks.
+    MapItems {
+        #[arg(long, default_value = mw_assets::DEFAULT_LANGUAGE)]
+        lang: String,
+    },
     /// The Easydrive menu model of a driving screen: item types, tiers, sources and items.
     Easydrive {
         #[arg(default_value = mw_assets::easydrive::EASYDRIVE_SCREEN)]
@@ -559,6 +563,15 @@ enum Cmd {
     /// Scoring actions (`ScoringAction`s of GAMELOGIC/GAMEPLAY.BNDL named by `ScoringConfig`): Speed Points,
     /// pursuit score, heat, HUD message sequence and title per action. `--all` includes the actions worth no
     /// Speed Points; `--sequence <id>` prints a message sequence's layouts instead.
+    /// Music (`mw_assets::music`): every `SongList` of `UI/SONGS/SONGS.BNDL` with its songs (artist, title,
+    /// stream), the game modes' `MusicPlaylist`; `--wave <resource id> --out <dir>` decodes one `Wave`'s whole
+    /// stream (prefetch + streamed file) to .wav.
+    Music {
+        #[arg(long)]
+        wave: Option<String>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     Scoring {
         #[arg(long)]
         all: bool,
@@ -666,6 +679,7 @@ fn main() -> Result<()> {
             }
             match cmd {
                 UiCmd::Screens => ui::screens(&store)?,
+                UiCmd::MapItems { lang } => ui::map_items(&store, &store.language(&lang)?)?,
                 UiCmd::Easydrive { screen, lang } => ui::easydrive(&store, &screen, &store.language(&lang)?)?,
                 UiCmd::Show { screen, widget, lang } => {
                     let lang = store.language(&lang)?;
@@ -1154,9 +1168,17 @@ fn main() -> Result<()> {
                     // player sees then only change once per buffer.
                     let burst: usize = std::env::var("MW_AUDIO_BURST").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
                     let tick = if burst > 0 { burst } else { rate / 64 };
+                    // `MW_NITROUS_AT=t0,t1`: nitrous in use between these times (the nitrous timeline).
+                    let nitrous_at = std::env::var("MW_NITROUS_AT").ok().and_then(|s| {
+                        let (a, b) = s.split_once(',')?;
+                        Some((a.trim().parse::<f32>().ok()?, b.trim().parse::<f32>().ok()?))
+                    });
                     for i in 0..(rate as f32 * duration) as usize {
                         if i % tick == 0 {
                             let t = i as f32 / rate as f32;
+                            if let Some((t0, t1)) = nitrous_at {
+                                driver.set_nitrous(t >= t0 && t < t1);
+                            }
                             let ([rpm, throttle, gear, speed], drive) = input_at(t, &mut k);
                             let input = mw_assets::engine_driver::EngineInput {
                                 rpm,
@@ -1426,9 +1448,52 @@ fn main() -> Result<()> {
             events::hsm(&AssetStore::new(game)?, &bundle, node, find.as_deref(), depth, parents)?
         }
         Cmd::Traffic { png, at } => traffic(&AssetStore::new(game)?, png.as_deref(), &at)?,
+        Cmd::Music { wave, out } => music(&AssetStore::new(game)?, wave.as_deref(), out.as_deref())?,
         Cmd::Scoring { all, sequence, text } => scoring(&AssetStore::new(game)?, all, sequence, &text)?,
         Cmd::Lights { near, hour } => lights(&AssetStore::new(game)?, &near, hour)?,
         Cmd::PaintMap { id, png, at } => paint_map(&AssetStore::new(game)?, &id, png.as_deref(), &at)?,
+    }
+    Ok(())
+}
+
+/// `mwtool music`.
+fn music(store: &AssetStore, wave: Option<&str>, out: Option<&Path>) -> Result<()> {
+    if let Some(w) = wave {
+        let id = ResourceId(u64::from_str_radix(w.trim_start_matches("0x"), 16)?);
+        let (pcm, gain, looping) = store.wave_stream(id)?;
+        println!(
+            "{id}: {} ch, {} Hz, {:.2} s, gain {gain}, loop {looping}",
+            pcm.channels,
+            pcm.sample_rate,
+            pcm.duration_secs()
+        );
+        if let Some(out) = out {
+            std::fs::create_dir_all(out)?;
+            std::fs::write(out.join(format!("{id}.wav")), pcm.to_wav())?;
+        }
+        return Ok(());
+    }
+    let lang = store.language(mw_assets::DEFAULT_LANGUAGE)?;
+    let text = |id: u32| lang.get(id).unwrap_or_default().to_string();
+    let b = open_bundle(store.game(), "UI/SONGS/SONGS.BNDL")?;
+    for e in b.entries_of_type(ResourceType::GenesysObject) {
+        let Ok(list) = store.song_list((e.id.0 & 0xffff_ffff) as u32) else { continue };
+        println!(
+            "song list {} ({} songs) feedback {} flags 22={} 23={} {}",
+            list.id,
+            list.songs.len(),
+            list.feedback_message,
+            list.flag_22,
+            list.flag_23,
+            list.url
+        );
+        for s in &list.songs {
+            println!("  {:>8} wave {} {:>7.3}  {} - {}", s.id, s.wave, s.bc7081c6, text(s.artist), text(s.title));
+        }
+    }
+    let events = store.events()?;
+    for m in &events.game_modes {
+        println!("game mode {} ({}): MusicPlaylist {}", m.id, text(m.name), m.music_playlist);
     }
     Ok(())
 }

@@ -14,15 +14,17 @@
 //! world and "InGame" sets up the start point; the game-mode manager's world-loaded flag needs the world's
 //! resources, the zone at the camera and its neighbours within 10 m resident, and traffic ready or 1.5 s.
 //! In game, the loading screen (layout 108177: black, a spinner turning once a second) shows while
-//! `Mode.ShowLoadingScreen`, i.e. while that flag is false; controls are disabled and sound muted meanwhile.
+//! `Mode.ShowLoadingScreen`, i.e. while that flag is false; controls are disabled and the world's sound muted
+//! meanwhile (music is not on that bus). The sequences' wave items (the title music, the transition's whoosh
+//! and looping bed) play through `music.rs`.
 //!
 //! **Here**: [`Phase::Title`] → [`Phase::Transition`] (holding while not [`FrontEnd::ready`]) → playing, for
 //! plain runs (`mostrusted` with no mode flags) and `--front-end`; other interactive world drives show
 //! [`Phase::Loading`] (108177) until ready. Headless runs and tests start in [`Phase::Playing`].
 //!
 //! Model decisions (not from code or data): the screen behind the title movie is the widget's white backdrop
-//! drawn full screen, the movies are decoded by ffmpeg (`movie.rs`) and drawn full screen, the title music and
-//! the transition's whooshes are not played (sound stays muted), "ready" uses the 1.5 s timeout instead of
+//! drawn full screen, the movies are decoded by ffmpeg (`movie.rs`) and drawn full screen, "ready" uses the 1.5 s
+//! timeout instead of
 //! checking traffic, the pictures are picked at random from the base game's 60 (four preloaded), the
 //! `TransitionImages.ImageNReady` holds never wait (our pictures are decoded up front; their polarity was not
 //! traced), and the profile (car, position) is our own file, saved every 10 s like the game's "Regular
@@ -117,6 +119,7 @@ impl Plugin for FrontEndPlugin {
                 receive,
                 track_ready,
                 advance,
+                sequence_waves,
                 draw,
                 (freeze_controls, mute).after(crate::drive::read_input),
                 save_profile,
@@ -480,6 +483,18 @@ pub(crate) fn binding_true(b: &str, lookup: &mut dyn FnMut(&str, Option<&str>) -
     Binding::parse(b).and_then(|b| b.eval(lookup)).is_some_and(|v| v.truthy())
 }
 
+/// `Controls.IsXInputControllerConnected`: a pad is connected (any Bevy gamepad: XInput pads through gilrs, the
+/// Steam Controller through `steam_controller.rs`). The title's prompt pair hides on it: "PRESS START" (label
+/// 1597779) shows with a pad, "PRESS ANY KEY" (label 1274432, `ComplianceTerm.Value["PressStart"]`) without
+/// (layout 1274392's triggered behaviours). `MW_XINPUT_CONNECTED=0|1` overrides it (headless checks).
+pub(crate) fn xinput_connected(pads: &Query<&Gamepad>) -> bool {
+    match std::env::var("MW_XINPUT_CONNECTED").as_deref() {
+        Ok("1") => true,
+        Ok("0") => false,
+        _ => pads.iter().next().is_some(),
+    }
+}
+
 /// The bindings the boot screens read.
 fn lookup(
     path: &str,
@@ -534,7 +549,7 @@ fn advance(
         return;
     }
     let Some(mut screens) = screens else { return };
-    let pad = pads.iter().next().is_some();
+    let pad = xinput_connected(&pads);
     match front.phase {
         Phase::Title => {
             let Some(seq) = screens.title.clone() else {
@@ -653,6 +668,49 @@ fn advance(
     }
 }
 
+/// The wave items of the screen's sequence active now (`music.rs` plays them): the title's music, the
+/// transition's whoosh and its looping bed (`010000000014e291`, 0.75–4.8 s, which covers the hold).
+fn sequence_waves(
+    front: Res<FrontEnd>,
+    screens: Option<Res<Screens>>,
+    waves: Option<ResMut<crate::music::SequenceWaves>>,
+) {
+    let Some(mut waves) = waves else { return };
+    if waves.upcoming.is_empty()
+        && let Some(s) = screens.as_ref()
+    {
+        for seq in [&s.title, &s.transition].into_iter().flatten() {
+            for i in &seq.items {
+                if let ItemKind::Wave(w) = &i.kind {
+                    waves.upcoming.extend(w.waves.iter().copied());
+                }
+            }
+        }
+    }
+    let seq = screens.as_ref().and_then(|s| match front.phase {
+        Phase::Title => s.title.as_ref(),
+        Phase::Transition => s.transition.as_ref(),
+        _ => None,
+    });
+    let active: Vec<(u32, mw_assets::sequence::WaveItem, f32)> = seq.map_or_else(Vec::new, |seq| {
+        seq.items
+            .iter()
+            .filter(|i| front.clock >= i.start && front.clock < i.end)
+            .filter_map(|i| match &i.kind {
+                ItemKind::Wave(w) => Some((i.unique_id, w.clone(), front.clock - i.start)),
+                _ => None,
+            })
+            .collect()
+    });
+    if waves.active.len() != active.len() || waves.active.iter().zip(&active).any(|(a, b)| a.0 != b.0) {
+        waves.active = active;
+    } else {
+        for (a, b) in waves.active.iter_mut().zip(active) {
+            a.2 = b.2;
+        }
+    }
+}
+
 /// Draw the current screen.
 #[allow(clippy::too_many_arguments)]
 fn draw(
@@ -668,7 +726,7 @@ fn draw(
     let Some(mut screens) = screens else { return };
     let Ok(window) = windows.single() else { return };
     let screen = [window.width(), window.height()];
-    let pad = pads.iter().next().is_some();
+    let pad = xinput_connected(&pads);
     let full = |colour: [f32; 4], texture: Option<ResourceId>| Quad {
         texture,
         uv: [0.0, 0.0, 1.0, 1.0],
@@ -795,6 +853,9 @@ pub struct Collected {
     pub body_shops: std::collections::BTreeSet<u32>,
     /// The location trigger of the jack spot last swapped at (the game's profile stats 0x14 / 0x13 / 0xe).
     pub swap_spot: Option<u32>,
+    /// The profile's "SongLists" table (`FUN_0072efb0` / `FUN_00729330`): per licensed song list (`SongListID`),
+    /// the index its next start resumes from (`SongIndex`): the line `songlists=<list>:<index>,...` (`music.rs`).
+    pub song_lists: std::collections::BTreeMap<u32, u32>,
     /// Changed since the last save: saved at once instead of with the next autosave.
     pub dirty: bool,
 }
@@ -841,6 +902,15 @@ pub fn load_profile(path: &std::path::Path) -> Option<Profile> {
                 }
             }
             Some(("swapspot", v)) => p.collected.swap_spot = v.trim().parse().ok(),
+            Some(("songlists", v)) => {
+                p.collected.song_lists = v
+                    .split(',')
+                    .filter_map(|pair| {
+                        let (l, i) = pair.split_once(':')?;
+                        Some((l.trim().parse().ok()?, i.trim().parse().ok()?))
+                    })
+                    .collect()
+            }
             _ => {}
         }
     }
@@ -877,7 +947,7 @@ fn save_profile(
     let mut owned = vec!["bundle=", "position="];
     if let Some(c) = collected.as_mut() {
         text += &c.lines();
-        owned.extend(["jackspots=", "jackcars=", "bodyshops=", "swapspot="]);
+        owned.extend(["jackspots=", "jackcars=", "bodyshops=", "swapspot=", "songlists="]);
         if dirty {
             c.dirty = false;
         }

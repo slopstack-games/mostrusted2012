@@ -10,6 +10,326 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-15: navigation (SET DESTINATION, the GPS route) from the code
+User play test: "Navigation (SET DESTINATION route / GPS) does not work yet". Details in decomp.md "Navigation: SET
+DESTINATION and the GPS route".
+- **Found**: `Map:OnSetWaypoint` is dispatched by its name hash (static initialiser 0x00f68cf0 → `.bss` 0x0117f49c)
+  in the map's action handler (0x008188e0) to `FUN_0080eb60`: events route to their start trigger, collectables
+  to their trigger. The route lives in `UIMapManager` (G+0x2f480) +0x1f8f0: three route objects (waypoint, the
+  race's GPS line, the shown one). The search is the AI's A* (path request type 9, `FUN_00843240`, both route
+  options on); when moving, the start is moved two road nodes ahead along the velocity. Line: ≤ 512 points
+  with the node's drivable width, u along the path and side vectors. Every 0.5 s the car is projected onto the
+  path; 15 m off → re-route; progress refined per frame within ±50 m; arrival within 5 m clears all routes.
+  The A* turn penalty is 5·max(0, 0.98 − cos Δ)³ (the trig was open: it is a cosine), multiplied by the × 5 / × 100
+  route-option factors; the exit-angle reference is still open.
+- **Ported** (`gps.rs`): SET DESTINATION on the map for events and (new) every collectable's option menu, the
+  route on a worker thread, the line, re-routing, progress, arrival, and drawing on the world map and the minimap.
+  `--map-waypoint <event id>` chooses SET DESTINATION headlessly (with `--show-map` the map stays open);
+  `MW_GPS_LOG=1` logs requests, routes, the 0.5 s checks and re-routes.
+- **Checked**: CONTINENTAL DRIFT (1.2 km) and HARBOR RUN (6.4 km) from the default spawn: the map screen draws
+  the route along the roads to the event, the minimap shows it from the car; with the car moving up the road
+  the progress follows (logged every 0.5 s: along / off / left). At the default spawn the car is 22 m from the
+  first route's nearest point (it starts at a node behind), so the first check re-routes, as the code would.
+  Unit tests: line decimation / u / side, nearest point and progress.
+- **Open**: (1) how the original draws the route (colour, width, texture, whether the driven part is hidden):
+  the renderer was not found in the decompiled set; **capture wanted**: a Steam F12 screenshot of the original's
+  minimap and map with a destination set (e.g. HARBOR RUN from the start point). (2) The A* turn penalty's angle
+  reference (data check: AIData junction exit angles against the exits' geometric headings), then the penalty and
+  the route-option factors can be ported; without them our routes may make U-turns the original avoids (seen once
+  after the start-point re-route). (3) The path expansion `FUN_00520a50` (ours: the AI's spline samples). (4) The
+  race GPS line (second route, `FUN_007a0e40`, next min(8, perLap − 1) gates) and its chaining into the shown
+  route are not ported. (5) Lua hooks `SetRouteFromPlayerToEvent` / `ToSafehouse` / `ClearTargetRoute` /
+  `SetWaypointToJackspot` not read.
+
+### 2026-10-15: traffic reactions: the headlight flash, the hit horn and car alarms (manoeuvre 1) ported
+User report (play test 2026-10-14): traffic sounds and effects mostly missing, "horns and headlight flashing when
+you drive towards them". Read from the dump and the disassembly; details in decomp.md "Traffic reactions
+(2026-10-15)"; ported in `traffic_reaction.rs` (engine-free, 3 unit tests), `traffic.rs` (`crash_hit_cars`,
+`reaction_lamps`) and `car_sfx.rs` (hit horn, alarm).
+- **Manoeuvres** are only for physical traffic: a car that gets a world vehicle (`FUN_0061cf50` →
+  `FUN_00609b70`) with a *request type* scores 11 manoeuvres (`FUN_006071d0` / `FUN_005eac20`). The 11 objects at
+  `world+0x339d0` (vtables set by `FUN_00420720`) map index → update: 0 `FUN_00604290`, 1 `FUN_005f5c40`, 2
+  `FUN_005f77e0` (swerve), 3 `FUN_005f6150`, 4 `FUN_005f6e30`, 5 `FUN_005f65a0` (jack-knife), 6 `FUN_005ffc10`, 7
+  `FUN_005f6aa0`, 8 `FUN_005f73a0`, 9 `FUN_005ebca0`, 10 `FUN_005e9260` (wrecked). Car byte +0x6f holds the index.
+- **Who reacts how**: a contact turns a lane follower physical (`FUN_0060c3a0`'s loop) with request 4 or 6
+  (`FUN_005f2eb0`): 4 when the contact closes faster than 30 mph, the traffic car moves faster than 40 mph and the
+  contact lies in its box zone 5–9 (side / rear, `FUN_00929da0`); else 6. Request 6 (and 2: every parked car, and 0
+  for a car with a trailer) picks **manoeuvre 1**; request 4 picks 6 / 2 / 4 by an input at +0xd0 (> 0.66 / > 0.33 /
+  else; input not traced). The arbiter's option 0 queues request 0 → manoeuvre 0 (no flash). So the flash and the
+  "hit horn" belong to cars bumped from the front or slowly, not to cars merely approached; approaching cars only
+  get the existing "stop for obstacle" horn (40 %, once per 55 s; ported 2026-10-09).
+- **Manoeuvre 1** (`FUN_005f5c40`): brakes / steers away; the car's horn timer is reset and it wants its horn (bit
+  0) when its random +0x5c ≤ `TrafficParamConfig` +0x20 (0.4); a parked car that is moving sets the alarm bit
+  0x10 instead. It ends when the car's physical time (+0x200, += dt in `FUN_005ffa10`) passes 5 s (`.rdata`
+  0x00fb278c) for a lane car (→ manoeuvre 0, or 10 when the damage bar is full); parked cars stay in it.
+- **Headlight flash**: while +0x6f = 1, `FUN_00ebe8c0` starts `FUN_00614620` (pattern = LCG high word % 3), restarted
+  whenever a pattern ends. Patterns (`.rdata` 0x00fb2168, seconds; even steps dark, odd steps lit, −1 = end):
+  0.15 0.30 0.13 0.25 0.14 0.25 0.18 | 0.12 0.20 0.10 0.20 0.09 0.16 0.21 0.20 0.18 (holds dark at step 8) | 0.16
+  0.75 0.22 0.25 0.16 0.32 0.13. `FUN_005f53b0` ramps the brightness byte +0x64 to 255 / 0 by
+  `TrafficVehicleConfig` +0x28 (5000 /s) × dt. The car's light sources are drawn (`FUN_005fd190`) at intensity
+  `0.7 + 0.5 × b/255` (0 for parked cars and manoeuvre 10), per car × `0.9 + 0.2 × random`. Our renderer draws no
+  car light sources (world_lights.rs: `VehicleVfxBehaviour.Lights` not drawn), so the flash needs those first.
+- **Car alarm** (`FUN_006042c0`): bit 0x10 (or a proximity test `FUN_005f2740`, 10.5 m, not traced) plays
+  `MiscSound.c1109b6e` when the car's `TrafficVehicle` +0x3c flag (`172df888`, true on 7 of 11 types) is set and
+  `(car index % 10) × 0.1 ≤ MiscSound` +0xe0 (0.4), then hazard-blinks (0x20: bit 8 toggles every 0.4 s between
+  0.5 s and 15 s of +0x4c).
+- **Indicators** (same functions): lane car +0x72 / +0x8 / +0xc pick left (0x40 → bit 2) / right (0x80 → bit 4),
+  brightness +0x65; the blink period reads `TrafficVehicleConfig` +0x80 / +0xac (0.012 / 0.022, too short for
+  seconds: unit open).
+- **Ported**: a crashed lane car gets its request from the hit's zone on its box and the closing speed; requests
+  2 / 6 run manoeuvre 1 (5 s for lane cars, for ever for parked ones): the flash patterns and the brightness
+  ramp as read, the hit horn through the two horn slots, the alarm (8 s, `(slot % 10) × 0.1 ≤ 0.4`, types with
+  the flag, once per car). Model decisions: the random +0x5c and the pattern draws come from one second LCG with
+  our seed; the contact speed is the closing speed along the contact normal; "moving" is the 0.5 m/s standing
+  test without the direction term; the behaviour's 150 m radius is not applied to the lights; request 4 gets no
+  reaction (manoeuvres 2 / 4 / 6 not ported); and, since car light sources are not drawn, the flash scales the
+  lamps' `HeadlightColour` emission by the game's intensity ratio `(0.7 + 0.5 b/255) / 0.7` (up to 1.71) on the
+  flashing car's own material copies.
+- **Checks**: unit tests (pattern 0 = three lit phases ending dark, zones, request rule, manoeuvre 1 ends at 5 s).
+  `--test crash-traffic`: head-on, zone 3, closing 128 km/h, request 6, the pickup's 3 lamp materials flash (its
+  random 0.62 > 0.4: no hit horn). Free roam at full throttle (`--spawn=800,42,1688,71 --auto-throttle 1
+  --bench 75`): five hits (zones 2, 4, 4, 5, 7; all request 6, the zone-5 one closed at 3 km/h), every car
+  flashes; the two with random 0.10 / 0.13 honk right after (horn at 16 m / 32 m, gain 0 dB). Alarm data loads
+  (`MiscSound.c1109b6e`, share 0.4); no parked car was hit in these runs (alarm not seen in game).
+- Open: the per-player request list (`world+0x36120 + p·0x680`, entries at +0x6b0, count +0x770) consumed by
+  `FUN_0060e030` (its writer, and so request types 1 / 3 / 5, not found: possibly the near-miss / panic reactions to
+  an approaching player); message 0x10 requests (`FUN_005efdd0`); manoeuvre 0's behaviour; how +0x64 / bit 8 reach
+  the lamp materials (hazard lights of parked cars); the input +0xd0; the hazard
+  blink and indicators; car light sources (then the flash drives their intensity instead of the lamp glow). A
+  capture of the original (bump a stopped car head-on at night, F12 burst) would confirm the flash look.
+
+### 2026-10-15: surface effects and tyre marks from the code (smoke, kick-up, marks per wheel surface)
+
+The play test said grass and dirt behave like road for the effects and the tyre marks look off. Cause: every
+effect used surface 0 / the first surface with marks, although the wheels already know their surface (the
+collision tag). Now traced in the dump (docs/decomp.md "Tyre marks and tyre smoke") and ported:
+
+- **Which effect** (`FUN_00589e20`, the race car's per-wheel effect update; `FUN_0054aaa0` looks up the
+  surface's `SurfaceVfx`, dry block, the wet one in the wet state): smoke = `PlayerWheelEffects` (+0xa0; AI cars
+  `AIWheelEffects` +0x40) `DefaultTyre` (`OnRims` on rims, the `61ac1863` variant when `FUN_006a15c0(…, 0xb) ==
+  2`); a second kick-up = `WheelVfx` (+0x138; AI `4cf3cf8f` +0x140); tyre marks = `TyreMarksMaterials` by the
+  car's tyre class (0 `Offroad`, 1 `eff16a09`, 2 `Road`, 3 `Sport`, 4 `Track`; class from car +0x1a88 through a
+  per-car short at +0x6c / +0x6e / +0x70), `RimMarksMaterial` (+0xe8) on rims. `SurfaceVfx` field offsets
+  (handles from +0x40, 8 bytes each, sorted by name) are in formats.md.
+- **When** (same function): smoke while the wheel is on the ground and any of its three smoke ramps is above
+  0.01 (`.rdata` 0x00fad910); the ramps go to the effect as its `WheelParams`. Tyre marks are laid by **every
+  wheel on the ground**, all the time; the strip's per-point weights are Slip = the `Skid_Marks` lateral ramp,
+  Spin = max(spin ramp, lock ramp). What shows is decided by the material: tarmac's `Run` layer is fully
+  transparent (marks only from slip / spin), grass and dirt use `…117f02` (`Run` transparent too, brown `Slip`
+  `…f58ca` / `Spin` `…117f26` layers).
+- **The ramps** (`FUN_009cef90`, per wheel and tick, record at vehicle +0x2c90 + 0x30 i; lanes 0..2 from the
+  axle's `TyreVfxBehaviour.Smoke`, lanes 4, 5, 7 from `Skid_Marks`, identified by which reader uses which
+  lanes): spin = clamp((s − `1281cf25`) / (`6a55fbd2` − `1281cf25`))^`Curve_Power` × `35caad30`, s = |tread −
+  ground| mph; lateral = the same over |α| (`6a83c966` → `53b71e27`) × a window on the car's mph (`26028ef5` →
+  `2c72e92a`); lock (`64222c3f`) = the spin form, counted only while wheel +0x108 < −0.1 (spin only at or above
+  it; `.data` 0x011870d0, all lanes −0.1); each smoothed by `6274d1ad` (rising) / `27c5dd70` (falling) × dt × 60
+  of the gap. `LatParams` / `LongParams` field roles are from these offsets (names beyond `Curve_Power` not
+  cracked). The dirt build-up (`FUN_009d19c0`) reads the smoke lanes.
+- **Other vehicles** (`FUN_00606210` over up to 431 slots, likely traffic): marks only when `FUN_009dfd40` says
+  so: m = max(wheel +0x130, clamp((+0x118 − 0.5) / 0.5) × 0.55, clamp((+0x134 − 0.1) / 0.9)), and on polygons
+  without the `ROAD` collision flag (bit 1 of the tag) at least max(+0x130, 0.5); laid while m > 0.1 and the wheel
+  is not on rims; material = `TyreMarksMaterials.Road` (+0x28) always. Its kick-up is `SurfaceVfx` +0x118
+  (`01d1b4fd`) or +0x120 (`f967c1ce`) into the shared `SurfaceFx` wheel-contact list (`FUN_0049ba00`). Inputs
+  +0x118 / +0x130 / +0x134 (from wheel +0xd8, +0x110, +0xdc) are not identified. Not ported (we draw marks for
+  the player only).
+- **Built**: `mw_handling::tyre_vfx` (the ramps, unit tests on the 911's numbers), `mw_assets::handling`
+  reads `TyreVfxBehaviour` (one per vehicle bundle, 188 over the install, 93 of them `…68fe4`), `drive.rs` carries surface index, ramps,
+  tyre width and lateral axis per contact, `particles.rs` / `tyre_marks.rs` / `paint_wear.rs` use them.
+  Model decisions: wheel +0x108 read as κ (the sign test against −0.1 splits spin from lock); the effect's
+  `Intensity` = max of the three smoke ramps (the spawner's binding slots are not decoded); a strip point every
+  0.25 m; the strip's across vector = the tyre's lateral axis × the tyre width (2 × the wheel body's half
+  extent; the game passes wheel +0xbc with each point and its vertex builder was not found), so the drawn width
+  is `WidthScale` (0.65) × the width (0.19 m on a 911 rear instead of 0.65 m); strips break on a change of
+  material; zero-weight points on a transparent-`Run` material are not stored; ramps of a wheel in the air head
+  for 0; impacts still use the default surface.
+- **Checked**: `--test drift --track-surface 8`: marks from launch wheelspin (spin 0.15) and through the drift
+  (rear slip 0.6, spin 0.4–0.5), dense white smoke; `--track-surface 4` (grass): brown dust clumps
+  (`…a39d7`) and brown strips; surface 0 (the default track): smoke, no marks (its `SurfaceVfx` has none, so a
+  test needing marks wants `--track-surface 8`); world launch on surface 2 (paving) gives its dusty smoke.
+  Screenshots in `ref/fx/` (not committed). Drift test result unchanged (peak 36.4°, held 4.73 s).
+- Open: the tarmac smoke looks very dense next to the original (compare with a capture); the grass marks' colour
+  against real grass; the tyre-mark vertex builder (consumer of the 0x50-byte records queued by
+  `FUN_004af040`: the meaning of wheel +0xbc, U, the age in POSITION.w and the `Animation` fade); the tyre
+  class → mark slot table (+0x6c..0x70 of the object at car +0xd0); `SurfaceVfx` +0x100 (`bb02333c`, started for
+  the local player's rear wheels with a camera-space transform: maybe lens dirt) and +0x58 (`5830a883`, copied to
+  the car at +0x3c0). **Live read wanted** (not done: the original was not to be launched this session): wheel
+  +0x108 / +0x110 / +0xd8 / +0xdc and the ramp record at vehicle +0x2c90 while launching, locking and drifting,
+  to confirm κ and the inputs of `FUN_009dfd40`.
+
+### 2026-10-15: map and minimap icons: item types, filters, Most Wanted races, jack spots, cops
+User play test: "many map icons are missing: jack spots, race locations, etc.", "Most Wanted races are shown like
+normal races on the map", "cops are not shown as cops on the map / minimap". Details in decomp.md "The world map's
+items and filters; the minimap's free-roam icons".
+- **Where the map's item kinds live**: not in the exe and not in `MainMapConfig`: the screen script
+  `LiveMapManager_ScreenScript` 1135185 (found by scanning a dump of every GenesysObject for the look key
+  1135494) has `MapItemTypes` (icon and card key per item type), `CollectablesName`, `AICopPOI` / `AIPlayerPOI` /
+  `BlackListDriver` / `CheckpointPOI` / `FinishLinePOI` / `SelectionPOI`; `FUN_0080ec90` reads them by these names
+  (strings in the pseudo-C; the hashes match the dump's field hashes). New: `AssetStore::map_manager_config`,
+  `map_filters`, `mwtool ui map-items`.
+- **Most Wanted races**: `FUN_008154f0` files an event as `MapItemTypes[9]` (key 955947, the red diamond `0e962f`)
+  when its +0xe9 (`c8f26580`, first place only) is set, else `[1]` (the green diamond). The 2026-10-10 reading
+  ("red = beaten", the `MAP_EVENT_DONE` step) was wrong for the capture's red icons: they are the Most Wanted
+  races' own look. Fixed: our map drew every event green.
+- **Filters**: the map shows one list at a time: RACES, JACK SPOTS, RECOMMENDS, SPEED CAMERAS, BILLBOARDS (group
+  1135638), Z / A (LT / RT) step through them (`FUN_00818550`); each filter's list from `FUN_008181b0` (trigger
+  kinds per filter). Ported; jack spots appear once found (the icon's `JackSpots.IsSwapSpotFound[#]`).
+- **Minimap**: free-roam collectables get a point of interest within 400 m (removed beyond 450 m; `FUN_006ffd90`,
+  `FUN_006ffba0`): body shops (the wrench, always) and jack spots (the wheel, once found) have map icons; speed
+  cameras and billboards have world looks only. Ported. Cops were drawn with the racers' orange arrow because
+  `Players.PlayerBase[#].IsCop` was forced false; the look's own cop elements (blue / red) now show.
+- **Checked** (headless, screenshots in the worktree's git-ignored `ref/map1/`, looked at): the map's RACES
+  (green and red diamonds; the cops of a `MW_PURSUIT_DEMO` chase beside the player), JACK SPOTS (the three found
+  spots of a test profile), SPEED CAMERAS (74 orange dots; a flick selects one and shows its card "SPEEDWALL /
+  SPEED CAMERA" with SELECT), BILLBOARDS (216); the minimap at (310, 420): the body shop's wrench under the car, a
+  found jack spot's wheel 170 m away, the patrol cop's red arrow. `mwtool ui map-items` prints the table.
+- **Dead ends**: the HUD screens' event looks with world layouts (1013512, 955952, 955955, 1013520, 1132924) are
+  named by no code (image scan for the immediates) and no GenesysObject (full dump scan): no event icons on the
+  minimap. `FUN_00ac54c0(0x5f3f3)` is a type test (the event's type chain contains 390131), not a game flag.
+- **Model decisions**: the `Collect3` table (`FUN_00728b20`, the collectables the map lists) is not read: every
+  trigger of the kinds counts (74 speed cameras and 216 billboards include the packs' kinds; the base game has
+  fewer); `FUN_006fcf90` (a profile list by the spot's +0x24; puts a spot into item 14 on the map and hides it
+  from the HUD) never holds; jack spots not found are not selectable; RECOMMENDS is empty; the filter index is not
+  saved; collectables' option menus (`SpeedCamera`, `Jump`, `Jackspot`) are not wired; events keep the measured
+  card 1481372 rather than item type 1's 1013511.
+- **Open / captures wanted from the original**: (1) the map's SPEED CAMERAS and BILLBOARDS lists on a known save
+  (count and which, to settle `Collect3` and the packs' kinds); (2) JACK SPOTS on a save with found and swapped
+  spots (what item 14 / `FUN_006fcf90` is: is a found spot shown before its car is driven); (3) the minimap near a
+  body shop and a found jack spot (icon size and the 400 m range); (4) the minimap and map in a pursuit (cop
+  arrow: blue / red alternation; whether patrolling cops show outside a pursuit); (5) the selected speed camera's
+  card and its options; (6) where the in-world jack spot marker (look 1013508's world layouts 186088 / 195581) and
+  the speed camera / billboard world looks (1013522, 1013491) are drawn: not ported.
+
+### 2026-10-15: title prompt pair, music by situation (user play test: front end, audio)
+
+- **Prompt overlap**: layout 1274392's labels 1597779 ("PRESS START", hidden on
+  `Controls.IsXInputControllerConnected(NOT)`) and 1274432 (`ComplianceTerm.Value["PressStart"]` = "PRESS ANY
+  KEY", hidden on `Controls.IsXInputControllerConnected`) hide each other with an instant `OUT` idle step on a
+  triggered behaviour; our tween applied the element's own looping pulse after it, whose `IN` undid the hide, so
+  both showed. Triggered idles now apply last (our reading of the order: the tween code is not traced). Checked
+  with front-end shots with and without a pad (`MW_XINPUT_CONNECTED=0|1` overrides the check; no pad was
+  connected to this machine during the runs).
+- **Music**: decomp.md "Music" has the code (song manager states, start index, play order, the situation bias of
+  the song float `bc7081c6`, `PLAYSONGLIST`, `MUTE_SOUND` = the world bus only, `MUSIC_ADVANCE` = M, the
+  DynamicMusicManager does nothing for pursuits); formats.md "Audio" the data (`SongList`, `Song`, Wave prefetch +
+  streamed file, the music sequence items). Before: every `UI/SONGS/*.SPS` shuffled (UI loops, credits and the
+  Picture Paradise list included), all sound muted on the front end. Now: the title's own waves, the
+  transition's whoosh and looping bed, free roam and events on list 1622455 with the game's ordering, M / RB
+  skips, the in-game menu fades the music, music stays on over loading screens.
+- **Verified**: `mwtool music` (lists, game modes' `MusicPlaylist`), wave decodes (title intro 45.39 s = its
+  45.385 s item, loop 26.10 s with the `H` loop flag, no silent seconds; prefetch + file concatenated), a unit
+  test of the ordering (a pass plays every song once; free drive puts the f < 0 songs first, events the f > 0),
+  runs with `MW_MUSIC_LOG=1`: front end (title intro -> transition whoosh + bed -> list 1622455, first song index
+  1 on a new profile), `--drive --show-pause` with a scripted M tap (skipped; a 1.5 s hold did not), the pause
+  menu fading the level to 0 and back.
+- **Open / wanted from the original**: an audio capture of the boot (title -> transition -> first song) and of a
+  pause / resume to confirm levels and the fade back; whether a new profile's first song is list index 1 (Calvin
+  Harris) as the code reads; profile option 5 (shuffle) default (a live read of the profile options); event
+  +0x68 (an event's own song list); the "now playing" popup (FeedbackMessage 30567) is not shown; the Autolog
+  player's music (116490 / sequence 1402320), credits and cutscene `SetSongList` items are not played; the
+  in-game loading screen's 0.1 s mute ramp.
+
+### 2026-10-15: car sounds: idle, nitrous, backfires, engine start / stop (play test "Car sounds and effects")
+- **Backfires never happened in normal driving** (cause found, fixed): the pop rule `FUN_009b20b0` reads the
+  sound's audible RPM +0x1f00 = `Idle + (Max − Idle) × +0x1f10`, and +0x1f10 already holds the RPM offsets the
+  engine sequences post (effect property 1, `FUN_009aea50`). Our rule used the physics curve without them. The 911's
+  upshift variant `…1d1a22` kicks the RPM +0.2 at engagement (shift clock 1..1.25) and drops it from ~0.13 to 0 in
+  one tick at the item's end, which is the drop that backfires (`1 − 0.13 · r · 10 < 0.1` for r > 0.69). Now the
+  player's rule gets the engine driver's offset and load (`Exhaust::set_sound`). Full throttle on the test track
+  (20 s, 911): 0 → 1 backfire, 40 pops; the kick's frame shows the normalised RPM 0.796 → 0.660. Every third
+  911 upshift has the kick (round robin), so ~1 in 9 upshifts backfires with its 0.1; the BMW M3 GTR (0.65) and
+  the McLarens far more. `--test exhaust` is muted (no engine sound, so no offsets): still 0 backfires there.
+- **Pops / crackles were silent** (fixed): the 911 has no `Pop_Sequence` (101 of 283 banks lack one; `dacf5fd5`,
+  between `Ignition_Sequence` and `Pop_Sequence`, is never set). Its pops are the `Gurgle_Sequence` (`…1d1c96`,
+  bound to `GetPopProbability`: pop waves 0.75..1, crackles 0.05..0.85), which the engine sound starts with the
+  bank's `Sequences` at sound start (the sound's state 2 → 3 code in `00580000.c` after `FUN_00575340`: `FUN_005866f0` of
+  `EngineSound2` +0x14, kept at +0x1ac). Its items have `Trigger_Probability` curves that start at 0, and the
+  player read every one-shot's probability (and gain / pitch) at item position 0, so they never fired. Now read
+  at the item position (`sequence::Player::start_voice`, same in `sfx_player`). Off-throttle at 6500 rpm the
+  crackle channels play (−30 / −34 dB average) ~33 dB under the engine; the retrigger rate (12/s × value) is
+  still our model. `6001d10d` on wave items (1 on every item with a probability curve, 2 / 3 elsewhere) is unread.
+- **Nitrous sound** (new): `HeatLevelSoundSet.NitrousLocal` (`…181ffc` in `GAMELOGIC/HL_31208.BNDL`, the only
+  heat-level sound bundle; `FUN_0065fee0` builds `HL_%d`): a 12 s timeline, burn wave `…1b0ab3` (1..8.885 s,
+  gain fading in over ~0.9 s) and tail `…1b0ab2` (8.7..10.594) on channel `…7533`, ducking the engine channels
+  (`…b381c` ×0.67, harmonic EQs, comb rasp, whine), +0.03 RPM, PostFX items, and eight timeline controllers on
+  `Players.LocalPlayer.NitrousState.UsingNitrous`. `JumpTimelineController.b6a51260` = **DestinationTime**
+  (cracked; sorts before `TriggerTime`). `2d0e4348` (bool, not cracked) read as "monitor": fire on the binding
+  turning true at any time past `TriggerTime`, else only when the clock crosses it; the only reading under which
+  all eight make sense (loop the burn 8.75 → 10.25 → 1 while held, quit on a tap under 1.5 s, tail on release
+  after 2 s, restart on a new press). Merged into the player's engine bank; started on the rising edge of the
+  nitrous input (its starter is not in the dump: model). Offline (`MW_NITROUS_AT=t0,t1 mwtool engine-sound`):
+  a 1 s use plays and quits by +1.25 s; a 4 s use plays the burn and the tail ~1 s after release.
+  `9b519cdb` (cracks as `NitrousDump`, unchecked) holds `…0b3a2a`, a 3 s timeline (wave `…1b0a36`); not used.
+- **Engine start / stop** (new, `ignition.rs`): the gearbox's start-up states 0 (off) and 1 (cranking)
+  (`FUN_009ce3d0`, `FUN_009cd7a0`): off → cranking after 0.5 s off (`.bss` 0x01186ef0 ← `.rdata` 0x01026050) on
+  throttle / brake; cranking → running when `Ignition_Sequence` posts property 7 (+0x1be5, `FUN_008f5490` case 7)
+  or has ended (+0x1be4 ← sound +0x1c8, `FUN_00900120`); `FUN_0058c930` starts the ignition in state 1 and stops
+  it in state 0. `EngineOn` (+0x1ef0, the engine buses' gain binding) moves 0.05 per tick (`.bss` 0x011866c0 ←
+  `.rdata` 0x01025370) towards 1 while running, 0 otherwise (`FUN_009b3030`). Catch times over the 283 banks:
+  0.25..1.5 s (the 911 0.25). The ignition wave plays as a one-shot on its snapshot channel `Player Vehicle
+  Ignition` like the horn (`AssetStore::player_ignition`); in the bank it reached the master at −48 dBFS, under
+  the idle. Checked: runtime log "player ignition" started at spawn, out −42 dBFS at 6 m, "engine running" 0.24 s
+  later. Model decisions: the player's car spawns cranking in play (running in `--test` / `--replay`); IGNITION
+  (action 17: I / L3) turns the engine off and starts it again (its reader was not found; ENGINE_START / OFF
+  39 / 40 are unbound); while off / cranking the throttle is held at 0 (the clutch never closes there) and the
+  physics engine idles silently. Message 0x1e (`FUN_00587490`, script `FUN_0068b070`) forces state 0 with
+  +0x1be3 (the "held off" flag); not wired.
+- **Idle** (measured, not changed): the idle loop plays (911: `…1d1c7a` / `…1d1c7b` at 1790..2290 audible rpm,
+  gain 0.3, faded out over 500 rpm), but in game the load sits at ~0.19 (the idle governor) and the whole engine
+  is −39.5 dBFS at idle against −7.6 at full throttle (bus inputs −15 vs +12 dB: the data's own balance). With
+  the engine volume (0.6) and music at −28 dBFS the idle is ~16 dB under the music, which is likely what reads as
+  "missing". Open: the engine-vs-music mix and the `SendDspPlugIn.Bus_Routing` (0 / 1 / 3) buses (we sum only the
+  first send to "none" into the master; `472497`, routing 1, is muted between load 0.2 and 0.54 by the load
+  curves); a capture of the original standing still (audio) settles it.
+- **Nitrous flames** (looked at, not changed): `--test nitrous` shows the flame effect `…24f34` at both pipes, but
+  sitting low and short behind the tips; the original's cone emitter axis (+Z inferred, 2026-10-09) and the
+  Bear emitter maths are still unread. Needs a screenshot of the original under nitrous at a known spot.
+- **Also found**: `FUN_0058d1c0` plays a random sequence of `EngineSound2` `c99783d2` (+0x60) when the throttle
+  pedal (entity +0x192c) rises by more than 0.3 in a frame and `6fd79c8d` (+0x5c) when it falls by more than 0.3
+  (`.rdata` 0x00fac27c / 0x00fae1f8), in gears above 1 (`FUN_0090d460`): driveline shunt clunks; not ported.
+- **Open / live reads wanted**: (1) entity +0x1a84 (requested engine state 0 / 1 / 2) and vehicle +0x1bd8 right
+  after a car spawn and after a jack-spot swap, to confirm the spawn state; (2) the IGNITION key's effect in the
+  original (does I stop the engine?); (3) audio capture at standstill for the idle level; (4) a nitrous
+  screenshot for the flames.
+
+### 2026-10-15: billboards' three looks and props without an AdditionalInfo (play-test items)
+
+Read from the dump and the data (no live reads; the original was not run). Details in decomp.md "Compound
+models: standing, found, broken".
+
+- **Billboards showed their broken model.** A `CompoundObject` carries three models: +0x04 (skinned to the
+  parts, the billboard's torn-poster panels), +0x24 and sometimes +0x28. The standing object draws its +0x10,
+  which `FUN_005396d0` (stream-in) / `FUN_00533a00` set to +0x24 while the object's flag +0x10f is clear and
+  to +0x28 when it is set (each falling back to +0x04 when empty); `FUN_00532430` (the break, +0x10d = 1)
+  switches to +0x04. We drew +0x04 standing. Now every standing compound draws +0x24 under its own LODs
+  (so street lamps etc. too: +0x24 is not a distance LOD as guessed on 2026-09; it is the standing model) and
+  the pieces only after the smash. Checked: screenshots of billboard 1496888 (BioWare advert), the
+  `--smash-set compounds` run (lamps stand, the billboard 0xac10f734 shows its DICE/BioWare advert and breaks
+  into torn panels), `--test freeroam` results unchanged.
+- **+0x10f is "found"**: `FUN_00554230`'s last argument is a binary search of the instance id (+0x4c, the
+  trigger id) in the list `FUN_006a0400` returns; that list (`+0x22c8`, count `+0x26b0`) is filled from the
+  profile's `Collect3` table ("TriggerID" column, `FUN_00728b20`) with billboard kinds ('2' 'A' 'D' 'J' 'M')
+  only. So a found billboard stands as +0x28: a "WANTED / Fairhaven Police Department" poster whose picture is
+  `World_SmashedBillboard_InstanceDiffuse_Specular_Singlesided` (G-buffer program identical to
+  World_Diffuse_Specular's) with its diffuse from the **instance**: every billboard's `CompoundInstanceList`
+  record has an override block at +0x54 (same layout as `InstanceList`'s) binding `DiffuseSampler` = texture
+  `0100000000141784`, a silhouette on a torn poster (216 of 216; no other compound has a block). That is what
+  the game draws offline / without Autolog friends; online pictures come through the `BillboardImages`
+  allocator and the `billboards` / `advert_contentid` online settings (not traced). Done in `freeroam.rs`
+  (`billboard_faces`): found = in the profile's billboard list. Model decision: the game picks the face at
+  stream-in only; ours picks it when the list is first known and while the compound is broken (so a newly
+  found billboard shows the poster once it is put back).
+- **Indestructible trash bags**: 19 prop and 3 dynamic definitions have no `AdditionalInfo` (the trash bag
+  `PropObject` 03102fec, 10 kg, 353 placements; crates of 0.2-15 kg; two 35 kg 2.6 m objects; one 2500 kg).
+  We treated them as never knockable (a model decision). `FUN_0054dfe0` clears the pinned bit when the
+  definition's info pointer (+0x30) is null, and `FUN_0054e570` / `FUN_0054bf70` skip their info reads: they
+  are loose (asleep) dynamic bodies from the start. Fixed (`PropPhysics::break_force` 0); `--smash-set bags`
+  drives through the bag and two crates: all three knocked, 0.6 km/h lost. (The set also fixed the smash test
+  waiting for 5 props when a set places fewer.)
+- Open: the `World_GbufferBlend` frame mesh over the poster's picture draws as our generic translucent
+  material (a bright frame; its blend program is not ported). Whether 0x546ff0's callback (re-picks every
+  compound's model, registered through `FUN_00adb5e0`) fires on a profile change was not resolved. A capture
+  of the original at a found and an unfound billboard would confirm the faces.
+
 ### 2026-10-14: the post chain against the original's code: bloom sizes, final pass, depth of field, grade
 
 The user: "postfx [is still off]". Compared our chain with the original's, stage by stage, from the full `.text`

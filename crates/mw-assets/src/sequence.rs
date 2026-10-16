@@ -44,6 +44,15 @@ mod h {
 
     pub const ID: u32 = 0x655d_3f5f;
     pub const SEQUENCE_ITEMS: u32 = field_hash("SequenceItems");
+    pub const WAVES: u32 = field_hash("Waves");
+    pub const GAIN: u32 = field_hash("Gain");
+    pub const FADE_IN: u32 = field_hash("Fade_In");
+    pub const FADE_OUT: u32 = field_hash("Fade_Out");
+    pub const TIME: u32 = field_hash("Time");
+    pub const TYPE: u32 = field_hash("Type");
+    pub const MIXER_CHANNEL: u32 = field_hash("Mixer_Channel");
+    pub const SONG_LIST: u32 = field_hash("SongList");
+    pub const STATE: u32 = field_hash("State");
     pub const TIMELINE_CONTROLLERS: u32 = field_hash("TimelineControllers");
     pub const SEQUENCES2: u32 = field_hash("Sequences2");
     pub const START_TIME: u32 = field_hash("StartTime");
@@ -616,8 +625,32 @@ pub enum ItemKind {
     /// Signals the game logic (the intros end with one; inferred: the race starts on it).
     EventTrigger,
     ClearTraffic(ClearTraffic),
+    /// `WaveSequenceItem`: plays one of its `Waves` (the title music's streams).
+    Wave(WaveItem),
+    /// `SetSongListSequenceItem`: hands the song manager a `SongList` (`mw_assets::music`); 0 = none.
+    SetSongList {
+        list: u32,
+        /// `3c4e5e2b`, `f28251e6`, `cb97beb9` (meaning: docs/decomp.md "Music").
+        flags: [bool; 3],
+    },
+    /// `MusicStateSequenceItem`: sets the dynamic music manager's state name ("Mapscreen", "Multiplayer").
+    MusicState(String),
     /// Audio, post-processing, speech, music and the other item types not ported (type name).
     Other(String),
+}
+
+/// A `WaveSequenceItem`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WaveItem {
+    /// `Wave` resources (one is picked; the title's items hold one each).
+    pub waves: Vec<ResourceId>,
+    pub gain: Modulated,
+    /// `Fade_In.Time` / `Fade_Out.Time`, s.
+    pub fade_in: f32,
+    pub fade_out: f32,
+    /// `Type`: 7 on the title's intro, 0 on its one-shot bridge, 4 on its loop (our reading: 4 loops).
+    pub kind: u32,
+    pub mixer_channel: Option<ResourceId>,
 }
 
 /// One item on the timeline.
@@ -694,6 +727,9 @@ impl Sequence {
                 ItemKind::StreamedImage { .. } => "StreamedImage".into(),
                 ItemKind::GeneralTrigger { .. } => "GeneralTrigger".into(),
                 ItemKind::Conductor(_) => "Conductor".into(),
+                ItemKind::Wave(_) => "Wave".into(),
+                ItemKind::SetSongList { .. } => "SetSongList".into(),
+                ItemKind::MusicState(_) => "MusicState".into(),
                 ItemKind::Other(n) => n.clone(),
             };
             match counts.iter_mut().find(|(n, _)| *n == name) {
@@ -1088,6 +1124,22 @@ impl<'a> SequenceContext<'a> {
                 },
                 radius: float(item, h::RADIUS).unwrap_or(0.0),
             }),
+            "WaveSequenceItem" => ItemKind::Wave(WaveItem {
+                waves: match item.get(h::WAVES) {
+                    Some(Value::Array(a)) => a.iter().filter_map(|v| handle(Some(v))).collect(),
+                    _ => Vec::new(),
+                },
+                gain: Modulated::field(item, h::GAIN, 1.0),
+                fade_in: sub(item, h::FADE_IN).and_then(|f| float(f, h::TIME)).unwrap_or(0.0),
+                fade_out: sub(item, h::FADE_OUT).and_then(|f| float(f, h::TIME)).unwrap_or(0.0),
+                kind: uint(item, h::TYPE),
+                mixer_channel: handle(item.get(h::MIXER_CHANNEL)),
+            }),
+            "SetSongListSequenceItem" => ItemKind::SetSongList {
+                list: uint(item, h::SONG_LIST),
+                flags: [0x3c4e_5e2b, 0xf282_51e6, 0xcb97_beb9].map(|k| boolean(item, k).unwrap_or(false)),
+            },
+            "MusicStateSequenceItem" => ItemKind::MusicState(string(item, h::STATE)),
             other => ItemKind::Other(other.to_string()),
         }
     }

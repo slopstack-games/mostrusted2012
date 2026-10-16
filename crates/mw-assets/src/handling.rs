@@ -17,6 +17,15 @@ use crate::{AssetStore, Result};
 mod h {
     use mw_formats::genesys::field_hash;
 
+    // TyreVfxBehaviour (field order: `Front_Tyres` 616a552f, `Rear_Tyres` b3a47895; `Skid_Marks` cde0a065, `Smoke`
+    // a94ca6f0; `Lat_Slip` 0735e463, `Long_Spin` 030016b3; `Curve_Power` ea16e822).
+    pub const VFX_FRONT_TYRES: u32 = field_hash("Front_Tyres");
+    pub const VFX_REAR_TYRES: u32 = field_hash("Rear_Tyres");
+    pub const SKID_MARKS: u32 = field_hash("Skid_Marks");
+    pub const SMOKE: u32 = field_hash("Smoke");
+    pub const LAT_SLIP: u32 = field_hash("Lat_Slip");
+    pub const LONG_SPIN: u32 = field_hash("Long_Spin");
+    pub const CURVE_POWER: u32 = field_hash("Curve_Power");
     // RaceCarPhysicalDefinition.PhysicalDefinition.RigidBody
     pub const RB_TRANSFORM: u32 = 0x0d0c29b4;
     pub const RB_HALF_EXTENTS: u32 = 0x98e902ed;
@@ -381,6 +390,71 @@ pub struct VehicleHandling {
     /// Every numeric field of `HandlingBehaviour`, by path of field hashes
     /// (array elements are skipped). Read with [`VehicleHandling::param`].
     pub params: std::collections::HashMap<Vec<u32>, f32>,
+    /// `TyreVfxBehaviour` (front, rear): the intensity ramps of the tyre smoke and the tyre marks
+    /// (`mw_handling::tyre_vfx`, docs/decomp.md "Tyre marks and tyre smoke").
+    pub tyre_vfx: Option<[TyreVfxAxle; 2]>,
+}
+
+/// One intensity ramp of `TyreVfxBehaviour.FrontRearParams.{Skid_Marks,Smoke}` (`LatParams` / `LongParams`).
+/// The game's evaluation is `FUN_009cef90` (`mw_handling::tyre_vfx`).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct TyreVfxRamp {
+    /// `Curve_Power`: the normalised input is raised to this power.
+    pub power: f32,
+    /// Input where the ramp starts / reaches 1 (`6a83c966` / `53b71e27`: slip angle in degrees for the lateral
+    /// ramp; `1281cf25` / `6a55fbd2`: |tread − ground| speed in mph for the spin and lock ramps).
+    pub start: f32,
+    pub full: f32,
+    /// `35caad30`: the target at full input.
+    pub scale: f32,
+    /// `6274d1ad` / `27c5dd70`: the smoothing rates per 60 Hz tick while rising / falling.
+    pub rise: f32,
+    pub fall: f32,
+    /// Lateral ramp only: the car speed (mph) window it is scaled by (`26028ef5` → `2c72e92a`).
+    pub speed: [f32; 2],
+}
+
+/// `TyreVfxBehaviour.FrontRearParams.SkidMarkParams` / `SmokeParams`: `Lat_Slip`, `Long_Spin` and `64222c3f`
+/// (the lock / braking ramp: the same hash is `TyreSoundParams.LongSpinBraking`).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct TyreVfxBlock {
+    pub lat: TyreVfxRamp,
+    pub spin: TyreVfxRamp,
+    pub lock: TyreVfxRamp,
+}
+
+/// One axle's `TyreVfxBehaviour.FrontRearParams`.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct TyreVfxAxle {
+    pub skid_marks: TyreVfxBlock,
+    pub smoke: TyreVfxBlock,
+}
+
+fn read_tyre_vfx(o: &Object) -> Option<[TyreVfxAxle; 2]> {
+    let ramp = |p: &Object, lateral: bool| -> Option<TyreVfxRamp> {
+        let (start, full) = if lateral { (0x6a83c966, 0x53b71e27) } else { (0x1281cf25, 0x6a55fbd2) };
+        Some(TyreVfxRamp {
+            power: float(p, h::CURVE_POWER)?,
+            start: float(p, start)?,
+            full: float(p, full)?,
+            scale: float(p, 0x35caad30)?,
+            rise: float(p, 0x6274d1ad)?,
+            fall: float(p, 0x27c5dd70)?,
+            speed: if lateral { [float(p, 0x26028ef5)?, float(p, 0x2c72e92a)?] } else { [0.0, 0.0] },
+        })
+    };
+    let block = |b: &Object| -> Option<TyreVfxBlock> {
+        Some(TyreVfxBlock {
+            lat: ramp(sub(b, h::LAT_SLIP)?, true)?,
+            spin: ramp(sub(b, h::LONG_SPIN)?, false)?,
+            lock: ramp(sub(b, 0x64222c3f)?, false)?,
+        })
+    };
+    let axle = |hash| -> Option<TyreVfxAxle> {
+        let a = sub(o, hash)?;
+        Some(TyreVfxAxle { skid_marks: block(sub(a, h::SKID_MARKS)?)?, smoke: block(sub(a, h::SMOKE)?)? })
+    };
+    Some([axle(h::VFX_FRONT_TYRES)?, axle(h::VFX_REAR_TYRES)?])
 }
 
 fn float(o: &Object, hash: u32) -> Option<f32> {
@@ -436,6 +510,7 @@ impl VehicleHandling {
                     }
                 }
                 "Genesys.Gen.HandlingBehaviour" => out.read_handling(&obj),
+                "Genesys.Gen.TyreVfxBehaviour" => out.tyre_vfx = read_tyre_vfx(&obj),
                 "Genesys.Gen.VehicleCameraContainer" => out.camera = VehicleCameras::from_container(&obj),
                 "Genesys.Gen.Vehicle_Gameplay" => {
                     out.ai_steering_pid = sub(&obj, h::GAMEPLAY_PID)

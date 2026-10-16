@@ -18,6 +18,7 @@ use mw_assets::camera::VehicleCameras;
 use mw_assets::handling::{LateralCurve, LongCurve, SlipBlend, Steering, SurfaceLink, TyreAxle, VehicleHandling};
 use mw_handling::surface::{self, SurfaceGrip};
 use mw_handling::suspension;
+use mw_handling::tyre_vfx;
 
 use crate::chassis::ChassisParams;
 use crate::drift::{self, DriftInput, DriftParams, DriftState};
@@ -115,6 +116,8 @@ pub struct CarParams {
     pub drift: Option<DriftParams>,
     /// How the tyres treat each surface (grip blend, slide drag): `VehicleSurfaceProfile` links.
     pub surface_links: Vec<SurfaceLink>,
+    /// `TyreVfxBehaviour` (front, rear): the tyre smoke and tyre mark ramps (`mw_handling::tyre_vfx`).
+    pub tyre_vfx: Option<[mw_assets::handling::TyreVfxAxle; 2]>,
     /// The AI driver's steering PID gains (Proportional, Integral, Derivative), `Vehicle_Gameplay.PIDController`
     /// (`ai_driver.rs`; the 911's 0.3 / 0.01 / 0.1 when a car has none).
     pub ai_steer_pid: [f32; 3],
@@ -166,6 +169,8 @@ const TYRE_NORMAL_MIN_UP: f32 = 0.5;
 /// Floor on the slide-drag ramp's slip-angle span (`DAT_01025ab0`, FLT_EPSILON in `FUN_009cdd90`).
 const DRAG_SLIP_SPAN_MIN: f32 = f32::EPSILON;
 pub(crate) const MPH: f32 = 0.44704;
+/// Tyre width (m) for a car without wheel bodies (model decision).
+const TYRE_WIDTH_DEFAULT: f32 = 0.25;
 /// Steering outwards at the full steer rate needs |raw input| ≥ this; below it the game uses the raw
 /// `High_speed_steer_rate` (`FUN_009d73f0`; `.bss` 0x01186e90, read from the running game).
 const STEER_FULL_INPUT: f32 = 0.99;
@@ -236,6 +241,7 @@ impl CarParams {
             camera: h.camera,
             drift: DriftParams::new(h),
             surface_links: h.surface_links.clone(),
+            tyre_vfx: h.tyre_vfx,
             ai_steer_pid: h.ai_steering_pid.unwrap_or([0.3, 0.01, 0.1]),
             damage_stats: h.damage_stats.unwrap_or_default(),
         }
@@ -356,6 +362,13 @@ struct WheelState {
     contact: Option<WheelContact>,
     /// The grip of the surface under the wheel and of those it just left (`mw_handling::surface`).
     surface: SurfaceGrip,
+    /// The wheel's tyre smoke and tyre mark ramps (`FUN_009cef90`: vehicle +0x2c90 + 0x30 i, lanes 0..2 and
+    /// 4, 5, 7).
+    smoke: tyre_vfx::Ramps,
+    marks: tyre_vfx::Ramps,
+    /// Full tyre width (m): twice the wheel body's half extent across the car (the strip width the game passes
+    /// with each tyre mark point is wheel +0xbc, read here as the tyre width; not traced).
+    width: f32,
 }
 
 /// A wheel's ground contact, for effects (tyre smoke, kick-up). World space.
@@ -372,6 +385,16 @@ pub struct WheelContact {
     pub tread_slip: f32,
     /// The surface's `VehicleEffects` (dry block): how fast it makes the car dirty (`paint_wear.rs`).
     pub effects: Option<mw_assets::surfaces::VehicleEffects>,
+    /// The surface under the wheel: its index in the game's surface list (`Surfaces.Surfaces`, the collision
+    /// tag's bits 13–19; `mw_assets::vfx::VfxLibrary::surfaces` has the same order).
+    pub surface: Option<usize>,
+    /// The wheel's smoothed smoke and tyre mark intensities (`mw_handling::tyre_vfx`).
+    pub smoke: tyre_vfx::Ramps,
+    pub marks: tyre_vfx::Ramps,
+    /// Full tyre width (m).
+    pub width: f32,
+    /// The tyre's lateral axis on the ground (unit; the steered wheel's, from the tyre frame).
+    pub across: Vec3,
 }
 
 impl Car {
@@ -438,6 +461,7 @@ fn spawn_car(
     spatial: SpatialQuery,
     mut camera: Query<&mut Transform, crate::MainCamera>,
     residency: Option<Res<crate::frontend::Residency>>,
+    crank: Option<Res<crate::ignition::CrankAtSpawn>>,
 ) {
     let Some(pending) = pending else { return };
     // A placement waits until its target is resident within max(200 m, 3 s of travel) (`FUN_00647e00`), so
@@ -475,6 +499,12 @@ fn spawn_car(
         },
     );
     commands.entity(car).insert((Player, crate::nitrous::NitrousFeed::new(pending.spec.top_speed_mph)));
+    // The engine's start-up states (`ignition.rs`), timed by the car's ignition sequence.
+    let ignition = match &pending.spec.engine {
+        Some(mw_assets::engine_sound::EngineVoice::Bank(b)) => b.ignition,
+        _ => None,
+    };
+    commands.entity(car).insert(crate::ignition::EngineStart::new(crank.is_some_and(|c| c.0), ignition));
     info!(
         "nitrous: burn {}/s, start from {} units and {} mph, top speed {} mph (HighSpeed above {}%)",
         nitrous_rules.usage.burn,
@@ -623,6 +653,13 @@ pub fn build_car(commands: &mut Commands, b: &CarBuild) -> Entity {
             })
             .map_or(25.0, |b| b.mass)
             .max(5.0);
+        let width = h
+            .wheels
+            .iter()
+            .min_by(|a, b| {
+                Vec3::from(a.position).distance(w.position).total_cmp(&Vec3::from(b.position).distance(w.position))
+            })
+            .map_or(TYRE_WIDTH_DEFAULT, |b| 2.0 * b.half_width);
         let share = if w.front { params.drivetrain.front_share } else { 1.0 - params.drivetrain.front_share };
         let inertia =
             0.5 * wheel_mass * radius * radius + if share > 0.0 { params.drivetrain.transmission_inertia } else { 0.0 };
@@ -680,6 +717,9 @@ pub fn build_car(commands: &mut Commands, b: &CarBuild) -> Entity {
             spinner,
             contact: None,
             surface: SurfaceGrip::default(),
+            smoke: tyre_vfx::Ramps::default(),
+            marks: tyre_vfx::Ramps::default(),
+            width,
         });
     }
     // A car swapped in at speed starts in the gear that speed needs.
@@ -1237,6 +1277,13 @@ pub(crate) fn car_physics(
             // The tyre acts where the wheel's contact carries a normal impulse (`FUN_009c75b0` skips it otherwise).
             let Some(g) = ground.as_ref().filter(|_| wheel.touching && wheel.normal_impulse > 0.0) else {
                 wheel.contact = None;
+                // In the air the ramps head for 0 (model decision: what the game's wheel inputs read off the
+                // ground was not traced).
+                if let Some(v) = &p.tyre_vfx {
+                    let a = &v[usize::from(!wheel.front)];
+                    wheel.smoke.step(&a.smoke, &tyre_vfx::WheelInput::default(), dt);
+                    wheel.marks.step(&a.skid_marks, &tyre_vfx::WheelInput::default(), dt);
+                }
                 let step = (brake_left / wheel.inertia).min(wheel.omega.abs());
                 wheel.omega -= step * wheel.omega.signum();
                 wheel.spin += wheel.omega * dt;
@@ -1367,6 +1414,18 @@ pub(crate) fn car_physics(
             }
 
             wheel.spin += wheel.omega * dt;
+            // The smoke and tyre mark ramps (`FUN_009cef90`, each tick after the dirt build-up): |tread − ground|,
+            // |α| and the car's speed; κ splits spinning from locked wheels.
+            if let Some(v) = &p.tyre_vfx {
+                let input = tyre_vfx::WheelInput {
+                    tread_slip: wheel.omega * r - v_long,
+                    slip_deg: wheel.slip.1,
+                    speed: mph_abs * MPH,
+                    kappa: wheel.slip.0,
+                };
+                wheel.smoke.step(&v[axle].smoke, &input, dt);
+                wheel.marks.step(&v[axle].skid_marks, &input, dt);
+            }
             wheel.contact = Some(WheelContact {
                 point: contact,
                 normal,
@@ -1374,6 +1433,11 @@ pub(crate) fn car_physics(
                 velocity: v,
                 tread_slip: wheel.omega * r - v_long,
                 effects: surface.effects,
+                surface: surface.index,
+                smoke: wheel.smoke,
+                marks: wheel.marks,
+                width: wheel.width,
+                across: side,
             });
         }
         // --- Low-speed turn-around assist (`FUN_008f8360`) -------------------------------------------------
@@ -1562,6 +1626,8 @@ pub(crate) fn car_physics(
 /// What the ground under one wheel does to its tyre (`FUN_009d8bd0`: `FUN_0054d750` looks the surface up,
 /// `FUN_009d4b70` finds the car's link for it, `FUN_009cec40` blends the grip, `FUN_009d4a10` the drag).
 struct WheelSurface {
+    /// The surface's index in the game's surface list (the collision tag's bits 13–19, or the test track's).
+    index: Option<usize>,
     /// The `SurfacePhysics` unique id (`u32::MAX` when the surface is not known).
     uid: u32,
     /// (lateral, longitudinal) grip factors on the tyre caps, before the fade of a surface just left.
@@ -1593,11 +1659,12 @@ impl WheelSurface {
         p: &CarParams,
         front: bool,
     ) -> Self {
-        let tagged = world_tags
+        let hit = world_tags
             .get(entity)
             .ok()
-            .and_then(|(collider, tags)| surfaces.surface_at(collider, tags, origin, *dir, reach))
-            .and_then(|hit| hit.surface);
+            .and_then(|(collider, tags)| surfaces.surface_at(collider, tags, origin, *dir, reach));
+        let index = Some(hit.as_ref().map_or(surfaces.untagged, |h| h.tag.surface as usize));
+        let tagged = hit.and_then(|hit| hit.surface);
         let info = tagged.or_else(|| surfaces.list.get(surfaces.untagged).or(surfaces.list.first()).cloned());
         let base = info.as_ref().and_then(|s| s.grip).unwrap_or(1.0);
         let uid = info.as_ref().and_then(|s| s.physics_uid);
@@ -1613,6 +1680,7 @@ impl WheelSurface {
         let roughness =
             info.as_ref().and_then(|s| s.roughness).map(surface::roughness_scale).filter(|&(f, a)| f > 0.0 && a > 0.0);
         Self {
+            index,
             uid: uid.unwrap_or(u32::MAX),
             grip,
             target: link.map_or(1.0, |l| l.grip),

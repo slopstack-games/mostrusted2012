@@ -32,8 +32,10 @@ mod frontend;
 mod game_text;
 mod garage;
 mod gate_marker;
+mod gps;
 mod groundcover;
 mod hud;
+mod ignition;
 mod input;
 mod input_script;
 mod jackspots;
@@ -44,6 +46,7 @@ mod materials;
 mod menu;
 mod mods_menu;
 mod movie;
+mod music;
 mod nitrous;
 mod paint_wear;
 mod particles;
@@ -63,6 +66,7 @@ mod sky;
 mod steam_controller;
 mod tonemap;
 mod traffic;
+mod traffic_reaction;
 mod tyre_marks;
 mod ui_quads;
 mod weather;
@@ -140,8 +144,9 @@ struct Cli {
     /// Smash test: speed (km/h) the car holds through the props.
     #[arg(long, default_value_t = 60.0)]
     smash_speed: f32,
-    /// Smash test: what stands on the track: `props` (cone, sign, lamp, fence, wall) or `compounds` (six
-    /// compound objects that break into their parts, filmed from beside the last knock).
+    /// Smash test: what stands on the track: `props` (cone, sign, lamp, fence, wall), `compounds` (six
+    /// compound objects that break into their parts, filmed from beside the last knock) or `bags` (a trash bag
+    /// and crates without an `AdditionalInfo`).
     #[arg(long, default_value = "props")]
     smash_set: String,
     /// Draw props, compound and dynamic objects without collision (smashable street furniture is on by
@@ -375,6 +380,9 @@ struct Cli {
     /// Choose START RACE for this event on the map: the event-loading card, then the race with its intro.
     #[arg(long)]
     map_start: Option<u32>,
+    /// Choose SET DESTINATION for this event on the map (the GPS route; the map closes again unless --show-map).
+    #[arg(long)]
+    map_waypoint: Option<u32>,
 }
 
 #[derive(Resource)]
@@ -826,6 +834,7 @@ fn main() -> anyhow::Result<()> {
             cli.screenshot.clone(),
             cli.smash_speed / 3.6,
             cli.smash_set == "compounds",
+            props::smash_test_props(&cli.smash_set).len(),
         ));
         app.add_plugins(props::SmashTestPlugin);
         app.add_systems(Startup, |mut t: ResMut<Time<Virtual>>| t.set_relative_speed(2.0));
@@ -912,6 +921,7 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(car_impacts::CarImpactsPlugin)
         .add_plugins(nitrous::NitrousPlugin)
         .add_plugins(exhaust::ExhaustPlugin)
+        .add_plugins(ignition::IgnitionPlugin { crank_at_spawn: cli.test.is_none() && cli.replay.is_none() })
         .add_plugins(tyre_marks::TyreMarksPlugin)
         .add_plugins(paint_wear::PaintWearPlugin)
         .add_plugins(freeroam::FreeroamPlugin {
@@ -961,14 +971,20 @@ fn main() -> anyhow::Result<()> {
             map: false,
         })
         .add_plugins(map_screen::MapScreenPlugin {
-            enabled: (menu_enabled || cli.show_pause || cli.show_map || cli.map_start.is_some())
+            enabled: (menu_enabled
+                || cli.show_pause
+                || cli.show_map
+                || cli.map_start.is_some()
+                || cli.map_waypoint.is_some())
                 && matches!(request, Request::Drive { .. }),
             open: cli.show_map || (cli.show_pause && cli.pause_map),
             select: cli.map_select,
             options: cli.map_options,
             start: cli.map_start,
+            waypoint: cli.map_waypoint,
         })
         .add_plugins(event_card::EventCardPlugin)
+        .add_plugins(gps::GpsPlugin)
         .add_plugins(game_text::GameTextPlugin)
         .add_plugins(ui_quads::UiQuadsPlugin)
         .add_plugins((world_ui::WorldUiPlugin, gate_marker::GateMarkerPlugin))
@@ -981,15 +997,17 @@ fn main() -> anyhow::Result<()> {
             open: cli.show_settings,
         })
         .add_plugins((car_audio::CarAudioPlugin, car_sfx::CarSfxPlugin, player_sfx::PlayerSfxPlugin))
-        .add_plugins(audio::GameAudioPlugin {
-            music: !cli.no_music
-                && !cli.mute
-                && screenshot.is_none()
-                && test.is_none()
-                && !race_test
-                && !crash
-                && !smash
-                && cli.replay.is_none(),
+        .add_plugins(audio::GameAudioPlugin)
+        .add_plugins(music::MusicPlugin {
+            enabled: std::env::var("MW_MUSIC").is_ok_and(|v| v == "1")
+                || (!cli.no_music
+                    && !cli.mute
+                    && screenshot.is_none()
+                    && test.is_none()
+                    && !race_test
+                    && !crash
+                    && !smash
+                    && cli.replay.is_none()),
         })
         .insert_resource(drive::CarInput { auto_throttle: cli.auto_throttle, auto_nitrous: cli.nitrous, ..default() })
         .insert_resource(mods_menu::ModSelection::parse(&cli.mods, &[]))
@@ -1273,7 +1291,7 @@ fn receive_assets(
                 });
                 loaded.instances += 1;
             }
-            Msg::Prop { model, transform, physics, pieces, lod } => {
+            Msg::Prop { model, transform, physics, pieces, lod, standing, found } => {
                 let Some(parts) = loaded.models.get(&model) else { continue };
                 let range = loaded.shadow_ranges.get(&model).copied().map(shadow_cull::ShadowRange);
                 let get = |k: &Option<mw_bundle::ResourceId>| k.and_then(|k| loaded.models.get(&k).cloned());
@@ -1281,13 +1299,22 @@ fn receive_assets(
                     parts: parts.iter().map(get).collect(),
                     rest: get(&rest),
                 });
-                let sets = lod::mesh_sets(lod.as_ref(), (model, parts), &loaded.models);
-                let sets: Vec<_> = sets
-                    .into_iter()
-                    .map(|(k, parts, mask)| {
-                        (parts, mask, loaded.shadow_ranges.get(&k).copied().map(shadow_cull::ShadowRange))
+                let with_ranges = |sets: Vec<(mw_bundle::ResourceId, ModelParts, u8)>| -> Vec<_> {
+                    sets.into_iter()
+                        .map(|(k, parts, mask)| {
+                            (parts, mask, loaded.shadow_ranges.get(&k).copied().map(shadow_cull::ShadowRange))
+                        })
+                        .collect()
+                };
+                let sets = with_ranges(lod::mesh_sets(lod.as_ref(), (model, parts), &loaded.models));
+                // A billboard's second standing model (the found one), with its own LODs.
+                let found = found.and_then(|(key, lod)| {
+                    let parts = loaded.models.get(&key)?;
+                    Some(props::MeshSets {
+                        sets: with_ranges(lod::mesh_sets(lod.as_ref(), (key, parts), &loaded.models)),
+                        lod: lod.map(|l| (l.table, l.scale)),
                     })
-                    .collect();
+                });
                 props::spawn_prop(
                     &mut commands,
                     physics,
@@ -1296,6 +1323,8 @@ fn receive_assets(
                     range,
                     pieces,
                     lod.map(|l| (l.table, l.scale)),
+                    standing,
+                    found,
                 );
                 loaded.instances += 1;
                 loaded.props += 1;

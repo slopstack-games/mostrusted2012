@@ -356,6 +356,12 @@ fn sequences(store: &AssetStore, events: &Events, e: &Event) {
                 ItemKind::StreamedImage { target, index } => format!("streamed image {target} <- {index}"),
                 ItemKind::GeneralTrigger { name, trigger } => format!("general trigger {name} [{trigger}]"),
                 ItemKind::Conductor(s) => format!("conductor: sequence {} ({} items)", s.unique_id, s.items.len()),
+                ItemKind::Wave(w) => format!(
+                    "wave {:?} gain {} fade in {} out {} type {}",
+                    w.waves, w.gain.value, w.fade_in, w.fade_out, w.kind
+                ),
+                ItemKind::SetSongList { list, flags } => format!("set song list {list} {flags:?}"),
+                ItemKind::MusicState(s) => format!("music state {s:?}"),
                 ItemKind::Other(n) => n.clone(),
             };
             println!("    {:6.2}-{:6.2} {}{what}", i.start, i.end, "  ".repeat(i.depth as usize));
@@ -474,6 +480,9 @@ fn print_ui_sequence(seq: &mw_assets::sequence::Sequence, depth: usize) {
             ItemKind::StreamedImage { target, index } => format!("streamed image {target} <- {index}"),
             ItemKind::GeneralTrigger { name, trigger } => format!("general trigger {name} [{trigger}]"),
             ItemKind::Conductor(_) => "conductor".into(),
+            ItemKind::Wave(w) => format!("wave {:?} gain {} type {}", w.waves, w.gain.value, w.kind),
+            ItemKind::SetSongList { list, flags } => format!("set song list {list} {flags:?}"),
+            ItemKind::MusicState(s) => format!("music state {s:?}"),
             ItemKind::Other(n) => n.clone(),
             _ => "(other)".into(),
         };

@@ -43,9 +43,110 @@ pub struct PoiKeys {
     /// `MapPoiConfig` `29401278` (1013507): its map icon is the player-coloured car arrow (which field the
     /// code reads for the local player was not traced).
     pub player: u32,
-    /// `MapPoiConfig` `5bfb3553` (1013521): racer / cop arrows (not traced which field races use).
+    /// `MapPoiConfig` `5bfb3553` (1013521): racer / cop arrows (not traced which field races use). The look
+    /// itself switches between the racer and the cop arrow on `Players.PlayerBase[#].IsCop`.
     pub opponent: u32,
+    /// `CollectablesConfig` +0x10 (`d71dba55`, 1444895): a body shop (`FUN_006ffba0`, kind 6).
+    pub body_shop: u32,
+    /// `CollectablesConfig` +0x48 (`507e9d87`, 1013508): a jack spot location (`FUN_006ffba0`, kinds '<', 'B',
+    /// 'E', 'K', 'N', base game); its map icon is visible on `JackSpots.IsSwapSpotFound[#]`.
+    pub jack_spot: u32,
+    /// `CollectablesConfig` +0x34 (`a1b2d86a`, 955694): the jack spot look when `FUN_006fcf90` holds (the
+    /// spot's car in a list of the profile; its icon has no visibility binding).
+    pub jack_spot_owned: u32,
 }
+
+/// The world map's item kinds (`UI.MapItemType.ItemType`), as the map code adds them (`FUN_008181b0`,
+/// `FUN_008154f0`, `FUN_00817500`).
+pub mod map_item {
+    pub const LOCAL_PLAYER: u16 = 0;
+    /// An offline event (`MapItemTypes[1]`).
+    pub const EVENT: u16 = 1;
+    pub const SPEED_CAMERA: u16 = 3;
+    /// Billboards (`DataSource` "Jump").
+    pub const BILLBOARD: u16 = 4;
+    pub const SECURITY_GATE: u16 = 5;
+    /// A jack spot location while `FUN_006fcf90` does not hold.
+    pub const JACK_SPOT: u16 = 7;
+    /// An offline event with `c8f26580` (+0xe9, first place only) set: the Most Wanted races.
+    pub const MOST_WANTED_EVENT: u16 = 9;
+    pub const BODY_SHOP: u16 = 13;
+    /// A jack spot location while `FUN_006fcf90` holds.
+    pub const JACK_SPOT_OWNED: u16 = 14;
+}
+
+/// The world map's filters (`Widget_MapFilters.Filter.FilterType`) and what `FUN_008181b0` lists for each.
+pub mod map_filter {
+    /// Events (`FUN_008154f0` with the driven car's rules).
+    pub const RACES: u16 = 1;
+    /// Trigger kinds '4' and 'G' as item type 3.
+    pub const SPEED_CAMERAS: u16 = 3;
+    /// Trigger kinds '2', 'A', 'D', 'J', 'M' as item type 4.
+    pub const BILLBOARDS: u16 = 4;
+    /// Trigger kind '0' as item type 5.
+    pub const SECURITY_GATES: u16 = 5;
+    /// Trigger kind '<' as item type 7 / 14 and the packs' kinds 'B', 'E', 'K', 'N' as 15–18.
+    pub const JACK_SPOTS: u16 = 7;
+    /// Autolog recommendations (events by other rules).
+    pub const RECOMMENDS: u16 = 9;
+    /// Body shops (trigger kind 6) as item type 13.
+    pub const BODY_SHOPS: u16 = 12;
+}
+
+/// One `UI.MapItemType` of the world map's `LiveMapManager_ScreenScript` (1135185).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MapItemType {
+    /// `ItemType` (+0x28): the index the code files the entry under (`FUN_0080ec90`: `+0x2298 + 4 × type`).
+    pub item_type: u16,
+    /// `DataSource`: the option menu (a `Widget_MenuData` of the map screen) for the item.
+    pub data_source: String,
+    /// `650f3bfb` (+0x20): the point-of-interest key of the item's icon.
+    pub icon: u32,
+    /// `c3f39ca3` (+0x24): the key of the card shown for the selected item.
+    pub card: u32,
+    pub options_height: u16,
+}
+
+/// The world map's configuration (`LiveMapManager_ScreenScript` 1135185), as `FUN_0080ec90` reads it by
+/// field name.
+#[derive(Debug, Clone, Default)]
+pub struct MapManagerConfig {
+    pub item_types: Vec<MapItemType>,
+    /// `CollectablesName`: (item type, language id) of the collectables' names ("SPEED CAMERA", ...).
+    pub collectable_names: Vec<(u16, u32)>,
+    /// `SelectionPOI` (1135303): the cursor.
+    pub selection_poi: u32,
+    /// `AIPlayerPOI` / `AICopPOI` (both 1135615) and `BlackListDriver` (1444899): racers, cops, Most Wanted
+    /// racers (`FUN_00808290`).
+    pub ai_player_poi: u32,
+    pub ai_cop_poi: u32,
+    pub blacklist_driver_poi: u32,
+    /// `CheckpointPOI` (1135616) / `FinishLinePOI` (1135617): the race route's gates on the map.
+    pub checkpoint_poi: u32,
+    pub finish_line_poi: u32,
+}
+
+impl MapManagerConfig {
+    pub fn item(&self, item_type: u16) -> Option<&MapItemType> {
+        self.item_types.iter().find(|t| t.item_type == item_type)
+    }
+
+    pub fn collectable_name(&self, item_type: u16) -> Option<u32> {
+        self.collectable_names.iter().find(|(t, _)| *t == item_type).map(|(_, n)| *n)
+    }
+}
+
+/// A filter of the world map (`Widget_MapFilters.Filter`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MapFilter {
+    /// `FilterName`: language id ("RACES").
+    pub name: u32,
+    /// `FilterType`: what is listed ([`map_filter`]).
+    pub filter_type: u16,
+}
+
+/// The world map's `LiveMapManager_ScreenScript` (in `UI/SCREENS2/899991.BNDL`).
+pub const LIVE_MAP_MANAGER_SCRIPT: u32 = 1_135_185;
 
 /// A layout as a widget places it.
 #[derive(Debug, Clone)]
@@ -132,6 +233,8 @@ impl AssetStore {
                 Some(Value::Int(i)) => *i as u32,
                 _ => 0,
             };
+            let collectables = self.genesys_object(fmt::ui::object_id(crate::scoring::COLLECTABLES_CONFIG)).ok();
+            let ck = |h: u32| collectables.as_ref().map_or(0, |o| key(o, h));
             return Ok(PoiKeys {
                 gate: key(cp, field_hash("NormalPoi")),
                 gate_preview: key(cp, 0xe9d2_21fe),
@@ -139,9 +242,94 @@ impl AssetStore {
                 finish_preview: key(map, 0x8d67_562d),
                 player: key(map, 0x2940_1278),
                 opponent: key(map, 0x5bfb_3553),
+                body_shop: ck(0xd71d_ba55),
+                jack_spot: ck(0x507e_9d87),
+                jack_spot_owned: ck(0xa1b2_d86a),
             });
         }
         Err(Error::Missing(ResourceId::NULL))
+    }
+
+    /// The world map's `LiveMapManager_ScreenScript` ([`LIVE_MAP_MANAGER_SCRIPT`]): its item types (icon and
+    /// card keys per kind), the collectables' names and the racers' / cops' / route's looks.
+    pub fn map_manager_config(&self) -> Result<MapManagerConfig> {
+        use fmt::genesys::{Value, field_hash};
+        let o = self.genesys_object(fmt::ui::object_id(LIVE_MAP_MANAGER_SCRIPT))?;
+        let num = |o: &fmt::genesys::Object, h: u32| match o.get(h) {
+            Some(Value::UInt(u)) => *u as u32,
+            Some(Value::Int(i)) => *i as u32,
+            _ => 0,
+        };
+        let structs = |h: u32| -> Vec<&fmt::genesys::Object> {
+            match o.get(h) {
+                Some(Value::Array(a)) => a
+                    .iter()
+                    .filter_map(|v| match v {
+                        Value::Struct(s) => Some(s),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            }
+        };
+        let item_types = structs(field_hash("MapItemTypes"))
+            .into_iter()
+            .map(|t| MapItemType {
+                item_type: num(t, field_hash("ItemType")) as u16,
+                data_source: match t.get(field_hash("DataSource")) {
+                    Some(Value::Str(s)) => s.clone(),
+                    _ => String::new(),
+                },
+                icon: num(t, 0x650f_3bfb),
+                card: num(t, 0xc3f3_9ca3),
+                options_height: num(t, field_hash("OptionsHeight")) as u16,
+            })
+            .collect();
+        let collectable_names = structs(field_hash("CollectablesName"))
+            .into_iter()
+            .map(|c| (num(c, field_hash("ItemType")) as u16, num(c, field_hash("CollectableName"))))
+            .collect();
+        Ok(MapManagerConfig {
+            item_types,
+            collectable_names,
+            selection_poi: num(&o, field_hash("SelectionPOI")),
+            ai_player_poi: num(&o, field_hash("AIPlayerPOI")),
+            ai_cop_poi: num(&o, field_hash("AICopPOI")),
+            blacklist_driver_poi: num(&o, field_hash("BlackListDriver")),
+            checkpoint_poi: num(&o, field_hash("CheckpointPOI")),
+            finish_line_poi: num(&o, field_hash("FinishLinePOI")),
+        })
+    }
+
+    /// The filters of the `Widget_MapFilters` in widget group `group` of a screen (the offline world map's
+    /// 1135638: RACES, JACK SPOTS, RECOMMENDS, SPEED CAMERAS, BILLBOARDS).
+    pub fn map_filters(&self, screen: &str, group: u32) -> Result<Vec<MapFilter>> {
+        use fmt::genesys::{Value, field_hash};
+        let o = self.ui_screen_object(screen)?;
+        let mut groups = Vec::new();
+        crate::frontend::collect(&o, "Genesys.Gen.WidgetGroup", &mut groups);
+        let num = |o: &fmt::genesys::Object, h: u32| match o.get(h) {
+            Some(Value::UInt(u)) => *u as u32,
+            Some(Value::Int(i)) => *i as u32,
+            _ => 0,
+        };
+        let g = groups
+            .into_iter()
+            .find(|g| num(g, 0x655d_3f5f) == group)
+            .ok_or(Error::Missing(fmt::ui::object_id(group)))?;
+        let mut widgets = Vec::new();
+        crate::frontend::collect(g, "Genesys.Gen.Widget_MapFilters", &mut widgets);
+        let w = widgets.first().ok_or(Error::Missing(fmt::ui::object_id(group)))?;
+        let mut filters = Vec::new();
+        crate::frontend::collect(w, "Genesys.Gen.Widget_MapFilters.Filter", &mut filters);
+        Ok(filters
+            .into_iter()
+            .map(|f| MapFilter {
+                name: num(f, field_hash("FilterName")),
+                filter_type: num(f, field_hash("FilterType")) as u16,
+            })
+            .filter(|f| f.name != 0)
+            .collect())
     }
 
     pub fn ui_layout(&self, id: ResourceId) -> Result<Layout> {
@@ -937,6 +1125,7 @@ impl<'a> DrawOptions<'a> {
             };
             t.apply(&e.transition_in, since);
         }
+        let mut held: Vec<(usize, f32)> = Vec::new();
         for (k, tb) in e.triggered.iter().enumerate() {
             if tb.trigger.is_empty() {
                 continue;
@@ -953,10 +1142,8 @@ impl<'a> DrawOptions<'a> {
                 None => f32::INFINITY,
             };
             t.apply(if on { &tb.transition_in } else { &tb.transition_out }, since);
-            // A triggered behaviour's idle steps run while its trigger holds (the title's "PRESS START" /
-            // "PRESS ANY KEY" pair hide each other with an instant `OUT` on the pad-connected binding).
             if on {
-                t.apply_started(&tb.idle, since);
+                held.push((k, since));
             }
         }
         // The element's own idle fades loop over their span (the prompt's pulse: `OUT` 0–0.8 s, `IN` 0.8–1.8 s),
@@ -970,6 +1157,15 @@ impl<'a> DrawOptions<'a> {
             let since = (((now - appeared) * 1000.0) as f32).rem_euclid(period);
             let steps: Vec<fmt::ui::Behaviour> = e.idle.iter().filter(fades).cloned().collect();
             t.apply_started(&steps, since);
+        }
+        // A triggered behaviour's idle steps run while its trigger holds, on top of the element's own idle: the
+        // title's prompt pair (layout 1274392: label 1597779 "PRESS START" hides on
+        // `Controls.IsXInputControllerConnected(NOT)`, label 1274432 "PRESS ANY KEY" on
+        // `Controls.IsXInputControllerConnected`) hide each other with an instant `OUT`, which the looping pulse's
+        // `IN` must not undo (it did: both prompts showed over each other). The order is our reading: the tween
+        // code was not traced.
+        for (k, since) in held {
+            t.apply_started(&e.triggered[k].idle, since);
         }
         t
     }

@@ -5,9 +5,13 @@
 //!
 //! - **Pops** (`FUN_009b20b0`, every physics tick after the gearbox): `mw_assets::engine_driver::ExhaustPops`.
 //!   A backfire holds group 14 for two updates (`FUN_0057a5e0` sets a countdown of 2) and starts
-//!   `Backfire_Sequence`; a pop starts `Pop_Sequence`.
+//!   `Backfire_Sequence`; a pop starts `Pop_Sequence`. The rule reads the sound's audible RPM (vehicle +0x1f00 =
+//!   `Idle_RPM + (Max_RPM − Idle_RPM) × +0x1f10`), and +0x1f10 includes the RPM offsets the engine sequences post
+//!   (effect property 1, `FUN_009aea50`): the gear changes' engagement kick (+0.2 of the range, falling to 0 in
+//!   a tick at its end on the 911) and the LFO shunt are what drop it fast enough for backfires, so the player's
+//!   rule is fed the engine sound's offsets and load ([`Exhaust::set_sound`]).
 //! - **Groups** (`FUN_0057a5e0` builds the mask, `FUN_005b2740` adds 12 for a wreck): 8 while nitrous burns, 14
-//!   backfire, 19 while the engine runs (the gearbox is past its start-up states: always, here). 9 and 20 are
+//!   backfire, 19 while the engine runs (the gearbox is past its start-up states, `ignition.rs`). 9 and 20 are
 //!   the nitrous upgrade's other modes (not run), 12 the wreck (not run).
 //! - **Spot effects** (`FUN_005b28d0`): each effect plays at every locator of its group (mirrored too with
 //!   `Mirror`); a non-looping one starts on its group's rising edge and emits while the group is on. Its
@@ -19,7 +23,7 @@
 
 use avian3d::prelude::{AngularVelocity, CenterOfMass, LinearVelocity};
 use bevy::prelude::*;
-use mw_assets::engine_driver::{ExhaustPops, PopEvent, PopInput, PopParams, normalised_rpm};
+use mw_assets::engine_driver::{ExhaustPops, PopEvent, PopInput, PopParams, normalised_rpm_with};
 use mw_assets::sound::EngineTuning;
 use mw_assets::vfx::{VehicleSpotEffect, spot_group};
 
@@ -54,6 +58,8 @@ pub struct Exhaust {
     was_on: Vec<bool>,
     /// Events not yet handed to the engine sound.
     events: Vec<PopEvent>,
+    /// The engine sound's last RPM offset (effect property 1) and load (+0x1f20), when the car has one.
+    sound: Option<(f32, f32)>,
     /// Totals, for tests and logs.
     pub backfires: u32,
     pub pop_count: u32,
@@ -81,14 +87,21 @@ impl Exhaust {
             pops: ExhaustPops::default(),
             backfire_hold: 0,
             events: Vec::new(),
+            sound: None,
             backfires: 0,
             pop_count: 0,
         }
     }
 
+    /// The engine sound's RPM offset and load this update (`EngineDriver::state`): the pop rule's audible RPM
+    /// is the sound's (vehicle +0x1f10 with the effect items' offsets, `FUN_009aea50`).
+    pub fn set_sound(&mut self, rpm_offset: f32, load: f32) {
+        self.sound = Some((rpm_offset, load));
+    }
+
     /// The car's effect group bits this update (`FUN_0057a5e0`), counting the backfire hold down.
-    fn mask(&mut self, car: &Car) -> u32 {
-        let mut mask = 1u32 << spot_group::ENGINE_RUNNING;
+    fn mask(&mut self, car: &Car, running: bool) -> u32 {
+        let mut mask = if running { 1u32 << spot_group::ENGINE_RUNNING } else { 0 };
         if car.drivetrain.nitrous {
             mask |= 1 << spot_group::NITROUS;
         }
@@ -106,25 +119,25 @@ fn exhaust_tick(
     time: Res<Time>,
     first: Option<Res<FirstBackfire>>,
     mut globals: ResMut<BearGlobals>,
-    mut cars: Query<(&Car, &mut Exhaust, Has<crate::drive::Player>)>,
+    mut cars: Query<(&Car, &mut Exhaust, Has<crate::drive::Player>, Option<&crate::ignition::EngineStart>)>,
 ) {
     let log = std::env::var_os("MW_EXHAUST_LOG").is_some();
-    for (car, mut ex, player) in &mut cars {
+    for (car, mut ex, player, start) in &mut cars {
         let p = &car.params;
-        // The sound's engine load (vehicle +0x1f20) follows the engine's lagged throttle (+0x1d14,
-        // `FUN_009b1f70`); the lagged throttle stands in for it (its smoothing is not ported here).
-        let load = car.drivetrain.throttle;
+        // The sound's engine load (vehicle +0x1f20, `FUN_009b1f70`) and RPM offsets, from the car's engine sound
+        // when it has one; otherwise the engine's lagged throttle (+0x1d14) stands in for the load.
+        let (offset, load) = ex.sound.unwrap_or((0.0, car.drivetrain.throttle));
         // The Bear effects' engine-load input is the player's car (`BearGlobalParameters`); AI and traffic cars run
         // the pop rule too but must not overwrite it.
         if player {
             globals.player_load = load;
         }
         let input = PopInput {
-            fraction: normalised_rpm(&ex.tuning, car.rpm, p.idle_rpm, p.redline_rpm, load),
+            fraction: normalised_rpm_with(&ex.tuning, car.rpm, p.idle_rpm, p.redline_rpm, load, offset),
             idle_rpm: p.idle_rpm,
             max_rpm: p.redline_rpm,
             gearbox_throttle: car.drivetrain.gearbox_throttle,
-            running: true,
+            running: start.is_none_or(|s| s.running()),
             cruising: car.drivetrain.cruising,
         };
         let params = ex.params;
@@ -172,6 +185,8 @@ fn push_sounds(mut cars: Query<&mut Exhaust>, mut sounds: Query<(&mut crate::aud
     for (mut sound, parent) in &mut sounds {
         let Ok(mut ex) = cars.get_mut(parent.parent()) else { continue };
         let Some(driver) = sound.driver.as_mut() else { continue };
+        let state = driver.state();
+        ex.set_sound(state.effects.rpm_offset, state.load);
         let probability = ex.pops.probability;
         driver.push_pops(probability, PopEvent::None);
         for e in ex.events.drain(..) {
@@ -197,10 +212,11 @@ fn spot_effects(
         &LinearVelocity,
         &AngularVelocity,
         Option<&CenterOfMass>,
+        Option<&crate::ignition::EngineStart>,
     )>,
 ) {
-    for (entity, car, mut ex, transform, v, w, com) in &mut cars {
-        let mask = ex.mask(car);
+    for (entity, car, mut ex, transform, v, w, com, start) in &mut cars {
+        let mask = ex.mask(car, start.is_none_or(|s| s.running()));
         let ex = &mut *ex;
         let world = transform.to_matrix();
         let centre = transform.transform_point(com.map_or(Vec3::ZERO, |c| c.0));

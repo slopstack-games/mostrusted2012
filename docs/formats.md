@@ -92,8 +92,9 @@ InstanceList ──> Model ──(LOD state)──> Renderable ──(per mesh)�
   (+0x10 there): it binds `AOMapTextureSampler` and `LightMapTextureSampler` (the engine's global samplers)
   for every mesh of the model (`mw_formats::Model::overrides`).
 - **PropObject (0x217)**: model imports at 0x04 and 0x08 (same model in practice). **CompoundObject (0x215)**:
-  model imports at 0x04 (high detail, skinned to the skeleton at 0x08: one bone per part), 0x24 (lower-poly
-  variant, same bbox) and sometimes 0x28; behaviours at 0x0C (count at 0x01; 0x14-byte entries: GeneSys import
+  model imports at 0x04 (high detail, skinned to the skeleton at 0x08: one bone per part), 0x24 (the unskinned
+  model it stands as, same bbox) and on billboards 0x28 (the found billboard's model; decomp.md "Compound
+  models"); behaviours at 0x0C (count at 0x01; 0x14-byte entries: GeneSys import
   at +0x00, type id at +0x0C), joints at 0x2C (count 0x3C, none in the install), parts at 0x30 (count 0x38,
   0x70 bytes: embedded `WorldObject` with its own behaviours and physical definition at +0x1C, skeleton bone
   +0x60, replaces / next / first replacement u8 part indices +0x64..+0x66, linked parts +0x68 / +0x6C) and a
@@ -441,6 +442,28 @@ See `crates/mw-audio` (decoders reimplemented from vgmstream's documentation of 
   samples).
 - **Wave** resources: 0x80-byte header (f32 1.0 at 0x10, duration in ms as f32 at 0x14), then an SPS stream; its
   `H` block's loop flag separates loops (engine idle, skid, wind) from one-shots (pops, clunks, impacts).
+- **Wave header, more** (2026-10-15): +0x00 = 0x80 when an SPS prefetch follows the header, +0x10 f32 = the
+  wave's gain (1.0 mostly; 0.499 on the 14729 / 14730 loops, 0.562 = -5 dB on the boot transition's bed),
+  +0x18 = the prefetch's length. A prefetched wave holds the stream's `H` block and first `D` blocks; the rest is
+  the file `<UniqueId>.SPS` (e.g. `UI/SEQUENCES/STREAMS/1772189.SPS`, starting with a `D` block; the
+  concatenation decodes to exactly the item's span). Without a prefetch (64-byte resources in
+  `UI/SONGS/SONGS.BNDL`) +0x28 is the stream's path (`UI\SONGS\14729.SPS`). `mw_assets::music`,
+  `mwtool music --wave <id>`.
+- **Music** (`UI/SONGS/SONGS.BNDL`, `mw_assets::music`, `mwtool music`): `SongList { f6b7d3df (string: a
+  Spotify URL on 1084858), FeedbackMessage (+0x14, the "now playing" popup; 30567 on the licensed lists),
+  UniqueId (+0x18), Songs (+0x1c), count (+0x20 u16), 341d0a95 (+0x22: skippable with MUSIC_ADVANCE, and a new
+  song on resume), 3fdcf508 (+0x23: licensed: its position is kept in the profile, user music may replace it) }`;
+  `Song { Sequence (+0x0c, unused), Sound (+0x14, a Wave), AlbumName c95dc017 (+0x1c), Artist (+0x20),
+  UniqueId (+0x24), TrackName e4b95981 (+0x28), bc7081c6 (+0x2c, f32 -0.92..0.99: the situation bias, > 0 the
+  rock songs, < 0 the electronic ones; decomp.md "Music") }`. Lists: 1622455 (42 licensed songs; every
+  `GameMode.MusicPlaylist`), 1845669 (the same 42 in another order) and 1836280 (12) unreferenced in data,
+  116490 (3 short loops, the Autolog player's), 116491 (6), 1084858 (Picture Paradise "Soothing Music", 4),
+  2026345 (the intro race: Baba O'Riley), 1870156 / 1870247 / 1870362 / 1836664 (sequences' `SetSongList`
+  items: credits and cutscenes).
+- **Music sequence items**: `SetSongListSequenceItem { SongList (+0x24), 3c4e5e2b (+0x28: a song may start
+  while the game clock is paused), f28251e6 (+0x29: preload, 1 s lead), cb97beb9 (+0x2a: use default, the
+  event's / mode's list) }`, `MusicStateSequenceItem { State (string: "Mapscreen", "Multiplayer") }` (only
+  exposed as `DynamicMusic.MusicState`).
 - **Sound sequences** (GeneSys, `mw_audio::sequence` has the full model): `Sequence { Binding (StringBase: a game
   value such as "Players.LocalPlayer.GetPlayerAudibleRPM", optionally with a test "(NOT)", "(GTEQ:100)",
   "(BETWEEN,20,60)"), Binding_Min, Binding_Max, SequenceItems }`; an empty binding makes a timeline in seconds.
@@ -564,9 +587,27 @@ same set, from `GLOBALEFFECTS.BNDL` (`mwtool genesys all --type VehicleVfxBehavi
 
 - **Tyre marks**: `SurfaceVfx.TyreMarksMaterials` (`75cb5de9`) = { `eff16a09`, `Offroad`, `Road`, `Sport`, `Track` }
   `Vfx_TyreMarksNew` materials (tyre class), plus `SurfaceVfx.RimMarksMaterial`. Each material: `RunDiffuse`
-  (rolling; transparent on tarmac), `SlipDiffuse` (sideways), `SpinDiffuse` (wheelspin / lock) layers, `WidthScale`
-  (0.65 on tarmac), `Animation`, `Specular`. Per car `TyreVfxBehaviour.{Front,Rear}_Tyres.Skid_Marks` holds the
-  intensity curves (`Lat_Slip`, `Long_Spin`, `64222c3f`; mostly unnamed). Shader: research log 2026-10-06 round 4.
+  (rolling; transparent on tarmac and on the grass / dirt material `…117f02`), `SlipDiffuse` (sideways), `SpinDiffuse`
+  (wheelspin / lock) layers, `WidthScale` (0.65), `Animation`, `Specular`. Three materials over the 48 surfaces
+  with marks: `…117f16` (tarmac, black), `…117f02` (grass and dirt, brown layers), `…117f1b` (wet, `Animation`
+  0.25, specular 0.6). Per car `TyreVfxBehaviour.{Front,Rear}_Tyres.{Skid_Marks,Smoke}` hold the intensity ramps
+  (`Lat_Slip`, `Long_Spin`, `64222c3f` = lock; field roles from the code: decomp.md "Tyre marks and tyre smoke").
+  Shader: research log 2026-10-06 round 4.
+- **`SurfaceVfx` layout** (data offsets as the code reads them; handles 8 bytes, fields sorted by name):
+  +0x0c `TyreMarksMaterials` (inline: +0x18 `eff16a09`, +0x20 `Offroad`, +0x28 `Road`, +0x30 `Sport`, +0x38
+  `Track`), +0x40 `AIWheelEffects`, +0x48 `BottomImpactEffect`, +0x50 `4bbc1cfa`, +0x58 `5830a883`, +0x60
+  `FrontImpactEffect`, +0x68 `ddc2da41`, +0x70 `FrontLeftImpactEffect`, +0x78 `62c63175`, +0x80
+  `FrontRightImpactEffect`, +0x88 `59a0c60a`, +0x90 `LeftImpactEffect`, +0x98 `47bdeeeb`, +0xa0
+  `PlayerWheelEffects`, +0xa8 `RearImpactEffect`, +0xb0 `111c9619`, +0xb8 `RearLeftImpactEffect`, +0xc0
+  `cd782520`, +0xc8 `RearRightImpactEffect`, +0xd0 `2ed478b9`, +0xd8 `RightImpactEffect`, +0xe0 `ad998581`,
+  +0xe8 `RimMarksMaterial`, +0xf0 `ac9d89ca`, +0xf8 `984d36bf`, +0x100 `bb02333c`, +0x108 `TopImpactEffect`,
+  +0x110 `1e8f2708`, +0x118 `01d1b4fd`, +0x120 `f967c1ce`, +0x128 `e4c49c3c`, +0x130 `4431b68d`, +0x138
+  `WheelVfx`, +0x140 `4cf3cf8f` (the AI cars' `WheelVfx`), +0x148 `669cc68d`, +0x150 UniqueId, +0x154..+0x157
+  bools (+0x156 / +0x157: smoke on the front / rear wheels whenever the car moves; false everywhere).
+  `FUN_0049fe80` picks impact effects in pairs (named one / the unnamed one after it). `VfxWheelEffects`: +0x0c
+  `DefaultTyre`, +0x14 `61ac1863`, +0x1c `OnRims`, +0x24 `e7a7150c`. `SurfaceType` weather block (+0x20 dry,
+  +0xf0 wet): `Contact_Type` `Flats`, `Normal`, `Offroad`, `Rims`, `Track` (each `Surface_Physics`,
+  `Surface_Rumble`, `Surface_Sounds`), +0xc0 `Surface_vfx`, +0xc8 `VehicleEffects`.
 
 ## World object physics (`PhysicalDefinition`, `DynamicAdditionalInfo`, collision responses)
 
@@ -932,6 +973,21 @@ card), 1135303 → 1470763 (cursor rings + the option list), 1135501 → 371789 
 899993 (`MapControls`), 1222205 (`Options`), 1135638 (`Filters` 1470726), 1607001 (`Tabs` 1470689 / 1470704,
 `Header` 1470711), 899992 (the Most Wanted list 1470720), 1135580 (the option lists: `Event` 1222202,
 `SinglePlayer`, `Jackspot`, …).
+
+The map's item kinds (2026-10-15): `LiveMapManager_ScreenScript` 1135185 (96 bytes) → `MapItemTypes` (field
+`4bcf868d`) [] `UI.MapItemType` (48 bytes: +12 `DataSource` string, +32 `650f3bfb` icon key, +36 `c3f39ca3` card
+key, +40 `ItemType` u16, +42 `OptionsHeight` u16, +44 bool, +45 i8), `CollectablesName` [] {`CollectableName`
+language id, `ItemType`}, and single keys `SelectionPOI`, `AIPlayerPOI`, `AICopPOI`, `BlackListDriver`,
+`CheckpointPOI`, `FinishLinePOI`, `MeetupPOI`, `MeetupAreaPOI` (loader `AssetStore::map_manager_config`, listing
+`mwtool ui map-items`; table in decomp.md "The world map's items and filters"). `Widget_MapFilters` (92 bytes):
+`Filters` (`ee1bbf49`) [] {`6e0ada84`, `FilterName` language id, `FilterType` = what is listed, `SpeechCommand`}
+(`AssetStore::map_filters`). The event icon 1135497 is item type 1; the Most Wanted races are item type 9, look
+955947 (red diamond): the red icons of the 2026-10-10 capture.
+
+`CollectablesConfig` 908780 point-of-interest keys (free-roam HUD, `FUN_006ffba0`): +0x10 `d71dba55` body shop
+1444895, +0x34 `a1b2d86a` jack spot 955694, +0x38…+0x44 the packs' jack spots, +0x48 `507e9d87` jack spot 1013508,
++0x54 `ced801cd` speed camera 1013522 (world look only). `MapPoiConfig` +0xc `a32aa8bd` = billboard 1013491 (world
+look only), +0x54 the local player, +0x5c the pursuit's search circle, +0x60 other players.
 
 ## Easydrive (inside `Screen2`, `UI/SCREENS2/*.BNDL`)
 

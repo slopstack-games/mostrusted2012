@@ -6,7 +6,8 @@
 //! game's props standing in the world. A hit breaks it free when the impact exceeds the object's
 //! break threshold (`AdditionalInfo` field `67f0233c`, unnamed: 0 for cones and bins, 500–2500 for signs
 //! and fences, 5000 for street lamps, 20000 for gantries, 100000 = never; see [`PropPhysics::break_force`]);
-//! then it becomes a dynamic body that falls and tumbles. Objects with mass 0 never break free. Knocked
+//! then it becomes a dynamic body that falls and tumbles. Objects with mass 0 never break free; objects without
+//! an `AdditionalInfo` (trash bags, crates) are never pinned and move at the first touch. Knocked
 //! objects are put back (or removed, `mbRemoveInsteadOfReset`) once the car is farther away than the
 //! prop's reset distance (`mfResetDistanceSquared`, 100 m on every prop; compounds and dynamic objects use
 //! 100 m too).
@@ -257,15 +258,16 @@ impl PropPhysics {
         if shapes.is_empty() {
             return None;
         }
-        // Without an `AdditionalInfo` (a few unconfigured definitions) an object is treated as never knockable
-        // (model decision: the game's test reads the info unconditionally).
         let info = def.info.unwrap_or_default();
         // Objects that do not start pinned (cones, bins: threshold 0) are the game's asleep dynamic bodies; ours
         // stand static until the first touch by a moving body, which is the same (model decision). Pinned ones
-        // come loose only when they are knockable (`FUN_0054e570`).
-        let break_force = if mass <= 0.0 || def.info.is_none() {
+        // come loose only when they are knockable (`FUN_0054e570`). An object without an `AdditionalInfo` (the
+        // trash bag 03102fec, 353 placements; crates and others: 19 prop and 3 dynamic definitions) is never
+        // pinned: `FUN_0054dfe0` clears the pinned bit when the definition's info pointer (+0x30) is null, and
+        // the break test (`FUN_0054e570`) and the damage threshold (`FUN_0054bf70`) skip their info reads then.
+        let break_force = if mass <= 0.0 {
             f32::INFINITY
-        } else if !info.starts_pinned {
+        } else if def.info.is_none() || !info.starts_pinned {
             0.0
         } else if !info.knockable {
             f32::INFINITY
@@ -363,6 +365,13 @@ pub struct Compound {
     smashed: bool,
 }
 
+impl Compound {
+    /// Broken into its parts (until it is put back).
+    pub fn is_smashed(&self) -> bool {
+        self.smashed
+    }
+}
+
 /// A part of a smashed compound: a prop of its own until the compound is put back.
 #[derive(Component)]
 pub struct CompoundPiece {
@@ -446,9 +455,49 @@ impl Plugin for PropsPlugin {
     }
 }
 
-/// Spawn a prop: the render parts as children of a rigid body carrying the collider. A compound object with
-/// its model split by part draws the pieces of its first parts instead of the whole model (the model also
-/// holds the parts that replace those later, on top of them).
+/// The meshes of one model under the game's LOD rule: (parts, the LODs they are drawn at, shadow range) per
+/// set, and the LOD table with the placement's scale.
+pub struct MeshSets {
+    pub sets: Vec<(crate::ModelParts, u8, Option<crate::shadow_cull::ShadowRange>)>,
+    pub lod: Option<(Arc<crate::lod::LodTable>, f32)>,
+}
+
+/// A billboard compound's two standing models (`loader::Loader::compound_standing`): the advert
+/// (`CompoundObject` +0x24) and the "WANTED" poster with the picture it shows once found (+0x28), each under
+/// a group entity of its own. `freeroam.rs` shows one of them.
+#[derive(Component)]
+pub struct BillboardFaces {
+    pub advert: Entity,
+    pub found: Entity,
+    /// Which one is shown (`None` until the found list is known).
+    pub shown: Option<bool>,
+}
+
+/// Spawn `sets` under `c`; returns the meshes with their LOD masks when they are LOD-managed.
+fn spawn_sets(
+    c: &mut bevy::ecs::hierarchy::ChildSpawnerCommands,
+    sets: &[(crate::ModelParts, u8, Option<crate::shadow_cull::ShadowRange>)],
+    managed: bool,
+) -> Vec<(Entity, u8)> {
+    let mut lod_meshes = Vec::new();
+    for (parts, mask, range) in sets {
+        for id in spawn_meshes(c, parts, Transform::IDENTITY, *range) {
+            if managed {
+                let state = (crate::lod::LodShadow(true), crate::lod::initial_visibility(*mask));
+                c.commands().entity(id).insert(state);
+                lod_meshes.push((id, *mask));
+            }
+        }
+    }
+    lod_meshes
+}
+
+/// Spawn a prop: the render parts as children of a rigid body carrying the collider. A compound object draws
+/// its standing model (`standing`: `sets` are of `CompoundObject` +0x24, not of the pieces' model) until it
+/// breaks; without one, the pieces of its first parts stand instead of the whole model (the model also holds
+/// the parts that replace those later, on top of them). `found`: a billboard's second standing model
+/// ([`BillboardFaces`]).
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_prop(
     commands: &mut Commands,
     physics: Arc<PropPhysics>,
@@ -457,6 +506,8 @@ pub fn spawn_prop(
     range: Option<crate::shadow_cull::ShadowRange>,
     pieces: Option<CompoundMeshes>,
     lod: Option<(Arc<crate::lod::LodTable>, f32)>,
+    standing: bool,
+    found: Option<MeshSets>,
 ) {
     let pieces = pieces.filter(|p| physics.compound.as_ref().is_some_and(|c| c.parts.len() == p.parts.len()));
     let mut e = commands.spawn((transform, Visibility::default(), PropBody::new(physics.clone(), transform, true)));
@@ -464,18 +515,36 @@ pub fn spawn_prop(
     let mut lod_meshes = Vec::new();
     let managed = lod.is_some();
     match pieces {
-        None => {
-            e.with_children(|c| {
-                for (parts, mask, range) in sets {
-                    for id in spawn_meshes(c, parts, Transform::IDENTITY, *range) {
-                        if managed {
-                            let state = (crate::lod::LodShadow(true), crate::lod::initial_visibility(*mask));
-                            c.commands().entity(id).insert(state);
-                            lod_meshes.push((id, *mask));
+        Some(pieces) if standing => {
+            let n = pieces.parts.len();
+            match found {
+                Some(found) => {
+                    // Each face in a group of its own, with its own LOD table.
+                    let mut groups = [Entity::PLACEHOLDER; 2];
+                    e.with_children(|c| {
+                        for (i, (sets, lod)) in
+                            [(sets, lod.clone()), (&found.sets[..], found.lod)].into_iter().enumerate()
+                        {
+                            let vis = if i == 0 { Visibility::Inherited } else { Visibility::Hidden };
+                            let mut g = c.spawn((Transform::IDENTITY, vis));
+                            let mut meshes = Vec::new();
+                            g.with_children(|c| meshes = spawn_sets(c, sets, lod.is_some()));
+                            if let Some((table, scale)) = lod {
+                                g.insert(crate::lod::ModelLod::new(table, scale, meshes));
+                            }
+                            groups[i] = g.id();
                         }
-                    }
+                    });
+                    e.insert(BillboardFaces { advert: groups[0], found: groups[1], shown: None });
+                    e.insert(Compound { meshes: pieces, range, parts: vec![None; n], smashed: false });
+                    return;
                 }
-            });
+                None => e.with_children(|c| lod_meshes = spawn_sets(c, sets, managed)),
+            };
+            e.insert(Compound { meshes: pieces, range, parts: vec![None; n], smashed: false });
+        }
+        None => {
+            e.with_children(|c| lod_meshes = spawn_sets(c, sets, managed));
         }
         Some(pieces) => {
             let compound = physics.compound.as_ref().expect("checked above");
@@ -1589,11 +1658,19 @@ impl WorldSurfaces {
 /// 5000), a 6 m fence panel (50 kg, 2500), and an immovable 5 m wall (a mass-0 dynamic object).
 /// `--smash-set compounds`: six compound objects 30 m apart: the single-arm street lamp (934 placements; its pole
 /// splits in two by a `SmashProxyBehaviour`), the double lamp, two pole compounds, a 600 kg object and an
-/// 11-panel structure whose panels are pinned and linked.
+/// 11-panel structure whose panels are pinned and linked. `--smash-set bags`: objects without an
+/// `AdditionalInfo` (never pinned): the trash bag (10 kg, 353 placements), a 0.2 kg crate and a 7 kg one.
 pub fn smash_test_props(set: &str) -> Vec<crate::loader::TestProp> {
     use crate::loader::TestProp;
     let p =
         |id: u64, kind, z: f32| TestProp { object: ResourceId(id), kind, position: Vec3::new(0.0, 0.0, z), yaw: 0.0 };
+    if set == "bags" {
+        return vec![
+            p(0x03102fec, ObjectKind::Prop, 40.0),
+            p(0x80a6d3c6, ObjectKind::Prop, 60.0),
+            p(0x9593a9cf, ObjectKind::Prop, 80.0),
+        ];
+    }
     if set == "compounds" {
         // The panel structure reaches 2.5 m below its origin (bounds centre 0.04, half height 2.56): raised to
         // stand on the track.
@@ -1646,6 +1723,8 @@ pub struct SmashTest {
     focus: f32,
     smashed: usize,
     smash_shot: Option<f32>,
+    /// How many props the set places (the drive starts once they are all spawned).
+    props: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1656,9 +1735,10 @@ enum SmashPhase {
 }
 
 impl SmashTest {
-    pub fn new(out: Option<std::path::PathBuf>, speed: f32, follow: bool) -> Self {
+    pub fn new(out: Option<std::path::PathBuf>, speed: f32, follow: bool, props: usize) -> Self {
         Self {
             out,
+            props,
             speed,
             phase: SmashPhase::Settle,
             timer: 0.0,
@@ -1712,7 +1792,7 @@ fn run_smash_test(
     match test.phase {
         SmashPhase::Settle => {
             input.scripted = Some([0.0, 0.0, 0.0, 1.0]);
-            if test.timer > 2.5 && props.iter().count() >= if test.follow { 6 } else { 5 } {
+            if test.timer > 2.5 && props.iter().count() >= test.props {
                 if let Some(p) = test.path("before") {
                     commands.spawn(Screenshot::primary_window()).observe(save_to_disk(p));
                 }

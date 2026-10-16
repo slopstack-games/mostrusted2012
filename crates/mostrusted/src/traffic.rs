@@ -107,7 +107,7 @@ impl Plugin for TrafficPlugin {
         }
         app.insert_resource(TrafficSettings { density: self.density })
             .init_resource::<TrafficModels>()
-            .add_systems(Update, (start_loading, receive_data, spawn_entities, count_log))
+            .add_systems(Update, (start_loading, receive_data, spawn_entities, reaction_lamps, count_log))
             .add_systems(FixedUpdate, (crash_hit_cars, traffic_tick, drive_bodies).chain());
     }
 }
@@ -238,6 +238,10 @@ pub struct TrafficSoundCar {
     /// The car's entity (a crashed car's rigid body; a lane follower's root once it has a model).
     pub entity: Option<Entity>,
     pub crashed: bool,
+    /// A crashed car's horn wish from its reaction (manoeuvre 1, `FUN_005f5c40`: bit 0).
+    pub horn: bool,
+    /// A crashed parked car's alarm wish (bit 0x10) and whether its type has an alarm (`TrafficVehicle` +0x3c).
+    pub alarm: bool,
 }
 
 /// The game's random source (`world+0x36190`): a 64-bit LCG whose high word feeds an 8-slot ring of floats
@@ -321,6 +325,10 @@ struct Crashed {
     /// Its own crash rule fired (vehicle +0x1774, `car_impacts.rs`): later hits on it are "crashing traffic
     /// impacts".
     wrecked: bool,
+    /// The game's car index (lane slot, or 256 + the parked slot): horns and alarms pick by it.
+    slot: usize,
+    /// Its reaction to the contact that made it physical (manoeuvre 1, the flash; `traffic_reaction.rs`).
+    reaction: crate::traffic_reaction::Reaction,
 }
 
 /// A parked car (`FUN_0060db90` places the hull's static vehicle records when the hull becomes active,
@@ -372,6 +380,10 @@ struct Obstacle {
 pub struct TrafficSystem {
     data: Arc<TrafficData>,
     rng: GameRng,
+    /// The second generator (`world+0x361c0`, ring `+0x361a0`) that `FUN_00608fb0` draws a car's random value
+    /// (+0x5c) from when it gets its world vehicle; here also the flash patterns' draws (the game's behaviour
+    /// object has its own LCG at +0x30).
+    vehicle_rng: GameRng,
     cars: Vec<Option<LaneCar>>,
     serial: u32,
     crashed: Vec<Crashed>,
@@ -416,6 +428,8 @@ impl TrafficSystem {
             hour: 0,
             data,
             rng: GameRng::new(0x2545_f491_4f6c_dd1d),
+            // MODEL: the seed (as `rng`'s).
+            vehicle_rng: GameRng::new(0x9e37_79b9_7f4a_7c15),
             cars: vec![None; MAX_CARS],
             serial: 0,
             crashed: Vec::new(),
@@ -489,6 +503,8 @@ impl TrafficSystem {
                     mode: c.mode,
                     entity: c.entity,
                     crashed: false,
+                    horn: false,
+                    alarm: false,
                 }
             });
         let crashed = self.crashed.iter().map(|c| TrafficSoundCar {
@@ -497,12 +513,14 @@ impl TrafficSystem {
             velocity: c.velocity,
             forward: c.right.cross(Vec3::Y).normalize_or_zero(),
             vehicle: c.vehicle,
-            // MODEL: a crashed car keeps no personality here; any fixed value.
-            random: 0.5,
-            slot: usize::MAX,
+            // The car's random value (+0x5c), which the manoeuvre horn and the alarm read.
+            random: c.reaction.random,
+            slot: c.slot,
             mode: u8::MAX,
             entity: Some(c.entity),
             crashed: true,
+            horn: c.reaction.horn,
+            alarm: c.reaction.alarm && self.data.vehicles[c.vehicle].alarm,
         });
         lane.chain(crashed).filter(|c| c.position.distance_squared(point) <= r2).collect()
     }
@@ -1172,6 +1190,13 @@ fn tick(
         }
         Err(_) => false,
     });
+    // Their reactions (`FUN_005ffa10` → manoeuvre 1, `FUN_00ebe8c0`, `FUN_005f53b0`).
+    let fade = (sys.data.light_fade * dt) as i32;
+    let horn_chance = sys.data.params.horn_chance;
+    let rng = &mut sys.vehicle_rng;
+    for c in &mut sys.crashed {
+        c.reaction.update(dt, fade, c.velocity.to_array(), horn_chance, || rng.raw());
+    }
 
     // The density multiplier (`FUN_005f0780`, which the frame function runs before the tick).
     let s = sys.data.system.clone();
@@ -1901,6 +1926,68 @@ fn spawn_entities(
     }
 }
 
+/// A crashed car's own copies of its lamp materials (mesh entity, shared handle, own handle), made once its
+/// lights first flash.
+#[derive(Component)]
+struct OwnLamps {
+    lamps: Vec<(Entity, Handle<GameMaterial>, Handle<GameMaterial>)>,
+    gain: f32,
+}
+
+/// The headlight flash on the lamps. The game raises the intensity of the car's light sources from 0.7 to
+/// `0.7 + 0.5 × b/255` (`FUN_005fd190`, `traffic_reaction.rs`); MODEL: the car light sources are not drawn here
+/// (`world_lights.rs`), so the same ratio scales the lamps' headlight emission colour (`HeadlightColour`,
+/// `p[5]` of the vehicle and lamp-interior programs) on the flashing car's own material copies.
+fn reaction_lamps(
+    mut commands: Commands,
+    system: Option<Res<TrafficSystem>>,
+    children: Query<&Children>,
+    meshes: Query<&MeshMaterial3d<GameMaterial>>,
+    mut own: Query<&mut OwnLamps>,
+    mut materials: ResMut<Assets<GameMaterial>>,
+) {
+    let Some(sys) = system else { return };
+    for c in &sys.crashed {
+        let gain = c.reaction.light_gain();
+        if let Ok(mut o) = own.get_mut(c.entity) {
+            if o.gain == gain {
+                continue;
+            }
+            o.gain = gain;
+            for (_, shared, mine) in &o.lamps {
+                let Some(base) = materials.get(shared).map(|m| m.extension.params) else { continue };
+                if let Some(mut m) = materials.get_mut(mine) {
+                    m.extension.params.lights = base.lights;
+                    m.extension.params.p[5] = (base.p[5].truncate() * gain).extend(base.p[5].w);
+                }
+            }
+            continue;
+        }
+        if gain == 1.0 {
+            continue;
+        }
+        let mut lamps = Vec::new();
+        for child in children.get(c.entity).into_iter().flatten() {
+            let Ok(mm) = meshes.get(*child) else { continue };
+            let Some(m) = materials.get(&mm.0) else { continue };
+            let params = &m.extension.params;
+            use crate::materials::Mode;
+            if ![Mode::Vehicle as u32, Mode::Refraction as u32].contains(&params.mode)
+                || params.p[5].truncate() == Vec3::ZERO
+            {
+                continue;
+            }
+            let mut mine = m.clone();
+            mine.extension.params.p[5] = (params.p[5].truncate() * gain).extend(params.p[5].w);
+            let handle = materials.add(mine);
+            commands.entity(*child).insert(MeshMaterial3d(handle.clone()));
+            lamps.push((*child, mm.0.clone(), handle));
+        }
+        info!("traffic: car {} flashes its lights ({} lamp materials)", c.slot, lamps.len());
+        commands.entity(c.entity).insert(OwnLamps { lamps, gain });
+    }
+}
+
 /// Collision layers of a traffic collider: lane followers meet only dynamic things (the player, props,
 /// crashed cars); crashed cars also meet the world.
 fn traffic_layers(crashed: bool) -> CollisionLayers {
@@ -2000,6 +2087,7 @@ fn crash_hit_cars(
                 "traffic: parked car {i} (hull {} record {}, {}) hit, now crashing",
                 p.hull, p.record, sys.data.vehicles[p.vehicle].bundle
             );
+            let random = sys.vehicle_rng.next();
             sys.crashed.push(Crashed {
                 entity,
                 vehicle: p.vehicle,
@@ -2007,6 +2095,8 @@ fn crash_hit_cars(
                 velocity: Vec3::ZERO,
                 right: p.rotation * Vec3::X,
                 wrecked: false,
+                slot: body.slot,
+                reaction: crate::traffic_reaction::Reaction::new(2, true, random),
             });
             if let Some(impacts) = impacts.as_mut() {
                 impacts.0.push(crate::car_impacts::RawImpact {
@@ -2026,21 +2116,41 @@ fn crash_hit_cars(
         }
         let car = sys.cars[body.slot].take().expect("checked above");
         let entity = parent.parent();
-        let v = &sys.data.vehicles[car.vehicle];
+        let data = sys.data.clone();
+        let v = &data.vehicles[car.vehicle];
         commands.entity(entity).insert((
             RigidBody::Dynamic,
             LinearVelocity(car.forward * car.speed),
             AngularVelocity(Vec3::ZERO),
         ));
         commands.entity(collider).insert(traffic_layers(true));
-        info!("traffic: car {} ({}) hit at {:.0} km/h, now crashing", body.slot, v.bundle, car.speed * 3.6);
+        // `FUN_005f2eb0`: the contact's zone on this car's box and its speed pick the request.
+        let right = car.up.cross(car.forward);
+        let d = hit.point - car.position;
+        let local =
+            [d.dot(right) - v.box_centre[0], d.dot(car.up) - v.box_centre[1], d.dot(car.forward) - v.box_centre[2]];
+        let zone = crate::traffic_reaction::impact_zone(local, v.half_extents);
+        // MODEL: the contact record's speed (+0x2c) is the closing speed along the contact normal.
+        let closing = (hit.v_hitter - hit.v_traffic).dot(hit.normal).abs();
+        let request = crate::traffic_reaction::contact_request(closing, car.speed, zone);
+        let random = sys.vehicle_rng.next();
+        info!(
+            "traffic: car {} ({}) hit at {:.0} km/h, now crashing (zone {zone}, closing {:.0} km/h, request {request}, random {random:.2})",
+            body.slot,
+            v.bundle,
+            car.speed * 3.6,
+            closing * 3.6
+        );
+
         sys.crashed.push(Crashed {
             entity,
             vehicle: car.vehicle,
             position: car.position,
             velocity: car.forward * car.speed,
-            right: car.up.cross(car.forward),
+            right,
             wrecked: false,
+            slot: body.slot,
+            reaction: crate::traffic_reaction::Reaction::new(request, false, random),
         });
         if let Some(impacts) = impacts.as_mut() {
             impacts.0.push(crate::car_impacts::RawImpact {

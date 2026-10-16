@@ -4,7 +4,41 @@
 > "Fidelity rule"); never settle for "plausible". Open differences are tracked below, in docs/PLAN.md and the
 > README roadmap.
 
-# Handoff: 2026-10-14 (session 8, part 2): start here
+# Handoff: 2026-10-15 (session 9, Windows): start here
+
+**State**: branch `session-9` (PR to master): six worktree branches merged, each working on items of the
+2026-10-14 play-test list below. Clippy 0 warnings, 178 tests, `mwtool verify` 0 failures; the 911's accel /
+brake / corner results are unchanged (0–60 mph 3.58 s, 100–0 km/h 38.1 m, 2.57 g), the race test passes. The
+original was not run this session: the agents worked from the dump and the data, so each area below lists the
+captures / live reads that would confirm it. Every area has a 2026-10-15 research-log entry (sources, model
+decisions, open items) and a decomp.md section. Also: `mwtool lods` builds on Windows again (a cfg slip).
+
+| Play-test item | State | Main open item |
+|---|---|---|
+| Grass / dirt behave like road (smoke, marks) | fixed: effects and marks per wheel surface from `SurfaceVfx` and `TyreVfxBehaviour` (`FUN_00589e20`, `FUN_009cef90`) | tyre-mark vertex builder (width is a model decision, ~0.19 m); traffic's own mark path `FUN_009dfd40` |
+| Tyre marks look off | partly: when / how strong from the code, per-surface material | tarmac smoke density and grass mark colour against a capture |
+| Map icons missing; Most Wanted races look normal | fixed: the map's filters and item looks from `LiveMapManager_ScreenScript` 1135185 (`mwtool ui map-items`); red diamond for Most Wanted races; body shops / found jack spots on the minimap | the `Collect3` table that limits listed collectables (all 74 cameras / 216 billboards show) |
+| Cops not shown as cops | fixed on map and minimap (cop arrow look) | pursuit capture: blue / red alternation |
+| Navigation | ported (`gps.rs`): SET DESTINATION, A* route, re-route at 15 m off, arrival 5 m, line on map and minimap | the route line's look (renderer not found: model decision), the A* turn penalty, the race GPS line |
+| Start screen shows both prompts | fixed (trigger steps apply after the pulse) | none |
+| No music on the loading screen; music not matched | fixed: the game's song manager (list 1622455 everywhere, 2026345 in the intro race), title sequence music, pause fades; `mwtool music` | audio capture of boot and pause; event +0x68 song lists |
+| Backfires not heard / seen | fixed: the pop rule now gets the sound's RPM offsets; crackles read at the item's position | `--test exhaust` stays at 0 (muted tests have no offsets) |
+| Nitrous sounds | added: `HeatLevelSoundSet.NitrousLocal` timeline | its starter is a model decision |
+| Engine start / stop | added (`ignition.rs`): cranking states and sequence from the code | the ignition key (I / L3) is ours; spawn state needs a live read |
+| Idle sound missing | measured, not changed: the data's mix puts idle ~30 dB under full load | an audio capture of the original at standstill |
+| Nitrous flames look off | not changed | a screenshot of the original under nitrous |
+| Billboards broken by default; no records on them | fixed: standing compounds draw their +0x24 model (also lamps etc.), found billboards the WANTED poster with the offline silhouette | the poster frame's `World_GbufferBlend` program; online pictures |
+| Trash bags indestructible | fixed: props without AdditionalInfo are loose (`FUN_0054dfe0`); `--smash-set bags` | none |
+| Traffic horns / headlight flashing | partly: hit cars flash (3 patterns), honk (40 %), parked cars' alarms (manoeuvre 1, `traffic_reaction.rs`) | near-miss requests 1 / 3 / 5 (writer not found), manoeuvres 0 / 2 / 4 / 6, the cars' light sources |
+
+Not started (still open from the list): police items (the branch is on the Linux machine), road / kerb harshness,
+brake-to-drift at speed, water height, terrain through the road, race end screen, car-change and start-up
+cutscenes, crash camera, mods / Most Wanted unlocks, takedowns in races.
+
+New this session: `mwtool music`, `mwtool ui map-items`, `--smash-set bags`, `--map-waypoint <event>`,
+`MW_GPS_LOG=1`, `MW_XINPUT_CONNECTED=0|1`, `MW_CAR_SFX_LOG=1`, `MW_NITROUS_AT=t0,t1` (`mwtool engine-sound`).
+
+# Handoff: 2026-10-14 (session 8, part 2)
 
 ## User play test (end of 2026-10-14): what is still wrong, by area
 
@@ -25,6 +59,13 @@ capture of the original) before a fix (CLAUDE.md fidelity rule).
 - Cops are not shown as cops on the map / minimap.
 - Many map icons are missing: jack spots, race locations, etc.
 - Most Wanted races are shown like normal races on the map.
+
+**Input: the Steam Controller** (`steam_controller.rs`, PR #3, research log 2026-10-10)
+- Works on Windows over its wireless puck. Not tried: Linux (hidraw needs Steam's udev rules), USB and Bluetooth.
+- With Steam running and the game not started through it, Steam's desktop layout also sends keys and mouse moves
+  from the controller (README); which keys, and whether they clash with the driving keys, is not checked.
+- The reader steps aside on `SteamVirtualGamepadInfo` (Steam Input's virtual pad); not checked with the game
+  added to Steam as a non-Steam game.
 
 **Police**
 - Cops have no sirens (sound) or light bars.

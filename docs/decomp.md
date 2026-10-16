@@ -862,7 +862,8 @@ posts their effects back for the next tick.
   undamaged car; not ported), clamped 0..1; then `FUN_009aea50` raises it to `2 − a` (`.rdata` 0x01025080 = 2;
   `a` = `EngineSound2` +0xb0 `cb44d82d` → +0xac `a33d84fe` by the load +0x1f20, or +0xb4 `913bb900` with flag
   +0x1f45), adds the property-1 effect list (+0x1e78, `FUN_00926330`) and clamps to 0..1 (`.rdata` 0x010245c0).
-  Vehicle +0x1f00 = `Idle_RPM + (Max_RPM − Idle_RPM) × +0x1f10` (the pop rule's RPM). Both run only while the
+  Vehicle +0x1f00 = `Idle_RPM + (Max_RPM − Idle_RPM) × +0x1f10` (the pop rule's RPM, so the pop rule sees the
+  sequences' RPM offsets too: the gear-change kick's end is what backfires, research log 2026-10-15). Both run only while the
   world flag `FUN_004b1a70` is set. Snapshot check (XKR, `snap2`): 4040.6 rpm → 0.5017 against 0.5040 computed
   with `a` = 1.
 - **Engine load** (`FUN_009b1f70`, `GetPlayerEngineLoad` = +0x1f20, state +0x1f24): `h` = the engine's lagged
@@ -941,7 +942,8 @@ and SubHarmoniser plug-ins fall in undecompiled gaps of the dump.
   `FUN_005866f0`, each only while its previous instance (slots +0x94 / +0x90, cleared by `FUN_00a422d0` when
   ended) is gone. `Ignition_Sequence` (+0x1c) starts when the gearbox leaves its start-up states
   (`FUN_0058c930`); `c62d11ac` (+0x34) is the rev limiter's (`FUN_0058cdb0`). `Gurgle_Sequence` (+0x14) and
-  `Pop_Sequence` are bound to `GetPopProbability` (items at 0.6–1 / 0.75–1); who starts the gurgle was not found.
+  `Pop_Sequence` are bound to `GetPopProbability` (items at 0.6–1 / 0.75–1); the gurgle is started with the bank's
+  `Sequences` when the sound starts ("Engine start and stop" below).
 - **Effect group bits** (`FUN_0057a5e0`, per car, entity +0x3c8): bit 14 for two updates after a backfire
   (entity +0x3f4 = 2, counted down when the world flag `FUN_00897b70` is up), bit 8 while the nitrous input
   (+0x1944) is above 0 and the car is the one `FUN_006a0020` / `FUN_0069ff20` accept, bit 9 instead while the
@@ -950,6 +952,38 @@ and SubHarmoniser plug-ins fall in undecompiled gaps of the dump.
   lights, 1 / 2 brake and reverse, 3 (+0x1c27), 15 (`0x80c7` group). `FUN_005b2740` adds bit 12 when the car is
   wrecked and 13 for a non-zero vector of the player state; the coronas, lights and spot effects test
   `1 << Group` against it.
+
+## Engine start and stop (2026-10-15, ported in `crates/mostrusted/src/ignition.rs`)
+
+- **Gearbox start-up states** (`FUN_009da340`, gearbox +0x168 = vehicle +0x1bd8): 0 off, 1 cranking. State 0
+  (`FUN_009ce3d0`): a timer (gearbox +0xe0 = vehicle +0x1b50) counts up; once past 0.5 s (`.bss` 0x01186ef0, from
+  `.rdata` 0x01026050 by `00f76430`; `009a9bc0` returns the time left) a throttle or brake input (control block
+  +0x04 / +0x10 lanes) or a set flag lane (+0x60, latched on release at +0x70) moves it to 1. State 1
+  (`FUN_009cd7a0`): moves to 2 when +0x174 (vehicle +0x1be4) or +0x175 (+0x1be5) is set, unless +0x173 (+0x1be3,
+  "held off") is set; clears the brake lanes. Both set the control block's +0x50..+0x5c lanes to −1 (their reader
+  is the state machine's "any lane set → state 9" test). Resets: `FUN_009cd620(char)` (0 → state 0, else 2),
+  `FUN_009cd790` (state 1), from `FUN_008f7b40` syncing entity +0x1a84 (0 / 1 / 2) for remote cars.
+- **Flags**: +0x1be5 = effect property 7 of a sound sequence (`FUN_008f5490`: |value| > FLT_EPSILON); property 6
+  sets +0x1be3 the same way and forces state 0. +0x1be4 = `RaceCarEngineSound` +0x1c8 (ignition played) or
+  vehicle +0x30ff (`FUN_00900120`). Message 0x1e {car, flag} (`FUN_00587490` sets entity +0x1c32 and sends it;
+  `FUN_005886a0` for entity message 0x10; script binding `FUN_0068b070`) sets +0x1be3 = flag and state 0.
+- **Ignition sound** (`FUN_0058c930`, per frame from `FUN_005911d0`): in state 1 with +0x1c8 clear it starts
+  `Ignition_Sequence` (`EngineSound2` +0x1c) once (slot +0x134) and sets +0x1c8 when that instance has ended (or
+  at once without a sequence); in state 0 it clears +0x1c8 and stops the instance.
+- **EngineOn** (vehicle +0x1ef0, `RaceCarEngineSound.EngineOn` via `FUN_0059ba00` / `FUN_0090d760`): end of
+  `FUN_009b3030`, +0.05 per tick (`.bss` 0x011866c0, `.rdata` 0x01025370) up to 1 while the state is not 0 / 1,
+  −0.05 down to 0 otherwise. `00830000.c` returns audible RPM × EngineOn (a getter). `Player.IsEngineOn`
+  (`FUN_006d8ab0`) = `FUN_00572c20` (state not 0 / 1).
+- **Sound start** (`RaceCarEngineSound` state 2 → 3, `00580000.c` near `FUN_00575340`): starts every sequence of
+  `EngineSound2.Sequences` (`FUN_00586550`, handles at +0x17c..), then `Gurgle_Sequence` (+0x14) with
+  `FUN_005866f0` (handle +0x1ac): the gurgle runs from the start like the bound sequences.
+- **Throttle shunts** (`FUN_0058d1c0`): pedal (entity +0x192c, the raw throttle input; in reverse it lights the
+  brake lamps, `FUN_0057a5e0`) up by more than 0.3 since the last frame → a random sequence of `EngineSound2`
+  +0x60 (`c99783d2`, count +0xff); down by more than 0.3 → one of +0x5c (`6fd79c8d`, count +0xfe), both only in
+  gears above 1 (`FUN_0090d460` = the gear, 0 at a standstill); a fall also starts +0x24 (`dacf5fd5`, empty in all
+  banks) in slot +0x98. Not ported.
+- **Nitrous sound**: `HeatLevelSoundSet` (bundle `GAMELOGIC\HL_%d.BNDL`, `FUN_0065fee0`, loaded per heat level
+  by the pursuit code `FUN_00663cd0`) +0x14 `NitrousLocal`; its player was not found. Research log 2026-10-15.
 
 ## Other cars' engine sounds (2026-10-09)
 
@@ -1156,6 +1190,50 @@ vehicle slot at `world + i·0x80` (+0x00 speed, +0x48 horn timer, +0x58 blink ti
   impacts at zero gain not started; one placement per voice (its first wave item's channel or snapshot channel).
   Not ported: manoeuvre horns (no manoeuvres), wrecked-traffic sounds, car alarms, the AI skid state machine. The
   player's horn and impacts by this table: next section (2026-10-10).
+
+## Traffic reactions (2026-10-15)
+
+Read for "horns and headlight flashing when you drive towards them"; ported in `traffic_reaction.rs`. Car = the
+0x80-byte slot as above; "AI vehicle" = the 0x620-byte physical-traffic object at `world+0x2c910 + k·0x620`
+(+0x4c car index, +0x1fc request, +0x1fd manoeuvre, +0x1d3 trailer, +0x200 physical time).
+
+- **Becoming physical**: `FUN_0061cf50(car, link, player, …, request, …)` takes a free AI vehicle (`world+0x32b20`
+  list, 16), sets car +0x6b bit 3 and calls `FUN_00609b70`, which forces request 2 for any car whose +0x6a low
+  nibble is not 0 (parked) and runs `FUN_006071d0(request)`. Callers: the contact loop in `FUN_0060c3a0` (world
+  vehicles with contacts; request from `FUN_005f2eb0`), the queues in `FUN_0060e030` (the arbiter's option 0 →
+  `world+0x32bac` with request 0; a per-player list at `world+0x36120 + p·0x680` +0x6b0 / count +0x770 whose writer
+  was not found; message 0x10 entries from `FUN_005efdd0` → `world+0x32b30`).
+- **`FUN_005f2eb0`** (the contact's request): `FUN_00929da0` zone of the contact point (+0x10 of the contact
+  record) on this car's box, stored at car +0x71; 4 when the record's +0x2c > 30 mph (`.rdata` 0x00fb1ec0), the car's
+  speed (+0x00) > 40 mph (0x00fb1ec4) and the zone is 5–9; else 6.
+- **Manoeuvre choice** (`FUN_006071d0` → scores `FUN_005eac20`, the best of 11 wins; the objects at
+  `world+0x339d0` get their vtables in `FUN_00420720`): request 2 / 6 → 1; request 1 → 1 by fuzzy memberships;
+  3 / 4 / 5 → 6 (input +0xd0 > 0.66), 2 (> 0.33) or 4; with a trailer 3 / 4 / 5 at speed → 5 (jack-knife) and 0 →
+  1; score 0 is always `fuzzy[0x510]` (0.2), so request 0 gives manoeuvre 0. Update functions (vtable +8): 0
+  `FUN_00604290`, 1 `FUN_005f5c40`, 2 `FUN_005f77e0`, 3 `FUN_005f6150`, 4 `FUN_005f6e30`, 5 `FUN_005f65a0`, 6
+  `FUN_005ffc10`, 7 `FUN_005f6aa0`, 8 `FUN_005f73a0`, 9 `FUN_005ebca0`, 10 `FUN_005e9260`; start +0xc. Each
+  update returns −1 (stay) or the next index (`FUN_005eb500`); `FUN_005ffa10` adds dt to +0x200 first and switches
+  to 10 when the damage bar is full.
+- **Manoeuvre 1** (`FUN_005f5c40`): standing (|v| components ≤ 0.5 or moving away) → stop flags; else steering /
+  speed targets, and "moving" when parked or faster than 30 mph (`.data` 0x010c4d0c). Parked and moving → bit 0x10
+  (unless 0x20); otherwise car +0x48 = 0 and bit 0 when car +0x5c ≤ `TrafficParamConfig` +0x20. Returns 0 once
+  +0x200 > 5 s for a lane car; a parked car stays.
+- **Car +0x5c**: a draw of the second generator (`world+0x361c0`, ring `+0x361a0`) when `FUN_00608fb0` gives the
+  car its world vehicle (`FUN_005f50b0`), separate from the lane car's personality (+0x3c).
+- **Lights** (`FUN_00ebe8c0`, then `FUN_005f53b0(dt, int(TrafficVehicleConfig +0x28 × dt))`; parked cars:
+  `FUN_0060b9a0`): +0x6f = 1 → `FUN_00614620(1, rng)` (sets 0x100 | 8, step 0, pattern = high word % 3), else
+  0x100 cleared; a non-physical lane car clears 8 and 0x100. `FUN_005f53b0`: bits 0x30 count +0x4c; 0x20
+  (hazard) between 0.5 and 15 s toggles 8 every 0.4 s (`.rdata` 0x00fae200); 0x100 steps the pattern table
+  (`.rdata` 0x00fb2168, 3 × 9 floats; even steps clear 8, odd steps set it, a step ≤ 0 ends and clears 0x100 | 8);
+  +0x64 moves by the step towards 255 (bit 8) or 0, held at 0 for a parked car outside the hazard. 0x40 / 0x80
+  (indicators, from lane car +0x72 / +0x8 / +0xc in `FUN_00ebe8c0`) toggle 2 / 4 at a period from
+  `TrafficVehicleConfig` +0x80 / +0xac and drive +0x65.
+- **Drawing** (`FUN_005fd190`): per car, its light objects (type 0x2aab, up to two) are queued (`FUN_004970b0`,
+  96 records of 0x70) with intensity `+0x64 / 255 × 0.5 + 0.7` (0 for parked cars and manoeuvre 10) and a per-car
+  factor `0.9 + 0.2 × +0x5c`.
+- **Alarm** (`FUN_006042c0`): bit 0x10 (or `FUN_005f2740`, a 10.5 m proximity test) plays `MiscSound` +0xb8
+  (`c1109b6e`) when the car's `TrafficVehicle` +0x3c flag is set and `(car index % 10) × 0.1 ≤ MiscSound` +0xe0;
+  then starts the hazard (0x20, +0x58 = 0.4) and clears 0x10.
 
 ## The player's horn, impacts and scrapes (2026-10-10)
 
@@ -2103,12 +2181,68 @@ Code side from a sub-agent's trace of the dump and the live snapshot's disassemb
 playing (new game or `--profile` continue), interactive `--drive` runs show 108177 until ready; "ready" = car placed,
 Resident(car, 10 m), then the 1.5 s timeout (traffic readiness not checked); cars are placed only once
 Resident(target, 200 m) (`drive::spawn_car`); the loader streams nearest zone first and reports each unit. Ours:
-the title's backdrop and movie drawn full screen (movies through ffmpeg; no VP6 decoder), no title music or
-transition sounds (muted, as the loading screen mutes), four random pictures and eight random offline tips per
+the title's backdrop and movie drawn full screen (movies through ffmpeg; no VP6 decoder), the sequences' waves
+played by `music.rs` (2026-10-15, "Music" below), four random pictures and eight random offline tips per
 run, the `ImageNReady` holds never wait, the strip's tip not scrolled, `UIRoadRibbonShader` elements left out,
 our profile file (car, position) saved every 10 s; the pause menu pauses the virtual clock, MAP lists the offline
 races (the map screen 899991 is not built), SETTINGS opens our volume panel, the online items are inert, pad A / B
 for accept / back.
+
+### Music (2026-10-15, `music.rs`, `mw_assets::music`)
+
+From a sub-agent's trace of the dump (high confidence unless marked). mgr = the `UISongManager` at
+UIM+0x30370 (UIM = G+0x2f480).
+- **Manager states** (`FUN_007a4010`, state at mgr+0x408): 2 loads `UI\SONGS\SONGS.BNDL`; 3 resolves list
+  0x1c70a (the Autolog player's list); 6 resolves the requested list (+0x400) into +0x410; 7 picks the start
+  index and builds the play order (`FUN_00798980`); 8 plays (`FUN_007a1750` every frame); a different request
+  goes to 5: the same list as before clears the pause, a new one switches at once (`FUN_0079d0d0`) unless
+  "allow playout" (+5), when state 9 lets the song end first (`FUN_00aba790`); 10-12 unload.
+- **Start index** (state 7): the session table at mgr+0x08 (`FUN_00792900`: list -> next index + 1); else, for a
+  list with +0x23 and a FeedbackMessage, the profile's "SongLists" table (`SongListID` -> `SongIndex`,
+  `FUN_0072efb0`); else random. The RNG at +0x3a0: `s = s * 0x5851f42d4c957f2d + 1`, output the high word before
+  the step, seeded from a timer (`FUN_00415fc0`); floats come through an 8-deep delay line at +0x380.
+- **Play order** (`FUN_00798980(shuffle)`): bytes at +0x48, 0..n-1, Fisher-Yates when shuffle (profile option
+  5, applied by `FUN_0073daf0`; its default not found). The next song (`FUN_0079d1e0`): index + 1, wrapping
+  re-builds the order; offline, `FUN_00798a90` tests the candidate: rejected if among the last 4 played (ring
+  +0xc8); a song with |`bc7081c6`| <= 1.19e-7 is accepted; else with r uniform, in free drive (GMM+0x2e90,
+  `IsFreedriveEvent`) a song with f > 0 is rejected when r <= f, in events a song with f < 0 when r <= -f; a
+  reject swaps the candidate with order[idx + rnd % (n - idx)], after n - idx tries the last is taken. So a pass
+  still plays every song once; the bias orders it (electronic first in free roam, rock first in events).
+- **Playback**: songs stream on the mixer channel "Music_UI" (`FUN_00aba490`); no crossfade (the next song starts
+  the frame after one ends; a skip or a list switch stops the stream); while the game clock is paused no new song
+  starts unless a `SetSongListSequenceItem` allowed it (mgr+7). Leaving a list stores (cur + 1) % n in the session
+  table and the profile (`FUN_00729330`).
+- **MUSIC_ADVANCE** (action 0x59): M on the keyboard (`FUN_00483470`), pad slot 13 (`FUN_00482250`; RB by its
+  neighbours, medium confidence); a tap (released within 1 s) skips (`FUN_007a15c0` -> `FUN_0079f760`), only on
+  lists with +0x22.
+- **`PLAYSONGLIST`** (factory 0x77c610, enter 0x757e90, update 0x744b50, leave 0x744b00): enter calls
+  `FUN_0079f7b0(list, ALLOWPLAYOUT)`; the list (`FUN_0074f540`) is SONGLIST, else with USEDEFAULT the event's
+  list (event +0x68, when the world is in state 4) else the current GameMode's `MusicPlaylist`. List 0 pauses
+  (moves the request to +0x404; "Pause Music", "Clear Credits Songlist"). STOPONLEAVE False: the node exits at
+  once and the music goes on; True: leaving pauses. The HSM: "Freedrive Update" -> "Play Freedrive Song List"
+  (USEDEFAULT, ALLOWPLAYOUT, STOPONLEAVE); "Show World Offline Event" -> after the intros "Is Intro Race" ->
+  "Play Intro Race Music" (2026345) or "Play Default Game Mode Music"; RETRY -> "Pause Music"; leaving the
+  in-game menu -> "Resume Music"; the in-game menu ("In Game Menu" 469008) starts "Mute World And Music"
+  (sequence 1870238: bus 259952 and the "Music UI" snapshot property 1 -> 0 within 0.28 s, held while open).
+- **`MUTE_SOUND`** (factory 0x77c0f0, enter 0x73e220; reasons table 0x010c5c28, counters `FUN_00790920`): a 0.1 s
+  fade (0x01104740), 0.1 s hold after release (0x01104630), applied by `FUN_00abb520` only to buses with
+  `BusRoute` 6 ("Master World"). Music (route 4 -> Final -> Master) is not muted: a song keeps playing on the
+  loading screens. Bus volumes (`FUN_004b8b90`): Music = MusicVolume * 0.1, Speech = SpeechVolume * 0.1, World /
+  UI / Movie = SfxVolume * 0.1.
+- **`DynamicMusicManager`** (B+0x47544, `FUN_00831d80`): only sequence-based songs (none in data) and the
+  `DynamicMusic.MusicState` string set by `MusicStateSequenceItem` (start 0x833900, end 0x830940); no code
+  changes the music for pursuits, cooldowns or races (searched).
+- **Title**: not the song manager: the title sequence 1022357's own waves (intro 1772189 28-73.385 s gain 0.7,
+  bridge 1870153 73-73.9 s, loop 1772190 from 73.385 s, a looping stream, while the clock jumps 100.88 ->
+  73.952 s); the boot transition 1836020 plays a whoosh (0.1-3.989 s) and a 2.5 s looping bed 14e291
+  (0.75-4.8 s, so it covers the hold while the world loads).
+- **Port** (model decisions in `music.rs` / `music/songs.rs`): no shuffle, the event's own list not read, the
+  intro race recognised by its mode (1560350), the in-game menu's fade back is the same 0.28 s ramp, the title's
+  intro starts ~0.8 s into the stream (decoding) instead of the clock waiting, the 0.1 s mute ramps not ported,
+  the "now playing" popup not shown.
+- **Not found**: the reader of the pause flag A+0x2c3b8, whether a stopped stream ramps, profile option 5's
+  default, the caller that starts the manager at boot (`FUN_00790770`), the unmute after a preloaded list, what
+  event +0x68 is.
 
 ### Menu input and the map screen's controls (2026-10-14, `input.rs`, `pause.rs`, `map_screen.rs`)
 
@@ -2175,7 +2309,151 @@ for accept / back.
 **Port** (`map_screen.rs`, `pause.rs`, `input.rs` `MenuInput`): all of the above except: the map is drawn flat (the
 cursor moves at 1500 m/s along the screen's axes, no foreshortening of the up axis; the camera rows at the view's
 +0x2f370 were not read), `FUN_0078f1d0` (a gate on moving) taken as true, the failed left flick snaps instead of
-opening the Most Wanted list (not built), the tabs and filters are inert, accept opens options only on events.
+opening the Most Wanted list (not built), the tabs are inert, accept opens options only on events. The filters
+work since 2026-10-15 (next section).
+
+### The world map's items and filters; the minimap's free-roam icons (2026-10-15, `map_screen.rs`, `hud.rs`)
+
+**Configuration** (`FUN_0080ec90`, the `LiveMapManager` reading its screen script by field name): the screen
+script `LiveMapManager_ScreenScript` 1135185 holds `MapItemTypes` (16 `UI.MapItemType` {`DataSource` = the
+option menu's name, `650f3bfb` icon key, `c3f39ca3` card key, `ItemType`, `OptionsHeight`, two flags}), filed by
+`ItemType` at +0x2298 + 4 × type; `CollectablesName` (item type → language id) at +0x22e4; `SelectionPOI` (+0x2608),
+`AIPlayerPOI` (+0x2330), `AICopPOI` (+0x2334), `CheckpointPOI` (+0x2338), `FinishLinePOI` (+0x233c),
+`BlackListDriver` (+0x2340), `MeetupPOI` / `MeetupAreaPOI` (+0x2344 / +0x2348), `DefaultFilterIndex`,
+`FilterListBinding`. Field names were confirmed by hashing them (`field_hash`). Keys resolve to the screen POI
+widget's `PointOfInterestVisuals` (`mwtool ui map-items` lists all of it).
+
+| type | source | icon key → texture | card key |
+|---|---|---|---|
+| 0 | LocalPlayer | 1135501 → arrow | 1013506 |
+| 1 | Event | 1135497 → green diamond `0f789a` | 1013511 |
+| 3 | SpeedCamera ("SPEED CAMERA") | 1135495 → `1d0861` | 1135735 (speedwall card) |
+| 4 | Jump ("BILLBOARD") | 1135493 → `1d0817` | 1135737 |
+| 5 | SecurityGate | 1135497 | 1135353 |
+| 7 / 14 | Jackspot ("JACK SPOT") | 1135494 (icon visible on `JackSpots.IsSwapSpotFound[#]`) / 955695 (always) → wheel `160c27` | 1524715 |
+| 9 | Event (Most Wanted) | 955947 → red diamond `0e962f` | 1013511 |
+| 13 | BodyShop ("BODYSHOP") | 1524672 → wrench `160bfc` | 1135353 |
+| 15–18 | JackspotDlc1 | 2113015, 2241160–2 (the packs' wheels) | 1524715 |
+
+**Filters** (`FUN_00818550` next filter: index +0x26c4 counts 1…n and wraps to 1, then `FUN_008181b0` rebuilds the
+list, `FUN_00813e60` snaps from the cursor, the index is saved as `MapFilterIndex`). The offline map's filter
+widget (group 1135638, `Widget_MapFilters` 1135664) lists RACES (type 1), JACK SPOTS (7), RECOMMENDS (9), SPEED
+CAMERAS (3), BILLBOARDS (4); `DefaultFilterIndex` = 1. `FUN_008181b0` by filter type: 1 → events
+(`FUN_008154f0`); 3 → `TriggerData` kinds '4', 'G' as item 3; 4 → '2', 'A', 'D', 'J', 'M' as item 4; 5 → '0' as
+item 5; 6 → 0x17 as item 6; 7 → '<' as item 7 and as item 14, 'B' / 'E' / 'K' / 'N' as 15–18; 9 → events with
+other rules (Autolog recommendations); 0xc → body shops (kind 6) as item 13; 0xb → `FUN_00808d30`.
+- **Collectables** (`FUN_00817500(kind, item type)`): every trigger of the kind whose id is in the world database's
+  `Collect3` table (`FUN_00728b20`, column `TriggerID`; body shops skip the test); jack spots skip spots of a pack
+  (`FUN_00643c10`), need `FUN_006fd0a0`, and go to item 14 when `FUN_006fcf90` holds (a profile list looked up by
+  the spot's +0x24), else to item 7.
+- **Events** (`FUN_008154f0`, test `FUN_00808e60`): every event of the world's list
+  (`world+0x2f3fc → +4 → +0x11c`) that is an offline event, has its start trigger, is not of the excluded game
+  mode (`GameLogicConfig` +0xd8), is not a locked pack's; with the RACES arguments, events the driven car may not
+  enter (`FUN_006eca10` on `AllowedVehicleList`) and Most Wanted races not yet available (`FUN_006f9640`) are
+  "locked" and hidden (`MainMapConfig.d9572ca3`, +0xb4, = false would show them). The item type is
+  `MapItemTypes[1]`, or **`MapItemTypes[9]` when the event's +0xe9 (`c8f26580`, first place only: the Most Wanted
+  races) is set** (and the event's type is 390131, `OfflineEvent`).
+- **Dynamic items** (`FUN_00808290`): racers (`AIPlayerPOI`; `BlackListDriver` for a racer whose +0x578 → +0xb4 flag
+  is set) while an event runs, cops (`AICopPOI`) while an event runs or in a pursuit (`FUN_006c2410`), the race's
+  checkpoints and finish, meet-ups (online). The racer / cop look 1135614 has both arrows and switches on
+  `Players.PlayerBase[#].IsCop` (racer `160b30` orange; cop `160b32` blue and `160b33` red).
+
+**The free-roam HUD's collectable icons** (`FUN_006ffd90`, called per collectable from the game-mode update at
+0x007030f6): a point of interest is created within 400 m of the player (`.rdata` 0x00fcb044) and removed beyond
+450 m (`.data` 0x010c5944, initial value); the look by kind (`FUN_006ffba0`): speed cameras → `CollectablesConfig`
++0x54 (`ced801cd` 1013522, a world look without a map icon), shown when collected and in free roam; billboards →
+`MapPoiConfig` +0xc (`a32aa8bd` 1013491, world look only); body shops → `CollectablesConfig` +0x10 (`d71dba55`
+1444895, the wrench), always; jack spots → by pack +0x38…+0x44, else +0x48 (`507e9d87` 1013508, the wheel, visible
+on `JackSpots.IsSwapSpotFound[#]`) or, when `FUN_006fcf90` holds, +0x34 (`a1b2d86a` 955694); a jack spot whose car
+is locked for the profile (`FUN_006ed400` → `FUN_0068f190`) is shown only while `FUN_006fcf90` does not hold and its
+car can be offered. The local player's look is `MapPoiConfig` +0x54 (`29401278`, 1013507) and another player's
++0x60 (`86c1695b`, 1013487) (`FUN_006440a0`: compares the record's player index with
+`world+0xa6b4`); the pursuit's search area is +0x5c (`52b0c553`, 1013492, the 128² circle).
+- **Dead end**: the HUD screens hold event looks with world layouts (1013512 green, 955952 / 955955 red,
+  1013520, 1132924) but no code or GeneSys data names those keys (searched the image for the immediates and
+  every GenesysObject dump); events are not drawn on the minimap here.
+
+**Port**: the world map lists one filter at a time with the data's icons and cards (events keep the card measured
+on the 2026-10-10 capture, look 1135809), Most Wanted races in red, cops of a pursuit with the cop arrow; the HUD
+draws body shops and found jack spots within 400 m (450 m hysteresis) and cops with their own arrow. Model
+decisions: `Collect3` taken as every trigger of the kind (74 speed cameras, 216 billboards with the packs' kinds);
+`FUN_006fcf90` never holds (jack spots are item 7: on the map only found spots are listed, as their icon shows only
+then); the packs' jack spots use the base look; RECOMMENDS lists nothing; the filter index is not saved;
+collectables have no options; on the HUD every jack spot counts as unlocked.
+
+### Navigation: SET DESTINATION and the GPS route (2026-10-15, `gps.rs`, `map_screen.rs`, `hud.rs`)
+
+Notation: UIM = G+0x2f480 (`UIMapManager`, 0xd550 bytes); RC = UIM+0x1f8f0, the route container, three route
+objects of 0x4450 bytes: RC+0 (the waypoint route), RC+0x4450 (a second route, the race's GPS line over the next
+gates, `FUN_007a0e40`), RC+0x88a0 (the **shown** route, the one followed and drawn). Route fields: +0x0000 up to
+512 line points of 0x20 bytes, +0x4000 point count, +0x4008 the path request's done flag, +0x4018 the path
+(nodes as `i16` at +2.., count +0xf0, length +0x2dc), +0x4300 / +0x4400 a list of chained paths and its count
+(race segments), +0x4404 start, +0x4410 velocity, +0x441c destination, +0x4428..+0x4434 the line's bounding box,
++0x4438 the check timer, +0x443c progress (u), +0x4440 remaining distance, +0x4444 state (1 pending, 2 built),
++0x4449 no re-routing, +0x444a no progress tracking.
+
+- **Setting** (`Map:OnSetWaypoint`; the action's name hash at `.bss` 0x0117f49c, matched in the map's action
+  handler at 0x008188e0 → `FUN_0080eb60`): the selected item (`LiveMapManager` +0x2610) of type 1, 9 or 10
+  (events) → `FUN_00796ff0(RC, G, event id)`: the destination is the event's start trigger position
+  (`FUN_006e56f0` → `FUN_0053c020`), UIM+0x2c8e4 = the event id; any other item → its position
+  (`FUN_007ed6e0` on the POI list at UIM+0x14c50, else `FUN_008091d0`: collectables (3–7, 13–18) the trigger
+  position, the player (0) its car) → `FUN_007970e0`; the second route is cleared first (`FUN_00792390`),
+  UIM+0x2c5e0 = −1, `LiveMapManager` +0x26db / +0x26d8 = 1. The menu item has no exit token: the options stay
+  open. `SetWaypointToEventFromBinding` (Lua, `LAB_006767d0` → `FUN_00674c60`) does the same for an event id;
+  `SetWaypointToJackspot`, `SetRouteFromPlayerToEvent` (`FUN_006802d0`), `SetRouteFromPlayerToSafehouse`,
+  `ClearTargetRoute` are Lua hooks (not read). Every collectable's option menu (`SpeedCamera`, `Jump`,
+  `SecurityGate`, `BodyShop`, `Jackspot`, `JackspotDlc1`, `JackspotLocked`) starts with SET DESTINATION.
+- **Request** (`FUN_00796df0(route, G, start, velocity, destination, 1)`): the start is the local player's
+  position (`FUN_006e02f0`); when the velocity is not zero (any component beyond ±1.19e-7) it is moved onto the
+  road graph: the nearest node (`FUN_004375b0`), then `FUN_00436c00` twice along the velocity (two nodes
+  ahead); then `FUN_00843240(start, destination, 1, 1, route+0x4008)` queues a path request of type 9 (0x28-byte
+  message, `FUN_0084b640`) for the AI's A* worker. The two option bytes are the A* route options: in
+  `FUN_00527300` they switch the × 5 (`.rdata` 0x00fa97dc) shortcut and × 100 (0x00fa300c) jump factors, which
+  multiply the **turn penalty only** (step = exit cost × 1/511 (0x00fa9ea4) + penalty × factors). The penalty
+  `FUN_0052e250(a, b)` is 5 (0x00f9c588) · max(0, 0.98 (0x00fa9eac) − cos(b − a))³ with angles in degrees ×
+  π/180 (the polynomial with `.rdata` 0x01075470.. is a cosine: 1 at 0, −1 at π); a = the angle (×2°) of the
+  exit at the next junction leading back to the current one, b = the exit's angle; 0xff means none (no penalty).
+  What the exit angle measures (heading out, or in) was not resolved, so the penalty's effect on straight vs
+  U-turn is open.
+- **Line** (`FUN_007a0f20` state 1: when the path is in, `FUN_0079e4f0`; a failed build asks again):
+  `FUN_0079b890` walks the path's spline points (`FUN_00520a50`, per node pair), keeping every
+  ((count >> 9) + 1)th so at most 512, plus the last node; each point: position, (0, 0, 1), the width = node
+  +0x25 × 0.25 (`.rdata` 0x00f9c584; leading nodes under 0.001 m skipped, a zero width takes the previous),
+  interpolated between the nodes, u = distance along × 1 / path length. `FUN_0079e4f0` then (single path or
+  chained race segments) recomputes u over the kept points, replaces the side with normalise(−dz, 0, dx) of
+  p[i+1] − p[i−1] (the last point its own segment), pushes points out by 10 m (0x00fa929c) sideways where the line
+  doubles back on itself (p[i] = p[i−2]), appends the destination when it differs from the last point, and
+  stores the bounding box.
+- **Following** (`FUN_007a0f20` state 2, every frame from the container update `FUN_007a2aa0`, which first
+  copies the car's position into +0x4404 and its velocity into +0x4410 of all three routes, the velocity zeroed
+  when it points backwards along the shown line): the timer (+0x4438, 0.5 s `.rdata` 0x00f8a810) runs down with
+  the game clock; at 0: reload, `FUN_005232f0` = the nearest point on the path to the car in 3D (over every
+  spline piece) and the distance along it; progress = along / length, remaining (+0x4440) = length − along
+  (the `UIMapManager.RouteDistance` binding, `LAB_007a7350`, reads the shown route's); unless +0x4449, with a
+  single path, a car 15 m or more from that point (squared ≥ 225, `.rdata` 0x00fd6b48) asks for the route again
+  (`FUN_00796df0` from the car, with its velocity). Then (unless +0x444a) the progress is refined each frame: the
+  line point nearest the car with |u − progress| < 50 m (0x00fa9ed8) / length, heights × 1.25 (0x00fe0f90), then
+  the car projected (`FUN_009f7ef0`, ground plane) onto the nearer neighbouring segment, u interpolated.
+- **Shown route** (`FUN_007a2aa0`): when no route was pending at the start of the frame's update but one was
+  and is now built, the shown route (RC+0x88a0) becomes a copy of the waypoint route (`FUN_007aa050`), with the
+  second route's paths chained on when both are built (`FUN_0079ef00`, joining paths whose ends meet within
+  1 m); RC+0xccd8 = −1, flags +0xcce9 / +0xd542 = 1.
+- **Arrival** (`FUN_007a2aa0`): with the shown route built, a single path (count +0xcca0 = 0), RC+0xd543 clear
+  and `FUN_006e0430` false (game-mode manager +0x2e91), a car within 5 m on the ground plane of the shown route's
+  destination (squared < `.data` 0x010c61c8 = 25, the initial value) → `FUN_00673770`: every route cleared. The
+  same function is called from the event code (0x0075e100, 0x00761d70, 0x00781b70, 0x00787c20). Starting an
+  event near its start (`FUN_0074ad50`) clears UIM+0x2c8e4 when it is the waypoint's event.
+- **Drawing: not found.** The shown route's points are read by code outside the decompiled set (no reference to
+  RC+0x88a0 / +0xc8a0 / +0x443c besides the ones above). Not the `UIRoadRibbonShader` (the front end's light
+  streaks, `frontend.rs`), not a `PointOfInterestVisuals` look, not `TextStyle` data (`FUN_0079a2f0`, which reads
+  colours, is a text style reader). `Widget_PointOfInterest` +80 (`062ec799`) is `MarginProportion` (by its
+  name hash at `.bss` 0x0117f9a8, `FUN_0080b570`), not a line colour.
+
+**Port**: `gps.rs` as above; the path is `AiData::path` (A* on link lengths, no turn penalty) through
+`ai::spline_through`'s samples; the map screen draws the route over the city image and the minimap into its
+pixels. Model decisions: the line's look (light blue, the road's drivable width, at least 2 px on the minimap and
+3 px on the map, only from the car's progress on); a failed search clears the destination; an event start
+clears the route when a race starts (`RaceState` appears); the 5 m arrival test runs whenever a destination is set.
 
 ### Race HUD, countdown and results (2026-10-09, `hud.rs`, `ui_quads.rs`)
 
@@ -2230,8 +2508,8 @@ the target and next gates and the finish (the keys of "Races" → "Markers": bar
 604240) and the other racers (1013521, `MapPoiConfig.5bfb3553`: the orange arrow 816012). Model decisions: an
 icon's turn is its heading relative to the map (the player's arrow points up); icons keep their reference-pixel
 size × the HUD scale; icons whose centre is off the map are left out (the widget's `EnableClamping` /
-`IsClamped` is code not traced); which `MapPoiConfig` field the code uses for the player and for racers was not
-traced (the two named hold the matching arrows). Still ours: the map scale (4 m per reference pixel from the
+`IsClamped` is code not traced); the player's field is +0x54 (`FUN_006440a0`, 2026-10-15), the racers' was not
+traced (`5bfb3553` holds the matching arrow; cops are drawn with it and `IsCop` true since 2026-10-15). Still ours: the map scale (4 m per reference pixel from the
 tile resolution, not the 600 m / 90° camera) and the tiles drawn opaque grey (the game adds them, opacity 0.7).
 - Easydrive's RACES list: the offline races (730000) whose `AllowedVehicleList` holds the driven car (all races
   when none does), nearest start first. "START RACE" puts the car on the event's start 0.5 m up; the start
@@ -2337,6 +2615,25 @@ reading the code unless marked *inferred*.
   `mwtool genesys-types`; the read offsets 0x20/0x24/0x28 are its fields `0aff900c` / `a3b7a168` /
   `0e3bcabe`): jack spot location and car trigger ids with the car's id as key, so owning a car marks its
   jack spot pair found. `FUN_0065fc00` hits the trigger of a 0x34-byte record list (`+0x20` = trigger id).
+
+### Compound models: standing, found, broken (2026-10-15)
+
+- The standing compound object (type 2, created by `FUN_005396d0` at stream-in or `FUN_00533980`) keeps
+  `CompoundObject` +0x24 at +0x100 and +0x04 at +0x104 and draws its +0x10 (draw passes `FUN_00538b00`,
+  `FUN_00550020` pass the object's +0x10 to `FUN_008ae140`). +0x10 = +0x28 when the flag +0x10f is set, else
+  +0x24; an empty slot falls back to +0x04. `FUN_00533a00` repeats the choice (with +0x10d set: +0x04) for every
+  compound when `DAT_0110bfb0` is raised (by 0x546ff0, a callback registered at init through `FUN_00adb5e0`).
+  `FUN_00532430` (the break) sets +0x10d and +0x10 = +0x104 (+0x04, skinned to the parts).
+- +0x10f is the last argument of `FUN_00554230`: whether the instance id (record +0x4c) is in the sorted list at
+  progress +0x22c8 (`FUN_006a0400`), which a function near 0x700080 (start not resolved; guarded by `FUN_00532dc0`) fills from the profile's collected
+  triggers (`FUN_00728b20`: table `Collect3`, column "TriggerID") of billboard kinds; kinds 7 / 'I' go to
+  +0x1194 (`FUN_006a03f0`, the list checked first: found there, the object is not created).
+- Per-object material overrides: the draw copies the object's override block (+0x20 of the runtime object,
+  from the instance record) into the constant and sampler slots (`FUN_00a621a0`, `FUN_00a62820`) before the
+  model draw. Billboards bind `DiffuseSampler` this way (formats: `ObjectInstance::overrides`).
+- No `AdditionalInfo`: `FUN_0054dfe0` clears the object's pinned bit when the physical definition's info
+  pointer (+0x30) is null; the break test `FUN_0054e570` and the damage test `FUN_0054bf70` only read the info
+  when it is there (no damage threshold then).
 
 ### Billboards, gates and other kinds (session 5, round 2)
 
@@ -3251,7 +3548,7 @@ off-screen check passes, the driver asks for a reset (`FUN_0083d4b0`).
 
 - Routes: an A* search on a worker thread (`"AStarWorker"`, `FUN_00528fe0`) over the **AIData** road graph's
   junctions (`FUN_00527300`: step cost = exit cost / 511 (= length / 200 m), plus a turn penalty
-  5·max(0, 0.98 − trig(Δ))³ (`FUN_0052e250`; sin or cos unresolved), × 5 on shortcut exits and × 100 on jump
+  5·max(0, 0.98 − cos Δ)³ (`FUN_0052e250`, 2026-10-15: a cosine; the angle reference is open), × 5 on shortcut exits and × 100 on jump
   exits when route options are set; heuristic the straight distance / 200), expanded back into nodes
   (`FUN_00524e20`). The format is in formats.md "AIData (0x200)".
 - A race path (`FUN_005075e0` → `FUN_004edb80` → `FUN_004e7d80`) takes one node per route point (closer than
@@ -3698,12 +3995,64 @@ How the eight damage clips (and the skeleton) become the body's bone matrices; p
   and what happens on frames it skips. Dead ends: `FUN_005bb770` and `FUN_00eaa990` apply procedural axis-angle
   rotations, not damage; `FUN_00a09c60` and its callers (`FUN_00a0b6d0` …) are collision (GJK), not pose code.
 
-## Tyre marks
+## Tyre marks and tyre smoke
 
-Not found. The skid mark code would read `TyreVfxBehaviour.{Front,Rear}_Tyres.Skid_Marks` (stride 0x130 per axle,
-`LatParams` floats at +0x10..+0x2c) and `SurfaceVfx.TyreMarksMaterials` (+0x18 + 8 x tyre class); none of these
-offsets, the field hashes, or a tyre-mark string turns up in the dump (research log 2026-10-06 round 4). The
-runtime borrows the per-wheel form of the skid sound intensities (`FUN_009d1bf0`, above) as a model decision.
+**Found (2026-10-15).** Two paths, both per wheel (wheel object = vehicle +0x870 + 0x1d0 i; +0x20 its contact's
+collision tag: surface = bits 13–19, bit 1 = the `ROAD` flag; +0x24 on the ground; +0x1c1 on rims, +0x1c2 flat).
+
+- **The race car's effects** (`FUN_00589e20`, per car and frame, four wheels; `bVar37` = an AI car): the surface's
+  `SurfaceVfx` (`FUN_0054aaa0`: `SurfaceType` weather block +0xc0, the wet block's when the surface manager's state
+  is ≥ 1, the car's +0x1c17 is clear and it is set, else the dry one's) gives
+  - the smoke: `AIWheelEffects` (+0x40) or `PlayerWheelEffects` (+0xa0) → `VfxWheelEffects`: `OnRims` (+0x1c)
+    when the car's wheel state +0x1aa8 + 4i is 1, else `61ac1863` (+0x14) when `FUN_006a15c0(…, 0xb)` returns 2,
+    else `DefaultTyre` (+0x0c). On while the wheel is down and the largest of its three smoke ramps (below) is
+    above 0.01 (`.rdata` 0x00fad910), or on rims, or while the car moves on a surface whose byte +0x156 (front
+    wheels) / +0x157 (rear) is set (false on every surface). The ramps are written into the effect's parameter
+    block (+0x84..+0x8c, the `WheelParams` intensities). Four effect slots per wheel.
+  - a second kick-up: `WheelVfx` (+0x138; AI `4cf3cf8f` +0x140) when a condition on the wheel's contact
+    velocities holds (not read in full).
+  - `bb02333c` (+0x100) for the local player's rear wheels, placed with the camera's matrix (lens dirt or
+    similar; not ported); `5830a883` (+0x58) is copied to car +0x3c0.
+  - the **tyre marks**: material = `RimMarksMaterial` (+0xe8) on rims, else `TyreMarksMaterials` by the car's
+    tyre class (car +0x1a88: classes 0/1, 2, 3/4 read a short at +0x6c / +0x6e / +0x70 of a per-car object that
+    picks the slot: 0 `Offroad` (+0x20), 1 `eff16a09` (+0x18), 2 `Road` (+0x28), 3 `Sport` (+0x30), 4 `Track`
+    (+0x38)). A strip point is added **every update while the wheel is down and the material exists**
+    (`FUN_004a3b80` starts a strip, `FUN_004a3c60` continues it, `FUN_004a3d10` ends it when the wheel lifts),
+    with position = contact + `fStack_220` × the across vector, the wheel's +0x10 vector, Slip weight = the
+    `Skid_Marks` lateral ramp (lane 5), Spin weight = max(spin, lock) (lanes 4, 7), wheel +0xbc (read as the
+    tyre width; set per wheel by the vehicle build next to the normal / rim / flat radii +0xac / +0xcc / +0xec)
+    and the material. The points go into a queue of 0x50-byte records (`FUN_004af040`); the vertex builder
+    that consumes them was not found.
+- **The ramps** (`FUN_009cef90`, `this` = vehicle +0x2c90 + 0x30 i, called four times per tick from
+  `FUN_009d6e30` between the dirt build-up `FUN_009d19c0` and the skid sound `FUN_009d1bf0`). The record's +0x20
+  points at an object whose +0x08 / +0x10 are the axle's `TyreVfxBehaviour` `Smoke` / `Skid_Marks` blocks (by
+  which readers use lanes 0..2 and 4, 5, 7). For a block S (offsets inside `SkidMarkParams` / `SmokeParams`):
+  s = |wheel +0xe4 − +0xe0| × 2.236936 (mph), v = |vehicle +0x1620| (mph), α = |wheel +0x114| (degrees);
+  spin = clamp((s − S+0x5c) / max(S+0x58 − S+0x5c, 2⁻²³))^S+0x4c × S+0x54, zero while wheel +0x108 < −0.1;
+  lateral = clamp((α − S+0x30) / (S+0x24 − S+0x30))^S+0x1c × clamp((v − S+0x34) / (S+0x28 − S+0x34)) × S+0x2c;
+  lock = clamp((s − S+0x84) / (S+0x80 − S+0x84))^S+0x74 × S+0x7c, only while wheel +0x108 < −0.1 (`.data`
+  0x011870d0, −0.1 in every lane). Each lane moves by rate × dt × 60 (0x01187200) of the gap to its target, the
+  rate S+0x60 / +0x38 / +0x88 (`6274d1ad`) rising and S+0x50 / +0x20 / +0x78 (`27c5dd70`) falling. Offsets →
+  fields: `Lat_Slip` at +0x0c (`Curve_Power` +0x1c, `27c5dd70` +0x20, `53b71e27` +0x24, `2c72e92a` +0x28,
+  `35caad30` +0x2c, `6a83c966` +0x30, `26028ef5` +0x34, `6274d1ad` +0x38), `Long_Spin` at +0x3c (+0x4c … +0x60),
+  `64222c3f` at +0x64 (+0x74 … +0x88). Ported as `mw_handling::tyre_vfx` (+0x108 taken as κ: inferred).
+- **Other vehicles** (`FUN_00606210`, up to 431 vehicle slots; per wheel, also extra contacts beyond four): the
+  surface's `SurfaceVfx` via `FUN_0054aaa0`; a kick-up `01d1b4fd` (+0x118) or `f967c1ce` (+0x120, by a byte
+  +0x3d of the slot's object) into the shared `SurfaceFx` wheel-contact list (`FUN_00497450` → `FUN_0049ba00`,
+  ≤ 256 contacts per frame) when wheel +0x1bf is set and the car's speed (max of +0x1fc0, +0x1fb8) > 0; tyre
+  marks with `TyreMarksMaterials.Road` (+0x28) while wheel +0x1be is set, weight wheel +0x138. Those come from
+  `FUN_009dfd40` (from `FUN_009e00c0`, the simplified wheel update of `FUN_008f7e10` / `FUN_008f8cd0` and three
+  more): m = max(+0x130, clamp((+0x118 − 0.5) / 0.5) × 0.55, clamp((+0x134 − 0.1) / 0.9)), raised to at least
+  max(+0x130, 0.5) on polygons without the `ROAD` flag; +0x1be = m > 0.1 and not on rims, +0x138 = m when above
+  0.1 (constants: `.rdata` 0x01026830 / 0x01026b70 / 0x01026990 / 0x01026840 copied by static initialisers at
+  0x00f772f0..0x00f77340). +0x134 = clamp(|wheel +0xdc|, 0, 15) / 15; +0x130 = clamp(|+0x110| − the axle tyre
+  object's +0x4c, 0, 1), zero while the wheel is at rest (`FUN_009df090`); +0x118 = a curve
+  (`TyreVfxBehaviour` `64222c3f` fields through the object at wheel +0x190) over |+0xd8| × 2.236936, times
+  clamp((p − F) / (1 − F)) of an input vector p (`FUN_009df2e0` / `FUN_009d4f20`). +0xd8, +0xdc, +0x110 are
+  written through vector lane setters that have no callers in the dump; not identified. Not ported.
+- Dead ends: the earlier search (2026-10-06) looked for the field hashes and `TyreMarksMaterials` × 8 + 0x18;
+  the code indexes the inline struct with a switch instead. The lane setters at 0x008f2c70..0x008f2fc0 and
+  0x00908650..0x009087c0 have no callers or vtable entries in the snapshot.
 
 ## Cameras
 

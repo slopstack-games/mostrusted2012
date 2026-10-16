@@ -10,6 +10,45 @@ use mw_bundle::ResourceId;
 use mw_formats::Language;
 use mw_formats::ui::{Element, REFERENCE_SIZE};
 
+/// `mwtool ui map-items`: the world map's `LiveMapManager_ScreenScript` (item kinds with their icon / card
+/// looks), its offline filters and the map screen's point-of-interest looks (key → map layout → textures).
+pub fn map_items(store: &AssetStore, lang: &Language) -> Result<()> {
+    const MAP_SCREEN: &str = "UI/SCREENS2/899991.BNDL";
+    const OFFLINE_FILTERS: u32 = 1_135_638;
+    let text = |id: u32| lang.get(id).unwrap_or("?").to_string();
+    let pois = store.ui_poi_visuals(MAP_SCREEN)?;
+    let look = |key: u32| -> String {
+        let Some(p) = pois.iter().find(|p| p.key == key) else { return format!("{key} (no look)") };
+        let Some(m) = &p.map else { return format!("{key} (look {}, no icon)", p.id) };
+        let tex: Vec<String> =
+            m.layout.elements.iter().filter_map(|e| e.texture).map(|t| format!("{:x}", t.0 & 0xff_ffff)).collect();
+        format!("{key} (look {}, layout {}, tex [{}])", p.id, m.layout.id, tex.join(" "))
+    };
+    let c = store.map_manager_config()?;
+    println!("item types (LiveMapManager_ScreenScript {}):", mw_assets::ui::LIVE_MAP_MANAGER_SCRIPT);
+    for t in &c.item_types {
+        let name = c.collectable_name(t.item_type).map(text).unwrap_or_default();
+        println!(
+            "  {:>2} {:<13} {:<14} icon {}\n{:32}card {}",
+            t.item_type,
+            t.data_source,
+            name,
+            look(t.icon),
+            "",
+            look(t.card)
+        );
+    }
+    println!("selection {}", look(c.selection_poi));
+    println!("racer {}  cop {}", look(c.ai_player_poi), look(c.ai_cop_poi));
+    println!("Most Wanted racer {}", look(c.blacklist_driver_poi));
+    println!("checkpoint {}  finish {}", look(c.checkpoint_poi), look(c.finish_line_poi));
+    println!("filters (group {OFFLINE_FILTERS}):");
+    for f in store.map_filters(MAP_SCREEN, OFFLINE_FILTERS)? {
+        println!("  type {:>2} {}", f.filter_type, text(f.name));
+    }
+    Ok(())
+}
+
 /// One line per screen bundle: its widgets and how many layouts each places.
 /// `mwtool ui easydrive`: the menu model (mw_assets::easydrive), one line per type, tier, source and item.
 pub fn easydrive(store: &AssetStore, screen: &str, lang: &Language) -> Result<()> {

@@ -3,7 +3,8 @@
 //! sequences' layouts, their textures and bitmap fonts, with the bindings the layouts name filled from the car
 //! and the race (`mw_assets::ui::UiScene::draw_with` turns them into quads; `ui_quads` shows them as Bevy UI
 //! nodes). The minimap is the game's map-tile grid, composited on the CPU with the car's facing (local +Z) up,
-//! with the points-of-interest icons over it (player, gates, racers; docs/decomp.md "Minimap orientation").
+//! with the points-of-interest icons over it (player, gates, racers, cops, body shops and jack spots within
+//! 400 m; docs/decomp.md "Minimap orientation", "The world map's items and filters").
 //!
 //! The game decides which layouts a widget shows in code (widget adapters); here fixed sets stand in:
 //! - free roam (always): speedometer + nitrous gauge, odometer, minimap frame, road / district name;
@@ -74,6 +75,12 @@ pub const RESULTS_SEQUENCE: u32 = 1_019_828;
 /// `FinishTime` "TIME {...LocalPlayerTime(TIME)}", what `Widget.HUD.SummaryHeadline` / `SummaryDetail` show.
 const FINISH_POSITION_TEXT: u32 = 1_589_986;
 const FINISH_TIME_TEXT: u32 = 1_693_016;
+
+/// The free-roam collectables' points of interest come and go with the distance to the player's car
+/// (`FUN_006ffd90` from `FUN_00702xxx`): added within 400 m (`.rdata` 0x00fcb044), removed beyond 450 m (`.data`
+/// 0x010c5944, its initial value).
+const POI_ADD_RANGE: f32 = 400.0;
+const POI_REMOVE_RANGE: f32 = 450.0;
 
 /// Minimap scale in metres per reference pixel (1280×720 frame): the map tiles' own resolution
 /// (256 px per 1036 m tile). The game's map camera (`UIMapCameraConfig`: distance 600 m bound to
@@ -155,6 +162,19 @@ enum MapIcon {
     Finish,
     FinishPreview,
     Opponent,
+    /// A cop: the opponent look with `Players.PlayerBase[#].IsCop` true (its cop elements).
+    Cop,
+    /// `CollectablesConfig` +0x10: a body shop.
+    BodyShop,
+    /// `CollectablesConfig` +0x48: a jack spot location (icon shown once found).
+    JackSpot,
+}
+
+impl MapIcon {
+    /// The icon whose layout is drawn (a cop is the opponent look).
+    fn look(self) -> Self {
+        if self == Self::Cop { Self::Opponent } else { self }
+    }
 }
 
 /// A sequence item's timing, enabling binding and texts.
@@ -183,6 +203,17 @@ struct HudAssets {
     images: Vec<(ResourceId, Image)>,
     fonts: Vec<(u32, mw_formats::Font)>,
     mosaic: Option<MapMosaic>,
+    points: Vec<MapPoint>,
+}
+
+/// A free-roam collectable with a minimap icon (`FUN_006ffba0`): body shops (kind 6) and jack spot locations
+/// ('<', 'B', 'E', 'K', 'N').
+#[derive(Debug, Clone, Copy)]
+struct MapPoint {
+    icon: MapIcon,
+    /// The trigger's id.
+    id: u32,
+    pos: Vec3,
 }
 
 #[derive(Resource)]
@@ -205,6 +236,9 @@ struct Hud {
     root: Entity,
     pool: QuadPool,
     map: Option<MapView>,
+    points: Vec<MapPoint>,
+    /// Indices into `points` with a point of interest now (within range, `FUN_006ffd90`).
+    active: std::collections::BTreeSet<usize>,
 }
 
 struct MapView {
@@ -272,6 +306,8 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>, settings: Res<H
                     (MapIcon::Finish, keys.finish),
                     (MapIcon::FinishPreview, keys.finish_preview),
                     (MapIcon::Opponent, keys.opponent),
+                    (MapIcon::BodyShop, keys.body_shop),
+                    (MapIcon::JackSpot, keys.jack_spot),
                 ];
                 for (icon, key) in wanted {
                     match pois.iter().find(|p| p.key == key).and_then(|p| p.map.clone()) {
@@ -329,6 +365,22 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>, settings: Res<H
             scene.textures().into_iter().filter_map(|id| Some((id, game_text::decode_texture(&store, id)?))).collect();
         let fonts = scene.fonts.iter().map(|(&n, f)| (n, f.clone())).collect();
         let mosaic = store.ui_map_grid().ok().map(|g| MapMosaic::build(&store, g));
+        let points = store
+            .trigger_data()
+            .map(|td| {
+                td.triggers
+                    .iter()
+                    .filter_map(|t| {
+                        let icon = match t.kind {
+                            6 => MapIcon::BodyShop,
+                            b'<' | b'B' | b'E' | b'K' | b'N' => MapIcon::JackSpot,
+                            _ => return None,
+                        };
+                        Some(MapPoint { icon, id: t.id, pos: Vec3::from(t.position) })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         info!(
             "HUD: {} layouts ({} countdown, {} results items), {} fonts, minimap {} in {:.0?}",
             scene.layouts.len(),
@@ -338,8 +390,19 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>, settings: Res<H
             mosaic.is_some(),
             t.elapsed()
         );
-        let _ =
-            tx.send(HudAssets { scene, groups, countdown, results, feedback, lang, car_names, images, fonts, mosaic });
+        let _ = tx.send(HudAssets {
+            scene,
+            groups,
+            countdown,
+            results,
+            feedback,
+            lang,
+            car_names,
+            images,
+            fonts,
+            mosaic,
+            points,
+        });
     });
     commands.insert_resource(HudLoading(Mutex::new(rx)));
 }
@@ -397,6 +460,8 @@ fn receive_hud(
         root,
         pool: QuadPool::default(),
         map,
+        points: assets.points,
+        active: Default::default(),
     });
 }
 
@@ -624,13 +689,16 @@ fn map_icons(
             match path {
                 "Rot" => Some((rot as f64).into()),
                 "Net.IsInOnlineGame" => Some(false.into()),
-                // `Players.PlayerBase[#].IsCop` / `.InChase`: racers, not cops.
-                "Players.PlayerBase" => Some(false.into()),
+                // `Players.PlayerBase[#].IsCop` / `.InChase`: the look's cop elements for cops.
+                "Players.PlayerBase" => Some((icon == MapIcon::Cop).into()),
+                // Only found jack spots are listed (`icons`).
+                "JackSpots.IsSwapSpotFound" => Some((icon == MapIcon::JackSpot).into()),
                 _ => base(path, arg),
             }
         };
+        let look = icon.look();
         let mut options = DrawOptions::new(
-            Some(Box::new(move |i| groups.get(i).is_some_and(|&g| g == Group::MapIcon(icon)))),
+            Some(Box::new(move |i| groups.get(i).is_some_and(|&g| g == Group::MapIcon(look)))),
             Some(&mut *anim),
             t,
         );
@@ -735,7 +803,11 @@ fn draw_hud(
     mut materials: ResMut<Assets<AdditiveQuadMaterial>>,
     mut root_vis: Query<&mut Visibility, Without<QuadNode>>,
     pause: Option<Res<crate::pause::PauseMenu>>,
-    pursuit: Res<crate::police::PursuitHud>,
+    (pursuit, collected, gps): (
+        Res<crate::police::PursuitHud>,
+        Option<Res<crate::frontend::Collected>>,
+        Res<crate::gps::Gps>,
+    ),
 ) {
     let Some(mut hud) = hud else { return };
     let car = car.single().ok();
@@ -756,7 +828,7 @@ fn draw_hud(
     let t = time.elapsed_secs_f64();
     let metric = settings.metric;
 
-    let Hud { scene, groups, countdown, results, feedback, lang, car_names, anim, map, .. } = &mut *hud;
+    let Hud { scene, groups, countdown, results, feedback, lang, car_names, anim, map, points, active, .. } = &mut *hud;
     scene.metric = Some(metric);
     let view = race.as_deref().map(|race| {
         let player = racers.iter().find(|(r, _)| r.player).map(|(_, p)| p);
@@ -886,6 +958,8 @@ fn draw_hud(
         if size != map.size || map.frame % 2 == 0 {
             let mut px = vec![0u8; (size.x * size.y * 4) as usize];
             map.mosaic.render(p.x, p.z, [f.x, f.z], metres_per_px / scale, size.x, size.y, &mut px);
+            // The SET DESTINATION route over the roads (`gps.rs`).
+            crate::gps::draw_on_minimap(gps.ahead(), p, f, metres_per_px / scale, size.x, size.y, &mut px);
             map.size = size;
             if let Some(mut img) = images.get_mut(&map.image) {
                 *img = game_text::ui_image(size.x, size.y, px);
@@ -904,8 +978,28 @@ fn draw_hud(
                 .filter(|(r, _)| !r.player)
                 .map(|(_, x)| (MapIcon::Opponent, x.translation(), car_facing(x))),
         );
-        // Cops: the same arrow (`MapPoiConfig.5bfb3553`, "racer / cop arrows").
-        icons.extend(pursuit.cops.iter().map(|&(p, f)| (MapIcon::Opponent, p, f)));
+        // Cops: the same look (`MapPoiConfig.5bfb3553`), whose cop elements show on `IsCop`.
+        icons.extend(pursuit.cops.iter().map(|&(p, f)| (MapIcon::Cop, p, f)));
+        // Body shops and jack spots near the car (`FUN_006ffd90`): a point of interest within 400 m, removed
+        // beyond 450 m. A jack spot's icon is visible once found (`JackSpots.IsSwapSpotFound[#]`). Model
+        // decisions: every jack spot counts as one whose car is not yet in the profile's list (`FUN_006ed400`,
+        // `FUN_006fcf90`), and the packs' spots use the base look.
+        for (i, pt) in points.iter().enumerate() {
+            let d2 = pt.pos.distance_squared(p);
+            if d2 < POI_ADD_RANGE * POI_ADD_RANGE {
+                active.insert(i);
+            } else if d2 > POI_REMOVE_RANGE * POI_REMOVE_RANGE {
+                active.remove(&i);
+            }
+        }
+        let found = |id: u32| collected.as_ref().is_some_and(|c| c.jack_spots.contains(&id));
+        icons.extend(
+            active
+                .iter()
+                .map(|&i| points[i])
+                .filter(|pt| pt.icon != MapIcon::JackSpot || found(pt.id))
+                .map(|pt| (pt.icon, pt.pos, Vec3::Z)),
+        );
         let icon_quads = map_icons(scene, groups, anim, t, screen, &q, p, f, metres_per_px, &icons, &mut base);
         quads.splice(qi + 1..qi + 1, icon_quads);
     }

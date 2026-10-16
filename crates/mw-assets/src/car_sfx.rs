@@ -159,6 +159,10 @@ pub struct OtherCarSfx {
     pub horns: Vec<Arc<OneShot>>,
     /// Per traffic `VehicleComponent` id: its horn list (indices into `horns`, in the resource's order).
     pub horn_lists: HashMap<u32, Vec<usize>>,
+    /// The car alarm (`MiscSound.c1109b6e`, an 8 s timeline; `FUN_006042c0`).
+    pub alarm: Option<Arc<OneShot>>,
+    /// `MiscSound` +0xe0 (`7f18169d`, 0.4): a car sounds its alarm when `(car index % 10) × 0.1` is at most this.
+    pub alarm_share: f32,
 }
 
 /// `CollisionSoundSet` competitor slots by `[level][direction]` (field hashes; offsets in the module doc).
@@ -427,6 +431,10 @@ impl AssetStore {
             }
             out.horn_lists.insert(c, list);
         }
+        if let Some(misc) = first_object(self, "SOUND/GLOBAL.BNDL", "Genesys.Gen.MiscSound") {
+            out.alarm = handle_at(&misc, 0xc110_9b6e).and_then(|id| self.one_shot(&snapshot, id)).map(Arc::new);
+            out.alarm_share = number(misc.get(0x7f18_169d)).unwrap_or(0.0);
+        }
         out
     }
 
@@ -436,6 +444,17 @@ impl AssetStore {
         let vs = self.vehicle_sound(&format!("{vehicle}_VEHICLESOUND"))?;
         let snapshot = Snapshot::load(self);
         vs.horns.iter().find_map(|&h| self.one_shot(&snapshot, h))
+    }
+
+    /// The player car's ignition: `Ignition_Sequence` of the `EngineSound2` of `<vehicle>_VEHICLESOUND` (+0x48),
+    /// started by `FUN_0058c930` when the gearbox enters its cranking state (`ignition.rs`). The 911's is one
+    /// 0.59 s wave on the snapshot channel `Player Vehicle Ignition` plus the effect item that starts the engine
+    /// (property 7), which has no sound.
+    pub fn player_ignition(&self, vehicle: u32) -> Option<OneShot> {
+        let vs = self.vehicle_sound(&format!("{vehicle}_VEHICLESOUND"))?;
+        let es = self.genesys_object(vs.engine?).ok()?;
+        let seq = handle(&es, "Ignition_Sequence")?;
+        self.one_shot(&Snapshot::load(self), seq)
     }
 
     /// The player car's impact, grind and damage sounds ([`PlayerCarSfx`]).
