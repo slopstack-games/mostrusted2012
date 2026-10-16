@@ -189,7 +189,7 @@ MW_ENGINE_TRACE=<scratch>/rpm.trace ./target/release/mostrusted --drive 911 --te
 ./target/release/mwtool speech [<event id>] [--out <dir>]                           # radio events; decode an event's lines
 # MW_SIREN_LOG=1, MW_SPEECH_LOG=1 (MW_AUDIO_METER=1 lists the sirens); a cop car driven by the player: the horn
 # steps its siren (MW_SIREN_PRESS=t0,t1,... presses it headless); MW_LIGHTBAR_SHOTS=<dir> (16 shots 1/8 s apart),
-# MW_COP_LIGHTS=1 (every bar on), MW_NO_LIGHTBAR=1 (A/B)
+# MW_COP_LIGHTS=1 (every bar on), MW_NO_LIGHTBAR=1 (A/B), MW_LIGHTBAR_SHOTS_AFTER=<s> (delay the shots)
 MW_SIREN_PRESS=12 MW_LIGHTBAR_SHOTS=<dir> ./target/release/mostrusted --drive "Ford Police Interceptor" --units 12 --hour 1 --no-traffic --screenshot <scratch>/bar.png --screenshot-delay 1500
 # The Steam Controller is read from HID (steam_controller.rs; MW_STEAM_CONTROLLER=0 off); --gamepad-debug logs pads
 # Controls are the original's defaults (input.rs): arrows steer, A accelerate, Z brake, Space handbrake, W horn; pad

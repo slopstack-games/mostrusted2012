@@ -170,14 +170,29 @@ fn update_bars(
     }
 }
 
-/// `MW_LIGHTBAR_SHOTS=<dir>`: from 2 s after a bar first shows, 16 screenshots 1/8 s of game time apart
-/// (`bar_00.png` …), each logged with the flash values of the first car's animated coronas.
-fn shots(mut commands: Commands, time: Res<Time>, cars: Query<&FlashCar>, mut state: Local<(Option<f32>, u32)>) {
+/// `MW_LIGHTBAR_SHOTS=<dir>`: from 2 s (`MW_LIGHTBAR_SHOTS_AFTER=<s>`) after a bar first shows, 16 screenshots 1/8 s of
+/// game time apart
+/// (`bar_00.png` …), each logged with the nearest lit car's distance from the camera and its coronas' flash values.
+fn shots(
+    mut commands: Commands,
+    time: Res<Time>,
+    cars: Query<(&FlashCar, &GlobalTransform)>,
+    camera: Query<&GlobalTransform, crate::MainCamera>,
+    mut state: Local<(Option<f32>, u32)>,
+) {
     use bevy::render::view::screenshot::{Screenshot, save_to_disk};
     let Some(dir) = std::env::var_os("MW_LIGHTBAR_SHOTS") else { return };
-    let Some(f) = cars.iter().find(|f| f.bar_on() || forced()) else { return };
+    let eye = camera.iter().next().map_or(Vec3::ZERO, |c| c.translation());
+    let Some((f, t)) = cars
+        .iter()
+        .filter(|(f, _)| f.bar_on() || forced())
+        .min_by(|a, b| a.1.translation().distance(eye).total_cmp(&b.1.translation().distance(eye)))
+    else {
+        return;
+    };
     let now = time.elapsed_secs();
-    let start = *state.0.get_or_insert(now + 2.0);
+    let after = std::env::var("MW_LIGHTBAR_SHOTS_AFTER").ok().and_then(|v| v.parse().ok()).unwrap_or(2.0);
+    let start = *state.0.get_or_insert(now + after);
     let k = state.1;
     if k >= 16 || now < start + k as f32 * 0.125 {
         return;
@@ -189,7 +204,8 @@ fn shots(mut commands: Commands, time: Res<Time>, cars: Query<&FlashCar>, mut st
         .iter()
         .filter_map(|c| c.animation.as_ref().map(|a| format!("{:.2}", a.value(clock))))
         .collect();
-    info!("lightbar shot {k}: t {now:.3} flash clock {clock:.3}: {}", values.join(" "));
+    let dist = t.translation().distance(eye);
+    info!("lightbar shot {k}: t {now:.3} flash clock {clock:.3}, nearest bar {dist:.1} m: {}", values.join(" "));
     let path = std::path::Path::new(&dir).join(format!("bar_{k:02}.png"));
     commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
     state.1 += 1;
