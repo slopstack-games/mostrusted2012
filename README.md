@@ -183,7 +183,8 @@ Still missing or not like the original (user play test, 2026-10-14; details in
 - [ ] Lights: car lights do not light up the world properly (their coronas draw since 2026-10-16); speed cameras
   light the world all the time, not only when they flash
 - [ ] Crash particles: broken glass when crashing into traffic, other crash debris and sparks
-- [ ] Sound effects: smashing billboards, hitting light poles and other props, light crashes, jump landings,
+- [ ] Sound effects: smashing billboards, hitting light poles and other props, light crashes, jump landings, the
+  cinematic crash sound,
   and many other one-off sounds
 - [ ] Dirt: the dirt cloud is too big and blocks the view; driving on dirt does not feel like the original
 - [ ] Car sounds and effects: idle sound, nitrous sound, backfires, engine start / stop; tyre marks and nitrous
