@@ -1325,12 +1325,11 @@ fn cop_brains(
                     // MODEL: without traffic (`--no-traffic`) there are no lanes: the patrol drives the road graph at
                     // the level's go-to / search speed.
                     let near_end = driver.route.length() - driver.progress < 150.0;
-                    if near_end || before != CopMode::Patrol {
-                        if let Some(route) =
+                    if (near_end || before != CopMode::Patrol)
+                        && let Some(route) =
                             crate::ai::route_from_ai_graph(&graph, t.translation, fwd.x.atan2(fwd.z), 2000.0)
-                        {
-                            set_route(&mut driver, route);
-                        }
+                    {
+                        set_route(&mut driver, route);
                     }
                     driver.schedule_speed = level.search_speed_mph * MPH;
                     continue;
