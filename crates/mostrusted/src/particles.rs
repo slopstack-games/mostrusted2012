@@ -283,7 +283,8 @@ impl BatchMaker<'_, '_> {
                             blend,
                         ),
                         key_colour: key_colour.extend(sky),
-                        key_direction: key_direction.extend(0.0),
+                        // w: the pixel program alpha-tests (all but the `NoAlphaTest` variants).
+                        key_direction: key_direction.extend(if m.shader.contains("NoAlphaTest") { 0.0 } else { 1.0 }),
                     },
                     texture: image.map(|i| self.images.add(i)),
                     irradiance: irradiance.clone(),
@@ -651,7 +652,7 @@ impl Instances {
         self.list.push(inst);
     }
 
-    fn one_shot(&mut self, vfx: &Vfx, effect: Option<ResourceId>, params: Params) {
+    pub(crate) fn one_shot(&mut self, vfx: &Vfx, effect: Option<ResourceId>, params: Params) {
         let Some(def) = effect.and_then(|id| vfx.effects.get(&id)) else { return };
         if self.list.len() > 64 {
             return;
@@ -703,8 +704,15 @@ pub(crate) fn simulate(
     let eye = camera.iter().next().map(|t| t.translation()).unwrap_or_default();
     for inst in &mut instances.list {
         let def = inst.def.clone();
-        for (layer, sim) in def.layers.iter().zip(&mut inst.layers) {
-            step_layer(layer, sim, &inst.params, &globals, inst.burst_done, eye, dt, &mut inst.rng);
+        for (i, layer) in def.layers.iter().enumerate() {
+            // A `SuperEmitter` layer reads the particles of its parent layer (an earlier one, already updated).
+            let parent = layer
+                .super_emitter_parent()
+                .filter(|&j| j != i)
+                .and_then(|j| inst.layers.get(j))
+                .map(|l| l.particles.clone());
+            let sim = &mut inst.layers[i];
+            step_layer(layer, sim, &inst.params, &globals, inst.burst_done, eye, dt, &mut inst.rng, parent.as_deref());
         }
         inst.burst_done = true;
         if inst.key.is_some() {
@@ -741,6 +749,7 @@ fn step_layer(
     eye: Vec3,
     dt: f32,
     rng: &mut Rng,
+    parent: Option<&[Particle]>,
 ) {
     let Some(group) = &layer.groups[0] else { return };
     let origin = p.transform.w_axis.truncate();
@@ -793,6 +802,11 @@ fn step_layer(
                 }
                 Op::Spawn(sp) => {
                     spawn(layer, sim, sp, &step.secondaries, p, burst_done, eye, dt, rng);
+                }
+                op @ Op::SuperEmitter { .. } => {
+                    if let Some(parent) = parent {
+                        super_emit(layer, sim, op, &step.secondaries, parent, p, dt, rng);
+                    }
                 }
                 _ => {}
             }
@@ -914,6 +928,78 @@ fn spawn(
         q.vel = vel;
         q.age = back * q.recip_life;
         sim.particles.push(q);
+    }
+}
+
+/// `SuperEmitter` (0x2B, run `FUN_0045d020`; `mw_formats::bear::Op::SuperEmitter`): children along each live
+/// parent particle's path this update. The count's fraction is carried over in one accumulator for the whole
+/// action and rounded to nearest, as the game does (its carry can go negative); the secondaries initialise
+/// lifetime, rotation and the like, the super emitter sets position, velocity and radius itself.
+#[allow(clippy::too_many_arguments)]
+fn super_emit(
+    layer: &Layer,
+    sim: &mut LayerSim,
+    op: &Op,
+    secondaries: &[u8],
+    parent: &[Particle],
+    p: &Params,
+    dt: f32,
+    rng: &mut Rng,
+) {
+    let &Op::SuperEmitter { cone, speed, inherit, radius, rate, per_metre, radius_end, rate_end, .. } = op else {
+        return;
+    };
+    let overwrite = layer.flags & 2 != 0;
+    for parent in parent.iter().filter(|q| q.age < 1.0) {
+        let t = parent.age;
+        let back = parent.vel * -dt;
+        let distance = back.length();
+        let count = (1.0 + (rate_end - 1.0) * t) * (per_metre * distance + rate * dt) + sim.carry;
+        let n = count.round();
+        sim.carry = count - n;
+        if n < 1.0 {
+            continue;
+        }
+        // The frame about the backward direction (fallback +Y when the parent stands still).
+        let z = if distance > 0.001 { back / distance } else { Vec3::Y };
+        let x = z.cross(Vec3::Y).try_normalize().unwrap_or(Vec3::X);
+        let y = x.cross(z);
+        for _ in 0..n as usize {
+            if sim.particles.len() >= layer.max_particles as usize {
+                if !overwrite {
+                    return;
+                }
+                sim.particles.remove(0);
+            }
+            let u = rng.next();
+            let azimuth = rng.next() * TAU;
+            let polar = rng.range(cone).to_radians();
+            let dir = (azimuth.sin() * y + azimuth.cos() * x) * polar.sin() + polar.cos() * z;
+            let mut q = Particle { alpha: 1.0, recip_life: 1.0, plane: p.ground, ..default() };
+            init_secondaries(layer, secondaries, &mut q, rng);
+            q.pos = parent.pos + back * u;
+            q.vel = dir * rng.range(speed) + parent.vel * rng.range(inherit);
+            // The parent's age at the birth time (`u` of the update back).
+            let born = (t - u * dt * parent.recip_life).max(0.0);
+            q.radius = rng.range(radius) * (1.0 + (radius_end - 1.0) * born);
+            sim.particles.push(q);
+        }
+    }
+}
+
+/// The initialisers of a spawned particle that do not depend on the emitter (lifetime, rotation, alpha, seed).
+fn init_secondaries(layer: &Layer, secondaries: &[u8], q: &mut Particle, rng: &mut Rng) {
+    for &s in secondaries {
+        match layer.actions.get(s as usize).map(|a| &a.op) {
+            Some(Op::Lifetime { min, max, .. }) => q.recip_life = 1.0 / rng.range([*min, *max]).max(0.001),
+            Some(Op::Rotation2dInit { min, max, spin, .. }) => {
+                q.rot = rng.range([*min, *max]) * TAU;
+                q.spin = *spin;
+            }
+            Some(Op::AlphaInit { min, max, .. }) => q.alpha = rng.range([*min, *max]),
+            Some(Op::SeedInit { .. }) => q.seed = (rng.next() * u32::MAX as f32) as u32,
+            _ => {}
+        }
     }
 }
 
@@ -1145,8 +1231,9 @@ fn impact_emitters(
 }
 
 /// A prop's impact effect (`PropObject` +0x14) when a car's contact passes its `ForceToDamage`
-/// (`props::prop_contacts`, the game's `FUN_0054bf70`, which orients it by the hitter's velocity). Effects
-/// load on first use; an impact waits up to half a second for its effect.
+/// (`props::prop_contacts`, the game's `FUN_0054bf70`): half a metre above the contact point, Z along the hitter's
+/// velocity, X = up × Z (`prop_vfx::impact_frame`). Effects load on first use; an impact waits up to half a second
+/// for its effect.
 fn prop_impact_effects(
     time: Res<Time>,
     vfx: Res<Vfx>,
@@ -1167,10 +1254,8 @@ fn prop_impact_effects(
         if !vfx.has_effect(id) {
             return now - t < 0.5;
         }
-        // Emitter frame: Y along the contact normal (out of the prop), Z along the car's travel.
-        let y = hit.normal.try_normalize().unwrap_or(Vec3::Y);
-        let z = (hit.velocity - y * hit.velocity.dot(y)).try_normalize().unwrap_or_else(|| y.any_orthonormal_vector());
-        let frame = Mat4::from_cols(y.cross(z).extend(0.0), y.extend(0.0), z.extend(0.0), hit.position.extend(1.0));
+        // `FUN_0054bf70` falls back to the identity rotation when the hitter's velocity has no direction.
+        let frame = crate::prop_vfx::impact_frame(hit.position, hit.velocity, Vec3::Z);
         instances.one_shot(
             &vfx,
             Some(id),
@@ -1180,8 +1265,8 @@ fn prop_impact_effects(
                 intensity: (hit.closing_speed / 15.0).clamp(0.0, 1.0),
                 emitting: false,
                 moved: 0.0,
-                // Model decision: the ground is taken as level, half a metre under the contact.
-                ground: Vec4::new(0.0, 1.0, 0.0, -(hit.position.y - 0.5)),
+                // Model decision: the ground is taken as level through the contact point.
+                ground: Vec4::new(0.0, 1.0, 0.0, -hit.position.y),
                 impact: hit.closing_speed,
                 movement: 0.0,
             },
@@ -1199,10 +1284,13 @@ fn demo_emitter(
     vfx: Res<Vfx>,
     debug: Res<VfxDebug>,
     mut instances: ResMut<Instances>,
+    mut requests: ResMut<EffectRequests>,
     camera: Query<&GlobalTransform, crate::MainCamera>,
     mut next: Local<f32>,
 ) {
     let Some((id, every, speed)) = debug.demo else { return };
+    // Effects outside the start-up set load on demand.
+    requests.request(id);
     let now = time.elapsed_secs();
     if now < *next {
         return;
@@ -1394,6 +1482,12 @@ fn render_particle(layer: &Layer, q: &Particle, eye: Vec3, slots: &[f32]) -> Opt
             }
         }
     }
+    // `RenderSpriteMotionBlur` (0x25, `FUN_004598e0`) writes the colour's rgb with alpha 1.0 (`.rdata`
+    // 0x00f9d13c) into the streak's vertices: the colour curve's alpha (all zero on the impact sparks) is not
+    // used. (The streak's other end takes the renderer's word 11 in the game; not ported, both ends 1.)
+    if layer.renderer().is_some_and(|r| r.kind == 0x25) {
+        d.colour.w = 1.0;
+    }
     (d.colour.w > 1e-3 && d.radius > 1e-4).then_some(d)
 }
 
@@ -1403,7 +1497,8 @@ fn push_quad(out: &mut Vec<QuadVertex>, d: &Drawn, r: &Renderer, eye: Vec3, righ
     let ry = (up * c - right * s) * d.radius;
     let centre = d.pos + rx * (1.0 - 2.0 * r.pivot[0]) + ry * (2.0 * r.pivot[1] - 1.0);
     let toward = (eye - d.pos).normalize_or_zero();
-    let light = Vec4::new(r.lighting[0], r.lighting[1], r.lighting[2], 1.0);
+    // w: the draw's opacity (`gVfxConstants.z`, the renderer's word after the depth fade).
+    let light = Vec4::new(r.lighting[0], r.lighting[1], r.lighting[2], r.opacity);
     let frame = Vec2::new(d.subuv, r.depth_fade_guess.max(0.0));
     for (cx, cy) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
         let offset = rx * cx + ry * cy;

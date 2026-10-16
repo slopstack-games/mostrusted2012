@@ -603,6 +603,14 @@ Decoded from the game's code (research log 2026-10-09 "exhaust effects"; layouts
   alpha slot +0x9a, tint flag +0x9b, colour / alpha rates +0x9c / +0xa0 (`Op::ColourCurve`): rgb = c.rgb × c.w.
 - `InitialisePosOffset` (0x14) + `ParametricPosVelToWorldSpace` (0x1A, or 0x1B with its own rotation and offset
   at +0x00 / +0x10): an emitter-space layer.
+- `SuperEmitter` (0x2B, 2026-10-16; `Op::SuperEmitter`): words 0–1 cone (degrees about the parent's backward
+  direction), 2–3 speed, 4–5 velocity inheritance, 6–7 radius, 8 engine operand (dt), 9–12 the parent layer's
+  position / velocity / age / 1 / lifetime operands (hi = 0x80 | 4·channel, bits 23+ = the parent layer's
+  index), 13–15 own position / velocity / radius, 16 rate (1/s), 17 per metre of the parent's travel, 18 radius
+  scale at the parent's end of life, 19 rate scale at its end, 20 a LOD byte. Layers fed this way have no
+  spawner (`mwtool effect all` shows `spawn -`).
+- Quad renderers: the word after the depth fade (0x24 word 8, 0x27 word 10, 0x28 word 0x12) is the draw's
+  opacity (`Renderer::opacity`; 0 on the nitrous glows and two flare quads, 1 almost everywhere).
 
 **Car spot effects**: `VehicleVfxBehaviour` (one per car bundle) lists `Coronas` (0x50 bytes), `Lights` (0x40)
 and `SpotEffects` (0x20: `SpotEffect` handle, `LocatorGroup`, `Group`, `da6ac384`, `Looping`, `Mirror`; counts
@@ -646,6 +654,12 @@ same set, from `GLOBALEFFECTS.BNDL` (`mwtool genesys all --type VehicleVfxBehavi
 ## World object physics (`PhysicalDefinition`, `DynamicAdditionalInfo`, collision responses)
 
 `mw_assets::props`; how the game uses the values: decomp.md "Props".
+- `WCVfxBehaviour` (2026-10-16; `mw_assets::props::WcVfx`, `mwtool props -v` lists them per object and part):
+  +0x0c `Label`, +0x18 `0228a2f8` on by contact, +0x19 `713589ad` off by contact, +0x1a `543527d0` on at start,
+  +0x1c `ImpactEffect`, +0x24 `4524a2be` contact effect, +0x30 `29436f61` its point speed (m/s), +0x40 /
+  +0x44 / +0x48 `Coronas` / `Lights` / `Spot_effects` (0x18-byte entries: handle +0x0c, locator group +0x14)
+  with counts at +0x54 / +0x56 / +0x58 (decomp.md "World-component behaviours"). A part's spot-effect locator
+  groups are in the part's (bone's) space.
 - `PropObject` +0x0C `PhysicalDefinition`, +0x14 impact effect (a `BearEffect`, 81% of props), +0x1C impact
   sound (a `WCPlaySoundBehaviour`: `Collision_Waves` handles, per-surface `Surface_Collisions`), +0x24
   `mfResetDistanceSquared` (10000 everywhere), +0x28 `mbRemoveInsteadOfReset`.

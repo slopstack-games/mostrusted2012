@@ -247,6 +247,26 @@ pub enum Op {
     /// the current `Transform` each frame, so they follow a moving emitter (the exhaust flames); 0x1B first
     /// applies its own rotation and offset.
     ToWorld { rotation: [f32; 4], offset: [f32; 3] },
+    /// 0x2B `SuperEmitter` (compile `0x0044b2c0` → `FUN_00448370`, a plain copy; run `0x0045dc40` →
+    /// `FUN_0045d020`, both outside the dump's functions): a layer whose particles are born along the
+    /// particles of another layer (`parent`, from the high bits of the parent-channel operands at +0x24..+0x30,
+    /// which carry 0x80 | 4·channel). Per parent particle with `t = Age · RecipLifetime < 1`, each update emits
+    /// `(1 + (rate_end − 1)·t) · (per_metre · |v·dt| + rate · dt)` children (the fraction carried to the
+    /// next update), each at `parent position − u·v·dt` (`u` uniform, along the parent's path this update),
+    /// leaving at `cone` degrees (uniform, about a uniform azimuth) from the parent's backward direction
+    /// `−v̂` with `rand(speed)` m/s, plus `rand(inherit)` × the parent's velocity; radius `rand(radius)` ×
+    /// `(1 + (radius_end − 1)·t)` at the birth time. The byte at +0x50 picks a LOD class (not ported).
+    SuperEmitter {
+        parent: u8,
+        cone: [f32; 2],
+        speed: [f32; 2],
+        inherit: [f32; 2],
+        radius: [f32; 2],
+        rate: f32,
+        per_metre: f32,
+        radius_end: f32,
+        rate_end: f32,
+    },
     /// Any other kind (kept as raw bytes in [`Action::data`]).
     Other,
 }
@@ -361,6 +381,13 @@ pub struct Renderer {
     pub lighting: [f32; 3],
     /// First parameter word (0.01–4; soft-particle depth fade distance in metres, a guess).
     pub depth_fade_guess: f32,
+    /// The word after it: the draw's opacity. The run functions store the pair at the draw state's +0x23c /
+    /// +0x240 (`FUN_00458e90` for 0x24 words 7 / 8, `FUN_0045ab10` for 0x27 words 9 / 10, `FUN_0045b620`
+    /// words 0x11 / 0x12), whose defaults are 0 and 1.0 (`FUN_004a…` reset); read as `gVfxConstants.z`,
+    /// which the pixel programs multiply into the output alpha and alpha-test (inferred: the constant's
+    /// writer for particle draws was not found). 0 on the nitrous glows (a `NoAlphaTest` material, so they
+    /// add) and on a few alpha-tested layers (which then draw nothing); 1 almost everywhere else.
+    pub opacity: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -428,6 +455,13 @@ impl Layer {
             Op::ToWorld { rotation, offset } => Some((rotation, offset)),
             _ => None,
         })
+    }
+
+    /// The layer whose particles this layer's `SuperEmitter` follows, if it has one.
+    pub fn super_emitter_parent(&self) -> Option<usize> {
+        self.actions
+            .iter()
+            .find_map(|a| if let Op::SuperEmitter { parent, .. } = a.op { Some(parent as usize) } else { None })
     }
 
     pub fn spawner(&self) -> Option<&Spawner> {
@@ -778,6 +812,7 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
                 pivot: pair(pivot_at)?,
                 lighting: [f(light_at)?, f(light_at + 4)?, f(light_at + 8)?],
                 depth_fade_guess: f(params)?,
+                opacity: f(params + 4)?,
             })
         }
         0x25 | 0x29 => Op::Render(Renderer {
@@ -792,7 +827,19 @@ fn decode_op(res: &Resource, kind: u8, start: usize, data: &[u8], nch: usize, np
             pivot: [0.5; 2],
             lighting: [0.0; 3],
             depth_fade_guess: 0.0,
+            opacity: 1.0,
         }),
+        0x2B => Op::SuperEmitter {
+            parent: (r.u32(0x24)? >> 23) as u8,
+            cone: pair(0x00)?,
+            speed: pair(0x08)?,
+            inherit: pair(0x10)?,
+            radius: pair(0x18)?,
+            rate: f(0x40)?,
+            per_metre: f(0x44)?,
+            radius_end: f(0x48)?,
+            rate_end: f(0x4c)?,
+        },
         _ => Op::Other,
     })
 }
