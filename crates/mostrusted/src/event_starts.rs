@@ -128,8 +128,11 @@ struct World {
     textures: HashMap<ResourceId, Handle<Image>>,
     anim: UiAnim,
     /// Per event: its layouts' timeline states.
-    triggers: HashMap<u32, HashMap<(usize, usize), (bool, f64)>>,
+    triggers: HashMap<u32, LayoutTriggers>,
 }
+
+/// Timeline state per (layout, element).
+type LayoutTriggers = HashMap<(usize, usize), (bool, f64)>;
 
 /// The shown starts, for the minimap and the world panels.
 #[derive(Resource, Default)]
@@ -315,7 +318,7 @@ fn build_list(starts: &mut EventStarts, reference: Vec3, vehicle: Option<u32>) {
 }
 
 /// `FUN_00755220` / `FUN_0074ad50` per frame: keep the list, the prompt, the burnout start.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn update_starts(
     mut starts: ResMut<EventStarts>,
     car: Query<(&Transform, &LinearVelocity), (With<Car>, With<Player>)>,
