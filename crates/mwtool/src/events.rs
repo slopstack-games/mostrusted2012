@@ -65,8 +65,12 @@ fn summary(events: &Events, text: &dyn Fn(u32) -> String, car: &dyn Fn(u32) -> S
             continue;
         }
         let career = if in_list.contains(&e.id) { "" } else { " (not in an EventList)" };
+        let mut ai_cars: Vec<String> =
+            e.opponents.iter().map(|o| o.rollout.map_or("?".into(), |r| car(r.vehicle))).collect();
+        ai_cars.dedup();
+        let ai_cars = if ai_cars.is_empty() { String::new() } else { format!("; AI: {}", ai_cars.join(", ")) };
         println!(
-            "{:>8}  {:<12} {:>4} {:>3} {:>3}  {:<26} {:<24} {}{career}",
+            "{:>8}  {:<12} {:>4} {:>3} {:>3}  {:<26} {:<24} {}{career}{ai_cars}",
             e.id,
             e.kind.label(),
             e.laps,
@@ -105,8 +109,15 @@ fn detail(events: &Events, e: &Event, text: &dyn Fn(u32) -> String, car: &dyn Fn
         text(e.type_name)
     );
     println!(
-        "  laps {}, nitrous {}, traffic {}, first place only {}, target speed {:?}, target time {:?}",
-        e.laps, e.nitrous_allowed, e.traffic_enabled, e.first_place_only, e.target_speed, e.target_time
+        "  laps {}, nitrous {}, traffic {}, first place only {}, skip the player's car's AI {}, target speed {:?}, \
+         target time {:?}",
+        e.laps,
+        e.nitrous_allowed,
+        e.traffic_enabled,
+        e.first_place_only,
+        e.skip_player_car_ai,
+        e.target_speed,
+        e.target_time
     );
     match &e.spawn {
         Some(s) => println!(
@@ -150,9 +161,18 @@ fn detail(events: &Events, e: &Event, text: &dyn Fn(u32) -> String, car: &dyn Fn
         let at = o.start.map_or("unresolved".into(), |s| {
             format!("({:.1}, {:.1}, {:.1})", s.position[0], s.position[1], s.position[2])
         });
+        let rollout = o.rollout.map_or("no rollout".into(), |r| {
+            let up = [r.body_upgrade, r.nitrous_upgrade, r.tyre_upgrade];
+            format!("rollout {} car {} ({}), colour {}, upgrades {up:?}", r.id, r.vehicle, car(r.vehicle), r.colour)
+        });
         println!(
-            "    AI type {:>8}, placement {:>8} {at}, 9b4e35f7 {}, colour {}",
-            o.ai_type, o.placement_id, o.unknown_9b4e, o.colour
+            "    AI type {:>8}{}{}, placement {:>8} {at}, colour {} (else {}); {rollout}",
+            o.ai_type,
+            if o.most_wanted { " (Most Wanted)" } else { "" },
+            if o.cop { " (cop)" } else { "" },
+            o.placement_id,
+            o.colour,
+            o.alt_colour
         );
     }
     for a in &e.alternate_routes {

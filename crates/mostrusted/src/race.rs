@@ -42,7 +42,8 @@
 //!   the gates ([`RaceCheckpoint`]: transform, size, normal, ground point), the route entries
 //!   ([`RaceState::entries`], start + every gate of every lap, with cumulative distances) and one lap as a
 //!   polyline ([`RaceState::route`]), the player's start ([`RaceState::player_start`]) and the opponents' grid
-//!   ([`RaceState::grid`]: one transform per `AIPlayerInformation` slot in data order, with its `AIPlayerType`),
+//!   ([`RaceState::grid`]: one slot per racing `AIPlayerInformation` in data order, cops left out, with its
+//!   `AIPlayerType`, car and colours; `ai.rs` drops the +0xee slot),
 //!   the live standings ([`RaceState::standings`], best first) and the results.
 //! - [`Racer`] (component): put it on **any** entity with a `Transform` to make it race. The player's car gets
 //!   one automatically; an AI car spawned on `RaceState::grid[i]` should get `Racer::ai(name, i)` (and its own
@@ -203,9 +204,14 @@ pub struct GridSlot {
     pub transform: Transform,
     /// `AIPlayerType` id (GAMEPLAY.BNDL): the driver profile.
     pub ai_type: u32,
-    /// `AIPlayerInformation` `9b4e35f7` / `2968e77a` (open; the latter matches paint `ColourId`s).
-    pub unknown: u32,
+    /// The car: `AIPlayerType.Rollout` → `Rollout.Vehicle`, a `VehicleList` id (`FUN_006cc870`).
+    pub vehicle: Option<u32>,
+    /// The paint: `AIPlayerInformation.2968e77a` (a `ColourId`; 0 = the rollout's `Colour`), and `9b4e35f7`, used
+    /// instead when the first is the player's car's colour (`FUN_006ce030`).
     pub colour: u32,
+    pub alt_colour: u32,
+    /// The event's Most Wanted rival (`AIPlayerType` +0xb4).
+    pub most_wanted: bool,
 }
 
 /// A racer's final result.
@@ -290,17 +296,21 @@ impl RaceState {
                 });
             }
         }
+        // The racers: `FUN_006ce030` files cop types (+0xb5 / +0xb3) in the cop list, not with the opponents.
         let grid = e
             .opponents
             .iter()
+            .filter(|o| !o.cop)
             .filter_map(|o| {
                 let s = o.start?;
                 Some(GridSlot {
                     transform: Transform::from_translation(Vec3::from_array(s.position))
                         .with_rotation(heading_rotation(s.direction)),
                     ai_type: o.ai_type,
-                    unknown: o.unknown_9b4e,
-                    colour: o.colour,
+                    vehicle: o.rollout.map(|r| r.vehicle).filter(|&v| v != 0),
+                    colour: if o.colour != 0 { o.colour } else { o.rollout.map_or(0, |r| r.colour) },
+                    alt_colour: o.alt_colour,
+                    most_wanted: o.most_wanted,
                 })
             })
             .collect();

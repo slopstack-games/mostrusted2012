@@ -3406,7 +3406,20 @@ by `FUN_006b51a0`). Times are 64-bit ticks of 1/3,000,000 s (`DAT_00f9f604`). Co
   (`FUN_00686f30`): per `AIPlayerInformation` (count OfflineEvent +0xd6) the car stands on its `Placement`
   point facing its direction, spawned with zero velocity (`FUN_006ce030`) into slots 12..23; racers without
   flags +0xb5 / +0xb3 join the opponent list; with OfflineEvent +0xee (`c75c9d90`) set, a slot whose car is the
-  player's car is skipped.
+  player's car is skipped. Detail (2026-10-19): a first pass from the last slot down finds the last slot whose
+  rollout car (`FUN_00683420` rollout entry +0x30) is the player's (`FUN_006bf330` / `FUN_006ba320`), **else the
+  last slot**: with +0xee set exactly one slot is always left out. The spawn (`FUN_006ce030` → `FUN_006cc870`)
+  takes the car from the slot's `AIPlayerType` +0x14 `Rollout` (runtime rollout table at player manager +0x1d80,
+  0xd8-byte entries, +0xcc → the GeneSys `Rollout`, found by id at its +0x38), the colour from the slot's +0x18
+  (`2968e77a`) unless it equals the player's car's colour (`FUN_0058f1d0`: the player vehicle's +0x74, when its
+  flags +0x18 / +0x19 are set), then +0x10 (`9b4e35f7`); a zero colour keeps the rollout entry's +0x34. It also
+  picks entry +0x40[n % +0x60] and +0x50[n % +0x64] by the spawn counter (+0xa69c) into the car's +0x594 / +0x598
+  (probably the rollout's `Characters` / `631d8188` arrays; not traced). A type with +0xb4 (`6bb93300`) set is
+  kept at +0xa698: **the Most Wanted rival**, read by `FUN_006bad70` (its health, 1 − damage), `FUN_006bf490`
+  (its distance to the player), `FUN_006a1390` / `FUN_006a3db0` (callers in the 0x914xxx HUD code and
+  `FUN_006d3c30`, not read), the free-roam "Do Blacklist Shutdowns" behaviour (`FUN_00748900` / `FUN_00748e50`:
+  matches `Gameplay.BlacklistShutdownData` entries against the rival's car, `Rollout` +0x58 `Vehicle`, and
+  spawns / releases it, `FUN_006ce180(.., 3)`) and the map's `BlackListDriver` icon.
 - **Route entries** (`FUN_00645290`; online `FUN_00642140`): DTF+0x10 holds 0x14-byte entries {position, trigger
   id, cumulative route distance}, count DTF+0x510: entry 0 is `SpawnPosition`, then for each of `Laps` (+0xf6)
   every id of `Checkpoints` (+0x64), positioned at the box centre lowered by half its height (on the road).
@@ -4118,7 +4131,8 @@ the event's `AllowedVehicleList` entry `a17a5e72` for the player's car (1.0 … 
 
 `AIPlayerType` (GAMELOGIC/GAMEPLAY.BNDL, 200 types; the racer personality copied by `FUN_006c0700`): its
 speed caps (0x78 / 0x7c, 90 mph) are read only by non-racer behaviours; nitrous usage (u16 0xaa) has no
-reader; the car comes from its rollout (0x14). Not used yet.
+reader; the car comes from its rollout (0x14; used since 2026-10-19, "Starting grid" in "Races"). The
+personality is not used yet.
 
 ### Model decisions (ours, `ai.rs` / `ai_driver.rs`)
 
@@ -4128,8 +4142,11 @@ reader; the car comes from its rollout (0x14). Not used yet.
 - Race routes: the shortest node path (A* on link lengths, no turn penalty or exit factors) between the start
   and every gate, laps unrolled; test routes (`--ai` without `--race`): from the player's spawn, the
   best-aligned neighbour at every node (`FUN_00436c00`'s rule) for 3 km.
-- Opponents' cars: the event's allowed cars in turn (the opponents' own cars, `AIPlayerInformation`
-  `9b4e35f7` / `2968e77a` and the type's rollout, are not resolved).
+- Opponents' cars (2026-10-19): each slot's own rollout car in its slot colour, the +0xee slot left out, cop
+  slots (+0xb5) not spawned (open: the event's cops); a car without a bundle falls back to the allowed cars in
+  turn (none in the install). A zero colour (on some DLC sprints) takes the car palette's first entry (the jack
+  spots' rule, `FUN_0058b9a0`; `FUN_006ca580`'s handling of colour 0 not traced). The rubber band's
+  `OpponentData[k]` is the k-th racer left on the grid (inferred).
 - The emergency brake's circle radius = the larger horizontal half extent of the body.
 - The recovery's probe length 6 m; the banded pedal's shape between its read thresholds; the reset puts the car
   on the path at its progress (the game's reset placement not traced); the off-screen 3 s reset is not used.
