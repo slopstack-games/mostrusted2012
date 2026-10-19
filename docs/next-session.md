@@ -63,6 +63,9 @@ Added by the user (2026-10-16); the ones marked (2026-10-16: ...) were worked on
 - **Floating trees**: some trees and foliage float near the street exit leading to the large airport area (place
   not measured; compare the research log's backdrop entry, "trees in a few far places float where no zone lists
   ground under them", and `mwtool placement-check`).
+- **UI scaling and positioning** (added 2026-10-19): the UI's scale and placement are still wrong (HUD, menus,
+  pop-ups): compare against screenshots of the original at the same resolution and take the layout from the
+  game's own UI data / code, not by eye.
 
 
 New this session: `mwtool water`, `mwtool terrain-check`, `mwtool siren`, `mwtool speech`, `mwtool ai-graph`,
