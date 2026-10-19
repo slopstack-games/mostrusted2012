@@ -8,6 +8,8 @@ Use `--camera=` with `=` when the first value is negative. Release builds are ne
 optimised in dev too, but world loading is slow without `--release`.
 
 ```sh
+tools/hl <command...>                       # run in a headless 1280x720 gamescope (no desktop window); MW_SHOW=1 runs it directly
+tools/t <mostrusted args>                   # tools/hl + result lines only (full log scratch/run.log)
 cargo build --release --workspace
 cargo clippy --release --workspace          # keep at 0 warnings
 cargo test --release --workspace

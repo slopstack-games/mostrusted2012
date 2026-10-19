@@ -28,7 +28,9 @@ from the integrator's conversation.
 - **The original game** (`tools/orig`): only when the task says so (one agent at a time; mute its audio stream,
   quit it after, back up the save). Otherwise list the captures that would confirm your change in the research
   log.
-- **Verify** with `tools/t <args>` (TEST RESULT lines, exit code) and `--screenshot` runs; look at the PNGs that
+- **No windows on the user's desktop**: run `mostrusted` only through `tools/t <args>` or `tools/hl
+  ./target/release/mostrusted <args>` (headless gamescope, 1280 × 720 like the normal window).
+- **Verify** with `tools/t <args>` (TEST RESULT lines, exit code) and `--screenshot` runs (through `tools/hl`); look at the PNGs that
   decide something, A/B stacked with `python3 tools/stack.py out.png a.png b.png`.
 - **Merging**: other agents work in parallel (the prompt says on what). Keep edits to files outside your area
   small; prefer new modules plus small hooks.

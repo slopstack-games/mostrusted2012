@@ -72,6 +72,7 @@ used in nearly every session:
 ```sh
 tools/b                                      # quiet build of mostrusted + mwtool (warnings / errors only)
 tools/t --drive 911 --test accel --mute      # quiet run: result lines + exit code (full log: scratch/run.log)
+tools/hl ./target/release/mostrusted ...     # any run in a headless gamescope: never pops up on the desktop
 cargo clippy --release --workspace          # keep at 0 warnings
 cargo test --release --workspace
 cargo fmt                                    # rustfmt.toml: max_width 120
@@ -98,6 +99,8 @@ Accuracy comes from reading the right source, not from reading everything. Habit
 - The docs are large (research-log ~580 KB, decomp ~470 KB, formats ~100 KB, PLAN ~60 KB): never read them
   whole. List headings (`grep -n '^##' docs/decomp.md`, `grep -n '^### ' docs/research-log.md`: dated, newest
   first) or grep for the function / type / flag, then read that section with an offset and limit.
+- **No windows on the user's desktop**: every `mostrusted` run (tests, screenshots) goes through `tools/t` or
+  `tools/hl` (headless gamescope; `MW_SHOW=1` only when the user asks to watch).
 - Build with `tools/b` (only warnings / errors and the result) and run with `tools/t <mostrusted args>` (only the
   TEST / BENCH RESULT lines, errors, panics and the exit code; the full log is in scratch/run.log for when you
   need it). `NO_COLOR=1` (set in `.claude/settings.json`) drops ANSI codes. Per-frame logging stays at `debug!`.
