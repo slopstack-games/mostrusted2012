@@ -89,11 +89,12 @@ Added by the user (2026-10-16); the ones marked (2026-10-16: ...) were worked on
 - **Menu functionality missing** (added 2026-10-19): many parts of the menus' functionality are still missing, in
   Easydrive too (survey every menu / Easydrive entry of the original against ours, from the HSM / layout data and the
   code, and list what is missing before implementing).
-- **UI scaling and positioning** (added 2026-10-19): the UI's scale and placement are still wrong (HUD, menus,
-  pop-ups): compare against screenshots of the original at the same resolution and take the layout from the
-  game's own UI data / code, not by eye. The UI also does not rescale when the window is resized, and loading
-  screens are not full screen when the window is taller than wide (a portrait window: the cover / fit rule per
-  aspect ratio is wrong). Session 11's UI agent works on this.
+- **UI scaling and positioning** (added 2026-10-19): fixed in session 11 (research log "UI frame"): the HUD keeps the
+  1280x720 frame's height and pins elements to the screen edges (`HudAspectCorrection`), menus are letterboxed;
+  Easydrive redraws on resize. Decided with the user (2026-10-19): loading / title pictures in a portrait window keep
+  the original's black bars (no fill). Open: the closed Easydrive prompt and hiding the HUD under Easydrive, the
+  minimap's translucency, the F-150's nitrous bar, key-box icons, the map's Most Wanted list / tab icons, which other
+  screens letterbox.
 
 
 New this session: `mwtool water`, `mwtool terrain-check`, `mwtool siren`, `mwtool speech`, `mwtool ai-graph`,
