@@ -411,6 +411,32 @@ the mirrored projection shifted by (N − N_vertex).xz × `WetScaleParams.y`, at
 wetness. `PlotPBR_AO_StandingWater` does the same with its own `PuddleTextureSampler` (TEXCOORD1).
 `SurfaceType` objects have `Dry_Conditions` and `Wet_Conditions` blocks (physics, rumble, sounds, vfx).
 
+**Surface list layout** (2026-10-19, from the readers in the dump; `mwtool surfaces --classes`):
+- `Surfaces` (60 bytes): +0x0c `Chevron_surface`, +0x14 `Default_surface` (`FUN_0054a470`: its dry `Normal`
+  physics is the fallback), +0x1c `06df3428` (surface 63's type), +0x24 `c1cfb178` (surface 21's, the sea),
+  +0x2c UniqueId, +0x30 `423651c1` (10 `SurfacePhysics` uids, count +0x38: 283001, 510001, 386921, 510013, 406000,
+  510008, 681692, 681698, 510053, 681663; the road surfaces of the off-road-distance statistic in `FUN_00706550`,
+  not handling), +0x34 `Surfaces` (count +0x3a; `FUN_0054a6f0` finds a type's index by its UniqueId +0x1e8).
+- `SurfaceType` (512 bytes): +0x10 `Colour`, +0x20 `Dry_Conditions`, +0xf0 `Wet_Conditions` (208 bytes each:
+  `Flats` +0x0c, `Normal` +0x30, `Offroad` +0x54, `Rims` +0x78, `Track` +0x9c, each { +0x0c `Surface_Physics`,
+  +0x14 `Surface_Rumble` (a controller `RumbleEffect`), +0x1c `Surface_Sounds` }, +0xc0 `Surface_vfx`, +0xc8
+  `VehicleEffects`), +0x1c0 `Collision_Rumble` (`0c4f9adb`), +0x1e0 `Collision_Sounds`, +0x1e8 UniqueId, +0x1ec
+  `c0878de5` (float, 1; 0 on surfaces 22 and 62), +0x1f0..+0x1f8 nine bools that are the collision tag flags of
+  the surface (`FUN_0043ab40` builds a tag from them): `a8e027e5` DECAL, `7c1fe418` DRIVABLE, `a5751c8b` FATAL,
+  `31272647` FATAL_FIELD, `194f91f2` KERB, `bf3b6604` REMOVABLE, `004582f4` ROAD, `12be83e7` SOLID_DECAL,
+  `38f37e6a` SUPER_FATAL. On every surface the world's triangles carry exactly their type's flags, which also
+  confirms that the tag's bits 13–19 index `Surfaces.Surfaces` directly.
+- Which contact kind each reader takes: physics (`FUN_0054a760`) `Normal`, `Rims` (wheel +0x1c1) or `Flats`
+  (+0x1c2), never `Offroad` / `Track`; rumble (`FUN_0054a9f0` → `FUN_0054a980`) and sounds (`FUN_0054a5d0` →
+  `FUN_0054a560`) take the car's tyre class: 0 / 1 `Offroad`, 2 `Normal`, 3 / 4 `Track` (a null handle falls
+  back to `Normal`), rims / flats as for physics; `FUN_0054a5d0` also returns 1 when the surface lacks the ROAD
+  bool (an off-road flag for its caller). Vfx (`FUN_0054aaa0`): the block's +0xc0, wet when the surface state is
+  ≥ 1, the car's +0x1c17 is clear and the wet one is set. Physics and sounds take the wet block at state ≥ 2.
+- `SurfacePhysics.TyreSpecificOverrides` by tyre class (`FUN_0054d750`, class = game car +0x1a88): 0
+  `OffRoadOverrides` (+0x28), 1 `08b66463` (+0x0c), 2 `RoadOverrides` (+0x44, also any other value), 3
+  `SportOverrides` (+0x60), 4 `TrackOverrides` (+0x7c). Every car's `PerformanceUpgrades.StockTyres`
+  (`32d208d1`, +0xc8) is `Tyres` 2; the OFF-ROAD tyre mod sets 1 (PRO 0), TRACK 3 (PRO 4) on the 911.
+
 ## Diffuse sampler names
 
 Most world and vehicle shaders use `DiffuseTextureSampler`. Exceptions:

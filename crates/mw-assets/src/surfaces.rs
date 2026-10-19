@@ -5,9 +5,10 @@
 //! `SurfaceType`: a debug `Colour`, two `Surface_weather_conditions` blocks (`f395b019`, `7348be25`;
 //! probably dry and wet) with per-contact-type (`Normal`, `Flats`, `Rims`, `Offroad`, `Track`)
 //! `Surface_Physics` / `Surface_Rumble` / `Surface_Sounds` handles and a `Surface_vfx` handle, plus
-//! `Collision_Sounds` and `Collision_Rumble`. `SurfacePhysics` gives `Surface_Grip` per tyre class
-//! (`RoadOverrides` and four unnamed ones), `Surface_speed` and `Surface_roughness`. Surface names
-//! are not in the data.
+//! `Collision_Sounds` and `Collision_Rumble`. `SurfacePhysics` gives `Surface_Grip`, rolling resistance and
+//! slide drag per tyre class ([`TyreOverrides`], `FUN_0054d750`), `Surface_speed` and `Surface_roughness`.
+//! Surface names are not in the data. The `SurfaceType`'s bools are the collision tag's flags it stands for
+//! ([`TAG_FLAG_FIELDS`], `FUN_0043ab40`).
 
 use mw_bundle::{ResourceId, ResourceType};
 use mw_formats::genesys::{Object, Value, field_hash};
@@ -45,6 +46,55 @@ pub struct SurfaceInfo {
     /// `VehicleEffects` of the dry and the wet weather block: how fast a car on this surface gets dirty
     /// (`FUN_009d19c0`, docs/decomp.md "Vehicle paint, liveries and dirt").
     pub vehicle_effects: [Option<VehicleEffects>; 2],
+    /// The normal contact's `TyreSpecificOverrides` by tyre class (`FUN_0054d750`: 0 `OffRoadOverrides`, 1
+    /// `08b66463`, 2 `RoadOverrides`, 3 `SportOverrides`, 4 `TrackOverrides`). `grip`, `rolling` and `slide_drag`
+    /// above are class 2's.
+    pub overrides: [Option<TyreOverrides>; 5],
+    /// The collision tag flags the `SurfaceType`'s bools stand for (`CollisionTag::DRIVABLE` …;
+    /// [`TAG_FLAG_FIELDS`]).
+    pub tag_flags: u16,
+}
+
+/// One `SurfacePhysics.TyreSpecificOverrides`: what a surface does to one tyre class.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TyreOverrides {
+    /// `Surface_Grip` (1.0 = full grip).
+    pub grip: f32,
+    /// `5c2a9f18`: rolling resistance per newton of tyre load (`FUN_009d4a10`).
+    pub rolling: f32,
+    /// `7585f9cb`: scale of the car's link slide drag (`FUN_009d4a10`).
+    pub slide_drag: f32,
+}
+
+/// The tyre class a car has without tyre mods: `Vehicles.PerformanceUpgrades.StockTyres` (`32d208d1`, read by
+/// `FUN_00593ac0`) is `Tyres` 2 on all 187 cars of the install, and `FUN_0058f3f0` resets the player's car to 2
+/// before applying its mods.
+pub const STOCK_TYRE_CLASS: u8 = 2;
+
+/// `SurfaceType` bools (offsets +0x1f0..+0x1f8) and the collision tag flag each one sets (`FUN_0043ab40`, which
+/// builds a tag from a `SurfaceType`). The field names are not cracked; the flag names are burnout.wiki's.
+pub const TAG_FLAG_FIELDS: [(u32, u16); 9] = [
+    (0x7c1f_e418, 0x001), // +0x1f1 DRIVABLE
+    (0x0045_82f4, 0x002), // +0x1f6 ROAD
+    (0x194f_91f2, 0x004), // +0x1f4 KERB
+    (0xa8e0_27e5, 0x008), // +0x1f0 DECAL
+    (0x12be_83e7, 0x010), // +0x1f7 SOLID_DECAL
+    (0xbf3b_6604, 0x020), // +0x1f5 REMOVABLE
+    (0xa575_1c8b, 0x040), // +0x1f2 FATAL
+    (0x38f3_7e6a, 0x080), // +0x1f8 SUPER_FATAL
+    (0x3127_2647, 0x100), // +0x1f3 FATAL_FIELD
+];
+
+impl SurfaceInfo {
+    /// What this surface does to a tyre of `class` (`FUN_0054d750`: a class other than 0, 1, 3 or 4 reads
+    /// `RoadOverrides`).
+    pub fn tyre(&self, class: u8) -> Option<TyreOverrides> {
+        let k = match class {
+            0 | 1 | 3 | 4 => class as usize,
+            _ => 2,
+        };
+        self.overrides[k]
+    }
 }
 
 /// `Genesys.Gen.SurfaceVehicleEffects`: the dirt and dust build-up a surface gives a car's paint.
@@ -93,6 +143,14 @@ const UNIQUE_ID: u32 = 0x655d3f5f;
 /// read by `FUN_0054d750`, used by `FUN_009d4a10`).
 const ROLLING: u32 = 0x5c2a9f18;
 const SLIDE_DRAG: u32 = 0x7585f9cb;
+/// `TyreSpecificOverrides` fields of `SurfacePhysics` by tyre class (`FUN_0054d750`).
+const CLASS_OVERRIDES: [u32; 5] = [
+    field_hash("OffRoadOverrides"), // +0x28
+    0x08b6_6463,                    // +0x0c
+    field_hash("RoadOverrides"),    // +0x44
+    field_hash("SportOverrides"),   // +0x60
+    field_hash("TrackOverrides"),   // +0x7c
+];
 
 fn get<'a>(o: &'a Object, name: &str) -> Option<&'a Value> {
     o.get(field_hash(name))
@@ -149,7 +207,19 @@ impl AssetStore {
             let normal = dry.and_then(|d| sub(d, field_hash("Normal")));
             let physics =
                 handle(normal.and_then(|n| get(n, "Surface_Physics"))).and_then(|p| self.genesys_object(p).ok());
-            let road = physics.as_ref().and_then(|p| sub(p, field_hash("RoadOverrides")));
+            let overrides = CLASS_OVERRIDES.map(|h| {
+                let o = physics.as_ref().and_then(|p| sub(p, h))?;
+                Some(TyreOverrides {
+                    grip: float(get(o, "Surface_Grip"))?,
+                    rolling: float(o.get(ROLLING)).unwrap_or(0.0),
+                    slide_drag: float(o.get(SLIDE_DRAG)).unwrap_or(0.0),
+                })
+            });
+            let road = physics.as_ref().and_then(|p| sub(p, CLASS_OVERRIDES[2]));
+            let tag_flags = TAG_FLAG_FIELDS
+                .iter()
+                .filter(|(h, _)| matches!(s.get(*h), Some(Value::Bool(true))))
+                .fold(0, |f, (_, bit)| f | bit);
             let roughness = physics.as_ref().and_then(|p| sub(p, field_hash("Surface_roughness"))).map(|r| {
                 let f = r.floats();
                 [f.first().copied().unwrap_or(0.0), f.get(1).copied().unwrap_or(0.0)]
@@ -179,6 +249,8 @@ impl AssetStore {
                         .and_then(|h| self.genesys_object(h).ok())
                         .map(|o| VehicleEffects::from_object(&o))
                 }),
+                overrides,
+                tag_flags,
             });
         }
         Ok(out)

@@ -63,7 +63,21 @@ impl ModCatalogue {
             }
         }
         mw_assets::mods::apply_to(&mut h, &mods);
+        h.tyre_class = self.tyre_class(sel);
         (h, rules)
+    }
+
+    /// The tyre class a selection fits (`None` = stock): the `Tyres` of a fitted OFF-ROAD (`0d43dacc`, game slot 0,
+    /// `FUN_00589a60`) or TRACK (`dd869f8b`, game slot 1, `FUN_00589b00`) `TyreUpgrade` of the chosen level. The
+    /// third tyre slot (REINFLATES, `5d0e0d89`) is not read by either, so it leaves the class alone.
+    pub fn tyre_class(&self, sel: &ModSelection) -> Option<u8> {
+        sel.0.iter().find_map(|&(slot, cat)| {
+            let c = self.mods.get(cat)?.get(slot)?;
+            if !TYRE_CLASS_SLOTS.contains(&c.slot) {
+                return None;
+            }
+            c.tyre.and_then(|t| u8::try_from(t).ok())
+        })
     }
 
     /// "slot:category name" of each selected mod, for test output.
@@ -116,6 +130,9 @@ pub const CLASSES: [(&str, &[u32]); 5] = [
 /// The unnamed `ModifierUpgrade` slot that goes with a tyre slot: it sorts directly before it among the fields
 /// (fields are stored sorted by name), so it shares the tyre's name prefix (inferred; its own name is not cracked).
 const TYRE_MODIFIERS: [(u32, u32); 2] = [(0x0d43_dacc, 0x6ffa_60e4), (0xdd86_9f8b, 0x1456_09b0)];
+
+/// The `TyreUpgrade` slots whose `Tyres` becomes the car's tyre class: OFF-ROAD and TRACK.
+const TYRE_CLASS_SLOTS: [u32; 2] = [0x0d43_dacc, 0xdd86_9f8b];
 
 /// Category index of the base level; 0 is the PRO level (decomp.md "Nitrous and upgrades").
 pub const BASE: usize = 1;

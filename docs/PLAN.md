@@ -221,7 +221,9 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    wedging (a lamp at 60 km/h costs about 1 km/h). Compounds break into their parts (2026-10-09). Still open:
    the damaged model, the game's activation pools. Surface grip, rolling resistance and slide drag per wheel are in the tyre model since
    2026-10-06; the fade on a surface change, the drift's surface factor and the player's bumps on rough
-   surfaces (`Surface_roughness` Perlin noise) since 2026-10-09.
+   surfaces (`Surface_roughness` Perlin noise) since 2026-10-09; the tyre class (OFF-ROAD / TRACK tyre mods pick
+   another `TyreSpecificOverrides`, `FUN_00589a60` / `FUN_00589b00`) since 2026-10-19. Open: per-surface player
+   sounds by tyre class (`FUN_0054a5d0`, `FUN_0058fe10`), the tyre-mark slot per tyre class, the wet blocks.
 2. `[~]` **Vehicle physics**: since 2026-10-04 (session 3) the model follows the game's own code, read from the
    user's decompiled dump ([decomp.md](decomp.md), [handling.md](handling.md) "The model"): 60 Hz tick; engine
    inertia, friction curve, clutch, shift on rpm and speed, top-gear lock (`drivetrain.rs`; since 2026-10-06 the

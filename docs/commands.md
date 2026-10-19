@@ -132,7 +132,9 @@ MW_NO_VIGNETTE=1 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,172
 #   effect (zone, contact value; =2 also refreshes), a CRASH VFX count line at exit
 ./target/release/mwtool lods --at=815,60,1760          # model LOD tables / placement LOD scales; what the game draws from a point
 #   runtime: MW_NO_LOD=1 (everything at LOD0, A/B), MW_LOD_SCALING=0|1|2 (the game's LodScaling option), MW_LOD_LOG=1
-./target/release/mwtool surfaces                    # surfaces: grip, rolling, drag, dirt build-up, triangle counts
+./target/release/mwtool surfaces                    # surfaces: grip, rolling, drag, dirt build-up, triangle counts, ground area
+./target/release/mwtool surfaces --classes          # per surface: tag flags of its type, grip/rolling/drag per tyre class, kick-up / smoke / marks
+#   MW_SURFACE_LOG=1 (mostrusted): a line each time a wheel moves onto another surface (index, physics, tyre class, grip, drag, bumps)
 #   --near x,z[,r] (surfaces around a point), --find <index> (where a surface is), --steps (kerbs / steps nearby), --tris (every triangle: tag flags, normal, vertices)
 ./target/release/mwtool ui screens                  # game UI: screens / widgets (ui show <screen>, ui render <screen> out.png, ui font <n> out.png, ui easydrive)
 ./target/release/mwtool traffic --png <scratch>/lanes.png   # TrafficLaneData: counts, flows, vehicle lists, lane map

@@ -769,7 +769,10 @@ watch file logs the wheel's grip load (`w*_N`, wheel +0x100) and static load (`w
   and the game car's byte +0x1c17 is clear, else dry) → the contact kind (`FUN_0054a760`: Normal; Rims when the
   wheel's +0x1c1 is set, Flats when +0x1c2; the wet kinds fall back to the dry ones, null to `Default_surface`) →
   `SurfacePhysics` → the tyre class's `TyreSpecificOverrides` (`FUN_0054d750`; class = game car +0x1a88, 2 at
-  creation in `FUN_00586810`, rewritten from upgrade data by `FUN_00589a60` / `FUN_00589b00`): class 0
+  creation in `FUN_00586810`; `FUN_00593ac0` sets it from `PerformanceUpgrades.StockTyres` (+0xc8, 2 on every car);
+  `FUN_0058f3f0` resets the player's car to 2 and then `FUN_00589a60` / `FUN_00589b00` write the short +0x18 of
+  the fitted OFF-ROAD (Category +0x3c, game slot 0) / TRACK (+0x50, game slot 1) `TyreUpgrade`, i.e. its `Tyres`;
+  the class reaches here through `FUN_00904260` → `FUN_009b4d70` → `FUN_009aaf30`; ported 2026-10-19): class 0
   `OffRoadOverrides` (+0x28), 1 `08b66463` (+0x0c), 2 `RoadOverrides` (+0x44, also any other value), 3
   `SportOverrides` (+0x60), 4 `TrackOverrides` (+0x7c). The record it fills: [0] `7585f9cb` (slide-drag scale),
   [1] `Surface_roughness.8193fd9b`, [2] `Surface_roughness.7cb58933` × 0.001 (`.rdata` 0x00f8bb34), [3]
@@ -804,6 +807,11 @@ watch file logs the wheel's grip load (`w*_N`, wheel +0x100) and static load (`w
   Asphalt (`SurfacePhysics` 283001, the dark-grey road type): `Surface_Grip` 1 and link grip 1 on every car, so 1;
   the game's `Default_surface` (250315) is 1 too. Grass (283005) on the 911: 0.7 blended to 0.835 / 0.88 (front)
   and 0.82 / 0.88 (rear) by its link (grip 1.3); dirt (283003, link grip 1.25): 0.875 / 0.90.
+- **The same surface lookups elsewhere** (2026-10-19): rumble `FUN_0054a9f0` and sounds `FUN_0054a5d0` pick the
+  contact kind by tyre class (formats.md "Surface list layout"); the AI's speed planning reads the effective
+  lateral grip (`FUN_00514ad0` / `FUN_00514c10`: corner speed from v² against grip); `FUN_00706550` (statistics)
+  runs `FUN_0054d750` per wheel and counts off-road distance when no wheel's physics uid is in
+  `Surfaces.423651c1`.
 - **Drift surface factor** (`FUN_009cede0`, `this` = vehicle +0x17e0): 0.25 (0x00fa8830) × the sum of the four
   wheels' effective lateral grip; the drift's yaw torque and side force are multiplied by it.
 - Another reader of the front wheels' effective lateral grip: `FUN_00905580` → `FUN_009d5270` (two lanes into a
@@ -4873,8 +4881,11 @@ collision tag: surface = bits 13–19, bit 1 = the `ROAD` flag; +0x24 on the gro
     above 0.01 (`.rdata` 0x00fad910), or on rims, or while the car moves on a surface whose byte +0x156 (front
     wheels) / +0x157 (rear) is set (false on every surface). The ramps are written into the effect's parameter
     block (+0x84..+0x8c, the `WheelParams` intensities). Four effect slots per wheel.
-  - a second kick-up: `WheelVfx` (+0x138; AI `4cf3cf8f` +0x140) when a condition on the wheel's contact
-    velocities holds (not read in full).
+  - a second kick-up: `WheelVfx` (+0x138; AI `4cf3cf8f` +0x140), started and kept going while any of the
+    wheel's three smoke ramps is above 0 (a four-lane compare of (0, ramps) against zero; read in full
+    2026-10-19), or on a surface whose +0x156 / +0x157 byte is set; ported. The ramps fall geometrically and
+    never reach 0 in float maths unless the FPU flushes denormals (not known), so after the first slip the
+    kick-up stays on and its count follows the contact speed.
   - `bb02333c` (+0x100) for the local player's rear wheels, placed with the camera's matrix (lens dirt or
     similar; not ported); `5830a883` (+0x58) is copied to car +0x3c0.
   - the **tyre marks**: material = `RimMarksMaterial` (+0xe8) on rims, else `TyreMarksMaterials` by the car's
