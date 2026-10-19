@@ -1,9 +1,15 @@
 #!/bin/sh
 # Run a command in a headless gamescope (a nested 1280 x 720 display) so no window shows on the desktop; returns the
-# command's exit code, its stdout / stderr pass through. MW_SHOW=1 runs it directly instead.
+# command's exit code, its stdout / stderr pass through. MW_SHOW=1 runs it directly instead (still silent unless
+# MW_SOUND=1). Silent: MW_MUTE=1 (mostrusted's --mute), and a null sink (tools/silent-sink) for anything else:
+# PULSE_SINK for PulseAudio clients (Wine), PIPEWIRE_NODE for ALSA ones (Bevy / cpal).
 # Example: tools/hl ./target/release/mostrusted --screenshot x.png
 # gamescope closes inherited descriptors (the child's output goes through two FIFOs) and does not exit on its own when
 # the child does (Xwayland hangs on a broken pipe): the child writes its exit code to a file, then gamescope is stopped.
+if [ -z "$MW_SOUND" ]; then
+    export MW_MUTE=1
+    s="$("$(dirname "$0")/silent-sink" 2> /dev/null)" && export PULSE_SINK="$s" PIPEWIRE_NODE="$s"
+fi
 if [ -n "$MW_SHOW" ] || ! command -v gamescope > /dev/null; then exec "$@"; fi
 d="$(mktemp -d)"
 mkfifo "$d/out" "$d/err"

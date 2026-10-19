@@ -1,0 +1,15 @@
+#!/bin/sh
+# Print the name of a silent PulseAudio / PipeWire null sink, creating it once (it lasts until the audio server
+# restarts). Headless runs send their audio there with PULSE_SINK / PIPEWIRE_NODE (tools/hl, tools/orig/orig-wrap): nothing is heard
+# and, unlike muting a stream, nothing is stored per application, so the user's own runs of the games keep their sound.
+# The user's default output is put back if creating the sink changed it.
+NAME=mostrusted_silent
+command -v pactl > /dev/null || exit 1
+if ! pactl list short sinks | awk '{print $2}' | grep -qx "$NAME"; then
+    def="$(pactl get-default-sink 2> /dev/null)"
+    pactl load-module module-null-sink sink_name="$NAME" \
+        sink_properties='device.description="Most Rusted headless (silent)" priority.session=0 priority.driver=0' \
+        > /dev/null || exit 1
+    [ -n "$def" ] && [ "$(pactl get-default-sink)" != "$def" ] && pactl set-default-sink "$def"
+fi
+echo "$NAME"

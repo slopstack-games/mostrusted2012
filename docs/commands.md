@@ -9,6 +9,9 @@ optimised in dev too, but world loading is slow without `--release`.
 
 ```sh
 tools/hl <command...>                       # run in a headless 1280x720 gamescope (no desktop window); MW_SHOW=1 runs it directly
+#   silent too: MW_MUTE=1 (= --mute, also silences Bevy's GlobalVolume) and PULSE_SINK / PIPEWIRE_NODE = tools/silent-sink
+#   (a null sink, created once; default output untouched); MW_SOUND=1 keeps the sound. tools/orig launches are silent the
+#   same way (orig-wrap), MW_SOUND=1 at `orig launch` keeps it.
 tools/t <mostrusted args>                   # tools/hl + result lines only (full log scratch/run.log)
 cargo build --release --workspace
 cargo clippy --release --workspace          # keep at 0 warnings

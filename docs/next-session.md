@@ -63,6 +63,20 @@ Added by the user (2026-10-16); the ones marked (2026-10-16: ...) were worked on
 - **Floating trees**: some trees and foliage float near the street exit leading to the large airport area (place
   not measured; compare the research log's backdrop entry, "trees in a few far places float where no zone lists
   ground under them", and `mwtool placement-check`).
+- **GPU out of memory** (user crash 2026-10-19, wgpu "Out of Memory" on a mesh slab resize): a full-map run needs
+  ~4.0 GB of GPU memory (`--composed-backdrop`) / ~4.3 GB (session 11's zone view); with the desktop (~2.6 GB) and the
+  original or another headless run on the 8 GB card it fails near unit 168/169. Bevy's slab cap (128 MiB) made no
+  difference (reverted). Fix in progress: stream units as the original does (`FUN_00549fb0`). Until then play with
+  `--units 60` while agents run.
+- **Wheel placement** (added 2026-10-19): some cars' wheels still sit in the wrong place, e.g. the Bugatti Veyron
+  Super Sport (compare research log 2026-10-10 "wheel placement: the game builds its wheels from VehicleInfo's
+  axles"; check the Veyron SS's axle data and wheel models against a screenshot of the original).
+- **Missing animations** (added 2026-10-19): some of the original's animations are still missing in the game (which
+  ones not listed yet; survey against the original's car / world / UI animations, `car_anim.rs`).
+- **Sounds still not right** (added 2026-10-19): cars still sound a bit glitchy (engine synth: grain / codec
+  boundaries, research log "Audio"); traffic cars whine; some sounds are missing, e.g. the supercharger whine on the
+  old Charger; running over lamp posts and cones makes no audible sound (session 10's `world_sfx.rs` props / lamps
+  behaviours: check they fire on a car's hit, not only on a break, and that the voice is audible).
 - **UI scaling and positioning** (added 2026-10-19): the UI's scale and placement are still wrong (HUD, menus,
   pop-ups): compare against screenshots of the original at the same resolution and take the layout from the
   game's own UI data / code, not by eye.
