@@ -168,6 +168,8 @@ pub struct WheelBody {
     pub radius: f32,
     pub half_width: f32,
     pub mass: f32,
+    /// The strut's top and bottom, car-space y (`wheel_layout`; `None` without the data).
+    pub strut: Option<[f32; 2]>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -505,6 +507,7 @@ impl VehicleHandling {
                         for w in &layout.wheels {
                             if let Some(b) = w.body.checked_sub(1).and_then(|i| out.wheels.get_mut(i)) {
                                 b.position = w.position;
+                                b.strut = w.strut;
                             }
                         }
                     }
@@ -582,6 +585,7 @@ impl VehicleHandling {
                     radius: ext[0],
                     half_width: ext[2],
                     mass: mass.unwrap_or(25.0),
+                    strut: None,
                 });
             }
         }

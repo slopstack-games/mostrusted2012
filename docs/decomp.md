@@ -493,10 +493,12 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
   (`ddbd44c0` / `b80e5de3`).
 - **Anti-roll scale** 60 (`.bss` 0x01185d70, read live) on the stiffness only (`FUN_00933a60`); the unit
   (N m per radian in our model) is inferred.
-- **Strut travel**: searched for the joint built from `WheelSuspensionConstraint` (`Angle` 5, `7fc0dc41` 0.09 /
-  0.08, `447b4e1c` / `668c92ac` −1.5, `c2a87807` 1.5, `b867a203` 0.23, `b1c680d5`): no reader of these offsets
-  turned up in the vehicle build (`FUN_009b4e60` and its callees) or in `009A`–`009D` (searched `+ 0x14` / `+ 0x24`
-  reads off a resource); `7fc0dc41` (0.09 front, 0.08 rear on the 911) is the likeliest travel. Open.
+- **Strut travel** (settled 2026-10-19, from the data and live reads): the strut object (vehicle +0x10f0 + 8i)
+  holds +0x40 top and +0x50 bottom in the body frame and +0x70 the angle; top = `VehicleInfo.caac331c` +
+  `WheelSuspensionConstraint.b867a203` (constraint +0x24), bottom = `caac331c` + `7fc0dc41` (+0x14), model space,
+  angle = −`447b4e1c` degrees; the constraint is `SuspensionWheel.Suspension_Constraint`. Raptor live: top −0.222 /
+  −0.202, bottom −0.512 / −0.557, 0.65° / 0.45° (body frame = model − 0.75); XKR (snap1) by the same rule. Ported in
+  `mw_assets::wheel_layout` (`RestWheel::strut`).
 - **Strut end stop** (`FUN_009c5a90`, the wheel constraint's contact pass, and `FUN_009c2670`, its normal
   impulse pass). The constraint (`FUN_009c24b0`: +0x460 a point on the chassis, the strut's end; +0x470 a slack;
   +0x490 a velocity; flag +0x4ac from the builder) keeps a list of contact records (0x40 bytes: normal, point,
@@ -611,13 +613,21 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
   So the bump travel above rest is 0.056 front / 0.067 rear on the XKR (ours: 0.06 for every car), droop 0.099 /
   0.093, the strut tilted 5° (`Angle`). The spring element (+0x10 rest length 0.463 / 0.449, +0x14 k 41603 /
   47896, +0x18 rebound c, +0x1c W, +0x20 anchor (0.795, 0.22, 1.291), +0x2c c) puts the rest position at the sag
-  (0.463 − (0.22 + 0.133) = 0.11 ✓). Where the strut top (−0.077 chassis-local on both axles) comes from in the
-  data was not found.
-- Unknown: the strut travel (+0x460 is set by the builder's caller; not traced); what holds the wheel record on
-  its strut across (the joints `FUN_009c62e0` / `FUN_009c4e10` were not read; ours moves the wheel along the body's
-  up axis only); the collision detection's margin for making a wheel's contact record; the writer of the wheel
-  object's on-ground byte (+0x24, vehicle +0x894 for wheel 0; `ref/live1`'s `w*_contact`), so whether it means an
-  active contact record is not known. Ported in `mw_handling::suspension` and drive.rs (handling.md item 5).
+  (0.463 − (0.22 + 0.133) = 0.11 ✓). The strut top and bottom come from the data ("Strut travel" above).
+- **Wheel contact list** (2026-10-19, `FUN_00923bb0` → `FUN_009ab3b0` → `FUN_009dd300`, `FUN_009e04a0` /
+  `FUN_009e06d0`, `FUN_009df790`, `FUN_0095b4d0`): the wheel object holds +0x1a0 a pointer into the world's contact
+  buffer (world +0x1f480, count +0x50d00, filled by the collision job `FUN_0092a510` → `FUN_009ac590`, not in the
+  dump), +0x1a4 the count, +0x1a8 the entry used (0, or −1 with none). Entry (0x40 bytes): +0x00 point on the wheel's
+  cylinder A, +0x10 world point B, +0x1c the triangle's collision tag, +0x20 normal, +0x30 the two body ids. The list
+  is dropped when the normal points against the chassis's up row. The wheel's contact (+0x00 point, +0x10 normal,
+  +0x20 = 3, +0x24 on-ground byte) is written by `FUN_009df790`: on-ground = (B − A)·n > −0.2 (`.bss` 0x01187ac0)
+  and normal.y > 0.5 (`.rdata` 0x01026830); +0x1c0 = within 0.2 / 0.01 and tag bit 0; `FUN_009dd3c0` sets +0x184 to
+  1 / 2 for a step of more than +0.1 / −0.1 m (`.rdata` 0x010267ec / 0x00fb1770) between ticks (an event, not
+  physics). `FUN_0095b4d0` adds a constraint record per entry and points +0x4a0 at entry 0's. Live (research log
+  2026-10-19): on a kerb's edge A is on the cylinder's rim ahead of the axle and B on the edge straight above it,
+  the normal the top face's. Ported in `mw_handling::wheel_probe`. Still unknown: the narrow phase (which entry is
+  first when several triangles touch); what holds the wheel record on its strut across (the joints `FUN_009c62e0` /
+  `FUN_009c4e10` were not read; ours moves the wheel along the body's up axis only).
 
 ## Wheel placement (2026-10-10, ported in `mw_assets::wheel_layout`)
 

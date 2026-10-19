@@ -17,6 +17,12 @@
 //! wheel centres are (±0.925, 0.354, 1.675) and (±0.93, 0.324, −1.725), the rule's values, against the spec's
 //! (±0.935, 0.436, 1.68 / −1.72).
 //!
+//! The strut runs from y = `caac331c` + `WheelSuspensionConstraint.b867a203` (top, constraint +0x24) down to
+//! `caac331c` + `7fc0dc41` (bottom, +0x14), the constraint named by `SuspensionWheel.Suspension_Constraint`. Read
+//! live on the Raptor (strut object +0x40 / +0x50, body frame = model − 0.75): top −0.222 / −0.202, bottom
+//! −0.512 / −0.557, so 0.174 / 0.224 m of bump travel above the wheel's rest; on the XKR (snapshot snap1) 0.056 /
+//! 0.067 m, both by this rule (2026-10-19).
+//!
 //! Traffic (kinematic, `FUN_005ee7f0`) uses the same axles with the front-left radius for every wheel and no
 //! spring: (x, R_FL, z) − T, T = the translation of `VehicleInfo.509931cd`. The tyre's bottom then sits at
 //! y = −T.y in model space, as the player's does at rest (`caac331c` − `2f5fb582` ≈ −T.y on every car).
@@ -33,6 +39,9 @@ const AXLE_Z: u32 = 0xeaee_225f;
 const AXLE_WHEELS: u32 = 0x1048_818a;
 const WHEEL_X: u32 = 0xdcbe_38af;
 const HALF_EXTENTS: u32 = 0x98e9_02ed;
+/// `WheelSuspensionConstraint` +0x24 / +0x14: the strut's top and bottom above `caac331c`.
+const STRUT_TOP: u32 = 0xb867_a203;
+const STRUT_BOTTOM: u32 = 0x7fc0_dc41;
 
 /// One wheel where the game places it.
 #[derive(Debug, Clone)]
@@ -45,6 +54,8 @@ pub struct RestWheel {
     pub position: [f32; 3],
     /// Cylinder radius of the wheel body.
     pub radius: f32,
+    /// The strut's top and bottom, model-space y (`None` without the constraint's data).
+    pub strut: Option<[f32; 2]>,
 }
 
 #[derive(Debug, Clone)]
@@ -144,11 +155,15 @@ impl AssetStore {
                 let Some(body) = names.iter().position(|n| n == child) else { continue };
                 let Some(Value::Struct(b)) = bodies.get(body) else { continue };
                 let Some(radius) = body_radius(b) else { continue };
+                let strut = handle(wheel.get(field_hash("Suspension_Constraint")))
+                    .and_then(|id| self.genesys_object(id).ok())
+                    .and_then(|c| Some([reference + float(&c, STRUT_TOP)?, reference + float(&c, STRUT_BOTTOM)?]));
                 wheels.push(RestWheel {
                     body,
                     name: child.clone(),
                     position: [x, reference + radius - ground, z],
                     radius,
+                    strut,
                 });
             }
         }

@@ -10,3 +10,4 @@ pub mod surface;
 pub mod suspension;
 pub mod tyre;
 pub mod tyre_vfx;
+pub mod wheel_probe;
