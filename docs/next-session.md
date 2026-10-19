@@ -32,7 +32,9 @@ CLAUDE.md is slim, every command is in docs/commands.md, old handoffs in handoff
 Model decisions worth a capture first: the siren rule, the nitrous flame colour (lit by the irradiance only), the
 corona distance scale, the 128 m water gap distance.
 
-**HIGH PRIORITY (user play test 2026-10-19, after session 11's kerb work):** running into a kerb at speed makes the
+**HIGH PRIORITY, fixed in session 11 — needs the user's play test** (research log "false crashes at kerbs": the crash
+rule counted avian's speculative contacts up to |v|·dt away; now only contacts the solver pushed on or that penetrate;
+`MW_SPECULATIVE_CONTACTS=1` for A/B). Original report (user play test 2026-10-19, after session 11's kerb work): running into a kerb at speed makes the
 car crash (the crash state / crash camera), and so do other road parts that stick out slightly (small steps, plates,
 edges). Find what triggers the crash: the body collider meeting the edge (the chassis's world contacts
 `FUN_009c62e0` / `FUN_009c4e10`, research log "kerb captures"), the crash-detection rule and its threshold
