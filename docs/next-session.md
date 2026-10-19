@@ -39,6 +39,12 @@ Decisions with the user: portrait loading screens keep the original's bars.
   start never run; race intros' special shaders / visuals; a second race in one run is refused; the AI racers'
   crash reset path and takedown camera; AI–traffic responses; whether the outro's AI-driven player uses the body
   shop. The UI behaviour-kind fix (kinds 13 / 4) is global: check other screens' blinking elements.
+- **Too-loud skid / drift sounds NOT resolved** (user, end of 2026-10-19, after the `MW_SFX_ENGINE_LEVEL` fix): it
+  seems to appear when starting a race. Suspects: the race start rebuilds / re-binds the player's car (the
+  `attach_player` path, the intro's AI-driven player, a respray reload) so the vehicle bank loses the engine-level
+  gain (`audio::PlayerEngineLevel` not re-published) or a second bank starts; the `RaceCarEntities.RaceCar[1]` skid
+  sets binding to the player once racers exist; the competitor (AI) tyre bank (+4 dB bus) playing at full level near
+  the player. Measure with `MW_AUDIO_TAP` across a race start (`--race 462174`), free roam vs race.
 - **Exhaust flames**: backfire / nitrous flames look framey and not attached to the exhaust (`exhaust.rs`,
   `particles.rs`: emitter space, in-frame spawn interpolation, flipbook rate).
 - **Textures**: the tyre tread is blank (tyre material family / samplers, `mwtool shaders`).
