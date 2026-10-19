@@ -4546,6 +4546,26 @@ Liveries and two-tone paint: research log 2026-10-06 (session 5, rounds 3 and 4)
   entry whose index matches: op 0 multiplies, op 1 adds (summed), op 2 returns the operand at once; the result is
   value × Π + Σ (identity with no entries). Call sites pass indices 0x00..0x36 as literals; which handling field
   each index belongs to was not mapped this session (open: read each call site).
+- **Where the multiplier goes** (2026-10-19, live): `FUN_009d9960` multiplies the full-load torque (`FUN_009d24a0`
+  × engine +0x3c) by its 9th argument, which `FUN_008f7c50` builds as vehicle +0x2e70 × vehicle +0x2a90 per lane;
+  +0x2a90 is the nitrous component's multiplier (read live: 1 → 1.9 on the 911 as the lane ramps, the engine
+  torque +0x1d28 430 → 820 N m), +0x2e70 stayed 1. The gearbox reads the lane itself (control block +0x30 =
+  vehicle +0x1c20 > 0): `FUN_009d9ee0` waives the upshift's speed condition and `FUN_009d4c20` unlocks the top gear,
+  and `FUN_009d93b0` does not downshift at all while it is above 0 (ported 2026-10-19: ours lacked this gate).
+  Captures `ref/noslaunchfull`, `noslaunch_a`, `noscruise2_a` (research log 2026-10-19 "nitrous").
+- **The rollout** (the car's fitted upgrades, 2026-10-19): a 0x2b-dword record per player at [G + 0x2f404] + 0x827c +
+  index × 0xd8 (`FUN_006a15c0` → `FUN_0067ecf0`; written whole by `FUN_0068e9d0`, the swap `FUN_006c2020` passes
+  a caller's record through `FUN_006911b0`): +0x30 the vehicle id, then five groups of (descriptor pointer, fitted
+  slot, level) at +0x70 / +0x7c / +0x88 / +0x94 / +0xa0. `FUN_0067e770(slot)` returns the level when the slot is the
+  one its group holds: tyres {0, 1, 2, 11} (+0x74), nitrous {3, 4, 12, 13} (+0x80), chassis {7, 8, 14} (+0x8c),
+  body {9, 10} (+0x98), gearbox {5, 6} (+0xa4). Level 1 reads the upgrade from category 1 (+0x70 + 4k), level 2
+  (PRO) from category 0 (+0x1c + 4k) of `PerformanceUpgrades`; slot → field k: 0 → 10, 1 → 15, 3 → 6, 4 → 7,
+  5 → 12, 6 → 13, 7 → 2, 8 → 3, 9 → 0, 10 → 1, 11 → 5, 12 → 8, 13 → 9, 14 → 4 (`FUN_0058f3f0`, `FUN_00589a60`,
+  `FUN_00589b00`, `FUN_0065de50`); slot 2 was not seen read (a `TyreUpgrade` field by elimination). The 911's
+  names: slot 3 BURN NITROUS, 4 POWERSHOT, 12 BURN NITROUS (another variant), 13 JUMP NITROUS, 5 / 6 LONG / SHORT
+  GEARS, 7 / 8 / 14 LIGHTWEIGHT / REINFORCED / RAM CHASSIS, 9 / 10 AERO / IMPACT PROTECTION BODY, 11 DRIFT TIRES.
+  The mod-usage counters (`FUN_00656b90`, `FUN_00656cb0`, `FUN_00656e60`) count driving with a level-1 mod towards
+  its PRO unlock.
 - **The mods' data**: `Genesys.Gen.Vehicles.PerformanceUpgrades` in each vehicle bundle (911: `…6a59f`), two
   `Category` fields (`cb186d88`, `6eeb691f`; their names in Language ids differ by one, so most likely the pro
   and base levels), each up to 18 slot fields holding a `ModifierUpgrade` {`Icon`, `Name` (Language ids),

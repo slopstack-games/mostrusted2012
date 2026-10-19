@@ -10,6 +10,61 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-19: nitrous against the original: no downshift while it burns; mods fitted through the probe
+
+User play test: nitrous made the car downshift, barely faster, and the gearbox then struggled. Recorded the
+original with the probe (911 Carrera S 1085007 on `hodges-strip`, 13:00, traffic off, repaired; save backed up to
+`ref/savebackup-2026-10-19-nitrous/` and restored byte-identical, whole directory; game silent through
+orig-wrap; quit after). Watch `ref/nitrous.watch` = kerb.watch lines 1-111 + `in_nitrous` (+0x1c20),
+`nitrous_mode` (+0x1c60), engine lag / hold / torque (+0x1d14 / +0x1d18 / +0x1d28), `nos_mult` (+0x2a90), the
+gearbox throttle / state / mode (+0x1aa0 / +0x1bd8 / +0x1bdc), ground time and the tank (G + 0x264f0 +0x10 /
++0x18 / +0x6c). Inputs `ref/nos_in/*.csv` (the control amount ramps 0 → 1 over 1 s as `FUN_00669ab0` does,
+throttle 1 while it burns as `FUN_006c1a80` forces).
+- **Captures** (in `ref/`, copied to the main checkout): `noslaunchfull` (full throttle from rest, nitrous from
+  0.783 s, the first tick above 10 mph, for 100 / 24 s), `noslaunch_a` (nitrous from 2 s), `noslaunch0` (no
+  nitrous), `noscruise2_a` (rest → 3 s full → 4 s at 0.3 (the cruising box after 3 s) → 2.5 s burst → 0.3 →
+  brake). `noscruise_a` / `_b` (placed at 80 km/h) hit something in the first 0.17 s (49.7 → 5 mph, both runs):
+  not used. No mod was fitted in these runs: the probe writes the nitrous lane itself, so the tank and the mod's
+  `NitrousParameters` are bypassed, and `Nitrous_strength` (the multiplier, 1.9) is `Engine` data. Each
+  capture's meta.txt says so.
+- **What the original does**: the multiplier (vehicle +0x2a90, the engine's 9th argument, decomp.md "Nitrous and
+  upgrades") follows the lane, the engine torque goes 430 → 820 N m. Upshifts come on rpm alone (3 → 4 at 47.9
+  mph, 7559 rpm, then 3400-4250 rpm in 4th) and **no downshift happens while the lane is above 0**; when it ends
+  the speed rule drops 4 → 3 at once. From rest the gain over 8 s is small in the original too: 90.7 mph with
+  nitrous against 90.3 without (the early 4th gear at low rpm); from the cruise burst it is large (49.9 → 86.7 mph
+  in 2.5 s, 2 → 3 at 7713 rpm). The cruising box drops to the race box within the 0.05 s rule and keeps the gear.
+- **Ours before**: `FUN_009d93b0`'s nitrous mask was missing from `Drivetrain`'s downshift rule, so after the
+  rpm-only upshift the speed rule shifted straight back: 3 → 2 → 3 → 2 under nitrous (`--test nitrous` log),
+  each shift costing drive. **Fix** (mw-handling drivetrain.rs): no downshift while the nitrous burns (source
+  `FUN_009d93b0`, control block +0x30). Replays (`--replay` now plays a recorded `in_nitrous` lane straight into
+  the multiplier and the gearbox, bypassing the tank as the probe does; `nos_mult` logged): `noscruise2_a` matches
+  the gear trace (2 held, 2 → 3 at 8.0 s in both), burst gain 40.4 mph against 36.8; `noslaunchfull` no more
+  hunting, but ours stays in 3rd (6677 rpm at 3.0 s against the original's 7559 → 4th): see the open items.
+  `--test nitrous` before → after: 0-60 mph 3.43 → 3.20 s, 0-100 km/h 3.53 → 3.30 s, tank empty 4.93 → 4.95 s,
+  0-200 km/h 9.87 → 9.25 s, quarter mile 11.07 → 10.82 s. Unchanged: accel 3.58 s / 11.60 s, brake 38.1 m /
+  2.62 s, corner 2.57 g, drift peak 37.3° held 4.75 s (same as the session-11 build).
+- **Mods without unlocking** (user request): `mwtool mods <car> nitrous=2,...` → probe `mods`: the player's
+  rollout record copied, the groups' slot / level set, `FUN_006c2020(player, id, 0, &record)` (decomp.md "Nitrous
+  and upgrades", "The rollout"); verified live: the rollout read back with the fit (3:1, then 3:2), the vehicle
+  id and the group's descriptor pointer filled in by the game. The profile is changed in memory and was in the
+  save after one relaunch: restore the save afterwards (done). `mwtool mods <car>` now prints the names and game
+  slots; `mods.txt` in the probe dir records the last fit and `capture` copies it into meta.txt.
+- **The real-tank capture was not made**: after the fit, the far placement to Hodges killed the game five times in
+  a row (probe.md "Crashes on the far placement"; NVRM out-of-memory lines in the kernel log while other agents'
+  runs shared the GPU). Script nitrous `nan` (leave the lane to the game) and the plan are ready: fit
+  `nitrous=2` (PRO BURN NITROUS; ours `--mods 6=0`), poke the tank to 100 (G + 0x26500), script throttle 1 with
+  nitrous `nan` (`ref/nos_in/launchnat.csv`), hold the nitrous key from about 2 s (`orig hold`): it would check the
+  burn, the 1 s ramp and the throttle rule.
+- **Model decisions**: none in the port. Tool choices: the scripted ramp and the 100 / 24 s burn (the default
+  rules' rate) stand in for the tank.
+- **Open**: (1) under full throttle ours spins one rear wheel (w2 κ 0.55, w3 ≈ 0) where the original spins both
+  (κ 0.58 / 0.58 under nitrous; 0.12 / 0 in a plain 1st-gear launch): ours keeps more traction, gains more speed
+  (+6 mph at 3 s), its engine falls back to the locked ratio and never reaches the 3 → 4 upshift rpm, and the
+  uneven drive yaws it 8° off the strip by 190 m (it then hits the apron's edge in every replay); a tyre /
+  differential question, not nitrous; (2) ours launches about 1.7 mph faster at 1 s in 1st (same captures;
+  kerbrest911a showed it too); (3) the real-tank capture above; (4) game slot 2 (a tyre upgrade by elimination)
+  not traced; (5) what +0x2e70 (the other engine factor, 1 here) is.
+
 ### 2026-10-19: probe capture helpers: teleport, car swap, tick-exact scripted inputs; reproducible kerb runs
 User request: probe helpers for cleaner captures (teleport with saved spots, any car, scripted inputs per tick,
 fixed conditions, a flat test strip), verified by two identical runs at 100 km/h over a kerb and a replay in ours.

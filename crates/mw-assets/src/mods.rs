@@ -92,6 +92,43 @@ fn choice(slot: u32, o: &Object) -> ModChoice {
     }
 }
 
+/// The game's upgrade slots ("UpgradeEnum", 0..14) → the index of the slot field in a category as
+/// [`performance_upgrades`] lists it (field k sits at category +0x1c + 4k in category 0, +0x70 + 4k in category
+/// 1). From the readers that turn a fitted slot into its upgrade handle: `FUN_0058f3f0` (slots 5–11, 14),
+/// `FUN_00589a60` / `FUN_00589b00` (0, 1), `FUN_0065de50` (nitrous 3, 4, 12, 13). Slot 2 was not seen read
+/// (None): by elimination one of the `TyreUpgrade` fields.
+pub const GAME_SLOT_FIELD: [Option<usize>; 15] = [
+    Some(10),
+    Some(15),
+    None,
+    Some(6),
+    Some(7),
+    Some(12),
+    Some(13),
+    Some(2),
+    Some(3),
+    Some(0),
+    Some(1),
+    Some(5),
+    Some(8),
+    Some(9),
+    Some(4),
+];
+
+/// The rollout's mutually exclusive slot groups (`FUN_0067e770`: one fitted slot and its level per group, rollout
+/// +0x74 / +0x80 / +0xa4 / +0x8c / +0x98), in that order. Names from the slots' data: group 1 holds the four
+/// `NitrousUpgrade`s, group 2 the two gearbox modifiers (gear ratios, `Gear_change_time`).
+pub const GAME_SLOT_GROUPS: [&[u32]; 5] = [&[0, 1, 2, 11], &[3, 4, 12, 13], &[5, 6], &[7, 8, 14], &[9, 10]];
+
+/// A rollout level (1 base, 2 PRO, `FUN_0065de50`) → the category index of [`performance_upgrades`] (0 PRO).
+pub fn level_category(level: u32) -> Option<usize> {
+    match level {
+        1 => Some(1),
+        2 => Some(0),
+        _ => None,
+    }
+}
+
 /// Every mod of a vehicle bundle, per category (the two `Category` fields, in field order).
 pub fn performance_upgrades(store: &AssetStore, bundle: &Bundle) -> Result<Vec<Vec<ModChoice>>> {
     let mut out = Vec::new();

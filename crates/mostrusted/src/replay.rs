@@ -25,6 +25,8 @@ struct Row {
     brake: f32,
     steer: f32,
     handbrake: bool,
+    /// The recorded nitrous lane (`in_nitrous`, vehicle +0x1c20), NaN without the column.
+    nitrous: f32,
     /// The recorded speed (mph), for `MW_REPLAY_FOLLOW`.
     mph: f32,
     /// The recorded body position (x, z), for `MW_REPLAY_FOLLOW=path` (NaN without the columns).
@@ -64,6 +66,7 @@ impl Replay {
         let need = |name: &str| col(name).ok_or_else(|| anyhow::anyhow!("{} has no column {name}", path.display()));
         let (ct, cth, cbr, cst) = (need("t")?, need("in_throttle")?, need("in_brake")?, need("in_steer")?);
         let (chb, cspeed, cgear) = (col("handbrake_a"), col("speed_mph"), col("gear"));
+        let cnos = col("in_nitrous");
         let (cpx, cpz) = (col("body_px"), col("body_pz"));
         let yaw_cols = ["body_wx", "body_wy", "body_wz", "body_upx", "body_upy", "body_upz"].map(col);
         let mut rows = Vec::new();
@@ -95,6 +98,7 @@ impl Replay {
                 brake: brake.clamp(0.0, 1.0),
                 steer,
                 handbrake,
+                nitrous: cnos.and_then(num).unwrap_or(f32::NAN),
                 mph,
                 at: Vec2::new(cpx.and_then(num).unwrap_or(f32::NAN), cpz.and_then(num).unwrap_or(f32::NAN)),
             });
@@ -162,6 +166,16 @@ impl Replay {
         self.rows.get(i).map(|r| r.mph)
     }
 
+    /// The recorded nitrous lane at playback time `t`, interpolated as the pedals (None without the column).
+    fn nitrous_at(&self, t: f32) -> Option<f32> {
+        let i = self.rows.partition_point(|r| r.t <= t);
+        let b = self.rows.get(i)?;
+        let a = if i == 0 { b } else { &self.rows[i - 1] };
+        let k = if b.t > a.t { ((t - a.t) / (b.t - a.t)).clamp(0.0, 1.0) } else { 1.0 };
+        let v = a.nitrous + (b.nitrous - a.nitrous) * k;
+        (!v.is_nan()).then_some(v)
+    }
+
     /// Inputs at playback time `t`, interpolated between recorded rows (the handbrake from the nearer row).
     fn inputs_at(&self, t: f32) -> Option<[f32; 4]> {
         let i = self.rows.partition_point(|r| r.t <= t);
@@ -185,7 +199,7 @@ impl Replay {
 const COLUMNS: &str = "t,speed_mph,in_throttle,in_brake,in_steer,handbrake,rpm,gear,drifting,drift_scale,\
 drift_rear_slip,yaw_rate,lat_accel,body_slip_deg,px,pz,w0_kappa,w0_alpha,w1_kappa,w1_alpha,w2_kappa,w2_alpha,\
 w3_kappa,w3_alpha,wheel_angle,tyre_yaw_front,tyre_yaw_rear,drift_yaw_tq,drift_side_f,drift_hold_f,drift_yaw_scale,\
-clutch,w0_omega,w1_omega,w2_omega,w3_omega,py,vy,pitch_rate,roll_rate,w0_cpy,w1_cpy,w2_cpy,w3_cpy";
+clutch,w0_omega,w1_omega,w2_omega,w3_omega,py,vy,pitch_rate,roll_rate,w0_cpy,w1_cpy,w2_cpy,w3_cpy,nos_mult";
 
 /// Runs before `car_physics` in the fixed schedule: approach the start speed, then play the inputs back.
 pub fn run_replay(
@@ -264,6 +278,7 @@ pub fn run_replay(
         }
     }
     input.scripted = Some(inputs);
+    input.scripted_nitrous = r.nitrous_at(t);
     let Some((t, inputs)) = r.prev.replace((t, inputs)) else {
         r.playing = Some(t + dt);
         return;
@@ -331,7 +346,8 @@ pub fn run_replay(
         cpy(3),
     );
     if let Some(w) = &mut r.out {
-        let _ = writeln!(w, "{line}");
+        // The engine's nitrous multiplier the last tick used (`FUN_009d2aa0`, the original's vehicle +0x2a90).
+        let _ = writeln!(w, "{line},{:.4}", car.drivetrain.nitrous_scale);
     }
     r.playing = r.prev.map(|(next, _)| next + dt);
 }

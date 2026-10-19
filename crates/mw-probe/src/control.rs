@@ -38,6 +38,18 @@ const GAME_PTR: usize = 0x0117_7868;
 /// The swap of the player's car (`FUN_006c2020`, thiscall on the player: vehicle id, colour, rollout or 0),
 /// as the jack spots' swap calls it (decomp.md "Jack spots").
 const FN_SWAP_CAR: usize = 0x006c_2020;
+/// The players' rollout records (0x2b dwords: +0x30 the vehicle id, five upgrade groups from +0x70; copied whole by
+/// the swap `FUN_006c2020`, stored by `FUN_0068e9d0`): [G + 0x2f404] + 0x827c + player index × 0xd8.
+const ROLLOUT_PROFILE: usize = 0x2f404;
+const ROLLOUT_BASE: usize = 0x827c;
+const ROLLOUT_STRIDE: usize = 0xd8;
+const ROLLOUT_DWORDS: usize = 0x2b;
+const ROLLOUT_VEHICLE: usize = 0x30;
+/// The rollout's upgrade groups (`FUN_0067e770`): (fitted slot, level) offsets and the game slots ("UpgradeEnum")
+/// each group holds; one slot per group, level 0 none, 1 base, 2 PRO (`FUN_0065de50`).
+/// Each group is (descriptor pointer, slot, level) from +0x70; the game sets the pointer from the slot on the swap.
+const ROLLOUT_GROUPS: [(usize, &[u32]); 5] =
+    [(0x74, &[0, 1, 2, 11]), (0x80, &[3, 4, 12, 13]), (0xa4, &[5, 6]), (0x8c, &[7, 8, 14]), (0x98, &[9, 10])];
 /// Vehicle-manager message 0x16, the repair (`FUN_00844940`, stdcall: vehicle handle).
 const FN_REPAIR: usize = 0x0084_4940;
 /// Traffic message 0xf: density 0 and the traffic system restarts (`FUN_008462a0`, decomp.md "Traffic rules").
@@ -207,9 +219,13 @@ enum Ty {
     U8,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 enum FrameCmd {
     Car(u32),
+    /// Swap to a car with upgrades fitted: vehicle id (0 = keep the rollout's) and (game slot, level) pairs.
+    Mods(u32, Vec<(u32, u32)>),
+    /// Print the player's current rollout record.
+    Rollout,
     Repair,
     TrafficOff,
     /// The game's placement: position (x, ground y, z), heading in degrees, speed in mph.
@@ -454,7 +470,10 @@ fn apply_inputs(veh: usize, [steer, throttle, brake, handbrake, nitrous]: [f32; 
     wf(veh + V_THROTTLE, throttle.clamp(0.0, 1.0));
     for lane in 0..4 {
         wf(veh + V_BRAKE + 4 * lane, brake.clamp(0.0, 1.0));
-        wf(veh + V_NITROUS + 4 * lane, nitrous.clamp(0.0, 1.0));
+        // NaN: leave the lane to the game's own nitrous (its tank, `FUN_006c1a80`).
+        if !nitrous.is_nan() {
+            wf(veh + V_NITROUS + 4 * lane, nitrous.clamp(0.0, 1.0));
+        }
         wu(veh + V_HANDBRAKE + 4 * lane, if handbrake > 0.5 { u32::MAX } else { 0 });
     }
 }
@@ -619,6 +638,30 @@ fn run_frame_cmd(cmd: FrameCmd) -> String {
             f(player, id, 0, 0);
             format!("ok car swap to {id} requested (player {player:#x}, old handle {handle:#x})")
         }
+        FrameCmd::Rollout => match current_rollout(player) {
+            Some(r) => format!("ok rollout {}", rollout_text(&r)),
+            None => "error: no rollout".into(),
+        },
+        FrameCmd::Mods(id, fits) => {
+            let Some(mut r) = current_rollout(player) else { return "error: no rollout".into() };
+            let before = rollout_text(&r);
+            for (slot, level) in fits {
+                let Some(&(off, _)) = ROLLOUT_GROUPS.iter().find(|(_, s)| s.contains(&slot)) else {
+                    return format!("error: no upgrade slot {slot} (0-14)");
+                };
+                r[off / 4] = slot;
+                r[off / 4 + 1] = level;
+            }
+            if id != 0 {
+                r[ROLLOUT_VEHICLE / 4] = id;
+            }
+            // SAFETY: the game's swap with a rollout (`FUN_006c2020(player, id, colour 0, rollout)`, `ret 0xc`), the
+            // jack spot's call with the rollout argument the Easydrive / save paths pass; the record is a copy of the
+            // player's own with only the group fields changed, and the game copies it before returning.
+            let f: extern "thiscall" fn(usize, u32, u32, *const u32) = unsafe { std::mem::transmute(FN_SWAP_CAR) };
+            f(player, id, 0, r.as_ptr());
+            format!("ok swap to {id} with rollout {} (was {before})", rollout_text(&r))
+        }
         FrameCmd::Repair => {
             // SAFETY: `FUN_00844940(handle)`, stdcall (`ret 4`), posts the vehicle manager's repair message.
             let f: extern "system" fn(u32) = unsafe { std::mem::transmute(FN_REPAIR) };
@@ -644,6 +687,33 @@ fn run_frame_cmd(cmd: FrameCmd) -> String {
             "ok traffic off posted".into()
         }
     }
+}
+
+/// A copy of the local player's rollout record, read where the game keeps it: [G + 0x2f404] + 0x827c + index ×
+/// 0xd8 (`FUN_006a15c0` → `FUN_0067ecf0`; index = the local player's slot, players + 0xa6b4): a plain read, no
+/// game call (the player's vtable +0x18 getter that `FUN_006c2020` uses was suspected in a hang, 2026-10-19).
+fn current_rollout(_player: usize) -> Option<[u32; ROLLOUT_DWORDS]> {
+    let g = read_u32(GAME_PTR)? as usize;
+    let players = read_u32(g + 0x2f3dc)? as usize;
+    let index = read_u32(players + 0xa6b4)? as usize;
+    let profile = read_u32(g + ROLLOUT_PROFILE)? as usize;
+    let p = profile + ROLLOUT_BASE + index * ROLLOUT_STRIDE;
+    if index > 11 || !readable(p, ROLLOUT_DWORDS * 4) {
+        return None;
+    }
+    let mut r = [0u32; ROLLOUT_DWORDS];
+    for (i, v) in r.iter_mut().enumerate() {
+        *v = ru(p + 4 * i);
+    }
+    Some(r)
+}
+
+/// The record's dwords in hex, then each group's (slot, level).
+fn rollout_text(r: &[u32; ROLLOUT_DWORDS]) -> String {
+    let words: Vec<String> = r.iter().map(|v| format!("{v:x}")).collect();
+    let groups: Vec<String> =
+        ROLLOUT_GROUPS.iter().map(|(off, _)| format!("{}:{}", r[off / 4] as i32, r[off / 4 + 1] as i32)).collect();
+    format!("groups [{}] words [{}]", groups.join(" "), words.join(" "))
 }
 
 #[cfg(not(all(windows, target_arch = "x86")))]
@@ -694,6 +764,7 @@ fn load_script(path: &str) -> Result<Script, String> {
     let mut rows = Vec::new();
     for l in lines {
         let f: Vec<f32> = l.split(',').map(|x| x.trim().parse().unwrap_or(0.0)).collect();
+        // Only the nitrous column may be NaN (`nan`): the lane is then left to the game.
         let get = |c: Option<usize>| c.and_then(|c| f.get(c).copied()).unwrap_or(0.0);
         rows.push([get(Some(t)), get(cols[0]), get(cols[1]), get(cols[2]), get(cols[3]), get(cols[4])]);
     }
@@ -769,7 +840,7 @@ fn run_command(line: &str) -> String {
             state().teleport = Some((tp, reply.clone()));
             wait_reply(&reply, 10.0)
         }
-        "car" | "repair" | "notraffic" | "place" => {
+        "car" | "repair" | "notraffic" | "place" | "mods" | "rollout" => {
             if !FRAME_HOOKED.load(Ordering::Acquire) {
                 return "error: the frame hook is not installed (it runs in free drive only)".into();
             }
@@ -782,6 +853,21 @@ fn run_command(line: &str) -> String {
                     Some(id) => FrameCmd::Car(id),
                     None => return "error: car <vehicle id>".into(),
                 },
+                "mods" => {
+                    // mods <vehicle id> <slot>=<level> ...
+                    let Some(id) = w.get(1).and_then(|x| x.parse().ok()) else {
+                        return "error: mods <vehicle id> <slot>=<level> ...".into();
+                    };
+                    let mut fits = Vec::new();
+                    for a in &w[2..] {
+                        match a.split_once('=').map(|(s, l)| (s.parse::<u32>(), l.parse::<u32>())) {
+                            Some((Ok(s), Ok(l))) if l <= 2 => fits.push((s, l)),
+                            _ => return format!("error: bad fit {a} (slot=level, level 0-2)"),
+                        }
+                    }
+                    FrameCmd::Mods(id, fits)
+                }
+                "rollout" => FrameCmd::Rollout,
                 "repair" => FrameCmd::Repair,
                 _ => FrameCmd::TrafficOff,
             };

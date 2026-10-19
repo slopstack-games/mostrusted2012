@@ -435,6 +435,7 @@ def probe_setup(args):
     (STATE / "probe.dll").write_text(str(target))
     out = REPO / "ref" / "probe" / (args.probe if isinstance(args.probe, str) else time.strftime("%Y%m%d-%H%M%S"))
     out.mkdir(parents=True, exist_ok=True)
+    (out / "mods.txt").unlink(missing_ok=True)  # `mwtool mods` fits last one game session
     (STATE / "probe.out").write_text(str(out))  # for `mwtool probe / tp / car / conditions / capture --probe`
     log(f"probe: {target.name} placed, log in {out}")
     return f"PROBE_OVERRIDE={args.proxy}=n,b\nPROBE_OUT={out}\n"

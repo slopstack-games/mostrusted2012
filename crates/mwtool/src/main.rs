@@ -519,10 +519,18 @@ enum Cmd {
         /// Car name, vehicle ID or bundle path.
         car: String,
     },
-    /// A car's performance mods (`Vehicles.PerformanceUpgrades`): slot -> choice -> parameter changes.
+    /// A car's performance mods (`Vehicles.PerformanceUpgrades`): slot -> choice -> parameter changes. With a fit
+    /// list, fits them in the running original (probe): the game's swap with a rollout (`FUN_006c2020`), no unlock
+    /// needed (docs/probe.md "Capture helpers").
     Mods {
         /// Car name, vehicle ID or bundle path.
         car: String,
+        /// Fit in the running original: `nitrous=1,gearbox=2,...` (groups tyres / nitrous / gearbox / chassis /
+        /// body), a mod by name (`powershot=2`, `long-gears=1`) or game slot (`3=1`); levels 0|none, 1|base, 2|pro;
+        /// `none` clears every group, `all=<level>` fits each group's first slot.
+        fit: Option<String>,
+        #[arg(long)]
+        probe_dir: Option<PathBuf>,
     },
     /// The collision surface list (`HAWAII/SURFACELIST.BNDL`) with each surface's triangle count and
     /// collision flags over the track units, and its dirt / dust build-up (`VehicleEffects`, dry | wet).
@@ -1027,7 +1035,11 @@ fn main() -> Result<()> {
             wheels.as_deref(),
         )?,
         Cmd::Wheels { car, png } => wheels::run(&AssetStore::new(game)?, &car, png.as_deref())?,
-        Cmd::Mods { car } => {
+        Cmd::Mods { car, fit: Some(fit), probe_dir } => {
+            let store = AssetStore::new(game)?;
+            return probe_ctl::fit_mods(&probe_ctl::probe_dir(probe_dir.as_deref())?, &store, &car, &fit);
+        }
+        Cmd::Mods { car, fit: None, .. } => {
             let store = AssetStore::new(game)?;
             let bundle = if car.to_ascii_uppercase().ends_with(".BNDL") {
                 car
@@ -1038,10 +1050,15 @@ fn main() -> Result<()> {
             };
             let b = store.bundle(&bundle).with_context(|| format!("no bundle {bundle}"))?;
             const OPS: [&str; 3] = ["x", "+", "="];
+            let lang = store.language(mw_assets::DEFAULT_LANGUAGE).ok();
+            let game_slot = |k: usize| mw_assets::mods::GAME_SLOT_FIELD.iter().position(|&f| f == Some(k));
             for (i, cat) in mw_assets::mods::performance_upgrades(&store, &b)?.iter().enumerate() {
-                println!("category {i}");
-                for c in cat {
-                    let name = c.name.map_or("-".into(), |n| n.to_string());
+                println!("category {i} (game level {})", if i == 0 { "2, PRO" } else { "1" });
+                for (k, c) in cat.iter().enumerate() {
+                    let text = c.name.and_then(|n| lang.as_ref()?.get(n as u32)).unwrap_or("");
+                    let name = c.name.map_or("-".into(), |n| format!("{n} \"{text}\""));
+                    let gs = game_slot(k).map_or("game slot ?".into(), |s| format!("game slot {s}"));
+                    print!("  {k:2} ({gs}) ");
                     let extra = match (&c.nitrous, c.tyre) {
                         (Some(n), _) => format!(" nitrous params {n}"),
                         (_, Some(t)) => format!(" tyre {t}"),
@@ -1059,7 +1076,7 @@ fn main() -> Result<()> {
                             )
                         })
                         .collect();
-                    println!("  slot {:08x} {:<16} name {name}{extra}: {}", c.slot, c.kind, changes.join(", "));
+                    println!("slot {:08x} {:<16} name {name}{extra}: {}", c.slot, c.kind, changes.join(", "));
                 }
             }
         }
