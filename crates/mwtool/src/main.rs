@@ -565,6 +565,10 @@ enum Cmd {
         /// least 10 m), longest first.
         #[arg(long)]
         flat_kerb: bool,
+        /// Per surface: the tag flags its `SurfaceType` stands for, what it does to each tyre class (grip /
+        /// rolling / slide drag, `FUN_0054d750`) and its wheel effects (kick-up, smoke, tyre marks).
+        #[arg(long)]
+        classes: bool,
     },
     /// ICE camera takes (`CAMERAS.BNDL`, `mw_formats::camera_take`): one line each, or one take (name,
     /// UniqueId or resource id) with its channel layout and the camera evaluated every `--step` seconds.
@@ -1098,7 +1102,8 @@ fn main() -> Result<()> {
                 println!("torque (rpm:Nm): {}", samples.join("  "));
             }
         }
-        Cmd::Surfaces { near, find, steps, tris, flat, flat_tol, flat_heading, flat_kerb } => {
+        Cmd::Surfaces { classes: true, .. } => props::surface_classes(&AssetStore::new(game)?)?,
+        Cmd::Surfaces { near, find, steps, tris, flat, flat_tol, flat_heading, flat_kerb, .. } => {
             let near = match near.as_deref() {
                 Some(n) => {
                     let v: Vec<f32> = n.split(',').map(|x| x.trim().parse()).collect::<Result<_, _>>()?;

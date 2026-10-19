@@ -389,6 +389,10 @@ pub struct VehicleHandling {
     pub rim_radius: [Option<f32>; 2],
     /// The car's surface profile (`Tyres.Surface_effects.Default_profile.Links`).
     pub surface_links: Vec<SurfaceLink>,
+    /// The tyre class (game car +0x1a88): which `TyreSpecificOverrides` of a surface the tyres read
+    /// (`FUN_0054d750`). `None` = stock ([`crate::surfaces::STOCK_TYRE_CLASS`]); a fitted OFF-ROAD or TRACK
+    /// tyre mod sets its `TyreUpgrade.Tyres` (`FUN_00589a60` / `FUN_00589b00`).
+    pub tyre_class: Option<u8>,
     /// Every numeric field of `HandlingBehaviour`, by path of field hashes
     /// (array elements are skipped). Read with [`VehicleHandling::param`].
     pub params: std::collections::HashMap<Vec<u32>, f32>,

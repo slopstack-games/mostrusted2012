@@ -32,4 +32,9 @@ the camera unless `--timeline <id|default>` is given (screenshots taken before 2
 | water-industrial | `--camera=-150,80,3300,50,10,3560 --mute --hour 13` (full map) | the coastal industrial area that a far sea plane (y 30.4) used to flood: must be dry |
 | water-pond | `--camera=-650,60,1850,-1000,40,2150 --mute --hour 12` | park pond from above: algae patches, floor near the banks, sky reflection in the middle |
 | terrain-road | `--camera=-860,75,3170,-919.5,20,3232.5 --units 20` | slip road and junction in unit 11; with `MW_ALL_PASSES=1` a coarse grass hill (pass-mask stand-in `11e76144`) covers the road (fixed 2026-10-16) |
+| surface-cobble-lane | `--camera=-347,40,1440,-347,34,1452 --units 12` | red cobbled lane (surface 25, `SurfacePhysics` 510001) between grey paving (2, 406000) at a road (the triangles: `mwtool surfaces --near=-347,1452,25 --tris`) |
+| surface-cobble-drive | `--drive 911 --units 12 --spawn=859.8,39.3,1909.9,137.3 --auto-throttle 0.5 --no-traffic --screenshot-delay 300` | the 911 across the cobbled plaza (surface 25, 8150 m²): kick-up `…0f565f` behind the wheels; `MW_SURFACE_LOG=1` for the wheels' surfaces |
+| surface-paving-drive | `--drive 911 --units 12 --spawn=-33.7,38.6,-83.8,41.9 --auto-throttle 0.5 --no-traffic --screenshot-delay 300` | paving (surface 2, 406000: grip 1, rolling 0.025, slide drag 1.5) |
+| surface-dirt-drive | `--drive 911 --units 12 --spawn=-1216.6,27.2,1845.6,124.3 --auto-throttle 0.6 --no-traffic --screenshot-delay 300` | onto dirt (surface 7, 283003) from the road edge; the dirt smoke `…0a39d6` |
+| surface-grass-drive | `--drive 911 --units 12 --spawn=1075.9,20.1,41.0,104.8 --auto-throttle 0.5 --no-traffic --screenshot-delay 300` | park lawn (surface 4, 283005, 12 000 m²) |
 | terrain-road-2 | `--camera=250,80,-1930,212.5,47.6,-1974.5` | four carriageways beside a cliff; with `MW_ALL_PASSES=1` a coarse rock tile covers them |

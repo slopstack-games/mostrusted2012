@@ -121,6 +121,8 @@ pub struct CarParams {
     pub drift: Option<DriftParams>,
     /// How the tyres treat each surface (grip blend, slide drag): `VehicleSurfaceProfile` links.
     pub surface_links: Vec<SurfaceLink>,
+    /// The tyre class (stock 2; OFF-ROAD / TRACK tyre mods): which of a surface's `TyreSpecificOverrides` apply.
+    pub tyre_class: u8,
     /// `TyreVfxBehaviour` (front, rear): the tyre smoke and tyre mark ramps (`mw_handling::tyre_vfx`).
     pub tyre_vfx: Option<[mw_assets::handling::TyreVfxAxle; 2]>,
     /// The AI driver's steering PID gains (Proportional, Integral, Derivative), `Vehicle_Gameplay.PIDController`
@@ -245,6 +247,7 @@ impl CarParams {
             camera: h.camera,
             drift: DriftParams::new(h),
             surface_links: h.surface_links.clone(),
+            tyre_class: h.tyre_class.unwrap_or(mw_assets::surfaces::STOCK_TYRE_CLASS),
             tyre_vfx: h.tyre_vfx,
             ai_steer_pid: h.ai_steering_pid.unwrap_or([0.3, 0.01, 0.1]),
             damage_stats: h.damage_stats.unwrap_or_default(),
@@ -1377,7 +1380,9 @@ pub(crate) fn car_physics(
         *forces.linear_velocity_mut() = ch.v;
         *forces.angular_velocity_mut() = ch.w;
 
-        for ((wheel, mut brake_left), ground) in car.wheels.iter_mut().zip(brake_budget).zip(&grounds) {
+        for (wheel_index, ((wheel, mut brake_left), ground)) in
+            car.wheels.iter_mut().zip(brake_budget).zip(&grounds).enumerate()
+        {
             // The tyre acts where the wheel's contact carries a normal impulse (`FUN_009c75b0` skips it otherwise).
             let Some(g) = ground.as_ref().filter(|_| wheel.touching && wheel.normal_impulse > 0.0) else {
                 wheel.contact = None;
@@ -1529,6 +1534,27 @@ pub(crate) fn car_physics(
                 };
                 wheel.smoke.step(&v[axle].smoke, &input, dt);
                 wheel.marks.step(&v[axle].skid_marks, &input, dt);
+            }
+            if surface_log() && wheel.contact.and_then(|c| c.surface) != surface.index {
+                info!(
+                    "surface: {} wheel {wheel_index} ({}) on {:?} (physics {}, tyre class {}): grip {:.3?} (link target \
+                     {:.2}, effective {:.3?}), rolling {:.3} x N, slide drag {:.2} x {:.1?} N/mph over {:.0?} deg, \
+                     bumps {:?} at {:.1} mph",
+                    if player { "player" } else { "car" },
+                    if wheel.front { "front" } else { "rear" },
+                    surface.index,
+                    surface.uid,
+                    p.tyre_class,
+                    surface.grip,
+                    surface.target,
+                    grip,
+                    surface.rolling,
+                    surface.drag_scale,
+                    surface.drag,
+                    surface.drag_slip,
+                    surface.roughness,
+                    mph_abs,
+                );
             }
             wheel.contact = Some(WheelContact {
                 point: contact,
@@ -1787,7 +1813,9 @@ impl WheelSurface {
         let index = Some(hit.as_ref().map_or(surfaces.untagged, |h| h.tag.surface as usize));
         let tagged = hit.and_then(|hit| hit.surface);
         let info = tagged.or_else(|| surfaces.list.get(surfaces.untagged).or(surfaces.list.first()).cloned());
-        let base = info.as_ref().and_then(|s| s.grip).unwrap_or(1.0);
+        // The tyre class's `TyreSpecificOverrides` (`FUN_0054d750`; class 2 `RoadOverrides` on every stock car).
+        let tyre = info.as_ref().and_then(|s| s.tyre(p.tyre_class));
+        let base = tyre.map_or(1.0, |t| t.grip);
         let uid = info.as_ref().and_then(|s| s.physics_uid);
         let link = uid.and_then(|u| p.surface_links.iter().find(|l| l.surfaces.contains(&u)));
         // The car's link blends the surface grip towards its own value, per axle and direction.
@@ -1806,8 +1834,8 @@ impl WheelSurface {
             grip,
             target: link.map_or(1.0, |l| l.grip),
             roughness,
-            rolling: info.as_ref().and_then(|s| s.rolling).unwrap_or(0.0),
-            drag_scale: if link.is_some() { info.as_ref().and_then(|s| s.slide_drag).unwrap_or(0.0) } else { 0.0 },
+            rolling: tyre.map_or(0.0, |t| t.rolling),
+            drag_scale: if link.is_some() { tyre.map_or(0.0, |t| t.slide_drag) } else { 0.0 },
             drag: link.map_or([0.0; 2], |l| l.drag),
             drag_slip: link.map_or([0.0, 1.0], |l| l.drag_slip),
             effects: info.as_ref().and_then(|s| s.vehicle_effects[0]),
@@ -2484,6 +2512,12 @@ fn trace_wheels(t: f32, car: &Car) {
             .collect();
         _ = writeln!(f.lock().unwrap(), "{t:.4} {:.3} | {}", car.speed, wheels.join(" | "));
     }
+}
+
+/// `MW_SURFACE_LOG=1`: log a wheel's surface and what it does to the tyre each time the wheel moves onto another.
+fn surface_log() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("MW_SURFACE_LOG").is_some())
 }
 
 /// `MW_TYRE_DEBUG=1`: log each tyre's slip angle and forces twice a second.

@@ -357,6 +357,38 @@ fn surfaces_near(
     Ok(())
 }
 
+/// `mwtool surfaces --classes`: per surface the tag flags of its `SurfaceType`, its tyre-class overrides and its
+/// dry wheel effects.
+pub fn surface_classes(store: &AssetStore) -> Result<()> {
+    let list = store.surfaces()?;
+    let lib = store.vfx_library()?;
+    let id = |o: Option<mw_bundle::ResourceId>| o.map_or("-".to_string(), |i| format!("{:06x}", i.0 & 0xff_ffff));
+    println!(
+        "index  physics  flags  tyre classes grip/rolling/drag: offroad(0) 08b66463(1) road(2) sport(3) track(4)    \
+         kick-up / ai, smoke, marks (road)"
+    );
+    for (i, s) in list.iter().enumerate() {
+        let classes: Vec<String> = s
+            .overrides
+            .iter()
+            .map(|o| o.map_or("-".into(), |o| format!("{:.3}/{:.3}/{:.2}", o.grip, o.rolling, o.slide_drag)))
+            .map(|t| format!("{t:<17}"))
+            .collect();
+        let fx = lib.surfaces.get(i).map(|f| &f.dry);
+        println!(
+            "{i:>5}  {:>7}  {:#05x}  {}  {} / {}, {}, {}",
+            s.physics_uid.map_or("-".into(), |u| u.to_string()),
+            s.tag_flags,
+            classes.join(" "),
+            id(fx.and_then(|f| f.wheel)),
+            id(fx.and_then(|f| f.ai_wheel)),
+            id(fx.and_then(|f| f.player_wheels.default_tyre)),
+            id(fx.and_then(|f| f.tyre_marks[mw_assets::vfx::TYRE_MARKS_ROAD])),
+        );
+    }
+    Ok(())
+}
+
 pub fn surfaces(store: &AssetStore, near: Option<[f32; 3]>, find: Option<u8>, steps: bool, tris: bool) -> Result<()> {
     use mw_bundle::ResourceType;
     use mw_formats::CollisionTag;
@@ -375,6 +407,7 @@ pub fn surfaces(store: &AssetStore, near: Option<[f32; 3]>, find: Option<u8>, st
         return surfaces_near(store, &list, at, find);
     }
     let mut tris: BTreeMap<u8, (usize, BTreeMap<u16, usize>)> = BTreeMap::new();
+    let mut ground: BTreeMap<u8, f64> = BTreeMap::new();
     let mut places: Vec<[f32; 3]> = Vec::new();
     for p in store.bundle_paths().to_vec() {
         if !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("TRK_UNIT")) {
@@ -404,16 +437,25 @@ pub fn surfaces(store: &AssetStore, near: Option<[f32; 3]>, find: Option<u8>, st
                     }
                 }
             }
-            for t in soups.triangle_tags().into_iter().map(CollisionTag::from_u32) {
+            let (verts, idx) = soups.triangles();
+            for (tri, t) in idx.iter().zip(soups.triangle_tags().into_iter().map(CollisionTag::from_u32)) {
                 let s = tris.entry(t.surface).or_default();
                 s.0 += 1;
                 *s.1.entry(t.flags).or_default() += 1;
+                // Ground area: the triangles facing up (normal within ~45° of +Y).
+                let [a, b, c] = tri.map(|i| verts[i as usize]);
+                let (u, v) = ([0, 1, 2].map(|k| b[k] - a[k]), [0, 1, 2].map(|k| c[k] - a[k]));
+                let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+                let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                if len > 0.0 && n[1] / len > 0.7 {
+                    *ground.entry(t.surface).or_default() += len as f64 / 2.0;
+                }
             }
         }
         store.evict_all();
     }
     println!(
-        "index  id                colour (debug)         grip   rolling  drag   physics  speed  roughness      triangles  dirt/dust dry | wet  flags (count)"
+        "index  id                colour (debug)         grip   rolling  drag   physics  speed  roughness      triangles  ground m²  dirt/dust dry | wet  flags (count)"
     );
     let fx = |e: &Option<mw_assets::surfaces::VehicleEffects>| match e {
         Some(e) => {
@@ -424,7 +466,7 @@ pub fn surfaces(store: &AssetStore, near: Option<[f32; 3]>, find: Option<u8>, st
     for (i, s) in list.iter().enumerate() {
         let (n, flags) = tris.get(&(i as u8)).cloned().unwrap_or_default();
         println!(
-            "{i:>5}  {}  ({:.2} {:.2} {:.2})   {:>5}  {:>7}  {:>5}  {:>7}  {:>5}  {:<13}  {n:>9}  {} | {}  {:?}",
+            "{i:>5}  {}  ({:.2} {:.2} {:.2})   {:>5}  {:>7}  {:>5}  {:>7}  {:>5}  {:<13}  {n:>9}  {:>9.0}  {} | {}  {:?}",
             s.id,
             s.colour[0],
             s.colour[1],
@@ -435,6 +477,7 @@ pub fn surfaces(store: &AssetStore, near: Option<[f32; 3]>, find: Option<u8>, st
             s.physics_uid.map_or("-".into(), |g| g.to_string()),
             s.speed.map_or("-".into(), |g| g.to_string()),
             s.roughness.map_or("-".into(), |r| format!("{:.2} {:.2}", r[0], r[1])),
+            ground.get(&(i as u8)).copied().unwrap_or(0.0),
             fx(&s.vehicle_effects[0]),
             fx(&s.vehicle_effects[1]),
             flags

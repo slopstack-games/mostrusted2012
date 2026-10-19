@@ -10,6 +10,123 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-19: every surface as its own type: the survey, the tyre class, the kick-up rule
+User play test: "non-road surfaces which aren't dirt get treated like dirt (cobblestone, ...)"; still open: "driving
+on dirt does not feel like dirt" (handling, not only the effects).
+
+- **No fallback to dirt exists.** Every per-wheel lookup goes tag bits 13–19 → `Surfaces.Surfaces[i]` →
+  `SurfaceType` → dry `Normal` contact → `SurfacePhysics` / `Surface_vfx` (handling: `drive.rs`
+  `WheelSurface::at`; smoke and kick-up: `particles.rs`; marks: `tyre_marks.rs`; dirt build-up: `paint_wear.rs`);
+  ground without tags (the test track, props) is `Default_surface` (index 0, tarmac). Ground truth for the index:
+  `FUN_0043ab40` builds a collision tag from a `SurfaceType`'s nine bools (DRIVABLE … FATAL_FIELD, formats.md
+  "Surface list layout"), and on all 65 surfaces the world's triangles carry exactly their type's flags. In the
+  world (`MW_SURFACE_LOG=1`, spots in viewpoints.md `surface-*`) the wheels read cobbles 25 → 510001, paving 2 →
+  406000, dirt 7 → 283003, grass 4 → 283005, road 8 → 283001, with the 911's link grips (dirt 0.875 / 0.90,
+  grass 0.835 / 0.88) and fades as before.
+- **Why cobbles and paving drive and look "like dirt": it is the data.** In the stock tyre class (`RoadOverrides`)
+  paving (406000), cobbles (510001) and rough asphalt (386921) have grip 1 but the same rolling resistance (0.025)
+  and slide-drag scale (1.5) as dirt (283003), and the 911's link for them starts its slide drag at 2 N/mph
+  (dirt 1.5): at 100 mph about 1.2 kN of drag on paving against 0.14 kN on asphalt. Their `SurfaceVfx` gives a
+  kick-up (`…0f565f`: dark dust puffs, 0.5–0.75 m) and tarmac-like smoke (`…0f5693`, the layers of `…049247`) with
+  the black tarmac marks (`…117f16`). Paving bumps ±12 mm over ~3 m, cobbles ±2 mm at 20 per metre (Perlin,
+  player only). Nothing in our code made them dirt; a capture is needed to see whether the original shows the
+  same (below).
+- **Tyre class ported** (`FUN_0054d750` picks a surface's `TyreSpecificOverrides` by game car +0x1a88; traced to
+  `FUN_00904260` → `FUN_009b4d70` → `FUN_009aaf30` → `FUN_009d8bd0`). Stock: `FUN_00593ac0` reads
+  `PerformanceUpgrades.StockTyres` (+0xc8), `Tyres` 2 on all 187 cars; `FUN_0058f3f0` resets to 2, then
+  `FUN_00589a60` (game slot 0: OFF-ROAD `0d43dacc`) / `FUN_00589b00` (slot 1: TRACK `dd869f8b`) write the fitted
+  tyre's `Tyres` (911: OFF-ROAD 1, PRO 0; TRACK 3, PRO 4). REINFLATES is not read there. `SurfaceInfo::overrides`,
+  `VehicleHandling::tyre_class`, `CarParams::tyre_class`, `ModCatalogue::tyre_class`. Results (911): dirt track
+  (`--track-surface 7`) corner 2.13 → 2.55 g and top speed 258 → 288 km/h with OFF-ROAD PRO (`--mods 11=0`);
+  road asphalt (`--track-surface 8`) corner 2.54 → 3.00 g with TRACK PRO (`--mods 16=0`: `SportOverrides` /
+  `TrackOverrides` give asphalt grip 1.25); the default track (surface 0) is 1 for every class, so the usual tests
+  do not move.
+- **The kick-up rule** (`FUN_00589e20`, read in full): `WheelVfx` (player) / `4cf3cf8f` (other race cars, now
+  parsed and used) runs while any of the wheel's smoke ramps is above 0, not "while rolling" (our old model
+  decision). The ramps never reach exactly 0 in float maths after a slip (no flush-to-zero known), so in practice
+  the kick-up stays on once the car has slipped, as before; the A/B drift shots on cobbles and dirt look alike.
+- **Dirt handling against the code**: every surface term the car code reads is in (grip and its blend and fade,
+  rolling resistance, slide drag over slip angle, the drift factor, the player's bumps); `Surface_speed` and the
+  `Offroad` / `Track` contact physics are not read by the car code (those contact kinds exist for the rumble and
+  the sounds, picked by tyre class: `FUN_0054a9f0`, `FUN_0054a5d0`). The other readers of the surface grip are the
+  AI's corner-speed planning (`FUN_00514ad0` / `FUN_00514c10`) and the off-road statistic (`FUN_00706550`, the
+  `Surfaces.423651c1` road-physics list). What still differs on dirt is not handling: **the sounds** (ours play the
+  default surface's skid and road sequences on every surface; the original picks each wheel's `SurfaceSounds` by
+  surface, wet state, rims / flats and tyre class, `FUN_0054a5d0`, per wheel for the player in `FUN_0058fe10` with
+  the voice states of `FUN_0058f6d0`, road sequences `SurfaceSounds` +0x34) and the controller rumble
+  (`Surface_Rumble` = `RumbleEffect`).
+- **Survey** (`mwtool surfaces`: new ground-area column, upward triangles; `mwtool surfaces --classes`: tag flags,
+  the five classes, kick-up / AI kick-up / smoke / marks). Surfaces over 1000 m² of ground, largest first (a place
+  from `--find`; FATAL 0x040 marks the out-of-bounds terrain and the sea is 21):
+
+| surface | ground m² | physics | flags | road-class grip / rolling / drag | kick-up, smoke, marks | a place |
+|---|---|---|---|---|---|---|
+| 46 | 7106430 | 283003 | 0x040 | 0.750/0.025/1.50 | 024f46 / 0f57cc, 0a39d6, 117f02 | -1280,-60,1561 |
+| 21 | 6031863 | 283001 | 0x0c0 | 1.000/0.010/1.00 | 024f54 / 0f57d0, 049247, - | 1033,13,5097 |
+| 16 | 3217475 | 283005 | 0x040 | 0.700/0.030/2.25 | 024f4c / 0f57cd, 0a39d7, 117f02 | -1138,19,1616 |
+| 2 | 2908239 | 406000 | 0x001 | 1.000/0.025/1.50 | 0f565f / 14022e, 0f5693, 117f16 | -216,37,-120 |
+| 8 | 2236786 | 283001 | 0x003 | 1.000/0.010/1.00 | 024f54 / 0f57d0, 049247, 117f16 | -1141,19,1650 |
+| 45 | 1878699 | 406000 | 0x040 | 1.000/0.025/1.50 | 024f54 / 0f57d0, 049247, 117f16 | -1191,32,1846 |
+| 17 | 1211245 | 283001 | 0x040 | 1.000/0.010/1.00 | 024f54 / 0f57d0, 049247, 117f16 | -1145,29,1546 |
+| 7 | 1000821 | 283003 | 0x001 | 0.750/0.025/1.50 | 024f46 / 0f57cc, 0a39d6, 117f02 | -1155,18,1663 |
+| 63 | 695694 | 283001 | 0x140 | 1.000/0.010/1.00 | 024f54 / 0f57d0, 049247, 117f16 | 12,43,-365 |
+| 4 | 668691 | 283005 | 0x001 | 0.700/0.030/2.25 | 024f4c / 0f57cd, 0a39d7, 117f02 | 313,16,3682 |
+| 14 | 557683 | 406000 | 0x000 | 1.000/0.025/1.50 | 024f54 / 0f57d0, 049247, - | -1122,63,1537 |
+| 59 | 351196 | 283001 | 0x040 | 1.000/0.010/1.00 | 024f54 / 0f57d0, 049247, 117f16 | -14,44,-423 |
+| 5 | 314534 | 283001 | 0x001 | 1.000/0.010/1.00 | 024f54 / 0f57d0, 049247, 117f16 | -742,37,3299 |
+| 24 | 278107 | 386921 | 0x003 | 1.000/0.025/1.50 | 024f54 / 0f57d0, 049247, 117f16 | -1155,18,1671 |
+| 60 | 232678 | 406000 | 0x001 | 1.000/0.025/1.50 | 0f565f / 14022e, 0f5693, 117f16 | 934,24,-198 |
+| 6 | 180339 | 283003 | 0x001 | 0.750/0.025/1.50 | 14040a / 0f57cf, 0a39d8, 117f02 | 1143,17,4949 |
+| 22 | 178106 | 283001 | 0x000 | 1.000/0.010/1.00 | 024f54 / 0f57d0, 049247, - | -1156,19,1666 |
+| 30 | 136408 | 406000 | 0x001 | 1.000/0.025/1.50 | 024f54 / 0f57d0, 049247, 117f16 | 345,16,3639 |
+| 61 | 134290 | 406000 | 0x001 | 1.000/0.025/1.50 | 024f46 / 0f57cc, 0a39d6, 117f02 | 1188,19,4920 |
+| 48 | 109085 | 283005 | 0x000 | 0.700/0.030/2.25 | 024f4c / 0f57cd, 0a39d7, 117f02 | -1162,19,1680 |
+| 25 | 96787 | 510001 | 0x001 | 1.000/0.025/1.50 | 0f565f / 14022e, 0f5693, 117f16 | -347,34,1450 |
+| 57 | 76587 | 1160576 | 0x001 | 0.750/0.045/2.50 | 024f46 / 0f57cc, 0a39d6, 117f02 | 944,19,4907 |
+| 52 | 64338 | 283003 | 0x001 | 0.750/0.025/1.50 | 0f5707 / 0f57c9, 0f570b, 117f16 | 854,48,3682 |
+| 23 | 38377 | 406000 | 0x001 | 1.000/0.025/1.50 | 024f54 / 0f57d0, 049247, 117f16 | -260,56,-17 |
+| 38 | 38069 | 283001 | 0x003 | 1.000/0.010/1.00 | 024f54 / 0f57d0, 049247, 117f16 | 2273,8,2324 |
+| 49 | 33945 | 283005 | 0x000 | 0.700/0.030/2.25 | 024f54 / 0f57d0, 049247, - | -979,19,3260 |
+| 58 | 25141 | 283003 | 0x040 | 0.750/0.025/1.50 | 0f5707 / 0f57c9, 0f570b, 117f16 | 1397,34,1158 |
+| 43 | 21478 | 1085317 | 0x001 | 0.550/0.100/2.75 | 0f5678 / 0f57d7, 140382, 117f1b | 63,7,3534 |
+| 29 | 21331 | 681641 | 0x001 | 1.000/0.125/7.50 | 024f54 / 0f57d0, 049247, 117f16 | 931,23,-277 |
+| 44 | 17703 | 283005 | 0x001 | 0.700/0.030/2.25 | 024f4c / 0f57cd, 0a39d7, 117f02 | -739,31,1928 |
+| 50 | 16920 | 283005 | 0x000 | 0.700/0.030/2.25 | 024f54 / 0f57d0, 049247, - | -1445,22,2998 |
+| 33 | 14336 | 406000 | 0x001 | 1.000/0.025/1.50 | 1403aa / 117f2e, 0f5693, 117f16 | -701,35,1942 |
+| 47 | 12148 | 283005 | 0x000 | 0.700/0.030/2.25 | 024f4c / 0f57cd, 0a39d7, 117f02 | -1134,19,1665 |
+| 12 | 9226 | 283001 | 0x008 | 1.000/0.010/1.00 | 024f54 / 0f57d0, 049247, 117f16 | 2037,33,3005 |
+| 62 | 7779 | 283001 | 0x000 | 1.000/0.010/1.00 | 024f54 / 0f57d0, 049247, - | 1605,39,191 |
+| 39 | 6846 | 386921 | 0x003 | 1.000/0.025/1.50 | 024f54 / 0f57d0, 049247, 117f16 | 2246,8,2342 |
+| 51 | 4152 | 283005 | 0x000 | 0.700/0.030/2.25 | 024f54 / 0f57d0, 049247, - | -204,46,-102 |
+| 55 | 4119 | 681638 | 0x001 | 0.500/0.150/15.00 | 0f5707 / 0f57c9, 0f570b, 117f16 | 1828,31,4740 |
+| 64 | 4103 | 283005 | 0x001 | 0.700/0.030/2.25 | 024f4c / 0f57cd, 0a39d7, 117f02 | -732,32,1923 |
+| 34 | 3726 | 283001 | 0x003 | 1.000/0.010/1.00 | 024f54 / 0f57d0, 049247, 117f16 | 2054,38,4432 |
+| 9 | 2526 | 406000 | 0x007 | 1.000/0.025/1.50 | 024f54 / 0f57d0, 049247, 117f16 | -1109,16,3394 |
+| 56 | 2339 | 386921 | 0x003 | 1.000/0.025/1.50 | 024f54 / 0f57d0, 049247, 117f16 | 2412,77,3218 |
+| 13 | 1536 | 283001 | 0x008 | 1.000/0.010/1.00 | 024f54 / 0f57d0, 049247, 117f16 | -767,31,3260 |
+| 42 | 1416 | 681637 | 0x001 | 0.600/0.045/2.50 | 024f46 / 0f57cc, 0a39d6, 117f02 | 1580,48,-333 |
+| 53 | 1378 | 406000 | 0x000 | 1.000/0.025/1.50 | 024f54 / 0f57d0, 049247, - | 185,17,3782 |
+
+  Looked at (`scratch/look.sh`, a camera onto the place; the place can sit at a boundary): 2 concrete / grey
+  paving (sidewalks, canal walls), 25 red cobbles (lanes, plazas: 8150 m² at 877, 1891), 60 concrete (the storm
+  canal), 6 sand (yellow ground by the docks; its own kick-up `…14040a` and smoke `…0a39d8`), 55 rail ballast
+  (681638: grip 0.5, drag 15), 43 the canal bed (1085317, washes the car), 33 white stone chips (its kick-up
+  `…1403aa`), 7 dirt verges, 4 park lawns, 61 sandy lots (paving physics with the dirt effects), 29 a concrete
+  yard (681641: rolling 0.125, drag 7.5), 52 / 58 dark dirt (their own effects `…0f5707` / `…0f570b`).
+- Model decisions: none new. Road tests (911): 0–60 mph 3.58 s and drift peak 37.3° held 4.75 s, identical to the
+  build before; brake 100–0 km/h 2.62 s, corner 2.57 g.
+- **Captures that would confirm** (the original, not run this round): the 911 coasting from 100 mph on a long
+  paving stretch and on asphalt (the slide drag says ~0.08 g more on paving); the per-wheel physics record
+  (vehicle +0x17e0 + 0x7c i: +0x54 uid, +0x70 / +0x74 effective grip) on cobbles, paving and dirt at a known speed;
+  car +0x1a88 with no tyre mod and with OFF-ROAD / TRACK fitted (`mwtool mods 911 tyres=2`); a screenshot pair of
+  the kick-up on the cobbled plaza (`surface-cobble-drive`) and on dirt at the same speed; the smoke ramps at
+  vehicle +0x2c90 after a slip (do they reach 0: flush-to-zero).
+- Open: per-surface player and AI sounds (above; a hook for the sounds work: the wheel's surface index is in
+  `WheelContact::surface`, the tyre class in `CarParams::tyre_class`); the tyre-mark slot per tyre class (a short
+  at +0x6c / +0x6e / +0x70 of the vehicle's +0x3c object, type not identified; marks stay `Road`); the wet blocks
+  (surface state ≥ 1 for vfx, ≥ 2 for physics and sounds; ours has no surface state); the on-rims and flat
+  contact kinds; the `61ac1863` smoke variant.
+
 ### 2026-10-19: UI frame: HUD aspect correction and menu letterbox (code + captures), stack cells, text metrics
 User play test: "UI scaling and positioning is still wrong"; the UI did not follow runtime window resizes; loading
 pictures did not fill portrait windows. Sources: the dump (decomp.md "UI frame and `HudAspectCorrection`"), the

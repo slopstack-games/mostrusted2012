@@ -39,8 +39,10 @@ pub struct WheelEffects {
 /// The effects of one surface in one weather condition (`SurfaceVfx`).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct SurfaceEffects {
-    /// Kick-up behind a rolling wheel (`WheelVfx`).
+    /// Kick-up behind a rolling wheel (`WheelVfx`, +0x138): the player's car.
     pub wheel: Option<ResourceId>,
+    /// The kick-up of every other race car (`4cf3cf8f`, +0x140; `FUN_00589e20` picks it for AI cars).
+    pub ai_wheel: Option<ResourceId>,
     pub player_wheels: WheelEffects,
     pub ai_wheels: WheelEffects,
     /// Impact effects by direction: front, front left, front right, rear, rear left, rear right,
@@ -319,6 +321,7 @@ impl AssetStore {
                     let ai_wheels = wheels("AIWheelEffects");
                     SurfaceEffects {
                         wheel: handle(&vfx, "WheelVfx"),
+                        ai_wheel: handle_hash(&vfx, 0x4cf3_cf8f),
                         player_wheels,
                         ai_wheels,
                         impacts: IMPACT_FIELDS.map(|n| handle(&vfx, n)),
