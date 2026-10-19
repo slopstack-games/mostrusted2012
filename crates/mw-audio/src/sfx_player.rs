@@ -194,7 +194,9 @@ pub struct Sequence {
     pub min: f32,
     pub max: f32,
     pub items: Vec<Item>,
-    /// The sequence only plays while this binding is true (set by the bank builder, empty = always).
+    /// The sequence only plays while this binding is above 0, and its wave items' gains are scaled by the value
+    /// (clamped to 0..1): a 0 / 1 switch, or a fade the caller ramps (the player's surface sounds, `sfx.rs`). Set by
+    /// the bank builder; empty = always, full.
     pub gate: String,
     /// One-shot items fire again whenever the previous one ends while the item is active, at a rate
     /// proportional to the binding (pops and crackles: `Gurgle_Sequence` is bound to a pop probability).
@@ -942,7 +944,8 @@ impl Player {
         let mut starts: Vec<(usize, usize, f32)> = Vec::new();
         for si in 0..self.seqs.len() {
             let seq = &self.bank.sequences[si];
-            let gate_ok = self.value(self.seqs[si].gate).is_none_or(|v| v > 0.5);
+            let gate = self.value(self.seqs[si].gate).map_or(1.0, |v| v.clamp(0.0, 1.0));
+            let gate_ok = gate > 0.0;
             let bound = self.seqs[si].bind.is_some();
             let raw = self.value(self.seqs[si].bind);
             let x = if bound {
@@ -1014,7 +1017,7 @@ impl Player {
                         let looping = waves.iter().all(|w| w.looping);
                         let eval =
                             |m: &Option<RMod>, d: f32| m.as_ref().map_or(d, |m| m.m.eval(t_item, self.value(m.bind)));
-                        let gain = eval(&st.gain, 1.0);
+                        let gain = eval(&st.gain, 1.0) * gate;
                         let pitch = eval(&st.pitch, 1.0);
                         if looping {
                             match st.voice {
@@ -1153,7 +1156,8 @@ impl Player {
                 return;
             }
         }
-        let gain = st.gain.as_ref().map_or(1.0, |m| m.m.eval(t, self.value(m.bind)));
+        let gate = self.value(self.seqs[si].gate).map_or(1.0, |v| v.clamp(0.0, 1.0));
+        let gain = st.gain.as_ref().map_or(1.0, |m| m.m.eval(t, self.value(m.bind))) * gate;
         let pitch = st.pitch.as_ref().map_or(1.0, |m| m.m.eval(t, self.value(m.bind)));
         let channel = st.channel;
         let pick = self.rng.next() as usize % waves.len();

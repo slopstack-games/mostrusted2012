@@ -98,6 +98,11 @@ impl BusMix {
         Self { groups }
     }
 
+    /// No bus data (or `MW_AUDIO_NO_BUS`).
+    pub fn is_empty(&self) -> bool {
+        self.groups.is_empty()
+    }
+
     /// The route a mixing group plays into and its chain gain.
     pub fn route(&self, group: u32) -> Option<(&str, f32)> {
         self.groups.get(&group).map(|(n, g)| (n.as_str(), *g))
