@@ -316,6 +316,18 @@ impl<'a> SoundLoader<'a> {
             let group = num(&o, "MixingGroup").unwrap_or(0.0) as u32;
             out.push(Channel { id: id.0, gain: num(&o, "Gain").unwrap_or(1.0), plugins, group, collects });
         }
+        // Channels that leave the bank (no send to a channel of it, no submix of it collecting their group) play
+        // into the game's buses: their route's chain against the engine's (`crate::buses`).
+        let ids: Vec<u64> = out.iter().map(|c| c.id).collect();
+        let collected: Vec<u32> = out.iter().flat_map(|c| c.collects.iter().copied()).collect();
+        let buses = self.store.bus_mix();
+        for c in &mut out {
+            let sends_inside =
+                c.plugins.iter().any(|p| matches!(p.kind, PluginKind::Send { to: Some(t) } if ids.contains(&t)));
+            if !sends_inside && !collected.contains(&c.group) {
+                c.gain *= buses.relative(c.group);
+            }
+        }
         out
     }
 }

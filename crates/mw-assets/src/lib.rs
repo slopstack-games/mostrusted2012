@@ -8,6 +8,7 @@
 //! demand.
 
 pub mod backdrop;
+pub mod buses;
 pub mod camera;
 pub mod car_anim;
 pub mod car_lights;
@@ -92,6 +93,7 @@ pub struct AssetStore {
     index: HashMap<ResourceId, Vec<Location>>,
     open: Mutex<HashMap<u32, Arc<Bundle>>>,
     genesys_types: Mutex<HashMap<ResourceId, Option<fmt::genesys::Type>>>,
+    buses: std::sync::OnceLock<buses::BusMix>,
 }
 
 impl AssetStore {
@@ -112,7 +114,14 @@ impl AssetStore {
                 });
             }
         }
-        Ok(Self { game, bundles, index, open: Mutex::new(HashMap::new()), genesys_types: Mutex::new(HashMap::new()) })
+        Ok(Self {
+            game,
+            bundles,
+            index,
+            open: Mutex::new(HashMap::new()),
+            genesys_types: Mutex::new(HashMap::new()),
+            buses: std::sync::OnceLock::new(),
+        })
     }
 
     pub fn game(&self) -> &GameDir {
@@ -216,6 +225,11 @@ impl AssetStore {
     }
 
     /// Decode a GenesysObject resource with types resolved across the game.
+    /// The game's bus mix (loaded once).
+    pub fn bus_mix(&self) -> &buses::BusMix {
+        self.buses.get_or_init(|| buses::BusMix::load(self))
+    }
+
     pub fn genesys_object(&self, id: ResourceId) -> Result<fmt::genesys::Object> {
         let res = self.load_typed(id, ResourceType::GenesysObject)?;
         self.decode_genesys(&res)

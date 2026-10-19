@@ -202,10 +202,15 @@ impl WorldSfxState {
         }
         let waves: Vec<ResourceId> = waves.to_vec();
         let (store, out) = (store.clone(), self.built.clone());
+        let label = sound.label.clone();
         std::thread::spawn(move || {
+            let t0 = std::time::Instant::now();
             let shots = WaveShots::new(&store);
             let built: Built = waves.iter().map(|w| ((w.0, chan), shots.shot(*w, chan.sfx(), None))).collect();
             out.lock().unwrap().extend(built);
+            if log_on() {
+                info!("world sfx: built {label:?} on {chan:?} in {:.0} ms", t0.elapsed().as_secs_f32() * 1000.0);
+            }
         });
     }
 }
@@ -566,7 +571,13 @@ fn objects(
         let n = state.counter;
         state.counter = (state.counter + 1) % COUNTER_WRAP;
         let wave = list[n as usize % list.len()];
-        let Some(Some(shot)) = state.shots.get(&(wave.0, chan)).cloned() else { continue };
+        let Some(Some(shot)) = state.shots.get(&(wave.0, chan)).cloned() else {
+            if log_on() {
+                let why = if state.shots.contains_key(&(wave.0, chan)) { "does not decode" } else { "not built yet" };
+                info!("world sfx: {:?} wave {wave} on {chan:?} skipped: {why}", s.label);
+            }
+            continue;
+        };
         let kind_name: &'static str = match kind {
             2 => "object damage",
             3 => "object slide",

@@ -143,6 +143,12 @@ pub enum Target {
     ChannelPlugin(u32),
     /// A field of the plug-in with this unique id.
     Plugin { uid: u32, field: u32 },
+    /// The item's channel pitch (`Automated_Property` 6 with no plug-in: a multiplier of the pitch of the
+    /// channel's voices, 1 = unchanged). `FUN_004b8cd0` / `FUN_004b8d90`, which queue a channel's property for the
+    /// mixer, treat 0 (gain) and 6 alike as multipliers whose identity is 1 (a value within `0x00fa306c` of 1 is
+    /// not sent); 6 = pitch is inferred from that and the data (the supercharger whines' 0.25 → 1.2 over the
+    /// normalised RPM, research log 2026-10-19).
+    ChannelPitch,
 }
 
 #[derive(Debug, Clone)]
@@ -154,6 +160,10 @@ pub enum ItemKind {
         gain: ModValue,
         pitch: ModValue,
         probability: Option<ModValue>,
+        /// `Auto_Pitch` (item +0xe0): the pitch is the sequence's axis value over `Pitch.Value` (the RPM or speed
+        /// the loop was recorded at) instead of the `Pitch` value (the wave item's update `0x00836910`:
+        /// `(StartTime + position) / Pitch.Value` replaces the evaluated pitch).
+        auto_pitch: bool,
     },
     Ginsu {
         ginsu: Arc<Ginsu>,
@@ -439,6 +449,8 @@ pub struct Params {
     /// Smoothing time constant per value (s).
     smoothing: Vec<AtomicU32>,
     triggers: Mutex<Vec<String>>,
+    /// Cues to stop, with their fade (s).
+    stops: Mutex<Vec<(String, f32)>>,
 }
 
 impl Params {
@@ -446,7 +458,7 @@ impl Params {
         let index = names.iter().enumerate().map(|(i, n)| (n.clone(), i)).collect();
         let values = names.iter().map(|_| AtomicU32::new(0f32.to_bits())).collect();
         let smoothing = names.iter().map(|_| AtomicU32::new(0.02f32.to_bits())).collect();
-        Self { names, index, values, smoothing, triggers: Mutex::new(Vec::new()) }
+        Self { names, index, values, smoothing, triggers: Mutex::new(Vec::new()), stops: Mutex::new(Vec::new()) }
     }
 
     pub fn names(&self) -> &[String] {
@@ -488,6 +500,19 @@ impl Params {
         }
     }
 
+    /// Stop a cue's timelines: their voices fade out over `fade` seconds (the game's `FUN_00a44e40(voice, fade)`).
+    pub fn stop(&self, cue: &str, fade: f32) {
+        if let Ok(mut t) = self.stops.lock()
+            && t.len() < 64
+        {
+            t.push((cue.to_string(), fade));
+        }
+    }
+
+    fn take_stops(&self) -> Vec<(String, f32)> {
+        self.stops.try_lock().map(|mut t| std::mem::take(&mut *t)).unwrap_or_default()
+    }
+
     fn take_triggers(&self) -> Vec<String> {
         self.triggers.try_lock().map(|mut t| std::mem::take(&mut *t)).unwrap_or_default()
     }
@@ -517,6 +542,8 @@ struct ItemState {
     channel: Option<usize>,
     gain: Option<RMod>,
     pitch: Option<RMod>,
+    /// `Auto_Pitch`: the recorded value the axis is divided by.
+    auto_pitch: Option<f32>,
     probability: Option<RMod>,
     params: Vec<(Target, RMod)>,
     /// Ginsu voice index in the group.
@@ -726,6 +753,8 @@ struct ChannelState {
     gain_static: f32,
     gain: f32,
     dgain: f32,
+    /// Pitch multiplier of the channel's voices ([`Target::ChannelPitch`]).
+    pitch: f32,
     plugins: Vec<PluginState>,
     /// Channels without sends play straight into the master.
     has_send: bool,
@@ -896,7 +925,14 @@ impl Player {
                     }
                 }
                 let sends: Vec<Option<usize>> = plugins.iter().filter_map(|p| p.send).collect();
-                ChannelState { gain_static: c.gain, gain: c.gain, dgain: 0.0, has_send: !sends.is_empty(), plugins }
+                ChannelState {
+                    gain_static: c.gain,
+                    gain: c.gain,
+                    dgain: 0.0,
+                    pitch: 1.0,
+                    has_send: !sends.is_empty(),
+                    plugins,
+                }
             })
             .collect();
         for c in &mut channels {
@@ -961,6 +997,7 @@ impl Player {
                             channel,
                             gain: None,
                             pitch: None,
+                            auto_pitch: None,
                             probability: None,
                             params: Vec::new(),
                             ginsu: None,
@@ -969,9 +1006,10 @@ impl Player {
                             held: None,
                         };
                         match &it.kind {
-                            ItemKind::Wave { gain, pitch, probability, .. } => {
+                            ItemKind::Wave { gain, pitch, probability, auto_pitch, .. } => {
                                 st.gain = Some(rmod(gain));
                                 st.pitch = Some(rmod(pitch));
+                                st.auto_pitch = auto_pitch.then_some(pitch.value);
                                 st.probability = probability.as_ref().map(rmod);
                             }
                             ItemKind::Mixer { params: ps } => {
@@ -1067,6 +1105,18 @@ impl Player {
                 self.smoothed[i] = 0.0;
             }
         }
+        for (cue, fade) in self.params.take_stops() {
+            let Some((_, seqs)) = self.bank.cues.iter().find(|(n, _)| *n == cue) else { continue };
+            for &si in seqs {
+                if self.seqs[si].playing {
+                    self.seqs[si].t = self.seqs[si].duration + 1.0;
+                }
+                for v in self.voices.iter_mut().filter(|v| v.owner.0 == si && !v.done) {
+                    v.stopping = true;
+                    v.release = v.gain.max(1e-3) * dt / fade.max(dt);
+                }
+            }
+        }
         for cue in self.params.take_triggers() {
             let Some((_, cands)) = self.bank.cues.iter().find(|(n, _)| *n == cue) else { continue };
             if cands.is_empty() {
@@ -1099,6 +1149,7 @@ impl Player {
 
         let nch = self.channels.len();
         let mut gain_mul = vec![1.0f32; nch];
+        let mut pitch_mul = vec![1.0f32; nch];
         let mut overrides: Vec<(usize, Target, f32)> = Vec::new();
         let mut starts: Vec<(usize, usize, f32)> = Vec::new();
         let mut releases: Vec<(usize, Option<usize>)> = Vec::new();
@@ -1193,7 +1244,8 @@ impl Player {
                                 let v = m.m.eval(t_item, self.value(m.bind));
                                 match (target, st.channel) {
                                     (Target::ChannelGain, Some(c)) => gain_mul[c] *= v.max(0.0),
-                                    (Target::ChannelGain, None) => {}
+                                    (Target::ChannelPitch, Some(c)) => pitch_mul[c] *= v.max(0.0),
+                                    (Target::ChannelGain | Target::ChannelPitch, None) => {}
                                     (t, c) => overrides.push((c.unwrap_or(usize::MAX), *t, v)),
                                 }
                             }
@@ -1207,7 +1259,10 @@ impl Player {
                         let eval =
                             |m: &Option<RMod>, d: f32| m.as_ref().map_or(d, |m| m.m.eval(t_item, self.value(m.bind)));
                         let gain = eval(&st.gain, 1.0);
-                        let pitch = eval(&st.pitch, 1.0);
+                        let pitch = match (st.auto_pitch, x) {
+                            (Some(recorded), Some(x)) => x / recorded.max(1e-6),
+                            _ => eval(&st.pitch, 1.0),
+                        };
                         if looping {
                             match st.voice {
                                 Some(v) if v < self.voices.len() && self.voices[v].owner == (si, ii) => {
@@ -1296,6 +1351,7 @@ impl Player {
         for (c, ch) in self.channels.iter_mut().enumerate() {
             let target = ch.gain_static * gain_mul[c];
             ch.dgain = (target - ch.gain) / BLOCK as f32;
+            ch.pitch = pitch_mul[c];
             for p in &mut ch.plugins {
                 // Back to static values unless automated below.
                 for k in 0..p.plugin.fields.len() {
@@ -1320,7 +1376,7 @@ impl Player {
                         p.set(field, v);
                     }
                 }
-                Target::ChannelGain => {}
+                Target::ChannelGain | Target::ChannelPitch => {}
             }
         }
         let sr = self.sr;
@@ -1348,7 +1404,10 @@ impl Player {
             }
         }
         let gain = st.gain.as_ref().map_or(1.0, |m| m.m.eval(t, self.value(m.bind)));
-        let pitch = st.pitch.as_ref().map_or(1.0, |m| m.m.eval(t, self.value(m.bind)));
+        let pitch = match st.auto_pitch {
+            Some(recorded) => (item.start + t * (item.end - item.start)) / recorded.max(1e-6),
+            None => st.pitch.as_ref().map_or(1.0, |m| m.m.eval(t, self.value(m.bind))),
+        };
         let channel = st.channel;
         let pick = self.rng.next() as usize % waves.len();
         let clip = waves[pick].clone();
@@ -1417,11 +1476,17 @@ impl Player {
                 0.0
             };
             let out = s * v.gain;
-            match v.channel {
-                Some(c) => self.inputs[c] += out,
-                None => self.inputs[master] += out,
-            }
-            v.pos += v.step;
+            let pitch = match v.channel {
+                Some(c) => {
+                    self.inputs[c] += out;
+                    self.channels[c].pitch
+                }
+                None => {
+                    self.inputs[master] += out;
+                    1.0
+                }
+            };
+            v.pos += v.step * pitch as f64;
             if v.pos >= len as f64 {
                 if v.clip.looping {
                     v.pos -= len as f64;
@@ -1548,6 +1613,7 @@ mod tests {
                 gain: ModValue::constant(1.0),
                 pitch: ModValue::constant(1.0),
                 probability: None,
+                auto_pitch: false,
             },
         };
         let bank = Bank {
@@ -1604,6 +1670,7 @@ mod tests {
                 gain: ModValue::constant(1.0),
                 pitch: ModValue::constant(1.0),
                 probability,
+                auto_pitch: false,
             },
         }
     }

@@ -1398,6 +1398,10 @@ fn main() -> Result<()> {
                                 last_shift_up: v[9] > 0.5,
                                 cruising: v[10] > 0.5,
                                 top_gears: v[11] > 0.5,
+                                // The pedal and the road speed (m/s → mph, signed by the gear) stand in.
+                                gearbox_throttle: v[2],
+                                transmission_mph: v.get(4).copied().unwrap_or(0.0).abs() / 0.447_04
+                                    * if v.get(3).is_some_and(|g| *g < 0.0) { -1.0 } else { 1.0 },
                             });
                             (
                                 [v[0], v[1], v[2], v.get(3).copied().unwrap_or(1.0), v.get(4).copied().unwrap_or(0.0)],
