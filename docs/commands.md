@@ -125,6 +125,10 @@ MW_TRAFFIC_LAMP_SHOTS=<dir>,2.5,12 ./target/release/mostrusted --drive 911 --uni
 # Collectables and Speed Points (freeroam.rs): a speed camera, a billboard and a gate; TEST RESULT freeroam ...
 ./target/release/mostrusted --drive 911 --units 12 --mute --no-traffic --test freeroam --profile <scratch>/p.cfg --screenshot <scratch>/fr.png
 ./target/release/mwtool placement-check --top 10             # placements vs the collision under them, per layer / model
+#   --floating: trees / cards / props / groundcover above every drawn surface (static view clusters, then per camera
+#   zone by drawing rule; MW_FLOAT_NEAR=300 range, MW_FLOAT_ZONES=1 per zone, MW_FLOAT_DIFF=<zone> lists, MW_FLOAT_CSV=f)
+# World view (zone_view.rs): default = the camera zone's backdrop + groundcover, main geometry of the zone and its
+# neighbours, as the game swaps them; --composed-backdrop = one backdrop per place, all main geometry (before 2026-10-19)
 ./target/release/mwtool terrain-check --top 30               # drawn ground above road meshes (terrain through the road), ranked
 #   --all-passes / runtime MW_ALL_PASSES=1: also the models whose pass mask (Model +0x19) skips the main view (A/B)
 #   only roads drawn at the same time count (LOD shells, --scale 1.5); --only main|lod|lod-ground|backdrop|shadow,

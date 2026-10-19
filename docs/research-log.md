@@ -73,6 +73,61 @@ Follow-up of the 2026-10-16 entry (user: "terrain still sticks through the road 
   road with a lamp post or tree beside it (planar reflection without the road's own props: bit 8), and a tree of
   the 0x0b models (no shadow) once identified by position.
 
+### 2026-10-19: floating trees at the tunnel exit to the airfield: the game swaps backdrop and groundcover per zone
+User play test 2026-10-16: "some trees and foliage float near the street exit leading to the large airport area".
+- **Finding the place**: new `mwtool placement-check --floating` (`float_check.rs`) records every surface over each
+  tree / alpha card / prop / groundcover base (main LOD0 by pass mask, every backdrop model whole with its listing
+  zones, the composed backdrop, collision) and reports what floats (nearest drawn surface more than 1 m below the
+  base). The airfield is the arena 527914 zones (36/37/39-44/46/55/57, x -3300..350, z -5800..-1800). The road
+  from the canyon (zones 208/700) runs through a tunnel under a hill (zone 43, road y 48, ceiling 57.7, hilltop
+  y ≈ 100) and leaves it westward into zone 42 towards the airfield: the "street exit". Above the portal stand
+  unit 43's trees (`a97b9688`, base ~98-100) and the groundcover collection `e557779c` (listed by 36-57 and 42).
+  The only ground there: unit 43's pass-mask stand-in `79c9fc10` (48 m triangles, not drawn since 2026-10-16) and
+  the backdrop tile `15f3021b` (20 m triangles, y 99.9) listed by 42 and the airfield zones, not by 43. The
+  composition (2026-10-04) draws zone 43's view over zone 43's polygon: `b6dd1f32` at y 69.6, 30 m under the trees.
+  Seen from zone 42 the trees and sprites hung in the sky (`extracted/float/exit_full_ab.png`, top). Not the
+  stand-in removal: with `MW_ALL_PASSES=1` the coarse stand-in hill covers the portal rock instead.
+- **The rule, from the code** (decomp.md "Streaming zone and backdrop swap"): `FUN_00549fb0` builds the stream
+  list = the focus zone + all its neighbours; `FUN_005573f0` on a zone change removes the old zone's backdrop
+  instances (`FUN_00556a60`) and groundcover collections (`FUN_0043ac80`) and inserts the new zone's
+  (`FUN_00556980`: `InstanceList` entries from the always-loaded count to the end; `FUN_0043ac10`: the 64-slot
+  groundcover list). So the game draws the main geometry of Z and its neighbours, Z's backdrop and Z's
+  groundcover only. The per-place composition cannot reproduce a zone whose own view never sees its area (the
+  tunnel zone 43): from zone 42 the game shows 42's tile over it.
+- **Data check** (`placement-check --floating`, per camera zone, placements within 300 m of the zone, summed over
+  the 169 zones; non-groundcover / groundcover / road samples with terrain 5 cm-3 m above them): static composition
+  9,524 / 157,078 / 581; game rule (Z + neighbours' main, Z's backdrop) with the neighbours' groundcover
+  10,651 / 397,849 / 605; the same with only Z's groundcover (the code's rule) 10,651 / 3,053 / 605. The extra
+  non-groundcover floats of the game rule are placements its zone cannot see (checked for zone 700: unit 42's
+  hill trees behind the canyon ridge). Zone 42 alone: composition 7 / 10,387 floating, game rule 15 / 0.
+- **Fix** (`zone_view.rs`, default; `--composed-backdrop` restores the old view): the loader tags each placement
+  root with its unit and sends every backdrop model once, whole, tagged with the units listing it (plus its composed
+  cut); with the focus in zone Z a unit's placements show while it is Z or a neighbour, a backdrop model while Z
+  lists it; groundcover shows Z's collections only (`groundcover.rs`, before: Z and its neighbours, a model
+  decision). The composition is still built (aerial fallback); whole backdrop solids add 0.5 M vertices (0.90 M
+  whole vs 0.40 M composed), peak VRAM +~40 MiB at airfield-exit.
+- **Model decisions**: focus = the player's car, else the camera; nearest zone outside the polygons; immediate
+  swap; props with physics and collision stay everywhere; **aerial fallback**: without a car and with the camera
+  more than 25 m above the collision under it (`zone_view::AERIAL`) the composed backdrop and all main geometry
+  are shown. A zone's backdrop is what is visible from its ground: from 60-400 m up (city-lod-check,
+  airfield-arch, water-industrial at 70 m) the zone view shows holes to the horizon where far hills are only
+  main geometry of units the zone does not stream; with 100 m water-industrial still lost its far hills.
+- **Verification**: Before / after stacks (`--composed-backdrop` top) in the worktree's ignored
+  `extracted/float/`: `exit_full_ab.png` (the place: floating trees and sprites gone, hill over the portal drawn),
+  `vp2/drive-911_ab.png`, `vp2/downtown-plaza_ab.png` (drive mode, focus = car: unchanged), `vp2/g4.png`
+  (road-cliff, a drive out of the tunnel: unchanged), `vp/g1.png` (terrain-road-2, water-gorge: unchanged but a few
+  more sprites on the gorge's slope), `vp/g2.png`, `vp/g3.png` (aerial views take the fallback: identical).
+  VRAM: +250 MiB at `--units 15` (1264 -> 1512 MiB peak; the whole tiles and 84 more textures on the full map:
+  3511 -> 3595 textures, 27395 -> 27626 models); with parallel agents on the 8 GB GPU full-map runs of either mode
+  hit wgpu out-of-memory now and then.
+- **Open / captures that would confirm**: a Steam F12 screenshot of the original at the airfield-exit viewpoint
+  (driving west out of the tunnel at (-90, 50, -2036), looking back east at 13 h): the hill over the portal with
+  trees standing on it and no sprites in the sky; the same from inside zone 700 (canyon) to see that hill absent.
+  Not traced: the caller of `FUN_005586e0` (whether the focus is the car or the camera) and the neighbour priority
+  constants; compounds `6a66316a` on the airfield stand 8-11 m above the runway (skinned mesh 58-64 m over a 50 m
+  runway, not identified); `placement-check --floating` static clusters elsewhere (unit 6 / 29 hills) were not
+  looked at under the new rule.
+
 ### 2026-10-16: car collision effects: glass, sparks, dust and debris from the game's rules
 User request (session 10): "particle effects for crashing are missing somewhat, stuff like broken glass when crashing
 into traffic vehicles, and other crash particles in general". Before: every body contact of a race car played the

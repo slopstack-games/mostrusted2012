@@ -69,8 +69,10 @@ InstanceList ──> Model ──(LOD state)──> Renderable ──(per mesh)�
 - **InstanceList backdrop**: entries past the always-loaded count are the unit's backdrop, the world-space
   geometry the game draws while the player is *in that unit* (terrain tiles, building blocks, water planes,
   horizon) at the LOD that suits the distance; other units list other tiers of the same tiles. Drawing every
-  unit's backdrop stacks the tiers. `mw_assets::backdrop` composes one backdrop per place from the zone that
-  owns it (research log 2026-10-04, night). Water is per zone too: far zones list coarse planes (a rectangle at
+  unit's backdrop stacks the tiers. The game inserts only the current streaming zone's entries (always-loaded
+  count to array size, `FUN_00556980` / `FUN_00556a60`, decomp.md "Streaming zone and backdrop swap");
+  `zone_view.rs` shows them by the camera's zone. `mw_assets::backdrop` composes one backdrop per place from
+  the zone that owns it (research log 2026-10-04, night; `--composed-backdrop`). Water is per zone too: far zones list coarse planes (a rectangle at
   y 13.1 over the gorge whose own zones list its water at y −36.8; a sloped sea plane up to y 30.4 over the
   coastal industrial area) that flood a zone that does not list them (research log 2026-10-16).
 - **ZoneList (0x90)**, the only resource in `HAWAII/PVS.BNDL`: one zone per track unit. Header: ptr points

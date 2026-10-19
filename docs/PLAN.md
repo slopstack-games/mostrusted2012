@@ -115,7 +115,9 @@ Make a static frame look like the game.
      169 stacked every tier ("buildings on streets, mountains"). `ZoneList` (PVS.BNDL) is decoded and
      `mw_assets::backdrop` keeps, per place, what the owning zone lists. Still open: cut faces where zone
      views meet. 2026-10-16: water follows the same rule (no fill-in from other zones' far planes, which
-     flooded the industrial coast and the gorge); `mwtool water`.
+     flooded the industrial coast and the gorge); `mwtool water`. 2026-10-19: replaced by the game's per-zone
+     swap (`zone_view.rs`, decomp.md "Streaming zone and backdrop swap"); the composition stays for aerial
+     free cameras and `--composed-backdrop`.
 4. **Shader families: G-buffer inputs** `[~]` (WGSL in `layered.wgsl`, selected by `materials::Look`). Each
    family computes exactly what the game's G-buffer pass writes (normal, roughness, sqrt albedo, AO, F0,
    Fresnel); today these feed Bevy's PBR lighting, later the ported deferred pipeline (item 7). Per-family
@@ -343,10 +345,9 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
 1. Load and *unload* track units by distance; budget memory (bundles are dropped after decode already).
 2. Partial bundle reads: load only needed resources instead of whole files (offsets are in the TOC).
 3. `[~]` Model LOD distances: `[x]` the game's per-placement LOD choice and draw distance (2026-10-10, `lod.rs`,
-   decomp.md "Model LOD and draw distance"; open: SHADOW renderables, car LODs); `[ ]` `HAWAII/PVS.BNDL` visibility. The ZoneList is decoded
-   (zones = track units, polygons, neighbours); a streaming world would load the current zone and its
-   neighbours and draw only the current zone's backdrop (`--backdrop-zone N` shows one), instead of the
-   static composition used while everything is loaded.
+   decomp.md "Model LOD and draw distance"; open: SHADOW renderables, car LODs); `[x]` `HAWAII/PVS.BNDL` visibility
+   (2026-10-19, `zone_view.rs`): the focus zone's neighbours' main geometry, only its backdrop and groundcover
+   (`FUN_00549fb0`, `FUN_005573f0`), shown by visibility while everything stays loaded.
 4. GPU instancing for repeated models; profile with Tracy (`bevy/trace_tracy`).
 5. **Stream around the player** (user, 2026-10-09: "just load what is needed around the player instead of the
    whole map and everything"): load and unload track units, props, groundcover, traffic models and world

@@ -1419,9 +1419,12 @@ closing speed (2.235 m/s = 5 mph) as before.
   shader `Time` is taken as seconds (not read live); the 20000-sprite / 300-record caps are not applied; the
   range, facing and in-front test use the view being drawn (the game builds once a frame for the main
   camera); the group test stays on the CPU (`groundcover.rs`).
-- **Not traced**: who fills the 64-slot list at `+0x2e94` (which track units' collections are resident). The
-  data fit "the player's zone and its `ZoneList` neighbours": at most 63 distinct collections over every
-  zone's neighbourhood. The runtime uses that rule (`groundcover.rs`, model decision).
+- **The filler** (2026-10-19, "Streaming zone and backdrop swap"): `FUN_005573f0` swaps the current zone's
+  collections in and out of a 64-slot `{collection, offset}` list with the count at +0x200, the layout
+  `FUN_008d6900` copies (`FUN_0043ac10` adds, `FUN_0043ac80` removes); that the list it fills is the one at
+  `+0x2e94` follows from the layout, the object was not followed. So only the current zone's collections
+  are drawn (`groundcover.rs`); until 2026-10-19 the runtime also drew its neighbours' (a model decision from
+  the 63-collection fit).
 
 ## Car spot effects (`FUN_005b28d0`, 2026-10-09)
 
@@ -1889,6 +1892,36 @@ object), 1169 dynamics of `79a1dfbc` and a dozen others that are one 0.24 m `Dif
 flat 2-triangle `Diffuse_Opaque` quads, and six 50–150 m `World_Diffuse_Specular_Illuminance` sheets around
 (1500, 20, 1500); mask 0x0f: a road strip `ecc052cf` and flat quads below ground. None is drawn here; whether
 another system draws them is not known.
+
+## Streaming zone and backdrop swap (2026-10-19, ported in `zone_view.rs` and `groundcover.rs`)
+
+The world object (`this`, the same one whose zone helpers `FUN_00548ab0` / `FUN_0054b340` the front end uses,
+"Boot, loading screens") keeps a list of loaded units at +0xe60ac (16-byte entries `{0, unit id, …, status
+byte +0xC}`, count +0xe60b0; status 4 = loaded; slot resources at +0xe6808 / +0xe680c, 8 bytes per slot).
+- **Stream list** (`FUN_00549fb0`, called from `FUN_005586e0(pos, vec)` with the output at +0xc40b0): the zone
+  holding the position (`FUN_00548ab0`; when none, the last position that had one, +0xe0), then **every**
+  neighbour of that zone (`count = Zone+0x43 + 1`; per neighbour its flag bits 1 and 2 are copied, and a
+  priority from the distance to the neighbour (`FUN_0055f160`) and the second vector's direction, with the
+  constants `DAT_010c45a8` / `DAT_010c45ac` per flag and `DAT_010c45b0`, not read). Entry 0 (+0xc40bc) is the
+  current zone, +0xc40b8 its `ZoneList` record (district at +0x38).
+- **`FUN_005573f0`** (after every stream-list update, and from the loading state machine `FUN_005585d0`):
+  requests each listed unit (`FUN_00532de0(0, id, id)`, the district and arena bundles with kinds 1 and 2), then,
+  when the current zone differs from the previous one (+0xef888 / +0xef88c) and its unit's status is 4:
+  - removes the old zone's backdrop (`FUN_00556a60`: every `InstanceList` entry from the always-loaded count
+    +0x08 to the array size +0x04 that was inserted, through `FUN_00553930`) and its groundcover collections
+    (`FUN_0043ac80` per pair of the unit's list at resource +0x34 / +0x38);
+  - inserts the new zone's backdrop (`FUN_00556980`: the same entry range, each through `FUN_00553810`, the
+    culling-structure insert of "Model pass mask") and its groundcover collections (`FUN_0043ac10`: first free
+    of the 64 `{collection, offset}` slots, count at +0x200, the list "Groundcover drawing" reads; +0x204 /
+    +0x208 sum per-collection counts).
+
+So the main view draws the main (always-loaded) instances of the current zone's unit and its neighbours' units,
+and the backdrop and groundcover of **the current zone only**. Port (`zone_view.rs`, default; the per-place
+composition stays behind `--composed-backdrop`): every placement root is tagged with its unit, every backdrop
+model (sent once, whole) with the units listing it; with the camera in zone Z (nearest zone outside the
+polygons) a unit's placements show while it is Z or a neighbour, a backdrop model while Z lists it, and
+groundcover collections while Z lists them. Model decisions: the focus is the camera (the caller's two vectors
+not traced); the swap is immediate (no wait for status 4); props with physics and collision stay everywhere.
 
 ## Sky, sun and shadows
 

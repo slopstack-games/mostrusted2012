@@ -11,6 +11,7 @@ mod compare;
 mod crack;
 mod damage;
 mod events;
+mod float_check;
 mod lods;
 mod memscan;
 mod placement;
@@ -496,6 +497,11 @@ enum Cmd {
         /// Groundcover only: per group, whether the zone that owns its place lists its collection.
         #[arg(long)]
         owners: bool,
+        /// Trees, cards, props and groundcover whose base floats above every drawn surface (main LOD0 in the
+        /// main view, composed backdrop), clustered, with the skipped stand-ins and collision under them
+        /// (`float_check.rs`).
+        #[arg(long)]
+        floating: bool,
     },
     /// Terrain through the road: drawn ground (main terrain / plot meshes at every LOD, the composed backdrop)
     /// above a road mesh at the same spot, ranked by area (`terrain_check.rs`).
@@ -949,9 +955,11 @@ fn main() -> Result<()> {
         Cmd::Water { wash, step, top, all_backdrops } => {
             water::run(&AssetStore::new(game)?, &wash, step, top, !all_backdrops)?
         }
-        Cmd::PlacementCheck { bundles, top, groups, view, column, owners } => {
+        Cmd::PlacementCheck { bundles, top, groups, view, column, owners, floating } => {
             let store = AssetStore::new(game)?;
-            if owners {
+            if floating {
+                float_check::run(&store, top)?
+            } else if owners {
                 placement::owners(&store)?
             } else if let Some(c) = column {
                 placement::column(&store, &c)?
