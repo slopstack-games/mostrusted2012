@@ -6,6 +6,7 @@
 mod ai;
 mod ai_driver;
 mod audio;
+mod audio_tap;
 mod bench;
 mod bodyshop;
 mod camera;
@@ -1069,6 +1070,7 @@ fn main() -> anyhow::Result<()> {
         ))
         .add_plugins(car_lights::CarLightsPlugin)
         .add_plugins(audio::GameAudioPlugin)
+        .add_plugins(audio_tap::AudioTapPlugin)
         .add_plugins(music::MusicPlugin {
             enabled: std::env::var("MW_MUSIC").is_ok_and(|v| v == "1")
                 || (!cli.no_music

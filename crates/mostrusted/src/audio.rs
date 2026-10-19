@@ -196,6 +196,12 @@ pub struct EngineSound {
 #[derive(Resource)]
 pub struct PendingEngine(pub Option<EngineAudio>);
 
+/// The gain our model put on the player's engine bank over its data level (`EngineBank::normalisation`; 1 for
+/// the Ginsu layers). The game plays the engine and every other sound at their data levels through its buses, so
+/// the sounds placed against the engine (the vehicle sound bank, `sfx.rs`) follow it.
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct PlayerEngineLevel(pub f32);
+
 fn engine_sound(
     mut commands: Commands,
     pending: Option<ResMut<PendingEngine>>,
@@ -204,8 +210,16 @@ fn engine_sound(
 ) {
     let (Some(mut pending), Ok(car)) = (pending, cars.single()) else { return };
     if let Some(audio) = pending.0.take() {
+        let level = match &audio.voice {
+            EngineVoice::Bank(b) => b.normalisation,
+            EngineVoice::Layers(..) => 1.0,
+        };
+        commands.insert_resource(PlayerEngineLevel(level));
         let driver = match (&audio.voice, &audio.bank_params) {
-            (EngineVoice::Bank(b), Some(p)) => Some(EngineDriver::new(b, p.clone())),
+            (EngineVoice::Bank(b), Some(p)) => {
+                crate::audio_tap::add_engine(Player::new(b.bank.clone(), p.clone()));
+                Some(EngineDriver::new(b, p.clone()))
+            }
             _ => None,
         };
         let legacy = audio.legacy_params.clone();

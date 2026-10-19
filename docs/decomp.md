@@ -976,7 +976,12 @@ Details and numbers in the research log ("sounds from the play test").
   `SurfaceSounds` (`FUN_0054a5d0`) fills one of two road slots (+0x1968, 0x20 bytes each, per-side wheel counts);
   a new slot starts the road sequence (+0x34 player, +0x3c others) with the "Traction" slot parameter and fade-in
   +0x80, a lost one releases it over +0x84; transitions +0x70 / +0x74 / +0x78 (counts +0x8c / +0x8e / +0x90) and
-  bumps +0x68 / +0x6c (suspension × +0x7c) are one-shots; skids `FUN_0058f6d0`.
+  bumps +0x68 / +0x6c (suspension × +0x7c) are one-shots; skids `FUN_0058f6d0`, called at the end once per road
+  slot (records at +0x19a8, 0x14 bytes), so two slots play two skid sets; `FUN_0057bbc0` keeps a slot's skid voices
+  across a set change with the same `Drift` sequence and stops them (0.15 s) in the air (research log 2026-10-19
+  "skids waaaay too loud").
+- **Engine level against the buses**: the bus gains hold relative to the engine's data level; our player engine
+  bank is normalised, so the vehicle sound bank follows that gain (only downwards; `sfx.rs` `bank_level`).
 - **Ginsu player** `FUN_00aaf0a0`: see the research log 2026-10-04 and 2026-10-19 (the window W is still unknown).
 
 ## Exhaust pops and backfires (2026-10-09)

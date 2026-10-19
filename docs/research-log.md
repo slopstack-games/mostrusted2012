@@ -10,6 +10,60 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-19: skids "waaaay too loud": the engine's normalisation, not duplicate voices
+User play test after the sound merge (fdbb6c6 / 7602f68): drift sounds far too loud. Measured in the runtime path
+with a new offline tap (`MW_AUDIO_TAP`, docs/commands.md "Audio": the player's engine bank and vehicle bank rendered
+in game time next to the live ones, plus the sounding voices), on the build before the merge (b4dec4f + the tap)
+and after; analysis scripts in the worktree's git-ignored `scratch/py/` (`tap.py` per 0.5 s, `classes.py` per
+situation). 911 Carrera S, vehicle bank against the engine (energy over each situation):
+
+| situation | before the merge | after the merge | after this fix |
+|---|---|---|---|
+| drift (`--test drift`, lateral intensity > 0.9, ~33 mph) | −0.6 dB | −7.1 dB | −15.8 dB |
+| the same on asphalt (`--track-surface 8`) | (one set) | −7.7 | −16.2 |
+| braking (`--test brake`, braking intensity > 0.25) | −0.7 | −4.6 | −12.1 |
+| rolling 55–70 mph (road + wind) | −16.0 | −22.4 | −31.0 |
+| light wheelspin (`--test accel`, spin 0.15–0.3) | −14.2 | −22.1 | −30.8 |
+
+- **No duplicates.** On a single surface one set's `Drift` (`…0f4eae`) and `Spin` (`…0f4ed0`) sound once each
+  (voice list of the tap); the three `0f4eae` entries of the bank belong to three surface sets behind their own
+  gates, and the `RaceCar[1]` sets (3, 5, 7) are not under the 911 on the test track, downtown (set 14) or the
+  runway (set 1). The merge made the skids ~7 dB *quieter* against the engine (the bus gain +7.2 dB replaced the
+  model gains 1.4 × 4 = +15 dB).
+- **The game's structure is ours.** `FUN_0058fe10` ends by calling `FUN_0058f6d0` once per road slot (two skid
+  records at +0x19a8, 0x14 bytes: set, car, voice, voice, state), each with its slot's `SurfaceSounds`: so two
+  surfaces under the car play two skid sets in the game too, and a set sharing the other slot's `Drift` sequence
+  plays it twice. Per record: `Drift` (+0x1c) and `Brake` (+0x0c), swapped for `Spin` (+0x44) while
+  `FUN_00573d70` (|vehicle +0x2d58| > 0.01) is false; `FUN_0057bbc0` (per frame) stops both over 0.15 s when the
+  wheel leaves the ground or the slot's set changes to one with another `Drift` sequence (+0x14 of its handle),
+  else they carry on; `FUN_00571840` stops them when the slot empties. `FUN_0058b840` starts a sequence with the
+  car's id, the car and its reference wheel (+0x1a78) as parameters; no check against the other slot.
+- **Cause: the engine plays 8.5 dB under its data level.** The bus gains place every effect at data level × its
+  chain over the engine's route ("Player Car"), which holds only while the engine also plays at its data level. The
+  player's engine bank is normalised (`EngineBank::normalise`, a model: full throttle at 75 % rev to −10.5 dBFS);
+  the 911 Carrera S renders at −1.9 dBFS at data level, so it is turned down 8.5 dB and every bus-placed sound is
+  8.5 dB too loud against it. Over the 93 cars the normalisation runs −8.7 .. +18.3 dB (median −2.6; the 911,
+  the Charger R/T (−7.0) and the Integrale among the hottest banks).
+- **Fixed** (`sfx.rs` `bank_level`, `sfx_player::Params::set_level`, `EngineBank::normalisation`, resource
+  `audio::PlayerEngineLevel`): the vehicle sound bank follows the player's engine normalisation, only downwards.
+  Model decision: an engine bank under the normalised level (gain > 1) may lack the part of its mix that leaves
+  through sends with no target in the bundle (the reason the banks were normalised), so its data level is not
+  trusted and the bank stays at data level. `MW_SFX_ENGINE_LEVEL=0` is the A/B.
+- **Open.** The same mismatch holds for every other sound placed by the bus gains (the player's collisions
+  `player_sfx.rs`, world props and landings `world_sfx.rs`, other cars' horns / crashes / skids `car_sfx.rs`, AI
+  and police tyres, and the AI / traffic engines at data level): left as they are (the props were reported
+  inaudible before the bus gains; in the game the "Player Collisions" route ducks "Player Sub", the engine's bus:
+  `Compressor_Send` 556003, compressor −4.5 dB 3:1, attack 0). Not ported: the buses' EQs and compressors (the
+  "Player Skids" bus: EQ 150 Hz −8 dB / 718 Hz +3.6 / 5 kHz +2.3, compressor −5.4 dB 2.85:1, attack 0.076 s,
+  release 0.65 s, mode 1; the side chains: "Player Car" → "World", "Dominant 3D" → "Player PM", "Player
+  Collisions" → "Player Sub", "Speech" → "Final", "Music" → "Master World"). What `RaceCarEntities.RaceCar[1]`
+  binds to in the game (ours: the player's values). Our drifts sit at the top of the skid axis (lateral 1.0 for
+  most of the drift test; the game's typical slide is 0.25–0.5, decomp.md "Tyre skid sound intensities").
+- **Capture that would settle it**: the original's own audio stream (`mwtool capture`, music off, traffic off if
+  possible) in the 911 Carrera S: a steady 4000 rpm cruise in 3rd for 5 s, then a handbrake drift held 3 s at the
+  same rpm on asphalt, then a hard stop from 60 mph; the skid-to-engine level at equal rpm settles the engine's
+  data level against the bus mix (and whether the drift ducks the engine).
+
 ### 2026-10-19: sounds from the play test: traffic whine, missing whines, inaudible props, glitches, surface sounds
 User play test items ("Sounds still not right") plus the surfaces agent's per-wheel surface sounds. Offline checks
 with `mwtool traffic-sound`, `engine-sound --trace`, `vehicle-sound --surface`; analysis scripts in the worktree's

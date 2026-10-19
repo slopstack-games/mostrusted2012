@@ -276,6 +276,13 @@ sequences' effect items off, `MW_SOUND_TRACE=<file>` logs what the engine sound 
 back), `MW_LISTENER_DT=current` the old listener-velocity step (A/B of the doppler jitter), `MW_LISTENER_TRACE=<file>`
 logs the listener's velocity per frame; `MW_SFX_TRACE` lines end with each wheel's surface sound set (−1 in the air).
 `mwtool vehicle-sound out.wav --surface <index> [--tyre-class 0..4]` renders the tyre / road sounds of one surface.
+`MW_SFX_ENGINE_LEVEL=0` leaves the vehicle sound bank at the data level instead of following the engine bank's
+normalisation (A/B, `sfx.rs` `bank_level`).
+```sh
+# Offline render of the player's engine (channel 0) and vehicle sounds (channel 1) in game time, also in muted /
+# --test runs (32-bit float .wav), plus <file>.voices (the bank's sounding voices every 0.25 s)
+MW_AUDIO_TAP=<dir>/tap.wav MW_SFX_TRACE=<dir>/sfx.txt tools/t --drive 911 --test drift --mute
+```
 
 ## Windows
 

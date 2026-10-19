@@ -410,6 +410,8 @@ pub struct Params {
     stop: AtomicU32,
     /// Set by the player once a cue has played and nothing sounds any more.
     finished: std::sync::atomic::AtomicBool,
+    /// A gain on the whole output, set at run time ([`Params::set_level`]).
+    level: AtomicU32,
 }
 
 impl Params {
@@ -425,7 +427,19 @@ impl Params {
             triggers: Mutex::new(Vec::new()),
             stop: AtomicU32::new(f32::NAN.to_bits()),
             finished: Default::default(),
+            level: AtomicU32::new(1f32.to_bits()),
         }
+    }
+
+    /// A gain on the bank's whole output (1 = the bank's own level), followed over 50 ms.
+    pub fn set_level(&self, gain: f32) {
+        if gain.is_finite() && gain >= 0.0 {
+            self.level.store(gain.to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    fn level(&self) -> f32 {
+        f32::from_bits(self.level.load(Ordering::Relaxed))
     }
 
     pub fn names(&self) -> &[String] {
@@ -669,6 +683,8 @@ pub struct Player {
     rank: Vec<usize>,
     /// Seconds rendered (control-rate clock).
     time: f32,
+    /// [`Params::set_level`], smoothed.
+    level: f32,
     /// Per-sample channel inputs; the extra last slot is the master.
     inputs: Vec<f32>,
     voices: Vec<WaveVoice>,
@@ -861,6 +877,7 @@ impl Player {
             },
             order,
             time: 0.0,
+            level: 1.0,
             voices: Vec::new(),
             // Each player draws its own sequence (a fixed start would send every horn down the same branch).
             rng: Rng((0x2545_f491 ^ PLAYERS.fetch_add(1, Ordering::Relaxed).wrapping_mul(0x9e37_79b9)) | 1),
@@ -896,10 +913,21 @@ impl Player {
         self.voices.len()
     }
 
+    /// The sounding wave voices (diagnostics): (bank sequence index, sequence id, item index, gain).
+    pub fn voices(&self) -> Vec<(usize, u64, usize, f32)> {
+        self.voices
+            .iter()
+            .filter(|v| !v.done)
+            .map(|v| (v.owner.0, self.bank.sequences.get(v.owner.0).map_or(0, |s| s.id), v.owner.1, v.gain))
+            .collect()
+    }
+
     fn control(&mut self) {
         let dt = BLOCK as f32 / self.sr;
         self.time += dt;
         let warming = self.time < 0.2;
+        let level = self.params.level();
+        self.level = if warming { level } else { self.level + (level - self.level) * (dt / 0.05).min(1.0) };
         for i in 0..self.smoothed.len() {
             let target = self.params.get(i);
             let tau = self.params.smoothing(i);
@@ -1280,7 +1308,7 @@ impl Player {
                 self.inputs[master] += x;
             }
         }
-        let out = self.inputs[master] * self.bank.master_gain * MIX_SCALE;
+        let out = self.inputs[master] * self.bank.master_gain * self.level * MIX_SCALE;
         self.inputs.iter_mut().for_each(|v| *v = 0.0);
         if out.is_finite() { out } else { 0.0 }
     }
