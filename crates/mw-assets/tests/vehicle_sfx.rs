@@ -38,6 +38,10 @@ fn cruise(mph: f32, slip_angle: f32, slip_speed: f32, brake: f32) -> VehicleInpu
     VehicleInput { speed_mph: mph, skid_wheel: Some(WheelSlip { slip_angle, slip_speed }), brake, handbrake: false }
 }
 
+/// The surface list's road asphalt (`mwtool surfaces`: index 8, `SurfacePhysics` 283001) and the stock tyre class.
+const ROAD_ASPHALT: usize = 8;
+const STOCK_TYRES: u8 = 2;
+
 #[test]
 fn vehicle_sounds_follow_the_physics() {
     let game = match GameDir::locate(None) {
@@ -45,7 +49,7 @@ fn vehicle_sounds_follow_the_physics() {
         Err(e) => return eprintln!("skipped: no game install ({e})"),
     };
     let store = AssetStore::new(game).expect("index the install");
-    let bank = store.vehicle_sfx_bank().expect("vehicle bank");
+    let (bank, surfaces) = store.vehicle_sfx_bank().expect("vehicle bank");
     assert!(bank.sequences.len() > 20, "{} sequences", bank.sequences.len());
     // Every wave decodes to more than its 47-sample PCM prefix (32 kHz streams used to stop there and loop
     // as a buzz: the "horn" in the tyre screech).
@@ -64,6 +68,10 @@ fn vehicle_sounds_follow_the_physics() {
     let tyre = store.tyre_sound_params().expect("TyreSoundParams");
     assert_eq!(tyre, TyreSoundParams::default(), "the built-in copy matches the data");
     let params = Arc::new(Params::new(bank.param_names()));
+    // All four wheels on road asphalt (surface 8, the city's roads) with stock tyres (class 2): the game plays that
+    // set's tyre and road sequences (`FUN_0054a5d0`; the runtime ramps the gate, `mostrusted::sfx`).
+    let set = surfaces.pick(Some(ROAD_ASPHALT), STOCK_TYRES).expect("road asphalt has a sound set");
+    params.set(&mw_assets::sfx::surface_gate(set), 1.0);
     let mut rig = Rig { driver: VehicleDriver::new(params.clone()), player: Player::new(bank, params) };
 
     let base = rig.run(1.5, &cruise(50.0, 0.0, 0.0, 0.0));
