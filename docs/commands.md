@@ -47,6 +47,18 @@ cargo fmt                                    # rustfmt.toml: max_width 120
 cargo build --release -p mw-probe --target i686-pc-windows-gnu    # needs mingw-w64-gcc + the rustup target
 tools/orig/orig launch --probe hello   # orig modules lists the game's DLLs; orig quit removes the copied DLL
 #   memory reads without ptrace: write ref/probe/hello/dump.req (`label base [offset ...] length`, docs/probe.md)
+# Capture helpers through the probe (docs/probe.md "Capture helpers"; the probe dir comes from `orig launch --probe`)
+./target/release/mwtool probe status              # raw probe commands: status, place, tp, car, repair, notraffic, poke / hold / peek, release, arm, script, log, stop
+./target/release/mwtool tp hodges-kerb100 [--kmh 100]   # the game's own placement (FUN_00647e00); spots in tools/orig/spots.txt, or -- x,ground_y,z,heading
+./target/release/mwtool tp --save <name> | --list | --raw -- x,y,z,h (move the bodies directly) | --hops 100 -- <a;b;spot> (raw hops)
+./target/release/mwtool car 911                   # the game's swap (FUN_006c2020): any car by id or name, owned or not
+./target/release/mwtool conditions --hour 13 --no-traffic --repair --nitrous 0   # --release lets the clock run again
+./target/release/mwtool inputs ref/x/inputs.csv 2.5:0,0.45,0,0,0 2.8:0,0,1,0,0   # seconds:steer(+ right),throttle,brake,handbrake,nitrous
+./target/release/mwtool capture kerb100a --probe --watch kerb.watch --script ref/x/inputs.csv --spot hodges-kerb100 --kmh 100   # one row per tick
+./target/release/mwtool capture kerbrest911a --probe --watch kerb.watch --script ref/x/inputs.csv --spot hodges-kerbrest --settle 4
+./target/release/mwtool surfaces --near=-2050,1000,700 --flat [--find 2] [--flat-tol 0.1] [--flat-heading 139.5]   # longest level straights
+./target/release/mwtool surfaces --near=-2050,1000,450 --flat --flat-kerb   # square approaches to kerbs (run-up, step, level after)
+./target/release/mwtool freeroam --at=-210,58,-2090   # every trigger volume holding a point
 # Drive the original yourself (tools/orig/orig --help): it runs headless in gamescope (always focused, input
 # only through gamescope's display, screenshots via gamescopectl); one-time: `tools/orig/orig setup` and set the
 # printed Steam launch option. Look at each screenshot before choosing the next input.

@@ -1,0 +1,9 @@
+# Teleport spots for the original (`mwtool tp <name>`, `mwtool capture --probe --spot <name>`) and for ours
+# (`mostrusted --spawn=x,y,z,heading`): name, x, ground y, z, heading in degrees (0 = +z, 90 = +x).
+# `mwtool tp --save <name>` appends the car's current place. Found with `mwtool surfaces --near ... --flat`
+# (docs/probe.md "Capture helpers"; research log 2026-10-19 "probe capture helpers").
+hodges-strip     -2199.00  102.40  1192.90  139.50  # Hodges Airfield: 468 m straight within 1.5 cm of level (concrete)
+hodges-kerb100   -2176.54  102.40  1194.07  232.20  # 40 m before a square 0.15 m kerb up (+ down 0.8 s later at 100 km/h); start with --kmh 100
+hodges-kerbrest  -2162.30  102.39  1205.07  232.20  # rest start 57 m before the same kerb
+tunnel-east       120.00   48.00  -2010.00  270.00  # in the tunnel west of the canyon, towards the airport (zone 43)
+airport-runway  -1908.80   50.03  -4321.90   48.50  # airport runway start, 1.5 km dead level; NOT reachable here: the game puts the car back

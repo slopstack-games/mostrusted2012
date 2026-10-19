@@ -10,6 +10,70 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-19: probe capture helpers: teleport, car swap, tick-exact scripted inputs; reproducible kerb runs
+User request: probe helpers for cleaner captures (teleport with saved spots, any car, scripted inputs per tick,
+fixed conditions, a flat test strip), verified by two identical runs at 100 km/h over a kerb and a replay in ours.
+Tools in docs/probe.md "Capture helpers" and docs/commands.md. Original run with the probe (4 launches, audio
+muted, save backed up to `ref/savebackup-2026-10-19-probe/` and restored byte-identical, controller setting
+untouched, game quit; the stored WirePlumber mute of the game's stream, left by `pactl` muting, cleared).
+- **Hooks**: the race car's "Update Car" `FUN_00904da0` is reached through `.rdata` slot 0x01023760 (found by
+  scanning the live snapshot for the address; the only reference); the "Car Swap Logic" behaviour's update
+  `FUN_00761d70` through 0x00fdb4d4 (its vtable at 0x00fdb4c8: [0] 0x758ba0, [3] the update, [6] 0x75d510 the
+  `JackSpots` registration). Tick and frame run on one thread (Wine tid 1652 both). The XInput poll runs on the
+  input thread (`FUN_0040f140`) and was not called at all while no pad was connected.
+- **Game functions used** (calling conventions from the disassembly): swap `FUN_006c2020` thiscall on the player
+  (`ret 0xc`; player = [G+0x2f3dc] + 0x10 + [[G+0x2f3dc]+0xa6b4] × 0x7f0, `FUN_00774650` / `FUN_006bf330`,
+  handle at player +0xa0, 0 here); repair `FUN_00844940` stdcall (`ret 4`); traffic off `FUN_008462a0`;
+  placement `FUN_00647e00` thiscall on G + 0x25690 (the manager's +0 holds G; `ret 0x20`), args as in the
+  trigger teleport `FUN_006e4770`: handle, position, direction (both vec4), speed in mph (streaming radius
+  max(200 m, mph × 0.44704 × 3 s), `.rdata` 0x00fb5024 = 200, 0x00fb69f0 = 3; 0x00fa9308 = 30 mph for triggers),
+  0, reason 0xf, flags 0, 0. Returns 1 when the target is resident (placed within a frame), 0 when it streams
+  first. The respawn record at manager + 0x20 + slot × 0x90 (+0x30 position, +0x40 direction, +0x84 flags) with the
+  reason at manager + 0x920 + 4 × slot; the free-roam start respawn is reason 6 (`FUN_006d0180`, flags 0x14).
+- **The airport is out of reach**: placing (native or raw) or driving into zone 42 (the airport arena 527914,
+  just west of the tunnel portal at x ≈ −160..−200) puts the car back on the free-roam start (reason 6) within a
+  second; the tunnel (zone 43) is fine. HSM nodes "Show Airport Required Dialog" (2253021..2253038, dialog
+  2253022) and "Is Entitled to Join Friend's Game" (`CanJoinAirportGameByFriendIndexBinding`) point to an
+  entitlement check for the airport (not traced: which flag, whether owning a pack lifts it). The airport runway
+  itself is 1.5 km dead level (surface 2 at y 50.03, heading 48.5°, `mwtool surfaces --near=-1500,-3800,1200 --flat
+  --find 2`), recorded as spot `airport-runway`.
+- **Test strip used**: Hodges Airfield (the hill airstrip by Interstate 92), 468 m within 1.5 cm at heading 139.5°
+  from (−2199.0, 102.40, 1192.9) (spot `hodges-strip`). The longest level straights elsewhere (asphalt): 628 m at
+  heading 54.5° from (−779.3, 28.0, 3258.9) (cluttered by structures), a 410 m boulevard at 175.5° from (1672,
+  31.75, 2591) with median kerbs; a 530 × 540 m flat patch at y 6.09 around (2240, −1560) is an isolated piece of
+  road collision (120 triangles), not a place to drive.
+- **Kerb**: square approaches to kerbs are rare in the open (`--flat --flat-kerb`: run-up ≥ 30 m, level ground ≥ 10 m
+  after). Used: a 0.15-0.18 m concrete kerb (surface 9) on the rounded corner of the Hodges apron, met at heading
+  232.2° from the strip (spot `hodges-kerb100`, 40 m before it; `hodges-kerbrest`, 57 m). The 100 km/h line
+  crosses a grass band (y 102.40-102.44), the kerb up (fronts 102.38 → 102.53 at 1.33 s, rears at 1.43 s,
+  64 mph), the kerb down 0.8 s later, a second up / down at 2.57 / 2.72 s, a 0.26 m drop at 3.3 s and a slope.
+- **Captures** (911 Carrera S 1085007 and F-150 SVT Raptor 300097, 13:00 frozen, traffic off, repaired, nitrous 0;
+  `kerb.watch` = handling.watch + the kerb fields of the 2026-10-19 kerb entry plus contact entry 1, `w*_l1a/b/n`;
+  copied to the main checkout's `ref/`): `kerb100a` / `kerb100b` (911 placed at 100 km/h, throttle 0.45 2.5 s,
+  brake 2.8 s): bit-identical for 2.05 s (the kerb up included), then within 0.15 mph / 6 mm to 3 s and 0.9 mph /
+  9 cm at the end; the divergence starts in the front wheels' rim speed at the kerb down. `kerbrest911a` / `b`
+  (911 from rest, throttle 1 for 3.5 s, brake 3 s; the kerb at 4.38 s at 32 mph): equal to 1e-5 mph and 0.4 mm
+  over 6.5 s. `kerb100raptor` / `raptorb` / `raptorc` (Raptor at 100 km/h): a and c bit-identical over the whole
+  run, b differs from the second tick (rpm 5125 → 5110 against 5153): the engine state after an at-speed
+  placement alternates between two values. In the first 911 pair (a probe build without the placement-wait, not
+  kept) the bodies stayed bit-identical over the whole run while the contact list's entry 0 A / B differed for a
+  few ticks on wheels 1 and 3: **the narrow phase's entry order is not deterministic** (the collision job is
+  threaded); when it matters, the runs drift apart.
+- **Replay in ours** (`--replay <csv> --spawn=-2162.20,103,1205.15,232.2 --no-traffic --units 12`, 911 = 1085007):
+  from rest, speed RMS 1.8 mph (ours 2-3 mph faster from 2 s, so 3 m further when braking ends), yaw ±3 °/s
+  spikes in ours at the kerb against ±0.5 in the original. Placed at speed (`kerb100a`, spawn at 62.1 mph): ours
+  drops to 49.5 mph in 0.5 s (gear 3 → 1 at the spawn, engine braking at 0.45 throttle) while the original holds
+  64-66 mph; a start-state problem of the at-speed replay (gearbox / clutch at spawn), not of the kerb.
+- **Model decisions**: none in the game port. Tool choices: the per-tick log reads at the start of the car's next
+  tick (state of the tick just run; control fields as that tick used them); script rows apply step-wise by game
+  time since the start; the arm radius 1.5 m and speed tolerance 0.5 mph.
+- **Open**: (1) the airport gate (what the respawn checks; an entitled save would open the 1.5 km runway); (2) no
+  cop switch: free-roam patrols still spawn (none came near in these runs; at 13:00 with traffic off); (3) the 30°
+  crossing and the "tyres half over a kerb at 30 km/h" captures need a straight kerb with room (the Hodges kerb
+  is a rounded corner); the decal strip and the track-unit seam captures were not made; (4) why the at-speed
+  placement's engine state alternates (gearbox / clutch timers?): place twice, or start from rest, for exact
+  repeats; (5) idle attract mode during long runs (tap `w` before each run).
+
 ### 2026-10-19: terrain through the road, the rest: what is left is authored; the pass mask per view
 Follow-up of the 2026-10-16 entry (user: "terrain still sticks through the road in some places").
 - **`mwtool terrain-check`, now LOD-aware**: a poke counts only against roads **drawn at the same time** as the

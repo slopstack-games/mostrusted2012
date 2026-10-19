@@ -417,6 +417,7 @@ def probe_cleanup():
             target.unlink()
             log(f"removed {target}")
         f.unlink()
+    (STATE / "probe.out").unlink(missing_ok=True)
 
 
 def probe_setup(args):
@@ -432,6 +433,7 @@ def probe_setup(args):
     (STATE / "probe.dll").write_text(str(target))
     out = REPO / "ref" / "probe" / (args.probe if isinstance(args.probe, str) else time.strftime("%Y%m%d-%H%M%S"))
     out.mkdir(parents=True, exist_ok=True)
+    (STATE / "probe.out").write_text(str(out))  # for `mwtool probe / tp / car / conditions / capture --probe`
     log(f"probe: {target.name} placed, log in {out}")
     return f"PROBE_OVERRIDE={args.proxy}=n,b\nPROBE_OUT={out}\n"
 

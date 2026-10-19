@@ -11,11 +11,13 @@ mod compare;
 mod crack;
 mod damage;
 mod events;
+mod flat_strip;
 mod float_check;
 mod lods;
 mod memscan;
 mod placement;
 mod preview;
+mod probe_ctl;
 mod props;
 mod siren;
 mod survey;
@@ -41,6 +43,34 @@ struct Cli {
     game_dir: Option<PathBuf>,
     #[command(subcommand)]
     cmd: Cmd,
+}
+
+/// Repeatable conditions in the original (probe).
+#[derive(clap::Args, Debug, Clone, Default)]
+struct ConditionArgs {
+    /// Freeze the time of day at this hour (0-24).
+    #[arg(long)]
+    hour: Option<f32>,
+    /// Switch traffic off (the game's traffic message 0xf).
+    #[arg(long)]
+    no_traffic: bool,
+    /// Repair the car (vehicle-manager message 0x16, as a body shop does).
+    #[arg(long)]
+    repair: bool,
+    /// Hold the nitrous amount at this value (0-100).
+    #[arg(long)]
+    nitrous: Option<f32>,
+}
+
+impl ConditionArgs {
+    fn get(&self) -> probe_ctl::Conditions {
+        probe_ctl::Conditions {
+            hour: self.hour,
+            no_traffic: self.no_traffic,
+            repair: self.repair,
+            nitrous: self.nitrous,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -257,7 +287,84 @@ enum Cmd {
         process: String,
         #[arg(long)]
         pid: Option<u32>,
+        /// Record through the probe DLL instead (`orig launch --probe`): one row per game tick, logged inside
+        /// the game; with --script / --spot / the condition flags (docs/probe.md "Capture helpers").
+        #[arg(long)]
+        probe: bool,
+        /// With --probe: an input script (`mwtool inputs`) played tick by tick; the run ends with it.
+        #[arg(long)]
+        script: Option<PathBuf>,
+        /// With --probe: teleport to this spot (name from tools/orig/spots.txt or x,ground_y,z,heading) first.
+        #[arg(long, allow_hyphen_values = true)]
+        spot: Option<String>,
+        /// With --probe --spot: seconds to let the car settle after the teleport.
+        #[arg(long, default_value_t = 3.0)]
+        settle: f32,
+        /// With --probe --spot: start moving at this speed (km/h): the game's placement gives the car the speed
+        /// and the script starts on the first tick after it (no settling).
+        #[arg(long)]
+        kmh: Option<f32>,
+        #[command(flatten)]
+        conditions: ConditionArgs,
+        /// The probe's output directory (default: the one `orig launch --probe` recorded).
+        #[arg(long)]
+        probe_dir: Option<PathBuf>,
     },
+    /// Send raw command lines to the probe in the running original (docs/probe.md "Capture helpers"):
+    /// `status`, `tp x y z heading [m/s]`, `car <id>`, `repair`, `notraffic`, `poke|hold <type> <value> <chain>`,
+    /// `peek <type> <chain>`, `release`, `script <csv> [<watch> <out>]`, `log <watch> <out> [s]`, `stop`.
+    Probe {
+        words: Vec<String>,
+        #[arg(long)]
+        probe_dir: Option<PathBuf>,
+    },
+    /// Teleport the player's car in the running original (probe): a spot name from tools/orig/spots.txt or
+    /// `x,ground_y,z[,heading_deg]` (heading 0 = +z, 90 = +x); `--save NAME` stores where the car is now.
+    Tp {
+        #[arg(allow_hyphen_values = true)]
+        target: Option<String>,
+        /// Speed along the heading after the teleport (km/h).
+        #[arg(long, default_value_t = 0.0)]
+        kmh: f32,
+        /// Move the car's rigid bodies directly (the probe's tick hook) instead of the game's own placement
+        /// (`FUN_00647e00`, which waits for streaming and resets the car's state): only for short moves within the
+        /// loaded world.
+        #[arg(long)]
+        raw: bool,
+        /// With --raw: the y given is the body's own height, not the ground's.
+        #[arg(long)]
+        body_y: bool,
+        /// Travel there in raw hops of this many metres (ground heights from the collision mesh), for places the
+        /// game's placement refuses (the airfield).
+        #[arg(long)]
+        hops: Option<f32>,
+        #[arg(long)]
+        save: Option<String>,
+        #[arg(long)]
+        list: bool,
+        #[arg(long)]
+        probe_dir: Option<PathBuf>,
+    },
+    /// Swap the player's car in the running original (probe) with the game's own swap (`FUN_006c2020`, the
+    /// jack spots' call): any car from the vehicle list, by id or name, owned or not.
+    Car {
+        car: String,
+        #[arg(long)]
+        probe_dir: Option<PathBuf>,
+    },
+    /// Fix the running original's conditions for repeatable runs (probe): time of day, traffic, damage, nitrous.
+    Conditions {
+        #[command(flatten)]
+        conditions: ConditionArgs,
+        /// Let the clock run again and drop the held values.
+        #[arg(long)]
+        release: bool,
+        #[arg(long)]
+        probe_dir: Option<PathBuf>,
+    },
+    /// Write an input script for `capture --probe --script`: segments `seconds:steer,throttle,brake,handbrake,
+    /// nitrous` (steer in the game's sense, + = right), e.g. `2:0,0,0,0,0 6:0,1,0,0,0 3:0,0.3,0,0,0`.
+    Inputs { out: PathBuf, segments: Vec<String> },
     /// Compare a recording of the original (`capture`) with Most Rusted's replay of it (`--replay`): speed, yaw
     /// rate, lateral g, body slip, rpm, gear, drift state and path side by side, and RMS differences.
     Compare {
@@ -435,6 +542,21 @@ enum Cmd {
         /// With `--near`: list every triangle around the point (vertices, surface, collision flags, normal).
         #[arg(long)]
         tris: bool,
+        /// With `--near x,z,r`: the longest straight, level stretches of ground (a test strip; `--find` limits
+        /// them to one surface), with their start, end and heading.
+        #[arg(long)]
+        flat: bool,
+        /// With `--flat`: the height range a stretch may span (m).
+        #[arg(long, default_value_t = 0.10)]
+        flat_tol: f32,
+        /// With `--flat`: only stretches within 3° of this heading (either way along it).
+        #[arg(long, allow_hyphen_values = true)]
+        flat_heading: Option<f32>,
+        /// With `--flat`: list square approaches to kerbs instead: for every low steep collision face (a
+        /// 0.05-0.3 m step), the level run-up along its normal (at least 30 m) and the level ground after it (at
+        /// least 10 m), longest first.
+        #[arg(long)]
+        flat_kerb: bool,
     },
     /// ICE camera takes (`CAMERAS.BNDL`, `mw_formats::camera_take`): one line each, or one take (name,
     /// UniqueId or resource id) with its channel layout and the camera evaluated every `--step` seconds.
@@ -458,6 +580,9 @@ enum Cmd {
         /// dynamic instance of the track units) with its instance ids, to check the object ↔ trigger link.
         #[arg(long)]
         objects: bool,
+        /// `x,y,z`: list every trigger (any kind) whose volume holds this point.
+        #[arg(long, allow_hyphen_values = true)]
+        at: Option<String>,
     },
     /// Police and pursuit data (`mw_assets::police`): the bust rule, the free-roam heat levels (thresholds, heat
     /// and cooldown times, the cops each fields) and the cop types' cars (docs/decomp.md "Police and pursuits").
@@ -713,16 +838,57 @@ fn main() -> Result<()> {
         Cmd::Telemetry { watch, out, hz, seconds, process, pid, pokes } => {
             return telemetry_cmd(watch, out, *hz, *seconds, process, *pid, pokes);
         }
-        Cmd::Capture { name, watch, hz, seconds, no_audio, process, pid, pokes } => {
+        Cmd::Capture {
+            name, watch, probe: true, script, spot, settle, kmh, conditions, probe_dir, seconds, ..
+        } => {
+            let dir = probe_ctl::probe_dir(probe_dir.as_deref())?;
+            let c = probe_ctl::ProbeCapture {
+                name,
+                watch,
+                script: script.as_deref(),
+                spot: spot.as_deref(),
+                settle: *settle,
+                kmh: *kmh,
+                seconds: *seconds,
+                conditions: conditions.get(),
+            };
+            return probe_ctl::capture(&dir, &c);
+        }
+        Cmd::Capture { name, watch, hz, seconds, no_audio, process, pid, pokes, .. } => {
             return capture_cmd(name, watch, *hz, *seconds, *no_audio, process, *pid, pokes);
         }
+        Cmd::Probe { words, probe_dir } => return probe_ctl::raw(&probe_ctl::probe_dir(probe_dir.as_deref())?, words),
+        Cmd::Tp { target: Some(target), hops: Some(step), probe_dir, .. } => {
+            let store = AssetStore::new(GameDir::locate(cli.game_dir.as_deref())?)?;
+            return probe_ctl::hop(&probe_ctl::probe_dir(probe_dir.as_deref())?, &store, target, *step);
+        }
+        Cmd::Tp { target, kmh, raw, body_y, save, list, probe_dir, .. } => {
+            let dir = if *list { PathBuf::new() } else { probe_ctl::probe_dir(probe_dir.as_deref())? };
+            return probe_ctl::tp(&dir, target.as_deref(), save.as_deref(), *list, *kmh, *raw, *body_y);
+        }
+        Cmd::Conditions { conditions, release, probe_dir } => {
+            return probe_ctl::conditions(&probe_ctl::probe_dir(probe_dir.as_deref())?, &conditions.get(), *release);
+        }
+        Cmd::Inputs { out, segments } => return probe_ctl::inputs(out, segments),
         Cmd::Compare { original, ours, every } => return compare::compare(original, ours, *every),
         _ => {}
     }
     let game = GameDir::locate(cli.game_dir.as_deref())?;
     match cli.cmd {
-        Cmd::Memscan { .. } | Cmd::Tune { .. } | Cmd::Telemetry { .. } | Cmd::Capture { .. } | Cmd::Compare { .. } => {
+        Cmd::Memscan { .. }
+        | Cmd::Tune { .. }
+        | Cmd::Telemetry { .. }
+        | Cmd::Capture { .. }
+        | Cmd::Compare { .. }
+        | Cmd::Probe { .. }
+        | Cmd::Tp { .. }
+        | Cmd::Conditions { .. }
+        | Cmd::Inputs { .. } => {
             unreachable!("handled before locating the game")
+        }
+        Cmd::Car { car, probe_dir } => {
+            let id = probe_ctl::car_id(&AssetStore::new(game)?, &car)?;
+            probe_ctl::car(&probe_ctl::probe_dir(probe_dir.as_deref())?, id)?
         }
         Cmd::Info => {
             println!("root:    {}", game.root().display());
@@ -915,7 +1081,7 @@ fn main() -> Result<()> {
                 println!("torque (rpm:Nm): {}", samples.join("  "));
             }
         }
-        Cmd::Surfaces { near, find, steps, tris } => {
+        Cmd::Surfaces { near, find, steps, tris, flat, flat_tol, flat_heading, flat_kerb } => {
             let near = match near.as_deref() {
                 Some(n) => {
                     let v: Vec<f32> = n.split(',').map(|x| x.trim().parse()).collect::<Result<_, _>>()?;
@@ -927,12 +1093,28 @@ fn main() -> Result<()> {
                 }
                 None => None,
             };
-            props::surfaces(&AssetStore::new(game)?, near, find, steps, tris)?
+            match near {
+                Some(at) if flat => {
+                    flat_strip::find(&AssetStore::new(game)?, at, flat_tol, find, flat_heading, flat_kerb)?
+                }
+                _ => props::surfaces(&AssetStore::new(game)?, near, find, steps, tris)?,
+            }
         }
         Cmd::CameraTake { take, step } => {
             camera_take::run(&open_bundle(&game, "CAMERAS.BNDL")?, take.as_deref(), step)?
         }
-        Cmd::Freeroam { list, kind, all_kinds, objects } => {
+        Cmd::Freeroam { at: Some(at), .. } => {
+            let p: Vec<f32> = at.split(',').map(|x| x.trim().parse()).collect::<Result<_, _>>()?;
+            anyhow::ensure!(p.len() == 3, "--at x,y,z");
+            let store = AssetStore::new(game)?;
+            for t in store.trigger_data()?.triggers.iter().filter(|t| t.contains([p[0], p[1], p[2]])) {
+                println!(
+                    "{:>10}  kind {:>3}  flags {:#04x}  at {:?}  {:?}",
+                    t.id, t.kind, t.flags, t.position, t.shape
+                );
+            }
+        }
+        Cmd::Freeroam { list, kind, all_kinds, objects, .. } => {
             let store = AssetStore::new(game)?;
             if objects {
                 freeroam_objects(&store, kind.as_deref())?
