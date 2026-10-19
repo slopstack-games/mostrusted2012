@@ -225,6 +225,87 @@ pub fn car_id(store: &mw_assets::AssetStore, q: &str) -> Result<u32> {
     }
 }
 
+/// The rollout's upgrade groups by name, each with its default slot (the game's slot numbers, "UpgradeEnum";
+/// `mw_assets::mods::GAME_SLOT_GROUPS`).
+const MOD_GROUPS: [(&str, u32); 5] = [("tyres", 11), ("nitrous", 3), ("gearbox", 5), ("chassis", 7), ("body", 9)];
+
+/// `mwtool mods <car> <fits>`: swap to the car with those upgrades fitted (probe `mods`, the game's swap with a
+/// rollout). Prints the matching `mostrusted --mods` (data field index = category).
+pub fn fit_mods(dir: &Path, store: &mw_assets::AssetStore, car: &str, spec: &str) -> Result<()> {
+    use mw_assets::mods::{GAME_SLOT_FIELD, GAME_SLOT_GROUPS, level_category};
+    // As `mwtool mods <car>` lists them: an id, an exact name or the first name containing it ("911").
+    let v = store.find_vehicle(car)?.with_context(|| format!("no car matches {car}"))?;
+    let id = v.id;
+    let lang = store.language(mw_assets::DEFAULT_LANGUAGE)?;
+    let b = store.bundle(v.hi_bundle.as_deref().context("car has no bundle")?).context("no bundle")?;
+    let cats = mw_assets::mods::performance_upgrades(store, &b)?;
+    // Slot names from the base category's data (`BURN NITROUS` -> burn-nitrous).
+    let slug = |k: usize| -> Option<String> {
+        let n = cats.get(1)?.get(k)?.name?;
+        let t = lang.get(n as u32)?.to_lowercase();
+        (!t.is_empty()).then(|| t.split_whitespace().collect::<Vec<_>>().join("-"))
+    };
+    let level = |l: &str| -> Result<u32> {
+        Ok(match l {
+            "0" | "none" => 0,
+            "1" | "base" => 1,
+            "2" | "pro" => 2,
+            _ => bail!("level {l}: 0|none, 1|base, 2|pro"),
+        })
+    };
+    let mut fits: Vec<(u32, u32)> = Vec::new();
+    let mut set = |slot: u32, lv: u32| {
+        let g = GAME_SLOT_GROUPS.iter().position(|g| g.contains(&slot));
+        fits.retain(|&(s, _)| GAME_SLOT_GROUPS.iter().position(|g| g.contains(&s)) != g);
+        fits.push((slot, lv));
+    };
+    for item in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+        let (key, lv) = item.split_once('=').map_or((item, "1"), |(k, l)| (k, l));
+        let lv = level(lv)?;
+        match key {
+            "none" => MOD_GROUPS.iter().for_each(|&(_, s)| set(s, 0)),
+            "all" => MOD_GROUPS.iter().for_each(|&(_, s)| set(s, lv)),
+            _ => {
+                let slot = if let Ok(n) = key.parse::<u32>() {
+                    n
+                } else if let Some(&(_, s)) = MOD_GROUPS.iter().find(|(g, _)| *g == key) {
+                    s
+                } else {
+                    (0..15u32)
+                        .find(|&s| GAME_SLOT_FIELD[s as usize].and_then(slug).as_deref() == Some(key))
+                        .with_context(|| format!("no mod {key} on {} (`mwtool mods {car}`)", v.name))?
+                };
+                if slot > 14 {
+                    bail!("game slot {slot}: 0-14");
+                }
+                set(slot, lv);
+            }
+        }
+    }
+    if fits.is_empty() {
+        bail!("nothing to fit");
+    }
+    let words: Vec<String> = fits.iter().map(|(s, l)| format!("{s}={l}")).collect();
+    let ours: Vec<String> = fits
+        .iter()
+        .filter_map(|&(s, l)| Some(format!("{}={}", GAME_SLOT_FIELD[s as usize]?, level_category(l)?)))
+        .collect();
+    for &(s, l) in &fits {
+        let name = GAME_SLOT_FIELD[s as usize].and_then(slug).unwrap_or_else(|| "(slot not traced)".into());
+        println!("game slot {s:2} level {l}: {name}");
+    }
+    send_ok(dir, &[format!("mods {id} {}", words.join(" "))])?;
+    let line = format!(
+        "mods {} ({id}) game slot=level {}; ours: --drive {id} --mods {}\n",
+        v.name,
+        words.join(" "),
+        ours.join(",")
+    );
+    print!("{line}");
+    std::fs::write(dir.join("mods.txt"), line)?;
+    Ok(())
+}
+
 pub fn car(dir: &Path, id: u32) -> Result<()> {
     send_ok(dir, &[format!("car {id}")])?;
     Ok(())
@@ -351,12 +432,14 @@ pub fn capture(dir: &Path, c: &ProbeCapture) -> Result<()> {
     std::fs::write(
         run.join("meta.txt"),
         format!(
-            "watch {}\nprobe tick log (one row per game tick)\nspot {}\nstart_kmh {}\nsettle {}\nconditions {:?}\nunix_time {}\n",
+            "watch {}\nprobe tick log (one row per game tick)\nspot {}\nstart_kmh {}\nsettle {}\nconditions {:?}\n{}unix_time {}\n",
             c.watch.display(),
             c.spot.unwrap_or("-"),
             c.kmh.unwrap_or(0.0),
             c.settle,
             c.conditions,
+            // The last `mwtool mods` fit in this game session (`mods.txt` in the probe dir).
+            std::fs::read_to_string(dir.join("mods.txt")).unwrap_or_else(|_| "mods none fitted by mwtool\n".into()),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
         ),
     )?;

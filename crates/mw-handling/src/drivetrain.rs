@@ -517,8 +517,12 @@ impl Drivetrain {
         }
         // Downshift (FUN_009d93b0) on speed (below the lower gear's upshift speed, with hysteresis) or rpm,
         // to the highest lower gear whose downshift rpm the revs would still be above.
-        // Only once the car has been on the ground for longer than `.bss` 0x01187580 (1 s).
+        // Only once the car has been on the ground for longer than `.bss` 0x01187580 (1 s), and never while the
+        // nitrous burns (`FUN_009d93b0` masks the condition with "not 0 < control block +0x30", the nitrous lane
+        // vehicle +0x1c20): with the upshift's speed condition waived, the gear it picks would otherwise drop
+        // straight back (ours hunted 3 → 2 → 3 under nitrous; capture `ref/noslaunchfull` holds the gear).
         if g > 1
+            && !self.nitrous
             && self.grounded_time > DOWNSHIFT_GROUNDED_TIME
             && (mph < p.upshift_mph(g - 1) - DOWNSHIFT_HYSTERESIS || self.rpm < p.downshift_rpm(g))
         {

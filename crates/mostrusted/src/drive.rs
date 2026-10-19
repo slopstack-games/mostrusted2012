@@ -77,6 +77,10 @@ pub struct CarInput {
     /// Scripted test in progress (`--test`): throttle, brake, steer, handbrake
     /// (> 0.5 = pulled). Overrides other input.
     pub scripted: Option<[f32; 4]>,
+    /// A recorded nitrous lane (`--replay` of a probe capture: the control amount, vehicle +0x1c20, written by
+    /// the probe every tick): drives the engine multiplier and the gearbox directly, bypassing the tank and its
+    /// throttle rule as the probe's script does.
+    pub scripted_nitrous: Option<f32>,
     /// The car is crashed (`crash.rs`): no control until the reset (`Player.CanDriveAway`).
     pub crashed: bool,
 }
@@ -913,6 +917,8 @@ pub struct CarControls {
     pub steer: f32,
     pub handbrake: bool,
     pub nitrous: bool,
+    /// The control amount given directly (`CarInput::scripted_nitrous`), instead of the tank's.
+    pub nitrous_amount: Option<f32>,
     /// Put the car back on its wheels (R for the player); cleared after one tick.
     pub reset: bool,
     /// No drive while crashed (`crash.rs`).
@@ -927,6 +933,7 @@ impl CarControls {
             steer: input.steer,
             handbrake: input.handbrake,
             nitrous: input.nitrous,
+            nitrous_amount: input.scripted_nitrous,
             reset: std::mem::take(&mut input.reset),
             crashed: input.crashed,
         }
@@ -1075,8 +1082,10 @@ pub(crate) fn car_physics(
             air_time: car.air_time,
             ..world
         };
-        let nitrous_amount = car.nitrous.update(&n_params.rules, &world, held, dt);
-        if car.nitrous.mode != 0
+        let mut nitrous_amount = car.nitrous.update(&n_params.rules, &world, held, dt);
+        if let Some(a) = ctl.nitrous_amount {
+            nitrous_amount = a.clamp(0.0, 1.0);
+        } else if car.nitrous.mode != 0
             && (nitrous_amount > 0.0 || speed / MPH < mw_handling::nitrous::FULL_THROTTLE_BELOW_MPH)
         {
             ctl.throttle = 1.0;

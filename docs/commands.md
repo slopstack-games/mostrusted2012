@@ -55,6 +55,9 @@ tools/orig/orig launch --probe hello   # orig modules lists the game's DLLs; ori
 ./target/release/mwtool tp hodges-kerb100 [--kmh 100]   # the game's own placement (FUN_00647e00); spots in tools/orig/spots.txt, or -- x,ground_y,z,heading
 ./target/release/mwtool tp --save <name> | --list | --raw -- x,y,z,h (move the bodies directly) | --hops 100 -- <a;b;spot> (raw hops)
 ./target/release/mwtool car 911                   # the game's swap (FUN_006c2020): any car by id or name, owned or not
+./target/release/mwtool mods 911 nitrous=2,gearbox=1   # swap with upgrades fitted, no unlock (groups tyres/nitrous/gearbox/chassis/body, a mod name `powershot=2` or game slot `3=1`; levels 0|none 1|base 2|pro; `none`, `all=<level>`); prints the matching `--mods`, logs to <probe dir>/mods.txt (capture meta.txt copies it); `mwtool mods 911` lists names and game slots
+./target/release/mwtool probe rollout              # the player's rollout record (vehicle id, the five upgrade groups' slot:level)
+# Input scripts: nitrous `nan` leaves the lane to the game's own nitrous (tank, its throttle rule); a number writes it
 ./target/release/mwtool conditions --hour 13 --no-traffic --repair --nitrous 0   # --release lets the clock run again
 ./target/release/mwtool inputs ref/x/inputs.csv 2.5:0,0.45,0,0,0 2.8:0,0,1,0,0   # seconds:steer(+ right),throttle,brake,handbrake,nitrous
 ./target/release/mwtool capture kerb100a --probe --watch kerb.watch --script ref/x/inputs.csv --spot hodges-kerb100 --kmh 100   # one row per tick
@@ -73,6 +76,7 @@ tools/orig/orig run-in -- ./target/release/mostrusted --drive 911 --test-track  
 # Reference runs: record the original (car state + its own audio, Enter stops), replay the inputs, compare
 ./target/release/mwtool capture corner1                     # -> ref/corner1/{telemetry.csv,audio.wav}
 ./target/release/mostrusted --drive 911 --replay ref/corner1/telemetry.csv   # -> telemetry.ours.csv
+# --replay plays a recorded in_nitrous column (probe captures) straight into the engine multiplier and gearbox, no tank; logs nos_mult
 # In the world from the recording's start (speed given at once): --spawn=x,y,z,heading with --replay; MW_REPLAY_FOLLOW=1
 #   holds the recorded speed (throttle / brake), =path also steers along the recorded path (pure pursuit); a recording
 #   that starts moving is placed as the game's placement does it (gear by speed, revs from the wheels)

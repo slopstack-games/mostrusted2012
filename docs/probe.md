@@ -76,8 +76,19 @@ the slot holds the expected method (so after the wrapper has unpacked the game) 
   0xf), `poke` / `hold` / `peek <type> <value> <chain>` (hold = rewritten every tick), `release`.
   `mwtool conditions --hour h` pokes the time-of-day rate (environment manager + 0x1b610, = renderer − 0x80 +
   0x1b610) to 0 and holds the time (+0x1b604); `--nitrous n` holds player 0's amount (game + 0x264f0 + 0x10).
+- `mods <vehicle id> <slot>=<level> ...` (`mwtool mods <car> <fits>`): fits upgrades without unlocking them, through
+  the swap's own rollout argument: the player's rollout record is copied ([G + 0x2f404] + 0x827c + player index ×
+  0xd8, 0x2b dwords: +0x30 vehicle id, five groups of (descriptor pointer, slot, level) from +0x70, `FUN_0067e770`),
+  each named group's slot and level replaced, the vehicle id set, and `FUN_006c2020(player, id, 0, &copy)` called
+  as the jack spot calls it (the Easydrive / save paths pass a rollout the same way). The game copies the record
+  into the profile (`FUN_0068e9d0`) and fixes the descriptor pointer itself. **The profile is changed in memory and
+  the game autosaves it** (the car and its fits were in the save after the next launch once): back the save up
+  first and restore it afterwards, as for `car`. Game slots ("UpgradeEnum" 0..14) and the data's fields:
+  `mw_assets::mods::GAME_SLOT_FIELD` (`mwtool mods <car>` prints both); levels 1 base, 2 PRO (`FUN_0065de50`).
+  `rollout` prints the record.
 - `script <inputs.csv> [<watch> <out.csv>]`: inputs `t,steer,throttle,brake,handbrake,nitrous` (step-wise, row
-  by game time since the start, steer + = right as the game's field); the log has one row per tick: `t,tick,dt`
+  by game time since the start, steer + = right as the game's field; nitrous is the control amount written to all
+  four lanes of vehicle +0x1c20, bypassing the tank and its throttle rule, and `nan` leaves the lane to the game); the log has one row per tick: `t,tick,dt`
   then the watch file's fields as the state the previous tick left, with the control fields as the values that
   tick used (the convention of `mwtool capture` rows and of `--replay`). Chains through the player's vehicle are
   followed every tick (contact lists move); unreadable values are NaN. `arm x z [mph]` holds the next script
@@ -97,6 +108,14 @@ HSM's "Show Airport Required Dialog" and `CanJoinAirportGameByFriendIndexBinding
 (the Most Wanted list over a grey picture) starts after some idle time: tap a harmless key (`orig key w`, the
 horn) before a run. Never mute the game's stream by hand: WirePlumber stores that per application name and the
 user's own launches inherit it; `orig-wrap` sends headless runs to a silent sink (`tools/silent-sink`).
+
+**Crashes on the far placement (2026-10-19)**: of seven launches, the first `place` to Hodges Airfield worked once
+(the 911 from the canyon start, −107, 37, −370) and killed the game five times (the process exits, gamescope
+keeps the last frame, the probe stops answering): from the Fairhaven start (200, 48, 1488) with and without a
+car swap before it, and from the canyon start with a fitted mod. The kernel log had NVRM "can't alloc VA space
+for mapping" / out-of-memory lines in the same minutes while other agents' headless runs shared the 8 GB card, so
+GPU memory is the suspect (not proven). Short placements on the strip itself never failed. Open: a hop chain
+(`tp --hops`) or a nearer start for the long move.
 
 ## Memory dumps on request (2026-10-10)
 
