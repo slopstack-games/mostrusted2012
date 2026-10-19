@@ -30,10 +30,15 @@ Decisions with the user: portrait loading screens keep the original's bars.
 
 ## Open items (user play tests; newest first)
 
-- **Races and free roam** (2026-10-19; agents were finishing at the end of the session, see the research log):
-  race intros lack their special shaders / visuals; jack-spot swap broken after a race; races and their start
-  markers missing in free roam; "checkpoint missed" always shown; racers don't react to hits as in the original;
-  racers stay after a race; cops red not blue on the minimap, no blink, no escape circle.
+- **Races and free roam** (2026-10-19), worked on at the end of session 11 (research log "race flow", "event
+  starts, cop arrows, search circle", car-against-car response in decomp.md): fixed "checkpoint missed" (road-path
+  distances, `FUN_00661b40`), racers removed after a race (`FUN_00521f00`), jack spots after a race (the event
+  ends after its results), races on the minimap, cop arrows blue / blinking (not yet seen on screen), race-car
+  contacts with the game's impulse scales, start markers in the world. **Open**: the escape / search circle (rule
+  traced, not drawn) and cops clamped to the minimap edge; the start panel's event name / reward labels; the burnout
+  start never run; race intros' special shaders / visuals; a second race in one run is refused; the AI racers'
+  crash reset path and takedown camera; AI–traffic responses; whether the outro's AI-driven player uses the body
+  shop. The UI behaviour-kind fix (kinds 13 / 4) is global: check other screens' blinking elements.
 - **Exhaust flames**: backfire / nitrous flames look framey and not attached to the exhaust (`exhaust.rs`,
   `particles.rs`: emitter space, in-frame spawn interpolation, flipbook rate).
 - **Textures**: the tyre tread is blank (tyre material family / samplers, `mwtool shaders`).
