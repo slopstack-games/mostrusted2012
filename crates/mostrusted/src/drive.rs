@@ -323,6 +323,11 @@ struct WheelState {
     rebound: f32,
     /// Total suspension range: droop below the rest position (the static sag) plus the bump travel.
     travel: f32,
+    /// The strut's bottom below the rest position (m): `caac331c` + `7fc0dc41` (strut object +0x50), the strut
+    /// joint's lower end (`wheel_layout`); the static sag without the data. And the joint's position parameter
+    /// (+0x30: 0 at the bottom, 1 at the top), taken from the wheel's position before the sub-steps.
+    droop: f32,
+    strut_t: f32,
     /// Compression under the car's static weight. The graphics spec's wheel position is the wheel at rest,
     /// so the wheel sits there at this compression, droops below it, and rises at most `travel - sag` above.
     sag: f32,
@@ -434,6 +439,36 @@ impl Car {
     /// Each wheel's spin (rad/s), in the order of [`Car::wheel_slips`].
     pub fn wheel_spins(&self) -> impl Iterator<Item = f32> + '_ {
         self.wheels.iter().map(|w| w.omega)
+    }
+
+    /// The game's placement of a car moving at `speed` (m/s along its heading; the caller sets the body's
+    /// velocity): `FUN_008f8190` with the moving flag. The wheels roll at road speed (`FUN_009b0430` gives the
+    /// wheel bodies the chassis's motion; `ref/kerb100a` row 0: ω r = v on all four), the vehicle reset
+    /// `FUN_009a9b10` clears the brake ramp (+0x1610), the handbrake countdown (`FUN_009cda30`, +0x2a20) and the
+    /// drift (`FUN_009cd3f0`, +0x2ab0), and the drivetrain is placed by `FUN_009b3550` ([`Drivetrain::place_moving`]).
+    pub fn place_moving(&mut self, speed: f32) {
+        for w in &mut self.wheels {
+            w.omega = speed / w.radius;
+        }
+        self.brake_ramp = 0.0;
+        // `FUN_009b1e90` (any placement) zeroes the air time (+0x1630) and the downshift gate's clock (+0x1ed0):
+        // no downshift for the first second (`ref/kerb100a` holds third at 4 470 rpm, below its 4 600 down rpm).
+        self.air_time = 0.0;
+        self.drivetrain.grounded_time = 0.0;
+        self.handbrake_timer = -1.0;
+        self.handbrake_on = false;
+        self.drift = DriftState::default();
+        // The driven wheels' mean spin as the driveline takes it (`FUN_009d5520`, no handbrake or burnout).
+        let dp = &self.params.drivetrain;
+        let mut omega = 0.0;
+        for (axle, share) in [dp.front_share, 1.0 - dp.front_share].into_iter().enumerate() {
+            let wheels: Vec<&WheelState> = self.wheels.iter().filter(|w| usize::from(!w.front) == axle).collect();
+            omega += share * wheels.iter().map(|w| w.omega).sum::<f32>() / wheels.len().max(1) as f32;
+        }
+        self.drivetrain.place_moving(dp, omega, speed / MPH);
+        self.gear = self.drivetrain.gear;
+        self.rpm = self.drivetrain.rpm.min(dp.max_rpm);
+        self.rpm_prev = self.rpm;
     }
 
     /// The front wheels' steering angle (rad, positive = left) the next tick's tyres use.
@@ -674,6 +709,15 @@ pub fn build_car(commands: &mut Commands, b: &CarBuild) -> Entity {
             .and_then(|b| b.strut.map(|[top, _]| top - b.position[1]))
             .filter(|t| *t > 0.0)
             .unwrap_or(BUMP_TRAVEL);
+        let droop = h
+            .wheels
+            .iter()
+            .min_by(|a, b| {
+                Vec3::from(a.position).distance(w.position).total_cmp(&Vec3::from(b.position).distance(w.position))
+            })
+            .and_then(|b| b.strut.map(|[_, bottom]| b.position[1] - bottom))
+            .filter(|t| *t > 0.0)
+            .unwrap_or(sag);
         let share = if w.front { params.drivetrain.front_share } else { 1.0 - params.drivetrain.front_share };
         let inertia =
             0.5 * wheel_mass * radius * radius + if share > 0.0 { params.drivetrain.transmission_inertia } else { 0.0 };
@@ -710,6 +754,8 @@ pub fn build_car(commands: &mut Commands, b: &CarBuild) -> Entity {
             damper: c,
             rebound: c * ratio.max(1.0),
             travel: bump + sag,
+            droop,
+            strut_t: 0.5,
             sag,
             brake_torque: brake,
             omega: b.velocity.dot(Quat::from_rotation_y(b.heading) * Vec3::Z) / radius,
@@ -1233,7 +1279,10 @@ pub(crate) fn car_physics(
             // suspension and the tyre see the bumped ground. The game does this only under a flag that reads as
             // "the car has a human player" (`FUN_00904260`: the car's player record +0x9c is 0; inferred), so AI and
             // traffic cars skip it.
-            if player && let Some((frequency, amplitude)) = surface.roughness {
+            if player
+                && rough_on()
+                && let Some((frequency, amplitude)) = surface.roughness
+            {
                 let (moved, tilted, _) = surface::roughness(point.to_array(), normal.to_array(), frequency, amplitude);
                 (point, normal) = (Vec3::from(moved), Vec3::from(tilted).normalize_or(normal));
             }
@@ -1251,10 +1300,25 @@ pub(crate) fn car_physics(
         let mut stop_total = 0.0;
         let mut ch =
             Chassis { v: forces.linear_velocity(), w: forces.angular_velocity(), com, mass: p.mass, inv_inertia };
+        let (joint_pos, joint_vel) = strut_joint_passes();
         for wheel in car.wheels.iter_mut() {
             wheel.normal_impulse = 0.0;
+            // The strut joint's position parameter (+0x30) from where the wheel stands now.
+            let (y, bump) = (wheel.compression - wheel.sag, wheel.travel - wheel.sag);
+            wheel.strut_t = (y + wheel.droop) / (bump + wheel.droop).max(1e-4);
         }
         for _ in 0..SOLVER_SUBSTEPS {
+            // The strut joints' velocity pass (`FUN_00928fb0` → `FUN_009c62c0` → `FUN_009c3ae0`), before the wheel
+            // contacts' impulse pass. Ours moves the wheel along the car's up axis only (across, it moves with the
+            // chassis), so only the along-strut limit remains.
+            if joint_vel {
+                for wheel in car.wheels.iter_mut() {
+                    let centre = wheel.world_centre(pos, rot);
+                    let s = wheel.vel - ch.velocity_at(centre).dot(up);
+                    let err = suspension::strut_velocity_error(s, wheel.strut_t);
+                    strut_joint_impulse(wheel, &mut ch, centre, up, err);
+                }
+            }
             for (wheel, ground) in car.wheels.iter_mut().zip(&grounds) {
                 let Some(g) = ground else { continue };
                 if wheel.touching {
@@ -1613,6 +1677,11 @@ pub(crate) fn car_physics(
                 wheel.touching = true;
                 wheel_ground_impulse(wheel, &mut ch, centre, g.normal, up, dvn);
                 // The strut stop (+0x4ac): the same with the contact offset taken from the strut's end (+0x460).
+                // `FUN_0095b4d0` rebuilds the constraint each tick with +0x4ac = vehicle +0x1774, the crashed state
+                // (`FUN_009b2d40`; 0 for the player in both snapshots): the stop only acts on a crashed car.
+                if !(ctl.crashed || strut_stop_forced()) {
+                    continue;
+                }
                 let mount = wheel.strut_end(pos, rot);
                 let vn = ch.velocity_at(mount).dot(g.normal);
                 let over = (g.point - (mount + g.offset)).dot(g.normal) - vn * dt;
@@ -1621,6 +1690,17 @@ pub(crate) fn car_physics(
                     let impulse = ch.effective_mass(mount, g.normal) * excess / dt;
                     ch.push(mount, g.normal * impulse);
                     stop_total += impulse;
+                }
+            }
+            // The strut joints' position pass (`FUN_00928cd0` → `FUN_009c6230`), after the wheel constraints: the
+            // wheel's predicted position relative to the strut's (both + v dt) kept between the strut's ends.
+            if joint_pos {
+                for wheel in car.wheels.iter_mut() {
+                    let centre = wheel.world_centre(pos, rot);
+                    let v_rel = wheel.vel - ch.velocity_at(centre).dot(up);
+                    let y_pred = wheel.compression - wheel.sag + v_rel * dt;
+                    let err = suspension::strut_position_error(y_pred, -wheel.droop, wheel.travel - wheel.sag);
+                    strut_joint_impulse(wheel, &mut ch, centre, up, err / dt);
                 }
             }
         }
@@ -1962,6 +2042,42 @@ fn wheel_ground_impulse(
     let impulse = wheel.mass * du / along;
     ch.push(centre, (normal - up * normal.dot(up)) * impulse);
     impulse
+}
+
+/// The strut joint's impulse for a velocity change `dv` of the wheel relative to the chassis along `up` (removed):
+/// through the effective mass (the chassis's at the wheel centre, `FUN_009e8230`, plus the wheel's 1/m), onto the
+/// chassis at the wheel centre (`FUN_009ca290` / `FUN_0097e440` + `FUN_00907840`) and against the wheel.
+fn strut_joint_impulse(wheel: &mut WheelState, ch: &mut Chassis, centre: Vec3, up: Vec3, dv: f32) {
+    if dv == 0.0 {
+        return;
+    }
+    let j = dv / (ch.inv_mass_at(centre, up) + 1.0 / wheel.mass);
+    ch.push(centre, up * j);
+    wheel.vel -= j / wheel.mass;
+}
+
+/// The strut joint's passes in use, (position, velocity): both by default; `MW_STRUT_JOINT=0` leaves the joint out
+/// (the model before 2026-10-19), `=pos` / `=vel` keeps one pass (A/B).
+fn strut_joint_passes() -> (bool, bool) {
+    static ON: std::sync::OnceLock<(bool, bool)> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| match std::env::var("MW_STRUT_JOINT").as_deref() {
+        Ok("0") => (false, false),
+        Ok("pos") => (true, false),
+        Ok("vel") => (false, true),
+        _ => (true, true),
+    })
+}
+
+/// `MW_ROUGH=0` leaves the surface bumps out (`FUN_009d77b0`; A/B: the yaw they cause, research log 2026-10-19).
+fn rough_on() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("MW_ROUGH").is_none_or(|v| v != "0"))
+}
+
+/// `MW_STRUT_STOP=1` runs the strut stop on every car, crashed or not (A/B against the model before 2026-10-19).
+fn strut_stop_forced() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("MW_STRUT_STOP").is_some_and(|v| v == "1"))
 }
 
 /// Sub-steps of the game's island solve (`FUN_0093f200` loops world +0x464 = 2 times, set by the world's

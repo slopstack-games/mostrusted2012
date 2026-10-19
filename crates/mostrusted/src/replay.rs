@@ -227,7 +227,10 @@ pub fn run_replay(
                 Err(e) => warn!("replay: cannot write {}: {e}", r.out_path.display()),
             }
             r.playing = Some(0.0);
-            if let Some(gear) = r.start_gear.filter(|&g| g > 0) {
+            if r.world {
+                // Placed moving as the game's own placement does it (gear by speed, revs from the wheels).
+                car.place_moving(r.start_mph * MPH);
+            } else if let Some(gear) = r.start_gear.filter(|&g| g > 0) {
                 car.drivetrain.put_in_gear(gear);
             }
         } else {

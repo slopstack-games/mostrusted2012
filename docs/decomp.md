@@ -509,12 +509,39 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
   applies the non-negative normal impulse (target from the record's bias and n · +0x490, accumulated, clamped
   at 0) to the wheel, and while +0x4ae is set also to the chassis at the strut point through the chassis's
   inverse mass and inertia, scaled by +0x474. So the end of the strut is a hard contact on the chassis, not a
-  spring: a landing cannot drive the body into the ground. Ported in drive.rs (`mw_handling::suspension::stop_excess`; handling.md item 5).
+  spring. Ported in drive.rs (`mw_handling::suspension::stop_excess`; handling.md item 5). **Only on a crashed car**
+  (2026-10-19): `FUN_0095b4d0` rebuilds each wheel constraint every tick through `FUN_0095b100` → `FUN_009c24b0`,
+  whose tenth argument (→ +0x4ac) is the byte at vehicle +0x1774, the crashed state (`FUN_009b2d40`); it is 0 for
+  the player in both snapshots. In normal driving the strut joint (below) is what limits the wheel.
+- **Strut joint** (2026-10-19, read in full): the strut object at vehicle +0x10f0 + 8i is a world joint between
+  the chassis (joint +4 body id) and the wheel record (+8), flags +0xc (bit 0 skips it; clear in the snapshots),
+  +0x30 a position parameter (0.956 on an XKR front at 51 m/s in snap1: 0 at the bottom, 1 at the top; its writer
+  was not found), +0x40 top, +0x50 bottom, +0x60 an arm pivot, +0x80 a byte choosing the arm variant (1 on the
+  XKR). Position pass (`FUN_00928cd0`, the last call of each contact pass, → `FUN_009c6230` → `FUN_009c4050`
+  straight / `FUN_009c42d0` arm): the wheel centre predicted for the end of the tick (centre + v dt) is projected
+  onto the strut predicted the same way (`FUN_009eab00`: chassis point + its velocity × dt), the parameter clamped
+  to 0..1 (the arm variant then puts the target on the arc about the pivot, radius lerped between the ends'
+  distances); the error beyond FLT_EPSILON (`.rdata` 0x010258a0) goes as err / dt through the effective mass
+  (the chassis's at the wheel centre along err, `FUN_009e8230`, plus the wheel's 1/m +0x58) to the chassis at the
+  wheel centre (`FUN_009ca290` + `FUN_00907840`) and against the wheel. Velocity pass (each sub-step, in
+  `FUN_00928fb0` before the wheel contacts' impulse pass, → `FUN_009c62c0` → `FUN_009c3ae0` / `FUN_009c3d70`):
+  the wheel's velocity relative to the chassis at its centre loses everything across the strut, and along it
+  (positive towards the top) only min(s, 0) is kept while +0x30 ≥ 1, only max(s, 0) while +0x30 ≤ 0; the impulse
+  goes the same way. `FUN_009c6230` then writes the wheel record's +0x3c / +0x4c lanes from the joint (+0x70 lerp
+  by +0x30) and calls `FUN_0096d650`. Ported in drive.rs (`suspension::strut_position_error` /
+  `strut_velocity_error`; along the strut only, ours moves the wheel along the car's up axis).
+- **`FUN_009c62e0` / `FUN_009c5840` (contact pass) and `FUN_009c4e10` / `FUN_009c1fb0` (sub-steps) are body
+  contacts**, not joints: a body's list of world contact records (+0x80, count +0x59; normal, world point, local
+  point, mass +0x34): the position pass pushes the body out by mass × penetration / dt per record (`FUN_009c5840`
+  scales the angular part by +0x100), the impulse pass is the usual non-negative normal impulse with restitution
+  +0xc, and with +0x8a a cap of the body's velocity along y (`FUN_009c4e10`'s tail).
 - **Island step and sub-steps** (2026-10-07, from the disassembly in the live snapshots). `FUN_0093f5a0` calls
   each pass once; the iterations live in two callees, both counted by the world (constructor `FUN_009330d0`,
-  same values live): `FUN_00932190` loops world +0x460 = 2 times (joints `FUN_009c62e0` / `FUN_009c5840`, the
-  wheel constraints' contact pass `FUN_009c5a90`, contacts `FUN_009be060`, `FUN_00928cd0`), and `FUN_0093f200`
-  loops world +0x464 = 2 times at dt / 2 (joints `FUN_009c4e10` / `FUN_009c1fb0`, contacts `FUN_009be420`,
+  same values live): `FUN_00932190` loops world +0x460 = 2 times (body contacts `FUN_009c62e0` / `FUN_009c5840`,
+  the wheel constraints' contact pass `FUN_009c5a90`, contacts `FUN_009be060`, `FUN_00928cd0` with the strut
+  joints; the passes run when the step context's byte +0x1b8 is set, which `FUN_0093f680` / `FUN_0093f800` always
+  pass as 1 to `FUN_00931dd0`), and `FUN_0093f200`
+  loops world +0x464 = 2 times at dt / 2 (body contacts `FUN_009c4e10` / `FUN_009c1fb0`, contacts `FUN_009be420`,
   `FUN_00928fb0`, the wheel constraints' impulse pass `FUN_009c2670`, the force elements `FUN_00932f90`, then
   gravity and velocity integration `FUN_009282d0`). Positions are integrated **between** the two, by
   `FUN_009324f0` (2026-10-10, read): each awake body through `FUN_0091f380` with dt, and each wheel record's centre
@@ -626,8 +653,8 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
   physics). `FUN_0095b4d0` adds a constraint record per entry and points +0x4a0 at entry 0's. Live (research log
   2026-10-19): on a kerb's edge A is on the cylinder's rim ahead of the axle and B on the edge straight above it,
   the normal the top face's. Ported in `mw_handling::wheel_probe`. Still unknown: the narrow phase (which entry is
-  first when several triangles touch); what holds the wheel record on its strut across (the joints `FUN_009c62e0` /
-  `FUN_009c4e10` were not read; ours moves the wheel along the body's up axis only).
+  first when several triangles touch). The wheel record is held on its strut by the strut joint (above; ours moves
+  the wheel along the body's up axis only).
 
 ## Wheel placement (2026-10-10, ported in `mw_assets::wheel_layout`)
 
@@ -2618,6 +2645,24 @@ Code side from a sub-agent's trace of the dump and the live snapshot's disassemb
 - **Waiting for streaming** (`FUN_00647e00`): radius max(200 m, mph × 0.44704 × 3 s); a target not resident holds
   the car, moves the streaming focus there (message 4) and sets the loading-screen bit 0; `FUN_0064b290` re-checks
   every frame and places the car once resident (message 5 clears the focus).
+- **Placement with a speed** (2026-10-19, read in full; ported for `--replay --spawn` in `Car::place_moving` /
+  `Drivetrain::place_moving`): `FUN_0064b290` caps the record's mph at 100 (`.rdata` 0x00fb69e0) and posts
+  `FUN_008446e0` (kind 2 on the queue [0x010edb2c] + 0x10: slot, pose, mph). `FUN_00596880` dispatches it to
+  `FUN_00596050`: velocity = mph × direction × 0.44704 (`.bss` 0x0118a010) → `FUN_00580f90` → `FUN_005705f0`
+  stores a pending teleport (+0xb1c0 + slot flag, pose +0xb1d0, velocity +0xb210, angular +0xb220, +0xb240 moving =
+  |v| > 0 or state 2) that `FUN_0090dc30` hands to the vehicle, `FUN_008f8190`: `FUN_009afc50` (pose),
+  `FUN_009b1e90` (velocities through `FUN_009073b0` / `FUN_00907420`, the speed `FUN_009ac030`, the wheel bodies
+  `FUN_009b0430`, zeroes +0x1630 air time and +0x1ed0 the downshift gate's clock, then vtable +0x58 =
+  `FUN_008f5280` → `FUN_009a9b10`, the vehicle reset: gearbox `FUN_009cd620` (state 2 when moving, else 0; timers,
+  the gear-change clock +0xb4 / +0xb0 to 0 / 1), driveline `FUN_009cd180`, `FUN_009d4be0` (gear index 1, driveline
+  speed = `Idle_RPM`), clutch `FUN_009cd150` (0), engine `FUN_009d22f0` (rpm = `Idle_RPM`; the throttle hold and lag
+  kept), the wheels' tyre records, brake ramp +0x1610, and with +0x1f0 the handbrake `FUN_009cda30`, +0x2a80 and the
+  drift `FUN_009cd3f0`), +0x30ed = 0, and when moving `FUN_009b3550`: driveline speed from the wheel spins
+  (`FUN_009d55f0`) × the ratio of the gear index the reset left (1: first gear), gear = `FUN_009d78e0` (0 below
+  0 mph, else the highest usable gear whose lower neighbour's `Gear_up_speed` is below the mph, at least 1), and
+  rpm = that speed with the gearbox in gear and the clutch closed (`FUN_009cd710`) when it is at least `Idle_RPM`,
+  else `Idle_RPM` in standstill with the clutch open (`FUN_009cd750`). The rpm is not clamped: the 911 at 62 mph
+  reads 10 402 rpm in third on the placement tick (`ref/kerb100a`; 3.91 × 3.44 × the rear wheels' 773 rpm).
 - **New game** (Lua `SetNewGame(true)` → `FUN_0068fd50`): resets the profile tables, the starting car from
   `GameLogicConfig` +0xa4 = `DefaultRollout` 523000 (`Rollout.Vehicle` 122672, Aston Martin V12 Vantage),
   IsNewGame, and the first unlocked event of kind 390145 as the pending event. `ShouldPlayNewGameIntro`

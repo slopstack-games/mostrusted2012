@@ -641,6 +641,38 @@ impl Drivetrain {
         self.launching = false;
         self.clutch = 1.0;
     }
+
+    /// The game's placement of a moving car (`FUN_008f8190` with the moving flag, from the placement message
+    /// `FUN_00596050` → `FUN_00580f90`; the trigger teleport's `FUN_00647e00` with a speed). Its reset
+    /// `FUN_009a9b10` (through vtable +0x58) puts the gearbox in standstill (`FUN_009cd620`: state 2, the shift
+    /// cleared, its clock +0xb4 / +0xb0 at 0 / 1), the gear index to 1 and the driveline's speed to `Idle_RPM`
+    /// (`FUN_009d4be0`), the clutch to 0 (`FUN_009cd150`) and the rpm to `Idle_RPM` (`FUN_009d22f0`; the throttle
+    /// hold and lag are kept). Then `FUN_009b3550`: the driveline's speed from the wheels (`FUN_009d55f0`, the
+    /// wheels already spinning at road speed) times **first gear's** ratio (the gear index the reset left), the
+    /// gear chosen by speed alone (`FUN_009d78e0`: the highest usable gear whose lower neighbour's
+    /// `Gear_up_speed` is passed, reverse below 0 mph), and at least `Idle_RPM` of it: the rpm and the gearbox in
+    /// gear with the clutch closed (`FUN_009cd710`), else idle in standstill with the clutch open (`FUN_009cd750`).
+    /// The rpm is not clamped here (the 911 at 62 mph starts at 10 402 rpm in third, `ref/kerb100a`; the engine
+    /// clamps it at `Max_RPM` on its next tick). `wheel_omega` is the driven wheels' mean spin as [`Self::step`]
+    /// takes it.
+    pub fn place_moving(&mut self, p: &DrivetrainParams, wheel_omega: f32, mph: f32) {
+        let p = p.active(self.cruising);
+        self.shift = None;
+        self.shift_elapsed = 0.0;
+        self.shift_time = 1.0;
+        let rpm = wheel_omega * p.ratio(1) * p.final_drive * RPM_PER_RAD_S;
+        let top = if self.nitrous { p.ratios.len() as i32 } else { p.gears as i32 };
+        self.gear = if mph < 0.0 { -1 } else { (2..=top).filter(|&k| p.upshift_mph(k - 1) < mph).max().unwrap_or(1) };
+        if rpm >= p.idle_rpm {
+            self.rpm = rpm;
+            self.clutch = 1.0;
+            self.launching = false;
+        } else {
+            self.rpm = p.idle_rpm;
+            self.clutch = 0.0;
+            self.launching = true;
+        }
+    }
 }
 
 #[cfg(test)]

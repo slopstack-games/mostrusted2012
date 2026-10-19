@@ -74,7 +74,8 @@ tools/orig/orig run-in -- ./target/release/mostrusted --drive 911 --test-track  
 ./target/release/mwtool capture corner1                     # -> ref/corner1/{telemetry.csv,audio.wav}
 ./target/release/mostrusted --drive 911 --replay ref/corner1/telemetry.csv   # -> telemetry.ours.csv
 # In the world from the recording's start (speed given at once): --spawn=x,y,z,heading with --replay; MW_REPLAY_FOLLOW=1
-#   holds the recorded speed (throttle / brake), =path also steers along the recorded path (pure pursuit)
+#   holds the recorded speed (throttle / brake), =path also steers along the recorded path (pure pursuit); a recording
+#   that starts moving is placed as the game's placement does it (gear by speed, revs from the wheels)
 tools/hl ./target/release/mostrusted --drive "F-150 SVT Raptor" --replay ref/kerb_drop2/telemetry.csv --spawn=192.03,50,1474.32,32.8 --no-traffic
 ./target/release/mwtool compare ref/corner1/telemetry.csv ref/corner1/telemetry.ours.csv
 
@@ -109,7 +110,9 @@ MW_NO_VIGNETTE=1 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,172
 ./target/release/mostrusted --drive 911 --test accel     # or brake, corner (skidpad g), handbrake, drift, engine,
 #   nitrous, landing, climb, jitter (MW_SUSP_TRACE=<file> logs the suspension every tick,
 #   MW_WHEEL_TRACE=<file> the point-mass wheels: compression, rate, velocity after the sub-steps and after the contact
-#   passes, contact impulse, flags; MW_WHEEL_RAY=1 the old ray wheel probe, MW_WHEEL_DECAL=1 wheels meet decal triangles)
+#   passes, contact impulse, flags; MW_WHEEL_RAY=1 the old ray wheel probe, MW_WHEEL_DECAL=1 wheels meet decal triangles;
+#   MW_STRUT_JOINT=0|pos|vel the strut joint left out / one of its passes only, MW_STRUT_STOP=1 the strut stop on every
+#   car (the game's only on a crashed one), MW_ROUGH=0 no surface bumps; A/B, research log 2026-10-19 "kerb captures")
 ./target/release/mostrusted --drive 911 --test smash --smash-speed 60 --screenshot <scratch>/smash.png   # props: cone, lamp, fence, wall
 #   --smash-set compounds: lamps etc. breaking into parts. Props collide in the world by default (--no-prop-physics)
 ./target/release/mostrusted --drive 911 --test kerb        # kerb strike (MW_TEST_KERB_H / _DEPTH / _ANGLE / _UP, MW_TEST_KMH)

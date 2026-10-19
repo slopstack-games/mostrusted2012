@@ -94,6 +94,46 @@ pub fn stop_excess(d: f32, slack: f32) -> Option<(f32, f32)> {
     Some((excess, (excess / d.max(f32::EPSILON)).clamp(0.0, 1.0)))
 }
 
+/// The strut joint's position pass (`FUN_00928cd0` → `FUN_009c6230` → `FUN_009c4050`, or `FUN_009c42d0` when the
+/// joint's +0x80 is set: the same with the wheel on an arc about the arm pivot +0x60), once per contact pass after
+/// the wheel constraints. The joint is the strut object (vehicle +0x10f0 + 8i): +0x40 top, +0x50 bottom in the
+/// chassis frame. The wheel record's centre predicted for the end of the tick (centre + v dt) is projected onto the
+/// strut predicted the same way (`FUN_009eab00`: chassis point + its velocity × dt), the projection clamped to the
+/// segment; what lies beyond (and anything across the strut) is removed in one go: the impulse err / dt through
+/// the effective mass (the chassis's at the wheel centre along err, `FUN_009e8230`, plus the wheel's 1/m) goes to
+/// the chassis at the wheel centre and against the wheel. `y_pred` is the predicted position along the strut
+/// relative to the rest position, `bottom` / `top` the strut's ends (negative / positive); returns the part of it
+/// beyond them (positive above the top), 0 within. The game skips errors at or below FLT_EPSILON (`.rdata`
+/// 0x010258a0).
+pub fn strut_position_error(y_pred: f32, bottom: f32, top: f32) -> f32 {
+    let err = if y_pred > top {
+        y_pred - top
+    } else if y_pred < bottom {
+        y_pred - bottom
+    } else {
+        0.0
+    };
+    if err.abs() > f32::EPSILON { err } else { 0.0 }
+}
+
+/// The strut joint's velocity pass (`FUN_00928fb0` → `FUN_009c62c0` → `FUN_009c3ae0`, or `FUN_009c3d70` for the
+/// arm), in each sub-step before the wheel contacts' impulse pass: the wheel's velocity relative to the chassis
+/// at its centre loses everything across the strut, and along it (`s`, positive towards the top) what would
+/// carry it past an end it is at: with the joint's position parameter `t` (+0x30: 0 at the bottom, 1 at the top)
+/// at 1 or more only `min(s, 0)` is kept, at 0 or less only `max(s, 0)`. Returns the part of `s` to remove (the
+/// impulse goes as in [`strut_position_error`], without the 1 / dt).
+pub fn strut_velocity_error(s: f32, t: f32) -> f32 {
+    let allowed = if t >= 1.0 {
+        s.min(0.0)
+    } else if t <= 0.0 {
+        s.max(0.0)
+    } else {
+        s
+    };
+    let err = s - allowed;
+    if err.abs() > f32::EPSILON { err } else { 0.0 }
+}
+
 /// Gravity on a wheel record in one sub-step (`FUN_009282d0`, the wheels' loop): its velocity gains
 /// (0, 1, 0) (`.rdata` 0x01024590) × 9.81 (`.bss` 0x01185f30, read in the snapshots) × h × h, both factors the
 /// sub-step's dt: a world-up change of 0.0007 m/s per sub-step at 60 Hz. The chassis's loop applies its own
@@ -119,6 +159,18 @@ fn sign(x: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strut_joint_limits_only_past_the_ends() {
+        assert_eq!(strut_position_error(0.02, -0.09, 0.05), 0.0);
+        assert!((strut_position_error(0.08, -0.09, 0.05) - 0.03).abs() < 1e-6);
+        assert!((strut_position_error(-0.12, -0.09, 0.05) + 0.03).abs() < 1e-6);
+        // At the top only the motion further up goes; at the bottom only further down; between, nothing.
+        assert_eq!(strut_velocity_error(1.5, 1.0), 1.5);
+        assert_eq!(strut_velocity_error(-1.5, 1.0), 0.0);
+        assert_eq!(strut_velocity_error(-1.5, 0.0), -1.5);
+        assert_eq!(strut_velocity_error(1.5, 0.5), 0.0);
+    }
 
     #[test]
     fn damper_never_reverses_the_strut() {
