@@ -588,7 +588,6 @@ fn spawn_route_markers(
 }
 
 /// Give the player's car (each new one after a swap too) its `Racer`.
-#[allow(clippy::type_complexity)]
 ///
 /// A car rebuilt during the race (a body shop's respray reloads ours; the game changes the paint of the same
 /// vehicle, `FUN_00748ff0` → message 0xc) keeps the race progress of the car it replaces.
