@@ -56,6 +56,7 @@ mod music;
 mod nitrous;
 mod paint_wear;
 mod particles;
+mod pass_mask;
 mod pause;
 mod player_sfx;
 mod police;
@@ -443,6 +444,8 @@ pub(crate) struct Loaded {
     mask_materials: HashSet<AssetId<GameMaterial>>,
     /// Models' own shadow distances (`loader::Msg::ShadowRange`).
     shadow_ranges: HashMap<ResourceId, f32>,
+    /// Models' pass masks (`loader::Msg::PassMask`, `pass_mask.rs`).
+    pass_masks: HashMap<ResourceId, u8>,
     instances: usize,
     /// Placements with physics (`props.rs`).
     props: usize,
@@ -906,7 +909,7 @@ fn main() -> anyhow::Result<()> {
         && cli.road_wetness > 0.0
         && matches!(request, Request::World { .. } | Request::Drive { world: true, .. });
     app.add_plugins(weather::WeatherPlugin { hud: menu_enabled })
-        .add_plugins(shadow_cull::ShadowCullPlugin)
+        .add_plugins((shadow_cull::ShadowCullPlugin, pass_mask::PassMaskPlugin))
         .add_plugins(lod::LodPlugin)
         .add_plugins(prewarm::PrewarmPlugin)
         .add_plugins(reflection::PlanarReflectionPlugin { enabled: reflection })
@@ -1265,6 +1268,9 @@ fn receive_assets(
             Msg::ShadowRange(id, d) => {
                 loaded.shadow_ranges.insert(id, d);
             }
+            Msg::PassMask(id, m) => {
+                loaded.pass_masks.insert(id, m);
+            }
             Msg::Instance { model, transform, lod } => {
                 let Some(parts) = loaded.models.get(&model) else { continue };
                 // Groundcover (model keys 0x6…, `loader::groundcover`) casts no shadows.
@@ -1300,6 +1306,9 @@ fn receive_assets(
                 });
                 if let Some(l) = lod {
                     root.insert(lod::ModelLod::new(l.table, l.scale, lod_meshes));
+                }
+                if let Some(&m) = loaded.pass_masks.get(&model) {
+                    root.insert(pass_mask::PassMask(m));
                 }
                 loaded.instances += 1;
             }
@@ -1352,7 +1361,7 @@ fn receive_assets(
                         lod: lod.map(|l| (l.table, l.scale)),
                     })
                 });
-                props::spawn_prop(
+                let root = props::spawn_prop(
                     &mut commands,
                     physics,
                     Transform::from_matrix(transform),
@@ -1363,6 +1372,9 @@ fn receive_assets(
                     standing,
                     found,
                 );
+                if let Some(&m) = loaded.pass_masks.get(&model) {
+                    commands.entity(root).insert(pass_mask::PassMask(m));
+                }
                 loaded.instances += 1;
                 loaded.props += 1;
             }

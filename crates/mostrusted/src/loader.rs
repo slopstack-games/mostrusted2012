@@ -147,6 +147,8 @@ pub enum Msg {
     Model(ResourceId, Vec<Part>),
     /// A model's own shadow distance (`Model` +0x0C, metres), sent before its `Model` when it is finite.
     ShadowRange(ResourceId, f32),
+    /// A model's pass-mask bits that keep it out of some views (`pass_mask.rs`), sent before its `Model`.
+    PassMask(ResourceId, u8),
     Instance {
         model: ResourceId,
         transform: Mat4,
@@ -285,7 +287,9 @@ pub fn spawn(
                 standing_models: HashMap::new(),
                 lods: crate::lod::LodSettings::from_env().enabled,
                 main_view: HashMap::new(),
+                pass_masks: HashMap::new(),
                 all_passes: std::env::var_os("MW_ALL_PASSES").is_some(),
+                standin_shadows: std::env::var("MW_STANDIN_SHADOWS").is_ok_and(|v| v != "0"),
             };
             if let Err(e) = w.run(request) {
                 let _ = w.tx.send(Msg::Progress(format!("loader error: {e:#}")));
@@ -343,10 +347,14 @@ struct Worker {
     prop_physics: HashMap<(ResourceId, mw_assets::props::ObjectKind), Option<Arc<crate::props::PropPhysics>>>,
     /// LOD table per model (`lod.rs`), `None` for models without one.
     lod_tables: HashMap<ResourceId, Option<Arc<crate::lod::LodTable>>>,
-    /// Whether the game's main view draws a model (`Model` +0x19 pass mask, [`Self::in_main_view`]).
-    main_view: HashMap<ResourceId, bool>,
+    /// Models' `Model` +0x19 pass masks ([`Self::pass_mask`]; 0 with `MW_ALL_PASSES=1`).
+    main_view: HashMap<ResourceId, u8>,
+    /// Pass masks by variant key, sent with the model (`Msg::PassMask`, `pass_mask.rs`).
+    pass_masks: HashMap<ResourceId, u8>,
     /// `MW_ALL_PASSES=1`: also draw models the main view skips (A/B).
     all_passes: bool,
+    /// `MW_STANDIN_SHADOWS=1`: the ground stand-ins' SHADOW states cast shadows (`pass_mask.rs`).
+    standin_shadows: bool,
     /// Per compound definition: the models it draws while standing (see [`Self::compound_standing`]).
     standing_models: HashMap<ResourceId, StandingModels>,
     /// Apply the game's LOD rule to world placements (off with `MW_NO_LOD=1`).
@@ -929,13 +937,35 @@ impl Worker {
                 }
                 // Static placements (no physics, not a backdrop) are merged per material below.
                 let physics = p.object.and_then(|(object, kind)| self.prop_physics(object, kind));
-                // Models whose pass mask excludes the main view (coarse terrain for the shadow, cube-map
-                // and reflection views) are not drawn. Placements with physics keep their model (model
+                // Models whose pass mask excludes every view we render are not drawn; the others go only into
+                // the views that draw them (`pass_mask.rs`). Placements with physics keep their model (model
                 // decision: no collision-only body yet).
-                if physics.is_none() && !self.in_main_view(p.model) {
+                let mask = self.pass_mask(p.model);
+                if physics.is_none() && !crate::pass_mask::PassMask::drawn(mask) {
                     continue;
                 }
-                if !self.filter.no_merge && !p.backdrop && physics.is_none() {
+                // The coarse ground stand-ins (mask 0x04) are drawn in the shadow cascades and the planar
+                // reflection only. The shadow pass draws a model's SHADOW state when it has one
+                // (`FUN_008a02f0`): for these a `WorldShadow` mesh, lower than the tile (the tile itself would
+                // shade the roads it cuts through), placed as a shadow-only instance under the draw distance.
+                // Model decision: off unless `MW_STANDIN_SHADOWS=1` (those meshes still stand up to 3 m over
+                // 3,100 m² of driven road, `mwtool terrain-check --only shadow`, and put whole carriageways in
+                // shadow at a low sun; the shadow views' eye for the LOD / shadow-distance test is not traced).
+                if physics.is_none() && mask & mw_formats::Model::PASS_MAIN != 0 {
+                    let look = InstanceLook::from_placement(&p);
+                    let shadow = Variant { lod: mw_formats::Model::STATE_SHADOW as u8, ..variant };
+                    if self.standin_shadows
+                        && mask & mw_formats::Model::PASS_SHADOW == 0
+                        && let Some(key) = self.model_variant(p.model, shadow, look)?
+                    {
+                        let lod = self.placement_lods(&p, key, shadow, look, false)?;
+                        self.send(Msg::Instance { model: key, transform: game_matrix(&p.transform), lod })?;
+                    }
+                    if mask & mw_formats::Model::PASS_PLANAR != 0 {
+                        continue;
+                    }
+                }
+                if !self.filter.no_merge && !p.backdrop && physics.is_none() && mask == 0 {
                     // A compound without physics only ever stands: its standing model (`compound_standing`).
                     let model = match p.object {
                         Some((object, mw_assets::props::ObjectKind::Compound)) => {
@@ -967,12 +997,16 @@ impl Worker {
     /// Whether the game's main view draws `model`: its pass mask (`Model` +0x19) has no main-view bit
     /// (`mw_formats::Model::PASS_MAIN`; the main view's query excludes `0x4000000`, docs/decomp.md "Model pass
     /// mask"). Always true with `MW_ALL_PASSES=1`.
-    fn in_main_view(&mut self, model: ResourceId) -> bool {
+    /// The bits of a model's pass mask that this port applies (`pass_mask.rs`); 0 with `MW_ALL_PASSES=1`.
+    fn pass_mask(&mut self, model: ResourceId) -> u8 {
         if self.all_passes {
-            return true;
+            return 0;
         }
         let store = &self.store;
-        *self.main_view.entry(model).or_insert_with(|| store.model(model).ok().is_none_or(|m| m.in_main_view()))
+        *self
+            .main_view
+            .entry(model)
+            .or_insert_with(|| store.model(model).map_or(0, |m| m.pass_mask & crate::pass_mask::PassMask::USED))
     }
 
     /// Send a track unit's static placements: models placed once in the unit whose parts can all share a
@@ -1125,6 +1159,9 @@ impl Worker {
             if let Some(&d) = self.shadow_ranges.get(&key) {
                 self.send(Msg::ShadowRange(key, d))?;
             }
+            if let Some(&m) = self.pass_masks.get(&key) {
+                self.send(Msg::PassMask(key, m))?;
+            }
             self.send(Msg::Model(key, parts))?;
         }
         Ok(())
@@ -1181,6 +1218,19 @@ impl Worker {
         {
             self.shadow_ranges.insert(key, m.shadow_distance);
         }
+        let mut mask = self.pass_mask(id);
+        // A stand-in's SHADOW state is its only shadow caster and is drawn in no other view; its LODs cast no
+        // shadow (`pass_mask.rs`; one stand-in has no SHADOW state: no caster, model decision).
+        if mask & mw_formats::Model::PASS_MAIN != 0 {
+            if variant.lod as usize == mw_formats::Model::STATE_SHADOW {
+                mask = mw_formats::Model::PASS_MAIN | mw_formats::Model::PASS_PLANAR;
+            } else {
+                mask |= mw_formats::Model::PASS_SHADOW;
+            }
+        }
+        if mask != 0 {
+            self.pass_masks.insert(key, mask);
+        }
         let meshes = match variant.lod {
             0 => self.store.model_meshes(id, 0).map_err(anyhow::Error::from),
             l => self
@@ -1208,7 +1258,10 @@ impl Worker {
                     None => continue,
                 }
             }
-            if mw_assets::is_hidden_shader(&sm.shader_name) {
+            // The SHADOW state's own meshes (`WorldShadow_*`) are kept for the shadow-only instances.
+            let shadow_mesh =
+                variant.lod as usize == mw_formats::Model::STATE_SHADOW && sm.shader_name.starts_with("WorldShadow");
+            if mw_assets::is_hidden_shader(&sm.shader_name) && !shadow_mesh {
                 continue;
             }
             if let Some(mask) = variant.bones {

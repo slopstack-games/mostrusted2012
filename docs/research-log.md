@@ -10,6 +10,69 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-19: terrain through the road, the rest: what is left is authored; the pass mask per view
+Follow-up of the 2026-10-16 entry (user: "terrain still sticks through the road in some places").
+- **`mwtool terrain-check`, now LOD-aware**: a poke counts only against roads **drawn at the same time** as the
+  ground (each main mesh carries the LOD states it is drawn at; under `FUN_008a02f0` a placement is at LOD l
+  while the camera's distance to its placed LOD0 sphere centre lies in `r + d[l−1]·s·V .. r + d[l]·s·V`; two
+  meshes are drawn together when the two shells meet), lower-LOD roads are included, each sample is classified
+  by the collision under it (`driven`: collision at the road mesh; `buried`: the collision follows the ground),
+  and each cluster gets a lower bound for the distance it can be seen from and a `--camera` standing on a driven
+  road 12–25 m away (`--within`, `--driven`, `--only lod-ground|shadow`). The old "LOD1/2" numbers compared
+  every lower-LOD mesh, LOD-shared states twice, with only LOD0 roads.
+- **Numbers** (all units, V 1.5, eps 5 cm): LOD0 ground over a simultaneous road 7,700 m² (6,514 driven, the rest
+  buried or off-collision); the composed backdrop 866 m²; lower LODs: terrain / plot shaders 22,500 m², other
+  shaders (the merged `WorldPBR_Diffuse_AO_PersistentLightmap` LOD meshes, foliage cards) 81,600 m², but only
+  5,480 m² of that can be seen from closer than 150 m over driven road, almost all at the airport terminal
+  plazas (zones 40 / 55 / 57: planters and LOD tree cards).
+- **Looked at** (headless screenshots from the printed cameras, `extracted/terrain2/main/m1..12.png`,
+  `extracted/terrain2/bd/m1..9.png`): the 12 largest LOD0 clusters are raised planters and verges standing in
+  plaza / pavement meshes that are `DriveableSurface` (airport terminal (-1564, 58, -3342) / (-1386, 58, -3318),
+  (-1424, 61, -3202), the brick planter at (1804, 24, 1752)), grass behind retaining walls (431, 46, 2379),
+  (1818, 24, 1922), a sidewalk at (1648, 21, 1509): the road mesh continues under authored kerbs and walls,
+  nothing shows through the asphalt. The backdrop clusters near roads (zone 142, (-188, 27, -1104)) are verge
+  slivers under 1 m beside the carriageway, not visible as ground over the road. Ground 0–5 cm under the road
+  covers 9,900 m² of LOD0 (coplanar, no z-fighting with our reverse-Z depth).
+- **The original hides nothing else**: `DriveableSurface`, `TerrainPBR_*` and `PlotPBR_*` use the same
+  `MaterialState`s (depth-only pass `01000006d4f4dae8`, G-buffer passes `01000006713dc05f`: same depth-stencil
+  block, rasteriser `3 3 1 0 0 0`, no depth bias or slope bias) and the same `ViewProjectionModified` projection
+  (no z offset). Roads are not decals over the ground, so every remaining overlap is the data's and also in the
+  original, with our LOD rule (`lod.rs`, the game's) choosing the same meshes. Conclusion: no further change to
+  what the main view draws.
+- **The pass mask per view** (`pass_mask.rs`; decomp.md "Model pass mask"): placements carry their model's mask
+  to their meshes as render layers: bit 4 → not in the main camera, bit 8 → not in the planar reflection
+  camera (`--planar-reflection`; roads 0x09 no longer mirror themselves, nor props / fences 0x08 / 0x1a), bit 1
+  → `NotShadowCaster` (roads, 0x03 / 0x0b buildings, 885 instances of four 0x0b trees, lit signs). The 230 ground
+  stand-ins are now spawned for the planar reflection (no shadow from their LOD0). Survey: `mwtool terrain-check
+  --masks`. A/B against session-11 (headless, `extracted/terrain2/ab/*_{before,after}.png`): terrain-road MAD
+  0.98 / 255 (groundcover sway only), terrain-road-2 at 17.5 h 0.33, road-cliff 0.28, city-lod-check 0.02,
+  airfield-arch 0.07, road-wet with `--planar-reflection` 0.25. `--test accel` unchanged (3.58 s), `--test smash`
+  passes.
+- **Stand-in shadows** (the open item "can we draw them shadow-only?"): yes, but the shadow pass draws a model's
+  SHADOW state (state 6, `FUN_008a02f0`); 215 of the 216 `TerrainPBR` stand-ins have one, a `WorldShadow` mesh
+  lower than the tile (`11e76144`: top 41.7 m against 43.5; `cdd14f40`: 48.6 against 61.9;
+  `terrain-check --model <id>`). Drawn with the tile itself as caster the slip road at terrain-road went dark.
+  With the SHADOW meshes (shadow-only layer, LOD rule = draw distance) terrain-road is unchanged, but those
+  meshes still stand up to 3 m over 3,100 m² of driven road (`terrain-check --only shadow`: (-1518, 13, 3216),
+  (119, 48, -2032), (-42, 37, -76) ...) and at terrain-road-2 at 17.5 h they put all four carriageways in shadow
+  (`extracted/terrain2/ab/tr2-h17_standin.png`). **Model decision**: off by default, `MW_STANDIN_SHADOWS=1` turns
+  them on, until a capture decides (the shadow views' eye for the LOD and shadow-distance test is not traced; a far
+  eye would cull these 200 m models in the shadow pass).
+- **View +0x17150** (bit 0x10): a second full world view with its own eye, set up like the +0x172e0 one, gated by
+  `FUN_00798840` (byte +0x48 of the first element of a renderer list, +0x31bf8) or `FUN_0069ff40()` +0x45. Not the
+  water's reflection (the water shaders read a cube map). Not identified.
+- **Mask 0x1f**: locators (single 0.24 m triangles, 1169 dynamics of `79a1dfbc`), flat quads, six large
+  `Illuminance` sheets near (1500, 20, 1500) and 1004 instances of a small 80-triangle object `80505b9d`; not drawn.
+- **Model decisions**: bit 1 also keeps casters out of the headlight's shadow map (its view's mask is not traced);
+  compound pieces spawned after a smash carry no mask (layer 0); the one stand-in without a SHADOW state casts
+  nothing; the stand-ins' LOD0 is spawned (hidden in every view but the planar reflection) even without
+  `--planar-reflection`.
+- **Captures that would confirm** (F12, same camera, 13 h unless noted): terrain-road-2 at 17.5 h (stand-in
+  shadows: are the four carriageways in shadow?), the airport terminal plaza at
+  `--camera=-1546.5,59.7,-3341.8,-1564.5,58.2,-3342.5` (planter as here), (-1518, 13, 3216) at a low sun, a wet
+  road with a lamp post or tree beside it (planar reflection without the road's own props: bit 8), and a tree of
+  the 0x0b models (no shadow) once identified by position.
+
 ### 2026-10-16: car collision effects: glass, sparks, dust and debris from the game's rules
 User request (session 10): "particle effects for crashing are missing somewhat, stuff like broken glass when crashing
 into traffic vehicles, and other crash particles in general". Before: every body contact of a race car played the

@@ -127,6 +127,12 @@ MW_TRAFFIC_LAMP_SHOTS=<dir>,2.5,12 ./target/release/mostrusted --drive 911 --uni
 ./target/release/mwtool placement-check --top 10             # placements vs the collision under them, per layer / model
 ./target/release/mwtool terrain-check --top 30               # drawn ground above road meshes (terrain through the road), ranked
 #   --all-passes / runtime MW_ALL_PASSES=1: also the models whose pass mask (Model +0x19) skips the main view (A/B)
+#   only roads drawn at the same time count (LOD shells, --scale 1.5); --only main|lod|lod-ground|backdrop|shadow,
+#   --within <m> (seen from closer), --driven (collision at the road); each cluster prints a --camera on the road
+./target/release/mwtool terrain-check --masks                # pass masks per layer / shader family; never-drawn models
+./target/release/mwtool terrain-check --model 11e76144       # one model: pass mask, LOD / shadow distances, renderable per state
+# Runtime pass masks (pass_mask.rs): MW_PASS_MASK_LOG=1 (meshes per view layer), MW_STANDIN_SHADOWS=1 (the ground
+# stand-ins' SHADOW meshes cast; off by default, model decision)
 ./target/release/mwtool water                                # water meshes: height, listing zones, drawn water over dry ground (MW_WATER_AT=x,z ...)
 ./target/release/mwtool mods 911                             # performance upgrades: slot -> parameter changes
 ./target/release/mwtool sampler-usage --filter Driveable     # the game's sampler states per shader slot

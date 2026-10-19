@@ -508,12 +508,27 @@ enum Cmd {
         eps: f32,
         #[arg(long, default_value_t = 30)]
         top: usize,
-        /// Only one kind of ground: main, lod, backdrop.
+        /// Only one kind of ground: main, lod, lod-ground, backdrop, shadow (the stand-ins' SHADOW meshes).
         #[arg(long)]
         only: Option<String>,
         /// Also count models the main view skips (`Model` +0x19 pass mask), as drawn before 2026-10-16.
         #[arg(long)]
         all_passes: bool,
+        /// The view's LOD scale (`FUN_008b5fe0`), for which LODs are drawn together.
+        #[arg(long, default_value_t = 1.5)]
+        scale: f32,
+        /// Only pokes that can be seen from closer than this (metres).
+        #[arg(long, default_value_t = f32::INFINITY)]
+        within: f32,
+        /// Only pokes over a driven road (collision at the road mesh).
+        #[arg(long)]
+        driven: bool,
+        /// Instead: the `Model` +0x19 pass masks of every main placement, per layer and shader family.
+        #[arg(long)]
+        masks: bool,
+        /// Instead: one model's pass mask, LOD / shadow distances and per-state renderables (hex id).
+        #[arg(long)]
+        model: Option<String>,
     },
     /// The world's model LOD tables and placement LOD scales (docs/decomp.md "Model LOD and draw distance");
     /// `--at x,y,z` counts what the game would draw from there at view scale `--scale`.
@@ -917,9 +932,19 @@ fn main() -> Result<()> {
             }
         }
         Cmd::Police => police(&AssetStore::new(game)?)?,
-        Cmd::TerrainCheck { step, eps, top, only, all_passes } => {
+        Cmd::TerrainCheck { step, eps, top, only, all_passes, scale, within, driven, masks, model } => {
             let store = AssetStore::new(game)?;
-            terrain_check::run(&store, step, eps, top, only.as_deref(), all_passes)?
+            if let Some(m) = model {
+                return terrain_check::model(&store, mw_bundle::ResourceId(u64::from_str_radix(&m, 16)?));
+            }
+            if masks {
+                return terrain_check::masks(&store);
+            }
+            let only = only.as_deref();
+            terrain_check::run(
+                &store,
+                terrain_check::Options { step, eps, top, only, all_passes, scale, within, driven },
+            )?
         }
         Cmd::Water { wash, step, top, all_backdrops } => {
             water::run(&AssetStore::new(game)?, &wash, step, top, !all_backdrops)?

@@ -1839,7 +1839,7 @@ meshes; 1835 of the 3668 world models have one); compounds that can break draw t
 (only the cull applies); backdrops keep the zone composition (no LOD rule); `--merge-static` merges LOD0 without
 the rule; L = 1 (`MW_LOD_SCALING`), the render target's pixels for L = 2.
 
-## Model pass mask (2026-10-16, applied to the main view in `loader.rs`)
+## Model pass mask (2026-10-16; per view since 2026-10-19, `pass_mask.rs`)
 
 `Model` +0x19 is a bit mask of the **views that skip the model**. Instances: `FUN_00553810` inserts each
 `InstanceList` instance into the culling structure (a 0x30-byte record through `FUN_00541850`: bounding sphere
@@ -1862,8 +1862,33 @@ The consumer of the queries is a job not in the dump. Runtime objects (compounds
 `FUN_00538b00`, which skips a model when `Model+0x19 & mask != 0`; its callers pass 4 (main view, LOD scale
 +0x1ee8c), 1 (shadow, state 6), 2, 8 and 0x10. Data: roads 0x09, lit signs 0x01, props / fences 0x08 / 0x1a,
 230 coarse terrain tiles 0x04 (shadow, cube-map and reflection stand-ins: drawn in the main view they cut through
-roads), 1007 instances and 1337 dynamics 0x1f. Port: placements of models with bit 4 are not spawned
-(`mw_formats::Model::in_main_view`); bits 1, 2, 8 are not applied (model decision, research log 2026-10-16).
+roads), 1007 instances and 1337 dynamics 0x1f. Port (`pass_mask.rs`, research log 2026-10-19): bit 4 keeps a
+model out of the main camera, bit 8 out of the planar reflection camera (render layers), bit 1 makes it cast no
+shadow; bit 2 has no counterpart (no cube-map views). The stand-ins' shadow caster in the game is their SHADOW
+state (`FUN_008a02f0` draws state 6 in the shadow pass; 215 of the 216 `TerrainPBR` stand-ins have a
+`WorldShadow_Opaque_Singlesided` renderable there, lower than the tile); here it casts only with
+`MW_STANDIN_SHADOWS=1` (model decision). `mwtool terrain-check --masks` lists the masks per layer and shader family.
+
+The rendering of road and ground gives no other way to hide an overlap: `DriveableSurface`, `TerrainPBR_*` and
+`PlotPBR_*` share the same `MaterialState`s (`01000006d4f4dae8` for the depth-only pass, `01000006713dc05f` for the
+G-buffer passes; identical depth-stencil blocks, rasteriser block `3 3 1 0 0 0 …`: solid, cull back, and in the
+D3D11 field order depth bias, bias clamp and slope-scaled bias all 0), and
+their vertex programs project through the same `ViewProjectionModified` (z and w from one row, no offset). Roads are
+not decals over the ground: what stands above the road surface in the data is visible in the original too.
+
+**View +0x17150** (bit 0x10): a second full world view with its own eye (+0x17200), set up like the +0x172e0
+view (`FUN_00539530` with the same pass ids 0x18 / 0x39 / 0x3a / 0x3b, render pass groups 0x14 / 0x15 against 0x16
+/ 0x17 for +0x172e0), gated by `+0x1cc13`, `FUN_00798840` (byte +0x48 of the first element of a list at renderer
++0x31bf8 / +0x31bfc, 0 when the list is empty) or `FUN_0069ff40()` +0x45, and `+0x8bc6f` of the frame
+parameters. Not identified. It is not the water's reflection: `Water_*` read `ReflectionTextureSampler` as a
+`texturecube` (`dcl_resource_texturecube t0`). Models with bit 0x10 are mostly props, fences, trees and flags
+(masks 0x18–0x1b), i.e. small objects also kept out of the planar reflection.
+
+**Mask 0x1f** (no view): 1004 instances of `80505b9d` (a 0.24 × 0.93 × 0.14 m, 80-triangle `World_Diffuse_Specular`
+object), 1169 dynamics of `79a1dfbc` and a dozen others that are one 0.24 m `Diffuse_1Bit` triangle (locators),
+flat 2-triangle `Diffuse_Opaque` quads, and six 50–150 m `World_Diffuse_Specular_Illuminance` sheets around
+(1500, 20, 1500); mask 0x0f: a road strip `ecc052cf` and flat quads below ground. None is drawn here; whether
+another system draws them is not known.
 
 ## Sky, sun and shadows
 

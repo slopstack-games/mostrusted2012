@@ -507,7 +507,7 @@ pub fn spawn_prop(
     lod: Option<(Arc<crate::lod::LodTable>, f32)>,
     standing: bool,
     found: Option<MeshSets>,
-) {
+) -> Entity {
     let pieces = pieces.filter(|p| physics.compound.as_ref().is_some_and(|c| c.parts.len() == p.parts.len()));
     let mut e = commands.spawn((transform, Visibility::default(), PropBody::new(physics.clone(), transform, true)));
     // The meshes under the game's LOD rule (`lod.rs`) and the LODs each is drawn at.
@@ -536,7 +536,7 @@ pub fn spawn_prop(
                     });
                     e.insert(BillboardFaces { advert: groups[0], found: groups[1], shown: None });
                     e.insert(Compound { meshes: pieces, range, parts: vec![None; n], smashed: false });
-                    return;
+                    return e.id();
                 }
                 None => e.with_children(|c| lod_meshes = spawn_sets(c, sets, managed)),
             };
@@ -572,6 +572,7 @@ pub fn spawn_prop(
     if let Some((table, scale)) = lod {
         e.insert(crate::lod::ModelLod::new(table, scale, lod_meshes));
     }
+    e.id()
 }
 
 fn spawn_meshes(
