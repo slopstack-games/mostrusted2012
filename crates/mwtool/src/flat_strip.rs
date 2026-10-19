@@ -241,6 +241,7 @@ pub fn find(
 
 /// Square approaches to kerbs: for every low steep face, the level run-up straight towards it along its normal
 /// (the face's normal points at the car that meets it), and the level ground after it.
+#[allow(clippy::type_complexity)]
 fn kerb_runs(g: &Grid, tol: f32, surface: Option<u8>) -> Result<()> {
     let ok = |s: Option<(f32, u8)>| s.filter(|s| surface.is_none_or(|w| s.1 == w));
     let mut out: Vec<(f32, f32, [f32; 3], [f32; 3], f32, f32)> = Vec::new();

@@ -968,13 +968,13 @@ pub fn service(dir: &str) {
         let done = s.script.is_none() && s.script_done.is_some();
         let log_over =
             s.log.as_ref().is_some_and(|l| l.end.is_some_and(|e| s.sim_t - l.start.unwrap_or(s.sim_t) > e + 0.05));
-        if (done && s.log.as_ref().is_some_and(|l| l.end.is_some())) || log_over {
-            if let Some(l) = s.log.take() {
-                let n = l.ticks;
-                flush_log(l, true);
-                drop(s);
-                log(&format!("log finished: {n} rows"));
-            }
+        if ((done && s.log.as_ref().is_some_and(|l| l.end.is_some())) || log_over)
+            && let Some(l) = s.log.take()
+        {
+            let n = l.ticks;
+            flush_log(l, true);
+            drop(s);
+            log(&format!("log finished: {n} rows"));
         }
     }
     let req = format!("{dir}\\cmd.req");
