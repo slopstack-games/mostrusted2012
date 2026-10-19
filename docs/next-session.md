@@ -93,7 +93,9 @@ Added by the user (2026-10-16); the ones marked (2026-10-16: ...) were worked on
   code, and list what is missing before implementing).
 - **UI scaling and positioning** (added 2026-10-19): the UI's scale and placement are still wrong (HUD, menus,
   pop-ups): compare against screenshots of the original at the same resolution and take the layout from the
-  game's own UI data / code, not by eye.
+  game's own UI data / code, not by eye. The UI also does not rescale when the window is resized, and loading
+  screens are not full screen when the window is taller than wide (a portrait window: the cover / fit rule per
+  aspect ratio is wrong). Session 11's UI agent works on this.
 
 
 New this session: `mwtool water`, `mwtool terrain-check`, `mwtool siren`, `mwtool speech`, `mwtool ai-graph`,
