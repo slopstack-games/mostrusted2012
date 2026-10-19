@@ -155,6 +155,8 @@ pub enum Msg {
     },
     /// The streaming zones (`ZoneList`), for the groundcover residency (`groundcover.rs`).
     Zones(mw_formats::ZoneList),
+    /// The camera zones that show the `Instance`s that follow (`zone_view.rs`); `None` ends the tagging.
+    ZoneTag(Option<crate::zone_view::ZoneTag>),
     /// A track unit (= zone) has been sent completely: its collision, placements and groundcover
     /// (`frontend::Residency`).
     UnitLoaded(u32),
@@ -209,9 +211,13 @@ pub enum Msg {
 /// Which `InstanceList` backdrop entries to draw (see `mw_assets::backdrop`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum BackdropMode {
-    /// One backdrop per place: a backdrop triangle is drawn where the zone owning its position lists its
-    /// model, i.e. what the game shows there when the player stands in that zone.
+    /// As the game: every backdrop model whole, shown while the camera's zone lists it, and each unit's main
+    /// placements while the unit is that zone or a neighbour (`zone_view.rs`).
     #[default]
+    CameraZone,
+    /// One backdrop per place: a backdrop triangle is drawn where the zone owning its position lists its
+    /// model, i.e. what the game shows there when the player stands in that zone; every unit's main
+    /// placements always (`--composed-backdrop`).
     Composed,
     /// Every unit's backdrop, unfiltered (all LOD tiers on top of each other; debug).
     All,
@@ -871,7 +877,7 @@ impl Worker {
         });
 
         // Backdrop composition needs every unit's backdrop list, also of units not streamed.
-        if self.filter.backdrop == BackdropMode::Composed {
+        if matches!(self.filter.backdrop, BackdropMode::Composed | BackdropMode::CameraZone) {
             self.send(Msg::Progress("indexing backdrops".into()))?;
             let listings = placed.iter().flat_map(|(name, placements, _)| {
                 let unit = track_unit_number(name);
@@ -886,6 +892,21 @@ impl Worker {
         }
 
         let total = max_units.unwrap_or(placed.len()).min(placed.len());
+        // Camera-zone mode: the streamed units listing each backdrop placement.
+        let camera_zone = self.filter.backdrop == BackdropMode::CameraZone && zones.is_some();
+        let mut listing: HashMap<(ResourceId, [u32; 16]), Vec<u32>> = HashMap::new();
+        if camera_zone {
+            for (name, placements, _) in placed.iter().take(total) {
+                let Some(unit) = track_unit_number(name) else { continue };
+                for p in placements.iter().filter(|p| p.backdrop) {
+                    let bits = std::array::from_fn(|i| p.transform[i / 4][i % 4].to_bits());
+                    let units = listing.entry((p.model, bits)).or_default();
+                    if !units.contains(&unit) {
+                        units.push(unit);
+                    }
+                }
+            }
+        }
         if let Some(sel) = &mut self.backdrop {
             sel.set_loaded(placed.iter().take(total).filter_map(|(name, _, _)| track_unit_number(name)));
         }
@@ -904,6 +925,9 @@ impl Worker {
                 }
             }
             let unit = track_unit_number(&name);
+            let unit_tag =
+                |u: Option<u32>| Msg::ZoneTag(u.filter(|_| camera_zone).map(crate::zone_view::ZoneTag::Unit));
+            self.send(unit_tag(unit))?;
             let mut statics = Vec::new();
             for p in placements {
                 if self.filter.exclude.contains(&p.model) {
@@ -921,6 +945,29 @@ impl Worker {
                                 continue;
                             }
                             variant.compose_backdrop = Some(p.transform);
+                        }
+                        // Sent once, whole, shown while the camera's zone lists it.
+                        BackdropMode::CameraZone if camera_zone => {
+                            let bits = std::array::from_fn(|i| p.transform[i / 4][i % 4].to_bits());
+                            if !self.backdrop_sent.insert((p.model, bits)) {
+                                continue;
+                            }
+                            let units = listing.get(&(p.model, bits)).cloned().unwrap_or_default();
+                            let look = InstanceLook::from_placement(&p);
+                            self.send(Msg::ZoneTag(Some(crate::zone_view::ZoneTag::Backdrop(units.into()))))?;
+                            if let Some(model) = self.model_variant(p.model, variant, look)? {
+                                self.send_placement(model, &p, variant, look)?;
+                            }
+                            // The composed cut for a free camera high above the ground (`zone_view::AERIAL`).
+                            if self.backdrop.is_some() {
+                                let composed = Variant { compose_backdrop: Some(p.transform), ..variant };
+                                self.send(Msg::ZoneTag(Some(crate::zone_view::ZoneTag::Composed)))?;
+                                if let Some(model) = self.model_variant(p.model, composed, look)? {
+                                    self.send_placement(model, &p, composed, look)?;
+                                }
+                            }
+                            self.send(unit_tag(unit))?;
+                            continue;
                         }
                         // Unfiltered backdrops mix needed world-space geometry (terrain, water, horizon)
                         // with LOD2 stand-ins for buildings whose detailed versions are also loaded.
@@ -954,6 +1001,7 @@ impl Worker {
                 }
             }
             self.send_merged(std::mem::take(&mut statics))?;
+            self.send(Msg::ZoneTag(None))?;
             self.parts.clear();
             self.store.evict_all();
             if let Some(unit) = unit {

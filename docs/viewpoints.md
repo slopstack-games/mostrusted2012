@@ -20,6 +20,7 @@ the camera unless `--timeline <id|default>` is given (screenshots taken before 2
 | props-roadside | `--camera=-1145,21,1712,-1157.5,19,1728 --mute` | props: tyres, barrels, pallet, sign beside the guard rail (full map, ~25 s load) |
 | lamp-post | `--camera=-1112,24,1640,-1130,20,1630 --mute` | compound-object street lamp upright next to a tree |
 | grass-tufts | `--camera=-1130,26.5,1599,-1135.5,24.5,1608 --mute` | groundcover: grass tufts (lit, textured; black before the 2026-10-06 normal fix) on a lawn next to a wall (full map; `--no-groundcover` to compare) |
+| airfield-exit | `--camera=-210,60,-2100,0,85,-2025 --mute` | the road west out of the tunnel (zone 43) towards the airfield, looking back at the portal: the hill over it with standing trees and groundcover (zone 42's backdrop `15f3021b`); with `--composed-backdrop` the trees and sprites float in the sky (2026-10-19) |
 | airfield-arch | `--camera=600,400,-600,300,0,-2000 --mute` | southern mountains; known seam: the mountain north of the airfield is cut into an arch where zones 46/55 do not list it |
 | tyre-smoke-drift | `--drive 911 --test drift --screenshot-time 9` | tyre smoke clouds behind the sliding car on the test track (`--test handbrake --screenshot-time 7.5` for the handbrake tap) |
 | crash-sparks | `--drive 911 --units 12 --auto-throttle 1 --screenshot-after-impact 0.04` | the car hits the guard rail west of downtown at ~80 km/h: spark spray and wheel dust |

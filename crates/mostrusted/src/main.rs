@@ -87,6 +87,7 @@ mod world_coronas;
 mod world_lights;
 mod world_sfx;
 mod world_ui;
+mod zone_view;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -209,13 +210,16 @@ struct Cli {
     #[arg(long)]
     merge_static: bool,
     /// Debug: draw the backdrop of every track unit unfiltered (all LOD tiers stacked: coarse terrain and
-    /// building stand-ins overlap the detailed world). The default composes one backdrop per place from the
-    /// zone that owns it.
+    /// building stand-ins overlap the detailed world). The default draws the camera zone's backdrop.
     #[arg(long, conflicts_with_all = ["no_backdrop", "backdrop_zone"])]
     all_backdrops: bool,
     /// Debug: draw only this track unit's backdrop, as the game does while the player is in that unit.
     #[arg(long, conflicts_with = "no_backdrop")]
     backdrop_zone: Option<u32>,
+    /// Draw one backdrop composed per place from the zone owning it, and every unit's main geometry (the
+    /// behaviour before 2026-10-19). The default follows the camera's zone as the game does (`zone_view.rs`).
+    #[arg(long, conflicts_with_all = ["no_backdrop", "all_backdrops", "backdrop_zone"])]
+    composed_backdrop: bool,
     /// Debug: with --all-backdrops or --backdrop-zone, also draw backdrop LOD2 stand-ins.
     #[arg(long)]
     keep_lod_proxies: bool,
@@ -444,6 +448,8 @@ pub(crate) struct Loaded {
     /// Models' own shadow distances (`loader::Msg::ShadowRange`).
     shadow_ranges: HashMap<ResourceId, f32>,
     instances: usize,
+    /// The tag for the world placements being received (`loader::Msg::ZoneTag`, `zone_view.rs`).
+    zone_tag: Option<zone_view::ZoneTag>,
     /// Placements with physics (`props.rs`).
     props: usize,
     status: String,
@@ -714,7 +720,8 @@ fn main() -> anyhow::Result<()> {
             (true, _, _) => loader::BackdropMode::None,
             (_, true, _) => loader::BackdropMode::All,
             (_, _, Some(unit)) => loader::BackdropMode::Zone(unit),
-            _ => loader::BackdropMode::Composed,
+            _ if cli.composed_backdrop => loader::BackdropMode::Composed,
+            _ => loader::BackdropMode::CameraZone,
         },
         no_groundcover: cli.no_groundcover,
         no_merge: !cli.merge_static,
@@ -1076,11 +1083,13 @@ fn main() -> anyhow::Result<()> {
         .insert_resource(ClearColor(Color::srgb(0.55, 0.68, 0.85)))
         .init_resource::<Loaded>()
         .init_resource::<groundcover::GroundcoverResidency>()
+        .init_resource::<zone_view::ZoneView>()
         .add_systems(Startup, (setup, cpu_light_clustering))
         .add_systems(Update, (start_loader, receive_assets, update_status, auto_screenshot))
         .add_systems(
             PostUpdate,
-            groundcover::groundcover_visibility
+            (zone_view::zone_view_visibility, groundcover::groundcover_visibility)
+                .chain()
                 .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
         )
         .add_systems(Update, (drive_vehicle_lights, apply_vehicle_lights).chain());
@@ -1218,7 +1227,7 @@ fn receive_assets(
     mut opponents: ResMut<ai::Opponents>,
     mut surfaces: ResMut<props::WorldSurfaces>,
     (mut traffic_models, mut parked_models): (Option<ResMut<traffic::TrafficModels>>, ResMut<jackspots::ParkedModels>),
-    mut residency: ResMut<groundcover::GroundcoverResidency>,
+    (mut residency, mut zone_view): (ResMut<groundcover::GroundcoverResidency>, ResMut<zone_view::ZoneView>),
     mut streamed: ResMut<frontend::Residency>,
 ) {
     let Some(channel) = channel else { return };
@@ -1301,9 +1310,14 @@ fn receive_assets(
                 if let Some(l) = lod {
                     root.insert(lod::ModelLod::new(l.table, l.scale, lod_meshes));
                 }
+                if let Some(tag) = &loaded.zone_tag {
+                    root.insert(tag.clone());
+                }
                 loaded.instances += 1;
             }
+            Msg::ZoneTag(tag) => loaded.zone_tag = tag,
             Msg::Zones(zones) => {
+                zone_view.set_zones(zones.clone());
                 streamed.set_zones(zones.clone());
                 residency.set_zones(zones);
             }

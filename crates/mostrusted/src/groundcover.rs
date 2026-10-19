@@ -3,15 +3,16 @@
 //! Two tests, both from the game:
 //!
 //! - **Resident collections.** The game draws groundcover from a list of 64 collection slots
-//!   (`FUN_00eb9f50` walks them; `FUN_008d6900` copies the list), filled from the track units it has loaded.
-//!   A unit lists the collections for its own ground and for the far hills it sees, placed on *its*
-//!   backdrop tier of those hills. Here every unit is loaded at once, so a collection listed only by units
-//!   kilometres away would stand on a terrain tier that the composed backdrop (`mw_assets::backdrop`) does
-//!   not draw at that place: it floats ("floating grass", CONTINENTAL DRIFT start, 2026-10-09). So only the
-//!   collections listed by the camera's zone and its `ZoneList` neighbours are drawn: the streaming set
-//!   the PVS describes. That set holds at most 63 distinct collections in every zone of the map (`mwtool
-//!   placement-check --owners`), which fits the 64 slots; the residency rule itself (which units the game
-//!   keeps loaded) is not traced in the code (model decision).
+//!   (`FUN_00eb9f50` walks them; `FUN_008d6900` copies the list). A unit lists the collections for its own
+//!   ground and for the far hills it sees, placed on *its* backdrop tier of those hills. The slots hold the
+//!   **current zone's** collections only: when the streaming zone changes, `FUN_005573f0` removes the old
+//!   zone's collections (`FUN_0043ac80`) and adds the new zone's (`FUN_0043ac10`: first free of the 64
+//!   `{collection, offset}` slots, count at +0x200), in the same step that swaps the zone's backdrop
+//!   (`zone_view.rs`). So only the collections the streaming zone lists are drawn. (Until 2026-10-19 the
+//!   zone's `ZoneList` neighbours' collections were drawn too, a model decision: they stand on the
+//!   neighbours' backdrop tiers, which the camera zone does not draw, and float: `mwtool placement-check
+//!   --floating`, summed over all camera zones, sprites within 300 m more than 1 m above the drawn ground:
+//!   397,849 with the neighbours' collections, 3,053 with the zone's own.)
 //! - **Distance.** A group is drawn while the camera is within 125 x its radius of its box
 //!   (`FUN_00eb9500`). The game also drops sprites behind the camera plane or beyond their own range and
 //!   shrinks them near it (`GroundcoverInstance::fade`); `groundcover.wgsl` does that per sprite on the GPU,
@@ -56,14 +57,13 @@ impl GroundcoverResidency {
 
     /// Rebuild the resident set when the camera changed zone or listings arrived. `None` when no zone list
     /// is known (every collection is drawn).
-    fn update(&mut self, eye: Vec3) -> Option<&HashSet<ResourceId>> {
+    fn update(&mut self, eye: Vec3, streaming: Option<u32>) -> Option<&HashSet<ResourceId>> {
         let zones = self.zones.as_ref()?;
-        let zone = zones.nearest(eye.x, eye.z)?;
-        if self.dirty || self.current != Some(zone.id) {
+        let zone = streaming.or_else(|| zones.nearest(eye.x, eye.z).map(|z| z.id))?;
+        if self.dirty || self.current != Some(zone) {
             self.dirty = false;
-            self.current = Some(zone.id);
-            let units = std::iter::once(zone.id).chain(zone.neighbours.iter().map(|&(i, _)| zones.zones[i].id));
-            self.resident = units.flat_map(|u| self.listing.get(&u).into_iter().flatten().copied()).collect();
+            self.current = Some(zone);
+            self.resident = self.listing.get(&zone).into_iter().flatten().copied().collect();
         }
         Some(&self.resident)
     }
@@ -73,10 +73,12 @@ impl GroundcoverResidency {
 pub fn groundcover_visibility(
     camera: Query<&GlobalTransform, crate::MainCamera>,
     mut residency: ResMut<GroundcoverResidency>,
+    zone_view: Res<crate::zone_view::ZoneView>,
     mut groups: Query<(&GroundcoverRange, &mut Visibility)>,
 ) {
     let Some(eye) = camera.iter().next().map(|t| t.translation()) else { return };
-    let resident = residency.update(eye);
+    // The streaming zone (`zone_view.rs`: the player's car's, else the camera's).
+    let resident = residency.update(eye, zone_view.current());
     for (g, mut vis) in &mut groups {
         let d = eye.clamp(g.min, g.max).distance(eye);
         let shown = d <= g.range && resident.is_none_or(|r| r.contains(&g.collection));
