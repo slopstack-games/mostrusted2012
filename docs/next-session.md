@@ -95,6 +95,11 @@ Added by the user (2026-10-16); the ones marked (2026-10-16: ...) were worked on
 - **Probe cheats for upgrades** (added 2026-10-19): in the original most cars have no nitrous or other mods until
   they are unlocked in races, so captures need a probe command that fits any mod / upgrade at runtime through the
   game's own path (save restored after). Asked of session 11's nitrous agent; check it landed.
+- **UI incomplete** (added 2026-10-19): parts of the UI are still missing, e.g. the strip behind the Speed Points
+  counter (survey each HUD / menu layout's elements against what we draw: `MW_UI_TEXT_LOG=1`, the layout data).
+- **Textures rendered wrong** (added 2026-10-19): some textures still do not render right, e.g. the tyre tread is
+  blank (check the tyre material's family / samplers with `mwtool shaders` / `shader-asm`: tread normal / detail map,
+  UV set, blend; compare a close-up screenshot of the original's wheel).
 - **Menu functionality missing** (added 2026-10-19): many parts of the menus' functionality are still missing, in
   Easydrive too (survey every menu / Easydrive entry of the original against ours, from the HSM / layout data and the
   code, and list what is missing before implementing).
