@@ -2119,6 +2119,9 @@ fn remove_car(sys: &mut TrafficSystem, slot: usize, commands: &mut Commands) {
             commands.entity(e).despawn();
         }
         sys.removed += 1;
+        // The section lists must not keep the slot (`leader` panicked on a removed car after the hulls changed
+        // under a crash reset).
+        sys.index_sections();
     }
 }
 
@@ -2455,6 +2458,7 @@ fn crash_hit_cars(
             continue;
         }
         let car = sys.cars[body.slot].take().expect("checked above");
+        sys.index_sections();
         let entity = parent.parent();
         let data = sys.data.clone();
         let v = &data.vehicles[car.vehicle];

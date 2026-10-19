@@ -77,6 +77,7 @@ mod sfx;
 mod shadow_cull;
 mod sky;
 mod steam_controller;
+mod streaming;
 mod tonemap;
 mod traffic;
 mod traffic_lamps;
@@ -258,9 +259,18 @@ struct Cli {
     /// Capture `--screenshot` this many seconds of game time after the first exhaust backfire (`exhaust.rs`).
     #[arg(long)]
     screenshot_after_backfire: Option<f32>,
-    /// Limit the number of streamed track units (nearest first).
+    /// Load this many track units once, nearest first, instead of streaming the focus zone and its neighbours
+    /// (`streaming.rs`).
     #[arg(long)]
     units: Option<usize>,
+    /// Load every track unit once and keep it (the behaviour before streaming; A/B and full-map views). The
+    /// default for a free camera without `--drive` (its aerial view needs every unit, `streaming.rs`).
+    #[arg(long, conflicts_with = "stream")]
+    load_all: bool,
+    /// Without `--drive`: stream around the free camera as the game streams around its camera, instead of
+    /// loading every unit.
+    #[arg(long)]
+    stream: bool,
     /// Camera pose as `x,y,z,look_x,look_y,look_z` (overrides the default view; with --drive in the world, a
     /// fixed camera instead of the chase camera).
     #[arg(long, value_delimiter = ',', allow_hyphen_values = true)]
@@ -734,6 +744,7 @@ fn main() -> anyhow::Result<()> {
         },
         no_groundcover: cli.no_groundcover,
         no_merge: !cli.merge_static,
+        load_all: cli.load_all || (matches!(request, Request::World { .. }) && !cli.stream),
         keep_lod_proxies: cli.keep_lod_proxies,
         paint_index: cli.paint_index,
         no_prop_physics: cli.no_prop_physics && !smash,
@@ -1098,8 +1109,14 @@ fn main() -> anyhow::Result<()> {
         .init_resource::<Loaded>()
         .init_resource::<groundcover::GroundcoverResidency>()
         .init_resource::<zone_view::ZoneView>()
+        .init_resource::<streaming::StreamRegistry>()
+        .init_resource::<streaming::PlacementFocus>()
         .add_systems(Startup, (setup, cpu_light_clustering))
         .add_systems(Update, (start_loader, receive_assets, update_status, auto_screenshot))
+        .add_systems(
+            Update,
+            (streaming::send_focus, streaming::despawn_streamed, streaming::streaming_stall).after(receive_assets),
+        )
         .add_systems(
             PostUpdate,
             (zone_view::zone_view_visibility, groundcover::groundcover_visibility)
@@ -1219,9 +1236,10 @@ fn start_loader(
     let Some(support) = support else { return };
     let bc = support.0.contains(CompressedImageFormats::BC);
     loaded.started = Some(Instant::now());
-    let (channel, requests) = loader::spawn(game.store.clone(), game.request.clone(), bc, game.filter.clone());
+    let (channel, requests, focus) = loader::spawn(game.store.clone(), game.request.clone(), bc, game.filter.clone());
     commands.insert_resource(channel);
     commands.insert_resource(requests);
+    commands.insert_resource(focus);
 }
 
 /// Turn loader messages into assets and entities, within a per-frame budget.
@@ -1242,7 +1260,7 @@ fn receive_assets(
     mut surfaces: ResMut<props::WorldSurfaces>,
     (mut traffic_models, mut parked_models): (Option<ResMut<traffic::TrafficModels>>, ResMut<jackspots::ParkedModels>),
     (mut residency, mut zone_view): (ResMut<groundcover::GroundcoverResidency>, ResMut<zone_view::ZoneView>),
-    mut streamed: ResMut<frontend::Residency>,
+    (mut streamed, mut registry): (ResMut<frontend::Residency>, ResMut<streaming::StreamRegistry>),
 ) {
     let Some(channel) = channel else { return };
     let rx = channel.0.lock().unwrap();
@@ -1333,6 +1351,7 @@ fn receive_assets(
                 if let Some(tag) = &loaded.zone_tag {
                     root.insert(tag.clone());
                 }
+                registry.register(root.id());
                 loaded.instances += 1;
             }
             Msg::ZoneTag(tag) => loaded.zone_tag = tag,
@@ -1341,7 +1360,26 @@ fn receive_assets(
                 streamed.set_zones(zones.clone());
                 residency.set_zones(zones);
             }
-            Msg::UnitLoaded(unit) => streamed.unit_loaded(unit),
+            Msg::UnitLoaded(unit) => {
+                registry.begin_unit(None);
+                streamed.unit_loaded(unit);
+                zone_view.unit_loaded(unit);
+            }
+            Msg::UnitBegin(unit) => registry.begin_unit(Some(unit)),
+            Msg::StreamKey(key) => registry.set_key(key),
+            Msg::UnitUnloaded(u) => {
+                let unit = u.unit;
+                streamed.unit_unloaded(unit);
+                zone_view.unit_unloaded(unit);
+                streaming::unloaded(*u, &mut registry, &mut loaded);
+                commands.queue(move |world: &mut World| {
+                    world.resource_mut::<world_lights::LightSources>().remove_unit(unit)
+                });
+            }
+            Msg::Streaming => {
+                registry.streaming = true;
+                zone_view.set_streaming();
+            }
             Msg::GroundcoverListing { unit, collections } => residency.add_listing(unit, collections),
             Msg::Groundcover { model, collection, min, max, range, bounds } => {
                 let Some(parts) = loaded.models.get(&model) else { continue };
@@ -1349,7 +1387,9 @@ fn receive_assets(
                 // The vertex shader expands each sprite from its base point (`groundcover.wgsl`), so the
                 // mesh's own bounds are too small: the loader's cover every turned, swaying sprite.
                 let aabb = bevy::camera::primitives::Aabb::from_min_max(bounds.0, bounds.1);
-                commands.spawn((Transform::IDENTITY, Visibility::Hidden, range)).with_children(|c| {
+                let mut root = commands.spawn((Transform::IDENTITY, Visibility::Hidden, range));
+                registry.register_groundcover(collection, root.id());
+                root.with_children(|c| {
                     for (mesh, mat) in parts {
                         c.spawn((
                             Mesh3d(mesh.clone()),
@@ -1400,15 +1440,20 @@ fn receive_assets(
                 if let Some(&m) = loaded.pass_masks.get(&model) {
                     commands.entity(root).insert(pass_mask::PassMask(m));
                 }
+                registry.register(root);
                 loaded.instances += 1;
                 loaded.props += 1;
             }
             Msg::Collider(c, tags) => {
-                commands.spawn((avian3d::prelude::RigidBody::Static, c, props::SurfaceTags(tags)));
+                let e = commands.spawn((avian3d::prelude::RigidBody::Static, c, props::SurfaceTags(tags))).id();
+                registry.register(e);
             }
             Msg::Surfaces(list) => surfaces.list = list,
             Msg::Lights(lights) => {
-                commands.queue(move |world: &mut World| world.resource_mut::<world_lights::LightSources>().add(lights));
+                let unit = registry.unit();
+                commands.queue(move |world: &mut World| {
+                    world.resource_mut::<world_lights::LightSources>().add_unit(unit, lights)
+                });
             }
             Msg::PropResponses(r) => {
                 info!("prop contact responses: {r:?}");
@@ -1443,7 +1488,8 @@ fn receive_assets(
             }
             Msg::Done => {
                 loaded.done = true;
-                streamed.all_sent = true;
+                // While streaming, residency follows the loaded units (`streaming.rs`).
+                streamed.all_sent = !registry.streaming;
                 if let Some(t) = loaded.started {
                     info!(
                         "loading finished in {:.1?}: {} instances, {} with physics",

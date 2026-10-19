@@ -96,7 +96,7 @@ impl Plugin for RacePlugin {
         // (Easydrive's RACES tier).
         let racing = resource_exists::<RaceState>;
         app.add_plugins(crate::chevron::ChevronPlugin)
-            .add_systems(Update, start_race)
+            .add_systems(Update, (start_race, place_at_start).chain())
             .add_systems(Update, spawn_route_markers.run_if(resource_added::<RaceState>))
             .add_systems(Update, (attach_player, log_messages).run_if(racing))
             .add_systems(
@@ -246,6 +246,9 @@ pub struct RaceState {
     pub won: Option<bool>,
     /// Hold the start in `Waiting` (intro sequence, AI not spawned yet).
     pub hold: bool,
+    /// A runtime start ([`StartRace`]) is placing the player's car: held at the start until the start area is
+    /// resident (`FUN_00647e00`, [`place_at_start`]).
+    pub placing: bool,
     /// An intro / outro sequence is playing (`cutscene.rs`): the start stays in `Waiting` while it is set, and
     /// `--test race` waits for the outro before it exits. Separate from `hold` (the AI's).
     pub cutscene: bool,
@@ -318,6 +321,7 @@ impl RaceState {
             results: Vec::new(),
             won: None,
             hold: false,
+            placing: false,
             cutscene: false,
             rolling_start: false,
         }
@@ -497,7 +501,8 @@ fn start_race(
         warn!("race {}: a race was already run; restart the game to run another", setup.event.id);
         return;
     }
-    let state = RaceState::new(setup);
+    let mut state = RaceState::new(setup);
+    state.placing = true;
     info!("race {}: {} started from Easydrive", setup.event.id, setup.name);
     for (mut t, lin, ang) in &mut cars {
         // A little above the start point (the car settles onto the road).
@@ -510,6 +515,48 @@ fn start_race(
         }
     }
     commands.insert_resource(state);
+}
+
+/// A runtime start puts the player's car at the start the way the game's placement does (`FUN_00647e00`,
+/// decomp.md "Start position"): while the start is not resident within 200 m (`frontend::PLACE_RADIUS`; the car is
+/// at rest) the car is held there, the streaming focus moves to it (message 4; `streaming::PlacementFocus`) and the
+/// loading screen stays up (the event card holds while `placing`); once resident, with the ground under it in, the
+/// car is put down and the focus goes back to the camera (message 5).
+#[allow(clippy::type_complexity)]
+fn place_at_start(
+    race: Option<ResMut<RaceState>>,
+    residency: Res<crate::frontend::Residency>,
+    mut focus: ResMut<crate::streaming::PlacementFocus>,
+    spatial: SpatialQuery,
+    mut cars: Query<
+        (&mut Transform, Option<&mut LinearVelocity>, Option<&mut AngularVelocity>),
+        (With<Car>, With<crate::drive::Player>),
+    >,
+) {
+    let Some(mut race) = race else { return };
+    if !race.placing {
+        return;
+    }
+    let target = race.player_start.translation;
+    let ground = SpatialQueryFilter::default().with_mask(crate::props::GameLayer::World);
+    let resident = residency.resident(target, crate::frontend::PLACE_RADIUS)
+        && spatial.cast_ray(target + Vec3::Y * 5.0, Dir3::NEG_Y, 40.0, true, &ground).is_some();
+    if resident {
+        race.placing = false;
+        focus.0 = None;
+        info!("race {}: start area resident, car placed", race.event.id);
+        return;
+    }
+    focus.0 = Some(target);
+    for (mut t, lin, ang) in &mut cars {
+        *t = race.player_start.with_translation(target + Vec3::Y * 0.5);
+        if let Some(mut lin) = lin {
+            lin.0 = Vec3::ZERO;
+        }
+        if let Some(mut ang) = ang {
+            ang.0 = Vec3::ZERO;
+        }
+    }
 }
 
 fn spawn_route_markers(
@@ -567,7 +614,7 @@ fn run_race(
     };
     match race.phase {
         RacePhase::Waiting => {
-            if loaded.done && !players.is_empty() && !race.hold && !race.cutscene {
+            if loaded.done && !players.is_empty() && !race.hold && !race.placing && !race.cutscene {
                 race.intro_elapsed = 0.0;
                 set_phase(race, RacePhase::Intro, &mut phase_msg);
             }

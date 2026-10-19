@@ -10,6 +10,68 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-19: world streaming as the game does it (wgpu out of memory on an 8 GB card)
+User report: the game crashed with wgpu "Out of Memory" while creating a mesh slab (RTX 3070, 8 GB). Every run
+loaded all 169 track units and kept them. Reproduced here: a `--load-all` bench run started while the original
+held ~1 GB (3.6 GB in use on the card) failed with `Out of Memory` and quit.
+- **The original's streamer, from the code** (decomp.md "World streaming"): a 32-slot resource streamer
+  (`FUN_005486c0`); the stream update `FUN_00558740` passes the **camera** manager's position (+0x140) and +0x130
+  in gameplay (mode 2), a stored target while a placement waits (modes 1 / 3, `FUN_00647e00` messages 4 / 5);
+  `FUN_00549fb0` lists the focus zone (priority 100) and every neighbour, `(1500 − d) / 750 + 3 · max(0, dir · to) +
+  (flag bit 2 ? 10 : 9.8)` (`.rdata` 0x00fab750 / 0x00fab74c, `.data` 0x010c45a4..b0, read with `exe-const`), d to
+  the neighbour's centroid (`FUN_0055f160`); `FUN_005573f0` requests the district (priority 500) and arena (200)
+  bundles and the units; the streamer unloads every slot not requested before it loads the best missing one
+  (`FUN_00537c80`, picks `FUN_00546d70` / `FUN_00546e20`, reached through the vtable `0x00f9a374` with REA: the
+  methods are not in the dump). No byte budget: 32 slots. Unit bundles = `TRK_UNIT<n>` + `_hdr`, `TRK_COL_<n>`,
+  `TRK_NAV_<n>` (load method `0x0054b5d0`).
+- **Port** (`streaming.rs`, `loader.rs`): the loader thread runs that step between frames (focus from the main
+  thread, `StreamFocus`), sends `UnitUnloaded` with the models, textures, shared backdrop placements and
+  groundcover collections no resident unit (nor a car) uses, and forgets them (sent again when needed). The main
+  thread despawns the unit's entities (placements, merged statics, props with smashed compounds' pieces,
+  colliders; 1500 a frame), its lights, and drops the handles and the materials no remaining model uses.
+  `zone_view.rs` now takes the camera as focus (code), keeps the last zone outside the polygons and, while
+  streaming, waits for the new zone's unit before swapping (status 4 in `FUN_005573f0`). The streaming stall
+  (`FUN_006a2200`, Resident(car, 25 m)) pauses virtual time. Jack spots' parked cars are released as soon as they
+  arrive (they hold their own handles): before, every parked car ever seen stayed loaded (+1,200 textures in a
+  20 km drive), also with the full map.
+- **Races** (user report the same day: no loading screen at a race start, Most Wanted opponents missing): Easydrive's
+  and the pause menu's START RACE now go through the event-loading card (`PlayEvent`) as the map's does (model
+  decision; whether the original plays 1014321 there is still open). A runtime start places the car the
+  `FUN_00647e00` way: held at the start, focus moved there (`streaming::PlacementFocus`), the card holding until the
+  start is resident within 200 m with ground under it (`race::place_at_start`; `RaceState::placing`). Checked
+  headless with `--map-start 462174` (near) and `--map-start 1399902` (MOST WANTED 6, 2.6 km away: placed 3 s
+  later under the card). **The Most Wanted opponent is not a loading problem**: event 1399902 has no
+  `allowed_vehicles` (`mwtool events 1399902`: "cars:" empty, one opponent "AI type 1399985, placement 1399905"),
+  and `ai::race_from_event` returns before setting any opponent when that list is empty. The rival's car must come
+  from the AI type / the Most Wanted list (`BlackListDriver`), not traced; opponents' car bundles are global
+  loader owners and never unloaded with a unit.
+- **Measured** (headless, `nvidia-smi --query-compute-apps` every 0.5 s for the run's PID): `--drive 911`
+  default spawn: peak **4558 MiB `--load-all` → 1266 MiB** streamed (8 units first, loaded in 4.5 s instead of
+  32 s); bench spawn (815, 60, 1760): 4112 → 1268 MiB. `--bench 10` there: `--load-all` 26.9 ms mean (main world
+  25.8 ms), streamed 12.7 ms (main world 7.3 ms), p99 39.4 → 20.4 ms. Soak: the player driven by the AI 20 km at
+  215 km/h mean across 54 zone changes (101 units streamed, `MW_AI_ROUTE_M=20000 --test ai --ai-seconds 420
+  --no-traffic`): peak 1592 MiB, flat at 1332 MiB for the first 100 s and 1590 MiB after the densest zone (the
+  allocator keeps its blocks); entities 10–37k, meshes 3–8.5k, textures 380–1,130 (kept = in use, checked per
+  unload on both threads). No stall fired. Frame times in the soak depend on the machine's load (load average
+  14 from other agents): quiet run mean 17.4 ms, 80 of 10,500 frames over 33 ms; frames that receive loader
+  messages average ~5 ms more than others (render-asset uploads). Unchanged: accel 0–60 mph 3.58 s; `--test race`
+  (streamed and `--units 12`), `--test freeroam` (both), `--test pursuit --units 30` and streamed (the pursuit
+  outcome varies run to run: one run of the same command timed out waiting for a bust with a cop 3 m away, the
+  next escaped once and busted once). A/B screenshots `--load-all` (top) / streamed (bottom) in the worktree's
+  ignored `extracted/stream/`: `road-cliff_ab.png`, `airfield-exit_ab.png`, `terrain-road-2_ab.png` identical,
+  `drive_ab.png` (same scene, chase-camera settle differs), `city-lod-check_ab.png` (aerial, 260 m up: streamed, far
+  water planes show bare in the fog where the far terrain is not loaded: why a free camera without `--drive`
+  loads everything unless `--stream`).
+- **Model decisions**: the car is the focus while the camera is more than 150 m from it (startup, fixed
+  `--camera`); before any zone was found the nearest zone; district / arena bundles are not units (our store
+  reaches their resources by index); despawning spread over frames; free-camera runs load all by default.
+- Also fixed on the way: a traffic panic ("live car", `traffic.rs` `leader`) after a crash reset moved the
+  traffic area: `remove_car` and the crash conversion left removed slots in the per-section lists.
+- **Open / captures that would confirm**: the camera manager's +0x130 as the view direction (a live read in a
+  drive); whether the original plays the event card for Easydrive's START RACE; the Most Wanted rival's car
+  (AI type 1399985 → vehicle); a capture of the original's memory use is not needed (slot count). Frame-time
+  measurements on an idle machine.
+
 ### 2026-10-19: terrain through the road, the rest: what is left is authored; the pass mask per view
 Follow-up of the 2026-10-16 entry (user: "terrain still sticks through the road in some places").
 - **`mwtool terrain-check`, now LOD-aware**: a poke counts only against roads **drawn at the same time** as the

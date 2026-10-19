@@ -25,7 +25,7 @@ use mw_bundle::ResourceId;
 use mw_formats::binding::BindValue;
 
 use crate::game_text::{self, GameFonts, LoadedFont};
-use crate::race::{RaceSetup, StartRace};
+use crate::race::RaceSetup;
 use crate::ui_quads::{AdditiveQuadMaterial, PoolNode, QuadNode, QuadPool, show_quads};
 
 /// The `Menu` widget's frame layout.
@@ -228,7 +228,7 @@ pub(crate) fn navigate(
     pads: Query<&Gamepad>,
     mut time: ResMut<Time<Virtual>>,
     mut settings: ResMut<crate::settings::SettingsMenu>,
-    mut race_start: MessageWriter<StartRace>,
+    mut race_start: MessageWriter<crate::event_card::PlayEvent>,
     front: Option<Res<crate::frontend::FrontEnd>>,
     easydrive: Option<Res<crate::easydrive::EasyDrive>>,
     cutscene: Option<Res<crate::cutscene::CutsceneState>>,
@@ -282,7 +282,7 @@ pub(crate) fn navigate(
             Some(Page::Races) => {
                 if let Some(r) = menu.races.get(menu.selected).cloned() {
                     close(&mut menu, &mut time);
-                    race_start.write(StartRace(r));
+                    race_start.write(crate::event_card::PlayEvent(r));
                 }
             }
             _ => match menu.items.get(menu.selected).filter(|i| i.active).map(|i| i.action.clone()).as_deref() {

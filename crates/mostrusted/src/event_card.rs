@@ -356,7 +356,10 @@ fn lookup(path: &str, arg: Option<&str>, card: &Card, look: &Look, ready: bool) 
 /// The race is ready to be shown: started, opponents placed, its start area resident.
 fn race_ready(race: Option<&RaceState>, loaded: &crate::Loaded, residency: &crate::frontend::Residency) -> bool {
     race.is_some_and(|r| {
-        !r.hold && loaded.done && residency.resident(r.player_start.translation, crate::frontend::READY_RADIUS)
+        !r.hold
+            && !r.placing
+            && loaded.done
+            && residency.resident(r.player_start.translation, crate::frontend::READY_RADIUS)
     })
 }
 

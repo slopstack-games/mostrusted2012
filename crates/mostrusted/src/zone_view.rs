@@ -10,9 +10,9 @@
 //! `FUN_0043ac10`, `groundcover.rs`).
 //!
 //! So with the focus in zone Z the game draws the main geometry of Z and its neighbours and only Z's backdrop.
-//! Here every unit is loaded at once; the loader tags each placement's root ([`ZoneTag`]) and this module shows
-//! it by that rule: a unit's main placements while the unit is Z or a neighbour of Z, a backdrop model while Z
-//! lists it. Before (`--composed-backdrop`) one backdrop was composed per place from the zone owning it, which
+//! The loader streams Z and its neighbours (`streaming.rs`; every unit with `--load-all`); it tags each
+//! placement's root ([`ZoneTag`]) and this module shows it by that rule: a unit's main placements while the unit
+//! is Z or a neighbour of Z, a backdrop model while Z lists it. Before (`--composed-backdrop`) one backdrop was composed per place from the zone owning it, which
 //! drops the ground a neighbour's view shows over a zone whose own view never sees it: the hill over the tunnel
 //! on the road west to the airfield is drawn only by the backdrop of the zone outside the tunnel, so its trees
 //! and groundcover floated (research log 2026-10-19).
@@ -21,11 +21,14 @@
 //! past it (holes to the horizon), so without a player car and with the camera more than [`AERIAL`] above the
 //! collision under it, the composed backdrop and every unit's main geometry are shown instead.
 //!
-//! Model decisions: the focus is the player's car, else the camera (the caller of `FUN_005586e0` passes a
-//! position and a direction, not traced; the direction's use, prefetch order, does not matter when all is
-//! loaded); outside every zone polygon the nearest zone counts (the game keeps the last zone it found); the
-//! switch is immediate (the game waits for the new zone's unit to be loaded); props with physics (`props.rs`)
-//! and collision stay everywhere; the aerial fallback and its height are ours.
+//! The focus is the camera (`FUN_00558740` passes the camera manager's position to `FUN_005586e0`;
+//! `streaming.rs`); outside every zone polygon the last zone found counts (`FUN_00549fb0`, world +0xe0). While
+//! the world is streamed the swap waits for the new zone's unit to be loaded, as `FUN_005573f0` does (status 4).
+//!
+//! Model decisions: the car is the focus while the camera is more than `streaming::CAMERA_REACH` from it; before
+//! any zone was found the nearest zone counts; with every unit loaded (`--load-all`, `--units`) the swap is
+//! immediate; props with physics (`props.rs`) and collision of loaded units stay everywhere; the aerial fallback
+//! and its height are ours.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -56,12 +59,31 @@ pub struct ZoneView {
     current: Option<u32>,
     resident: HashSet<u32>,
     aerial: bool,
+    /// The zone of the last focus inside one (`streaming::focus_zone`).
+    last_zone: Option<usize>,
+    /// While streaming (`streaming.rs`), the swap waits for the new zone's unit, as the game's
+    /// `FUN_005573f0` does (status 4); `loaded` are the units in.
+    streaming: bool,
+    loaded: HashSet<u32>,
 }
 
 impl ZoneView {
     pub fn set_zones(&mut self, zones: mw_formats::ZoneList) {
         self.zones = Some(zones);
         self.current = None;
+        self.last_zone = None;
+    }
+
+    pub fn set_streaming(&mut self) {
+        self.streaming = true;
+    }
+
+    pub fn unit_loaded(&mut self, unit: u32) {
+        self.loaded.insert(unit);
+    }
+
+    pub fn unit_unloaded(&mut self, unit: u32) {
+        self.loaded.remove(&unit);
     }
 
     /// The focus zone (`None` before the zones are known).
@@ -72,7 +94,16 @@ impl ZoneView {
     /// Track the focus zone and the aerial state; true when either changed.
     fn update(&mut self, focus: Vec3, aerial: bool) -> bool {
         let Some(zones) = &self.zones else { return false };
-        let Some(zone) = zones.nearest(focus.x, focus.z) else { return false };
+        let Some(zi) = crate::streaming::focus_zone(zones, focus, self.last_zone) else { return false };
+        self.last_zone = Some(zi);
+        let mut zone = &zones.zones[zi];
+        // The game keeps the old zone's backdrop until the new zone's unit is loaded.
+        if self.streaming
+            && !self.loaded.contains(&zone.id)
+            && let Some(old) = self.current.and_then(|c| zones.zones.iter().find(|z| z.id == c))
+        {
+            zone = old;
+        }
         if self.current == Some(zone.id) && self.aerial == aerial {
             return false;
         }
@@ -109,7 +140,12 @@ pub fn zone_view_visibility(
         return;
     }
     let car = player.iter().next().map(|t| t.translation());
-    let Some(focus) = car.or_else(|| camera.iter().next().map(|t| t.translation())) else { return };
+    // The stream focus is the camera (`FUN_00558740`, `streaming.rs`), the car while the camera is not on it.
+    let Some(eye) = camera.iter().next().map(|t| t.translation()) else { return };
+    let focus = match car {
+        Some(c) if eye.distance(c) > crate::streaming::CAMERA_REACH => c,
+        _ => eye,
+    };
     let aerial = car.is_none() && {
         let filter = SpatialQueryFilter::from_mask(crate::props::GameLayer::World);
         spatial.cast_ray(focus, Dir3::NEG_Y, AERIAL_PROBE, true, &filter).is_none_or(|hit| hit.distance > AERIAL)

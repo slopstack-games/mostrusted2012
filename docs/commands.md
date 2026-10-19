@@ -152,6 +152,12 @@ MW_TRAFFIC_LAMP_SHOTS=<dir>,2.5,12 ./target/release/mostrusted --drive 911 --uni
 ./target/release/mostrusted --drive 911 --units 6 --show-easydrive --easydrive-path 4,4,1,1 --screenshot <scratch>/mods.png --screenshot-delay 200
 # Frame-time benchmark (prints a BENCH RESULT line; --no-shadows, MW_BENCH_PASSES=1 for per-pass GPU times)
 ./target/release/mostrusted --drive 911 --units 30 --spawn=815,60,1760,270 --auto-throttle 0.3 --mute --bench 10   # --merge-static: A/B the mesh merge
+# World streaming (streaming.rs): --drive streams the camera's zone and its neighbours and unloads the rest;
+# --load-all keeps every unit (the old behaviour; the default for a free camera without --drive, which --stream
+# streams instead); --units N loads N units once. Streaming soak test: the player driven by the AI along a 20 km
+# road-graph route (MW_AI_ROUTE_M, default 3000); sample the run's GPU memory every 0.5 s with
+# `nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits` (the line of its PID)
+MW_AI_ROUTE_M=20000 MW_FRAME_LOG=<scratch>/frames.txt ./target/release/mostrusted --drive 911 --test ai --ai-seconds 420 --no-traffic
 # MW_TYRE_MARKS_LOG=1 (tyre-mark segments alive), MW_WATER_DEBUG=1 (lists the water meshes)
 # The driving HUD (hud.rs) is on in --drive runs except tests: --no-hud, --mph, F3 shows the debug status text
 # Engine RPM every physics tick, for `mwtool engine-sound --trace` (use with --test engine)

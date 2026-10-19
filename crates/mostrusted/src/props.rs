@@ -363,6 +363,11 @@ impl Compound {
     pub fn is_smashed(&self) -> bool {
         self.smashed
     }
+
+    /// The part bodies of a smashed compound (despawned with it when its track unit goes, `streaming.rs`).
+    pub fn piece_entities(&self) -> impl Iterator<Item = Entity> + '_ {
+        self.parts.iter().flatten().copied()
+    }
 }
 
 /// A part of a smashed compound: a prop of its own until the compound is put back.
@@ -641,9 +646,19 @@ fn grid_cell(p: Vec3) -> (i32, i32) {
 fn index_props(
     mut grid: ResMut<PropGrid>,
     props: Query<(Entity, &PropBody), (Added<PropBody>, Without<CompoundPiece>)>,
+    mut removed: RemovedComponents<PropBody>,
 ) {
     for (e, p) in &props {
         grid.cells.entry(grid_cell(p.home.translation)).or_default().push(e);
+    }
+    // Props of unloaded track units (`streaming.rs`) leave the grid.
+    let gone: HashSet<Entity> = removed.read().collect();
+    if !gone.is_empty() {
+        for list in grid.cells.values_mut() {
+            list.retain(|e| !gone.contains(e));
+        }
+        grid.cells.retain(|_, list| !list.is_empty());
+        grid.active.retain(|e| !gone.contains(e));
     }
 }
 

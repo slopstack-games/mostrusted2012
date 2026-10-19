@@ -584,7 +584,9 @@ fn setup_race(
             return;
         }
     };
-    let Some(route) = route_from_ai_graph(&graph, t.translation, heading, 3000.0) else {
+    // `MW_AI_ROUTE_M`: a longer test route (the streaming soak test, `streaming.rs`).
+    let length = std::env::var("MW_AI_ROUTE_M").ok().and_then(|v| v.parse().ok()).unwrap_or(3000.0);
+    let Some(route) = route_from_ai_graph(&graph, t.translation, heading, length) else {
         warn!("AI: no lane near {:?}; no route", t.translation);
         return;
     };
