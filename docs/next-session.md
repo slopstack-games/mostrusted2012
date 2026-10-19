@@ -100,11 +100,11 @@ Added by the user (2026-10-16); the ones marked (2026-10-16: ...) were worked on
 - **Textures rendered wrong** (added 2026-10-19): some textures still do not render right, e.g. the tyre tread is
   blank (check the tyre material's family / samplers with `mwtool shaders` / `shader-asm`: tread normal / detail map,
   UV set, blend; compare a close-up screenshot of the original's wheel).
-- **Surfaces misclassified** (added 2026-10-19): non-road surfaces that are not dirt get treated like dirt, which is
-  wrong for e.g. cobblestone (handling grip / drag and the effects: smoke, kick-up, tyre marks, sounds). Check how
-  the collision tag's surface index maps to the game's surface types (`mw-handling` `surface.rs`, `SurfaceVfx` /
-  `TyreVfxBehaviour` from research log 2026-10-15 "surface effects", `mwtool surfaces`) and where ours falls back
-  to dirt for an unmatched surface; take the mapping from the data / code for every surface the world uses.
+- **Surfaces misclassified** (added 2026-10-19): non-road surfaces that are not dirt get treated like dirt, e.g.
+  cobblestone. Session 11 found no fallback in our lookup: the game's data gives paving / cobbles / rough asphalt the
+  same rolling resistance (0.025) and slide drag (1.5) as dirt with stock tyres (research log "every surface as its
+  own type"); tyre classes (OFF-ROAD / TRACK mods) now pick the per-class numbers. To confirm with the original: the
+  911 coasting from 100 mph on long paving vs asphalt. Per-surface tyre sounds handed to the sounds agent.
 - **Menu functionality missing** (added 2026-10-19): many parts of the menus' functionality are still missing, in
   Easydrive too (survey every menu / Easydrive entry of the original against ours, from the HSM / layout data and the
   code, and list what is missing before implementing).
