@@ -114,6 +114,9 @@ impl EngineSoundSpec {
 
 /// A car's engine voice: the full sequence bank when the car has `EngineSound2` data, else Ginsu layers.
 #[derive(Debug, Clone)]
+// One voice per car, built once and moved a few times: the size difference does not matter, and boxing would touch
+// every match on it.
+#[allow(clippy::large_enum_variant)]
 pub enum EngineVoice {
     Bank(crate::sound::EngineBank),
     Layers(Vec<mw_audio::ginsu::EngineLayer>, f32),
