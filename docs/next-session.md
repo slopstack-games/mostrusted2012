@@ -81,6 +81,10 @@ Added by the user (2026-10-16); the ones marked (2026-10-16: ...) were worked on
   lit (the wet layer's reflection / specular is probably not attenuated by the shadow; compare the wet road
   shader's maths and the sky-cube reflection note in the 2026-10-14 "Lighting open" item against a capture of the
   original in the rain at a shadowed spot).
+- **Races are broken** (added 2026-10-19): starting a race shows no loading screen while its resources load (the
+  original holds the event-loading card until everything is resident: research log 2026-10-10 "the event-loading
+  card"); in Most Wanted races the opponent cars do not spawn (`race.rs`, `ai.rs`; check the Most Wanted list car's
+  bundle / spawn path). Possibly related to session 11's world streaming change: re-test after it is merged.
 - **UI scaling and positioning** (added 2026-10-19): the UI's scale and placement are still wrong (HUD, menus,
   pop-ups): compare against screenshots of the original at the same resolution and take the layout from the
   game's own UI data / code, not by eye.
