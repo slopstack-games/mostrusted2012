@@ -13,9 +13,10 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 ### 2026-10-19: probe capture helpers: teleport, car swap, tick-exact scripted inputs; reproducible kerb runs
 User request: probe helpers for cleaner captures (teleport with saved spots, any car, scripted inputs per tick,
 fixed conditions, a flat test strip), verified by two identical runs at 100 km/h over a kerb and a replay in ours.
-Tools in docs/probe.md "Capture helpers" and docs/commands.md. Original run with the probe (4 launches, audio
-muted, save backed up to `ref/savebackup-2026-10-19-probe/` and restored byte-identical, controller setting
-untouched, game quit; the stored WirePlumber mute of the game's stream, left by `pactl` muting, cleared).
+Tools in docs/probe.md "Capture helpers" and docs/commands.md. Original run with the probe (4 launches, before
+the silent sink existed: its stream was muted with `pactl`, which WirePlumber stored per application, and that
+stored mute was cleared again afterwards; save backed up to `ref/savebackup-2026-10-19-probe/` and restored
+byte-identical, controller setting untouched, game quit).
 - **Hooks**: the race car's "Update Car" `FUN_00904da0` is reached through `.rdata` slot 0x01023760 (found by
   scanning the live snapshot for the address; the only reference); the "Car Swap Logic" behaviour's update
   `FUN_00761d70` through 0x00fdb4d4 (its vtable at 0x00fdb4c8: [0] 0x758ba0, [3] the update, [6] 0x75d510 the

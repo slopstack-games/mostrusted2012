@@ -95,8 +95,8 @@ teleporting or driving into it puts the car back on the free-roam start (respawn
 HSM's "Show Airport Required Dialog" and `CanJoinAirportGameByFriendIndexBinding` suggest an entitlement gate
 (not traced). The test strip is therefore Hodges Airfield (`tools/orig/spots.txt`). The idle attract mode
 (the Most Wanted list over a grey picture) starts after some idle time: tap a harmless key (`orig key w`, the
-horn) before a run. Muting the game's stream with `pactl` is stored per application by WirePlumber: clear it
-afterwards (play a stream under the game's name and unmute it) or the user's own launches stay silent.
+horn) before a run. Never mute the game's stream by hand: WirePlumber stores that per application name and the
+user's own launches inherit it; `orig-wrap` sends headless runs to a silent sink (`tools/silent-sink`).
 
 ## Memory dumps on request (2026-10-10)
 
