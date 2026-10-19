@@ -158,19 +158,21 @@ Done:
 - [x] Traffic and parked cars, AI racers, races (gates, laps, results), speed cameras, billboards, gates, jack
   spots, body shops, a first playable pursuit
 
-Still missing or not like the original (user play test, 2026-10-14; details in
+Still missing or not like the original (user play tests, 2026-10-14 to 2026-10-19; details in
 [docs/next-session.md](docs/next-session.md)):
-- [ ] Physics: some trash bags are indestructible; road collisions sometimes harsh; sidewalks affect the car too
-  much; brake-to-drift understeers at higher speeds
+- [~] Physics: kerbs and road steps from the game's wheel probe and strut data, false crashes at kerbs fixed
+  (2026-10-19); brake-to-drift understeers at higher speeds; launch traction differs
 - [x] World: water floating above where it should be; terrain sticking through the road (2026-10-16)
-- [ ] World: trees and foliage floating near the street exit to the airport area
+- [x] World: trees floating at the airfield tunnel exit (per-zone backdrop swap); world streaming as the game does
+  it (2026-10-19)
 - [ ] Navigation (route to a destination); map icons (jack spots, race locations, cops; Most Wanted races shown
   as normal races)
 - [~] Police: chase behaviour, patrol in the traffic lanes and the pursuit-start rules from the game's code;
   sirens, light bars (with coronas) and radio chatter (2026-10-16). Missing: roadblocks, spike strips, the
   Interceptor, busted / escaped sequences; crashing racers and cops does not work yet
 - [ ] Music on the loading screen, music matched to free roam / races
-- [ ] Front end and UI: the start screen overlaps its two prompts; race end screen; the UI in general
+- [~] Front end and UI: placement and scaling from the game's code, the free-drive HUD's missing parts (2026-10-19);
+  race end screen, menu / Easydrive functionality, the Most Wanted list
 - [ ] Cutscenes: changing cars, the start-up cutscene (entering the car, with its stats)
 - [~] Crash camera: there, but not quite like the original
 - [~] Chase camera: close to the original, but clips into buildings and other objects
@@ -188,7 +190,7 @@ Still missing or not like the original (user play test, 2026-10-14; details in
   cinematic crash's ducking and slow-motion audio still missing
 - [~] Dirt: the dirt cloud follows the game's fade and size now (2026-10-16); driving on dirt does not feel like
   the original
-- [ ] Nitrous: makes the car downshift and barely go faster, then the gearbox has trouble shifting
+- [x] Nitrous: no downshift while it burns, as the game's code (2026-10-19)
 - [ ] Car sounds and effects: idle sound, nitrous sound, backfires, engine start / stop; tyre marks and nitrous
   flames look off; grass / dirt still give road smoke and marks
 - [ ] Traffic reactions: horns, headlight flashing when you drive towards them
