@@ -10,6 +10,92 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-19: kerb captures: the placement at speed, the strut joint, the strut stop only when crashed, yaw from the bumps
+Against the clean probe captures (main checkout `ref/`: `kerb100a` / `b` 911 at 100 km/h, `kerbrest911a` / `b` 911
+from rest, `kerb100raptor` / `raptorc`, plus `kerb_drop2`, `kerb_angle1`), replayed with `--replay <csv>
+--spawn=… --no-traffic --units 12`. The original was not run this round. Scripts (git-ignored, the worktree's
+`scratch/kerb/`): `rp.sh` / `matrix.sh` (replays), `summ.py` (per run: speed RMS by time, yaw RMS / peak, RMS of the
+per-tick vertical, pitch and roll accelerations, pitch / roll rate peaks), `kc.py` (the same per 20 m), `tick.py`
+(per tick by distance, with the original's wheel records and contact entries); the summary in `final.txt`.
+- **Placement at speed** (decomp.md "Boot, loading screens", new bullet "Placement with a speed"): traced from
+  `FUN_00647e00` through the placement message (`FUN_008446e0` → `FUN_00596050` → `FUN_005705f0`'s pending
+  teleport → `FUN_008f8190`). The vehicle reset `FUN_009a9b10` leaves gear index 1, `Idle_RPM`, clutch 0 and the
+  gearbox in standstill; `FUN_009b1e90` zeroes the air time and the downshift gate's clock (+0x1ed0); then
+  `FUN_009b3550` sets the revs from the wheels (rolling at road speed) through **first gear's** ratio, the gear by
+  speed alone, and the gearbox in gear with the clutch closed (or idle in standstill below `Idle_RPM`). The 911 at
+  62.1 mph: third at 10 402 rpm on the placement tick (3.91 × 3.44 × 773 rpm of the rear wheels, exactly the
+  capture), 6451 one tick later; the zeroed +0x1ed0 is why the original holds third at 4470 rpm, below its
+  4600 down rpm, for a second. Ported as `Car::place_moving` / `Drivetrain::place_moving` (drive.rs, mw-handling
+  drivetrain: one new method at the end of `impl Drivetrain`, nothing else there touched), used by the world replay.
+  `kerb100a` replay: speed RMS 9.9 → 1.3 mph (the pair a / b: 0.4), first ticks 6138 / 5816 / 5502 rpm against the
+  original's 6451 / 6433 / 6113 (ours one tick ahead; the original's first tick shows the rear wheels at 126.7 rad/s
+  after the clutch's impulse, ours already pulled back by the tyre), 3 → 2 at 1–1.5 s in both; `kerb100raptor`
+  11.6 → 3.1 mph (the rest is braking, below).
+- **The strut stop acts only on a crashed car**: `FUN_0095b4d0` rebuilds the wheel constraints every tick, and the
+  stop's flag +0x4ac is `FUN_009c24b0`'s tenth argument, the byte at vehicle +0x1774 = the crashed state (set by
+  the crash entry `FUN_009b2d40`; 0 for the player in snap1 and snap2). Gated on `ctl.crashed` (`MW_STRUT_STOP=1`
+  for the old behaviour). This was the main cause of the harsh kerbs on short-travel cars (the 911's 0.05 m bump
+  travel put it on the stop at every kerb).
+- **The strut joint** (decomp.md "Strut joint"): what holds the wheel on its strut is a world joint, the strut
+  object itself (vehicle +0x10f0 + 8i), solved in each contact pass (`FUN_00928cd0` → `FUN_009c6230` →
+  `FUN_009c4050` / arm `FUN_009c42d0`: the predicted wheel kept between the strut's ends, err / dt through the
+  effective mass to the chassis and against the wheel) and in each sub-step (`FUN_00928fb0` → `FUN_009c62c0` →
+  `FUN_009c3ae0` / `FUN_009c3d70`: no relative motion past the end the wheel is at). The original shows it: the
+  911's wheel records stop at −0.054 / −0.055 m (body frame) and stay there for ten ticks while the kerb is still
+  0.10–0.14 m into the tyre. Ported along the strut (`suspension::strut_position_error` / `strut_velocity_error`;
+  `MW_STRUT_JOINT=0|pos|vel`). The "joints `FUN_009c62e0` / `FUN_009c4e10`" of the 2026-10-19 kerb entry are the
+  body's world contacts (position and impulse passes of a body's contact list), not wheel joints.
+- **Before (session-11 build) → after**, summ.py; the original's own pair for the noise floor:
+
+  | capture | run | mph RMS | yaw RMS / peak °/s | vert. acc RMS m/s² | pitch acc RMS °/s² | roll acc RMS °/s² | pitch / roll rate peak °/s |
+  |---|---|---|---|---|---|---|---|
+  | kerb100a | original (b) | 0 (0.39) | 0.44 / 0.88 (0.49 / 1.92) | 6.0 (6.1) | 286 (273) | 124 (129) | 47 / 14 (45 / 18) |
+  | | before → after | 9.9 → 1.3 | 0.84 / 2.9 → 0.94 / 2.6 | 10.0 → 8.9 | 467 → 254 | 174 → 108 | 108 / 31 → 44 / 18 |
+  | kerbrest911a | original (b identical) | 0 | 0.45 / 0.93 | 1.3 | 59 | 35 | 19 / 7 |
+  | | before → after | 1.85 → 1.82 | 1.35 / 4.7 → 1.25 / 3.2 | 5.0 → 2.5 | 244 → 142 | 168 → 49 | 66 / 44 → 42 / 9 |
+  | kerb100raptor | original (c identical) | 0 | 0.52 / 2.0 | 4.1 | 156 | 89 | 41 / 16 |
+  | | before → after | 12.0 → 3.3 | 0.61 / 2.1 → 1.18 / 4.0 | 4.1 → 6.4 | 134 → 174 | 56 → 75 | 32 / 9 → 34 / 18 |
+
+  (the Raptor's "before" ran 10–15 mph slow from the bad start, so its kerb was softer). ride2.py totals (vertical
+  RMS, pitch, roll acc), original | before | after: `kerb_drop2` 1.6, 62, 10 | 2.1, 52, 17 | 2.1, 52, 21;
+  `kerb_angle1` 3.0, 128, 26 | 2.0, 50, 85 | 2.2, 55, 132 (this capture ends with the original crashing; its
+  25–50 m bin carries the difference).
+- **Still open: the position pass lifts the chassis more than the original does.** At the 911's front step in
+  `kerb100a` (1.367 s) the original's chassis takes ≈ 26 N s per wheel more than its trend in the tick the wheel
+  reaches the strut top, about what the spring at full compression gives; ours as read (err ≈ 0.12 m, m_eff ≈ 23 kg,
+  two passes) gives ≈ 5–10 × that, and `kerbrest911a`'s pitch-rate peak is 42 against 19 °/s. With the pass left out
+  (`MW_STRUT_JOINT=vel`) the 911's numbers come close (kerbrest911a pitch acc 105, peak 24; kerb100a 186 / 43) but
+  the wheel then rises past its strut top. Not found: what in the chain (the wheel contact's push, the record the
+  constraint uses on the first tick, the joint's masses) makes the game's reaction smaller. Kept as read.
+- **Yaw spikes (item 2) come from the surface bumps**, not the kerb: the Hodges strip is paving (`SurfacePhysics`
+  406000: f 0.3 / m, A 12 mm). `MW_ROUGH=0`: yaw RMS 1.25 → 0.52 (original 0.45), and ours then follows the
+  original's yaw trace (e.g. −0.6 against −0.8 °/s while braking); on the flat in second gear (2.3–3.5 s) yaw RMS
+  0.94 → 0.21 (0.10), roll rate 1.78 → 1.07 (0.92), vertical speed 0.124 → 0.071 (0.042) m/s. Bumping only the
+  point (normal unchanged) still gives 1.17, so it is the moved contact, not the tilt. The original's body shows no
+  sign of ±12 mm bumps on this strip: either the bump flag (`FUN_00904260`: player record +0x9c == 0, the 911 is the
+  player here) is not what we think, or ours answers a moving contact far more strongly. Bumps kept (from the code).
+- **Speed RMS 1.8 mph from rest (item 4) is a flat-ground drivetrain / tyre difference**: ours gains it at the
+  launch (rear slip 0.43 at once against the original's ≈ 0 for 0.4 s, 0.22 / 0.11 left / right at 0.5 s and
+  0.43 / 0.24 at 1 s; ours 0.42 / 0.37) and in second gear without slip (36 → 50 mph: original 12.6, ours
+  13.4 mph/s, +6 %; engine 20 % above the wheels in both). Not traced (the drivetrain is the nitrous agent's this
+  round); our `--test accel` (0–60 3.58 s) is a regression guard, not a match: this capture reaches 50 mph at 3.5 s.
+- **Raptor braking** (`kerb100raptor` from 2.5 s): ours decelerates 11.2 against 9.9 m/s² (3–4.5 s), the revs fall to
+  idle and the gearbox drops to standstill at 3 s, where the original stays coupled (4250 rpm, 3 → 2 → 1). Open.
+- **Tests (911), before → after**: accel, brake, corner, drift unchanged (0–60 3.58 s, quarter 11.60 s, 38.1 m,
+  2.57 g, drift 37.3°); landing deepest 0.114 → 0.237 m, overtravel 0.071 → 0.214 m, body contact 0.82 s, settle
+  3.48 → 3.57 s; climb deepest 0.122 → 0.208 m, overtravel 0.179 → 0.305 m, body contact 0.90 → 0.97 s, settle
+  5.05 → 5.62 s; kerb (50 km/h) vy peak 1.69 → 1.73 m/s, pitch rate 29.3 → 34.2 °/s, roll rate 68.3 → 54.8 °/s,
+  rise 0.194 → 0.202 m, stop 2898 → 0 N s. The deeper landings are the stop gone (no landing capture to check).
+- **Model decisions** (handling.md): the joint along the car's up axis only; its position parameter (+0x30, writer
+  not found) from the wheel's position before the sub-steps; the strut bottom at the static sag without strut
+  data; the replay's start always the moving placement.
+- **Captures wanted** (probe helpers, `hodges-kerbrest` / `hodges-kerb100`, 911): (1) `kerb.watch` + vehicle +0x19d0
+  + 4i (the bump A × n per wheel) and the wheel constraint's record point: whether the bumps run on the player's car;
+  (2) a hook on `FUN_009c6230` logging the joint's err and impulse and the wheel record's velocity before / after
+  `FUN_009c5a90` for the ticks around the step: where the chassis's reaction goes; (3) engine +0x20 rpm, the clutch
+  torque and the wheels' drive torque over the first 3.5 s from rest (the launch difference); (4) the Raptor's
+  brake budget and wheel spins from 2.5 s; (5) a landing from a kicker (no stop now) for the wheels' depth.
+
 ### 2026-10-19: probe capture helpers: teleport, car swap, tick-exact scripted inputs; reproducible kerb runs
 User request: probe helpers for cleaner captures (teleport with saved spots, any car, scripted inputs per tick,
 fixed conditions, a flat test strip), verified by two identical runs at 100 km/h over a kerb and a replay in ours.
