@@ -88,6 +88,9 @@ Added by the user (2026-10-16); the ones marked (2026-10-16: ...) were worked on
 - **Probe cheats for upgrades** (added 2026-10-19): in the original most cars have no nitrous or other mods until
   they are unlocked in races, so captures need a probe command that fits any mod / upgrade at runtime through the
   game's own path (save restored after). Asked of session 11's nitrous agent; check it landed.
+- **Menu functionality missing** (added 2026-10-19): many parts of the menus' functionality are still missing, in
+  Easydrive too (survey every menu / Easydrive entry of the original against ours, from the HSM / layout data and the
+  code, and list what is missing before implementing).
 - **UI scaling and positioning** (added 2026-10-19): the UI's scale and placement are still wrong (HUD, menus,
   pop-ups): compare against screenshots of the original at the same resolution and take the layout from the
   game's own UI data / code, not by eye.
