@@ -10,6 +10,89 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-19: harsh road / kerb response: the wheel's cylinder, the strut travel from data, decal triangles
+User play test: "road collisions are sometimes harsh (seams / steps)", "sidewalks affect the car too much". Three
+causes found and fixed; sources below. Captures of the original (`tools/orig`, F-150 Raptor from the save's start
+point, keyboard, audio muted, save backed up to `ref/savebackup-2026-10-19-kerbs/` and restored byte-identical,
+controller setting restored, game quit): `ref/kerb_drop2` (31–34 mph straight over a 0.10 m step up, a 0.12 m step
+up and a 0.11 m drop, 120 Hz), `ref/kerb_angle1` (the same line again), `ref/kerb_angle2` (a 60° turn at 5–24 mph
+with single-wheel kerb mounts), all with the watch file `kerb.watch` (handling.watch plus, per wheel, the wheel
+object's contact point / normal (+0x00 / +0x10), contact count (+0x1a4), the first contact entry's A / B / normal
+(list at +0x1a0) and the wheel record's centre / velocity (+0x198 → +0x00 / +0x40)).
+- **The wheel's contact is the wheel body's cylinder against the world** (dump): the wheel object holds a contact
+  list (+0x1a0 pointer, +0x1a4 count, 0x40-byte entries: +0x00 the point on the cylinder A, +0x10 the world point
+  B, +0x1c the triangle's collision tag, +0x20 the normal) filled from the world's contact buffer (`FUN_00923bb0` →
+  `FUN_009ab3b0` → `FUN_009dd300`; the narrow phase is in the collision job `FUN_0092a510` / `FUN_009ac590`, not in
+  the dump). `FUN_009e04a0` / `FUN_009e06d0` take entry 0 (+0x1a8 = 0), drop the list when the normal points
+  against the chassis's up row, and write the wheel's contact (`FUN_009df790`: point, normal, on-ground byte
+  +0x24 = (B − A)·n > −0.2 (`.bss` 0x01187ac0, snap1) and normal.y > 0.5 (`.rdata` 0x01026830)); +0x1c0 = the
+  same within the margin and tag bit 0 (drivable). `FUN_0095b4d0` gives the wheel constraint one record per entry and
+  points +0x4a0 at entry 0's; `FUN_009c5a90` runs on that one only. Snapshot snap1: one entry per wheel, A on the rim
+  of the cylinder's lower end (0.123 m along the axle = the body's half extent z; radius 0.339). So the old
+  research-log line "the original keeps its on-ground flags where ours lose a wheel" compared different things:
+  the byte stays 1 for ground up to 0.2 m away.
+- **Live, at the step** (`ref/kerb_drop2` 4.09 s): entry 0's A is on the cylinder's rim 0.22 m ahead of the centre
+  and 0.38 m below it, B on the kerb's top edge straight above A, normal (−0.01, 1.000, 0.02): the edge's vertical
+  depth in the cylinder (0.041 m) with the top face's normal. The wheel centre rose 0.044 then 0.061 m over two
+  ticks. Normals stay y ≥ 0.995 through both steps and the drop: no radial (edge-to-axle) normals.
+- **Ported** (`mw_handling::wheel_probe`, 4 unit tests; `drive.rs probe_ground`): the cylinder (radius, length =
+  twice the wheel body's half extent z, axle steered on the fronts) is cut into 9 slices across the axle; each
+  slice circle is solved exactly against each nearby triangle's cut (the highest centre at which it touches); the
+  highest slice gives the contact point (on the triangle), the triangle's own normal and the offset from the centre,
+  which the contact pass and the strut stop now use (d = (B − (centre + offset)) · n, as `FUN_009c5a90`). The
+  surface bumps move that point and normal directly (as `FUN_009aaf30` writes them into the record), so the "plane
+  under the ray" workaround is gone. Tried and dropped: parry's cylinder / 32-gon shape cast (GJK witnesses off by
+  up to 0.17 m against flat ground), radial normals at edges (doubled the pitch / roll rates against
+  `ref/kerb_drop2`), passing over edges that reach under the tyre's outer end by less than the lift (lifts came at
+  once a tick later: worse against the captures). `MW_WHEEL_RAY=1` keeps the old ray for A/B.
+- **Strut travel from data**: the strut runs from `caac331c` + `WheelSuspensionConstraint.b867a203` (top) down to
+  `caac331c` + `7fc0dc41` (bottom), model space, the constraint named by `SuspensionWheel.Suspension_Constraint`.
+  Read live on the Raptor (strut object at vehicle +0x10f0 + 8i: +0x40 top −0.222 / −0.202, +0x50 bottom −0.512 /
+  −0.557, body frame = model − 0.75, +0x70 angle 0.65° / 0.45° = −`447b4e1c`): bump travel 0.174 / 0.224 m above
+  rest, droop 0.116 / 0.131; the XKR's snapshot values (0.056 / 0.067, droop 0.099 / 0.093) follow the same rule.
+  Ours had 0.06 m for every car, so the Raptor sat on its strut stops over every kerb. `wheel_layout` reads it
+  (`RestWheel::strut`), drive.rs sets the travel from it (`BUMP_TRAVEL` 0.06 stays for cars without the data).
+- **Decal triangles are not under the wheels**: collision tag flag 0x8 (`CollisionTag::DECAL`; only surfaces 11,
+  12, 13, 26 carry it, 3939 triangles, all with no other flag) marks plates and strips lying up to 0.1 m above the
+  road (and some posts). In `ref/live1` the MP4-12C crosses such a strip at 99 mph (83.8 s, (1335.6, 137.5): a
+  0.47 m strip 0.06–0.1 m above the asphalt) and another at 77.7 s without a bump. Replayed along the same path
+  (below): with the strip under the wheels ours had 4.6× the original's vertical-acceleration RMS over that 25 m
+  (13.4 against 2.9 m/s², peak 64 against 5), without it 0.93× (2.7, peak 5.8; pitch 80 / 89, roll 111 / 137 °/s²).
+  The probe skips them (`MW_WHEEL_DECAL=1` keeps them). Whether the body / props collide with them was not checked.
+- **New tools**: `--replay <csv> --spawn=x,y,z,heading` replays in the world from that point (starting speed given
+  at once; `MW_REPLAY_FOLLOW=1` holds the recorded speed with throttle / brake, `=path` also steers along the
+  recorded path, pure pursuit); the ours CSV gained py, vy, pitch / roll rates and the wheels' contact heights.
+  `mwtool surfaces --near x,z,r --tris` lists the collision triangles with tags. `MW_WHEEL_TRACE` gained the
+  velocity after the sub-steps (comparable with the original's wheel record +0x40 between ticks: static −1.24 /
+  −1.60 m/s against the Raptor's −1.06 / −1.42). Scripts (git-ignored `scratch/`): `ride.py` (per tick by distance),
+  `ride2.py` (per 25 m: RMS of vertical, pitch and roll accelerations, crashes and the first second left out).
+- **Against the captures** (ride2, all / RMS ay m/s², pitch, roll acc °/s²; original | ours now | ray before):
+  Raptor `kerb_drop2` 1.6, 62, 10 | 2.2, 52, 33 | 2.1, 43, 134 (the ray run had the 0.06 m travel: rear wheels on
+  the stops); per event, front step up pitch rate −3.8 / −3.7 °/s, vy 0.25 / 0.19 m/s, rear step +10.4 / +10.6 °/s
+  (ray: +12.9 at once, rear wheels 3 ticks off), drop vy −0.49 / −0.68. `live1` stretches (XKR 15.6–22.4 s, SL 65
+  199.7–202.7 / 262–269 s, XKR 0.2–7.8 s, MP4 77.7–90.5 / 136.6–139.9 s): 14.2 / 13.7 / 16.4; 3.3 / 5.1 / 5.8;
+  0.7 / 0.6 / 0.6; 5.5 / 3.0 / 3.1; 0.6 / 0.5 / 0.5; 14.6 / 8.6 / 7.7 (jumps dominate). Roll accelerations stay
+  above the original's on some (Raptor 33 / 10, `kerb_angle1` 276 / 26 against 141 for the ray).
+- **911 tests, before → after**: accel 0–60 mph 3.58 s, quarter mile 11.60 s, 0–200 11.12 s, top 307.4 km/h,
+  brake 38.1 m, corner 2.57 g, jitter unchanged; drift peak 37.6 → 37.3° (held 4.75 s); landing deepest 0.123 →
+  0.114 m, settle 3.48 s; climb deepest 0.105 → 0.122 m, overtravel 0.164 → 0.179 m, body contact 0.82 → 0.90 s,
+  settle 5.00 → 5.05 s; kerb (50 km/h, 0.168 m, 30°) vy peak 1.81 → 1.69 m/s, pitch rate 36.4 → 29.3 °/s, roll
+  rate 84.6 → 68.3 °/s, rise 0.182 → 0.194 m, stop 3009 → 2898 N s. Bench (`--units 30`, 911): frame mean 9.21 →
+  9.69 ms (the probe walks the triangles near each wheel).
+- **Model decisions** (handling.md): which contact the job lists first is not known: ours takes the ground the
+  cylinder meets first coming down its strut (the highest slice); 9 slices; a tyre whose outer end overlaps a kerb
+  is lifted by it (a penetration-depth contact would push it aside; ours only moves along up); ground more than
+  one radius above the strut's end is not under the wheel.
+- **Open / captures wanted** (with the new probe tools, flat airfield strip, scripted inputs, `kerb.watch` fields):
+  (1) a straight run at 100 km/h square over a kerb step up (and one down), sports car (911 or XKR: short strut
+  travel, the strut stop's share) and the Raptor; (2) the same at 30° to the kerb, for the roll response and the
+  order of the wheels' contacts; (3) 30 km/h along a kerb with the outer half of the tyres over it, to see whether
+  the original lifts the wheel or pushes it aside (the side-overlap decision above), with the list count
+  `w*_ncont` and entry 1 (+0x40…) added to the watch; (4) a decal strip (surface 13, e.g. (1335.6, 137.5)) at
+  60 mph with the wheel contacts, to confirm the skip (and whether the body meets decal posts); (5) a straight run
+  over a track-unit seam at speed. Also open: the joints that hold the wheel on its strut (`FUN_009c62e0` /
+  `FUN_009c4e10`), the droop stop (strut bottom), the job's narrow phase (for which entry comes first).
+
 ### 2026-10-16: car collision effects: glass, sparks, dust and debris from the game's rules
 User request (session 10): "particle effects for crashing are missing somewhat, stuff like broken glass when crashing
 into traffic vehicles, and other crash particles in general". Before: every body contact of a race car played the

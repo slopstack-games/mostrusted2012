@@ -431,6 +431,9 @@ enum Cmd {
         /// vertical extent is under 0.5 m), nearest first, with their height, surface and facing.
         #[arg(long)]
         steps: bool,
+        /// With `--near`: list every triangle around the point (vertices, surface, collision flags, normal).
+        #[arg(long)]
+        tris: bool,
     },
     /// ICE camera takes (`CAMERAS.BNDL`, `mw_formats::camera_take`): one line each, or one take (name,
     /// UniqueId or resource id) with its channel layout and the camera evaluated every `--step` seconds.
@@ -891,7 +894,7 @@ fn main() -> Result<()> {
                 println!("torque (rpm:Nm): {}", samples.join("  "));
             }
         }
-        Cmd::Surfaces { near, find, steps } => {
+        Cmd::Surfaces { near, find, steps, tris } => {
             let near = match near.as_deref() {
                 Some(n) => {
                     let v: Vec<f32> = n.split(',').map(|x| x.trim().parse()).collect::<Result<_, _>>()?;
@@ -903,7 +906,7 @@ fn main() -> Result<()> {
                 }
                 None => None,
             };
-            props::surfaces(&AssetStore::new(game)?, near, find, steps)?
+            props::surfaces(&AssetStore::new(game)?, near, find, steps, tris)?
         }
         Cmd::CameraTake { take, step } => {
             camera_take::run(&open_bundle(&game, "CAMERAS.BNDL")?, take.as_deref(), step)?

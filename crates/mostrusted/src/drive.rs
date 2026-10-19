@@ -1,4 +1,4 @@
-//! Drivable cars: a raycast-suspension vehicle on avian3d, and input. The
+//! Drivable cars: a point-mass-wheel suspension vehicle on avian3d, and input. The
 //! cameras that follow the car are in `camera.rs`.
 //!
 //! The game's handling code is in the encrypted executable, so this is a
@@ -13,6 +13,7 @@
 
 use avian3d::prelude::*;
 use bevy::input::gamepad::RawGamepadEvent;
+use bevy::math::DVec3;
 use bevy::prelude::*;
 use mw_assets::camera::VehicleCameras;
 use mw_assets::handling::{LateralCurve, LongCurve, SlipBlend, Steering, SurfaceLink, TyreAxle, VehicleHandling};
@@ -156,8 +157,7 @@ impl Handbrake {
     }
 }
 
-/// Bump travel above the rest position (m): the game's strut on the 911 allows ~0.06 m (inferred from its
-/// geometry; not read per car yet).
+/// Bump travel above the rest position (m) for a car without the strut data (`wheel_layout`; ours).
 const BUMP_TRAVEL: f32 = 0.06;
 fn finite_or_zero(x: f32) -> f32 {
     if x.is_finite() { x.max(0.0) } else { 0.0 }
@@ -355,6 +355,9 @@ struct WheelState {
     touching: bool,
     stop_share: Option<f32>,
     normal_impulse: f32,
+    /// The wheel's velocity along the strut after this tick's sub-steps, before the contact passes (telemetry: what
+    /// the original's wheel record holds between ticks).
+    vel_substeps: f32,
     spin: f32,
     pivot: Entity,
     spinner: Entity,
@@ -660,6 +663,17 @@ pub fn build_car(commands: &mut Commands, b: &CarBuild) -> Entity {
                 Vec3::from(a.position).distance(w.position).total_cmp(&Vec3::from(b.position).distance(w.position))
             })
             .map_or(TYRE_WIDTH_DEFAULT, |b| 2.0 * b.half_width);
+        // Bump travel above the rest position: up to the strut's top, `caac331c` + the suspension constraint's
+        // `b867a203` (`wheel_layout`; 0.174 / 0.224 m on the Raptor, 0.056 / 0.067 m on the XKR, read live).
+        let bump = h
+            .wheels
+            .iter()
+            .min_by(|a, b| {
+                Vec3::from(a.position).distance(w.position).total_cmp(&Vec3::from(b.position).distance(w.position))
+            })
+            .and_then(|b| b.strut.map(|[top, _]| top - b.position[1]))
+            .filter(|t| *t > 0.0)
+            .unwrap_or(BUMP_TRAVEL);
         let share = if w.front { params.drivetrain.front_share } else { 1.0 - params.drivetrain.front_share };
         let inertia =
             0.5 * wheel_mass * radius * radius + if share > 0.0 { params.drivetrain.transmission_inertia } else { 0.0 };
@@ -695,7 +709,7 @@ pub fn build_car(commands: &mut Commands, b: &CarBuild) -> Entity {
             spring: k,
             damper: c,
             rebound: c * ratio.max(1.0),
-            travel: BUMP_TRAVEL + sag,
+            travel: bump + sag,
             sag,
             brake_torque: brake,
             omega: b.velocity.dot(Quat::from_rotation_y(b.heading) * Vec3::Z) / radius,
@@ -712,6 +726,7 @@ pub fn build_car(commands: &mut Commands, b: &CarBuild) -> Entity {
             touching: false,
             stop_share: None,
             normal_impulse: 0.0,
+            vel_substeps: 0.0,
             spin: 0.0,
             pivot,
             spinner,
@@ -931,6 +946,7 @@ pub(crate) fn car_physics(
     )>,
     surfaces: Res<crate::props::WorldSurfaces>,
     world_tags: Query<(&Collider, &crate::props::SurfaceTags)>,
+    world_shapes: WorldShapes,
 ) {
     let dt = time.delta_secs();
     input.apply_script();
@@ -1173,8 +1189,8 @@ pub(crate) fn car_physics(
         // --- The wheels' point masses and the ground under them (decomp.md "Suspension, wheels, aerodynamics") -----
         // Each wheel is a point mass on its strut (the game's wheel record: centre, velocity, the wheel body's data
         // mass) that the island step integrates like a body; ours moves along the car's up axis only (handling.md
-        // "Model decisions"). Where the last tick's integration left it gives the compression, and a ray from above
-        // the strut's end finds the ground under it: this tick's contact record.
+        // "Model decisions"). Where the last tick's integration left it gives the compression, and the wheel
+        // body's cylinder coming down the strut finds the ground under it: this tick's contact record (`probe_ground`).
         let ray_dir = Dir3::new(-up).unwrap_or(Dir3::NEG_Y);
         let mut grounds: Vec<Option<Ground>> = Vec::with_capacity(car.wheels.len());
         for wheel in car.wheels.iter_mut() {
@@ -1194,41 +1210,36 @@ pub(crate) fn car_physics(
                 wheel.compression = y + wheel.sag;
             }
             wheel.overtravel = 0.0;
-            let reach = wheel.travel + wheel.radius + WHEEL_DROOP_REACH;
-            // The ray starts one wheel radius above the strut's end so that ground which has come up past it still
-            // registers (from inside a solid it returns a zero normal, through a trimesh's back face nothing).
-            // Stopgap, handling.md "Model decisions": the game's wheel collides as a cylinder.
-            let lift = wheel.radius;
-            let Some(mut hit) = spatial.cast_ray(mount + up * lift, ray_dir, reach + lift, true, &filter) else {
+            // The wheel's axle: the car's x axis, turned by the steering on the front wheels (the game's wheel
+            // shape takes the wheel's world matrix, `FUN_00902930`).
+            let axle = if wheel.front { Quat::from_axis_angle(up, steer) } else { Quat::IDENTITY } * (rot * Vec3::X);
+            let Some(hit) = probe_ground(&spatial, &filter, &world_shapes, wheel, mount, up, axle, ray_dir) else {
                 grounds.push(None);
                 continue;
             };
-            hit.distance -= lift;
-            // The surface under the wheel and how this car's tyres treat it (`FUN_009d8bd0`).
-            let surface = WheelSurface::at(&surfaces, &world_tags, hit.entity, (mount, ray_dir, reach), p, wheel.front);
-            // The surface's bumps (`FUN_009d77b0` → `FUN_009d4650`): the contact moves along the ground normal by
-            // Perlin noise of its position and the normal tilts with it; the suspension and the tyre see the
-            // bumped ground. The game does this only under a flag that reads as "the car has a human player"
-            // (`FUN_00904260`: the car's player record +0x9c is 0; inferred), so AI and traffic cars skip it.
+            let (mut point, mut normal) = (hit.point, hit.normal);
+            // The surface under the contact and how this car's tyres treat it (`FUN_009d8bd0`).
+            let surface = WheelSurface::at(
+                &surfaces,
+                &world_tags,
+                hit.entity,
+                (point + normal * 0.05, Dir3::new(-normal).unwrap_or(ray_dir), 0.1),
+                p,
+                wheel.front,
+            );
+            // The surface's bumps (`FUN_009d77b0` → `FUN_009d4650`): the contact point moves along the ground normal
+            // by Perlin noise of its position and the normal tilts with it, and both are written into the wheel's
+            // contact and its constraint's contact record (+0x10 point, +0x20 normal; `FUN_009aaf30`), so the
+            // suspension and the tyre see the bumped ground. The game does this only under a flag that reads as
+            // "the car has a human player" (`FUN_00904260`: the car's player record +0x9c is 0; inferred), so AI and
+            // traffic cars skip it.
             if player && let Some((frequency, amplitude)) = surface.roughness {
-                let point = mount - up * hit.distance;
-                let (moved, tilted, _) =
-                    surface::roughness(point.to_array(), hit.normal.to_array(), frequency, amplitude);
-                let (moved, tilted) = (Vec3::from(moved), Vec3::from(tilted));
-                // Where the wheel's ray meets the bumped ground (the plane through the moved point).
-                let along = up.dot(tilted);
-                if along > TYRE_NORMAL_MIN_UP {
-                    hit.distance = (mount - moved).dot(tilted) / along;
-                    hit.normal = tilted;
-                }
+                let (moved, tilted, _) = surface::roughness(point.to_array(), normal.to_array(), frequency, amplitude);
+                (point, normal) = (Vec3::from(moved), Vec3::from(tilted).normalize_or(normal));
             }
-            wheel.overtravel = (wheel.radius - hit.distance).max(0.0);
-            grounds.push(Some(Ground {
-                distance: hit.distance,
-                normal: hit.normal,
-                point: mount - up * hit.distance,
-                surface,
-            }));
+            // The ground inside a tyre centred at the strut's end (telemetry; the strut stop's own measure).
+            wheel.overtravel = (point - (mount + hit.offset)).dot(normal).max(0.0);
+            grounds.push(Some(Ground { normal, point, offset: hit.offset, surface }));
         }
 
         // --- The island's sub-steps (`FUN_0093f200`: world +0x464 = 2, at dt / 2) ------------------------------------
@@ -1586,24 +1597,25 @@ pub(crate) fn car_physics(
             Chassis { v: forces.linear_velocity(), w: forces.angular_velocity(), com, mass: p.mass, inv_inertia };
         for wheel in car.wheels.iter_mut() {
             wheel.touching = false;
+            wheel.vel_substeps = wheel.vel;
         }
         for _ in 0..STOP_CONTACT_PASSES {
             for (wheel, ground) in car.wheels.iter_mut().zip(&grounds) {
                 // The stop's flag (+0x4ae) is cleared at the top of every call.
                 wheel.stop_share = None;
                 let Some(g) = ground else { continue };
-                let along = g.normal.dot(up).max(TYRE_NORMAL_MIN_UP);
-                // The gap between the tyre's bottom and the ground along the ray, as a depth along the normal.
-                let gap = g.distance - (wheel.travel - wheel.compression + wheel.radius);
+                // The ground point against the wheel's contact point (its centre + the record's offset), along the
+                // normal: d = (ground point − (centre + offset + v dt)) · n.
                 let centre = wheel.world_centre(pos, rot);
                 let vn = ch.wheel_velocity(centre, up, wheel.vel).dot(g.normal);
-                let Some(dvn) = suspension::contact_correction(-gap * along - vn * dt, dt) else { continue };
+                let depth = (g.point - (centre + g.offset)).dot(g.normal);
+                let Some(dvn) = suspension::contact_correction(depth - vn * dt, dt) else { continue };
                 wheel.touching = true;
                 wheel_ground_impulse(wheel, &mut ch, centre, g.normal, up, dvn);
-                // The strut stop (+0x4ac): the ground's penetration into a tyre centred at the strut's end.
+                // The strut stop (+0x4ac): the same with the contact offset taken from the strut's end (+0x460).
                 let mount = wheel.strut_end(pos, rot);
                 let vn = ch.velocity_at(mount).dot(g.normal);
-                let over = wheel.radius - g.distance - vn * dt;
+                let over = (g.point - (mount + g.offset)).dot(g.normal) - vn * dt;
                 if let Some((excess, share)) = suspension::stop_excess(over, wheel.stop_slack) {
                     wheel.stop_share = Some(share);
                     let impulse = ch.effective_mass(mount, g.normal) * excess / dt;
@@ -1741,13 +1753,144 @@ fn limited_slip(wheels: &mut [WheelState], diff: &[f32; 2]) {
     }
 }
 
-/// The ground under a wheel this tick (its contact record): the ray's distance from the strut's end (m), the
-/// ground normal, the ground point under the strut and the surface there.
+/// The ground under a wheel this tick (its contact record, constraint +0x80: normal, ground point, the contact's
+/// offset from the wheel centre) and the surface there.
 struct Ground {
-    distance: f32,
     normal: Vec3,
     point: Vec3,
+    offset: Vec3,
     surface: WheelSurface,
+}
+
+/// What the wheel probe found: the world collider, the ground point, its normal (out of the ground) and the
+/// contact point on the wheel relative to the wheel's centre (the contact record's +0x10, +0x00 and +0x20).
+struct ProbeHit {
+    entity: Entity,
+    point: Vec3,
+    normal: Vec3,
+    offset: Vec3,
+}
+
+/// The world's static shapes the wheels stand on (`GameLayer::World`).
+type WorldShapes<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static Collider,
+        &'static Position,
+        &'static Rotation,
+        Option<&'static CollisionLayers>,
+        Option<&'static crate::props::SurfaceTags>,
+    ),
+>;
+
+/// The wheel's contact with the world (`mw_handling::wheel_probe`): the wheel body's cylinder (radius, the body's
+/// half width along the axle) coming down its strut onto the
+/// nearby world triangles; the first it meets is the contact (the game takes the first of its wheel's contact list,
+/// `FUN_009e04a0`; which one its job lists first is not known: model decision, handling.md). `MW_WHEEL_RAY=1` uses
+/// the ray along the strut of before (a point under the centre) for A/B.
+#[allow(clippy::too_many_arguments)]
+fn probe_ground(
+    spatial: &SpatialQuery,
+    filter: &SpatialQueryFilter,
+    shapes: &WorldShapes,
+    wheel: &WheelState,
+    mount: Vec3,
+    up: Vec3,
+    axle: Vec3,
+    down: Dir3,
+) -> Option<ProbeHit> {
+    use mw_handling::wheel_probe;
+    static RAY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let ray = *RAY.get_or_init(|| std::env::var_os("MW_WHEEL_RAY").is_some_and(|v| v != "0"));
+    // Triangles flagged as decals (collision tag bit 3, `CollisionTag::DECAL`: road plates and strips lying up to
+    // 0.1 m above the road, posts) are not under the wheels: the original crosses them without a bump (`ref/live1`
+    // 77.7 s and 83.8 s, MP4-12C at 70 / 99 mph; ours meeting them: 4.6× the original's vertical-acceleration RMS
+    // over that stretch, skipping them: 0.93×). `MW_WHEEL_DECAL=1` keeps them for A/B.
+    static SKIP_DECAL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let skip_decal = *SKIP_DECAL.get_or_init(|| std::env::var_os("MW_WHEEL_DECAL").is_none_or(|v| v == "0"));
+    // Ground a wheel can reach within a tick: down to `WHEEL_DROOP_REACH` below full droop.
+    let reach = wheel.travel + WHEEL_DROOP_REACH;
+    let r = wheel.radius;
+    if ray {
+        let hit = spatial.cast_ray(mount + up * r, down, reach + 2.0 * r, true, filter)?;
+        let normal = hit.normal.normalize_or_zero();
+        return (normal.dot(up) > 0.0).then(|| ProbeHit {
+            entity: hit.entity,
+            point: mount + up * (r - hit.distance),
+            normal,
+            offset: -up * r,
+        });
+    }
+    let half_length = 0.5 * wheel.width;
+    let cyl = wheel_probe::Wheel {
+        axis: axle.normalize_or(Vec3::X).as_dvec3().to_array(),
+        up: up.as_dvec3().to_array(),
+        radius: r as f64,
+        half_length: half_length as f64,
+    };
+    let extent = Vec3::splat(2.0 * r + half_length + reach);
+    let (lo, hi) = (mount - extent, mount + extent);
+    let mut profile = wheel_probe::Profile::new(cyl).with_limits(r as f64, -(reach as f64));
+    let mut consider = |entity: Entity, tri: [Vec3; 3]| {
+        profile.add(&tri.map(|p| (p.as_dvec3() - mount.as_dvec3()).to_array()), entity.to_bits());
+    };
+    for entity in spatial.aabb_intersections_with_aabb(ColliderAabb::from_min_max(lo, hi)) {
+        let Ok((collider, position, rotation, layers, tags)) = shapes.get(entity) else { continue };
+        if layers.is_some_and(|l| !l.memberships.has_all(crate::props::GameLayer::World))
+            || !filter.test(entity, layers.copied().unwrap_or_default())
+        {
+            continue;
+        }
+        let (p, q) = (position.0, rotation.0);
+        let to_world = |v: Vec3| p + q * v;
+        let shape = collider.shape_scaled();
+        if let Some(mesh) = shape.as_trimesh() {
+            // The query box in the mesh's frame.
+            let corners = [lo, hi].map(|c| q.inverse() * (c - p));
+            let centre = (corners[0] + corners[1]) * 0.5;
+            let half = Mat3::from_quat(q.inverse()).abs() * (extent);
+            let (a, b) = (centre - half, centre + half);
+            let aabb = avian3d::parry::bounding_volume::Aabb::new(a.to_array().into(), b.to_array().into());
+            for i in mesh.bvh().intersect_aabb(&aabb) {
+                if skip_decal
+                    && tags
+                        .and_then(|t| t.0.get(i as usize))
+                        .is_some_and(|&t| mw_formats::CollisionTag::from_u32(t).has(mw_formats::CollisionTag::DECAL))
+                {
+                    continue;
+                }
+                let t = mesh.triangle(i);
+                let v = |x: [f32; 3]| to_world(Vec3::from(x));
+                consider(entity, [v(t.a.into()), v(t.b.into()), v(t.c.into())]);
+            }
+        } else if let Some(cuboid) = shape.as_cuboid() {
+            let h: [f32; 3] = cuboid.half_extents.into();
+            let h = Vec3::from(h);
+            let corner =
+                |i: usize| to_world(h * Vec3::new([-1.0, 1.0][i & 1], [-1.0, 1.0][(i >> 1) & 1], [-1.0, 1.0][i >> 2]));
+            // Two triangles per face, corners indexed by bits (x, y, z).
+            const FACES: [[usize; 4]; 6] =
+                [[0, 1, 3, 2], [4, 5, 7, 6], [0, 1, 5, 4], [2, 3, 7, 6], [0, 2, 6, 4], [1, 3, 7, 5]];
+            for f in FACES {
+                consider(entity, [corner(f[0]), corner(f[1]), corner(f[2])]);
+                consider(entity, [corner(f[0]), corner(f[2]), corner(f[3])]);
+            }
+        }
+    }
+    let rest = profile.resolve()?;
+    let entity = Entity::try_from_bits(rest.tag)?;
+    let normal = DVec3::from(rest.normal).as_vec3();
+    // `FUN_009e04a0`: a contact whose normal points against the chassis's up axis is dropped.
+    if normal.dot(up) <= 0.0 {
+        return None;
+    }
+    Some(ProbeHit {
+        entity,
+        point: mount + DVec3::from(rest.point).as_vec3(),
+        normal,
+        offset: DVec3::from(rest.offset).as_vec3(),
+    })
 }
 
 impl WheelState {
@@ -1830,7 +1973,7 @@ const SOLVER_SUBSTEPS: usize = 2;
 const STOP_CONTACT_PASSES: usize = 2;
 /// A wheel further than this from its rest position (m) is put back there: the car was moved (ours).
 const WHEEL_RESYNC: f32 = 1.0;
-/// How far below the fully drooped wheel the ground ray still looks (m; ours): a contact record exists for ground
+/// How far below the fully drooped wheel the ground probe still looks (m; ours): a contact record exists for ground
 /// the wheel can reach within a tick.
 const WHEEL_DROOP_REACH: f32 = 0.3;
 
@@ -2180,7 +2323,8 @@ fn trace_engine(t: f32, car: &Car, throttle: f32, speed: f32) {
 }
 
 /// `MW_WHEEL_TRACE=<file>`: the player's wheel point masses every tick: time, speed (m/s), then per wheel the
-/// compression (m), its rate (m/s), the wheel's velocity along the car's up axis (m/s), the ground's normal impulse
+/// compression (m), its rate (m/s), the wheel's velocity along the car's up axis after the sub-steps and after the
+/// contact passes (m/s), the ground's normal impulse
 /// this tick (N s) and flags (t = contact activated, s = strut stop set, g = tyre acting).
 fn trace_wheels(t: f32, car: &Car) {
     use std::io::Write;
@@ -2195,9 +2339,10 @@ fn trace_wheels(t: f32, car: &Car) {
             .iter()
             .map(|w| {
                 format!(
-                    "{:.4} {:.3} {:.3} {:.1} {}{}{}",
+                    "{:.4} {:.3} {:.3} {:.3} {:.1} {}{}{}",
                     w.compression,
                     w.compression_rate,
+                    w.vel_substeps,
                     w.vel,
                     w.normal_impulse,
                     if w.touching { "t" } else { "-" },

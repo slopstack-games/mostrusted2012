@@ -629,7 +629,9 @@ fn main() -> anyhow::Result<()> {
                     | Some("pursuit")
                     | Some("cops")
             );
-        let track = cli.test_track || (cli.test.is_some() && !street_test) || cli.replay.is_some();
+        // A replay with `--spawn` runs in the world from that point (kerbs and road against the original's capture).
+        let track =
+            cli.test_track || (cli.test.is_some() && !street_test) || (cli.replay.is_some() && cli.spawn.is_empty());
         let spawn = if track { Vec3::new(0.0, 1.0, 0.0) } else { spawn };
         let props =
             if cli.test.as_deref() == Some("smash") { props::smash_test_props(&cli.smash_set) } else { Vec::new() };
@@ -683,7 +685,10 @@ fn main() -> anyhow::Result<()> {
     if (cli.test.is_some() || cli.replay.is_some()) && drive.is_none() {
         anyhow::bail!("--test / --replay need --drive <car>");
     }
-    let replay = cli.replay.as_deref().map(replay::Replay::load).transpose()?;
+    let mut replay = cli.replay.as_deref().map(replay::Replay::load).transpose()?;
+    if let Some(r) = &mut replay {
+        r.world = !cli.spawn.is_empty();
+    }
     let script = if cli.swap_to.is_empty() {
         None
     } else {

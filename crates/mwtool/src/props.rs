@@ -239,6 +239,48 @@ fn steps_near(store: &AssetStore, [x, z, r]: [f32; 3]) -> Result<()> {
     Ok(())
 }
 
+/// Every collision triangle with a vertex within `r` (horizontally) of (`x`, `z`): track unit, surface, collision
+/// flags, normal and vertices.
+fn tris_near(store: &AssetStore, [x, z, r]: [f32; 3]) -> Result<()> {
+    use mw_bundle::ResourceType;
+    use mw_formats::CollisionTag;
+    for p in store.bundle_paths().to_vec() {
+        if !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("TRK_UNIT")) {
+            continue;
+        }
+        let Some(b) = store.bundle(&p) else { continue };
+        for e in b.entries_of_type(ResourceType::PolygonSoupList) {
+            let soups = mw_formats::PolygonSoupList::parse(&b.load(e)?)?;
+            if soups.max[0] < x - r || soups.min[0] > x + r || soups.max[2] < z - r || soups.min[2] > z + r {
+                continue;
+            }
+            let (verts, tris) = soups.triangles();
+            for (t, tag) in tris.iter().zip(soups.triangle_tags()) {
+                let v = t.map(|i| verts[i as usize]);
+                if !v.iter().any(|p| (p[0] - x).hypot(p[2] - z) <= r) {
+                    continue;
+                }
+                let (u, w) = ([0, 1, 2].map(|k| v[1][k] - v[0][k]), [0, 1, 2].map(|k| v[2][k] - v[0][k]));
+                let n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+                let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-9);
+                let tag = CollisionTag::from_u32(tag);
+                println!(
+                    "{} s{:<3} f{:#05x} n({:5.2} {:5.2} {:5.2}) {}",
+                    p.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned()),
+                    tag.surface,
+                    tag.flags,
+                    n[0] / len,
+                    n[1] / len,
+                    n[2] / len,
+                    v.iter().map(|p| format!("({:.2} {:.3} {:.2})", p[0], p[1], p[2])).collect::<Vec<_>>().join(" ")
+                );
+            }
+        }
+        store.evict_all();
+    }
+    Ok(())
+}
+
 /// Per surface, the triangles whose centre lies within `r` (horizontally) of (`x`, `z`): count, the nearest
 /// one's centre and its normal's up component.
 fn surfaces_near(
@@ -315,7 +357,7 @@ fn surfaces_near(
     Ok(())
 }
 
-pub fn surfaces(store: &AssetStore, near: Option<[f32; 3]>, find: Option<u8>, steps: bool) -> Result<()> {
+pub fn surfaces(store: &AssetStore, near: Option<[f32; 3]>, find: Option<u8>, steps: bool, tris: bool) -> Result<()> {
     use mw_bundle::ResourceType;
     use mw_formats::CollisionTag;
     let list = store.surfaces()?;
@@ -323,6 +365,11 @@ pub fn surfaces(store: &AssetStore, near: Option<[f32; 3]>, find: Option<u8>, st
         && steps
     {
         return steps_near(store, at);
+    }
+    if let Some(at) = near
+        && tris
+    {
+        return tris_near(store, at);
     }
     if let Some(at) = near {
         return surfaces_near(store, &list, at, find);
