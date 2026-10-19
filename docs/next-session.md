@@ -77,6 +77,10 @@ Added by the user (2026-10-16); the ones marked (2026-10-16: ...) were worked on
   boundaries, research log "Audio"); traffic cars whine; some sounds are missing, e.g. the supercharger whine on the
   old Charger; running over lamp posts and cones makes no audible sound (session 10's `world_sfx.rs` props / lamps
   behaviours: check they fire on a car's hit, not only on a break, and that the voice is audible).
+- **Wet roads in shadow** (added 2026-10-19): wet roads sometimes look odd in shadowed areas because they still look
+  lit (the wet layer's reflection / specular is probably not attenuated by the shadow; compare the wet road
+  shader's maths and the sky-cube reflection note in the 2026-10-14 "Lighting open" item against a capture of the
+  original in the rain at a shadowed spot).
 - **UI scaling and positioning** (added 2026-10-19): the UI's scale and placement are still wrong (HUD, menus,
   pop-ups): compare against screenshots of the original at the same resolution and take the layout from the
   game's own UI data / code, not by eye.
