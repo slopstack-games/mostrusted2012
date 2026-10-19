@@ -277,10 +277,11 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    landing rules (traffic / AI car impacts ported 2026-10-09, `car_impacts.rs`), a capture of the original to compare. Still open: the in-car cameras' unnamed fields (rigid now),
    the remaining acceleration / yaw-spring / gradient / height fields, FOV convention and calibration against
    the original (handling.md, "Cameras").
-4. `[~]` The world streams nearest-first from the spawn point (or the `--camera` pose); since 2026-10-09 by
-   `ZoneList` zone distance, each unit reported when complete, and the player's car is placed only once the zone
-   at its target and the neighbours within 200 m are resident (the game's `FUN_00647e00` rule). Still open: streaming that
-   follows the car (see M4).
+4. `[x]` The world streams as the game does (2026-10-19, `streaming.rs`, decomp.md "World streaming"): the camera's
+   zone and all its neighbours by the game's priorities, every other unit unloaded with its entities, models,
+   textures and materials; placements (`--spawn`, race starts) wait until their target is resident; the streaming
+   stall. Peak GPU memory of a `--drive 911` run 4.1–4.6 GB → 1.3–1.6 GB. `--load-all` / `--units N` load once.
+   Open: district / arena bundles as units, free-camera aerial views stream only with `--stream`.
 5. `[x]` **Car menu** (`menu.rs`, `garage.rs`; Tab / F1 / gamepad Start): pick any of the 93 drivable cars and
    one of its paints mid-session. The loader thread takes runtime `CarRequest`s (between track units, without
    reloading the world); the new car replaces the driven one in place (position, heading, velocity, a gear to

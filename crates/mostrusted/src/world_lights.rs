@@ -35,6 +35,8 @@ pub struct LightSources {
     dirty: bool,
     /// The hour the list on the GPU was built for.
     shown_hour: Option<f32>,
+    /// Each track unit's lights by [`light_key`], to remove them with the unit (`streaming.rs`).
+    by_unit: std::collections::HashMap<u32, std::collections::HashSet<([u32; 3], usize)>>,
 }
 
 impl LightSources {
@@ -55,6 +57,27 @@ impl LightSources {
             self.dirty = true;
         }
     }
+
+    /// A track unit's lights (`loader::Msg::Lights`); `None` for lights no unit owns.
+    pub fn add_unit(&mut self, unit: Option<u32>, lights: Vec<WorldLight>) {
+        if let Some(unit) = unit {
+            self.by_unit.entry(unit).or_default().extend(lights.iter().map(light_key));
+        }
+        self.add(lights);
+    }
+
+    /// The unit was unloaded (`streaming.rs`): its lights go, also those switched off and back on since.
+    pub fn remove_unit(&mut self, unit: u32) {
+        let Some(keys) = self.by_unit.remove(&unit) else { return };
+        let before = self.lights.len();
+        self.lights.retain(|l| !keys.contains(&light_key(l)));
+        self.dirty |= self.lights.len() != before;
+    }
+}
+
+/// A light by its position and definition (what a unit's light list gives it).
+fn light_key(l: &WorldLight) -> ([u32; 3], usize) {
+    (l.position.map(f32::to_bits), Arc::as_ptr(&l.def) as usize)
 }
 
 /// `DynamicLighting_GlobalLightMapIntensities.x`, the global factor on the world shaders' lightmap, lit-window

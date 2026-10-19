@@ -6,9 +6,10 @@
 //! `Widget.FMNEAREST` list) lists the offline races (game mode 730000) offered with the driven car (their
 //! `AllowedVehicleList`'s cars; every race when the car has none), nearest start first (`FMNEAREST`,
 //! `CalculateDistanceToEventByIdString`); choosing one opens its ACTIONS tier (`TO_FMN_OPT`: "SET
-//! DESTINATION", inert, and "START RACE", which starts it through `race::StartRace`). Which events the code's
-//! list holds and its order are our reading of the names (model decision). Other hook items and generated tiers
-//! are shown and inert.
+//! DESTINATION", inert, and "START RACE", which starts it through the event-loading card,
+//! `event_card::PlayEvent`, as the map's START RACE does: model decision, research log 2026-10-10 left open
+//! whether the original plays sequence 1014321 here too). Which events the code's list holds and its order are
+//! our reading of the names (model decision). Other hook items and generated tiers are shown and inert.
 //!
 //! The look is the `EasyDrive` widget's menu layout (`MENU_LAYOUT`): an element stack whose header lists the
 //! tier history, whose rows repeat the item layouts over `Widget.EasyDrive.Items` (the selected row's template
@@ -27,7 +28,7 @@ use bevy::prelude::*;
 use mw_assets::easydrive::{self as ed, EASYDRIVE_SCREEN};
 
 use crate::Game;
-use crate::race::{RaceSetup, StartRace};
+use crate::race::RaceSetup;
 use std::collections::HashMap;
 
 use mw_assets::ui::UiScene;
@@ -371,7 +372,7 @@ fn navigate(
     mods: Res<ModCatalogue>,
     mut mod_sel: ResMut<ModSelection>,
     mut actions: MessageWriter<GarageAction>,
-    mut race_start: MessageWriter<StartRace>,
+    mut race_start: MessageWriter<crate::event_card::PlayEvent>,
     game: Res<Game>,
     player: Query<&GlobalTransform, (With<crate::drive::Car>, With<crate::drive::Player>)>,
     front: Option<Res<crate::frontend::FrontEnd>>,
@@ -454,7 +455,7 @@ fn navigate(
             }
             Some(Choice::Race(k)) => menu.stack.push((Page::RaceActions(k), 0)),
             Some(Choice::StartRace(k)) => {
-                race_start.write(StartRace(menu.races[k].setup.clone()));
+                race_start.write(crate::event_card::PlayEvent(menu.races[k].setup.clone()));
                 menu.stack.clear();
                 menu.open = false;
             }

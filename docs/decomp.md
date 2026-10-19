@@ -1932,6 +1932,42 @@ model (sent once, whole) with the units listing it; with the camera in zone Z (n
 polygons) a unit's placements show while it is Z or a neighbour, a backdrop model while Z lists it, and
 groundcover collections while Z lists them. Model decisions: the focus is the camera (the caller's two vectors
 not traced); the swap is immediate (no wait for status 4); props with physics and collision stay everywhere.
+Since the same day's streaming port ("World streaming" below) the focus is the camera from the code, the last zone
+holds outside the polygons and the swap waits for the new zone's unit while streaming.
+
+## World streaming (2026-10-19, ported in `streaming.rs` and `loader.rs`)
+
+The track units are streamed by one generic slot streamer that the world object embeds (vtable `0x00f9a374`,
+built by `FUN_005486c0` → `FUN_00534380`: **32 slots**, three 8-byte resource arrays per slot at streamer +0x768 /
++0x868 / +0x968, world pointer at +0xa68). Driven by the world's stream update `FUN_00558740` (every frame in
+game state 0xc):
+- **Focus**: by the world's mode +0xef868: 2 (gameplay) passes the camera manager's (`*(DAT_010edaf4 + 4)`)
+  +0x140 (its position, the vector the HUD's `DistanceToCamera` uses) and +0x130 (the camera matrix's third row,
+  read as the view direction; not confirmed live) to `FUN_005586e0`; modes 1 / 3 pass a stored position / vector
+  (+0xef810 / +0xef820: the target of a waiting placement, `FUN_00647e00` messages 4 / 5); modes 4 / 5 belong to
+  the loading state machine (`FUN_005585d0`, `FUN_00548120`).
+- **Stream list** (`FUN_00549fb0`): the zone holding the focus (else the zone of the last focus that had one,
+  world +0xe0) gets priority `DAT_010c45a4` = 100; each neighbour `(1500 − d) × (1 / 750) + 3 × max(0, dir ·
+  to) + (neighbour flag bit 2 ? 10 : 9.8)` with d / `to` the XZ distance / direction from the focus to the
+  neighbour's polygon centroid (`FUN_0055f160`: the mean of the points), `dir` the focus vector's XZ direction
+  (`.rdata` 0x00fab750 = 1500, 0x00fab74c = 0.0013333; `.data` 0x010c45a8 = 10, 0x010c45ac = 9.8, 0x010c45b0 = 3).
+- **Requests** (`FUN_005573f0`): `FUN_00531710` clears the request list, then kind 1 = `DISTRICT_<zone+0x38>.BNDL`,
+  kind 2 = `ARENA_<zone+0x3c>.BNDL`, kind 0 = each listed unit (`TRK_UNIT<n>.BNDL` + `trk_unit<n>_hdr`, `TRK_COL_<n>`,
+  `TRK_NAV_<n>`; names built by the streamer's load method `0x0054b5d0`); then the backdrop / groundcover swap
+  above; then the streamer step `FUN_0053acf0`.
+- **Streamer step** (`FUN_0053acf0` → `FUN_00537c80` / `FUN_00537dc0` / `FUN_00537f70`): every loaded slot that is
+  not requested is unloaded first (`FUN_00533050` collects them; the evict pick `0x005473a0` → `FUN_00546e20`
+  takes units first, then arena, then district; unload callback `FUN_0055a5b0` → `FUN_00558fb0`, not read, then
+  the slot's three resources cleared). Only then is one missing request loaded into a free slot (`FUN_00533130`; pick
+  `0x00547390` → `FUN_00546d70`: highest priority, district 500, arena 200, units their stream-list priority);
+  the load completes over frames (status 1 → 2 → 4), its callback `FUN_00558540` inserts the unit's placements
+  (`FUN_00557740`). Nothing else stays: the budget is the slot count, not bytes.
+- Port: the loader thread runs the same step between frames (`Worker::stream_step`): stream list from the focus
+  the main thread writes (`StreamFocus`), unload all units off the list, then load the best missing one. A unit's
+  entities are tagged as they arrive (`Msg::UnitBegin`); shared backdrop placements (`Msg::StreamKey`) and
+  groundcover collections go when no resident unit lists them; models / textures / materials when no resident
+  unit or car uses them. District / arena bundles are not loaded as units (the asset store reaches their shared
+  resources by its index).
 
 ## Sky, sun and shadows
 
@@ -2567,7 +2603,8 @@ Code side from a sub-agent's trace of the dump and the live snapshot's disassemb
   waits the layout's own out duration (layout+0x18) before unloading. No minimum display time, no fade constant.
 - **Streaming stall** (`FUN_006a2200` from `FUN_004766a0`): pauses the simulation (pause reason 3) while the world
   is not ready or the car's surroundings are not Resident(car, 25 m) (`DAT_00faba94`; `FUN_00587120` per tick into
-  +0x1c33; free camera: the camera, `DAT_00fa8844` 25 m). Not ported (we stream everything).
+  +0x1c33; free camera: the camera, `DAT_00fa8844` 25 m). Ported 2026-10-19 for the player's car
+  (`streaming::streaming_stall`, virtual time paused); never seen to fire in a 20 km drive at 215 km/h.
 - **Start position** (`FUN_006d0180`, the respawn executor; offline, `IsFreedriveEvent` GMM+0x2e90): if not a new
   game (`IsNewGame` GMM+0x2e87) and the event's kind == `GameLogicConfig` +0xd8 (390145, free drive): the profile's
   last swap spot (stats 0x14 / 0x13 / 0xe) if its car is the current car, else `FUN_006c1840(car, 1)` then `(car,

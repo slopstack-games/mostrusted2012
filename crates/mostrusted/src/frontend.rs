@@ -154,6 +154,11 @@ impl Residency {
         self.loaded.insert(unit);
     }
 
+    /// The unit left the stream set (`streaming.rs`).
+    pub fn unit_unloaded(&mut self, unit: u32) {
+        self.loaded.remove(&unit);
+    }
+
     /// `Resident(p, r)` (`FUN_0054b540` → `FUN_0054b340`): the zone holding `p` is loaded and so is every
     /// neighbour zone within `r` of `p`. Without a zone list, or once the loader is done, everything is.
     pub fn resident(&self, p: Vec3, r: f32) -> bool {

@@ -366,7 +366,7 @@ fn track_cars(
     garage: Res<Garage>,
     requests: Option<Res<LoaderRequests>>,
     player: Query<&Transform, (With<Car>, With<Player>)>,
-
+    focus: Option<Res<crate::loader::StreamFocus>>,
     spatial: SpatialQuery,
 ) {
     let jack = &mut *jack;
@@ -474,6 +474,11 @@ fn track_cars(
         });
     }
     for (serial, model) in models.arrived.drain(..) {
+        // The parked car holds its meshes and materials itself: the loader can forget them, so they go with the
+        // car (`streaming.rs`; before, every parked car's model stayed loaded).
+        if let Some(f) = &focus {
+            f.release(crate::loader::PARKED_OWNER | serial as u32);
+        }
         let Some(i) = jack.serials.remove(&serial) else { continue };
         let s = &mut jack.spots[i];
         if matches!(s.parked, Parked::Loading { serial: n } if n == serial) {
