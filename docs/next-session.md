@@ -32,6 +32,15 @@ CLAUDE.md is slim, every command is in docs/commands.md, old handoffs in handoff
 Model decisions worth a capture first: the siren rule, the nitrous flame colour (lit by the irradiance only), the
 corona distance scale, the 128 m water gap distance.
 
+**HIGH PRIORITY (user play test 2026-10-19, after session 11's kerb work):** running into a kerb at speed makes the
+car crash (the crash state / crash camera), and so do other road parts that stick out slightly (small steps, plates,
+edges). Find what triggers the crash: the body collider meeting the edge (the chassis's world contacts
+`FUN_009c62e0` / `FUN_009c4e10`, research log "kerb captures"), the crash-detection rule and its threshold
+(`crash.rs`: impulse / deceleration / angle, against the game's crash trigger in the dump), or the wheel probe letting
+the body reach the step. Reproduce headless (`--test kerb` at 100+ km/h, `MW_TEST_KERB_*`; the real kerbs from
+`mwtool surfaces --near ... --steps`), compare with the original over the same kerb (probe: `mwtool tp`, scripted
+inputs, `ref/kerb100*` already shows the original crossing a 0.15 m kerb at 64 mph without crashing).
+
 Added by the user (2026-10-16); the ones marked (2026-10-16: ...) were worked on this session:
 - **Collectable effects**: the speed camera's flash when the player passes one is missing.
 - **Gas stations**: driving through one has no clean transition: the original fades / cuts through the repair and
