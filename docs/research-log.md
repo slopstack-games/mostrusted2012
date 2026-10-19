@@ -85,6 +85,15 @@ cars from the event's `allowed_vehicles` (the player's list), empty on all 14 Mo
   at their own placements: the cops are not spawned (open).
 - **The intro**: the Most Wanted intros (e.g. 1482366) end with teleports of the player (100 mph) and `Racer(1)`
   (115 mph) onto the rolling start; `cutscene.rs` already played them, with the rival now there.
+- **The intro's grid with a slot left out** (CONTINENTAL DRIFT, intro teleports): `Racer(1..8)` go to the 8
+  placements in data order and the player to trigger 462172, the same spot as the last placement (1442997). With
+  slot 4 left out, `Racer(n)` is the n-th racer spawned (`cutscene.rs`: grid slot n − 1 of the kept grid), so
+  slots 5..7 move up one placement, `Racer(8)` names nobody and the last placement is free for the player: the
+  data agrees with the skip rule. A regression after the merge (`--race 462174 --test race`: passed=0) was not
+  the grid: in the outro the AI drove the player's car through body shop 1496594, our respray reloads the car
+  (new entity, fresh `RacerProgress`). Fixed in `race::attach_player`: a car rebuilt during a race keeps the
+  replaced car's progress (the game resprays the same vehicle, `FUN_00748ff0` → message 0xc). Open: whether the
+  original runs "Do Body Shop" for the AI-driven player in an outro.
 - **Hold bug**: `spawn_opponents` released the race hold once the app had run 60 s, so a race started from free
   roam after a minute did not wait for its opponents' cars and the intro teleports found nobody. The 60 s now
   count from the hold's start.
