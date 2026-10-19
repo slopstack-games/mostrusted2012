@@ -2258,6 +2258,14 @@ decisions: [handling.md](handling.md), "Crash camera".
   `FUN_0093bc40` copies the `WorldRules` (0x34) thresholds and override into the collision response block,
   so the world test happens inside the contact solver (the comparison was not traced; the contact record
   carries the crash flag at `+0xed`, and `FUN_009175e0` turns it into a crash).
+- **World contacts into the impact handler** (2026-10-19, read; not ported): the collision analyzer's world
+  handler `FUN_00918120` takes the record's first value (a 4-lane vector, all lanes equal) as the impact value. For
+  the player (not crashed, +0x1774 clear) it keeps the last world impact's time and value (analyzer + 0x670 /
+  + 0x680): when the previous one is recent (`FUN_005e5760` on the time difference, not read) a value not above the
+  last one is dropped and a larger one counts only by its excess; then any value above 1.19e-7 goes to the impact
+  handler `FUN_009145c0` (the crash entry, with `FUN_00929da0`'s zone). Where the record's value comes from (the
+  collision job) and so whether a contact that has not touched yet can carry one is still not in the dump; ours
+  counts touching contacts only (handling.md "Crash camera", research log 2026-10-19 "false crashes at kerbs").
 - **Entering the crash** (`FUN_009145c0`, `FUN_009b2d40`, confirmed): the impact handler calls the crash
   entry with reason "Impact" / "damage applied"; it saves the car's pre-crash state (velocity at
   `+0x1124…` copied to `+0x114c…`, the "pre-carnage velocity" the sound reads) and sets `vehicle+0x1774`.

@@ -1653,7 +1653,8 @@ fn spawn_test_track(
         mesh.compute_smooth_normals();
         commands.spawn((
             RigidBody::Static,
-            Collider::trimesh(vertices, indices),
+            // As the world's colliders (`loader.rs`).
+            Collider::trimesh_with_config(vertices, indices, avian3d::prelude::TrimeshFlags::FIX_INTERNAL_EDGES),
             Mesh3d(meshes.add(mesh)),
             MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.5, 0.45, 0.4), ..default() })),
         ));
