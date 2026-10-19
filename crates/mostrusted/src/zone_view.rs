@@ -97,6 +97,7 @@ impl ZoneView {
 
 /// Show the tagged roots the focus zone draws; runs over all of them when the zone changes, otherwise only over
 /// newly spawned ones.
+#[allow(clippy::type_complexity)]
 pub fn zone_view_visibility(
     camera: Query<&GlobalTransform, crate::MainCamera>,
     player: Query<&GlobalTransform, (With<crate::drive::Player>, With<crate::drive::Car>)>,

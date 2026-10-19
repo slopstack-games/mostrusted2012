@@ -620,6 +620,7 @@ pub fn run(store: &AssetStore, o: Options) -> Result<()> {
 /// `--masks`: the `Model` +0x19 pass mask over every main placement (instances, props, compounds, dynamics), per
 /// mask and the family of the LOD0 renderable's first visible shader, with placements, models, and whether
 /// the model has a SHADOW-state renderable of its own.
+#[allow(clippy::type_complexity)]
 pub fn masks(store: &AssetStore) -> Result<()> {
     let units: Vec<String> = store
         .bundle_paths()

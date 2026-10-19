@@ -93,6 +93,7 @@ fn view_layers(
 }
 
 /// Hand a placement's mask down to its meshes (also those spawned later under it).
+#[allow(clippy::type_complexity)]
 fn apply(
     mut commands: Commands,
     roots: Query<(Entity, &PassMask), Or<(Added<PassMask>, Changed<Children>)>>,

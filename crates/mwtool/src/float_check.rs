@@ -542,7 +542,7 @@ pub fn run(store: &AssetStore, top: usize) -> Result<()> {
                         let under: Vec<String> = x
                             .hits
                             .iter()
-                            .map(|&(y, s)| format!("{:.1} {:?} {}", y, sources[s as usize].0, &sources[s as usize].1))
+                            .map(|&(y, s)| format!("{:.1} {:?} {}", y, sources[s as usize].0, sources[s as usize].1))
                             .collect();
                         println!(
                             "  A-only {:?} {} unit {} at {:.1},{:.1},{:.1} gap {gap:.1}: {}",
