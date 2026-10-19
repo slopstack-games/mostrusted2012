@@ -85,6 +85,9 @@ Added by the user (2026-10-16); the ones marked (2026-10-16: ...) were worked on
   original holds the event-loading card until everything is resident: research log 2026-10-10 "the event-loading
   card"); in Most Wanted races the opponent cars do not spawn (`race.rs`, `ai.rs`; check the Most Wanted list car's
   bundle / spawn path). Possibly related to session 11's world streaming change: re-test after it is merged.
+- **Probe cheats for upgrades** (added 2026-10-19): in the original most cars have no nitrous or other mods until
+  they are unlocked in races, so captures need a probe command that fits any mod / upgrade at runtime through the
+  game's own path (save restored after). Asked of session 11's nitrous agent; check it landed.
 - **UI scaling and positioning** (added 2026-10-19): the UI's scale and placement are still wrong (HUD, menus,
   pop-ups): compare against screenshots of the original at the same resolution and take the layout from the
   game's own UI data / code, not by eye.
