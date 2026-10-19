@@ -3602,14 +3602,18 @@ by `FUN_006b51a0`). Times are 64-bit ticks of 1/3,000,000 s (`DAT_00f9f604`). Co
   Found since (2026-10-09, "Cutscenes and sequences"): `Mode.Data.CountdownSequence` is GameMode +0x10 (0 offline);
   the outro is the event's `EventOutro` sequence, its camera an ICE take.
 
+- **Racers after the race** (2026-10-19): finished / done racers (+0x5d7) are removed by `FUN_00521f00` by
+  distance and visibility (heat level +0xb0 / +0xb4: 100 / 300 m); the event ends after its outro context and free
+  drive resumes. Research log 2026-10-19 "race flow".
+
 ### Port and model decisions (`race.rs`, `chevron.rs`)
 
 Ported as above: intro length from the game mode, 3-2-1 from `IntroTime`, handbrake freeze with live throttle,
 route entries, target-only gate overlap (car box from `body_half_extents` vs the trigger box, separating
 axes), lap and finish rule, distance to finish, position rule, the wrong-way state machine, the won rule
 (with `TargetSpeed` / `TargetTime`), respawn facing the target gate (`crash.rs` reads `race::RespawnFacing`).
-Model decisions: segments between entries are straight lines (no road-network paths), so positions and the
-wrong-way test differ where the road bends away from the line; the car box is centred half its height above
+Model decisions: segments between entries are road-graph paths cut at the entries (2026-10-19; were straight
+lines, which made the wrong-way test call "missed checkpoint" on every bend); the car box is centred half its height above
 the car's origin; the wrong-way machine runs for every racer (the original: the local player); AI finish times
 are kept for results; the speed run's average speed is the counted distance over the race time; the race clock
 advances by the fixed tick; the chevron boards are 2 m tall with one texture repeat per 2 m, `baseColour`

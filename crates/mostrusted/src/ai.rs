@@ -784,9 +784,10 @@ fn spawn_opponents(
         if event.is_some() {
             let name = spec.bundle.rsplit('/').next().unwrap_or(&spec.bundle).trim_end_matches(".BNDL").to_string();
             let ext = crate::drive::CarParams::new(&spec.handling).body_half_extents;
+            let rival = event.as_ref().and_then(|ev| ev.grid.get(slot)).is_some_and(|g| g.most_wanted);
             commands
                 .entity(car)
-                .insert((crate::race::Racer::ai(name, slot, ext), crate::race::RacerProgress::default()));
+                .insert((crate::race::Racer::ai(name, slot, ext).rival(rival), crate::race::RacerProgress::default()));
         }
         opponents.spawned[slot] = true;
         info!("AI: opponent {slot} ({}) placed at {start:.1?}", spec.bundle);
@@ -877,9 +878,10 @@ pub(crate) fn ai_drive(
             *ctl = CarControls { handbrake: true, ..default() };
             continue;
         }
-        // A racer that has finished gets AI goal 3, stop racing (`FUN_00843030`): ours brakes to a stop.
-        // (Not the player's car: after its finish the outro sequence drives it, `cutscene.rs`.)
-        if !is_player && progress.get(entity).is_ok_and(|p| p.finished.is_some()) {
+        // A racer that is done racing (its finish, or the player's: `CHECKPTS` exit) gets AI goal 3, stop racing
+        // (`FUN_00843030`): ours brakes to a stop. (Not the player's car: after its finish the outro sequence
+        // drives it, `cutscene.rs`.)
+        if !is_player && progress.get(entity).is_ok_and(|p| p.done) {
             *ctl = CarControls { brake: 1.0, ..default() };
             continue;
         }

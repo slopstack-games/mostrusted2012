@@ -330,6 +330,11 @@ impl Police {
         self.pursuit.level(self.cfg.as_ref()?)
     }
 
+    /// The player's current heat level row (`FUN_006bdc00`), for other systems (`race.rs`).
+    pub fn heat_level(&self) -> Option<&HeatLevel> {
+        self.level()
+    }
+
     /// Index into the heat level's distance triples: no pursuit, chase, cooldown (`FUN_00513e80`).
     fn phase(&self) -> usize {
         match self.pursuit.state {

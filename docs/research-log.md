@@ -10,6 +10,56 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-19: race flow: "checkpoint missed" always on, racers left in free roam, jack spots dead after a race
+
+Three play-test bugs (user, 2026-10-19), all traced in the dump; `race.rs`, small hooks in `ai.rs`, `jackspots.rs`,
+`cutscene.rs`, `police.rs`, `mw-assets` (events / police).
+
+- **Missed checkpoint.** `FUN_006585b0` (the wrong-way / missed machine) was ported right; its inputs were not.
+  `FUN_00661b40` (distance to finish) works on per-segment road paths (DTF+0x2778 polylines from
+  `FUN_006423e0`), ours on straight chords between gates: on any bend the car's distance from the chord (the "off"
+  term `FUN_0066b3f0` adds) grew faster than the remaining length fell, so d rose while d' fell → "missed".
+  Now each segment is a road-graph path (`route_segments`: `AiData::path` + `ai::spline_through`, cut at the points
+  nearest the entries: **model** for the path ends), and `FUN_00661b40` is ported literally: remaining length after
+  the nearest piece's projection (`FUN_00516af0` / `FUN_0051e850`, clamped), and when less than 0.5 m is left
+  (`.rdata` 0x00fb8290) the distance *along the next segments* is added (`FUN_0051e7d0`), so driving on past an
+  unhit gate makes d grow; the 20 m behind-start term only when < 0.01 m along (0x00fb82f0). d' with the finish as
+  target is the plain distance (`FUN_0066b3f0`). `HasMissedCheckpoint` (`FUN_006584d0`) tests the **target entry**
+  (DTF+0xd90) against 1..count−2: ours tested `passed`, one off (it allowed the finish as target and dropped gate 0).
+  The race test also ran the intro's sequence clock in real time while the simulation ran 4×, so the rolling start
+  carried the car past gate 0 before go; the sequence clock now scales with the run's speed-up (`cutscene.rs`,
+  no change at 1×).
+- **Racers left behind.** `FUN_00521f00` (from the AI coordinator `FUN_00526c30`, only while the game-mode timer
+  runs: race from go to the player's finish, and free roam, whose "Freedrive Update" 469930 starts the timer):
+  a race car with +0x5d7 set, a car, not mid-reset (`FUN_006b8840`), not the Most Wanted rival (+0xb4) is removed
+  (message 0xe → `FUN_006ce180(slot, 3)`) when its XZ distance from the player exceeds the heat level's `dd335ee5`
+  (+0xb0) and it is off screen (`FUN_006bf380`, 4 m sphere vs frustum), or `092b3408` (+0xb4) anyway. Data: 100 / 300 m
+  on every free-roam level (events' own levels 25 / 300; races have none, `OfflineEvent.ab4e53fd` empty). +0x5d7 is
+  set at an AI's last checkpoint and, on `CHECKPTS` exit (0x75d960, disassembly: a word write at player +0x5d7), on
+  every AI racer still racing (with AI goal 3). The rival is released by the blacklist behaviour (`FUN_00754290`
+  state 6 / `FUN_007428b0`: beyond 300 m, 0x00fd2108 = 90000); its takedown phase is not modelled.
+  `RemoveAllRaceCars` (`FUN_006d1310`) runs only on "Reset Event" (retry) and on `HSM_PLAYING` exit (vtable
+  0xfd9c04, exit 0x73e930, leaving the game). Ported as `retire_racers`.
+- **Jack spots after a race.** Our `RaceState` stayed for the rest of the run, and the swap (like the collectables'
+  scoring) requires free roam (`race.is_none()`). The original's event ends after the outro context ("Run PageRunner2
+  Context - Outros" → "Race Game Mode" exit → "On Event End") and free drive resumes. `end_event` now removes the
+  race once the outro and the results (8.25 s, the results sequence's last item: **model**, the offline results are
+  the `ArcResults` screen the player closes) are over: free-roam rules, HUD and jack spots come back, the player's
+  car stops being a racer, route markers go. A second race in one run is still refused (`RaceOver`; the AI and
+  cutscene set-up run once).
+- **Outro body shop**: not looked at (time). Open.
+
+Verified: `--race 462174 --test race` (now drives along the route polylines at 40 m/s; slower, ~4 min game time):
+`missed_seen=false`, `wrong_way_seen=true` (the deliberate 4 s backing away); `MW_RACE_TEST_MISS=3`:
+`missed_at_skip=true missed_seen=false`; `MW_RACE_TEST_AFTER=2`: `racers_left=0`; `MW_RACE_TEST_JACK=1`: jack-spot
+swap after the race works; `--race 1399902 --drive 911 --test race --units 12`: opponent placed, `missed_seen=false`;
+911 accel unchanged (3.58 s / 11.60 s). Open: the on-screen branch of the removal is untested headless (the test's
+racers end > 300 m away); what goal 3 does (ours brakes to a stop); whether the original runs the body shop for the
+AI-driven player in the outro; multiple races per run. Captures that would confirm: (1) the original in 462174
+driving the race line, HUD never showing CHECKPOINT MISSED, then cutting a gate (banner after ~1 s); (2) after a
+finish, park and watch the opponents: they vanish once > 100 m and off screen (turn the camera away) or > 300 m;
+(3) a jack-spot swap right after the results.
+
 ### 2026-10-19: sounds from the play test: traffic whine, missing whines, inaudible props, glitches, surface sounds
 User play test items ("Sounds still not right") plus the surfaces agent's per-wheel surface sounds. Offline checks
 with `mwtool traffic-sound`, `engine-sound --trace`, `vehicle-sound --surface`; analysis scripts in the worktree's
