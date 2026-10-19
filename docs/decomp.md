@@ -2396,6 +2396,59 @@ player's crash cameras' length (4.5 s) onto its route at its progress, rolling a
 speed; a crashed traffic car is marked wrecked (later hits on it use `5ccf9942`). Not ported: takedown
 feedback, battling (`FUN_008f8ac0`, damage × profile +0x4c), the crashing-race-car pairs, props' "prop impact".
 
+### Car against car: contact response (2026-10-19, ported in `crates/mostrusted/src/car_contacts.rs`)
+
+Read from the dump and the snapshot disassembly (`re/out/live/text.asm`); data `CollisionResponses_RaceCar`
+(`010000000007f0c9`) and `CollisionResponses_Global` (`…f0c6`) in `PHYSICS/PHYSICSCONFIG.BNDL`, layouts by
+`mwtool genesys-types` (struct offsets include the 12-byte header).
+
+- **Lanes**: every pair handler fills a record (`FUN_009251f0` defaults) whose +0x20 / +0x30 are the first / second
+  car's linear impulse scale and +0x40 / +0x50 their angular ones, +0x00 / +0x10 the friction, +0x60 the restitution;
+  `FUN_009bb640` copies them into the contact constraint (+0x90..+0x9c) and the contact pass `FUN_009be420` adds
+  impulse × lane to each body (see "Car against a dynamic object"). In the params structs `e3882eb1` is the linear
+  lane and `e5ea1414` the angular one; `3e2f6a22` (`Damage`) the damage a `DamageParams` entry stands at.
+- **Player – AI** (`FUN_009588c0`, `PlayerVsAI` at +0x100): the player's lanes lerp from `41d5a4d1` (damage 0:
+  linear 0.4, angular 0.05) to `f5ba78b1` (100: 1, 0.4) by the player's damage of this impact, t = clamp((d − lo) /
+  max(hi − lo, 0.5)) (`.rdata` 0x010245b0); the AI's from `d2fdd797` (0: 0.5, 0.1) to `d8e13fb1` (100: 1, 0.1) by
+  its damage. The damage is the computed one, or the rule's `DamageToDeal` when it fired with the override flag
+  clear. When the AI car crashed or is wrecked by the impact ([esp+0x18]: its verdict, its flagged override or
+  `FUN_009b2530`'s wreck) the AI takes `bd61d07e` (0.7, 0.4) and the player `52915382` (0.7, 0.1); when the player's
+  car did (DL: [esp+0x58] / [esp+0x28] / [esp+0x1f], so only while an event runs) the player takes `Player_Crashed`
+  (`bd4c8b39`: 1, 0.7) over that; a car flagged never to crash (+0x1777) takes `61f2b095` (0.4, 0). Friction 0,
+  restitution −0.1. Record +0x132 / +0x133 = the player's / the AI's crash verdict; +0x100 / +0x110 = (1,1,1,1)
+  (`.bss` 0x01186190, snapshot) when the player crashed, else 0 (→ constraint +0xd0 / +0xd4; their use not traced).
+- **AI – AI** (`FUN_009575e0`, `RaceCarVsRaceCar` `4b2df237` of the global set): each car by its own damage from
+  `Stable` (0: 0.4, 0.05) to `Unstable` (200: 1, 0.4); crashed or wrecked → `Crashed` (1, 0.7); friction 0.3.
+- **Against a crashing race car** (category 2): `FUN_00959210` (`PlayerVsCrashingRaceCar` +0x2c0) and `FUN_00959730`
+  (`AIVsCrashingRaceCar` +0x368) blend by the faster body's speed (body +0xb0, zero while asleep) from
+  `a563fb88` (15 mph) to `742f5d62` (25 mph), divisor at least 1 m/s, from the `Low_Speed` profile (`bd346f75`) to
+  the other: the player linear `91583928` 0.25 → 0.7, angular `dccbab9d` 0.7 → 0.1; the AI `33475b56` 0.25 → 0.7,
+  `3b04b8fd` 0.7 → 0.25; the crashing car linear `8655a00b` 1, angular `830403e8` 1 (→ 0.7 against an AI);
+  friction 0.1 → 0.05. Record +0x133 = 1 always. Which high profile the player handler uses (EDX: `68378547` or
+  `7d03de76`) was not traced; they differ only in restitution. `CrashingRaceCarVsCrashingRaceCar`: 1 / 1, friction 0.3.
+- **Crashed bodies are not lifted** (`FUN_009be420` after the points, constraint +0xf1 / +0xf2 = record +0x132 /
+  +0x133): with v_y0 the body's vertical velocity before the pass, the pass's gain in v_y is cut to at most
+  clamp(3 − v_y0, 0, 2) m/s (`.rdata` 0x010258f0 = 3, 0x01025840 = 2, mask 0x01025800 = (0, 1, 0)); then the
+  velocity is zeroed unless its length is below body +0x2f (the w lane of the velocity vector; not identified).
+- **The AI driver after a hit**: the racer state (`FUN_0050da90`) has no reaction of its own: it keeps the path
+  PID and pedals; only the stuck check (`FUN_004fb9f0` → state 11) and a per-player skip byte (world + 0x2ef50,
+  `FUN_006a05d0`, not identified) interrupt it. The player's crash reset (`FUN_006d39d0`) returns at once for
+  players whose kind (+0x9c) is not 0, so AI racers are not reset by the `GameMode` timer; their reset path was
+  not found (`FUN_006d3550`, the crash message, is shared by all players).
+- **Takedown cameras**: `GameModeManager.ShowTakedownCameras` (+0x2e7b) is set from option 0x12 (`FUN_0073daf0`, the
+  options apply); no reader in the dump, no HSM node. The HSM's "Run Takedown Sequence" (1377014, sequence 287389)
+  is the *player's* wreck by someone else (`Players.LocalPlayer.IsWreckSuicide` false), in "Manage Crash Sequence".
+
+Ours (`car_contacts.rs`): avian keeps detecting race-car pairs but the hook in `props.rs` neutralises them (points
+pushed far out, so its solver applies nothing); before each step the pairs' body boxes are queried
+(`contact_query::contact_manifolds`), a new impact is decided there (`car_impacts.rs` `decide`, the same rules)
+and solved with these lanes (2 passes, the props solver's push-out); after the step our impulse and the pre-solve
+closing speed are written back into avian's contacts for the effects, sounds and camera. The island's first pass
+(`FUN_009be060`, lanes +0x80 = linear 1, angular 0) acts only on points whose predicted separation (relative point
+velocity × the step vector, along the normal) is ≥ 0, i.e. not on approaching contacts; so the approach is
+resolved by `FUN_009be420` with the lanes. Model decisions: that first pass left out, no restitution, damage 0 between impacts (0.5 s cooldown), the crashed body's
+velocity cap (+0x2f) left out. `MW_RACE_CAR_CONTACTS=0` restores avian's rigid solve.
+
 ## Props (2026-10-09)
 
 Runtime: `crates/mostrusted/src/props.rs`; data: `mw_assets::props` (`AdditionalInfo`, `DynamicResponses`).

@@ -27,6 +27,9 @@
 //! What follows a crash: the player's car → the crash camera and reset (`crash.rs`); an AI car → no control,
 //! then its reset ([`AiCrash`], `ai.rs`); a traffic car → wrecked (later hits are "crashing traffic impacts").
 //!
+//! Race car against race car is decided in `car_contacts.rs`, before the step, because the same handler picks the
+//! contact's impulse scales from the damage and the verdicts; pairs with traffic are decided here after the step.
+//!
 //! Model decisions (docs/decomp.md "Car against car"): the per-location table at vehicle +0x16a0 is taken as
 //! zero (it was zero on the player's car in both snapshots); the input-dependent extras of `FUN_0092e7b0`
 //! (≤ 0.1, from vehicle +0x1bf0…+0x1c20) are left out; the component flag `05cd1d74` is taken as clear (it is on
@@ -112,39 +115,71 @@ pub struct AiCrash {
     /// Speed before the crash (mph), for the rolling reset.
     pub pre_mph: f32,
     pub rule: &'static str,
+    /// The race car whose impact crashed it (the takedown's aggressor, `Player.TakedownAggressor`).
+    pub by: Option<Entity>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum Kind {
+pub(crate) enum Kind {
     Player,
     Ai,
     Traffic { wrecked: bool },
 }
 
 /// One side of an impact.
-struct Party<'a> {
-    entity: Entity,
-    kind: Kind,
-    position: Vec3,
-    rotation: Quat,
-    velocity: Vec3,
+pub(crate) struct Party<'a> {
+    pub entity: Entity,
+    pub kind: Kind,
+    pub position: Vec3,
+    pub rotation: Quat,
+    pub velocity: Vec3,
     /// The physical box in car space.
-    centre: Vec3,
-    half: Vec3,
-    stats: DamageStats,
-    profile: &'a DamageProfile,
-    grounded: bool,
+    pub centre: Vec3,
+    pub half: Vec3,
+    pub stats: DamageStats,
+    pub profile: &'a DamageProfile,
+    pub grounded: bool,
     /// Already crashed: its rules do not fire again (vehicle +0x1774).
-    crashed: bool,
+    pub crashed: bool,
+}
+
+impl<'a> Party<'a> {
+    /// A race car (the player's or an AI car) as one side of an impact.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn race_car(
+        data: &'a CarImpactData,
+        entity: Entity,
+        car: &Car,
+        position: Vec3,
+        rotation: Quat,
+        velocity: Vec3,
+        is_player: bool,
+        crashed: bool,
+    ) -> Self {
+        let stats = car.params.damage_stats;
+        Party {
+            entity,
+            kind: if is_player { Kind::Player } else { Kind::Ai },
+            position,
+            rotation,
+            velocity,
+            centre: car.params.centre_of_mass,
+            half: car.params.body_half_extents,
+            stats: if is_player { stats.offline } else { stats.ai },
+            profile: if is_player { &data.player } else { &data.ai },
+            grounded: car.wheels_down() > 0,
+            crashed,
+        }
+    }
 }
 
 /// Damage to each car (`dmg`) and before the strength factor (`base`, the rules' third threshold).
 #[derive(Debug, Default, Clone, Copy)]
-struct Damage {
-    a: f32,
-    base_a: f32,
-    b: f32,
-    base_b: f32,
+pub(crate) struct Damage {
+    pub a: f32,
+    pub base_a: f32,
+    pub b: f32,
+    pub base_b: f32,
 }
 
 /// The impact zone (`FUN_00929da0`): 0 roof, 1 underside, 2 / 4 front corners, 3 front, 5 / 9 sides, 6 / 8 rear
@@ -318,10 +353,12 @@ fn lands_on(a: &Party, b: &Party, point: Vec3) -> bool {
 
 /// The outcome for one car of a pair.
 #[derive(Debug, Clone, Copy)]
-struct Verdict {
-    crash: bool,
-    rule: &'static str,
-    damage: f32,
+pub(crate) struct Verdict {
+    pub crash: bool,
+    pub rule: &'static str,
+    /// The impact's damage; when the rule fires with a `DamageOverride` whose flag is clear, its `DamageToDeal`
+    /// (`FUN_009588c0` / `FUN_009575e0` after `FUN_009a9fd0`).
+    pub damage: f32,
 }
 
 fn test_rule(
@@ -335,6 +372,10 @@ fn test_rule(
     // `FUN_009a9fd0`: a crashed car (or one flagged never to crash) does not crash again.
     let crash = !party.crashed
         && rule.is_some_and(|r| r.is_crash(Some(damage), closing / MPH) || r.third.is_some_and(|t| base > t));
+    let damage = match rule.and_then(|r| r.damage_override) {
+        Some((deal, false)) if crash => deal,
+        _ => damage,
+    };
     Verdict { crash, rule: name, damage }
 }
 
@@ -346,7 +387,7 @@ fn traffic_rule<'a>(profile: &DamageProfile, other: &Party<'a>) -> (Option<Impac
 }
 
 /// Decide one impact: (verdict for a, verdict for b, the damages, the zones).
-fn decide(
+pub(crate) fn decide(
     data: &CarImpactData,
     a: &Party,
     b: &Party,
@@ -406,7 +447,7 @@ fn decide(
     (va, vb, dmg, (loc_a, loc_b))
 }
 
-fn rank(k: Kind) -> u8 {
+pub(crate) fn rank(k: Kind) -> u8 {
     match k {
         Kind::Player => 0,
         Kind::Ai => 1,
@@ -478,27 +519,11 @@ fn evaluate_impacts(
     let player_crashed = crash.active.as_ref().is_some_and(|a| !a.reset_done);
     let party = |e: Entity, v: Vec3| -> Option<Party> {
         if let Ok((car, t, _, _, is_player, is_ai, ai_crashed)) = cars.get(e) {
-            let kind = if is_player {
-                Kind::Player
-            } else if is_ai {
-                Kind::Ai
-            } else {
+            if !is_player && !is_ai {
                 return None;
-            };
-            let stats = car.params.damage_stats;
-            return Some(Party {
-                entity: e,
-                kind,
-                position: t.translation,
-                rotation: t.rotation,
-                velocity: v,
-                centre: car.params.centre_of_mass,
-                half: car.params.body_half_extents,
-                stats: if is_player { stats.offline } else { stats.ai },
-                profile: if is_player { &data.player } else { &data.ai },
-                grounded: car.wheels_down() > 0,
-                crashed: if is_player { player_crashed } else { ai_crashed },
-            });
+            }
+            let crashed = if is_player { player_crashed } else { ai_crashed };
+            return Some(Party::race_car(data, e, car, t.translation, t.rotation, v, is_player, crashed));
         }
         let (tc, t, _, _) = traffic_cars.get(e).ok()?;
         let sys = traffic.as_deref()?;
@@ -526,6 +551,13 @@ fn evaluate_impacts(
             continue;
         }
         let (Some(pa), Some(pb)) = (party(imp.a, imp.va), party(imp.b, imp.vb)) else { continue };
+        // Race car against race car: decided with the contact solve before the step (`car_contacts.rs`).
+        if crate::car_contacts::enabled()
+            && !matches!(pa.kind, Kind::Traffic { .. })
+            && !matches!(pb.kind, Kind::Traffic { .. })
+        {
+            continue;
+        }
         cooldown.insert(key, now);
         // The handlers take the lower category first.
         let (a, b, imp) = if rank(pa.kind) <= rank(pb.kind) {
@@ -558,17 +590,34 @@ fn evaluate_impacts(
         }
     }
     for (entity, kind, v, closing_mph, pre_mph) in outcomes {
-        match kind {
-            Kind::Player => {
-                crash.car_crash = Some(crate::crash::CarCrash { closing_mph, damage: v.damage, rule: v.rule });
-            }
-            Kind::Ai => {
-                commands.entity(entity).insert(AiCrash { time: 0.0, pre_mph, rule: v.rule });
-            }
-            Kind::Traffic { .. } => {
-                if let Some(sys) = traffic.as_deref_mut() {
-                    sys.wreck(entity);
-                }
+        apply_outcome(&mut commands, &mut crash, traffic.as_deref_mut(), entity, kind, v, closing_mph, pre_mph, None);
+    }
+}
+
+/// What a crash verdict does: the player's car → the crash camera (`crash.rs`); an AI car → no control, then its
+/// reset ([`AiCrash`], `ai.rs`); a traffic car → wrecked. `by` is the race car that caused an AI car's crash.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn apply_outcome(
+    commands: &mut Commands,
+    crash: &mut crate::crash::CrashState,
+    traffic: Option<&mut TrafficSystem>,
+    entity: Entity,
+    kind: Kind,
+    v: Verdict,
+    closing_mph: f32,
+    pre_mph: f32,
+    by: Option<Entity>,
+) {
+    match kind {
+        Kind::Player => {
+            crash.car_crash = Some(crate::crash::CarCrash { closing_mph, damage: v.damage, rule: v.rule });
+        }
+        Kind::Ai => {
+            commands.entity(entity).insert(AiCrash { time: 0.0, pre_mph, rule: v.rule, by });
+        }
+        Kind::Traffic { .. } => {
+            if let Some(sys) = traffic {
+                sys.wreck(entity);
             }
         }
     }
@@ -601,7 +650,35 @@ pub struct ImpactTest {
     timer: f32,
     shots: usize,
     target: Option<Entity>,
+    /// `--test crash-ai`: the AI car's response to the hit.
+    ram: RamLog,
 }
+
+/// What `--test crash-ai` measures on the struck AI car: its velocity just before the contact and how it moves
+/// for [`RAM_WATCH`] seconds after.
+#[derive(Default)]
+struct RamLog {
+    /// The intended closing speed (m/s) and angle (deg) of the setup.
+    closing: f32,
+    angle: f32,
+    /// The AI car's velocity and heading (rad) on the last frame before the contact.
+    before: Option<(Vec3, f32)>,
+    /// Seconds since the contact, the peak yaw rate (rad/s), the largest heading change (rad), the lowest speed.
+    hit: Option<f32>,
+    peak_yaw: f32,
+    max_turn: f32,
+    min_speed: f32,
+    /// The player's velocity before the contact.
+    player_before: Vec3,
+    /// The AI car's and the player's velocities [`RAM_SAMPLE`] after the contact.
+    after: Option<(Vec3, Vec3)>,
+}
+
+/// When the post-contact velocities are taken (s).
+const RAM_SAMPLE: f32 = 0.25;
+
+/// Seconds the AI car is watched after the contact.
+const RAM_WATCH: f32 = 3.0;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ImpactTestKind {
@@ -613,7 +690,7 @@ pub enum ImpactTestKind {
 
 impl ImpactTest {
     pub fn new(kind: ImpactTestKind, out: Option<std::path::PathBuf>) -> Self {
-        Self { kind, out, phase: 0, timer: 0.0, shots: 0, target: None }
+        Self { kind, out, phase: 0, timer: 0.0, shots: 0, target: None, ram: RamLog::default() }
     }
 
     fn path(&self, suffix: &str) -> Option<std::path::PathBuf> {
@@ -647,6 +724,26 @@ const TEST_SPEED_AI: f32 = 35.0;
 /// The AI car is placed this far ahead of the player's car (m), across the road at this speed (m/s).
 const TEST_AI_AHEAD: f32 = 20.0;
 const TEST_AI_ROLL: f32 = 0.0;
+/// A ram (`MW_TEST_AI_KMH` > 0 or a race): the player's car starts this far from the AI car (m), closing at
+/// `MW_TEST_KMH` along `MW_TEST_RAM_ANGLE` degrees from the AI car's heading (0 = from behind, 90 = into its
+/// left side, 180 = head on), coasting.
+const TEST_RAM_GAP: f32 = 6.0;
+/// In a race the ram starts this long after the go (s).
+const TEST_RAM_RACE_DELAY: f32 = 4.0;
+
+fn test_env(name: &str, default: f32) -> f32 {
+    std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+}
+
+/// The body's heading (rad, 0 = +z).
+fn heading(rotation: Quat) -> f32 {
+    let d = rotation * Vec3::Z;
+    d.x.atan2(d.z)
+}
+
+fn wrap(a: f32) -> f32 {
+    (a + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI
+}
 /// The player's car starts this far in front of a parked car (m), at this speed (m/s; about 27 mph).
 const TEST_PARKED_AHEAD: f32 = 10.0;
 /// A shot this long after the setup (s), to see the parked car moving.
@@ -665,24 +762,108 @@ fn run_impact_test(
     mut input: ResMut<crate::drive::CarInput>,
     traffic: Option<Res<TrafficSystem>>,
     crash: Res<crate::crash::CrashState>,
+    race: Option<Res<crate::race::RaceState>>,
+    last_impact: Res<crate::car_contacts::LastRaceImpact>,
     spatial: SpatialQuery,
     mut player: Query<
         (Entity, &mut Transform, &mut LinearVelocity, &mut AngularVelocity),
         (With<Player>, With<Car>, Without<AiDriver>),
     >,
     mut ai_cars: Query<
-        (Entity, &mut Transform, &mut LinearVelocity, Option<&AiCrash>),
+        (Entity, &mut Transform, &mut LinearVelocity, &AngularVelocity, Option<&AiCrash>),
         (With<AiDriver>, Without<Player>),
     >,
+    mut impacts_seen: Local<u32>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let Ok((me, mut t, mut v, mut w)) = player.single_mut() else { return };
-    test.timer += time.delta_secs();
+    let dt = time.delta_secs();
+    test.timer += dt;
+    // The struck AI car's response, from the first contact on (`--test crash-ai`).
+    if test.kind == ImpactTestKind::Ai
+        && test.phase >= 1
+        && let Some((_, at, av, aw, crashed)) = test.target.and_then(|e| ai_cars.get(e).ok())
+    {
+        let new_impact = last_impact.count != *impacts_seen;
+        *impacts_seen = last_impact.count;
+        let h = heading(at.rotation);
+        match test.ram.hit {
+            None => {
+                // With avian's solve (`MW_RACE_CAR_CONTACTS=0`) the contact shows as a jump in the AI car's
+                // velocity (armed after the setup has settled).
+                let jump = !crate::car_contacts::enabled()
+                    && test.timer > 0.2
+                    && test.ram.before.is_some_and(|(v0, _)| (av.0 - v0).length() > 1.0);
+                if new_impact || jump || crashed.is_some() {
+                    test.ram.hit = Some(0.0);
+                    test.ram.min_speed = av.0.length();
+                    let (v0, _) = test.ram.before.unwrap_or((av.0, h));
+                    info!(
+                        "TEST Ai: contact: AI {:.1} m/s, player {:.1} m/s, closing {:.1} m/s",
+                        v0.length(),
+                        test.ram.player_before.length(),
+                        (test.ram.player_before - v0).length()
+                    );
+                } else {
+                    test.ram.before = Some((av.0, h));
+                    test.ram.player_before = v.0;
+                }
+            }
+            Some(s) if s < RAM_WATCH => {
+                let (v0, h0) = test.ram.before.unwrap_or((av.0, h));
+                test.ram.peak_yaw = test.ram.peak_yaw.max(aw.0.y.abs());
+                test.ram.max_turn = test.ram.max_turn.max(wrap(h - h0).abs());
+                test.ram.min_speed = test.ram.min_speed.min(av.0.length());
+                test.ram.hit = Some(s + dt);
+                if s + dt >= RAM_SAMPLE && test.ram.after.is_none() {
+                    test.ram.after = Some((av.0, v.0));
+                }
+                if s + dt >= RAM_WATCH {
+                    let (ai_after, player_after) = test.ram.after.unwrap_or((av.0, v.0));
+                    let impact = &last_impact;
+                    info!(
+                        "TEST RESULT crash-ai: angle {:.0} deg, closing {:.1} mph (set {:.1}); AI {:.1} -> {:.1} mph after {RAM_SAMPLE} s, \
+                         {:.1} after {RAM_WATCH} s (lowest {:.1}), peak yaw rate {:.0} deg/s, heading change {:.0} deg (max {:.0}), crashed {} ({}); \
+                         impact damage {:.1} / {:.1}, lanes player {:.2}/{:.2} AI {:.2}/{:.2}; player {:.1} -> {:.1} mph after {RAM_SAMPLE} s",
+                        test.ram.angle,
+                        (test.ram.player_before - v0).length() / MPH,
+                        test.ram.closing / MPH,
+                        v0.length() / MPH,
+                        ai_after.length() / MPH,
+                        av.0.length() / MPH,
+                        test.ram.min_speed / MPH,
+                        test.ram.peak_yaw.to_degrees(),
+                        wrap(h - h0).to_degrees(),
+                        test.ram.max_turn.to_degrees(),
+                        crashed.is_some(),
+                        crashed.map_or("-", |c| c.rule),
+                        impact.damage.0,
+                        impact.damage.1,
+                        impact.scales.0.linear,
+                        impact.scales.0.angular,
+                        impact.scales.1.linear,
+                        impact.scales.1.angular,
+                        test.ram.player_before.length() / MPH,
+                        player_after.length() / MPH,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    let ram_done = test.kind != ImpactTestKind::Ai || test.ram.hit.is_none_or(|s| s >= RAM_WATCH);
     match test.phase {
-        // Let the world stream in and the traffic fill the area.
+        // Let the world stream in and the traffic fill the area (in a race: until a few seconds after the go).
         0 => {
             input.scripted = Some([0.0, 0.0, 0.0, 1.0]);
-            if test.timer < 10.0 {
+            let ram_ai_kmh = test_env("MW_TEST_AI_KMH", 0.0);
+            let in_race = race.is_some();
+            if let Some(r) = race.as_ref() {
+                input.scripted = None;
+                if r.phase != crate::race::RacePhase::Racing || r.clock < TEST_RAM_RACE_DELAY {
+                    return;
+                }
+            } else if test.timer < 10.0 {
                 return;
             }
             let ground = |p: Vec3| {
@@ -737,12 +918,54 @@ fn run_impact_test(
                         (e, Vec3::new(p.x, pos.y + 0.6, p.z), -fwd, TEST_SPEED_PARKED)
                     })
                 }
+                // A ram: the player's car closes on the AI car (moving at `MW_TEST_AI_KMH`, or racing) from
+                // `MW_TEST_RAM_ANGLE` off its heading, aimed to meet its centre `TEST_RAM_GAP` of travel later.
+                ImpactTestKind::Ai if in_race || ram_ai_kmh > 0.0 => {
+                    let fwd = (t.rotation * Vec3::Z).with_y(0.0).normalize_or(Vec3::Z);
+                    let start = t.translation;
+                    let speed = test_env("MW_TEST_KMH", TEST_SPEED_AI * 3.6) / 3.6;
+                    let angle = test_env("MW_TEST_RAM_ANGLE", 90.0);
+                    let nearest = ai_cars
+                        .iter_mut()
+                        .filter(|c| c.4.is_none())
+                        .min_by(|a, b| a.1.translation.distance(start).total_cmp(&b.1.translation.distance(start)));
+                    let mut ram = None;
+                    let course = nearest.map(|(e, mut at, mut av, _, _)| {
+                        if !in_race {
+                            // Across the road ahead of the player's car, rolling along its own heading.
+                            let p = start + fwd * TEST_AI_AHEAD;
+                            let across = Vec3::Y.cross(fwd);
+                            at.translation = Vec3::new(p.x, ground(p) + 0.6, p.z);
+                            at.rotation = Quat::from_rotation_y(across.x.atan2(across.z));
+                            commands.entity(e).insert((Position(at.translation), Rotation(at.rotation)));
+                            av.0 = across * ram_ai_kmh / 3.6;
+                        }
+                        let h = if av.0.with_y(0.0).length() > 1.0 {
+                            av.0.with_y(0.0).normalize()
+                        } else {
+                            Quat::from_rotation_y(heading(at.rotation)) * Vec3::Z
+                        };
+                        let d = Quat::from_rotation_y(angle.to_radians()) * h;
+                        let vp = d * speed;
+                        let rel = (vp - av.0).length().max(1.0);
+                        let p = at.translation + (av.0 - vp) * (TEST_RAM_GAP / rel);
+                        ram = Some(rel);
+                        (e, Vec3::new(p.x, ground(p) + 0.3, p.z), d, speed)
+                    });
+                    if let Some(rel) = ram {
+                        test.ram.closing = rel;
+                        test.ram.angle = angle;
+                    }
+                    course
+                }
                 // The AI car is put across the road ahead of the player's car, rolling slowly; the player's car
                 // drives into its side.
                 ImpactTestKind::Ai => {
                     let fwd = (t.rotation * Vec3::Z).with_y(0.0).normalize_or(Vec3::Z);
                     let start = t.translation;
-                    ai_cars.iter_mut().next().map(|(e, mut at, mut av, _)| {
+                    test.ram.closing = TEST_SPEED_AI;
+                    test.ram.angle = 90.0;
+                    ai_cars.iter_mut().next().map(|(e, mut at, mut av, _, _)| {
                         let p = start + fwd * TEST_AI_AHEAD;
                         let across = Vec3::Y.cross(fwd);
                         at.translation = Vec3::new(p.x, ground(p) + 0.6, p.z);
@@ -763,18 +986,21 @@ fn run_impact_test(
             };
             t.translation = at;
             t.rotation = Quat::from_rotation_y(dir.x.atan2(dir.z));
+            commands.entity(me).insert((Position(t.translation), Rotation(t.rotation)));
             v.0 = dir * speed;
             w.0 = Vec3::ZERO;
             test.target = Some(target);
+            *impacts_seen = last_impact.count;
             info!("TEST {:?}: player at {at:?} heading {dir:?}, {speed:.0} m/s toward {target}", test.kind);
             test.shoot(&mut commands, "before");
             test.phase = 1;
             test.timer = 0.0;
         }
-        // Drive into the target.
+        // Drive into the target (a ram coasts so the aim holds).
         1 => {
-            input.scripted = Some([1.0, 0.0, 0.0, 0.0]);
-            if let Some((_, at, av, _)) = test.target.and_then(|e| ai_cars.get(e).ok())
+            let ram = test.kind == ImpactTestKind::Ai && (race.is_some() || test_env("MW_TEST_AI_KMH", 0.0) > 0.0);
+            input.scripted = Some(if ram { [0.0, 0.0, 0.0, 0.0] } else { [1.0, 0.0, 0.0, 0.0] });
+            if let Some((_, at, av, ..)) = test.target.and_then(|e| ai_cars.get(e).ok())
                 && (test.timer * 4.0).fract() < time.delta_secs() * 4.0
             {
                 info!(
@@ -792,7 +1018,7 @@ fn run_impact_test(
             {
                 test.shoot(&mut commands, "hit");
             }
-            let ai_crashed = test.target.and_then(|e| ai_cars.get(e).ok()).is_some_and(|c| c.3.is_some());
+            let ai_crashed = test.target.and_then(|e| ai_cars.get(e).ok()).is_some_and(|c| c.4.is_some());
             if crash.active.is_some() || ai_crashed {
                 info!("TEST {:?}: crash (player {}, AI {ai_crashed})", test.kind, crash.active.is_some());
                 test.phase = 2;
@@ -819,7 +1045,7 @@ fn run_impact_test(
                 test.shots += 1;
             }
             let shots_done = test.shots >= shots.len();
-            let ai_back = test.target.and_then(|e| ai_cars.get(e).ok()).is_none_or(|c| c.3.is_none());
+            let ai_back = test.target.and_then(|e| ai_cars.get(e).ok()).is_none_or(|c| c.4.is_none());
             if shots_done && (ai_back || test.timer > 12.0) {
                 info!("TEST {:?}: done (player car {me}, AI back {ai_back})", test.kind);
                 test.phase = 3;
@@ -827,7 +1053,7 @@ fn run_impact_test(
             }
         }
         _ => {
-            if test.timer > 1.0 {
+            if test.timer > 1.0 && ram_done {
                 exit.write(AppExit::Success);
             }
         }

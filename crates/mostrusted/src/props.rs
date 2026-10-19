@@ -760,10 +760,19 @@ pub struct PropHooks<'w, 's> {
     hitters: Query<'w, 's, (), Hitter>,
     /// Race cars: their hits on standing props are tested in [`prop_contacts`] before the step.
     race_cars: Query<'w, 's, (), With<Car>>,
+    /// Race cars' body colliders: race car against race car is solved in `car_contacts.rs`.
+    race_bodies: Query<'w, 's, (), With<crate::car_contacts::RaceCarBody>>,
 }
 
 impl CollisionHooks for PropHooks<'_, '_> {
     fn modify_contacts(&self, contacts: &mut ContactPair, commands: &mut Commands) -> bool {
+        if crate::car_contacts::enabled()
+            && self.race_bodies.contains(contacts.collider1)
+            && self.race_bodies.contains(contacts.collider2)
+        {
+            crate::car_contacts::neutralise(contacts);
+            return true;
+        }
         // A car (the player's, or crashed traffic) touching a lane follower turns it into a crashing car; the
         // contact is dropped for this step and solved between two dynamic bodies from the next one.
         for (first, collider, other, own) in [
@@ -860,12 +869,12 @@ fn unpin_props(
 
 /// Contact passes per physics step: the game runs its contact solver once in each of the island's two
 /// sub-steps (world +0x464 = 2, `FUN_0093f200` → `FUN_009be420`).
-const CONTACT_PASSES: usize = 2;
+pub(crate) const CONTACT_PASSES: usize = 2;
 /// Model decisions: how fast an overlap is pushed apart (fraction per step, the speed cap in m/s, the
 /// overlap allowed). The game's contact targets (point +0x30..+0x3c) were not traced.
-const PUSH_OUT: f32 = 0.2;
-const PUSH_OUT_MAX: f32 = 4.0;
-const PUSH_OUT_SLOP: f32 = 0.01;
+pub(crate) const PUSH_OUT: f32 = 0.2;
+pub(crate) const PUSH_OUT_MAX: f32 = 4.0;
+pub(crate) const PUSH_OUT_SLOP: f32 = 0.01;
 /// A crashed race car's contacts with objects get the default record (`FUN_00960f20`, category 2 against
 /// 4: `FUN_009251f0`, every scale 1).
 const FULL_RESPONSE: DynamicResponse =
