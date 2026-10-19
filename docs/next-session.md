@@ -45,6 +45,12 @@ Decisions with the user: portrait loading screens keep the original's bars.
   gain (`audio::PlayerEngineLevel` not re-published) or a second bank starts; the `RaceCarEntities.RaceCar[1]` skid
   sets binding to the player once racers exist; the competitor (AI) tyre bank (+4 dB bus) playing at full level near
   the player. Measure with `MW_AUDIO_TAP` across a race start (`--race 462174`), free roam vs race.
+- **Body shops / repair stations** (user, 2026-10-19): only cars with liveries behave right (nitrous refilled,
+  repaired, cleaned). Cars with plain paint colours get replaced by a whole new car spawned in a different colour.
+  The game resprays the same vehicle (`FUN_00748ff0` → vehicle-manager message 0xc, research log "race flow" /
+  Most Wanted races entry); ours reloads the car on a respray (`garage.rs` "loading ..."): change the paint in place
+  on the existing car (material / paint parameters), keep the entity, its damage reset and nitrous refill, no
+  reload. Related: the race progress stash in `race::attach_player` exists only because of that reload.
 - **Exhaust flames**: backfire / nitrous flames look framey and not attached to the exhaust (`exhaust.rs`,
   `particles.rs`: emitter space, in-frame spawn interpolation, flipbook rate).
 - **Textures**: the tyre tread is blank (tyre material family / samplers, `mwtool shaders`).
