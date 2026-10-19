@@ -146,6 +146,9 @@ pub struct PursuitHud {
     pub show_bust_bar: bool,
     /// Cop positions and facings for the minimap.
     pub cops: Vec<(Vec3, Vec3)>,
+    /// Per entry of `cops`: `Players.PlayerBase[#].InChase` of a cop (the getter at 0x006dacc0: for an AI cop
+    /// `FUN_006bbb70`, the same chasing test the pursuit counts cops by).
+    pub cops_in_chase: Vec<bool>,
 }
 
 /// What a cop does (the coordinator's view of its driver state).
@@ -1560,6 +1563,7 @@ fn pursuit_tick(
         bust_progress: p.bust_meter,
         show_bust_bar: p.show_bust_bar,
         cops: cops.iter().map(|(_, t, ..)| (t.translation, t.rotation * Vec3::Z)).collect(),
+        cops_in_chase: cops.iter().map(|(_, _, _, cop, _)| cop.mode == CopMode::Chase).collect(),
     };
 }
 

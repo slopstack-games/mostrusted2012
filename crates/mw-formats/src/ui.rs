@@ -779,12 +779,18 @@ impl Screen {
 /// | `9a5a94d3` | the key |
 /// | `bd550893` (count `2300858a`) | `{Layout, Params}` drawn in the world at the point's transform |
 /// | `e3256f36`, `8ac61148`, `ea3ab789`, `d788383f`, `db617d4f` | flags (`ea3ab789` set exactly when there are world layouts) |
+///
+/// `d788383f` is set on the event-start looks (1013512, 955952, 955955), whose world panel faces the camera
+/// from every side in the original (captures 2026-10-19), and clear on the gate looks, which turn with the
+/// gate: read as "world layouts face the camera" (the code reading it was not traced).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PoiVisuals {
     pub id: u32,
     pub key: u32,
     pub map: Option<WidgetLayout>,
     pub world: Vec<WidgetLayout>,
+    /// `d788383f`: the world layouts face the camera (our reading, see above).
+    pub face_camera: bool,
 }
 
 impl PoiVisuals {
@@ -792,6 +798,7 @@ impl PoiVisuals {
     const MAP: u32 = 0xb8a6_b50a;
     const KEY: u32 = 0x9a5a_94d3;
     const WORLD: u32 = 0xbd55_0893;
+    const FACE_CAMERA: u32 = 0xd788_383f;
 
     pub fn from_object(o: &Object) -> Option<Self> {
         if o.type_name != Self::TYPE_NAME {
@@ -806,6 +813,7 @@ impl PoiVisuals {
             key: uint(o, Self::KEY) as u32,
             map: object(o, Self::MAP).and_then(layout),
             world: structs(o, Self::WORLD).filter_map(layout).collect(),
+            face_camera: boolean(o, Self::FACE_CAMERA),
         })
     }
 }

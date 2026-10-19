@@ -127,6 +127,8 @@ pub struct PoiVisual {
     pub map: Option<PlacedLayout>,
     /// Layouts drawn in the world at the point's transform (`Pos`, `Rot`, `DistanceToCamera` bindings).
     pub world: Vec<PlacedLayout>,
+    /// The world layouts face the camera ([`fmt::ui::PoiVisuals::face_camera`]).
+    pub face_camera: bool,
 }
 
 /// Point-of-interest keys (see [`AssetStore::poi_keys`]). Offsets are into the config structs as
@@ -312,6 +314,7 @@ impl AssetStore {
                 key: v.key,
                 map: v.map.as_ref().and_then(placed),
                 world: v.world.iter().filter_map(placed).collect(),
+                face_camera: v.face_camera,
             });
         }
         Ok(out)
@@ -544,6 +547,9 @@ impl AssetStore {
     }
 }
 
+/// `UIColourPalette` of `UI/UICONFIG.BNDL` (the named colours behaviours blend to).
+pub const UI_COLOUR_PALETTE: ResourceId = ResourceId(0x0100_0000_0001_72aa);
+
 /// Everything needed to draw a set of layouts, resolved from the assets once (on a loader thread), so
 /// drawing a frame needs no asset access.
 #[derive(Debug, Clone, Default)]
@@ -564,6 +570,8 @@ pub struct UiScene {
     /// A menu screen ([`UiFrame::letterbox`]: the whole frame fitted, no HUD correction, black bars) rather
     /// than a HUD screen ([`UiFrame::new`]).
     pub letterbox: bool,
+    /// The UI's named colours that colour steps blend to ([`AssetStore::ui_colour_palette`]).
+    pub palette: HashMap<String, [f32; 4]>,
 }
 
 fn walk_elements<'a>(elements: impl IntoIterator<Item = &'a Element>, f: &mut impl FnMut(&'a Element)) {
@@ -577,8 +585,33 @@ fn walk_elements<'a>(elements: impl IntoIterator<Item = &'a Element>, f: &mut im
 
 impl AssetStore {
     /// Resolve the styles, fonts, strings, UVs and blend modes the layouts use.
+    /// The UI's named colours (`UIColourPalette` [`UI_COLOUR_PALETTE`] in `UI/UICONFIG.BNDL`, 179 `UIColour`
+    /// {`263d15bc` name, `Colour` RGBA bytes}), as linear RGBA like element tints (sRGB bytes decoded: `WHITE`
+    /// ebebeb = 0.8308, the tint of white text). Empty when the object is missing.
+    pub fn ui_colour_palette(&self) -> HashMap<String, [f32; 4]> {
+        use fmt::genesys::{Value, field_hash};
+        let Ok(o) = self.genesys_object(UI_COLOUR_PALETTE) else { return HashMap::new() };
+        let Some(Value::Array(entries)) = o.get(0xd46f_dc01) else { return HashMap::new() };
+        let linear = |b: u8| {
+            let c = b as f32 / 255.0;
+            if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        };
+        let mut out = HashMap::new();
+        for v in entries {
+            let Value::Struct(c) = v else { continue };
+            let (Some(Value::Str(name)), Some(Value::Raw(rgba))) = (c.get(0x263d_15bc), c.get(field_hash("Colour")))
+            else {
+                continue;
+            };
+            if let [r, g, b, a, ..] = rgba[..] {
+                out.insert(name.clone(), [linear(r), linear(g), linear(b), a as f32 / 255.0]);
+            }
+        }
+        out
+    }
+
     pub fn ui_scene(&self, layouts: Vec<PlacedLayout>, lang: &fmt::Language) -> UiScene {
-        let mut scene = UiScene { layouts, ..Default::default() };
+        let mut scene = UiScene { layouts, palette: self.ui_colour_palette(), ..Default::default() };
         let mut cache = UiCache::default();
         let mut all = Vec::new();
         for pl in &scene.layouts {
@@ -944,11 +977,15 @@ impl UiScene {
         if !e.bindings.visibility.is_empty() && !eval(&e.bindings.visibility, lookup).is_some_and(|v| v.truthy()) {
             return;
         }
-        let tween = options.tween(e, lookup);
+        let tween = options.tween(e, lookup, &self.palette);
         if tween.opacity <= 0.0 {
             return;
         }
         let (mut rect, mut pivot) = element_rect(e, lookup);
+        if tween.scale != 1.0 {
+            let (w, h) = (rect[2] * tween.scale, rect[3] * tween.scale);
+            rect = [rect[0] + (rect[2] - w) * 0.5, rect[1] + (rect[3] - h) * 0.5, w, h];
+        }
         rect[0] += tween.offset[0];
         rect[1] += tween.offset[1];
         pivot = [pivot[0] + tween.offset[0], pivot[1] + tween.offset[1]];
@@ -997,7 +1034,8 @@ impl UiScene {
         let mut push = |texture: Option<ResourceId>, uv: [f32; 4], r: [f32; 4], colour: [f32; 4], map: bool| {
             push_quad(out, Quad { texture, uv, rect: r, rotation, colour, blend, map }, screen_pivot, clip);
         };
-        let tint = [e.tint[0], e.tint[1], e.tint[2], e.tint[3] * opacity];
+        let c = tween.colour.unwrap_or(e.tint);
+        let tint = [c[0], c[1], c[2], c[3] * opacity];
         match e.kind {
             ElementKind::Image | ElementKind::SubImage => {
                 // `ImageBinding`: the lookup answers with a texture resource id (16 hex digits) to show whole
@@ -1324,25 +1362,45 @@ struct Tween {
     offset: [f32; 2],
     /// Degrees added by idle spins.
     rotation: f32,
+    /// Size factor about the element's centre (behaviour kind 4).
+    scale: f32,
+    /// The element's own tint (linear RGBA), what colour steps start from and `OUT` returns to.
+    base: [f32; 4],
+    /// The tint now, when a colour step has changed it.
+    colour: Option<[f32; 4]>,
 }
 
+/// Behaviour kinds (`Behaviour.Type`): 4 scales (`from,to` in percent), 13 changes the colour (`TO,<palette
+/// entry>`, `TO,INVISIBLE`, `OUT` = back to the element's own colour). Our reading of the data (the tween code
+/// was not traced): the search circle's `OUT` steps (kind 13) on its cooldown / race triggers would hide it in
+/// every chase if they faded it, but the original shows it (captures 2026-10-19); the cop arrow's chase-ping
+/// (`100,500`, kind 4) is a growing icon there, not an offset.
+const KIND_SCALE: u8 = 4;
+const KIND_COLOUR: u8 = 13;
+
 impl Tween {
+    fn new(base: [f32; 4]) -> Self {
+        Self { opacity: 1.0, offset: [0.0; 2], rotation: 0.0, scale: 1.0, base, colour: None }
+    }
+
     /// Apply behaviour steps `since` ms after they started. Each step runs from its `Delay` over its `Duration`
     /// (ms), in order: `IN` fades in from invisible (and holds the element invisible until it starts), `OUT`
-    /// fades out, `TO,INVISIBLE` hides, `dx,dy` approaches the rest position from that offset (reference
-    /// pixels; sitting at the offset until it starts), as the layouts' `APPROACH (delay, duration, dx, dy)`.
-    /// Colour steps (`TO,WHITE`, `TO,<palette entry>`), four-number steps (scales, read) and bare ids
-    /// (sounds) are not applied. The vocabulary is the data's; what each step does is our reading of the names
-    /// (the tween code was not traced).
+    /// fades out, `TO,INVISIBLE` hides (over its duration), `dx,dy` approaches the rest position from that
+    /// offset (reference pixels; sitting at the offset until it starts), as the layouts' `APPROACH (delay,
+    /// duration, dx, dy)`; kind 4 `a,b` scales from a to b percent (at a until it starts); kind 13 `TO,<name>`
+    /// blends the tint to the palette entry (`UIColourPalette`, [`UiScene::palette`]) and `OUT` back to the
+    /// element's own tint. Bare ids (sounds) are not applied. The vocabulary is the data's; what each step does
+    /// is our reading of the names (the tween code was not traced).
     /// [`apply`](Self::apply) for loops and idle lists: steps that have not started yet do nothing (an `IN`
     /// waiting for its delay does not hold the element invisible).
-    fn apply_started(&mut self, steps: &[fmt::ui::Behaviour], since: f32) {
+    fn apply_started(&mut self, steps: &[fmt::ui::Behaviour], since: f32, palette: &HashMap<String, [f32; 4]>) {
         for b in steps.iter().filter(|b| since >= b.delay) {
-            self.apply(std::slice::from_ref(b), since);
+            self.apply(std::slice::from_ref(b), since, palette);
         }
     }
 
-    fn apply(&mut self, steps: &[fmt::ui::Behaviour], since: f32) {
+    fn apply(&mut self, steps: &[fmt::ui::Behaviour], since: f32, palette: &HashMap<String, [f32; 4]>) {
+        let mut scaled = false;
         for b in steps {
             let started = since >= b.delay;
             let p = if b.duration <= 0.0 {
@@ -1351,19 +1409,47 @@ impl Tween {
                 ((since - b.delay) / b.duration).clamp(0.0, 1.0)
             };
             let params = b.parameters.trim();
-            match params {
-                "IN" => self.opacity = p,
-                "OUT" if started => self.opacity *= 1.0 - p,
-                "TO,INVISIBLE" if started => self.opacity = 0.0,
-                _ => {
-                    let parts: Vec<&str> = params.split(',').collect();
-                    if let [x, y] = parts[..]
-                        && let (Ok(x), Ok(y)) = (x.trim().parse::<f32>(), y.trim().parse::<f32>())
+            if params == "TO,INVISIBLE" {
+                if started {
+                    self.opacity *= 1.0 - p;
+                }
+                continue;
+            }
+            match b.kind {
+                KIND_COLOUR => {
+                    let target = match params {
+                        "OUT" => Some(self.base),
+                        _ => params.strip_prefix("TO,").and_then(|name| palette.get(name.trim()).copied()),
+                    };
+                    if let Some(target) = target
+                        && started
                     {
-                        self.offset[0] += x * (1.0 - p);
-                        self.offset[1] += y * (1.0 - p);
+                        let from = self.colour.unwrap_or(self.base);
+                        self.colour = Some(std::array::from_fn(|i| from[i] + (target[i] - from[i]) * p));
                     }
                 }
+                KIND_SCALE => {
+                    let parts: Vec<f32> = params.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                    if let [a, z] = parts[..]
+                        && (started || !scaled)
+                    {
+                        self.scale = (a + (z - a) * p) / 100.0;
+                        scaled |= started;
+                    }
+                }
+                _ => match params {
+                    "IN" => self.opacity = p,
+                    "OUT" if started => self.opacity *= 1.0 - p,
+                    _ => {
+                        let parts: Vec<&str> = params.split(',').collect();
+                        if let [x, y] = parts[..]
+                            && let (Ok(x), Ok(y)) = (x.trim().parse::<f32>(), y.trim().parse::<f32>())
+                        {
+                            self.offset[0] += x * (1.0 - p);
+                            self.offset[1] += y * (1.0 - p);
+                        }
+                    }
+                },
             }
         }
     }
@@ -1377,10 +1463,14 @@ impl<'a> DrawOptions<'a> {
     /// The element's behaviours now: its own transition-in since it appeared (was drawn after not being
     /// drawn), then each triggered behaviour (a `TriggerBinding` whose rising edge plays the transition-in
     /// steps and falling edge the transition-out steps). Without `anim`, and for a trigger that has not changed
-    /// since it was first seen, the steps count as long finished. Transition-out of disappearing elements
-    /// and idle behaviours are not played.
-    fn tween(&mut self, e: &Element, lookup: &mut Lookup) -> Tween {
-        let mut t = Tween { opacity: 1.0, offset: [0.0; 2], rotation: 0.0 };
+    /// since it was first seen, the steps count as long finished. Transition-out of disappearing elements is
+    /// not played. Order (our reading): the transition-in, the triggers that do not hold (their out steps), the
+    /// element's idle loop, then the triggers that hold (their in steps and idle steps), so a held trigger's
+    /// colour or hide wins over the idle loop and a released one's settled steps do not stop it (the minimap's
+    /// pursuit flash 1444098 blinks on `TO,INVISIBLE` / `TO,HUD_PURSUIT_HEATFILL` while `Mode.IsRaceEvent` is
+    /// false, whose out step is `OUT` to the own colour).
+    fn tween(&mut self, e: &Element, lookup: &mut Lookup, palette: &HashMap<String, [f32; 4]>) -> Tween {
+        let mut t = Tween::new(e.tint);
         // Idle behaviours of type 8 spin the element by `Parameters` degrees every `Duration` ms, repeating (the
         // loading spinner of layout 108177: "360.0" over 1000 ms). Our reading of the type; the other idle
         // types are not played. Only animated draws spin.
@@ -1405,7 +1495,7 @@ impl<'a> DrawOptions<'a> {
                 }
                 None => f32::INFINITY,
             };
-            t.apply(&e.transition_in, since);
+            t.apply(&e.transition_in, since, palette);
         }
         let mut held: Vec<(usize, f32)> = Vec::new();
         for (k, tb) in e.triggered.iter().enumerate() {
@@ -1423,31 +1513,50 @@ impl<'a> DrawOptions<'a> {
                 }
                 None => f32::INFINITY,
             };
-            t.apply(if on { &tb.transition_in } else { &tb.transition_out }, since);
             if on {
                 held.push((k, since));
+            } else {
+                t.apply(&tb.transition_out, since, palette);
             }
         }
-        // The element's own idle fades loop over their span (the prompt's pulse: `OUT` 0–0.8 s, `IN` 0.8–1.8 s),
-        // timed from when the element appeared; only animated draws pulse.
-        let fades = |b: &&fmt::ui::Behaviour| b.kind == 0 && matches!(b.parameters.trim(), "IN" | "OUT");
-        let period = e.idle.iter().filter(fades).map(|b| b.delay + b.duration).fold(0.0, f32::max);
+        // The element's own idle steps loop over their span (the prompt's pulse: `OUT` 0–0.8 s, `IN` 0.8–1.8 s;
+        // the search circle's colour: `TO,COP` at 1 s, `TO,HUD_MINIMAP_PURSUITRADIUS` at 2 s), timed from when
+        // the element appeared; only animated draws loop. After the first pass a loop starts from the colour its
+        // last colour step left (the circle is red until it turns blue at 1 s).
+        let looped = |b: &&fmt::ui::Behaviour| match b.kind {
+            0 => matches!(b.parameters.trim(), "IN" | "OUT"),
+            KIND_COLOUR | KIND_SCALE => true,
+            _ => false,
+        };
+        let period = e.idle.iter().filter(looped).map(|b| b.delay + b.duration).fold(0.0, f32::max);
         if period > 0.0
             && let Some(anim) = self.anim.as_deref_mut()
         {
-            let appeared = anim.shown.get(&(e.id, layout, cell)).map_or(0.0, |s| s.0);
-            let since = (((now - appeared) * 1000.0) as f32).rem_euclid(period);
-            let steps: Vec<fmt::ui::Behaviour> = e.idle.iter().filter(fades).cloned().collect();
-            t.apply_started(&steps, since);
+            let appeared = anim.shown.entry((e.id, layout, cell)).or_insert((now, now));
+            if e.transition_in.is_empty() {
+                if now - appeared.1 > REAPPEAR_GAP {
+                    appeared.0 = now;
+                }
+                appeared.1 = now;
+            }
+            let elapsed = ((now - appeared.0) * 1000.0) as f32;
+            let since = elapsed.rem_euclid(period);
+            let steps: Vec<fmt::ui::Behaviour> = e.idle.iter().filter(looped).cloned().collect();
+            if elapsed >= period
+                && let Some(last) = steps.iter().rev().find(|b| b.kind == KIND_COLOUR)
+            {
+                t.apply(std::slice::from_ref(last), f32::INFINITY, palette);
+            }
+            t.apply_started(&steps, since, palette);
         }
-        // A triggered behaviour's idle steps run while its trigger holds, on top of the element's own idle: the
-        // title's prompt pair (layout 1274392: label 1597779 "PRESS START" hides on
-        // `Controls.IsXInputControllerConnected(NOT)`, label 1274432 "PRESS ANY KEY" on
-        // `Controls.IsXInputControllerConnected`) hide each other with an instant `OUT`, which the looping pulse's
-        // `IN` must not undo (it did: both prompts showed over each other). The order is our reading: the tween
-        // code was not traced.
+        // A held trigger's in steps and idle steps run on top of the element's own idle: the title's prompt pair
+        // (layout 1274392: label 1597779 "PRESS START" hides on `Controls.IsXInputControllerConnected(NOT)`,
+        // label 1274432 "PRESS ANY KEY" on `Controls.IsXInputControllerConnected`) hide each other with an
+        // instant `OUT`, which the looping pulse's `IN` must not undo (it did: both prompts showed over each
+        // other). The order is our reading: the tween code was not traced.
         for (k, since) in held {
-            t.apply_started(&e.triggered[k].idle, since);
+            t.apply(&e.triggered[k].transition_in, since, palette);
+            t.apply_started(&e.triggered[k].idle, since, palette);
         }
         t
     }

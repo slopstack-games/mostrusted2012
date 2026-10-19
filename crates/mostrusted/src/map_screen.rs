@@ -103,7 +103,7 @@ const OFFLINE_TICKER: u32 = 119_887;
 /// Ink of the navigation bar (its labels' colour in layout 1470689, linear): the unselected tabs' icons.
 const TAB_INK: f32 = 0.005;
 /// The offline race game mode (the one `race.rs` runs).
-const RACE_MODE: u32 = 730_000;
+pub const RACE_MODE: u32 = 730_000;
 
 /// World rectangle (x, z, width, depth) the main-map image covers: registered against the `UIMapGrid` tiles,
 /// whose placement is data (research log 2026-10-10).

@@ -30,6 +30,7 @@ mod deferred;
 mod drive;
 mod easydrive;
 mod event_card;
+mod event_starts;
 mod exhaust;
 mod flash_probe;
 mod frame_log;
@@ -1045,7 +1046,7 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(game_text::GameTextPlugin)
         .add_plugins(ui_quads::UiQuadsPlugin)
         .add_plugins(window_test::WindowTestPlugin)
-        .add_plugins((world_ui::WorldUiPlugin, gate_marker::GateMarkerPlugin))
+        .add_plugins((world_ui::WorldUiPlugin, gate_marker::GateMarkerPlugin, event_starts::EventStartsPlugin))
         .add_plugins(hud::HudPlugin {
             enabled: !cli.no_hud && test.is_none() && !crash && !smash && !matches!(request, Request::Vehicle { .. }),
             metric: !cli.mph,

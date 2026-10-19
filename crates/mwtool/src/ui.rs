@@ -49,7 +49,6 @@ pub fn map_items(store: &AssetStore, lang: &Language) -> Result<()> {
     Ok(())
 }
 
-/// One line per screen bundle: its widgets and how many layouts each places.
 /// `mwtool ui easydrive`: the menu model (mw_assets::easydrive), one line per type, tier, source and item.
 pub fn easydrive(store: &AssetStore, screen: &str, lang: &Language) -> Result<()> {
     use mw_assets::easydrive::label;
@@ -80,6 +79,27 @@ pub fn easydrive(store: &AssetStore, screen: &str, lang: &Language) -> Result<()
     Ok(())
 }
 
+/// `mwtool ui pois`: a screen's point-of-interest looks with their map and world layouts.
+pub fn pois(store: &AssetStore, screen: &str, keys: &[u32], lang: &Language) -> Result<()> {
+    let mut cache = UiCache::default();
+    for p in store.ui_poi_visuals(screen)? {
+        if !keys.is_empty() && !keys.contains(&p.key) {
+            continue;
+        }
+        println!("\n#### look {} key {} ({} world layouts)", p.id, p.key, p.world.len());
+        if let Some(m) = &p.map {
+            println!("-- map icon");
+            print_layout(store, &mut cache, m, lang);
+        }
+        for w in &p.world {
+            println!("-- world");
+            print_layout(store, &mut cache, w, lang);
+        }
+    }
+    Ok(())
+}
+
+/// One line per screen bundle: its widgets and how many layouts each places.
 pub fn screens(store: &AssetStore) -> Result<()> {
     let mut paths: Vec<_> = store
         .bundle_paths()
@@ -173,6 +193,15 @@ fn print_layout(store: &AssetStore, cache: &mut UiCache, pl: &PlacedLayout, lang
             })
             .collect();
         println!("   instance anchor {} [{}] {}", i.anchor_type, t.join(", "), i.timeline);
+        if !i.visibility.is_empty() {
+            println!("   instance visible: {}", i.visibility);
+        }
+        for c in &i.colours {
+            println!("   instance colour kind {} value {} <{}>", c.kind, c.value, c.binding);
+        }
+        for tl in &i.timelines {
+            println!("   instance timeline on <{}>: in {:?} / out {:?}", tl.trigger, tl.on, tl.off);
+        }
     }
     for e in &pl.layout.elements {
         print_element(store, cache, e, lang, 1);
@@ -231,7 +260,18 @@ fn print_element(store: &AssetStore, cache: &mut UiCache, e: &Element, lang: &La
         }
     }
     let list = |b: &[mw_formats::ui::Behaviour]| {
-        b.iter().map(|b| format!("{}@{}+{}", b.parameters, b.delay, b.duration)).collect::<Vec<_>>().join("; ")
+        b.iter()
+            .map(|b| {
+                format!(
+                    "{}@{}+{}{}",
+                    b.parameters,
+                    b.delay,
+                    b.duration,
+                    if b.kind == 0 { String::new() } else { format!(" k{}", b.kind) }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
     };
     if !e.transition_in.is_empty() {
         println!("{pad}   in: [{}]", list(&e.transition_in));
@@ -240,7 +280,15 @@ fn print_element(store: &AssetStore, cache: &mut UiCache, e: &Element, lang: &La
         println!("{pad}   idle: [{}]", list(&e.idle));
     }
     for t in &e.triggered {
-        println!("{pad}   on {:?}: in [{}] / out [{}]", t.trigger, list(&t.transition_in), list(&t.transition_out));
+        let idle = if t.idle.is_empty() { String::new() } else { format!(" idle [{}]", list(&t.idle)) };
+        println!(
+            "{pad}   on {:?} (type {}, seq {:?}): in [{}] / out [{}]{idle}",
+            t.trigger,
+            t.trigger_type,
+            t.sequence,
+            list(&t.transition_in),
+            list(&t.transition_out)
+        );
     }
     if let Some(s) = &e.stack {
         let ids = |l: &[mw_bundle::ResourceId]| l.iter().map(|i| (i.0 & 0xffff_ffff).to_string()).collect::<Vec<_>>();

@@ -259,6 +259,8 @@ MW_POLICE_LOG=1 MW_COP_DISTANCE=80 ./target/release/mostrusted --drive 911 --uni
 # MW_WORLD_SFX_LOG=1: every world / prop / landing / crash / collectable sound started (also loads them in muted
 # test runs, as MW_CAR_SFX_LOG=1 does for player_sfx.rs): --test smash, --smash-set compounds, --test landing
 # MW_HORN_AT=t0,t1 holds the horn between game times (headless); MW_AUDIO_METER=1 lists the player's voices too
+./target/release/mwtool ui pois UI/SCREENS2/371621.BNDL [--key 1013512,1013521]   # a screen's point-of-interest looks: map icon / world layouts, instance visibility / colours / timelines, trigger types, behaviour kinds
+# Event starts (event_starts.rs): MW_EVENT_START_LOG=1 (shown starts, panel triangles), MW_EVENT_START_TEST=1 (holds throttle + brake in a start's radius: the burnout start)
 # Debug logs: MW_NITROUS_LOG=1, MW_DIRT_LOG=1, MW_GATE_LOG=1, MW_TYRE_DEBUG=1, MW_FLASH_LOG=1 [MW_FLASH_SHOTS=dir]
 # Performance: MW_FRAME_LOG=<file> (per-frame schedule / render times), --bench prints p95 / p99 / hitches;
 # A/B switches MW_INDIRECT=1 (Bevy's multi-draw-indirect), MW_AVIAN_ASYNC=1, MW_BAKE_THREADS=0, MW_FOV_VERTICAL=1,

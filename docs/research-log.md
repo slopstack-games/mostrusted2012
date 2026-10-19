@@ -10,6 +10,69 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-19: event starts, cop arrows, search circle (play test "Races and free roam")
+User play test: races missing from the minimap in free roam, no race start locations in the world, cops red on
+the minimap, not blinking, no escape circle. The original was run (probe, offline prompt taken, save backed up to
+the worktree's `ref/savebackup-2026-10-19-minimap/` and restored byte-identical after two busts had autosaved, md5
+in `ref/savebackup-2026-10-19-minimap.md5`, probe DLL removed, game quit). Captures (1280×720, copied to the main
+checkout's `ref/minimap-2026-10-19/`): `start_fairhaven.png` (minimap at the start), `turfwar_50m.png`,
+`turfwar_from_wnw.png`, `turfwar_inside.png` (TURF WAR's panel from two sides and inside its radius with the
+prompt "HOLD [Z] + [A] TO START EVENT"), `mw3_28m.png` (a Most Wanted start), `p3__strip.png` … `p9__strip.png`
+(minimap bursts ~0.4 s apart in a pursuit started by poking the takedown flag `rec` +0x8a4 = 1; bust meter held
+at 0: circle, cops patrolling / chasing, clamped at the edge), `pursuit1.png`, `p10_4.png`.
+- **Event starts** (the gap behind "races missing from the minimap"; the 2026-10-15 dead end "no code names the
+  event looks" is settled): the HSM behaviour "Do Event Starts" (nodes 1560429 / 816214; vtable 0x00fd950c, enter
+  `vt_00754f30`, update `FUN_00755220`) reads its HSM parameters by name (keys decoded from `.bss` in the
+  snapshot): `POIID` 1013512, `RECPOIID` 1132924, `MWPOIIDC` 955952, `MWPOIIDUC` 955955, `ACTIVERADIUS` 2000,
+  `RSPCTRADIUS`, `CHECKENTRY`, `TRACKEDONLY`. `FUN_0074a600` lists up to 20 events (driven car allowed,
+  `FUN_006eca10` with default true; within 2000 m of a reference point except Most Wanted races not yet won;
+  not the freedrive mode `GameLogicConfig.1b3c1ddc`) and gives each a point of interest at its start trigger
+  (`FUN_00793350`, yaw 0); `FUN_0074aaf0` removes them in a pursuit (`FUN_006c2410`); `FUN_0074ad50` (below
+  `GameLogicConfig.ff4aef6f` = 70 mph) shows `PromptEvent` 18364 within `49caf423` = 22 m (height ×5,
+  0x00fd67b4) and starts the event (`FUN_006e74f0`) after throttle and brake (input record +0x30 / +0x3c) are both
+  above 0.5 for 1.0 s (0x00f8a810, 0x00f8a820). The looks are in the free-roam HUD's POI widget (371621; the race
+  HUD's lacks the Most Wanted ones): map icon = green / red diamond, world layouts = the panel 1454873 (shown while
+  `Widget.POI.ShowSpeedwall` is false, faded beyond 200 m and outside 5–140 m) and the speedwall 1597974 (online).
+  The panel faces the camera (captures from both sides); the look flag `d788383f` is set on event looks and clear
+  on gate looks: read as "face camera".
+- **Cop arrows**: look 816002's elements: blue 816011 (`IsCop`), a blue ping 1445057 on appearing (kind-4 scale
+  100→500 %), red 816004 (`InChase`, blinking IN 100–200 ms / OUT 300–400 ms), red 1445048 whose trigger on
+  `InChase` (trigger type 2) only plays a white growing ping when the cop leaves the chase. The getter of
+  `PlayerBase.InChase` (0x006dacc0): local player = pursuit state 1, AI cop = `FUN_006bbb70`. Ours fed every
+  `PlayerBase` field as `IsCop`, so `InChase` was always true and the solid red 1445048 covered everything.
+  Captures: patrolling / arriving cops blue, chasing cops blue with red blinking over them; cops off the map are
+  clamped to its edge.
+- **Search circle** (look 955013, key 1013492): `FUN_0065be70` keeps it only in state 1 (chase), at the last-seen
+  point (`rec` +0x860), matrix scale = lose radius × 2 (0x00f8a808); the layout's instance S(0.05)·R(90°)·
+  S(`Scale`) makes the 20-px circle 300 m across at 150 m lose radius. Its idle steps blend the colour to `COP`
+  (0660fe) at 1 s and `HUD_MINIMAP_PURSUITRADIUS` (ca2027) at 2 s, looping (captures: ~1 s red, ~1 s blue). The
+  minimap's red flash in a chase is element 1444098 of layout 1206246 (idle `TO,INVISIBLE` / `TO,HUD_PURSUIT_HEATFILL`).
+- **Behaviour kinds** (`Behaviour.Type`): 4 = scale `from,to` percent, 13 = colour (`TO,<UIColourPalette entry>`,
+  `OUT` = back to the own tint, `TO,INVISIBLE`), 0 = fades / offsets, 8 = spin. `UIColourPalette` 01000000000172aa
+  (UI/UICONFIG.BNDL, 179 named sRGB colours). Our tween read kind-13 `OUT` as a fade and kind-4 pairs as offsets.
+- **Ported**: `event_starts.rs` (list, prompt, burnout start → `PlayEvent`, the world panels through
+  `gate_marker::draw_world_layout`, now shared); `hud.rs` minimap: event / Most Wanted diamonds from the
+  free-roam HUD's looks, cop `InChase` per cop (`PursuitHud.cops_in_chase`); `mw_assets::ui`: colour steps with the
+  palette, scale steps, colour / scale idle loops (cyclic), held triggers applied after the idle loop;
+  `Binding::parse` takes bare numbers after an operator as its arguments (`BETWEEN,5,140`); `mwtool ui pois
+  <screen> [--key k,...]` prints a screen's POI looks (instances' visibility / colours / timelines, trigger types,
+  behaviour kinds). Checked headless (`ref/minimap-2026-10-19/ours/ab_turfwar_50m.png`, original above, ours
+  below, F-150 at TURF WAR): the diamonds (green ahead, green left, red Most Wanted) match the original's minimap;
+  the panel stands over the start facing the camera with MEDIUM / CIRCUIT RACE and the bracket.
+- **Model decisions**: the reference point (UI manager +0x2cd50, writer not found) = the player's car; no event
+  counts as won or recommended, every event as unlocked (`FUN_00688f60`, `FUN_0068f190`, `FUN_006f0b60`,
+  `FUN_006e58a0` not ported); the panel turns about the vertical only; rewards not modelled; prompt keys = the
+  original's keyboard defaults Z / A (captured); markers in free roam and after a race finished; held triggers'
+  colours win over idle loops.
+- **Open**: (1) the panel's event name on the white strip is empty in ours and the reward label prints "0" (the
+  label bindings `Name` on 1454926 / `AvailableReward(SPEEDPOINTS, PLUS)`; rewards' data not found); (2) **the
+  search circle is not drawn yet** and the cops are not clamped to the map edge (data and captures above; the
+  circle needs `PursuitHud` to carry the last-seen point and diameter in chase); (3) the burnout start is coded
+  (`MW_EVENT_START_TEST=1` holds throttle + brake inside a start's radius) but was not run headless; (4) which
+  look flag clamps icons (`db617d4f` is set on cops, events, gates and the player, but events 900 m away were not
+  drawn at the edge); (5) the cooldown's minimap (the circle goes in cooldown per the code; no capture: holding
+  the state did not keep the game in cooldown).
+
 ### 2026-10-19: sounds from the play test: traffic whine, missing whines, inaudible props, glitches, surface sounds
 User play test items ("Sounds still not right") plus the surfaces agent's per-wheel surface sounds. Offline checks
 with `mwtool traffic-sound`, `engine-sound --trace`, `vehicle-sound --surface`; analysis scripts in the worktree's
