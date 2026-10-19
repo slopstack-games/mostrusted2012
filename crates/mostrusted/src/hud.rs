@@ -670,8 +670,7 @@ fn map_icons(
     let right = Vec2::new(-up.y, up.x) * mw_assets::ui::MAP_RIGHT_SIGN;
     let map_centre = Vec2::new(map.rect[0] + map.rect[2] * 0.5, map.rect[1] + map.rect[3] * 0.5);
     // Where a layout's origin lands when drawn without an instance (`Placement`: the reference frame centred).
-    let s = (screen[0] / 1280.0).min(screen[1] / 720.0);
-    let origin = Vec2::new(screen[0] * 0.5 - 640.0 * s, screen[1] * 0.5 - 360.0 * s);
+    let origin = Vec2::from_array(mw_assets::ui::UiFrame::new(screen).origin);
     let mut out = Vec::new();
     for &(icon, pos, dir) in icons {
         let d = Vec2::new(pos.x - centre.x, pos.z - centre.z);
@@ -952,7 +951,7 @@ fn draw_hud(
         let p = xf.translation();
         let f = car_facing(xf);
         // Metres per logical pixel: the map's reference scale over the HUD's scale.
-        let hud_scale = (screen[0] / 1280.0).min(screen[1] / 720.0);
+        let hud_scale = mw_assets::ui::UiFrame::new(screen).scale;
         let metres_per_px = MINIMAP_METRES_PER_PIXEL / hud_scale;
         map.frame += 1;
         if size != map.size || map.frame % 2 == 0 {

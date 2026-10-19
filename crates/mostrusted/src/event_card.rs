@@ -222,7 +222,8 @@ fn begin(
                     instance: inst,
                 });
             }
-            let scene = store.ui_scene(layouts, &lang);
+            let mut scene = store.ui_scene(layouts, &lang);
+            scene.letterbox = true;
             let mut images: Vec<(ResourceId, Image)> = scene
                 .textures()
                 .into_iter()
@@ -545,6 +546,8 @@ fn draw(
         quads.extend(look.scene.draw_with(screen, &mut lk, &mut options));
     }
     look.anim = anim;
+    // The black bars outside the letterboxed frame (`FUN_006240b0`).
+    quads.extend(mw_assets::ui::UiFrame::letterbox(screen).bars(screen));
     show_quads(&mut commands, root, pool, &quads, &look.textures, None, &mut nodes, &mut materials);
     c.look = Some(look);
 }

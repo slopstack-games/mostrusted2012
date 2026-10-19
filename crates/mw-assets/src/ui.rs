@@ -460,6 +460,9 @@ pub struct UiScene {
     pub cells: HashMap<ResourceId, fmt::ui::Layout>,
     /// Units for the code-side formatters (`DIST`: metres in, metric or imperial out); `None` = raw numbers.
     pub metric: Option<bool>,
+    /// A menu screen ([`UiFrame::letterbox`]: the whole frame fitted, no HUD correction, black bars) rather
+    /// than a HUD screen ([`UiFrame::new`]).
+    pub letterbox: bool,
 }
 
 fn walk_elements<'a>(elements: impl IntoIterator<Item = &'a Element>, f: &mut impl FnMut(&'a Element)) {
@@ -578,44 +581,175 @@ fn intersect(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     [x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0)]
 }
 
-/// Maps the 1280×720 reference frame of one layout to the screen: uniform scale, the layout's anchor
-/// point pinned to the same point of the screen (what `UIConfig.HudAspectCorrection` does for other aspects).
+/// How the game maps its 1280×720 UI frame to a screen, and its `UIConfig.HudAspectCorrection` for that screen.
+///
+/// `FUN_0078faa0` (run when the back buffer's size changes, `FUN_0079a810`) with the screen's aspect a = w / h:
+/// for 1 ≤ a ≤ 8/3 the frame keeps its height (720 reference pixels fill the screen's height) and `Left` =
+/// (1280 − 720·a) / 2 + 0.5, `Right` = −`Left`: at 4:3 the visible frame is x 160..1120 and left-side HUD
+/// layouts move in by 160, at 21:9 out by 200. For a > 8/3 (three monitors) the HUD stays in the centre 16:9
+/// (`Left` = 0.5). For a < 1 (portrait) the frame keeps its width and `Top` = (720 − 1280 / a) / 2 + 0.5,
+/// `Bottom` = −`Top`. `ScreenWidthMultiplier` = min(a, 16/9 above 8/3) · 0.5625 and `EffectiveScreenWidth` =
+/// 1280 × that (`FUN_00794700`, per frame: "the width of a 16:9 screen with no margin scaling is 1280"). The
+/// options' screen-scale margins (`FUN_00794700` adds them; widget `ScreenScale` of screen 469958) are taken as
+/// 0, the default (model decision until a live read). The frame itself is centred on the screen.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UiFrame {
+    /// Screen pixels per reference pixel.
+    pub scale: f32,
+    /// Screen position of the frame's (0, 0).
+    pub origin: [f32; 2],
+    pub left: f32,
+    pub right: f32,
+    pub top: f32,
+    pub bottom: f32,
+    pub width_multiplier: f32,
+    pub effective_width: f32,
+}
+
+impl UiFrame {
+    pub fn new(screen: [f32; 2]) -> Self {
+        let [w, h] = [screen[0].max(1.0), screen[1].max(1.0)];
+        let r = fmt::ui::REFERENCE_SIZE;
+        let a = w / h;
+        // Above 8/3 the code computes with the width of a 16:9 screen of the same height.
+        let a_hud = if a > 8.0 / 3.0 { 16.0 / 9.0 } else { a };
+        let mult = a_hud * 0.5625;
+        let (left, top) =
+            if a < 1.0 { (0.0, (r[1] - r[0] / w * h) * 0.5 + 0.5) } else { ((r[0] - r[1] * a_hud) * 0.5 + 0.5, 0.0) };
+        // Portrait windows fit the frame's width, every other one its height.
+        let scale = if a < 1.0 { w / r[0] } else { h / r[1] };
+        Self {
+            scale,
+            origin: [w * 0.5 - r[0] * 0.5 * scale, h * 0.5 - r[1] * 0.5 * scale],
+            left,
+            right: -left,
+            top,
+            bottom: -top,
+            width_multiplier: mult,
+            effective_width: r[0] * mult,
+        }
+    }
+
+    /// A menu screen's frame (the UI manager's byte +0x2ecf4 set: `FUN_00794700` leaves the corrections at 0 and
+    /// `FUN_006240b0` draws black bars outside the frame): the whole 1280×720 frame fitted inside the screen and
+    /// centred. Captures of the original at 1024×768 and 1680×720 (`ref/ui-2026-10-19/`): the title, the boot
+    /// transition, the pause menu, the settings and the map are letterboxed / pillarboxed so; the driving HUD
+    /// and Easydrive are not ([`UiFrame::new`]).
+    pub fn letterbox(screen: [f32; 2]) -> Self {
+        let [w, h] = [screen[0].max(1.0), screen[1].max(1.0)];
+        let r = fmt::ui::REFERENCE_SIZE;
+        let scale = (w / r[0]).min(h / r[1]);
+        Self {
+            scale,
+            origin: [(w - r[0] * scale) * 0.5, (h - r[1] * scale) * 0.5],
+            left: 0.0,
+            right: 0.0,
+            top: 0.0,
+            bottom: 0.0,
+            width_multiplier: 1.0,
+            effective_width: r[0],
+        }
+    }
+
+    /// The black bars outside the frame (`FUN_006240b0`), for menu screens: up to four quads, drawn last.
+    pub fn bars(&self, screen: [f32; 2]) -> Vec<Quad> {
+        let [x, y, w, h] = self.rect();
+        let bar = |rect: [f32; 4]| Quad {
+            texture: None,
+            uv: [0.0, 0.0, 1.0, 1.0],
+            rect,
+            rotation: 0.0,
+            colour: [0.0, 0.0, 0.0, 1.0],
+            blend: UiBlend::Alpha,
+            map: false,
+        };
+        [
+            [0.0, 0.0, screen[0], y],
+            [0.0, y + h, screen[0], screen[1] - y - h],
+            [0.0, y, x, h],
+            [x + w, y, screen[0] - x - w, h],
+        ]
+        .into_iter()
+        .filter(|r| r[2] > 0.5 && r[3] > 0.5)
+        .map(bar)
+        .collect()
+    }
+
+    /// The frame scaled to cover the whole screen (centred, keeping its aspect): for full-screen backdrops of
+    /// HUD screens. Equal to the frame from 1:1 up to 16:9.
+    pub fn cover(&self) -> Self {
+        let r = fmt::ui::REFERENCE_SIZE;
+        let screen = [self.origin[0] * 2.0 + r[0] * self.scale, self.origin[1] * 2.0 + r[1] * self.scale];
+        let scale = (screen[0] / r[0]).max(screen[1] / r[1]);
+        Self { scale, origin: [(screen[0] - r[0] * scale) * 0.5, (screen[1] - r[1] * scale) * 0.5], ..*self }
+    }
+
+    /// Screen rectangle `[x, y, w, h]` of the whole frame.
+    pub fn rect(&self) -> [f32; 4] {
+        let r = fmt::ui::REFERENCE_SIZE;
+        [self.origin[0], self.origin[1], r[0] * self.scale, r[1] * self.scale]
+    }
+
+    /// Screen position of a frame point (reference pixels).
+    pub fn to_screen(&self, p: [f32; 2]) -> [f32; 2] {
+        [self.origin[0] + p[0] * self.scale, self.origin[1] + p[1] * self.scale]
+    }
+
+    /// The `UIConfig.HudAspectCorrection.<field>` binding's value.
+    pub fn correction(&self, field: &str) -> Option<f32> {
+        Some(match field {
+            "Left" => self.left,
+            "Right" => self.right,
+            "Top" => self.top,
+            "Bottom" => self.bottom,
+            "ScreenWidthMultiplier" => self.width_multiplier,
+            "EffectiveScreenWidth" => self.effective_width,
+            _ => return None,
+        })
+    }
+}
+
+/// Places one layout: its anchor point (`AnchorType`, a point of its own 1280×720 authoring frame) goes to the
+/// sum of its instance's translate components, the bound ones (`UIConfig.HudAspectCorrection.Left(AXES:X)`)
+/// evaluated and put on their axis; then the frame goes to the screen ([`UiFrame`]).
 #[derive(Debug, Clone, Copy)]
 struct Placement {
-    scale: f32,
-    anchor_ref: [f32; 2],
-    anchor_screen: [f32; 2],
+    frame: UiFrame,
+    /// Added to a layout point to get its frame point.
+    shift: [f32; 2],
 }
 
 impl Placement {
-    fn new(instance: Option<&LayoutInstance>, screen: [f32; 2]) -> Self {
-        let r = fmt::ui::REFERENCE_SIZE;
-        let scale = (screen[0] / r[0]).min(screen[1] / r[1]);
-        let (anchor_ref, offset) = match instance {
+    fn new(instance: Option<&LayoutInstance>, frame: UiFrame, lookup: &mut Lookup) -> Self {
+        let shift = match instance {
             Some(i) => {
                 let a = i.anchor_point();
-                let t = i.transforms.iter().find(|t| t.kind == 1 && t.binding.is_empty());
-                (a, t.map_or([0.0; 2], |t| [t.value[0] - a[0], t.value[1] - a[1]]))
+                let mut t = i
+                    .transforms
+                    .iter()
+                    .find(|t| t.kind == 1 && t.binding.is_empty())
+                    .map_or(a, |t| [t.value[0], t.value[1]]);
+                // Bound scalar translates on one axis (`(AXES:X)` / `(AXES:Y)`); vector bindings such as the
+                // minimap's `MapOrigin` are left to their widgets.
+                for c in i.transforms.iter().filter(|t| t.kind == 1 && t.binding.contains("AXES:")) {
+                    let Some(v) = eval_num(&c.binding, lookup) else { continue };
+                    let axis = usize::from(c.binding.contains("AXES:Y"));
+                    t[axis] += v + c.value[axis];
+                }
+                [t[0] - a[0], t[1] - a[1]]
             }
-            None => ([r[0] * 0.5, r[1] * 0.5], [0.0; 2]),
+            None => [0.0; 2],
         };
-        let anchor_screen = [
-            anchor_ref[0] / r[0] * screen[0] + offset[0] * scale,
-            anchor_ref[1] / r[1] * screen[1] + offset[1] * scale,
-        ];
-        Self { scale, anchor_ref, anchor_screen }
+        Self { frame, shift }
     }
 
     fn point(&self, p: [f32; 2]) -> [f32; 2] {
-        [
-            (p[0] - self.anchor_ref[0]) * self.scale + self.anchor_screen[0],
-            (p[1] - self.anchor_ref[1]) * self.scale + self.anchor_screen[1],
-        ]
+        self.frame.to_screen([p[0] + self.shift[0], p[1] + self.shift[1]])
     }
 
     fn rect(&self, r: [f32; 4]) -> [f32; 4] {
         let p = self.point([r[0], r[1]]);
-        [p[0], p[1], r[2] * self.scale, r[3] * self.scale]
+        [p[0], p[1], r[2] * self.frame.scale, r[3] * self.frame.scale]
     }
 }
 
@@ -654,6 +788,14 @@ impl UiScene {
 
     /// [`draw`](Self::draw) with options: only some layouts, and triggered behaviours animated over time.
     pub fn draw_with(&self, screen: [f32; 2], lookup: &mut Lookup, options: &mut DrawOptions) -> Vec<Quad> {
+        let frame = if self.letterbox { UiFrame::letterbox(screen) } else { UiFrame::new(screen) };
+        // `UIConfig.HudAspectCorrection.*` comes from the screen ([`UiFrame`]).
+        let lookup = &mut |path: &str, arg: Option<&str>| -> Option<fmt::binding::BindValue> {
+            if let Some(field) = path.strip_prefix("UIConfig.HudAspectCorrection.") {
+                return frame.correction(field).map(|v| f64::from(v).into());
+            }
+            lookup(path, arg)
+        };
         let mut out = Vec::new();
         for (index, pl) in self.layouts.iter().enumerate() {
             if options.layouts.as_ref().is_some_and(|only| !only(index)) {
@@ -668,7 +810,7 @@ impl UiScene {
             options.layout = index as u32;
             options.cell = u32::MAX;
             options.replacement = pl.instance.as_ref().map_or(0, |i| i.replacement_index);
-            let place = Placement::new(pl.instance.as_ref(), screen);
+            let place = Placement::new(pl.instance.as_ref(), frame, lookup);
             let mut clips: Vec<[f32; 4]> = Vec::new();
             for e in &pl.layout.elements {
                 if e.kind == ElementKind::Mask {
@@ -722,6 +864,22 @@ impl UiScene {
             self.stack(st, place, [rect[0], rect[1]], clip, lookup, options, out);
             return;
         }
+        // On HUD screens, full-screen backdrops (a solid shape or a streamed picture at least as large as the
+        // frame: fades, flashes) cover the whole window whatever its aspect (model decision: the height-fitted
+        // frame alone leaves bars beside them above 16:9). Menu screens letterbox instead, as the original.
+        let cover;
+        let backdrop = e.kind == ElementKind::Shape || (e.kind == ElementKind::Image && !e.bindings.image.is_empty());
+        let place = if parent.is_none()
+            && !self.letterbox
+            && backdrop
+            && rect[2] >= fmt::ui::REFERENCE_SIZE[0] - 0.5
+            && rect[3] >= fmt::ui::REFERENCE_SIZE[1] - 0.5
+        {
+            cover = Placement { frame: place.frame.cover(), shift: place.shift };
+            &cover
+        } else {
+            place
+        };
         let screen_rect = place.rect(rect);
         let screen_pivot = place.point(pivot);
         // Backed labels: the backing image first, filling the label's rectangle.
@@ -801,7 +959,10 @@ impl UiScene {
             rect[3] - e.margins[1] - e.margins[3],
         ];
         let size = style.size;
-        let lines: Vec<_> = text.split('\n').map(|l| font.layout(l, size, style.character_spacing)).collect();
+        // In the font's units, scaled with the glyphs: the odometer (size 19) and the speed (size 38) share spacing
+        // −5, and the original's odometer digits do not overlap (`ref/ui-2026-10-19/hud_1024x768.png`).
+        let spacing = style.character_spacing * size / font.em.max(1.0);
+        let lines: Vec<_> = text.split('\n').map(|l| font.layout(l, size, spacing)).collect();
         let line_h = size + style.line_spacing;
         let total_h = line_h * lines.len() as f32 - style.line_spacing;
         let colour = [style.colour[0], style.colour[1], style.colour[2], style.colour[3] * opacity];
@@ -812,7 +973,19 @@ impl UiScene {
                 2 => inner[0] + inner[2] - width,
                 _ => inner[0],
             };
-            let y0 = inner[1] + (inner[3] - total_h) * 0.5 + i as f32 * line_h;
+            // Vertically the text sits by the element's anchor row: top-anchored labels at the top of their box
+            // (the pause title, the speed and its unit), middle ones centred (menu rows), bottom ones at the
+            // bottom. Our reading of captures of the original (research log 2026-10-19 "UI frame").
+            static TEXT_LOG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            if *TEXT_LOG.get_or_init(|| std::env::var_os("MW_UI_TEXT_LOG").is_some()) {
+                eprintln!(
+                    "ui text {text:?}: font {} size {size} spacing {spacing} box {inner:?} width {width} quads {:?}",
+                    style.font,
+                    quads.iter().map(|q| q.rect).collect::<Vec<_>>()
+                );
+            }
+            let free = inner[3] - total_h;
+            let y0 = inner[1] + free * (e.anchor / 3).min(2) as f32 * 0.5 + i as f32 * line_h;
             for q in quads {
                 let r = place.rect([x0 + q.rect[0], y0 + q.rect[1], q.rect[2], q.rect[3]]);
                 let a = q.atlas;
@@ -830,20 +1003,26 @@ impl UiScene {
     }
 }
 
-/// Rectangle (reference pixels, top-left based) and rotation pivot of an element, with its bindings.
-/// Height of a stack cell: the lowest element bottom (reference pixels); a nested stack counts its own `Height`,
-/// or its default cell's when that is 0 (the selected Easydrive row is a 25 px stack whose glow images reach
-/// lower). Our reading: the stack's own cell-size fields (`CellSizeDefinition`, empty here) are
-/// not decoded; for Easydrive this gives 26 px rows, against the 26.42 px per item the `EasyDrivePanel` layout
-/// moves by (`Widget.EasyDrive.ItemsAbovePanel(MULT:26.42)`).
-/// Width of a cell of a stack running across: the rightmost element edge (reference pixels).
+/// Width of a cell of a stack running across: the rightmost edge of the elements that size the cell.
 fn cell_width(layout: &Layout) -> f32 {
-    layout.elements.iter().map(|e| e.top_left()[0] + e.size[0]).fold(0.0, f32::max)
+    sizing(layout).map(|e| e.top_left()[0] + e.size[0]).fold(0.0, f32::max)
 }
 
+/// The elements that size a stack cell (`Element::sizes_cell`), or every element when none is flagged.
+fn sizing(layout: &Layout) -> impl Iterator<Item = &Element> {
+    let any = layout.elements.iter().any(|e| e.sizes_cell);
+    layout.elements.iter().filter(move |e| e.sizes_cell || !any)
+}
+
+/// Height of a stack cell (reference pixels): the lowest bottom of the elements that size it, from the cell's
+/// top. A nested stack counts its own `Height`, or its default cell's when that is 0 (the selected Easydrive row
+/// is a 25 px stack whose glow images reach lower). The pause menu's rows come out 40 px (52 px selected) as in
+/// the original (`ref/frontend-2026-10-10/o4.png`); Easydrive's are 26 px against the 26.42 px per item the
+/// `EasyDrivePanel` moves by (`Widget.EasyDrive.ItemsAbovePanel(MULT:26.42)`): `CellSizeDefinition` and
+/// `Padding` (empty / 0 there) are not decoded.
 fn cell_height(scene: &UiScene, layout: &Layout, depth: u32, lookup: &mut Lookup) -> f32 {
     let mut h: f32 = 0.0;
-    for e in &layout.elements {
+    for e in sizing(layout) {
         let own = match &e.stack {
             Some(st) if depth < 8 => {
                 let inner = st.default.first().and_then(|id| scene.cells.get(id));
@@ -856,7 +1035,9 @@ fn cell_height(scene: &UiScene, layout: &Layout, depth: u32, lookup: &mut Lookup
                 let n = if st.length.is_empty() {
                     1.0
                 } else {
-                    eval_num(&st.length, lookup).map_or(1.0, |v| v.clamp(0.0, 64.0).floor().max(1.0))
+                    // An empty list takes no room (Easydrive's root tier has no title: its first row sits right
+                    // under the prompt, `ref/ui-2026-10-19/easydrive_1680x720.png`).
+                    eval_num(&st.length, lookup).map_or(1.0, |v| v.clamp(0.0, 64.0).floor())
                 };
                 one * n
             }
@@ -1368,3 +1549,36 @@ impl MapMosaic {
 
 /// Which side of the forward direction is screen-right on the minimap (see [`MapMosaic::render`]).
 pub const MAP_RIGHT_SIGN: f32 = 1.0;
+
+#[cfg(test)]
+mod tests {
+    use super::UiFrame;
+
+    #[test]
+    fn hud_frame_follows_the_code() {
+        // 16:9: the frame fills the screen; `Left` is the code's half pixel.
+        let f = UiFrame::new([1920.0, 1080.0]);
+        assert_eq!((f.scale, f.origin), (1.5, [0.0, 0.0]));
+        assert!((f.left - 0.5).abs() < 1e-3 && (f.effective_width - 1280.0).abs() < 1e-2);
+        // 4:3: height-fitted, centred, left-side HUD in by 160 (`FUN_0078faa0`).
+        let f = UiFrame::new([1024.0, 768.0]);
+        assert!((f.scale - 768.0 / 720.0).abs() < 1e-6 && (f.left - 160.5).abs() < 1e-3 && f.right == -f.left);
+        assert!(f.to_screen([160.0, 0.0])[0].abs() < 1e-3);
+        // Three monitors: the HUD stays in the centre 16:9.
+        assert!((UiFrame::new([5760.0, 1080.0]).left - 0.5).abs() < 1e-3);
+        // Portrait: width-fitted, `Top` moves top layouts up.
+        let f = UiFrame::new([720.0, 1280.0]);
+        assert!((f.scale - 0.5625).abs() < 1e-6 && f.top < -700.0 && f.left == 0.0);
+    }
+
+    #[test]
+    fn menu_frame_letterboxes() {
+        let f = UiFrame::letterbox([1024.0, 768.0]);
+        assert!((f.scale - 0.8).abs() < 1e-6 && f.origin[0] == 0.0 && (f.origin[1] - 96.0).abs() < 1e-3);
+        assert_eq!(f.left, 0.0);
+        let bars = f.bars([1024.0, 768.0]);
+        assert_eq!(bars.len(), 2);
+        assert!((bars[0].rect[3] - 96.0).abs() < 1e-3 && bars[0].rect[2] == 1024.0);
+        assert!(UiFrame::letterbox([1280.0, 720.0]).bars([1280.0, 720.0]).is_empty());
+    }
+}

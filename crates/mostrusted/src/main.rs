@@ -85,6 +85,7 @@ mod traffic_reaction;
 mod tyre_marks;
 mod ui_quads;
 mod weather;
+mod window_test;
 mod world_coronas;
 mod world_lights;
 mod world_sfx;
@@ -1043,6 +1044,7 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(gps::GpsPlugin)
         .add_plugins(game_text::GameTextPlugin)
         .add_plugins(ui_quads::UiQuadsPlugin)
+        .add_plugins(window_test::WindowTestPlugin)
         .add_plugins((world_ui::WorldUiPlugin, gate_marker::GateMarkerPlugin))
         .add_plugins(hud::HudPlugin {
             enabled: !cli.no_hud && test.is_none() && !crash && !smash && !matches!(request, Request::Vehicle { .. }),

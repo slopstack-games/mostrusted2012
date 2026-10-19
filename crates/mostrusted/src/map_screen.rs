@@ -682,7 +682,8 @@ fn start_load(mut map: ResMut<MapScreen>, game: Res<crate::Game>) {
                 .ui_layout(mw_formats::ui::object_id(MAP_IMAGE_LAYOUT))
                 .ok()
                 .and_then(|l| l.elements.iter().find_map(|e| e.texture));
-            let scene = store.ui_scene(layouts, &lang);
+            let mut scene = store.ui_scene(layouts, &lang);
+            scene.letterbox = true;
             let mut images: Vec<(ResourceId, Image)> = scene
                 .textures()
                 .into_iter()
@@ -1256,9 +1257,9 @@ fn draw(
     let Some(mut look) = map.look.take() else { return };
     let mut quads: Vec<Quad> = Vec::new();
     if open {
-        // The reference frame centred on the window, scaled to fit (as `Placement` places layouts).
-        let k = (screen[0] / 1280.0).min(screen[1] / 720.0);
-        let origin = Vec2::new(screen[0] * 0.5 - 640.0 * k, screen[1] * 0.5 - 360.0 * k);
+        // The reference frame on the window as the game places its UI (`mw_assets::ui::UiFrame`).
+        let frame = mw_assets::ui::UiFrame::letterbox(screen);
+        let (k, origin) = (frame.scale, Vec2::from_array(frame.origin));
         let to_px = |p: Vec2| origin + p * k;
         let now = time.elapsed_secs_f64();
         let m = &*map;
@@ -1368,6 +1369,8 @@ fn draw(
         for id in [TITLE, TABS[0], TABS[1], FILTERS] {
             draw_at(&mut look, &mut quads, id, None, None, false, &none);
         }
+        // The black bars outside the letterboxed frame (`FUN_006240b0`).
+        quads.extend(frame.bars(screen));
     } else {
         look.anim.reset();
     }

@@ -307,7 +307,9 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>, front: Res<Fron
                     instance: inst,
                 });
             }
-            let scene = store.ui_scene(layouts, &lang);
+            let mut scene = store.ui_scene(layouts, &lang);
+            // Title, transition and loading screens are letterboxed like the original (`UiFrame::letterbox`).
+            scene.letterbox = true;
             let mut images: Vec<(ResourceId, Image)> = scene
                 .textures()
                 .into_iter()
@@ -772,7 +774,9 @@ fn draw(
             base.push(full([1.0; 4], None));
             if let Some(m) = movie.as_ref().filter(|m| m.ready) {
                 textures.insert(MOVIE_KEY, (m.image.clone(), Vec2::new(640.0, 360.0)));
-                base.push(full([1.0; 4], Some(MOVIE_KEY)));
+                // The 16:9 movie fills the letterboxed frame (capture `ref/ui-2026-10-19/title_1024x768.png`).
+                let rect = mw_assets::ui::UiFrame::letterbox(screen).rect();
+                base.push(Quad { rect, ..full([1.0; 4], Some(MOVIE_KEY)) });
             }
             if let Some(seq) = title.as_ref() {
                 add_items(seq, front.clock, &mut active, &mut base);
@@ -810,6 +814,10 @@ fn draw(
             lookup(p, a, &front, strings, pictures, pad)
         };
         quads.extend(scene.draw_with(screen, &mut lk, &mut options));
+    }
+    // The black bars outside the letterboxed frame (`FUN_006240b0`).
+    if !quads.is_empty() {
+        quads.extend(mw_assets::ui::UiFrame::letterbox(screen).bars(screen));
     }
     if std::env::var_os("MW_FE_QUADS").is_some() && DUMP.swap(false, std::sync::atomic::Ordering::Relaxed) {
         info!("front end {:?} clock {:.2}: screen {screen:?}", front.phase, front.clock);

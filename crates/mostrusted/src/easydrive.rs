@@ -516,8 +516,11 @@ fn redraw(
     mut materials: ResMut<Assets<AdditiveQuadMaterial>>,
     game: Res<Game>,
     player: Query<&GlobalTransform, (With<crate::drive::Car>, With<crate::drive::Player>)>,
+    mut resized: MessageReader<bevy::window::WindowResized>,
 ) {
-    if !menu.dirty && !garage.is_changed() && !mod_sel.is_changed() {
+    // A resized window places the layout anew (the UI follows the window's current size).
+    let resized = resized.read().count() > 0;
+    if !menu.dirty && !garage.is_changed() && !mod_sel.is_changed() && !resized {
         return;
     }
     let Ok(window) = windows.single() else { return };

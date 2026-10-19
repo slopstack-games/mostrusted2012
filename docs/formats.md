@@ -1114,6 +1114,12 @@ An element stack repeats `UILayout`s (resource IDs in `Cell.Content`) over a dat
 | `Width`, `Height` | the stack's box; nested row stacks have Height 25 (selected row) or 0 (from their content) |
 | `ae583a9a` (+236, 2-byte enum) | direction (2026-10-10): 1 = cells go down (every list on the pause, HUD, Easydrive and map screens), 0 = across (the map screen's navigation tabs over `Widget.Tabs.TabList`; also the single-cell header stack); our reading of the values |
 
+A cell is as tall as the elements whose UIElementBase bool `bb6cac74` (+172) is set (the pause row: an invisible
+21×40 shape, 21×52 selected; its 44 px image is unflagged), checked against the original (research log 2026-10-19
+"UI frame"). Labels: glyphs scale by `Font_Size` / em (em = atlas width / the font header's ratio at 0x08, not the
+point size at 0x148), `Character_Spacing` (TextStyle +76) goes between characters, and text sits in its box by the
+element's anchor row (top / middle / bottom).
+
 Not decoded: `CellSizeDefinition` (empty in Easydrive), `Padding`, `Shift`, `ScrollSpeed`, the unnamed counts
 (`280402f1` = 3 on the menu stack, 6 on the tabs). Inside a cell, bindings without a dot (`Name`, `Locked`, `DLCIconID`,
 `PositionNotNull`, `Shutdown`, `New`) are fields of the entry.

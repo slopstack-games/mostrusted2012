@@ -9,6 +9,10 @@ optimised in dev too, but world loading is slow without `--release`.
 
 ```sh
 tools/hl <command...>                       # run in a headless 1280x720 gamescope (no desktop window); MW_SHOW=1 runs it directly
+#   other sizes: MW_HL_SIZE=WxH (the gamescope display) with MW_WINDOW=WxH (mostrusted sizes its window at startup) and
+#   MW_RESIZE_AT=<frame>,WxH (a runtime resize; window_test.rs), e.g. MW_HL_SIZE=1920x1080 MW_WINDOW=1280x720
+#   MW_RESIZE_AT=120,1920x1080 tools/t --drive 911 --units 6 --show-easydrive --screenshot <scratch>/r.png --screenshot-delay 200
+#   MW_UI_TEXT_LOG=1: every UI label laid out (text, font, size, spacing, box, glyph quads) on stderr
 #   silent too: MW_MUTE=1 (= --mute, also silences Bevy's GlobalVolume) and PULSE_SINK / PIPEWIRE_NODE = tools/silent-sink
 #   (a null sink, created once; default output untouched); MW_SOUND=1 keeps the sound. tools/orig launches are silent the
 #   same way (orig-wrap), MW_SOUND=1 at `orig launch` keeps it.

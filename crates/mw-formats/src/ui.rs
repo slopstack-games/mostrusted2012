@@ -105,6 +105,8 @@ pub mod field {
     pub const FONT_ASSET_ALT: u32 = 0xc455_a691;
     pub const FONT_SIZE: u32 = field_hash("Font_Size");
     pub const FONT_SIZE_2: u32 = 0x9662_94f5;
+    /// `837b4199` (TextStyle +76): −1 on the pause title, −5 on the speed, 0 on menu rows; matches the
+    /// original's letter positions to a pixel (research log 2026-10-19 "UI frame").
     pub const CHARACTER_SPACING: u32 = field_hash("Character_Spacing");
     pub const LINE_SPACING: u32 = field_hash("Line_Spacing");
     pub const EFFECT_DISTANCE: u32 = field_hash("EffectDistance");
@@ -355,6 +357,12 @@ pub struct Element {
     /// Backed labels: left, top, right, bottom.
     pub margins: [f32; 4],
     pub min_size: [f32; 2],
+    /// `bb6cac74` (UIElementBase +172, bool): the element counts towards the size of an element-stack cell.
+    /// Unflagged elements (the pause menu row's 44 px image, Easydrive's selected-row glows) overhang the cell;
+    /// the pause rows' invisible 21×40 / 21×52 shapes carry the flag and give the original's 40 / 52 px pitch
+    /// (research log 2026-10-19 "UI frame"). Our reading from the data and a capture; the field's name is
+    /// unknown.
+    pub sizes_cell: bool,
     pub sub_image: Option<Box<Element>>,
     /// `UIElement_ElementStack`: a list of layouts repeated over a data source.
     pub stack: Option<Box<Stack>>,
@@ -444,6 +452,7 @@ impl Element {
             pop_mask: boolean(o, field::POP_MASK),
             margins,
             min_size: [float(o, field::MIN_WIDTH), float(o, field::MIN_HEIGHT)],
+            sizes_cell: boolean(o, 0xbb6c_ac74),
             // Backed labels' backing image, or the minimap's mask image.
             stack: (kind == ElementKind::ElementStack).then(|| Box::new(Stack::from_object(o))),
             sub_image: object(o, field::SUB_IMAGE)

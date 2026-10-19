@@ -10,6 +10,61 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-19: UI frame: HUD aspect correction and menu letterbox (code + captures), stack cells, text metrics
+User play test: "UI scaling and positioning is still wrong"; the UI did not follow runtime window resizes; loading
+pictures did not fill portrait windows. Sources: the dump (decomp.md "UI frame and `HudAspectCorrection`"), the
+layout data (`mwtool genesys`), snapshots snap1 / snap2, the original's 1280×720 captures
+`ref/frontend-2026-10-10/o4.png` (pause), `o7.png` (map options), `ref/shots/fence-13/original.png` (HUD), and new
+captures of the original at native 1024×768 and 1680×720 (`ref/ui-2026-10-19/`, below).
+- **Two placements, both from the code and confirmed by the captures** (`mw_assets::ui::UiFrame`):
+  - *HUD screens* (driving HUD, Easydrive): `FUN_0078faa0` / `FUN_00794700` compute
+    `UIConfig.HudAspectCorrection` from the back buffer's aspect; the frame keeps its height (aspect ≥ 1; width in
+    portrait) and layouts reach the edges only through their instance's bound translates (`...Left(AXES:X)`
+    etc., 707 in the install) and element bindings (the ticker: `Left(ADD:223)`,
+    `EffectiveScreenWidth(MINUS:457,DIV:1280)`). Above 8/3 the HUD stays in the centre 16:9. Captures
+    `hud_1024x768.png`, `hud_1680x720.png`, `easydrive_*.png`: the minimap, speedometer and Easydrive sit at the
+    screen's edges, sized by the height (×1.067 at 1024×768).
+  - *Menu screens* (title, boot transition, pause, settings, map; the event card assumed the same): the UI
+    manager's byte +0x2ecf4 set turns the corrections off (`FUN_00794700`) and `FUN_006240b0` draws black bars
+    outside the frame: the whole 1280×720 frame fitted inside the screen. Captures `title_1024x768.png`,
+    `transition_1024x768.png`, `pause_1024x768.png`, `settings_1024x768.png`, `map_1024x768.png` (bars above and
+    below, frame scale 0.8: pause rows 32 px apart) and `pause_1680x720.png`, `map_1680x720.png` (bars beside).
+    snap1 has the byte set (taken in a menu?), snap2 clear. Ours: `UiScene::letterbox` on the pause, map, front-end
+    and event-card scenes, bars drawn last ([`UiFrame::bars`]).
+  - Margins (UI manager +0x2ece0..+0x2ecec): 0 in both snapshots; the options' Display > MARGIN SCALE reads 100 %
+    (default). Modelled as 0.
+- **Portrait windows** (user request: loading pictures must fill them): the original letterboxes its menu and
+  front-end screens on any screen narrower than 16:9 (captured at 4:3: the title movie and the transition
+  pictures sit in a 1024×576 band between black bars), so a portrait window gets the same bars above and below.
+  We follow the original; the request contradicts it (to discuss with the user). HUD screens' full-screen
+  shapes / streamed pictures (fades, flashes) cover the window above 16:9 (`UiFrame::cover`, model decision).
+- **Stack cell size**: an element-stack cell is as tall as its elements with the UIElementBase bool `bb6cac74`
+  (+172) set, not as all of them: the pause row's 44 px image is unflagged, its invisible 21×40 shape flagged
+  (selected row 21×52). Pause rows now 40 / 52 px as in o4 (were 42 / 57: rows 2–7 were 5–15 px low).
+- **Text scale** = size / em (em = atlas width / header ratio at 0x08), not size / point size (header 0x148): the
+  pause title, the menu rows, the map title and KM/H were 7.5 % narrow (fonts 1022113 / 1206238 / 1206239: point 28,
+  em 26.05); now within 1 px of o4 / o7 / fence-13. `Character_Spacing` (hash 837b4199: −1 title, −5 speed) is
+  applied between characters only (the right-justified speed was 8 px right; now ≤ 2 px). `b12cc0a0` (2 on most
+  styles), `46a2f495` (0.8 on the speed), `00b3eaec` (9) are not spacing; unknown.
+- **Vertical text alignment** follows the element's anchor row (top / middle / bottom), our reading of four labels:
+  PAUSE (anchor 0) was 3 px low, KM/H (0) 4 px low, the speed (2) 1 px low, the menu rows (3) right; all now ≤ 1 px.
+- At 1280×720 now (o4 / o7 / fence-13): pause rows 0 px (were up to 15), PAUSE ≤ 1 (3 low, 7 narrow), MAP title ≤ 1
+  (2 high, 5 narrow), nav bar / PGUP / ESC box 0 (unchanged), DRIVE prompt 5 px right (was 14), speed digit ≤ 2
+  (8 right), KM/H 2 narrow (4 narrow, 4 low). Not placement but content, still open: the Easydrive closed prompt
+  (1805584) is not drawn, the minimap is opaque black (the original's is translucent), the odometer formatter,
+  the nitrous bar shows for the F-150 (none in the original), key-box glyphs (the Enter icon on the pause row), the
+  map's MWL list / header / tab icons, the SP counter at the top centre of the HUD.
+- **Runtime resize**: Easydrive redrew only when its menu changed; it now also redraws on `WindowResized` (the other
+  UI modules draw every frame from the window's current size). Checked with `MW_WINDOW=1280x720
+  MW_RESIZE_AT=120,1920x1080` (new switches, `window_test.rs`; `tools/hl` takes `MW_HL_SIZE`).
+- **Running the original at other sizes**: `orig launch --size WxH` alone stretches the game's 1280×720 back
+  buffer (`pause_1280x720_stretched_to_1024x768.png`); set Settings > Graphics > SCREEN RESOLUTION to the size
+  (Right to the last entry, Return, Return to keep). The save was backed up to `ref/savebackup-2026-10-19-ui/` and
+  restored byte-identical (md5 in `ref/savebackup-2026-10-19-ui.md5`).
+- **Open**: which other screens set +0x2ecf4 (results, cutscene overlays, the event card: a capture at 4:3);
+  Easydrive's row pitch (26 vs the panel's 26.42); the projection that draws the frame (a UI camera,
+  `FUN_0061f800`) is inferred from the corrections and the captures, not traced.
+
 ### 2026-10-19: kerb captures: the placement at speed, the strut joint, the strut stop only when crashed, yaw from the bumps
 Against the clean probe captures (main checkout `ref/`: `kerb100a` / `b` 911 at 100 km/h, `kerbrest911a` / `b` 911
 from rest, `kerb100raptor` / `raptorc`, plus `kerb_drop2`, `kerb_angle1`), replayed with `--replay <csv>

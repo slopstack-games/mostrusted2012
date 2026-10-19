@@ -144,7 +144,9 @@ fn start_load(mut menu: ResMut<PauseMenu>, game: Res<crate::Game>) {
             .filter(|l| l.layout.id == MENU_LAYOUT)
             .take(1)
             .collect();
-        let scene = store.ui_scene(layouts, &lang);
+        let mut scene = store.ui_scene(layouts, &lang);
+        // A menu screen: letterboxed like the original (`UiFrame::letterbox`).
+        scene.letterbox = true;
         let images =
             scene.textures().into_iter().filter_map(|id| Some((id, game_text::decode_texture(&store, id)?))).collect();
         let fonts = scene.fonts.iter().map(|(&n, f)| (n, f.clone())).collect();
@@ -383,6 +385,10 @@ fn draw(
             misses.dedup();
             info!("pause menu: unknown bindings {misses:?}");
         }
+        let mut q = q;
+        // The black bars outside the letterboxed frame (`FUN_006240b0`).
+        let screen = [window.width(), window.height()];
+        q.extend(mw_assets::ui::UiFrame::letterbox(screen).bars(screen));
         q
     } else {
         look.anim.reset();

@@ -53,9 +53,12 @@ pub struct Font {
     pub texture: Option<ResourceId>,
     /// Atlas size in pixels, from the em ratios and the em (the texture header has the same).
     pub atlas_size: [f32; 2],
-    /// Point size the atlas was generated at: text of size `s` scales glyphs by `s / point_size`.
+    /// The size in the header at 0x148 (the em when 0). Not the glyph scale: see `em`.
     pub point_size: f32,
-    /// Atlas width / the ratio at 0x08: within ±12 % of the point size (line height?).
+    /// Atlas width / the ratio at 0x08 (within ±12 % of the point size): text of size `s` scales glyphs by
+    /// `s / em`. Captures of the original: the pause title (font 1022113, size 28: point size 28, em 26.05) and
+    /// the menu rows (1206239, size 14) are 7.5 % wider than at `s / point_size`, matching `s / em` to a pixel
+    /// (research log 2026-10-19 "UI frame").
     pub em: f32,
     pub metrics: [f32; 2],
     pub glyphs: HashMap<char, Glyph>,
@@ -137,7 +140,7 @@ impl Font {
         const RIGHT: char = '\u{e049}';
         const PROMPTS: char = '\u{e000}';
         const PROMPTS_END: char = '\u{e0ff}';
-        let scale = size / self.point_size;
+        let scale = size / self.em;
         let mut pen = 0.0;
         let mut quads: Vec<GlyphQuad> = Vec::new();
         // An open key box: where its fill goes in `quads` and the pen there.
@@ -186,7 +189,10 @@ impl Font {
             }
             pen += g.advance * scale + spacing;
         }
-        (quads, pen)
+        // The spacing goes between characters: none after the last (the right-justified speed, whose style has
+        // spacing −5, then sits where the original puts it; research log 2026-10-19 "UI frame").
+        let width = if text.is_empty() { pen } else { pen - spacing };
+        (quads, width)
     }
 }
 
@@ -214,8 +220,8 @@ mod tests {
             style: String::new(),
             texture: None,
             atlas_size: [256.0, 256.0],
-            point_size: 20.0,
-            em: 19.0,
+            point_size: 19.0,
+            em: 20.0,
             metrics: [0.8, 0.7],
             glyphs,
         };

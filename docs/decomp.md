@@ -2954,6 +2954,42 @@ pixels. Model decisions: the line's look (light blue, the road's drivable width,
 3 px on the map, only from the car's progress on); a failed search clears the destination; an event start
 clears the route when a race starts (`RaceState` appears); the 5 m arrival test runs whenever a destination is set.
 
+### UI frame and `HudAspectCorrection` (2026-10-19, `mw_assets::ui::UiFrame`)
+
+Layouts are authored in a 1280×720 frame. `UIConfigManager` (reflection registered by `FUN_007a03c0`, 0x41c
+bytes, the UI manager's config object; `UIConfig` in bindings) holds `HudAspectCorrection` at +0x1dc (0x2c bytes,
+registered by `FUN_0078f970`): public `Left` +0, `Right` +4, `Top` +8, `Bottom` +0xc, `ScreenWidthMultiplier`
++0x10, `EffectiveScreenWidth` +0x14 ("effective width of the screen in pixels, assuming the width of a 16:9
+screen with no margin scaling is 1280"), and private copies at +0x18..+0x28 (left, right, top, bottom,
+multiplier). Initial values: 0, multiplier 1.0 (`0x00f8a820`), width 1280.0 (`0x00fb331c`).
+
+- `FUN_0078faa0` (ECX = the struct; run by `FUN_0079a6f0` at UI start and by `FUN_0079a810` whenever the back
+  buffer's width / height, `FUN_0046efe0()` +0x138 / +0x13c, differ from the stored +0x1d4 / +0x1d8): a = w / h.
+  For 1 ≤ a ≤ 8/3 (`0x00fe0eec`): private left = (1280 − 720·a)·0.5 + 0.5, right = −left, multiplier =
+  a·0.5625 (`0x00fe0ee8`). For a > 8/3 the same with a = 16/9 (`0x00fddf74`: the HUD stays in the centre 16:9
+  of three monitors). For a < 1 (portrait): top = (720 − (1280 / w)·h)·0.5 + 0.5, bottom = −top, multiplier
+  a·0.5625; the other axis keeps its previous private values (stale, 0 from the start).
+- `FUN_00794700` (per frame from `FUN_0079a810`, stack argument = the game object): public = 0, multiplier 1,
+  width 1280; unless the UI manager's byte +0x2ecf4 is set (read by `FUN_007902f0`), public left..bottom =
+  private, multiplier = private, width = 1280 × multiplier. Then the four floats at UI manager +0x2ece0..+0x2ecec
+  (m0..m3; the options' screen-scale margins, widget `ScreenScale` of screen 469958, assumed) are added when any
+  is non-zero: left += m0, right += m2, top += m1, bottom += m3, and multiplier / width scale by
+  (m2 + width − m0) / width.
+- The data uses it as translate components of `UILayoutInstanceParams` (`UIConfig.HudAspectCorrection.Left(AXES:X)`
+  117×, `Right(AXES:X)` 209×, `Top(AXES:Y)` 149×, `Bottom(AXES:Y)` 232×, next to the constant translate that
+  puts the layout's anchor at its corner of the frame) and in element bindings (the ticker strip: x =
+  `Left(ADD:223)` / `Right(ADD:1077)`, width scale `EffectiveScreenWidth(MINUS:457,DIV:1280)`).
+- So on HUD screens the frame keeps its height (aspect ≥ 1: 720 reference pixels = the screen's height; at 4:3
+  the visible frame is x 160..1120 and left-side HUD layouts move in by 160) and its width on portrait screens.
+- Menu screens set the UI manager's byte +0x2ecf4: the corrections stay 0 and `FUN_006240b0` draws black quads
+  outside the 1280×720 frame (its extents from the view scales `FUN_0061f800` sets from a camera's FOVs): the
+  frame fits inside the screen with bars. snap1 has the byte set, snap2 clear; margins 0 in both.
+- Captures of the original at native 1024×768 and 1680×720 (`ref/ui-2026-10-19/`, research log 2026-10-19)
+  confirm both: HUD and Easydrive at the screen edges, height-scaled; title, transition, pause, settings and map
+  letterboxed / pillarboxed. Ported as `UiFrame::new` (HUD) and `UiFrame::letterbox` + `UiFrame::bars` (menus,
+  `UiScene::letterbox`). Model decisions: which of our screens are menus beyond the captured ones (the event
+  card: menu); HUD screens' full-screen shapes / streamed pictures cover the window ([`UiFrame::cover`]).
+
 ### Race HUD, countdown and results (2026-10-09, `hud.rs`, `ui_quads.rs`)
 
 What is data (research log 2026-10-09): the screens and layouts, the countdown / results `Sequence`s and their
