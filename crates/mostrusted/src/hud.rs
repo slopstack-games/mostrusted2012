@@ -207,6 +207,9 @@ pub struct HudState {
     /// `Mode.PromptString` (game-mode manager +0x2c70 with its flag +0x2ca7): the prompt bar's text, set each
     /// frame by whoever prompts (`jackspots.rs`); `None` hides the bar.
     pub prompt: Option<String>,
+    /// The same prompt slot for an event's start (`event_starts.rs`: `GameLogicConfig.PromptEvent`), set each
+    /// frame while the car is in a start's radius; the jack spots' prompt wins when both are set.
+    pub event_prompt: Option<String>,
     /// The road the player's car was last found on (`RoadManager` slot [2], index into the road data):
     /// `CurrentRoad.Name` keeps showing it off the network (`FUN_00668650`).
     pub last_road: Option<usize>,
@@ -252,6 +255,10 @@ enum MapIcon {
     BodyShop,
     /// `CollectablesConfig` +0x48: a jack spot location (icon shown once found).
     JackSpot,
+    /// An event's start (`event_starts::POI_EVENT`, the green diamond).
+    EventStart,
+    /// A Most Wanted race's start (`event_starts::POI_MOST_WANTED`, the red diamond).
+    MostWantedStart,
 }
 
 impl MapIcon {
@@ -409,8 +416,10 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>, settings: Res<H
         }
         // Minimap icons: the map layout of each point-of-interest look the race code names. Their instance only
         // translates to the `Pos` binding (the point on the map), which `draw_hud` does.
+        let free_roam_pois = store.ui_poi_visuals(FREE_ROAM_HUD).unwrap_or_default();
         match (store.poi_keys(), store.ui_poi_visuals(RACE_HUD)) {
-            (Ok(keys), Ok(pois)) => {
+            (Ok(keys), Ok(race_pois)) => {
+                let pois: Vec<_> = free_roam_pois.into_iter().chain(race_pois).collect();
                 let wanted = [
                     (MapIcon::Player, keys.player),
                     (MapIcon::Gate, keys.gate),
@@ -420,6 +429,8 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>, settings: Res<H
                     (MapIcon::Opponent, keys.opponent),
                     (MapIcon::BodyShop, keys.body_shop),
                     (MapIcon::JackSpot, keys.jack_spot),
+                    (MapIcon::EventStart, crate::event_starts::POI_EVENT),
+                    (MapIcon::MostWantedStart, crate::event_starts::POI_MOST_WANTED),
                 ];
                 for (icon, key) in wanted {
                     match pois.iter().find(|p| p.key == key).and_then(|p| p.map.clone()) {
@@ -784,7 +795,7 @@ fn map_icons(
     centre: Vec3,
     facing: Vec3,
     metres_per_px: f32,
-    icons: &[(MapIcon, Vec3, Vec3)],
+    icons: &[(MapIcon, Vec3, Vec3, bool)],
     base: &mut dyn FnMut(&str, Option<&str>) -> Option<BindValue>,
 ) -> Vec<Quad> {
     let up = Vec2::new(facing.x, facing.z).normalize_or(Vec2::Y);
@@ -794,7 +805,7 @@ fn map_icons(
     // Where a layout's origin lands when drawn without an instance (`Placement`: the reference frame centred).
     let origin = Vec2::from_array(mw_assets::ui::UiFrame::new(screen).origin);
     let mut out = Vec::new();
-    for &(icon, pos, dir) in icons {
+    for &(icon, pos, dir, chasing) in icons {
         let d = Vec2::new(pos.x - centre.x, pos.z - centre.z);
         let at = map_centre + Vec2::new(d.dot(right), -d.dot(up)) / metres_per_px;
         if at.x < map.rect[0]
@@ -810,8 +821,14 @@ fn map_icons(
             match path {
                 "Rot" => Some((rot as f64).into()),
                 "Net.IsInOnlineGame" => Some(false.into()),
-                // `Players.PlayerBase[#].IsCop` / `.InChase`: the look's cop elements for cops.
-                "Players.PlayerBase" => Some((icon == MapIcon::Cop).into()),
+                // `Players.PlayerBase[#].IsCop` / `.InChase` (getter 0x006dacc0: for an AI cop `FUN_006bbb70`,
+                // its chasing states): the look's blue arrow for cops, the blinking red one over it while chasing.
+                "Players.PlayerBase" => {
+                    match arg.and_then(|a| a.split_once(']')).map(|(_, f)| f.trim_start_matches('.')) {
+                        Some("InChase") => Some((icon == MapIcon::Cop && chasing).into()),
+                        _ => Some((icon == MapIcon::Cop).into()),
+                    }
+                }
                 // Only found jack spots are listed (`icons`).
                 "JackSpots.IsSwapSpotFound" => Some((icon == MapIcon::JackSpot).into()),
                 _ => base(path, arg),
@@ -895,7 +912,7 @@ fn lookup(
         "CollectablesVM.CameraSpeedwall.ShowMiniWall" | "Camera.IsInternalDrivingCam" => false.into(),
         "CollectablesVM.Collectables.speedwall.Items._length" => 0.0.into(),
         // An empty text is false: the bar's elements are visible on this binding.
-        "Mode.PromptString" => state.prompt.clone().unwrap_or_default().into(),
+        "Mode.PromptString" => state.prompt.clone().or_else(|| state.event_prompt.clone()).unwrap_or_default().into(),
         "Players.LocalPlayer.IsInChase" => pursuit.in_chase.into(),
         "Players.LocalPlayer.IsInCooldown" => pursuit.in_cooldown.into(),
         "Players.LocalPlayer.IsInChaseOrCooldown" => (pursuit.in_chase || pursuit.in_cooldown).into(),
@@ -923,11 +940,12 @@ fn draw_hud(
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<AdditiveQuadMaterial>>,
     mut root_vis: Query<&mut Visibility, Without<QuadNode>>,
-    (pause, pursuit, collected, gps): (
+    (pause, pursuit, collected, gps, event_starts): (
         Option<Res<crate::pause::PauseMenu>>,
         Res<crate::police::PursuitHud>,
         Option<Res<crate::frontend::Collected>>,
         Res<crate::gps::Gps>,
+        Option<Res<crate::event_starts::EventStarts>>,
     ),
     (easydrive, mods, catalogue, roads): (
         Option<Res<crate::easydrive::EasyDrive>>,
@@ -1146,18 +1164,35 @@ fn draw_hud(
         map_image = Some(map.image.clone());
 
         // Icons over the map: the player, the race's target and next gates, the other racers.
-        let mut icons = vec![(MapIcon::Player, p, f)];
+        let mut icons = Vec::new();
+        // Event starts (`event_starts.rs`): their looks' map icons, under the moving icons.
+        if let Some(starts) = event_starts.as_ref() {
+            for (key, pos) in starts.icons() {
+                let icon =
+                    if key == crate::event_starts::POI_EVENT { MapIcon::EventStart } else { MapIcon::MostWantedStart };
+                icons.push((icon, pos, Vec3::Z, false));
+            }
+        }
+        icons.push((MapIcon::Player, p, f, false));
         if let Some(v) = view.as_ref().filter(|v| matches!(v.race.phase, RacePhase::Intro | RacePhase::Racing)) {
-            icons.extend(gate_icons(v.race, v.player.map_or(1, |p| p.target())));
+            icons.extend(
+                gate_icons(v.race, v.player.map_or(1, |p| p.target())).into_iter().map(|(i, p, f)| (i, p, f, false)),
+            );
         }
         icons.extend(
             racer_xf
                 .iter()
                 .filter(|(r, _)| !r.player)
-                .map(|(_, x)| (MapIcon::Opponent, x.translation(), car_facing(x))),
+                .map(|(_, x)| (MapIcon::Opponent, x.translation(), car_facing(x), false)),
         );
-        // Cops: the same look (`MapPoiConfig.5bfb3553`), whose cop elements show on `IsCop`.
-        icons.extend(pursuit.cops.iter().map(|&(p, f)| (MapIcon::Cop, p, f)));
+        // Cops: the same look (`MapPoiConfig.5bfb3553`), whose cop elements show on `IsCop` / `InChase`.
+        icons.extend(
+            pursuit
+                .cops
+                .iter()
+                .enumerate()
+                .map(|(k, &(p, f))| (MapIcon::Cop, p, f, pursuit.cops_in_chase.get(k).copied().unwrap_or(false))),
+        );
         // Body shops and jack spots near the car (`FUN_006ffd90`): a point of interest within 400 m, removed
         // beyond 450 m. A jack spot's icon is visible once found (`JackSpots.IsSwapSpotFound[#]`). Model
         // decisions: every jack spot counts as one whose car is not yet in the profile's list (`FUN_006ed400`,
@@ -1176,7 +1211,7 @@ fn draw_hud(
                 .iter()
                 .map(|&i| points[i])
                 .filter(|pt| pt.icon != MapIcon::JackSpot || found(pt.id))
-                .map(|pt| (pt.icon, pt.pos, Vec3::Z)),
+                .map(|pt| (pt.icon, pt.pos, Vec3::Z, false)),
         );
         let icon_quads = map_icons(scene, groups, anim, t, screen, &q, p, f, metres_per_px, &icons, &mut base);
         quads.splice(qi + 1..qi + 1, icon_quads);

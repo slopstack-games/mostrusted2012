@@ -82,6 +82,16 @@ enum UiCmd {
         #[arg(long, default_value = mw_assets::DEFAULT_LANGUAGE)]
         lang: String,
     },
+    /// A screen's point-of-interest looks (`Widget_PointOfInterest`): key, map icon layout and world layouts with
+    /// their elements (`--key` keeps the looks with these keys).
+    Pois {
+        /// Screen bundle, e.g. `UI/SCREENS2/604153.BNDL` (the race HUD, whose looks the minimap draws).
+        screen: String,
+        #[arg(long, value_delimiter = ',')]
+        key: Vec<u32>,
+        #[arg(long, default_value = mw_assets::DEFAULT_LANGUAGE)]
+        lang: String,
+    },
     /// The Easydrive menu model of a driving screen: item types, tiers, sources and items.
     Easydrive {
         #[arg(default_value = mw_assets::easydrive::EASYDRIVE_SCREEN)]
@@ -950,6 +960,7 @@ fn main() -> Result<()> {
             match cmd {
                 UiCmd::Screens => ui::screens(&store)?,
                 UiCmd::MapItems { lang } => ui::map_items(&store, &store.language(&lang)?)?,
+                UiCmd::Pois { screen, key, lang } => ui::pois(&store, &screen, &key, &store.language(&lang)?)?,
                 UiCmd::Easydrive { screen, lang } => ui::easydrive(&store, &screen, &store.language(&lang)?)?,
                 UiCmd::Show { screen, widget, lang } => {
                     let lang = store.language(&lang)?;
