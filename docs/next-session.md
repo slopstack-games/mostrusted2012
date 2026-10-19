@@ -124,6 +124,11 @@ Added by the user (2026-10-16); the ones marked (2026-10-16: ...) were worked on
   - racers do not react to hits the way they do in the original (AI collision response / takedown rules);
   - racers stay in the world forever after a race ends (their despawn after the outro);
   - cops are red on the minimap instead of blue, do not blink, and the escape circle (search area) is not drawn.
+- **Exhaust flames** (added 2026-10-19): backfire and nitrous flames still look "framey" (stepping / flipbook frames
+  visible) and not attached to the exhaust as in the original: they should move with the tailpipe every frame, not
+  lag or float behind it (`exhaust.rs`, `particles.rs`: the emitter's space (local vs world), spawn interpolation
+  within the frame, the flipbook frame rate / blend from the effect data; compare a capture of the original at speed
+  under nitrous and on a lift-off backfire).
 - **Menu functionality missing** (added 2026-10-19): many parts of the menus' functionality are still missing, in
   Easydrive too (survey every menu / Easydrive entry of the original against ours, from the HSM / layout data and the
   code, and list what is missing before implementing).
