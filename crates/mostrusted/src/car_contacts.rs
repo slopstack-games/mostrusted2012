@@ -426,87 +426,75 @@ fn solve_race_contacts(
             now_touching.insert(key);
             // A new impact: the pair's handler decides the damage and the crash verdicts before the solve.
             let mut verdicts = (None, None);
-            if !touching.contains(&key) && !cooldown.contains_key(&key) {
-                if let Some(data) = data {
-                    cooldown.insert(key, now);
-                    let point =
-                        points.iter().max_by(|x, y| x.depth.total_cmp(&y.depth)).map_or(ea.position, |p| p.point);
-                    let normal = points[0].normal;
-                    let party = |e: &Entry| {
-                        let car = cars.get(e.entity).map(|c| c.1).ok()?;
-                        Some(Party::race_car(
-                            data,
-                            e.entity,
-                            car,
-                            e.position,
-                            e.rotation,
-                            e.body.v,
-                            e.is_player,
-                            e.crashed,
-                        ))
+            if !touching.contains(&key)
+                && !cooldown.contains_key(&key)
+                && let Some(data) = data
+            {
+                cooldown.insert(key, now);
+                let point = points.iter().max_by(|x, y| x.depth.total_cmp(&y.depth)).map_or(ea.position, |p| p.point);
+                let normal = points[0].normal;
+                let party = |e: &Entry| {
+                    let car = cars.get(e.entity).map(|c| c.1).ok()?;
+                    Some(Party::race_car(data, e.entity, car, e.position, e.rotation, e.body.v, e.is_player, e.crashed))
+                };
+                if let (Some(pa), Some(pb)) = (party(ea), party(eb)) {
+                    let imp = crate::car_impacts::RawImpact {
+                        a: ea.entity,
+                        b: eb.entity,
+                        point,
+                        normal,
+                        va: ea.body.v,
+                        vb: eb.body.v,
                     };
-                    if let (Some(pa), Some(pb)) = (party(ea), party(eb)) {
-                        let imp = crate::car_impacts::RawImpact {
-                            a: ea.entity,
-                            b: eb.entity,
-                            point,
-                            normal,
-                            va: ea.body.v,
-                            vb: eb.body.v,
-                        };
-                        let (va, vb, dmg, (la, lb)) = decide(data, &pa, &pb, &imp, race.is_some());
-                        let closing_n = (ea.body.v - eb.body.v).dot(normal).max(0.0) / MPH;
-                        let crashing = |k: Kind, v: Verdict| match (k, v.crash) {
-                            (Kind::Player, true) => " → player CRASHES",
-                            (_, true) => " → AI CRASHES",
-                            _ => "",
-                        };
-                        info!(
-                            "race car impact: {:?} zone {la} vs {:?} zone {lb}, closing {closing_n:.1} mph, speeds {:.0} / {:.0} mph, damage {:.1} / {:.1} (base {:.1} / {:.1}){}{}",
-                            ea.category,
-                            eb.category,
-                            ea.body.v.length() / MPH,
-                            eb.body.v.length() / MPH,
-                            va.damage,
-                            vb.damage,
-                            dmg.base_a,
-                            dmg.base_b,
-                            crashing(pa.kind, va),
-                            crashing(pb.kind, vb),
-                        );
-                        for (p, v, other) in [(&pa, va, eb.entity), (&pb, vb, ea.entity)] {
-                            if v.crash {
-                                let pre = p.velocity.length() / MPH;
-                                apply_outcome(
-                                    &mut commands,
-                                    &mut crash,
-                                    None,
-                                    p.entity,
-                                    p.kind,
-                                    v,
-                                    closing_n,
-                                    pre,
-                                    Some(other),
-                                );
-                                if p.kind == Kind::Ai
-                                    && other
-                                        == entries
-                                            .iter()
-                                            .find(|e| e.is_player)
-                                            .map_or(Entity::PLACEHOLDER, |e| e.entity)
-                                {
-                                    info!("takedown: the player took down AI car {} ({})", p.entity, v.rule);
-                                }
+                    let (va, vb, dmg, (la, lb)) = decide(data, &pa, &pb, &imp, race.is_some());
+                    let closing_n = (ea.body.v - eb.body.v).dot(normal).max(0.0) / MPH;
+                    let crashing = |k: Kind, v: Verdict| match (k, v.crash) {
+                        (Kind::Player, true) => " → player CRASHES",
+                        (_, true) => " → AI CRASHES",
+                        _ => "",
+                    };
+                    info!(
+                        "race car impact: {:?} zone {la} vs {:?} zone {lb}, closing {closing_n:.1} mph, speeds {:.0} / {:.0} mph, damage {:.1} / {:.1} (base {:.1} / {:.1}){}{}",
+                        ea.category,
+                        eb.category,
+                        ea.body.v.length() / MPH,
+                        eb.body.v.length() / MPH,
+                        va.damage,
+                        vb.damage,
+                        dmg.base_a,
+                        dmg.base_b,
+                        crashing(pa.kind, va),
+                        crashing(pb.kind, vb),
+                    );
+                    for (p, v, other) in [(&pa, va, eb.entity), (&pb, vb, ea.entity)] {
+                        if v.crash {
+                            let pre = p.velocity.length() / MPH;
+                            apply_outcome(
+                                &mut commands,
+                                &mut crash,
+                                None,
+                                p.entity,
+                                p.kind,
+                                v,
+                                closing_n,
+                                pre,
+                                Some(other),
+                            );
+                            if p.kind == Kind::Ai
+                                && other
+                                    == entries.iter().find(|e| e.is_player).map_or(Entity::PLACEHOLDER, |e| e.entity)
+                            {
+                                info!("takedown: the player took down AI car {} ({})", p.entity, v.rule);
                             }
                         }
-                        last.count += 1;
-                        last.a = Some(ea.entity);
-                        last.b = Some(eb.entity);
-                        last.closing_mph = closing_n;
-                        last.damage = (va.damage, vb.damage);
-                        last.crash = (va.crash, vb.crash);
-                        verdicts = (Some(va), Some(vb));
                     }
+                    last.count += 1;
+                    last.a = Some(ea.entity);
+                    last.b = Some(eb.entity);
+                    last.closing_mph = closing_n;
+                    last.damage = (va.damage, vb.damage);
+                    last.crash = (va.crash, vb.crash);
+                    verdicts = (Some(va), Some(vb));
                 }
             }
             let speed = ea.body.v.length().max(eb.body.v.length());
