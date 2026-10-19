@@ -10,6 +10,90 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-10-19: sounds from the play test: traffic whine, missing whines, inaudible props, glitches, surface sounds
+User play test items ("Sounds still not right") plus the surfaces agent's per-wheel surface sounds. Offline checks
+with `mwtool traffic-sound`, `engine-sound --trace`, `vehicle-sound --surface`; analysis scripts in the worktree's
+git-ignored `scratch/py/` (`spec.py` RMS / centroid / flatness / peak, `ab.py` before → after, `clicks.py`
+second-difference outliers, `lst.py` listener jitter).
+- **Traffic whine = `Auto_Pitch`.** The traffic engines' RPM-bound wave loops (and every car's transmission whine)
+  set `WaveSequenceItem.Auto_Pitch` (+0xe0) with `Pitch.Value` = the loop's recorded RPM / speed (3000, 3400,
+  2136, ...). The wave item's update (`0x00836910`, vtable 0x00fef4d0 from the item factory 0x0083aa00, found by
+  the type id 0x3f3c0 in `re/out/live/text.asm`; not in the dump) replaces the evaluated pitch by
+  `(StartTime + position) / Pitch.Value` = axis value / recorded value. We played the loops at 3000× their rate
+  (aliased noise). `mwtool traffic-sound all`: idle centroid 3828 → 379 Hz, energy above 4 kHz 66 % → 0.5 %; the
+  pass-by's tonal peak at 3316 Hz (× doppler) → 118 Hz, the engine's firing. Same item: fade-in
+  `pow(pos / Fade_In.Time, Curve)`, fade-out likewise from the end (already ported).
+- **Missing layers (supercharger / turbo / transmission).** `VehicleSound` +0x50 `Vehicles.Sound.TransmissionWhine`
+  (every car) and +0x58 `Vehicles.Sound.TurboWhine` (43 of 81 HI bundles, the 1970 Charger R/T 2196466
+  included: its "turbo" is the blower) were never played. `FUN_0058c3f0` (engine sound start, state 3) starts every
+  sequence of both for the player's car (entity +0x1c18). Ported: merged into the player's engine bank after its
+  normalisation (data level against the engine). Bindings added: `GetTransmissionSpeedMph` (`FUN_0059ed70` →
+  `FUN_009170a0`: rpm / (gear ratio × final drive) × 2π × wheel 2's radius / 60 × 2.23694; `.data` 0x01189f50 = 2π,
+  0x01189f90 = 60, 0x0118a060 = 2.23694 read in `snap2`), `GetReverseTransSpeedMph` (the same negated,
+  `FUN_0059ede0`), `GetPlayerGas` (the pedal). The supercharger loop is gained by the engine load and its channel
+  is automated on the normalised RPM with property 0 (gain 1 → 2) and **property 6 (0.25 → 1.2)**: read as the
+  channel's pitch (`FUN_004b8cd0` / `FUN_004b8d90` treat 0 and 6 alike as multipliers with identity 1; the data's
+  range fits a blower whine; the mixer-side consumer was not found: model decision). Blow-off / spool:
+  `FUN_0058f8f0` per sound update (boost +0xf4 → engine load × normalised RPM at rates `(+0x44 − +0x48) × b +
+  +0x48` falling, `(+0x4c − +0x50) × b + +0x50` rising; gearbox-throttle drop > 0.3 in gear starts blow-off +0x0c /
+  +0x14 / +0x1c / +0x24 by boost ≥ 0.75 / > 0.5 / > 0.25 / else (`FUN_0058d6f0`), a rise > 0.3 stops it over 0.15 s
+  and starts spool +0x2c / +0x34; `.rdata` 0x00fac27c 0.3, 0x00fae1f8 −0.3, 0x00fad428 0.15, 0x00fabad8 0.75,
+  0x00f8a810 0.5, 0x00fabaec 0.25). Charger accel trace (`engine-sound 2196466 --trace`): the new layers add
+  −8..−11 dB of power, peaked at 0.9–1.2 kHz and following the RPM (912 Hz at 4233 rpm, 1219 Hz at 6419); the 911
+  Turbo's sweep: the blow-off at the lift (−8.5 dB of the window, ~800 Hz). Model decisions: `FUN_0090d460` (the
+  gear, 0 at a standstill) read as our gear index; `FUN_00572810` (popcount 6 of +0x18c) taken as true; the
+  instance slots +0xa4 / +0xa8 free after the sequence's length.
+- **Props and lamps inaudible = the bus mix.** The hits do fire (`--test smash` at 60 and 120 km/h: cone, sign,
+  lamp, fence; waves built 2–15 ms after the request, before the hit); they played 20–30 dB under the engine.
+  `SOUND/MIXER_CHANNELS.BNDL` holds the game's buses: 23 `BusRoute`s (`AssetName`, `Mixing_Groups`, `Main_Send`,
+  `Compressor_Send`) and their `BusMixerChannel`s (nine per-state gains, EQ curve, compressor); the snapshot
+  channels name their group (`Player_Vehicle_Prop_Collision`, `World_Prop_Collision` … 29311 "Player
+  Collisions"; `Landings_Large` 29306 "Dominant World"; the engine banks' channels 29310 "Player Car" → "Player
+  Sub" 0.562 → "Player PM"). Ported (`mw_assets::buses`): every channel that leaves its bank gets its route's chain
+  gain over the engine route's: Player Collisions +5.2 dB, World / Dominant World / skids +7.2, Competitor +4.2,
+  horn ("Player other") +2.2, Player Surfaces (road) −2.8. Offline (`traffic-sound world`): cone hit −35.0 →
+  −29.8 dBFS, metal lamp −36.0 → −30.8, landing −30.8 → −23.7. The tyre bank's model gains (master 1.4, skids
+  4 / 3.5 / 2.5, "measured against the engine") stood in for these buses and are dropped (kept under
+  `MW_AUDIO_NO_BUS=1`, the A/B switch): drift ≈ −13.7 → −8.4 dBFS in `vehicle-sound` before the per-surface change.
+  Model decisions: the free-roam state is the gain field `8b61e126` (the first with every bus audible; the states
+  differ by ≤ 0.3 dB on these routes); the buses' EQ curves and compressors (side chains) are not ported; the
+  engine bank stays normalised (so the reference is the engine's route); the traffic / competitor engines keep
+  their data level (open). Also `0x…79ff` (the 0.1 s silent placeholder) sits in some lamp lists, so some lamp
+  hits are silent in the game too.
+- **Glitches.** (a) The listener's velocity divided this frame's position change by the next frame's step (the
+  camera's global transform lags a frame), so the doppler of every other car jumped: `MW_LISTENER_TRACE` on
+  `--test accel`, frame-to-frame speed change median 21.3 → 0.03 m/s, p95 doppler step 285 → 2 cents (fixed:
+  divide by the previous step; `MW_LISTENER_DT=current` for A/B). (b) No buffer- or block-periodic clicks in the
+  offline engine renders (`clicks.py`: no excess at 32 / 64 / 512 / 800-sample residues; the Charger's 32 events/s
+  sit in its raw Ginsu recordings `…228c4f` / `…228c50`, 49/s there, not on XAS frame edges; the 911: 0; the
+  original's `xkr_launch` capture 2.9/s against our XKR replay 6.1/s). Render cost 1.1 s per 20 s of the
+  Charger's player bank. (c) The game's Ginsu player (`FUN_00aaf0a0`) plays at the native rate (no resampling) and
+  every 0.01 s (`.rdata` 0x01034138) may jump by whole grains with a 0.25 ms crossfade (0x010d1c7c × 0.001): a
+  random draw over the window + 1 (`FUN_00aacc00`) stays (> 0.5), steps back one grain (−0.5..0.5) or two (<
+  −0.5, 0x00f8a808 = 2), clamped into the window around the RPM's grain (clamp(g − W/2, 0, N − W − 2) ..
+  + W), and the RPM glides over 33 ms; chunks ≤ 64 input samples (0x00fb0ea8) of a 120 · rate / rpm period
+  (0x01034130 = 120 as f32). Our overlap-add synth (resampled cycles, 1-in-8 random jumps) differs; not replaced
+  this session: the window W (`GinsuPlayer` parameter 1) has no default in the dump (init `0x00aaef50` /
+  `0x00aad630` are not decompiled). Open, with REA on those two.
+- **Surface sounds** (`FUN_0058fe10`, `FUN_0054a5d0`): the vehicle bank now holds every surface's dry
+  `SurfaceSounds` set (24 sets; `Drift`, `Spin`, `Brake` and the player's road sequence +0x34 `4648873a` — we also
+  played the other cars' road sequence +0x3c `1376f03b` for the player: dropped), each behind a gate the runtime
+  ramps: per wheel the set of its surface (`WheelContact::surface`) by tyre class (0 / 1 `Offroad`, 2 `Normal`,
+  3 / 4 `Track`, a missing one → `Normal`), the two sets under the most wheels on (the game's two road slots), in
+  over the set's +0x80 (0.333 s) and out over +0x84 (0.5 s); a wheel in the air counts for none. `sfx_player` gates
+  now scale the gains by their value (0..1). Checked: `vehicle-sound --surface 8 / 4 / 7` (road asphalt: drift
+  −19.6 dBFS, centroid ~900 Hz; grass: no squeal, −34; dirt: −15.3, 814 Hz), and the `surface-dirt-drive` viewpoint
+  with `MW_SFX_TRACE` (wheels on set 7, then 9 / 8 at the road). Model decisions: the skids follow their set's
+  road-slot fade (`FUN_0058f6d0`'s own state machine — Drift + Brake, Brake ↔ Spin swaps by vehicle +0x2d58 — is
+  not ported); wet blocks, rims / flats, the transition / bump one-shots (+0x68..+0x78) not ported; the AI's and
+  traffic's tyres still use the default surface.
+- **Captures that would confirm** (the original's own audio, `mwtool capture` with the probe's `tp`): knock a lamp
+  (`fed64b97`), a sign and three cones at ~60 km/h on the downtown street (815, 1760) with music off, and a 10 s
+  steady cruise before (the hit's level against the engine: settles the bus gains and the state field); the 1970
+  Charger R/T full-throttle in 2nd–4th and a lift (the blower whine's pitch track: confirms property 6 = pitch, and
+  the blow-off); the 911 Turbo lift-off (blow-off thresholds); a pass-by of a traffic car at 40 mph (its loop
+  pitch); a held 4000 rpm on the XKR (the Ginsu jump rhythm, to choose W); a drift on asphalt, cobbles and dirt.
+
 ### 2026-10-19: every surface as its own type: the survey, the tyre class, the kick-up rule
 User play test: "non-road surfaces which aren't dirt get treated like dirt (cobblestone, ...)"; still open: "driving
 on dirt does not feel like dirt" (handling, not only the effects).

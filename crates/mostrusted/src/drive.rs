@@ -413,6 +413,12 @@ pub struct WheelContact {
 }
 
 impl Car {
+    /// The first rear wheel's radius (m): `GetTransmissionSpeedMph` (`FUN_009170a0`) reads wheel object 2's
+    /// (vehicle +0xc10 → +0x19c → +0x40).
+    pub(crate) fn rear_wheel_radius(&self) -> f32 {
+        self.wheels.iter().find(|w| !w.front).map_or(0.33, |w| w.radius)
+    }
+
     /// Wheels touching the ground (the camera's landing trigger).
     pub(crate) fn wheels_down(&self) -> usize {
         self.wheels.iter().filter(|w| w.contact.is_some()).count()

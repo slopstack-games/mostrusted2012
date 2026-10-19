@@ -201,7 +201,7 @@ impl AssetStore {
         let channel = |name: &str| {
             let o = snapshot.channel(name)?;
             Some(SirenChannel {
-                gain: number(o.get(field_hash("Gain"))).unwrap_or(1.0),
+                gain: snapshot.gain(name),
                 spatial: snapshot.spatial(self, name)?,
                 voices: number(o.get(0x1653_b84c)).unwrap_or(1.0) as u32,
             })

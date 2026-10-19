@@ -267,6 +267,10 @@ Engine A/B switches (runtime and `mwtool engine-sound`): `MW_AUDIO_DRY=1` (plug-
 `MW_AUDIO_NO_SUB`, `MW_AUDIO_NO_EQ`, `MW_AUDIO_DIST=raw`, `MW_AUDIO_RPM_LINEAR=1` (audible RPM = physics RPM);
 `MW_AUDIO_METER=1` prints channel levels and plug-in chains (and other cars' voices), `MW_AUDIO_NO_FX=1` turns the
 sequences' effect items off, `MW_SOUND_TRACE=<file>` logs what the engine sound plays from.
+`MW_AUDIO_NO_BUS=1` leaves the game's bus gains out (`mw_assets::buses`; the tyre bank's old model gains come
+back), `MW_LISTENER_DT=current` the old listener-velocity step (A/B of the doppler jitter), `MW_LISTENER_TRACE=<file>`
+logs the listener's velocity per frame; `MW_SFX_TRACE` lines end with each wheel's surface sound set (−1 in the air).
+`mwtool vehicle-sound out.wav --surface <index> [--tyre-class 0..4]` renders the tyre / road sounds of one surface.
 
 ## Windows
 

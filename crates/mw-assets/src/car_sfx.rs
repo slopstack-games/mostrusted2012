@@ -310,6 +310,7 @@ fn collision_rules(vs: &Object) -> CollisionRules {
 /// The mix snapshot's channels by name hash (`field_hash` of the name with underscores).
 pub(crate) struct Snapshot {
     channels: HashMap<u32, Object>,
+    buses: crate::buses::BusMix,
 }
 
 impl Snapshot {
@@ -330,15 +331,26 @@ impl Snapshot {
             )
         })()
         .unwrap_or_default();
-        Self { channels }
+        Self { channels, buses: store.bus_mix().clone() }
     }
 
     pub(crate) fn channel(&self, property: &str) -> Option<&Object> {
         self.channels.get(&field_hash(&property.replace(' ', "_")))
     }
 
+    /// A channel's gain into the mix: its `Gain` times its bus chain against the engine's
+    /// ([`crate::buses::BusMix::relative`] of its `MixingGroup`; 1 for an unknown channel).
+    pub(crate) fn gain(&self, property: &str) -> f32 {
+        self.channel(property).map_or(1.0, |c| self.channel_gain(c))
+    }
+
+    fn channel_gain(&self, c: &Object) -> f32 {
+        let group = number(c.get(field_hash("MixingGroup"))).unwrap_or(0.0) as u32;
+        number(c.get(field_hash("Gain"))).unwrap_or(1.0) * self.buses.relative(group)
+    }
+
     fn gains(&self) -> HashMap<u32, f32> {
-        self.channels.iter().map(|(h, o)| (*h, number(o.get(field_hash("Gain"))).unwrap_or(1.0))).collect()
+        self.channels.iter().map(|(h, o)| (*h, self.channel_gain(o))).collect()
     }
 
     pub(crate) fn spatial(&self, store: &AssetStore, property: &str) -> Option<Spatial> {
@@ -519,7 +531,7 @@ impl AssetStore {
         if waves.is_empty() {
             return None;
         }
-        let channel_gain = snapshot.channel(channel).and_then(|c| number(c.get(field_hash("Gain")))).unwrap_or(1.0);
+        let channel_gain = snapshot.gain(channel);
         let bound = |name: Option<&str>, scale: f32| {
             let mut v = ModValue::constant(scale);
             if let Some(b) = name {
@@ -573,7 +585,7 @@ impl AssetStore {
             return None;
         }
         const CHANNEL: &str = "Competitor World Collision";
-        let channel_gain = snapshot.channel(CHANNEL).and_then(|c| number(c.get(field_hash("Gain")))).unwrap_or(1.0);
+        let channel_gain = snapshot.gain(CHANNEL);
         let mut gain = ModValue::constant(1.0);
         gain.binding = IMPACT_GAIN.to_string();
         gain.range = (0.0, 1.0);

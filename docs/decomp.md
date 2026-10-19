@@ -960,6 +960,25 @@ posts their effects back for the next tick.
 The harmonic multipliers come from `EngineSound2` (research log "engine sound from the game code"). The Distortion
 and SubHarmoniser plug-ins fall in undecompiled gaps of the dump.
 
+## Wave items, whines and the bus mix (2026-10-19)
+
+Details and numbers in the research log ("sounds from the play test").
+- **`WaveSequenceItem` update** (`0x00836910`, vtable 0x00fef4d0; item factory 0x0083aa00 in the `(type id, factory)`
+  table at 0x00837220): pitch = the `Pitch` value, replaced when `Auto_Pitch` (+0xe0) by `(StartTime + position) /
+  Pitch.Value`; fade-in `pow(position / Fade_In.Time, Curve)` (+0xa4 / +0xa0), fade-out the same from the end
+  (+0xb8 / +0xb4). `MixerChannelSequenceItem` (factory 0x008370e0, vtable 0x00fef5f8, update `FUN_00836120` →
+  `FUN_00833290` → `FUN_004b8cd0` / `FUN_004b8d90`): properties 0 and 6 are multipliers skipped at 1.
+- **Whines** (`FUN_0058c3f0`, engine sound start): for the player's car (+0x1c18) every sequence of `VehicleSound`
+  +0x50 `TransmissionWhine` (`Sequences` +0x10, count +0x14) and +0x58 `TurboWhine` (+0x40, count +0x54).
+  `GetTransmissionSpeedMph` `FUN_0059ed70` → `FUN_009170a0`; the turbo update `FUN_0058f8f0` / blow-off pick
+  `FUN_0058d6f0` (constants in the log).
+- **Surface sounds** (`FUN_0058fe10`, per wheel, the player all four, others wheels 0 / 2): the wheel's
+  `SurfaceSounds` (`FUN_0054a5d0`) fills one of two road slots (+0x1968, 0x20 bytes each, per-side wheel counts);
+  a new slot starts the road sequence (+0x34 player, +0x3c others) with the "Traction" slot parameter and fade-in
+  +0x80, a lost one releases it over +0x84; transitions +0x70 / +0x74 / +0x78 (counts +0x8c / +0x8e / +0x90) and
+  bumps +0x68 / +0x6c (suspension × +0x7c) are one-shots; skids `FUN_0058f6d0`.
+- **Ginsu player** `FUN_00aaf0a0`: see the research log 2026-10-04 and 2026-10-19 (the window W is still unknown).
+
 ## Exhaust pops and backfires (2026-10-09)
 
 - **`FUN_009b20b0`** (run by the engine-sound update `FUN_009b3030` every tick, after the gearbox `FUN_009da600`

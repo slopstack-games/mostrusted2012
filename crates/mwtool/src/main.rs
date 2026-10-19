@@ -472,6 +472,12 @@ enum Cmd {
         sweep: Option<String>,
         #[arg(long, default_value_t = 40.0)]
         mph: f32,
+        /// The surface under the wheels (its index in the surface list, the collision tag's bits 13–19; default:
+        /// `Default_surface`) and the tyre class (2 = stock road tyres) that pick the tyre and road sounds.
+        #[arg(long)]
+        surface: Option<usize>,
+        #[arg(long, default_value_t = 2)]
+        tyre_class: u8,
     },
     /// Count world triangles per shader (all track units), to prioritise ports.
     ShaderUsage,
@@ -1403,6 +1409,10 @@ fn main() -> Result<()> {
                                 last_shift_up: v[9] > 0.5,
                                 cruising: v[10] > 0.5,
                                 top_gears: v[11] > 0.5,
+                                // The pedal and the road speed (m/s → mph, signed by the gear) stand in.
+                                gearbox_throttle: v[2],
+                                transmission_mph: v.get(4).copied().unwrap_or(0.0).abs() / 0.447_04
+                                    * if v.get(3).is_some_and(|g| *g < 0.0) { -1.0 } else { 1.0 },
                             });
                             (
                                 [v[0], v[1], v[2], v.get(3).copied().unwrap_or(1.0), v.get(4).copied().unwrap_or(0.0)],
@@ -1571,10 +1581,20 @@ fn main() -> Result<()> {
             let store = AssetStore::new(game)?;
             traffic_sound::run(&store, &component, out.as_deref(), passby)?;
         }
-        Cmd::VehicleSound { out, dry, sweep, mph } => {
+        Cmd::VehicleSound { out, dry, sweep, mph, surface, tyre_class } => {
             use mw_assets::vehicle_driver::{VehicleDriver, VehicleInput, WheelSlip};
             let store = AssetStore::new(game)?;
-            let bank = store.vehicle_sfx_bank()?;
+            let (mut bank, picks) = store.vehicle_sfx_bank()?;
+            // Every wheel on one surface: its set's sequences play, the other sets' are left out.
+            let set = picks.pick(surface, tyre_class);
+            println!("surface {surface:?}, tyre class {tyre_class}: sound set {set:?} of {}", picks.fades.len());
+            let open = set.map(mw_assets::sfx::surface_gate);
+            for s in &mut bank.sequences {
+                if !s.gate.is_empty() && Some(&s.gate) != open.as_ref() {
+                    s.items.clear();
+                }
+                s.gate.clear();
+            }
             println!("vehicle bank: {} sequences, {} channels", bank.sequences.len(), bank.channels.len());
             for s in &bank.sequences {
                 println!("  sequence {:016x} {:?} {}..{}: {} items", s.id, s.binding, s.min, s.max, s.items.len());

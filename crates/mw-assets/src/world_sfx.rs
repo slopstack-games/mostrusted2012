@@ -203,12 +203,12 @@ impl<'a> WaveShots<'a> {
     pub fn shot(&self, wave: ResourceId, channel: SfxChannel, gain: Option<&str>) -> Option<OneShot> {
         let clip = self.loader.wave(wave)?;
         let (channel_gain, spatial) = match channel {
-            SfxChannel::Snapshot(name) => (
-                self.snapshot.channel(name).and_then(|c| number(c.get(field_hash("Gain")))).unwrap_or(1.0),
-                self.snapshot.spatial(self.store, name),
-            ),
+            SfxChannel::Snapshot(name) => (self.snapshot.gain(name), self.snapshot.spatial(self.store, name)),
             SfxChannel::Mixer(id) => (
-                self.store.genesys_object(id).ok().and_then(|c| number(c.get(field_hash("Gain")))).unwrap_or(1.0),
+                self.store.genesys_object(id).ok().map_or(1.0, |c| {
+                    let group = number(c.get(field_hash("MixingGroup"))).unwrap_or(0.0) as u32;
+                    number(c.get(field_hash("Gain"))).unwrap_or(1.0) * self.store.bus_mix().relative(group)
+                }),
                 self.store.channel_spatial(id),
             ),
         };

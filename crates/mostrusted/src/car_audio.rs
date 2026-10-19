@@ -280,6 +280,9 @@ pub(crate) struct Listener {
     pub right: Vec3,
     pub velocity: Vec3,
     pub valid: bool,
+    /// The previous frame's time step: the camera's global transform read here is the one its follow system set
+    /// in the previous frame (it propagates in `PostUpdate`), so it moved over that frame's step.
+    last_dt: f32,
 }
 
 pub(crate) fn update_listener(
@@ -289,16 +292,32 @@ pub(crate) fn update_listener(
 ) {
     let Some(t) = cam.iter().next() else { return };
     let p = t.translation();
-    let dt = time.delta_secs();
+    // `MW_LISTENER_DT=current` divides by this frame's step instead (A/B: the velocity then jitters with the frame
+    // times, and with it every other car's doppler pitch).
+    let current = std::env::var("MW_LISTENER_DT").is_ok_and(|v| v == "current");
+    let dt = if current { time.delta_secs() } else { l.last_dt };
+    l.last_dt = time.delta_secs();
     if l.valid && dt > 0.0 {
         let v = (p - l.position) / dt;
         // A cut (teleport, camera switch) is not a velocity.
         l.velocity = if v.length() < 150.0 { v } else { Vec3::ZERO };
     }
+    listener_trace(time.elapsed_secs(), time.delta_secs(), l.velocity);
     l.position = p;
     l.forward = t.forward().as_vec3();
     l.right = t.right().as_vec3();
     l.valid = true;
+}
+
+/// `MW_LISTENER_TRACE=<file>`: one line per frame, `seconds dt speed vx vy vz` of the listener (the camera).
+fn listener_trace(t: f32, dt: f32, v: Vec3) {
+    use std::io::Write;
+    static FILE: std::sync::OnceLock<Option<std::sync::Mutex<std::fs::File>>> = std::sync::OnceLock::new();
+    let file = FILE
+        .get_or_init(|| std::fs::File::create(std::env::var_os("MW_LISTENER_TRACE")?).ok().map(std::sync::Mutex::new));
+    if let Some(f) = file {
+        _ = writeln!(f.lock().unwrap(), "{t:.4} {dt:.5} {:.3} {:.3} {:.3} {:.3}", v.length(), v.x, v.y, v.z);
+    }
 }
 
 /// Gain, pan and doppler of an emitter at `position` moving at `velocity` facing `forward`.
@@ -479,6 +498,12 @@ fn update_ai_voices(
             last_shift_up: dt.last_shift_up,
             cruising: dt.cruising,
             top_gears: dt.in_top_gears(dp),
+            gearbox_throttle: dt.gearbox_throttle,
+            transmission_mph: mw_assets::engine_driver::transmission_mph(
+                rpm,
+                dp.active(dt.cruising).ratio(car.gear) * dp.active(dt.cruising).final_drive,
+                car.rear_wheel_radius(),
+            ),
         };
         let forward = t.rotation * Vec3::Z;
         let placed = place(&v.spatial, &listener, t.translation, vel.0, forward);

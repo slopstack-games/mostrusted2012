@@ -437,6 +437,20 @@ wetness. `PlotPBR_AO_StandingWater` does the same with its own `PuddleTextureSam
   `SportOverrides` (+0x60), 4 `TrackOverrides` (+0x7c). Every car's `PerformanceUpgrades.StockTyres`
   (`32d208d1`, +0xc8) is `Tyres` 2; the OFF-ROAD tyre mod sets 1 (PRO 0), TRACK 3 (PRO 4) on the 911.
 
+**Bus mix** (`SOUND/MIXER_CHANNELS.BNDL`, `mw_assets::buses`, 2026-10-19): `BusRoute { AssetName, Mixing_Groups,
+Main_Send (next route's UniqueId, 0 = out), Compressor_Send, Delay_Time }` (23 routes: Player Car → Player Sub →
+Player PM → Master World → Final → Master, Player Collisions → Player PM, World / Dominant World / Dominant 3D →
+Master World, Music → Final, UI / Speech → Master, ...); `BusMixerChannel { Routing, EQ curve f7b3abec [Frequency,
+Gain, Q], Compressor, nine state gains 3ca61a54 79a2cbf6 8b61e126 eecf2aca f31e8e7e 0e4f2179 bec6fe4f fca6257d
+d7f83c28, DistortionType }`; `Compressor { Attack, Release, Ratio, Threshold (dB), dd357e8b (make-up, linear),
+Mode }`. The snapshot's `MixerChannel`s carry the `MixingGroup` a route collects. `SurfaceSounds` (148 bytes): +0x0c
+.. +0x2c the skid sequences (`Brake`, `Brake_Competitor`, `Drift`, `Drift_Competitor`, `Reflection`), +0x34
+`4648873a` player road, +0x3c `1376f03b` other cars' road, +0x44 `Spin`, +0x4c `Spin_Competitor`, +0x54
+`6bdefb10` traffic skid, +0x5c `TyreParams`, +0x68.. `Bumps` / `Transitions` lists, +0x7c bump scale, +0x80
+road fade-in (0.333 s), +0x84 release (0.5 s), +0x88..+0x90 list counts. `VehicleSound` +0x50
+`TransmissionWhine`, +0x58 `TurboWhine` (88 bytes: six one-shot sequences +0x0c..+0x34, `Sequences` +0x40, boost
+rates +0x44..+0x50).
+
 ## Diffuse sampler names
 
 Most world and vehicle shaders use `DiffuseTextureSampler`. Exceptions:

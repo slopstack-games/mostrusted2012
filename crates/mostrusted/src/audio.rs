@@ -250,6 +250,12 @@ fn update_engine_params(
         last_shift_up: dt.last_shift_up,
         cruising: dt.cruising,
         top_gears: dt.in_top_gears(dp),
+        gearbox_throttle: dt.gearbox_throttle,
+        transmission_mph: mw_assets::engine_driver::transmission_mph(
+            rpm,
+            dp.active(dt.cruising).ratio(car.gear) * dp.active(dt.cruising).final_drive,
+            car.rear_wheel_radius(),
+        ),
     };
     for mut s in &mut sounds {
         s.legacy.set(rpm, throttle);
