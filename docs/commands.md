@@ -124,6 +124,10 @@ MW_NO_VIGNETTE=1 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,172
 ./target/release/mostrusted --drive 911 --test smash --smash-speed 60 --screenshot <scratch>/smash.png   # props: cone, lamp, fence, wall
 #   --smash-set compounds: lamps etc. breaking into parts. Props collide in the world by default (--no-prop-physics)
 ./target/release/mostrusted --drive 911 --test kerb        # kerb strike (MW_TEST_KERB_H / _DEPTH / _ANGLE / _UP, MW_TEST_KMH)
+#   crashes=N in its result; MW_SPECULATIVE_CONTACTS=1 counts avian's speculative body contacts as impacts again (crash
+#   rule, wall scrape, impact yaw damping; the old behaviour), MW_CRASH_CONTACTS=1 adds every body-world contact point to
+#   MW_CRASH_TRACE (closing speed, penetration, impulse, normal, point in the car's frame); research log 2026-10-19
+#   "false crashes at kerbs"
 ./target/release/mostrusted --drive 911 --test-track --track-surface 4 --test accel   # the flat track as any surface (4 = grass)
 ./target/release/mwtool props -v                    # physics of every prop / compound / dynamic object (+ WCVfxBehaviours)
 #   prop-break effects (prop_vfx.rs): MW_PROP_VFX_LOG=1 logs impact / spot / contact effects and lights out;

@@ -296,6 +296,59 @@ the 911 and a nitrous mod fitted (the BURN / DUMP gauges); 0.1 → 9.9 km on the
 open on a car with no unseen races (NEW badge rule); the pause menu with the Most Wanted list at 1280×720 after
 some progress; a close crop of the minimap edge (mask).
 
+### 2026-10-19: false crashes at kerbs: avian's speculative contacts counted as impacts
+User play test: "running into a curb at speed the car crashes; also other road parts that slightly stick out".
+- **Cause** (reproduced headless): `crash.rs` took the largest pre-solve `normal_speed` over every point of the body
+  collider's world contacts. Avian keeps **speculative contacts**: points up to |v| dt apart (0.65 m at 150 km/h,
+  1.1 m at 250 km/h, `collision/narrow_phase/system_param.rs`), reported with the closing speed they would have.
+  Passing a kerb end or corner at speed, the body box's bottom corner 0.2-0.4 m above it gets a corner-to-corner
+  normal (n.y ≈ 0.3, under the wall limit 0.7) with v·n above 70 mph: a crash with no impulse, 1.1 m before (and
+  without) any touch. The same contacts fed `drive.rs car_contacts`: the wall scrape (steering zeroed above 6 m/s)
+  and the impact yaw damping fired over plain kerbs (Hodges kerb at 93 mph: one wall scrape, one damping start), and
+  the landing test's `body_contact` 0.82 s was speculative (0.00 s touching).
+- **Repro** (`scratch/k/corner.sh` in the worktree, not committed): the MP4-12C at 74 mph from (1392.92, 33.5,
+  −738.53) heading 75° / 76°, `--units 8 --no-traffic`: CRASH at 77.4 / 77.8 mph closing, contact pen −1.18 m, impulse
+  0, the world side on a 0.26 m kerb end (surface 9, flags 0x007, (1410.3, 32.70, −733.5)). Found by replaying the
+  original's `ref/live1` MP4 stretch (63-118 s, `MW_REPLAY_FOLLOW=path`, streaming on): ours crashed there at
+  80 mph; the original's own line passes the same kerb end ~1.5 m further left at 96 mph with no crash.
+- **The original's rule** (dump): the world test happens on the collision analyzer's world record
+  (`FUN_00918600` → `FUN_00918120` → impact handler `FUN_009145c0` → `FUN_009a9fd0` with `WorldRules`), whose value
+  the collision job writes (not in the dump; decomp.md "Crashes", new bullet: a recent previous world impact is
+  subtracted). The thresholds are copied into the body's response block (`FUN_0093bc40` → `FUN_009c1a20` →
+  `FUN_009bd180`, body +0xd0..+0xdc). The body's own contact passes (`FUN_009c62e0` / `FUN_009c4e10`) act on records
+  the job produced. Not found: whether a record exists before contact. The original's chassis is four convex hulls
+  whose bounding box bottom is 0.17 m above the ground in model space (911: `RaceCarPhysicalDefinition` body 0, hulls
+  `0100000000108e54..57`); ours is a 1.8 × 0.75 × 4.2 box from 0.475 m.
+- **Fix** (model decision, handling.md "Crash camera" / "Model decisions"): a body contact point counts only when
+  the solver pushed on it this step (normal impulse > 0) or it penetrates (`crash::touching`), in the crash rule and
+  in `car_contacts` (wall normal, world / object / car impact). `MW_SPECULATIVE_CONTACTS=1` restores the old counting;
+  `MW_CRASH_CONTACTS=1` dumps every body-world contact point into `MW_CRASH_TRACE`, whose impact lines now carry the
+  contact point (car frame), normal, penetration, impulse, car position and the world-side point.
+- **Kerb test** (`--test kerb`): the kerb's trimesh gets a 5 m post 90 m aside so its bounding box reaches above the
+  ground as every track unit's does (the broad phase never paired the low slab with the body box, so speculative
+  kerb contacts could not show); the test track uses `FIX_INTERNAL_EDGES` as the world's colliders; the result line
+  gains `crashes=N`. At 250 km/h: body_contact 0.15 s (old) → 0.00 s, crashes 0 both. No test-track geometry tried
+  (square, 30-85°, 0.168-0.5 m high, a kerb end beside the path) produced the false crash itself: it needs the
+  world's kerb ends.
+- **Before → after**: the kerb end above 1 / 1 → 0 / 0 crashes (no impact at all after). Hodges kerbs (9 approaches ×
+  150 / 250 km/h × 0 / 30°): 24 → 23 crashes, the rest real walls / buildings / rocks 3-31 m tall (checked by
+  triangle); one false crash 1.33 m before a berm and one at the spawn drop gone. 911 tests unchanged: accel 0-60
+  3.58 s, quarter 11.60 s, top 307.4 km/h; brake 38.1 m; corner 2.57 g; drift 37.3° / 4.75 s; landing deepest
+  0.237 m, settle 3.57 s, body_contact 0.82 → 0.00 s; climb deepest 0.208 m, settle 5.62 s, body_contact 0.97 →
+  0.12 s; kerb (50 km/h) vy 1.73 m/s, pitch 34.2 °/s, roll 54.8 °/s. `--test crash` crashes at 71.3 mph closing both
+  ways, `crash-traffic` crashes (traffic impact, 79.3 mph); `smash` identical; `crash-parked` / `crash-ai` as before.
+- **The original** (probe, offline prompt taken, save backed up to the worktree's `ref/savebackup-2026-10-19-crash/` and
+  restored byte-identical after the car swap had autosaved, probe DLL removed, game quit): the swap worked, but both
+  placements to the kerb end (2.5 km from the Fairhaven start, native `place`) killed the game, as in the earlier
+  probe sessions; `tp --hops` stops at the first hop without drivable ground ((247.8, 1400.2)). No controlled
+  capture: the evidence of the original is `ref/live1` (96 mph past the same kerb end, no crash, smooth vy).
+- **Open / captures wanted**: (1) the kerb-end line in the original (MP4-12C 74 mph heading 75° from (1392.92,
+  33.24, −738.53), watch = kerb.watch + vehicle +0x1774 / +0x1777) once a route of hops exists (waypoints along
+  drivable ground from the start, or a start nearer downtown); (2) the original's body hulls as our body collider
+  (lower than our box: kerbs would then meet the body, and the hull-vs-kerb contact decides); (3) `car_impacts.rs`
+  and `crash_vfx.rs` read their own contacts (not changed; their CRASH VFX counts vary run to run in the traffic
+  tests).
+
 ### 2026-10-19: UI frame: HUD aspect correction and menu letterbox (code + captures), stack cells, text metrics
 User play test: "UI scaling and positioning is still wrong"; the UI did not follow runtime window resizes; loading
 pictures did not fill portrait windows. Sources: the dump (decomp.md "UI frame and `HudAspectCorrection`"), the

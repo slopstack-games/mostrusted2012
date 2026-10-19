@@ -2299,15 +2299,23 @@ fn car_contacts(collisions: &Collisions, layers: &Query<&CollisionLayers>, car: 
         for pair in collisions.collisions_with(collider) {
             let (other, sign) = if pair.collider1 == collider { (pair.collider2, -1.0) } else { (pair.collider1, 1.0) };
             let world = layers.get(other).map_or(true, |l| l.memberships.has_all(crate::props::GameLayer::World));
-            let speed =
-                pair.manifolds.iter().flat_map(|m| m.points.iter()).map(|p| -p.normal_speed).fold(0.0, f32::max);
+            // Only contacts the solver acted on: avian's speculative ones are up to |v| dt away
+            // (`crash::touching`); counted, a wall or kerb face a metre ahead zeroed the steering (the wall scrape
+            // below) and started the impact yaw damping before anything touched.
+            let mut touching = pair.manifolds.iter().filter(|m| m.points.iter().any(crate::crash::touching)).peekable();
+            let Some(first) = touching.peek().copied() else { continue };
+            let speed = touching
+                .flat_map(|m| m.points.iter())
+                .filter(|p| crate::crash::touching(p))
+                .map(|p| -p.normal_speed)
+                .fold(0.0, f32::max);
             let other_car = layers.get(other).is_ok_and(|l| l.memberships.has_all(crate::props::GameLayer::Car));
             if other_car {
                 c.car_impact = c.car_impact.max(speed);
             } else if world {
                 c.world_impact = c.world_impact.max(speed);
                 if collider == car.body_collider && c.wall.is_none() {
-                    c.wall = pair.manifolds.first().map(|m| m.normal * sign);
+                    c.wall = Some(first.normal * sign);
                 }
             } else {
                 c.object_impact = c.object_impact.max(speed);
@@ -3034,6 +3042,14 @@ pub fn test_obstacle(kind: TestKind) -> Option<(Vec<Vec3>, Vec<[u32; 3]>)> {
             indices.push([b, c, d]);
         }
     }
+    if kind == TestKind::Kerb {
+        // A tall post 90 m to the side, out of the car's way: the kerb's collider then has a bounding box that
+        // reaches above the ground, as every track unit's does (buildings, walls), so the broad phase pairs it with
+        // the body collider as the world's are paired (speculative contacts with the kerb below the body).
+        let n = vertices.len() as u32;
+        vertices.extend([place(90.0, 0.0, KERB_Z - 1.0), place(90.0, 0.0, KERB_Z + 1.0), place(90.0, 5.0, KERB_Z)]);
+        indices.push([n, n + 1, n + 2]);
+    }
     Some((vertices, indices))
 }
 const LANDING_RAMP_Z: f32 = 400.0;
@@ -3103,6 +3119,7 @@ pub(crate) fn ground_test(
     cars: Query<(Entity, &Car, &Transform, &LinearVelocity, &AngularVelocity), With<Player>>,
     mut state: Local<GroundTest>,
     mut exit: MessageWriter<AppExit>,
+    crash: Option<Res<crate::crash::CrashState>>,
 ) {
     let (Some(mut test), Ok((entity, car, tf, vel, ang))) = (test, cars.single()) else { return };
     if test.done || !matches!(test.kind, TestKind::Landing | TestKind::Climb | TestKind::Jitter | TestKind::Kerb) {
@@ -3261,7 +3278,7 @@ pub(crate) fn ground_test(
     let stuck = state.slow_since.is_some_and(|s| t - s > 2.0);
     if test.kind == TestKind::Kerb && (z > end_z || stuck || t > 60.0) {
         let m = format!(
-            "kmh={target_kmh:.0} vy_peak={:.2}m/s pitch_rate={:.1}deg/s roll_rate={:.1}deg/s pitch={:.2}..{:.2}deg roll={:.2}..{:.2}deg rise={:.3}m wheel_off={:.3}s all_off={:.3}s stop={:.0}Ns overtravel={:.3}m body_contact={:.2}s{}",
+            "kmh={target_kmh:.0} vy_peak={:.2}m/s pitch_rate={:.1}deg/s roll_rate={:.1}deg/s pitch={:.2}..{:.2}deg roll={:.2}..{:.2}deg rise={:.3}m wheel_off={:.3}s all_off={:.3}s stop={:.0}Ns overtravel={:.3}m body_contact={:.2}s crashes={}{}",
             state.kerb_peaks[0],
             state.kerb_peaks[1],
             state.kerb_peaks[2],
@@ -3275,6 +3292,7 @@ pub(crate) fn ground_test(
             state.kerb_stop,
             state.max_overtravel,
             state.body_contact_ticks as f32 * dt,
+            crash.as_ref().map_or(0, |c| c.crashes),
             if stuck { " STUCK" } else { "" }
         );
         test.marks.push((m, t, v));

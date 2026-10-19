@@ -3,7 +3,7 @@
 //! - **Decision** (`FUN_009a9fd0`): an impact on the car body against static scenery is a crash when its
 //!   closing speed in mph exceeds the offline player's `WorldRules` threshold (70) or its damage exceeds
 //!   the damage threshold (30). Our damage model has no damage-bar units for world impacts yet, so only the
-//!   closing speed is tested there. Impacts with traffic and other cars are decided in `car_impacts.rs`
+//!   closing speed is tested there, on contact points that touch ([`touching`]: not avian's speculative ones). Impacts with traffic and other cars are decided in `car_impacts.rs`
 //!   (the game's car-against-car damage and `TrafficRules` / "AI impact" / landing-on-a-car rules), which
 //!   hands a crash over through [`CrashState::car_crash`].
 //! - **While crashed** the player has no control (`Player.CanDriveAway`); the car keeps tumbling.
@@ -143,6 +143,22 @@ impl CrashState {
     }
 }
 
+/// `MW_SPECULATIVE_CONTACTS=1`: count avian's speculative contacts as impacts again (the old behaviour, for A/B).
+pub(crate) fn speculative_contacts() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("MW_SPECULATIVE_CONTACTS").is_ok_and(|v| v == "1"))
+}
+
+/// Whether a body's contact point is a contact the solver acted on this step. Avian keeps speculative contacts
+/// up to the distance the bodies cover in one step (|v| dt: 0.65 m at 150 km/h, 1.1 m at 250 km/h) and reports
+/// them with the closing speed they would have; the solver pushes only on those it predicts to close within the
+/// step. The game's collision analysis gets the contacts its collision job found (decomp.md "Crashes"), so a
+/// contact that never touched is not an impact: without this, a wall or kerb face a metre ahead counted as a hit
+/// at full speed, a tick or more before (or without) the real one.
+pub(crate) fn touching(p: &ContactPoint) -> bool {
+    p.normal_impulse > 0.0 || p.penetration > 0.0 || speculative_contacts()
+}
+
 /// Record safe poses and test body impacts against the world rule.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn detect_crash(
@@ -170,13 +186,62 @@ pub(crate) fn detect_crash(
             && collider_of.get(e).ok().is_none_or(|c| bodies.get(c.body).is_ok_and(|b| *b == RigidBody::Static))
     };
     let collider = car.body_collider;
-    let closing = collisions
+    if std::env::var_os("MW_CRASH_CONTACTS").is_some() {
+        // Every body-world contact point: closing speed (m/s), penetration, impulse, normal (from the world at
+        // the car), the point in the car's frame.
+        let inv = transform.rotation.inverse();
+        let mut lines = Vec::new();
+        for pair in collisions.collisions_with(collider) {
+            let other = if pair.collider1 == collider { pair.collider2 } else { pair.collider1 };
+            if !world(other) {
+                continue;
+            }
+            let sign = if pair.collider1 == collider { -1.0 } else { 1.0 };
+            for m in &pair.manifolds {
+                for p in &m.points {
+                    let l = inv * (p.point - transform.translation);
+                    let n = m.normal * sign;
+                    lines.push(format!(
+                        "contact {now:.3} v {:.1} cl {:.2} pen {:.3} imp {:.0} n {:.2} {:.2} {:.2} local {:.2} {:.2} {:.2}",
+                        velocity.length(),
+                        -p.normal_speed,
+                        p.penetration,
+                        p.normal_impulse,
+                        n.x,
+                        n.y,
+                        n.z,
+                        l.x,
+                        l.y,
+                        l.z
+                    ));
+                }
+            }
+        }
+        for l in lines {
+            state.trace(format_args!("{l}"));
+        }
+    }
+    // The strongest wall contact: closing speed, point, normal, penetration, impulse.
+    let best = collisions
         .collisions_with(collider)
         .filter(|pair| world(if pair.collider1 == collider { pair.collider2 } else { pair.collider1 }))
-        .flat_map(|pair| pair.manifolds.iter())
-        .filter(|m| m.normal.y.abs() < MAX_WALL_NORMAL_Y)
-        .flat_map(|m| m.points.iter().map(|p| -p.normal_speed))
-        .fold(0.0f32, f32::max);
+        .flat_map(|pair| {
+            // The normal from the world at the car.
+            let sign = if pair.collider1 == collider { -1.0 } else { 1.0 };
+            pair.manifolds.iter().map(move |m| (m, m.normal * sign))
+        })
+        .filter(|(m, _)| m.normal.y.abs() < MAX_WALL_NORMAL_Y)
+        .flat_map(|(m, n)| {
+            m.points
+                .iter()
+                .filter(|p| touching(p))
+                .map(move |p| (-p.normal_speed, p.point, n, p.penetration, p.normal_impulse))
+        })
+        .fold(
+            None,
+            |a: Option<(f32, Vec3, Vec3, f32, f32)>, b| if a.is_some_and(|a| a.0 >= b.0) { a } else { Some(b) },
+        );
+    let closing = best.map_or(0.0, |b| b.0.max(0.0));
     let mut closing_mph = closing / MPH;
     let rule = config.0.rules.world;
     let is_world_crash = rule.is_some_and(|r| r.is_crash(None, closing_mph));
@@ -188,7 +253,28 @@ pub(crate) fn detect_crash(
     let is_crash = is_world_crash || car_crash.is_some();
     if closing_mph > TRACE_MIN_MPH {
         let limit = rule.and_then(|r| r.closing_mph).unwrap_or(f32::INFINITY);
-        state.trace(format_args!("impact {now:.3} {closing_mph:.1} {limit:.1} {}", if is_crash { 1 } else { 0 }));
+        // The contact in the car's frame (x right, y up, z forward from the origin at road level).
+        let (local, n, pen, imp) = best.map_or((Vec3::NAN, Vec3::NAN, f32::NAN, f32::NAN), |b| {
+            (transform.rotation.inverse() * (b.1 - transform.translation), b.2, b.3, b.4)
+        });
+        // The world's side of the contact (world space).
+        let wp = best.map_or(Vec3::NAN, |b| b.1 + b.2 * b.3 * 0.5);
+        state.trace(format_args!(
+            "impact {now:.3} {closing_mph:.1} {limit:.1} {} local {:.2} {:.2} {:.2} n {:.2} {:.2} {:.2} pen {pen:.3} imp {imp:.1} at {:.1} {:.2} {:.1} wp {:.2} {:.3} {:.2}",
+            if is_crash { 1 } else { 0 },
+            local.x,
+            local.y,
+            local.z,
+            n.x,
+            n.y,
+            n.z,
+            transform.translation.x,
+            transform.translation.y,
+            transform.translation.z,
+            wp.x,
+            wp.y,
+            wp.z
+        ));
     }
     if !is_crash {
         state.history.push_back(SafePose {
