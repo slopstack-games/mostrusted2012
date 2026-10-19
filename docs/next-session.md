@@ -63,11 +63,9 @@ Added by the user (2026-10-16); the ones marked (2026-10-16: ...) were worked on
 - **Floating trees**: some trees and foliage float near the street exit leading to the large airport area (place
   not measured; compare the research log's backdrop entry, "trees in a few far places float where no zone lists
   ground under them", and `mwtool placement-check`).
-- **GPU out of memory** (user crash 2026-10-19, wgpu "Out of Memory" on a mesh slab resize): a full-map run needs
-  ~4.0 GB of GPU memory (`--composed-backdrop`) / ~4.3 GB (session 11's zone view); with the desktop (~2.6 GB) and the
-  original or another headless run on the 8 GB card it fails near unit 168/169. Bevy's slab cap (128 MiB) made no
-  difference (reverted). Fix in progress: stream units as the original does (`FUN_00549fb0`). Until then play with
-  `--units 60` while agents run.
+- **GPU out of memory** (user crash 2026-10-19): fixed by world streaming as the game does it (`streaming.rs`,
+  research log "world streaming"): a `--drive` run peaks at ~1.3 GB instead of ~4.5 GB (`--load-all` for the old
+  way; free-camera runs still load everything). Open: idle-machine frame times, the camera manager's +0x130.
 - **Wheel placement** (added 2026-10-19): some cars' wheels still sit in the wrong place, e.g. the Bugatti Veyron
   Super Sport (compare research log 2026-10-10 "wheel placement: the game builds its wheels from VehicleInfo's
   axles"; check the Veyron SS's axle data and wheel models against a screenshot of the original).
