@@ -65,6 +65,50 @@ captures of the original at native 1024×768 and 1680×720 (`ref/ui-2026-10-19/`
   Easydrive's row pitch (26 vs the panel's 26.42); the projection that draws the frame (a UI camera,
   `FUN_0061f800`) is inferred from the corrections and the captures, not traced.
 
+### 2026-10-19: Most Wanted races spawn their rival; every race slot drives its own car
+User play test: "the cars in Most Wanted races don't spawn". Cause: `ai::race_from_event` took the opponents'
+cars from the event's `allowed_vehicles` (the player's list), empty on all 14 Most Wanted events, and returned.
+- **Where the car comes from** (dump, `FUN_00686f30` → `FUN_006ce030` → `FUN_006cc870`): each
+  `AIPlayerInformation` slot's `AIPlayerType` +0x14 `Rollout` → `Rollout.Vehicle` (+0x58). That holds for **every**
+  race, not only Most Wanted ones: all 72 races with opponents name their cars this way (`mwtool events --all`
+  now lists them; e.g. CONTINENTAL DRIFT: 911 ×2, XKR ×2, 4C ×2, M3 ×2). The 14 rivals: MW1 Agera R, 2 Huayra,
+  3 Veyron SS, 4 Aventador, 5 918 Concept, 6 MP4-12C, 7 LFA, 8 SL 65, 9 Cobra 427, 10 4C Concept, DLC Venom,
+  M3 GTR, GT500, 918 Spyder; every bundle is in the install.
+- **Colour**: slot +0x18 (`2968e77a`) is a `ColourId` of the car's palette, used unless it is the player's car's
+  colour, then +0x10 (`9b4e35f7`); 0 keeps the rollout's colour. All Most Wanted rivals but the Venom use 1454330
+  (also the McLaren / SL 65 jack spots' colour; the MP4-12C's paint 3, white).
+- **Skip rule** (+0xee `c75c9d90`): one slot is always left out when it is set: the last whose car is the
+  player's, else the last. Set on every normal race except 3 DLC sprints, never on a Most Wanted race. Before,
+  we spawned every slot (CONTINENTAL DRIFT now 7 opponents, the XKR in slot 4 left out for the player's XKR).
+- **Flags** (`AIPlayerType`): +0xb4 `6bb93300` = the Most Wanted driver, kept as the rival at player manager
+  +0xa698; +0xb5 `d4fbaf43` = a cop, filed in the cop list. MOST WANTED 7 has the LFA plus two Charger SRT8 cops
+  at their own placements: the cops are not spawned (open).
+- **The intro**: the Most Wanted intros (e.g. 1482366) end with teleports of the player (100 mph) and `Racer(1)`
+  (115 mph) onto the rolling start; `cutscene.rs` already played them, with the rival now there.
+- **Hold bug**: `spawn_opponents` released the race hold once the app had run 60 s, so a race started from free
+  roam after a minute did not wait for its opponents' cars and the intro teleports found nobody. The 60 s now
+  count from the hold's start.
+- Ported: `mw_assets::events::{Opponent::rollout, most_wanted, cop}`, `Rollout`; `race::GridSlot::{vehicle,
+  colour, alt_colour, most_wanted}`, cops left off the grid; `ai::race_from_event` (cars, paints, skip).
+  Verified headless: `--race 1399902 / 1496231 / 1496382 / 1472789 / 2090137 --drive 911 --test race` (rival
+  spawned and placed, won=true), `--race 462174` (7 opponents, slot 4 skipped), `--race 2090016` (+0xee clear, 5
+  opponents, colour 0 → palette's first), `--drive 911 --map-start 1399902` (streamed; card, rival placed, intro),
+  grid screenshot `MW_CUTSCENE_START=32.7 MW_CUTSCENE_SHOT=intro:34.3` (the white MP4-12C ahead of the player on
+  the rolling start); `--drive 911 --test accel` unchanged (3.58 / 3.73 / 11.12 / 11.60 s, same as session-11).
+- **Model decisions**: colour 0 → the palette's first paint (`FUN_006ca580` not traced); `OpponentData[k]` of the
+  rubber band = the k-th racer left on the grid; a rival car without a bundle would fall back to the allowed cars.
+- **Not traced / open**: the rival's personality (`AIPlayerType` fields, Behaviour 8 like any racer; no rival-only
+  rule found in the racer state); the rollout's upgrades (`BodyUpgrade` / `NitrousUpgrade` / `TyreUpgrade` are 0
+  on the Most Wanted rollouts) and its `Characters` / `631d8188` arrays (runtime +0x594 / +0x598, ids 1656931..
+  not found as resources); MOST WANTED 7's cops; what `FUN_006a1390` / `FUN_006a3db0` (0x914xxx HUD callers)
+  do with the rival; after a win, the free-roam shutdown ("Do Blacklist Shutdowns", `FUN_00748900` /
+  `FUN_00748e50`, `Gameplay.BlacklistShutdownData`: `AIPlayerInstance` type 457332 etc., `DamageThreshold`,
+  `SpeedControl` near 100 / far 300 m) and the car's jack spot; the Most Wanted car's progression unlock
+  (`GameUnlock` 1399899 names event 1399902, `Text` 979245, 415000).
+- **Captures that would confirm**: MOST WANTED 6 from the map in the original, F12 at the rolling start (the
+  rival's paint and place); CONTINENTAL DRIFT in the XKR, count the opponents on the grid (7 expected); MOST
+  WANTED 7's grid (are the two Chargers there at the start?).
+
 ### 2026-10-19: kerb captures: the placement at speed, the strut joint, the strut stop only when crashed, yaw from the bumps
 Against the clean probe captures (main checkout `ref/`: `kerb100a` / `b` 911 at 100 km/h, `kerbrest911a` / `b` 911
 from rest, `kerb100raptor` / `raptorc`, plus `kerb_drop2`, `kerb_angle1`), replayed with `--replay <csv>

@@ -844,13 +844,22 @@ route drawn over the lane map `mwtool events <id> --png <file>`. Settled 2026-10
   "SPEED RUN", 1119989 "AMBUSH", 2193051 "DRIFT ATTACK"); `Name` (+0x84) and `Description` (+0x14) language ids;
   `Checkpoints` (+0x64, UniqueId[]); `SpawnPosition` (+0x9c); `Laps` (u8 +0xf6: 1 for sprints, 2–3 for
   circuits; "AROUND THE WORLD" is a circuit with 1 lap); `AllowedVehicleList` (+0x5c); `TargetSpeed` /
-  `TargetTime` (float[3], speed runs / timed DLC modes); `1795ca2a` `AIPlayerInformation`[] (+0xc0:
-  `AIPlayerType`, `9b4e35f7`, `Placement`, `2968e77a`); `c0756b63` `CustomChevron`[] (+0xb8); `d4b38a64`
+  `TargetTime` (float[3], speed runs / timed DLC modes); `1795ca2a` `AIPlayerInformation`[] (+0xc0, 0x1c B:
+  +0xc `AIPlayerType`, +0x10 `9b4e35f7` the alternative colour, +0x14 `Placement`, +0x18 `2968e77a` the colour, a
+  `ColourId` of the car's palette; 2026-10-19, `FUN_00686f30` / `FUN_006ce030`); `c0756b63` `CustomChevron`[] (+0xb8); `d4b38a64`
   `AlternateRoutes`[] (+0xc4: `Checkpoint`, `fe6ef8d8` UniqueId[]); `CheckpointInfo`[] (+0xc8: `Sequence`,
   `Type`, two bools; on 7 events, the count rule gives more entries than checkpoints on some: open);
   `NitrousAllowed` (+0xec), `TrafficEnabled` (+0xf0); `RaceBalancingData` / `RaceBalancingProfile` ids
   (items of GAMEMODES). Career content: 22 circuits, 36 sprints, 14 Most Wanted races (one opponent, no car
   list: the player's own car), 18 speed runs, 7 ambushes, plus DLC drift attacks and timed modes.
+- **Opponents' cars** (2026-10-19): `AIPlayerType` (GAMEPLAY.BNDL, 188 B) +0x14 `Rollout` → `Rollout` (112 B)
+  +0x58 `Vehicle` (a `VehicleList` id), +0x30 `Colour` (0 on 116 of 118), `BodyUpgrade` / `NitrousUpgrade` /
+  `TyreUpgrade`, `DamageBarProfile`, `Characters` and `631d8188` (UniqueId[]; 1656931.., not resolved). Every
+  race slot names its own car this way (the allowed list is the player's); `mwtool events <id>` prints them.
+  `AIPlayerType` flags: +0xb0 `48b3bcce`, +0xb3 `cc3cbc22` (never set), +0xb4 `6bb93300` = the Most Wanted
+  driver (14 race types, Behaviour 8; 14 free-roam ones, Behaviour 0 / 1), +0xb5 `d4fbaf43` = a cop (MOST WANTED
+  7's two Chargers, the ambushes' Interceptors). `OfflineEvent` +0xee `c75c9d90` is set on every normal race
+  with opponents but 3 DLC sprints, never on a Most Wanted race.
 - **Checkpoints and starts are `TriggerData` records** (`HAWAII/TRIGGERS.BNDL`, same ids): every checkpoint is a
   kind-0 **box**, 2 m deep, 36 m high (centre 18 m above the road), as wide as the road or the junction (27–186 m),
   its local Z the driving direction through it. The list is in driving order; on circuits the last gate stands
