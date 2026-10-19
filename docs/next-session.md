@@ -114,6 +114,16 @@ Added by the user (2026-10-16); the ones marked (2026-10-16: ...) were worked on
   nitrous message / ticker layouts, Easydrive's extra rows, the Most Wanted list panel. **Handling divergence**: every
   car gets the online default nitrous; a car without a nitrous mod boosts with no gauge (the HUD now follows the
   mods, the handling does not).
+- **Races and free roam, user play test 2026-10-19** (each needs its source in the code / data first):
+  - race intros lack their special shaders and visuals (the intro cutscene's post / letterbox / grade looks;
+    `cutscene.rs`, the sequence items we skip);
+  - changing car at jack spots no longer works after a race (the swap's state after the race / outro);
+  - races are missing from the minimap in free roam, and the race start locations are missing in the world
+    (start markers / gate looks, map item filters);
+  - in races the HUD always says "checkpoint missed" (`missed_seen=true` even in clean `--test race` runs);
+  - racers do not react to hits the way they do in the original (AI collision response / takedown rules);
+  - racers stay in the world forever after a race ends (their despawn after the outro);
+  - cops are red on the minimap instead of blue, do not blink, and the escape circle (search area) is not drawn.
 - **Menu functionality missing** (added 2026-10-19): many parts of the menus' functionality are still missing, in
   Easydrive too (survey every menu / Easydrive entry of the original against ours, from the HSM / layout data and the
   code, and list what is missing before implementing).
