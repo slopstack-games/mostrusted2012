@@ -99,8 +99,9 @@ Accuracy comes from reading the right source, not from reading everything. Habit
 - The docs are large (research-log ~580 KB, decomp ~470 KB, formats ~100 KB, PLAN ~60 KB): never read them
   whole. List headings (`grep -n '^##' docs/decomp.md`, `grep -n '^### ' docs/research-log.md`: dated, newest
   first) or grep for the function / type / flag, then read that section with an offset and limit.
-- **No windows on the user's desktop**: every `mostrusted` run (tests, screenshots) goes through `tools/t` or
-  `tools/hl` (headless gamescope; `MW_SHOW=1` only when the user asks to watch).
+- **No windows and no sound on the user's desktop**: every `mostrusted` run (tests, screenshots) goes through `tools/t`
+  or `tools/hl` (headless gamescope, audio to a silent null sink; `MW_SHOW=1` / `MW_SOUND=1` only when the user asks).
+  `tools/orig` is silent the same way; never mute a game's stream by hand (WirePlumber remembers it per application).
 - Build with `tools/b` (only warnings / errors and the result) and run with `tools/t <mostrusted args>` (only the
   TEST / BENCH RESULT lines, errors, panics and the exit code; the full log is in scratch/run.log for when you
   need it). `NO_COLOR=1` (set in `.claude/settings.json`) drops ANSI codes. Per-frame logging stays at `debug!`.

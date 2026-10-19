@@ -13,6 +13,11 @@ if [ -f "$DIR/request" ]; then
     . "$DIR/request"
     rm -f "$DIR/request" "$DIR/state.env"
     echo $$ > "$DIR/gamescope.pid"
+    # Headless runs are never audible: the game's stream goes to a null sink (no per-application mute is stored, so
+    # the user's own launches keep their sound). SOUND=1 in the request keeps the normal output.
+    if [ -z "$SOUND" ]; then
+        s="$("$(dirname "$0")/../silent-sink" 2> /dev/null)" && export PULSE_SINK="$s" PIPEWIRE_NODE="$s"
+    fi
     # The probe (docs/probe.md): only for runs that asked for it. Proton appends its own overrides to ours.
     if [ -n "$PROBE_OVERRIDE" ]; then
         export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:+$WINEDLLOVERRIDES;}$PROBE_OVERRIDE"

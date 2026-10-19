@@ -230,7 +230,7 @@ struct Cli {
     /// Disable the background music.
     #[arg(long)]
     no_music: bool,
-    /// Disable all audio.
+    /// Disable all audio (also `MW_MUTE=1`, which `tools/hl` sets for headless runs).
     #[arg(long)]
     mute: bool,
     /// Volumes for this run, over the saved settings: `master=0.8,engine=1,sfx=0.5,music=0.3` (0..1 or %).
@@ -466,7 +466,8 @@ pub struct StatusText;
 
 fn main() -> anyhow::Result<()> {
     drive::install_gamepad_mappings();
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    cli.mute |= std::env::var_os("MW_MUTE").is_some_and(|v| v != "0");
     if cli.bench.is_some() && std::env::var_os("WAYLAND_DISPLAY").is_some() && std::env::var_os("DISPLAY").is_some() {
         // Wayland offers no Immediate present mode and paces Mailbox at the monitor's refresh: benchmark
         // through XWayland, where `AutoNoVsync` gets Immediate (`bench.rs`).
@@ -802,6 +803,11 @@ fn main() -> anyhow::Result<()> {
         }),
         ..default()
     }));
+    // `--mute` / `MW_MUTE=1`: silence at the output too, so no voice that misses its module's own mute check is heard
+    // (headless runs through `tools/hl` must never be audible). After DefaultPlugins, which inserts `GlobalVolume`.
+    if cli.mute {
+        app.insert_resource(bevy::audio::GlobalVolume::new(bevy::audio::Volume::SILENT));
+    }
     // The game advances at most 2/60 s per frame (decomp.md "Update loop": one 2/60 catch-up step, even after
     // a stall). Bevy's default catches up 250 ms of fixed steps after a slow frame, which makes the next frames
     // slower too. The clamp is on real time, before the relative speed (`--test` runs 4x, so 8 steps there).

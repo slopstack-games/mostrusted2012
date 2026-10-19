@@ -389,8 +389,10 @@ def wait_for_display(timeout):
 def write_request(args, extra=""):
     STATE.mkdir(parents=True, exist_ok=True)
     w, h = args.size.lower().split("x")
+    # The game is silent (orig-wrap routes it to a null sink) unless MW_SOUND=1 is set for this launch.
+    sound = "SOUND=1\n" if os.environ.get("MW_SOUND") else ""
     (STATE / "request").write_text(f"W={int(w)}\nH={int(h)}\nBACKEND={'wayland' if args.visible else 'headless'}\n"
-                                   + extra)
+                                   + sound + extra)
     (STATE / "state.env").unlink(missing_ok=True)
 
 

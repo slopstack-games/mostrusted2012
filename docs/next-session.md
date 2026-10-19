@@ -73,6 +73,10 @@ Added by the user (2026-10-16); the ones marked (2026-10-16: ...) were worked on
   axles"; check the Veyron SS's axle data and wheel models against a screenshot of the original).
 - **Missing animations** (added 2026-10-19): some of the original's animations are still missing in the game (which
   ones not listed yet; survey against the original's car / world / UI animations, `car_anim.rs`).
+- **Sounds still not right** (added 2026-10-19): cars still sound a bit glitchy (engine synth: grain / codec
+  boundaries, research log "Audio"); traffic cars whine; some sounds are missing, e.g. the supercharger whine on the
+  old Charger; running over lamp posts and cones makes no audible sound (session 10's `world_sfx.rs` props / lamps
+  behaviours: check they fire on a car's hit, not only on a break, and that the voice is audible).
 - **UI scaling and positioning** (added 2026-10-19): the UI's scale and placement are still wrong (HUD, menus,
   pop-ups): compare against screenshots of the original at the same resolution and take the layout from the
   game's own UI data / code, not by eye.
