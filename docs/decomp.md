@@ -3017,6 +3017,29 @@ multiplier). Initial values: 0, multiplier 1.0 (`0x00f8a820`), width 1280.0 (`0x
   `UiScene::letterbox`). Model decisions: which of our screens are menus beyond the captured ones (the event
   card: menu); HUD screens' full-screen shapes / streamed pictures cover the window ([`UiFrame::cover`]).
 
+### HUD widget groups, district and road names (2026-10-19, `hud.rs`)
+
+- Free roam's screen is 371621 "FreedriveHud" (not 371670 "AmbushHud"). The HSM's "Some HUD Elements Visible"
+  (1014536) runs "Select HUD" (cockpit or third-person HUDs) and "Run Child Behaviour - Engine Off Group" (1805616:
+  group 1805613 in a freedrive event, else 1014531). "Run 3rd person HUDs" (371583): "Run Default HUD" activates the
+  `Widget_HudSelection` field `ExternalDefault` (264948: SP total, POI) and, via "Run No EasyDrive HUD" (1524982),
+  `ExternalEasyDriveOff` (`2c4a8019`, 1695018: minimap, plates, pursuit bars) until `Widget.EasyDrive.IsActive`;
+  "Run Nitrous HUD" (1524952) picks the `Nitrous` group by `Players.LocalPlayer.CurrentNitrousType` (NONE 1524950,
+  BURN / JUMP 1524919, BURN_PRO / JUMP_PRO 1524920, DUMP 1524921, DUMP_PRO 1524922) and exits on Easydrive. "Wait for
+  EZDrive Input Prompt" (1445535) shows the `Prompt` group 1135011 while Easydrive is closed. Research log
+  2026-10-19 "UI content".
+- `CurrentRoad.*`: `FUN_006591b0` registers the `RoadManager` (game +0x15324; RoadData handle +0x84, 24 player
+  slots of 0x1c bytes at +0x8c: current road or −1, previous, last valid, its previous, section, previous section,
+  segment) with `Id` +0x32c, `Name` +0x330, `Visible` +0x334. `FUN_00668650` per tick refreshes one slot
+  (`FUN_00666200` → `FUN_006638f0` → `FUN_0065f410`, "Road position" below), clears the three fields and, if the
+  local player's (game +0x2f3dc → +0xa6b4) last valid road has flag bit 0 (+0x33), sets Id = road +0x18, Name =
+  road +0x1C, Visible = 1: the plate keeps the last named road off the network.
+- `Players.LocalPlayer.CurrentDistrictName` is a `Player` binding field (+0x300, registered by `FUN_006d1830`;
+  writer not traced); the data: `GameLogicConfig.DistrictConfig.Districts[]` {`Name`,
+  `PaintLayer`} and the district `WorldPaintMap` 010000000002823e (GAMEPLAY.BNDL).
+- Text layout (`FUN_009e9780`): a character the font lacks is looked up as U+007F, then `-` (`FUN_009ebab0`), then
+  glyph record 0.
+
 ### Race HUD, countdown and results (2026-10-09, `hud.rs`, `ui_quads.rs`)
 
 What is data (research log 2026-10-09): the screens and layouts, the countdown / results `Sequence`s and their
@@ -3072,7 +3095,7 @@ icon's turn is its heading relative to the map (the player's arrow points up); i
 size × the HUD scale; icons whose centre is off the map are left out (the widget's `EnableClamping` /
 `IsClamped` is code not traced); the player's field is +0x54 (`FUN_006440a0`, 2026-10-15), the racers' was not
 traced (`5bfb3553` holds the matching arrow; cops are drawn with it and `IsCop` true since 2026-10-15). Still ours: the map scale (4 m per reference pixel from the
-tile resolution, not the 600 m / 90° camera) and the tiles drawn opaque grey (the game adds them, opacity 0.7).
+tile resolution, not the 600 m / 90° camera); the tiles are added at opacity 0.7 like the game's (2026-10-19).
 - Easydrive's RACES list: the offline races (730000) whose `AllowedVehicleList` holds the driven car (all races
   when none does), nearest start first. "START RACE" puts the car on the event's start 0.5 m up; the start
   must be inside the streamed world (`--units`), else the car falls and is reset. One race per run.

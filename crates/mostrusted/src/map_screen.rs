@@ -100,6 +100,8 @@ const SET_WAYPOINT: &str = "Map:OnSetWaypoint";
 const TITLE_TEXT: u32 = 565_900;
 const FILTER_TEXT: u32 = 1_135_274;
 const OFFLINE_TICKER: u32 = 119_887;
+/// Ink of the navigation bar (its labels' colour in layout 1470689, linear): the unselected tabs' icons.
+const TAB_INK: f32 = 0.005;
 /// The offline race game mode (the one `race.rs` runs).
 const RACE_MODE: u32 = 730_000;
 
@@ -353,6 +355,8 @@ pub struct MapScreen {
     config: MapConfig,
     player: Vec2,
     strings: HashMap<&'static str, String>,
+    /// The navigation tabs (`Widget_NavigationTabs.Tabs`): icon texture (16 hex digits) and name.
+    tabs: Vec<(String, String)>,
     job: Option<Arc<Mutex<Option<Loaded>>>>,
     look: Option<Look>,
     /// The virtual clock was running when the map opened.
@@ -538,6 +542,7 @@ struct Loaded {
     point_names: HashMap<u16, String>,
     menus: HashMap<u16, Vec<OptionItem>>,
     strings: HashMap<&'static str, String>,
+    tabs: Vec<(String, String)>,
     scene: UiScene,
     map_texture: Option<ResourceId>,
     images: Vec<(ResourceId, Image)>,
@@ -684,10 +689,19 @@ fn start_load(mut map: ResMut<MapScreen>, game: Res<crate::Game>) {
                 .and_then(|l| l.elements.iter().find_map(|e| e.texture));
             let mut scene = store.ui_scene(layouts, &lang);
             scene.letterbox = true;
+            let nav = store.navigation_tabs(MAP_SCREEN).map_err(|e| warn!("map screen: tabs: {e}")).unwrap_or_default();
+            let tabs: Vec<(String, String)> = nav
+                .iter()
+                .map(|t| {
+                    let image = t.image.map(|i| format!("{:016x}", i.0)).unwrap_or_default();
+                    (image, lang.get(t.name).unwrap_or_default().to_uppercase())
+                })
+                .collect();
             let mut images: Vec<(ResourceId, Image)> = scene
                 .textures()
                 .into_iter()
                 .chain(map_texture)
+                .chain(nav.iter().filter_map(|t| t.image))
                 .filter_map(|id| Some((id, game_text::decode_texture(&store, id)?)))
                 .collect();
             images.dedup_by_key(|(id, _)| *id);
@@ -712,6 +726,7 @@ fn start_load(mut map: ResMut<MapScreen>, game: Res<crate::Game>) {
                 point_names,
                 menus,
                 strings,
+                tabs,
                 scene,
                 map_texture,
                 images,
@@ -799,6 +814,7 @@ fn poll_load(
     }
     map.menus = loaded.menus;
     map.strings = loaded.strings;
+    map.tabs = loaded.tabs;
     map.look = Some(Look {
         scene: loaded.scene,
         slots,
@@ -1146,13 +1162,17 @@ fn lookup(
             false.into()
         }
         "UIConfig.IsArabic" | "Net.IsInOnlineGame" => false.into(),
-        // Navigation tabs: the MAP tab selected among six (their icons and names are not decoded but MAP's).
-        "Widget.Tabs.TabList._length" => 6.0.into(),
+        // Navigation tabs (`Widget_NavigationTabs.Tabs`): MWL, MAP, MPLAYER, FRIENDS, SETTINGS, STORE, with MAP
+        // selected; each cell shows its tab's icon (`Image`), the selected one its name too.
+        "Widget.Tabs.TabList._length" => (map.tabs.len().max(2) as f64).into(),
         "Widget.Tabs.SelectedIndex" => 1.0.into(),
         p if p.starts_with("Widget.Tabs.TabList[") => {
             let (i, f) = p["Widget.Tabs.TabList[".len()..].split_once("].")?;
+            let tab = i.parse::<usize>().ok().and_then(|i| map.tabs.get(i));
             match f {
-                "Name" if i == "1" => s("title"),
+                "Name" if i == "1" && tab.is_none() => s("title"),
+                "Name" => BindValue::Text(tab?.1.clone()),
+                "Image" => BindValue::Text(tab?.0.clone()),
                 "Items._length" => 0.0.into(),
                 _ => return None,
             }
@@ -1368,6 +1388,20 @@ fn draw(
         draw_at(&mut look, &mut quads, CURSOR, Some(ANCHOR), selected, true, &none);
         for id in [TITLE, TABS[0], TABS[1], FILTERS] {
             draw_at(&mut look, &mut quads, id, None, None, false, &none);
+        }
+        // The other tabs' icons are dark on their light cells in the original (`o7.png`), the selected one white
+        // on red; the icons are white silhouettes and their elements carry no tint. Model decision: the bar's
+        // own ink (its labels' colour 0.005, layout 1470689) for the tabs not selected (the code that colours
+        // them was not traced).
+        let dark: Vec<ResourceId> = m
+            .tabs
+            .iter()
+            .enumerate()
+            .filter(|&(i, _)| i != 1)
+            .filter_map(|(_, (hex, _))| ResourceId::parse(hex))
+            .collect();
+        for q in quads.iter_mut().filter(|q| q.texture.is_some_and(|t| dark.contains(&t))) {
+            q.colour[..3].copy_from_slice(&[TAB_INK; 3]);
         }
         // The black bars outside the letterboxed frame (`FUN_006240b0`).
         quads.extend(frame.bars(screen));

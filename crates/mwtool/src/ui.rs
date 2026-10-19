@@ -125,7 +125,14 @@ pub fn show(store: &AssetStore, bundle: &str, widgets: Option<&[&str]>, lang: &L
         let screen = store.ui_screen(bundle)?;
         println!("screen {} ({} widgets)", screen.id, screen.widgets.len());
         for w in &screen.widgets {
-            println!("  widget {:?} {} layer {} layouts {}", w.name, w.type_name, w.layer, w.layouts.len());
+            println!(
+                "  widget {:?} {} group {} layer {} layouts {}",
+                w.name,
+                w.type_name,
+                w.group,
+                w.layer,
+                w.layouts.len()
+            );
         }
     }
     let mut cache = UiCache::default();
@@ -223,10 +230,16 @@ fn print_element(store: &AssetStore, cache: &mut UiCache, e: &Element, lang: &La
             println!("{pad}   {name}: {v}");
         }
     }
+    let list = |b: &[mw_formats::ui::Behaviour]| {
+        b.iter().map(|b| format!("{}@{}+{}", b.parameters, b.delay, b.duration)).collect::<Vec<_>>().join("; ")
+    };
+    if !e.transition_in.is_empty() {
+        println!("{pad}   in: [{}]", list(&e.transition_in));
+    }
+    if !e.idle.is_empty() {
+        println!("{pad}   idle: [{}]", list(&e.idle));
+    }
     for t in &e.triggered {
-        let list = |b: &[mw_formats::ui::Behaviour]| {
-            b.iter().map(|b| format!("{}@{}+{}", b.parameters, b.delay, b.duration)).collect::<Vec<_>>().join("; ")
-        };
         println!("{pad}   on {:?}: in [{}] / out [{}]", t.trigger, list(&t.transition_in), list(&t.transition_out));
     }
     if let Some(s) = &e.stack {

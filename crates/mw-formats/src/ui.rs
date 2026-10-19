@@ -728,6 +728,8 @@ pub struct Widget {
     pub name: String,
     pub type_name: String,
     pub id: u32,
+    /// UniqueId of the widget group holding it (the HSM's "Activate Widget Group" nodes name groups).
+    pub group: u32,
     pub layer: u64,
     pub layouts: Vec<WidgetLayout>,
 }
@@ -745,11 +747,12 @@ impl Screen {
             return None;
         }
         let widgets = structs(o, field::WIDGET_GROUPS)
-            .flat_map(|g| structs(g, field::WIDGETS))
-            .map(|w| Widget {
+            .flat_map(|g| structs(g, field::WIDGETS).map(move |w| (uint(g, field::ID) as u32, w)))
+            .map(|(group, w)| Widget {
                 name: string(w, field::NAME),
                 type_name: w.type_name.trim_start_matches("Genesys.Gen.").to_string(),
                 id: uint(w, field::ID) as u32,
+                group,
                 layer: uint(w, field::LAYOUT_LAYER),
                 layouts: structs(w, field::LAYOUTS)
                     .map(|l| WidgetLayout {

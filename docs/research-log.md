@@ -211,6 +211,91 @@ on dirt does not feel like dirt" (handling, not only the effects).
   (surface state ≥ 1 for vfx, ≥ 2 for physics and sounds; ours has no surface state); the on-rims and flat
   contact kinds; the `61ac1863` smoke variant.
 
+### 2026-10-19: UI content: the HUD's widget groups, Easydrive prompt, SP strip, district / road plates, minimap blend, pause and map gaps
+User play test: "the UI still isn't complete, e.g. a strip behind the Speed Points". Sources: the layouts (`mwtool ui
+show`, which now prints each widget's group and the elements' own `in` / `idle` behaviours), the HSM (`mwtool hsm`),
+the dump, the original's captures `ref/shots/fence-13/original.png` (HUD, 1280×720), `ref/ui-2026-10-19/
+hud_1680x720.png`, `easydrive_1680x720.png`, `ref/frontend-2026-10-10/o4.png` (pause), `o7.png` (map). Ours at
+1280×720 (`--drive F-150 --units 12 --hour 13 --spawn=210.5,50,1503.8,33`, the fence spot): `scratch/ui/hud_c.png`,
+A/B `scratch/ui/ab_hud.png`, `ab_ed.png` (Easydrive open, 1680×720), `ab_pause2.png`, `tabs_ab2.png`, `gauges.png`
+(BURN / DUMP / none) in the worktree.
+- **Wrong screen**: the HUD read `UI/SCREENS2/371670.BNDL`, whose `Screen2` name is "AmbushHud". Free roam is
+  371621 "FreedriveHud" (Easydrive's menu already came from it): same widgets plus `EngineOffHud`'s backing,
+  `HackEasyDrive`, the GPS distance; groups `ExternalDefault` 264948, `ExternalEasyDriveOff` (field `2c4a8019` =
+  hash of "ExternalEasyDriveOff") 1695018. `FREE_ROAM_HUD` now names 371621.
+- **Which groups show** (HSM "Some HUD Elements Visible" 1014536 → "Select HUD" → "Run 3rd person HUDs" 371583):
+  "Run Default HUD" activates `Widget.HudSelect.ExternalDefault` (SP total, POI) and, through "Run No EasyDrive HUD"
+  1524982, `ExternalEasyDriveOff` (minimap frame, plates, pursuit bars, `MapOverlay`) until
+  `Widget.EasyDrive.IsActive`; "Run Nitrous HUD" 1524952 picks a `Nitrous` group in "Choose Nitrous" on
+  `Players.LocalPlayer.CurrentNitrousType` (NONE 1524950 = speedometer 1670271 without a gauge, BURN / JUMP 1524919
+  = 1670234, BURN_PRO / JUMP_PRO 1524920 = 1670333, DUMP 1524921 = 1670359, DUMP_PRO 1524922 = 1670307; each also
+  has the odometer 1806698 and the message stack 1315635) and leaves it while Easydrive is open; "Run Child
+  Behaviour - Engine Off Group" 1805616 activates `EngineOffHud` 1805613 in a freedrive event (layout 1135036, the
+  dark strip and disc behind the Easydrive prompt, and the prompt bar 604307); "Wait for EZDrive Input Prompt"
+  1445535 activates the `Prompt` group 1135011 (layout 1805584: d-pad, EASYDRIVE, NEW) while Easydrive is closed,
+  until `UISequences.HideHudRequests(GTEQ:1)`. Matches the captures: with Easydrive open the minimap and
+  speedometer go, the SP total and the EASYDRIVE strip stay.
+- **Nitrous type** (`hud::NitrousType::of`): the fitted nitrous mod's game slot (3 / 12 BURN NITROUS, 4 POWERSHOT =
+  DUMP, 13 JUMP NITROUS = BURN's group), category 0 = PRO; no nitrous mod = NONE (the offline `Nitrous_Offline`
+  disables nitrous). The F-150 without mods now shows the short speedometer as in fence-13. Model decision: slot →
+  type from the mods' names (the binding's code not traced). Divergence left: our handling still gives every car
+  the online default nitrous (handling.md "Model decisions"), so a car without a mod boosts with no gauge.
+- **SP strip**: the label's backing (sub-image 1470275) is shown by a trigger on
+  `MostWantedListManager.LocalPlayerSpeedPoints` (out: white, invisible after 8 s + 650 ms); we only fired it when
+  points were scored, so at the start the label showed without its strip. The profile's total arriving now counts
+  as a change (model decision: the trigger's evaluation was not traced). Strip and label as in hud_1680x720.
+- **District plate** (`Players.LocalPlayer.CurrentDistrictName`): `GameLogicConfig` (0100000000045e6f)
+  `DistrictConfig.Districts[10]` {`Name` Language id, `PaintLayer`} and the `WorldPaintMap` 010000000002823e in
+  `GAMELOGIC/GAMEPLAY.BNDL`, whose 10 entries are exactly those paint layers (`AssetStore::districts`). FAIRHAVEN at
+  the fence spot as in the capture. The binding's writer (player +0x300) was not traced: the link is our reading.
+- **Road plate** (`CurrentRoad.Name`), traced by a sub-agent: `FUN_006591b0` registers the `RoadManager` (game
+  +0x15324) binding table: +0x32c `Id`, +0x330 `Name`, +0x334 `Visible`; `FUN_00668650` (each tick) clears them and,
+  when the local player's last found road (slot [2], which `FUN_00666200` → `FUN_006638f0` overwrites only when a
+  road is found, one of 24 slots per tick) has flag bit 0, copies road +0x18 (Id = name − 1, no string) and +0x1C
+  (the Language id) and sets Visible. `RoadData` (`HAWAII/GAMELOGIC/ROADDATA.BNDL`): 116 of 147 roads named, all
+  resolve (road 62 = 993892 "JOHNSON ROAD", the fence spot). +0x20 / +0x24 are other ids (`FUN_0065f650` looks roads
+  up by them). Ours: `Road::id` / `name` / `NAMED`, the HUD keeps the last road the nitrous feed found.
+- **Minimap translucency**: the tile layout 371427 draws the tiles at opacity 0.7 with `MapIconShaderAdditive`
+  (MaterialState rt0 `7911488b`: src alpha, one), over the frame image 1444131 whose texture is a translucent dark
+  fill (alpha ≤ 0.64). Ours drew the tiles opaque; the map quad is now additive at 0.7 (`ui_quads` takes additive
+  map quads). Not done: the mask texture 197dd5 (rounded alpha edge) on the map; the map scale (600 m camera).
+- **Missing glyphs** (`Font::layout`): the game's text layout `FUN_009e9780` looks a character up
+  (`FUN_009ebab0`, bucket + binary search), then U+007F, then `-`, then glyph record 0; ours used `?`. Ported.
+- **Pause** (screen 431082): the original's eight rows (… STORE, QUIT) are `StdData` 1532781 (group 1532780), not
+  431091 (seven rows); QUIT shown inactive (model). The selected row's `~Widget.Menu.Action.MenuAccept` is now the
+  keyboard's Return prompt (`UIListItems` 113577, `U+E06B` box). The `Menu` widget's ticker layout 1695971 (two bars,
+  `Widget.MainMapState.Ticker1 / 2`) is drawn with the offline message on the lower grey line as in o4 (static).
+- **Map tabs**: `Widget_NavigationTabs.Tabs` (screen 899991) lists MWL, MAP, MPLAYER, FRIENDS, SETTINGS, STORE with
+  an `Image` (a texture id) and `Name`; the cells bind `Widget.Tabs.TabList[#].Image`. Icons drawn; the unselected
+  ones in the bar's ink 0.005 (the icons are white and their elements untinted: model decision for the code's tint).
+
+**Survey: what is still missing, by screen** (most visible first):
+- *Free-roam HUD* (371621): the odometer's spacing: the original prints "0.1" with one digit's advance between the
+  digits around the separate "." label, ours "0 0" (`DIST,LONG` output and the digits-only font 581007's fallback
+  record 0 = U+3000, advance 11/256, do not explain it; the formatter's code was not found); the speed and odometer
+  digits glow cyan and read bright in the original, ours grey at the data's alpha 0.45 / 0.56 (the style's unknown
+  fields `46a2f495` 0.8, `b12cc0a0` 2, `00b3eaec` 9 may be a glow); the GPS distance 1598071 (`Map.RouteDistance`;
+  its `DIST` and `DIST, LONG` labels share one visibility in our decode, so what picks one is open); the pursuit
+  score 955232 (`ScoringViewModel.CurrentPursuitScore`); the nitrous refill messages 1315635
+  (`UIMessages.NitrousList`); the milestone ticker 1867022 (`Recommends`); `MapOverlay` 1413021 (tunnel noise on
+  `Players.LocalPlayer.IsInTunnel`, jammer); the minimap's alpha mask and scale; the Easydrive side panel
+  `EasyDrivePanel` 1902272 and `CurrentRollout` 1695598 (fitted upgrades); `HackEasyDrive` 1773358 (online).
+- *Easydrive*: ours lists RETRY LAST EVENT and EXCLUSIVE RACES, the original does not (the tiers' `Sources`
+  condition bindings); the RACES row's NEW badge (items' `New`); `Widget.Prompt.New` is a model (true until the
+  menu is first opened); the alert icon (`Recommends.ShowAlert`, Autolog) never shows.
+- *Pause*: the Most Wanted list panel (layout 1695911 over `Widget.MWLList.Items`: rivals, SP thresholds, the
+  player's row; `IngameMWLList_ScreenScript`, no data loader yet); the ticker's scrolling; the Return glyph's look
+  (ours an arrow in a box, the original a notched key).
+- *Map*: the Most Wanted list (1470720) and the player's header (name, SP, SL, avatar, rank) at the top right;
+  the ticker line (ours on the upper line); key boxes (PGUP / PGDN / ESC) ~10 px taller than the original's.
+- *Not surveyed this round*: results / event card / race HUD against captures (no captures of those at 1280×720).
+
+**Captures of the original still needed** (the original was not run this round): the HUD at the fence spot with
+the 911 and a nitrous mod fitted (the BURN / DUMP gauges); 0.1 → 9.9 km on the odometer (spacing); a GPS route set
+(the distance panel, which label shows); a pursuit (score label); driving through a tunnel (map noise); Easydrive
+open on a car with no unseen races (NEW badge rule); the pause menu with the Most Wanted list at 1280×720 after
+some progress; a close crop of the minimap edge (mask).
+
 ### 2026-10-19: UI frame: HUD aspect correction and menu letterbox (code + captures), stack cells, text metrics
 User play test: "UI scaling and positioning is still wrong"; the UI did not follow runtime window resizes; loading
 pictures did not fill portrait windows. Sources: the dump (decomp.md "UI frame and `HudAspectCorrection`"), the

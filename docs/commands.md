@@ -137,6 +137,7 @@ MW_NO_VIGNETTE=1 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,172
 #   MW_SURFACE_LOG=1 (mostrusted): a line each time a wheel moves onto another surface (index, physics, tyre class, grip, drag, bumps)
 #   --near x,z[,r] (surfaces around a point), --find <index> (where a surface is), --steps (kerbs / steps nearby), --tris (every triangle: tag flags, normal, vertices)
 ./target/release/mwtool ui screens                  # game UI: screens / widgets (ui show <screen>, ui render <screen> out.png, ui font <n> out.png, ui easydrive)
+#   ui show prints each widget's group (the HSM's "Activate Widget Group" ids) and elements' in / idle behaviours; ui text --grep <s>
 ./target/release/mwtool traffic --png <scratch>/lanes.png   # TrafficLaneData: counts, flows, vehicle lists, lane map
 ./target/release/mwtool lights --near x,z[,r] --hour 21     # world lights (lists + street lamps): types, flags, ranges
 ./target/release/mwtool car-lights 911                      # a car's light sources (VehicleVfxBehaviour.Lights; `all` surveys)

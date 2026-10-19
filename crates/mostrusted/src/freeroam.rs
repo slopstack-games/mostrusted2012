@@ -680,6 +680,10 @@ fn publish(mut hud: ResMut<crate::hud::HudState>, time: Res<Time>, cars: Query<(
     // The first "Show SP Points" state: 8 s from the start of play.
     if hud.freeroam.sp_visible_until.is_none() && !cars.is_empty() {
         hud.freeroam.sp_visible_until = Some(time.elapsed_secs_f64() + SP_SHOW_SECONDS);
+        // The profile's total arriving counts as a change of `MostWantedListManager.LocalPlayerSpeedPoints`: the
+        // counter's strip (sub-image 1470275, triggered by it) shows with the label, as in the original's
+        // `ref/ui-2026-10-19/hud_1680x720.png`. Model decision (the trigger's evaluation was not traced).
+        hud.freeroam.sp_changed = Some(time.elapsed_secs_f64());
     }
     if hud.freeroam.playing.is_empty() {
         return;

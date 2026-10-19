@@ -14,8 +14,11 @@
 //! | 0x0C | u32  | road count |
 //! | 0x10 | u32  | second-array count |
 //!
-//! Road (0x34): `f32[4]` box (min x, min z, max x, max z) at 0x00; two zero words; four `u32` ids at 0x18
-//! (text ids of the road's name when flag bit 0 is set, unverified); `ptr` sections at 0x28; `ptr` the first
+//! Road (0x34): `f32[4]` box (min x, min z, max x, max z) at 0x00; two zero words; `u32` id at 0x18 (the
+//! `CurrentRoad.Id` binding; always the name's id − 1, no string), `u32` name at 0x1C (Language id, the
+//! `CurrentRoad.Name` binding: `FUN_00668650` copies both from the local player's last found road when its flag
+//! bit 0 is set, research log 2026-10-19 "UI"), two more `u32` ids at 0x20 / 0x24 (roads looked up by them in
+//! `FUN_0065f650`, not text); `ptr` sections at 0x28; `ptr` the first
 //! section's points at 0x2C; `i16` section count at 0x30; `u8` flags at 0x33 (bit 0 named road, bit 1 shortcut:
 //! set on no road of the install).
 //!
@@ -40,11 +43,17 @@ pub struct RoadData {
 pub struct Road {
     /// min x, min z, max x, max z.
     pub bounds: [f32; 4],
+    /// `CurrentRoad.Id` (0x18).
+    pub id: u32,
+    /// `CurrentRoad.Name`, a Language id (0x1C); shown only when [`Road::NAMED`] is set.
+    pub name: u32,
     pub flags: u8,
     pub sections: Vec<RoadSection>,
 }
 
 impl Road {
+    /// Flag bit 0: the road's name shows on the HUD (`FUN_00668650`; 116 of the 147 roads).
+    pub const NAMED: u8 = 0x1;
     /// Flag bit 1: the road is a shortcut (`FUN_00667c10`, the TakingShortcut refill).
     pub const SHORTCUT: u8 = 0x2;
 }
@@ -195,7 +204,13 @@ impl RoadData {
                     .collect::<Result<Vec<_>>>()?;
                 sections.push(RoadSection { bounds: r.f32_array::<4>(so)?, id: r.u32(so + 0x10)?, points });
             }
-            roads.push(Road { bounds: r.f32_array::<4>(o)?, flags: r.u8(o + 0x33)?, sections });
+            roads.push(Road {
+                bounds: r.f32_array::<4>(o)?,
+                id: r.u32(o + 0x18)?,
+                name: r.u32(o + 0x1C)?,
+                flags: r.u8(o + 0x33)?,
+                sections,
+            });
         }
         Ok(Self { version, roads })
     }
@@ -284,7 +299,13 @@ mod tests {
         let bounds = [-20.0, -20.0, 120.0, 20.0];
         RoadData {
             version: 9,
-            roads: vec![Road { bounds, flags: 0, sections: vec![RoadSection { bounds, id: 0, points }] }],
+            roads: vec![Road {
+                bounds,
+                id: 0,
+                name: 0,
+                flags: 0,
+                sections: vec![RoadSection { bounds, id: 0, points }],
+            }],
         }
     }
 
