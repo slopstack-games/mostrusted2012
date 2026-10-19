@@ -110,14 +110,15 @@ fn detail(events: &Events, e: &Event, text: &dyn Fn(u32) -> String, car: &dyn Fn
     );
     println!(
         "  laps {}, nitrous {}, traffic {}, first place only {}, skip the player's car's AI {}, target speed {:?}, \
-         target time {:?}",
+         target time {:?}, heat levels {:?}",
         e.laps,
         e.nitrous_allowed,
         e.traffic_enabled,
         e.first_place_only,
         e.skip_player_car_ai,
         e.target_speed,
-        e.target_time
+        e.target_time,
+        e.heat_levels
     );
     match &e.spawn {
         Some(s) => println!(

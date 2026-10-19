@@ -3054,6 +3054,12 @@ fn police(store: &AssetStore) -> Result<()> {
             cops(&l.fallback)
         );
     }
+    let mut all: Vec<_> = cfg.levels_by_id.values().collect();
+    all.sort_by_key(|l| l.id);
+    println!("every heat level: id level heat< finished-racer removal m (off screen / always)");
+    for l in all {
+        println!("  {:8} {} {:5} {:?}", l.id, l.level, l.threshold, l.finished_racer_remove);
+    }
     let mut types: Vec<_> = cfg.cop_vehicles.iter().collect();
     types.sort();
     println!("cop types (id -> vehicle, takedown heat):");

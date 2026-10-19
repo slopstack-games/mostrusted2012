@@ -91,8 +91,10 @@ impl Plugin for JackSpotsPlugin {
             .init_resource::<Collected>()
             .add_systems(Startup, start_loading)
             .add_systems(Update, (receive, track_cars, fit_boxes, swap).chain().after(crate::drive::read_input));
-        if let Some(out) = &self.test {
-            app.insert_resource(JackTest { out: out.clone(), phase: 0, timer: 0.0, spot: None, old: String::new() })
+        // `MW_RACE_TEST_JACK=1` with `--test race`: the same swap once the race is over (`race.rs`).
+        let test = self.test.clone().or_else(|| std::env::var_os("MW_RACE_TEST_JACK").map(|_| None));
+        if let Some(out) = test {
+            app.insert_resource(JackTest { out, phase: 0, timer: 0.0, spot: None, old: String::new() })
                 .add_systems(Update, run_test.before(receive));
         }
     }
@@ -804,8 +806,14 @@ fn run_test(
     collected: Res<Collected>,
     spatial: SpatialQuery,
     mut player: Query<(Entity, &Car, &mut Transform, &mut LinearVelocity, &mut AngularVelocity), With<Player>>,
+    race: Option<Res<crate::race::RaceState>>,
     mut exit: MessageWriter<AppExit>,
 ) {
+    // After a race (`MW_RACE_TEST_JACK`): start once the event is over and free roam is back.
+    if race.is_some() {
+        test.timer = 0.0;
+        return;
+    }
     test.timer += time.delta_secs();
     input.scripted = Some([0.0, 0.0, 0.0, 1.0]);
     let fail = |what: &str, exit: &mut MessageWriter<AppExit>| {

@@ -336,6 +336,9 @@ pub struct Event {
     /// `FeedbackMessageGroup` (+0x78) and `IntroMessageGroup` (+0x80): `EN_US/FEEDBACKGROUPS/<id>.BNDL`.
     pub feedback_message_group: u32,
     pub intro_message_group: u32,
+    /// `ab4e53fd` (+0x6c, count +0xde): the event's own `HeatLevel` ids; when the game mode uses them, the player's
+    /// heat level comes from this list instead of the free-roam one (`FUN_00669640`).
+    pub heat_levels: Vec<u32>,
 }
 
 impl Event {
@@ -621,6 +624,7 @@ impl AssetStore {
                         ar_outro: uint(o.get(h::AR_OUTRO)),
                         feedback_message_group: uint(o.get(h::FEEDBACK_MESSAGE_GROUP)),
                         intro_message_group: uint(o.get(h::INTRO_MESSAGE_GROUP)),
+                        heat_levels: uints(o.get(0xab4e_53fd)),
                     });
                 }
                 _ => {}

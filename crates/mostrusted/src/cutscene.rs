@@ -111,7 +111,7 @@ pub enum Which {
 struct Playing {
     which: Which,
     seq: Arc<Sequence>,
-    /// Sequence time (real seconds).
+    /// Sequence time (real seconds × the run's speed-up, `base_speed`).
     t: f32,
     /// Per item: has it started (one-shot actions fired).
     started: Vec<bool>,
@@ -368,7 +368,9 @@ fn run_cutscene(
             snap.0 = true;
         }
     }
-    p.t += real.delta_secs();
+    // Real time, sped up with the run (tests run the simulation faster than real time: the sequence keeps pace
+    // with it, so the intro hands over where it does at 1x).
+    p.t += real.delta_secs() * p.base_speed;
     let t = p.t;
     let seq = p.seq.clone();
 
