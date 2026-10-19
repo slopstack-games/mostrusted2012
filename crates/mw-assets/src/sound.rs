@@ -414,6 +414,10 @@ pub struct EngineBank {
     pub ignition: Option<(f32, f32)>,
     /// The car's `Vehicles.Sound.TurboWhine` (the player's `VehicleSound` +0x58), when it has one.
     pub turbo: Option<TurboWhine>,
+    /// The gain [`EngineBank::normalise`] gave the bank on top of its data level (1 when not normalised). The
+    /// game plays the engine at its data level next to every other sound, so the player's other sounds follow
+    /// it (`crates/mostrusted/src/sfx.rs`).
+    pub normalisation: f32,
 }
 
 /// `Genesys.Gen.Vehicles.Sound.TurboWhine` as the turbo update (`FUN_0058f8f0`) reads it; its `Sequences`
@@ -484,7 +488,8 @@ impl EngineBank {
             );
         }
         if rms > 1e-6 {
-            self.bank.master_gain *= (ENGINE_LEVEL / rms).clamp(0.05, 50.0);
+            self.normalisation = (ENGINE_LEVEL / rms).clamp(0.05, 50.0);
+            self.bank.master_gain *= self.normalisation;
         }
     }
 }
@@ -797,8 +802,17 @@ impl AssetStore {
                 .fold(length, f32::min);
             (catch, length)
         });
-        let mut eb =
-            EngineBank { bank, rpm_range, audible_range, harmonic_order, tuning, gear_changes, ignition, turbo: None };
+        let mut eb = EngineBank {
+            bank,
+            rpm_range,
+            audible_range,
+            harmonic_order,
+            tuning,
+            gear_changes,
+            ignition,
+            turbo: None,
+            normalisation: 1.0,
+        };
         if normalise {
             eb.normalise();
         }

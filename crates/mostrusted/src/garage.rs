@@ -400,7 +400,7 @@ fn place_arrived_car(
         commands.entity(e).despawn();
     }
     match spec.engine.clone() {
-        Some(voice) if !game.mute => {
+        Some(voice) if !game.mute || crate::audio_tap::on() => {
             commands.insert_resource(audio::PendingEngine(Some(audio::EngineAudio::new(voice))));
         }
         _ => commands.remove_resource::<audio::PendingEngine>(),

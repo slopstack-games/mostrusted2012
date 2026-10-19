@@ -129,6 +129,23 @@ struct SfxState {
     started: bool,
     driver: Option<VehicleDriver>,
     surfaces: SurfaceFades,
+    params: Option<Arc<Params>>,
+    /// The bank's channels carry the game's bus gains (`mw_assets::buses`), set against the engine's route.
+    bus_mix: bool,
+}
+
+/// The bank's level against the player's engine. Its channels play at the data's level times their bus chain over
+/// the engine's ("Player Car", `mw_assets::buses`), which is right while the engine also plays at its data level;
+/// but the engine bank is normalised (`EngineBank::normalise`, a model), on the 911 Carrera S by -8.5 dB, so the
+/// bank follows that gain. Only downwards: an engine bank under the normalised level may lack the part of its mix
+/// that leaves through sends to buses outside the bundle, so its data level says nothing (a model decision).
+/// `MW_SFX_ENGINE_LEVEL=0` leaves it out (A/B); without the bus gains (`MW_AUDIO_NO_BUS`) the old model gains,
+/// measured against the normalised engine, stand.
+fn bank_level(engine: Option<f32>, bus_mix: bool) -> f32 {
+    if !bus_mix || std::env::var("MW_SFX_ENGINE_LEVEL").is_ok_and(|v| v == "0") {
+        return 1.0;
+    }
+    engine.unwrap_or(1.0).min(1.0)
 }
 
 fn load_bank(
@@ -137,7 +154,7 @@ fn load_bank(
     mut assets: ResMut<Assets<SfxAudio>>,
     game: Res<crate::Game>,
 ) {
-    if state.driver.is_some() || (game.mute && std::env::var_os("MW_SFX_TRACE").is_none()) {
+    if state.driver.is_some() || (game.mute && std::env::var_os("MW_SFX_TRACE").is_none() && !crate::audio_tap::on()) {
         return;
     }
     if !state.started {
@@ -171,11 +188,14 @@ fn load_bank(
 
     let params = Arc::new(Params::new(bank.param_names()));
     state.surfaces = SurfaceFades::new(picks, params.clone());
+    state.params = Some(params.clone());
+    state.bus_mix = !game.store.bus_mix().is_empty();
     let mut driver = VehicleDriver::new(params.clone());
     if let Some(t) = tyre {
         driver.tyre = t;
     }
     state.driver = Some(driver);
+    crate::audio_tap::add_sfx(Player::new(bank.clone(), params.clone()));
     let handle = assets.add(SfxAudio { bank, params });
     // ONCE: a live source never ends; LOOP would buffer it 0.74 s at a time (see audio.rs).
     // Starts silent; `settings::apply_volumes` sets the effects volume once the sink exists.
@@ -189,12 +209,16 @@ fn load_bank(
 fn update_params(
     time: Res<Time>,
     mut state: ResMut<SfxState>,
+    engine: Option<Res<crate::audio::PlayerEngineLevel>>,
     cars: Query<(Entity, &Car, &CarControls), With<crate::drive::Player>>,
 ) {
     let now = time.elapsed_secs();
     let dt = time.delta_secs();
     let state = &mut *state;
     let Some(driver) = state.driver.as_mut() else { return };
+    if let Some(p) = &state.params {
+        p.set_level(bank_level(engine.map(|e| e.0), state.bus_mix));
+    }
     let car = cars.single().ok();
     // The player car's control block (its pedals also when the AI drives it in a cutscene).
     let (brake, handbrake) = car.map_or((0.0, false), |(_, _, c)| (c.brake, c.handbrake));
