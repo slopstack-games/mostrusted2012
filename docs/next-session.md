@@ -105,6 +105,13 @@ Added by the user (2026-10-16); the ones marked (2026-10-16: ...) were worked on
   same rolling resistance (0.025) and slide drag (1.5) as dirt with stock tyres (research log "every surface as its
   own type"); tyre classes (OFF-ROAD / TRACK mods) now pick the per-class numbers. To confirm with the original: the
   911 coasting from 100 mph on long paving vs asphalt. Per-surface tyre sounds handed to the sounds agent.
+- **Session 11 follow-ups (sounds, UI)**: nobody has listened to session 11's sound changes yet (bus mix from
+  `MIXER_CHANNELS`, traffic pitch fix, transmission / turbo whines, per-wheel surface sounds, doppler fix): a play
+  test by ear is the check. Open: the game's Ginsu grain player (window W in `0x00aaef50` / `0x00aad630`), bus
+  compressors, AI / traffic tyre sounds per surface. UI open: odometer spacing, digit glow, GPS / pursuit score /
+  nitrous message / ticker layouts, Easydrive's extra rows, the Most Wanted list panel. **Handling divergence**: every
+  car gets the online default nitrous; a car without a nitrous mod boosts with no gauge (the HUD now follows the
+  mods, the handling does not).
 - **Menu functionality missing** (added 2026-10-19): many parts of the menus' functionality are still missing, in
   Easydrive too (survey every menu / Easydrive entry of the original against ours, from the HSM / layout data and the
   code, and list what is missing before implementing).
