@@ -907,7 +907,7 @@ fn lookup(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn draw_hud(
     mut commands: Commands,
     hud: Option<ResMut<Hud>>,
