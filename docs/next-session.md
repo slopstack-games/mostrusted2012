@@ -65,6 +65,16 @@ Decisions with the user: portrait loading screens keep the original's bars.
   counts), roof landings and out of bounds (crash camera + reset onto the nearest road), car lights on the world,
   crash particles (glass, debris), camera clipping (find what the original does), dirt cloud size and dirt feel.
 
+## Future plans (user, 2026-10-20)
+
+- **Split screen** in our game (two local players: two views, two HUDs, two input devices; the original has no
+  split screen, so this is an addition on top of the faithful game, kept switchable).
+- **Mod menu for the original**: the debug / mod tools (the probe's teleport, car select, mods fitting, fixed
+  conditions, scripted inputs and future mods) usable while playing the original, through an in-game UI overlay
+  (a menu drawn inside the running game, e.g. from the probe DLL hooking the game's present / the D3D11 swap chain,
+  driven by keys or the pad), not only from `mwtool` on the command line. Same policy as the probe: runtime only,
+  offline, the exe on disk untouched (reverse-engineering.md "Code inside the running game").
+
 New this session (docs/commands.md): `tools/hl`, `tools/silent-sink`, `mwtool tp / car / mods / conditions / inputs /
 probe`, `capture --probe --script`, `mwtool surfaces --flat / --tris / --classes`, `placement-check --floating`,
 `terrain-check` LOD modes, `--load-all`, `--stream`, `--composed-backdrop`, `--replay ... --spawn`, `MW_MUTE`,
