@@ -64,6 +64,46 @@ situation). 911 Carrera S, vehicle bank against the engine (energy over each sit
   same rpm on asphalt, then a hard stop from 60 mph; the skid-to-engine level at equal rpm settles the engine's
   data level against the bus mix (and whether the drift ducks the engine).
 
+### 2026-10-19: AI racers and hits: the race-car contact response, takedowns, the AI after a hit
+
+User play test: racers are not affected by hits the way they are in the original. Read from the dump / snapshot
+disassembly and the data (decomp.md "Car against car: contact response"); ported in `car_contacts.rs`.
+
+- **Found**: every race-car pair handler (`FUN_009588c0` player–AI, `FUN_009575e0` AI–AI, `FUN_00959210` /
+  `FUN_00959730` against a crashing race car) sets per-car impulse scales (record +0x20 / +0x30 linear, +0x40 / +0x50
+  angular) that the contact pass `FUN_009be420` applies, from `CollisionResponses_RaceCar.PlayerVsAI` /
+  `CollisionResponses_Global.RaceCarVsRaceCar` etc.: e.g. player–AI at damage 0 the player takes 0.4 linear /
+  0.05 angular, the AI 0.5 / 0.1, rising with each car's damage to 1 / 0.4 and 1 / 0.1 at 100; a crash switches
+  to 0.7 / 0.4 for the AI (0.7 / 0.1 for the player); friction 0 (AI–AI 0.3). `e3882eb1` = linear, `e5ea1414` =
+  angular. A car crashed by the impact cannot be lifted by the pass (v_y gain ≤ clamp(3 − v_y, 0, 2) m/s). Ours
+  had avian's rigid contact with full spin and friction 0.5.
+- **Ported**: avian still detects race-car pairs (effects, sounds, camera read them) but the `props.rs` hook
+  neutralises them; `car_contacts.rs` queries the body boxes before each step, decides a new impact there
+  (`car_impacts::decide`, now with the rules' `DamageOverride` damage) and solves with the lanes, then writes the
+  impulse and pre-solve closing speed back into avian's contacts. `AiCrash.by` names the aggressor; a player's
+  AI crash logs "takedown". `MW_RACE_CAR_CONTACTS=0` = the old solve (A/B), `MW_CAR_CONTACT_LOG=1`.
+- **Verified** (`tools/ram-sweep`, 911 vs 911, new / old; full lines in the worktree's scratch/sweep2.txt):
+  side hit of a stationary AI at 72 mph: AI crashes ("player impact", damage 78 > 50), both cars ≈ 26 mph after
+  0.25 s in both; moving AI (60 km/h) hit in the side at 40 / 80 / 130 km/h: damage 5.7 / 17.9 / 41.3, no crash
+  (rule 50), AI scales 0.53 / 0.59 / 0.71 linear, 0.1 angular; rear-end at 100 / 160 km/h: the AI is pushed from
+  37 to 52 / 70 mph (old solve: both cars nearly stopped, a measurement artefact of the old run's contact timing);
+  25° swipe at 100 km/h: the same as before (−38° heading). The old path crashed the AI at the 130 km/h side hit
+  (its damage used after-step velocities); ours uses pre-solve velocities as the game does. `--race 462174 --test
+  race` passes (1 AI–AI crash and reset in the run, 44 race-car impacts); `--test accel` unchanged (3.58 s, 11.60 s).
+- **Not found / open**: the AI racers' crash reset (`FUN_006d39d0` skips players with kind ≠ 0; ours stays the
+  4.5 s model); the takedown camera (`ShowTakedownCameras`, GameModeManager +0x2e7b from option 0x12 in
+  `FUN_0073daf0`, no reader in the dump; HSM 1377014 "Run Takedown Sequence" is the player's own wreck); the
+  racer state `FUN_0050da90` has no hit reaction (only the stuck check and an unidentified skip byte world
+  +0x2ef50); the racer interaction (`FUN_005050d0`, shunt / ram) still not ported; AI–traffic and player–traffic
+  responses (`FUN_0095a680` blends with `FUN_00927360`, `FUN_00959be0`) still avian's; the crashing handlers'
+  "race car impact" rule (`RULES_14`); record +0x100 / +0x110 and the crashed body's velocity cap (+0x2f);
+  restitution −0.1. The large peak yaw rates (115–216 deg/s) after non-crash hits come from the AI's tyres and
+  steering after the push, not the contact (angular lane 0.1): compare with a capture.
+- **Captures that would confirm** (probe, `mwtool tp` + scripted inputs, one AI racer): a T-bone of a stationary
+  racer at 40 / 70 mph (its speed / yaw over 1 s, crash or not), a rear-end at +25 / +60 mph over a racer at
+  60 km/h, a 25° side-swipe at 100 km/h; read both cars' velocity before / after (vehicle +0x1124) and the
+  crash flags (+0x1774), and how long a crashed racer takes to reappear.
+
 ### 2026-10-19: sounds from the play test: traffic whine, missing whines, inaudible props, glitches, surface sounds
 User play test items ("Sounds still not right") plus the surfaces agent's per-wheel surface sounds. Offline checks
 with `mwtool traffic-sound`, `engine-sound --trace`, `vehicle-sound --surface`; analysis scripts in the worktree's

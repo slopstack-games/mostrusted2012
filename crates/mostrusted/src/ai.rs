@@ -864,7 +864,10 @@ pub(crate) fn ai_drive(
                 w.0 = Vec3::ZERO;
                 ai.state = Default::default();
                 ai.resets += 1;
-                info!("AI car {entity}: crash reset after {:.1} s ({}), rolling at {mph:.0} mph", c.time, c.rule);
+                info!(
+                    "AI car {entity}: crash reset after {:.1} s ({}, by {:?}), rolling at {mph:.0} mph",
+                    c.time, c.rule, c.by
+                );
                 commands.entity(entity).remove::<crate::car_impacts::AiCrash>();
             }
             continue;

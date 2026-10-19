@@ -250,6 +250,11 @@ MW_POLICE_LOG=1 MW_COP_DISTANCE=80 ./target/release/mostrusted --drive 911 --uni
 ./target/release/mostrusted --drive 911 --test crash-traffic       # head-on with traffic: crash camera (car_impacts.rs)
 ./target/release/mostrusted --drive 911 --test crash-parked --units 20 --spawn=925,24,-101 --screenshot <scratch>/p.png  # into a parked car
 ./target/release/mostrusted --drive 911 --test crash-ai --ai 911 --no-traffic --spawn=925,23,-101,10   # (the default spawn has a barrier ahead)
+# crash-ai prints TEST RESULT crash-ai (AI speed / yaw response, crash, damage, lanes). A ram of a moving AI car:
+MW_TEST_AI_KMH=60 MW_TEST_KMH=80 MW_TEST_RAM_ANGLE=90 ./target/release/mostrusted --drive 911 --test crash-ai --ai 911 --no-traffic --spawn=925,23,-101,10   # 0 rear, 90 side, 180 head on
+./target/release/mostrusted --race 462174 --test crash-ai --no-cutscenes   # the same ram on the nearest opponent, 4 s after the go
+MW_RACE_CAR_CONTACTS=0 ...    # race car vs race car back to avian's rigid solve (A/B; car_contacts.rs); MW_CAR_CONTACT_LOG=1 logs each solved pair
+tools/ram-sweep <out>         # crash-ai at several speeds / angles, both solves: one TEST RESULT line each
 # Car state: --nitrous holds nitrous, --damage all=0.5 starts damaged, R washes the car, --dirt 0.6,0.3
 ./target/release/mostrusted --drive 911 --test exhaust   # pops / backfires (MW_EXHAUST_LOG=1)
 ./target/release/mwtool damage <car> --keys              # damage clip keys; --level all=0.5 --preview <png>
