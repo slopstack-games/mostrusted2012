@@ -86,6 +86,8 @@ enum Page {
 pub struct EasyDrive {
     enabled: bool,
     pub open: bool,
+    /// Opened at least once (the HUD's `Widget.Prompt.New` model, `hud.rs`).
+    pub seen: bool,
     tiers: Vec<Tier>,
     job: Option<Arc<Mutex<Option<Loaded>>>>,
     look: Option<Look>,
@@ -101,6 +103,13 @@ pub struct EasyDrive {
     /// "SET DESTINATION" / "START RACE" (the `TO_FMN_OPT` tier's RPC items, generated in code; labels from the
     /// black-list tier's hook items `SetWaypointToEventFromBinding` / `StartEventFromBinding`).
     race_actions: [String; 2],
+}
+
+impl EasyDrive {
+    /// `Widget.EasyDrive.IsActive`: the menu is up.
+    pub fn is_active(&self) -> bool {
+        self.open && !self.stack.is_empty()
+    }
 }
 
 /// An offline race Easydrive can start.
@@ -180,8 +189,12 @@ struct Look {
 }
 
 /// The `EasyDrive` widget's menu layout in `EASYDRIVE_SCREEN` (UniqueId): the element stack at (3, 43). The
-/// widget's other layouts are the closed-menu prompt (1805584: d-pad icon, alert, "NEW" badge) and an empty one.
+/// widget's other layouts are the prompt (1805584: d-pad icon, the EASYDRIVE strip, alert, "NEW" badge), drawn
+/// above the open menu as in the original (`ref/ui-2026-10-19/easydrive_1680x720.png`; the widget is a
+/// `Widget_ShowLayouts`, which shows all of its layouts), and an empty one (1713378). Closed, the `Prompt`
+/// widget's copy of the prompt shows instead (`hud.rs`).
 const MENU_LAYOUT: u32 = 1_773_380;
+const PROMPT_LAYOUT: u32 = crate::hud::PROMPT_LAYOUT;
 
 fn load_look(store: &mw_assets::AssetStore, lang: &mw_formats::Language) -> Option<Look> {
     let layouts = store
@@ -189,7 +202,7 @@ fn load_look(store: &mw_assets::AssetStore, lang: &mw_formats::Language) -> Opti
         .map_err(|e| warn!("Easydrive layouts unavailable: {e}"))
         .ok()?
         .into_iter()
-        .filter(|l| l.layout.id == MENU_LAYOUT)
+        .filter(|l| l.layout.id == MENU_LAYOUT || l.layout.id == PROMPT_LAYOUT)
         .collect();
     let scene = store.ui_scene(layouts, lang);
     let images =
@@ -272,6 +285,7 @@ fn open_root(menu: &mut EasyDrive) {
     if let Some(i) = menu.tiers.iter().position(|t| t.transition == "TO_BASE") {
         menu.stack.push((Page::Tier(i), 0));
         menu.open = true;
+        menu.seen = true;
     }
     menu.dirty = true;
 }
@@ -498,6 +512,9 @@ fn lookup(path: &str, arg: Option<&str>, history: &[String], names: &[String], s
             BindValue::Text(history.get(i)?.to_uppercase())
         }
         "Signals.False" => false.into(),
+        // The prompt's alert and NEW badge: Autolog alerts are not modelled; the badge belongs to the `Prompt`
+        // widget, whose group is not active while the menu is open (model decision).
+        "Recommends.ShowAlert" | "Widget.Prompt.New" => false.into(),
         // Item types: the special row templates (paint, nearest event, recommends, friends) are not ours yet.
         p if p.starts_with("Widget.") && p.ends_with(".IsActive") => false.into(),
         _ => return None,

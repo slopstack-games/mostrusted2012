@@ -62,6 +62,8 @@ pub struct Font {
     pub em: f32,
     pub metrics: [f32; 2],
     pub glyphs: HashMap<char, Glyph>,
+    /// Glyph record 0, the last resort for a character the font lacks (see [`Font::layout`]).
+    pub first: Option<Glyph>,
 }
 
 impl Font {
@@ -83,6 +85,7 @@ impl Font {
         let glyph_at = r.u32(0x20)? as usize;
         let codes_at = r.u32(0x24)? as usize;
         let mut glyphs = HashMap::with_capacity(n);
+        let mut first = None;
         for i in 0..n {
             let code = r.u16(codes_at + i * 2)?;
             let g = glyph_at + i * 32;
@@ -94,6 +97,9 @@ impl Font {
                 advance: f(6)? * w,
                 flags: r.u32(g + 28)?,
             };
+            if i == 0 {
+                first = Some(glyph);
+            }
             // Surrogate halves can't be chars; the fonts have none.
             if let Some(c) = char::from_u32(code as u32) {
                 glyphs.insert(c, glyph);
@@ -116,6 +122,7 @@ impl Font {
             em,
             metrics: [r.f32(0x14)?, r.f32(0x18)?],
             glyphs,
+            first,
         })
     }
 
@@ -130,7 +137,10 @@ impl Font {
     }
 
     /// Lay out one line of text at `size` (em, output units). Returns the quads (atlas rectangle, output
-    /// rectangle relative to the pen start and line top) and the advance width. Unknown characters use `?`.
+    /// rectangle relative to the pen start and line top) and the advance width. A character the font lacks is
+    /// drawn as U+007F, else `-`, else glyph record 0, the game's chain in its text layout (`FUN_009e9780`, the
+    /// loop calling the bucket lookup `FUN_009ebab0`): e.g. the odometer's `.` in the digits-only font 581007
+    /// becomes record 0, an ideographic space (11 / 256 of the atlas width).
     ///
     /// Key boxes: the button prompts are `U+E047` (left cap), `U+E048` (fill), the key's name, `U+E049` (right
     /// cap), e.g. "ESC" for Esc (`UIListItems` 113577). The fill is stretched under the name, which is marked
@@ -172,7 +182,11 @@ impl Font {
                 );
                 pen = start + width;
             }
-            let Some(g) = self.glyph(c).or_else(|| self.glyph('?')) else { continue };
+            let Some(g) =
+                self.glyph(c).or_else(|| self.glyph('\u{7f}')).or_else(|| self.glyph('-')).or(self.first.as_ref())
+            else {
+                continue;
+            };
             if let Some(rect) = g.rect {
                 quads.push(GlyphQuad {
                     atlas: rect,
@@ -224,6 +238,7 @@ mod tests {
             em: 20.0,
             metrics: [0.8, 0.7],
             glyphs,
+            first: None,
         };
         let (quads, width) = font.layout("A A", 10.0, 0.0);
         assert_eq!(quads.len(), 2);

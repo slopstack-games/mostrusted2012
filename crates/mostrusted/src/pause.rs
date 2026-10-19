@@ -2,8 +2,12 @@
 //!
 //! Data: the `Menu` widget's layout 431094 (the frame, the red "PAUSE" title and an element stack over
 //! `Widget.Menu.Items` whose selected row uses the template `Widget.Menu.SelectedIndex(EQUALS:#)`); the
-//! offline item list is the `StdData` `Widget_MenuData` (431091): RESUME "CONTINUE", MWL "DRIVER DETAILS", MAP,
-//! MPLAYER "MULTIPLAYER", FRIENDS, TO_SETTINGS "SETTINGS", STORE. The widget's actions: previous / next, the
+//! offline item list is a `StdData` `Widget_MenuData`: 1532781 (group 1532780): RESUME "CONTINUE", MWL "DRIVER
+//! DETAILS", MAP, MPLAYER "MULTIPLAYER", FRIENDS, TO_SETTINGS "SETTINGS", STORE, QUIT. Model decision: of the
+//! screen's two offline `StdData` lists (431091 without QUIT, group 1532668; 1532781 with it) the one the
+//! original's PC pause menu shows (`ref/frontend-2026-10-10/o4.png`, eight rows ending in QUIT); the page data
+//! that picks the group was not traced. The `Menu` widget's other layouts: 1695971, the ticker bars at the bottom
+//! (drawn; the text static, not scrolled), and 1695911, the Most Wanted list (not built: no rivals' data yet). The widget's actions: previous / next, the
 //! current item's `Action` through `ExitGroupVia`, and RESUME on cancel. Controls: the original's PAUSE (Esc,
 //! pad Start) opens it; the widget's user actions (decomp.md "Menu input and the map screen's controls") move with
 //! `menu_up` / `menu_down` (arrows, left stick, d-pad; auto-repeat 0.2 s then every 0.1 s), choose with `accept`
@@ -30,8 +34,12 @@ use crate::ui_quads::{AdditiveQuadMaterial, PoolNode, QuadNode, QuadPool, show_q
 
 /// The `Menu` widget's frame layout.
 const MENU_LAYOUT: u32 = 431_094;
-/// The offline items (`StdData`).
-const STD_DATA: u32 = 431_091;
+/// The offline items (`StdData` of group 1532780; module doc).
+const STD_DATA: u32 = 1_532_781;
+/// The `Menu` widget's ticker layout (two bars and `Widget.MainMapState.Ticker1` / `Ticker2`).
+const TICKER_LAYOUT: u32 = 1_695_971;
+/// "You are not connected to the Autolog Servers" (the map's offline ticker, `map_screen.rs`).
+const OFFLINE_TICKER: u32 = 119_887;
 /// Rows shown at once (the stack's `Widget.Menu.Menu.NumItemsShown` is set by code; model decision).
 const WINDOW: usize = 9;
 
@@ -79,9 +87,18 @@ pub struct PauseMenu {
     /// The virtual clock was running when the menu opened.
     unpause: bool,
     open_map: bool,
+    /// `~Widget.Menu.Action.MenuAccept` (the keyboard's Return prompt, `U+E06B`) and the offline ticker.
+    strings: Strings,
+}
+
+#[derive(Default, Clone)]
+struct Strings {
+    accept: String,
+    ticker: String,
 }
 
 struct Loaded {
+    strings: Strings,
     items: Vec<Item>,
     races: Vec<Arc<RaceSetup>>,
     scene: UiScene,
@@ -141,16 +158,21 @@ fn start_load(mut menu: ResMut<PauseMenu>, game: Res<crate::Game>) {
             .ui_screen_layouts(PAUSE_SCREEN, Some(&["Menu"]))
             .unwrap_or_default()
             .into_iter()
-            .filter(|l| l.layout.id == MENU_LAYOUT)
-            .take(1)
+            .filter(|l| l.layout.id == MENU_LAYOUT || l.layout.id == TICKER_LAYOUT)
+            .take(2)
             .collect();
+        // The original's default key for MENU_ACCEPT is Return (decomp.md "Input").
+        let strings = Strings {
+            accept: store.keyboard_button_prompt("KEY_RETURN").and_then(|id| lang.get(id)).unwrap_or_default().into(),
+            ticker: lang.get(OFFLINE_TICKER).unwrap_or_default().into(),
+        };
         let mut scene = store.ui_scene(layouts, &lang);
         // A menu screen: letterboxed like the original (`UiFrame::letterbox`).
         scene.letterbox = true;
         let images =
             scene.textures().into_iter().filter_map(|id| Some((id, game_text::decode_texture(&store, id)?))).collect();
         let fonts = scene.fonts.iter().map(|(&n, f)| (n, f.clone())).collect();
-        *out.lock().unwrap() = Some(Loaded { items, races, scene, images, fonts });
+        *out.lock().unwrap() = Some(Loaded { strings, items, races, scene, images, fonts });
     });
     menu.job = Some(job);
 }
@@ -185,6 +207,7 @@ fn poll_load(
     let root = commands.spawn((node, Pickable::IGNORE, GlobalZIndex(15))).id();
     info!("pause menu: {} items, {} races", loaded.items.len(), loaded.races.len());
     menu.items = loaded.items;
+    menu.strings = loaded.strings;
     menu.races = loaded.races;
     menu.look = Some(Look { scene: loaded.scene, textures, root, pool: QuadPool::default(), anim: UiAnim::default() });
     if menu.open {
@@ -315,7 +338,13 @@ pub(crate) fn navigate(
 
 /// Values for the frame's bindings (`Widget.Menu.*`; inside a row the item's fields arrive as
 /// `Widget.Menu.Items[<row>].<field>`).
-fn lookup(path: &str, arg: Option<&str>, rows: &[(String, bool)], selected: usize) -> Option<BindValue> {
+fn lookup(
+    path: &str,
+    arg: Option<&str>,
+    rows: &[(String, bool)],
+    selected: usize,
+    strings: &Strings,
+) -> Option<BindValue> {
     let field = |row: Option<&(String, bool)>, f: &str| -> Option<BindValue> {
         let (label, active) = row?;
         Some(match f {
@@ -344,6 +373,11 @@ fn lookup(path: &str, arg: Option<&str>, rows: &[(String, bool)], selected: usiz
         "Widget.Menu.SelectedIndex" => (selected as f64).into(),
         "Widget.Menu.Menu.CanSelectPrevious" | "Widget.Menu.Menu.CanSelectNext" => true.into(),
         "Mode.IsInGameIntro" => false.into(),
+        "Widget.Menu.Action.MenuAccept" => BindValue::Text(strings.accept.clone()),
+        // The ticker: the offline message on the lower, grey line, as in `o4.png` (model decision: the
+        // `TickerStrings` palette's use by `MainMapState` was not traced).
+        "Widget.MainMapState.Ticker1" => BindValue::Text(String::new()),
+        "Widget.MainMapState.Ticker2" => BindValue::Text(strings.ticker.clone()),
         "Signals.True" => true.into(),
         "Signals.False" => false.into(),
         _ => return None,
@@ -365,6 +399,7 @@ fn draw(
     let shown: Vec<(String, bool)> = all.iter().skip(first).take(WINDOW).cloned().collect();
     let sel = menu.selected - first;
     let open = menu.open;
+    let strings = menu.strings.clone();
     let Some(look) = menu.look.as_mut() else { return };
     let quads = if open {
         let mut options = DrawOptions::new(None, Some(&mut look.anim), time.elapsed_secs_f64());
@@ -372,7 +407,7 @@ fn draw(
         let q = look.scene.draw_with(
             [window.width(), window.height()],
             &mut |p, a| {
-                let v = lookup(p, a, &shown, sel);
+                let v = lookup(p, a, &shown, sel, &strings);
                 if v.is_none() {
                     misses.push(format!("{p}[{a:?}]"));
                 }

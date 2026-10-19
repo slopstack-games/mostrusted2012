@@ -8,13 +8,114 @@ use mw_formats::ui::{Element, ElementKind, Layout, LayoutInstance, Screen, TextS
 
 use crate::{AssetStore, Error, Result};
 
-/// The free-roam driving HUD screen: Speedwall / Recommends / EngineOffHud widgets, the speed-point
-/// counter, minimap, nitrous gauge (research log, 2026-10-04 UI section).
-pub const FREE_ROAM_HUD: &str = "UI/SCREENS2/371670.BNDL";
+/// The free-roam driving HUD screen, `Screen2` "FreedriveHud" (the same bundle as Easydrive's menu): the
+/// speed-point counter, minimap, nitrous gauge, the Easydrive prompt and its backing (`EngineOffHud`). Until
+/// 2026-10-19 the HUD read 371670, "AmbushHud" (the Ambush event's screen: same widgets but no `EngineOffHud`
+/// backing, `Speedwall` / `Recommends` instead of `HackEasyDrive`).
+pub const FREE_ROAM_HUD: &str = "UI/SCREENS2/371621.BNDL";
 
 /// Ink of a key's name inside a key box and of the box (the prompt labels' dark and light, linear).
 const KEY_INK: [f32; 3] = [0.005_181_5, 0.005_181_5, 0.005_181_5];
 const KEY_BOX: [f32; 3] = [0.830_77, 0.830_77, 0.830_77];
+
+/// The `WorldPaintMap` that paints the districts over the world (`GAMELOGIC/GAMEPLAY.BNDL`): its entries are the
+/// `PaintLayer`s of `GameLogicConfig.DistrictConfig.Districts` (10 districts, 10 entries besides "nothing").
+pub const DISTRICT_PAINT_MAP: ResourceId = ResourceId(0x0100_0000_0002_823e);
+/// The `GameLogicConfig` object (`GLOBALCONFIG.BNDL`, its only one).
+const GAME_LOGIC_CONFIG: ResourceId = ResourceId(0x0100_0000_0004_5e6f);
+
+/// The districts (`Players.LocalPlayer.CurrentDistrictName`, the plate above the minimap): the paint map and,
+/// per paint layer, the district's name (Language id). The binding's code (`Player.CurrentDistrictName`, a
+/// field at player +0x300 registered in the `Player` binding table) was not traced to its writer; the link
+/// from a position to a name through this map is our reading of the data (each paint layer is exactly one
+/// district's, and the plate at the original's start reads FAIRHAVEN, the district painted there).
+#[derive(Debug, Clone)]
+pub struct Districts {
+    pub map: fmt::WorldPaintMap,
+    /// Paint layer (UniqueId) → district name (Language id).
+    pub names: HashMap<u32, u32>,
+}
+
+impl Districts {
+    /// The name (Language id) of the district painted at a world position.
+    pub fn name_at(&self, x: f32, z: f32) -> Option<u32> {
+        self.map.entry_at(x, z).and_then(|layer| self.names.get(&layer).copied())
+    }
+}
+
+impl AssetStore {
+    /// [`Districts`]: `GameLogicConfig` field `DistrictConfig.Districts[]` {`Name`,
+    /// `PaintLayer`} and [`DISTRICT_PAINT_MAP`].
+    pub fn districts(&self) -> Result<Districts> {
+        use fmt::genesys::{Value, field_hash as h};
+        let cfg = self.genesys_object(GAME_LOGIC_CONFIG)?;
+        let num = |o: &fmt::genesys::Object, f: &str| match o.get(h(f)) {
+            Some(Value::UInt(u)) => Some(*u as u32),
+            Some(Value::Int(i)) => Some(*i as u32),
+            _ => None,
+        };
+        let mut names = HashMap::new();
+        if let Some(Value::Struct(dc)) = cfg.get(h("DistrictConfig"))
+            && let Some(Value::Array(list)) = dc.get(h("Districts"))
+        {
+            for d in list {
+                if let Value::Struct(d) = d
+                    && let (Some(name), Some(layer)) = (num(d, "Name"), num(d, "PaintLayer"))
+                {
+                    names.insert(layer, name);
+                }
+            }
+        }
+        let map = fmt::WorldPaintMap::parse(&self.load(DISTRICT_PAINT_MAP)?)?;
+        Ok(Districts { map, names })
+    }
+}
+
+/// A tab of a screen's `Widget_NavigationTabs` (the menus' bottom bar: MWL, MAP, MPLAYER, FRIENDS, SETTINGS,
+/// STORE): the cell layouts bind `Widget.Tabs.TabList[#].Image` / `.Name` to these.
+#[derive(Debug, Clone)]
+pub struct NavTab {
+    /// `TabName` (the page's token).
+    pub token: String,
+    /// `Image`: the icon texture.
+    pub image: Option<ResourceId>,
+    /// `Name`: Language id.
+    pub name: u32,
+}
+
+impl AssetStore {
+    /// The tabs of the first `Widget_NavigationTabs` of a screen: its `Tabs` list (six on the map screen 899991;
+    /// a second list, field `d730cb94`, holds five of them and is not used here).
+    pub fn navigation_tabs(&self, screen: &str) -> Result<Vec<NavTab>> {
+        use fmt::genesys::{Value, field_hash as h};
+        let o = self.ui_screen_object(screen)?;
+        let mut widgets = Vec::new();
+        crate::frontend::collect(&o, "Genesys.Gen.Widget_NavigationTabs", &mut widgets);
+        let w = widgets.first().ok_or(Error::Missing(ResourceId::NULL))?;
+        let Some(Value::Array(tabs)) = w.get(h("Tabs")) else { return Err(Error::Missing(ResourceId::NULL)) };
+        Ok(tabs
+            .iter()
+            .filter_map(|t| match t {
+                Value::Struct(t) => Some(NavTab {
+                    token: match t.get(h("TabName")) {
+                        Some(Value::Str(s)) => s.clone(),
+                        _ => String::new(),
+                    },
+                    image: match t.get(h("Image")) {
+                        Some(Value::Handle(id)) => *id,
+                        _ => None,
+                    },
+                    name: match t.get(h("Name")) {
+                        Some(Value::UInt(u)) => *u as u32,
+                        Some(Value::Int(i)) => *i as u32,
+                        _ => 0,
+                    },
+                }),
+                _ => None,
+            })
+            .collect())
+    }
+}
 
 /// A point-of-interest look ([`fmt::ui::PoiVisuals`]) with its layouts.
 #[derive(Debug, Clone)]
