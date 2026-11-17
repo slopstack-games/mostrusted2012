@@ -51,9 +51,9 @@ impl crate::binding::Host for LogicState {
     fn lookup(&self, path: &[crate::binding::Segment]) -> crate::binding::Lookup {
         use crate::binding::Lookup;
         if let Some((root, members)) = path.split_first()
-            && root.hash == *MODE_ROOT
+            && let Some((_, f)) = ROOTS.iter().find(|(h, _)| *h == root.hash)
         {
-            let r = super::mode_view::lookup(self, members);
+            let r = f(self, members);
             if matches!(r, Lookup::Found(_) | Lookup::Unsupported) {
                 return r;
             }
@@ -62,7 +62,20 @@ impl crate::binding::Host for LogicState {
     }
 }
 
-static MODE_ROOT: std::sync::LazyLock<u32> = std::sync::LazyLock::new(|| crate::binding::hash("Mode"));
+type RootFn = fn(&LogicState, &[crate::binding::Segment]) -> crate::binding::Lookup;
+
+/// The registered roots the logic answers itself, by root hash (one module per root, `natives/<root>_view.rs`).
+static ROOTS: std::sync::LazyLock<Vec<(u32, RootFn)>> = std::sync::LazyLock::new(|| {
+    let h = crate::binding::hash;
+    vec![
+        (h("Mode"), super::mode_view::lookup as RootFn),
+        (h("ModeVM"), super::modevm_view::lookup),
+        (h("Net"), super::net_view::lookup),
+        (h("JoinGameState"), super::online_state_view::lookup),
+        (h("CreateMatchState"), super::online_state_view::lookup),
+        (h("MatchMakeState"), super::online_state_view::lookup),
+    ]
+});
 
 impl LogicState {
     /// `ResolveBoolBinding` / an HSM condition: [`super::ViewModels::resolve_bool`]'s rules over every root.

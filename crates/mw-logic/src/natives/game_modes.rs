@@ -148,6 +148,10 @@ pub struct GameModeManager {
     /// ... and the one its loader holds (+0xb0 with the state +0xb8 == 2; set by the runtime). The mode's machine
     /// starts once they agree (`FUN_006bb6f0`).
     pub weapon_list_loaded: u32,
+    /// +0x2510: the skip prompt's time (`ModeVM.ShowSkipPrompt`: shown while > 0).
+    pub skip_prompt_time: f32,
+    /// +0x2526: `HasTargetSpeed` (`ModeVM.ShowPositionFromCheckpoint` needs it clear).
+    pub has_target_speed: bool,
 }
 
 impl GameModeManager {
