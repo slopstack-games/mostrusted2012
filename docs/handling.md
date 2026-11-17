@@ -152,6 +152,13 @@ no drift can start and a running drift ends.
 It does **not** lock the rear wheels outright (the game's lock mask comes from other states). The brakes and the
 driveline see the previous tick's state, the drift this tick's. `35e18207` / `6ce0fda7` are the drift scale a
 drift starts with on the tick after the handbrake is let go, not grip.
+The 911's data does carry the speed band (350 N m at ≤ 30 mph → 1200 N m at ≥ 135 mph, `Minimum_handbrake_time`
+0.1 s; `Handbrake.*` hashes `b0bb7eaa`, `4af55f8a`, `8c74b0f6`, `92a9eddb`, `df620dba`), and our `Handbrake`
+reads it. With ≈ 800 N m per rear wheel at 85 mph against ≈ 2680 N m of tyre at the braking peak, the rears do
+not lock in a straight line, in ours or (by the code) in the original; in a slide the longitudinal cap blends
+towards `Brake_Slip_Long` (911 rear: 1.0 at κ −0.25) with the slip angle, so they slip more but still roll.
+Whether the original's rears lock (user report 2026-11-17) is open until the capture in the research log
+2026-11-17 is taken; nothing was changed without it.
 
 ### Steering
 

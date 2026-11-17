@@ -284,6 +284,23 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
   state of the previous tick (they run before `FUN_009d27b0`). **The handbrake does not lock the wheels**: the
   lock mask (a stopping torque that holds a wheel still) comes from other vehicle states (+0x1774 on all wheels,
   +0x1b90 on the front), not from the handbrake. Whether the rear wheels lock is up to the tyre and the torque.
+- **Brake path in detail** (re-read 2026-11-17 for the handbrake-lock report; research log that day). The four
+  brake objects are vehicle +0xfb0 / +0xff0 (front) and +0x1030 / +0x1070 (rear), 0x40 bytes each (the `this` of
+  `FUN_009cdfd0`): +0x00 service torque = `Brakes` front / rear × brake ramp +0x1610 × (1 − burnout on the
+  burnout axle), written by `FUN_009b1180`; +0x04 the budget left over; +0x08 pedal²; +0x10 lock lanes; +0x20
+  handbrake lanes; +0x30 the wheel object, whose +0x198 is the wheel's spin record (+0x2c ω, +0x54 I, +0x5c 1/I).
+  Per wheel: budget = locked ? I |ω| / dt : (handbrake ? max(strength, service × pedal²) : service × pedal²) + a
+  damage drag (wheel +0x15c × the wheel-damage attribute's +0x10, only while a damage object hangs at wheel
+  +0x1ac: `FUN_009140b0` for damage zones 2 / 4 / 6 / 8). Applied at once: ω −= sign(ω) min(budget, I |ω| / dt) ×
+  dt / I (`FUN_009df750`), the rest kept at +0x04. **Units**: torque in N m per wheel, the same units for the
+  service brake and the handbrake (one `max`); the third argument is 1/dt (`FUN_00904da0` turns the rpm change
+  into a rate with it). So the 911's handbrake is lerp(`Brake_strength_at_low_speed` 350, `_at_high_speed`
+  1200 N m) over `Low_speed_mph` 30 → `High_speed_mph` 135, per rear wheel (≈ 800 N m at 85 mph), against a
+  rear tyre that carries 1.8 × 4340 N × 0.343 m ≈ 2680 N m at its braking peak and 1.4 × … ≈ 2080 N m fully
+  sliding: with the code as read the 911's rears cannot lock under the handbrake in a straight line on asphalt.
+- **The lock lanes**: +0x1774 is the crashed flag (all wheels); +0x1b90 is the gearbox's +0x120 (gearbox =
+  vehicle +0x1a70), set to all-ones by the engine-off start-up state `FUN_009ce3d0` (state 0) and cleared by the
+  reset `FUN_009cd620`: the front wheels are held while the engine is off. Neither reads the handbrake.
 - **Driveline** (`FUN_009b32c0` stores the state at +0x17b0; `FUN_009d5520`, `FUN_009d0380`, clutch
   `FUN_009d7ac0`): while the handbrake is on the front axle's torque share is 1 and the rear's 0, on every car
   (rear-driven ones included); the burnout measure then blends both shares towards the burnout axle's (front if
