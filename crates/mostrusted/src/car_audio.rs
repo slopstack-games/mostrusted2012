@@ -15,6 +15,7 @@
 //! `MW_AUDIO_METER=1` prints the voices once a second (distance, gain, doppler, RPM, the level the audio thread
 //! rendered) and the audio thread's time per voice. The player's engine (`audio.rs`) is unchanged.
 
+use crate::platform::PollLock;
 use std::num::NonZero;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -67,11 +68,11 @@ static GAME_NANOS: AtomicU64 = AtomicU64::new(0);
 static GAME_FRAMES: AtomicU64 = AtomicU64::new(0);
 
 /// Adds the time until it is dropped to [`GAME_NANOS`].
-struct Timed(std::time::Instant);
+struct Timed(crate::platform::Instant);
 
 impl Timed {
     fn start() -> Self {
-        Self(std::time::Instant::now())
+        Self(crate::platform::Instant::now())
     }
 }
 
@@ -155,7 +156,7 @@ impl Iterator for SpatialSource {
         if self.one_shot.as_ref().is_some_and(|p| p.finished()) {
             return None;
         }
-        let t0 = self.timing.then(std::time::Instant::now);
+        let t0 = self.timing.then(crate::platform::Instant::now);
         let player = &mut self.player;
         let (l, r) = self.render.frame(&mut || player.next_sample());
         if let Some(t0) = t0 {
@@ -280,6 +281,9 @@ pub(crate) struct Listener {
     pub right: Vec3,
     pub velocity: Vec3,
     pub valid: bool,
+    /// The previous frame's time step: the camera's global transform read here is the one its follow system set
+    /// in the previous frame (it propagates in `PostUpdate`), so it moved over that frame's step.
+    last_dt: f32,
 }
 
 pub(crate) fn update_listener(
@@ -289,16 +293,32 @@ pub(crate) fn update_listener(
 ) {
     let Some(t) = cam.iter().next() else { return };
     let p = t.translation();
-    let dt = time.delta_secs();
+    // `MW_LISTENER_DT=current` divides by this frame's step instead (A/B: the velocity then jitters with the frame
+    // times, and with it every other car's doppler pitch).
+    let current = std::env::var("MW_LISTENER_DT").is_ok_and(|v| v == "current");
+    let dt = if current { time.delta_secs() } else { l.last_dt };
+    l.last_dt = time.delta_secs();
     if l.valid && dt > 0.0 {
         let v = (p - l.position) / dt;
         // A cut (teleport, camera switch) is not a velocity.
         l.velocity = if v.length() < 150.0 { v } else { Vec3::ZERO };
     }
+    listener_trace(time.elapsed_secs(), time.delta_secs(), l.velocity);
     l.position = p;
     l.forward = t.forward().as_vec3();
     l.right = t.right().as_vec3();
     l.valid = true;
+}
+
+/// `MW_LISTENER_TRACE=<file>`: one line per frame, `seconds dt speed vx vy vz` of the listener (the camera).
+fn listener_trace(t: f32, dt: f32, v: Vec3) {
+    use std::io::Write;
+    static FILE: std::sync::OnceLock<Option<std::sync::Mutex<std::fs::File>>> = std::sync::OnceLock::new();
+    let file = FILE
+        .get_or_init(|| std::fs::File::create(std::env::var_os("MW_LISTENER_TRACE")?).ok().map(std::sync::Mutex::new));
+    if let Some(f) = file {
+        _ = writeln!(f.lock().unwrap(), "{t:.4} {dt:.5} {:.3} {:.3} {:.3} {:.3}", v.length(), v.x, v.y, v.z);
+    }
 }
 
 /// Gain, pan and doppler of an emitter at `position` moving at `velocity` facing `forward`.
@@ -392,7 +412,7 @@ fn attach_ai_tyres(
                 let job = Arc::new(Mutex::new(None));
                 let out = job.clone();
                 let store = game.store.clone();
-                std::thread::spawn(move || {
+                crate::platform::thread::spawn(move || {
                     let (bank, spatial) = store.competitor_tyre_bank().unwrap_or_else(|e| {
                         warn!("competitor tyre sounds: {e}");
                         Default::default()
@@ -402,7 +422,7 @@ fn attach_ai_tyres(
                 tyres.job = Some(job);
             }
             Some(job) => {
-                if let Some(b) = job.lock().unwrap().take() {
+                if let Some(b) = job.poll_lock().and_then(|mut s| s.take()) {
                     info!("competitor tyre sounds: {} sequences, 3D {:?}", b.0.sequences.len(), b.1.falloff);
                     tyres.bank = Some(Arc::new(b));
                 }
@@ -479,6 +499,12 @@ fn update_ai_voices(
             last_shift_up: dt.last_shift_up,
             cruising: dt.cruising,
             top_gears: dt.in_top_gears(dp),
+            gearbox_throttle: dt.gearbox_throttle,
+            transmission_mph: mw_assets::engine_driver::transmission_mph(
+                rpm,
+                dp.active(dt.cruising).ratio(car.gear) * dp.active(dt.cruising).final_drive,
+                car.rear_wheel_radius(),
+            ),
         };
         let forward = t.rotation * Vec3::Z;
         let placed = place(&v.spatial, &listener, t.translation, vel.0, forward);
@@ -545,7 +571,7 @@ fn load_traffic_banks(
         return;
     }
     if let Some(job) = voices.job.clone() {
-        if let Some(banks) = job.lock().unwrap().take() {
+        if let Some(banks) = job.poll_lock().and_then(|mut s| s.take()) {
             let n = banks.iter().flatten().count();
             info!("traffic sounds: {n} of {} vehicle types have an engine", banks.len());
             voices.banks = Some(banks);
@@ -558,7 +584,7 @@ fn load_traffic_banks(
     let store = game.store.clone();
     let job: BankJob = Arc::new(Mutex::new(None));
     let out = job.clone();
-    std::thread::spawn(move || {
+    crate::platform::thread::spawn(move || {
         let banks = components
             .iter()
             .map(|&c| match store.traffic_engine(c) {

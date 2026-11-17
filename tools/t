@@ -1,10 +1,11 @@
 #!/bin/sh
 # Run mostrusted with the given arguments, full log to scratch/run.log (or $MW_RUN_LOG); prints only the result lines
 # (TEST / BENCH RESULT, CRASH VFX), errors and panics, and the exit code. Example: tools/t --drive 911 --test accel --mute
+# Runs in a headless gamescope (tools/hl): no window on the desktop; MW_SHOW=1 shows it.
 R="$(dirname "$0")/.."
 LOG="${MW_RUN_LOG:-$R/scratch/run.log}"
 mkdir -p "$(dirname "$LOG")"
-NO_COLOR=1 "$R/target/release/mostrusted" "$@" > "$LOG" 2>&1
+NO_COLOR=1 "$R/tools/hl" "$R/target/release/mostrusted" "$@" > "$LOG" 2>&1
 rc=$?
 grep -E 'TEST RESULT|BENCH RESULT|CRASH VFX| ERROR |panicked' "$LOG" | sed -E 's/^[0-9T:.Z-]+ +[A-Z]+ +[a-z_:]+: //' | cut -c1-300
 echo "exit $rc (full log: $LOG)"

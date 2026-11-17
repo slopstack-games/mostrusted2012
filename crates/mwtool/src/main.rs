@@ -5,16 +5,22 @@ use std::sync::Mutex;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
+mod bindings;
 mod camera_take;
 mod car_lights;
 mod compare;
 mod crack;
 mod damage;
 mod events;
+mod flat_strip;
+mod float_check;
+mod hsm;
 mod lods;
+mod lua;
 mod memscan;
 mod placement;
 mod preview;
+mod probe_ctl;
 mod props;
 mod siren;
 mod survey;
@@ -25,6 +31,7 @@ mod ui;
 mod verify_handling;
 mod water;
 mod wheels;
+mod widgets;
 
 use mw_assets::AssetStore;
 use mw_bundle::{Bundle, ResourceId, ResourceType};
@@ -42,12 +49,50 @@ struct Cli {
     cmd: Cmd,
 }
 
+/// Repeatable conditions in the original (probe).
+#[derive(clap::Args, Debug, Clone, Default)]
+struct ConditionArgs {
+    /// Freeze the time of day at this hour (0-24).
+    #[arg(long)]
+    hour: Option<f32>,
+    /// Switch traffic off (the game's traffic message 0xf).
+    #[arg(long)]
+    no_traffic: bool,
+    /// Repair the car (vehicle-manager message 0x16, as a body shop does).
+    #[arg(long)]
+    repair: bool,
+    /// Hold the nitrous amount at this value (0-100).
+    #[arg(long)]
+    nitrous: Option<f32>,
+}
+
+impl ConditionArgs {
+    fn get(&self) -> probe_ctl::Conditions {
+        probe_ctl::Conditions {
+            hour: self.hour,
+            no_traffic: self.no_traffic,
+            repair: self.repair,
+            nitrous: self.nitrous,
+        }
+    }
+}
+
 #[derive(Subcommand)]
 enum UiCmd {
     /// One line per screen bundle with its widgets (and their layout counts).
     Screens,
     /// The world map's item kinds (icon / card looks, option menus), filters and point-of-interest looks.
     MapItems {
+        #[arg(long, default_value = mw_assets::DEFAULT_LANGUAGE)]
+        lang: String,
+    },
+    /// A screen's point-of-interest looks (`Widget_PointOfInterest`): key, map icon layout and world layouts with
+    /// their elements (`--key` keeps the looks with these keys).
+    Pois {
+        /// Screen bundle, e.g. `UI/SCREENS2/604153.BNDL` (the race HUD, whose looks the minimap draws).
+        screen: String,
+        #[arg(long, value_delimiter = ',')]
+        key: Vec<u32>,
         #[arg(long, default_value = mw_assets::DEFAULT_LANGUAGE)]
         lang: String,
     },
@@ -256,7 +301,84 @@ enum Cmd {
         process: String,
         #[arg(long)]
         pid: Option<u32>,
+        /// Record through the probe DLL instead (`orig launch --probe`): one row per game tick, logged inside
+        /// the game; with --script / --spot / the condition flags (docs/probe.md "Capture helpers").
+        #[arg(long)]
+        probe: bool,
+        /// With --probe: an input script (`mwtool inputs`) played tick by tick; the run ends with it.
+        #[arg(long)]
+        script: Option<PathBuf>,
+        /// With --probe: teleport to this spot (name from tools/orig/spots.txt or x,ground_y,z,heading) first.
+        #[arg(long, allow_hyphen_values = true)]
+        spot: Option<String>,
+        /// With --probe --spot: seconds to let the car settle after the teleport.
+        #[arg(long, default_value_t = 3.0)]
+        settle: f32,
+        /// With --probe --spot: start moving at this speed (km/h): the game's placement gives the car the speed
+        /// and the script starts on the first tick after it (no settling).
+        #[arg(long)]
+        kmh: Option<f32>,
+        #[command(flatten)]
+        conditions: ConditionArgs,
+        /// The probe's output directory (default: the one `orig launch --probe` recorded).
+        #[arg(long)]
+        probe_dir: Option<PathBuf>,
     },
+    /// Send raw command lines to the probe in the running original (docs/probe.md "Capture helpers"):
+    /// `status`, `tp x y z heading [m/s]`, `car <id>`, `repair`, `notraffic`, `poke|hold <type> <value> <chain>`,
+    /// `peek <type> <chain>`, `release`, `script <csv> [<watch> <out>]`, `log <watch> <out> [s]`, `stop`.
+    Probe {
+        words: Vec<String>,
+        #[arg(long)]
+        probe_dir: Option<PathBuf>,
+    },
+    /// Teleport the player's car in the running original (probe): a spot name from tools/orig/spots.txt or
+    /// `x,ground_y,z[,heading_deg]` (heading 0 = +z, 90 = +x); `--save NAME` stores where the car is now.
+    Tp {
+        #[arg(allow_hyphen_values = true)]
+        target: Option<String>,
+        /// Speed along the heading after the teleport (km/h).
+        #[arg(long, default_value_t = 0.0)]
+        kmh: f32,
+        /// Move the car's rigid bodies directly (the probe's tick hook) instead of the game's own placement
+        /// (`FUN_00647e00`, which waits for streaming and resets the car's state): only for short moves within the
+        /// loaded world.
+        #[arg(long)]
+        raw: bool,
+        /// With --raw: the y given is the body's own height, not the ground's.
+        #[arg(long)]
+        body_y: bool,
+        /// Travel there in raw hops of this many metres (ground heights from the collision mesh), for places the
+        /// game's placement refuses (the airfield).
+        #[arg(long)]
+        hops: Option<f32>,
+        #[arg(long)]
+        save: Option<String>,
+        #[arg(long)]
+        list: bool,
+        #[arg(long)]
+        probe_dir: Option<PathBuf>,
+    },
+    /// Swap the player's car in the running original (probe) with the game's own swap (`FUN_006c2020`, the
+    /// jack spots' call): any car from the vehicle list, by id or name, owned or not.
+    Car {
+        car: String,
+        #[arg(long)]
+        probe_dir: Option<PathBuf>,
+    },
+    /// Fix the running original's conditions for repeatable runs (probe): time of day, traffic, damage, nitrous.
+    Conditions {
+        #[command(flatten)]
+        conditions: ConditionArgs,
+        /// Let the clock run again and drop the held values.
+        #[arg(long)]
+        release: bool,
+        #[arg(long)]
+        probe_dir: Option<PathBuf>,
+    },
+    /// Write an input script for `capture --probe --script`: segments `seconds:steer,throttle,brake,handbrake,
+    /// nitrous` (steer in the game's sense, + = right), e.g. `2:0,0,0,0,0 6:0,1,0,0,0 3:0,0.3,0,0,0`.
+    Inputs { out: PathBuf, segments: Vec<String> },
     /// Compare a recording of the original (`capture`) with Most Rusted's replay of it (`--replay`): speed, yaw
     /// rate, lateral g, body slip, rpm, gear, drift state and path side by side, and RMS differences.
     Compare {
@@ -364,6 +486,12 @@ enum Cmd {
         sweep: Option<String>,
         #[arg(long, default_value_t = 40.0)]
         mph: f32,
+        /// The surface under the wheels (its index in the surface list, the collision tag's bits 13–19; default:
+        /// `Default_surface`) and the tyre class (2 = stock road tyres) that pick the tyre and road sounds.
+        #[arg(long)]
+        surface: Option<usize>,
+        #[arg(long, default_value_t = 2)]
+        tyre_class: u8,
     },
     /// Count world triangles per shader (all track units), to prioritise ports.
     ShaderUsage,
@@ -411,10 +539,18 @@ enum Cmd {
         /// Car name, vehicle ID or bundle path.
         car: String,
     },
-    /// A car's performance mods (`Vehicles.PerformanceUpgrades`): slot -> choice -> parameter changes.
+    /// A car's performance mods (`Vehicles.PerformanceUpgrades`): slot -> choice -> parameter changes. With a fit
+    /// list, fits them in the running original (probe): the game's swap with a rollout (`FUN_006c2020`), no unlock
+    /// needed (docs/probe.md "Capture helpers").
     Mods {
         /// Car name, vehicle ID or bundle path.
         car: String,
+        /// Fit in the running original: `nitrous=1,gearbox=2,...` (groups tyres / nitrous / gearbox / chassis /
+        /// body), a mod by name (`powershot=2`, `long-gears=1`) or game slot (`3=1`); levels 0|none, 1|base, 2|pro;
+        /// `none` clears every group, `all=<level>` fits each group's first slot.
+        fit: Option<String>,
+        #[arg(long)]
+        probe_dir: Option<PathBuf>,
     },
     /// The collision surface list (`HAWAII/SURFACELIST.BNDL`) with each surface's triangle count and
     /// collision flags over the track units, and its dirt / dust build-up (`VehicleEffects`, dry | wet).
@@ -431,6 +567,28 @@ enum Cmd {
         /// vertical extent is under 0.5 m), nearest first, with their height, surface and facing.
         #[arg(long)]
         steps: bool,
+        /// With `--near`: list every triangle around the point (vertices, surface, collision flags, normal).
+        #[arg(long)]
+        tris: bool,
+        /// With `--near x,z,r`: the longest straight, level stretches of ground (a test strip; `--find` limits
+        /// them to one surface), with their start, end and heading.
+        #[arg(long)]
+        flat: bool,
+        /// With `--flat`: the height range a stretch may span (m).
+        #[arg(long, default_value_t = 0.10)]
+        flat_tol: f32,
+        /// With `--flat`: only stretches within 3° of this heading (either way along it).
+        #[arg(long, allow_hyphen_values = true)]
+        flat_heading: Option<f32>,
+        /// With `--flat`: list square approaches to kerbs instead: for every low steep collision face (a
+        /// 0.05-0.3 m step), the level run-up along its normal (at least 30 m) and the level ground after it (at
+        /// least 10 m), longest first.
+        #[arg(long)]
+        flat_kerb: bool,
+        /// Per surface: the tag flags its `SurfaceType` stands for, what it does to each tyre class (grip /
+        /// rolling / slide drag, `FUN_0054d750`) and its wheel effects (kick-up, smoke, tyre marks).
+        #[arg(long)]
+        classes: bool,
     },
     /// ICE camera takes (`CAMERAS.BNDL`, `mw_formats::camera_take`): one line each, or one take (name,
     /// UniqueId or resource id) with its channel layout and the camera evaluated every `--step` seconds.
@@ -454,6 +612,9 @@ enum Cmd {
         /// dynamic instance of the track units) with its instance ids, to check the object ↔ trigger link.
         #[arg(long)]
         objects: bool,
+        /// `x,y,z`: list every trigger (any kind) whose volume holds this point.
+        #[arg(long, allow_hyphen_values = true)]
+        at: Option<String>,
     },
     /// Police and pursuit data (`mw_assets::police`): the bust rule, the free-roam heat levels (thresholds, heat
     /// and cooldown times, the cops each fields) and the cop types' cars (docs/decomp.md "Police and pursuits").
@@ -496,6 +657,11 @@ enum Cmd {
         /// Groundcover only: per group, whether the zone that owns its place lists its collection.
         #[arg(long)]
         owners: bool,
+        /// Trees, cards, props and groundcover whose base floats above every drawn surface (main LOD0 in the
+        /// main view, composed backdrop), clustered, with the skipped stand-ins and collision under them
+        /// (`float_check.rs`).
+        #[arg(long)]
+        floating: bool,
     },
     /// Terrain through the road: drawn ground (main terrain / plot meshes at every LOD, the composed backdrop)
     /// above a road mesh at the same spot, ranked by area (`terrain_check.rs`).
@@ -508,12 +674,27 @@ enum Cmd {
         eps: f32,
         #[arg(long, default_value_t = 30)]
         top: usize,
-        /// Only one kind of ground: main, lod, backdrop.
+        /// Only one kind of ground: main, lod, lod-ground, backdrop, shadow (the stand-ins' SHADOW meshes).
         #[arg(long)]
         only: Option<String>,
         /// Also count models the main view skips (`Model` +0x19 pass mask), as drawn before 2026-10-16.
         #[arg(long)]
         all_passes: bool,
+        /// The view's LOD scale (`FUN_008b5fe0`), for which LODs are drawn together.
+        #[arg(long, default_value_t = 1.5)]
+        scale: f32,
+        /// Only pokes that can be seen from closer than this (metres).
+        #[arg(long, default_value_t = f32::INFINITY)]
+        within: f32,
+        /// Only pokes over a driven road (collision at the road mesh).
+        #[arg(long)]
+        driven: bool,
+        /// Instead: the `Model` +0x19 pass masks of every main placement, per layer and shader family.
+        #[arg(long)]
+        masks: bool,
+        /// Instead: one model's pass mask, LOD / shadow distances and per-state renderables (hex id).
+        #[arg(long)]
+        model: Option<String>,
     },
     /// The world's model LOD tables and placement LOD scales (docs/decomp.md "Model LOD and draw distance");
     /// `--at x,y,z` counts what the game would draw from there at view scale `--scale`.
@@ -537,6 +718,18 @@ enum Cmd {
     Ui {
         #[command(subcommand)]
         cmd: UiCmd,
+    },
+    /// The screens' JSON widget definitions and scripts (`mw_formats::widget`, `mw_assets::widgets`): with no
+    /// argument, checks every screen (definitions parse, untyped keys per widget type, every script resolves
+    /// to a Lua chunk or a native script, JSON and GeneSys agree); `widgets <screen>` (number or bundle) lists a
+    /// screen's widgets, actions and scripts; `--json <Name>_<UniqueId>|<resource id>` prints one definition;
+    /// `--scripts` lists every script name and what runs it.
+    Widgets {
+        screen: Option<String>,
+        #[arg(long)]
+        json: Option<String>,
+        #[arg(long)]
+        scripts: bool,
     },
     /// Disassemble the compiled D3D11 programs (DXBC) a shader uses.
     ShaderAsm {
@@ -607,9 +800,49 @@ enum Cmd {
         #[arg(long)]
         spots: bool,
     },
-    /// The game logic's state machines (`HSMData`, `mw_formats::hsm`): `hsm` lists the root nodes, `hsm <id>`
-    /// prints a node's tree (children, what each child's exit codes start, parameters), `hsm --find <text>`
-    /// searches node names, `hsm <id> --parents` lists the nodes that start it (as a child or a transition).
+    /// Every binding path in the install (JSON widgets, Lua constants, HSM parameters, GeneSys strings) parsed
+    /// with `mw_logic::binding`: counts per source, parse errors, warnings, roots, op tokens.
+    Bindings {
+        /// Only texts containing this.
+        #[arg(long)]
+        find: Option<String>,
+        /// Print every binding with its segments and op records.
+        #[arg(long)]
+        parse: bool,
+        /// Skip the GeneSys objects (the slow part).
+        #[arg(long)]
+        no_genesys: bool,
+        /// Write `sources \t text \t result` per binding to this file.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// The UI's Lua scripts run by `mw_lua` (crates/mwtool/src/lua.rs): `lua --list` lists the chunks;
+    /// `lua` runs every chunk's main function and `Construct` with logging stub natives and prints the natives
+    /// each called; `--run <name>` one script (its natives, errors); `--trace` every native call with its
+    /// arguments; `--call <Fn>` (repeatable, `all` = every function of the script table) also calls callbacks;
+    /// `--natives <file>` stubs only the names listed (the game's registry); `--out <tsv>` per-script natives.
+    Lua {
+        #[arg(long)]
+        list: bool,
+        #[arg(long)]
+        run: Option<String>,
+        #[arg(long)]
+        call: Vec<String>,
+        #[arg(long)]
+        trace: bool,
+        #[arg(long)]
+        natives: Option<PathBuf>,
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// The game logic's state machines (`HSMData`, `mw_formats::hsm`): `hsm` lists the top-level states and other
+    /// roots, `hsm <id>` prints a state's tree (behaviour, parameters, data definition, what each child's exit
+    /// points do), `hsm --find <text>` searches state names, `hsm <id> --parents` lists who starts it, `hsm --data`
+    /// prints the data definitions. `hsm --run [instance]` runs the interpreter (`mw_logic::hsm`) headless from a
+    /// top-level state (default 20527, the boot's "Top State") for `--steps` frames of `--dt` s and logs every
+    /// state entered / exited; unported behaviours hold (never exit), hooks answer EXIT,
+    /// bindings do not resolve, unless `--answer NAME=VALUE` says otherwise (NAME: a state id, a behaviour code,
+    /// a binding path with a '.' (`Host.LoadingScreenShowing`, `Host.GraphicsPrepared` answer the host queries), or a hook name; VALUE: an exit point, `run` = never exit, or a binding value).
     Hsm {
         node: Option<u32>,
         #[arg(long)]
@@ -621,6 +854,16 @@ enum Cmd {
         /// Tree depth for `hsm <id>`.
         #[arg(long, default_value_t = 3)]
         depth: usize,
+        #[arg(long)]
+        data: bool,
+        #[arg(long, num_args = 0..=1, default_missing_value = "20527")]
+        run: Option<u32>,
+        #[arg(long, default_value_t = 300)]
+        steps: usize,
+        #[arg(long, default_value_t = 1.0 / 30.0)]
+        dt: f32,
+        #[arg(long)]
+        answer: Vec<String>,
     },
     /// Scoring actions (`ScoringAction`s of GAMELOGIC/GAMEPLAY.BNDL named by `ScoringConfig`): Speed Points,
     /// pursuit score, heat, HUD message sequence and title per action. `--all` includes the actions worth no
@@ -689,16 +932,57 @@ fn main() -> Result<()> {
         Cmd::Telemetry { watch, out, hz, seconds, process, pid, pokes } => {
             return telemetry_cmd(watch, out, *hz, *seconds, process, *pid, pokes);
         }
-        Cmd::Capture { name, watch, hz, seconds, no_audio, process, pid, pokes } => {
+        Cmd::Capture {
+            name, watch, probe: true, script, spot, settle, kmh, conditions, probe_dir, seconds, ..
+        } => {
+            let dir = probe_ctl::probe_dir(probe_dir.as_deref())?;
+            let c = probe_ctl::ProbeCapture {
+                name,
+                watch,
+                script: script.as_deref(),
+                spot: spot.as_deref(),
+                settle: *settle,
+                kmh: *kmh,
+                seconds: *seconds,
+                conditions: conditions.get(),
+            };
+            return probe_ctl::capture(&dir, &c);
+        }
+        Cmd::Capture { name, watch, hz, seconds, no_audio, process, pid, pokes, .. } => {
             return capture_cmd(name, watch, *hz, *seconds, *no_audio, process, *pid, pokes);
         }
+        Cmd::Probe { words, probe_dir } => return probe_ctl::raw(&probe_ctl::probe_dir(probe_dir.as_deref())?, words),
+        Cmd::Tp { target: Some(target), hops: Some(step), probe_dir, .. } => {
+            let store = AssetStore::new(GameDir::locate(cli.game_dir.as_deref())?)?;
+            return probe_ctl::hop(&probe_ctl::probe_dir(probe_dir.as_deref())?, &store, target, *step);
+        }
+        Cmd::Tp { target, kmh, raw, body_y, save, list, probe_dir, .. } => {
+            let dir = if *list { PathBuf::new() } else { probe_ctl::probe_dir(probe_dir.as_deref())? };
+            return probe_ctl::tp(&dir, target.as_deref(), save.as_deref(), *list, *kmh, *raw, *body_y);
+        }
+        Cmd::Conditions { conditions, release, probe_dir } => {
+            return probe_ctl::conditions(&probe_ctl::probe_dir(probe_dir.as_deref())?, &conditions.get(), *release);
+        }
+        Cmd::Inputs { out, segments } => return probe_ctl::inputs(out, segments),
         Cmd::Compare { original, ours, every } => return compare::compare(original, ours, *every),
         _ => {}
     }
     let game = GameDir::locate(cli.game_dir.as_deref())?;
     match cli.cmd {
-        Cmd::Memscan { .. } | Cmd::Tune { .. } | Cmd::Telemetry { .. } | Cmd::Capture { .. } | Cmd::Compare { .. } => {
+        Cmd::Memscan { .. }
+        | Cmd::Tune { .. }
+        | Cmd::Telemetry { .. }
+        | Cmd::Capture { .. }
+        | Cmd::Compare { .. }
+        | Cmd::Probe { .. }
+        | Cmd::Tp { .. }
+        | Cmd::Conditions { .. }
+        | Cmd::Inputs { .. } => {
             unreachable!("handled before locating the game")
+        }
+        Cmd::Car { car, probe_dir } => {
+            let id = probe_ctl::car_id(&AssetStore::new(game)?, &car)?;
+            probe_ctl::car(&probe_ctl::probe_dir(probe_dir.as_deref())?, id)?
         }
         Cmd::Info => {
             println!("root:    {}", game.root().display());
@@ -742,6 +1026,7 @@ fn main() -> Result<()> {
             match cmd {
                 UiCmd::Screens => ui::screens(&store)?,
                 UiCmd::MapItems { lang } => ui::map_items(&store, &store.language(&lang)?)?,
+                UiCmd::Pois { screen, key, lang } => ui::pois(&store, &screen, &key, &store.language(&lang)?)?,
                 UiCmd::Easydrive { screen, lang } => ui::easydrive(&store, &screen, &store.language(&lang)?)?,
                 UiCmd::Show { screen, widget, lang } => {
                     let lang = store.language(&lang)?;
@@ -837,7 +1122,11 @@ fn main() -> Result<()> {
             wheels.as_deref(),
         )?,
         Cmd::Wheels { car, png } => wheels::run(&AssetStore::new(game)?, &car, png.as_deref())?,
-        Cmd::Mods { car } => {
+        Cmd::Mods { car, fit: Some(fit), probe_dir } => {
+            let store = AssetStore::new(game)?;
+            return probe_ctl::fit_mods(&probe_ctl::probe_dir(probe_dir.as_deref())?, &store, &car, &fit);
+        }
+        Cmd::Mods { car, fit: None, .. } => {
             let store = AssetStore::new(game)?;
             let bundle = if car.to_ascii_uppercase().ends_with(".BNDL") {
                 car
@@ -848,10 +1137,15 @@ fn main() -> Result<()> {
             };
             let b = store.bundle(&bundle).with_context(|| format!("no bundle {bundle}"))?;
             const OPS: [&str; 3] = ["x", "+", "="];
+            let lang = store.language(mw_assets::DEFAULT_LANGUAGE).ok();
+            let game_slot = |k: usize| mw_assets::mods::GAME_SLOT_FIELD.iter().position(|&f| f == Some(k));
             for (i, cat) in mw_assets::mods::performance_upgrades(&store, &b)?.iter().enumerate() {
-                println!("category {i}");
-                for c in cat {
-                    let name = c.name.map_or("-".into(), |n| n.to_string());
+                println!("category {i} (game level {})", if i == 0 { "2, PRO" } else { "1" });
+                for (k, c) in cat.iter().enumerate() {
+                    let text = c.name.and_then(|n| lang.as_ref()?.get(n as u32)).unwrap_or("");
+                    let name = c.name.map_or("-".into(), |n| format!("{n} \"{text}\""));
+                    let gs = game_slot(k).map_or("game slot ?".into(), |s| format!("game slot {s}"));
+                    print!("  {k:2} ({gs}) ");
                     let extra = match (&c.nitrous, c.tyre) {
                         (Some(n), _) => format!(" nitrous params {n}"),
                         (_, Some(t)) => format!(" tyre {t}"),
@@ -869,7 +1163,7 @@ fn main() -> Result<()> {
                             )
                         })
                         .collect();
-                    println!("  slot {:08x} {:<16} name {name}{extra}: {}", c.slot, c.kind, changes.join(", "));
+                    println!("slot {:08x} {:<16} name {name}{extra}: {}", c.slot, c.kind, changes.join(", "));
                 }
             }
         }
@@ -891,7 +1185,8 @@ fn main() -> Result<()> {
                 println!("torque (rpm:Nm): {}", samples.join("  "));
             }
         }
-        Cmd::Surfaces { near, find, steps } => {
+        Cmd::Surfaces { classes: true, .. } => props::surface_classes(&AssetStore::new(game)?)?,
+        Cmd::Surfaces { near, find, steps, tris, flat, flat_tol, flat_heading, flat_kerb, .. } => {
             let near = match near.as_deref() {
                 Some(n) => {
                     let v: Vec<f32> = n.split(',').map(|x| x.trim().parse()).collect::<Result<_, _>>()?;
@@ -903,12 +1198,28 @@ fn main() -> Result<()> {
                 }
                 None => None,
             };
-            props::surfaces(&AssetStore::new(game)?, near, find, steps)?
+            match near {
+                Some(at) if flat => {
+                    flat_strip::find(&AssetStore::new(game)?, at, flat_tol, find, flat_heading, flat_kerb)?
+                }
+                _ => props::surfaces(&AssetStore::new(game)?, near, find, steps, tris)?,
+            }
         }
         Cmd::CameraTake { take, step } => {
             camera_take::run(&open_bundle(&game, "CAMERAS.BNDL")?, take.as_deref(), step)?
         }
-        Cmd::Freeroam { list, kind, all_kinds, objects } => {
+        Cmd::Freeroam { at: Some(at), .. } => {
+            let p: Vec<f32> = at.split(',').map(|x| x.trim().parse()).collect::<Result<_, _>>()?;
+            anyhow::ensure!(p.len() == 3, "--at x,y,z");
+            let store = AssetStore::new(game)?;
+            for t in store.trigger_data()?.triggers.iter().filter(|t| t.contains([p[0], p[1], p[2]])) {
+                println!(
+                    "{:>10}  kind {:>3}  flags {:#04x}  at {:?}  {:?}",
+                    t.id, t.kind, t.flags, t.position, t.shape
+                );
+            }
+        }
+        Cmd::Freeroam { list, kind, all_kinds, objects, .. } => {
             let store = AssetStore::new(game)?;
             if objects {
                 freeroam_objects(&store, kind.as_deref())?
@@ -917,16 +1228,28 @@ fn main() -> Result<()> {
             }
         }
         Cmd::Police => police(&AssetStore::new(game)?)?,
-        Cmd::TerrainCheck { step, eps, top, only, all_passes } => {
+        Cmd::TerrainCheck { step, eps, top, only, all_passes, scale, within, driven, masks, model } => {
             let store = AssetStore::new(game)?;
-            terrain_check::run(&store, step, eps, top, only.as_deref(), all_passes)?
+            if let Some(m) = model {
+                return terrain_check::model(&store, mw_bundle::ResourceId(u64::from_str_radix(&m, 16)?));
+            }
+            if masks {
+                return terrain_check::masks(&store);
+            }
+            let only = only.as_deref();
+            terrain_check::run(
+                &store,
+                terrain_check::Options { step, eps, top, only, all_passes, scale, within, driven },
+            )?
         }
         Cmd::Water { wash, step, top, all_backdrops } => {
             water::run(&AssetStore::new(game)?, &wash, step, top, !all_backdrops)?
         }
-        Cmd::PlacementCheck { bundles, top, groups, view, column, owners } => {
+        Cmd::PlacementCheck { bundles, top, groups, view, column, owners, floating } => {
             let store = AssetStore::new(game)?;
-            if owners {
+            if floating {
+                float_check::run(&store, top)?
+            } else if owners {
                 placement::owners(&store)?
             } else if let Some(c) = column {
                 placement::column(&store, &c)?
@@ -1163,6 +1486,10 @@ fn main() -> Result<()> {
                                 last_shift_up: v[9] > 0.5,
                                 cruising: v[10] > 0.5,
                                 top_gears: v[11] > 0.5,
+                                // The pedal and the road speed (m/s → mph, signed by the gear) stand in.
+                                gearbox_throttle: v[2],
+                                transmission_mph: v.get(4).copied().unwrap_or(0.0).abs() / 0.447_04
+                                    * if v.get(3).is_some_and(|g| *g < 0.0) { -1.0 } else { 1.0 },
                             });
                             (
                                 [v[0], v[1], v[2], v.get(3).copied().unwrap_or(1.0), v.get(4).copied().unwrap_or(0.0)],
@@ -1331,10 +1658,20 @@ fn main() -> Result<()> {
             let store = AssetStore::new(game)?;
             traffic_sound::run(&store, &component, out.as_deref(), passby)?;
         }
-        Cmd::VehicleSound { out, dry, sweep, mph } => {
+        Cmd::VehicleSound { out, dry, sweep, mph, surface, tyre_class } => {
             use mw_assets::vehicle_driver::{VehicleDriver, VehicleInput, WheelSlip};
             let store = AssetStore::new(game)?;
-            let bank = store.vehicle_sfx_bank()?;
+            let (mut bank, picks) = store.vehicle_sfx_bank()?;
+            // Every wheel on one surface: its set's sequences play, the other sets' are left out.
+            let set = picks.pick(surface, tyre_class);
+            println!("surface {surface:?}, tyre class {tyre_class}: sound set {set:?} of {}", picks.fades.len());
+            let open = set.map(mw_assets::sfx::surface_gate);
+            for s in &mut bank.sequences {
+                if !s.gate.is_empty() && Some(&s.gate) != open.as_ref() {
+                    s.items.clear();
+                }
+                s.gate.clear();
+            }
             println!("vehicle bank: {} sequences, {} channels", bank.sequences.len(), bank.channels.len());
             for s in &bank.sequences {
                 println!("  sequence {:016x} {:?} {}..{}: {} items", s.id, s.binding, s.min, s.max, s.items.len());
@@ -1523,11 +1860,34 @@ fn main() -> Result<()> {
             export_world(&AssetStore::new(game)?, &bundles, &out, size, obj, &instances)?
         }
         Cmd::Events { id, png, all } => events::run(&AssetStore::new(game)?, id.as_deref(), png.as_deref(), all)?,
+        Cmd::Widgets { screen, json, scripts } => widgets::run(
+            &AssetStore::new(game)?,
+            &widgets::Options { screen: screen.as_deref(), json: json.as_deref(), scripts },
+        )?,
         Cmd::Frontend { sequence: Some(id), .. } => events::print_sequence(&AssetStore::new(game)?, id)?,
         Cmd::Frontend { sequence: None, spots } => events::frontend(&AssetStore::new(game)?, spots)?,
-        Cmd::Hsm { node, bundle, find, depth, parents } => {
-            events::hsm(&AssetStore::new(game)?, &bundle, node, find.as_deref(), depth, parents)?
+        Cmd::Lua { list, run, call, trace, natives, out } => {
+            lua::cmd(&AssetStore::new(game)?, list, run.as_deref(), &call, trace, natives.as_deref(), out.as_deref())?
         }
+        Cmd::Bindings { find, parse, no_genesys, out } => {
+            let opt = bindings::Options { find: find.as_deref(), parse, no_genesys, out: out.as_deref() };
+            bindings::run(&AssetStore::new(game)?, &opt)?
+        }
+        Cmd::Hsm { node, bundle, find, depth, parents, data, run, steps, dt, answer } => hsm::run(
+            &AssetStore::new(game)?,
+            hsm::Options {
+                bundle: &bundle,
+                node,
+                find: find.as_deref(),
+                depth,
+                parents,
+                data,
+                run,
+                steps,
+                dt,
+                answers: &answer,
+            },
+        )?,
         Cmd::AiGraph => {
             let ai = AssetStore::new(game)?.ai_data()?;
             for (i, n) in ai.nodes.iter().enumerate() {
@@ -2793,6 +3153,12 @@ fn police(store: &AssetStore) -> Result<()> {
             cops(&l.main),
             cops(&l.fallback)
         );
+    }
+    let mut all: Vec<_> = cfg.levels_by_id.values().collect();
+    all.sort_by_key(|l| l.id);
+    println!("every heat level: id level heat< finished-racer removal m (off screen / always)");
+    for l in all {
+        println!("  {:8} {} {:5} {:?}", l.id, l.level, l.threshold, l.finished_racer_remove);
     }
     let mut types: Vec<_> = cfg.cop_vehicles.iter().collect();
     types.sort();

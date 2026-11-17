@@ -100,7 +100,7 @@ struct Loaded {
 struct Loading(Mutex<Receiver<Loaded>>);
 
 #[derive(Resource)]
-struct GateMarkers {
+pub(crate) struct GateMarkers {
     scene: UiScene,
     /// The look and the instance (world transforms) of each layout of `scene`.
     looks: Vec<GateLook>,
@@ -114,7 +114,7 @@ struct GateMarkers {
 fn start_loading(mut commands: Commands, game: Res<crate::Game>) {
     let store = game.store.clone();
     let (tx, rx) = channel();
-    std::thread::spawn(move || {
+    crate::platform::thread::spawn(move || {
         let (keys, pois, lang) =
             match (store.poi_keys(), store.ui_poi_visuals(POI_SCREEN), store.language(mw_assets::DEFAULT_LANGUAGE)) {
                 (Ok(k), Ok(p), Ok(l)) => (k, p, l),
@@ -235,7 +235,7 @@ fn apply(ops: &[(u16, Vec3, Quat)], p: [f32; 2]) -> Vec3 {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_markers(
+pub(crate) fn draw_markers(
     markers: Option<ResMut<GateMarkers>>,
     race: Option<Res<RaceState>>,
     racers: Query<(&Racer, &RacerProgress)>,
@@ -274,62 +274,9 @@ fn draw_markers(
             })
         };
         for (i, _) in looks.iter().enumerate().filter(|(_, l)| **l == look) {
-            let instance = instances.get(i).cloned().flatten();
-            // The layout's opacity: colour transforms and triggered timelines.
-            let mut alpha = 1.0f32;
-            if let Some(inst) = &instance {
-                for c in inst.colours.iter().filter(|c| c.kind == 3) {
-                    let v = Binding::parse(&c.binding)
-                        .and_then(|b| b.eval(&mut lookup))
-                        .map_or(c.value, |v| v.num() as f32);
-                    alpha *= v.clamp(0.0, 1.0);
-                }
-                for (k, tl) in inst.timelines.iter().enumerate() {
-                    let on = Binding::parse(&tl.trigger).and_then(|b| b.eval(&mut lookup)).is_some_and(|v| v.truthy());
-                    let entry = triggers.entry((i, k)).or_insert((on, f64::NEG_INFINITY));
-                    if entry.0 != on {
-                        *entry = (on, now);
-                    }
-                    let since = ((now - entry.1) * 1000.0).min(f32::MAX as f64) as f32;
-                    alpha *= fade(if on { &tl.on } else { &tl.off }, since);
-                }
-            }
-            if alpha <= 0.001 {
-                continue;
-            }
-            let ops = placement(instance.as_ref(), position, rotation, &mut lookup);
-            let mut options = DrawOptions::new(Some(Box::new(move |j| j == i)), Some(&mut *anim), now);
-            for q in scene.draw_with([1280.0, 720.0], &mut lookup, &mut options) {
-                let key = (q.texture, q.blend == UiBlend::Additive);
-                let b = *batch_of.entry(key).or_insert_with(|| {
-                    batches.push(WorldUiBatch {
-                        texture: q.texture.and_then(|t| textures.get(&t).cloned()),
-                        additive: q.blend == UiBlend::Additive,
-                        vertices: Vec::new(),
-                    });
-                    batches.len() - 1
-                });
-                if q.texture.is_some() && batches[b].texture.is_none() {
-                    continue;
-                }
-                let [x, y, w, h] = q.rect;
-                let (cx, cy) = (x + w * 0.5, y + h * 0.5);
-                let (s, c) = q.rotation.to_radians().sin_cos();
-                let corner = |dx: f32, dy: f32| {
-                    let (rx, ry) = (dx * c - dy * s, dx * s + dy * c);
-                    apply(&ops, [cx + rx, cy + ry])
-                };
-                let [u0, v0, u1, v1] = q.uv;
-                let colour = [q.colour[0], q.colour[1], q.colour[2], q.colour[3] * alpha];
-                let v = |p: Vec3, uv: [f32; 2]| WorldUiVertex { position: p.to_array(), uv, colour };
-                let (a, bb, cc, d) = (
-                    v(corner(-w * 0.5, -h * 0.5), [u0, v0]),
-                    v(corner(w * 0.5, -h * 0.5), [u1, v0]),
-                    v(corner(w * 0.5, h * 0.5), [u1, v1]),
-                    v(corner(-w * 0.5, h * 0.5), [u0, v1]),
-                );
-                batches[b].vertices.extend([a, bb, cc, a, cc, d]);
-            }
+            let instance = instances.get(i).and_then(Option::as_ref);
+            let mut out = WorldLayoutOut { batches: &mut batches, batch_of: &mut batch_of, textures };
+            draw_world_layout(scene, i, instance, position, rotation, &mut lookup, anim, triggers, now, &mut out);
         }
     }
     if std::env::var_os("MW_GATE_LOG").is_some() && (now * 2.0).floor() != ((now - time.delta_secs_f64()) * 2.0).floor()
@@ -345,4 +292,88 @@ fn draw_markers(
         }
     }
     out.0 = batches;
+}
+
+/// Where [`draw_world_layout`] puts its triangles: batches by (texture, additive).
+pub(crate) struct WorldLayoutOut<'a> {
+    pub batches: &'a mut Vec<WorldUiBatch>,
+    pub batch_of: &'a mut HashMap<(Option<ResourceId>, bool), usize>,
+    pub textures: &'a HashMap<ResourceId, Handle<Image>>,
+}
+
+/// Draw layout `i` of `scene` as a point of interest's world layout at `position` / `rotation`: its instance's
+/// visibility binding, colour transforms (type 3: opacity) and triggered timelines (`FADE`), then its elements
+/// through the instance transforms (`placement`). `triggers` keeps each (layout, timeline)'s value and when it
+/// last changed; a caller drawing several points with one scene keeps one map per point.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn draw_world_layout(
+    scene: &UiScene,
+    i: usize,
+    instance: Option<&LayoutInstance>,
+    position: Vec3,
+    rotation: Quat,
+    lookup: &mut dyn FnMut(&str, Option<&str>) -> Option<BindValue>,
+    anim: &mut UiAnim,
+    triggers: &mut HashMap<(usize, usize), (bool, f64)>,
+    now: f64,
+    out: &mut WorldLayoutOut,
+) {
+    // The layout's opacity: visibility, colour transforms and triggered timelines.
+    let mut alpha = 1.0f32;
+    if let Some(inst) = instance {
+        if !inst.visibility.is_empty()
+            && !Binding::parse(&inst.visibility).and_then(|b| b.eval(&mut *lookup)).is_some_and(|v| v.truthy())
+        {
+            return;
+        }
+        for c in inst.colours.iter().filter(|c| c.kind == 3) {
+            let v = Binding::parse(&c.binding).and_then(|b| b.eval(&mut *lookup)).map_or(c.value, |v| v.num() as f32);
+            alpha *= v.clamp(0.0, 1.0);
+        }
+        for (k, tl) in inst.timelines.iter().enumerate() {
+            let on = Binding::parse(&tl.trigger).and_then(|b| b.eval(&mut *lookup)).is_some_and(|v| v.truthy());
+            let entry = triggers.entry((i, k)).or_insert((on, f64::NEG_INFINITY));
+            if entry.0 != on {
+                *entry = (on, now);
+            }
+            let since = ((now - entry.1) * 1000.0).min(f32::MAX as f64) as f32;
+            alpha *= fade(if on { &tl.on } else { &tl.off }, since);
+        }
+    }
+    if alpha <= 0.001 {
+        return;
+    }
+    let ops = placement(instance, position, rotation, lookup);
+    let mut options = DrawOptions::new(Some(Box::new(move |j| j == i)), Some(anim), now);
+    for q in scene.draw_with([1280.0, 720.0], lookup, &mut options) {
+        let key = (q.texture, q.blend == UiBlend::Additive);
+        let b = *out.batch_of.entry(key).or_insert_with(|| {
+            out.batches.push(WorldUiBatch {
+                texture: q.texture.and_then(|t| out.textures.get(&t).cloned()),
+                additive: q.blend == UiBlend::Additive,
+                vertices: Vec::new(),
+            });
+            out.batches.len() - 1
+        });
+        if q.texture.is_some() && out.batches[b].texture.is_none() {
+            continue;
+        }
+        let [x, y, w, h] = q.rect;
+        let (cx, cy) = (x + w * 0.5, y + h * 0.5);
+        let (s, c) = q.rotation.to_radians().sin_cos();
+        let corner = |dx: f32, dy: f32| {
+            let (rx, ry) = (dx * c - dy * s, dx * s + dy * c);
+            apply(&ops, [cx + rx, cy + ry])
+        };
+        let [u0, v0, u1, v1] = q.uv;
+        let colour = [q.colour[0], q.colour[1], q.colour[2], q.colour[3] * alpha];
+        let v = |p: Vec3, uv: [f32; 2]| WorldUiVertex { position: p.to_array(), uv, colour };
+        let (a, bb, cc, d) = (
+            v(corner(-w * 0.5, -h * 0.5), [u0, v0]),
+            v(corner(w * 0.5, -h * 0.5), [u1, v0]),
+            v(corner(w * 0.5, h * 0.5), [u1, v1]),
+            v(corner(-w * 0.5, h * 0.5), [u0, v1]),
+        );
+        out.batches[b].vertices.extend([a, bb, cc, a, cc, d]);
+    }
 }

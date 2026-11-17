@@ -1,0 +1,38 @@
+#!/bin/sh
+# Run a command in a headless gamescope (a nested 1280 x 720 display; MW_HL_SIZE=WxH for another size) so no window
+# shows on the desktop; returns the command's exit code, its stdout / stderr pass through.
+# MW_SHOW=1 runs it directly instead (still silent unless
+# MW_SOUND=1). Silent: MW_MUTE=1 (mostrusted's --mute), and a null sink (tools/silent-sink) for anything else:
+# PULSE_SINK for PulseAudio clients (Wine), PIPEWIRE_NODE for ALSA ones (Bevy / cpal).
+# Example: tools/hl ./target/release/mostrusted --screenshot x.png
+# gamescope closes inherited descriptors (the child's output goes through two FIFOs) and does not exit on its own when
+# the child does (Xwayland hangs on a broken pipe): the child writes its exit code to a file, then gamescope is stopped.
+if [ -z "$MW_SOUND" ]; then
+    export MW_MUTE=1
+    s="$("$(dirname "$0")/silent-sink" 2> /dev/null)" && export PULSE_SINK="$s" PIPEWIRE_NODE="$s"
+fi
+if [ -n "$MW_SHOW" ] || ! command -v gamescope > /dev/null; then exec "$@"; fi
+d="$(mktemp -d)"
+mkfifo "$d/out" "$d/err"
+cat "$d/out" &
+co=$!
+cat "$d/err" >&2 &
+ce=$!
+W="${MW_HL_SIZE%x*}"; H="${MW_HL_SIZE#*x}"; [ -n "$MW_HL_SIZE" ] || { W=1280; H=720; }
+env -u WAYLAND_DISPLAY gamescope --backend headless -W "$W" -H "$H" -w "$W" -h "$H" -- \
+    sh -c 'd="$1"; shift; unset WAYLAND_DISPLAY; "$@" > "$d/out" 2> "$d/err"; echo $? > "$d/rc"' sh "$d" "$@" \
+    > "$d/gamescope.log" 2>&1 &
+gs=$!
+while [ ! -f "$d/rc" ] && kill -0 "$gs" 2> /dev/null; do sleep 0.2; done
+kill "$gs" 2> /dev/null
+wait "$gs" 2> /dev/null
+if [ ! -f "$d/rc" ]; then
+    echo "tools/hl: gamescope exited without running the command:" >&2
+    tail -5 "$d/gamescope.log" >&2
+    # unblock the readers if the child never opened the FIFOs
+    : > "$d/out" & : > "$d/err" &
+fi
+wait "$co" "$ce" 2> /dev/null
+rc="$(cat "$d/rc" 2> /dev/null || echo 1)"
+rm -rf "$d"
+exit "$rc"

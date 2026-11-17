@@ -1,13 +1,16 @@
 //! The driving HUD, drawn from the game's own UI data: the free-roam screen's layouts
-//! (`UI/SCREENS2/371670.BNDL`), the race HUD's (`UI/SCREENS2/604153.BNDL`), the countdown and results
+//! (`UI/SCREENS2/371621.BNDL`, "FreedriveHud"), the race HUD's (`UI/SCREENS2/604153.BNDL`), the countdown and results
 //! sequences' layouts, their textures and bitmap fonts, with the bindings the layouts name filled from the car
 //! and the race (`mw_assets::ui::UiScene::draw_with` turns them into quads; `ui_quads` shows them as Bevy UI
 //! nodes). The minimap is the game's map-tile grid, composited on the CPU with the car's facing (local +Z) up,
 //! with the points-of-interest icons over it (player, gates, racers, cops, body shops and jack spots within
 //! 400 m; docs/decomp.md "Minimap orientation", "The world map's items and filters").
 //!
-//! The game decides which layouts a widget shows in code (widget adapters); here fixed sets stand in:
-//! - free roam (always): speedometer + nitrous gauge, odometer, minimap frame, road / district name;
+//! Which widget groups show follows the HSM ("Some HUD Elements Visible" 1014536 and its "Run 3rd person HUDs"),
+//! the layouts inside a widget are fixed sets:
+//! - free roam: the Speed Points total; Easydrive's prompt and its backing; while Easydrive is closed the minimap
+//!   frame with the district / road plates and the nitrous group of the fitted nitrous (speedometer, gauge,
+//!   odometer; constants below);
 //! - a race (`race::RaceState` present, intro and racing): position / lap or distance left, race time,
 //!   wrong way / checkpoint missed;
 //! - the countdown sequence over the intro's last seconds, and the results sequence after the finish.
@@ -28,13 +31,80 @@ use crate::game_text::{self, GameFonts, LoadedFont};
 use crate::race::{RacePhase, RaceState, Racer, RacerProgress};
 use crate::ui_quads::{AdditiveQuadMaterial, PoolNode, QuadNode, QuadPool, show_quads};
 
-/// Layouts shown while driving in free roam (UniqueIds in `FREE_ROAM_HUD`): the first `Nitrous` widget's
-/// speedometer + nitrous gauge (1670359) and odometer (1806698), and `AdditionalHUD`'s minimap frame
-/// (1206246) and road / district name plates (1990196), and `HUD`'s Speed Points total (979928: shown when the
-/// total changes, `freeroam.rs`). Pursuit and EasyDrive layouts need game modes we don't have yet. 604307 is
-/// `EngineOffHud`'s prompt bar (`{Mode.PromptString}`, e.g. the jack spots' "PRESS … TO DRIVE CAR"), drawn
-/// while [`HudState::prompt`] is set.
-pub const FREE_ROAM_LAYOUTS: [u32; 6] = [1_206_246, 1_990_196, 1_670_359, 1_806_698, 979_928, 604_307];
+/// Layouts shown while driving in free roam (UniqueIds in `FREE_ROAM_HUD`), by the widget group that holds them:
+/// `HUD`'s Speed Points total (979928: shown when the total changes, `freeroam.rs`; group 264948, the
+/// `Widget_HudSelection`'s `ExternalDefault`, up whenever the third-person HUD runs), `AdditionalHUD`'s minimap
+/// frame (1206246) and road / district name plates (1990196) (group 1695018, `ExternalEasyDriveOff`), and
+/// `EngineOffHud` (group 1805613, which the HSM's "Some HUD Elements Visible" 1014536 activates in a freedrive
+/// event through "Run Child Behaviour - Engine Off Group" 1805616 whenever the HUD is up): 1135036, the dark strip
+/// and disc behind the Easydrive prompt, and 604307, the prompt bar (`{Mode.PromptString}`, e.g. the jack spots'
+/// "PRESS … TO DRIVE CAR"), drawn while [`HudState::prompt`] is set. The speedometer comes from the `Nitrous` widget groups ([`NITROUS_GROUPS`]),
+/// the closed Easydrive prompt from the `Prompt` widget ([`PROMPT_LAYOUT`]). Pursuit and EasyDrive layouts need
+/// game modes we don't have yet.
+pub const FREE_ROAM_LAYOUTS: [u32; 5] = [1_206_246, 1_990_196, 979_928, 1_135_036, 604_307];
+/// The `AdditionalHUD` layouts above (group 1695018): hidden while Easydrive is open (the HSM's "Run Default
+/// HUD" runs "Run No EasyDrive HUD" 1524982, which activates `Widget.HudSelect.ExternalEasyDriveOff` until
+/// "Exit When Easy Drive On" sees `Widget.EasyDrive.IsActive`).
+const EASYDRIVE_OFF_LAYOUTS: [u32; 2] = [1_206_246, 1_990_196];
+
+/// The odometer (`Nitrous` widgets' 1806698), the same in every nitrous group.
+const ODOMETER_LAYOUT: u32 = 1_806_698;
+/// `UIMessages.NitrousList` (1315635, in every group with nitrous): not drawn yet.
+const NITROUS_MESSAGES_LAYOUT: u32 = 1_315_635;
+
+/// Which `Nitrous` widget group shows (`Players.LocalPlayer.CurrentNitrousType`): the HSM's "Run Nitrous HUD"
+/// (1524952, under "Run 3rd person HUDs") picks the group in "Choose Nitrous" (1524930) and leaves it when the
+/// type changes or Easydrive opens ("Exit When Easy Drive On" 1773904): NONE → 1524950 (speedometer 1670271, no
+/// gauge), BURN and JUMP → 1524919 (1670234), BURN_PRO and JUMP_PRO → 1524920 (1670333), DUMP → 1524921
+/// (1670359), DUMP_PRO → 1524922 (1670307). The widget of each group: `mwtool ui show` (its `group` column).
+pub const NITROUS_GROUPS: [(NitrousType, u32); 5] = [
+    (NitrousType::None, 1_524_950),
+    (NitrousType::Burn, 1_524_919),
+    (NitrousType::BurnPro, 1_524_920),
+    (NitrousType::Dump, 1_524_921),
+    (NitrousType::DumpPro, 1_524_922),
+];
+
+/// The `Prompt` widget's layout (group 1135011): the closed Easydrive prompt (d-pad icon, the EASYDRIVE strip,
+/// the "NEW" badge). The HSM's "Run Child - Wait for EZDrive Input Prompt" (1445535) activates the group ("With
+/// EasyDrivePrompt Offline", 1135035) while Easydrive is closed, until `UISequences.HideHudRequests(GTEQ:1)`.
+/// Easydrive's own widget shows the same layout over its open menu (`easydrive.rs`).
+pub const PROMPT_LAYOUT: u32 = 1_805_584;
+
+/// `Players.LocalPlayer.CurrentNitrousType`, the HSM's exit codes of "Choose Nitrous" (JUMP shares BURN's group).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NitrousType {
+    None,
+    Burn,
+    BurnPro,
+    Dump,
+    DumpPro,
+}
+
+impl NitrousType {
+    /// The fitted nitrous mod's type: game slots 3 and 12 (BURN NITROUS), 4 (POWERSHOT = DUMP), 13 (JUMP NITROUS,
+    /// BURN's group); category 0 (game level 2) is PRO (decomp.md "Nitrous and upgrades": the rollout's nitrous
+    /// group {3, 4, 12, 13}). No nitrous mod: NONE (the offline default `Nitrous_Offline` disables nitrous).
+    /// Model decision: slot → type follows the mods' names (POWERSHOT read as DUMP); the code that answers the
+    /// binding was not traced.
+    pub fn of(sel: &crate::mods_menu::ModSelection, cat: &crate::mods_menu::ModCatalogue) -> Self {
+        for &(slot, category) in &sel.0 {
+            let Some(c) = cat.mods.get(category).and_then(|m| m.get(slot)) else { continue };
+            if c.nitrous.is_none() {
+                continue;
+            }
+            let game_slot = mw_assets::mods::GAME_SLOT_FIELD.iter().position(|&f| f == Some(slot));
+            let pro = category == 0;
+            return match (game_slot, pro) {
+                (Some(4), false) => Self::Dump,
+                (Some(4), true) => Self::DumpPro,
+                (_, false) => Self::Burn,
+                (_, true) => Self::BurnPro,
+            };
+        }
+        Self::None
+    }
+}
 
 /// Pursuit layouts of the free-roam screen (`AdditionalHUD`): 1213038, the HEAT / COOLDOWN bars beside the
 /// minimap (the stepped level bar bound to `Players.LocalPlayer.HeatLevelInt` over 0–6 and the fill bound to
@@ -87,6 +157,9 @@ const POI_REMOVE_RANGE: f32 = 450.0;
 /// `Mode.MinimapDistance`, FOV 90°) isn't reproduced yet.
 pub const MINIMAP_METRES_PER_PIXEL: f32 = 4.0;
 
+/// The minimap tiles' opacity (tile layout 371427's images, `MapIconShaderAdditive`).
+const MINIMAP_TILE_OPACITY: f32 = 0.7;
+
 pub struct HudPlugin {
     /// Show the HUD (not in vehicle-viewer or test runs).
     pub enabled: bool,
@@ -134,12 +207,26 @@ pub struct HudState {
     /// `Mode.PromptString` (game-mode manager +0x2c70 with its flag +0x2ca7): the prompt bar's text, set each
     /// frame by whoever prompts (`jackspots.rs`); `None` hides the bar.
     pub prompt: Option<String>,
+    /// The same prompt slot for an event's start (`event_starts.rs`: `GameLogicConfig.PromptEvent`), set each
+    /// frame while the car is in a start's radius; the jack spots' prompt wins when both are set.
+    pub event_prompt: Option<String>,
+    /// The road the player's car was last found on (`RoadManager` slot [2], index into the road data):
+    /// `CurrentRoad.Name` keeps showing it off the network (`FUN_00668650`).
+    pub last_road: Option<usize>,
 }
 
 /// What a layout of the HUD scene belongs to.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum Group {
     FreeRoam,
+    /// `AdditionalHUD` layouts hidden while Easydrive is open ([`EASYDRIVE_OFF_LAYOUTS`]).
+    EasyDriveOff,
+    /// The speedometer / nitrous gauge of one `Nitrous` widget group ([`NITROUS_GROUPS`]).
+    Nitrous(NitrousType),
+    /// The odometer: shown with whichever nitrous group runs.
+    Odometer,
+    /// The closed Easydrive prompt ([`PROMPT_LAYOUT`]).
+    Prompt,
     Race,
     /// The heat bars / the BUSTING bar (`PURSUIT_LAYOUT`, `BUSTING_LAYOUT`).
     Pursuit,
@@ -168,6 +255,10 @@ enum MapIcon {
     BodyShop,
     /// `CollectablesConfig` +0x48: a jack spot location (icon shown once found).
     JackSpot,
+    /// An event's start (`event_starts::POI_EVENT`, the green diamond).
+    EventStart,
+    /// A Most Wanted race's start (`event_starts::POI_MOST_WANTED`, the red diamond).
+    MostWantedStart,
 }
 
 impl MapIcon {
@@ -204,6 +295,7 @@ struct HudAssets {
     fonts: Vec<(u32, mw_formats::Font)>,
     mosaic: Option<MapMosaic>,
     points: Vec<MapPoint>,
+    districts: Option<mw_assets::ui::Districts>,
 }
 
 /// A free-roam collectable with a minimap icon (`FUN_006ffba0`): body shops (kind 6) and jack spot locations
@@ -237,6 +329,8 @@ struct Hud {
     pool: QuadPool,
     map: Option<MapView>,
     points: Vec<MapPoint>,
+    /// The district paint map and names (`Players.LocalPlayer.CurrentDistrictName`).
+    districts: Option<mw_assets::ui::Districts>,
     /// Indices into `points` with a point of interest now (within range, `FUN_006ffd90`).
     active: std::collections::BTreeSet<usize>,
 }
@@ -272,8 +366,8 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>, settings: Res<H
     }
     let store = game.store.clone();
     let (tx, rx) = channel();
-    std::thread::spawn(move || {
-        let t = std::time::Instant::now();
+    crate::platform::thread::spawn(move || {
+        let t = crate::platform::Instant::now();
         let lang = match store.language(mw_assets::DEFAULT_LANGUAGE) {
             Ok(l) => l,
             Err(e) => {
@@ -284,8 +378,33 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>, settings: Res<H
         let mut layouts = Vec::new();
         let mut groups = Vec::new();
         for l in screen_layouts(&store, FREE_ROAM_HUD, &FREE_ROAM_LAYOUTS) {
+            groups.push(if EASYDRIVE_OFF_LAYOUTS.contains(&l.layout.id) {
+                Group::EasyDriveOff
+            } else {
+                Group::FreeRoam
+            });
             layouts.push(l);
-            groups.push(Group::FreeRoam);
+        }
+        // The `Nitrous` widgets' layouts by their widget group, the odometer once; the `Prompt` widget's layout.
+        let widget_groups: Vec<u32> =
+            store.ui_screen(FREE_ROAM_HUD).map(|s| s.widgets.iter().map(|w| w.group).collect()).unwrap_or_default();
+        let mut odometer = false;
+        for l in store.ui_screen_layouts(FREE_ROAM_HUD, Some(&["Nitrous", "Prompt"])).unwrap_or_default() {
+            let group = widget_groups.get(l.widget_index).copied().unwrap_or(0);
+            let g = match l.layout.id {
+                PROMPT_LAYOUT if l.widget == "Prompt" => Group::Prompt,
+                ODOMETER_LAYOUT if !odometer => {
+                    odometer = true;
+                    Group::Odometer
+                }
+                ODOMETER_LAYOUT | NITROUS_MESSAGES_LAYOUT => continue,
+                _ => match NITROUS_GROUPS.iter().find(|n| n.1 == group) {
+                    Some(&(kind, _)) => Group::Nitrous(kind),
+                    None => continue,
+                },
+            };
+            groups.push(g);
+            layouts.push(l);
         }
         for l in screen_layouts(&store, FREE_ROAM_HUD, &[PURSUIT_LAYOUT, BUSTING_LAYOUT]) {
             groups.push(if l.layout.id == PURSUIT_LAYOUT { Group::Pursuit } else { Group::Busting });
@@ -297,8 +416,10 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>, settings: Res<H
         }
         // Minimap icons: the map layout of each point-of-interest look the race code names. Their instance only
         // translates to the `Pos` binding (the point on the map), which `draw_hud` does.
+        let free_roam_pois = store.ui_poi_visuals(FREE_ROAM_HUD).unwrap_or_default();
         match (store.poi_keys(), store.ui_poi_visuals(RACE_HUD)) {
-            (Ok(keys), Ok(pois)) => {
+            (Ok(keys), Ok(race_pois)) => {
+                let pois: Vec<_> = free_roam_pois.into_iter().chain(race_pois).collect();
                 let wanted = [
                     (MapIcon::Player, keys.player),
                     (MapIcon::Gate, keys.gate),
@@ -308,6 +429,8 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>, settings: Res<H
                     (MapIcon::Opponent, keys.opponent),
                     (MapIcon::BodyShop, keys.body_shop),
                     (MapIcon::JackSpot, keys.jack_spot),
+                    (MapIcon::EventStart, crate::event_starts::POI_EVENT),
+                    (MapIcon::MostWantedStart, crate::event_starts::POI_MOST_WANTED),
                 ];
                 for (icon, key) in wanted {
                     match pois.iter().find(|p| p.key == key).and_then(|p| p.map.clone()) {
@@ -365,6 +488,7 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>, settings: Res<H
             scene.textures().into_iter().filter_map(|id| Some((id, game_text::decode_texture(&store, id)?))).collect();
         let fonts = scene.fonts.iter().map(|(&n, f)| (n, f.clone())).collect();
         let mosaic = store.ui_map_grid().ok().map(|g| MapMosaic::build(&store, g));
+        let districts = store.districts().map_err(|e| warn!("HUD: no districts ({e})")).ok();
         let points = store
             .trigger_data()
             .map(|td| {
@@ -402,6 +526,7 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>, settings: Res<H
             fonts,
             mosaic,
             points,
+            districts,
         });
     });
     commands.insert_resource(HudLoading(Mutex::new(rx)));
@@ -461,6 +586,7 @@ fn receive_hud(
         pool: QuadPool::default(),
         map,
         points: assets.points,
+        districts: assets.districts,
         active: Default::default(),
     });
 }
@@ -488,9 +614,12 @@ fn toggle_debug(
 
 fn track_car(
     mut state: ResMut<HudState>,
-    car: Query<(&GlobalTransform, &crate::drive::Car), With<crate::drive::Player>>,
+    car: Query<
+        (&GlobalTransform, &crate::drive::Car, Option<&crate::nitrous::NitrousFeed>),
+        With<crate::drive::Player>,
+    >,
 ) {
-    let Ok((t, car)) = car.single() else {
+    let Ok((t, car, feed)) = car.single() else {
         state.last_position = None;
         return;
     };
@@ -503,6 +632,10 @@ fn track_car(
         }
     }
     state.last_position = Some(p);
+    // The road position the nitrous refill keeps (`FUN_00666200`, refreshed every 24 game-logic ticks).
+    if let Some(at) = feed.and_then(|f| f.road) {
+        state.last_road = Some(at.road);
+    }
     state.nitrous = car.nitrous.fill();
     state.using_nitrous = car.nitrous.burning;
 }
@@ -662,7 +795,7 @@ fn map_icons(
     centre: Vec3,
     facing: Vec3,
     metres_per_px: f32,
-    icons: &[(MapIcon, Vec3, Vec3)],
+    icons: &[(MapIcon, Vec3, Vec3, bool)],
     base: &mut dyn FnMut(&str, Option<&str>) -> Option<BindValue>,
 ) -> Vec<Quad> {
     let up = Vec2::new(facing.x, facing.z).normalize_or(Vec2::Y);
@@ -670,10 +803,9 @@ fn map_icons(
     let right = Vec2::new(-up.y, up.x) * mw_assets::ui::MAP_RIGHT_SIGN;
     let map_centre = Vec2::new(map.rect[0] + map.rect[2] * 0.5, map.rect[1] + map.rect[3] * 0.5);
     // Where a layout's origin lands when drawn without an instance (`Placement`: the reference frame centred).
-    let s = (screen[0] / 1280.0).min(screen[1] / 720.0);
-    let origin = Vec2::new(screen[0] * 0.5 - 640.0 * s, screen[1] * 0.5 - 360.0 * s);
+    let origin = Vec2::from_array(mw_assets::ui::UiFrame::new(screen).origin);
     let mut out = Vec::new();
-    for &(icon, pos, dir) in icons {
+    for &(icon, pos, dir, chasing) in icons {
         let d = Vec2::new(pos.x - centre.x, pos.z - centre.z);
         let at = map_centre + Vec2::new(d.dot(right), -d.dot(up)) / metres_per_px;
         if at.x < map.rect[0]
@@ -689,8 +821,14 @@ fn map_icons(
             match path {
                 "Rot" => Some((rot as f64).into()),
                 "Net.IsInOnlineGame" => Some(false.into()),
-                // `Players.PlayerBase[#].IsCop` / `.InChase`: the look's cop elements for cops.
-                "Players.PlayerBase" => Some((icon == MapIcon::Cop).into()),
+                // `Players.PlayerBase[#].IsCop` / `.InChase` (getter 0x006dacc0: for an AI cop `FUN_006bbb70`,
+                // its chasing states): the look's blue arrow for cops, the blinking red one over it while chasing.
+                "Players.PlayerBase" => {
+                    match arg.and_then(|a| a.split_once(']')).map(|(_, f)| f.trim_start_matches('.')) {
+                        Some("InChase") => Some((icon == MapIcon::Cop && chasing).into()),
+                        _ => Some((icon == MapIcon::Cop).into()),
+                    }
+                }
                 // Only found jack spots are listed (`icons`).
                 "JackSpots.IsSwapSpotFound" => Some((icon == MapIcon::JackSpot).into()),
                 _ => base(path, arg),
@@ -774,7 +912,7 @@ fn lookup(
         "CollectablesVM.CameraSpeedwall.ShowMiniWall" | "Camera.IsInternalDrivingCam" => false.into(),
         "CollectablesVM.Collectables.speedwall.Items._length" => 0.0.into(),
         // An empty text is false: the bar's elements are visible on this binding.
-        "Mode.PromptString" => state.prompt.clone().unwrap_or_default().into(),
+        "Mode.PromptString" => state.prompt.clone().or_else(|| state.event_prompt.clone()).unwrap_or_default().into(),
         "Players.LocalPlayer.IsInChase" => pursuit.in_chase.into(),
         "Players.LocalPlayer.IsInCooldown" => pursuit.in_cooldown.into(),
         "Players.LocalPlayer.IsInChaseOrCooldown" => (pursuit.in_chase || pursuit.in_cooldown).into(),
@@ -786,7 +924,7 @@ fn lookup(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn draw_hud(
     mut commands: Commands,
     hud: Option<ResMut<Hud>>,
@@ -802,11 +940,18 @@ fn draw_hud(
     mut images: ResMut<Assets<Image>>,
     mut materials: ResMut<Assets<AdditiveQuadMaterial>>,
     mut root_vis: Query<&mut Visibility, Without<QuadNode>>,
-    pause: Option<Res<crate::pause::PauseMenu>>,
-    (pursuit, collected, gps): (
+    (pause, pursuit, collected, gps, event_starts): (
+        Option<Res<crate::pause::PauseMenu>>,
         Res<crate::police::PursuitHud>,
         Option<Res<crate::frontend::Collected>>,
         Res<crate::gps::Gps>,
+        Option<Res<crate::event_starts::EventStarts>>,
+    ),
+    (easydrive, mods, catalogue, roads): (
+        Option<Res<crate::easydrive::EasyDrive>>,
+        Option<Res<crate::mods_menu::ModSelection>>,
+        Option<Res<crate::mods_menu::ModCatalogue>>,
+        Option<Res<crate::nitrous::Roads>>,
     ),
 ) {
     let Some(mut hud) = hud else { return };
@@ -828,8 +973,37 @@ fn draw_hud(
     let t = time.elapsed_secs_f64();
     let metric = settings.metric;
 
-    let Hud { scene, groups, countdown, results, feedback, lang, car_names, anim, map, points, active, .. } = &mut *hud;
+    let Hud {
+        scene, groups, countdown, results, feedback, lang, car_names, anim, map, points, active, districts, ..
+    } = &mut *hud;
     scene.metric = Some(metric);
+    // Easydrive open (`Widget.EasyDrive.IsActive`): the HSM leaves the `ExternalEasyDriveOff` group, the nitrous
+    // HUD and the prompt (see the constants above); the Speed Points total stays (group 264948).
+    let easydrive_open = easydrive.as_ref().is_some_and(|e| e.is_active());
+    // `Widget.Prompt.New`: model decision, true until Easydrive has been opened once (we keep no record of the
+    // items the player has seen; the original's prompt carried NEW at the start of free roam, `fence-13`).
+    let prompt_new = easydrive.as_ref().is_some_and(|e| !e.seen);
+    let nitrous_type = match (&mods, &catalogue) {
+        (Some(m), Some(c)) => NitrousType::of(m, c),
+        _ => NitrousType::None,
+    };
+    // `Players.LocalPlayer.CurrentDistrictName`: the district painted under the car; `CurrentRoad.Name`: the last
+    // road found, when it is a named one (`Road::NAMED`, `FUN_00668650`).
+    let district = car
+        .and_then(|(_, xf)| {
+            let p = xf.translation();
+            districts.as_ref()?.name_at(p.x, p.z)
+        })
+        .and_then(|id| lang.get(id))
+        .unwrap_or_default()
+        .to_string();
+    let road = roads
+        .as_ref()
+        .and_then(|r| r.0.as_ref()?.roads.get(state.last_road?).cloned())
+        .filter(|r| r.flags & mw_formats::road_data::Road::NAMED != 0)
+        .and_then(|r| lang.get(r.name))
+        .unwrap_or_default()
+        .to_string();
     let view = race.as_deref().map(|race| {
         let player = racers.iter().find(|(r, _)| r.player).map(|(_, p)| p);
         // Finished racers by finish time, then the rest by position.
@@ -855,6 +1029,16 @@ fn draw_hud(
     let race_hud = view.as_ref().is_some_and(|v| matches!(v.race.phase, RacePhase::Intro | RacePhase::Racing));
 
     let mut base = |path: &str, arg: Option<&str>| -> Option<BindValue> {
+        match path {
+            "Players.LocalPlayer.CurrentDistrictName" => return Some(district.clone().into()),
+            // An empty name hides the plate's label (its visibility binding).
+            "CurrentRoad.Name" => return Some(road.clone().into()),
+            "Widget.EasyDrive.IsActive" => return Some(easydrive_open.into()),
+            "Widget.Prompt.New" => return Some(prompt_new.into()),
+            // Autolog alerts are not modelled.
+            "Recommends.ShowAlert" => return Some(false.into()),
+            _ => {}
+        }
         view.as_ref()
             .and_then(|v| v.lookup(path, arg, metric))
             .or_else(|| lookup(path, arg, car, &state, &pursuit, metric, t))
@@ -868,9 +1052,14 @@ fn draw_hud(
     let mut quads: Vec<Quad> = draw(
         &|g| {
             g == Group::FreeRoam
+                || (!easydrive_open
+                    && (g == Group::EasyDriveOff
+                        || g == Group::Odometer
+                        || g == Group::Prompt
+                        || g == Group::Nitrous(nitrous_type)))
                 || (g == Group::Race && race_hud)
-                || (g == Group::Pursuit && (pursuit.in_chase || pursuit.in_cooldown))
-                || (g == Group::Busting && pursuit.show_bust_bar)
+                || (g == Group::Pursuit && !easydrive_open && (pursuit.in_chase || pursuit.in_cooldown))
+                || (g == Group::Busting && !easydrive_open && pursuit.show_bust_bar)
         },
         &mut base,
     );
@@ -945,6 +1134,13 @@ fn draw_hud(
     // facing (local +Z) is up.
     let mut map_image = None;
     let map_quad = quads.iter().position(|q| q.map);
+    // The map tiles are added over the frame's translucent backing (image 1444131, alpha up to 0.64): the tile
+    // layout 371427 draws each `Widget.POI.POIDisplayScript.TileTex[#]` at opacity 0.7 with `MapIconShaderAdditive`
+    // (blend src alpha / one), so black ground leaves the world showing through and the roads lighten it.
+    if let Some(q) = map_quad.and_then(|i| quads.get_mut(i)) {
+        q.blend = mw_assets::ui::UiBlend::Additive;
+        q.colour[3] *= MINIMAP_TILE_OPACITY;
+    }
     if let (Some(qi), Some(map), Some((_, xf))) = (map_quad, map.as_mut(), car) {
         let q = quads[qi].clone();
         let scale = window.scale_factor();
@@ -952,7 +1148,7 @@ fn draw_hud(
         let p = xf.translation();
         let f = car_facing(xf);
         // Metres per logical pixel: the map's reference scale over the HUD's scale.
-        let hud_scale = (screen[0] / 1280.0).min(screen[1] / 720.0);
+        let hud_scale = mw_assets::ui::UiFrame::new(screen).scale;
         let metres_per_px = MINIMAP_METRES_PER_PIXEL / hud_scale;
         map.frame += 1;
         if size != map.size || map.frame % 2 == 0 {
@@ -968,18 +1164,35 @@ fn draw_hud(
         map_image = Some(map.image.clone());
 
         // Icons over the map: the player, the race's target and next gates, the other racers.
-        let mut icons = vec![(MapIcon::Player, p, f)];
+        let mut icons = Vec::new();
+        // Event starts (`event_starts.rs`): their looks' map icons, under the moving icons.
+        if let Some(starts) = event_starts.as_ref() {
+            for (key, pos) in starts.icons() {
+                let icon =
+                    if key == crate::event_starts::POI_EVENT { MapIcon::EventStart } else { MapIcon::MostWantedStart };
+                icons.push((icon, pos, Vec3::Z, false));
+            }
+        }
+        icons.push((MapIcon::Player, p, f, false));
         if let Some(v) = view.as_ref().filter(|v| matches!(v.race.phase, RacePhase::Intro | RacePhase::Racing)) {
-            icons.extend(gate_icons(v.race, v.player.map_or(1, |p| p.target())));
+            icons.extend(
+                gate_icons(v.race, v.player.map_or(1, |p| p.target())).into_iter().map(|(i, p, f)| (i, p, f, false)),
+            );
         }
         icons.extend(
             racer_xf
                 .iter()
                 .filter(|(r, _)| !r.player)
-                .map(|(_, x)| (MapIcon::Opponent, x.translation(), car_facing(x))),
+                .map(|(_, x)| (MapIcon::Opponent, x.translation(), car_facing(x), false)),
         );
-        // Cops: the same look (`MapPoiConfig.5bfb3553`), whose cop elements show on `IsCop`.
-        icons.extend(pursuit.cops.iter().map(|&(p, f)| (MapIcon::Cop, p, f)));
+        // Cops: the same look (`MapPoiConfig.5bfb3553`), whose cop elements show on `IsCop` / `InChase`.
+        icons.extend(
+            pursuit
+                .cops
+                .iter()
+                .enumerate()
+                .map(|(k, &(p, f))| (MapIcon::Cop, p, f, pursuit.cops_in_chase.get(k).copied().unwrap_or(false))),
+        );
         // Body shops and jack spots near the car (`FUN_006ffd90`): a point of interest within 400 m, removed
         // beyond 450 m. A jack spot's icon is visible once found (`JackSpots.IsSwapSpotFound[#]`). Model
         // decisions: every jack spot counts as one whose car is not yet in the profile's list (`FUN_006ed400`,
@@ -998,7 +1211,7 @@ fn draw_hud(
                 .iter()
                 .map(|&i| points[i])
                 .filter(|pt| pt.icon != MapIcon::JackSpot || found(pt.id))
-                .map(|pt| (pt.icon, pt.pos, Vec3::Z)),
+                .map(|pt| (pt.icon, pt.pos, Vec3::Z, false)),
         );
         let icon_quads = map_icons(scene, groups, anim, t, screen, &q, p, f, metres_per_px, &icons, &mut base);
         quads.splice(qi + 1..qi + 1, icon_quads);

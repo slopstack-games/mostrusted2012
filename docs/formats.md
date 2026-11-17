@@ -69,8 +69,10 @@ InstanceList ──> Model ──(LOD state)──> Renderable ──(per mesh)�
 - **InstanceList backdrop**: entries past the always-loaded count are the unit's backdrop, the world-space
   geometry the game draws while the player is *in that unit* (terrain tiles, building blocks, water planes,
   horizon) at the LOD that suits the distance; other units list other tiers of the same tiles. Drawing every
-  unit's backdrop stacks the tiers. `mw_assets::backdrop` composes one backdrop per place from the zone that
-  owns it (research log 2026-10-04, night). Water is per zone too: far zones list coarse planes (a rectangle at
+  unit's backdrop stacks the tiers. The game inserts only the current streaming zone's entries (always-loaded
+  count to array size, `FUN_00556980` / `FUN_00556a60`, decomp.md "Streaming zone and backdrop swap");
+  `zone_view.rs` shows them by the camera's zone. `mw_assets::backdrop` composes one backdrop per place from
+  the zone that owns it (research log 2026-10-04, night; `--composed-backdrop`). Water is per zone too: far zones list coarse planes (a rectangle at
   y 13.1 over the gorge whose own zones list its water at y −36.8; a sloped sea plane up to y 30.4 over the
   coastal industrial area) that flood a zone that does not list them (research log 2026-10-16).
 - **ZoneList (0x90)**, the only resource in `HAWAII/PVS.BNDL`: one zone per track unit. Header: ptr points
@@ -408,6 +410,46 @@ the mirrored projection shifted by (N − N_vertex).xz × `WetScaleParams.y`, at
 `WetScaleParams.z`, × env-BRDF × wet. No global wetness input exists: roads always carry the puddle map's
 wetness. `PlotPBR_AO_StandingWater` does the same with its own `PuddleTextureSampler` (TEXCOORD1).
 `SurfaceType` objects have `Dry_Conditions` and `Wet_Conditions` blocks (physics, rumble, sounds, vfx).
+
+**Surface list layout** (2026-10-19, from the readers in the dump; `mwtool surfaces --classes`):
+- `Surfaces` (60 bytes): +0x0c `Chevron_surface`, +0x14 `Default_surface` (`FUN_0054a470`: its dry `Normal`
+  physics is the fallback), +0x1c `06df3428` (surface 63's type), +0x24 `c1cfb178` (surface 21's, the sea),
+  +0x2c UniqueId, +0x30 `423651c1` (10 `SurfacePhysics` uids, count +0x38: 283001, 510001, 386921, 510013, 406000,
+  510008, 681692, 681698, 510053, 681663; the road surfaces of the off-road-distance statistic in `FUN_00706550`,
+  not handling), +0x34 `Surfaces` (count +0x3a; `FUN_0054a6f0` finds a type's index by its UniqueId +0x1e8).
+- `SurfaceType` (512 bytes): +0x10 `Colour`, +0x20 `Dry_Conditions`, +0xf0 `Wet_Conditions` (208 bytes each:
+  `Flats` +0x0c, `Normal` +0x30, `Offroad` +0x54, `Rims` +0x78, `Track` +0x9c, each { +0x0c `Surface_Physics`,
+  +0x14 `Surface_Rumble` (a controller `RumbleEffect`), +0x1c `Surface_Sounds` }, +0xc0 `Surface_vfx`, +0xc8
+  `VehicleEffects`), +0x1c0 `Collision_Rumble` (`0c4f9adb`), +0x1e0 `Collision_Sounds`, +0x1e8 UniqueId, +0x1ec
+  `c0878de5` (float, 1; 0 on surfaces 22 and 62), +0x1f0..+0x1f8 nine bools that are the collision tag flags of
+  the surface (`FUN_0043ab40` builds a tag from them): `a8e027e5` DECAL, `7c1fe418` DRIVABLE, `a5751c8b` FATAL,
+  `31272647` FATAL_FIELD, `194f91f2` KERB, `bf3b6604` REMOVABLE, `004582f4` ROAD, `12be83e7` SOLID_DECAL,
+  `38f37e6a` SUPER_FATAL. On every surface the world's triangles carry exactly their type's flags, which also
+  confirms that the tag's bits 13–19 index `Surfaces.Surfaces` directly.
+- Which contact kind each reader takes: physics (`FUN_0054a760`) `Normal`, `Rims` (wheel +0x1c1) or `Flats`
+  (+0x1c2), never `Offroad` / `Track`; rumble (`FUN_0054a9f0` → `FUN_0054a980`) and sounds (`FUN_0054a5d0` →
+  `FUN_0054a560`) take the car's tyre class: 0 / 1 `Offroad`, 2 `Normal`, 3 / 4 `Track` (a null handle falls
+  back to `Normal`), rims / flats as for physics; `FUN_0054a5d0` also returns 1 when the surface lacks the ROAD
+  bool (an off-road flag for its caller). Vfx (`FUN_0054aaa0`): the block's +0xc0, wet when the surface state is
+  ≥ 1, the car's +0x1c17 is clear and the wet one is set. Physics and sounds take the wet block at state ≥ 2.
+- `SurfacePhysics.TyreSpecificOverrides` by tyre class (`FUN_0054d750`, class = game car +0x1a88): 0
+  `OffRoadOverrides` (+0x28), 1 `08b66463` (+0x0c), 2 `RoadOverrides` (+0x44, also any other value), 3
+  `SportOverrides` (+0x60), 4 `TrackOverrides` (+0x7c). Every car's `PerformanceUpgrades.StockTyres`
+  (`32d208d1`, +0xc8) is `Tyres` 2; the OFF-ROAD tyre mod sets 1 (PRO 0), TRACK 3 (PRO 4) on the 911.
+
+**Bus mix** (`SOUND/MIXER_CHANNELS.BNDL`, `mw_assets::buses`, 2026-10-19): `BusRoute { AssetName, Mixing_Groups,
+Main_Send (next route's UniqueId, 0 = out), Compressor_Send, Delay_Time }` (23 routes: Player Car → Player Sub →
+Player PM → Master World → Final → Master, Player Collisions → Player PM, World / Dominant World / Dominant 3D →
+Master World, Music → Final, UI / Speech → Master, ...); `BusMixerChannel { Routing, EQ curve f7b3abec [Frequency,
+Gain, Q], Compressor, nine state gains 3ca61a54 79a2cbf6 8b61e126 eecf2aca f31e8e7e 0e4f2179 bec6fe4f fca6257d
+d7f83c28, DistortionType }`; `Compressor { Attack, Release, Ratio, Threshold (dB), dd357e8b (make-up, linear),
+Mode }`. The snapshot's `MixerChannel`s carry the `MixingGroup` a route collects. `SurfaceSounds` (148 bytes): +0x0c
+.. +0x2c the skid sequences (`Brake`, `Brake_Competitor`, `Drift`, `Drift_Competitor`, `Reflection`), +0x34
+`4648873a` player road, +0x3c `1376f03b` other cars' road, +0x44 `Spin`, +0x4c `Spin_Competitor`, +0x54
+`6bdefb10` traffic skid, +0x5c `TyreParams`, +0x68.. `Bumps` / `Transitions` lists, +0x7c bump scale, +0x80
+road fade-in (0.333 s), +0x84 release (0.5 s), +0x88..+0x90 list counts. `VehicleSound` +0x50
+`TransmissionWhine`, +0x58 `TurboWhine` (88 bytes: six one-shot sequences +0x0c..+0x34, `Sequences` +0x40, boost
+rates +0x44..+0x50).
 
 ## Diffuse sampler names
 
@@ -842,13 +884,22 @@ route drawn over the lane map `mwtool events <id> --png <file>`. Settled 2026-10
   "SPEED RUN", 1119989 "AMBUSH", 2193051 "DRIFT ATTACK"); `Name` (+0x84) and `Description` (+0x14) language ids;
   `Checkpoints` (+0x64, UniqueId[]); `SpawnPosition` (+0x9c); `Laps` (u8 +0xf6: 1 for sprints, 2–3 for
   circuits; "AROUND THE WORLD" is a circuit with 1 lap); `AllowedVehicleList` (+0x5c); `TargetSpeed` /
-  `TargetTime` (float[3], speed runs / timed DLC modes); `1795ca2a` `AIPlayerInformation`[] (+0xc0:
-  `AIPlayerType`, `9b4e35f7`, `Placement`, `2968e77a`); `c0756b63` `CustomChevron`[] (+0xb8); `d4b38a64`
+  `TargetTime` (float[3], speed runs / timed DLC modes); `1795ca2a` `AIPlayerInformation`[] (+0xc0, 0x1c B:
+  +0xc `AIPlayerType`, +0x10 `9b4e35f7` the alternative colour, +0x14 `Placement`, +0x18 `2968e77a` the colour, a
+  `ColourId` of the car's palette; 2026-10-19, `FUN_00686f30` / `FUN_006ce030`); `c0756b63` `CustomChevron`[] (+0xb8); `d4b38a64`
   `AlternateRoutes`[] (+0xc4: `Checkpoint`, `fe6ef8d8` UniqueId[]); `CheckpointInfo`[] (+0xc8: `Sequence`,
   `Type`, two bools; on 7 events, the count rule gives more entries than checkpoints on some: open);
   `NitrousAllowed` (+0xec), `TrafficEnabled` (+0xf0); `RaceBalancingData` / `RaceBalancingProfile` ids
   (items of GAMEMODES). Career content: 22 circuits, 36 sprints, 14 Most Wanted races (one opponent, no car
   list: the player's own car), 18 speed runs, 7 ambushes, plus DLC drift attacks and timed modes.
+- **Opponents' cars** (2026-10-19): `AIPlayerType` (GAMEPLAY.BNDL, 188 B) +0x14 `Rollout` → `Rollout` (112 B)
+  +0x58 `Vehicle` (a `VehicleList` id), +0x30 `Colour` (0 on 116 of 118), `BodyUpgrade` / `NitrousUpgrade` /
+  `TyreUpgrade`, `DamageBarProfile`, `Characters` and `631d8188` (UniqueId[]; 1656931.., not resolved). Every
+  race slot names its own car this way (the allowed list is the player's); `mwtool events <id>` prints them.
+  `AIPlayerType` flags: +0xb0 `48b3bcce`, +0xb3 `cc3cbc22` (never set), +0xb4 `6bb93300` = the Most Wanted
+  driver (14 race types, Behaviour 8; 14 free-roam ones, Behaviour 0 / 1), +0xb5 `d4fbaf43` = a cop (MOST WANTED
+  7's two Chargers, the ambushes' Interceptors). `OfflineEvent` +0xee `c75c9d90` is set on every normal race
+  with opponents but 3 DLC sprints, never on a Most Wanted race.
 - **Checkpoints and starts are `TriggerData` records** (`HAWAII/TRIGGERS.BNDL`, same ids): every checkpoint is a
   kind-0 **box**, 2 m deep, 36 m high (centre 18 m above the road), as wide as the road or the junction (27–186 m),
   its local Z the driving direction through it. The list is in driving order; on circuits the last gate stands
@@ -921,18 +972,44 @@ states). A sequence is referenced by its own `655d3f5f` UniqueId, never by resou
   `Binding_Replacement_Index` is the `#` of the layout's bindings), `Text1` (`bf1ce9a1`) / `Text2` / `Text3`.
   `JumpTimelineController`s carry an `EnabledBinding`; their destination is the unnamed `b6a51260`.
 
-## HSMData (0x501, game-logic state machines, 2026-10-09)
+## HSMData (0x501, game-logic state machines, 2026-10-09; completed 2026-11-17)
 
-Parser `mw_formats::hsm` (layout table in its doc comment), `mwtool hsm [<node id>] [--find text]`; read like the
-interpreter reads it (docs/decomp.md "Boot, loading screens and the free-roam start"). Header: version 3, entry
-points (12 B {node, behaviour code, key}), nodes (32 B), an unread pair, behaviour types (32 B {packed key, name
-ptr, ...}: "Run Child Behaviour", "Activate Widget Group", ...). A node: behaviour code = `~crc32(code name)`
-(`HSB_RUNCHILD` 0x24c422b2, the most common), id, its events (the `ENTER` event lists the children it starts),
-its children with transitions (on a child's exit code, start these nodes), parameters (packed key → value text,
-e.g. `GROUP="491032"`, `BINDING="Mode.ShowLoadingScreen"`, `FUNCTION="SetNewGame"`), an optional inline Lua
-chunk, a name, u8 parameter / kind / event / child counts at +0x1c..0x1f. Keys and exit codes are names packed
-base 40 into a u64 (`EXIT`, `ENTER`, `TRUE` / `FALSE`, `YES` / `NO`, `TOGAME`, `PC` / `PS3` / `X360` / `VITA`).
-The cars' active-aero machines (`AnimationStateBehaviour`) are the same format.
+Parser `mw_formats::hsm` (full layout table in its doc comment; official structure names from burnout.wiki "HSM
+Data/NFS Most Wanted", a PS3 debug build), `mwtool hsm` (listing, trees, `--data`, `--bundle all` parses all 37
+instances of the install); run by `mw_logic::hsm` (decomp.md "The HSM interpreter"). Header: version 3, then
+(ptr, count) of top-level states (12 B {definition id, behaviour id, **instance id**}: the code starts a machine
+by instance id, the boot's 20527 → "Top State" 21597), states (32 B), data definitions (0x14 B), behaviour
+interfaces (32 B).
+- **State** (`HSMStateDefinition`): behaviour id = `~crc32(code name)` (`HSB_RUNCHILD` 0x24c422b2), definition
+  id, entry points, child exit data, parameters, data definition, debug name, u8 counts; +0x1D is the **fallback
+  behaviour** used when the behaviour id is not registered: RUN_CHILDREN 0 (2,011 states) → `HSB_RUNCHILD`, EXIT 1
+  (694) and ASSERT_THEN_EXIT 2 (1) → `HSB_PLCHLDR` (exits through `EXIT`).
+- **Entry points** (16 B {id, action, spawn count, spawns}): the state is entered through one of them (most:
+  `ENTER`; `SETENDREASON` has QUIT / ENDED / RETRY, `LOADPROFILE` ENTER / ENTER_NO_PRF). Action NOTHING 0, CHILD 1
+  (start the spawns), EXIT 2. A **spawn** (16 B) = {entry point id, state id, name}: start that state through
+  that entry point.
+- **Child exit data** (16 B {child id, exit points, count, name}) and **child exit points** (24 B {parent exit
+  point, child exit point, action, spawn count, spawns}): when the child exits through the child exit point,
+  start the spawns (CHILD) or exit the parent through the parent exit point (EXIT).
+- **Parameters** (16 B {id, values, i16 type, i16 count}): every value is text; types STRING 0 (2,458 + 16 with
+  0 / 4 values), BOOL 4 (1,158), ASSET_REFERENCE 5 (858, up to 4 values: speech events, error lists), INT 1 (57),
+  FLOAT 2 (42), ID 3 (none), STRUCTURE 6 (21, sign-in screens: values → `HSMStructureInstance` 8 B {params,
+  count}, nested). Ids are packed names, but not always canonical: 484 `BINDING` parameters carry
+  "BINDING" NUL "PATH" (0x54a48941b5db2e54, also the exe's constant for most binding behaviours), plus
+  `ERROR·STRING` (3) and `CONTEXT·NAME` (2); the code compares all 64 bits.
+- **Data definitions** (0x14 B {id, path, JSON text, size, debug name}), 28 in GAMEMODES, referenced by 65 states
+  (+0x14; corrected 2026-11-17: not inline Lua). With a path they are view models published while the state is
+  active (`SafeForDialogs {"CanShow": true}`, `PostBoot`, `WaitingForBoot`, `SPVisible`, `ActiveGameMode` with
+  binding `adapters`, `GameState`, `Killcam`); without, a hook's arguments (`{"Params": {"NewGame": true}}`,
+  read as the member `Params` / `EnterParams` / `ExitParams`).
+- **Behaviour interfaces** (32 B {packed code name, name, entry point ids, exit point ids, parameter defaults,
+  u32 parameter count, i16 entry count, i16 exit count}): e.g. `HSB_SEL_EX_B` (BINDING, ONFAILEXIT; no declared
+  exits), `SETENDREASON` (entries QUIT / ENDED / RETRY). 199 in GAMEMODES; 5 top-level states (275234, 955119,
+  995174, 995220, 1019762) name states this resource lacks.
+No shipped state runs Lua (`NEWLUASTATE` / `LOADLUA` / `RUNLUASCRIPT` exist but are unused). Keys and exit codes
+are names packed base 40 into a u64 (`EXIT`, `ENTER`, `TRUE` / `FALSE`, `YES` / `NO`, `TOGAME`, `PC` / `PS3`
+/ `X360` / `VITA`); a behaviour starts with `EXITINVALID`. The cars' active-aero machines
+(`AnimationStateBehaviour`) are the same format.
 
 ## Front-end data (2026-10-09, `mw_assets::frontend`, `mwtool frontend`)
 
@@ -1112,6 +1189,12 @@ An element stack repeats `UILayout`s (resource IDs in `Cell.Content`) over a dat
 | `Width`, `Height` | the stack's box; nested row stacks have Height 25 (selected row) or 0 (from their content) |
 | `ae583a9a` (+236, 2-byte enum) | direction (2026-10-10): 1 = cells go down (every list on the pause, HUD, Easydrive and map screens), 0 = across (the map screen's navigation tabs over `Widget.Tabs.TabList`; also the single-cell header stack); our reading of the values |
 
+A cell is as tall as the elements whose UIElementBase bool `bb6cac74` (+172) is set (the pause row: an invisible
+21×40 shape, 21×52 selected; its 44 px image is unflagged), checked against the original (research log 2026-10-19
+"UI frame"). Labels: glyphs scale by `Font_Size` / em (em = atlas width / the font header's ratio at 0x08, not the
+point size at 0x148), `Character_Spacing` (TextStyle +76) goes between characters, and text sits in its box by the
+element's anchor row (top / middle / bottom).
+
 Not decoded: `CellSizeDefinition` (empty in Easydrive), `Padding`, `Shift`, `ScrollSpeed`, the unnamed counts
 (`280402f1` = 3 on the menu stack, 6 on the tabs). Inside a cell, bindings without a dot (`Name`, `Locked`, `DLCIconID`,
 `PositionNotNull`, `Shutdown`, `New`) are fields of the entry.
@@ -1126,3 +1209,46 @@ image 256×29 at (7,−3), name label at (56,12) left-middle, lock / DLC / medal
 prompt (d-pad icon 39×39 at (8,6), alert variant with `Recommends.ShowAlert`, logo strip 100×16, "NEW" badge on
 `Widget.Prompt.New`); **1713378** is empty. Widget `EasyDrivePanel` (layout 1902272, a 548×25 stack at (365,15)
 moved down by `Widget.EasyDrive.ItemsAbovePanel × 26.42`) is the side panel next to the selected row.
+
+## Widget definitions (JSON `TextFile`s, 2026-11-17, `mw_formats::{json, widget}`, `mw_assets::widgets`, `mwtool widgets`)
+
+How the game reads and runs them: decomp.md "Widget definitions (JSON) and widget scripts".
+
+- **`TextFile` (0x70)**: u32 byte count, then the text (JSON: tabs, CRLF; Lua: a compiled 5.1 chunk). 859 unique
+  JSON files: 846 are screen widgets (all 94 `UI/SCREENS2` bundles), 13 are adapter hosts in `EN_US/FEEDBACKGROUPS`.
+- **Naming**: every `Widget_*` struct of a `Screen2` has a JSON twin, resource id = CRC-32 (IEEE) of
+  `lower("<Name>_<UniqueId>.json")` (`Background_1022356.json` → `fd9e3727`); the 13 adapter-host files are
+  referenced by handle from `SequenceItems.AdapterHost` items (field `Adapters`) and are named otherwise. Lua chunks:
+  CRC-32 of `lower("<ScriptName>.lua")`.
+- **JSON dialect** (the engine's reader): value tags 0 object, 1 array, 2 string, 3 int (no `.`/`e`/`E`; i64), 4
+  double, 5 bool, 6 null; objects keep file order; a key is found by its GeneSys field hash (first match);
+  trailing commas accepted; escapes `\" \/ \\ \b \f \n \r \t \uXXXX`.
+- **Keys = GeneSys field names**: the JSON keys hash to the field hashes of the GeneSys twin (`CallbackArgs` =
+  `a00328b4`, `ActiveBinding` = `053e93c0`, `DeferredViewModels` = `f11da36d`, `OnlineViewModels` = `688739e4`,
+  `ImagePalettes` = `e14ba22c`, `LayoutInstanceParams` = `ecc08889`, `Widgets` = `c7413006`, `LuaAsset` =
+  `ca319217`, `LuaHooks` = `f4e46c1f`, `LuaModules` = `c00843e6`, `LuaModulesIncluded` = `29751313`, …): the 400
+  distinct keys name that many GeneSys fields. The values agree (the `Layouts`, `Scripts`, `Sequence` ids; the
+  `LayoutLayer` / `ModalMode` names ↔ enum values below; the screen scripts' `LuaAsset`).
+- **Common fields** (the GeneSys widget base `WidgetDefinition`): `Name`; `LayoutLayer` (`BACKGROUND_BELOWMAPS` 0,
+  `BACKGROUND_ABOVEMAPS` 1, `MIDGROUND` 2, `FOREGROUND` 3, `MODAL_BACKGROUND` 4, `MODAL_FOREGROUND` 5, `OVERLAY`
+  6); `ModalMode` (`E_NON_MODAL` 1, `E_MODAL` 2, `E_BOTH` 3); `Layouts` [{`Layout`, `LayoutInstanceParams`}];
+  `Actions` [`UserActionInstance` {`ActionDefinition`, `ActiveBinding`, `SuccessCallback`, `CallbackArgs`,
+  `IsCallbackInLua`, `SuccessBinding`}]; `Adapters` [{`Name`, `BindingSplices` [{`dataSources` [{`source`,
+  `length`}], `dataSourceIndex`, `dataSourceOffset`, `index`, `offset`, `numElements`, `mappedSources` [{`source`,
+  `key`, `expectsHash`}], `respectLength`, `expectsHash`, `wrap`, `appendElement`, `operation` {`Operator`,
+  `Operand`}}]}]; `Scripts` [{`Name`, `Script` {`LuaAsset`?, configuration items}}]; `Timers` [ScreenTimer ids];
+  `ImagePalettes` [ids]; `DeferredViewModels` / `OnlineViewModels` [{`Name`, `ViewModel` {…}}]. The GeneSys base
+  adds eight small fields (`982e681c` = layout count, `1f3e2f69` = script count, the others counts or flags).
+- **Type-specific fields**: typed for 39 widget types (`WidgetKind`: menus, titles, palettes, navigation tabs,
+  the Easydrive tier / item / type definitions, action series, streamed image sets, HUD selection, windowed menus,
+  DLC messages, alerts, the map and point-of-interest widgets with their `Map configuration` camera, map filters,
+  language select, car stats, the settings lists and categories, adapter hosts). 18 types (online, Autolog,
+  login, store / social "blades", report, driver details, notification tabs, player points) keep theirs in
+  `WidgetDef::fields`; `mwtool widgets` lists them.
+- **Screen scripts**: a JSON `Scripts[]` entry with `LuaAsset` runs the Lua chunk of its `Name` (115 chunks, 419
+  uses); without, the native script of that name (22 names, 181 uses; 24 natives exist). The GeneSys header
+  `<Name>_ScreenScript` adds `LuaHooks` (the natives bound into the state), `LuaModules`, `LuaModulesIncluded`
+  and the typed configuration fields.
+- **Adapter hosts** (`SequenceItems.AdapterHost`, sequences in `EN_US/FEEDBACKGROUPS`): `Name`, `Adapters` (the
+  JSON's handle), `EnabledBinding`, `StartTime` / `EndTime`; the JSON repeats them plus
+  `EnabledBindingEvaluationMode` (`Constantly` = GeneSys `84531672` 0, `On Entry` = 2), `Group`, `IsLocked`.

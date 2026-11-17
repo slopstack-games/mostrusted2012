@@ -10,6 +10,1512 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-11-17: browser audio: it plays, matches native's level, drops out while streaming
+- **Start**: browsers start an `AudioContext` suspended until a gesture; the game (cpal via Bevy/rodio) creates
+  its context while starting. `tools/web/index.html` keeps every context and resumes them on the first
+  click / key / touch (picking the install folder counts). Headless: `--autoplay-policy=no-user-gesture-required`.
+- **Measurement** (no listening): the page's `?record_audio=<s>` routes everything cpal connects to the
+  speakers through a tap into a `MediaRecorder` (`audio/webm;codecs=pcm`, lossless, off the main thread) and
+  POSTs it to `serve.py` (`/__audio`); `tools/web/headless <name> '<flags>' <timeout> <seconds>` runs it.
+  Native reference: the same drive in `tools/hl env MW_MUTE=0 ...` (null sink only) recorded with `parecord` from
+  the sink's monitor. Analysis: RMS per 0.1 s, exact-zero runs (dropouts), clicks, spectral centroid per second.
+- **Result** (`--drive 911 --units 12 --auto-throttle 0.6`, 34 s after the car is placed): level and pitch
+  match: median RMS 0.17 browser vs 0.059 native = the user's saved master 0.35 (the browser has no settings
+  file: defaults, master 1.0); centroid 1.4–2.4 kHz in both. **Dropouts**: 42 (913 ms, longest 328 ms, 13
+  clicks) in the browser, 0 natively, clustered in the first ~8 s after placement and around 32 s, i.e. while
+  units stream in: cpal's WebAudio host refills two 2048-frame buffers (~93 ms) from main-thread timeouts, so
+  any main-thread stall over ~46 ms (GPU uploads, mesh / image preparation, a main-thread game file read) gaps.
+- **Main-thread file reads** (`WebSource` now warns on reads ≥ 16 ms): the startup index is 4,040 small reads
+  (~4.4 s total, the text path); while driving only GLOBALEFFECTS (91 ms), ENVIRONMENT (102 ms) and a feedback
+  group (41 ms): not the main cause of the gaps.
+- **Fixed the same day** (user: patch both): `third_party/` carries rodio 0.22.2 and bevy_audio 0.19.1 through
+  `[patch.crates-io]` (third_party/README.md): bevy_audio opens its sink on cpal's AudioWorklet host on wasm32 with
+  atomics (falling back to WebAudio), the sink wrapped in `send_wrapper` (the worklet stream holds the page's
+  `AudioContext`, not `Send`; Bevy's systems run on the main thread there); rodio's 32 lock sites on the callback
+  path go through `lock_spin` (spins on `try_lock` in the threaded browser build, the ordinary lock natively).
+  Same drive, 31 s after placement: **0 dropouts, 0 clicks** (was 42 / 913 ms), median RMS 0.168 (was 0.17);
+  log line "audio: AudioWorklet output". Native unchanged: median RMS 0.0590 (0.0586 before), 0 dropouts;
+  243 tests, accel and race tests as before. Original plan, for the record: take the mixer off the main thread with cpal's `audioworklet` host (the callback
+  runs on the audio rendering thread over shared memory). Bevy's `AudioOutput` is crate-private and opens
+  cpal's *default* host (always WebAudio), so this needs a patched `bevy_audio` (or our own output plugin), and
+  rodio's `Player` takes plain `Mutex::lock`s on its controls (volume / speed / seek / position) every few
+  samples while the main thread sets them: a contended lock traps on the worklet thread (no `Atomics.wait`
+  there) as on the main thread; those have to become try-locks or atomics. Bigger buffers alone would trade the
+  gaps for ~0.4 s of latency.
+- Headless setup: `brave --headless=new` with `--use-angle=vulkan --disable-vulkan-surface` presented frames
+  only with a profile left by an earlier run; with fresh profiles it gets no WebGPU adapter, and without
+  `--disable-vulkan-surface` the swap chain's shared images fail (device lost). Brave inside `tools/hl`'s
+  headless gamescope (X11, `--enable-features=Vulkan`) works from a fresh profile: `tools/web/headless`.
+  Killing the launcher leaves Brave's processes running (they restored old tabs into later runs): the runner
+  kills by profile.
+
+### 2026-11-17: Binding evaluator (M8 step 1, `mw_logic::binding`, `mwtool bindings`)
+The binding language's parser and evaluator read from the code (decomp.md "Binding evaluator": functions,
+visitor vtables, constants); ported as `mw_logic::binding` (engine-free, wasm-checked): `Binding::parse`
+(`FUN_00a50650`, HSM / Lua / most UI) and `parse_rooted` (`FUN_00a503e0`), `compile` with `{binding}` splices,
+`eval_bool` / `eval_int` / `eval_float` / `eval_double` / `eval_string` / `eval_text` over a `Host` (or `Roots`:
+root name → `Provider`). Sources: the dump (parsers, arithmetic, comparisons, LERP) and the snapshot's
+disassembly `re/out/live/text.asm` for the vtable-only visitor methods; REA could not run (installed Ghidra 12.2,
+the `rea` server accepts 12.1.x only).
+- **Found in the code, not in the data**: 22 operators (ADD MINUS MULT DIV POW FLOOR_TO CEIL_TO ROUND_TO AXES MOD
+  MIN MAX EQUALS GTEQ LTEQ BETWEEN HASHEQUALS NOT UPPERCASE POSTFIX IS_EMPTY LERP); LERP / BETWEEN take their
+  arguments from the following op records by position (`MINVALUE` etc. are not in the exe); indices are 1-based
+  (none = 1), `["key"]` hashes; the operators that apply depend on the *result type* (bool: comparisons, NOT /
+  IS_EMPTY once; float / double: LERP then arithmetic; int: arithmetic; string: UPPERCASE / POSTFIX only); a
+  missing value is false and only IS_EMPTY inverts it; the bool of an int is its *original* value ≠ 0 (the
+  arithmetic only feeds comparisons); EQUALS on a string compares hash(upper(first 23 bytes)); op tokens are
+  upper-cased and at most 23 bytes; from the first `(` on the text is one segment. `~` in a widget path means
+  *absolute* (`FUN_007cb300`), not "relative to the list item" as `mw_formats::binding` assumed.
+- **Verification**: `mwtool bindings` collects 5,024 distinct binding texts (JSON 2,544, GeneSys 3,503 string
+  fields, HSM parameters 263, Lua constants 239; 156 whole-value `{binding}`s, 37 Lua concatenation fragments
+  skipped): **all parse**. 10 unit tests on the operators against the semantics above (hashes checked against
+  the AXES table in `.bss`). The warnings are data quirks the original has too: `Signals.GetRandomNumber[100]
+  (LTEQ,50)` (GeneSys `EnabledBinding`: LTEQ without `:` compares with 0), `Players.LocalPlayer.GetTeam(EQUALS, 0)`
+  / `(EQUALS, 1)` (both compare with 0), `LocalPlayer.TimeTilEvaded(BETWEEN(10, 19))` and
+  `...IsRankingUp(IS_EMPTY(NOT))` (nested parens: no operator), `(CAPS)` ×6 (not an operator or formatter: a
+  no-op), `MAINRANGE` ×4 (typo, harmless: positional).
+- **Model decisions**: op records past the count read 0 (the original reads stale memory); i64 DIV / MOD by 0
+  leave the value (the original faults); nesting of `{binding}` string values capped at 8; the int result of a
+  string or object is 0 (the original leaves the caller's initial value); `Value::List(n)` answers `_length` in
+  `Roots` (the original registers `_length` members on its list types, static initialisers at 0x00f593xx–
+  0x00f797xx); the 64-bit fixed-point time type (slot 10) and vectors (only `axes()`) are not values.
+- **Open**: the text widget's formatters (`SPEED`, `TIME`, `DIST`, `WITHORDINAL`, ... `.rdata` 0x00f9e484, vtable
+  0x00fd82f8 first half, 0x0046xxxx) still live in `mw_formats::binding` (`hud.rs`); the root registry's
+  contents (which roots are static types vs dynamic providers, the `Signals` functions); `%name%` widget
+  variables (`FUN_007c83f0`); binding splices of JSON adapters (`FUN_00a4f410`, `BindingSplices`); which of the
+  7 rooted-form call sites serve which data; `EnabledBindingEvaluationMode` (`Constantly` / `On Entry`, 13 JSON
+  widgets) is widget-level. `mw_formats::binding` (used by `hud.rs`) differs from the original in `~`, NOT /
+  IS_EMPTY counting, named LERP arguments and string EQUALS; move `hud.rs` onto `mw_logic::binding`.
+### 2026-11-17: game logic: the HSM interpreter (PLAN M8 step 2)
+Worktree agent. The HSMData parser completed and the original's interpreter ported (decomp.md "The HSM
+interpreter", formats.md "HSMData").
+- **Parser** (`mw_formats::hsm`): all official structures (burnout.wiki names): top-level states with instance
+  ids, entry points with spawn entry ids, child exit points with parent exit points, typed parameters incl.
+  nested STRUCTUREs, data definitions (path + JSON text), behaviour interfaces (entry / exit point ids,
+  parameter defaults), fallback byte. All 37 HSMData of the install parse (`mwtool hsm --bundle all`).
+- **Found**: parameter ids are not always canonical packed names: 484 `BINDING` parameters (and the exe's
+  constant for EXITBINDTRUE / HSB_SEL_EX_B / HSM_B_TRUE / HSB_B_NOT_0 / HSB_EX_BI_CH) are "BINDING" NUL "PATH"
+  (0x54a48941b5db2e54), while BINDINGTIMED / RUNSUBNET use the plain `BINDING`; lookups compare all 64 bits, so
+  each behaviour uses its exact id. Hooks return the exit point; a missing hook gives `EXITINVALID` (also every
+  instance's initial exit point). The fallback byte only matters for unregistered ids (RUN_CHILDREN →
+  HSB_RUNCHILD, else HSB_PLCHLDR = exit through EXIT); a top-level state always falls back to HSB_PLCHLDR.
+  Children are not ticked while their parent is entering; instant states chain within one frame (later passes
+  tick the children started in the same call). The boot's instance id 20527 is G+0x2f710 (live). 5 top-level
+  states name states GAMEMODES lacks (RUNSUBNET's enter requests a load when the state is missing: other HSM
+  resources may hold them; not seen in the install).
+- **Interpreter** (`mw_logic::hsm`): 12 machine slots, results ring, the 4-phase tick, children passes,
+  transitions, entry points, subtree exit requests, data definitions published / retracted as view models, hook
+  arguments from the JSON (`serde_json`). Behaviour types are a registry of factories by behaviour id; 19 ported
+  (list in decomp.md); `Host` trait for bindings (typed bool / text / int), hooks, view models, graphics /
+  loading-screen queries; `Clock` with the two clocks the behaviours read. 10 lifecycle tests.
+- **Verified** (`mwtool hsm --run`, answers in docs/commands.md): the boot runs Top State → Boot ("Wait For
+  Graphics Prepare") + Run Always Active Systems + Enable Black Background + the boot page (Language Select: the
+  PC locale check exits at once → Press Start: widget group 491032, "Exit When Intro Sequence Binding Is True" →
+  Press Start) + Switch to 60Hz → Post Controller Bind Boot (Autoselect and Load World: DEBUG Autoselect World →
+  Load World via ENTRY; Do Profile Load: Start Loading All Data → Select Profile → Load Profile → PopulateSettings;
+  Platform Selector PC → Get Online Silently → ConnectToAutolog) → InGame (Wait For Required Resources: feedback
+  group 97039, vehicle list, IsProgressionReady, CalculateShouldShowRecapSequence → Setup Start Point: Is Brand
+  New Profile YES → SetNewGame, SetSinglePlayerRollout → TOGAME → Should Play New Game Intro FALSE) → "Playing"
+  (Wait For Message Groups, Load Message Groups, Preload Cop Cars, Switch to 30Hz mode, Listen for Invite Flow).
+  Same order as decomp.md "Boot, loading screens and the free-roam start".
+- **Model decisions**: missing child exit records / entry points are reported (`Trace::Missing`) and ignored
+  (the original dereferences null); 10,000 passes per children update (the original has no guard); a binding
+  counts as parsed when its path is non-empty (until agent A's evaluator is connected); `WAIT4TIME`'s
+  `CurrentHSMTimer` view model is not published; the driver holds unported behaviours and answers unknown hooks
+  with EXIT (driver only).
+- **Open**: the ~180 used behaviour types left (RUN_PG_RNNR2 / ACTI_WDGT_GR / HSB_P1BIND / RUNGAMEMODE /
+  GAMEMODE / RUNGAMELOGIC / LOADWORLD / LOADPROFILE / MUTE_SOUND / SETBLACKBACK / CHANGEVSYNCS first); which
+  engine clocks +0x18 / +0x38 of the timer manager are; the byte at UI manager +0x2d200; the data-definition
+  `adapters` member (hash 0xb21d9989) and binding writes into published view models; connecting the binding
+  evaluator (typed reads `FUN_00a4f160` bool, `FUN_00a4f2e0` text, `FUN_00a4f200` int, the parse context
+  machine +0xe8) and the native registry for hooks. A probe hook on `FUN_00776470` logging (state id, phase) in
+  the original would confirm the boot path frame by frame.
+### 2026-11-17: Lua 5.1 VM (`mw-lua`): the UI's 115 chunks run (PLAN M8 step 5)
+Worktree agent. C = confirmed (dump / data / differential test), I = inferred.
+- **Decision: our own interpreter, not `rilua`.** rilua 0.1.27 (MIT / Apache, single author, the WoW-addon
+  variant of 5.1.1, ~49k lines with compiler, GC, io / os, taint): its undump hard-codes an 8-byte `size_t` (the
+  game's chunks have 4), host functions are plain `fn(&mut LuaState)` pointers (no captured state, so no
+  name → closure natives), MSRV 1.92, and table order / number output are not the game's. Ours is ~4k lines with
+  no compiler (everything ships as bytecode) and owns the details fidelity needs. The chunks use little: no
+  SELF, 3 TFORLOOP, 1 POW; `string.sub/gsub/find/len`, `table.insert/remove`, `math.floor/ceil/sin/pi`,
+  `tostring`, `tonumber`, `pairs`, `print`, `error` (C, opcode / GETGLOBAL scan).
+- **What follows the original** (crate docs): `lundump.c` (size_t 4 or 8 accepted), the 38 opcodes of
+  `lvm.c`, `ltable.c` ported (main positions, `luaS_hash`, `hashnum`, rehash sizes, re-insertion order,
+  `luaH_getn`, keys created by `t[k] = nil`), so `pairs` order matches; `lstrlib.c` matcher and `format`;
+  `ltablib.c` quicksort; 5.1.3 message texts and `ldebug.c` variable names (`?:0: attempt to call global 'X'
+  (a nil value)`: stripped chunks, source `=?`, line 0); `luaL_where` positions only with line info (never in
+  the game's chunks). Natives are global closures receiving their registered name (`FUN_009f86d0`).
+- **The game's CRT and libs** (C, `.rdata` of the dump): `"%.14g"` at 0x01084474; pre-2015 MSVC CRT strings
+  `1#INF` / `1#QNAN` / `1#IND` at 0x0109f3c8.. → numbers print as `1e+020`, `1.#INF`, `-1.#IND`;
+  `"table contains non-strings"` at 0x01084574 is the 5.1.3 text (5.1.5 changed it; the host-diff test avoids
+  it). `lua_tointeger` rounds to nearest-even (luaconf.h's `fistp` path for `_MSC_VER` x86, I: build flags not
+  seen), `%d` truncates, out of range = 0x80000000; `math.random` = MSVC `rand()` (its state is shared with the
+  game's C++, so the draw order is not reproducible).
+- **How the game calls scripts** (C, dump): `FUN_009ef230` = `lua_getfield(globals, <script>)`,
+  `lua_getfield(-1, <callback>)`, flag "is a function"; `FUN_009ef2e0` = `lua_pcall(L, n, MULTRET, 0)` and on
+  error **pops the message without logging it**: script errors are silent. `FUN_007ec680`: `Construct(<light
+  userdata = the script object>)`, then per JSON config item `SetConfigurationItem(name, value)` with value a
+  string, an integer (`FUN_00ec0380` = `lua_pushinteger`), a boolean, or a double pushed as `(double)(float)v`
+  (a float round trip). `mw_lua::Lua::call_field` does the lookup + call and returns the error (the host should
+  drop it like the game).
+- **Natives**: `print` is a native (`FUN_007e9920`: `lua_tolstring(L, 1)`, nothing else, no error for any
+  argument), registered after the libraries, so it replaces base `print`. `ExitWidgetGroup` (`FUN_007f22e0`,
+  argument 1 as a string, `"<invalid>"` otherwise) is registered with `FUN_009f7e50` too but missing from the
+  385-name list (`scratch/scripting/reg_9f7e50.json`); the dump's 216 `FUN_009f7e50("…")` calls add only it:
+  **386 natives**. The chunks read **171** of them (most used: `print` 70 scripts, `ResolveIntBinding` 69,
+  `ExitWidgetGroup` 55, `ResolveBoolBinding` 48, `ResolveStringBinding` 43, `SetBoolVariable` 36,
+  `SetIntVariable` 35, `SetStringVariable` 28, `DoRpc` 22, `WriteStringToOnlineSession` 19,
+  `UpdateDeferredViewModel` 17). Read but not registered (nil in the game): `ToggleOfflineEventFilter`,
+  `MarkAutologAlertAsSeen`, `GoBackEasyGuide`, `SaveCustomRollouts`, `SelectCustomRollout`, `SetRolloutColour`,
+  `Change{Weapon,Package,UpgradePackage}OnCustomRollout`, `SetNo{EMail,Password}AsLastError`, plus script
+  variables (`lsAction`, `liNumItems`, `liRecommendIndex`, `lsCategoryBinding`) and two other scripts' tables.
+- **Scripts share a state** (I): `CarSelectMW` calls `CarSelectMenu.Back(...)` and `EditSpeedlists` reads
+  `Breadcrumb`, both other scripts' global tables, so at least a screen's scripts live in one Lua state.
+- **Verified**: `cargo test -p mw-lua`: 9 differential scripts compiled by the host `luac5.1` give the same
+  output as `lua5.1` (numbers, coercion, patterns, `format`, `pairs` order with deletions and rehashes, table
+  library and `sort`, closures / varargs / the `arg` table, error texts with variable names, metatables); MSVC
+  formatting unit tests; on the install, all 115 chunks load, their names hash to their ids, main + `Construct`
+  run, and `ViewLegal.OnAction` calls `ResolveStringBinding` then `ExitWidgetGroup("TOS" / "PP")`.
+  `mwtool lua --natives <386 names>`: main + `Construct` of all 115 without error (9 natives called);
+  `--call all` (every callback, no arguments) reaches 109 natives, every error comes from the missing context
+  (nil arguments, globals another callback sets, the unregistered names above), none from the VM.
+  Per-script table: `mwtool lua --natives <list> --call all --out <tsv>` (script, native, calls, first
+  arguments; `nil` rows = not registered); the list is the union of `reg_9f7e50.json` and the dump's calls.
+- **Model decisions**: tables / functions hash and print (`table: 0000002A`) by a per-state counter, not an
+  address; at most 200 nested calls (LUAI_MAXCCALLS; the game allows deeper Lua recursion); memory is
+  reference counted, cycles live until the state is dropped (the game stops its collector,
+  `lua_gc(STOP)`); `collectgarbage` answers 0. Not provided (no chunk uses them): coroutines, `io`, `os`,
+  `package`, `load*` / `dofile`, `getfenv` / `setfenv`, `string.dump`, weak tables.
+- **Open**: one state for all scripts or one per screen (the state list of `FUN_009f86d0`), and when the game
+  steps the collector; the arguments of `OnActivated`, `OnDeactivating`, `PreInputUpdate` and action callbacks
+  (`OnAction` gets something `ResolveStringBinding` resolves); porting the 171 natives (mw-logic registry).
+### 2026-11-17: JSON widget definitions and screen scripts, typed (M8 step 4, data side)
+Worktree agent. Code: `mw_formats::json` (the engine's JSON reader), `mw_formats::widget` (typed definitions,
+naming, the native screen-script table), `mw_assets::widgets` (screen → widget groups → widgets → JSON → scripts;
+adapter hosts), `mwtool widgets`. Spec: decomp.md "Widget definitions (JSON) and widget scripts"; format:
+formats.md "Widget definitions (JSON `TextFile`s)".
+- **Result** (`mwtool widgets`, exit 0): 859 unique JSON files; 846 named by the 94 screens' `Widget_*` structs
+  (CRC-32 of `"<Name>_<UniqueId>.json"`), all parse; the other 13 (`EN_US/FEEDBACKGROUPS`) are the adapters of
+  `SequenceItems.AdapterHost` sequence items (referenced by handle). Scripts: 419 Lua uses of 115 chunks (every
+  chunk of the install, none missing), 181 native uses of 22 names, 0 unresolved; the ScreenScript objects'
+  `LuaAsset` equals the JSON's everywhere; `LayoutLayer` / `ModalMode` names map 1:1 to the GeneSys enum values on
+  all 1,876 screen widgets (7 layers: `MODAL_BACKGROUND` 4 was not known).
+- **Keys = GeneSys field names** (C): the JSON keys hash (GeneSys field hash) to the twin struct's field hashes,
+  so the 400 distinct keys name 400 GeneSys fields (269 not in `genesys_names.txt`). Not added to the names
+  file (it holds names found by dictionary attack; a bulk copy of the data's keys is closer to extracted data):
+  open whether to read them from the user's install at run time.
+- **Untyped (listed set)**: 18 widget types keep their own fields in `WidgetDef::fields` (online / Autolog / login /
+  report / store and social blades / driver details / notification tabs / player points); `mwtool widgets`
+  prints them per type. Everything else is typed, with a hard error on any unknown key inside typed records.
+- **Native screen scripts** (C, snapshot `snap1`): factory table at manager +0x308 (count +0x408 = 24), the
+  manager at 0x24473560 in that snapshot; each entry {`field_hash(name)`, factory}; each factory sits next to a
+  registration stub returning (hash of the name string, factory). 24 = the 22 used + `RearViewMirror` and
+  `MWL_VITA`. Names, factories and sizes in `NATIVE_SCREEN_SCRIPTS`.
+- **Corrections to the research entry below**: `LuaHooks` *is* used at run time: `FUN_007f84c0` binds each listed
+  name into the widget's Lua state (`FUN_009f1c30`; non-natives other than `tonumber` / `tostring` / `error` /
+  `pairs` / `mfpFunction` set the error flag); `LuaModulesIncluded` picks "open the listed `LuaModules`" vs "open
+  all five". One Lua state per widget (widget +0x84). Actions are read from the GeneSys `UserActionInstance`, not
+  the JSON (the JSON key hashes for them are never referenced). `IsCallbackInLua` = "offer to the widget's
+  scripts" (native scripts too); `"Widget::Function"` callbacks go to another widget's scripts.
+- **Model decisions**: none in behaviour (no runtime yet). Parser choices: the JSON reader is our own port of the
+  engine's (file-ordered objects, int vs double tags, first-match lookup), not serde_json, because
+  `SetConfigurationItem` order and the int / double split are observable by the scripts; `lua_configuration()`
+  rounds doubles through f32 as `FUN_007ec680` does.
+- **Open**: the Lua init's two unnamed keys (hashes `67d01e38` bool, `cc2e0dc5` binding; absent from the data);
+  vtable slots 7, 9–11; callers of `OnActivated` / `OnDeactivating` (`FUN_007ebc80` / `FUN_007ebcb0`); where
+  `Widget::Function` is split (record +0x104); the release-build effect of the error flag +0x2028 (39 `LuaHooks`
+  names are not natives); when the widget's Lua state is created; per-native behaviour (24 C++ classes);
+  `RearViewMirror` / `MWL_VITA` never used by the shipped screens.
+
+### 2026-11-17: game logic: scripting, flow, AI (survey of the install, the exe and prior work)
+Research agent; full tables, registries and URLs in the main checkout's git-ignored
+`scratch/engine-scripting-research.md` (raw outputs and scripts in `scratch/scripting/`). Whole install scanned
+(2,020 bundles, 353,223 resources). C = confirmed, I = inferred.
+- **One script VM: PUC-Rio Lua 5.1.3** (version string at 0x01083c3e), standard 38 opcodes, 32-bit size_t,
+  double numbers, debug info stripped (C). No Squirrel, Scaleform / ActionScript or RAGE-style custom VM; the
+  other "VMs" are C++ interpreters of data: HSM, bindings, the sequence player, PageRunner.
+- **Lua = UI only**: 115 unique chunks (229 copies, ~25k instructions, 1,103 functions), `TextFile` (0x70) in
+  `UI/SCREENS2`; id = CRC-32 of the lower-cased `"<ScriptName>.lua"` (all 115 match). Menus, map, car select,
+  settings, online / store. No game-mode, AI or physics Lua (C).
+- **JSON** `TextFile`s: 859 unique widget definitions (439 Lua callbacks, 224 native actions, binding adapters,
+  script configuration); id = CRC-32 of `"<WidgetName>_<UniqueId>.json"` lower-cased (`FUN_007edd50`,
+  `FUN_007e0850`) (C).
+- **HSMData**: 17 unique machines: GAMEMODES' game-logic machine (2,706 nodes, 36 entry points, 199 behaviour
+  types) and 16 active-aero machines (C). Node +0x14 is a data definition, not Lua (formats.md corrected).
+- **GeneSys**: 1,138 type names, 83,655 objects; 8,485 `Sequence`s using 73 `*SequenceItem` types; 243
+  `*_ScreenScript` objects (`LuaAsset`, `LuaHooks`, `LuaModules`, `LuaModulesIncluded` cracked); 24 types with
+  no chunk = native C++ screen scripts (C). `LuaCode`, `LuaData`, AttribSys, BinaryFile, FlaptFile: 0 resources.
+- **Bindings**: ≥2,701 distinct paths in JSON, Lua and HSM, ~100 roots (`Widget`, `Signals`, `Mode`,
+  `Players`, …); operators seen EQUALS, GTEQ, LTEQ, MINUS, ADD, MIN, BETWEEN, NOT (C syntax, I full grammar).
+- **Lua host** `FUN_009f86d0`: base + optional package / table / io / string / math (module table 0x0102a1fc),
+  GC pause 100 / stepmul 200 then **GC stopped**; every native registered as a global closure with its name as
+  upvalue (`LuaHooks` is not a runtime whitelist, I). Natives: `FUN_009f7e50` registers **385** Lua natives;
+  `FUN_007763b0` **187** HSM hooks keyed by name hash (35 names in both). Widget scripts: factory
+  `FUN_007f2850` (Lua script object vtable 0x00fe7f78, or one of up to 32 native screen scripts);
+  `FUN_007ec680` calls `Construct` then `SetConfigurationItem` per item; other callbacks by name (I).
+- **HSM never calls Lua**: it calls natives through `CALLHSMHOOK` / `CALLHSMHOOKS` / `HSMHOOKEXIT` (121 hook
+  names used), arguments from the node's data definition. The exe registers 268 behaviour types (203 used).
+- **Flow vs rules**: flow = the HSM; content = GeneSys (111 `OfflineEvent`, 12 `GameMode`, `EventList`,
+  `AIPlayerInformation`, `ScoringAction`); cutscenes = sequences run by `RUNGAMELOGIC` nodes; menus = JSON
+  widgets + Lua + native screen scripts; rules (checkpoints, positions, timers, scoring, rewards, unlocks) are
+  C++ reached through hooks (`StartGameModeTimer`, `AwardPostEventAwards`, `RemoveAllCops`, …).
+- **AI**: racers, cops, traffic are C++ state machines; no HSM / Lua / behaviour-tree data for AI (C); tuned by
+  `AIConfig`, 200 `AIPlayerType` (`Behaviour` picks the state), 40 `HeatLevel` → `PursuitBehaviour` →
+  `CopBehaviour`, `CopType`, `RoadblockRules`, `TrafficManoeuvreConfig`. HSM only pauses / preloads / removes AI.
+- **Prior work**: burnout.wiki "HSM Data/NFS Most Wanted" (official field names; high value); BNDL Explorer
+  (github.com/FrankHUN88453/BNDLExplorer: MW2012 editor, JSON / Lua text editors, HSM viewer; the PS3
+  prototype's debug data names ~3/4 of GeneSys field hashes; licence to check, format knowledge only); DGIorio's
+  tools (bundles, `HashBreaker`); nothing from GDC; no other reimplementation found.
+- About 15 functions the scripts call do not exist in the exe (`ToggleOfflineEventFilter`,
+  `SaveCustomRollouts`): dead or online paths (I).
+
+Consequence (user, 2026-11-17: a 1:1 rewrite): CLAUDE.md "Fidelity rule" and PLAN.md M8: the logic data is
+executed by ports of these interpreters. Open: what `HSB_STRSCRPT` runs; Lua state per screen or per script, GC
+and error handling; the second HSM-style registry at 0x54d (RUNSEQUENCE / EXITBINDTRUE / EnableCompound);
+`NavigationMesh` and `GameplayLinkData`; the full binding grammar from the evaluator; the offline / online split
+of the natives.
+
+### 2026-11-17: browser port, step 4: the runtime renders in a browser (WebGPU, free camera)
+`mostrusted` builds for wasm32 with threads (`tools/web/build`: nightly, std with atomics, wasm-bindgen 0.2.129;
+153 MB module without debug info, not yet optimised with wasm-opt) and runs in headless Brave on WebGPU:
+`--camera=-1131,27,1627,-1190,15,1720 --units 4 --hour 13` loads the same 4 track units, 2881 models, 690 textures,
+3788 instances as natively and renders the road at Hawaii's bridge (frame POSTed by `--screenshot`; matches the
+native frame up to the canvas framing). What it took:
+- `main()` split: native `main` locates the install and calls `run(cli, game)`; in a browser `web.rs` exports
+  `start_with_files(FileList, args)` (the folder picked on the page) and `start_with_listing(base, listing, args)`
+  (a served install: `tools/web/serve.py` serves the player's own install over loopback with HTTP ranges, the
+  build, and the COOP / COEP headers). Flags are the native ones, from the page's `?args=` (`+` = space).
+  `WebSource::from_urls` serves both; the base URL must be absolute (worker threads run from `blob:` scripts).
+- Compiled out of the browser build: hidapi / `steam_controller.rs` (the Gamepad API covers pads), the SDL
+  gamepad-mapping environment write (`set_var` panics there). Window = the page's `#mostrusted` canvas.
+  `--screenshot` POSTs a PNG to the server (`platform::save_screenshot`). Bevy's `webgpu` feature.
+- **`Layered` material within WebGPU's 16 samplers per stage**: its 12 texture / sampler pairs were visible to
+  vertex and fragment (the vertex stage counted 18 with StandardMaterial's 6), and the fragment stage had 18.
+  Now fragment-only, and two samplers: every game texture already had the same sampler
+  (`convert::game_sampler`), bound once on `tex0` (a missing first texture is a white 1×1 image carrying that
+  sampler, as Bevy's fallback is white); the planar reflection reads with the sky cube's sampler (both linear,
+  clamp). Native frames unchanged: before vs after differs no more than two runs of the same build (2.5-3.3 %
+  vs 3.0 % of pixels, traffic / particles).
+- Settings, profile and saves: no config directory in a browser, so defaults and nothing saved (as before
+  with no `$HOME`); browser storage is open.
+
+Later the same day: the worker panic was the loader's `Receiver::recv_timeout` (std reads `Instant` inside):
+`platform::recv_timeout` polls in a browser (`try_recv`, 1 ms worker sleeps = atomic waits, no clock); our
+threads now set `Error.stackTraceLimit` (platform's `Builder` wraps wasm_thread's), which named it. Clean run
+after that; **driving works in the browser** (`--drive 911 --units 12 --auto-throttle 0.4`: car, HUD, Easydrive,
+minimap, streaming; slower per frame than native: 35 vs 47 km/h at frame 400). Open: audio needs a user gesture (headless runs are muted);
+`AssetStore::new` indexes 2020 TOCs on the page's main thread (text path, a few seconds); the window size on the
+page vs `--units` / memory (4 GB cap) for larger worlds; driving (step 5).
+
+### 2026-11-17: browser port, step 3: threads as Web Workers, a main thread that never blocks
+Decision: the browser build uses **shared-memory threads** (wasm32 with `atomics`, nightly `-Z build-std`, COOP /
+COEP headers). Without threads every loader would have to run in a separate worker instance and send its results
+as messages (the browser has no synchronous file reads on the page's main thread), a rewrite of every load path.
+Bevy 0.19 supports atomics builds (bevy_render wraps its wgpu handles with `send_wrapper` there); its own task
+pools stay single-threaded on the web, our loader threads don't.
+
+- `mostrusted/src/platform.rs`: `thread::{spawn, Builder}` = `std::thread` natively, `wasm_thread` (0.3.3, same
+  API, each thread a Web Worker on the shared memory) in a browser; all 26 `spawn` and 16 `Builder` sites use it
+  (`steam_controller.rs` and `movie.rs` stay `std`: native-only, hidapi / ffmpeg). `PollLock::poll_lock` (a
+  `try_lock`; busy = "not yet") for every main-thread read of a worker's result slot (24 `take()`s, the
+  `is_some` / `clone` / `retain` polls in sequence_fx, world_coronas, music, world_sfx): a contended lock **traps**
+  on a browser's main thread (`memory.atomic.wait32` is not allowed there). `StreamFocus`: the focus is polled
+  (a busy lock skips one frame), releases go through an mpsc channel (a skipped release would be lost).
+  `Instant` = `bevy::platform::time::Instant` (`std::time::Instant::now` panics in a browser; same type
+  natively), seeds from `platform::time_seed` (`Date.now()` there). The bake pool falls back to the global
+  rayon pool when threads can't be made; rayon-core 1.13's global pool falls back to the calling thread itself.
+- `WebSource` changed from `FileReaderSync` (worker-only, `File` handles tied to one thread, `unsafe impl Send`)
+  to **blob URLs + synchronous range `XMLHttpRequest`s**: the source is plain strings, `Send + Sync` without
+  unsafe, readable from any worker; on the page's main thread binary sync requests are not allowed, so it reads
+  `x-user-defined` text and takes the low byte of each char (works, slower).
+- Builds: `tools/wasm-check --threads` (nightly, rust-src; the linker flags `--shared-memory --import-memory
+  --max-memory=4294967296` and the `__wasm_init_tls` / `__tls_*` exports are required: without them the memory is
+  not shared and posting it to a worker fails with `DataCloneError: #<Memory> could not be cloned`).
+
+Verified natively: clippy 0, 201 tests, 911 accel unchanged (0-60 mph 3.58 s, quarter mile 11.60 s),
+`--race 462174 --test race` 27/27 gates. In headless Brave (scratch wasm-bindgen module, `--target web`,
+COOP / COEP served, `crossOriginIsolated` true): `WebSource` made on the page from 7 install files, `GameDir`
+validated on the main thread (VERSION.TXT and a 1 MiB range of VEH_122769_HI through the text path, 23 ms); a
+`wasm_thread` loader worker read the same range (identical FNV hash), built the `AssetStore` (4406 resources,
+9 ms), then four workers loaded and parsed GLOBALEFFECTS / VEH_122769_HI / GLOBALTEXTUREDICTIONARY / SHADERS
+at the same time through the shared store with the native counts and 0 errors (16-58 ms each); the page polled
+the results with `try_lock` only.
+
+Open for step 4: `mostrusted` itself on wasm32 (hidapi and ffmpeg compiled out, settings / profile / saves into
+browser storage, the debug trace files off, the page / worker bootstrap); main-thread locks in the engine-free
+crates (`AssetStore`'s bundle cache) are still blocking if the main thread loads: loads belong on workers.
+
+### 2026-11-17: browser port, step 2: game files read through `mw_gamedir::Source`
+Every game-data read in the engine-free crates now goes through `GameDir` (`read`, `read_at`, `len`, `resolve`)
+over a `Source` trait (`mw-gamedir/src/source.rs`): `DirSource` (disk, native), `WebSource` (wasm32: the folder
+the player picks with `<input webkitdirectory>`, `File` handles read on demand with `FileReaderSync`), `MemSource`
+(tests). Moved onto it: `AssetStore::new` (TOCs via the new `Bundle::read_toc_with`), the store's bundle opens,
+`instance_positions` (traffic_lamps.rs), SPS music streams (music.rs; the index now holds game-relative paths) and
+the police speech container (`SpeechData::container` = the `GameDir` and the SWC0's path, read with `read_at`).
+`GameDir::path` / `root` stay for native users that hand paths to other programs (mwtool, the ffmpeg movie
+decoder): on a browser source they return `None` / an empty path, so movies are off there. The install root
+inside a picked folder is the shallowest folder holding `SHADERS.BNDL` (picking the install or a parent works).
+
+Constraint: `FileReaderSync` exists only in Web Workers, so in the browser the loads must run in a worker
+(the main thread gets errors). `WebSource` is `Send + Sync` only without the `atomics` target feature (one
+thread); a threaded build (step 3) has to keep the handles in the loading worker. The other `std::fs` users in
+`mostrusted` are settings / profile / save files and debug traces: browser storage, step 4.
+
+Verified: native unchanged (clippy 0, 201 tests, `mwtool verify` 0 failures over 2020 bundles, 911 accel
+0-60 mph 3.58 s / quarter mile 11.60 s, `mwtool speech 1186352` decodes its 144 lines, `mwtool music --wave
+010000000005dc99` 44.38 s). In a browser: a scratch wasm-bindgen 0.2.129 module in a dedicated worker in headless
+Brave, fed `File`s of 7 install files under `Need for Speed(TM) Most Wanted/` plus one outside it: `GameDir`
+validates (version 1.4.0.0), any-case resolve and `read_at` work (EOF error past the end), `AssetStore::new`
+indexes 4406 resources (rayon falls back to the calling thread), and GLOBALEFFECTS / VEH_122769_HI /
+GLOBALTEXTUREDICTIONARY load and parse with the native counts (521/129/12, 831/28/21, 33/33/0), 0 errors.
+`FileReaderSync` is absent on the page's main thread, as expected.
+
+### 2026-11-17: browser port, step 1: the engine-free crates build and run as wasm32
+Question from the user: can the game run in a browser? Plan agreed: (1) engine-free crates on
+`wasm32-unknown-unknown`, (2) file reads behind a trait (native `std::fs` / browser `File` handles from a
+user-picked install folder: the data is never hosted), (3) the ~17 `std::thread::spawn` sites and rayon onto a
+task-pool helper, (4) `mostrusted` on WebGPU behind a `web` feature (free camera first, no audio), (5) driving,
+then audio. The native build stays the reference for captures and comparisons.
+
+Step 1 result: `mw-gamedir`, `mw-bundle`, `mw-formats`, `mw-audio`, `mw-assets`, `mw-handling` compile for
+wasm32 with no source changes (`tools/wasm-check`). A throwaway raw-ABI module (scratchpad, not committed) ran in
+Node 24 on real bundles: `Bundle::from_bytes`, `load` of every resource (decompression via flate2/miniz),
+`Texture::parse` and `Renderable::parse`. Results identical to the same code built natively: GLOBALEFFECTS 521
+resources / 129 textures / 12 renderables, VEH_122769_HI 831 / 28 / 21, GLOBALTEXTUREDICTIONARY 33 / 33 / 0,
+SHADERS 3099, HAWAII/GLOBALRESOURCES 549 / 261 / 101; zero load or parse errors. Speed: wasm 1.4-1.6x the native
+time (GLOBALRESOURCES 607 ms against 390 ms, single thread both).
+
+Compiles but fails at runtime on wasm32-unknown-unknown (input for step 2): every `std::fs` call
+(`mw-gamedir` install detection and `read_dir` case lookup, `Bundle::open` / `read_toc`, `mw-assets` `music.rs`
+and `police_speech.rs` partial reads with `File::open` + seek). `std::env::var*` returns nothing there (the
+`MW_*` switches are simply off). `AssetStore::new` uses rayon `par_iter` over every bundle's TOC: rayon-core 1.13
+falls back to the calling thread on wasm. Runtime-only blockers kept for later steps: threads in `mostrusted`,
+the 4 GB wasm32 memory cap (the free camera still loads the whole world, ~4.5 GB GPU), `hidapi` (Steam
+Controller) to be compiled out, storage buffers in `game_lighting.wgsl` need WebGPU (no WebGL2).
+
+### 2026-10-19: skids "waaaay too loud": the engine's normalisation, not duplicate voices
+User play test after the sound merge (fdbb6c6 / 7602f68): drift sounds far too loud. Measured in the runtime path
+with a new offline tap (`MW_AUDIO_TAP`, docs/commands.md "Audio": the player's engine bank and vehicle bank rendered
+in game time next to the live ones, plus the sounding voices), on the build before the merge (b4dec4f + the tap)
+and after; analysis scripts in the worktree's git-ignored `scratch/py/` (`tap.py` per 0.5 s, `classes.py` per
+situation). 911 Carrera S, vehicle bank against the engine (energy over each situation):
+
+| situation | before the merge | after the merge | after this fix |
+|---|---|---|---|
+| drift (`--test drift`, lateral intensity > 0.9, ~33 mph) | −0.6 dB | −7.1 dB | −15.8 dB |
+| the same on asphalt (`--track-surface 8`) | (one set) | −7.7 | −16.2 |
+| braking (`--test brake`, braking intensity > 0.25) | −0.7 | −4.6 | −12.1 |
+| rolling 55–70 mph (road + wind) | −16.0 | −22.4 | −31.0 |
+| light wheelspin (`--test accel`, spin 0.15–0.3) | −14.2 | −22.1 | −30.8 |
+
+- **No duplicates.** On a single surface one set's `Drift` (`…0f4eae`) and `Spin` (`…0f4ed0`) sound once each
+  (voice list of the tap); the three `0f4eae` entries of the bank belong to three surface sets behind their own
+  gates, and the `RaceCar[1]` sets (3, 5, 7) are not under the 911 on the test track, downtown (set 14) or the
+  runway (set 1). The merge made the skids ~7 dB *quieter* against the engine (the bus gain +7.2 dB replaced the
+  model gains 1.4 × 4 = +15 dB).
+- **The game's structure is ours.** `FUN_0058fe10` ends by calling `FUN_0058f6d0` once per road slot (two skid
+  records at +0x19a8, 0x14 bytes: set, car, voice, voice, state), each with its slot's `SurfaceSounds`: so two
+  surfaces under the car play two skid sets in the game too, and a set sharing the other slot's `Drift` sequence
+  plays it twice. Per record: `Drift` (+0x1c) and `Brake` (+0x0c), swapped for `Spin` (+0x44) while
+  `FUN_00573d70` (|vehicle +0x2d58| > 0.01) is false; `FUN_0057bbc0` (per frame) stops both over 0.15 s when the
+  wheel leaves the ground or the slot's set changes to one with another `Drift` sequence (+0x14 of its handle),
+  else they carry on; `FUN_00571840` stops them when the slot empties. `FUN_0058b840` starts a sequence with the
+  car's id, the car and its reference wheel (+0x1a78) as parameters; no check against the other slot.
+- **Cause: the engine plays 8.5 dB under its data level.** The bus gains place every effect at data level × its
+  chain over the engine's route ("Player Car"), which holds only while the engine also plays at its data level. The
+  player's engine bank is normalised (`EngineBank::normalise`, a model: full throttle at 75 % rev to −10.5 dBFS);
+  the 911 Carrera S renders at −1.9 dBFS at data level, so it is turned down 8.5 dB and every bus-placed sound is
+  8.5 dB too loud against it. Over the 93 cars the normalisation runs −8.7 .. +18.3 dB (median −2.6; the 911,
+  the Charger R/T (−7.0) and the Integrale among the hottest banks).
+- **Fixed** (`sfx.rs` `bank_level`, `sfx_player::Params::set_level`, `EngineBank::normalisation`, resource
+  `audio::PlayerEngineLevel`): the vehicle sound bank follows the player's engine normalisation, only downwards.
+  Model decision: an engine bank under the normalised level (gain > 1) may lack the part of its mix that leaves
+  through sends with no target in the bundle (the reason the banks were normalised), so its data level is not
+  trusted and the bank stays at data level. `MW_SFX_ENGINE_LEVEL=0` is the A/B.
+- **Open.** The same mismatch holds for every other sound placed by the bus gains (the player's collisions
+  `player_sfx.rs`, world props and landings `world_sfx.rs`, other cars' horns / crashes / skids `car_sfx.rs`, AI
+  and police tyres, and the AI / traffic engines at data level): left as they are (the props were reported
+  inaudible before the bus gains; in the game the "Player Collisions" route ducks "Player Sub", the engine's bus:
+  `Compressor_Send` 556003, compressor −4.5 dB 3:1, attack 0). Not ported: the buses' EQs and compressors (the
+  "Player Skids" bus: EQ 150 Hz −8 dB / 718 Hz +3.6 / 5 kHz +2.3, compressor −5.4 dB 2.85:1, attack 0.076 s,
+  release 0.65 s, mode 1; the side chains: "Player Car" → "World", "Dominant 3D" → "Player PM", "Player
+  Collisions" → "Player Sub", "Speech" → "Final", "Music" → "Master World"). What `RaceCarEntities.RaceCar[1]`
+  binds to in the game (ours: the player's values). Our drifts sit at the top of the skid axis (lateral 1.0 for
+  most of the drift test; the game's typical slide is 0.25–0.5, decomp.md "Tyre skid sound intensities").
+- **Capture that would settle it**: the original's own audio stream (`mwtool capture`, music off, traffic off if
+  possible) in the 911 Carrera S: a steady 4000 rpm cruise in 3rd for 5 s, then a handbrake drift held 3 s at the
+  same rpm on asphalt, then a hard stop from 60 mph; the skid-to-engine level at equal rpm settles the engine's
+  data level against the bus mix (and whether the drift ducks the engine).
+
+### 2026-10-19: AI racers and hits: the race-car contact response, takedowns, the AI after a hit
+
+User play test: racers are not affected by hits the way they are in the original. Read from the dump / snapshot
+disassembly and the data (decomp.md "Car against car: contact response"); ported in `car_contacts.rs`.
+
+- **Found**: every race-car pair handler (`FUN_009588c0` player–AI, `FUN_009575e0` AI–AI, `FUN_00959210` /
+  `FUN_00959730` against a crashing race car) sets per-car impulse scales (record +0x20 / +0x30 linear, +0x40 / +0x50
+  angular) that the contact pass `FUN_009be420` applies, from `CollisionResponses_RaceCar.PlayerVsAI` /
+  `CollisionResponses_Global.RaceCarVsRaceCar` etc.: e.g. player–AI at damage 0 the player takes 0.4 linear /
+  0.05 angular, the AI 0.5 / 0.1, rising with each car's damage to 1 / 0.4 and 1 / 0.1 at 100; a crash switches
+  to 0.7 / 0.4 for the AI (0.7 / 0.1 for the player); friction 0 (AI–AI 0.3). `e3882eb1` = linear, `e5ea1414` =
+  angular. A car crashed by the impact cannot be lifted by the pass (v_y gain ≤ clamp(3 − v_y, 0, 2) m/s). Ours
+  had avian's rigid contact with full spin and friction 0.5.
+- **Ported**: avian still detects race-car pairs (effects, sounds, camera read them) but the `props.rs` hook
+  neutralises them; `car_contacts.rs` queries the body boxes before each step, decides a new impact there
+  (`car_impacts::decide`, now with the rules' `DamageOverride` damage) and solves with the lanes, then writes the
+  impulse and pre-solve closing speed back into avian's contacts. `AiCrash.by` names the aggressor; a player's
+  AI crash logs "takedown". `MW_RACE_CAR_CONTACTS=0` = the old solve (A/B), `MW_CAR_CONTACT_LOG=1`.
+- **Verified** (`tools/ram-sweep`, 911 vs 911, new / old; full lines in the worktree's scratch/sweep2.txt):
+  side hit of a stationary AI at 72 mph: AI crashes ("player impact", damage 78 > 50), both cars ≈ 26 mph after
+  0.25 s in both; moving AI (60 km/h) hit in the side at 40 / 80 / 130 km/h: damage 5.7 / 17.9 / 41.3, no crash
+  (rule 50), AI scales 0.53 / 0.59 / 0.71 linear, 0.1 angular; rear-end at 100 / 160 km/h: the AI is pushed from
+  37 to 52 / 70 mph (old solve: both cars nearly stopped, a measurement artefact of the old run's contact timing);
+  25° swipe at 100 km/h: the same as before (−38° heading). The old path crashed the AI at the 130 km/h side hit
+  (its damage used after-step velocities); ours uses pre-solve velocities as the game does. `--race 462174 --test
+  race` passes (1 AI–AI crash and reset in the run, 44 race-car impacts); `--test accel` unchanged (3.58 s, 11.60 s).
+- **Not found / open**: the AI racers' crash reset (`FUN_006d39d0` skips players with kind ≠ 0; ours stays the
+  4.5 s model); the takedown camera (`ShowTakedownCameras`, GameModeManager +0x2e7b from option 0x12 in
+  `FUN_0073daf0`, no reader in the dump; HSM 1377014 "Run Takedown Sequence" is the player's own wreck); the
+  racer state `FUN_0050da90` has no hit reaction (only the stuck check and an unidentified skip byte world
+  +0x2ef50); the racer interaction (`FUN_005050d0`, shunt / ram) still not ported; AI–traffic and player–traffic
+  responses (`FUN_0095a680` blends with `FUN_00927360`, `FUN_00959be0`) still avian's; the crashing handlers'
+  "race car impact" rule (`RULES_14`); record +0x100 / +0x110 and the crashed body's velocity cap (+0x2f);
+  restitution −0.1. The large peak yaw rates (115–216 deg/s) after non-crash hits come from the AI's tyres and
+  steering after the push, not the contact (angular lane 0.1): compare with a capture.
+- **Captures that would confirm** (probe, `mwtool tp` + scripted inputs, one AI racer): a T-bone of a stationary
+  racer at 40 / 70 mph (its speed / yaw over 1 s, crash or not), a rear-end at +25 / +60 mph over a racer at
+  60 km/h, a 25° side-swipe at 100 km/h; read both cars' velocity before / after (vehicle +0x1124) and the
+  crash flags (+0x1774), and how long a crashed racer takes to reappear.
+
+### 2026-10-19: race flow: "checkpoint missed" always on, racers left in free roam, jack spots dead after a race
+
+Three play-test bugs (user, 2026-10-19), all traced in the dump; `race.rs`, small hooks in `ai.rs`, `jackspots.rs`,
+`cutscene.rs`, `police.rs`, `mw-assets` (events / police).
+
+- **Missed checkpoint.** `FUN_006585b0` (the wrong-way / missed machine) was ported right; its inputs were not.
+  `FUN_00661b40` (distance to finish) works on per-segment road paths (DTF+0x2778 polylines from
+  `FUN_006423e0`), ours on straight chords between gates: on any bend the car's distance from the chord (the "off"
+  term `FUN_0066b3f0` adds) grew faster than the remaining length fell, so d rose while d' fell → "missed".
+  Now each segment is a road-graph path (`route_segments`: `AiData::path` + `ai::spline_through`, cut at the points
+  nearest the entries: **model** for the path ends), and `FUN_00661b40` is ported literally: remaining length after
+  the nearest piece's projection (`FUN_00516af0` / `FUN_0051e850`, clamped), and when less than 0.5 m is left
+  (`.rdata` 0x00fb8290) the distance *along the next segments* is added (`FUN_0051e7d0`), so driving on past an
+  unhit gate makes d grow; the 20 m behind-start term only when < 0.01 m along (0x00fb82f0). d' with the finish as
+  target is the plain distance (`FUN_0066b3f0`). `HasMissedCheckpoint` (`FUN_006584d0`) tests the **target entry**
+  (DTF+0xd90) against 1..count−2: ours tested `passed`, one off (it allowed the finish as target and dropped gate 0).
+  The race test also ran the intro's sequence clock in real time while the simulation ran 4×, so the rolling start
+  carried the car past gate 0 before go; the sequence clock now scales with the run's speed-up (`cutscene.rs`,
+  no change at 1×).
+- **Racers left behind.** `FUN_00521f00` (from the AI coordinator `FUN_00526c30`, only while the game-mode timer
+  runs: race from go to the player's finish, and free roam, whose "Freedrive Update" 469930 starts the timer):
+  a race car with +0x5d7 set, a car, not mid-reset (`FUN_006b8840`), not the Most Wanted rival (+0xb4) is removed
+  (message 0xe → `FUN_006ce180(slot, 3)`) when its XZ distance from the player exceeds the heat level's `dd335ee5`
+  (+0xb0) and it is off screen (`FUN_006bf380`, 4 m sphere vs frustum), or `092b3408` (+0xb4) anyway. Data: 100 / 300 m
+  on every free-roam level (events' own levels 25 / 300; races have none, `OfflineEvent.ab4e53fd` empty). +0x5d7 is
+  set at an AI's last checkpoint and, on `CHECKPTS` exit (0x75d960, disassembly: a word write at player +0x5d7), on
+  every AI racer still racing (with AI goal 3). The rival is released by the blacklist behaviour (`FUN_00754290`
+  state 6 / `FUN_007428b0`: beyond 300 m, 0x00fd2108 = 90000); its takedown phase is not modelled.
+  `RemoveAllRaceCars` (`FUN_006d1310`) runs only on "Reset Event" (retry) and on `HSM_PLAYING` exit (vtable
+  0xfd9c04, exit 0x73e930, leaving the game). Ported as `retire_racers`.
+- **Jack spots after a race.** Our `RaceState` stayed for the rest of the run, and the swap (like the collectables'
+  scoring) requires free roam (`race.is_none()`). The original's event ends after the outro context ("Run PageRunner2
+  Context - Outros" → "Race Game Mode" exit → "On Event End") and free drive resumes. `end_event` now removes the
+  race once the outro and the results (8.25 s, the results sequence's last item: **model**, the offline results are
+  the `ArcResults` screen the player closes) are over: free-roam rules, HUD and jack spots come back, the player's
+  car stops being a racer, route markers go. A second race in one run is still refused (`RaceOver`; the AI and
+  cutscene set-up run once).
+- **Outro body shop**: not looked at (time). Open.
+
+Verified: `--race 462174 --test race` (now drives along the route polylines at 40 m/s; slower, ~4 min game time):
+`missed_seen=false`, `wrong_way_seen=true` (the deliberate 4 s backing away); `MW_RACE_TEST_MISS=3`:
+`missed_at_skip=true missed_seen=false`; `MW_RACE_TEST_AFTER=2`: `racers_left=0`; `MW_RACE_TEST_JACK=1`: jack-spot
+swap after the race works; `--race 1399902 --drive 911 --test race --units 12`: opponent placed, `missed_seen=false`;
+911 accel unchanged (3.58 s / 11.60 s). Open: the on-screen branch of the removal is untested headless (the test's
+racers end > 300 m away); what goal 3 does (ours brakes to a stop); whether the original runs the body shop for the
+AI-driven player in the outro; multiple races per run. Captures that would confirm: (1) the original in 462174
+driving the race line, HUD never showing CHECKPOINT MISSED, then cutting a gate (banner after ~1 s); (2) after a
+finish, park and watch the opponents: they vanish once > 100 m and off screen (turn the camera away) or > 300 m;
+(3) a jack-spot swap right after the results.
+
+### 2026-10-19: event starts, cop arrows, search circle (play test "Races and free roam")
+User play test: races missing from the minimap in free roam, no race start locations in the world, cops red on
+the minimap, not blinking, no escape circle. The original was run (probe, offline prompt taken, save backed up to
+the worktree's `ref/savebackup-2026-10-19-minimap/` and restored byte-identical after two busts had autosaved, md5
+in `ref/savebackup-2026-10-19-minimap.md5`, probe DLL removed, game quit). Captures (1280×720, copied to the main
+checkout's `ref/minimap-2026-10-19/`): `start_fairhaven.png` (minimap at the start), `turfwar_50m.png`,
+`turfwar_from_wnw.png`, `turfwar_inside.png` (TURF WAR's panel from two sides and inside its radius with the
+prompt "HOLD [Z] + [A] TO START EVENT"), `mw3_28m.png` (a Most Wanted start), `p3__strip.png` … `p9__strip.png`
+(minimap bursts ~0.4 s apart in a pursuit started by poking the takedown flag `rec` +0x8a4 = 1; bust meter held
+at 0: circle, cops patrolling / chasing, clamped at the edge), `pursuit1.png`, `p10_4.png`.
+- **Event starts** (the gap behind "races missing from the minimap"; the 2026-10-15 dead end "no code names the
+  event looks" is settled): the HSM behaviour "Do Event Starts" (nodes 1560429 / 816214; vtable 0x00fd950c, enter
+  `vt_00754f30`, update `FUN_00755220`) reads its HSM parameters by name (keys decoded from `.bss` in the
+  snapshot): `POIID` 1013512, `RECPOIID` 1132924, `MWPOIIDC` 955952, `MWPOIIDUC` 955955, `ACTIVERADIUS` 2000,
+  `RSPCTRADIUS`, `CHECKENTRY`, `TRACKEDONLY`. `FUN_0074a600` lists up to 20 events (driven car allowed,
+  `FUN_006eca10` with default true; within 2000 m of a reference point except Most Wanted races not yet won;
+  not the freedrive mode `GameLogicConfig.1b3c1ddc`) and gives each a point of interest at its start trigger
+  (`FUN_00793350`, yaw 0); `FUN_0074aaf0` removes them in a pursuit (`FUN_006c2410`); `FUN_0074ad50` (below
+  `GameLogicConfig.ff4aef6f` = 70 mph) shows `PromptEvent` 18364 within `49caf423` = 22 m (height ×5,
+  0x00fd67b4) and starts the event (`FUN_006e74f0`) after throttle and brake (input record +0x30 / +0x3c) are both
+  above 0.5 for 1.0 s (0x00f8a810, 0x00f8a820). The looks are in the free-roam HUD's POI widget (371621; the race
+  HUD's lacks the Most Wanted ones): map icon = green / red diamond, world layouts = the panel 1454873 (shown while
+  `Widget.POI.ShowSpeedwall` is false, faded beyond 200 m and outside 5–140 m) and the speedwall 1597974 (online).
+  The panel faces the camera (captures from both sides); the look flag `d788383f` is set on event looks and clear
+  on gate looks: read as "face camera".
+- **Cop arrows**: look 816002's elements: blue 816011 (`IsCop`), a blue ping 1445057 on appearing (kind-4 scale
+  100→500 %), red 816004 (`InChase`, blinking IN 100–200 ms / OUT 300–400 ms), red 1445048 whose trigger on
+  `InChase` (trigger type 2) only plays a white growing ping when the cop leaves the chase. The getter of
+  `PlayerBase.InChase` (0x006dacc0): local player = pursuit state 1, AI cop = `FUN_006bbb70`. Ours fed every
+  `PlayerBase` field as `IsCop`, so `InChase` was always true and the solid red 1445048 covered everything.
+  Captures: patrolling / arriving cops blue, chasing cops blue with red blinking over them; cops off the map are
+  clamped to its edge.
+- **Search circle** (look 955013, key 1013492): `FUN_0065be70` keeps it only in state 1 (chase), at the last-seen
+  point (`rec` +0x860), matrix scale = lose radius × 2 (0x00f8a808); the layout's instance S(0.05)·R(90°)·
+  S(`Scale`) makes the 20-px circle 300 m across at 150 m lose radius. Its idle steps blend the colour to `COP`
+  (0660fe) at 1 s and `HUD_MINIMAP_PURSUITRADIUS` (ca2027) at 2 s, looping (captures: ~1 s red, ~1 s blue). The
+  minimap's red flash in a chase is element 1444098 of layout 1206246 (idle `TO,INVISIBLE` / `TO,HUD_PURSUIT_HEATFILL`).
+- **Behaviour kinds** (`Behaviour.Type`): 4 = scale `from,to` percent, 13 = colour (`TO,<UIColourPalette entry>`,
+  `OUT` = back to the own tint, `TO,INVISIBLE`), 0 = fades / offsets, 8 = spin. `UIColourPalette` 01000000000172aa
+  (UI/UICONFIG.BNDL, 179 named sRGB colours). Our tween read kind-13 `OUT` as a fade and kind-4 pairs as offsets.
+- **Ported**: `event_starts.rs` (list, prompt, burnout start → `PlayEvent`, the world panels through
+  `gate_marker::draw_world_layout`, now shared); `hud.rs` minimap: event / Most Wanted diamonds from the
+  free-roam HUD's looks, cop `InChase` per cop (`PursuitHud.cops_in_chase`); `mw_assets::ui`: colour steps with the
+  palette, scale steps, colour / scale idle loops (cyclic), held triggers applied after the idle loop;
+  `Binding::parse` takes bare numbers after an operator as its arguments (`BETWEEN,5,140`); `mwtool ui pois
+  <screen> [--key k,...]` prints a screen's POI looks (instances' visibility / colours / timelines, trigger types,
+  behaviour kinds). Checked headless (`ref/minimap-2026-10-19/ours/ab_turfwar_50m.png`, original above, ours
+  below, F-150 at TURF WAR): the diamonds (green ahead, green left, red Most Wanted) match the original's minimap;
+  the panel stands over the start facing the camera with MEDIUM / CIRCUIT RACE and the bracket.
+- **Model decisions**: the reference point (UI manager +0x2cd50, writer not found) = the player's car; no event
+  counts as won or recommended, every event as unlocked (`FUN_00688f60`, `FUN_0068f190`, `FUN_006f0b60`,
+  `FUN_006e58a0` not ported); the panel turns about the vertical only; rewards not modelled; prompt keys = the
+  original's keyboard defaults Z / A (captured); markers in free roam and after a race finished; held triggers'
+  colours win over idle loops.
+- **Open**: (1) the panel's event name on the white strip is empty in ours and the reward label prints "0" (the
+  label bindings `Name` on 1454926 / `AvailableReward(SPEEDPOINTS, PLUS)`; rewards' data not found); (2) **the
+  search circle is not drawn yet** and the cops are not clamped to the map edge (data and captures above; the
+  circle needs `PursuitHud` to carry the last-seen point and diameter in chase); (3) the burnout start is coded
+  (`MW_EVENT_START_TEST=1` holds throttle + brake inside a start's radius) but was not run headless; (4) which
+  look flag clamps icons (`db617d4f` is set on cops, events, gates and the player, but events 900 m away were not
+  drawn at the edge); (5) the cooldown's minimap (the circle goes in cooldown per the code; no capture: holding
+  the state did not keep the game in cooldown).
+
+### 2026-10-19: sounds from the play test: traffic whine, missing whines, inaudible props, glitches, surface sounds
+User play test items ("Sounds still not right") plus the surfaces agent's per-wheel surface sounds. Offline checks
+with `mwtool traffic-sound`, `engine-sound --trace`, `vehicle-sound --surface`; analysis scripts in the worktree's
+git-ignored `scratch/py/` (`spec.py` RMS / centroid / flatness / peak, `ab.py` before → after, `clicks.py`
+second-difference outliers, `lst.py` listener jitter).
+- **Traffic whine = `Auto_Pitch`.** The traffic engines' RPM-bound wave loops (and every car's transmission whine)
+  set `WaveSequenceItem.Auto_Pitch` (+0xe0) with `Pitch.Value` = the loop's recorded RPM / speed (3000, 3400,
+  2136, ...). The wave item's update (`0x00836910`, vtable 0x00fef4d0 from the item factory 0x0083aa00, found by
+  the type id 0x3f3c0 in `re/out/live/text.asm`; not in the dump) replaces the evaluated pitch by
+  `(StartTime + position) / Pitch.Value` = axis value / recorded value. We played the loops at 3000× their rate
+  (aliased noise). `mwtool traffic-sound all`: idle centroid 3828 → 379 Hz, energy above 4 kHz 66 % → 0.5 %; the
+  pass-by's tonal peak at 3316 Hz (× doppler) → 118 Hz, the engine's firing. Same item: fade-in
+  `pow(pos / Fade_In.Time, Curve)`, fade-out likewise from the end (already ported).
+- **Missing layers (supercharger / turbo / transmission).** `VehicleSound` +0x50 `Vehicles.Sound.TransmissionWhine`
+  (every car) and +0x58 `Vehicles.Sound.TurboWhine` (43 of 81 HI bundles, the 1970 Charger R/T 2196466
+  included: its "turbo" is the blower) were never played. `FUN_0058c3f0` (engine sound start, state 3) starts every
+  sequence of both for the player's car (entity +0x1c18). Ported: merged into the player's engine bank after its
+  normalisation (data level against the engine). Bindings added: `GetTransmissionSpeedMph` (`FUN_0059ed70` →
+  `FUN_009170a0`: rpm / (gear ratio × final drive) × 2π × wheel 2's radius / 60 × 2.23694; `.data` 0x01189f50 = 2π,
+  0x01189f90 = 60, 0x0118a060 = 2.23694 read in `snap2`), `GetReverseTransSpeedMph` (the same negated,
+  `FUN_0059ede0`), `GetPlayerGas` (the pedal). The supercharger loop is gained by the engine load and its channel
+  is automated on the normalised RPM with property 0 (gain 1 → 2) and **property 6 (0.25 → 1.2)**: read as the
+  channel's pitch (`FUN_004b8cd0` / `FUN_004b8d90` treat 0 and 6 alike as multipliers with identity 1; the data's
+  range fits a blower whine; the mixer-side consumer was not found: model decision). Blow-off / spool:
+  `FUN_0058f8f0` per sound update (boost +0xf4 → engine load × normalised RPM at rates `(+0x44 − +0x48) × b +
+  +0x48` falling, `(+0x4c − +0x50) × b + +0x50` rising; gearbox-throttle drop > 0.3 in gear starts blow-off +0x0c /
+  +0x14 / +0x1c / +0x24 by boost ≥ 0.75 / > 0.5 / > 0.25 / else (`FUN_0058d6f0`), a rise > 0.3 stops it over 0.15 s
+  and starts spool +0x2c / +0x34; `.rdata` 0x00fac27c 0.3, 0x00fae1f8 −0.3, 0x00fad428 0.15, 0x00fabad8 0.75,
+  0x00f8a810 0.5, 0x00fabaec 0.25). Charger accel trace (`engine-sound 2196466 --trace`): the new layers add
+  −8..−11 dB of power, peaked at 0.9–1.2 kHz and following the RPM (912 Hz at 4233 rpm, 1219 Hz at 6419); the 911
+  Turbo's sweep: the blow-off at the lift (−8.5 dB of the window, ~800 Hz). Model decisions: `FUN_0090d460` (the
+  gear, 0 at a standstill) read as our gear index; `FUN_00572810` (popcount 6 of +0x18c) taken as true; the
+  instance slots +0xa4 / +0xa8 free after the sequence's length.
+- **Props and lamps inaudible = the bus mix.** The hits do fire (`--test smash` at 60 and 120 km/h: cone, sign,
+  lamp, fence; waves built 2–15 ms after the request, before the hit); they played 20–30 dB under the engine.
+  `SOUND/MIXER_CHANNELS.BNDL` holds the game's buses: 23 `BusRoute`s (`AssetName`, `Mixing_Groups`, `Main_Send`,
+  `Compressor_Send`) and their `BusMixerChannel`s (nine per-state gains, EQ curve, compressor); the snapshot
+  channels name their group (`Player_Vehicle_Prop_Collision`, `World_Prop_Collision` … 29311 "Player
+  Collisions"; `Landings_Large` 29306 "Dominant World"; the engine banks' channels 29310 "Player Car" → "Player
+  Sub" 0.562 → "Player PM"). Ported (`mw_assets::buses`): every channel that leaves its bank gets its route's chain
+  gain over the engine route's: Player Collisions +5.2 dB, World / Dominant World / skids +7.2, Competitor +4.2,
+  horn ("Player other") +2.2, Player Surfaces (road) −2.8. Offline (`traffic-sound world`): cone hit −35.0 →
+  −29.8 dBFS, metal lamp −36.0 → −30.8, landing −30.8 → −23.7. The tyre bank's model gains (master 1.4, skids
+  4 / 3.5 / 2.5, "measured against the engine") stood in for these buses and are dropped (kept under
+  `MW_AUDIO_NO_BUS=1`, the A/B switch): drift ≈ −13.7 → −8.4 dBFS in `vehicle-sound` before the per-surface change.
+  Model decisions: the free-roam state is the gain field `8b61e126` (the first with every bus audible; the states
+  differ by ≤ 0.3 dB on these routes); the buses' EQ curves and compressors (side chains) are not ported; the
+  engine bank stays normalised (so the reference is the engine's route); the traffic / competitor engines keep
+  their data level (open). Also `0x…79ff` (the 0.1 s silent placeholder) sits in some lamp lists, so some lamp
+  hits are silent in the game too.
+- **Glitches.** (a) The listener's velocity divided this frame's position change by the next frame's step (the
+  camera's global transform lags a frame), so the doppler of every other car jumped: `MW_LISTENER_TRACE` on
+  `--test accel`, frame-to-frame speed change median 21.3 → 0.03 m/s, p95 doppler step 285 → 2 cents (fixed:
+  divide by the previous step; `MW_LISTENER_DT=current` for A/B). (b) No buffer- or block-periodic clicks in the
+  offline engine renders (`clicks.py`: no excess at 32 / 64 / 512 / 800-sample residues; the Charger's 32 events/s
+  sit in its raw Ginsu recordings `…228c4f` / `…228c50`, 49/s there, not on XAS frame edges; the 911: 0; the
+  original's `xkr_launch` capture 2.9/s against our XKR replay 6.1/s). Render cost 1.1 s per 20 s of the
+  Charger's player bank. (c) The game's Ginsu player (`FUN_00aaf0a0`) plays at the native rate (no resampling) and
+  every 0.01 s (`.rdata` 0x01034138) may jump by whole grains with a 0.25 ms crossfade (0x010d1c7c × 0.001): a
+  random draw over the window + 1 (`FUN_00aacc00`) stays (> 0.5), steps back one grain (−0.5..0.5) or two (<
+  −0.5, 0x00f8a808 = 2), clamped into the window around the RPM's grain (clamp(g − W/2, 0, N − W − 2) ..
+  + W), and the RPM glides over 33 ms; chunks ≤ 64 input samples (0x00fb0ea8) of a 120 · rate / rpm period
+  (0x01034130 = 120 as f32). Our overlap-add synth (resampled cycles, 1-in-8 random jumps) differs; not replaced
+  this session: the window W (`GinsuPlayer` parameter 1) has no default in the dump (init `0x00aaef50` /
+  `0x00aad630` are not decompiled). Open, with REA on those two.
+- **Surface sounds** (`FUN_0058fe10`, `FUN_0054a5d0`): the vehicle bank now holds every surface's dry
+  `SurfaceSounds` set (24 sets; `Drift`, `Spin`, `Brake` and the player's road sequence +0x34 `4648873a` — we also
+  played the other cars' road sequence +0x3c `1376f03b` for the player: dropped), each behind a gate the runtime
+  ramps: per wheel the set of its surface (`WheelContact::surface`) by tyre class (0 / 1 `Offroad`, 2 `Normal`,
+  3 / 4 `Track`, a missing one → `Normal`), the two sets under the most wheels on (the game's two road slots), in
+  over the set's +0x80 (0.333 s) and out over +0x84 (0.5 s); a wheel in the air counts for none. `sfx_player` gates
+  now scale the gains by their value (0..1). Checked: `vehicle-sound --surface 8 / 4 / 7` (road asphalt: drift
+  −19.6 dBFS, centroid ~900 Hz; grass: no squeal, −34; dirt: −15.3, 814 Hz), and the `surface-dirt-drive` viewpoint
+  with `MW_SFX_TRACE` (wheels on set 7, then 9 / 8 at the road). Model decisions: the skids follow their set's
+  road-slot fade (`FUN_0058f6d0`'s own state machine — Drift + Brake, Brake ↔ Spin swaps by vehicle +0x2d58 — is
+  not ported); wet blocks, rims / flats, the transition / bump one-shots (+0x68..+0x78) not ported; the AI's and
+  traffic's tyres still use the default surface.
+- **Captures that would confirm** (the original's own audio, `mwtool capture` with the probe's `tp`): knock a lamp
+  (`fed64b97`), a sign and three cones at ~60 km/h on the downtown street (815, 1760) with music off, and a 10 s
+  steady cruise before (the hit's level against the engine: settles the bus gains and the state field); the 1970
+  Charger R/T full-throttle in 2nd–4th and a lift (the blower whine's pitch track: confirms property 6 = pitch, and
+  the blow-off); the 911 Turbo lift-off (blow-off thresholds); a pass-by of a traffic car at 40 mph (its loop
+  pitch); a held 4000 rpm on the XKR (the Ginsu jump rhythm, to choose W); a drift on asphalt, cobbles and dirt.
+
+### 2026-10-19: every surface as its own type: the survey, the tyre class, the kick-up rule
+User play test: "non-road surfaces which aren't dirt get treated like dirt (cobblestone, ...)"; still open: "driving
+on dirt does not feel like dirt" (handling, not only the effects).
+
+- **No fallback to dirt exists.** Every per-wheel lookup goes tag bits 13–19 → `Surfaces.Surfaces[i]` →
+  `SurfaceType` → dry `Normal` contact → `SurfacePhysics` / `Surface_vfx` (handling: `drive.rs`
+  `WheelSurface::at`; smoke and kick-up: `particles.rs`; marks: `tyre_marks.rs`; dirt build-up: `paint_wear.rs`);
+  ground without tags (the test track, props) is `Default_surface` (index 0, tarmac). Ground truth for the index:
+  `FUN_0043ab40` builds a collision tag from a `SurfaceType`'s nine bools (DRIVABLE … FATAL_FIELD, formats.md
+  "Surface list layout"), and on all 65 surfaces the world's triangles carry exactly their type's flags. In the
+  world (`MW_SURFACE_LOG=1`, spots in viewpoints.md `surface-*`) the wheels read cobbles 25 → 510001, paving 2 →
+  406000, dirt 7 → 283003, grass 4 → 283005, road 8 → 283001, with the 911's link grips (dirt 0.875 / 0.90,
+  grass 0.835 / 0.88) and fades as before.
+- **Why cobbles and paving drive and look "like dirt": it is the data.** In the stock tyre class (`RoadOverrides`)
+  paving (406000), cobbles (510001) and rough asphalt (386921) have grip 1 but the same rolling resistance (0.025)
+  and slide-drag scale (1.5) as dirt (283003), and the 911's link for them starts its slide drag at 2 N/mph
+  (dirt 1.5): at 100 mph about 1.2 kN of drag on paving against 0.14 kN on asphalt. Their `SurfaceVfx` gives a
+  kick-up (`…0f565f`: dark dust puffs, 0.5–0.75 m) and tarmac-like smoke (`…0f5693`, the layers of `…049247`) with
+  the black tarmac marks (`…117f16`). Paving bumps ±12 mm over ~3 m, cobbles ±2 mm at 20 per metre (Perlin,
+  player only). Nothing in our code made them dirt; a capture is needed to see whether the original shows the
+  same (below).
+- **Tyre class ported** (`FUN_0054d750` picks a surface's `TyreSpecificOverrides` by game car +0x1a88; traced to
+  `FUN_00904260` → `FUN_009b4d70` → `FUN_009aaf30` → `FUN_009d8bd0`). Stock: `FUN_00593ac0` reads
+  `PerformanceUpgrades.StockTyres` (+0xc8), `Tyres` 2 on all 187 cars; `FUN_0058f3f0` resets to 2, then
+  `FUN_00589a60` (game slot 0: OFF-ROAD `0d43dacc`) / `FUN_00589b00` (slot 1: TRACK `dd869f8b`) write the fitted
+  tyre's `Tyres` (911: OFF-ROAD 1, PRO 0; TRACK 3, PRO 4). REINFLATES is not read there. `SurfaceInfo::overrides`,
+  `VehicleHandling::tyre_class`, `CarParams::tyre_class`, `ModCatalogue::tyre_class`. Results (911): dirt track
+  (`--track-surface 7`) corner 2.13 → 2.55 g and top speed 258 → 288 km/h with OFF-ROAD PRO (`--mods 11=0`);
+  road asphalt (`--track-surface 8`) corner 2.54 → 3.00 g with TRACK PRO (`--mods 16=0`: `SportOverrides` /
+  `TrackOverrides` give asphalt grip 1.25); the default track (surface 0) is 1 for every class, so the usual tests
+  do not move.
+- **The kick-up rule** (`FUN_00589e20`, read in full): `WheelVfx` (player) / `4cf3cf8f` (other race cars, now
+  parsed and used) runs while any of the wheel's smoke ramps is above 0, not "while rolling" (our old model
+  decision). The ramps never reach exactly 0 in float maths after a slip (no flush-to-zero known), so in practice
+  the kick-up stays on once the car has slipped, as before; the A/B drift shots on cobbles and dirt look alike.
+- **Dirt handling against the code**: every surface term the car code reads is in (grip and its blend and fade,
+  rolling resistance, slide drag over slip angle, the drift factor, the player's bumps); `Surface_speed` and the
+  `Offroad` / `Track` contact physics are not read by the car code (those contact kinds exist for the rumble and
+  the sounds, picked by tyre class: `FUN_0054a9f0`, `FUN_0054a5d0`). The other readers of the surface grip are the
+  AI's corner-speed planning (`FUN_00514ad0` / `FUN_00514c10`) and the off-road statistic (`FUN_00706550`, the
+  `Surfaces.423651c1` road-physics list). What still differs on dirt is not handling: **the sounds** (ours play the
+  default surface's skid and road sequences on every surface; the original picks each wheel's `SurfaceSounds` by
+  surface, wet state, rims / flats and tyre class, `FUN_0054a5d0`, per wheel for the player in `FUN_0058fe10` with
+  the voice states of `FUN_0058f6d0`, road sequences `SurfaceSounds` +0x34) and the controller rumble
+  (`Surface_Rumble` = `RumbleEffect`).
+- **Survey** (`mwtool surfaces`: new ground-area column, upward triangles; `mwtool surfaces --classes`: tag flags,
+  the five classes, kick-up / AI kick-up / smoke / marks). Surfaces over 1000 m² of ground, largest first (a place
+  from `--find`; FATAL 0x040 marks the out-of-bounds terrain and the sea is 21):
+
+| surface | ground m² | physics | flags | road-class grip / rolling / drag | kick-up, smoke, marks | a place |
+|---|---|---|---|---|---|---|
+| 46 | 7106430 | 283003 | 0x040 | 0.750/0.025/1.50 | 024f46 / 0f57cc, 0a39d6, 117f02 | -1280,-60,1561 |
+| 21 | 6031863 | 283001 | 0x0c0 | 1.000/0.010/1.00 | 024f54 / 0f57d0, 049247, - | 1033,13,5097 |
+| 16 | 3217475 | 283005 | 0x040 | 0.700/0.030/2.25 | 024f4c / 0f57cd, 0a39d7, 117f02 | -1138,19,1616 |
+| 2 | 2908239 | 406000 | 0x001 | 1.000/0.025/1.50 | 0f565f / 14022e, 0f5693, 117f16 | -216,37,-120 |
+| 8 | 2236786 | 283001 | 0x003 | 1.000/0.010/1.00 | 024f54 / 0f57d0, 049247, 117f16 | -1141,19,1650 |
+| 45 | 1878699 | 406000 | 0x040 | 1.000/0.025/1.50 | 024f54 / 0f57d0, 049247, 117f16 | -1191,32,1846 |
+| 17 | 1211245 | 283001 | 0x040 | 1.000/0.010/1.00 | 024f54 / 0f57d0, 049247, 117f16 | -1145,29,1546 |
+| 7 | 1000821 | 283003 | 0x001 | 0.750/0.025/1.50 | 024f46 / 0f57cc, 0a39d6, 117f02 | -1155,18,1663 |
+| 63 | 695694 | 283001 | 0x140 | 1.000/0.010/1.00 | 024f54 / 0f57d0, 049247, 117f16 | 12,43,-365 |
+| 4 | 668691 | 283005 | 0x001 | 0.700/0.030/2.25 | 024f4c / 0f57cd, 0a39d7, 117f02 | 313,16,3682 |
+| 14 | 557683 | 406000 | 0x000 | 1.000/0.025/1.50 | 024f54 / 0f57d0, 049247, - | -1122,63,1537 |
+| 59 | 351196 | 283001 | 0x040 | 1.000/0.010/1.00 | 024f54 / 0f57d0, 049247, 117f16 | -14,44,-423 |
+| 5 | 314534 | 283001 | 0x001 | 1.000/0.010/1.00 | 024f54 / 0f57d0, 049247, 117f16 | -742,37,3299 |
+| 24 | 278107 | 386921 | 0x003 | 1.000/0.025/1.50 | 024f54 / 0f57d0, 049247, 117f16 | -1155,18,1671 |
+| 60 | 232678 | 406000 | 0x001 | 1.000/0.025/1.50 | 0f565f / 14022e, 0f5693, 117f16 | 934,24,-198 |
+| 6 | 180339 | 283003 | 0x001 | 0.750/0.025/1.50 | 14040a / 0f57cf, 0a39d8, 117f02 | 1143,17,4949 |
+| 22 | 178106 | 283001 | 0x000 | 1.000/0.010/1.00 | 024f54 / 0f57d0, 049247, - | -1156,19,1666 |
+| 30 | 136408 | 406000 | 0x001 | 1.000/0.025/1.50 | 024f54 / 0f57d0, 049247, 117f16 | 345,16,3639 |
+| 61 | 134290 | 406000 | 0x001 | 1.000/0.025/1.50 | 024f46 / 0f57cc, 0a39d6, 117f02 | 1188,19,4920 |
+| 48 | 109085 | 283005 | 0x000 | 0.700/0.030/2.25 | 024f4c / 0f57cd, 0a39d7, 117f02 | -1162,19,1680 |
+| 25 | 96787 | 510001 | 0x001 | 1.000/0.025/1.50 | 0f565f / 14022e, 0f5693, 117f16 | -347,34,1450 |
+| 57 | 76587 | 1160576 | 0x001 | 0.750/0.045/2.50 | 024f46 / 0f57cc, 0a39d6, 117f02 | 944,19,4907 |
+| 52 | 64338 | 283003 | 0x001 | 0.750/0.025/1.50 | 0f5707 / 0f57c9, 0f570b, 117f16 | 854,48,3682 |
+| 23 | 38377 | 406000 | 0x001 | 1.000/0.025/1.50 | 024f54 / 0f57d0, 049247, 117f16 | -260,56,-17 |
+| 38 | 38069 | 283001 | 0x003 | 1.000/0.010/1.00 | 024f54 / 0f57d0, 049247, 117f16 | 2273,8,2324 |
+| 49 | 33945 | 283005 | 0x000 | 0.700/0.030/2.25 | 024f54 / 0f57d0, 049247, - | -979,19,3260 |
+| 58 | 25141 | 283003 | 0x040 | 0.750/0.025/1.50 | 0f5707 / 0f57c9, 0f570b, 117f16 | 1397,34,1158 |
+| 43 | 21478 | 1085317 | 0x001 | 0.550/0.100/2.75 | 0f5678 / 0f57d7, 140382, 117f1b | 63,7,3534 |
+| 29 | 21331 | 681641 | 0x001 | 1.000/0.125/7.50 | 024f54 / 0f57d0, 049247, 117f16 | 931,23,-277 |
+| 44 | 17703 | 283005 | 0x001 | 0.700/0.030/2.25 | 024f4c / 0f57cd, 0a39d7, 117f02 | -739,31,1928 |
+| 50 | 16920 | 283005 | 0x000 | 0.700/0.030/2.25 | 024f54 / 0f57d0, 049247, - | -1445,22,2998 |
+| 33 | 14336 | 406000 | 0x001 | 1.000/0.025/1.50 | 1403aa / 117f2e, 0f5693, 117f16 | -701,35,1942 |
+| 47 | 12148 | 283005 | 0x000 | 0.700/0.030/2.25 | 024f4c / 0f57cd, 0a39d7, 117f02 | -1134,19,1665 |
+| 12 | 9226 | 283001 | 0x008 | 1.000/0.010/1.00 | 024f54 / 0f57d0, 049247, 117f16 | 2037,33,3005 |
+| 62 | 7779 | 283001 | 0x000 | 1.000/0.010/1.00 | 024f54 / 0f57d0, 049247, - | 1605,39,191 |
+| 39 | 6846 | 386921 | 0x003 | 1.000/0.025/1.50 | 024f54 / 0f57d0, 049247, 117f16 | 2246,8,2342 |
+| 51 | 4152 | 283005 | 0x000 | 0.700/0.030/2.25 | 024f54 / 0f57d0, 049247, - | -204,46,-102 |
+| 55 | 4119 | 681638 | 0x001 | 0.500/0.150/15.00 | 0f5707 / 0f57c9, 0f570b, 117f16 | 1828,31,4740 |
+| 64 | 4103 | 283005 | 0x001 | 0.700/0.030/2.25 | 024f4c / 0f57cd, 0a39d7, 117f02 | -732,32,1923 |
+| 34 | 3726 | 283001 | 0x003 | 1.000/0.010/1.00 | 024f54 / 0f57d0, 049247, 117f16 | 2054,38,4432 |
+| 9 | 2526 | 406000 | 0x007 | 1.000/0.025/1.50 | 024f54 / 0f57d0, 049247, 117f16 | -1109,16,3394 |
+| 56 | 2339 | 386921 | 0x003 | 1.000/0.025/1.50 | 024f54 / 0f57d0, 049247, 117f16 | 2412,77,3218 |
+| 13 | 1536 | 283001 | 0x008 | 1.000/0.010/1.00 | 024f54 / 0f57d0, 049247, 117f16 | -767,31,3260 |
+| 42 | 1416 | 681637 | 0x001 | 0.600/0.045/2.50 | 024f46 / 0f57cc, 0a39d6, 117f02 | 1580,48,-333 |
+| 53 | 1378 | 406000 | 0x000 | 1.000/0.025/1.50 | 024f54 / 0f57d0, 049247, - | 185,17,3782 |
+
+  Looked at (`scratch/look.sh`, a camera onto the place; the place can sit at a boundary): 2 concrete / grey
+  paving (sidewalks, canal walls), 25 red cobbles (lanes, plazas: 8150 m² at 877, 1891), 60 concrete (the storm
+  canal), 6 sand (yellow ground by the docks; its own kick-up `…14040a` and smoke `…0a39d8`), 55 rail ballast
+  (681638: grip 0.5, drag 15), 43 the canal bed (1085317, washes the car), 33 white stone chips (its kick-up
+  `…1403aa`), 7 dirt verges, 4 park lawns, 61 sandy lots (paving physics with the dirt effects), 29 a concrete
+  yard (681641: rolling 0.125, drag 7.5), 52 / 58 dark dirt (their own effects `…0f5707` / `…0f570b`).
+- Model decisions: none new. Road tests (911): 0–60 mph 3.58 s and drift peak 37.3° held 4.75 s, identical to the
+  build before; brake 100–0 km/h 2.62 s, corner 2.57 g.
+- **Captures that would confirm** (the original, not run this round): the 911 coasting from 100 mph on a long
+  paving stretch and on asphalt (the slide drag says ~0.08 g more on paving); the per-wheel physics record
+  (vehicle +0x17e0 + 0x7c i: +0x54 uid, +0x70 / +0x74 effective grip) on cobbles, paving and dirt at a known speed;
+  car +0x1a88 with no tyre mod and with OFF-ROAD / TRACK fitted (`mwtool mods 911 tyres=2`); a screenshot pair of
+  the kick-up on the cobbled plaza (`surface-cobble-drive`) and on dirt at the same speed; the smoke ramps at
+  vehicle +0x2c90 after a slip (do they reach 0: flush-to-zero).
+- Open: per-surface player and AI sounds (above; a hook for the sounds work: the wheel's surface index is in
+  `WheelContact::surface`, the tyre class in `CarParams::tyre_class`); the tyre-mark slot per tyre class (a short
+  at +0x6c / +0x6e / +0x70 of the vehicle's +0x3c object, type not identified; marks stay `Road`); the wet blocks
+  (surface state ≥ 1 for vfx, ≥ 2 for physics and sounds; ours has no surface state); the on-rims and flat
+  contact kinds; the `61ac1863` smoke variant.
+
+### 2026-10-19: UI content: the HUD's widget groups, Easydrive prompt, SP strip, district / road plates, minimap blend, pause and map gaps
+User play test: "the UI still isn't complete, e.g. a strip behind the Speed Points". Sources: the layouts (`mwtool ui
+show`, which now prints each widget's group and the elements' own `in` / `idle` behaviours), the HSM (`mwtool hsm`),
+the dump, the original's captures `ref/shots/fence-13/original.png` (HUD, 1280×720), `ref/ui-2026-10-19/
+hud_1680x720.png`, `easydrive_1680x720.png`, `ref/frontend-2026-10-10/o4.png` (pause), `o7.png` (map). Ours at
+1280×720 (`--drive F-150 --units 12 --hour 13 --spawn=210.5,50,1503.8,33`, the fence spot): `scratch/ui/hud_c.png`,
+A/B `scratch/ui/ab_hud.png`, `ab_ed.png` (Easydrive open, 1680×720), `ab_pause2.png`, `tabs_ab2.png`, `gauges.png`
+(BURN / DUMP / none) in the worktree.
+- **Wrong screen**: the HUD read `UI/SCREENS2/371670.BNDL`, whose `Screen2` name is "AmbushHud". Free roam is
+  371621 "FreedriveHud" (Easydrive's menu already came from it): same widgets plus `EngineOffHud`'s backing,
+  `HackEasyDrive`, the GPS distance; groups `ExternalDefault` 264948, `ExternalEasyDriveOff` (field `2c4a8019` =
+  hash of "ExternalEasyDriveOff") 1695018. `FREE_ROAM_HUD` now names 371621.
+- **Which groups show** (HSM "Some HUD Elements Visible" 1014536 → "Select HUD" → "Run 3rd person HUDs" 371583):
+  "Run Default HUD" activates `Widget.HudSelect.ExternalDefault` (SP total, POI) and, through "Run No EasyDrive HUD"
+  1524982, `ExternalEasyDriveOff` (minimap frame, plates, pursuit bars, `MapOverlay`) until
+  `Widget.EasyDrive.IsActive`; "Run Nitrous HUD" 1524952 picks a `Nitrous` group in "Choose Nitrous" on
+  `Players.LocalPlayer.CurrentNitrousType` (NONE 1524950 = speedometer 1670271 without a gauge, BURN / JUMP 1524919
+  = 1670234, BURN_PRO / JUMP_PRO 1524920 = 1670333, DUMP 1524921 = 1670359, DUMP_PRO 1524922 = 1670307; each also
+  has the odometer 1806698 and the message stack 1315635) and leaves it while Easydrive is open; "Run Child
+  Behaviour - Engine Off Group" 1805616 activates `EngineOffHud` 1805613 in a freedrive event (layout 1135036, the
+  dark strip and disc behind the Easydrive prompt, and the prompt bar 604307); "Wait for EZDrive Input Prompt"
+  1445535 activates the `Prompt` group 1135011 (layout 1805584: d-pad, EASYDRIVE, NEW) while Easydrive is closed,
+  until `UISequences.HideHudRequests(GTEQ:1)`. Matches the captures: with Easydrive open the minimap and
+  speedometer go, the SP total and the EASYDRIVE strip stay.
+- **Nitrous type** (`hud::NitrousType::of`): the fitted nitrous mod's game slot (3 / 12 BURN NITROUS, 4 POWERSHOT =
+  DUMP, 13 JUMP NITROUS = BURN's group), category 0 = PRO; no nitrous mod = NONE (the offline `Nitrous_Offline`
+  disables nitrous). The F-150 without mods now shows the short speedometer as in fence-13. Model decision: slot →
+  type from the mods' names (the binding's code not traced). Divergence left: our handling still gives every car
+  the online default nitrous (handling.md "Model decisions"), so a car without a mod boosts with no gauge.
+- **SP strip**: the label's backing (sub-image 1470275) is shown by a trigger on
+  `MostWantedListManager.LocalPlayerSpeedPoints` (out: white, invisible after 8 s + 650 ms); we only fired it when
+  points were scored, so at the start the label showed without its strip. The profile's total arriving now counts
+  as a change (model decision: the trigger's evaluation was not traced). Strip and label as in hud_1680x720.
+- **District plate** (`Players.LocalPlayer.CurrentDistrictName`): `GameLogicConfig` (0100000000045e6f)
+  `DistrictConfig.Districts[10]` {`Name` Language id, `PaintLayer`} and the `WorldPaintMap` 010000000002823e in
+  `GAMELOGIC/GAMEPLAY.BNDL`, whose 10 entries are exactly those paint layers (`AssetStore::districts`). FAIRHAVEN at
+  the fence spot as in the capture. The binding's writer (player +0x300) was not traced: the link is our reading.
+- **Road plate** (`CurrentRoad.Name`), traced by a sub-agent: `FUN_006591b0` registers the `RoadManager` (game
+  +0x15324) binding table: +0x32c `Id`, +0x330 `Name`, +0x334 `Visible`; `FUN_00668650` (each tick) clears them and,
+  when the local player's last found road (slot [2], which `FUN_00666200` → `FUN_006638f0` overwrites only when a
+  road is found, one of 24 slots per tick) has flag bit 0, copies road +0x18 (Id = name − 1, no string) and +0x1C
+  (the Language id) and sets Visible. `RoadData` (`HAWAII/GAMELOGIC/ROADDATA.BNDL`): 116 of 147 roads named, all
+  resolve (road 62 = 993892 "JOHNSON ROAD", the fence spot). +0x20 / +0x24 are other ids (`FUN_0065f650` looks roads
+  up by them). Ours: `Road::id` / `name` / `NAMED`, the HUD keeps the last road the nitrous feed found.
+- **Minimap translucency**: the tile layout 371427 draws the tiles at opacity 0.7 with `MapIconShaderAdditive`
+  (MaterialState rt0 `7911488b`: src alpha, one), over the frame image 1444131 whose texture is a translucent dark
+  fill (alpha ≤ 0.64). Ours drew the tiles opaque; the map quad is now additive at 0.7 (`ui_quads` takes additive
+  map quads). Not done: the mask texture 197dd5 (rounded alpha edge) on the map; the map scale (600 m camera).
+- **Missing glyphs** (`Font::layout`): the game's text layout `FUN_009e9780` looks a character up
+  (`FUN_009ebab0`, bucket + binary search), then U+007F, then `-`, then glyph record 0; ours used `?`. Ported.
+- **Pause** (screen 431082): the original's eight rows (… STORE, QUIT) are `StdData` 1532781 (group 1532780), not
+  431091 (seven rows); QUIT shown inactive (model). The selected row's `~Widget.Menu.Action.MenuAccept` is now the
+  keyboard's Return prompt (`UIListItems` 113577, `U+E06B` box). The `Menu` widget's ticker layout 1695971 (two bars,
+  `Widget.MainMapState.Ticker1 / 2`) is drawn with the offline message on the lower grey line as in o4 (static).
+- **Map tabs**: `Widget_NavigationTabs.Tabs` (screen 899991) lists MWL, MAP, MPLAYER, FRIENDS, SETTINGS, STORE with
+  an `Image` (a texture id) and `Name`; the cells bind `Widget.Tabs.TabList[#].Image`. Icons drawn; the unselected
+  ones in the bar's ink 0.005 (the icons are white and their elements untinted: model decision for the code's tint).
+
+**Survey: what is still missing, by screen** (most visible first):
+- *Free-roam HUD* (371621): the odometer's spacing: the original prints "0.1" with one digit's advance between the
+  digits around the separate "." label, ours "0 0" (`DIST,LONG` output and the digits-only font 581007's fallback
+  record 0 = U+3000, advance 11/256, do not explain it; the formatter's code was not found); the speed and odometer
+  digits glow cyan and read bright in the original, ours grey at the data's alpha 0.45 / 0.56 (the style's unknown
+  fields `46a2f495` 0.8, `b12cc0a0` 2, `00b3eaec` 9 may be a glow); the GPS distance 1598071 (`Map.RouteDistance`;
+  its `DIST` and `DIST, LONG` labels share one visibility in our decode, so what picks one is open); the pursuit
+  score 955232 (`ScoringViewModel.CurrentPursuitScore`); the nitrous refill messages 1315635
+  (`UIMessages.NitrousList`); the milestone ticker 1867022 (`Recommends`); `MapOverlay` 1413021 (tunnel noise on
+  `Players.LocalPlayer.IsInTunnel`, jammer); the minimap's alpha mask and scale; the Easydrive side panel
+  `EasyDrivePanel` 1902272 and `CurrentRollout` 1695598 (fitted upgrades); `HackEasyDrive` 1773358 (online).
+- *Easydrive*: ours lists RETRY LAST EVENT and EXCLUSIVE RACES, the original does not (the tiers' `Sources`
+  condition bindings); the RACES row's NEW badge (items' `New`); `Widget.Prompt.New` is a model (true until the
+  menu is first opened); the alert icon (`Recommends.ShowAlert`, Autolog) never shows.
+- *Pause*: the Most Wanted list panel (layout 1695911 over `Widget.MWLList.Items`: rivals, SP thresholds, the
+  player's row; `IngameMWLList_ScreenScript`, no data loader yet); the ticker's scrolling; the Return glyph's look
+  (ours an arrow in a box, the original a notched key).
+- *Map*: the Most Wanted list (1470720) and the player's header (name, SP, SL, avatar, rank) at the top right;
+  the ticker line (ours on the upper line); key boxes (PGUP / PGDN / ESC) ~10 px taller than the original's.
+- *Not surveyed this round*: results / event card / race HUD against captures (no captures of those at 1280×720).
+
+**Captures of the original still needed** (the original was not run this round): the HUD at the fence spot with
+the 911 and a nitrous mod fitted (the BURN / DUMP gauges); 0.1 → 9.9 km on the odometer (spacing); a GPS route set
+(the distance panel, which label shows); a pursuit (score label); driving through a tunnel (map noise); Easydrive
+open on a car with no unseen races (NEW badge rule); the pause menu with the Most Wanted list at 1280×720 after
+some progress; a close crop of the minimap edge (mask).
+
+### 2026-10-19: false crashes at kerbs: avian's speculative contacts counted as impacts
+User play test: "running into a curb at speed the car crashes; also other road parts that slightly stick out".
+- **Cause** (reproduced headless): `crash.rs` took the largest pre-solve `normal_speed` over every point of the body
+  collider's world contacts. Avian keeps **speculative contacts**: points up to |v| dt apart (0.65 m at 150 km/h,
+  1.1 m at 250 km/h, `collision/narrow_phase/system_param.rs`), reported with the closing speed they would have.
+  Passing a kerb end or corner at speed, the body box's bottom corner 0.2-0.4 m above it gets a corner-to-corner
+  normal (n.y ≈ 0.3, under the wall limit 0.7) with v·n above 70 mph: a crash with no impulse, 1.1 m before (and
+  without) any touch. The same contacts fed `drive.rs car_contacts`: the wall scrape (steering zeroed above 6 m/s)
+  and the impact yaw damping fired over plain kerbs (Hodges kerb at 93 mph: one wall scrape, one damping start), and
+  the landing test's `body_contact` 0.82 s was speculative (0.00 s touching).
+- **Repro** (`scratch/k/corner.sh` in the worktree, not committed): the MP4-12C at 74 mph from (1392.92, 33.5,
+  −738.53) heading 75° / 76°, `--units 8 --no-traffic`: CRASH at 77.4 / 77.8 mph closing, contact pen −1.18 m, impulse
+  0, the world side on a 0.26 m kerb end (surface 9, flags 0x007, (1410.3, 32.70, −733.5)). Found by replaying the
+  original's `ref/live1` MP4 stretch (63-118 s, `MW_REPLAY_FOLLOW=path`, streaming on): ours crashed there at
+  80 mph; the original's own line passes the same kerb end ~1.5 m further left at 96 mph with no crash.
+- **The original's rule** (dump): the world test happens on the collision analyzer's world record
+  (`FUN_00918600` → `FUN_00918120` → impact handler `FUN_009145c0` → `FUN_009a9fd0` with `WorldRules`), whose value
+  the collision job writes (not in the dump; decomp.md "Crashes", new bullet: a recent previous world impact is
+  subtracted). The thresholds are copied into the body's response block (`FUN_0093bc40` → `FUN_009c1a20` →
+  `FUN_009bd180`, body +0xd0..+0xdc). The body's own contact passes (`FUN_009c62e0` / `FUN_009c4e10`) act on records
+  the job produced. Not found: whether a record exists before contact. The original's chassis is four convex hulls
+  whose bounding box bottom is 0.17 m above the ground in model space (911: `RaceCarPhysicalDefinition` body 0, hulls
+  `0100000000108e54..57`); ours is a 1.8 × 0.75 × 4.2 box from 0.475 m.
+- **Fix** (model decision, handling.md "Crash camera" / "Model decisions"): a body contact point counts only when
+  the solver pushed on it this step (normal impulse > 0) or it penetrates (`crash::touching`), in the crash rule and
+  in `car_contacts` (wall normal, world / object / car impact). `MW_SPECULATIVE_CONTACTS=1` restores the old counting;
+  `MW_CRASH_CONTACTS=1` dumps every body-world contact point into `MW_CRASH_TRACE`, whose impact lines now carry the
+  contact point (car frame), normal, penetration, impulse, car position and the world-side point.
+- **Kerb test** (`--test kerb`): the kerb's trimesh gets a 5 m post 90 m aside so its bounding box reaches above the
+  ground as every track unit's does (the broad phase never paired the low slab with the body box, so speculative
+  kerb contacts could not show); the test track uses `FIX_INTERNAL_EDGES` as the world's colliders; the result line
+  gains `crashes=N`. At 250 km/h: body_contact 0.15 s (old) → 0.00 s, crashes 0 both. No test-track geometry tried
+  (square, 30-85°, 0.168-0.5 m high, a kerb end beside the path) produced the false crash itself: it needs the
+  world's kerb ends.
+- **Before → after**: the kerb end above 1 / 1 → 0 / 0 crashes (no impact at all after). Hodges kerbs (9 approaches ×
+  150 / 250 km/h × 0 / 30°): 24 → 23 crashes, the rest real walls / buildings / rocks 3-31 m tall (checked by
+  triangle); one false crash 1.33 m before a berm and one at the spawn drop gone. 911 tests unchanged: accel 0-60
+  3.58 s, quarter 11.60 s, top 307.4 km/h; brake 38.1 m; corner 2.57 g; drift 37.3° / 4.75 s; landing deepest
+  0.237 m, settle 3.57 s, body_contact 0.82 → 0.00 s; climb deepest 0.208 m, settle 5.62 s, body_contact 0.97 →
+  0.12 s; kerb (50 km/h) vy 1.73 m/s, pitch 34.2 °/s, roll 54.8 °/s. `--test crash` crashes at 71.3 mph closing both
+  ways, `crash-traffic` crashes (traffic impact, 79.3 mph); `smash` identical; `crash-parked` / `crash-ai` as before.
+- **The original** (probe, offline prompt taken, save backed up to the worktree's `ref/savebackup-2026-10-19-crash/` and
+  restored byte-identical after the car swap had autosaved, probe DLL removed, game quit): the swap worked, but both
+  placements to the kerb end (2.5 km from the Fairhaven start, native `place`) killed the game, as in the earlier
+  probe sessions; `tp --hops` stops at the first hop without drivable ground ((247.8, 1400.2)). No controlled
+  capture: the evidence of the original is `ref/live1` (96 mph past the same kerb end, no crash, smooth vy).
+- **Open / captures wanted**: (1) the kerb-end line in the original (MP4-12C 74 mph heading 75° from (1392.92,
+  33.24, −738.53), watch = kerb.watch + vehicle +0x1774 / +0x1777) once a route of hops exists (waypoints along
+  drivable ground from the start, or a start nearer downtown); (2) the original's body hulls as our body collider
+  (lower than our box: kerbs would then meet the body, and the hull-vs-kerb contact decides); (3) `car_impacts.rs`
+  and `crash_vfx.rs` read their own contacts (not changed; their CRASH VFX counts vary run to run in the traffic
+  tests).
+
+### 2026-10-19: UI frame: HUD aspect correction and menu letterbox (code + captures), stack cells, text metrics
+User play test: "UI scaling and positioning is still wrong"; the UI did not follow runtime window resizes; loading
+pictures did not fill portrait windows. Sources: the dump (decomp.md "UI frame and `HudAspectCorrection`"), the
+layout data (`mwtool genesys`), snapshots snap1 / snap2, the original's 1280×720 captures
+`ref/frontend-2026-10-10/o4.png` (pause), `o7.png` (map options), `ref/shots/fence-13/original.png` (HUD), and new
+captures of the original at native 1024×768 and 1680×720 (`ref/ui-2026-10-19/`, below).
+- **Two placements, both from the code and confirmed by the captures** (`mw_assets::ui::UiFrame`):
+  - *HUD screens* (driving HUD, Easydrive): `FUN_0078faa0` / `FUN_00794700` compute
+    `UIConfig.HudAspectCorrection` from the back buffer's aspect; the frame keeps its height (aspect ≥ 1; width in
+    portrait) and layouts reach the edges only through their instance's bound translates (`...Left(AXES:X)`
+    etc., 707 in the install) and element bindings (the ticker: `Left(ADD:223)`,
+    `EffectiveScreenWidth(MINUS:457,DIV:1280)`). Above 8/3 the HUD stays in the centre 16:9. Captures
+    `hud_1024x768.png`, `hud_1680x720.png`, `easydrive_*.png`: the minimap, speedometer and Easydrive sit at the
+    screen's edges, sized by the height (×1.067 at 1024×768).
+  - *Menu screens* (title, boot transition, pause, settings, map; the event card assumed the same): the UI
+    manager's byte +0x2ecf4 set turns the corrections off (`FUN_00794700`) and `FUN_006240b0` draws black bars
+    outside the frame: the whole 1280×720 frame fitted inside the screen. Captures `title_1024x768.png`,
+    `transition_1024x768.png`, `pause_1024x768.png`, `settings_1024x768.png`, `map_1024x768.png` (bars above and
+    below, frame scale 0.8: pause rows 32 px apart) and `pause_1680x720.png`, `map_1680x720.png` (bars beside).
+    snap1 has the byte set (taken in a menu?), snap2 clear. Ours: `UiScene::letterbox` on the pause, map, front-end
+    and event-card scenes, bars drawn last ([`UiFrame::bars`]).
+  - Margins (UI manager +0x2ece0..+0x2ecec): 0 in both snapshots; the options' Display > MARGIN SCALE reads 100 %
+    (default). Modelled as 0.
+- **Portrait windows** (user request: loading pictures must fill them): the original letterboxes its menu and
+  front-end screens on any screen narrower than 16:9 (captured at 4:3: the title movie and the transition
+  pictures sit in a 1024×576 band between black bars), so a portrait window gets the same bars above and below.
+  We follow the original; the request contradicts it (to discuss with the user). HUD screens' full-screen
+  shapes / streamed pictures (fades, flashes) cover the window above 16:9 (`UiFrame::cover`, model decision).
+- **Stack cell size**: an element-stack cell is as tall as its elements with the UIElementBase bool `bb6cac74`
+  (+172) set, not as all of them: the pause row's 44 px image is unflagged, its invisible 21×40 shape flagged
+  (selected row 21×52). Pause rows now 40 / 52 px as in o4 (were 42 / 57: rows 2–7 were 5–15 px low).
+- **Text scale** = size / em (em = atlas width / header ratio at 0x08), not size / point size (header 0x148): the
+  pause title, the menu rows, the map title and KM/H were 7.5 % narrow (fonts 1022113 / 1206238 / 1206239: point 28,
+  em 26.05); now within 1 px of o4 / o7 / fence-13. `Character_Spacing` (hash 837b4199: −1 title, −5 speed) is
+  applied between characters only (the right-justified speed was 8 px right; now ≤ 2 px). `b12cc0a0` (2 on most
+  styles), `46a2f495` (0.8 on the speed), `00b3eaec` (9) are not spacing; unknown.
+- **Vertical text alignment** follows the element's anchor row (top / middle / bottom), our reading of four labels:
+  PAUSE (anchor 0) was 3 px low, KM/H (0) 4 px low, the speed (2) 1 px low, the menu rows (3) right; all now ≤ 1 px.
+- At 1280×720 now (o4 / o7 / fence-13): pause rows 0 px (were up to 15), PAUSE ≤ 1 (3 low, 7 narrow), MAP title ≤ 1
+  (2 high, 5 narrow), nav bar / PGUP / ESC box 0 (unchanged), DRIVE prompt 5 px right (was 14), speed digit ≤ 2
+  (8 right), KM/H 2 narrow (4 narrow, 4 low). Not placement but content, still open: the Easydrive closed prompt
+  (1805584) is not drawn, the minimap is opaque black (the original's is translucent), the odometer formatter,
+  the nitrous bar shows for the F-150 (none in the original), key-box glyphs (the Enter icon on the pause row), the
+  map's MWL list / header / tab icons, the SP counter at the top centre of the HUD.
+- **Runtime resize**: Easydrive redrew only when its menu changed; it now also redraws on `WindowResized` (the other
+  UI modules draw every frame from the window's current size). Checked with `MW_WINDOW=1280x720
+  MW_RESIZE_AT=120,1920x1080` (new switches, `window_test.rs`; `tools/hl` takes `MW_HL_SIZE`).
+- **Running the original at other sizes**: `orig launch --size WxH` alone stretches the game's 1280×720 back
+  buffer (`pause_1280x720_stretched_to_1024x768.png`); set Settings > Graphics > SCREEN RESOLUTION to the size
+  (Right to the last entry, Return, Return to keep). The save was backed up to `ref/savebackup-2026-10-19-ui/` and
+  restored byte-identical (md5 in `ref/savebackup-2026-10-19-ui.md5`).
+- **Open**: which other screens set +0x2ecf4 (results, cutscene overlays, the event card: a capture at 4:3);
+  Easydrive's row pitch (26 vs the panel's 26.42); the projection that draws the frame (a UI camera,
+  `FUN_0061f800`) is inferred from the corrections and the captures, not traced.
+
+### 2026-10-19: Most Wanted races spawn their rival; every race slot drives its own car
+User play test: "the cars in Most Wanted races don't spawn". Cause: `ai::race_from_event` took the opponents'
+cars from the event's `allowed_vehicles` (the player's list), empty on all 14 Most Wanted events, and returned.
+- **Where the car comes from** (dump, `FUN_00686f30` → `FUN_006ce030` → `FUN_006cc870`): each
+  `AIPlayerInformation` slot's `AIPlayerType` +0x14 `Rollout` → `Rollout.Vehicle` (+0x58). That holds for **every**
+  race, not only Most Wanted ones: all 72 races with opponents name their cars this way (`mwtool events --all`
+  now lists them; e.g. CONTINENTAL DRIFT: 911 ×2, XKR ×2, 4C ×2, M3 ×2). The 14 rivals: MW1 Agera R, 2 Huayra,
+  3 Veyron SS, 4 Aventador, 5 918 Concept, 6 MP4-12C, 7 LFA, 8 SL 65, 9 Cobra 427, 10 4C Concept, DLC Venom,
+  M3 GTR, GT500, 918 Spyder; every bundle is in the install.
+- **Colour**: slot +0x18 (`2968e77a`) is a `ColourId` of the car's palette, used unless it is the player's car's
+  colour, then +0x10 (`9b4e35f7`); 0 keeps the rollout's colour. All Most Wanted rivals but the Venom use 1454330
+  (also the McLaren / SL 65 jack spots' colour; the MP4-12C's paint 3, white).
+- **Skip rule** (+0xee `c75c9d90`): one slot is always left out when it is set: the last whose car is the
+  player's, else the last. Set on every normal race except 3 DLC sprints, never on a Most Wanted race. Before,
+  we spawned every slot (CONTINENTAL DRIFT now 7 opponents, the XKR in slot 4 left out for the player's XKR).
+- **Flags** (`AIPlayerType`): +0xb4 `6bb93300` = the Most Wanted driver, kept as the rival at player manager
+  +0xa698; +0xb5 `d4fbaf43` = a cop, filed in the cop list. MOST WANTED 7 has the LFA plus two Charger SRT8 cops
+  at their own placements: the cops are not spawned (open).
+- **The intro**: the Most Wanted intros (e.g. 1482366) end with teleports of the player (100 mph) and `Racer(1)`
+  (115 mph) onto the rolling start; `cutscene.rs` already played them, with the rival now there.
+- **The intro's grid with a slot left out** (CONTINENTAL DRIFT, intro teleports): `Racer(1..8)` go to the 8
+  placements in data order and the player to trigger 462172, the same spot as the last placement (1442997). With
+  slot 4 left out, `Racer(n)` is the n-th racer spawned (`cutscene.rs`: grid slot n − 1 of the kept grid), so
+  slots 5..7 move up one placement, `Racer(8)` names nobody and the last placement is free for the player: the
+  data agrees with the skip rule. A regression after the merge (`--race 462174 --test race`: passed=0) was not
+  the grid: in the outro the AI drove the player's car through body shop 1496594, our respray reloads the car
+  (new entity, fresh `RacerProgress`). Fixed in `race::attach_player`: a car rebuilt during a race keeps the
+  replaced car's progress (the game resprays the same vehicle, `FUN_00748ff0` → message 0xc). Open: whether the
+  original runs "Do Body Shop" for the AI-driven player in an outro.
+- **Hold bug**: `spawn_opponents` released the race hold once the app had run 60 s, so a race started from free
+  roam after a minute did not wait for its opponents' cars and the intro teleports found nobody. The 60 s now
+  count from the hold's start.
+- Ported: `mw_assets::events::{Opponent::rollout, most_wanted, cop}`, `Rollout`; `race::GridSlot::{vehicle,
+  colour, alt_colour, most_wanted}`, cops left off the grid; `ai::race_from_event` (cars, paints, skip).
+  Verified headless: `--race 1399902 / 1496231 / 1496382 / 1472789 / 2090137 --drive 911 --test race` (rival
+  spawned and placed, won=true), `--race 462174` (7 opponents, slot 4 skipped), `--race 2090016` (+0xee clear, 5
+  opponents, colour 0 → palette's first), `--drive 911 --map-start 1399902` (streamed; card, rival placed, intro),
+  grid screenshot `MW_CUTSCENE_START=32.7 MW_CUTSCENE_SHOT=intro:34.3` (the white MP4-12C ahead of the player on
+  the rolling start); `--drive 911 --test accel` unchanged (3.58 / 3.73 / 11.12 / 11.60 s, same as session-11).
+- **Model decisions**: colour 0 → the palette's first paint (`FUN_006ca580` not traced); `OpponentData[k]` of the
+  rubber band = the k-th racer left on the grid; a rival car without a bundle would fall back to the allowed cars.
+- **Not traced / open**: the rival's personality (`AIPlayerType` fields, Behaviour 8 like any racer; no rival-only
+  rule found in the racer state); the rollout's upgrades (`BodyUpgrade` / `NitrousUpgrade` / `TyreUpgrade` are 0
+  on the Most Wanted rollouts) and its `Characters` / `631d8188` arrays (runtime +0x594 / +0x598, ids 1656931..
+  not found as resources); MOST WANTED 7's cops; what `FUN_006a1390` / `FUN_006a3db0` (0x914xxx HUD callers)
+  do with the rival; after a win, the free-roam shutdown ("Do Blacklist Shutdowns", `FUN_00748900` /
+  `FUN_00748e50`, `Gameplay.BlacklistShutdownData`: `AIPlayerInstance` type 457332 etc., `DamageThreshold`,
+  `SpeedControl` near 100 / far 300 m) and the car's jack spot; the Most Wanted car's progression unlock
+  (`GameUnlock` 1399899 names event 1399902, `Text` 979245, 415000).
+- **Captures that would confirm**: MOST WANTED 6 from the map in the original, F12 at the rolling start (the
+  rival's paint and place); CONTINENTAL DRIFT in the XKR, count the opponents on the grid (7 expected); MOST
+  WANTED 7's grid (are the two Chargers there at the start?).
+
+### 2026-10-19: kerb captures: the placement at speed, the strut joint, the strut stop only when crashed, yaw from the bumps
+Against the clean probe captures (main checkout `ref/`: `kerb100a` / `b` 911 at 100 km/h, `kerbrest911a` / `b` 911
+from rest, `kerb100raptor` / `raptorc`, plus `kerb_drop2`, `kerb_angle1`), replayed with `--replay <csv>
+--spawn=… --no-traffic --units 12`. The original was not run this round. Scripts (git-ignored, the worktree's
+`scratch/kerb/`): `rp.sh` / `matrix.sh` (replays), `summ.py` (per run: speed RMS by time, yaw RMS / peak, RMS of the
+per-tick vertical, pitch and roll accelerations, pitch / roll rate peaks), `kc.py` (the same per 20 m), `tick.py`
+(per tick by distance, with the original's wheel records and contact entries); the summary in `final.txt`.
+- **Placement at speed** (decomp.md "Boot, loading screens", new bullet "Placement with a speed"): traced from
+  `FUN_00647e00` through the placement message (`FUN_008446e0` → `FUN_00596050` → `FUN_005705f0`'s pending
+  teleport → `FUN_008f8190`). The vehicle reset `FUN_009a9b10` leaves gear index 1, `Idle_RPM`, clutch 0 and the
+  gearbox in standstill; `FUN_009b1e90` zeroes the air time and the downshift gate's clock (+0x1ed0); then
+  `FUN_009b3550` sets the revs from the wheels (rolling at road speed) through **first gear's** ratio, the gear by
+  speed alone, and the gearbox in gear with the clutch closed (or idle in standstill below `Idle_RPM`). The 911 at
+  62.1 mph: third at 10 402 rpm on the placement tick (3.91 × 3.44 × 773 rpm of the rear wheels, exactly the
+  capture), 6451 one tick later; the zeroed +0x1ed0 is why the original holds third at 4470 rpm, below its
+  4600 down rpm, for a second. Ported as `Car::place_moving` / `Drivetrain::place_moving` (drive.rs, mw-handling
+  drivetrain: one new method at the end of `impl Drivetrain`, nothing else there touched), used by the world replay.
+  `kerb100a` replay: speed RMS 9.9 → 1.3 mph (the pair a / b: 0.4), first ticks 6138 / 5816 / 5502 rpm against the
+  original's 6451 / 6433 / 6113 (ours one tick ahead; the original's first tick shows the rear wheels at 126.7 rad/s
+  after the clutch's impulse, ours already pulled back by the tyre), 3 → 2 at 1–1.5 s in both; `kerb100raptor`
+  11.6 → 3.1 mph (the rest is braking, below).
+- **The strut stop acts only on a crashed car**: `FUN_0095b4d0` rebuilds the wheel constraints every tick, and the
+  stop's flag +0x4ac is `FUN_009c24b0`'s tenth argument, the byte at vehicle +0x1774 = the crashed state (set by
+  the crash entry `FUN_009b2d40`; 0 for the player in snap1 and snap2). Gated on `ctl.crashed` (`MW_STRUT_STOP=1`
+  for the old behaviour). This was the main cause of the harsh kerbs on short-travel cars (the 911's 0.05 m bump
+  travel put it on the stop at every kerb).
+- **The strut joint** (decomp.md "Strut joint"): what holds the wheel on its strut is a world joint, the strut
+  object itself (vehicle +0x10f0 + 8i), solved in each contact pass (`FUN_00928cd0` → `FUN_009c6230` →
+  `FUN_009c4050` / arm `FUN_009c42d0`: the predicted wheel kept between the strut's ends, err / dt through the
+  effective mass to the chassis and against the wheel) and in each sub-step (`FUN_00928fb0` → `FUN_009c62c0` →
+  `FUN_009c3ae0` / `FUN_009c3d70`: no relative motion past the end the wheel is at). The original shows it: the
+  911's wheel records stop at −0.054 / −0.055 m (body frame) and stay there for ten ticks while the kerb is still
+  0.10–0.14 m into the tyre. Ported along the strut (`suspension::strut_position_error` / `strut_velocity_error`;
+  `MW_STRUT_JOINT=0|pos|vel`). The "joints `FUN_009c62e0` / `FUN_009c4e10`" of the 2026-10-19 kerb entry are the
+  body's world contacts (position and impulse passes of a body's contact list), not wheel joints.
+- **Before (session-11 build) → after**, summ.py; the original's own pair for the noise floor:
+
+  | capture | run | mph RMS | yaw RMS / peak °/s | vert. acc RMS m/s² | pitch acc RMS °/s² | roll acc RMS °/s² | pitch / roll rate peak °/s |
+  |---|---|---|---|---|---|---|---|
+  | kerb100a | original (b) | 0 (0.39) | 0.44 / 0.88 (0.49 / 1.92) | 6.0 (6.1) | 286 (273) | 124 (129) | 47 / 14 (45 / 18) |
+  | | before → after | 9.9 → 1.3 | 0.84 / 2.9 → 0.94 / 2.6 | 10.0 → 8.9 | 467 → 254 | 174 → 108 | 108 / 31 → 44 / 18 |
+  | kerbrest911a | original (b identical) | 0 | 0.45 / 0.93 | 1.3 | 59 | 35 | 19 / 7 |
+  | | before → after | 1.85 → 1.82 | 1.35 / 4.7 → 1.25 / 3.2 | 5.0 → 2.5 | 244 → 142 | 168 → 49 | 66 / 44 → 42 / 9 |
+  | kerb100raptor | original (c identical) | 0 | 0.52 / 2.0 | 4.1 | 156 | 89 | 41 / 16 |
+  | | before → after | 12.0 → 3.3 | 0.61 / 2.1 → 1.18 / 4.0 | 4.1 → 6.4 | 134 → 174 | 56 → 75 | 32 / 9 → 34 / 18 |
+
+  (the Raptor's "before" ran 10–15 mph slow from the bad start, so its kerb was softer). ride2.py totals (vertical
+  RMS, pitch, roll acc), original | before | after: `kerb_drop2` 1.6, 62, 10 | 2.1, 52, 17 | 2.1, 52, 21;
+  `kerb_angle1` 3.0, 128, 26 | 2.0, 50, 85 | 2.2, 55, 132 (this capture ends with the original crashing; its
+  25–50 m bin carries the difference).
+- **Still open: the position pass lifts the chassis more than the original does.** At the 911's front step in
+  `kerb100a` (1.367 s) the original's chassis takes ≈ 26 N s per wheel more than its trend in the tick the wheel
+  reaches the strut top, about what the spring at full compression gives; ours as read (err ≈ 0.12 m, m_eff ≈ 23 kg,
+  two passes) gives ≈ 5–10 × that, and `kerbrest911a`'s pitch-rate peak is 42 against 19 °/s. With the pass left out
+  (`MW_STRUT_JOINT=vel`) the 911's numbers come close (kerbrest911a pitch acc 105, peak 24; kerb100a 186 / 43) but
+  the wheel then rises past its strut top. Not found: what in the chain (the wheel contact's push, the record the
+  constraint uses on the first tick, the joint's masses) makes the game's reaction smaller. Kept as read.
+- **Yaw spikes (item 2) come from the surface bumps**, not the kerb: the Hodges strip is paving (`SurfacePhysics`
+  406000: f 0.3 / m, A 12 mm). `MW_ROUGH=0`: yaw RMS 1.25 → 0.52 (original 0.45), and ours then follows the
+  original's yaw trace (e.g. −0.6 against −0.8 °/s while braking); on the flat in second gear (2.3–3.5 s) yaw RMS
+  0.94 → 0.21 (0.10), roll rate 1.78 → 1.07 (0.92), vertical speed 0.124 → 0.071 (0.042) m/s. Bumping only the
+  point (normal unchanged) still gives 1.17, so it is the moved contact, not the tilt. The original's body shows no
+  sign of ±12 mm bumps on this strip: either the bump flag (`FUN_00904260`: player record +0x9c == 0, the 911 is the
+  player here) is not what we think, or ours answers a moving contact far more strongly. Bumps kept (from the code).
+- **Speed RMS 1.8 mph from rest (item 4) is a flat-ground drivetrain / tyre difference**: ours gains it at the
+  launch (rear slip 0.43 at once against the original's ≈ 0 for 0.4 s, 0.22 / 0.11 left / right at 0.5 s and
+  0.43 / 0.24 at 1 s; ours 0.42 / 0.37) and in second gear without slip (36 → 50 mph: original 12.6, ours
+  13.4 mph/s, +6 %; engine 20 % above the wheels in both). Not traced (the drivetrain is the nitrous agent's this
+  round); our `--test accel` (0–60 3.58 s) is a regression guard, not a match: this capture reaches 50 mph at 3.5 s.
+- **Raptor braking** (`kerb100raptor` from 2.5 s): ours decelerates 11.2 against 9.9 m/s² (3–4.5 s), the revs fall to
+  idle and the gearbox drops to standstill at 3 s, where the original stays coupled (4250 rpm, 3 → 2 → 1). Open.
+- **Tests (911), before → after**: accel, brake, corner, drift unchanged (0–60 3.58 s, quarter 11.60 s, 38.1 m,
+  2.57 g, drift 37.3°); landing deepest 0.114 → 0.237 m, overtravel 0.071 → 0.214 m, body contact 0.82 s, settle
+  3.48 → 3.57 s; climb deepest 0.122 → 0.208 m, overtravel 0.179 → 0.305 m, body contact 0.90 → 0.97 s, settle
+  5.05 → 5.62 s; kerb (50 km/h) vy peak 1.69 → 1.73 m/s, pitch rate 29.3 → 34.2 °/s, roll rate 68.3 → 54.8 °/s,
+  rise 0.194 → 0.202 m, stop 2898 → 0 N s. The deeper landings are the stop gone (no landing capture to check).
+- **Model decisions** (handling.md): the joint along the car's up axis only; its position parameter (+0x30, writer
+  not found) from the wheel's position before the sub-steps; the strut bottom at the static sag without strut
+  data; the replay's start always the moving placement.
+- **Captures wanted** (probe helpers, `hodges-kerbrest` / `hodges-kerb100`, 911): (1) `kerb.watch` + vehicle +0x19d0
+  + 4i (the bump A × n per wheel) and the wheel constraint's record point: whether the bumps run on the player's car;
+  (2) a hook on `FUN_009c6230` logging the joint's err and impulse and the wheel record's velocity before / after
+  `FUN_009c5a90` for the ticks around the step: where the chassis's reaction goes; (3) engine +0x20 rpm, the clutch
+  torque and the wheels' drive torque over the first 3.5 s from rest (the launch difference); (4) the Raptor's
+  brake budget and wheel spins from 2.5 s; (5) a landing from a kicker (no stop now) for the wheels' depth.
+
+### 2026-10-19: nitrous against the original: no downshift while it burns; mods fitted through the probe
+
+User play test: nitrous made the car downshift, barely faster, and the gearbox then struggled. Recorded the
+original with the probe (911 Carrera S 1085007 on `hodges-strip`, 13:00, traffic off, repaired; save backed up to
+`ref/savebackup-2026-10-19-nitrous/` and restored byte-identical, whole directory; game silent through
+orig-wrap; quit after). Watch `ref/nitrous.watch` = kerb.watch lines 1-111 + `in_nitrous` (+0x1c20),
+`nitrous_mode` (+0x1c60), engine lag / hold / torque (+0x1d14 / +0x1d18 / +0x1d28), `nos_mult` (+0x2a90), the
+gearbox throttle / state / mode (+0x1aa0 / +0x1bd8 / +0x1bdc), ground time and the tank (G + 0x264f0 +0x10 /
++0x18 / +0x6c). Inputs `ref/nos_in/*.csv` (the control amount ramps 0 → 1 over 1 s as `FUN_00669ab0` does,
+throttle 1 while it burns as `FUN_006c1a80` forces).
+- **Captures** (in `ref/`, copied to the main checkout): `noslaunchfull` (full throttle from rest, nitrous from
+  0.783 s, the first tick above 10 mph, for 100 / 24 s), `noslaunch_a` (nitrous from 2 s), `noslaunch0` (no
+  nitrous), `noscruise2_a` (rest → 3 s full → 4 s at 0.3 (the cruising box after 3 s) → 2.5 s burst → 0.3 →
+  brake). `noscruise_a` / `_b` (placed at 80 km/h) hit something in the first 0.17 s (49.7 → 5 mph, both runs):
+  not used. No mod was fitted in these runs: the probe writes the nitrous lane itself, so the tank and the mod's
+  `NitrousParameters` are bypassed, and `Nitrous_strength` (the multiplier, 1.9) is `Engine` data. Each
+  capture's meta.txt says so.
+- **What the original does**: the multiplier (vehicle +0x2a90, the engine's 9th argument, decomp.md "Nitrous and
+  upgrades") follows the lane, the engine torque goes 430 → 820 N m. Upshifts come on rpm alone (3 → 4 at 47.9
+  mph, 7559 rpm, then 3400-4250 rpm in 4th) and **no downshift happens while the lane is above 0**; when it ends
+  the speed rule drops 4 → 3 at once. From rest the gain over 8 s is small in the original too: 90.7 mph with
+  nitrous against 90.3 without (the early 4th gear at low rpm); from the cruise burst it is large (49.9 → 86.7 mph
+  in 2.5 s, 2 → 3 at 7713 rpm). The cruising box drops to the race box within the 0.05 s rule and keeps the gear.
+- **Ours before**: `FUN_009d93b0`'s nitrous mask was missing from `Drivetrain`'s downshift rule, so after the
+  rpm-only upshift the speed rule shifted straight back: 3 → 2 → 3 → 2 under nitrous (`--test nitrous` log),
+  each shift costing drive. **Fix** (mw-handling drivetrain.rs): no downshift while the nitrous burns (source
+  `FUN_009d93b0`, control block +0x30). Replays (`--replay` now plays a recorded `in_nitrous` lane straight into
+  the multiplier and the gearbox, bypassing the tank as the probe does; `nos_mult` logged): `noscruise2_a` matches
+  the gear trace (2 held, 2 → 3 at 8.0 s in both), burst gain 40.4 mph against 36.8; `noslaunchfull` no more
+  hunting, but ours stays in 3rd (6677 rpm at 3.0 s against the original's 7559 → 4th): see the open items.
+  `--test nitrous` before → after: 0-60 mph 3.43 → 3.20 s, 0-100 km/h 3.53 → 3.30 s, tank empty 4.93 → 4.95 s,
+  0-200 km/h 9.87 → 9.25 s, quarter mile 11.07 → 10.82 s. Unchanged: accel 3.58 s / 11.60 s, brake 38.1 m /
+  2.62 s, corner 2.57 g, drift peak 37.3° held 4.75 s (same as the session-11 build).
+- **Mods without unlocking** (user request): `mwtool mods <car> nitrous=2,...` → probe `mods`: the player's
+  rollout record copied, the groups' slot / level set, `FUN_006c2020(player, id, 0, &record)` (decomp.md "Nitrous
+  and upgrades", "The rollout"); verified live: the rollout read back with the fit (3:1, then 3:2), the vehicle
+  id and the group's descriptor pointer filled in by the game. The profile is changed in memory and was in the
+  save after one relaunch: restore the save afterwards (done). `mwtool mods <car>` now prints the names and game
+  slots; `mods.txt` in the probe dir records the last fit and `capture` copies it into meta.txt.
+- **The real-tank capture was not made**: after the fit, the far placement to Hodges killed the game five times in
+  a row (probe.md "Crashes on the far placement"; NVRM out-of-memory lines in the kernel log while other agents'
+  runs shared the GPU). Script nitrous `nan` (leave the lane to the game) and the plan are ready: fit
+  `nitrous=2` (PRO BURN NITROUS; ours `--mods 6=0`), poke the tank to 100 (G + 0x26500), script throttle 1 with
+  nitrous `nan` (`ref/nos_in/launchnat.csv`), hold the nitrous key from about 2 s (`orig hold`): it would check the
+  burn, the 1 s ramp and the throttle rule.
+- **Model decisions**: none in the port. Tool choices: the scripted ramp and the 100 / 24 s burn (the default
+  rules' rate) stand in for the tank.
+- **Open**: (1) under full throttle ours spins one rear wheel (w2 κ 0.55, w3 ≈ 0) where the original spins both
+  (κ 0.58 / 0.58 under nitrous; 0.12 / 0 in a plain 1st-gear launch): ours keeps more traction, gains more speed
+  (+6 mph at 3 s), its engine falls back to the locked ratio and never reaches the 3 → 4 upshift rpm, and the
+  uneven drive yaws it 8° off the strip by 190 m (it then hits the apron's edge in every replay); a tyre /
+  differential question, not nitrous; (2) ours launches about 1.7 mph faster at 1 s in 1st (same captures;
+  kerbrest911a showed it too); (3) the real-tank capture above; (4) game slot 2 (a tyre upgrade by elimination)
+  not traced; (5) what +0x2e70 (the other engine factor, 1 here) is.
+
+### 2026-10-19: probe capture helpers: teleport, car swap, tick-exact scripted inputs; reproducible kerb runs
+User request: probe helpers for cleaner captures (teleport with saved spots, any car, scripted inputs per tick,
+fixed conditions, a flat test strip), verified by two identical runs at 100 km/h over a kerb and a replay in ours.
+Tools in docs/probe.md "Capture helpers" and docs/commands.md. Original run with the probe (4 launches, before
+the silent sink existed: its stream was muted with `pactl`, which WirePlumber stored per application, and that
+stored mute was cleared again afterwards; save backed up to `ref/savebackup-2026-10-19-probe/` and restored
+byte-identical, controller setting untouched, game quit).
+- **Hooks**: the race car's "Update Car" `FUN_00904da0` is reached through `.rdata` slot 0x01023760 (found by
+  scanning the live snapshot for the address; the only reference); the "Car Swap Logic" behaviour's update
+  `FUN_00761d70` through 0x00fdb4d4 (its vtable at 0x00fdb4c8: [0] 0x758ba0, [3] the update, [6] 0x75d510 the
+  `JackSpots` registration). Tick and frame run on one thread (Wine tid 1652 both). The XInput poll runs on the
+  input thread (`FUN_0040f140`) and was not called at all while no pad was connected.
+- **Game functions used** (calling conventions from the disassembly): swap `FUN_006c2020` thiscall on the player
+  (`ret 0xc`; player = [G+0x2f3dc] + 0x10 + [[G+0x2f3dc]+0xa6b4] × 0x7f0, `FUN_00774650` / `FUN_006bf330`,
+  handle at player +0xa0, 0 here); repair `FUN_00844940` stdcall (`ret 4`); traffic off `FUN_008462a0`;
+  placement `FUN_00647e00` thiscall on G + 0x25690 (the manager's +0 holds G; `ret 0x20`), args as in the
+  trigger teleport `FUN_006e4770`: handle, position, direction (both vec4), speed in mph (streaming radius
+  max(200 m, mph × 0.44704 × 3 s), `.rdata` 0x00fb5024 = 200, 0x00fb69f0 = 3; 0x00fa9308 = 30 mph for triggers),
+  0, reason 0xf, flags 0, 0. Returns 1 when the target is resident (placed within a frame), 0 when it streams
+  first. The respawn record at manager + 0x20 + slot × 0x90 (+0x30 position, +0x40 direction, +0x84 flags) with the
+  reason at manager + 0x920 + 4 × slot; the free-roam start respawn is reason 6 (`FUN_006d0180`, flags 0x14).
+- **The airport is out of reach**: placing (native or raw) or driving into zone 42 (the airport arena 527914,
+  just west of the tunnel portal at x ≈ −160..−200) puts the car back on the free-roam start (reason 6) within a
+  second; the tunnel (zone 43) is fine. HSM nodes "Show Airport Required Dialog" (2253021..2253038, dialog
+  2253022) and "Is Entitled to Join Friend's Game" (`CanJoinAirportGameByFriendIndexBinding`) point to an
+  entitlement check for the airport (not traced: which flag, whether owning a pack lifts it). The airport runway
+  itself is 1.5 km dead level (surface 2 at y 50.03, heading 48.5°, `mwtool surfaces --near=-1500,-3800,1200 --flat
+  --find 2`), recorded as spot `airport-runway`.
+- **Test strip used**: Hodges Airfield (the hill airstrip by Interstate 92), 468 m within 1.5 cm at heading 139.5°
+  from (−2199.0, 102.40, 1192.9) (spot `hodges-strip`). The longest level straights elsewhere (asphalt): 628 m at
+  heading 54.5° from (−779.3, 28.0, 3258.9) (cluttered by structures), a 410 m boulevard at 175.5° from (1672,
+  31.75, 2591) with median kerbs; a 530 × 540 m flat patch at y 6.09 around (2240, −1560) is an isolated piece of
+  road collision (120 triangles), not a place to drive.
+- **Kerb**: square approaches to kerbs are rare in the open (`--flat --flat-kerb`: run-up ≥ 30 m, level ground ≥ 10 m
+  after). Used: a 0.15-0.18 m concrete kerb (surface 9) on the rounded corner of the Hodges apron, met at heading
+  232.2° from the strip (spot `hodges-kerb100`, 40 m before it; `hodges-kerbrest`, 57 m). The 100 km/h line
+  crosses a grass band (y 102.40-102.44), the kerb up (fronts 102.38 → 102.53 at 1.33 s, rears at 1.43 s,
+  64 mph), the kerb down 0.8 s later, a second up / down at 2.57 / 2.72 s, a 0.26 m drop at 3.3 s and a slope.
+- **Captures** (911 Carrera S 1085007 and F-150 SVT Raptor 300097, 13:00 frozen, traffic off, repaired, nitrous 0;
+  `kerb.watch` = handling.watch + the kerb fields of the 2026-10-19 kerb entry plus contact entry 1, `w*_l1a/b/n`;
+  copied to the main checkout's `ref/`): `kerb100a` / `kerb100b` (911 placed at 100 km/h, throttle 0.45 2.5 s,
+  brake 2.8 s): bit-identical for 2.05 s (the kerb up included), then within 0.15 mph / 6 mm to 3 s and 0.9 mph /
+  9 cm at the end; the divergence starts in the front wheels' rim speed at the kerb down. `kerbrest911a` / `b`
+  (911 from rest, throttle 1 for 3.5 s, brake 3 s; the kerb at 4.38 s at 32 mph): equal to 1e-5 mph and 0.4 mm
+  over 6.5 s. `kerb100raptor` / `raptorb` / `raptorc` (Raptor at 100 km/h): a and c bit-identical over the whole
+  run, b differs from the second tick (rpm 5125 → 5110 against 5153): the engine state after an at-speed
+  placement alternates between two values. In the first 911 pair (a probe build without the placement-wait, not
+  kept) the bodies stayed bit-identical over the whole run while the contact list's entry 0 A / B differed for a
+  few ticks on wheels 1 and 3: **the narrow phase's entry order is not deterministic** (the collision job is
+  threaded); when it matters, the runs drift apart.
+- **Replay in ours** (`--replay <csv> --spawn=-2162.20,103,1205.15,232.2 --no-traffic --units 12`, 911 = 1085007):
+  from rest, speed RMS 1.8 mph (ours 2-3 mph faster from 2 s, so 3 m further when braking ends), yaw ±3 °/s
+  spikes in ours at the kerb against ±0.5 in the original. Placed at speed (`kerb100a`, spawn at 62.1 mph): ours
+  drops to 49.5 mph in 0.5 s (gear 3 → 1 at the spawn, engine braking at 0.45 throttle) while the original holds
+  64-66 mph; a start-state problem of the at-speed replay (gearbox / clutch at spawn), not of the kerb.
+- **Model decisions**: none in the game port. Tool choices: the per-tick log reads at the start of the car's next
+  tick (state of the tick just run; control fields as that tick used them); script rows apply step-wise by game
+  time since the start; the arm radius 1.5 m and speed tolerance 0.5 mph.
+- **Open**: (1) the airport gate (what the respawn checks; an entitled save would open the 1.5 km runway); (2) no
+  cop switch: free-roam patrols still spawn (none came near in these runs; at 13:00 with traffic off); (3) the 30°
+  crossing and the "tyres half over a kerb at 30 km/h" captures need a straight kerb with room (the Hodges kerb
+  is a rounded corner); the decal strip and the track-unit seam captures were not made; (4) why the at-speed
+  placement's engine state alternates (gearbox / clutch timers?): place twice, or start from rest, for exact
+  repeats; (5) idle attract mode during long runs (tap `w` before each run).
+
+### 2026-10-19: world streaming as the game does it (wgpu out of memory on an 8 GB card)
+User report: the game crashed with wgpu "Out of Memory" while creating a mesh slab (RTX 3070, 8 GB). Every run
+loaded all 169 track units and kept them. Reproduced here: a `--load-all` bench run started while the original
+held ~1 GB (3.6 GB in use on the card) failed with `Out of Memory` and quit.
+- **The original's streamer, from the code** (decomp.md "World streaming"): a 32-slot resource streamer
+  (`FUN_005486c0`); the stream update `FUN_00558740` passes the **camera** manager's position (+0x140) and +0x130
+  in gameplay (mode 2), a stored target while a placement waits (modes 1 / 3, `FUN_00647e00` messages 4 / 5);
+  `FUN_00549fb0` lists the focus zone (priority 100) and every neighbour, `(1500 − d) / 750 + 3 · max(0, dir · to) +
+  (flag bit 2 ? 10 : 9.8)` (`.rdata` 0x00fab750 / 0x00fab74c, `.data` 0x010c45a4..b0, read with `exe-const`), d to
+  the neighbour's centroid (`FUN_0055f160`); `FUN_005573f0` requests the district (priority 500) and arena (200)
+  bundles and the units; the streamer unloads every slot not requested before it loads the best missing one
+  (`FUN_00537c80`, picks `FUN_00546d70` / `FUN_00546e20`, reached through the vtable `0x00f9a374` with REA: the
+  methods are not in the dump). No byte budget: 32 slots. Unit bundles = `TRK_UNIT<n>` + `_hdr`, `TRK_COL_<n>`,
+  `TRK_NAV_<n>` (load method `0x0054b5d0`).
+- **Port** (`streaming.rs`, `loader.rs`): the loader thread runs that step between frames (focus from the main
+  thread, `StreamFocus`), sends `UnitUnloaded` with the models, textures, shared backdrop placements and
+  groundcover collections no resident unit (nor a car) uses, and forgets them (sent again when needed). The main
+  thread despawns the unit's entities (placements, merged statics, props with smashed compounds' pieces,
+  colliders; 1500 a frame), its lights, and drops the handles and the materials no remaining model uses.
+  `zone_view.rs` now takes the camera as focus (code), keeps the last zone outside the polygons and, while
+  streaming, waits for the new zone's unit before swapping (status 4 in `FUN_005573f0`). The streaming stall
+  (`FUN_006a2200`, Resident(car, 25 m)) pauses virtual time. Jack spots' parked cars are released as soon as they
+  arrive (they hold their own handles): before, every parked car ever seen stayed loaded (+1,200 textures in a
+  20 km drive), also with the full map.
+- **Races** (user report the same day: no loading screen at a race start, Most Wanted opponents missing): Easydrive's
+  and the pause menu's START RACE now go through the event-loading card (`PlayEvent`) as the map's does (model
+  decision; whether the original plays 1014321 there is still open). A runtime start places the car the
+  `FUN_00647e00` way: held at the start, focus moved there (`streaming::PlacementFocus`), the card holding until the
+  start is resident within 200 m with ground under it (`race::place_at_start`; `RaceState::placing`). Checked
+  headless with `--map-start 462174` (near) and `--map-start 1399902` (MOST WANTED 6, 2.6 km away: placed 3 s
+  later under the card). **The Most Wanted opponent is not a loading problem**: event 1399902 has no
+  `allowed_vehicles` (`mwtool events 1399902`: "cars:" empty, one opponent "AI type 1399985, placement 1399905"),
+  and `ai::race_from_event` returns before setting any opponent when that list is empty. The rival's car must come
+  from the AI type / the Most Wanted list (`BlackListDriver`), not traced; opponents' car bundles are global
+  loader owners and never unloaded with a unit.
+- **Measured** (headless, `nvidia-smi --query-compute-apps` every 0.5 s for the run's PID): `--drive 911`
+  default spawn: peak **4558 MiB `--load-all` → 1266 MiB** streamed (8 units first, loaded in 4.5 s instead of
+  32 s); bench spawn (815, 60, 1760): 4112 → 1268 MiB. `--bench 10` there: `--load-all` 26.9 ms mean (main world
+  25.8 ms), streamed 12.7 ms (main world 7.3 ms), p99 39.4 → 20.4 ms. Soak: the player driven by the AI 20 km at
+  215 km/h mean across 54 zone changes (101 units streamed, `MW_AI_ROUTE_M=20000 --test ai --ai-seconds 420
+  --no-traffic`): peak 1592 MiB, flat at 1332 MiB for the first 100 s and 1590 MiB after the densest zone (the
+  allocator keeps its blocks); entities 10–37k, meshes 3–8.5k, textures 380–1,130 (kept = in use, checked per
+  unload on both threads). No stall fired. Frame times in the soak depend on the machine's load (load average
+  14 from other agents): quiet run mean 17.4 ms, 80 of 10,500 frames over 33 ms; frames that receive loader
+  messages average ~5 ms more than others (render-asset uploads). Unchanged: accel 0–60 mph 3.58 s; `--test race`
+  (streamed and `--units 12`), `--test freeroam` (both), `--test pursuit --units 30` and streamed (the pursuit
+  outcome varies run to run: one run of the same command timed out waiting for a bust with a cop 3 m away, the
+  next escaped once and busted once). A/B screenshots `--load-all` (top) / streamed (bottom) in the worktree's
+  ignored `extracted/stream/`: `road-cliff_ab.png`, `airfield-exit_ab.png`, `terrain-road-2_ab.png` identical,
+  `drive_ab.png` (same scene, chase-camera settle differs), `city-lod-check_ab.png` (aerial, 260 m up: streamed, far
+  water planes show bare in the fog where the far terrain is not loaded: why a free camera without `--drive`
+  loads everything unless `--stream`).
+- **Model decisions**: the car is the focus while the camera is more than 150 m from it (startup, fixed
+  `--camera`); before any zone was found the nearest zone; district / arena bundles are not units (our store
+  reaches their resources by index); despawning spread over frames; free-camera runs load all by default.
+- Also fixed on the way: a traffic panic ("live car", `traffic.rs` `leader`) after a crash reset moved the
+  traffic area: `remove_car` and the crash conversion left removed slots in the per-section lists.
+- **Open / captures that would confirm**: the camera manager's +0x130 as the view direction (a live read in a
+  drive); whether the original plays the event card for Easydrive's START RACE; the Most Wanted rival's car
+  (AI type 1399985 → vehicle); a capture of the original's memory use is not needed (slot count). Frame-time
+  measurements on an idle machine.
+
+### 2026-10-19: terrain through the road, the rest: what is left is authored; the pass mask per view
+Follow-up of the 2026-10-16 entry (user: "terrain still sticks through the road in some places").
+- **`mwtool terrain-check`, now LOD-aware**: a poke counts only against roads **drawn at the same time** as the
+  ground (each main mesh carries the LOD states it is drawn at; under `FUN_008a02f0` a placement is at LOD l
+  while the camera's distance to its placed LOD0 sphere centre lies in `r + d[l−1]·s·V .. r + d[l]·s·V`; two
+  meshes are drawn together when the two shells meet), lower-LOD roads are included, each sample is classified
+  by the collision under it (`driven`: collision at the road mesh; `buried`: the collision follows the ground),
+  and each cluster gets a lower bound for the distance it can be seen from and a `--camera` standing on a driven
+  road 12–25 m away (`--within`, `--driven`, `--only lod-ground|shadow`). The old "LOD1/2" numbers compared
+  every lower-LOD mesh, LOD-shared states twice, with only LOD0 roads.
+- **Numbers** (all units, V 1.5, eps 5 cm): LOD0 ground over a simultaneous road 7,700 m² (6,514 driven, the rest
+  buried or off-collision); the composed backdrop 866 m²; lower LODs: terrain / plot shaders 22,500 m², other
+  shaders (the merged `WorldPBR_Diffuse_AO_PersistentLightmap` LOD meshes, foliage cards) 81,600 m², but only
+  5,480 m² of that can be seen from closer than 150 m over driven road, almost all at the airport terminal
+  plazas (zones 40 / 55 / 57: planters and LOD tree cards).
+- **Looked at** (headless screenshots from the printed cameras, `extracted/terrain2/main/m1..12.png`,
+  `extracted/terrain2/bd/m1..9.png`): the 12 largest LOD0 clusters are raised planters and verges standing in
+  plaza / pavement meshes that are `DriveableSurface` (airport terminal (-1564, 58, -3342) / (-1386, 58, -3318),
+  (-1424, 61, -3202), the brick planter at (1804, 24, 1752)), grass behind retaining walls (431, 46, 2379),
+  (1818, 24, 1922), a sidewalk at (1648, 21, 1509): the road mesh continues under authored kerbs and walls,
+  nothing shows through the asphalt. The backdrop clusters near roads (zone 142, (-188, 27, -1104)) are verge
+  slivers under 1 m beside the carriageway, not visible as ground over the road. Ground 0–5 cm under the road
+  covers 9,900 m² of LOD0 (coplanar, no z-fighting with our reverse-Z depth).
+- **The original hides nothing else**: `DriveableSurface`, `TerrainPBR_*` and `PlotPBR_*` use the same
+  `MaterialState`s (depth-only pass `01000006d4f4dae8`, G-buffer passes `01000006713dc05f`: same depth-stencil
+  block, rasteriser `3 3 1 0 0 0`, no depth bias or slope bias) and the same `ViewProjectionModified` projection
+  (no z offset). Roads are not decals over the ground, so every remaining overlap is the data's and also in the
+  original, with our LOD rule (`lod.rs`, the game's) choosing the same meshes. Conclusion: no further change to
+  what the main view draws.
+- **The pass mask per view** (`pass_mask.rs`; decomp.md "Model pass mask"): placements carry their model's mask
+  to their meshes as render layers: bit 4 → not in the main camera, bit 8 → not in the planar reflection
+  camera (`--planar-reflection`; roads 0x09 no longer mirror themselves, nor props / fences 0x08 / 0x1a), bit 1
+  → `NotShadowCaster` (roads, 0x03 / 0x0b buildings, 885 instances of four 0x0b trees, lit signs). The 230 ground
+  stand-ins are now spawned for the planar reflection (no shadow from their LOD0). Survey: `mwtool terrain-check
+  --masks`. A/B against session-11 (headless, `extracted/terrain2/ab/*_{before,after}.png`): terrain-road MAD
+  0.98 / 255 (groundcover sway only), terrain-road-2 at 17.5 h 0.33, road-cliff 0.28, city-lod-check 0.02,
+  airfield-arch 0.07, road-wet with `--planar-reflection` 0.25. `--test accel` unchanged (3.58 s), `--test smash`
+  passes.
+- **Stand-in shadows** (the open item "can we draw them shadow-only?"): yes, but the shadow pass draws a model's
+  SHADOW state (state 6, `FUN_008a02f0`); 215 of the 216 `TerrainPBR` stand-ins have one, a `WorldShadow` mesh
+  lower than the tile (`11e76144`: top 41.7 m against 43.5; `cdd14f40`: 48.6 against 61.9;
+  `terrain-check --model <id>`). Drawn with the tile itself as caster the slip road at terrain-road went dark.
+  With the SHADOW meshes (shadow-only layer, LOD rule = draw distance) terrain-road is unchanged, but those
+  meshes still stand up to 3 m over 3,100 m² of driven road (`terrain-check --only shadow`: (-1518, 13, 3216),
+  (119, 48, -2032), (-42, 37, -76) ...) and at terrain-road-2 at 17.5 h they put all four carriageways in shadow
+  (`extracted/terrain2/ab/tr2-h17_standin.png`). **Model decision**: off by default, `MW_STANDIN_SHADOWS=1` turns
+  them on, until a capture decides (the shadow views' eye for the LOD and shadow-distance test is not traced; a far
+  eye would cull these 200 m models in the shadow pass).
+- **View +0x17150** (bit 0x10): a second full world view with its own eye, set up like the +0x172e0 one, gated by
+  `FUN_00798840` (byte +0x48 of the first element of a renderer list, +0x31bf8) or `FUN_0069ff40()` +0x45. Not the
+  water's reflection (the water shaders read a cube map). Not identified.
+- **Mask 0x1f**: locators (single 0.24 m triangles, 1169 dynamics of `79a1dfbc`), flat quads, six large
+  `Illuminance` sheets near (1500, 20, 1500) and 1004 instances of a small 80-triangle object `80505b9d`; not drawn.
+- **Model decisions**: bit 1 also keeps casters out of the headlight's shadow map (its view's mask is not traced);
+  compound pieces spawned after a smash carry no mask (layer 0); the one stand-in without a SHADOW state casts
+  nothing; the stand-ins' LOD0 is spawned (hidden in every view but the planar reflection) even without
+  `--planar-reflection`.
+- **Captures that would confirm** (F12, same camera, 13 h unless noted): terrain-road-2 at 17.5 h (stand-in
+  shadows: are the four carriageways in shadow?), the airport terminal plaza at
+  `--camera=-1546.5,59.7,-3341.8,-1564.5,58.2,-3342.5` (planter as here), (-1518, 13, 3216) at a low sun, a wet
+  road with a lamp post or tree beside it (planar reflection without the road's own props: bit 8), and a tree of
+  the 0x0b models (no shadow) once identified by position.
+
+### 2026-10-19: floating trees at the tunnel exit to the airfield: the game swaps backdrop and groundcover per zone
+User play test 2026-10-16: "some trees and foliage float near the street exit leading to the large airport area".
+- **Finding the place**: new `mwtool placement-check --floating` (`float_check.rs`) records every surface over each
+  tree / alpha card / prop / groundcover base (main LOD0 by pass mask, every backdrop model whole with its listing
+  zones, the composed backdrop, collision) and reports what floats (nearest drawn surface more than 1 m below the
+  base). The airfield is the arena 527914 zones (36/37/39-44/46/55/57, x -3300..350, z -5800..-1800). The road
+  from the canyon (zones 208/700) runs through a tunnel under a hill (zone 43, road y 48, ceiling 57.7, hilltop
+  y ≈ 100) and leaves it westward into zone 42 towards the airfield: the "street exit". Above the portal stand
+  unit 43's trees (`a97b9688`, base ~98-100) and the groundcover collection `e557779c` (listed by 36-57 and 42).
+  The only ground there: unit 43's pass-mask stand-in `79c9fc10` (48 m triangles, not drawn since 2026-10-16) and
+  the backdrop tile `15f3021b` (20 m triangles, y 99.9) listed by 42 and the airfield zones, not by 43. The
+  composition (2026-10-04) draws zone 43's view over zone 43's polygon: `b6dd1f32` at y 69.6, 30 m under the trees.
+  Seen from zone 42 the trees and sprites hung in the sky (`extracted/float/exit_full_ab.png`, top). Not the
+  stand-in removal: with `MW_ALL_PASSES=1` the coarse stand-in hill covers the portal rock instead.
+- **The rule, from the code** (decomp.md "Streaming zone and backdrop swap"): `FUN_00549fb0` builds the stream
+  list = the focus zone + all its neighbours; `FUN_005573f0` on a zone change removes the old zone's backdrop
+  instances (`FUN_00556a60`) and groundcover collections (`FUN_0043ac80`) and inserts the new zone's
+  (`FUN_00556980`: `InstanceList` entries from the always-loaded count to the end; `FUN_0043ac10`: the 64-slot
+  groundcover list). So the game draws the main geometry of Z and its neighbours, Z's backdrop and Z's
+  groundcover only. The per-place composition cannot reproduce a zone whose own view never sees its area (the
+  tunnel zone 43): from zone 42 the game shows 42's tile over it.
+- **Data check** (`placement-check --floating`, per camera zone, placements within 300 m of the zone, summed over
+  the 169 zones; non-groundcover / groundcover / road samples with terrain 5 cm-3 m above them): static composition
+  9,524 / 157,078 / 581; game rule (Z + neighbours' main, Z's backdrop) with the neighbours' groundcover
+  10,651 / 397,849 / 605; the same with only Z's groundcover (the code's rule) 10,651 / 3,053 / 605. The extra
+  non-groundcover floats of the game rule are placements its zone cannot see (checked for zone 700: unit 42's
+  hill trees behind the canyon ridge). Zone 42 alone: composition 7 / 10,387 floating, game rule 15 / 0.
+- **Fix** (`zone_view.rs`, default; `--composed-backdrop` restores the old view): the loader tags each placement
+  root with its unit and sends every backdrop model once, whole, tagged with the units listing it (plus its composed
+  cut); with the focus in zone Z a unit's placements show while it is Z or a neighbour, a backdrop model while Z
+  lists it; groundcover shows Z's collections only (`groundcover.rs`, before: Z and its neighbours, a model
+  decision). The composition is still built (aerial fallback); whole backdrop solids add 0.5 M vertices (0.90 M
+  whole vs 0.40 M composed), peak VRAM +~40 MiB at airfield-exit.
+- **Model decisions**: focus = the player's car, else the camera; nearest zone outside the polygons; immediate
+  swap; props with physics and collision stay everywhere; **aerial fallback**: without a car and with the camera
+  more than 25 m above the collision under it (`zone_view::AERIAL`) the composed backdrop and all main geometry
+  are shown. A zone's backdrop is what is visible from its ground: from 60-400 m up (city-lod-check,
+  airfield-arch, water-industrial at 70 m) the zone view shows holes to the horizon where far hills are only
+  main geometry of units the zone does not stream; with 100 m water-industrial still lost its far hills.
+- **Verification**: Before / after stacks (`--composed-backdrop` top) in the worktree's ignored
+  `extracted/float/`: `exit_full_ab.png` (the place: floating trees and sprites gone, hill over the portal drawn),
+  `vp2/drive-911_ab.png`, `vp2/downtown-plaza_ab.png` (drive mode, focus = car: unchanged), `vp2/g4.png`
+  (road-cliff, a drive out of the tunnel: unchanged), `vp/g1.png` (terrain-road-2, water-gorge: unchanged but a few
+  more sprites on the gorge's slope), `vp/g2.png`, `vp/g3.png` (aerial views take the fallback: identical).
+  VRAM: +250 MiB at `--units 15` (1264 -> 1512 MiB peak; the whole tiles and 84 more textures on the full map:
+  3511 -> 3595 textures, 27395 -> 27626 models); with parallel agents on the 8 GB GPU full-map runs of either mode
+  hit wgpu out-of-memory now and then.
+- **Open / captures that would confirm**: a Steam F12 screenshot of the original at the airfield-exit viewpoint
+  (driving west out of the tunnel at (-90, 50, -2036), looking back east at 13 h): the hill over the portal with
+  trees standing on it and no sprites in the sky; the same from inside zone 700 (canyon) to see that hill absent.
+  Not traced: the caller of `FUN_005586e0` (whether the focus is the car or the camera) and the neighbour priority
+  constants; compounds `6a66316a` on the airfield stand 8-11 m above the runway (skinned mesh 58-64 m over a 50 m
+  runway, not identified); `placement-check --floating` static clusters elsewhere (unit 6 / 29 hills) were not
+  looked at under the new rule.
+
+### 2026-10-19: harsh road / kerb response: the wheel's cylinder, the strut travel from data, decal triangles
+User play test: "road collisions are sometimes harsh (seams / steps)", "sidewalks affect the car too much". Three
+causes found and fixed; sources below. Captures of the original (`tools/orig`, F-150 Raptor from the save's start
+point, keyboard, audio muted, save backed up to `ref/savebackup-2026-10-19-kerbs/` and restored byte-identical,
+controller setting restored, game quit): `ref/kerb_drop2` (31–34 mph straight over a 0.10 m step up, a 0.12 m step
+up and a 0.11 m drop, 120 Hz), `ref/kerb_angle1` (the same line again), `ref/kerb_angle2` (a 60° turn at 5–24 mph
+with single-wheel kerb mounts), all with the watch file `kerb.watch` (handling.watch plus, per wheel, the wheel
+object's contact point / normal (+0x00 / +0x10), contact count (+0x1a4), the first contact entry's A / B / normal
+(list at +0x1a0) and the wheel record's centre / velocity (+0x198 → +0x00 / +0x40)).
+- **The wheel's contact is the wheel body's cylinder against the world** (dump): the wheel object holds a contact
+  list (+0x1a0 pointer, +0x1a4 count, 0x40-byte entries: +0x00 the point on the cylinder A, +0x10 the world point
+  B, +0x1c the triangle's collision tag, +0x20 the normal) filled from the world's contact buffer (`FUN_00923bb0` →
+  `FUN_009ab3b0` → `FUN_009dd300`; the narrow phase is in the collision job `FUN_0092a510` / `FUN_009ac590`, not in
+  the dump). `FUN_009e04a0` / `FUN_009e06d0` take entry 0 (+0x1a8 = 0), drop the list when the normal points
+  against the chassis's up row, and write the wheel's contact (`FUN_009df790`: point, normal, on-ground byte
+  +0x24 = (B − A)·n > −0.2 (`.bss` 0x01187ac0, snap1) and normal.y > 0.5 (`.rdata` 0x01026830)); +0x1c0 = the
+  same within the margin and tag bit 0 (drivable). `FUN_0095b4d0` gives the wheel constraint one record per entry and
+  points +0x4a0 at entry 0's; `FUN_009c5a90` runs on that one only. Snapshot snap1: one entry per wheel, A on the rim
+  of the cylinder's lower end (0.123 m along the axle = the body's half extent z; radius 0.339). So the old
+  research-log line "the original keeps its on-ground flags where ours lose a wheel" compared different things:
+  the byte stays 1 for ground up to 0.2 m away.
+- **Live, at the step** (`ref/kerb_drop2` 4.09 s): entry 0's A is on the cylinder's rim 0.22 m ahead of the centre
+  and 0.38 m below it, B on the kerb's top edge straight above A, normal (−0.01, 1.000, 0.02): the edge's vertical
+  depth in the cylinder (0.041 m) with the top face's normal. The wheel centre rose 0.044 then 0.061 m over two
+  ticks. Normals stay y ≥ 0.995 through both steps and the drop: no radial (edge-to-axle) normals.
+- **Ported** (`mw_handling::wheel_probe`, 4 unit tests; `drive.rs probe_ground`): the cylinder (radius, length =
+  twice the wheel body's half extent z, axle steered on the fronts) is cut into 9 slices across the axle; each
+  slice circle is solved exactly against each nearby triangle's cut (the highest centre at which it touches); the
+  highest slice gives the contact point (on the triangle), the triangle's own normal and the offset from the centre,
+  which the contact pass and the strut stop now use (d = (B − (centre + offset)) · n, as `FUN_009c5a90`). The
+  surface bumps move that point and normal directly (as `FUN_009aaf30` writes them into the record), so the "plane
+  under the ray" workaround is gone. Tried and dropped: parry's cylinder / 32-gon shape cast (GJK witnesses off by
+  up to 0.17 m against flat ground), radial normals at edges (doubled the pitch / roll rates against
+  `ref/kerb_drop2`), passing over edges that reach under the tyre's outer end by less than the lift (lifts came at
+  once a tick later: worse against the captures). `MW_WHEEL_RAY=1` keeps the old ray for A/B.
+- **Strut travel from data**: the strut runs from `caac331c` + `WheelSuspensionConstraint.b867a203` (top) down to
+  `caac331c` + `7fc0dc41` (bottom), model space, the constraint named by `SuspensionWheel.Suspension_Constraint`.
+  Read live on the Raptor (strut object at vehicle +0x10f0 + 8i: +0x40 top −0.222 / −0.202, +0x50 bottom −0.512 /
+  −0.557, body frame = model − 0.75, +0x70 angle 0.65° / 0.45° = −`447b4e1c`): bump travel 0.174 / 0.224 m above
+  rest, droop 0.116 / 0.131; the XKR's snapshot values (0.056 / 0.067, droop 0.099 / 0.093) follow the same rule.
+  Ours had 0.06 m for every car, so the Raptor sat on its strut stops over every kerb. `wheel_layout` reads it
+  (`RestWheel::strut`), drive.rs sets the travel from it (`BUMP_TRAVEL` 0.06 stays for cars without the data).
+- **Decal triangles are not under the wheels**: collision tag flag 0x8 (`CollisionTag::DECAL`; only surfaces 11,
+  12, 13, 26 carry it, 3939 triangles, all with no other flag) marks plates and strips lying up to 0.1 m above the
+  road (and some posts). In `ref/live1` the MP4-12C crosses such a strip at 99 mph (83.8 s, (1335.6, 137.5): a
+  0.47 m strip 0.06–0.1 m above the asphalt) and another at 77.7 s without a bump. Replayed along the same path
+  (below): with the strip under the wheels ours had 4.6× the original's vertical-acceleration RMS over that 25 m
+  (13.4 against 2.9 m/s², peak 64 against 5), without it 0.93× (2.7, peak 5.8; pitch 80 / 89, roll 111 / 137 °/s²).
+  The probe skips them (`MW_WHEEL_DECAL=1` keeps them). Whether the body / props collide with them was not checked.
+- **New tools**: `--replay <csv> --spawn=x,y,z,heading` replays in the world from that point (starting speed given
+  at once; `MW_REPLAY_FOLLOW=1` holds the recorded speed with throttle / brake, `=path` also steers along the
+  recorded path, pure pursuit); the ours CSV gained py, vy, pitch / roll rates and the wheels' contact heights.
+  `mwtool surfaces --near x,z,r --tris` lists the collision triangles with tags. `MW_WHEEL_TRACE` gained the
+  velocity after the sub-steps (comparable with the original's wheel record +0x40 between ticks: static −1.24 /
+  −1.60 m/s against the Raptor's −1.06 / −1.42). Scripts (git-ignored `scratch/`): `ride.py` (per tick by distance),
+  `ride2.py` (per 25 m: RMS of vertical, pitch and roll accelerations, crashes and the first second left out).
+- **Against the captures** (ride2, all / RMS ay m/s², pitch, roll acc °/s²; original | ours now | ray before):
+  Raptor `kerb_drop2` 1.6, 62, 10 | 2.2, 52, 33 | 2.1, 43, 134 (the ray run had the 0.06 m travel: rear wheels on
+  the stops); per event, front step up pitch rate −3.8 / −3.7 °/s, vy 0.25 / 0.19 m/s, rear step +10.4 / +10.6 °/s
+  (ray: +12.9 at once, rear wheels 3 ticks off), drop vy −0.49 / −0.68. `live1` stretches (XKR 15.6–22.4 s, SL 65
+  199.7–202.7 / 262–269 s, XKR 0.2–7.8 s, MP4 77.7–90.5 / 136.6–139.9 s): 14.2 / 13.7 / 16.4; 3.3 / 5.1 / 5.8;
+  0.7 / 0.6 / 0.6; 5.5 / 3.0 / 3.1; 0.6 / 0.5 / 0.5; 14.6 / 8.6 / 7.7 (jumps dominate). Roll accelerations stay
+  above the original's on some (Raptor 33 / 10, `kerb_angle1` 276 / 26 against 141 for the ray).
+- **911 tests, before → after**: accel 0–60 mph 3.58 s, quarter mile 11.60 s, 0–200 11.12 s, top 307.4 km/h,
+  brake 38.1 m, corner 2.57 g, jitter unchanged; drift peak 37.6 → 37.3° (held 4.75 s); landing deepest 0.123 →
+  0.114 m, settle 3.48 s; climb deepest 0.105 → 0.122 m, overtravel 0.164 → 0.179 m, body contact 0.82 → 0.90 s,
+  settle 5.00 → 5.05 s; kerb (50 km/h, 0.168 m, 30°) vy peak 1.81 → 1.69 m/s, pitch rate 36.4 → 29.3 °/s, roll
+  rate 84.6 → 68.3 °/s, rise 0.182 → 0.194 m, stop 3009 → 2898 N s. Bench (`--units 30`, 911): frame mean 9.21 →
+  9.69 ms (the probe walks the triangles near each wheel).
+- **Model decisions** (handling.md): which contact the job lists first is not known: ours takes the ground the
+  cylinder meets first coming down its strut (the highest slice); 9 slices; a tyre whose outer end overlaps a kerb
+  is lifted by it (a penetration-depth contact would push it aside; ours only moves along up); ground more than
+  one radius above the strut's end is not under the wheel.
+- **Open / captures wanted** (with the new probe tools, flat airfield strip, scripted inputs, `kerb.watch` fields):
+  (1) a straight run at 100 km/h square over a kerb step up (and one down), sports car (911 or XKR: short strut
+  travel, the strut stop's share) and the Raptor; (2) the same at 30° to the kerb, for the roll response and the
+  order of the wheels' contacts; (3) 30 km/h along a kerb with the outer half of the tyres over it, to see whether
+  the original lifts the wheel or pushes it aside (the side-overlap decision above), with the list count
+  `w*_ncont` and entry 1 (+0x40…) added to the watch; (4) a decal strip (surface 13, e.g. (1335.6, 137.5)) at
+  60 mph with the wheel contacts, to confirm the skip (and whether the body meets decal posts); (5) a straight run
+  over a track-unit seam at speed. Also open: the joints that hold the wheel on its strut (`FUN_009c62e0` /
+  `FUN_009c4e10`), the droop stop (strut bottom), the job's narrow phase (for which entry comes first).
+
 ### 2026-10-16: car collision effects: glass, sparks, dust and debris from the game's rules
 User request (session 10): "particle effects for crashing are missing somewhat, stuff like broken glass when crashing
 into traffic vehicles, and other crash particles in general". Before: every body contact of a race car played the

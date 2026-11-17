@@ -1,0 +1,22 @@
+#!/bin/sh
+# Ram sweep: --test crash-ai at several closing speeds / angles, new contact solve and the old (avian) one.
+# Usage: tools/ram-sweep <out file>   (logs in scratch/sweep-*.log)
+R="$(dirname "$0")/.."
+OUT="$1"
+: > "$OUT"
+run() {
+    label="$1"; shift
+    for mode in 1 0; do
+        env MW_RACE_CAR_CONTACTS=$mode "$@" MW_RUN_LOG="$R/scratch/sweep-$label-$mode.log" \
+            "$R/tools/t" --drive 911 --test crash-ai --ai 911 --no-traffic --spawn=925,23,-101,10 --mute > /dev/null 2>&1
+        line=$(grep -h 'TEST RESULT' "$R/scratch/sweep-$label-$mode.log" | sed -E 's/^.*TEST RESULT //')
+        echo "$label contacts=$mode: $line" >> "$OUT"
+    done
+}
+run side78
+run side40-ai60 MW_TEST_AI_KMH=60 MW_TEST_KMH=40 MW_TEST_RAM_ANGLE=90
+run side80-ai60 MW_TEST_AI_KMH=60 MW_TEST_KMH=80 MW_TEST_RAM_ANGLE=90
+run side130-ai60 MW_TEST_AI_KMH=60 MW_TEST_KMH=130 MW_TEST_RAM_ANGLE=90
+run rear100-ai60 MW_TEST_AI_KMH=60 MW_TEST_KMH=100 MW_TEST_RAM_ANGLE=0
+run rear160-ai60 MW_TEST_AI_KMH=60 MW_TEST_KMH=160 MW_TEST_RAM_ANGLE=0
+run swipe100-ai80 MW_TEST_AI_KMH=80 MW_TEST_KMH=100 MW_TEST_RAM_ANGLE=25

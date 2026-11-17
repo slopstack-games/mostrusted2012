@@ -30,8 +30,11 @@
 //! - **Respawn** (`FUN_006c9fb0`): a reset during a race faces the target gate (`RespawnFacing`, read by
 //!   `crash.rs`).
 //!
-//! Model decisions (no source; decomp.md "Races"): the road-network route segments between entries are straight
-//! lines here (the original asks the AI road network for each, `FUN_006423e0`); the car's overlap box is the
+//! - **After the race**: done racers are removed by distance (`retire_racers`, `FUN_00521f00`); the event ends
+//!   after the outro and the results (`end_event`) and free roam resumes.
+//!
+//! Model decisions (no source; decomp.md "Races"): the route segments are road-graph paths cut at the entries
+//! (the original asks the AI road network for each, `FUN_006423e0`); the car's overlap box is the
 //! body's half extents centred that high above the car's origin; AI finishing times are recorded (the original
 //! stores none); the race clock runs in fixed ticks.
 //!
@@ -42,7 +45,8 @@
 //!   the gates ([`RaceCheckpoint`]: transform, size, normal, ground point), the route entries
 //!   ([`RaceState::entries`], start + every gate of every lap, with cumulative distances) and one lap as a
 //!   polyline ([`RaceState::route`]), the player's start ([`RaceState::player_start`]) and the opponents' grid
-//!   ([`RaceState::grid`]: one transform per `AIPlayerInformation` slot in data order, with its `AIPlayerType`),
+//!   ([`RaceState::grid`]: one slot per racing `AIPlayerInformation` in data order, cops left out, with its
+//!   `AIPlayerType`, car and colours; `ai.rs` drops the +0xee slot),
 //!   the live standings ([`RaceState::standings`], best first) and the results.
 //! - [`Racer`] (component): put it on **any** entity with a `Transform` to make it race. The player's car gets
 //!   one automatically; an AI car spawned on `RaceState::grid[i]` should get `Racer::ai(name, i)` (and its own
@@ -91,14 +95,16 @@ impl Plugin for RacePlugin {
             .add_message::<LapCompleted>()
             .add_message::<RacerFinished>()
             .add_message::<StartRace>()
+            .add_message::<RaceEnded>()
             .init_resource::<RespawnFacing>();
         // The race runs while `RaceState` exists: from `--race` (inserted here) or a runtime [`StartRace`]
         // (Easydrive's RACES tier).
         let racing = resource_exists::<RaceState>;
         app.add_plugins(crate::chevron::ChevronPlugin)
-            .add_systems(Update, start_race)
-            .add_systems(Update, spawn_route_markers.run_if(resource_added::<RaceState>))
-            .add_systems(Update, (attach_player, log_messages).run_if(racing))
+            .add_systems(Update, (start_race, place_at_start).chain())
+            .add_systems(Update, (route_segments, spawn_route_markers).run_if(resource_added::<RaceState>))
+            .add_systems(Update, (attach_player, log_messages, end_event).run_if(racing))
+            .add_systems(Update, retire_racers)
             .add_systems(
                 FixedUpdate,
                 (hold_at_start.before(crate::drive::car_physics), run_race.after(crate::drive::car_physics))
@@ -192,8 +198,68 @@ pub struct RouteEntry {
     pub position: Vec3,
     /// Gate index into [`RaceState::checkpoints`] (`None` for the start).
     pub gate: Option<usize>,
-    /// Route distance from the start (straight segments; model decision).
+    /// Route distance from the start: the sum of the segment polylines' lengths (`FUN_006676b0`).
     pub distance: f32,
+}
+
+/// The route from one entry to the next as a polyline (the original's per-segment path through the AI road
+/// network, `FUN_006423e0` → `FUN_006676b0`; DTF+0x2778: x, y, z and each piece's length).
+#[derive(Debug, Clone, Default)]
+pub struct RouteSegment {
+    pub points: Vec<Vec3>,
+    /// Distance along the polyline at each point.
+    cum: Vec<f32>,
+}
+
+impl RouteSegment {
+    pub fn new(points: Vec<Vec3>) -> Self {
+        let mut cum = Vec::with_capacity(points.len());
+        let mut d = 0.0;
+        for (i, p) in points.iter().enumerate() {
+            if i > 0 {
+                d += p.distance(points[i - 1]);
+            }
+            cum.push(d);
+        }
+        Self { points, cum }
+    }
+
+    pub fn length(&self) -> f32 {
+        self.cum.last().copied().unwrap_or(0.0)
+    }
+
+    /// The point's distance along the polyline through its nearest piece (`FUN_00516af0`: the first piece with
+    /// the smallest 3D distance to the point clamped onto it), unclamped (`FUN_0051e850` / `FUN_0051e7d0` project
+    /// onto the piece's direction without clamping), and the clamped projection.
+    /// The point at distance `s` along the polyline (extended straight past either end) and the direction there.
+    pub fn at(&self, s: f32) -> (Vec3, Vec3) {
+        let n = self.points.len();
+        if n < 2 {
+            return (self.points.first().copied().unwrap_or_default(), Vec3::Z);
+        }
+        let i = self.cum.partition_point(|&c| c <= s).clamp(1, n - 1) - 1;
+        let dir = (self.points[i + 1] - self.points[i]).normalize_or(Vec3::Z);
+        (self.points[i] + dir * (s - self.cum[i]), dir)
+    }
+
+    fn project(&self, pos: Vec3) -> (f32, Vec3) {
+        let mut best = (f32::MAX, 0.0, self.points.first().copied().unwrap_or(pos));
+        for i in 0..self.points.len().saturating_sub(1) {
+            let (a, b) = (self.points[i], self.points[i + 1]);
+            let len = self.cum[i + 1] - self.cum[i];
+            if len <= 1e-6 {
+                continue;
+            }
+            let dir = (b - a) / len;
+            let t = (pos - a).dot(dir);
+            let q = a + dir * t.clamp(0.0, len);
+            let d2 = q.distance_squared(pos);
+            if d2 < best.0 {
+                best = (d2, self.cum[i] + t, q);
+            }
+        }
+        (best.1, best.2)
+    }
 }
 
 /// An opponent's start slot.
@@ -203,9 +269,14 @@ pub struct GridSlot {
     pub transform: Transform,
     /// `AIPlayerType` id (GAMEPLAY.BNDL): the driver profile.
     pub ai_type: u32,
-    /// `AIPlayerInformation` `9b4e35f7` / `2968e77a` (open; the latter matches paint `ColourId`s).
-    pub unknown: u32,
+    /// The car: `AIPlayerType.Rollout` → `Rollout.Vehicle`, a `VehicleList` id (`FUN_006cc870`).
+    pub vehicle: Option<u32>,
+    /// The paint: `AIPlayerInformation.2968e77a` (a `ColourId`; 0 = the rollout's `Colour`), and `9b4e35f7`, used
+    /// instead when the first is the player's car's colour (`FUN_006ce030`).
     pub colour: u32,
+    pub alt_colour: u32,
+    /// The event's Most Wanted rival (`AIPlayerType` +0xb4).
+    pub most_wanted: bool,
 }
 
 /// A racer's final result.
@@ -237,6 +308,9 @@ pub struct RaceState {
     pub checkpoints: Vec<RaceCheckpoint>,
     /// Start, then every gate of every lap.
     pub entries: Vec<RouteEntry>,
+    /// `segments[k]`: the route from entry k − 1 to entry k (`segments[0]` is empty). Straight lines until
+    /// `route_segments` replaces them with road-graph paths.
+    pub segments: Vec<RouteSegment>,
     pub player_start: Transform,
     pub grid: Vec<GridSlot>,
     /// Racers, best first (updated every tick while racing).
@@ -246,6 +320,9 @@ pub struct RaceState {
     pub won: Option<bool>,
     /// Hold the start in `Waiting` (intro sequence, AI not spawned yet).
     pub hold: bool,
+    /// A runtime start ([`StartRace`]) is placing the player's car: held at the start until the start area is
+    /// resident (`FUN_00647e00`, [`place_at_start`]).
+    pub placing: bool,
     /// An intro / outro sequence is playing (`cutscene.rs`): the start stays in `Waiting` while it is set, and
     /// `--test race` waits for the outro before it exits. Separate from `hold` (the AI's).
     pub cutscene: bool,
@@ -287,19 +364,26 @@ impl RaceState {
                 });
             }
         }
+        // The racers: `FUN_006ce030` files cop types (+0xb5 / +0xb3) in the cop list, not with the opponents.
         let grid = e
             .opponents
             .iter()
+            .filter(|o| !o.cop)
             .filter_map(|o| {
                 let s = o.start?;
                 Some(GridSlot {
                     transform: Transform::from_translation(Vec3::from_array(s.position))
                         .with_rotation(heading_rotation(s.direction)),
                     ai_type: o.ai_type,
-                    unknown: o.unknown_9b4e,
-                    colour: o.colour,
+                    vehicle: o.rollout.map(|r| r.vehicle).filter(|&v| v != 0),
+                    colour: if o.colour != 0 { o.colour } else { o.rollout.map_or(0, |r| r.colour) },
+                    alt_colour: o.alt_colour,
+                    most_wanted: o.most_wanted,
                 })
             })
+            .collect();
+        let segments = std::iter::once(RouteSegment::default())
+            .chain(entries.windows(2).map(|w| RouteSegment::new(vec![w[0].position, w[1].position])))
             .collect();
         Self {
             event: e.clone(),
@@ -312,12 +396,14 @@ impl RaceState {
             laps,
             checkpoints,
             entries,
+            segments,
             player_start,
             grid,
             standings: Vec::new(),
             results: Vec::new(),
             won: None,
             hold: false,
+            placing: false,
             cutscene: false,
             rolling_start: false,
         }
@@ -355,22 +441,101 @@ impl RaceState {
         self.entries.last().map_or(0.0, |e| e.distance)
     }
 
-    /// Distance to the finish through route entry `target` (`FUN_00661b40`, with straight segments) and the
-    /// distance from the car to its projection on that segment.
+    /// Distance to the finish through route entry `target` (`FUN_00661b40`) and the distance from the car to its
+    /// projection on that entry's segment (the term `FUN_0066b3f0` adds for the wrong-way test).
+    ///
+    /// `FUN_00661b40`: total − cumdist[target] + what is left of the target's segment after the car's projection
+    /// (`FUN_0051e850`, clamped to [0, length]). While less than 0.5 m is left (the car is at or past the target)
+    /// the distance along the following segment is added (`FUN_0051e7d0`, clamped), and the next one's while the
+    /// car is within 0.5 m of that one's end: driving on past a gate makes the distance grow. On the last segment
+    /// looked at, a car less than 0.01 m along it and more than 20 m from its start adds the straight distance to
+    /// that start.
     pub fn distance_to_finish(&self, target: usize, pos: Vec3) -> (f32, f32) {
-        let Some(t) = self.entries.get(target) else { return (0.0, 0.0) };
-        let start = self.entries[target.saturating_sub(1)].position;
-        let seg = t.position - start;
-        let len = seg.length();
-        let along = if len > 1e-3 { (pos - start).dot(seg) / len } else { 0.0 };
-        let clamped = along.clamp(0.0, len);
-        let projection = start + if len > 1e-3 { seg / len * clamped } else { Vec3::ZERO };
-        let mut d = self.total_distance() - t.distance + (len - clamped);
-        if along < 0.0 && pos.distance(start) > BEHIND_START {
-            d += pos.distance(start);
+        let last = self.entries.len().saturating_sub(1);
+        if target == 0 || target > last {
+            return (0.0, 0.0);
         }
-        (d, pos.distance(projection))
+        let seg = &self.segments[target];
+        let (along, projection) = seg.project(pos);
+        let mut rem = (seg.length() - along).clamp(0.0, seg.length());
+        let mut k = target;
+        let mut stop = rem >= REACHED;
+        while !stop && k < last {
+            k += 1;
+            let next = &self.segments[k];
+            let along = next.project(pos).0.clamp(0.0, next.length());
+            rem += along;
+            stop = along < next.length() - REACHED;
+        }
+        let seg = &self.segments[k];
+        if let Some(&first) = seg.points.first()
+            && seg.length() - rem < AT_START
+            && pos.distance(first) > BEHIND_START
+        {
+            rem += pos.distance(first);
+        }
+        (self.total_distance() - self.entries[target].distance + rem, pos.distance(projection))
     }
+}
+
+/// `FUN_00661b40`'s thresholds (`.rdata` 0x00fb8290 = 0.5, 0x00fb82f0 = 0.01; 0x00fb8300 = 20 is `BEHIND_START`).
+const REACHED: f32 = 0.5;
+const AT_START: f32 = 0.01;
+
+/// Replace the straight segments with paths along the AI road graph (`FUN_006423e0` asks the road network for
+/// each segment, `FUN_00843240`; `FUN_006676b0` stores the path and adds its length to the cumulative distance):
+/// the shortest node path between the nodes nearest the two entries (`AiData::path`), as the Catmull-Rom centre
+/// line the AI drives (`ai::spline_through`). Model decision: the path is cut at its points nearest the two
+/// entries and ends on the entries themselves (how the original joins its path to the gates is not traced); a
+/// segment without a path stays straight.
+fn route_segments(game: Res<crate::Game>, mut race: ResMut<RaceState>) {
+    let graph = match game.store.ai_data() {
+        Ok(g) => g,
+        Err(e) => {
+            warn!("race: no road graph ({e}); straight route segments");
+            return;
+        }
+    };
+    let race = &mut *race;
+    let mut cache: std::collections::HashMap<(Option<usize>, Option<usize>), RouteSegment> = Default::default();
+    let mut straight = 0;
+    for k in 1..race.entries.len() {
+        let (a, b) = (race.entries[k - 1], race.entries[k]);
+        let seg = cache
+            .entry((a.gate, b.gate))
+            .or_insert_with(|| {
+                road_segment(&graph, a.position, b.position).unwrap_or_else(|| {
+                    straight += 1;
+                    RouteSegment::new(vec![a.position, b.position])
+                })
+            })
+            .clone();
+        race.entries[k].distance = race.entries[k - 1].distance + seg.length();
+        race.segments[k] = seg;
+    }
+    info!(
+        "race {}: route {:.0} m along the road graph ({} segments, {straight} straight)",
+        race.event.id,
+        race.total_distance(),
+        race.entries.len() - 1
+    );
+}
+
+fn road_segment(graph: &mw_formats::AiData, a: Vec3, b: Vec3) -> Option<RouteSegment> {
+    let na = graph.nearest_node(a.to_array(), false)?;
+    let nb = graph.nearest_node(b.to_array(), false)?;
+    let nodes = graph.path(na, nb)?;
+    let spline = crate::ai::spline_through(graph, &nodes)?;
+    let pts = &spline.points;
+    let nearest = |p: Vec3, from: usize| {
+        (from..pts.len()).min_by(|&i, &j| pts[i].distance_squared(p).total_cmp(&pts[j].distance_squared(p)))
+    };
+    let i0 = nearest(a, 0)?;
+    let i1 = nearest(b, i0)?;
+    let mut points = vec![a];
+    points.extend(pts.iter().take(i1).skip(i0 + 1).copied());
+    points.push(b);
+    Some(RouteSegment::new(points))
 }
 
 /// Marks an entity as a racer. Any entity with a `Transform` can race.
@@ -382,15 +547,22 @@ pub struct Racer {
     pub grid_slot: Option<usize>,
     /// The car's box for the gate overlap (half extents, m), centred this high above the origin.
     pub half_extents: Vec3,
+    /// The event's Most Wanted rival (`AIPlayerType` +0xb4): left alone by the finished-racer removal.
+    pub most_wanted: bool,
 }
 
 impl Racer {
     pub fn player(half_extents: Vec3) -> Self {
-        Self { name: "Player".into(), player: true, grid_slot: None, half_extents }
+        Self { name: "Player".into(), player: true, grid_slot: None, half_extents, most_wanted: false }
     }
 
     pub fn ai(name: impl Into<String>, grid_slot: usize, half_extents: Vec3) -> Self {
-        Self { name: name.into(), player: false, grid_slot: Some(grid_slot), half_extents }
+        Self { name: name.into(), player: false, grid_slot: Some(grid_slot), half_extents, most_wanted: false }
+    }
+
+    pub fn rival(mut self, most_wanted: bool) -> Self {
+        self.most_wanted = most_wanted;
+        self
     }
 }
 
@@ -408,6 +580,10 @@ pub struct RacerProgress {
     pub lap_times: Vec<f32>,
     /// Race time at the finish.
     pub finished: Option<f32>,
+    /// Done racing (player +0x5d7): set when an AI racer reaches its last checkpoint and, on `CHECKPTS` exit
+    /// (the player's finish, 0x75d960), on every AI racer still racing; both also get AI goal 3. Done racers are
+    /// removed by distance ([`retire_racers`], `FUN_00521f00`).
+    pub done: bool,
     /// 1-based position.
     pub position: usize,
     pub wrong_way: bool,
@@ -469,6 +645,17 @@ pub struct LapCompleted {
     pub time: f32,
 }
 
+/// The event is over and free roam has resumed ([`end_event`]): `RaceState` is gone from the next frame on.
+#[derive(Message, Debug, Clone, Copy)]
+pub struct RaceEnded {
+    pub event: u32,
+    pub won: Option<bool>,
+}
+
+/// A race has been run and ended (a second race is refused: the AI and cutscene set-up run once per run).
+#[derive(Resource)]
+struct RaceOver;
+
 #[derive(Message, Debug, Clone, Copy)]
 pub struct RacerFinished {
     pub racer: Entity,
@@ -487,17 +674,19 @@ fn start_race(
     mut commands: Commands,
     mut starts: MessageReader<StartRace>,
     race: Option<Res<RaceState>>,
+    over: Option<Res<RaceOver>>,
     mut cars: Query<
         (&mut Transform, Option<&mut LinearVelocity>, Option<&mut AngularVelocity>),
         (With<Car>, With<crate::drive::Player>),
     >,
 ) {
     let Some(StartRace(setup)) = starts.read().last() else { return };
-    if race.is_some() {
+    if race.is_some() || over.is_some() {
         warn!("race {}: a race was already run; restart the game to run another", setup.event.id);
         return;
     }
-    let state = RaceState::new(setup);
+    let mut state = RaceState::new(setup);
+    state.placing = true;
     info!("race {}: {} started from Easydrive", setup.event.id, setup.name);
     for (mut t, lin, ang) in &mut cars {
         // A little above the start point (the car settles onto the road).
@@ -510,6 +699,48 @@ fn start_race(
         }
     }
     commands.insert_resource(state);
+}
+
+/// A runtime start puts the player's car at the start the way the game's placement does (`FUN_00647e00`,
+/// decomp.md "Start position"): while the start is not resident within 200 m (`frontend::PLACE_RADIUS`; the car is
+/// at rest) the car is held there, the streaming focus moves to it (message 4; `streaming::PlacementFocus`) and the
+/// loading screen stays up (the event card holds while `placing`); once resident, with the ground under it in, the
+/// car is put down and the focus goes back to the camera (message 5).
+#[allow(clippy::type_complexity)]
+fn place_at_start(
+    race: Option<ResMut<RaceState>>,
+    residency: Res<crate::frontend::Residency>,
+    mut focus: ResMut<crate::streaming::PlacementFocus>,
+    spatial: SpatialQuery,
+    mut cars: Query<
+        (&mut Transform, Option<&mut LinearVelocity>, Option<&mut AngularVelocity>),
+        (With<Car>, With<crate::drive::Player>),
+    >,
+) {
+    let Some(mut race) = race else { return };
+    if !race.placing {
+        return;
+    }
+    let target = race.player_start.translation;
+    let ground = SpatialQueryFilter::default().with_mask(crate::props::GameLayer::World);
+    let resident = residency.resident(target, crate::frontend::PLACE_RADIUS)
+        && spatial.cast_ray(target + Vec3::Y * 5.0, Dir3::NEG_Y, 40.0, true, &ground).is_some();
+    if resident {
+        race.placing = false;
+        focus.0 = None;
+        info!("race {}: start area resident, car placed", race.event.id);
+        return;
+    }
+    focus.0 = Some(target);
+    for (mut t, lin, ang) in &mut cars {
+        *t = race.player_start.with_translation(target + Vec3::Y * 0.5);
+        if let Some(mut lin) = lin {
+            lin.0 = Vec3::ZERO;
+        }
+        if let Some(mut ang) = ang {
+            ang.0 = Vec3::ZERO;
+        }
+    }
 }
 
 fn spawn_route_markers(
@@ -531,10 +762,26 @@ fn spawn_route_markers(
 }
 
 /// Give the player's car (each new one after a swap too) its `Racer`.
+///
+/// A car rebuilt during the race (a body shop's respray reloads ours; the game changes the paint of the same
+/// vehicle, `FUN_00748ff0` → message 0xc) keeps the race progress of the car it replaces.
 #[allow(clippy::type_complexity)]
-fn attach_player(mut commands: Commands, cars: Query<(Entity, &Car), (Without<Racer>, With<crate::drive::Player>)>) {
+fn attach_player(
+    mut commands: Commands,
+    cars: Query<(Entity, &Car), (Without<Racer>, With<crate::drive::Player>)>,
+    racing: Query<&RacerProgress, (With<Racer>, With<crate::drive::Player>)>,
+    race: Res<RaceState>,
+    mut last: Local<Option<RacerProgress>>,
+) {
+    if race.is_added() {
+        *last = None;
+    }
+    if let Some(p) = racing.iter().next() {
+        *last = Some(p.clone());
+    }
     for (e, car) in &cars {
-        commands.entity(e).insert((Racer::player(car.params.body_half_extents), RacerProgress::default()));
+        let progress = last.clone().unwrap_or_default();
+        commands.entity(e).insert((Racer::player(car.params.body_half_extents), progress));
     }
 }
 
@@ -567,7 +814,7 @@ fn run_race(
     };
     match race.phase {
         RacePhase::Waiting => {
-            if loaded.done && !players.is_empty() && !race.hold && !race.cutscene {
+            if loaded.done && !players.is_empty() && !race.hold && !race.placing && !race.cutscene {
                 race.intro_elapsed = 0.0;
                 set_phase(race, RacePhase::Intro, &mut phase_msg);
             }
@@ -623,6 +870,8 @@ fn run_race(
                 p.lap_times.push(lap_time);
                 lap_msg.write(LapCompleted { racer: entity, lap: p.lap, lap_time, time: now });
                 p.finished = Some(now);
+                // `CHECKPTS` (0x75xxxx, decomp.md "Races"): AI goal 3 and +0x5d7 = 1 at the last checkpoint.
+                p.done = true;
                 let position = race.results.len() + 1;
                 p.position = position;
                 p.to_finish = 0.0;
@@ -663,13 +912,14 @@ fn run_race(
         let target = p.target();
         let (d_finish, off) = race.distance_to_finish(target, pos);
         p.to_finish = d_finish;
-        // FUN_006585b0: d through the target (+ the distance off the route), d' through the next one.
+        // FUN_0066b3f0 → FUN_006585b0: d through the target (+ the distance off its segment), d' through the next
+        // one; with the finish as the target d' is the plain distance to the finish.
         let d = d_finish + off;
-        let d_next = (target < last).then(|| race.distance_to_finish(target + 1, pos).0);
+        let d_next = if target < last { race.distance_to_finish(target + 1, pos).0 } else { d_finish };
         let ww = &mut p.ww;
         let rose = ww.last_d.is_some_and(|l| d > l);
         let fell = ww.last_d.is_some_and(|l| d < l);
-        let next_fell = matches!((d_next, ww.last_next), (Some(a), Some(b)) if a < b);
+        let next_fell = ww.last_next.is_some_and(|l| d_next < l);
         ww.timer += dt;
         match ww.state {
             0 => {
@@ -681,6 +931,9 @@ fn run_race(
             }
             1 => {
                 if ww.timer > MISSED_AFTER && rose && next_fell {
+                    if racer.player {
+                        info!("race: missed checkpoint (target entry {target}) at {now:.2} s");
+                    }
                     ww.missed = true;
                     ww.state = 2;
                 } else if ww.timer > WRONG_WAY_AFTER && pos.distance_squared(ww.stored) > WRONG_WAY_MOVED_SQ {
@@ -705,12 +958,19 @@ fn run_race(
             }
         }
         ww.last_d = Some(d);
-        ww.last_next = d_next;
+        ww.last_next = Some(d_next);
+        if racer.player && std::env::var_os("MW_RACE_WW_TRACE").is_some() {
+            info!(
+                "WW t={now:.2} target={target} d={d:.1} dn={d_next:.1} off={off:.1} state={} timer={:.2} missed={}",
+                ww.state, ww.timer, ww.missed
+            );
+        }
         let flagged = ww.state >= 2;
         let missed = ww.missed;
         p.wrong_way = flagged && !missed;
-        // HasMissedCheckpoint only for checkpoints 1..count−2 (`FUN_006584d0`).
-        p.missed_checkpoint = flagged && missed && (1..last).contains(&p.passed);
+        // HasMissedCheckpoint only while the target entry is 1..count − 2, i.e. not the finish (`FUN_006584d0`
+        // reads DTF+0xd90, the target entry).
+        p.missed_checkpoint = flagged && missed && (1..last).contains(&target);
         if racer.player {
             facing.0 = Some(race.entries[target].position);
         }
@@ -733,8 +993,114 @@ fn run_race(
     race.standings = order.into_iter().map(|o| o.1).collect();
     if race.won.is_some() {
         facing.0 = None;
+        // `CHECKPTS` exit (0x75d960): every AI racer still racing (not a cop, with a car) gets +0x5d7 = 1 and
+        // AI goal 3, like one that finished.
+        for (_, racer, mut p, _) in &mut racers {
+            if !racer.player {
+                p.done = true;
+            }
+        }
         set_phase(race, RacePhase::Finished, &mut phase_msg);
     }
+}
+
+/// The finished-racer removal distances when the heat level is unknown: the free-roam rows' `dd335ee5` /
+/// `092b3408` (100 / 300 m on all seven; `mwtool police`).
+const FINISHED_RACER_REMOVE: [f32; 2] = [100.0, 300.0];
+/// The blacklist shutdown behaviour releases the Most Wanted rival beyond 300 m (`FUN_00754290` state 6 and
+/// `FUN_007428b0`: squared distance against `.rdata` 0x00fd2108 = 90000).
+const RIVAL_RELEASE: f32 = 300.0;
+
+/// `FUN_00521f00` (run by the AI coordinator `FUN_00526c30` every frame while the game mode's timer runs: in a
+/// race from go to the player's finish, and in free roam, whose "Freedrive Update" starts the timer): a race car
+/// that is done racing (+0x5d7), has its car, is not being reset (`FUN_006b8840`) and is not the Most Wanted rival
+/// is removed (message 0xe → `FUN_006ce180(slot, 3)`) when its horizontal distance from the player is beyond the
+/// heat level's `dd335ee5` (+0xb0) and it is off screen (`FUN_006bf380`: a 4 m sphere against the camera's
+/// frustum), or beyond `092b3408` (+0xb4) in any case. The rival is left to the blacklist behaviour, which
+/// releases it beyond 300 m (its takedown phase is not modelled).
+#[allow(clippy::type_complexity)]
+fn retire_racers(
+    mut commands: Commands,
+    race: Option<Res<RaceState>>,
+    police: Option<Res<crate::police::Police>>,
+    frustum: Query<&bevy::camera::primitives::Frustum, crate::MainCamera>,
+    player: Query<&Transform, (With<Car>, With<crate::drive::Player>)>,
+    racers: Query<
+        (Entity, &Racer, &RacerProgress, &Transform),
+        (Without<crate::drive::Player>, Without<crate::car_impacts::AiCrash>),
+    >,
+) {
+    if race.as_ref().is_some_and(|r| r.phase != RacePhase::Racing) {
+        return;
+    }
+    let Ok(me) = player.single() else { return };
+    let [off_screen, always] =
+        police.as_ref().and_then(|p| p.heat_level()).map_or(FINISHED_RACER_REMOVE, |l| l.finished_racer_remove);
+    let frustum = frustum.iter().next();
+    let flat = |v: Vec3| Vec2::new(v.x, v.z);
+    for (e, racer, p, t) in &racers {
+        if racer.player || !p.done {
+            continue;
+        }
+        let d = flat(t.translation).distance(flat(me.translation));
+        let remove = if racer.most_wanted {
+            d > RIVAL_RELEASE
+        } else {
+            let seen = frustum.is_some_and(|f| {
+                f.intersects_sphere(
+                    &bevy::camera::primitives::Sphere { center: t.translation.into(), radius: 4.0 },
+                    true,
+                )
+            });
+            d > always || (d > off_screen && !seen)
+        };
+        if remove {
+            info!(
+                "race: {} removed {d:.0} m from the player{}",
+                racer.name,
+                if d > always { "" } else { ", off screen" }
+            );
+            commands.entity(e).despawn();
+        }
+    }
+}
+
+/// The results' length (s): the results sequence's items run 0.25–8.25 s (`hud::RESULTS_SEQUENCE`).
+const RESULTS_SECS: f32 = 8.25;
+
+/// The event's end: once the outro and the results are over (the HSM's "Run PageRunner2 Context - Outros" →
+/// "Race Game Mode" exit → "On Event End"), the race is torn down and free roam resumes ("Freedrive Update"): the
+/// race state goes (so free-roam rules such as the jack spots, collectables and the free-roam HUD apply again), the
+/// player's car is no longer a racer and the route markers go. The opponents stay until [`retire_racers`] removes
+/// them. Model decision: the end is the results sequence's last item (the offline results are the front end's
+/// `ArcResults` screen, which the player closes).
+#[allow(clippy::type_complexity)]
+fn end_event(
+    mut commands: Commands,
+    race: Res<RaceState>,
+    hud: Option<Res<crate::hud::HudState>>,
+    mut facing: ResMut<RespawnFacing>,
+    players: Query<Entity, (With<Racer>, With<crate::drive::Player>)>,
+    markers: Query<Entity, With<crate::chevron::RouteMarker>>,
+    mut ended: MessageWriter<RaceEnded>,
+) {
+    if race.phase != RacePhase::Finished || race.cutscene {
+        return;
+    }
+    if hud.as_ref().is_some_and(|h| h.results_clock.is_none_or(|t| t < RESULTS_SECS)) {
+        return;
+    }
+    info!("race {}: event over (won: {:?}), back to free roam", race.event.id, race.won);
+    commands.remove_resource::<RaceState>();
+    commands.insert_resource(RaceOver);
+    facing.0 = None;
+    for e in &players {
+        commands.entity(e).remove::<(Racer, RacerProgress)>();
+    }
+    for e in &markers {
+        commands.entity(e).despawn();
+    }
+    ended.write(RaceEnded { event: race.event.id, won: race.won });
 }
 
 fn log_messages(
@@ -824,9 +1190,17 @@ fn update_text(
     }
 }
 
-/// `--test race`: once racing, the player's car is carried through its target gate along the gate's normal
-/// (kinematically: from 20 m before the gate to 10 m past it at 40 m/s), gate after gate, then the results
+/// `--test race`: once racing, the player's car first backs away from its target for 4 s (the wrong-way check),
+/// then is carried along the route's segments (kinematically, at 40 m/s) through every gate; then the results
 /// are printed.
+///
+/// - `MW_RACE_TEST_MISS=<k>`: on the way to the k-th gate (route entry k, 1-based) the car skips it and drives
+///   through the next one first (from 60 m before it), then comes back for the skipped one: `missed_at_skip`
+///   says whether the HUD's missed-checkpoint flag came up on that leg, `missed_seen` covers the rest.
+/// - `MW_RACE_TEST_AFTER=<s>`: after the results, wait for the event's end, hold the car still for `s` seconds and
+///   print `TEST RESULT race after ... racers_left=N` (the opponents still in the world).
+/// - `MW_RACE_TEST_JACK=1`: then the jack-spot test (`jackspots.rs`) swaps cars at the nearest spot and exits.
+/// - `MW_RACE_TEST_HOLD=<s>`: keep running this long after the result (to screenshot the results).
 #[derive(Resource, Default)]
 struct RaceTest {
     /// Target entry being driven through and the distance along its approach.
@@ -836,39 +1210,86 @@ struct RaceTest {
     /// The wrong-way check: drive the first leg backwards first.
     reversed: bool,
     saw_wrong_way: bool,
-    /// The detector may call reversing a missed checkpoint instead (after an intro's rolling start the car can
-    /// sit where backing up nears the gate after next, `FUN_006585b0`).
+    /// The missed-checkpoint flag outside the deliberate miss.
     saw_missed: bool,
-    /// `MW_RACE_TEST_HOLD=<s>`: keep running this long after the result (to screenshot the results).
+    /// `MW_RACE_TEST_MISS`: the entry to skip, the leg through the next one (distance along it), and whether the
+    /// flag came up meanwhile.
+    miss: Option<usize>,
+    skip_leg: Option<f32>,
+    skipped: Option<usize>,
+    /// Where the forward run starts on the target's segment (the car's projection after the wrong-way check).
+    from: f32,
+    /// After the skip leg, until the flag clears: still the miss's.
+    skip_tail: bool,
+    missed_at_skip: bool,
+    /// `MW_RACE_TEST_AFTER`: seconds to wait after the event's end, and the time waited so far.
+    after: Option<f32>,
+    waited: Option<f32>,
+    held_at: Option<Vec3>,
     exit_at: Option<u32>,
 }
 
 const TEST_SPEED: f32 = 40.0;
-const TEST_BEFORE: f32 = 20.0;
 const TEST_AFTER: f32 = 10.0;
+/// The skipped gate's leg starts this far before the next gate: more than a second at `TEST_SPEED` (the
+/// missed-checkpoint test needs d rising for over `MISSED_AFTER`).
+const TEST_SKIP_BEFORE: f32 = 60.0;
 
-#[allow(clippy::type_complexity)]
+fn env_f32(name: &str) -> Option<f32> {
+    std::env::var(name).ok().and_then(|s| s.parse().ok())
+}
+
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn run_test(
     time: Res<Time>,
-    race: Res<RaceState>,
+    race: Option<Res<RaceState>>,
     mut test: ResMut<RaceTest>,
     mut input: ResMut<CarInput>,
     mut cars: Query<
-        (&mut Transform, &mut LinearVelocity, &mut AngularVelocity, &RacerProgress),
+        (&mut Transform, &mut LinearVelocity, &mut AngularVelocity, Option<&RacerProgress>),
         (With<Car>, With<crate::drive::Player>),
     >,
+    opponents: Query<&Racer, Without<crate::drive::Player>>,
     mut exit: MessageWriter<AppExit>,
 ) {
+    test.ticks += 1;
     if test.done {
-        test.ticks += 1;
         if test.exit_at.is_some_and(|t| test.ticks >= t) {
             test.exit_at = None;
             exit.write(AppExit::Success);
         }
         return;
     }
-    test.ticks += 1;
+    if test.ticks == 1 {
+        test.miss = env_f32("MW_RACE_TEST_MISS").map(|k| k as usize);
+        test.after = env_f32("MW_RACE_TEST_AFTER");
+    }
     let Ok((mut t, mut lin, mut ang, p)) = cars.single_mut() else { return };
+    // After the results: the event's end, then the opponents left.
+    if let Some(waited) = test.waited {
+        if race.is_some() {
+            return;
+        }
+        let held = *test.held_at.get_or_insert(t.translation);
+        t.translation = held;
+        lin.0 = Vec3::ZERO;
+        ang.0 = Vec3::ZERO;
+        let waited = waited + time.delta_secs();
+        test.waited = Some(waited);
+        if waited >= test.after.unwrap_or(0.0) {
+            info!(
+                "TEST RESULT race after event_over=true waited={waited:.1}s racers_left={}",
+                opponents.iter().count()
+            );
+            test.done = true;
+            input.scripted = None;
+            if std::env::var_os("MW_RACE_TEST_JACK").is_none() {
+                exit.write(AppExit::Success);
+            }
+        }
+        return;
+    }
+    let Some(race) = race else { return };
     // Give up if the race never starts or finishes (5 min of game time).
     if test.ticks > 60 * 300 {
         error!("TEST RESULT race FAILED: phase {:?} after {} ticks", race.phase, test.ticks);
@@ -876,15 +1297,18 @@ fn run_test(
         exit.write(AppExit::error());
         return;
     }
+    let Some(p) = p else { return };
     match race.phase {
         RacePhase::Waiting | RacePhase::Intro => return,
         // The outro sequence plays to its end first (`cutscene.rs`).
         RacePhase::Finished if race.cutscene => {}
         RacePhase::Finished => {
-            test.done = true;
             let laps: Vec<String> = p.lap_times.iter().map(|l| format!("{l:.2}")).collect();
+            let skip = test
+                .skipped
+                .map_or(String::new(), |k| format!(" skipped_entry={k} missed_at_skip={}", test.missed_at_skip));
             info!(
-                "TEST RESULT race event={} kind={} intro={:.1}s laps={} gates={} passed={} finished={:.2}s position={} won={:?} wrong_way_seen={} missed_seen={} average={:.1}mph lap_times=[{}]",
+                "TEST RESULT race event={} kind={} intro={:.1}s laps={} gates={} passed={} finished={:.2}s position={} won={:?} wrong_way_seen={} missed_seen={}{skip} average={:.1}mph lap_times=[{}]",
                 race.event.id,
                 race.event.kind.label(),
                 race.intro,
@@ -899,7 +1323,13 @@ fn run_test(
                 p.average_mph(p.finished.unwrap_or(race.clock)),
                 laps.join(","),
             );
-            match std::env::var("MW_RACE_TEST_HOLD").ok().and_then(|s| s.parse::<f32>().ok()) {
+            input.scripted = Some([0.0; 4]);
+            if test.after.is_some() {
+                test.waited = Some(0.0);
+                return;
+            }
+            test.done = true;
+            match env_f32("MW_RACE_TEST_HOLD") {
                 Some(hold) => test.exit_at = Some(test.ticks + (hold * 60.0) as u32),
                 None => {
                     exit.write(AppExit::Success);
@@ -911,7 +1341,12 @@ fn run_test(
     }
     input.scripted = Some([0.0; 4]);
     test.saw_wrong_way |= p.wrong_way;
-    test.saw_missed |= p.missed_checkpoint;
+    if test.skip_leg.is_some() || test.skip_tail {
+        test.missed_at_skip |= p.missed_checkpoint;
+        test.skip_tail &= p.missed_checkpoint || test.skip_leg.is_some();
+    } else {
+        test.saw_missed |= p.missed_checkpoint;
+    }
     // First 4 s: drive away from the first gate (a wrong-way check), then the gates.
     if !test.reversed {
         if race.clock < 4.0 {
@@ -927,17 +1362,41 @@ fn run_test(
         }
         test.reversed = true;
     }
-    let (target, s) = match test.leg {
-        Some((g, s)) if s < TEST_BEFORE + TEST_AFTER => (g, s),
-        _ => (p.target(), 0.0),
+    let step = TEST_SPEED * time.delta_secs();
+    let last = race.total_gates();
+    if test.leg.is_none() {
+        let seg = &race.segments[p.target()];
+        test.from = seg.project(t.translation).0.clamp(0.0, seg.length());
+    }
+    let mut place = |(point, dir): (Vec3, Vec3)| {
+        *t =
+            Transform::from_translation(point + Vec3::Y * 0.5).with_rotation(Quat::from_rotation_y(dir.x.atan2(dir.z)));
+        lin.0 = Vec3::ZERO;
+        ang.0 = Vec3::ZERO;
     };
-    let Some(gate) = race.entries.get(target).and_then(|e| e.gate) else { return };
-    let cp = race.checkpoints[gate];
-    let normal = cp.normal().with_y(0.0).normalize_or(Vec3::Z);
-    let s = s + TEST_SPEED * time.delta_secs();
-    t.translation = cp.ground() + Vec3::Y * 0.5 + normal * (s - TEST_BEFORE);
-    t.rotation = Quat::from_rotation_y(normal.x.atan2(normal.z));
-    lin.0 = Vec3::ZERO;
-    ang.0 = Vec3::ZERO;
-    test.leg = Some((target, s));
+    // The deliberate miss: the next segment from `TEST_SKIP_BEFORE` before its end (the gate after the skipped
+    // one) to `TEST_AFTER` past it, then back to the start of the skipped gate's segment.
+    if test.miss == Some(p.target()) && p.target() < last {
+        let seg = &race.segments[p.target() + 1];
+        let s = test.skip_leg.unwrap_or(seg.length() - TEST_SKIP_BEFORE) + step;
+        place(seg.at(s));
+        if s < seg.length() + TEST_AFTER {
+            test.skip_leg = Some(s);
+        } else {
+            test.skip_leg = None;
+            test.skip_tail = true;
+            test.skipped = test.miss.take();
+            test.leg = Some((p.target(), 0.0));
+        }
+        return;
+    }
+    // Along the route: the target's segment from where the car is, then the next ones.
+    let (mut k, mut s) = test.leg.unwrap_or((p.target(), test.from));
+    s += step;
+    while s > race.segments[k].length() && k < last {
+        s -= race.segments[k].length();
+        k += 1;
+    }
+    place(race.segments[k].at(s));
+    test.leg = Some((k, s));
 }

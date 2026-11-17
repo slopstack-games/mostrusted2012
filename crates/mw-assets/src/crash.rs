@@ -54,6 +54,12 @@ mod h {
     pub const DAMAGE_OVERRIDE: u32 = field_hash("DamageOverride");
     pub const DAMAGE_TO_DEAL: u32 = field_hash("DamageToDeal");
     pub const DAMAGE_OVERRIDE_FLAG: u32 = 0x1b41_f6fc;
+    // CollisionResponses_* params
+    pub const RESP_LINEAR: u32 = 0xe388_2eb1;
+    pub const RESP_ANGULAR: u32 = 0xe5ea_1414;
+    pub const RESP_DAMAGE: u32 = 0x3e2f_6a22;
+    pub const RESP_FRICTION: u32 = 0x9639_a197;
+    pub const RESP_RESTITUTION: u32 = 0x453a_d988;
     // FeedbackMessageGroup / Sequence
     pub const SEQUENCES2: u32 = field_hash("Sequences2");
     pub const SEQUENCE_ITEMS: u32 = field_hash("SequenceItems");
@@ -95,6 +101,8 @@ mod h {
 /// Where the data lives (resolved by type within these bundles, not by fixed resource IDs).
 const PHYSICS_CONFIG: &str = "PHYSICS/PHYSICSCONFIG.BNDL";
 const GLOBAL_CONFIG: &str = "GLOBALCONFIG.BNDL";
+const COLLISION_RESPONSES_RACE_CAR: ResourceId = ResourceId(0x0100_0000_0007_f0c9);
+const COLLISION_RESPONSES_GLOBAL: ResourceId = ResourceId(0x0100_0000_0007_f0c6);
 /// The feedback message group whose second sequence (`Sequences2[1]`) is the crash camera: the only one
 /// with slow motion and bystander cameras that is about five seconds long (docs/decomp.md, "Crashes").
 const FEEDBACK_GROUP: &str = "EN_US/FEEDBACKGROUPS/457707.BNDL";
@@ -277,6 +285,132 @@ pub struct CarImpactData {
     pub player: DamageProfile,
     pub ai: DamageProfile,
     pub traffic: DamageProfile,
+    /// How race-car pairs' contacts are solved (`None` without the data).
+    pub responses: Option<RaceCarResponses>,
+}
+
+/// The share of a contact's impulse one car's body takes: the game's contact pass adds impulse × `linear` to the
+/// body's velocity and the angular impulse × `angular` to its spin (`FUN_009be420`, lanes from the pair record
+/// +0x20 / +0x30 / +0x40 / +0x50 via `FUN_009bb640`). GeneSys `e3882eb1` (linear) and `e5ea1414` (angular): the
+/// handlers copy `e3882eb1` into the record's linear lanes (+0x20 / +0x30) and `e5ea1414` into the angular ones.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ImpulseScales {
+    pub linear: f32,
+    pub angular: f32,
+}
+
+impl ImpulseScales {
+    pub const FULL: Self = Self { linear: 1.0, angular: 1.0 };
+
+    pub fn lerp(self, other: Self, t: f32) -> Self {
+        Self {
+            linear: self.linear + (other.linear - self.linear) * t,
+            angular: self.angular + (other.angular - self.angular) * t,
+        }
+    }
+}
+
+/// A `DamageParams` / `Params` entry: the scales a car takes at an impact damage (`3e2f6a22`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct DamageScales {
+    pub damage: f32,
+    pub scales: ImpulseScales,
+}
+
+impl DamageScales {
+    /// The handlers' blend (`FUN_009588c0`, `FUN_009575e0`): t = clamp((damage − low) / max(high − low, 0.5), 0, 1)
+    /// (0.5: `.rdata` 0x010245b0), then each lane lerps from the low entry to the high one.
+    pub fn blend(low: &Self, high: &Self, damage: f32) -> ImpulseScales {
+        let t = ((damage - low.damage) / (high.damage - low.damage).max(0.5)).clamp(0.0, 1.0);
+        low.scales.lerp(high.scales, if t.is_nan() { 0.0 } else { t })
+    }
+}
+
+/// `CollisionResponses_RaceCar.PlayerVsAI` (struct at +0x100, `8b053c5a`; read by `FUN_009588c0`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlayerVsAiResponse {
+    /// The AI car's scales at its damage: `d2fdd797` (damage 0) → `d8e13fb1` (damage 100).
+    pub ai: [DamageScales; 2],
+    /// The player's: `41d5a4d1` (0) → `f5ba78b1` (100).
+    pub player: [DamageScales; 2],
+    /// The AI car's when it crashes or is wrecked (`bd61d07e`).
+    pub ai_crashed: ImpulseScales,
+    /// The player's when it crashes or is wrecked (`Player_Crashed`, `bd4c8b39`).
+    pub player_crashed: ImpulseScales,
+    /// The player's when the AI car crashes (`52915382`).
+    pub player_ai_crashed: ImpulseScales,
+    /// The player's when its car never crashes (vehicle +0x1777, `61f2b095`).
+    pub player_no_crash: ImpulseScales,
+    pub friction: f32,
+    pub restitution: f32,
+}
+
+/// `CollisionResponses_Global.RaceCarVsRaceCar` (`4b2df237`; AI against AI, `FUN_009575e0`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RaceCarVsRaceCarResponse {
+    /// `Stable` (damage 0) → `Unstable` (damage 200), per car by its own damage.
+    pub scales: [DamageScales; 2],
+    /// `Crashed`: a car that crashes or is wrecked by the impact.
+    pub crashed: ImpulseScales,
+    pub friction: f32,
+    pub restitution: f32,
+}
+
+/// One speed profile of a race car against a crashing race car.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CrashingProfile {
+    /// The car that has not crashed (the record's first car).
+    pub car: ImpulseScales,
+    /// The crashing car.
+    pub crashing: ImpulseScales,
+    pub friction: f32,
+    pub restitution: f32,
+}
+
+impl CrashingProfile {
+    fn lerp(&self, o: &Self, t: f32) -> Self {
+        let l = |a: f32, b: f32| a + (b - a) * t;
+        Self {
+            car: self.car.lerp(o.car, t),
+            crashing: self.crashing.lerp(o.crashing, t),
+            friction: l(self.friction, o.friction),
+            restitution: l(self.restitution, o.restitution),
+        }
+    }
+}
+
+/// `PlayerVsCrashingRaceCar` (+0x2c0, `FUN_00959210`) and `AIVsCrashingRaceCar` (+0x368, `FUN_00959730`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VsCrashingResponse {
+    pub low: CrashingProfile,
+    pub high: CrashingProfile,
+    /// `a563fb88` / `742f5d62` (mph): the blend runs over the faster car's speed.
+    pub low_mph: f32,
+    pub high_mph: f32,
+    /// The player's scales when its car never crashes (`61f2b095`, player handler only).
+    pub no_crash: Option<ImpulseScales>,
+}
+
+impl VsCrashingResponse {
+    /// t = clamp((max |v| − low) / max(high − low, 1 m/s), 0, 1), speeds in m/s (`.rdata` 0x010245c0 = 1).
+    pub fn at(&self, max_speed: f32) -> CrashingProfile {
+        let (lo, hi) = (self.low_mph * MPH, self.high_mph * MPH);
+        let t = ((max_speed - lo) / (hi - lo).max(1.0)).clamp(0.0, 1.0);
+        self.low.lerp(&self.high, if t.is_nan() { 0.0 } else { t })
+    }
+}
+
+/// The contact responses of race-car pairs (`PHYSICS/PHYSICSCONFIG.BNDL`; docs/decomp.md "Car against car:
+/// contact response").
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RaceCarResponses {
+    pub player_vs_ai: PlayerVsAiResponse,
+    pub ai_vs_ai: RaceCarVsRaceCarResponse,
+    pub player_vs_crashing: VsCrashingResponse,
+    pub ai_vs_crashing: VsCrashingResponse,
+    /// `CrashingRaceCarVsCrashingRaceCar` (`49aab966`): both cars.
+    pub crashing_vs_crashing: ImpulseScales,
+    pub crashing_vs_crashing_friction: f32,
 }
 
 /// The game's mph → m/s factor (`.bss` 0x0118a010, read in a snapshot).
@@ -613,6 +747,85 @@ impl AssetStore {
             player: self.damage_profile(&profiles, h::PLAYER_OFFLINE)?,
             ai: self.damage_profile(&profiles, h::PROFILE_AI)?,
             traffic: self.damage_profile(&profiles, h::PROFILE_TRAFFIC)?,
+            responses: self.race_car_responses().ok(),
+        })
+    }
+
+    /// The race-car pairs' contact responses. Field offsets from the readers (struct offsets include the 12-byte
+    /// GeneSys header): `PlayerVsAI` +0x1c / +0x24 / +0x20 = `d2fdd797` angular / linear / damage, +0x38 / +0x40
+    /// / +0x3c `d8e13fb1`, +0x54 / +0x5c / +0x58 `41d5a4d1`, +0x70 / +0x78 / +0x74 `f5ba78b1`, +0x8c / +0x90
+    /// `bd61d07e`, +0xa4 / +0xa8 `Player_Crashed`, +0xbc / +0xc0 `61f2b095`, +0xd4 / +0xd8 `52915382`, +0xe0
+    /// `Friction`, +0xe4 `Restitution` (`FUN_009588c0`); `RaceCarVsRaceCar` `Stable` +0x1c..+0x24, `Unstable`
+    /// +0x38..+0x40, `Crashed` +0x54 / +0x58, +0x60 / +0x64 (`FUN_009575e0`); the crashing pairs' profiles
+    /// (`FUN_00959210`, `FUN_00959730`): the first car's linear `91583928` / `33475b56`, angular `dccbab9d` /
+    /// `3b04b8fd`, the crashing car's linear `8655a00b`, angular `830403e8`.
+    pub fn race_car_responses(&self) -> Result<RaceCarResponses> {
+        let race = self.genesys_object(COLLISION_RESPONSES_RACE_CAR)?;
+        let global = self.genesys_object(COLLISION_RESPONSES_GLOBAL)?;
+        let missing = || Error::Missing(COLLISION_RESPONSES_RACE_CAR);
+        let s = |o: &Object, hash: u32| sub(o, hash).cloned().ok_or_else(missing);
+        let f = |o: &Object, hash: u32| float(o, hash).ok_or_else(missing);
+        let scales = |o: &Object| -> Result<ImpulseScales> {
+            Ok(ImpulseScales { linear: f(o, h::RESP_LINEAR)?, angular: f(o, h::RESP_ANGULAR)? })
+        };
+        let damage = |o: &Object| -> Result<DamageScales> {
+            Ok(DamageScales { damage: f(o, h::RESP_DAMAGE)?, scales: scales(o)? })
+        };
+        let pva = s(&race, 0x8b05_3c5a)?;
+        let player_vs_ai = PlayerVsAiResponse {
+            ai: [damage(&s(&pva, 0xd2fd_d797)?)?, damage(&s(&pva, 0xd8e1_3fb1)?)?],
+            player: [damage(&s(&pva, 0x41d5_a4d1)?)?, damage(&s(&pva, 0xf5ba_78b1)?)?],
+            ai_crashed: scales(&s(&pva, 0xbd61_d07e)?)?,
+            player_crashed: scales(&s(&pva, 0xbd4c_8b39)?)?,
+            player_ai_crashed: scales(&s(&pva, 0x5291_5382)?)?,
+            player_no_crash: scales(&s(&pva, 0x61f2_b095)?)?,
+            friction: f(&pva, h::RESP_FRICTION)?,
+            restitution: f(&pva, h::RESP_RESTITUTION)?,
+        };
+        let rr = s(&global, 0x4b2d_f237)?;
+        let ai_vs_ai = RaceCarVsRaceCarResponse {
+            scales: [damage(&s(&rr, 0x4e66_3450)?)?, damage(&s(&rr, 0x68c1_ee3e)?)?],
+            crashed: scales(&s(&rr, 0x3693_b784)?)?,
+            friction: f(&rr, h::RESP_FRICTION)?,
+            restitution: f(&rr, h::RESP_RESTITUTION)?,
+        };
+        // A profile: (the first car's linear, its angular, the crashing car's linear, its angular).
+        let profile = |o: &Object, hashes: [u32; 4]| -> Result<CrashingProfile> {
+            Ok(CrashingProfile {
+                car: ImpulseScales { linear: f(o, hashes[0])?, angular: f(o, hashes[1])? },
+                crashing: ImpulseScales { linear: f(o, hashes[2])?, angular: f(o, hashes[3])? },
+                friction: f(o, h::RESP_FRICTION)?,
+                restitution: f(o, h::RESP_RESTITUTION)?,
+            })
+        };
+        let pvc = s(&race, 0x6eb4_840c)?;
+        let player_lanes = [0x9158_3928, 0xdccb_ab9d, 0x8655_a00b, 0x8304_03e8];
+        let player_vs_crashing = VsCrashingResponse {
+            low: profile(&s(&pvc, 0xbd34_6f75)?, player_lanes)?,
+            // The handler blends towards the profile in a register (`68378547` or `7d03de76`, not traced): the two
+            // differ only in restitution.
+            high: profile(&s(&pvc, 0x6837_8547)?, player_lanes)?,
+            low_mph: f(&pvc, 0xa563_fb88)?,
+            high_mph: f(&pvc, 0x742f_5d62)?,
+            no_crash: Some(scales(&s(&pvc, 0x61f2_b095)?)?),
+        };
+        let avc = s(&race, 0x7944_7499)?;
+        let ai_lanes = [0x3347_5b56, 0x3b04_b8fd, 0x8655_a00b, 0x8304_03e8];
+        let ai_vs_crashing = VsCrashingResponse {
+            low: profile(&s(&avc, 0xbd34_6f75)?, ai_lanes)?,
+            high: profile(&s(&avc, 0x4ca9_869f)?, ai_lanes)?,
+            low_mph: f(&avc, 0xa563_fb88)?,
+            high_mph: f(&avc, 0x742f_5d62)?,
+            no_crash: None,
+        };
+        let cc = s(&global, 0x49aa_b966)?;
+        Ok(RaceCarResponses {
+            player_vs_ai,
+            ai_vs_ai,
+            player_vs_crashing,
+            ai_vs_crashing,
+            crashing_vs_crashing: scales(&cc)?,
+            crashing_vs_crashing_friction: f(&cc, h::RESP_FRICTION)?,
         })
     }
 

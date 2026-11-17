@@ -178,7 +178,7 @@ fn start_loading(
     let bc = support.0.contains(CompressedImageFormats::BC);
     let store = game.store.clone();
     let (tx, rx) = mpsc::channel();
-    std::thread::Builder::new()
+    crate::platform::thread::Builder::new()
         .name("vfx loader".into())
         .spawn(move || {
             let _ = tx.send(load_vfx(&store, bc));
@@ -195,7 +195,7 @@ fn load_vfx(store: &AssetStore, bc: bool) -> anyhow::Result<VfxLoaded> {
         .iter()
         .flat_map(|s| [&s.dry, &s.wet])
         .flat_map(|e| {
-            [e.wheel, e.player_wheels.default_tyre, e.ai_wheels.default_tyre, e.player_wheels.on_rims]
+            [e.wheel, e.ai_wheel, e.player_wheels.default_tyre, e.ai_wheels.default_tyre, e.player_wheels.on_rims]
                 .into_iter()
                 .chain(e.impacts)
                 .chain(e.ai_impacts)
@@ -387,7 +387,7 @@ fn load_requested(
     let bc = support.is_some_and(|s| s.0.contains(CompressedImageFormats::BC));
     let store = game.store.clone();
     let (tx, rx) = mpsc::channel();
-    std::thread::Builder::new()
+    crate::platform::thread::Builder::new()
         .name("vfx loader (more)".into())
         .spawn(move || {
             let _ = tx.send(load_effects(&store, bc, ids));
@@ -1342,15 +1342,16 @@ fn wheel_emitters(
             instances.emit(
                 &vfx,
                 EmitterKey { owner: entity, slot: SLOT_KICKUP + i as u32 },
-                fx.wheel,
+                if player { fx.wheel } else { fx.ai_wheel },
                 Params {
                     transform: frame,
                     velocity: c.velocity,
                     intensity: (speed / 60.0).clamp(0.0, 1.0),
-                    // Model decision: on while the wheel touches the ground and rolls (the game's IsEmitting
-                    // for the kick-up was not traced); the kick-up's `EmitterWheelContactPlus` scales its count
-                    // by the contact speed and its `UpdateWheelBindings` slot, which starts near 1 m/s.
-                    emitting: speed > 0.5,
+                    // `FUN_00589e20` keeps the kick-up going while the wheel is down and any of its three smoke
+                    // ramps is above 0 (the smoke itself needs 0.01), or on a surface whose per-axle "always" byte
+                    // is set (false on every surface). Its `EmitterWheelContactPlus` scales the count by the
+                    // contact speed and its `UpdateWheelBindings` slot.
+                    emitting: c.smoke.max() > 0.0,
                     moved: speed * dt,
                     ground,
                     wheel: [c.smoke.spin, c.smoke.lat, c.smoke.lock],

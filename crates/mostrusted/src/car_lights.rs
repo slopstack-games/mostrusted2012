@@ -217,7 +217,7 @@ fn load_cookie(
     let bc = support.0.contains(CompressedImageFormats::BC);
     let store = game.store.clone();
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    crate::platform::thread::spawn(move || {
         // Model decision: the cookie's texels are used as stored (`BC1_UNORM`, no sRGB decode), like the sky's
         // cloud textures (research log 2026-10-07).
         let image = store.texture(texture).ok().and_then(|t| crate::convert::image(&t, false, bc)).map(|mut i| {

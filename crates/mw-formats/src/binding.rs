@@ -112,8 +112,17 @@ impl Binding {
                     args: parts.map(|p| p.trim().to_string()).collect(),
                 }
             })
-            .collect();
-        Some(Self { relative, path: path.to_string(), argument, ops })
+            .collect::<Vec<Op>>();
+        // Bare numbers are the arguments of the operator before them: the event-start panel's timeline
+        // `DistanceToCamera(BETWEEN,5,140,NOT)` writes `BETWEEN:5:140` that way.
+        let mut merged: Vec<Op> = Vec::with_capacity(ops.len());
+        for op in ops {
+            match merged.last_mut() {
+                Some(prev) if op.args.is_empty() && op.name.parse::<f64>().is_ok() => prev.args.push(op.name),
+                _ => merged.push(op),
+            }
+        }
+        Some(Self { relative, path: path.to_string(), argument, ops: merged })
     }
 
     pub fn has(&self, op: &str) -> bool {

@@ -42,6 +42,7 @@
 //! `MW_WORLD_SFX_LOG=1` logs every start (also in muted test runs, which otherwise load nothing);
 //! `MW_AUDIO_METER=1` lists the voices once a second.
 
+use crate::platform::PollLock;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
@@ -202,10 +203,15 @@ impl WorldSfxState {
         }
         let waves: Vec<ResourceId> = waves.to_vec();
         let (store, out) = (store.clone(), self.built.clone());
-        std::thread::spawn(move || {
+        let label = sound.label.clone();
+        crate::platform::thread::spawn(move || {
+            let t0 = crate::platform::Instant::now();
             let shots = WaveShots::new(&store);
             let built: Built = waves.iter().map(|w| ((w.0, chan), shots.shot(*w, chan.sfx(), None))).collect();
             out.lock().unwrap().extend(built);
+            if log_on() {
+                info!("world sfx: built {label:?} on {chan:?} in {:.0} ms", t0.elapsed().as_secs_f32() * 1000.0);
+            }
         });
     }
 }
@@ -216,13 +222,13 @@ fn load(game: Res<crate::Game>, mut state: ResMut<WorldSfxState>) {
         return;
     }
     let state = &mut *state;
-    for (k, shot) in std::mem::take(&mut *state.built.lock().unwrap()) {
+    for (k, shot) in state.built.poll_lock().map(|mut b| std::mem::take(&mut *b)).unwrap_or_default() {
         state.shots.insert(k, shot.map(Arc::new));
     }
     if state.data.is_none() {
         match state.job.clone() {
             Some(job) => {
-                if let Some(data) = job.lock().unwrap().take() {
+                if let Some(data) = job.poll_lock().and_then(|mut s| s.take()) {
                     let sets: Vec<String> = data
                         .sets
                         .iter()
@@ -256,7 +262,7 @@ fn load(game: Res<crate::Game>, mut state: ResMut<WorldSfxState>) {
                 let store = game.store.clone();
                 let job = Arc::new(Mutex::new(None));
                 let out = job.clone();
-                std::thread::spawn(move || *out.lock().unwrap() = Some(store.world_sfx()));
+                crate::platform::thread::spawn(move || *out.lock().unwrap() = Some(store.world_sfx()));
                 state.job = Some(job);
             }
         }
@@ -264,7 +270,7 @@ fn load(game: Res<crate::Game>, mut state: ResMut<WorldSfxState>) {
     if state.hud.is_empty() {
         match state.hud_job.clone() {
             Some(job) => {
-                if let Some(hud) = job.lock().unwrap().take() {
+                if let Some(hud) = job.poll_lock().and_then(|mut s| s.take()) {
                     state.hud = hud;
                 }
             }
@@ -272,7 +278,7 @@ fn load(game: Res<crate::Game>, mut state: ResMut<WorldSfxState>) {
                 let store = game.store.clone();
                 let job = Arc::new(Mutex::new(None));
                 let out = job.clone();
-                std::thread::spawn(move || *out.lock().unwrap() = Some(hud_sequence_waves(&store)));
+                crate::platform::thread::spawn(move || *out.lock().unwrap() = Some(hud_sequence_waves(&store)));
                 state.hud_job = Some(job);
             }
         }
@@ -566,7 +572,13 @@ fn objects(
         let n = state.counter;
         state.counter = (state.counter + 1) % COUNTER_WRAP;
         let wave = list[n as usize % list.len()];
-        let Some(Some(shot)) = state.shots.get(&(wave.0, chan)).cloned() else { continue };
+        let Some(Some(shot)) = state.shots.get(&(wave.0, chan)).cloned() else {
+            if log_on() {
+                let why = if state.shots.contains_key(&(wave.0, chan)) { "does not decode" } else { "not built yet" };
+                info!("world sfx: {:?} wave {wave} on {chan:?} skipped: {why}", s.label);
+            }
+            continue;
+        };
         let kind_name: &'static str = match kind {
             2 => "object damage",
             3 => "object slide",

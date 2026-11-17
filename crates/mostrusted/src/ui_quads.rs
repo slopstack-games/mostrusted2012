@@ -127,7 +127,8 @@ pub fn show_quads(
             // Solid colour: Bevy's default image is one white pixel.
             (false, None) => (Handle::default(), None, (false, false)),
         };
-        let additive = q.blend == UiBlend::Additive && !q.map;
+        // The minimap's tiles are added too (`hud.rs`): its quad shows `map_image` through the additive material.
+        let additive = q.blend == UiBlend::Additive;
         if additive {
             let params = QuadParams { colour: Vec4::from_array(q.colour), uv: Vec4::from_array(q.uv) };
             match &pool.additive[i] {

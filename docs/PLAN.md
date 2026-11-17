@@ -18,8 +18,11 @@ than as the design:
   quadric, sky reflection cubes with the env-BRDF LUT), sky dome, planar reflections for wet roads, its
   post-processing and tonemap, driven by the environment timeline. Shaders are ported from the DXBC (by hand
   now, later by DXBC → WGSL translation) as custom render-graph passes, not mapped onto `StandardMaterial`.
-- **Game logic**: the same split the data implies (GeneSys types, HSM state machines, triggers, AI data) rather
-  than ad-hoc Bevy systems.
+- **Game logic** (decided 2026-11-17: a 1:1 rewrite): the original's own logic data is *executed*, by ports of
+  its interpreters (M8): the HSM machine drives boot → front end → game modes → results, bindings and JSON
+  widgets drive the UI, the UI's Lua 5.1 bytecode runs in a Lua VM, sequences drive cutscenes and the HUD; the
+  native functions they call are ported from the code under their original names. Rules that are C++ in the
+  original (checkpoints, scoring, AI, pursuit) are ported from the code, tuned by their GeneSys data.
 - Bevy features stand in only temporarily (today: `StandardMaterial` lighting, `GeneratedEnvironmentMapLight`,
   `DistanceFog`); list each stand-in in [research-log.md](research-log.md) so it can be replaced.
 
@@ -68,14 +71,14 @@ user's review after session 3, with where each gap is tracked:
 | Inputs are not mapped like the original | `[~]` 2026-10-06 (session 5): the original's action list, default keyboard / pad tables and mapping rule read from the code and made our defaults (`input.rs`: arrows / A / Z / Space, RT / LT / X, C / LB camera, numpad / d-pad Easydrive). Open: look back / look around have no default binding in the tables (ours: End / right stick), nitrous and horn have no runtime yet, remapping. The Steam Controller (2026) is read from its HID interface (`steam_controller.rs`, 2026-10-10) | M3.9 |
 | UI incomplete, no Easydrive | `[~]` 2026-10-06 (session 5): Easydrive's menu tree is read from the UI data (23 tiers in the free-roam screen) and shown in game (`easydrive.rs`, `--show-easydrive`); Change car works through it, every other entry is inert. Its look and position are our own (the game's layouts are not read), conditional entries are not filtered. 2026-10-09: **start-up flow from the game's data** (`frontend.rs`): title screen (sequence 1022357, title movies through ffmpeg, PRESS ANY KEY), the boot transition holding over the loading (car pictures, tips), the in-game loading screen 108177, the free-roam start (new game: the default rollout at start trigger 1156487; continue: the saved car at its nearest swap spot), the pause menu 431082 (`pause.rs`: CONTINUE, MAP, SETTINGS). 2026-10-10: the map screen 899991 (`map_screen.rs`, event selection) and the event-loading card (`event_card.rs`). Not built: car select / customise screens, the online and Autolog pages, the new-game intro event | M7 |
 | No crash camera | crash cam since 2026-10-06 (`crash.rs`): rules, slow motion, bystander shots, letterbox and rolling reset from the data; the shots' placement / FOV and the reset pose are model decisions until compared with a capture of the original | M3.3 |
-| No AI vehicles | `[~]` **Traffic runs** (2026-10-09, `traffic.rs`, `--no-traffic`, `--traffic-density`): the TR car models in their palette paints spawn, follow the lanes, stop at red lights, queue behind cars and the player and are removed by the game's rules (active cells, emitters, density = the event's base (free drive 1.0) × `Density`, load budget of crashing cars, fuzzy option choice, speed controller, route by span load, junction light cycles; decomp.md "Traffic runtime"); hit by the player they become crashed bodies; hard hits on traffic and AI cars crash by the game's car-against-car rules (2026-10-09, `car_impacts.rs`: crash camera for the player, AI reset, wrecked traffic). Model decisions: no manoeuvres (swerve / cut-up), crashed cars are boxes without wheels, models only within 250 m, no per-car lights; parked cars placed and spawned by the game's rules since 2026-10-10 (static vehicle records, hit ones crash like traffic); traffic engines sound since 2026-10-09 (the game's pool of five, `car_audio.rs`), horns and crash / skid sounds since 2026-10-09 (`car_sfx.rs`). No racers or cops 2026-10-09: **AI racers run**: every car steps the same physics from its own controls (`CarControls`, `Player` marker); the racer's driving law (state 8: steering PID on the look-ahead error with the car's `PIDController` gains, pedal PID, nitrous, emergency brake, crash recovery and reset) and the rubber band are ported (`ai_driver.rs`, `ai.rs`; decomp.md "AI racers"); `AIData` (the road graph) decoded. `--race <id>` puts opponents on the event's grid and they finish its laps; `--ai <cars>` / `--test ai` on a road-graph route. Open: the racing line (`FUN_004e70e0`), the lane planner, racer interaction, the opponents' own cars, a live check that physical racers really have no corner speed. No traffic or cops yet (traffic lanes decoded 2026-10-06) | M6.1, M6.4 |
+| No AI vehicles | `[~]` **Traffic runs** (2026-10-09, `traffic.rs`, `--no-traffic`, `--traffic-density`): the TR car models in their palette paints spawn, follow the lanes, stop at red lights, queue behind cars and the player and are removed by the game's rules (active cells, emitters, density = the event's base (free drive 1.0) × `Density`, load budget of crashing cars, fuzzy option choice, speed controller, route by span load, junction light cycles; decomp.md "Traffic runtime"); hit by the player they become crashed bodies; hard hits on traffic and AI cars crash by the game's car-against-car rules (2026-10-09, `car_impacts.rs`: crash camera for the player, AI reset, wrecked traffic). Model decisions: no manoeuvres (swerve / cut-up), crashed cars are boxes without wheels, models only within 250 m, no per-car lights; parked cars placed and spawned by the game's rules since 2026-10-10 (static vehicle records, hit ones crash like traffic); traffic engines sound since 2026-10-09 (the game's pool of five, `car_audio.rs`), horns and crash / skid sounds since 2026-10-09 (`car_sfx.rs`). No racers or cops 2026-10-09: **AI racers run**: every car steps the same physics from its own controls (`CarControls`, `Player` marker); the racer's driving law (state 8: steering PID on the look-ahead error with the car's `PIDController` gains, pedal PID, nitrous, emergency brake, crash recovery and reset) and the rubber band are ported (`ai_driver.rs`, `ai.rs`; decomp.md "AI racers"); `AIData` (the road graph) decoded. `--race <id>` puts opponents on the event's grid and they finish its laps; `--ai <cars>` / `--test ai` on a road-graph route. Since 2026-10-19 every slot drives its own rollout car in its colour, Most Wanted races spawn their rival. Open: the racing line (`FUN_004e70e0`), the lane planner, racer interaction, a live check that physical racers really have no corner speed. No traffic or cops yet (traffic lanes decoded 2026-10-06) | M6.1, M6.4 |
 | Prop collisions | `[~]` **On by default** since 2026-10-09 (`--no-prop-physics` opts out): the game's car-against-object response (the car takes 0.1 / 0.05 of the contact impulse, `RaceCarVsDynamic`), the momentum break-free rule, reset when camera and car are past the reset distance, impact effects on `ForceToDamage` and impact sounds (decomp.md "Props"); props activate within 30 m of a car. Compounds break into their parts (`ForceToSmash` after `08c87eeb`, smash proxies, links; 2026-10-09) and loose props sound when they land. Compound / part behaviours (impact sparks, spot effects, contact sparks, lights out; 2026-10-16, `prop_vfx.rs`). Open: the damaged model, the sound threshold, the game's pools | M3.1 |
 | Game logic in general | 2026-10-09 (later): race HUD, 3-2-1 countdown and results from the game's layouts (`hud.rs`), races startable from Easydrive's RACES tier. 2026-10-09: events decoded (`mwtool events`: 111 offline events with checkpoints, starts, grids, cars) and races playable from start to result (`--race <id>`, `race.rs`: the traced intro / freeze / gate / lap / position / wrong-way / finish rules, the original's chevron route markers; `--test race`); no AI opponents, HUD, intro cutscenes, pursuits, Most Wanted list or progression yet. Later 2026-10-09: **race cutscenes** play from the game's sequences (`cutscene.rs`): the event's intro cinematic (camera clips, ICE camera takes decoded in `mw_formats::camera_take`, rolling start on the grid, skip with Esc / Back; offline races have no countdown, `--no-cutscenes` keeps the frozen 3-2-1 start) and its outro after the finish; camera axes, horizontal FOVs, `DUTCH` and the outro's frozen camera settled by captures of the original (2026-10-09); open: audio / UI / post-FX items. 2026-10-06 (session 5): the free-roam objects are decoded (`mwtool freeroam`: 74 speed cameras, 216 billboards, 152 gates, 183 jack spots, 22 body shops) and speed cameras log the pass speed (`freeroam.rs`, the game's 50 mph threshold); no HUD message, Speed Points, smashes or jack-spot swaps yet | M6 |
 | Road / terrain textures scaled wrong, foliage in the wrong place (user, 2026-10-06) | `[~]` Texture scale: every ground family's UV maths, the mip chains, UV formats and detail strength match the game; three road decal variants (465 meshes) and the anisotropy (the game's 4×) fixed; **not resolved** (lead: the texture header's first-mip byte and a global quality flag, needs a live read and a capture of the original). Foliage: placement decodes are right (`mwtool placement-check`); groundcover uses the game's fields and group draw distance; **the cause was a forward redraw**: masked materials (trees) were drawn again without fog and with Bevy's lighting, fixed the same day; hills beyond 500 m are still flat fog colour (gradient texture alpha not traced); floating groundcover at the CONTINENTAL DRIFT start fixed (2026-10-09): only the collections of the camera's zone and its neighbours are drawn, and sprites are byte/127 × 2^e m (the e = 6 / 8 groups are tree cards that forest the hills) | M1.3, M1.4, M1.5 |
 | Cars stuck in the floor after jumps / steep climbs, jitter, "stuck in a gear" (user, 2026-10-06) | `[~]` sinking fixed (the game's hard strut stops; `--test landing`, `--test climb`); gear holding: the cruising gearbox and its mode switch ported, 1st gear at part throttle still revs high; jitter fixed (the anti-roll bar's damping coefficient from `FUN_00933a60`) | M3.2 |
 | Liveries, dirt, active aero, nitrous, mods (user, 2026-10-06) | `[~]` liveries drawn; dirt / dust build up per wheel from the surfaces' `VehicleEffects` and damage scratches the paint (2026-10-09, `paint_wear.rs`, decomp.md "Vehicle paint, liveries and dirt"; open: the per-wheel skid values, wet surface block, rain drops, crumple normal map); two-tone paint bound; active aero for the speed-only cars; nitrous (tank, refill events and burn from the code, 2026-10-09: decomp.md "Nitrous refill"; takedown / crash escape / gas station / gate awards not fed, speedbreaker and jump modes not run); mods chosen through Easydrive and applied (about half of the parameters identified) | M1.4, M3.2, M3.8 |
 | UI, tyre marks, optimisation, camera, water (user, 2026-10-06) | `[~]` Easydrive drawn from the game's layout (its RACES tier starts races, 2026-10-09); race HUD / countdown / results from the game's layouts and additive UI blending (2026-10-09); tyre marks drawn; 2026-10-15 their rule, the smoke rule and the per-wheel surface effects traced and ported (`FUN_00589e20`, `FUN_009cef90`: smoke, kick-up and marks from the surface under each wheel); `--bench` and a baseline (51 fps driving downtown, shadows cost 6.6 ms; mesh merging gave nothing); 2026-10-09: direct draws, inline tree optimisation and bakes off the frame's cores against frame drops (M4.7); the chase camera's update found (`FUN_005d4970`) and, 2026-10-10, ported stage by stage and checked frame by frame against `ref/live1` (`--camera-replay`, `tools/camcompare.py`: eye within 2–4 cm, view pitch 0.23°, FOV 0.23° RMS); no wall push-in, as the original (its whole camera path read with REA, 2026-10-14; `MW_CAMERA_PUSH_IN=1` for A/B); `Water_Opaque` ported; groundcover tufts lit | M7, M3.7, M4, M3.3, M1.4 |
-| Terrain sticks through the road in places (user, 2026-10-14) | fixed 2026-10-16: 230 coarse terrain tiles whose `Model` +0x19 pass mask excludes the main view (shadow / cube-map / reflection stand-ins) were drawn; now skipped (`mwtool terrain-check` finds the rest: LOD0 ground above roads 12,524 → 5,356 m², all authored). Shadow / cube / reflection bits not applied yet | research log 2026-10-16 |
+| Terrain sticks through the road in places (user, 2026-10-14) | fixed 2026-10-16: 230 coarse terrain tiles whose `Model` +0x19 pass mask excludes the main view (shadow / cube-map / reflection stand-ins) were drawn; now skipped (`mwtool terrain-check` finds the rest: LOD0 ground above roads 12,524 → 5,356 m², all authored). 2026-10-19: the rest classified (LOD-aware check: planters, verges, kerbs; roads and ground share render states, no decal draw), mask bits 1 / 4 / 8 applied per view (`pass_mask.rs`); stand-in shadows behind `MW_STANDIN_SHADOWS=1` until a capture | research log 2026-10-16, 2026-10-19 |
 | Porsche badge text and texture broken (user, 2026-10-09) | fixed 2026-10-09: every car's `_Alpha1bit` badges / logos / hub caps now cut out at the shader's 0.5 (diffuse or normal-map alpha) and the `_Alpha_` parts blend alpha-over (MaterialState); those blended parts use Bevy's forward lighting, `g_wheelConstants.x` (`_BlurFade`) taken as 0 (research log) | M1.4 |
 
 ---
@@ -115,7 +118,9 @@ Make a static frame look like the game.
      169 stacked every tier ("buildings on streets, mountains"). `ZoneList` (PVS.BNDL) is decoded and
      `mw_assets::backdrop` keeps, per place, what the owning zone lists. Still open: cut faces where zone
      views meet. 2026-10-16: water follows the same rule (no fill-in from other zones' far planes, which
-     flooded the industrial coast and the gorge); `mwtool water`.
+     flooded the industrial coast and the gorge); `mwtool water`. 2026-10-19: replaced by the game's per-zone
+     swap (`zone_view.rs`, decomp.md "Streaming zone and backdrop swap"); the composition stays for aerial
+     free cameras and `--composed-backdrop`.
 4. **Shader families: G-buffer inputs** `[~]` (WGSL in `layered.wgsl`, selected by `materials::Look`). Each
    family computes exactly what the game's G-buffer pass writes (normal, roughness, sqrt albedo, AO, F0,
    Fresnel); today these feed Bevy's PBR lighting, later the ported deferred pipeline (item 7). Per-family
@@ -219,7 +224,9 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    wedging (a lamp at 60 km/h costs about 1 km/h). Compounds break into their parts (2026-10-09). Still open:
    the damaged model, the game's activation pools. Surface grip, rolling resistance and slide drag per wheel are in the tyre model since
    2026-10-06; the fade on a surface change, the drift's surface factor and the player's bumps on rough
-   surfaces (`Surface_roughness` Perlin noise) since 2026-10-09.
+   surfaces (`Surface_roughness` Perlin noise) since 2026-10-09; the tyre class (OFF-ROAD / TRACK tyre mods pick
+   another `TyreSpecificOverrides`, `FUN_00589a60` / `FUN_00589b00`) since 2026-10-19. Open: per-surface player
+   sounds by tyre class (`FUN_0054a5d0`, `FUN_0058fe10`), the tyre-mark slot per tyre class, the wet blocks.
 2. `[~]` **Vehicle physics**: since 2026-10-04 (session 3) the model follows the game's own code, read from the
    user's decompiled dump ([decomp.md](decomp.md), [handling.md](handling.md) "The model"): 60 Hz tick; engine
    inertia, friction curve, clutch, shift on rpm and speed, top-gear lock (`drivetrain.rs`; since 2026-10-06 the
@@ -275,10 +282,11 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    landing rules (traffic / AI car impacts ported 2026-10-09, `car_impacts.rs`), a capture of the original to compare. Still open: the in-car cameras' unnamed fields (rigid now),
    the remaining acceleration / yaw-spring / gradient / height fields, FOV convention and calibration against
    the original (handling.md, "Cameras").
-4. `[~]` The world streams nearest-first from the spawn point (or the `--camera` pose); since 2026-10-09 by
-   `ZoneList` zone distance, each unit reported when complete, and the player's car is placed only once the zone
-   at its target and the neighbours within 200 m are resident (the game's `FUN_00647e00` rule). Still open: streaming that
-   follows the car (see M4).
+4. `[x]` The world streams as the game does (2026-10-19, `streaming.rs`, decomp.md "World streaming"): the camera's
+   zone and all its neighbours by the game's priorities, every other unit unloaded with its entities, models,
+   textures and materials; placements (`--spawn`, race starts) wait until their target is resident; the streaming
+   stall. Peak GPU memory of a `--drive 911` run 4.1–4.6 GB → 1.3–1.6 GB. `--load-all` / `--units N` load once.
+   Open: district / arena bundles as units, free-camera aerial views stream only with `--stream`.
 5. `[x]` **Car menu** (`menu.rs`, `garage.rs`; Tab / F1 / gamepad Start): pick any of the 93 drivable cars and
    one of its paints mid-session. The loader thread takes runtime `CarRequest`s (between track units, without
    reloading the world); the new car replaces the driven one in place (position, heading, velocity, a gear to
@@ -343,10 +351,9 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
 1. Load and *unload* track units by distance; budget memory (bundles are dropped after decode already).
 2. Partial bundle reads: load only needed resources instead of whole files (offsets are in the TOC).
 3. `[~]` Model LOD distances: `[x]` the game's per-placement LOD choice and draw distance (2026-10-10, `lod.rs`,
-   decomp.md "Model LOD and draw distance"; open: SHADOW renderables, car LODs); `[ ]` `HAWAII/PVS.BNDL` visibility. The ZoneList is decoded
-   (zones = track units, polygons, neighbours); a streaming world would load the current zone and its
-   neighbours and draw only the current zone's backdrop (`--backdrop-zone N` shows one), instead of the
-   static composition used while everything is loaded.
+   decomp.md "Model LOD and draw distance"; open: SHADOW renderables, car LODs); `[x]` `HAWAII/PVS.BNDL` visibility
+   (2026-10-19, `zone_view.rs`): the focus zone's neighbours' main geometry, only its backdrop and groundcover
+   (`FUN_00549fb0`, `FUN_005573f0`), shown by visibility while everything stays loaded.
 4. GPU instancing for repeated models; profile with Tracy (`bevy/trace_tracy`).
 5. **Stream around the player** (user, 2026-10-09: "just load what is needed around the player instead of the
    whole map and everything"): load and unload track units, props, groundcover, traffic models and world
@@ -453,12 +460,55 @@ code side (game modes, HSMs, AI) next to the data. Roughly in dependency order:
    Interceptor, coronas, busted / escaped sequences, Speed Points, cooldown spots. Takedowns, wrecks (deformation
    itself landed under M3.5: there is no
    `DeformationModel`; damage is skeletal animation).
-5. `HSMData` (0x501): hierarchical state machines that drive game flow. Interpret, or reimplement by hand.
+5. `HSMData` (0x501): hierarchical state machines that drive game flow. **Interpreted** (decided 2026-11-17):
+   M8.
 6. `[~]` Cutscenes: game-logic `Sequence`s play (2026-10-09, `cutscene.rs`, decomp.md "Cutscenes and sequences"):
    race intros and outros with their camera clips, ICE takes, teleports, AI drive, animated cars, slow motion,
    letterbox and skip. Open: audio, post-FX, UI layout and speech items; nested timeline controllers; the other
    sequences (tutorials, busted / escaped, Most Wanted intros with `MovieSequenceItem`). Characters
    (`CharacterSpec`) are low priority.
+
+### M8: Game logic engine: the original's interpreters `[~]` (2026-11-17)
+What drives the original's flow and UI is data run by a few interpreters (research-log 2026-11-17 "game logic:
+scripting, flow, AI"): one HSM machine (2,706 nodes) for boot → front end → modes → results, 16 aero machines,
+859 JSON widgets, 115 Lua 5.1 UI chunks, ~2,700 binding paths, 8,485 sequences; AI and rules are C++ tuned by
+GeneSys. Engine-free crates (`mw-logic`, `mw-lua`; wasm-compatible), in dependency order:
+1. `[x]` **Binding evaluator** (`mw-logic::binding`): the path language (`Mode.X`, `Widget.Y`, 22 operators)
+   parsed and evaluated like the original's evaluator (decomp.md "Binding evaluator"), over view models the
+   runtime provides; all 5,024 binding texts in the data parse (`mwtool bindings`). Open: the text formatters
+   (`SPEED`, `TIME`, ...), the root providers themselves, `hud.rs` still on `mw_formats::binding`.
+2. `[~]` **HSM interpreter** (`mw-logic::hsm`): the parser corrected (typed parameters, data definitions,
+   fallback behaviour), the node lifecycle and transitions; then the 203 used behaviour types one by one.
+   Done (2026-11-17): parser (all official structures, 37/37 instances), the manager / lifecycle / transitions
+   ported from the code (decomp.md "The HSM interpreter"), 19 behaviour types (structural, hooks, bindings,
+   timers, sub-networks, loading-screen / graphics waits), `mwtool hsm --run` (boot → "Playing" with answers).
+   Left: ~180 used behaviour types (UI, game modes, online), the binding evaluator hook-up.
+3. `[ ]` **Native registry** (`mw-logic::natives`): one name → function table for the 187 HSM hooks (121 used)
+   and 386 Lua natives (171 read by the chunks; `mwtool lua`), offline ones first, each ported from its handler.
+4. `[~]` **JSON widgets** and the widget-script lifecycle (`Construct`, `SetConfigurationItem`, `OnActivated`,
+   actions), PageRunner page flow; the 24 native screen scripts. Data side done (2026-11-17): the 859 JSON
+   definitions typed (`mw_formats::widget`, the engine's JSON reader `mw_formats::json`), the screen → widget →
+   script graph (`mw_assets::widgets`, `mwtool widgets`), the lifecycle and action dispatch specified
+   (decomp.md "Widget definitions (JSON) and widget scripts"). Open: the runtime, the native scripts' behaviour,
+   PageRunner.
+5. `[x]` **Lua 5.1 VM** (`mw-lua`, 2026-11-17): our own interpreter (undump, 38 opcodes, `ltable.c` table
+   order, MSVC number formatting; base, string, math, table); all 115 chunks run their main function and
+   `Construct` (`mwtool lua`). One state per widget (widget +0x84, decomp.md "Widget definitions (JSON) and widget scripts"). Open: the
+   game's GC stepping.
+6. `[ ]` **Sequences**: the missing `*SequenceItem` types (73 in the data).
+7. `[ ]` The runtime moves onto them: front end, game modes, HUD and results from the HSM instead of the
+   hand-written flows.
+
+### M9: Browser build `[~]` (2026-11-17)
+The same runtime in a browser on WebGPU, on the player's own install (picked folder or a loopback server; the
+data is never hosted). research-log 2026-11-17 (steps 1-4), docs/commands.md "Browser (wasm32)".
+1. `[x]` Engine-free crates on wasm32 (`tools/wasm-check`).
+2. `[x]` Game files through `mw_gamedir::Source` (`WebSource`: blob / http URLs, sync range requests).
+3. `[x]` Threads as Web Workers on shared memory (`platform.rs`), a main thread that never blocks.
+4. `[x]` The runtime renders in a browser (free camera, `tools/web/build`, `tools/web/serve.py`).
+5. `[~]` Driving runs, audio plays without dropouts (2026-11-17; the mixer on cpal's AudioWorklet thread through
+   patched `bevy_audio` / `rodio` in `third_party/`; level matches native). Open: saves in browser storage, the 4 GB cap
+   for whole-world views, module size (wasm-opt).
 
 ### M7: Front-end and release `[~]`
 - `[~]` Native Bevy UI (fonts from `UI/FONTS` if feasible), menus, car select, settings, save data (our own format).

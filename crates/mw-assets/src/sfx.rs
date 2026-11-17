@@ -1,10 +1,10 @@
 //! The player car's sounds other than the engine, from the game's sound data:
 //!
-//! - **Tyres and road**: the default surface's `SurfaceSounds` (`HAWAII/SURFACELIST.BNDL`: `Surfaces.
-//!   Default_surface` → `SurfaceType`, dry conditions → `Normal` contact → `Surface_Sounds`): the `Drift`,
+//! - **Tyres and road**: every surface's `SurfaceSounds` (`HAWAII/SURFACELIST.BNDL`: `Surfaces.Surfaces` →
+//!   `SurfaceType`, dry conditions → `Offroad` / `Normal` / `Track` contact → `Surface_Sounds`): the `Drift`,
 //!   `Spin` and `Brake` sequences (bound to `LatSlipIntensityForSkidSound`, `SpinIntensityForSkidSound`,
-//!   `SpinBrakingIntensityForSkidSound`) and two road-noise sequences bound to `GetSpeedMph`. Surface types
-//!   are not decoded yet, so every road is the default surface.
+//!   `SpinBrakingIntensityForSkidSound`) and the player's road-noise sequence (+0x34, bound to `GetSpeedMph`),
+//!   each set behind its gate ([`surface_gate`]); the caller picks the wheels' sets ([`PlayerSurfaceSounds`]).
 //! - **Wind**: the speed-bound player sequences of `VehicleSound.Player_Sequences` (`SOUND/GLOBAL.BNDL`):
 //!   wind layers crossfaded over 45–250 mph.
 //! - **Landings**: the `CollisionSoundSet` (`SOUND/METALCAR.BNDL`) every car's `Vehicle_Sound` points to, its
@@ -37,15 +37,58 @@ const COLLISION_SEQUENCES: [u32; 31] = [
 /// Dry-weather conditions of a `SurfaceType` (the first of its two condition sets; the second has the same
 /// skid sequences and a wet road noise).
 const SURFACE_DRY: u32 = 0xf395_b019;
-/// Road-noise sequences of `SurfaceSounds` (unnamed, bound to the car's speed).
-const SURFACE_ROAD: [u32; 2] = [0x4648_873a, 0x1376_f03b];
+/// The player's road-noise sequence of a `SurfaceSounds` (+0x34, `FUN_0058fe10`; +0x3c `1376f03b` is the other
+/// cars').
+const SURFACE_ROAD: u32 = 0x4648_873a;
+/// `SurfaceSounds` +0x80 / +0x84: the road voice's fade-in (passed to its start, `FUN_00a44cc0`) and its release
+/// (`FUN_00a44e40`) when its slot is given up.
+const SURFACE_FADE_IN: u32 = 0xbd94_ae52;
+const SURFACE_FADE_OUT: u32 = 0xe0ac_cbe3;
+/// Contact kinds of a `SurfaceType` conditions block, in [`PlayerSurfaceSounds::table`] order.
+const CONTACT_KINDS: [&str; 3] = ["Offroad", "Normal", "Track"];
 
-/// Our mix (assumed: the bank's sounds reach the master through buses outside the bundles we load, as the
-/// engine's do). Measured on `mwtool vehicle-sound` against the engine at full throttle (≈ −14 dBFS): road and
+/// The gate of the `k`-th `SurfaceSounds`' sequences in the vehicle bank: the caller ramps it 0..1 as the game
+/// fades the surface's voices in and out (`FUN_0058fe10`).
+pub fn surface_gate(k: usize) -> String {
+    format!("Surface.{k}")
+}
+
+/// Which `SurfaceSounds` a wheel plays (`FUN_0054a5d0`): per surface index (the collision tag's bits 13–19,
+/// `Surfaces.Surfaces` order), the dry block's `Offroad`, `Normal` and `Track` contacts, as indices of the vehicle
+/// bank's surface sound sets ([`surface_gate`]).
+#[derive(Debug, Clone, Default)]
+pub struct PlayerSurfaceSounds {
+    pub table: Vec<[Option<usize>; 3]>,
+    /// `Surfaces.Default_surface`'s dry `Normal` set: wheels without a surface.
+    pub default: Option<usize>,
+    /// Per set: (fade-in, release) seconds (+0x80 / +0x84).
+    pub fades: Vec<(f32, f32)>,
+}
+
+impl PlayerSurfaceSounds {
+    /// `FUN_0054a5d0` / `FUN_0054a560`: the contact kind by tyre class (0 / 1 `Offroad`, 2 `Normal`, 3 / 4
+    /// `Track`, a missing handle falls back to `Normal`).
+    pub fn pick(&self, surface: Option<usize>, tyre_class: u8) -> Option<usize> {
+        let Some(row) = surface.and_then(|s| self.table.get(s)) else { return self.default };
+        let kind = match tyre_class {
+            0 | 1 => 0,
+            3 | 4 => 2,
+            _ => 1,
+        };
+        row[kind].or(row[1])
+    }
+}
+
+/// Our old mix, used only without the game's bus gains (`MW_AUDIO_NO_BUS`; assumed: the bank's sounds reach the
+/// master through buses outside the bundles we load, as the engine's do). Measured on `mwtool vehicle-sound` against the engine at full throttle (≈ −14 dBFS): road and
 /// wind at 60 mph ≈ −25 dBFS, a 30° drift ≈ −12.5 (−16.7 before the 32 kHz waves decoded: four of the drift
 /// layers were a 47-sample buzz), locked brakes ≈ −13, a heavy impact ≈ −8.
 const MASTER_GAIN: f32 = 1.4;
 const SKID_GAINS: [(&str, f32); 3] = [("Drift", 4.0), ("Spin", 3.5), ("Brake", 2.5)];
+/// With the game's bus gains (`crate::buses`, which these model gains stood in for) the data's own levels play.
+fn mix_gains(store: &AssetStore) -> (f32, [f32; 3]) {
+    if store.bus_mix().is_empty() { (MASTER_GAIN, SKID_GAINS.map(|g| g.1)) } else { (1.0, [1.0; 3]) }
+}
 const IMPACT_GAIN: f32 = 3.0;
 
 fn first_object(store: &AssetStore, bundle: &str, type_name: &str) -> Option<Object> {
@@ -122,30 +165,72 @@ impl AssetStore {
         })
     }
 
-    /// The player car's tyre, road, wind and impact sounds ([`crate::sfx`]).
-    pub fn vehicle_sfx_bank(&self) -> crate::Result<Bank> {
+    /// The player car's tyre, road, wind and impact sounds ([`crate::sfx`]), and which surface sound set each
+    /// wheel plays.
+    pub fn vehicle_sfx_bank(&self) -> crate::Result<(Bank, PlayerSurfaceSounds)> {
         let mut loader = SoundLoader::new(self);
-        let mut bank = Bank { master_gain: MASTER_GAIN, ..Default::default() };
+        let (master, skid_gains) = mix_gains(self);
+        let mut bank = Bank { master_gain: master, ..Default::default() };
 
-        // Tyres and road: the default surface.
+        // Tyres and road: every surface's sets (`FUN_0058fe10` picks one per wheel), each behind its gate.
         let surfaces = first_object(self, "HAWAII/SURFACELIST.BNDL", "Genesys.Gen.Surfaces");
-        let sounds = surfaces
-            .as_ref()
-            .and_then(|s| handle(s, "Default_surface"))
-            .and_then(|id| loader.object(id))
-            .and_then(|t| {
-                let normal = sub(&t, SURFACE_DRY).and_then(|c| sub(c, field_hash("Normal")))?;
-                handle(normal, "Surface_Sounds")
-            })
-            .and_then(|id| loader.object(id));
-        if let Some(ss) = &sounds {
-            let ids = SKID_GAINS.iter().map(|&(n, g)| (field_hash(n), g)).chain(SURFACE_ROAD.map(|h| (h, 1.0)));
+        let normal_sounds = |t: &Object, kind: &str| {
+            let c = sub(t, SURFACE_DRY).and_then(|c| sub(c, field_hash(kind)))?;
+            handle(c, "Surface_Sounds")
+        };
+        let mut sets: Vec<mw_bundle::ResourceId> = Vec::new();
+        let index_of =
+            |id: mw_bundle::ResourceId, sets: &mut Vec<mw_bundle::ResourceId>| match sets.iter().position(|&s| s == id)
+            {
+                Some(k) => k,
+                None => {
+                    sets.push(id);
+                    sets.len() - 1
+                }
+            };
+        let mut picks = PlayerSurfaceSounds::default();
+        if let Some(list) = &surfaces {
+            let types: Vec<Option<mw_bundle::ResourceId>> = match list.get(field_hash("Surfaces")) {
+                Some(Value::Array(a)) => a
+                    .iter()
+                    .map(|v| match v {
+                        Value::Handle(h) => *h,
+                        Value::Ref(r) => Some(*r),
+                        _ => None,
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            for t in types {
+                let t = t.and_then(|id| loader.object(id));
+                let row = CONTACT_KINDS
+                    .map(|k| t.as_ref().and_then(|t| normal_sounds(t, k)).map(|id| index_of(id, &mut sets)));
+                picks.table.push(row);
+            }
+            picks.default = handle(list, "Default_surface")
+                .and_then(|id| loader.object(id))
+                .and_then(|t| normal_sounds(&t, "Normal"))
+                .map(|id| index_of(id, &mut sets));
+        }
+        for (k, &id) in sets.iter().enumerate() {
+            let Some(ss) = loader.object(id) else {
+                picks.fades.push((0.0, 0.0));
+                continue;
+            };
+            let f = |h: u32| crate::sfx_loader::number(ss.get(h)).unwrap_or(0.0);
+            picks.fades.push((f(SURFACE_FADE_IN), f(SURFACE_FADE_OUT)));
+            let ids = SKID_GAINS
+                .iter()
+                .zip(skid_gains)
+                .map(|(&(n, _), g)| (field_hash(n), g))
+                .chain(std::iter::once((SURFACE_ROAD, 1.0)));
             for (h, gain) in ids {
                 let id = match ss.get(h) {
                     Some(Value::Handle(Some(id))) => *id,
                     _ => continue,
                 };
-                if let Some(s) = loader.sequence(id) {
+                if let Some(mut s) = loader.sequence(id) {
+                    s.gate = surface_gate(k);
                     bank.sequences.push(scaled(s, gain));
                 }
             }
@@ -191,7 +276,7 @@ impl AssetStore {
             }
         }
         bank.channels = loader.channels();
-        Ok(bank)
+        Ok((bank, picks))
     }
 
     /// An AI racer's tyre sounds: the default surface's `Drift_Competitor`, `Spin_Competitor` and

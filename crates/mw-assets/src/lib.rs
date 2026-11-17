@@ -8,6 +8,7 @@
 //! demand.
 
 pub mod backdrop;
+pub mod buses;
 pub mod camera;
 pub mod car_anim;
 pub mod car_lights;
@@ -47,6 +48,7 @@ pub mod ui;
 pub mod vehicle_driver;
 pub mod vfx;
 pub mod wheel_layout;
+pub mod widgets;
 pub mod world_sfx;
 
 pub use catalog::{DEFAULT_LANGUAGE, VehicleInfo};
@@ -92,6 +94,7 @@ pub struct AssetStore {
     index: HashMap<ResourceId, Vec<Location>>,
     open: Mutex<HashMap<u32, Arc<Bundle>>>,
     genesys_types: Mutex<HashMap<ResourceId, Option<fmt::genesys::Type>>>,
+    buses: std::sync::OnceLock<buses::BusMix>,
 }
 
 impl AssetStore {
@@ -100,7 +103,7 @@ impl AssetStore {
         let bundles = game.files_with_extension("BNDL");
         let tocs: Vec<_> = bundles
             .par_iter()
-            .map(|rel| Bundle::read_toc(game.root().join(rel)).map(|(_, e)| e))
+            .map(|rel| Bundle::read_toc_with(|offset, len| game.read_at(rel, offset, len)).map(|(_, e)| e))
             .collect::<std::result::Result<_, _>>()?;
         let mut index: HashMap<ResourceId, Vec<Location>> = HashMap::new();
         for (b, entries) in tocs.into_iter().enumerate() {
@@ -112,7 +115,14 @@ impl AssetStore {
                 });
             }
         }
-        Ok(Self { game, bundles, index, open: Mutex::new(HashMap::new()), genesys_types: Mutex::new(HashMap::new()) })
+        Ok(Self {
+            game,
+            bundles,
+            index,
+            open: Mutex::new(HashMap::new()),
+            genesys_types: Mutex::new(HashMap::new()),
+            buses: std::sync::OnceLock::new(),
+        })
     }
 
     pub fn game(&self) -> &GameDir {
@@ -138,7 +148,8 @@ impl AssetStore {
         if let Some(b) = self.open.lock().unwrap().get(&idx) {
             return Ok(b.clone());
         }
-        let b = Arc::new(Bundle::open(self.game.root().join(&self.bundles[idx as usize]))?);
+        let data = self.game.read(&self.bundles[idx as usize]).map_err(mw_bundle::Error::from)?;
+        let b = Arc::new(Bundle::from_bytes(data)?);
         self.open.lock().unwrap().insert(idx, b.clone());
         Ok(b)
     }
@@ -216,6 +227,11 @@ impl AssetStore {
     }
 
     /// Decode a GenesysObject resource with types resolved across the game.
+    /// The game's bus mix (loaded once).
+    pub fn bus_mix(&self) -> &buses::BusMix {
+        self.buses.get_or_init(|| buses::BusMix::load(self))
+    }
+
     pub fn genesys_object(&self, id: ResourceId) -> Result<fmt::genesys::Object> {
         let res = self.load_typed(id, ResourceType::GenesysObject)?;
         self.decode_genesys(&res)

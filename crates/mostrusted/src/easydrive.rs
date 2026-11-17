@@ -6,9 +6,10 @@
 //! `Widget.FMNEAREST` list) lists the offline races (game mode 730000) offered with the driven car (their
 //! `AllowedVehicleList`'s cars; every race when the car has none), nearest start first (`FMNEAREST`,
 //! `CalculateDistanceToEventByIdString`); choosing one opens its ACTIONS tier (`TO_FMN_OPT`: "SET
-//! DESTINATION", inert, and "START RACE", which starts it through `race::StartRace`). Which events the code's
-//! list holds and its order are our reading of the names (model decision). Other hook items and generated tiers
-//! are shown and inert.
+//! DESTINATION", inert, and "START RACE", which starts it through the event-loading card,
+//! `event_card::PlayEvent`, as the map's START RACE does: model decision, research log 2026-10-10 left open
+//! whether the original plays sequence 1014321 here too). Which events the code's list holds and its order are
+//! our reading of the names (model decision). Other hook items and generated tiers are shown and inert.
 //!
 //! The look is the `EasyDrive` widget's menu layout (`MENU_LAYOUT`): an element stack whose header lists the
 //! tier history, whose rows repeat the item layouts over `Widget.EasyDrive.Items` (the selected row's template
@@ -21,13 +22,14 @@
 //! `Hack_EasyRight` opens) and `cancel` (quick close); which keys those mappings are on PC is not decoded, so
 //! here: the original's EASY_* bindings (d-pad; Num 4 / 6 / 8 / 2, input.rs), Esc / pad B to close, `E` opens (ours).
 
+use crate::platform::PollLock;
 use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
 use mw_assets::easydrive::{self as ed, EASYDRIVE_SCREEN};
 
 use crate::Game;
-use crate::race::{RaceSetup, StartRace};
+use crate::race::RaceSetup;
 use std::collections::HashMap;
 
 use mw_assets::ui::UiScene;
@@ -85,6 +87,8 @@ enum Page {
 pub struct EasyDrive {
     enabled: bool,
     pub open: bool,
+    /// Opened at least once (the HUD's `Widget.Prompt.New` model, `hud.rs`).
+    pub seen: bool,
     tiers: Vec<Tier>,
     job: Option<Arc<Mutex<Option<Loaded>>>>,
     look: Option<Look>,
@@ -100,6 +104,13 @@ pub struct EasyDrive {
     /// "SET DESTINATION" / "START RACE" (the `TO_FMN_OPT` tier's RPC items, generated in code; labels from the
     /// black-list tier's hook items `SetWaypointToEventFromBinding` / `StartEventFromBinding`).
     race_actions: [String; 2],
+}
+
+impl EasyDrive {
+    /// `Widget.EasyDrive.IsActive`: the menu is up.
+    pub fn is_active(&self) -> bool {
+        self.open && !self.stack.is_empty()
+    }
 }
 
 /// An offline race Easydrive can start.
@@ -179,8 +190,12 @@ struct Look {
 }
 
 /// The `EasyDrive` widget's menu layout in `EASYDRIVE_SCREEN` (UniqueId): the element stack at (3, 43). The
-/// widget's other layouts are the closed-menu prompt (1805584: d-pad icon, alert, "NEW" badge) and an empty one.
+/// widget's other layouts are the prompt (1805584: d-pad icon, the EASYDRIVE strip, alert, "NEW" badge), drawn
+/// above the open menu as in the original (`ref/ui-2026-10-19/easydrive_1680x720.png`; the widget is a
+/// `Widget_ShowLayouts`, which shows all of its layouts), and an empty one (1713378). Closed, the `Prompt`
+/// widget's copy of the prompt shows instead (`hud.rs`).
 const MENU_LAYOUT: u32 = 1_773_380;
+const PROMPT_LAYOUT: u32 = crate::hud::PROMPT_LAYOUT;
 
 fn load_look(store: &mw_assets::AssetStore, lang: &mw_formats::Language) -> Option<Look> {
     let layouts = store
@@ -188,7 +203,7 @@ fn load_look(store: &mw_assets::AssetStore, lang: &mw_formats::Language) -> Opti
         .map_err(|e| warn!("Easydrive layouts unavailable: {e}"))
         .ok()?
         .into_iter()
-        .filter(|l| l.layout.id == MENU_LAYOUT)
+        .filter(|l| l.layout.id == MENU_LAYOUT || l.layout.id == PROMPT_LAYOUT)
         .collect();
     let scene = store.ui_scene(layouts, lang);
     let images =
@@ -202,7 +217,7 @@ fn start_load(mut menu: ResMut<EasyDrive>, game: Res<Game>) {
     }
     let job = Arc::new(Mutex::new(None));
     let (out, store) = (job.clone(), game.store.clone());
-    std::thread::spawn(move || {
+    crate::platform::thread::spawn(move || {
         let tiers = store
             .language(mw_assets::DEFAULT_LANGUAGE)
             .and_then(|lang| Ok((store.easydrive(EASYDRIVE_SCREEN)?, lang)))
@@ -239,7 +254,9 @@ fn resolve(m: &ed::EasyDrive, lang: &mw_formats::Language) -> Vec<Tier> {
 }
 
 fn poll_load(mut commands: Commands, mut menu: ResMut<EasyDrive>, mut images: ResMut<Assets<Image>>) {
-    let Some((tiers, look, races, race_actions)) = menu.job.as_ref().and_then(|j| j.lock().unwrap().take()) else {
+    let Some((tiers, look, races, race_actions)) =
+        menu.job.as_ref().and_then(|j| j.poll_lock().and_then(|mut s| s.take()))
+    else {
         return;
     };
     menu.races = races;
@@ -271,6 +288,7 @@ fn open_root(menu: &mut EasyDrive) {
     if let Some(i) = menu.tiers.iter().position(|t| t.transition == "TO_BASE") {
         menu.stack.push((Page::Tier(i), 0));
         menu.open = true;
+        menu.seen = true;
     }
     menu.dirty = true;
 }
@@ -371,7 +389,7 @@ fn navigate(
     mods: Res<ModCatalogue>,
     mut mod_sel: ResMut<ModSelection>,
     mut actions: MessageWriter<GarageAction>,
-    mut race_start: MessageWriter<StartRace>,
+    mut race_start: MessageWriter<crate::event_card::PlayEvent>,
     game: Res<Game>,
     player: Query<&GlobalTransform, (With<crate::drive::Car>, With<crate::drive::Player>)>,
     front: Option<Res<crate::frontend::FrontEnd>>,
@@ -454,7 +472,7 @@ fn navigate(
             }
             Some(Choice::Race(k)) => menu.stack.push((Page::RaceActions(k), 0)),
             Some(Choice::StartRace(k)) => {
-                race_start.write(StartRace(menu.races[k].setup.clone()));
+                race_start.write(crate::event_card::PlayEvent(menu.races[k].setup.clone()));
                 menu.stack.clear();
                 menu.open = false;
             }
@@ -497,6 +515,9 @@ fn lookup(path: &str, arg: Option<&str>, history: &[String], names: &[String], s
             BindValue::Text(history.get(i)?.to_uppercase())
         }
         "Signals.False" => false.into(),
+        // The prompt's alert and NEW badge: Autolog alerts are not modelled; the badge belongs to the `Prompt`
+        // widget, whose group is not active while the menu is open (model decision).
+        "Recommends.ShowAlert" | "Widget.Prompt.New" => false.into(),
         // Item types: the special row templates (paint, nearest event, recommends, friends) are not ours yet.
         p if p.starts_with("Widget.") && p.ends_with(".IsActive") => false.into(),
         _ => return None,
@@ -515,8 +536,11 @@ fn redraw(
     mut materials: ResMut<Assets<AdditiveQuadMaterial>>,
     game: Res<Game>,
     player: Query<&GlobalTransform, (With<crate::drive::Car>, With<crate::drive::Player>)>,
+    mut resized: MessageReader<bevy::window::WindowResized>,
 ) {
-    if !menu.dirty && !garage.is_changed() && !mod_sel.is_changed() {
+    // A resized window places the layout anew (the UI follows the window's current size).
+    let resized = resized.read().count() > 0;
+    if !menu.dirty && !garage.is_changed() && !mod_sel.is_changed() && !resized {
         return;
     }
     let Ok(window) = windows.single() else { return };

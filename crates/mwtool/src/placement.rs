@@ -527,8 +527,28 @@ pub fn column(store: &AssetStore, at: &str) -> Result<()> {
                 }
                 if !hits.is_empty() {
                     hits.sort_by(f32::total_cmp);
+                    let mask = store.model(p.model).map_or(0, |m| m.pass_mask);
+                    let tris = sm.mesh.indices.len() / 3;
+                    let edge = sm
+                        .mesh
+                        .indices
+                        .as_chunks::<3>()
+                        .0
+                        .iter()
+                        .filter_map(|t| {
+                            Some(
+                                pos.get(t[0] as usize)?
+                                    .iter()
+                                    .zip(pos.get(t[1] as usize)?)
+                                    .map(|(a, b)| (a - b) * (a - b))
+                                    .sum::<f32>()
+                                    .sqrt(),
+                            )
+                        })
+                        .sum::<f32>()
+                        / tris.max(1) as f32;
                     println!(
-                        "{name} model {} backdrop {} mesh {} {} y {:?}",
+                        "{name} model {} backdrop {} pass mask {mask:#04x} mesh {} ({tris} tris, edge {edge:.1} m) {} y {:?}",
                         p.model,
                         p.backdrop,
                         sm.mesh_index,

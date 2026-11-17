@@ -25,10 +25,13 @@ from the integrator's conversation.
 - **Never commit** game data, exports or decompiled code; findings go into the docs as prose.
 - **/tmp and the scratchpad are RAM**: screenshots, traces and binaries go into the worktree's git-ignored
   `extracted/`, `ref/` or `scratch/`.
-- **The original game** (`tools/orig`): only when the task says so (one agent at a time; mute its audio stream,
-  quit it after, back up the save). Otherwise list the captures that would confirm your change in the research
+- **The original game** (`tools/orig`): only when the task says so (one agent at a time; it is silent by
+  itself, never mute its stream by hand (WirePlumber stores that per application); quit it after, back up the save). Otherwise list the captures that would confirm your change in the research
   log.
-- **Verify** with `tools/t <args>` (TEST RESULT lines, exit code) and `--screenshot` runs; look at the PNGs that
+- **No windows on the user's desktop**: run `mostrusted` only through `tools/t <args>` or `tools/hl
+  ./target/release/mostrusted <args>` (headless gamescope, 1280 × 720 like the normal window; silent: `MW_MUTE=1`
+  and a null sink, `tools/silent-sink`). Nothing may be heard either.
+- **Verify** with `tools/t <args>` (TEST RESULT lines, exit code) and `--screenshot` runs (through `tools/hl`); look at the PNGs that
   decide something, A/B stacked with `python3 tools/stack.py out.png a.png b.png`.
 - **Merging**: other agents work in parallel (the prompt says on what). Keep edits to files outside your area
   small; prefer new modules plus small hooks.

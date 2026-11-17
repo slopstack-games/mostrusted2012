@@ -28,6 +28,7 @@ impl Plugin for AiPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(Opponents {
             bundles: self.cars.clone(),
+            paints: Vec::new(),
             requested: false,
             arrived: Vec::new(),
             spawned: vec![false; self.cars.len()],
@@ -97,6 +98,8 @@ pub fn rubber_band_from_data(
 #[derive(Resource, Default)]
 pub struct Opponents {
     bundles: Vec<String>,
+    /// Each slot's paint index (a race's slot colours); empty = a paint per slot (`--ai`).
+    paints: Vec<usize>,
     requested: bool,
     arrived: Vec<(usize, Box<CarSpec>, CarParts)>,
     spawned: Vec<bool>,
@@ -479,16 +482,20 @@ struct AiTest {
     started: bool,
 }
 
-/// `--race`: the opponents of the event. Model decisions: the race's AI route is the road graph's shortest
-/// path through the start and every gate of every lap (`route_through`); each grid slot drives the event's
-/// allowed cars in turn (or the `--ai` cars), as the opponents' own cars (`AIPlayerInformation` `9b4e35f7` /
-/// `2968e77a`, the `AIPlayerType`'s rollout) are not resolved yet. The rubber band is the event's
-/// (`OfflineEvent` +0x94 / +0x98).
+/// `--race` / a runtime start: the opponents of the event. Each slot drives its own car, as `FUN_00686f30` /
+/// `FUN_006cc870` spawn them: `AIPlayerType.Rollout` → `Rollout.Vehicle`, painted in the slot's `ColourId`
+/// (`2968e77a`, or `9b4e35f7` when that is the player's car's colour, `FUN_006ce030`). With `OfflineEvent` +0xee
+/// set (every normal race, no Most Wanted race), one slot is left out: the last whose car is the player's, else
+/// the last slot (`FUN_00686f30`). `--ai` cars, when given, replace the event's cars. Model decisions: the race's
+/// AI route is the road graph's shortest path through the start and every gate of every lap (`route_through`);
+/// a slot whose car has no bundle drives the event's allowed cars in turn. The rubber band is the event's
+/// (`OfflineEvent` +0x94 / +0x98), `OpponentData[k]` for the k-th racer left on the grid (inferred).
 fn race_from_event(
     mut commands: Commands,
     event: Option<ResMut<crate::race::RaceState>>,
     mut opponents: ResMut<Opponents>,
     game: Res<crate::Game>,
+    garage: Option<Res<crate::garage::Garage>>,
     mut done: Local<bool>,
 ) {
     let Some(mut event) = event else { return };
@@ -496,6 +503,22 @@ fn race_from_event(
         return;
     }
     *done = true;
+    // The player's car (the garage's current car, else the startup request) and paint.
+    let (player_bundle, player_paint) = match (garage.as_ref().and_then(|g| g.current.as_ref()), &game.request) {
+        (Some(c), _) => (c.bundle.to_ascii_uppercase(), c.paint_index),
+        (None, crate::loader::Request::Drive { bundle, .. }) => (bundle.to_ascii_uppercase(), 0),
+        _ => (String::new(), 0),
+    };
+    let player_vehicle = vehicle_id(&player_bundle);
+    let skipped = skipped_slot(&event.grid, event.event.skip_player_car_ai, player_vehicle);
+    if let Some(k) = skipped {
+        let slot = event.grid.remove(k);
+        info!(
+            "AI: grid slot {k} left out (OfflineEvent +0xee; its car {:?} is {}the player's)",
+            slot.vehicle,
+            if slot.vehicle.is_some() && slot.vehicle == player_vehicle { "" } else { "not " }
+        );
+    }
     let graph = match game.store.ai_data() {
         Ok(g) => g,
         Err(e) => {
@@ -508,39 +531,61 @@ fn race_from_event(
         warn!("AI: no road-graph path through the race's gates; no opponents");
         return;
     };
-    let grid: Vec<Transform> = event.grid.iter().map(|g| g.transform).collect();
     if opponents.bundles.is_empty() {
-        let cars: Vec<String> =
-            event.event.allowed_vehicles.iter().map(|v| format!("VEHICLES/VEH_{}_HI.BNDL", v.vehicle)).collect();
-        if cars.is_empty() {
-            return;
+        let allowed: Vec<u32> = event.event.allowed_vehicles.iter().map(|v| v.vehicle).collect();
+        let player_colour = player_colour(&game.store, &player_bundle, player_paint);
+        let mut bundles = Vec::new();
+        let mut paints = Vec::new();
+        let mut kept = Vec::new();
+        for (i, slot) in event.grid.iter().enumerate() {
+            let own = slot.vehicle.map(car_bundle).filter(|b| game.store.bundle(b).is_some());
+            let bundle = match own {
+                Some(b) => b,
+                None if !allowed.is_empty() => {
+                    warn!("AI: grid slot {i}: car {:?} has no bundle; the event's cars instead", slot.vehicle);
+                    car_bundle(allowed[i % allowed.len()])
+                }
+                None => {
+                    warn!("AI: grid slot {i}: car {:?} has no bundle; no opponent there", slot.vehicle);
+                    continue;
+                }
+            };
+            let colour = if slot.colour != 0 && Some(slot.colour) == player_colour && slot.alt_colour != 0 {
+                slot.alt_colour
+            } else {
+                slot.colour
+            };
+            let paint = paint_for(&game.store, &bundle, colour);
+            info!(
+                "AI: grid slot {i}{}: {bundle}, colour {colour} → paint {paint}",
+                if slot.most_wanted { " (the Most Wanted rival)" } else { "" }
+            );
+            bundles.push(bundle);
+            paints.push(paint);
+            kept.push(*slot);
         }
-        opponents.bundles = (0..grid.len()).map(|i| cars[i % cars.len()].clone()).collect();
+        event.grid = kept;
+        opponents.bundles = bundles;
+        opponents.paints = paints;
     } else {
         let cars = opponents.bundles.clone();
-        opponents.bundles = (0..grid.len()).map(|i| cars[i % cars.len()].clone()).collect();
+        let grid = event.grid.len();
+        opponents.bundles = (0..grid).map(|i| cars[i % cars.len()].clone()).collect();
     }
+    let grid: Vec<Transform> = event.grid.iter().map(|g| g.transform).collect();
     opponents.spawned = vec![false; opponents.bundles.len()];
     info!(
         "AI: race route {:.0} m through {} gates along the road graph, {} opponents",
         route.length(),
         waypoints.len() - 1,
-        grid.len()
+        opponents.bundles.len()
     );
-    event.hold = !grid.is_empty();
+    event.hold = !opponents.bundles.is_empty();
     // The rubber band: `OpponentData[slot]` of the event's `RaceBalancingData`, with the pace multiplier of the
     // allowed-vehicle entry matching the player's car.
     let (data, profile) = event.event.balancing;
-    let player_bundle = match &game.request {
-        crate::loader::Request::Drive { bundle, .. } => bundle.to_ascii_uppercase(),
-        _ => String::new(),
-    };
-    let pace = event
-        .event
-        .allowed_vehicles
-        .iter()
-        .find(|v| player_bundle.contains(&format!("VEH_{}_", v.vehicle)))
-        .map_or(1.0, |v| v.ai_pace);
+    let pace =
+        event.event.allowed_vehicles.iter().find(|v| Some(v.vehicle) == player_vehicle).map_or(1.0, |v| v.ai_pace);
     let id = |u: u32| mw_bundle::ResourceId(0x0100_0000_0000_0000 | u as u64);
     let balancing: Vec<Option<RubberBand>> = (0..grid.len())
         .map(|k| {
@@ -554,6 +599,39 @@ fn race_from_event(
         })
         .collect();
     commands.insert_resource(RaceSetup { route: Arc::new(route), grid, balancing });
+}
+
+fn car_bundle(vehicle: u32) -> String {
+    format!("VEHICLES/VEH_{vehicle}_HI.BNDL")
+}
+
+/// The `VehicleList` id of a car bundle path (`.../VEH_<id>_HI.BNDL`).
+fn vehicle_id(bundle: &str) -> Option<u32> {
+    let name = bundle.rsplit('/').next()?.to_ascii_uppercase();
+    name.strip_prefix("VEH_")?.split('_').next()?.parse().ok()
+}
+
+/// The grid slot `FUN_00686f30` leaves out when `OfflineEvent` +0xee is set: the last whose rollout car is the
+/// player's car, else the last slot.
+fn skipped_slot(grid: &[crate::race::GridSlot], skip: bool, player: Option<u32>) -> Option<usize> {
+    if !skip || grid.is_empty() {
+        return None;
+    }
+    grid.iter().rposition(|s| s.vehicle.is_some() && s.vehicle == player).or(Some(grid.len() - 1))
+}
+
+/// The `ColourId` of the player's paint (`FUN_0058f1d0`): its palette entry, if the car has a palette.
+fn player_colour(store: &mw_assets::AssetStore, bundle: &str, paint: usize) -> Option<u32> {
+    let b = store.bundle(bundle)?;
+    store.vehicle_palette(&b).ok()?.into_iter().find(|(i, _)| *i == paint).map(|(_, c)| c)
+}
+
+/// The paint index a `ColourId` stands for in a car's palette; an id the palette lacks (or 0) gives its first
+/// entry (`FUN_0058b9a0`, as for the jack spots' cars).
+fn paint_for(store: &mw_assets::AssetStore, bundle: &str, colour: u32) -> usize {
+    let Some(b) = store.bundle(bundle) else { return 0 };
+    let palette = store.vehicle_palette(&b).unwrap_or_default();
+    palette.iter().find(|(_, c)| *c == colour).or(palette.first()).map_or(0, |(i, _)| *i)
 }
 
 /// Build the test race when there is none: once the player's car is on the road, a route along the AI road
@@ -584,7 +662,9 @@ fn setup_race(
             return;
         }
     };
-    let Some(route) = route_from_ai_graph(&graph, t.translation, heading, 3000.0) else {
+    // `MW_AI_ROUTE_M`: a longer test route (the streaming soak test, `streaming.rs`).
+    let length = std::env::var("MW_AI_ROUTE_M").ok().and_then(|v| v.parse().ok()).unwrap_or(3000.0);
+    let Some(route) = route_from_ai_graph(&graph, t.translation, heading, length) else {
         warn!("AI: no lane near {:?}; no route", t.translation);
         return;
     };
@@ -634,8 +714,9 @@ fn request_opponents(mut opponents: ResMut<Opponents>, requests: Option<Res<Load
     let Some(requests) = requests else { return };
     opponents.requested = true;
     for (slot, bundle) in opponents.bundles.clone().into_iter().enumerate() {
-        // A paint per slot, so two of the same car differ.
-        let req = CarRequest { bundle, paint_index: slot + 1, traffic: None, opponent: Some(slot) };
+        // The slot's colour, else a paint per slot, so two of the same car differ.
+        let paint_index = opponents.paints.get(slot).copied().unwrap_or(slot + 1);
+        let req = CarRequest { bundle, paint_index, traffic: None, opponent: Some(slot) };
         if requests.0.send(req).is_err() {
             warn!("AI: the loader thread has stopped");
         }
@@ -651,13 +732,17 @@ fn spawn_opponents(
     mut event: Option<ResMut<crate::race::RaceState>>,
     time: Res<Time>,
     spatial: SpatialQuery,
+    mut hold_since: Local<Option<f32>>,
 ) {
     let Some(race) = race else { return };
-    // `--race`: hold the start until every opponent is on the grid (or 60 s have passed: a car failed to load).
+    // Hold the start until every opponent is on the grid, or 60 s after the hold began (a car failed to load;
+    // counted from the race, not from the app's start, so a race started from free roam waits too).
+    let now = time.elapsed_secs();
     if let Some(ev) = event.as_mut()
         && ev.hold
-        && (opponents.spawned.iter().all(|&s| s) || time.elapsed_secs() > 60.0)
+        && (opponents.spawned.iter().all(|&s| s) || now - *hold_since.get_or_insert(now) > 60.0)
     {
+        *hold_since = None;
         ev.hold = false;
         info!("AI: {} opponents on the grid; the race may start", opponents.spawned.iter().filter(|&&s| s).count());
     }
@@ -699,9 +784,10 @@ fn spawn_opponents(
         if event.is_some() {
             let name = spec.bundle.rsplit('/').next().unwrap_or(&spec.bundle).trim_end_matches(".BNDL").to_string();
             let ext = crate::drive::CarParams::new(&spec.handling).body_half_extents;
+            let rival = event.as_ref().and_then(|ev| ev.grid.get(slot)).is_some_and(|g| g.most_wanted);
             commands
                 .entity(car)
-                .insert((crate::race::Racer::ai(name, slot, ext), crate::race::RacerProgress::default()));
+                .insert((crate::race::Racer::ai(name, slot, ext).rival(rival), crate::race::RacerProgress::default()));
         }
         opponents.spawned[slot] = true;
         info!("AI: opponent {slot} ({}) placed at {start:.1?}", spec.bundle);
@@ -779,7 +865,10 @@ pub(crate) fn ai_drive(
                 w.0 = Vec3::ZERO;
                 ai.state = Default::default();
                 ai.resets += 1;
-                info!("AI car {entity}: crash reset after {:.1} s ({}), rolling at {mph:.0} mph", c.time, c.rule);
+                info!(
+                    "AI car {entity}: crash reset after {:.1} s ({}, by {:?}), rolling at {mph:.0} mph",
+                    c.time, c.rule, c.by
+                );
                 commands.entity(entity).remove::<crate::car_impacts::AiCrash>();
             }
             continue;
@@ -792,9 +881,10 @@ pub(crate) fn ai_drive(
             *ctl = CarControls { handbrake: true, ..default() };
             continue;
         }
-        // A racer that has finished gets AI goal 3, stop racing (`FUN_00843030`): ours brakes to a stop.
-        // (Not the player's car: after its finish the outro sequence drives it, `cutscene.rs`.)
-        if !is_player && progress.get(entity).is_ok_and(|p| p.finished.is_some()) {
+        // A racer that is done racing (its finish, or the player's: `CHECKPTS` exit) gets AI goal 3, stop racing
+        // (`FUN_00843030`): ours brakes to a stop. (Not the player's car: after its finish the outro sequence
+        // drives it, `cutscene.rs`.)
+        if !is_player && progress.get(entity).is_ok_and(|p| p.done) {
             *ctl = CarControls { brake: 1.0, ..default() };
             continue;
         }

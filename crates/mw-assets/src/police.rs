@@ -177,6 +177,9 @@ pub struct HeatLevel {
     pub crashed_remove_distance: f32,
     /// `be25ae81` (+0xc0, 10 s): a cop sent to the last-seen point searches after this long (`FUN_0051a4e0`).
     pub goto_timeout: f32,
+    /// `dd335ee5` (+0xb0) and `092b3408` (+0xb4): a race car that has finished its race is removed beyond the
+    /// first distance when it is off screen, beyond the second in any case (m, horizontal; `FUN_00521f00`).
+    pub finished_racer_remove: [f32; 2],
 }
 
 /// `Gameplay.CopType` +0x14 .. +0x19: which spawn kinds a cop type may use in a pursuit (`FUN_005261d0`).
@@ -215,6 +218,8 @@ pub struct PoliceConfig {
     pub bust_time: f32,
     /// The free-roam heat levels in order (`GameLogicConfig.ab4e53fd`, +0xa0).
     pub levels: Vec<HeatLevel>,
+    /// Every `HeatLevel` by id (an event's own list, `OfflineEvent.ab4e53fd`, names rows from here).
+    pub levels_by_id: HashMap<u32, HeatLevel>,
     /// `Gameplay.CopType` id → `VehicleList` id of the car (`AIPlayerType.Rollout` → `Rollout.Vehicle`).
     pub cop_vehicles: HashMap<u32, u32>,
     /// `Gameplay.CopType` id → the speed a cop of that type is spawned with (mph; `AIPlayerType.SpawnSpeed`,
@@ -326,6 +331,7 @@ fn heat_level(o: &Object) -> HeatLevel {
         surplus_remove_distance: float(o, h::SURPLUS_REMOVE),
         crashed_remove_distance: float(o, h::CRASHED_REMOVE),
         goto_timeout: float(o, h::GOTO_TIMEOUT),
+        finished_racer_remove: [float(o, 0xdd33_5ee5), float(o, 0x092b_3408)],
     }
 }
 
@@ -388,6 +394,7 @@ impl AssetStore {
             }
         }
         cfg.levels = level_ids.iter().filter_map(|id| levels.get(id).cloned()).collect();
+        cfg.levels_by_id = levels;
         for (id, player_type) in cop_types {
             let Some(&(rollout, takedown, spawn_speed)) = player_types.get(&player_type) else { continue };
             cfg.cop_spawn_speed.insert(id, spawn_speed);

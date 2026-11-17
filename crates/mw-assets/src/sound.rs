@@ -41,6 +41,10 @@ pub(crate) fn number(v: Option<&Value>) -> Option<f32> {
     }
 }
 
+fn num_hash(o: &Object, hash: u32) -> Option<f32> {
+    number(o.get(hash))
+}
+
 fn num(o: &Object, name: &str) -> Option<f32> {
     number(o.get(field_hash(name)))
 }
@@ -203,6 +207,7 @@ impl<'a> SoundLoader<'a> {
                         gain: sub(it, field_hash("Gain")).map_or(ModValue::constant(1.0), mod_value),
                         pitch: sub(it, field_hash("Pitch")).map_or(ModValue::constant(1.0), mod_value),
                         probability: structs(it, TRIGGER_PROBABILITY).next().map(mod_value),
+                        auto_pitch: num(it, "Auto_Pitch").unwrap_or(0.0) > 0.5,
                     }
                 }
                 "GinsuSequenceItem" => {
@@ -226,6 +231,8 @@ impl<'a> SoundLoader<'a> {
                             // distortion amount of the strain channels this way).
                             (0, f, 9) if f != 0 => Target::ChannelPlugin(f),
                             (0, field::GAIN, _) => Target::ChannelGain,
+                            // The channel's pitch (the supercharger whines, `Vehicles.Sound.TurboWhine`).
+                            (0, 0, 6) => Target::ChannelPitch,
                             (0, 0, _) => continue,
                             (0, f, _) => Target::ChannelPlugin(f),
                             (uid, f, _) => Target::Plugin { uid, field: f },
@@ -405,7 +412,32 @@ pub struct EngineBank {
     /// flag or the "ignition finished" flag (+0x1be4, from `RaceCarEngineSound` +0x1c8) is up (`FUN_009cd7a0`,
     /// `FUN_00900120`); `None` = no ignition sequence, the engine catches at once (`FUN_0058c930`).
     pub ignition: Option<(f32, f32)>,
+    /// The car's `Vehicles.Sound.TurboWhine` (the player's `VehicleSound` +0x58), when it has one.
+    pub turbo: Option<TurboWhine>,
+    /// The gain [`EngineBank::normalise`] gave the bank on top of its data level (1 when not normalised). The
+    /// game plays the engine at its data level next to every other sound, so the player's other sounds follow
+    /// it (`crates/mostrusted/src/sfx.rs`).
+    pub normalisation: f32,
 }
+
+/// `Genesys.Gen.Vehicles.Sound.TurboWhine` as the turbo update (`FUN_0058f8f0`) reads it; its `Sequences`
+/// (+0x40, the whine loop) are bound sequences of the bank, its one-shots cues ([`cue::BLOW_OFF`], [`cue::SPOOL`]).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TurboWhine {
+    /// The boost's response while falling: +0x44 `9fb6103d`, +0x48 `126fd4a0` (0.07 / 0.02 on most cars).
+    pub fall: (f32, f32),
+    /// While rising: +0x4c `ce79c7c7`, +0x50 `8e2e0ad7` (0.2 / 0.05).
+    pub rise: (f32, f32),
+    /// Length (s) of the blow-off sequences +0x0c, +0x14, +0x1c, +0x24 (`None`: no sequence).
+    pub blow_off: [Option<f32>; 4],
+    /// Length of the spool sequences +0x2c (boost above 0.5) and +0x34.
+    pub spool: [Option<f32>; 2],
+}
+
+/// `TurboWhine` fields (offsets from the type table).
+const TURBO_BLOW_OFF: [u32; 4] = [0xef6d_1e60, 0x3dba_62a6, 0x3dbf_63a5, 0x4c5b_8fb3];
+const TURBO_SPOOL: [u32; 2] = [0x5352_dd98, 0xf675_9d3d];
+const TURBO_RATES: [u32; 4] = [0x9fb6_103d, 0x126f_d4a0, 0xce79_c7c7, 0x8e2e_0ad7];
 
 /// RMS of the calibration render (full throttle at 75 % of the rev range) every engine is scaled to.
 const ENGINE_LEVEL: f32 = 0.3;
@@ -456,7 +488,8 @@ impl EngineBank {
             );
         }
         if rms > 1e-6 {
-            self.bank.master_gain *= (ENGINE_LEVEL / rms).clamp(0.05, 50.0);
+            self.normalisation = (ENGINE_LEVEL / rms).clamp(0.05, 50.0);
+            self.bank.master_gain *= self.normalisation;
         }
     }
 }
@@ -469,6 +502,10 @@ pub mod cue {
     pub const LIMITER: &str = "engine.limiter";
     /// The local player's nitrous timeline ([`AssetStore::nitrous_bank`]).
     pub const NITROUS: &str = "engine.nitrous";
+    /// The turbo's blow-off sequences (`TurboWhine` +0x0c, +0x14, +0x1c, +0x24) and spool sequences (+0x2c,
+    /// +0x34), started by the turbo update (`FUN_0058f8f0`).
+    pub const BLOW_OFF: [&str; 4] = ["turbo.blowoff0", "turbo.blowoff1", "turbo.blowoff2", "turbo.blowoff3"];
+    pub const SPOOL: [&str; 2] = ["turbo.spool0", "turbo.spool1"];
 }
 
 /// Gate bindings for the gear-change sequences (not game names: the game starts one sequence of a list per shift,
@@ -503,25 +540,77 @@ const REV_LIMITER_SEQUENCE: u32 = 0xc62d_11ac;
 impl AssetStore {
     /// The engine bank of a vehicle bundle: the `EngineSound2` with the most sequences.
     pub fn engine_bank(&self, bundle: &mw_bundle::Bundle) -> crate::Result<Option<EngineBank>> {
-        let mut best: Option<Object> = None;
+        let mut best: Option<(ResourceId, Object)> = None;
         for e in bundle.entries_of_type(mw_bundle::ResourceType::GenesysObject) {
             let Ok(obj) = self.decode_genesys(&bundle.load(e)?) else { continue };
             if obj.type_name != "Genesys.Gen.EngineSound2" {
                 continue;
             }
             let n = handles(&obj, ENGINE_SEQUENCES).len();
-            if n > best.as_ref().map_or(0, |b| handles(b, ENGINE_SEQUENCES).len()) {
-                best = Some(obj);
+            if n > best.as_ref().map_or(0, |b| handles(&b.1, ENGINE_SEQUENCES).len()) {
+                best = Some((e.id, obj));
             }
         }
-        let Some(es) = best else { return Ok(None) };
+        let Some((es_id, es)) = best else { return Ok(None) };
         let mut eb = self.engine_bank_from(&es, true);
+        // The player's `VehicleSound` (the one pointing at this `EngineSound2`, +0x48): its transmission whine
+        // (+0x50) and turbo whine (+0x58), started with the engine for the player's car (`FUN_0058c3f0`, entity
+        // +0x1c18). Merged after the normalisation, so they keep the data's level against the engine.
+        let vs = bundle
+            .entries_of_type(mw_bundle::ResourceType::VehicleSound)
+            .filter_map(|e| bundle.load(e).ok())
+            .find(|r| r.import_at(0x48) == Some(es_id));
+        if let Some(vs) = vs {
+            self.add_whines(&mut eb, vs.import_at(0x50), vs.import_at(0x58));
+        }
         // The local player's nitrous sound (`HeatLevelSoundSet.NitrousLocal`), merged into the engine bank: it
         // ducks the engine's own channels and plays on the bank's master level.
         if let Some(nitrous) = self.nitrous_bank() {
             eb.bank.merge(nitrous);
         }
         Ok(Some(eb))
+    }
+
+    /// Add a `Vehicles.Sound.TransmissionWhine` (its `Sequences`: whine loops on `GetTransmissionSpeedMph` /
+    /// `GetReverseTransSpeedMph` with `Auto_Pitch`, channel gains on `GetPlayerGas`) and a
+    /// `Vehicles.Sound.TurboWhine` (`Sequences`: the whine loop on `GetNormalisedRPM`, gain by the engine load,
+    /// channel gain and pitch by the RPM; the blow-off and spool one-shots as cues) to the player's engine bank.
+    fn add_whines(&self, eb: &mut EngineBank, transmission: Option<ResourceId>, turbo: Option<ResourceId>) {
+        let mut loader = SoundLoader::new(self);
+        let mut extra = Bank::default();
+        if let Some(tw) = transmission.and_then(|id| self.genesys_object(id).ok()) {
+            for id in handles(&tw, ENGINE_SEQUENCES) {
+                if let Some(s) = loader.sequence(id) {
+                    extra.sequences.push(s);
+                }
+            }
+        }
+        if let Some(tb) = turbo.and_then(|id| self.genesys_object(id).ok()) {
+            for id in handles(&tb, ENGINE_SEQUENCES) {
+                if let Some(s) = loader.sequence(id) {
+                    extra.sequences.push(s);
+                }
+            }
+            let mut cue_of = |hash: u32, name: &str| -> Option<f32> {
+                let mut s = loader.sequence(handle_of(tb.get(hash))?)?;
+                s.exclusive_cue = true;
+                let length = s.items.iter().map(|it| it.end).fold(s.max, f32::max);
+                extra.sequences.push(s);
+                extra.cues.push((name.to_string(), vec![extra.sequences.len() - 1]));
+                Some(length)
+            };
+            let blow_off: Vec<Option<f32>> = (0..4).map(|k| cue_of(TURBO_BLOW_OFF[k], cue::BLOW_OFF[k])).collect();
+            let spool: Vec<Option<f32>> = (0..2).map(|k| cue_of(TURBO_SPOOL[k], cue::SPOOL[k])).collect();
+            let r = |k: usize| num_hash(&tb, TURBO_RATES[k]).unwrap_or(1.0);
+            eb.turbo = Some(TurboWhine {
+                fall: (r(0), r(1)),
+                rise: (r(2), r(3)),
+                blow_off: [blow_off[0], blow_off[1], blow_off[2], blow_off[3]],
+                spool: [spool[0], spool[1]],
+            });
+        }
+        extra.channels = loader.channels();
+        eb.bank.merge(extra);
     }
 
     /// The local player's nitrous timeline as a one-cue bank ([`cue::NITROUS`]): `HeatLevelSoundSet.NitrousLocal`
@@ -713,7 +802,17 @@ impl AssetStore {
                 .fold(length, f32::min);
             (catch, length)
         });
-        let mut eb = EngineBank { bank, rpm_range, audible_range, harmonic_order, tuning, gear_changes, ignition };
+        let mut eb = EngineBank {
+            bank,
+            rpm_range,
+            audible_range,
+            harmonic_order,
+            tuning,
+            gear_changes,
+            ignition,
+            turbo: None,
+            normalisation: 1.0,
+        };
         if normalise {
             eb.normalise();
         }

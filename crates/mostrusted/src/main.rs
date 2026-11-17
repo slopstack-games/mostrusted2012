@@ -6,11 +6,13 @@
 mod ai;
 mod ai_driver;
 mod audio;
+mod audio_tap;
 mod bench;
 mod bodyshop;
 mod camera;
 mod car_anim;
 mod car_audio;
+mod car_contacts;
 mod car_impacts;
 mod car_sfx;
 mod chassis;
@@ -30,6 +32,7 @@ mod deferred;
 mod drive;
 mod easydrive;
 mod event_card;
+mod event_starts;
 mod exhaust;
 mod flash_probe;
 mod frame_log;
@@ -56,7 +59,9 @@ mod music;
 mod nitrous;
 mod paint_wear;
 mod particles;
+mod pass_mask;
 mod pause;
+mod platform;
 mod player_sfx;
 mod police;
 mod police_audio;
@@ -75,7 +80,9 @@ mod settings;
 mod sfx;
 mod shadow_cull;
 mod sky;
+#[cfg(not(target_arch = "wasm32"))]
 mod steam_controller;
+mod streaming;
 mod tonemap;
 mod traffic;
 mod traffic_lamps;
@@ -83,20 +90,25 @@ mod traffic_reaction;
 mod tyre_marks;
 mod ui_quads;
 mod weather;
+#[cfg(target_arch = "wasm32")]
+mod web;
+mod window_test;
 mod world_coronas;
 mod world_lights;
 mod world_sfx;
 mod world_ui;
+mod zone_view;
 
+use crate::platform::Instant;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bevy::camera_controller::free_camera::{FreeCamera, FreeCameraPlugin};
 use bevy::image::{CompressedImageFormatSupport, CompressedImageFormats};
 use bevy::prelude::*;
-use bevy::render::view::screenshot::{Screenshot, save_to_disk};
+use bevy::render::view::screenshot::Screenshot;
 use clap::Parser;
 use mw_assets::AssetStore;
 use mw_bundle::ResourceId;
@@ -209,13 +221,16 @@ struct Cli {
     #[arg(long)]
     merge_static: bool,
     /// Debug: draw the backdrop of every track unit unfiltered (all LOD tiers stacked: coarse terrain and
-    /// building stand-ins overlap the detailed world). The default composes one backdrop per place from the
-    /// zone that owns it.
+    /// building stand-ins overlap the detailed world). The default draws the camera zone's backdrop.
     #[arg(long, conflicts_with_all = ["no_backdrop", "backdrop_zone"])]
     all_backdrops: bool,
     /// Debug: draw only this track unit's backdrop, as the game does while the player is in that unit.
     #[arg(long, conflicts_with = "no_backdrop")]
     backdrop_zone: Option<u32>,
+    /// Draw one backdrop composed per place from the zone owning it, and every unit's main geometry (the
+    /// behaviour before 2026-10-19). The default follows the camera's zone as the game does (`zone_view.rs`).
+    #[arg(long, conflicts_with_all = ["no_backdrop", "all_backdrops", "backdrop_zone"])]
+    composed_backdrop: bool,
     /// Debug: with --all-backdrops or --backdrop-zone, also draw backdrop LOD2 stand-ins.
     #[arg(long)]
     keep_lod_proxies: bool,
@@ -225,7 +240,7 @@ struct Cli {
     /// Disable the background music.
     #[arg(long)]
     no_music: bool,
-    /// Disable all audio.
+    /// Disable all audio (also `MW_MUTE=1`, which `tools/hl` sets for headless runs).
     #[arg(long)]
     mute: bool,
     /// Volumes for this run, over the saved settings: `master=0.8,engine=1,sfx=0.5,music=0.3` (0..1 or %).
@@ -253,9 +268,18 @@ struct Cli {
     /// Capture `--screenshot` this many seconds of game time after the first exhaust backfire (`exhaust.rs`).
     #[arg(long)]
     screenshot_after_backfire: Option<f32>,
-    /// Limit the number of streamed track units (nearest first).
+    /// Load this many track units once, nearest first, instead of streaming the focus zone and its neighbours
+    /// (`streaming.rs`).
     #[arg(long)]
     units: Option<usize>,
+    /// Load every track unit once and keep it (the behaviour before streaming; A/B and full-map views). The
+    /// default for a free camera without `--drive` (its aerial view needs every unit, `streaming.rs`).
+    #[arg(long, conflicts_with = "stream")]
+    load_all: bool,
+    /// Without `--drive`: stream around the free camera as the game streams around its camera, instead of
+    /// loading every unit.
+    #[arg(long)]
+    stream: bool,
     /// Camera pose as `x,y,z,look_x,look_y,look_z` (overrides the default view; with --drive in the world, a
     /// fixed camera instead of the chase camera).
     #[arg(long, value_delimiter = ',', allow_hyphen_values = true)]
@@ -443,7 +467,11 @@ pub(crate) struct Loaded {
     mask_materials: HashSet<AssetId<GameMaterial>>,
     /// Models' own shadow distances (`loader::Msg::ShadowRange`).
     shadow_ranges: HashMap<ResourceId, f32>,
+    /// Models' pass masks (`loader::Msg::PassMask`, `pass_mask.rs`).
+    pass_masks: HashMap<ResourceId, u8>,
     instances: usize,
+    /// The tag for the world placements being received (`loader::Msg::ZoneTag`, `zone_view.rs`).
+    zone_tag: Option<zone_view::ZoneTag>,
     /// Placements with physics (`props.rs`).
     props: usize,
     status: String,
@@ -455,16 +483,27 @@ pub(crate) struct Loaded {
 #[derive(Component)]
 pub struct StatusText;
 
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> anyhow::Result<()> {
-    drive::install_gamepad_mappings();
     let cli = Cli::parse();
+    let game = GameDir::locate(cli.game_dir.as_deref())?;
+    run(cli, game)
+}
+
+/// In a browser the page starts the game (`web.rs`) once it has the install's files.
+#[cfg(target_arch = "wasm32")]
+fn main() {}
+
+/// Everything after the install is found: the same on the desktop and in a browser.
+fn run(mut cli: Cli, game: GameDir) -> anyhow::Result<()> {
+    drive::install_gamepad_mappings();
+    cli.mute |= std::env::var_os("MW_MUTE").is_some_and(|v| v != "0");
     if cli.bench.is_some() && std::env::var_os("WAYLAND_DISPLAY").is_some() && std::env::var_os("DISPLAY").is_some() {
         // Wayland offers no Immediate present mode and paces Mailbox at the monitor's refresh: benchmark
         // through XWayland, where `AutoNoVsync` gets Immediate (`bench.rs`).
         // SAFETY: no other thread has started yet.
         unsafe { std::env::remove_var("WAYLAND_DISPLAY") };
     }
-    let game = GameDir::locate(cli.game_dir.as_deref())?;
     println!("Most Wanted install: {} (version {})", game.root().display(), game.version().unwrap_or("?"));
     let t = Instant::now();
     let store = Arc::new(AssetStore::new(game)?);
@@ -629,7 +668,9 @@ fn main() -> anyhow::Result<()> {
                     | Some("pursuit")
                     | Some("cops")
             );
-        let track = cli.test_track || (cli.test.is_some() && !street_test) || cli.replay.is_some();
+        // A replay with `--spawn` runs in the world from that point (kerbs and road against the original's capture).
+        let track =
+            cli.test_track || (cli.test.is_some() && !street_test) || (cli.replay.is_some() && cli.spawn.is_empty());
         let spawn = if track { Vec3::new(0.0, 1.0, 0.0) } else { spawn };
         let props =
             if cli.test.as_deref() == Some("smash") { props::smash_test_props(&cli.smash_set) } else { Vec::new() };
@@ -683,7 +724,10 @@ fn main() -> anyhow::Result<()> {
     if (cli.test.is_some() || cli.replay.is_some()) && drive.is_none() {
         anyhow::bail!("--test / --replay need --drive <car>");
     }
-    let replay = cli.replay.as_deref().map(replay::Replay::load).transpose()?;
+    let mut replay = cli.replay.as_deref().map(replay::Replay::load).transpose()?;
+    if let Some(r) = &mut replay {
+        r.world = !cli.spawn.is_empty();
+    }
     let script = if cli.swap_to.is_empty() {
         None
     } else {
@@ -714,10 +758,12 @@ fn main() -> anyhow::Result<()> {
             (true, _, _) => loader::BackdropMode::None,
             (_, true, _) => loader::BackdropMode::All,
             (_, _, Some(unit)) => loader::BackdropMode::Zone(unit),
-            _ => loader::BackdropMode::Composed,
+            _ if cli.composed_backdrop => loader::BackdropMode::Composed,
+            _ => loader::BackdropMode::CameraZone,
         },
         no_groundcover: cli.no_groundcover,
         no_merge: !cli.merge_static,
+        load_all: cli.load_all || (matches!(request, Request::World { .. }) && !cli.stream),
         keep_lod_proxies: cli.keep_lod_proxies,
         paint_index: cli.paint_index,
         no_prop_physics: cli.no_prop_physics && !smash,
@@ -777,6 +823,9 @@ fn main() -> anyhow::Result<()> {
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
             title: "Most Rusted".into(),
+            // In a browser: the page's canvas, sized by its parent.
+            canvas: cfg!(target_arch = "wasm32").then(|| "#mostrusted".into()),
+            fit_canvas_to_parent: cfg!(target_arch = "wasm32"),
             // Unthrottled frames for `--frame-stats`.
             present_mode: if cli.frame_stats || cli.bench.is_some() {
                 bevy::window::PresentMode::AutoNoVsync
@@ -787,6 +836,11 @@ fn main() -> anyhow::Result<()> {
         }),
         ..default()
     }));
+    // `--mute` / `MW_MUTE=1`: silence at the output too, so no voice that misses its module's own mute check is heard
+    // (headless runs through `tools/hl` must never be audible). After DefaultPlugins, which inserts `GlobalVolume`.
+    if cli.mute {
+        app.insert_resource(bevy::audio::GlobalVolume::new(bevy::audio::Volume::SILENT));
+    }
     // The game advances at most 2/60 s per frame (decomp.md "Update loop": one 2/60 catch-up step, even after
     // a stall). Bevy's default catches up 250 ms of fixed steps after a slow frame, which makes the next frames
     // slower too. The clamp is on real time, before the relative speed (`--test` runs 4x, so 8 steps there).
@@ -796,7 +850,7 @@ fn main() -> anyhow::Result<()> {
     }
     bevy::asset::embedded_asset!(app, "layered.wgsl");
     bevy::asset::embedded_asset!(app, "groundcover.wgsl");
-    app.add_systems(Startup, materials::load_groundcover_shader);
+    app.add_systems(Startup, (materials::load_groundcover_shader, materials::insert_game_sampler));
     if let Some(r) = replay {
         app.insert_resource(r)
             .add_systems(FixedUpdate, replay::run_replay.before(drive::car_physics))
@@ -882,7 +936,10 @@ fn main() -> anyhow::Result<()> {
     if cli.gamepad_debug {
         app.add_systems(Update, drive::log_gamepad_events);
     }
-    app.add_plugins((steam_controller::SteamControllerPlugin, input::MenuInputPlugin, input_script::InputScriptPlugin));
+    // The Steam Controller is read from its HID interface: not in a browser (its Gamepad API covers pads).
+    #[cfg(not(target_arch = "wasm32"))]
+    app.add_plugins(steam_controller::SteamControllerPlugin);
+    app.add_plugins((input::MenuInputPlugin, input_script::InputScriptPlugin));
     // The environment timeline: `--timeline`, else the one painted where the view starts (the camera
     // pose or the drive spawn; the default timeline until the world view has a focus).
     let fixed_timeline =
@@ -906,7 +963,7 @@ fn main() -> anyhow::Result<()> {
         && cli.road_wetness > 0.0
         && matches!(request, Request::World { .. } | Request::Drive { world: true, .. });
     app.add_plugins(weather::WeatherPlugin { hud: menu_enabled })
-        .add_plugins(shadow_cull::ShadowCullPlugin)
+        .add_plugins((shadow_cull::ShadowCullPlugin, pass_mask::PassMaskPlugin))
         .add_plugins(lod::LodPlugin)
         .add_plugins(prewarm::PrewarmPlugin)
         .add_plugins(reflection::PlanarReflectionPlugin { enabled: reflection })
@@ -939,6 +996,7 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(camera::CameraPlugin { mode: camera_mode, look_back })
         .add_plugins(crash::CrashPlugin)
         .add_plugins(car_impacts::CarImpactsPlugin)
+        .add_plugins(car_contacts::CarContactsPlugin)
         .add_plugins(nitrous::NitrousPlugin)
         .add_plugins(exhaust::ExhaustPlugin)
         .add_plugins(ignition::IgnitionPlugin { crank_at_spawn: cli.test.is_none() && cli.replay.is_none() })
@@ -1011,7 +1069,8 @@ fn main() -> anyhow::Result<()> {
         .add_plugins(gps::GpsPlugin)
         .add_plugins(game_text::GameTextPlugin)
         .add_plugins(ui_quads::UiQuadsPlugin)
-        .add_plugins((world_ui::WorldUiPlugin, gate_marker::GateMarkerPlugin))
+        .add_plugins(window_test::WindowTestPlugin)
+        .add_plugins((world_ui::WorldUiPlugin, gate_marker::GateMarkerPlugin, event_starts::EventStartsPlugin))
         .add_plugins(hud::HudPlugin {
             enabled: !cli.no_hud && test.is_none() && !crash && !smash && !matches!(request, Request::Vehicle { .. }),
             metric: !cli.mph,
@@ -1035,6 +1094,7 @@ fn main() -> anyhow::Result<()> {
         ))
         .add_plugins(car_lights::CarLightsPlugin)
         .add_plugins(audio::GameAudioPlugin)
+        .add_plugins(audio_tap::AudioTapPlugin)
         .add_plugins(music::MusicPlugin {
             enabled: std::env::var("MW_MUSIC").is_ok_and(|v| v == "1")
                 || (!cli.no_music
@@ -1076,11 +1136,19 @@ fn main() -> anyhow::Result<()> {
         .insert_resource(ClearColor(Color::srgb(0.55, 0.68, 0.85)))
         .init_resource::<Loaded>()
         .init_resource::<groundcover::GroundcoverResidency>()
+        .init_resource::<zone_view::ZoneView>()
+        .init_resource::<streaming::StreamRegistry>()
+        .init_resource::<streaming::PlacementFocus>()
         .add_systems(Startup, (setup, cpu_light_clustering))
         .add_systems(Update, (start_loader, receive_assets, update_status, auto_screenshot))
         .add_systems(
+            Update,
+            (streaming::send_focus, streaming::despawn_streamed, streaming::streaming_stall).after(receive_assets),
+        )
+        .add_systems(
             PostUpdate,
-            groundcover::groundcover_visibility
+            (zone_view::zone_view_visibility, groundcover::groundcover_visibility)
+                .chain()
                 .before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate),
         )
         .add_systems(Update, (drive_vehicle_lights, apply_vehicle_lights).chain());
@@ -1196,9 +1264,10 @@ fn start_loader(
     let Some(support) = support else { return };
     let bc = support.0.contains(CompressedImageFormats::BC);
     loaded.started = Some(Instant::now());
-    let (channel, requests) = loader::spawn(game.store.clone(), game.request.clone(), bc, game.filter.clone());
+    let (channel, requests, focus) = loader::spawn(game.store.clone(), game.request.clone(), bc, game.filter.clone());
     commands.insert_resource(channel);
     commands.insert_resource(requests);
+    commands.insert_resource(focus);
 }
 
 /// Turn loader messages into assets and entities, within a per-frame budget.
@@ -1218,8 +1287,8 @@ fn receive_assets(
     mut opponents: ResMut<ai::Opponents>,
     mut surfaces: ResMut<props::WorldSurfaces>,
     (mut traffic_models, mut parked_models): (Option<ResMut<traffic::TrafficModels>>, ResMut<jackspots::ParkedModels>),
-    mut residency: ResMut<groundcover::GroundcoverResidency>,
-    mut streamed: ResMut<frontend::Residency>,
+    (mut residency, mut zone_view): (ResMut<groundcover::GroundcoverResidency>, ResMut<zone_view::ZoneView>),
+    (mut streamed, mut registry): (ResMut<frontend::Residency>, ResMut<streaming::StreamRegistry>),
 ) {
     let Some(channel) = channel else { return };
     let rx = channel.0.lock().unwrap();
@@ -1265,6 +1334,9 @@ fn receive_assets(
             Msg::ShadowRange(id, d) => {
                 loaded.shadow_ranges.insert(id, d);
             }
+            Msg::PassMask(id, m) => {
+                loaded.pass_masks.insert(id, m);
+            }
             Msg::Instance { model, transform, lod } => {
                 let Some(parts) = loaded.models.get(&model) else { continue };
                 // Groundcover (model keys 0x6…, `loader::groundcover`) casts no shadows.
@@ -1301,13 +1373,41 @@ fn receive_assets(
                 if let Some(l) = lod {
                     root.insert(lod::ModelLod::new(l.table, l.scale, lod_meshes));
                 }
+                if let Some(&m) = loaded.pass_masks.get(&model) {
+                    root.insert(pass_mask::PassMask(m));
+                }
+                if let Some(tag) = &loaded.zone_tag {
+                    root.insert(tag.clone());
+                }
+                registry.register(root.id());
                 loaded.instances += 1;
             }
+            Msg::ZoneTag(tag) => loaded.zone_tag = tag,
             Msg::Zones(zones) => {
+                zone_view.set_zones(zones.clone());
                 streamed.set_zones(zones.clone());
                 residency.set_zones(zones);
             }
-            Msg::UnitLoaded(unit) => streamed.unit_loaded(unit),
+            Msg::UnitLoaded(unit) => {
+                registry.begin_unit(None);
+                streamed.unit_loaded(unit);
+                zone_view.unit_loaded(unit);
+            }
+            Msg::UnitBegin(unit) => registry.begin_unit(Some(unit)),
+            Msg::StreamKey(key) => registry.set_key(key),
+            Msg::UnitUnloaded(u) => {
+                let unit = u.unit;
+                streamed.unit_unloaded(unit);
+                zone_view.unit_unloaded(unit);
+                streaming::unloaded(*u, &mut registry, &mut loaded);
+                commands.queue(move |world: &mut World| {
+                    world.resource_mut::<world_lights::LightSources>().remove_unit(unit)
+                });
+            }
+            Msg::Streaming => {
+                registry.streaming = true;
+                zone_view.set_streaming();
+            }
             Msg::GroundcoverListing { unit, collections } => residency.add_listing(unit, collections),
             Msg::Groundcover { model, collection, min, max, range, bounds } => {
                 let Some(parts) = loaded.models.get(&model) else { continue };
@@ -1315,7 +1415,9 @@ fn receive_assets(
                 // The vertex shader expands each sprite from its base point (`groundcover.wgsl`), so the
                 // mesh's own bounds are too small: the loader's cover every turned, swaying sprite.
                 let aabb = bevy::camera::primitives::Aabb::from_min_max(bounds.0, bounds.1);
-                commands.spawn((Transform::IDENTITY, Visibility::Hidden, range)).with_children(|c| {
+                let mut root = commands.spawn((Transform::IDENTITY, Visibility::Hidden, range));
+                registry.register_groundcover(collection, root.id());
+                root.with_children(|c| {
                     for (mesh, mat) in parts {
                         c.spawn((
                             Mesh3d(mesh.clone()),
@@ -1352,7 +1454,7 @@ fn receive_assets(
                         lod: lod.map(|l| (l.table, l.scale)),
                     })
                 });
-                props::spawn_prop(
+                let root = props::spawn_prop(
                     &mut commands,
                     physics,
                     Transform::from_matrix(transform),
@@ -1363,15 +1465,23 @@ fn receive_assets(
                     standing,
                     found,
                 );
+                if let Some(&m) = loaded.pass_masks.get(&model) {
+                    commands.entity(root).insert(pass_mask::PassMask(m));
+                }
+                registry.register(root);
                 loaded.instances += 1;
                 loaded.props += 1;
             }
             Msg::Collider(c, tags) => {
-                commands.spawn((avian3d::prelude::RigidBody::Static, c, props::SurfaceTags(tags)));
+                let e = commands.spawn((avian3d::prelude::RigidBody::Static, c, props::SurfaceTags(tags))).id();
+                registry.register(e);
             }
             Msg::Surfaces(list) => surfaces.list = list,
             Msg::Lights(lights) => {
-                commands.queue(move |world: &mut World| world.resource_mut::<world_lights::LightSources>().add(lights));
+                let unit = registry.unit();
+                commands.queue(move |world: &mut World| {
+                    world.resource_mut::<world_lights::LightSources>().add_unit(unit, lights)
+                });
             }
             Msg::PropResponses(r) => {
                 info!("prop contact responses: {r:?}");
@@ -1406,7 +1516,8 @@ fn receive_assets(
             }
             Msg::Done => {
                 loaded.done = true;
-                streamed.all_sent = true;
+                // While streaming, residency follows the loaded units (`streaming.rs`).
+                streamed.all_sent = !registry.streaming;
                 if let Some(t) = loaded.started {
                     info!(
                         "loading finished in {:.1?}: {} instances, {} with physics",
@@ -1524,7 +1635,7 @@ fn auto_screenshot(
         match *frames_after_done {
             n if n == game.screenshot_delay.max(1) => {
                 info!("screenshot at {:.2} s game time", time.elapsed_secs());
-                commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path.clone()));
+                commands.spawn(Screenshot::primary_window()).observe(platform::save_screenshot(path.clone()));
             }
             n if n == game.screenshot_delay.max(1) + 30 => {
                 exit.write(AppExit::Success);
@@ -1542,7 +1653,7 @@ fn auto_screenshot(
     *frames_after_done += 1;
     match *frames_after_done {
         n if n == game.screenshot_delay => {
-            commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path.clone()));
+            commands.spawn(Screenshot::primary_window()).observe(platform::save_screenshot(path.clone()));
         }
         n if n == game.screenshot_delay + 30 => {
             exit.write(AppExit::Success);
@@ -1568,7 +1679,8 @@ fn spawn_test_track(
         mesh.compute_smooth_normals();
         commands.spawn((
             RigidBody::Static,
-            Collider::trimesh(vertices, indices),
+            // As the world's colliders (`loader.rs`).
+            Collider::trimesh_with_config(vertices, indices, avian3d::prelude::TrimeshFlags::FIX_INTERNAL_EDGES),
             Mesh3d(meshes.add(mesh)),
             MeshMaterial3d(materials.add(StandardMaterial { base_color: Color::srgb(0.5, 0.45, 0.4), ..default() })),
         ));

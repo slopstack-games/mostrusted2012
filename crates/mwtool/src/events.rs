@@ -65,8 +65,12 @@ fn summary(events: &Events, text: &dyn Fn(u32) -> String, car: &dyn Fn(u32) -> S
             continue;
         }
         let career = if in_list.contains(&e.id) { "" } else { " (not in an EventList)" };
+        let mut ai_cars: Vec<String> =
+            e.opponents.iter().map(|o| o.rollout.map_or("?".into(), |r| car(r.vehicle))).collect();
+        ai_cars.dedup();
+        let ai_cars = if ai_cars.is_empty() { String::new() } else { format!("; AI: {}", ai_cars.join(", ")) };
         println!(
-            "{:>8}  {:<12} {:>4} {:>3} {:>3}  {:<26} {:<24} {}{career}",
+            "{:>8}  {:<12} {:>4} {:>3} {:>3}  {:<26} {:<24} {}{career}{ai_cars}",
             e.id,
             e.kind.label(),
             e.laps,
@@ -105,8 +109,16 @@ fn detail(events: &Events, e: &Event, text: &dyn Fn(u32) -> String, car: &dyn Fn
         text(e.type_name)
     );
     println!(
-        "  laps {}, nitrous {}, traffic {}, first place only {}, target speed {:?}, target time {:?}",
-        e.laps, e.nitrous_allowed, e.traffic_enabled, e.first_place_only, e.target_speed, e.target_time
+        "  laps {}, nitrous {}, traffic {}, first place only {}, skip the player's car's AI {}, target speed {:?}, \
+         target time {:?}, heat levels {:?}",
+        e.laps,
+        e.nitrous_allowed,
+        e.traffic_enabled,
+        e.first_place_only,
+        e.skip_player_car_ai,
+        e.target_speed,
+        e.target_time,
+        e.heat_levels
     );
     match &e.spawn {
         Some(s) => println!(
@@ -150,9 +162,18 @@ fn detail(events: &Events, e: &Event, text: &dyn Fn(u32) -> String, car: &dyn Fn
         let at = o.start.map_or("unresolved".into(), |s| {
             format!("({:.1}, {:.1}, {:.1})", s.position[0], s.position[1], s.position[2])
         });
+        let rollout = o.rollout.map_or("no rollout".into(), |r| {
+            let up = [r.body_upgrade, r.nitrous_upgrade, r.tyre_upgrade];
+            format!("rollout {} car {} ({}), colour {}, upgrades {up:?}", r.id, r.vehicle, car(r.vehicle), r.colour)
+        });
         println!(
-            "    AI type {:>8}, placement {:>8} {at}, 9b4e35f7 {}, colour {}",
-            o.ai_type, o.placement_id, o.unknown_9b4e, o.colour
+            "    AI type {:>8}{}{}, placement {:>8} {at}, colour {} (else {}); {rollout}",
+            o.ai_type,
+            if o.most_wanted { " (Most Wanted)" } else { "" },
+            if o.cop { " (cop)" } else { "" },
+            o.placement_id,
+            o.colour,
+            o.alt_colour
         );
     }
     for a in &e.alternate_routes {
@@ -492,96 +513,4 @@ fn print_ui_sequence(seq: &mw_assets::sequence::Sequence, depth: usize) {
             print_ui_sequence(s, depth + 2);
         }
     }
-}
-
-/// `mwtool hsm`: the game logic's state machines.
-pub fn hsm(
-    store: &AssetStore,
-    bundle: &str,
-    node: Option<u32>,
-    find: Option<&str>,
-    depth: usize,
-    parents: bool,
-) -> Result<()> {
-    use mw_formats::hsm::key_name;
-    let data = store.hsm_data(bundle)?;
-    if let (true, Some(id)) = (parents, node) {
-        // Who starts this node: a parent's child list / ENTER event, or a sibling's transition.
-        for n in &data.nodes {
-            let child = n.children.iter().any(|c| c.id == id);
-            let enter = n.events.iter().any(|e| e.nodes.contains(&id));
-            for c in &n.children {
-                for t in c.transitions.iter().filter(|t| t.targets.contains(&id)) {
-                    println!("{:8} {:?}: child {} on {} starts it", n.id, n.name, c.id, key_name(t.exit));
-                }
-            }
-            if child || enter {
-                println!(
-                    "{:8} {:?}: {}",
-                    n.id,
-                    n.name,
-                    if enter { "starts it on an event" } else { "has it as a child" }
-                );
-            }
-        }
-        return Ok(());
-    }
-    if let Some(text) = find {
-        for n in data.nodes.iter().filter(|n| n.name.to_lowercase().contains(&text.to_lowercase())) {
-            println!("{:8} [{:08x}] {}", n.id, n.code, n.name);
-        }
-        return Ok(());
-    }
-    let Some(root) = node else {
-        let children: std::collections::HashSet<u32> =
-            data.nodes.iter().flat_map(|n| n.children.iter().map(|c| c.id)).collect();
-        println!(
-            "{} nodes, {} entry points, {} behaviour types; roots with children:",
-            data.nodes.len(),
-            data.entries.len(),
-            data.behaviours.len()
-        );
-        for n in data.nodes.iter().filter(|n| !children.contains(&n.id) && !n.children.is_empty()) {
-            println!("{:8} {} ({} children)", n.id, n.name, n.children.len());
-        }
-        return Ok(());
-    };
-    fn show(data: &mw_formats::hsm::HsmData, id: u32, depth: usize, max: usize) {
-        let pad = "  ".repeat(depth);
-        let Some(n) = data.node(id) else {
-            println!("{pad}? {id}");
-            return;
-        };
-        let params: Vec<String> = n.parameters.iter().map(|(k, v)| format!("{}={v:?}", key_name(*k))).collect();
-        let init: Vec<u32> = n.initial().collect();
-        println!(
-            "{pad}{} [{:08x}] {:?} {}{}{}",
-            n.id,
-            n.code,
-            n.name,
-            params.join(" "),
-            if init.is_empty() { String::new() } else { format!(" starts {init:?}") },
-            if n.has_lua { " (Lua)" } else { "" }
-        );
-        if depth >= max {
-            return;
-        }
-        for c in &n.children {
-            show(data, c.id, depth + 1, max);
-            for t in &c.transitions {
-                let names: Vec<String> = t
-                    .targets
-                    .iter()
-                    .map(|t| format!("{t} {:?}", data.node(*t).map_or("?", |n| n.name.as_str())))
-                    .collect();
-                println!(
-                    "{pad}    on {} -> {}",
-                    key_name(t.exit),
-                    if names.is_empty() { "(done)".into() } else { names.join(", ") }
-                );
-            }
-        }
-    }
-    show(&data, root, 0, depth);
-    Ok(())
 }

@@ -5,7 +5,11 @@
 //! forwards that DLL's exports to the real one in `system32`, and runs its own thread. **Phase 0 (hello)**:
 //! the thread logs when it was loaded, when the game's code became stable (the wrapper has unpacked it) and
 //! when gameplay began (the vehicle table exists), into `probe.log` in the directory named by the
-//! `MW_PROBE_OUT` environment variable (a Unix path; Wine maps `/` to `Z:`). Nothing is patched yet.
+//! `MW_PROBE_OUT` environment variable (a Unix path; Wine maps `/` to `Z:`). Memory dumps on request
+//! (`dump.req`). Capture helpers (`control.rs`, docs/probe.md "Capture helpers"): two vtable slots are pointed at
+//! thunks once the game has unpacked itself (the race car's per-tick update and the free-drive "Car Swap Logic"
+//! behaviour's per-frame update), for teleports, the car swap, scripted inputs, fixed conditions and a per-tick
+//! log. No instruction of the game is rewritten.
 //!
 //! Only `tools/orig/orig launch --probe` puts this DLL next to the game and enables the DLL override for
 //! that run; `orig quit` removes it. Build:
@@ -21,6 +25,8 @@ use std::fmt::Write as _;
 use std::io::Write as _;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
+
+mod control;
 
 /// Base address of `NFS13.exe` (no ASLR: `DllCharacteristics` has no `DYNAMIC_BASE`).
 const IMAGE_BASE: usize = 0x0040_0000;
@@ -339,6 +345,9 @@ fn hello(real_loaded: bool, missing: Vec<&'static str>) {
     let mut reported_gameplay = false;
     let mut next_beat = Duration::from_secs(5);
     let mut next_request = Duration::ZERO;
+    let mut next_control = Duration::ZERO;
+    let mut next_status = Duration::ZERO;
+    let dir = out_dir();
     log(&format!("tick fn {TICK_FN:#010x}: initial hash {last_hash:08x?}"));
     loop {
         std::thread::sleep(Duration::from_millis(10));
@@ -363,6 +372,17 @@ fn hello(real_loaded: bool, missing: Vec<&'static str>) {
         if start.elapsed() >= next_request {
             serve_dump_requests();
             next_request = start.elapsed() + Duration::from_millis(200);
+        }
+        if reported_stable && start.elapsed() >= next_control {
+            if let Some(dir) = &dir {
+                control::service(dir);
+                if start.elapsed() >= next_status {
+                    control::write_status(dir);
+                    control::flush_running();
+                    next_status = start.elapsed() + Duration::from_millis(500);
+                }
+            }
+            next_control = start.elapsed() + Duration::from_millis(50);
         }
         if start.elapsed() >= next_beat {
             log(&format!(
@@ -395,7 +415,10 @@ fn attach(module: HMODULE) {
 pub extern "system" fn DllMain(module: HMODULE, reason: u32, _reserved: *mut c_void) -> BOOL {
     match reason {
         DLL_PROCESS_ATTACH => attach(module),
-        DLL_PROCESS_DETACH => log("probe unloading"),
+        DLL_PROCESS_DETACH => {
+            control::uninstall_hooks();
+            log("probe unloading")
+        }
         _ => {}
     }
     1

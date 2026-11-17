@@ -30,11 +30,11 @@
 //! traced), and the profile (car, position) is our own file, saved every 10 s like the game's "Regular
 //! Autosave" state.
 
+use crate::platform::Instant;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, channel};
-use std::time::Instant;
 
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
@@ -154,6 +154,11 @@ impl Residency {
         self.loaded.insert(unit);
     }
 
+    /// The unit left the stream set (`streaming.rs`).
+    pub fn unit_unloaded(&mut self, unit: u32) {
+        self.loaded.remove(&unit);
+    }
+
     /// `Resident(p, r)` (`FUN_0054b540` → `FUN_0054b340`): the zone holding `p` is loaded and so is every
     /// neighbour zone within `r` of `p`. Without a zone list, or once the loader is done, everything is.
     pub fn resident(&self, p: Vec3, r: f32) -> bool {
@@ -263,7 +268,7 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>, front: Res<Fron
     }
     let store = game.store.clone();
     let (tx, rx) = channel();
-    std::thread::Builder::new()
+    crate::platform::thread::Builder::new()
         .name("mw-frontend".into())
         .spawn(move || {
             let t = Instant::now();
@@ -302,7 +307,9 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>, front: Res<Fron
                     instance: inst,
                 });
             }
-            let scene = store.ui_scene(layouts, &lang);
+            let mut scene = store.ui_scene(layouts, &lang);
+            // Title, transition and loading screens are letterboxed like the original (`UiFrame::letterbox`).
+            scene.letterbox = true;
             let mut images: Vec<(ResourceId, Image)> = scene
                 .textures()
                 .into_iter()
@@ -420,7 +427,7 @@ fn track_ready(
 
 /// A seed for the random picks (the game seeds its PCG-style generator from the clock too).
 pub(crate) fn clock_seed() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64)
+    crate::platform::time_seed()
 }
 
 fn next_random(seed: &mut u64) -> usize {
@@ -767,7 +774,9 @@ fn draw(
             base.push(full([1.0; 4], None));
             if let Some(m) = movie.as_ref().filter(|m| m.ready) {
                 textures.insert(MOVIE_KEY, (m.image.clone(), Vec2::new(640.0, 360.0)));
-                base.push(full([1.0; 4], Some(MOVIE_KEY)));
+                // The 16:9 movie fills the letterboxed frame (capture `ref/ui-2026-10-19/title_1024x768.png`).
+                let rect = mw_assets::ui::UiFrame::letterbox(screen).rect();
+                base.push(Quad { rect, ..full([1.0; 4], Some(MOVIE_KEY)) });
             }
             if let Some(seq) = title.as_ref() {
                 add_items(seq, front.clock, &mut active, &mut base);
@@ -805,6 +814,10 @@ fn draw(
             lookup(p, a, &front, strings, pictures, pad)
         };
         quads.extend(scene.draw_with(screen, &mut lk, &mut options));
+    }
+    // The black bars outside the letterboxed frame (`FUN_006240b0`).
+    if !quads.is_empty() {
+        quads.extend(mw_assets::ui::UiFrame::letterbox(screen).bars(screen));
     }
     if std::env::var_os("MW_FE_QUADS").is_some() && DUMP.swap(false, std::sync::atomic::Ordering::Relaxed) {
         info!("front end {:?} clock {:.2}: screen {screen:?}", front.phase, front.clock);

@@ -1,5 +1,6 @@
 //! The song manager (`UISongManager`, per-frame `FUN_007a4010`; docs/decomp.md "Music").
 
+use crate::platform::PollLock;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
@@ -73,9 +74,7 @@ pub struct SongManager {
 
 impl Default for SongManager {
     fn default() -> Self {
-        let seed =
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64);
-        Self::with_seed(seed)
+        Self::with_seed(crate::platform::time_seed())
     }
 }
 
@@ -221,10 +220,10 @@ fn poll<T: Send + 'static>(job: &mut Option<Job<T>>, f: impl FnOnce() -> T + Sen
     let slot = job.get_or_insert_with(|| {
         let slot = Arc::new(Mutex::new(None));
         let out = slot.clone();
-        std::thread::spawn(move || *out.lock().unwrap() = Some(f()));
+        crate::platform::thread::spawn(move || *out.lock().unwrap() = Some(f()));
         slot
     });
-    let done = slot.lock().unwrap().take();
+    let done = slot.poll_lock().and_then(|mut s| s.take());
     if done.is_some() {
         *job = None;
     }

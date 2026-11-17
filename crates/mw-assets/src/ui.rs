@@ -8,13 +8,114 @@ use mw_formats::ui::{Element, ElementKind, Layout, LayoutInstance, Screen, TextS
 
 use crate::{AssetStore, Error, Result};
 
-/// The free-roam driving HUD screen: Speedwall / Recommends / EngineOffHud widgets, the speed-point
-/// counter, minimap, nitrous gauge (research log, 2026-10-04 UI section).
-pub const FREE_ROAM_HUD: &str = "UI/SCREENS2/371670.BNDL";
+/// The free-roam driving HUD screen, `Screen2` "FreedriveHud" (the same bundle as Easydrive's menu): the
+/// speed-point counter, minimap, nitrous gauge, the Easydrive prompt and its backing (`EngineOffHud`). Until
+/// 2026-10-19 the HUD read 371670, "AmbushHud" (the Ambush event's screen: same widgets but no `EngineOffHud`
+/// backing, `Speedwall` / `Recommends` instead of `HackEasyDrive`).
+pub const FREE_ROAM_HUD: &str = "UI/SCREENS2/371621.BNDL";
 
 /// Ink of a key's name inside a key box and of the box (the prompt labels' dark and light, linear).
 const KEY_INK: [f32; 3] = [0.005_181_5, 0.005_181_5, 0.005_181_5];
 const KEY_BOX: [f32; 3] = [0.830_77, 0.830_77, 0.830_77];
+
+/// The `WorldPaintMap` that paints the districts over the world (`GAMELOGIC/GAMEPLAY.BNDL`): its entries are the
+/// `PaintLayer`s of `GameLogicConfig.DistrictConfig.Districts` (10 districts, 10 entries besides "nothing").
+pub const DISTRICT_PAINT_MAP: ResourceId = ResourceId(0x0100_0000_0002_823e);
+/// The `GameLogicConfig` object (`GLOBALCONFIG.BNDL`, its only one).
+const GAME_LOGIC_CONFIG: ResourceId = ResourceId(0x0100_0000_0004_5e6f);
+
+/// The districts (`Players.LocalPlayer.CurrentDistrictName`, the plate above the minimap): the paint map and,
+/// per paint layer, the district's name (Language id). The binding's code (`Player.CurrentDistrictName`, a
+/// field at player +0x300 registered in the `Player` binding table) was not traced to its writer; the link
+/// from a position to a name through this map is our reading of the data (each paint layer is exactly one
+/// district's, and the plate at the original's start reads FAIRHAVEN, the district painted there).
+#[derive(Debug, Clone)]
+pub struct Districts {
+    pub map: fmt::WorldPaintMap,
+    /// Paint layer (UniqueId) → district name (Language id).
+    pub names: HashMap<u32, u32>,
+}
+
+impl Districts {
+    /// The name (Language id) of the district painted at a world position.
+    pub fn name_at(&self, x: f32, z: f32) -> Option<u32> {
+        self.map.entry_at(x, z).and_then(|layer| self.names.get(&layer).copied())
+    }
+}
+
+impl AssetStore {
+    /// [`Districts`]: `GameLogicConfig` field `DistrictConfig.Districts[]` {`Name`,
+    /// `PaintLayer`} and [`DISTRICT_PAINT_MAP`].
+    pub fn districts(&self) -> Result<Districts> {
+        use fmt::genesys::{Value, field_hash as h};
+        let cfg = self.genesys_object(GAME_LOGIC_CONFIG)?;
+        let num = |o: &fmt::genesys::Object, f: &str| match o.get(h(f)) {
+            Some(Value::UInt(u)) => Some(*u as u32),
+            Some(Value::Int(i)) => Some(*i as u32),
+            _ => None,
+        };
+        let mut names = HashMap::new();
+        if let Some(Value::Struct(dc)) = cfg.get(h("DistrictConfig"))
+            && let Some(Value::Array(list)) = dc.get(h("Districts"))
+        {
+            for d in list {
+                if let Value::Struct(d) = d
+                    && let (Some(name), Some(layer)) = (num(d, "Name"), num(d, "PaintLayer"))
+                {
+                    names.insert(layer, name);
+                }
+            }
+        }
+        let map = fmt::WorldPaintMap::parse(&self.load(DISTRICT_PAINT_MAP)?)?;
+        Ok(Districts { map, names })
+    }
+}
+
+/// A tab of a screen's `Widget_NavigationTabs` (the menus' bottom bar: MWL, MAP, MPLAYER, FRIENDS, SETTINGS,
+/// STORE): the cell layouts bind `Widget.Tabs.TabList[#].Image` / `.Name` to these.
+#[derive(Debug, Clone)]
+pub struct NavTab {
+    /// `TabName` (the page's token).
+    pub token: String,
+    /// `Image`: the icon texture.
+    pub image: Option<ResourceId>,
+    /// `Name`: Language id.
+    pub name: u32,
+}
+
+impl AssetStore {
+    /// The tabs of the first `Widget_NavigationTabs` of a screen: its `Tabs` list (six on the map screen 899991;
+    /// a second list, field `d730cb94`, holds five of them and is not used here).
+    pub fn navigation_tabs(&self, screen: &str) -> Result<Vec<NavTab>> {
+        use fmt::genesys::{Value, field_hash as h};
+        let o = self.ui_screen_object(screen)?;
+        let mut widgets = Vec::new();
+        crate::frontend::collect(&o, "Genesys.Gen.Widget_NavigationTabs", &mut widgets);
+        let w = widgets.first().ok_or(Error::Missing(ResourceId::NULL))?;
+        let Some(Value::Array(tabs)) = w.get(h("Tabs")) else { return Err(Error::Missing(ResourceId::NULL)) };
+        Ok(tabs
+            .iter()
+            .filter_map(|t| match t {
+                Value::Struct(t) => Some(NavTab {
+                    token: match t.get(h("TabName")) {
+                        Some(Value::Str(s)) => s.clone(),
+                        _ => String::new(),
+                    },
+                    image: match t.get(h("Image")) {
+                        Some(Value::Handle(id)) => *id,
+                        _ => None,
+                    },
+                    name: match t.get(h("Name")) {
+                        Some(Value::UInt(u)) => *u as u32,
+                        Some(Value::Int(i)) => *i as u32,
+                        _ => 0,
+                    },
+                }),
+                _ => None,
+            })
+            .collect())
+    }
+}
 
 /// A point-of-interest look ([`fmt::ui::PoiVisuals`]) with its layouts.
 #[derive(Debug, Clone)]
@@ -26,6 +127,8 @@ pub struct PoiVisual {
     pub map: Option<PlacedLayout>,
     /// Layouts drawn in the world at the point's transform (`Pos`, `Rot`, `DistanceToCamera` bindings).
     pub world: Vec<PlacedLayout>,
+    /// The world layouts face the camera ([`fmt::ui::PoiVisuals::face_camera`]).
+    pub face_camera: bool,
 }
 
 /// Point-of-interest keys (see [`AssetStore::poi_keys`]). Offsets are into the config structs as
@@ -211,6 +314,7 @@ impl AssetStore {
                 key: v.key,
                 map: v.map.as_ref().and_then(placed),
                 world: v.world.iter().filter_map(placed).collect(),
+                face_camera: v.face_camera,
             });
         }
         Ok(out)
@@ -443,6 +547,9 @@ impl AssetStore {
     }
 }
 
+/// `UIColourPalette` of `UI/UICONFIG.BNDL` (the named colours behaviours blend to).
+pub const UI_COLOUR_PALETTE: ResourceId = ResourceId(0x0100_0000_0001_72aa);
+
 /// Everything needed to draw a set of layouts, resolved from the assets once (on a loader thread), so
 /// drawing a frame needs no asset access.
 #[derive(Debug, Clone, Default)]
@@ -460,6 +567,11 @@ pub struct UiScene {
     pub cells: HashMap<ResourceId, fmt::ui::Layout>,
     /// Units for the code-side formatters (`DIST`: metres in, metric or imperial out); `None` = raw numbers.
     pub metric: Option<bool>,
+    /// A menu screen ([`UiFrame::letterbox`]: the whole frame fitted, no HUD correction, black bars) rather
+    /// than a HUD screen ([`UiFrame::new`]).
+    pub letterbox: bool,
+    /// The UI's named colours that colour steps blend to ([`AssetStore::ui_colour_palette`]).
+    pub palette: HashMap<String, [f32; 4]>,
 }
 
 fn walk_elements<'a>(elements: impl IntoIterator<Item = &'a Element>, f: &mut impl FnMut(&'a Element)) {
@@ -473,8 +585,33 @@ fn walk_elements<'a>(elements: impl IntoIterator<Item = &'a Element>, f: &mut im
 
 impl AssetStore {
     /// Resolve the styles, fonts, strings, UVs and blend modes the layouts use.
+    /// The UI's named colours (`UIColourPalette` [`UI_COLOUR_PALETTE`] in `UI/UICONFIG.BNDL`, 179 `UIColour`
+    /// {`263d15bc` name, `Colour` RGBA bytes}), as linear RGBA like element tints (sRGB bytes decoded: `WHITE`
+    /// ebebeb = 0.8308, the tint of white text). Empty when the object is missing.
+    pub fn ui_colour_palette(&self) -> HashMap<String, [f32; 4]> {
+        use fmt::genesys::{Value, field_hash};
+        let Ok(o) = self.genesys_object(UI_COLOUR_PALETTE) else { return HashMap::new() };
+        let Some(Value::Array(entries)) = o.get(0xd46f_dc01) else { return HashMap::new() };
+        let linear = |b: u8| {
+            let c = b as f32 / 255.0;
+            if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+        };
+        let mut out = HashMap::new();
+        for v in entries {
+            let Value::Struct(c) = v else { continue };
+            let (Some(Value::Str(name)), Some(Value::Raw(rgba))) = (c.get(0x263d_15bc), c.get(field_hash("Colour")))
+            else {
+                continue;
+            };
+            if let [r, g, b, a, ..] = rgba[..] {
+                out.insert(name.clone(), [linear(r), linear(g), linear(b), a as f32 / 255.0]);
+            }
+        }
+        out
+    }
+
     pub fn ui_scene(&self, layouts: Vec<PlacedLayout>, lang: &fmt::Language) -> UiScene {
-        let mut scene = UiScene { layouts, ..Default::default() };
+        let mut scene = UiScene { layouts, palette: self.ui_colour_palette(), ..Default::default() };
         let mut cache = UiCache::default();
         let mut all = Vec::new();
         for pl in &scene.layouts {
@@ -578,44 +715,175 @@ fn intersect(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
     [x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0)]
 }
 
-/// Maps the 1280×720 reference frame of one layout to the screen: uniform scale, the layout's anchor
-/// point pinned to the same point of the screen (what `UIConfig.HudAspectCorrection` does for other aspects).
+/// How the game maps its 1280×720 UI frame to a screen, and its `UIConfig.HudAspectCorrection` for that screen.
+///
+/// `FUN_0078faa0` (run when the back buffer's size changes, `FUN_0079a810`) with the screen's aspect a = w / h:
+/// for 1 ≤ a ≤ 8/3 the frame keeps its height (720 reference pixels fill the screen's height) and `Left` =
+/// (1280 − 720·a) / 2 + 0.5, `Right` = −`Left`: at 4:3 the visible frame is x 160..1120 and left-side HUD
+/// layouts move in by 160, at 21:9 out by 200. For a > 8/3 (three monitors) the HUD stays in the centre 16:9
+/// (`Left` = 0.5). For a < 1 (portrait) the frame keeps its width and `Top` = (720 − 1280 / a) / 2 + 0.5,
+/// `Bottom` = −`Top`. `ScreenWidthMultiplier` = min(a, 16/9 above 8/3) · 0.5625 and `EffectiveScreenWidth` =
+/// 1280 × that (`FUN_00794700`, per frame: "the width of a 16:9 screen with no margin scaling is 1280"). The
+/// options' screen-scale margins (`FUN_00794700` adds them; widget `ScreenScale` of screen 469958) are taken as
+/// 0, the default (model decision until a live read). The frame itself is centred on the screen.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UiFrame {
+    /// Screen pixels per reference pixel.
+    pub scale: f32,
+    /// Screen position of the frame's (0, 0).
+    pub origin: [f32; 2],
+    pub left: f32,
+    pub right: f32,
+    pub top: f32,
+    pub bottom: f32,
+    pub width_multiplier: f32,
+    pub effective_width: f32,
+}
+
+impl UiFrame {
+    pub fn new(screen: [f32; 2]) -> Self {
+        let [w, h] = [screen[0].max(1.0), screen[1].max(1.0)];
+        let r = fmt::ui::REFERENCE_SIZE;
+        let a = w / h;
+        // Above 8/3 the code computes with the width of a 16:9 screen of the same height.
+        let a_hud = if a > 8.0 / 3.0 { 16.0 / 9.0 } else { a };
+        let mult = a_hud * 0.5625;
+        let (left, top) =
+            if a < 1.0 { (0.0, (r[1] - r[0] / w * h) * 0.5 + 0.5) } else { ((r[0] - r[1] * a_hud) * 0.5 + 0.5, 0.0) };
+        // Portrait windows fit the frame's width, every other one its height.
+        let scale = if a < 1.0 { w / r[0] } else { h / r[1] };
+        Self {
+            scale,
+            origin: [w * 0.5 - r[0] * 0.5 * scale, h * 0.5 - r[1] * 0.5 * scale],
+            left,
+            right: -left,
+            top,
+            bottom: -top,
+            width_multiplier: mult,
+            effective_width: r[0] * mult,
+        }
+    }
+
+    /// A menu screen's frame (the UI manager's byte +0x2ecf4 set: `FUN_00794700` leaves the corrections at 0 and
+    /// `FUN_006240b0` draws black bars outside the frame): the whole 1280×720 frame fitted inside the screen and
+    /// centred. Captures of the original at 1024×768 and 1680×720 (`ref/ui-2026-10-19/`): the title, the boot
+    /// transition, the pause menu, the settings and the map are letterboxed / pillarboxed so; the driving HUD
+    /// and Easydrive are not ([`UiFrame::new`]).
+    pub fn letterbox(screen: [f32; 2]) -> Self {
+        let [w, h] = [screen[0].max(1.0), screen[1].max(1.0)];
+        let r = fmt::ui::REFERENCE_SIZE;
+        let scale = (w / r[0]).min(h / r[1]);
+        Self {
+            scale,
+            origin: [(w - r[0] * scale) * 0.5, (h - r[1] * scale) * 0.5],
+            left: 0.0,
+            right: 0.0,
+            top: 0.0,
+            bottom: 0.0,
+            width_multiplier: 1.0,
+            effective_width: r[0],
+        }
+    }
+
+    /// The black bars outside the frame (`FUN_006240b0`), for menu screens: up to four quads, drawn last.
+    pub fn bars(&self, screen: [f32; 2]) -> Vec<Quad> {
+        let [x, y, w, h] = self.rect();
+        let bar = |rect: [f32; 4]| Quad {
+            texture: None,
+            uv: [0.0, 0.0, 1.0, 1.0],
+            rect,
+            rotation: 0.0,
+            colour: [0.0, 0.0, 0.0, 1.0],
+            blend: UiBlend::Alpha,
+            map: false,
+        };
+        [
+            [0.0, 0.0, screen[0], y],
+            [0.0, y + h, screen[0], screen[1] - y - h],
+            [0.0, y, x, h],
+            [x + w, y, screen[0] - x - w, h],
+        ]
+        .into_iter()
+        .filter(|r| r[2] > 0.5 && r[3] > 0.5)
+        .map(bar)
+        .collect()
+    }
+
+    /// The frame scaled to cover the whole screen (centred, keeping its aspect): for full-screen backdrops of
+    /// HUD screens. Equal to the frame from 1:1 up to 16:9.
+    pub fn cover(&self) -> Self {
+        let r = fmt::ui::REFERENCE_SIZE;
+        let screen = [self.origin[0] * 2.0 + r[0] * self.scale, self.origin[1] * 2.0 + r[1] * self.scale];
+        let scale = (screen[0] / r[0]).max(screen[1] / r[1]);
+        Self { scale, origin: [(screen[0] - r[0] * scale) * 0.5, (screen[1] - r[1] * scale) * 0.5], ..*self }
+    }
+
+    /// Screen rectangle `[x, y, w, h]` of the whole frame.
+    pub fn rect(&self) -> [f32; 4] {
+        let r = fmt::ui::REFERENCE_SIZE;
+        [self.origin[0], self.origin[1], r[0] * self.scale, r[1] * self.scale]
+    }
+
+    /// Screen position of a frame point (reference pixels).
+    pub fn to_screen(&self, p: [f32; 2]) -> [f32; 2] {
+        [self.origin[0] + p[0] * self.scale, self.origin[1] + p[1] * self.scale]
+    }
+
+    /// The `UIConfig.HudAspectCorrection.<field>` binding's value.
+    pub fn correction(&self, field: &str) -> Option<f32> {
+        Some(match field {
+            "Left" => self.left,
+            "Right" => self.right,
+            "Top" => self.top,
+            "Bottom" => self.bottom,
+            "ScreenWidthMultiplier" => self.width_multiplier,
+            "EffectiveScreenWidth" => self.effective_width,
+            _ => return None,
+        })
+    }
+}
+
+/// Places one layout: its anchor point (`AnchorType`, a point of its own 1280×720 authoring frame) goes to the
+/// sum of its instance's translate components, the bound ones (`UIConfig.HudAspectCorrection.Left(AXES:X)`)
+/// evaluated and put on their axis; then the frame goes to the screen ([`UiFrame`]).
 #[derive(Debug, Clone, Copy)]
 struct Placement {
-    scale: f32,
-    anchor_ref: [f32; 2],
-    anchor_screen: [f32; 2],
+    frame: UiFrame,
+    /// Added to a layout point to get its frame point.
+    shift: [f32; 2],
 }
 
 impl Placement {
-    fn new(instance: Option<&LayoutInstance>, screen: [f32; 2]) -> Self {
-        let r = fmt::ui::REFERENCE_SIZE;
-        let scale = (screen[0] / r[0]).min(screen[1] / r[1]);
-        let (anchor_ref, offset) = match instance {
+    fn new(instance: Option<&LayoutInstance>, frame: UiFrame, lookup: &mut Lookup) -> Self {
+        let shift = match instance {
             Some(i) => {
                 let a = i.anchor_point();
-                let t = i.transforms.iter().find(|t| t.kind == 1 && t.binding.is_empty());
-                (a, t.map_or([0.0; 2], |t| [t.value[0] - a[0], t.value[1] - a[1]]))
+                let mut t = i
+                    .transforms
+                    .iter()
+                    .find(|t| t.kind == 1 && t.binding.is_empty())
+                    .map_or(a, |t| [t.value[0], t.value[1]]);
+                // Bound scalar translates on one axis (`(AXES:X)` / `(AXES:Y)`); vector bindings such as the
+                // minimap's `MapOrigin` are left to their widgets.
+                for c in i.transforms.iter().filter(|t| t.kind == 1 && t.binding.contains("AXES:")) {
+                    let Some(v) = eval_num(&c.binding, lookup) else { continue };
+                    let axis = usize::from(c.binding.contains("AXES:Y"));
+                    t[axis] += v + c.value[axis];
+                }
+                [t[0] - a[0], t[1] - a[1]]
             }
-            None => ([r[0] * 0.5, r[1] * 0.5], [0.0; 2]),
+            None => [0.0; 2],
         };
-        let anchor_screen = [
-            anchor_ref[0] / r[0] * screen[0] + offset[0] * scale,
-            anchor_ref[1] / r[1] * screen[1] + offset[1] * scale,
-        ];
-        Self { scale, anchor_ref, anchor_screen }
+        Self { frame, shift }
     }
 
     fn point(&self, p: [f32; 2]) -> [f32; 2] {
-        [
-            (p[0] - self.anchor_ref[0]) * self.scale + self.anchor_screen[0],
-            (p[1] - self.anchor_ref[1]) * self.scale + self.anchor_screen[1],
-        ]
+        self.frame.to_screen([p[0] + self.shift[0], p[1] + self.shift[1]])
     }
 
     fn rect(&self, r: [f32; 4]) -> [f32; 4] {
         let p = self.point([r[0], r[1]]);
-        [p[0], p[1], r[2] * self.scale, r[3] * self.scale]
+        [p[0], p[1], r[2] * self.frame.scale, r[3] * self.frame.scale]
     }
 }
 
@@ -654,6 +922,14 @@ impl UiScene {
 
     /// [`draw`](Self::draw) with options: only some layouts, and triggered behaviours animated over time.
     pub fn draw_with(&self, screen: [f32; 2], lookup: &mut Lookup, options: &mut DrawOptions) -> Vec<Quad> {
+        let frame = if self.letterbox { UiFrame::letterbox(screen) } else { UiFrame::new(screen) };
+        // `UIConfig.HudAspectCorrection.*` comes from the screen ([`UiFrame`]).
+        let lookup = &mut |path: &str, arg: Option<&str>| -> Option<fmt::binding::BindValue> {
+            if let Some(field) = path.strip_prefix("UIConfig.HudAspectCorrection.") {
+                return frame.correction(field).map(|v| f64::from(v).into());
+            }
+            lookup(path, arg)
+        };
         let mut out = Vec::new();
         for (index, pl) in self.layouts.iter().enumerate() {
             if options.layouts.as_ref().is_some_and(|only| !only(index)) {
@@ -668,7 +944,7 @@ impl UiScene {
             options.layout = index as u32;
             options.cell = u32::MAX;
             options.replacement = pl.instance.as_ref().map_or(0, |i| i.replacement_index);
-            let place = Placement::new(pl.instance.as_ref(), screen);
+            let place = Placement::new(pl.instance.as_ref(), frame, lookup);
             let mut clips: Vec<[f32; 4]> = Vec::new();
             for e in &pl.layout.elements {
                 if e.kind == ElementKind::Mask {
@@ -701,11 +977,15 @@ impl UiScene {
         if !e.bindings.visibility.is_empty() && !eval(&e.bindings.visibility, lookup).is_some_and(|v| v.truthy()) {
             return;
         }
-        let tween = options.tween(e, lookup);
+        let tween = options.tween(e, lookup, &self.palette);
         if tween.opacity <= 0.0 {
             return;
         }
         let (mut rect, mut pivot) = element_rect(e, lookup);
+        if tween.scale != 1.0 {
+            let (w, h) = (rect[2] * tween.scale, rect[3] * tween.scale);
+            rect = [rect[0] + (rect[2] - w) * 0.5, rect[1] + (rect[3] - h) * 0.5, w, h];
+        }
         rect[0] += tween.offset[0];
         rect[1] += tween.offset[1];
         pivot = [pivot[0] + tween.offset[0], pivot[1] + tween.offset[1]];
@@ -722,6 +1002,22 @@ impl UiScene {
             self.stack(st, place, [rect[0], rect[1]], clip, lookup, options, out);
             return;
         }
+        // On HUD screens, full-screen backdrops (a solid shape or a streamed picture at least as large as the
+        // frame: fades, flashes) cover the whole window whatever its aspect (model decision: the height-fitted
+        // frame alone leaves bars beside them above 16:9). Menu screens letterbox instead, as the original.
+        let cover;
+        let backdrop = e.kind == ElementKind::Shape || (e.kind == ElementKind::Image && !e.bindings.image.is_empty());
+        let place = if parent.is_none()
+            && !self.letterbox
+            && backdrop
+            && rect[2] >= fmt::ui::REFERENCE_SIZE[0] - 0.5
+            && rect[3] >= fmt::ui::REFERENCE_SIZE[1] - 0.5
+        {
+            cover = Placement { frame: place.frame.cover(), shift: place.shift };
+            &cover
+        } else {
+            place
+        };
         let screen_rect = place.rect(rect);
         let screen_pivot = place.point(pivot);
         // Backed labels: the backing image first, filling the label's rectangle.
@@ -738,7 +1034,8 @@ impl UiScene {
         let mut push = |texture: Option<ResourceId>, uv: [f32; 4], r: [f32; 4], colour: [f32; 4], map: bool| {
             push_quad(out, Quad { texture, uv, rect: r, rotation, colour, blend, map }, screen_pivot, clip);
         };
-        let tint = [e.tint[0], e.tint[1], e.tint[2], e.tint[3] * opacity];
+        let c = tween.colour.unwrap_or(e.tint);
+        let tint = [c[0], c[1], c[2], c[3] * opacity];
         match e.kind {
             ElementKind::Image | ElementKind::SubImage => {
                 // `ImageBinding`: the lookup answers with a texture resource id (16 hex digits) to show whole
@@ -801,7 +1098,10 @@ impl UiScene {
             rect[3] - e.margins[1] - e.margins[3],
         ];
         let size = style.size;
-        let lines: Vec<_> = text.split('\n').map(|l| font.layout(l, size, style.character_spacing)).collect();
+        // In the font's units, scaled with the glyphs: the odometer (size 19) and the speed (size 38) share spacing
+        // −5, and the original's odometer digits do not overlap (`ref/ui-2026-10-19/hud_1024x768.png`).
+        let spacing = style.character_spacing * size / font.em.max(1.0);
+        let lines: Vec<_> = text.split('\n').map(|l| font.layout(l, size, spacing)).collect();
         let line_h = size + style.line_spacing;
         let total_h = line_h * lines.len() as f32 - style.line_spacing;
         let colour = [style.colour[0], style.colour[1], style.colour[2], style.colour[3] * opacity];
@@ -812,7 +1112,19 @@ impl UiScene {
                 2 => inner[0] + inner[2] - width,
                 _ => inner[0],
             };
-            let y0 = inner[1] + (inner[3] - total_h) * 0.5 + i as f32 * line_h;
+            // Vertically the text sits by the element's anchor row: top-anchored labels at the top of their box
+            // (the pause title, the speed and its unit), middle ones centred (menu rows), bottom ones at the
+            // bottom. Our reading of captures of the original (research log 2026-10-19 "UI frame").
+            static TEXT_LOG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            if *TEXT_LOG.get_or_init(|| std::env::var_os("MW_UI_TEXT_LOG").is_some()) {
+                eprintln!(
+                    "ui text {text:?}: font {} size {size} spacing {spacing} box {inner:?} width {width} quads {:?}",
+                    style.font,
+                    quads.iter().map(|q| q.rect).collect::<Vec<_>>()
+                );
+            }
+            let free = inner[3] - total_h;
+            let y0 = inner[1] + free * (e.anchor / 3).min(2) as f32 * 0.5 + i as f32 * line_h;
             for q in quads {
                 let r = place.rect([x0 + q.rect[0], y0 + q.rect[1], q.rect[2], q.rect[3]]);
                 let a = q.atlas;
@@ -830,20 +1142,26 @@ impl UiScene {
     }
 }
 
-/// Rectangle (reference pixels, top-left based) and rotation pivot of an element, with its bindings.
-/// Height of a stack cell: the lowest element bottom (reference pixels); a nested stack counts its own `Height`,
-/// or its default cell's when that is 0 (the selected Easydrive row is a 25 px stack whose glow images reach
-/// lower). Our reading: the stack's own cell-size fields (`CellSizeDefinition`, empty here) are
-/// not decoded; for Easydrive this gives 26 px rows, against the 26.42 px per item the `EasyDrivePanel` layout
-/// moves by (`Widget.EasyDrive.ItemsAbovePanel(MULT:26.42)`).
-/// Width of a cell of a stack running across: the rightmost element edge (reference pixels).
+/// Width of a cell of a stack running across: the rightmost edge of the elements that size the cell.
 fn cell_width(layout: &Layout) -> f32 {
-    layout.elements.iter().map(|e| e.top_left()[0] + e.size[0]).fold(0.0, f32::max)
+    sizing(layout).map(|e| e.top_left()[0] + e.size[0]).fold(0.0, f32::max)
 }
 
+/// The elements that size a stack cell (`Element::sizes_cell`), or every element when none is flagged.
+fn sizing(layout: &Layout) -> impl Iterator<Item = &Element> {
+    let any = layout.elements.iter().any(|e| e.sizes_cell);
+    layout.elements.iter().filter(move |e| e.sizes_cell || !any)
+}
+
+/// Height of a stack cell (reference pixels): the lowest bottom of the elements that size it, from the cell's
+/// top. A nested stack counts its own `Height`, or its default cell's when that is 0 (the selected Easydrive row
+/// is a 25 px stack whose glow images reach lower). The pause menu's rows come out 40 px (52 px selected) as in
+/// the original (`ref/frontend-2026-10-10/o4.png`); Easydrive's are 26 px against the 26.42 px per item the
+/// `EasyDrivePanel` moves by (`Widget.EasyDrive.ItemsAbovePanel(MULT:26.42)`): `CellSizeDefinition` and
+/// `Padding` (empty / 0 there) are not decoded.
 fn cell_height(scene: &UiScene, layout: &Layout, depth: u32, lookup: &mut Lookup) -> f32 {
     let mut h: f32 = 0.0;
-    for e in &layout.elements {
+    for e in sizing(layout) {
         let own = match &e.stack {
             Some(st) if depth < 8 => {
                 let inner = st.default.first().and_then(|id| scene.cells.get(id));
@@ -856,7 +1174,9 @@ fn cell_height(scene: &UiScene, layout: &Layout, depth: u32, lookup: &mut Lookup
                 let n = if st.length.is_empty() {
                     1.0
                 } else {
-                    eval_num(&st.length, lookup).map_or(1.0, |v| v.clamp(0.0, 64.0).floor().max(1.0))
+                    // An empty list takes no room (Easydrive's root tier has no title: its first row sits right
+                    // under the prompt, `ref/ui-2026-10-19/easydrive_1680x720.png`).
+                    eval_num(&st.length, lookup).map_or(1.0, |v| v.clamp(0.0, 64.0).floor())
                 };
                 one * n
             }
@@ -1042,25 +1362,45 @@ struct Tween {
     offset: [f32; 2],
     /// Degrees added by idle spins.
     rotation: f32,
+    /// Size factor about the element's centre (behaviour kind 4).
+    scale: f32,
+    /// The element's own tint (linear RGBA), what colour steps start from and `OUT` returns to.
+    base: [f32; 4],
+    /// The tint now, when a colour step has changed it.
+    colour: Option<[f32; 4]>,
 }
 
+/// Behaviour kinds (`Behaviour.Type`): 4 scales (`from,to` in percent), 13 changes the colour (`TO,<palette
+/// entry>`, `TO,INVISIBLE`, `OUT` = back to the element's own colour). Our reading of the data (the tween code
+/// was not traced): the search circle's `OUT` steps (kind 13) on its cooldown / race triggers would hide it in
+/// every chase if they faded it, but the original shows it (captures 2026-10-19); the cop arrow's chase-ping
+/// (`100,500`, kind 4) is a growing icon there, not an offset.
+const KIND_SCALE: u8 = 4;
+const KIND_COLOUR: u8 = 13;
+
 impl Tween {
+    fn new(base: [f32; 4]) -> Self {
+        Self { opacity: 1.0, offset: [0.0; 2], rotation: 0.0, scale: 1.0, base, colour: None }
+    }
+
     /// Apply behaviour steps `since` ms after they started. Each step runs from its `Delay` over its `Duration`
     /// (ms), in order: `IN` fades in from invisible (and holds the element invisible until it starts), `OUT`
-    /// fades out, `TO,INVISIBLE` hides, `dx,dy` approaches the rest position from that offset (reference
-    /// pixels; sitting at the offset until it starts), as the layouts' `APPROACH (delay, duration, dx, dy)`.
-    /// Colour steps (`TO,WHITE`, `TO,<palette entry>`), four-number steps (scales, read) and bare ids
-    /// (sounds) are not applied. The vocabulary is the data's; what each step does is our reading of the names
-    /// (the tween code was not traced).
+    /// fades out, `TO,INVISIBLE` hides (over its duration), `dx,dy` approaches the rest position from that
+    /// offset (reference pixels; sitting at the offset until it starts), as the layouts' `APPROACH (delay,
+    /// duration, dx, dy)`; kind 4 `a,b` scales from a to b percent (at a until it starts); kind 13 `TO,<name>`
+    /// blends the tint to the palette entry (`UIColourPalette`, [`UiScene::palette`]) and `OUT` back to the
+    /// element's own tint. Bare ids (sounds) are not applied. The vocabulary is the data's; what each step does
+    /// is our reading of the names (the tween code was not traced).
     /// [`apply`](Self::apply) for loops and idle lists: steps that have not started yet do nothing (an `IN`
     /// waiting for its delay does not hold the element invisible).
-    fn apply_started(&mut self, steps: &[fmt::ui::Behaviour], since: f32) {
+    fn apply_started(&mut self, steps: &[fmt::ui::Behaviour], since: f32, palette: &HashMap<String, [f32; 4]>) {
         for b in steps.iter().filter(|b| since >= b.delay) {
-            self.apply(std::slice::from_ref(b), since);
+            self.apply(std::slice::from_ref(b), since, palette);
         }
     }
 
-    fn apply(&mut self, steps: &[fmt::ui::Behaviour], since: f32) {
+    fn apply(&mut self, steps: &[fmt::ui::Behaviour], since: f32, palette: &HashMap<String, [f32; 4]>) {
+        let mut scaled = false;
         for b in steps {
             let started = since >= b.delay;
             let p = if b.duration <= 0.0 {
@@ -1069,19 +1409,47 @@ impl Tween {
                 ((since - b.delay) / b.duration).clamp(0.0, 1.0)
             };
             let params = b.parameters.trim();
-            match params {
-                "IN" => self.opacity = p,
-                "OUT" if started => self.opacity *= 1.0 - p,
-                "TO,INVISIBLE" if started => self.opacity = 0.0,
-                _ => {
-                    let parts: Vec<&str> = params.split(',').collect();
-                    if let [x, y] = parts[..]
-                        && let (Ok(x), Ok(y)) = (x.trim().parse::<f32>(), y.trim().parse::<f32>())
+            if params == "TO,INVISIBLE" {
+                if started {
+                    self.opacity *= 1.0 - p;
+                }
+                continue;
+            }
+            match b.kind {
+                KIND_COLOUR => {
+                    let target = match params {
+                        "OUT" => Some(self.base),
+                        _ => params.strip_prefix("TO,").and_then(|name| palette.get(name.trim()).copied()),
+                    };
+                    if let Some(target) = target
+                        && started
                     {
-                        self.offset[0] += x * (1.0 - p);
-                        self.offset[1] += y * (1.0 - p);
+                        let from = self.colour.unwrap_or(self.base);
+                        self.colour = Some(std::array::from_fn(|i| from[i] + (target[i] - from[i]) * p));
                     }
                 }
+                KIND_SCALE => {
+                    let parts: Vec<f32> = params.split(',').filter_map(|x| x.trim().parse().ok()).collect();
+                    if let [a, z] = parts[..]
+                        && (started || !scaled)
+                    {
+                        self.scale = (a + (z - a) * p) / 100.0;
+                        scaled |= started;
+                    }
+                }
+                _ => match params {
+                    "IN" => self.opacity = p,
+                    "OUT" if started => self.opacity *= 1.0 - p,
+                    _ => {
+                        let parts: Vec<&str> = params.split(',').collect();
+                        if let [x, y] = parts[..]
+                            && let (Ok(x), Ok(y)) = (x.trim().parse::<f32>(), y.trim().parse::<f32>())
+                        {
+                            self.offset[0] += x * (1.0 - p);
+                            self.offset[1] += y * (1.0 - p);
+                        }
+                    }
+                },
             }
         }
     }
@@ -1095,10 +1463,14 @@ impl<'a> DrawOptions<'a> {
     /// The element's behaviours now: its own transition-in since it appeared (was drawn after not being
     /// drawn), then each triggered behaviour (a `TriggerBinding` whose rising edge plays the transition-in
     /// steps and falling edge the transition-out steps). Without `anim`, and for a trigger that has not changed
-    /// since it was first seen, the steps count as long finished. Transition-out of disappearing elements
-    /// and idle behaviours are not played.
-    fn tween(&mut self, e: &Element, lookup: &mut Lookup) -> Tween {
-        let mut t = Tween { opacity: 1.0, offset: [0.0; 2], rotation: 0.0 };
+    /// since it was first seen, the steps count as long finished. Transition-out of disappearing elements is
+    /// not played. Order (our reading): the transition-in, the triggers that do not hold (their out steps), the
+    /// element's idle loop, then the triggers that hold (their in steps and idle steps), so a held trigger's
+    /// colour or hide wins over the idle loop and a released one's settled steps do not stop it (the minimap's
+    /// pursuit flash 1444098 blinks on `TO,INVISIBLE` / `TO,HUD_PURSUIT_HEATFILL` while `Mode.IsRaceEvent` is
+    /// false, whose out step is `OUT` to the own colour).
+    fn tween(&mut self, e: &Element, lookup: &mut Lookup, palette: &HashMap<String, [f32; 4]>) -> Tween {
+        let mut t = Tween::new(e.tint);
         // Idle behaviours of type 8 spin the element by `Parameters` degrees every `Duration` ms, repeating (the
         // loading spinner of layout 108177: "360.0" over 1000 ms). Our reading of the type; the other idle
         // types are not played. Only animated draws spin.
@@ -1123,7 +1495,7 @@ impl<'a> DrawOptions<'a> {
                 }
                 None => f32::INFINITY,
             };
-            t.apply(&e.transition_in, since);
+            t.apply(&e.transition_in, since, palette);
         }
         let mut held: Vec<(usize, f32)> = Vec::new();
         for (k, tb) in e.triggered.iter().enumerate() {
@@ -1141,31 +1513,50 @@ impl<'a> DrawOptions<'a> {
                 }
                 None => f32::INFINITY,
             };
-            t.apply(if on { &tb.transition_in } else { &tb.transition_out }, since);
             if on {
                 held.push((k, since));
+            } else {
+                t.apply(&tb.transition_out, since, palette);
             }
         }
-        // The element's own idle fades loop over their span (the prompt's pulse: `OUT` 0–0.8 s, `IN` 0.8–1.8 s),
-        // timed from when the element appeared; only animated draws pulse.
-        let fades = |b: &&fmt::ui::Behaviour| b.kind == 0 && matches!(b.parameters.trim(), "IN" | "OUT");
-        let period = e.idle.iter().filter(fades).map(|b| b.delay + b.duration).fold(0.0, f32::max);
+        // The element's own idle steps loop over their span (the prompt's pulse: `OUT` 0–0.8 s, `IN` 0.8–1.8 s;
+        // the search circle's colour: `TO,COP` at 1 s, `TO,HUD_MINIMAP_PURSUITRADIUS` at 2 s), timed from when
+        // the element appeared; only animated draws loop. After the first pass a loop starts from the colour its
+        // last colour step left (the circle is red until it turns blue at 1 s).
+        let looped = |b: &&fmt::ui::Behaviour| match b.kind {
+            0 => matches!(b.parameters.trim(), "IN" | "OUT"),
+            KIND_COLOUR | KIND_SCALE => true,
+            _ => false,
+        };
+        let period = e.idle.iter().filter(looped).map(|b| b.delay + b.duration).fold(0.0, f32::max);
         if period > 0.0
             && let Some(anim) = self.anim.as_deref_mut()
         {
-            let appeared = anim.shown.get(&(e.id, layout, cell)).map_or(0.0, |s| s.0);
-            let since = (((now - appeared) * 1000.0) as f32).rem_euclid(period);
-            let steps: Vec<fmt::ui::Behaviour> = e.idle.iter().filter(fades).cloned().collect();
-            t.apply_started(&steps, since);
+            let appeared = anim.shown.entry((e.id, layout, cell)).or_insert((now, now));
+            if e.transition_in.is_empty() {
+                if now - appeared.1 > REAPPEAR_GAP {
+                    appeared.0 = now;
+                }
+                appeared.1 = now;
+            }
+            let elapsed = ((now - appeared.0) * 1000.0) as f32;
+            let since = elapsed.rem_euclid(period);
+            let steps: Vec<fmt::ui::Behaviour> = e.idle.iter().filter(looped).cloned().collect();
+            if elapsed >= period
+                && let Some(last) = steps.iter().rev().find(|b| b.kind == KIND_COLOUR)
+            {
+                t.apply(std::slice::from_ref(last), f32::INFINITY, palette);
+            }
+            t.apply_started(&steps, since, palette);
         }
-        // A triggered behaviour's idle steps run while its trigger holds, on top of the element's own idle: the
-        // title's prompt pair (layout 1274392: label 1597779 "PRESS START" hides on
-        // `Controls.IsXInputControllerConnected(NOT)`, label 1274432 "PRESS ANY KEY" on
-        // `Controls.IsXInputControllerConnected`) hide each other with an instant `OUT`, which the looping pulse's
-        // `IN` must not undo (it did: both prompts showed over each other). The order is our reading: the tween
-        // code was not traced.
+        // A held trigger's in steps and idle steps run on top of the element's own idle: the title's prompt pair
+        // (layout 1274392: label 1597779 "PRESS START" hides on `Controls.IsXInputControllerConnected(NOT)`,
+        // label 1274432 "PRESS ANY KEY" on `Controls.IsXInputControllerConnected`) hide each other with an
+        // instant `OUT`, which the looping pulse's `IN` must not undo (it did: both prompts showed over each
+        // other). The order is our reading: the tween code was not traced.
         for (k, since) in held {
-            t.apply_started(&e.triggered[k].idle, since);
+            t.apply(&e.triggered[k].transition_in, since, palette);
+            t.apply_started(&e.triggered[k].idle, since, palette);
         }
         t
     }
@@ -1368,3 +1759,36 @@ impl MapMosaic {
 
 /// Which side of the forward direction is screen-right on the minimap (see [`MapMosaic::render`]).
 pub const MAP_RIGHT_SIGN: f32 = 1.0;
+
+#[cfg(test)]
+mod tests {
+    use super::UiFrame;
+
+    #[test]
+    fn hud_frame_follows_the_code() {
+        // 16:9: the frame fills the screen; `Left` is the code's half pixel.
+        let f = UiFrame::new([1920.0, 1080.0]);
+        assert_eq!((f.scale, f.origin), (1.5, [0.0, 0.0]));
+        assert!((f.left - 0.5).abs() < 1e-3 && (f.effective_width - 1280.0).abs() < 1e-2);
+        // 4:3: height-fitted, centred, left-side HUD in by 160 (`FUN_0078faa0`).
+        let f = UiFrame::new([1024.0, 768.0]);
+        assert!((f.scale - 768.0 / 720.0).abs() < 1e-6 && (f.left - 160.5).abs() < 1e-3 && f.right == -f.left);
+        assert!(f.to_screen([160.0, 0.0])[0].abs() < 1e-3);
+        // Three monitors: the HUD stays in the centre 16:9.
+        assert!((UiFrame::new([5760.0, 1080.0]).left - 0.5).abs() < 1e-3);
+        // Portrait: width-fitted, `Top` moves top layouts up.
+        let f = UiFrame::new([720.0, 1280.0]);
+        assert!((f.scale - 0.5625).abs() < 1e-6 && f.top < -700.0 && f.left == 0.0);
+    }
+
+    #[test]
+    fn menu_frame_letterboxes() {
+        let f = UiFrame::letterbox([1024.0, 768.0]);
+        assert!((f.scale - 0.8).abs() < 1e-6 && f.origin[0] == 0.0 && (f.origin[1] - 96.0).abs() < 1e-3);
+        assert_eq!(f.left, 0.0);
+        let bars = f.bars([1024.0, 768.0]);
+        assert_eq!(bars.len(), 2);
+        assert!((bars[0].rect[3] - 96.0).abs() < 1e-3 && bars[0].rect[2] == 1024.0);
+        assert!(UiFrame::letterbox([1280.0, 720.0]).bars([1280.0, 720.0]).is_empty());
+    }
+}

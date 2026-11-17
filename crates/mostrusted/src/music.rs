@@ -8,6 +8,7 @@
 //!
 //! **Song manager** ([`songs::SongManager`]): the licensed songs by situation, see its notes.
 
+use crate::platform::PollLock;
 use std::num::NonZero;
 use std::sync::{Arc, Mutex};
 
@@ -114,7 +115,7 @@ impl Decoded {
             let slot = Arc::new(Mutex::new(None));
             let out = slot.clone();
             let store = game.store.clone();
-            std::thread::spawn(move || {
+            crate::platform::thread::spawn(move || {
                 let r = store.wave_stream(id);
                 if let Err(e) = &r {
                     warn!("music: wave {id}: {e}");
@@ -123,7 +124,7 @@ impl Decoded {
             });
             slot
         });
-        slot.lock().unwrap().clone().flatten()
+        slot.poll_lock().and_then(|s| s.clone()).flatten()
     }
 
     /// Start decoding without waiting.
@@ -133,7 +134,7 @@ impl Decoded {
 
     /// Forget decoded streams not in `keep` (songs are large).
     pub fn retain(&mut self, keep: &[ResourceId]) {
-        self.slots.retain(|id, s| keep.contains(id) || s.lock().unwrap().is_none());
+        self.slots.retain(|id, s| keep.contains(id) || s.poll_lock().is_none_or(|s| s.is_none()));
     }
 }
 

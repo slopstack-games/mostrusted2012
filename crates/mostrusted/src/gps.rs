@@ -31,6 +31,7 @@
 //!
 //! `MW_GPS_LOG=1` logs requests, routes and re-routes.
 
+use crate::platform::PollLock;
 use std::sync::{Arc, Mutex};
 
 use avian3d::prelude::LinearVelocity;
@@ -124,7 +125,7 @@ impl Gps {
         let job: Job = Arc::new(Mutex::new(None));
         let (out, graph) = (job.clone(), self.graph.clone());
         let log = std::env::var_os("MW_GPS_LOG").is_some();
-        let spawned = std::thread::Builder::new().name("mw-gps".into()).spawn(move || {
+        let spawned = crate::platform::thread::Builder::new().name("mw-gps".into()).spawn(move || {
             let g = {
                 let mut slot = graph.lock().unwrap();
                 if slot.is_none() {
@@ -284,7 +285,7 @@ fn request(
 }
 
 fn poll(mut gps: ResMut<Gps>) {
-    let Some(done) = gps.job.as_ref().and_then(|j| j.lock().unwrap().take()) else { return };
+    let Some(done) = gps.job.as_ref().and_then(|j| j.poll_lock().and_then(|mut s| s.take())) else { return };
     gps.job = None;
     match done {
         Some(route) => gps.route = Some(route),

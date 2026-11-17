@@ -105,6 +105,8 @@ pub mod field {
     pub const FONT_ASSET_ALT: u32 = 0xc455_a691;
     pub const FONT_SIZE: u32 = field_hash("Font_Size");
     pub const FONT_SIZE_2: u32 = 0x9662_94f5;
+    /// `837b4199` (TextStyle +76): −1 on the pause title, −5 on the speed, 0 on menu rows; matches the
+    /// original's letter positions to a pixel (research log 2026-10-19 "UI frame").
     pub const CHARACTER_SPACING: u32 = field_hash("Character_Spacing");
     pub const LINE_SPACING: u32 = field_hash("Line_Spacing");
     pub const EFFECT_DISTANCE: u32 = field_hash("EffectDistance");
@@ -355,6 +357,12 @@ pub struct Element {
     /// Backed labels: left, top, right, bottom.
     pub margins: [f32; 4],
     pub min_size: [f32; 2],
+    /// `bb6cac74` (UIElementBase +172, bool): the element counts towards the size of an element-stack cell.
+    /// Unflagged elements (the pause menu row's 44 px image, Easydrive's selected-row glows) overhang the cell;
+    /// the pause rows' invisible 21×40 / 21×52 shapes carry the flag and give the original's 40 / 52 px pitch
+    /// (research log 2026-10-19 "UI frame"). Our reading from the data and a capture; the field's name is
+    /// unknown.
+    pub sizes_cell: bool,
     pub sub_image: Option<Box<Element>>,
     /// `UIElement_ElementStack`: a list of layouts repeated over a data source.
     pub stack: Option<Box<Stack>>,
@@ -444,6 +452,7 @@ impl Element {
             pop_mask: boolean(o, field::POP_MASK),
             margins,
             min_size: [float(o, field::MIN_WIDTH), float(o, field::MIN_HEIGHT)],
+            sizes_cell: boolean(o, 0xbb6c_ac74),
             // Backed labels' backing image, or the minimap's mask image.
             stack: (kind == ElementKind::ElementStack).then(|| Box::new(Stack::from_object(o))),
             sub_image: object(o, field::SUB_IMAGE)
@@ -719,6 +728,8 @@ pub struct Widget {
     pub name: String,
     pub type_name: String,
     pub id: u32,
+    /// UniqueId of the widget group holding it (the HSM's "Activate Widget Group" nodes name groups).
+    pub group: u32,
     pub layer: u64,
     pub layouts: Vec<WidgetLayout>,
 }
@@ -736,11 +747,12 @@ impl Screen {
             return None;
         }
         let widgets = structs(o, field::WIDGET_GROUPS)
-            .flat_map(|g| structs(g, field::WIDGETS))
-            .map(|w| Widget {
+            .flat_map(|g| structs(g, field::WIDGETS).map(move |w| (uint(g, field::ID) as u32, w)))
+            .map(|(group, w)| Widget {
                 name: string(w, field::NAME),
                 type_name: w.type_name.trim_start_matches("Genesys.Gen.").to_string(),
                 id: uint(w, field::ID) as u32,
+                group,
                 layer: uint(w, field::LAYOUT_LAYER),
                 layouts: structs(w, field::LAYOUTS)
                     .map(|l| WidgetLayout {
@@ -767,12 +779,18 @@ impl Screen {
 /// | `9a5a94d3` | the key |
 /// | `bd550893` (count `2300858a`) | `{Layout, Params}` drawn in the world at the point's transform |
 /// | `e3256f36`, `8ac61148`, `ea3ab789`, `d788383f`, `db617d4f` | flags (`ea3ab789` set exactly when there are world layouts) |
+///
+/// `d788383f` is set on the event-start looks (1013512, 955952, 955955), whose world panel faces the camera
+/// from every side in the original (captures 2026-10-19), and clear on the gate looks, which turn with the
+/// gate: read as "world layouts face the camera" (the code reading it was not traced).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PoiVisuals {
     pub id: u32,
     pub key: u32,
     pub map: Option<WidgetLayout>,
     pub world: Vec<WidgetLayout>,
+    /// `d788383f`: the world layouts face the camera (our reading, see above).
+    pub face_camera: bool,
 }
 
 impl PoiVisuals {
@@ -780,6 +798,7 @@ impl PoiVisuals {
     const MAP: u32 = 0xb8a6_b50a;
     const KEY: u32 = 0x9a5a_94d3;
     const WORLD: u32 = 0xbd55_0893;
+    const FACE_CAMERA: u32 = 0xd788_383f;
 
     pub fn from_object(o: &Object) -> Option<Self> {
         if o.type_name != Self::TYPE_NAME {
@@ -794,6 +813,7 @@ impl PoiVisuals {
             key: uint(o, Self::KEY) as u32,
             map: object(o, Self::MAP).and_then(layout),
             world: structs(o, Self::WORLD).filter_map(layout).collect(),
+            face_camera: boolean(o, Self::FACE_CAMERA),
         })
     }
 }

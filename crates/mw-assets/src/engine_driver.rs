@@ -52,6 +52,22 @@ pub struct DriveState {
     pub cruising: bool,
     /// The gear is one of the gearbox's last two (`FUN_00911690`): only then can the rev limiter play.
     pub top_gears: bool,
+    /// The gearbox's throttle (vehicle +0x1aa0): the turbo update (`FUN_0058f8f0`) blows off when it falls by more
+    /// than 0.3 in a frame.
+    pub gearbox_throttle: f32,
+    /// `GetTransmissionSpeedMph` (`FUN_0059ed70` → `FUN_009170a0`): the road speed the engine's RPM gives in the
+    /// current gear, `rpm / (gear ratio × final drive) × 2π × rear wheel radius / 60 × 2.23694` (`.data`
+    /// 0x01189f50 = 2π, 0x01189f90 = 60, 0x0118a060 = 2.23694, read in `snap2`); negative in reverse.
+    pub transmission_mph: f32,
+}
+
+/// `GetTransmissionSpeedMph` (`FUN_009170a0`): the road speed (mph) the engine's `rpm` gives through `ratio` (the
+/// gear's ratio × the final drive, negative in reverse) on a wheel of `radius` metres; 0 in neutral.
+pub fn transmission_mph(rpm: f32, ratio: f32, radius: f32) -> f32 {
+    if ratio.abs() < 1e-4 {
+        return 0.0;
+    }
+    rpm / ratio * std::f32::consts::TAU * radius / 60.0 * 2.236_94
 }
 
 /// The audible RPM range of `RaceCarEngineSound` (+0x1c0 / +0x1c4) as its constructor sets it; `FUN_00575340`
@@ -259,6 +275,12 @@ enum Kind {
     ListenerDistance,
     /// `Players.LocalPlayer.NitrousState.UsingNitrous` (the nitrous timeline's controllers).
     UsingNitrous,
+    /// `RaceCars.Entities["Id"].GetTransmissionSpeedMph` (`FUN_0059ed70`) and `GetReverseTransSpeedMph`
+    /// (`FUN_0059ede0`, the same with the sign flipped): the transmission whines' axes.
+    TransmissionSpeed,
+    ReverseTransmissionSpeed,
+    /// `LocalPlayer.GetPlayerGas`: the accelerator pedal (the transmission whine's on / off-throttle channels).
+    Gas,
     Random(u32),
     Other,
 }
@@ -283,6 +305,9 @@ fn classify(name: &str) -> Kind {
         "SkidLfo" => Kind::SkidLfo,
         "GetDistanceToListener" => Kind::ListenerDistance,
         "UsingNitrous" => Kind::UsingNitrous,
+        "GetTransmissionSpeedMph" => Kind::TransmissionSpeed,
+        "GetReverseTransSpeedMph" => Kind::ReverseTransmissionSpeed,
+        "GetPlayerGas" => Kind::Gas,
         _ => {
             if let Some((list, k)) = gate::parse(name) {
                 return Kind::GearGate(list, k);
@@ -418,7 +443,27 @@ pub struct EngineDriver {
     nitrous: bool,
     state: SoundState,
     listener_distance: Option<f32>,
+    /// The last update's `GetTransmissionSpeedMph`.
+    transmission_mph: f32,
+    turbo: Option<TurboState>,
 }
+
+/// The turbo update's state (`FUN_0058f8f0`, `RaceCarEngineSound` +0xf4 / +0xf8 / +0xa4 / +0xa8).
+struct TurboState {
+    data: crate::sound::TurboWhine,
+    /// +0xf4: the boost, following engine load × normalised RPM.
+    boost: f32,
+    /// +0xf8: the gearbox throttle of the last update.
+    last_throttle: f32,
+    /// The playing blow-off (+0xa4: which cue, time left) and spool (+0xa8: time left) instances.
+    blow_off: Option<(usize, f32)>,
+    spool: f32,
+}
+
+/// `FUN_0058f8f0`: the gearbox throttle moving by more than this in a frame (`.rdata` 0x00fac27c = 0.3,
+/// 0x00fae1f8 = −0.3) blows off / spools; a rising throttle stops the blow-off over 0.15 s (0x00fad428).
+const TURBO_THROTTLE_STEP: f32 = 0.3;
+const BLOW_OFF_STOP_FADE: f32 = 0.15;
 
 impl EngineDriver {
     pub fn new(bank: &EngineBank, params: Arc<Params>) -> Self {
@@ -510,6 +555,14 @@ impl EngineDriver {
             nitrous: false,
             state: SoundState::default(),
             listener_distance: None,
+            transmission_mph: 0.0,
+            turbo: bank.turbo.map(|data| TurboState {
+                data,
+                boost: 0.0,
+                last_throttle: 0.0,
+                blow_off: None,
+                spool: 0.0,
+            }),
         };
         // Values before the first update: engine on, gear-change sequences closed.
         d.write(
@@ -575,6 +628,9 @@ impl EngineDriver {
             last_shift_up: self.offline_up,
             cruising: false,
             top_gears: true,
+            gearbox_throttle: i.throttle.clamp(0.0, 1.0),
+            // No drivetrain: the road speed, signed by the gear (no wheel spin, assumed).
+            transmission_mph: if i.gear < 0 { -i.speed_mph.abs() } else { i.speed_mph.abs() },
         }
     }
 
@@ -737,6 +793,8 @@ impl EngineDriver {
                 }
             }
         }
+        self.transmission_mph = d.transmission_mph;
+        self.turbo_update(dt, &d, i, norm, load);
         self.jitter_timer -= dt;
         if self.jitter_timer <= 0.0 {
             self.jitter_timer = 0.05;
@@ -753,6 +811,53 @@ impl EngineDriver {
             effects,
             limiter: self.limiter_on,
         };
+    }
+
+    /// The turbo / supercharger sounds (`FUN_0058f8f0`, every sound update of a car with a `TurboWhine`; its
+    /// whine loop is a bound sequence of the bank). The throttle falling by more than 0.3 in gear starts a
+    /// blow-off by the boost (`FUN_0058d6f0`: ≥ 0.75 +0x0c, > 0.5 +0x14, > 0.25 +0x1c, else +0x24) unless one
+    /// plays; rising by more than 0.3 stops it over 0.15 s and starts a spool sound (boost > 0.5 +0x2c, else
+    /// +0x34) unless one plays. The boost then moves towards engine load × normalised RPM by `rate × difference`
+    /// per update, the rate `(+0x44 − +0x48) × boost + +0x48` falling, `(+0x4c − +0x50) × boost + +0x50` rising.
+    fn turbo_update(&mut self, dt: f32, d: &DriveState, i: &EngineInput, norm: f32, load: f32) {
+        let Some(t) = self.turbo.as_mut() else { return };
+        let step = d.gearbox_throttle - t.last_throttle;
+        if let Some((_, left)) = &mut t.blow_off {
+            *left -= dt;
+        }
+        t.blow_off = t.blow_off.filter(|b| b.1 > 0.0);
+        t.spool -= dt;
+        match t.blow_off {
+            // `FUN_0090d460` (the gear, 0 at a standstill) read as our gear index (assumed).
+            None if step < -TURBO_THROTTLE_STEP && i.gear != 0 => {
+                let k = match t.boost {
+                    b if b >= 0.75 => 0,
+                    b if b > 0.5 => 1,
+                    b if b > 0.25 => 2,
+                    _ => 3,
+                };
+                if let Some(len) = t.data.blow_off[k] {
+                    self.params.trigger(cue::BLOW_OFF[k]);
+                    t.blow_off = Some((k, len));
+                }
+            }
+            Some((k, _)) if step > TURBO_THROTTLE_STEP => {
+                self.params.stop(cue::BLOW_OFF[k], BLOW_OFF_STOP_FADE);
+                t.blow_off = None;
+            }
+            _ => {}
+        }
+        if t.spool <= 0.0 && step > TURBO_THROTTLE_STEP {
+            let k = usize::from(t.boost <= 0.5);
+            if let Some(len) = t.data.spool[k] {
+                self.params.trigger(cue::SPOOL[k]);
+                t.spool = len;
+            }
+        }
+        let diff = load * norm - t.boost;
+        let (a, b) = if diff < 0.0 { t.data.fall } else { t.data.rise };
+        t.boost += diff * ((a - b) * t.boost + b);
+        t.last_throttle = d.gearbox_throttle;
     }
 
     fn limiter_cycle(&mut self) {
@@ -842,6 +947,9 @@ impl EngineDriver {
                 Kind::Load => load,
                 Kind::EngineOn => self.engine_on,
                 Kind::UsingNitrous => f32::from(u8::from(self.nitrous)),
+                Kind::TransmissionSpeed => self.transmission_mph,
+                Kind::ReverseTransmissionSpeed => -self.transmission_mph,
+                Kind::Gas => i.throttle,
                 Kind::Speed => i.speed_mph,
                 Kind::Harmonic1 => firing * self.tuning.harmonic1,
                 Kind::Harmonic2 => firing * self.tuning.harmonic2,

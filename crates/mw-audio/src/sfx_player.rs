@@ -194,7 +194,9 @@ pub struct Sequence {
     pub min: f32,
     pub max: f32,
     pub items: Vec<Item>,
-    /// The sequence only plays while this binding is true (set by the bank builder, empty = always).
+    /// The sequence only plays while this binding is above 0, and its wave items' gains are scaled by the value
+    /// (clamped to 0..1): a 0 / 1 switch, or a fade the caller ramps (the player's surface sounds, `sfx.rs`). Set by
+    /// the bank builder; empty = always, full.
     pub gate: String,
     /// One-shot items fire again whenever the previous one ends while the item is active, at a rate
     /// proportional to the binding (pops and crackles: `Gurgle_Sequence` is bound to a pop probability).
@@ -408,6 +410,8 @@ pub struct Params {
     stop: AtomicU32,
     /// Set by the player once a cue has played and nothing sounds any more.
     finished: std::sync::atomic::AtomicBool,
+    /// A gain on the whole output, set at run time ([`Params::set_level`]).
+    level: AtomicU32,
 }
 
 impl Params {
@@ -423,7 +427,19 @@ impl Params {
             triggers: Mutex::new(Vec::new()),
             stop: AtomicU32::new(f32::NAN.to_bits()),
             finished: Default::default(),
+            level: AtomicU32::new(1f32.to_bits()),
         }
+    }
+
+    /// A gain on the bank's whole output (1 = the bank's own level), followed over 50 ms.
+    pub fn set_level(&self, gain: f32) {
+        if gain.is_finite() && gain >= 0.0 {
+            self.level.store(gain.to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    fn level(&self) -> f32 {
+        f32::from_bits(self.level.load(Ordering::Relaxed))
     }
 
     pub fn names(&self) -> &[String] {
@@ -667,6 +683,8 @@ pub struct Player {
     rank: Vec<usize>,
     /// Seconds rendered (control-rate clock).
     time: f32,
+    /// [`Params::set_level`], smoothed.
+    level: f32,
     /// Per-sample channel inputs; the extra last slot is the master.
     inputs: Vec<f32>,
     voices: Vec<WaveVoice>,
@@ -859,6 +877,7 @@ impl Player {
             },
             order,
             time: 0.0,
+            level: 1.0,
             voices: Vec::new(),
             // Each player draws its own sequence (a fixed start would send every horn down the same branch).
             rng: Rng((0x2545_f491 ^ PLAYERS.fetch_add(1, Ordering::Relaxed).wrapping_mul(0x9e37_79b9)) | 1),
@@ -894,10 +913,21 @@ impl Player {
         self.voices.len()
     }
 
+    /// The sounding wave voices (diagnostics): (bank sequence index, sequence id, item index, gain).
+    pub fn voices(&self) -> Vec<(usize, u64, usize, f32)> {
+        self.voices
+            .iter()
+            .filter(|v| !v.done)
+            .map(|v| (v.owner.0, self.bank.sequences.get(v.owner.0).map_or(0, |s| s.id), v.owner.1, v.gain))
+            .collect()
+    }
+
     fn control(&mut self) {
         let dt = BLOCK as f32 / self.sr;
         self.time += dt;
         let warming = self.time < 0.2;
+        let level = self.params.level();
+        self.level = if warming { level } else { self.level + (level - self.level) * (dt / 0.05).min(1.0) };
         for i in 0..self.smoothed.len() {
             let target = self.params.get(i);
             let tau = self.params.smoothing(i);
@@ -942,7 +972,8 @@ impl Player {
         let mut starts: Vec<(usize, usize, f32)> = Vec::new();
         for si in 0..self.seqs.len() {
             let seq = &self.bank.sequences[si];
-            let gate_ok = self.value(self.seqs[si].gate).is_none_or(|v| v > 0.5);
+            let gate = self.value(self.seqs[si].gate).map_or(1.0, |v| v.clamp(0.0, 1.0));
+            let gate_ok = gate > 0.0;
             let bound = self.seqs[si].bind.is_some();
             let raw = self.value(self.seqs[si].bind);
             let x = if bound {
@@ -1014,7 +1045,7 @@ impl Player {
                         let looping = waves.iter().all(|w| w.looping);
                         let eval =
                             |m: &Option<RMod>, d: f32| m.as_ref().map_or(d, |m| m.m.eval(t_item, self.value(m.bind)));
-                        let gain = eval(&st.gain, 1.0);
+                        let gain = eval(&st.gain, 1.0) * gate;
                         let pitch = eval(&st.pitch, 1.0);
                         if looping {
                             match st.voice {
@@ -1153,7 +1184,8 @@ impl Player {
                 return;
             }
         }
-        let gain = st.gain.as_ref().map_or(1.0, |m| m.m.eval(t, self.value(m.bind)));
+        let gate = self.value(self.seqs[si].gate).map_or(1.0, |v| v.clamp(0.0, 1.0));
+        let gain = st.gain.as_ref().map_or(1.0, |m| m.m.eval(t, self.value(m.bind))) * gate;
         let pitch = st.pitch.as_ref().map_or(1.0, |m| m.m.eval(t, self.value(m.bind)));
         let channel = st.channel;
         let pick = self.rng.next() as usize % waves.len();
@@ -1276,7 +1308,7 @@ impl Player {
                 self.inputs[master] += x;
             }
         }
-        let out = self.inputs[master] * self.bank.master_gain * MIX_SCALE;
+        let out = self.inputs[master] * self.bank.master_gain * self.level * MIX_SCALE;
         self.inputs.iter_mut().for_each(|v| *v = 0.0);
         if out.is_finite() { out } else { 0.0 }
     }

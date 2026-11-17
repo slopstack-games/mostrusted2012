@@ -8,10 +8,10 @@
 //! submit, present). Plus the fixed steps run, the loader messages applied and their time, entity and asset
 //! counts. Columns are named in the header line. Costs nothing when the variable is unset (nothing is added).
 
+use crate::platform::Instant;
 use std::io::Write;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
 
 use bevy::app::MainScheduleOrder;
 use bevy::ecs::schedule::ScheduleLabel;

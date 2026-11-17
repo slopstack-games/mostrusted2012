@@ -356,7 +356,7 @@ fn request_materials(
     let bc = support.0.contains(CompressedImageFormats::BC);
     let store = game.store.clone();
     let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
+    crate::platform::thread::spawn(move || {
         let out = want
             .into_iter()
             .filter_map(|id| {

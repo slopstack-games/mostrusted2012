@@ -15,7 +15,7 @@
 //! there was no start hitch to remove. Later arrivals (traffic, streamed units) are specialised as before,
 //! when first seen. `MW_NO_PREWARM=1` turns it off (A/B).
 
-use std::time::Instant;
+use crate::platform::Instant;
 
 use bevy::camera::primitives::Frustum;
 use bevy::camera::visibility::{CascadesVisibleEntities, VisibilitySystems};

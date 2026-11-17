@@ -101,31 +101,22 @@ struct Layered {
 
 @group(#{MATERIAL_BIND_GROUP}) @binding(100) var<uniform> layered: Layered;
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var tex0: texture_2d<f32>;
+// One sampler for every game texture (`convert::game_sampler`; WebGPU allows 16 per stage).
 @group(#{MATERIAL_BIND_GROUP}) @binding(102) var samp0: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(103) var tex1: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(104) var samp1: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(105) var tex2: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(106) var samp2: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(107) var tex3: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(108) var samp3: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(109) var tex4: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(110) var samp4: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(111) var tex5: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(112) var samp5: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(113) var tex6: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(114) var samp6: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(115) var tex7: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(116) var samp7: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(117) var tex8: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(118) var samp8: sampler;
 @group(#{MATERIAL_BIND_GROUP}) @binding(119) var tex9: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(120) var samp9: sampler;
 // The prefiltered sky reflection cube (mip = roughness × 5.5), as the game's G-buffer passes read it.
 @group(#{MATERIAL_BIND_GROUP}) @binding(121) var sky_cube: texture_cube<f32>;
 @group(#{MATERIAL_BIND_GROUP}) @binding(122) var sky_samp: sampler;
 // The planar reflection (`reflection.rs`): the scene mirrored in y = view.color_grading.hue, HDR game units.
 @group(#{MATERIAL_BIND_GROUP}) @binding(123) var planar_tex: texture_2d<f32>;
-@group(#{MATERIAL_BIND_GROUP}) @binding(124) var planar_samp: sampler;
 
 // The wet roads' reflection at a road point: the planar reflection at the point's mirrored projection,
 // shifted by the normal's deviation from the vertex normal (WetScaleParams.y), blurred by roughness (the
@@ -139,10 +130,10 @@ fn wet_reflection(p: vec3<f32>, n: vec3<f32>, nv: vec3<f32>, v: vec3<f32>, rough
         let uv = clip.xy / clip.w * vec2(0.5, -0.5) + 0.5 + (n - nv).xz * ws.y;
         let r = rough * 0.02;
         var c = vec3(0.0);
-        c += textureSampleLevel(planar_tex, planar_samp, uv + vec2(r, 0.5 * r), 0.0).rgb;
-        c += textureSampleLevel(planar_tex, planar_samp, uv + vec2(-0.5 * r, r), 0.0).rgb;
-        c += textureSampleLevel(planar_tex, planar_samp, uv + vec2(-r, -0.5 * r), 0.0).rgb;
-        c += textureSampleLevel(planar_tex, planar_samp, uv + vec2(0.5 * r, -r), 0.0).rgb;
+        c += textureSampleLevel(planar_tex, sky_samp, uv + vec2(r, 0.5 * r), 0.0).rgb;
+        c += textureSampleLevel(planar_tex, sky_samp, uv + vec2(-0.5 * r, r), 0.0).rgb;
+        c += textureSampleLevel(planar_tex, sky_samp, uv + vec2(-r, -0.5 * r), 0.0).rgb;
+        c += textureSampleLevel(planar_tex, sky_samp, uv + vec2(0.5 * r, -r), 0.0).rgb;
         return c * 0.25 * layered.env.x;
     }
 #endif
@@ -281,11 +272,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     if layered.mode == 1u || layered.mode == 4u {
         let world_uv = in.world_position.xz * ty.xy;
         // FloatingDecal_1Bit: discard where EdgeAlphaPlusAoMap(uv0).y < 0.5.
-        if layered.mode == 1u && layered.p[2].x > 0.5 && textureSample(tex2, samp2, uv).y < 0.5 {
+        if layered.mode == 1u && layered.p[2].x > 0.5 && textureSample(tex2, samp0, uv).y < 0.5 {
             discard;
         }
         let colour = textureSample(tex0, samp0, uv).rgb;
-        let detail = textureSample(tex1, samp1, world_uv).rgb;
+        let detail = textureSample(tex1, samp0, world_uv).rgb;
         var albedo = colour * detail * 2.0;
         // Light the road programs add to RT3 as light × this albedo (before the wet darkening):
         //   DriveableSurface (no lightmap): COLOR.rgb² × 0.318 × DynamicLighting_GlobalLightMapIntensities.x,
@@ -303,7 +294,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
                 extra += albedo * baked * baked * 0.318 * layered.night.x * layered.env.x;
             }
             if road_light.z > 0.0 {
-                extra += albedo * textureSample(tex9, samp9, uv_b).rgb * road_light.z * layered.env.x;
+                extra += albedo * textureSample(tex9, samp0, uv_b).rgb * road_light.z * layered.env.x;
             }
         }
         let flags = layered.p[0];
@@ -311,24 +302,24 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         var f0 = 0.02;
         var line_a = 0.0;
         if layered.mode == 4u {
-            let line = textureSample(tex2, samp2, uv_b) * layered.p[2];
+            let line = textureSample(tex2, samp0, uv_b) * layered.p[2];
             line_a = line.a;
             albedo = mix(albedo, line.rgb, line_a);
         }
         var n_road = nv;
         if flags.x > 0.5 {
             // Slope sum of road map, detail map and vertex normal, then (p.x, 1, p.y) normalised.
-            let road = textureSample(tex3, samp3, uv);
-            let det = textureSample(tex4, samp4, world_uv);
+            let road = textureSample(tex3, samp0, uv);
+            let det = textureSample(tex4, samp0, world_uv);
             var p = road_slope(road.rgb, tv, bv) + detail_slope(det.rgb) + nv.xz / max(nv.y, 0.05);
             if flags.z > 0.5 {
-                p += road_slope(textureSample(tex6, samp6, uv_b).rgb, tv, bv) * line_a;
+                p += road_slope(textureSample(tex6, samp0, uv_b).rgb, tv, bv) * line_a;
             }
             n_road = normalize(vec3(p.x, 1.0, p.y));
             rough = road.a * det.a;
         }
         if flags.y > 0.5 {
-            f0 = textureSample(tex5, samp5, uv).g;
+            f0 = textureSample(tex5, samp0, uv).g;
         }
         if layered.mode == 4u {
             let rsf = layered.p[3];
@@ -350,10 +341,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         var n = n_road;
         if flags.w > 0.5 {
             let ws = layered.p[4];
-            let puddle = textureSample(tex8, samp8, in.world_position.xz * ws.x);
+            let puddle = textureSample(tex8, samp0, in.world_position.xz * ws.x);
             var depth = 0.0;
             if flags.w > 1.5 {
-                depth = textureSample(tex7, samp7, uv).y;
+                depth = textureSample(tex7, samp0, uv).y;
             }
             let wet = saturate(puddle.w * wet_in * layered.env.z);
             let k = mix(vec3(1.0), vec3(depth * puddle.x, puddle.y, puddle.z), wet);
@@ -373,14 +364,14 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         pbr_input.specular_occlusion = 0.0;
     } else if layered.mode == 2u {
         let m = textureSample(tex0, samp0, uv);
-        let n = textureSample(tex1, samp1, uv_b * tx.w).g;
+        let n = textureSample(tex1, samp0, uv_b * tx.w).g;
         let w = terrain_weights(m, n);
         let uv1 = uv_b * vec2(tx.x, ty.x);
         let uv2 = uv_b * vec2(tx.y, ty.y);
         let uv3 = uv_b * vec2(tx.z, ty.z);
-        let l1 = textureSample(tex2, samp2, uv1).rgb;
-        let l2 = textureSample(tex3, samp3, uv2).rgb;
-        let l3 = textureSample(tex4, samp4, uv3).rgb;
+        let l1 = textureSample(tex2, samp0, uv1).rgb;
+        let l2 = textureSample(tex3, samp0, uv2).rgb;
+        let l3 = textureSample(tex4, samp0, uv3).rgb;
         let albedo = (l1 * w.x + l2 * w.y + l3 * w.z) * (2.0 * m.g);
         pbr_input.material.base_color = vec4(albedo, 1.0);
         // Layer constants blended by the same weights: x = roughness scale, y = F0.
@@ -389,14 +380,14 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         var rough = c.x;
         if flags.y > 0.5 {
             // Tiling normals: x, y and roughness in w; z is reconstructed.
-            let nt = textureSample(tex6, samp6, uv1).xyw * w.x + textureSample(tex7, samp7, uv2).xyw * w.y
-                + textureSample(tex8, samp8, uv3).xyw * w.z;
+            let nt = textureSample(tex6, samp0, uv1).xyw * w.x + textureSample(tex7, samp0, uv2).xyw * w.y
+                + textureSample(tex8, samp0, uv3).xyw * w.z;
             let t2 = 2.0 * (nt.xy - 0.5);
             let tz = sqrt(max(0.0, 1.0 - dot(t2, t2)));
             // Macro frame: the world-space macro normal (texel swizzled to x, z, -y) or the vertex normal.
             var nm = nv;
             if flags.x > 0.5 {
-                let mt = 2.0 * (textureSample(tex5, samp5, uv).rgb - 0.5);
+                let mt = 2.0 * (textureSample(tex5, samp0, uv).rgb - 0.5);
                 nm = normalize(vec3(mt.x, mt.z, -mt.y));
             }
             let bm = normalize(cross(nm, tv));
@@ -414,15 +405,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let uv1 = uv * vec2(tx.x, ty.x);
         let uv2 = uv * vec2(tx.y, ty.y);
         let uv3 = uv * vec2(tx.z, ty.z);
-        let l1 = textureSample(tex1, samp1, uv1).rgb * layered.p[3].rgb;
-        let l2 = textureSample(tex2, samp2, uv2).rgb * layered.p[4].rgb;
-        let l3 = textureSample(tex3, samp3, uv3).rgb * layered.p[5].rgb;
+        let l1 = textureSample(tex1, samp0, uv1).rgb * layered.p[3].rgb;
+        let l2 = textureSample(tex2, samp0, uv2).rgb * layered.p[4].rgb;
+        let l3 = textureSample(tex3, samp0, uv3).rgb * layered.p[5].rgb;
         var albedo = l1 * w.x + l2 * w.y + l3 * w.z;
         let flags = layered.p[10];
         // A missing decal reads 0 in the game (unbound slot).
         var d = vec4(0.0);
         if flags.w > 0.5 {
-            d = textureSample(tex4, samp4, uv * md.zw);
+            d = textureSample(tex4, samp0, uv * md.zw);
         }
         let dt = layered.p[6];
         albedo = mix(albedo, d.x * dt.rgb, d.y * dt.w);
@@ -430,8 +421,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let c = layered.p[7] * w.x + layered.p[8] * w.y + layered.p[9] * w.z;
         var nt_a = 1.0;
         if flags.x > 0.5 {
-            let nt = textureSample(tex5, samp5, uv1) * w.x + textureSample(tex6, samp6, uv2) * w.y
-                + textureSample(tex7, samp7, uv3) * w.z;
+            let nt = textureSample(tex5, samp0, uv1) * w.x + textureSample(tex6, samp0, uv2) * w.y
+                + textureSample(tex7, samp0, uv3) * w.z;
             let t = 2.0 * (nt.rgb - 0.5);
             pbr_input.N = normalize(t.x * tv + t.y * bv + t.z * nv);
             nt_a = nt.a;
@@ -441,7 +432,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         set_specular(&pbr_input, vec3(c.y), mix(d.z, 1.0, k));
         var ao = flags.z;
         if flags.y > 0.5 {
-            ao *= textureSample(tex8, samp8, uv_b).y;
+            ao *= textureSample(tex8, samp0, uv_b).y;
         }
         set_ao(&pbr_input, ao);
         // Like roads, plots have no cube reflection, only the wet planar one.
@@ -451,10 +442,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // o2 = F0 = cubic(spec.x), or SpecularColour.rgb * MaterialDiffuse for ColouredSpecular,
         // o1.w = AO map(uv1).y * instance AO.
         let p = layered.p[0];
-        let spec = textureSample(tex1, samp1, uv);
+        let spec = textureSample(tex1, samp0, uv);
         var f0 = gamma_to_f0(spec.xxx);
         if p.x > 0.5 {
-            f0 = textureSample(tex3, samp3, uv).rgb * layered.p[1].rgb;
+            f0 = textureSample(tex3, samp0, uv).rgb * layered.p[1].rgb;
         }
         set_specular(&pbr_input, f0, spec.y);
         var ao = p.y;
@@ -462,7 +453,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         // (the game's unbound slot reads 0).
         var ao_tex = vec4(1.0, 1.0, 1.0, 0.0);
         if p.z > 0.5 {
-            ao_tex = textureSample(tex2, samp2, uv_b);
+            ao_tex = textureSample(tex2, samp0, uv_b);
             ao *= ao_tex.y;
         }
         set_ao(&pbr_input, ao);
@@ -481,7 +472,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let glow = layered.p[2];
         let k = layered.p[3];
         if k.w > 0.5 {
-            let lm = textureSample(tex5, samp5, uv_b).rgb * k.x * mix(1.0, layered.night.x, k.z);
+            let lm = textureSample(tex5, samp0, uv_b).rgb * k.x * mix(1.0, layered.night.x, k.z);
             extra += lm * pbr_input.material.base_color.rgb * layered.env.x;
         }
         if glow.w > 0.5 {
@@ -492,7 +483,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
                 let a = pbr_input.material.base_color.a;
                 e = a * a * k.y;
             } else {
-                e = textureSample(tex4, samp4, uv).y * k.x;
+                e = textureSample(tex4, samp0, uv).y * k.x;
             }
             e *= mix(1.0, layered.night.x, k.z);
             extra += glow.rgb * e * pbr_input.material.base_color.rgb * layered.env.x;
@@ -521,7 +512,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             }
         }
         if layered.p[8].w > 1.5 {
-            coverage = textureSample(tex2, samp2, uv).a;
+            coverage = textureSample(tex2, samp0, uv).a;
         }
         // VehicleNFS13_BodyPaint* (p8 = (livery kind, mPaintColourIndex, has effects map), p9 = GenericVector4_A
         // = (dust level × DustColour.w, dirt level × DirtColour.w), p10 / p11 = GenericVector4_B / _C = the
@@ -552,8 +543,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         if p8.z > 0.5 {
             let euv = select(uv_b, uv, layered.p[20].z > 0.5);
             let a_in = layered.p[9];
-            let e = textureSample(tex1, samp1, euv);
-            let e7 = textureSample(tex1, samp1, euv * 7.0);
+            let e = textureSample(tex1, samp0, euv);
+            let e7 = textureSample(tex1, samp0, euv * 7.0);
             let a = saturate(e.w * e.w * a_in.x);
             let d = saturate(2.0 * saturate(e.y * e.y * a_in.y) * e7.x);
             let dirt = mix(a * layered.p[10].rgb, layered.p[11].rgb, d);
@@ -562,7 +553,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 #ifdef VERTEX_COLORS
             if layered.p[19].w > 0.5 {
                 let w = damage_weight(in.color.zw);
-                let e23 = textureSample(tex1, samp1, euv * vec2(2.0, 3.0));
+                let e23 = textureSample(tex1, samp0, euv * vec2(2.0, 3.0));
                 let band = 1.0 - 2.0 * abs(e23.z - 0.5);
                 scratch = band * saturate(2.0 * e.z - 1.0) * w;
                 albedo = vec4(mix(albedo.rgb, layered.p[19].rgb, scratch), 1.0);
@@ -576,10 +567,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         var f0 = (p0.rgb + layered.p[13].rgb * second) * (1.0 - cover);
         var rough = mix(p0.w, 1.0, cover);
         if p1.x > 0.5 {
-            f0 = textureSample(tex1, samp1, uv).rgb;
+            f0 = textureSample(tex1, samp0, uv).rgb;
         }
         if p1.y > 0.5 {
-            let nt = textureSample(tex2, samp2, uv);
+            let nt = textureSample(tex2, samp0, uv);
             rough = select(nt.a, nt.y, p1.y > 1.5);
         }
         rough = mix(rough, layered.p[20].x, scratch);
@@ -619,11 +610,11 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
                 let k = 1.0 - saturate(dot(d, d) * layered.p[4].w);
                 s += l.w * k * k;
             }
-            let emit = s * layered.p[4].rgb * p2.w * textureSample(tex3, samp3, uv).x * layered.env.x;
+            let emit = s * layered.p[4].rgb * p2.w * textureSample(tex3, samp0, uv).x * layered.env.x;
             extra += emit;
             pbr_input.material.emissive = vec4(emit, 1.0);
         } else if p2.z > 0.5 {
-            let t = textureSample(tex3, samp3, select(uv, uv_b, p3.w > 0.5));
+            let t = textureSample(tex3, samp0, select(uv, uv_b, p3.w > 0.5));
             let m = layered.lights;
             var emit: vec3<f32>;
             if p2.z < 1.5 {
@@ -652,13 +643,13 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let k = layered.p[1];
         let i_w = -v_dir;
         let i_ts = vec3(dot(i_w, tv), dot(i_w, bv), dot(i_w, nv));
-        let height = textureSample(tex4, samp4, uv).x * pc.x + pc.y;
-        let ext = 2.0 * textureSample(tex1, samp1, uv).rgb - 1.0;
+        let height = textureSample(tex4, samp0, uv).x * pc.x + pc.y;
+        let ext = 2.0 * textureSample(tex1, samp0, uv).rgb - 1.0;
         let d = normalize(mix(i_ts, -ext, pc.z));
         let uv2 = uv + vec2(d.x, -d.y) * height;
-        let ni = 2.0 * (textureSample(tex3, samp3, uv2).rgb - 0.5);
+        let ni = 2.0 * (textureSample(tex3, samp0, uv2).rgb - 0.5);
         let n = normalize(ni.x * tv + ni.y * bv + ni.z * nv);
-        let disp = textureSample(tex4, samp4, uv2);
+        let disp = textureSample(tex4, samp0, uv2);
         let colour = textureSample(tex0, samp0, uv2);
         pbr_input.N = n;
         pbr_input.material.base_color = vec4(layered.p[2].rgb, 1.0);
@@ -667,7 +658,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         pbr_input.diffuse_occlusion = vec3(disp.y);
         pbr_input.specular_occlusion = 0.0;
         // Emissive channels: brake, headlight, reversing, tail.
-        let e = saturate(textureSample(tex2, samp2, uv2) * layered.lights) * k.x;
+        let e = saturate(textureSample(tex2, samp0, uv2) * layered.lights) * k.x;
         let emit = e.x * layered.p[4].rgb + e.y * layered.p[5].rgb + e.z * layered.p[6].rgb + e.w * layered.p[7].rgb;
         let dw = normalize(d.x * tv + d.y * bv + d.z * nv);
         let refl = textureSampleLevel(sky_cube, sky_samp, reflect(dw, n), 0.0).rgb;
@@ -697,7 +688,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         pbr_input.specular_occlusion = 0.0;
         if flags.y > 0.5 {
             // Running light: lightmap.y × mask.y × mSelfIlluminationMultiplier × RunningColour.
-            let lm = textureSample(tex1, samp1, uv).y;
+            let lm = textureSample(tex1, samp0, uv).y;
             extra = lm * layered.lights.y * layered.p[0].w * layered.p[2].rgb * layered.env.x;
         }
     } else if layered.mode == 7u {
@@ -754,19 +745,19 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         if flags.y > 0.5 {
             let w1 = uv_b * tiles.xy + vec2(0.0, t / p1.x);
             let w2 = uv_b * tiles.zw + vec2(0.0, t / p1.y);
-            nt = 0.5 * (textureSample(tex1, samp1, w1).rgb + textureSample(tex1, samp1, w2).rgb);
+            nt = 0.5 * (textureSample(tex1, samp0, w1).rgb + textureSample(tex1, samp0, w2).rgb);
         }
         // SpecDepthAndRefraction.w at 2 × TEXCOORD2 scrolling by Time / 2: shifts surf, floor and caustics.
         var refr = 0.0;
         if flags.x > 0.5 && flags.z > 0.5 {
-            refr = textureSample(tex3, samp3, 2.0 * uv2 + vec2(0.0, 0.5 * t)).w;
+            refr = textureSample(tex3, samp0, 2.0 * uv2 + vec2(0.0, 0.5 * t)).w;
         }
         // Surf: its normal replaces the waves by Surf.y × SurfMask.y (mask over TEXCOORD0).
         var surf = 0.0;
         if flags.w > 0.5 {
             let su = vec2(uv_b.x * st.x, uv_b.y * st.y + t / st.z + 0.05 * t - refr);
-            surf = textureSample(tex5, samp5, su).y * textureSample(tex6, samp6, uv).y;
-            nt = mix(nt, textureSample(tex7, samp7, su).rgb, surf);
+            surf = textureSample(tex5, samp0, su).y * textureSample(tex6, samp0, uv).y;
+            nt = mix(nt, textureSample(tex7, samp0, su).rgb, surf);
         }
         let c = 2.0 * (nt - 0.5);
         pbr_input.N = normalize(c.x * tv + c.y * bv + c.z * nv);
@@ -775,15 +766,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         var refl = 1.0;
         if flags.x > 0.5 {
             // s: x = roughness scale, y = depth (floor visibility, damps the reflection), z = algae.
-            let s = textureSample(tex3, samp3, uv);
-            let base = textureSample(tex2, samp2, uv).rgb;
+            let s = textureSample(tex3, samp0, uv);
+            let base = textureSample(tex2, samp0, uv).rgb;
             // River floor at TEXCOORD2 - refraction / 4, lit by s.y plus the caustics (DiffuseAndCaustics.w
             // at world xz / causticTile + refraction) × s.y. Without TEXCOORD2 a mid grey stands in.
             var floor = vec3(0.35) * s.y;
             if flags.z > 0.5 {
                 let cuv = in.world_position.xz / layered.p[5].xy + refr;
-                let caustic = textureSample(tex2, samp2, cuv).w * s.y;
-                floor = saturate(textureSample(tex4, samp4, uv2 - 0.25 * refr).rgb * s.y + caustic);
+                let caustic = textureSample(tex2, samp0, cuv).w * s.y;
+                floor = saturate(textureSample(tex4, samp0, uv2 - 0.25 * refr).rgb * s.y + caustic);
             }
             albedo = mix(floor * base, layered.p[2].rgb, s.z);
             rough = mix(rough * s.x, rough, surf);

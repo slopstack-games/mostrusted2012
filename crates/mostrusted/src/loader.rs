@@ -5,6 +5,7 @@
 //! the main thread over a channel. Track units are streamed nearest-first
 //! from the focus point, much like the original game streams its world.
 
+use crate::platform::PollLock;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
@@ -147,6 +148,8 @@ pub enum Msg {
     Model(ResourceId, Vec<Part>),
     /// A model's own shadow distance (`Model` +0x0C, metres), sent before its `Model` when it is finite.
     ShadowRange(ResourceId, f32),
+    /// A model's pass-mask bits that keep it out of some views (`pass_mask.rs`), sent before its `Model`.
+    PassMask(ResourceId, u8),
     Instance {
         model: ResourceId,
         transform: Mat4,
@@ -155,9 +158,22 @@ pub enum Msg {
     },
     /// The streaming zones (`ZoneList`), for the groundcover residency (`groundcover.rs`).
     Zones(mw_formats::ZoneList),
+    /// The camera zones that show the `Instance`s that follow (`zone_view.rs`); `None` ends the tagging.
+    ZoneTag(Option<crate::zone_view::ZoneTag>),
     /// A track unit (= zone) has been sent completely: its collision, placements and groundcover
     /// (`frontend::Residency`).
     UnitLoaded(u32),
+    /// What follows (up to [`Msg::UnitLoaded`]) belongs to this track unit: it goes when the unit is unloaded
+    /// (`streaming.rs`).
+    UnitBegin(u32),
+    /// The instances that follow are shared by several units (a backdrop placement, by its key): they go when
+    /// no resident unit lists it any more. `None` ends the shared run.
+    StreamKey(Option<u64>),
+    /// A track unit left the stream set (`streaming.rs`): its entities go, and the models, textures, shared
+    /// backdrop instances and groundcover collections no resident unit uses any more are dropped.
+    UnitUnloaded(Box<Unloaded>),
+    /// The world is streamed around the focus (not loaded once): `Done` then means the first stream set is in.
+    Streaming,
     /// The groundcover collections a track unit lists (also those already sent for another unit).
     GroundcoverListing {
         unit: u32,
@@ -206,12 +222,72 @@ pub enum Msg {
     Done,
 }
 
+/// What [`Msg::UnitUnloaded`] frees.
+#[derive(Debug, Default)]
+pub struct Unloaded {
+    pub unit: u32,
+    pub models: Vec<ResourceId>,
+    pub textures: Vec<TexKey>,
+    /// Shared backdrop instances ([`Msg::StreamKey`]).
+    pub backdrops: Vec<u64>,
+    /// Groundcover collections (`Msg::Groundcover::collection`).
+    pub groundcover: Vec<ResourceId>,
+}
+
+/// The streaming focus the main thread hands the loader: the camera's position and view direction (the game's
+/// `FUN_00558740` passes the camera manager's +0x140 / +0x130 to `FUN_005586e0`; `streaming.rs`).
+/// Also carries owners whose models the main thread no longer needs ([`StreamFocus::release`]).
+#[derive(Resource, Clone)]
+pub struct StreamFocus {
+    focus: Arc<std::sync::Mutex<Option<(Vec3, Vec3)>>>,
+    releases: std::sync::mpsc::Sender<u32>,
+    /// Read by the loader thread only.
+    released: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<u32>>>,
+}
+
+impl Default for StreamFocus {
+    fn default() -> Self {
+        let (releases, released) = std::sync::mpsc::channel();
+        Self { focus: Default::default(), releases, released: Arc::new(std::sync::Mutex::new(released)) }
+    }
+}
+
+impl StreamFocus {
+    pub fn set(&self, at: Vec3, direction: Vec3) {
+        // Polled: the main thread must not block (a browser traps there); a busy lock skips one frame's focus.
+        if let Some(mut f) = self.focus.poll_lock() {
+            *f = Some((at, direction));
+        }
+    }
+
+    fn get(&self) -> Option<(Vec3, Vec3)> {
+        self.focus.lock().ok().and_then(|f| *f)
+    }
+
+    /// Forget what `owner` uses (a parked car's models: [`PARKED_OWNER`] | its serial), as for an unloaded unit.
+    pub fn release(&self, owner: u32) {
+        let _ = self.releases.send(owner);
+    }
+
+    fn take_releases(&self) -> Vec<u32> {
+        self.released.lock().map(|r| r.try_iter().collect()).unwrap_or_default()
+    }
+}
+
+/// Owner ids of jack spots' parked cars (`jackspots.rs`): this bit and the request's serial. Track units are
+/// small numbers.
+pub const PARKED_OWNER: u32 = 1 << 31;
+
 /// Which `InstanceList` backdrop entries to draw (see `mw_assets::backdrop`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum BackdropMode {
-    /// One backdrop per place: a backdrop triangle is drawn where the zone owning its position lists its
-    /// model, i.e. what the game shows there when the player stands in that zone.
+    /// As the game: every backdrop model whole, shown while the camera's zone lists it, and each unit's main
+    /// placements while the unit is that zone or a neighbour (`zone_view.rs`).
     #[default]
+    CameraZone,
+    /// One backdrop per place: a backdrop triangle is drawn where the zone owning its position lists its
+    /// model, i.e. what the game shows there when the player stands in that zone; every unit's main
+    /// placements always (`--composed-backdrop`).
     Composed,
     /// Every unit's backdrop, unfiltered (all LOD tiers on top of each other; debug).
     All,
@@ -242,6 +318,9 @@ pub struct WorldFilter {
     /// Draw every static world placement as its own entity (the default: without `--merge-static`)
     /// instead of merging a track unit's single-use static placements per material.
     pub no_merge: bool,
+    /// `--load-all`: load every track unit once and keep it (the behaviour before streaming), instead of
+    /// streaming the focus zone and its neighbours (`streaming.rs`). `--units N` also loads once (N units).
+    pub load_all: bool,
 }
 
 #[derive(Resource)]
@@ -252,10 +331,12 @@ pub fn spawn(
     request: Request,
     bc_supported: bool,
     filter: WorldFilter,
-) -> (LoaderChannel, LoaderRequests) {
+) -> (LoaderChannel, LoaderRequests, StreamFocus) {
     let (tx, rx) = channel();
     let (req_tx, req_rx) = channel();
-    std::thread::Builder::new()
+    let focus = StreamFocus::default();
+    let worker_focus = focus.clone();
+    crate::platform::thread::Builder::new()
         .name("mw-loader".into())
         .spawn(move || {
             let mut w = Worker {
@@ -285,21 +366,103 @@ pub fn spawn(
                 standing_models: HashMap::new(),
                 lods: crate::lod::LodSettings::from_env().enabled,
                 main_view: HashMap::new(),
+                pass_masks: HashMap::new(),
                 all_passes: std::env::var_os("MW_ALL_PASSES").is_some(),
+                standin_shadows: std::env::var("MW_STANDIN_SHADOWS").is_ok_and(|v| v != "0"),
+                owner: None,
+                refs: HashMap::new(),
+                global: UnitRefs::default(),
+                model_textures: HashMap::new(),
+                gc_models: HashMap::new(),
+                index: None,
+                stream: None,
+                focus: worker_focus,
+                pending_release: HashSet::new(),
             };
             if let Err(e) = w.run(request) {
                 let _ = w.tx.send(Msg::Progress(format!("loader error: {e:#}")));
             }
             let _ = w.tx.send(Msg::Done);
-            // Then serve runtime car requests until the main thread drops its sender.
-            while let Ok(req) = w.requests.recv() {
-                if w.car_request(req).is_err() {
+            // Then serve runtime car requests until the main thread drops its sender and, while streaming, keep
+            // the stream set around the focus loaded (one unit at a time, car requests in between).
+            loop {
+                if w.process_releases().is_err() {
                     break;
+                }
+                match w.stream_step() {
+                    Ok(true) => {
+                        if w.poll_requests().is_err() {
+                            break;
+                        }
+                        continue;
+                    }
+                    Ok(false) => {}
+                    Err(e) => {
+                        let _ = w.tx.send(Msg::Progress(format!("streaming error: {e:#}")));
+                        break;
+                    }
+                }
+                match crate::platform::recv_timeout(&w.requests, std::time::Duration::from_millis(STREAM_POLL_MS)) {
+                    Ok(req) => {
+                        if w.car_request(req).is_err() {
+                            break;
+                        }
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                 }
             }
         })
         .expect("spawn loader thread");
-    (LoaderChannel(std::sync::Mutex::new(rx)), LoaderRequests(req_tx))
+    (LoaderChannel(std::sync::Mutex::new(rx)), LoaderRequests(req_tx), focus)
+}
+
+/// How often the idle loader looks at the focus (ms). The game rebuilds its stream list every frame
+/// (`FUN_00558740`); this only bounds how late a zone change is seen.
+const STREAM_POLL_MS: u64 = 20;
+
+/// A shared backdrop placement: its model and transform bits.
+type BackdropKey = (ResourceId, [u32; 16]);
+
+fn backdrop_key(model: ResourceId, transform: &[[f32; 4]; 4]) -> BackdropKey {
+    (model, std::array::from_fn(|i| transform[i / 4][i % 4].to_bits()))
+}
+
+/// The key the main thread knows a shared backdrop placement by ([`Msg::StreamKey`]).
+fn backdrop_hash(key: &BackdropKey) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut h);
+    h.finish()
+}
+
+/// What a track unit (or the global set: cars, test props) uses of what the loader has sent.
+#[derive(Default)]
+struct UnitRefs {
+    models: HashSet<ResourceId>,
+    textures: HashSet<TexKey>,
+    backdrops: HashSet<BackdropKey>,
+    groundcover: HashSet<ResourceId>,
+}
+
+/// Every track unit's placements, read once (`Worker::index_world`).
+struct WorldIndex {
+    /// Bundle name and placements per track unit number.
+    units: HashMap<u32, (String, Vec<mw_assets::Placement>)>,
+    /// Units nearest-first from the first focus (the load-once modes).
+    order: Vec<u32>,
+    zones: Option<mw_formats::ZoneList>,
+    /// The units listing each backdrop placement ([`BackdropMode::CameraZone`]).
+    listing: HashMap<BackdropKey, Vec<u32>>,
+    camera_zone: bool,
+}
+
+/// The streamer's state (`streaming.rs`): the units loaded now and the zone of the last focus inside one.
+struct StreamState {
+    resident: HashSet<u32>,
+    last_zone: Option<usize>,
+    /// The focus until the main thread sends one (the spawn point or the `--camera` pose).
+    initial: Vec3,
 }
 
 struct Worker {
@@ -343,14 +506,33 @@ struct Worker {
     prop_physics: HashMap<(ResourceId, mw_assets::props::ObjectKind), Option<Arc<crate::props::PropPhysics>>>,
     /// LOD table per model (`lod.rs`), `None` for models without one.
     lod_tables: HashMap<ResourceId, Option<Arc<crate::lod::LodTable>>>,
-    /// Whether the game's main view draws a model (`Model` +0x19 pass mask, [`Self::in_main_view`]).
-    main_view: HashMap<ResourceId, bool>,
+    /// Models' `Model` +0x19 pass masks ([`Self::pass_mask`]; 0 with `MW_ALL_PASSES=1`).
+    main_view: HashMap<ResourceId, u8>,
+    /// Pass masks by variant key, sent with the model (`Msg::PassMask`, `pass_mask.rs`).
+    pass_masks: HashMap<ResourceId, u8>,
     /// `MW_ALL_PASSES=1`: also draw models the main view skips (A/B).
     all_passes: bool,
+    /// `MW_STANDIN_SHADOWS=1`: the ground stand-ins' SHADOW states cast shadows (`pass_mask.rs`).
+    standin_shadows: bool,
     /// Per compound definition: the models it draws while standing (see [`Self::compound_standing`]).
     standing_models: HashMap<ResourceId, StandingModels>,
     /// Apply the game's LOD rule to world placements (off with `MW_NO_LOD=1`).
     lods: bool,
+    /// The track unit being sent (`None`: cars, test props; never unloaded).
+    owner: Option<u32>,
+    /// What each resident track unit uses, and what the rest uses.
+    refs: HashMap<u32, UnitRefs>,
+    global: UnitRefs,
+    /// Textures per model key sent (to keep a shared model's textures with it).
+    model_textures: HashMap<ResourceId, Vec<TexKey>>,
+    /// Model keys per groundcover collection sent.
+    gc_models: HashMap<ResourceId, Vec<ResourceId>>,
+    index: Option<WorldIndex>,
+    /// Set while the world is streamed around the focus.
+    stream: Option<StreamState>,
+    focus: StreamFocus,
+    /// Owners released before their request was served (released right after it).
+    pending_release: HashSet<u32>,
 }
 
 /// The models a compound definition draws while it stands (`Loader::compound_standing`): `CompoundObject`
@@ -428,9 +610,31 @@ impl Worker {
     /// Load a car asked for at runtime. Load errors go back to the main thread; only a closed
     /// channel is an error here.
     fn car_request(&mut self, req: CarRequest) -> anyhow::Result<()> {
+        // Cars are kept (never unloaded with a unit).
+        let owner = self.owner.take();
+        let r = self.car_request_global(req);
+        self.owner = owner;
+        r
+    }
+
+    fn car_request_global(&mut self, req: CarRequest) -> anyhow::Result<()> {
         if let Some(t) = &req.traffic {
-            if let Err(e) = self.traffic_car(&req.bundle, t) {
+            // A jack spot's parked car is its own owner, released when the car goes (`jackspots.rs`).
+            let parked =
+                t.vehicle.checked_sub(crate::jackspots::MODEL_KEY_BASE).map(|serial| PARKED_OWNER | serial as u32);
+            if let Some(o) = parked {
+                self.refs.entry(o).or_default();
+            }
+            self.owner = parked;
+            let loaded = self.traffic_car(&req.bundle, t);
+            self.owner = None;
+            if let Err(e) = loaded {
                 self.send(Msg::Progress(format!("traffic car {}: {e:#}", req.bundle)))?;
+            }
+            if let Some(o) = parked
+                && self.pending_release.remove(&o)
+            {
+                self.unload_unit(o)?;
             }
             return Ok(());
         }
@@ -444,8 +648,21 @@ impl Worker {
         Ok(())
     }
 
+    /// Forget what released owners used (`StreamFocus::release`).
+    fn process_releases(&mut self) -> anyhow::Result<()> {
+        for owner in self.focus.take_releases() {
+            if self.refs.contains_key(&owner) {
+                self.unload_unit(owner)?;
+            } else {
+                self.pending_release.insert(owner);
+            }
+        }
+        Ok(())
+    }
+
     /// Serve any runtime car requests that are waiting (called between track units).
     fn poll_requests(&mut self) -> anyhow::Result<()> {
+        self.process_releases()?;
         loop {
             match self.requests.try_recv() {
                 Ok(req) => self.car_request(req)?,
@@ -832,25 +1049,65 @@ impl Worker {
     }
 
     fn world(&mut self, max_units: Option<usize>, focus: Option<Vec3>) -> anyhow::Result<()> {
-        let units: Vec<String> = self
+        let focus = self.index_world(focus)?;
+        let Some(index) = &self.index else { return Ok(()) };
+        // Streamed as the game does (`streaming.rs`) unless `--units N` or `--load-all` asks for a fixed set, or
+        // there is no zone list to stream by.
+        let streaming = max_units.is_none() && !self.filter.load_all && index.zones.is_some();
+        let fixed: Vec<u32> = if streaming {
+            index.units.keys().copied().collect()
+        } else {
+            index.order.iter().take(max_units.unwrap_or(usize::MAX)).copied().collect()
+        };
+        self.build_listing(&fixed);
+        // The composition fills a zone's area from the nearest loaded zone's view: while streaming, as for the
+        // full map (the composed cut is drawn only in the aerial view, `zone_view.rs`).
+        if let Some(sel) = &mut self.backdrop {
+            sel.set_loaded(fixed.iter().copied());
+        }
+        if streaming {
+            self.send(Msg::Streaming)?;
+            self.stream = Some(StreamState { resident: HashSet::new(), last_zone: None, initial: focus });
+            // The first stream set, then `Done`.
+            while self.stream_step()? {
+                self.poll_requests()?;
+            }
+            let n = self.stream.as_ref().map_or(0, |s| s.resident.len());
+            self.send(Msg::Progress(format!("first stream set loaded: {n} track units")))?;
+            return Ok(());
+        }
+        let total = fixed.len();
+        for (i, &unit) in fixed.iter().enumerate() {
+            self.poll_requests()?;
+            self.send(Msg::Progress(format!("streaming TRK_UNIT{unit} ({}/{total})", i + 1)))?;
+            self.load_unit(unit)?;
+        }
+        self.send(Msg::Progress(format!("world loaded: {total} track units")))?;
+        Ok(())
+    }
+
+    /// Read every unit's placements (cheap) to find the city centre and the units' order nearest-first from the
+    /// focus; send the focus and the zone list. Returns the focus.
+    fn index_world(&mut self, focus: Option<Vec3>) -> anyhow::Result<Vec3> {
+        let names: Vec<String> = self
             .store
             .bundle_paths()
             .iter()
             .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("TRK_UNIT")))
             .map(|p| p.to_string_lossy().into_owned())
             .collect();
-
-        // Read every unit's placements first (cheap) to find the city centre
-        // and order units nearest-first.
-        let mut placed = Vec::with_capacity(units.len());
-        for name in &units {
-            let Some(b) = self.store.bundle(name) else { continue };
+        let mut placed = Vec::with_capacity(names.len());
+        for name in names {
+            let Some(b) = self.store.bundle(&name) else { continue };
             let p = self.store.bundle_placements(&b)?;
             let centre = median_translation(&p);
-            placed.push((name.clone(), p, centre));
             self.store.evict_all();
+            match track_unit_number(&name) {
+                Some(unit) => placed.push((unit, name, p, centre)),
+                None => self.send(Msg::Progress(format!("{name}: no unit number, not loaded")))?,
+            }
         }
-        let mut centres: Vec<Vec3> = placed.iter().filter_map(|(_, _, c)| *c).collect();
+        let mut centres: Vec<Vec3> = placed.iter().filter_map(|(_, _, _, c)| *c).collect();
         let focus = focus.or_else(|| median_vec(&mut centres)).unwrap_or(Vec3::ZERO);
         self.send(Msg::Focus(focus))?;
         let zones = self.store.zone_list().ok();
@@ -859,23 +1116,21 @@ impl Worker {
         }
         // Nearest zone first (the game streams by `ZoneList` zone: the zone holding the focus, then its
         // neighbours; docs/decomp.md "Front end"), units without a zone by their placements' median.
-        let zone_distance = |name: &str| -> Option<f32> {
-            let unit = track_unit_number(name)?;
+        let zone_distance = |unit: u32| -> Option<f32> {
             Some(zones.as_ref()?.zones.iter().find(|z| z.id == unit)?.distance(focus.x, focus.z))
         };
         placed.sort_by(|a, b| {
-            let d = |name: &str, c: &Option<Vec3>| {
-                zone_distance(name).unwrap_or_else(|| c.map_or(f32::MAX, |c| c.distance(focus)))
+            let d = |unit: u32, c: &Option<Vec3>| {
+                zone_distance(unit).unwrap_or_else(|| c.map_or(f32::MAX, |c| c.distance(focus)))
             };
-            d(&a.0, &a.2).total_cmp(&d(&b.0, &b.2))
+            d(a.0, &a.3).total_cmp(&d(b.0, &b.3))
         });
 
         // Backdrop composition needs every unit's backdrop list, also of units not streamed.
-        if self.filter.backdrop == BackdropMode::Composed {
+        if matches!(self.filter.backdrop, BackdropMode::Composed | BackdropMode::CameraZone) {
             self.send(Msg::Progress("indexing backdrops".into()))?;
-            let listings = placed.iter().flat_map(|(name, placements, _)| {
-                let unit = track_unit_number(name);
-                placements.iter().filter(|p| p.backdrop).filter_map(move |p| Some((unit?, p.model, &p.transform)))
+            let listings = placed.iter().flat_map(|(unit, _, placements, _)| {
+                placements.iter().filter(|p| p.backdrop).map(move |p| (*unit, p.model, &p.transform))
             });
             match self.store.backdrop_selector(listings) {
                 Ok(sel) => self.backdrop = Some(sel),
@@ -884,95 +1139,314 @@ impl Worker {
                 }
             }
         }
+        let camera_zone = self.filter.backdrop == BackdropMode::CameraZone && zones.is_some();
+        let order = placed.iter().map(|(unit, ..)| *unit).collect();
+        let units = placed.into_iter().map(|(unit, name, p, _)| (unit, (name, p))).collect();
+        self.index = Some(WorldIndex { units, order, zones, listing: HashMap::new(), camera_zone });
+        Ok(focus)
+    }
 
-        let total = max_units.unwrap_or(placed.len()).min(placed.len());
-        if let Some(sel) = &mut self.backdrop {
-            sel.set_loaded(placed.iter().take(total).filter_map(|(name, _, _)| track_unit_number(name)));
+    /// Camera-zone mode: the units of `units` listing each backdrop placement.
+    fn build_listing(&mut self, units: &[u32]) {
+        let Some(index) = &mut self.index else { return };
+        if !index.camera_zone {
+            return;
         }
-        for (i, (name, placements, _)) in placed.into_iter().take(total).enumerate() {
-            self.poll_requests()?;
-            self.send(Msg::Progress(format!("streaming {name} ({}/{total})", i + 1)))?;
-            if let Some(b) = self.store.bundle(&name) {
-                self.collision(&b)?;
-                match self.store.bundle_lights(&b) {
-                    Ok(lights) if !lights.is_empty() => self.send(Msg::Lights(lights))?,
-                    Ok(_) => {}
-                    Err(e) => self.send(Msg::Progress(format!("no lights for {name}: {e}")))?,
-                }
-                if !self.filter.no_groundcover {
-                    self.groundcover(&b, track_unit_number(&name))?;
+        let mut listing: HashMap<BackdropKey, Vec<u32>> = HashMap::new();
+        for unit in units {
+            let Some((_, placements)) = index.units.get(unit) else { continue };
+            for p in placements.iter().filter(|p| p.backdrop) {
+                let units = listing.entry(backdrop_key(p.model, &p.transform)).or_default();
+                if !units.contains(unit) {
+                    units.push(*unit);
                 }
             }
-            let unit = track_unit_number(&name);
-            let mut statics = Vec::new();
-            for p in placements {
-                if self.filter.exclude.contains(&p.model) {
-                    continue;
-                }
-                let mut variant = Variant::default();
-                if p.backdrop {
-                    match self.filter.backdrop {
-                        BackdropMode::None => continue,
-                        BackdropMode::Zone(z) if unit != Some(z) => continue,
-                        BackdropMode::Composed if self.backdrop.is_some() => {
-                            // Many units list the same backdrop model: compose and send it once.
-                            let bits = std::array::from_fn(|i| p.transform[i / 4][i % 4].to_bits());
-                            if !self.backdrop_sent.insert((p.model, bits)) {
-                                continue;
+        }
+        index.listing = listing;
+    }
+
+    /// One step of the streamer (`streaming.rs`, the game's `FUN_00549fb0` stream list and `FUN_0053acf0`
+    /// streamer): build the stream list for the focus, unload every resident unit not on it, then load the
+    /// missing unit of highest priority. True when a unit was loaded (call again).
+    fn stream_step(&mut self) -> anyhow::Result<bool> {
+        let (Some(state), Some(index)) = (&self.stream, &self.index) else { return Ok(false) };
+        let Some(zones) = &index.zones else { return Ok(false) };
+        let (pos, dir) = self.focus.get().unwrap_or((state.initial, Vec3::ZERO));
+        let Some(list) = crate::streaming::stream_list(zones, pos, dir, state.last_zone) else { return Ok(false) };
+        // Evict first: the game's streamer unloads every slot not requested before it picks one to load
+        // (`FUN_00537c80`).
+        let gone: Vec<u32> =
+            state.resident.iter().filter(|u| !list.units.iter().any(|(w, _)| w == *u)).copied().collect();
+        let next = list
+            .units
+            .iter()
+            .filter(|(u, _)| !state.resident.contains(u) && index.units.contains_key(u))
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|&(u, _)| u);
+        let focus_unit = zones.zones.get(list.zone).map_or(0, |z| z.id);
+        if let Some(state) = &mut self.stream {
+            state.last_zone = Some(list.zone);
+        }
+        for unit in gone {
+            if let Some(state) = &mut self.stream {
+                state.resident.remove(&unit);
+            }
+            self.unload_unit(unit)?;
+        }
+        let Some(unit) = next else { return Ok(false) };
+        if let Some(state) = &mut self.stream {
+            state.resident.insert(unit);
+        }
+        let t = crate::platform::Instant::now();
+        self.load_unit(unit)?;
+        self.send(Msg::Progress(format!(
+            "streamed TRK_UNIT{unit} in {:.0} ms (focus zone {focus_unit})",
+            t.elapsed().as_secs_f32() * 1000.0,
+        )))?;
+        Ok(true)
+    }
+
+    /// Send one track unit: its collision, lights, groundcover and placements, owned by the unit.
+    fn load_unit(&mut self, unit: u32) -> anyhow::Result<()> {
+        let Some(index) = &mut self.index else { return Ok(()) };
+        let Some((name, placements)) = index.units.remove(&unit) else { return Ok(()) };
+        self.owner = Some(unit);
+        self.refs.entry(unit).or_default();
+        let sent = self.send(Msg::UnitBegin(unit)).and_then(|_| self.send_unit(unit, &name, &placements));
+        self.owner = None;
+        self.parts.clear();
+        self.store.evict_all();
+        if let Some(index) = &mut self.index {
+            index.units.insert(unit, (name, placements));
+        }
+        sent?;
+        self.send(Msg::UnitLoaded(unit))
+    }
+
+    /// Drop a track unit: the main thread despawns its entities, and the models, textures, shared backdrop
+    /// instances and groundcover collections no other resident unit (nor a car) uses are forgotten here, so
+    /// they are sent again when needed.
+    fn unload_unit(&mut self, unit: u32) -> anyhow::Result<()> {
+        let Some(refs) = self.refs.remove(&unit) else { return Ok(()) };
+        let mut models = HashSet::new();
+        let mut textures = HashSet::new();
+        let mut backdrops = HashSet::new();
+        let mut groundcover = HashSet::new();
+        for r in self.refs.values().chain(std::iter::once(&self.global)) {
+            models.extend(r.models.iter().copied());
+            textures.extend(r.textures.iter().copied());
+            backdrops.extend(r.backdrops.iter().copied());
+            groundcover.extend(r.groundcover.iter().copied());
+        }
+        let mut out = Unloaded { unit, ..Default::default() };
+        for k in refs.models.into_iter().filter(|k| !models.contains(k)) {
+            self.model_textures.remove(&k);
+            if self.models.remove(&k) {
+                out.models.push(k);
+            }
+        }
+        for t in refs.textures.into_iter().filter(|t| !textures.contains(t)) {
+            if self.textures.remove(&t) {
+                out.textures.push(t);
+            }
+        }
+        for b in refs.backdrops.into_iter().filter(|b| !backdrops.contains(b)) {
+            if self.backdrop_sent.remove(&b) {
+                out.backdrops.push(backdrop_hash(&b));
+            }
+        }
+        for c in refs.groundcover.into_iter().filter(|c| !groundcover.contains(c)) {
+            if self.groundcover_done.remove(&c) {
+                self.gc_models.remove(&c);
+                out.groundcover.push(c);
+            }
+        }
+        let line = format!(
+            "unloaded TRK_UNIT{unit}: {} models, {} textures, {} backdrops, {} groundcover freed; {} models, {} \
+             textures sent ({} / {} in use)",
+            out.models.len(),
+            out.textures.len(),
+            out.backdrops.len(),
+            out.groundcover.len(),
+            self.models.len(),
+            self.textures.len(),
+            models.len(),
+            textures.len()
+        );
+        self.send(Msg::UnitUnloaded(Box::new(out)))?;
+        self.send(Msg::Progress(line))
+    }
+
+    /// The refs of the unit being sent, or the global ones.
+    fn owner_refs(&mut self) -> &mut UnitRefs {
+        match self.owner {
+            Some(u) => self.refs.entry(u).or_default(),
+            None => &mut self.global,
+        }
+    }
+
+    /// The owner uses model `key` (and so its textures).
+    fn note_model(&mut self, key: ResourceId) {
+        let textures = self.model_textures.get(&key).cloned();
+        let refs = self.owner_refs();
+        if refs.models.insert(key)
+            && let Some(t) = textures
+        {
+            refs.textures.extend(t);
+        }
+    }
+
+    /// The owner uses groundcover collection `id` (and its group models, when sent).
+    fn note_groundcover(&mut self, id: ResourceId) {
+        self.owner_refs().groundcover.insert(id);
+        for key in self.gc_models.get(&id).cloned().unwrap_or_default() {
+            self.note_model(key);
+        }
+    }
+
+    fn send_unit(&mut self, unit: u32, name: &str, placements: &[mw_assets::Placement]) -> anyhow::Result<()> {
+        let camera_zone = self.index.as_ref().is_some_and(|i| i.camera_zone);
+        if let Some(b) = self.store.bundle(name) {
+            self.collision(&b)?;
+            match self.store.bundle_lights(&b) {
+                Ok(lights) if !lights.is_empty() => self.send(Msg::Lights(lights))?,
+                Ok(_) => {}
+                Err(e) => self.send(Msg::Progress(format!("no lights for {name}: {e}")))?,
+            }
+            if !self.filter.no_groundcover {
+                self.groundcover(&b, Some(unit))?;
+            }
+        }
+        let unit = Some(unit);
+        let unit_tag = |u: Option<u32>| Msg::ZoneTag(u.filter(|_| camera_zone).map(crate::zone_view::ZoneTag::Unit));
+        self.send(unit_tag(unit))?;
+        let mut statics = Vec::new();
+        // A shared backdrop instance's key is open ([`Msg::StreamKey`]) until the next placement.
+        let mut key_open = false;
+        for p in placements {
+            if key_open {
+                self.send(Msg::StreamKey(None))?;
+                key_open = false;
+            }
+            if self.filter.exclude.contains(&p.model) {
+                continue;
+            }
+            let mut variant = Variant::default();
+            if p.backdrop {
+                match self.filter.backdrop {
+                    BackdropMode::None => continue,
+                    BackdropMode::Zone(z) if unit != Some(z) => continue,
+                    BackdropMode::Composed if self.backdrop.is_some() => {
+                        // Many units list the same backdrop model: compose and send it once.
+                        let key = backdrop_key(p.model, &p.transform);
+                        self.owner_refs().backdrops.insert(key);
+                        if !self.backdrop_sent.insert(key) {
+                            continue;
+                        }
+                        self.send(Msg::StreamKey(Some(backdrop_hash(&key))))?;
+                        key_open = true;
+                        variant.compose_backdrop = Some(p.transform);
+                    }
+                    // Sent once, whole, shown while the camera's zone lists it.
+                    BackdropMode::CameraZone if camera_zone => {
+                        let key = backdrop_key(p.model, &p.transform);
+                        self.owner_refs().backdrops.insert(key);
+                        if !self.backdrop_sent.insert(key) {
+                            continue;
+                        }
+                        self.send(Msg::StreamKey(Some(backdrop_hash(&key))))?;
+                        key_open = true;
+                        let units = self.index.as_ref().and_then(|i| i.listing.get(&key).cloned()).unwrap_or_default();
+                        let look = InstanceLook::from_placement(p);
+                        self.send(Msg::ZoneTag(Some(crate::zone_view::ZoneTag::Backdrop(units.into()))))?;
+                        if let Some(model) = self.model_variant(p.model, variant, look)? {
+                            self.send_placement(model, p, variant, look)?;
+                        }
+                        // The composed cut for a free camera high above the ground (`zone_view::AERIAL`).
+                        if self.backdrop.is_some() {
+                            let composed = Variant { compose_backdrop: Some(p.transform), ..variant };
+                            self.send(Msg::ZoneTag(Some(crate::zone_view::ZoneTag::Composed)))?;
+                            if let Some(model) = self.model_variant(p.model, composed, look)? {
+                                self.send_placement(model, p, composed, look)?;
                             }
-                            variant.compose_backdrop = Some(p.transform);
                         }
-                        // Unfiltered backdrops mix needed world-space geometry (terrain, water, horizon)
-                        // with LOD2 stand-ins for buildings whose detailed versions are also loaded.
-                        _ => variant.strip_lod2 = !self.filter.keep_lod_proxies,
+                        self.send(unit_tag(unit))?;
+                        continue;
                     }
-                }
-                // Static placements (no physics, not a backdrop) are merged per material below.
-                let physics = p.object.and_then(|(object, kind)| self.prop_physics(object, kind));
-                // Models whose pass mask excludes the main view (coarse terrain for the shadow, cube-map
-                // and reflection views) are not drawn. Placements with physics keep their model (model
-                // decision: no collision-only body yet).
-                if physics.is_none() && !self.in_main_view(p.model) {
-                    continue;
-                }
-                if !self.filter.no_merge && !p.backdrop && physics.is_none() {
-                    // A compound without physics only ever stands: its standing model (`compound_standing`).
-                    let model = match p.object {
-                        Some((object, mw_assets::props::ObjectKind::Compound)) => {
-                            self.compound_standing(object).advert.unwrap_or(p.model)
-                        }
-                        _ => p.model,
-                    };
-                    if let Some(model) = self.model_parts(model, variant, InstanceLook::from_placement(&p), true)? {
-                        statics.push((model, game_matrix(&p.transform)));
-                    }
-                    continue;
-                }
-                let look = InstanceLook::from_placement(&p);
-                if let Some(model) = self.model_variant(p.model, variant, look)? {
-                    self.send_placement(model, &p, variant, look)?;
+                    // Unfiltered backdrops mix needed world-space geometry (terrain, water, horizon)
+                    // with LOD2 stand-ins for buildings whose detailed versions are also loaded.
+                    _ => variant.strip_lod2 = !self.filter.keep_lod_proxies,
                 }
             }
-            self.send_merged(std::mem::take(&mut statics))?;
-            self.parts.clear();
-            self.store.evict_all();
-            if let Some(unit) = unit {
-                self.send(Msg::UnitLoaded(unit))?;
+            // Static placements (no physics, not a backdrop) are merged per material below.
+            let physics = p.object.and_then(|(object, kind)| self.prop_physics(object, kind));
+            // Models whose pass mask excludes every view we render are not drawn; the others go only into
+            // the views that draw them (`pass_mask.rs`). Placements with physics keep their model (model
+            // decision: no collision-only body yet).
+            let mask = self.pass_mask(p.model);
+            if physics.is_none() && !crate::pass_mask::PassMask::drawn(mask) {
+                continue;
+            }
+            // The coarse ground stand-ins (mask 0x04) are drawn in the shadow cascades and the planar
+            // reflection only. The shadow pass draws a model's SHADOW state when it has one
+            // (`FUN_008a02f0`): for these a `WorldShadow` mesh, lower than the tile (the tile itself would
+            // shade the roads it cuts through), placed as a shadow-only instance under the draw distance.
+            // Model decision: off unless `MW_STANDIN_SHADOWS=1` (those meshes still stand up to 3 m over
+            // 3,100 m² of driven road, `mwtool terrain-check --only shadow`, and put whole carriageways in
+            // shadow at a low sun; the shadow views' eye for the LOD / shadow-distance test is not traced).
+            if physics.is_none() && mask & mw_formats::Model::PASS_MAIN != 0 {
+                let look = InstanceLook::from_placement(p);
+                let shadow = Variant { lod: mw_formats::Model::STATE_SHADOW as u8, ..variant };
+                if self.standin_shadows
+                    && mask & mw_formats::Model::PASS_SHADOW == 0
+                    && let Some(key) = self.model_variant(p.model, shadow, look)?
+                {
+                    let lod = self.placement_lods(p, key, shadow, look, false)?;
+                    self.send(Msg::Instance { model: key, transform: game_matrix(&p.transform), lod })?;
+                }
+                if mask & mw_formats::Model::PASS_PLANAR != 0 {
+                    continue;
+                }
+            }
+            if !self.filter.no_merge && !p.backdrop && physics.is_none() && mask == 0 {
+                // A compound without physics only ever stands: its standing model (`compound_standing`).
+                let model = match p.object {
+                    Some((object, mw_assets::props::ObjectKind::Compound)) => {
+                        self.compound_standing(object).advert.unwrap_or(p.model)
+                    }
+                    _ => p.model,
+                };
+                if let Some(model) = self.model_parts(model, variant, InstanceLook::from_placement(p), true)? {
+                    statics.push((model, game_matrix(&p.transform)));
+                }
+                continue;
+            }
+            let look = InstanceLook::from_placement(p);
+            if let Some(model) = self.model_variant(p.model, variant, look)? {
+                self.send_placement(model, p, variant, look)?;
             }
         }
-        self.send(Msg::Progress(format!("world loaded: {total} track units")))?;
+        if key_open {
+            self.send(Msg::StreamKey(None))?;
+        }
+        self.send_merged(std::mem::take(&mut statics))?;
+        self.send(Msg::ZoneTag(None))?;
         Ok(())
     }
 
     /// Whether the game's main view draws `model`: its pass mask (`Model` +0x19) has no main-view bit
     /// (`mw_formats::Model::PASS_MAIN`; the main view's query excludes `0x4000000`, docs/decomp.md "Model pass
     /// mask"). Always true with `MW_ALL_PASSES=1`.
-    fn in_main_view(&mut self, model: ResourceId) -> bool {
+    /// The bits of a model's pass mask that this port applies (`pass_mask.rs`); 0 with `MW_ALL_PASSES=1`.
+    fn pass_mask(&mut self, model: ResourceId) -> u8 {
         if self.all_passes {
-            return true;
+            return 0;
         }
         let store = &self.store;
-        *self.main_view.entry(model).or_insert_with(|| store.model(model).ok().is_none_or(|m| m.in_main_view()))
+        *self
+            .main_view
+            .entry(model)
+            .or_insert_with(|| store.model(model).map_or(0, |m| m.pass_mask & crate::pass_mask::PassMask::USED))
     }
 
     /// Send a track unit's static placements: models placed once in the unit whose parts can all share a
@@ -1032,6 +1506,8 @@ impl Worker {
                 self.merged += 1;
                 let key = ResourceId(0x7000_0000_0000_0000 | self.merged);
                 self.models.insert(key);
+                self.model_textures.insert(key, g.0.all_textures().collect());
+                self.note_model(key);
                 self.send(Msg::Model(key, vec![Part { mesh, look: g.0 }]))?;
                 self.send(Msg::Instance { model: key, transform: Mat4::IDENTITY, lod: None })?;
                 start = end;
@@ -1046,6 +1522,9 @@ impl Worker {
         let listed: Vec<ResourceId> = b.entries_of_type(ResourceType::GroundcoverCollection).map(|e| e.id).collect();
         if let Some(unit) = unit {
             self.send(Msg::GroundcoverListing { unit, collections: listed.clone() })?;
+        }
+        for &id in &listed {
+            self.note_groundcover(id);
         }
         let ids: Vec<ResourceId> = listed.into_iter().filter(|id| self.groundcover_done.insert(*id)).collect();
         for id in ids {
@@ -1085,6 +1564,10 @@ impl Worker {
                     let Some(mesh) = groundcover_mesh(mine, &mat.regions) else { continue };
                     let bounds = groundcover_bounds(mine, mat.wind[0]);
                     let key = ResourceId(0x6000_0000_0000_0000 | (gi as u64) << 32 | id.0 & 0xFFFF_FFFF);
+                    self.models.insert(key);
+                    self.model_textures.insert(key, look.all_textures().collect());
+                    self.gc_models.entry(id).or_default().push(key);
+                    self.note_model(key);
                     self.send(Msg::Model(key, vec![Part { mesh, look }]))?;
                     self.send(Msg::Groundcover {
                         model: key,
@@ -1125,14 +1608,31 @@ impl Worker {
             if let Some(&d) = self.shadow_ranges.get(&key) {
                 self.send(Msg::ShadowRange(key, d))?;
             }
+            if let Some(&m) = self.pass_masks.get(&key) {
+                self.send(Msg::PassMask(key, m))?;
+            }
             self.send(Msg::Model(key, parts))?;
         }
         Ok(())
     }
 
     /// Decode a model variant into [`Self::parts`] (see [`Self::model_variant`]) unless it is there or,
-    /// without `need_parts`, already sent.
+    /// without `need_parts`, already sent. The unit being sent (or the global set) then uses it.
     fn model_parts(
+        &mut self,
+        id: ResourceId,
+        variant: Variant,
+        inst: InstanceLook,
+        need_parts: bool,
+    ) -> anyhow::Result<Option<ResourceId>> {
+        let key = self.model_parts_inner(id, variant, inst, need_parts)?;
+        if let Some(key) = key {
+            self.note_model(key);
+        }
+        Ok(key)
+    }
+
+    fn model_parts_inner(
         &mut self,
         id: ResourceId,
         variant: Variant,
@@ -1181,6 +1681,19 @@ impl Worker {
         {
             self.shadow_ranges.insert(key, m.shadow_distance);
         }
+        let mut mask = self.pass_mask(id);
+        // A stand-in's SHADOW state is its only shadow caster and is drawn in no other view; its LODs cast no
+        // shadow (`pass_mask.rs`; one stand-in has no SHADOW state: no caster, model decision).
+        if mask & mw_formats::Model::PASS_MAIN != 0 {
+            if variant.lod as usize == mw_formats::Model::STATE_SHADOW {
+                mask = mw_formats::Model::PASS_MAIN | mw_formats::Model::PASS_PLANAR;
+            } else {
+                mask |= mw_formats::Model::PASS_SHADOW;
+            }
+        }
+        if mask != 0 {
+            self.pass_masks.insert(key, mask);
+        }
         let meshes = match variant.lod {
             0 => self.store.model_meshes(id, 0).map_err(anyhow::Error::from),
             l => self
@@ -1208,7 +1721,10 @@ impl Worker {
                     None => continue,
                 }
             }
-            if mw_assets::is_hidden_shader(&sm.shader_name) {
+            // The SHADOW state's own meshes (`WorldShadow_*`) are kept for the shadow-only instances.
+            let shadow_mesh =
+                variant.lod as usize == mw_formats::Model::STATE_SHADOW && sm.shader_name.starts_with("WorldShadow");
+            if mw_assets::is_hidden_shader(&sm.shader_name) && !shadow_mesh {
                 continue;
             }
             if let Some(mask) = variant.bones {
@@ -1254,6 +1770,8 @@ impl Worker {
             key = self.paint_key(key);
         }
         self.paintable.entry(id).or_insert(false);
+        let textures: HashSet<TexKey> = parts.iter().flat_map(|p| p.look.all_textures()).collect();
+        self.model_textures.insert(key, textures.into_iter().collect());
         self.parts.insert(key, parts);
         Ok(Some(key))
     }
@@ -1275,6 +1793,7 @@ impl Worker {
     }
 
     fn texture(&mut self, key: TexKey) -> anyhow::Result<()> {
+        self.owner_refs().textures.insert(key);
         if self.textures.contains(&key) || self.failed_textures.contains(&key) {
             return Ok(());
         }

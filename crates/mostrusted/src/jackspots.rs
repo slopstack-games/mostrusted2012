@@ -91,8 +91,10 @@ impl Plugin for JackSpotsPlugin {
             .init_resource::<Collected>()
             .add_systems(Startup, start_loading)
             .add_systems(Update, (receive, track_cars, fit_boxes, swap).chain().after(crate::drive::read_input));
-        if let Some(out) = &self.test {
-            app.insert_resource(JackTest { out: out.clone(), phase: 0, timer: 0.0, spot: None, old: String::new() })
+        // `MW_RACE_TEST_JACK=1` with `--test race`: the same swap once the race is over (`race.rs`).
+        let test = self.test.clone().or_else(|| std::env::var_os("MW_RACE_TEST_JACK").map(|_| None));
+        if let Some(out) = test {
+            app.insert_resource(JackTest { out, phase: 0, timer: 0.0, spot: None, old: String::new() })
                 .add_systems(Update, run_test.before(receive));
         }
     }
@@ -256,7 +258,7 @@ fn start_loading(game: Res<Game>, mut jack: ResMut<JackSpots>, pads: Query<&Game
     let (tx, rx) = channel();
     let store = game.store.clone();
     let pad = pads.iter().next().is_some();
-    std::thread::Builder::new()
+    crate::platform::thread::Builder::new()
         .name("mw-jackspots".into())
         .spawn(move || {
             let _ = tx.send(read_data(&store, pad));
@@ -366,7 +368,7 @@ fn track_cars(
     garage: Res<Garage>,
     requests: Option<Res<LoaderRequests>>,
     player: Query<&Transform, (With<Car>, With<Player>)>,
-
+    focus: Option<Res<crate::loader::StreamFocus>>,
     spatial: SpatialQuery,
 ) {
     let jack = &mut *jack;
@@ -442,7 +444,7 @@ fn track_cars(
             jack.serials.insert(serial, i);
             s.parked = Parked::Loading { serial };
             let (store, tx, colour) = (game.store.clone(), tx.clone(), s.colour);
-            std::thread::Builder::new()
+            crate::platform::thread::Builder::new()
                 .name("mw-jackspot-paint".into())
                 .spawn(move || {
                     let _ = tx.send((serial, read_paint(&store, &bundle, colour)));
@@ -474,6 +476,11 @@ fn track_cars(
         });
     }
     for (serial, model) in models.arrived.drain(..) {
+        // The parked car holds its meshes and materials itself: the loader can forget them, so they go with the
+        // car (`streaming.rs`; before, every parked car's model stayed loaded).
+        if let Some(f) = &focus {
+            f.release(crate::loader::PARKED_OWNER | serial as u32);
+        }
         let Some(i) = jack.serials.remove(&serial) else { continue };
         let s = &mut jack.spots[i];
         if matches!(s.parked, Parked::Loading { serial: n } if n == serial) {
@@ -799,8 +806,14 @@ fn run_test(
     collected: Res<Collected>,
     spatial: SpatialQuery,
     mut player: Query<(Entity, &Car, &mut Transform, &mut LinearVelocity, &mut AngularVelocity), With<Player>>,
+    race: Option<Res<crate::race::RaceState>>,
     mut exit: MessageWriter<AppExit>,
 ) {
+    // After a race (`MW_RACE_TEST_JACK`): start once the event is over and free roam is back.
+    if race.is_some() {
+        test.timer = 0.0;
+        return;
+    }
     test.timer += time.delta_secs();
     input.scripted = Some([0.0, 0.0, 0.0, 1.0]);
     let fail = |what: &str, exit: &mut MessageWriter<AppExit>| {

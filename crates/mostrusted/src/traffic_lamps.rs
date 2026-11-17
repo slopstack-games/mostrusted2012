@@ -11,6 +11,7 @@
 //! game a lamp that streams in shows its behaviours' start state until the next change); a lamp is the
 //! world object with switchable behaviours within 1 m of its instance's position.
 
+use crate::platform::PollLock;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -74,7 +75,7 @@ fn apply(
                 let job: Job = Arc::new(Mutex::new(None));
                 let out = job.clone();
                 let store = game.store.clone();
-                std::thread::spawn(move || {
+                crate::platform::thread::spawn(move || {
                     let handles: Vec<u32> = store
                         .traffic_lanes()
                         .map(|t| {
@@ -93,7 +94,7 @@ fn apply(
                 lamps.job = Some(job);
             }
             Some(job) => {
-                let done = job.lock().unwrap().take();
+                let done = job.poll_lock().and_then(|mut s| s.take());
                 if let Some(p) = done {
                     info!("traffic lamps: {} lamp objects placed", p.len());
                     if log_on() {

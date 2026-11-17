@@ -649,8 +649,6 @@ dependencies = [
 [[package]]
 name = "bevy_audio"
 version = "0.19.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "750809b7b007dd6de6e5c730e67973027a3d22392fa7fd6f5331f8cefb489a18"
 dependencies = [
  "bevy_app",
  "bevy_asset",
@@ -658,7 +656,9 @@ dependencies = [
  "bevy_math",
  "bevy_reflect",
  "bevy_transform",
+ "cpal",
  "rodio",
+ "send_wrapper",
  "tracing",
 ]
 
@@ -2930,12 +2930,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
 
 [[package]]
+name = "futures"
+version = "0.3.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a31d2a3fbaaeb2af2368bbdd904aa8e812d3c04a1ee10d3171f52d556e5d0a3"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "futures-executor",
+ "futures-io",
+ "futures-sink",
+ "futures-task",
+ "futures-util",
+]
+
+[[package]]
 name = "futures-channel"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b1f9e3d69d39e4862ffed03ed071a76f9a13ba1d9109d355b0f0aa6b15e393c4"
 dependencies = [
  "futures-core",
+ "futures-sink",
 ]
 
 [[package]]
@@ -2943,6 +2959,17 @@ name = "futures-core"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92d699e522242e69e3003b94ecc1f960f3a5e015aa7c5d7486e65ad01dd94f5e"
+
+[[package]]
+name = "futures-executor"
+version = "0.3.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "031b47cf1a3c6cc8bc2fc76cd437f521619387907d469316e7c0bc278f1f5432"
+dependencies = [
+ "futures-core",
+ "futures-task",
+ "futures-util",
+]
 
 [[package]]
 name = "futures-io"
@@ -2975,6 +3002,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "futures-sink"
+version = "0.3.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1944426bf7d03f1d14f708785e4b33efd750b36d48a157b836b3efc15ede8e1d"
+
+[[package]]
 name = "futures-task"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2986,9 +3019,13 @@ version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0d50a92467f8ba5dd6e3ee5d4bd04d73ab2e4e1c44474a0674821dfce14b79bc"
 dependencies = [
+ "futures-channel",
  "futures-core",
+ "futures-io",
  "futures-macro",
+ "futures-sink",
  "futures-task",
+ "memchr",
  "pin-project-lite",
  "slab",
 ]
@@ -3901,6 +3938,8 @@ dependencies = [
  "bevy",
  "clap",
  "hidapi",
+ "image",
+ "js-sys",
  "mw-assets",
  "mw-audio",
  "mw-bundle",
@@ -3908,6 +3947,9 @@ dependencies = [
  "mw-gamedir",
  "mw-handling",
  "rayon",
+ "wasm-bindgen",
+ "wasm_thread",
+ "web-sys",
 ]
 
 [[package]]
@@ -3960,7 +4002,10 @@ dependencies = [
 name = "mw-gamedir"
 version = "0.1.0"
 dependencies = [
+ "js-sys",
  "thiserror 2.0.21",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]
@@ -3969,6 +4014,25 @@ version = "0.1.0"
 dependencies = [
  "mw-assets",
  "mw-formats",
+]
+
+[[package]]
+name = "mw-logic"
+version = "0.1.0"
+dependencies = [
+ "mw-bundle",
+ "mw-formats",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "mw-lua"
+version = "0.1.0"
+dependencies = [
+ "mw-assets",
+ "mw-bundle",
+ "mw-gamedir",
 ]
 
 [[package]]
@@ -3990,7 +4054,10 @@ dependencies = [
  "mw-formats",
  "mw-gamedir",
  "mw-handling",
+ "mw-logic",
+ "mw-lua",
  "rayon",
+ "serde_json",
 ]
 
 [[package]]
@@ -5248,8 +5315,6 @@ checksum = "4e27ee8bb91ca0adcf0ecb116293afa12d393f9c2b9b9cd54d33e8078fe19839"
 [[package]]
 name = "rodio"
 version = "0.22.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d0a536bb79db59098ef71a4dd4246c02eb87b316deceb1b68e0cde7167ec01eb"
 dependencies = [
  "cpal",
  "dasp_sample",
@@ -6219,6 +6284,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasm_thread"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7516db7f32decdadb1c3b8deb1b7d78b9df7606c5cc2f6241737c2ab3a0258e"
+dependencies = [
+ "futures",
+ "js-sys",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "wayland-backend"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6387,6 +6464,7 @@ dependencies = [
  "smallvec",
  "static_assertions",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "web-sys",
  "wgpu-core",
  "wgpu-hal",

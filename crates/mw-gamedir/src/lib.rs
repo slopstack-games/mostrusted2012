@@ -7,8 +7,18 @@
 //! 2. the `MW2012_DIR` environment variable,
 //! 3. every Steam library (app 1262560), including Flatpak and Windows layouts,
 //! 4. the default EA app / Origin install locations.
+//!
+//! In a browser there is no filesystem: the player picks the install folder and [`WebSource`] serves it
+//! ([`GameDir::from_source`]).
 
+use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+pub mod source;
+#[cfg(target_arch = "wasm32")]
+pub use source::WebSource;
+pub use source::{DirSource, MemSource, Source};
 
 pub const ENV_VAR: &str = "MW2012_DIR";
 pub const STEAM_APP_ID: u32 = 1262560;
@@ -30,9 +40,12 @@ pub enum Error {
     NotFound,
 }
 
-/// A validated game installation.
+/// A validated game installation: its files come from a [`Source`] (a directory on disk, or the folder picked in
+/// a browser), and every read of game data goes through [`GameDir::read`] / [`GameDir::read_at`].
 #[derive(Debug, Clone)]
 pub struct GameDir {
+    source: Arc<dyn Source>,
+    /// The install directory (empty when the files are not on disk).
     root: PathBuf,
     version: Option<String>,
 }
@@ -40,16 +53,22 @@ pub struct GameDir {
 impl GameDir {
     /// Validate a specific directory.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, Error> {
-        let root: PathBuf = path.into();
+        Self::from_source(Arc::new(DirSource::new(path)))
+    }
+
+    /// Validate an install served by any [`Source`].
+    pub fn from_source(source: Arc<dyn Source>) -> Result<Self, Error> {
         for f in REQUIRED_FILES {
-            if resolve_case_insensitive(&root, f).is_none() {
-                return Err(Error::Invalid { path: root, missing: f.to_string() });
+            if source.resolve(f).is_none() {
+                return Err(Error::Invalid { path: PathBuf::from(source.label()), missing: f.to_string() });
             }
         }
-        let version = resolve_case_insensitive(&root, "VERSION.TXT")
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .map(|s| s.trim().to_string());
-        Ok(Self { root, version })
+        let version = source
+            .resolve("VERSION.TXT")
+            .and_then(|p| source.read(&p).ok())
+            .map(|b| String::from_utf8_lossy(&b).trim().to_string());
+        let root = source.dir().map(Path::to_path_buf).unwrap_or_default();
+        Ok(Self { source, root, version })
     }
 
     /// Locate the game using the explicit path, env var, then auto-detection.
@@ -63,8 +82,13 @@ impl GameDir {
         candidates().into_iter().find_map(|p| Self::open(p).ok()).ok_or(Error::NotFound)
     }
 
+    /// The install directory; empty when the files are not on disk (a browser's picked folder).
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub fn source(&self) -> &Arc<dyn Source> {
+        &self.source
     }
 
     /// Contents of `VERSION.TXT` (e.g. `1.4.0.0`).
@@ -72,37 +96,53 @@ impl GameDir {
         self.version.as_deref()
     }
 
-    /// Resolve a game-relative path such as `VEHICLES/VEH_1085007_HI.BNDL`,
-    /// matching case-insensitively so it works on case-sensitive filesystems.
-    pub fn path(&self, relative: &str) -> Option<PathBuf> {
-        resolve_case_insensitive(&self.root, relative)
+    /// The canonical form (`/`-separated, the case on disk) of a game-relative path, matched case-insensitively.
+    pub fn resolve(&self, relative: impl AsRef<Path>) -> Option<String> {
+        self.source.resolve(&relative.as_ref().to_string_lossy())
     }
 
-    /// All files with the given extension (e.g. `"BNDL"`), relative to the root. The paths use `/` on every
-    /// platform, so they compare equal to game-relative strings such as `VEHICLES/VEH_1085007_HI.BNDL`.
+    /// Resolve a game-relative path such as `VEHICLES/VEH_1085007_HI.BNDL` to a path on disk, matching
+    /// case-insensitively. `None` when the install is not a directory: native-only users (tools, ffmpeg) only;
+    /// game data is read with [`GameDir::read`].
+    pub fn path(&self, relative: &str) -> Option<PathBuf> {
+        let dir = self.source.dir()?;
+        Some(dir.join(self.source.resolve(relative)?))
+    }
+
+    /// A whole file, by game-relative path (any case).
+    pub fn read(&self, relative: impl AsRef<Path>) -> io::Result<Vec<u8>> {
+        self.source.read(&self.canonical(relative.as_ref())?)
+    }
+
+    /// `len` bytes of a file from `offset`, by game-relative path (any case).
+    pub fn read_at(&self, relative: impl AsRef<Path>, offset: u64, len: usize) -> io::Result<Vec<u8>> {
+        self.source.read_at(&self.canonical(relative.as_ref())?, offset, len)
+    }
+
+    /// Size of a file in bytes, by game-relative path (any case).
+    pub fn len(&self, relative: impl AsRef<Path>) -> io::Result<u64> {
+        self.source.len(&self.canonical(relative.as_ref())?)
+    }
+
+    fn canonical(&self, relative: &Path) -> io::Result<String> {
+        let rel = relative.to_string_lossy();
+        self.source
+            .resolve(&rel)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("{rel} is not in the install")))
+    }
+
+    /// All files with the given extension (e.g. `"BNDL"`), relative to the root, sorted. The paths use `/` on
+    /// every platform, so they compare equal to game-relative strings such as `VEHICLES/VEH_1085007_HI.BNDL`.
     pub fn files_with_extension(&self, ext: &str) -> Vec<PathBuf> {
-        let mut out = Vec::new();
-        walk(&self.root, &mut |p| {
-            if p.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext)) {
-                let rel = p.strip_prefix(&self.root).unwrap_or(p);
-                let parts: Vec<_> = rel.components().map(|c| c.as_os_str().to_string_lossy()).collect();
-                out.push(PathBuf::from(parts.join("/")));
-            }
-        });
+        let mut out: Vec<PathBuf> = self
+            .source
+            .files()
+            .into_iter()
+            .map(PathBuf::from)
+            .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case(ext)))
+            .collect();
         out.sort();
         out
-    }
-}
-
-fn walk(dir: &Path, f: &mut dyn FnMut(&Path)) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
-    for e in rd.flatten() {
-        let p = e.path();
-        if e.file_type().is_ok_and(|t| t.is_dir()) {
-            walk(&p, f);
-        } else {
-            f(&p);
-        }
     }
 }
 

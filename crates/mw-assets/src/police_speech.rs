@@ -18,8 +18,6 @@
 //!   recordings (99.5–100 % of the energy in 300–3400 Hz).
 
 use std::collections::HashMap;
-use std::io::{Read, Seek, SeekFrom};
-use std::path::PathBuf;
 
 use mw_bundle::{ResourceId, ResourceType};
 use mw_formats::genesys::{Object, Value, field_hash};
@@ -73,7 +71,8 @@ pub struct SpeechData {
     pub events: HashMap<u32, SpeechEvent>,
     /// Wave id (low 32 bits) → offset and size in the SWC0.
     pub waves: HashMap<u32, (u64, u32)>,
-    pub container: Option<PathBuf>,
+    /// The install and the SWC0's game-relative path, when it exists.
+    pub container: Option<(mw_gamedir::GameDir, String)>,
 }
 
 fn num(o: &Object, hash: u32) -> f32 {
@@ -103,10 +102,8 @@ impl SpeechData {
     /// One line's PCM (mono, 48 kHz).
     pub fn line_pcm(&self, wave: u32) -> Option<mw_audio::Pcm> {
         let (offset, size) = *self.waves.get(&wave)?;
-        let mut f = std::fs::File::open(self.container.as_ref()?).ok()?;
-        f.seek(SeekFrom::Start(offset)).ok()?;
-        let mut buf = vec![0; size as usize];
-        f.read_exact(&mut buf).ok()?;
+        let (game, path) = self.container.as_ref()?;
+        let buf = game.read_at(path, offset, size as usize).ok()?;
         mw_audio::sps::decode(&buf).ok()
     }
 }
@@ -115,7 +112,10 @@ impl AssetStore {
     /// The speech events and the SWC0 index ([`SpeechData`]).
     pub fn speech_data(&self) -> crate::Result<SpeechData> {
         let b = self.bundle(BUNDLE).ok_or(crate::Error::Missing(ResourceId::NULL))?;
-        let mut out = SpeechData { container: self.game().path(CONTAINER), ..Default::default() };
+        let mut out = SpeechData {
+            container: self.game().resolve(CONTAINER).map(|p| (self.game().clone(), p)),
+            ..Default::default()
+        };
         // The wave container table.
         for e in b.entries_of_type(ResourceType::WaveContainerTable) {
             let res = b.load(e)?;

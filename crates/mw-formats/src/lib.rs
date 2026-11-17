@@ -17,6 +17,7 @@ mod font;
 pub mod genesys;
 pub mod groundcover;
 pub mod hsm;
+pub mod json;
 mod material;
 mod paint_map;
 mod renderable;
@@ -29,6 +30,7 @@ pub mod trigger;
 pub mod ui;
 mod vehicle;
 mod vertex;
+pub mod widget;
 mod world;
 mod zone;
 

@@ -68,8 +68,16 @@ mod h {
     pub const AI_PLAYERS: u32 = 0x1795_ca2a;
     pub const AI_PLAYER_TYPE: u32 = field_hash("AIPlayerType");
     pub const PLACEMENT: u32 = field_hash("Placement");
-    pub const AI_9B4E: u32 = 0x9b4e_35f7;
-    pub const AI_2968: u32 = 0x2968_e77a;
+    pub const ALT_COLOUR: u32 = 0x9b4e_35f7;
+    pub const COLOUR_ID: u32 = 0x2968_e77a;
+    pub const ROLLOUT: u32 = field_hash("Rollout");
+    pub const COLOUR: u32 = field_hash("Colour");
+    pub const BODY_UPGRADE: u32 = field_hash("BodyUpgrade");
+    pub const NITROUS_UPGRADE: u32 = field_hash("NitrousUpgrade");
+    pub const TYRE_UPGRADE: u32 = field_hash("TyreUpgrade");
+    pub const AI_NOT_RACER: u32 = 0xcc3c_bc22; // AIPlayerType +0xb3
+    pub const AI_MOST_WANTED: u32 = 0x6bb9_3300; // +0xb4
+    pub const AI_COP: u32 = 0xd4fb_af43; // +0xb5
     pub const CUSTOM_CHEVRONS: u32 = 0xc075_6b63;
     pub const CHEVRON_X: u32 = 0xc6bc_8827;
     pub const CHEVRON_Y: u32 = 0xc27d_9491;
@@ -220,10 +228,36 @@ pub struct Opponent {
     /// Where the opponent starts (`Placement`, a trigger point), if it resolves.
     pub start: Option<StartPoint>,
     pub placement_id: u32,
-    /// `9b4e35f7` and `2968e77a`: ids into GAMEPLAY.BNDL (`2968e77a` matches `ColourId`s of paint data: the
-    /// opponent's colour, inferred); `9b4e35f7` unknown (the opponent's car?).
-    pub unknown_9b4e: u32,
+    /// `9b4e35f7` (+0x10): the alternative colour, used when `colour` is the player's car's colour
+    /// (`FUN_006ce030`). A `ColourId` of the car's palette.
+    pub alt_colour: u32,
+    /// `2968e77a` (+0x18): the car's colour, a `ColourId` (`VehiclePaint` UniqueId) of the car's palette; 0 =
+    /// the rollout's colour (`FUN_006cc870`: rollout entry +0x34 unless this is set).
     pub colour: u32,
+    /// The type's `Rollout` (`AIPlayerType` +0x14): the opponent's car (`FUN_006cc870` → `FUN_00683420`).
+    pub rollout: Option<Rollout>,
+    /// `AIPlayerType` +0xb4 (`6bb93300`): the Most Wanted driver. `FUN_006ce030` keeps the slot as the event's
+    /// rival (player manager +0xa698: the map's `BlackListDriver` icon, the rival's damage / distance readers
+    /// `FUN_006bad70` / `FUN_006bf490`). Set on the 14 Most Wanted race types and the 14 free-roam ones.
+    pub most_wanted: bool,
+    /// `AIPlayerType` +0xb5 (`d4fbaf43`, a cop) or +0xb3 (`cc3cbc22`, never set): `FUN_006ce030` files the car
+    /// in the cop list (+0xa630) instead of the racers (+0xa664). MOST WANTED 7's two Chargers, the ambushes'
+    /// Interceptors.
+    pub cop: bool,
+}
+
+/// What an AI player drives (`Genesys.Gen.Rollout`, GAMEPLAY.BNDL, 112 B; `AIPlayerType.Rollout` names one).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Rollout {
+    pub id: u32,
+    /// `Vehicle` (+0x58): a `VehicleList` id (`VEHICLES/VEH_<id>_HI.BNDL`).
+    pub vehicle: u32,
+    /// `Colour` (+0x30): the default paint `ColourId` (0 on 116 of 118 rollouts).
+    pub colour: u32,
+    /// `BodyUpgrade` / `NitrousUpgrade` / `TyreUpgrade`: upgrade ids (0 = stock; not resolved).
+    pub body_upgrade: u32,
+    pub nitrous_upgrade: u32,
+    pub tyre_upgrade: u32,
 }
 
 /// A chevron barrier line (`CustomChevron`): points along which the route's arrow boards stand.
@@ -302,6 +336,9 @@ pub struct Event {
     /// `FeedbackMessageGroup` (+0x78) and `IntroMessageGroup` (+0x80): `EN_US/FEEDBACKGROUPS/<id>.BNDL`.
     pub feedback_message_group: u32,
     pub intro_message_group: u32,
+    /// `ab4e53fd` (+0x6c, count +0xde): the event's own `HeatLevel` ids; when the game mode uses them, the player's
+    /// heat level comes from this list instead of the free-roam one (`FUN_00669640`).
+    pub heat_levels: Vec<u32>,
 }
 
 impl Event {
@@ -446,8 +483,32 @@ impl AssetStore {
         let gameplay = items(self, GAMEPLAY)?;
         let mut allowed: HashMap<u32, Vec<AllowedVehicle>> = HashMap::new();
         let mut event_lists = Vec::new();
+        // AIPlayerType id → (rollout id, +0xb4 Most Wanted, +0xb5 / +0xb3 not a racer).
+        let mut ai_types: HashMap<u32, (u32, bool, bool)> = HashMap::new();
+        let mut rollouts: HashMap<u32, Rollout> = HashMap::new();
         for o in &gameplay {
             match short(o) {
+                "AIPlayerType" => {
+                    let not_racer = boolean(o.get(h::AI_COP)) || boolean(o.get(h::AI_NOT_RACER));
+                    ai_types.insert(
+                        uint(o.get(h::ID)),
+                        (uint(o.get(h::ROLLOUT)), boolean(o.get(h::AI_MOST_WANTED)), not_racer),
+                    );
+                }
+                "Rollout" => {
+                    let id = uint(o.get(h::ID));
+                    rollouts.insert(
+                        id,
+                        Rollout {
+                            id,
+                            vehicle: uint(o.get(h::VEHICLE)),
+                            colour: uint(o.get(h::COLOUR)),
+                            body_upgrade: uint(o.get(h::BODY_UPGRADE)),
+                            nitrous_upgrade: uint(o.get(h::NITROUS_UPGRADE)),
+                            tyre_upgrade: uint(o.get(h::TYRE_UPGRADE)),
+                        },
+                    );
+                }
                 "Gameplay.AllowedVehicleList" => {
                     let list = structs(o.get(h::VEHICLES))
                         .map(|v| AllowedVehicle {
@@ -511,12 +572,18 @@ impl AssetStore {
                         opponents: structs(o.get(h::AI_PLAYERS))
                             .map(|a| {
                                 let placement_id = uint(a.get(h::PLACEMENT));
+                                let ai_type = uint(a.get(h::AI_PLAYER_TYPE));
+                                let (rollout, most_wanted, cop) =
+                                    ai_types.get(&ai_type).copied().unwrap_or((0, false, false));
                                 Opponent {
-                                    ai_type: uint(a.get(h::AI_PLAYER_TYPE)),
+                                    ai_type,
+                                    rollout: rollouts.get(&rollout).copied(),
+                                    most_wanted,
+                                    cop,
                                     start: point(placement_id),
                                     placement_id,
-                                    unknown_9b4e: uint(a.get(h::AI_9B4E)),
-                                    colour: uint(a.get(h::AI_2968)),
+                                    alt_colour: uint(a.get(h::ALT_COLOUR)),
+                                    colour: uint(a.get(h::COLOUR_ID)),
                                 }
                             })
                             .collect(),
@@ -557,6 +624,7 @@ impl AssetStore {
                         ar_outro: uint(o.get(h::AR_OUTRO)),
                         feedback_message_group: uint(o.get(h::FEEDBACK_MESSAGE_GROUP)),
                         intro_message_group: uint(o.get(h::INTRO_MESSAGE_GROUP)),
+                        heat_levels: uints(o.get(0xab4e_53fd)),
                     });
                 }
                 _ => {}

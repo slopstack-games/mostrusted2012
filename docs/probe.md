@@ -5,7 +5,13 @@ process. Written 2026-10-04 after the user decided that hooks in their own licen
 (policy: [reverse-engineering.md](reverse-engineering.md), "Code inside the running game"). Status is tracked
 in [PLAN.md](PLAN.md) (M3.2 and "Testing").
 
-## Status (2026-10-05)
+## Status (2026-10-05; 2026-10-19)
+
+- **2026-10-19: hooks without code patching.** The probe now runs code on the game's own thread through two
+  vtable slots (pointer swaps in `.rdata`, checked and restored; "Capture helpers" below): the race car's tick
+  and the free-drive behaviour's frame. That covers what the capture helpers need (teleport, car swap, scripted
+  inputs, fixed conditions, a per-tick log); the instruction-detour installer of Tier 1 was not needed and is
+  still not written. Hooks inside functions without a vtable entry would still need it.
 
 - **Tier 0 built and verified**: `mwtool memscan` has `poke`, `unpoke`, `pokes`; `telemetry` and `capture`
   take `--poke name=value` (restored after the run). Writes go through `/proc/<pid>/mem` and are refused outside
@@ -34,6 +40,82 @@ in [PLAN.md](PLAN.md) (M3.2 and "Testing").
   `DAT_011acd64`; the end-of-frame caller is `FUN_00476f20`); there is no game text-drawing helper to borrow;
   pad input needs no hook at all, since the game polls `XInputGetState` through our proxy (`FUN_0040f140`,
   `FUN_004119c0`). The fallback the user named, an external menu, is built: `mwtool tune` ("Tuning menu").
+
+## Capture helpers (2026-10-19)
+
+Tools that make runs of the original repeatable: teleport, car swap, scripted inputs tick by tick, fixed
+conditions, a per-tick log. Source: `crates/mw-probe/src/control.rs` (in the game), `crates/mwtool/src/probe_ctl.rs`
+(the commands), `flat_strip.rs` (finding strips and kerbs). Commands: docs/commands.md "Capture helpers".
+
+**Where our code runs** (no instruction of the game is rewritten): two vtable slots in `.rdata` are pointed at
+small thunks (pushad / pushfd, call into Rust, restore, jump to the original method), each installed only when
+the slot holds the expected method (so after the wrapper has unpacked the game) and restored on unload.
+- `0x01023760` → `FUN_00904da0`, the race car's "Update Car" (decomp.md "Update loop"): `on_tick(vehicle, dt)`
+  runs for every race car each 60 Hz tick; the probe acts on the player's car only. `FUN_0091c5c0` copies each
+  car's control record into its control fields (`FUN_009aacc0`) before the world step updates the cars, so the
+  scripted inputs written here (+0x1bf0 steer, +0x1bf4 throttle, +0x1c00 brake ×4, +0x1c20 nitrous ×4, +0x1c40
+  handbrake mask ×4) are the ones that tick uses. Nitrous's own throttle rule (`FUN_006c1a80`) is bypassed.
+- `0x00fdb4d4` → `FUN_00761d70`, the free-drive "Car Swap Logic" behaviour's update (decomp.md "Jack spots"):
+  `on_frame()` runs the commands that call game functions, once per frame on the game-logic thread, where the
+  jack spots call the same functions. The tick and the frame run on the same thread (status `tick_thread` =
+  `frame_thread`). The XInput poll is not usable for this: it runs on the input thread (`FUN_0040f140`).
+
+**Commands** (`cmd.req` in the probe dir, answer in `cmd.out`, `status.txt` twice a second):
+- `place x y z heading [mph]`: the game's placement with streaming, `FUN_00647e00` on G + 0x25690, called as the
+  trigger teleport `FUN_006e4770` calls it (handle, position, direction, speed in mph, 0, 0xf, 0, 0). It waits
+  until the target is resident and resets the car (suspension, wheels, engine) as a respawn does; with a speed
+  the car starts rolling (62.137 mph read back exactly). y is the ground; the game puts the car on it.
+- `tp x y z heading [m/s]` (`mwtool tp --raw`): moves the chassis body ([vehicle +0x1760]: rows +0x00..+0x20,
+  position +0x30, velocity +0xb0, angular velocity +0xc0, the world inverse inertia +0x40..+0x6c rotated from
+  the local one at +0xe0 after checking the stored one has that form) and each wheel record (centre, velocity,
+  spin = speed / radius) and wheel matrix by the same rigid motion, at the start of the car's tick. Only for
+  short moves inside the streamed world; `--hops` chains them.
+- `car <vehicle id>`: `FUN_006c2020(player, id, colour 0, rollout 0)` as the jack spot's swap; the profile's
+  current car changes (the save is restored after a session).
+- `repair` (`FUN_00844940(handle)`, vehicle-manager message 0x16), `notraffic` (`FUN_008462a0`, traffic message
+  0xf), `poke` / `hold` / `peek <type> <value> <chain>` (hold = rewritten every tick), `release`.
+  `mwtool conditions --hour h` pokes the time-of-day rate (environment manager + 0x1b610, = renderer − 0x80 +
+  0x1b610) to 0 and holds the time (+0x1b604); `--nitrous n` holds player 0's amount (game + 0x264f0 + 0x10).
+- `mods <vehicle id> <slot>=<level> ...` (`mwtool mods <car> <fits>`): fits upgrades without unlocking them, through
+  the swap's own rollout argument: the player's rollout record is copied ([G + 0x2f404] + 0x827c + player index ×
+  0xd8, 0x2b dwords: +0x30 vehicle id, five groups of (descriptor pointer, slot, level) from +0x70, `FUN_0067e770`),
+  each named group's slot and level replaced, the vehicle id set, and `FUN_006c2020(player, id, 0, &copy)` called
+  as the jack spot calls it (the Easydrive / save paths pass a rollout the same way). The game copies the record
+  into the profile (`FUN_0068e9d0`) and fixes the descriptor pointer itself. **The profile is changed in memory and
+  the game autosaves it** (the car and its fits were in the save after the next launch once): back the save up
+  first and restore it afterwards, as for `car`. Game slots ("UpgradeEnum" 0..14) and the data's fields:
+  `mw_assets::mods::GAME_SLOT_FIELD` (`mwtool mods <car>` prints both); levels 1 base, 2 PRO (`FUN_0065de50`).
+  `rollout` prints the record.
+- `script <inputs.csv> [<watch> <out.csv>]`: inputs `t,steer,throttle,brake,handbrake,nitrous` (step-wise, row
+  by game time since the start, steer + = right as the game's field; nitrous is the control amount written to all
+  four lanes of vehicle +0x1c20, bypassing the tank and its throttle rule, and `nan` leaves the lane to the game); the log has one row per tick: `t,tick,dt`
+  then the watch file's fields as the state the previous tick left, with the control fields as the values that
+  tick used (the convention of `mwtool capture` rows and of `--replay`). Chains through the player's vehicle are
+  followed every tick (contact lists move); unreadable values are NaN. `arm x z [mph]` holds the next script
+  until the car has been placed there (and has the speed), so a run that starts with `place` starts on the
+  first tick after it. `log <watch> <out> [s]` logs without inputs; `stop`.
+
+**Reproducibility** (research log 2026-10-19 "probe capture helpers"): two runs from a rest placement with the
+same script agree to float noise (1e-5 mph, 0.4 mm over 6.5 s with a kerb); runs placed at speed are
+bit-identical, but the engine state after an at-speed placement takes one of two values (alternating runs
+match); over a kerb drop the contact list's entry order can differ between runs and the runs then drift apart
+by tenths of a mph.
+
+**Limits**: the airport arena (zones 36-57, x −3300..350, z −5800..−1800) is not reachable here: placing,
+teleporting or driving into it puts the car back on the free-roam start (respawn reason 6, `FUN_006d0180`). The
+HSM's "Show Airport Required Dialog" and `CanJoinAirportGameByFriendIndexBinding` suggest an entitlement gate
+(not traced). The test strip is therefore Hodges Airfield (`tools/orig/spots.txt`). The idle attract mode
+(the Most Wanted list over a grey picture) starts after some idle time: tap a harmless key (`orig key w`, the
+horn) before a run. Never mute the game's stream by hand: WirePlumber stores that per application name and the
+user's own launches inherit it; `orig-wrap` sends headless runs to a silent sink (`tools/silent-sink`).
+
+**Crashes on the far placement (2026-10-19)**: of seven launches, the first `place` to Hodges Airfield worked once
+(the 911 from the canyon start, −107, 37, −370) and killed the game five times (the process exits, gamescope
+keeps the last frame, the probe stops answering): from the Fairhaven start (200, 48, 1488) with and without a
+car swap before it, and from the canyon start with a fitted mod. The kernel log had NVRM "can't alloc VA space
+for mapping" / out-of-memory lines in the same minutes while other agents' headless runs shared the 8 GB card, so
+GPU memory is the suspect (not proven). Short placements on the strip itself never failed. Open: a hop chain
+(`tp --hops`) or a nearer start for the long move.
 
 ## Memory dumps on request (2026-10-10)
 

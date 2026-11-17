@@ -1331,7 +1331,7 @@ fn start_loading(
     *done = true;
     let store = game.store.clone();
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::Builder::new()
+    crate::platform::thread::Builder::new()
         .name("mw-traffic".into())
         .spawn(move || {
             let data = match store.traffic_data() {
@@ -1409,7 +1409,7 @@ fn traffic_tick(
     if dt <= 0.0 {
         return;
     }
-    let started = std::time::Instant::now();
+    let started = crate::platform::Instant::now();
     // The game's hour (`FUN_00897980`): the whole hour of the time of day.
     let hour = env.map_or(12, |e| e.want.hour.rem_euclid(24.0) as usize % 24);
     let want = match &race {
@@ -2119,6 +2119,9 @@ fn remove_car(sys: &mut TrafficSystem, slot: usize, commands: &mut Commands) {
             commands.entity(e).despawn();
         }
         sys.removed += 1;
+        // The section lists must not keep the slot (`leader` panicked on a removed car after the hulls changed
+        // under a crash reset).
+        sys.index_sections();
     }
 }
 
@@ -2455,6 +2458,7 @@ fn crash_hit_cars(
             continue;
         }
         let car = sys.cars[body.slot].take().expect("checked above");
+        sys.index_sections();
         let entity = parent.parent();
         let data = sys.data.clone();
         let v = &data.vehicles[car.vehicle];

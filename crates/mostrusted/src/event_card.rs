@@ -21,6 +21,7 @@
 //! the transition; when exactly was not traced); the rewards, the Most Wanted list and the speedwall show
 //! nothing (no progression or Autolog data), no transition sounds.
 
+use crate::platform::PollLock;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
@@ -188,10 +189,10 @@ fn begin(
     info!("event card: {} ({})", setup.name, setup.event.id);
     let job = Arc::new(Mutex::new(None));
     let (out, store, s) = (job.clone(), game.store.clone(), setup.clone());
-    std::thread::Builder::new()
+    crate::platform::thread::Builder::new()
         .name("mw-event-card".into())
         .spawn(move || {
-            let t = std::time::Instant::now();
+            let t = crate::platform::Instant::now();
             let Ok(lang) = store.language(mw_assets::DEFAULT_LANGUAGE) else { return };
             let outer = match store.ui_sequence(TRANSITION_SEQUENCE) {
                 Ok(o) => o,
@@ -222,7 +223,8 @@ fn begin(
                     instance: inst,
                 });
             }
-            let scene = store.ui_scene(layouts, &lang);
+            let mut scene = store.ui_scene(layouts, &lang);
+            scene.letterbox = true;
             let mut images: Vec<(ResourceId, Image)> = scene
                 .textures()
                 .into_iter()
@@ -276,7 +278,7 @@ fn receive(
     mut images: ResMut<Assets<Image>>,
     mut fonts: ResMut<GameFonts>,
 ) {
-    let Some(loaded) = card.job.as_ref().and_then(|j| j.lock().unwrap().take()) else { return };
+    let Some(loaded) = card.job.as_ref().and_then(|j| j.poll_lock().and_then(|mut s| s.take())) else { return };
     card.job = None;
     let textures: HashMap<ResourceId, (Handle<Image>, Vec2)> = loaded
         .images
@@ -356,7 +358,10 @@ fn lookup(path: &str, arg: Option<&str>, card: &Card, look: &Look, ready: bool) 
 /// The race is ready to be shown: started, opponents placed, its start area resident.
 fn race_ready(race: Option<&RaceState>, loaded: &crate::Loaded, residency: &crate::frontend::Residency) -> bool {
     race.is_some_and(|r| {
-        !r.hold && loaded.done && residency.resident(r.player_start.translation, crate::frontend::READY_RADIUS)
+        !r.hold
+            && !r.placing
+            && loaded.done
+            && residency.resident(r.player_start.translation, crate::frontend::READY_RADIUS)
     })
 }
 
@@ -542,6 +547,8 @@ fn draw(
         quads.extend(look.scene.draw_with(screen, &mut lk, &mut options));
     }
     look.anim = anim;
+    // The black bars outside the letterboxed frame (`FUN_006240b0`).
+    quads.extend(mw_assets::ui::UiFrame::letterbox(screen).bars(screen));
     show_quads(&mut commands, root, pool, &quads, &look.textures, None, &mut nodes, &mut materials);
     c.look = Some(look);
 }

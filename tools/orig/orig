@@ -389,8 +389,10 @@ def wait_for_display(timeout):
 def write_request(args, extra=""):
     STATE.mkdir(parents=True, exist_ok=True)
     w, h = args.size.lower().split("x")
+    # The game is silent (orig-wrap routes it to a null sink) unless MW_SOUND=1 is set for this launch.
+    sound = "SOUND=1\n" if os.environ.get("MW_SOUND") else ""
     (STATE / "request").write_text(f"W={int(w)}\nH={int(h)}\nBACKEND={'wayland' if args.visible else 'headless'}\n"
-                                   + extra)
+                                   + sound + extra)
     (STATE / "state.env").unlink(missing_ok=True)
 
 
@@ -417,6 +419,7 @@ def probe_cleanup():
             target.unlink()
             log(f"removed {target}")
         f.unlink()
+    (STATE / "probe.out").unlink(missing_ok=True)
 
 
 def probe_setup(args):
@@ -432,6 +435,8 @@ def probe_setup(args):
     (STATE / "probe.dll").write_text(str(target))
     out = REPO / "ref" / "probe" / (args.probe if isinstance(args.probe, str) else time.strftime("%Y%m%d-%H%M%S"))
     out.mkdir(parents=True, exist_ok=True)
+    (out / "mods.txt").unlink(missing_ok=True)  # `mwtool mods` fits last one game session
+    (STATE / "probe.out").write_text(str(out))  # for `mwtool probe / tp / car / conditions / capture --probe`
     log(f"probe: {target.name} placed, log in {out}")
     return f"PROBE_OVERRIDE={args.proxy}=n,b\nPROBE_OUT={out}\n"
 

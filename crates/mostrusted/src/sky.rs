@@ -241,13 +241,16 @@ fn bake_pool() -> Option<&'static rayon::ThreadPool> {
     static POOL: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
     POOL.get_or_init(|| {
         let n = std::env::var("MW_BAKE_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
-        (n > 0).then(|| {
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(n)
-                .thread_name(|i| format!("environment bake {i}"))
-                .build()
-                .expect("bake thread pool")
-        })
+        // No pool where threads can't be made (a browser): the global pool, which then runs on the caller.
+        (n > 0)
+            .then(|| {
+                rayon::ThreadPoolBuilder::new()
+                    .num_threads(n)
+                    .thread_name(|i| format!("environment bake {i}"))
+                    .build()
+                    .ok()
+            })
+            .flatten()
     })
     .as_ref()
 }

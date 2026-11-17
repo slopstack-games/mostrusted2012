@@ -44,10 +44,10 @@ macro_rules! bitflags_lite {
 mod id;
 mod types;
 
-use std::io::Read;
+use std::io::{Read, Seek};
 use std::path::Path;
 
-pub use id::ResourceId;
+pub use id::{ResourceId, crc32};
 pub use types::ResourceType;
 
 pub const MAGIC: &[u8; 4] = b"bnd2";
@@ -255,12 +255,24 @@ impl Bundle {
     /// Read only the header and resource table, without loading resource data.
     pub fn read_toc(path: impl AsRef<Path>) -> Result<(Header, Vec<ResourceEntry>)> {
         let mut f = std::fs::File::open(path)?;
-        let mut head = vec![0u8; HEADER_SIZE];
-        f.read_exact(&mut head)?;
+        Self::read_toc_with(|offset, len| {
+            f.seek(std::io::SeekFrom::Start(offset))?;
+            let mut buf = vec![0; len];
+            f.read_exact(&mut buf)?;
+            Ok(buf)
+        })
+    }
+
+    /// [`Bundle::read_toc`] over any random-access reader: `read(offset, len)` returns those bytes of the file.
+    pub fn read_toc_with(
+        mut read: impl FnMut(u64, usize) -> std::io::Result<Vec<u8>>,
+    ) -> Result<(Header, Vec<ResourceEntry>)> {
+        let mut head = read(0, HEADER_SIZE)?;
         let r = Reader(&head);
         let end = r.u32(0x10)? as usize + r.u32(0x0C)? as usize * ENTRY_SIZE;
-        head.resize(end.max(HEADER_SIZE), 0);
-        f.read_exact(&mut head[HEADER_SIZE..])?;
+        if end > HEADER_SIZE {
+            head.extend(read(HEADER_SIZE as u64, end - HEADER_SIZE)?);
+        }
         Self::parse_toc(&head)
     }
 

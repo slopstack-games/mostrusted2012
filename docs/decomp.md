@@ -493,10 +493,12 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
   (`ddbd44c0` / `b80e5de3`).
 - **Anti-roll scale** 60 (`.bss` 0x01185d70, read live) on the stiffness only (`FUN_00933a60`); the unit
   (N m per radian in our model) is inferred.
-- **Strut travel**: searched for the joint built from `WheelSuspensionConstraint` (`Angle` 5, `7fc0dc41` 0.09 /
-  0.08, `447b4e1c` / `668c92ac` −1.5, `c2a87807` 1.5, `b867a203` 0.23, `b1c680d5`): no reader of these offsets
-  turned up in the vehicle build (`FUN_009b4e60` and its callees) or in `009A`–`009D` (searched `+ 0x14` / `+ 0x24`
-  reads off a resource); `7fc0dc41` (0.09 front, 0.08 rear on the 911) is the likeliest travel. Open.
+- **Strut travel** (settled 2026-10-19, from the data and live reads): the strut object (vehicle +0x10f0 + 8i)
+  holds +0x40 top and +0x50 bottom in the body frame and +0x70 the angle; top = `VehicleInfo.caac331c` +
+  `WheelSuspensionConstraint.b867a203` (constraint +0x24), bottom = `caac331c` + `7fc0dc41` (+0x14), model space,
+  angle = −`447b4e1c` degrees; the constraint is `SuspensionWheel.Suspension_Constraint`. Raptor live: top −0.222 /
+  −0.202, bottom −0.512 / −0.557, 0.65° / 0.45° (body frame = model − 0.75); XKR (snap1) by the same rule. Ported in
+  `mw_assets::wheel_layout` (`RestWheel::strut`).
 - **Strut end stop** (`FUN_009c5a90`, the wheel constraint's contact pass, and `FUN_009c2670`, its normal
   impulse pass). The constraint (`FUN_009c24b0`: +0x460 a point on the chassis, the strut's end; +0x470 a slack;
   +0x490 a velocity; flag +0x4ac from the builder) keeps a list of contact records (0x40 bytes: normal, point,
@@ -507,12 +509,39 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
   applies the non-negative normal impulse (target from the record's bias and n · +0x490, accumulated, clamped
   at 0) to the wheel, and while +0x4ae is set also to the chassis at the strut point through the chassis's
   inverse mass and inertia, scaled by +0x474. So the end of the strut is a hard contact on the chassis, not a
-  spring: a landing cannot drive the body into the ground. Ported in drive.rs (`mw_handling::suspension::stop_excess`; handling.md item 5).
+  spring. Ported in drive.rs (`mw_handling::suspension::stop_excess`; handling.md item 5). **Only on a crashed car**
+  (2026-10-19): `FUN_0095b4d0` rebuilds each wheel constraint every tick through `FUN_0095b100` → `FUN_009c24b0`,
+  whose tenth argument (→ +0x4ac) is the byte at vehicle +0x1774, the crashed state (`FUN_009b2d40`); it is 0 for
+  the player in both snapshots. In normal driving the strut joint (below) is what limits the wheel.
+- **Strut joint** (2026-10-19, read in full): the strut object at vehicle +0x10f0 + 8i is a world joint between
+  the chassis (joint +4 body id) and the wheel record (+8), flags +0xc (bit 0 skips it; clear in the snapshots),
+  +0x30 a position parameter (0.956 on an XKR front at 51 m/s in snap1: 0 at the bottom, 1 at the top; its writer
+  was not found), +0x40 top, +0x50 bottom, +0x60 an arm pivot, +0x80 a byte choosing the arm variant (1 on the
+  XKR). Position pass (`FUN_00928cd0`, the last call of each contact pass, → `FUN_009c6230` → `FUN_009c4050`
+  straight / `FUN_009c42d0` arm): the wheel centre predicted for the end of the tick (centre + v dt) is projected
+  onto the strut predicted the same way (`FUN_009eab00`: chassis point + its velocity × dt), the parameter clamped
+  to 0..1 (the arm variant then puts the target on the arc about the pivot, radius lerped between the ends'
+  distances); the error beyond FLT_EPSILON (`.rdata` 0x010258a0) goes as err / dt through the effective mass
+  (the chassis's at the wheel centre along err, `FUN_009e8230`, plus the wheel's 1/m +0x58) to the chassis at the
+  wheel centre (`FUN_009ca290` + `FUN_00907840`) and against the wheel. Velocity pass (each sub-step, in
+  `FUN_00928fb0` before the wheel contacts' impulse pass, → `FUN_009c62c0` → `FUN_009c3ae0` / `FUN_009c3d70`):
+  the wheel's velocity relative to the chassis at its centre loses everything across the strut, and along it
+  (positive towards the top) only min(s, 0) is kept while +0x30 ≥ 1, only max(s, 0) while +0x30 ≤ 0; the impulse
+  goes the same way. `FUN_009c6230` then writes the wheel record's +0x3c / +0x4c lanes from the joint (+0x70 lerp
+  by +0x30) and calls `FUN_0096d650`. Ported in drive.rs (`suspension::strut_position_error` /
+  `strut_velocity_error`; along the strut only, ours moves the wheel along the car's up axis).
+- **`FUN_009c62e0` / `FUN_009c5840` (contact pass) and `FUN_009c4e10` / `FUN_009c1fb0` (sub-steps) are body
+  contacts**, not joints: a body's list of world contact records (+0x80, count +0x59; normal, world point, local
+  point, mass +0x34): the position pass pushes the body out by mass × penetration / dt per record (`FUN_009c5840`
+  scales the angular part by +0x100), the impulse pass is the usual non-negative normal impulse with restitution
+  +0xc, and with +0x8a a cap of the body's velocity along y (`FUN_009c4e10`'s tail).
 - **Island step and sub-steps** (2026-10-07, from the disassembly in the live snapshots). `FUN_0093f5a0` calls
   each pass once; the iterations live in two callees, both counted by the world (constructor `FUN_009330d0`,
-  same values live): `FUN_00932190` loops world +0x460 = 2 times (joints `FUN_009c62e0` / `FUN_009c5840`, the
-  wheel constraints' contact pass `FUN_009c5a90`, contacts `FUN_009be060`, `FUN_00928cd0`), and `FUN_0093f200`
-  loops world +0x464 = 2 times at dt / 2 (joints `FUN_009c4e10` / `FUN_009c1fb0`, contacts `FUN_009be420`,
+  same values live): `FUN_00932190` loops world +0x460 = 2 times (body contacts `FUN_009c62e0` / `FUN_009c5840`,
+  the wheel constraints' contact pass `FUN_009c5a90`, contacts `FUN_009be060`, `FUN_00928cd0` with the strut
+  joints; the passes run when the step context's byte +0x1b8 is set, which `FUN_0093f680` / `FUN_0093f800` always
+  pass as 1 to `FUN_00931dd0`), and `FUN_0093f200`
+  loops world +0x464 = 2 times at dt / 2 (body contacts `FUN_009c4e10` / `FUN_009c1fb0`, contacts `FUN_009be420`,
   `FUN_00928fb0`, the wheel constraints' impulse pass `FUN_009c2670`, the force elements `FUN_00932f90`, then
   gravity and velocity integration `FUN_009282d0`). Positions are integrated **between** the two, by
   `FUN_009324f0` (2026-10-10, read): each awake body through `FUN_0091f380` with dt, and each wheel record's centre
@@ -611,13 +640,21 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
   So the bump travel above rest is 0.056 front / 0.067 rear on the XKR (ours: 0.06 for every car), droop 0.099 /
   0.093, the strut tilted 5° (`Angle`). The spring element (+0x10 rest length 0.463 / 0.449, +0x14 k 41603 /
   47896, +0x18 rebound c, +0x1c W, +0x20 anchor (0.795, 0.22, 1.291), +0x2c c) puts the rest position at the sag
-  (0.463 − (0.22 + 0.133) = 0.11 ✓). Where the strut top (−0.077 chassis-local on both axles) comes from in the
-  data was not found.
-- Unknown: the strut travel (+0x460 is set by the builder's caller; not traced); what holds the wheel record on
-  its strut across (the joints `FUN_009c62e0` / `FUN_009c4e10` were not read; ours moves the wheel along the body's
-  up axis only); the collision detection's margin for making a wheel's contact record; the writer of the wheel
-  object's on-ground byte (+0x24, vehicle +0x894 for wheel 0; `ref/live1`'s `w*_contact`), so whether it means an
-  active contact record is not known. Ported in `mw_handling::suspension` and drive.rs (handling.md item 5).
+  (0.463 − (0.22 + 0.133) = 0.11 ✓). The strut top and bottom come from the data ("Strut travel" above).
+- **Wheel contact list** (2026-10-19, `FUN_00923bb0` → `FUN_009ab3b0` → `FUN_009dd300`, `FUN_009e04a0` /
+  `FUN_009e06d0`, `FUN_009df790`, `FUN_0095b4d0`): the wheel object holds +0x1a0 a pointer into the world's contact
+  buffer (world +0x1f480, count +0x50d00, filled by the collision job `FUN_0092a510` → `FUN_009ac590`, not in the
+  dump), +0x1a4 the count, +0x1a8 the entry used (0, or −1 with none). Entry (0x40 bytes): +0x00 point on the wheel's
+  cylinder A, +0x10 world point B, +0x1c the triangle's collision tag, +0x20 normal, +0x30 the two body ids. The list
+  is dropped when the normal points against the chassis's up row. The wheel's contact (+0x00 point, +0x10 normal,
+  +0x20 = 3, +0x24 on-ground byte) is written by `FUN_009df790`: on-ground = (B − A)·n > −0.2 (`.bss` 0x01187ac0)
+  and normal.y > 0.5 (`.rdata` 0x01026830); +0x1c0 = within 0.2 / 0.01 and tag bit 0; `FUN_009dd3c0` sets +0x184 to
+  1 / 2 for a step of more than +0.1 / −0.1 m (`.rdata` 0x010267ec / 0x00fb1770) between ticks (an event, not
+  physics). `FUN_0095b4d0` adds a constraint record per entry and points +0x4a0 at entry 0's. Live (research log
+  2026-10-19): on a kerb's edge A is on the cylinder's rim ahead of the axle and B on the edge straight above it,
+  the normal the top face's. Ported in `mw_handling::wheel_probe`. Still unknown: the narrow phase (which entry is
+  first when several triangles touch). The wheel record is held on its strut by the strut joint (above; ours moves
+  the wheel along the body's up axis only).
 
 ## Wheel placement (2026-10-10, ported in `mw_assets::wheel_layout`)
 
@@ -732,7 +769,10 @@ watch file logs the wheel's grip load (`w*_N`, wheel +0x100) and static load (`w
   and the game car's byte +0x1c17 is clear, else dry) → the contact kind (`FUN_0054a760`: Normal; Rims when the
   wheel's +0x1c1 is set, Flats when +0x1c2; the wet kinds fall back to the dry ones, null to `Default_surface`) →
   `SurfacePhysics` → the tyre class's `TyreSpecificOverrides` (`FUN_0054d750`; class = game car +0x1a88, 2 at
-  creation in `FUN_00586810`, rewritten from upgrade data by `FUN_00589a60` / `FUN_00589b00`): class 0
+  creation in `FUN_00586810`; `FUN_00593ac0` sets it from `PerformanceUpgrades.StockTyres` (+0xc8, 2 on every car);
+  `FUN_0058f3f0` resets the player's car to 2 and then `FUN_00589a60` / `FUN_00589b00` write the short +0x18 of
+  the fitted OFF-ROAD (Category +0x3c, game slot 0) / TRACK (+0x50, game slot 1) `TyreUpgrade`, i.e. its `Tyres`;
+  the class reaches here through `FUN_00904260` → `FUN_009b4d70` → `FUN_009aaf30`; ported 2026-10-19): class 0
   `OffRoadOverrides` (+0x28), 1 `08b66463` (+0x0c), 2 `RoadOverrides` (+0x44, also any other value), 3
   `SportOverrides` (+0x60), 4 `TrackOverrides` (+0x7c). The record it fills: [0] `7585f9cb` (slide-drag scale),
   [1] `Surface_roughness.8193fd9b`, [2] `Surface_roughness.7cb58933` × 0.001 (`.rdata` 0x00f8bb34), [3]
@@ -767,6 +807,11 @@ watch file logs the wheel's grip load (`w*_N`, wheel +0x100) and static load (`w
   Asphalt (`SurfacePhysics` 283001, the dark-grey road type): `Surface_Grip` 1 and link grip 1 on every car, so 1;
   the game's `Default_surface` (250315) is 1 too. Grass (283005) on the 911: 0.7 blended to 0.835 / 0.88 (front)
   and 0.82 / 0.88 (rear) by its link (grip 1.3); dirt (283003, link grip 1.25): 0.875 / 0.90.
+- **The same surface lookups elsewhere** (2026-10-19): rumble `FUN_0054a9f0` and sounds `FUN_0054a5d0` pick the
+  contact kind by tyre class (formats.md "Surface list layout"); the AI's speed planning reads the effective
+  lateral grip (`FUN_00514ad0` / `FUN_00514c10`: corner speed from v² against grip); `FUN_00706550` (statistics)
+  runs `FUN_0054d750` per wheel and counts off-road distance when no wheel's physics uid is in
+  `Surfaces.423651c1`.
 - **Drift surface factor** (`FUN_009cede0`, `this` = vehicle +0x17e0): 0.25 (0x00fa8830) × the sum of the four
   wheels' effective lateral grip; the drift's yaw torque and side force are multiplied by it.
 - Another reader of the front wheels' effective lateral grip: `FUN_00905580` → `FUN_009d5270` (two lanes into a
@@ -914,6 +959,30 @@ posts their effects back for the next tick.
 
 The harmonic multipliers come from `EngineSound2` (research log "engine sound from the game code"). The Distortion
 and SubHarmoniser plug-ins fall in undecompiled gaps of the dump.
+
+## Wave items, whines and the bus mix (2026-10-19)
+
+Details and numbers in the research log ("sounds from the play test").
+- **`WaveSequenceItem` update** (`0x00836910`, vtable 0x00fef4d0; item factory 0x0083aa00 in the `(type id, factory)`
+  table at 0x00837220): pitch = the `Pitch` value, replaced when `Auto_Pitch` (+0xe0) by `(StartTime + position) /
+  Pitch.Value`; fade-in `pow(position / Fade_In.Time, Curve)` (+0xa4 / +0xa0), fade-out the same from the end
+  (+0xb8 / +0xb4). `MixerChannelSequenceItem` (factory 0x008370e0, vtable 0x00fef5f8, update `FUN_00836120` →
+  `FUN_00833290` → `FUN_004b8cd0` / `FUN_004b8d90`): properties 0 and 6 are multipliers skipped at 1.
+- **Whines** (`FUN_0058c3f0`, engine sound start): for the player's car (+0x1c18) every sequence of `VehicleSound`
+  +0x50 `TransmissionWhine` (`Sequences` +0x10, count +0x14) and +0x58 `TurboWhine` (+0x40, count +0x54).
+  `GetTransmissionSpeedMph` `FUN_0059ed70` → `FUN_009170a0`; the turbo update `FUN_0058f8f0` / blow-off pick
+  `FUN_0058d6f0` (constants in the log).
+- **Surface sounds** (`FUN_0058fe10`, per wheel, the player all four, others wheels 0 / 2): the wheel's
+  `SurfaceSounds` (`FUN_0054a5d0`) fills one of two road slots (+0x1968, 0x20 bytes each, per-side wheel counts);
+  a new slot starts the road sequence (+0x34 player, +0x3c others) with the "Traction" slot parameter and fade-in
+  +0x80, a lost one releases it over +0x84; transitions +0x70 / +0x74 / +0x78 (counts +0x8c / +0x8e / +0x90) and
+  bumps +0x68 / +0x6c (suspension × +0x7c) are one-shots; skids `FUN_0058f6d0`, called at the end once per road
+  slot (records at +0x19a8, 0x14 bytes), so two slots play two skid sets; `FUN_0057bbc0` keeps a slot's skid voices
+  across a set change with the same `Drift` sequence and stops them (0.15 s) in the air (research log 2026-10-19
+  "skids waaaay too loud").
+- **Engine level against the buses**: the bus gains hold relative to the engine's data level; our player engine
+  bank is normalised, so the vehicle sound bank follows that gain (only downwards; `sfx.rs` `bank_level`).
+- **Ginsu player** `FUN_00aaf0a0`: see the research log 2026-10-04 and 2026-10-19 (the window W is still unknown).
 
 ## Exhaust pops and backfires (2026-10-09)
 
@@ -1419,9 +1488,12 @@ closing speed (2.235 m/s = 5 mph) as before.
   shader `Time` is taken as seconds (not read live); the 20000-sprite / 300-record caps are not applied; the
   range, facing and in-front test use the view being drawn (the game builds once a frame for the main
   camera); the group test stays on the CPU (`groundcover.rs`).
-- **Not traced**: who fills the 64-slot list at `+0x2e94` (which track units' collections are resident). The
-  data fit "the player's zone and its `ZoneList` neighbours": at most 63 distinct collections over every
-  zone's neighbourhood. The runtime uses that rule (`groundcover.rs`, model decision).
+- **The filler** (2026-10-19, "Streaming zone and backdrop swap"): `FUN_005573f0` swaps the current zone's
+  collections in and out of a 64-slot `{collection, offset}` list with the count at +0x200, the layout
+  `FUN_008d6900` copies (`FUN_0043ac10` adds, `FUN_0043ac80` removes); that the list it fills is the one at
+  `+0x2e94` follows from the layout, the object was not followed. So only the current zone's collections
+  are drawn (`groundcover.rs`); until 2026-10-19 the runtime also drew its neighbours' (a model decision from
+  the 63-collection fit).
 
 ## Car spot effects (`FUN_005b28d0`, 2026-10-09)
 
@@ -1839,7 +1911,7 @@ meshes; 1835 of the 3668 world models have one); compounds that can break draw t
 (only the cull applies); backdrops keep the zone composition (no LOD rule); `--merge-static` merges LOD0 without
 the rule; L = 1 (`MW_LOD_SCALING`), the render target's pixels for L = 2.
 
-## Model pass mask (2026-10-16, applied to the main view in `loader.rs`)
+## Model pass mask (2026-10-16; per view since 2026-10-19, `pass_mask.rs`)
 
 `Model` +0x19 is a bit mask of the **views that skip the model**. Instances: `FUN_00553810` inserts each
 `InstanceList` instance into the culling structure (a 0x30-byte record through `FUN_00541850`: bounding sphere
@@ -1862,8 +1934,99 @@ The consumer of the queries is a job not in the dump. Runtime objects (compounds
 `FUN_00538b00`, which skips a model when `Model+0x19 & mask != 0`; its callers pass 4 (main view, LOD scale
 +0x1ee8c), 1 (shadow, state 6), 2, 8 and 0x10. Data: roads 0x09, lit signs 0x01, props / fences 0x08 / 0x1a,
 230 coarse terrain tiles 0x04 (shadow, cube-map and reflection stand-ins: drawn in the main view they cut through
-roads), 1007 instances and 1337 dynamics 0x1f. Port: placements of models with bit 4 are not spawned
-(`mw_formats::Model::in_main_view`); bits 1, 2, 8 are not applied (model decision, research log 2026-10-16).
+roads), 1007 instances and 1337 dynamics 0x1f. Port (`pass_mask.rs`, research log 2026-10-19): bit 4 keeps a
+model out of the main camera, bit 8 out of the planar reflection camera (render layers), bit 1 makes it cast no
+shadow; bit 2 has no counterpart (no cube-map views). The stand-ins' shadow caster in the game is their SHADOW
+state (`FUN_008a02f0` draws state 6 in the shadow pass; 215 of the 216 `TerrainPBR` stand-ins have a
+`WorldShadow_Opaque_Singlesided` renderable there, lower than the tile); here it casts only with
+`MW_STANDIN_SHADOWS=1` (model decision). `mwtool terrain-check --masks` lists the masks per layer and shader family.
+
+The rendering of road and ground gives no other way to hide an overlap: `DriveableSurface`, `TerrainPBR_*` and
+`PlotPBR_*` share the same `MaterialState`s (`01000006d4f4dae8` for the depth-only pass, `01000006713dc05f` for the
+G-buffer passes; identical depth-stencil blocks, rasteriser block `3 3 1 0 0 0 …`: solid, cull back, and in the
+D3D11 field order depth bias, bias clamp and slope-scaled bias all 0), and
+their vertex programs project through the same `ViewProjectionModified` (z and w from one row, no offset). Roads are
+not decals over the ground: what stands above the road surface in the data is visible in the original too.
+
+**View +0x17150** (bit 0x10): a second full world view with its own eye (+0x17200), set up like the +0x172e0
+view (`FUN_00539530` with the same pass ids 0x18 / 0x39 / 0x3a / 0x3b, render pass groups 0x14 / 0x15 against 0x16
+/ 0x17 for +0x172e0), gated by `+0x1cc13`, `FUN_00798840` (byte +0x48 of the first element of a list at renderer
++0x31bf8 / +0x31bfc, 0 when the list is empty) or `FUN_0069ff40()` +0x45, and `+0x8bc6f` of the frame
+parameters. Not identified. It is not the water's reflection: `Water_*` read `ReflectionTextureSampler` as a
+`texturecube` (`dcl_resource_texturecube t0`). Models with bit 0x10 are mostly props, fences, trees and flags
+(masks 0x18–0x1b), i.e. small objects also kept out of the planar reflection.
+
+**Mask 0x1f** (no view): 1004 instances of `80505b9d` (a 0.24 × 0.93 × 0.14 m, 80-triangle `World_Diffuse_Specular`
+object), 1169 dynamics of `79a1dfbc` and a dozen others that are one 0.24 m `Diffuse_1Bit` triangle (locators),
+flat 2-triangle `Diffuse_Opaque` quads, and six 50–150 m `World_Diffuse_Specular_Illuminance` sheets around
+(1500, 20, 1500); mask 0x0f: a road strip `ecc052cf` and flat quads below ground. None is drawn here; whether
+another system draws them is not known.
+
+## Streaming zone and backdrop swap (2026-10-19, ported in `zone_view.rs` and `groundcover.rs`)
+
+The world object (`this`, the same one whose zone helpers `FUN_00548ab0` / `FUN_0054b340` the front end uses,
+"Boot, loading screens") keeps a list of loaded units at +0xe60ac (16-byte entries `{0, unit id, …, status
+byte +0xC}`, count +0xe60b0; status 4 = loaded; slot resources at +0xe6808 / +0xe680c, 8 bytes per slot).
+- **Stream list** (`FUN_00549fb0`, called from `FUN_005586e0(pos, vec)` with the output at +0xc40b0): the zone
+  holding the position (`FUN_00548ab0`; when none, the last position that had one, +0xe0), then **every**
+  neighbour of that zone (`count = Zone+0x43 + 1`; per neighbour its flag bits 1 and 2 are copied, and a
+  priority from the distance to the neighbour (`FUN_0055f160`) and the second vector's direction, with the
+  constants `DAT_010c45a8` / `DAT_010c45ac` per flag and `DAT_010c45b0`, not read). Entry 0 (+0xc40bc) is the
+  current zone, +0xc40b8 its `ZoneList` record (district at +0x38).
+- **`FUN_005573f0`** (after every stream-list update, and from the loading state machine `FUN_005585d0`):
+  requests each listed unit (`FUN_00532de0(0, id, id)`, the district and arena bundles with kinds 1 and 2), then,
+  when the current zone differs from the previous one (+0xef888 / +0xef88c) and its unit's status is 4:
+  - removes the old zone's backdrop (`FUN_00556a60`: every `InstanceList` entry from the always-loaded count
+    +0x08 to the array size +0x04 that was inserted, through `FUN_00553930`) and its groundcover collections
+    (`FUN_0043ac80` per pair of the unit's list at resource +0x34 / +0x38);
+  - inserts the new zone's backdrop (`FUN_00556980`: the same entry range, each through `FUN_00553810`, the
+    culling-structure insert of "Model pass mask") and its groundcover collections (`FUN_0043ac10`: first free
+    of the 64 `{collection, offset}` slots, count at +0x200, the list "Groundcover drawing" reads; +0x204 /
+    +0x208 sum per-collection counts).
+
+So the main view draws the main (always-loaded) instances of the current zone's unit and its neighbours' units,
+and the backdrop and groundcover of **the current zone only**. Port (`zone_view.rs`, default; the per-place
+composition stays behind `--composed-backdrop`): every placement root is tagged with its unit, every backdrop
+model (sent once, whole) with the units listing it; with the camera in zone Z (nearest zone outside the
+polygons) a unit's placements show while it is Z or a neighbour, a backdrop model while Z lists it, and
+groundcover collections while Z lists them. Model decisions: the focus is the camera (the caller's two vectors
+not traced); the swap is immediate (no wait for status 4); props with physics and collision stay everywhere.
+Since the same day's streaming port ("World streaming" below) the focus is the camera from the code, the last zone
+holds outside the polygons and the swap waits for the new zone's unit while streaming.
+
+## World streaming (2026-10-19, ported in `streaming.rs` and `loader.rs`)
+
+The track units are streamed by one generic slot streamer that the world object embeds (vtable `0x00f9a374`,
+built by `FUN_005486c0` → `FUN_00534380`: **32 slots**, three 8-byte resource arrays per slot at streamer +0x768 /
++0x868 / +0x968, world pointer at +0xa68). Driven by the world's stream update `FUN_00558740` (every frame in
+game state 0xc):
+- **Focus**: by the world's mode +0xef868: 2 (gameplay) passes the camera manager's (`*(DAT_010edaf4 + 4)`)
+  +0x140 (its position, the vector the HUD's `DistanceToCamera` uses) and +0x130 (the camera matrix's third row,
+  read as the view direction; not confirmed live) to `FUN_005586e0`; modes 1 / 3 pass a stored position / vector
+  (+0xef810 / +0xef820: the target of a waiting placement, `FUN_00647e00` messages 4 / 5); modes 4 / 5 belong to
+  the loading state machine (`FUN_005585d0`, `FUN_00548120`).
+- **Stream list** (`FUN_00549fb0`): the zone holding the focus (else the zone of the last focus that had one,
+  world +0xe0) gets priority `DAT_010c45a4` = 100; each neighbour `(1500 − d) × (1 / 750) + 3 × max(0, dir ·
+  to) + (neighbour flag bit 2 ? 10 : 9.8)` with d / `to` the XZ distance / direction from the focus to the
+  neighbour's polygon centroid (`FUN_0055f160`: the mean of the points), `dir` the focus vector's XZ direction
+  (`.rdata` 0x00fab750 = 1500, 0x00fab74c = 0.0013333; `.data` 0x010c45a8 = 10, 0x010c45ac = 9.8, 0x010c45b0 = 3).
+- **Requests** (`FUN_005573f0`): `FUN_00531710` clears the request list, then kind 1 = `DISTRICT_<zone+0x38>.BNDL`,
+  kind 2 = `ARENA_<zone+0x3c>.BNDL`, kind 0 = each listed unit (`TRK_UNIT<n>.BNDL` + `trk_unit<n>_hdr`, `TRK_COL_<n>`,
+  `TRK_NAV_<n>`; names built by the streamer's load method `0x0054b5d0`); then the backdrop / groundcover swap
+  above; then the streamer step `FUN_0053acf0`.
+- **Streamer step** (`FUN_0053acf0` → `FUN_00537c80` / `FUN_00537dc0` / `FUN_00537f70`): every loaded slot that is
+  not requested is unloaded first (`FUN_00533050` collects them; the evict pick `0x005473a0` → `FUN_00546e20`
+  takes units first, then arena, then district; unload callback `FUN_0055a5b0` → `FUN_00558fb0`, not read, then
+  the slot's three resources cleared). Only then is one missing request loaded into a free slot (`FUN_00533130`; pick
+  `0x00547390` → `FUN_00546d70`: highest priority, district 500, arena 200, units their stream-list priority);
+  the load completes over frames (status 1 → 2 → 4), its callback `FUN_00558540` inserts the unit's placements
+  (`FUN_00557740`). Nothing else stays: the budget is the slot count, not bytes.
+- Port: the loader thread runs the same step between frames (`Worker::stream_step`): stream list from the focus
+  the main thread writes (`StreamFocus`), unload all units off the list, then load the best missing one. A unit's
+  entities are tagged as they arrive (`Msg::UnitBegin`); shared backdrop placements (`Msg::StreamKey`) and
+  groundcover collections go when no resident unit lists them; models / textures / materials when no resident
+  unit or car uses them. District / arena bundles are not loaded as units (the asset store reaches their shared
+  resources by its index).
 
 ## Sky, sun and shadows
 
@@ -2127,6 +2290,14 @@ decisions: [handling.md](handling.md), "Crash camera".
   `FUN_0093bc40` copies the `WorldRules` (0x34) thresholds and override into the collision response block,
   so the world test happens inside the contact solver (the comparison was not traced; the contact record
   carries the crash flag at `+0xed`, and `FUN_009175e0` turns it into a crash).
+- **World contacts into the impact handler** (2026-10-19, read; not ported): the collision analyzer's world
+  handler `FUN_00918120` takes the record's first value (a 4-lane vector, all lanes equal) as the impact value. For
+  the player (not crashed, +0x1774 clear) it keeps the last world impact's time and value (analyzer + 0x670 /
+  + 0x680): when the previous one is recent (`FUN_005e5760` on the time difference, not read) a value not above the
+  last one is dropped and a larger one counts only by its excess; then any value above 1.19e-7 goes to the impact
+  handler `FUN_009145c0` (the crash entry, with `FUN_00929da0`'s zone). Where the record's value comes from (the
+  collision job) and so whether a contact that has not touched yet can carry one is still not in the dump; ours
+  counts touching contacts only (handling.md "Crash camera", research log 2026-10-19 "false crashes at kerbs").
 - **Entering the crash** (`FUN_009145c0`, `FUN_009b2d40`, confirmed): the impact handler calls the crash
   entry with reason "Impact" / "damage applied"; it saves the car's pre-crash state (velocity at
   `+0x1124…` copied to `+0x114c…`, the "pre-carnage velocity" the sound reads) and sets `vehicle+0x1774`.
@@ -2229,6 +2400,59 @@ the glancing test uses the current poses; a pair is tested when its contact star
 player's crash cameras' length (4.5 s) onto its route at its progress, rolling at the `GameLogicConfig` reset
 speed; a crashed traffic car is marked wrecked (later hits on it use `5ccf9942`). Not ported: takedown
 feedback, battling (`FUN_008f8ac0`, damage × profile +0x4c), the crashing-race-car pairs, props' "prop impact".
+
+### Car against car: contact response (2026-10-19, ported in `crates/mostrusted/src/car_contacts.rs`)
+
+Read from the dump and the snapshot disassembly (`re/out/live/text.asm`); data `CollisionResponses_RaceCar`
+(`010000000007f0c9`) and `CollisionResponses_Global` (`…f0c6`) in `PHYSICS/PHYSICSCONFIG.BNDL`, layouts by
+`mwtool genesys-types` (struct offsets include the 12-byte header).
+
+- **Lanes**: every pair handler fills a record (`FUN_009251f0` defaults) whose +0x20 / +0x30 are the first / second
+  car's linear impulse scale and +0x40 / +0x50 their angular ones, +0x00 / +0x10 the friction, +0x60 the restitution;
+  `FUN_009bb640` copies them into the contact constraint (+0x90..+0x9c) and the contact pass `FUN_009be420` adds
+  impulse × lane to each body (see "Car against a dynamic object"). In the params structs `e3882eb1` is the linear
+  lane and `e5ea1414` the angular one; `3e2f6a22` (`Damage`) the damage a `DamageParams` entry stands at.
+- **Player – AI** (`FUN_009588c0`, `PlayerVsAI` at +0x100): the player's lanes lerp from `41d5a4d1` (damage 0:
+  linear 0.4, angular 0.05) to `f5ba78b1` (100: 1, 0.4) by the player's damage of this impact, t = clamp((d − lo) /
+  max(hi − lo, 0.5)) (`.rdata` 0x010245b0); the AI's from `d2fdd797` (0: 0.5, 0.1) to `d8e13fb1` (100: 1, 0.1) by
+  its damage. The damage is the computed one, or the rule's `DamageToDeal` when it fired with the override flag
+  clear. When the AI car crashed or is wrecked by the impact ([esp+0x18]: its verdict, its flagged override or
+  `FUN_009b2530`'s wreck) the AI takes `bd61d07e` (0.7, 0.4) and the player `52915382` (0.7, 0.1); when the player's
+  car did (DL: [esp+0x58] / [esp+0x28] / [esp+0x1f], so only while an event runs) the player takes `Player_Crashed`
+  (`bd4c8b39`: 1, 0.7) over that; a car flagged never to crash (+0x1777) takes `61f2b095` (0.4, 0). Friction 0,
+  restitution −0.1. Record +0x132 / +0x133 = the player's / the AI's crash verdict; +0x100 / +0x110 = (1,1,1,1)
+  (`.bss` 0x01186190, snapshot) when the player crashed, else 0 (→ constraint +0xd0 / +0xd4; their use not traced).
+- **AI – AI** (`FUN_009575e0`, `RaceCarVsRaceCar` `4b2df237` of the global set): each car by its own damage from
+  `Stable` (0: 0.4, 0.05) to `Unstable` (200: 1, 0.4); crashed or wrecked → `Crashed` (1, 0.7); friction 0.3.
+- **Against a crashing race car** (category 2): `FUN_00959210` (`PlayerVsCrashingRaceCar` +0x2c0) and `FUN_00959730`
+  (`AIVsCrashingRaceCar` +0x368) blend by the faster body's speed (body +0xb0, zero while asleep) from
+  `a563fb88` (15 mph) to `742f5d62` (25 mph), divisor at least 1 m/s, from the `Low_Speed` profile (`bd346f75`) to
+  the other: the player linear `91583928` 0.25 → 0.7, angular `dccbab9d` 0.7 → 0.1; the AI `33475b56` 0.25 → 0.7,
+  `3b04b8fd` 0.7 → 0.25; the crashing car linear `8655a00b` 1, angular `830403e8` 1 (→ 0.7 against an AI);
+  friction 0.1 → 0.05. Record +0x133 = 1 always. Which high profile the player handler uses (EDX: `68378547` or
+  `7d03de76`) was not traced; they differ only in restitution. `CrashingRaceCarVsCrashingRaceCar`: 1 / 1, friction 0.3.
+- **Crashed bodies are not lifted** (`FUN_009be420` after the points, constraint +0xf1 / +0xf2 = record +0x132 /
+  +0x133): with v_y0 the body's vertical velocity before the pass, the pass's gain in v_y is cut to at most
+  clamp(3 − v_y0, 0, 2) m/s (`.rdata` 0x010258f0 = 3, 0x01025840 = 2, mask 0x01025800 = (0, 1, 0)); then the
+  velocity is zeroed unless its length is below body +0x2f (the w lane of the velocity vector; not identified).
+- **The AI driver after a hit**: the racer state (`FUN_0050da90`) has no reaction of its own: it keeps the path
+  PID and pedals; only the stuck check (`FUN_004fb9f0` → state 11) and a per-player skip byte (world + 0x2ef50,
+  `FUN_006a05d0`, not identified) interrupt it. The player's crash reset (`FUN_006d39d0`) returns at once for
+  players whose kind (+0x9c) is not 0, so AI racers are not reset by the `GameMode` timer; their reset path was
+  not found (`FUN_006d3550`, the crash message, is shared by all players).
+- **Takedown cameras**: `GameModeManager.ShowTakedownCameras` (+0x2e7b) is set from option 0x12 (`FUN_0073daf0`, the
+  options apply); no reader in the dump, no HSM node. The HSM's "Run Takedown Sequence" (1377014, sequence 287389)
+  is the *player's* wreck by someone else (`Players.LocalPlayer.IsWreckSuicide` false), in "Manage Crash Sequence".
+
+Ours (`car_contacts.rs`): avian keeps detecting race-car pairs but the hook in `props.rs` neutralises them (points
+pushed far out, so its solver applies nothing); before each step the pairs' body boxes are queried
+(`contact_query::contact_manifolds`), a new impact is decided there (`car_impacts.rs` `decide`, the same rules)
+and solved with these lanes (2 passes, the props solver's push-out); after the step our impulse and the pre-solve
+closing speed are written back into avian's contacts for the effects, sounds and camera. The island's first pass
+(`FUN_009be060`, lanes +0x80 = linear 1, angular 0) acts only on points whose predicted separation (relative point
+velocity × the step vector, along the normal) is ≥ 0, i.e. not on approaching contacts; so the approach is
+resolved by `FUN_009be420` with the lanes. Model decisions: that first pass left out, no restitution, damage 0 between impacts (0.5 s cooldown), the crashed body's
+velocity cap (+0x2f) left out. `MW_RACE_CAR_CONTACTS=0` restores avian's rigid solve.
 
 ## Props (2026-10-09)
 
@@ -2432,6 +2656,152 @@ Runtime: `crates/mostrusted/src/props.rs`; data: `mw_assets::props` (`Additional
 - Downstream, `FUN_008fa750` passes stored control fields (vehicle-controller words 0x7ed–0x7f3) to
   `FUN_009aacc0`; the steering value is right − left (Update loop above).
 
+## Binding evaluator (2026-11-17, ported in `mw_logic::binding`)
+
+The binding path language of the UI, Lua, HSM and GeneSys data (`Mode.ShowLoadingScreen`,
+`Signals.GetSineWave[7500](MULT:8, MINUS:4)`) is one C++ system in 0x00a47000–0x00a59000. The dump has the
+parsers and the arithmetic; the visitors (one class per result type, 28 virtual slots each, one per property
+type) are vtable-only methods read from the snapshot's disassembly (`re/out/live/text.asm`). REA was not
+available (the installed Ghidra 12.2 is rejected by the `rea` server, which wants 12.1.x).
+
+- **Names are hashed** with `FUN_009ed180` → `FUN_00d6a410`: 0 for "", the GeneSys field CRC for 4+ bytes, and
+  for 1–3 bytes a variant that starts from the first byte, shifts every byte in (the first again) and reduces by
+  the register's low byte (`.bss` 0x0118a840 holds `X` = 5e9f1ee7, `XY` = 44f09125, unit-tested).
+- **Operators** (`FUN_00a4da00` fills the hash vector `.bss` 0x0118a7f0; op code = index): ADD MINUS MULT DIV POW
+  FLOOR_TO CEIL_TO ROUND_TO AXES MOD MIN MAX EQUALS GTEQ LTEQ BETWEEN HASHEQUALS NOT UPPERCASE POSTFIX IS_EMPTY
+  LERP. No other names exist: `MINVALUE` / `MAXRANGE` are not in the exe (LERP's arguments are positional), nor is
+  `CAPS` (6 GeneSys `UIMessages` bindings use it: a no-op).
+- **Compile form** `FUN_00a503e0` (binding object: 5 op records of 12 bytes at +0x00, count +0x3c, segment hashes
+  +0x40, indices +0x58, segment count +0x74 = 0xff when invalid): text cut to 127 bytes; root = text before the
+  first `.` hashed as is, looked up in the registered roots (`FUN_00a520d0`, records of 0x14 at +0x12968 of the
+  manager) or the dynamic providers (`FUN_00a58f70`), else invalid; no `.` → invalid. Members are walked
+  against the root's type (`FUN_00a52500` per member; index 0 or past the member's count stops the walk).
+  **Inner form** `FUN_00a50650` (358 call sites against 7 for the compile form): all segments alike, the root
+  too, at most 6, no root check; used by the HSM (`FUN_0076f330`, `FUN_007716c0`, `FUN_00771ea0`), Lua's
+  `ResolveBoolBinding` (`FUN_00680120` → `FUN_0067f4e0`), `ResolveIntBinding` (`FUN_00679900` → `FUN_006794e0`),
+  `ResolveDoubleBinding` (`FUN_00679950` → `FUN_00679550`), `ResolveStringBinding` (`LAB_007e97e0` →
+  `FUN_007e7cc0`, to-text visitor, "" on error) and splices. Compile-form callers include `FUN_00851c80`,
+  `FUN_008539b0` (not traced further) and `FUN_00a50f40`.
+- **Segments** (`FUN_00a48ec0`): split at the delimiter, but when a `(` comes before it the paren counter starts at
+  1 and counts that `(` again, so it never returns to 0: the rest of the text is one segment. Per segment:
+  ops (`FUN_00a50230`: between the first `(` and the first `)` after it; split at `,`, spaces before a token
+  skipped, at most 5; each token copied into a 24-byte buffer, `{binding}` spliced (`FUN_00a4fe80`, inner form,
+  the splice visitor vtable 0x0102c0f0: `%.2f`, `%d`, `%lld`, `true` / `false`, no operators), upper-cased
+  (`FUN_009ee1a0`, a–z only), then `FUN_00a4a2b0`: split at the first `:`; no `:` → the token is its own operand;
+  record = {op index or −1, hash(operand), (float)atof(operand)}); then the index (`FUN_00a4a440`: `[n]` → atol,
+  `["key"]` → hash(key), none / empty / over 32 bytes → 1); the segment name is the text before `(` / `[`.
+- **Dispatch** `FUN_00a4ef40`: resolves the path (`FUN_00a4eb00`, else the root's dynamic provider), then calls the
+  visitor slot of the property's type through the reader table `PTR_010d1218`; null object → slot 25, index 0 or
+  past the property's count (+0x18 of the member) → slot 26, no reader → slot 27. Slot order (from the visitors'
+  bodies): 10 a 64-bit fixed-point time (× 3.33e-7, `.rdata` 0x00f9f608), 11 object pointer, 13 / 14 strings,
+  15 bool, 16 u64, 17 u32, 18 u16, 19 u8, 20 double, 21 i64, 22 i32, 23 i16, 24 float.
+- **Arithmetic**: `FUN_00a4b940` (f64), `FUN_00a4bb10` (f32), `FUN_00a4bca0` (i64: ADD MINUS MULT DIV MOD MIN
+  MAX, operand through `__ftol2`), every record in order: `MIN:a` → a when a < v; `MAX:a` → a when v ≤ a;
+  FLOOR_TO = trunc(v/a)·a; CEIL_TO adds a step when the rest is > 0 (`.rdata` 0x0100e8d0 = 0); ROUND_TO when the
+  rest ≥ a·0.5 (0x00fb0eb0); MOD = v − trunc(v/a)·a; POW = pow(v, a) (`FUN_00edaa7f`, SSE2 libm).
+- **Comparisons** `FUN_00a4bea0` (f32): the first EQUALS / GTEQ / LTEQ / BETWEEN / HASHEQUALS decides. EQUALS:
+  |a − v| < 2⁻¹⁶ (`.rdata` 0x0102b880); GTEQ v ≥ a; LTEQ a ≥ v; BETWEEN a < v < b strictly, a and b from the next
+  two records (`BETWEEN,5,140`); HASHEQUALS |hash(operand) − v| < 2⁻¹⁶. EQUALS / GTEQ take the next record's
+  number instead when their operand *hashes to their op code* (12 / 13), which no text does: `(LTEQ,50)` and
+  `(EQUALS, 1)` compare with 0.
+- **LERP** `FUN_00a4b5d0` (f32; `FUN_00a4b530` double in, f32 maths): first LERP record k, records k+1..k+4 =
+  a, b, c, d; t = (v − a)/(b − a), < 0 → 0, ≥ 1 → 1 (`.rdata` 0x00f8a820); c + (d − c)·t.
+- **bool visitor** (vtable 0x00f98d10; HSM conditions, `ResolveBoolBinding`): double (`FUN_00a4d5d0`) →
+  comparison on (float)v if any, else |v| > 2⁻²³ (`.rdata` 0x0102c1a8 / b0; NaN true); float (`FUN_00a4c9c0`) →
+  f32 arithmetic, then the double path; i32 (`FUN_00a4d6c0`) / i64 (`FUN_00a4d640`) → arithmetic, comparison,
+  else the *original* value ≠ 0; u8 / u16 / u32 / u64 → the i64 path; string (`FUN_00a4d770`) → with EQUALS:
+  hash(upper(first 23 bytes)) == the operand's hash, else non-empty; object → non-null; then `FUN_00a4ca40`: NOT,
+  else IS_EMPTY, inverts once. Null / out of range / unsupported (`FUN_00a4d4e0`, `..530`, `..580`): false,
+  inverted only by IS_EMPTY.
+- **int** (vtable 0x00fb68a0, `FUN_00a4f220`): float / double truncated (`cvttsd2si`), i64 low word, bool 0 / 1,
+  string unchanged; null → 0 or 1 with IS_EMPTY (`FUN_00a4d970`); then, with any ops, the f64 arithmetic.
+  **float** (vtable 0x00fb0e00, `FUN_00a4f1d0`): numbers → f32 → LERP (`FUN_00a4cbe0`, `FUN_00a4cc00`), bool 1 / 0,
+  a string `{Path}` is resolved as that binding (`FUN_00a51020` → `FUN_00a50f40`), else 1 / 0 for non-empty; then
+  the f32 arithmetic. **double** (vtable 0x00fbcef0, `FUN_00a4f1a0`): the same with `FUN_00a4cbc0`, strings only
+  1 / 0. **string** (vtable 0x00fd8368, the HSM's parameter values `FUN_00771ea0`): `%.2f` (double through float),
+  `%d`, `%lld`, `%u`, `%llu`, `TRUE` / `FALSE`, strings with UPPERCASE and POSTFIX (which appends the literal
+  `:POSTFIX`, 0x0102bbb4); `<NULL>`, `<INVALID ARRAY INDEX>`, `<INVALID PROPERTY BINDING TYPE>`; no arithmetic.
+  **text** (vtable 0x00fb6830, Lua `ResolveStringBinding`, nested keys in `FUN_00a4f410`): arithmetic and
+  comparison (`true` / `false`), else `%.2f` / `%d`; bools `true` / `false` without NOT. The vector form (`FUN_00a4ceb0`) writes the scalar into the AXES lanes (`FUN_00a4c070`, mask table
+  `.bss` 0x0118a840: X Y Z W XY XZ XW YZ YW ZW XYZ XYW XZW YZW).
+- **Widget paths** (`FUN_007cb300`): with a base path, `{parent}` → `~base`, `~path` → absolute (the `~` dropped),
+  else `base.path`; `#` → the list item index; `%name%` → a widget variable (`FUN_007c83f0`, not ported).
+- **Data check** (`mwtool bindings`): 5,024 distinct binding texts (JSON 2,544, GeneSys 3,503, HSM 263, Lua 239)
+  all parse; the quirks the original also has are listed by its warnings (research log 2026-11-17 "Binding
+  evaluator").
+## The HSM interpreter (2026-11-17, ported in `mw_logic::hsm`)
+
+The game-logic state machines (`HSMData`, formats.md) run in a manager (`this` with 12 machine slots of 0x30 B at
++0x10, a ring of 16 finished results at +0x258 / index +0x358, a serial counter +0x250, the hook registry +0x360
+and the behaviour registry pointer +0x378: {count +0x964, (id, factory) pairs from +4}). Confirmed from the dump
+and the snapshot's disassembly unless stated.
+- **Start** `FUN_00775ed0`(resource, instance id, context): the top-level state whose instance id matches (12 B
+  records, id at +8), a free slot (serial −1), serial = counter++; the slot's spawn record = the state's first
+  entry point id + its definition id; behaviour from the registry, or `HSB_PLCHLDR` if the id is not registered;
+  init `FUN_00775cd0`; returns the serial (−1: no instance or no slot). The boot starts G+0x2f710 = **20527**
+  (read live; set in `FUN_006a5aa0` case 3 from a GeneSys object of `DAT_010edac0`) in case 7; game modes
+  (`FUN_0070d580`, from the mode's data) and `RUNSUBNET` (`FUN_007500a0`) start others.
+- **Per frame** `FUN_00776010`: per slot in order, the root's tick (vtable +0x20); a root in state 3 is freed by
+  `FUN_00775b30` (its serial and exit point into the ring, data definition freed). `FUN_00776050` ticks one slot;
+  `FUN_00775010` flags a machine's root for exit; `FUN_00774f70` running?, `FUN_00774fa0` exit flagged?,
+  `FUN_00774fe0` result from the ring.
+- **Instance** (`FUN_00775cd0`): +0x08 behaviour id, +0x10 exit point (u64, starts `EXITINVALID` =
+  `DAT_0117bd78`), +0x18 the machine slot, +0x1c parent, +0x20 the parent's child exit data for this state (or 0),
+  +0x24 first child, +0x28 / +0x2c next / previous sibling, +0x30 the state, +0x34 the spawn record (entry point
+  id, state id), +0x38 the data definition's instance (JSON parsed by `FUN_009f8fc0` in `FUN_007756c0`; a root
+  member hashing to 0xb21d9989 also builds binding adapters), +0x3c phase 0–3, +0x40 exit requested, +0x41
+  entered, +0x42 exit begun, +0x43 ticked once.
+- **Registry** `FUN_00775a60`(id, fallback): the factory registered for the id, else `HSB_PLCHLDR` for fallback 1
+  / 2 and `HSB_RUNCHILD` otherwise. `FUN_00775980` registers HSB_PLCHLDR, RUNSUBNET, HSB_RUNCHILD, BUNITTEST,
+  WAITCHILDREN, then the rest (268 names, factories 0x776000–0x780000).
+- **Vtable** (9 slots; base defaults 0x55cd90–0x55ce00): 0 on enter, 1 enter update (1 = entered), 2 on running,
+  3 update (nonzero = exit; base 0), 4 exit update (1 = done), 5 on exit begin, 6 on exit, 7 (returns 0, unused
+  here), 8 the shared tick `FUN_00776470`.
+- **Tick** `FUN_00776470`: phase 0: once, the entry point (`FUN_007760b0`: the state's entry point whose id is the
+  spawn record's; `FUN_00775e70` action 1 starts the spawns, 2 flags the subtree for exit), publish the data
+  definition when it has a path (`FUN_00a4ead0`; its vtable slot 0 returns the path), slot 0; then slot 1 every
+  tick until nonzero, slot 2, phase 1 in the same tick. Phase 1: unless flagged, `FUN_00776210`; nonzero →
+  `FUN_00778f10` (flag self and subtree); phase 2. Phase 2: once slot 5; `FUN_007757f0` ticks the children and
+  frees the finished ones (exit points are not looked at); when none is left slot 4 until nonzero, then slot 6,
+  retract the data definition (`FUN_00a4de20`), phase 3. +0x43 is set at the end of every tick.
+- **Children** `FUN_00776210`: slot 3 first (nonzero is returned at once: the children are not ticked). Then
+  passes: tick each child (later passes only those with +0x43 clear, i.e. started in this call); if any finished,
+  unlink and free each finished child and call `FUN_00776100`(child id, its exit point): the child exit data for
+  that id, the exit point whose child exit matches, `FUN_00775e70` on it, and for action 2 set the parent's exit
+  point to the record's parent exit point and return 1. Repeat while something finished and the result is not 1.
+  A missing record dereferences null (the data never lacks one on the paths it runs). Starting a child
+  `FUN_00775da0`: create, append at the end of the child list, inherit a pending exit flag.
+- **Parameters** `FUN_00774890`(u64 id): linear search of the state's parameters comparing all 64 bits (value =
+  the first string); `FUN_00774790`(exit): does the parent's child exit data for this state handle that exit
+  point with a non-NOTHING action (`FUN_00774dc0` sets it as the exit point when so).
+- **Hooks** (registry at manager+0x360, `FUN_007763b0` registers 187 by name hash `FUN_009ed180`;
+  `FUN_007761a0` looks up and calls, `EXITINVALID` when missing; `FUN_00776440` by name): `hook(arg)` returns the
+  exit point (u64), `arg` = the data definition's member (`FUN_009f77a0`). E.g. `IsNewGame` (0x675a50): G+0x2f3fc
+  +0x2e87 ? TRUE : FALSE; `ClearNewGameFlag`: clears it, EXIT.
+- **Behaviours ported** (factory → vtable; slots that differ from the base): `HSB_RUNCHILD` 0x77ab20 → 0xfd9194
+  (update 0); `HSB_PLCHLDR` 0x77aa80 → 0xfd914c (update: EXIT); `WAITCHILDREN` 0x77aad0 → 0xfd9170 (EXIT when no
+  child); `CALLHSMHOOK` 0x77a990 → 0xfd90e0 (enter: `FUNCTION` hashed; update: hook(`Params`) → exit point);
+  `CALLHSMHOOKS` 0x77a9e0 → 0xfd9104 (enter: `ONENTERHOOK`(`EnterParams`), on exit: `ONEXITHOOK`(`ExitParams`));
+  `HSMHOOKEXIT` 0x77aa30 → 0xfd9128 (update: hook(`Params`) until not `EXITINVALID`); `EXITBINDTRUE` 0x55f790 →
+  0xfab66c (binding parsed on enter `FUN_00a50650`; EXIT when it evaluates true `FUN_00a4f160`);
+  `HSB_SEL_EX_B` 0x77bc90 → 0xfd9860 (binding as text, 12 chars, `FUN_00a4f2e0` → packed exit point; failure →
+  `ONFAILEXIT`); `HSM_B_TRUE` 0x77bd30 → 0xfd98a8 (TRUE / FALSE); `HSB_B_NOT_0` 0x77bce0 → 0xfd9884 (TRUE unless
+  the text is "" or "0"); `HSB_EX_BI_CH` 0x77bd80 → 0xfd98cc (first resolved value kept, EXIT on a change);
+  `BINDINGTIMED` 0x779c60 → 0xfd8ee8 (`TIME` counted down on clock +0x38 while true, reset when false);
+  `BDELAY` 0x779280 → 0xfd8d80 (`ENTERTIME` / `UPDATETIME` / `LEAVETIME` on slots 1 / 3 / 4, clock +0x18);
+  `WAIT4TIME` 0x5a23f0 → 0xfae1a4 (`TIME` × 3e6 ticks (`.rdata` 0x00f9f604), minus dt × 3e6 per update, EXIT when
+  ticks / 3 ≤ 0; `REGBINDING` publishes `CurrentHSMTimer`); `RUNSUBNET` 0x77dd50 → 0xfda810 (instance = `BINDING`
+  value or `TOPSTATE`, own machine, its exit point if the parent handles it else EXIT; exits it on the way out);
+  `LOCALECHECK` 0x779ff0 → 0xfd8fc0 (EXIT at once on PC); `BWAIT4GFX` 0x7792e0 → 0xfd8da4 (EXIT at once, exit
+  update waits for `FUN_00897960`); `HSB_WAIT4LS` 0x77c1f0 / `HSB_WAIT4NL` 0x77c1a0 (UI manager +0x2d204 ≠ 0 and
+  +0x2d200 clear = showing).
+- **Clocks**: `*0x010edacc` + 4 → +0x18 (dt +0x10 × rate +0x14; `BDELAY`, `WAIT4TIME`) and +0x38 (with a running
+  flag +0x1c; `BINDINGTIMED`). Which engine clocks they are is open.
+- **Model decisions** (`mw_logic::hsm`): a missing child exit record / entry point is reported and ignored
+  (original: null dereference); a 10,000-pass guard per call; the binding "parsed" test is a non-empty path until
+  the binding parser is connected; unported behaviours registered in the original are the host's business
+  (the `mwtool hsm --run` driver holds them or answers them).
+
 ## Front end, HUD and Easydrive
 
 _(session 5)_ Easydrive's tree, labels, item types and input actions are data (research log 2026-10-06
@@ -2499,7 +2869,8 @@ Code side from a sub-agent's trace of the dump and the live snapshot's disassemb
   waits the layout's own out duration (layout+0x18) before unloading. No minimum display time, no fade constant.
 - **Streaming stall** (`FUN_006a2200` from `FUN_004766a0`): pauses the simulation (pause reason 3) while the world
   is not ready or the car's surroundings are not Resident(car, 25 m) (`DAT_00faba94`; `FUN_00587120` per tick into
-  +0x1c33; free camera: the camera, `DAT_00fa8844` 25 m). Not ported (we stream everything).
+  +0x1c33; free camera: the camera, `DAT_00fa8844` 25 m). Ported 2026-10-19 for the player's car
+  (`streaming::streaming_stall`, virtual time paused); never seen to fire in a 20 km drive at 215 km/h.
 - **Start position** (`FUN_006d0180`, the respawn executor; offline, `IsFreedriveEvent` GMM+0x2e90): if not a new
   game (`IsNewGame` GMM+0x2e87) and the event's kind == `GameLogicConfig` +0xd8 (390145, free drive): the profile's
   last swap spot (stats 0x14 / 0x13 / 0xe) if its car is the current car, else `FUN_006c1840(car, 1)` then `(car,
@@ -2513,6 +2884,24 @@ Code side from a sub-agent's trace of the dump and the live snapshot's disassemb
 - **Waiting for streaming** (`FUN_00647e00`): radius max(200 m, mph × 0.44704 × 3 s); a target not resident holds
   the car, moves the streaming focus there (message 4) and sets the loading-screen bit 0; `FUN_0064b290` re-checks
   every frame and places the car once resident (message 5 clears the focus).
+- **Placement with a speed** (2026-10-19, read in full; ported for `--replay --spawn` in `Car::place_moving` /
+  `Drivetrain::place_moving`): `FUN_0064b290` caps the record's mph at 100 (`.rdata` 0x00fb69e0) and posts
+  `FUN_008446e0` (kind 2 on the queue [0x010edb2c] + 0x10: slot, pose, mph). `FUN_00596880` dispatches it to
+  `FUN_00596050`: velocity = mph × direction × 0.44704 (`.bss` 0x0118a010) → `FUN_00580f90` → `FUN_005705f0`
+  stores a pending teleport (+0xb1c0 + slot flag, pose +0xb1d0, velocity +0xb210, angular +0xb220, +0xb240 moving =
+  |v| > 0 or state 2) that `FUN_0090dc30` hands to the vehicle, `FUN_008f8190`: `FUN_009afc50` (pose),
+  `FUN_009b1e90` (velocities through `FUN_009073b0` / `FUN_00907420`, the speed `FUN_009ac030`, the wheel bodies
+  `FUN_009b0430`, zeroes +0x1630 air time and +0x1ed0 the downshift gate's clock, then vtable +0x58 =
+  `FUN_008f5280` → `FUN_009a9b10`, the vehicle reset: gearbox `FUN_009cd620` (state 2 when moving, else 0; timers,
+  the gear-change clock +0xb4 / +0xb0 to 0 / 1), driveline `FUN_009cd180`, `FUN_009d4be0` (gear index 1, driveline
+  speed = `Idle_RPM`), clutch `FUN_009cd150` (0), engine `FUN_009d22f0` (rpm = `Idle_RPM`; the throttle hold and lag
+  kept), the wheels' tyre records, brake ramp +0x1610, and with +0x1f0 the handbrake `FUN_009cda30`, +0x2a80 and the
+  drift `FUN_009cd3f0`), +0x30ed = 0, and when moving `FUN_009b3550`: driveline speed from the wheel spins
+  (`FUN_009d55f0`) × the ratio of the gear index the reset left (1: first gear), gear = `FUN_009d78e0` (0 below
+  0 mph, else the highest usable gear whose lower neighbour's `Gear_up_speed` is below the mph, at least 1), and
+  rpm = that speed with the gearbox in gear and the clutch closed (`FUN_009cd710`) when it is at least `Idle_RPM`,
+  else `Idle_RPM` in standstill with the clutch open (`FUN_009cd750`). The rpm is not clamped: the 911 at 62 mph
+  reads 10 402 rpm in third on the placement tick (`ref/kerb100a`; 3.91 × 3.44 × the rear wheels' 773 rpm).
 - **New game** (Lua `SetNewGame(true)` → `FUN_0068fd50`): resets the profile tables, the starting car from
   `GameLogicConfig` +0xa4 = `DefaultRollout` 523000 (`Rollout.Vehicle` 122672, Aston Martin V12 Vantage),
   IsNewGame, and the first unlocked event of kind 390145 as the pending event. `ShouldPlayNewGameIntro`
@@ -2804,6 +3193,65 @@ pixels. Model decisions: the line's look (light blue, the road's drivable width,
 3 px on the map, only from the car's progress on); a failed search clears the destination; an event start
 clears the route when a race starts (`RaceState` appears); the 5 m arrival test runs whenever a destination is set.
 
+### UI frame and `HudAspectCorrection` (2026-10-19, `mw_assets::ui::UiFrame`)
+
+Layouts are authored in a 1280×720 frame. `UIConfigManager` (reflection registered by `FUN_007a03c0`, 0x41c
+bytes, the UI manager's config object; `UIConfig` in bindings) holds `HudAspectCorrection` at +0x1dc (0x2c bytes,
+registered by `FUN_0078f970`): public `Left` +0, `Right` +4, `Top` +8, `Bottom` +0xc, `ScreenWidthMultiplier`
++0x10, `EffectiveScreenWidth` +0x14 ("effective width of the screen in pixels, assuming the width of a 16:9
+screen with no margin scaling is 1280"), and private copies at +0x18..+0x28 (left, right, top, bottom,
+multiplier). Initial values: 0, multiplier 1.0 (`0x00f8a820`), width 1280.0 (`0x00fb331c`).
+
+- `FUN_0078faa0` (ECX = the struct; run by `FUN_0079a6f0` at UI start and by `FUN_0079a810` whenever the back
+  buffer's width / height, `FUN_0046efe0()` +0x138 / +0x13c, differ from the stored +0x1d4 / +0x1d8): a = w / h.
+  For 1 ≤ a ≤ 8/3 (`0x00fe0eec`): private left = (1280 − 720·a)·0.5 + 0.5, right = −left, multiplier =
+  a·0.5625 (`0x00fe0ee8`). For a > 8/3 the same with a = 16/9 (`0x00fddf74`: the HUD stays in the centre 16:9
+  of three monitors). For a < 1 (portrait): top = (720 − (1280 / w)·h)·0.5 + 0.5, bottom = −top, multiplier
+  a·0.5625; the other axis keeps its previous private values (stale, 0 from the start).
+- `FUN_00794700` (per frame from `FUN_0079a810`, stack argument = the game object): public = 0, multiplier 1,
+  width 1280; unless the UI manager's byte +0x2ecf4 is set (read by `FUN_007902f0`), public left..bottom =
+  private, multiplier = private, width = 1280 × multiplier. Then the four floats at UI manager +0x2ece0..+0x2ecec
+  (m0..m3; the options' screen-scale margins, widget `ScreenScale` of screen 469958, assumed) are added when any
+  is non-zero: left += m0, right += m2, top += m1, bottom += m3, and multiplier / width scale by
+  (m2 + width − m0) / width.
+- The data uses it as translate components of `UILayoutInstanceParams` (`UIConfig.HudAspectCorrection.Left(AXES:X)`
+  117×, `Right(AXES:X)` 209×, `Top(AXES:Y)` 149×, `Bottom(AXES:Y)` 232×, next to the constant translate that
+  puts the layout's anchor at its corner of the frame) and in element bindings (the ticker strip: x =
+  `Left(ADD:223)` / `Right(ADD:1077)`, width scale `EffectiveScreenWidth(MINUS:457,DIV:1280)`).
+- So on HUD screens the frame keeps its height (aspect ≥ 1: 720 reference pixels = the screen's height; at 4:3
+  the visible frame is x 160..1120 and left-side HUD layouts move in by 160) and its width on portrait screens.
+- Menu screens set the UI manager's byte +0x2ecf4: the corrections stay 0 and `FUN_006240b0` draws black quads
+  outside the 1280×720 frame (its extents from the view scales `FUN_0061f800` sets from a camera's FOVs): the
+  frame fits inside the screen with bars. snap1 has the byte set, snap2 clear; margins 0 in both.
+- Captures of the original at native 1024×768 and 1680×720 (`ref/ui-2026-10-19/`, research log 2026-10-19)
+  confirm both: HUD and Easydrive at the screen edges, height-scaled; title, transition, pause, settings and map
+  letterboxed / pillarboxed. Ported as `UiFrame::new` (HUD) and `UiFrame::letterbox` + `UiFrame::bars` (menus,
+  `UiScene::letterbox`). Model decisions: which of our screens are menus beyond the captured ones (the event
+  card: menu); HUD screens' full-screen shapes / streamed pictures cover the window ([`UiFrame::cover`]).
+
+### HUD widget groups, district and road names (2026-10-19, `hud.rs`)
+
+- Free roam's screen is 371621 "FreedriveHud" (not 371670 "AmbushHud"). The HSM's "Some HUD Elements Visible"
+  (1014536) runs "Select HUD" (cockpit or third-person HUDs) and "Run Child Behaviour - Engine Off Group" (1805616:
+  group 1805613 in a freedrive event, else 1014531). "Run 3rd person HUDs" (371583): "Run Default HUD" activates the
+  `Widget_HudSelection` field `ExternalDefault` (264948: SP total, POI) and, via "Run No EasyDrive HUD" (1524982),
+  `ExternalEasyDriveOff` (`2c4a8019`, 1695018: minimap, plates, pursuit bars) until `Widget.EasyDrive.IsActive`;
+  "Run Nitrous HUD" (1524952) picks the `Nitrous` group by `Players.LocalPlayer.CurrentNitrousType` (NONE 1524950,
+  BURN / JUMP 1524919, BURN_PRO / JUMP_PRO 1524920, DUMP 1524921, DUMP_PRO 1524922) and exits on Easydrive. "Wait for
+  EZDrive Input Prompt" (1445535) shows the `Prompt` group 1135011 while Easydrive is closed. Research log
+  2026-10-19 "UI content".
+- `CurrentRoad.*`: `FUN_006591b0` registers the `RoadManager` (game +0x15324; RoadData handle +0x84, 24 player
+  slots of 0x1c bytes at +0x8c: current road or −1, previous, last valid, its previous, section, previous section,
+  segment) with `Id` +0x32c, `Name` +0x330, `Visible` +0x334. `FUN_00668650` per tick refreshes one slot
+  (`FUN_00666200` → `FUN_006638f0` → `FUN_0065f410`, "Road position" below), clears the three fields and, if the
+  local player's (game +0x2f3dc → +0xa6b4) last valid road has flag bit 0 (+0x33), sets Id = road +0x18, Name =
+  road +0x1C, Visible = 1: the plate keeps the last named road off the network.
+- `Players.LocalPlayer.CurrentDistrictName` is a `Player` binding field (+0x300, registered by `FUN_006d1830`;
+  writer not traced); the data: `GameLogicConfig.DistrictConfig.Districts[]` {`Name`,
+  `PaintLayer`} and the district `WorldPaintMap` 010000000002823e (GAMEPLAY.BNDL).
+- Text layout (`FUN_009e9780`): a character the font lacks is looked up as U+007F, then `-` (`FUN_009ebab0`), then
+  glyph record 0.
+
 ### Race HUD, countdown and results (2026-10-09, `hud.rs`, `ui_quads.rs`)
 
 What is data (research log 2026-10-09): the screens and layouts, the countdown / results `Sequence`s and their
@@ -2859,10 +3307,142 @@ icon's turn is its heading relative to the map (the player's arrow points up); i
 size × the HUD scale; icons whose centre is off the map are left out (the widget's `EnableClamping` /
 `IsClamped` is code not traced); the player's field is +0x54 (`FUN_006440a0`, 2026-10-15), the racers' was not
 traced (`5bfb3553` holds the matching arrow; cops are drawn with it and `IsCop` true since 2026-10-15). Still ours: the map scale (4 m per reference pixel from the
-tile resolution, not the 600 m / 90° camera) and the tiles drawn opaque grey (the game adds them, opacity 0.7).
+tile resolution, not the 600 m / 90° camera); the tiles are added at opacity 0.7 like the game's (2026-10-19).
 - Easydrive's RACES list: the offline races (730000) whose `AllowedVehicleList` holds the driven car (all races
   when none does), nearest start first. "START RACE" puts the car on the event's start 0.5 m up; the start
   must be inside the streamed world (`--units`), else the car falls and is reset. One race per run.
+
+### Widget definitions (JSON) and widget scripts (2026-11-17, `mw_formats::{json, widget}`, `mw_assets::widgets`)
+
+The spec the runtime implements for M8 step 4. Formats: formats.md "Widget definitions (JSON)". C = read in the
+code (dump function or disassembly of the snapshot `snap1`), I = inferred. Helpers used: `.claude/tools/fn`,
+`disas.py`, and reads of the live snapshot (hash globals at 0x0117xxxx, the native-script table).
+
+**Loading (C).** A screen's `Screen2` (GeneSys) lists widget groups → `Widgets` (`Widget_*` structs: the type,
+`Name`, `UniqueId`, layouts, actions, script headers). For each widget the screen loads the JSON
+`"<Name>_<UniqueId>.json"` (`FUN_007edd50`: `"%s_%d.json"` per entry of a 0x2c-byte list, load kind 0xd, a
+"loaded" byte at +0x28; `FUN_007e0850` does the same for one object named `"<name>.json"`; both kick off from
+`FUN_007f95e0` / `FUN_007f9a70` / `FUN_007e27f0`, which poll `FUN_007f79f0` / `FUN_007e0920` until loaded). The
+parsed JSON objects sit in a sorted map keyed by the widget's `UniqueId` (`FUN_007feb20` binary search; the id is
+read from the GeneSys struct's field `655d3f5f`, global 0x011a2678). The JSON parser is the engine's own
+(`FUN_009f69b0` lexer, `FUN_009f7990` / `FUN_009f8510` objects, `FUN_009f8c70` arrays, tags 0 object … 6 null);
+lookups hash the key with the GeneSys field hash (`FUN_009ed180` → `FUN_00d6a410`) and scan in file order
+(`FUN_009f16b0`). Key hashes are precomputed into globals (0x0117e74c `Scripts`, 0x0117e7e0 `Name`, 0x0117e7e8
+`Script`, 0x0117e60c `Adapters`, 0x0117e938 / 0x0117e93c `DeferredViewModels` / `OnlineViewModels`, …: 141
+globals in 0x0117xxxx hold the hashes of 94 of the 400 JSON key names, read from the snapshot).
+
+**What is read from the JSON vs the GeneSys struct (C for the JSON readers; I for the GeneSys side).** The JSON
+readers found: `Scripts` (`FUN_007f59c0`, `FUN_007f84c0`, factory `FUN_007f2850`), `Adapters` (`FUN_007f5a30`,
+`FUN_007f5bf0` → `FUN_00a51aa0` → splice reader `FUN_00a510e0` → `FUN_00a50930` data sources / `FUN_00a50860`
+mapped sources), `DeferredViewModels` / `OnlineViewModels` (`FUN_007f5b10`, `FUN_007f5b80`, `FUN_007f5db0`,
+`FUN_007f5f80`, `FUN_007f72f0`, `FUN_007f7510`), and type-specific keys (`FUN_00802bd0` Easydrive callbacks,
+`FUN_00806470` / `FUN_008064e0` `ScriptedActions`, `FUN_00807cf0` / `FUN_0080b570` / `FUN_00815760` /
+`FUN_00815a90` the point-of-interest widget, `FUN_0080e4c0` image sources, `FUN_0080fb60` event challenges,
+`FUN_00810000` item groups, `FUN_00814870` / `FUN_00816ad0` / `FUN_00816f20` Easydrive types and tiers,
+`FUN_00870010` settings). The hash globals for `SuccessCallback`, `ActiveBinding`, `ActionDefinition`,
+`CallbackArgs`, `IsCallbackInLua` exist but no code references them: the action records (0x10c bytes each, list
+at widget +0x18, count +0x10) are built from the GeneSys `UserActionInstance` structs, whose fields are the same.
+`LayoutLayer` / `ModalMode` / `Layouts` / `Timers` have no JSON reader either (GeneSys side; the JSON names agree
+with the GeneSys enum values on all 1,876 screen widgets).
+
+**Script construction (C).** `FUN_007f84c0`, per widget of the screen, per JSON `Scripts[]` entry:
+1. Find the GeneSys `Scripts[]` header with the same `Name` (string compare, first match) → its
+   `<Name>_ScreenScript` object.
+2. Bind the natives the script uses into the widget's Lua state (widget +0x84; one state per widget, shared by its
+   scripts): for each `LuaHooks` name `FUN_009f1c30` looks the name up in the native registry (`FUN_009f7e50`'s
+   list) and sets a global C closure with the name as upvalue; `tonumber`, `tostring`, `error`, `pairs` and
+   `mfpFunction` (table 0x010d0548) are accepted as built in; any other name sets the screen's error flag
+   (+0x2028). So `LuaHooks` is the binding list (research-log 2026-11-17 had it as tooling metadata).
+3. Libraries: `LuaModulesIncluded` false → `FUN_009ef470` opens all five (`package`, `table`, `io`, `string`,
+   `math`; table 0x0102a1fc); true → `FUN_009ef3e0` opens each name of `LuaModules` (unknown name → error flag).
+4. If the JSON `Script` has `LuaAsset`: record {name, `field_hash(name)`, state} (manager +0x18f4 / +0x18fc, 28-byte
+   entries), find the chunk by `field_hash(name)` in the screen's sorted chunk table (+0x18ec, 12-byte entries;
+   the chunk resource id is CRC-32 of `"<name>.lua"`) and run it (`thunk_FUN_009ef4c0`: load the buffer after the
+   u32 length, call it), which defines the global table `<name>`.
+5. `FUN_007f4150` → factory `FUN_007f2850`: with `LuaAsset` → a Lua script object (0xbc bytes, vtable
+   0x00fe7f78); without → the name's hash is looked up in the native factory table (manager +0x308, pairs {hash,
+   factory}, count +0x408) → a native script (table: `mw_formats::widget::NATIVE_SCREEN_SCRIPTS`; 24 entries).
+   No match → error flag, no script. Then vtable slot 0 (init), then slot 12 (`FUN_007fbc10`: constructed byte
+   +0x91); not constructed → error flag, the object is destroyed.
+6. Lua init `FUN_007f29b0`: stores the manager / widget pointers, reads two optional JSON keys (bool hash
+   `67d01e38` → +0x92; binding hash `cc2e0dc5` → +0x90 when it has parts; neither key is in the shipped data,
+   names not cracked), creates the script's own view-model JSON object (+0xb4, vtable 0x00fccfd4; bindings
+   `Widget.<widget>.<…>` resolve into it through slot 8 `FUN_007e7a80` → `FUN_009f61c0`), then `FUN_007ec680`:
+   - copies the script name (≤ 16 chars, +0x98) and the state (+0x94); no `Name` or no state → error flag;
+   - `Construct(script)`: `_G[<name>].Construct` called with one light-userdata argument, the script object
+     (`FUN_009ef230` = `lua_getfield(G, name)`, `getfield(fn)`, type must be function; `FUN_009ef2e0` =
+     `lua_pcall(nargs, LUA_MULTRET)`; an error pops the message, nothing else);
+   - `SetConfigurationItem(key, value)` for each entry of the JSON `Script` object in file order whose value is a
+     string (tag 2), int (3, `lua_pushinteger`), double (4, pushed as `(double)(float)value`) or bool (5);
+     arrays and objects are skipped; `LuaAsset` itself is passed (an int);
+   - sets +0x91 = constructed.
+
+**Lua script object vtable 0x00fe7f78 (C; 13 slots).** 0 `FUN_007f29b0` init; 1 `FUN_007ebce0` destructor (calls
+`Destruct` when defined; 3 chunks define it); 2 `0x007ebdf0` `OnActivated()`; 3 `0x007ebe50` `OnDeactivating()`;
+4 `FUN_007ebd40` `PreInputUpdate(dt)` (dt as a number; the script's cooldown +0x14 counts down by dt while
+the widget has input); 5 `FUN_007eed50` handle an action (below); 6 `0x007f2ac0` call a callback by name;
+7 `0x007ec4c0`; 8 `0x007e7a80` resolve a binding into the script's view model; 9–11 `0x007fbc00`, `0x007ec5a0`,
+`0x007ec610`; 12 `FUN_007fbc10` constructed. Every call goes `_G[<script name>][<function>]`: the script's
+table, no `self`; a missing function is skipped silently. Native scripts implement the same interface (their
+vtables have 17 slots, e.g. `PlaySequenceFast` 0x00fe8080).
+
+**Lifecycle order (C unless marked).** Construct → SetConfigurationItem × n at build time (per script in
+`Scripts` order). On activation of the widget, every script's `OnActivated` (`FUN_007ebc80`, list order); on
+deactivation `OnDeactivating` (`FUN_007ebcb0`); the callers of these two are not in the dump (I: the widget
+group's activate / deactivate). Each frame `FUN_007f6420`: every script's `PreInputUpdate(dt)`
+(`FUN_007eb850`), then, when the widget has focus and an input device, `FUN_007f50e0` fires the actions (the
+firing rules are in "Menu input and the map screen's controls"). Destruction calls `Destruct`.
+
+**Action dispatch (C).** `FUN_007f40d0` routes a fired action record:
+- **Cross-widget** (record +0x104 set: a `SuccessCallback` of the form `"Widget::Function"`, e.g.
+  `Tabs::OnTabLeft`, `EasyDrive::OnNext`): `FUN_007eeb40` checks `ActiveBinding` (fails → the definition's
+  failure sound, +0x1c), finds the target widget of the screen (list at manager +0x2b4, key +0x88) and offers the
+  call to each of its scripts (`FUN_007eb9a0` → slot 6) until one handles it; handled → success sound (+0x24).
+  Where the `::` split happens is not in the dump (I: when the record is built; the Lua chunks define plain
+  `OnTabLeft`, never a `Tabs::` name).
+- **Script callback** (`IsCallbackInLua`, +0x109): `FUN_007eb910` offers the action to every script of the
+  widget (slot 5). The Lua slot 5 `FUN_007eed50`: only when the script's cooldown (+0x14) is ≤ 0; checks
+  `ActiveBinding` (fails → failure sound, cooldown 0.15 s); then slot 6 `0x007f2ac0`: `_G[script][callback]`
+  with `CallbackArgs` split at `,` (`FUN_007eeea0` → `FUN_009f06f0`), each piece a string argument; if the
+  function exists → success sound and cooldown 0.15 s (`.rdata` 0x00fe73ec). Native scripts receive the same
+  call by name (slot 6), so `IsCallbackInLua` means "handled by the widget's scripts", Lua or native
+  (`EasyDrive::OnNext` goes to the native `EasyDrive` script).
+- **Native** (otherwise): `FUN_007f2670` checks `ActiveBinding`; `SuccessCallback == "ExitGroupVia"` →
+  `FUN_007f2530`: the first `CallbackArgs` token (a `{…}` splice is resolved through the binding evaluator) is
+  hashed (`FUN_009ed220`, 64-bit) into manager +0x488: the widget group's exit code, which the HSM's "Activate
+  Widget Group" node takes as its exit; any other name is looked up in the HSM hook registry (`FUN_007763b0`'s map,
+  lookup 0x007761a0) and called with the arguments. Success / failure sounds as above.
+
+**Adapters (C for the fields; the evaluation is the binding evaluator's).** Each `Adapters[]` entry publishes
+`Widget.<widget>.<Name>`; `FUN_00a51aa0` builds one per entry from `BindingSplices` (`FUN_00a510e0`): a splice
+reads `dataSources[]` (`source` binding + `length`), picks one with `dataSourceIndex` (+ `dataSourceOffset`),
+indexes it with `index` (+ `offset`), limits to `numElements`, honours `respectLength`, `expectsHash`, `wrap`,
+`mappedSources[]` {`source`, `key`, `expectsHash`} (keyed lookups), `appendElement`, and an `operation`
+{`Operator`, `Operand`} — or the operator written as a key — with operators AND 0, OR 1, ADD 2, SUBTRACT 3,
+MIN 4, MAX 5, SUBTRACT_FLOAT 6 (7 = none); the operand is a binding (string) or an int.
+
+**View models (C for the readers).** `DeferredViewModels` / `OnlineViewModels`: named JSON request objects
+(`getComponent`, `action`, parameters whose `{…}` splices are resolved when sent); online / Autolog only.
+
+**Adapter hosts (C, data).** A sequence item `SequenceItems.AdapterHost` {`Name`, `Adapters` = a JSON TextFile
+handle, `EnabledBinding`, start / end} publishes that JSON's adapters while the sequence runs; the 13 JSON files
+of `EN_US/FEEDBACKGROUPS` are these (`AssetStore::ui_adapter_hosts`).
+
+**Native screen scripts (C).** 24 factories (table above; names, factory addresses and object sizes in
+`NATIVE_SCREEN_SCRIPTS`): MilestoneRecVM, SessionBestAnim, POIDisplayScript, PlaySequenceFast, RearViewMirror,
+FindMyNearest, ExitOnIdleScript, MapCarouselItems, MpPlatfmActions, LiveMapManager, NotifiCenterVITA, MWL_VITA,
+EasyDrive, EasyDriveSpeech, JackspotScript, FilterCtrls_VITA, ScoreFormat, ImageStreamer, MapFriendsList,
+ActionSeries, Menu_Fast, FriendHelperFast, FriendsFast, WaitPhotoDtlFAST. Shipped widgets use 22 (181 script
+instances); RearViewMirror and MWL_VITA are unused. Each one's behaviour is its own C++ (ports one by one; the
+map's `LiveMapManager` is partly ported in `map_screen.rs`).
+
+**Native actions (C, data).** Native `SuccessCallback`s in the shipped JSON: `ExitGroupVia` (most) and HSM hook
+names; per screen with `mwtool widgets <screen>` (each action line says `lua` or `native`).
+
+**Open.** The two unnamed keys of the Lua init (`67d01e38`, `cc2e0dc5`); slots 7, 9–11 of the script vtable; who
+calls `FUN_007ebc80` / `FUN_007ebcb0`; where `Widget::Function` is split and what +0x104 holds; what the error flag
++0x2028 does in a release build (LuaHooks that are not natives, like `Copyright`, would set it); when the
+widget's Lua state is created and whether it is shared beyond the widget.
 
 ## Free-roam rules: collectibles, jack spots, events
 
@@ -3256,7 +3836,20 @@ by `FUN_006b51a0`). Times are 64-bit ticks of 1/3,000,000 s (`DAT_00f9f604`). Co
   (`FUN_00686f30`): per `AIPlayerInformation` (count OfflineEvent +0xd6) the car stands on its `Placement`
   point facing its direction, spawned with zero velocity (`FUN_006ce030`) into slots 12..23; racers without
   flags +0xb5 / +0xb3 join the opponent list; with OfflineEvent +0xee (`c75c9d90`) set, a slot whose car is the
-  player's car is skipped.
+  player's car is skipped. Detail (2026-10-19): a first pass from the last slot down finds the last slot whose
+  rollout car (`FUN_00683420` rollout entry +0x30) is the player's (`FUN_006bf330` / `FUN_006ba320`), **else the
+  last slot**: with +0xee set exactly one slot is always left out. The spawn (`FUN_006ce030` → `FUN_006cc870`)
+  takes the car from the slot's `AIPlayerType` +0x14 `Rollout` (runtime rollout table at player manager +0x1d80,
+  0xd8-byte entries, +0xcc → the GeneSys `Rollout`, found by id at its +0x38), the colour from the slot's +0x18
+  (`2968e77a`) unless it equals the player's car's colour (`FUN_0058f1d0`: the player vehicle's +0x74, when its
+  flags +0x18 / +0x19 are set), then +0x10 (`9b4e35f7`); a zero colour keeps the rollout entry's +0x34. It also
+  picks entry +0x40[n % +0x60] and +0x50[n % +0x64] by the spawn counter (+0xa69c) into the car's +0x594 / +0x598
+  (probably the rollout's `Characters` / `631d8188` arrays; not traced). A type with +0xb4 (`6bb93300`) set is
+  kept at +0xa698: **the Most Wanted rival**, read by `FUN_006bad70` (its health, 1 − damage), `FUN_006bf490`
+  (its distance to the player), `FUN_006a1390` / `FUN_006a3db0` (callers in the 0x914xxx HUD code and
+  `FUN_006d3c30`, not read), the free-roam "Do Blacklist Shutdowns" behaviour (`FUN_00748900` / `FUN_00748e50`:
+  matches `Gameplay.BlacklistShutdownData` entries against the rival's car, `Rollout` +0x58 `Vehicle`, and
+  spawns / releases it, `FUN_006ce180(.., 3)`) and the map's `BlackListDriver` icon.
 - **Route entries** (`FUN_00645290`; online `FUN_00642140`): DTF+0x10 holds 0x14-byte entries {position, trigger
   id, cumulative route distance}, count DTF+0x510: entry 0 is `SpawnPosition`, then for each of `Laps` (+0xf6)
   every id of `Checkpoints` (+0x64), positioned at the box centre lowered by half its height (on the road).
@@ -3345,14 +3938,18 @@ by `FUN_006b51a0`). Times are 64-bit ticks of 1/3,000,000 s (`DAT_00f9f604`). Co
   Found since (2026-10-09, "Cutscenes and sequences"): `Mode.Data.CountdownSequence` is GameMode +0x10 (0 offline);
   the outro is the event's `EventOutro` sequence, its camera an ICE take.
 
+- **Racers after the race** (2026-10-19): finished / done racers (+0x5d7) are removed by `FUN_00521f00` by
+  distance and visibility (heat level +0xb0 / +0xb4: 100 / 300 m); the event ends after its outro context and free
+  drive resumes. Research log 2026-10-19 "race flow".
+
 ### Port and model decisions (`race.rs`, `chevron.rs`)
 
 Ported as above: intro length from the game mode, 3-2-1 from `IntroTime`, handbrake freeze with live throttle,
 route entries, target-only gate overlap (car box from `body_half_extents` vs the trigger box, separating
 axes), lap and finish rule, distance to finish, position rule, the wrong-way state machine, the won rule
 (with `TargetSpeed` / `TargetTime`), respawn facing the target gate (`crash.rs` reads `race::RespawnFacing`).
-Model decisions: segments between entries are straight lines (no road-network paths), so positions and the
-wrong-way test differ where the road bends away from the line; the car box is centred half its height above
+Model decisions: segments between entries are road-graph paths cut at the entries (2026-10-19; were straight
+lines, which made the wrong-way test call "missed checkpoint" on every bend); the car box is centred half its height above
 the car's origin; the wrong-way machine runs for every racer (the original: the local player); AI finish times
 are kept for results; the speed run's average speed is the counted distance over the race time; the race clock
 advances by the fixed tick; the chevron boards are 2 m tall with one texture repeat per 2 m, `baseColour`
@@ -3968,7 +4565,8 @@ the event's `AllowedVehicleList` entry `a17a5e72` for the player's car (1.0 … 
 
 `AIPlayerType` (GAMELOGIC/GAMEPLAY.BNDL, 200 types; the racer personality copied by `FUN_006c0700`): its
 speed caps (0x78 / 0x7c, 90 mph) are read only by non-racer behaviours; nitrous usage (u16 0xaa) has no
-reader; the car comes from its rollout (0x14). Not used yet.
+reader; the car comes from its rollout (0x14; used since 2026-10-19, "Starting grid" in "Races"). The
+personality is not used yet.
 
 ### Model decisions (ours, `ai.rs` / `ai_driver.rs`)
 
@@ -3978,8 +4576,11 @@ reader; the car comes from its rollout (0x14). Not used yet.
 - Race routes: the shortest node path (A* on link lengths, no turn penalty or exit factors) between the start
   and every gate, laps unrolled; test routes (`--ai` without `--race`): from the player's spawn, the
   best-aligned neighbour at every node (`FUN_00436c00`'s rule) for 3 km.
-- Opponents' cars: the event's allowed cars in turn (the opponents' own cars, `AIPlayerInformation`
-  `9b4e35f7` / `2968e77a` and the type's rollout, are not resolved).
+- Opponents' cars (2026-10-19): each slot's own rollout car in its slot colour, the +0xee slot left out, cop
+  slots (+0xb5) not spawned (open: the event's cops); a car without a bundle falls back to the allowed cars in
+  turn (none in the install). A zero colour (on some DLC sprints) takes the car palette's first entry (the jack
+  spots' rule, `FUN_0058b9a0`; `FUN_006ca580`'s handling of colour 0 not traced). The rubber band's
+  `OpponentData[k]` is the k-th racer left on the grid (inferred).
 - The emergency brake's circle radius = the larger horizontal half extent of the body.
 - The recovery's probe length 6 m; the banded pedal's shape between its read thresholds; the reset puts the car
   on the path at its progress (the game's reset placement not traced); the off-screen 3 s reset is not used.
@@ -4478,6 +5079,26 @@ Liveries and two-tone paint: research log 2026-10-06 (session 5, rounds 3 and 4)
   entry whose index matches: op 0 multiplies, op 1 adds (summed), op 2 returns the operand at once; the result is
   value × Π + Σ (identity with no entries). Call sites pass indices 0x00..0x36 as literals; which handling field
   each index belongs to was not mapped this session (open: read each call site).
+- **Where the multiplier goes** (2026-10-19, live): `FUN_009d9960` multiplies the full-load torque (`FUN_009d24a0`
+  × engine +0x3c) by its 9th argument, which `FUN_008f7c50` builds as vehicle +0x2e70 × vehicle +0x2a90 per lane;
+  +0x2a90 is the nitrous component's multiplier (read live: 1 → 1.9 on the 911 as the lane ramps, the engine
+  torque +0x1d28 430 → 820 N m), +0x2e70 stayed 1. The gearbox reads the lane itself (control block +0x30 =
+  vehicle +0x1c20 > 0): `FUN_009d9ee0` waives the upshift's speed condition and `FUN_009d4c20` unlocks the top gear,
+  and `FUN_009d93b0` does not downshift at all while it is above 0 (ported 2026-10-19: ours lacked this gate).
+  Captures `ref/noslaunchfull`, `noslaunch_a`, `noscruise2_a` (research log 2026-10-19 "nitrous").
+- **The rollout** (the car's fitted upgrades, 2026-10-19): a 0x2b-dword record per player at [G + 0x2f404] + 0x827c +
+  index × 0xd8 (`FUN_006a15c0` → `FUN_0067ecf0`; written whole by `FUN_0068e9d0`, the swap `FUN_006c2020` passes
+  a caller's record through `FUN_006911b0`): +0x30 the vehicle id, then five groups of (descriptor pointer, fitted
+  slot, level) at +0x70 / +0x7c / +0x88 / +0x94 / +0xa0. `FUN_0067e770(slot)` returns the level when the slot is the
+  one its group holds: tyres {0, 1, 2, 11} (+0x74), nitrous {3, 4, 12, 13} (+0x80), chassis {7, 8, 14} (+0x8c),
+  body {9, 10} (+0x98), gearbox {5, 6} (+0xa4). Level 1 reads the upgrade from category 1 (+0x70 + 4k), level 2
+  (PRO) from category 0 (+0x1c + 4k) of `PerformanceUpgrades`; slot → field k: 0 → 10, 1 → 15, 3 → 6, 4 → 7,
+  5 → 12, 6 → 13, 7 → 2, 8 → 3, 9 → 0, 10 → 1, 11 → 5, 12 → 8, 13 → 9, 14 → 4 (`FUN_0058f3f0`, `FUN_00589a60`,
+  `FUN_00589b00`, `FUN_0065de50`); slot 2 was not seen read (a `TyreUpgrade` field by elimination). The 911's
+  names: slot 3 BURN NITROUS, 4 POWERSHOT, 12 BURN NITROUS (another variant), 13 JUMP NITROUS, 5 / 6 LONG / SHORT
+  GEARS, 7 / 8 / 14 LIGHTWEIGHT / REINFORCED / RAM CHASSIS, 9 / 10 AERO / IMPACT PROTECTION BODY, 11 DRIFT TIRES.
+  The mod-usage counters (`FUN_00656b90`, `FUN_00656cb0`, `FUN_00656e60`) count driving with a level-1 mod towards
+  its PRO unlock.
 - **The mods' data**: `Genesys.Gen.Vehicles.PerformanceUpgrades` in each vehicle bundle (911: `…6a59f`), two
   `Category` fields (`cb186d88`, `6eeb691f`; their names in Language ids differ by one, so most likely the pro
   and base levels), each up to 18 slot fields holding a `ModifierUpgrade` {`Icon`, `Name` (Language ids),
@@ -4650,8 +5271,11 @@ collision tag: surface = bits 13–19, bit 1 = the `ROAD` flag; +0x24 on the gro
     above 0.01 (`.rdata` 0x00fad910), or on rims, or while the car moves on a surface whose byte +0x156 (front
     wheels) / +0x157 (rear) is set (false on every surface). The ramps are written into the effect's parameter
     block (+0x84..+0x8c, the `WheelParams` intensities). Four effect slots per wheel.
-  - a second kick-up: `WheelVfx` (+0x138; AI `4cf3cf8f` +0x140) when a condition on the wheel's contact
-    velocities holds (not read in full).
+  - a second kick-up: `WheelVfx` (+0x138; AI `4cf3cf8f` +0x140), started and kept going while any of the
+    wheel's three smoke ramps is above 0 (a four-lane compare of (0, ramps) against zero; read in full
+    2026-10-19), or on a surface whose +0x156 / +0x157 byte is set; ported. The ramps fall geometrically and
+    never reach 0 in float maths unless the FPU flushes denormals (not known), so after the first slip the
+    kick-up stays on and its count follows the contact speed.
   - `bb02333c` (+0x100) for the local player's rear wheels, placed with the camera's matrix (lens dirt or
     similar; not ported); `5830a883` (+0x58) is copied to car +0x3c0.
   - the **tyre marks**: material = `RimMarksMaterial` (+0xe8) on rims, else `TyreMarksMaterials` by the car's

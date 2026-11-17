@@ -251,7 +251,7 @@ fn load_meshes(game: Res<crate::Game>, mut loads: ResMut<CarMeshes>, mut meshes:
     let want = std::mem::take(&mut loads.want);
     let store = game.store.clone();
     let (tx, rx) = mpsc::channel();
-    std::thread::Builder::new()
+    crate::platform::thread::Builder::new()
         .name("collision meshes".into())
         .spawn(move || {
             for bundle in want {

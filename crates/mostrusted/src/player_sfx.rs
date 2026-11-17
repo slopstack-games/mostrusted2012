@@ -30,6 +30,7 @@
 //! in muted test runs); `MW_HORN_AT=t0,t1`
 //! holds the horn from t0 to t1 seconds of game time (headless checks).
 
+use crate::platform::PollLock;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -131,7 +132,7 @@ fn load(game: Res<crate::Game>, garage: Option<Res<crate::garage::Garage>>, mut 
     if sfx.data.is_none() {
         match sfx.job.clone() {
             Some(job) => {
-                if let Some(data) = job.lock().unwrap().take() {
+                if let Some(data) = job.poll_lock().and_then(|mut s| s.take()) {
                     info!(
                         "player car sounds: {} impact slots, {} grind / {} sparks / {} glass / {} scratch waves, {} \
                          world waves; {:?}",
@@ -151,7 +152,7 @@ fn load(game: Res<crate::Game>, garage: Option<Res<crate::garage::Garage>>, mut 
                 let store = game.store.clone();
                 let job: Job<PlayerCarSfx> = Arc::new(Mutex::new(None));
                 let out = job.clone();
-                std::thread::spawn(move || *out.lock().unwrap() = Some(store.player_car_sfx()));
+                crate::platform::thread::spawn(move || *out.lock().unwrap() = Some(store.player_car_sfx()));
                 sfx.job = Some(job);
                 sfx.rng = 0x2f6b_1d35;
             }
@@ -160,7 +161,7 @@ fn load(game: Res<crate::Game>, garage: Option<Res<crate::garage::Garage>>, mut 
     // The horn of the car being driven.
     let vehicle = garage.and_then(|g| g.current.as_ref().and_then(|c| crate::frontend::vehicle_id(&c.bundle)));
     if let Some(job) = sfx.horn_job.clone()
-        && let Some(horn) = job.lock().unwrap().take()
+        && let Some(horn) = job.poll_lock().and_then(|mut s| s.take())
     {
         if horn.is_none() {
             warn!("player horn: {:?} has no horn sequence", sfx.horn_for);
@@ -175,17 +176,17 @@ fn load(game: Res<crate::Game>, garage: Option<Res<crate::garage::Garage>>, mut 
         let id = vehicle.unwrap_or_default();
         let job: Job<Option<OneShot>> = Arc::new(Mutex::new(None));
         let out = job.clone();
-        std::thread::spawn(move || *out.lock().unwrap() = Some(store.player_horn(id)));
+        crate::platform::thread::spawn(move || *out.lock().unwrap() = Some(store.player_horn(id)));
         sfx.horn_job = Some(job);
         sfx.ignition = None;
         let store = game.store.clone();
         let job: Job<Option<OneShot>> = Arc::new(Mutex::new(None));
         let out = job.clone();
-        std::thread::spawn(move || *out.lock().unwrap() = Some(store.player_ignition(id)));
+        crate::platform::thread::spawn(move || *out.lock().unwrap() = Some(store.player_ignition(id)));
         sfx.ignition_job = Some(job);
     }
     if let Some(job) = sfx.ignition_job.clone()
-        && let Some(ignition) = job.lock().unwrap().take()
+        && let Some(ignition) = job.poll_lock().and_then(|mut s| s.take())
     {
         sfx.ignition = ignition.map(Arc::new);
         sfx.ignition_job = None;
