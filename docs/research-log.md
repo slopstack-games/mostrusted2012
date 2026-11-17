@@ -13,6 +13,32 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ## Dated findings
 
+### 2026-11-17: 9 dialog / pause / photo HSM behaviour types (`hsm/behaviours_dialog.rs`; 94 types)
+
+`SHOWDIALOG` (73 uses), `HSMPAUSEINTR`, `SUPPRESSPREF`, `RUNPRCONTEXT`, `TAKEPHOTO`, `PHOTO_LISTEN` / `PHOTO_COMPL` / `PHOTO_INPUT`, `LIMITEDEDSP`.
+Method as the earlier batches: factory = the `mov edx` of the name stub (0x77df10, 0x77ea80, 0x77f170, 0x77edb0, 0x77d4e0, 0x77b1a0 / 1f0 / 240,
+0x7800c0), vtable from the factory (0xfda8cc, 0xfdadb8, 0xfdb0d0, 0xfdaf20, 0xfda3fc, 0xfd9380 / 93a4 / 93c8, 0xfdc234), slot bodies from `text.asm`
+(the dump lacks several), keys from snapshot 1 (POS_EXIT 0x117a6e0, NEG_EXIT 0x117a0d8, DIALOG 0x117a4c8, DEF_PG_NAME 0x117ae90, SUSPEND 0x117ae88,
+RESTOREGRP 0x117ae60). `SHOWDIALOG` runs on the same `Dialogs` state as the Lua natives `RequestDialog` / `GetDialogResult` / `ClearDialog`:
+`LogicHost::request` applies `ShowDialog` / `CloseDialog` (filling `last`) / `TakeDialogResult` to `LogicState.screen.dialogs`; `Query::DialogResult`
+(0xff = none) / `DialogOpen` read it; `Dialogs::set_result` (the runtime) answers it.
+`SUPPRESSPREF`: enter 0x740f70, enter update 0x740f90 (byte +0x6dc clear), exit 0x740fb0 (object G+0x2f458 +0x1940, 0x7edab0 / 0x7edb10).
+`HSMPAUSEINTR`: idle watches the UI manager's timeline for an item of type 0x5f6d2 (0x74d040), active holds > 15 frames until released.
+`RUNPRCONTEXT` = `RUN_PG_RNNR2`'s sibling on the context manager G+0x2ed74 with 0x83b580 / 0x83b590 / 0x83b5a0 / 0x83b5b0 / 0x83d630 (own Requests / Queries).
+`LIMITEDEDSP` (0x75aff0, 0x762650, jump tables 0x7629a0 / 0x7629bc): seven states over four entitlements (0x2045b9, 0x2195ac / ad / ae) after the first
+check 0x1721a; offline the enter update never passes (player byte +0x42f), and with nothing owned the update walks 0 -> 3 -> 6 four times to `SUCCESS`.
+Requests: TakeDialogResult, PauseInterruptStart / Begin / End, SuppressPrefs, ReleasePrefs, StartPhotoCapture, PhotoInputBegin / End, PostPhotoSnapEvent,
+PushPrContext, LeavePrContext, LimitedEdSend. Queries (default): DialogResult (0xff), DialogOpen (false), PauseInterruptTriggered (false),
+PauseInterruptReleased (true), PrefsSuppressPending (false), PhotoCaptured (true), PhotoIdle (true), PhotoButtonHeld (false), PhotoTriggered (false),
+PhotoMode (0), PrContextExists (true), PrContextExit (0), PrContextBusy (false), LimitedEdReady (false), EntitlementOwned (false; `LogicHost` answers it
+from `Entitlements::has`, so the DLC lock holds), LimitedEdPlayerFlag / PlayerBit (false), LimitedEdRequest (0 = pending). One test per type at the end of `flow_tests.rs`.
+Result: `mwtool hsm --run --steps 600` (free roam command) still reaches "Freedrive Update" and "Freedrive HUD".
+Model decisions: the pause interrupt's UI-state scan (timeline items, `FUN_00827400`) and release test (`FUN_005470e0` + screen state) are one Query each;
+the photo telemetry events ("GAME / EVNT / SNAP" and the photo-input one, `FUN_00872590`) are one Request each (the runtime posts only for a valid player
+vehicle); the photo object's states are two bool Queries (6 captured, 1 idle), default true so an engine without photo mode never stalls; the
+limited-edition server request is `LimitedEdSend` plus the poll Query.
+Open: the runtime answers none of the new Requests / Queries except the dialog and entitlement ones; photo mode itself and the pause-interrupt timeline
+items are unported; the sign-in family is the bulk of the remaining machines.
 ### 2026-11-17: the DLC lock in the runtime (`dlc.rs`)
 
 Every DLC pack counts as not owned (user decision; decomp.md "DLC and entitlements" for the rules and the
