@@ -1,0 +1,13 @@
+[package]
+name = "mw-lua"
+description = "A Lua 5.1 VM for the game's shipped UI bytecode (PUC-Rio 5.1.3 semantics): pure Rust, no compiler, wasm-compatible"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+
+[dev-dependencies]
+mw-gamedir.workspace = true
+mw-assets.workspace = true
+mw-bundle.workspace = true

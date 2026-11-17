@@ -16,6 +16,7 @@ mod flat_strip;
 mod float_check;
 mod hsm;
 mod lods;
+mod lua;
 mod memscan;
 mod placement;
 mod preview;
@@ -799,6 +800,25 @@ enum Cmd {
         #[arg(long)]
         no_genesys: bool,
         /// Write `sources \t text \t result` per binding to this file.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// The UI's Lua scripts run by `mw_lua` (crates/mwtool/src/lua.rs): `lua --list` lists the chunks;
+    /// `lua` runs every chunk's main function and `Construct` with logging stub natives and prints the natives
+    /// each called; `--run <name>` one script (its natives, errors); `--trace` every native call with its
+    /// arguments; `--call <Fn>` (repeatable, `all` = every function of the script table) also calls callbacks;
+    /// `--natives <file>` stubs only the names listed (the game's registry); `--out <tsv>` per-script natives.
+    Lua {
+        #[arg(long)]
+        list: bool,
+        #[arg(long)]
+        run: Option<String>,
+        #[arg(long)]
+        call: Vec<String>,
+        #[arg(long)]
+        trace: bool,
+        #[arg(long)]
+        natives: Option<PathBuf>,
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -1829,6 +1849,9 @@ fn main() -> Result<()> {
         Cmd::Events { id, png, all } => events::run(&AssetStore::new(game)?, id.as_deref(), png.as_deref(), all)?,
         Cmd::Frontend { sequence: Some(id), .. } => events::print_sequence(&AssetStore::new(game)?, id)?,
         Cmd::Frontend { sequence: None, spots } => events::frontend(&AssetStore::new(game)?, spots)?,
+        Cmd::Lua { list, run, call, trace, natives, out } => {
+            lua::cmd(&AssetStore::new(game)?, list, run.as_deref(), &call, trace, natives.as_deref(), out.as_deref())?
+        }
         Cmd::Bindings { find, parse, no_genesys, out } => {
             let opt = bindings::Options { find: find.as_deref(), parse, no_genesys, out: out.as_deref() };
             bindings::run(&AssetStore::new(game)?, &opt)?

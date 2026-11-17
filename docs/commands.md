@@ -233,6 +233,9 @@ MW_SIREN_PRESS=12 MW_LIGHTBAR_SHOTS=<dir> ./target/release/mostrusted --drive "F
 # --answer NAME=VALUE (state id | behaviour code | binding path with '.' | hook name; VALUE exit point / run / value;
 # Host.LoadingScreenShowing / Host.GraphicsPrepared answer the host queries). --steps 300 --dt 0.0333
 ./target/release/mwtool hsm --run --steps 90 --answer 'GeneralSequence.Triggers["BOOT"].IsTriggerSet[1]=true' --answer HSB_P1BIND=EXIT --answer LOAD_ALL=EXIT --answer SELECT_PROF=SUCCESS --answer LOADPROFILE=EXIT --answer DBAUTOSELWD=EXIT --answer UIConfig.Platform=PC --answer LOADWORLD=EXIT --answer Net.IsLoggedInToServer=FALSE --answer SignInState.Params.IsChatRestricted=TRUE --answer 1222788=DONE --answer WAIT4FEEDBK=EXIT --answer WAITFORVEHIC=EXIT --answer ISNEWPROFILE=YES --answer IsProgressionReady=TRUE --answer ISAUTOTESTIN=NO --answer ShouldPlayNewGameIntro=FALSE   # boot → "Playing"
+./target/release/mwtool lua --list                       # the UI's 115 Lua chunks (mw-lua): id, name (checked against the id), size
+./target/release/mwtool lua [--run <name>] [--call <Fn>|all] [--trace]   # main chunk + Construct with logging stub natives
+#   --natives <file>: stub only the names listed (the game's registry, one per line; others stay nil); --out <tsv>: per script
 ./target/release/mwtool frontend --sequence 1014321      # one UI sequence's items; --spots lists every jack spot
 # The map screen (map_screen.rs; pause menu MAP): arrows / left stick / d-pad push the cursor (tap: flick to the
 # next event that way; hold: free cursor, snaps on release), Enter / A options, START RACE plays the event-loading
@@ -314,7 +317,7 @@ memscan` / `telemetry` / `tune` / `capture` read the game through `ReadProcessMe
 
 Port plan and status: research-log 2026-11-17 "browser port, step 1". One-time `rustup target add wasm32-unknown-unknown`.
 ```sh
-tools/wasm-check    # the engine-free crates (gamedir, bundle, formats, audio, assets, handling) build for wasm32
+tools/wasm-check    # the engine-free crates (gamedir, bundle, formats, audio, assets, handling, lua) build for wasm32
 tools/wasm-check --threads   # the same for the threaded browser build (nightly + rust-src, std rebuilt with atomics,
                              # target/wasm-threads); its RUSTFLAGS (shared memory, TLS exports) link the final module
 # In the browser: game files come from mw_gamedir::WebSource (the picked folder as blob URLs, sync range requests);

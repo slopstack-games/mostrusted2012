@@ -484,11 +484,12 @@ GeneSys. Engine-free crates (`mw-logic`, `mw-lua`; wasm-compatible), in dependen
    timers, sub-networks, loading-screen / graphics waits), `mwtool hsm --run` (boot → "Playing" with answers).
    Left: ~180 used behaviour types (UI, game modes, online), the binding evaluator hook-up.
 3. `[ ]` **Native registry** (`mw-logic::natives`): one name → function table for the 187 HSM hooks (121 used)
-   and 385 Lua natives (185 used), offline ones first, each ported from its handler.
+   and 386 Lua natives (171 read by the chunks; `mwtool lua`), offline ones first, each ported from its handler.
 4. `[ ]` **JSON widgets** and the widget-script lifecycle (`Construct`, `SetConfigurationItem`, `OnActivated`,
    actions), PageRunner page flow; the 24 native screen scripts.
-5. `[ ]` **Lua 5.1 VM** (`mw-lua`): runs the shipped bytecode (no compiler needed): `rilua` or our own
-   38-opcode interpreter; base, string, math, table.
+5. `[x]` **Lua 5.1 VM** (`mw-lua`, 2026-11-17): our own interpreter (undump, 38 opcodes, `ltable.c` table
+   order, MSVC number formatting; base, string, math, table); all 115 chunks run their main function and
+   `Construct` (`mwtool lua`). Open: one shared state or one per screen, the game's GC stepping.
 6. `[ ]` **Sequences**: the missing `*SequenceItem` types (73 in the data).
 7. `[ ]` The runtime moves onto them: front end, game modes, HUD and results from the HSM instead of the
    hand-written flows.
