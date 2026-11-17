@@ -1873,3 +1873,19 @@ Controller) to be compiled out, storage buffers in `game_lighting.wgsl` need Web
   exhaust effects are the cars' spot effects (2026-10-09).
 
 ---
+
+### 2026-11-18: Lua natives, fifth batch: state-field getters and setters (115 of 385; `natives/lua_sim.rs`)
+Handlers are not in the decompiled dump (`fn` says "not a function start"); read from `re/out/live/text.asm` at the
+address `mwtool natives` lists. Ported: GetFrameCount, GetSimTime, GetSimTimeStep (the sim clock record =
+`FUN_0046ee10` on `*0x010edacc`, `*(+4)+0x38`: int +0, i64 +8 x the float 3.33333e-7 (.rdata 0xf9f608), floats
++0x14 x +0x10 while byte +0x1c), GetLocalPlayerCompetitorIndex (PM+0xa6b4), IsCompetitorActive (PM+0xa5d0[i] != 0),
+GetCompetitorTeam (record i x 0x7f0 + 0x268; new `Player::team`), GetCameraTarget (`FUN_006bf100`: +0xa6bc when set
+and occupied, else +0xa6b4), ResetCameraTarget (`FUN_006cab10`(PM, -1): +0xa6bc = -1), GetUseOverheadCamera (camera
+manager +0x36de), GetCameraFov (+0x150 x 57.2958), SetCameraFov / ResetCameraFov (camera message 0xf via
+`FUN_00843ca0`(0, set, fov): `Request::CameraFov`), AreUnitsMetric (UIM+0x2cf28), ShouldLoadingScreenBeShowing
+(UIM+0x2d204 != 0 && +0x2d200 == 0 = `Engine::loading_screen_showing`), SetCarFrozen (PM+0xcba8 = 1.0 / 0.0; new
+`PlayerManager::car_frozen`). Model decisions: out-of-range competitor indexes read as empty (the original indexes
+raw memory); the clock, camera and units fields are set by the runtime (`SimFields`), not yet fed.
+Skipped (need a callee not yet read): GetCompetitorName (`FUN_006bf2d0` + string copy), GetCompetitorType (table
+0x10c5414 by player kind), IsLoadingScreenShowing (`FUN_00799d90`), IsHudMessageQueueEmpty (vtable call),
+SetUseOverheadCamera (message 0xd, unverified argument order).

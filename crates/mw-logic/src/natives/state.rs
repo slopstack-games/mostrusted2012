@@ -40,6 +40,8 @@ pub struct LogicState {
     pub menus: super::lua_menus::MenuFields,
     /// The remaining offline natives' fields (`lua_misc.rs`).
     pub misc: super::lua_misc::MiscFields,
+    /// The sim clock, camera and units fields (`lua_sim.rs`).
+    pub sim: super::lua_sim::SimFields,
     /// The garage, ranks, awards and vehicle-focus fields (`lua_garage.rs`).
     pub garage: super::lua_garage::GarageFields,
     /// The easy-drive / event selection hooks' fields (`hooks_select.rs`).
@@ -426,6 +428,9 @@ pub enum Request {
     /// `ClearViewModel` (`FUN_0081ec00`): the loaded view model `name` is released (its entry swapped with the
     /// last, `ViewModels` data freed); the downloads of that name are already updated in [`LogicState`].
     ReleaseViewModel { name: String },
+    /// `SetCameraFov` / `ResetCameraFov` (0x0067bab0 / 0x00677ff0 → `FUN_00843ca0`(G+0x2f470, 0, set, fov)): the
+    /// camera message 0xf; the camera's reaction is the runtime's.
+    CameraFov { set: bool, fov: f32 },
     /// `StartActionBind` (0x007eb200 → `FUN_00878790` on the settings (OM+0x4210)): wait for a control press to
     /// bind `action` (+0x1beb4) with `arg` (+0x1beb8); the state change 4 is posted (`FUN_0087ed10`) and the
     /// bind's start time (`FUN_0046ee00` +8 / +0xc) kept at +0x1bec8 / +0x1bed0.
