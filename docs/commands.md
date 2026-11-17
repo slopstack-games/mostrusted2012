@@ -323,7 +323,7 @@ tools/wasm-check --threads   # the same for the threaded browser build (nightly 
 tools/web/build                  # the browser build into target/web (WASM_BINDGEN=<path> if not on PATH)
 python3 tools/web/serve.py       # serve it + your install on 127.0.0.1:8080 (--install, --port, --out)
 #   http://127.0.0.1:8080/ (pick the install folder) or /?serve=1&args=--camera=-1131,27,1627,-1190,15,1720+--units+4
-#   headless: brave --headless=new --enable-unsafe-webgpu --use-angle=vulkan --enable-features=Vulkan
-#   --disable-vulkan-surface --window-size=1280,720 --enable-logging=stderr '<url>&args=...+--screenshot+x.png'
-#   (the page's console is in stderr; --screenshot lands in scratch/web/)
+tools/web/headless <name> '<flags>' [timeout] [record_s]   # Brave in tools/hl's gamescope, silent; waits for
+#   scratch/web/<name>.png (flags incl. --screenshot <name>.png) or, with record_s, <name>.webm: the page's lossless
+#   recording of the game's audio (?record_audio=<s>); console in scratch/web/<name>.browser.log
 ```

@@ -289,6 +289,7 @@ fn blob_range(url: &str, offset: u64, len: usize, size: u64) -> io::Result<Vec<u
         xhr.set_request_header("Range", &format!("bytes={}-{}", offset, offset + len as u64 - 1)).map_err(js_err)?;
     }
     let on_page = js_sys::global().dyn_ref::<web_sys::Window>().is_some();
+    let started = on_page.then(js_sys::Date::now);
     if on_page {
         xhr.override_mime_type("text/plain; charset=x-user-defined").map_err(js_err)?;
     } else {
@@ -302,6 +303,14 @@ fn blob_range(url: &str, offset: u64, len: usize, size: u64) -> io::Result<Vec<u
     } else {
         js_sys::Uint8Array::new(&xhr.response().map_err(js_err)?).to_vec()
     };
+    // A read on the page's main thread stalls rendering and the audio callback (cpal's WebAudio callbacks run
+    // there): report the ones that take a frame or more.
+    if let Some(t) = started {
+        let ms = js_sys::Date::now() - t;
+        if ms >= 16.0 {
+            web_sys::console::warn_1(&format!("main-thread game file read: {url} {offset}+{len} in {ms:.0} ms").into());
+        }
+    }
     match status {
         206 if bytes.len() == len => Ok(bytes),
         // A browser that ignores the range sends the whole file.

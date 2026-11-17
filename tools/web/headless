@@ -1,0 +1,31 @@
+#!/bin/sh
+# Run the browser build without a human: Brave inside the headless gamescope of tools/hl (a real display, so
+# WebGPU presents; silent null sink; nothing on the desktop), serving the build and the install with
+# tools/web/serve.py on 127.0.0.1:8090. Waits for scratch/web/<name>.png (pass `--screenshot <name>.png` in the
+# args) or, with record_seconds, for the page's lossless recording scratch/web/<name>.webm of the game's audio
+# (from the moment the game opens its audio stream). Prints the page's errors, panics and results.
+#   tools/web/headless <name> '<flags, + or space separated>' [timeout_s=300] [record_seconds]
+# e.g. tools/web/headless road '--camera=-1131,27,1627,-1190,15,1720 --units 4 --mute --screenshot road.png'
+#      tools/web/headless drive '--drive 911 --units 12 --auto-throttle 0.6' 400 60   (then ffmpeg → wav)
+# Headless Brave without gamescope (--headless=new) loses the WebGPU adapter or the swap chain on this machine
+# (NVIDIA, Vulkan); see research-log 2026-11-17 "browser audio".
+R="$(cd "$(dirname "$0")/../.." && pwd)"; cd "$R" || exit 1
+NAME="$1"; ARGS="$(printf '%s' "$2" | tr ' ' '+')"; TIMEOUT="${3:-300}"; REC="$4"
+OUT=scratch/web; mkdir -p "$OUT"
+P="$(mktemp -d)"
+URL="http://127.0.0.1:8090/?serve=1&args=$ARGS"
+WAIT="$OUT/$NAME.png"
+if [ -n "$REC" ]; then URL="$URL&record_audio=$REC&record_name=$NAME.webm"; WAIT="$OUT/$NAME.webm"; fi
+[ -e "$WAIT" ] && mv -f "$WAIT" "$WAIT.old"
+python3 -I tools/web/serve.py --port 8090 > "$P/serve.log" 2>&1 & SRV=$!
+tools/hl brave --no-first-run --ozone-platform=x11 --user-data-dir="$P/profile" --enable-unsafe-webgpu \
+  --enable-features=Vulkan --autoplay-policy=no-user-gesture-required --kiosk --enable-logging=stderr --v=0 "$URL" \
+  > "$OUT/$NAME.browser.log" 2>&1 & HL=$!
+T0=$(date +%s)
+timeout "$TIMEOUT" sh -c "until [ -s '$WAIT' ] || grep -qa 'panicked at\|start failed\|DeviceLost' '$OUT/$NAME.browser.log'; do sleep 2; done"
+echo "elapsed $(( $(date +%s) - T0 )) s (browser log: $OUT/$NAME.browser.log)"
+sleep 2
+pkill -f -- "--user-data-dir=$P/profile"; kill "$SRV" 2> /dev/null; wait "$HL" 2> /dev/null
+grep -a "CONSOLE" "$OUT/$NAME.browser.log" | sed 's/.*CONSOLE:[0-9]*\] //; s/%c//g; s/color: [^"]*//' \
+  | grep -i "panic\|error\|DeviceLost\|recording\|Screenshot posted\|main-thread game file read" | awk '!seen[$0]++' | cut -c1-200 | head -20
+ls -la "$WAIT" 2> /dev/null || { echo "no $WAIT"; exit 1; }

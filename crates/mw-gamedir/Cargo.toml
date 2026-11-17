@@ -12,4 +12,4 @@ thiserror.workspace = true
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2.129"
 js-sys = "0.3.106"
-web-sys = { version = "0.3.106", features = ["Blob", "File", "FileList", "Url", "Window", "XmlHttpRequest", "XmlHttpRequestResponseType"] }
+web-sys = { version = "0.3.106", features = ["Blob", "File", "FileList", "Url", "Window", "XmlHttpRequest", "XmlHttpRequestResponseType", "console"] }

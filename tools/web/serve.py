@@ -8,7 +8,8 @@ http://127.0.0.1:8080/?serve=1&args=--camera=-1131,27,1627,-1190,15,1720+--units
 
 - `/`, `/pkg/...`: target/web, with the cross-origin isolation headers threads need (COOP / COEP).
 - `/game-listing`: one `<size>\\t<path>` line per install file; `/game/<path>`: the file, with HTTP range requests.
-- POST `/__screenshot?name=x.png`: `--screenshot` in a browser saves there, into --out (default scratch/web).
+- POST `/__screenshot?name=x.png`: `--screenshot` in a browser saves there, into --out (default scratch/web);
+  POST `/__audio?name=x.webm`: the page's `?record_audio=<seconds>` recording of the game's output.
 The install is never copied or uploaded anywhere: it is read in place, over loopback.
 """
 import argparse, http.server, os, re, shutil, sys, urllib.parse
@@ -86,9 +87,9 @@ def main():
             url = urllib.parse.urlsplit(self.path)
             name = urllib.parse.parse_qs(url.query).get("name", ["shot.png"])[0]
             body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
-            if url.path == "/__screenshot":
+            if url.path in ("/__screenshot", "/__audio"):
                 (a.out / Path(name).name).write_bytes(body)
-                print(f"screenshot {a.out / Path(name).name} ({len(body)} bytes)", flush=True)
+                print(f"{url.path[2:]} {a.out / Path(name).name} ({len(body)} bytes)", flush=True)
             self.head(200, "text/plain", 0)
 
     print(f"serving http://127.0.0.1:{a.port}/ (install {install}, {listing.count(b'\n')} files)", flush=True)

@@ -10,6 +10,38 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-11-17: browser audio: it plays, matches native's level, drops out while streaming
+- **Start**: browsers start an `AudioContext` suspended until a gesture; the game (cpal via Bevy/rodio) creates
+  its context while starting. `tools/web/index.html` keeps every context and resumes them on the first
+  click / key / touch (picking the install folder counts). Headless: `--autoplay-policy=no-user-gesture-required`.
+- **Measurement** (no listening): the page's `?record_audio=<s>` routes everything cpal connects to the
+  speakers through a tap into a `MediaRecorder` (`audio/webm;codecs=pcm`, lossless, off the main thread) and
+  POSTs it to `serve.py` (`/__audio`); `tools/web/headless <name> '<flags>' <timeout> <seconds>` runs it.
+  Native reference: the same drive in `tools/hl env MW_MUTE=0 ...` (null sink only) recorded with `parecord` from
+  the sink's monitor. Analysis: RMS per 0.1 s, exact-zero runs (dropouts), clicks, spectral centroid per second.
+- **Result** (`--drive 911 --units 12 --auto-throttle 0.6`, 34 s after the car is placed): level and pitch
+  match: median RMS 0.17 browser vs 0.059 native = the user's saved master 0.35 (the browser has no settings
+  file: defaults, master 1.0); centroid 1.4–2.4 kHz in both. **Dropouts**: 42 (913 ms, longest 328 ms, 13
+  clicks) in the browser, 0 natively, clustered in the first ~8 s after placement and around 32 s, i.e. while
+  units stream in: cpal's WebAudio host refills two 2048-frame buffers (~93 ms) from main-thread timeouts, so
+  any main-thread stall over ~46 ms (GPU uploads, mesh / image preparation, a main-thread game file read) gaps.
+- **Main-thread file reads** (`WebSource` now warns on reads ≥ 16 ms): the startup index is 4,040 small reads
+  (~4.4 s total, the text path); while driving only GLOBALEFFECTS (91 ms), ENVIRONMENT (102 ms) and a feedback
+  group (41 ms): not the main cause of the gaps.
+- **The fix, not done yet**: take the mixer off the main thread with cpal's `audioworklet` host (the callback
+  runs on the audio rendering thread over shared memory). Bevy's `AudioOutput` is crate-private and opens
+  cpal's *default* host (always WebAudio), so this needs a patched `bevy_audio` (or our own output plugin), and
+  rodio's `Player` takes plain `Mutex::lock`s on its controls (volume / speed / seek / position) every few
+  samples while the main thread sets them: a contended lock traps on the worklet thread (no `Atomics.wait`
+  there) as on the main thread; those have to become try-locks or atomics. Bigger buffers alone would trade the
+  gaps for ~0.4 s of latency.
+- Headless setup: `brave --headless=new` with `--use-angle=vulkan --disable-vulkan-surface` presented frames
+  only with a profile left by an earlier run; with fresh profiles it gets no WebGPU adapter, and without
+  `--disable-vulkan-surface` the swap chain's shared images fail (device lost). Brave inside `tools/hl`'s
+  headless gamescope (X11, `--enable-features=Vulkan`) works from a fresh profile: `tools/web/headless`.
+  Killing the launcher leaves Brave's processes running (they restored old tabs into later runs): the runner
+  kills by profile.
+
 ### 2026-11-17: Binding evaluator (M8 step 1, `mw_logic::binding`, `mwtool bindings`)
 The binding language's parser and evaluator read from the code (decomp.md "Binding evaluator": functions,
 visitor vtables, constants); ported as `mw_logic::binding` (engine-free, wasm-checked): `Binding::parse`

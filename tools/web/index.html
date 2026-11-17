@@ -28,7 +28,48 @@
   <label class="pick">Choose the install folder<input type="file" id="folder" webkitdirectory multiple></label>
   <div id="status"></div>
 </div>
-<script>Error.stackTraceLimit = 200; // full Rust stacks in panic reports</script>
+<script>
+Error.stackTraceLimit = 200; // full Rust stacks in panic reports
+// Audio: browsers start an AudioContext suspended until the page gets a click or key press, and the game creates
+// its context (cpal, through Bevy) while starting. Keep every context and resume them on the first gesture.
+(() => {
+  const contexts = [];
+  const Native = window.AudioContext;
+  window.AudioContext = function (...args) { const c = new Native(...args); contexts.push(c); return c; };
+  window.AudioContext.prototype = Native.prototype;
+  const resume = () => contexts.forEach((c) => c.state === 'suspended' && c.resume());
+  for (const ev of ['pointerdown', 'keydown', 'touchstart']) addEventListener(ev, resume, { capture: true });
+  // ?record_audio=<seconds>: everything the game sends to the speakers also goes to a lossless recording,
+  // POSTed to the server after that many seconds of playback (tools/web/serve.py: /__audio). For checks only.
+  const q = new URLSearchParams(location.search);
+  if (!q.has('record_audio')) return;
+  const seconds = Number(q.get('record_audio')) || 20;
+  const name = q.get('record_name') || 'audio.webm';
+  const taps = new WeakMap();
+  const connect = AudioNode.prototype.connect;
+  AudioNode.prototype.connect = function (dest, ...rest) {
+    if (!(dest instanceof AudioDestinationNode)) return connect.call(this, dest, ...rest);
+    const ctx = dest.context;
+    let tap = taps.get(ctx);
+    if (!tap) {
+      tap = ctx.createGain();
+      connect.call(tap, dest);
+      const stream = ctx.createMediaStreamDestination();
+      connect.call(tap, stream);
+      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=pcm') ? 'audio/webm;codecs=pcm' : 'audio/webm';
+      const rec = new MediaRecorder(stream.stream, { mimeType: mime });
+      const chunks = [];
+      rec.ondataavailable = (e) => chunks.push(e.data);
+      rec.onstop = () => fetch('/__audio?name=' + encodeURIComponent(name), { method: 'POST', body: new Blob(chunks) });
+      rec.start(1000);
+      setTimeout(() => rec.stop(), seconds * 1000);
+      console.log(`recording ${seconds} s of audio (${mime}, ${ctx.sampleRate} Hz)`);
+      taps.set(ctx, tap);
+    }
+    return connect.call(this, tap, ...rest);
+  };
+})();
+</script>
 <script type="module">
 import init, { start_with_files, start_with_listing } from './pkg/mostrusted.js';
 const q = new URLSearchParams(location.search);
