@@ -1209,3 +1209,46 @@ image 256×29 at (7,−3), name label at (56,12) left-middle, lock / DLC / medal
 prompt (d-pad icon 39×39 at (8,6), alert variant with `Recommends.ShowAlert`, logo strip 100×16, "NEW" badge on
 `Widget.Prompt.New`); **1713378** is empty. Widget `EasyDrivePanel` (layout 1902272, a 548×25 stack at (365,15)
 moved down by `Widget.EasyDrive.ItemsAbovePanel × 26.42`) is the side panel next to the selected row.
+
+## Widget definitions (JSON `TextFile`s, 2026-11-17, `mw_formats::{json, widget}`, `mw_assets::widgets`, `mwtool widgets`)
+
+How the game reads and runs them: decomp.md "Widget definitions (JSON) and widget scripts".
+
+- **`TextFile` (0x70)**: u32 byte count, then the text (JSON: tabs, CRLF; Lua: a compiled 5.1 chunk). 859 unique
+  JSON files: 846 are screen widgets (all 94 `UI/SCREENS2` bundles), 13 are adapter hosts in `EN_US/FEEDBACKGROUPS`.
+- **Naming**: every `Widget_*` struct of a `Screen2` has a JSON twin, resource id = CRC-32 (IEEE) of
+  `lower("<Name>_<UniqueId>.json")` (`Background_1022356.json` → `fd9e3727`); the 13 adapter-host files are
+  referenced by handle from `SequenceItems.AdapterHost` items (field `Adapters`) and are named otherwise. Lua chunks:
+  CRC-32 of `lower("<ScriptName>.lua")`.
+- **JSON dialect** (the engine's reader): value tags 0 object, 1 array, 2 string, 3 int (no `.`/`e`/`E`; i64), 4
+  double, 5 bool, 6 null; objects keep file order; a key is found by its GeneSys field hash (first match);
+  trailing commas accepted; escapes `\" \/ \\ \b \f \n \r \t \uXXXX`.
+- **Keys = GeneSys field names**: the JSON keys hash to the field hashes of the GeneSys twin (`CallbackArgs` =
+  `a00328b4`, `ActiveBinding` = `053e93c0`, `DeferredViewModels` = `f11da36d`, `OnlineViewModels` = `688739e4`,
+  `ImagePalettes` = `e14ba22c`, `LayoutInstanceParams` = `ecc08889`, `Widgets` = `c7413006`, `LuaAsset` =
+  `ca319217`, `LuaHooks` = `f4e46c1f`, `LuaModules` = `c00843e6`, `LuaModulesIncluded` = `29751313`, …): the 400
+  distinct keys name that many GeneSys fields. The values agree (the `Layouts`, `Scripts`, `Sequence` ids; the
+  `LayoutLayer` / `ModalMode` names ↔ enum values below; the screen scripts' `LuaAsset`).
+- **Common fields** (the GeneSys widget base `WidgetDefinition`): `Name`; `LayoutLayer` (`BACKGROUND_BELOWMAPS` 0,
+  `BACKGROUND_ABOVEMAPS` 1, `MIDGROUND` 2, `FOREGROUND` 3, `MODAL_BACKGROUND` 4, `MODAL_FOREGROUND` 5, `OVERLAY`
+  6); `ModalMode` (`E_NON_MODAL` 1, `E_MODAL` 2, `E_BOTH` 3); `Layouts` [{`Layout`, `LayoutInstanceParams`}];
+  `Actions` [`UserActionInstance` {`ActionDefinition`, `ActiveBinding`, `SuccessCallback`, `CallbackArgs`,
+  `IsCallbackInLua`, `SuccessBinding`}]; `Adapters` [{`Name`, `BindingSplices` [{`dataSources` [{`source`,
+  `length`}], `dataSourceIndex`, `dataSourceOffset`, `index`, `offset`, `numElements`, `mappedSources` [{`source`,
+  `key`, `expectsHash`}], `respectLength`, `expectsHash`, `wrap`, `appendElement`, `operation` {`Operator`,
+  `Operand`}}]}]; `Scripts` [{`Name`, `Script` {`LuaAsset`?, configuration items}}]; `Timers` [ScreenTimer ids];
+  `ImagePalettes` [ids]; `DeferredViewModels` / `OnlineViewModels` [{`Name`, `ViewModel` {…}}]. The GeneSys base
+  adds eight small fields (`982e681c` = layout count, `1f3e2f69` = script count, the others counts or flags).
+- **Type-specific fields**: typed for 39 widget types (`WidgetKind`: menus, titles, palettes, navigation tabs,
+  the Easydrive tier / item / type definitions, action series, streamed image sets, HUD selection, windowed menus,
+  DLC messages, alerts, the map and point-of-interest widgets with their `Map configuration` camera, map filters,
+  language select, car stats, the settings lists and categories, adapter hosts). 18 types (online, Autolog,
+  login, store / social "blades", report, driver details, notification tabs, player points) keep theirs in
+  `WidgetDef::fields`; `mwtool widgets` lists them.
+- **Screen scripts**: a JSON `Scripts[]` entry with `LuaAsset` runs the Lua chunk of its `Name` (115 chunks, 419
+  uses); without, the native script of that name (22 names, 181 uses; 24 natives exist). The GeneSys header
+  `<Name>_ScreenScript` adds `LuaHooks` (the natives bound into the state), `LuaModules`, `LuaModulesIncluded`
+  and the typed configuration fields.
+- **Adapter hosts** (`SequenceItems.AdapterHost`, sequences in `EN_US/FEEDBACKGROUPS`): `Name`, `Adapters` (the
+  JSON's handle), `EnabledBinding`, `StartTime` / `EndTime`; the JSON repeats them plus
+  `EnabledBindingEvaluationMode` (`Constantly` = GeneSys `84531672` 0, `On Entry` = 2), `Group`, `IsLocked`.

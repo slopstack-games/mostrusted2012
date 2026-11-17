@@ -31,6 +31,7 @@ mod ui;
 mod verify_handling;
 mod water;
 mod wheels;
+mod widgets;
 
 use mw_assets::AssetStore;
 use mw_bundle::{Bundle, ResourceId, ResourceType};
@@ -717,6 +718,18 @@ enum Cmd {
     Ui {
         #[command(subcommand)]
         cmd: UiCmd,
+    },
+    /// The screens' JSON widget definitions and scripts (`mw_formats::widget`, `mw_assets::widgets`): with no
+    /// argument, checks every screen (definitions parse, untyped keys per widget type, every script resolves
+    /// to a Lua chunk or a native script, JSON and GeneSys agree); `widgets <screen>` (number or bundle) lists a
+    /// screen's widgets, actions and scripts; `--json <Name>_<UniqueId>|<resource id>` prints one definition;
+    /// `--scripts` lists every script name and what runs it.
+    Widgets {
+        screen: Option<String>,
+        #[arg(long)]
+        json: Option<String>,
+        #[arg(long)]
+        scripts: bool,
     },
     /// Disassemble the compiled D3D11 programs (DXBC) a shader uses.
     ShaderAsm {
@@ -1847,6 +1860,10 @@ fn main() -> Result<()> {
             export_world(&AssetStore::new(game)?, &bundles, &out, size, obj, &instances)?
         }
         Cmd::Events { id, png, all } => events::run(&AssetStore::new(game)?, id.as_deref(), png.as_deref(), all)?,
+        Cmd::Widgets { screen, json, scripts } => widgets::run(
+            &AssetStore::new(game)?,
+            &widgets::Options { screen: screen.as_deref(), json: json.as_deref(), scripts },
+        )?,
         Cmd::Frontend { sequence: Some(id), .. } => events::print_sequence(&AssetStore::new(game)?, id)?,
         Cmd::Frontend { sequence: None, spots } => events::frontend(&AssetStore::new(game)?, spots)?,
         Cmd::Lua { list, run, call, trace, natives, out } => {

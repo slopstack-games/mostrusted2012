@@ -182,6 +182,43 @@ Worktree agent. C = confirmed (dump / data / differential test), I = inferred.
 - **Open**: one state for all scripts or one per screen (the state list of `FUN_009f86d0`), and when the game
   steps the collector; the arguments of `OnActivated`, `OnDeactivating`, `PreInputUpdate` and action callbacks
   (`OnAction` gets something `ResolveStringBinding` resolves); porting the 171 natives (mw-logic registry).
+### 2026-11-17: JSON widget definitions and screen scripts, typed (M8 step 4, data side)
+Worktree agent. Code: `mw_formats::json` (the engine's JSON reader), `mw_formats::widget` (typed definitions,
+naming, the native screen-script table), `mw_assets::widgets` (screen → widget groups → widgets → JSON → scripts;
+adapter hosts), `mwtool widgets`. Spec: decomp.md "Widget definitions (JSON) and widget scripts"; format:
+formats.md "Widget definitions (JSON `TextFile`s)".
+- **Result** (`mwtool widgets`, exit 0): 859 unique JSON files; 846 named by the 94 screens' `Widget_*` structs
+  (CRC-32 of `"<Name>_<UniqueId>.json"`), all parse; the other 13 (`EN_US/FEEDBACKGROUPS`) are the adapters of
+  `SequenceItems.AdapterHost` sequence items (referenced by handle). Scripts: 419 Lua uses of 115 chunks (every
+  chunk of the install, none missing), 181 native uses of 22 names, 0 unresolved; the ScreenScript objects'
+  `LuaAsset` equals the JSON's everywhere; `LayoutLayer` / `ModalMode` names map 1:1 to the GeneSys enum values on
+  all 1,876 screen widgets (7 layers: `MODAL_BACKGROUND` 4 was not known).
+- **Keys = GeneSys field names** (C): the JSON keys hash (GeneSys field hash) to the twin struct's field hashes,
+  so the 400 distinct keys name 400 GeneSys fields (269 not in `genesys_names.txt`). Not added to the names
+  file (it holds names found by dictionary attack; a bulk copy of the data's keys is closer to extracted data):
+  open whether to read them from the user's install at run time.
+- **Untyped (listed set)**: 18 widget types keep their own fields in `WidgetDef::fields` (online / Autolog / login /
+  report / store and social blades / driver details / notification tabs / player points); `mwtool widgets`
+  prints them per type. Everything else is typed, with a hard error on any unknown key inside typed records.
+- **Native screen scripts** (C, snapshot `snap1`): factory table at manager +0x308 (count +0x408 = 24), the
+  manager at 0x24473560 in that snapshot; each entry {`field_hash(name)`, factory}; each factory sits next to a
+  registration stub returning (hash of the name string, factory). 24 = the 22 used + `RearViewMirror` and
+  `MWL_VITA`. Names, factories and sizes in `NATIVE_SCREEN_SCRIPTS`.
+- **Corrections to the research entry below**: `LuaHooks` *is* used at run time: `FUN_007f84c0` binds each listed
+  name into the widget's Lua state (`FUN_009f1c30`; non-natives other than `tonumber` / `tostring` / `error` /
+  `pairs` / `mfpFunction` set the error flag); `LuaModulesIncluded` picks "open the listed `LuaModules`" vs "open
+  all five". One Lua state per widget (widget +0x84). Actions are read from the GeneSys `UserActionInstance`, not
+  the JSON (the JSON key hashes for them are never referenced). `IsCallbackInLua` = "offer to the widget's
+  scripts" (native scripts too); `"Widget::Function"` callbacks go to another widget's scripts.
+- **Model decisions**: none in behaviour (no runtime yet). Parser choices: the JSON reader is our own port of the
+  engine's (file-ordered objects, int vs double tags, first-match lookup), not serde_json, because
+  `SetConfigurationItem` order and the int / double split are observable by the scripts; `lua_configuration()`
+  rounds doubles through f32 as `FUN_007ec680` does.
+- **Open**: the Lua init's two unnamed keys (hashes `67d01e38` bool, `cc2e0dc5` binding; absent from the data);
+  vtable slots 7, 9–11; callers of `OnActivated` / `OnDeactivating` (`FUN_007ebc80` / `FUN_007ebcb0`); where
+  `Widget::Function` is split (record +0x104); the release-build effect of the error flag +0x2028 (39 `LuaHooks`
+  names are not natives); when the widget's Lua state is created; per-native behaviour (24 C++ classes);
+  `RearViewMirror` / `MWL_VITA` never used by the shipped screens.
 
 ### 2026-11-17: game logic: scripting, flow, AI (survey of the install, the exe and prior work)
 Research agent; full tables, registries and URLs in the main checkout's git-ignored

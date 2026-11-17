@@ -485,11 +485,16 @@ GeneSys. Engine-free crates (`mw-logic`, `mw-lua`; wasm-compatible), in dependen
    Left: ~180 used behaviour types (UI, game modes, online), the binding evaluator hook-up.
 3. `[ ]` **Native registry** (`mw-logic::natives`): one name → function table for the 187 HSM hooks (121 used)
    and 386 Lua natives (171 read by the chunks; `mwtool lua`), offline ones first, each ported from its handler.
-4. `[ ]` **JSON widgets** and the widget-script lifecycle (`Construct`, `SetConfigurationItem`, `OnActivated`,
-   actions), PageRunner page flow; the 24 native screen scripts.
+4. `[~]` **JSON widgets** and the widget-script lifecycle (`Construct`, `SetConfigurationItem`, `OnActivated`,
+   actions), PageRunner page flow; the 24 native screen scripts. Data side done (2026-11-17): the 859 JSON
+   definitions typed (`mw_formats::widget`, the engine's JSON reader `mw_formats::json`), the screen → widget →
+   script graph (`mw_assets::widgets`, `mwtool widgets`), the lifecycle and action dispatch specified
+   (decomp.md "Widget definitions (JSON) and widget scripts"). Open: the runtime, the native scripts' behaviour,
+   PageRunner.
 5. `[x]` **Lua 5.1 VM** (`mw-lua`, 2026-11-17): our own interpreter (undump, 38 opcodes, `ltable.c` table
    order, MSVC number formatting; base, string, math, table); all 115 chunks run their main function and
-   `Construct` (`mwtool lua`). Open: one shared state or one per screen, the game's GC stepping.
+   `Construct` (`mwtool lua`). One state per widget (widget +0x84, decomp.md "Widget definitions (JSON) and widget scripts"). Open: the
+   game's GC stepping.
 6. `[ ]` **Sequences**: the missing `*SequenceItem` types (73 in the data).
 7. `[ ]` The runtime moves onto them: front end, game modes, HUD and results from the HSM instead of the
    hand-written flows.

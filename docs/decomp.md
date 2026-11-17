@@ -3312,6 +3312,138 @@ tile resolution, not the 600 m / 90° camera); the tiles are added at opacity 0.
   when none does), nearest start first. "START RACE" puts the car on the event's start 0.5 m up; the start
   must be inside the streamed world (`--units`), else the car falls and is reset. One race per run.
 
+### Widget definitions (JSON) and widget scripts (2026-11-17, `mw_formats::{json, widget}`, `mw_assets::widgets`)
+
+The spec the runtime implements for M8 step 4. Formats: formats.md "Widget definitions (JSON)". C = read in the
+code (dump function or disassembly of the snapshot `snap1`), I = inferred. Helpers used: `.claude/tools/fn`,
+`disas.py`, and reads of the live snapshot (hash globals at 0x0117xxxx, the native-script table).
+
+**Loading (C).** A screen's `Screen2` (GeneSys) lists widget groups → `Widgets` (`Widget_*` structs: the type,
+`Name`, `UniqueId`, layouts, actions, script headers). For each widget the screen loads the JSON
+`"<Name>_<UniqueId>.json"` (`FUN_007edd50`: `"%s_%d.json"` per entry of a 0x2c-byte list, load kind 0xd, a
+"loaded" byte at +0x28; `FUN_007e0850` does the same for one object named `"<name>.json"`; both kick off from
+`FUN_007f95e0` / `FUN_007f9a70` / `FUN_007e27f0`, which poll `FUN_007f79f0` / `FUN_007e0920` until loaded). The
+parsed JSON objects sit in a sorted map keyed by the widget's `UniqueId` (`FUN_007feb20` binary search; the id is
+read from the GeneSys struct's field `655d3f5f`, global 0x011a2678). The JSON parser is the engine's own
+(`FUN_009f69b0` lexer, `FUN_009f7990` / `FUN_009f8510` objects, `FUN_009f8c70` arrays, tags 0 object … 6 null);
+lookups hash the key with the GeneSys field hash (`FUN_009ed180` → `FUN_00d6a410`) and scan in file order
+(`FUN_009f16b0`). Key hashes are precomputed into globals (0x0117e74c `Scripts`, 0x0117e7e0 `Name`, 0x0117e7e8
+`Script`, 0x0117e60c `Adapters`, 0x0117e938 / 0x0117e93c `DeferredViewModels` / `OnlineViewModels`, …: 141
+globals in 0x0117xxxx hold the hashes of 94 of the 400 JSON key names, read from the snapshot).
+
+**What is read from the JSON vs the GeneSys struct (C for the JSON readers; I for the GeneSys side).** The JSON
+readers found: `Scripts` (`FUN_007f59c0`, `FUN_007f84c0`, factory `FUN_007f2850`), `Adapters` (`FUN_007f5a30`,
+`FUN_007f5bf0` → `FUN_00a51aa0` → splice reader `FUN_00a510e0` → `FUN_00a50930` data sources / `FUN_00a50860`
+mapped sources), `DeferredViewModels` / `OnlineViewModels` (`FUN_007f5b10`, `FUN_007f5b80`, `FUN_007f5db0`,
+`FUN_007f5f80`, `FUN_007f72f0`, `FUN_007f7510`), and type-specific keys (`FUN_00802bd0` Easydrive callbacks,
+`FUN_00806470` / `FUN_008064e0` `ScriptedActions`, `FUN_00807cf0` / `FUN_0080b570` / `FUN_00815760` /
+`FUN_00815a90` the point-of-interest widget, `FUN_0080e4c0` image sources, `FUN_0080fb60` event challenges,
+`FUN_00810000` item groups, `FUN_00814870` / `FUN_00816ad0` / `FUN_00816f20` Easydrive types and tiers,
+`FUN_00870010` settings). The hash globals for `SuccessCallback`, `ActiveBinding`, `ActionDefinition`,
+`CallbackArgs`, `IsCallbackInLua` exist but no code references them: the action records (0x10c bytes each, list
+at widget +0x18, count +0x10) are built from the GeneSys `UserActionInstance` structs, whose fields are the same.
+`LayoutLayer` / `ModalMode` / `Layouts` / `Timers` have no JSON reader either (GeneSys side; the JSON names agree
+with the GeneSys enum values on all 1,876 screen widgets).
+
+**Script construction (C).** `FUN_007f84c0`, per widget of the screen, per JSON `Scripts[]` entry:
+1. Find the GeneSys `Scripts[]` header with the same `Name` (string compare, first match) → its
+   `<Name>_ScreenScript` object.
+2. Bind the natives the script uses into the widget's Lua state (widget +0x84; one state per widget, shared by its
+   scripts): for each `LuaHooks` name `FUN_009f1c30` looks the name up in the native registry (`FUN_009f7e50`'s
+   list) and sets a global C closure with the name as upvalue; `tonumber`, `tostring`, `error`, `pairs` and
+   `mfpFunction` (table 0x010d0548) are accepted as built in; any other name sets the screen's error flag
+   (+0x2028). So `LuaHooks` is the binding list (research-log 2026-11-17 had it as tooling metadata).
+3. Libraries: `LuaModulesIncluded` false → `FUN_009ef470` opens all five (`package`, `table`, `io`, `string`,
+   `math`; table 0x0102a1fc); true → `FUN_009ef3e0` opens each name of `LuaModules` (unknown name → error flag).
+4. If the JSON `Script` has `LuaAsset`: record {name, `field_hash(name)`, state} (manager +0x18f4 / +0x18fc, 28-byte
+   entries), find the chunk by `field_hash(name)` in the screen's sorted chunk table (+0x18ec, 12-byte entries;
+   the chunk resource id is CRC-32 of `"<name>.lua"`) and run it (`thunk_FUN_009ef4c0`: load the buffer after the
+   u32 length, call it), which defines the global table `<name>`.
+5. `FUN_007f4150` → factory `FUN_007f2850`: with `LuaAsset` → a Lua script object (0xbc bytes, vtable
+   0x00fe7f78); without → the name's hash is looked up in the native factory table (manager +0x308, pairs {hash,
+   factory}, count +0x408) → a native script (table: `mw_formats::widget::NATIVE_SCREEN_SCRIPTS`; 24 entries).
+   No match → error flag, no script. Then vtable slot 0 (init), then slot 12 (`FUN_007fbc10`: constructed byte
+   +0x91); not constructed → error flag, the object is destroyed.
+6. Lua init `FUN_007f29b0`: stores the manager / widget pointers, reads two optional JSON keys (bool hash
+   `67d01e38` → +0x92; binding hash `cc2e0dc5` → +0x90 when it has parts; neither key is in the shipped data,
+   names not cracked), creates the script's own view-model JSON object (+0xb4, vtable 0x00fccfd4; bindings
+   `Widget.<widget>.<…>` resolve into it through slot 8 `FUN_007e7a80` → `FUN_009f61c0`), then `FUN_007ec680`:
+   - copies the script name (≤ 16 chars, +0x98) and the state (+0x94); no `Name` or no state → error flag;
+   - `Construct(script)`: `_G[<name>].Construct` called with one light-userdata argument, the script object
+     (`FUN_009ef230` = `lua_getfield(G, name)`, `getfield(fn)`, type must be function; `FUN_009ef2e0` =
+     `lua_pcall(nargs, LUA_MULTRET)`; an error pops the message, nothing else);
+   - `SetConfigurationItem(key, value)` for each entry of the JSON `Script` object in file order whose value is a
+     string (tag 2), int (3, `lua_pushinteger`), double (4, pushed as `(double)(float)value`) or bool (5);
+     arrays and objects are skipped; `LuaAsset` itself is passed (an int);
+   - sets +0x91 = constructed.
+
+**Lua script object vtable 0x00fe7f78 (C; 13 slots).** 0 `FUN_007f29b0` init; 1 `FUN_007ebce0` destructor (calls
+`Destruct` when defined; 3 chunks define it); 2 `0x007ebdf0` `OnActivated()`; 3 `0x007ebe50` `OnDeactivating()`;
+4 `FUN_007ebd40` `PreInputUpdate(dt)` (dt as a number; the script's cooldown +0x14 counts down by dt while
+the widget has input); 5 `FUN_007eed50` handle an action (below); 6 `0x007f2ac0` call a callback by name;
+7 `0x007ec4c0`; 8 `0x007e7a80` resolve a binding into the script's view model; 9–11 `0x007fbc00`, `0x007ec5a0`,
+`0x007ec610`; 12 `FUN_007fbc10` constructed. Every call goes `_G[<script name>][<function>]`: the script's
+table, no `self`; a missing function is skipped silently. Native scripts implement the same interface (their
+vtables have 17 slots, e.g. `PlaySequenceFast` 0x00fe8080).
+
+**Lifecycle order (C unless marked).** Construct → SetConfigurationItem × n at build time (per script in
+`Scripts` order). On activation of the widget, every script's `OnActivated` (`FUN_007ebc80`, list order); on
+deactivation `OnDeactivating` (`FUN_007ebcb0`); the callers of these two are not in the dump (I: the widget
+group's activate / deactivate). Each frame `FUN_007f6420`: every script's `PreInputUpdate(dt)`
+(`FUN_007eb850`), then, when the widget has focus and an input device, `FUN_007f50e0` fires the actions (the
+firing rules are in "Menu input and the map screen's controls"). Destruction calls `Destruct`.
+
+**Action dispatch (C).** `FUN_007f40d0` routes a fired action record:
+- **Cross-widget** (record +0x104 set: a `SuccessCallback` of the form `"Widget::Function"`, e.g.
+  `Tabs::OnTabLeft`, `EasyDrive::OnNext`): `FUN_007eeb40` checks `ActiveBinding` (fails → the definition's
+  failure sound, +0x1c), finds the target widget of the screen (list at manager +0x2b4, key +0x88) and offers the
+  call to each of its scripts (`FUN_007eb9a0` → slot 6) until one handles it; handled → success sound (+0x24).
+  Where the `::` split happens is not in the dump (I: when the record is built; the Lua chunks define plain
+  `OnTabLeft`, never a `Tabs::` name).
+- **Script callback** (`IsCallbackInLua`, +0x109): `FUN_007eb910` offers the action to every script of the
+  widget (slot 5). The Lua slot 5 `FUN_007eed50`: only when the script's cooldown (+0x14) is ≤ 0; checks
+  `ActiveBinding` (fails → failure sound, cooldown 0.15 s); then slot 6 `0x007f2ac0`: `_G[script][callback]`
+  with `CallbackArgs` split at `,` (`FUN_007eeea0` → `FUN_009f06f0`), each piece a string argument; if the
+  function exists → success sound and cooldown 0.15 s (`.rdata` 0x00fe73ec). Native scripts receive the same
+  call by name (slot 6), so `IsCallbackInLua` means "handled by the widget's scripts", Lua or native
+  (`EasyDrive::OnNext` goes to the native `EasyDrive` script).
+- **Native** (otherwise): `FUN_007f2670` checks `ActiveBinding`; `SuccessCallback == "ExitGroupVia"` →
+  `FUN_007f2530`: the first `CallbackArgs` token (a `{…}` splice is resolved through the binding evaluator) is
+  hashed (`FUN_009ed220`, 64-bit) into manager +0x488: the widget group's exit code, which the HSM's "Activate
+  Widget Group" node takes as its exit; any other name is looked up in the HSM hook registry (`FUN_007763b0`'s map,
+  lookup 0x007761a0) and called with the arguments. Success / failure sounds as above.
+
+**Adapters (C for the fields; the evaluation is the binding evaluator's).** Each `Adapters[]` entry publishes
+`Widget.<widget>.<Name>`; `FUN_00a51aa0` builds one per entry from `BindingSplices` (`FUN_00a510e0`): a splice
+reads `dataSources[]` (`source` binding + `length`), picks one with `dataSourceIndex` (+ `dataSourceOffset`),
+indexes it with `index` (+ `offset`), limits to `numElements`, honours `respectLength`, `expectsHash`, `wrap`,
+`mappedSources[]` {`source`, `key`, `expectsHash`} (keyed lookups), `appendElement`, and an `operation`
+{`Operator`, `Operand`} — or the operator written as a key — with operators AND 0, OR 1, ADD 2, SUBTRACT 3,
+MIN 4, MAX 5, SUBTRACT_FLOAT 6 (7 = none); the operand is a binding (string) or an int.
+
+**View models (C for the readers).** `DeferredViewModels` / `OnlineViewModels`: named JSON request objects
+(`getComponent`, `action`, parameters whose `{…}` splices are resolved when sent); online / Autolog only.
+
+**Adapter hosts (C, data).** A sequence item `SequenceItems.AdapterHost` {`Name`, `Adapters` = a JSON TextFile
+handle, `EnabledBinding`, start / end} publishes that JSON's adapters while the sequence runs; the 13 JSON files
+of `EN_US/FEEDBACKGROUPS` are these (`AssetStore::ui_adapter_hosts`).
+
+**Native screen scripts (C).** 24 factories (table above; names, factory addresses and object sizes in
+`NATIVE_SCREEN_SCRIPTS`): MilestoneRecVM, SessionBestAnim, POIDisplayScript, PlaySequenceFast, RearViewMirror,
+FindMyNearest, ExitOnIdleScript, MapCarouselItems, MpPlatfmActions, LiveMapManager, NotifiCenterVITA, MWL_VITA,
+EasyDrive, EasyDriveSpeech, JackspotScript, FilterCtrls_VITA, ScoreFormat, ImageStreamer, MapFriendsList,
+ActionSeries, Menu_Fast, FriendHelperFast, FriendsFast, WaitPhotoDtlFAST. Shipped widgets use 22 (181 script
+instances); RearViewMirror and MWL_VITA are unused. Each one's behaviour is its own C++ (ports one by one; the
+map's `LiveMapManager` is partly ported in `map_screen.rs`).
+
+**Native actions (C, data).** Native `SuccessCallback`s in the shipped JSON: `ExitGroupVia` (most) and HSM hook
+names; per screen with `mwtool widgets <screen>` (each action line says `lua` or `native`).
+
+**Open.** The two unnamed keys of the Lua init (`67d01e38`, `cc2e0dc5`); slots 7, 9–11 of the script vtable; who
+calls `FUN_007ebc80` / `FUN_007ebcb0`; where `Widget::Function` is split and what +0x104 holds; what the error flag
++0x2028 does in a release build (LuaHooks that are not natives, like `Copyright`, would set it); when the
+widget's Lua state is created and whether it is shared beyond the widget.
+
 ## Free-roam rules: collectibles, jack spots, events
 
 Speed cameras, billboards, security gates, jack spots and body shops are trigger volumes in the world's one
