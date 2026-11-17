@@ -468,6 +468,9 @@ fn drive(
         // The world loads at once too (the game-mode manager's +0x2e77, `Mode.WorldLoaded`).
         st.game_modes.world_loaded = true;
     }
+    // The title sequence's "BOOT" general trigger item has fired (the runtime sets it the same way when the title's
+    // trigger item passes): `GeneralSequence.Triggers["BOOT"].IsTriggerSet[1]`.
+    logic.state.borrow_mut().set_general_trigger(mw_logic::binding::hash("BOOT"), 1);
     let mut host = Driver {
         data,
         logic,
