@@ -11,6 +11,48 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+### 2026-11-17: police and pursuit ported into `crates/mw-police` (engine-free; WIP, runtime not switched)
+
+New crate `mw-police` (glam 0.32, wasm-clean, in `tools/wasm-check`): `pursuit` (pursuit manager `FUN_0066ae60`),
+`sight` (perception / wanted, moved from `cop_sight.rs`), `coordinator` (sequencer, roadblock task, count, spawn
+kinds, removal, roles, search legs), `driver` (moved from `cop_driver.rs`, plus the coordinator's state switch),
+`patrol` (moved from `cop_patrol.rs`, traffic behind a `PatrolTraffic` trait), `score` (ScoringConfig slots),
+`Police::tick` (inputs → events / spawns / removals / roadblock / roles / legs). 15 tests (scenarios: slow pass, spotted
+→ chase, out of sight → cooldown → escaped, stopped → busted in 4 s, meter drains, heat rate and level-up, cap,
+roadblock resumes cooldown, cop order, sequencer, roadblock trigger). `mw-assets::police::Behaviour` gained
+`duration`, `roadblock_delay`, `roadblock_repeat`, `fallback_after`; `HeatLevel.cycle`.
+
+Read in the code this session (new or corrected versus the runtime's `pursuit.rs` / `police.rs`):
+- Chase start variants (`FUN_0066ae60` case 0): mode without cooldown → +0x54 at once; touching a roadblock car
+  → +0x48; a chasing cop / takedown → spotter (`FUN_00514aa0`) none → +0x54, coordinator +0x448 → +0x48, spotter
+  wrecked (+0x23e; ECX = spotter's player, disassembly 0x66b0b7) → +0x4c, else +0x50; cues `FUN_006f3f30` 0xc / 0xd.
+  ScoringConfig offsets → actions mapped (score.rs): +0x2c 1289377, +0x58 604021, +0x90 / +0x94 sight lost /
+  regained (`FUN_0065c740`), +0xc4 cooldown, +0xe4 / +0xe8 heat down / up, +0x1a8 escaped (1377906).
+- `FUN_0065c880` (wrecked by AI → busted) acts only in a chase (runtime also busted in cooldown).
+- Bust meter: no chasing cop → drains; nearest chasing cop crashed → **holds** (runtime drained). Candidates skip
+  `FUN_006bed90` (+0x1f0 / +0x1f4, not identified). Bar range hysteresis + cue 1 after 3 s (0x00fb77ec);
+  `FUN_006f0f00(2)` floor −0.9 (0x00fb8678). The bar at −1 posts camera event 0x1a only; state 2 comes from
+  `FUN_00658140` (HSM action 0xf, link inferred; `Police::manual_bust`).
+- Level-up message only for a 1-level step and not the first one when GMM +0x2e8d (`FUN_0065d080`); level's
+  own action once per level (`FUN_0065c5e0`, bitmask rec +0x858); heat cap = highest *unlocked* row (`FUN_006673a0`).
+- `FUN_00657ee0` identified: the target within 100 m of a **roadblock** (world +0x2f484 = roadblock manager, records
+  0xff0, count +0x2050, max 2) → the cop "sees" (was MODEL false).
+- GoTo (`FUN_0051a4e0` / `FUN_0051a3f0`): armed on the chase's rising edge (`FUN_00519040`), in the cooldown's join
+  window (`FUN_00658160`: < 7 s, 0x00fb74ec, or level > 1) the cop **nearest the player** goes to the player's
+  position (runtime: nearest to last-seen, to last-seen); Search when arrived (`FUN_004fbfa0`) or after `H`+0xc0.
+- Sequencer `FUN_0051f010` / `FUN_00514e40` / `FUN_00514d90` (coordinator +0x6b4): main for `4fea2957` s, then
+  cycle items, fallback after `f58d1d54` events (counter writer not traced), restart on a level change.
+- Roadblocks: task `FUN_00526150` (first after `ae2d8f7d`, then `cbbeb3e0` after each), `FUN_005246f0`: route
+  segments starting 300–600 m (`AIConfig` +0x1ac / +0x1a8) from the player, kind-0x12 triggers (`FUN_0051bd50`)
+  whose bounding radius (`FUN_0042c0b0`: box size × 0.5 length → box size is full extents) touches the segment →
+  `FUN_005226b0` (world message 7 → `FUN_006ab390` → `FUN_0083f030` layout, `FUN_00841040` add). Spike strips are
+  roadblock props only; no helicopter logic found.
+- Count `FUN_00526e30` re-read: per AIPlayerType, pending tasks + living uncrashed, ≤ 3 per pass (matches).
+
+Open / where I stopped: decomp.md section "Police and pursuit (ported)" with the runtime wiring spec and the PLAN
+item were **not written** (budget); the runtime still uses its own modules. Still MODEL: alert flag, ram strength,
+hidden = no cop knows, the cooldown's stale `TimeTilEvaded` at entry (as the game), the box-in, spawn placement.
+
 ### 2026-11-17: handbrake rear-wheel lock (user report), no capture yet, no model change
 
 User report: "the handbrake doesn't lock up the rear wheels like the original; with brake-to-drift you can test".

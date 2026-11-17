@@ -4089,6 +4089,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mw-police"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "mw-assets",
+]
+
+[[package]]
 name = "mw-probe"
 version = "0.1.0"
 

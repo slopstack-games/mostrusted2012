@@ -1,0 +1,11 @@
+[package]
+name = "mw-police"
+description = "The original's police and pursuit logic, ported from its code: heat, the pursuit manager, cop sight, the cop coordinator, cop drivers and the patrol (engine-free, wasm-safe)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mw-assets.workspace = true
+# The same glam as Bevy 0.19's `Vec3`, so the runtime passes its vectors straight through.
+glam = "0.32"
