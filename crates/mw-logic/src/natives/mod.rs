@@ -23,7 +23,17 @@
 //! [`Registry::original`] builds the table and runs every area's `register`. An entry without a function is a
 //! known native that is not ported yet: calling it is recorded in [`LogicState::unported`].
 
+pub mod game_logic;
+pub mod game_modes;
+pub mod hook_args;
+pub mod hooks_event;
+pub mod hooks_flow;
+#[cfg(test)]
+mod hooks_tests;
+pub mod hooks_ui;
 pub mod host;
+pub mod players;
+pub mod progression;
 pub mod state;
 pub mod table;
 pub mod view_models;
@@ -118,6 +128,18 @@ impl Registry {
             r.lua.push(Native { name, handler, area, f: None });
         }
         // Area files register here (one line each).
+        hooks_flow::register(&mut r);
+        hooks_event::register(&mut r);
+        r
+    }
+
+    /// [`original`](Self::original) plus the hooks ported but not yet verified against the dump (hooks_*.rs
+    /// `register_parked`).
+    pub fn original_with_parked() -> Self {
+        let mut r = Self::original();
+        hooks_flow::register_parked(&mut r);
+        hooks_event::register_parked(&mut r);
+        hooks_ui::register_parked(&mut r);
         r
     }
 

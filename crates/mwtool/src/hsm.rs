@@ -369,9 +369,21 @@ fn drive(data: Arc<HsmData>, instance: u32, steps: usize, dt: f32, answers: &[St
         }
     }
     let mut hsm = Hsm::new(data.clone(), registry);
+    let logic = LogicHost::default();
+    {
+        // Stand-in for what the engine and the profile give a running game: the progression database loaded, a
+        // local player, the intro already played (a continued profile).
+        let mut st = logic.state.borrow_mut();
+        st.progression.loaded = true;
+        st.progression.world_count_ready = true;
+        st.progression.collectables_ready = true;
+        st.progression.set_last_played(mw_logic::natives::progression::INTRO_PLAYED, 1);
+        st.players.local = Some(0);
+        st.players.slots[0] = Some(Default::default());
+    }
     let mut host = Driver {
         data,
-        logic: LogicHost::default(),
+        logic,
         hooks,
         bindings,
         frame: 0,

@@ -5907,3 +5907,8 @@ HSM manager +0x360, called by `CALLHSMHOOK(S)` / `HSMHOOKEXIT` with a member of 
 arguments through `FUN_007761a0`, and by widget native actions `FUN_007f2670`) and Lua natives (`FUN_009f7e50`,
 385 names, bound as global closures with the name as upvalue by `FUN_009f86d0`). 36 names are in both, each with
 its own handler. The port: `crates/mw-logic/src/natives/` (`table.rs` has every name and handler address).
+
+Ported HSM hooks (20, 2026-11-17): CalculateShouldShowRecapSequence, ClearRecapFlag, ClearMatchmakingState, PopulateSettings,
+SaveSettings, SetNewGame, SetSinglePlayerRollout, SetRolloutFromProfile, IsNewGame, ClearNewGameFlag, ShouldPlayNewGameIntro,
+SetNewGameIntroCompleted, SetIntroEventNext, IsIntroRace, IsProgressionReady, SaveProfile, StartGameModeTimer,
+StopGameModeTimer, ResetGameMode, IsOnlineEvent (research-log 2026-11-17).
