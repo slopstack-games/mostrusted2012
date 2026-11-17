@@ -328,6 +328,14 @@ pub(crate) fn place(s: &Spatial, l: &Listener, position: Vec3, velocity: Vec3, f
     let u = if dist > 1e-3 { d / dist } else { l.forward };
     let gain = s.gain(dist, forward.dot(u), l.forward.dot(u));
     let pitch = s.doppler((velocity - l.velocity).dot(u));
+    if gain > 0.0 && !(0.5..=2.0).contains(&pitch) && std::env::var_os("MW_DOPPLER_LOG").is_some() {
+        warn!(
+            "doppler {pitch:.3} gain {gain:.2} at {dist:.1} m: emitter v {velocity:.1} (|{:.0}|), listener v {:.1} (|{:.0}|)",
+            velocity.length(),
+            l.velocity,
+            l.velocity.length()
+        );
+    }
     (gain, u.dot(l.right), pitch, dist)
 }
 
