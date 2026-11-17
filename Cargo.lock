@@ -4026,6 +4026,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mw-lua"
+version = "0.1.0"
+dependencies = [
+ "mw-assets",
+ "mw-bundle",
+ "mw-gamedir",
+]
+
+[[package]]
 name = "mw-probe"
 version = "0.1.0"
 
@@ -4044,6 +4053,7 @@ dependencies = [
  "mw-formats",
  "mw-gamedir",
  "mw-handling",
+ "mw-lua",
  "rayon",
 ]
 

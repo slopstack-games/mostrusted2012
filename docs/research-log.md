@@ -10,6 +10,66 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-11-17: Lua 5.1 VM (`mw-lua`): the UI's 115 chunks run (PLAN M8 step 5)
+Worktree agent. C = confirmed (dump / data / differential test), I = inferred.
+- **Decision: our own interpreter, not `rilua`.** rilua 0.1.27 (MIT / Apache, single author, the WoW-addon
+  variant of 5.1.1, ~49k lines with compiler, GC, io / os, taint): its undump hard-codes an 8-byte `size_t` (the
+  game's chunks have 4), host functions are plain `fn(&mut LuaState)` pointers (no captured state, so no
+  name → closure natives), MSRV 1.92, and table order / number output are not the game's. Ours is ~4k lines with
+  no compiler (everything ships as bytecode) and owns the details fidelity needs. The chunks use little: no
+  SELF, 3 TFORLOOP, 1 POW; `string.sub/gsub/find/len`, `table.insert/remove`, `math.floor/ceil/sin/pi`,
+  `tostring`, `tonumber`, `pairs`, `print`, `error` (C, opcode / GETGLOBAL scan).
+- **What follows the original** (crate docs): `lundump.c` (size_t 4 or 8 accepted), the 38 opcodes of
+  `lvm.c`, `ltable.c` ported (main positions, `luaS_hash`, `hashnum`, rehash sizes, re-insertion order,
+  `luaH_getn`, keys created by `t[k] = nil`), so `pairs` order matches; `lstrlib.c` matcher and `format`;
+  `ltablib.c` quicksort; 5.1.3 message texts and `ldebug.c` variable names (`?:0: attempt to call global 'X'
+  (a nil value)`: stripped chunks, source `=?`, line 0); `luaL_where` positions only with line info (never in
+  the game's chunks). Natives are global closures receiving their registered name (`FUN_009f86d0`).
+- **The game's CRT and libs** (C, `.rdata` of the dump): `"%.14g"` at 0x01084474; pre-2015 MSVC CRT strings
+  `1#INF` / `1#QNAN` / `1#IND` at 0x0109f3c8.. → numbers print as `1e+020`, `1.#INF`, `-1.#IND`;
+  `"table contains non-strings"` at 0x01084574 is the 5.1.3 text (5.1.5 changed it; the host-diff test avoids
+  it). `lua_tointeger` rounds to nearest-even (luaconf.h's `fistp` path for `_MSC_VER` x86, I: build flags not
+  seen), `%d` truncates, out of range = 0x80000000; `math.random` = MSVC `rand()` (its state is shared with the
+  game's C++, so the draw order is not reproducible).
+- **How the game calls scripts** (C, dump): `FUN_009ef230` = `lua_getfield(globals, <script>)`,
+  `lua_getfield(-1, <callback>)`, flag "is a function"; `FUN_009ef2e0` = `lua_pcall(L, n, MULTRET, 0)` and on
+  error **pops the message without logging it**: script errors are silent. `FUN_007ec680`: `Construct(<light
+  userdata = the script object>)`, then per JSON config item `SetConfigurationItem(name, value)` with value a
+  string, an integer (`FUN_00ec0380` = `lua_pushinteger`), a boolean, or a double pushed as `(double)(float)v`
+  (a float round trip). `mw_lua::Lua::call_field` does the lookup + call and returns the error (the host should
+  drop it like the game).
+- **Natives**: `print` is a native (`FUN_007e9920`: `lua_tolstring(L, 1)`, nothing else, no error for any
+  argument), registered after the libraries, so it replaces base `print`. `ExitWidgetGroup` (`FUN_007f22e0`,
+  argument 1 as a string, `"<invalid>"` otherwise) is registered with `FUN_009f7e50` too but missing from the
+  385-name list (`scratch/scripting/reg_9f7e50.json`); the dump's 216 `FUN_009f7e50("…")` calls add only it:
+  **386 natives**. The chunks read **171** of them (most used: `print` 70 scripts, `ResolveIntBinding` 69,
+  `ExitWidgetGroup` 55, `ResolveBoolBinding` 48, `ResolveStringBinding` 43, `SetBoolVariable` 36,
+  `SetIntVariable` 35, `SetStringVariable` 28, `DoRpc` 22, `WriteStringToOnlineSession` 19,
+  `UpdateDeferredViewModel` 17). Read but not registered (nil in the game): `ToggleOfflineEventFilter`,
+  `MarkAutologAlertAsSeen`, `GoBackEasyGuide`, `SaveCustomRollouts`, `SelectCustomRollout`, `SetRolloutColour`,
+  `Change{Weapon,Package,UpgradePackage}OnCustomRollout`, `SetNo{EMail,Password}AsLastError`, plus script
+  variables (`lsAction`, `liNumItems`, `liRecommendIndex`, `lsCategoryBinding`) and two other scripts' tables.
+- **Scripts share a state** (I): `CarSelectMW` calls `CarSelectMenu.Back(...)` and `EditSpeedlists` reads
+  `Breadcrumb`, both other scripts' global tables, so at least a screen's scripts live in one Lua state.
+- **Verified**: `cargo test -p mw-lua`: 9 differential scripts compiled by the host `luac5.1` give the same
+  output as `lua5.1` (numbers, coercion, patterns, `format`, `pairs` order with deletions and rehashes, table
+  library and `sort`, closures / varargs / the `arg` table, error texts with variable names, metatables); MSVC
+  formatting unit tests; on the install, all 115 chunks load, their names hash to their ids, main + `Construct`
+  run, and `ViewLegal.OnAction` calls `ResolveStringBinding` then `ExitWidgetGroup("TOS" / "PP")`.
+  `mwtool lua --natives <386 names>`: main + `Construct` of all 115 without error (9 natives called);
+  `--call all` (every callback, no arguments) reaches 109 natives, every error comes from the missing context
+  (nil arguments, globals another callback sets, the unregistered names above), none from the VM.
+  Per-script table: `mwtool lua --natives <list> --call all --out <tsv>` (script, native, calls, first
+  arguments; `nil` rows = not registered); the list is the union of `reg_9f7e50.json` and the dump's calls.
+- **Model decisions**: tables / functions hash and print (`table: 0000002A`) by a per-state counter, not an
+  address; at most 200 nested calls (LUAI_MAXCCALLS; the game allows deeper Lua recursion); memory is
+  reference counted, cycles live until the state is dropped (the game stops its collector,
+  `lua_gc(STOP)`); `collectgarbage` answers 0. Not provided (no chunk uses them): coroutines, `io`, `os`,
+  `package`, `load*` / `dofile`, `getfenv` / `setfenv`, `string.dump`, weak tables.
+- **Open**: one state for all scripts or one per screen (the state list of `FUN_009f86d0`), and when the game
+  steps the collector; the arguments of `OnActivated`, `OnDeactivating`, `PreInputUpdate` and action callbacks
+  (`OnAction` gets something `ResolveStringBinding` resolves); porting the 171 natives (mw-logic registry).
+
 ### 2026-11-17: game logic: scripting, flow, AI (survey of the install, the exe and prior work)
 Research agent; full tables, registries and URLs in the main checkout's git-ignored
 `scratch/engine-scripting-research.md` (raw outputs and scripts in `scratch/scripting/`). Whole install scanned

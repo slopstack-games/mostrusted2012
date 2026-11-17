@@ -12,6 +12,7 @@ mw-formats.workspace = true
 mw-assets.workspace = true
 mw-handling.workspace = true
 mw-audio.workspace = true
+mw-lua.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"] }
 d3dasm = "0.1"
 anyhow.workspace = true

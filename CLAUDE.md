@@ -63,6 +63,7 @@ crates/mw-audio     EA audio decoders (SPS/EALayer3, Ginsu/XAS) and the engine-s
 crates/mw-assets    AssetStore: index over all bundles, cross-bundle loads, scene helpers
 crates/mw-handling  the game's handling maths, engine-free (tyres, drivetrain, drift, nitrous, surfaces)
 crates/mw-logic     the original's logic interpreters: bindings, HSM, native registry (engine-free, wasm-safe)
+crates/mw-lua       Lua 5.1 VM for the UI's shipped bytecode, PUC 5.1.3 semantics, no compiler (engine-free, wasm-safe)
 crates/mwtool       CLI for inspection / extraction / previews
 crates/mostrusted   Bevy 0.19 runtime (loader thread → channel → ECS), avian3d 0.7 physics (drive.rs)
 crates/mw-probe     DLL loaded into the running original (docs/probe.md; i686-pc-windows-gnu)

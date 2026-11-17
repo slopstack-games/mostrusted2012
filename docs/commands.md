@@ -225,6 +225,9 @@ MW_SIREN_PRESS=12 MW_LIGHTBAR_SHOTS=<dir> ./target/release/mostrusted --drive "F
 ./target/release/mostrusted
 ./target/release/mwtool hsm [<node id>] [--find text]     # game-logic state machines (HSMData); mwtool frontend
 ./target/release/mwtool hsm <id> --parents               # which nodes start a node (child or transition)
+./target/release/mwtool lua --list                       # the UI's 115 Lua chunks (mw-lua): id, name (checked against the id), size
+./target/release/mwtool lua [--run <name>] [--call <Fn>|all] [--trace]   # main chunk + Construct with logging stub natives
+#   --natives <file>: stub only the names listed (the game's registry, one per line; others stay nil); --out <tsv>: per script
 ./target/release/mwtool frontend --sequence 1014321      # one UI sequence's items; --spots lists every jack spot
 # The map screen (map_screen.rs; pause menu MAP): arrows / left stick / d-pad push the cursor (tap: flick to the
 # next event that way; hold: free cursor, snaps on release), Enter / A options, START RACE plays the event-loading
@@ -306,7 +309,7 @@ memscan` / `telemetry` / `tune` / `capture` read the game through `ReadProcessMe
 
 Port plan and status: research-log 2026-11-17 "browser port, step 1". One-time `rustup target add wasm32-unknown-unknown`.
 ```sh
-tools/wasm-check    # the engine-free crates (gamedir, bundle, formats, audio, assets, handling) build for wasm32
+tools/wasm-check    # the engine-free crates (gamedir, bundle, formats, audio, assets, handling, lua) build for wasm32
 tools/wasm-check --threads   # the same for the threaded browser build (nightly + rust-src, std rebuilt with atomics,
                              # target/wasm-threads); its RUSTFLAGS (shared memory, TLS exports) link the final module
 # In the browser: game files come from mw_gamedir::WebSource (the picked folder as blob URLs, sync range requests);
