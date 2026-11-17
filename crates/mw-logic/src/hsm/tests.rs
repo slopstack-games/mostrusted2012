@@ -69,7 +69,7 @@ struct TestHost {
     bools: HashMap<String, bool>,
     strings: HashMap<String, String>,
     hooks: HashMap<String, Key>,
-    hook_args: Vec<Option<Value>>,
+    hook_args: Vec<Option<Json>>,
     published: Vec<String>,
 }
 
@@ -80,11 +80,11 @@ impl Host for TestHost {
     fn binding_string(&mut self, path: &str) -> Option<String> {
         self.strings.get(path).cloned()
     }
-    fn hook(&mut self, name: &str, args: Option<&Value>) -> Option<Key> {
+    fn hook(&mut self, name: &str, args: Option<&Json>) -> Option<Key> {
         self.hook_args.push(args.cloned());
         self.hooks.get(name).copied()
     }
-    fn publish(&mut self, path: &str, _data: &Value) {
+    fn publish(&mut self, path: &str, _data: &Json) {
         self.published.push(format!("+{path}"));
     }
     fn retract(&mut self, path: &str) {
@@ -212,7 +212,7 @@ fn hooks_get_the_data_definition_and_choose_the_exit() {
     hsm.update(&mut host, DT);
     hsm.update(&mut host, DT);
     assert!(hsm.is_running(serial)); // "Ready" does not exist yet: HSMHOOKEXIT keeps polling
-    assert_eq!(host.hook_args[0], Some(serde_json::json!({ "NewGame": true })));
+    assert_eq!(host.hook_args[0], Some(Json::Object(vec![("NewGame".into(), Json::Bool(true))])));
     host.hooks.insert("Ready".into(), k("YES"));
     hsm.update(&mut host, DT);
     assert_eq!(hsm.result(serial), Some(EXIT));

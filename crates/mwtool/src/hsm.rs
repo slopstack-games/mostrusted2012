@@ -1,5 +1,6 @@
 //! `mwtool hsm`: the game logic's state machines (`mw_formats::hsm`): listing, trees, search, and a headless
-//! run of the interpreter (`mw_logic::hsm`) with stub hooks / bindings / behaviours.
+//! run of the interpreter (`mw_logic::hsm`) on the logic host (`mw_logic::natives::LogicHost`: ported hooks,
+//! published view models, `Signals`), with stand-ins for unported hooks / behaviours and `--answer` overrides.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -7,8 +8,9 @@ use std::sync::Arc;
 use anyhow::{Result, bail};
 use mw_assets::AssetStore;
 use mw_formats::hsm::{Action, HsmData, ParamType, Parameter, State, behaviour_id, key, key_name};
+use mw_formats::json::Json;
 use mw_logic::hsm::{Clock, Host, Hsm, Key, ORIGINAL_BEHAVIOURS, Registry, Trace, behaviours::Stub, original_code};
-use serde_json::Value;
+use mw_logic::natives::LogicHost;
 
 pub struct Options<'a> {
     pub bundle: &'a str,
@@ -213,46 +215,75 @@ fn show(data: &HsmData, id: u32, depth: usize, max: usize) {
     }
 }
 
-/// The driver's stand-ins: answers by state id, behaviour code, hook name or binding path.
+/// The logic host plus the driver's stand-ins: answers by state id, behaviour code, hook name or binding path
+/// override it; a hook the original has but that is not ported answers EXIT (most CALLHSMHOOK nodes go on on
+/// EXIT).
 struct Driver {
     data: Arc<HsmData>,
+    logic: LogicHost,
     hooks: HashMap<String, Key>,
     bindings: HashMap<String, String>,
     frame: usize,
-    missing_hooks: HashMap<String, usize>,
+    /// Unported hooks the driver answered EXIT.
+    unported_hooks: HashMap<String, usize>,
+    /// Hook names the original does not have (EXITINVALID, as in the original).
+    unknown_hooks: HashMap<String, usize>,
 }
 
 impl Host for Driver {
     fn binding_bool(&mut self, path: &str) -> Option<bool> {
-        self.bindings.get(path).map(|v| matches!(v.to_ascii_lowercase().as_str(), "true" | "1" | "yes"))
+        match self.bindings.get(path) {
+            Some(v) => Some(matches!(v.to_ascii_lowercase().as_str(), "true" | "1" | "yes")),
+            None => self.logic.binding_bool(path),
+        }
     }
     fn binding_string(&mut self, path: &str) -> Option<String> {
-        self.bindings.get(path).cloned()
+        match self.bindings.get(path) {
+            Some(v) => Some(v.clone()),
+            None => self.logic.binding_string(path),
+        }
     }
     fn binding_int(&mut self, path: &str) -> Option<i64> {
-        self.bindings.get(path).and_then(|v| v.parse().ok())
+        match self.bindings.get(path) {
+            Some(v) => v.parse().ok(),
+            None => self.logic.binding_int(path),
+        }
     }
-    fn hook(&mut self, name: &str, _args: Option<&Value>) -> Option<Key> {
-        match self.hooks.get(name) {
-            Some(&k) => Some(k),
-            None => {
-                *self.missing_hooks.entry(name.to_owned()).or_default() += 1;
-                // Driver default: a hook nobody answered returns EXIT (most CALLHSMHOOK nodes go on on EXIT).
+    fn hook(&mut self, name: &str, args: Option<&Json>) -> Option<Key> {
+        if let Some(&k) = self.hooks.get(name) {
+            return Some(k);
+        }
+        match self.logic.registry.hook(name).map(|n| n.ported()) {
+            Some(true) => self.logic.hook(name, args),
+            Some(false) => {
+                *self.unported_hooks.entry(name.to_owned()).or_default() += 1;
                 Some(key("EXIT"))
+            }
+            None => {
+                *self.unknown_hooks.entry(name.to_owned()).or_default() += 1;
+                None
             }
         }
     }
     fn loading_screen_showing(&mut self) -> bool {
-        self.binding_bool("Host.LoadingScreenShowing").unwrap_or(false)
+        match self.bindings.get("Host.LoadingScreenShowing") {
+            Some(_) => self.binding_bool("Host.LoadingScreenShowing").unwrap_or(false),
+            None => self.logic.loading_screen_showing(),
+        }
     }
     fn graphics_prepared(&mut self) -> bool {
-        self.binding_bool("Host.GraphicsPrepared").unwrap_or(true)
+        match self.bindings.get("Host.GraphicsPrepared") {
+            Some(_) => self.binding_bool("Host.GraphicsPrepared").unwrap_or(true),
+            None => self.logic.graphics_prepared(),
+        }
     }
-    fn publish(&mut self, path: &str, data: &Value) {
-        println!("{:5}      publish {path} = {data}", self.frame);
+    fn publish(&mut self, path: &str, data: &Json) {
+        println!("{:5}      publish {path} ({} members)", self.frame, data.entries().len());
+        self.logic.publish(path, data);
     }
     fn retract(&mut self, path: &str) {
         println!("{:5}      retract {path}", self.frame);
+        self.logic.retract(path);
     }
     fn trace(&mut self, e: &Trace) {
         let f = self.frame;
@@ -338,11 +369,20 @@ fn drive(data: Arc<HsmData>, instance: u32, steps: usize, dt: f32, answers: &[St
         }
     }
     let mut hsm = Hsm::new(data.clone(), registry);
-    let mut host = Driver { data, hooks, bindings, frame: 0, missing_hooks: HashMap::new() };
+    let mut host = Driver {
+        data,
+        logic: LogicHost::default(),
+        hooks,
+        bindings,
+        frame: 0,
+        unported_hooks: HashMap::new(),
+        unknown_hooks: HashMap::new(),
+    };
     let Some(serial) = hsm.start(instance, &mut host) else { bail!("no top-level state with instance {instance}") };
     let clock = Clock::both(dt);
     for f in 0..steps {
         host.frame = f;
+        host.logic.frame(dt);
         hsm.update(&mut host, clock);
         if !hsm.is_running(serial) {
             break;
@@ -355,10 +395,22 @@ fn drive(data: Arc<HsmData>, instance: u32, steps: usize, dt: f32, answers: &[St
             println!("{}{id} {name:?} {phase:?}", "  ".repeat(d + 1));
         }
     }
-    if !host.missing_hooks.is_empty() {
-        let mut v: Vec<_> = host.missing_hooks.iter().collect();
-        v.sort();
-        println!("hooks answered EXIT by default: {v:?}");
+    for (what, m) in [
+        ("unported hooks answered EXIT by the driver", &host.unported_hooks),
+        ("hooks the original does not have (EXITINVALID)", &host.unknown_hooks),
+    ] {
+        if !m.is_empty() {
+            let mut v: Vec<_> = m.iter().collect();
+            v.sort();
+            println!("{what}: {v:?}");
+        }
     }
+    let unported = host.logic.take_unported();
+    if !unported.is_empty() {
+        println!("unported natives called through the logic host: {}", unported.len());
+    }
+    let published: Vec<String> =
+        host.logic.state.borrow().view_models.published.iter().map(|(p, _)| p.clone()).collect();
+    println!("published view models at the end: {published:?}");
     Ok(())
 }

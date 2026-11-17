@@ -4022,7 +4022,7 @@ version = "0.1.0"
 dependencies = [
  "mw-bundle",
  "mw-formats",
- "serde_json",
+ "mw-lua",
  "thiserror 2.0.21",
 ]
 

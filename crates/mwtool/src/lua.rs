@@ -1,10 +1,12 @@
-//! `mwtool lua`: the UI's Lua scripts run by `mw_lua` with logging stub natives.
+//! `mwtool lua`: the UI's Lua scripts run by `mw_lua` on the logic host (`mw_logic::natives::LogicHost`).
 //!
 //! Every precompiled chunk (`TextFile` resources in `UI/SCREENS2`) is loaded, its main function run and its
 //! script table's `Construct` called with a light userdata, as the game's `FUN_007ec680` does; `--call`
-//! adds callbacks. Natives the script reads (`GETGLOBAL` names it does not define and the libraries lack)
-//! are stubs that log their name and arguments. With `--natives <file>` only the names listed there (the
-//! game's registry, one per line) get stubs; any other undefined global stays nil, as in the game.
+//! adds callbacks. The natives a script reads (`GETGLOBAL` names it does not define) are the original's Lua
+//! registry (`mw_logic::natives::table`; `--natives <file>` replaces the list, one name per line): a ported one
+//! runs on the logic host's shared state, an unported one is a stub; both log their name and arguments. A name
+//! the registry lacks stays nil (or the library function), as in the game; a listed name replaces a library
+//! function (`print`).
 //!
 //! Stub results are a model, not the game's: `Resolve{Int,Double}Binding` and names with `Count` / `Index` /
 //! `Num` give 0, `ResolveBoolBinding` and `Is` / `Has` / `Can` / `Should` / `Did` names false, string
@@ -18,6 +20,7 @@ use std::rc::Rc;
 use anyhow::{Context, Result};
 use mw_assets::AssetStore;
 use mw_bundle::{Bundle, ResourceId, ResourceType};
+use mw_logic::natives::LogicHost;
 use mw_lua::{Lua, Value};
 
 /// One unique chunk: id, script name, the chunk bytes, and the bundles it is in.
@@ -77,34 +80,46 @@ pub struct Report {
     pub errors: Vec<String>,
     /// Natives the chunk reads but that had no stub (not in `--natives`).
     pub missing: Vec<String>,
-    /// Natives the chunk reads that got a stub (called or not).
+    /// Natives the chunk reads that got a stub or the ported function (called or not).
     pub stubbed: Vec<String>,
+    /// Of those, the ported ones.
+    pub ported: Vec<String>,
 }
 
-/// Run a chunk's main function, `Construct`, then `calls` (`all` = every function of the script table).
+/// Run a chunk's main function, `Construct`, then `calls` (`all` = every function of the script table), on a
+/// fresh logic host (one Lua state per widget in the game).
 pub fn run(chunk: &Chunk, natives: Option<&HashSet<String>>, calls: &[String]) -> Result<Report> {
+    let host = LogicHost::default();
     let mut lua = Lua::new();
     let log: Rc<RefCell<Vec<(String, String)>>> = Rc::default();
     let (get, set) = mw_lua::chunk_globals(&chunk.bytes).map_err(lerr)?;
     let mut missing = Vec::new();
     let mut stubbed = Vec::new();
+    let mut ported = Vec::new();
     for g in &get {
         // The game registers its natives after opening the libraries, so a listed native replaces a library
         // function of the same name (`print` is one: a native that reads its argument and does nothing).
-        let listed = natives.map(|n| n.contains(g));
-        if set.contains(g) || (listed != Some(true) && !lua.global(g).is_nil()) {
+        let listed = natives.map_or_else(|| host.registry.lua(g).is_some(), |n| n.contains(g));
+        if set.contains(g) || (!listed && !lua.global(g).is_nil()) {
             continue;
         }
-        if listed == Some(false) {
+        if !listed {
             missing.push(g.clone());
             continue;
         }
         stubbed.push(g.clone());
         let l = log.clone();
-        lua.register(g, move |_, name, args| {
+        let real = host.registry.lua(g).filter(|n| n.ported()).and_then(|_| host.lua_native(g));
+        if real.is_some() {
+            ported.push(g.clone());
+        }
+        lua.register(g, move |lua, name, args| {
             let a: Vec<String> = args.iter().map(|v| v.display()).collect();
             l.borrow_mut().push((name.to_string(), a.join(", ")));
-            Ok(stub_result(name))
+            match &real {
+                Some(f) => f(lua, name, args),
+                None => Ok(stub_result(name)),
+            }
         });
     }
     let l = log.clone();
@@ -148,7 +163,7 @@ pub fn run(chunk: &Chunk, natives: Option<&HashSet<String>>, calls: &[String]) -
     for (n, a) in trace.iter().filter(|(n, _)| n != "(base print)") {
         natives_called.entry(n.clone()).or_insert((0, a.clone())).0 += 1;
     }
-    Ok(Report { name: chunk.name.clone(), natives: natives_called, trace, errors, missing, stubbed })
+    Ok(Report { name: chunk.name.clone(), natives: natives_called, trace, errors, missing, stubbed, ported })
 }
 
 fn read_natives(path: &Path) -> Result<HashSet<String>> {
@@ -218,6 +233,9 @@ pub fn cmd(
             }
             if !r.missing.is_empty() {
                 println!("  not registered (nil): {}", r.missing.join(", "));
+            }
+            if !r.ported.is_empty() {
+                println!("  ported natives: {}", r.ported.join(", "));
             }
             for e in &r.errors {
                 println!("  ERROR {e}");
