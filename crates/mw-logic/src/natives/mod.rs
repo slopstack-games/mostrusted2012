@@ -20,9 +20,14 @@
 //! [`Registry::original`] builds the table and runs every area's `register`. An entry without a function is a
 //! known native that is not ported yet: calling it is recorded in [`LogicState::unported`].
 
+pub mod lua_args;
+pub mod lua_career;
+pub mod lua_settings;
+pub mod lua_widgets;
 pub mod state;
 pub mod table;
 pub mod view_models;
+pub mod vm_path;
 
 use std::collections::HashMap;
 
@@ -88,6 +93,9 @@ impl Registry {
             r.lua.push(Native { name, handler, area, f: None });
         }
         // Area files register here (one line each).
+        lua_widgets::register(&mut r);
+        lua_settings::register(&mut r);
+        lua_career::register(&mut r);
         r
     }
 
