@@ -113,6 +113,8 @@ pub struct GameModeManager {
     /// `Mode.IsInGameIntroFreedrive`).
     pub in_game_intro_freedrive: bool,
     pub in_game_intro_other: bool,
+    /// +0x2e75: `MODEENDCHECK` online: the end was announced (the online code writes it; not ported).
+    pub end_flag_2e75: bool,
     /// +0x2d08: `EndReason`.
     pub end_reason: i32,
     /// +0x2e64 / +0x2e68: `ScoreLimit` / `EventScoreLimit`.

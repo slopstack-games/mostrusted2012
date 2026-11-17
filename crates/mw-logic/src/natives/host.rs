@@ -171,6 +171,10 @@ impl hsm::Host for LogicHost {
             Q::ShowWorldCount => st.game.show_world_count as u64,
             Q::RequestedEvent => u64::from(gm.requested_event),
             Q::StoryMode => gm.story_mode as u64,
+            Q::EndReason => gm.end_reason as u64,
+            Q::DisplayTimeoutOn => gm.display_timeout as u64,
+            Q::ModeEndFlag => gm.end_flag_2e75 as u64,
+            Q::ModeWon if gm.online_event => gm.won as u64,
             _ => return None,
         })
     }

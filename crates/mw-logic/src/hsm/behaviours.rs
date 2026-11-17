@@ -6,6 +6,8 @@ use mw_formats::hsm::key;
 
 use super::{Behaviour, Cx, EXIT, EXITINVALID, Key, Registry};
 
+#[path = "behaviours_event.rs"]
+pub mod event;
 #[path = "behaviours_game.rs"]
 pub mod game;
 #[path = "behaviours_mode.rs"]
@@ -52,6 +54,7 @@ pub fn register(r: &mut Registry) {
     game::register(r);
     mode::register(r);
     mode2::register(r);
+    event::register(r);
 }
 
 /// Engine state a behaviour reads, asked through [`Host::query`](super::Host::query). Answers are `u64`: bools are
@@ -227,6 +230,58 @@ pub enum Query {
     ProfileServiceConnected,
     /// `SYNCPROFILEW` enter (0x7462e0): byte G+0x2ee5c. Default false.
     ProfileSyncFlag,
+    /// `MODEENDCHECK` (`FUN_006dfee0` on the GMM: no session, or the session's host `FUN_004c22c0`): this machine decides the mode's end. Default true (offline).
+    ModeAuthority,
+    /// `MODEENDCHECK` (`FUN_006f1530`): the mode's time limit (GMM+0x2d28 / 3 against +0x2d28 stamps), the offline time limit or a player's score reaching the score limit (+0x2e64). Needs the players' scores: the runtime answers. Default false (free roam has no limit).
+    ModeLimitReached,
+    /// `MODEENDCHECK` / `SETENDREASON` (`FUN_006f46e0`): online it is GMM+0x2e78; offline a medal / time derivation from the event data (not ported: the runtime answers). The logic host answers GMM+0x2e78 online only. Default false.
+    ModeWon,
+    /// `MODEENDCHECK` (`FUN_004c1f30` on `*0x010edb58`): a session exists and its state (+0xbe7c) is 4. Default false.
+    SessionRaceState,
+    /// `MODEENDCHECK` (`FUN_0074e790`): offline with the mode timer running, the first end trigger of the event's list (`FUN_006f4b70` per entry, type +0x1e) that fired: 0 none, 1 = type 0 (the game mode is won: `FUN_00673ff0`(1)), 2 = type 1 (lost: (0)). Needs the event data: the runtime answers. Default 0.
+    EventEndTrigger,
+    /// GMM+0x2d08, the end reason ([`GameModeManager::end_reason`](crate::natives::game_modes::GameModeManager::end_reason)). Default 0.
+    EndReason,
+    /// GMM+0x2f10 ([`GameModeManager::display_timeout`](crate::natives::game_modes::GameModeManager::display_timeout)). Default false.
+    DisplayTimeoutOn,
+    /// `MODEENDCHECK` (`FUN_006e27e0`): the ticks left until the display deadline (GMM+0x2f18 as i64 minus the clock `FUN_0046ee10`+8), 0 when it has none or passed; as an i64 in the u64. Not ported: the runtime answers. Default 0 (= timed out).
+    DisplayTimeLeft,
+    /// GMM+0x2e75 (`MODEENDCHECK` online: the end was announced; written by the online code, not ported). Default false.
+    ModeEndFlag,
+    /// `HSB_WAIT4IN` (`FUN_007470e0`'s test on the local player's input record `FUN_0047aa20`): an input action (the 12 action blocks at +0x214..+0x268, +0x646..+0x64d, the 5 menu-state words) is still held, so the wait is not released yet. Default false.
+    InputHeld,
+    /// `HSB_WAIT4IN` (0x753540): the `index`th candidate exit point (packed; 0 = no more) in the original's order: the 0x28c / 0x10c / 0x298 menu-state words == 2 (the first and third also play a cue, `FUN_0079fb40`), then the actions 0x73a020 / 0x73a070 / 0x73a110 / 0x73a0c0 (given `autorepeat`, the `AUTOREPEAT` parameter), then the words 0x304 / 0x2b0 (== 2), 0x358 / 0x364 / 0x370 / 0x37c (== 3), 0x208 (== 2), and last any device whose record +0 is 0 (`FUN_0047aa40`). The behaviour takes the first the parent handles. Default 0.
+    InputExit { index: u32, autorepeat: bool },
+    /// `SET_LAY_SET`: the UI manager's layer set, (*(G+0x2f480))+0x31c08. Default 0.
+    LayerSet,
+    /// `HSMCARSWAPLO` (+0x74c8): the car-swap logic has been started by the engine's phase machine. Default false.
+    CarSwapActive,
+    /// `CHECKPTS`: the checkpoint manager's (G+0x2f47c) count +0x510. Default 0.
+    CheckpointCount,
+    /// `CHECKPTS` enter update (the manager's vtable +8): the checkpoints are loaded. Default true.
+    CheckpointsLoaded,
+    /// `CHECKPTS` update (0x75da20): the last checkpoint index was reached and the widget manager's state G+0x2f458 +0x85c is not 3. Default true.
+    CheckpointsFinished,
+    /// `EVENTSTARTS` update (0x755220): not in a vehicle (`FUN_006c2410`), slower than the event start's limit (`FUN_006ba3e0`) and `FUN_0074ad50` == 1: the player stands in an event start. Default false.
+    EventStartTriggered,
+    /// `DOBLACKLISTS` (+0x4c): 2 or 3 holds the machine in phase 0 and in its exit. Default 0.
+    BlacklistMode,
+    /// `DOBLACKLISTS` (+0x84): the blacklist rival's player slot (non-zero = its record's active byte +0x23d is set; the slot's id is +0x98). Default 0.
+    BlacklistSlot,
+    /// `DOBLACKLISTS` (`FUN_006ba2a0`): the rival's vehicle is alive. Default false.
+    BlacklistRivalAlive,
+    /// `DOBLACKLISTS`: squared distance between the rival and the player (`FUN_006b9ea0` positions) as f32 bits; `FUN_006ba2a0` false: `FLT_MAX` (`DAT_00fd1304`). Default `FLT_MAX`.
+    BlacklistRivalDistance,
+    /// `DOBLACKLISTS` phase 2 without a slot (`FUN_00748a40`). Default false.
+    BlacklistReady,
+    /// `DOBLACKLISTS` phase 3: the rival's handle (slot +0xb0), -1 (= u32::MAX) when it has none. Default -1.
+    BlacklistRivalHandle,
+    /// `DOBLACKLISTS` phases 1 / 4 / 5 (`FUN_00748e50`, `FUN_007428b0`, `FUN_00753fa0`): the phase (+0x70) the step left behind: 0 = unchanged, else 1 + the phase. Default 0.
+    BlacklistPhaseAfter,
+    /// `DOBLACKLISTS` (+0xa4, set by the steps): the credits sequence follows the shutdown. Default false.
+    BlacklistCreditsPending,
+    /// `DOBLACKLISTS` (`FUN_0066e0f0`): the general sequence runs. Default false.
+    CreditsSequenceActive,
 }
 
 impl Query {
@@ -253,9 +308,13 @@ impl Query {
             | Query::LayoutReady { .. }
             | Query::EventIsFreedrive { .. }
             | Query::SpeedwallIdle
-            | Query::ScreenPrefetched { .. } => 1,
+            | Query::ScreenPrefetched { .. }
+            | Query::ModeAuthority
+            | Query::CheckpointsLoaded
+            | Query::CheckpointsFinished => 1,
             Query::TransitionState => 2,
-            Query::GameModeEvent | Query::GameModeMachine => u64::MAX,
+            Query::GameModeEvent | Query::GameModeMachine | Query::BlacklistRivalHandle => u64::MAX,
+            Query::BlacklistRivalDistance => 0x7f7f_ffff,
             _ => 0,
         }
     }
@@ -326,6 +385,32 @@ impl Query {
             Query::GmmFlag2e80 => "GmmFlag2e80",
             Query::ProfileServiceConnected => "ProfileServiceConnected",
             Query::ProfileSyncFlag => "ProfileSyncFlag",
+            Query::ModeAuthority => "ModeAuthority",
+            Query::ModeLimitReached => "ModeLimitReached",
+            Query::ModeWon => "ModeWon",
+            Query::SessionRaceState => "SessionRaceState",
+            Query::EventEndTrigger => "EventEndTrigger",
+            Query::EndReason => "EndReason",
+            Query::DisplayTimeoutOn => "DisplayTimeoutOn",
+            Query::DisplayTimeLeft => "DisplayTimeLeft",
+            Query::ModeEndFlag => "ModeEndFlag",
+            Query::InputHeld => "InputHeld",
+            Query::InputExit { .. } => "InputExit",
+            Query::LayerSet => "LayerSet",
+            Query::CarSwapActive => "CarSwapActive",
+            Query::CheckpointCount => "CheckpointCount",
+            Query::CheckpointsLoaded => "CheckpointsLoaded",
+            Query::CheckpointsFinished => "CheckpointsFinished",
+            Query::EventStartTriggered => "EventStartTriggered",
+            Query::BlacklistMode => "BlacklistMode",
+            Query::BlacklistSlot => "BlacklistSlot",
+            Query::BlacklistRivalAlive => "BlacklistRivalAlive",
+            Query::BlacklistRivalDistance => "BlacklistRivalDistance",
+            Query::BlacklistReady => "BlacklistReady",
+            Query::BlacklistRivalHandle => "BlacklistRivalHandle",
+            Query::BlacklistPhaseAfter => "BlacklistPhaseAfter",
+            Query::BlacklistCreditsPending => "BlacklistCreditsPending",
+            Query::CreditsSequenceActive => "CreditsSequenceActive",
         }
     }
 }

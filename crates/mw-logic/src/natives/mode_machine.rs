@@ -107,6 +107,9 @@ pub fn apply(s: &mut LogicState, r: &Request) {
         Request::SetInputBlock { group, bit, set: false } if (*group as usize) < s.game.input_blocks.masks.len() => {
             s.game.input_blocks.clear(*group as usize, *bit)
         }
+        Request::SetGameModeWon { won } => s.game_modes.won = *won,
+        Request::SetEndReason { reason } => s.game_modes.end_reason = i32::from(*reason),
+        Request::SetCreditsTransition { on } => s.game_modes.credits_transition = *on,
         _ => {}
     }
 }
