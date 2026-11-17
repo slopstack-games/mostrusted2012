@@ -70,6 +70,9 @@ impl LogicHost {
         let mut st = self.state.borrow_mut();
         st.engine.ui_ticks += (dt as f64 * 3e6).round() as i64;
         st.engine.ui_counter = (st.engine.ui_ticks / 3000) as u32;
+        // The prompt bar (GMM+0x2c70 / +0x2ca7) is set again by whoever wants it this frame (model decision: its
+        // clearer is not in the dump; `natives::game_modes::GameModeManager::prompt`).
+        st.game_modes.prompt = None;
         let (ticks, counter) = (st.engine.ui_ticks, st.engine.ui_counter);
         st.view_models.signals.update(ticks, counter);
         drop(st);
@@ -108,7 +111,14 @@ impl LogicHost {
     /// logic state (`mode_machine::apply`), the page contexts and widget groups ([`Pages`]: their scripts call
     /// natives, so no borrow of the state is held here).
     pub fn apply(&mut self, r: &super::Request) {
-        super::mode_machine::apply(&mut self.state.borrow_mut(), r);
+        {
+            let mut st = self.state.borrow_mut();
+            super::mode_machine::apply(&mut st, r);
+            // The engine subsystems the logic now runs itself (`CHECKPTS`, `EVENTSTARTS`, `HSMCARSWAPLO`).
+            super::checkpoints::apply(&mut st, r);
+            super::event_starts::apply(&mut st, r);
+            super::car_swap::apply(&mut st, r);
+        }
         let mut p = std::mem::take(&mut self.pages);
         pages::apply(&mut p, &self.state, &|lua| self.install_lua(lua), r);
         self.pages = p;
@@ -213,6 +223,15 @@ impl hsm::Host for LogicHost {
             }
             Q::DialogOpen { id } => st.screen.dialogs.open.contains(id) as u64,
             Q::EntitlementOwned { id } => st.entitlements.has(*id) as u64,
+            // `CHECKPTS` (`natives::checkpoints`): the route's entries (DTF+0x510), the distance manager ready, the
+            // update's finish.
+            Q::CheckpointCount => super::checkpoints::count_query(&st),
+            Q::CheckpointsLoaded => st.checkpoints.inputs.loaded as u64,
+            Q::CheckpointsFinished => st.checkpoints.progress.finished as u64,
+            // `EVENTSTARTS` (`natives::event_starts`): the update returned 1 this frame.
+            Q::EventStartTriggered => st.event_starts.state.triggered as u64,
+            // `HSMCARSWAPLO` (`natives::car_swap`): +0x74c8.
+            Q::CarSwapActive => st.car_swap.inputs.started as u64,
             _ => return None,
         })
     }

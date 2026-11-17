@@ -23,8 +23,11 @@
 //! [`Registry::original`] builds the table and runs every area's `register`. An entry without a function is a
 //! known native that is not ported yet: calling it is recorded in [`LogicState::unported`].
 
+pub mod car_swap;
+pub mod checkpoints;
 pub mod entitlement_view;
 pub mod entitlements;
+pub mod event_starts;
 pub mod event_view;
 pub mod game_logic;
 pub mod game_logic_view;
@@ -63,6 +66,7 @@ pub mod sign_in_view;
 pub mod state;
 pub mod table;
 pub mod transitions_view;
+pub mod trigger_boxes;
 pub mod ui_config_view;
 pub mod view_models;
 pub mod vm_path;

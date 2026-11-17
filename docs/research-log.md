@@ -13,6 +13,58 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ## Dated findings
 
+### 2026-11-17: the checkpoints, event starts and car swap run in the logic (`natives/{checkpoints,event_starts,car_swap}.rs`)
+
+The per-frame work of `CHECKPTS`, `EVENTSTARTS` and `HSMCARSWAPLO` (until now one `Request` each) is ported from the
+code into mw-logic, engine-free: the host runs it on the behaviours' requests (`LogicHost::apply`) and answers
+`Query::CheckpointCount` / `CheckpointsLoaded` / `CheckpointsFinished` / `EventStartTriggered` / `CarSwapActive`
+from it. What the runtime must fill each frame is a documented input struct per manager (`CheckpointInputs`,
+`EventStartInputs`, `CarSwapInputs`: route entries and gate boxes, car boxes, distances to the finish, profile
+answers, engine waits); the outcomes are logic state (counter, lap, position, finish, shown starts, prompt GMM+0x2c70,
+slot states, swap phase) and `Request::Checkpoint` / `EventStart` / `CarSwap` for the engine. "In a trigger" is the
+hit-list rule of `FUN_00536f70` over a box test (`natives/trigger_boxes.rs`). Sources: decomp.md "The checkpoint
+manager in the logic", "Event starts", "Jack spots" (new paragraphs); the enters / exits not in the dump were read
+from the snapshot's disassembly (`re/out/live/text.asm`: 0x749670, 0x75d8d0, 0x75d960, 0x754f30).
+`mwtool hsm --run --event 462174` now needs no checkpoint answer: a synthetic lap (route from the event's gates, the
+car driven straight at the logic's target gate at 60 m/s) passes 27/27 gates over 3 laps, `CHECKPTS` exits at
+frame 4186, the outro plays and free drive resumes (sprint 906146: 10/10 at frame 1984). Tests: 8 new (the box rule, 3 gates in
+order, a missed gate and a reset, position with an AI racer, which starts show, a burnout start, a parked car's
+20–300 m rule, a swap's seven phases), 209 mw-logic tests pass.
+
+Found on the way (corrections): the `CHECKPTS` score event (ScoringConfig +0x60) goes for every gate but the finish
+while GameMode +0x6e is set (not "but the last two"); a jack spot's "CAR JACK USED" score is sent only for a swap
+during a pursuit (`FUN_006c2410` on the player at 0x76239a, first time per spot) and with it `FUN_00639b60` on
+G+0x2a890; position's start term is PM+0xa694 at enter (racers removed since count as ahead); the lead timer
+(+0x48) is enabled by GMM+0x2e8b; `FUN_006e0520` returns 0 (constant); the event-start radius +0x1c0 is
+`ACTIVERADIUS` squared; the free-drive machine runs a `CHECKPTS` too (no route: it exits at once).
+
+Differences of the runtime's hand-written code (to fix when the runtime feeds the logic):
+- **race.rs**: no reset advance (`FUN_00661da0`) for player or AI; mid-race position ignores racers removed since the
+  start (+0x5c) and finished ones get their finish order; AI racers pass gates by the player's rules (sequence flag
+  +0x12, no time in the original; ours keeps AI times); lap times instead of `eb1ecc26` splits; no lead events
+  (took / lost / held 1.5 s), no gate score event, no GMM+0x2e7d; the finish does not wait for G+0x2f458 +0x85c ≠ 3;
+  no trigger switching or GPS segment list from the counter (gps.rs builds its own); `TargetSpeed` / `TargetTime`
+  in the won rule belong to `FUN_006f46e0` (`Query::ModeWon`), not to `CHECKPTS`.
+- **event_starts.rs**: rebuilds the list from scratch (the original keeps entries and swap-removes, so the order
+  and the 20 cap differ after a rebuild); ignores `RSPCTRADIUS`, GMM+0x2e83, the story-mode rebuild, the offline /
+  free-drive / unlocked / available / intro filters and recommendations; adds the hold once per frame (the original
+  per start in reach, only while the clock runs); counts the pursuit cooldown as a pursuit; starts the event at once
+  (the original sets the next event, shows hint 0xe / 0xf / 0x11 / 0x12 and exits once UI manager +0x12568 is
+  idle); no `TRACKEDONLY`, GMM+0x2e9c, swap gate GMM+0x252f or nearest-start prefetch; speed from |velocity|.
+- **jackspots.rs**: origin in the location box (logic: box overlap); every car available (logic: `owned` / `store`
+  answers); immediate swap (logic: the seven phases with their engine waits, input block 2 bit 7, GMM+0x252f);
+  no parked-car spawn states, eligibility round robin, Lua `JackIt`, intro rules, pursuit / heat gate, nearest
+  standing car, first-use effects (`FUN_0083c220`, heat bump) or spot counters (+0x74b0, +0xe6, +0x74c6).
+
+Model decisions: the box test for the hit list (narrow phase not read); the prompt cleared at the start of each
+logic frame (its clearer is not in the dump); the location query's distance is to the trigger position within
+300 m (its sphere test against the shape not read); the mwtool driver's straight-line 60 m/s car and its race clock.
+Open (runtime): fill the three input structs from race.rs / event_starts.rs / jackspots.rs and carry out the
+`Checkpoint` / `EventStart` / `CarSwap` requests, then drop the runtime's own rules and its `CheckpointCount` /
+`Loaded` / `Finished` answers in logic.rs; who sets `HSMCARSWAPLO` +0x74c8 / +0x74c4; `FUN_00656220`'s reroute rule;
+the `GameLogicConfig` / `CheckpointConfig` values the tool and runtime should read instead of the documented
+defaults.
+
 ### 2026-11-17: skids louder after a pause, very loud at a race start: two causes fixed
 
 User reports: skids get louder at a pause and stay that loud after it; very loud and distorted at a race start.

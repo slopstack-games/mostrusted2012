@@ -58,6 +58,12 @@ pub struct LogicState {
     pub transitions: super::transitions_view::Transitions,
     /// The profile access bytes of G+0x2f454 (`GameLogicState.IsAccessingProfile`, `game_logic_view.rs`).
     pub profile_io: super::game_logic_view::ProfileIo,
+    /// `CHECKPTS`'s checkpoint manager (`checkpoints.rs`): runtime inputs and the logic's progress.
+    pub checkpoints: super::checkpoints::Checkpoints,
+    /// `EVENTSTARTS`'s event-start markers (`event_starts.rs`).
+    pub event_starts: super::event_starts::EventStarts,
+    /// `HSMCARSWAPLO`'s jack spots and swap (`car_swap.rs`).
+    pub car_swap: super::car_swap::CarSwap,
 }
 
 /// The binding host the logic reads through: the game-mode manager's `Mode` root ([`super::mode_view`]) first,
@@ -854,4 +860,12 @@ pub enum Request {
     /// `GAMEERROR` enter (0x740ab0): show the generic error message (`FUN_007b3410` on `FUN_007746a0` +
     /// 0x11190).
     ShowGameError,
+    /// `CHECKPTS`'s outcomes for the engine (`natives::checkpoints`).
+    Checkpoint(super::checkpoints::CheckpointOut),
+    /// `EVENTSTARTS` enter (0x754f30): the parameters, applied by the logic (`natives::event_starts::enter`).
+    EventStartParams(super::event_starts::EventStartParams),
+    /// `EVENTSTARTS`'s outcomes for the engine (`natives::event_starts`).
+    EventStart(super::event_starts::EventStartOut),
+    /// `HSMCARSWAPLO`'s outcomes for the engine (`natives::car_swap`).
+    CarSwap(super::car_swap::CarSwapOut),
 }

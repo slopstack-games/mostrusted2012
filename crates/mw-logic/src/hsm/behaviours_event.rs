@@ -1,8 +1,8 @@
 //! Behaviour types the game-mode machines run to end, check and set up an event: the end reason, the end check,
 //! the wait for input, the layer set, the blacklist shutdowns, the checkpoints, the event starts and the car-swap
-//! logic. The big ones (`CHECKPTS`, `EVENTSTARTS`, `HSMCARSWAPLO`, the steps of `DOBLACKLISTS`) are engine
-//! subsystems of the original: their lifecycle, exit conditions and parameters are ported here, the per-frame work is
-//! a [`Request`] the runtime answers (each names its function).
+//! logic. The big ones (`CHECKPTS`, `EVENTSTARTS`, `HSMCARSWAPLO`) keep their lifecycle here and their per-frame
+//! work in the logic's managers (`natives::checkpoints`, `natives::event_starts`, `natives::car_swap`), which the
+//! host runs on the behaviours' requests; the steps of `DOBLACKLISTS` are still a [`Request`] the runtime answers.
 
 use mw_formats::hsm::key;
 use mw_formats::json::Json;
@@ -10,6 +10,7 @@ use mw_formats::json::Json;
 use super::{Query, ask, ask_bool, param_true};
 use crate::hsm::{Behaviour, Cx, EXIT, Key, Registry};
 use crate::natives::Request;
+use crate::natives::event_starts::EventStartParams;
 
 pub fn register(r: &mut Registry) {
     r.register_fn("SETENDREASON", |_| SetEndReason);
@@ -296,7 +297,7 @@ impl DoBlacklistShutdowns {
 /// loaded (at once when there are none); the update (0x75da20) steps them each frame (the checkpoint passed,
 /// split times, the next one's marker) and exits through `EXIT` when the last one was reached and the widget
 /// manager's state G+0x2f458 +0x85c is not 3, at once with no checkpoints; exit (0x75d960) removes them. The
-/// stepping is engine code (not ported), see the [`Request`]s.
+/// stepping is `natives::checkpoints` (run by the host on `CheckpointsStep`; the queries are its answers).
 pub struct Checkpoints;
 
 impl Behaviour for Checkpoints {
@@ -334,7 +335,8 @@ impl Behaviour for Checkpoints {
 /// world. Enter (0x754f30) reads `CHECKENTRY` (true: the player entering a start ends the state), `POIID`,
 /// `RECPOIID`, `MWPOIIDC`, `MWPOIIDUC` and `TRACKEDONLY`; the update (0x755220) refreshes the starts and, with
 /// `CHECKENTRY`, exits through `EXIT` when the player stands in one ([`Query::EventStartTriggered`]); exit
-/// (0x74ab80) removes them. The marker bookkeeping is engine code (not ported).
+/// (0x74ab80) removes them. The markers, the prompt and the burnout are `natives::event_starts` (run by the host on
+/// `EventStartParams` / `EventStartsStep` / `EventStartsLeave`).
 #[derive(Default)]
 pub struct EventStarts {
     check_entry: bool,
@@ -344,6 +346,18 @@ impl Behaviour for EventStarts {
     fn on_enter(&mut self, cx: &mut Cx) {
         self.check_entry = param_true(cx, "CHECKENTRY");
         cx.host.request(Request::EventStartsEnter { check_entry: self.check_entry });
+        let int = |cx: &Cx, name: &str| super::param_int(cx, name).max(0) as u32;
+        let params = EventStartParams {
+            check_entry: self.check_entry,
+            poi: int(cx, "POIID"),
+            rec_poi: int(cx, "RECPOIID"),
+            mw_poi: int(cx, "MWPOIIDC"),
+            mw_poi_won: int(cx, "MWPOIIDUC"),
+            tracked_only: param_true(cx, "TRACKEDONLY"),
+            respect_radius: param_true(cx, "RSPCTRADIUS"),
+            active_radius: cx.param_f32("ACTIVERADIUS"),
+        };
+        cx.host.request(Request::EventStartParams(params));
     }
 
     fn update(&mut self, cx: &mut Cx) -> bool {
