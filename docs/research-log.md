@@ -13,6 +13,28 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ## Dated findings
 
+### 2026-11-17: Lua natives, first 60 ported (M8 step 3; `natives/lua_{args,widgets,settings,career}.rs`)
+
+Merged the stopped agent's WIP onto the wired registry (`Registry::set_lua`, `LogicHost::install_lua`) and
+verified it. Sources: each handler in the dump (addresses in the doc comments), Lua 5.1 `lapi.c` as linked in the
+exe (`lua_args.rs`: `tolstring` NULL gives `"<invalid>"`, `tonumber` + `_ftol2` for ints). Ported (60 of 385, mwtool
+natives): bindings (`Resolve{Bool,Int,Double,String,WideString}Binding`), `ExitWidgetGroup`, `Set{Bool,Int,Double,
+String,UniqueId}Variable`, `DeleteVariable`, `DoRpc`, `SetModalMode`, `print`, `GetPlatformName` (`"PC"`),
+`SmoothStep`, `SetLanguage`, `GetInitialLanguageSelectLanguage`, conductors / sequences (6), dialogs (3), text
+entry (3), settings (14 + 3 post-FX), career fields (12). State: `LogicState::{screen, widget_scripts, text_entry,
+settings, post_fx, game, game_modes, ui_manager, challenges}`; engine-only effects are `Request::{WidgetRpc,
+SetLanguage, CreateConductor, DestroyConductor, StartSequence, StopSequence, ShowDialog, CloseDialog,
+StartTextEntry, SaveSettings}`.
+- **Tests**: `natives/lua_tests.rs` (a test per area, every native called as a Lua global); `tests/lua_natives.rs`
+  (shipped chunks `ViewLegal`, `Breadcrumb` through `LogicHost`). `ViewLegal.OnCancel` calls the unported
+  `SignInFinished` then `ExitWidgetGroup("CANCEL")`; `ViewLegal.OnAction` without a configured binding errors in
+  the script on a chunk-level nil local (context, not a native).
+- **Model decisions**: `SetUniqueIdVariable` stores an int (the typed JSON has no tag 7); the script variables
+  are republished as the single root `Widget` (one member per widget; the bindings' root is one name hash, the
+  original resolves `Widget.<w>.<..>` through slot 8 of the script objects); `GetCurrentSafeHouse` answers 0
+  and the `SetSafeHouse`-like natives only read their argument until the career state exists.
+- **Open**: `SignInFinished` / `SignInStarted` (online, trivial), the profile / career natives that rebuild lists.
+
 ### 2026-11-17: native registries wired (PLAN M8 step 3, `mw_logic::natives`)
 
 - `Registry::original()` lists the 187 HSM hooks (`FUN_007763b0`) and 385 Lua natives (`FUN_009f7e50`) with handler

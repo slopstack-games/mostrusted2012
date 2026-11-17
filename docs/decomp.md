@@ -5907,3 +5907,11 @@ HSM manager +0x360, called by `CALLHSMHOOK(S)` / `HSMHOOKEXIT` with a member of 
 arguments through `FUN_007761a0`, and by widget native actions `FUN_007f2670`) and Lua natives (`FUN_009f7e50`,
 385 names, bound as global closures with the name as upvalue by `FUN_009f86d0`). 36 names are in both, each with
 its own handler. The port: `crates/mw-logic/src/natives/` (`table.rs` has every name and handler address).
+
+Ported Lua natives (60 of 385, 2026-11-17; handlers in the doc comments of `lua_widgets.rs`, `lua_settings.rs`,
+`lua_career.rs`): the five `Resolve*Binding`, `ExitWidgetGroup`, `Set{Bool,Int,Double,String,UniqueId}Variable`,
+`DeleteVariable`, `DoRpc`, `SetModalMode`, `print`, `GetPlatformName`, `SmoothStep`, `SetLanguage`,
+`GetInitialLanguageSelectLanguage`, `{Create,Destroy}Conductor`, `{Start,Stop}Sequence`, `HasSequenceFinished`,
+`IsConductorIdle`, `RequestDialog`, `GetDialogResult`, `ClearDialog`, `StartTextEntry`, `GetTextEntryState`,
+`GetEnteredText`, the settings getters / setters / revert / save, `RegisterPostFXSetting`, `ChangePostFXSetting`,
+`ResetPostFXSettings`, and 12 career field natives (`SetOfflineEventToPlay`, `SetStoryMode`, ...).
