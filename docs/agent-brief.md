@@ -38,7 +38,8 @@ keep them wasm32-compatible (`tools/wasm-check`), and clippy clean for them.
   `.claude/tools/`: `fn <addr>`, `callers <addr>`, `exe-const <va> [n] [f32|u32|str]`. REA (MCP `rea`) opens
   `re/out/live/NFS13_snap1_vt.exe` for functions the dump misses (reverse-engineering.md "Functions the dump is
   missing"; slow first query; other agents may use it at the same time).
-- **Never commit** game data, exports or decompiled code; findings go into the docs as prose.
+- **Never commit** game data, exports or decompiled code; findings go into the docs as prose. That includes disassembly or `fn` output saved to
+  files: keep those in the git-ignored `scratch/`, never at the repo root, and check `git status` before committing.
 - **/tmp and the scratchpad are RAM**: screenshots, traces and binaries go into the worktree's git-ignored
   `extracted/`, `ref/` or `scratch/`.
 - **The original game** (`tools/orig`): only when the task says so (one agent at a time; it is silent by

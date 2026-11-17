@@ -23,3 +23,7 @@
 
 # Agent scratch space (screenshots, traces, binaries)
 /scratch/
+
+# Stray dump / disassembly notes agents leave at the root (never commit dump output)
+/scratch_*
+/*.wav
