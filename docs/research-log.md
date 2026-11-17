@@ -13,6 +13,30 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ## Dated findings
 
+### 2026-11-17: 11 more HSM behaviour types, the boot needs no behaviour answers (`hsm/behaviours_game.rs`)
+
+The 6 types removed from the first batch were verified against `text.asm` (factories are not in the dump: vtable
+from the factory's `mov [esi],vtable`, slots from `.rdata`, bodies from `text.asm` plus `fn` for callees) and
+ported: DBAUTOSELWD, SELECT_PROF, WAIT4FEEDBK, WAITFORVEHIC, ISNEWPROFILE, ISAUTOTESTIN, plus HSB_STRSCRPT (only
+slot 1 own, returns 1). Then the unported types the boot still ran as placeholders: REBOOT_REQ, ENABLETIME,
+COLLECTABLES, LOAD_FDBK_GR (7 + 4 = 11 ported in all). Details and addresses: decomp.md "The HSM
+interpreter" (second batch). Findings: SELECT_PROF names the profile `%llu` of the persona id (`FUN_00428860` into
+`DAT_010ecc10`) and posts message 0xc on exit; the `.bss` parameter keys read from snapshot 1 are `GROUP`,
+`GROUPBINDING` (shared by WAIT4FEEDBK and LOAD_FDBK_GR) and `UNLOADONEXIT`; the earlier WIP's readings were all
+confirmed (no corrections). Name stubs (`FUN_00779e10` etc.) return (hash, factory) in edx: that is how a name
+maps to its factory.
+Request: AutoSelectWorld, SetProfileUser, ProfileUserSelected, StartCollectables, StopCollectables,
+LoadFeedbackGroup, UnloadFeedbackGroup, AdjustTimeEnabled. Query (default): AutoSelectableWorld (true), UserId (1:
+model decision, offline has no persona), FeedbackGroupLoaded (true), VehicleListLoaded (true), NewProfile (true),
+RebootRequested (false), CollectablesReady (true). Tests in `hsm/flow_tests.rs`, one per type.
+`mwtool hsm --run` reaches "Playing" with 5 answers instead of 11; each of the 5 is needed: the BOOT trigger,
+`UIConfig.Platform`, `Net.IsLoggedInToServer`, `SignInState.Params.IsChatRestricted` (engine bindings / online
+services) and state 1222788 `ConnectToAutolog` (online Autolog sign-in; its subtree "PC Login" waits for a
+sign-in screen). None is a behaviour answer. Still placeholders on the boot path:
+PRELOADCOPS (0x744c50 / 0x75c1c0 / 0x758030, resource streaming), HSB_RNLAYOUT (0x77f5f0, 7 slots), LIST_INVITE
+(0x74dd80, online invites) are the next candidates. ENABLETIME's counter meaning (G+0x25624) is inferred from the
+name.
+
 ### 2026-11-17: second 20 HSM hooks verified and enabled (`natives/hooks_{flow,event,ui}.rs`)
 
 Handlers read from `re/out/live/text.asm` (TRUE = `DAT_01177fe0`, FALSE = `DAT_01177ee0`, EXIT = `DAT_01177ef0`).

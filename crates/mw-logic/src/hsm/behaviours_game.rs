@@ -20,6 +20,17 @@ pub fn register(r: &mut Registry) {
     r.register_fn("LOAD_ALL", |_| LoadAll);
     r.register_fn("BINGAME", |_| InGame::default());
     r.register_fn("HSM_PLAYING", |_| Playing);
+    r.register_fn("DBAUTOSELWD", |_| AutoSelectWorld);
+    r.register_fn("SELECT_PROF", |_| SelectProfile);
+    r.register_fn("WAIT4FEEDBK", |_| WaitForFeedbackGroup);
+    r.register_fn("WAITFORVEHIC", |_| WaitForVehicleList);
+    r.register_fn("ISNEWPROFILE", |_| IsNewProfile);
+    r.register_fn("ISAUTOTESTIN", |_| IsAutoTesting);
+    r.register_fn("HSB_STRSCRPT", |_| StartupScript);
+    r.register_fn("REBOOT_REQ", |_| RebootRequest);
+    r.register_fn("ENABLETIME", |_| EnableTime);
+    r.register_fn("COLLECTABLES", |_| Collectables);
+    r.register_fn("LOAD_FDBK_GR", |_| LoadFeedbackGroup::default());
 }
 
 /// `YES` (`DAT_0117a9b0`) and `NO` (`DAT_0117a020`).
@@ -278,5 +289,179 @@ impl Behaviour for Playing {
 
     fn on_exit(&mut self, cx: &mut Cx) {
         cx.host.request(Request::StopPlaying);
+    }
+}
+
+/// "DEBUG Autoselect World" (`DBAUTOSELWD`, factory 0x77d670, vtable 0xfda4cc): selects the configured debug
+/// world, else the world list's only world, and exits through `SELECTED`; with neither, `UNSELECTED`
+/// (0x7702e0).
+pub struct AutoSelectWorld;
+
+impl Behaviour for AutoSelectWorld {
+    fn update(&mut self, cx: &mut Cx) -> bool {
+        if ask_bool(cx, Query::AutoSelectableWorld) {
+            cx.host.request(Request::AutoSelectWorld);
+            cx.set_exit(key("SELECTED"));
+        } else {
+            cx.set_exit(key("UNSELECTED"));
+        }
+        true
+    }
+}
+
+/// "Select Profile" (`SELECT_PROF`, factory 0x77bf10, vtable 0xfd998c): waits for the platform user's id
+/// (0x73f270), names the profile after it and exits through `SUCCESS`; posts message 0xc on exit (0x75cd00).
+pub struct SelectProfile;
+
+impl Behaviour for SelectProfile {
+    fn update(&mut self, cx: &mut Cx) -> bool {
+        let user = ask(cx, Query::UserId);
+        if user == 0 {
+            return false;
+        }
+        cx.host.request(Request::SetProfileUser { user });
+        cx.set_exit(key("SUCCESS"));
+        true
+    }
+
+    fn on_exit(&mut self, cx: &mut Cx) {
+        cx.host.request(Request::ProfileUserSelected);
+    }
+}
+
+/// "Wait For Feedback Group" (`WAIT4FEEDBK`, factory 0x77d2b0, vtable 0xfda2f4, update 0x746a50): the group is
+/// `GROUP` (atoi), replaced by the value of the `GROUPBINDING` binding when that parameter is a non-empty path
+/// (parameter names read from the snapshot's keys at `DAT_0117a650` / `DAT_0117a580`); exits through `EXIT` once
+/// the group is loaded (`FUN_00792590`), or at once for group 0.
+pub struct WaitForFeedbackGroup;
+
+impl Behaviour for WaitForFeedbackGroup {
+    fn update(&mut self, cx: &mut Cx) -> bool {
+        let path = cx.param_text("GROUPBINDING");
+        let group = binding_or_param(cx, &path, "GROUP");
+        if group != 0 && !ask_bool(cx, Query::FeedbackGroupLoaded { group }) {
+            return false;
+        }
+        cx.set_exit(EXIT);
+        true
+    }
+}
+
+/// "Wait For Vehicle List" (`WAITFORVEHIC`, factory 0x77d850, vtable 0xfda5b4): exits through `EXIT` once the
+/// vehicle list is loaded (0x741b70).
+pub struct WaitForVehicleList;
+
+impl Behaviour for WaitForVehicleList {
+    fn update(&mut self, cx: &mut Cx) -> bool {
+        if !ask_bool(cx, Query::VehicleListLoaded) {
+            return false;
+        }
+        cx.set_exit(EXIT);
+        true
+    }
+}
+
+/// "HSM.Is Brand New Profile" (`ISNEWPROFILE`, factory 0x77e540, vtable 0xfdab78): exits at once through `Yes`
+/// for a new profile, else `No` (0x73d350).
+pub struct IsNewProfile;
+
+impl Behaviour for IsNewProfile {
+    fn update(&mut self, cx: &mut Cx) -> bool {
+        let new = ask_bool(cx, Query::NewProfile);
+        cx.set_exit(if new { YES } else { NO });
+        true
+    }
+}
+
+/// "Is Auto Testing" (`ISAUTOTESTIN`, factory 0x77e590, vtable 0xfdab9c): exits at once through `No` on the
+/// retail PC build (0x76e8a0).
+pub struct IsAutoTesting;
+
+impl Behaviour for IsAutoTesting {
+    fn update(&mut self, cx: &mut Cx) -> bool {
+        cx.set_exit(NO);
+        true
+    }
+}
+
+/// "Run Startup Script" (`HSB_STRSCRPT`, factory 0x77bba0, vtable 0xfd97f4): its only own slot is the enter
+/// update 0x73f110 (`return 1`, like the base's): runs its children.
+pub struct StartupScript;
+
+impl Behaviour for StartupScript {}
+
+/// "Wait For System Reboot Request" (`REBOOT_REQ`, factory 0x779de0, vtable 0xfd8f78): exits through `EXIT` once
+/// a reboot was requested (update 0x741a90).
+pub struct RebootRequest;
+
+impl Behaviour for RebootRequest {
+    fn update(&mut self, cx: &mut Cx) -> bool {
+        if !ask_bool(cx, Query::RebootRequested) {
+            return false;
+        }
+        cx.set_exit(EXIT);
+        true
+    }
+}
+
+/// "Enable Time" (`ENABLETIME`, factory 0x77f270, vtable 0xfdb13c): counts G+0x25624 up on enter (0x73c4d0) and
+/// down on exit (0x73c4e0); runs its children.
+pub struct EnableTime;
+
+impl Behaviour for EnableTime {
+    fn on_enter(&mut self, cx: &mut Cx) {
+        cx.host.request(Request::AdjustTimeEnabled { delta: 1 });
+    }
+
+    fn on_exit(&mut self, cx: &mut Cx) {
+        cx.host.request(Request::AdjustTimeEnabled { delta: -1 });
+    }
+}
+
+/// "Collectables" (`COLLECTABLES`, factory 0x77b4c0, vtable 0xfd94e8): enters once the world state is loaded and
+/// resets the collectables (enter update 0x73c2f0); stops them on exit (0x73c330); runs its children (update
+/// 0x73c350 returns 0, on enter 0x73c2e0 is empty).
+pub struct Collectables;
+
+impl Behaviour for Collectables {
+    fn enter_update(&mut self, cx: &mut Cx) -> bool {
+        if !ask_bool(cx, Query::CollectablesReady) {
+            return false;
+        }
+        cx.host.request(Request::StartCollectables);
+        true
+    }
+
+    fn on_exit(&mut self, cx: &mut Cx) {
+        cx.host.request(Request::StopCollectables);
+    }
+}
+
+/// "Load Feedback Message Group" (`LOAD_FDBK_GR`, factory 0x77cf60, vtable 0xfda13c): the group is `GROUP`
+/// (atoi) or the `GROUPBINDING` binding's value (as `WAIT4FEEDBK`); on enter (0x743ee0) a nonzero group is loaded;
+/// enters once it is loaded, at once for group 0 (0x73d990 / 0x73d9a0); on exit (0x743ff0) it is released when
+/// `UNLOADONEXIT` is "true" (`_stricmp`).
+#[derive(Default)]
+pub struct LoadFeedbackGroup {
+    group: i64,
+}
+
+impl Behaviour for LoadFeedbackGroup {
+    fn on_enter(&mut self, cx: &mut Cx) {
+        let path = cx.param_text("GROUPBINDING");
+        self.group = binding_or_param(cx, &path, "GROUP");
+        if self.group != 0 {
+            cx.host.request(Request::LoadFeedbackGroup { group: self.group });
+        }
+    }
+
+    fn enter_update(&mut self, cx: &mut Cx) -> bool {
+        self.group == 0 || ask_bool(cx, Query::FeedbackGroupLoaded { group: self.group })
+    }
+
+    fn on_exit(&mut self, cx: &mut Cx) {
+        if param_true(cx, "UNLOADONEXIT") && self.group != 0 {
+            cx.host.request(Request::UnloadFeedbackGroup { group: self.group });
+        }
     }
 }
