@@ -241,6 +241,7 @@ tools/t --hsm-event 462174 --auto-start 1 --test race --mute; grep -E 'hsm:.*(ma
 ./target/release/mwtool hsm [<node id>] [--find text]     # game-logic state machines (HSMData); mwtool frontend
 ./target/release/mwtool hsm <id> --parents               # which nodes start a node (child or transition)
 ./target/release/mwtool hsm --data                       # the data definitions (JSON view models / hook arguments)
+./target/release/mwtool hsm --codes [--find CODE]        # the behaviour codes the bundle uses, uses and ported / UNPORTED; --find: those states with their parameters
 ./target/release/mwtool hsm --bundle all                 # parse every HSMData of the install (37)
 # (--answer Query.<Name>=<v> answers an engine wait of the ported boot behaviours, e.g. Query.ProfileLoaded=false; every Request is printed)
 # Headless HSM interpreter (mw_logic::hsm) from a top-level instance (default 20527 = boot "Top State"): logs every

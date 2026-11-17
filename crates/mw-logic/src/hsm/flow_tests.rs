@@ -1691,3 +1691,523 @@ fn show_game_error_counts_three_frames_then_posts_on_exit() {
     assert_eq!(hsm.result(s), Some(EXIT));
     assert_eq!(host.reqs[1], Request::PostGameMessage { id: 0xa, value: None });
 }
+
+// The online behaviour types (`behaviours_online.rs`): offline answers ("no session, no connection") and the
+// original's paths when the host says otherwise.
+
+use super::behaviours::online::NetMessage;
+
+fn net_reqs(host: &Rec) -> Vec<&Request> {
+    host.reqs.iter().filter(|r| matches!(r, Request::NetSend { .. })).collect()
+}
+
+#[test]
+fn upload_results_waits_a_tick_then_exits_and_books_the_xp() {
+    // Offline: the object is reset and acknowledged, nothing is sent.
+    let (mut hsm, mut host, s) = machine("UPLOADRESULT", &[], "ENTER");
+    step(&mut hsm, &mut host, 1);
+    assert_eq!(host.reqs, [Request::NetReset { slot: 0 }, Request::NetAck { slot: 0 }]);
+    assert!(hsm.is_running(s));
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    // The exit update found the request done (default state 2): the XP is booked.
+    assert!(host.reqs.contains(&Request::UploadResultXp));
+    // Connected and online: the result is sent.
+    let (mut hsm, mut host, _) = machine("UPLOADRESULT", &[], "ENTER");
+    host.answers.insert("NetBlazeUp", 1);
+    host.answers.insert("OnlineEvent", 1);
+    step(&mut hsm, &mut host, 1);
+    assert_eq!(host.reqs[1], Request::NetSend { slot: 0, message: NetMessage::UploadRaceResult });
+    // A pending request keeps the exit update waiting.
+    let (mut hsm, mut host, s) = machine("UPLOADRESULT", &[], "ENTER");
+    host.answers.insert("NetRequestState", 1);
+    step(&mut hsm, &mut host, 5);
+    assert_eq!(hsm.result(s), None);
+    host.answers.insert("NetRequestState", 0);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+}
+
+#[test]
+fn upload_concours_sends_thousands_and_waits_for_the_sync() {
+    let (mut hsm, mut host, s) = machine("UPLDCONCOURS", &[], "ENTER");
+    host.answers.insert("ConcoursValue", 12_345);
+    host.answers.insert("NetRequestError", 0);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(net_reqs(&host), [&Request::NetSend { slot: 0, message: NetMessage::UploadConcours { value: 12_000 } }]);
+    assert!(host.reqs.contains(&Request::ClearConcoursPending));
+    assert!(hsm.is_running(s));
+    host.answers.insert("ConcoursSynced", 1);
+    step(&mut hsm, &mut host, 2);
+    assert!(host.reqs.contains(&Request::ApplyConcoursResult));
+    assert_eq!(hsm.result(s), Some(EXIT));
+    // An error exits at once without applying anything.
+    let (mut hsm, mut host, s) = machine("UPLDCONCOURS", &[], "ENTER");
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    assert!(!host.reqs.contains(&Request::ApplyConcoursResult));
+}
+
+#[test]
+fn net_create_game_waits_for_the_network_then_creates_by_visibility() {
+    let (mut hsm, mut host, s) = machine("HSB_NET_CRE", &[("VISIBILITY", "FRIENDS_ONLY")], "ENTER");
+    step(&mut hsm, &mut host, 5);
+    assert!(host.reqs.is_empty());
+    assert!(hsm.is_running(s));
+    host.answers.insert("NetReady", 1);
+    host.answers.insert("NetRequestError", 0);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(
+        net_reqs(&host),
+        [&Request::NetSend { slot: 0, message: NetMessage::CreateGame { visibility: 3, flag: true } }]
+    );
+    assert!(host.reqs.contains(&Request::ClearCreateGameDesired));
+    // The success is waited out until the session exists.
+    step(&mut hsm, &mut host, 3);
+    assert!(hsm.is_running(s));
+    host.answers.insert("OnlineGame", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(key("SUCCESS")));
+    assert_eq!(host.reqs.last(), Some(&Request::RestoreUiMessages));
+    // An error fails (default error 1); no `VISIBILITY` = invite only.
+    let (mut hsm, mut host, s) = machine("HSB_NET_CRE", &[], "ENTER");
+    host.answers.insert("NetReady", 1);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(
+        net_reqs(&host),
+        [&Request::NetSend { slot: 0, message: NetMessage::CreateGame { visibility: 2, flag: true } }]
+    );
+    assert_eq!(hsm.result(s), Some(key("FAILED")));
+}
+
+#[test]
+fn create_playgroup_sends_and_exits_by_the_error() {
+    let (mut hsm, mut host, s) = machine("CREATEPLAYGR", &[], "ENTER");
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(net_reqs(&host), [&Request::NetSend { slot: 0, message: NetMessage::CreatePlaygroup }]);
+    assert_eq!(hsm.result(s), Some(key("FAIL")));
+    assert_eq!(host.reqs.last(), Some(&Request::RestoreUiMessages));
+    let (mut hsm, mut host, s) = machine("CREATEPLAYGR", &[], "ENTER");
+    host.answers.insert("NetRequestError", 0);
+    step(&mut hsm, &mut host, 3);
+    // Waits for the game session (`FUN_004c1ea0`).
+    assert!(hsm.is_running(s));
+    host.answers.insert("NetInGame", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(key("SUCCESS")));
+}
+
+#[test]
+fn leave_playgroup_sends_only_inside_a_session() {
+    let (mut hsm, mut host, s) = machine("LEAVEPLAYGRO", &[], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert!(net_reqs(&host).is_empty());
+    assert_eq!(hsm.result(s), Some(key("SUCCESS")));
+    let (mut hsm, mut host, s) = machine("LEAVEPLAYGRO", &[], "ENTER");
+    host.answers.insert("NetInGame", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(net_reqs(&host), [&Request::NetSend { slot: 0, message: NetMessage::LeavePlaygroup }]);
+    // The default error with the session still standing: FAILED.
+    assert_eq!(hsm.result(s), Some(key("FAILED")));
+    let (mut hsm, mut host, s) = machine("LEAVEPLAYGRO", &[], "ENTER");
+    host.answers.insert("NetInGame", 1);
+    host.answers.insert("NetRequestError", 0);
+    host.answers.insert("NetRequestState", 1);
+    step(&mut hsm, &mut host, 3);
+    assert!(hsm.is_running(s));
+    host.answers.insert("NetRequestState", 2);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(key("SUCCESS")));
+}
+
+#[test]
+fn quick_join_holds_offline_and_searches_when_connected() {
+    let (mut hsm, mut host, s) = machine("HSB_NET_QJO", &[], "ENTER");
+    step(&mut hsm, &mut host, 5);
+    assert!(host.reqs.is_empty());
+    assert!(hsm.is_running(s));
+    host.answers.insert("NetReady", 1);
+    host.answers.insert("NetRequestState", 0);
+    step(&mut hsm, &mut host, 1);
+    assert!(net_reqs(&host).contains(&&Request::NetSend { slot: 0, message: NetMessage::QuickJoinSearch }));
+    assert!(host.reqs.contains(&Request::ClearQuickJoinDesired));
+    // In the playgroup: SUCCESS.
+    host.answers.insert("OnlineGame", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(key("SUCCESS")));
+    // The matchmaking state 2 with an idle search: CANCELLED.
+    let (mut hsm, mut host, s) = machine("HSB_NET_QJO", &[], "ENTER");
+    host.answers.insert("NetReady", 1);
+    host.answers.insert("NetRequestState", 0);
+    host.answers.insert("MatchState", 2);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(hsm.result(s), Some(key("CANCELLED")));
+    // A finished search by its error: 2 DISCONNECTED.
+    let (mut hsm, mut host, s) = machine("HSB_NET_QJO", &[], "ENTER");
+    host.answers.insert("NetReady", 1);
+    host.answers.insert("NetRequestState", 2);
+    host.answers.insert("NetRequestError", 2);
+    step(&mut hsm, &mut host, 3);
+    // The exit waits for the (acknowledged) objects to be idle.
+    assert!(hsm.is_running(s));
+    host.answers.insert("NetRequestState", 0);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(key("DISCONNECTED")));
+}
+
+#[test]
+fn net_join_game_sends_the_wish_and_maps_the_errors() {
+    // No Blaze connection: FAILED at once.
+    let (mut hsm, mut host, s) = machine("HSB_NET_JOI", &[], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(key("FAILED")));
+    assert!(net_reqs(&host).is_empty());
+    // Connected, a game id wished: the join is sent, then the error picks the exit.
+    let cases = [
+        (0, "SUCCESS"),
+        (45, "NOT_EXIST"),
+        (46, "GAME_FULL"),
+        (48, "INV_VER"),
+        (49, "NO_PRIV"),
+        (51, "UNENTITLED"),
+        (47, "FAILED"),
+    ];
+    for (code, exit) in cases {
+        let (mut hsm, mut host, s) = machine("HSB_NET_JOI", &[], "ENTER");
+        host.answers.insert("NetBlazeUp", 1);
+        host.answers.insert("NetReady", 1);
+        host.answers.insert("JoinWish", 2);
+        host.answers.insert("NetRequestError", code);
+        step(&mut hsm, &mut host, 3);
+        assert_eq!(net_reqs(&host), [&Request::NetSend { slot: 0, message: NetMessage::JoinGame }]);
+        assert!(host.reqs.contains(&Request::ClearJoinWish));
+        // After a join the exit waits for the session; a failure does not.
+        assert_eq!(hsm.is_running(s), code == 0, "error {code}");
+        host.answers.insert("OnlineGame", 1);
+        step(&mut hsm, &mut host, 3);
+        assert_eq!(hsm.result(s), Some(key(exit)), "error {code}");
+    }
+    // An accepted invite joins the invite's game and is dropped when leaving.
+    let (mut hsm, mut host, s) = machine("HSB_NET_JOI", &[], "ENTER");
+    host.answers.insert("NetBlazeUp", 1);
+    host.answers.insert("NetReady", 1);
+    host.answers.insert("InviteAccepted", 1);
+    host.answers.insert("JoinWish", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(net_reqs(&host), [&Request::NetSend { slot: 0, message: NetMessage::JoinInvite }]);
+    host.answers.insert("InviteAccepted", 0);
+    step(&mut hsm, &mut host, 5);
+    assert!(!hsm.is_running(s));
+    assert!(host.reqs.contains(&Request::ClearInvite));
+}
+
+#[test]
+fn net_leave_game_sends_inside_a_session_and_maps_the_errors() {
+    let (mut hsm, mut host, s) = machine("HSB_NET_LEA", &[("BRINGPLAYGRP", "False")], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert!(net_reqs(&host).is_empty());
+    assert_eq!(hsm.result(s), Some(key("SUCCESS")));
+    let (mut hsm, mut host, s) = machine("HSB_NET_LEA", &[("BRINGPLAYGRP", "True")], "ENTER");
+    host.answers.insert("OnlineGame", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(
+        net_reqs(&host),
+        [&Request::NetSend { slot: 0, message: NetMessage::LeaveGame { bring_playgroup: true } }]
+    );
+    // Error, no Blaze: DISCONNECTED.
+    assert_eq!(hsm.result(s), Some(key("DISCONNECTED")));
+    let (mut hsm, mut host, s) = machine("HSB_NET_LEA", &[], "ENTER");
+    host.answers.insert("NetLobbyB", 1);
+    host.answers.insert("NetBlazeUp", 1);
+    step(&mut hsm, &mut host, 2);
+    // Blaze up, no playgroup: the leave counts as done.
+    assert_eq!(hsm.result(s), Some(key("SUCCESS")));
+}
+
+#[test]
+fn join_playgroup_by_user_picks_the_message_and_exits_party() {
+    let (mut hsm, mut host, s) = machine("JOINPARTYUID", &[], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(key("FAILED")));
+    let (mut hsm, mut host, s) = machine("JOINPARTYUID", &[], "ENTER");
+    host.answers.insert("NetBlazeUp", 1);
+    host.answers.insert("NetReady", 1);
+    host.answers.insert("NetRequestError", 0);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(net_reqs(&host), [&Request::NetSend { slot: 0, message: NetMessage::JoinPartyByUser }]);
+    assert!(host.reqs.contains(&Request::ClearPartyWish));
+    assert!(host.reqs.contains(&Request::RefreshPartyUi));
+    assert_eq!(hsm.result(s), Some(key("PARTY")));
+    let (mut hsm, mut host, _) = machine("JOINPARTYUID", &[], "ENTER");
+    host.answers.insert("NetBlazeUp", 1);
+    host.answers.insert("NetReady", 1);
+    host.answers.insert("PartyInvite", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(net_reqs(&host), [&Request::NetSend { slot: 0, message: NetMessage::JoinPartyByInvite }]);
+}
+
+#[test]
+fn disconnect_from_blaze_sends_exits_and_waits_for_the_request() {
+    let (mut hsm, mut host, s) = machine("DISCONNECTFR", &[], "ENTER");
+    host.answers.insert("NetRequestState", 1);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(net_reqs(&host), [&Request::NetSend { slot: 0, message: NetMessage::Disconnect }]);
+    assert_eq!(hsm.result(s), None);
+    assert!(hsm.is_running(s));
+    host.answers.insert("NetRequestState", 2);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    assert!(host.reqs.contains(&Request::NetAck { slot: 0 }));
+}
+
+#[test]
+fn reconnect_to_autolog_requests_and_exits() {
+    let (mut hsm, mut host, s) = machine("RECONNECT AL", &[], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::AutologReconnect]);
+    assert_eq!(hsm.result(s), Some(EXIT));
+}
+
+#[test]
+fn invite_failed_drops_the_invite_and_waits_for_it_to_go() {
+    let (mut hsm, mut host, s) = machine("INVITEFAILED", &[], "ENTER");
+    host.answers.insert("InvitePending", 1);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs, [Request::ClearInvite]);
+    assert!(hsm.is_running(s));
+    host.answers.insert("InvitePending", 0);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+}
+
+#[test]
+fn is_invite_pending_answers_yes_or_no() {
+    let (mut hsm, mut host, s) = machine("ISINVITEPEND", &[], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(NO));
+    let (mut hsm, mut host, s) = machine("ISINVITEPEND", &[], "ENTER");
+    host.answers.insert("InvitePending", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(YES));
+}
+
+#[test]
+fn send_invite_takes_the_friend_id_and_exits_when_sent() {
+    // No friend id: step 2 at once.
+    let (mut hsm, mut host, s) = machine("SEND_INVITE", &[], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert!(host.reqs.is_empty());
+    assert_eq!(hsm.result(s), Some(key("INVITE_SENT")));
+    let (mut hsm, mut host, s) = machine("SEND_INVITE", &[], "ENTER");
+    host.answers.insert("FriendInviteId", 77);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs, [Request::ClearFriendInviteId, Request::SendInvite { id: 77 }]);
+    assert!(hsm.is_running(s));
+    host.answers.insert("InviteSent", 1);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(hsm.result(s), Some(key("INVITE_SENT")));
+    // The invite is sent once.
+    assert_eq!(host.reqs.len(), 2);
+}
+
+#[test]
+fn delete_session_entry_removes_the_named_entry() {
+    let (mut hsm, mut host, s) = machine("DEL_PR_SESS", &[("NAME", "GotoCreateClass")], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::DeleteSessionEntry { name: "GotoCreateClass".into() }]);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    let (mut hsm, mut host, s) = machine("DEL_PR_SESS", &[("NAME", "")], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert!(host.reqs.is_empty());
+    assert_eq!(hsm.result(s), Some(EXIT));
+}
+
+#[test]
+fn valid_connection_is_always_valid() {
+    let (mut hsm, mut host, s) = machine("VALID_CNX_MP", &[], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(key("VALID")));
+    assert!(host.reqs.is_empty());
+}
+
+#[test]
+fn login_state_setters_store_the_state_parameter() {
+    let (mut hsm, mut host, s) = machine("SETFAILLOGIN", &[("STATE", "3")], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::SetLoginState { success: false, state: 3 }]);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    let (mut hsm, mut host, s) = machine("SETSUCCESSLO", &[("STATE", "3")], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::SetLoginState { success: true, state: 3 }]);
+    assert_eq!(hsm.result(s), Some(EXIT));
+}
+
+#[test]
+fn browser_input_holds_without_a_command_and_exits_by_the_command() {
+    let (mut hsm, mut host, s) = machine("BROWSER_IN", &[], "ENTER");
+    step(&mut hsm, &mut host, 4);
+    assert!(host.reqs.is_empty());
+    assert!(hsm.is_running(s));
+    for (command, exit) in [(1, "CLOSE"), (2, "CHANGE_PIC"), (3, "JOIN_GAME"), (4, "INVITE")] {
+        let (mut hsm, mut host, s) = machine("BROWSER_IN", &[], "ENTER");
+        host.answers.insert("BrowserCommand", command);
+        step(&mut hsm, &mut host, 2);
+        assert_eq!(hsm.result(s), Some(key(exit)), "command {command}");
+    }
+    // `Perspective?` only parses; a blocked player object holds everything.
+    let (mut hsm, mut host, s) = machine("BROWSER_IN", &[], "ENTER");
+    host.answers.insert("BrowserCommand", 5);
+    step(&mut hsm, &mut host, 2);
+    assert!(hsm.is_running(s));
+    assert!(host.reqs.contains(&Request::BrowserParse { command: 5 }));
+    let (mut hsm, mut host, s) = machine("BROWSER_IN", &[], "ENTER");
+    host.answers.insert("BrowserCommand", 1);
+    host.answers.insert("BrowserBlocked", 1);
+    step(&mut hsm, &mut host, 3);
+    assert!(hsm.is_running(s));
+}
+
+#[test]
+fn has_invite_accepted_answers_yes_or_no() {
+    let (mut hsm, mut host, s) = machine("HAS_INV_ACCT", &[], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(NO));
+    let (mut hsm, mut host, s) = machine("HAS_INV_ACCT", &[], "ENTER");
+    host.answers.insert("InviteAccepted", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(YES));
+}
+
+#[test]
+fn enumerate_entitlements_requests_and_waits_for_the_list() {
+    let (mut hsm, mut host, s) = machine("ENUM_ENTMNTS", &[], "ENTER");
+    host.answers.insert("EntitlementEnumPending", 1);
+    step(&mut hsm, &mut host, 4);
+    assert_eq!(host.reqs, [Request::EnumerateEntitlements]);
+    assert!(hsm.is_running(s));
+    host.answers.insert("EntitlementEnumPending", 0);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+}
+
+#[test]
+fn system_error_exits_and_finishes() {
+    let (mut hsm, mut host, s) = machine("SYSERROR", &[], "ENTER");
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    assert!(host.reqs.is_empty());
+}
+
+#[test]
+fn host_set_game_mode_is_for_the_host() {
+    let (mut hsm, mut host, _) = machine("HOSTSETGAMEM", &[], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::HostSetGameMode]);
+    let (mut hsm, mut host, _) = machine("HOSTSETGAMEM", &[], "ENTER");
+    host.answers.insert("SessionHost", 0);
+    step(&mut hsm, &mut host, 2);
+    assert!(host.reqs.is_empty());
+}
+
+#[test]
+fn stop_movie_stops_and_exits() {
+    let (mut hsm, mut host, s) = machine("STOPMOVIE", &[], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::StopMovie]);
+    assert_eq!(hsm.result(s), Some(EXIT));
+}
+
+#[test]
+fn online_score_init_holds() {
+    let (mut hsm, mut host, s) = machine("ONLINESCORIN", &[], "ENTER");
+    step(&mut hsm, &mut host, 10);
+    assert!(hsm.is_running(s));
+    assert!(host.reqs.is_empty());
+}
+
+#[test]
+fn sync_game_state_waits_for_the_synced_byte() {
+    let (mut hsm, mut host, s) = machine("SYNCGAMESTAT", &[], "ENTER");
+    step(&mut hsm, &mut host, 4);
+    assert_eq!(host.reqs, [Request::SyncGameState]);
+    assert!(hsm.is_running(s));
+    host.answers.insert("NetSyncing", 1);
+    step(&mut hsm, &mut host, 1);
+    assert_eq!(host.reqs.len(), 2);
+    host.answers.insert("GameStateSynced", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+}
+
+#[test]
+fn upload_challenge_state_uploads_when_authenticated() {
+    let (mut hsm, mut host, s) = machine("UPLDCHALSTE", &[], "ENTER");
+    host.answers.insert("NetRequestState", 0);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    assert!(!host.reqs.contains(&Request::UploadChallengeState { list: 0 }));
+    assert_eq!(host.reqs.last(), Some(&Request::ApplyChallengeResult));
+    let (mut hsm, mut host, _) = machine("UPLDCHALSTE", &[], "ENTER");
+    host.answers.insert("NetAuthenticated", 1);
+    host.answers.insert("NetRequestState", 0);
+    step(&mut hsm, &mut host, 2);
+    assert!(host.reqs.contains(&Request::UploadChallengeState { list: 0 }));
+    assert!(host.reqs.contains(&Request::UploadChallengeState { list: 1 }));
+}
+
+#[test]
+fn is_context_open_answers_yes_or_no() {
+    let (mut hsm, mut host, s) = machine("IsPRCtxtOpen", &[("CONTEXTNAME", "Store")], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(NO));
+    let (mut hsm, mut host, s) = machine("IsPRCtxtOpen", &[("CONTEXTNAME", "Store")], "ENTER");
+    host.answers.insert("AutologContextOpen", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(YES));
+}
+
+#[test]
+fn online_score_actions_run_until_messages_and_scoring_are_done() {
+    let (mut hsm, mut host, s) = machine("ONLNSCRACT", &[], "ENTER");
+    host.answers.insert("UiMessagesActive", 1);
+    step(&mut hsm, &mut host, 3);
+    assert!(hsm.is_running(s));
+    assert_eq!(host.reqs.iter().filter(|r| **r == Request::OnlineScoreActionsUpdate).count(), 3);
+    host.answers.insert("UiMessagesActive", 0);
+    host.answers.insert("OnlineScoreBusy", 1);
+    step(&mut hsm, &mut host, 2);
+    assert!(hsm.is_running(s));
+    host.answers.insert("OnlineScoreBusy", 0);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+}
+
+#[test]
+fn reboot_posts_its_message_every_tick() {
+    let (mut hsm, mut host, s) = machine("REBOOT", &[], "ENTER");
+    step(&mut hsm, &mut host, 4);
+    assert!(hsm.is_running(s));
+    assert!(host.reqs.iter().all(|r| *r == Request::PostQueueMessage { function: 0x76aa50, id: 0xb }));
+    assert!(host.reqs.len() >= 3);
+}
+
+#[test]
+fn sync_time_exits_outside_a_session_or_when_synced() {
+    // Outside a game session: EXIT at once.
+    let (mut hsm, mut host, s) = machine("SYNCTIME", &[], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    // In a session: posts the sync message until the clock is syncing / synced.
+    let (mut hsm, mut host, s) = machine("SYNCTIME", &[], "ENTER");
+    host.answers.insert("OnlineGame", 1);
+    step(&mut hsm, &mut host, 2);
+    assert!(hsm.is_running(s));
+    assert_eq!(host.reqs.len(), 2);
+    assert!(host.reqs.iter().all(|r| *r == Request::PostQueueMessage { function: 0x69a650, id: 5 }));
+    host.answers.insert("ClockSyncing", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs.len(), 2);
+    host.answers.insert("ClockSynced", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+}

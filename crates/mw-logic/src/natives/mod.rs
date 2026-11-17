@@ -243,7 +243,8 @@ mod tests {
         assert_eq!(both, 36);
         let mut state = LogicState::default();
         assert_eq!(r.call_hook(&mut state, "NoSuchHook", None), None);
-        assert_eq!(r.call_hook(&mut state, "MutePlayer", None), Some(crate::hsm::EXITINVALID));
-        assert_eq!(state.unported, ["hook MutePlayer"]);
+        // Every hook is ported: an unknown name is not "unported", it is unknown.
+        assert!(r.hooks().iter().all(|h| h.ported()));
+        assert!(state.unported.is_empty());
     }
 }
