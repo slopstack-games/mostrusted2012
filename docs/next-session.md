@@ -107,9 +107,15 @@ Decisions with the user: portrait loading screens keep the original's bars.
   frame time, memory for whole-world views (PLAN.md M9).
 - **Game logic engine** (PLAN.md M8, 2026-11-17): bindings, HSM interpreter, Lua 5.1 VM, widget data and the native
   registry (`mw_logic::natives`, `mwtool natives`) are in.
-  - Ported and verified against the dump: **75 HSM behaviour types**, **100 / 187 HSM hooks** and **100 / 385 Lua
+  - Ported and verified against the dump: **110 HSM behaviour types**, **160 / 187 HSM hooks** and **100 / 385 Lua
     natives**. Every offline Lua native the UI chunks read is ported. Binding roots: `Mode`, `ModeVM`, `Net`, the online
-    match states (root table in `natives/state.rs`). The boot reaches "Freedrive Update" with no unhandled exit.
+    match states, `UIConfig`, `SignInState`, `UISequences`, `GeneralSequence`, `EntitlementManager`, `Players`, `Event`,
+    `Transitions`, `GameLogicState` (root table in `natives/state.rs`). Under `--hsm` races run through the logic
+    (`--hsm-event <id>`: free roam → race mode 730003 → back), and the runtime carries out the song list, UI sounds,
+    sim pause, show world, mute, chevrons and triggers. Open: the load requests (world, profile, feedback groups,
+    layouts, sequences, players), the menus' own widgets (EasyDrive, map) instead of the hand-written ones, the AI /
+    timer / add-AI requests; the body shop's respray reloads the car (with `--units 12` the reloaded car has no
+    ground: `--race 462174 --test race --units 12` stalls after gate 3; repaint in place). The boot reaches "Freedrive Update" with no unhandled exit.
   - Next round's candidates: the research-log entries of 2026-11-17 (fifth hooks, `behaviours_mode2.rs`,
     `behaviours_event.rs`, the binding roots: `EntitlementManager` with `HasPdlc*` is where the DLC lock belongs,
     then `UIConfig`, `SignInState`, `UISequences`, `GeneralSequence`). Many new Requests have no runtime handler yet
