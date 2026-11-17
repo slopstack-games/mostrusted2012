@@ -69,6 +69,38 @@ torque, +0x04 left over, +0x08 pedal², +0x10 lock lanes u32, +0x20 handbrake la
 
 ## Dated findings
 
+### 2026-11-18: UI port (widget-tree renderer): survey only, stopped before code (budget)
+
+Stopped at the survey (session budget); nothing in the runtime changed. What the next attempt can start from:
+- **Widget types decide what draws.** The HUD screen 371621's layouts all sit in `Widget_ShowLayouts` widgets
+  (`HUD`, `AdditionalHUD` 7 layouts, `MapOverlay`, `EngineOffHud`, `Prompt`, `EasyDrive`, the five `Nitrous`,
+  `HackEasyDrive`, `CurrentRollout`, `EasyDrivePanel`); which of their layouts show is data: instance visibility
+  (`Players.LocalPlayer.IsInStaticBust` on 581357), element visibility (`IsInChase` / `IsInCooldown`,
+  `Mode.PromptString`, `CurrentRoad.Name`, `Recommends.*`, `Widget.Prompt.New`) and instance timelines
+  (`Widget.EngineOffHud.*`, `Widget.EasyDrive.HideForMusic`). So a generic renderer draws every layout of every
+  active group's widgets (`mw_assets::AssetStore::ui_screen_layouts` gives them with `widget_index`; `Screen`
+  gives each widget's `group` and `layer`), in `LayoutLayer` order (0 below maps .. 6 overlay; order across
+  groups not traced: model decision), with `UiScene::draw_with` and a lookup chain runtime feed (`hud.rs`
+  `lookup`, `HudState`) → logic (`ui_sequence::logic_lookup`). The minimap quad (`Quad::map`) is the
+  `Widget_PointOfInterest` / native `POIDisplayScript`: keep `hud.rs`'s mosaic + icons as its port.
+- **Logic side.** `mw_logic::natives::pages::Pages` knows the contexts' pages and active groups but exposes only
+  `current_page` / `active_groups`; the renderer needs (screen, group) in activation order: a small accessor
+  plus one hook in `logic.rs` `tick` (after the HSM update) publishing it as a resource.
+- **Feeds the logic lacks.** `Players.LocalPlayer.CurrentNitrousType` (the HSM's "Choose Nitrous") reads
+  `players::Player::nitrous`, which the runtime never sets: set it from the fitted mod (`hud::NitrousType::of`'s
+  slot rule) or the nitrous HUD always picks NONE.
+- **Menu letterbox.** The flag `FUN_00794700` tests (UI manager +0x2ecf4) is read with +0x2ecf0 in
+  `FUN_0061f8xx` (UI camera: +0x2ecf0 an override camera, else the default at +0x2eea0; getter per layer
+  0x791480): the letterbox belongs to a UI camera override, not to a screen flag. No direct writer found in
+  `text.asm` (written through another base). Until traced: a screen whose layout instances bind
+  `UIConfig.HudAspectCorrection` is a HUD screen, else letterboxed (model decision).
+- **The pause menu 431082**: `Menu` is a `Widget_MenuData` (layer 3, layouts 431094 / 1695971 / 1695911); its
+  `Widget.Menu.Items` / `SelectedIndex` come from the menu widget's native code (filled from the group's
+  `Data` / `StdData` MenuData widgets): that native has to be ported before pause.rs can go.
+- **Blocker to decide (integrator)**: the logic runs only under `--hsm`; a HUD drawn only from the logic's
+  groups disappears from plain / `--drive` runs unless `--hsm` becomes the default (`--drive 911 --hsm` was not
+  run: `logic.rs` treats a run without the front end as booted, so it should reach free drive).
+
 ### 2026-11-17: the checkpoints, event starts and car swap run in the logic (`natives/{checkpoints,event_starts,car_swap}.rs`)
 
 The per-frame work of `CHECKPTS`, `EVENTSTARTS` and `HSMCARSWAPLO` (until now one `Request` each) is ported from the
