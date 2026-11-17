@@ -224,6 +224,8 @@ MW_SIREN_PRESS=12 MW_LIGHTBAR_SHOTS=<dir> ./target/release/mostrusted --drive "F
 # Game flow (frontend.rs, pause.rs): no mode flag starts the game's front end (title, loading, free roam in the
 # default car at the game's start point; Esc / pad Start pauses). --drive / --race / --test / --camera / --replay
 # skip it. --new-game, --profile <file> (~/.config/mostrusted/profile.cfg), --front-end-shots <dir>, --show-loading
+# MW_PROFILE=<file> replaces the default profile path; tools/hl (and tools/t) set it to scratch/profile.cfg so headless
+# runs never write the player's own profile.
 ./target/release/mostrusted
 # The original's game-logic machine ("Top State") run beside the hand-written flows (logic.rs, PLAN M8 step 7):
 # logs `hsm:` lines (states, hooks, Requests). Carried out so far: page contexts / widget groups (their Lua scripts

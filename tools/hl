@@ -7,6 +7,14 @@
 # Example: tools/hl ./target/release/mostrusted --screenshot x.png
 # gamescope closes inherited descriptors (the child's output goes through two FIFOs) and does not exit on its own when
 # the child does (Xwayland hangs on a broken pipe): the child writes its exit code to a file, then gamescope is stopped.
+# Headless runs never write the player's own profile (~/.config/mostrusted/profile.cfg, saved every 10 s by
+# front-end runs): they use scratch/profile.cfg, seeded once from it (MW_PROFILE overrides).
+if [ -z "$MW_PROFILE" ]; then
+    R="$(cd "$(dirname "$0")/.." && pwd)"
+    mkdir -p "$R/scratch"
+    [ -f "$R/scratch/profile.cfg" ] || cp "$HOME/.config/mostrusted/profile.cfg" "$R/scratch/profile.cfg" 2> /dev/null
+    export MW_PROFILE="$R/scratch/profile.cfg"
+fi
 if [ -z "$MW_SOUND" ]; then
     export MW_MUTE=1
     s="$("$(dirname "$0")/silent-sink" 2> /dev/null)" && export PULSE_SINK="$s" PIPEWIRE_NODE="$s"

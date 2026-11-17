@@ -969,6 +969,11 @@ impl Collected {
 }
 
 pub fn default_profile_path() -> Option<PathBuf> {
+    // `MW_PROFILE=<file>`: another profile file (headless runs: `tools/hl` sets a scratch copy so they never write the
+    // player's own profile).
+    if let Some(p) = std::env::var_os("MW_PROFILE") {
+        return Some(PathBuf::from(p));
+    }
     let base = crate::settings::config_dir()?;
     Some(base.join("mostrusted").join("profile.cfg"))
 }
