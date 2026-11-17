@@ -234,6 +234,8 @@ MW_SIREN_PRESS=12 MW_LIGHTBAR_SHOTS=<dir> ./target/release/mostrusted --drive "F
 # MW_MUSIC_LOG=1 to see the song list it picks under --mute)
 tools/t --front-end --hsm --front-end-shots scratch/fe --mute; grep 'hsm:' scratch/run.log
 # Races through the logic: any event start (map, Easy Drive, pause menu, markers) is the logic's event request; the race
+# The logic (HSM) runs by default (2026-11-18); --no-hsm turns it off (bisecting only). With it on, --race <id> is
+# the logic's event start (as --hsm-event <id> --auto-start 1).
 # mode 730003 starts race.rs / the intro / the outro and ends the event (logic.rs doc). --hsm-event <id> (implies --hsm and
 # the start-up flow) chooses the event once free roam waits on the Easy Drive prompt; with --test race: the gates test
 tools/t --hsm-event 462174 --auto-start 1 --test race --mute; grep -E 'hsm:.*(machine|request (Respawn|PlaySequence|StartGameMode))' scratch/run.log

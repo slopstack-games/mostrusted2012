@@ -390,10 +390,13 @@ struct Cli {
     /// default when no mode flag (--drive, --vehicle, --camera, --race, --test, --replay) is given.
     #[arg(long)]
     front_end: bool,
-    /// Run the original's game-logic state machine ("Top State") beside the hand-written flows and log what it
-    /// does (`hsm:` lines); the requests carried out so far are listed in logic.rs's module doc.
+    /// The original's game-logic state machine ("Top State") runs by default (user 2026-11-18) and logs what it
+    /// does (`hsm:` lines); the requests carried out so far are listed in logic.rs's module doc. Kept as a no-op.
     #[arg(long)]
     hsm: bool,
+    /// Don't run the logic (the hand-written flows alone): for bisecting a regression while the port moves over.
+    #[arg(long)]
+    no_hsm: bool,
     /// With the logic (implies --hsm and the start-up flow): once free roam is reached, start this event the way the
     /// map's START RACE does; the logic runs it (logic.rs). With `--test race`: the scripted run through its gates.
     #[arg(long)]
@@ -516,7 +519,13 @@ fn main() {}
 fn run(mut cli: Cli, game: GameDir) -> anyhow::Result<()> {
     drive::install_gamepad_mappings();
     cli.mute |= std::env::var_os("MW_MUTE").is_some_and(|v| v != "0");
-    cli.hsm |= cli.hsm_event.is_some();
+    cli.hsm = !cli.no_hsm || cli.hsm_event.is_some();
+    // With the logic on, `--race <id>` is the logic's event start (as `--hsm-event`: boot, free roam, START RACE),
+    // pressed after 1 s unless told otherwise; `--no-hsm --race` keeps the direct start.
+    if cli.hsm && cli.hsm_event.is_none() && cli.race.is_some() {
+        cli.hsm_event = cli.race.take();
+        cli.auto_start = cli.auto_start.or(Some(1.0));
+    }
     if cli.bench.is_some() && std::env::var_os("WAYLAND_DISPLAY").is_some() && std::env::var_os("DISPLAY").is_some() {
         // Wayland offers no Immediate present mode and paces Mailbox at the monitor's refresh: benchmark
         // through XWayland, where `AutoNoVsync` gets Immediate (`bench.rs`).
