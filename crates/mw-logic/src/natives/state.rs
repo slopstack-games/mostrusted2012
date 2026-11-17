@@ -42,6 +42,8 @@ pub struct LogicState {
     pub misc: super::lua_misc::MiscFields,
     /// The garage, ranks, awards and vehicle-focus fields (`lua_garage.rs`).
     pub garage: super::lua_garage::GarageFields,
+    /// The UI sequence services' state (`UISequences` / `GeneralSequence` roots, `sequence_view.rs`).
+    pub sequences: super::sequence_view::UiSequences,
 }
 
 /// The binding host the logic reads through: the game-mode manager's `Mode` root ([`super::mode_view`]) first,
@@ -74,6 +76,10 @@ static ROOTS: std::sync::LazyLock<Vec<(u32, RootFn)>> = std::sync::LazyLock::new
         (h("JoinGameState"), super::online_state_view::lookup),
         (h("CreateMatchState"), super::online_state_view::lookup),
         (h("MatchMakeState"), super::online_state_view::lookup),
+        (h("UIConfig"), super::ui_config_view::lookup),
+        (h("SignInState"), super::sign_in_view::lookup),
+        (h("UISequences"), super::sequence_view::ui_lookup),
+        (h("GeneralSequence"), super::sequence_view::general_lookup),
     ]
 });
 

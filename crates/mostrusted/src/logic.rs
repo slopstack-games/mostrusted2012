@@ -22,7 +22,8 @@
 //! logged only: `freeroam.rs`, `race.rs` and the rest of `frontend.rs` drive the game.
 //!
 //! What the runtime answers from its own state: the title sequence's general trigger "BOOT"
-//! (`GeneralSequence.Triggers["BOOT"].IsTriggerSet[1]`, set by `frontend.rs` when the trigger item passes), the
+//! (`GeneralSequence.Triggers["BOOT"].IsTriggerSet[1]`, set by `frontend.rs` when the trigger item passes and
+//! handed to the logic with `LogicState::set_general_trigger`), the
 //! loading screen (`HSB_WAIT4LS` / `HSB_WAIT4NL`: `frontend::Phase::Loading`), the primary user bound by the
 //! title's key press (`Query::PrimaryUserBound` while `ListenForPrimaryUser` listens), whether the profile is
 //! brand new (`Query::NewProfile`: `--new-game` or no saved profile), and the progression / local player the boot
@@ -31,8 +32,8 @@
 //! `FrontEnd::ready`.
 //!
 //! Stand-ins (model decisions, the same answers `mwtool hsm --run` documents in docs/commands.md): the engine
-//! bindings `UIConfig.Platform` = "PC" (`Net.*` is the logic's own offline root, `net_view.rs`),
-//! `SignInState.Params.IsChatRestricted` = true; state 1222788 `ConnectToAutolog` (online Autolog sign-in) exits
+//! bindings: none left but `Transitions.Transitioning` (`Net.*`, `UIConfig.*`, `SignInState.*`, `UISequences.*` and
+//! `GeneralSequence.*` are the logic's own offline roots); state 1222788 `ConnectToAutolog` (online Autolog sign-in) exits
 //! DONE at once; behaviour types that are not ported yet hold (run their children, never exit); hooks that are
 //! not ported answer EXIT (most `CALLHSMHOOK` nodes go on on EXIT).
 
@@ -63,7 +64,8 @@ const CONNECT_TO_AUTOLOG: u32 = 1222788;
 /// The boot page's "Press Start" widget group (HSM state 491835 `GROUP`): its `Background` widget plays
 /// [`fe::TITLE_SEQUENCE`], its `ScreenTransition` is the boot transition [`fe::BOOT_TRANSITION_SEQUENCE`].
 const PRESS_START_GROUP: i64 = 491_032;
-const BOOT_TRIGGER: &str = "GeneralSequence.Triggers[\"BOOT\"].IsTriggerSet[1]";
+/// The title sequence's general trigger (`GeneralSequence.Triggers["BOOT"].IsTriggerSet[1]`).
+const BOOT_TRIGGER_NAME: &str = "BOOT";
 
 pub struct LogicPlugin {
     /// `--hsm`: run the machine (shadow mode).
@@ -457,10 +459,7 @@ impl RuntimeHost {
     fn engine_binding(&self, path: &str) -> Option<&'static str> {
         let bool = |b: bool| if b { "true" } else { "false" };
         Some(match path {
-            BOOT_TRIGGER => bool(self.boot_trigger),
             "Transitions.Transitioning(NOT)" => bool(!self.transitioning),
-            "UIConfig.Platform" => "PC",
-            "SignInState.Params.IsChatRestricted" => "true",
             _ => return None,
         })
     }

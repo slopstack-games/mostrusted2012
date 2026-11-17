@@ -13,6 +13,53 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ## Dated findings
 
+### 2026-11-17: the `UIConfig`, `SignInState`, `UISequences` and `GeneralSequence` binding roots
+
+Registered like `Mode` (`FUN_00a4d2a0` root / type / object, `FUN_00a4e2f0` fields, `FUN_00a4e350` getters). Code:
+`natives/ui_config_view.rs`, `sign_in_view.rs`, `sequence_view.rs`; one `ROOTS` line each. Tests per root.
+
+**`UIConfig`** (`FUN_007a03c0`, `UIConfigManager`, 0x41c). Constructor values: `Platform` (+0x208) = the `.rdata`
+string "PC" (0xfde864), `IsPlatformPC` 1, X360 / PS3 / VITA 0, `IsHighDef` 1, `NumberOfMonitors` 1. Language
+getters read the UI language id at +0xb4 (0 until set): `IsEnglish` 0x78ec50 (1 or 2), German 6, Russian 7, Japanese
+0xb, Traditional Chinese 0xc, Arabic 0xe (same codes as the language menu). `ShouldShowSubtitleOptions` (0x7a9df0) and
+`IsLeftToRightLanguage` (0x7a9e20) answer true for language 0, else read a byte of the UI language table record
+(`FUN_00794f30`), not ported. Model decisions: LTR false only for Arabic, subtitle options shown. Open: the runtime
+does not set the language (`screen.language` stays 0, so `IsEnglish` is false until something sets it).
+`HudAspectCorrection.*` / `Data.*` stay with the UI data.
+
+**`SignInState`** (`FUN_00888d40`, `SignInViewModel` 0x3148, `Params` = `SignInParamsViewModel` at +8). Read from the
+getters: `IsChatRestricted` (0x889bf0) stores 0, `IsMultiplayerAllowed` (0x889be0) stores 1, `IsAccountDeactivated`
+(0x881610: error code +0x135c == 0x1b), `AuthenticatedWithBlaze` (0x889c10 -> 0x4c2070 -> 0xa82f20: the Blaze
+connection object is null), `IsReadyForToS` (0x881650: byte +0x1589), plain bytes for `AccountCreated`,
+`FirstUseInTitle`, `EMailHasEAAccount`, ...; all false / empty offline. **Finding:** the original's
+`IsChatRestricted` is false, not true; the boot's "Get Online Silently" then goes to the silent sign-in (state
+1597850 / `ServerOperation PCLogin`, the Blaze login, not ported: an offline run would wait for it). The earlier
+`--answer SignInState.Params.IsChatRestricted=TRUE` is therefore an online stand-in (model decision: skip the
+login), not a value of the code, and it stays in the documented commands. `SignInState.Error` is not a registered
+member (does not resolve).
+
+**`UISequences`** (`UISequenceService` 0x3258) and **`GeneralSequence`** (`GeneralSequenceService` 0x98). Getters:
+`HideHudRequests` +0x3254, `IsAnimationTriggerSet[n]` (0x82bcb0, bit set at +0x20), `IsActionHostUsed["X"]`
+(`FUN_0082fbe0`: byte 1 of the entry at +0x34 + 2 * i; unknown = false; set by `FUN_00829b20`), `UseDefaultHud` /
+`UseThermalHud` / `UseNightHud` (0x82c690 / 0x82c720 / 0x82c7a0: mode = first nonzero request counter of +8 (none
+match), +0x10 (thermal 2), +0x14 (night 3), +0x18 / +0x1c (neither), else 1 = default), `Params[n].Text1..3` (16 slots
+of 0x320 B, valid byte +0x4c; invalid = null). General triggers: the service's bits at +0x88 (`IsTriggerSet[n]`,
+0x82e950) and up to five named ones (`Triggers["NAME"]` = `FUN_0082fb00`: sorted table at +0xc, bits from +0x20, a
+missing name is a null object; `Trigger.IsTriggerSet` 0x82c650). Setter `FUN_00829d30(name, n)` sets bit n - 1 (name 0:
+the service's; a new name is added unless five exist), clearer `FUN_00829810` (an emptied name leaves the table,
+`FUN_0082ea50`). `hash("BOOT")` is 1112493908, the `GeneralTriggerSequenceItem` name field the assets keep.
+**The settable path:** `LogicState::set_general_trigger(name_hash, index)` / `clear_general_trigger` (and
+`state.sequences` for HUD requests, action hosts, params, animation bits); the runtime calls them when the sequence
+item fires / ends. `mostrusted/src/logic.rs` now does that for "BOOT" instead of answering the binding itself
+(not compiled in this session: engine-free task; the integrator's build checks it); `mwtool hsm --run` sets BOOT
+at start. Model decision: the named table is keyed by the binding's name hash (the getter looks up hash + 1, the
+setter the value as given; the callers' packing is not traced).
+
+**Result.** The documented free-roam command needs two answers instead of nine (`IsChatRestricted=TRUE`,
+`1222788=DONE`; the `Mode.*`, `UIConfig.Platform`, BOOT and `Transitions` answers are gone) and still reaches
+"Freedrive Update" and machine 371633; the 90-step boot still reaches "Playing". Captures that would confirm:
+a live read of UIConfig +0xb4 and the SignIn VM bytes at the title.
+
 ### 2026-11-17: fifth 20 HSM hooks verified and enabled (100 of 187; `natives/hooks_{flow,ui}.rs`)
 
 All 20 were already ported but parked; handlers re-read from `re/out/live/text.asm`, now enabled in `Registry::original`.

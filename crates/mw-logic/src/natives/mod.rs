@@ -49,8 +49,11 @@ pub mod online_state_view;
 pub mod pages;
 pub mod players;
 pub mod progression;
+pub mod sequence_view;
+pub mod sign_in_view;
 pub mod state;
 pub mod table;
+pub mod ui_config_view;
 pub mod view_models;
 pub mod vm_path;
 
