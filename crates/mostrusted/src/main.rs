@@ -50,6 +50,7 @@ mod input_script;
 mod jackspots;
 mod loader;
 mod lod;
+mod logic;
 mod map_screen;
 mod materials;
 mod menu;
@@ -384,6 +385,10 @@ struct Cli {
     /// default when no mode flag (--drive, --vehicle, --camera, --race, --test, --replay) is given.
     #[arg(long)]
     front_end: bool,
+    /// Run the original's game-logic state machine ("Top State") beside the hand-written flows and log what it
+    /// does (`hsm:` lines); its engine requests are not carried out yet (logic.rs, shadow mode).
+    #[arg(long)]
+    hsm: bool,
     /// Start a new game: the default car at the free-roam start, ignoring the saved profile.
     #[arg(long)]
     new_game: bool,
@@ -1046,6 +1051,10 @@ fn run(mut cli: Cli, game: GameDir) -> anyhow::Result<()> {
             auto_start: cli.auto_start.or(cli.front_end_shots.as_ref().map(|_| 1.0)),
             shots: cli.front_end_shots.clone(),
             profile: save_profile.clone(),
+        })
+        .add_plugins(logic::LogicPlugin {
+            enabled: cli.hsm,
+            new_profile: cli.new_game || profile_file.as_deref().and_then(frontend::load_profile).is_none(),
         })
         .add_plugins(pause::PausePlugin {
             enabled: (menu_enabled || cli.show_pause) && matches!(request, Request::Drive { .. }),

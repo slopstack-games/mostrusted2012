@@ -13,6 +13,45 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ## Dated findings
 
+### 2026-11-17: fourth 20 HSM hooks verified and enabled (80 of 187; `natives/hooks_{flow,event,ui}.rs`)
+
+Handlers read from `re/out/live/text.asm`, callees with `fn`. Already ported but parked, now verified byte for byte and
+enabled: SetSafehouseFromProfile (0x676070) and ApplySelectedVehicleRollout (0x6762c0) return EXIT only;
+ClearHudInstantQueue (0x67a7b0: frees UIM+0x126e8 through `FUN_00cc4780`, +0x126e8 = 0, +0x126e0 = 0);
+StopAllSequences (0x680480: `FUN_0067f8c0` = ClearHudMessageQueues, then `FUN_00a44dd0` on UIM+0x47748 / +0x4774c);
+StopSpeech (0x676100: `FUN_008423a0` on G+0x2c3c0; the Lua native of the same name is a separate handler 0x6784e0);
+SkipCurrentTrack (0x676b40: `FUN_0079f760` on UIM+0x30370); ToggleLoadingScreenOff (0x677010: UIM+0x2d204 &= ~0x20,
++0x2d21c = 0); ClearForceOpenEasyDriveFlag (GMM+0x2ca9 = 0), ClearCreditsTransition (GMM+0x2f26 = 0),
+ClearJumpToStoreFlag (0x677080: GMM+0x2f27 = 0; the table lists it as Online but the PC body is this one store),
+SetFMNMenuShowingCommonEvents (`FUN_006e0470`(GMM, 0) = GMM+0x2e85 = 0).
+Fixed and enabled: DeactivateDamage / ReactivateDamage (`FUN_0068acb0` / `FUN_0068ad50`, identical but for a flag
+byte 1 / 0): only with the local slot occupied and the car loaded (`FUN_006ba2f0`), post message 0x1f {vehicle (+0xa0 or
+-1), flag} through `FUN_0069a5e0` (`Request::VehicleDamage` now carries both). CleanAndRepairVehicle (`FUN_006926b0`):
+the local record's rollout copy (vtable +0x18, 0x2b dwords, two zeroed) applied by `FUN_0068e9d0`(+0x98, copy, 2), then
+`FUN_00844940`(vehicle) when +0xa0 != -1 (`Request::CleanAndRepairVehicle { vehicle }`).
+New: ClearPendingResets (0x676080: `FUN_0063d410`(G+0x25690, i) for i in 0..16; per slot it clears the loading-screen bit
+0x1000 / UIM+0x2d238 when the slot is the local car's and resets the entry: `Request::ClearPendingResets`);
+TransferCurrentHeatToVehicle (0x6761c0: the local vehicle id = (record vtable +0x18)+0x30 via `FUN_006ba320`; if non-zero
+`FUN_0072a280`(profile db G+0x2f454+0x4964, id, 0) writes the "garage" row's "heat" column = 0; `Request::TransferCurrentHeatToVehicle`);
+IsSpeedTrapEvent (0x680530 = `FUN_0067fe30`: online event, else the event type record's byte +0x10 (via
+`FUN_0053c020` on the handle (GMM+4)+0xf4) is 0x34 or 0x47, `FUN_006e1720`; `GameModeManager::current_event_kind`);
+SetValidProgressionData (0x687750: `lbValid` = 0xce68ae4f from `.bss` 0x1177a6c; `FUN_00686e70` zeroes 11 entries of
+G+0x2f3e4, then its +0xa4 = flag and G+0x2f3e8 +0x70 = 0: `Request::SetValidProgressionData`);
+SetCollectablesNotInWorld (0x676330: `FUN_0070d260`, `FUN_007000d0` on G+0x14e40); SetRollout (0x68d2f0: `liRolloutId`
+= 0xd04318ef from `.bss` 0x1177c78, `FUN_0068bbf0`(G+0x2f404, id): copies the rollout with that id into the local slot's
+record and applies it). The `.bss` hashes were read from `re/out/live/snap1/mem.bin` and matched by `field_hash`.
+Test `the_fourth_twenty`; `the_twenty_ported_hooks` now counts 80.
+
+Model decisions: no local player = nothing happens (the original dereferences `FUN_006bf330` unchecked);
+`current_event_kind` is filled by the runtime (the type record behind the current event handle is not modelled).
+Open: what G+0x2f3e4 / G+0x2f3e8 are (SetValidProgressionData); whether the local vehicle id of
+TransferCurrentHeatToVehicle (+0x30 of the vtable +0x18 object) equals the garage "vehicleid".
+Next candidates (parked, offline or trivial; verify the same way): OnOpenEasyDrive, OnStartEvent, OnSelectEasyDriveOption,
+OnOpenEasyDriveMods, OnCloseEasyDriveMods, PlayEndOfIntroSequenceInEasyDrive, ShouldPlayEndOfIntroSequenceInEasyDrive,
+ClearPlayEndOfIntroSequenceInEasyDrive, SetHasIntroEasyDriveBeenActive, HasIntroEasyDriveBeenActive,
+SwitchToGameplayLoadWorld, LeaveGame, ExitForMultiplayerMatchMaking, ClearE3MultiplayerProgression, ShowPartyInvitePopup,
+OnPhotoSharedToWall, ShowX360GamerCard, ShowX360GamerCardEasyDrive, ShowX360GamerCardByPlayerIndex,
+SetFMNMenuShowingVITAExclusiveEvents.
 ### 2026-11-17: third 20 HSM hooks verified and enabled (60 of 187; `natives/hooks_{flow,event}.rs`)
 
 Handlers read from `re/out/live/text.asm` (vtable-only), helpers with `fn`: RemoveAllCops 0x67a740 (`FUN_006795c0`, per
@@ -37,6 +76,47 @@ Next candidates (still unported, offline): SetSafehouseFromProfile, ClearHudInst
 CleanAndRepairVehicle, DeactivateDamage, ReactivateDamage, ApplySelectedVehicleRollout, ClearPendingResets, TransferCurrentHeatToVehicle,
 IsSpeedTrapEvent, SetValidProgressionData, SetCollectablesNotInWorld, SetRollout, SkipCurrentTrack, ToggleLoadingScreenOff,
 ClearForceOpenEasyDriveFlag, SetFMNMenuShowingCommonEvents, ClearJumpToStoreFlag, ClearCreditsTransition.
+### 2026-11-17: Lua natives, fourth batch: the last 15 the UI's chunks read (100 of 385; `natives/lua_garage.rs`)
+
+The intersection of `mwtool natives --area offline --unported` with the native names in `mwtool lua --out` column 2
+is now empty: every offline Lua native a shipped UI chunk names is ported. Handlers from the dump, `re/out/live/text.asm`
+for 0x67a6b0 (AddNewGarageItem), 0x7e9c30 (ReleaseAllImages), 0x692740, 0x690270, 0x680340 (the dump has no function
+there; `fn` does not resolve register `this`, the asm does).
+- Rank natives: the `this` of `FUN_006ec470` / `FUN_006ec4f0` / `FUN_006ec5a0` is **G+0x14c08**, the profile manager
+  (PPM); the rank list is at PPM+0x94 (count +0x98, (record, offset) pairs, rank at `*(rec+0x28)+0x18+off`, threshold key at
+  +0xc). GetMaxRank = max rank (0 empty). GetRankForSP(sp) = `FUN_006ec4f0`(sp - local player record +0x408), where the
+  record is `FUN_006bf330` of PM (G+0x2f3dc): rollout `(*(G+0x2f3e4)+0x44) == 4` → the rank with the nearest threshold at
+  or below the argument (`FUN_006893c0` = smallest positive matching row, else 0), else 1. GetSPForRank(rank) =
+  `FUN_006ec5a0`(rank) + the same +0x408: rank 0 → 1; above the max → `FUN_006ec230` (largest value over the listed ranks);
+  else that rank's threshold in mode 4, 0 otherwise.
+- AddNewGarageItem(kind, id, flag): `FUN_006fe380` on G+0x14c08 (sic, same object): `FUN_006f8950` validity (item-type tree),
+  then a sorted id → byte map gets the flag. HasEarnedAward(awardId, uniqueId): `FUN_007322a0`, query "OfflineAward" on
+  the progression database (G+0x2f454 +0x4964), true when a row exists. SelectEasyGuideCategory(id): `FUN_00792fc0` on
+  UIM+0x47640 (find the category with that id among the current page's children, push the current page, descend).
+  SetFocusVehicleId: `FUN_0086bbf0`(id, 0) on OM+0x4c90. SetLocalPlayerLicenseRegistration: `FUN_00679760` → `FUN_006ee6f0`
+  (8 chars into the local player's 0x1c-byte record, +4). SetRolloutFromProfile / SetSinglePlayerRollout: the same
+  requests as their hooks. SetVehicleAndRolloutFromSaveGameByVehicleID (Lua 0x680340 = `FUN_006800a0`, > 0 only). Requests
+  (engine-only): ApplyModUpgrade (`FUN_0068ab10`, also sets GMM+0x251c), ReleaseAllImages (`FUN_007e1340`: image
+  slots in state 2 → 3), ResetNeutalVaues (flag 8 of `*0x010edb18`, message {8,0} queued), SetAvailableVehicleListEvent
+  (`FUN_00871330` on OM+0x5ee0), SetVehicleAndRolloutFromSaveGame. Tests in `lua_garage.rs`; `mwtool lua`: 115 scripts run, 0 errors.
+
+Model decisions: the rank table (`GarageFields::ranks`, thresholds precomputed from `FUN_006893c0`'s data lookups), `sp_base`,
+`rank_mode`, the garage validity set, earned awards and the guide's per-page `children` are filled by the runtime, not read
+from memory. GetRankForSP with no threshold at or below the argument: the original dereferences a null record; we return 1.
+Open: filling those fields from the install (the rank/threshold data, OfflineAward rows); the engine side of the five new requests.
+
+Next candidates (offline Lua natives still unported, 163 minus these; none is named by a UI chunk, so they are reached
+from the HSM behaviours/hooks, GeneSys sequences or the in-race feedback/event scripts, which this session did not
+trace; by family): camera (TransitionCameraTo*, Get/SetCameraFov, ICE camera, overhead / finish-line camera), feedback
+messages and sequences (ShowFeedbackMessage, StartFeedbackSequence, Load/UnloadFeedbackGroup, loading-screen natives),
+sound (PlaySound, PlayMusic, PlaySpeech, mix snapshots), race/competitor queries (GetCompetitor*, GetRaceDistance,
+GetDistanceToFinish, IsInTrigger*, GetTrigger*), vehicle control and queries (SpawnVehicle, TeleportVehicle,
+SetCarLocked/Frozen, GetVehicle*, speed getters), traffic (StopTraffic, SetTrafficDensity), nitrous, and the rollout /
+route ones (SetEventFromAvailableVehicles, SelectDefaultRollout, SetRolloutFromVehicleID, SetRouteFromPlayerTo*,
+SetSelectedWorld, GetSelectedVehicleId / ColourId, IsAssetUnlocked, SaveControllerConfiguration). The rollout/route and
+selected-id ones are the cheapest next (state fields like this batch); the camera / sound / traffic / vehicle ones are
+mostly engine requests plus a few getters that need runtime-filled fields.
+
 ### 2026-11-17: Lua natives, third batch: 15 more (85 of 385; `natives/lua_misc.rs`)
 
 Each read from its handler (dump; `re/out/live/text.asm` for the six the dump lacks: ReleaseSettings 0x7eb170,
@@ -56,8 +136,7 @@ Model decisions: UpdateDeferredViewModel pushes `MiscFields::deferred_ids[name]`
 value (set by FUN_0081d1f0 inside FUN_00820550) was not traced; the load is `Request::UpdateDeferredViewModel`.
 SetLocalPlayerLicensePlate's telemetry event (FUN_004c3890 "GAME EVNT LICE") is not ported. The `this` of
 FUN_006e4d10 / FUN_006ee760 (plate list) is not identified; plates are filled by the runtime.
-Open: GetRankForSP (FUN_006ec4f0: rollout +0x44 == 4, nearest rank threshold from FUN_006893c0) needs its `this`
-identified.
+Open (closed in the fourth batch): GetRankForSP's `this` is G+0x14c08.
 ### 2026-11-17: 11 more HSM behaviour types, the boot needs no behaviour answers (`hsm/behaviours_game.rs`)
 
 The 6 types removed from the first batch were verified against `text.asm` (factories are not in the dump: vtable

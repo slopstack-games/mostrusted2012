@@ -32,6 +32,9 @@ pub struct GameModeManager {
     pub events: Vec<EventInfo>,
     /// (GMM+4)+0xe8: the running event is online (`FUN_006dfed0`, `IsOnlineEvent`).
     pub online_event: bool,
+    /// The event kind byte (+0x10) of the type record `FUN_0053c020` returns for the current event handle
+    /// ((GMM+4)+0xf4 / +0xf8); 0x34 and 0x47 are speed traps (`IsSpeedTrapEvent`). Filled by the runtime.
+    pub current_event_kind: i8,
     /// +0x2ce0: the current event's id (0 = none; `IsChallengeActive`).
     pub current_event: u32,
     /// The current game mode's id: the `GameMode` object behind the handle +0x2cf4 / +0x2cf8, its +0x18.

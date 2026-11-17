@@ -25,8 +25,10 @@ pub const RETRY: u32 = 0xa596_a25b;
 pub const LB_SEEN: u32 = 0xa783_3b84;
 /// `liId` (`DAT_01177b34`, `SetVehicleAndRolloutFromSaveGameByVehicleID`).
 pub const LI_ID: u32 = 0x6c69_4964;
-/// The bool member `SetValidProgressionData` reads (`DAT_01177a6c`; name not found).
+/// `lbValid` (`DAT_01177a6c`, `SetValidProgressionData`).
 pub const VALID_PROGRESSION_DATA: u32 = 0xce68_ae4f;
+/// `liRolloutId` (`DAT_01177c78`, `SetRollout`).
+pub const LI_ROLLOUT_ID: u32 = 0xd043_18ef;
 
 /// `FUN_009f16b0` + the tag check: the member whose name hashes to `hash`, if it has the value tag `tag`.
 pub fn member(args: Option<&Json>, hash: u32, tag: u8) -> Option<&Json> {
@@ -102,6 +104,8 @@ mod tests {
         assert_eq!(field_hash("Retry"), RETRY);
         assert_eq!(field_hash("lbSeen"), LB_SEEN);
         assert_eq!(field_hash("liId"), LI_ID);
+        assert_eq!(field_hash("lbValid"), VALID_PROGRESSION_DATA);
+        assert_eq!(field_hash("liRolloutId"), LI_ROLLOUT_ID);
     }
 
     #[test]
