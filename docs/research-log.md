@@ -13,6 +13,28 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ## Dated findings
 
+### 2026-11-17: Lua natives, third batch: 15 more (85 of 385; `natives/lua_misc.rs`)
+
+Each read from its handler (dump; `re/out/live/text.asm` for the six the dump lacks: ReleaseSettings 0x7eb170,
+PrepareControlSettings 0x7eb140, GoBackEasyGuideCategory 0x675910, Enable/DisableDreamshotsCameraControlGroup
+0x7ea120 / 0x7ea150, StartViewingEasyDrivePages 0x680300). Natives: UpdateDeferredViewModel (0x7f96a0, FUN_007f72f0),
+ClearViewModel (FUN_0081ed30 / FUN_0081ec00: the entry swapped with the last, downloads of that name removed or
+their +2 cleared), GetCurrentFreedriveEvent (FUN_0068fa10, shared with the hook), GetNextEventForProgression
+(FUN_0068fba0: other-mode events that are available, listed at G+0x29204 and pass the rollout check; pass 1 skips
+`EventInfo::completed` = FUN_006ec6a0, pass 2 takes any, else the free-drive pick), StartActionBind (FUN_00878790),
+SetGameMode / SetDistrict (read their argument and do nothing), Prepare/ReleaseControlSettings (FUN_00879010 /
+FUN_00879c70), GoBackEasyGuideCategory (FUN_00790a60), StartViewingEasyDrivePages (+FUN_007997f0), Enable/Disable
+DreamshotsCameraControlGroup (bit 4 of group 0 of the input-block set G+0x2f0a4: FUN_0083d030 clears, FUN_0083d000
+sets, each counting at +0x2f0c0; `InputBlocks::set` added), SetLocalPlayerLicensePlate (FUN_0067fa20),
+ChangeVehicleOnCustomRollout (FUN_00691110). Tests in `lua_misc.rs`; `Download` records now carry name and flags.
+
+Model decisions: UpdateDeferredViewModel pushes `MiscFields::deferred_ids[name]` (else -1): the original's out
+value (set by FUN_0081d1f0 inside FUN_00820550) was not traced; the load is `Request::UpdateDeferredViewModel`.
+SetLocalPlayerLicensePlate's telemetry event (FUN_004c3890 "GAME EVNT LICE") is not ported. The `this` of
+FUN_006e4d10 / FUN_006ee760 (plate list) is not identified; plates are filled by the runtime.
+Open: GetRankForSP (FUN_006ec4f0: rollout +0x44 == 4, nearest rank threshold from FUN_006893c0) needs its `this`
+identified.
+
 ### 2026-11-17: second 20 HSM hooks verified and enabled (`natives/hooks_{flow,event,ui}.rs`)
 
 Handlers read from `re/out/live/text.asm` (TRUE = `DAT_01177fe0`, FALSE = `DAT_01177ee0`, EXIT = `DAT_01177ef0`).

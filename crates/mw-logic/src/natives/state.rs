@@ -38,6 +38,8 @@ pub struct LogicState {
     pub challenges: super::lua_career::ChallengeFields,
     /// The menus' managers (`lua_menus.rs`).
     pub menus: super::lua_menus::MenuFields,
+    /// The remaining offline natives' fields (`lua_misc.rs`).
+    pub misc: super::lua_misc::MiscFields,
 }
 
 /// Engine facts the logic reads, set by the runtime (or a tool) before the logic runs.
@@ -283,4 +285,24 @@ pub enum Request {
     SelectPack { id: u32 },
     /// `UpdateAwardProgressBindings`: `FUN_0071fd20`(-1) and (6) refresh the award progress bindings.
     UpdateAwardProgressBindings,
+    /// `UpdateDeferredViewModel` (0x007f96a0 → `FUN_007f72f0` on the screen manager's page, `*0x0117e9f4`+0x280): for
+    /// the page's deferred view-model definition named `name`, start its load (`FUN_00823b20` → `FUN_00820550`
+    /// on G+0x2f42c). The runtime answers by setting `MiscFields::deferred_ids[name]` (the id the native returns).
+    UpdateDeferredViewModel { name: String },
+    /// `ClearViewModel` (`FUN_0081ec00`): the loaded view model `name` is released (its entry swapped with the
+    /// last, `ViewModels` data freed); the downloads of that name are already updated in [`LogicState`].
+    ReleaseViewModel { name: String },
+    /// `StartActionBind` (0x007eb200 → `FUN_00878790` on the settings (OM+0x4210)): wait for a control press to
+    /// bind `action` (+0x1beb4) with `arg` (+0x1beb8); the state change 4 is posted (`FUN_0087ed10`) and the
+    /// bind's start time (`FUN_0046ee00` +8 / +0xc) kept at +0x1bec8 / +0x1bed0.
+    StartActionBind { action: i32, arg: i32 },
+    /// `PrepareControlSettings` (0x007eb140 → `FUN_00879010`): the control page is built (buffer 0x1bed8 bytes
+    /// allocated, `FUN_0086ea10`, `FUN_008781d0`); [`ControlSettings`](super::lua_misc::ControlSettings) is set.
+    PrepareControlSettings,
+    /// `ReleaseSettings` (0x007eb170 → `FUN_00879c70`): `FUN_008795c0` and `FUN_008721e0` before the buffer is
+    /// freed (the state is in [`ControlSettings`](super::lua_misc::ControlSettings)).
+    ReleaseControlSettings,
+    /// `ChangeVehicleOnCustomRollout` (0x00692760 → `FUN_00691110` on the rollout manager G+0x2f404): try the
+    /// vehicle as the custom rollout (`FUN_00691050`), else rebuild the default one for it (`FUN_00690b10`).
+    ChangeVehicleOnCustomRollout { vehicle: i32 },
 }
