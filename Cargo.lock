@@ -3946,6 +3946,7 @@ dependencies = [
  "mw-formats",
  "mw-gamedir",
  "mw-handling",
+ "mw-logic",
  "rayon",
  "wasm-bindgen",
  "wasm_thread",

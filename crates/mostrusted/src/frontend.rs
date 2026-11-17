@@ -204,6 +204,12 @@ pub struct FrontEnd {
 }
 
 impl FrontEnd {
+    /// The title sequence's general trigger "BOOT" is set (the HSM reads it as
+    /// `GeneralSequence.Triggers["BOOT"].IsTriggerSet[1]`, logic.rs).
+    pub fn boot_trigger(&self) -> bool {
+        self.boot_trigger
+    }
+
     pub fn playing(&self) -> bool {
         self.phase == Phase::Playing
     }
