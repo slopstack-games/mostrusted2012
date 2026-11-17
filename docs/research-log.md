@@ -32,6 +32,45 @@ Older entries (before 2026-11, and the early topical findings) are in
 - The browser runs at master 1.0 (no settings file): +9 dB against the desktop's saved 0.35.
 - Open: the user's exact situation; a capture of the original's drift and crash with audio.
 
+### 2026-11-17: the `ModeVM`, `Net`, `JoinGameState` / `CreateMatchState` / `MatchMakeState` roots
+
+Root dispatch: `LogicState`'s `binding::Host` now looks the root hash up in a table (`state.rs` `ROOTS`), one module
+per root (`natives/<root>_view.rs`); a member a module does not answer falls through to published definitions.
+
+**`ModeVM`** (`modevm_view.rs`). `GameModeViewModel` is registered by `FUN_006fe520` with ECX = the view model
+embedded in the game-mode manager at manager +0x20 (`FUN_0070be40` calls `FUN_006e7670` on `esi+0x20` at 0x70c5de,
+then `FUN_0070a120` on the manager with the stack argument `param_2 + 0xe8`, the binding manager the registrations go
+to). So a VM offset is a manager offset minus 0x20: `ForceOpenEasyDrive` VM +0x2c89 = manager +0x2ca9 (the hook's
+byte), `ModsAppliedInOutro` VM +0x24fc = manager +0x251c (`GarageFields::mod_flag`); the VM keeps back-pointers to
+the manager (+0x1914) and the game logic (+0x1910). Getters ported: `CanSkipIntro` (0x711d90, always true),
+`ShowSkipPrompt` (0x711dc0: manager +0x2510 float > 0.0, the constant at 0xf8f344), `ShowPositionFromCheckpoint`
+(0x716e50: manager +0x2526 `HasTargetSpeed` clear and the current mode id is not 0x212851). The 6fe520 block also
+registers more `GameModeManager`-typed (`Mode`) fields (`HasTargetSpeed`, `DisablePauseMenu`, `PersonalBest`, ...):
+not ported as `Mode` members (unresolved members read false / 0 as before). Not ported: the blacklist getters,
+`IsWaitingForBustRetry` (0x6e2d10: +0x2e90 clear and `UISequences.IsActionHostUsed["RETRY"](NOT)`),
+`WasBlacklistBeatenAndNotShutdown` (0x6e8860), `GetFinishedString` (0x6e85c0), `ShouldShowInCarPosition`
+(0x716ec0, a UI global), `CurrentContext`.
+
+**`Net`** (`net_view.rs`; `FUN_004c4740`, 28 getters, all `LAB_`, read from text.asm). Offline answers from the
+getters' no-connection branches: `IsPlayerConnectedToFirstyParty` true (0x4cf2a0 constant), `AreAllPlayersConnected`
+true (0xa83320: empty slots count as fine), `IsInX360Party` false (constant); `IsInOnlineGame`, `IsLoggedInToServer`,
+`IsConnectedToServer`, `IsHost`, `IsGameAdmin`, `IsInLobby`, `IsInPlaygroup`, `AreWeHostMigrating`, ... false; counts 0.
+Model decision: the Blaze / session objects never exist offline (not ported). The indexed members do not resolve.
+
+**`JoinGameState`, `CreateMatchState`, `MatchMakeState`** (`online_state_view.rs`): `IsValid` (0x64d820 / 0x64d870 /
+0x64d850: a validity field of the zero-initialised object) and `DoRematchmaking` (0x651660, needs the playgroup
+pointer): false (model decision).
+
+**Result.** `mwtool hsm --run` (docs/commands.md "Freedrive Update") needs no `Net.IsLoggedInToServer` answer any
+more and still reaches "Freedrive Update". "Open EasyDrive Request" (1560481) takes FALSE through `ModeVM.ForceOpenEasyDrive`
+and 1532918 ("Is In Online Game") takes FALSE: both exits handled. Tests `modevm_view`, `net_view`,
+`online_state_view`.
+
+Open: entitlement getters (`HasPdlc1..4`: `FUN_006401b0` on global ids), `EntitlementManager.DlcMessageIndicator`
+and `ThankYouCount` (0x651480, 0x6514c0); `UIConfig` / `SignInState` / `Autolog` / `PlayDirector` / `StoreViewModel`
+and the other HSM-read roots (listing: `mwtool bindings` rows with source `hsm:`) are unported; `Recommends`,
+`Screen`, `Transitions`, `Demo`, `ActiveGameMode` are not registered roots (published data or the engine).
+
 ### 2026-11-17: the `Mode` binding root (`natives/mode_view.rs`)
 
 **Registration.** `FUN_0070a120` (`ECX` = the game-mode manager) registers the root "Mode" (`.rdata` 0x00fc7ef0)
