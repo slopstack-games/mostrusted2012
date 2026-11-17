@@ -225,6 +225,13 @@ MW_SIREN_PRESS=12 MW_LIGHTBAR_SHOTS=<dir> ./target/release/mostrusted --drive "F
 ./target/release/mostrusted
 ./target/release/mwtool hsm [<node id>] [--find text]     # game-logic state machines (HSMData); mwtool frontend
 ./target/release/mwtool hsm <id> --parents               # which nodes start a node (child or transition)
+./target/release/mwtool hsm --data                       # the data definitions (JSON view models / hook arguments)
+./target/release/mwtool hsm --bundle all                 # parse every HSMData of the install (37)
+# Headless HSM interpreter (mw_logic::hsm) from a top-level instance (default 20527 = boot "Top State"): logs every
+# state entered / exited per frame; unported behaviours hold, hooks answer EXIT, bindings don't resolve unless
+# --answer NAME=VALUE (state id | behaviour code | binding path with '.' | hook name; VALUE exit point / run / value;
+# Host.LoadingScreenShowing / Host.GraphicsPrepared answer the host queries). --steps 300 --dt 0.0333
+./target/release/mwtool hsm --run --steps 90 --answer 'GeneralSequence.Triggers["BOOT"].IsTriggerSet[1]=true' --answer HSB_P1BIND=EXIT --answer LOAD_ALL=EXIT --answer SELECT_PROF=SUCCESS --answer LOADPROFILE=EXIT --answer DBAUTOSELWD=EXIT --answer UIConfig.Platform=PC --answer LOADWORLD=EXIT --answer Net.IsLoggedInToServer=FALSE --answer SignInState.Params.IsChatRestricted=TRUE --answer 1222788=DONE --answer WAIT4FEEDBK=EXIT --answer WAITFORVEHIC=EXIT --answer ISNEWPROFILE=YES --answer IsProgressionReady=TRUE --answer ISAUTOTESTIN=NO --answer ShouldPlayNewGameIntro=FALSE   # boot → "Playing"
 ./target/release/mwtool frontend --sequence 1014321      # one UI sequence's items; --spots lists every jack spot
 # The map screen (map_screen.rs; pause menu MAP): arrows / left stick / d-pad push the cursor (tap: flick to the
 # next event that way; hold: free cursor, snaps on release), Enter / A options, START RACE plays the event-loading

@@ -13,6 +13,7 @@ mod damage;
 mod events;
 mod flat_strip;
 mod float_check;
+mod hsm;
 mod lods;
 mod memscan;
 mod placement;
@@ -784,9 +785,14 @@ enum Cmd {
         #[arg(long)]
         spots: bool,
     },
-    /// The game logic's state machines (`HSMData`, `mw_formats::hsm`): `hsm` lists the root nodes, `hsm <id>`
-    /// prints a node's tree (children, what each child's exit codes start, parameters), `hsm --find <text>`
-    /// searches node names, `hsm <id> --parents` lists the nodes that start it (as a child or a transition).
+    /// The game logic's state machines (`HSMData`, `mw_formats::hsm`): `hsm` lists the top-level states and other
+    /// roots, `hsm <id>` prints a state's tree (behaviour, parameters, data definition, what each child's exit
+    /// points do), `hsm --find <text>` searches state names, `hsm <id> --parents` lists who starts it, `hsm --data`
+    /// prints the data definitions. `hsm --run [instance]` runs the interpreter (`mw_logic::hsm`) headless from a
+    /// top-level state (default 20527, the boot's "Top State") for `--steps` frames of `--dt` s and logs every
+    /// state entered / exited; unported behaviours hold (never exit), hooks answer EXIT,
+    /// bindings do not resolve, unless `--answer NAME=VALUE` says otherwise (NAME: a state id, a behaviour code,
+    /// a binding path with a '.' (`Host.LoadingScreenShowing`, `Host.GraphicsPrepared` answer the host queries), or a hook name; VALUE: an exit point, `run` = never exit, or a binding value).
     Hsm {
         node: Option<u32>,
         #[arg(long)]
@@ -798,6 +804,16 @@ enum Cmd {
         /// Tree depth for `hsm <id>`.
         #[arg(long, default_value_t = 3)]
         depth: usize,
+        #[arg(long)]
+        data: bool,
+        #[arg(long, num_args = 0..=1, default_missing_value = "20527")]
+        run: Option<u32>,
+        #[arg(long, default_value_t = 300)]
+        steps: usize,
+        #[arg(long, default_value_t = 1.0 / 30.0)]
+        dt: f32,
+        #[arg(long)]
+        answer: Vec<String>,
     },
     /// Scoring actions (`ScoringAction`s of GAMELOGIC/GAMEPLAY.BNDL named by `ScoringConfig`): Speed Points,
     /// pursuit score, heat, HUD message sequence and title per action. `--all` includes the actions worth no
@@ -1796,9 +1812,21 @@ fn main() -> Result<()> {
         Cmd::Events { id, png, all } => events::run(&AssetStore::new(game)?, id.as_deref(), png.as_deref(), all)?,
         Cmd::Frontend { sequence: Some(id), .. } => events::print_sequence(&AssetStore::new(game)?, id)?,
         Cmd::Frontend { sequence: None, spots } => events::frontend(&AssetStore::new(game)?, spots)?,
-        Cmd::Hsm { node, bundle, find, depth, parents } => {
-            events::hsm(&AssetStore::new(game)?, &bundle, node, find.as_deref(), depth, parents)?
-        }
+        Cmd::Hsm { node, bundle, find, depth, parents, data, run, steps, dt, answer } => hsm::run(
+            &AssetStore::new(game)?,
+            hsm::Options {
+                bundle: &bundle,
+                node,
+                find: find.as_deref(),
+                depth,
+                parents,
+                data,
+                run,
+                steps,
+                dt,
+                answers: &answer,
+            },
+        )?,
         Cmd::AiGraph => {
             let ai = AssetStore::new(game)?.ai_data()?;
             for (i, n) in ai.nodes.iter().enumerate() {

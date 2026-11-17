@@ -972,22 +972,44 @@ states). A sequence is referenced by its own `655d3f5f` UniqueId, never by resou
   `Binding_Replacement_Index` is the `#` of the layout's bindings), `Text1` (`bf1ce9a1`) / `Text2` / `Text3`.
   `JumpTimelineController`s carry an `EnabledBinding`; their destination is the unnamed `b6a51260`.
 
-## HSMData (0x501, game-logic state machines, 2026-10-09)
+## HSMData (0x501, game-logic state machines, 2026-10-09; completed 2026-11-17)
 
-Parser `mw_formats::hsm` (layout table in its doc comment), `mwtool hsm [<node id>] [--find text]`; read like the
-interpreter reads it (docs/decomp.md "Boot, loading screens and the free-roam start"). Header: version 3, entry
-points (12 B {node, behaviour code, key}), nodes (32 B), an unread pair, behaviour types (32 B {packed key, name
-ptr, ...}: "Run Child Behaviour", "Activate Widget Group", ...). A node: behaviour code = `~crc32(code name)`
-(`HSB_RUNCHILD` 0x24c422b2, the most common), id, its events (the `ENTER` event lists the children it starts),
-its children with transitions (on a child's exit code, start these nodes), parameters (packed key → value text,
-e.g. `GROUP="491032"`, `BINDING="Mode.ShowLoadingScreen"`, `FUNCTION="SetNewGame"`; the u16 pair beside each is
-(type, count): typed parameters), an optional **data definition** at +0x14 (corrected 2026-11-17: not inline Lua;
-a named JSON view-model block, 28 in GAMEMODES, e.g. `SafeForDialogs {CanShow:true}` or a hook's arguments
-`Params {NewGame:true}`), a name, u8 counts at +0x1c..0x1f of which +0x1D is the **fallback behaviour**
-(RUN_CHILDREN / EXIT / ASSERT_THEN_EXIT; burnout.wiki "HSM Data/NFS Most Wanted", official field names from a
-PS3 debug build). No shipped node runs Lua (`NEWLUASTATE` / `LOADLUA` / `RUNLUASCRIPT` exist but are unused). Keys and exit codes are names packed
-base 40 into a u64 (`EXIT`, `ENTER`, `TRUE` / `FALSE`, `YES` / `NO`, `TOGAME`, `PC` / `PS3` / `X360` / `VITA`).
-The cars' active-aero machines (`AnimationStateBehaviour`) are the same format.
+Parser `mw_formats::hsm` (full layout table in its doc comment; official structure names from burnout.wiki "HSM
+Data/NFS Most Wanted", a PS3 debug build), `mwtool hsm` (listing, trees, `--data`, `--bundle all` parses all 37
+instances of the install); run by `mw_logic::hsm` (decomp.md "The HSM interpreter"). Header: version 3, then
+(ptr, count) of top-level states (12 B {definition id, behaviour id, **instance id**}: the code starts a machine
+by instance id, the boot's 20527 → "Top State" 21597), states (32 B), data definitions (0x14 B), behaviour
+interfaces (32 B).
+- **State** (`HSMStateDefinition`): behaviour id = `~crc32(code name)` (`HSB_RUNCHILD` 0x24c422b2), definition
+  id, entry points, child exit data, parameters, data definition, debug name, u8 counts; +0x1D is the **fallback
+  behaviour** used when the behaviour id is not registered: RUN_CHILDREN 0 (2,011 states) → `HSB_RUNCHILD`, EXIT 1
+  (694) and ASSERT_THEN_EXIT 2 (1) → `HSB_PLCHLDR` (exits through `EXIT`).
+- **Entry points** (16 B {id, action, spawn count, spawns}): the state is entered through one of them (most:
+  `ENTER`; `SETENDREASON` has QUIT / ENDED / RETRY, `LOADPROFILE` ENTER / ENTER_NO_PRF). Action NOTHING 0, CHILD 1
+  (start the spawns), EXIT 2. A **spawn** (16 B) = {entry point id, state id, name}: start that state through
+  that entry point.
+- **Child exit data** (16 B {child id, exit points, count, name}) and **child exit points** (24 B {parent exit
+  point, child exit point, action, spawn count, spawns}): when the child exits through the child exit point,
+  start the spawns (CHILD) or exit the parent through the parent exit point (EXIT).
+- **Parameters** (16 B {id, values, i16 type, i16 count}): every value is text; types STRING 0 (2,458 + 16 with
+  0 / 4 values), BOOL 4 (1,158), ASSET_REFERENCE 5 (858, up to 4 values: speech events, error lists), INT 1 (57),
+  FLOAT 2 (42), ID 3 (none), STRUCTURE 6 (21, sign-in screens: values → `HSMStructureInstance` 8 B {params,
+  count}, nested). Ids are packed names, but not always canonical: 484 `BINDING` parameters carry
+  "BINDING" NUL "PATH" (0x54a48941b5db2e54, also the exe's constant for most binding behaviours), plus
+  `ERROR·STRING` (3) and `CONTEXT·NAME` (2); the code compares all 64 bits.
+- **Data definitions** (0x14 B {id, path, JSON text, size, debug name}), 28 in GAMEMODES, referenced by 65 states
+  (+0x14; corrected 2026-11-17: not inline Lua). With a path they are view models published while the state is
+  active (`SafeForDialogs {"CanShow": true}`, `PostBoot`, `WaitingForBoot`, `SPVisible`, `ActiveGameMode` with
+  binding `adapters`, `GameState`, `Killcam`); without, a hook's arguments (`{"Params": {"NewGame": true}}`,
+  read as the member `Params` / `EnterParams` / `ExitParams`).
+- **Behaviour interfaces** (32 B {packed code name, name, entry point ids, exit point ids, parameter defaults,
+  u32 parameter count, i16 entry count, i16 exit count}): e.g. `HSB_SEL_EX_B` (BINDING, ONFAILEXIT; no declared
+  exits), `SETENDREASON` (entries QUIT / ENDED / RETRY). 199 in GAMEMODES; 5 top-level states (275234, 955119,
+  995174, 995220, 1019762) name states this resource lacks.
+No shipped state runs Lua (`NEWLUASTATE` / `LOADLUA` / `RUNLUASCRIPT` exist but are unused). Keys and exit codes
+are names packed base 40 into a u64 (`EXIT`, `ENTER`, `TRUE` / `FALSE`, `YES` / `NO`, `TOGAME`, `PC` / `PS3`
+/ `X360` / `VITA`); a behaviour starts with `EXITINVALID`. The cars' active-aero machines
+(`AnimationStateBehaviour`) are the same format.
 
 ## Front-end data (2026-10-09, `mw_assets::frontend`, `mwtool frontend`)
 

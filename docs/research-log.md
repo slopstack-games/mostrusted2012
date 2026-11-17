@@ -10,6 +10,51 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-11-17: game logic: the HSM interpreter (PLAN M8 step 2)
+Worktree agent. The HSMData parser completed and the original's interpreter ported (decomp.md "The HSM
+interpreter", formats.md "HSMData").
+- **Parser** (`mw_formats::hsm`): all official structures (burnout.wiki names): top-level states with instance
+  ids, entry points with spawn entry ids, child exit points with parent exit points, typed parameters incl.
+  nested STRUCTUREs, data definitions (path + JSON text), behaviour interfaces (entry / exit point ids,
+  parameter defaults), fallback byte. All 37 HSMData of the install parse (`mwtool hsm --bundle all`).
+- **Found**: parameter ids are not always canonical packed names: 484 `BINDING` parameters (and the exe's
+  constant for EXITBINDTRUE / HSB_SEL_EX_B / HSM_B_TRUE / HSB_B_NOT_0 / HSB_EX_BI_CH) are "BINDING" NUL "PATH"
+  (0x54a48941b5db2e54), while BINDINGTIMED / RUNSUBNET use the plain `BINDING`; lookups compare all 64 bits, so
+  each behaviour uses its exact id. Hooks return the exit point; a missing hook gives `EXITINVALID` (also every
+  instance's initial exit point). The fallback byte only matters for unregistered ids (RUN_CHILDREN →
+  HSB_RUNCHILD, else HSB_PLCHLDR = exit through EXIT); a top-level state always falls back to HSB_PLCHLDR.
+  Children are not ticked while their parent is entering; instant states chain within one frame (later passes
+  tick the children started in the same call). The boot's instance id 20527 is G+0x2f710 (live). 5 top-level
+  states name states GAMEMODES lacks (RUNSUBNET's enter requests a load when the state is missing: other HSM
+  resources may hold them; not seen in the install).
+- **Interpreter** (`mw_logic::hsm`): 12 machine slots, results ring, the 4-phase tick, children passes,
+  transitions, entry points, subtree exit requests, data definitions published / retracted as view models, hook
+  arguments from the JSON (`serde_json`). Behaviour types are a registry of factories by behaviour id; 19 ported
+  (list in decomp.md); `Host` trait for bindings (typed bool / text / int), hooks, view models, graphics /
+  loading-screen queries; `Clock` with the two clocks the behaviours read. 10 lifecycle tests.
+- **Verified** (`mwtool hsm --run`, answers in docs/commands.md): the boot runs Top State → Boot ("Wait For
+  Graphics Prepare") + Run Always Active Systems + Enable Black Background + the boot page (Language Select: the
+  PC locale check exits at once → Press Start: widget group 491032, "Exit When Intro Sequence Binding Is True" →
+  Press Start) + Switch to 60Hz → Post Controller Bind Boot (Autoselect and Load World: DEBUG Autoselect World →
+  Load World via ENTRY; Do Profile Load: Start Loading All Data → Select Profile → Load Profile → PopulateSettings;
+  Platform Selector PC → Get Online Silently → ConnectToAutolog) → InGame (Wait For Required Resources: feedback
+  group 97039, vehicle list, IsProgressionReady, CalculateShouldShowRecapSequence → Setup Start Point: Is Brand
+  New Profile YES → SetNewGame, SetSinglePlayerRollout → TOGAME → Should Play New Game Intro FALSE) → "Playing"
+  (Wait For Message Groups, Load Message Groups, Preload Cop Cars, Switch to 30Hz mode, Listen for Invite Flow).
+  Same order as decomp.md "Boot, loading screens and the free-roam start".
+- **Model decisions**: missing child exit records / entry points are reported (`Trace::Missing`) and ignored
+  (the original dereferences null); 10,000 passes per children update (the original has no guard); a binding
+  counts as parsed when its path is non-empty (until agent A's evaluator is connected); `WAIT4TIME`'s
+  `CurrentHSMTimer` view model is not published; the driver holds unported behaviours and answers unknown hooks
+  with EXIT (driver only).
+- **Open**: the ~180 used behaviour types left (RUN_PG_RNNR2 / ACTI_WDGT_GR / HSB_P1BIND / RUNGAMEMODE /
+  GAMEMODE / RUNGAMELOGIC / LOADWORLD / LOADPROFILE / MUTE_SOUND / SETBLACKBACK / CHANGEVSYNCS first); which
+  engine clocks +0x18 / +0x38 of the timer manager are; the byte at UI manager +0x2d200; the data-definition
+  `adapters` member (hash 0xb21d9989) and binding writes into published view models; connecting the binding
+  evaluator (typed reads `FUN_00a4f160` bool, `FUN_00a4f2e0` text, `FUN_00a4f200` int, the parse context
+  machine +0xe8) and the native registry for hooks. A probe hook on `FUN_00776470` logging (state id, phase) in
+  the original would confirm the boot path frame by frame.
+
 ### 2026-11-17: game logic: scripting, flow, AI (survey of the install, the exe and prior work)
 Research agent; full tables, registries and URLs in the main checkout's git-ignored
 `scratch/engine-scripting-research.md` (raw outputs and scripts in `scratch/scripting/`). Whole install scanned
