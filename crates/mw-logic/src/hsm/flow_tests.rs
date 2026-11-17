@@ -642,3 +642,202 @@ fn the_game_mode_manager_starts_the_mode_machine() {
     assert_eq!(host.query(&Query::FreedriveEvent), Some(1));
     assert_eq!(host.query(&Query::GameModeEvent), Some(390703));
 }
+
+fn reqs_of(host: &Rec) -> Vec<&Request> {
+    host.reqs.iter().collect()
+}
+
+#[test]
+fn set_end_reason_follows_the_entry_point() {
+    for (entry, reason) in [("ENDED", 1), ("RETRY", 3), ("OTHER", 2)] {
+        let (mut hsm, mut host, s) = machine("SETENDREASON", &[], entry);
+        step(&mut hsm, &mut host, 2);
+        assert_eq!(hsm.result(s), Some(EXIT));
+        assert!(host.reqs.contains(&Request::SetEndReason { reason }));
+        assert!(host.reqs.contains(&Request::SetGameModeWon { won: false }));
+    }
+    // ENDED with the mode won keeps "won".
+    let (mut hsm, mut host, _) = machine("SETENDREASON", &[], "ENDED");
+    host.answers.insert("ModeWon", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(reqs_of(&host), [&Request::SetEndReason { reason: 1 }]);
+}
+
+#[test]
+fn mode_end_check_exits_offline_and_times_out() {
+    let (mut hsm, mut host, s) = machine("MODEENDCHECK", &[], "ENTER");
+    host.answers.insert("ModeWon", 1);
+    host.answers.insert("EventEndTrigger", 0);
+    step(&mut hsm, &mut host, 3);
+    assert!(hsm.is_running(s), "won but no end trigger yet");
+    host.answers.insert("EventEndTrigger", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    assert!(host.reqs.contains(&Request::SetGameModeWon { won: true }));
+    // An end reason set holds it; a passed display timeout exits through TIME_OUT.
+    let (mut hsm, mut host, s) = machine("MODEENDCHECK", &[], "ENTER");
+    host.answers.insert("EndReason", 2);
+    step(&mut hsm, &mut host, 3);
+    assert!(hsm.is_running(s));
+    host.answers.insert("EndReason", 0);
+    host.answers.insert("DisplayTimeoutOn", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(key("TIME_OUT")));
+    // Without authority nothing happens.
+    let (mut hsm, mut host, s) = machine("MODEENDCHECK", &[], "ENTER");
+    host.answers.insert("ModeAuthority", 0);
+    step(&mut hsm, &mut host, 3);
+    assert!(hsm.is_running(s));
+}
+
+#[test]
+fn mode_end_check_online_waits_for_the_flag() {
+    let (mut hsm, mut host, s) = machine("MODEENDCHECK", &[], "ENTER");
+    host.answers.insert("OnlineEvent", 1);
+    step(&mut hsm, &mut host, 3);
+    assert!(hsm.is_running(s));
+    assert!(host.reqs.contains(&Request::SendModeEndMessage));
+    host.answers.insert("ModeEndFlag", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+}
+
+#[test]
+fn wait_for_input_waits_for_release_then_takes_a_handled_exit() {
+    let (mut hsm, mut host, s) = machine("HSB_WAIT4IN", &[], "ENTER");
+    host.answers.insert("InputHeld", 1);
+    step(&mut hsm, &mut host, 3);
+    assert!(hsm.is_running(s));
+    host.answers.insert("InputHeld", 0);
+    step(&mut hsm, &mut host, 3);
+    assert!(hsm.is_running(s));
+    // The root has no parent that handles the candidate: it keeps waiting.
+    host.answers.insert("InputExit", key("ACCEPT"));
+    step(&mut hsm, &mut host, 3);
+    assert!(hsm.is_running(s));
+}
+
+#[test]
+fn layer_set_sets_forces_and_stays_off_for_zero() {
+    let (mut hsm, mut host, _) = machine("SET_LAY_SET", &[("LAYOUTSET", "7"), ("FORCE_SET", "true")], "ENTER");
+    host.answers.insert("LayerSet", 3);
+    step(&mut hsm, &mut host, 3);
+    assert!(host.reqs.len() >= 2 && host.reqs.iter().all(|r| *r == Request::SetLayerSet { set: 7 }));
+    // A binding wins over the parameter; 0 is not set on enter; RESTORE_OLD false keeps it.
+    let (mut hsm, mut host, s) =
+        machine("SET_LAY_SET", &[("LAYOUTPATH", "Mode.Layer"), ("RESTORE_OLD", "false")], "ENTER");
+    host.ints.insert("Mode.Layer".into(), 0);
+    step(&mut hsm, &mut host, 3);
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 3);
+    assert!(host.reqs.is_empty());
+}
+
+#[test]
+fn layer_set_restores_the_old_one_on_exit() {
+    let (mut hsm, mut host, s) = machine("SET_LAY_SET", &[("LAYOUTSET", "7")], "ENTER");
+    host.answers.insert("LayerSet", 3);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(reqs_of(&host), [&Request::SetLayerSet { set: 7 }]);
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs.last(), Some(&Request::SetLayerSet { set: 3 }));
+}
+
+#[test]
+fn blacklist_shutdowns_walk_their_phases_and_end_in_the_credits() {
+    let (mut hsm, mut host, s) = machine("DOBLACKLISTS", &[], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs[0], Request::SetCreditsTransition { on: false });
+    // Phase 1's step runs; scripted, it moves on to phase 2 (answer = 1 + phase).
+    host.answers.insert("BlacklistPhaseAfter", 3);
+    step(&mut hsm, &mut host, 1);
+    assert!(host.reqs.contains(&Request::BlacklistStep { phase: 1 }));
+    host.answers.insert("BlacklistPhaseAfter", 0);
+    host.answers.insert("BlacklistReady", 1);
+    step(&mut hsm, &mut host, 2);
+    assert!(hsm.is_running(s));
+    // The credits tail: the sequence runs with its trigger unset, then it is over.
+    host.answers.insert("BlacklistCreditsPending", 1);
+    host.answers.insert("CreditsSequenceActive", 1);
+    step(&mut hsm, &mut host, 1);
+    assert!(hsm.is_running(s));
+    host.answers.insert("CreditsSequenceActive", 0);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(key("CREDITS")));
+    assert!(host.reqs.contains(&Request::GameCreditsFinished));
+    assert!(host.reqs.contains(&Request::SetCreditsTransition { on: true }));
+}
+
+#[test]
+fn blacklist_rival_is_released_and_removed_on_exit() {
+    let (mut hsm, mut host, s) = machine("DOBLACKLISTS", &[], "ENTER");
+    host.answers.insert("BlacklistSlot", 1);
+    host.answers.insert("BlacklistRivalAlive", 1);
+    host.answers.insert("BlacklistRivalHandle", 9);
+    step(&mut hsm, &mut host, 2);
+    host.answers.insert("BlacklistPhaseAfter", 3);
+    step(&mut hsm, &mut host, 1);
+    host.answers.insert("BlacklistPhaseAfter", 0);
+    step(&mut hsm, &mut host, 2);
+    assert!(host.reqs.contains(&Request::BlacklistRelease { handle: 9 }));
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 3);
+    assert!(host.reqs.contains(&Request::BlacklistRemoveSlot));
+}
+
+#[test]
+fn checkpoints_wait_for_load_step_and_exit_when_finished() {
+    // None: exits at once.
+    let (mut hsm, mut host, s) = machine("CHECKPTS", &[], "ENTER");
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    assert_eq!(host.reqs.first(), Some(&Request::CheckpointsEnter));
+    assert!(host.reqs.contains(&Request::CheckpointsLeave));
+    // Some: waits for the load, places them, steps until finished.
+    let (mut hsm, mut host, s) = machine("CHECKPTS", &[], "ENTER");
+    host.answers.insert("CheckpointCount", 5);
+    host.answers.insert("CheckpointsLoaded", 0);
+    host.answers.insert("CheckpointsFinished", 0);
+    step(&mut hsm, &mut host, 3);
+    assert!(!host.reqs.contains(&Request::CheckpointsPlace));
+    host.answers.insert("CheckpointsLoaded", 1);
+    step(&mut hsm, &mut host, 3);
+    assert!(host.reqs.contains(&Request::CheckpointsPlace));
+    assert!(host.reqs.contains(&Request::CheckpointsStep));
+    assert!(hsm.is_running(s));
+    host.answers.insert("CheckpointsFinished", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+}
+
+#[test]
+fn event_starts_exit_on_entry_when_asked() {
+    let (mut hsm, mut host, s) = machine("EVENTSTARTS", &[("CHECKENTRY", "true")], "ENTER");
+    step(&mut hsm, &mut host, 3);
+    assert!(hsm.is_running(s));
+    assert_eq!(host.reqs[0], Request::EventStartsEnter { check_entry: true });
+    host.answers.insert("EventStartTriggered", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    assert_eq!(host.reqs.last(), Some(&Request::EventStartsLeave));
+    // Without CHECKENTRY it never exits by itself.
+    let (mut hsm, mut host, s) = machine("EVENTSTARTS", &[], "ENTER");
+    host.answers.insert("EventStartTriggered", 1);
+    step(&mut hsm, &mut host, 5);
+    assert!(hsm.is_running(s));
+}
+
+#[test]
+fn car_swap_logic_steps_once_started_and_never_exits() {
+    let (mut hsm, mut host, s) = machine("HSMCARSWAPLO", &[], "ENTER");
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(reqs_of(&host), [&Request::CarSwapEnter]);
+    host.answers.insert("CarSwapActive", 1);
+    step(&mut hsm, &mut host, 2);
+    assert!(host.reqs.contains(&Request::CarSwapStep));
+    assert!(hsm.is_running(s));
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs.last(), Some(&Request::CarSwapExit));
+}

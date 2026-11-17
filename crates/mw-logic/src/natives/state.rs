@@ -454,4 +454,48 @@ pub enum Request {
     /// name, 0x00680680, ends in it): for vehicle > 0 the saved-game record of that vehicle (`FUN_00730ec0`, the
     /// zeroed one when none) is applied to the local player's record (`FUN_006c7950`).
     SetVehicleAndRolloutFromSaveGame { vehicle: i32 },
+    /// `FUN_00673ff0` (`MODEENDCHECK`, `SETENDREASON`): GMM+0x2e78 ([`GameModeManager::won`]) = `won`; applied by the host.
+    SetGameModeWon { won: bool },
+    /// `FUN_006dff20` (`SETENDREASON`): GMM+0x2d08 (u16, [`GameModeManager::end_reason`]) = `reason`; applied by the host.
+    SetEndReason { reason: u16 },
+    /// `FUN_006f4680` (`MODEENDCHECK` online): the mode-end message (the clock stamp `FUN_0046ee10`+8, posted with
+    /// `FUN_00715f40` while the message flag 8 of `*0x010edb5c` is set).
+    SendModeEndMessage,
+    /// `SET_LAY_SET`: (*(G+0x2f480))+0x31c08 = `set` (the UI manager's layer set).
+    SetLayerSet { set: u32 },
+    /// `HSMCARSWAPLO` enter (`FUN_00758ba0`): the car-swap logic initialises its 0x74d0-byte instance (jack spots,
+    /// `FUN_00747aa0`) and registers the view model `JackSpots` ("HSMBehaviourCarSwapLogic").
+    CarSwapEnter,
+    /// `HSMCARSWAPLO` update (`FUN_00761d70`): one step of the engine-side car-swap phase machine (7 phases).
+    CarSwapStep,
+    /// `HSMCARSWAPLO` exit (`FUN_0075d510`): release the spots (`FUN_007592a0`), GMM+0x252f = 0, G+0x2f718 / +0x2f71c
+    /// = -1 (`FUN_0069fd90`), unregister `JackSpots`, unblock input group 2 bit 7 when it was blocked.
+    CarSwapExit,
+    /// `CHECKPTS` enter (`FUN_00749670`): reset the checkpoint progress (index +0x50 = 0, lap +0x54 = 1).
+    CheckpointsEnter,
+    /// `CHECKPTS` enter update, once loaded (0x75d8d0): place the checkpoints (`FUN_00759860` per player slot).
+    CheckpointsPlace,
+    /// `CHECKPTS` update (0x75da20): one step (passing checkpoints, rank, split times).
+    CheckpointsStep,
+    /// `CHECKPTS` exit (0x75d960): remove the checkpoints (`FUN_00759fa0`, `FUN_00843030` per slot).
+    CheckpointsLeave,
+    /// `EVENTSTARTS` enter (0x754f30): read `CHECKENTRY`, `POIID`, `RECPOIID`, `MWPOIIDC`, `MWPOIIDUC` and
+    /// `TRACKEDONLY` and build the event starts.
+    EventStartsEnter { check_entry: bool },
+    /// `EVENTSTARTS` update (0x755220): refresh the starts (`FUN_0074ab90`, `FUN_0074a600`, `FUN_00755160`).
+    EventStartsStep,
+    /// `EVENTSTARTS` exit (0x74ab80 -> `FUN_0074aaf0`): remove the starts.
+    EventStartsLeave,
+    /// `DOBLACKLISTS` phases 1 / 4 / 5: `FUN_00748e50` / `FUN_007428b0` / `FUN_00753fa0` (the engine's blacklist
+    /// shutdown steps).
+    BlacklistStep { phase: u32 },
+    /// `DOBLACKLISTS` phase 3 (`FUN_00843030`(handle, 3, 0)): the rival's handle is released.
+    BlacklistRelease { handle: u32 },
+    /// `DOBLACKLISTS` (`FUN_006ce180`(slot id +0x98, 3)): the rival's slot is removed.
+    BlacklistRemoveSlot,
+    /// `DOBLACKLISTS` enter: GMM+0x2f26 ([`GameModeManager::credits_transition`]) = `on`; applied by the host.
+    SetCreditsTransition { on: bool },
+    /// `DOBLACKLISTS` credits tail: the telemetry event "GAME CRED FNSH" (`FUN_004c3890`, `FUN_0072e5e0`(9),
+    /// `FUN_004c2900`, `FUN_004c39f0`).
+    GameCreditsFinished,
 }

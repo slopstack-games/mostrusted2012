@@ -13,6 +13,26 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ## Dated findings
 
+### 2026-11-17: 8 event-flow HSM behaviour types (`hsm/behaviours_event.rs`)
+
+`SETENDREASON`, `MODEENDCHECK`, `HSB_WAIT4IN`, `SET_LAY_SET`, `DOBLACKLISTS`, `CHECKPTS`, `EVENTSTARTS`, `HSMCARSWAPLO` (66 types
+in all). Method as the entry below, with one correction: the factory of a name is the function *before* the name stub
+(the stub's `mov edx, <factory>`), not the one after it; its `mov [eax], vtable` gives the vtable. Entry-point and exit
+constants (`ENDED` 0x117a2d8, `RETRY` 0x117a668, `EXIT`, `TIME_OUT` 0x117a978, `CREDITS` 0x117a0e8) decode with the
+packed-name alphabet from snapshot 1. Details per type: decomp.md "The HSM interpreter".
+Model decisions: `SETENDREASON` / `MODEENDCHECK` write GMM+0x2e78 / +0x2d08 through `Request::SetGameModeWon` /
+`SetEndReason`, which `natives::mode_machine::apply` applies to `GameModeManager::won` / `end_reason` (the `Mode`
+binding root reads them); `FUN_006f46e0` (won, offline: medal / time maths on event data), `FUN_006f1530` (limit
+reached), `FUN_0074e790`'s list scan and `FUN_006e27e0` (display time left; its `FUN_00eda646` is `_ftol` of 0.0, read
+from the asm) are `Query`s the runtime answers (the host answers only the online `won`). `HSB_WAIT4IN`'s candidate
+exits are `Query::InputExit { index }` (first one the parent handles wins, as the original's chain; the two cues
+`FUN_0079fb40` are not ported). `DOBLACKLISTS`: phases 0, 2, 3, 6 and the credits tail ported; the steps of phases
+1 / 4 / 5 are engine requests whose effect on the phase is a query; the view model `BlacklistShutDown` is published
+with defaults only. `CHECKPTS`, `EVENTSTARTS`, `HSMCARSWAPLO` (0x200, 0x1f0, 0x74d0 bytes of instance state): lifecycle,
+exit conditions and parameters ported, the per-frame work is `Request`s (checkpoint passing, event-start markers,
+the 7-phase car swap) for the runtime: open, with "Rules that are C++ ... are ported from the code" still to do.
+Test: 11 in `hsm/flow_tests.rs`; `mwtool hsm --run` still reaches "Freedrive Update".
+
 ### 2026-11-17: skid / crash sound glitch: not reproduced headless (user: "extremely loud, distorted")
 
 - **Original vs ours** (`ref/xkr_launch`: the original's own audio, the inputs replayed with the tap, levels
