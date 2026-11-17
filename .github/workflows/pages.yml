@@ -1,0 +1,70 @@
+# The browser build (tools/web/build) published to GitHub Pages. Run by hand only (Actions → "Browser build to
+# GitHub Pages" → Run workflow). The page holds only our code: the game files are read from the player's own
+# install folder in the browser and never uploaded. Needs Settings → Pages → Source: "GitHub Actions".
+name: Browser build to GitHub Pages
+
+on:
+  workflow_dispatch:
+    inputs:
+      toolchain:
+        description: "Rust nightly for the threaded wasm build (std is rebuilt with atomics)"
+        default: "nightly-2026-11-14"
+        required: true
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ inputs.toolchain }}
+          components: rust-src
+
+      - name: Cache the cargo registry and the wasm build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target/wasm-threads"
+          cache-on-failure: true
+
+      # The CLI must match the `wasm-bindgen` crate in Cargo.lock.
+      - name: wasm-bindgen CLI
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.129
+
+      - name: Build
+        env:
+          WEB_TOOLCHAIN: ${{ inputs.toolchain }}
+        run: |
+          # A module restored by the cache must not stand in for a failed build.
+          rm -f target/wasm-threads/wasm32-unknown-unknown/release/mostrusted.wasm
+          tools/web/build
+          test -f target/web/pkg/mostrusted_bg.wasm
+          test -f target/web/coi-sw.js
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: target/web
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

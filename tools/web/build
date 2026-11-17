@@ -2,13 +2,13 @@
 # Build the browser version into target/web (index.html + pkg/): the threaded wasm32 build (nightly + rust-src,
 # std rebuilt with atomics, as tools/wasm-check --threads), then wasm-bindgen (`cargo install wasm-bindgen-cli
 # --version 0.2.129`, or WASM_BINDGEN=<path>). Serve and open it with tools/web/serve.py. Prints only warnings /
-# errors and the result.
+# errors and the result. WEB_TOOLCHAIN=<toolchain> picks another nightly (CI pins one).
 set -e
 R="$(cd "$(dirname "$0")/../.." && pwd)"
 export RUSTFLAGS='-C target-feature=+atomics,+bulk-memory,+mutable-globals -C link-arg=--shared-memory -C link-arg=--max-memory=4294967296 -C link-arg=--import-memory -C link-arg=--export=__wasm_init_tls -C link-arg=--export=__tls_size -C link-arg=--export=__tls_align -C link-arg=--export=__tls_base'
 # No debug info: it would multiply the module's size.
 export CARGO_PROFILE_RELEASE_DEBUG=false
-CARGO_TARGET_DIR="$R/target/wasm-threads" nice -n 19 cargo +nightly build --manifest-path "$R/Cargo.toml" --release \
+CARGO_TARGET_DIR="$R/target/wasm-threads" nice -n 19 cargo +"${WEB_TOOLCHAIN:-nightly}" build --manifest-path "$R/Cargo.toml" --release \
   --target wasm32-unknown-unknown -Z build-std=std,panic_abort -p mostrusted --message-format short "$@" 2>&1 \
   | grep -E '^[^ ]+\.rs:[0-9]+:[0-9]+: (warning|error)|^(warning|error)(\[|:)|Finished|could not compile' \
   | grep -v 'generated [0-9]* warning\|unused field `repository`' || true
@@ -16,4 +16,5 @@ WASM="$R/target/wasm-threads/wasm32-unknown-unknown/release/mostrusted.wasm"
 [ -f "$WASM" ] || exit 1
 "${WASM_BINDGEN:-wasm-bindgen}" --target web --no-typescript --out-dir "$R/target/web/pkg" "$WASM"
 cp "$R/tools/web/index.html" "$R/target/web/index.html"
+cp "$R/tools/web/coi-sw.js" "$R/target/web/coi-sw.js"
 ls -la "$R/target/web/pkg" | awk '/_bg.wasm|\.js$/ {print $5, $9}'

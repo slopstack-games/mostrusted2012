@@ -336,6 +336,9 @@ tools/wasm-check --threads   # the same for the threaded browser build (nightly 
 # threads are Web Workers (mostrusted/src/platform.rs, wasm_thread); the page needs COOP same-origin + COEP
 # require-corp; the main thread never blocks on a lock (PollLock::poll_lock)
 tools/web/build                  # the browser build into target/web (WASM_BINDGEN=<path> if not on PATH)
+# GitHub Pages: Actions → "Browser build to GitHub Pages" → Run workflow (.github/workflows/pages.yml, manual only;
+# Settings → Pages → Source "GitHub Actions"). WEB_TOOLCHAIN=<nightly> picks the toolchain (the workflow's input).
+# Pages sends no COOP / COEP headers: tools/web/coi-sw.js (a service worker index.html registers) adds them.
 python3 tools/web/serve.py       # serve it + your install on 127.0.0.1:8080 (--install, --port, --out)
 #   http://127.0.0.1:8080/ (pick the install folder) or /?serve=1&args=--camera=-1131,27,1627,-1190,15,1720+--units+4
 tools/web/headless <name> '<flags>' [timeout] [record_s]   # Brave in tools/hl's gamescope, silent; waits for
