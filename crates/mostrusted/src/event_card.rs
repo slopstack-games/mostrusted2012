@@ -20,6 +20,12 @@
 //! the intro. Model decisions: the race is started at 0.25 s of the card (the original loads the event behind
 //! the transition; when exactly was not traced); the rewards, the Most Wanted list and the speedwall show
 //! nothing (no progression or Autolog data), no transition sounds.
+//!
+//! Driven (`--hsm`, [`crate::race::RaceDriven`]): the card is the chosen menu's transition as above, but the race is
+//! the logic's: logic.rs makes the choice the logic's event request and starts the race on the logic's respawn at
+//! the event's start; "TRANSITION" is handed to the logic (its general trigger, [`EventCard::transition`]), whose
+//! "Screen Transition Voodoo" then plays the intro. The clock the pause menu stopped runs again when the card
+//! begins (the logic pauses it itself while the event loads).
 
 use crate::platform::PollLock;
 use std::collections::{HashMap, HashSet};
@@ -109,12 +115,19 @@ pub struct EventCard {
     job: Option<Arc<Mutex<Option<Loaded>>>>,
     root: Option<Entity>,
     pool: QuadPool,
+    /// The card's "TRANSITION" general trigger item has passed (set until the next card).
+    transition: bool,
 }
 
 impl EventCard {
     /// A card is showing (other screens and the pause menu stay closed).
     pub fn showing(&self) -> bool {
         self.card.is_some()
+    }
+
+    /// The card's general trigger "TRANSITION" has passed (`GeneralSequence.Triggers["TRANSITION"]`).
+    pub fn transition(&self) -> bool {
+        self.transition
     }
 }
 
@@ -171,6 +184,8 @@ fn begin(
     mut plays: MessageReader<PlayEvent>,
     game: Res<crate::Game>,
     race: Option<Res<RaceState>>,
+    driven: Option<Res<crate::race::RaceDriven>>,
+    mut time: ResMut<Time<Virtual>>,
 ) {
     let Some(PlayEvent(setup)) = plays.read().last().cloned() else { return };
     // `FUN_006f3830` / `FUN_0074a600`: a DLC event whose pack is not owned is listed but not started (`dlc.rs`).
@@ -192,6 +207,11 @@ fn begin(
         card.root = Some(commands.spawn((node, Pickable::IGNORE, GlobalZIndex(25))).id());
     }
     info!("event card: {} ({})", setup.name, setup.event.id);
+    card.transition = false;
+    if driven.is_some() {
+        // The pause menu's clock (driven: the logic pauses it while the event loads).
+        time.unpause();
+    }
     let job = Arc::new(Mutex::new(None));
     let (out, store, s) = (job.clone(), game.store.clone(), setup.clone());
     crate::platform::thread::Builder::new()
@@ -380,14 +400,17 @@ fn advance(
     residency: Res<crate::frontend::Residency>,
     mut start: MessageWriter<StartRace>,
     mut cutscenes: ResMut<crate::cutscene::CutsceneState>,
+    driven: Option<Res<crate::race::RaceDriven>>,
 ) {
+    let card = &mut *card;
     let Some(c) = card.card.as_mut() else { return };
     let dt = real.delta_secs().min(0.1);
     let ready = race_ready(race.as_deref(), &loaded, &residency);
     // Hold the intro until "TRANSITION".
     cutscenes.hold_intro = !c.released;
     let Some(look) = c.look.take() else { return };
-    if !c.race_started && c.clock >= START_AT {
+    // Driven: the logic starts the race (logic.rs, on its respawn at the event's start).
+    if !c.race_started && c.clock >= START_AT && driven.is_none() {
         c.race_started = true;
         time.unpause();
         start.write(StartRace(c.setup.clone()));
@@ -415,6 +438,7 @@ fn advance(
             && !c.released
         {
             c.released = true;
+            card.transition = true;
             cutscenes.hold_intro = false;
             info!("event card: TRANSITION at {:.2} s", c.clock);
         }

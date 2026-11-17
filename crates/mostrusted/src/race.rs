@@ -86,6 +86,16 @@ pub struct RaceSetup {
 
 pub struct RacePlugin {
     pub setup: Option<Arc<RaceSetup>>,
+    /// `--test race` for a race started at runtime (`--hsm-event`): the scripted run once it starts.
+    pub test_runtime: bool,
+}
+
+/// Under `--hsm` the race runs "driven" (logic.rs): started on the logic's respawn at the event start, ended when
+/// the logic's mode machine has gone back to free drive. Present only then.
+#[derive(Resource, Default)]
+pub struct RaceDriven {
+    /// The logic went back to free drive: [`end_event`] ends the event now.
+    pub end: bool,
 }
 
 impl Plugin for RacePlugin {
@@ -113,6 +123,10 @@ impl Plugin for RacePlugin {
         // The race HUD is `hud.rs` (the game's race layouts); `MW_RACE_TEXT=1` adds the old one-line debug text.
         if std::env::var_os("MW_RACE_TEXT").is_some() {
             app.add_systems(Update, (spawn_text, update_text).run_if(racing));
+        }
+        if self.test_runtime {
+            app.insert_resource(RaceTest { runtime: true, ..default() })
+                .add_systems(FixedUpdate, run_test.before(crate::drive::car_physics).before(hold_at_start));
         }
         let Some(setup) = &self.setup else { return };
         app.insert_resource(RaceState::new(setup));
@@ -1066,29 +1080,39 @@ fn retire_racers(
 }
 
 /// The results' length (s): the results sequence's items run 0.25–8.25 s (`hud::RESULTS_SEQUENCE`).
-const RESULTS_SECS: f32 = 8.25;
+pub const RESULTS_SECS: f32 = 8.25;
 
 /// The event's end: once the outro and the results are over (the HSM's "Run PageRunner2 Context - Outros" →
 /// "Race Game Mode" exit → "On Event End"), the race is torn down and free roam resumes ("Freedrive Update"): the
 /// race state goes (so free-roam rules such as the jack spots, collectables and the free-roam HUD apply again), the
 /// player's car is no longer a racer and the route markers go. The opponents stay until [`retire_racers`] removes
 /// them. Model decision: the end is the results sequence's last item (the offline results are the front end's
-/// `ArcResults` screen, which the player closes).
-#[allow(clippy::type_complexity)]
+/// `ArcResults` screen, which the player closes). Driven ([`RaceDriven`], `--hsm`): when the logic says so.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn end_event(
     mut commands: Commands,
     race: Res<RaceState>,
+    driven: Option<ResMut<RaceDriven>>,
     hud: Option<Res<crate::hud::HudState>>,
     mut facing: ResMut<RespawnFacing>,
     players: Query<Entity, (With<Racer>, With<crate::drive::Player>)>,
     markers: Query<Entity, With<crate::chevron::RouteMarker>>,
     mut ended: MessageWriter<RaceEnded>,
 ) {
-    if race.phase != RacePhase::Finished || race.cutscene {
-        return;
-    }
-    if hud.as_ref().is_some_and(|h| h.results_clock.is_none_or(|t| t < RESULTS_SECS)) {
-        return;
+    match driven {
+        Some(mut d) => {
+            if !std::mem::take(&mut d.end) {
+                return;
+            }
+        }
+        None => {
+            if race.phase != RacePhase::Finished || race.cutscene {
+                return;
+            }
+            if hud.as_ref().is_some_and(|h| h.results_clock.is_none_or(|t| t < RESULTS_SECS)) {
+                return;
+            }
+        }
     }
     info!("race {}: event over (won: {:?}), back to free roam", race.event.id, race.won);
     commands.remove_resource::<RaceState>();
@@ -1227,6 +1251,10 @@ struct RaceTest {
     waited: Option<f32>,
     held_at: Option<Vec3>,
     exit_at: Option<u32>,
+    /// The race is started at runtime (`--hsm-event`): the 4× speed-up begins with it, and the result waits for
+    /// the event's end (the logic's way back to free roam).
+    runtime: bool,
+    sped_up: bool,
 }
 
 const TEST_SPEED: f32 = 40.0;
@@ -1242,6 +1270,7 @@ fn env_f32(name: &str) -> Option<f32> {
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn run_test(
     time: Res<Time>,
+    mut speed: ResMut<Time<Virtual>>,
     race: Option<Res<RaceState>>,
     mut test: ResMut<RaceTest>,
     mut input: ResMut<CarInput>,
@@ -1252,6 +1281,15 @@ fn run_test(
     opponents: Query<&Racer, Without<crate::drive::Player>>,
     mut exit: MessageWriter<AppExit>,
 ) {
+    if test.runtime && !test.done && test.waited.is_none() {
+        // A race started at runtime: nothing to do until it exists; then as `--race --test race` (4× speed).
+        if race.is_none() {
+            return;
+        }
+        if !std::mem::replace(&mut test.sped_up, true) {
+            speed.set_relative_speed(4.0);
+        }
+    }
     test.ticks += 1;
     if test.done {
         if test.exit_at.is_some_and(|t| test.ticks >= t) {
@@ -1263,6 +1301,10 @@ fn run_test(
     if test.ticks == 1 {
         test.miss = env_f32("MW_RACE_TEST_MISS").map(|k| k as usize);
         test.after = env_f32("MW_RACE_TEST_AFTER");
+        if test.runtime {
+            // The result waits for the event's end (the way back to free roam).
+            test.after.get_or_insert(1.0);
+        }
     }
     let Ok((mut t, mut lin, mut ang, p)) = cars.single_mut() else { return };
     // After the results: the event's end, then the opponents left.

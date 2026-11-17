@@ -391,6 +391,10 @@ struct Cli {
     /// does (`hsm:` lines); the requests carried out so far are listed in logic.rs's module doc.
     #[arg(long)]
     hsm: bool,
+    /// With the logic (implies --hsm and the start-up flow): once free roam is reached, start this event the way the
+    /// map's START RACE does; the logic runs it (logic.rs). With `--test race`: the scripted run through its gates.
+    #[arg(long)]
+    hsm_event: Option<u32>,
     /// Keep the sound in test runs (`--test`, crash / smash / race tests are silent otherwise): audio checks such
     /// as the browser build's recording (`tools/web/headless ... <record_seconds>`).
     #[arg(long)]
@@ -509,6 +513,7 @@ fn main() {}
 fn run(mut cli: Cli, game: GameDir) -> anyhow::Result<()> {
     drive::install_gamepad_mappings();
     cli.mute |= std::env::var_os("MW_MUTE").is_some_and(|v| v != "0");
+    cli.hsm |= cli.hsm_event.is_some();
     if cli.bench.is_some() && std::env::var_os("WAYLAND_DISPLAY").is_some() && std::env::var_os("DISPLAY").is_some() {
         // Wayland offers no Immediate present mode and paces Mailbox at the monitor's refresh: benchmark
         // through XWayland, where `AutoNoVsync` gets Immediate (`bench.rs`).
@@ -561,35 +566,35 @@ fn run(mut cli: Cli, game: GameDir) -> anyhow::Result<()> {
         Ok(v.hi_bundle.expect("find_vehicle only returns cars with bundles"))
     };
     let race_test = cli.test.as_deref() == Some("race");
-    if race_test && cli.race.is_none() {
-        anyhow::bail!("--test race needs --race <event id>");
+    if race_test && cli.race.is_none() && cli.hsm_event.is_none() {
+        anyhow::bail!("--test race needs --race <event id> or --hsm-event <event id>");
     }
-    // `--race`: the event's start and (unless --drive names one) its first allowed car.
-    let race = match cli.race {
-        None => None,
-        Some(id) => {
-            let events = store.events()?;
-            let event =
-                events.get(id).cloned().ok_or_else(|| anyhow::anyhow!("no event {id} (see `mwtool events`)"))?;
-            let name = store
-                .language(mw_assets::DEFAULT_LANGUAGE)
-                .ok()
-                .and_then(|l| l.get(event.name).map(str::to_owned))
-                .unwrap_or_else(|| format!("event {id}"));
-            if event.spawn.is_none() || event.checkpoints.is_empty() {
-                anyhow::bail!("event {id} ({name}) has no start or no checkpoints: not a race");
-            }
-            println!(
-                "race: {name} ({}, {} laps, {} checkpoints, {} opponents)",
-                event.kind.label(),
-                event.laps,
-                event.checkpoints.len(),
-                event.opponents.len()
-            );
-            let game_mode = events.game_mode(event.game_mode).copied();
-            Some(race::RaceSetup { event, game_mode, name, test: race_test })
+    // An event's race set-up: its start and checkpoints, its game mode and name.
+    let event_setup = |id: u32, test: bool| -> anyhow::Result<race::RaceSetup> {
+        let events = store.events()?;
+        let event = events.get(id).cloned().ok_or_else(|| anyhow::anyhow!("no event {id} (see `mwtool events`)"))?;
+        let name = store
+            .language(mw_assets::DEFAULT_LANGUAGE)
+            .ok()
+            .and_then(|l| l.get(event.name).map(str::to_owned))
+            .unwrap_or_else(|| format!("event {id}"));
+        if event.spawn.is_none() || event.checkpoints.is_empty() {
+            anyhow::bail!("event {id} ({name}) has no start or no checkpoints: not a race");
         }
+        println!(
+            "race: {name} ({}, {} laps, {} checkpoints, {} opponents)",
+            event.kind.label(),
+            event.laps,
+            event.checkpoints.len(),
+            event.opponents.len()
+        );
+        let game_mode = events.game_mode(event.game_mode).copied();
+        Ok(race::RaceSetup { event, game_mode, name, test })
     };
+    // `--race`: the event's start and (unless --drive names one) its first allowed car.
+    let race = cli.race.map(|id| event_setup(id, race_test)).transpose()?;
+    // `--hsm-event`: started from free roam through the logic (the race test is the plugin's `test_runtime`).
+    let hsm_event = cli.hsm_event.map(|id| event_setup(id, false)).transpose()?.map(Arc::new);
     // The event's intro and outro sequences (`cutscene.rs`).
     let cutscenes = match &race {
         Some(r) if !cli.no_cutscenes => {
@@ -621,6 +626,7 @@ fn run(mut cli: Cli, game: GameDir) -> anyhow::Result<()> {
     let no_race = race.is_none();
     // The start-up flow: a plain run (no mode flag) or --front-end.
     let boot = cli.front_end
+        || cli.hsm_event.is_some()
         || (cli.drive.is_none()
             && cli.vehicle.is_none()
             && camera.is_none()
@@ -1075,7 +1081,7 @@ fn run(mut cli: Cli, game: GameDir) -> anyhow::Result<()> {
             test: cli.test.as_deref() == Some("pursuit"),
             start_test: cli.test.as_deref() == Some("cops"),
         })
-        .add_plugins(race::RacePlugin { setup: race.map(Arc::new) })
+        .add_plugins(race::RacePlugin { setup: race.map(Arc::new), test_runtime: race_test && cli.hsm_event.is_some() })
         .add_plugins(cutscene::CutscenePlugin { setup: cutscenes })
         .add_plugins(traffic::TrafficPlugin {
             enabled: !cli.no_traffic && matches!(request, Request::Drive { world: true, .. }),
@@ -1099,6 +1105,7 @@ fn run(mut cli: Cli, game: GameDir) -> anyhow::Result<()> {
         .add_plugins(dlc::DlcPlugin { free_roam: no_race && matches!(request, Request::Drive { .. }) })
         .add_plugins(logic::LogicPlugin {
             enabled: cli.hsm,
+            event: hsm_event,
             new_profile: cli.new_game || profile_file.as_deref().and_then(frontend::load_profile).is_none(),
         })
         .add_plugins(pause::PausePlugin {
