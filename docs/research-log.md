@@ -11,6 +11,62 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+### 2026-11-17: handbrake rear-wheel lock (user report), no capture yet, no model change
+
+User report: "the handbrake doesn't lock up the rear wheels like the original; with brake-to-drift you can test".
+
+**The original could not be captured.** Two launches (probe, save backed up to the worktree's
+`ref/savebackup-2026-11-17-handbrake/`, md5 in `…handbrake.md5`, restored byte-identical after each, proxy DLL
+removed, game quit): (1) the EA app updated itself on the first launch (13.827.2.6342) and then relaunched
+`NFS13.exe` itself through Steam; `orig-wrap` had already consumed its request file, so that copy started on the
+desktop display (`DISPLAY=:0`, no probe) and was killed within a minute. (2) Headless with the probe, title and
+offline prompt passed, free roam reached (Raptor), but `mwtool car 911` (issued once while the world was still
+loading on a first try, once ~20 s into free roam on a second) answered "old handle 0x0" and left the player
+with no car: the probe's vehicle went to 0x0, its tick hook stopped (tick frozen at 1473 / 1568), the world
+stayed carless. Open: why the swap finds no handle now (it worked 2026-10-19), and `orig-wrap` should keep the
+request until `orig quit` (or a guard should kill a desktop `NFS13.exe`) so an EA-app relaunch stays headless.
+
+**Code trace** (decomp.md "Handbrake and burnout", "Brake path in detail"): the handbrake budget is
+max(strength, service × pedal²) per rear wheel in N m, the same units as the service brake; `FUN_009cdfd0`
+applies min(budget, I |ω| / dt) to the spin at once (third argument 1/dt, checked in `FUN_00904da0`), keeps
+the rest for the solver's brake step / tyre hold. No handbrake lock: the lock lanes are the crashed flag
+(+0x1774) and the gearbox's engine-off hold of the front wheels (+0x1b90 = gearbox +0x120, `FUN_009ce3d0` /
+`FUN_009cd620`). The task premise "no `Handbrake.*` speed band on the 911" is wrong: the block holds
+`Brake_strength_at_low_speed` 350, `_at_high_speed` 1200, `Low_speed_mph` 30, `High_speed_mph` 135,
+`Minimum_handbrake_time` 0.1 (hashes checked) and `Handbrake::new` reads them, so at 85 mph the strength is
+≈ 800 N m, at 69 mph ≈ 670. The 911's rear tyre at its static load (4340 N in ours) and r 0.343 m carries
+1.8 × N × r ≈ 2680 N m at the braking peak (κ −0.05) and 1.4 × N × r ≈ 2080 N m fully sliding: by the code as
+read the rears cannot lock in a straight line. Also found, not ported: a per-wheel damage brake drag (wheel
++0x15c × the wheel-damage attribute +0x10, `FUN_009140b0`), and the engine-off front hold (check `ignition.rs`).
+
+**Ours on the synthetic inputs** (spawn hodges-strip at 85 mph, `scratch/synth.py` turns the `mwtool inputs`
+rows below into a 60 Hz replay CSV; outputs in the worktree's `ref/hb/*/telemetry.ours.csv`):
+- straight (handbrake 0.5–2.5 s): 89.0 → 66 mph (≈ 5 m/s², rear handbrake ≈ 2.1–2.3 kN per wheel plus engine
+  braking on the fronts, which take the whole drive with the handbrake on); rear ω = v / r throughout; pre-pass
+  κ −0.05 at μ 1.80 (`MW_TYRE_DEBUG`): the wheel slips at the tyre's peak, it does not lock;
+- turn (steer 0.5 with the handbrake): yaw ≤ 0.73 rad/s, rear slip angle ≤ 4.7°, body slip ≤ 3.4°, rear ω 2 %
+  under v / r: the car barely rotates;
+- brake-to-drift (brake 1 + steer 0.6 for 0.25 s, then throttle): no drift (rear slip ≤ 5.2° against
+  `Slip_angle_to_enter_drift` 7°, the tap's floor `0dce38f7` 2° recovering at `b5290695` 10°/s), body slip ≤ 4.2°.
+  If the original swings out here, the difference is in the drift entry / rear lateral grip, not a lock rule.
+
+Tests (911, unchanged, no model change): accel 0–100 km/h 3.73 s, top 307.4 km/h; brake 100–0 38.1 m / 2.62 s;
+corner 2.57 g; drift peak 37.3°, held 4.75 s, mean 32.3°; handbrake slip 1.1°, yaw 59°/s.
+
+**The capture to take on an idle machine** (one agent; back up the save; wait until the probe's `tick`
+advances in free roam before `mwtool car 911`): watch file = `ref/kerb.watch` up to `body_pz` plus, per wheel i,
+the spin inertia `[vehicle +0xa08 + 0x1d0 i] + 0x54` and the brake object `vehicle +0xfb0 + 0x40 i` (+0x00
+torque, +0x04 left over, +0x08 pedal², +0x10 lock lanes u32, +0x20 handbrake lanes u32), plus +0x1774 (u8),
++0x1b90 (u32), +0x2a20 (handbrake countdown), +0x1aa8 (hold input); then
+`mwtool conditions --hour 13 --no-traffic --repair --nitrous 0` and
+- `mwtool inputs ref/hb_straight/inputs.csv 0:0,1,0,0,0 0.5:0,0,0,1,0 2.5:0,0,0,0,0 3.5:0,0,0,0,0`
+- `mwtool inputs ref/hb_turn/inputs.csv 0:0,1,0,0,0 0.5:0.5,0,0,1,0 2.5:0,0,0,0,0 3.5:0,0,0,0,0`
+- `mwtool inputs ref/hb_bdrift/inputs.csv 0:0,1,0,0,0 0.5:0.6,0,1,0,0 0.75:0.6,1,0,0,0 2.75:0,0,0,0,0 3.5:0,0,0,0,0`
+- each `mwtool capture <name> --probe --watch handbrake.watch --script ref/<name>/inputs.csv --spot hodges-strip
+  --kmh 137`, then `mostrusted --drive 911 --replay ref/<name>/telemetry.csv --spawn=-2199.00,102.40,1192.90,139.50`
+  and `mwtool compare`. Decisive columns: `w2_omega` / `w3_omega` against v / r, `b2_left` / `b3_left` (a
+  locked wheel keeps budget left over), `b2_lock`, `w2_kappa`, `drifting`.
+
 ## Dated findings
 
 ### 2026-11-17: the checkpoints, event starts and car swap run in the logic (`natives/{checkpoints,event_starts,car_swap}.rs`)
