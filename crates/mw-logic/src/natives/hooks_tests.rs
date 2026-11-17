@@ -238,12 +238,12 @@ fn ui_hooks() {
     );
 }
 
-/// The registry the boot path uses: the 80 hooks verified against their handlers (`the_second_twenty` ... `the_fourth_twenty`).
+/// The registry the boot path uses: the 100 hooks verified against their handlers (`the_second_twenty` ... `the_fifth_twenty`).
 #[test]
 fn the_twenty_ported_hooks() {
     let r = Registry::original();
     let ported: Vec<_> = r.hooks().iter().filter(|h| h.ported()).map(|h| h.name).collect();
-    assert_eq!(ported.len(), 80, "{ported:?}");
+    assert_eq!(ported.len(), 100, "{ported:?}");
     let mut s = LogicState::default();
     s.players.local = Some(0);
     s.players.slots[0] = Some(Player::default());
@@ -520,4 +520,51 @@ fn the_fourth_twenty() {
     let g = &s.game_modes;
     assert!(!g.force_open_easydrive && !g.credits_transition && !g.jump_to_store && !g.fmn_vita_exclusive);
     assert_eq!((s.game.loading_screen_requests, s.game.loading_screen_2d21c), (0xdf, 0));
+}
+
+/// The fifth twenty, each checked against its handler (research-log 2026-11-17), through the verified registry.
+#[test]
+fn the_fifth_twenty() {
+    let r = Registry::original();
+    let mut s = with_local_player();
+    // Easydrive sounds: UniqueId at the given field, started on the sequence player.
+    for (name, field) in [
+        ("OnOpenEasyDrive", 0x50),
+        ("OnStartEvent", 0x60),
+        ("OnSelectEasyDriveOption", 0x58),
+        ("OnOpenEasyDriveMods", 0x54),
+        ("OnCloseEasyDriveMods", 0x4c),
+    ] {
+        assert_eq!(call(&r, &mut s, name, None), EXIT);
+        assert_eq!(s.requests.pop(), Some(Request::PlayUiSound { field }), "{name}");
+    }
+    // Flags (GMM = G+0x2f3fc): +0x2caa, +0x2f28, +0x2e9b, +0x2e9a, +0x2e9d.
+    assert_eq!(call(&r, &mut s, "ShouldPlayEndOfIntroSequenceInEasyDrive", None), FALSE);
+    assert_eq!(call(&r, &mut s, "PlayEndOfIntroSequenceInEasyDrive", None), EXIT);
+    assert_eq!(call(&r, &mut s, "ShouldPlayEndOfIntroSequenceInEasyDrive", None), TRUE);
+    assert_eq!(call(&r, &mut s, "ClearPlayEndOfIntroSequenceInEasyDrive", None), EXIT);
+    assert_eq!(call(&r, &mut s, "ShouldPlayEndOfIntroSequenceInEasyDrive", None), FALSE);
+    assert_eq!(call(&r, &mut s, "HasIntroEasyDriveBeenActive", None), FALSE);
+    assert_eq!(call(&r, &mut s, "SetHasIntroEasyDriveBeenActive", None), EXIT);
+    assert_eq!(call(&r, &mut s, "HasIntroEasyDriveBeenActive", None), TRUE);
+    for name in ["SwitchToGameplayLoadWorld", "LeaveGame", "ExitForMultiplayerMatchMaking"] {
+        assert_eq!(call(&r, &mut s, name, None), EXIT);
+    }
+    let g = &s.game_modes;
+    assert!(g.switch_to_gameplay_load_world && g.leave_game && g.exit_for_mp_matchmaking);
+    // Handlers that only return EXIT on PC (0x117efa0 holds the same key as EXIT).
+    for name in [
+        "ClearE3MultiplayerProgression",
+        "ShowPartyInvitePopup",
+        "OnPhotoSharedToWall",
+        "ShowX360GamerCard",
+        "ShowX360GamerCardEasyDrive",
+        "ShowX360GamerCardByPlayerIndex",
+    ] {
+        assert_eq!(call(&r, &mut s, name, None), EXIT, "{name}");
+    }
+    assert!(s.requests.is_empty());
+    // ForceKeyboardShutdown: engine only.
+    assert_eq!(call(&r, &mut s, "ForceKeyboardShutdown", None), EXIT);
+    assert_eq!(s.requests, [Request::ForceKeyboardShutdown]);
 }

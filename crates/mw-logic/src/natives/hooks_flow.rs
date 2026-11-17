@@ -49,13 +49,7 @@ pub fn register(r: &mut Registry) {
     r.set_hook("ClearForceOpenEasyDriveFlag", clear_force_open_easydrive_flag);
     r.set_hook("ClearCreditsTransition", clear_credits_transition);
     r.set_hook("ClearJumpToStoreFlag", clear_jump_to_store_flag);
-}
-
-/// Hooks ported from their handlers by an earlier, unfinished pass: not verified against the dump yet, so not
-/// part of [`Registry::original`]; tests install them with [`Registry::original_with_parked`].
-pub fn register_parked(r: &mut Registry) {
-    // Game-mode manager flags.
-    r.set_hook("SetFMNMenuShowingVITAExclusiveEvents", set_fmn_menu_showing_vita_exclusive_events);
+    // The fifth twenty (verified 2026-11-17, research-log).
     r.set_hook("PlayEndOfIntroSequenceInEasyDrive", play_end_of_intro_sequence_in_easydrive);
     r.set_hook("ShouldPlayEndOfIntroSequenceInEasyDrive", should_play_end_of_intro_sequence_in_easydrive);
     r.set_hook("ClearPlayEndOfIntroSequenceInEasyDrive", clear_play_end_of_intro_sequence_in_easydrive);
@@ -64,7 +58,7 @@ pub fn register_parked(r: &mut Registry) {
     r.set_hook("SwitchToGameplayLoadWorld", switch_to_gameplay_load_world);
     r.set_hook("LeaveGame", leave_game);
     r.set_hook("ExitForMultiplayerMatchMaking", exit_for_multiplayer_matchmaking);
-    // Handlers that only return EXIT on PC (console / online features compiled out).
+    r.set_hook("ForceKeyboardShutdown", force_keyboard_shutdown);
     for name in [
         "ClearE3MultiplayerProgression",
         "ShowPartyInvitePopup",
@@ -75,6 +69,12 @@ pub fn register_parked(r: &mut Registry) {
     ] {
         r.set_hook(name, exit_only);
     }
+}
+
+/// Hooks ported from their handlers by an earlier, unfinished pass: not verified against the dump yet, so not
+/// part of [`Registry::original`]; tests install them with [`Registry::original_with_parked`].
+pub fn register_parked(r: &mut Registry) {
+    r.set_hook("SetFMNMenuShowingVITAExclusiveEvents", set_fmn_menu_showing_vita_exclusive_events);
 }
 
 /// The original's TRUE / FALSE exit points.
@@ -406,4 +406,11 @@ fn leave_game(s: &mut LogicState, _: Args) -> Key {
 /// `ExitForMultiplayerMatchMaking` (0x677040): GMM+0x2e9d = 1.
 fn exit_for_multiplayer_matchmaking(s: &mut LogicState, _: Args) -> Key {
     set_flag(s, |g| &mut g.exit_for_mp_matchmaking, true)
+}
+
+/// `ForceKeyboardShutdown` (0x677060) -> `FUN_00845dc0`: sets bit 3 of the byte at `*DAT_010edb0c`, posts the
+/// message {0xf, 0} through `FUN_0084dcc0`, clears the bit (engine side: [`Request::ForceKeyboardShutdown`]).
+fn force_keyboard_shutdown(s: &mut LogicState, _: Args) -> Key {
+    s.requests.push(Request::ForceKeyboardShutdown);
+    EXIT
 }

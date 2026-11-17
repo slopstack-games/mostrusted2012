@@ -226,6 +226,9 @@ pub enum Request {
     /// `ClearPendingResets` (0x676080): `FUN_0063d410`(G+0x25690, i) for i in 0..16 (clears the pending reset of
     /// vehicle slot i; when it is the local car's: UIM+0x2d204 bit 12 and +0x2d238 cleared).
     ClearPendingResets,
+    /// `ForceKeyboardShutdown` (0x677060) -> `FUN_00845dc0`: bit 3 of `*DAT_010edb0c` set, message {0xf, 0}
+    /// posted (`FUN_0084dcc0`), bit cleared: closes the on-screen keyboard.
+    ForceKeyboardShutdown,
     /// `TransferCurrentHeatToVehicle` (0x6761c0): the local player's current vehicle id (`FUN_006ba320`: the
     /// vtable +0x18 object's +0x30); when non-zero `FUN_0072a280`(the profile's "garage" table (G+0x2f454)+0x4964,
     /// id, 0): the "heat" column of that vehicle's row is set to 0.

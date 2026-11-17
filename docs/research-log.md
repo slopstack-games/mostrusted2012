@@ -13,6 +13,28 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ## Dated findings
 
+### 2026-11-17: fifth 20 HSM hooks verified and enabled (100 of 187; `natives/hooks_{flow,ui}.rs`)
+
+All 20 were already ported but parked; handlers re-read from `re/out/live/text.asm`, now enabled in `Registry::original`.
+Easydrive sounds (OnOpenEasyDrive 0x6877b0 / OnStartEvent 0x687830 / OnSelectEasyDriveOption 0x6878b0 /
+OnOpenEasyDriveMods 0x687930 / OnCloseEasyDriveMods 0x6879b0): identical bodies, the UniqueId at `[obj+0xb27c + [obj+0xb278]+0x28 + f]`
+(obj = `[DAT_010edb08]+4`) with f = 0x50 / 0x60 / 0x58 / 0x54 / 0x4c; if non-zero `FUN_007983b0`(UIM+0x2f480... +0x32858) maps it and
+`FUN_00a45070` starts it on UIM+0x47748 (`Request::PlayUiSound`), then EXIT. GMM (= `[G+0x2f3fc]`) byte flags: +0x2caa
+(PlayEndOfIntroSequenceInEasyDrive sets 1, Clear sets 0, Should tests), +0x2f28 (SetHasIntroEasyDriveBeenActive / Has...), +0x2e9b
+(SwitchToGameplayLoadWorld), +0x2e9a (LeaveGame), +0x2e9d (ExitForMultiplayerMatchMaking), all set 1 and return EXIT; the tests
+return TRUE / FALSE. EXIT-only bodies: ClearE3MultiplayerProgression (0x676360), ShowPartyInvitePopup (0x7eb730), OnPhotoSharedToWall
+(0x7eb7c0), ShowX360GamerCard / ...EasyDrive / ...ByPlayerIndex (0x7eb6f0 / 0x7eb710 / 0x7eb740: a `FUN_009f16b0` hash lookup, result
+dropped). The three PC handlers return `DAT_0117efa0`, not 0x1177ef0; both hold the same 8-byte key in `snap1/mem.bin`
+(`00000068 a1614568`), so EXIT. The 20th, ForceKeyboardShutdown (0x677060): `FUN_00845dc0` sets bit 3 of `*DAT_010edb0c`, posts
+{0xf, 0} through `FUN_0084dcc0`, clears the bit (`Request::ForceKeyboardShutdown`). Test `the_fifth_twenty`; `the_twenty_ported_hooks` counts 100.
+Model decisions: none new. Open: the runtime does not handle `Request::ForceKeyboardShutdown` / `PlayUiSound` yet.
+Next candidates (offline, unported): SetFMNMenuShowingVITAExclusiveEvents (parked), CancelMilestoneTracking (0x675e50:
+`FUN_0071d1e0` on profile db +0x5a3c), HasEasyDriveOptionBeenSeen, SetEasyDriveOptionSeen, SetEasyDriveOptionSeenToTrue,
+SetSelectedWorld, SetAvailableVehicleListEvent, CalculateDistanceToEventByIdString, SetRolloutFromVehicleIdString,
+SetHighlightedRolloutByIdString, SetHighlightedVehicleByIdString, IsTargetScoreHit, ShowTargetScoreReminderMessage,
+SelectPaintPackFromEasyDrive, UpdatePendingRollout_EasyDrive, UpdatePendingRollout_EasyDrive_Stock, SetFinalEventData,
+StartEventFromBinding, SetWaypointToEventFromBinding, UpdateProgressAwardsStrings.
+
 ### 2026-11-17: skid / crash sound glitch: not reproduced headless (user: "extremely loud, distorted")
 
 - **Original vs ours** (`ref/xkr_launch`: the original's own audio, the inputs replayed with the tap, levels

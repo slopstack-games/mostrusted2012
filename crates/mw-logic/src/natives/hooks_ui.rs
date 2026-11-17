@@ -15,11 +15,6 @@ pub fn register(r: &mut Registry) {
     r.set_hook("StopSpeech", stop_speech);
     r.set_hook("SkipCurrentTrack", skip_current_track);
     r.set_hook("ToggleLoadingScreenOff", toggle_loading_screen_off);
-}
-
-/// Hooks ported from their handlers by an earlier, unfinished pass: not verified against the dump yet, so not
-/// part of [`Registry::original`]; tests install them with [`Registry::original_with_parked`].
-pub fn register_parked(r: &mut Registry) {
     r.set_hook("OnOpenEasyDrive", on_open_easydrive);
     r.set_hook("OnStartEvent", on_start_event);
     r.set_hook("OnSelectEasyDriveOption", on_select_easydrive_option);
@@ -97,3 +92,6 @@ fn on_open_easydrive_mods(s: &mut LogicState, _: Args) -> Key {
 fn on_close_easydrive_mods(s: &mut LogicState, _: Args) -> Key {
     ui_sound(s, 0x4c)
 }
+
+/// Nothing parked in this file any more (all verified).
+pub fn register_parked(_: &mut Registry) {}
