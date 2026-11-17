@@ -13,6 +13,75 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ## Dated findings
 
+### 2026-11-17: third 20 HSM hooks verified and enabled (60 of 187; `natives/hooks_{flow,event}.rs`)
+
+Handlers read from `re/out/live/text.asm` (vtable-only), helpers with `fn`: RemoveAllCops 0x67a740 (`FUN_006795c0`, per
+occupied slot `FUN_006bf190` = kind +0x9c == 2 and (+0x578)+0xb5, then `FUN_006ce180`(slot, 3)), AreAllAIPlayersLoaded,
+RequestRespawn / ...ToLastSwapSpot (`FUN_006cd340` / `FUN_006cd3a0`: +0x2c4 = 0, (+0x435 = 1), `FUN_006c9fb0`(0, 0)),
+HasLocalPlayerSetRollout, ResetChaseStats (`FUN_0065b830`(pursuit, 1) then heat +0x3d8 / +0x3dc / +0x3e8 = 0),
+ResetLocalPlayerHeat, TransferVehicleHeatToPlayer (+0x3dc only), ResetLocalPlayerDamage (`FUN_006ba2a0` then
+GMM+0x2e7f = 0 then message 0x16), ClearNitrous (`FUN_0065de30` = thunk to `FUN_00658c90`, arg PM+0xa6b4),
+ShouldShowEscapeSequence (`FUN_006e03d0` = GMM+0x2e90, or the mode record (GMM+0x2cf4 / +0x2cf8)+0x18 == config +0x60),
+FixUpRecommendationRetry (`FUN_006e04d0`: only when GMM+0x2e90, `FUN_00726ca0`(`last_played` value via `FUN_00732650`)),
+SyncTimeOfDay (`FUN_006f4960`), ClearPostEventAwards (`FUN_006e6670` + `FUN_006e28c0`, all 25 offsets match),
+RemoveRoadblocks (`FUN_008456d0`), ResetProps (`FUN_00846830`, message 0x15), HACKSuspend / Resume (G+0x2f0c8 = 3.0, `.rdata`
+0xf92eb0 = 0x40400000; `FUN_0083c930` group 1 bit 6), SetSeenEventsForVehicleToTrue (`FUN_006e0480`, GMM+0x2e86),
+ForceOpenEasyDrive (GMM+0x2ca9). All exit through EXIT except the three bool tests (TRUE 0x1177fe0 / FALSE 0x1177ee0).
+All 20 were already right; one fix: AreAllAIPlayersLoaded now needs a vehicle (+0xa0 != -1) as well as `loaded`
+(`FUN_006ba2f0` returns false without one). Test `the_third_twenty` (through `Registry::original`).
+
+Model decision: AreAllAIPlayersLoaded in the original walks the records from PM+0x5f50 with a stride of 0x5e0
+(the records are 0x7f0 apart), so slots 13..23 read shifted memory; the port reads each slot's own record. Open: confirm
+with a probe read whether slots 13+ ever matter (they would only differ with AI racers).
+Next candidates (still unported, offline): SetSafehouseFromProfile, ClearHudInstantQueue, StopAllSequences, StopSpeech,
+CleanAndRepairVehicle, DeactivateDamage, ReactivateDamage, ApplySelectedVehicleRollout, ClearPendingResets, TransferCurrentHeatToVehicle,
+IsSpeedTrapEvent, SetValidProgressionData, SetCollectablesNotInWorld, SetRollout, SkipCurrentTrack, ToggleLoadingScreenOff,
+ClearForceOpenEasyDriveFlag, SetFMNMenuShowingCommonEvents, ClearJumpToStoreFlag, ClearCreditsTransition.
+### 2026-11-17: Lua natives, third batch: 15 more (85 of 385; `natives/lua_misc.rs`)
+
+Each read from its handler (dump; `re/out/live/text.asm` for the six the dump lacks: ReleaseSettings 0x7eb170,
+PrepareControlSettings 0x7eb140, GoBackEasyGuideCategory 0x675910, Enable/DisableDreamshotsCameraControlGroup
+0x7ea120 / 0x7ea150, StartViewingEasyDrivePages 0x680300). Natives: UpdateDeferredViewModel (0x7f96a0, FUN_007f72f0),
+ClearViewModel (FUN_0081ed30 / FUN_0081ec00: the entry swapped with the last, downloads of that name removed or
+their +2 cleared), GetCurrentFreedriveEvent (FUN_0068fa10, shared with the hook), GetNextEventForProgression
+(FUN_0068fba0: other-mode events that are available, listed at G+0x29204 and pass the rollout check; pass 1 skips
+`EventInfo::completed` = FUN_006ec6a0, pass 2 takes any, else the free-drive pick), StartActionBind (FUN_00878790),
+SetGameMode / SetDistrict (read their argument and do nothing), Prepare/ReleaseControlSettings (FUN_00879010 /
+FUN_00879c70), GoBackEasyGuideCategory (FUN_00790a60), StartViewingEasyDrivePages (+FUN_007997f0), Enable/Disable
+DreamshotsCameraControlGroup (bit 4 of group 0 of the input-block set G+0x2f0a4: FUN_0083d030 clears, FUN_0083d000
+sets, each counting at +0x2f0c0; `InputBlocks::set` added), SetLocalPlayerLicensePlate (FUN_0067fa20),
+ChangeVehicleOnCustomRollout (FUN_00691110). Tests in `lua_misc.rs`; `Download` records now carry name and flags.
+
+Model decisions: UpdateDeferredViewModel pushes `MiscFields::deferred_ids[name]` (else -1): the original's out
+value (set by FUN_0081d1f0 inside FUN_00820550) was not traced; the load is `Request::UpdateDeferredViewModel`.
+SetLocalPlayerLicensePlate's telemetry event (FUN_004c3890 "GAME EVNT LICE") is not ported. The `this` of
+FUN_006e4d10 / FUN_006ee760 (plate list) is not identified; plates are filled by the runtime.
+Open: GetRankForSP (FUN_006ec4f0: rollout +0x44 == 4, nearest rank threshold from FUN_006893c0) needs its `this`
+identified.
+### 2026-11-17: 11 more HSM behaviour types, the boot needs no behaviour answers (`hsm/behaviours_game.rs`)
+
+The 6 types removed from the first batch were verified against `text.asm` (factories are not in the dump: vtable
+from the factory's `mov [esi],vtable`, slots from `.rdata`, bodies from `text.asm` plus `fn` for callees) and
+ported: DBAUTOSELWD, SELECT_PROF, WAIT4FEEDBK, WAITFORVEHIC, ISNEWPROFILE, ISAUTOTESTIN, plus HSB_STRSCRPT (only
+slot 1 own, returns 1). Then the unported types the boot still ran as placeholders: REBOOT_REQ, ENABLETIME,
+COLLECTABLES, LOAD_FDBK_GR (7 + 4 = 11 ported in all). Details and addresses: decomp.md "The HSM
+interpreter" (second batch). Findings: SELECT_PROF names the profile `%llu` of the persona id (`FUN_00428860` into
+`DAT_010ecc10`) and posts message 0xc on exit; the `.bss` parameter keys read from snapshot 1 are `GROUP`,
+`GROUPBINDING` (shared by WAIT4FEEDBK and LOAD_FDBK_GR) and `UNLOADONEXIT`; the earlier WIP's readings were all
+confirmed (no corrections). Name stubs (`FUN_00779e10` etc.) return (hash, factory) in edx: that is how a name
+maps to its factory.
+Request: AutoSelectWorld, SetProfileUser, ProfileUserSelected, StartCollectables, StopCollectables,
+LoadFeedbackGroup, UnloadFeedbackGroup, AdjustTimeEnabled. Query (default): AutoSelectableWorld (true), UserId (1:
+model decision, offline has no persona), FeedbackGroupLoaded (true), VehicleListLoaded (true), NewProfile (true),
+RebootRequested (false), CollectablesReady (true). Tests in `hsm/flow_tests.rs`, one per type.
+`mwtool hsm --run` reaches "Playing" with 5 answers instead of 11; each of the 5 is needed: the BOOT trigger,
+`UIConfig.Platform`, `Net.IsLoggedInToServer`, `SignInState.Params.IsChatRestricted` (engine bindings / online
+services) and state 1222788 `ConnectToAutolog` (online Autolog sign-in; its subtree "PC Login" waits for a
+sign-in screen). None is a behaviour answer. Still placeholders on the boot path:
+PRELOADCOPS (0x744c50 / 0x75c1c0 / 0x758030, resource streaming), HSB_RNLAYOUT (0x77f5f0, 7 slots), LIST_INVITE
+(0x74dd80, online invites) are the next candidates. ENABLETIME's counter meaning (G+0x25624) is inferred from the
+name.
+
 ### 2026-11-17: second 20 HSM hooks verified and enabled (`natives/hooks_{flow,event,ui}.rs`)
 
 Handlers read from `re/out/live/text.asm` (TRUE = `DAT_01177fe0`, FALSE = `DAT_01177ee0`, EXIT = `DAT_01177ef0`).

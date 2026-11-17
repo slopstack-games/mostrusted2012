@@ -37,8 +37,8 @@ pub struct SignInManager {
 pub struct MenuFields {
     pub sign_in: SignInManager,
     /// The downloads in progress (the manager at G+0x2f42c, +0x4d8: records of 0x604 bytes from +0x600, count
-    /// +0xb478; the id is the record's first int). Empty offline.
-    pub downloads: Vec<i32>,
+    /// +0xb478). Empty offline.
+    pub downloads: Vec<super::lua_misc::Download>,
     /// The rollout manager G+0x2f404, +0x1bc: the vehicle category the list shows.
     pub vehicle_category: i32,
     /// The pack page (OM+0x4ce0): the pack ids from +0x44 + 4*index (index 0 is "none"; the original reads the
@@ -123,7 +123,7 @@ fn select_pack(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
 /// that id is in the list.
 fn is_view_model_download_complete(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
     let id = int(&args, 1);
-    Ok(vec![Value::Bool(!state.menus.downloads.contains(&id))])
+    Ok(vec![Value::Bool(!state.menus.downloads.iter().any(|d| d.id == id))])
 }
 
 /// `UpdateAwardProgressBindings()` (0x007e9f40): `FUN_00724680` and `FUN_00724690` on G+0x2f3f8, each

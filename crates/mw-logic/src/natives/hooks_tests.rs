@@ -238,12 +238,12 @@ fn ui_hooks() {
     );
 }
 
-/// The registry the boot path uses: the first 20 hooks verified against their handlers (the second 20: `the_second_twenty`).
+/// The registry the boot path uses: the 60 hooks verified against their handlers (`the_second_twenty`, `the_third_twenty`).
 #[test]
 fn the_twenty_ported_hooks() {
     let r = Registry::original();
     let ported: Vec<_> = r.hooks().iter().filter(|h| h.ported()).map(|h| h.name).collect();
-    assert_eq!(ported.len(), 40, "{ported:?}");
+    assert_eq!(ported.len(), 60, "{ported:?}");
     let mut s = LogicState::default();
     s.players.local = Some(0);
     s.players.slots[0] = Some(Player::default());
@@ -355,4 +355,95 @@ fn the_second_twenty() {
         ]
     );
     assert_eq!(s.players.local_player().unwrap().respawn_event, 77);
+}
+
+/// The third 20 verified hooks (handlers read from the snapshot's disassembly, 2026-11-17), through
+/// `Registry::original`.
+#[test]
+fn the_third_twenty() {
+    let r = Registry::original();
+    let mut s = with_local_player();
+    // Players: cops are AI-driven (kind 2) with the cop flag; AI racers must have a vehicle and be loaded.
+    s.players.slots[5] = Some(Player { kind: 2, cop: true, ..Default::default() });
+    s.players.slots[6] = Some(Player { kind: 1, cop: true, ..Default::default() });
+    s.players.slots[12] = Some(Player { kind: 2, loaded: true, ..Default::default() });
+    assert_eq!(call(&r, &mut s, "AreAllAIPlayersLoaded", None), TRUE);
+    s.players.slots[13] = Some(Player { kind: 2, loaded: true, vehicle: -1, ..Default::default() });
+    assert_eq!(call(&r, &mut s, "AreAllAIPlayersLoaded", None), FALSE);
+    assert_eq!(call(&r, &mut s, "RemoveAllCops", None), EXIT);
+    assert_eq!(s.requests, [Request::RemovePlayer { slot: 5, reason: 3 }]);
+    s.requests.clear();
+    // Engine-side hooks: one request each.
+    for name in ["RemoveRoadblocks", "ResetProps", "SyncTimeOfDay", "RequestRespawn"] {
+        assert_eq!(call(&r, &mut s, name, None), EXIT, "{name}");
+    }
+    assert_eq!(
+        s.requests,
+        [
+            Request::RemoveRoadblocks,
+            Request::ResetProps,
+            Request::SyncTimeOfDay,
+            Request::Respawn { event: 0, to_swap_spot: false }
+        ]
+    );
+    s.requests.clear();
+    call(&r, &mut s, "RequestRespawnToLastSwapSpot", None);
+    let p = s.players.local_player().unwrap();
+    assert!(p.respawn_to_swap_spot && p.respawn_event == 0);
+    // Heat: ResetChaseStats (request + all three), ResetLocalPlayerHeat (all three), Transfer (+0x3dc only).
+    s.players.local_player_mut().unwrap().heat_3d8 = 1.0;
+    call(&r, &mut s, "TransferVehicleHeatToPlayer", None);
+    let p = s.players.local_player().unwrap();
+    assert_eq!((p.heat_3d8, p.heat_3dc, p.heat_3e8), (1.0, 0.0, 3.0));
+    call(&r, &mut s, "ResetLocalPlayerHeat", None);
+    let p = s.players.local_player().unwrap();
+    assert_eq!((p.heat_3d8, p.heat_3dc, p.heat_3e8), (0.0, 0.0, 0.0));
+    s.requests.clear();
+    call(&r, &mut s, "ResetChaseStats", None);
+    assert_eq!(s.requests, [Request::ResetChaseStats]);
+    // Rollout set / damage reset / nitrous.
+    assert_eq!(call(&r, &mut s, "HasLocalPlayerSetRollout", None), TRUE);
+    s.requests.clear();
+    s.game_modes.has_transitioned_events = true;
+    call(&r, &mut s, "ResetLocalPlayerDamage", None);
+    assert!(s.requests.is_empty());
+    s.game_modes.has_transitioned_events = false;
+    call(&r, &mut s, "ResetLocalPlayerDamage", None);
+    call(&r, &mut s, "ClearNitrous", None);
+    assert_eq!(s.requests, [Request::ResetVehicleDamage { vehicle: 3 }, Request::ClearNitrous { slot: 0 }]);
+    s.players.local_player_mut().unwrap().vehicle = -1;
+    assert_eq!(call(&r, &mut s, "HasLocalPlayerSetRollout", None), FALSE);
+    // Escape sequence: a free-drive event or the configured mode; the recommendation retry only in free drive.
+    s.config.escape_mode = 390185;
+    assert_eq!(call(&r, &mut s, "ShouldShowEscapeSequence", None), FALSE);
+    s.game_modes.current_mode = 390185;
+    assert_eq!(call(&r, &mut s, "ShouldShowEscapeSequence", None), TRUE);
+    s.game_modes.current_mode = 0;
+    s.game_modes.freedrive_event = true;
+    assert_eq!(call(&r, &mut s, "ShouldShowEscapeSequence", None), TRUE);
+    s.requests.clear();
+    s.progression.set_last_played(LAST_EVENT, 42);
+    call(&r, &mut s, "FixUpRecommendationRetry", None);
+    assert_eq!(s.requests, [Request::RecommendationRetry { event: 42 }]);
+    s.game_modes.freedrive_event = false;
+    call(&r, &mut s, "FixUpRecommendationRetry", None);
+    assert_eq!(s.requests.len(), 1);
+    // GMM flags and the post-event awards.
+    s.game_modes.awards = vec![1];
+    s.game_modes.award_amount = 9;
+    call(&r, &mut s, "ClearPostEventAwards", None);
+    assert!(s.game_modes.awards.is_empty() && s.game_modes.award_amount == 0);
+    call(&r, &mut s, "SetSeenEventsForVehicleToTrue", None);
+    call(&r, &mut s, "ForceOpenEasyDrive", None);
+    assert!(s.game_modes.seen_events_for_vehicle && s.game_modes.force_open_easydrive);
+    // The intro's car control: G+0x2f0c8 = 3.0, then group 1 bit 6 cleared and 0.
+    s.game.input_blocks.masks[1] = 1 << 6 | 1;
+    s.game.input_blocks.counts[1] = 2;
+    call(&r, &mut s, "HACKSuspendCarControlForIntro", None);
+    assert_eq!(s.game.input_blocks.suspend_time, 3.0);
+    call(&r, &mut s, "HACKResumeCarControlAfterIntro", None);
+    assert_eq!(
+        (s.game.input_blocks.masks[1], s.game.input_blocks.counts[1], s.game.input_blocks.suspend_time),
+        (1, 1, 0.0)
+    );
 }
