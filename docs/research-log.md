@@ -28,7 +28,14 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 - **Main-thread file reads** (`WebSource` now warns on reads ≥ 16 ms): the startup index is 4,040 small reads
   (~4.4 s total, the text path); while driving only GLOBALEFFECTS (91 ms), ENVIRONMENT (102 ms) and a feedback
   group (41 ms): not the main cause of the gaps.
-- **The fix, not done yet**: take the mixer off the main thread with cpal's `audioworklet` host (the callback
+- **Fixed the same day** (user: patch both): `third_party/` carries rodio 0.22.2 and bevy_audio 0.19.1 through
+  `[patch.crates-io]` (third_party/README.md): bevy_audio opens its sink on cpal's AudioWorklet host on wasm32 with
+  atomics (falling back to WebAudio), the sink wrapped in `send_wrapper` (the worklet stream holds the page's
+  `AudioContext`, not `Send`; Bevy's systems run on the main thread there); rodio's 32 lock sites on the callback
+  path go through `lock_spin` (spins on `try_lock` in the threaded browser build, the ordinary lock natively).
+  Same drive, 31 s after placement: **0 dropouts, 0 clicks** (was 42 / 913 ms), median RMS 0.168 (was 0.17);
+  log line "audio: AudioWorklet output". Native unchanged: median RMS 0.0590 (0.0586 before), 0 dropouts;
+  243 tests, accel and race tests as before. Original plan, for the record: take the mixer off the main thread with cpal's `audioworklet` host (the callback
   runs on the audio rendering thread over shared memory). Bevy's `AudioOutput` is crate-private and opens
   cpal's *default* host (always WebAudio), so this needs a patched `bevy_audio` (or our own output plugin), and
   rodio's `Player` takes plain `Mutex::lock`s on its controls (volume / speed / seek / position) every few

@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# Patched upstream crates ([patch.crates-io] below): not workspace members.
+exclude = ["third_party"]
 
 [workspace.package]
 version = "0.1.0"
@@ -28,3 +30,9 @@ opt-level = 3
 
 [profile.release]
 debug = 1
+
+# Upstream crates carried with small patches for the browser build's audio (third_party/README.md): the mixer
+# runs on cpal's AudioWorklet thread, and no lock in its path may block there.
+[patch.crates-io]
+bevy_audio = { path = "third_party/bevy_audio" }
+rodio = { path = "third_party/rodio" }

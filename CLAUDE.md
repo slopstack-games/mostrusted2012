@@ -66,6 +66,7 @@ crates/mw-logic     the original's logic interpreters: bindings, HSM, native reg
 crates/mw-lua       Lua 5.1 VM for the UI's shipped bytecode, PUC 5.1.3 semantics, no compiler (engine-free, wasm-safe)
 crates/mwtool       CLI for inspection / extraction / previews
 crates/mostrusted   Bevy 0.19 runtime (loader thread → channel → ECS), avian3d 0.7 physics (drive.rs)
+third_party/        upstream crates with small patches ([patch.crates-io]; third_party/README.md lists them)
 crates/mw-probe     DLL loaded into the running original (docs/probe.md; i686-pc-windows-gnu)
 ```
 
