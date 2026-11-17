@@ -2349,3 +2349,31 @@ fn end_settings_screen_acts_on_exit_and_car_select_follows_story_mode() {
     step(&mut hsm, &mut host, 2);
     assert_eq!(hsm.result(s), Some(key("FALSE")));
 }
+
+#[test]
+fn rollout_and_colour_correct_exit_at_once() {
+    for code in ["ROLLOUTACHVM", "CARCOLCORRCT"] {
+        let (mut hsm, mut host, s) = machine(code, &[], "ENTER");
+        step(&mut hsm, &mut host, 2);
+        assert_eq!(hsm.result(s), Some(EXIT), "{code}");
+        assert!(host.reqs.is_empty());
+    }
+}
+
+#[test]
+fn start_photo_mode_requests_then_exits() {
+    let (mut hsm, mut host, s) = machine("HSM.STARTPHO", &[], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    assert_eq!(host.reqs, [Request::StartPhotoMode]);
+}
+
+#[test]
+fn input_device_detect_waits_for_the_device_flag() {
+    let (mut hsm, mut host, s) = machine("HSM.INPUTDET", &[], "ENTER");
+    step(&mut hsm, &mut host, 3);
+    assert!(hsm.is_running(s));
+    host.answers.insert("InputDeviceDetected", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+}

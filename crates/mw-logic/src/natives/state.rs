@@ -596,6 +596,8 @@ pub enum Request {
     StartChallenge,
     /// `RUNCHALL` exit (0x73ed30): `FUN_00785d90` on the challenge object.
     StopChallenge,
+    /// `HSM.STARTPHO` enter (0x740f20, `FUN_0083e710` on the photo-mode object G+0x2f474).
+    StartPhotoMode,
     /// `FUN_00673ff0` (`MODEENDCHECK`, `SETENDREASON`): GMM+0x2e78 ([`GameModeManager::won`]) = `won`; applied by the host.
     SetGameModeWon { won: bool },
     /// `FUN_006dff20` (`SETENDREASON`): GMM+0x2d08 (u16, [`GameModeManager::end_reason`]) = `reason`; applied by the host.
