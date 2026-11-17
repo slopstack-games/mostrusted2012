@@ -777,7 +777,10 @@ fn spawn_route_markers(
 
 /// Give the player's car (each new one after a swap too) its `Racer`. A body shop's respray keeps the car
 /// entity (`paint_wear::Respray`, as the game's message 0xc paints the same vehicle), so its progress stays.
-fn attach_player(mut commands: Commands, cars: Query<(Entity, &Car), (Without<Racer>, With<crate::drive::Player>)>) {
+/// The player's car before it is a racer.
+type NewPlayerCar = (Without<Racer>, With<crate::drive::Player>);
+
+fn attach_player(mut commands: Commands, cars: Query<(Entity, &Car), NewPlayerCar>) {
     for (e, car) in &cars {
         commands.entity(e).insert((Racer::player(car.params.body_half_extents), RacerProgress::default()));
     }
