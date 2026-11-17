@@ -132,6 +132,29 @@ Open:
 - Captures that would confirm: the original's recap on a continue (when it starts relative to the transition, the
   camera framing at 1 / 8 / 12 s, the statistics shown, the music level against the bus mixer items).
 
+### 2026-11-17: skid "loud and distorted for good" after a race start: not reproduced, underruns ruled out (unfinished)
+
+Real-time headless runs recorded from the null sink (`scratch/live.sh` in the worktree, `MW_INPUT_SCRIPT`,
+`--hsm-event 462174 --auto-start 1`, free roam on the flat area `--spawn=-2197,103.5,1194,140`), with the new
+`MW_AUDIO_METER` line for the player's vehicle bank and `MW_AUDIO_STALL` (commands.md).
+- **The user's recording** (36 s, 44.1 kHz, master 0.35): the loud bursts are one centred source pinned at its
+  soft limiter (rails at ±0.21 = tanh × channel 0.6 × master 0.35) and flipping sign every 2–30 ms (a "telegraph"
+  wave: the sign of a signal far over full scale): that is where the sub-25 Hz share and the DC wander come from.
+  Up to 61 % of a second's samples sit above 0.18. Ours never: at most 21 %, and periodic (the engine at full
+  throttle, which renders at −5 dBFS after its limiter in the tap); the vehicle bank's level before its limiter
+  peaks at 0.4–1.5 in slides (3.6 once in a crash).
+- **Underruns ruled out as a lasting cause**: three 150 ms audio-thread holds at the race start's first teleport
+  (`MW_AUDIO_STALL=teleport,150,3,0.3`) give three real `Buffer underrun` errors, and the race after it measures the
+  same as without (vehicle bank −22 to −23 dBFS at 70 mph, the mix within 1 dB, no rail). Our runs also underrun
+  without a load burst: race2 logged 7 in a race grinding against AI cars (8 AI engine voices at ~4 % audio-thread
+  cpu each, the vehicle bank 10–19 %): the audio thread is near its budget in races.
+- No lasting state found in the vehicle bank (sfx_player smoothing guards non-finite values, ModValue clamps, the
+  bank's Distortion channel `…73483` receives nothing) or in its driver (`VehicleDriver::approach` is stable).
+- Open: the source of the rail. Next: a slide before and after the race start at the same speed (the script needs a
+  clock from the race's go; `MW_INPUT_SCRIPT_START` only knows `playing`), and the engine bank's state (its
+  SubHarmoniser toggles a square every 2 zero crossings, a telegraph by construction) after the teleport; the
+  audio-thread budget in races (AI voice cost is ~4 %, not the 0.1–0.3 % noted before).
+
 ### 2026-11-17: skids louder after a pause, very loud at a race start: two causes fixed
 
 User reports: skids get louder at a pause and stay that loud after it; very loud and distorted at a race start.
