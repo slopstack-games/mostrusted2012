@@ -6,6 +6,11 @@ use mw_formats::hsm::key;
 
 use super::{Behaviour, Cx, EXIT, EXITINVALID, Key, Registry};
 
+#[path = "behaviours_game.rs"]
+pub mod game;
+#[path = "behaviours_ui.rs"]
+pub mod ui;
+
 /// `TRUE` (`DAT_0117aac0`).
 pub const TRUE: Key = 0xbec0_6eaf_9900_0000;
 /// `FALSE` (`DAT_0117a960`).
@@ -38,6 +43,193 @@ pub fn register(r: &mut Registry) {
     r.register_fn("BWAIT4GFX", |_| WaitForGraphics);
     r.register_fn("HSB_WAIT4LS", |_| WaitForLoadingScreen { showing: true });
     r.register_fn("HSB_WAIT4NL", |_| WaitForLoadingScreen { showing: false });
+    ui::register(r);
+    game::register(r);
+}
+
+/// Engine state a behaviour reads, asked through [`Host::query`](super::Host::query). Answers are `u64`: bools are
+/// 0 / 1, exit points their packed key; each variant names where the original reads it and its
+/// [`default_answer`](Self::default_answer) (what an engine that does not answer gives: the value the original
+/// has on the boot path, or the offline one).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Query {
+    /// The PageRunner2 context `name` is on the context stack (`FUN_0083b8b0` → `FUN_007dc950`). Default true
+    /// (the push is synchronous in the original).
+    PageContextExists { name: String },
+    /// Takes the exit point the context's pages asked for (context +0x1f8, `FUN_0083b8c0` has one, `FUN_0083b8d0`
+    /// takes and clears it); 0 = none. Default 0.
+    PageContextExit { name: String },
+    /// The context is still busy leaving (`FUN_0083b8e0` → `FUN_007dc9c0`: its byte +1, on the stack or the
+    /// suspended one). Default false.
+    PageContextBusy { name: String },
+    /// The services' state G+0x2f454 +0x38f8 is 2 (one entry of an array at +0x38ec that `FUN_006e24e0` resets
+    /// to −1; 2 in both live snapshots; meaning open: `IGNORE_KB` bypasses it, so likely the on-screen
+    /// keyboard). Default true.
+    KeyboardIdle,
+    /// The UI manager's focus group (`*`(G+0x2f480) +0x31c04), saved by `RUN_PG_RNNR2` with `RESTOREGRP`.
+    /// Default 0.
+    FocusGroup,
+    /// The widget screen manager has a screen (G+0x2f458 +8 ≠ 0). Default true.
+    ScreenActive,
+    /// The current page's exit point asked by a widget (page +0x208, e.g. by the `ExitWidgetGroup` natives); 0 =
+    /// none. Default 0.
+    WidgetExit,
+    /// The current page can activate a group (`FUN_007f2f30`: page state 2 and its pending load done). Default
+    /// true.
+    PageReady,
+    /// [`PlayWidgetGroupTransition`](crate::natives::Request::PlayWidgetGroupTransition) of `group` started a
+    /// transition (the original's return value of `FUN_007f78a0` / `FUN_007f58e0`). Default false.
+    WidgetTransitionStarted { group: i64 },
+    /// The screen transition finished (G+0x2f458 +0x4b0 +0x3c4). Default true.
+    TransitionFinished,
+    /// The screen transitions' state (G+0x2f458 +0x4b0 +0x3ac; `ACTI_WDGT_GR` counts frames in state 2, at most
+    /// 10 are waited). Default 2.
+    TransitionState,
+    /// The page's out animation runs after [`DeactivateWidgetGroup`](crate::natives::Request::DeactivateWidgetGroup)
+    /// (page +0x68 × `.rdata` 0x00f9f608 > 0). Default false.
+    WidgetGroupOutTime,
+    /// The page's busy count (+0x4c, u16) is nonzero. Default false.
+    PageBusy,
+    /// The save system is ready to load (G+0x2f454 +0x4934). Default true.
+    ProfileReady,
+    /// The profile load ended with data (G+0x2f454: (+0x4941 clear or +0x4935 set), +0x4942 clear, +0x4964 ≠ 0).
+    /// Default true.
+    ProfileLoaded,
+    /// The primary user is bound (the user record `*`(0x010edad8)+4 +0xb28c ≠ 1). Default false.
+    PrimaryUserBound,
+    /// The local player exists (players G+0x2f3dc: +0xa6b4 ≠ −1 and its slot +0xa5d0 ≠ 0). Default true.
+    LocalPlayerReady,
+    /// The 60 Hz mode flag G+0x2f723. Default false.
+    FullRate,
+    /// In an online game (`FUN_004c1ec0`: the network object +0x6a20 ≠ 0). Default false (offline).
+    OnlineGame,
+    /// Online and the session lost (GAMEMODE: GMM+4 +0xe8 set and not `FUN_004c1ec0`). Default false.
+    SessionLost,
+    /// The event to run next (G+0x2f6f8). Default 0.
+    NextEvent,
+    /// The game-mode manager has started a mode (`FUN_006dfe00`: GMM+0x2ce0 ≠ 0 and the mode's state +0xdc =
+    /// 4). Default true.
+    GameModeStarted,
+    /// The running event (GMM+0x2ce0); 0 = none. Default: [`Self::default_answer`] gives `u64::MAX` = "the
+    /// event `RUNGAMEMODE` started is still running".
+    GameModeEvent,
+    /// The HSM machine serial of the running mode (GMM+0x2cfc). Default `u64::MAX` (none).
+    GameModeMachine,
+    /// The sequence `playback` still plays (`FUN_00a422d0` / `FUN_00a42390`). Default false (as for a sequence
+    /// that is not loaded).
+    SequencePlaying { playback: u32 },
+    /// The sequence player `player` (2–5) still plays something (its count at +0x58). Default false.
+    SequencePlayerBusy { player: u8 },
+    /// `DBAUTOSELWD`: a world to select without asking: the GeneSys config's debug world (`DAT_010edac0` +0x1c
+    /// → +0x10 ≠ 0) or the world list's only entry (G+0x2f468 +0x80 count 1). Default true.
+    AutoSelectableWorld,
+    /// The platform user's id once known (`FUN_004129f0` / `FUN_00412a50`: Origin's persona, cached in
+    /// `DAT_010eb010`); 0 = not yet. Default 1.
+    UserId,
+    /// The feedback group `group` is loaded (UI manager +0x32858, `FUN_00792590`). Default true.
+    FeedbackGroupLoaded { group: i64 },
+    /// The vehicle list is loaded (`FUN_0083bd20`: its resource +0x2108 > 0). Default true.
+    VehicleListLoaded,
+    /// The profile is new (G+0x2f454 +0x4964 +5). Default true (no save).
+    NewProfile,
+    /// `BINGAME` still leaving the game: two or more players (players +0xa6a0), or one of the 16 slots of
+    /// `FUN_00573390` busy (`FUN_0083bd40`). Default false.
+    GameLeaving,
+}
+
+impl Query {
+    /// The answer when the host does not know (see each variant).
+    pub fn default_answer(&self) -> u64 {
+        match self {
+            Query::PageContextExists { .. }
+            | Query::KeyboardIdle
+            | Query::ScreenActive
+            | Query::PageReady
+            | Query::ProfileReady
+            | Query::ProfileLoaded
+            | Query::LocalPlayerReady
+            | Query::GameModeStarted
+            | Query::TransitionFinished
+            | Query::AutoSelectableWorld
+            | Query::UserId
+            | Query::FeedbackGroupLoaded { .. }
+            | Query::VehicleListLoaded
+            | Query::NewProfile => 1,
+            Query::TransitionState => 2,
+            Query::GameModeEvent | Query::GameModeMachine => u64::MAX,
+            _ => 0,
+        }
+    }
+
+    /// The variant's name (drivers answer by it).
+    pub fn name(&self) -> &'static str {
+        match self {
+            Query::PageContextExists { .. } => "PageContextExists",
+            Query::PageContextExit { .. } => "PageContextExit",
+            Query::PageContextBusy { .. } => "PageContextBusy",
+            Query::KeyboardIdle => "KeyboardIdle",
+            Query::FocusGroup => "FocusGroup",
+            Query::ScreenActive => "ScreenActive",
+            Query::WidgetExit => "WidgetExit",
+            Query::PageReady => "PageReady",
+            Query::WidgetTransitionStarted { .. } => "WidgetTransitionStarted",
+            Query::TransitionFinished => "TransitionFinished",
+            Query::TransitionState => "TransitionState",
+            Query::WidgetGroupOutTime => "WidgetGroupOutTime",
+            Query::PageBusy => "PageBusy",
+            Query::ProfileReady => "ProfileReady",
+            Query::ProfileLoaded => "ProfileLoaded",
+            Query::PrimaryUserBound => "PrimaryUserBound",
+            Query::LocalPlayerReady => "LocalPlayerReady",
+            Query::FullRate => "FullRate",
+            Query::OnlineGame => "OnlineGame",
+            Query::SessionLost => "SessionLost",
+            Query::NextEvent => "NextEvent",
+            Query::GameModeStarted => "GameModeStarted",
+            Query::GameModeEvent => "GameModeEvent",
+            Query::GameModeMachine => "GameModeMachine",
+            Query::SequencePlaying { .. } => "SequencePlaying",
+            Query::SequencePlayerBusy { .. } => "SequencePlayerBusy",
+            Query::AutoSelectableWorld => "AutoSelectableWorld",
+            Query::UserId => "UserId",
+            Query::FeedbackGroupLoaded { .. } => "FeedbackGroupLoaded",
+            Query::VehicleListLoaded => "VehicleListLoaded",
+            Query::NewProfile => "NewProfile",
+            Query::GameLeaving => "GameLeaving",
+        }
+    }
+}
+
+/// Asks the host, falling back to the query's default.
+pub fn ask(cx: &mut Cx, q: Query) -> u64 {
+    cx.host.query(&q).unwrap_or_else(|| q.default_answer())
+}
+
+/// [`ask`] as a bool.
+pub fn ask_bool(cx: &mut Cx, q: Query) -> bool {
+    ask(cx, q) != 0
+}
+
+/// A parameter read as the original's `__stricmp(value, "true") == 0` (false when missing).
+pub fn param_true(cx: &Cx, name: &str) -> bool {
+    cx.param_text(name).eq_ignore_ascii_case("true")
+}
+
+/// A parameter read with `atoi` (`FUN_00edb8aa`; 0 when missing or not a number).
+pub fn param_int(cx: &Cx, name: &str) -> i64 {
+    super::atof(&cx.param_text(name)) as i64
+}
+
+/// An integer binding (`FUN_00a50650` parse, `FUN_00a4f220` read) when `path` is not empty, else the parameter
+/// `fallback` as `atoi`: the "binding or parameter" pattern of `ACTI_WDGT_GR` (0x76f250) and `RUNGAMELOGIC`
+/// (0x744fe0). An unresolved binding is 0.
+pub fn binding_or_param(cx: &mut Cx, path: &str, fallback: &str) -> i64 {
+    if path.is_empty() {
+        param_int(cx, fallback)
+    } else {
+        cx.host.binding_int(path).unwrap_or(0)
+    }
 }
 
 /// "Run Child Behaviour" (`HSB_RUNCHILD`, factory 0x77ab20, vtable 0xfd9194): runs its children until one of
