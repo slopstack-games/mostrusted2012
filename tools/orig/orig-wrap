@@ -8,10 +8,16 @@
 # (its own nested display: always focused, keyboard / mouse injection and screenshots without touching the
 # desktop), and the nested display's environment is written to the state directory for `orig`.
 DIR="${XDG_RUNTIME_DIR:-/tmp}/mostrusted-orig"
+# The request stays until `orig quit` (a relaunch, e.g. by the EA app after it updated itself, must stay headless
+# too: 2026-11-17 one ran on the user's desktop); a request older than 15 minutes is stale and dropped, so a forgotten
+# one never takes over the user's own launches.
+if [ -f "$DIR/request" ] && [ -n "$(find "$DIR/request" -mmin +15 2> /dev/null)" ]; then
+    rm -f "$DIR/request"
+fi
 if [ -f "$DIR/request" ]; then
     # shellcheck disable=SC1091
     . "$DIR/request"
-    rm -f "$DIR/request" "$DIR/state.env"
+    rm -f "$DIR/state.env"
     echo $$ > "$DIR/gamescope.pid"
     # Headless runs are never audible: the game's stream goes to a null sink (no per-application mute is stored, so
     # the user's own launches keep their sound). SOUND=1 in the request keeps the normal output.

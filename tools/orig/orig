@@ -539,6 +539,8 @@ def cmd_quit(_):
             log("gamescope already gone")
         f.unlink()
     (STATE / "state.env").unlink(missing_ok=True)
+    # The wrapper keeps the request for relaunches (orig-wrap); it ends here.
+    (STATE / "request").unlink(missing_ok=True)
 
 
 # --- steps (single commands and scripts) -------------------------------------------------------------------
