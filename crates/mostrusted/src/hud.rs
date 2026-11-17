@@ -759,13 +759,12 @@ impl RaceView<'_> {
     }
 }
 
-/// The race's gate icons for the player's target route entry `target`, as `FUN_00759860` registers the
-/// points of interest: the target gate (the finish look when it is the last entry) and, while the target is
-/// not the last entry, the gate after it (the finish's preview look when that one is last). Each at the gate's
-/// ground point, facing its normal.
-fn gate_icons(race: &RaceState, target: usize) -> Vec<(MapIcon, Vec3, Vec3)> {
+/// The race's gate icons: the points of interest the checkpoint manager registered (`FUN_00759860`,
+/// [`crate::gate_marker::shown_gates`]): the target gate (the finish look when it is the last entry) and the gate
+/// after it (the finish's preview look when that one is last). Each at the gate's ground point, facing its normal.
+fn gate_icons(race: &RaceState) -> Vec<(MapIcon, Vec3, Vec3)> {
     use crate::gate_marker::{GateLook, shown_gates};
-    shown_gates(race, target)
+    shown_gates(race)
         .into_iter()
         .map(|(look, gate)| {
             let icon = match look {
@@ -1175,9 +1174,7 @@ fn draw_hud(
         }
         icons.push((MapIcon::Player, p, f, false));
         if let Some(v) = view.as_ref().filter(|v| matches!(v.race.phase, RacePhase::Intro | RacePhase::Racing)) {
-            icons.extend(
-                gate_icons(v.race, v.player.map_or(1, |p| p.target())).into_iter().map(|(i, p, f)| (i, p, f, false)),
-            );
+            icons.extend(gate_icons(v.race).into_iter().map(|(i, p, f)| (i, p, f, false)));
         }
         icons.extend(
             racer_xf

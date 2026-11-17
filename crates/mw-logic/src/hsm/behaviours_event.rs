@@ -344,19 +344,9 @@ pub struct EventStarts {
 
 impl Behaviour for EventStarts {
     fn on_enter(&mut self, cx: &mut Cx) {
-        self.check_entry = param_true(cx, "CHECKENTRY");
+        let params = EventStartParams::read(|name| cx.param_text(name));
+        self.check_entry = params.check_entry;
         cx.host.request(Request::EventStartsEnter { check_entry: self.check_entry });
-        let int = |cx: &Cx, name: &str| super::param_int(cx, name).max(0) as u32;
-        let params = EventStartParams {
-            check_entry: self.check_entry,
-            poi: int(cx, "POIID"),
-            rec_poi: int(cx, "RECPOIID"),
-            mw_poi: int(cx, "MWPOIIDC"),
-            mw_poi_won: int(cx, "MWPOIIDUC"),
-            tracked_only: param_true(cx, "TRACKEDONLY"),
-            respect_radius: param_true(cx, "RSPCTRADIUS"),
-            active_radius: cx.param_f32("ACTIVERADIUS"),
-        };
         cx.host.request(Request::EventStartParams(params));
     }
 

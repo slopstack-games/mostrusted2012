@@ -36,7 +36,7 @@ use mw_bundle::ResourceId;
 use mw_formats::binding::{BindValue, Binding, race_time};
 use mw_formats::ui::LayoutInstance;
 
-use crate::race::{RaceCheckpoint, RacePhase, RaceState, Racer, RacerProgress};
+use crate::race::{RaceCheckpoint, RacePhase, RaceState};
 use crate::world_ui::{WorldUiBatch, WorldUiQuads, WorldUiVertex};
 
 /// The screen whose `Widget_PointOfInterest` lists the looks: the offline race HUD.
@@ -63,30 +63,17 @@ pub enum GateLook {
     FinishPreview,
 }
 
-/// The gates `FUN_00759860` marks for a racer whose target is route entry `target`: the target (finish look
-/// when it is the last entry) and, while the target is not the last entry, the one after it.
-pub fn shown_gates(race: &RaceState, target: usize) -> Vec<(GateLook, RaceCheckpoint)> {
-    let last = race.entries.len().saturating_sub(1);
-    let mut out = Vec::new();
-    if target > last {
-        return out;
-    }
-    for (entry, active) in [(target, true), (target + 1, false)] {
-        if entry > last {
-            continue;
-        }
-        let Some(gate) = race.entries.get(entry).and_then(|e| e.gate).and_then(|g| race.checkpoints.get(g)) else {
-            continue;
-        };
-        let look = match (entry == last, active) {
-            (true, true) => GateLook::Finish,
-            (true, false) => GateLook::FinishPreview,
-            (false, true) => GateLook::Gate,
-            (false, false) => GateLook::GatePreview,
-        };
-        out.push((look, *gate));
-    }
-    out
+/// The gates marked for the local player: the points of interest the checkpoint manager placed
+/// (`FUN_00759860` / `FUN_00759b70` in mw-logic `natives::checkpoints`, carried into [`RaceState::markers`]: the
+/// target gate, the finish's look on the last entry, and the gate after it), in placing order.
+pub fn shown_gates(race: &RaceState) -> Vec<(GateLook, RaceCheckpoint)> {
+    race.markers
+        .iter()
+        .filter_map(|&(entry, look)| {
+            let gate = race.entries.get(entry).and_then(|e| e.gate).and_then(|g| race.checkpoints.get(g))?;
+            Some((look, *gate))
+        })
+        .collect()
 }
 
 struct Loaded {
@@ -238,7 +225,6 @@ fn apply(ops: &[(u16, Vec3, Quat)], p: [f32; 2]) -> Vec3 {
 pub(crate) fn draw_markers(
     markers: Option<ResMut<GateMarkers>>,
     race: Option<Res<RaceState>>,
-    racers: Query<(&Racer, &RacerProgress)>,
     camera: Query<&GlobalTransform, crate::MainCamera>,
     hud: Option<Res<crate::hud::HudSettings>>,
     time: Res<Time>,
@@ -252,12 +238,11 @@ pub(crate) fn draw_markers(
     if !shown {
         return;
     }
-    let target = racers.iter().find(|(r, _)| r.player).map_or(1, |(_, p)| p.target());
     let now = time.elapsed_secs_f64();
     let GateMarkers { scene, looks, instances, textures, anim, triggers } = &mut *m;
     let mut batches: Vec<WorldUiBatch> = Vec::new();
     let mut batch_of: HashMap<(Option<ResourceId>, bool), usize> = HashMap::new();
-    for (look, gate) in shown_gates(&race, target) {
+    for (look, gate) in shown_gates(&race) {
         let position = gate.ground();
         let rotation = gate.transform.rotation;
         let distance = cam.distance(position) as f64;
@@ -281,7 +266,7 @@ pub(crate) fn draw_markers(
     }
     if std::env::var_os("MW_GATE_LOG").is_some() && (now * 2.0).floor() != ((now - time.delta_secs_f64()) * 2.0).floor()
     {
-        for (look, gate) in shown_gates(&race, target) {
+        for (look, gate) in shown_gates(&race) {
             info!(
                 "gate marker {look:?} at {:.1} up {:.2} (camera {:.0} m), {} triangles",
                 gate.ground(),

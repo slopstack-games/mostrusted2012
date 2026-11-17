@@ -100,6 +100,7 @@ mod web;
 mod window_test;
 mod world_coronas;
 mod world_lights;
+mod world_logic;
 mod world_sfx;
 mod world_ui;
 mod zone_view;
@@ -1105,6 +1106,7 @@ fn run(mut cli: Cli, game: GameDir) -> anyhow::Result<()> {
             driven: cli.hsm,
         })
         .add_plugins(dlc::DlcPlugin { free_roam: no_race && matches!(request, Request::Drive { .. }) })
+        .add_plugins(world_logic::WorldLogicPlugin { driven: cli.hsm })
         .add_plugins(logic::LogicPlugin {
             enabled: cli.hsm,
             event: hsm_event,

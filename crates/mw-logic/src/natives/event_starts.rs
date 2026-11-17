@@ -51,6 +51,25 @@ pub struct EventStartParams {
     pub active_radius: f32,
 }
 
+impl EventStartParams {
+    /// Read by name as enter (0x754f30) reads them: `__stricmp(value, "true")` for the flags, `atoi` for the ids,
+    /// `atof` for the radius; `param` gives a parameter's text ("" when missing).
+    pub fn read(param: impl Fn(&str) -> String) -> Self {
+        let flag = |name: &str| param(name).eq_ignore_ascii_case("true");
+        let int = |name: &str| (crate::hsm::atof(&param(name)) as i64).max(0) as u32;
+        EventStartParams {
+            check_entry: flag("CHECKENTRY"),
+            poi: int("POIID"),
+            rec_poi: int("RECPOIID"),
+            mw_poi: int("MWPOIIDC"),
+            mw_poi_won: int("MWPOIIDUC"),
+            tracked_only: flag("TRACKEDONLY"),
+            respect_radius: flag("RSPCTRADIUS"),
+            active_radius: crate::hsm::atof(&param("ACTIVERADIUS")) as f32,
+        }
+    }
+}
+
 /// One event of the world's list (GMM+4 → +0x11c / +0x120) with what the list build asks about it.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct StartEvent {
@@ -163,6 +182,8 @@ pub struct EventStartState {
     pub mode_bits: u32,
     /// The update returned 1 this frame (`Query::EventStartTriggered`).
     pub triggered: bool,
+    /// The event the last burnout chose (`FUN_006e74f0`'s argument; 0 = none): the runtime's event card reads it.
+    pub chosen: u32,
 }
 
 /// The logic's event-start manager.
@@ -413,6 +434,7 @@ fn enter_start(s: &mut LogicState) -> bool {
                 Some(index) => out(s, EventStartOut::Recommendation { index }),
                 None => s.game_modes.request_event(e.event, false),
             }
+            s.event_starts.state.chosen = e.event;
             if tracked == e.event {
                 s.event_starts.state.tracked = 0;
             }

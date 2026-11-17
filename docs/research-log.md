@@ -204,6 +204,42 @@ Stopped at the survey (session budget); nothing in the runtime changed. What the
 - **Blocker to decide (integrator)**: the logic runs only under `--hsm`; a HUD drawn only from the logic's
   groups disappears from plain / `--drive` runs unless `--hsm` becomes the default (`--drive 911 --hsm` was not
   run: `logic.rs` treats a run without the front end as booted, so it should reach free drive).
+### 2026-11-17: the runtime's races run on the ported checkpoint manager (`world_logic.rs`, race.rs); event starts / jack spots not yet
+
+Work in progress (stopped on the session budget). **Done**: `world_logic.rs` (`WorldLogic`, NonSend): the
+`LogicState` the managers of `natives::{checkpoints, event_starts, car_swap}` run on in every mode: under `--hsm` the
+logic host's (logic.rs hands it over in `receive`; `RuntimeHost::request` routes `Request::Checkpoint` / `EventStart`
+/ `CarSwap` into `WorldLogic::outbox`), otherwise one owned there, on which `step_plain` issues the free drive's
+"Do Event Starts" (node 816214's parameters read from the HSM data, `EventStartParams::read`, shared with the
+behaviour) and "Car Swap Logic" requests; sets `Inputs` → `Step` → `Outcomes` around `LogicTick`. **race.rs**: the
+hand-written gate overlap / lap / position / finish rules are gone; `fill_checkpoints` fills `CheckpointInputs` (route
+entries with `TriggerBox::from_quat` gate boxes, the event's `CheckpointInfo` (new in `mw_assets::events::Event`),
+car boxes, reset flag (crash / `AiCrash`), `FUN_00661da0` answer (`RaceState::past_target`), distances to the finish,
+the race clock into GMM+0x2d28, the AI racers as PM slots 12 + grid slot, `GameMode` +0x6e markers, the marker keys);
+plain play enters / places at go, steps per fixed tick, leaves on the finish (`checkpoints_plain`); `--hsm` fills
+before `LogicTick` and reads after (`checkpoints_inputs` / `checkpoints_outcomes`); `apply_checkpoints` turns the
+counters, lap, position, finish (`FUN_006b9d00` place, GMM+0x2e78) and `AiDone` into `RacerProgress`, messages and
+results; the gate markers / map icons now draw the manager's `Marker` outcomes (`RaceState::markers`,
+`gate_marker::shown_gates`). logic.rs no longer answers `CheckpointCount` / `Loaded` / `Finished` (the logic's own
+answers); an event the logic's event starts chose gets its set-up from the runtime's `PlayEvent` without the Easy
+Drive choice, and its `LoadEventData` waits for it. **Data**: `StartConfig::logic` (`GameLogicValues`): the
+`CheckPointsConfig` / `MapPoiConfig` marker keys (+0x28 / +0x24 / Type 1–4 at +0x0c / +0x30 / +0x1c / +0x20; finish
++0x28 / +0x2c), +0x244, +0x284, +0x160 / +0x168 / +0x16c, +0x1ec, +0x8c, +0x104 (offsets from `mwtool genesys-types`).
+mw-logic: `EventStartState::chosen`, `TriggerBox::from_quat` (+ test).
+
+Model decisions kept / new: the car box centred half its height above the origin; "resetting" = the crash sequence
+active / `AiCrash`; GMM+0x2e48, G+0x2f458 +0x85c, `FUN_00656220` reroute not read (false); AI finishing times and
+places kept for the results board; the AI board order by the position relation; lap times derived from the counter.
+
+**Open (next session)**: `event_starts.rs` still runs its own list / prompt / burnout rules: fill
+`EventStartInputs` (events with start trigger = `SpawnPosition`, allowed lists, car id, speed, throttle / brake,
+pursuit = chase only, `GameLogicValues`), draw `EventStartState::shown`, prompt from GMM+0x2c70, start on
+`state.chosen` (plain: `PlayEvent` + `PlainFlow::awaiting_event`, cleared for unplayable events). `jackspots.rs`
+still runs its own standing / prompt / immediate swap: fill `CarSwapInputs` (spots with `TriggerBox` location boxes,
+owned = bundle and not DLC, store = DLC, parked reports from the runtime's `Parked` states, `started` = true as a
+model, the engine waits true), carry out `Spawn` / `Remove` / `Exchange` (garage `Drive` + `place_at`) / `Place` /
+`Finish` / `Found`; `inputs.rebuild` once when the spots arrive. Verification not finished: only
+`--race 462174 --test race` was run after the change (see the commit); sprint 906146, `--hsm-event`, accel to do.
 
 ### 2026-11-17: the checkpoints, event starts and car swap run in the logic (`natives/{checkpoints,event_starts,car_swap}.rs`)
 

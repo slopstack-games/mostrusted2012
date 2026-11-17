@@ -38,6 +38,13 @@ pub fn dist2(a: V3, b: V3) -> f32 {
     dot(d, d)
 }
 
+/// `v` rotated by the unit quaternion `q` (x, y, z, w).
+pub fn rotate(q: [f32; 4], v: V3) -> V3 {
+    let [x, y, z, w] = q;
+    let t = scale(cross([x, y, z], v), 2.0);
+    add(add(v, scale(t, w)), cross([x, y, z], t))
+}
+
 /// The identity rotation's rows (local X, Y, Z in world space).
 pub const AXES: [V3; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
 
@@ -64,6 +71,11 @@ impl Default for TriggerBox {
 }
 
 impl TriggerBox {
+    /// A box from its record: centre, rotation quaternion (x, y, z, w) and full size.
+    pub fn from_quat(id: u32, centre: V3, q: [f32; 4], size: V3, one_way: bool) -> Self {
+        TriggerBox { id, centre, axes: AXES.map(|a| rotate(q, a)), size, one_way }
+    }
+
     /// The route entry point of a checkpoint (`FUN_00645290`): the centre lowered by half the height.
     pub fn ground(&self) -> V3 {
         sub(self.centre, scale(self.axes[1], self.size[1] * 0.5))
@@ -153,5 +165,16 @@ mod tests {
         let back = CarBox::level(car.centre, [0.0, 0.0, -1.0], car.half);
         assert!(!hits(&back, &one_way));
         assert!(hits(&back, &gate));
+    }
+
+    #[test]
+    fn box_from_quaternion() {
+        let h = std::f32::consts::FRAC_1_SQRT_2;
+        // A quarter turn about +Y: local Z points along world +X.
+        let b = TriggerBox::from_quat(1, [0.0; 3], [0.0, h, 0.0, h], [2.0, 2.0, 2.0], false);
+        let close = |a: V3, b: V3| (0..3).all(|i| (a[i] - b[i]).abs() < 1e-5);
+        assert!(close(b.axes[2], [1.0, 0.0, 0.0]), "{:?}", b.axes);
+        assert!(close(b.axes[0], [0.0, 0.0, -1.0]), "{:?}", b.axes);
+        assert!(close(b.axes[1], [0.0, 1.0, 0.0]));
     }
 }

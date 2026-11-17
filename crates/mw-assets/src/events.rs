@@ -58,6 +58,11 @@ mod h {
     pub const DESCRIPTION: u32 = field_hash("Description");
     pub const TYPE_NAME: u32 = field_hash("TypeName");
     pub const CHECKPOINTS: u32 = field_hash("Checkpoints");
+    pub const CHECKPOINT_INFO: u32 = field_hash("CheckpointInfo");
+    pub const SEQUENCE: u32 = field_hash("Sequence");
+    pub const TYPE: u32 = field_hash("Type");
+    pub const CP_AI_SEQUENCE: u32 = 0xa1ec_8d81;
+    pub const CP_STORE_SPLIT: u32 = 0xeb1e_cc26;
     pub const SPAWN_POSITION: u32 = field_hash("SpawnPosition");
     pub const LAPS: u32 = field_hash("Laps");
     pub const TARGET_SPEED: u32 = field_hash("TargetSpeed");
@@ -225,6 +230,19 @@ impl Gate {
     }
 }
 
+/// One `OfflineEvent.CheckpointInfo` (0x14 B).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct CheckpointInfo {
+    /// +0xc `Sequence`: played when the gate is passed (0 = none).
+    pub sequence: u32,
+    /// +0x10 `Type` (1–4 pick another marker look; 0 in all the data).
+    pub kind: u16,
+    /// +0x12 `a1ec8d81`: an AI racer passing the gate plays the sequence too.
+    pub ai_sequence: bool,
+    /// +0x13 `eb1ecc26`: passing the gate stores a split time.
+    pub store_split: bool,
+}
+
 /// An opponent slot (`OfflineEvent.AIPlayerInformation`).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Opponent {
@@ -314,6 +332,9 @@ pub struct Event {
     pub checkpoints: Vec<Gate>,
     /// Checkpoint ids that did not resolve to a trigger box (should be empty).
     pub missing_checkpoints: Vec<u32>,
+    /// `CheckpointInfo` (+0xc8, 0x14 B each, count +0xda): per gate of a lap, what passing it does
+    /// (`natives::checkpoints` of mw-logic, `FUN_0075da20`). Empty in most events.
+    pub checkpoint_infos: Vec<CheckpointInfo>,
     pub opponents: Vec<Opponent>,
     pub chevrons: Vec<Chevron>,
     pub alternate_routes: Vec<AlternateRoute>,
@@ -596,6 +617,14 @@ impl AssetStore {
                         spawn_id,
                         checkpoints,
                         missing_checkpoints,
+                        checkpoint_infos: structs(o.get(h::CHECKPOINT_INFO))
+                            .map(|c| CheckpointInfo {
+                                sequence: uint(c.get(h::SEQUENCE)),
+                                kind: uint(c.get(h::TYPE)) as u16,
+                                ai_sequence: boolean(c.get(h::CP_AI_SEQUENCE)),
+                                store_split: boolean(c.get(h::CP_STORE_SPLIT)),
+                            })
+                            .collect(),
                         opponents: structs(o.get(h::AI_PLAYERS))
                             .map(|a| {
                                 let placement_id = uint(a.get(h::PLACEMENT));
