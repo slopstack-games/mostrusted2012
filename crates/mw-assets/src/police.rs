@@ -78,6 +78,12 @@ mod h {
     pub const ROADBLOCK: u32 = field_hash("Roadblock");
     pub const COP_BEHAVIOURS: u32 = field_hash("CopBehaviours");
     pub const COP_COUNT: u32 = 0x5ec3_75f3;
+    pub const ROADBLOCK_REPEAT: u32 = 0xcbbe_b3e0; // +0x10
+    pub const ROADBLOCK_DELAY: u32 = 0xae2d_8f7d; // +0x14
+    pub const DURATION: u32 = 0x4fea_2957; // +0x18
+    pub const FALLBACK_AFTER: u32 = 0xf58d_1d54; // +0x23
+    // HeatLevel.BehaviourCoordination +0x58 / +0x5c: the cycle behaviours
+    pub const CYCLE: u32 = 0xb7dd_bf1a;
     // ...PursuitBehaviour.CopBehaviour
     pub const COP_TYPE: u32 = 0x10a8_0aa8;
     pub const COP_SPEED: u32 = 0xa762_0186;
@@ -114,6 +120,14 @@ pub struct Behaviour {
     /// `f3d7aeeb` (+0x22): missing cops are spawned while this behaviour runs.
     pub spawn_allowed: bool,
     pub cops: Vec<CopSlot>,
+    /// `4fea2957` (+0x18): seconds the sequencer runs this behaviour (`FUN_00514e40`).
+    pub duration: f32,
+    /// `ae2d8f7d` (+0x14): seconds from the behaviour's start to its first roadblock; `cbbeb3e0` (+0x10): seconds
+    /// from a roadblock to the next (`FUN_00526150`, `FUN_005246f0`).
+    pub roadblock_delay: f32,
+    pub roadblock_repeat: f32,
+    /// `f58d1d54` (+0x23): the sequencer's event count after which the fallback behaviour runs (0 = never).
+    pub fallback_after: u8,
 }
 
 /// A `HeatLevel` row.
@@ -142,6 +156,8 @@ pub struct HeatLevel {
     /// starts with, and `.e8cb6438` (+0x0c): the one it falls back to (`FUN_0051f010`).
     pub main: Behaviour,
     pub fallback: Behaviour,
+    /// `Coordination.b7ddbf1a` (+0x58, count +0x5c): the behaviours the sequencer cycles through after the main one.
+    pub cycle: Vec<Behaviour>,
     /// Cops are spawned this far from the player (m; `FUN_00513e80`): `7aa0635a` (+0xd4) with no pursuit,
     /// `b408d33d` (+0x80) in a chase, `bf896b50` (+0x88) in the cooldown.
     pub spawn_distance: [f32; 3],
@@ -288,6 +304,10 @@ fn behaviour(o: Option<&Object>) -> Behaviour {
         roadblock: uint(o, h::ROADBLOCK),
         cop_count: uint(o, h::COP_COUNT),
         spawn_allowed: boolean(o, h::SPAWN_ALLOWED),
+        duration: float(o, h::DURATION),
+        roadblock_delay: float(o, h::ROADBLOCK_DELAY),
+        roadblock_repeat: float(o, h::ROADBLOCK_REPEAT),
+        fallback_after: uint(o, h::FALLBACK_AFTER) as u8,
         cops: structs(o.get(h::COP_BEHAVIOURS))
             .into_iter()
             .map(|c| CopSlot {
@@ -315,6 +335,9 @@ fn heat_level(o: &Object) -> HeatLevel {
         helicopter: uint(o, h::HELICOPTER),
         main: behaviour(sub(h::MAIN)),
         fallback: behaviour(sub(h::FALLBACK)),
+        cycle: coordination
+            .map(|c| structs(c.get(h::CYCLE)).into_iter().map(|b| behaviour(Some(b))).collect())
+            .unwrap_or_default(),
         spawn_distance: [float(o, h::SPAWN_FREE), float(o, h::SPAWN_CHASE), float(o, h::SPAWN_COOLDOWN)],
         remove_distance: [float(o, h::REMOVE_FREE), float(o, h::REMOVE_CHASE), float(o, h::REMOVE_COOLDOWN)],
         sight_chasing: float(o, h::RANGE_CHASING),
