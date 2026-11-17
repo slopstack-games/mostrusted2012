@@ -39,6 +39,41 @@ vehicle); the photo object's states are two bool Queries (6 captured, 1 idle), d
 limited-edition server request is `LimitedEdSend` plus the poll Query.
 Open: the runtime answers none of the new Requests / Queries except the dialog and entitlement ones; photo mode itself and the pause-interrupt timeline
 items are unported; the sign-in family is the bulk of the remaining machines.
+### 2026-11-17: races run through the logic in the runtime (`--hsm`, logic.rs, `--hsm-event`)
+
+Under `--hsm` a race now goes the logic's route (decomp.md "Route free roam → race") and race.rs / event_card.rs /
+cutscene.rs run "driven" (logic.rs module doc lists what is answered and carried out). Without `--hsm` nothing
+changes (`RaceDriven` absent, `CutsceneState::logic_driven` false).
+- **Event choice**: any runtime start (map START RACE, Easy Drive, pause menu, world markers: `PlayEvent`) is the
+  logic's request through the same native path as `mwtool hsm --event`: the free-roam prompt's input wait 908987
+  exits `EZ_RIGHT`, "Easy Drive Menu" 1135029 calls `StartEventFromEasyDrive` (`lpcValue`) and exits `TO_EVENT`
+  (the runtime's menus stand in for the logic's Easy Drive widgets). `--hsm-event <id>` chooses once 908987 waits.
+- **Event change**: `LoadEventData` is ready when the runtime holds the event's `RaceSetup` (free drive at once).
+- **Race**: `RequestRespawnAtEventStart` (`Respawn` of the event) → `race::StartRace` (car held at the start until
+  resident; `Players.LocalPlayer.ResetInProgress` follows `RaceState::placing`); `Mode.HasIntroLoadCompleted` once
+  placed with the opponents; the event card is the chosen menu's screen transition: `Transitions.Transitioning`
+  while it shows, its "TRANSITION" item sets the logic's general trigger, so "Screen Transition Voodoo" waits for
+  it and `RUNGAMELOGIC` of `Event.Data.EventIntro` plays the intro at the same moment as the hand-written flow did;
+  `Query::SequencePlaying` = the cutscene plays; `CHECKPTS` = race.rs's gates (`CheckpointCount` /
+  `CheckpointsLoaded` / `CheckpointsFinished`); the outro on `RUNGAMELOGIC` of `EventOutro`, its playback held
+  through the results; `StartGameMode` of free drive after "On Event End" → race.rs ends the event.
+- Found on the way: without the card as a transition, Voodoo's first child (`Transitions.Transitioning(NOT)`)
+  ended it at once and the intro was requested 7 s before the card's trigger.
+
+Verified: `tools/t --hsm-event 462174 --auto-start 1 --test race --mute`: `hsm:` log free roam (machines 1 / 2) →
+`START_EVENT` → `LoadEventData 462174` → machine 3 at 730003 → `Respawn` → `PlaySequence 1439074` (intro) → 27/27
+gates → `PlaySequence 1689795` (outro) → machine 3 finished → `StartGameMode 390703` → "event over, back to free
+roam" → machines 5 / 6 (free drive again); `TEST RESULT race ... passed=27` and `TEST RESULT race after
+event_over=true`. `MW_HSM_SHOTS=<dir>` saves card / intro / race / outro / free-roam screenshots.
+`--race 462174 --test race --units 12` (no `--hsm`) stalls after gate 3 on master too: the kinematic test car
+passes body shop 1496594, the respray reloads the car, and with only 12 units loaded there is no ground collision
+under it, so the new car is never placed (0 player cars). Without `--units` (streamed world) the same route passes.
+Model decisions: listed in logic.rs ("Race stand-ins"): intro load = placed with opponents; "TRANSITION" kept set
+until the event ends; `WasBusted` false; the outro's playback held through the hand-written results. Open: the
+logic's own Easy Drive / map widgets (their Lua) instead of the runtime's menus; `PauseAi`, `GameModeTimer`,
+`AddAllAIPlayers` still logged only (race.rs / ai.rs time the go and the AI); a second race per run is still refused
+(`RaceOver`); captures: the original's moment of `RequestRespawnAtEventStart` vs the card's clock.
+
 ### 2026-11-17: the route free roam → race, and 7 race-route behaviour types (`hsm/behaviours_race.rs`; 92 types)
 
 `mwtool hsm --run --event <id>` (docs/commands.md) plays the player's choice of an offline event from free roam

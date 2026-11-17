@@ -31,10 +31,21 @@
 //!   rumble and renders at the display's rate;
 //! - `HideChevron`: the route markers (`chevron::ChevronsHidden`); `EnableTriggers`: the free-roam trigger hits
 //!   (`freeroam::TriggersEnabled`, off until the logic enables them).
+//! - **races** (decomp.md "Route free roam → race"): an event start in the runtime (map START RACE, Easy Drive,
+//!   pause menu, world markers: `event_card::PlayEvent`; `--hsm-event` once free roam waits on the Easy Drive
+//!   prompt) becomes the logic's event request: the free-roam prompt's input wait 908987 exits `EZ_RIGHT` and the
+//!   "Easy Drive Menu" 1135029 calls the list item's hook `StartEventFromEasyDrive` (`lpcValue` = the event) and exits
+//!   `TO_EVENT` ([`EventChoice`], as `mwtool hsm --event`); the free-drive machine ends, the GMM's event change asks
+//!   `LoadEventData` (ready: the runtime has the event's `RaceSetup`) and starts "Race Game Mode" 730003. Its
+//!   `RequestRespawnAtEventStart` (`Respawn` of the event) starts `race.rs` (`StartRace`: the car to the start, held
+//!   until resident); the card (`event_card.rs`, the chosen menu's transition) hands its "TRANSITION" trigger to the
+//!   logic; `RUNGAMELOGIC` of `Event.Data.EventIntro` / `EventOutro` (`PlaySequence`) starts the intro / outro
+//!   (`cutscene.rs`, driven); the `CHECKPTS` requests are `race.rs`'s gates; when the GMM starts free drive again
+//!   (`StartGameMode` of another event) `race.rs` ends the event (`RaceDriven`) and free roam resumes.
 //!
-//! Everything else (world, profile and feedback-group loads, the game mode, the HUD screen's requests) is still
-//! logged only: `freeroam.rs`, `race.rs` and the rest of `frontend.rs` drive the game. Queries nobody answers log
-//! their default once (`hsm: ... query X: default answer N`).
+//! Everything else (world, profile and feedback-group loads, the HUD screen's requests) is still logged only:
+//! `freeroam.rs`, the rest of `race.rs` (stepping, AI, results) and of `frontend.rs` drive the game. Queries nobody
+//! answers log their default once (`hsm: ... query X: default answer N`).
 //!
 //! What the runtime answers from its own state: the title sequence's general trigger "BOOT"
 //! (`GeneralSequence.Triggers["BOOT"].IsTriggerSet[1]`, set by `frontend.rs` when the trigger item passes and
@@ -45,7 +56,17 @@
 //! reads (loaded at start-up; the intro counts as played for a saved profile). `Mode.*` bindings are the game-mode
 //! manager's own table (`mw_logic::natives::mode_view`); the runtime sets its world-loaded byte +0x2e77 from
 //! `FrontEnd::ready`. Also: `UIMessages.NISRunning` (a cutscene plays, `cutscene.rs`), `Query::CollectablesReady`
-//! (freeroam.rs read its triggers), `Query::FullRate`, `Query::DefaultEventSongList`.
+//! (freeroam.rs read its triggers), `Query::FullRate`, `Query::DefaultEventSongList`. For the race (from
+//! `race.rs`, `cutscene.rs`, `hud.rs`): `Query::CheckpointCount` / `CheckpointsLoaded` / `CheckpointsFinished` (the
+//! event's gates, the player past the last), `Query::SequencePlaying` of the intro / outro playbacks (the cutscene
+//! plays; the outro's also while the results after it run), `Event.Data.EventIntro` / `EventOutro` (the event's ids),
+//! `Players.LocalPlayer.ResetInProgress` (the car held at the start), `Mode.HasIntroLoadCompleted` (GMM+0x2e82).
+//!
+//! Race stand-ins (model decisions): `Mode.HasIntroLoadCompleted` is set once the race is placed with its
+//! opponents (what the original's intro load waits for was not traced); the "TRANSITION" general trigger stays set
+//! from the card's item until the event ends (the original clears it when the item ends; the logic may reach its
+//! wait after that here); `Players.LocalPlayer.WasBusted` is false (no police in the runtime's races); the outro's
+//! playback also holds through the hand-written results (the offline results screen is not ported).
 //!
 //! Stand-ins (model decisions, the same answers `mwtool hsm --run` documents in docs/commands.md): the engine
 //! bindings: none left but `Transitions.Transitioning` (`Net.*`, `UIConfig.*`, `SignInState.*`, `UISequences.*` and
@@ -57,6 +78,7 @@
 //! go on on EXIT).
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
@@ -73,7 +95,9 @@ use mw_logic::natives::mode_view;
 use mw_logic::natives::pages::{self, ActionInput, ScreenData};
 use mw_logic::natives::{LogicHost, Request, progression};
 
+use crate::cutscene::{CutsceneState, Which};
 use crate::frontend::{FrontEnd, Phase};
+use crate::race::{RaceDriven, RaceSetup, RaceState, RacerProgress, StartRace};
 
 const BUNDLE: &str = "GAMELOGIC/GAMEMODES.BNDL";
 /// "Top State": the boot machine.
@@ -89,6 +113,8 @@ const BOOT_TRIGGER_NAME: &str = "BOOT";
 pub struct LogicPlugin {
     /// `--hsm`: run the machine (shadow mode).
     pub enabled: bool,
+    /// `--hsm-event`: this event is chosen (as the map's START RACE chooses it) once free roam is reached.
+    pub event: Option<Arc<RaceSetup>>,
     /// `--new-game`, or no saved profile was loaded: the profile is brand new (`ISNEWPROFILE` → YES) and the
     /// intro is not marked played.
     pub new_profile: bool,
@@ -105,10 +131,17 @@ impl Plugin for LogicPlugin {
             .insert_resource(crate::music::SongListRequest::default())
             .insert_resource(crate::chevron::ChevronsHidden(false))
             .insert_resource(crate::freeroam::TriggersEnabled(false))
+            .insert_resource(RaceDriven::default())
+            .insert_resource(HsmEvent(self.event.clone()))
+            .add_systems(Startup, |mut c: ResMut<CutsceneState>| c.logic_driven = true)
             .add_systems(Startup, start_loading)
-            .add_systems(Update, (receive, tick).chain());
+            .add_systems(Update, (receive, choose_event, tick, race_shots).chain());
     }
 }
+
+/// `--hsm-event`: the event to choose once free roam is reached (taken when sent).
+#[derive(Resource)]
+struct HsmEvent(Option<Arc<RaceSetup>>);
 
 #[derive(Resource)]
 struct Setup {
@@ -179,7 +212,8 @@ fn receive(world: &mut World) {
         }
     };
     let data = Arc::new(data);
-    let registry = registry(&data);
+    let choice = Arc::new(AtomicU32::new(0));
+    let registry = registry(&data, &choice);
     let mut hsm = Hsm::new(data.clone(), registry);
     let logic = LogicHost::default();
     {
@@ -253,6 +287,7 @@ fn receive(world: &mut World) {
         listening: false,
         frame: 0,
         requests: HashMap::new(),
+        race: RaceLink { choice, ..Default::default() },
     };
     let Some(serial) = hsm.start(TOP_STATE, &mut host) else {
         warn!("hsm: no top-level state {TOP_STATE}");
@@ -276,8 +311,9 @@ fn receive(world: &mut World) {
 const SERVER_OPERATION: &str = "HSM_SERV_OP";
 
 /// The structural and ported behaviour types; types the original has but we have not ported hold, the online
-/// Autolog state exits DONE and server operations exit FAILURE.
-fn registry(data: &HsmData) -> Registry {
+/// Autolog state exits DONE and server operations exit FAILURE. The free-roam Easy Drive prompt's input wait and
+/// the Easy Drive menu take the runtime's event choice ([`EventChoice`]).
+fn registry(data: &HsmData, choice: &Arc<AtomicU32>) -> Registry {
     let mut registry = Registry::structural();
     let autolog = data.state(CONNECT_TO_AUTOLOG).map(|s| s.behaviour);
     let original = registry.clone();
@@ -312,20 +348,188 @@ fn registry(data: &HsmData) -> Registry {
             }),
         );
     }
+    for id in [EZ_PROMPT_INPUT, EASY_DRIVE_MENU] {
+        let Some(b) = data.state(id).map(|s| s.behaviour) else { continue };
+        let (orig, choice) = (registry.clone(), choice.clone());
+        let name = registry.code(b).unwrap_or("?").to_owned();
+        registry.register_id(
+            b,
+            &name,
+            Arc::new(move |s: &State| {
+                let inner = orig.create_for(s).unwrap_or_else(|| Box::new(Stub { exit: None }));
+                if s.id == EZ_PROMPT_INPUT || s.id == EASY_DRIVE_MENU {
+                    Box::new(EventChoice { state: s.id, choice: choice.clone(), inner, choosing: false })
+                } else {
+                    inner
+                }
+            }),
+        );
+    }
     registry
+}
+
+/// "Wait for UI Input" (`HSB_WAIT4IN`) of the free-roam Easy Drive prompt ("Run Child - Wait for EZDrive Input
+/// Prompt" 1445535 leaves through `EZ_SELECT` on its `EZ_RIGHT`).
+const EZ_PROMPT_INPUT: u32 = 908_987;
+/// "Easy Drive Menu" (`HSB_RUNCHILD` under the Easy Drive widget group 1135023): its event list's item calls the
+/// hook `StartEventFromEasyDrive` and the state exits `TO_EVENT` (→ 908973 `START_EVENT` → the free-drive HUD
+/// machine ends `START_EVENT`, decomp.md "Route free roam → race").
+const EASY_DRIVE_MENU: u32 = 1_135_029;
+
+/// The runtime's event choice made the logic's (stand-in for the Easy Drive widgets' input and list item, which the
+/// runtime draws with its own menus: map START RACE, Easy Drive, pause menu, world markers all send
+/// `event_card::PlayEvent`): with an event chosen, 908987 exits `EZ_RIGHT` (the prompt opens the menu) and
+/// 1135029 calls the list item's hook with the event (`lpcValue`) and exits `TO_EVENT`, as `mwtool hsm --event`
+/// does; otherwise both are the original behaviours.
+struct EventChoice {
+    state: u32,
+    choice: Arc<AtomicU32>,
+    inner: Box<dyn mw_logic::hsm::Behaviour>,
+    /// 1135029 entered with a choice: it is taken on the first update.
+    choosing: bool,
+}
+
+impl mw_logic::hsm::Behaviour for EventChoice {
+    fn on_enter(&mut self, cx: &mut mw_logic::hsm::Cx) {
+        self.choosing = self.state == EASY_DRIVE_MENU && self.choice.load(Ordering::Relaxed) != 0;
+        if !self.choosing {
+            self.inner.on_enter(cx);
+        }
+    }
+    fn enter_update(&mut self, cx: &mut mw_logic::hsm::Cx) -> bool {
+        self.choosing || self.inner.enter_update(cx)
+    }
+    fn on_running(&mut self, cx: &mut mw_logic::hsm::Cx) {
+        if !self.choosing {
+            self.inner.on_running(cx);
+        }
+    }
+    fn update(&mut self, cx: &mut mw_logic::hsm::Cx) -> bool {
+        let event = self.choice.load(Ordering::Relaxed);
+        match self.state {
+            EZ_PROMPT_INPUT if event != 0 => {
+                cx.set_exit(key("EZ_RIGHT"));
+                true
+            }
+            EASY_DRIVE_MENU if self.choosing => {
+                self.choice.store(0, Ordering::Relaxed);
+                let args = Json::parse(&format!(r#"{{ "lpcValue": "{event}" }}"#)).expect("json");
+                cx.host.hook("StartEventFromEasyDrive", Some(&args));
+                cx.set_exit(key("TO_EVENT"));
+                true
+            }
+            _ => self.inner.update(cx),
+        }
+    }
+    fn exit_update(&mut self, cx: &mut mw_logic::hsm::Cx) -> bool {
+        self.choosing || self.inner.exit_update(cx)
+    }
+    fn on_exit_begin(&mut self, cx: &mut mw_logic::hsm::Cx) {
+        if !self.choosing {
+            self.inner.on_exit_begin(cx);
+        }
+    }
+    fn on_exit(&mut self, cx: &mut mw_logic::hsm::Cx) {
+        if !self.choosing {
+            self.inner.on_exit(cx);
+        }
+    }
+}
+
+/// `MW_HSM_SHOTS=<dir>`: screenshots along a race the logic runs (headless checks): `card` 3 s into the event card,
+/// `intro` 6 s into the intro, `race` 10 s after the go, `outro` 5 s into the outro, `freeroam` 4 s after the event
+/// ended; then exit (real seconds).
+#[allow(clippy::type_complexity)]
+fn race_shots(
+    mut commands: Commands,
+    real: Res<Time<Real>>,
+    card: Option<Res<crate::event_card::EventCard>>,
+    cutscene: Res<CutsceneState>,
+    race: Option<Res<RaceState>>,
+    mut state: Local<(usize, Option<f32>, bool)>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    let Some(dir) = std::env::var_os("MW_HSM_SHOTS").map(std::path::PathBuf::from) else { return };
+    let (step, since, raced) = &mut *state;
+    let now = real.elapsed_secs();
+    let racing = race.as_ref().is_some_and(|r| r.phase == crate::race::RacePhase::Racing);
+    *raced |= race.is_some();
+    // What each step waits for, and how long after it began.
+    let (on, wait, name) = match *step {
+        0 => (card.as_ref().is_some_and(|c| c.showing()), 3.0, "card"),
+        1 => (cutscene.playing() && !cutscene.finished(Which::Intro), 6.0, "intro"),
+        2 => (racing && !cutscene.playing(), 10.0, "race"),
+        3 => (cutscene.playing() && cutscene.finished(Which::Intro), 5.0, "outro"),
+        4 => (*raced && race.is_none(), 4.0, "freeroam"),
+        5 => (true, 1.0, ""),
+        _ => return,
+    };
+    if !on {
+        *since = None;
+        return;
+    }
+    if now - *since.get_or_insert(now) < wait {
+        return;
+    }
+    *since = None;
+    *step += 1;
+    if name.is_empty() {
+        exit.write(AppExit::Success);
+        return;
+    }
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join(format!("{}-{name}.png", *step));
+    info!("hsm: screenshot {}", path.display());
+    commands
+        .spawn(bevy::render::view::screenshot::Screenshot::primary_window())
+        .observe(bevy::render::view::screenshot::save_to_disk(path));
+}
+
+/// `--hsm-event`: once the logic's free roam waits on the Easy Drive prompt (and the front end is playing), the event
+/// is chosen as the map's START RACE chooses it.
+fn choose_event(
+    logic: Option<NonSend<Logic>>,
+    mut event: ResMut<HsmEvent>,
+    front: Option<Res<FrontEnd>>,
+    mut play: MessageWriter<crate::event_card::PlayEvent>,
+) {
+    let (Some(logic), Some(setup)) = (logic, &event.0) else { return };
+    if front.is_some_and(|f| f.phase != Phase::Playing) {
+        return;
+    }
+    let waiting = logic.hsm.machines().any(|(m, _)| logic.hsm.active(m).iter().any(|&(_, s, _)| s == EZ_PROMPT_INPUT));
+    if waiting {
+        info!("hsm: {:5} --hsm-event: {} ({}) chosen in free roam", logic.frame, setup.name, setup.event.id);
+        play.write(crate::event_card::PlayEvent(setup.clone()));
+        event.0 = None;
+    }
 }
 
 /// The systems the requests drive.
 #[derive(bevy::ecs::system::SystemParam)]
-struct Targets<'w> {
+struct Targets<'w, 's> {
     front: Option<ResMut<'w, FrontEnd>>,
     songs: Option<ResMut<'w, crate::music::SongListRequest>>,
     ui_sounds: Option<ResMut<'w, crate::ui_sound::UiSounds>>,
     chevrons: Option<ResMut<'w, crate::chevron::ChevronsHidden>>,
     triggers: Option<ResMut<'w, crate::freeroam::TriggersEnabled>>,
     collectables: Option<Res<'w, crate::freeroam::Collectables>>,
-    cutscene: Option<Res<'w, crate::cutscene::CutsceneState>>,
+    cutscene: Option<ResMut<'w, CutsceneState>>,
     sim: ResMut<'w, Time<Virtual>>,
+    race: Race<'w, 's>,
+}
+
+/// The race the logic drives (`race.rs`, `event_card.rs`, `cutscene.rs` in driven mode).
+#[derive(bevy::ecs::system::SystemParam)]
+struct Race<'w, 's> {
+    state: Option<Res<'w, RaceState>>,
+    driven: Option<ResMut<'w, RaceDriven>>,
+    player: bevy::ecs::system::Query<'w, 's, &'static RacerProgress, With<crate::drive::Player>>,
+    card: Option<Res<'w, crate::event_card::EventCard>>,
+    hud: Option<Res<'w, crate::hud::HudState>>,
+    loaded: Res<'w, crate::Loaded>,
+    plays: MessageReader<'w, 's, crate::event_card::PlayEvent>,
+    start: MessageWriter<'w, StartRace>,
 }
 
 fn tick(logic: Option<NonSendMut<Logic>>, real: Res<Time<Real>>, mut t: Targets, menu: Res<crate::input::MenuInput>) {
@@ -379,8 +583,11 @@ fn tick(logic: Option<NonSendMut<Logic>>, real: Res<Time<Real>>, mut t: Targets,
         // The game-mode manager's world-loaded byte (+0x2e77, `Mode.WorldLoaded` / `Mode.ShowLoadingScreen`).
         host.logic.state.borrow_mut().game_modes.world_loaded = front.ready;
         // Requested and not yet started counts as playing.
-        host.transitioning =
-            front.phase == Phase::Transition || host.carry.iter().any(|c| matches!(c, Carry::BootTransition));
+        // The screen transitions playing: the boot transition, the event card (the chosen menu's `PLAY_EVENT`
+        // transition, `event_card.rs`).
+        host.transitioning = front.phase == Phase::Transition
+            || host.carry.iter().any(|c| matches!(c, Carry::BootTransition))
+            || t.race.card.as_ref().is_some_and(|c| c.showing());
         host.logic.state.borrow_mut().engine.loading_screen_showing = front.phase == Phase::Loading;
     } else {
         host.boot_trigger = true;
@@ -395,6 +602,18 @@ fn tick(logic: Option<NonSendMut<Logic>>, real: Res<Time<Real>>, mut t: Targets,
     }
     host.collectables_ready = t.collectables.as_ref().is_some_and(|c| c.ready());
     host.nis_running = t.cutscene.as_ref().is_some_and(|c| c.playing());
+    // The runtime's event choice (map START RACE, Easy Drive, pause menu, world markers) becomes the logic's.
+    if let Some(crate::event_card::PlayEvent(setup)) = t.race.plays.read().last().cloned() {
+        let id = setup.event.id;
+        if host.race.setup.is_some() || crate::dlc::event_locked(&setup.event).is_some() {
+            info!("hsm: {:5} event {id} chosen: not taken (an event runs, or DLC)", host.frame);
+        } else {
+            info!("hsm: {:5} event {id} chosen in the runtime: the logic's event request", host.frame);
+            host.race.choice.store(id, Ordering::Relaxed);
+            host.race = RaceLink { choice: host.race.choice.clone(), setup: Some(setup), ..Default::default() };
+        }
+    }
+    host.race.observe(&t.race, t.cutscene.as_deref(), &host.logic);
     host.logic.frame(dt);
     step_playbacks(host, dt);
     // The widgets' user actions (before the HSM's update, which reads the group exit they set).
@@ -480,6 +699,25 @@ fn tick(logic: Option<NonSendMut<Logic>>, real: Res<Time<Real>>, mut t: Targets,
                     e.0 = on;
                 }
             }
+            Carry::StartRace(setup) => {
+                if let Some(c) = t.cutscene.as_deref_mut() {
+                    c.reset();
+                }
+                t.race.start.write(StartRace(setup));
+            }
+            Carry::PlayCutscene(which) => {
+                if let Some(c) = t.cutscene.as_deref_mut() {
+                    match which {
+                        Which::Intro => c.logic_intro = true,
+                        Which::Outro => c.logic_outro = true,
+                    }
+                }
+            }
+            Carry::EndRace => {
+                if let Some(d) = t.race.driven.as_deref_mut() {
+                    d.end = true;
+                }
+            }
             Carry::Play { .. } | Carry::Nothing => {}
         }
     }
@@ -518,6 +756,12 @@ enum Carry {
     HideChevron(bool),
     /// `ENABLETRIGS`: the free-roam trigger hits (`freeroam::TriggersEnabled`).
     EnableTriggers(bool),
+    /// `RequestRespawnAtEventStart` of the chosen event: `race::StartRace` (the car to the start, the race loads).
+    StartRace(Arc<RaceSetup>),
+    /// `RUNGAMELOGIC` of `Event.Data.EventIntro` / `EventOutro`: `cutscene.rs` plays it.
+    PlayCutscene(Which),
+    /// The logic's mode machine went back to free drive: `race.rs` ends the event.
+    EndRace,
     /// Carried out with nothing to do (`CreateConductor`: the conductor is logic state).
     Nothing,
 }
@@ -597,20 +841,114 @@ struct RuntimeHost {
     frame: u64,
     /// Requests seen, by kind (shadow mode logs the first of each and counts the rest).
     requests: HashMap<String, u32>,
+    race: RaceLink,
+}
+
+/// The general trigger item of the event card ([`crate::event_card::EventCard::transition`]) that the EventIntro
+/// context's "Screen Transition Voodoo" waits for (`GeneralSequence.Triggers["TRANSITION"].IsTriggerSet[1]`).
+const TRANSITION_TRIGGER_NAME: &str = "TRANSITION";
+
+/// The event the runtime chose and the logic runs: its requests for the race and the runtime's answers (module doc).
+#[derive(Default)]
+struct RaceLink {
+    /// The chosen event not yet taken by the logic's Easy Drive menu ([`EventChoice`]); 0 = none.
+    choice: Arc<AtomicU32>,
+    /// The chosen event's set-up, from the choice until the logic is back in free drive.
+    setup: Option<Arc<RaceSetup>>,
+    /// The logic asked for the respawn at the event's start: `race.rs` runs it.
+    started: bool,
+    /// `RUNGAMELOGIC`'s playbacks of the event's intro and outro.
+    intro_playback: Option<u32>,
+    outro_playback: Option<u32>,
+    /// The card's "TRANSITION" was handed to the logic.
+    transition: bool,
+    // The runtime's answers, refreshed every frame ([`RaceLink::observe`]).
+    /// `race.rs` has the event (`RaceState`), and for how many frames (the AI sets the race up on its first).
+    loaded: bool,
+    loaded_frames: u32,
+    /// The player's car is held at the start until it is resident (`RaceState::placing`).
+    placing: bool,
+    /// The race is ready to show: placed, opponents placed (`RaceState::hold`), the world loaded.
+    ready: bool,
+    gates: usize,
+    /// The player passed the last checkpoint.
+    finished: bool,
+    intro_done: bool,
+    /// The outro is over and so are the results after it (`hud.rs`).
+    outro_done: bool,
+}
+
+impl RaceLink {
+    fn observe(&mut self, r: &Race, cutscene: Option<&CutsceneState>, logic: &LogicHost) {
+        if self.setup.is_none() {
+            return;
+        }
+        let race = r.state.as_deref().filter(|_| self.started);
+        self.loaded = race.is_some();
+        self.loaded_frames = if self.loaded { self.loaded_frames + 1 } else { 0 };
+        self.placing = self.started && race.is_none_or(|r| r.placing);
+        self.ready = race.is_some_and(|r| !r.placing && !r.hold) && r.loaded.done && self.loaded_frames > 2;
+        self.gates = race.map_or(0, |r| r.checkpoints.len());
+        self.finished = race.is_some() && r.player.iter().any(|p| p.finished.is_some());
+        let finished = |w| cutscene.is_none_or(|c| c.finished(w));
+        self.intro_done = finished(Which::Intro);
+        let results_over = r.hud.as_ref().is_none_or(|h| {
+            h.results_clock.is_some_and(|t| t >= crate::race::RESULTS_SECS)
+                || race.is_some_and(|r| r.phase != crate::race::RacePhase::Finished)
+        });
+        self.outro_done = finished(Which::Outro) && results_over;
+        // `Mode.HasIntroLoadCompleted` (+0x2e82): the event is loaded and placed (model decision, module doc).
+        let mut st = logic.state.borrow_mut();
+        if self.ready && st.game_modes.machine.is_some() && st.game_modes.current_event == self.event() {
+            st.game_modes.intro_load_complete = true;
+        }
+        // The card's "TRANSITION" (set from the item on until the event's end: model decision, module doc).
+        if !self.transition && r.card.as_ref().is_some_and(|c| c.transition()) {
+            self.transition = true;
+            st.set_general_trigger(mw_logic::binding::hash(TRANSITION_TRIGGER_NAME), 1);
+        }
+    }
+
+    fn event(&self) -> u32 {
+        self.setup.as_ref().map_or(0, |s| s.event.id)
+    }
+
+    /// The event's own data the logic reads (`Event.Data.*`, `Players.LocalPlayer.*` of the race).
+    fn binding(&self, path: &str, current_event: u32) -> Option<String> {
+        let setup = self.setup.as_ref()?;
+        let bool = |b: bool| if b { "true" } else { "false" }.to_owned();
+        let current = current_event == setup.event.id;
+        Some(match path {
+            "Event.Data.EventIntro" if current => setup.event.event_intro.to_string(),
+            "Event.Data.EventOutro" if current => setup.event.event_outro.to_string(),
+            // The respawn at the event's start: `race.rs` holds the car there until the start is resident.
+            "Players.LocalPlayer.ResetInProgress(NOT)" if self.started => bool(!self.placing),
+            "Players.LocalPlayer.ResetInProgress" if self.started => bool(self.placing),
+            // No busting in the runtime's races (police are off in them).
+            "Players.LocalPlayer.WasBusted" if current => bool(false),
+            _ => return None,
+        })
+    }
 }
 
 impl RuntimeHost {
     /// Engine bindings the logic host has no root for yet (the game-mode manager's `Mode` table, the
     /// transitions): the runtime's own state where it has it, else the stand-ins of the module doc.
-    fn engine_binding(&self, path: &str) -> Option<&'static str> {
+    fn engine_binding(&self, path: &str) -> Option<String> {
         let bool = |b: bool| if b { "true" } else { "false" };
-        Some(match path {
-            "Transitions.Transitioning(NOT)" => bool(!self.transitioning),
-            // The UI message manager's NIS flag: a cutscene plays (`cutscene.rs`).
-            "UIMessages.NISRunning" => bool(self.nis_running),
-            "UIMessages.NISRunning(NOT)" => bool(!self.nis_running),
-            _ => return None,
-        })
+        Some(
+            match path {
+                "Transitions.Transitioning(NOT)" => bool(!self.transitioning),
+                // The UI message manager's NIS flag: a cutscene plays (`cutscene.rs`).
+                "UIMessages.NISRunning" => bool(self.nis_running),
+                "UIMessages.NISRunning(NOT)" => bool(!self.nis_running),
+                _ => {
+                    let current = self.logic.state.borrow().game_modes.current_event;
+                    return self.race.binding(path, current);
+                }
+            }
+            .to_owned(),
+        )
     }
 }
 
@@ -623,7 +961,7 @@ impl Host for RuntimeHost {
     }
     fn binding_string(&mut self, path: &str) -> Option<String> {
         match self.engine_binding(path) {
-            Some(v) => Some(v.to_owned()),
+            Some(v) => Some(v),
             None => self.logic.binding_string(path),
         }
     }
@@ -715,6 +1053,49 @@ impl Host for RuntimeHost {
                 self.transitioning = true;
                 Some(Carry::BootTransition)
             }
+            // The chosen event's data is in once the runtime has its set-up (`RaceSetup`); events the runtime did
+            // not choose (free drive) at once, as before.
+            Request::LoadEventData { event } => {
+                let ready = self.race.setup.as_ref().is_none_or(|s| s.event.id == *event)
+                    || mode_machine::is_freedrive_event(&self.logic.state.borrow(), *event);
+                self.logic.state.borrow_mut().game_modes.event_data_ready = ready;
+                Some(Carry::Nothing)
+            }
+            Request::Respawn { event, .. } if *event != 0 && *event == self.race.event() && !self.race.started => {
+                self.race.started = true;
+                // The reset is pending from the request on (`race.rs` puts the car down once the start is in).
+                self.race.placing = true;
+                self.race.ready = false;
+                self.race.setup.clone().map(Carry::StartRace)
+            }
+            Request::PlaySequence { playback, sequence, .. }
+                if self.race.setup.as_ref().is_some_and(|s| *sequence == s.event.event_intro) =>
+            {
+                self.race.intro_playback = Some(*playback);
+                Some(Carry::PlayCutscene(Which::Intro))
+            }
+            Request::PlaySequence { playback, sequence, .. }
+                if self.race.setup.as_ref().is_some_and(|s| *sequence == s.event.event_outro) =>
+            {
+                self.race.outro_playback = Some(*playback);
+                Some(Carry::PlayCutscene(Which::Outro))
+            }
+            // The race's gates are `race.rs`'s (stepped every tick); the logic reads them through its queries.
+            Request::CheckpointsEnter
+            | Request::CheckpointsPlace
+            | Request::CheckpointsStep
+            | Request::CheckpointsLeave
+                if self.race.started =>
+            {
+                Some(Carry::Nothing)
+            }
+            // Free drive again after the race: the event ends (`race.rs`).
+            Request::StartGameMode { event } if self.race.started && *event != self.race.event() => {
+                let name = mw_logic::binding::hash(TRANSITION_TRIGGER_NAME);
+                self.logic.state.borrow_mut().clear_general_trigger(name, 1);
+                self.race = RaceLink { choice: self.race.choice.clone(), ..Default::default() };
+                Some(Carry::EndRace)
+            }
             _ => None,
         };
         let done = carried.is_some()
@@ -734,9 +1115,11 @@ impl Host for RuntimeHost {
         let kind = kind.split([' ', '(', '{']).next().unwrap_or_default().to_owned();
         let n = self.requests.entry(kind).or_default();
         *n += 1;
-        if done {
+        // Requests made every frame are logged once.
+        let every_frame = matches!(r, Request::CheckpointsStep);
+        if done && (!every_frame || *n == 1) {
             info!("hsm: {:5} request {r:?}", self.frame);
-        } else if *n == 1 {
+        } else if !done && *n == 1 {
             info!("hsm: {:5} request {r:?} (not carried out yet)", self.frame);
         }
     }
@@ -757,6 +1140,17 @@ impl Host for RuntimeHost {
             }
             // `COLLECTABLES`: the world state the collectables need (freeroam.rs has read the triggers).
             Query::CollectablesReady => Some(self.collectables_ready as u64),
+            // The event's intro / outro (`cutscene.rs`; the outro also holds through the results after it).
+            Query::SequencePlaying { playback } if self.race.intro_playback == Some(*playback) => {
+                Some(!self.race.intro_done as u64)
+            }
+            Query::SequencePlaying { playback } if self.race.outro_playback == Some(*playback) => {
+                Some(!self.race.outro_done as u64)
+            }
+            // `CHECKPTS`: the race's gates (`race.rs`).
+            Query::CheckpointCount if self.race.started => Some(self.race.gates as u64),
+            Query::CheckpointsLoaded if self.race.started => Some(self.race.loaded as u64),
+            Query::CheckpointsFinished if self.race.started => Some(self.race.finished as u64),
             // The logic answers GMM+0x2e78 (1 while a mode runs: the manager's constructor / reset); the fallback
             // (free drive) is only for a logic without that byte. `FUN_006f46e0`'s offline derivation is not ported.
             Query::ModeWon => {

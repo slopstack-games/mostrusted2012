@@ -138,6 +138,11 @@ enum Pending {
 pub struct CutsceneState {
     /// Don't start the intro yet (the event card's "TRANSITION" has not been set).
     pub hold_intro: bool,
+    /// Under `--hsm` (logic.rs): the intro and the outro start when the logic plays them (`RUNGAMELOGIC` of
+    /// `Event.Data.EventIntro` / `EventOutro` → `PlaySequence`), not by themselves.
+    pub logic_driven: bool,
+    pub logic_intro: bool,
+    pub logic_outro: bool,
     playing: Option<Playing>,
     intro_started: bool,
     outro_started: bool,
@@ -154,6 +159,23 @@ impl CutsceneState {
     /// A sequence is playing (the menu leaves Esc / Back to SKIP_CUTSCENE meanwhile).
     pub fn playing(&self) -> bool {
         self.playing.is_some()
+    }
+
+    /// The intro / outro has been started (or there was none to start) and is no longer playing.
+    pub fn finished(&self, which: Which) -> bool {
+        let started = match which {
+            Which::Intro => self.intro_started,
+            Which::Outro => self.outro_started,
+        };
+        started && self.playing.as_ref().is_none_or(|p| p.which != which)
+    }
+
+    /// A new runtime race: its cutscenes are still to come.
+    pub fn reset(&mut self) {
+        self.intro_started = false;
+        self.outro_started = false;
+        self.logic_intro = false;
+        self.logic_outro = false;
     }
 
     fn trace(&mut self, line: std::fmt::Arguments) {
@@ -274,6 +296,8 @@ fn start_cutscenes(
         frozen: Default::default(),
     };
     let finished = race.phase == RacePhase::Finished || progress.is_some_and(|p| p.finished.is_some());
+    // Driven: the outro waits for the logic's `PlaySequence` of it.
+    let finished = finished && (!state.logic_driven || state.logic_outro);
     if !state.outro_started && (finished || (setup.0.force_outro && loaded.done && !race.hold)) {
         state.outro_started = true;
         state.intro_started = true;
@@ -294,6 +318,7 @@ fn start_cutscenes(
         || race.hold
         || prewarm.is_some_and(|p| p.pending())
         || state.hold_intro
+        || (state.logic_driven && !state.logic_intro && setup.0.intro.is_some())
     {
         return;
     }

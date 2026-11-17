@@ -231,6 +231,12 @@ MW_SIREN_PRESS=12 MW_LIGHTBAR_SHOTS=<dir> ./target/release/mostrusted --drive "F
 # list, UI sounds, sim pause, show world, mute, chevrons, triggers (list: logic.rs module doc; MW_MUSIC=1
 # MW_MUSIC_LOG=1 to see the song list it picks under --mute)
 tools/t --front-end --hsm --front-end-shots scratch/fe --mute; grep 'hsm:' scratch/run.log
+# Races through the logic: any event start (map, Easy Drive, pause menu, markers) is the logic's event request; the race
+# mode 730003 starts race.rs / the intro / the outro and ends the event (logic.rs doc). --hsm-event <id> (implies --hsm and
+# the start-up flow) chooses the event once free roam waits on the Easy Drive prompt; with --test race: the gates test
+tools/t --hsm-event 462174 --auto-start 1 --test race --mute; grep -E 'hsm:.*(machine|request (Respawn|PlaySequence|StartGameMode))' scratch/run.log
+# MW_HSM_SHOTS=<dir>: screenshots card / intro / race / outro / free roam along it, then exit (add MW_RACE_TEST_AFTER=40
+# so the test waits in free roam). Note: --units 12 stalls --test race at gate 3 (body shop respray, no ground loaded)
 ./target/release/mwtool bindings [--find x] [--parse] [--no-genesys] [--out f.tsv]  # every binding path, parsed (mw_logic::binding)
 ./target/release/mwtool hsm [<node id>] [--find text]     # game-logic state machines (HSMData); mwtool frontend
 ./target/release/mwtool hsm <id> --parents               # which nodes start a node (child or transition)

@@ -508,7 +508,9 @@ GeneSys. Engine-free crates (`mw-logic`, `mw-lua`; wasm-compatible), in dependen
    hand-written flows. Started (2026-11-17): `mostrusted --hsm` (logic.rs) runs "Top State" and the game-mode
    manager in shadow mode. It follows the real title, press and world load into "Freedrive Update" and the HUD
    machine. Carried out: page contexts and widget groups (`natives/pages.rs`: the widgets' Lua scripts run)
-   and the boot page (title and boot transition from the HSM). The rest is logged.
+   and the boot page (title and boot transition from the HSM); songs, UI sounds, sim pause, world, mute, chevrons,
+   triggers; races (the event request, the race mode 730003 starts race.rs, the intro and outro, and ends the
+   event; `--hsm-event`). The rest is logged.
 8. `[~]` **DLC and entitlements** (2026-11-17, decomp.md "DLC and entitlements"): user decision: base game
    owned, every DLC pack not owned. Done: `natives::entitlements` (the entitlement / game-pack managers' checks),
    the `EntitlementManager` root, `Mode.CurrentVehicleGamepack`, the packs' data (`mw_assets::packs`, `mwtool
