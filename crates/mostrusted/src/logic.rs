@@ -31,7 +31,7 @@
 //! `FrontEnd::ready`.
 //!
 //! Stand-ins (model decisions, the same answers `mwtool hsm --run` documents in docs/commands.md): the engine
-//! bindings `UIConfig.Platform` = "PC", `Net.IsLoggedInToServer` = false (offline),
+//! bindings `UIConfig.Platform` = "PC" (`Net.*` is the logic's own offline root, `net_view.rs`),
 //! `SignInState.Params.IsChatRestricted` = true; state 1222788 `ConnectToAutolog` (online Autolog sign-in) exits
 //! DONE at once; behaviour types that are not ported yet hold (run their children, never exit); hooks that are
 //! not ported answer EXIT (most `CALLHSMHOOK` nodes go on on EXIT).
@@ -460,7 +460,6 @@ impl RuntimeHost {
             BOOT_TRIGGER => bool(self.boot_trigger),
             "Transitions.Transitioning(NOT)" => bool(!self.transitioning),
             "UIConfig.Platform" => "PC",
-            "Net.IsLoggedInToServer" => "false",
             "SignInState.Params.IsChatRestricted" => "true",
             _ => return None,
         })
