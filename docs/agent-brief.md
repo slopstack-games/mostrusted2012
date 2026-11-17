@@ -60,6 +60,7 @@ keep them wasm32-compatible (`tools/wasm-check`), and clippy clean for them.
 ## When done
 
 1. Add a dated research-log entry (newest first, under the header) with sources, model decisions and open items.
+   Don't edit docs/next-session.md: the integrator keeps it short (≤ ~3 KB).
    Update decomp.md / formats.md / PLAN.md where relevant. Add new flags and env vars to docs/commands.md (one
    line each), not CLAUDE.md.
 2. Commit on your worktree branch. End the message with the co-author line the integrator gives you.

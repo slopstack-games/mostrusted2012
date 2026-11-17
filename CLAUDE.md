@@ -122,7 +122,8 @@ Accuracy comes from reading the right source, not from reading everything. Habit
   need it). Tests: `cargo test -q ... 2>&1 | grep -E "test result|FAILED|panicked"`. `NO_COLOR=1` is set.
 - Dump: `fn <addr> --head 60` first, the whole function only if needed; `callers <addr>`; never whole files.
 - Output you don't need to see goes to a file (`> scratch/x.txt`), then grep it.
-- Open items have one home: the newest section of docs/next-session.md. The README roadmap and PLAN.md
+- Open items have one home: docs/next-session.md, kept ≤ ~3 KB (one line + pointer per item; details in the
+  research log; old handoffs go to handoffs-archive.md). The README roadmap and PLAN.md
   checkboxes are updated once at the end of a session, not after every change.
 - Screenshots: look at the ones that decide something. For A/B, stack before / after into one downscaled image
   (`python3 tools/stack.py out.png a.png b.png`) instead of reading two full-size ones.
