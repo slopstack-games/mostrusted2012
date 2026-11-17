@@ -503,8 +503,10 @@ GeneSys. Engine-free crates (`mw-logic`, `mw-lua`; wasm-compatible), in dependen
    `Construct` (`mwtool lua`). One state per widget (widget +0x84, decomp.md "Widget definitions (JSON) and widget scripts"). Open: the
    game's GC stepping.
 6. `[ ]` **Sequences**: the missing `*SequenceItem` types (73 in the data).
-7. `[ ]` The runtime moves onto them: front end, game modes, HUD and results from the HSM instead of the
-   hand-written flows.
+7. `[~]` The runtime moves onto them: front end, game modes, HUD and results from the HSM instead of the
+   hand-written flows. Started (2026-11-17): `mostrusted --hsm` (logic.rs) runs "Top State" and the game-mode
+   manager in shadow mode. It follows the real title, press and world load into "Freedrive Update" and the HUD
+   machine. Its Requests are logged, not carried out yet.
 
 ### M9: Browser build `[~]` (2026-11-17)
 The same runtime in a browser on WebGPU, on the player's own install (picked folder or a loopback server; the

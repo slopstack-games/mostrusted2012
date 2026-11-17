@@ -13,6 +13,35 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ## Dated findings
 
+### 2026-11-17: the original's HSM runs inside the runtime, shadow mode (`--hsm`, `mostrusted/src/logic.rs`)
+
+`mostrusted --hsm` runs "Top State" (20527) every frame on `LogicHost`, next to the hand-written flows. The
+game-mode manager's update (`mode_machine::update`, `FUN_006abc10` order) runs after each HSM update. Requests are
+logged (`hsm:` lines, the first of each kind) and applied to the logic state (`mode_machine::apply`); the runtime
+does not carry any of them out yet. Hook-queued requests are drained right after the hook, so the log keeps the
+original's call order. Answers from runtime state: the title's "BOOT" trigger (`FrontEnd::boot_trigger`),
+`PrimaryUserBound` (the title key press while `ListenForPrimaryUser` listens), `NewProfile` (`--new-game` or no
+saved profile), the loading screen (`Phase::Loading`), `Mode.WorldLoaded` (`FrontEnd::ready`) and
+`Transitions.Transitioning` (`Phase::Transition`). The other answers are stand-ins (model decisions), the same as
+`mwtool hsm --run`: platform PC, offline, chat restricted, `ConnectToAutolog` exits DONE, snapshot 1's `Mode`
+bindings (HudHsm 371633, FeedbackGroupID 2, ...), events available when listed, weapon lists loaded at once,
+unported behaviours hold and unported hooks answer EXIT.
+
+Headless front-end run (`tools/t --front-end --hsm --front-end-shots scratch/fe --mute`):
+- The machine waits on the title until BOOT (frame ~550, ≈ 9.3 s, as the title sequence sets it), then in
+  "Press Start" until the key press.
+- Then, in two frames, it goes boot → profile ("Set Up Continue Game" for a saved profile) → "Playing" →
+  "Run Game Mode" → machine 390148 → "Wait for Loading" → "Show World Freedrive" / "Freedrive Update", and the
+  free-drive HUD machine starts.
+
+"Wait for Loading" passed at once because our world was already loaded (10.3 s, before the press). Every other
+engine wait answers "done" at once because the runtime does not carry out the Requests yet: profile, world and
+feedback-group loads.
+
+Open: carry out the Requests one by one and drop the hand-written flow each replaces: `PushPageContext` /
+`ActivateWidgetGroup` (front-end screens), `LoadWorld`, `LoadProfile`, `StartGameMode`, the HUD machine's requests.
+`Mode` / `Event` binding roots (the GMM's binding table) instead of the stand-ins.
+
 ### 2026-11-17: fourth 20 HSM hooks verified and enabled (80 of 187; `natives/hooks_{flow,event,ui}.rs`)
 
 Handlers read from `re/out/live/text.asm`, callees with `fn`. Already ported but parked, now verified byte for byte and
