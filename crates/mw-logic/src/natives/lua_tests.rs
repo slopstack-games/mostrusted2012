@@ -316,7 +316,7 @@ fn menu_natives() {
     assert_eq!(host.state.borrow().menus.selected_pack, 0);
     assert_eq!(host.state.borrow().requests.last(), Some(&Request::SelectPack { id: 0 }));
     // Downloads: complete unless listed.
-    host.state.borrow_mut().menus.downloads = vec![7];
+    host.state.borrow_mut().menus.downloads = vec![super::lua_misc::Download { id: 7, ..Default::default() }];
     assert!(!flag(&call(&mut lua, "IsViewModelDownloadComplete", vec![n(7.0)])));
     assert!(flag(&call(&mut lua, "IsViewModelDownloadComplete", vec![n(8.0)])));
     // Sign-in.

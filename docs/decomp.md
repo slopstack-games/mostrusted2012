@@ -5922,6 +5922,7 @@ ResetChaseStats, ResetLocalPlayerHeat, TransferVehicleHeatToPlayer, ResetLocalPl
 FixUpRecommendationRetry, SyncTimeOfDay, ClearPostEventAwards, RemoveRoadblocks, ResetProps, HACKSuspendCarControlForIntro,
 HACKResumeCarControlAfterIntro, SetSeenEventsForVehicleToTrue, ForceOpenEasyDrive (60 of 187 in all).
 Ported Lua natives (60 of 385, 2026-11-17; handlers in the doc comments of `lua_widgets.rs`, `lua_settings.rs`,
+Third batch (85 of 385, 2026-11-17, `lua_misc.rs`): UpdateDeferredViewModel, ClearViewModel, GetCurrentFreedriveEvent, GetNextEventForProgression, StartActionBind, SetGameMode, SetDistrict, PrepareControlSettings, ReleaseSettings, GoBackEasyGuideCategory, StartViewingEasyDrivePages, Enable/DisableDreamshotsCameraControlGroup, SetLocalPlayerLicensePlate, ChangeVehicleOnCustomRollout (research log 2026-11-17 "third batch").
 Ported Lua natives (70 of 385, 2026-11-17; the first 60 were checked against their handlers, research log 2026-11-17 "Lua natives verified"; `lua_menus.rs` adds SetNewGame, SelectChallengeVehicleSet, SelectVehicleCategory, SetSelectedVehicleColour, SetVehicleModifier, SignInStarted, SignInFinished, SelectPack, IsViewModelDownloadComplete, UpdateAwardProgressBindings; first 60: handlers in the doc comments of `lua_widgets.rs`, `lua_settings.rs`,
 `lua_career.rs`): the five `Resolve*Binding`, `ExitWidgetGroup`, `Set{Bool,Int,Double,String,UniqueId}Variable`,
 `DeleteVariable`, `DoRpc`, `SetModalMode`, `print`, `GetPlatformName`, `SmoothStep`, `SetLanguage`,

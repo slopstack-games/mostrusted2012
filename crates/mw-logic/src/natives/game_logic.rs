@@ -44,6 +44,15 @@ pub struct InputBlocks {
 }
 
 impl InputBlocks {
+    /// `FUN_0083d000`(bit) on group 0 (the inverse of [`clear`](Self::clear): sets the bit, counts it up).
+    pub fn set(&mut self, group: usize, bit: u32) {
+        let before = self.masks[group];
+        self.masks[group] |= 1 << (bit & 31);
+        if before != self.masks[group] {
+            self.counts[group] = self.counts[group].wrapping_add(1);
+        }
+    }
+
     /// `FUN_0083c930`(group, bit).
     pub fn clear(&mut self, group: usize, bit: u32) {
         let before = self.masks[group];

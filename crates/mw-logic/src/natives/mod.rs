@@ -35,6 +35,7 @@ pub mod host;
 pub mod lua_args;
 pub mod lua_career;
 pub mod lua_menus;
+pub mod lua_misc;
 pub mod lua_settings;
 #[cfg(test)]
 mod lua_tests;
@@ -143,6 +144,7 @@ impl Registry {
         lua_settings::register(&mut r);
         lua_career::register(&mut r);
         lua_menus::register(&mut r);
+        lua_misc::register(&mut r);
         r
     }
 
