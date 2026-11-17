@@ -505,7 +505,18 @@ fn print_ui_sequence(seq: &mw_assets::sequence::Sequence, depth: usize) {
             ItemKind::SetSongList { list, flags } => format!("set song list {list} {flags:?}"),
             ItemKind::MusicState(s) => format!("music state {s:?}"),
             ItemKind::Other(n) => n.clone(),
-            _ => "(other)".into(),
+            ItemKind::Camera(shots) => {
+                let s: Vec<String> = shots
+                    .iter()
+                    .map(|s| format!("take {} {:?} bound {:?}", s.take, s.take_data.is_some(), s.bindings))
+                    .collect();
+                format!("camera [{}]", s.join("; "))
+            }
+            other => {
+                // The variant's name (cameras, teleports, letterbox, ...).
+                let d = format!("{other:?}");
+                d[..d.find(|c: char| !c.is_alphanumeric()).unwrap_or(d.len())].to_string()
+            }
         };
         let en = if i.enabled.is_empty() { String::new() } else { format!(" if {:?}", i.enabled) };
         println!("{pad}  {:7.3}-{:7.3} {what}{en}", i.start, i.end);

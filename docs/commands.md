@@ -268,7 +268,9 @@ tools/t --hsm-event 462174 --auto-start 1 --test race --mute; grep -E 'hsm:.*(ma
 ./target/release/mwtool lua --list                       # the UI's 115 Lua chunks (mw-lua): id, name (checked against the id), size
 ./target/release/mwtool lua [--run <name>] [--call <Fn>|all] [--trace]   # main chunk + Construct with logging stub natives
 #   --natives <file>: stub only the names listed (the game's registry, one per line; others stay nil); --out <tsv>: per script
-./target/release/mwtool frontend --sequence 1014321      # one UI sequence's items; --spots lists every jack spot
+./target/release/mwtool frontend --sequence 1014321      # one UI sequence's items (camera items with their take and bindings, other kinds by name); --spots lists every jack spot
+# The general UI sequence player (ui_sequence.rs; under --hsm the logic's conductors / PlaySequence, e.g. the continue's recap 1689073):
+MW_UI_SEQUENCE_SHOTS=<dir> tools/t --front-end --hsm --auto-start 1 --mute   # shots at 1/4/8/12/16/20 s of each playing sequence, then exit; unresolved layout bindings logged once ('ui sequence: binding')
 # The map screen (map_screen.rs; pause menu MAP): arrows / left stick / d-pad push the cursor (tap: flick to the
 # next event that way; hold: free cursor, snaps on release), Enter / A options, START RACE plays the event-loading
 # card (event_card.rs) and starts the race with its intro; Backspace / B (or Esc / Start) back to driving

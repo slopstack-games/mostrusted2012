@@ -648,7 +648,7 @@ fn run_cutscene(
 }
 
 /// A transform as the game's row-major frame (rows: the local x, y, z axes, then the position).
-fn frame_of(t: Transform) -> Frame {
+pub(crate) fn frame_of(t: Transform) -> Frame {
     Frame {
         x: (t.rotation * Vec3::X).to_array(),
         y: (t.rotation * Vec3::Y).to_array(),

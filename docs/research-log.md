@@ -81,6 +81,57 @@ Requests (appended): NetSend { slot, message: NetMessage } (+ NetReset / NetAck 
 Model decisions: the message payloads the original builds from game objects (the race result of UPLOADRESULT, the quick-join search, the ids of the join wishes) are the engine's: `NetMessage` carries what the handler decides (message id, visibility, bring-playgroup, concours value); the quick-join info publication, `BROWSER_IN`'s argument parsing (`FUN_0076f460`) and the three-state UPLDCONCOURS refresh are single Requests; `QuickJoinInfo` default "absent"; query names for the invite object's vtable slots (+0 pending / +4 accepted / +0x10 sent) are inferred from their uses; the REFRESHENT note "`FUN_004c2050` = not up" is probably inverted (it is "state 0xb", authenticated).
 Verified: `mwtool hsm --run --steps 600 --answer 1222788=DONE` (boot -> "Freedrive Update" + "Freedrive HUD") and `--event 462174` (race route) still run, `tools/wasm-check` ok, clippy 0 warnings for mw-logic / mwtool, 232 mw-logic tests.
 Open: the runtime carries out none of the new Requests; 50 used codes remain unported (`mwtool hsm --codes`): the event / checkpoint / car-swap types (agent C: SWAPGAMEMODE, CHKPNTSONLIN, DOONEVTSTRT, TELEPORTTOME, ...), TRYTOPLAYSPE (19 uses), the Easy Drive / car-select / debug ones (DBGAUTOBIND, DBGSTARTFRID, DEBUGUNLOCKS, SHOWCARSELEC, STARTCARSELE, PICKNEXTFDE, ...) and WRT_PR_SESSN / WRITETODATAS / ACCT_INVITE / JOINEDLEFT / WAIT4ALLSYN / SYNCRESSTART / ONLINECARSWA / MMPICONSONL / LAUNCH / ENDGAME / RESETGAME / EXITWHENGAME.
+### 2026-11-17: one UI sequence player; the logic's sequences drawn, the game recap shows (`ui_sequence.rs`)
+
+Under `--hsm` the logic's own sequences (conductors' `StartSequence` other than the title, `RUNGAMELOGIC`
+`PlaySequence` other than the event's intro / outro) ran headless. Now they play through a general player,
+crates/mostrusted/src/ui_sequence.rs: the logic keeps each playback's clock (its jumps are what the HSM waits on) and
+hands the player (key, sequence, clock) every frame (`UiSequencePlayer::show`, after `logic::LogicTick`); the
+player loads the sequence's layouts / textures / fonts on a thread (as `frontend.rs` does), steps conducted children
+on their own clocks with their jump controllers, and plays: layouts (`UiScene::draw_with`, letterboxed, GlobalZIndex
+19 under the front end's 20), black quads, movies, wave items (`music::SequenceWaves::player`, mixed with the front
+end's), ICE camera takes on the gameplay camera (`camera_take::CameraTake::camera` with the player's car as subject,
+blended back by the take's `GAME_CAM_BLEND`, as cutscene.rs), HideHud (`HudSettings::hidden_by_sequence` and the
+logic's `UISequences.HideHudRequests`). Bindings (items' `enabled`, conducted jumps, layout elements) resolve through
+the logic's binding host (`LogicState`'s roots, registered as `ui_sequence::LogicView`): the UI binding's path and
+`[argument]` are re-joined, parsed with `mw_logic::binding` and looked up; a path that does not resolve is logged once.
+logic.rs's `step_playbacks` now also sets / clears `GeneralTriggerSequenceItem`s of its playbacks
+(`set_general_trigger` / `clear_general_trigger` when the clock enters / leaves the item).
+
+**The recap 1689073** (data, `mwtool frontend --sequence 1689073`, which now names item kinds and camera takes):
+the ICE take 1689072 "Game" (20.35 s, `Player` space, no bindings: shots around the player's car, lens 22–60 mm,
+`GAME_CAM_BLEND` 0 → 1 over 13.68–20.35 s), HideHud 0–18.9 s, layout 1689155 (the player name strip and logo,
+`Players.LocalPlayer.Name`), 1689182 (statistics: speed points `ScoringViewModel.CurrentSpeedPoints`, events and
+Most Wanted completed `Mode.*`, completion per pack `Mode.GameCompletePercentage[n]` with the DLC packs'
+`EntitlementManager.IsPdlcNPurchasable`, `Milestone.Value[...]`, time played, the Most Wanted list `SequenceMwl`),
+the conducted 1532921 (layout 1532919) and 275950 at 15.9 s (the car's mods: `Rollouts.SelectedRollout.Data.*`),
+the music bed `01000000001b0a3e` (type 4, 0–21.4 s) and the stingers of 275950. In the runtime (continued profile,
+`--front-end --hsm`): the recap starts when the world is loaded (`PlaySequence` at HSM frame ~600–1100), under the
+boot transition's last part; the camera circles the car, the strips and statistics panels slide in and out on
+their timelines, the HUD is hidden until 18.9 s, then the camera blends to the chase camera and free roam goes on.
+Screenshots (git-ignored): `scratch/recap/1689073-{01,04,08,12,16,20}s.png`, `scratch/fe/*.png`. The waves play
+(`MW_MUSIC=1 MW_MUSIC_LOG=1`: the bed from 0.21 s, the 275950 stingers at 15.9 / 17.4 s).
+
+Model decisions: as the other two players, the layouts draw in the letterboxed 1280 × 720 frame with its bars, a
+movie fills that frame under the layouts, `UISequences.Params[n].TextN` reads "", unported shaders' elements are left
+out; the conducted children's clocks run on real time (capped at 0.1 s per frame as `frontend.rs`). Not played:
+`SetUICamera`, `AdapterHost`, `ImagePaletteSequenceItem`, the bus mixer channels (waves at their own gain),
+`RaceCarEffectSequenceItem` (9.8–20.9 s), `ListenerSequenceItem`, the recap's `EventTrigger` at 15.9 s, streamed
+images, the take's depth of field and motion blur.
+
+Not moved: `frontend.rs` (title, boot transition) and `event_card.rs` keep their own players. Both hand state out of
+their sequences that the general player does not model (the title's "BOOT" trigger and key press, the transition's
+and the card's picture slots and tips, the card's monitor jump, race start and "TRANSITION" hand-over); moving them is
+not low-risk and was left.
+
+Open:
+- The recap's statistics are empty: `Players.LocalPlayer.Name`, `ScoringViewModel.CurrentSpeedPoints`,
+  `Mode.GameCompletePercentage[n]`, `Mode.SPToNextBlacklist`, `Mode.UniqueEventsComplete`, `Mode.BlackListComplete`,
+  `Milestone.Value[...]`, `DriverDetails.General.TotalTimePlayed`, `SequenceMwl.*` (and `#index` in its list),
+  `Players.LocalPlayer.GetVehicleInfo.ShortName`, `Rollouts.SelectedRollout.*` do not resolve in the logic yet.
+- Captures that would confirm: the original's recap on a continue (when it starts relative to the transition, the
+  camera framing at 1 / 8 / 12 s, the statistics shown, the music level against the bus mixer items).
+
 ### 2026-11-17: skids louder after a pause, very loud at a race start: two causes fixed
 
 User reports: skids get louder at a pause and stay that loud after it; very loud and distorted at a race start.

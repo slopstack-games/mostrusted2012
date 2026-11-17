@@ -1,7 +1,7 @@
 //! Music: the title's sequence waves and the song manager (docs/decomp.md "Music"; data in `mw_assets::music`).
 //!
 //! **Sequence waves** (`WaveSequenceItem`): a front-end sequence's wave items play while its clock is inside
-//! them ([`SequenceWaves`], written by `frontend.rs`): the title sequence 1022357 plays the intro stream
+//! them ([`SequenceWaves`], written by `frontend.rs` and the general player `ui_sequence.rs`): the title sequence 1022357 plays the intro stream
 //! 1772189 (28–73.385 s, gain 0.7, 0.385 s fade out), the bridge 1870153 (73–73.9 s) and the loop 1772190
 //! (73.385 s on, gain 0.7, a looping stream) while the clock jumps 100.88 → 73.952 s; an item the clock jumps
 //! inside of keeps playing.
@@ -218,6 +218,9 @@ pub struct SequenceWaves {
     pub active: Vec<(u32, WaveItem, f32)>,
     /// Waves the screens will play (decoded ahead).
     pub upcoming: Vec<ResourceId>,
+    /// The same for the sequences the general player plays (`ui_sequence.rs`).
+    pub player: Vec<(u32, WaveItem, f32)>,
+    pub player_upcoming: Vec<ResourceId>,
 }
 
 fn sequence_waves(
@@ -232,14 +235,14 @@ fn sequence_waves(
     if !enabled.0 {
         return;
     }
-    for &w in &waves.upcoming {
+    for &w in waves.upcoming.iter().chain(&waves.player_upcoming) {
         decoded.prefetch(&game, w);
     }
     // Items that ended fade out.
     for (_, mut v) in &mut playing {
         if let VoiceKey::Item(id) = v.key
             && v.stopping.is_none()
-            && !waves.active.iter().any(|(i, ..)| *i == id)
+            && !waves.active.iter().chain(&waves.player).any(|(i, ..)| *i == id)
         {
             if log_on() {
                 info!("music: sequence wave item {id} stops");
@@ -247,7 +250,7 @@ fn sequence_waves(
             v.stopping = Some(0.0);
         }
     }
-    for (id, item, offset) in &waves.active {
+    for (id, item, offset) in waves.active.iter().chain(&waves.player) {
         if playing.iter().any(|(_, v)| v.key == VoiceKey::Item(*id) && v.stopping.is_none()) {
             continue;
         }

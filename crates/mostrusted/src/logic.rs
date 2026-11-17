@@ -12,8 +12,9 @@
 //!   the user (`frontend.rs` in driven mode); the boot transition starts on the group's
 //!   `PlayWidgetGroupTransition` and answers `WidgetTransitionStarted` / `TransitionFinished`.
 //!
-//! - conductors: `StartSequence` of the title goes to `frontend.rs`; any other sequence runs headless
-//!   ([`Playback`]: its clock with its jumps, the conductor idle again at its end; nothing drawn yet);
+//! - conductors: `StartSequence` of the title goes to `frontend.rs`; any other sequence runs as a [`Playback`] (its
+//!   clock with its jumps and general triggers, the conductor idle again at its end) and plays through the general
+//!   UI sequence player (`ui_sequence.rs`: layouts, movies, waves, camera takes, HideHud);
 //!   `StopSequence` / `DestroyConductor` end it (the title's stops the title);
 //! - widget input: the menu actions (`input::MenuInput`, ids of `FUN_007e7910`'s table) reach the active widgets'
 //!   user actions every frame before the HSM update (`LogicHost::input`: Lua callbacks, `ExitGroupVia`, hooks);
@@ -48,9 +49,9 @@
 //!   `LoadProfile` (our profile file and `settings.cfg` read on a thread) and `ApplyProfileSettings` (the read
 //!   volumes to `settings::AudioSettings`); `Query::FeedbackGroupLoaded` / `ScreenPrefetched` / `LayoutReady` /
 //!   `ProfileReady` / `ProfileLoaded` answer from them, so those waits take the frames the loads take. Every
-//!   other `RUNGAMELOGIC` sequence (`PlaySequence`, e.g. the continue's game recap 1689073, 24 s) runs headless
-//!   like a conductor's ([`Playback`]): `Query::SequencePlaying` / `SequencePlayerBusy` while its clock runs,
-//!   `StopPlayback` ends it. `RemovePlayers` / `CreateLocalPlayer` empty and fill the logic's player slots
+//!   other `RUNGAMELOGIC` sequence (`PlaySequence`, e.g. the continue's game recap 1689073, 24 s) runs like a
+//!   conductor's ([`Playback`], drawn and heard through `ui_sequence.rs`): `Query::SequencePlaying` /
+//!   `SequencePlayerBusy` while its clock runs, `StopPlayback` ends it. `RemovePlayers` / `CreateLocalPlayer` empty and fill the logic's player slots
 //!   (`Query::LocalPlayerReady`). `LoadWorld`, `LoadAll`, `AutoSelectWorld` are what the runtime's loader does
 //!   from start-up (one world, streamed without a gate; `Mode.WorldLoaded` is `FrontEnd::ready`).
 //!
@@ -87,8 +88,9 @@
 //! while a mode runs, as the manager's constructor and reset set it; `FUN_006f46e0`'s offline derivation is not ported); behaviour types that are not
 //! ported yet hold (run their children, never exit); hooks that are not ported answer EXIT (most `CALLHSMHOOK` nodes
 //! go on on EXIT); `CreateLocalPlayer` fills the slot at once (whether `FUN_006d6090` takes frames was not traced);
-//! the headless playbacks draw and sound nothing (the game recap's camera, layouts and music are not shown); the load
-//! stand-ins of `logic_loads.rs`'s doc.
+//! the playbacks' layout bindings the logic's view models do not answer yet (the recap's
+//! statistics: `Mode.GameCompletePercentage`, `ScoringViewModel`, `Milestone`, `Rollouts`, ...) draw empty
+//! (`ui_sequence.rs` logs each once); the load stand-ins of `logic_loads.rs`'s doc.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -157,9 +159,13 @@ impl Plugin for LogicPlugin {
         .insert_resource(HsmEvent(self.event.clone()))
         .add_systems(Startup, |mut c: ResMut<CutsceneState>| c.logic_driven = true)
         .add_systems(Startup, start_loading)
-        .add_systems(Update, (receive, choose_event, tick, race_shots).chain());
+        .add_systems(Update, (receive, choose_event, tick.in_set(LogicTick), race_shots).chain());
     }
 }
+
+/// The logic's frame (the HSM update and the requests it carries out); `ui_sequence.rs` draws after it.
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct LogicTick;
 
 /// `--hsm-event`: the event to choose once free roam is reached (taken when sent).
 #[derive(Resource)]
@@ -326,6 +332,8 @@ fn receive(world: &mut World) {
         return;
     };
     info!("hsm: machine {serial} started at {TOP_STATE} (shadow mode)");
+    // The general UI sequence player resolves its bindings through the logic's view models (`ui_sequence.rs`).
+    world.insert_non_send(crate::ui_sequence::LogicView(host.logic.state.clone()));
     world.insert_non_send(Logic {
         hsm,
         host,
@@ -550,6 +558,8 @@ struct Targets<'w, 's> {
     audio: Option<ResMut<'w, crate::settings::AudioSettings>>,
     sim: ResMut<'w, Time<Virtual>>,
     race: Race<'w, 's>,
+    /// The general UI sequence player: the playbacks are drawn through it.
+    player: Option<ResMut<'w, crate::ui_sequence::UiSequencePlayer>>,
 }
 
 /// The race the logic drives (`race.rs`, `event_card.rs`, `cutscene.rs` in driven mode).
@@ -654,6 +664,18 @@ fn tick(logic: Option<NonSendMut<Logic>>, real: Res<Time<Real>>, mut t: Targets,
     host.race.observe(&t.race, t.cutscene.as_deref(), &host.logic);
     host.logic.frame(dt);
     step_playbacks(host, dt);
+    // What the playbacks show (`ui_sequence.rs` draws their layouts, plays their movies, waves and camera takes).
+    if let Some(player) = t.player.as_deref_mut() {
+        player.show(
+            host.playbacks
+                .iter()
+                .filter_map(|p| {
+                    let seq = p.seq.clone()?;
+                    Some(crate::ui_sequence::Shown { key: format!("{:?}", p.owner), seq, clock: p.clock })
+                })
+                .collect(),
+        );
+    }
     // The widgets' user actions (before the HSM's update, which reads the group exit they set).
     host.logic.input(&|id| {
         let (pressed, repeat, value) = menu.by_id(id).unwrap_or_default();
@@ -817,7 +839,7 @@ enum Carry {
 /// The title's conductor (the "Press Start" `Background` widget's `ConductorName`).
 const TITLE_CONDUCTOR: &str = "PressStart";
 
-/// A sequence that the runtime does not draw yet: its clock runs with the sequence's jump controllers
+/// A sequence the logic plays (drawn by `ui_sequence.rs`): its clock runs with the sequence's jump controllers
 /// (`frontend::step`, bindings through the logic's view models) and, once it reaches the sequence's end, a
 /// conductor is idle again (`HasSequenceFinished` / `IsConductorIdle`) and a `RUNGAMELOGIC` playback no longer
 /// plays (`Query::SequencePlaying`), so the scripts and states waiting on it keep the original's timing.
@@ -854,6 +876,18 @@ fn step_playbacks(host: &mut RuntimeHost, dt: f32) {
         let Some(seq) = &p.seq else { continue };
         let vm = &host.logic.state;
         let (next, _) = crate::frontend::step(seq, p.clock, dt, &mut |b| vm.borrow().resolve_bool(b) == Some(true));
+        // `GeneralTriggerSequenceItem`s set their trigger when the clock passes their start and clear it when it
+        // passes their end (`UiSequences::set_trigger` / `clear_trigger`).
+        for i in &seq.items {
+            if let mw_assets::sequence::ItemKind::GeneralTrigger { name, trigger } = i.kind {
+                let (was, is) = (p.clock >= i.start && p.clock < i.end, next >= i.start && next < i.end);
+                if is && !was {
+                    vm.borrow_mut().set_general_trigger(name, trigger);
+                } else if was && !is {
+                    vm.borrow_mut().clear_general_trigger(name, trigger);
+                }
+            }
+        }
         p.clock = next;
         if next >= seq.length {
             finished.push((p.owner.clone(), p.sequence));
@@ -893,7 +927,7 @@ struct RuntimeHost {
     transitioning: bool,
     /// Requests for `tick` to carry out.
     carry: Vec<Carry>,
-    /// The conductors' sequences the runtime runs without drawing.
+    /// The conductors' and `RUNGAMELOGIC` playbacks' sequences (drawn by `ui_sequence.rs`).
     playbacks: Vec<Playback>,
     /// "Press Start" was pressed (`frontend.rs` left the title on the key's release).
     pressed: bool,
