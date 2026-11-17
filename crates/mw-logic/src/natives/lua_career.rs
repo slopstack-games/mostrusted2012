@@ -29,7 +29,7 @@ pub struct ChallengeFields {
     pub driving_test_list_group: i32,
 }
 
-/// `SetOfflineEventToPlay(id)` (0x006799d0 → `FUN_0063e380(id, false)` on G).
+/// `SetOfflineEventToPlay(id)` (0x006799d0 → `FUN_0063e380(id, false)` on the object at G+0x2f4c8: +0x230 id, +0x234 −1, +0x238 flag).
 fn set_offline_event_to_play(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
     let g = &mut state.game;
     g.pending_event = int(&args, 1) as u32;

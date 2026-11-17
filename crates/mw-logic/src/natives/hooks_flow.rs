@@ -29,6 +29,15 @@ pub fn register(r: &mut Registry) {
     r.set_hook("SaveSettings", save_settings);
     r.set_hook("CalculateShouldShowRecapSequence", calculate_should_show_recap_sequence);
     r.set_hook("ClearRecapFlag", clear_recap_flag);
+    r.set_hook("SetFreedriveEventToPlay", set_freedrive_event_to_play);
+    r.set_hook("SetIntroLoadComplete", set_intro_load_complete);
+    r.set_hook("ShouldShowSafehouseExitSequence", should_show_safehouse_exit_sequence);
+    r.set_hook("ShutdownGame", shutdown_game);
+    r.set_hook("SetStoryMode", set_story_mode);
+    r.set_hook("SetGameModeWon", set_game_mode_won);
+    r.set_hook("SetAllowLoadingScreen", set_allow_loading_screen);
+    r.set_hook("SetRetryAtEnd", set_retry_at_end);
+    r.set_hook("IsChallengeActive", is_challenge_active);
     r.set_hook("ClearMatchmakingState", clear_matchmaking_state);
 }
 
@@ -36,20 +45,11 @@ pub fn register(r: &mut Registry) {
 /// part of [`Registry::original`]; tests install them with [`Registry::original_with_parked`].
 pub fn register_parked(r: &mut Registry) {
     // New game / continue, the intro.
-    r.set_hook("SetFreedriveEventToPlay", set_freedrive_event_to_play);
-    r.set_hook("SetIntroLoadComplete", set_intro_load_complete);
     r.set_hook("HACKSuspendCarControlForIntro", hack_suspend_car_control_for_intro);
     r.set_hook("HACKResumeCarControlAfterIntro", hack_resume_car_control_after_intro);
-    r.set_hook("ShouldShowSafehouseExitSequence", should_show_safehouse_exit_sequence);
     r.set_hook("SetSafehouseFromProfile", exit_only);
     // Profile, settings, progression.
-    r.set_hook("ShutdownGame", shutdown_game);
     // Game-mode manager flags.
-    r.set_hook("IsChallengeActive", is_challenge_active);
-    r.set_hook("SetStoryMode", set_story_mode);
-    r.set_hook("SetGameModeWon", set_game_mode_won);
-    r.set_hook("SetAllowLoadingScreen", set_allow_loading_screen);
-    r.set_hook("SetRetryAtEnd", set_retry_at_end);
     r.set_hook("SetSeenEventsForVehicleToTrue", set_seen_events_for_vehicle_to_true);
     r.set_hook("SetFMNMenuShowingVITAExclusiveEvents", set_fmn_menu_showing_vita_exclusive_events);
     r.set_hook("SetFMNMenuShowingCommonEvents", set_fmn_menu_showing_common_events);

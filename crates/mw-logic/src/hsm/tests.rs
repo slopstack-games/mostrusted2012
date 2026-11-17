@@ -13,7 +13,7 @@ fn k(s: &str) -> Key {
     key(s)
 }
 
-fn state(id: u32, code: &str, fallback: Fallback) -> State {
+pub(super) fn state(id: u32, code: &str, fallback: Fallback) -> State {
     State {
         behaviour: behaviour_id(code),
         id,
@@ -26,7 +26,7 @@ fn state(id: u32, code: &str, fallback: Fallback) -> State {
     }
 }
 
-fn param(name: &str, value: &str) -> Parameter {
+pub(super) fn param(name: &str, value: &str) -> Parameter {
     Parameter { id: k(name), kind: ParamType::String, values: vec![value.into()], structures: Vec::new() }
 }
 
@@ -53,7 +53,7 @@ fn on(s: &mut State, child: u32, exit: &str, action: Action, spawns: &[u32], par
     }
 }
 
-fn data(states: Vec<State>, defs: Vec<DataDefinition>) -> Arc<HsmData> {
+pub(super) fn data(states: Vec<State>, defs: Vec<DataDefinition>) -> Arc<HsmData> {
     let root = states[0].id;
     Arc::new(HsmData::from_parts(
         vec![TopState { definition: root, behaviour: states[0].behaviour, instance: 1 }],
@@ -102,7 +102,7 @@ impl Host for TestHost {
     }
 }
 
-const DT: Clock = Clock { frame: 1.0 / 30.0, game: Some(1.0 / 30.0) };
+pub(super) const DT: Clock = Clock { frame: 1.0 / 30.0, game: Some(1.0 / 30.0) };
 
 #[test]
 fn instant_chain_runs_in_one_frame_and_exit_points_exit_the_parent() {

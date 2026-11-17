@@ -8,10 +8,13 @@ use mw_formats::json::Json;
 
 type Args<'a> = Option<&'a Json>;
 
+pub fn register(r: &mut Registry) {
+    r.set_hook("ClearHudMessageQueues", clear_hud_message_queues);
+}
+
 /// Hooks ported from their handlers by an earlier, unfinished pass: not verified against the dump yet, so not
 /// part of [`Registry::original`]; tests install them with [`Registry::original_with_parked`].
 pub fn register_parked(r: &mut Registry) {
-    r.set_hook("ClearHudMessageQueues", clear_hud_message_queues);
     r.set_hook("ClearHudInstantQueue", clear_hud_instant_queue);
     r.set_hook("StopAllSequences", stop_all_sequences);
     r.set_hook("StopSpeech", stop_speech);
@@ -24,7 +27,8 @@ pub fn register_parked(r: &mut Registry) {
     r.set_hook("OnCloseEasyDriveMods", on_close_easydrive_mods);
 }
 
-/// `ClearHudMessageQueues` (0x680460) → `FUN_0067f8c0`.
+/// `ClearHudMessageQueues` (0x680460) → `FUN_0067f8c0`: the four queues of UIM (G+0x2f480): the two at +0x7230 /
+/// +0xa6f0 (`FUN_007b2ba0`), the records at +0x12458 and the lists +0x12468 / +0x124f8 / +0x12574 / +0x126e8.
 fn clear_hud_message_queues(s: &mut LogicState, _: Args) -> Key {
     s.requests.push(Request::ClearHudMessageQueues);
     EXIT

@@ -10,7 +10,7 @@
 
 use mw_lua::{Lua, Value};
 
-use super::lua_args::{fit, ftol32, int, push_str, push_uint, tonumber};
+use super::lua_args::{fit, ftol32, int, push_str, push_uint, round_int, tonumber};
 use super::{LogicState, Registry, Request};
 
 type R = mw_lua::Result<Vec<Value>>;
@@ -290,11 +290,11 @@ fn register_post_fx_setting(state: &mut LogicState, _: &mut Lua, args: Vec<Value
     Ok(vec![])
 }
 
-/// `ChangePostFXSetting(key, delta)` (0x007e9f80 → `FUN_00872500`): the first record with that key; value plus
+/// `ChangePostFXSetting(key, delta)` (0x007e9f80 → `FUN_00872500`; the key is rounded to nearest, the delta truncated): the first record with that key; value plus
 /// delta is kept unless it goes above max (delta > 0) or below min (delta ≤ 0). An unknown key (a null
 /// dereference in the original) does nothing.
 fn change_post_fx_setting(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
-    let key = ftol32(tonumber(&args, 1));
+    let key = round_int(&args, 1);
     let delta = int(&args, 2);
     if let Some(s) = state.post_fx.settings.iter_mut().find(|s| s.key == key) {
         let v = s.value.wrapping_add(delta);

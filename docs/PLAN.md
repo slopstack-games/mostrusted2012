@@ -480,9 +480,10 @@ GeneSys. Engine-free crates (`mw-logic`, `mw-lua`; wasm-compatible), in dependen
 2. `[~]` **HSM interpreter** (`mw-logic::hsm`): the parser corrected (typed parameters, data definitions,
    fallback behaviour), the node lifecycle and transitions; then the 203 used behaviour types one by one.
    Done (2026-11-17): parser (all official structures, 37/37 instances), the manager / lifecycle / transitions
-   ported from the code (decomp.md "The HSM interpreter"), 19 behaviour types (structural, hooks, bindings,
-   timers, sub-networks, loading-screen / graphics waits), `mwtool hsm --run` (boot → "Playing" with answers).
-   Left: ~180 used behaviour types (UI, game modes, online), the binding evaluator hook-up.
+   ported from the code (decomp.md "The HSM interpreter"), 34 behaviour types (structural, hooks, bindings,
+   timers, sub-networks, loading-screen / graphics waits; the boot flow: page contexts, widget groups, press
+   start, world / profile loading, game modes, in game / playing), `mwtool hsm --run` (boot → "Playing" with
+   fewer answers). Left: ~165 used behaviour types (UI, game modes, online), the binding evaluator hook-up.
 3. `[ ]` **Native registry** (`mw-logic::natives`): one name → function table for the 187 HSM hooks (121 used)
    and 385 Lua natives (171 read by the chunks; `mwtool lua`), offline ones first, each ported from its handler.
 4. `[~]` **JSON widgets** and the widget-script lifecycle (`Construct`, `SetConfigurationItem`, `OnActivated`,

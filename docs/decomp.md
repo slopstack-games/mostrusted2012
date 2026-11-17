@@ -2795,6 +2795,7 @@ and the snapshot's disassembly unless stated.
   `LOCALECHECK` 0x779ff0 → 0xfd8fc0 (EXIT at once on PC); `BWAIT4GFX` 0x7792e0 → 0xfd8da4 (EXIT at once, exit
   update waits for `FUN_00897960`); `HSB_WAIT4LS` 0x77c1f0 / `HSB_WAIT4NL` 0x77c1a0 (UI manager +0x2d204 ≠ 0 and
   +0x2d200 clear = showing).
+- **Behaviours ported, boot flow** (`hsm/behaviours_game.rs`, `behaviours_ui.rs`; engine effects are `natives::Request`s through `Host::request`, waits are `behaviours::Query`s through `Host::query`; each names its function in its doc comment): `RUN_PG_RNNR2` 0x77ee00 → 0xfdaf44 (enter 0x76f7f0 pushes the PageRunner2 context; update 0x76eac0: context gone → EXIT, else the exit point its pages asked for; exit 0x76eb50 suspends or pops it, waits until not busy and the keyboard is idle, restores the focus group); `ACTI_WDGT_GR` 0x77ee50 → 0xfdaf68 (update 0x76e4e0, exit begin 0x76e5e0, exit update 0x76ffd0); `HSB_P1BIND` 0x77ad40 → 0xfd91dc (0x73e730 / 0x744810 / 0x7448e0); `SETBLACKBACK` 0x77b9c0; `CHANGEVSYNCS` 0x77c9b0 (enter saves G+0x2f723, exit restores); `MUTE_SOUND` 0x77c0f0 (reason count per `MUTEREASON`); `LOADWORLD` 0x77bc40; `LOADPROFILE` 0x77bec0 (EXIT_NO_PRF when entered through ENTER_NO_PRF); `IN_ON_GAME` 0x779590 (YES / NO, 0x73d3d0); `RUNGAMEMODE` 0x77c340 (enter 0x7450e0, update 0x73ee50, exit 0x73eed0); `GAMEMODE` 0x77d8f0 (only the DISCONNECT exit of 0x75e6f0 ported; the ActiveGameMode upkeep, Autolog refreshes and telemetry are not); `RUNGAMELOGIC` 0x77dbc0 (enter 0x75c870 picks the player from `Style` / `UseSimTimer`); `LOAD_ALL` 0x779990; `BINGAME` 0x77ba10 (0x73d130 / 0x73d1d0); `HSM_PLAYING` 0x77c430 (0x73e7e0 / 0x73e930). 34 types in all.
 - **Clocks**: `*0x010edacc` + 4 → +0x18 (dt +0x10 × rate +0x14; `BDELAY`, `WAIT4TIME`) and +0x38 (with a running
   flag +0x1c; `BINDINGTIMED`). Which engine clocks they are is open.
 - **Model decisions** (`mw_logic::hsm`): a missing child exit record / entry point is reported and ignored
@@ -5912,7 +5913,12 @@ Ported HSM hooks (20, 2026-11-17): CalculateShouldShowRecapSequence, ClearRecapF
 SaveSettings, SetNewGame, SetSinglePlayerRollout, SetRolloutFromProfile, IsNewGame, ClearNewGameFlag, ShouldPlayNewGameIntro,
 SetNewGameIntroCompleted, SetIntroEventNext, IsIntroRace, IsProgressionReady, SaveProfile, StartGameModeTimer,
 StopGameModeTimer, ResetGameMode, IsOnlineEvent (research-log 2026-11-17).
+Second 20 (2026-11-17): SetFreedriveEventToPlay, SetIntroLoadComplete, ShouldShowSafehouseExitSequence, ShutdownGame, SetStoryMode,
+SetGameModeWon, SetAllowLoadingScreen, SetRetryAtEnd, IsChallengeActive, RetryLastEvent, StartEventFromEasyDrive,
+SetEventFromAvailableVehicles, ResetCurrentEventStats, SetTimeOfDayFromEvent, PreparePostEventAwards, AwardPostEventAwards,
+AddAllAIPlayers, RemoveAllRaceCars, RequestRespawnAtEventStart, ClearHudMessageQueues (40 of 187 in all).
 Ported Lua natives (60 of 385, 2026-11-17; handlers in the doc comments of `lua_widgets.rs`, `lua_settings.rs`,
+Ported Lua natives (70 of 385, 2026-11-17; the first 60 were checked against their handlers, research log 2026-11-17 "Lua natives verified"; `lua_menus.rs` adds SetNewGame, SelectChallengeVehicleSet, SelectVehicleCategory, SetSelectedVehicleColour, SetVehicleModifier, SignInStarted, SignInFinished, SelectPack, IsViewModelDownloadComplete, UpdateAwardProgressBindings; first 60: handlers in the doc comments of `lua_widgets.rs`, `lua_settings.rs`,
 `lua_career.rs`): the five `Resolve*Binding`, `ExitWidgetGroup`, `Set{Bool,Int,Double,String,UniqueId}Variable`,
 `DeleteVariable`, `DoRpc`, `SetModalMode`, `print`, `GetPlatformName`, `SmoothStep`, `SetLanguage`,
 `GetInitialLanguageSelectLanguage`, `{Create,Destroy}Conductor`, `{Start,Stop}Sequence`, `HasSequenceFinished`,
