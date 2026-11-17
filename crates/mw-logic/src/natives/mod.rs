@@ -137,6 +137,7 @@ impl Registry {
         // Area files register here (one line each).
         hooks_flow::register(&mut r);
         hooks_event::register(&mut r);
+        hooks_ui::register(&mut r);
         lua_widgets::register(&mut r);
         lua_settings::register(&mut r);
         lua_career::register(&mut r);

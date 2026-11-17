@@ -5912,6 +5912,10 @@ Ported HSM hooks (20, 2026-11-17): CalculateShouldShowRecapSequence, ClearRecapF
 SaveSettings, SetNewGame, SetSinglePlayerRollout, SetRolloutFromProfile, IsNewGame, ClearNewGameFlag, ShouldPlayNewGameIntro,
 SetNewGameIntroCompleted, SetIntroEventNext, IsIntroRace, IsProgressionReady, SaveProfile, StartGameModeTimer,
 StopGameModeTimer, ResetGameMode, IsOnlineEvent (research-log 2026-11-17).
+Second 20 (2026-11-17): SetFreedriveEventToPlay, SetIntroLoadComplete, ShouldShowSafehouseExitSequence, ShutdownGame, SetStoryMode,
+SetGameModeWon, SetAllowLoadingScreen, SetRetryAtEnd, IsChallengeActive, RetryLastEvent, StartEventFromEasyDrive,
+SetEventFromAvailableVehicles, ResetCurrentEventStats, SetTimeOfDayFromEvent, PreparePostEventAwards, AwardPostEventAwards,
+AddAllAIPlayers, RemoveAllRaceCars, RequestRespawnAtEventStart, ClearHudMessageQueues (40 of 187 in all).
 Ported Lua natives (60 of 385, 2026-11-17; handlers in the doc comments of `lua_widgets.rs`, `lua_settings.rs`,
 `lua_career.rs`): the five `Resolve*Binding`, `ExitWidgetGroup`, `Set{Bool,Int,Double,String,UniqueId}Variable`,
 `DeleteVariable`, `DoRpc`, `SetModalMode`, `print`, `GetPlatformName`, `SmoothStep`, `SetLanguage`,

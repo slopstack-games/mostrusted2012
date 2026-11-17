@@ -13,6 +13,33 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ## Dated findings
 
+### 2026-11-17: second 20 HSM hooks verified and enabled (`natives/hooks_{flow,event,ui}.rs`)
+
+Handlers read from `re/out/live/text.asm` (TRUE = `DAT_01177fe0`, FALSE = `DAT_01177ee0`, EXIT = `DAT_01177ef0`).
+All 20 matched the earlier port, no Rust fix needed; they moved from `register_parked` to `register` (now 40 of 187
+hooks). Verified: SetFreedriveEventToPlay (0x690310: `FUN_0068fa10` pick, then `FUN_0063e380`(G+0x2f4c8, id, 0)
+= pending +0x230 / aux +0x234 = -1 / flag +0x238), SetIntroLoadComplete (GMM+0x2e82), ShouldShowSafehouseExitSequence
+(`FUN_006e0520` is `xor al,al; ret`, so TRUE), ShutdownGame (`DAT_011a2470`), SetStoryMode / SetGameModeWon /
+SetAllowLoadingScreen / SetRetryAtEnd (bool member tag 5 from `StoryMode` / `Won` / `lbEnable` / `Retry` into
+GMM+0x2e7a / 0x2e78 / 0x2e81 / 0x2ead), IsChallengeActive (GMM+0x2ce0 ≠ 0), RetryLastEvent (`FUN_00732650`(PPM, 1)
+= `last_played`[1], then `FUN_006e74f0`(id, 0)), StartEventFromEasyDrive (`lpcValue` tag 2, strtol base 10, skip on
+-1), RequestRespawnAtEventStart (`FUN_006cd380`: player +0x2c4 = G+0x2f6f8, `FUN_006c9fb0`(0, 0)),
+AwardPostEventAwards (`FUN_006e65e0`: amount GMM+0x2e70 > 0 → `FUN_00736a90`(+0x2ce8, event, amount); each award
++0x38a0[..+0x38b4]: `FUN_00736ab0` if `FUN_0071f7e0` else `FUN_006792b0`), ResetCurrentEventStats (`FUN_0067f700`:
+`FUN_006600d0`(event +0x2ce0, mode (+0x2cf4/+0x2cf8)+0x18, online)), RemoveAllRaceCars (`FUN_006d1310`: vtable +0x20 of
+all 24 slot pointers, `FUN_006ce180`(slot, 3) for occupied 12..23, PM+0xa660 / 0xa694 / 0xa698 = 0),
+ClearHudMessageQueues (`FUN_0067f8c0`: UIM queues +0x7230 / +0xa6f0, records +0x12458 (stride 0x7c) and +0x12468 /
++0x124f8 / +0x12574 / +0x126e8). Engine-only bodies (a `Request`, the hook itself just calls with no argument and
+exits EXIT): SetEventFromAvailableVehicles (`FUN_00673d70`), SetTimeOfDayFromEvent (`FUN_0067f570`),
+PreparePostEventAwards (`FUN_006fbb60`, 330 lines), AddAllAIPlayers (`FUN_00686f30`).
+Model decision: the runtime must fill `LogicState` where the `Request` doc says so (PreparePostEventAwards writes
+GMM+0x2eb4 / 0x2e70 / 0x2ce8 / 0x38a0 awards, which `AwardPostEventAwards` reads); until it does, those stay at
+their defaults. Test: `hooks_tests.rs::the_second_twenty` (through `Registry::original`).
+Next candidates (still parked, same files): RemoveAllCops, AreAllAIPlayersLoaded, RequestRespawn,
+RequestRespawnToLastSwapSpot, ResetChaseStats, ResetLocalPlayerHeat, TransferVehicleHeatToPlayer,
+HasLocalPlayerSetRollout, ResetLocalPlayerDamage, ClearNitrous, ShouldShowEscapeSequence, FixUpRecommendationRetry,
+SyncTimeOfDay, ClearPostEventAwards, RemoveRoadblocks, ResetProps, HACKSuspend/ResumeCarControlForIntro.
+
 ### 2026-11-17: 20 HSM hooks ported (`natives/hooks_flow.rs`, `hooks_event.rs`)
 
 Handlers are not in `functions.csv` (vtable-only); read from `re/out/live/text.asm` (awk from the address to the next int3) with the helpers' bodies from the dump. Ported (all offline): CalculateShouldShowRecapSequence (GMM+0x2e88 := 1), ClearRecapFlag, ClearMatchmakingState (FUN_00675470), PopulateSettings / SaveSettings (FUN_0086e0a0 / FUN_0086fe20 on the settings at +0x2f3e0 of the object behind 0x117e9f4+0x2020, not G), SetNewGame (FUN_0068fd50), SetSinglePlayerRollout, SetRolloutFromProfile, IsNewGame, ClearNewGameFlag, ShouldPlayNewGameIntro, SetNewGameIntroCompleted, SetIntroEventNext, IsIntroRace, IsProgressionReady, SaveProfile, StartGameModeTimer, StopGameModeTimer, ResetGameMode, IsOnlineEvent. Each returns EXIT (0x1177ef0) or TRUE / FALSE (0x1177fe0 / 0x1177ee0). State: LogicState.game / config / game_modes / players / progression (offsets in field docs); engine work as Request variants. About 70 further hooks from a stopped pass are in register_parked (unverified, not in Registry::original(); original_with_parked() for tests). Model decisions: missing / mistyped arguments read as zero; ResetGameMode sends no telemetry record. mwtool hsm --run stands in a loaded profile, so IsProgressionReady / ShouldPlayNewGameIntro are no longer answered by hand; the boot trace is identical. Open: verify the parked hooks one by one.

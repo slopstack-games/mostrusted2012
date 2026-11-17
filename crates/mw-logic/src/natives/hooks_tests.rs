@@ -238,12 +238,12 @@ fn ui_hooks() {
     );
 }
 
-/// The registry the boot path uses: exactly the 20 hooks verified against their handlers.
+/// The registry the boot path uses: the first 20 hooks verified against their handlers (the second 20: `the_second_twenty`).
 #[test]
 fn the_twenty_ported_hooks() {
     let r = Registry::original();
     let ported: Vec<_> = r.hooks().iter().filter(|h| h.ported()).map(|h| h.name).collect();
-    assert_eq!(ported.len(), 20, "{ported:?}");
+    assert_eq!(ported.len(), 40, "{ported:?}");
     let mut s = LogicState::default();
     s.players.local = Some(0);
     s.players.slots[0] = Some(Player::default());
@@ -282,4 +282,77 @@ fn the_twenty_ported_hooks() {
     assert_eq!(call(&r, &mut s, "SaveProfile", None), EXIT);
     assert_eq!(s.requests, [Request::SaveProfile]);
     assert!(s.game.save_pending);
+}
+
+/// The second 20 verified hooks (handlers read from the snapshot's disassembly, 2026-11-17), through
+/// `Registry::original` (not the parked set).
+#[test]
+fn the_second_twenty() {
+    let r = Registry::original();
+    let mut s = with_local_player();
+    // Bool members of the data definition into GMM bytes (0x676030 / 0x675ff0 / 0x676160 / 0x676bf0).
+    call(&r, &mut s, "SetStoryMode", Some(r#"{ "StoryMode": true }"#));
+    call(&r, &mut s, "SetGameModeWon", Some(r#"{ "Won": true }"#));
+    call(&r, &mut s, "SetAllowLoadingScreen", Some(r#"{ "lbEnable": true }"#));
+    call(&r, &mut s, "SetRetryAtEnd", Some(r#"{ "Retry": true }"#));
+    let g = &s.game_modes;
+    assert!(g.story_mode && g.won && g.allow_loading_screen && g.retry_at_end);
+    call(&r, &mut s, "SetRetryAtEnd", Some(r#"{ "Retry": false }"#));
+    assert!(!s.game_modes.retry_at_end);
+    // IsChallengeActive: GMM+0x2ce0 != 0; the safehouse sequence: always TRUE on PC (FUN_006e0520 = 0).
+    assert_eq!(call(&r, &mut s, "IsChallengeActive", None), FALSE);
+    s.game_modes.current_event = 3;
+    assert_eq!(call(&r, &mut s, "IsChallengeActive", None), TRUE);
+    assert_eq!(call(&r, &mut s, "ShouldShowSafehouseExitSequence", None), TRUE);
+    assert_eq!(call(&r, &mut s, "SetIntroLoadComplete", None), EXIT);
+    assert!(s.game_modes.intro_load_complete);
+    assert_eq!(call(&r, &mut s, "ShutdownGame", None), EXIT);
+    assert!(s.game.shutdown);
+    assert_eq!(s.requests, [Request::ShutdownGame]);
+    s.requests.clear();
+    // SetFreedriveEventToPlay: no free-drive event -> -1, aux -1, flag 0.
+    call(&r, &mut s, "SetFreedriveEventToPlay", None);
+    assert_eq!((s.game.pending_event, s.game.pending_event_aux, s.game.pending_event_flag), (u32::MAX, -1, false));
+    // RetryLastEvent / StartEventFromEasyDrive: FUN_006e74f0(id, 0); -1 does nothing.
+    s.progression.set_last_played(LAST_EVENT, 42);
+    call(&r, &mut s, "RetryLastEvent", None);
+    assert_eq!(s.game_modes.requested_event, 42);
+    call(&r, &mut s, "StartEventFromEasyDrive", Some(r#"{ "lpcValue": "-1" }"#));
+    assert_eq!(s.game_modes.requested_event, 42);
+    call(&r, &mut s, "StartEventFromEasyDrive", Some(r#"{ "lpcValue": "7" }"#));
+    assert_eq!(s.game_modes.requested_event, 7);
+    // The engine-side hooks, each one request, EXIT.
+    s.game_modes.current_event = 9;
+    s.game_modes.current_mode = 11;
+    s.game_modes.award_amount = 5;
+    s.game_modes.awards = vec![4];
+    s.game.pending_event = 77;
+    for name in [
+        "SetEventFromAvailableVehicles",
+        "ResetCurrentEventStats",
+        "SetTimeOfDayFromEvent",
+        "PreparePostEventAwards",
+        "AwardPostEventAwards",
+        "AddAllAIPlayers",
+        "RemoveAllRaceCars",
+        "RequestRespawnAtEventStart",
+        "ClearHudMessageQueues",
+    ] {
+        assert_eq!(call(&r, &mut s, name, None), EXIT, "{name}");
+    }
+    assert_eq!(
+        s.requests,
+        [
+            Request::SetEventFromAvailableVehicles,
+            Request::ResetCurrentEventStats { event: 9, mode: 11, online: false },
+            Request::SetTimeOfDayFromEvent,
+            Request::PreparePostEventAwards,
+            Request::AwardPostEventAwards { event: 9, amount: 5, award_2ce8: 0, awards: vec![4] },
+            Request::AddAllAIPlayers,
+            Request::RemoveAllRaceCars,
+            Request::Respawn { event: 77, to_swap_spot: false },
+            Request::ClearHudMessageQueues,
+        ]
+    );
+    assert_eq!(s.players.local_player().unwrap().respawn_event, 77);
 }

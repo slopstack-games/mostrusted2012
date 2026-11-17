@@ -17,6 +17,16 @@ pub fn register(r: &mut Registry) {
     r.set_hook("StartGameModeTimer", start_game_mode_timer);
     r.set_hook("StopGameModeTimer", stop_game_mode_timer);
     r.set_hook("ResetGameMode", reset_game_mode);
+    r.set_hook("RetryLastEvent", retry_last_event);
+    r.set_hook("StartEventFromEasyDrive", start_event_from_easydrive);
+    r.set_hook("SetEventFromAvailableVehicles", set_event_from_available_vehicles);
+    r.set_hook("ResetCurrentEventStats", reset_current_event_stats);
+    r.set_hook("SetTimeOfDayFromEvent", set_time_of_day_from_event);
+    r.set_hook("PreparePostEventAwards", prepare_post_event_awards);
+    r.set_hook("AwardPostEventAwards", award_post_event_awards);
+    r.set_hook("AddAllAIPlayers", add_all_ai_players);
+    r.set_hook("RemoveAllRaceCars", remove_all_race_cars);
+    r.set_hook("RequestRespawnAtEventStart", request_respawn_at_event_start);
     r.set_hook("IsOnlineEvent", is_online_event);
 }
 
@@ -24,24 +34,14 @@ pub fn register(r: &mut Registry) {
 /// part of [`Registry::original`]; tests install them with [`Registry::original_with_parked`].
 pub fn register_parked(r: &mut Registry) {
     r.set_hook("ShouldShowEscapeSequence", should_show_escape_sequence);
-    r.set_hook("RetryLastEvent", retry_last_event);
     r.set_hook("FixUpRecommendationRetry", fix_up_recommendation_retry);
-    r.set_hook("StartEventFromEasyDrive", start_event_from_easydrive);
-    r.set_hook("SetEventFromAvailableVehicles", set_event_from_available_vehicles);
-    r.set_hook("ResetCurrentEventStats", reset_current_event_stats);
-    r.set_hook("SetTimeOfDayFromEvent", set_time_of_day_from_event);
     r.set_hook("SyncTimeOfDay", sync_time_of_day);
-    r.set_hook("PreparePostEventAwards", prepare_post_event_awards);
-    r.set_hook("AwardPostEventAwards", award_post_event_awards);
     r.set_hook("ClearPostEventAwards", clear_post_event_awards);
-    r.set_hook("AddAllAIPlayers", add_all_ai_players);
     r.set_hook("AreAllAIPlayersLoaded", are_all_ai_players_loaded);
-    r.set_hook("RemoveAllRaceCars", remove_all_race_cars);
     r.set_hook("RemoveAllCops", remove_all_cops);
     r.set_hook("RemoveRoadblocks", remove_roadblocks);
     r.set_hook("ResetProps", reset_props);
     r.set_hook("RequestRespawn", request_respawn);
-    r.set_hook("RequestRespawnAtEventStart", request_respawn_at_event_start);
     r.set_hook("RequestRespawnToLastSwapSpot", request_respawn_to_last_swap_spot);
     r.set_hook("ResetChaseStats", reset_chase_stats);
     r.set_hook("ResetLocalPlayerHeat", reset_local_player_heat);
@@ -147,7 +147,7 @@ fn prepare_post_event_awards(s: &mut LogicState, _: Args) -> Key {
     EXIT
 }
 
-/// `AwardPostEventAwards` (0x675fd0) → `FUN_006e65e0`: hands the GMM's award fields to the progression
+/// `AwardPostEventAwards` (0x675fd0) → `FUN_006e65e0` (verified against its body): hands the GMM's award fields to the progression
 /// ([`Request::AwardPostEventAwards`]).
 fn award_post_event_awards(s: &mut LogicState, _: Args) -> Key {
     let g = &s.game_modes;
@@ -177,7 +177,8 @@ fn are_all_ai_players_loaded(s: &mut LogicState, _: Args) -> Key {
     exit_if(s.players.slots[FIRST_AI_SLOT..].iter().flatten().all(|p| p.loaded))
 }
 
-/// `RemoveAllRaceCars` (0x675f90) → `FUN_006d1310` on PM.
+/// `RemoveAllRaceCars` (0x675f90) → `FUN_006d1310` on PM: the vtable +0x20 of each of the 24 slot pointers
+/// (+0xa5d0), `FUN_006ce180`(slot, 3) for each occupied AI slot 12..23 (+0xa600), PM+0xa660 / +0xa694 / +0xa698 = 0.
 fn remove_all_race_cars(s: &mut LogicState, _: Args) -> Key {
     s.requests.push(Request::RemoveAllRaceCars);
     EXIT
