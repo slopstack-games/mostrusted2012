@@ -6,6 +6,8 @@ use mw_formats::hsm::key;
 
 use super::{Behaviour, Cx, EXIT, EXITINVALID, Key, Registry};
 
+#[path = "behaviours_dialog.rs"]
+pub mod dialog;
 #[path = "behaviours_event.rs"]
 pub mod event;
 #[path = "behaviours_game.rs"]
@@ -57,6 +59,7 @@ pub fn register(r: &mut Registry) {
     mode::register(r);
     mode2::register(r);
     hud::register(r);
+    dialog::register(r);
     event::register(r);
 }
 
@@ -301,6 +304,53 @@ pub enum Query {
     EasyGuideShown,
     /// `HOSTEZGUIDE` exit update: the easy guide is released and closed (+0x58 == 0, state +0x54 == 0). Default true.
     EasyGuideClosed,
+    /// `SHOWDIALOG` update (0x740a20, `FUN_007b83f0`): the result byte of the popup dialog `id` (the dialog
+    /// manager G480+0x47740 +0x94 / +0xa8), 0xff = none yet. Default 0xff.
+    DialogResult { id: u32 },
+    /// `SHOWDIALOG` exit (0x740a80, `FUN_007aec80`): the dialog `id` is among the open ones. Default false.
+    DialogOpen { id: u32 },
+    /// `HSMPAUSEINTR` update (0x74d040), idle branch: a pause-interrupt item (type 0x5f6d2 in the UI's timeline
+    /// list +0x125a0) is active now (`FUN_00827400` of the clock) while the UI is in a screen state (+0x1258c /
+    /// +0x12590 / +0x125a0 / +0x125a4 / +0x1256c). Default false.
+    PauseInterruptTriggered,
+    /// `HSMPAUSEINTR` update, active branch: `FUN_005470e0` (the game state 0xc, its flag, `FUN_00531bc0`, mode
+    /// not 4 / 5) and the screen state has gone (+0x125c6 ...). Default true (the interrupt does not hang).
+    PauseInterruptReleased,
+    /// `SUPPRESSPREF` enter update (0x740f90): the preference object's byte +0x6dc is still set. Default false.
+    PrefsSuppressPending,
+    /// `TAKEPHOTO` update (0x741130): the photo object's state (G+0x2f474 +0) is 6 (captured). Default true.
+    PhotoCaptured,
+    /// `PHOTO_COMPL` update (0x7419f0): the photo object's state is 1 (idle again). Default true.
+    PhotoIdle,
+    /// `PHOTO_LISTEN` enter update (0x746de0): the local player's input record (`FUN_0047aa20` of the player's
+    /// slot) is not in state 1 and its buttons +0xa0 or +0xac are still 2 (held). Default false.
+    PhotoButtonHeld,
+    /// `PHOTO_LISTEN` update (0x746e40): the photo button was pressed: the input record is not in state 1 and
+    /// (+0xa0 == 2, or the photo mode is 1 / 2 and +0xac == 2). Default false.
+    PhotoTriggered,
+    /// The photo mode (photo object +0x13c: 1, 2, other). Default 0.
+    PhotoMode,
+    /// `RUNPRCONTEXT` enter update (0x76ec20, `FUN_0083b580` → `FUN_007dcfd0`): the PageRunner context `name`
+    /// exists. Default true.
+    PrContextExists { name: String },
+    /// `RUNPRCONTEXT` update (0x76ec50): the exit point the context asked for (`FUN_0083b590` has one,
+    /// `FUN_0083b5a0` gets it); 0 = none. Default 0.
+    PrContextExit { name: String },
+    /// `RUNPRCONTEXT` exit update (0x76ece0, `FUN_0083b5b0` → `FUN_007dcfe0`): the context is still leaving.
+    /// Default false.
+    PrContextBusy { name: String },
+    /// `LIMITEDEDSP` enter update (0x75aff0): the local player (G+0x2f3dc → `FUN_006bf310`) has its byte +0x42f
+    /// set and `FUN_0076c000` accepts it (online profile ready). Default false (offline).
+    LimitedEdReady,
+    /// `FUN_006401b0` on the entitlement manager: the entitlement `id` is owned (`LIMITEDEDSP`). Default false.
+    EntitlementOwned { id: u32 },
+    /// `LIMITEDEDSP`: the local player's byte +0x42e (the first check answered). Default false.
+    LimitedEdPlayerFlag,
+    /// `LIMITEDEDSP` (`FUN_00768310`): bit `index` of the local player's set +0x3c8. Default false.
+    LimitedEdPlayerBit { index: u32 },
+    /// `LIMITEDEDSP` request object (+0x48, polled by `FUN_004c4b30`): 0 = pending (+0x50 != 2), 1 = done,
+    /// 2 = done with an error (+0x54 != 0). Default 0.
+    LimitedEdRequest,
 }
 
 impl Query {
@@ -333,7 +383,12 @@ impl Query {
             | Query::CheckpointsFinished
             | Query::WorldRendering
             | Query::EasyGuideShown
-            | Query::EasyGuideClosed => 1,
+            | Query::EasyGuideClosed
+            | Query::PauseInterruptReleased
+            | Query::PhotoCaptured
+            | Query::PhotoIdle
+            | Query::PrContextExists { .. } => 1,
+            Query::DialogResult { .. } => 0xff,
             Query::TransitionState => 2,
             Query::GameModeEvent | Query::GameModeMachine | Query::BlacklistRivalHandle => u64::MAX,
             Query::BlacklistRivalDistance => 0x7f7f_ffff,
@@ -441,6 +496,24 @@ impl Query {
             Query::WorldRendering => "WorldRendering",
             Query::EasyGuideShown => "EasyGuideShown",
             Query::EasyGuideClosed => "EasyGuideClosed",
+            Query::DialogResult { .. } => "DialogResult",
+            Query::DialogOpen { .. } => "DialogOpen",
+            Query::PauseInterruptTriggered => "PauseInterruptTriggered",
+            Query::PauseInterruptReleased => "PauseInterruptReleased",
+            Query::PrefsSuppressPending => "PrefsSuppressPending",
+            Query::PhotoCaptured => "PhotoCaptured",
+            Query::PhotoIdle => "PhotoIdle",
+            Query::PhotoButtonHeld => "PhotoButtonHeld",
+            Query::PhotoTriggered => "PhotoTriggered",
+            Query::PhotoMode => "PhotoMode",
+            Query::PrContextExists { .. } => "PrContextExists",
+            Query::PrContextExit { .. } => "PrContextExit",
+            Query::PrContextBusy { .. } => "PrContextBusy",
+            Query::LimitedEdReady => "LimitedEdReady",
+            Query::EntitlementOwned { .. } => "EntitlementOwned",
+            Query::LimitedEdPlayerFlag => "LimitedEdPlayerFlag",
+            Query::LimitedEdPlayerBit { .. } => "LimitedEdPlayerBit",
+            Query::LimitedEdRequest => "LimitedEdRequest",
         }
     }
 }

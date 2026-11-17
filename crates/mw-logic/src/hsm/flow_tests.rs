@@ -1067,3 +1067,167 @@ fn override_page_hands_context_and_page_over_and_exits() {
     assert_eq!(host.reqs, [Request::OverridePage { context: "main_menu".into(), page: "settings".into() }]);
     assert_eq!(hsm.result(s), Some(EXIT));
 }
+
+#[test]
+fn show_dialog_requests_waits_for_the_answer_and_exits_by_it() {
+    let params = [("DIALOG", "42"), ("POS_EXIT", "YES"), ("NEG_EXIT", "NO")];
+    let (mut hsm, mut host, s) = machine("SHOWDIALOG", &params, "ENTER");
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs, [Request::ShowDialog { id: 42 }]);
+    assert!(hsm.is_running(s)); // result 0xff: none yet
+    host.answers.insert("DialogResult", 1);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs[1], Request::TakeDialogResult { id: 42 });
+    assert_eq!(hsm.result(s), Some(key("YES")));
+    // Any other button takes NEG_EXIT; the dialog is closed on exit when it is still open.
+    let (mut hsm, mut host, s) = machine("SHOWDIALOG", &params, "ENTER");
+    host.answers.insert("DialogResult", 0);
+    host.answers.insert("DialogOpen", 1);
+    step(&mut hsm, &mut host, 4);
+    assert_eq!(hsm.result(s), Some(key("NO")));
+    assert!(host.reqs.contains(&Request::CloseDialog { id: 42, last: false }));
+}
+
+#[test]
+fn show_dialog_flows_through_the_dialog_state_of_the_logic_host() {
+    use crate::natives::host::LogicHost;
+    let mut host = LogicHost::default();
+    host.request(Request::ShowDialog { id: 7 });
+    assert_eq!(host.query(&Query::DialogOpen { id: 7 }), Some(1));
+    assert_eq!(host.query(&Query::DialogResult { id: 7 }), Some(0xff));
+    host.state.borrow_mut().screen.dialogs.set_result(7, 1);
+    assert_eq!(host.query(&Query::DialogResult { id: 7 }), Some(1));
+    host.request(Request::TakeDialogResult { id: 7 });
+    assert_eq!(host.query(&Query::DialogResult { id: 7 }), Some(0xff));
+    host.request(Request::CloseDialog { id: 7, last: false });
+    assert!(host.state.borrow().requests.contains(&Request::CloseDialog { id: 7, last: true }));
+    assert_eq!(host.query(&Query::DialogOpen { id: 7 }), Some(0));
+}
+
+#[test]
+fn pause_interrupt_starts_holds_fifteen_frames_and_ends() {
+    let (mut hsm, mut host, _s) = machine("HSMPAUSEINTR", &[], "ENTER");
+    step(&mut hsm, &mut host, 3);
+    assert!(host.reqs.is_empty());
+    host.answers.insert("PauseInterruptTriggered", 1);
+    host.answers.insert("PauseInterruptReleased", 1);
+    step(&mut hsm, &mut host, 1);
+    assert_eq!(host.reqs, [Request::PauseInterruptStart]);
+    step(&mut hsm, &mut host, 16); // frames 0..=15: held
+    assert_eq!(host.reqs, [Request::PauseInterruptStart, Request::PauseInterruptBegin]);
+    step(&mut hsm, &mut host, 1);
+    assert_eq!(host.reqs.last(), Some(&Request::PauseInterruptEnd));
+    // Leaving while active ends it as well.
+    let (mut hsm, mut host, s2) = machine("HSMPAUSEINTR", &[], "ENTER");
+    host.answers.insert("PauseInterruptTriggered", 1);
+    host.answers.insert("PauseInterruptReleased", 0);
+    step(&mut hsm, &mut host, 3);
+    hsm.request_exit(s2);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs.last(), Some(&Request::PauseInterruptEnd));
+}
+
+#[test]
+fn suppress_preferences_waits_for_the_byte_and_releases_on_exit() {
+    let (mut hsm, mut host, s) = machine("SUPPRESSPREF", &[], "ENTER");
+    host.answers.insert("PrefsSuppressPending", 1);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs, [Request::SuppressPrefs]);
+    host.answers.insert("PrefsSuppressPending", 0);
+    step(&mut hsm, &mut host, 3);
+    assert!(hsm.is_running(s)); // never exits itself
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs.last(), Some(&Request::ReleasePrefs));
+}
+
+#[test]
+fn run_pr_context_pushes_waits_exits_and_leaves() {
+    let params = [("CONTEXT_NAME", "menu"), ("DEF_PG_NAME", "start"), ("SUSPEND", "true")];
+    let (mut hsm, mut host, s) = machine("RUNPRCONTEXT", &params, "ENTER");
+    host.answers.insert("PrContextExists", 0);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs, [Request::PushPrContext { name: "menu".into(), page: "start".into() }]);
+    host.answers.insert("PrContextExists", 1);
+    host.answers.insert("PrContextExit", key("DONE"));
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(hsm.result(s), Some(key("DONE")));
+    assert_eq!(host.reqs[1], Request::LeavePrContext { name: "menu".into(), suspend: true });
+}
+
+#[test]
+fn take_photo_asks_for_the_capture_and_exits_when_it_is_done() {
+    let (mut hsm, mut host, s) = machine("TAKEPHOTO", &[], "ENTER");
+    host.answers.insert("PhotoCaptured", 0);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs, [Request::StartPhotoCapture]);
+    assert!(hsm.is_running(s));
+    host.answers.insert("PhotoCaptured", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+}
+
+#[test]
+fn photo_complete_waits_for_the_idle_state() {
+    let (mut hsm, mut host, s) = machine("PHOTO_COMPL", &[], "ENTER");
+    host.answers.insert("PhotoIdle", 0);
+    step(&mut hsm, &mut host, 3);
+    assert!(hsm.is_running(s));
+    host.answers.insert("PhotoIdle", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+}
+
+#[test]
+fn photo_input_switches_the_photo_input_on_and_off() {
+    let (mut hsm, mut host, s) = machine("PHOTO_INPUT", &[], "ENTER");
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs, [Request::PhotoInputBegin]);
+    assert!(hsm.is_running(s));
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs.last(), Some(&Request::PhotoInputEnd));
+}
+
+#[test]
+fn photo_listen_waits_for_the_buttons_then_the_press_and_posts_the_event() {
+    let (mut hsm, mut host, s) = machine("PHOTO_LISTEN", &[], "ENTER");
+    host.answers.insert("PhotoButtonHeld", 1);
+    host.answers.insert("PhotoTriggered", 1);
+    step(&mut hsm, &mut host, 3);
+    assert!(host.reqs.is_empty()); // still entering: the button is held
+    host.answers.insert("PhotoButtonHeld", 0);
+    host.answers.insert("PhotoTriggered", 0);
+    host.answers.insert("PhotoMode", 2);
+    step(&mut hsm, &mut host, 3);
+    assert!(hsm.is_running(s));
+    host.answers.insert("PhotoTriggered", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::PostPhotoSnapEvent { mode: 2 }]);
+    assert_eq!(hsm.result(s), Some(EXIT));
+}
+
+#[test]
+fn limited_edition_offline_walks_the_four_codes_to_success() {
+    // Offline: the player is not ready, so the machine stays entering.
+    let (mut hsm, mut host, s) = machine("LIMITEDEDSP", &[], "ENTER");
+    step(&mut hsm, &mut host, 5);
+    assert!(hsm.is_running(s) && host.reqs.is_empty());
+    // Ready, nothing owned: state 0 -> 3, then every code skips through 6: SUCCESS after the fourth.
+    host.answers.insert("LimitedEdReady", 1);
+    step(&mut hsm, &mut host, 12);
+    assert_eq!(hsm.result(s), Some(key("SUCCESS")));
+    assert!(host.reqs.is_empty());
+}
+
+#[test]
+fn limited_edition_sends_the_request_of_an_owned_code_and_fails_on_the_first_error() {
+    let (mut hsm, mut host, s) = machine("LIMITEDEDSP", &[], "ENTER");
+    host.answers.insert("LimitedEdReady", 1);
+    host.answers.insert("EntitlementOwned", 1);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs, [Request::LimitedEdSend { stage: -1 }]);
+    host.answers.insert("LimitedEdRequest", 2);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(key("FAILED")));
+}

@@ -146,7 +146,26 @@ impl hsm::Host for LogicHost {
     }
     /// [`LogicHost::apply`], then queues the request for the runtime with the natives' requests
     /// ([`LogicState::requests`]).
-    fn request(&mut self, r: super::Request) {
+    fn request(&mut self, mut r: super::Request) {
+        // The popup-dialog manager (UIM+0x47740, `Dialogs`): the HSM's `SHOWDIALOG` acts like the Lua natives
+        // `RequestDialog` / `ClearDialog` / `GetDialogResult` (natives/lua_widgets.rs) on the same state.
+        {
+            let mut st = self.state.borrow_mut();
+            let d = &mut st.screen.dialogs;
+            match &mut r {
+                super::Request::ShowDialog { id } => {
+                    if !d.open.contains(id) {
+                        d.open.push(*id);
+                    }
+                }
+                super::Request::CloseDialog { id, last } => {
+                    d.open.retain(|o| o != id);
+                    *last = d.open.is_empty();
+                }
+                super::Request::TakeDialogResult { id } => d.results.retain(|(i, _)| i != id),
+                _ => {}
+            }
+        }
         self.apply(&r);
         self.state.borrow_mut().requests.push(r);
     }
@@ -175,6 +194,12 @@ impl hsm::Host for LogicHost {
             Q::DisplayTimeoutOn => gm.display_timeout as u64,
             Q::ModeEndFlag => gm.end_flag_2e75 as u64,
             Q::ModeWon if gm.online_event => gm.won as u64,
+            Q::DialogResult { id } => {
+                let d = &st.screen.dialogs;
+                d.results.iter().find(|(i, _)| i == id).map_or(0xff, |&(_, r)| r as u8 as u64)
+            }
+            Q::DialogOpen { id } => st.screen.dialogs.open.contains(id) as u64,
+            Q::EntitlementOwned { id } => st.entitlements.has(*id) as u64,
             _ => return None,
         })
     }

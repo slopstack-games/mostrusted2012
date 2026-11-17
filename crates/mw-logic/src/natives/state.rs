@@ -621,4 +621,47 @@ pub enum Request {
     SetPendingDialog { value: i32 },
     /// `OVERRIDEPAGE` enter (0x76f750): `FUN_0083d6f0` on G+0x2ed74 with the context and page names.
     OverridePage { context: String, page: String },
+    /// `SHOWDIALOG` update (0x740a20): `FUN_007b69b0` (→ `FUN_007c0400`) takes the dialog result that
+    /// `GetDialogResult` read (`Dialogs::results`), so the next read is "none" again. `LogicHost` applies it.
+    TakeDialogResult { id: u32 },
+    /// `HSMPAUSEINTR`, the interrupt starts (0x74d040): the UI manager's byte +0x2d260 = 1 and the flags
+    /// G+0x2f3fc +0x2ea8 |= 2.
+    PauseInterruptStart,
+    /// `HSMPAUSEINTR`, its first frame (0x74d040): +0x2d260 = 0, the UI counter +0x125c4 += 1 and the fade
+    /// `FUN_006a0f30`(UI+0x15290, 4, 0, `.rdata` 0xf8a820).
+    PauseInterruptBegin,
+    /// `HSMPAUSEINTR`, the interrupt ends (0x74d040 when released, exit 0x74cfe0): flags +0x2ea8 &= ~2, the counter
+    /// +0x125c4 -= 1, the fade `FUN_006a0f30`(UI+0x15290, 4, c, c) with c = `.rdata` 0xf8a820.
+    PauseInterruptEnd,
+    /// `SUPPRESSPREF` enter (0x740f70 → `FUN_007edab0` on G+0x2f458 +0x1940): the preference object's suppress
+    /// counter +0x6d8 goes up (at 0 the entries are released: `FUN_00622170` each) and its byte +0x6dc is set.
+    SuppressPrefs,
+    /// `SUPPRESSPREF` exit (0x740fb0 → `FUN_007edb10`): the counter goes down; at 0 the entries are re-applied
+    /// (`FUN_00623cb0` each).
+    ReleasePrefs,
+    /// `TAKEPHOTO` enter (0x741110 → `FUN_0083bac0` on the photo object G+0x2f474): unless the photo is already
+    /// requested (+0x146) or busy (+0x145) it takes the pause-screen's capture, sets the state (+0) to 2 and
+    /// +0x146 = 1.
+    StartPhotoCapture,
+    /// `PHOTO_INPUT` enter (0x746c60): UI message 0xb (`FUN_008438e0`, on = 1), photo object +0x140 = 1,
+    /// +0x144 = 0, `FUN_0083bc30` (a no-op), then the telemetry event "GAME / EVNT / OTHP" with the player's
+    /// position (`FUN_00872590`).
+    PhotoInputBegin,
+    /// `PHOTO_INPUT` exit (0x741a30): UI message 0xb (on = 0), +0x140 = 0, control group 0 bit 4 of G+0x2f0a4
+    /// cleared (`FUN_0083c930`).
+    PhotoInputEnd,
+    /// `PHOTO_LISTEN` update (0x746e40): the telemetry event "GAME / EVNT / SNAP" (`FUN_00872590` on
+    /// G+0x2f3e0 +0x5ac8) with the player's position, the photo mode and the event id (GMM+0x2ce0). Only when the
+    /// local player's vehicle is valid (`FUN_006ba2a0`); the runtime checks that.
+    PostPhotoSnapEvent { mode: i32 },
+    /// `RUNPRCONTEXT` enter (0x76f960 → `FUN_0083d630` on G+0x2ed74): pushes the PageRunner context `name` with
+    /// the start page `page` (the parameter `DEF_PG_NAME`).
+    PushPrContext { name: String, page: String },
+    /// `RUNPRCONTEXT` exit (0x76ece0): the context leaves: `suspend` (parameter `SUSPEND`) = `FUN_007e1140`,
+    /// else `FUN_007e1190`.
+    LeavePrContext { name: String, suspend: bool },
+    /// `LIMITEDEDSP` (0x762650): starts the server request of the stage (-1: the first check, `n`: the code
+    /// `n` of the four, with the message built by `FUN_007661f0`) on the request object (+0x48). The result
+    /// comes back through `Query::LimitedEdRequest`.
+    LimitedEdSend { stage: i32 },
 }
