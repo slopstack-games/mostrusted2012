@@ -106,8 +106,13 @@ Decisions with the user: portrait loading screens keep the original's bars.
   frame time, memory for whole-world views (PLAN.md M9).
 - **Game logic engine** (PLAN.md M8, 2026-11-17): bindings, HSM interpreter, Lua 5.1 VM, widget data and the native
   registry (`mw_logic::natives`, `mwtool natives`) are in.
-  - Ported and verified against the dump: **58 HSM behaviour types**, **80 / 187 HSM hooks** and **100 / 385 Lua
-    natives**. Every offline Lua native the UI chunks read is ported.
+  - Ported and verified against the dump: **75 HSM behaviour types**, **100 / 187 HSM hooks** and **100 / 385 Lua
+    natives**. Every offline Lua native the UI chunks read is ported. Binding roots: `Mode`, `ModeVM`, `Net`, the online
+    match states (root table in `natives/state.rs`). The boot reaches "Freedrive Update" with no unhandled exit.
+  - Next round's candidates: the research-log entries of 2026-11-17 (fifth hooks, `behaviours_mode2.rs`,
+    `behaviours_event.rs`, the binding roots: `EntitlementManager` with `HasPdlc*` is where the DLC lock belongs,
+    then `UIConfig`, `SignInState`, `UISequences`, `GeneralSequence`). Many new Requests have no runtime handler yet
+    (`PlaySongList`, `PauseAi`, checkpoints, event starts, car swap, `PlayUiSound`).
   - The game-mode manager starts the mode machine (`natives/mode_machine.rs`). `mwtool hsm --run` reaches
     "Freedrive Update" and the HUD machine (docs/commands.md).
   - **The runtime runs the HSM in shadow mode** (`mostrusted --hsm`, logic.rs: research-log "the original's HSM runs
