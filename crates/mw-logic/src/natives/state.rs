@@ -698,4 +698,60 @@ pub enum Request {
     CrashEscape { player: u32 },
     /// `HSB_TOG_LS` update (0x746650): show the loading screen with `layout` (0 = the default) or hide it.
     ToggleLoadingScreen { show: bool, layout: i64 },
+    /// `HSM_SERV_OP` (`start` function of table 0xfd5208 entry `op`, +8): builds and sends the operation's
+    /// request on the request object (+0x50).
+    ServerOpStart { op: u32 },
+    /// `HSM_SERV_OP` exit update (0x73f490, `FUN_004c2870`): acknowledges a finished request.
+    ServerOpAck,
+    /// `HSM_SERV_OP` exit begin (0x73f450): cancels a pending request (`FUN_004c4b40`) and posts the message
+    /// (1, 0x1f8) (`FUN_008820c0`).
+    ServerOpCancel,
+    /// `HSM_SERV_OP` error handlers (0x73f4d0 / 0x73f620 ...): shows the error `code` (`FUN_008820c0` of
+    /// `FUN_00881fa0`) and ends the operation's busy state (`FUN_00882d00`). Code 0 only ends the busy state.
+    ServerOpReport { code: u32 },
+    /// `HSM_SERV_OP` success handler (+0x10 of the table entry of the current state) of operation `op`.
+    ServerOpHandle { op: u32 },
+    /// `HSM_SERV_OP` `PCLogin` / `Login` error 0x13 (0x73f620): the terms of service must be shown (flag
+    /// G+0x2f3e0 +0x2436 = 1, `FUN_00889450` / `FUN_008894a0` with the request's +0x6c / +0x70).
+    ServerOpTermsRequired,
+    /// `WRITESESSION` enter (0x747280, `FUN_007e94f0` on G+0x2f458 +0x280): sets the session variable.
+    WriteSession { name: String, value: String },
+    /// `LOADSTRSET` enter update (0x74de80): loads `UI\LANGUAGE\<language>\<id>.BNDL` (`FUN_00adcda0`).
+    LoadStringSet { id: i64 },
+    /// `LOADSTRSET` enter update: the loaded set becomes the current one (`FUN_0046fea0`).
+    ActivateStringSet { id: i64 },
+    /// `LOADSTRSET` exit update (0x7441a0): drops the set (`FUN_00472e00`) and unloads its bundle.
+    UnloadStringSet { id: i64 },
+    /// `SIGNIN_CNTRL` enter / exit (`FUN_00884d40` on the sign-in form G+0x2f3e0 +0x10c8): the control
+    /// `context` is shown / hidden.
+    SignInFormActive { context: String, active: bool },
+    /// `SI_EDT_EMPT` update (`FUN_008852f0`): the edit control's "empty" flag (+0x23c).
+    SignInEditEmptyFlag { context: String, empty: bool },
+    /// `HSM_KEYB_ENT` enter (0x7722b0, `FUN_00885080` then `FUN_00845d60` on G+0x2f065): the on-screen keyboard
+    /// for the control `context` (its text, title, description and length); `flags` 4 password, 2 e-mail,
+    /// 0x20 product key, 8 gamertag.
+    OpenKeyboard { context: String, flags: u8 },
+    /// `HSM_KEYB_ENT` update (0x7724f0, `FUN_008850e0`): the keyboard's text goes into the control when
+    /// `accepted` (result 3).
+    KeyboardStore { context: String, accepted: bool },
+    /// `HSM_KEYB_ENT` update (`FUN_00845e00`): closes the keyboard.
+    CloseKeyboard,
+    /// `SI_ADD_CNTRL` / `SI_SHOW_ERR` enter (0x7730c0 / 0x7735f0, `FUN_00adcda0`): loads the string sets the
+    /// state's lists name.
+    SignInFormLoadStrings { state: u32 },
+    /// ... exit begin (0x771030 / 0x772600): unloads them.
+    SignInFormUnloadStrings { state: u32 },
+    /// `SI_ADD_CNTRL` running (0x773870): the form `screen` (`FUN_00883750`) gets the controls of the state's
+    /// `BACKGROUND`, `BOOLEAN`, `COMMAND`, `DATE`, `EDITTEXT`, `LIST` and `LONGMESSAGE` parameters.
+    SignInFormBuild { state: u32, screen: String },
+    /// `SI_ADD_CNTRL` exit (0x7729c0): the form's controls of the six kinds and the screen are removed
+    /// (`FUN_00887960`).
+    SignInFormRemove { screen: String },
+    /// `SI_SHOW_ERR` running (0x773f40): builds the error screen from the error `SignInState.Error` picks.
+    SignInErrorShow { state: u32 },
+    /// `SI_SHOW_ERR` update (0x773a10): the per-frame layer set and button focus handling.
+    SignInErrorFrame { state: u32 },
+    /// `SI_SHOW_ERR` exit (0x772720): restores the layer set, removes the buttons and the screen
+    /// (`FUN_00887960`, with `show_load` = `SHOWLOAD`, default true).
+    SignInErrorClose { show_load: bool },
 }

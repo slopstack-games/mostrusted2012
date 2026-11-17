@@ -20,6 +20,8 @@ pub mod mode;
 pub mod mode2;
 #[path = "behaviours_race.rs"]
 pub mod race;
+#[path = "behaviours_signin.rs"]
+pub mod signin;
 #[path = "behaviours_ui.rs"]
 pub mod ui;
 
@@ -64,6 +66,7 @@ pub fn register(r: &mut Registry) {
     dialog::register(r);
     event::register(r);
     race::register(r);
+    signin::register(r);
 }
 
 /// Engine state a behaviour reads, asked through [`Host::query`](super::Host::query). Answers are `u64`: bools are
@@ -366,6 +369,45 @@ pub enum Query {
     /// vehicle and the direction to it has a dot product >= 0.1 (0xfd67a0) with the local vehicle's forward
     /// axis (`FUN_006ba380`). Default false.
     CrashPlayerNear { index: u32 },
+    /// `HSM_SERV_OP` (0x73f3c0, `FUN_004c4b30` pumps the request object at +0x50 first): the request object's
+    /// state (+0x58): 0 = idle, 1 = pending, 2 = done. Default 2 (offline: the request has failed at once).
+    ServerOpState,
+    /// `HSM_SERV_OP`: the request object's error code (+0x5c), 0 = none. Default 1: model decision, a generic
+    /// "no server" error (the codes the handlers know are 0xe, 0x10, 0x11, 0x13, 0x15, 0x16).
+    ServerOpError,
+    /// `HSM_SERV_OP`: the start function of operation `op` (table 0xfd5208, +8) returned true (it sent its
+    /// request). Default true.
+    ServerOpStarted { op: u32 },
+    /// `HSM_SERV_OP` start of `Login` / `PCLogin` / `ConsoleSilentLogin` (0x750210 / 0x7502d0): the network
+    /// layer is up (`FUN_004c2040` on `*0x010edb58`). Default false (offline: `Connect` runs first).
+    ServerOpNetReady,
+    /// `HSM_SERV_OP` update (0x73f3c0): the state the success handler of operation `state` left the machine in
+    /// (+0x88; 26 = finished). Default 26.
+    ServerOpNextState { state: u32 },
+    /// `LOADSTRSET`: the string set's load (`unload` false, status +0x164) or unload (+0x1e4) is still running
+    /// (status 2 or 3). Default false.
+    StringSetBusy { unload: bool },
+    /// `SIGNIN_CNTRL` update (0x7731e0, `FUN_00884fc0` on the sign-in form G+0x2f3e0 +0x10c8): the control
+    /// `context`'s first expression (text at control +0xc, `FUN_008822e0`) is true. Default true.
+    SignInControlActive { context: String },
+    /// `SIGNIN_CNTRL` update (`FUN_00884ec0`): the control's second expression is true. Default true.
+    SignInControlVisible { context: String },
+    /// `SI_EDT_EMPT` update (0x772120): the edit control `context`'s text (`FUN_00885270`, control +0x24) is
+    /// empty. Default true.
+    SignInEditEmpty { context: String },
+    /// `SI_FIRST_PRT` (`FUN_004c2030`, a constant true on the PC): signed in with the first party. Default true.
+    FirstPartySignedIn,
+    /// `HSM_KEYB_ENT` update (0x7724f0, `FUN_0083c730` / `FUN_0083c770` on the keyboard result `*0x010edacc`):
+    /// 0 = open / none, 2 = cancelled, 3 = accepted. Default 0.
+    KeyboardResult,
+    /// `SI_ADD_CNTRL` / `SI_SHOW_ERR` enter (0x7730c0 / 0x7735f0): how many string sets the state's `LIST` /
+    /// `DATE` / `ERRORLIST` parameters name (+0xf4). Default 0.
+    SignInFormStringSets { state: u32 },
+    /// ... their load (`unload` false, status +0x74) or unload (+0x9c) is still running. Default false.
+    SignInFormBusy { unload: bool },
+    /// `SI_SHOW_ERR` update (0x773a10 → 0x773680): the exit point the confirmed button gives; 0 = none yet.
+    /// Default 0.
+    SignInErrorChoice,
 }
 
 impl Query {
@@ -402,7 +444,15 @@ impl Query {
             | Query::PauseInterruptReleased
             | Query::PhotoCaptured
             | Query::PhotoIdle
-            | Query::PrContextExists { .. } => 1,
+            | Query::PrContextExists { .. }
+            | Query::ServerOpStarted { .. }
+            | Query::SignInControlActive { .. }
+            | Query::SignInControlVisible { .. }
+            | Query::SignInEditEmpty { .. }
+            | Query::FirstPartySignedIn => 1,
+            Query::ServerOpState => 2,
+            Query::ServerOpError => 1,
+            Query::ServerOpNextState { .. } => 26,
             Query::DialogResult { .. } => 0xff,
             Query::TransitionState => 2,
             Query::GameModeEvent | Query::GameModeMachine | Query::BlacklistRivalHandle => u64::MAX,
@@ -533,6 +583,20 @@ impl Query {
             Query::CrashPlayerCount => "CrashPlayerCount",
             Query::CrashPlayerState { .. } => "CrashPlayerState",
             Query::CrashPlayerNear { .. } => "CrashPlayerNear",
+            Query::ServerOpState => "ServerOpState",
+            Query::ServerOpError => "ServerOpError",
+            Query::ServerOpStarted { .. } => "ServerOpStarted",
+            Query::ServerOpNetReady => "ServerOpNetReady",
+            Query::ServerOpNextState { .. } => "ServerOpNextState",
+            Query::StringSetBusy { .. } => "StringSetBusy",
+            Query::SignInControlActive { .. } => "SignInControlActive",
+            Query::SignInControlVisible { .. } => "SignInControlVisible",
+            Query::SignInEditEmpty { .. } => "SignInEditEmpty",
+            Query::FirstPartySignedIn => "FirstPartySignedIn",
+            Query::KeyboardResult => "KeyboardResult",
+            Query::SignInFormStringSets { .. } => "SignInFormStringSets",
+            Query::SignInFormBusy { .. } => "SignInFormBusy",
+            Query::SignInErrorChoice => "SignInErrorChoice",
         }
     }
 }

@@ -241,17 +241,17 @@ tools/t --front-end --hsm --front-end-shots scratch/fe --mute; grep 'hsm:' scrat
 # state entered / exited per frame; unported behaviours hold, hooks answer EXIT, bindings don't resolve unless
 # --answer NAME=VALUE (state id | behaviour code | binding path with '.' | hook name; VALUE exit point / run / value;
 # Host.LoadingScreenShowing / Host.GraphicsPrepared answer the host queries). --steps 300 --dt 0.0333
-./target/release/mwtool hsm --run --steps 90 --answer SignInState.Params.IsChatRestricted=TRUE --answer 1222788=DONE   # boot → "Playing" (IsProgressionReady, ShouldPlayNewGameIntro are ported: the driver stands in a loaded profile and sets the title's BOOT general trigger; `UIConfig`, `Net`, `SignInState`, `UISequences`, `GeneralSequence` are the logic's own offline roots; the two answers left are online stand-ins: the code's IsChatRestricted is false, which makes the HSM run the Blaze silent sign-in (ServerOperation PCLogin, not ported), TRUE skips it; and the online ConnectToAutolog state 1222788)
+./target/release/mwtool hsm --run --steps 90 --answer 1222788=DONE   # boot → "Playing" (IsProgressionReady, ShouldPlayNewGameIntro are ported: the driver stands in a loaded profile and sets the title's BOOT general trigger; `UIConfig`, `Net`, `SignInState`, `UISequences`, `GeneralSequence` are the logic's own offline roots; the answer left is an online stand-in, the ConnectToAutolog state 1222788; the Blaze silent sign-in (ServerOperation PCLogin, `HSM_SERV_OP`) is ported and fails over offline)
 # ... and on into free roam: the driver also plays the game-mode manager (mode_machine::update after each frame; events,
 # GameMode items and GameLogicConfig ids from the install; event data and weapon lists load at once), so "Run Game Mode"
 # starts event 390703 and the GMM machine 390147 "Freedrive Game Mode":
-./target/release/mwtool hsm --run --steps 600 --answer SignInState.Params.IsChatRestricted=TRUE --answer 1222788=DONE   # → "Freedrive Update" + machine 371633 "Freedrive HUD" (hook requests print as "hook request"); the same two online stand-ins as above, everything else from the logic's roots
+./target/release/mwtool hsm --run --steps 600 --answer 1222788=DONE   # → "Freedrive Update" + machine 371633 "Freedrive HUD" (hook requests print as "hook request"); the same online stand-in as above, everything else from the logic's roots
 # ... and on into a race: `--event <id>` plays the player's choice of that offline event from free roam (the Easy Drive
 # menu's list item stands in; circuit 462174, sprint 906146): the free-drive machine ends, the GMM loads the event and starts
 # "Race Game Mode" 730003 (decomp.md "Route free roam → race"); the headless stand-ins are listed in research-log 2026-11-17.
 # --pause-at <frame> holds the pause button from then on (add --answer 'GameLogicState.IsControlGroupEnabled["MENU"]=TRUE'),
 # --answer Query.CheckpointsFinished=true ends the race (outro, then free roam again; --answer 1560270=FALSE: not busted)
-./target/release/mwtool hsm --run --steps 1500 --event 462174 --answer SignInState.Params.IsChatRestricted=TRUE --answer 1222788=DONE --answer Query.CheckpointsFinished=true --answer 1560270=FALSE
+./target/release/mwtool hsm --run --steps 1500 --event 462174 --answer 1222788=DONE --answer Query.CheckpointsFinished=true --answer 1560270=FALSE
 ./target/release/mwtool natives [--area offline|online|platform|debug|unknown] [--unported]   # the 187 hooks + 385 Lua natives, handler address, ported or not
 ./target/release/mwtool lua --list                       # the UI's 115 Lua chunks (mw-lua): id, name (checked against the id), size
 ./target/release/mwtool lua [--run <name>] [--call <Fn>|all] [--trace]   # main chunk + Construct with logging stub natives

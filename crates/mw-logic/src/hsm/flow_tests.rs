@@ -1328,3 +1328,200 @@ fn toggle_loading_screen_shows_with_the_layout_or_hides() {
     step(&mut hsm, &mut host, 3);
     assert_eq!(host.reqs, [Request::ToggleLoadingScreen { show: false, layout: 0 }]);
 }
+
+// ---- Sign-in family, session variables, string sets (`behaviours_signin`) ----
+
+#[test]
+fn server_operation_offline_connects_first_and_fails() {
+    let (mut hsm, mut host, s) = machine("HSM_SERV_OP", &[("OPERATION", "PCLogin")], "ENTER");
+    step(&mut hsm, &mut host, 3);
+    // PCLogin without a network layer sends Connect (0), then the generic "no server" error fails it.
+    assert_eq!(host.reqs[0], Request::ServerOpStart { op: 0 });
+    assert!(host.reqs.contains(&Request::ServerOpReport { code: 1 }));
+    assert_eq!(hsm.result(s), Some(key("FAILURE")));
+    assert!(host.reqs.contains(&Request::ServerOpAck));
+}
+
+#[test]
+fn server_operation_unknown_fails_without_a_request() {
+    let (mut hsm, mut host, s) = machine("HSM_SERV_OP", &[("OPERATION", "Nope")], "ENTER");
+    step(&mut hsm, &mut host, 3);
+    assert!(!host.reqs.iter().any(|r| matches!(r, Request::ServerOpStart { .. })));
+    assert_eq!(hsm.result(s), Some(key("FAILURE")));
+}
+
+#[test]
+fn server_operation_error_codes_pick_the_exit() {
+    let (mut hsm, mut host, s) = machine("HSM_SERV_OP", &[("OPERATION", "Login")], "ENTER");
+    host.answers.insert("ServerOpNetReady", 1);
+    host.answers.insert("ServerOpError", 0x15);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs[0], Request::ServerOpStart { op: 1 });
+    assert_eq!(hsm.result(s), Some(key("WRONG_PWD")));
+    // The generic handler knows only error 0x11.
+    let (mut hsm, mut host, s) = machine("HSM_SERV_OP", &[("OPERATION", "AddPersona")], "ENTER");
+    host.answers.insert("ServerOpError", 0x15);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(hsm.result(s), Some(key("FAILURE")));
+    let (mut hsm, mut host, s) = machine("HSM_SERV_OP", &[("OPERATION", "AddPersona")], "ENTER");
+    host.answers.insert("ServerOpError", 0x11);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(hsm.result(s), Some(key("NO_PERSONA")));
+}
+
+#[test]
+fn server_operation_connect_then_the_requested_operation_succeeds() {
+    let (mut hsm, mut host, s) = machine("HSM_SERV_OP", &[("OPERATION", "PCLogin")], "ENTER");
+    host.answers.insert("ServerOpError", 0);
+    step(&mut hsm, &mut host, 1);
+    // Connect finished (state 2 = done): the login itself is started (network ready now).
+    host.answers.insert("ServerOpNetReady", 1);
+    step(&mut hsm, &mut host, 1);
+    assert!(host.reqs.contains(&Request::ServerOpStart { op: 2 }));
+    assert!(hsm.is_running(s));
+    // Its success handler finishes it.
+    step(&mut hsm, &mut host, 2);
+    assert!(host.reqs.contains(&Request::ServerOpHandle { op: 2 }));
+    assert_eq!(hsm.result(s), Some(key("SUCCESS")));
+}
+
+#[test]
+fn sign_in_control_shows_and_leaves_through_the_matching_exit() {
+    let (mut hsm, mut host, s) = machine("SIGNIN_CNTRL", &[("DATACONTEXT", "Password")], "ENTER_PREV");
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs, [Request::SignInFormActive { context: "Password".into(), active: true }]);
+    assert!(hsm.is_running(s));
+    host.answers.insert("SignInControlVisible", 0);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(key("EXIT_PREV")));
+    assert_eq!(host.reqs.last(), Some(&Request::SignInFormActive { context: "Password".into(), active: false }));
+    let (mut hsm, mut host, s) = machine("SIGNIN_CNTRL", &[("DATACONTEXT", "Continue")], "ENTER_NEXT");
+    host.answers.insert("SignInControlActive", 0);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(hsm.result(s), Some(key("EXIT_NEXT")));
+    // No context: never leaves.
+    let (mut hsm, mut host, s) = machine("SIGNIN_CNTRL", &[], "ENTER_NEXT");
+    host.answers.insert("SignInControlActive", 0);
+    step(&mut hsm, &mut host, 5);
+    assert!(hsm.is_running(s) && host.reqs.is_empty());
+}
+
+#[test]
+fn edit_text_empty_exits_true_or_false() {
+    let (mut hsm, mut host, s) = machine("SI_EDT_EMPT", &[("DATACONTEXT", "EMail")], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(key("TRUE")));
+    assert_eq!(host.reqs, [Request::SignInEditEmptyFlag { context: "EMail".into(), empty: true }]);
+    let (mut hsm, mut host, s) = machine("SI_EDT_EMPT", &[("DATACONTEXT", "EMail")], "ENTER");
+    host.answers.insert("SignInEditEmpty", 0);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(key("FALSE")));
+}
+
+#[test]
+fn keyboard_entry_opens_and_stores_the_accepted_text() {
+    let params = [("DATACONTEXT", "Password"), ("ISPASSWORD", "True"), ("ISEMAIL", "True")];
+    let (mut hsm, mut host, s) = machine("HSM_KEYB_ENT", &params, "ENTER");
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs, [Request::OpenKeyboard { context: "Password".into(), flags: 4 }]);
+    assert!(hsm.is_running(s));
+    host.answers.insert("KeyboardResult", 3);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(
+        host.reqs[1..],
+        [Request::KeyboardStore { context: "Password".into(), accepted: true }, Request::CloseKeyboard]
+    );
+    assert_eq!(hsm.result(s), Some(EXIT));
+    let (mut hsm, mut host, _) = machine("HSM_KEYB_ENT", &[("DATACONTEXT", "EMail"), ("ISEMAIL", "True")], "ENTER");
+    host.answers.insert("KeyboardResult", 2);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs[0], Request::OpenKeyboard { context: "EMail".into(), flags: 2 });
+    assert_eq!(host.reqs[1], Request::KeyboardStore { context: "EMail".into(), accepted: false });
+}
+
+#[test]
+fn first_party_sign_in_succeeds_on_the_pc() {
+    let (mut hsm, mut host, s) = machine("SI_FIRST_PRT", &[], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(key("SUCCESS")));
+    // Not signed in at the enter: it waits for ever.
+    let (mut hsm, mut host, s) = machine("SI_FIRST_PRT", &[], "ENTER");
+    host.answers.insert("FirstPartySignedIn", 0);
+    step(&mut hsm, &mut host, 5);
+    assert!(hsm.is_running(s));
+}
+
+#[test]
+fn add_controls_loads_strings_builds_and_removes_the_screen() {
+    let (mut hsm, mut host, s) = machine("SI_ADD_CNTRL", &[("SCREEN", "IncorrectPassword")], "ENTER");
+    host.answers.insert("SignInFormStringSets", 2);
+    host.answers.insert("SignInFormBusy", 1);
+    step(&mut hsm, &mut host, 4);
+    // Loading: the screen is not built yet.
+    assert_eq!(host.reqs, [Request::SignInFormLoadStrings { state: 1 }]);
+    host.answers.insert("SignInFormBusy", 0);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs[1], Request::SignInFormBuild { state: 1, screen: "IncorrectPassword".into() });
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 4);
+    assert!(host.reqs.contains(&Request::SignInFormUnloadStrings { state: 1 }));
+    assert_eq!(host.reqs.last(), Some(&Request::SignInFormRemove { screen: "IncorrectPassword".into() }));
+}
+
+#[test]
+fn show_sign_in_error_exits_through_the_confirmed_button() {
+    let (mut hsm, mut host, s) = machine("SI_SHOW_ERR", &[("SHOWLOAD", "False")], "ENTER");
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs[0], Request::SignInErrorShow { state: 1 });
+    assert!(host.reqs.contains(&Request::SignInErrorFrame { state: 1 }));
+    assert!(hsm.is_running(s));
+    host.answers.insert("SignInErrorChoice", key("CONTINUE"));
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(hsm.result(s), Some(key("CONTINUE")));
+    assert_eq!(host.reqs.last(), Some(&Request::SignInErrorClose { show_load: false }));
+}
+
+#[test]
+fn write_session_sets_the_variable_and_exits_when_the_parent_handles_exit() {
+    use mw_formats::hsm::{ChildExitPoint, ChildExits, Spawn};
+    let mut child = state(2, "WRITESESSION", Fallback::Exit);
+    child.parameters = vec![param("VARNAME", "NavTabName"), param("VARVALUE", "STORE")];
+    child.entry_points.push(EntryPoint { id: key("ENTER"), action: Action::Child, spawns: vec![] });
+    let mut parent = state(1, "HSB_RUNCHILD", Fallback::RunChildren);
+    parent.entry_points.push(EntryPoint {
+        id: key("ENTER"),
+        action: Action::Child,
+        spawns: vec![Spawn { entry_point: key("ENTER"), state: 2 }],
+    });
+    parent.children.push(ChildExits {
+        state: 2,
+        exits: vec![ChildExitPoint {
+            parent_exit: key("DONE"),
+            child_exit: EXIT,
+            action: Action::Exit,
+            spawns: vec![],
+        }],
+    });
+    let mut hsm = Hsm::new(data(vec![parent, child], vec![]), Registry::structural());
+    let mut host = Rec::default();
+    let s = hsm.start(1, &mut host).unwrap();
+    step(&mut hsm, &mut host, 4);
+    assert_eq!(host.reqs, [Request::WriteSession { name: "NavTabName".into(), value: "STORE".into() }]);
+    assert_eq!(hsm.result(s), Some(key("DONE")));
+}
+
+#[test]
+fn load_string_set_loads_activates_and_unloads() {
+    let (mut hsm, mut host, s) = machine("LOADSTRSET", &[("STRINGSET", "2012359")], "ENTER");
+    host.answers.insert("StringSetBusy", 1);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs, [Request::LoadStringSet { id: 2012359 }]);
+    host.answers.insert("StringSetBusy", 0);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs[1], Request::ActivateStringSet { id: 2012359 });
+    assert!(hsm.is_running(s));
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 4);
+    assert_eq!(host.reqs[2], Request::UnloadStringSet { id: 2012359 });
+    assert!(!hsm.is_running(s));
+}
