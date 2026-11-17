@@ -107,6 +107,48 @@ Next unported types in these trees (online): `UPLOADRESULT`, `UPLDCONCOURS`, `HS
   `tools/hl ... > out 2> err` shows them all (the two FIFO `cat`s of `tools/hl` writing one log?). Capture that
   would confirm: a body-shop pass in the original (`mwtool capture`) to see whether anything else (a fade, a
   sound) goes with the colour change.
+### 2026-11-17: the logic's load requests carried out under `--hsm` (`logic_loads.rs`)
+
+The boot's load waits passed in the frame they were asked because the queries' defaults say "loaded". Now the
+runtime carries out the loads and answers from them (crates/mostrusted/src/logic_loads.rs, logic.rs module doc):
+- `LoadFeedbackGroup` / `UnloadFeedbackGroup` (`LOAD_FDBK_GR` → `FUN_007982e0` / `FUN_00798370`): the group's
+  bundle `EN_US/FEEDBACKGROUPS/<id>.BNDL` read and its `FeedbackMessageGroup` decoded on a thread, counted;
+  `FeedbackGroupLoaded` (`FUN_00792590`) true once read while counted. Front-end run: 97039, 97037, 457707,
+  604180, 1560226 (the recap's group, "Wait for Recap FMG" waits on it) each 1–3 frames.
+- `PrefetchScreen` / `ReleasePrefetchedScreen`: the screen's bundle `UI/SCREENS2/<id>.BNDL`; 371621, 431082 1 frame.
+- `RunLayout` / `DeactivateLayout` / `ReleaseLayout`: the layout decoded (`AssetStore::ui_layout`), `LayoutReady`
+  once decoded (100143 "AlwaysAvailable Notifications", 1 frame); not drawn.
+- `LoadProfile`: our profile file and `settings.cfg` read on a thread (`ProfileLoaded` after 1 frame, `ProfileReady`
+  while no load runs); `ApplyProfileSettings` applies the read volumes (`--volume` on top) to `AudioSettings`.
+- `PlaySequence` of anything but the event's intro / outro runs headless like a conductor's sequence (its clock
+  with the jump controllers): `SequencePlaying` / `SequencePlayerBusy` while it runs, `StopPlayback` ends it. The
+  continue's "Run Recap Sequence" 1560255 (`CalculateShouldShowRecapSequence` sets GMM+0x2e88 on PC) plays the game
+  recap 1689073 (24 s, player 2) and now waits for it: frames 572 → 2013 in the race run; the free-drive states after
+  it ("Freedrive Update", the song list, the Easy Drive prompt) start 24 s later than before. The recap's camera,
+  layouts and music are not drawn / played (open).
+- `RemovePlayers` / `CreateLocalPlayer` (`HSB_P1BIND`): the logic's player slots emptied / the local slot filled
+  (`LocalPlayerReady`). Not the car entity: our car spawns only with the world (~15–30 s after the press), the
+  original's player record exists at once and the boot transition would hang on it.
+- `LoadWorld`, `LoadAll`, `AutoSelectWorld`: mapped to the runtime's loader, which streams the one world from
+  start-up without a gate (`Mode.WorldLoaded` was already `FrontEnd::ready`). Open: the original starts the world
+  load at `LOADWORLD` (after the key press); gating ours on it would move the world loading behind the transition.
+- `LoadEventData` was already done (race link).
+
+Who loads the groups the HSM waits for without loading them (97039 at 286011 "Wait For Required Resources" before
+1560411 loads it, 97037 at 457754, 457707 at 457757, 1560603 at "Wait for Recap FMG")? Not the HSM data (only
+`LOAD_FDBK_GR` 1560411 names 97039; none names 97037 / 457707); `FUN_007982e0` has no caller in the dump (its HSM
+caller 0x743ee0 is outside it) and no group id is a code constant. `UIConfig` 0x172ab's
+`LocalisedFeedbackMessageGroupList` (field 0x2c69cde5, id 2083002) lists 1560603, 1909255, 1909289, 457707,
+1532857, 1560675: likely the engine's own preloads. Model decision: a group the logic never asked for keeps the
+default answer (loaded). Also model decisions: a failed read counts as loaded (logged); nothing leaves the asset
+store's cache at count 0; `CreateLocalPlayer` is immediate.
+
+Fix on the way: `--hsm-event` is dropped when the runtime already chose an event (in one race-test run the car's
+burnout at the event-start marker chose 462174 during the recap; the pending `--hsm-event` then started the race a
+second time after it).
+
+Captures that would confirm: the original's frame count from the key press to "Freedrive Update" on a continue
+(the recap's 24 s), and whether the recap shows on every continue.
 
 ### 2026-11-17: eighth 20 HSM hooks verified and enabled (160 of 187; `natives/hooks_online.rs`)
 

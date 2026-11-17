@@ -42,8 +42,19 @@
 //!   logic; `RUNGAMELOGIC` of `Event.Data.EventIntro` / `EventOutro` (`PlaySequence`) starts the intro / outro
 //!   (`cutscene.rs`, driven); the `CHECKPTS` requests are `race.rs`'s gates; when the GMM starts free drive again
 //!   (`StartGameMode` of another event) `race.rs` ends the event (`RaceDriven`) and free roam resumes.
+//! - **loads** (`logic_loads.rs`): `LoadFeedbackGroup` / `UnloadFeedbackGroup` (the group's bundle read and its
+//!   `FeedbackMessageGroup` decoded on a thread, counted), `PrefetchScreen` / `ReleasePrefetchedScreen` (the
+//!   screen's bundle), `RunLayout` / `DeactivateLayout` / `ReleaseLayout` (the layout decoded; not drawn),
+//!   `LoadProfile` (our profile file and `settings.cfg` read on a thread) and `ApplyProfileSettings` (the read
+//!   volumes to `settings::AudioSettings`); `Query::FeedbackGroupLoaded` / `ScreenPrefetched` / `LayoutReady` /
+//!   `ProfileReady` / `ProfileLoaded` answer from them, so those waits take the frames the loads take. Every
+//!   other `RUNGAMELOGIC` sequence (`PlaySequence`, e.g. the continue's game recap 1689073, 24 s) runs headless
+//!   like a conductor's ([`Playback`]): `Query::SequencePlaying` / `SequencePlayerBusy` while its clock runs,
+//!   `StopPlayback` ends it. `RemovePlayers` / `CreateLocalPlayer` empty and fill the logic's player slots
+//!   (`Query::LocalPlayerReady`). `LoadWorld`, `LoadAll`, `AutoSelectWorld` are what the runtime's loader does
+//!   from start-up (one world, streamed without a gate; `Mode.WorldLoaded` is `FrontEnd::ready`).
 //!
-//! Everything else (world, profile and feedback-group loads, the HUD screen's requests) is still logged only:
+//! Everything else (the HUD screen's requests, the profile's game state) is still logged only:
 //! `freeroam.rs`, the rest of `race.rs` (stepping, AI, results) and of `frontend.rs` drive the game. Queries nobody
 //! answers log their default once (`hsm: ... query X: default answer N`).
 //!
@@ -75,7 +86,9 @@
 //! `HSM_SERV_OP` (the silent sign-in's `PCLogin` fails over without a server); `Query::ModeWon` is the logic's GMM+0x2e78 (1
 //! while a mode runs, as the manager's constructor and reset set it; `FUN_006f46e0`'s offline derivation is not ported); behaviour types that are not
 //! ported yet hold (run their children, never exit); hooks that are not ported answer EXIT (most `CALLHSMHOOK` nodes
-//! go on on EXIT).
+//! go on on EXIT); `CreateLocalPlayer` fills the slot at once (whether `FUN_006d6090` takes frames was not traced);
+//! the headless playbacks draw and sound nothing (the game recap's camera, layouts and music are not shown); the load
+//! stand-ins of `logic_loads.rs`'s doc.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -118,6 +131,10 @@ pub struct LogicPlugin {
     /// `--new-game`, or no saved profile was loaded: the profile is brand new (`ISNEWPROFILE` → YES) and the
     /// intro is not marked played.
     pub new_profile: bool,
+    /// Our profile file, read again when the logic loads the profile (`LoadProfile`); `None` with `--new-game`.
+    pub profile: Option<std::path::PathBuf>,
+    /// `--volume`: applied on top of the saved settings when the logic applies the profile's settings.
+    pub volume: Option<String>,
 }
 
 impl Plugin for LogicPlugin {
@@ -127,15 +144,20 @@ impl Plugin for LogicPlugin {
         }
         // The systems the logic's requests drive (absent without `--hsm`: those systems keep their hand-written
         // rules).
-        app.insert_resource(Setup { new_profile: self.new_profile, pending: None })
-            .insert_resource(crate::music::SongListRequest::default())
-            .insert_resource(crate::chevron::ChevronsHidden(false))
-            .insert_resource(crate::freeroam::TriggersEnabled(false))
-            .insert_resource(RaceDriven::default())
-            .insert_resource(HsmEvent(self.event.clone()))
-            .add_systems(Startup, |mut c: ResMut<CutsceneState>| c.logic_driven = true)
-            .add_systems(Startup, start_loading)
-            .add_systems(Update, (receive, choose_event, tick, race_shots).chain());
+        app.insert_resource(Setup {
+            new_profile: self.new_profile,
+            profile: self.profile.clone(),
+            volume: self.volume.clone(),
+            pending: None,
+        })
+        .insert_resource(crate::music::SongListRequest::default())
+        .insert_resource(crate::chevron::ChevronsHidden(false))
+        .insert_resource(crate::freeroam::TriggersEnabled(false))
+        .insert_resource(RaceDriven::default())
+        .insert_resource(HsmEvent(self.event.clone()))
+        .add_systems(Startup, |mut c: ResMut<CutsceneState>| c.logic_driven = true)
+        .add_systems(Startup, start_loading)
+        .add_systems(Update, (receive, choose_event, tick, race_shots).chain());
     }
 }
 
@@ -146,6 +168,8 @@ struct HsmEvent(Option<Arc<RaceSetup>>);
 #[derive(Resource)]
 struct Setup {
     new_profile: bool,
+    profile: Option<std::path::PathBuf>,
+    volume: Option<String>,
     pending: Option<Mutex<Receiver<Result<Loaded, String>>>>,
 }
 
@@ -162,8 +186,8 @@ const MUTE_REASONS: usize = 6;
 
 /// A screen load's result.
 type ScreenLoad = Result<ScreenData, String>;
-/// A conductor's sequence load: (conductor, sequence id, result).
-type SequenceLoad = (String, u32, Result<Arc<Sequence>, String>);
+/// A sequence load: (who plays it, sequence id, result).
+type SequenceLoad = (Owner, u32, Result<Arc<Sequence>, String>);
 
 /// The running machine and its host (not `Send`: the logic state is shared with Lua through `Rc`).
 struct Logic {
@@ -173,7 +197,7 @@ struct Logic {
     frame: u64,
     /// Screens the page contexts asked for, loaded on a thread ([`mw_logic::natives::pages::load_screen`]).
     screens: (Sender<ScreenLoad>, Receiver<ScreenLoad>),
-    /// Conductors' sequences (conductor, sequence id, the loaded sequence).
+    /// Conductors' and playbacks' sequences (owner, sequence id, the loaded sequence).
     sequences: (Sender<SequenceLoad>, Receiver<SequenceLoad>),
     store: Arc<mw_assets::AssetStore>,
     /// The logic paused the game clock (`SimPause`) and has not resumed it yet.
@@ -204,6 +228,7 @@ fn receive(world: &mut World) {
     };
     setup.pending = None;
     let new_profile = setup.new_profile;
+    let (profile_path, volume) = (setup.profile.clone(), setup.volume.clone());
     let Loaded { data, events, ids } = match got {
         Ok(l) => l,
         Err(e) => {
@@ -273,7 +298,9 @@ fn receive(world: &mut World) {
         st.game_modes.event_data_ready = true;
     }
     let playlists = events.game_modes.iter().map(|m| (m.id, m.music_playlist)).collect();
+    let store = world.resource::<crate::Game>().store.clone();
     let mut host = RuntimeHost {
+        loads: crate::logic_loads::Loads::new(store.clone(), profile_path, volume),
         data,
         playlists,
         full_rate: false,
@@ -299,7 +326,6 @@ fn receive(world: &mut World) {
         return;
     };
     info!("hsm: machine {serial} started at {TOP_STATE} (shadow mode)");
-    let store = world.resource::<crate::Game>().store.clone();
     world.insert_non_send(Logic {
         hsm,
         host,
@@ -493,6 +519,13 @@ fn choose_event(
     mut play: MessageWriter<crate::event_card::PlayEvent>,
 ) {
     let (Some(logic), Some(setup)) = (logic, &event.0) else { return };
+    // An event chosen in the runtime first (a world marker while the logic still ran the continue's recap) is the
+    // choice: `--hsm-event` chooses once.
+    if let Some(chosen) = &logic.host.race.setup {
+        info!("hsm: {:5} --hsm-event: {} already chosen in the runtime: dropped", logic.frame, chosen.event.id);
+        event.0 = None;
+        return;
+    }
     if front.is_some_and(|f| f.phase != Phase::Playing) {
         return;
     }
@@ -514,6 +547,7 @@ struct Targets<'w, 's> {
     triggers: Option<ResMut<'w, crate::freeroam::TriggersEnabled>>,
     collectables: Option<Res<'w, crate::freeroam::Collectables>>,
     cutscene: Option<ResMut<'w, CutsceneState>>,
+    audio: Option<ResMut<'w, crate::settings::AudioSettings>>,
     sim: ResMut<'w, Time<Virtual>>,
     race: Race<'w, 's>,
 }
@@ -542,21 +576,26 @@ fn tick(logic: Option<NonSendMut<Logic>>, real: Res<Time<Real>>, mut t: Targets,
     let game_dt = (!t.sim.is_paused()).then(|| t.sim.delta_secs());
     let front = &mut t.front;
     let Logic { hsm, host, serial, frame, screens, sequences, store, .. } = &mut *logic;
-    while let Ok((conductor, sequence, got)) = sequences.1.try_recv() {
-        let Some(p) = host.playbacks.iter_mut().find(|p| p.conductor == conductor && p.sequence == sequence) else {
+    while let Ok((owner, sequence, got)) = sequences.1.try_recv() {
+        let Some(p) = host.playbacks.iter_mut().find(|p| p.owner == owner && p.sequence == sequence) else {
             continue;
         };
         match got {
             Ok(seq) => p.seq = Some(seq),
             Err(e) => {
-                warn!("hsm: sequence {sequence}: {e}");
-                host.playbacks.retain(|p| p.conductor != conductor);
-                set_idle(&host.logic, &conductor);
+                // `FUN_007983b0` finds no such sequence: nothing plays.
+                warn!("hsm: sequence {sequence} ({owner:?}): {e}");
+                host.playbacks.retain(|p| p.owner != owner);
+                if let Owner::Conductor(c) = &owner {
+                    set_idle(&host.logic, c);
+                }
             }
         }
     }
     *frame += 1;
     host.frame = *frame;
+    // The loads the logic asked for (feedback groups, screens, layouts, the profile) that ended.
+    host.loads.poll(*frame);
     // Screens: start the loads the page contexts asked for, hand over the finished ones.
     for id in std::mem::take(&mut host.logic.pages.wanted) {
         let (tx, store) = (screens.0.clone(), store.clone());
@@ -644,17 +683,13 @@ fn tick(logic: Option<NonSendMut<Logic>>, real: Res<Time<Real>>, mut t: Targets,
     for e in std::mem::take(&mut host.logic.pages.errors) {
         warn!("hsm: script {e}");
     }
-    // The requests the runtime carries out (module doc). Conductors' sequences load on a thread.
+    // The requests the runtime carries out (module doc). The playbacks' sequences load on a thread.
     for c in &host.carry {
-        if let Carry::Play { conductor, sequence } = c {
-            let (tx, store, conductor, sequence) = (sequences.0.clone(), store.clone(), conductor.clone(), *sequence);
-            host.playbacks.push(Playback { conductor: conductor.clone(), sequence, seq: None, clock: 0.0 });
+        if let Carry::Play { owner, sequence, .. } = c {
+            let (tx, store, owner, sequence) = (sequences.0.clone(), store.clone(), owner.clone(), *sequence);
             let _ = crate::platform::thread::Builder::new().name("mw-sequence".into()).spawn(move || {
-                let _ = tx.send((
-                    conductor,
-                    sequence,
-                    store.ui_sequence(sequence).map(Arc::new).map_err(|e| e.to_string()),
-                ));
+                let _ =
+                    tx.send((owner, sequence, store.ui_sequence(sequence).map(Arc::new).map_err(|e| e.to_string())));
             });
         }
     }
@@ -720,6 +755,14 @@ fn tick(logic: Option<NonSendMut<Logic>>, real: Res<Time<Real>>, mut t: Targets,
                     d.end = true;
                 }
             }
+            Carry::ApplySettings(mut read) => {
+                if let Some(a) = t.audio.as_deref_mut() {
+                    read.muted = a.muted;
+                    if *a != read {
+                        *a = read;
+                    }
+                }
+            }
             Carry::Play { .. } | Carry::Nothing => {}
         }
     }
@@ -744,8 +787,9 @@ enum Carry {
     BootTransition,
     /// `StopSequence` / `DestroyConductor` of the title's conductor.
     StopTitle,
-    /// `StartSequence` of any other sequence: its clock runs here ([`Playback`]).
-    Play { conductor: String, sequence: u32 },
+    /// `StartSequence` of any other sequence, `PlaySequence` of any other than the event's intro / outro: its clock
+    /// runs here ([`Playback`]).
+    Play { owner: Owner, sequence: u32, player: Option<u8> },
     /// `PLAYSONGLIST` / its exit: the song manager's list (`music::SongListRequest`; 0 = stopped).
     SongList { list: u32, allow_playout: bool },
     /// `PlayUiSound`: `ui_sound.rs`.
@@ -764,6 +808,8 @@ enum Carry {
     PlayCutscene(Which),
     /// The logic's mode machine went back to free drive: `race.rs` ends the event.
     EndRace,
+    /// `ApplyProfileSettings`: the volumes read with the profile (`logic_loads.rs`) to `settings::AudioSettings`.
+    ApplySettings(crate::settings::AudioSettings),
     /// Carried out with nothing to do (`CreateConductor`: the conductor is logic state).
     Nothing,
 }
@@ -771,15 +817,26 @@ enum Carry {
 /// The title's conductor (the "Press Start" `Background` widget's `ConductorName`).
 const TITLE_CONDUCTOR: &str = "PressStart";
 
-/// A conductor's sequence that the runtime does not draw yet: its clock runs with the sequence's jump controllers
-/// (`frontend::step`, bindings through the logic's view models) and, once it reaches the sequence's end, the
-/// conductor is idle again (`HasSequenceFinished` / `IsConductorIdle`), so scripts waiting on it keep the
-/// original's timing.
+/// A sequence that the runtime does not draw yet: its clock runs with the sequence's jump controllers
+/// (`frontend::step`, bindings through the logic's view models) and, once it reaches the sequence's end, a
+/// conductor is idle again (`HasSequenceFinished` / `IsConductorIdle`) and a `RUNGAMELOGIC` playback no longer
+/// plays (`Query::SequencePlaying`), so the scripts and states waiting on it keep the original's timing.
 struct Playback {
-    conductor: String,
+    owner: Owner,
     sequence: u32,
+    /// `RUNGAMELOGIC`'s sequence player (`Style`; `Query::SequencePlayerBusy`).
+    player: Option<u8>,
     seq: Option<Arc<Sequence>>,
     clock: f32,
+}
+
+/// Who plays a [`Playback`].
+#[derive(Debug, Clone, PartialEq)]
+enum Owner {
+    /// A conductor (`StartSequence`).
+    Conductor(String),
+    /// A `RUNGAMELOGIC` playback (`PlaySequence`).
+    Playback(u32),
 }
 
 /// The conductor's `playing` cleared (the runtime finished or could not play its sequence).
@@ -799,13 +856,15 @@ fn step_playbacks(host: &mut RuntimeHost, dt: f32) {
         let (next, _) = crate::frontend::step(seq, p.clock, dt, &mut |b| vm.borrow().resolve_bool(b) == Some(true));
         p.clock = next;
         if next >= seq.length {
-            finished.push((p.conductor.clone(), p.sequence));
+            finished.push((p.owner.clone(), p.sequence));
         }
     }
-    for (conductor, sequence) in finished {
-        info!("hsm: {:5} sequence {sequence} on conductor {conductor:?} finished", host.frame);
-        host.playbacks.retain(|p| p.conductor != conductor);
-        set_idle(&host.logic, &conductor);
+    for (owner, sequence) in finished {
+        info!("hsm: {:5} sequence {sequence} of {owner:?} finished", host.frame);
+        host.playbacks.retain(|p| p.owner != owner);
+        if let Owner::Conductor(c) = &owner {
+            set_idle(&host.logic, c);
+        }
     }
 }
 
@@ -844,6 +903,8 @@ struct RuntimeHost {
     /// Requests seen, by kind (shadow mode logs the first of each and counts the rest).
     requests: HashMap<String, u32>,
     race: RaceLink,
+    /// The loads the logic asked for (`logic_loads.rs`).
+    loads: crate::logic_loads::Loads,
 }
 
 /// The general trigger item of the event card ([`crate::event_card::EventCard::transition`]) that the EventIntro
@@ -1007,10 +1068,11 @@ impl Host for RuntimeHost {
             Request::StartSequence { conductor, sequence } => {
                 let id = self.logic.state.borrow().resolve_int(sequence);
                 // A new sequence replaces what the conductor played.
-                self.playbacks.retain(|p| &p.conductor != conductor);
+                let owner = Owner::Conductor(conductor.clone());
+                self.playbacks.retain(|p| p.owner != owner);
                 match id {
                     Some(id) if id == i64::from(fe::TITLE_SEQUENCE) => Some(Carry::Title),
-                    Some(id) if id > 0 => Some(Carry::Play { conductor: conductor.clone(), sequence: id as u32 }),
+                    Some(id) if id > 0 => Some(Carry::Play { owner, sequence: id as u32, player: None }),
                     _ => {
                         warn!("hsm: {:5} StartSequence {sequence:?}: no sequence id", self.frame);
                         // Nothing to play: the conductor is idle again (`HasSequenceFinished`).
@@ -1020,7 +1082,7 @@ impl Host for RuntimeHost {
                 }
             }
             Request::StopSequence { conductor } | Request::DestroyConductor { name: conductor } => {
-                self.playbacks.retain(|p| &p.conductor != conductor);
+                self.playbacks.retain(|p| p.owner != Owner::Conductor(conductor.clone()));
                 (conductor == TITLE_CONDUCTOR).then_some(Carry::StopTitle)
             }
             Request::CreateConductor { .. } => Some(Carry::Nothing),
@@ -1081,6 +1143,45 @@ impl Host for RuntimeHost {
                 self.race.outro_playback = Some(*playback);
                 Some(Carry::PlayCutscene(Which::Outro))
             }
+            // Any other `RUNGAMELOGIC` sequence (the continue's game recap 1689073, ...) runs headless ([`Playback`]).
+            Request::PlaySequence { playback, sequence, player } => {
+                let owner = Owner::Playback(*playback);
+                self.playbacks.retain(|p| p.owner != owner);
+                Some(Carry::Play { owner, sequence: *sequence, player: *player })
+            }
+            // `RUNGAMELOGIC` exit: a headless playback stops; the intro / outro end with their cutscene.
+            Request::StopPlayback { playback } => {
+                self.playbacks.retain(|p| p.owner != Owner::Playback(*playback));
+                Some(Carry::Nothing)
+            }
+            // The loads the logic asks for (`logic_loads.rs`).
+            Request::LoadFeedbackGroup { .. }
+            | Request::UnloadFeedbackGroup { .. }
+            | Request::PrefetchScreen { .. }
+            | Request::ReleasePrefetchedScreen { .. }
+            | Request::RunLayout { .. }
+            | Request::DeactivateLayout { .. }
+            | Request::ReleaseLayout { .. }
+            | Request::LoadProfile => self.loads.request(&r, self.frame).then_some(Carry::Nothing),
+            // The volumes read with the profile; nothing when the profile was not read.
+            Request::ApplyProfileSettings => self.loads.settings().map(Carry::ApplySettings),
+            // The world: the runtime's loader streams it from start-up (loader.rs, streaming.rs; one world, no gate);
+            // `Mode.WorldLoaded` is `FrontEnd::ready` (`tick`).
+            Request::AutoSelectWorld | Request::LoadWorld | Request::LoadAll => Some(Carry::Nothing),
+            // `FUN_006ce500(2)`: every player removed; `FUN_006d6090(0, 0)`: the local player for the bound user
+            // (the runtime's player and its car chosen at start-up), `Query::LocalPlayerReady` from the logic's slots.
+            Request::RemovePlayers => {
+                let mut st = self.logic.state.borrow_mut();
+                st.players.slots.iter_mut().for_each(|s| *s = None);
+                st.players.local = None;
+                Some(Carry::Nothing)
+            }
+            Request::CreateLocalPlayer => {
+                let mut st = self.logic.state.borrow_mut();
+                st.players.local = Some(0);
+                st.players.slots[0] = Some(Default::default());
+                Some(Carry::Nothing)
+            }
             // The race's gates are `race.rs`'s (stepped every tick); the logic reads them through its queries.
             Request::CheckpointsEnter
             | Request::CheckpointsPlace
@@ -1111,6 +1212,11 @@ impl Host for RuntimeHost {
                     | Request::StopSequence { .. }
                     | Request::DestroyConductor { .. }
             );
+        // A playback plays from its request on (its sequence still loading), as the original's starts at once.
+        if let Some(Carry::Play { owner, sequence, player }) = &carried {
+            let (owner, sequence, player) = (owner.clone(), *sequence, *player);
+            self.playbacks.push(Playback { owner, sequence, player, seq: None, clock: 0.0 });
+        }
         self.carry.extend(carried);
         let kind = format!("{r:?}");
         let kind = kind.split([' ', '(', '{']).next().unwrap_or_default().to_owned();
@@ -1125,6 +1231,10 @@ impl Host for RuntimeHost {
         }
     }
     fn query(&mut self, q: &Query) -> Option<u64> {
+        // The loads the logic asked for (`logic_loads.rs`).
+        if let Some(a) = self.loads.query(q) {
+            return Some(a);
+        }
         match q {
             // The press that binds the primary user is the title's key press (frontend.rs).
             Query::PrimaryUserBound => Some((self.listening && self.pressed) as u64),
@@ -1147,6 +1257,13 @@ impl Host for RuntimeHost {
             }
             Query::SequencePlaying { playback } if self.race.outro_playback == Some(*playback) => {
                 Some(!self.race.outro_done as u64)
+            }
+            // Any other playback: plays while its headless clock runs (or its sequence loads); gone = ended.
+            Query::SequencePlaying { playback } => {
+                Some(self.playbacks.iter().any(|p| p.owner == Owner::Playback(*playback)) as u64)
+            }
+            Query::SequencePlayerBusy { player } => {
+                Some(self.playbacks.iter().any(|p| p.player == Some(*player)) as u64)
             }
             // `CHECKPTS`: the race's gates (`race.rs`).
             Query::CheckpointCount if self.race.started => Some(self.race.gates as u64),
