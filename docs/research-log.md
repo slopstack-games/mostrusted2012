@@ -13,6 +13,37 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ## Dated findings
 
+### 2026-11-17: body shops respray the same car in place (`paint_wear::Respray`, `materials::repaint`)
+
+- **What the game does** (decomp.md "Body shops", `bodyshop.rs` doc): `FUN_00748ff0` posts vehicle-manager message
+  0xc (`FUN_0058bc60`: next palette colour; `FUN_0058edd0` loads its values into the render instance's paint block)
+  for the same vehicle; `FUN_008e9c00` writes that block into the paint shaders' per-object constants every frame.
+  Nothing is rebuilt. Liveries are the meshes' own `DiffuseTextureSampler` (research log 2026-10-06), so a respray
+  changes only the paint constants on livery cars too.
+- **Ours before**: the respray sent `GarageAction::Drive` and the loader rebuilt the car (its body meshes are baked
+  per paint, `loader.rs` `paint_key`): a new entity, the nitrous tank carried over by hand, the race progress
+  stashed in `race::attach_player`; with `--units 12` the reloaded car found no ground and the race test stalled
+  after gate 3 (shop 1496594).
+- **Now**: `CarSpec::paints` carries all of the car's `VehiclePaint`s; the car entity gets `paint_wear::CarPaints`.
+  `GarageAction::Respray { paint_index }` (body shops; the car menu when it picks another paint of the car being
+  driven) sets `Garage::current.paint_index` and puts `paint_wear::Respray(i)` on the player's car; `paint_wear`
+  writes the paint into the car's own copies of its body-paint materials (`materials::repaint`: the constants
+  `Look::with_paint` writes, p0, p1, p2.y, p3.rgb, p10..p13, p19.rgb, p20.xy, quantised the same way, plus the
+  base colour and clear coat; p9.xy, the dust / dirt levels, stay and are rewritten by `write_materials` with the
+  new paint's `DustColour.w` / `DirtColour.w`). Body-paint parts outside the body's `CarPaint` (wheels, if any)
+  get their own copy first so other cars sharing the model are untouched. `CrashVfxCar::paint_index` follows.
+  The race progress stash is gone (the entity stays). `--test bodyshop` checks the same entity and now holds the
+  handbrake once stopped (the brake alone reversed the car out of the shot).
+- **Verified**: `--race 462174 --test race --units 12` 27/27 (three resprays in place), without `--units` 27/27;
+  `--test bodyshop` PASSED with the 911 (plain paint, red → blue) and the F-150 SVT Raptor (livery bundle,
+  black → silver), same entity, repaired, washed, nitrous 100; 911 accel unchanged (3.58 s, 11.60 s).
+- **Model decision**: the respray is applied in the frame after the pass (garage message → component); the game's
+  message-queue timing was not read.
+- **Open**: `tools/t` lost some stdout lines of `--test bodyshop` (the `before:` and verdict lines) in two runs;
+  `tools/hl ... > out 2> err` shows them all (the two FIFO `cat`s of `tools/hl` writing one log?). Capture that
+  would confirm: a body-shop pass in the original (`mwtool capture`) to see whether anything else (a fade, a
+  sound) goes with the colour change.
+
 ### 2026-11-17: eighth 20 HSM hooks verified and enabled (160 of 187; `natives/hooks_online.rs`)
 
 Handlers read from `re/out/live/text.asm`, callees from the dump; member hashes read from the snapshot `.bss`

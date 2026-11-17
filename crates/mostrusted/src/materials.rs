@@ -1165,6 +1165,42 @@ impl Look {
     }
 }
 
+/// Respray a car's own body-paint material in place (`paint_wear.rs`, the body shops' message 0xc): the
+/// constants [`Look::with_paint`] writes for `paint` (p0, p1, p2.y, p3.rgb, p10..p13, p19.rgb, p20.xy),
+/// quantised as a loaded car's are, its colour and clear coat, so the car looks as if it had been loaded in
+/// that paint. p9.xy are the car's dust / dirt levels (`paint_wear.rs`) and stay; the textures (livery,
+/// two-paint mask, effects map) are the mesh's own, not the paint's. `colour` is the `--paint` override
+/// ([`Look::material`]).
+pub fn repaint(m: &mut GameMaterial, paint: &mw_assets::paint::VehiclePaint, colour: Option<Color>) {
+    let probe = Look {
+        mode: Mode::Vehicle,
+        textures: [None; N_TEX],
+        normal: None,
+        uv_b: None,
+        tint: [1.0; 4].map(q),
+        roughness: 0,
+        vals: [0; N_VEC * 4],
+        blend: Blend::Opaque,
+        double_sided: false,
+        paint: true,
+        vertex_colour: false,
+        lightmap_variant: false,
+    }
+    .with_paint(Some(paint));
+    let p = &mut m.extension.params.p;
+    for i in (0..8).chain([9]).chain(12..15).chain(40..56).chain(76..79).chain(80..82) {
+        p[i / 4][i % 4] = probe.vals[i] as f32 / 1000.0;
+    }
+    let [r, g, b, a] = probe.tint.map(dq);
+    m.base.base_color = Color::linear_rgba(r, g, b, a);
+    if let Some(c) = colour {
+        let c = c.to_linear();
+        p[3] = Vec4::new(c.red, c.green, c.blue, p[3].w);
+        m.base.base_color = c.into();
+    }
+    m.base.clearcoat = probe.clearcoat();
+}
+
 #[derive(ShaderType, Clone, Copy, Debug, Default, Reflect)]
 pub struct LayeredParams {
     pub mode: u32,

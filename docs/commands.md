@@ -236,7 +236,7 @@ tools/t --front-end --hsm --front-end-shots scratch/fe --mute; grep 'hsm:' scrat
 # the start-up flow) chooses the event once free roam waits on the Easy Drive prompt; with --test race: the gates test
 tools/t --hsm-event 462174 --auto-start 1 --test race --mute; grep -E 'hsm:.*(machine|request (Respawn|PlaySequence|StartGameMode))' scratch/run.log
 # MW_HSM_SHOTS=<dir>: screenshots card / intro / race / outro / free roam along it, then exit (add MW_RACE_TEST_AFTER=40
-# so the test waits in free roam). Note: --units 12 stalls --test race at gate 3 (body shop respray, no ground loaded)
+# so the test waits in free roam). --test bodyshop: drive through the nearest body shop (same car entity, resprayed in place)
 ./target/release/mwtool bindings [--find x] [--parse] [--no-genesys] [--out f.tsv]  # every binding path, parsed (mw_logic::binding)
 ./target/release/mwtool hsm [<node id>] [--find text]     # game-logic state machines (HSMData); mwtool frontend
 ./target/release/mwtool hsm <id> --parents               # which nodes start a node (child or transition)

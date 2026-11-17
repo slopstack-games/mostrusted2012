@@ -32,8 +32,11 @@
 //! - "In the trigger" is the car's origin inside the box (the game uses the car's trigger-hit list, whose
 //!   narrow phase was not read; as `freeroam.rs`).
 //! - The player gates of the update (player bytes +0x23e / +0x23f, word +0x250) are not modelled.
-//! - The respray reloads the car through the garage (as the car menu's paint choice does), which takes a
-//!   moment; the nitrous tank is carried over, damage and dirt stay off.
+//! - The respray changes the paint of the same car entity in place (`GarageAction::Respray` →
+//!   `paint_wear::Respray`: its body-paint materials take the new paint's constants, `materials::repaint`), as
+//!   the game's message 0xc changes the paint of the same vehicle; the repair, the wash and the nitrous refill
+//!   stay as the handler left them. It happens in the frame after the pass (the game's message queue timing
+//!   was not read).
 //! - No effect or sound: none is named by the handler (the events above go to the scoring / HUD listeners).
 
 use crate::platform::PollLock;
@@ -68,26 +71,22 @@ pub struct BodyShopPlugin {
 
 impl Plugin for BodyShopPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<BodyShops>()
-            .init_resource::<Collected>()
-            .add_systems(Update, (read_palette, pass).chain())
-            // After the new car's own start-up state (`--damage`, `--dirt`) has been applied.
-            .add_systems(PostUpdate, finish_respray);
+        app.init_resource::<BodyShops>().init_resource::<Collected>().add_systems(Update, (read_palette, pass).chain());
         if let Some(out) = &self.test {
-            app.insert_resource(ShopTest { out: out.clone(), phase: 0, timer: 0.0, before: String::new(), paint: 0 })
-                .add_systems(Update, run_test.before(pass));
+            app.insert_resource(ShopTest {
+                out: out.clone(),
+                phase: 0,
+                timer: 0.0,
+                before: String::new(),
+                paint: 0,
+                entity: None,
+            })
+            .add_systems(Update, run_test.before(pass));
         }
     }
 }
 
 type Palette = Vec<(usize, u32)>;
-
-/// A respray in progress: the garage is loading the car in its next colour.
-struct Respray {
-    old_entity: Entity,
-    tank: f32,
-    started: f32,
-}
 
 #[derive(Resource, Default)]
 pub struct BodyShops {
@@ -100,7 +99,6 @@ pub struct BodyShops {
     /// when the car changes.
     palette: Option<(String, Palette)>,
     palette_job: Option<(String, Arc<Mutex<Option<Palette>>>)>,
-    respray: Option<Respray>,
     /// Passes so far and the shop of the last one.
     pub passes: u32,
     pub last: Option<u32>,
@@ -146,9 +144,8 @@ fn pass(
     garage: Res<Garage>,
     mut actions: MessageWriter<GarageAction>,
     pending: Option<Res<PendingCar>>,
-    time: Res<Time<Real>>,
     game_time: Res<Time>,
-    mut cars: Query<(Entity, &mut Car, &Transform, Option<&mut CarDamage>, Option<&mut CarGrime>), With<Player>>,
+    mut cars: Query<(&mut Car, &Transform, Option<&mut CarDamage>, Option<&mut CarGrime>), With<Player>>,
 ) {
     let Some(game) = game else { return };
     let shops = &mut *shops;
@@ -160,7 +157,7 @@ fn pass(
         }
         info!("body shops: {}", shops.shops.len());
     }
-    let Some((entity, mut car, transform, damage, grime)) = cars.iter_mut().next() else { return };
+    let Some((mut car, transform, damage, grime)) = cars.iter_mut().next() else { return };
     let p = transform.translation.to_array();
     // `FUN_00749220`: a shop on the cooldown list only keeps the inside byte; another one goes on the list and,
     // if the byte was clear, is a pass.
@@ -188,7 +185,7 @@ fn pass(
     });
     let Some(id) = entered else { return };
     // The handler does nothing more for a car that is being replaced.
-    if shops.respray.is_some() || pending.is_some() || garage.loading.is_some() {
+    if pending.is_some() || garage.loading.is_some() {
         return;
     }
     let Some(current) = garage.current.as_ref() else { return };
@@ -225,40 +222,8 @@ fn pass(
         car.speed / 0.447_04
     );
     if next != current.paint_index {
-        let name = garage
-            .catalogue
-            .iter()
-            .find(|c| c.bundle.eq_ignore_ascii_case(&current.bundle))
-            .map_or_else(|| current.bundle.clone(), |c| c.name.clone());
-        actions.write(GarageAction::Drive { name, bundle: current.bundle.clone(), paint_index: next });
-        shops.respray = Some(Respray { old_entity: entity, tank: car.nitrous.tank, started: time.elapsed_secs() });
+        actions.write(GarageAction::Respray { paint_index: next });
     }
-}
-
-/// The resprayed car has replaced the old one: it is the same car, so it keeps the tank and stays repaired and
-/// clean (the garage spawns a fresh car, with the run's `--damage` / `--dirt` start values).
-#[allow(clippy::type_complexity)]
-fn finish_respray(
-    mut shops: ResMut<BodyShops>,
-    time: Res<Time<Real>>,
-    mut cars: Query<(Entity, &mut Car, Option<&mut CarDamage>, Option<&mut CarGrime>), With<Player>>,
-) {
-    let Some(respray) = shops.respray.as_ref() else { return };
-    if time.elapsed_secs() - respray.started > 60.0 {
-        warn!("body shop: the resprayed car did not arrive");
-        shops.respray = None;
-        return;
-    }
-    let Some((entity, mut car, damage, grime)) = cars.iter_mut().next() else { return };
-    if entity == respray.old_entity {
-        return;
-    }
-    // Both arrive a frame or two after the car (`damage::attach_damage`, `paint_wear::attach_paint`).
-    let (Some(mut damage), Some(mut grime)) = (damage, grime) else { return };
-    car.nitrous.tank = respray.tank;
-    damage.repair();
-    *grime = CarGrime::default();
-    shops.respray = None;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -271,6 +236,8 @@ struct ShopTest {
     timer: f32,
     before: String,
     paint: usize,
+    /// The car before the pass: a respray keeps it.
+    entity: Option<Entity>,
 }
 
 impl ShopTest {
@@ -328,7 +295,7 @@ fn run_test(
         exit.write(AppExit::Success);
     };
     let Ok((entity, car, mut t, mut v, mut w, damage, grime)) = player.single_mut() else {
-        if test.timer > 120.0 && shops.respray.is_none() {
+        if test.timer > 120.0 {
             fail("no player car", &mut exit);
         }
         return;
@@ -400,6 +367,7 @@ fn run_test(
             }
             test.before = state_line(car, damage, grime, &garage);
             test.paint = garage.current.as_ref().map_or(0, |c| c.paint_index);
+            test.entity = Some(entity);
             println!("TEST RESULT bodyshop before: {}", test.before);
             test.shoot(&mut commands, "before");
             test.phase = 2;
@@ -421,23 +389,22 @@ fn run_test(
                 fail(&format!("no pass after 20 s (car at {:.1})", t.translation), &mut exit);
             }
         }
-        // Stop, wait for the resprayed car.
+        // Stop, then look at the car.
         3 => {
-            input.scripted = Some([0.0, 1.0, 0.0, 0.0]);
-            if shops.respray.is_some() || damage.is_none() || grime.is_none() || test.timer < 4.0 {
-                if test.timer > 70.0 {
-                    fail("the resprayed car did not arrive", &mut exit);
-                }
+            // Brake to a stop, then hold the handbrake (the brake alone reverses a stopped car).
+            input.scripted = Some([0.0, if car.speed > 0.5 { 1.0 } else { 0.0 }, 0.0, 1.0]);
+            if test.timer < 4.0 {
                 return;
             }
             let after = state_line(car, damage, grime, &garage);
             let paint = garage.current.as_ref().map_or(0, |c| c.paint_index);
             let clean = damage.is_some_and(|d| d.levels.iter().all(|l| *l == 0.0))
                 && grime.is_some_and(|g| g.dust < 0.05 && g.dirt < 0.05);
+            let same = test.entity == Some(entity);
             println!("TEST RESULT bodyshop after: {after}");
             println!(
-                "TEST RESULT bodyshop {}: repaired and washed {clean}, resprayed {} ({} -> {paint}), shops found {:?}",
-                if clean && paint != test.paint { "PASSED" } else { "FAILED" },
+                "TEST RESULT bodyshop {}: repaired and washed {clean}, same car entity {same}, resprayed {} ({} -> {paint}), shops found {:?}",
+                if clean && same && paint != test.paint { "PASSED" } else { "FAILED" },
                 paint != test.paint,
                 test.paint,
                 collected.body_shops
@@ -447,7 +414,7 @@ fn run_test(
             test.timer = 0.0;
         }
         _ => {
-            input.scripted = Some([0.0, 1.0, 0.0, 0.0]);
+            input.scripted = Some([0.0, if car.speed > 0.5 { 1.0 } else { 0.0 }, 0.0, 1.0]);
             if test.timer > 1.5 {
                 exit.write(AppExit::Success);
             }

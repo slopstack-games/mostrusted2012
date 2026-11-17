@@ -574,8 +574,17 @@ fn menu_input(
 
 fn activate(menu: &mut CarMenu, garage: &Garage, list: &[usize], actions: &mut MessageWriter<GarageAction>) {
     let Some(e) = list.get(menu.selected).map(|&i| &garage.catalogue[i]) else { return };
-    actions.write(GarageAction::Drive { name: e.name.clone(), bundle: e.bundle.clone(), paint_index: menu.paint });
     menu.open = false;
+    // Another paint of the car being driven: the same car resprayed in place, as the game's paint shop does.
+    if garage.loading.is_none()
+        && let Some(c) = &garage.current
+        && c.bundle.eq_ignore_ascii_case(&e.bundle)
+        && c.paint_index != menu.paint
+    {
+        actions.write(GarageAction::Respray { paint_index: menu.paint });
+        return;
+    }
+    actions.write(GarageAction::Drive { name: e.name.clone(), bundle: e.bundle.clone(), paint_index: menu.paint });
 }
 
 fn set_text(text: &mut Text, value: String) {
