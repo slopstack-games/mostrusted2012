@@ -14,6 +14,8 @@ pub struct VehicleInfo {
     pub id: u32,
     pub name: String,
     pub year: u16,
+    /// The vehicle list's `GamePackID` (+0x2c): 17127 = the base game, else a DLC pack.
+    pub game_pack: u32,
     /// Game-relative paths of the high/low detail bundles, if the car has its own.
     pub hi_bundle: Option<String>,
     pub lo_bundle: Option<String>,
@@ -44,6 +46,7 @@ impl AssetStore {
                 id: v.id,
                 name: lang.get(v.name_string).unwrap_or("?").to_string(),
                 year: v.year,
+                game_pack: v.game_pack,
                 hi_bundle: bundle(v.id, "HI"),
                 lo_bundle: bundle(v.id, "LO"),
             })

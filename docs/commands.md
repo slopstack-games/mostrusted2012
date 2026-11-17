@@ -31,6 +31,7 @@ cargo fmt                                    # rustfmt.toml: max_width 120
 ./target/release/mwtool shader-asm DriveableSurface # DXBC disassembly of a shader's programs
 ./target/release/mwtool survey VehicleGraphicsSpec --len 0x60   # per-field stats across all instances
 ./target/release/mwtool vehicles                   # car catalogue (id, year, name, bundle)
+./target/release/mwtool packs                      # game packs, entitlements, their grants, each DLC pack's cars and events
 ./target/release/mwtool texture <id> out.png
 ./target/release/mwtool genesys VEHICLES/VEH_1085007_HI.BNDL --type HandlingBehaviour   # or: genesys all --type X
 ./target/release/mwtool handling 911                # typed handling parameters (docs/handling.md)

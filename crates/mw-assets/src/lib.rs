@@ -28,6 +28,7 @@ pub mod handling;
 pub mod lights;
 pub mod mods;
 pub mod music;
+pub mod packs;
 pub mod paint;
 pub mod police;
 pub mod police_lights;

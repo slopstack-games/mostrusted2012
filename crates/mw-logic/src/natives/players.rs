@@ -36,6 +36,9 @@ pub struct Player {
     pub final_5c8: u32,
     pub final_5cc: u32,
     pub final_5d0: bool,
+    /// `FUN_006ba320` (the player's vtable +0x18): the `VehicleList` id of its car (engine state; the runtime
+    /// sets it; 0 = none). `Mode.CurrentVehicleGamepack` reads its pack.
+    pub vehicle_id: u32,
 }
 
 /// The player manager.

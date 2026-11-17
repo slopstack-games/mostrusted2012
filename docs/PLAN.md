@@ -509,6 +509,11 @@ GeneSys. Engine-free crates (`mw-logic`, `mw-lua`; wasm-compatible), in dependen
    manager in shadow mode. It follows the real title, press and world load into "Freedrive Update" and the HUD
    machine. Carried out: page contexts and widget groups (`natives/pages.rs`: the widgets' Lua scripts run)
    and the boot page (title and boot transition from the HSM). The rest is logged.
+8. `[~]` **DLC and entitlements** (2026-11-17, decomp.md "DLC and entitlements"): user decision: base game
+   owned, every DLC pack not owned. Done: `natives::entitlements` (the entitlement / game-pack managers' checks),
+   the `EntitlementManager` root, `Mode.CurrentVehicleGamepack`, the packs' data (`mw_assets::packs`, `mwtool
+   packs`). Left: the runtime gates (garage / `--drive`, jack-spot store prompt, map events, mods, the airport
+   barrier and prompt), `DlcMessageIndicator`, the unlock manager.
 
 ### M9: Browser build `[~]` (2026-11-17)
 The same runtime in a browser on WebGPU, on the player's own install (picked folder or a loopback server; the

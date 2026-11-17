@@ -5937,3 +5937,89 @@ Ported Lua natives (70 of 385, 2026-11-17; the first 60 were checked against the
 `IsConductorIdle`, `RequestDialog`, `GetDialogResult`, `ClearDialog`, `StartTextEntry`, `GetTextEntryState`,
 `GetEnteredText`, the settings getters / setters / revert / save, `RegisterPostFXSetting`, `ChangePostFXSetting`,
 `ResetPostFXSettings`, and 12 career field natives (`SetOfflineEventToPlay`, `SetStoryMode`, ...).
+
+## DLC and entitlements
+
+(2026-11-17; `natives/entitlements.rs`, `natives/entitlement_view.rs`, `mw_assets::packs`, `mwtool packs`.)
+**Offline rule (user decision, not a model value): the base game is owned, every DLC pack is not** (the Steam
+depot ships all packs, so the files cannot show ownership); the owned set stays empty until a real entitlement
+source exists.
+
+**The entitlement manager EM** (G+0x29280; EM+0xadc → G). Owned set EM+0x22c, up to 64 ids, count +0x32c (0 in
+the constructor). `FUN_006401b0(id)` = owned: the online pass `DAT_01176f28` counts as owned while EM+0xce0 is
+clear or +0x1a4 / +0xae5 are set (all three 0 on PC: constructor stores at 0x64adfb.., +0xae5 = `FUN_004128c0()`
+= 0), any other id when it is in the set. Filled from the platform's tags (`FUN_00643810`: the
+`NucleusGrantMappingsList` maps a Nucleus tag such as `NFSMW_DLCPACK2` to `Entitlement` objects) and from the
+save's "entitlements" cache (`FUN_00647400` → `FUN_0072f9b0`); `FUN_00640030` writes new ids back and queues
+their thank-you items (+0x9d4 `ThankYouCount`). Ids are the `Entitlement` objects' `GameChangerID`s, set into
+globals by static initialisers (0xf56530.., 0xf5bf10..): OnlinePass 94740, LimitedEdition 94746, **PDLC1
+Ultimate Speed 2115001, PDLC2 Terminal Velocity 2201004, PDLC3 Movie Legends 2201005, PDLC4 NFS Heroes
+2201006** (`HasPdlc1..4` = 0x654030/50/70/90, wrappers `FUN_006402d0` / `2e0` / `2f0` / `300`). Others
+(TimeSavers_1 1551660 → GMM+0x2feb via `FUN_006ecfa0`, pre-order and mod time-saver packs) exist in the data.
+
+**The game-pack manager GPM** (G+0x2ab00). List +0x6c / +0x70 = `GAMEPLAY.BNDL` `GamePack` items (resource
+0x33ba): `GameChangerID` +0x1c, entitlement `72c1dd5c` +0x24, `Release` +0x28. Packs: base 17127 (release 0, no
+entitlement), 2115003 (1, PDLC1), 2196330 (2, PDLC2), 2196660 (3, PDLC3), 2196661 (4, PDLC4). Helpers:
+`FUN_00643b40` by id, `FUN_00643ae0` by release, `FUN_00643c10` = release > 0 (a DLC pack), `FUN_00643c50` =
+release equals n, **`FUN_00647780` = owned** (pack found and entitlement 0 or owned), `FUN_00647700` = shown
+(owned or `FUN_0072fcc0`: the four PDLC ids are hard-coded visible, others from the save's "entitle_vis"
+table). Per player slot GPM keeps a bitset of packs (+slot×4); `FUN_006478e0` sets the local slot's bit i from
+the unlock manager (`FUN_0068f190(pack id)`), whose only records for a pack are its entitlement's `GameUnlock`.
+`GamePackConfig` (`GlobalConfig` +0x2c): +0x0c..+0x18 the four DLC packs, +0x10 the airport's (2196330),
++0x20 the base pack.
+
+**Unlock records sourced by entitlements.** `GAMEPLAY.BNDL` `GameUnlockList` (0x33be): a `GameUnlock`'s
+`6060c3fa` handle names its source; for 28 records it is a DLC `Entitlement`, and `d2cded7d` is the unlocked
+asset (`UnlockAssetType` 4 = car, 9 = game pack, −1 = event). Each PDLC grants its pack, 5 cars and 1 event.
+`FUN_00686010(record)` = the source's `GameChangerID` is **not** owned (`FUN_005dbb20` reads the field named
+`GameChangerID` = 0x655d3f5f); `FUN_00688fa0(asset, kind)` (the `IsAssetUnlocked` path when the manager's +0x2c
+flag is set; else the cached `FUN_0068cc30`): no local player / profile → false; manager +0x2e ("unlock all")
+→ true; an asset with records is unlocked only through a record that is not entitlement-blocked and passes its
+progression check; an asset without records is unlocked. `FUN_00689280` / `FUN_00689710` / `FUN_006898b0` /
+`FUN_0068f450` filter the same way. So a DLC car is "not in the profile" (`FUN_0068f190` false) without its
+entitlement.
+
+**What each system does with it** (runtime specs; ported checks named in brackets):
+- **Car lists** (`FUN_00683170` / `FUN_006835c0`, vehicle list manager +0x8fa0, bitset +0x8258): an entry is
+  listed when its pack (vehicle list +0x2c `GamePackID`) is not DLC or is shown (`FUN_00647700`: always for the
+  four packs) and it is not a livery entry (+0x04 is 0 or equals +0x00). **DLC cars stay listed** (shown locked:
+  the garage / store). Selectable / drivable (`FUN_0073c180`): unlocked (`FUN_0068f190`), not
+  `FUN_006e1020`, and the pack owned (`FUN_00647780`) [`Entitlements::pack_owned`]. Runtime: `garage.rs` and
+  `--drive` must refuse a car whose pack is not owned; list it locked.
+- **Jack spots** (`FUN_00747aa0`, the spot list): a slot is kept when its car's pack is not DLC, is release 1 or
+  2, or is shown: DLC cars appear in jack spots. The prompt (`FUN_007615f0`, decomp.md "Jack spots"): a car the
+  profile lacks shows `GameLogicConfig` +0x168 `PromptStore` (2094166 "… TO GO TO STORE") and SWAP_CARS opens the
+  store (`FUN_00748090`) instead of swapping. Runtime: `freeroam.rs` swap must use the store prompt (no swap) for
+  a car without its entitlement. The map's jack-spot icons (`Widget.POI.NearCollGamePack[#].Release`,
+  `JackSpotDLCIcon`, `JackSpots.GamePackImageIds`) show the pack.
+- **Events** (`FUN_006f3830` / `FUN_0074a600`): an event (+0x20 `GamePack`) whose pack is DLC and whose
+  entitlement is not owned is unavailable [`Entitlements::pack_content_available`]; in addition, when the
+  event's allowed-car entry for the current car (`FUN_006f0b60`: the `AllowedVehicleList` entry with exactly
+  one mod: 0xb → 1, 0xc → 2, other → 3) gives 2 or 3, PDLC2 is required. Event lists (`FUN_006ef450`,
+  `FUN_00806cb0`) keep DLC events listed (shown). `FUN_006fd0a0` (an event / location's pack by release):
+  release 0 → available when TimeSavers_1 is owned (GMM+0x2feb) unless `FUN_006fcf90`; release 1..4 → the
+  same with `HasPdlc1..4`; otherwise the progression's unlock bitset (category 1 / 8 / 0xb / 0x11 / 0x14 by
+  release, +0x420 + cat × 0x94). Runtime: map events (`freeroam.rs` / the map) must not start a DLC event (list
+  in research-log 2026-11-17) without its entitlement.
+- **Mods**: slots 11 (DRIFT TIRES) and 13 (JUMP NITROUS) need PDLC2 (`FUN_00678e60`, `FUN_00688c90`,
+  `FUN_0068c320` / `FUN_0068c3d0`, `FUN_00700480`) [`Entitlements::mod_slot_available`]. Runtime: the mods
+  menu / `--drive` mods must not fit them.
+- **The airport** (PDLC2 Terminal Velocity). Offline, `FUN_006e68d0` (at the free-drive setup): without
+  `HasPdlc2` each `CustomChevron` of `GameLogicConfig` +0x2a8 `CheckpointConfig` (`e74de7e2`, one chevron:
+  id 2204089, x 134..137.8, y 48, z −1991.9..−2030.2, at the airport road) is shown with `FUN_00645f30(id, 0, 3)`
+  (a barrier). `FUN_006cfd40` (per-player update): with a world flag (`FUN_0046ee10()`+0x1c), a live car, no
+  `HasPdlc2` and offline (`FUN_006dfed0` false), within 50 m (`.rdata` 0x00fc4fa0 = 2500 squared) of a chevron's
+  centre (min/max × 0.5) the prompt is GMM+0x2c70 = `GameLogicConfig` +0x58 `edbc4945` (language 2211224) with
+  GMM+0x2ca7 = 1, and a SWAP_CARS press (player 0 action +0xc4 = 2) opens the store (`FUN_0086d610`, GMM+0x2f27
+  `JumpToStore` = 1). Online, `FUN_00752ba0` refuses a spawn inside the "AirportTrgr" trigger without
+  `HasPdlc2` (GMM+0x2e9a `LeaveGame`, G+0x2f70c = `OnlineConfig` +0xe4), `FUN_006478e0` does the same for a
+  session that needs the airport, `FUN_006c9fb0` sends the airport bit (`FUN_00643c90`) in the respawn message,
+  and `CanJoinAirportGameByFriendIndexBinding` (0x676680 → `FUN_006748d0`) lets a player join a friend's game
+  when it has the pack or the friend is not in an airport lobby (friend +99 `InAirportLobby`); online events
+  with `RequiresAirport` (+0x6c) are hidden without PDLC2 (`FUN_00808d30`). Not found: the code behind the
+  probe's offline "put back to the free-roam start" (reason 6) when entering zone 42; `FUN_006cfd40` /
+  `FUN_006e68d0` are the offline gates the dump shows. Runtime: place the barrier chevron and the store prompt;
+  keep the car out of the airport arena (zones 36-57) without PDLC2.
+- **UI**: `EntitlementManager.HasPdlc1..4` / `IsPdlc3Purchasable` / `HasOnlinePass` (ported root),
+  `Mode.CurrentVehicleGamepack.Release` (ported: the car's pack) drive the DLC badges, the store pages and
+  `FUN_00871240` (per pack not owned → GMM+0x2848 / 0x2950 / 0x2a58 / 0x2b60, a per-pack text block).

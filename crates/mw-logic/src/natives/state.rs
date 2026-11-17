@@ -46,6 +46,8 @@ pub struct LogicState {
     pub select: super::hooks_select::SelectFields,
     /// The UI sequence services' state (`UISequences` / `GeneralSequence` roots, `sequence_view.rs`).
     pub sequences: super::sequence_view::UiSequences,
+    /// The entitlement and game-pack managers (EM G+0x29280, GPM G+0x2ab00): offline, base game only.
+    pub entitlements: super::entitlements::Entitlements,
 }
 
 /// The binding host the logic reads through: the game-mode manager's `Mode` root ([`super::mode_view`]) first,
@@ -82,6 +84,7 @@ static ROOTS: std::sync::LazyLock<Vec<(u32, RootFn)>> = std::sync::LazyLock::new
         (h("SignInState"), super::sign_in_view::lookup),
         (h("UISequences"), super::sequence_view::ui_lookup),
         (h("GeneralSequence"), super::sequence_view::general_lookup),
+        (h("EntitlementManager"), super::entitlement_view::lookup),
     ]
 });
 

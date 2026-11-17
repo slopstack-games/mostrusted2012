@@ -431,6 +431,21 @@ fn drive(
         // weapon lists load at once.
         let events = store.events()?;
         let ids = store.start_config()?.ids;
+        // The packs (game-pack manager) and each car's pack; nothing is owned (the user's offline decision,
+        // `natives::entitlements`).
+        let packs = store.pack_data()?;
+        st.entitlements.game_packs = packs
+            .game_packs
+            .iter()
+            .map(|p| mw_logic::natives::entitlements::GamePack {
+                id: p.id,
+                entitlement: p.entitlement,
+                release: p.release,
+            })
+            .collect();
+        st.entitlements.airport_pack = packs.airport_pack;
+        let lang = store.language(mw_assets::DEFAULT_LANGUAGE)?;
+        st.entitlements.vehicle_packs = store.vehicles(&lang)?.iter().map(|v| (v.id, v.game_pack)).collect();
         st.config.escape_mode = ids.escape_mode;
         st.config.default_rollout = ids.default_rollout;
         st.config.freedrive_mode = ids.freedrive_mode;

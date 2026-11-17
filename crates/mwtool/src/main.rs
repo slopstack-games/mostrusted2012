@@ -509,6 +509,9 @@ enum Cmd {
     Shaders,
     /// List the cars from the vehicle list with names and bundles.
     Vehicles,
+    /// Content packs: the `GamePack`s, the `Entitlement`s, the entitlement-sourced `GameUnlock`s and the cars and
+    /// offline events of each DLC pack (decomp.md "DLC and entitlements").
+    Packs,
     /// Show a car's damage data (skeleton, per-zone deformation clips, hinged parts), check its
     /// skinning, and optionally render a damaged pose (`--level front=0.5 --preview out.png`).
     /// `damage all` surveys every car.
@@ -1292,6 +1295,43 @@ fn main() -> Result<()> {
             let lang = store.language(mw_assets::DEFAULT_LANGUAGE)?;
             for v in store.vehicles(&lang)? {
                 println!("{:>8}  {:<4}  {:<40} {}", v.id, v.year, v.name, v.hi_bundle.as_deref().unwrap_or("-"));
+            }
+        }
+        Cmd::Packs => {
+            let store = AssetStore::new(game)?;
+            let lang = store.language(mw_assets::DEFAULT_LANGUAGE)?;
+            let packs = store.pack_data()?;
+            let text = |id: u32| lang.get(id).unwrap_or("?").replace('\n', " ");
+            println!("game packs (airport pack {}):", packs.airport_pack);
+            for p in &packs.game_packs {
+                println!(
+                    "  {:>8}  release {}  entitlement {:>8}  {}",
+                    p.id,
+                    p.release,
+                    p.entitlement,
+                    text(p.display_name)
+                );
+            }
+            println!("entitlements:");
+            for e in &packs.entitlements {
+                println!("  {:>8}  {:<22} purchasable {:<5}  {}", e.id, e.name, e.purchasable, e.description);
+            }
+            println!("entitlement grants (GameUnlock with an Entitlement source):");
+            for g in &packs.grants {
+                println!("  entitlement {:>8} -> asset {:>8} (type {})", g.entitlement, g.asset, g.asset_type);
+            }
+            let vehicles = store.vehicles(&lang)?;
+            let events = store.events()?;
+            for p in packs.game_packs.iter().filter(|p| p.release > 0) {
+                println!("pack {} (release {}, {}):", p.id, p.release, text(p.display_name));
+                // One line per car id (the list repeats an id for its livery entries).
+                let mut seen = std::collections::HashSet::new();
+                for v in vehicles.iter().filter(|v| v.game_pack == p.id && seen.insert(v.id)) {
+                    println!("  car   {:>8}  {}", v.id, v.name);
+                }
+                for e in events.events.iter().filter(|e| e.game_pack == p.id) {
+                    println!("  event {:>8}  {:<12} {}", e.id, e.game_mode, text(e.name));
+                }
             }
         }
         Cmd::Collision { bundle, out } => {

@@ -75,6 +75,8 @@ pub fn lookup(s: &LogicState, members: &[Segment]) -> Lookup {
         "ShowRecommendsIntro" | "RecommendsEventActive" => b(false),
         // 0x711f70 / 0x711fc0 / 0x711fe0 / 0x711f00 (online sessions): offline false.
         "IsHostMigrating" | "IsInPublicGame" | "IsHostMigrationCountdownRunning" | "IsSuitableHost" => b(false),
+        // 0x717010 → `FUN_006e7210`: the pack of the local player's car.
+        "CurrentVehicleGamepack" => super::entitlement_view::current_vehicle_gamepack(s, rest),
         "Data" => match current_mode(s) {
             None => Lookup::Null,
             Some(m) => match rest.first() {
@@ -186,6 +188,7 @@ static MEMBERS: std::sync::LazyLock<Vec<(u32, &'static str)>> = std::sync::LazyL
         "IsHostMigrationCountdownRunning",
         "IsSuitableHost",
         "Data",
+        "CurrentVehicleGamepack",
     ]
     .into_iter()
     .map(|n| (binding::hash(n), n))
