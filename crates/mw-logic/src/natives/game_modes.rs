@@ -154,6 +154,12 @@ pub struct GameModeManager {
     pub skip_prompt_time: f32,
     /// +0x2526: `HasTargetSpeed` (`ModeVM.ShowPositionFromCheckpoint` needs it clear).
     pub has_target_speed: bool,
+    /// +0x2ca3, +0x2d28, +0x2d2c: what `SetFinalEventData` copies into the local player (meaning open).
+    pub byte_2ca3: u8,
+    pub word_2d28: u32,
+    pub word_2d2c: u32,
+    /// The current event's target score (its record's +0xcc, behind (GMM+4)+0xf4 / +0xf8; the runtime fills it).
+    pub event_target_score: i32,
 }
 
 impl GameModeManager {

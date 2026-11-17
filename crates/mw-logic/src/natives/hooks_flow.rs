@@ -59,6 +59,8 @@ pub fn register(r: &mut Registry) {
     r.set_hook("LeaveGame", leave_game);
     r.set_hook("ExitForMultiplayerMatchMaking", exit_for_multiplayer_matchmaking);
     r.set_hook("ForceKeyboardShutdown", force_keyboard_shutdown);
+    // The sixth twenty (verified 2026-11-17): the rest are in hooks_select.rs.
+    r.set_hook("SetFMNMenuShowingVITAExclusiveEvents", set_fmn_menu_showing_vita_exclusive_events);
     for name in [
         "ClearE3MultiplayerProgression",
         "ShowPartyInvitePopup",
@@ -73,9 +75,7 @@ pub fn register(r: &mut Registry) {
 
 /// Hooks ported from their handlers by an earlier, unfinished pass: not verified against the dump yet, so not
 /// part of [`Registry::original`]; tests install them with [`Registry::original_with_parked`].
-pub fn register_parked(r: &mut Registry) {
-    r.set_hook("SetFMNMenuShowingVITAExclusiveEvents", set_fmn_menu_showing_vita_exclusive_events);
-}
+pub fn register_parked(_: &mut Registry) {}
 
 /// The original's TRUE / FALSE exit points.
 pub(crate) fn exit_if(b: bool) -> Key {

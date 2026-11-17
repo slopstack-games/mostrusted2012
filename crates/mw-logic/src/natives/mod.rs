@@ -28,6 +28,7 @@ pub mod game_modes;
 pub mod hook_args;
 pub mod hooks_event;
 pub mod hooks_flow;
+pub mod hooks_select;
 #[cfg(test)]
 mod hooks_tests;
 pub mod hooks_ui;
@@ -147,6 +148,7 @@ impl Registry {
         hooks_flow::register(&mut r);
         hooks_event::register(&mut r);
         hooks_ui::register(&mut r);
+        hooks_select::register(&mut r);
         lua_widgets::register(&mut r);
         lua_settings::register(&mut r);
         lua_career::register(&mut r);
