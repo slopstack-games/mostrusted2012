@@ -28,11 +28,6 @@ pub fn register(r: &mut Registry) {
     r.set_hook("RemoveAllRaceCars", remove_all_race_cars);
     r.set_hook("RequestRespawnAtEventStart", request_respawn_at_event_start);
     r.set_hook("IsOnlineEvent", is_online_event);
-}
-
-/// Hooks ported from their handlers by an earlier, unfinished pass: not verified against the dump yet, so not
-/// part of [`Registry::original`]; tests install them with [`Registry::original_with_parked`].
-pub fn register_parked(r: &mut Registry) {
     r.set_hook("ShouldShowEscapeSequence", should_show_escape_sequence);
     r.set_hook("FixUpRecommendationRetry", fix_up_recommendation_retry);
     r.set_hook("SyncTimeOfDay", sync_time_of_day);
@@ -48,10 +43,15 @@ pub fn register_parked(r: &mut Registry) {
     r.set_hook("TransferVehicleHeatToPlayer", transfer_vehicle_heat_to_player);
     r.set_hook("HasLocalPlayerSetRollout", has_local_player_set_rollout);
     r.set_hook("ResetLocalPlayerDamage", reset_local_player_damage);
+    r.set_hook("ClearNitrous", clear_nitrous);
+}
+
+/// Hooks ported from their handlers by an earlier, unfinished pass: not verified against the dump yet, so not
+/// part of [`Registry::original`]; tests install them with [`Registry::original_with_parked`].
+pub fn register_parked(r: &mut Registry) {
     r.set_hook("DeactivateDamage", deactivate_damage);
     r.set_hook("ReactivateDamage", reactivate_damage);
     r.set_hook("CleanAndRepairVehicle", clean_and_repair_vehicle);
-    r.set_hook("ClearNitrous", clear_nitrous);
 }
 
 /// `StartGameModeTimer` (0x675ea0): `FUN_006f4650`(GMM, 1).
@@ -172,9 +172,12 @@ fn add_all_ai_players(s: &mut LogicState, _: Args) -> Key {
     EXIT
 }
 
-/// `AreAllAIPlayersLoaded` (0x67a710) → `FUN_00679600`: every occupied slot 12..23 is loaded (`FUN_006ba2f0`).
+/// `AreAllAIPlayersLoaded` (0x67a710) → `FUN_00679600`: every occupied slot 12..23 is loaded: `FUN_006ba2f0` is false
+/// without a vehicle (+0xa0 = −1), else `FUN_0083bde0` → `FUN_005733b0`(vehicle) (engine state, `loaded`). The original
+/// walks the records from PM+0x5f50 with a stride of 0x5e0 (not the 0x7f0 of the records, so slots 13.. read
+/// shifted memory); model decision: each slot reads its own record.
 fn are_all_ai_players_loaded(s: &mut LogicState, _: Args) -> Key {
-    exit_if(s.players.slots[FIRST_AI_SLOT..].iter().flatten().all(|p| p.loaded))
+    exit_if(s.players.slots[FIRST_AI_SLOT..].iter().flatten().all(|p| p.vehicle != -1 && p.loaded))
 }
 
 /// `RemoveAllRaceCars` (0x675f90) → `FUN_006d1310` on PM: the vtable +0x20 of each of the 24 slot pointers

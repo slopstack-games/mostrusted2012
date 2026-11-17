@@ -39,21 +39,21 @@ pub fn register(r: &mut Registry) {
     r.set_hook("SetRetryAtEnd", set_retry_at_end);
     r.set_hook("IsChallengeActive", is_challenge_active);
     r.set_hook("ClearMatchmakingState", clear_matchmaking_state);
+    r.set_hook("HACKSuspendCarControlForIntro", hack_suspend_car_control_for_intro);
+    r.set_hook("HACKResumeCarControlAfterIntro", hack_resume_car_control_after_intro);
+    r.set_hook("SetSeenEventsForVehicleToTrue", set_seen_events_for_vehicle_to_true);
+    r.set_hook("ForceOpenEasyDrive", force_open_easydrive);
 }
 
 /// Hooks ported from their handlers by an earlier, unfinished pass: not verified against the dump yet, so not
 /// part of [`Registry::original`]; tests install them with [`Registry::original_with_parked`].
 pub fn register_parked(r: &mut Registry) {
     // New game / continue, the intro.
-    r.set_hook("HACKSuspendCarControlForIntro", hack_suspend_car_control_for_intro);
-    r.set_hook("HACKResumeCarControlAfterIntro", hack_resume_car_control_after_intro);
     r.set_hook("SetSafehouseFromProfile", exit_only);
     // Profile, settings, progression.
     // Game-mode manager flags.
-    r.set_hook("SetSeenEventsForVehicleToTrue", set_seen_events_for_vehicle_to_true);
     r.set_hook("SetFMNMenuShowingVITAExclusiveEvents", set_fmn_menu_showing_vita_exclusive_events);
     r.set_hook("SetFMNMenuShowingCommonEvents", set_fmn_menu_showing_common_events);
-    r.set_hook("ForceOpenEasyDrive", force_open_easydrive);
     r.set_hook("ClearForceOpenEasyDriveFlag", clear_force_open_easydrive_flag);
     r.set_hook("PlayEndOfIntroSequenceInEasyDrive", play_end_of_intro_sequence_in_easydrive);
     r.set_hook("ShouldPlayEndOfIntroSequenceInEasyDrive", should_play_end_of_intro_sequence_in_easydrive);

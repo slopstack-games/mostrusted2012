@@ -13,6 +13,31 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ## Dated findings
 
+### 2026-11-17: third 20 HSM hooks verified and enabled (60 of 187; `natives/hooks_{flow,event}.rs`)
+
+Handlers read from `re/out/live/text.asm` (vtable-only), helpers with `fn`: RemoveAllCops 0x67a740 (`FUN_006795c0`, per
+occupied slot `FUN_006bf190` = kind +0x9c == 2 and (+0x578)+0xb5, then `FUN_006ce180`(slot, 3)), AreAllAIPlayersLoaded,
+RequestRespawn / ...ToLastSwapSpot (`FUN_006cd340` / `FUN_006cd3a0`: +0x2c4 = 0, (+0x435 = 1), `FUN_006c9fb0`(0, 0)),
+HasLocalPlayerSetRollout, ResetChaseStats (`FUN_0065b830`(pursuit, 1) then heat +0x3d8 / +0x3dc / +0x3e8 = 0),
+ResetLocalPlayerHeat, TransferVehicleHeatToPlayer (+0x3dc only), ResetLocalPlayerDamage (`FUN_006ba2a0` then
+GMM+0x2e7f = 0 then message 0x16), ClearNitrous (`FUN_0065de30` = thunk to `FUN_00658c90`, arg PM+0xa6b4),
+ShouldShowEscapeSequence (`FUN_006e03d0` = GMM+0x2e90, or the mode record (GMM+0x2cf4 / +0x2cf8)+0x18 == config +0x60),
+FixUpRecommendationRetry (`FUN_006e04d0`: only when GMM+0x2e90, `FUN_00726ca0`(`last_played` value via `FUN_00732650`)),
+SyncTimeOfDay (`FUN_006f4960`), ClearPostEventAwards (`FUN_006e6670` + `FUN_006e28c0`, all 25 offsets match),
+RemoveRoadblocks (`FUN_008456d0`), ResetProps (`FUN_00846830`, message 0x15), HACKSuspend / Resume (G+0x2f0c8 = 3.0, `.rdata`
+0xf92eb0 = 0x40400000; `FUN_0083c930` group 1 bit 6), SetSeenEventsForVehicleToTrue (`FUN_006e0480`, GMM+0x2e86),
+ForceOpenEasyDrive (GMM+0x2ca9). All exit through EXIT except the three bool tests (TRUE 0x1177fe0 / FALSE 0x1177ee0).
+All 20 were already right; one fix: AreAllAIPlayersLoaded now needs a vehicle (+0xa0 != -1) as well as `loaded`
+(`FUN_006ba2f0` returns false without one). Test `the_third_twenty` (through `Registry::original`).
+
+Model decision: AreAllAIPlayersLoaded in the original walks the records from PM+0x5f50 with a stride of 0x5e0
+(the records are 0x7f0 apart), so slots 13..23 read shifted memory; the port reads each slot's own record. Open: confirm
+with a probe read whether slots 13+ ever matter (they would only differ with AI racers).
+Next candidates (still unported, offline): SetSafehouseFromProfile, ClearHudInstantQueue, StopAllSequences, StopSpeech,
+CleanAndRepairVehicle, DeactivateDamage, ReactivateDamage, ApplySelectedVehicleRollout, ClearPendingResets, TransferCurrentHeatToVehicle,
+IsSpeedTrapEvent, SetValidProgressionData, SetCollectablesNotInWorld, SetRollout, SkipCurrentTrack, ToggleLoadingScreenOff,
+ClearForceOpenEasyDriveFlag, SetFMNMenuShowingCommonEvents, ClearJumpToStoreFlag, ClearCreditsTransition.
+
 ### 2026-11-17: second 20 HSM hooks verified and enabled (`natives/hooks_{flow,event,ui}.rs`)
 
 Handlers read from `re/out/live/text.asm` (TRUE = `DAT_01177fe0`, FALSE = `DAT_01177ee0`, EXIT = `DAT_01177ef0`).
