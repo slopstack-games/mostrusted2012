@@ -480,8 +480,12 @@ GeneSys. Engine-free crates (`mw-logic`, `mw-lua`; wasm-compatible), in dependen
    fallback behaviour), the node lifecycle and transitions; then the 203 used behaviour types one by one.
 3. `[ ]` **Native registry** (`mw-logic::natives`): one name → function table for the 187 HSM hooks (121 used)
    and 385 Lua natives (185 used), offline ones first, each ported from its handler.
-4. `[ ]` **JSON widgets** and the widget-script lifecycle (`Construct`, `SetConfigurationItem`, `OnActivated`,
-   actions), PageRunner page flow; the 24 native screen scripts.
+4. `[~]` **JSON widgets** and the widget-script lifecycle (`Construct`, `SetConfigurationItem`, `OnActivated`,
+   actions), PageRunner page flow; the 24 native screen scripts. Data side done (2026-11-17): the 859 JSON
+   definitions typed (`mw_formats::widget`, the engine's JSON reader `mw_formats::json`), the screen → widget →
+   script graph (`mw_assets::widgets`, `mwtool widgets`), the lifecycle and action dispatch specified
+   (decomp.md "Widget definitions (JSON) and widget scripts"). Open: the runtime, the native scripts' behaviour,
+   PageRunner.
 5. `[ ]` **Lua 5.1 VM** (`mw-lua`): runs the shipped bytecode (no compiler needed): `rilua` or our own
    38-opcode interpreter; base, string, math, table.
 6. `[ ]` **Sequences**: the missing `*SequenceItem` types (73 in the data).
