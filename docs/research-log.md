@@ -37,6 +37,39 @@ the files (the Steam depot ships every pack; the DLC lock is the logic's entitle
   (`run`). The message gives the hash to report. Tools (`mwtool`) do not check.
 - Hashes are the one exception to "nothing derived from game data" (CLAUDE.md), and they hold no content.
 - Tests: `mw_gamedir::ownership_tests` (the Steam install is retail; a fake executable is refused).
+### 2026-11-17: seventh 20 HSM hooks verified and enabled (140 of 187; `natives/hooks_misc.rs`)
+
+Handlers read from `re/out/live/text.asm`, callees from the dump. Mapping (all return EXIT unless noted; TRUE / FALSE as named):
+CalculateBlacklistDescription 0x676a70 (`strtol(lpcValue)` - 1 -> `FUN_006f9380` on (G+0x2f3fc)+0x20: the flags +0x2c48..+0x2c4a are cleared, then
+it picks the text (game pack lock "gamepack", vehicle not owned "VehicleName", not yet raced) and posts the HUD message: `Request`);
+ResolveBoolBinding 0x680160 (member `Path` = 0x50617468, a four-byte name hashes to its bytes; `FUN_0067f4e0` = the Lua native's code, TRUE / FALSE);
+SetVehicleAndRolloutFromSaveGameByVehicleID 0x680680 (`liId`, int) and ...String 0x687a30 (`strtol(lpcValue)`): `FUN_006800a0`, vehicle > 0 only
+(existing `Request::SetVehicleAndRolloutFromSaveGame`); UpdateAwardProgressBindings 0x7eb4e0 (`FUN_00724680` + `FUN_00724690` on G+0x2f3f8 as
+`UpdateProgressAwardsStrings`; returns the table's EXIT copy 0x117efa0 = same value); IncrementSetting 0x7eb610 / DecrementSetting 0x7eb680
+(`lpcValue` = category, `DAT_0117ec1c` = index, both `strtol`; `FUN_007e8900` / `FUN_007e8970`: value < max -> value + 1 / min < value -> value - 1 through
+the settings manager's slots; TRUE when changed, else FALSE; `SettingsManager::increment` / `decrement`); ExitWidgetGroup 0x7f24f0 (`DAT_0117ed40` text ->
+`FUN_007eef40`, the Lua native's `exit_group_via`); UpdateDeferredViewModelSilent 0x7f9940 (`lpcViewModelName` = 0x1a5058d7 -> `FUN_007f72f0`(SM+0x280, name, silent = 1, &out):
+load kind 2 instead of 1); HasScreenRegisterdDeferredViewModel 0x7f9990 (`FUN_007f7510`: FALSE while the page changes (+0x1b4 or +0x21c's +0x1904 not 0), TRUE
+when a widget group's deferred list names it, byte comparison); SetJumpToStoreFlag 0x6770d0 (`FUN_00675580`: (G+0x2f3fc)+0x2f27 = 1, the binding text
+`DAT_01177d18` read as an int (0 when unresolved) -> entitlement manager (G+0x2f3e0 +0x4ce0) +0xdbc); ClearEntitlementJumpID 0x6770a0 (that +0xdbc = 0);
+ClearNetworkedTimer 0x68ae20 (message 6 into the queue `*0x010edb0c`+0x10); ClearOnlineEasyDrive 0x676d50 (`FUN_006f44e0` on G+0x14c08) and
+RefreshOnlineEasyDrive 0x676d30 (`FUN_00706ec0` = clear + `FUN_00706c90` refill); SetGameVisibilityPublic / Joinable / InviteOnly 0x6762d0 / 0x6762f0 /
+0x676310 (G+0x2a9e4 = 4 / 3 / 2); SetOnlineRaceCarFrozen / Unfrozen 0x68aea0 / 0x68af10 (`FUN_006bf330` +0xa0 != -1: engine message 0x37 via `FUN_00844f70`
+on G+0x2ed70 with 1 / 0, then message 2 with the flag into the queue `*0x010edb18`+0x10). Test `the_seventh_twenty`; `the_twenty_ported_hooks` counts 140.
+Model decisions: three member names are not known (hashes read from the snapshot `.bss`: setting index 0x2f348b52, ExitWidgetGroup text 0x83959c02, jump binding
+0x9e943e15; several hundred thousand `lpc` / `li` / `lb` + word combinations tried, only `lpcViewModelName` hit), so the test cannot set them (missing member reads as ""/0);
+`hook_misc.registered_deferred_view_models` and `screen_changing` are filled by the runtime (the page's widget groups are not in the logic); the entitlement jump id and the visibility are
+plain fields (no reader in the logic yet).
+Open: the runtime handles none of the new `Request`s (CalculateBlacklistDescription, UpdateDeferredViewModelSilent, ClearNetworkedTimer, ClearOnlineEasyDrive,
+RefreshOnlineEasyDrive, SetRaceCarFrozen; the saved-vehicle and progress-awards ones were already open); `mod.rs` / `host.rs` tests now use
+SetTargetRecommendedEvent as their "unported" example.
+Next 20 candidates (all unported; offline-relevant first): PopThankYou (0x676840), StopAutologAlert (0x676860), SetDlcMessageIndicator (0x677110),
+OpenStoreOverlay (0x677150), RemoveOnlineSeenUnlocksMenu (0x676d70), RefreshTopOfSpeedwallViewModel (0x6768f0), ResetPlaylistScoreState (0x676ac0),
+InvalidateKinectSelectedClass (0x676d00), IsOriginIgoAvailable (0x7eb760), SignInStarted (0x7eb520), SilentSignInStarted (0x7eb550), SignInFinished
+(0x7eb580), SetTargetRecommendedEvent (0x675bb0), SetCurrentRecommendedEvent (0x675c20), SetCarListForRecommendedEvent (0x675c50),
+SelectRecommendationDomByIndexString (0x675d10), SelectRecommendationDomByEventIdString (0x675d70), RefreshRecommendations (0x676810),
+GenerateRecomendationPostEventString (0x676890), CacheMwlAndLock (0x676dc0).
+
 ### 2026-11-17: sixth 20 HSM hooks verified and enabled (120 of 187; `natives/hooks_select.rs`, `hooks_flow.rs`)
 
 Handlers read from `re/out/live/text.asm`, callees from the dump. Argument names found by hash search over the

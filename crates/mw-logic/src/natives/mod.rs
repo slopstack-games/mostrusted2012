@@ -30,6 +30,7 @@ pub mod game_modes;
 pub mod hook_args;
 pub mod hooks_event;
 pub mod hooks_flow;
+pub mod hooks_misc;
 pub mod hooks_select;
 #[cfg(test)]
 mod hooks_tests;
@@ -154,6 +155,7 @@ impl Registry {
         hooks_event::register(&mut r);
         hooks_ui::register(&mut r);
         hooks_select::register(&mut r);
+        hooks_misc::register(&mut r);
         lua_widgets::register(&mut r);
         lua_settings::register(&mut r);
         lua_career::register(&mut r);
@@ -229,7 +231,7 @@ mod tests {
         assert_eq!(both, 36);
         let mut state = LogicState::default();
         assert_eq!(r.call_hook(&mut state, "NoSuchHook", None), None);
-        assert_eq!(r.call_hook(&mut state, "ResolveBoolBinding", None), Some(crate::hsm::EXITINVALID));
-        assert_eq!(state.unported, ["hook ResolveBoolBinding"]);
+        assert_eq!(r.call_hook(&mut state, "SetTargetRecommendedEvent", None), Some(crate::hsm::EXITINVALID));
+        assert_eq!(state.unported, ["hook SetTargetRecommendedEvent"]);
     }
 }

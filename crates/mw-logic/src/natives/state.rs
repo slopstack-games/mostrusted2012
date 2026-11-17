@@ -48,6 +48,8 @@ pub struct LogicState {
     pub sequences: super::sequence_view::UiSequences,
     /// The entitlement and game-pack managers (EM G+0x29280, GPM G+0x2ab00): offline, base game only.
     pub entitlements: super::entitlements::Entitlements,
+    /// The fields of the seventh twenty HSM hooks (`hooks_misc.rs`).
+    pub hook_misc: super::hooks_misc::HookMiscFields,
 }
 
 /// The binding host the logic reads through: the game-mode manager's `Mode` root ([`super::mode_view`]) first,
@@ -600,6 +602,24 @@ pub enum Request {
     SetWaypointToEvent { event: i32 },
     /// `UpdateProgressAwardsStrings` (0x6768c0): `FUN_0071fd20`(-1, +0x10e8) and (6, +0x12e8) on G+0x2f3f8.
     UpdateProgressAwardsStrings,
+    /// `CalculateBlacklistDescription` (0x676a70 -> `FUN_006f9380` on (G+0x2f3fc)+0x20): the blacklist member of
+    /// rank `rank` (= the hook's number - 1): which text the screen shows (locked by a game pack / vehicle not
+    /// owned / not yet raced), the flags +0x2c48..+0x2c4a and the HUD message with "gamepack" / "VehicleName".
+    CalculateBlacklistDescription { rank: i32 },
+    /// `UpdateDeferredViewModelSilent` (0x7f9940): `FUN_007f72f0` on the screen manager's page (SM+0x280) with the
+    /// silent flag: the load of the page's deferred view model `name` starts with kind 2 (`UpdateDeferredViewModel`: 1).
+    UpdateDeferredViewModelSilent { name: String },
+    /// `ClearNetworkedTimer` (0x68ae20): the message 6 into the networked-timer queue (`*0x010edb0c` +0x10, flag
+    /// bit 3 set while it is posted).
+    ClearNetworkedTimer,
+    /// `ClearOnlineEasyDrive` (0x676d50 -> `FUN_006f44e0` on G+0x14c08): the list of online easy-drive entries emptied.
+    ClearOnlineEasyDrive,
+    /// `RefreshOnlineEasyDrive` (0x676d30 -> `FUN_00706ec0`): the list emptied, then refilled (`FUN_00706c90`).
+    RefreshOnlineEasyDrive,
+    /// `SetOnlineRaceCarFrozen` / `Unfrozen` (0x68aea0 / 0x68af10): the current race car (`FUN_006bf330` +0xa0, when
+    /// not -1) gets the engine message 0x37 (`FUN_00844f70` on G+0x2ed70) with `frozen`, and the message 2 with
+    /// `frozen` goes into the queue `*0x010edb18` +0x10.
+    SetRaceCarFrozen { frozen: bool },
     /// `COSTSTATESC` (0x74a580, every 5 s): drop the u16 ids of the list (+0x48.., count +0x108) that
     /// `FUN_0090cbd0` (G+0x53200) no longer knows.
     CostStatePrune,

@@ -238,12 +238,12 @@ fn ui_hooks() {
     );
 }
 
-/// The registry the boot path uses: the 120 hooks verified against their handlers (`the_second_twenty` ... `the_sixth_twenty`).
+/// The registry the boot path uses: the 140 hooks verified against their handlers (`the_second_twenty` ... `the_seventh_twenty`).
 #[test]
 fn the_twenty_ported_hooks() {
     let r = Registry::original();
     let ported: Vec<_> = r.hooks().iter().filter(|h| h.ported()).map(|h| h.name).collect();
-    assert_eq!(ported.len(), 120, "{ported:?}");
+    assert_eq!(ported.len(), 140, "{ported:?}");
     let mut s = LogicState::default();
     s.players.local = Some(0);
     s.players.slots[0] = Some(Player::default());
@@ -668,4 +668,112 @@ fn the_sixth_twenty() {
     // The Vita flag (GMM+0x2e85).
     assert_eq!(call(&r, &mut s, "SetFMNMenuShowingVITAExclusiveEvents", None), EXIT);
     assert!(s.game_modes.fmn_vita_exclusive);
+}
+
+/// The seventh twenty, each checked against its handler (research-log 2026-11-17), through the verified registry.
+#[test]
+fn the_seventh_twenty() {
+    use super::hooks_misc::{LPC_VIEW_MODEL_NAME, PATH};
+    use super::lua_settings::{SettingsCategory, ValueSetting};
+    use mw_formats::genesys::field_hash;
+    assert_eq!(field_hash("Path"), PATH);
+    assert_eq!(field_hash("lpcViewModelName"), LPC_VIEW_MODEL_NAME);
+    let r = Registry::original();
+    let mut s = with_local_player();
+
+    // CalculateBlacklistDescription: lpcValue - 1, the flags cleared.
+    s.hook_misc.blacklist_flags = [true; 3];
+    let v = |n: i32| format!(r#"{{"lpcValue": "{n}"}}"#);
+    assert_eq!(call(&r, &mut s, "CalculateBlacklistDescription", Some(&v(15))), EXIT);
+    assert_eq!(s.hook_misc.blacklist_flags, [false; 3]);
+    assert_eq!(s.requests, [Request::CalculateBlacklistDescription { rank: 14 }]);
+    s.requests.clear();
+
+    // ResolveBoolBinding: FALSE when the binding does not resolve or the member is missing.
+    assert_eq!(call(&r, &mut s, "ResolveBoolBinding", Some(r#"{"Path": "Nope.Nothing"}"#)), FALSE);
+    assert_eq!(call(&r, &mut s, "ResolveBoolBinding", None), FALSE);
+
+    // The saved vehicle and rollout: an id above 0 only.
+    assert_eq!(call(&r, &mut s, "SetVehicleAndRolloutFromSaveGameByVehicleID", Some(r#"{"liId": 0}"#)), EXIT);
+    assert_eq!(call(&r, &mut s, "SetVehicleAndRolloutFromSaveGameByVehicleID", Some(r#"{"liId": 12}"#)), EXIT);
+    assert_eq!(call(&r, &mut s, "SetVehicleAndRolloutFromSaveGameByVehicleIDString", Some(&v(-3))), EXIT);
+    assert_eq!(call(&r, &mut s, "SetVehicleAndRolloutFromSaveGameByVehicleIDString", Some(&v(77))), EXIT);
+    assert_eq!(call(&r, &mut s, "UpdateAwardProgressBindings", None), EXIT);
+    assert_eq!(
+        s.requests,
+        [
+            Request::SetVehicleAndRolloutFromSaveGame { vehicle: 12 },
+            Request::SetVehicleAndRolloutFromSaveGame { vehicle: 77 },
+            Request::UpdateProgressAwardsStrings,
+        ]
+    );
+    s.requests.clear();
+
+    // Settings steppers (category and index both read as 0 without their members): TRUE only when the value moved.
+    assert_eq!(call(&r, &mut s, "IncrementSetting", None), FALSE);
+    s.settings.insert(SettingsCategory {
+        id: 0,
+        settings: vec![Box::new(ValueSetting { value: 4, saved: 4, min: 3, max: 5, ..Default::default() })],
+    });
+    let value = |s: &mut LogicState| s.settings.setting_mut(0, 0).unwrap().value();
+    assert_eq!(call(&r, &mut s, "IncrementSetting", None), TRUE);
+    assert_eq!(value(&mut s), 5);
+    assert_eq!(call(&r, &mut s, "IncrementSetting", None), FALSE);
+    assert_eq!(call(&r, &mut s, "DecrementSetting", None), TRUE);
+    assert_eq!(call(&r, &mut s, "DecrementSetting", None), TRUE);
+    assert_eq!(value(&mut s), 3);
+    assert_eq!(call(&r, &mut s, "DecrementSetting", None), FALSE);
+    assert_eq!(value(&mut s), 3);
+
+    // ExitWidgetGroup: without its text member the empty code has the key 0: nothing is exited.
+    assert_eq!(call(&r, &mut s, "ExitWidgetGroup", None), EXIT);
+    assert_eq!(s.screen.widget_group_exit, 0);
+
+    // Deferred view models.
+    let n = |name: &str| format!(r#"{{"lpcViewModelName": "{name}"}}"#);
+    assert_eq!(call(&r, &mut s, "UpdateDeferredViewModelSilent", Some(&n("Garage"))), EXIT);
+    assert_eq!(s.requests, [Request::UpdateDeferredViewModelSilent { name: "Garage".into() }]);
+    s.requests.clear();
+    assert_eq!(call(&r, &mut s, "HasScreenRegisterdDeferredViewModel", Some(&n("Garage"))), FALSE);
+    s.hook_misc.registered_deferred_view_models.insert("Garage".into());
+    assert_eq!(call(&r, &mut s, "HasScreenRegisterdDeferredViewModel", Some(&n("Garage"))), TRUE);
+    assert_eq!(call(&r, &mut s, "HasScreenRegisterdDeferredViewModel", Some(&n("garage"))), FALSE);
+    s.hook_misc.screen_changing = true;
+    assert_eq!(call(&r, &mut s, "HasScreenRegisterdDeferredViewModel", Some(&n("Garage"))), FALSE);
+
+    // The store jump: the flag, the id from the binding (0 when it does not resolve), cleared again.
+    s.hook_misc.entitlement_jump_id = 9;
+    assert_eq!(call(&r, &mut s, "SetJumpToStoreFlag", None), EXIT);
+    assert!(s.game_modes.jump_to_store);
+    assert_eq!(s.hook_misc.entitlement_jump_id, 0);
+    s.hook_misc.entitlement_jump_id = 9;
+    assert_eq!(call(&r, &mut s, "ClearEntitlementJumpID", None), EXIT);
+    assert_eq!(s.hook_misc.entitlement_jump_id, 0);
+
+    // The online ones.
+    for (name, vis) in
+        [("SetGameVisibilityInviteOnly", 2), ("SetGameVisibilityJoinable", 3), ("SetGameVisibilityPublic", 4)]
+    {
+        assert_eq!(call(&r, &mut s, name, None), EXIT);
+        assert_eq!(s.hook_misc.game_visibility, vis, "{name}");
+    }
+    for name in [
+        "ClearNetworkedTimer",
+        "ClearOnlineEasyDrive",
+        "RefreshOnlineEasyDrive",
+        "SetOnlineRaceCarFrozen",
+        "SetOnlineRaceCarUnfrozen",
+    ] {
+        assert_eq!(call(&r, &mut s, name, None), EXIT);
+    }
+    assert_eq!(
+        s.requests,
+        [
+            Request::ClearNetworkedTimer,
+            Request::ClearOnlineEasyDrive,
+            Request::RefreshOnlineEasyDrive,
+            Request::SetRaceCarFrozen { frozen: true },
+            Request::SetRaceCarFrozen { frozen: false },
+        ]
+    );
 }

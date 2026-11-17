@@ -124,6 +124,30 @@ impl SettingsManager {
         Some(&mut self.categories[i])
     }
 
+    /// `FUN_007e8900(category, index)` (the `IncrementSetting` hook): the value one up when it is below the maximum
+    /// (`FUN_0087ae60`, `FUN_0087b0c0`, set through `FUN_0087b130`); true when it was changed.
+    pub fn increment(&mut self, id: i32, index: i32) -> bool {
+        let Some(s) = self.setting_mut(id, index) else { return false };
+        let v = s.value();
+        if v < s.max() {
+            s.set_value(v + 1);
+            return true;
+        }
+        false
+    }
+
+    /// `FUN_007e8970(category, index)` (the `DecrementSetting` hook): the value one down when it is above the
+    /// minimum (`FUN_0087b050`); true when it was changed.
+    pub fn decrement(&mut self, id: i32, index: i32) -> bool {
+        let Some(s) = self.setting_mut(id, index) else { return false };
+        let v = s.value();
+        if s.min() < v {
+            s.set_value(v - 1);
+            return true;
+        }
+        false
+    }
+
     /// Category `id` → slot 4 `setting(index)`.
     pub fn setting_mut(&mut self, id: i32, index: i32) -> Option<&mut Box<dyn Setting>> {
         let c = self.category_mut(id)?;
