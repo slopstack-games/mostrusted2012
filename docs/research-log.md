@@ -381,6 +381,24 @@ Open:
 - Captures that would confirm: the original's recap on a continue (when it starts relative to the transition, the
   camera framing at 1 / 8 / 12 s, the statistics shown, the music level against the bus mixer items).
 
+### 2026-11-18: vehicle bank skid / impact voices against the code: reset on a new vehicle ported (unfinished)
+
+Task: how the original drives the vehicle bank's skid and impact voices, and what it resets.
+- **Skids** (`FUN_009d1bf0`, already ported in `vehicle_driver.rs`): the three intensities are the only inputs the
+  skid sequences follow. Their reset is `FUN_009d1120` (from `FUN_009d83e0` <- `FUN_009d91a0` <- the vehicle's
+  construction `FUN_00904260`): +0xd0 / +0xd4 / +0xd8 = 1.0 (`.rdata` 0x01026060..6c, read), so a new vehicle's
+  skids start full and fall at their fall rates (0.1 / 0.2 / 0.5 per tick). Ours started at 0 and kept the old
+  car's smoothed state across a car change. Ported: `VehicleDriver::reset` (start state 1.0), called by
+  `sfx.rs` when the player car entity changes. A teleport / placement is not a construction: no reset (the
+  original's `FUN_009d1120` is not on that path as far as traced).
+- **Hardening (model)**: the smoothing lerp keeps a NaN for good; non-finite wheel inputs / dt are now zeroed
+  (the audio thread already zeroes a non-finite smoothed value, which would be silence, not the rail).
+- **Impacts**: in the original they are one-shot sequences started from `FUN_0057e920` / `FUN_0057caf0`
+  (decomp.md "Traffic horns, crashes and skids"), not bindings of the vehicle bank; ours are `player_sfx.rs`
+  one-shots (`VehicleDriver::impact` is only used by mwtool). So no lasting impact state exists in the bank.
+- Not found: a state in the vehicle bank that survives a teleport / pause. The rail source is still open (the
+  engine's sub-harmoniser is the remaining suspect, see the entry below).
+
 ### 2026-11-17: skid "loud and distorted for good" after a race start: not reproduced, underruns ruled out (unfinished)
 
 Real-time headless runs recorded from the null sink (`scratch/live.sh` in the worktree, `MW_INPUT_SCRIPT`,
