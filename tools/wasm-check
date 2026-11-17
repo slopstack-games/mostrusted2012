@@ -10,7 +10,7 @@ filter() {
   grep -E '^[^ ]+\.rs:[0-9]+:[0-9]+: (warning|error)|^(warning|error)(\[|:)|Finished|could not compile' \
     | grep -v 'generated [0-9]* warning'
 }
-PKGS="-p mw-gamedir -p mw-bundle -p mw-formats -p mw-audio -p mw-assets -p mw-handling -p mw-lua -p mw-logic -p mw-police"
+PKGS="-p mw-gamedir -p mw-bundle -p mw-formats -p mw-audio -p mw-assets -p mw-handling -p mw-lua -p mw-logic -p mw-police -p mw-ai"
 if [ -n "$THREADS" ]; then
   RUSTFLAGS='-C target-feature=+atomics,+bulk-memory,+mutable-globals -C link-arg=--shared-memory -C link-arg=--max-memory=4294967296 -C link-arg=--import-memory -C link-arg=--export=__wasm_init_tls -C link-arg=--export=__tls_size -C link-arg=--export=__tls_align -C link-arg=--export=__tls_base' \
   CARGO_TARGET_DIR="$R/target/wasm-threads" nice -n 19 cargo +nightly check --manifest-path "$R/Cargo.toml" --release \

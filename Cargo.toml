@@ -19,6 +19,7 @@ mw-logic = { path = "crates/mw-logic" }
 mw-lua = { path = "crates/mw-lua" }
 mw-handling = { path = "crates/mw-handling" }
 mw-police = { path = "crates/mw-police" }
+mw-ai = { path = "crates/mw-ai" }
 mw-audio = { path = "crates/mw-audio" }
 anyhow = "1"
 thiserror = "2"

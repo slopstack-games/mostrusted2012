@@ -1,0 +1,8 @@
+[package]
+name = "mw-ai"
+description = "The original's AI racer driving (racer state, crash recovery, rubber band), ported from the decomp, free of any engine."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
