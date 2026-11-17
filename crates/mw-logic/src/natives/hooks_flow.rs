@@ -43,31 +43,29 @@ pub fn register(r: &mut Registry) {
     r.set_hook("HACKResumeCarControlAfterIntro", hack_resume_car_control_after_intro);
     r.set_hook("SetSeenEventsForVehicleToTrue", set_seen_events_for_vehicle_to_true);
     r.set_hook("ForceOpenEasyDrive", force_open_easydrive);
+    r.set_hook("SetSafehouseFromProfile", exit_only);
+    r.set_hook("ApplySelectedVehicleRollout", exit_only);
+    r.set_hook("SetFMNMenuShowingCommonEvents", set_fmn_menu_showing_common_events);
+    r.set_hook("ClearForceOpenEasyDriveFlag", clear_force_open_easydrive_flag);
+    r.set_hook("ClearCreditsTransition", clear_credits_transition);
+    r.set_hook("ClearJumpToStoreFlag", clear_jump_to_store_flag);
 }
 
 /// Hooks ported from their handlers by an earlier, unfinished pass: not verified against the dump yet, so not
 /// part of [`Registry::original`]; tests install them with [`Registry::original_with_parked`].
 pub fn register_parked(r: &mut Registry) {
-    // New game / continue, the intro.
-    r.set_hook("SetSafehouseFromProfile", exit_only);
-    // Profile, settings, progression.
     // Game-mode manager flags.
     r.set_hook("SetFMNMenuShowingVITAExclusiveEvents", set_fmn_menu_showing_vita_exclusive_events);
-    r.set_hook("SetFMNMenuShowingCommonEvents", set_fmn_menu_showing_common_events);
-    r.set_hook("ClearForceOpenEasyDriveFlag", clear_force_open_easydrive_flag);
     r.set_hook("PlayEndOfIntroSequenceInEasyDrive", play_end_of_intro_sequence_in_easydrive);
     r.set_hook("ShouldPlayEndOfIntroSequenceInEasyDrive", should_play_end_of_intro_sequence_in_easydrive);
     r.set_hook("ClearPlayEndOfIntroSequenceInEasyDrive", clear_play_end_of_intro_sequence_in_easydrive);
     r.set_hook("SetHasIntroEasyDriveBeenActive", set_has_intro_easydrive_been_active);
     r.set_hook("HasIntroEasyDriveBeenActive", has_intro_easydrive_been_active);
-    r.set_hook("ClearCreditsTransition", clear_credits_transition);
     r.set_hook("SwitchToGameplayLoadWorld", switch_to_gameplay_load_world);
-    r.set_hook("ClearJumpToStoreFlag", clear_jump_to_store_flag);
     r.set_hook("LeaveGame", leave_game);
     r.set_hook("ExitForMultiplayerMatchMaking", exit_for_multiplayer_matchmaking);
     // Handlers that only return EXIT on PC (console / online features compiled out).
     for name in [
-        "ApplySelectedVehicleRollout",
         "ClearE3MultiplayerProgression",
         "ShowPartyInvitePopup",
         "OnPhotoSharedToWall",
@@ -84,8 +82,8 @@ pub(crate) fn exit_if(b: bool) -> Key {
     if b { TRUE } else { FALSE }
 }
 
-/// Handlers whose body is `return EXIT` on PC: `SetSafehouseFromProfile` (0x676070), `ApplySelectedVehicleRollout`
-/// (0x6762c0), `ClearE3MultiplayerProgression` (0x676360), `ShowPartyInvitePopup` (0x7eb730),
+/// Handlers whose body is `return EXIT` on PC (verified: `mov eax, EXIT; mov edx, EXIT+4; ret`): `SetSafehouseFromProfile`
+/// (0x676070), `ApplySelectedVehicleRollout` (0x6762c0), `ClearE3MultiplayerProgression` (0x676360), `ShowPartyInvitePopup` (0x7eb730),
 /// `OnPhotoSharedToWall` (0x7eb7c0); `ShowX360GamerCard` (0x7eb6f0), `ShowX360GamerCardEasyDrive` (0x7eb710),
 /// `ShowX360GamerCardByPlayerIndex` (0x7eb740) look their argument up and drop it.
 fn exit_only(_: &mut LogicState, _: Args) -> Key {

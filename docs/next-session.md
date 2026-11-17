@@ -81,12 +81,35 @@ Decisions with the user: portrait loading screens keep the original's bars.
   audio (mixer on an AudioWorklet thread, patched crates in `third_party/`). Next: saves in browser storage,
   frame time, memory for whole-world views (PLAN.md M9).
 - **Game logic engine** (PLAN.md M8, 2026-11-17): bindings, HSM interpreter, Lua 5.1 VM, widget data and the native
-  registry (`mw_logic::natives`, `mwtool natives`) are in. Ported and verified against the dump: **45 of ~200 used HSM
-  behaviour types** (the boot reaches "Playing" with 5 answers left, all engine bindings / online: docs/commands.md),
-  **60 / 187 HSM hooks**, **85 / 385 Lua natives**. Each agent report lists the next batch (research-log entries of
-  2026-11-17). Next, besides more batches: the runtime (`mostrusted`) carrying out the natives' `Request`s and
-  answering the HSM `Query`s, so the real front end runs from the HSM. Rounds run cheapest as `sonnet` agents with
-  a fixed batch (CLAUDE.md "Parallel agents"), in a fresh session per round.
+  registry (`mw_logic::natives`, `mwtool natives`) are in.
+  - Ported and verified against the dump: **58 HSM behaviour types**, **80 / 187 HSM hooks** and **100 / 385 Lua
+    natives**. Every offline Lua native the UI chunks read is ported.
+  - The game-mode manager starts the mode machine (`natives/mode_machine.rs`). `mwtool hsm --run` reaches
+    "Freedrive Update" and the HUD machine (docs/commands.md).
+  - **The runtime runs the HSM in shadow mode** (`mostrusted --hsm`, logic.rs: research-log "the original's HSM runs
+    inside the runtime"). It follows the title, press and world load into free roam. Requests are logged, not
+    carried out.
+  - **Front-end screens from the HSM** (same day, research-log "front-end screens from the HSM"):
+    - Page contexts and widget groups run in `natives/pages.rs`, and the widgets' Lua scripts run.
+    - Under `--hsm` the boot page's title and transition are started by the original's script / HSM.
+  - **Next (integrator, default model)**: carry out the Requests one at a time and remove the hand-written flow each
+    one replaces.
+    - Done the same day (research-log "widget input and conductors"): widget actions fire from the menu input,
+      and conductors run headless (only the title is drawn).
+    - `Mode` root done (research-log "the `Mode` binding root").
+    - Next blockers: `ModeVM` (`GameModeViewModel`, EasyDrive's "Open EasyDrive Request") and `Net.IsInOnlineGame`.
+      The runtime's mode machine now waits in the Game Recap page (1560241): check the original's boot with a save.
+    - A generic sequence player that draws conductors' sequences (frontend.rs / event_card.rs each have their
+      own), then the pause menu (431082, Lua `PlaySequence`) from the HSM.
+    - Drawing the HUD screen 371621 from its widgets instead of `hud.rs`.
+    - Then `LoadWorld`, `LoadProfile` and the game mode. Fill the runtime-filled `LogicState` fields: ranks, awards, `garage`,
+    `current_event_kind`. Add `Mode` / `Event` binding roots in place of the stand-ins.
+  - **Next batches (sonnet agents)**: the candidates are in the 2026-11-17 research-log entries, listed below.
+    Rounds run cheapest as `sonnet` agents with a fixed batch (CLAUDE.md "Parallel agents"), one fresh session per
+    round.
+    - Behaviour types: MUTEALLRUMBL, PAUSEMSGS, PLAYSONGLIST, WEAPONSOK, MINIMAPICONS, ...
+    - Hooks: the parked OnOpenEasyDrive family and others.
+    - Lua natives: the state-field ones first.
 
 New this session (docs/commands.md): `tools/hl`, `tools/silent-sink`, `mwtool tp / car / mods / conditions / inputs /
 probe`, `capture --probe --script`, `mwtool surfaces --flat / --tris / --classes`, `placement-check --floating`,

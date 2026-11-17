@@ -24,6 +24,9 @@ pub struct Download {
     pub flag_2: bool,
 }
 
+/// A category of a guide page: its id and its page pair.
+pub type GuideChild = (i32, (u32, u32));
+
 /// The easy-drive guide (UIM+0x47640): a stack of pages the categories were entered through.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct EasyGuide {
@@ -36,6 +39,10 @@ pub struct EasyGuide {
     /// What `FUN_007997f0` reads when the guide's source (the object at +0xfc, its +0xb0) has state 2: the first
     /// page's id pair (`(*(+0xb8)+0x28)+0x3c+(+0xbc)`). `None`: the state is not 2. Filled by the runtime.
     pub root_page: Option<(u32, u32)>,
+    /// The categories under each page, by the page's id pair: (the category's id (`*(*(obj+0x28)+0xc+off)`), its
+    /// page pair (record +0xc / +0x10)). `SelectEasyGuideCategory` searches the current page's list; the runtime
+    /// fills it from the guide's data (model decision: the lists are not read from memory).
+    pub children: std::collections::HashMap<(u32, u32), Vec<GuideChild>>,
 }
 
 /// The control-settings page's state (the settings OM+0x4210, `FUN_00879010` / `FUN_00879c70`).

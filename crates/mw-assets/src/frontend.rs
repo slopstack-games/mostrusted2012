@@ -81,6 +81,22 @@ pub struct StartConfig {
     /// `GameLogicConfig.ff4aef6f` (+0x284, 70): the speed in mph up to which a parked car can be swapped
     /// into (`FUN_007615f0`).
     pub swap_max_mph: Option<f32>,
+    /// `GameLogicConfig` ids the game logic compares with (0 = missing): +0x60 `4c86472d` the escape mode
+    /// (390185), +0xa4 `DefaultRollout` (523000), +0xd8 `1b3c1ddc` the free-drive mode (390145), +0xfc `4b9afa9f`
+    /// the intro event (1560354), +0x100 `814c73fc` the intro race (1909234), +0x130 `3d09a25a` the second
+    /// free-drive mode `FUN_006e5ea0` accepts (431133, online).
+    pub ids: LogicConfigIds,
+}
+
+/// See [`StartConfig::ids`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LogicConfigIds {
+    pub escape_mode: u32,
+    pub default_rollout: u32,
+    pub freedrive_mode: u32,
+    pub intro_event: u32,
+    pub intro_race_event: u32,
+    pub online_freedrive_mode: u32,
 }
 
 impl StartConfig {
@@ -239,6 +255,14 @@ impl AssetStore {
                 .or(Some(&root).filter(|r| r.type_name == "Genesys.Gen.GameLogicConfig"))
             {
                 rollout = uint(g, h::DEFAULT_ROLLOUT);
+                cfg.ids = LogicConfigIds {
+                    escape_mode: uint(g, 0x4c86_472d),
+                    default_rollout: rollout,
+                    freedrive_mode: uint(g, 0x1b3c_1ddc),
+                    intro_event: uint(g, 0x4b9a_fa9f),
+                    intro_race_event: uint(g, 0x814c_73fc),
+                    online_freedrive_mode: uint(g, 0x3d09_a25a),
+                };
                 cfg.default_start = pose(uint(g, h::DEFAULT_START));
                 cfg.swap_max_mph = match g.get(h::SWAP_MAX_MPH) {
                     Some(Value::Float(f)) => Some(*f),

@@ -13,6 +13,259 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ## Dated findings
 
+### 2026-11-17: the `Mode` binding root (`natives/mode_view.rs`)
+
+**Registration.** `FUN_0070a120` (`ECX` = the game-mode manager) registers the root "Mode" (`.rdata` 0x00fc7ef0)
+of type "GameModeManager":
+- 34 fields (`FUN_00a4e2f0`: name, offset into the manager, count, property type).
+- 86 getters (`FUN_00a4e350`: name, getter, count, property type). The full table with offsets and getter
+  addresses is in the dump at 0x70a120.
+- Property types: 9 bool, 0 / 1 / 2 integers, 8 float, 0x11 time, 0xf / 0x10 strings, 0x1a object.
+- It then calls `FUN_006fe520`, which registers "ModeVM" (`GameModeViewModel`) on its argument (the caller
+  `FUN_0070be40` passes param_2 + 0xe8). ModeVM is not ported.
+
+**Port.**
+- `LogicState` is now the binding host: `Mode` first, then the view models. A `Mode` member the table does not
+  answer falls through to a data definition published as "Mode" (`Mode.Time`, `Mode.DisablePauseMenu`).
+- The resolve call sites moved from `view_models.resolve_*` to `LogicState::resolve_*`.
+- Fields: every manager byte the logic keeps. New `GameModeManager` fields: +0x2e77 world loaded, +0x2e76,
+  +0x2ea8, +0x2e91 / +0x2e92, +0x2d08, +0x2e64 / +0x2e68, and the event-kind flags.
+- `Mode.Data` = the current `GameMode` object. Its members are the GeneSys fields by hash
+  (`Events::game_mode_fields`, `mode_view::data_fields`).
+- Getters read from `text.asm`:
+
+  | Getter | Address | Reads |
+  |---|---|---|
+  | `WorldLoaded` | 0x712010 | an event and +0x2e77 |
+  | `ShowLoadingScreen` | `FUN_006f49c0` | +0x2e81, +0x2e7f, event, online / +0x2e76, +0x2e77, then the two bits of +0x2ea8 |
+  | `HasIntroLoadCompleted` | 0x70da10 | +0x2e82 |
+  | `IsInGameIntro` / `…Freedrive` | 0x711e90 / 0x711e70 | +0x2e91 or +0x2e92 / +0x2e91 |
+  | `HudHsm` | 0x716f40 | the mode's `GameMode` +0x20 |
+  | `IsPauseAllowed` | `FUN_006e62a0` | |
+  | `RetryLastEventEnabled` | 0x711ee0 | +0x2eac |
+  | `LeaveGameRequested` | `FUN_00711f30` | |
+  | `ShowRecommendsIntro` / `RecommendsEventActive` | 0x7120c0 | G+0x2f6d0..d8: none offline |
+
+- The online session getters are false offline.
+- The runtime sets +0x2e77 from `FrontEnd::ready`. The `mwtool hsm --run` driver sets it at once.
+
+**Result.**
+- Boot to free roam no longer needs the six `Mode` answers. `mwtool hsm --run` with only the boot's answers and
+  `Transitions` reaches "Freedrive Update", and the HUD machine 371633 comes from the mode's data.
+- "Is Recommends" takes FALSE.
+- In the runtime the mode machine now takes the recap branch. `Mode.ShowRecap` (+0x2e88) is set by the ported
+  `CalculateShouldShowRecapSequence` for the continued profile, so "Show Game Recap" pushes page 1560241 and waits
+  for its group (`mwtool hsm --run` uses a fresh logic state).
+- Test `mode_view::tests::mode_root`.
+
+Model decisions:
+- The local player's +0x2c8 (`LeaveGameRequested`) is taken as clear.
+- Members not ported (times, online / Autolog / recommendation getters, career statistics) do not resolve.
+
+Open:
+- `ModeVM` (`ForceOpenEasyDrive` at +0x2c89 of its object: the EasyDrive prompt's "Open EasyDrive Request").
+- `Net.IsInOnlineGame`.
+- Whether the original shows the recap on a continued profile (a capture of the original's boot with a save).
+- The recap page in the runtime.
+
+### 2026-11-17: widget input and conductors (`natives/pages.rs`, `logic.rs`, `input.rs`)
+
+**The input mapping table** (`FUN_007e7910`, `.rdata` 0x00fe7260, 33 entries of {name, id, directional flag}; an
+unknown name gives 0x60):
+- The documented 42–61, then `to_main_menu` 62, `play_it` 63, `fullscreen_photo` 64, `friend_recommends` 65,
+  `hitbox` 66, `dbg_win_event` 67, `dbg_switch_progression` 68, `easy_left` / `right` / `up` / `down` 69–72,
+  `universal_accept` 73, `universal_alt` 74. The flag is 1 for 42–51 only.
+- Default bindings: keyboard `FUN_00483470` (Windows virtual-key codes), pad `FUN_00482250` (pad codes
+  cross-checked against 46–49 and 52–55):
+
+  | Action | Keyboard | Pad |
+  |---|---|---|
+  | `easy_*` 69–72 | Numpad 4 / 6 / 8 / 2 | d-pad (codes 8 / 9 / 6 / 7, plus an argument `DAT_00fa1db8` not read) |
+  | `universal_accept` 73 | Enter | A |
+  | `universal_alt` 74 | Backspace | X |
+  | `to_main_menu` 62 | F1 | Start |
+  | `scroll_up` / `down` 50–51 | Numpad 8 / 2 | right stick Y |
+  | `play_it` 63, 65 | A | — |
+  | `fullscreen_photo` 64 | Right Ctrl | — |
+  | `dbg_*` 67 / 68 | F10 / F11 | — |
+
+**Action definitions:** `UserActionDefinition` = GeneSys object `0x01000000_<id>` in the screen bundles:
+`InputMapping`, `Analogue`, field `2da735e3` = repeat (`AssetStore::ui_action_definition`).
+
+**Widget input** (`LogicHost::input`, every frame before the HSM update):
+- Each active widget's actions fire per `FUN_007f50e0`: analogue every frame; repeat on the press or the
+  auto-repeat tick, directional ones only above 0.05; otherwise on the press.
+- Routing follows `FUN_007f40d0`:
+  - Cross-widget `Widget::Function`: offered to the target's scripts until one handles it.
+  - Lua: every script of the widget out of its 0.15 s cooldown; a refusal by `ActiveBinding` also starts it.
+  - Native: `ExitGroupVia` → the group exit; other names → the HSM hook.
+- `input.rs` `MenuAction` gained 50, 51, 60, 62, 69–74 and `MenuInput::by_id`.
+- Test `tests/pages.rs::calibration_actions` (boot screen group 1532543): accept → NEXT, cancel → BACK, the Lua
+  `IncrementSetting` runs.
+
+**Conductors:**
+- The title's conductor "PressStart" is the front end's title: `StopSequence` / `DestroyConductor` stop it.
+- Any other `StartSequence` runs headless (`logic.rs` `Playback`): the sequence loaded on a thread, its clock
+  stepped with its jump controllers (bindings through the logic's view models), and the conductor set idle at
+  the end, so `HasSequenceFinished` / `IsConductorIdle` keep the original's timing.
+- A binding that gives no sequence id makes the conductor idle at once.
+
+Model decisions:
+- Every active widget takes input (the focus / modal rules were not traced).
+- An analogue value reaches a Lua callback as an extra argument.
+- A native callback calls its hook without arguments.
+- No success / failure sounds yet (the definition's handles `7866a8e2` / `1cb2a09a` were not read).
+- `MW_INPUT_SCRIPT_START=playing` lets a script run in free roam.
+
+Open:
+- Drawing conductors' sequences: a generic sequence player (frontend.rs and event_card.rs each draw their own
+  today). `PlaySequence` (Lua) is on the boot, pause (431082) and two more screens; the native `PlaySequenceFast`
+  is on 44 screens and is not ported.
+- In free roam nothing fireable is active yet. The HUD's `ShowMap` (Tab) is gated by `Mode.IsInGameIntro(NOT)`, and
+  EasyDrive's group 1135023 opens only through "Open EasyDrive Request". Both need the `Mode` roots.
+
+### 2026-11-17: front-end screens from the HSM: page contexts, widget groups, the boot page (`natives/pages.rs`, `logic.rs`)
+
+**Page contexts and widget groups** (`mw_logic::natives::pages`, inside `LogicHost`; `LogicHost::apply` carries out
+the logic's part of a request for every host).
+- `PushPageContext` pushes {name, page} and asks the host for the page's screen (`Pages::wanted` →
+  `pages::load_screen` → `Pages::provide`; feature `assets`). `PageReady` is true once the screen is loaded.
+- `ActivateWidgetGroup` builds each widget of the group as decomp.md "Widget definitions (JSON) and widget scripts"
+  specifies: one Lua state per widget with the natives bound, the chunk run, `Construct(this)`,
+  `SetConfigurationItem` per scalar `Script` entry, then `OnActivated`.
+- `PreInputUpdate(dt)` runs every frame. `DeactivateWidgetGroup` / `LeavePageContext` call `OnDeactivating` +
+  `Destruct`.
+- The widgets' Lua states live in `LogicHost::pages`, outside the `RefCell` the natives borrow.
+
+Model decisions:
+- The `Widget` root is one published JSON object of the active widgets' typed fields. The original resolves it
+  through the script's view model, slot 8. Adapters are not published yet.
+- Every native is bound, not only `LuaHooks`.
+- `WidgetExit` (page +0x208) is read from WM+0x488.
+- Native screen scripts are not run.
+
+**The boot page, from the original's data** (`mostrusted --hsm`; `frontend.rs` "driven" mode):
+- "Run PageRunner2 Context - Boot Flow" pushes 491012 (12 widgets). "Activate Press Start Widget Group" activates
+  491032. Its `Background` widget's `PlaySequence` script creates the conductor "PressStart" and starts
+  `Widget.Background.Sequence`, which resolves to 1022357, and `frontend.rs` plays the title.
+- The key press only binds the primary user (`HSB_P1BIND`). The HSM then asks for the group's transition
+  (`PlayWidgetGroupTransition` 491032 → the boot transition 1836020).
+- `TransitionFinished` follows the front end's transition. `TransitionState` stays at its default 2, so the group
+  deactivates after 10 frames (the original's cap) while the transition holds over the load, and the script stops
+  its sequence.
+- The boot then leaves the page and, in free drive, pushes the HUD screen 371621 (98 widgets) and activates its
+  groups.
+- Headless timings: title started by the logic at 0.58 s, key at 10.85 s, transition at 10.87 s, playing at
+  15.65 s. Without `--hsm` the flow is unchanged (key 10.76 s, playing 15.56 s).
+- Test: `mw-logic/tests/pages.rs` (needs the install).
+
+Open:
+- `CreateConductor` / `StopSequence` / `DestroyConductor` are still logged only. The front end's sequence player
+  should become the conductor.
+- The other group transitions (data: each group's `ScreenTransition`) and `TransitionState`.
+- The HUD screen's widgets run their scripts, but nothing draws from them yet (`hud.rs` is still hand-written).
+- `Mode.*` roots: `Mode.ShowRecommendsIntro` and two others leave "Select HUD" / the EasyDrive prompt with an
+  unhandled exit.
+
+### 2026-11-17: the original's HSM runs inside the runtime, shadow mode (`--hsm`, `mostrusted/src/logic.rs`)
+
+`mostrusted --hsm` runs "Top State" (20527) every frame on `LogicHost`, next to the hand-written flows. The
+game-mode manager's update (`mode_machine::update`, `FUN_006abc10` order) runs after each HSM update. Requests are
+logged (`hsm:` lines, the first of each kind) and applied to the logic state (`mode_machine::apply`); the runtime
+does not carry any of them out yet. Hook-queued requests are drained right after the hook, so the log keeps the
+original's call order. Answers from runtime state: the title's "BOOT" trigger (`FrontEnd::boot_trigger`),
+`PrimaryUserBound` (the title key press while `ListenForPrimaryUser` listens), `NewProfile` (`--new-game` or no
+saved profile), the loading screen (`Phase::Loading`), `Mode.WorldLoaded` (`FrontEnd::ready`) and
+`Transitions.Transitioning` (`Phase::Transition`). The other answers are stand-ins (model decisions), the same as
+`mwtool hsm --run`: platform PC, offline, chat restricted, `ConnectToAutolog` exits DONE, snapshot 1's `Mode`
+bindings (HudHsm 371633, FeedbackGroupID 2, ...), events available when listed, weapon lists loaded at once,
+unported behaviours hold and unported hooks answer EXIT.
+
+Headless front-end run (`tools/t --front-end --hsm --front-end-shots scratch/fe --mute`):
+- The machine waits on the title until BOOT (frame ~550, ≈ 9.3 s, as the title sequence sets it), then in
+  "Press Start" until the key press.
+- Then, in two frames, it goes boot → profile ("Set Up Continue Game" for a saved profile) → "Playing" →
+  "Run Game Mode" → machine 390148 → "Wait for Loading" → "Show World Freedrive" / "Freedrive Update", and the
+  free-drive HUD machine starts.
+
+"Wait for Loading" passed at once because our world was already loaded (10.3 s, before the press). Every other
+engine wait answers "done" at once because the runtime does not carry out the Requests yet: profile, world and
+feedback-group loads.
+
+Open: carry out the Requests one by one and drop the hand-written flow each replaces: `PushPageContext` /
+`ActivateWidgetGroup` (front-end screens), `LoadWorld`, `LoadProfile`, `StartGameMode`, the HUD machine's requests.
+`Mode` / `Event` binding roots (the GMM's binding table) instead of the stand-ins.
+
+### 2026-11-17: fourth 20 HSM hooks verified and enabled (80 of 187; `natives/hooks_{flow,event,ui}.rs`)
+
+Handlers read from `re/out/live/text.asm`, callees with `fn`. Already ported but parked, now verified byte for byte and
+enabled: SetSafehouseFromProfile (0x676070) and ApplySelectedVehicleRollout (0x6762c0) return EXIT only;
+ClearHudInstantQueue (0x67a7b0: frees UIM+0x126e8 through `FUN_00cc4780`, +0x126e8 = 0, +0x126e0 = 0);
+StopAllSequences (0x680480: `FUN_0067f8c0` = ClearHudMessageQueues, then `FUN_00a44dd0` on UIM+0x47748 / +0x4774c);
+StopSpeech (0x676100: `FUN_008423a0` on G+0x2c3c0; the Lua native of the same name is a separate handler 0x6784e0);
+SkipCurrentTrack (0x676b40: `FUN_0079f760` on UIM+0x30370); ToggleLoadingScreenOff (0x677010: UIM+0x2d204 &= ~0x20,
++0x2d21c = 0); ClearForceOpenEasyDriveFlag (GMM+0x2ca9 = 0), ClearCreditsTransition (GMM+0x2f26 = 0),
+ClearJumpToStoreFlag (0x677080: GMM+0x2f27 = 0; the table lists it as Online but the PC body is this one store),
+SetFMNMenuShowingCommonEvents (`FUN_006e0470`(GMM, 0) = GMM+0x2e85 = 0).
+Fixed and enabled: DeactivateDamage / ReactivateDamage (`FUN_0068acb0` / `FUN_0068ad50`, identical but for a flag
+byte 1 / 0): only with the local slot occupied and the car loaded (`FUN_006ba2f0`), post message 0x1f {vehicle (+0xa0 or
+-1), flag} through `FUN_0069a5e0` (`Request::VehicleDamage` now carries both). CleanAndRepairVehicle (`FUN_006926b0`):
+the local record's rollout copy (vtable +0x18, 0x2b dwords, two zeroed) applied by `FUN_0068e9d0`(+0x98, copy, 2), then
+`FUN_00844940`(vehicle) when +0xa0 != -1 (`Request::CleanAndRepairVehicle { vehicle }`).
+New: ClearPendingResets (0x676080: `FUN_0063d410`(G+0x25690, i) for i in 0..16; per slot it clears the loading-screen bit
+0x1000 / UIM+0x2d238 when the slot is the local car's and resets the entry: `Request::ClearPendingResets`);
+TransferCurrentHeatToVehicle (0x6761c0: the local vehicle id = (record vtable +0x18)+0x30 via `FUN_006ba320`; if non-zero
+`FUN_0072a280`(profile db G+0x2f454+0x4964, id, 0) writes the "garage" row's "heat" column = 0; `Request::TransferCurrentHeatToVehicle`);
+IsSpeedTrapEvent (0x680530 = `FUN_0067fe30`: online event, else the event type record's byte +0x10 (via
+`FUN_0053c020` on the handle (GMM+4)+0xf4) is 0x34 or 0x47, `FUN_006e1720`; `GameModeManager::current_event_kind`);
+SetValidProgressionData (0x687750: `lbValid` = 0xce68ae4f from `.bss` 0x1177a6c; `FUN_00686e70` zeroes 11 entries of
+G+0x2f3e4, then its +0xa4 = flag and G+0x2f3e8 +0x70 = 0: `Request::SetValidProgressionData`);
+SetCollectablesNotInWorld (0x676330: `FUN_0070d260`, `FUN_007000d0` on G+0x14e40); SetRollout (0x68d2f0: `liRolloutId`
+= 0xd04318ef from `.bss` 0x1177c78, `FUN_0068bbf0`(G+0x2f404, id): copies the rollout with that id into the local slot's
+record and applies it). The `.bss` hashes were read from `re/out/live/snap1/mem.bin` and matched by `field_hash`.
+Test `the_fourth_twenty`; `the_twenty_ported_hooks` now counts 80.
+
+Model decisions: no local player = nothing happens (the original dereferences `FUN_006bf330` unchecked);
+`current_event_kind` is filled by the runtime (the type record behind the current event handle is not modelled).
+Open: what G+0x2f3e4 / G+0x2f3e8 are (SetValidProgressionData); whether the local vehicle id of
+TransferCurrentHeatToVehicle (+0x30 of the vtable +0x18 object) equals the garage "vehicleid".
+Next candidates (parked, offline or trivial; verify the same way): OnOpenEasyDrive, OnStartEvent, OnSelectEasyDriveOption,
+OnOpenEasyDriveMods, OnCloseEasyDriveMods, PlayEndOfIntroSequenceInEasyDrive, ShouldPlayEndOfIntroSequenceInEasyDrive,
+ClearPlayEndOfIntroSequenceInEasyDrive, SetHasIntroEasyDriveBeenActive, HasIntroEasyDriveBeenActive,
+SwitchToGameplayLoadWorld, LeaveGame, ExitForMultiplayerMatchMaking, ClearE3MultiplayerProgression, ShowPartyInvitePopup,
+OnPhotoSharedToWall, ShowX360GamerCard, ShowX360GamerCardEasyDrive, ShowX360GamerCardByPlayerIndex,
+SetFMNMenuShowingVITAExclusiveEvents.
+### 2026-11-17: HSM boot placeholders ported, the game-mode manager starts free drive (`hsm/behaviours_mode.rs`, `natives/mode_machine.rs`)
+
+13 more behaviour types (58 in all; details decomp.md "The HSM interpreter", third batch): the boot's three
+placeholders `PRELOADCOPS` (streams `VEHICLES\VEH_<id>_HI/LO.BNDL` for the player's car, the default cop 0x1df59
+and the cop table), `HSB_RNLAYOUT`, `LIST_INVITE` (waits for ever offline), then the free-drive mode's
+`REQTRAFRSTRT`, `GETSPEEDWALL`, `PREFETCHSCRE`, `ALLOWSIMPAUS`, `SETSIMPAUSES`, `BPAUSED`, `HSB_RUNNING`,
+`ENABLETRIGS`, `HSB_DISCONGP` and `RUNHUDSUBNET` (the same vtable slots as `RUNSUBNET`: one class under two names).
+**What `StartGameMode` does** (from `FUN_00701cb0` / `FUN_0070d580`, values read in both snapshots): the event is
+G+0x2f6f8, on the boot the free-drive event 390703 that `SetNewGame` picks; the GMM starts the event's `GameMode`
++0x1c instance (390147 "Freedrive Game Mode") once the event data and the mode's `WeaponList` are loaded. Ported
+engine-free as `natives::mode_machine` (`start_game_mode` applied by `LogicHost::request`, `update` called by the
+`Hsm` owner after `Hsm::update`, queries `NextEvent` / `GameModeStarted` / `GameModeEvent` / `GameModeMachine` /
+`FreedriveEvent` answered from `LogicState` by `LogicHost::query`); mw-assets reads `GameMode` +0x1c / +0x20 / +0x40
+and `GameLogicConfig` ids (`StartConfig::ids`). `mwtool hsm --run` plays the GMM and reaches "Freedrive Update" with
+the "Freedrive HUD" machine at frame 3 (route in decomp.md) with six binding answers on top of the boot's five
+(`Mode.HasTransitionedEvents`, `Mode.Data.FeedbackGroupID`, `Mode.WorldLoaded`, `Mode.NeedTheMapScreen`,
+`Mode.HudHsm`, `Transitions.Transitioning(NOT)`; values as snapshot 1 reads them): the `Mode` binding root is the
+GMM's binding table, not ported.
+Model decisions: the driver marks an event available when it is in GAMEPLAY's `EventList` (stands in for
+`FUN_006e58a0`'s world list lookup, which picks 390703 as the snapshots show) and loads event data and weapon lists at
+once; `HSB_RNLAYOUT`'s slot is named by the layout id in Requests (the original keeps a slot handle); the
+`.bss` qword 0x0117ac30 it zeroes is not ported; `HSB_DISCONGP`'s per-frame re-block is a Request every update (the
+logic host applies it to `InputBlocks`); online paths of `REQTRAFRSTRT` / the GMM are ported as read but untested.
+Open: the runtime host (`mostrusted/src/logic.rs`) should call `mode_machine::apply` in `request`, fall back to
+`LogicHost::query`, and call `mode_machine::update` after `Hsm::update`; `FUN_0070b1e0` (end of event),
+`FUN_007090f0`, `FUN_0070caa0`; `RUNSUBNET`'s cross-resource load. Next candidate types on the free-roam route (held
+as placeholders): `MUTEALLRUMBL`, `PAUSEMSGS`, `PLAYSONGLIST`, `WEAPONSOK`, `MINIMAPICONS`, `SYNCPROFILEW`,
+`HIDECHEV`, `PAUSEAI`, `DOBODYSHOP`, `HSMCARSWAPLO`, `DOBLACKLISTS`, `MODEENDCHECK`, `CHECKPTS`, `EVENTSTARTS`,
+`HSB_WAIT4IN`, `SET_LAY_SET`, `SETENDREASON`. Captures that would confirm: G+0x2f6f8 and GMM+0x2cfc right after
+the boot of a fresh profile; the `PRELOADCOPS` instance's lists (+0x98 / +0xcc) in free roam.
+
 ### 2026-11-17: third 20 HSM hooks verified and enabled (60 of 187; `natives/hooks_{flow,event}.rs`)
 
 Handlers read from `re/out/live/text.asm` (vtable-only), helpers with `fn`: RemoveAllCops 0x67a740 (`FUN_006795c0`, per
@@ -37,6 +290,47 @@ Next candidates (still unported, offline): SetSafehouseFromProfile, ClearHudInst
 CleanAndRepairVehicle, DeactivateDamage, ReactivateDamage, ApplySelectedVehicleRollout, ClearPendingResets, TransferCurrentHeatToVehicle,
 IsSpeedTrapEvent, SetValidProgressionData, SetCollectablesNotInWorld, SetRollout, SkipCurrentTrack, ToggleLoadingScreenOff,
 ClearForceOpenEasyDriveFlag, SetFMNMenuShowingCommonEvents, ClearJumpToStoreFlag, ClearCreditsTransition.
+### 2026-11-17: Lua natives, fourth batch: the last 15 the UI's chunks read (100 of 385; `natives/lua_garage.rs`)
+
+The intersection of `mwtool natives --area offline --unported` with the native names in `mwtool lua --out` column 2
+is now empty: every offline Lua native a shipped UI chunk names is ported. Handlers from the dump, `re/out/live/text.asm`
+for 0x67a6b0 (AddNewGarageItem), 0x7e9c30 (ReleaseAllImages), 0x692740, 0x690270, 0x680340 (the dump has no function
+there; `fn` does not resolve register `this`, the asm does).
+- Rank natives: the `this` of `FUN_006ec470` / `FUN_006ec4f0` / `FUN_006ec5a0` is **G+0x14c08**, the profile manager
+  (PPM); the rank list is at PPM+0x94 (count +0x98, (record, offset) pairs, rank at `*(rec+0x28)+0x18+off`, threshold key at
+  +0xc). GetMaxRank = max rank (0 empty). GetRankForSP(sp) = `FUN_006ec4f0`(sp - local player record +0x408), where the
+  record is `FUN_006bf330` of PM (G+0x2f3dc): rollout `(*(G+0x2f3e4)+0x44) == 4` → the rank with the nearest threshold at
+  or below the argument (`FUN_006893c0` = smallest positive matching row, else 0), else 1. GetSPForRank(rank) =
+  `FUN_006ec5a0`(rank) + the same +0x408: rank 0 → 1; above the max → `FUN_006ec230` (largest value over the listed ranks);
+  else that rank's threshold in mode 4, 0 otherwise.
+- AddNewGarageItem(kind, id, flag): `FUN_006fe380` on G+0x14c08 (sic, same object): `FUN_006f8950` validity (item-type tree),
+  then a sorted id → byte map gets the flag. HasEarnedAward(awardId, uniqueId): `FUN_007322a0`, query "OfflineAward" on
+  the progression database (G+0x2f454 +0x4964), true when a row exists. SelectEasyGuideCategory(id): `FUN_00792fc0` on
+  UIM+0x47640 (find the category with that id among the current page's children, push the current page, descend).
+  SetFocusVehicleId: `FUN_0086bbf0`(id, 0) on OM+0x4c90. SetLocalPlayerLicenseRegistration: `FUN_00679760` → `FUN_006ee6f0`
+  (8 chars into the local player's 0x1c-byte record, +4). SetRolloutFromProfile / SetSinglePlayerRollout: the same
+  requests as their hooks. SetVehicleAndRolloutFromSaveGameByVehicleID (Lua 0x680340 = `FUN_006800a0`, > 0 only). Requests
+  (engine-only): ApplyModUpgrade (`FUN_0068ab10`, also sets GMM+0x251c), ReleaseAllImages (`FUN_007e1340`: image
+  slots in state 2 → 3), ResetNeutalVaues (flag 8 of `*0x010edb18`, message {8,0} queued), SetAvailableVehicleListEvent
+  (`FUN_00871330` on OM+0x5ee0), SetVehicleAndRolloutFromSaveGame. Tests in `lua_garage.rs`; `mwtool lua`: 115 scripts run, 0 errors.
+
+Model decisions: the rank table (`GarageFields::ranks`, thresholds precomputed from `FUN_006893c0`'s data lookups), `sp_base`,
+`rank_mode`, the garage validity set, earned awards and the guide's per-page `children` are filled by the runtime, not read
+from memory. GetRankForSP with no threshold at or below the argument: the original dereferences a null record; we return 1.
+Open: filling those fields from the install (the rank/threshold data, OfflineAward rows); the engine side of the five new requests.
+
+Next candidates (offline Lua natives still unported, 163 minus these; none is named by a UI chunk, so they are reached
+from the HSM behaviours/hooks, GeneSys sequences or the in-race feedback/event scripts, which this session did not
+trace; by family): camera (TransitionCameraTo*, Get/SetCameraFov, ICE camera, overhead / finish-line camera), feedback
+messages and sequences (ShowFeedbackMessage, StartFeedbackSequence, Load/UnloadFeedbackGroup, loading-screen natives),
+sound (PlaySound, PlayMusic, PlaySpeech, mix snapshots), race/competitor queries (GetCompetitor*, GetRaceDistance,
+GetDistanceToFinish, IsInTrigger*, GetTrigger*), vehicle control and queries (SpawnVehicle, TeleportVehicle,
+SetCarLocked/Frozen, GetVehicle*, speed getters), traffic (StopTraffic, SetTrafficDensity), nitrous, and the rollout /
+route ones (SetEventFromAvailableVehicles, SelectDefaultRollout, SetRolloutFromVehicleID, SetRouteFromPlayerTo*,
+SetSelectedWorld, GetSelectedVehicleId / ColourId, IsAssetUnlocked, SaveControllerConfiguration). The rollout/route and
+selected-id ones are the cheapest next (state fields like this batch); the camera / sound / traffic / vehicle ones are
+mostly engine requests plus a few getters that need runtime-filled fields.
+
 ### 2026-11-17: Lua natives, third batch: 15 more (85 of 385; `natives/lua_misc.rs`)
 
 Each read from its handler (dump; `re/out/live/text.asm` for the six the dump lacks: ReleaseSettings 0x7eb170,
@@ -56,8 +350,7 @@ Model decisions: UpdateDeferredViewModel pushes `MiscFields::deferred_ids[name]`
 value (set by FUN_0081d1f0 inside FUN_00820550) was not traced; the load is `Request::UpdateDeferredViewModel`.
 SetLocalPlayerLicensePlate's telemetry event (FUN_004c3890 "GAME EVNT LICE") is not ported. The `this` of
 FUN_006e4d10 / FUN_006ee760 (plate list) is not identified; plates are filled by the runtime.
-Open: GetRankForSP (FUN_006ec4f0: rollout +0x44 == 4, nearest rank threshold from FUN_006893c0) needs its `this`
-identified.
+Open (closed in the fourth batch): GetRankForSP's `this` is G+0x14c08.
 ### 2026-11-17: 11 more HSM behaviour types, the boot needs no behaviour answers (`hsm/behaviours_game.rs`)
 
 The 6 types removed from the first batch were verified against `text.asm` (factories are not in the dump: vtable

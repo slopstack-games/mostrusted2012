@@ -31,6 +31,8 @@ pub fn register(r: &mut Registry) {
     r.register_fn("ENABLETIME", |_| EnableTime);
     r.register_fn("COLLECTABLES", |_| Collectables);
     r.register_fn("LOAD_FDBK_GR", |_| LoadFeedbackGroup::default());
+    r.register_fn("PRELOADCOPS", |_| PreloadCops::default());
+    r.register_fn("LIST_INVITE", |_| ListenForInvite);
 }
 
 /// `YES` (`DAT_0117a9b0`) and `NO` (`DAT_0117a020`).
@@ -463,5 +465,168 @@ impl Behaviour for LoadFeedbackGroup {
         if param_true(cx, "UNLOADONEXIT") && self.group != 0 {
             cx.host.request(Request::UnloadFeedbackGroup { group: self.group });
         }
+    }
+}
+
+/// The vehicle `PRELOADCOPS` always lists first when cops take part (0x75c313: `mov [esi+0xcc], 0x1df59`).
+pub const DEFAULT_COP_VEHICLE: u32 = 0x1df59;
+
+/// "Preload Cop Cars" (`PRELOADCOPS`, factory 0x77c140, vtable 0xfd9a94, 0x118 B): keeps the vehicle bundles of
+/// the running game mode streamed in. Update 0x75c1c0 (never exits; nothing while a load or release runs): with
+/// a started mode, a local player and an offline event it watches the event, the local player's car and, when cops
+/// take part, a heat record field; on a change (or the first time players exist) it re-lists the wanted cars: the
+/// default cop car and the cop vehicle table's cars when cops take part, then, outside free drive, every player's
+/// car; without those it forgets everything. Each update then streams one step (`FUN_00757f10`). On exit (exit
+/// update 0x758030) it lets everything go and finishes once nothing is loaded. On enter (0x744c50) all is reset.
+#[derive(Default)]
+pub struct PreloadCops {
+    /// +0xcc, count +0xfc: the cars wanted in low detail.
+    wanted: Vec<u32>,
+    /// +0x98, count +0xc8: the cars loaded in low detail.
+    loaded: Vec<u32>,
+    /// +0x100: the heat record field last seen.
+    heat: u64,
+    /// +0x104: the event last seen (GMM+0x2ce0).
+    event: u64,
+    /// +0x108: the local player's car wanted in high detail.
+    player_vehicle: u32,
+    /// +0x10c: ... and loaded.
+    loaded_player: u32,
+    /// +0x110: the players have been listed.
+    players_listed: bool,
+}
+
+impl PreloadCops {
+    /// 0x75c4ca / 0x758030: forget the inputs and the wanted list (the loaded ones stay until streamed out).
+    fn forget(&mut self) {
+        self.wanted.clear();
+        self.heat = 0;
+        self.event = 0;
+        self.player_vehicle = 0;
+        self.players_listed = false;
+    }
+
+    /// `FUN_00757f10`, one step: swap the high-detail car when it changed (and nothing else this step); else load
+    /// the first wanted car not loaded, then release the first loaded car no longer wanted.
+    fn stream(&mut self, cx: &mut Cx) {
+        if self.player_vehicle != self.loaded_player {
+            if self.loaded_player != 0 {
+                cx.host.request(Request::ReleaseVehicle { vehicle: self.loaded_player, hi: true });
+            }
+            if self.player_vehicle != 0 {
+                cx.host.request(Request::StreamVehicle { vehicle: self.player_vehicle, hi: true });
+            }
+            self.loaded_player = self.player_vehicle;
+            return;
+        }
+        if let Some(&v) = self.wanted.iter().find(|v| !self.loaded.contains(v)) {
+            cx.host.request(Request::StreamVehicle { vehicle: v, hi: false });
+            self.loaded.push(v);
+        }
+        if let Some(&v) = self.loaded.iter().find(|v| !self.wanted.contains(v)) {
+            cx.host.request(Request::ReleaseVehicle { vehicle: v, hi: false });
+            self.loaded.retain(|&x| x != v);
+        }
+    }
+
+    fn push_new(&mut self, v: u32) {
+        if !self.wanted.contains(&v) {
+            self.wanted.push(v);
+        }
+    }
+}
+
+impl Behaviour for PreloadCops {
+    fn on_enter(&mut self, _cx: &mut Cx) {
+        *self = Self::default();
+    }
+
+    fn update(&mut self, cx: &mut Cx) -> bool {
+        if ask_bool(cx, Query::VehicleStreamBusy) {
+            return false;
+        }
+        let ready = ask_bool(cx, Query::GameModeStarted)
+            && ask_bool(cx, Query::LocalPlayerReady)
+            && !ask_bool(cx, Query::OnlineEvent);
+        if !ready {
+            self.forget();
+            self.stream(cx);
+            return false;
+        }
+        let mut changed = false;
+        let event = ask(cx, Query::GameModeEvent);
+        let car = ask(cx, Query::PlayerVehicle) as u32;
+        if event != self.event {
+            self.players_listed = false;
+            self.event = event;
+            changed = true;
+        }
+        if car != self.player_vehicle {
+            self.player_vehicle = car;
+            changed = true;
+        }
+        if ask_bool(cx, Query::CopsAllowed) {
+            let heat = ask(cx, Query::HeatRecordKey);
+            if heat != self.heat {
+                self.heat = heat;
+                changed = true;
+            }
+        }
+        let relist = if !self.players_listed && ask(cx, Query::PlayerCount) > 0 {
+            self.players_listed = true;
+            true
+        } else {
+            changed
+        };
+        if relist {
+            self.wanted.clear();
+            if ask_bool(cx, Query::CopsAllowed) {
+                self.wanted.push(DEFAULT_COP_VEHICLE);
+                for index in 0..ask(cx, Query::CopVehicleCount) as u32 {
+                    let v = ask(cx, Query::CopVehicle { index }) as u32;
+                    self.push_new(v);
+                }
+            }
+            if self.players_listed && !ask_bool(cx, Query::FreedriveEvent) {
+                for index in 0..ask(cx, Query::PlayerCount) as u32 {
+                    let v = ask(cx, Query::PlayerVehicleOf { index }) as u32;
+                    self.push_new(v);
+                }
+            }
+        }
+        self.stream(cx);
+        false
+    }
+
+    fn exit_update(&mut self, cx: &mut Cx) -> bool {
+        if ask_bool(cx, Query::VehicleStreamBusy) {
+            return false;
+        }
+        self.forget();
+        self.stream(cx);
+        self.loaded.is_empty() && self.loaded_player == 0 && !ask_bool(cx, Query::VehicleStreamBusy)
+    }
+}
+
+/// `DONT_JOIN`, `LIST_INVITE`'s exit when it took the invite (0x74dd80).
+pub const DONT_JOIN: u64 = 0x6128_ab34_4e91_3400;
+
+/// "Listen for Invite" (`LIST_INVITE`, factory 0x77bfb0, vtable 0xfd99e0, only the update 0x74dd80 is its own):
+/// waits for an invite on the invite listener (PM+0xc9a0); a joinable one is taken (exit `DONT_JOIN`), any other
+/// exits through `EXIT`. Offline no invite comes, so it waits for ever.
+pub struct ListenForInvite;
+
+impl Behaviour for ListenForInvite {
+    fn update(&mut self, cx: &mut Cx) -> bool {
+        if !ask_bool(cx, Query::InvitePending) {
+            return false;
+        }
+        if ask_bool(cx, Query::InviteJoinable) {
+            cx.host.request(Request::TakeInvite);
+            cx.set_exit(DONT_JOIN);
+        } else {
+            cx.set_exit(EXIT);
+        }
+        true
     }
 }

@@ -2,7 +2,7 @@
 //!
 //! The script is a `;`-separated list of `<seconds> <command> [<argument>]` steps. The clock starts on the first
 //! frame the pause menu or the map screen is open and the loading screen is gone (real time, as those screens
-//! run with the game clock paused).
+//! run with the game clock paused); with `MW_INPUT_SCRIPT_START=playing` as soon as the game is playing.
 //! Commands: `key <KeyCode>` / `keyup <KeyCode>` (held until released: `ArrowLeft`, `Enter`, `Backspace`,
 //! `Escape`, `PageUp`, `KeyZ`, …), `pad <button>` / `padup <button>` on a virtual gamepad (`South`, `East`,
 //! `North`, `West`, `DPadUp`, `DPadDown`, `DPadLeft`, `DPadRight`, `Start`, `Select`, `LeftTrigger`,
@@ -145,8 +145,11 @@ fn run_script(
             return;
         }
     };
-    // Open and on screen (not under the loading screen).
-    let open = (pause.is_some_and(|p| p.open) || map.is_some_and(|m| m.open)) && front.is_none_or(|f| f.playing());
+    // Open and on screen (not under the loading screen); `MW_INPUT_SCRIPT_START=playing`: as soon as the game is
+    // playing (free roam, the HUD's widget actions).
+    let playing = front.is_none_or(|f| f.playing());
+    let menus = pause.is_some_and(|p| p.open) || map.is_some_and(|m| m.open);
+    let open = playing && (menus || std::env::var("MW_INPUT_SCRIPT_START").is_ok_and(|v| v == "playing"));
     let now = match script.clock {
         Some(t) => t + time.delta_secs(),
         None if open => 0.0,

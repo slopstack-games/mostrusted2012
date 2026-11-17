@@ -34,12 +34,16 @@ pub mod hooks_ui;
 pub mod host;
 pub mod lua_args;
 pub mod lua_career;
+pub mod lua_garage;
 pub mod lua_menus;
 pub mod lua_misc;
 pub mod lua_settings;
 #[cfg(test)]
 mod lua_tests;
 pub mod lua_widgets;
+pub mod mode_machine;
+pub mod mode_view;
+pub mod pages;
 pub mod players;
 pub mod progression;
 pub mod state;
@@ -145,6 +149,7 @@ impl Registry {
         lua_career::register(&mut r);
         lua_menus::register(&mut r);
         lua_misc::register(&mut r);
+        lua_garage::register(&mut r);
         r
     }
 

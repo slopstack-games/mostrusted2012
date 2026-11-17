@@ -224,6 +224,10 @@ MW_SIREN_PRESS=12 MW_LIGHTBAR_SHOTS=<dir> ./target/release/mostrusted --drive "F
 # default car at the game's start point; Esc / pad Start pauses). --drive / --race / --test / --camera / --replay
 # skip it. --new-game, --profile <file> (~/.config/mostrusted/profile.cfg), --front-end-shots <dir>, --show-loading
 ./target/release/mostrusted
+# The original's game-logic machine ("Top State") run beside the hand-written flows (logic.rs, PLAN M8 step 7):
+# logs `hsm:` lines (states, hooks, Requests). Carried out so far: page contexts / widget groups (their Lua scripts
+# run) and the boot page (the title starts on the Press Start group's script, the transition on its request)
+tools/t --front-end --hsm --front-end-shots scratch/fe --mute; grep 'hsm:' scratch/run.log
 ./target/release/mwtool bindings [--find x] [--parse] [--no-genesys] [--out f.tsv]  # every binding path, parsed (mw_logic::binding)
 ./target/release/mwtool hsm [<node id>] [--find text]     # game-logic state machines (HSMData); mwtool frontend
 ./target/release/mwtool hsm <id> --parents               # which nodes start a node (child or transition)
@@ -235,6 +239,10 @@ MW_SIREN_PRESS=12 MW_LIGHTBAR_SHOTS=<dir> ./target/release/mostrusted --drive "F
 # --answer NAME=VALUE (state id | behaviour code | binding path with '.' | hook name; VALUE exit point / run / value;
 # Host.LoadingScreenShowing / Host.GraphicsPrepared answer the host queries). --steps 300 --dt 0.0333
 ./target/release/mwtool hsm --run --steps 90 --answer 'GeneralSequence.Triggers["BOOT"].IsTriggerSet[1]=true' --answer UIConfig.Platform=PC --answer Net.IsLoggedInToServer=FALSE --answer SignInState.Params.IsChatRestricted=TRUE --answer 1222788=DONE   # boot → "Playing" (IsProgressionReady, ShouldPlayNewGameIntro are ported: the driver stands in a loaded profile; the five answers left are engine bindings (BOOT trigger, UIConfig.Platform, Net.IsLoggedInToServer, IsChatRestricted) and the online ConnectToAutolog state 1222788, no behaviour answers)
+# ... and on into free roam: the driver also plays the game-mode manager (mode_machine::update after each frame; events,
+# GameMode items and GameLogicConfig ids from the install; event data and weapon lists load at once), so "Run Game Mode"
+# starts event 390703 and the GMM machine 390147 "Freedrive Game Mode"; six engine bindings answered as the snapshots read:
+./target/release/mwtool hsm --run --steps 600 --answer 'GeneralSequence.Triggers["BOOT"].IsTriggerSet[1]=true' --answer UIConfig.Platform=PC --answer Net.IsLoggedInToServer=FALSE --answer SignInState.Params.IsChatRestricted=TRUE --answer 1222788=DONE --answer Mode.HasTransitionedEvents=FALSE --answer Mode.Data.FeedbackGroupID=2 --answer Mode.WorldLoaded=TRUE --answer Mode.NeedTheMapScreen=FALSE --answer Mode.HudHsm=371633 --answer 'Transitions.Transitioning(NOT)=TRUE'   # → "Freedrive Update" + machine 371633 "Freedrive HUD" (hook requests print as "hook request")
 ./target/release/mwtool natives [--area offline|online|platform|debug|unknown] [--unported]   # the 187 hooks + 385 Lua natives, handler address, ported or not
 ./target/release/mwtool lua --list                       # the UI's 115 Lua chunks (mw-lua): id, name (checked against the id), size
 ./target/release/mwtool lua [--run <name>] [--call <Fn>|all] [--trace]   # main chunk + Construct with logging stub natives
@@ -247,6 +255,7 @@ MW_SIREN_PRESS=12 MW_LIGHTBAR_SHOTS=<dir> ./target/release/mostrusted --drive "F
 MW_CARD_SHOTS=<dir> ./target/release/mostrusted --drive "v12 vantage" --units 20 --spawn=1600,40,2350 --map-start 1909234   # card shots, intro, exit
 # Scripted keys / virtual pad for the menus (input_script.rs): `<s> key|keyup|pad|padup|lx|ly|rx|ry|shot|quit [arg]`
 # steps, clock from when the pause menu or map is on screen; MW_MAP_LOG=1 logs the map's selection and cursor
+# (MW_INPUT_SCRIPT_START=playing: from when the game is playing, e.g. the HUD's widget actions under --hsm)
 MW_MAP_LOG=1 MW_INPUT_SCRIPT="0.5 lx 1; 0.6 lx 0; 1.5 shot <scratch>/m.png; 2 quit" ./target/release/mostrusted --drive "v12 vantage" --units 12 --spawn=1600,40,2350 --show-map
 # Races (race.rs, ai.rs, cutscene.rs): the event's intro, AI opponents on the grid, gates, laps, results
 ./target/release/mwtool events [<id> [--png f]] [--all]  # offline events (each opponent's rollout car, colours, Most Wanted / cop flags); mwtool camera-take [take] (ICE cameras)
@@ -327,6 +336,9 @@ tools/wasm-check --threads   # the same for the threaded browser build (nightly 
 # threads are Web Workers (mostrusted/src/platform.rs, wasm_thread); the page needs COOP same-origin + COEP
 # require-corp; the main thread never blocks on a lock (PollLock::poll_lock)
 tools/web/build                  # the browser build into target/web (WASM_BINDGEN=<path> if not on PATH)
+# GitHub Pages: Actions → "Browser build to GitHub Pages" → Run workflow (.github/workflows/pages.yml, manual only;
+# Settings → Pages → Source "GitHub Actions"). WEB_TOOLCHAIN=<nightly> picks the toolchain (the workflow's input).
+# Pages sends no COOP / COEP headers: tools/web/coi-sw.js (a service worker index.html registers) adds them.
 python3 tools/web/serve.py       # serve it + your install on 127.0.0.1:8080 (--install, --port, --out)
 #   http://127.0.0.1:8080/ (pick the install folder) or /?serve=1&args=--camera=-1131,27,1627,-1190,15,1720+--units+4
 tools/web/headless <name> '<flags>' [timeout] [record_s]   # Brave in tools/hl's gamescope, silent; waits for

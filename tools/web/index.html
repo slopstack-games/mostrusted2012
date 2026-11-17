@@ -29,6 +29,23 @@
   <div id="status"></div>
 </div>
 <script>
+// Hosts without COOP / COEP headers (GitHub Pages): coi-sw.js adds them; the page reloads once it is in control.
+// tools/web/serve.py sends the headers itself, so nothing is registered there.
+(() => {
+  if (self.crossOriginIsolated || !('serviceWorker' in navigator) || !window.isSecureContext) return;
+  let reloaded = false;
+  try { reloaded = sessionStorage.getItem('coi-reloaded') === '1'; } catch (_) {}
+  navigator.serviceWorker.register('./coi-sw.js').then((reg) => {
+    const reload = () => {
+      if (reloaded) return;
+      try { sessionStorage.setItem('coi-reloaded', '1'); } catch (_) {}
+      location.reload();
+    };
+    if (navigator.serviceWorker.controller) reload();
+    else navigator.serviceWorker.addEventListener('controllerchange', reload);
+    reg.update();
+  }, (e) => console.warn('cross-origin isolation worker:', e));
+})();
 Error.stackTraceLimit = 200; // full Rust stacks in panic reports
 // Audio: browsers start an AudioContext suspended until the page gets a click or key press, and the game creates
 // its context (cpal, through Bevy) while starting. Keep every context and resume them on the first gesture.
@@ -82,7 +99,7 @@ function launch(f) {
   document.getElementById('panel').classList.add('hidden');
   try { f(); } catch (e) { document.getElementById('panel').classList.remove('hidden'); fail(e); }
 }
-if (!self.crossOriginIsolated) status.textContent = 'This page needs cross-origin isolation (COOP / COEP headers): serve it with tools/web/serve.py.';
+if (!self.crossOriginIsolated) status.textContent = 'This page needs cross-origin isolation (COOP / COEP headers): reload it once (a service worker adds them), or serve it with tools/web/serve.py.';
 await init();
 document.getElementById('folder').addEventListener('change', (ev) => launch(() => start_with_files(ev.target.files, args())));
 if (q.has('serve')) {

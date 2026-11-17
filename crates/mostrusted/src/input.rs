@@ -117,10 +117,25 @@ pub enum MenuAction {
     TriggerLeft,
     TriggerRight,
     Start,
+    /// 50 / 51: Numpad 8 / 2; right stick Y.
+    ScrollUp,
+    ScrollDown,
+    /// 60: Tab; Back.
+    ViewProfile,
+    /// 62: F1; Start.
+    ToMainMenu,
+    /// 69–72 (the HUD's EasyDrive menu): Numpad 4 / 6 / 8 / 2; d-pad (pad codes 8 / 9 / 6 / 7, the `_alt` twins').
+    EasyLeft,
+    EasyRight,
+    EasyUp,
+    EasyDown,
+    /// 73: Enter; A. 74: Backspace; X.
+    UniversalAccept,
+    UniversalAlt,
 }
 
 impl MenuAction {
-    pub const ALL: [MenuAction; 13] = [
+    pub const ALL: [MenuAction; 23] = [
         Self::Left,
         Self::Right,
         Self::Up,
@@ -134,7 +149,53 @@ impl MenuAction {
         Self::TriggerLeft,
         Self::TriggerRight,
         Self::Start,
+        Self::ScrollUp,
+        Self::ScrollDown,
+        Self::ViewProfile,
+        Self::ToMainMenu,
+        Self::EasyLeft,
+        Self::EasyRight,
+        Self::EasyUp,
+        Self::EasyDown,
+        Self::UniversalAccept,
+        Self::UniversalAlt,
     ];
+
+    /// The action id (`FUN_007e7910`'s table, `mw_logic::natives::pages::INPUT_MAPPINGS`); 42–45 include their `_alt`
+    /// twins 46–49.
+    pub fn id(self) -> u8 {
+        match self {
+            Self::Left => 42,
+            Self::Right => 43,
+            Self::Up => 44,
+            Self::Down => 45,
+            Self::Accept => 52,
+            Self::Cancel => 53,
+            Self::Settings => 54,
+            Self::Alt => 55,
+            Self::TabLeft => 56,
+            Self::TabRight => 57,
+            Self::TriggerLeft => 58,
+            Self::TriggerRight => 59,
+            Self::Start => 61,
+            Self::ScrollUp => 50,
+            Self::ScrollDown => 51,
+            Self::ViewProfile => 60,
+            Self::ToMainMenu => 62,
+            Self::EasyLeft => 69,
+            Self::EasyRight => 70,
+            Self::EasyUp => 71,
+            Self::EasyDown => 72,
+            Self::UniversalAccept => 73,
+            Self::UniversalAlt => 74,
+        }
+    }
+
+    /// The action of an id; the `_alt` twins 46–49 read as 42–45 (`FUN_0047a3f0` resolves them together).
+    pub fn from_id(id: u8) -> Option<Self> {
+        let id = if (46..=49).contains(&id) { id - 4 } else { id };
+        Self::ALL.into_iter().find(|a| a.id() == id)
+    }
 
     /// The action's bindings and, for the four directions, those of its `_ALT` twin (46–49: the d-pad).
     pub fn bindings(self) -> (&'static [Control], &'static [Control]) {
@@ -164,11 +225,23 @@ impl MenuAction {
             Self::TriggerRight => (&[Key(K::KeyA), Trigger(B::RightTrigger2, A::RightZ)], &[]),
             // AUTOLOG_START (61): Escape; Start.
             Self::Start => (&[Key(K::Escape), Button(B::Start)], &[]),
+            Self::ScrollUp => (&[Key(K::Numpad8), Axis(A::RightStickY, 1.0)], &[]),
+            Self::ScrollDown => (&[Key(K::Numpad2), Axis(A::RightStickY, -1.0)], &[]),
+            Self::ViewProfile => (&[Key(K::Tab), Button(B::Select)], &[]),
+            Self::ToMainMenu => (&[Key(K::F1), Button(B::Start)], &[]),
+            // The pad bindings carry an extra argument (`DAT_00fa1db8`) whose meaning was not read.
+            Self::EasyLeft => (&[Key(K::Numpad4), Button(B::DPadLeft)], &[]),
+            Self::EasyRight => (&[Key(K::Numpad6), Button(B::DPadRight)], &[]),
+            Self::EasyUp => (&[Key(K::Numpad8), Button(B::DPadUp)], &[]),
+            Self::EasyDown => (&[Key(K::Numpad2), Button(B::DPadDown)], &[]),
+            Self::UniversalAccept => (&[Key(K::Enter), Key(K::NumpadEnter), Button(B::South)], &[]),
+            Self::UniversalAlt => (&[Key(K::Backspace), Button(B::West)], &[]),
         }
     }
 
+    /// The table's directional flag (42–51).
     fn directional(self) -> bool {
-        matches!(self, Self::Left | Self::Right | Self::Up | Self::Down)
+        matches!(self, Self::Left | Self::Right | Self::Up | Self::Down | Self::ScrollUp | Self::ScrollDown)
     }
 }
 
@@ -233,7 +306,7 @@ impl Track {
 /// `update_menu_input`).
 #[derive(Resource, Default)]
 pub struct MenuInput {
-    tracks: [(Track, Track); 13],
+    tracks: [(Track, Track); MenuAction::ALL.len()],
 }
 
 impl MenuInput {
@@ -241,6 +314,12 @@ impl MenuInput {
         let (main, alt) = &self.tracks[a as usize];
         let combined = STATE_PRIORITY[(main.state() * 4 + alt.state()) as usize];
         if main.state() == combined { main } else { alt }
+    }
+
+    /// An action's state by id (pressed, auto-repeat tick, value) for the widgets' user actions (logic.rs).
+    pub fn by_id(&self, id: u8) -> Option<(bool, bool, f32)> {
+        let t = self.resolved(MenuAction::from_id(id)?);
+        Some((t.state() == 2, t.repeat, t.value))
     }
 
     /// The action's value (analogue: the stick's, keys and buttons 0 / 1).

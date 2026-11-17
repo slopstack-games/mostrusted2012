@@ -218,26 +218,26 @@ fn delete_variable(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
 /// evaluate as bool, false when it does not parse or resolve).
 fn resolve_bool_binding(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
     let b = string_or_invalid(&args, 1);
-    Ok(vec![Value::Bool(state.view_models.resolve_bool(&b).unwrap_or(false))])
+    Ok(vec![Value::Bool(state.resolve_bool(&b).unwrap_or(false))])
 }
 
 /// `ResolveIntBinding(binding)` (0x00679900 → `FUN_006794e0`: int, 0 when unresolved; pushed as a number).
 fn resolve_int_binding(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
     let b = string_or_invalid(&args, 1);
-    Ok(vec![push_int(state.view_models.resolve_int(&b).unwrap_or(0) as i32)])
+    Ok(vec![push_int(state.resolve_int(&b).unwrap_or(0) as i32)])
 }
 
 /// `ResolveDoubleBinding(binding)` (0x00679950 → `FUN_00679550`: double, 0.0 when unresolved).
 fn resolve_double_binding(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
     let b = string_or_invalid(&args, 1);
-    Ok(vec![Value::Number(state.view_models.resolve_double(&b).unwrap_or(0.0))])
+    Ok(vec![Value::Number(state.resolve_double(&b).unwrap_or(0.0))])
 }
 
 /// `ResolveStringBinding(binding)` (0x007e97e0 → `FUN_007e7cc0`: the to-text visitor into a 0x3ff-byte buffer,
 /// "" when it does not parse or fails).
 fn resolve_string_binding(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
     let b = string_or_invalid(&args, 1);
-    let s = state.view_models.resolve_string(&b).unwrap_or_default();
+    let s = state.resolve_string(&b).unwrap_or_default();
     Ok(vec![push_str(fit(&s, 0x3ff))])
 }
 
@@ -247,7 +247,7 @@ fn resolve_string_binding(state: &mut LogicState, _: &mut Lua, args: Vec<Value>)
 /// the text database yet).
 fn resolve_wide_string_binding(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
     let b = string_or_invalid(&args, 1);
-    let s = state.view_models.resolve_string(&b).unwrap_or_default();
+    let s = state.resolve_string(&b).unwrap_or_default();
     Ok(vec![push_str(fit(&s, 0x3ff))])
 }
 
@@ -265,7 +265,7 @@ fn exit_widget_group(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R
 pub fn exit_group_via(state: &mut LogicState, text: &str) {
     let code = if text.contains('{') {
         let inner = fit(text.get(1..text.len().saturating_sub(1)).unwrap_or(""), 64);
-        let s = state.view_models.resolve_string(inner).unwrap_or_default();
+        let s = state.resolve_string(inner).unwrap_or_default();
         fit(&s, 16).to_string()
     } else {
         text.to_string()

@@ -109,6 +109,9 @@ mod h {
     pub const RESULTS_SEQUENCE: u32 = field_hash("ResultsSequence");
     pub const FEEDBACK_GROUP_ID: u32 = field_hash("FeedbackGroupID");
     pub const MUSIC_PLAYLIST: u32 = field_hash("MusicPlaylist");
+    pub const MODE_HSM: u32 = 0x0501_d88b;
+    pub const HUD_HSM: u32 = 0x8e95_85cb;
+    pub const WEAPON_LIST: u32 = field_hash("WeaponList");
 }
 
 const GAME_MODES: &str = "GAMELOGIC/GAMEMODES.BNDL";
@@ -381,6 +384,14 @@ pub struct GameMode {
     /// `MusicPlaylist`: the `SongList` the HSM's "Play Default Game Mode Music" (`PLAYSONGLIST`, `USEDEFAULT`)
     /// plays: 1622455 on every offline mode (`mw_assets::music`).
     pub music_playlist: u32,
+    /// `0501d88b` (+0x1c): the instance id of the mode's top-level HSM state (`GAMELOGIC/GAMEMODES.BNDL`), which
+    /// the game-mode manager starts (`FUN_0070d580` → `FUN_00775ed0`; 390147 "Freedrive Game Mode").
+    pub hsm: u32,
+    /// `8e9585cb` (+0x20): the HUD's top-level instance (`Mode.HudHsm`, `RUNHUDSUBNET`; 371633 "Freedrive HUD").
+    pub hud_hsm: u32,
+    /// `WeaponList` (+0x40): set on the local player before the mode's machine starts (`FUN_006bb720`), which waits
+    /// for it to load (`FUN_006bb6f0`).
+    pub weapon_list: u32,
 }
 
 /// Every offline event plus the game modes and the career's event lists.
@@ -390,6 +401,8 @@ pub struct Events {
     pub game_modes: Vec<GameMode>,
     /// `EventList`s (GAMEPLAY.BNDL): (list id, event ids).
     pub event_lists: Vec<(u32, Vec<u32>)>,
+    /// Each `GameMode` object's fields by mode id (what `Mode.Data.<field>` bindings read).
+    pub game_mode_fields: Vec<(u32, Vec<(u32, mw_formats::genesys::Value)>)>,
 }
 
 impl Events {
@@ -533,21 +546,27 @@ impl AssetStore {
         let mut out = Events { event_lists, ..Default::default() };
         for o in items(self, GAME_MODES)? {
             match short(&o) {
-                "GameMode" => out.game_modes.push(GameMode {
-                    id: uint(o.get(h::ID)),
-                    name: uint(o.get(h::NAME)),
-                    crash_reset_delay: float(o.get(h::CRASH_RESET_DELAY)),
-                    intro_time: float(o.get(h::INTRO_TIME)),
-                    timeout: float(o.get(h::TIMEOUT)),
-                    gate_markers: boolean(o.get(h::GATE_MARKERS)),
-                    respawn_to_racer: boolean(o.get(h::RESPAWN_TO_RACER)),
-                    ar_outro: uint(o.get(h::AR_OUTRO)),
-                    countdown_sequence: uint(o.get(h::COUNTDOWN_SEQUENCE)),
-                    intro_sequence: uint(o.get(h::MODE_INTRO)),
-                    results_sequence: uint(o.get(h::RESULTS_SEQUENCE)),
-                    feedback_group_id: uint(o.get(h::FEEDBACK_GROUP_ID)) as u8,
-                    music_playlist: uint(o.get(h::MUSIC_PLAYLIST)),
-                }),
+                "GameMode" => {
+                    out.game_mode_fields.push((uint(o.get(h::ID)), o.fields.clone()));
+                    out.game_modes.push(GameMode {
+                        id: uint(o.get(h::ID)),
+                        name: uint(o.get(h::NAME)),
+                        crash_reset_delay: float(o.get(h::CRASH_RESET_DELAY)),
+                        intro_time: float(o.get(h::INTRO_TIME)),
+                        timeout: float(o.get(h::TIMEOUT)),
+                        gate_markers: boolean(o.get(h::GATE_MARKERS)),
+                        respawn_to_racer: boolean(o.get(h::RESPAWN_TO_RACER)),
+                        ar_outro: uint(o.get(h::AR_OUTRO)),
+                        countdown_sequence: uint(o.get(h::COUNTDOWN_SEQUENCE)),
+                        intro_sequence: uint(o.get(h::MODE_INTRO)),
+                        results_sequence: uint(o.get(h::RESULTS_SEQUENCE)),
+                        feedback_group_id: uint(o.get(h::FEEDBACK_GROUP_ID)) as u8,
+                        music_playlist: uint(o.get(h::MUSIC_PLAYLIST)),
+                        hsm: uint(o.get(h::MODE_HSM)),
+                        hud_hsm: uint(o.get(h::HUD_HSM)),
+                        weapon_list: uint(o.get(h::WEAPON_LIST)),
+                    });
+                }
                 "OfflineEvent" => {
                     let game_mode = uint(o.get(h::GAME_MODE));
                     let type_name = uint(o.get(h::TYPE_NAME));

@@ -13,6 +13,7 @@ pub fn register(r: &mut Registry) {
     r.register_fn("SETBLACKBACK", |_| SetBlackBackground);
     r.register_fn("CHANGEVSYNCS", |_| ChangeFrameRate::default());
     r.register_fn("MUTE_SOUND", |_| MuteSound::default());
+    r.register_fn("HSB_RNLAYOUT", |_| RunLayout::default());
 }
 
 /// "Run PageRunner2 Context" (`RUN_PG_RNNR2`, factory 0x77ee00, vtable 0xfdaf44, 0x58 B): on enter (0x76f7f0)
@@ -297,5 +298,66 @@ impl Behaviour for MuteSound {
 
     fn on_exit(&mut self, cx: &mut Cx) {
         cx.host.request(Request::MuteSound { reason: self.reason, on: false });
+    }
+}
+
+/// "Run Layout" (`HSB_RNLAYOUT`, factory 0x77f5f0, vtable 0xfdb298, 0x58 B): on enter (0x74fc80) runs the UI layout
+/// `LAYOUT` (atoi) in a slot of the UI manager, in layer 0x18 when `RUN_HIGHEST` is "true" (`_stricmp`), else 0
+/// (its vtable slots 9–11, 0x77ae40 / 50 / 60, give 0 for the other arguments); enters once the slot is ready
+/// (0x745280); runs its children; on exit begin (0x741340) the counter +0x48 is reset, then the exit update
+/// (0x7452d0) deactivates the layout, deactivates it once more and raises +0x54, and finishes on the third call
+/// (zeroing the `.bss` qword 0x0117ac30, which nothing else in the snapshot's text names: not ported); on exit
+/// (0x745360) the slot is freed.
+#[derive(Default)]
+pub struct RunLayout {
+    layout: i64,
+    /// +0x48.
+    count: i32,
+    /// +0x54.
+    deactivated: bool,
+}
+
+/// `HSB_RNLAYOUT`'s layer with `RUN_HIGHEST` (0x74fccf: `lea ebx, [eax+0x18]` with eax 0).
+pub const HIGHEST_LAYER: u32 = 0x18;
+
+impl Behaviour for RunLayout {
+    fn on_enter(&mut self, cx: &mut Cx) {
+        self.count = 0;
+        let layer = if param_true(cx, "RUN_HIGHEST") { HIGHEST_LAYER } else { 0 };
+        self.layout = super::param_int(cx, "LAYOUT");
+        cx.host.request(Request::RunLayout { layout: self.layout, layer });
+        self.deactivated = false;
+    }
+
+    fn enter_update(&mut self, cx: &mut Cx) -> bool {
+        if !ask_bool(cx, Query::LayoutReady { layout: self.layout }) {
+            return false;
+        }
+        self.count += 1;
+        true
+    }
+
+    fn on_exit_begin(&mut self, _cx: &mut Cx) {
+        self.count = 0;
+    }
+
+    fn exit_update(&mut self, cx: &mut Cx) -> bool {
+        let was = self.count;
+        self.count += 1;
+        if was <= 0 {
+            cx.host.request(Request::DeactivateLayout { layout: self.layout });
+            return false;
+        }
+        if self.deactivated {
+            return true;
+        }
+        cx.host.request(Request::DeactivateLayout { layout: self.layout });
+        self.deactivated = true;
+        false
+    }
+
+    fn on_exit(&mut self, cx: &mut Cx) {
+        cx.host.request(Request::ReleaseLayout { layout: self.layout });
+        self.count = 0;
     }
 }

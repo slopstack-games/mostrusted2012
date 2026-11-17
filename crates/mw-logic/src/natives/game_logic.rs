@@ -31,6 +31,8 @@ pub struct GameLogic {
     pub loading_screen_requests: u32,
     /// UIM+0x2d21c (cleared with bit 5 by `ToggleLoadingScreenOff`; meaning open).
     pub loading_screen_2d21c: u32,
+    /// `DAT_01179de0`: the running `HSB_RUNNING` ("Show World") states.
+    pub show_world_count: i32,
 }
 
 /// The block set at G+0x2f0a4 (`FUN_0083c930` clears a bit): a mask word per group at +group×4, a count byte per
@@ -93,4 +95,6 @@ pub struct LogicConfig {
     pub intro_event: u32,
     /// +0x100 `814c73fc` (1909234): the event `IsIntroRace` compares the current one with.
     pub intro_race_event: u32,
+    /// +0x130 `3d09a25a` (431133): the other free-drive mode `FUN_006e5ea0` accepts (the online one).
+    pub online_freedrive_mode: u32,
 }

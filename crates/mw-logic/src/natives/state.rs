@@ -40,6 +40,53 @@ pub struct LogicState {
     pub menus: super::lua_menus::MenuFields,
     /// The remaining offline natives' fields (`lua_misc.rs`).
     pub misc: super::lua_misc::MiscFields,
+    /// The garage, ranks, awards and vehicle-focus fields (`lua_garage.rs`).
+    pub garage: super::lua_garage::GarageFields,
+}
+
+/// The binding host the logic reads through: the game-mode manager's `Mode` root ([`super::mode_view`]) first,
+/// then the view models (registered roots, `Signals`, the published data definitions). A `Mode` member the table
+/// does not answer falls through to a data definition published as "Mode" (the original's dispatch `FUN_00a4ef40`).
+impl crate::binding::Host for LogicState {
+    fn lookup(&self, path: &[crate::binding::Segment]) -> crate::binding::Lookup {
+        use crate::binding::Lookup;
+        if let Some((root, members)) = path.split_first()
+            && root.hash == *MODE_ROOT
+        {
+            let r = super::mode_view::lookup(self, members);
+            if matches!(r, Lookup::Found(_) | Lookup::Unsupported) {
+                return r;
+            }
+        }
+        self.view_models.lookup(path)
+    }
+}
+
+static MODE_ROOT: std::sync::LazyLock<u32> = std::sync::LazyLock::new(|| crate::binding::hash("Mode"));
+
+impl LogicState {
+    /// `ResolveBoolBinding` / an HSM condition: [`super::ViewModels::resolve_bool`]'s rules over every root.
+    pub fn resolve_bool(&self, binding: &str) -> Option<bool> {
+        crate::binding::Binding::parse(binding).ok().map(|b| b.eval_bool(self).value)
+    }
+    /// `ResolveIntBinding` ([`super::ViewModels::resolve_int`]'s rules).
+    pub fn resolve_int(&self, binding: &str) -> Option<i64> {
+        crate::binding::Binding::parse(binding).ok().map(|b| b.eval_int(self).value as i64)
+    }
+    /// `ResolveDoubleBinding`.
+    pub fn resolve_double(&self, binding: &str) -> Option<f64> {
+        crate::binding::Binding::parse(binding).ok().map(|b| b.eval_double(self).value)
+    }
+    /// `ResolveStringBinding`: `None` when it does not parse or resolve.
+    pub fn resolve_string(&self, binding: &str) -> Option<String> {
+        let r = crate::binding::Binding::parse(binding).ok()?.eval_text(self);
+        r.ok.then_some(r.value)
+    }
+    /// The HSM's string reads (`FUN_00a4f2e0`, the string visitor).
+    pub fn resolve_hsm_string(&self, binding: &str) -> Option<String> {
+        let r = crate::binding::Binding::parse(binding).ok()?.eval_string(self);
+        r.ok.then_some(r.value)
+    }
 }
 
 /// Engine facts the logic reads, set by the runtime (or a tool) before the logic runs.
@@ -130,10 +177,13 @@ pub enum Request {
     ResetChaseStats,
     /// `FUN_00844940`(vehicle): message 0x16, the vehicle's damage is reset.
     ResetVehicleDamage { vehicle: i32 },
-    /// `FUN_0068acb0` (inactive) / `FUN_0068ad50` (active): the local car's damage model.
-    VehicleDamage { active: bool },
-    /// `FUN_006926b0`: the local car's rollout re-applied clean (`FUN_0068e9d0`(…, 2)) and its damage reset.
-    CleanAndRepairVehicle,
+    /// `FUN_0068acb0` (`deactivated` = 1, `DeactivateDamage`) / `FUN_0068ad50` (0, `ReactivateDamage`): message 0x1f
+    /// `{vehicle, deactivated}` through `FUN_0069a5e0`, sent only when the local car is loaded.
+    VehicleDamage { vehicle: i32, deactivated: bool },
+    /// `FUN_006926b0`: the local car's rollout (vtable +0x18, 0x2b dwords, two fields zeroed) re-applied clean
+    /// (`FUN_0068e9d0`(player +0x98, copy, 2)), then, when it has a vehicle (+0xa0), `FUN_00844940`(vehicle):
+    /// message 0x16, its damage reset. `vehicle` −1: none.
+    CleanAndRepairVehicle { vehicle: i32 },
     /// `FUN_0065de30`(G+0x264e0, slot): the player's nitrous is emptied.
     ClearNitrous { slot: i32 },
     /// `FUN_0067f8c0`: the HUD's message queues are emptied (UIM+0x12458 records, +0x12468, +0x124f8, +0x12574).
@@ -173,6 +223,22 @@ pub enum Request {
     /// `StartTextEntry`: open the platform keyboard; the runtime updates `LogicState::text_entry` (`state`,
     /// `entered`).
     StartTextEntry { title: String, description: String, text: String, max_len: i32, flags: u8 },
+    /// `ClearPendingResets` (0x676080): `FUN_0063d410`(G+0x25690, i) for i in 0..16 (clears the pending reset of
+    /// vehicle slot i; when it is the local car's: UIM+0x2d204 bit 12 and +0x2d238 cleared).
+    ClearPendingResets,
+    /// `TransferCurrentHeatToVehicle` (0x6761c0): the local player's current vehicle id (`FUN_006ba320`: the
+    /// vtable +0x18 object's +0x30); when non-zero `FUN_0072a280`(the profile's "garage" table (G+0x2f454)+0x4964,
+    /// id, 0): the "heat" column of that vehicle's row is set to 0.
+    TransferCurrentHeatToVehicle,
+    /// `SetCollectablesNotInWorld` (0x676330): `FUN_0070d260` then `FUN_007000d0` on the collectables
+    /// manager G+0x14e40.
+    SetCollectablesNotInWorld,
+    /// `SetRollout` (0x68d2f0): `liRolloutId` → `FUN_0068bbf0`(the rollout manager G+0x2f404, id): the rollout
+    /// with that id is copied into the local player's slot record and applied.
+    SetRollout { rollout: i32 },
+    /// `SetValidProgressionData` (0x687750): `FUN_00686e70`(G+0x2f3e4) (11 entries zeroed), its +0xa4 = `valid`,
+    /// G+0x2f3e8's +0x70 = 0.
+    SetValidProgressionData { valid: bool },
     // --- From HSM behaviours (`hsm::behaviours`; each names the behaviour and the original's call).
     /// `RUN_PG_RNNR2` enter (0x76f7f0 → `FUN_0083dc70` on the PageRunner2 at G+0x2ee60): push the PageRunner2
     /// context `name` with its default page `page` (the `DEF_PAGE_REF` id printed "%d"); a context of that name
@@ -326,4 +392,66 @@ pub enum Request {
     /// `ChangeVehicleOnCustomRollout` (0x00692760 → `FUN_00691110` on the rollout manager G+0x2f404): try the
     /// vehicle as the custom rollout (`FUN_00691050`), else rebuild the default one for it (`FUN_00690b10`).
     ChangeVehicleOnCustomRollout { vehicle: i32 },
+    /// `PRELOADCOPS` (`FUN_0074f640`): load the bundle `VEHICLES\VEH_<vehicle>_HI.BNDL` (`hi`, the local player's
+    /// car) or `..._LO.BNDL` (the cops and other players) with its `GRAPHICS`, `PHYSICS`, `SOUNDGLOBAL` and `SOUND`
+    /// parts; `Query::VehicleStreamBusy` answers while it runs.
+    StreamVehicle { vehicle: u32, hi: bool },
+    /// `PRELOADCOPS` (`FUN_00744cd0`): release that bundle again.
+    ReleaseVehicle { vehicle: u32, hi: bool },
+    /// `HSB_RNLAYOUT` enter (0x74fc80 → `FUN_007a2a00` → `FUN_007a0ba0` on the UI manager): run the UI layout
+    /// `layout` in a layout slot, `layer` 0x18 with `RUN_HIGHEST`, else 0; the slot is named by the layout id
+    /// afterwards (the original keeps the slot handle).
+    RunLayout { layout: i64, layer: u32 },
+    /// `HSB_RNLAYOUT` exit update (`FUN_00791d60`(slot, 0)): deactivate the layout (its slot's vtable +0x20 with
+    /// false, when active).
+    DeactivateLayout { layout: i64 },
+    /// `HSB_RNLAYOUT` exit (0x745360 → `FUN_00791a10`): free the layout's slot.
+    ReleaseLayout { layout: i64 },
+    /// `LIST_INVITE` (0x74dd80): take the pending invite (the listener's vtable +0xc) and set G+0x2f70c from the
+    /// GeneSys config (the object at config +0x34, its +0x94).
+    TakeInvite,
+    /// `REQTRAFRSTRT` enter (0x73ec50 → `FUN_00846210` on the queue G+0x2ef64): post message 7, the traffic restart
+    /// (not asked when the traffic density world+0xa2b74 is 0).
+    RestartTraffic,
+    /// `GETSPEEDWALL` enter (0x73c790 → `FUN_006f1dc0` on the speed-wall leaderboard GMM+0x20): when `event` is not
+    /// the one it holds (+0x1968), reset it and ask for that event's times (its vtable +0x14, +0x10).
+    GetSpeedwallTimes { event: u32 },
+    /// `PREFETCHSCRE` enter (`FUN_007f0e10` on the widget screen manager's prefetch list, G+0x2f458 +0x1940): count
+    /// the screen `asset` up, loading it (`FUN_00623cb0`) when it is new; `Query::ScreenPrefetched` answers.
+    PrefetchScreen { asset: i64 },
+    /// `PREFETCHSCRE` exit (`FUN_007f0e70`): count it down; at 0 it is freed (`FUN_00622170`) and dropped.
+    ReleasePrefetchedScreen { asset: i64 },
+    /// `SETSIMPAUSES` / `ALLOWSIMPAUS` (offline only): pause (`FUN_00845c60`, message (0, 0, 2) through
+    /// `FUN_0084db50`) or resume (`FUN_00845ce0`, (1, 0, 2) through `FUN_0084dbd0`) the simulation, on G+0x2f065
+    /// with the queue flag `*0x010edb0c` | 8 held meanwhile. Reading the 2 as the pause reason is inferred.
+    SimPause { paused: bool },
+    /// `HSB_RUNNING` (0x73f030 / 0x73f090): show the world (G+0x2ef70 +0x44 = 1, byte 0 posted with
+    /// `FUN_004b8b20` on `*0x010edb4c`) or hide it (+0x44 = 0, byte 1). Its meaning is read from the states that
+    /// use it ("Show World Freedrive", "Show World States").
+    ShowWorld { show: bool },
+    /// `HSB_RUNNING`: the global `DAT_01179de0` += `delta` (`Query::ShowWorldCount` reads it).
+    AdjustShowWorldCount { delta: i32 },
+    /// `ENABLETRIGS` (`FUN_00846590` on G+0x2f064: message (0, 0, flag) through `FUN_0084ea50`): enable or disable
+    /// the world's triggers.
+    EnableTriggers(bool),
+    /// `HSB_DISCONGP`: block (`FUN_0083c960`) or unblock (`FUN_0083c930`) `bit` of input-block `group` in the
+    /// car-control block set G+0x2f0a4 ([`InputBlocks`](super::game_logic::InputBlocks); the logic host applies it).
+    SetInputBlock { group: u32, bit: u32, set: bool },
+    /// `ApplyModUpgrade` (0x0068adf0 → `FUN_0068ab10`(id)): the upgrade record `GMM->FUN_006e75f0`(id) is applied
+    /// to the local player's vehicle (`FUN_006830a0`, `FUN_0069fce0`, `FUN_007316d0`, `FUN_00702710`);
+    /// `GarageFields::mod_flag` (GMM+0x251c) is set.
+    ApplyModUpgrade { id: i32 },
+    /// `ReleaseAllImages` (0x007e9c30 → `FUN_007e1340` on (G+0x2f454)+8): every image slot in state 2 (+0x20 of
+    /// the 0x34-byte records of `(*(+0x4830)+0x2f430)`) becomes 3 (released).
+    ReleaseAllImages,
+    /// `ResetNeutalVaues` (0x007f5090): flag 8 of `*0x010edb18` is set, the message {8, 0} is queued
+    /// (`FUN_0076a370`) and the flag cleared: the controllers' neutral values are re-read.
+    ResetNeutralValues,
+    /// `SetAvailableVehicleListEvent` (0x00679b30 → `FUN_00871330` on OM+0x5ee0): the list (count +0x300 reset to
+    /// 0, at most 0x40 records of 12 bytes) of the vehicles available for the event is rebuilt.
+    SetAvailableVehicleListEvent { event: i32 },
+    /// `FUN_006800a0`(vehicle) (Lua `SetVehicleAndRolloutFromSaveGameByVehicleID`, 0x00680340; the hook of the same
+    /// name, 0x00680680, ends in it): for vehicle > 0 the saved-game record of that vehicle (`FUN_00730ec0`, the
+    /// zeroed one when none) is applied to the local player's record (`FUN_006c7950`).
+    SetVehicleAndRolloutFromSaveGame { vehicle: i32 },
 }
