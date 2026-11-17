@@ -824,4 +824,34 @@ pub enum Request {
     /// `SetRolloutSweetRevengeFromEasyDrive` (0x68d330): after the record (+0x82b8) was stored,
     /// `FUN_0068ba20`(0) applies the local player's rollout record.
     ApplyLocalRollout,
+    /// `DWNLDPROG` enter (0x73ccd0): the transient states (player objects G+0x2f3e4 +0x44 / G+0x2f418 +0xbd8 /
+    /// G+0x2f420 +0x1a8 / scoring +0xe90 left from 5 / 7 / 8 / 3 to 0, the mode pause released) are reset and the
+    /// progression download is started (`FUN_0071dfe0` on G+0x2f454 +0x4af0).
+    DownloadProgressionBegin,
+    /// `DWNLDPROG` state 1 -> 2 (0x74c164): apply the downloaded progression (`FUN_00679250` on G+0x2f3e4).
+    DownloadProgressionApply,
+    /// `DWNLDPROG` state 2 (0x74bfdf): `FUN_00686e70` on G+0x2f3e4, then the scratch buffer G+0x2f420 +0x200 is
+    /// freed (`FUN_00cc4780`, +0x200 = 0) and +0x1f8 = 0.
+    DownloadProgressionFinish,
+    /// `RFRSHALMANIF` enter (0x76ea10 -> `FUN_007dae50` on G+0x2ed74): refresh the Autolog server manifest.
+    AutologRefreshManifest,
+    /// `RUNSTOREENUM` enter (0x73f120 -> `FUN_0086f710` on G+0x2f3e0 +0x4ce0): start the store enumeration.
+    StoreEnumerate,
+    /// `PAUSEAUTOLOG` enter / exit: poller 0 (G+0x2ed74: `FUN_007daee0` / `FUN_007dcf70`) or 1 (G+0x2ee60:
+    /// `FUN_007e9350` / `FUN_007f0b30`) is paused / resumed.
+    AutologPause { poller: u32, paused: bool },
+    /// `SHOWPENDINGO` enter (0x740be0): G+0x2f70c = 0 (the pending error dialog id is taken).
+    ClearPendingDialog,
+    /// `TAKEPPIC` exit (0x7411c0, `FUN_00a4d3f0` on G+0xe8): remove the registry entry `name` of `owner`.
+    UnregisterHandler { owner: String, name: String },
+    /// `REFRESHENT` update (0x73ec20, `FUN_0063a4a0` on G+0x29280): the entitlement manager's byte +0xd1c = the
+    /// network layer is not up (`FUN_004c2050`) or +0xcec != 0.
+    RefreshEntitlements,
+    /// `SET_GAME_ERR` enter (0x75cdf0, `FUN_0076abd0` with {9, 0, value}) and `GAMEERROR` exit (0x75ce50,
+    /// `FUN_0076ac50` with {0xa, 0}): a message on the queue `*0x010edb0c` +0x10 (flag 8 of its owner set while
+    /// posting).
+    PostGameMessage { id: u32, value: Option<i32> },
+    /// `GAMEERROR` enter (0x740ab0): show the generic error message (`FUN_007b3410` on `FUN_007746a0` +
+    /// 0x11190).
+    ShowGameError,
 }

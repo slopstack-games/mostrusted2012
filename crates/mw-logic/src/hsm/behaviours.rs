@@ -20,6 +20,8 @@ pub mod mode;
 pub mod mode2;
 #[path = "behaviours_race.rs"]
 pub mod race;
+#[path = "behaviours_racehud.rs"]
+pub mod racehud;
 #[path = "behaviours_signin.rs"]
 pub mod signin;
 #[path = "behaviours_ui.rs"]
@@ -66,6 +68,7 @@ pub fn register(r: &mut Registry) {
     dialog::register(r);
     event::register(r);
     race::register(r);
+    racehud::register(r);
     signin::register(r);
 }
 
@@ -408,6 +411,29 @@ pub enum Query {
     /// `SI_SHOW_ERR` update (0x773a10 → 0x773680): the exit point the confirmed button gives; 0 = none yet.
     /// Default 0.
     SignInErrorChoice,
+    /// `DWNLDPROG` update (0x74bfc0, state 0): the download object's state (G+0x2f454 +0x2d14); 0 and 2 go on.
+    /// Default 0.
+    DownloadProgState,
+    /// `DWNLDPROG` (`FUN_007daf20` on the object +8): the request is valid (network layer up, `FUN_004c2040` and
+    /// `FUN_004c2050`). Default false (offline: the wait fails).
+    DownloadProgValid,
+    /// `DWNLDPROG` (0x74c0ac..0x74c10c): a player / scoring state or a pause blocks the apply (player object
+    /// G+0x2f3e4 +0x44 = 5, G+0x2f418 +0xbd8 = 7, G+0x2f420 +0x1a8 = 8, scoring +0xe90 = 3, `FUN_006e0d20`).
+    /// Default false.
+    DownloadProgBlocked,
+    /// `DWNLDPROG` (0x74c115..0x74c162): the apply conditions hold (+0x30 byte, +0xbd8 = 6, `FUN_0073aad0`,
+    /// G+0x2f454 +0x4b20 = -1, scoring +0xe90 = 2, `FUN_006e0d30`). Default false.
+    DownloadProgReady,
+    /// `RFRSHALMANIF` update (0x76ea30, `FUN_0083b680`): the Autolog object's state (+0x2d0c) is 0 or 2.
+    /// Default true.
+    AutologManifestIdle,
+    /// `PAUSEAUTOLOG` (0x83b5e0 poller 0 = +0x2da4 != 0, 0x83b910 poller 1 = +0x8 != 0): the poller is busy.
+    /// Default false.
+    AutologBusy { poller: u32 },
+    /// `SHOWPENDINGO` enter (0x740be0): the pending dialog id G+0x2f70c. Default 0.
+    PendingDialogId,
+    /// `GAMEERROR` update (0x740ad0, `FUN_0046efa0`): the clock object's word +0xc4c is nonzero. Default false.
+    GameErrorHold,
 }
 
 impl Query {
@@ -450,6 +476,7 @@ impl Query {
             | Query::SignInControlVisible { .. }
             | Query::SignInEditEmpty { .. }
             | Query::FirstPartySignedIn => 1,
+            Query::AutologManifestIdle => 1,
             Query::ServerOpState => 2,
             Query::ServerOpError => 1,
             Query::ServerOpNextState { .. } => 26,
@@ -597,6 +624,14 @@ impl Query {
             Query::SignInFormStringSets { .. } => "SignInFormStringSets",
             Query::SignInFormBusy { .. } => "SignInFormBusy",
             Query::SignInErrorChoice => "SignInErrorChoice",
+            Query::DownloadProgState => "DownloadProgState",
+            Query::DownloadProgValid => "DownloadProgValid",
+            Query::DownloadProgBlocked => "DownloadProgBlocked",
+            Query::DownloadProgReady => "DownloadProgReady",
+            Query::AutologManifestIdle => "AutologManifestIdle",
+            Query::AutologBusy { .. } => "AutologBusy",
+            Query::PendingDialogId => "PendingDialogId",
+            Query::GameErrorHold => "GameErrorHold",
         }
     }
 }

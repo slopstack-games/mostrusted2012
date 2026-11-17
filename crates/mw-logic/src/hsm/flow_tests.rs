@@ -1525,3 +1525,169 @@ fn load_string_set_loads_activates_and_unloads() {
     assert_eq!(host.reqs[2], Request::UnloadStringSet { id: 2012359 });
     assert!(!hsm.is_running(s));
 }
+
+// ---- Race HUD / pause menu / Autolog family (`behaviours_racehud`) ----
+
+/// A parent running one child of behaviour `code`, which the parent leaves through `child_exits` (names).
+fn wrapped(code: &str, params: &[(&str, &str)], child_exits: &[&str]) -> (Hsm, Rec, u32) {
+    use mw_formats::hsm::{ChildExitPoint, ChildExits, Spawn};
+    let mut child = state(2, code, Fallback::RunChildren);
+    child.parameters = params.iter().map(|(n, v)| param(n, v)).collect();
+    child.entry_points.push(EntryPoint { id: key("ENTER"), action: Action::Child, spawns: vec![] });
+    let mut parent = state(1, "HSB_RUNCHILD", Fallback::RunChildren);
+    parent.entry_points.push(EntryPoint {
+        id: key("ENTER"),
+        action: Action::Child,
+        spawns: vec![Spawn { entry_point: key("ENTER"), state: 2 }],
+    });
+    parent.children.push(ChildExits {
+        state: 2,
+        exits: child_exits
+            .iter()
+            .map(|e| ChildExitPoint { parent_exit: key(e), child_exit: key(e), action: Action::Exit, spawns: vec![] })
+            .collect(),
+    });
+    let mut hsm = Hsm::new(data(vec![parent, child], vec![]), Registry::structural());
+    let mut host = Rec::default();
+    let s = hsm.start(1, &mut host).unwrap();
+    (hsm, host, s)
+}
+
+#[test]
+fn download_progression_fails_offline_and_applies_when_ready() {
+    // Offline (defaults): the request is not valid -> FAILED.
+    let (mut hsm, mut host, s) = wrapped("DWNLDPROG", &[], &["EXIT", "FAILED"]);
+    step(&mut hsm, &mut host, 5);
+    assert_eq!(host.reqs, [Request::DownloadProgressionBegin]);
+    assert_eq!(hsm.result(s), Some(key("FAILED")));
+    // Valid, then ready: apply, state 2 finishes and exits through EXIT.
+    let (mut hsm, mut host, s) = wrapped("DWNLDPROG", &[], &["EXIT", "FAILED"]);
+    host.answers.insert("DownloadProgValid", 1);
+    step(&mut hsm, &mut host, 4);
+    assert!(hsm.is_running(s));
+    host.answers.insert("DownloadProgReady", 1);
+    step(&mut hsm, &mut host, 4);
+    assert_eq!(
+        host.reqs,
+        [Request::DownloadProgressionBegin, Request::DownloadProgressionApply, Request::DownloadProgressionFinish]
+    );
+    assert_eq!(hsm.result(s), Some(EXIT));
+    // The download object still busy (state 1): waits.
+    let (mut hsm, mut host, s) = wrapped("DWNLDPROG", &[], &["EXIT", "FAILED"]);
+    host.answers.insert("DownloadProgState", 1);
+    step(&mut hsm, &mut host, 6);
+    assert!(hsm.is_running(s));
+}
+
+#[test]
+fn refresh_manifest_waits_for_the_autolog_object() {
+    let (mut hsm, mut host, s) = machine("RFRSHALMANIF", &[], "ENTER");
+    host.answers.insert("AutologManifestIdle", 0);
+    step(&mut hsm, &mut host, 4);
+    assert_eq!(host.reqs, [Request::AutologRefreshManifest]);
+    assert!(hsm.is_running(s));
+    host.answers.insert("AutologManifestIdle", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+}
+
+#[test]
+fn run_store_enumeration_starts_it_and_exits() {
+    let (mut hsm, mut host, s) = machine("RUNSTOREENUM", &[], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::StoreEnumerate]);
+    assert_eq!(hsm.result(s), Some(EXIT));
+}
+
+#[test]
+fn pause_autolog_pauses_busy_pollers_and_resumes_them() {
+    let (mut hsm, mut host, s) = machine("PAUSEAUTOLOG", &[], "ENTER");
+    // Both idle by default: nothing is paused; the enter update is done at once.
+    step(&mut hsm, &mut host, 3);
+    assert!(host.reqs.is_empty());
+    assert!(hsm.is_running(s));
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 3);
+    assert!(host.reqs.is_empty());
+    // Both busy on enter: paused, resumed on exit.
+    let (mut hsm, mut host, s) = machine("PAUSEAUTOLOG", &[], "ENTER");
+    host.answers.insert("AutologBusy", 1);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(
+        host.reqs,
+        [Request::AutologPause { poller: 0, paused: true }, Request::AutologPause { poller: 1, paused: true }]
+    );
+    host.answers.insert("AutologBusy", 0);
+    step(&mut hsm, &mut host, 2);
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs[2], Request::AutologPause { poller: 0, paused: false });
+    assert_eq!(host.reqs[3], Request::AutologPause { poller: 1, paused: false });
+}
+
+#[test]
+fn show_pending_dialog_shows_waits_and_takes_the_result() {
+    // Nothing pending: clears the id and exits at once.
+    let (mut hsm, mut host, s) = machine("SHOWPENDINGO", &[], "ENTER");
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs, [Request::ClearPendingDialog]);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    // Pending 77: shown, waits for the result (default 0xff), takes it, exits.
+    let (mut hsm, mut host, s) = machine("SHOWPENDINGO", &[], "ENTER");
+    host.answers.insert("PendingDialogId", 77);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs, [Request::ClearPendingDialog, Request::ShowDialog { id: 77 }]);
+    assert!(hsm.is_running(s));
+    host.answers.insert("DialogResult", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs[2], Request::TakeDialogResult { id: 77 });
+    assert_eq!(hsm.result(s), Some(EXIT));
+}
+
+#[test]
+fn take_profile_picture_exits_and_unregisters() {
+    let (mut hsm, mut host, s) = machine("TAKEPPIC", &[], "ENTER");
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    assert_eq!(
+        host.reqs,
+        [Request::UnregisterHandler { owner: "HSMBehaviourTakeProfilePic".into(), name: "TakePic".into() }]
+    );
+}
+
+#[test]
+fn show_vita_system_message_exits_without_effects() {
+    let (mut hsm, mut host, s) = machine("SHOWVITASYST", &[("SYSMESSAGE", "1")], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    assert!(host.reqs.is_empty());
+}
+
+#[test]
+fn refresh_entitlements_asks_and_exits() {
+    let (mut hsm, mut host, s) = machine("REFRESHENT", &[], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::RefreshEntitlements]);
+    assert_eq!(hsm.result(s), Some(EXIT));
+}
+
+#[test]
+fn set_game_error_posts_the_string_id() {
+    let (mut hsm, mut host, s) = machine("SET_GAME_ERR", &[("ERROR STRING", "119887")], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::PostGameMessage { id: 9, value: Some(119887) }]);
+    assert_eq!(hsm.result(s), Some(EXIT));
+}
+
+#[test]
+fn show_game_error_counts_three_frames_then_posts_on_exit() {
+    let (mut hsm, mut host, s) = machine("GAMEERROR", &[], "ENTER");
+    host.answers.insert("GameErrorHold", 1);
+    step(&mut hsm, &mut host, 8);
+    assert_eq!(host.reqs, [Request::ShowGameError]);
+    assert!(hsm.is_running(s));
+    host.answers.insert("GameErrorHold", 0);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    assert_eq!(host.reqs[1], Request::PostGameMessage { id: 0xa, value: None });
+}

@@ -32,6 +32,34 @@ Model decisions: the hooks that take an expression string (SetFriendInviteId, th
 Open: the runtime handles none of the new `Request`s (LoadLastOnlineRollout, UploadLocalPlayerXp, ProcessOnlineDrivingTests, SetupPlaylistsVote, PlayCriterionPlaylist, PlayCustomPlaylist, CancelPlaylist, MatchmakePlaygroup, ApplyLocalRollout); the `FUN_00a50650` expression evaluation is not checked against a live binding.
 Remaining unported (7): HACKPlayFirstCustomPlaylist (0x676570, debug), RestartGamesComShowFloorFlow (0x680630, debug), ProcessPlaylistEndMilestones (0x676da0), GetMostWantedListFromServer (0x7eb4b0), MutePlayer (0x7eea30), UnmutePlayer (0x7eea70), OnWallPostOrComment (0x7eb7d0).
 
+### 2026-11-17: 10 race HUD / pause menu / Autolog behaviour types (`hsm/behaviours_racehud.rs`; 120 types)
+
+Survey: `mwtool hsm --run --steps 3000 --event 462174` (race) and with `--pause-at 300` enter no unported type at all
+(every behaviour code in both traces is registered; `HSMPAUSEINTR` is ported since the dialog batch). The static walk
+(`mwtool hsm <id> --depth 30` of 730003, the HUD machine 604141, the pause menu 1135398 / 1135406) finds 29
+unported codes, all online / Autolog / dialog branches; the ten ported are the ones with offline logic. Method as
+the earlier batches, with one correction to the notes: the factory is the `mov edx` that follows the name's push in
+the registration table (0x777xxx..0x778xxx), not a function before it. Types (factory -> vtable): `DWNLDPROG`
+0x77e8f0 -> 0xfdad04, `RFRSHALMANIF` 0x77ed10 -> 0xfdaed8, `RUNSTOREENUM` 0x77d530 -> 0xfda420, `PAUSEAUTOLOG`
+0x77ec70 -> 0xfdae90, `SHOWPENDINGO` 0x77e940 -> 0xfdad28, `TAKEPPIC` 0x77be70 -> 0xfd9944, `SHOWVITASYST` 0x779d40 ->
+0xfd8f30, `REFRESHENT` 0x77d800 -> 0xfda590, `SET_GAME_ERR` 0x779cf0 -> 0xfd8f0c, `GAMEERROR` 0x77ceb0 -> 0xfda0c0
+(slots and effects: decomp.md "Behaviours ported, race HUD / pause menu / Autolog").
+Found: `SET_GAME_ERR`'s parameter key `DAT_0117a378` is "ERROR STRING" (a NUL-padded space; the dump shows only
+`ERROR`); `TAKEPPIC` / `SHOWVITASYST` do nothing on the PC but exit `EXIT` (TAKEPPIC's exit unregisters a named
+handler at G+0xe8); `DWNLDPROG` exits through `FUN_00774dc0` (only taken when the parent handles the exit point).
+Requests (new, appended): DownloadProgressionBegin / Apply / Finish, AutologRefreshManifest, StoreEnumerate,
+AutologPause, ClearPendingDialog, UnregisterHandler, RefreshEntitlements, PostGameMessage, ShowGameError. Queries
+(default): DownloadProgState (0), DownloadProgValid (false), DownloadProgBlocked (false), DownloadProgReady
+(false), AutologManifestIdle (true), AutologBusy (false), PendingDialogId (0), GameErrorHold (false). One test per
+type at the end of `flow_tests.rs`.
+Model decisions: offline `DWNLDPROG` fails at once (`DownloadProgValid` default false; the real answer needs
+`FUN_007daf20`'s network layer, not measured); `GameErrorHold` (the clock object's word +0xc4c, meaning unknown)
+defaults to 0; `SET_GAME_ERR` / `GAMEERROR` messages have no consumer in the runtime yet; the runtime does not
+act on any new Request (the Autolog / store / entitlement objects do not exist there). Verified: free roam ->
+race -> free roam still runs through the logic (`--event 462174`), `tools/wasm-check` ok.
+Next unported types in these trees (online): `UPLOADRESULT`, `UPLDCONCOURS`, `HSB_NET_CRE / JOI / LEA / QJO`,
+`CREATEPLAYGR`, `LEAVEPLAYGRO`, `DISCONNECTFR`, `RECONNECT`, `INVITEFAILED`, `ISINVITEPEND`, `SEND_INVITE`,
+`JOINPARTYUID`, `DEL_PR_SESS`, `VALID_CNX_MP`, `SETFAILLOGIN`, `SETSUCCESSLO`, `BROWSER_IN`.
 ### 2026-11-17: eighth 20 HSM hooks verified and enabled (160 of 187; `natives/hooks_online.rs`)
 
 Handlers read from `re/out/live/text.asm`, callees from the dump; member hashes read from the snapshot `.bss`
