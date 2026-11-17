@@ -75,6 +75,69 @@ Model decisions: offline error code 1 (a "no server" error; the real code of a d
 and which "visible" is not settled (names are a guess, both are binding expressions at control +0xc).
 Open: the engine side of all new Requests / Queries (the sign-in form object G+0x2f3e0 +0x10c8, the keyboard, the session store) is unported; slot 9 of `HSM_KEYB_ENT` (0x772880, form `FLOW`) and `SI_SHOW_ERR`'s
 enter-time layer-set save (+0xfc / +0x100) are read but not ported; the remaining 11 `HSM_SERV_OP` error handlers and all success handlers.
+### 2026-11-17: the `Players`, `Event`, `Transitions`, `GameLogicState` binding roots and `Mode.DisablePauseMenu`
+
+Done like the earlier roots (`natives/players_view.rs`, `event_view.rs`, `transitions_view.rs`, `game_logic_view.rs`;
+one `ROOTS` line each; tests per root). The race route no longer needs the driver's `Players`, `Transitions`,
+`Event.Data.EventIntro` and `GameLogicState` answers.
+
+**`Players`** (`FUN_006d4350` registers "PlayerManager", 0xcc60 B; the root is `FUN_006d3c30`'s `FUN_00a4d2a0`;
+player records are the types "PlayerBase" / "Player", 230 members, 0x7f0 B inline from PM+0x10). Ported: the
+manager's `LocalPlayer` / `GetLocalCompetitor` (0x6dbef0), `CameraTarget` (0x6dbf20), `Player[n]` / `GetCompetitor` /
+`PlayerBase` / `AIPlayer` (0x6dbe60 / 0x6dbe30 / 0x6dbec0), `IsPlayerActive`, `Racer[n]` / `Cop[n]` (lists at +0xa664 /
++0xa630), `RacerCount`, `CopCount`, `NumNonLocalPlayers` (+0xa6a4 - 1), `NumNonMidGameJoinPlayers` (0x6bef60),
+`NumTeamPlayers`, `NumOpponents`, `HasAnyPlayerFinishedCurrentEvent`; and the record members the HSM reads:
+`ResetInProgress` (0x6bc410: byte +0x2c1, or the world's per-vehicle flag G+0x25694[vehicle]), `Wrecked` /
+`Crashed` / `IsActive` (+0x23e / +0x23f / +0x23d), `WasBusted` (+0x434), `IsTeleporting` (+0x2c8), `IsFallingOffCliff`
+(+0x2f6), `IsInBuilding` (+0x285), `IsMidGameJoining` (+0x474), `IsEngineOn` (`FUN_006d8ab0`), `IsInWaitForZone`
+(0x6d8c20), `IsWreckSuicide` (0x6d8b90), `HasChaseStarted` (0x6db740), `CurrentNitrousType` (`FUN_006bde60`: NONE /
+BURN / DUMP / JUMP and the `_PRO` names from the class +0x84 and kind +0x80 of the vehicle record), `PlayerIndex`,
+`RaceCarIndex`, `LocalPlayer`, `IsCop`, `GetVehicleInfo.ID` / `.GamePackID`. State the engine owns is a documented
+`Player` field the runtime sets (reset pending, engine on, in wait-for-zone, chase started, nitrous, wrecked, ...).
+Not ported (they need physics, pursuit or rollout): speeds, RPM, heat, chase / position / score members,
+transforms, `SelectedRollout`; they do not resolve (a published "Players" definition still answers). A missing
+local player is a null object (`ResetInProgress(NOT)` then reads false-NOT = true, like any failed binding).
+`Mode.LeaveGameRequested` now reads the local player's `IsTeleporting` (+0x2c8) as the code does.
+Model decisions: racers / cops are the AI-driven (+0x9c = 2) non-cop / cop slots in slot order (the original keeps
+explicit lists); `NumNonLocalPlayers` counts the occupied slots - 1.
+
+**`Event`** (`FUN_006dfbc0` / `FUN_006e6bf0`, type "EventDataManager" 0x7ec B, the GMM's two event data managers
+swap on a load): registered fields `Data` (.rdata "Data", +0xf4, the event's GeneSys object), `GameMode` (+0xec),
+`HasDescription2` (+0xe9). `Event.Data.<field>` is the current event's GeneSys field by hash (`mw_assets::Events::
+event_fields` -> `EventInfo::data`, filled by `mwtool hsm` and the runtime like `Mode.Data`), `Event.GameMode.<field>`
+the current mode's record; `Id`, `Name2`, `IsRecommends`, `CustomItems`, `speedwall.Items`, ... are published data
+definitions and fall through. Model decisions: the loaded event is the GMM's current event (+0x2ce0);
+`HasDescription2` false. **Finding:** the old driver kept `Event.Data.EventIntro` set after the race, so the return
+to free roam wrongly played an intro; with the root it is 0 again ("Does Event Intro Exist" FALSE) as in the data.
+The checkpoint count / finished answers (`Query.CheckpointCount` / `CheckpointsFinished`) belong to the checkpoint
+manager (G+0x2f47c), which is not a binding root; the driver still stands in for it.
+
+**`Transitions`** is not a `FUN_00a4d2a0` root: the screen-transition manager (G+0x2f458 +0x4b0) answers through its
+property getter (factory 0x7edbd0), which compares the property hash with globals the static initialisers fill (the
+code is beyond the text dump; found in the memory snapshot at file offset 0xb67261). `Transitioning` = state +0x3ac ==
+3; `Image1` / `Image2` (+0x394 / +0x398), `Tip[n]` (+0x374 + (n & 7) * 4), `AllowInput` (+0x3c5). The state machine is
+`FUN_007f4760` (0 idle, 1 loading, 2 ready, 3 playing, 4 finishing; the same word is `Query::TransitionState`).
+The runtime owns it: `LogicState::transitions.set_playing(bool)` while its transition plays (the runtime's own
+`Transitions.Transitioning(NOT)` override in `mostrusted/src/logic.rs` can go, agent C's file); idle (offline tools) =
+not transitioning.
+
+**`GameLogicState`** (`FUN_006a38c0`): `IsAccessingProfile` (0x6ad680: `(+0x4941 && +0x4935) || +0x4942` of G+0x2f454;
+`LogicState::profile_io`), `HasSaveGameDeviceBeenUnmounted` (always false), `IsControlGroupEnabled["NAME"]` (0x6b1770:
+the input manager's group table, built in its constructor: CAR_ONLY {1}, MENU {2}, DIALOG {3}, DEBUG {4},
+UNIVERSAL {5}, EASYDRIVE {6}, CAR {1, 6}; enabled when every group's block count byte G+0x2f0c0+g is 0, i.e.
+[`InputBlocks::counts`]). The pause test no longer needs an answer.
+
+**`Mode.DisablePauseMenu`**: `FUN_006fe520` registers it as the byte at manager +0x252b ("Is it safe to open the pause
+menu?", VM +0x250b, cleared by the VM constructor; no other writer in the text dump: the engine sets it);
+`GameModeManager::disable_pause_menu`. The same function registers more fields (`TargetTime`, `Speedwall*`, medals,
+`PersonalBest`, ...) not ported yet.
+
+**Result.** `mwtool hsm --run --steps 1500 --event 462174 ...` (free roam -> race -> free roam) needs
+`SignInState.Params.IsChatRestricted`, `1222788=DONE`, `Query.CheckpointsFinished` and `1560270=FALSE` only; the
+driver's local player now has a running car (`engine_on`, `vehicle_alive`: a stand-in for the engine).
+Captures that would confirm: a live read of the local player's +0x2c1 around a respawn and of the transition
+manager's +0x3ac during an event intro.
+
 ### 2026-11-17: 9 dialog / pause / photo HSM behaviour types (`hsm/behaviours_dialog.rs`; 94 types)
 
 `SHOWDIALOG` (73 uses), `HSMPAUSEINTR`, `SUPPRESSPREF`, `RUNPRCONTEXT`, `TAKEPHOTO`, `PHOTO_LISTEN` / `PHOTO_COMPL` / `PHOTO_INPUT`, `LIMITEDEDSP`.

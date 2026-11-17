@@ -407,6 +407,8 @@ pub struct Events {
     pub event_lists: Vec<(u32, Vec<u32>)>,
     /// Each `GameMode` object's fields by mode id (what `Mode.Data.<field>` bindings read).
     pub game_mode_fields: Vec<(u32, Vec<(u32, mw_formats::genesys::Value)>)>,
+    /// Each offline event object's fields by event id (what `Event.Data.<field>` bindings read).
+    pub event_fields: Vec<(u32, Vec<(u32, mw_formats::genesys::Value)>)>,
 }
 
 impl Events {
@@ -572,6 +574,7 @@ impl AssetStore {
                     });
                 }
                 "OfflineEvent" => {
+                    out.event_fields.push((uint(o.get(h::ID)), o.fields.clone()));
                     let game_mode = uint(o.get(h::GAME_MODE));
                     let type_name = uint(o.get(h::TYPE_NAME));
                     let ids = uints(o.get(h::CHECKPOINTS));

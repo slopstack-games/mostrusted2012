@@ -68,8 +68,10 @@ pub fn lookup(s: &LogicState, members: &[Segment]) -> Lookup {
         "IsPauseAllowed" => b(pause_allowed(s)),
         // 0x711ee0: +0x2eac.
         "RetryLastEventEnabled" => b(gm.byte_2eac),
+        // `FUN_006fe520`: the field at +0x252b.
+        "DisablePauseMenu" => b(gm.disable_pause_menu),
         // 0x711f30: +0x2e9a and the local player's +0x2c8 clear (that byte is not kept: taken as clear).
-        "LeaveGameRequested" => b(gm.leave_game),
+        "LeaveGameRequested" => b(gm.leave_game && !s.players.local_player().is_some_and(|p| p.teleporting)),
         // 0x7120c0 / `RecommendsEventActive` (the same getter): a recommendation is set (G+0x2f6d0 not the null id,
         // or G+0x2f6d8 > 0); offline there is none.
         "ShowRecommendsIntro" | "RecommendsEventActive" => b(false),
@@ -89,7 +91,7 @@ pub fn lookup(s: &LogicState, members: &[Segment]) -> Lookup {
 }
 
 /// The current mode's record (`GameMode` behind the handle +0x2cf4 / +0x2cf8).
-fn current_mode(s: &LogicState) -> Option<&super::mode_machine::ModeInfo> {
+pub(super) fn current_mode(s: &LogicState) -> Option<&super::mode_machine::ModeInfo> {
     let id = s.game_modes.current_mode;
     (id != 0).then(|| s.game_modes.modes.iter().find(|m| m.id == id)).flatten()
 }
@@ -189,6 +191,7 @@ static MEMBERS: std::sync::LazyLock<Vec<(u32, &'static str)>> = std::sync::LazyL
         "IsSuitableHost",
         "Data",
         "CurrentVehicleGamepack",
+        "DisablePauseMenu",
     ]
     .into_iter()
     .map(|n| (binding::hash(n), n))
@@ -223,6 +226,14 @@ mod tests {
         assert_eq!(s.resolve_int("Mode.HudHsm"), Some(371633));
         assert_eq!(s.resolve_int("Mode.Data.FeedbackGroupID"), Some(2));
         assert_eq!(s.resolve_bool("Mode.ShowRecommendsIntro"), Some(false));
+        s.game_modes.disable_pause_menu = true;
+        assert_eq!(s.resolve_bool("Mode.DisablePauseMenu"), Some(true));
+        s.game_modes.leave_game = true;
+        assert_eq!(s.resolve_bool("Mode.LeaveGameRequested"), Some(true));
+        s.players.local = Some(0);
+        s.players.slots[0] = Some(Default::default());
+        s.players.slots[0].as_mut().unwrap().teleporting = true;
+        assert_eq!(s.resolve_bool("Mode.LeaveGameRequested"), Some(false));
         s.game_modes.need_map_screen = true;
         assert_eq!(s.resolve_bool("Mode.NeedTheMapScreen"), Some(true));
         // A member the table does not answer falls through to a published "Mode" data definition.

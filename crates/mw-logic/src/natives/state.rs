@@ -52,6 +52,10 @@ pub struct LogicState {
     pub hook_misc: super::hooks_misc::HookMiscFields,
     /// The fields of the eighth twenty HSM hooks (`hooks_online.rs`).
     pub hook_online: super::hooks_online::HookOnlineFields,
+    /// The screen-transition manager (`Transitions` root, `transitions_view.rs`).
+    pub transitions: super::transitions_view::Transitions,
+    /// The profile access bytes of G+0x2f454 (`GameLogicState.IsAccessingProfile`, `game_logic_view.rs`).
+    pub profile_io: super::game_logic_view::ProfileIo,
 }
 
 /// The binding host the logic reads through: the game-mode manager's `Mode` root ([`super::mode_view`]) first,
@@ -89,6 +93,10 @@ static ROOTS: std::sync::LazyLock<Vec<(u32, RootFn)>> = std::sync::LazyLock::new
         (h("UISequences"), super::sequence_view::ui_lookup),
         (h("GeneralSequence"), super::sequence_view::general_lookup),
         (h("EntitlementManager"), super::entitlement_view::lookup),
+        (h("Players"), super::players_view::lookup),
+        (h("Event"), super::event_view::lookup),
+        (h("Transitions"), super::transitions_view::lookup),
+        (h("GameLogicState"), super::game_logic_view::lookup),
     ]
 });
 

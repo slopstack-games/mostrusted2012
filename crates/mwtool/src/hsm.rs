@@ -367,8 +367,7 @@ fn drive(store: &AssetStore, data: Arc<HsmData>, instance: u32, o: &Options) -> 
     if let Some(id) = event {
         let events = store.events()?;
         let e = events.events.iter().find(|e| e.id == id);
-        // Stand-ins for the `Event` view model (not ported) and the checkpoint manager: the intro sequence id from
-        // the gates counted, none passed (the intro id is set once the event is the current one, below).
+        // Stand-ins for the checkpoint manager (not a binding root): the gates counted, none passed.
         let stand_ins = [
             ("Query.CheckpointsFinished", "false".to_owned()),
             ("Query.CheckpointCount", e.map_or(0, |e| e.checkpoints.len()).to_string()),
@@ -420,11 +419,6 @@ fn drive(store: &AssetStore, data: Arc<HsmData>, instance: u32, o: &Options) -> 
     // headless run does not have): the first input of "Wait for UI Input" opens the menu (EZ_RIGHT), and the
     // menu's state calls the hook the event list's item calls and exits TO_EVENT.
     if let Some(id) = event {
-        // The respawn at the event's start is done at once (`Players.LocalPlayer.ResetInProgress`: the `Players`
-        // view model is not ported yet).
-        bindings.entry("Players.LocalPlayer.ResetInProgress(NOT)".to_owned()).or_insert_with(|| "TRUE".to_owned());
-        // ... and the screen transitions are done (the `Transitions` view model is not ported yet).
-        bindings.entry("Transitions.Transitioning(NOT)".to_owned()).or_insert_with(|| "TRUE".to_owned());
         by_state.entry(908987).or_insert(Some(key("EZ_RIGHT")));
         if let Some(s) = data.state(1135029) {
             let b = s.behaviour;
@@ -481,7 +475,9 @@ fn drive(store: &AssetStore, data: Arc<HsmData>, instance: u32, o: &Options) -> 
         st.progression.collectables_ready = true;
         st.progression.set_last_played(mw_logic::natives::progression::INTRO_PLAYED, 1);
         st.players.local = Some(0);
-        st.players.slots[0] = Some(Default::default());
+        // (its car exists and the engine runs: `Players.LocalPlayer.IsEngineOn`, which the engine owns)
+        st.players.slots[0] =
+            Some(mw_logic::natives::players::Player { vehicle_alive: true, engine_on: true, ..Default::default() });
         // The game-mode data and `GameLogicConfig` ids the GMM reads (what the runtime fills from the install).
         // Stand-ins: an event is available when it is in an `EventList` (`FUN_006e58a0` looks it up in the
         // selected world's list; GAMEPLAY has one list), every rollout check passes, the event data and the
@@ -506,6 +502,11 @@ fn drive(store: &AssetStore, data: Arc<HsmData>, instance: u32, o: &Options) -> 
                 mode: e.game_mode,
                 available: listed.contains(&e.id),
                 rollout_ok: true,
+                data: events
+                    .event_fields
+                    .iter()
+                    .find(|(id, _)| *id == e.id)
+                    .map_or_else(Vec::new, |(_, f)| mode_view::data_fields(f)),
                 ..Default::default()
             })
             .collect();
@@ -542,8 +543,6 @@ fn drive(store: &AssetStore, data: Arc<HsmData>, instance: u32, o: &Options) -> 
         user_bound: false,
         printed_blocks: HashSet::new(),
     };
-    let event_intro =
-        event.and_then(|id| store.events().ok()?.events.iter().find(|e| e.id == id).map(|e| e.event_intro));
     let Some(serial) = hsm.start(instance, &mut host) else { bail!("no top-level state with instance {instance}") };
     let clock = Clock::both(dt);
     for f in 0..steps {
@@ -577,10 +576,7 @@ fn drive(store: &AssetStore, data: Arc<HsmData>, instance: u32, o: &Options) -> 
         if pause_at.is_some_and(|p| f >= p) {
             host.bindings.insert("Query.InputExit".into(), "PAUSE".into());
         }
-        if let (Some(id), Some(intro)) = (event, event_intro)
-            && state.borrow().game_modes.current_event == id
-        {
-            host.bindings.insert("Event.Data.EventIntro".into(), intro.to_string());
+        if event.is_some_and(|id| state.borrow().game_modes.current_event == id) {
             // The intro's UI sequence fires the "TRANSITION" general trigger item when its screen transition runs
             // (the runtime does; "Screen Transition Voodoo" waits for it).
             state.borrow_mut().set_general_trigger(mw_logic::binding::hash("TRANSITION"), 1);
