@@ -255,10 +255,12 @@ tools/t --hsm-event 462174 --auto-start 1 --test race --mute; grep -E 'hsm:.*(ma
 # ... and on into a race: `--event <id>` plays the player's choice of that offline event from free roam (the Easy Drive
 # menu's list item stands in; circuit 462174, sprint 906146): the free-drive machine ends, the GMM loads the event and starts
 # "Race Game Mode" 730003 (decomp.md "Route free roam → race"); the roots answer `Players`, `Event`, `Transitions` and
-# `GameLogicState` (research-log 2026-11-17), the driver keeps only the Easy Drive choice and the checkpoint stand-ins.
-# --pause-at <frame> holds the pause button from then on (the pause menu opens: `GameLogicState.IsControlGroupEnabled["MENU"]` is true),
-# --answer Query.CheckpointsFinished=true ends the race (outro, then free roam again; --answer 1560270=FALSE: not busted)
-./target/release/mwtool hsm --run --steps 1500 --event 462174 --answer 1222788=DONE --answer Query.CheckpointsFinished=true --answer 1560270=FALSE
+# `GameLogicState` (research-log 2026-11-17), the driver keeps only the Easy Drive choice. The race is decided by the
+# logic's checkpoint manager (`natives/checkpoints.rs`): a synthetic lap feeds it the event's route and drives the car
+# straight at the target gate at 60 m/s ("synthetic lap: gate N of M passed" lines; 462174 finishes at frame ~4190,
+# outro, then free roam again; sprint 906146 at ~1990; --answer 1560270=FALSE: not busted).
+# --pause-at <frame> holds the pause button from then on (the pause menu opens: `GameLogicState.IsControlGroupEnabled["MENU"]` is true)
+./target/release/mwtool hsm --run --steps 4400 --event 462174 --answer 1222788=DONE --answer 1560270=FALSE
 ./target/release/mwtool natives [--area offline|online|platform|debug|unknown] [--unported]   # the 187 hooks + 385 Lua natives, handler address, ported or not
 ./target/release/mwtool lua --list                       # the UI's 115 Lua chunks (mw-lua): id, name (checked against the id), size
 ./target/release/mwtool lua [--run <name>] [--call <Fn>|all] [--trace]   # main chunk + Construct with logging stub natives

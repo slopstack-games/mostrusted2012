@@ -363,22 +363,12 @@ impl mw_logic::hsm::Behaviour for ChooseEvent {
 
 fn drive(store: &AssetStore, data: Arc<HsmData>, instance: u32, o: &Options) -> Result<()> {
     let Options { steps, dt, answers, event, pause_at, .. } = *o;
-    let mut answers = answers.to_vec();
-    if let Some(id) = event {
-        let events = store.events()?;
-        let e = events.events.iter().find(|e| e.id == id);
-        // Stand-ins for the checkpoint manager (not a binding root): the gates counted, none passed.
-        let stand_ins = [
-            ("Query.CheckpointsFinished", "false".to_owned()),
-            ("Query.CheckpointCount", e.map_or(0, |e| e.checkpoints.len()).to_string()),
-        ];
-        for (name, value) in stand_ins {
-            if !answers.iter().any(|a| a.starts_with(&format!("{name}="))) {
-                answers.push(format!("{name}={value}"));
-            }
-        }
-    }
-    let answers = &answers[..];
+    // `--event`: the event's route for the logic's checkpoint manager (`natives::checkpoints`) and a driver stand-in
+    // that drives the local player's car along its gates.
+    let mut lap = match event {
+        Some(id) => SyntheticLap::new(store, id)?,
+        None => None,
+    };
     let mut registry = Registry::structural();
     let mut hooks = HashMap::new();
     let mut bindings = HashMap::new();
@@ -558,6 +548,9 @@ fn drive(store: &AssetStore, data: Arc<HsmData>, instance: u32, o: &Options) -> 
             }
         }
         host.logic.frame(dt);
+        if let Some(lap) = &mut lap {
+            lap.frame(&mut host.logic.state.borrow_mut(), dt, f);
+        }
         hsm.update(&mut host, clock);
         for e in std::mem::take(&mut host.logic.pages.errors) {
             println!("{f:5}      !! script {e}");
@@ -614,4 +607,95 @@ fn drive(store: &AssetStore, data: Arc<HsmData>, instance: u32, o: &Options) -> 
         host.logic.state.borrow().view_models.published.iter().map(|(p, _)| p.clone()).collect();
     println!("published view models at the end: {published:?}");
     Ok(())
+}
+
+/// `--event`: the runtime's part of the checkpoint manager, headless: the route the distance-to-finish manager would
+/// build (`FUN_00645290`: the spawn, then the event's gates for every lap), the local player's car box, the race
+/// clock (GMM+0x2d28, advanced by the frame time while the car drives), and a driver stand-in that drives the car
+/// straight at the logic's current target gate at a fixed speed once the gates are placed. The route is there
+/// while the game-mode manager runs the event (the original builds it on `CHECKPTS` enter from the current event;
+/// free drive has none). The logic decides the passing, laps and the finish (`mw_logic::natives::checkpoints`).
+struct SyntheticLap {
+    event: u32,
+    inputs: mw_logic::natives::checkpoints::CheckpointInputs,
+    installed: bool,
+    position: [f32; 3],
+    heading: [f32; 3],
+    driving: bool,
+    passed: usize,
+}
+
+impl SyntheticLap {
+    /// The stand-in's speed (m/s): a fast race pace (no handling: straight lines between the gates).
+    const SPEED: f32 = 60.0;
+    /// A car's half extents (m).
+    const HALF: [f32; 3] = [1.0, 0.7, 2.3];
+
+    fn new(store: &AssetStore, id: u32) -> Result<Option<Self>> {
+        use mw_logic::natives::checkpoints::{CheckpointInputs, route_from_gates};
+        use mw_logic::natives::trigger_boxes::{TriggerBox, cross};
+        let events = store.events()?;
+        let Some(e) = events.events.iter().find(|e| e.id == id) else { return Ok(None) };
+        if e.checkpoints.is_empty() {
+            return Ok(None);
+        }
+        let boxes: Vec<TriggerBox> = e
+            .checkpoints
+            .iter()
+            .map(|g| {
+                let (x, z) = (g.across(), g.normal());
+                TriggerBox { id: g.id, centre: g.position, axes: [x, cross(z, x), z], size: g.size, one_way: false }
+            })
+            .collect();
+        let (position, heading) = e.spawn.map_or((boxes[0].ground(), boxes[0].axes[2]), |p| (p.position, p.direction));
+        let laps = usize::from(e.laps.max(1));
+        println!("      synthetic lap: event {id}, {} gates × {laps} laps", boxes.len());
+        let inputs = CheckpointInputs {
+            route: route_from_gates(position, &boxes, laps),
+            per_lap: boxes.len(),
+            loaded: true,
+            markers: events.game_modes.iter().find(|m| m.id == e.game_mode).is_some_and(|m| m.gate_markers),
+            first_place_only: e.first_place_only,
+            ..Default::default()
+        };
+        Ok(Some(SyntheticLap { event: id, inputs, installed: false, position, heading, driving: false, passed: 0 }))
+    }
+
+    fn frame(&mut self, st: &mut mw_logic::natives::LogicState, dt: f32, f: usize) {
+        use mw_logic::natives::checkpoints::RaceCar;
+        use mw_logic::natives::trigger_boxes::{CarBox, add, dist2, scale, sub};
+        let running = st.game_modes.current_event == self.event;
+        if running != self.installed {
+            self.installed = running;
+            st.checkpoints.inputs = if running { self.inputs.clone() } else { Default::default() };
+            (self.driving, self.passed) = (false, 0);
+        }
+        let c = &st.checkpoints;
+        let (cp, lap) = (c.progress.cp, c.progress.lap);
+        if self.driving && cp != self.passed && running {
+            println!("{f:5}      synthetic lap: gate {cp} of {} passed (lap {lap})", c.inputs.route.len() - 1);
+            self.passed = cp;
+        }
+        if !c.progress.gates.is_empty() && !c.progress.finished && cp + 1 < c.inputs.route.len() {
+            if !self.driving {
+                println!("{f:5}      synthetic lap: the gates are placed, driving");
+                self.driving = true;
+            }
+            let e = c.inputs.route[cp + 1];
+            let target = e.gate.map_or(e.position, |g| g.centre);
+            let to = sub([target[0], self.position[1], target[2]], self.position);
+            let d = dist2(to, [0.0; 3]).sqrt();
+            if d > 1e-3 {
+                self.heading = scale(to, 1.0 / d);
+                self.position = add(self.position, scale(self.heading, (Self::SPEED * dt).min(d)));
+            }
+            self.position[1] = e.position[1] + Self::HALF[1];
+            let gm = &mut st.game_modes;
+            let ticks =
+                (u64::from(gm.word_2d28) | (u64::from(gm.word_2d2c) << 32)) + (f64::from(dt) * 3e6).round() as u64;
+            (gm.word_2d28, gm.word_2d2c) = (ticks as u32, (ticks >> 32) as u32);
+        }
+        let car = CarBox::level(self.position, self.heading, Self::HALF);
+        st.checkpoints.inputs.cars[0] = Some(RaceCar { car, has_vehicle: true, ..Default::default() });
+    }
 }

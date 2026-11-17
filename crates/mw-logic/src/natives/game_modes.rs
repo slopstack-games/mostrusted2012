@@ -172,6 +172,16 @@ pub struct GameModeManager {
     pub event_target_score: i32,
     /// +0x2d0c: the event change's progress (`FUN_006f1720`): 0 none, 1 requested, 2 next data loading, 3 ready.
     pub transition_state: u8,
+    /// +0x2c70 / +0x2ca7: the prompt bar's language string id and its "shown" byte (`Mode.PromptString`; set by
+    /// the event starts and the car swap each frame they want it; model: cleared at the start of every logic
+    /// frame, [`LogicHost::frame`](super::LogicHost::frame), as its clearer is not in the dump).
+    pub prompt: Option<u32>,
+    /// +0x2e7d: the split time of the gate just passed shows (`CHECKPTS`: the gate stores a split and +0x2e48).
+    pub split_shown: bool,
+    /// +0x252f: a car swap is under way (`HSMCARSWAPLO`: phase ≠ 0); event starts are not entered meanwhile.
+    pub swap_in_progress: bool,
+    /// +0x2e9c: an event start's burnout is being held (`FUN_0074ad50`); the jack-it swap waits meanwhile.
+    pub event_start_held: bool,
 }
 
 impl GameModeManager {
