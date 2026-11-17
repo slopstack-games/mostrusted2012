@@ -13,6 +13,7 @@ mw-gamedir = { path = "crates/mw-gamedir" }
 mw-bundle = { path = "crates/mw-bundle" }
 mw-formats = { path = "crates/mw-formats" }
 mw-assets = { path = "crates/mw-assets" }
+mw-logic = { path = "crates/mw-logic" }
 mw-handling = { path = "crates/mw-handling" }
 mw-audio = { path = "crates/mw-audio" }
 anyhow = "1"

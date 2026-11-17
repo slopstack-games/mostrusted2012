@@ -4017,6 +4017,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "mw-logic"
+version = "0.1.0"
+dependencies = [
+ "mw-bundle",
+ "mw-formats",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "mw-probe"
 version = "0.1.0"
 

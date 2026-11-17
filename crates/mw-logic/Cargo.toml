@@ -1,0 +1,11 @@
+[package]
+name = "mw-logic"
+description = "The original's game-logic interpreters: bindings, HSM state machines, the native-function registry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mw-bundle.workspace = true
+mw-formats.workspace = true
+thiserror.workspace = true

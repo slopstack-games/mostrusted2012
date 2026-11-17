@@ -30,7 +30,16 @@ the first section of docs/next-session.md; the other docs are references to sear
 
 ## Fidelity rule: the original is the reference
 
-The goal is to play and look exactly like the original, not like a plausible racing game. Reverse engineering
+**The target is a 1:1 rewrite of the original in Rust**: the same systems doing the same work on the same data,
+not a Bevy game that resembles it. The goal is to play and look exactly like the original, not like a plausible
+racing game. **Game logic runs from the original's own logic data, interpreted as the original does**: the HSM
+state machines, binding expressions (`Mode.X`, `Widget.Y`), JSON widget definitions, Lua 5.1 bytecode (UI
+scripts) and GeneSys sequences are executed by ports of the original's interpreters (`mw-logic`, `mw-lua`), and
+the native functions they call (HSM behaviours and hooks, Lua natives, screen scripts) are ported one by one
+from the code under their original names. Logic that data already describes is never re-coded by hand; flows
+written by hand before the interpreters existed (race / free-roam / front-end flow in `mostrusted`) move onto
+them as they land. Rules that are C++ in the original (checkpoints, scoring, AI, pursuit) are ported from the
+code as before. Reverse engineering
 the original's inner workings (physics, rendering, audio, AI, rules) to get there is allowed and preferred:
 the dump, shader disassembly, the probe, memory reads and frame captures (docs/reverse-engineering.md).
 **How vehicles drive is read from the decompiled code**, not guessed or
@@ -53,6 +62,7 @@ crates/mw-formats   per-type parsers; take &mw_bundle::Resource     (never depen
 crates/mw-audio     EA audio decoders (SPS/EALayer3, Ginsu/XAS) and the engine-sound synth
 crates/mw-assets    AssetStore: index over all bundles, cross-bundle loads, scene helpers
 crates/mw-handling  the game's handling maths, engine-free (tyres, drivetrain, drift, nitrous, surfaces)
+crates/mw-logic     the original's logic interpreters: bindings, HSM, native registry (engine-free, wasm-safe)
 crates/mwtool       CLI for inspection / extraction / previews
 crates/mostrusted   Bevy 0.19 runtime (loader thread → channel → ECS), avian3d 0.7 physics (drive.rs)
 crates/mw-probe     DLL loaded into the running original (docs/probe.md; i686-pc-windows-gnu)

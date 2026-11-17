@@ -980,8 +980,12 @@ points (12 B {node, behaviour code, key}), nodes (32 B), an unread pair, behavio
 ptr, ...}: "Run Child Behaviour", "Activate Widget Group", ...). A node: behaviour code = `~crc32(code name)`
 (`HSB_RUNCHILD` 0x24c422b2, the most common), id, its events (the `ENTER` event lists the children it starts),
 its children with transitions (on a child's exit code, start these nodes), parameters (packed key → value text,
-e.g. `GROUP="491032"`, `BINDING="Mode.ShowLoadingScreen"`, `FUNCTION="SetNewGame"`), an optional inline Lua
-chunk, a name, u8 parameter / kind / event / child counts at +0x1c..0x1f. Keys and exit codes are names packed
+e.g. `GROUP="491032"`, `BINDING="Mode.ShowLoadingScreen"`, `FUNCTION="SetNewGame"`; the u16 pair beside each is
+(type, count): typed parameters), an optional **data definition** at +0x14 (corrected 2026-11-17: not inline Lua;
+a named JSON view-model block, 28 in GAMEMODES, e.g. `SafeForDialogs {CanShow:true}` or a hook's arguments
+`Params {NewGame:true}`), a name, u8 counts at +0x1c..0x1f of which +0x1D is the **fallback behaviour**
+(RUN_CHILDREN / EXIT / ASSERT_THEN_EXIT; burnout.wiki "HSM Data/NFS Most Wanted", official field names from a
+PS3 debug build). No shipped node runs Lua (`NEWLUASTATE` / `LOADLUA` / `RUNLUASCRIPT` exist but are unused). Keys and exit codes are names packed
 base 40 into a u64 (`EXIT`, `ENTER`, `TRUE` / `FALSE`, `YES` / `NO`, `TOGAME`, `PC` / `PS3` / `X360` / `VITA`).
 The cars' active-aero machines (`AnimationStateBehaviour`) are the same format.
 

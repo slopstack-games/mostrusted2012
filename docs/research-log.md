@@ -10,6 +10,54 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-11-17: game logic: scripting, flow, AI (survey of the install, the exe and prior work)
+Research agent; full tables, registries and URLs in the main checkout's git-ignored
+`scratch/engine-scripting-research.md` (raw outputs and scripts in `scratch/scripting/`). Whole install scanned
+(2,020 bundles, 353,223 resources). C = confirmed, I = inferred.
+- **One script VM: PUC-Rio Lua 5.1.3** (version string at 0x01083c3e), standard 38 opcodes, 32-bit size_t,
+  double numbers, debug info stripped (C). No Squirrel, Scaleform / ActionScript or RAGE-style custom VM; the
+  other "VMs" are C++ interpreters of data: HSM, bindings, the sequence player, PageRunner.
+- **Lua = UI only**: 115 unique chunks (229 copies, ~25k instructions, 1,103 functions), `TextFile` (0x70) in
+  `UI/SCREENS2`; id = CRC-32 of the lower-cased `"<ScriptName>.lua"` (all 115 match). Menus, map, car select,
+  settings, online / store. No game-mode, AI or physics Lua (C).
+- **JSON** `TextFile`s: 859 unique widget definitions (439 Lua callbacks, 224 native actions, binding adapters,
+  script configuration); id = CRC-32 of `"<WidgetName>_<UniqueId>.json"` lower-cased (`FUN_007edd50`,
+  `FUN_007e0850`) (C).
+- **HSMData**: 17 unique machines: GAMEMODES' game-logic machine (2,706 nodes, 36 entry points, 199 behaviour
+  types) and 16 active-aero machines (C). Node +0x14 is a data definition, not Lua (formats.md corrected).
+- **GeneSys**: 1,138 type names, 83,655 objects; 8,485 `Sequence`s using 73 `*SequenceItem` types; 243
+  `*_ScreenScript` objects (`LuaAsset`, `LuaHooks`, `LuaModules`, `LuaModulesIncluded` cracked); 24 types with
+  no chunk = native C++ screen scripts (C). `LuaCode`, `LuaData`, AttribSys, BinaryFile, FlaptFile: 0 resources.
+- **Bindings**: ≥2,701 distinct paths in JSON, Lua and HSM, ~100 roots (`Widget`, `Signals`, `Mode`,
+  `Players`, …); operators seen EQUALS, GTEQ, LTEQ, MINUS, ADD, MIN, BETWEEN, NOT (C syntax, I full grammar).
+- **Lua host** `FUN_009f86d0`: base + optional package / table / io / string / math (module table 0x0102a1fc),
+  GC pause 100 / stepmul 200 then **GC stopped**; every native registered as a global closure with its name as
+  upvalue (`LuaHooks` is not a runtime whitelist, I). Natives: `FUN_009f7e50` registers **385** Lua natives;
+  `FUN_007763b0` **187** HSM hooks keyed by name hash (35 names in both). Widget scripts: factory
+  `FUN_007f2850` (Lua script object vtable 0x00fe7f78, or one of up to 32 native screen scripts);
+  `FUN_007ec680` calls `Construct` then `SetConfigurationItem` per item; other callbacks by name (I).
+- **HSM never calls Lua**: it calls natives through `CALLHSMHOOK` / `CALLHSMHOOKS` / `HSMHOOKEXIT` (121 hook
+  names used), arguments from the node's data definition. The exe registers 268 behaviour types (203 used).
+- **Flow vs rules**: flow = the HSM; content = GeneSys (111 `OfflineEvent`, 12 `GameMode`, `EventList`,
+  `AIPlayerInformation`, `ScoringAction`); cutscenes = sequences run by `RUNGAMELOGIC` nodes; menus = JSON
+  widgets + Lua + native screen scripts; rules (checkpoints, positions, timers, scoring, rewards, unlocks) are
+  C++ reached through hooks (`StartGameModeTimer`, `AwardPostEventAwards`, `RemoveAllCops`, …).
+- **AI**: racers, cops, traffic are C++ state machines; no HSM / Lua / behaviour-tree data for AI (C); tuned by
+  `AIConfig`, 200 `AIPlayerType` (`Behaviour` picks the state), 40 `HeatLevel` → `PursuitBehaviour` →
+  `CopBehaviour`, `CopType`, `RoadblockRules`, `TrafficManoeuvreConfig`. HSM only pauses / preloads / removes AI.
+- **Prior work**: burnout.wiki "HSM Data/NFS Most Wanted" (official field names; high value); BNDL Explorer
+  (github.com/FrankHUN88453/BNDLExplorer: MW2012 editor, JSON / Lua text editors, HSM viewer; the PS3
+  prototype's debug data names ~3/4 of GeneSys field hashes; licence to check, format knowledge only); DGIorio's
+  tools (bundles, `HashBreaker`); nothing from GDC; no other reimplementation found.
+- About 15 functions the scripts call do not exist in the exe (`ToggleOfflineEventFilter`,
+  `SaveCustomRollouts`): dead or online paths (I).
+
+Consequence (user, 2026-11-17: a 1:1 rewrite): CLAUDE.md "Fidelity rule" and PLAN.md M8: the logic data is
+executed by ports of these interpreters. Open: what `HSB_STRSCRPT` runs; Lua state per screen or per script, GC
+and error handling; the second HSM-style registry at 0x54d (RUNSEQUENCE / EXITBINDTRUE / EnableCompound);
+`NavigationMesh` and `GameplayLinkData`; the full binding grammar from the evaluator; the offline / online split
+of the natives.
+
 ### 2026-11-17: browser port, step 4: the runtime renders in a browser (WebGPU, free camera)
 `mostrusted` builds for wasm32 with threads (`tools/web/build`: nightly, std with atomics, wasm-bindgen 0.2.129;
 153 MB module without debug info, not yet optimised with wasm-opt) and runs in headless Brave on WebGPU:

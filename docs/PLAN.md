@@ -18,8 +18,11 @@ than as the design:
   quadric, sky reflection cubes with the env-BRDF LUT), sky dome, planar reflections for wet roads, its
   post-processing and tonemap, driven by the environment timeline. Shaders are ported from the DXBC (by hand
   now, later by DXBC → WGSL translation) as custom render-graph passes, not mapped onto `StandardMaterial`.
-- **Game logic**: the same split the data implies (GeneSys types, HSM state machines, triggers, AI data) rather
-  than ad-hoc Bevy systems.
+- **Game logic** (decided 2026-11-17: a 1:1 rewrite): the original's own logic data is *executed*, by ports of
+  its interpreters (M8): the HSM machine drives boot → front end → game modes → results, bindings and JSON
+  widgets drive the UI, the UI's Lua 5.1 bytecode runs in a Lua VM, sequences drive cutscenes and the HUD; the
+  native functions they call are ported from the code under their original names. Rules that are C++ in the
+  original (checkpoints, scoring, AI, pursuit) are ported from the code, tuned by their GeneSys data.
 - Bevy features stand in only temporarily (today: `StandardMaterial` lighting, `GeneratedEnvironmentMapLight`,
   `DistanceFog`); list each stand-in in [research-log.md](research-log.md) so it can be replaced.
 
@@ -457,12 +460,43 @@ code side (game modes, HSMs, AI) next to the data. Roughly in dependency order:
    Interceptor, coronas, busted / escaped sequences, Speed Points, cooldown spots. Takedowns, wrecks (deformation
    itself landed under M3.5: there is no
    `DeformationModel`; damage is skeletal animation).
-5. `HSMData` (0x501): hierarchical state machines that drive game flow. Interpret, or reimplement by hand.
+5. `HSMData` (0x501): hierarchical state machines that drive game flow. **Interpreted** (decided 2026-11-17):
+   M8.
 6. `[~]` Cutscenes: game-logic `Sequence`s play (2026-10-09, `cutscene.rs`, decomp.md "Cutscenes and sequences"):
    race intros and outros with their camera clips, ICE takes, teleports, AI drive, animated cars, slow motion,
    letterbox and skip. Open: audio, post-FX, UI layout and speech items; nested timeline controllers; the other
    sequences (tutorials, busted / escaped, Most Wanted intros with `MovieSequenceItem`). Characters
    (`CharacterSpec`) are low priority.
+
+### M8: Game logic engine: the original's interpreters `[~]` (2026-11-17)
+What drives the original's flow and UI is data run by a few interpreters (research-log 2026-11-17 "game logic:
+scripting, flow, AI"): one HSM machine (2,706 nodes) for boot → front end → modes → results, 16 aero machines,
+859 JSON widgets, 115 Lua 5.1 UI chunks, ~2,700 binding paths, 8,485 sequences; AI and rules are C++ tuned by
+GeneSys. Engine-free crates (`mw-logic`, `mw-lua`; wasm-compatible), in dependency order:
+1. `[ ]` **Binding evaluator** (`mw-logic::binding`): the path language (`Mode.X`, `Widget.Y`, operators EQUALS,
+   GTEQ, LTEQ, MINUS, ADD, MIN, BETWEEN, NOT, …) parsed and evaluated like the original's evaluator, over view
+   models the runtime provides; every path in the data parses.
+2. `[ ]` **HSM interpreter** (`mw-logic::hsm`): the parser corrected (typed parameters, data definitions,
+   fallback behaviour), the node lifecycle and transitions; then the 203 used behaviour types one by one.
+3. `[ ]` **Native registry** (`mw-logic::natives`): one name → function table for the 187 HSM hooks (121 used)
+   and 385 Lua natives (185 used), offline ones first, each ported from its handler.
+4. `[ ]` **JSON widgets** and the widget-script lifecycle (`Construct`, `SetConfigurationItem`, `OnActivated`,
+   actions), PageRunner page flow; the 24 native screen scripts.
+5. `[ ]` **Lua 5.1 VM** (`mw-lua`): runs the shipped bytecode (no compiler needed): `rilua` or our own
+   38-opcode interpreter; base, string, math, table.
+6. `[ ]` **Sequences**: the missing `*SequenceItem` types (73 in the data).
+7. `[ ]` The runtime moves onto them: front end, game modes, HUD and results from the HSM instead of the
+   hand-written flows.
+
+### M9: Browser build `[~]` (2026-11-17)
+The same runtime in a browser on WebGPU, on the player's own install (picked folder or a loopback server; the
+data is never hosted). research-log 2026-11-17 (steps 1-4), docs/commands.md "Browser (wasm32)".
+1. `[x]` Engine-free crates on wasm32 (`tools/wasm-check`).
+2. `[x]` Game files through `mw_gamedir::Source` (`WebSource`: blob / http URLs, sync range requests).
+3. `[x]` Threads as Web Workers on shared memory (`platform.rs`), a main thread that never blocks.
+4. `[x]` The runtime renders in a browser (free camera, `tools/web/build`, `tools/web/serve.py`).
+5. `[ ]` A worker `Instant` panic, driving, audio (user gesture), saves in browser storage, the 4 GB memory cap
+   for whole-world views, module size (wasm-opt).
 
 ### M7: Front-end and release `[~]`
 - `[~]` Native Bevy UI (fonts from `UI/FONTS` if feasible), menus, car select, settings, save data (our own format).
