@@ -61,6 +61,7 @@ mod paint_wear;
 mod particles;
 mod pass_mask;
 mod pause;
+mod platform;
 mod player_sfx;
 mod police;
 mod police_audio;
@@ -95,10 +96,11 @@ mod world_sfx;
 mod world_ui;
 mod zone_view;
 
+use crate::platform::Instant;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bevy::camera_controller::free_camera::{FreeCamera, FreeCameraPlugin};
 use bevy::image::{CompressedImageFormatSupport, CompressedImageFormats};

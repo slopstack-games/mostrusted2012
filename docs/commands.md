@@ -307,5 +307,9 @@ memscan` / `telemetry` / `tune` / `capture` read the game through `ReadProcessMe
 Port plan and status: research-log 2026-11-17 "browser port, step 1". One-time `rustup target add wasm32-unknown-unknown`.
 ```sh
 tools/wasm-check    # the engine-free crates (gamedir, bundle, formats, audio, assets, handling) build for wasm32
-# In the browser, game files come from mw_gamedir::WebSource (the picked install folder; reads only in a Web Worker)
+tools/wasm-check --threads   # the same for the threaded browser build (nightly + rust-src, std rebuilt with atomics,
+                             # target/wasm-threads); its RUSTFLAGS (shared memory, TLS exports) link the final module
+# In the browser: game files come from mw_gamedir::WebSource (the picked folder as blob URLs, sync range requests);
+# threads are Web Workers (mostrusted/src/platform.rs, wasm_thread); the page needs COOP same-origin + COEP
+# require-corp; the main thread never blocks on a lock (PollLock::poll_lock)
 ```

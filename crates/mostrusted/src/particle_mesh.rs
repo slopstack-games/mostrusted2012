@@ -443,7 +443,7 @@ pub(super) fn build_debris(
         let want = std::mem::take(&mut debris.want);
         let store = game.store.clone();
         let (tx, rx) = std::sync::mpsc::channel();
-        std::thread::Builder::new()
+        crate::platform::thread::Builder::new()
             .name("debris models".into())
             .spawn(move || {
                 for id in want {

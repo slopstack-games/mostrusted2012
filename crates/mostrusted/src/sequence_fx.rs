@@ -18,6 +18,7 @@
 //! PostFX state's +0x1504 / +0x1508), the `BusMixerChannelSequenceItem` that ducks the "Dominant 3D" bus to 0.435
 //! rising to 1 over 4 s.
 
+use crate::platform::PollLock;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -123,12 +124,13 @@ fn run(
         let job: Job<Loaded> = Arc::new(Mutex::new(None));
         let out = job.clone();
         let (store, seq, mute) = (game.store.clone(), p.sequence, game.mute);
-        std::thread::spawn(move || *out.lock().unwrap() = Some(load(&store, seq, mute)));
+        crate::platform::thread::spawn(move || *out.lock().unwrap() = Some(load(&store, seq, mute)));
         fx.jobs.insert(p.sequence, job);
     }
-    let finished: Vec<u32> = fx.jobs.iter().filter(|(_, j)| j.lock().unwrap().is_some()).map(|(s, _)| *s).collect();
+    let finished: Vec<u32> =
+        fx.jobs.iter().filter(|(_, j)| j.poll_lock().is_some_and(|s| s.is_some())).map(|(s, _)| *s).collect();
     for s in finished {
-        let loaded = fx.jobs.remove(&s).and_then(|j| j.lock().unwrap().take());
+        let loaded = fx.jobs.remove(&s).and_then(|j| j.poll_lock().and_then(|mut s| s.take()));
         fx.data.insert(s, loaded.filter(|l| !l.items.is_empty()).map(Arc::new));
     }
 

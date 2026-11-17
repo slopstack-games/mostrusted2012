@@ -258,7 +258,7 @@ fn start_loading(game: Res<Game>, mut jack: ResMut<JackSpots>, pads: Query<&Game
     let (tx, rx) = channel();
     let store = game.store.clone();
     let pad = pads.iter().next().is_some();
-    std::thread::Builder::new()
+    crate::platform::thread::Builder::new()
         .name("mw-jackspots".into())
         .spawn(move || {
             let _ = tx.send(read_data(&store, pad));
@@ -444,7 +444,7 @@ fn track_cars(
             jack.serials.insert(serial, i);
             s.parked = Parked::Loading { serial };
             let (store, tx, colour) = (game.store.clone(), tx.clone(), s.colour);
-            std::thread::Builder::new()
+            crate::platform::thread::Builder::new()
                 .name("mw-jackspot-paint".into())
                 .spawn(move || {
                     let _ = tx.send((serial, read_paint(&store, &bundle, colour)));

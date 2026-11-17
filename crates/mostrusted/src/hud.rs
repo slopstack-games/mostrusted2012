@@ -366,8 +366,8 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>, settings: Res<H
     }
     let store = game.store.clone();
     let (tx, rx) = channel();
-    std::thread::spawn(move || {
-        let t = std::time::Instant::now();
+    crate::platform::thread::spawn(move || {
+        let t = crate::platform::Instant::now();
         let lang = match store.language(mw_assets::DEFAULT_LANGUAGE) {
             Ok(l) => l,
             Err(e) => {

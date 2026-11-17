@@ -17,6 +17,7 @@
 //! game's being a runtime handle; part locators are object space; the blink (`c8d7741f`) and the rain / wet bits
 //! are not modelled; a smashed compound shows no coronas.
 
+use crate::platform::PollLock;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -135,9 +136,9 @@ fn attach(
 ) {
     let Some(game) = game else { return };
     let finished: Vec<ResourceId> =
-        cache.jobs.iter().filter(|(_, j)| j.lock().unwrap().is_some()).map(|(id, _)| *id).collect();
+        cache.jobs.iter().filter(|(_, j)| j.poll_lock().is_some_and(|s| s.is_some())).map(|(id, _)| *id).collect();
     for id in finished {
-        let fx = cache.jobs.remove(&id).and_then(|j| j.lock().unwrap().take()).flatten();
+        let fx = cache.jobs.remove(&id).and_then(|j| j.poll_lock().and_then(|mut s| s.take())).flatten();
         if let (Some(fx), Some(w)) = (&fx, world.as_mut()) {
             for c in &fx.coronas {
                 w.new_defs.extend(c.entries.iter().map(|(d, _)| d.clone()));
@@ -170,7 +171,7 @@ fn attach(
                 let out = job.clone();
                 let store = game.store.clone();
                 let kind = prop.physics.kind;
-                std::thread::spawn(move || {
+                crate::platform::thread::spawn(move || {
                     let fx = store.object_def(object, kind).ok().map(|def| Arc::new(ObjectFx::read(&store, &def)));
                     *out.lock().unwrap() = Some(fx);
                 });
@@ -233,7 +234,7 @@ fn queue_coronas(
         return;
     }
     let (Some(state), Some(cam)) = (state, camera.iter().next()) else { return };
-    let started = std::time::Instant::now();
+    let started = crate::platform::Instant::now();
     // The object lights' stagger ids by object, rebuilt when the light list changes.
     if staggers.0 != sources.lights.len() {
         staggers.0 = sources.lights.len();

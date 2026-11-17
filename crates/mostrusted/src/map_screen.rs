@@ -53,6 +53,7 @@
 //! options are their menus (`SpeedCamera`, `Jump`, ...) with only SET DESTINATION wired; the chosen filter is
 //! not saved to the profile (`MapFilterIndex`).
 
+use crate::platform::PollLock;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -566,10 +567,10 @@ fn start_load(mut map: ResMut<MapScreen>, game: Res<crate::Game>) {
     }
     let job = Arc::new(Mutex::new(None));
     let (out, store) = (job.clone(), game.store.clone());
-    std::thread::Builder::new()
+    crate::platform::thread::Builder::new()
         .name("mw-map-screen".into())
         .spawn(move || {
-            let t = std::time::Instant::now();
+            let t = crate::platform::Instant::now();
             let Ok(lang) = store.language(mw_assets::DEFAULT_LANGUAGE) else { return };
             let text = |id: u32| lang.get(id).unwrap_or_default().to_string();
             let items = load_items(&store, &lang);
@@ -776,7 +777,7 @@ fn poll_load(
     mut images: ResMut<Assets<Image>>,
     mut fonts: ResMut<GameFonts>,
 ) {
-    let Some(loaded) = map.job.as_ref().and_then(|j| j.lock().unwrap().take()) else { return };
+    let Some(loaded) = map.job.as_ref().and_then(|j| j.poll_lock().and_then(|mut s| s.take())) else { return };
     map.job = None;
     let textures: HashMap<ResourceId, (Handle<Image>, Vec2)> = loaded
         .images

@@ -114,7 +114,7 @@ pub(crate) struct GateMarkers {
 fn start_loading(mut commands: Commands, game: Res<crate::Game>) {
     let store = game.store.clone();
     let (tx, rx) = channel();
-    std::thread::spawn(move || {
+    crate::platform::thread::spawn(move || {
         let (keys, pois, lang) =
             match (store.poi_keys(), store.ui_poi_visuals(POI_SCREEN), store.language(mw_assets::DEFAULT_LANGUAGE)) {
                 (Ok(k), Ok(p), Ok(l)) => (k, p, l),

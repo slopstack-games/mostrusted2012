@@ -162,7 +162,7 @@ fn choose_lods(
         on: std::env::var("MW_LOD_LOG").is_ok_and(|v| v != "0"),
         ..Default::default()
     });
-    let start = log.on.then(std::time::Instant::now);
+    let start = log.on.then(crate::platform::Instant::now);
     let Some((eye_t, projection, cam)) = camera.iter().find(|(_, _, c)| c.is_active) else { return };
     let eye = eye_t.translation();
     let fov_h = match projection {
@@ -209,7 +209,7 @@ struct LodLog {
     shadows: u32,
     frames: u32,
     seconds: f64,
-    since: Option<std::time::Instant>,
+    since: Option<crate::platform::Instant>,
 }
 
 impl LodLog {
@@ -224,7 +224,7 @@ impl LodLog {
     fn finish(&mut self, seconds: f64, view: f32) {
         self.frames += 1;
         self.seconds += seconds;
-        let since = *self.since.get_or_insert_with(std::time::Instant::now);
+        let since = *self.since.get_or_insert_with(crate::platform::Instant::now);
         if since.elapsed().as_secs_f32() >= 2.0 {
             let n = self.frames.max(1);
             info!(

@@ -163,7 +163,7 @@ impl EventStarts {
 fn start_loading(mut commands: Commands, game: Res<crate::Game>) {
     let store = game.store.clone();
     let (tx, rx) = channel();
-    std::thread::spawn(move || {
+    crate::platform::thread::spawn(move || {
         use mw_formats::genesys::Value;
         let (Ok(events), Ok(lang)) = (store.events(), store.language(mw_assets::DEFAULT_LANGUAGE)) else {
             warn!("event starts: no events");

@@ -178,7 +178,7 @@ fn start_loading(
     let bc = support.0.contains(CompressedImageFormats::BC);
     let store = game.store.clone();
     let (tx, rx) = mpsc::channel();
-    std::thread::Builder::new()
+    crate::platform::thread::Builder::new()
         .name("vfx loader".into())
         .spawn(move || {
             let _ = tx.send(load_vfx(&store, bc));
@@ -387,7 +387,7 @@ fn load_requested(
     let bc = support.is_some_and(|s| s.0.contains(CompressedImageFormats::BC));
     let store = game.store.clone();
     let (tx, rx) = mpsc::channel();
-    std::thread::Builder::new()
+    crate::platform::thread::Builder::new()
         .name("vfx loader (more)".into())
         .spawn(move || {
             let _ = tx.send(load_effects(&store, bc, ids));

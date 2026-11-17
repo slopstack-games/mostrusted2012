@@ -36,6 +36,7 @@
 //!   moment; the nitrous tank is carried over, damage and dirt stay off.
 //! - No effect or sound: none is named by the handler (the events above go to the scoring / HUD listeners).
 
+use crate::platform::PollLock;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -109,7 +110,7 @@ pub struct BodyShops {
 fn read_palette(mut shops: ResMut<BodyShops>, garage: Res<Garage>, game: Option<Res<Game>>) {
     let (Some(game), Some(current)) = (game, garage.current.as_ref()) else { return };
     if let Some((bundle, job)) = &shops.palette_job {
-        let Some(palette) = job.lock().unwrap().take() else { return };
+        let Some(palette) = job.poll_lock().and_then(|mut s| s.take()) else { return };
         shops.palette = Some((bundle.clone(), palette));
         shops.palette_job = None;
     }
@@ -118,7 +119,7 @@ fn read_palette(mut shops: ResMut<BodyShops>, garage: Res<Garage>, game: Option<
     }
     let job = Arc::new(Mutex::new(None));
     let (out, store, bundle) = (job.clone(), game.store.clone(), current.bundle.clone());
-    std::thread::Builder::new()
+    crate::platform::thread::Builder::new()
         .name("mw-palette".into())
         .spawn(move || {
             let palette = store.bundle(&bundle).and_then(|b| store.vehicle_palette(&b).ok()).unwrap_or_default();

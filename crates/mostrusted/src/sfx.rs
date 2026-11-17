@@ -3,6 +3,7 @@
 //! it). The body's impacts, the grind against other cars and the damage sounds are `player_sfx.rs`; landings
 //! are `world_sfx.rs` (`FUN_00576b40`; the old loudness-sorted landing thump here was a model).
 
+use crate::platform::PollLock;
 use std::num::NonZero;
 use std::sync::{Arc, Mutex};
 
@@ -162,7 +163,7 @@ fn load_bank(
         let slot = Arc::new(Mutex::new(None));
         let out = slot.clone();
         let store = game.store.clone();
-        std::thread::spawn(move || {
+        crate::platform::thread::spawn(move || {
             let (bank, picks) = store.vehicle_sfx_bank().unwrap_or_else(|e| {
                 warn!("vehicle sounds: {e}");
                 (Bank::default(), PlayerSurfaceSounds::default())
@@ -177,7 +178,7 @@ fn load_bank(
         return;
     }
     let Some(slot) = state.building.clone() else { return };
-    let Some((bank, picks, tyre)) = slot.lock().unwrap().take() else { return };
+    let Some((bank, picks, tyre)) = slot.poll_lock().and_then(|mut s| s.take()) else { return };
     state.building = None;
     info!(
         "vehicle sounds: {} sequences, {} channels, {} surface sound sets",

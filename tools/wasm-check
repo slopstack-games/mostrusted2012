@@ -1,8 +1,21 @@
 #!/bin/sh
-# Browser port, step 1: check that the engine-free crates build for wasm32-unknown-unknown (one-time:
+# Browser port: check that the engine-free crates build for wasm32-unknown-unknown (one-time:
 # `rustup target add wasm32-unknown-unknown`). Prints only warnings / errors and the result line.
+#   --threads: the threaded browser build (shared memory, wasm_thread workers): nightly with rust-src, std rebuilt
+#   with atomics, in its own target dir (target/wasm-threads). The same RUSTFLAGS link the final module.
 R="$(dirname "$0")/.."
-nice -n 19 cargo check --manifest-path "$R/Cargo.toml" --release --target wasm32-unknown-unknown --message-format short \
-  -p mw-gamedir -p mw-bundle -p mw-formats -p mw-audio -p mw-assets -p mw-handling "$@" 2>&1 \
-  | grep -E '^[^ ]+\.rs:[0-9]+:[0-9]+: (warning|error)|^(warning|error)(\[|:)|Finished|could not compile' \
-  | grep -v 'generated [0-9]* warning'
+THREADS=
+if [ "$1" = "--threads" ]; then THREADS=1; shift; fi
+filter() {
+  grep -E '^[^ ]+\.rs:[0-9]+:[0-9]+: (warning|error)|^(warning|error)(\[|:)|Finished|could not compile' \
+    | grep -v 'generated [0-9]* warning'
+}
+PKGS="-p mw-gamedir -p mw-bundle -p mw-formats -p mw-audio -p mw-assets -p mw-handling"
+if [ -n "$THREADS" ]; then
+  RUSTFLAGS='-C target-feature=+atomics,+bulk-memory,+mutable-globals -C link-arg=--shared-memory -C link-arg=--max-memory=4294967296 -C link-arg=--import-memory -C link-arg=--export=__wasm_init_tls -C link-arg=--export=__tls_size -C link-arg=--export=__tls_align -C link-arg=--export=__tls_base' \
+  CARGO_TARGET_DIR="$R/target/wasm-threads" nice -n 19 cargo +nightly check --manifest-path "$R/Cargo.toml" --release \
+    --target wasm32-unknown-unknown -Z build-std=std,panic_abort --message-format short $PKGS "$@" 2>&1 | filter
+else
+  nice -n 19 cargo check --manifest-path "$R/Cargo.toml" --release --target wasm32-unknown-unknown \
+    --message-format short $PKGS "$@" 2>&1 | filter
+fi

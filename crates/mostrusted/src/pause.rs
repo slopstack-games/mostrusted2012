@@ -19,6 +19,7 @@
 //! DRIVER DETAILS, MULTIPLAYER, FRIENDS and STORE are online / Autolog screens: shown inactive. Model decisions:
 //! the inactive rows' look (the row template's `Active` field), the race list page, the list wrapping around.
 
+use crate::platform::PollLock;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -120,7 +121,7 @@ fn start_load(mut menu: ResMut<PauseMenu>, game: Res<crate::Game>) {
     }
     let job = Arc::new(Mutex::new(None));
     let (out, store) = (job.clone(), game.store.clone());
-    std::thread::spawn(move || {
+    crate::platform::thread::spawn(move || {
         let Ok(lang) = store.language(mw_assets::DEFAULT_LANGUAGE) else { return };
         let text = |id: u32| lang.get(id).unwrap_or_default().to_uppercase();
         // Online / Autolog destinations are inactive offline (ours).
@@ -183,7 +184,7 @@ fn poll_load(
     mut images: ResMut<Assets<Image>>,
     mut fonts: ResMut<GameFonts>,
 ) {
-    let Some(loaded) = menu.job.as_ref().and_then(|j| j.lock().unwrap().take()) else { return };
+    let Some(loaded) = menu.job.as_ref().and_then(|j| j.poll_lock().and_then(|mut s| s.take())) else { return };
     menu.job = None;
     let textures: HashMap<ResourceId, (Handle<Image>, Vec2)> = loaded
         .images

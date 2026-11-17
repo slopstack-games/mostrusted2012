@@ -22,6 +22,7 @@
 //! `Hack_EasyRight` opens) and `cancel` (quick close); which keys those mappings are on PC is not decoded, so
 //! here: the original's EASY_* bindings (d-pad; Num 4 / 6 / 8 / 2, input.rs), Esc / pad B to close, `E` opens (ours).
 
+use crate::platform::PollLock;
 use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
@@ -216,7 +217,7 @@ fn start_load(mut menu: ResMut<EasyDrive>, game: Res<Game>) {
     }
     let job = Arc::new(Mutex::new(None));
     let (out, store) = (job.clone(), game.store.clone());
-    std::thread::spawn(move || {
+    crate::platform::thread::spawn(move || {
         let tiers = store
             .language(mw_assets::DEFAULT_LANGUAGE)
             .and_then(|lang| Ok((store.easydrive(EASYDRIVE_SCREEN)?, lang)))
@@ -253,7 +254,9 @@ fn resolve(m: &ed::EasyDrive, lang: &mw_formats::Language) -> Vec<Tier> {
 }
 
 fn poll_load(mut commands: Commands, mut menu: ResMut<EasyDrive>, mut images: ResMut<Assets<Image>>) {
-    let Some((tiers, look, races, race_actions)) = menu.job.as_ref().and_then(|j| j.lock().unwrap().take()) else {
+    let Some((tiers, look, races, race_actions)) =
+        menu.job.as_ref().and_then(|j| j.poll_lock().and_then(|mut s| s.take()))
+    else {
         return;
     };
     menu.races = races;

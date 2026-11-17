@@ -30,11 +30,11 @@
 //! traced), and the profile (car, position) is our own file, saved every 10 s like the game's "Regular
 //! Autosave" state.
 
+use crate::platform::Instant;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, channel};
-use std::time::Instant;
 
 use bevy::prelude::*;
 use bevy::render::view::screenshot::{Screenshot, save_to_disk};
@@ -268,7 +268,7 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>, front: Res<Fron
     }
     let store = game.store.clone();
     let (tx, rx) = channel();
-    std::thread::Builder::new()
+    crate::platform::thread::Builder::new()
         .name("mw-frontend".into())
         .spawn(move || {
             let t = Instant::now();
@@ -427,7 +427,7 @@ fn track_ready(
 
 /// A seed for the random picks (the game seeds its PCG-style generator from the clock too).
 pub(crate) fn clock_seed() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64)
+    crate::platform::time_seed()
 }
 
 fn next_random(seed: &mut u64) -> usize {

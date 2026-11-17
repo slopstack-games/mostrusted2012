@@ -27,6 +27,7 @@
 //!
 //! `MW_AUDIO_METER=1` prints the live voices and the counts once a second; `MW_CAR_SFX_LOG=1` logs every start.
 
+use crate::platform::PollLock;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -138,7 +139,7 @@ fn load(game: Res<crate::Game>, mut sfx: ResMut<CarSfx>) {
         return;
     }
     if let Some(job) = sfx.job.clone() {
-        if let Some((data, chance)) = job.lock().unwrap().take() {
+        if let Some((data, chance)) = job.poll_lock().and_then(|mut s| s.take()) {
             info!(
                 "other cars' sounds: {} horns, {} impact slots, world impact {}, traffic skid {}, alarm {} (share {}); rules {:?}",
                 data.horns.len(),
@@ -158,7 +159,7 @@ fn load(game: Res<crate::Game>, mut sfx: ResMut<CarSfx>) {
     let store = game.store.clone();
     let job: Job = Arc::new(Mutex::new(None));
     let out = job.clone();
-    std::thread::spawn(move || {
+    crate::platform::thread::spawn(move || {
         let traffic = store.traffic_data().ok();
         let components: Vec<u32> = traffic.iter().flat_map(|t| t.vehicles.iter().map(|v| v.component)).collect();
         let chance = traffic.map_or(0.4, |t| t.params.horn_chance);

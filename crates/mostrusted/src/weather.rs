@@ -109,7 +109,7 @@ pub struct Baked {
 
 /// Build everything the renderer takes from the environment (blocking: ~0.1–0.3 s for the cubes).
 pub fn bake(store: &AssetStore, key: EnvironmentKey) -> Option<Baked> {
-    let started = std::time::Instant::now();
+    let started = crate::platform::Instant::now();
     let baked = bake_inner(store, key);
     info!("environment bake {:x} at {:.2} h took {:.0?}", key.timeline.0 & 0xFF_FFFF, key.hour, started.elapsed());
     baked
@@ -474,7 +474,7 @@ fn request_bake(state: Option<ResMut<EnvironmentState>>) {
     if state.sync {
         let _ = tx.send(bake(&store, key));
     } else {
-        std::thread::spawn(move || {
+        crate::platform::thread::spawn(move || {
             let _ = tx.send(bake(&store, key));
         });
     }

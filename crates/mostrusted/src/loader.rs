@@ -5,6 +5,7 @@
 //! the main thread over a channel. Track units are streamed nearest-first
 //! from the focus point, much like the original game streams its world.
 
+use crate::platform::PollLock;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
@@ -236,15 +237,25 @@ pub struct Unloaded {
 /// The streaming focus the main thread hands the loader: the camera's position and view direction (the game's
 /// `FUN_00558740` passes the camera manager's +0x140 / +0x130 to `FUN_005586e0`; `streaming.rs`).
 /// Also carries owners whose models the main thread no longer needs ([`StreamFocus::release`]).
-#[derive(Resource, Clone, Default)]
+#[derive(Resource, Clone)]
 pub struct StreamFocus {
     focus: Arc<std::sync::Mutex<Option<(Vec3, Vec3)>>>,
-    releases: Arc<std::sync::Mutex<Vec<u32>>>,
+    releases: std::sync::mpsc::Sender<u32>,
+    /// Read by the loader thread only.
+    released: Arc<std::sync::Mutex<std::sync::mpsc::Receiver<u32>>>,
+}
+
+impl Default for StreamFocus {
+    fn default() -> Self {
+        let (releases, released) = std::sync::mpsc::channel();
+        Self { focus: Default::default(), releases, released: Arc::new(std::sync::Mutex::new(released)) }
+    }
 }
 
 impl StreamFocus {
     pub fn set(&self, at: Vec3, direction: Vec3) {
-        if let Ok(mut f) = self.focus.lock() {
+        // Polled: the main thread must not block (a browser traps there); a busy lock skips one frame's focus.
+        if let Some(mut f) = self.focus.poll_lock() {
             *f = Some((at, direction));
         }
     }
@@ -255,13 +266,11 @@ impl StreamFocus {
 
     /// Forget what `owner` uses (a parked car's models: [`PARKED_OWNER`] | its serial), as for an unloaded unit.
     pub fn release(&self, owner: u32) {
-        if let Ok(mut r) = self.releases.lock() {
-            r.push(owner);
-        }
+        let _ = self.releases.send(owner);
     }
 
     fn take_releases(&self) -> Vec<u32> {
-        self.releases.lock().map(|mut r| std::mem::take(&mut *r)).unwrap_or_default()
+        self.released.lock().map(|r| r.try_iter().collect()).unwrap_or_default()
     }
 }
 
@@ -327,7 +336,7 @@ pub fn spawn(
     let (req_tx, req_rx) = channel();
     let focus = StreamFocus::default();
     let worker_focus = focus.clone();
-    std::thread::Builder::new()
+    crate::platform::thread::Builder::new()
         .name("mw-loader".into())
         .spawn(move || {
             let mut w = Worker {
@@ -1188,7 +1197,7 @@ impl Worker {
         if let Some(state) = &mut self.stream {
             state.resident.insert(unit);
         }
-        let t = std::time::Instant::now();
+        let t = crate::platform::Instant::now();
         self.load_unit(unit)?;
         self.send(Msg::Progress(format!(
             "streamed TRK_UNIT{unit} in {:.0} ms (focus zone {focus_unit})",

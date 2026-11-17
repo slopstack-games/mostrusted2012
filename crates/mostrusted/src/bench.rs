@@ -7,8 +7,8 @@
 //! queries on Vulkan) are printed as `BENCH PASS` lines too; that plugin adds queries to every pass,
 //! so it is off for the headline numbers.
 
+use crate::platform::Instant;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
 
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;

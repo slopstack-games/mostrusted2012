@@ -17,6 +17,7 @@
 //! 9.253 Hz, D = 0.067 / 0.042 / 0.009 by impact decaying over 0.375 s) and the pitch factor B+0x28 (input open).
 //! `MW_AUDIO_METER=1` prints the siren voices once a second; `MW_SIREN_LOG=1` logs starts and the dying siren.
 
+use crate::platform::PollLock;
 use std::num::NonZero;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -159,14 +160,14 @@ fn load(game: Option<Res<crate::Game>>, mut sirens: ResMut<Sirens>) {
             let job: Job = Arc::new(Mutex::new(None));
             let out = job.clone();
             let store = game.store.clone();
-            std::thread::spawn(move || {
+            crate::platform::thread::spawn(move || {
                 let s = store.cop_sounds();
                 *out.lock().unwrap() = Some(s);
             });
             sirens.job = Some(job);
         }
         Some(job) => {
-            let Some(done) = job.lock().unwrap().take() else { return };
+            let Some(done) = job.poll_lock().and_then(|mut s| s.take()) else { return };
             match done {
                 Some(s) => {
                     info!(

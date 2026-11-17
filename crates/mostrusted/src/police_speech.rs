@@ -25,6 +25,7 @@
 //! cutscene behaviour, the speech volume setting (lines play on the effects volume). `MW_SPEECH_LOG=1` logs
 //! requests and lines.
 
+use crate::platform::PollLock;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
@@ -254,7 +255,7 @@ fn load(game: Option<Res<crate::Game>>, mut speech: ResMut<Speech>) {
             let job: Job = Arc::new(Mutex::new(None));
             let out = job.clone();
             let store = game.store.clone();
-            std::thread::spawn(move || {
+            crate::platform::thread::spawn(move || {
                 let d = store.speech_data().map_err(anyhow::Error::from);
                 *out.lock().unwrap() = Some(d);
             });
@@ -262,7 +263,7 @@ fn load(game: Option<Res<crate::Game>>, mut speech: ResMut<Speech>) {
             speech.rng = 0x853c_49e6_748f_ea9b;
         }
         Some(job) => {
-            let Some(done) = job.lock().unwrap().take() else { return };
+            let Some(done) = job.poll_lock().and_then(|mut s| s.take()) else { return };
             match done {
                 Ok(d) => {
                     info!("speech: {} events, {} waves", d.events.len(), d.waves.len());
@@ -413,7 +414,7 @@ fn play(
                 let job: LineJob = Arc::new(Mutex::new(None));
                 let out = job.clone();
                 let d = data.clone();
-                std::thread::spawn(move || {
+                crate::platform::thread::spawn(move || {
                     let pcm = d.line_pcm(line.wave).map(|mut pcm| {
                         for s in &mut pcm.samples {
                             *s = (*s as f32 * line.gain) as i16;
@@ -445,7 +446,7 @@ fn play(
     // Lines that have decoded start now.
     let vol = settings.as_ref().map_or(0.6, |s| s.gain(crate::settings::Channel::Sfx));
     p.jobs.retain(|job| {
-        let Some(done) = job.lock().unwrap().take() else { return true };
+        let Some(done) = job.poll_lock().and_then(|mut s| s.take()) else { return true };
         if let Some(pcm) = done {
             let secs = pcm.samples.len() as f32 / pcm.sample_rate.max(1) as f32 / pcm.channels.max(1) as f32;
             p.end = p.end.max(p.t + secs);

@@ -19,3 +19,8 @@ avian3d = "0.7"
 # The Steam Controller is read from its HID interface (steam_controller.rs); pure-Rust backends, no C build.
 hidapi = { version = "2.6", default-features = false, features = ["linux-native", "windows-native"] }
 mw-audio.workspace = true
+
+# The browser build (crate::platform): threads as Web Workers over shared memory, the clock for seeds.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm_thread = "0.3.3"
+js-sys = "0.3.106"

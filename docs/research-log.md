@@ -10,6 +10,44 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-11-17: browser port, step 3: threads as Web Workers, a main thread that never blocks
+Decision: the browser build uses **shared-memory threads** (wasm32 with `atomics`, nightly `-Z build-std`, COOP /
+COEP headers). Without threads every loader would have to run in a separate worker instance and send its results
+as messages (the browser has no synchronous file reads on the page's main thread), a rewrite of every load path.
+Bevy 0.19 supports atomics builds (bevy_render wraps its wgpu handles with `send_wrapper` there); its own task
+pools stay single-threaded on the web, our loader threads don't.
+
+- `mostrusted/src/platform.rs`: `thread::{spawn, Builder}` = `std::thread` natively, `wasm_thread` (0.3.3, same
+  API, each thread a Web Worker on the shared memory) in a browser; all 26 `spawn` and 16 `Builder` sites use it
+  (`steam_controller.rs` and `movie.rs` stay `std`: native-only, hidapi / ffmpeg). `PollLock::poll_lock` (a
+  `try_lock`; busy = "not yet") for every main-thread read of a worker's result slot (24 `take()`s, the
+  `is_some` / `clone` / `retain` polls in sequence_fx, world_coronas, music, world_sfx): a contended lock **traps**
+  on a browser's main thread (`memory.atomic.wait32` is not allowed there). `StreamFocus`: the focus is polled
+  (a busy lock skips one frame), releases go through an mpsc channel (a skipped release would be lost).
+  `Instant` = `bevy::platform::time::Instant` (`std::time::Instant::now` panics in a browser; same type
+  natively), seeds from `platform::time_seed` (`Date.now()` there). The bake pool falls back to the global
+  rayon pool when threads can't be made; rayon-core 1.13's global pool falls back to the calling thread itself.
+- `WebSource` changed from `FileReaderSync` (worker-only, `File` handles tied to one thread, `unsafe impl Send`)
+  to **blob URLs + synchronous range `XMLHttpRequest`s**: the source is plain strings, `Send + Sync` without
+  unsafe, readable from any worker; on the page's main thread binary sync requests are not allowed, so it reads
+  `x-user-defined` text and takes the low byte of each char (works, slower).
+- Builds: `tools/wasm-check --threads` (nightly, rust-src; the linker flags `--shared-memory --import-memory
+  --max-memory=4294967296` and the `__wasm_init_tls` / `__tls_*` exports are required: without them the memory is
+  not shared and posting it to a worker fails with `DataCloneError: #<Memory> could not be cloned`).
+
+Verified natively: clippy 0, 201 tests, 911 accel unchanged (0-60 mph 3.58 s, quarter mile 11.60 s),
+`--race 462174 --test race` 27/27 gates. In headless Brave (scratch wasm-bindgen module, `--target web`,
+COOP / COEP served, `crossOriginIsolated` true): `WebSource` made on the page from 7 install files, `GameDir`
+validated on the main thread (VERSION.TXT and a 1 MiB range of VEH_122769_HI through the text path, 23 ms); a
+`wasm_thread` loader worker read the same range (identical FNV hash), built the `AssetStore` (4406 resources,
+9 ms), then four workers loaded and parsed GLOBALEFFECTS / VEH_122769_HI / GLOBALTEXTUREDICTIONARY / SHADERS
+at the same time through the shared store with the native counts and 0 errors (16-58 ms each); the page polled
+the results with `try_lock` only.
+
+Open for step 4: `mostrusted` itself on wasm32 (hidapi and ffmpeg compiled out, settings / profile / saves into
+browser storage, the debug trace files off, the page / worker bootstrap); main-thread locks in the engine-free
+crates (`AssetStore`'s bundle cache) are still blocking if the main thread loads: loads belong on workers.
+
 ### 2026-11-17: browser port, step 2: game files read through `mw_gamedir::Source`
 Every game-data read in the engine-free crates now goes through `GameDir` (`read`, `read_at`, `len`, `resolve`)
 over a `Source` trait (`mw-gamedir/src/source.rs`): `DirSource` (disk, native), `WebSource` (wasm32: the folder

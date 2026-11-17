@@ -208,35 +208,25 @@ pub fn install_relative_paths(picked: &[String]) -> Vec<Option<String>> {
         .collect()
 }
 
-/// The folder the player picked in a browser (`<input type="file" webkitdirectory>`): `File` handles, read on
-/// demand with `FileReaderSync`. That API exists only in Web Workers, so the loads must run in one (the main
-/// thread gets an error from every read).
+/// The folder the player picked in a browser (`<input type="file" webkitdirectory>`). Each `File` becomes a blob
+/// URL (a plain string, so the source is `Send + Sync` and any thread can read it); a read is a synchronous
+/// `XMLHttpRequest` for that byte range. In a Web Worker the bytes come back as an `ArrayBuffer`; on the page's
+/// main thread (where synchronous requests can't return binary) as `x-user-defined` text, decoded byte by byte:
+/// it works, but loads belong on a worker thread.
 #[cfg(target_arch = "wasm32")]
+#[derive(Debug)]
 pub struct WebSource {
     index: Index,
-    files: HashMap<String, web_sys::File>,
+    /// Canonical path → (blob URL, size in bytes).
+    files: HashMap<String, (String, u64)>,
     label: String,
-}
-
-// SAFETY: without the `atomics` target feature a wasm module has one thread, so the `File` handles (JS objects,
-// tied to the thread that created them) are never touched from another one. A threaded build (the browser port's
-// step 3) must not compile this impl: it would need the handles moved to the loading worker instead.
-#[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
-unsafe impl Send for WebSource {}
-#[cfg(all(target_arch = "wasm32", not(target_feature = "atomics")))]
-unsafe impl Sync for WebSource {}
-
-#[cfg(target_arch = "wasm32")]
-impl std::fmt::Debug for WebSource {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WebSource").field("label", &self.label).field("files", &self.files.len()).finish()
-    }
 }
 
 #[cfg(target_arch = "wasm32")]
 impl WebSource {
-    /// From a directory picker's `FileList` (each `File` carries its `webkitRelativePath`).
-    pub fn from_file_list(list: &web_sys::FileList) -> Self {
+    /// From a directory picker's `FileList` (each `File` carries its `webkitRelativePath`). Must run on the
+    /// thread that owns the list (the page); the source can then move anywhere.
+    pub fn from_file_list(list: &web_sys::FileList) -> io::Result<Self> {
         let files: Vec<web_sys::File> = (0..list.length()).filter_map(|i| list.get(i)).collect();
         let paths = files
             .iter()
@@ -252,20 +242,21 @@ impl WebSource {
     }
 
     /// From `(path as picked, File)` pairs; paths are made install-relative with [`install_relative_paths`].
-    pub fn from_files(files: impl IntoIterator<Item = (String, web_sys::File)>) -> Self {
+    pub fn from_files(files: impl IntoIterator<Item = (String, web_sys::File)>) -> io::Result<Self> {
         let (paths, handles): (Vec<String>, Vec<web_sys::File>) = files.into_iter().unzip();
         let label = paths.first().and_then(|p| p.split(['/', '\\']).next()).unwrap_or("<picked folder>").to_string();
         let mut out = Self { index: Index::default(), files: HashMap::new(), label };
         for (rel, file) in install_relative_paths(&paths).into_iter().zip(handles) {
             if let Some(rel) = rel {
+                let url = web_sys::Url::create_object_url_with_blob(&file).map_err(js_err)?;
                 out.index.insert(rel.clone());
-                out.files.insert(rel, file);
+                out.files.insert(rel, (url, file.size() as u64));
             }
         }
-        out
+        Ok(out)
     }
 
-    fn get(&self, canonical: &str) -> io::Result<&web_sys::File> {
+    fn get(&self, canonical: &str) -> io::Result<&(String, u64)> {
         self.files.get(canonical).ok_or_else(|| io::ErrorKind::NotFound.into())
     }
 }
@@ -273,6 +264,38 @@ impl WebSource {
 #[cfg(target_arch = "wasm32")]
 fn js_err(e: wasm_bindgen::JsValue) -> io::Error {
     io::Error::other(format!("{e:?}"))
+}
+
+/// `len` bytes from `offset` of a blob URL, by a synchronous range request.
+#[cfg(target_arch = "wasm32")]
+fn blob_range(url: &str, offset: u64, len: usize, size: u64) -> io::Result<Vec<u8>> {
+    use wasm_bindgen::JsCast;
+    let xhr = web_sys::XmlHttpRequest::new().map_err(js_err)?;
+    xhr.open_with_async("GET", url, false).map_err(js_err)?;
+    let whole = offset == 0 && len as u64 == size;
+    if !whole {
+        xhr.set_request_header("Range", &format!("bytes={}-{}", offset, offset + len as u64 - 1)).map_err(js_err)?;
+    }
+    let on_page = js_sys::global().dyn_ref::<web_sys::Window>().is_some();
+    if on_page {
+        xhr.override_mime_type("text/plain; charset=x-user-defined").map_err(js_err)?;
+    } else {
+        xhr.set_response_type(web_sys::XmlHttpRequestResponseType::Arraybuffer);
+    }
+    xhr.send().map_err(js_err)?;
+    let status = xhr.status().map_err(js_err)?;
+    let bytes = if on_page {
+        let text = xhr.response_text().map_err(js_err)?.unwrap_or_default();
+        text.chars().map(|c| c as u32 as u8).collect::<Vec<u8>>()
+    } else {
+        js_sys::Uint8Array::new(&xhr.response().map_err(js_err)?).to_vec()
+    };
+    match status {
+        206 if bytes.len() == len => Ok(bytes),
+        // A browser that ignores the range sends the whole file.
+        200 if bytes.len() as u64 == size => Ok(bytes[offset as usize..offset as usize + len].to_vec()),
+        _ => Err(io::Error::other(format!("blob read {offset}+{len}: status {status}, {} bytes", bytes.len()))),
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -284,17 +307,17 @@ impl Source for WebSource {
         self.files.keys().cloned().collect()
     }
     fn len(&self, canonical: &str) -> io::Result<u64> {
-        Ok(self.get(canonical)?.size() as u64)
+        Ok(self.get(canonical)?.1)
     }
     fn read_at(&self, canonical: &str, offset: u64, len: usize) -> io::Result<Vec<u8>> {
-        let file = self.get(canonical)?;
-        let end = offset + len as u64;
-        if end as f64 > file.size() {
+        let (url, size) = self.get(canonical)?;
+        if offset.checked_add(len as u64).is_none_or(|end| end > *size) {
             return Err(io::ErrorKind::UnexpectedEof.into());
         }
-        let blob = file.slice_with_f64_and_f64(offset as f64, end as f64).map_err(js_err)?;
-        let buf = web_sys::FileReaderSync::new().map_err(js_err)?.read_as_array_buffer(&blob).map_err(js_err)?;
-        Ok(js_sys::Uint8Array::new(&buf).to_vec())
+        if len == 0 {
+            return Ok(Vec::new());
+        }
+        blob_range(url, offset, len, *size)
     }
     fn label(&self) -> String {
         self.label.clone()

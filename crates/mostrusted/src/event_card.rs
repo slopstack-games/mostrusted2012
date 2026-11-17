@@ -21,6 +21,7 @@
 //! the transition; when exactly was not traced); the rewards, the Most Wanted list and the speedwall show
 //! nothing (no progression or Autolog data), no transition sounds.
 
+use crate::platform::PollLock;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
@@ -188,10 +189,10 @@ fn begin(
     info!("event card: {} ({})", setup.name, setup.event.id);
     let job = Arc::new(Mutex::new(None));
     let (out, store, s) = (job.clone(), game.store.clone(), setup.clone());
-    std::thread::Builder::new()
+    crate::platform::thread::Builder::new()
         .name("mw-event-card".into())
         .spawn(move || {
-            let t = std::time::Instant::now();
+            let t = crate::platform::Instant::now();
             let Ok(lang) = store.language(mw_assets::DEFAULT_LANGUAGE) else { return };
             let outer = match store.ui_sequence(TRANSITION_SEQUENCE) {
                 Ok(o) => o,
@@ -277,7 +278,7 @@ fn receive(
     mut images: ResMut<Assets<Image>>,
     mut fonts: ResMut<GameFonts>,
 ) {
-    let Some(loaded) = card.job.as_ref().and_then(|j| j.lock().unwrap().take()) else { return };
+    let Some(loaded) = card.job.as_ref().and_then(|j| j.poll_lock().and_then(|mut s| s.take())) else { return };
     card.job = None;
     let textures: HashMap<ResourceId, (Handle<Image>, Vec2)> = loaded
         .images

@@ -6,6 +6,7 @@
 //! camera. The old car is despawned with everything attached to it (body, wheels, colliders, engine
 //! sound); its meshes and materials stay in the model cache, so swapping back reuses them.
 
+use crate::platform::PollLock;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
@@ -160,7 +161,7 @@ impl Garage {
         if !self.paints.contains_key(bundle) && self.paint_job.is_none() {
             let job: Job<Vec<[f32; 3]>> = Arc::new(Mutex::new(None));
             let (out, store, path) = (job.clone(), store.clone(), bundle.to_string());
-            std::thread::Builder::new()
+            crate::platform::thread::Builder::new()
                 .name("mw-paints".into())
                 .spawn(move || {
                     let paints = store
@@ -190,7 +191,7 @@ fn start_catalogue(mut garage: ResMut<Garage>, game: Res<Game>) {
     garage.startup_car = matches!(game.request, Request::Drive { .. });
     let job: Job<Vec<CatalogueEntry>> = Arc::new(Mutex::new(None));
     let (out, store) = (job.clone(), game.store.clone());
-    std::thread::Builder::new()
+    crate::platform::thread::Builder::new()
         .name("mw-catalogue".into())
         .spawn(move || {
             let list = store
@@ -270,14 +271,16 @@ fn poll_jobs(mut garage: ResMut<Garage>, time: Res<Time>) {
     if garage.status_time.is_nan() {
         garage.status_time = time.elapsed_secs();
     }
-    let list = garage.catalogue_job.as_ref().and_then(|job| job.lock().unwrap().take());
+    let list = garage.catalogue_job.as_ref().and_then(|job| job.poll_lock().and_then(|mut s| s.take()));
     if let Some(list) = list {
         info!("car catalogue: {} drivable cars", list.len());
         garage.catalogue = list;
         garage.catalogue_job = None;
     }
-    let paints =
-        garage.paint_job.as_ref().and_then(|(bundle, job)| Some((bundle.clone(), job.lock().unwrap().take()?)));
+    let paints = garage
+        .paint_job
+        .as_ref()
+        .and_then(|(bundle, job)| Some((bundle.clone(), job.poll_lock().and_then(|mut s| s.take())?)));
     if let Some((bundle, paints)) = paints {
         garage.paints.insert(bundle, paints);
         garage.paint_job = None;

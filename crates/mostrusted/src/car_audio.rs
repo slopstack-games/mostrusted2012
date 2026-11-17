@@ -15,6 +15,7 @@
 //! `MW_AUDIO_METER=1` prints the voices once a second (distance, gain, doppler, RPM, the level the audio thread
 //! rendered) and the audio thread's time per voice. The player's engine (`audio.rs`) is unchanged.
 
+use crate::platform::PollLock;
 use std::num::NonZero;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -67,11 +68,11 @@ static GAME_NANOS: AtomicU64 = AtomicU64::new(0);
 static GAME_FRAMES: AtomicU64 = AtomicU64::new(0);
 
 /// Adds the time until it is dropped to [`GAME_NANOS`].
-struct Timed(std::time::Instant);
+struct Timed(crate::platform::Instant);
 
 impl Timed {
     fn start() -> Self {
-        Self(std::time::Instant::now())
+        Self(crate::platform::Instant::now())
     }
 }
 
@@ -155,7 +156,7 @@ impl Iterator for SpatialSource {
         if self.one_shot.as_ref().is_some_and(|p| p.finished()) {
             return None;
         }
-        let t0 = self.timing.then(std::time::Instant::now);
+        let t0 = self.timing.then(crate::platform::Instant::now);
         let player = &mut self.player;
         let (l, r) = self.render.frame(&mut || player.next_sample());
         if let Some(t0) = t0 {
@@ -411,7 +412,7 @@ fn attach_ai_tyres(
                 let job = Arc::new(Mutex::new(None));
                 let out = job.clone();
                 let store = game.store.clone();
-                std::thread::spawn(move || {
+                crate::platform::thread::spawn(move || {
                     let (bank, spatial) = store.competitor_tyre_bank().unwrap_or_else(|e| {
                         warn!("competitor tyre sounds: {e}");
                         Default::default()
@@ -421,7 +422,7 @@ fn attach_ai_tyres(
                 tyres.job = Some(job);
             }
             Some(job) => {
-                if let Some(b) = job.lock().unwrap().take() {
+                if let Some(b) = job.poll_lock().and_then(|mut s| s.take()) {
                     info!("competitor tyre sounds: {} sequences, 3D {:?}", b.0.sequences.len(), b.1.falloff);
                     tyres.bank = Some(Arc::new(b));
                 }
@@ -570,7 +571,7 @@ fn load_traffic_banks(
         return;
     }
     if let Some(job) = voices.job.clone() {
-        if let Some(banks) = job.lock().unwrap().take() {
+        if let Some(banks) = job.poll_lock().and_then(|mut s| s.take()) {
             let n = banks.iter().flatten().count();
             info!("traffic sounds: {n} of {} vehicle types have an engine", banks.len());
             voices.banks = Some(banks);
@@ -583,7 +584,7 @@ fn load_traffic_banks(
     let store = game.store.clone();
     let job: BankJob = Arc::new(Mutex::new(None));
     let out = job.clone();
-    std::thread::spawn(move || {
+    crate::platform::thread::spawn(move || {
         let banks = components
             .iter()
             .map(|&c| match store.traffic_engine(c) {
