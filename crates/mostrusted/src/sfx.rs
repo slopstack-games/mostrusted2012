@@ -5,6 +5,8 @@
 
 use crate::platform::PollLock;
 use std::num::NonZero;
+use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::{AtomicU32, AtomicU64};
 use std::sync::{Arc, Mutex};
 
 use bevy::audio::{AddAudioSource, Decodable, Sample, Source, Volume};
@@ -29,14 +31,90 @@ impl Plugin for SfxPlugin {
 pub struct SfxAudio {
     bank: Bank,
     params: Arc<Params>,
+    stats: Arc<SfxStats>,
 }
 
-pub struct SfxSource(Box<Player>);
+/// What the audio thread measures of the bank for `MW_AUDIO_METER` (flushed every 1024 samples).
+#[derive(Default)]
+struct SfxStats {
+    /// Sums of squares before and after the soft limiter (f64 bits), the samples, the largest sample before the
+    /// limiter (f32 bits), the sounding voices at the last flush, the render time (ns).
+    linear: AtomicU64,
+    out: AtomicU64,
+    samples: AtomicU64,
+    peak: AtomicU32,
+    voices: AtomicU32,
+    nanos: AtomicU64,
+}
+
+pub struct SfxSource {
+    player: Box<Player>,
+    stats: Option<Arc<SfxStats>>,
+    /// Linear energy, output energy, samples, peak and render time since the last flush.
+    block: (f64, f64, u64, f32, u64),
+    /// `MW_AUDIO_STALL` is set: [`STALL_MS`] is read.
+    stall: bool,
+}
+
+/// `MW_AUDIO_STALL=<s>|teleport,<ms>[,<n>,<every s>]`: at `s` seconds of game time (or at the first frame whose
+/// speed jumps by more than 30 mph: a teleport) the audio thread is held `ms` ms, `n` times `every` seconds apart: an
+/// underrun of the output, as the user's load bursts gave (a test switch).
+static STALL_MS: AtomicU64 = AtomicU64::new(0);
+
+fn stall_test(now: f32, jump: bool, done: &mut u32, start: &mut Option<f32>) {
+    static PLAN: std::sync::OnceLock<Option<(Option<f32>, u64, u32, f32)>> = std::sync::OnceLock::new();
+    let Some((at, ms, n, every)) = *PLAN.get_or_init(|| {
+        let v = std::env::var("MW_AUDIO_STALL").ok()?;
+        let mut it = v.split(',');
+        let at = it.next()?;
+        let f: Vec<f32> = it.filter_map(|x| x.parse().ok()).collect();
+        let at = if at == "teleport" { None } else { Some(at.parse().ok()?) };
+        Some((at, *f.first()? as u64, f.get(1).map_or(1, |&n| n as u32), f.get(2).copied().unwrap_or(0.3)))
+    }) else {
+        return;
+    };
+    if start.is_none() && (at.is_some_and(|t| now >= t) || (at.is_none() && jump)) {
+        *start = Some(now);
+    }
+    let Some(t0) = *start else { return };
+    if *done < n && now >= t0 + *done as f32 * every {
+        *done += 1;
+        info!("MW_AUDIO_STALL: holding the audio thread {ms} ms at {now:.2} s");
+        STALL_MS.store(ms, Relaxed);
+    }
+}
 
 impl Iterator for SfxSource {
     type Item = Sample;
     fn next(&mut self) -> Option<Sample> {
-        Some(self.0.next_sample())
+        if self.stall {
+            // `MW_AUDIO_STALL`: the game thread asked to hold the audio thread (an underrun, as a load burst gives).
+            let ms = STALL_MS.swap(0, Relaxed);
+            if ms > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+            }
+        }
+        let Some(stats) = &self.stats else { return Some(self.player.next_sample()) };
+        let t0 = crate::platform::Instant::now();
+        let x = self.player.next_sample_linear();
+        let y = x.tanh();
+        let b = &mut self.block;
+        b.4 += t0.elapsed().as_nanos() as u64;
+        b.0 += (x * x) as f64;
+        b.1 += (y * y) as f64;
+        b.2 += 1;
+        b.3 = b.3.max(x.abs());
+        if b.2 == 1024 {
+            let add = |a: &AtomicU64, v: f64| a.store((f64::from_bits(a.load(Relaxed)) + v).to_bits(), Relaxed);
+            add(&stats.linear, b.0);
+            add(&stats.out, b.1);
+            stats.samples.fetch_add(b.2, Relaxed);
+            stats.nanos.fetch_add(b.4, Relaxed);
+            stats.peak.fetch_max(b.3.to_bits(), Relaxed);
+            stats.voices.store(self.player.voice_count() as u32, Relaxed);
+            *b = (0.0, 0.0, 0, 0.0, 0);
+        }
+        Some(y)
     }
 }
 
@@ -60,7 +138,9 @@ impl Decodable for SfxAudio {
     fn decoder(&self) -> SfxSource {
         let mut p = Player::new(self.bank.clone(), self.params.clone());
         p.dry = std::env::var_os("MW_AUDIO_DRY").is_some();
-        SfxSource(Box::new(p))
+        let stats = std::env::var_os("MW_AUDIO_METER").is_some().then(|| self.stats.clone());
+        let stall = std::env::var_os("MW_AUDIO_STALL").is_some();
+        SfxSource { player: Box::new(p), stats, block: (0.0, 0.0, 0, 0.0, 0), stall }
     }
 }
 
@@ -135,6 +215,13 @@ struct SfxState {
     bus_mix: bool,
     /// The level last set (logged when it changes).
     last_level: f32,
+    /// The live source's measurements (`MW_AUDIO_METER`) and when they were last printed.
+    stats: Option<Arc<SfxStats>>,
+    next_meter: f32,
+    /// `MW_AUDIO_STALL`: holds done, when they started, the last frame's speed (mph).
+    stalls: u32,
+    stall_start: Option<f32>,
+    last_mph: f32,
 }
 
 /// The bank's level against the player's engine. Its channels play at the data's level times their bus chain over
@@ -199,7 +286,9 @@ fn load_bank(
     }
     state.driver = Some(driver);
     crate::audio_tap::add_sfx(Player::new(bank.clone(), params.clone()));
-    let handle = assets.add(SfxAudio { bank, params });
+    let stats = Arc::new(SfxStats::default());
+    state.stats = Some(stats.clone());
+    let handle = assets.add(SfxAudio { bank, params, stats });
     // ONCE: a live source never ends; LOOP would buffer it 0.74 s at a time (see audio.rs).
     // Starts silent; `settings::apply_volumes` sets the effects volume once the sink exists.
     commands.spawn((
@@ -246,6 +335,38 @@ fn update_params(
     state.surfaces.update(dt, &sets);
     driver.update(dt, &i);
     trace(now, driver.last(), landing, &sets);
+    let mph = car.map_or(0.0, |(_, c, _)| c.speed.abs() / 0.447_04);
+    stall_test(now, (mph - state.last_mph).abs() > 30.0, &mut state.stalls, &mut state.stall_start);
+    state.last_mph = mph;
+    if let Some(stats) = &state.stats
+        && std::env::var_os("MW_AUDIO_METER").is_some()
+        && now >= state.next_meter
+    {
+        state.next_meter = now + 1.0;
+        meter(stats, driver.last());
+    }
+}
+
+/// `MW_AUDIO_METER`: the live vehicle bank once a second: its level before the soft limiter (RMS and peak), after
+/// it, the sounding voices and the audio thread's render time per second of audio.
+fn meter(stats: &SfxStats, skid: [f32; 4]) {
+    let take = |a: &AtomicU64| f64::from_bits(a.swap(0f64.to_bits(), Relaxed));
+    let (linear, out) = (take(&stats.linear), take(&stats.out));
+    let n = stats.samples.swap(0, Relaxed).max(1) as f64;
+    let peak = f32::from_bits(stats.peak.swap(0, Relaxed));
+    let cpu = stats.nanos.swap(0, Relaxed) as f64 / 1e9 / (n / OUTPUT_RATE as f64) * 100.0;
+    let db = |ms: f64| 10.0 * (ms + 1e-12).log10();
+    info!(
+        "vehicle sounds: linear {:6.1} dBFS (peak {:5.2}), out {:6.1} dBFS, {} voices, cpu {cpu:.2} %, {:.0} mph, skid {:.2}/{:.2}/{:.2}",
+        db(linear / n),
+        peak,
+        db(out / n),
+        stats.voices.load(Relaxed),
+        skid[0],
+        skid[1],
+        skid[2],
+        skid[3]
+    );
 }
 
 /// `MW_SFX_TRACE=<file>`: one line per frame, `seconds mph lateral spin braking landing s0 s1 s2 s3` (skid
