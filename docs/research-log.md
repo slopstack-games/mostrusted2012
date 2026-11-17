@@ -13,6 +13,49 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ## Dated findings
 
+### 2026-11-17: front-end screens from the HSM: page contexts, widget groups, the boot page (`natives/pages.rs`, `logic.rs`)
+
+**Page contexts and widget groups** (`mw_logic::natives::pages`, inside `LogicHost`; `LogicHost::apply` carries out
+the logic's part of a request for every host).
+- `PushPageContext` pushes {name, page} and asks the host for the page's screen (`Pages::wanted` →
+  `pages::load_screen` → `Pages::provide`; feature `assets`). `PageReady` is true once the screen is loaded.
+- `ActivateWidgetGroup` builds each widget of the group as decomp.md "Widget definitions (JSON) and widget scripts"
+  specifies: one Lua state per widget with the natives bound, the chunk run, `Construct(this)`,
+  `SetConfigurationItem` per scalar `Script` entry, then `OnActivated`.
+- `PreInputUpdate(dt)` runs every frame. `DeactivateWidgetGroup` / `LeavePageContext` call `OnDeactivating` +
+  `Destruct`.
+- The widgets' Lua states live in `LogicHost::pages`, outside the `RefCell` the natives borrow.
+
+Model decisions:
+- The `Widget` root is one published JSON object of the active widgets' typed fields. The original resolves it
+  through the script's view model, slot 8. Adapters are not published yet.
+- Every native is bound, not only `LuaHooks`.
+- `WidgetExit` (page +0x208) is read from WM+0x488.
+- Native screen scripts are not run.
+
+**The boot page, from the original's data** (`mostrusted --hsm`; `frontend.rs` "driven" mode):
+- "Run PageRunner2 Context - Boot Flow" pushes 491012 (12 widgets). "Activate Press Start Widget Group" activates
+  491032. Its `Background` widget's `PlaySequence` script creates the conductor "PressStart" and starts
+  `Widget.Background.Sequence`, which resolves to 1022357, and `frontend.rs` plays the title.
+- The key press only binds the primary user (`HSB_P1BIND`). The HSM then asks for the group's transition
+  (`PlayWidgetGroupTransition` 491032 → the boot transition 1836020).
+- `TransitionFinished` follows the front end's transition. `TransitionState` stays at its default 2, so the group
+  deactivates after 10 frames (the original's cap) while the transition holds over the load, and the script stops
+  its sequence.
+- The boot then leaves the page and, in free drive, pushes the HUD screen 371621 (98 widgets) and activates its
+  groups.
+- Headless timings: title started by the logic at 0.58 s, key at 10.85 s, transition at 10.87 s, playing at
+  15.65 s. Without `--hsm` the flow is unchanged (key 10.76 s, playing 15.56 s).
+- Test: `mw-logic/tests/pages.rs` (needs the install).
+
+Open:
+- `CreateConductor` / `StopSequence` / `DestroyConductor` are still logged only. The front end's sequence player
+  should become the conductor.
+- The other group transitions (data: each group's `ScreenTransition`) and `TransitionState`.
+- The HUD screen's widgets run their scripts, but nothing draws from them yet (`hud.rs` is still hand-written).
+- `Mode.*` roots: `Mode.ShowRecommendsIntro` and two others leave "Select HUD" / the EasyDrive prompt with an
+  unhandled exit.
+
 ### 2026-11-17: the original's HSM runs inside the runtime, shadow mode (`--hsm`, `mostrusted/src/logic.rs`)
 
 `mostrusted --hsm` runs "Top State" (20527) every frame on `LogicHost`, next to the hand-written flows. The

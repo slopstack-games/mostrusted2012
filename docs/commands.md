@@ -225,7 +225,8 @@ MW_SIREN_PRESS=12 MW_LIGHTBAR_SHOTS=<dir> ./target/release/mostrusted --drive "F
 # skip it. --new-game, --profile <file> (~/.config/mostrusted/profile.cfg), --front-end-shots <dir>, --show-loading
 ./target/release/mostrusted
 # The original's game-logic machine ("Top State") run beside the hand-written flows (logic.rs, PLAN M8 step 7):
-# logs `hsm:` lines (states, hooks, the Requests it makes; Requests not carried out yet = shadow mode)
+# logs `hsm:` lines (states, hooks, Requests). Carried out so far: page contexts / widget groups (their Lua scripts
+# run) and the boot page (the title starts on the Press Start group's script, the transition on its request)
 tools/t --front-end --hsm --front-end-shots scratch/fe --mute; grep 'hsm:' scratch/run.log
 ./target/release/mwtool bindings [--find x] [--parse] [--no-genesys] [--out f.tsv]  # every binding path, parsed (mw_logic::binding)
 ./target/release/mwtool hsm [<node id>] [--find text]     # game-logic state machines (HSMData); mwtool frontend

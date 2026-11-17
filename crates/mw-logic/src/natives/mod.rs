@@ -42,6 +42,7 @@ pub mod lua_settings;
 mod lua_tests;
 pub mod lua_widgets;
 pub mod mode_machine;
+pub mod pages;
 pub mod players;
 pub mod progression;
 pub mod state;

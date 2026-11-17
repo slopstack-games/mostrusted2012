@@ -109,6 +109,19 @@ impl AssetStore {
         Ok(Json::parse_text_file(res.header())?)
     }
 
+    /// A widget script's Lua chunk: the TextFile's bytes after its u32 length (what `thunk_FUN_009ef4c0` loads).
+    pub fn ui_lua_chunk(&self, id: ResourceId) -> Result<Vec<u8>> {
+        let res = self.load_typed(id, ResourceType::TextFile)?;
+        let h = res.header();
+        let n = h.get(..4).map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize);
+        h.get(4..4 + n).filter(|c| c.starts_with(b"\x1bLua")).map(<[u8]>::to_vec).ok_or(Error::Missing(id))
+    }
+
+    /// The bundle of screen `id` (`UI/SCREENS2/<id>.BNDL`).
+    pub fn ui_screen_bundle(id: u32) -> String {
+        format!("UI/SCREENS2/{id}.BNDL")
+    }
+
     /// The screen of a bundle with its widgets, their JSON definitions and scripts.
     pub fn ui_screen_graph(&self, bundle: &str) -> Result<ScreenGraph> {
         let b = self.bundle(bundle).ok_or(Error::Missing(ResourceId::NULL))?;

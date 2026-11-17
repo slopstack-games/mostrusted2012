@@ -11,7 +11,17 @@ mw-formats.workspace = true
 mw-lua.workspace = true
 thiserror.workspace = true
 serde_json = "1"
+# `pages::load_screen`: a screen read from the install (tools and the runtime).
+mw-assets = { workspace = true, optional = true }
+
+[features]
+assets = ["dep:mw-assets"]
 
 [dev-dependencies]
 mw-gamedir.workspace = true
 mw-assets.workspace = true
+
+# The page contexts and widget groups on the shipped boot screen (needs `pages::load_screen`).
+[[test]]
+name = "pages"
+required-features = ["assets"]

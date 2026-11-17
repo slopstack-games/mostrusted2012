@@ -89,9 +89,16 @@ Decisions with the user: portrait loading screens keep the original's bars.
   - **The runtime runs the HSM in shadow mode** (`mostrusted --hsm`, logic.rs: research-log "the original's HSM runs
     inside the runtime"). It follows the title, press and world load into free roam. Requests are logged, not
     carried out.
+  - **Front-end screens from the HSM** (same day, research-log "front-end screens from the HSM"):
+    - Page contexts and widget groups run in `natives/pages.rs`, and the widgets' Lua scripts run.
+    - Under `--hsm` the boot page's title and transition are started by the original's script / HSM.
   - **Next (integrator, default model)**: carry out the Requests one at a time and remove the hand-written flow each
-    one replaces. Start with the front-end screens (`PushPageContext` / `ActivateWidgetGroup`), then `LoadWorld`,
-    `LoadProfile` and the HUD machine. Fill the runtime-filled `LogicState` fields: ranks, awards, `garage`,
+    one replaces.
+    - The conductors (`CreateConductor` / `StartSequence` played by the front end's sequence player for any
+      sequence).
+    - Widget actions and input (`ExitGroupVia`).
+    - Drawing the HUD screen 371621 from its widgets instead of `hud.rs`.
+    - Then `LoadWorld`, `LoadProfile` and the game mode. Fill the runtime-filled `LogicState` fields: ranks, awards, `garage`,
     `current_event_kind`. Add `Mode` / `Event` binding roots in place of the stand-ins.
   - **Next batches (sonnet agents)**: the candidates are in the 2026-11-17 research-log entries, listed below.
     Rounds run cheapest as `sonnet` agents with a fixed batch (CLAUDE.md "Parallel agents"), one fresh session per

@@ -285,7 +285,7 @@ impl Host for Driver {
         if !repeat {
             println!("{:5}      request {text}", self.frame);
         }
-        mode_machine::apply(&mut self.logic.state.borrow_mut(), &r);
+        self.logic.apply(&r);
     }
     /// `--answer Query.<Name>=<value>` (true / false / a number / an exit point name), else the driver's own
     /// state (the primary user), else the query's default.
@@ -467,8 +467,21 @@ fn drive(
     let clock = Clock::both(dt);
     for f in 0..steps {
         host.frame = f;
+        // The screens the page contexts asked for, loaded at once (the runtime loads them on its loader thread).
+        for id in std::mem::take(&mut host.logic.pages.wanted) {
+            match mw_logic::natives::pages::load_screen(store, id) {
+                Ok(screen) => {
+                    println!("{f:5}      screen {id} loaded ({} widgets)", screen.widgets.len());
+                    host.logic.pages.provide(screen);
+                }
+                Err(e) => println!("{f:5}      !! screen {id}: {e}"),
+            }
+        }
         host.logic.frame(dt);
         hsm.update(&mut host, clock);
+        for e in std::mem::take(&mut host.logic.pages.errors) {
+            println!("{f:5}      !! script {e}");
+        }
         // The GMM's update after the HSM's (`FUN_006abc10`): starts the mode's machine.
         let state = host.logic.state.clone();
         {

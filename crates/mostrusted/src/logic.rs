@@ -2,10 +2,18 @@
 //! `GAMELOGIC/GAMEMODES.BNDL`) run by `mw_logic::hsm` on the logic host (`mw_logic::natives::LogicHost`: the ported
 //! hooks and the shared `LogicState`), once per frame, beside the hand-written flows.
 //!
-//! **Shadow mode** (`--hsm`, this first step): the machine runs and logs what it does (`hsm:` lines: states
-//! entered and left, hooks, the engine `Request`s it makes), but no `Request` is carried out yet; the hand-written
-//! flows (`frontend.rs`, `freeroam.rs`, `race.rs`) still drive the game. Each `Request` then moves from "logged" to
-//! "done by the runtime" one at a time, and the hand-written flow it replaces goes.
+//! **`--hsm`**: the machine runs and logs what it does (`hsm:` lines: states entered and left, hooks, the engine
+//! `Request`s it makes). Requests move from "logged" ("not carried out yet") to "done" one at a time, and the
+//! hand-written flow each one replaces goes. Done so far:
+//! - page contexts and widget groups (`mw_logic::natives::pages` inside the logic host; the screens they need are
+//!   loaded here on a thread): the widgets' Lua scripts run as in the original;
+//! - the boot page's front end: the title sequence plays when the "Press Start" group's `PlaySequence` script
+//!   starts it (`StartSequence` of `Widget.Background.Sequence` = [`fe::TITLE_SEQUENCE`]); the key press only binds
+//!   the user (`frontend.rs` in driven mode); the boot transition starts on the group's
+//!   `PlayWidgetGroupTransition` and answers `WidgetTransitionStarted` / `TransitionFinished`.
+//!
+//! Everything else (world, profile and feedback-group loads, the game mode, the HUD screen's requests) is still
+//! logged only: `freeroam.rs`, `race.rs` and the rest of `frontend.rs` drive the game.
 //!
 //! What the runtime answers from its own state: the title sequence's general trigger "BOOT"
 //! (`GeneralSequence.Triggers["BOOT"].IsTriggerSet[1]`, set by `frontend.rs` when the trigger item passes), the
@@ -17,21 +25,24 @@
 //! Stand-ins (model decisions, the same answers `mwtool hsm --run` documents in docs/commands.md): the engine
 //! bindings `UIConfig.Platform` = "PC", `Net.IsLoggedInToServer` = false (offline),
 //! `SignInState.Params.IsChatRestricted` = true, and the free-drive mode's `Mode` bindings as snapshot 1 reads
-//! them (`Mode.HudHsm` = 371633, ...; `Mode.WorldLoaded` is ours: `FrontEnd::ready`); state 1222788 `ConnectToAutolog` (online Autolog sign-in) exits
+//! them (`Mode.HudHsm` = 371633, ...; `Mode.WorldLoaded` is ours: `FrontEnd::ready`); state 1222788
+//! `ConnectToAutolog` (online Autolog sign-in) exits
 //! DONE at once; behaviour types that are not ported yet hold (run their children, never exit); hooks that are
 //! not ported answer EXIT (most `CALLHSMHOOK` nodes go on on EXIT).
 
 use std::collections::{HashMap, HashSet};
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
+use mw_assets::frontend as fe;
 use mw_formats::hsm::{HsmData, State, key, key_name};
 use mw_formats::json::Json;
 use mw_logic::hsm::behaviours::{Query, Stub};
 use mw_logic::hsm::{Clock, Host, Hsm, Key, Registry, Trace, original_code};
 use mw_logic::natives::game_modes::EventInfo;
 use mw_logic::natives::mode_machine::{self, ModeInfo};
+use mw_logic::natives::pages::{self, ScreenData};
 use mw_logic::natives::{LogicHost, Request, progression};
 
 use crate::frontend::{FrontEnd, Phase};
@@ -41,6 +52,9 @@ const BUNDLE: &str = "GAMELOGIC/GAMEMODES.BNDL";
 const TOP_STATE: u32 = 20527;
 /// `ConnectToAutolog` (online).
 const CONNECT_TO_AUTOLOG: u32 = 1222788;
+/// The boot page's "Press Start" widget group (HSM state 491835 `GROUP`): its `Background` widget plays
+/// [`fe::TITLE_SEQUENCE`], its `ScreenTransition` is the boot transition [`fe::BOOT_TRANSITION_SEQUENCE`].
+const PRESS_START_GROUP: i64 = 491_032;
 const BOOT_TRIGGER: &str = "GeneralSequence.Triggers[\"BOOT\"].IsTriggerSet[1]";
 
 pub struct LogicPlugin {
@@ -76,12 +90,18 @@ struct Loaded {
     ids: mw_assets::frontend::LogicConfigIds,
 }
 
+/// A screen load's result.
+type ScreenLoad = Result<ScreenData, String>;
+
 /// The running machine and its host (not `Send`: the logic state is shared with Lua through `Rc`).
 struct Logic {
     hsm: Hsm,
     host: RuntimeHost,
     serial: u32,
     frame: u64,
+    /// Screens the page contexts asked for, loaded on a thread ([`mw_logic::natives::pages::load_screen`]).
+    screens: (Sender<ScreenLoad>, Receiver<ScreenLoad>),
+    store: Arc<mw_assets::AssetStore>,
 }
 
 fn start_loading(game: Res<crate::Game>, mut setup: ResMut<Setup>) {
@@ -164,6 +184,7 @@ fn receive(world: &mut World) {
         new_profile,
         world_loaded: false,
         transitioning: false,
+        carry: Vec::new(),
         pressed: false,
         listening: false,
         frame: 0,
@@ -174,7 +195,8 @@ fn receive(world: &mut World) {
         return;
     };
     info!("hsm: machine {serial} started at {TOP_STATE} (shadow mode)");
-    world.insert_non_send(Logic { hsm, host, serial, frame: 0 });
+    let store = world.resource::<crate::Game>().store.clone();
+    world.insert_non_send(Logic { hsm, host, serial, frame: 0, screens: channel(), store });
 }
 
 /// The structural and ported behaviour types; types the original has but we have not ported hold, and the online
@@ -214,20 +236,41 @@ fn registry(data: &HsmData) -> Registry {
     registry
 }
 
-fn tick(logic: Option<NonSendMut<Logic>>, time: Res<Time>, front: Option<Res<FrontEnd>>) {
+fn tick(logic: Option<NonSendMut<Logic>>, time: Res<Time>, mut front: Option<ResMut<FrontEnd>>) {
     let Some(mut logic) = logic else { return };
     let dt = time.delta_secs();
     if dt <= 0.0 {
         return;
     }
-    let Logic { hsm, host, serial, frame } = &mut *logic;
+    let Logic { hsm, host, serial, frame, screens, store } = &mut *logic;
     *frame += 1;
     host.frame = *frame;
+    // Screens: start the loads the page contexts asked for, hand over the finished ones.
+    for id in std::mem::take(&mut host.logic.pages.wanted) {
+        let (tx, store) = (screens.0.clone(), store.clone());
+        let spawned = crate::platform::thread::Builder::new().name("mw-screen".into()).spawn(move || {
+            let _ = tx.send(pages::load_screen(&store, id).map_err(|e| format!("screen {id}: {e}")));
+        });
+        if let Err(e) = spawned {
+            warn!("hsm: screen {id}: no loader thread: {e}");
+        }
+    }
+    while let Ok(got) = screens.1.try_recv() {
+        match got {
+            Ok(screen) => {
+                info!("hsm: {:5} screen {} loaded ({} widgets)", host.frame, screen.id, screen.widgets.len());
+                host.logic.pages.provide(screen);
+            }
+            Err(e) => warn!("hsm: {e}"),
+        }
+    }
     if let Some(front) = &front {
         host.boot_trigger = front.boot_trigger() || front.phase != Phase::Title;
-        host.pressed = front.phase != Phase::Title;
+        host.pressed = front.pressed() || front.phase != Phase::Title;
         host.world_loaded = front.ready;
-        host.transitioning = front.phase == Phase::Transition;
+        // Requested and not yet started counts as playing.
+        host.transitioning =
+            front.phase == Phase::Transition || host.carry.iter().any(|c| matches!(c, Carry::BootTransition));
         host.logic.state.borrow_mut().engine.loading_screen_showing = front.phase == Phase::Loading;
     } else {
         host.boot_trigger = true;
@@ -253,6 +296,25 @@ fn tick(logic: Option<NonSendMut<Logic>>, time: Res<Time>, front: Option<Res<Fro
     if was_running && !hsm.is_running(*serial) {
         info!("hsm: machine {serial} finished");
     }
+    for e in std::mem::take(&mut host.logic.pages.errors) {
+        warn!("hsm: script {e}");
+    }
+    // The requests the runtime carries out (module doc).
+    for r in std::mem::take(&mut host.carry) {
+        let Some(front) = front.as_deref_mut() else { continue };
+        match r {
+            Carry::Title => front.start_title(),
+            Carry::BootTransition => front.start_transition(),
+        }
+    }
+}
+
+/// A request the runtime carries out.
+enum Carry {
+    /// `StartSequence` of the title sequence (the "Press Start" group's `PlaySequence` script).
+    Title,
+    /// `PlayWidgetGroupTransition` of the "Press Start" group: its `ScreenTransition` (the boot transition).
+    BootTransition,
 }
 
 /// The logic host plus the runtime's answers (see the module doc).
@@ -263,8 +325,11 @@ struct RuntimeHost {
     new_profile: bool,
     /// The game-mode manager's world-loaded flag (`Mode.WorldLoaded`): `FrontEnd::ready`.
     world_loaded: bool,
-    /// The boot screen transition plays (`Transitions.Transitioning`).
+    /// The boot screen transition plays (`Transitions.Transitioning`; also true from its request until the front
+    /// end has started it).
     transitioning: bool,
+    /// Requests for `tick` to carry out.
+    carry: Vec<Carry>,
     /// "Press Start" was pressed (`frontend.rs` left the title on the key's release).
     pressed: bool,
     /// The primary-user listener is on (`ListenForPrimaryUser`, until `ReleasePrimaryUser`).
@@ -344,14 +409,38 @@ impl Host for RuntimeHost {
             Request::ReleasePrimaryUser(_) => self.listening = false,
             _ => {}
         }
-        // The parts of the original's call that only touch logic state (the game-mode start, input blocks).
-        mode_machine::apply(&mut self.logic.state.borrow_mut(), &r);
+        // The parts of the original's call the logic does itself (the game-mode start, input blocks, page
+        // contexts and widget groups).
+        self.logic.apply(&r);
+        let carried = match &r {
+            Request::StartSequence { sequence, .. } => {
+                let id = self.logic.state.borrow().view_models.resolve_int(sequence);
+                (id == Some(i64::from(fe::TITLE_SEQUENCE))).then_some(Carry::Title)
+            }
+            Request::PlayWidgetGroupTransition { group, .. } if *group == PRESS_START_GROUP => {
+                self.transitioning = true;
+                Some(Carry::BootTransition)
+            }
+            _ => None,
+        };
+        let done = carried.is_some()
+            || matches!(
+                r,
+                Request::PushPageContext { .. }
+                    | Request::LeavePageContext { .. }
+                    | Request::ActivateWidgetGroup { .. }
+                    | Request::DeactivateWidgetGroup { .. }
+                    | Request::ClearWidgetExit
+            );
+        self.carry.extend(carried);
         let kind = format!("{r:?}");
         let kind = kind.split([' ', '(', '{']).next().unwrap_or_default().to_owned();
         let n = self.requests.entry(kind).or_default();
         *n += 1;
-        if *n == 1 {
-            info!("hsm: {:5} request {r:?} (not carried out: shadow mode)", self.frame);
+        if done {
+            info!("hsm: {:5} request {r:?}", self.frame);
+        } else if *n == 1 {
+            info!("hsm: {:5} request {r:?} (not carried out yet)", self.frame);
         }
     }
     fn query(&mut self, q: &Query) -> Option<u64> {
@@ -360,6 +449,9 @@ impl Host for RuntimeHost {
             Query::PrimaryUserBound => Some((self.listening && self.pressed) as u64),
             // `ISNEWPROFILE`: no saved profile was loaded (frontend.rs reads ours at start-up).
             Query::NewProfile => Some(self.new_profile as u64),
+            // The boot transition (the only group transition the runtime plays so far).
+            Query::WidgetTransitionStarted { group } => Some((*group == PRESS_START_GROUP) as u64),
+            Query::TransitionFinished => Some(!self.transitioning as u64),
             _ => self.logic.query(q),
         }
     }

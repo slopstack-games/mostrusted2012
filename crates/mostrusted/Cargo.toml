@@ -11,7 +11,7 @@ mw-bundle.workspace = true
 mw-formats.workspace = true
 mw-assets.workspace = true
 mw-handling.workspace = true
-mw-logic.workspace = true
+mw-logic = { workspace = true, features = ["assets"] }
 anyhow.workspace = true
 clap.workspace = true
 rayon.workspace = true

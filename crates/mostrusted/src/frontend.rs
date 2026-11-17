@@ -89,6 +89,8 @@ pub struct FrontEndPlugin {
     pub shots: Option<PathBuf>,
     /// Where to save the profile (interactive world drives, or `--profile`); `None` saves nothing.
     pub profile: Option<PathBuf>,
+    /// `--hsm`: the original's logic drives the screens (logic.rs, [`FrontEnd::driven`]).
+    pub driven: bool,
 }
 
 impl Plugin for FrontEndPlugin {
@@ -111,6 +113,10 @@ impl Plugin for FrontEndPlugin {
             profile: self.profile.clone(),
             autosave: 0.0,
             log: Vec::new(),
+            driven: self.driven,
+            title_started: false,
+            pressed: false,
+            reset_screens: false,
         })
         .add_systems(Startup, start_loading)
         .add_systems(
@@ -201,6 +207,15 @@ pub struct FrontEnd {
     autosave: f32,
     /// Timing log (phase, seconds since start).
     log: Vec<(String, f32)>,
+    /// `--hsm`: the original's logic drives the screens (logic.rs). The title's sequence plays once the "Press
+    /// Start" group's `PlaySequence` script starts it ([`FrontEnd::start_title`]); the key press only marks
+    /// [`FrontEnd::pressed`] (the HSM's `HSB_P1BIND` reads it); the boot transition starts when the group asks for
+    /// its screen transition ([`FrontEnd::start_transition`]).
+    pub driven: bool,
+    title_started: bool,
+    pressed: bool,
+    /// The screens' movie and layer animations restart (a transition started from outside `advance`).
+    reset_screens: bool,
 }
 
 impl FrontEnd {
@@ -208,6 +223,29 @@ impl FrontEnd {
     /// `GeneralSequence.Triggers["BOOT"].IsTriggerSet[1]`, logic.rs).
     pub fn boot_trigger(&self) -> bool {
         self.boot_trigger
+    }
+
+    /// The title's sequence was started (`StartSequence` of the "Press Start" group's script).
+    pub fn start_title(&mut self) {
+        if !self.title_started {
+            self.title_started = true;
+            self.mark("title: sequence started by the logic");
+        }
+    }
+
+    /// "Press Start" was pressed and released (the title is past its BOOT trigger).
+    pub fn pressed(&self) -> bool {
+        self.pressed
+    }
+
+    /// The boot screen transition starts (the "Press Start" group's `ScreenTransition`).
+    pub fn start_transition(&mut self) {
+        if self.phase == Phase::Title {
+            self.phase = Phase::Transition;
+            self.clock = 0.0;
+            self.reset_screens = true;
+            self.mark("title: transition started by the logic");
+        }
     }
 
     pub fn playing(&self) -> bool {
@@ -563,7 +601,13 @@ fn advance(
     }
     let Some(mut screens) = screens else { return };
     let pad = xinput_connected(&pads);
+    if front.reset_screens {
+        front.reset_screens = false;
+        screens.movie = None;
+        screens.anim.reset();
+    }
     match front.phase {
+        Phase::Title if front.driven && !front.title_started => {}
         Phase::Title => {
             let Some(seq) = screens.title.clone() else {
                 front.phase = Phase::Transition;
@@ -616,6 +660,11 @@ fn advance(
                 let auto = front.auto_start.zip(front.prompt_at).is_some_and(|(a, at)| time.elapsed_secs() - at >= a);
                 if any_down {
                     front.armed = true;
+                } else if front.driven {
+                    if (front.armed || auto) && !front.pressed {
+                        front.pressed = true;
+                        front.mark("title: key pressed");
+                    }
                 } else if front.armed || auto {
                     front.phase = Phase::Transition;
                     front.clock = 0.0;

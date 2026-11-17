@@ -1051,6 +1051,7 @@ fn run(mut cli: Cli, game: GameDir) -> anyhow::Result<()> {
             auto_start: cli.auto_start.or(cli.front_end_shots.as_ref().map(|_| 1.0)),
             shots: cli.front_end_shots.clone(),
             profile: save_profile.clone(),
+            driven: cli.hsm,
         })
         .add_plugins(logic::LogicPlugin {
             enabled: cli.hsm,

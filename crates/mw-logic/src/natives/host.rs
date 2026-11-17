@@ -21,6 +21,7 @@ use std::rc::Rc;
 use mw_formats::json::Json;
 use mw_lua::{Lua, LuaError, Value};
 
+use super::pages::{self, Pages};
 use super::{LogicState, LuaFn, Registry};
 use crate::hsm::{self, Key, Trace};
 
@@ -36,6 +37,9 @@ pub struct LogicHost {
     pub state: Rc<RefCell<LogicState>>,
     /// Receives the HSM's trace events (tools print them).
     pub on_trace: Option<TraceFn>,
+    /// The page contexts and active widget groups (their Lua states live here, outside the shared state the
+    /// natives borrow).
+    pub pages: Pages,
 }
 
 impl Default for LogicHost {
@@ -46,7 +50,7 @@ impl Default for LogicHost {
 
 impl LogicHost {
     pub fn new(registry: Registry) -> Self {
-        LogicHost { registry, state: Rc::default(), on_trace: None }
+        LogicHost { registry, state: Rc::default(), on_trace: None, pages: Pages::default() }
     }
 
     /// One frame of the logic's clocks: the UI clock advances by `dt` seconds and `Signals` updates
@@ -58,6 +62,9 @@ impl LogicHost {
         st.engine.ui_counter = (st.engine.ui_ticks / 3000) as u32;
         let (ticks, counter) = (st.engine.ui_ticks, st.engine.ui_counter);
         st.view_models.signals.update(ticks, counter);
+        drop(st);
+        // The active widgets' per-frame update (`FUN_007f6420`: `PreInputUpdate(dt)`).
+        self.pages.frame(dt);
     }
 
     /// The global closure for one Lua native of the registry (`None`: not a native of the original).
@@ -85,6 +92,16 @@ impl LogicHost {
                 lua.register(n.name, f);
             }
         }
+    }
+
+    /// The part of a request the logic itself carries out before the runtime gets it: the game-mode manager's
+    /// logic state (`mode_machine::apply`), the page contexts and widget groups ([`Pages`]: their scripts call
+    /// natives, so no borrow of the state is held here).
+    pub fn apply(&mut self, r: &super::Request) {
+        super::mode_machine::apply(&mut self.state.borrow_mut(), r);
+        let mut p = std::mem::take(&mut self.pages);
+        pages::apply(&mut p, &self.state, &|lua| self.install_lua(lua), r);
+        self.pages = p;
     }
 
     /// Take the unported calls recorded since the last call (for logs).
@@ -117,18 +134,20 @@ impl hsm::Host for LogicHost {
     fn loading_screen_showing(&mut self) -> bool {
         self.state.borrow().engine.loading_screen_showing
     }
-    /// Applies the logic-state part of the request (`mode_machine::apply`), then queues it for the runtime with
-    /// the hooks' requests ([`LogicState::requests`]).
+    /// [`LogicHost::apply`], then queues the request for the runtime with the natives' requests
+    /// ([`LogicState::requests`]).
     fn request(&mut self, r: super::Request) {
-        let mut st = self.state.borrow_mut();
-        super::mode_machine::apply(&mut st, &r);
-        st.requests.push(r);
+        self.apply(&r);
+        self.state.borrow_mut().requests.push(r);
     }
     /// The queries whose answer is logic state: the pending event (G+0x2f6f8), the GMM's event, mode start,
     /// machine and flags, the local player.
     fn query(&mut self, q: &hsm::behaviours::Query) -> Option<u64> {
         use hsm::behaviours::Query as Q;
         let st = self.state.borrow();
+        if let Some(a) = self.pages.query(&st, q) {
+            return Some(a);
+        }
         let gm = &st.game_modes;
         Some(match q {
             Q::NextEvent => u64::from(st.game.pending_event),

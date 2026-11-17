@@ -496,8 +496,9 @@ GeneSys. Engine-free crates (`mw-logic`, `mw-lua`; wasm-compatible), in dependen
    actions), PageRunner page flow; the 24 native screen scripts. Data side done (2026-11-17): the 859 JSON
    definitions typed (`mw_formats::widget`, the engine's JSON reader `mw_formats::json`), the screen → widget →
    script graph (`mw_assets::widgets`, `mwtool widgets`), the lifecycle and action dispatch specified
-   (decomp.md "Widget definitions (JSON) and widget scripts"). Open: the runtime, the native scripts' behaviour,
-   PageRunner.
+   (decomp.md "Widget definitions (JSON) and widget scripts"). Runtime started (2026-11-17,
+   `natives/pages.rs`): page contexts, widget-group activation, the Lua lifecycle, the `Widget` view model.
+   Open: actions / input, adapters, group transitions, the native scripts' behaviour, drawing from the widgets.
 5. `[x]` **Lua 5.1 VM** (`mw-lua`, 2026-11-17): our own interpreter (undump, 38 opcodes, `ltable.c` table
    order, MSVC number formatting; base, string, math, table); all 115 chunks run their main function and
    `Construct` (`mwtool lua`). One state per widget (widget +0x84, decomp.md "Widget definitions (JSON) and widget scripts"). Open: the
@@ -506,7 +507,8 @@ GeneSys. Engine-free crates (`mw-logic`, `mw-lua`; wasm-compatible), in dependen
 7. `[~]` The runtime moves onto them: front end, game modes, HUD and results from the HSM instead of the
    hand-written flows. Started (2026-11-17): `mostrusted --hsm` (logic.rs) runs "Top State" and the game-mode
    manager in shadow mode. It follows the real title, press and world load into "Freedrive Update" and the HUD
-   machine. Its Requests are logged, not carried out yet.
+   machine. Carried out: page contexts and widget groups (`natives/pages.rs`: the widgets' Lua scripts run)
+   and the boot page (title and boot transition from the HSM). The rest is logged.
 
 ### M9: Browser build `[~]` (2026-11-17)
 The same runtime in a browser on WebGPU, on the player's own install (picked folder or a loopback server; the
