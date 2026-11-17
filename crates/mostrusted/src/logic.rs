@@ -213,6 +213,11 @@ fn receive(world: &mut World) {
                 mode: e.game_mode,
                 available: listed.contains(&e.id),
                 rollout_ok: true,
+                data: events
+                    .event_fields
+                    .iter()
+                    .find(|(id, _)| *id == e.id)
+                    .map_or_else(Vec::new, |(_, f)| mode_view::data_fields(f)),
                 ..Default::default()
             })
             .collect();

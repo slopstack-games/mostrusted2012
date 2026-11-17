@@ -39,6 +39,40 @@ pub struct Player {
     /// `FUN_006ba320` (the player's vtable +0x18): the `VehicleList` id of its car (engine state; the runtime
     /// sets it; 0 = none). `Mode.CurrentVehicleGamepack` reads its pack.
     pub vehicle_id: u32,
+    /// +0x23d `IsActive`, +0x23e `Wrecked`, +0x23f `Crashed` (fields of the `Players` binding root,
+    /// [`players_view`](super::players_view)).
+    pub active: bool,
+    pub wrecked: bool,
+    pub crashed: bool,
+    /// +0x434 `WasBusted`.
+    pub was_busted: bool,
+    /// +0x2c8 `IsTeleporting`.
+    pub teleporting: bool,
+    /// +0x2f6 `IsFallingOffCliff`.
+    pub falling_off_cliff: bool,
+    /// +0x285 `IsInBuilding`.
+    pub in_building: bool,
+    /// +0x474 `IsMidGameJoining`.
+    pub mid_game_joining: bool,
+    /// +0x2c1: a respawn is under way (`FUN_006c9fb0` sets it, the reset's end clears it; engine state, the
+    /// runtime owns it). `ResetInProgress` also holds while the vehicle's flag G+0x25694[vehicle] does
+    /// ([`Self::vehicle_resetting`]).
+    pub reset_pending: bool,
+    /// G+0x25694 + `vehicle`: the world's per-vehicle reset flag (engine state; the runtime sets it).
+    pub vehicle_resetting: bool,
+    /// +0x2ea / +0x2e8: the wreck's cause is known / it is a suicide (`IsWreckSuicide`).
+    pub wreck_cause_known: bool,
+    pub wreck_suicide: bool,
+    /// `IsEngineOn` (`FUN_006d8ab0` -> `FUN_00572c20` on the world's vehicle; engine state, the runtime sets it).
+    pub engine_on: bool,
+    /// `IsInWaitForZone` (`FUN_00515120` on `*0x010edb50`'s record of the player; engine state).
+    pub in_wait_for_zone: bool,
+    /// `HasChaseStarted` (0x6db740: the pursuit record G+0x2f410 + slot x 0x8b0, +0x89c != 0; the pursuit
+    /// system's state, the runtime sets it).
+    pub chase_started: bool,
+    /// `CurrentNitrousType` (`FUN_006bde60`): the vehicle gameplay record's (+0x84 class, +0x80 kind) behind the
+    /// player's vtable +0x18; `None` = no record (a null string). The runtime sets it from the car.
+    pub nitrous: Option<(u32, u32)>,
 }
 
 /// The player manager.
@@ -48,11 +82,25 @@ pub struct PlayerManager {
     pub slots: [Option<Player>; SLOTS],
     /// +0xa6b4: the local player's slot.
     pub local: Option<usize>,
+    /// +0xa6bc: the camera target's slot (None = the local player; `CameraTarget`).
+    pub camera_target: Option<usize>,
+    /// +0xa6ac `NumTeamPlayers` and +0xa6b0 `NumOpponents` (set by the game's match set-up; offline 0).
+    pub team_players: i32,
+    pub opponents: i32,
+    /// +0xcbe9 `HasAnyPlayerFinishedCurrentEvent` (the runtime sets it when a car crosses the finish).
+    pub any_finished: bool,
 }
 
 impl Default for PlayerManager {
     fn default() -> Self {
-        Self { slots: std::array::from_fn(|_| None), local: None }
+        Self {
+            slots: std::array::from_fn(|_| None),
+            local: None,
+            camera_target: None,
+            team_players: 0,
+            opponents: 0,
+            any_finished: false,
+        }
     }
 }
 

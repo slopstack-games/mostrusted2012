@@ -26,6 +26,9 @@ pub struct EventInfo {
     /// The event record's +0x8c: the event to go on with (`FUN_0070caa0`); 0 = none. Field not named in the
     /// assets yet: the runtime fills it.
     pub next_event: u32,
+    /// The event object's scalar GeneSys fields by field hash, what `Event.Data.<field>` reads while it is the
+    /// current event ([`super::mode_view::data_fields`]; filled by the runtime from the install).
+    pub data: Vec<(u32, crate::binding::Value)>,
 }
 
 /// Fields of the GMM the hooks touch.
@@ -157,6 +160,10 @@ pub struct GameModeManager {
     pub skip_prompt_time: f32,
     /// +0x2526: `HasTargetSpeed` (`ModeVM.ShowPositionFromCheckpoint` needs it clear).
     pub has_target_speed: bool,
+    /// +0x252b: `Mode.DisablePauseMenu` ("is it safe to open the pause menu?"; a field of `FUN_006fe520`'s
+    /// registrations; the view model constructor `FUN_006e7670` clears it and no other writer is in the dump's
+    /// range: the engine sets it).
+    pub disable_pause_menu: bool,
     /// +0x2ca3, +0x2d28, +0x2d2c: what `SetFinalEventData` copies into the local player (meaning open).
     pub byte_2ca3: u8,
     pub word_2d28: u32,
