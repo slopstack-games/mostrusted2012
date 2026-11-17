@@ -13,6 +13,45 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ## Dated findings
 
+### 2026-11-17: fourth 20 HSM hooks verified and enabled (80 of 187; `natives/hooks_{flow,event,ui}.rs`)
+
+Handlers read from `re/out/live/text.asm`, callees with `fn`. Already ported but parked, now verified byte for byte and
+enabled: SetSafehouseFromProfile (0x676070) and ApplySelectedVehicleRollout (0x6762c0) return EXIT only;
+ClearHudInstantQueue (0x67a7b0: frees UIM+0x126e8 through `FUN_00cc4780`, +0x126e8 = 0, +0x126e0 = 0);
+StopAllSequences (0x680480: `FUN_0067f8c0` = ClearHudMessageQueues, then `FUN_00a44dd0` on UIM+0x47748 / +0x4774c);
+StopSpeech (0x676100: `FUN_008423a0` on G+0x2c3c0; the Lua native of the same name is a separate handler 0x6784e0);
+SkipCurrentTrack (0x676b40: `FUN_0079f760` on UIM+0x30370); ToggleLoadingScreenOff (0x677010: UIM+0x2d204 &= ~0x20,
++0x2d21c = 0); ClearForceOpenEasyDriveFlag (GMM+0x2ca9 = 0), ClearCreditsTransition (GMM+0x2f26 = 0),
+ClearJumpToStoreFlag (0x677080: GMM+0x2f27 = 0; the table lists it as Online but the PC body is this one store),
+SetFMNMenuShowingCommonEvents (`FUN_006e0470`(GMM, 0) = GMM+0x2e85 = 0).
+Fixed and enabled: DeactivateDamage / ReactivateDamage (`FUN_0068acb0` / `FUN_0068ad50`, identical but for a flag
+byte 1 / 0): only with the local slot occupied and the car loaded (`FUN_006ba2f0`), post message 0x1f {vehicle (+0xa0 or
+-1), flag} through `FUN_0069a5e0` (`Request::VehicleDamage` now carries both). CleanAndRepairVehicle (`FUN_006926b0`):
+the local record's rollout copy (vtable +0x18, 0x2b dwords, two zeroed) applied by `FUN_0068e9d0`(+0x98, copy, 2), then
+`FUN_00844940`(vehicle) when +0xa0 != -1 (`Request::CleanAndRepairVehicle { vehicle }`).
+New: ClearPendingResets (0x676080: `FUN_0063d410`(G+0x25690, i) for i in 0..16; per slot it clears the loading-screen bit
+0x1000 / UIM+0x2d238 when the slot is the local car's and resets the entry: `Request::ClearPendingResets`);
+TransferCurrentHeatToVehicle (0x6761c0: the local vehicle id = (record vtable +0x18)+0x30 via `FUN_006ba320`; if non-zero
+`FUN_0072a280`(profile db G+0x2f454+0x4964, id, 0) writes the "garage" row's "heat" column = 0; `Request::TransferCurrentHeatToVehicle`);
+IsSpeedTrapEvent (0x680530 = `FUN_0067fe30`: online event, else the event type record's byte +0x10 (via
+`FUN_0053c020` on the handle (GMM+4)+0xf4) is 0x34 or 0x47, `FUN_006e1720`; `GameModeManager::current_event_kind`);
+SetValidProgressionData (0x687750: `lbValid` = 0xce68ae4f from `.bss` 0x1177a6c; `FUN_00686e70` zeroes 11 entries of
+G+0x2f3e4, then its +0xa4 = flag and G+0x2f3e8 +0x70 = 0: `Request::SetValidProgressionData`);
+SetCollectablesNotInWorld (0x676330: `FUN_0070d260`, `FUN_007000d0` on G+0x14e40); SetRollout (0x68d2f0: `liRolloutId`
+= 0xd04318ef from `.bss` 0x1177c78, `FUN_0068bbf0`(G+0x2f404, id): copies the rollout with that id into the local slot's
+record and applies it). The `.bss` hashes were read from `re/out/live/snap1/mem.bin` and matched by `field_hash`.
+Test `the_fourth_twenty`; `the_twenty_ported_hooks` now counts 80.
+
+Model decisions: no local player = nothing happens (the original dereferences `FUN_006bf330` unchecked);
+`current_event_kind` is filled by the runtime (the type record behind the current event handle is not modelled).
+Open: what G+0x2f3e4 / G+0x2f3e8 are (SetValidProgressionData); whether the local vehicle id of
+TransferCurrentHeatToVehicle (+0x30 of the vtable +0x18 object) equals the garage "vehicleid".
+Next candidates (parked, offline or trivial; verify the same way): OnOpenEasyDrive, OnStartEvent, OnSelectEasyDriveOption,
+OnOpenEasyDriveMods, OnCloseEasyDriveMods, PlayEndOfIntroSequenceInEasyDrive, ShouldPlayEndOfIntroSequenceInEasyDrive,
+ClearPlayEndOfIntroSequenceInEasyDrive, SetHasIntroEasyDriveBeenActive, HasIntroEasyDriveBeenActive,
+SwitchToGameplayLoadWorld, LeaveGame, ExitForMultiplayerMatchMaking, ClearE3MultiplayerProgression, ShowPartyInvitePopup,
+OnPhotoSharedToWall, ShowX360GamerCard, ShowX360GamerCardEasyDrive, ShowX360GamerCardByPlayerIndex,
+SetFMNMenuShowingVITAExclusiveEvents.
 ### 2026-11-17: third 20 HSM hooks verified and enabled (60 of 187; `natives/hooks_{flow,event}.rs`)
 
 Handlers read from `re/out/live/text.asm` (vtable-only), helpers with `fn`: RemoveAllCops 0x67a740 (`FUN_006795c0`, per

@@ -238,12 +238,12 @@ fn ui_hooks() {
     );
 }
 
-/// The registry the boot path uses: the 60 hooks verified against their handlers (`the_second_twenty`, `the_third_twenty`).
+/// The registry the boot path uses: the 80 hooks verified against their handlers (`the_second_twenty` ... `the_fourth_twenty`).
 #[test]
 fn the_twenty_ported_hooks() {
     let r = Registry::original();
     let ported: Vec<_> = r.hooks().iter().filter(|h| h.ported()).map(|h| h.name).collect();
-    assert_eq!(ported.len(), 60, "{ported:?}");
+    assert_eq!(ported.len(), 80, "{ported:?}");
     let mut s = LogicState::default();
     s.players.local = Some(0);
     s.players.slots[0] = Some(Player::default());
@@ -446,4 +446,78 @@ fn the_third_twenty() {
         (s.game.input_blocks.masks[1], s.game.input_blocks.counts[1], s.game.input_blocks.suspend_time),
         (1, 1, 0.0)
     );
+}
+
+/// The fourth twenty, each checked against its handler (research-log 2026-11-17), through the verified registry.
+#[test]
+fn the_fourth_twenty() {
+    let r = Registry::original();
+    let mut s = with_local_player();
+    // Handlers that only return EXIT on PC.
+    for name in ["SetSafehouseFromProfile", "ApplySelectedVehicleRollout"] {
+        assert_eq!(call(&r, &mut s, name, None), EXIT);
+    }
+    assert!(s.requests.is_empty());
+    // Engine-only bodies.
+    for (name, req) in [
+        ("ClearHudInstantQueue", Request::ClearHudInstantQueue),
+        ("StopSpeech", Request::StopSpeech),
+        ("SkipCurrentTrack", Request::SkipCurrentTrack),
+        ("ClearPendingResets", Request::ClearPendingResets),
+        ("SetCollectablesNotInWorld", Request::SetCollectablesNotInWorld),
+        ("TransferCurrentHeatToVehicle", Request::TransferCurrentHeatToVehicle),
+    ] {
+        assert_eq!(call(&r, &mut s, name, None), EXIT);
+        assert_eq!(s.requests.pop(), Some(req), "{name}");
+    }
+    // StopAllSequences: the HUD queues (FUN_0067f8c0), then both sequence players.
+    call(&r, &mut s, "StopAllSequences", None);
+    assert_eq!(s.requests, [Request::ClearHudMessageQueues, Request::StopAllSequences]);
+    s.requests.clear();
+    // Damage: the message needs the local car loaded; flag 1 deactivates, 0 reactivates.
+    call(&r, &mut s, "DeactivateDamage", None);
+    assert!(s.requests.is_empty());
+    s.players.local_player_mut().unwrap().loaded = true;
+    call(&r, &mut s, "DeactivateDamage", None);
+    call(&r, &mut s, "ReactivateDamage", None);
+    call(&r, &mut s, "CleanAndRepairVehicle", None);
+    assert_eq!(
+        s.requests,
+        [
+            Request::VehicleDamage { vehicle: 3, deactivated: true },
+            Request::VehicleDamage { vehicle: 3, deactivated: false },
+            Request::CleanAndRepairVehicle { vehicle: 3 },
+        ]
+    );
+    s.requests.clear();
+    // Speed traps: an online event, or the event kind 0x34 / 0x47.
+    assert_eq!(call(&r, &mut s, "IsSpeedTrapEvent", None), FALSE);
+    s.game_modes.current_event_kind = 0x47;
+    assert_eq!(call(&r, &mut s, "IsSpeedTrapEvent", None), TRUE);
+    s.game_modes.current_event_kind = 0x10;
+    s.game_modes.online_event = true;
+    assert_eq!(call(&r, &mut s, "IsSpeedTrapEvent", None), TRUE);
+    // Arguments.
+    call(&r, &mut s, "SetValidProgressionData", Some(r#"{ "lbValid": true }"#));
+    call(&r, &mut s, "SetRollout", Some(r#"{ "liRolloutId": 523000 }"#));
+    assert_eq!(s.requests, [Request::SetValidProgressionData { valid: true }, Request::SetRollout { rollout: 523000 }]);
+    // Flags.
+    s.game_modes.force_open_easydrive = true;
+    s.game_modes.credits_transition = true;
+    s.game_modes.jump_to_store = true;
+    s.game_modes.fmn_vita_exclusive = true;
+    s.game.loading_screen_requests = 0xff;
+    s.game.loading_screen_2d21c = 5;
+    for name in [
+        "ClearForceOpenEasyDriveFlag",
+        "ClearCreditsTransition",
+        "ClearJumpToStoreFlag",
+        "SetFMNMenuShowingCommonEvents",
+        "ToggleLoadingScreenOff",
+    ] {
+        assert_eq!(call(&r, &mut s, name, None), EXIT);
+    }
+    let g = &s.game_modes;
+    assert!(!g.force_open_easydrive && !g.credits_transition && !g.jump_to_store && !g.fmn_vita_exclusive);
+    assert_eq!((s.game.loading_screen_requests, s.game.loading_screen_2d21c), (0xdf, 0));
 }
