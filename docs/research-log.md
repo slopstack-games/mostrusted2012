@@ -23,6 +23,37 @@ the files (the Steam depot ships every pack; the DLC lock is the logic's entitle
   (`run`). The message gives the hash to report. Tools (`mwtool`) do not check.
 - Hashes are the one exception to "nothing derived from game data" (CLAUDE.md), and they hold no content.
 - Tests: `mw_gamedir::ownership_tests` (the Steam install is retail; a fake executable is refused).
+### 2026-11-17: sixth 20 HSM hooks verified and enabled (120 of 187; `natives/hooks_select.rs`, `hooks_flow.rs`)
+
+Handlers read from `re/out/live/text.asm`, callees from the dump. Argument names found by hash search over the
+snapshot's `.bss`: `liOptionId` (`DAT_01177a98` = 0x74b4f5f4), `liSelectedWorldId` (`DAT_01177bd8` = 0x4ee0ce22);
+`lpcValue` strings go through `strtol(s, 0, 10)` (`FUN_00d751e0`) or `atol`. Mapping (all return EXIT unless noted):
+CancelMilestoneTracking 0x675e50 (`FUN_0071d1e0` on profile db +0x5a3c: clears the tracking fields) ; HasEasyDriveOptionBeenSeen 0x676920
+(`FUN_0072eb90`: seen byte of the "ez_options" row, TRUE/FALSE); SetEasyDriveOptionSeen 0x676970 (`FUN_00674d20`: ez_options row via
+`FUN_007291b0`, or the "ez_mods" row via `FUN_007316d0` when `FUN_006ecae0` knows the id); SetEasyDriveOptionSeenToTrue 0x6769d0
+(`FUN_00674d90`: online flag (GMM+4)+0xe8 and id != 0 -> `FUN_00703c10` only, else the rows with 1 then `FUN_007040b0`); SetSelectedWorld
+0x675ad0 (`FUN_00645780` on G+0x2f468); SetAvailableVehicleListEvent 0x675cc0 (existing Request); CalculateDistanceToEventByIdString 0x675e00
+(`FUN_0078ff50`: UIM+0x1f8f0 +0xcff0 = n, +0xd544 = 1); SetRolloutFromVehicleIdString 0x675ee0 (n > 0: `FUN_006c7950`(local player, n, 0));
+SetHighlightedRolloutByIdString 0x675f40 (rollout manager +0x1c4 = n); SetHighlightedVehicleByIdString 0x680390 (`FUN_0067ef40`: +0x1c8 = n when
+changed, record copied to +0x1cc or cleared); IsTargetScoreHit 0x6803e0 (local player +0x418 >= event record +0xcc, TRUE/FALSE);
+ShowTargetScoreReminderMessage 0x680440 (`FUN_0067f7f0`: message 0x5f5ee "score" = target - score); SelectPaintPackFromEasyDrive 0x68d3a0
+(`FUN_0068d200`); UpdatePendingRollout_EasyDrive 0x6903a0 (`FUN_00690030`) and _Stock 0x68ae60 (`FUN_0068aa40`: UI sound +0x64, then
+`FUN_006830a0`(id, 0, 0)); SetFinalEventData 0x6766f0 (`FUN_006b9d00`: local player +0x5b8 = GMM+0x2ca3 + 1, +0x5c8 / +0x5cc = GMM+0x2d28 / +0x2d2c, +0x5d0 = 0);
+StartEventFromBinding 0x676790 (`FUN_00674be0`: `lpcValue` is a binding read as int, out value starts at -1; not -1: `FUN_006e74f0`(id, 0));
+SetWaypointToEventFromBinding 0x6767d0 (`FUN_00674c60`: same, then `FUN_00792390`, `FUN_00796ff0`(id), UIM+0x2c5e0 = -1);
+UpdateProgressAwardsStrings 0x6768c0 (`FUN_0071fd20`(-1, +0x10e8) and (6, +0x12e8) on G+0x2f3f8); SetFMNMenuShowingVITAExclusiveEvents
+0x676a30 (`FUN_006e0470`(1): GMM+0x2e85; was parked, now enabled). Test `the_sixth_twenty`; `the_twenty_ported_hooks` counts 120.
+Model decisions: the "ez_options" seen flags are a mirror in `SelectFields` (the ez_mods branch is not mirrored; the profile db row write is the
+`Request`); `event_target_score` (the event record +0xcc) and the player's score are filled by the runtime; the meaning of GMM+0x2ca3 / +0x2d28 / +0x2d2c is open;
+a binding that does not resolve reads as -1 (assumed: the visitor leaves the preset out value).
+Open: the runtime handles none of the new `Request`s (CancelMilestoneTracking, SetEasyDriveOptionSeen*, SetSelectedWorld, SetRolloutFromVehicle,
+LoadHighlightedVehicle, ShowTargetScoreReminder, SelectPaintPack, UpdatePendingRollout, SetWaypointToEvent, UpdateProgressAwardsStrings).
+Next 20 candidates (all unported; the ten Offline ones first): CalculateBlacklistDescription (0x676a70), ResolveBoolBinding (0x680160),
+SetVehicleAndRolloutFromSaveGameByVehicleID (0x680680), SetVehicleAndRolloutFromSaveGameByVehicleIDString (0x687a30), UpdateAwardProgressBindings
+(0x7eb4e0), IncrementSetting (0x7eb610), DecrementSetting (0x7eb680), ExitWidgetGroup (0x7f24f0), UpdateDeferredViewModelSilent (0x7f9940),
+HasScreenRegisterdDeferredViewModel (0x7f9990); then small Online ones: SetJumpToStoreFlag, ClearEntitlementJumpID, ClearNetworkedTimer,
+ClearOnlineEasyDrive, RefreshOnlineEasyDrive, SetGameVisibilityInviteOnly, SetGameVisibilityJoinable, SetGameVisibilityPublic,
+SetOnlineRaceCarFrozen, SetOnlineRaceCarUnfrozen.
 
 ### 2026-11-17: fifth 20 HSM hooks verified and enabled (100 of 187; `natives/hooks_{flow,ui}.rs`)
 

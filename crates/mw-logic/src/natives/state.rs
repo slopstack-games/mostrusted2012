@@ -42,6 +42,8 @@ pub struct LogicState {
     pub misc: super::lua_misc::MiscFields,
     /// The garage, ranks, awards and vehicle-focus fields (`lua_garage.rs`).
     pub garage: super::lua_garage::GarageFields,
+    /// The easy-drive / event selection hooks' fields (`hooks_select.rs`).
+    pub select: super::hooks_select::SelectFields,
 }
 
 /// The binding host the logic reads through: the game-mode manager's `Mode` root ([`super::mode_view`]) first,
@@ -559,4 +561,34 @@ pub enum Request {
     /// `DOBLACKLISTS` credits tail: the telemetry event "GAME CRED FNSH" (`FUN_004c3890`, `FUN_0072e5e0`(9),
     /// `FUN_004c2900`, `FUN_004c39f0`).
     GameCreditsFinished,
+    // --- The sixth twenty hooks (`hooks_select.rs`).
+    /// `CancelMilestoneTracking` (0x675e50): `FUN_0071d1e0` on the profile database +0x5a3c.
+    CancelMilestoneTracking,
+    /// `SetEasyDriveOptionSeen` (0x676970 -> `FUN_00674d20`): the "ez_options" row of `option` (`FUN_007291b0`) or,
+    /// for an id the vehicle list knows (`FUN_006ecae0`), the "ez_mods" one (`FUN_007316d0`), set to `seen`.
+    SetEasyDriveOptionSeen { option: i32, seen: bool },
+    /// `SetEasyDriveOptionSeenToTrue` (0x6769d0 -> `FUN_00674d90`): `online` (the online-event flag set, id
+    /// non-zero): `FUN_00703c10`(id) alone; else the rows as above with seen = 1, then `FUN_007040b0`(id).
+    SetEasyDriveOptionSeenToTrue { option: i32, online: bool },
+    /// `SetSelectedWorld` (0x675ad0 -> `FUN_00645780` on the world list G+0x2f468).
+    SetSelectedWorld { world: i32 },
+    /// `SetRolloutFromVehicleIdString` (0x675ee0): `FUN_006c7950`(the local player's record, vehicle, 0).
+    SetRolloutFromVehicle { vehicle: i32 },
+    /// `SetHighlightedVehicleByIdString` (0x680390 -> `FUN_0067ef40`): the vehicle's record into the rollout
+    /// manager +0x1cc (0x2b dwords; `FUN_00730ec0`), or cleared (`FUN_0067e990`) when the database lacks it.
+    LoadHighlightedVehicle { vehicle: i32 },
+    /// `ShowTargetScoreReminderMessage` (0x680440 -> `FUN_0067f7f0`): when UIM+0x7230's vtable +0x14 and +0x10
+    /// answers differ, the HUD message 0x5f5ee with "score" = `remaining` (`FUN_007c1c00`, `FUN_007b96b0`).
+    ShowTargetScoreReminder { remaining: i32 },
+    /// `SelectPaintPackFromEasyDrive` (0x68d3a0 -> `FUN_0068d200`): the paint pack of the rollout manager's
+    /// local-player record (`FUN_0068c480`); `FUN_00704e80` when its +0x34 changed.
+    SelectPaintPack { pack: i32 },
+    /// `UpdatePendingRollout_EasyDrive` (0x6903a0 -> `FUN_00690030`) / `_Stock` (0x68ae60 -> `FUN_0068aa40`):
+    /// the pending rollout of the local player (`FUN_006830a0`(vehicle, kind, 0), `FUN_006ca4f0`); the kind is
+    /// 1 or 2 from the mods owned (`FUN_0068c3d0` / `FUN_0068cc30` / `FUN_00688c90`), 0 when `stock`.
+    UpdatePendingRollout { vehicle: i32, stock: bool },
+    /// `SetWaypointToEventFromBinding` (0x6767d0 -> `FUN_00674c60`): `FUN_00792390`, `FUN_00796ff0`(event).
+    SetWaypointToEvent { event: i32 },
+    /// `UpdateProgressAwardsStrings` (0x6768c0): `FUN_0071fd20`(-1, +0x10e8) and (6, +0x12e8) on G+0x2f3f8.
+    UpdateProgressAwardsStrings,
 }

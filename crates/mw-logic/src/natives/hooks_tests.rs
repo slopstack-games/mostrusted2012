@@ -238,12 +238,12 @@ fn ui_hooks() {
     );
 }
 
-/// The registry the boot path uses: the 100 hooks verified against their handlers (`the_second_twenty` ... `the_fifth_twenty`).
+/// The registry the boot path uses: the 120 hooks verified against their handlers (`the_second_twenty` ... `the_sixth_twenty`).
 #[test]
 fn the_twenty_ported_hooks() {
     let r = Registry::original();
     let ported: Vec<_> = r.hooks().iter().filter(|h| h.ported()).map(|h| h.name).collect();
-    assert_eq!(ported.len(), 100, "{ported:?}");
+    assert_eq!(ported.len(), 120, "{ported:?}");
     let mut s = LogicState::default();
     s.players.local = Some(0);
     s.players.slots[0] = Some(Player::default());
@@ -567,4 +567,105 @@ fn the_fifth_twenty() {
     // ForceKeyboardShutdown: engine only.
     assert_eq!(call(&r, &mut s, "ForceKeyboardShutdown", None), EXIT);
     assert_eq!(s.requests, [Request::ForceKeyboardShutdown]);
+}
+
+/// The sixth twenty, each checked against its handler (research-log 2026-11-17), through the verified registry.
+#[test]
+fn the_sixth_twenty() {
+    use super::hooks_select::{LI_OPTION_ID, LI_SELECTED_WORLD_ID};
+    use mw_formats::genesys::field_hash;
+    assert_eq!(field_hash("liOptionId"), LI_OPTION_ID);
+    assert_eq!(field_hash("liSelectedWorldId"), LI_SELECTED_WORLD_ID);
+    let r = Registry::original();
+    let mut s = with_local_player();
+
+    // Engine-only: the handler's call, with the arguments it reads.
+    assert_eq!(call(&r, &mut s, "CancelMilestoneTracking", None), EXIT);
+    assert_eq!(call(&r, &mut s, "SetSelectedWorld", Some(r#"{"liSelectedWorldId": 2}"#)), EXIT);
+    assert_eq!(call(&r, &mut s, "SetAvailableVehicleListEvent", Some(r#"{"liEventId": 77}"#)), EXIT);
+    assert_eq!(call(&r, &mut s, "SelectPaintPackFromEasyDrive", Some(r#"{"lpcValue": "12"}"#)), EXIT);
+    assert_eq!(call(&r, &mut s, "UpdatePendingRollout_EasyDrive", Some(r#"{"lpcValue": "345"}"#)), EXIT);
+    assert_eq!(call(&r, &mut s, "UpdatePendingRollout_EasyDrive_Stock", Some(r#"{"lpcValue": "9"}"#)), EXIT);
+    assert_eq!(call(&r, &mut s, "UpdateProgressAwardsStrings", None), EXIT);
+    assert_eq!(call(&r, &mut s, "ShowTargetScoreReminderMessage", None), EXIT);
+    assert_eq!(
+        s.requests,
+        [
+            Request::CancelMilestoneTracking,
+            Request::SetSelectedWorld { world: 2 },
+            Request::SetAvailableVehicleListEvent { event: 77 },
+            Request::SelectPaintPack { pack: 12 },
+            Request::UpdatePendingRollout { vehicle: 345, stock: false },
+            Request::PlayUiSound { field: 0x64 },
+            Request::UpdatePendingRollout { vehicle: 9, stock: true },
+            Request::UpdateProgressAwardsStrings,
+            Request::ShowTargetScoreReminder { remaining: 0 },
+        ]
+    );
+    s.requests.clear();
+
+    // Easy-drive options: the "ez_options" mirror.
+    let opt = |id: i32| format!(r#"{{"liOptionId": {id}}}"#);
+    assert_eq!(call(&r, &mut s, "HasEasyDriveOptionBeenSeen", Some(&opt(5))), FALSE);
+    assert_eq!(call(&r, &mut s, "SetEasyDriveOptionSeen", Some(r#"{"liOptionId": 5, "lbSeen": true}"#)), EXIT);
+    assert_eq!(call(&r, &mut s, "HasEasyDriveOptionBeenSeen", Some(&opt(5))), TRUE);
+    assert_eq!(call(&r, &mut s, "SetEasyDriveOptionSeenToTrue", Some(r#"{"lpcValue": "6"}"#)), EXIT);
+    assert_eq!(call(&r, &mut s, "HasEasyDriveOptionBeenSeen", Some(&opt(6))), TRUE);
+    s.game_modes.online_event = true;
+    assert_eq!(call(&r, &mut s, "SetEasyDriveOptionSeenToTrue", Some(r#"{"lpcValue": "7"}"#)), EXIT);
+    assert_eq!(call(&r, &mut s, "HasEasyDriveOptionBeenSeen", Some(&opt(7))), FALSE);
+    s.game_modes.online_event = false;
+    assert_eq!(
+        s.requests,
+        [
+            Request::SetEasyDriveOptionSeen { option: 5, seen: true },
+            Request::SetEasyDriveOptionSeenToTrue { option: 6, online: false },
+            Request::SetEasyDriveOptionSeenToTrue { option: 7, online: true },
+        ]
+    );
+    s.requests.clear();
+
+    // UI manager / rollout manager fields.
+    assert_eq!(call(&r, &mut s, "CalculateDistanceToEventByIdString", Some(r#"{"lpcValue": "42"}"#)), EXIT);
+    assert_eq!((s.select.distance_event, s.select.distance_requested), (42, true));
+    assert_eq!(call(&r, &mut s, "SetHighlightedRolloutByIdString", Some(r#"{"lpcValue": "8"}"#)), EXIT);
+    assert_eq!(s.select.highlighted_rollout, 8);
+    assert_eq!(call(&r, &mut s, "SetHighlightedVehicleByIdString", Some(r#"{"lpcValue": "11"}"#)), EXIT);
+    assert_eq!(call(&r, &mut s, "SetHighlightedVehicleByIdString", Some(r#"{"lpcValue": "11"}"#)), EXIT);
+    assert_eq!(s.requests, [Request::LoadHighlightedVehicle { vehicle: 11 }]);
+    s.requests.clear();
+    // A vehicle id of 0 or less selects nothing.
+    assert_eq!(call(&r, &mut s, "SetRolloutFromVehicleIdString", Some(r#"{"lpcValue": "0"}"#)), EXIT);
+    assert!(s.requests.is_empty());
+    assert_eq!(call(&r, &mut s, "SetRolloutFromVehicleIdString", Some(r#"{"lpcValue": "31"}"#)), EXIT);
+    assert_eq!(s.requests, [Request::SetRolloutFromVehicle { vehicle: 31 }]);
+    s.requests.clear();
+
+    // IsTargetScoreHit: score >= target.
+    s.game_modes.event_target_score = 1000;
+    s.players.local_player_mut().unwrap().score = 999;
+    assert_eq!(call(&r, &mut s, "IsTargetScoreHit", None), FALSE);
+    s.players.local_player_mut().unwrap().score = 1000;
+    assert_eq!(call(&r, &mut s, "IsTargetScoreHit", None), TRUE);
+    assert_eq!(call(&r, &mut s, "ShowTargetScoreReminderMessage", None), EXIT);
+    assert_eq!(s.requests, [Request::ShowTargetScoreReminder { remaining: 0 }]);
+    s.requests.clear();
+
+    // SetFinalEventData: the local player's +0x5b8 / +0x5c8 / +0x5cc / +0x5d0.
+    s.game_modes.byte_2ca3 = 2;
+    s.game_modes.word_2d28 = 0x1234;
+    s.game_modes.word_2d2c = 0x5678;
+    s.players.local_player_mut().unwrap().final_5d0 = true;
+    assert_eq!(call(&r, &mut s, "SetFinalEventData", None), EXIT);
+    let p = s.players.local_player().unwrap();
+    assert_eq!((p.final_5b8, p.final_5c8, p.final_5cc, p.final_5d0), (3, 0x1234, 0x5678, false));
+
+    // Events from a binding: a binding that does not resolve is -1, nothing happens.
+    assert_eq!(call(&r, &mut s, "StartEventFromBinding", Some(r#"{"lpcValue": "Nope.Nothing"}"#)), EXIT);
+    assert_eq!(call(&r, &mut s, "SetWaypointToEventFromBinding", Some(r#"{"lpcValue": "Nope.Nothing"}"#)), EXIT);
+    assert!(s.requests.is_empty() && !s.game_modes.event_requested);
+
+    // The Vita flag (GMM+0x2e85).
+    assert_eq!(call(&r, &mut s, "SetFMNMenuShowingVITAExclusiveEvents", None), EXIT);
+    assert!(s.game_modes.fmn_vita_exclusive);
 }

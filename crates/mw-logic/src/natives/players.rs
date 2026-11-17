@@ -29,6 +29,13 @@ pub struct Player {
     pub respawn_event: u32,
     /// +0x435: respawn at the last swap spot.
     pub respawn_to_swap_spot: bool,
+    /// +0x418: the event score (`IsTargetScoreHit`).
+    pub score: i32,
+    /// +0x5b8, +0x5c8, +0x5cc, +0x5d0: the final event data (`SetFinalEventData`, `FUN_006b9d00`).
+    pub final_5b8: i32,
+    pub final_5c8: u32,
+    pub final_5cc: u32,
+    pub final_5d0: bool,
 }
 
 /// The player manager.
