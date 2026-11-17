@@ -29,6 +29,9 @@ pub struct Player {
     pub respawn_event: u32,
     /// +0x435: respawn at the last swap spot.
     pub respawn_to_swap_spot: bool,
+    /// `FUN_006ba320` (the player's vtable +0x18): the `VehicleList` id of its car (engine state; the runtime
+    /// sets it; 0 = none). `Mode.CurrentVehicleGamepack` reads its pack.
+    pub vehicle_id: u32,
 }
 
 /// The player manager.

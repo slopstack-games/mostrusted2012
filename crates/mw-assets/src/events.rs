@@ -19,6 +19,7 @@
 //! |------|--------|-------|---------|
 //! | `OfflineEvent` (248 B; first 76 B = `Event`) | 0x18 | `655d3f5f` | the event's id (what `EventList`s hold) |
 //! | | 0x1c | `GameMode` | id of a `GameMode` item: 730000 races, 955569 speed runs, 390185 ambushes, ... |
+//! | | 0x20 | `GamePack` | the event's game pack (17127 = base game; DLC: decomp.md "DLC and entitlements") |
 //! | | 0x64 | `Checkpoints` UniqueId[] | trigger box ids, in driving order; for circuits the last is the start line |
 //! | | 0x84 | `Name` | language string id |
 //! | | 0x9c | `SpawnPosition` | trigger point id: the player's start |
@@ -52,6 +53,7 @@ mod h {
     pub const ITEM: u32 = field_hash("Item");
     pub const ID: u32 = 0x655d_3f5f;
     pub const GAME_MODE: u32 = field_hash("GameMode");
+    pub const GAME_PACK: u32 = field_hash("GamePack");
     pub const NAME: u32 = field_hash("Name");
     pub const DESCRIPTION: u32 = field_hash("Description");
     pub const TYPE_NAME: u32 = field_hash("TypeName");
@@ -297,6 +299,8 @@ pub struct Event {
     pub id: u32,
     pub kind: EventKind,
     pub game_mode: u32,
+    /// `GamePack` (+0x20): 17127 = the base game, else a DLC pack (available only when owned, `FUN_006f3830`).
+    pub game_pack: u32,
     pub type_name: u32,
     /// Language string ids.
     pub name: u32,
@@ -578,6 +582,7 @@ impl AssetStore {
                         id: uint(o.get(h::ID)),
                         kind: EventKind::from_ids(game_mode, type_name),
                         game_mode,
+                        game_pack: uint(o.get(h::GAME_PACK)),
                         type_name,
                         name: uint(o.get(h::NAME)),
                         description: uint(o.get(h::DESCRIPTION)),

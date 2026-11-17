@@ -13,6 +13,55 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ## Dated findings
 
+### 2026-11-17: DLC and entitlements: the `EntitlementManager` root and the original's DLC gates
+
+Worktree agent. Spec in decomp.md "DLC and entitlements". **User decision (2026-11-17): our game must not unlock
+DLC cars or areas; the Steam depot ships every pack, so until a real entitlement source exists the base game counts
+as owned and every DLC pack as not owned** (`natives/entitlements.rs`, offline default: an empty owned set; not a
+model value).
+
+**Sources.** `FUN_006401b0` (owned = in EM+0x22c, count +0x32c; the online pass special case), the registration
+`FUN_00649eb0` (10 getters / 1 field, read from text.asm), the id globals' static initialisers (`.text` 0xf56530..,
+0xf5bf10.., disassembled from `re/out/live/NFS13_snap1_vt.exe`: the dump's text.asm stops at 0xb81fff), the data
+(`GAMEPLAY.BNDL` `Entitlement` / `GamePack` / `GameUnlockList` / `NucleusGrantMappingsList`, `GLOBALCONFIG.BNDL`
+`GamePackConfig`, `GameLogicConfig` +0xac / +0x1f0 / +0x58 / +0x2a8), the vehicle list +0x2c (`VehicleListEntry`
+`GamePackID`, `FUN_0042ade0`), the event `GamePack` (+0x20). `GameChangerID` is the name of the universal id
+field 0x655d3f5f (it hashes to it; `FUN_005dbb20` reads it by name).
+
+**Ported (engine-free).** `Entitlements` in `LogicState` (`has` = `FUN_006401b0`, `add`, `has_online_pass`,
+`has_pdlc`, the GPM helpers `FUN_00643b40` / `643ae0` / `643c10` / `643c50` / `647780` / `647700` / `0072fcc0`,
+`pdlc_purchasable` = `FUN_00647680`, `unlock_blocked` = `FUN_00686010`, `owns_any` = `FUN_00640210`,
+`pack_content_available` (`FUN_006f3830`), `mod_slot_available` (`FUN_00678e60`), `airport_pack_owned`
+(`FUN_00643c90`)); the root `EntitlementManager` (`HasOnlinePass`, `HasPdlc1..4`, `IsPdlc3/4Purchasable`,
+`ThankYouCount`, `ShowDirectDownloadInfo`; `natives/entitlement_view.rs`); `Mode.CurrentVehicleGamepack` (the
+local player's new `vehicle_id` → pack). `mw_assets::packs` (`pack_data`), `VehicleEntry::game_pack`,
+`VehicleInfo::game_pack`, `Event::game_pack`, `mwtool packs`; `mwtool hsm --run` fills the packs (the boot run is
+unchanged). Tests: `entitlements`, `entitlement_view`, `mw-assets/tests/packs.rs` (install).
+
+**The four packs** (pack `GameChangerID`, release, entitlement): Ultimate Speed 2115003 / 1 / 2115001, Terminal
+Velocity 2196330 / 2 / 2201004 (the airport: `GamePackConfig` +0x10; mod slots 11 / 13), Movie Legends 2196660 /
+3 / 2201005, NFS Heroes 2196661 / 4 / 2201006. The base pack is 17127. In the install 20 cars and 46 offline events
+belong to them (`mwtool packs`); online events / challenges of packs 2..4 also exist (34 / 19).
+
+| pack | cars (`VehicleList` id) | offline events (id; † = granted by the entitlement's `GameUnlock`) |
+|------|------|------|
+| Ultimate Speed | 2076005 Bugatti Veyron Vitesse, 2076070 McLaren F1 LM, 2076137 Hennessey Venom GT Spyder, 2076203 Lamborghini Aventador J, 2076266 Pagani Zonda R | 2090001 DOWNFALL, 2090016 TERMINAL VELOCITY, 2090031 STEEL CITY, 2090046 DRIVE HARD, 2090062 CRITICAL PATH, 2090092 GREEN ZONE, 2090107 BURNING BRIDGES, 2090123 AROUND THE WORLD, 2090137† MOST WANTED VENOM, 2090152 THE DESCENT, 2109068 THE ENFORCER, 2109288 LIVE FOR SPEED, 2109323 FULL OVERDRIVE, 2109324 FULL THROTTLE |
+| Terminal Velocity | 2196000 Porsche 918 Spyder, 2196065 BMW 1 Series M Coupe, 2196131 Audi RS3 Sportback, 2196197 Ford Fiesta ST, 2196263 Alfa Romeo Mito QV | 2165035 SIDEWINDER, 2165052 EASY DRIFTER, 2193062 AERIAL AGGRESSION, 2193106 ROUND TRIP, 2193221 POWER SLIDE, 2193406 DUTY FREE, 2204045† MOST WANTED 918 SPYDER, 2216000 DRIFT CITY, 2216641 AIR BRAKE, 2254089 AIR RAID, 2254100 GREEN BELT, 2254497 SHIP TO SHORE, 2254586 DESTRUCTION SITE, 2254919 JAILBIRD |
+| Movie Legends | 2196334 Shelby GT500, 2196399 Pontiac Firebird T/A, 2196466 Dodge Charger R/T, 2196529 Aston Martin DB5, 2196595 Aston Martin DBS | 2191016 LICENCE TO THRILL, 2191171 BOOTLEGGING, 2191269† MOST WANTED GT500, 2191413 SUDDEN IMPACT, 2191469 BULLET TRAIN, 2191507 MAYHEM, 2191553 DEADLINE, 2191594 LIVE AND LET DRIVE, 2191651 PULP FRICTION |
+| NFS Heroes | 393276 BMW M3 GTR, 2076339 Lamborghini Diablo SV, 2076399 Porsche 911 GT2, 2076462 Nissan 350Z, 2076524 Nissan Skyline GT-R (R34) | 2189981 GET TO CALLAHAN, 2191208† MOST WANTED M3 GTR, 2191848 BRAKING TRACTION, 2191871 RUNNING WILD, 2254660 HIGH STAKES, 2254708 FUELLED, 2254712 BRING THE NOISE, 2254765 SPEED DEMON, 2282050 INNER CITY PRESSURE |
+
+**Not ported / open.** `DlcMessageIndicator` (profile value 0x11) stays unresolved: the HSM reads it as
+`DlcMessageIndicator(GTEQ:n)` through `HSB_SEL_EX_B`, i.e. the string visitor, whose int32 slot (0xa49bf0, slot 12
+of 0x00fd8368) prints `%d` without the comparison; answering 0 would stall "Is DLC Messaging Required?" (2241062)
+on exit "0", so either property type 1 reaches another slot (`FUN_00a4eb00`) or the comparison happens elsewhere:
+not traced. With it the original would advertise the packs to a new profile (not seen → not bought → TRUE). The
+unlock manager (`IsAssetUnlocked` → `FUN_0068cc30` / `FUN_00688fa0`) is not ported: its entitlement test is
+(`unlock_blocked`). The offline airport "put back to the start" (probe.md "Limits", reason 6) was not found in the
+dump: the gates seen offline are the barrier chevron (`FUN_006e68d0`) and the store prompt near it
+(`FUN_006cfd40`). Captures that would confirm: the original with a save that has no DLC at the airport road
+(x 136, z −2010): the barrier and the prompt text 2211224; the garage with a DLC car selected; a DLC jack spot's
+prompt. Runtime work (garage, jack spots, free roam / map events, mods, airport) is specified in decomp.md.
+
 ### 2026-11-17: fifth 20 HSM hooks verified and enabled (100 of 187; `natives/hooks_{flow,ui}.rs`)
 
 All 20 were already ported but parked; handlers re-read from `re/out/live/text.asm`, now enabled in `Registry::original`.

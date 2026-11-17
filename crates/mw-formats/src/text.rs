@@ -60,6 +60,7 @@ impl Language {
 /// | 0x04 | u32  | related vehicle ID (sometimes also a bundle ID) |
 /// | 0x08 | u32  | Language string ID: full name |
 /// | 0x10 | u32  | Language string ID: name (same text in English) |
+/// | 0x2C | u32  | `GamePackID` (the registration `FUN_0042ade0`): the `GamePack` the car belongs to (17127 = base game) |
 /// | 0x38 | f32  | a speed in mph (183 on the XKR; unknown) |
 /// | 0x3C | f32  | top speed in mph (174 on the XKR): the nitrous HighSpeed refill's reference (`FUN_00667c10`) |
 /// | 0x6C | u16  | model year |
@@ -77,6 +78,9 @@ pub struct VehicleEntry {
     /// +0x3C, mph.
     pub top_speed: f32,
     pub year: u16,
+    /// +0x2C `GamePackID`: the car's game pack (17127 = the base game; DLC packs gate it, decomp.md "DLC and
+    /// entitlements").
+    pub game_pack: u32,
     /// Raw entry bytes for fields not decoded yet.
     pub raw: Vec<u8>,
 }
@@ -99,6 +103,7 @@ impl VehicleList {
                     short_name_string: r.u32(o + 0x10)?,
                     top_speed: r.f32(o + 0x3C)?,
                     year: r.u16(o + 0x6C)?,
+                    game_pack: r.u32(o + 0x2C)?,
                     raw: r.bytes(o, 0x70)?.to_vec(),
                 })
             })

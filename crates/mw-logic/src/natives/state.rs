@@ -42,6 +42,8 @@ pub struct LogicState {
     pub misc: super::lua_misc::MiscFields,
     /// The garage, ranks, awards and vehicle-focus fields (`lua_garage.rs`).
     pub garage: super::lua_garage::GarageFields,
+    /// The entitlement and game-pack managers (EM G+0x29280, GPM G+0x2ab00): offline, base game only.
+    pub entitlements: super::entitlements::Entitlements,
 }
 
 /// The binding host the logic reads through: the game-mode manager's `Mode` root ([`super::mode_view`]) first,
@@ -74,6 +76,7 @@ static ROOTS: std::sync::LazyLock<Vec<(u32, RootFn)>> = std::sync::LazyLock::new
         (h("JoinGameState"), super::online_state_view::lookup),
         (h("CreateMatchState"), super::online_state_view::lookup),
         (h("MatchMakeState"), super::online_state_view::lookup),
+        (h("EntitlementManager"), super::entitlement_view::lookup),
     ]
 });
 
