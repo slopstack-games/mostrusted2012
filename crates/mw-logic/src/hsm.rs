@@ -397,6 +397,16 @@ pub trait Host {
     fn loading_screen_showing(&mut self) -> bool {
         false
     }
+    /// Asks the engine to do something (load, play, show, mute: [`Request`](crate::natives::Request)); the
+    /// runtime drains them in order every frame. Where the original's call was synchronous, the host's
+    /// [`query`](Self::query) answers reflect the request at once (a pushed page context exists, a profile load is
+    /// running, a transition started), even if the work itself happens later.
+    fn request(&mut self, _r: crate::natives::Request) {}
+    /// Engine state a behaviour waits on or saves ([`behaviours::Query`]: each names the original's read and its
+    /// answer); `None` = not known, the query's default ([`behaviours::Query::default_answer`]).
+    fn query(&mut self, _q: &behaviours::Query) -> Option<u64> {
+        None
+    }
     /// A state with a data definition that has a path became active: publish the view model (`FUN_00a4ead0`).
     fn publish(&mut self, _path: &str, _data: &Json) {}
     /// ... and its state finished (`FUN_00a4de20`).
@@ -1012,6 +1022,14 @@ impl Cx<'_> {
             .is_some_and(|c| c.exits.iter().any(|e| e.child_exit == exit && e.action != Action::Nothing))
     }
 
+    /// Whether the parent's child exit data for this state lists the exit point at all, whatever its action
+    /// (`FUN_00774740`).
+    pub fn parent_has_exit(&self, exit: Key) -> bool {
+        let Some(parent) = self.hsm.inst(self.id).parent else { return false };
+        let pdef = &self.data.states[self.hsm.inst(parent).state];
+        pdef.child(self.state().id).is_some_and(|c| c.exits.iter().any(|e| e.child_exit == exit))
+    }
+
     /// Starts another machine (`RUNSUBNET`).
     pub fn start_machine(&mut self, instance: u32) -> Option<u32> {
         self.hsm.start(instance, self.host)
@@ -1065,5 +1083,7 @@ pub fn atof(s: &str) -> f64 {
 
 pub mod behaviours;
 
+#[cfg(test)]
+mod flow_tests;
 #[cfg(test)]
 mod tests;

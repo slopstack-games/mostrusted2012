@@ -9,8 +9,9 @@ use anyhow::{Result, bail};
 use mw_assets::AssetStore;
 use mw_formats::hsm::{Action, HsmData, ParamType, Parameter, State, behaviour_id, key, key_name};
 use mw_formats::json::Json;
-use mw_logic::hsm::{Clock, Host, Hsm, Key, ORIGINAL_BEHAVIOURS, Registry, Trace, behaviours::Stub, original_code};
-use mw_logic::natives::LogicHost;
+use mw_logic::hsm::behaviours::{Query, Stub};
+use mw_logic::hsm::{Clock, Host, Hsm, Key, ORIGINAL_BEHAVIOURS, Registry, Trace, original_code};
+use mw_logic::natives::{LogicHost, Request};
 
 pub struct Options<'a> {
     pub bundle: &'a str,
@@ -228,6 +229,8 @@ struct Driver {
     unported_hooks: HashMap<String, usize>,
     /// Hook names the original does not have (EXITINVALID, as in the original).
     unknown_hooks: HashMap<String, usize>,
+    /// A headless press: the primary user binds as soon as the binding press is listened for.
+    user_bound: bool,
 }
 
 impl Host for Driver {
@@ -263,6 +266,29 @@ impl Host for Driver {
                 *self.unknown_hooks.entry(name.to_owned()).or_default() += 1;
                 None
             }
+        }
+    }
+    fn request(&mut self, r: Request) {
+        match &r {
+            Request::ReleasePrimaryUser(true) => self.user_bound = false,
+            Request::ListenForPrimaryUser { listen: true, .. } => self.user_bound = true,
+            _ => {}
+        }
+        println!("{:5}      request {r:?}", self.frame);
+    }
+    /// `--answer Query.<Name>=<value>` (true / false / a number / an exit point name), else the driver's own
+    /// state (the primary user), else the query's default.
+    fn query(&mut self, q: &Query) -> Option<u64> {
+        if let Some(v) = self.bindings.get(&format!("Query.{}", q.name())) {
+            return Some(match v.to_ascii_lowercase().as_str() {
+                "true" | "yes" => 1,
+                "false" | "no" => 0,
+                _ => v.parse().unwrap_or_else(|_| key(v)),
+            });
+        }
+        match q {
+            Query::PrimaryUserBound => Some(self.user_bound as u64),
+            _ => None,
         }
     }
     fn loading_screen_showing(&mut self) -> bool {
@@ -389,6 +415,7 @@ fn drive(data: Arc<HsmData>, instance: u32, steps: usize, dt: f32, answers: &[St
         frame: 0,
         unported_hooks: HashMap::new(),
         unknown_hooks: HashMap::new(),
+        user_bound: false,
     };
     let Some(serial) = hsm.start(instance, &mut host) else { bail!("no top-level state with instance {instance}") };
     let clock = Clock::both(dt);
