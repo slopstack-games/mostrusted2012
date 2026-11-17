@@ -61,8 +61,11 @@ pub struct SfxSource {
 /// underrun of the output, as the user's load bursts gave (a test switch).
 static STALL_MS: AtomicU64 = AtomicU64::new(0);
 
+/// A stall plan: start (`None`: at a teleport), ms, count, spacing (s).
+type StallPlan = (Option<f32>, u64, u32, f32);
+
 fn stall_test(now: f32, jump: bool, done: &mut u32, start: &mut Option<f32>) {
-    static PLAN: std::sync::OnceLock<Option<(Option<f32>, u64, u32, f32)>> = std::sync::OnceLock::new();
+    static PLAN: std::sync::OnceLock<Option<StallPlan>> = std::sync::OnceLock::new();
     let Some((at, ms, n, every)) = *PLAN.get_or_init(|| {
         let v = std::env::var("MW_AUDIO_STALL").ok()?;
         let mut it = v.split(',');
