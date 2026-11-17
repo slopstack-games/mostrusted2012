@@ -69,10 +69,10 @@
 //! playback also holds through the hand-written results (the offline results screen is not ported).
 //!
 //! Stand-ins (model decisions, the same answers `mwtool hsm --run` documents in docs/commands.md): the engine
-//! bindings: none left but `Transitions.Transitioning` (`Net.*`, `UIConfig.*`, `SignInState.*`, `UISequences.*` and
-//! `GeneralSequence.*` are the logic's own offline roots); state 1222788 `ConnectToAutolog` (online Autolog sign-in) exits
-//! DONE at once; server operations (`HSM_SERV_OP`: the Blaze `PCLogin` the silent sign-in starts, since the
-//! code's `IsChatRestricted` is false) exit FAILURE, as with no server; `Query::ModeWon` is the logic's GMM+0x2e78 (1
+//! bindings: none left (`Net.*`, `UIConfig.*`, `SignInState.*`, `UISequences.*`, `GeneralSequence.*`,
+//! `Transitions.*` (set from the runtime's transition state) are the logic's own roots); state 1222788
+//! `ConnectToAutolog` (online Autolog sign-in) exits DONE at once; server operations are the logic's ported
+//! `HSM_SERV_OP` (the silent sign-in's `PCLogin` fails over without a server); `Query::ModeWon` is the logic's GMM+0x2e78 (1
 //! while a mode runs, as the manager's constructor and reset set it; `FUN_006f46e0`'s offline derivation is not ported); behaviour types that are not
 //! ported yet hold (run their children, never exit); hooks that are not ported answer EXIT (most `CALLHSMHOOK` nodes
 //! go on on EXIT).
@@ -312,11 +312,8 @@ fn receive(world: &mut World) {
     });
 }
 
-/// The server operations (`HSM_SERV_OP`: Blaze / Origin logins, entitlements, uploads).
-const SERVER_OPERATION: &str = "HSM_SERV_OP";
-
 /// The structural and ported behaviour types; types the original has but we have not ported hold, the online
-/// Autolog state exits DONE and server operations exit FAILURE. The free-roam Easy Drive prompt's input wait and
+/// Autolog state exits DONE (server operations are the logic's own `HSM_SERV_OP`, which fails over offline). The free-roam Easy Drive prompt's input wait and
 /// the Easy Drive menu take the runtime's event choice ([`EventChoice`]).
 fn registry(data: &HsmData, choice: &Arc<AtomicU32>) -> Registry {
     let mut registry = Registry::structural();
@@ -336,7 +333,6 @@ fn registry(data: &HsmData, choice: &Arc<AtomicU32>) -> Registry {
         }
         let orig = original.clone();
         let name = original_code(b).unwrap_or("?").to_owned();
-        let server = !ported && name == SERVER_OPERATION;
         registry.register_id(
             b,
             &name,
@@ -345,8 +341,6 @@ fn registry(data: &HsmData, choice: &Arc<AtomicU32>) -> Registry {
                     Box::new(Stub { exit: Some(key("DONE")) })
                 } else if ported {
                     orig.create_for(s).expect("registered")
-                } else if server {
-                    Box::new(Stub { exit: Some(key("FAILURE")) })
                 } else {
                     Box::new(Stub { exit: None })
                 }
@@ -627,6 +621,9 @@ fn tick(logic: Option<NonSendMut<Logic>>, real: Res<Time<Real>>, mut t: Targets,
         ActionInput { pressed, repeat, value }
     });
     let was_running = hsm.is_running(*serial);
+    // The screen transitions' state (the logic's `Transitions` root, state +0x3ac == 3 while one plays).
+    let playing = host.transitioning;
+    host.logic.state.borrow_mut().transitions.set_playing(playing);
     hsm.update(host, Clock { frame: dt, game: game_dt });
     // The game-mode manager's update right after the HSM's (`FUN_006abc10`): starts the mode's machine. Stand-in:
     // the weapon list loads at once.
@@ -943,7 +940,6 @@ impl RuntimeHost {
         let bool = |b: bool| if b { "true" } else { "false" };
         Some(
             match path {
-                "Transitions.Transitioning(NOT)" => bool(!self.transitioning),
                 // The UI message manager's NIS flag: a cutscene plays (`cutscene.rs`).
                 "UIMessages.NISRunning" => bool(self.nis_running),
                 "UIMessages.NISRunning(NOT)" => bool(!self.nis_running),
