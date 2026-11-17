@@ -13,6 +13,18 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ## Dated findings
 
+### 2026-11-17: native registries wired (PLAN M8 step 3, `mw_logic::natives`)
+
+- `Registry::original()` lists the 187 HSM hooks (`FUN_007763b0`) and 385 Lua natives (`FUN_009f7e50`) with handler
+  addresses; ported ones carry a fn, the rest record `"hook Name"` / `"lua Name"` in `LogicState::unported`.
+  `Area` classification of the entries is still `unknown` (later).
+- `LogicHost` (one `Registry` + `LogicState`) implements `hsm::Host` (hooks through `Registry::call_hook`, binding
+  reads and publish / retract through `state.view_models`) and `install_lua` binds every Lua native as a global.
+  `ViewModels` = published data-definition roots plus runtime-registered root providers.
+- HSM data definitions are read with `mw_formats::json::Json` (engine reader, key order, int / double tags).
+- `mwtool natives [--area a] [--unported]`; `mwtool hsm --run` and `mwtool lua` run on the logic host. Results
+  unchanged: boot reaches "Playing" with the answer set, 115 Lua scripts run clean.
+
 ### 2026-11-17: browser audio: it plays, matches native's level, drops out while streaming
 - **Start**: browsers start an `AudioContext` suspended until a gesture; the game (cpal via Bevy/rodio) creates
   its context while starting. `tools/web/index.html` keeps every context and resumes them on the first
