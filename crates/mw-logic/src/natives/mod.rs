@@ -32,11 +32,18 @@ pub mod hooks_flow;
 mod hooks_tests;
 pub mod hooks_ui;
 pub mod host;
+pub mod lua_args;
+pub mod lua_career;
+pub mod lua_settings;
+#[cfg(test)]
+mod lua_tests;
+pub mod lua_widgets;
 pub mod players;
 pub mod progression;
 pub mod state;
 pub mod table;
 pub mod view_models;
+pub mod vm_path;
 
 use std::collections::HashMap;
 
@@ -130,6 +137,9 @@ impl Registry {
         // Area files register here (one line each).
         hooks_flow::register(&mut r);
         hooks_event::register(&mut r);
+        lua_widgets::register(&mut r);
+        lua_settings::register(&mut r);
+        lua_career::register(&mut r);
         r
     }
 

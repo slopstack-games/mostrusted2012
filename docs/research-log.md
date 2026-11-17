@@ -16,6 +16,27 @@ Older entries (before 2026-11, and the early topical findings) are in
 ### 2026-11-17: 20 HSM hooks ported (`natives/hooks_flow.rs`, `hooks_event.rs`)
 
 Handlers are not in `functions.csv` (vtable-only); read from `re/out/live/text.asm` (awk from the address to the next int3) with the helpers' bodies from the dump. Ported (all offline): CalculateShouldShowRecapSequence (GMM+0x2e88 := 1), ClearRecapFlag, ClearMatchmakingState (FUN_00675470), PopulateSettings / SaveSettings (FUN_0086e0a0 / FUN_0086fe20 on the settings at +0x2f3e0 of the object behind 0x117e9f4+0x2020, not G), SetNewGame (FUN_0068fd50), SetSinglePlayerRollout, SetRolloutFromProfile, IsNewGame, ClearNewGameFlag, ShouldPlayNewGameIntro, SetNewGameIntroCompleted, SetIntroEventNext, IsIntroRace, IsProgressionReady, SaveProfile, StartGameModeTimer, StopGameModeTimer, ResetGameMode, IsOnlineEvent. Each returns EXIT (0x1177ef0) or TRUE / FALSE (0x1177fe0 / 0x1177ee0). State: LogicState.game / config / game_modes / players / progression (offsets in field docs); engine work as Request variants. About 70 further hooks from a stopped pass are in register_parked (unverified, not in Registry::original(); original_with_parked() for tests). Model decisions: missing / mistyped arguments read as zero; ResetGameMode sends no telemetry record. mwtool hsm --run stands in a loaded profile, so IsProgressionReady / ShouldPlayNewGameIntro are no longer answered by hand; the boot trace is identical. Open: verify the parked hooks one by one.
+### 2026-11-17: Lua natives, first 60 ported (M8 step 3; `natives/lua_{args,widgets,settings,career}.rs`)
+
+Merged the stopped agent's WIP onto the wired registry (`Registry::set_lua`, `LogicHost::install_lua`) and
+verified it. Sources: each handler in the dump (addresses in the doc comments), Lua 5.1 `lapi.c` as linked in the
+exe (`lua_args.rs`: `tolstring` NULL gives `"<invalid>"`, `tonumber` + `_ftol2` for ints). Ported (60 of 385, mwtool
+natives): bindings (`Resolve{Bool,Int,Double,String,WideString}Binding`), `ExitWidgetGroup`, `Set{Bool,Int,Double,
+String,UniqueId}Variable`, `DeleteVariable`, `DoRpc`, `SetModalMode`, `print`, `GetPlatformName` (`"PC"`),
+`SmoothStep`, `SetLanguage`, `GetInitialLanguageSelectLanguage`, conductors / sequences (6), dialogs (3), text
+entry (3), settings (14 + 3 post-FX), career fields (12). State: `LogicState::{screen, widget_scripts, text_entry,
+settings, post_fx, game, game_modes, ui_manager, challenges}`; engine-only effects are `Request::{WidgetRpc,
+SetLanguage, CreateConductor, DestroyConductor, StartSequence, StopSequence, ShowDialog, CloseDialog,
+StartTextEntry, SaveSettings}`.
+- **Tests**: `natives/lua_tests.rs` (a test per area, every native called as a Lua global); `tests/lua_natives.rs`
+  (shipped chunks `ViewLegal`, `Breadcrumb` through `LogicHost`). `ViewLegal.OnCancel` calls the unported
+  `SignInFinished` then `ExitWidgetGroup("CANCEL")`; `ViewLegal.OnAction` without a configured binding errors in
+  the script on a chunk-level nil local (context, not a native).
+- **Model decisions**: `SetUniqueIdVariable` stores an int (the typed JSON has no tag 7); the script variables
+  are republished as the single root `Widget` (one member per widget; the bindings' root is one name hash, the
+  original resolves `Widget.<w>.<..>` through slot 8 of the script objects); `GetCurrentSafeHouse` answers 0
+  and the `SetSafeHouse`-like natives only read their argument until the career state exists.
+- **Open**: `SignInFinished` / `SignInStarted` (online, trivial), the profile / career natives that rebuild lists.
 
 ### 2026-11-17: native registries wired (PLAN M8 step 3, `mw_logic::natives`)
 

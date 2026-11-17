@@ -4020,9 +4020,12 @@ dependencies = [
 name = "mw-logic"
 version = "0.1.0"
 dependencies = [
+ "mw-assets",
  "mw-bundle",
  "mw-formats",
+ "mw-gamedir",
  "mw-lua",
+ "serde_json",
  "thiserror 2.0.21",
 ]
 
