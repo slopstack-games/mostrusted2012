@@ -454,4 +454,49 @@ pub enum Request {
     /// name, 0x00680680, ends in it): for vehicle > 0 the saved-game record of that vehicle (`FUN_00730ec0`, the
     /// zeroed one when none) is applied to the local player's record (`FUN_006c7950`).
     SetVehicleAndRolloutFromSaveGame { vehicle: i32 },
+    /// `MUTEALLRUMBL` enter (0x73e170) / exit (0x73e1f0, `FUN_0079f5f0` on G+0x2f480 +0x325f0): the controller
+    /// rumble mute flag of `reason` (`MUTEREASON` in the table at 0x010c5c10: 0 Unknown, 1 LoadingScreen, 2
+    /// CarSelect, 3 Pause, 4 Autolog, 5 Settings; no match 0) set (`on`) or cleared (byte +0x260 + reason); rumble
+    /// is off while any flag is set, and a rumble message {2, 0, any set} is queued on `*0x010edb18`.
+    MuteRumble { reason: u8, on: bool },
+    /// `PAUSEMSGS` enter (0x74e890) / exit (0x74ee10): pause (`on`) or resume the in-game message system
+    /// (G+0x2f480). `queues` (the `QUEUES` list, at most 8 names) are looked up in the message queue table
+    /// (+0x17e0, `FUN_007b2940`); each found queue's pause byte (+0x25) is set / cleared. `flags` (the
+    /// `PAUSE_*` bits of `behaviours_mode2`) count the HUD message categories up / down by one: the counter
+    /// bytes at G480 +0x124b8 / +0x124b9 (HUD), the per-slot bytes +0x121cc / +0x121cd (stride 0x7c, the
+    /// +0x12458 slots) with +0x12738 / 9 (instant) and +0x13fe4 cleared, +0x12548 / 9, +0x12640 / 1, +0x126bc / d,
+    /// +0x125c4 / 5; `PAUSE_SPEECH` sets G+0x2ed68 to `on`; `PAUSE_DEFER_HUD` counts +0x1245c +0x8c; byte
+    /// +0x325e8 = `on`.
+    PauseMessages { queues: Vec<String>, flags: u16, on: bool },
+    /// `PAUSEMSGS` update (0x74edd0, with `FORCEPAUSE`): every found queue whose pause byte (+0x25) is 0 gets 1.
+    ForcePauseMessageQueues { queues: Vec<String> },
+    /// `PLAYSONGLIST` enter (0x757e90 → `FUN_0079f7b0` on G+0x2f480 +0x30370): start the song `list` (resumes
+    /// the previous one when it is the same and nothing is current, `FUN_0079f760`); `allow_playout` is
+    /// `ALLOWPLAYOUT`.
+    PlaySongList { list: i64, allow_playout: bool },
+    /// `PLAYSONGLIST` exit begin (0x744b00 → `FUN_007908e0`): the current list (+0x400) becomes the previous
+    /// (+0x404) and is cleared, +6 = 0 (stopped).
+    StopSongList,
+    /// `WEAPONSOK` enter (0x753ad0) / exit begin (0x741bb0): `FUN_006bb6e0` on the object manager
+    /// (G+0x2f400): byte +0x6070 = `allowed`.
+    WeaponsAllowed(bool),
+    /// `WEAPONSOK` exit begin, unless `Query::GmmFlag2e80` (`FUN_006c8e90` on G+0x2f400): each player's id
+    /// (+0xa0) is queued on the object manager's list (+0x5ff0, count +0x5ffc, total +0x6000).
+    ResetPlayerWeapons,
+    /// `MINIMAPICONS` update (0x7579b0), every frame: for the 12 minimap slots (G+0x2f3d8, 0x50 B each) the
+    /// icon-visible byte (+0x92) is cleared; for every present player (G+0x2f3dc, +0xa5d0): when the visibility
+    /// check (0x74e0b0) passes the player's +0x2f8 is set to 1.0 (`FUN_006b9410`); the slot's state (+0x80) =
+    /// 2 when +0x2f8 > 0, else 0; its flag (+0x14 + 4 slot) = 4 when the player's +0x9c is nonzero, else 0.
+    UpdateMinimapIcons,
+    /// `SYNCPROFILEW` finish (0x7646f2): when the flag saved on enter (G+0x2ee5c) was 0 it is set to 1.
+    SetProfileSyncFlag,
+    /// `HIDECHEV` enter (0x75bbf0) / exit (0x75bc20): message {0x1b, 0, `hide`} posted on the queue
+    /// `*0x010edb1c` +0x10 (`FUN_0076a970`): the HUD chevron is hidden / shown.
+    HideChevron { hide: bool },
+    /// `PAUSEAI` enter (0x73e450) / exit (0x73e4c0): the 16 bytes G+0x2ef50..0x2ef5f = `paused`, G+0x2ef60 =
+    /// `!paused`.
+    PauseAi { paused: bool },
+    /// `DOBODYSHOP` update (0x749220), every frame: the body-shop watcher over the 24 player slots (see
+    /// `behaviours_mode2::DoBodyShop`).
+    UpdateBodyShop,
 }

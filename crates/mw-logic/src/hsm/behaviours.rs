@@ -10,6 +10,8 @@ use super::{Behaviour, Cx, EXIT, EXITINVALID, Key, Registry};
 pub mod game;
 #[path = "behaviours_mode.rs"]
 pub mod mode;
+#[path = "behaviours_mode2.rs"]
+pub mod mode2;
 #[path = "behaviours_ui.rs"]
 pub mod ui;
 
@@ -49,6 +51,7 @@ pub fn register(r: &mut Registry) {
     ui::register(r);
     game::register(r);
     mode::register(r);
+    mode2::register(r);
 }
 
 /// Engine state a behaviour reads, asked through [`Host::query`](super::Host::query). Answers are `u64`: bools are
@@ -207,6 +210,23 @@ pub enum Query {
     ControlGroupCount { name: String },
     /// ... and group `index`. Default 0.
     ControlGroup { name: String, index: u32 },
+    /// `PLAYSONGLIST` (0x74f540, first fallback): the event's own song list: when GMM+0x2ce0 is set with mode
+    /// 4 (`FUN_006dfe00`) and the event is offline (`FUN_006dfed0`), byte +0x68 of the event record
+    /// (`FUN_006e66a0`). Default 0 (none: the next fallback).
+    CurrentEventSongList,
+    /// `PLAYSONGLIST` (0x74f540, last fallback): the current event's default list (GMM+0x2cf4 record +0x2c).
+    /// Default 0.
+    DefaultEventSongList,
+    /// `WEAPONSOK` (0x753ad0): byte +0xf2 of the event record (`FUN_006e66a0`): weapons allowed in the event.
+    /// Default false (model decision: the free-drive record is not read).
+    EventWeaponsAllowed,
+    /// `WEAPONSOK` exit: byte GMM+0x2e80. Default false (so the weapon state is reset on exit).
+    GmmFlag2e80,
+    /// `SYNCPROFILEW` (0x763a00 state 0, `FUN_004c2050` → `FUN_00a82e60`): the online profile service is
+    /// connected. Default false (offline).
+    ProfileServiceConnected,
+    /// `SYNCPROFILEW` enter (0x7462e0): byte G+0x2ee5c. Default false.
+    ProfileSyncFlag,
 }
 
 impl Query {
@@ -300,6 +320,12 @@ impl Query {
             Query::StoryMode => "StoryMode",
             Query::ControlGroupCount { .. } => "ControlGroupCount",
             Query::ControlGroup { .. } => "ControlGroup",
+            Query::CurrentEventSongList => "CurrentEventSongList",
+            Query::DefaultEventSongList => "DefaultEventSongList",
+            Query::EventWeaponsAllowed => "EventWeaponsAllowed",
+            Query::GmmFlag2e80 => "GmmFlag2e80",
+            Query::ProfileServiceConnected => "ProfileServiceConnected",
+            Query::ProfileSyncFlag => "ProfileSyncFlag",
         }
     }
 }
