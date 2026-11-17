@@ -245,8 +245,8 @@ mod tests {
         h.retract("SafeForDialogs");
         assert_eq!(h.binding_bool("SafeForDialogs.CanShow"), Some(false));
         assert_eq!(h.hook("NoSuchHook", None), None);
-        assert_eq!(h.hook("LoadLastOnlineRollout", None), Some(hsm::EXITINVALID));
-        assert_eq!(h.take_unported(), ["hook LoadLastOnlineRollout"]);
+        assert_eq!(h.hook("MutePlayer", None), Some(hsm::EXITINVALID));
+        assert_eq!(h.take_unported(), ["hook MutePlayer"]);
         assert!(h.graphics_prepared());
     }
 

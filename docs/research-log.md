@@ -13,6 +13,25 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ## Dated findings
 
+### 2026-11-17: ninth 20 HSM hooks verified and enabled (180 of 187; `natives/hooks_playlist.rs`)
+
+Handlers read from `re/out/live/text.asm`, callees from the dump. All return EXIT except `CanJoinAirportGameByFriendIndexBinding`
+(TRUE 0x1177fe0 / FALSE 0x1177ee0, equal to the table's copies in the snapshot). New member hash: `liPlaylistIndex` = 0x25a408da (`DAT_01177b10`, found by name guess with the field hash).
+Mapping: LoadLastOnlineRollout 0x693c50 (`FUN_00692800` on G+0x2f404: Request); UploadLocalPlayerXP 0x676370 (local player +0x3fc > 0 -> stat upload `FUN_00734f60`(type 4), +0x3fc = 0 either way; `Player::online_xp`);
+ProcessOnlinePostEventDrivingTests 0x680560 (online event and the race state's byte +0x71 -> `FUN_00704bf0` G+0x2f418: ranking messages 6/7, 6/8);
+SetupPlaylistsVote 0x676430 (`FUN_006f60f0` on the playlist manager (G+0x2f3fc)+0x14); PlayCriterionPlaylist 0x676450 (`FUN_006e9a30` = a current playlist with state; if none `FUN_006f6040`);
+PlayCustomPlaylist 0x676480 (`liPlaylistIndex` -> `FUN_006f2730` = `FUN_006eae00`: creates the playlist session when +0x3c == -1); EZPlayCustomPlaylist 0x676520 (`atoi(lpcValue)` - 1, same call);
+HostCancelPlaylist / SoloPlayerCancelPlaylist 0x6764c0 / 0x6764f0 (`FUN_006f5f00`(0 / 1): needs +0x8c == -1, a current playlist and `FUN_004c22b0`); MatchmakePlaygroup 0x6765c0 (`FUN_006747d0`: network request);
+QuickJoinGameDesired 0x6765e0 / CreateGameDesired 0x676610 (G+0x2f490 word / G+0x2f708 byte = 1, then `FUN_006e74f0`(0, 0) on (G+0x2f3fc): wished game cleared, +0x2d10/14 = `DAT_01179528/2c` = 0 in the snapshot);
+SetRolloutSweetRevengeFromEasyDrive 0x68d330 (`atoi` -> (G+0x2f404)+PM+0xa6b4 x 0xd8 + 0x82b8, then `FUN_0068ba20`(0)); SetFriendInviteIdEasyDrive 0x67a800 (`FUN_006797f0`: the string evaluated by the binding expression parser `FUN_00a50650`, `strtoll` -> G+0x2f498);
+SetJoinFriendIdByIndexBinding 0x676640 (`FUN_006749a0`: the string evaluated to an index, -1, in the friend list G+0x2f3e0 (`FUN_0086f2f0`, 0x68-byte entries) -> G+0x2f4ac = 1, id +0x38/+0x3c stored at +0x2f4b0 and +0x2f4b8);
+CanJoinAirportGameByFriendIndexBinding 0x676680 (`FUN_006748d0`: `FUN_00643c90` = airport pack owned -> TRUE, else friend entry byte +0x63 == 0 -> TRUE, else FALSE); OnMidGameJoin 0x6766d0 (`FUN_006e0c10`: byte +0x84 = 0, +4 = G+0x2a9e0);
+Activate / DeactivateFriendCarouselViewModel 0x676cc0 / 0x676ce0 ((G+0x2f3e0)+0x14 word = 1 / 0); UnlockMwlCache 0x676df0 (`FUN_0071cad0`: lock byte +0x36 = 0, the inverse of CacheMwlAndLock). Test `the_ninth_twenty`; `the_twenty_ported_hooks` counts 180; `mod.rs` / `host.rs` tests use `MutePlayer` as the unported example.
+Model decisions: the hooks that take an expression string (SetFriendInviteId, the two friend-index ones) read it as the number itself (no binding expression is evaluated); the cancel hooks are guarded only by "a playlist is current" (`HookPlaylistFields::playlist_active`), the other two guards are the runtime's;
+`SetRolloutSweetRevenge` with a local player outside slots 0..12 stores nothing (the original writes out of range); the friend list is empty offline, so the friend hooks answer FALSE / do nothing.
+Open: the runtime handles none of the new `Request`s (LoadLastOnlineRollout, UploadLocalPlayerXp, ProcessOnlineDrivingTests, SetupPlaylistsVote, PlayCriterionPlaylist, PlayCustomPlaylist, CancelPlaylist, MatchmakePlaygroup, ApplyLocalRollout); the `FUN_00a50650` expression evaluation is not checked against a live binding.
+Remaining unported (7): HACKPlayFirstCustomPlaylist (0x676570, debug), RestartGamesComShowFloorFlow (0x680630, debug), ProcessPlaylistEndMilestones (0x676da0), GetMostWantedListFromServer (0x7eb4b0), MutePlayer (0x7eea30), UnmutePlayer (0x7eea70), OnWallPostOrComment (0x7eb7d0).
+
 ### 2026-11-17: eighth 20 HSM hooks verified and enabled (160 of 187; `natives/hooks_online.rs`)
 
 Handlers read from `re/out/live/text.asm`, callees from the dump; member hashes read from the snapshot `.bss`

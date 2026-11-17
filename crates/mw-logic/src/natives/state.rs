@@ -52,6 +52,8 @@ pub struct LogicState {
     pub hook_misc: super::hooks_misc::HookMiscFields,
     /// The fields of the eighth twenty HSM hooks (`hooks_online.rs`).
     pub hook_online: super::hooks_online::HookOnlineFields,
+    /// The fields of the ninth twenty HSM hooks (`hooks_playlist.rs`).
+    pub hook_playlist: super::hooks_playlist::HookPlaylistFields,
     /// The screen-transition manager (`Transitions` root, `transitions_view.rs`).
     pub transitions: super::transitions_view::Transitions,
     /// The profile access bytes of G+0x2f454 (`GameLogicState.IsAccessingProfile`, `game_logic_view.rs`).
@@ -798,4 +800,28 @@ pub enum Request {
     /// `SI_SHOW_ERR` exit (0x772720): restores the layer set, removes the buttons and the screen
     /// (`FUN_00887960`, with `show_load` = `SHOWLOAD`, default true).
     SignInErrorClose { show_load: bool },
+    /// `LoadLastOnlineRollout` (0x693c50 -> `FUN_00692800` on G+0x2f404): the last online car / rollout from the profile.
+    LoadLastOnlineRollout,
+    /// `UploadLocalPlayerXP` (0x676370 -> `FUN_00734f60` on G+0x2f3f8): the stat upload of `xp` (type 4) for the
+    /// local player.
+    UploadLocalPlayerXp { xp: i32 },
+    /// `ProcessOnlinePostEventDrivingTests` (0x680560 -> `FUN_00704bf0` on G+0x2f418): the online post-event
+    /// ranking messages (UI messages 6/7, 6/8).
+    ProcessOnlineDrivingTests,
+    /// `SetupPlaylistsVote` (0x676430 -> `FUN_006f60f0` on the playlist manager (G+0x2f3fc)+0x14): a new vote set
+    /// up and kept at G+0x2a9d8.
+    SetupPlaylistsVote,
+    /// `PlayCriterionPlaylist` (0x676450 -> `FUN_006f6040`): the playlist the criteria pick starts.
+    PlayCriterionPlaylist,
+    /// `PlayCustomPlaylist` / `EZPlayCustomPlaylist` (0x676480 / 0x676520 -> `FUN_006f2730` = `FUN_006eae00`): the
+    /// custom playlist `index` (0-based) is created as the current one.
+    PlayCustomPlaylist { index: i32 },
+    /// `HostCancelPlaylist` / `SoloPlayerCancelPlaylist` (0x6764c0 / 0x6764f0 -> `FUN_006f5f00`(solo)): the
+    /// playlist-cancel event is sent.
+    CancelPlaylist { solo: bool },
+    /// `MatchmakePlaygroup` (0x6765c0 -> `FUN_006747d0`): the matchmaking session request (`FUN_0083db60`).
+    MatchmakePlaygroup,
+    /// `SetRolloutSweetRevengeFromEasyDrive` (0x68d330): after the record (+0x82b8) was stored,
+    /// `FUN_0068ba20`(0) applies the local player's rollout record.
+    ApplyLocalRollout,
 }

@@ -34,6 +34,7 @@ pub mod hooks_event;
 pub mod hooks_flow;
 pub mod hooks_misc;
 pub mod hooks_online;
+pub mod hooks_playlist;
 pub mod hooks_select;
 #[cfg(test)]
 mod hooks_tests;
@@ -162,6 +163,7 @@ impl Registry {
         hooks_select::register(&mut r);
         hooks_misc::register(&mut r);
         hooks_online::register(&mut r);
+        hooks_playlist::register(&mut r);
         lua_widgets::register(&mut r);
         lua_settings::register(&mut r);
         lua_career::register(&mut r);
@@ -237,7 +239,7 @@ mod tests {
         assert_eq!(both, 36);
         let mut state = LogicState::default();
         assert_eq!(r.call_hook(&mut state, "NoSuchHook", None), None);
-        assert_eq!(r.call_hook(&mut state, "LoadLastOnlineRollout", None), Some(crate::hsm::EXITINVALID));
-        assert_eq!(state.unported, ["hook LoadLastOnlineRollout"]);
+        assert_eq!(r.call_hook(&mut state, "MutePlayer", None), Some(crate::hsm::EXITINVALID));
+        assert_eq!(state.unported, ["hook MutePlayer"]);
     }
 }

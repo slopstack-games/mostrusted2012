@@ -36,6 +36,8 @@ pub struct Player {
     pub final_5c8: u32,
     pub final_5cc: u32,
     pub final_5d0: bool,
+    /// +0x3fc: the XP the player earned online and has not uploaded yet (`UploadLocalPlayerXP` zeroes it).
+    pub online_xp: i32,
     /// `FUN_006ba320` (the player's vtable +0x18): the `VehicleList` id of its car (engine state; the runtime
     /// sets it; 0 = none). `Mode.CurrentVehicleGamepack` reads its pack.
     pub vehicle_id: u32,

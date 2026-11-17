@@ -29,6 +29,8 @@ pub const LI_ID: u32 = 0x6c69_4964;
 pub const VALID_PROGRESSION_DATA: u32 = 0xce68_ae4f;
 /// `liRolloutId` (`DAT_01177c78`, `SetRollout`).
 pub const LI_ROLLOUT_ID: u32 = 0xd043_18ef;
+/// `liPlaylistIndex` (`DAT_01177b10` = 0x25a408da, `PlayCustomPlaylist`; name found by hash).
+pub const LI_PLAYLIST_INDEX: u32 = 0x25a4_08da;
 
 /// `FUN_009f16b0` + the tag check: the member whose name hashes to `hash`, if it has the value tag `tag`.
 pub fn member(args: Option<&Json>, hash: u32, tag: u8) -> Option<&Json> {
@@ -106,6 +108,7 @@ mod tests {
         assert_eq!(field_hash("liId"), LI_ID);
         assert_eq!(field_hash("lbValid"), VALID_PROGRESSION_DATA);
         assert_eq!(field_hash("liRolloutId"), LI_ROLLOUT_ID);
+        assert_eq!(field_hash("liPlaylistIndex"), LI_PLAYLIST_INDEX);
     }
 
     #[test]

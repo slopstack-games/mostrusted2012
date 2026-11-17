@@ -238,12 +238,12 @@ fn ui_hooks() {
     );
 }
 
-/// The registry the boot path uses: the 160 hooks verified against their handlers (`the_second_twenty` ... `the_eighth_twenty`).
+/// The registry the boot path uses: the 180 hooks verified against their handlers (`the_second_twenty` ... `the_ninth_twenty`).
 #[test]
 fn the_twenty_ported_hooks() {
     let r = Registry::original();
     let ported: Vec<_> = r.hooks().iter().filter(|h| h.ported()).map(|h| h.name).collect();
-    assert_eq!(ported.len(), 160, "{ported:?}");
+    assert_eq!(ported.len(), 180, "{ported:?}");
     let mut s = LogicState::default();
     s.players.local = Some(0);
     s.players.slots[0] = Some(Player::default());
@@ -882,4 +882,113 @@ fn the_eighth_twenty() {
             Request::ResetPlaylistScoreState,
         ]
     );
+}
+
+/// The ninth twenty, each checked against its handler (research-log 2026-11-17), through the verified registry.
+#[test]
+fn the_ninth_twenty() {
+    use crate::natives::entitlements::GamePack;
+    use crate::natives::hooks_playlist::Friend;
+    let r = Registry::original();
+    let mut s = with_local_player();
+    let v = |t: &str| format!(r#"{{"lpcValue": "{t}"}}"#);
+
+    // Requests only.
+    for name in ["LoadLastOnlineRollout", "SetupPlaylistsVote", "MatchmakePlaygroup"] {
+        assert_eq!(call(&r, &mut s, name, None), EXIT);
+    }
+    assert_eq!(s.requests, [Request::LoadLastOnlineRollout, Request::SetupPlaylistsVote, Request::MatchmakePlaygroup]);
+    s.requests.clear();
+
+    // UploadLocalPlayerXP: uploaded above 0, zeroed either way.
+    assert_eq!(call(&r, &mut s, "UploadLocalPlayerXP", None), EXIT);
+    assert!(s.requests.is_empty());
+    s.players.local_player_mut().unwrap().online_xp = 250;
+    call(&r, &mut s, "UploadLocalPlayerXP", None);
+    assert_eq!(s.requests, [Request::UploadLocalPlayerXp { xp: 250 }]);
+    assert_eq!(s.players.local_player().unwrap().online_xp, 0);
+    s.requests.clear();
+
+    // ProcessOnlinePostEventDrivingTests: an online event and the pending byte.
+    call(&r, &mut s, "ProcessOnlinePostEventDrivingTests", None);
+    s.game_modes.online_event = true;
+    call(&r, &mut s, "ProcessOnlinePostEventDrivingTests", None);
+    assert!(s.requests.is_empty());
+    s.hook_playlist.driving_tests_pending = true;
+    call(&r, &mut s, "ProcessOnlinePostEventDrivingTests", None);
+    assert_eq!(s.requests, [Request::ProcessOnlineDrivingTests]);
+    s.requests.clear();
+
+    // The playlists: the criterion playlist only without a current one; cancels only with one.
+    call(&r, &mut s, "PlayCriterionPlaylist", None);
+    call(&r, &mut s, "HostCancelPlaylist", None);
+    assert_eq!(s.requests, [Request::PlayCriterionPlaylist]);
+    s.hook_playlist.playlist_active = true;
+    call(&r, &mut s, "PlayCriterionPlaylist", None);
+    call(&r, &mut s, "HostCancelPlaylist", None);
+    call(&r, &mut s, "SoloPlayerCancelPlaylist", None);
+    call(&r, &mut s, "PlayCustomPlaylist", Some(r#"{"liPlaylistIndex": 3}"#));
+    call(&r, &mut s, "EZPlayCustomPlaylist", Some(&v("2")));
+    assert_eq!(
+        s.requests[1..],
+        [
+            Request::CancelPlaylist { solo: false },
+            Request::CancelPlaylist { solo: true },
+            Request::PlayCustomPlaylist { index: 3 },
+            Request::PlayCustomPlaylist { index: 1 },
+        ]
+    );
+    s.requests.clear();
+
+    // The join wishes.
+    s.hook_playlist.desired_game = 5;
+    s.hook_playlist.desired_game_set = true;
+    assert_eq!(call(&r, &mut s, "QuickJoinGameDesired", None), EXIT);
+    assert!(s.hook_playlist.quick_join_desired && !s.hook_playlist.create_game_desired);
+    assert_eq!((s.hook_playlist.desired_game, s.hook_playlist.desired_game_set), (0, false));
+    assert_eq!(call(&r, &mut s, "CreateGameDesired", None), EXIT);
+    assert!(s.hook_playlist.create_game_desired);
+    s.hook_playlist.playlist_source_2a9e0 = 9;
+    s.hook_playlist.mid_game_join_flag = true;
+    call(&r, &mut s, "OnMidGameJoin", None);
+    assert!(!s.hook_playlist.mid_game_join_flag);
+    assert_eq!(s.hook_playlist.playlist_mgr_4, 9);
+
+    // Friends: none offline; the airport pack is not owned offline.
+    s.entitlements.game_packs = vec![GamePack { id: 2196330, entitlement: 5, release: 2 }];
+    s.entitlements.airport_pack = 2196330;
+    assert_eq!(call(&r, &mut s, "CanJoinAirportGameByFriendIndexBinding", Some(&v("1"))), FALSE);
+    call(&r, &mut s, "SetJoinFriendIdByIndexBinding", Some(&v("1")));
+    assert!(!s.hook_playlist.join_friend_set);
+    s.hook_playlist.friends =
+        vec![Friend { id: 77, in_airport_game: true }, Friend { id: 1 << 40, in_airport_game: false }];
+    assert_eq!(call(&r, &mut s, "CanJoinAirportGameByFriendIndexBinding", Some(&v("1"))), FALSE);
+    assert_eq!(call(&r, &mut s, "CanJoinAirportGameByFriendIndexBinding", Some(&v("2"))), TRUE);
+    assert_eq!(call(&r, &mut s, "CanJoinAirportGameByFriendIndexBinding", Some(&v("3"))), FALSE);
+    assert_eq!(call(&r, &mut s, "CanJoinAirportGameByFriendIndexBinding", Some(&v("0"))), FALSE);
+    call(&r, &mut s, "SetJoinFriendIdByIndexBinding", Some(&v("2")));
+    assert!(s.hook_playlist.join_friend_set);
+    assert_eq!((s.hook_playlist.join_friend_id, s.hook_playlist.join_friend_id_copy), (1 << 40, 1 << 40));
+    call(&r, &mut s, "SetFriendInviteIdEasyDrive", Some(&v("12345678901234")));
+    assert_eq!(s.hook_playlist.friend_invite_id, 12_345_678_901_234);
+    call(&r, &mut s, "SetFriendInviteIdEasyDrive", Some(&v("")));
+    assert_eq!(s.hook_playlist.friend_invite_id, 0);
+    s.entitlements.add(5);
+    assert_eq!(call(&r, &mut s, "CanJoinAirportGameByFriendIndexBinding", Some(&v("1"))), TRUE);
+
+    // Sweet revenge: stored for the local player, then the rollout applied.
+    s.requests.clear();
+    assert_eq!(call(&r, &mut s, "SetRolloutSweetRevengeFromEasyDrive", Some(&v("3"))), EXIT);
+    assert_eq!(s.hook_playlist.sweet_revenge[0], 3);
+    assert_eq!(s.requests, [Request::ApplyLocalRollout]);
+
+    // The carousel and the MWL lock.
+    call(&r, &mut s, "ActivateFriendCarouselViewModel", None);
+    assert!(s.hook_playlist.friend_carousel_active);
+    call(&r, &mut s, "DeactivateFriendCarouselViewModel", None);
+    assert!(!s.hook_playlist.friend_carousel_active);
+    call(&r, &mut s, "CacheMwlAndLock", None);
+    assert!(s.hook_online.mwl_cache_locked);
+    call(&r, &mut s, "UnlockMwlCache", None);
+    assert!(!s.hook_online.mwl_cache_locked);
 }
