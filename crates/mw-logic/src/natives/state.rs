@@ -40,6 +40,8 @@ pub struct LogicState {
     pub menus: super::lua_menus::MenuFields,
     /// The remaining offline natives' fields (`lua_misc.rs`).
     pub misc: super::lua_misc::MiscFields,
+    /// The garage, ranks, awards and vehicle-focus fields (`lua_garage.rs`).
+    pub garage: super::lua_garage::GarageFields,
 }
 
 /// Engine facts the logic reads, set by the runtime (or a tool) before the logic runs.
@@ -326,4 +328,21 @@ pub enum Request {
     /// `ChangeVehicleOnCustomRollout` (0x00692760 → `FUN_00691110` on the rollout manager G+0x2f404): try the
     /// vehicle as the custom rollout (`FUN_00691050`), else rebuild the default one for it (`FUN_00690b10`).
     ChangeVehicleOnCustomRollout { vehicle: i32 },
+    /// `ApplyModUpgrade` (0x0068adf0 → `FUN_0068ab10`(id)): the upgrade record `GMM->FUN_006e75f0`(id) is applied
+    /// to the local player's vehicle (`FUN_006830a0`, `FUN_0069fce0`, `FUN_007316d0`, `FUN_00702710`);
+    /// `GarageFields::mod_flag` (GMM+0x251c) is set.
+    ApplyModUpgrade { id: i32 },
+    /// `ReleaseAllImages` (0x007e9c30 → `FUN_007e1340` on (G+0x2f454)+8): every image slot in state 2 (+0x20 of
+    /// the 0x34-byte records of `(*(+0x4830)+0x2f430)`) becomes 3 (released).
+    ReleaseAllImages,
+    /// `ResetNeutalVaues` (0x007f5090): flag 8 of `*0x010edb18` is set, the message {8, 0} is queued
+    /// (`FUN_0076a370`) and the flag cleared: the controllers' neutral values are re-read.
+    ResetNeutralValues,
+    /// `SetAvailableVehicleListEvent` (0x00679b30 → `FUN_00871330` on OM+0x5ee0): the list (count +0x300 reset to
+    /// 0, at most 0x40 records of 12 bytes) of the vehicles available for the event is rebuilt.
+    SetAvailableVehicleListEvent { event: i32 },
+    /// `FUN_006800a0`(vehicle) (Lua `SetVehicleAndRolloutFromSaveGameByVehicleID`, 0x00680340; the hook of the same
+    /// name, 0x00680680, ends in it): for vehicle > 0 the saved-game record of that vehicle (`FUN_00730ec0`, the
+    /// zeroed one when none) is applied to the local player's record (`FUN_006c7950`).
+    SetVehicleAndRolloutFromSaveGame { vehicle: i32 },
 }
