@@ -49,3 +49,18 @@ fn packs_read() {
     let events = store.events().expect("events");
     assert_eq!(events.events.iter().filter(|e| e.game_pack != BASE_GAME_PACK).count(), 46);
 }
+
+/// The airport barrier (`CheckPointsConfig` `e74de7e2`): one chevron across the airport road.
+#[test]
+fn airport_barrier_chevron() {
+    let Ok(game) = mw_gamedir::GameDir::locate(None) else { return };
+    let store = mw_assets::AssetStore::new(game).unwrap();
+    let m = store.route_markers().unwrap();
+    let ids: Vec<u32> = m.barriers.iter().map(|c| c.id).collect();
+    assert_eq!(ids, [2_204_089], "{:?}", m.barriers);
+    let p = &m.barriers[0].points;
+    assert!(
+        p.len() >= 2 && p.iter().all(|q| (130.0..140.0).contains(&q[0]) && (-2035.0..-1985.0).contains(&q[2])),
+        "{p:?}"
+    );
+}

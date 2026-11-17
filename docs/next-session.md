@@ -43,8 +43,8 @@ Decisions with the user: portrait loading screens keep the original's bars.
   2. **Handbrake doesn't swing the car** (user): at 60 mph with full lock, Space locks the rears (braking skid
      0.95) but the slip only reaches 0.16 in 1 s. Trace the handbrake's drift entry in the code (handling.md /
      decomp.md "drift").
-  3. **Ownership and DLC** (base check done the same day: `GameDir::ownership`, retail exe hash; DLC lock: agent E's
-     entitlements, then the runtime gating) (user decision): an install whose retail data passes a checksum counts as the owned
+  3. **Ownership and DLC**: done the same day (retail exe hash `GameDir::ownership`; the DLC lock in `dlc.rs` over
+     the ported entitlements). Left: lock badges in the menus' lists, the store offline (nothing) (user decision): an install whose retail data passes a checksum counts as the owned
      base game (no other check); **all DLC cars and areas locked** until a real entitlement source exists. The
      install is one Steam depot with every DLC inside, so files can't show DLC ownership. Find what the original
      gates on: gamepacks, `IsAssetUnlocked`, `Mode.CurrentVehicleGamepack.Release`, the airport arena's

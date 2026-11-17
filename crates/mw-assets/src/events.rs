@@ -685,6 +685,17 @@ impl AssetStore {
             arrows: look(0x53a7_6c21)?,
             block: look(0xbeb3_01a3)?,
             poi: [uint(c.get(0x9c90_086c)), uint(c.get(mw_formats::genesys::field_hash("NormalPoi")))],
+            barriers: structs(c.get(0xe74d_e7e2))
+                .map(|c| {
+                    let (x, y, z) =
+                        (floats(c.get(h::CHEVRON_X)), floats(c.get(h::CHEVRON_Y)), floats(c.get(h::CHEVRON_Z)));
+                    Chevron {
+                        id: uint(c.get(h::ID)),
+                        points: x.iter().zip(&y).zip(&z).map(|((x, y), z)| [*x, *y, *z]).collect(),
+                        flag: boolean(c.get(h::CHEVRON_FLAG)),
+                    }
+                })
+                .collect(),
         })
     }
 }
@@ -715,4 +726,7 @@ pub struct RouteMarkers {
     pub block: ChevronLook,
     /// `9c90086c` and `NormalPoi`: map icon ids (POIs), for the map / HUD.
     pub poi: [u32; 2],
+    /// `e74de7e2`: the `CustomChevron` barriers free drive shows without the airport's pack (`FUN_006e68d0`:
+    /// 2204089 across the airport road; decomp.md "DLC and entitlements").
+    pub barriers: Vec<Chevron>,
 }

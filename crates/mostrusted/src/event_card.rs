@@ -173,6 +173,11 @@ fn begin(
     race: Option<Res<RaceState>>,
 ) {
     let Some(PlayEvent(setup)) = plays.read().last().cloned() else { return };
+    // `FUN_006f3830` / `FUN_0074a600`: a DLC event whose pack is not owned is listed but not started (`dlc.rs`).
+    if let Some(pack) = crate::dlc::event_locked(&setup.event) {
+        warn!("event card: {} is part of the {pack}, not owned (DLC locked)", setup.name);
+        return;
+    }
     if card.card.is_some() || race.is_some() {
         warn!("event card: {} not started (a race is already running)", setup.name);
         return;

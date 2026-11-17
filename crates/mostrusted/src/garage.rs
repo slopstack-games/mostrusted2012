@@ -303,6 +303,11 @@ fn handle_actions(
     for action in actions.read() {
         match action {
             GarageAction::Drive { name, bundle, paint_index } => {
+                // `FUN_0073c180`: a car whose DLC pack is not owned stays listed but cannot be driven (`dlc.rs`).
+                if let Some(pack) = crate::dlc::car_locked(bundle) {
+                    garage.set_status(format!("{name}: {pack} not owned (DLC locked)"), now);
+                    continue;
+                }
                 let Some(requests) = &requests else {
                     garage.set_status("the loader has not started yet".into(), now);
                     continue;

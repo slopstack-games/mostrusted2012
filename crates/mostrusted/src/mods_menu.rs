@@ -56,6 +56,10 @@ impl ModCatalogue {
         let mut mods: Vec<Modification> = Vec::new();
         let mut rules = self.default_nitrous;
         for &(slot, cat) in &sel.0 {
+            // Game slots 11 and 13 need the Terminal Velocity pack (`FUN_00678e60`, `dlc.rs`).
+            if crate::dlc::mod_field_locked(slot) {
+                continue;
+            }
             let Some(c) = self.mods.get(cat).and_then(|s| s.get(slot)) else { continue };
             mods.extend(&c.modifications);
             if let Some(id) = &c.nitrous {

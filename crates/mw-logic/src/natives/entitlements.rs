@@ -246,3 +246,21 @@ mod tests {
         assert!(e.has_online_pass());
     }
 }
+
+/// The packs and each car's pack read from the install, nothing owned (the offline rule above): what the logic
+/// host and the runtime's DLC lock start from.
+#[cfg(feature = "assets")]
+pub fn load(store: &mw_assets::AssetStore) -> mw_assets::Result<Entitlements> {
+    let packs = store.pack_data()?;
+    let lang = store.language(mw_assets::DEFAULT_LANGUAGE)?;
+    Ok(Entitlements {
+        game_packs: packs
+            .game_packs
+            .iter()
+            .map(|p| GamePack { id: p.id, entitlement: p.entitlement, release: p.release })
+            .collect(),
+        airport_pack: packs.airport_pack,
+        vehicle_packs: store.vehicles(&lang)?.iter().map(|v| (v.id, v.game_pack)).collect(),
+        ..Default::default()
+    })
+}

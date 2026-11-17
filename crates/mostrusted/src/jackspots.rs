@@ -312,8 +312,10 @@ fn receive(mut jack: ResMut<JackSpots>) {
     let Some(init) = init else { return };
     let with_second = init.spots.iter().filter(|s| s.0.second.is_some()).count();
     let without_car = init.spots.iter().filter(|s| s.2.is_none()).count();
+    let dlc = init.spots.iter().filter(|s| s.2.as_deref().and_then(crate::dlc::car_locked).is_some()).count();
     info!(
-        "jack spots: {} ({} with a second place, {} without a car bundle), swap up to {} mph, prompt {:?}",
+        "jack spots: {} ({} with a second place, {} without a car bundle, {dlc} with a DLC car: store prompt), swap up \
+         to {} mph, prompt {:?}",
         init.spots.len(),
         with_second,
         without_car,
@@ -612,7 +614,7 @@ fn read_paint(store: &AssetStore, bundle: &str, colour: Colour) -> Option<(Vehic
 
 /// The prompt, the swap key and the swap itself; "found" bookkeeping.
 #[allow(clippy::too_many_arguments)]
-fn swap(
+pub(crate) fn swap(
     mut commands: Commands,
     mut jack: ResMut<JackSpots>,
     mut garage: ResMut<Garage>,
@@ -726,6 +728,17 @@ fn swap(
             }
             near_any = true;
             if jack.latch {
+                continue;
+            }
+            // A car whose DLC pack is not owned: the store prompt, and the button opens the store instead of the swap
+            // (`FUN_007615f0` / `FUN_00748090`; there is no store offline: nothing happens).
+            if let Some(pack) = s.bundle.as_deref().and_then(crate::dlc::car_locked) {
+                show = crate::dlc::store_prompt().map(str::to_string);
+                jack.prompt = true;
+                if pressed && !jack.latch {
+                    info!("jack spot {}: {pack} not owned (DLC locked): the store is not available", s.data.id);
+                    jack.latch = true;
+                }
                 continue;
             }
             show = Some(jack.prompt_text.clone());

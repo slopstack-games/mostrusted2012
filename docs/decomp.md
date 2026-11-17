@@ -5940,6 +5940,15 @@ Ported Lua natives (70 of 385, 2026-11-17; the first 60 were checked against the
 
 ## DLC and entitlements
 
+**In the runtime** (2026-11-17, `mostrusted/src/dlc.rs`, the checks of `natives::entitlements` over a process-wide
+copy): `--drive` / `--race` refuse DLC content; a saved profile's DLC car becomes the default car at the default
+start; the garage (`GarageAction::Drive`, the one path of every car load) refuses a DLC car; DLC jack spot cars
+stand with the `PromptStore` prompt and no swap; `PlayEvent` (every event start) refuses a DLC event; the mod
+fields of game slots 11 / 13 are skipped (`ModCatalogue::modded`); free roam shows the barrier chevron
+2204089 (`CheckPointsConfig` `e74de7e2`, read with the route markers) and its prompt within 50 m, and a car in
+zones 36–57 goes back to the free-roam start. Not done: lists show no lock badge yet (the map / EasyDrive / garage
+menus list DLC entries as before), the store opens nothing offline.
+
 (2026-11-17; `natives/entitlements.rs`, `natives/entitlement_view.rs`, `mw_assets::packs`, `mwtool packs`.)
 **Offline rule (user decision, not a model value): the base game is owned, every DLC pack is not** (the Steam
 depot ships all packs, so the files cannot show ownership); the owned set stays empty until a real entitlement

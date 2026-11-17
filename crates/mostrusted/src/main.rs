@@ -29,6 +29,7 @@ mod crash_vfx;
 mod cutscene;
 mod damage;
 mod deferred;
+mod dlc;
 mod drive;
 mod easydrive;
 mod event_card;
@@ -527,6 +528,8 @@ fn run(mut cli: Cli, game: GameDir) -> anyhow::Result<()> {
     let t = Instant::now();
     let store = Arc::new(AssetStore::new(game)?);
     println!("indexed {} resources in {:?}", store.resource_count(), t.elapsed());
+    // The DLC lock: every DLC pack counts as not owned (`dlc.rs`).
+    dlc::init(&store);
     if let [input, output] = cli.camera_replay.as_slice() {
         return camera::replay_recording(&store, input, output);
     }
@@ -609,6 +612,12 @@ fn run(mut cli: Cli, game: GameDir) -> anyhow::Result<()> {
         }
         _ => None,
     };
+    if let Some(r) = &race
+        && let Some(pack) = dlc::event_locked(&r.event)
+    {
+        anyhow::bail!("{} is part of the {pack}, which is not owned (DLC is locked: dlc.rs)", r.name);
+    }
+    let no_race = race.is_none();
     // The start-up flow: a plain run (no mode flag) or --front-end.
     let boot = cli.front_end
         || (cli.drive.is_none()
@@ -630,9 +639,22 @@ fn run(mut cli: Cli, game: GameDir) -> anyhow::Result<()> {
             (None, None, Some(v)) => Some(resolve(&v.to_string())?),
             _ => None,
         };
+        // A saved car from a DLC pack is not drivable (`dlc.rs`): the default car at the default start instead.
+        let mut replaced = false;
+        let bundle = match bundle {
+            Some(b) if cli.drive.is_none() && dlc::car_locked(&b).is_some() => {
+                warn!(
+                    "the profile's car {b} is DLC ({}), not owned: starting in the default car",
+                    dlc::car_locked(&b).unwrap_or_default()
+                );
+                replaced = true;
+                cfg.default_vehicle.map(|v| resolve(&v.to_string())).transpose()?
+            }
+            other => other,
+        };
         if let Some(bundle) = bundle {
             let pose = match (&profile, frontend::vehicle_id(&bundle)) {
-                (Some(p), Some(v)) if !cli.new_game => {
+                (Some(p), Some(v)) if !cli.new_game && !replaced => {
                     cfg.continue_pose(v, p.position.map_or([0.0; 3], |p| p.to_array()))
                 }
                 _ => cfg.default_start,
@@ -657,6 +679,12 @@ fn run(mut cli: Cli, game: GameDir) -> anyhow::Result<()> {
         })?),
         (None, None) => None,
     };
+    if let Some(q) = &drive {
+        let bundle = resolve(q)?;
+        if let Some(pack) = dlc::car_locked(&bundle) {
+            anyhow::bail!("{q} is part of the {pack}, which is not owned (DLC is locked: dlc.rs)");
+        }
+    }
     let request = if let Some(q) = &drive {
         let (spawn, heading) = match (&race, &cli.spawn[..]) {
             (None, []) if boot_start.is_some() => {
@@ -1067,6 +1095,7 @@ fn run(mut cli: Cli, game: GameDir) -> anyhow::Result<()> {
             profile: save_profile.clone(),
             driven: cli.hsm,
         })
+        .add_plugins(dlc::DlcPlugin { free_roam: no_race && matches!(request, Request::Drive { .. }) })
         .add_plugins(logic::LogicPlugin {
             enabled: cli.hsm,
             new_profile: cli.new_game || profile_file.as_deref().and_then(frontend::load_profile).is_none(),

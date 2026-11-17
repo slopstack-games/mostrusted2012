@@ -13,6 +13,20 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ## Dated findings
 
+### 2026-11-17: the DLC lock in the runtime (`dlc.rs`)
+
+Every DLC pack counts as not owned (user decision; decomp.md "DLC and entitlements" for the rules and the
+runtime's coverage). Checked:
+- `--drive 2196000` (Porsche 918 Spyder, Terminal Velocity) and `--race 2165035` (SIDEWINDER) stop with "… is part
+  of the … PACK, which is not owned"; the 911 drives as before (accel test unchanged).
+- Jack spots: 60 of the 183 hold a DLC car and show the store prompt; `--test jackspot` still swaps into the base
+  game's 918 Spyder Concept.
+- The airport: the barrier stands across the tunnel east of zone 43 (`PRESS E TO PURCHASE AIRPORT`, text 2211224,
+  screenshot at (175, 48, −2010) facing west); a spawn on the runway or at (100, 48, −2010) (zone 43) is put back
+  on the free-roam start. The arena lies west of the barrier: (120, −2010) is zone 700, (100, −2010) zone 43.
+- `ZoneList` zones overlap (`zone_at` returns the first match); the airport test uses zone ids 36–57 (probe.md
+  "Limits", observed in the original); arena 527914 holds only 7 of them.
+
 ### 2026-11-17: ownership check: a retail executable (`mw_gamedir::GameDir::ownership`)
 
 User decision: the base game counts as owned when `NFS13.exe` is a known retail build; DLC is never inferred from
