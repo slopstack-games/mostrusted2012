@@ -329,6 +329,7 @@ sequences' effect items off, `MW_SOUND_TRACE=<file>` logs what the engine sound 
 back), `MW_LISTENER_DT=current` the old listener-velocity step (A/B of the doppler jitter), `MW_LISTENER_TRACE=<file>`
 logs the listener's velocity per frame; `MW_SFX_TRACE` lines end with each wheel's surface sound set (−1 in the air).
 `mwtool vehicle-sound out.wav --surface <index> [--tyre-class 0..4]` renders the tyre / road sounds of one surface.
+`MW_PAUSE_WORLD_SOUND=0` lets the world's sounds play on while the game clock is paused (the old behaviour; A/B of the pause fix in `settings.rs`).
 `MW_DOPPLER_LOG=1` warns on every audible spatial voice placed with a doppler pitch outside 0.5..2 (`car_audio::place`: emitter and listener velocities; a pitch near 0.05 plays a sound as a subsonic rumble).
 `MW_SFX_ENGINE_LEVEL=0` leaves the vehicle sound bank at the data level instead of following the engine bank's
 normalisation (A/B, `sfx.rs` `bank_level`).

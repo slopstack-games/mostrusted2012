@@ -8,6 +8,10 @@ use bevy::audio::{AudioSinkPlayback, Volume};
 use bevy::prelude::*;
 use std::path::PathBuf;
 
+/// A sound of the menus (UI sounds): it plays while the game is paused ([`pause_world_sound`]).
+#[derive(Component)]
+pub struct MenuSound;
+
 /// Which volume slider a sound follows; added to each sound entity next to its `AudioPlayer`.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Channel {
@@ -162,7 +166,8 @@ impl Plugin for SettingsPlugin {
         app.insert_resource(self.settings.clone())
             .insert_resource(SettingsMenu { open: self.open, ..default() })
             .add_systems(Startup, spawn_overlay)
-            .add_systems(Update, (menu_input, refresh_overlay, apply_volumes, freeze_car_input).chain());
+            .add_systems(Update, (menu_input, refresh_overlay, apply_volumes, freeze_car_input).chain())
+            .add_systems(PostUpdate, pause_world_sound);
     }
 }
 
@@ -267,6 +272,33 @@ fn apply_volumes(settings: Res<AudioSettings>, mut sinks: Query<(&Channel, &mut 
     for (channel, mut sink) in &mut sinks {
         if settings.is_changed() || sink.is_added() {
             sink.set_volume(Volume::Linear(settings.gain(*channel)));
+        }
+    }
+}
+
+/// The world's sounds (engine, vehicle sounds, other cars, impacts, sirens: every engine / effects sink but the
+/// menus') stop while the game clock is paused (pause menu, map, the logic's sim pause at a race start) and go on
+/// where they were when it runs again. Their parameters are written on the game clock, so while it stands the
+/// sources would play on with frozen values: a slide's skid sequences kept retriggering for the whole pause and the
+/// pile-up stayed after it (user report 2026-11-17: skids louder after every pause, very loud at a race start).
+/// Model decision: the original's sim pause (`FUN_00845c60`, message (0, 0, 2)) is taken to stop the world's sound
+/// with the sim; which receiver does it was not traced (a capture of the original's pause would confirm). Music
+/// plays on.
+fn pause_world_sound(time: Res<Time<Virtual>>, sinks: Query<(&Channel, &AudioSink), Without<MenuSound>>) {
+    // `MW_PAUSE_WORLD_SOUND=0`: the old behaviour (A/B).
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *OFF.get_or_init(|| std::env::var("MW_PAUSE_WORLD_SOUND").is_ok_and(|v| v == "0")) {
+        return;
+    }
+    let paused = time.is_paused();
+    for (channel, sink) in &sinks {
+        if *channel == Channel::Music {
+            continue;
+        }
+        if paused && !sink.is_paused() {
+            sink.pause();
+        } else if !paused && sink.is_paused() {
+            sink.play();
         }
     }
 }

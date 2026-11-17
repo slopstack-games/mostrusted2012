@@ -107,6 +107,7 @@ fn play(
                 AudioPlayer::<crate::audio::PcmAudio>(audio.add(crate::audio::PcmAudio { pcm })),
                 PlaybackSettings::DESPAWN.with_volume(Volume::Linear(0.0)),
                 crate::settings::Channel::Sfx,
+                crate::settings::MenuSound,
             ));
         }
         *clock += dt;

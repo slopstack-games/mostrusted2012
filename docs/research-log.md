@@ -13,6 +13,23 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ## Dated findings
 
+### 2026-11-17: skids louder after a pause, very loud at a race start: two causes fixed
+
+User reports: skids get louder at a pause and stay that loud after it; very loud and distorted at a race start.
+- **Pause** (`settings.rs` `pause_world_sound`): the world's sounds are driven by parameters written on the game
+  clock, but their sources play in real time; while the clock was paused (pause menu, map, the logic's sim pause at
+  a race start) they played on with frozen values (a slide's skid sequences retriggering) and what built up stayed.
+  Now every engine / effects sink but the menus' (`MenuSound`: the UI sounds) pauses with `Time<Virtual>` and goes
+  on where it was. Live A/B from the null sink (slide, pause 4 s, resume; `MW_PAUSE_WORLD_SOUND=0` = old): old
+  plays on through the pause at −24 dBFS, new is silent and resumes at the pre-pause level. Model decision: the
+  original's sim pause (`FUN_00845c60`) is taken to stop the world's sound; its receiver was not traced.
+- **Race start** (`cutscene.rs` teleports): the intro's `TeleportPlayerSequenceItem`s set the body to 55–70 mph but
+  left the wheels' spin, so the tyres slid until they caught up: the Spin skid at full intensity. Now the game's
+  placement of a moving car (`Car::place_moving`, `FUN_008f8190`: wheels at road speed, gearbox placed) and on the
+  ground (`FUN_00647e00`). `--race 462174 --test race`: spin in the first 4 s 0.07 (was ~1.0), vehicle channel
+  −22.7 dBFS (was −17.6), 27/27 gates. Open: the landing input reads 1.96 m/s in the teleport frame (the wheels'
+  contact velocity over the jump): should ignore the teleport.
+
 ### 2026-11-17: ninth 20 HSM hooks verified and enabled (180 of 187; `natives/hooks_playlist.rs`)
 
 Handlers read from `re/out/live/text.asm`, callees from the dump. All return EXIT except `CanJoinAirportGameByFriendIndexBinding`

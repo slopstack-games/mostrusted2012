@@ -732,21 +732,28 @@ fn animated_camera_view(
 fn apply_cars(
     mut state: ResMut<CutsceneState>,
     spatial: SpatialQuery,
-    mut cars: Query<(&Car, &mut Transform, &mut LinearVelocity, &mut AngularVelocity)>,
+    mut cars: Query<(&mut Car, &mut Transform, &mut LinearVelocity, &mut AngularVelocity)>,
 ) {
     for pending in std::mem::take(&mut state.pending) {
         match pending {
             Pending::Teleport { entity, position, direction, speed } => {
-                let Ok((car, mut t, mut lin, mut ang)) = cars.get_mut(entity) else { continue };
+                let Ok((mut car, mut t, mut lin, mut ang)) = cars.get_mut(entity) else { continue };
                 // On the road under the trigger point (as `ai.rs` places the grid).
                 let from = position + Vec3::Y * 5.0;
                 let filter = SpatialQueryFilter::from_excluded_entities([entity, car.body_collider])
                     .with_mask(crate::props::GameLayer::World);
                 let ground = spatial.cast_ray(from, Dir3::NEG_Y, 40.0, true, &filter).map(|h| from.y - h.distance);
-                t.translation = position.with_y(ground.unwrap_or(position.y) + 0.15);
+                // On the ground, as the game places it (`FUN_00647e00`: y is the ground; the car origin is at road level): a
+                // higher placement dropped the car and played a landing at every teleport.
+                t.translation = position.with_y(ground.unwrap_or(position.y) + 0.02);
                 t.rotation = Quat::from_rotation_y(direction.x.atan2(direction.z));
                 lin.0 = direction * speed;
                 ang.0 = Vec3::ZERO;
+                // The game's placement of a moving car (`TeleportPlayerSequenceItem` → `FUN_00647e00` →
+                // `FUN_008f8190` with the moving flag): the wheels roll at road speed and the gearbox is placed for
+                // it. Without it the wheels kept their old spin and slid until they caught up: a full-intensity
+                // wheelspin skid at every race start (user report 2026-11-17).
+                car.place_moving(speed);
                 info!("cutscene: teleport to {:.1?} at {:.0} mph", t.translation, speed / MPH);
             }
         }
