@@ -41,6 +41,18 @@ pub struct SimFields {
     pub camera_fov: f32,
     /// UIM +0x2cf28: the units are metric.
     pub units_metric: bool,
+    /// Camera system (G+0x2f470) byte +8: `AllowCameraSwitching`.
+    pub allow_camera_switching: bool,
+    /// G+0x291f8: `EnableNitrousBalancing`.
+    pub nitrous_balancing: bool,
+    /// The input state words the button natives compare with 2 (`FUN_0047aa20`(input manager, 0)): +0x1b4
+    /// (the exit-loading-screen and skip-cutscene buttons), +0x19c (the spectator camera button).
+    pub button_1b4: i32,
+    pub button_19c: i32,
+    /// The mask words at G+0x2f0a4 (`FUN_0083c960` sets / `FUN_0083c930` clears a bit; the byte +0x1c+word counts
+    /// the words that changed): word 1 = `SetCarLocked`, word 2 = `DisableMenuControls` (bit 1 of each).
+    pub input_masks: [u32; 8],
+    pub input_mask_counts: [u8; 8],
 }
 
 /// `GetFrameCount()` (0x00677c30): the sim clock's first int as a number.
@@ -145,7 +157,166 @@ fn set_car_frozen(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
     Ok(vec![])
 }
 
+/// `SetMinimumCollisionDamage(x)` (0x00677e30): checks the arguments and does nothing else.
+fn set_minimum_collision_damage(_: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    Ok(vec![])
+}
+
+/// `GetCompetitorType(index)` (0x0067b400): the kind (player +0x9c) of the slot, as the string at
+/// `0x010c5414[kind]` (0 `LocalPlayer`, 1 `Network`, 2 `AI`; the table shares its memory with unrelated strings after
+/// that). Model decision: an empty slot or a kind past 2 gives the empty string.
+fn get_competitor_type(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    let i = int(&args, 1);
+    let p = usize::try_from(i).ok().and_then(|i| state.players.slots.get(i)).and_then(|s| s.as_ref());
+    let name = match p.map(|p| p.kind) {
+        Some(0) => "LocalPlayer",
+        Some(1) => "Network",
+        Some(2) => "AI",
+        _ => "",
+    };
+    Ok(vec![Value::from(name)])
+}
+
+/// `SetUseOverheadCamera(on)` (0x0067bc20): `lua_toboolean`; the camera message 0xd (0, on).
+fn set_use_overhead_camera(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    state.requests.push(Request::CameraOverhead { on: toboolean(&args, 1) });
+    Ok(vec![])
+}
+
+/// `SetUseFinishLineCamera(on, id)` (0x0067bc70): the camera message 0xe (0, on, id) with id = -1 unless `on`,
+/// when it is the second argument (`lua_tonumber` + `_ftol2`).
+fn set_use_finish_line_camera(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    let on = toboolean(&args, 1);
+    let id = if on { int(&args, 2) } else { -1 };
+    state.requests.push(Request::CameraFinishLine { on, id });
+    Ok(vec![])
+}
+
+/// `AllowCameraSwitching(on)` (0x0067bcd0): the camera system's byte +8 = `lua_toboolean`.
+fn allow_camera_switching(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    state.sim.allow_camera_switching = toboolean(&args, 1);
+    Ok(vec![])
+}
+
+/// `SnapCameraToBehindCar()` (0x00677f70): the camera message 1 (0).
+fn snap_camera_to_behind_car(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    state.requests.push(Request::CameraSnapBehind);
+    Ok(vec![])
+}
+
+/// `EnableLocalRaceCarRumble(on)` (0x0067b450): `lua_toboolean`; the message 9 (`FUN_00844900`).
+fn enable_local_race_car_rumble(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    state.requests.push(Request::RumbleEnable { on: toboolean(&args, 1) });
+    Ok(vec![])
+}
+
+/// `IsExitLoadingScreenButtonPressed()` (0x00677c70): the input state word +0x1b4 equals 2.
+fn is_exit_loading_screen_button_pressed(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    Ok(vec![Value::Bool(state.sim.button_1b4 == 2)])
+}
+
+/// `IsSkipCutsceneButtonPressed()` (0x00678700): the same word +0x1b4 equals 2.
+fn is_skip_cutscene_button_pressed(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    Ok(vec![Value::Bool(state.sim.button_1b4 == 2)])
+}
+
+/// `IsSpectatorCameraButtonPressed()` (0x006780f0): the input state word +0x19c equals 2.
+fn is_spectator_camera_button_pressed(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    Ok(vec![Value::Bool(state.sim.button_19c == 2)])
+}
+
+/// Set (`FUN_0083c960`) or clear (`FUN_0083c930`) bit 1 of mask word `word`; the counter byte changes when the
+/// word does.
+fn set_mask_bit(state: &mut LogicState, word: usize, on: bool) {
+    let s = &mut state.sim;
+    let old = s.input_masks[word];
+    if on {
+        s.input_masks[word] |= 2;
+        if old != s.input_masks[word] {
+            s.input_mask_counts[word] = s.input_mask_counts[word].wrapping_add(1);
+        }
+    } else {
+        s.input_masks[word] &= !2;
+        if old != s.input_masks[word] {
+            s.input_mask_counts[word] = s.input_mask_counts[word].wrapping_sub(1);
+        }
+    }
+}
+
+/// `SetCarLocked(locked)` (0x0067b220): bit 1 of mask word 1 at G+0x2f0a4, set when `lua_toboolean`.
+fn set_car_locked(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    set_mask_bit(state, 1, toboolean(&args, 1));
+    Ok(vec![])
+}
+
+/// `DisableMenuControls(disable)` (0x0067b280): bit 1 of mask word 2 at G+0x2f0a4.
+fn disable_menu_controls(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    set_mask_bit(state, 2, toboolean(&args, 1));
+    Ok(vec![])
+}
+
+/// `EnableNitrousBalancing([on])` (0x0067b7b0): G+0x291f8 = `lua_toboolean`(1), or true without an argument.
+fn enable_nitrous_balancing(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    state.sim.nitrous_balancing = if args.is_empty() { true } else { toboolean(&args, 1) };
+    Ok(vec![])
+}
+
+fn stop_all_sounds(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    state.requests.push(Request::StopSounds { kind: 0 });
+    Ok(vec![])
+}
+
+fn stop_speech(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    state.requests.push(Request::StopSounds { kind: 2 });
+    Ok(vec![])
+}
+
+fn stop_gameplay_stream(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    state.requests.push(Request::StopSounds { kind: 4 });
+    Ok(vec![])
+}
+
+fn stop_music(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    state.requests.push(Request::StopMusic);
+    Ok(vec![])
+}
+
+fn stop_unwanted_sound(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    state.requests.push(Request::StopUnwantedSound);
+    Ok(vec![])
+}
+
+fn clear_all_feedback_queues(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    state.requests.push(Request::ClearFeedbackQueues { background: true });
+    Ok(vec![])
+}
+
+fn clear_all_non_background_feedback_queues(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    state.requests.push(Request::ClearFeedbackQueues { background: false });
+    Ok(vec![])
+}
+
 pub fn register(r: &mut Registry) {
+    r.set_lua("SetMinimumCollisionDamage", set_minimum_collision_damage);
+    r.set_lua("GetCompetitorType", get_competitor_type);
+    r.set_lua("SetUseOverheadCamera", set_use_overhead_camera);
+    r.set_lua("SetUseFinishLineCamera", set_use_finish_line_camera);
+    r.set_lua("AllowCameraSwitching", allow_camera_switching);
+    r.set_lua("SnapCameraToBehindCar", snap_camera_to_behind_car);
+    r.set_lua("EnableLocalRaceCarRumble", enable_local_race_car_rumble);
+    r.set_lua("IsExitLoadingScreenButtonPressed", is_exit_loading_screen_button_pressed);
+    r.set_lua("IsSkipCutsceneButtonPressed", is_skip_cutscene_button_pressed);
+    r.set_lua("IsSpectatorCameraButtonPressed", is_spectator_camera_button_pressed);
+    r.set_lua("SetCarLocked", set_car_locked);
+    r.set_lua("DisableMenuControls", disable_menu_controls);
+    r.set_lua("EnableNitrousBalancing", enable_nitrous_balancing);
+    r.set_lua("StopAllSounds", stop_all_sounds);
+    r.set_lua("StopSpeech", stop_speech);
+    r.set_lua("StopGameplayStream", stop_gameplay_stream);
+    r.set_lua("StopMusic", stop_music);
+    r.set_lua("StopUnwantedSound", stop_unwanted_sound);
+    r.set_lua("ClearAllFeedbackQueues", clear_all_feedback_queues);
+    r.set_lua("ClearAllNonBackgroundFeedbackQueues", clear_all_non_background_feedback_queues);
     r.set_lua("GetFrameCount", get_frame_count);
     r.set_lua("GetSimTime", get_sim_time);
     r.set_lua("GetSimTimeStep", get_sim_time_step);
@@ -252,6 +423,75 @@ mod tests {
         assert_eq!(st(&host).players.car_frozen, 1.0);
         call(&mut lua, "SetCarFrozen", vec![Value::Bool(false)]);
         assert_eq!(st(&host).players.car_frozen, 0.0);
+        assert!(st(&host).unported.is_empty());
+    }
+
+    #[test]
+    fn batch_six() {
+        let (mut lua, host) = setup();
+        call(&mut lua, "SetMinimumCollisionDamage", vec![Value::Number(1.0)]);
+        {
+            let mut s = st(&host);
+            s.players.slots[0] = Some(Player { kind: 0, ..Default::default() });
+            s.players.slots[1] = Some(Player { kind: 2, ..Default::default() });
+        }
+        let t = |lua: &mut Lua, i: f64| call(lua, "GetCompetitorType", vec![Value::Number(i)]);
+        assert_eq!(t(&mut lua, 0.0)[0].as_str_lossy().as_deref(), Some("LocalPlayer"));
+        assert_eq!(t(&mut lua, 1.0)[0].as_str_lossy().as_deref(), Some("AI"));
+        assert_eq!(t(&mut lua, 5.0)[0].as_str_lossy().as_deref(), Some(""));
+        call(&mut lua, "SetUseOverheadCamera", vec![Value::Bool(true)]);
+        call(&mut lua, "SetUseFinishLineCamera", vec![Value::Bool(true), Value::Number(3.0)]);
+        call(&mut lua, "SetUseFinishLineCamera", vec![Value::Bool(false), Value::Number(3.0)]);
+        call(&mut lua, "SnapCameraToBehindCar", vec![]);
+        call(&mut lua, "EnableLocalRaceCarRumble", vec![Value::Bool(true)]);
+        call(&mut lua, "StopAllSounds", vec![]);
+        call(&mut lua, "StopSpeech", vec![]);
+        call(&mut lua, "StopGameplayStream", vec![]);
+        call(&mut lua, "StopMusic", vec![]);
+        call(&mut lua, "StopUnwantedSound", vec![]);
+        call(&mut lua, "ClearAllFeedbackQueues", vec![]);
+        call(&mut lua, "ClearAllNonBackgroundFeedbackQueues", vec![]);
+        assert_eq!(
+            st(&host).requests,
+            [
+                Request::CameraOverhead { on: true },
+                Request::CameraFinishLine { on: true, id: 3 },
+                Request::CameraFinishLine { on: false, id: -1 },
+                Request::CameraSnapBehind,
+                Request::RumbleEnable { on: true },
+                Request::StopSounds { kind: 0 },
+                Request::StopSounds { kind: 2 },
+                Request::StopSounds { kind: 4 },
+                Request::StopMusic,
+                Request::StopUnwantedSound,
+                Request::ClearFeedbackQueues { background: true },
+                Request::ClearFeedbackQueues { background: false },
+            ]
+        );
+        call(&mut lua, "AllowCameraSwitching", vec![Value::Bool(true)]);
+        assert!(st(&host).sim.allow_camera_switching);
+        call(&mut lua, "EnableNitrousBalancing", vec![]);
+        assert!(st(&host).sim.nitrous_balancing);
+        call(&mut lua, "EnableNitrousBalancing", vec![Value::Bool(false)]);
+        assert!(!st(&host).sim.nitrous_balancing);
+        st(&host).sim.button_1b4 = 2;
+        assert!(flag(&call(&mut lua, "IsExitLoadingScreenButtonPressed", vec![])));
+        assert!(flag(&call(&mut lua, "IsSkipCutsceneButtonPressed", vec![])));
+        assert!(!flag(&call(&mut lua, "IsSpectatorCameraButtonPressed", vec![])));
+        st(&host).sim.button_19c = 2;
+        assert!(flag(&call(&mut lua, "IsSpectatorCameraButtonPressed", vec![])));
+        call(&mut lua, "SetCarLocked", vec![Value::Bool(true)]);
+        call(&mut lua, "SetCarLocked", vec![Value::Bool(true)]);
+        call(&mut lua, "DisableMenuControls", vec![Value::Bool(true)]);
+        let (m, c) = {
+            let s = st(&host);
+            (s.sim.input_masks[1], s.sim.input_mask_counts[1])
+        };
+        assert_eq!((m, c), (2, 1));
+        call(&mut lua, "SetCarLocked", vec![Value::Bool(false)]);
+        call(&mut lua, "DisableMenuControls", vec![Value::Bool(false)]);
+        assert_eq!(st(&host).sim.input_masks, [0; 8]);
+        assert_eq!(st(&host).sim.input_mask_counts, [0; 8]);
         assert!(st(&host).unported.is_empty());
     }
 }

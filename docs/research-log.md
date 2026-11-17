@@ -2123,3 +2123,22 @@ raw memory); the clock, camera and units fields are set by the runtime (`SimFiel
 Skipped (need a callee not yet read): GetCompetitorName (`FUN_006bf2d0` + string copy), GetCompetitorType (table
 0x10c5414 by player kind), IsLoadingScreenShowing (`FUN_00799d90`), IsHudMessageQueueEmpty (vtable call),
 SetUseOverheadCamera (message 0xd, unverified argument order).
+
+### 2026-11-18: Lua natives, sixth batch: camera messages, buttons, sound stops (135 of 385; `natives/lua_sim.rs`)
+Handlers read from `re/out/live/text.asm`. Ported: SetMinimumCollisionDamage (argument check only, no effect),
+GetCompetitorType (player +0x9c indexes the string table 0x010c5414: 0 LocalPlayer, 1 Network, 2 AI; later entries
+are unrelated strings, model decision: empty), SetUseOverheadCamera (camera message 0xd: `Request::CameraOverhead`),
+SetUseFinishLineCamera (message 0xe, id = arg 2 when on, else -1), SnapCameraToBehindCar (message 1),
+AllowCameraSwitching (camera system +8), EnableLocalRaceCarRumble (message 9), IsExitLoadingScreenButtonPressed /
+IsSkipCutsceneButtonPressed (input state word +0x1b4 == 2), IsSpectatorCameraButtonPressed (+0x19c == 2),
+SetCarLocked / DisableMenuControls (bit 1 of mask word 1 / 2 at G+0x2f0a4 by `FUN_0083c960` / `FUN_0083c930`, the
+byte +0x1c+word counts the changed words), EnableNitrousBalancing (G+0x291f8, true without an argument),
+StopAllSounds / StopSpeech / StopGameplayStream (`FUN_007a2140` on UIM+0x2d2f0 with kind 0 / 2 / 4;
+`Request::StopSounds`), StopMusic, StopUnwantedSound, ClearAllFeedbackQueues / ClearAllNonBackgroundFeedbackQueues
+(`FUN_007b3410`, then `FUN_007b1120` / `FUN_007b1150`(~2) on UIM+0x30840; `Request::ClearFeedbackQueues`). The
+requests only record the call; the sound, feedback and camera systems behind them are the runtime's.
+Skipped: GetCompetitorName (string copy), IsLoadingScreenShowing (`FUN_00792090` + vtable +0x14),
+IsHudMessageQueueEmpty (vtable +0x10), ClearLoadingScreenLayout (needs the UIM+0x2d204 mask, not modelled),
+StopUsingIceCamera / SetIceCameraPaused (guarded messages via `FUN_0084c110`), GetIceTakeDuration (`FUN_0083b730`),
+IsVehicleCop (`FUN_0083be20`), InvalidateRaceTarget (`FUN_00843170`), ClearAllChevrons (`FUN_006465a0` + three
+messages), SetCarStill.

@@ -491,7 +491,7 @@ GeneSys. Engine-free crates (`mw-logic`, `mw-lua`; wasm-compatible), in dependen
    `Mode` / `Event` binding roots (GMM fields), the runtime host carrying out the new Requests, the binding
    evaluator hook-up.
 3. `[~]` **Native registry** (`mw-logic::natives`): one name → function table for the 187 HSM hooks (121 used; all 187 ported, 2026-11-17)
-   and 385 Lua natives (115 ported 2026-11-18; 171 read by the chunks; `mwtool lua`), offline ones first, each ported from its handler.
+   and 385 Lua natives (135 ported 2026-11-18; 171 read by the chunks; `mwtool lua`), offline ones first, each ported from its handler.
 4. `[~]` **JSON widgets** and the widget-script lifecycle (`Construct`, `SetConfigurationItem`, `OnActivated`,
    actions), PageRunner page flow; the 24 native screen scripts. Data side done (2026-11-17): the 859 JSON
    definitions typed (`mw_formats::widget`, the engine's JSON reader `mw_formats::json`), the screen → widget →

@@ -431,6 +431,27 @@ pub enum Request {
     /// `SetCameraFov` / `ResetCameraFov` (0x0067bab0 / 0x00677ff0 → `FUN_00843ca0`(G+0x2f470, 0, set, fov)): the
     /// camera message 0xf; the camera's reaction is the runtime's.
     CameraFov { set: bool, fov: f32 },
+    /// `SetUseOverheadCamera` (0x0067bc20 -> `FUN_008439a0`(G+0x2f470, 0, on)): the camera message 0xd.
+    CameraOverhead { on: bool },
+    /// `SetUseFinishLineCamera` (0x0067bc70 -> `FUN_008439f0`(G+0x2f470, 0, on, id)): the camera message 0xe; `id`
+    /// is the second argument when `on`, else -1.
+    CameraFinishLine { on: bool, id: i32 },
+    /// `SnapCameraToBehindCar` (0x00677f70 -> `FUN_00843cf0`(G+0x2f470, 0)): the camera message 0x1.
+    CameraSnapBehind,
+    /// `EnableLocalRaceCarRumble` (0x0067b450 -> `FUN_00844900`(on)): the message 9 (rumble on / off).
+    RumbleEnable { on: bool },
+    /// `StopAllSounds` / `StopSpeech` / `StopGameplayStream` (0x00678420 / 0x006784e0 / 0x006784a0 ->
+    /// `FUN_007a2140`(UIM+0x2d2f0, kind)): stop the sounds of one kind (0 = all, 2 = speech, 4 = gameplay stream).
+    StopSounds { kind: u32 },
+    /// `StopMusic` (0x00678460 -> `FUN_007908e0` on UIM+0x30370).
+    StopMusic,
+    /// `StopUnwantedSound` (0x00678520): `FUN_008404c0`(G+0x2c3c0), the byte G+0x2ae19 = 0, then
+    /// `FUN_00799060`(UIM+0x2d2f0, 0).
+    StopUnwantedSound,
+    /// `ClearAllFeedbackQueues` / `ClearAllNonBackgroundFeedbackQueues` (0x00678580 / 0x00682750): `FUN_007b3410`
+    /// (UIM+0x7230), then `FUN_007b1120` (every queue) or `FUN_007b1150` with the mask ~2 (`background` false:
+    /// the background queue is kept) on UIM+0x30840.
+    ClearFeedbackQueues { background: bool },
     /// `StartActionBind` (0x007eb200 → `FUN_00878790` on the settings (OM+0x4210)): wait for a control press to
     /// bind `action` (+0x1beb4) with `arg` (+0x1beb8); the state change 4 is posted (`FUN_0087ed10`) and the
     /// bind's start time (`FUN_0046ee00` +8 / +0xc) kept at +0x1bec8 / +0x1bed0.
