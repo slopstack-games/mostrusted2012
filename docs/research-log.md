@@ -46,6 +46,35 @@ EZPlayCustomPlaylist (0x676520), MatchmakePlaygroup (0x6765c0), QuickJoinGameDes
 SetFriendInviteIdEasyDrive (0x67a800), SetJoinFriendIdByIndexBinding (0x676640), CanJoinAirportGameByFriendIndexBinding (0x676680), OnMidGameJoin (0x6766d0),
 ActivateFriendCarouselViewModel (0x676cc0, writes OM+0x14 = 1: trivial), DeactivateFriendCarouselViewModel (0x676ce0, = 0), UnlockMwlCache (0x676df0, +0x36 = 0: trivial).
 
+### 2026-11-17: the sign-in family, WRITESESSION and LOADSTRSET (`hsm/behaviours_signin.rs`; 110 types)
+
+`HSM_SERV_OP` (33 uses), `SIGNIN_CNTRL` (11), `SI_EDT_EMPT` (6), `SI_SHOW_ERR` / `SI_ADD_CNTRL` (3 each), `HSM_KEYB_ENT` (2), `SI_FIRST_PRT`, `WRITESESSION` (47), `LOADSTRSET` (5).
+Method as the earlier batches: factories 0x77ca70 / 0x77c720 / 0x77c8b0 / 0x77fbf0 / 0x77fb60 / 0x77c7c0 / 0x77ca00 / 0x77d5d0 / 0x77f9f0 (the function before each name stub's `mov edx`),
+vtables 0xfd9edc / 0xfd9d48 / 0xfd9dfc / 0xfdc100 / 0xfdc0cc / 0xfd9d90 / 0xfd9eb8 / 0xfda484 / 0xfdbe3c, bodies from `text.asm` (the dump lacks most of them; REA's Ghidra provider is unavailable here:
+Ghidra 12.2 installed, 12.1.x wanted), keys from snapshot 1 (OPERATION, DATACONTEXT, ENTER_NEXT / PREV, EXIT_NEXT / PREV, ISPASSWORD / ISEMAIL / ISPRODKEY / ISGAMERTAG, VARNAME / VARVALUE,
+NO_PERSONA 0x117a4e0, CREATE 0x117a468, PC_LOGIN 0x117a7a8, SHOW_TOS 0x117a178, WRONG_PWD 0x117a0c8, ENTITLE_GAM 0x117a1c0).
+`HSM_SERV_OP` is a 26-entry table at 0xfd5208 (20 B: name, name string, start function +8, error handler +0xc, success handler +0x10; `Connect`, `Login`, `PCLogin` ... `OnlinePassKillSwitch`);
+enter 0x750120 finds the `OPERATION` (unknown = state 26, byte +0x90 = 0 so the first update exits `FAILURE`), update 0x73f3c0 pumps the request object (+0x50; +0x58 state 2 = done, +0x5c error),
+runs the error handler of the requested op or the success handler of the *current* state (+0x88), exit `SUCCESS` (+0x48 default) once the state is 26. The login starts (0x750210 / 0x7502d0) send `Connect`
+(0x7501a0, state 0) when the network layer (`*0x010edb58`) is not up; its success handler 0x7400b0 then starts the requested op. Error handlers: generic 0x73f4d0 (0x11 `NO_PERSONA`, else show the error, `FAILURE`),
+logins 0x73f620 (0x10 CREATE, 0x11 NO_PERSONA, 0xe PC_LOGIN, 0x13 SHOW_TOS, 0x15 WRONG_PWD, 0x16 ENTITLE_GAM, else `FAILURE`); the other eleven handlers are answered like the generic one.
+Other types: `SIGNIN_CNTRL` (shows / hides the form control `DATACONTEXT` on `G+0x2f3e0 +0x10c8`; leaves when one of the control's two binding expressions is false: `ENTER_PREV` -> `EXIT_PREV`, else `EXIT_NEXT`),
+`SI_EDT_EMPT` (edit text empty -> `TRUE` / `FALSE`), `HSM_KEYB_ENT` (on-screen keyboard: flags 4 password > 2 e-mail > 0x20 product key > 8 gamertag; result 3 accepted, 2 cancelled; `EXIT`),
+`SI_FIRST_PRT` (`FUN_004c2030` is a constant true on the PC: `SUCCESS` at once), `SI_ADD_CNTRL` / `SI_SHOW_ERR` (string-set load of the lists, form / error screen built from the parameters, removed on exit;
+the control building and the error screen's button focus are one Request each), `WRITESESSION` (enter sets the session variable, update exits `EXIT` when the parent handles it, `FUN_00774dc0`),
+`LOADSTRSET` (loads `UI\LANGUAGE\<language>\<STRINGSET>.BNDL` in the enter update, unloads in the exit update; update 0x73dde0 = 0).
+Requests: ServerOpStart / Ack / Cancel / Report / Handle / TermsRequired, WriteSession, LoadStringSet / ActivateStringSet / UnloadStringSet, SignInFormActive / EditEmptyFlag / LoadStrings / UnloadStrings /
+Build / Remove, OpenKeyboard, KeyboardStore, CloseKeyboard, SignInErrorShow / Frame / Close. Queries (default): ServerOpState (2 done), ServerOpError (1), ServerOpStarted (true), ServerOpNetReady (false),
+ServerOpNextState (26), StringSetBusy (false), SignInControlActive / Visible (true), SignInEditEmpty (true), FirstPartySignedIn (true), KeyboardResult (0), SignInFormStringSets (0), SignInFormBusy (false),
+SignInErrorChoice (0). One test per type at the end of `flow_tests.rs`.
+Result: `mwtool hsm --run --steps 600 --answer 1222788=DONE` (no `IsChatRestricted` answer any more) runs the silent sign-in: `PCLogin` sends `Connect`, fails with the generic error, `FAILURE`; then
+`CancelLogin` fails the same way and the boot reaches "Freedrive Update" and "Freedrive HUD". The runtime's hand-written FAILURE stub for `HSM_SERV_OP` in `logic.rs` is not needed any more (the type is ported, so
+its registry skips it).
+Model decisions: offline error code 1 (a "no server" error; the real code of a dead Blaze server is unmeasured, every handler maps unknown codes to `FAILURE` anyway); the success handlers of states other than
+`Connect` are `Request::ServerOpHandle` + `Query::ServerOpNextState` (online only); after the exit update's acknowledge the request object counts as idle; which of `SIGNIN_CNTRL`'s two expressions is "active"
+and which "visible" is not settled (names are a guess, both are binding expressions at control +0xc).
+Open: the engine side of all new Requests / Queries (the sign-in form object G+0x2f3e0 +0x10c8, the keyboard, the session store) is unported; slot 9 of `HSM_KEYB_ENT` (0x772880, form `FLOW`) and `SI_SHOW_ERR`'s
+enter-time layer-set save (+0xfc / +0x100) are read but not ported; the remaining 11 `HSM_SERV_OP` error handlers and all success handlers.
 ### 2026-11-17: 9 dialog / pause / photo HSM behaviour types (`hsm/behaviours_dialog.rs`; 94 types)
 
 `SHOWDIALOG` (73 uses), `HSMPAUSEINTR`, `SUPPRESSPREF`, `RUNPRCONTEXT`, `TAKEPHOTO`, `PHOTO_LISTEN` / `PHOTO_COMPL` / `PHOTO_INPUT`, `LIMITEDEDSP`.
