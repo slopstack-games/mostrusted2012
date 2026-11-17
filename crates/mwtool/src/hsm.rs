@@ -22,6 +22,7 @@ pub struct Options<'a> {
     pub depth: usize,
     pub parents: bool,
     pub data: bool,
+    pub codes: bool,
     pub run: Option<u32>,
     pub steps: usize,
     pub dt: f32,
@@ -76,6 +77,35 @@ pub fn run(store: &AssetStore, o: Options) -> Result<()> {
     let data = store.hsm_data(o.bundle)?;
     if let Some(instance) = o.run {
         return drive(store, Arc::new(data), instance, &o);
+    }
+    if o.codes {
+        // Every behaviour code the bundle's states use, with its use count and whether the registry ports it.
+        let registry = Registry::structural();
+        let mut uses: std::collections::BTreeMap<String, (usize, bool)> = Default::default();
+        for s in &data.states {
+            let e = uses.entry(code(&data, s.behaviour)).or_insert((0, registry.contains(s.behaviour)));
+            e.0 += 1;
+        }
+        if let Some(text) = o.find {
+            // With --find: the states of the matching codes, with their parameters and data definition.
+            for s in data.states.iter().filter(|s| code(&data, s.behaviour).contains(text)) {
+                println!(
+                    "{:8} {} {:?} {} def {:?}",
+                    s.id,
+                    code(&data, s.behaviour),
+                    s.name,
+                    params(&s.parameters),
+                    s.data_definition
+                );
+            }
+            return Ok(());
+        }
+        let missing = uses.values().filter(|(_, p)| !p).count();
+        for (name, (n, ported)) in &uses {
+            println!("{n:5} {} {name}", if *ported { "ported  " } else { "UNPORTED" });
+        }
+        println!("{} codes, {missing} unported", uses.len());
+        return Ok(());
     }
     if o.data {
         for d in &data.data_definitions {

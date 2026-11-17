@@ -238,12 +238,12 @@ fn ui_hooks() {
     );
 }
 
-/// The registry the boot path uses: the 180 hooks verified against their handlers (`the_second_twenty` ... `the_ninth_twenty`).
+/// The registry the boot path uses: the 187 hooks verified against their handlers (`the_second_twenty` ... `the_ninth_twenty`).
 #[test]
 fn the_twenty_ported_hooks() {
     let r = Registry::original();
     let ported: Vec<_> = r.hooks().iter().filter(|h| h.ported()).map(|h| h.name).collect();
-    assert_eq!(ported.len(), 180, "{ported:?}");
+    assert_eq!(ported.len(), 187, "{ported:?}");
     let mut s = LogicState::default();
     s.players.local = Some(0);
     s.players.slots[0] = Some(Player::default());
@@ -991,4 +991,43 @@ fn the_ninth_twenty() {
     assert!(s.hook_online.mwl_cache_locked);
     call(&r, &mut s, "UnlockMwlCache", None);
     assert!(!s.hook_online.mwl_cache_locked);
+}
+
+/// The last seven hooks (research-log 2026-11-17 "the last seven hooks").
+#[test]
+fn the_last_seven() {
+    let r = Registry::original();
+    let mut s = with_local_player();
+    let v = |t: &str| format!(r#"{{"lpcValue": "{t}"}}"#);
+    assert_eq!(r.hooks().iter().filter(|h| h.ported()).count(), 187);
+
+    s.hook_playlist.show_floor_flag = true;
+    for name in [
+        "HACKPlayFirstCustomPlaylist",
+        "RestartGamesComShowFloorFlow",
+        "ProcessPlaylistEndMilestones",
+        "GetMostWantedListFromServer",
+        "OnWallPostOrComment",
+    ] {
+        assert_eq!(call(&r, &mut s, name, None), EXIT, "{name}");
+    }
+    assert!(!s.hook_playlist.show_floor_flag);
+    assert_eq!(
+        s.requests,
+        [
+            Request::PlayCustomPlaylist { index: 0 },
+            Request::RestartShowFloorFlow,
+            Request::ProcessPlaylistEndMilestones,
+            Request::GetMostWantedList,
+        ]
+    );
+    s.requests.clear();
+
+    // The player index is 1-based in the string (`FUN_007ecdc0`: value - 1); nothing for an unusable one.
+    assert_eq!(call(&r, &mut s, "MutePlayer", Some(&v("3"))), EXIT);
+    assert_eq!(call(&r, &mut s, "UnmutePlayer", Some(&v("1"))), EXIT);
+    assert_eq!(call(&r, &mut s, "MutePlayer", Some(&v("0"))), EXIT);
+    assert_eq!(call(&r, &mut s, "UnmutePlayer", None), EXIT);
+    assert_eq!(s.requests, [Request::MutePlayer { index: 2 }, Request::UnmutePlayer { index: 0 }]);
+    assert!(s.unported.is_empty());
 }

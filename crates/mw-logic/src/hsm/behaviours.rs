@@ -18,6 +18,8 @@ pub mod hud;
 pub mod mode;
 #[path = "behaviours_mode2.rs"]
 pub mod mode2;
+#[path = "behaviours_online.rs"]
+pub mod online;
 #[path = "behaviours_race.rs"]
 pub mod race;
 #[path = "behaviours_racehud.rs"]
@@ -70,6 +72,7 @@ pub fn register(r: &mut Registry) {
     race::register(r);
     racehud::register(r);
     signin::register(r);
+    online::register(r);
 }
 
 /// Engine state a behaviour reads, asked through [`Host::query`](super::Host::query). Answers are `u64`: bools are
@@ -434,6 +437,64 @@ pub enum Query {
     PendingDialogId,
     /// `GAMEERROR` update (0x740ad0, `FUN_0046efa0`): the clock object's word +0xc4c is nonzero. Default false.
     GameErrorHold,
+    /// The Blaze connection is up (`FUN_004c2040` -> `FUN_00a82680`: the connection object's state is 9 or more). Default false (offline).
+    NetBlazeUp,
+    /// The network layer is ready for requests (`FUN_004c3750`: vtable +0x70 of the layer's object +0x480). Default false.
+    NetReady,
+    /// In a game session (`FUN_004c1ea0`: the network object +0x7078 is not 0). Default false.
+    NetInGame,
+    /// `FUN_004c1eb0` (`FUN_00a81de0` on the network object +0x5bb0): the lobby / matchmaking object has a session. Default false.
+    NetLobbyA,
+    /// `FUN_004c23a0` (`FUN_00a829a0` on the network object +0x5bb0). Default false.
+    NetLobbyB,
+    /// The state of request object `slot` (0 idle, 1 pending, 2 done; `FUN_004c4b30` pumps it). Default 2.
+    NetRequestState { slot: u8 },
+    /// The error of request object `slot` (0 = none). Default 1 (a "no server" error).
+    NetRequestError { slot: u8 },
+    /// `UPLDCONCOURS`: the local player's concours value (`FUN_006b9df0`). Default 0.
+    ConcoursValue,
+    /// `UPLDCONCOURS`: the local player's synced value (+0x408) equals `value`. Default false.
+    ConcoursSynced { value: i32 },
+    /// The invite object (vtable +4): the invite was accepted and can be joined. Default false.
+    InviteAccepted,
+    /// The invite object (vtable +0x10): the invite was sent. Default false.
+    InviteSent,
+    /// G+0x2f4ac: the join wish (0 none, 1 a friend, 2 a game id). Default 0.
+    JoinWish,
+    /// G+0x2f4a8: the playgroup join is by invite (else by user id). Default false.
+    PartyInvite,
+    /// G+0x2f498: the friend invite id (0 = none). Default 0.
+    FriendInviteId,
+    /// `HSB_NET_QJO`: the network layer's session number `which` (0 `NumMatchedPlayers`, 1 `MinAcceptedPlayerCount`, 2 `MaxAcceptedPlayerCount`, `FUN_004c2490` + `atoi`); `u64::MAX` = absent. Default absent.
+    QuickJoinInfo { which: u8 },
+    /// The local player's matchmaking state (the net player object +0x298; 2 = leaving the search). Default 0.
+    MatchState,
+    /// `FUN_0063b0a0`: in a session whose attribute 0xfb6184 is a non-zero number. Default false.
+    QuickJoinSessionFlag,
+    /// `BROWSER_IN`: the local player's net object (`FUN_00047aa20`) is in state 1. Default false.
+    BrowserBlocked,
+    /// `BROWSER_IN`: the pending browser command (G+0x2f454 +0x4627 set): 0 none, 1 `PlayIt?`, 2 `TakeProfilePic?`, 3 `Join?`, 4 `Invite?`, 5 `Perspective?`. Default 0.
+    BrowserCommand,
+    /// `FUN_006dfee0`: not in a game session (`FUN_004c1ec0`), or the session's host (`FUN_004c22c0`). Default true (offline).
+    SessionHost,
+    /// The entitlement list's request byte G+0x29d60 is still set. Default false.
+    EntitlementEnumPending,
+    /// The playlist manager's byte +0x2e76 (the game state is synced). Default false.
+    GameStateSynced,
+    /// `FUN_004c2310`: the network object's byte +0xbe78. Default false.
+    NetSyncing,
+    /// `FUN_004c2050`: the Blaze session's state (`FUN_00a82e60`) is 0xb. Default false.
+    NetAuthenticated,
+    /// The context `name` is open in the poller G+0x2ee60 (`FUN_0083b8b0`) or the Autolog G+0x2ed74 (`FUN_0083b580`). Default false.
+    AutologContextOpen { name: String },
+    /// The UI manager's word +0x12460 is above 0 (messages up). Default false.
+    UiMessagesActive,
+    /// `FUN_006a6e50` on G+0x2f3cc: online scoring actions are pending. Default false.
+    OnlineScoreBusy,
+    /// The clock object's state +0x6c is 2 (`FUN_0046eed0`). Default false.
+    ClockSynced,
+    /// The clock object's state +0x6c is 1 (`FUN_0046eec0`). Default false.
+    ClockSyncing,
 }
 
 impl Query {
@@ -480,6 +541,10 @@ impl Query {
             Query::ServerOpState => 2,
             Query::ServerOpError => 1,
             Query::ServerOpNextState { .. } => 26,
+            Query::NetRequestState { .. } => 2,
+            Query::NetRequestError { .. } => 1,
+            Query::QuickJoinInfo { .. } => u64::MAX,
+            Query::SessionHost => 1,
             Query::DialogResult { .. } => 0xff,
             Query::TransitionState => 2,
             Query::GameModeEvent | Query::GameModeMachine | Query::BlacklistRivalHandle => u64::MAX,
@@ -632,6 +697,35 @@ impl Query {
             Query::AutologBusy { .. } => "AutologBusy",
             Query::PendingDialogId => "PendingDialogId",
             Query::GameErrorHold => "GameErrorHold",
+            Query::NetBlazeUp => "NetBlazeUp",
+            Query::NetReady => "NetReady",
+            Query::NetInGame => "NetInGame",
+            Query::NetLobbyA => "NetLobbyA",
+            Query::NetLobbyB => "NetLobbyB",
+            Query::NetRequestState { .. } => "NetRequestState",
+            Query::NetRequestError { .. } => "NetRequestError",
+            Query::ConcoursValue => "ConcoursValue",
+            Query::ConcoursSynced { .. } => "ConcoursSynced",
+            Query::InviteAccepted => "InviteAccepted",
+            Query::InviteSent => "InviteSent",
+            Query::JoinWish => "JoinWish",
+            Query::PartyInvite => "PartyInvite",
+            Query::FriendInviteId => "FriendInviteId",
+            Query::QuickJoinInfo { .. } => "QuickJoinInfo",
+            Query::MatchState => "MatchState",
+            Query::QuickJoinSessionFlag => "QuickJoinSessionFlag",
+            Query::BrowserBlocked => "BrowserBlocked",
+            Query::BrowserCommand => "BrowserCommand",
+            Query::SessionHost => "SessionHost",
+            Query::EntitlementEnumPending => "EntitlementEnumPending",
+            Query::GameStateSynced => "GameStateSynced",
+            Query::NetSyncing => "NetSyncing",
+            Query::NetAuthenticated => "NetAuthenticated",
+            Query::AutologContextOpen { .. } => "AutologContextOpen",
+            Query::UiMessagesActive => "UiMessagesActive",
+            Query::OnlineScoreBusy => "OnlineScoreBusy",
+            Query::ClockSynced => "ClockSynced",
+            Query::ClockSyncing => "ClockSyncing",
         }
     }
 }

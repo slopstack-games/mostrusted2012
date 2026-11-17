@@ -871,6 +871,9 @@ enum Cmd {
         depth: usize,
         #[arg(long)]
         data: bool,
+        /// Lists the behaviour codes the bundle's states use, with use counts and whether they are ported.
+        #[arg(long)]
+        codes: bool,
         #[arg(long, num_args = 0..=1, default_missing_value = "20527")]
         run: Option<u32>,
         #[arg(long, default_value_t = 300)]
@@ -1935,23 +1938,26 @@ fn main() -> Result<()> {
             let opt = bindings::Options { find: find.as_deref(), parse, no_genesys, out: out.as_deref() };
             bindings::run(&AssetStore::new(game)?, &opt)?
         }
-        Cmd::Hsm { node, bundle, find, depth, parents, data, run, steps, dt, answer, event, pause_at } => hsm::run(
-            &AssetStore::new(game)?,
-            hsm::Options {
-                bundle: &bundle,
-                node,
-                find: find.as_deref(),
-                depth,
-                parents,
-                data,
-                run,
-                steps,
-                dt,
-                answers: &answer,
-                event,
-                pause_at,
-            },
-        )?,
+        Cmd::Hsm { node, bundle, find, depth, parents, data, codes, run, steps, dt, answer, event, pause_at } => {
+            hsm::run(
+                &AssetStore::new(game)?,
+                hsm::Options {
+                    bundle: &bundle,
+                    node,
+                    find: find.as_deref(),
+                    depth,
+                    parents,
+                    data,
+                    codes,
+                    run,
+                    steps,
+                    dt,
+                    answers: &answer,
+                    event,
+                    pause_at,
+                },
+            )?
+        }
         Cmd::AiGraph => {
             let ai = AssetStore::new(game)?.ai_data()?;
             for (i, n) in ai.nodes.iter().enumerate() {

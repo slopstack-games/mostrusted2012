@@ -854,4 +854,98 @@ pub enum Request {
     /// `GAMEERROR` enter (0x740ab0): show the generic error message (`FUN_007b3410` on `FUN_007746a0` +
     /// 0x11190).
     ShowGameError,
+    /// `GetMostWantedListFromServer` (0x7eb4b0, `FUN_0071dfe0` on G+0x2f454 +0x4af0): request "GetMostWantedList"
+    /// from the notification centre when no request is pending (+0x30 < 0) and the retry timer (+0x3c) ran out.
+    GetMostWantedList,
+    /// `ProcessPlaylistEndMilestones` (0x676da0, `FUN_00704b30` on G+0x2f418): ranking messages 0x1c / 0, and
+    /// 0x1c / 0xf when the local player is the last of the vote order, 0x12 / 0 when `FUN_006eb940` holds.
+    ProcessPlaylistEndMilestones,
+    /// `RestartGamesComShowFloorFlow` (0x680630, `FUN_0067ff80`): the session object's +0x230 / +0x234 / +0x238
+    /// reset (0 / -1 / 0), then `FUN_006ce6f0` releases the player objects.
+    RestartShowFloorFlow,
+    /// `MutePlayer` (0x7eea30, `FUN_007ecdc0`): bit `index` of the network layer's mute mask (+0x80ec).
+    MutePlayer { index: u32 },
+    /// `UnmutePlayer` (0x7eea70, `FUN_007ece70`): bit `index` of the network layer's unmute mask (+0x80f0).
+    UnmutePlayer { index: u32 },
+    /// A message of the network layer queued on request object `slot` (0: the owner's +0x48, 1: +0x84; for
+    /// `UPLOADRESULT` / `UPLDCONCOURS` the object at +0x1f0 / +0x88): `FUN_004c59d0`. See
+    /// [`NetMessage`](crate::hsm::behaviours::online::NetMessage); the ids it needs from game state (join
+    /// targets, invite) are the engine's to fill in.
+    NetSend { slot: u8, message: crate::hsm::behaviours::online::NetMessage },
+    /// A request object is reset / cleared (`FUN_004c27e0` / `FUN_004c2840`).
+    NetReset { slot: u8 },
+    /// A finished request object is acknowledged: idle again (`FUN_004c2870`).
+    NetAck { slot: u8 },
+    /// A request object is pumped (`FUN_004c4b30`: the network layer's callbacks run, its state advances).
+    NetPump { slot: u8 },
+    /// A pending request object is cancelled (`FUN_004c4b40`).
+    NetCancel { slot: u8 },
+    /// `UPLOADRESULT` exit update (0x741600 -> `FUN_00674520`): the local player's online XP above 0 is uploaded
+    /// as a stat (type 4) and cleared, as the hook `UploadLocalPlayerXP` does.
+    UploadResultXp,
+    /// `UPLDCONCOURS` step 0 done (0x741490): the local player's +0x3fc (the pending concours value) = 0.
+    ClearConcoursPending,
+    /// `UPLDCONCOURS` step 1 done (0x753440): `FUN_006fdb70` / `FUN_006fdd80` on G+0x2f418, `FUN_006e4d40` on
+    /// G+0x2f420, `FUN_00679250` on G+0x2f3e4, and for an online event `FUN_00683370` on G+0x2f404 with the
+    /// current rollout id.
+    ApplyConcoursResult,
+    /// The UI's message layer is restored (`FUN_007b3410` on G+0x2f480 +0x8c90): the message texts cleared,
+    /// the saved focus group put back, the shown groups re-applied.
+    RestoreUiMessages,
+    /// `FUN_0063e380` on G+0x2f4c8: the wished game object's +0x230 = the local player's id value (`local`, from
+    /// the rollout slot +0xcc, else 0), +0x234 = -1, +0x238 = `flag`.
+    SetGameWish { local: bool, flag: bool },
+    /// `HSB_NET_CRE` (0x748450): the create-game wish G+0x2f708 = 0.
+    ClearCreateGameDesired,
+    /// `HSB_NET_QJO` running / `HSB_NET_JOI` exit begin: the quick-join wish G+0x2f490 = 0.
+    ClearQuickJoinDesired,
+    /// `HSB_NET_QJO` update: the session's `NumMatchedPlayers` / `MinAcceptedPlayerCount` /
+    /// `MaxAcceptedPlayerCount` are written into the state's data definition (members `NumPlayers` /
+    /// `MinAccepted` / `MaxAccepted`).
+    PublishQuickJoinInfo { players: i32, min: i32, max: i32 },
+    /// `HSB_NET_JOI` step 0 done: G+0x2f4c0 / +0x2f4b0 / +0x2f4b4 / +0x2f4ac = 0.
+    ClearJoinWish,
+    /// `INVITEFAILED` enter / `HSB_NET_JOI` exit begin (`FUN_006bad40`): vtable +0xc of the invite object
+    /// G+0xc9a0, then `FUN_00419240` on G+0xcab8.
+    ClearInvite,
+    /// `JOINPARTYUID` step 0 done: G+0x2f4a0 / +0x2f4a4 / +0x2f4a8 / +0x2f4b8 / +0x2f4bc = 0.
+    ClearPartyWish,
+    /// `JOINPARTYUID` step 1 done: `FUN_00ae1b20`(0).
+    RefreshPartyUi,
+    /// `RECONNECT AL` enter (0x76e9d0, `FUN_0083b660` on G+0x2ed74): the Autolog server connection is renewed.
+    AutologReconnect,
+    /// `SEND_INVITE` enter (0x73f2d0): G+0x2f498 = 0 (the id was taken).
+    ClearFriendInviteId,
+    /// `SEND_INVITE` step 0 (0x73f320, `FUN_00418b60` on the invite object G+0xc9a0): invite the friend `id`.
+    SendInvite { id: u64 },
+    /// `DEL_PR_SESS` enter (0x76f680, `FUN_0083b630` on G+0x2ed74): the entry `name` of the session store is removed.
+    DeleteSessionEntry { name: String },
+    /// `SETFAILLOGIN` / `SETSUCCESSLO`: the sign-in state object G+0x2f3e0's +0x10cc (fail) / +0x10c8 (success;
+    /// +0x10cc = 0 when `state` is 0) = `state`.
+    SetLoginState { success: bool, state: i32 },
+    /// `BROWSER_IN`: the pending browser command's arguments are parsed (`FUN_0076f460`, command number as
+    /// [`BROWSER_PLAY_IT`](crate::hsm::behaviours::online::BROWSER_PLAY_IT)..) and stored in the join /
+    /// invite wishes (`Join?` G+0x2f4ac / +0x2f4b0 / +0x2f4b8 / +0x2f4c0, `Invite?` G+0x2f498).
+    BrowserParse { command: u64 },
+    /// `BROWSER_IN` `PlayIt?`: the pending flag G+0x2f454 +0x4627 = 0.
+    BrowserCommandDone,
+    /// `ENUM_ENTMNTS` enter update (0x73c600): the entitlement list's request byte G+0x29d60 = 1.
+    EnumerateEntitlements,
+    /// `HOSTSETGAMEM` enter (0x73c8f0, `FUN_006f4680`): the session host sets the game mode (a message with the
+    /// mode flags 6 on the playlist manager's queue).
+    HostSetGameMode,
+    /// `STOPMOVIE` enter (0x740f60, `FUN_0079f1c0` on `FUN_007746a0` +0x2deb0): the movie player stops.
+    StopMovie,
+    /// `SYNCGAMESTAT` (`FUN_006f4890` on G+0x2f3fc): for the host the game start time (+0x2d18) and the synced
+    /// byte (+0x2e76) are set, else the sync message is sent.
+    SyncGameState,
+    /// `UPLDCHALSTE` update (0x764790, `FUN_00762df0`(`list`)): the challenge state of list 0 / 1 is uploaded.
+    UploadChallengeState { list: u8 },
+    /// `UPLDCHALSTE` exit (0x741470, `FUN_006fdb70` on G+0x2f418).
+    ApplyChallengeResult,
+    /// `ONLNSCRACT` update (0x7436c0, `FUN_006a3360` on G+0x2f3cc): the online scoring actions advance.
+    OnlineScoreActionsUpdate,
+    /// `REBOOT` / `SYNCTIME` updates: the message `id` is posted with `function` (0x76aa50 / 0x69a650) on the
+    /// game message queue `*0x010edb0c` +0x10 (flag 8 of the owner set while posting).
+    PostQueueMessage { function: u32, id: u32 },
 }

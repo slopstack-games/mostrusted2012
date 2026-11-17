@@ -53,6 +53,8 @@ pub struct HookPlaylistFields {
     pub sweet_revenge: [i32; 12],
     /// (G+0x2f3e0)+0x14 (word): the friend carousel view model is active.
     pub friend_carousel_active: bool,
+    /// (G+0x2f3fc)+0x2e7f (byte): cleared by `RestartGamesComShowFloorFlow` (meaning unknown; read by the runtime).
+    pub show_floor_flag: bool,
 }
 
 pub fn register(r: &mut Registry) {
@@ -76,6 +78,14 @@ pub fn register(r: &mut Registry) {
     r.set_hook("ActivateFriendCarouselViewModel", activate_friend_carousel_view_model);
     r.set_hook("DeactivateFriendCarouselViewModel", deactivate_friend_carousel_view_model);
     r.set_hook("UnlockMwlCache", unlock_mwl_cache);
+    // The last seven.
+    r.set_hook("HACKPlayFirstCustomPlaylist", hack_play_first_custom_playlist);
+    r.set_hook("RestartGamesComShowFloorFlow", restart_games_com_show_floor_flow);
+    r.set_hook("ProcessPlaylistEndMilestones", process_playlist_end_milestones);
+    r.set_hook("GetMostWantedListFromServer", get_most_wanted_list_from_server);
+    r.set_hook("MutePlayer", mute_player);
+    r.set_hook("UnmutePlayer", unmute_player);
+    r.set_hook("OnWallPostOrComment", on_wall_post_or_comment);
 }
 
 /// `LoadLastOnlineRollout` (0x693c50): `FUN_00692800` on the rollout manager G+0x2f404.
@@ -274,5 +284,61 @@ fn deactivate_friend_carousel_view_model(s: &mut LogicState, _: Args) -> Key {
 /// `UnlockMwlCache` (0x676df0): `FUN_0071cad0`: the lock byte +0x36 = 0 (`CacheMwlAndLock` sets it).
 fn unlock_mwl_cache(s: &mut LogicState, _: Args) -> Key {
     s.hook_online.mwl_cache_locked = false;
+    EXIT
+}
+
+/// `HACKPlayFirstCustomPlaylist` (0x676570, a debug hook): `FUN_006f2730`(0), the same call as
+/// `PlayCustomPlaylist` with index 0.
+fn hack_play_first_custom_playlist(s: &mut LogicState, _: Args) -> Key {
+    s.requests.push(Request::PlayCustomPlaylist { index: 0 });
+    EXIT
+}
+
+/// `RestartGamesComShowFloorFlow` (0x680630, a debug hook): `FUN_0067ff80`: a session object's +0x230 / +0x234 /
+/// +0x238 reset ([`Request::RestartShowFloorFlow`], with `FUN_006ce6f0`), the playlist manager's byte +0x2e7f = 0.
+fn restart_games_com_show_floor_flow(s: &mut LogicState, _: Args) -> Key {
+    s.hook_playlist.show_floor_flag = false;
+    s.requests.push(Request::RestartShowFloorFlow);
+    EXIT
+}
+
+/// `ProcessPlaylistEndMilestones` (0x676da0): `FUN_00704b30` on G+0x2f418.
+fn process_playlist_end_milestones(s: &mut LogicState, _: Args) -> Key {
+    s.requests.push(Request::ProcessPlaylistEndMilestones);
+    EXIT
+}
+
+/// `GetMostWantedListFromServer` (0x7eb4b0): `FUN_0071dfe0` on (G+0x2f454)+0x4af0 (the "CachedMWL" object).
+fn get_most_wanted_list_from_server(s: &mut LogicState, _: Args) -> Key {
+    s.requests.push(Request::GetMostWantedList);
+    EXIT
+}
+
+/// The player `MutePlayer` / `UnmutePlayer` pick (`FUN_007ecdc0` / `FUN_007ece70`): `lpcValue` is evaluated
+/// (`FUN_00a50650`) and read as an int minus 1; a string that does not evaluate leaves the index at -1, whose
+/// bit lies outside the mask (the original writes out of range). Model decision: the string is the number
+/// itself and an index below 0 does nothing.
+fn mute_index(args: Args) -> Option<u32> {
+    u32::try_from(strtol10(arg::string(args, arg::LPC_VALUE)).wrapping_sub(1)).ok()
+}
+
+/// `MutePlayer` (0x7eea30): bit of the network layer's mute mask (+0x80ec).
+fn mute_player(s: &mut LogicState, args: Args) -> Key {
+    if let Some(index) = mute_index(args) {
+        s.requests.push(Request::MutePlayer { index });
+    }
+    EXIT
+}
+
+/// `UnmutePlayer` (0x7eea70): the same for the unmute mask (+0x80f0).
+fn unmute_player(s: &mut LogicState, args: Args) -> Key {
+    if let Some(index) = mute_index(args) {
+        s.requests.push(Request::UnmutePlayer { index });
+    }
+    EXIT
+}
+
+/// `OnWallPostOrComment` (0x7eb7d0): calls `FUN_00639a90`, a bare `ret`.
+fn on_wall_post_or_comment(_: &mut LogicState, _: Args) -> Key {
     EXIT
 }
