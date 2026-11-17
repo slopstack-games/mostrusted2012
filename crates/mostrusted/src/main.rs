@@ -514,6 +514,16 @@ fn run(mut cli: Cli, game: GameDir) -> anyhow::Result<()> {
         unsafe { std::env::remove_var("WAYLAND_DISPLAY") };
     }
     println!("Most Wanted install: {} (version {})", game.root().display(), game.version().unwrap_or("?"));
+    // The player must own the game: a known retail build of the executable (`GameDir::ownership`, user decision
+    // 2026-11-17). DLC ownership is never taken from the files (every pack ships in the install).
+    match game.ownership() {
+        mw_gamedir::Ownership::Retail { release } => println!("retail copy: {release}"),
+        mw_gamedir::Ownership::Unknown { sha256 } => anyhow::bail!(
+            "this install is not a known retail copy of Need for Speed Most Wanted (2012): NFS13.exe has SHA-256 \
+             {sha256}. Most Rusted runs only on a copy you own, as installed by Steam or the EA app; if yours is \
+             one, please report this hash so its release can be added."
+        ),
+    }
     let t = Instant::now();
     let store = Arc::new(AssetStore::new(game)?);
     println!("indexed {} resources in {:?}", store.resource_count(), t.elapsed());

@@ -40,6 +40,20 @@ pub enum Error {
     NotFound,
 }
 
+/// The retail builds of `NFS13.exe` the ownership check accepts: (release, SHA-256). Hashes only, no game content
+/// (CLAUDE.md "Hard rules" allows them). Add a build when a player's copy is confirmed retail.
+pub const RETAIL_BUILDS: &[(&str, &str)] =
+    &[("Steam 1.4.0.0 (app 1262560)", "3af4dc5f206d3b41d2dcf46ef8ef41575e56834ae73de826708a2a44c44fe971")];
+
+/// The result of [`GameDir::ownership`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ownership {
+    /// A known retail build.
+    Retail { release: &'static str },
+    /// Not a known build (or no executable): its hash, for adding a confirmed release to [`RETAIL_BUILDS`].
+    Unknown { sha256: String },
+}
+
 /// A validated game installation: its files come from a [`Source`] (a directory on disk, or the folder picked in
 /// a browser), and every read of game data goes through [`GameDir::read`] / [`GameDir::read_at`].
 #[derive(Debug, Clone)]
@@ -89,6 +103,20 @@ impl GameDir {
 
     pub fn source(&self) -> &Arc<dyn Source> {
         &self.source
+    }
+
+    /// Whether this is a retail copy of the game the player owns (user decision, 2026-11-17: the base game counts
+    /// as owned when its executable is a known retail build; DLC is never inferred from the files, which ship every
+    /// pack: see `mw_logic`'s entitlements). Reads and hashes `NFS13.exe` (~14 MB).
+    pub fn ownership(&self) -> Ownership {
+        let Ok(exe) = self.read(EXECUTABLE) else { return Ownership::Unknown { sha256: String::new() } };
+        use sha2::Digest;
+        let digest = sha2::Sha256::digest(&exe);
+        let sha256: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+        match RETAIL_BUILDS.iter().find(|(_, h)| *h == sha256) {
+            Some((release, _)) => Ownership::Retail { release },
+            None => Ownership::Unknown { sha256 },
+        }
     }
 
     /// Contents of `VERSION.TXT` (e.g. `1.4.0.0`).
@@ -322,5 +350,37 @@ mod tests {
             parse_library_paths(vdf),
             vec![PathBuf::from("/home/u/.local/share/Steam"), PathBuf::from("D:\\SteamLibrary")]
         );
+    }
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+
+    /// The install on this machine is the Steam retail build (skipped without an install).
+    #[test]
+    fn steam_install_is_retail() {
+        let Ok(g) = GameDir::locate(None) else { return };
+        if g.version() != Some("1.4.0.0") {
+            return;
+        }
+        assert!(matches!(g.ownership(), Ownership::Retail { .. }), "{:?}", g.ownership());
+    }
+
+    /// An install whose executable is not a known build is refused, with the hash to report.
+    #[test]
+    fn unknown_executable_is_not_owned() {
+        let dir = std::env::temp_dir().join(format!("mw-gamedir-ownership-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for f in REQUIRED_FILES {
+            std::fs::write(dir.join(f), b"not the game").unwrap();
+        }
+        let g = GameDir::open(&dir).unwrap();
+        let o = g.ownership();
+        std::fs::remove_dir_all(&dir).ok();
+        match o {
+            Ownership::Unknown { sha256 } => assert_eq!(sha256.len(), 64),
+            other => panic!("{other:?}"),
+        }
     }
 }

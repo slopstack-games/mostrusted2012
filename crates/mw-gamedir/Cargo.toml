@@ -7,6 +7,8 @@ license.workspace = true
 
 [dependencies]
 thiserror.workspace = true
+# The ownership check (`GameDir::ownership`): SHA-256 of the retail executable.
+sha2 = "0.10"
 
 # The browser's picked folder (WebSource): blob URLs read with synchronous range requests.
 [target.'cfg(target_arch = "wasm32")'.dependencies]

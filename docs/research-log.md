@@ -13,6 +13,17 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ## Dated findings
 
+### 2026-11-17: ownership check: a retail executable (`mw_gamedir::GameDir::ownership`)
+
+User decision: the base game counts as owned when `NFS13.exe` is a known retail build; DLC is never inferred from
+the files (the Steam depot ships every pack; the DLC lock is the logic's entitlements, agent round of the same day).
+- `GameDir::ownership` hashes `NFS13.exe` (SHA-256, ~14 MB) against `RETAIL_BUILDS` (release, hash). Known: Steam
+  1.4.0.0 (app 1262560). The EA app build is not known yet: add its hash once a copy is confirmed.
+- `mostrusted` refuses to start on an unknown executable, before indexing, in both the native and browser builds
+  (`run`). The message gives the hash to report. Tools (`mwtool`) do not check.
+- Hashes are the one exception to "nothing derived from game data" (CLAUDE.md), and they hold no content.
+- Tests: `mw_gamedir::ownership_tests` (the Steam install is retail; a fake executable is refused).
+
 ### 2026-11-17: fifth 20 HSM hooks verified and enabled (100 of 187; `natives/hooks_{flow,ui}.rs`)
 
 All 20 were already ported but parked; handlers re-read from `re/out/live/text.asm`, now enabled in `Registry::original`.

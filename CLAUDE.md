@@ -24,7 +24,8 @@ the first section of docs/next-session.md; the other docs are references to sear
 ## Hard rules
 
 - **Never commit game data or anything derived from it**: extracted resources, DDS/PNG/OBJ exports,
-  Ghidra databases, decompiled code (findings go into docs in prose only). Use the session scratchpad or git-ignored dirs (`/extracted`, `/re/out`).
+  Ghidra databases, decompiled code (findings go into docs in prose only). Exception: SHA-256 hashes of retail files for
+  the ownership check (`mw_gamedir::RETAIL_BUILDS`; no content). Use the session scratchpad or git-ignored dirs (`/extracted`, `/re/out`).
 - Community references (burnout.wiki, DGIorio's MIT tools) may be read for format knowledge; don't copy code.
 - **Modding the original is allowed** (docs/reverse-engineering.md): code mods run in the
   user's own copy, offline. Data files may be replaced if backed up and restorable. Byte signatures and anything from the dump stay in git-ignored `re/`.
