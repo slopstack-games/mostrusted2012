@@ -26,6 +26,8 @@ pub struct Options<'a> {
     pub steps: usize,
     pub dt: f32,
     pub answers: &'a [String],
+    pub event: Option<u32>,
+    pub pause_at: Option<usize>,
 }
 
 /// Parses every `HSMData` of the install (`hsm --bundle all`) and prints its counts.
@@ -73,7 +75,7 @@ pub fn run(store: &AssetStore, o: Options) -> Result<()> {
     }
     let data = store.hsm_data(o.bundle)?;
     if let Some(instance) = o.run {
-        return drive(store, Arc::new(data), instance, o.steps, o.dt, o.answers);
+        return drive(store, Arc::new(data), instance, &o);
     }
     if o.data {
         for d in &data.data_definitions {
@@ -344,14 +346,40 @@ impl Host for Driver {
     }
 }
 
-fn drive(
-    store: &AssetStore,
-    data: Arc<HsmData>,
-    instance: u32,
-    steps: usize,
-    dt: f32,
-    answers: &[String],
-) -> Result<()> {
+/// `--event`: stands in for the Easy Drive menu "Easy Drive Menu" (1135029) after the player picked an event: the
+/// list item's hook `StartEventFromEasyDrive` (`lpcValue` = the event id, `FUN_006e74f0`) and the exit `TO_EVENT`.
+struct ChooseEvent {
+    event: u32,
+}
+
+impl mw_logic::hsm::Behaviour for ChooseEvent {
+    fn update(&mut self, cx: &mut mw_logic::hsm::Cx) -> bool {
+        let args = Json::parse(&format!(r#"{{ "lpcValue": "{}" }}"#, self.event)).expect("json");
+        cx.host.hook("StartEventFromEasyDrive", Some(&args));
+        cx.set_exit(key("TO_EVENT"));
+        true
+    }
+}
+
+fn drive(store: &AssetStore, data: Arc<HsmData>, instance: u32, o: &Options) -> Result<()> {
+    let Options { steps, dt, answers, event, pause_at, .. } = *o;
+    let mut answers = answers.to_vec();
+    if let Some(id) = event {
+        let events = store.events()?;
+        let e = events.events.iter().find(|e| e.id == id);
+        // Stand-ins for the `Event` view model (not ported) and the checkpoint manager: the intro sequence id from
+        // the gates counted, none passed (the intro id is set once the event is the current one, below).
+        let stand_ins = [
+            ("Query.CheckpointsFinished", "false".to_owned()),
+            ("Query.CheckpointCount", e.map_or(0, |e| e.checkpoints.len()).to_string()),
+        ];
+        for (name, value) in stand_ins {
+            if !answers.iter().any(|a| a.starts_with(&format!("{name}="))) {
+                answers.push(format!("{name}={value}"));
+            }
+        }
+    }
+    let answers = &answers[..];
     let mut registry = Registry::structural();
     let mut hooks = HashMap::new();
     let mut bindings = HashMap::new();
@@ -387,6 +415,35 @@ fn drive(
                 Box::new(Stub { exit })
             }),
         );
+    }
+    // `--event`: the player's choice in the Easy Drive menu (the widget actions are Lua and input, which the
+    // headless run does not have): the first input of "Wait for UI Input" opens the menu (EZ_RIGHT), and the
+    // menu's state calls the hook the event list's item calls and exits TO_EVENT.
+    if let Some(id) = event {
+        // The respawn at the event's start is done at once (`Players.LocalPlayer.ResetInProgress`: the `Players`
+        // view model is not ported yet).
+        bindings.entry("Players.LocalPlayer.ResetInProgress(NOT)".to_owned()).or_insert_with(|| "TRUE".to_owned());
+        // ... and the screen transitions are done (the `Transitions` view model is not ported yet).
+        bindings.entry("Transitions.Transitioning(NOT)".to_owned()).or_insert_with(|| "TRUE".to_owned());
+        by_state.entry(908987).or_insert(Some(key("EZ_RIGHT")));
+        if let Some(s) = data.state(1135029) {
+            let b = s.behaviour;
+            let name = code(&data, b);
+            let orig = registry.clone();
+            // The player chooses once; the way back to free roam after the event is not chosen again.
+            let chosen = std::sync::atomic::AtomicBool::new(false);
+            registry.register_id(
+                b,
+                &name,
+                Arc::new(move |s: &State| {
+                    if s.id == 1135029 && !chosen.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        Box::new(ChooseEvent { event: id })
+                    } else {
+                        orig.create_for(s).expect("registered")
+                    }
+                }),
+            );
+        }
     }
     // State-id answers for ported behaviours replace them too.
     let mut overrides: HashMap<u32, Option<Key>> = HashMap::new();
@@ -485,6 +542,8 @@ fn drive(
         user_bound: false,
         printed_blocks: HashSet::new(),
     };
+    let event_intro =
+        event.and_then(|id| store.events().ok()?.events.iter().find(|e| e.id == id).map(|e| e.event_intro));
     let Some(serial) = hsm.start(instance, &mut host) else { bail!("no top-level state with instance {instance}") };
     let clock = Clock::both(dt);
     for f in 0..steps {
@@ -509,8 +568,23 @@ fn drive(
         {
             let mut st = state.borrow_mut();
             st.game_modes.weapon_list_loaded = st.game_modes.weapon_list;
+            // The mode's intro load (`Mode.HasIntroLoadCompleted`, +0x2e82) completes at once, like the other loads.
+            if event.is_some() && st.game_modes.machine.is_some() {
+                st.game_modes.intro_load_complete = true;
+            }
         }
         mode_machine::update(&state, &mut hsm, &mut host);
+        if pause_at.is_some_and(|p| f >= p) {
+            host.bindings.insert("Query.InputExit".into(), "PAUSE".into());
+        }
+        if let (Some(id), Some(intro)) = (event, event_intro)
+            && state.borrow().game_modes.current_event == id
+        {
+            host.bindings.insert("Event.Data.EventIntro".into(), intro.to_string());
+            // The intro's UI sequence fires the "TRANSITION" general trigger item when its screen transition runs
+            // (the runtime does; "Screen Transition Voodoo" waits for it).
+            state.borrow_mut().set_general_trigger(mw_logic::binding::hash("TRANSITION"), 1);
+        }
         let hook_requests = std::mem::take(&mut state.borrow_mut().requests);
         for r in hook_requests {
             println!("{f:5}      hook request {r:?}");

@@ -1231,3 +1231,100 @@ fn limited_edition_sends_the_request_of_an_owned_code_and_fails_on_the_first_err
     step(&mut hsm, &mut host, 2);
     assert_eq!(hsm.result(s), Some(key("FAILED")));
 }
+
+// ---- Race route types (`behaviours_race`) ----
+
+#[test]
+fn pause_sim_pauses_offline_and_resumes_on_exit() {
+    let (mut hsm, mut host, s) = machine("PAUSESIM", &[], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::SimPause { paused: true }]);
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs[1..], [Request::SimPause { paused: false }]);
+    // Online it leaves the simulation alone.
+    let (mut hsm, mut host, _) = machine("PAUSESIM", &[], "ENTER");
+    host.answers.insert("OnlineEvent", 1);
+    step(&mut hsm, &mut host, 2);
+    assert!(host.reqs.is_empty());
+}
+
+#[test]
+fn enable_alerts_does_nothing_itself() {
+    let (mut hsm, mut host, s) = machine("ENABLEALERTS", &[], "ENTER");
+    step(&mut hsm, &mut host, 3);
+    assert!(host.reqs.is_empty());
+    assert!(hsm.is_running(s));
+}
+
+#[test]
+fn clear_selected_event_clears_and_exits() {
+    let (mut hsm, mut host, s) = machine("CLRSELEVENT", &[], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::ClearSelectedEvent]);
+    assert_eq!(hsm.result(s), Some(EXIT));
+}
+
+#[test]
+fn no_scores_raises_and_lowers_the_scoring_counter() {
+    let (mut hsm, mut host, s) = machine("HSB_NOSCORES", &[], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::AdjustScoringDisabled { delta: 1 }]);
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs[1..], [Request::AdjustScoringDisabled { delta: -1 }]);
+}
+
+#[test]
+fn crash_escape_scores_a_wrecked_player_the_local_player_left_behind() {
+    let (mut hsm, mut host, s) = machine("CRASHESCAPE", &[], "ENTER");
+    host.answers.insert("CrashLocalOk", 1);
+    host.answers.insert("CrashPlayerCount", 2);
+    // Both players are id 3 with a vehicle and the +0x23f byte set (bits 0, 1), near: the escape scores.
+    host.answers.insert("CrashPlayerState", (3 << 8) | 3);
+    host.answers.insert("CrashPlayerNear", 1);
+    step(&mut hsm, &mut host, 1);
+    // The 0.2 s timer starts at 0, so the first update checks; the first scores, the second finds the cool-down
+    // (5 s + a step) above 4 s.
+    assert_eq!(host.reqs, [Request::CrashEscape { player: 3 }]);
+    host.reqs.clear();
+    step(&mut hsm, &mut host, 30);
+    assert!(host.reqs.is_empty());
+    // A player the local player wrecked (bit 2) resets its cool-down and never scores ...
+    host.answers.insert("CrashPlayerState", (3 << 8) | 7);
+    step(&mut hsm, &mut host, 30);
+    assert!(host.reqs.is_empty());
+    // ... and scores again once it is not.
+    host.answers.insert("CrashPlayerState", (3 << 8) | 3);
+    step(&mut hsm, &mut host, 10);
+    assert!(host.reqs.contains(&Request::CrashEscape { player: 3 }));
+    assert!(hsm.is_running(s));
+}
+
+#[test]
+fn crash_escape_needs_the_local_vehicle() {
+    let (mut hsm, mut host, _) = machine("CRASHESCAPE", &[], "ENTER");
+    host.answers.insert("CrashPlayerCount", 1);
+    host.answers.insert("CrashPlayerState", 3);
+    host.answers.insert("CrashPlayerNear", 1);
+    step(&mut hsm, &mut host, 10);
+    assert!(host.reqs.is_empty()); // CrashLocalOk defaults to false
+}
+
+#[test]
+fn check_entitlement_has_it() {
+    let (mut hsm, mut host, s) = machine("CHECK_ENT", &[("ENTITLEMENT", "94740")], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(key("HAVE")));
+}
+
+#[test]
+fn toggle_loading_screen_shows_with_the_layout_or_hides() {
+    let (mut hsm, mut host, s) = machine("HSB_TOG_LS", &[("SHOW", "True"), ("LAYOUT", "12")], "ENTER");
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs, [Request::ToggleLoadingScreen { show: true, layout: 12 }]);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    let (mut hsm, mut host, _) = machine("HSB_TOG_LS", &[("SHOW", "False"), ("LAYOUT", "12")], "ENTER");
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs, [Request::ToggleLoadingScreen { show: false, layout: 0 }]);
+}

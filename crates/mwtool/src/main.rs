@@ -879,6 +879,14 @@ enum Cmd {
         dt: f32,
         #[arg(long)]
         answer: Vec<String>,
+        /// With `--run`: the player starts this event from free roam (the Easy Drive menu's choice, see
+        /// docs/decomp.md "Route free roam to race"); the free-drive machine ends and the GMM starts the event's.
+        #[arg(long)]
+        event: Option<u32>,
+        /// With `--run`: from this frame on the pause button is held (`Query.InputExit=PAUSE`), e.g. to enter the
+        /// pause menu's machines in a race.
+        #[arg(long)]
+        pause_at: Option<usize>,
     },
     /// Scoring actions (`ScoringAction`s of GAMELOGIC/GAMEPLAY.BNDL named by `ScoringConfig`): Speed Points,
     /// pursuit score, heat, HUD message sequence and title per action. `--all` includes the actions worth no
@@ -1927,7 +1935,7 @@ fn main() -> Result<()> {
             let opt = bindings::Options { find: find.as_deref(), parse, no_genesys, out: out.as_deref() };
             bindings::run(&AssetStore::new(game)?, &opt)?
         }
-        Cmd::Hsm { node, bundle, find, depth, parents, data, run, steps, dt, answer } => hsm::run(
+        Cmd::Hsm { node, bundle, find, depth, parents, data, run, steps, dt, answer, event, pause_at } => hsm::run(
             &AssetStore::new(game)?,
             hsm::Options {
                 bundle: &bundle,
@@ -1940,6 +1948,8 @@ fn main() -> Result<()> {
                 steps,
                 dt,
                 answers: &answer,
+                event,
+                pause_at,
             },
         )?,
         Cmd::AiGraph => {

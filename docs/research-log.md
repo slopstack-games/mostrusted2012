@@ -39,6 +39,55 @@ vehicle); the photo object's states are two bool Queries (6 captured, 1 idle), d
 limited-edition server request is `LimitedEdSend` plus the poll Query.
 Open: the runtime answers none of the new Requests / Queries except the dialog and entitlement ones; photo mode itself and the pause-interrupt timeline
 items are unported; the sign-in family is the bulk of the remaining machines.
+### 2026-11-17: the route free roam → race, and 7 race-route behaviour types (`hsm/behaviours_race.rs`; 92 types)
+
+`mwtool hsm --run --event <id>` (docs/commands.md) plays the player's choice of an offline event from free roam
+and follows the logic on: the Easy Drive menu's list item calls `StartEventFromEasyDrive` (the hook of the map's / list's
+START RACE items; `StartEventFromBinding` is the map's variant), the free-drive machine ends its mode (HUD machine
+exit `START_EVENT`), the GMM finishes it, loads the next event's data and starts "Race Game Mode" 730003 (circuit
+462174 and sprint 906146 are the same machine); the race runs to the checkpoints, then outro, "On Event End", and
+the GMM goes back to free roam by itself. State ids and transitions: decomp.md "Route free roam → race".
+Found on the way (all fixed): (1) free roam ended at frame 4 since the event-flow batch: `MODEENDCHECK` reads
+`FUN_006f46e0`, which returns GMM+0x2e78; that byte is *1* in a running mode (GMM constructor 0x70c603 and the
+end-of-event reset 0x70b37d set it; `SETENDREASON` / `SetGameModeWon` clear it), so the old name "won" with default
+false made every mode end at once. `Query::ModeWon` is now the byte (offline too), set by `LogicHost::new`
+together with +0x2e7a `StoryMode` and +0x2e7b (also constructor values). (2) `FUN_0070d580` after the machine
+finished: `natives::mode_machine::update` now ports the event change (`FUN_006f1720` 0 → 1 `FUN_006f06d0`(requested)
+→ 2 → 3 when (GMM+8)+0xdc == 4, then `FUN_0070b1e0`: story mode and a request → pending event = requested, current
+event / mode / +0x2e7f = +0x2e80 / +0x2e8a; else the hard reset `FUN_006e6af0`) and `FUN_0070caa0`'s next-event part
+(record +0x8c, else in story mode the free-drive event with flag 1: the way back; free roam clears the request).
+New `Request::LoadEventData`, `GameModeManager::transition_state`, `EventInfo::next_event` (the +0x8c field is not
+named in the assets yet; the runtime fills it).
+Types, in the order the route enters them (method as the earlier batches: factory = function before the name stub,
+vtable from its `mov [eax], vtable`, slots from text.asm, constants from snapshot 1 / `exe-const`): `PAUSESIM`
+0x77d990 → 0xfda650 (the same pause as `BPAUSED`), `ENABLEALERTS` 0x77dc60 → 0xfda7a4 (every slot is the base:
+nothing; its effect, if any, is somebody else reading that the state is active: open), `CLRSELEVENT` 0x77b6d0 →
+0xfd95c0 (update 0x73baa0), `HSB_NOSCORES` 0x77b380 → 0xfd9458 (scoring manager +0x124 counter), `CRASHESCAPE`
+0x77b290 → 0xfd93ec (update 0x748150: 0.2 s period, 24 cool-downs, 15 m / dot 0.1, 4 s / 5 s, constants read from
+`.rdata`), and two next-nearest ones off the offline route: `CHECK_ENT` 0x77d300 → 0xfda318 (always `HAVE`),
+`HSB_TOG_LS` 0x77b970 → 0xfd96f8 (loading screen show / hide). Requests: ClearSelectedEvent, AdjustScoringDisabled,
+CrashEscape, ToggleLoadingScreen, LoadEventData. Queries (defaults): CrashLocalOk (false), CrashPlayerCount (0),
+CrashPlayerState (0), CrashPlayerNear (false). One test per type at the end of `flow_tests.rs`, four in
+`mode_machine.rs`.
+How far the route gets: the whole race loop with the stand-ins below; the only type the offline route still holds on
+is `HSMPAUSEINTR` (agent B's: it is held, the intro sequence exits anyway). Everything else the race machine, its HUD
+machine and the pause menu enter is ported; the rest of the unported types in these trees (about 40, 600+ states)
+are online / sign-in / dialog / photo (`SHOWDIALOG`, `SUPPRESSPREF`, `WRITESESSION`, `RUNPRCONTEXT`, `LOADSTRSET`,
+`HSM_SERV_OP`, `SIGNIN_CNTRL`, ...: dialog, nav-tab and credits parts of the pause menu are next).
+Model decisions (driver stand-ins, not the original's): the headless run has no widgets or input, so `--event`
+replaces state 1135029 "Easy Drive Menu" by the list item (hook call + exit `TO_EVENT`) and answers the first input
+of 908987 with `EZ_RIGHT`; the `Players` / `Event` / `Transitions` / `GameLogicState` roots are not ported, so
+`Players.LocalPlayer.ResetInProgress(NOT)` and `Transitions.Transitioning(NOT)` read TRUE, `Event.Data.EventIntro`
+is the event's intro sequence, the "TRANSITION" general trigger fires with the intro, `Mode.HasIntroLoadCompleted`
+is set at once, `Query.CheckpointCount` is the event's gate count and `CheckpointsFinished` false (answer it TRUE to
+see the finish and the outro; `--answer 1560270=FALSE` stands for `Players.LocalPlayer.WasBusted`).
+`--pause-at <frame>` holds the pause button (`Query.InputExit=PAUSE`, with
+`--answer 'GameLogicState.IsControlGroupEnabled["MENU"]=TRUE'`): the pause menu's machine starts ("Run PageRunner2
+Context - PauseMenuScreen"); `Mode.DisablePauseMenu` is missing from the `Mode` view model (the state exits through
+an empty exit point). `RACE_MODE` (+0x170 of `GameLogicConfig`) is not read (field hash unknown), so
+`IsRaceEvent` / `LastEventWasRace` stay with the runtime. Captures that would confirm: GMM+0x2d0c, +0x2ce4, +0x2e7e /
++0x2e80 at the moment a race is chosen in free roam (probe), and +0x2e78 in free roam (expected 1).
+
 ### 2026-11-17: the DLC lock in the runtime (`dlc.rs`)
 
 Every DLC pack counts as not owned (user decision; decomp.md "DLC and entitlements" for the rules and the

@@ -50,7 +50,17 @@ impl Default for LogicHost {
 
 impl LogicHost {
     pub fn new(registry: Registry) -> Self {
-        LogicHost { registry, state: Rc::default(), on_trace: None, pages: Pages::default() }
+        // The GMM's constructor (0x70c5xx) sets +0x2e78 (`SetGameModeWon`'s byte, "the mode is still on"), +0x2e7a
+        // (`StoryMode`) and +0x2e7b (`ShowTakedownCameras`) to 1; the end-of-event reset (0x70b37d) sets +0x2e78
+        // again.
+        let state: Rc<RefCell<LogicState>> = Rc::default();
+        {
+            let mut s = state.borrow_mut();
+            s.game_modes.won = true;
+            s.game_modes.story_mode = true;
+            s.game_modes.show_takedown_cameras = true;
+        }
+        LogicHost { registry, state, on_trace: None, pages: Pages::default() }
     }
 
     /// One frame of the logic's clocks: the UI clock advances by `dt` seconds and `Signals` updates
@@ -193,7 +203,10 @@ impl hsm::Host for LogicHost {
             Q::EndReason => gm.end_reason as u64,
             Q::DisplayTimeoutOn => gm.display_timeout as u64,
             Q::ModeEndFlag => gm.end_flag_2e75 as u64,
-            Q::ModeWon if gm.online_event => gm.won as u64,
+            // `FUN_006f46e0`: GMM+0x2e78, which the end-of-event reset (0x70b37d) sets to 1 for the next event and
+            // `SETENDREASON` / `SetGameModeWon` clear (so it reads "the mode is still on"); the offline conditions in
+            // front of it (time limits, target score) are the runtime's.
+            Q::ModeWon => gm.won as u64,
             Q::DialogResult { id } => {
                 let d = &st.screen.dialogs;
                 d.results.iter().find(|(i, _)| i == id).map_or(0xff, |&(_, r)| r as u8 as u64)

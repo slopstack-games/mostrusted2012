@@ -23,6 +23,9 @@ pub struct EventInfo {
     /// `FUN_006ec6a0`(id, the local player's vehicle): the event is done (`FUN_006ec620` → `FUN_006e39c0`, else
     /// `FUN_00727b80`'s flag; progression data, not ported: the runtime fills it). `GetNextEventForProgression`.
     pub completed: bool,
+    /// The event record's +0x8c: the event to go on with (`FUN_0070caa0`); 0 = none. Field not named in the
+    /// assets yet: the runtime fills it.
+    pub next_event: u32,
 }
 
 /// Fields of the GMM the hooks touch.
@@ -160,6 +163,8 @@ pub struct GameModeManager {
     pub word_2d2c: u32,
     /// The current event's target score (its record's +0xcc, behind (GMM+4)+0xf4 / +0xf8; the runtime fills it).
     pub event_target_score: i32,
+    /// +0x2d0c: the event change's progress (`FUN_006f1720`): 0 none, 1 requested, 2 next data loading, 3 ready.
+    pub transition_state: u8,
 }
 
 impl GameModeManager {

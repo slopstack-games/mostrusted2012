@@ -18,6 +18,8 @@ pub mod hud;
 pub mod mode;
 #[path = "behaviours_mode2.rs"]
 pub mod mode2;
+#[path = "behaviours_race.rs"]
+pub mod race;
 #[path = "behaviours_ui.rs"]
 pub mod ui;
 
@@ -61,6 +63,7 @@ pub fn register(r: &mut Registry) {
     hud::register(r);
     dialog::register(r);
     event::register(r);
+    race::register(r);
 }
 
 /// Engine state a behaviour reads, asked through [`Host::query`](super::Host::query). Answers are `u64`: bools are
@@ -351,6 +354,18 @@ pub enum Query {
     /// `LIMITEDEDSP` request object (+0x48, polled by `FUN_004c4b30`): 0 = pending (+0x50 != 2), 1 = done,
     /// 2 = done with an error (+0x54 != 0). Default 0.
     LimitedEdRequest,
+    /// `CRASHESCAPE` (0x748150): the local player's vehicle exists (`FUN_006ba2a0`) and its +0x23f byte
+    /// (`FUN_006ba290`) is clear. Default false.
+    CrashLocalOk,
+    /// ... the number of players in the list PM+0xa664 (count +0xa694). Default 0.
+    CrashPlayerCount,
+    /// ... player `index`: bit 0 its vehicle exists (`FUN_006ba2a0`), bit 1 its +0x23f byte is set, bit 2 its
+    /// +0x59c equals the local player's id (+0x98), bits 8.. its id (+0x98). Default 0.
+    CrashPlayerState { index: u32 },
+    /// ... player `index` is within 15 m (squared distance <= 225, `.rdata` 0xfd6b48) of the local player's
+    /// vehicle and the direction to it has a dot product >= 0.1 (0xfd67a0) with the local vehicle's forward
+    /// axis (`FUN_006ba380`). Default false.
+    CrashPlayerNear { index: u32 },
 }
 
 impl Query {
@@ -514,6 +529,10 @@ impl Query {
             Query::LimitedEdPlayerFlag => "LimitedEdPlayerFlag",
             Query::LimitedEdPlayerBit { .. } => "LimitedEdPlayerBit",
             Query::LimitedEdRequest => "LimitedEdRequest",
+            Query::CrashLocalOk => "CrashLocalOk",
+            Query::CrashPlayerCount => "CrashPlayerCount",
+            Query::CrashPlayerState { .. } => "CrashPlayerState",
+            Query::CrashPlayerNear { .. } => "CrashPlayerNear",
         }
     }
 }

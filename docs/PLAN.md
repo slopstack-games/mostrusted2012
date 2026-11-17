@@ -480,14 +480,14 @@ GeneSys. Engine-free crates (`mw-logic`, `mw-lua`; wasm-compatible), in dependen
 2. `[~]` **HSM interpreter** (`mw-logic::hsm`): the parser corrected (typed parameters, data definitions,
    fallback behaviour), the node lifecycle and transitions; then the 203 used behaviour types one by one.
    Done (2026-11-17): parser (all official structures, 37/37 instances), the manager / lifecycle / transitions
-   ported from the code (decomp.md "The HSM interpreter"), 94 behaviour types (structural, hooks, bindings,
+   ported from the code (decomp.md "The HSM interpreter"), 101 behaviour types (structural, hooks, bindings,
    timers, sub-networks, loading-screen / graphics waits; the boot flow: page contexts, widget groups, press
    start, world / profile / feedback-group loading, game modes, in game / playing, cop-car preload, layouts,
    invites; the free-drive mode: traffic restart, speed-wall times, screen prefetch, sim pauses, show world,
    triggers, control groups, the HUD sub-network), the game-mode manager's machine start
    (`natives::mode_machine`), `mwtool hsm --run` (boot → "Playing" without any behaviour answer → the GMM starts
    "Freedrive Game Mode" 390147 → "Freedrive Update" with the "Freedrive HUD" machine: driving in free roam, with
-   six `Mode.*` / `Transitions.*` binding answers). Left: ~150 used behaviour types (UI, game modes, online), the
+   six `Mode.*` / `Transitions.*` binding answers; `--event <id>` plays the way to a race and back: the GMM's event change `FUN_006f1720` / `FUN_0070b1e0` / `FUN_0070caa0` is ported, "Race Game Mode" 730003 runs through intro, checkpoints and outro on the ported types, decomp.md "Route free roam → race"). Left: ~150 used behaviour types (UI, game modes, online), the
    `Mode` / `Event` binding roots (GMM fields), the runtime host carrying out the new Requests, the binding
    evaluator hook-up.
 3. `[ ]` **Native registry** (`mw-logic::natives`): one name → function table for the 187 HSM hooks (121 used)
