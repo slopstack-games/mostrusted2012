@@ -546,6 +546,30 @@ pub enum Request {
     /// `DOBODYSHOP` update (0x749220), every frame: the body-shop watcher over the 24 player slots (see
     /// `behaviours_mode2::DoBodyShop`).
     UpdateBodyShop,
+    /// `ACTIVATESPOT` enter (0x73afa0) `on`: byte +0x98 of the spotting object G+0x2f434 = 1; exit (0x73afd0,
+    /// `FUN_0063e2d0`) `!on`: +0x98 = 0, 0x90 bytes from +4 zeroed, float 0xfb5f94 into +0x94.
+    ActivateSpotting { on: bool },
+    /// `CACHESCORE` enter (0x73b2b0): the local player's (`FUN_006bf330` on G+0x2f3dc) +0x41c = `FUN_006b9df0`
+    /// (online +0x3f8, else services +0x4b0c + player +0x3fc).
+    CachePlayerScore,
+    /// `ACCT_INVITE` exit update (0x73af10): `FUN_006bad40` on the player manager (the invite listener's vtable
+    /// +0xc, then `FUN_00419240` on +0xcab8).
+    AcceptInvite,
+    /// `SWAPGAMEMODE` update (0x746100): `FUN_006e74f0`(GMM, `mode`, 1): GMM+0x2ce4 = mode, +0x2e7e / +0x2e80 =
+    /// mode ≠ 0, the mode's record looked up into GMM+0x2d10.
+    SwapGameMode { mode: i32 },
+    /// `WRT_PR_SESSN` enter (0x7704b0, `FUN_0083b5f0` on the Autolog G+0x2ed74): the boolean session variable.
+    WriteAutologBool { name: String, value: bool },
+    /// `WRT_PR_SESSN` enter (`FUN_0083b610`): the integer session variable.
+    WriteAutologInt { name: String, value: i64 },
+    /// `ENDSETTINGSS` exit (0x73c5c0, `FUN_0071c1c0` on G+0x2f454): with services +0x4968 or G+0x2f3e0 +0x14e0
+    /// set, services +0x4940 = 1.
+    EndSettingsScreen,
+    /// `RUNCHALL` enter (0x74fc30): `FUN_00789240` on the challenge object G+0x2f428 with the current event
+    /// record (GMM+4 +0xf4 / +0xf8).
+    StartChallenge,
+    /// `RUNCHALL` exit (0x73ed30): `FUN_00785d90` on the challenge object.
+    StopChallenge,
     /// `FUN_00673ff0` (`MODEENDCHECK`, `SETENDREASON`): GMM+0x2e78 ([`GameModeManager::won`]) = `won`; applied by the host.
     SetGameModeWon { won: bool },
     /// `FUN_006dff20` (`SETENDREASON`): GMM+0x2d08 (u16, [`GameModeManager::end_reason`]) = `reason`; applied by the host.

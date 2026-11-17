@@ -480,7 +480,7 @@ GeneSys. Engine-free crates (`mw-logic`, `mw-lua`; wasm-compatible), in dependen
 2. `[~]` **HSM interpreter** (`mw-logic::hsm`): the parser corrected (typed parameters, data definitions,
    fallback behaviour), the node lifecycle and transitions; then the 203 used behaviour types one by one.
    Done (2026-11-17): parser (all official structures, 37/37 instances), the manager / lifecycle / transitions
-   ported from the code (decomp.md "The HSM interpreter"), 151 behaviour types (149 of the 199 codes GAMEMODES.BNDL uses, `mwtool hsm --codes`; the online flows `hsm/behaviours_online.rs` ported as read with the server parts as Requests / Queries answered offline; 50 left: event / checkpoint / car-swap per-frame logic, debug and Easy Drive types) (structural, hooks, bindings,
+   ported from the code (decomp.md "The HSM interpreter"), 161 behaviour types (159 of the 199 codes GAMEMODES.BNDL uses, `mwtool hsm --codes`; the online flows `hsm/behaviours_online.rs` ported as read with the server parts as Requests / Queries answered offline; 40 left: Blaze game launch / reset / end, speech (TRYTOPLAYSPE x19), waypoints, car select, debug and Easy Drive types) (structural, hooks, bindings,
    timers, sub-networks, loading-screen / graphics waits; the boot flow: page contexts, widget groups, press
    start, world / profile / feedback-group loading, game modes, in game / playing, cop-car preload, layouts,
    invites; the free-drive mode: traffic restart, speed-wall times, screen prefetch, sim pauses, show world,

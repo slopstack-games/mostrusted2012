@@ -14,6 +14,8 @@ pub mod event;
 pub mod game;
 #[path = "behaviours_hud.rs"]
 pub mod hud;
+#[path = "behaviours_misc.rs"]
+pub mod misc;
 #[path = "behaviours_mode.rs"]
 pub mod mode;
 #[path = "behaviours_mode2.rs"]
@@ -66,6 +68,7 @@ pub fn register(r: &mut Registry) {
     game::register(r);
     mode::register(r);
     mode2::register(r);
+    misc::register(r);
     hud::register(r);
     dialog::register(r);
     event::register(r);
@@ -495,6 +498,14 @@ pub enum Query {
     ClockSynced,
     /// The clock object's state +0x6c is 1 (`FUN_0046eec0`). Default false.
     ClockSyncing,
+    /// The game-mode clock runs: GMM+0x2e74 is set (`EXITWHENGAME`). Default false.
+    GameModeClockRunning,
+    /// The game mode's elapsed ticks, GMM+0x2d28 as an i64 (`EXITWHENGAME`). Default 0.
+    GameModeElapsedTicks,
+    /// The clock object's (`FUN_0046ee10`) tick count +8 as an i64 (`SYNCRESSTART`). Default 0.
+    ClockTicks,
+    /// GMM+0x2d20 as an i64: the results-sync delay in ticks (`SYNCRESSTART`); i64::MIN = none. Default i64::MIN.
+    ResultsSyncDelay,
 }
 
 impl Query {
@@ -549,6 +560,7 @@ impl Query {
             Query::TransitionState => 2,
             Query::GameModeEvent | Query::GameModeMachine | Query::BlacklistRivalHandle => u64::MAX,
             Query::BlacklistRivalDistance => 0x7f7f_ffff,
+            Query::ResultsSyncDelay => i64::MIN as u64,
             _ => 0,
         }
     }
@@ -726,6 +738,10 @@ impl Query {
             Query::OnlineScoreBusy => "OnlineScoreBusy",
             Query::ClockSynced => "ClockSynced",
             Query::ClockSyncing => "ClockSyncing",
+            Query::GameModeClockRunning => "GameModeClockRunning",
+            Query::GameModeElapsedTicks => "GameModeElapsedTicks",
+            Query::ClockTicks => "ClockTicks",
+            Query::ResultsSyncDelay => "ResultsSyncDelay",
         }
     }
 }

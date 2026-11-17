@@ -108,7 +108,7 @@ Decisions with the user: portrait loading screens keep the original's bars.
   frame time, memory for whole-world views (PLAN.md M9).
 - **Game logic engine** (PLAN.md M8, 2026-11-17): bindings, HSM interpreter, Lua 5.1 VM, widget data and the native
   registry (`mw_logic::natives`, `mwtool natives`) are in.
-  - Ported and verified against the dump: **110 HSM behaviour types**, **160 / 187 HSM hooks** and **100 / 385 Lua
+  - Ported and verified against the dump: **120 HSM behaviour types**, **160 / 187 HSM hooks** and **100 / 385 Lua
     natives**. Every offline Lua native the UI chunks read is ported. Binding roots: `Mode`, `ModeVM`, `Net`, the online
     match states, `UIConfig`, `SignInState`, `UISequences`, `GeneralSequence`, `EntitlementManager`, `Players`, `Event`,
     `Transitions`, `GameLogicState` (root table in `natives/state.rs`). Under `--hsm` races run through the logic
