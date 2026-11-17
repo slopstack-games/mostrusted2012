@@ -46,6 +46,7 @@ pub mod surfaces;
 pub mod traffic;
 pub mod traffic_lamps;
 pub mod ui;
+pub mod ui_sounds;
 pub mod vehicle_driver;
 pub mod vfx;
 pub mod wheel_layout;

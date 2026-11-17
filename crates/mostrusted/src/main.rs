@@ -91,6 +91,7 @@ mod traffic_lamps;
 mod traffic_reaction;
 mod tyre_marks;
 mod ui_quads;
+mod ui_sound;
 mod weather;
 #[cfg(target_arch = "wasm32")]
 mod web;
@@ -387,7 +388,7 @@ struct Cli {
     #[arg(long)]
     front_end: bool,
     /// Run the original's game-logic state machine ("Top State") beside the hand-written flows and log what it
-    /// does (`hsm:` lines); its engine requests are not carried out yet (logic.rs, shadow mode).
+    /// does (`hsm:` lines); the requests carried out so far are listed in logic.rs's module doc.
     #[arg(long)]
     hsm: bool,
     /// Keep the sound in test runs (`--test`, crash / smash / race tests are silent otherwise): audio checks such
@@ -1147,6 +1148,7 @@ fn run(mut cli: Cli, game: GameDir) -> anyhow::Result<()> {
         ))
         .add_plugins(car_lights::CarLightsPlugin)
         .add_plugins(audio::GameAudioPlugin)
+        .add_plugins(ui_sound::UiSoundPlugin)
         .add_plugins(audio_tap::AudioTapPlugin)
         .add_plugins(music::MusicPlugin {
             enabled: std::env::var("MW_MUSIC").is_ok_and(|v| v == "1")

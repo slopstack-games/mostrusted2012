@@ -87,6 +87,65 @@ Context - PauseMenuScreen"); `Mode.DisablePauseMenu` is missing from the `Mode` 
 an empty exit point). `RACE_MODE` (+0x170 of `GameLogicConfig`) is not read (field hash unknown), so
 `IsRaceEvent` / `LastEventWasRace` stay with the runtime. Captures that would confirm: GMM+0x2d0c, +0x2ce4, +0x2e7e /
 +0x2e80 at the moment a race is chosen in free roam (probe), and +0x2e78 in free roam (expected 1).
+### 2026-11-17: the HSM's requests drive music, UI sounds, sim pause, world, mute, chevrons, triggers (`logic.rs`)
+
+Under `--hsm` the runtime now carries out these Requests through the system that already does the job (logic.rs
+module doc lists them):
+- `PlaySongList` / `StopSongList` → `music::SongListRequest` replaces `songs.rs`'s hand-written list choice. "Play
+  Freedrive Song List" (`USEDEFAULT`) asks `Query::DefaultEventSongList`; the runtime answers with the current mode's
+  `MusicPlaylist` (1622455). `free_drive` = GMM+0x2e90.
+- `PlayUiSound { field }` → `ui_sound.rs`. The field is an offset into the object behind `[[DAT_010edb08]+4]+0xb278`.
+  That handle is filled by 0x4b80fe from the `GlobalSound` root (`SOUND/GLOBAL.BNDL` 0x79e7, loaded at 0x4b8033): its
+  +0x14 handle `MiscSounds`, next to +0x1c `VehicleSounds` (+0xb270, already confirmed). The `MiscSound.UI` struct
+  (`cfac01f3`, +0x40) holds 8 UniqueIds at +0x4c..+0x68: 1836407 / 1836401 / 1836405 / 1836335 / 1836058 / 1836333 /
+  1836331 / 1836060 (`mw_assets::ui_sounds`, test `tests/ui_sounds.rs`). Each is a UI sequence of wave items. It plays
+  on the effects channel, on the game clock (the sim-timer player UIM+0x47748).
+- `SimPause` → `Time<Virtual>` paused / resumed, as the pause menu does. Only the pauser resumes. The HSM now steps on
+  the frame clock (real time, capped at the game clock's 2/60 s) with `Clock::game` None while paused; before, it
+  stopped with the game clock, and the logic could not have resumed it.
+- `ShowWorld` → `FrontEnd::world_shown`. In driven mode `Screen.IsActive` (the transition's hold) = world loaded and
+  shown: the original's HUD screen is pushed by the HUD machine inside "Show World Freedrive".
+- `MuteSound` → counts per reason; any count mutes the world's sound (`FrontEnd::logic_mute`, ORed with the front
+  end's own mute). `MuteRumble`, `SetFullRate` → kept in the host (`Query::FullRate`). `AdjustShowWorldCount` is the
+  logic's own count.
+- `HideChevron` → `chevron::ChevronsHidden` (route markers). `EnableTriggers` → `freeroam::TriggersEnabled` (trigger
+  hits; off until "Show World States" enables them).
+- Answers: `UIMessages.NISRunning` (cutscene.rs), `CollectablesReady` (freeroam.rs), `FullRate`,
+  `DefaultEventSongList`. Queries answered by default are logged once each.
+
+**Why the boot did not reach free drive under `--hsm` any more:**
+- The `SignInState` root (same day) made `IsChatRestricted` false, so "Get Online Silently" runs "ServerOperation
+  PCLogin" (`HSM_SERV_OP`, unported, held). Runtime stand-in: server operations exit FAILURE (no server). The chain
+  then goes CancelLogin → FAILED → ClearMatchmakingState and on.
+- With a continued profile `Mode.ShowRecap` is true. "Show Game Recap" waits on `UIMessages.NISRunning(NOT)`, now
+  answered.
+- `MODEENDCHECK` (update 0x757af0): when `FUN_006f46e0` returns 0 (`je 0x757b60`) it goes straight to the end check,
+  so free drive ended in its first frame (`Query::ModeWon` default false). Runtime stand-in: true in free drive.
+
+Verified (`tools/t --front-end --hsm --front-end-shots scratch/fe --mute`, `MW_MUSIC=1 MW_MUSIC_LOG=1`):
+- Title at 0.88 s, key at 11.18 s, transition at 11.20 s, playing at 16.00 s (baseline 15.86 s).
+- Title / transition / playing shots look the same as before.
+- The HSM stays in "Freedrive Update". It plays list 1622455 (song 1622458 starts after the transition, the clock
+  having been paused by "Offline Pause" while `Transitions.Transitioning`, frames 618–712).
+- `hsm:` shows SimPause, ShowWorld, EnableTriggers, MuteSound, HideChevron, PlaySongList, MuteRumble, SetFullRate
+  carried out.
+- `--drive 911 --test accel` unchanged (3.58 s / 307.4 km/h).
+
+Model decisions:
+- Server operations fail.
+- `ModeWon` true in free drive.
+- `FUN_007983b0` read as "the sequence with that UniqueId".
+- The UI sound items play whole, without fades.
+- `HIDECHEV`'s message 0x1b and `ENABLETRIGS`' message on `DAT_010edb48`: receivers not traced, mapped to the route
+  markers / free-roam trigger hits.
+- No rumble or frame-rate change in the runtime.
+
+Open:
+- `PlayUiSound` not yet seen in a run (EasyDrive opens only through "Open EasyDrive Request").
+- Races started by `race.rs` don't go through the HSM, so the intro race's list (2026345) and `HideChevron` in event
+  intros aren't reached.
+- `FUN_006f46e0`'s offline derivation.
+- 46 Requests still logged only (world / profile / feedback-group loads, `RunLayout`, `PlaySequence`, players).
 
 ### 2026-11-17: the DLC lock in the runtime (`dlc.rs`)
 

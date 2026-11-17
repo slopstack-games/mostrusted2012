@@ -117,6 +117,8 @@ impl Plugin for FrontEndPlugin {
             title_started: false,
             pressed: false,
             reset_screens: false,
+            world_shown: false,
+            logic_mute: false,
         })
         .add_systems(Startup, start_loading)
         .add_systems(
@@ -216,6 +218,13 @@ pub struct FrontEnd {
     pressed: bool,
     /// The screens' movie and layer animations restart (a transition started from outside `advance`).
     reset_screens: bool,
+    /// `--hsm`: the logic showed the world (`ShowWorld`, `HSB_RUNNING` "Show World Freedrive", logic.rs). In driven
+    /// mode the screen behind the transition (`Screen.IsActive`) is active only once the world is shown as well as
+    /// loaded: the original's HUD screen is pushed by the HUD machine that runs inside "Show World Freedrive".
+    pub world_shown: bool,
+    /// `--hsm`: a `MUTE_SOUND` reason counted up by the logic (logic.rs): the world's sounds are muted as on the
+    /// front-end screens.
+    pub logic_mute: bool,
 }
 
 impl FrontEnd {
@@ -255,6 +264,12 @@ impl FrontEnd {
             self.reset_screens = true;
             self.mark("title: transition started by the logic");
         }
+    }
+
+    /// The screen the boot transition reveals is active (`Screen.IsActive`): the world is loaded and, in driven
+    /// mode, shown by the logic ([`FrontEnd::world_shown`]).
+    fn screen_active(&self) -> bool {
+        self.ready && (!self.driven || self.world_shown)
     }
 
     pub fn playing(&self) -> bool {
@@ -574,7 +589,7 @@ fn lookup(
         // The keyboard's text for the action's key (Enter for AUTOLOG_ACCEPT, the default keyboard table).
         "Controls.ButtonPrompt" => strings.get(&format!("key:{}", quoted()?))?.clone().into(),
         "Screen.TransitionsLoaded" => true.into(),
-        "Screen.IsActive" => front.ready.into(),
+        "Screen.IsActive" => front.screen_active().into(),
         "TransitionImages.Image1Ready" | "TransitionImages.Image2Ready" => false.into(),
         "Transitions.Image1" | "Transitions.Image2" => {
             let slot = if path.ends_with('1') { 0 } else { 1 };
@@ -685,7 +700,7 @@ fn advance(
         }
         Phase::Transition => {
             let Some(seq) = screens.transition.clone() else {
-                if front.ready {
+                if front.screen_active() {
                     front.phase = Phase::Playing;
                 }
                 return;
@@ -906,7 +921,7 @@ fn freeze_controls(front: Res<FrontEnd>, mut input: ResMut<crate::drive::CarInpu
 /// "Mute All Sound" (`MUTE_SOUND`, reason `LoadingScreen`) while a front-end screen shows.
 fn mute(front: Res<FrontEnd>, settings: Option<ResMut<crate::settings::AudioSettings>>) {
     let Some(mut s) = settings else { return };
-    let want = !front.playing();
+    let want = !front.playing() || front.logic_mute;
     if s.muted != want {
         s.muted = want;
     }

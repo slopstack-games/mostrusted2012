@@ -227,7 +227,9 @@ MW_SIREN_PRESS=12 MW_LIGHTBAR_SHOTS=<dir> ./target/release/mostrusted --drive "F
 ./target/release/mostrusted
 # The original's game-logic machine ("Top State") run beside the hand-written flows (logic.rs, PLAN M8 step 7):
 # logs `hsm:` lines (states, hooks, Requests). Carried out so far: page contexts / widget groups (their Lua scripts
-# run) and the boot page (the title starts on the Press Start group's script, the transition on its request)
+# run), the boot page (the title starts on the Press Start group's script, the transition on its request), the song
+# list, UI sounds, sim pause, show world, mute, chevrons, triggers (list: logic.rs module doc; MW_MUSIC=1
+# MW_MUSIC_LOG=1 to see the song list it picks under --mute)
 tools/t --front-end --hsm --front-end-shots scratch/fe --mute; grep 'hsm:' scratch/run.log
 ./target/release/mwtool bindings [--find x] [--parse] [--no-genesys] [--out f.tsv]  # every binding path, parsed (mw_logic::binding)
 ./target/release/mwtool hsm [<node id>] [--find text]     # game-logic state machines (HSMData); mwtool frontend

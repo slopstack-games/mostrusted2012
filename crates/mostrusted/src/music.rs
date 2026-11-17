@@ -22,6 +22,8 @@ use crate::settings::{AudioSettings, Channel};
 
 mod songs;
 
+pub use songs::SongListRequest;
+
 pub struct MusicPlugin {
     pub enabled: bool,
 }
