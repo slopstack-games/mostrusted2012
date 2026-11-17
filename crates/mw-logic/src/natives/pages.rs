@@ -460,7 +460,7 @@ impl Pages {
         let Some(w) = self.groups.get(f.group).and_then(|g| g.widgets.get(f.widget)) else { return };
         let Some(a) = w.data.def.actions.get(f.action).cloned() else { return };
         let active = |state: &std::cell::RefCell<LogicState>| {
-            a.active_binding.is_empty() || state.borrow().view_models.resolve_bool(&a.active_binding) == Some(true)
+            a.active_binding.is_empty() || state.borrow().resolve_bool(&a.active_binding) == Some(true)
         };
         let mut args: Vec<Value> =
             if a.args.is_empty() { Vec::new() } else { a.args.split(',').map(Value::from).collect() };

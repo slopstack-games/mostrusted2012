@@ -12,6 +12,7 @@ use mw_formats::json::Json;
 use mw_logic::hsm::behaviours::{Query, Stub};
 use mw_logic::hsm::{Clock, Host, Hsm, Key, ORIGINAL_BEHAVIOURS, Registry, Trace, original_code};
 use mw_logic::natives::mode_machine::{self, ModeInfo};
+use mw_logic::natives::mode_view;
 use mw_logic::natives::{LogicHost, Request};
 
 pub struct Options<'a> {
@@ -448,9 +449,24 @@ fn drive(
                 ..Default::default()
             })
             .collect();
-        st.game_modes.modes =
-            events.game_modes.iter().map(|m| ModeInfo { id: m.id, hsm: m.hsm, weapon_list: m.weapon_list }).collect();
+        st.game_modes.modes = events
+            .game_modes
+            .iter()
+            .map(|m| ModeInfo {
+                id: m.id,
+                hsm: m.hsm,
+                weapon_list: m.weapon_list,
+                hud_hsm: m.hud_hsm,
+                data: events
+                    .game_mode_fields
+                    .iter()
+                    .find(|(id, _)| *id == m.id)
+                    .map_or_else(Vec::new, |(_, f)| mode_view::data_fields(f)),
+            })
+            .collect();
         st.game_modes.event_data_ready = true;
+        // The world loads at once too (the game-mode manager's +0x2e77, `Mode.WorldLoaded`).
+        st.game_modes.world_loaded = true;
     }
     let mut host = Driver {
         data,

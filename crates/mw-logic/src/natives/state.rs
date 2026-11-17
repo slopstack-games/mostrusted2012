@@ -44,6 +44,51 @@ pub struct LogicState {
     pub garage: super::lua_garage::GarageFields,
 }
 
+/// The binding host the logic reads through: the game-mode manager's `Mode` root ([`super::mode_view`]) first,
+/// then the view models (registered roots, `Signals`, the published data definitions). A `Mode` member the table
+/// does not answer falls through to a data definition published as "Mode" (the original's dispatch `FUN_00a4ef40`).
+impl crate::binding::Host for LogicState {
+    fn lookup(&self, path: &[crate::binding::Segment]) -> crate::binding::Lookup {
+        use crate::binding::Lookup;
+        if let Some((root, members)) = path.split_first()
+            && root.hash == *MODE_ROOT
+        {
+            let r = super::mode_view::lookup(self, members);
+            if matches!(r, Lookup::Found(_) | Lookup::Unsupported) {
+                return r;
+            }
+        }
+        self.view_models.lookup(path)
+    }
+}
+
+static MODE_ROOT: std::sync::LazyLock<u32> = std::sync::LazyLock::new(|| crate::binding::hash("Mode"));
+
+impl LogicState {
+    /// `ResolveBoolBinding` / an HSM condition: [`super::ViewModels::resolve_bool`]'s rules over every root.
+    pub fn resolve_bool(&self, binding: &str) -> Option<bool> {
+        crate::binding::Binding::parse(binding).ok().map(|b| b.eval_bool(self).value)
+    }
+    /// `ResolveIntBinding` ([`super::ViewModels::resolve_int`]'s rules).
+    pub fn resolve_int(&self, binding: &str) -> Option<i64> {
+        crate::binding::Binding::parse(binding).ok().map(|b| b.eval_int(self).value as i64)
+    }
+    /// `ResolveDoubleBinding`.
+    pub fn resolve_double(&self, binding: &str) -> Option<f64> {
+        crate::binding::Binding::parse(binding).ok().map(|b| b.eval_double(self).value)
+    }
+    /// `ResolveStringBinding`: `None` when it does not parse or resolve.
+    pub fn resolve_string(&self, binding: &str) -> Option<String> {
+        let r = crate::binding::Binding::parse(binding).ok()?.eval_text(self);
+        r.ok.then_some(r.value)
+    }
+    /// The HSM's string reads (`FUN_00a4f2e0`, the string visitor).
+    pub fn resolve_hsm_string(&self, binding: &str) -> Option<String> {
+        let r = crate::binding::Binding::parse(binding).ok()?.eval_string(self);
+        r.ok.then_some(r.value)
+    }
+}
+
 /// Engine facts the logic reads, set by the runtime (or a tool) before the logic runs.
 #[derive(Debug)]
 pub struct Engine {

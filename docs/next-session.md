@@ -96,8 +96,9 @@ Decisions with the user: portrait loading screens keep the original's bars.
     one replaces.
     - Done the same day (research-log "widget input and conductors"): widget actions fire from the menu input,
       and conductors run headless (only the title is drawn).
-    - **`Mode` binding roots** (the game-mode manager's table) are now the blocker: the HUD's ShowMap and
-      EasyDrive actions and "Select HUD" wait on them.
+    - `Mode` root done (research-log "the `Mode` binding root").
+    - Next blockers: `ModeVM` (`GameModeViewModel`, EasyDrive's "Open EasyDrive Request") and `Net.IsInOnlineGame`.
+      The runtime's mode machine now waits in the Game Recap page (1560241): check the original's boot with a save.
     - A generic sequence player that draws conductors' sequences (frontend.rs / event_card.rs each have their
       own), then the pause menu (431082, Lua `PlaySequence`) from the HSM.
     - Drawing the HUD screen 371621 from its widgets instead of `hud.rs`.

@@ -26,13 +26,13 @@
 //! loading screen (`HSB_WAIT4LS` / `HSB_WAIT4NL`: `frontend::Phase::Loading`), the primary user bound by the
 //! title's key press (`Query::PrimaryUserBound` while `ListenForPrimaryUser` listens), whether the profile is
 //! brand new (`Query::NewProfile`: `--new-game` or no saved profile), and the progression / local player the boot
-//! reads (loaded at start-up; the intro counts as played for a saved profile).
+//! reads (loaded at start-up; the intro counts as played for a saved profile). `Mode.*` bindings are the game-mode
+//! manager's own table (`mw_logic::natives::mode_view`); the runtime sets its world-loaded byte +0x2e77 from
+//! `FrontEnd::ready`.
 //!
 //! Stand-ins (model decisions, the same answers `mwtool hsm --run` documents in docs/commands.md): the engine
 //! bindings `UIConfig.Platform` = "PC", `Net.IsLoggedInToServer` = false (offline),
-//! `SignInState.Params.IsChatRestricted` = true, and the free-drive mode's `Mode` bindings as snapshot 1 reads
-//! them (`Mode.HudHsm` = 371633, ...; `Mode.WorldLoaded` is ours: `FrontEnd::ready`); state 1222788
-//! `ConnectToAutolog` (online Autolog sign-in) exits
+//! `SignInState.Params.IsChatRestricted` = true; state 1222788 `ConnectToAutolog` (online Autolog sign-in) exits
 //! DONE at once; behaviour types that are not ported yet hold (run their children, never exit); hooks that are
 //! not ported answer EXIT (most `CALLHSMHOOK` nodes go on on EXIT).
 
@@ -49,6 +49,7 @@ use mw_logic::hsm::behaviours::{Query, Stub};
 use mw_logic::hsm::{Clock, Host, Hsm, Key, Registry, Trace, original_code};
 use mw_logic::natives::game_modes::EventInfo;
 use mw_logic::natives::mode_machine::{self, ModeInfo};
+use mw_logic::natives::mode_view;
 use mw_logic::natives::pages::{self, ActionInput, ScreenData};
 use mw_logic::natives::{LogicHost, Request, progression};
 
@@ -184,8 +185,21 @@ fn receive(world: &mut World) {
                 ..Default::default()
             })
             .collect();
-        st.game_modes.modes =
-            events.game_modes.iter().map(|m| ModeInfo { id: m.id, hsm: m.hsm, weapon_list: m.weapon_list }).collect();
+        st.game_modes.modes = events
+            .game_modes
+            .iter()
+            .map(|m| ModeInfo {
+                id: m.id,
+                hsm: m.hsm,
+                weapon_list: m.weapon_list,
+                hud_hsm: m.hud_hsm,
+                data: events
+                    .game_mode_fields
+                    .iter()
+                    .find(|(id, _)| *id == m.id)
+                    .map_or_else(Vec::new, |(_, f)| mode_view::data_fields(f)),
+            })
+            .collect();
         st.game_modes.event_data_ready = true;
     }
     let mut host = RuntimeHost {
@@ -193,7 +207,6 @@ fn receive(world: &mut World) {
         logic,
         boot_trigger: false,
         new_profile,
-        world_loaded: false,
         transitioning: false,
         carry: Vec::new(),
         playbacks: Vec::new(),
@@ -297,7 +310,8 @@ fn tick(
     if let Some(front) = &front {
         host.boot_trigger = front.boot_trigger() || front.phase != Phase::Title;
         host.pressed = front.pressed() || front.phase != Phase::Title;
-        host.world_loaded = front.ready;
+        // The game-mode manager's world-loaded byte (+0x2e77, `Mode.WorldLoaded` / `Mode.ShowLoadingScreen`).
+        host.logic.state.borrow_mut().game_modes.world_loaded = front.ready;
         // Requested and not yet started counts as playing.
         host.transitioning =
             front.phase == Phase::Transition || host.carry.iter().any(|c| matches!(c, Carry::BootTransition));
@@ -305,7 +319,7 @@ fn tick(
     } else {
         host.boot_trigger = true;
         host.pressed = true;
-        host.world_loaded = true;
+        host.logic.state.borrow_mut().game_modes.world_loaded = true;
     }
     host.logic.frame(dt);
     step_playbacks(host, dt);
@@ -402,8 +416,7 @@ fn step_playbacks(host: &mut RuntimeHost, dt: f32) {
     for p in &mut host.playbacks {
         let Some(seq) = &p.seq else { continue };
         let vm = &host.logic.state;
-        let (next, _) =
-            crate::frontend::step(seq, p.clock, dt, &mut |b| vm.borrow().view_models.resolve_bool(b) == Some(true));
+        let (next, _) = crate::frontend::step(seq, p.clock, dt, &mut |b| vm.borrow().resolve_bool(b) == Some(true));
         p.clock = next;
         if next >= seq.length {
             finished.push((p.conductor.clone(), p.sequence));
@@ -422,8 +435,6 @@ struct RuntimeHost {
     logic: LogicHost,
     boot_trigger: bool,
     new_profile: bool,
-    /// The game-mode manager's world-loaded flag (`Mode.WorldLoaded`): `FrontEnd::ready`.
-    world_loaded: bool,
     /// The boot screen transition plays (`Transitions.Transitioning`; also true from its request until the front
     /// end has started it).
     transitioning: bool,
@@ -447,17 +458,10 @@ impl RuntimeHost {
         let bool = |b: bool| if b { "true" } else { "false" };
         Some(match path {
             BOOT_TRIGGER => bool(self.boot_trigger),
-            "Mode.WorldLoaded" => bool(self.world_loaded),
             "Transitions.Transitioning(NOT)" => bool(!self.transitioning),
             "UIConfig.Platform" => "PC",
             "Net.IsLoggedInToServer" => "false",
             "SignInState.Params.IsChatRestricted" => "true",
-            // Read in snapshot 1 (free roam): no transitioned events, feedback group 2, no map screen needed, the
-            // free-drive HUD machine.
-            "Mode.HasTransitionedEvents" => "false",
-            "Mode.Data.FeedbackGroupID" => "2",
-            "Mode.NeedTheMapScreen" => "false",
-            "Mode.HudHsm" => "371633",
             _ => return None,
         })
     }
@@ -515,7 +519,7 @@ impl Host for RuntimeHost {
         self.logic.apply(&r);
         let carried = match &r {
             Request::StartSequence { conductor, sequence } => {
-                let id = self.logic.state.borrow().view_models.resolve_int(sequence);
+                let id = self.logic.state.borrow().resolve_int(sequence);
                 // A new sequence replaces what the conductor played.
                 self.playbacks.retain(|p| &p.conductor != conductor);
                 match id {

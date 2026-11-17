@@ -15,7 +15,7 @@ use super::{LogicState, Request};
 use crate::hsm::{Host, Hsm};
 
 /// A `GameMode` item (GAMEMODES.BNDL) as the GMM uses it.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ModeInfo {
     /// +0x18: its id (what an event's +0x1c names).
     pub id: u32,
@@ -23,6 +23,11 @@ pub struct ModeInfo {
     pub hsm: u32,
     /// +0x40 `WeaponList`: set on the local player before the machine starts.
     pub weapon_list: u32,
+    /// +0x20 `8e9585cb`: the HUD's top-level instance (`Mode.HudHsm`).
+    pub hud_hsm: u32,
+    /// The `GameMode` object's scalar fields by field hash, what `Mode.Data.<field>` reads (the binding hash of a
+    /// name of 4+ bytes is the GeneSys field hash): [`super::mode_view::data_fields`].
+    pub data: Vec<(u32, crate::binding::Value)>,
 }
 
 /// `FUN_006e5ea0`(event): the event's mode is a free-drive mode (`GameLogicConfig` +0xd8 or +0x130).
@@ -74,14 +79,17 @@ pub fn update(state: &RefCell<LogicState>, hsm: &mut Hsm, host: &mut dyn Host) {
         if s.game_modes.machine.is_some() || !mode_started(&s) || s.game_modes.online_event {
             return;
         }
-        let Some(mode) = s.game_modes.modes.iter().find(|m| m.id == s.game_modes.current_mode).copied() else {
+        let current = s.game_modes.current_mode;
+        let Some((hsm, weapon_list)) =
+            s.game_modes.modes.iter().find(|m| m.id == current).map(|m| (m.hsm, m.weapon_list))
+        else {
             return;
         };
-        s.game_modes.weapon_list = mode.weapon_list;
-        if s.game_modes.weapon_list_loaded != mode.weapon_list {
+        s.game_modes.weapon_list = weapon_list;
+        if s.game_modes.weapon_list_loaded != weapon_list {
             return;
         }
-        mode.hsm
+        hsm
     };
     let serial = hsm.start(instance, host);
     state.borrow_mut().game_modes.machine = serial;

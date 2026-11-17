@@ -124,15 +124,15 @@ impl hsm::Host for LogicHost {
     /// Parse-gated (`FUN_0076f330` evaluates whenever the binding parsed): an unresolved path reads false, or
     /// true with `IS_EMPTY`.
     fn binding_bool(&mut self, path: &str) -> Option<bool> {
-        self.state.borrow().view_models.resolve_bool(path)
+        self.state.borrow().resolve_bool(path)
     }
     fn binding_string(&mut self, path: &str) -> Option<String> {
-        self.state.borrow().view_models.resolve_hsm_string(path)
+        self.state.borrow().resolve_hsm_string(path)
     }
     fn binding_int(&mut self, path: &str) -> Option<i64> {
         let st = self.state.borrow();
         let b = crate::binding::Binding::parse(path).ok()?;
-        let r = b.eval_int(&st.view_models);
+        let r = b.eval_int(&*st);
         r.ok.then_some(r.value as i64)
     }
     fn hook(&mut self, name: &str, args: Option<&Json>) -> Option<Key> {

@@ -13,6 +13,61 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ## Dated findings
 
+### 2026-11-17: the `Mode` binding root (`natives/mode_view.rs`)
+
+**Registration.** `FUN_0070a120` (`ECX` = the game-mode manager) registers the root "Mode" (`.rdata` 0x00fc7ef0)
+of type "GameModeManager":
+- 34 fields (`FUN_00a4e2f0`: name, offset into the manager, count, property type).
+- 86 getters (`FUN_00a4e350`: name, getter, count, property type). The full table with offsets and getter
+  addresses is in the dump at 0x70a120.
+- Property types: 9 bool, 0 / 1 / 2 integers, 8 float, 0x11 time, 0xf / 0x10 strings, 0x1a object.
+- It then calls `FUN_006fe520`, which registers "ModeVM" (`GameModeViewModel`) on its argument (the caller
+  `FUN_0070be40` passes param_2 + 0xe8). ModeVM is not ported.
+
+**Port.**
+- `LogicState` is now the binding host: `Mode` first, then the view models. A `Mode` member the table does not
+  answer falls through to a data definition published as "Mode" (`Mode.Time`, `Mode.DisablePauseMenu`).
+- The resolve call sites moved from `view_models.resolve_*` to `LogicState::resolve_*`.
+- Fields: every manager byte the logic keeps. New `GameModeManager` fields: +0x2e77 world loaded, +0x2e76,
+  +0x2ea8, +0x2e91 / +0x2e92, +0x2d08, +0x2e64 / +0x2e68, and the event-kind flags.
+- `Mode.Data` = the current `GameMode` object. Its members are the GeneSys fields by hash
+  (`Events::game_mode_fields`, `mode_view::data_fields`).
+- Getters read from `text.asm`:
+
+  | Getter | Address | Reads |
+  |---|---|---|
+  | `WorldLoaded` | 0x712010 | an event and +0x2e77 |
+  | `ShowLoadingScreen` | `FUN_006f49c0` | +0x2e81, +0x2e7f, event, online / +0x2e76, +0x2e77, then the two bits of +0x2ea8 |
+  | `HasIntroLoadCompleted` | 0x70da10 | +0x2e82 |
+  | `IsInGameIntro` / `…Freedrive` | 0x711e90 / 0x711e70 | +0x2e91 or +0x2e92 / +0x2e91 |
+  | `HudHsm` | 0x716f40 | the mode's `GameMode` +0x20 |
+  | `IsPauseAllowed` | `FUN_006e62a0` | |
+  | `RetryLastEventEnabled` | 0x711ee0 | +0x2eac |
+  | `LeaveGameRequested` | `FUN_00711f30` | |
+  | `ShowRecommendsIntro` / `RecommendsEventActive` | 0x7120c0 | G+0x2f6d0..d8: none offline |
+
+- The online session getters are false offline.
+- The runtime sets +0x2e77 from `FrontEnd::ready`. The `mwtool hsm --run` driver sets it at once.
+
+**Result.**
+- Boot to free roam no longer needs the six `Mode` answers. `mwtool hsm --run` with only the boot's answers and
+  `Transitions` reaches "Freedrive Update", and the HUD machine 371633 comes from the mode's data.
+- "Is Recommends" takes FALSE.
+- In the runtime the mode machine now takes the recap branch. `Mode.ShowRecap` (+0x2e88) is set by the ported
+  `CalculateShouldShowRecapSequence` for the continued profile, so "Show Game Recap" pushes page 1560241 and waits
+  for its group (`mwtool hsm --run` uses a fresh logic state).
+- Test `mode_view::tests::mode_root`.
+
+Model decisions:
+- The local player's +0x2c8 (`LeaveGameRequested`) is taken as clear.
+- Members not ported (times, online / Autolog / recommendation getters, career statistics) do not resolve.
+
+Open:
+- `ModeVM` (`ForceOpenEasyDrive` at +0x2c89 of its object: the EasyDrive prompt's "Open EasyDrive Request").
+- `Net.IsInOnlineGame`.
+- Whether the original shows the recap on a continued profile (a capture of the original's boot with a save).
+- The recap page in the runtime.
+
 ### 2026-11-17: widget input and conductors (`natives/pages.rs`, `logic.rs`, `input.rs`)
 
 **The input mapping table** (`FUN_007e7910`, `.rdata` 0x00fe7260, 33 entries of {name, id, directional flag}; an

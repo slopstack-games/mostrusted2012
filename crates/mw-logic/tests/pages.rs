@@ -36,7 +36,7 @@ fn boot_page_press_start() {
     });
     let (conductor, sequence) = started.expect("PlaySequence starts its sequence");
     assert_eq!(conductor, "PressStart");
-    assert_eq!(host.state.borrow().view_models.resolve_int(&sequence), Some(1_022_357));
+    assert_eq!(host.state.borrow().resolve_int(&sequence), Some(1_022_357));
 
     host.request(Request::DeactivateWidgetGroup { group: 491032, instant: false });
     let reqs = std::mem::take(&mut host.state.borrow_mut().requests);

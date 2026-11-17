@@ -102,6 +102,40 @@ pub struct GameModeManager {
     pub jump_to_store: bool,
     /// +0x2f28: the intro's Easydrive has been active.
     pub intro_easydrive_active: bool,
+    /// +0x2e77: the world is loaded for the event (`Mode.WorldLoaded` with an event; `Mode.ShowLoadingScreen`).
+    /// Set by the runtime (the front end's world-loaded flag).
+    pub world_loaded: bool,
+    /// +0x2e76: read by `Mode.ShowLoadingScreen` for online events only (meaning not traced).
+    pub byte_2e76: bool,
+    /// +0x2ea8: a two-bit set; `Mode.ShowLoadingScreen` holds while any bit is set (writers not traced).
+    pub loading_bits: u32,
+    /// +0x2e91 / +0x2e92: in the game's intro, free-drive part / the other (`Mode.IsInGameIntro`,
+    /// `Mode.IsInGameIntroFreedrive`).
+    pub in_game_intro_freedrive: bool,
+    pub in_game_intro_other: bool,
+    /// +0x2d08: `EndReason`.
+    pub end_reason: i32,
+    /// +0x2e64 / +0x2e68: `ScoreLimit` / `EventScoreLimit`.
+    pub score_limit: i32,
+    pub event_score_limit: i32,
+    /// +0x2e7b `ShowTakedownCameras`, +0x2e7c `ForceEnd`, +0x2e7d `ShowSplitTime`, +0x2e89 `InMeetup`, +0x2e8a
+    /// `LastEventWasRace`, +0x2e8b `IsRaceEvent`, +0x2e8d `IsAmbushEvent`, +0x2e8e `IsScoreBasedEvent`, +0x2e93
+    /// `IsBiggerBetter`, +0x2e94 `UsePauseMap`, +0x2e96 / +0x2e97 `PlayerBustedIn(Last)Event`, +0x2e99
+    /// `NeedTheMapScreen`, +0x2f10 `DisplayTimeout` (the `Mode` binding table, `FUN_0070a120`).
+    pub show_takedown_cameras: bool,
+    pub force_end: bool,
+    pub show_split_time: bool,
+    pub in_meetup: bool,
+    pub last_event_was_race: bool,
+    pub race_event: bool,
+    pub ambush_event: bool,
+    pub score_based_event: bool,
+    pub bigger_better: bool,
+    pub use_pause_map: bool,
+    pub player_busted_in_event: bool,
+    pub player_busted_in_last_event: bool,
+    pub need_map_screen: bool,
+    pub display_timeout: bool,
     /// The `GameMode` items (`mode_machine.rs`; filled by the runtime from the install).
     pub modes: Vec<super::mode_machine::ModeInfo>,
     /// +0x2cfc: the serial of the HSM machine the mode runs (−1 in the original = `None`).

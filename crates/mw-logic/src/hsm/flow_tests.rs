@@ -623,7 +623,7 @@ fn the_game_mode_manager_starts_the_mode_machine() {
         st.game.pending_event = 390703;
         st.config.freedrive_mode = 390145;
         st.game_modes.events = vec![EventInfo { id: 390703, mode: 390145, ..Default::default() }];
-        st.game_modes.modes = vec![ModeInfo { id: 390145, hsm: 1, weapon_list: 457359 }];
+        st.game_modes.modes = vec![ModeInfo { id: 390145, hsm: 1, weapon_list: 457359, ..Default::default() }];
     }
     assert_eq!(host.query(&Query::NextEvent), Some(390703));
     host.request(Request::StartGameMode { event: 390703 });

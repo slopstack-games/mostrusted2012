@@ -401,6 +401,8 @@ pub struct Events {
     pub game_modes: Vec<GameMode>,
     /// `EventList`s (GAMEPLAY.BNDL): (list id, event ids).
     pub event_lists: Vec<(u32, Vec<u32>)>,
+    /// Each `GameMode` object's fields by mode id (what `Mode.Data.<field>` bindings read).
+    pub game_mode_fields: Vec<(u32, Vec<(u32, mw_formats::genesys::Value)>)>,
 }
 
 impl Events {
@@ -544,24 +546,27 @@ impl AssetStore {
         let mut out = Events { event_lists, ..Default::default() };
         for o in items(self, GAME_MODES)? {
             match short(&o) {
-                "GameMode" => out.game_modes.push(GameMode {
-                    id: uint(o.get(h::ID)),
-                    name: uint(o.get(h::NAME)),
-                    crash_reset_delay: float(o.get(h::CRASH_RESET_DELAY)),
-                    intro_time: float(o.get(h::INTRO_TIME)),
-                    timeout: float(o.get(h::TIMEOUT)),
-                    gate_markers: boolean(o.get(h::GATE_MARKERS)),
-                    respawn_to_racer: boolean(o.get(h::RESPAWN_TO_RACER)),
-                    ar_outro: uint(o.get(h::AR_OUTRO)),
-                    countdown_sequence: uint(o.get(h::COUNTDOWN_SEQUENCE)),
-                    intro_sequence: uint(o.get(h::MODE_INTRO)),
-                    results_sequence: uint(o.get(h::RESULTS_SEQUENCE)),
-                    feedback_group_id: uint(o.get(h::FEEDBACK_GROUP_ID)) as u8,
-                    music_playlist: uint(o.get(h::MUSIC_PLAYLIST)),
-                    hsm: uint(o.get(h::MODE_HSM)),
-                    hud_hsm: uint(o.get(h::HUD_HSM)),
-                    weapon_list: uint(o.get(h::WEAPON_LIST)),
-                }),
+                "GameMode" => {
+                    out.game_mode_fields.push((uint(o.get(h::ID)), o.fields.clone()));
+                    out.game_modes.push(GameMode {
+                        id: uint(o.get(h::ID)),
+                        name: uint(o.get(h::NAME)),
+                        crash_reset_delay: float(o.get(h::CRASH_RESET_DELAY)),
+                        intro_time: float(o.get(h::INTRO_TIME)),
+                        timeout: float(o.get(h::TIMEOUT)),
+                        gate_markers: boolean(o.get(h::GATE_MARKERS)),
+                        respawn_to_racer: boolean(o.get(h::RESPAWN_TO_RACER)),
+                        ar_outro: uint(o.get(h::AR_OUTRO)),
+                        countdown_sequence: uint(o.get(h::COUNTDOWN_SEQUENCE)),
+                        intro_sequence: uint(o.get(h::MODE_INTRO)),
+                        results_sequence: uint(o.get(h::RESULTS_SEQUENCE)),
+                        feedback_group_id: uint(o.get(h::FEEDBACK_GROUP_ID)) as u8,
+                        music_playlist: uint(o.get(h::MUSIC_PLAYLIST)),
+                        hsm: uint(o.get(h::MODE_HSM)),
+                        hud_hsm: uint(o.get(h::HUD_HSM)),
+                        weapon_list: uint(o.get(h::WEAPON_LIST)),
+                    });
+                }
                 "OfflineEvent" => {
                     let game_mode = uint(o.get(h::GAME_MODE));
                     let type_name = uint(o.get(h::TYPE_NAME));
