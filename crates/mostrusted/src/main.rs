@@ -52,6 +52,7 @@ mod jackspots;
 mod loader;
 mod lod;
 mod logic;
+mod logic_loads;
 mod map_screen;
 mod materials;
 mod menu;
@@ -1107,6 +1108,8 @@ fn run(mut cli: Cli, game: GameDir) -> anyhow::Result<()> {
             enabled: cli.hsm,
             event: hsm_event,
             new_profile: cli.new_game || profile_file.as_deref().and_then(frontend::load_profile).is_none(),
+            profile: profile_file.clone().filter(|_| !cli.new_game),
+            volume: cli.volume.clone(),
         })
         .add_plugins(pause::PausePlugin {
             enabled: (menu_enabled || cli.show_pause) && matches!(request, Request::Drive { .. }),
