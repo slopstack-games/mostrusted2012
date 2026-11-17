@@ -225,6 +225,7 @@ struct SfxState {
     stalls: u32,
     stall_start: Option<f32>,
     last_mph: f32,
+    last_car: Option<Entity>,
 }
 
 /// The bank's level against the player's engine. Its channels play at the data's level times their bus chain over
@@ -320,6 +321,15 @@ fn update_params(
         p.set_level(level);
     }
     let car = cars.single().ok();
+    // A new vehicle (car change, respawn) starts its skid intensities at the construction's 1.0
+    // (`FUN_009d1120`), instead of carrying the old car's smoothed state.
+    let id = car.map(|(e, _, _)| e);
+    if id != state.last_car {
+        if id.is_some() {
+            driver.reset();
+        }
+        state.last_car = id;
+    }
     // The player car's control block (its pedals also when the AI drives it in a cutscene).
     let (brake, handbrake) = car.map_or((0.0, false), |(_, _, c)| (c.brake, c.handbrake));
     let mut i = VehicleInput { brake, handbrake, ..default() };

@@ -175,7 +175,7 @@ impl VehicleDriver {
             params,
             slots,
             tyre: TyreSoundParams::default(),
-            skid: [0.0; 3],
+            skid: [1.0; 3],
             time: 0.0,
             jitter: 0.5,
             jitter_timer: 0.0,
@@ -200,14 +200,31 @@ impl VehicleDriver {
         self.last
     }
 
+    /// A new vehicle: `FUN_009d1120` (the per-vehicle sim's reset, via `FUN_009d83e0` from the vehicle's
+    /// construction `FUN_00904260`) sets the three intensities (+0xd0 / +0xd4 / +0xd8) to 1.0 (`.rdata`
+    /// 0x01026060..6c), so a fresh car's skids start full and fall at their fall rates.
+    pub fn reset(&mut self) {
+        self.skid = [1.0; 3];
+        self.last = [0.0, 1.0, 1.0, 1.0];
+    }
+
     /// Advance by `dt` seconds.
     pub fn update(&mut self, dt: f32, i: &VehicleInput) {
         self.time += dt;
         let t = self.tyre;
-        let mph = i.speed_mph.abs();
+        // MODEL: a non-finite input (a teleport frame's wheel solve) must not poison the smoothed state: the
+        // game's lerp would keep a NaN for good.
+        let dt = if dt.is_finite() { dt.max(0.0) } else { 0.0 };
+        let mph = if i.speed_mph.is_finite() { i.speed_mph.abs() } else { 0.0 };
         // Targets as `FUN_009d1bf0` computes them. Lateral: the slip angle's ramp times the speed's.
         // In the air the wheel has no slip (assumed: the game keeps reading the wheel's last solve).
-        let w = i.skid_wheel.unwrap_or_default();
+        let mut w = i.skid_wheel.unwrap_or_default();
+        if !w.slip_angle.is_finite() {
+            w.slip_angle = 0.0;
+        }
+        if !w.slip_speed.is_finite() {
+            w.slip_speed = 0.0;
+        }
         let lat = t.lat_slip.ratio(w.slip_angle.abs()) * t.lat_slip.speed_factor(mph);
         // Spin: the tread against the ground in mph, either way (a spinning or a locked wheel). The game zeroes
         // it while a wheel value (+0x108 of the object `FUN_009d1bf0` reads) is below `.bss` 0x011870d0 = −0.1
