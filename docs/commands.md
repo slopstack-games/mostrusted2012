@@ -229,11 +229,12 @@ MW_SIREN_PRESS=12 MW_LIGHTBAR_SHOTS=<dir> ./target/release/mostrusted --drive "F
 ./target/release/mwtool hsm <id> --parents               # which nodes start a node (child or transition)
 ./target/release/mwtool hsm --data                       # the data definitions (JSON view models / hook arguments)
 ./target/release/mwtool hsm --bundle all                 # parse every HSMData of the install (37)
+# (--answer Query.<Name>=<v> answers an engine wait of the ported boot behaviours, e.g. Query.ProfileLoaded=false; every Request is printed)
 # Headless HSM interpreter (mw_logic::hsm) from a top-level instance (default 20527 = boot "Top State"): logs every
 # state entered / exited per frame; unported behaviours hold, hooks answer EXIT, bindings don't resolve unless
 # --answer NAME=VALUE (state id | behaviour code | binding path with '.' | hook name; VALUE exit point / run / value;
 # Host.LoadingScreenShowing / Host.GraphicsPrepared answer the host queries). --steps 300 --dt 0.0333
-./target/release/mwtool hsm --run --steps 90 --answer 'GeneralSequence.Triggers["BOOT"].IsTriggerSet[1]=true' --answer HSB_P1BIND=EXIT --answer LOAD_ALL=EXIT --answer SELECT_PROF=SUCCESS --answer LOADPROFILE=EXIT --answer DBAUTOSELWD=EXIT --answer UIConfig.Platform=PC --answer LOADWORLD=EXIT --answer Net.IsLoggedInToServer=FALSE --answer SignInState.Params.IsChatRestricted=TRUE --answer 1222788=DONE --answer WAIT4FEEDBK=EXIT --answer WAITFORVEHIC=EXIT --answer ISNEWPROFILE=YES --answer ISAUTOTESTIN=NO   # boot → "Playing" (IsProgressionReady, ShouldPlayNewGameIntro are ported: the driver stands in a loaded profile)
+./target/release/mwtool hsm --run --steps 90 --answer 'GeneralSequence.Triggers["BOOT"].IsTriggerSet[1]=true' --answer SELECT_PROF=SUCCESS --answer DBAUTOSELWD=EXIT --answer UIConfig.Platform=PC --answer Net.IsLoggedInToServer=FALSE --answer SignInState.Params.IsChatRestricted=TRUE --answer 1222788=DONE --answer WAIT4FEEDBK=EXIT --answer WAITFORVEHIC=EXIT --answer ISNEWPROFILE=YES --answer ISAUTOTESTIN=NO   # boot → "Playing" (IsProgressionReady, ShouldPlayNewGameIntro are ported: the driver stands in a loaded profile)
 ./target/release/mwtool natives [--area offline|online|platform|debug|unknown] [--unported]   # the 187 hooks + 385 Lua natives, handler address, ported or not
 ./target/release/mwtool lua --list                       # the UI's 115 Lua chunks (mw-lua): id, name (checked against the id), size
 ./target/release/mwtool lua [--run <name>] [--call <Fn>|all] [--trace]   # main chunk + Construct with logging stub natives
