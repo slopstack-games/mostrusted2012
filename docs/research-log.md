@@ -34,6 +34,24 @@ SetSelectedWorld, SetAvailableVehicleListEvent, CalculateDistanceToEventByIdStri
 SetHighlightedRolloutByIdString, SetHighlightedVehicleByIdString, IsTargetScoreHit, ShowTargetScoreReminderMessage,
 SelectPaintPackFromEasyDrive, UpdatePendingRollout_EasyDrive, UpdatePendingRollout_EasyDrive_Stock, SetFinalEventData,
 StartEventFromBinding, SetWaypointToEventFromBinding, UpdateProgressAwardsStrings.
+### 2026-11-17: 9 more HSM behaviour types of the free-drive machines (`hsm/behaviours_mode2.rs`)
+
+`MUTEALLRUMBL`, `PAUSEMSGS`, `PLAYSONGLIST`, `WEAPONSOK`, `MINIMAPICONS`, `SYNCPROFILEW`, `HIDECHEV`, `PAUSEAI`,
+`DOBODYSHOP` (67 types in all; addresses and slots: decomp.md "The HSM interpreter", fourth batch). Method as the
+earlier batches: factory from the name registration (string push, `mov edx, factory` near 0x778xxx), vtable from the
+factory, slot bodies from `text.asm`, parameter keys from snapshot 1. Requests: MuteRumble, PauseMessages,
+ForcePauseMessageQueues, PlaySongList, StopSongList, WeaponsAllowed, ResetPlayerWeapons, UpdateMinimapIcons,
+SetProfileSyncFlag, HideChevron, PauseAi, UpdateBodyShop. Queries (default): CurrentEventSongList (0),
+DefaultEventSongList (0), EventWeaponsAllowed (false), GmmFlag2e80 (false), ProfileServiceConnected (false),
+ProfileSyncFlag (false). One test per type in `hsm/flow_tests.rs`; `mwtool hsm --run` (docs/commands.md) still
+reaches "Freedrive Update" with "Do Body Shop" and "Mute All Rumble (Paused)" now running real behaviours.
+Model decisions: `SYNCPROFILEW`'s connected states 1..14 (the online profile sync) are not ported, connected is
+treated as offline; `DOBODYSHOP`'s update and `MINIMAPICONS`' update are single per-frame Requests (the work is
+engine state; the body shop's zone-list reads `FUN_005372f0` / `FUN_005378d0` and the minimap visibility check
+0x74e0b0 are not ported); `EventWeaponsAllowed` defaults to false (the free-drive record's byte +0xf2 was not read);
+`PAUSEMSGS` keeps queue names, not pointers. Open: the host side of these 12 Requests (message system, song
+player, rumble); `ResetPlayerWeapons` = `FUN_006c8e90` only summarised; the free-roam route still holds
+`HSMCARSWAPLO` etc. (agent B2). Captures that would confirm: G+0x2ef50..60 and G480+0x325e8 in free roam.
 
 ### 2026-11-17: skid / crash sound glitch: not reproduced headless (user: "extremely loud, distorted")
 

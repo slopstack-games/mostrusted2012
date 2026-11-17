@@ -642,3 +642,102 @@ fn the_game_mode_manager_starts_the_mode_machine() {
     assert_eq!(host.query(&Query::FreedriveEvent), Some(1));
     assert_eq!(host.query(&Query::GameModeEvent), Some(390703));
 }
+
+#[test]
+fn mute_rumble_maps_the_reason_and_clears_it() {
+    let (mut hsm, mut host, s) = machine("MUTEALLRUMBL", &[("MUTEREASON", "pause")], "ENTER");
+    step(&mut hsm, &mut host, 3);
+    assert!(hsm.is_running(s));
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::MuteRumble { reason: 3, on: true }, Request::MuteRumble { reason: 3, on: false }]);
+    let (mut hsm, mut host, _) = machine("MUTEALLRUMBL", &[("MUTEREASON", "nonsense")], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::MuteRumble { reason: 0, on: true }]);
+}
+
+#[test]
+fn pause_messages_pauses_queues_and_counts_categories() {
+    use crate::hsm::behaviours::mode2::{PAUSE_FORCE, PAUSE_HUD, PAUSE_SPEECH};
+    let params = [("QUEUES", "Race"), ("PAUSEHUD", "true"), ("PAUSESPEECH", "True"), ("FORCEPAUSE", "true")];
+    let (mut hsm, mut host, s) = machine("PAUSEMSGS", &params, "ENTER");
+    step(&mut hsm, &mut host, 3);
+    assert!(hsm.is_running(s));
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 2);
+    let queues = vec!["Race".to_string()];
+    let flags = PAUSE_HUD | PAUSE_SPEECH | PAUSE_FORCE;
+    assert_eq!(host.reqs.first(), Some(&Request::PauseMessages { queues: queues.clone(), flags, on: true }));
+    assert!(host.reqs.contains(&Request::ForcePauseMessageQueues { queues: queues.clone() }));
+    assert_eq!(host.reqs.last(), Some(&Request::PauseMessages { queues, flags, on: false }));
+}
+
+#[test]
+fn play_song_list_falls_back_and_exits_unless_it_stops_on_leave() {
+    let (mut hsm, mut host, s) = machine("PLAYSONGLIST", &[("SONGLIST", "0"), ("ALLOWPLAYOUT", "true")], "ENTER");
+    host.answers.insert("CurrentEventSongList", 0);
+    host.answers.insert("DefaultEventSongList", 77);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::PlaySongList { list: 77, allow_playout: true }]);
+    assert_eq!(hsm.result(s), Some(EXIT), "no STOPONLEAVE: exits at once");
+    let (mut hsm, mut host, s) = machine("PLAYSONGLIST", &[("SONGLIST", "5"), ("STOPONLEAVE", "true")], "ENTER");
+    step(&mut hsm, &mut host, 3);
+    assert!(hsm.is_running(s));
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::PlaySongList { list: 5, allow_playout: false }, Request::StopSongList]);
+}
+
+#[test]
+fn weapons_ok_sets_and_resets() {
+    let (mut hsm, mut host, s) = machine("WEAPONSOK", &[], "ENTER");
+    host.answers.insert("EventWeaponsAllowed", 1);
+    step(&mut hsm, &mut host, 3);
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::WeaponsAllowed(true), Request::WeaponsAllowed(false), Request::ResetPlayerWeapons]);
+}
+
+#[test]
+fn minimap_icons_update_every_frame() {
+    let (mut hsm, mut host, s) = machine("MINIMAPICONS", &[], "ENTER");
+    step(&mut hsm, &mut host, 4);
+    assert!(hsm.is_running(s));
+    assert!(host.reqs.len() >= 2 && host.reqs.iter().all(|r| *r == Request::UpdateMinimapIcons));
+}
+
+#[test]
+fn sync_profile_write_finishes_offline_and_restores_the_flag() {
+    let (mut hsm, mut host, s) = machine("SYNCPROFILEW", &[], "ENTER");
+    step(&mut hsm, &mut host, 5);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    assert_eq!(host.reqs, [Request::SetProfileSyncFlag]);
+    let (mut hsm, mut host, s) = machine("SYNCPROFILEW", &[], "ENTER");
+    host.answers.insert("ProfileSyncFlag", 1);
+    step(&mut hsm, &mut host, 5);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    assert!(host.reqs.is_empty());
+}
+
+#[test]
+fn hide_chevron_and_pause_ai_bracket_their_lifetime() {
+    for (code, on, off) in [
+        ("HIDECHEV", Request::HideChevron { hide: true }, Request::HideChevron { hide: false }),
+        ("PAUSEAI", Request::PauseAi { paused: true }, Request::PauseAi { paused: false }),
+    ] {
+        let (mut hsm, mut host, s) = machine(code, &[], "ENTER");
+        step(&mut hsm, &mut host, 3);
+        assert!(hsm.is_running(s), "{code}");
+        hsm.request_exit(s);
+        step(&mut hsm, &mut host, 2);
+        assert_eq!(host.reqs, [on, off], "{code}");
+    }
+}
+
+#[test]
+fn do_body_shop_runs_its_watcher_every_frame() {
+    let (mut hsm, mut host, s) = machine("DOBODYSHOP", &[], "ENTER");
+    step(&mut hsm, &mut host, 4);
+    assert!(hsm.is_running(s));
+    assert!(host.reqs.len() >= 2 && host.reqs.iter().all(|r| *r == Request::UpdateBodyShop));
+}
