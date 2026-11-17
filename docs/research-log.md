@@ -10,6 +10,29 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-11-17: browser port, step 1: the engine-free crates build and run as wasm32
+Question from the user: can the game run in a browser? Plan agreed: (1) engine-free crates on
+`wasm32-unknown-unknown`, (2) file reads behind a trait (native `std::fs` / browser `File` handles from a
+user-picked install folder: the data is never hosted), (3) the ~17 `std::thread::spawn` sites and rayon onto a
+task-pool helper, (4) `mostrusted` on WebGPU behind a `web` feature (free camera first, no audio), (5) driving,
+then audio. The native build stays the reference for captures and comparisons.
+
+Step 1 result: `mw-gamedir`, `mw-bundle`, `mw-formats`, `mw-audio`, `mw-assets`, `mw-handling` compile for
+wasm32 with no source changes (`tools/wasm-check`). A throwaway raw-ABI module (scratchpad, not committed) ran in
+Node 24 on real bundles: `Bundle::from_bytes`, `load` of every resource (decompression via flate2/miniz),
+`Texture::parse` and `Renderable::parse`. Results identical to the same code built natively: GLOBALEFFECTS 521
+resources / 129 textures / 12 renderables, VEH_122769_HI 831 / 28 / 21, GLOBALTEXTUREDICTIONARY 33 / 33 / 0,
+SHADERS 3099, HAWAII/GLOBALRESOURCES 549 / 261 / 101; zero load or parse errors. Speed: wasm 1.4-1.6x the native
+time (GLOBALRESOURCES 607 ms against 390 ms, single thread both).
+
+Compiles but fails at runtime on wasm32-unknown-unknown (input for step 2): every `std::fs` call
+(`mw-gamedir` install detection and `read_dir` case lookup, `Bundle::open` / `read_toc`, `mw-assets` `music.rs`
+and `police_speech.rs` partial reads with `File::open` + seek). `std::env::var*` returns nothing there (the
+`MW_*` switches are simply off). `AssetStore::new` uses rayon `par_iter` over every bundle's TOC: rayon-core 1.13
+falls back to the calling thread on wasm. Runtime-only blockers kept for later steps: threads in `mostrusted`,
+the 4 GB wasm32 memory cap (the free camera still loads the whole world, ~4.5 GB GPU), `hidapi` (Steam
+Controller) to be compiled out, storage buffers in `game_lighting.wgsl` need WebGPU (no WebGL2).
+
 ### 2026-10-19: skids "waaaay too loud": the engine's normalisation, not duplicate voices
 User play test after the sound merge (fdbb6c6 / 7602f68): drift sounds far too loud. Measured in the runtime path
 with a new offline tap (`MW_AUDIO_TAP`, docs/commands.md "Audio": the player's engine bank and vehicle bank rendered

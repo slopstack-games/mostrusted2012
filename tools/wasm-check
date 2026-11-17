@@ -1,0 +1,8 @@
+#!/bin/sh
+# Browser port, step 1: check that the engine-free crates build for wasm32-unknown-unknown (one-time:
+# `rustup target add wasm32-unknown-unknown`). Prints only warnings / errors and the result line.
+R="$(dirname "$0")/.."
+nice -n 19 cargo check --manifest-path "$R/Cargo.toml" --release --target wasm32-unknown-unknown --message-format short \
+  -p mw-gamedir -p mw-bundle -p mw-formats -p mw-audio -p mw-assets -p mw-handling "$@" 2>&1 \
+  | grep -E '^[^ ]+\.rs:[0-9]+:[0-9]+: (warning|error)|^(warning|error)(\[|:)|Finished|could not compile' \
+  | grep -v 'generated [0-9]* warning'

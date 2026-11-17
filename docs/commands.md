@@ -301,3 +301,10 @@ memscan` / `telemetry` / `tune` / `capture` read the game through `ReadProcessMe
 `capture` records no audio there (it uses pactl / parecord). The probe DLL builds with
 `rustup target add i686-pc-windows-msvc` and `cargo build --release -p mw-probe --target i686-pc-windows-msvc`.
 `tools/orig` (gamescope) is Linux-only.
+
+## Browser (wasm32)
+
+Port plan and status: research-log 2026-11-17 "browser port, step 1". One-time `rustup target add wasm32-unknown-unknown`.
+```sh
+tools/wasm-check    # the engine-free crates (gamedir, bundle, formats, audio, assets, handling) build for wasm32
+```
