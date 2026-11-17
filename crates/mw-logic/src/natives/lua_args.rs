@@ -64,6 +64,14 @@ pub fn int(args: &[Value], i: usize) -> i32 {
     ftol32(tonumber(args, i))
 }
 
+/// `lua_tonumber` then `fistp` with the default control word (round to nearest, ties to even; the decompiler
+/// shows `ROUND(x)`), to 32 bits: the arguments the handlers read with a plain `(int)(longlong)ROUND(...)`
+/// (`ChangePostFXSetting` key, `StartTextEntry` flag bit). NaN and out of range give 0x80000000.
+pub fn round_int(args: &[Value], i: usize) -> i32 {
+    let r = tonumber(args, i).round_ties_even();
+    if r.is_nan() || r.abs() >= 9.2e18 { 0 } else { r as i64 as i32 }
+}
+
 /// `lua_pushnumber((double)i)` of a signed int.
 pub fn push_int(i: i32) -> Value {
     Value::Number(i as f64)
@@ -102,6 +110,9 @@ mod tests {
         assert_eq!(int(&args, 1), 2);
         assert_eq!(ftol32(-2.9), -2);
         assert_eq!(ftol32(f64::NAN), 0);
+        assert_eq!(round_int(&[Value::Number(2.5)], 1), 2);
+        assert_eq!(round_int(&[Value::Number(3.5)], 1), 4);
+        assert_eq!(round_int(&[Value::Number(-0.6)], 1), -1);
         assert_eq!(ftol32(4294967295.0), -1);
         assert_eq!(tolstring(&args, 1).as_deref(), Some("2.9"));
         assert_eq!(tolstring(&args, 2).as_deref(), Some("x"));

@@ -54,7 +54,7 @@ fn view_legal_callbacks_exit_the_widget_group() {
     {
         let st = host.state.borrow();
         assert_eq!(st.screen.widget_group_exit, mw_formats::hsm::key("CANCEL"));
-        assert!(st.unported.iter().all(|u| u == "lua SignInFinished"), "{:?}", st.unported);
+        assert!(st.unported.is_empty(), "{:?}", st.unported);
     }
     // OnAction: ResolveStringBinding(nil) reads "<invalid>", which resolves to nothing; the script then calls
     // a chunk-level local that another callback sets (decomp.md: errors without that context are expected), so
@@ -62,7 +62,7 @@ fn view_legal_callbacks_exit_the_widget_group() {
     let _ = lua.call_field("ViewLegal", "OnAction", vec![]);
     let st = host.state.borrow();
     assert_eq!(st.screen.widget_group_exit, mw_formats::hsm::key("CANCEL"));
-    assert!(st.unported.iter().all(|u| u == "lua SignInFinished"));
+    assert!(st.unported.is_empty());
 }
 
 #[test]
