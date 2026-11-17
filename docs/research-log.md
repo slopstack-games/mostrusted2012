@@ -114,6 +114,26 @@ peak 37.3°, held 4.75 s; handbrake slip 1.1°, yaw 59°/s.
 "Handbrake and burnout" and handling.md not yet rewritten; model decision: the clutch opens when the handbrake
 sends a launch back to standstill (the code leaves it); the engine-rpm launch condition (attribute +0x14 via
 gearbox +0x180) not identified, taken as met; the crashed lock lanes (+0x1774) not ported; captures to confirm.
+
+### 2026-11-18: HSM behaviours, batch of 4 (`hsm/behaviours_misc.rs`, second part)
+
+Same method (string -> name stub -> factory -> vtable, slots from `text.asm`, `.bss` keys from snapshot 1 with a small
+reader over `snap1/index.tsv`). Ported (4): `ROLLOUTACHVM` 0x77e720 / vtable 0xfdac50 (update 0x73ba10) and
+`CARCOLCORRCT` 0x77e450 / 0xfdab0c (update 0x73c5e0): both only store the key at 0x117a970 (= `EXIT`) as the exit;
+`HSM.STARTPHO` 0x77b150 / 0xfd935c (enter 0x740f20 `FUN_0083e710` on G+0x2f474, update 0x740f40 EXIT);
+`HSM.INPUTDET` 0x77e1d0 / 0xfda9ec (update 0x73d0b0: local player's input-device record byte +0x499 set -> exit key
+0x117a018 = `EXIT`). New Request: StartPhotoMode; Query: InputDeviceDetected.
+Skipped, and why: `HSM.SELECTEA` (Easy Drive menu: keys EZ_RACES / EZ_MODS / EZ_CARS / EZ_M_WANTED / EZ_RECOMM /
+EZ_MULTIPLAY / EZ_RETRY / EZ_LEAVE / EZ_SPEC_MOD by the UI state G+0x2f480 +0x33608; task says skip Easy Drive),
+`HSM.ENABLEDE` / `HSM.CHECKFOR` (debug variable only: enter registers, exit 0x73c960 / 0x73cdc0 unregisters),
+`DEBUGUNLOCKS`, `DBGSTARTFRID`, `DBGAUTOBIND`, `WRITETODATAS` (update 0x747310: key / type / value writes through
+unnamed `FUN_009f8a00` helpers), `JOINEDLEFT` (enter 0x751c80 / update 0x75ef50: per-player join / leave bitmask,
+`FUN_00745ff0` / `FUN_0075ce90` unread), `BINDCONTROLL` (update 0x741fd0 input polling `FUN_0047aab0`),
+`HSM.UPLOADON` (Blaze job state +0x50), `RCDONEVNTWNR` (enter 0x74fa90, per-player event-result tables, update EXIT
+0x73ec00), `ONLINECARSWA`, `CONSMUNLOCKS`, `MMPICONSONL`, `SHOWMEETUPPO`, `PLAYFEEDBACK`, `TELEPORTTOME`,
+`CARJACKERACT`, `HSMSHAKEDOWN`, `HSMDODRIFTS`, `DOONEVTSTRT`, `DOSMSHNGRB`, `CHKPNTSONLIN`: 100+ instruction bodies
+over unnamed engine functions, not read in full (no guessing).
+
 ### 2026-11-18: HSM behaviours, batch of 10 (`hsm/behaviours_misc.rs`)
 
 Method as the earlier batches: name string address from strings.csv, the `push` / `mov edx` pair of the name stub gives

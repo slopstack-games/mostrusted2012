@@ -21,6 +21,10 @@ pub fn register(r: &mut Registry) {
     r.register_fn("ENDSETTINGSS", |_| EndSettingsScreen);
     r.register_fn("SHOULDSHOWCA", |_| ShouldShowCarSelect);
     r.register_fn("RUNCHALL", |_| RunChallenge);
+    r.register_fn("ROLLOUTACHVM", |_| RolloutAchievement);
+    r.register_fn("CARCOLCORRCT", |_| CarColourCorrect);
+    r.register_fn("HSM.STARTPHO", |_| StartPhotoMode);
+    r.register_fn("HSM.INPUTDET", |_| InputDeviceDetect);
 }
 
 /// Ticks per second of the timers (`.rdata` 0x00f9f604 = 3e6).
@@ -239,5 +243,58 @@ impl Behaviour for RunChallenge {
     }
     fn on_exit(&mut self, cx: &mut Cx) {
         cx.host.request(Request::StopChallenge);
+    }
+}
+
+/// "Rollout Achievements" (`ROLLOUTACHVM`, factory 0x77e720, vtable 0xfdac50): enter is the empty stub 0x73ba00,
+/// the update (0x73ba10) only stores the `.bss` key at 0x117a970 (= `EXIT`, read from snapshot 1) as the exit.
+pub struct RolloutAchievement;
+
+impl Behaviour for RolloutAchievement {
+    fn update(&mut self, cx: &mut Cx) -> bool {
+        cx.set_exit(EXIT);
+        true
+    }
+}
+
+/// "Car Colour Correct" (`CARCOLCORRCT`, factory 0x77e450, vtable 0xfdab0c): only the update (0x73c5e0) is not a
+/// default stub; it stores the key at 0x117a970 (= `EXIT`) as the exit.
+pub struct CarColourCorrect;
+
+impl Behaviour for CarColourCorrect {
+    fn update(&mut self, cx: &mut Cx) -> bool {
+        cx.set_exit(EXIT);
+        true
+    }
+}
+
+/// "HSM.StartPhotoMode" (`HSM.STARTPHO`, factory 0x77b150, vtable 0xfd935c): enter (0x740f20) calls `FUN_0083e710`
+/// on the photo-mode object G+0x2f474 ([`Request::StartPhotoMode`]); the update (0x740f40) exits through the key
+/// at 0x117a970 (= `EXIT`) in the same frame.
+pub struct StartPhotoMode;
+
+impl Behaviour for StartPhotoMode {
+    fn on_enter(&mut self, cx: &mut Cx) {
+        cx.host.request(Request::StartPhotoMode);
+    }
+    fn update(&mut self, cx: &mut Cx) -> bool {
+        cx.set_exit(EXIT);
+        true
+    }
+}
+
+/// "HSM.InputDeviceDetect" (`HSM.INPUTDET`, factory 0x77e1d0, vtable 0xfda9ec): the update (0x73d0b0) takes the
+/// local player (`FUN_006bf330` on G+0x2f3dc), the input-device record of its +0x254 (`FUN_0047aa20` on the input
+/// system 0x10edad8) and exits through the key at 0x117a018 (= `EXIT`) once that record's byte +0x499 is set
+/// ([`Query::InputDeviceDetected`]); until then it keeps running.
+pub struct InputDeviceDetect;
+
+impl Behaviour for InputDeviceDetect {
+    fn update(&mut self, cx: &mut Cx) -> bool {
+        if ask_bool(cx, Query::InputDeviceDetected) {
+            cx.set_exit(EXIT);
+            return true;
+        }
+        false
     }
 }

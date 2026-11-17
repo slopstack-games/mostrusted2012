@@ -506,6 +506,9 @@ pub enum Query {
     ClockTicks,
     /// GMM+0x2d20 as an i64: the results-sync delay in ticks (`SYNCRESSTART`); i64::MIN = none. Default i64::MIN.
     ResultsSyncDelay,
+    /// The local player's input-device record (`FUN_0047aa20`, id player+0x254) has byte +0x499 set
+    /// (`HSM.INPUTDET`). Default false.
+    InputDeviceDetected,
 }
 
 impl Query {
@@ -742,6 +745,7 @@ impl Query {
             Query::GameModeElapsedTicks => "GameModeElapsedTicks",
             Query::ClockTicks => "ClockTicks",
             Query::ResultsSyncDelay => "ResultsSyncDelay",
+            Query::InputDeviceDetected => "InputDeviceDetected",
         }
     }
 }
