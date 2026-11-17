@@ -121,8 +121,21 @@ impl FieldHasher {
     #[inline]
     pub const fn finish(&self) -> u32 {
         if self.len < 4 {
-            // Shorter names: unverified (none occur in the install); packed like four-byte names.
-            return !self.reg & (u32::MAX >> (8 * (4 - self.len)));
+            // Shorter names (`FUN_00d6a410` below four bytes): the register starts as the first byte and each byte
+            // is shifted in with the table entry of the register's *low* byte, no complement. The JSON member
+            // "Won" of the HSM hook `SetGameModeWon` hashes to 0xf3d625b7 (`DAT_01177ad8`). The bytes are kept
+            // complemented in `reg` until here.
+            let mut v = 0u32;
+            let mut i = 0;
+            while i < self.len {
+                let b = ((self.reg >> (8 * (self.len - 1 - i))) as u8) ^ 0xff;
+                if i == 0 {
+                    v = b as u32;
+                }
+                v = ((v << 8) | b as u32) ^ CRC_TABLE[(v & 0xff) as usize];
+                i += 1;
+            }
+            return v;
         }
         !self.reg
     }
@@ -566,6 +579,8 @@ mod tests {
         assert_eq!(field_hash("Power_curve"), 0xa1a3b0a2);
         assert_eq!(field_hash("Take_off_behaviour"), 0xc63c4447);
         assert_eq!(field_hash("Normal_quality_engine"), 0xbf36eecf);
+        // Below four bytes (an HSM hook's JSON member, read by `SetGameModeWon` 0x675ff0).
+        assert_eq!(field_hash("Won"), 0xf3d625b7);
     }
 
     #[test]
