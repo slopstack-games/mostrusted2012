@@ -117,9 +117,15 @@ impl Plugin for RacePlugin {
             .add_systems(Update, retire_racers)
             .add_systems(
                 FixedUpdate,
-                (hold_at_start.before(crate::drive::car_physics), run_race.after(crate::drive::car_physics))
+                (
+                    hold_at_start.before(crate::drive::car_physics),
+                    (run_race, checkpoints_plain).chain().after(crate::drive::car_physics),
+                )
                     .run_if(racing),
-            );
+            )
+            // Under `--hsm` the HSM's `CHECKPTS` steps the checkpoint manager in the logic's frame.
+            .add_systems(Update, checkpoints_inputs.in_set(crate::world_logic::WorldLogicSet::Inputs))
+            .add_systems(Update, checkpoints_outcomes.in_set(crate::world_logic::WorldLogicSet::Outcomes));
         // The race HUD is `hud.rs` (the game's race layouts); `MW_RACE_TEXT=1` adds the old one-line debug text.
         if std::env::var_os("MW_RACE_TEXT").is_some() {
             app.add_systems(Update, (spawn_text, update_text).run_if(racing));
@@ -343,6 +349,11 @@ pub struct RaceState {
     /// The intro's teleports put the cars on the grid rolling (`TeleportPlayerSequenceItem.Speed_MPH`): the
     /// offline flow has no freeze and no countdown (decomp.md "Cutscenes and sequences").
     pub rolling_start: bool,
+    /// The local player's gate markers the checkpoint manager placed (route entry, look; `FUN_00759860`).
+    pub markers: Vec<(usize, crate::gate_marker::GateLook)>,
+    /// Plain play: the race mode's `CHECKPTS` was entered / has exited ([`checkpoints_plain`]).
+    pub logic_entered: bool,
+    pub logic_left: bool,
 }
 
 fn heading_rotation(direction: [f32; 3]) -> Quat {
@@ -420,6 +431,9 @@ impl RaceState {
             placing: false,
             cutscene: false,
             rolling_start: false,
+            markers: Vec::new(),
+            logic_entered: false,
+            logic_left: false,
         }
     }
 
@@ -489,6 +503,15 @@ impl RaceState {
             rem += pos.distance(first);
         }
         (self.total_distance() - self.entries[target].distance + rem, pos.distance(projection))
+    }
+}
+
+impl RaceState {
+    /// The car is at or past route entry `target` (`FUN_00661b40`: less than [`REACHED`] of the target's segment is
+    /// left after the car's projection), the condition under which `FUN_00661da0` moves the target on after a reset.
+    pub fn past_target(&self, target: usize, pos: Vec3) -> bool {
+        let Some(seg) = self.segments.get(target).filter(|_| target > 0) else { return false };
+        seg.length() - seg.project(pos).0 < REACHED
     }
 }
 
@@ -605,6 +628,9 @@ pub struct RacerProgress {
     /// Distance driven while neither going the wrong way nor past a missed checkpoint (m): the speed run's
     /// average speed is this over the race time (`FUN_006e0580`; the accumulation itself is ours).
     pub counted_distance: f32,
+    /// `FUN_00661da0`'s answer after a reset: the entry after the target when the car is already past the target
+    /// (less than 0.5 m of its segment left, `FUN_00661b40`'s `REACHED`), else none.
+    pub reset_target: Option<usize>,
     ww: WrongWay,
     last_pos: Option<Vec3>,
 }
@@ -803,9 +829,6 @@ fn run_race(
     mut racers: Query<(Entity, &Racer, &mut RacerProgress, &Transform)>,
     players: Query<(), With<Car>>,
     mut phase_msg: MessageWriter<RacePhaseChanged>,
-    mut cp_msg: MessageWriter<CheckpointPassed>,
-    mut lap_msg: MessageWriter<LapCompleted>,
-    mut fin_msg: MessageWriter<RacerFinished>,
 ) {
     let dt = time.delta_secs();
     let race = &mut *race;
@@ -839,13 +862,12 @@ fn run_race(
         }
         RacePhase::Racing => race.clock += dt,
     }
-    let n = race.gates_per_lap();
     let last = race.total_gates();
-    if n == 0 {
+    if race.gates_per_lap() == 0 {
         return;
     }
     let now = race.clock;
-    for (entity, racer, mut p, t) in &mut racers {
+    for (_, racer, mut p, t) in &mut racers {
         if p.lap == 0 {
             // Joined after go (a swapped car): from the start of the race.
             *p = RacerProgress { lap: 1, ..default() };
@@ -860,59 +882,13 @@ fn run_race(
         {
             p.counted_distance += prev.distance(pos);
         }
-        let target = p.target();
-        let gate = race.entries[target].gate.expect("entries after the start are gates");
-        let centre = pos + t.rotation * Vec3::Y * racer.half_extents.y;
-        if race.checkpoints[gate].overlaps(centre, t.rotation, racer.half_extents) {
-            cp_msg.write(CheckpointPassed { racer: entity, index: gate, lap: p.lap, time: now });
-            p.passed += 1;
-            if target == last {
-                let lap_time = now - p.lap_start;
-                p.lap_times.push(lap_time);
-                lap_msg.write(LapCompleted { racer: entity, lap: p.lap, lap_time, time: now });
-                p.finished = Some(now);
-                // `CHECKPTS` (0x75xxxx, decomp.md "Races"): AI goal 3 and +0x5d7 = 1 at the last checkpoint.
-                p.done = true;
-                let position = race.results.len() + 1;
-                p.position = position;
-                p.to_finish = 0.0;
-                p.wrong_way = false;
-                p.missed_checkpoint = false;
-                race.results.push(RaceResult {
-                    racer: entity,
-                    name: racer.name.clone(),
-                    player: racer.player,
-                    position,
-                    time: now,
-                    lap_times: p.lap_times.clone(),
-                    best_lap: p.lap_times.iter().copied().reduce(f32::min),
-                });
-                if racer.player {
-                    // FUN_006b9d00 / FUN_006f46e0: top three (first only with `c8f26580`); a speed run also
-                    // needs an average speed of at least the last (lowest) TargetSpeed, mph.
-                    let mut won = position <= if race.event.first_place_only { 1 } else { 3 };
-                    if let Some(&least) = race.event.target_speed.last() {
-                        won &= p.average_mph(now) >= least;
-                    }
-                    if let Some(&limit) = race.event.target_time.first() {
-                        won &= now <= limit;
-                    }
-                    race.won = Some(won);
-                }
-                fin_msg.write(RacerFinished { racer: entity, position, time: now });
-                continue;
-            }
-            if p.passed.is_multiple_of(n) {
-                let lap_time = now - p.lap_start;
-                p.lap_times.push(lap_time);
-                lap_msg.write(LapCompleted { racer: entity, lap: p.lap, lap_time, time: now });
-                p.lap_start = now;
-                p.lap += 1;
-            }
-        }
-        let target = p.target();
+        // The gates, laps, the position and the finish are the checkpoint manager's (`checkpoints_*` below); the
+        // distance manager's per-slot work stays here: the distance to the finish through the target, the reset
+        // answer and the wrong-way / missed-checkpoint machine.
+        let target = p.target().min(last);
         let (d_finish, off) = race.distance_to_finish(target, pos);
         p.to_finish = d_finish;
+        p.reset_target = race.past_target(target, pos).then_some(target + 1).filter(|&t| t <= last);
         // FUN_0066b3f0 → FUN_006585b0: d through the target (+ the distance off its segment), d' through the next
         // one; with the finish as the target d' is the plain distance to the finish.
         let d = d_finish + off;
@@ -976,32 +952,413 @@ fn run_race(
             facing.0 = Some(race.entries[target].position);
         }
     }
-    // Positions (FUN_00749bb0): 1 + racers ahead (finished, or strictly closer to the finish).
-    let all: Vec<(Entity, Option<usize>, f32)> =
-        racers.iter().map(|(e, _, p, _)| (e, p.finished.map(|_| p.position), p.to_finish)).collect();
+    if race.won.is_some() {
+        facing.0 = None;
+    }
+}
+
+/// The checkpoint manager's inputs from the race (`CheckpointInputs`, mw-logic `natives::checkpoints`): the route
+/// entries and gate boxes (`FUN_00645290`), the event's `CheckpointInfo`, the racers' boxes, reset state and
+/// distances to the finish, the race clock (GMM+0x2d28), the `GameLogicConfig` marker looks. Racers by player slot:
+/// the local player's, AI racer `grid_slot` k in slot 12 + k (PM+0xa664's list).
+fn fill_checkpoints(
+    st: &mut mw_logic::natives::LogicState,
+    race: Option<&RaceState>,
+    racers: &[CheckpointCar],
+    values: Option<&mw_assets::frontend::GameLogicValues>,
+    dt: f32,
+) {
+    use mw_logic::natives::checkpoints::{CheckpointInfo, MarkerKeys, RaceCar, RouteEntry};
+    use mw_logic::natives::players::{FIRST_AI_SLOT, Player, SLOTS};
+    use mw_logic::natives::trigger_boxes::TriggerBox;
+    let local = st.players.local.unwrap_or(0);
+    let Some(race) = race else {
+        // No event: no route (the free drive's `CHECKPTS` exits at once), no AI racers.
+        if !st.checkpoints.inputs.route.is_empty() || !st.checkpoints.inputs.racers.is_empty() {
+            st.checkpoints.inputs = Default::default();
+            for slot in FIRST_AI_SLOT..SLOTS {
+                st.players.slots[slot] = None;
+            }
+        }
+        return;
+    };
+    let i = &mut st.checkpoints.inputs;
+    if i.route.len() != race.entries.len() {
+        i.route = race
+            .entries
+            .iter()
+            .map(|e| {
+                let gate = e.gate.map(|g| {
+                    let c = &race.checkpoints[g];
+                    TriggerBox::from_quat(
+                        c.id,
+                        c.transform.translation.to_array(),
+                        c.transform.rotation.to_array(),
+                        c.size.to_array(),
+                        false,
+                    )
+                });
+                RouteEntry {
+                    position: e.position.to_array(),
+                    trigger: gate.map_or(race.event.spawn_id, |g| g.id),
+                    gate,
+                }
+            })
+            .collect();
+        i.per_lap = race.checkpoints.len();
+        i.infos = race
+            .event
+            .checkpoint_infos
+            .iter()
+            .map(|c| CheckpointInfo {
+                sequence: c.sequence,
+                kind: c.kind,
+                ai_sequence: c.ai_sequence,
+                store_split: c.store_split,
+            })
+            .collect();
+    }
+    // The distance manager is ready once the route segments are built (`route_segments`).
+    i.loaded = true;
+    // GameMode +0x6e (`f1123d7b`): the local player's gate markers and score events.
+    i.markers = race.game_mode.is_some_and(|m| m.gate_markers);
+    if let Some(v) = values {
+        i.marker_keys = MarkerKeys {
+            target: v.gate_target,
+            next: v.gate_next,
+            by_type: v.gate_by_type,
+            finish: v.finish_target,
+            finish_next: v.finish_next,
+        };
+    }
+    i.first_place_only = race.event.first_place_only;
+    // GMM+0x2e8b (`IsRaceEvent`, `FUN_006e03e0`): the logic's.
+    i.lead_events = st.game_modes.race_event;
+    // GMM+0x2e48 and the widget manager's state G+0x2f458 +0x85c are not read from the engine yet (open).
+    i.split_display = false;
+    i.finish_held = false;
+    // `FUN_00656220`'s reroute rule is open (research log 2026-11-17).
+    i.reroute = false;
+    i.dt = dt;
+    i.cars = [None; SLOTS];
+    i.racers.clear();
+    for c in racers {
+        let slot = match c.grid_slot {
+            None => local,
+            Some(k) => FIRST_AI_SLOT + k,
+        };
+        if slot >= SLOTS {
+            continue;
+        }
+        i.cars[slot] = Some(RaceCar {
+            car: c.car,
+            has_vehicle: true,
+            resetting: c.resetting,
+            reset_target: c.reset_target,
+            to_finish: c.to_finish,
+        });
+        if c.grid_slot.is_some() {
+            i.racers.push(slot);
+        }
+    }
+    i.racers.sort_unstable();
+    // The AI racers are players with a vehicle (PM slots 12..23).
+    for slot in FIRST_AI_SLOT..SLOTS {
+        let racing = i.racers.contains(&slot);
+        let entry = &mut st.players.slots[slot];
+        if racing && entry.is_none() {
+            *entry = Some(Player { kind: 2, vehicle: slot as i32, ..Default::default() });
+        } else if !racing {
+            *entry = None;
+        }
+    }
+    // The race clock (GMM+0x2d28 / +0x2d2c, ticks of 1/3,000,000 s) and the mode timer (+0x2e74).
+    let ticks = (f64::from(race.clock) * 3e6) as u64;
+    st.game_modes.word_2d28 = ticks as u32;
+    st.game_modes.word_2d2c = (ticks >> 32) as u32;
+    st.game_modes.timer_running = race.phase == RacePhase::Racing;
+}
+
+/// A racer as [`fill_checkpoints`] reads it.
+struct CheckpointCar {
+    grid_slot: Option<usize>,
+    car: mw_logic::natives::trigger_boxes::CarBox,
+    resetting: bool,
+    reset_target: Option<usize>,
+    to_finish: Option<f32>,
+}
+
+/// The racer's box as the overlap job queries it (`FUN_00536a10`): centred half its height above the origin (model
+/// decision, as before).
+fn car_box(t: &Transform, half: Vec3) -> mw_logic::natives::trigger_boxes::CarBox {
+    let axes = [t.rotation * Vec3::X, t.rotation * Vec3::Y, t.rotation * Vec3::Z];
+    mw_logic::natives::trigger_boxes::CarBox {
+        centre: (t.translation + axes[1] * half.y).to_array(),
+        axes: axes.map(|a| a.to_array()),
+        half: half.to_array(),
+        forward: axes[2].to_array(),
+    }
+}
+
+type CheckpointRacers<'w, 's> = Query<
+    'w,
+    's,
+    (Entity, &'static Racer, &'static mut RacerProgress, &'static Transform, Has<crate::car_impacts::AiCrash>),
+>;
+
+fn checkpoint_cars(racers: &CheckpointRacers, crash: Option<&crate::crash::CrashState>) -> Vec<CheckpointCar> {
+    racers
+        .iter()
+        .filter(|(_, _, p, ..)| p.lap > 0)
+        .map(|(_, r, p, t, ai_crash)| CheckpointCar {
+            grid_slot: if r.player { None } else { r.grid_slot },
+            car: car_box(t, r.half_extents),
+            // The world's reset flag (G+0x25694 + vehicle): the crash sequence and its reset (`crash.rs`, the
+            // AI's `AiCrash`).
+            resetting: if r.player { crash.is_some_and(|c| c.active.is_some()) } else { ai_crash },
+            reset_target: p.reset_target,
+            to_finish: Some(p.to_finish),
+        })
+        .collect()
+}
+
+/// The messages the race sends.
+#[derive(bevy::ecs::system::SystemParam)]
+struct RaceMessages<'w> {
+    phase: MessageWriter<'w, RacePhaseChanged>,
+    cp: MessageWriter<'w, CheckpointPassed>,
+    lap: MessageWriter<'w, LapCompleted>,
+    fin: MessageWriter<'w, RacerFinished>,
+}
+
+/// Plain play: what the race mode's "Checkpoints" (`CHECKPTS`) does each simulation step: enter and place at go, a
+/// step while racing, the exit once the player has finished; then the outcomes ([`apply_checkpoints`]).
+fn checkpoints_plain(
+    time: Res<Time>,
+    logic: NonSend<crate::world_logic::WorldLogic>,
+    mut race: ResMut<RaceState>,
+    crash: Option<Res<crate::crash::CrashState>>,
+    mut racers: CheckpointRacers,
+    mut msgs: RaceMessages,
+) {
+    use mw_logic::natives::Request;
+    if logic.driven || !matches!(race.phase, RacePhase::Racing | RacePhase::Finished) || race.logic_left {
+        return;
+    }
+    let cars = checkpoint_cars(&racers, crash.as_deref());
+    {
+        let mut st = logic.state.borrow_mut();
+        if !race.logic_entered {
+            // The game-mode manager's event start: +0x2e78 set (0x70b37d), +0x2e8b `IsRaceEvent`.
+            st.game_modes.won = true;
+            st.game_modes.race_event = race.event.kind.is_race();
+        }
+        fill_checkpoints(&mut st, Some(&race), &cars, logic.values.as_ref(), time.delta_secs());
+    }
+    if !race.logic_entered {
+        race.logic_entered = true;
+        logic.run(&Request::CheckpointsEnter);
+        logic.run(&Request::CheckpointsPlace);
+    }
+    if race.phase == RacePhase::Racing {
+        logic.run(&Request::CheckpointsStep);
+    }
+    if logic.state.borrow().checkpoints.progress.finished {
+        // The update returned 1: the state exits through `EXIT` (0x75d960).
+        race.logic_left = true;
+        logic.run(&Request::CheckpointsLeave);
+    }
+    apply_checkpoints(&logic, &mut race, &mut racers, &mut msgs);
+}
+
+/// Under `--hsm`: the inputs before the logic's frame (the HSM's `CHECKPTS` steps the manager in it).
+fn checkpoints_inputs(
+    time: Res<Time>,
+    logic: NonSend<crate::world_logic::WorldLogic>,
+    race: Option<Res<RaceState>>,
+    crash: Option<Res<crate::crash::CrashState>>,
+    racers: CheckpointRacers,
+) {
+    if !logic.driven {
+        return;
+    }
+    let cars = checkpoint_cars(&racers, crash.as_deref());
+    let mut st = logic.state.borrow_mut();
+    fill_checkpoints(&mut st, race.as_deref(), &cars, logic.values.as_ref(), time.delta_secs());
+}
+
+/// Under `--hsm`: the outcomes after the logic's frame.
+fn checkpoints_outcomes(
+    logic: NonSend<crate::world_logic::WorldLogic>,
+    race: Option<ResMut<RaceState>>,
+    mut racers: CheckpointRacers,
+    mut msgs: RaceMessages,
+) {
+    if !logic.driven {
+        return;
+    }
+    match race {
+        Some(mut race) => apply_checkpoints(&logic, &mut race, &mut racers, &mut msgs),
+        None => {
+            logic.take(|r| matches!(r, mw_logic::natives::Request::Checkpoint(_)));
+        }
+    }
+}
+
+/// The checkpoint manager's outcomes: its `Request::Checkpoint`s (the local player's gate markers, AI racers done)
+/// and its state (counters, lap, position, finish) into the racers' [`RacerProgress`], the messages and the results.
+fn apply_checkpoints(
+    logic: &crate::world_logic::WorldLogic,
+    race: &mut RaceState,
+    racers: &mut CheckpointRacers,
+    msgs: &mut RaceMessages,
+) {
+    use crate::gate_marker::GateLook;
+    use mw_logic::natives::Request;
+    use mw_logic::natives::checkpoints::CheckpointOut;
+    use mw_logic::natives::players::FIRST_AI_SLOT;
+    let st = logic.state.borrow();
+    let keys = st.checkpoints.inputs.marker_keys;
+    let ai_slot = |r: &Racer| r.grid_slot.filter(|_| !r.player).map(|k| FIRST_AI_SLOT + k);
+    for r in logic.take(|r| matches!(r, Request::Checkpoint(_))) {
+        let Request::Checkpoint(o) = r else { continue };
+        match o {
+            CheckpointOut::Marker { entry, key } => {
+                race.markers.retain(|m| m.0 != entry);
+                let look = if key == keys.finish {
+                    GateLook::Finish
+                } else if key == keys.finish_next {
+                    GateLook::FinishPreview
+                } else if key == keys.next {
+                    GateLook::GatePreview
+                } else {
+                    GateLook::Gate
+                };
+                race.markers.push((entry, look));
+            }
+            CheckpointOut::MarkerRemove { entry } => race.markers.retain(|m| m.0 != entry),
+            CheckpointOut::AiDone { slot } => {
+                for (_, r, mut p, ..) in racers.iter_mut() {
+                    if ai_slot(r) == Some(slot) {
+                        p.done = true;
+                    }
+                }
+            }
+            CheckpointOut::Event(e) => debug!("race: event {e:?}"),
+            CheckpointOut::Sequence { slot, sequence } => {
+                info!("race: checkpoint sequence {sequence} for slot {slot} (not played)")
+            }
+            // The trigger switching, the GPS line, the distance manager's target (= counter + 1, read from the
+            // counter) and the reroute: the runtime's GPS and triggers do their own (open).
+            CheckpointOut::Trigger { .. }
+            | CheckpointOut::Gps { .. }
+            | CheckpointOut::Target { .. }
+            | CheckpointOut::Reroute { .. } => {}
+        }
+    }
+    if matches!(race.phase, RacePhase::Waiting | RacePhase::Intro) {
+        return;
+    }
+    let pr = &st.checkpoints.progress;
+    let n = race.gates_per_lap().max(1);
+    let last = race.total_gates();
+    let now = race.clock;
+    for (entity, racer, mut p, ..) in racers.iter_mut() {
+        if p.lap == 0 || p.finished.is_some() {
+            continue;
+        }
+        let cp = match ai_slot(racer) {
+            None if racer.player => pr.cp,
+            None => continue,
+            Some(slot) => pr.ai_cp[slot],
+        };
+        // The gates the manager counted since the last frame.
+        while p.passed < cp.min(last) {
+            let index = p.passed % n;
+            msgs.cp.write(CheckpointPassed { racer: entity, index, lap: p.lap, time: now });
+            p.passed += 1;
+            // Lap times (display): a lap ends with the lap's last gate (the manager's lap rule).
+            if p.passed.is_multiple_of(n) {
+                let lap_time = now - p.lap_start;
+                p.lap_times.push(lap_time);
+                msgs.lap.write(LapCompleted { racer: entity, lap: p.lap, lap_time, time: now });
+                p.lap_start = now;
+                if p.passed < last {
+                    p.lap += 1;
+                }
+            }
+        }
+        if racer.player {
+            p.lap = pr.lap.min(u32::from(u8::MAX)) as u8;
+            if pr.position > 0 {
+                p.position = pr.position as usize;
+            }
+        }
+        let finished = if racer.player { pr.finished } else { cp >= last };
+        if !finished {
+            continue;
+        }
+        // The finish: the player's place and time are `FUN_006b9d00`'s (player +0x5b8 / +0x5c8); an AI racer's
+        // last gate makes it done (+0x5d7). AI finishing times and places are kept for the results board (the
+        // original stores none: model decision).
+        p.finished = Some(now);
+        p.done = true;
+        p.to_finish = 0.0;
+        p.wrong_way = false;
+        p.missed_checkpoint = false;
+        let position = if racer.player {
+            st.players.local_player().map_or(p.position, |l| l.final_5b8.max(1) as usize)
+        } else {
+            race.results.len() + 1
+        };
+        p.position = position;
+        race.results.push(RaceResult {
+            racer: entity,
+            name: racer.name.clone(),
+            player: racer.player,
+            position,
+            time: now,
+            lap_times: p.lap_times.clone(),
+            best_lap: p.lap_times.iter().copied().reduce(f32::min),
+        });
+        if racer.player {
+            // `CHECKPTS`'s rule (GMM+0x2e78 cleared below the place, `FUN_006b9d00`); a speed run also needs the
+            // average speed of the last (lowest) TargetSpeed and a timed event the first TargetTime
+            // (`FUN_006f46e0`'s, not ported: runtime rule).
+            let mut won = st.game_modes.won;
+            if let Some(&least) = race.event.target_speed.last() {
+                won &= p.average_mph(now) >= least;
+            }
+            if let Some(&limit) = race.event.target_time.first() {
+                won &= now <= limit;
+            }
+            race.won = Some(won);
+        }
+        msgs.fin.write(RacerFinished { racer: entity, position, time: now });
+    }
+    // The board's order (display): the player at the manager's position, the AI racers not finished by the same
+    // relation (`FUN_00749bb0`: finished, or strictly closer to the finish).
+    let all: Vec<(Entity, bool, Option<usize>, f32, usize)> = racers
+        .iter()
+        .map(|(e, r, p, ..)| (e, r.player, p.finished.map(|_| p.position), p.to_finish, p.position))
+        .collect();
     let mut order = Vec::with_capacity(all.len());
-    for (e, place, d) in &all {
+    for (e, player, place, d, current) in &all {
         let position = match place {
             Some(place) => *place,
-            None => 1 + all.iter().filter(|(o, op, od)| o != e && (op.is_some() || od < d)).count(),
+            None if *player => (*current).max(1),
+            None => 1 + all.iter().filter(|(o, _, op, od, _)| o != e && (op.is_some() || od < d)).count(),
         };
-        if let Ok((_, _, mut p, _)) = racers.get_mut(*e) {
+        if let Ok((_, _, mut p, ..)) = racers.get_mut(*e) {
             p.position = position;
         }
         order.push((position, *e));
     }
     order.sort_by_key(|o| o.0);
     race.standings = order.into_iter().map(|o| o.1).collect();
-    if race.won.is_some() {
-        facing.0 = None;
-        // `CHECKPTS` exit (0x75d960): every AI racer still racing (not a cop, with a car) gets +0x5d7 = 1 and
-        // AI goal 3, like one that finished.
-        for (_, racer, mut p, _) in &mut racers {
-            if !racer.player {
-                p.done = true;
-            }
-        }
-        set_phase(race, RacePhase::Finished, &mut phase_msg);
+    if race.won.is_some() && race.phase == RacePhase::Racing {
+        race.phase = RacePhase::Finished;
+        msgs.phase.write(RacePhaseChanged { phase: RacePhase::Finished });
     }
 }
 

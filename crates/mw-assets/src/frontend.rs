@@ -86,6 +86,40 @@ pub struct StartConfig {
     /// the intro event (1560354), +0x100 `814c73fc` the intro race (1909234), +0x130 `3d09a25a` the second
     /// free-drive mode `FUN_006e5ea0` accepts (431133, online).
     pub ids: LogicConfigIds,
+    /// The `GameLogicConfig` values the checkpoints, event starts and jack spots read (mw-logic's
+    /// `CheckpointInputs` / `EventStartInputs` / `CarSwapInputs`).
+    pub logic: GameLogicValues,
+}
+
+/// `GameLogicConfig` values (offsets in the 0x2b0 B record; `mwtool genesys GLOBALCONFIG.BNDL --type
+/// GameLogicConfig`). 0 = missing.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct GameLogicValues {
+    /// +0x2a8 `CheckpointConfig` (`CheckPointsConfig`): +0x28 `NormalPoi` (the target gate's look, 1013519), +0x24
+    /// `e9d221fe` (the next gate, 1013518), +0x0c / +0x30 / +0x1c / +0x20 (`9c90086c`, `9b8441ba`, `ba788429`,
+    /// `57ca74a6`: the target of `CheckpointInfo.Type` 1–4; `FUN_007545b0`).
+    pub gate_target: u32,
+    pub gate_next: u32,
+    pub gate_by_type: [u32; 4],
+    /// +0x2ac `MapPoiConfig` +0x28 `f4d5177c` (the finish as the target, 1013510) and +0x2c `8d67562d` (as the next
+    /// gate, 1695650).
+    pub finish_target: u32,
+    pub finish_next: u32,
+    /// +0x244 `49caf423` (22): the event-start radius, m (`FUN_0074ad50`).
+    pub start_radius: f32,
+    /// +0x284 `ff4aef6f` (70): the speed below which an event starts or a car swaps, mph.
+    pub max_mph: f32,
+    /// +0x160 `PromptEvent` (18364), +0x168 `PromptStore` (2094166), +0x16c `a1e83efa` (955092, "PRESS … TO DRIVE
+    /// CAR"): prompt-bar language strings.
+    pub prompt_event: u32,
+    pub prompt_store: u32,
+    pub prompt_drive: u32,
+    /// +0x1ec `3cd2c536` (955569): the speed-run game mode (its event-start hint 0x11).
+    pub speed_run_mode: u32,
+    /// +0x8c `fdf15e9a` (995872): the car swap's sequence (phase 5 of `FUN_00761d70`).
+    pub swap_sequence: u32,
+    /// +0x104 `48f11061` (1560090): the nearest standing parked car's sequence (`FUN_00759410`).
+    pub nearest_car_sequence: u32,
 }
 
 /// See [`StartConfig::ids`].
@@ -196,6 +230,19 @@ mod h {
     pub const COLOUR_ID: u32 = field_hash("ColourId");
     pub const SWAP_SECOND: u32 = 0xe36e_9d9d;
     pub const SWAP_MAX_MPH: u32 = 0xff4a_ef6f;
+    pub const START_RADIUS: u32 = 0x49ca_f423;
+    pub const PROMPT_EVENT: u32 = field_hash("PromptEvent");
+    pub const PROMPT_STORE: u32 = field_hash("PromptStore");
+    pub const PROMPT_DRIVE: u32 = 0xa1e8_3efa;
+    pub const SPEED_RUN_MODE: u32 = 0x3cd2_c536;
+    pub const SWAP_SEQUENCE: u32 = 0xfdf1_5e9a;
+    pub const NEAREST_CAR_SEQUENCE: u32 = 0x48f1_1061;
+    pub const NORMAL_POI: u32 = field_hash("NormalPoi");
+    pub const NEXT_GATE_POI: u32 = 0xe9d2_21fe;
+    /// `CheckPointsConfig` +0x0c / +0x30 / +0x1c / +0x20: the target look of `CheckpointInfo.Type` 1–4.
+    pub const TYPE_POI: [u32; 4] = [0x9c90_086c, 0x9b84_41ba, 0xba78_8429, 0x57ca_74a6];
+    pub const FINISH_POI: u32 = 0xf4d5_177c;
+    pub const FINISH_NEXT_POI: u32 = 0x8d67_562d;
     pub const GENERAL_LAYOUTS: u32 = 0xeee9_32fa;
     pub const TOGGLE_LAYOUTS: u32 = 0xa65d_5d07;
     pub const TRANSITION_IMAGES: u32 = field_hash("TransitionImages");
@@ -268,6 +315,31 @@ impl AssetStore {
                     Some(Value::Float(f)) => Some(*f),
                     _ => None,
                 };
+                let float = |o: &Object, hash: u32| match o.get(hash) {
+                    Some(Value::Float(f)) => *f,
+                    _ => uint(o, hash) as f32,
+                };
+                let mut v = GameLogicValues {
+                    start_radius: float(g, h::START_RADIUS),
+                    max_mph: float(g, h::SWAP_MAX_MPH),
+                    prompt_event: uint(g, h::PROMPT_EVENT),
+                    prompt_store: uint(g, h::PROMPT_STORE),
+                    prompt_drive: uint(g, h::PROMPT_DRIVE),
+                    speed_run_mode: uint(g, h::SPEED_RUN_MODE),
+                    swap_sequence: uint(g, h::SWAP_SEQUENCE),
+                    nearest_car_sequence: uint(g, h::NEAREST_CAR_SEQUENCE),
+                    ..Default::default()
+                };
+                if let Some(c) = g.find("Genesys.Gen.CheckPointsConfig") {
+                    v.gate_target = uint(c, h::NORMAL_POI);
+                    v.gate_next = uint(c, h::NEXT_GATE_POI);
+                    v.gate_by_type = h::TYPE_POI.map(|f| uint(c, f));
+                }
+                if let Some(m) = g.find("Genesys.Gen.GameLogic.MapPoiConfig") {
+                    v.finish_target = uint(m, h::FINISH_POI);
+                    v.finish_next = uint(m, h::FINISH_NEXT_POI);
+                }
+                cfg.logic = v;
             }
         }
         for o in items(self, GAMEPLAY)? {

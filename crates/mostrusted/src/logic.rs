@@ -112,7 +112,7 @@ use mw_logic::natives::{LogicHost, Request, progression};
 
 use crate::cutscene::{CutsceneState, Which};
 use crate::frontend::{FrontEnd, Phase};
-use crate::race::{RaceDriven, RaceSetup, RaceState, RacerProgress, StartRace};
+use crate::race::{RaceDriven, RaceSetup, RaceState, StartRace};
 
 const BUNDLE: &str = "GAMELOGIC/GAMEMODES.BNDL";
 /// "Top State": the boot machine.
@@ -305,6 +305,16 @@ fn receive(world: &mut World) {
     }
     let playlists = events.game_modes.iter().map(|m| (m.id, m.music_playlist)).collect();
     let store = world.resource::<crate::Game>().store.clone();
+    // The world managers (checkpoints, event starts, car swap) run on the logic's state from now on; their outcomes
+    // go to `world_logic.rs` (`WorldLogic::outbox`).
+    let world_out = match world.get_non_send_mut::<crate::world_logic::WorldLogic>() {
+        Some(mut w) => {
+            w.state = logic.state.clone();
+            w.driven = true;
+            w.outbox.clone()
+        }
+        None => Default::default(),
+    };
     let mut host = RuntimeHost {
         loads: crate::logic_loads::Loads::new(store.clone(), profile_path, volume),
         data,
@@ -326,6 +336,7 @@ fn receive(world: &mut World) {
         frame: 0,
         requests: HashMap::new(),
         race: RaceLink { choice, ..Default::default() },
+        world_out,
     };
     let Some(serial) = hsm.start(TOP_STATE, &mut host) else {
         warn!("hsm: no top-level state {TOP_STATE}");
@@ -567,7 +578,6 @@ struct Targets<'w, 's> {
 struct Race<'w, 's> {
     state: Option<Res<'w, RaceState>>,
     driven: Option<ResMut<'w, RaceDriven>>,
-    player: bevy::ecs::system::Query<'w, 's, &'static RacerProgress, With<crate::drive::Player>>,
     card: Option<Res<'w, crate::event_card::EventCard>>,
     hud: Option<Res<'w, crate::hud::HudState>>,
     loaded: Res<'w, crate::Loaded>,
@@ -653,8 +663,18 @@ fn tick(logic: Option<NonSendMut<Logic>>, real: Res<Time<Real>>, mut t: Targets,
     // The runtime's event choice (map START RACE, Easy Drive, pause menu, world markers) becomes the logic's.
     if let Some(crate::event_card::PlayEvent(setup)) = t.race.plays.read().last().cloned() {
         let id = setup.event.id;
+        let logic_chose = host.logic.state.borrow().event_starts.state.chosen == id;
         if host.race.setup.is_some() || crate::dlc::event_locked(&setup.event).is_some() {
             info!("hsm: {:5} event {id} chosen: not taken (an event runs, or DLC)", host.frame);
+        } else if logic_chose {
+            // The logic's own choice (an event start's burnout, `natives::event_starts`): the runtime only adds the
+            // event's set-up; its data is in from now on (`LoadEventData`).
+            info!("hsm: {:5} event {id} chosen by the logic's event starts: its set-up", host.frame);
+            host.race = RaceLink { choice: host.race.choice.clone(), setup: Some(setup), ..Default::default() };
+            let mut st = host.logic.state.borrow_mut();
+            if st.game_modes.current_event == id || st.game_modes.requested_event == id {
+                st.game_modes.event_data_ready = true;
+            }
         } else {
             info!("hsm: {:5} event {id} chosen in the runtime: the logic's event request", host.frame);
             host.race.choice.store(id, Ordering::Relaxed);
@@ -939,6 +959,8 @@ struct RuntimeHost {
     race: RaceLink,
     /// The loads the logic asked for (`logic_loads.rs`).
     loads: crate::logic_loads::Loads,
+    /// The world managers' outcomes for `world_logic.rs` (`WorldLogic::outbox`).
+    world_out: std::rc::Rc<std::cell::RefCell<Vec<Request>>>,
 }
 
 /// The general trigger item of the event card ([`crate::event_card::EventCard::transition`]) that the EventIntro
@@ -967,9 +989,6 @@ struct RaceLink {
     placing: bool,
     /// The race is ready to show: placed, opponents placed (`RaceState::hold`), the world loaded.
     ready: bool,
-    gates: usize,
-    /// The player passed the last checkpoint.
-    finished: bool,
     intro_done: bool,
     /// The outro is over and so are the results after it (`hud.rs`).
     outro_done: bool,
@@ -985,8 +1004,6 @@ impl RaceLink {
         self.loaded_frames = if self.loaded { self.loaded_frames + 1 } else { 0 };
         self.placing = self.started && race.is_none_or(|r| r.placing);
         self.ready = race.is_some_and(|r| !r.placing && !r.hold) && r.loaded.done && self.loaded_frames > 2;
-        self.gates = race.map_or(0, |r| r.checkpoints.len());
-        self.finished = race.is_some() && r.player.iter().any(|p| p.finished.is_some());
         let finished = |w| cutscene.is_none_or(|c| c.finished(w));
         self.intro_done = finished(Which::Intro);
         let results_over = r.hud.as_ref().is_none_or(|h| {
@@ -1153,8 +1170,13 @@ impl Host for RuntimeHost {
             // The chosen event's data is in once the runtime has its set-up (`RaceSetup`); events the runtime did
             // not choose (free drive) at once, as before.
             Request::LoadEventData { event } => {
-                let ready = self.race.setup.as_ref().is_none_or(|s| s.event.id == *event)
-                    || mode_machine::is_freedrive_event(&self.logic.state.borrow(), *event);
+                // An event the logic's event starts chose waits for its set-up (`event_starts.rs` sends it).
+                let st = self.logic.state.borrow();
+                let ready = match &self.race.setup {
+                    Some(s) => s.event.id == *event,
+                    None => st.event_starts.state.chosen != *event,
+                } || mode_machine::is_freedrive_event(&st, *event);
+                drop(st);
                 self.logic.state.borrow_mut().game_modes.event_data_ready = ready;
                 Some(Carry::Nothing)
             }
@@ -1216,13 +1238,22 @@ impl Host for RuntimeHost {
                 st.players.slots[0] = Some(Default::default());
                 Some(Carry::Nothing)
             }
-            // The race's gates are `race.rs`'s (stepped every tick); the logic reads them through its queries.
+            // The world managers run in the logic (`LogicHost::apply` above: `CHECKPTS`, `EVENTSTARTS`,
+            // `HSMCARSWAPLO`) on the inputs `race.rs`, `event_starts.rs` and `jackspots.rs` fill; their outcomes are
+            // carried out by those modules (`world_logic.rs`).
             Request::CheckpointsEnter
             | Request::CheckpointsPlace
             | Request::CheckpointsStep
             | Request::CheckpointsLeave
-                if self.race.started =>
-            {
+            | Request::EventStartsEnter { .. }
+            | Request::EventStartParams(_)
+            | Request::EventStartsStep
+            | Request::EventStartsLeave
+            | Request::CarSwapEnter
+            | Request::CarSwapStep
+            | Request::CarSwapExit => Some(Carry::Nothing),
+            Request::Checkpoint(_) | Request::EventStart(_) | Request::CarSwap(_) => {
+                self.world_out.borrow_mut().push(r.clone());
                 Some(Carry::Nothing)
             }
             // Free drive again after the race: the event ends (`race.rs`).
@@ -1257,7 +1288,15 @@ impl Host for RuntimeHost {
         let n = self.requests.entry(kind).or_default();
         *n += 1;
         // Requests made every frame are logged once.
-        let every_frame = matches!(r, Request::CheckpointsStep);
+        let every_frame = matches!(
+            r,
+            Request::CheckpointsStep
+                | Request::EventStartsStep
+                | Request::CarSwapStep
+                | Request::Checkpoint(_)
+                | Request::EventStart(_)
+                | Request::CarSwap(_)
+        );
         if done && (!every_frame || *n == 1) {
             info!("hsm: {:5} request {r:?}", self.frame);
         } else if !done && *n == 1 {
@@ -1299,10 +1338,6 @@ impl Host for RuntimeHost {
             Query::SequencePlayerBusy { player } => {
                 Some(self.playbacks.iter().any(|p| p.player == Some(*player)) as u64)
             }
-            // `CHECKPTS`: the race's gates (`race.rs`).
-            Query::CheckpointCount if self.race.started => Some(self.race.gates as u64),
-            Query::CheckpointsLoaded if self.race.started => Some(self.race.loaded as u64),
-            Query::CheckpointsFinished if self.race.started => Some(self.race.finished as u64),
             // The logic answers GMM+0x2e78 (1 while a mode runs: the manager's constructor / reset); the fallback
             // (free drive) is only for a logic without that byte. `FUN_006f46e0`'s offline derivation is not ported.
             Query::ModeWon => {
