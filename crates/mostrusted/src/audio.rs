@@ -214,6 +214,7 @@ fn engine_sound(
             EngineVoice::Bank(b) => b.normalisation,
             EngineVoice::Layers(..) => 1.0,
         };
+        info!("engine sound: player bank attached, level {level:.3} (vehicle sounds follow it)");
         commands.insert_resource(PlayerEngineLevel(level));
         let driver = match (&audio.voice, &audio.bank_params) {
             (EngineVoice::Bank(b), Some(p)) => {

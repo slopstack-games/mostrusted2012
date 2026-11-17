@@ -133,6 +133,8 @@ struct SfxState {
     params: Option<Arc<Params>>,
     /// The bank's channels carry the game's bus gains (`mw_assets::buses`), set against the engine's route.
     bus_mix: bool,
+    /// The level last set (logged when it changes).
+    last_level: f32,
 }
 
 /// The bank's level against the player's engine. Its channels play at the data's level times their bus chain over
@@ -218,7 +220,12 @@ fn update_params(
     let state = &mut *state;
     let Some(driver) = state.driver.as_mut() else { return };
     if let Some(p) = &state.params {
-        p.set_level(bank_level(engine.map(|e| e.0), state.bus_mix));
+        let level = bank_level(engine.map(|e| e.0), state.bus_mix);
+        if (level - state.last_level).abs() > 1e-4 {
+            info!("vehicle sounds: bank level {:.3} -> {level:.3}", state.last_level);
+            state.last_level = level;
+        }
+        p.set_level(level);
     }
     let car = cars.single().ok();
     // The player car's control block (its pedals also when the AI drives it in a cutscene).
