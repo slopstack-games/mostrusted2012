@@ -52,6 +52,37 @@ ClearPlayEndOfIntroSequenceInEasyDrive, SetHasIntroEasyDriveBeenActive, HasIntro
 SwitchToGameplayLoadWorld, LeaveGame, ExitForMultiplayerMatchMaking, ClearE3MultiplayerProgression, ShowPartyInvitePopup,
 OnPhotoSharedToWall, ShowX360GamerCard, ShowX360GamerCardEasyDrive, ShowX360GamerCardByPlayerIndex,
 SetFMNMenuShowingVITAExclusiveEvents.
+### 2026-11-17: HSM boot placeholders ported, the game-mode manager starts free drive (`hsm/behaviours_mode.rs`, `natives/mode_machine.rs`)
+
+13 more behaviour types (58 in all; details decomp.md "The HSM interpreter", third batch): the boot's three
+placeholders `PRELOADCOPS` (streams `VEHICLES\VEH_<id>_HI/LO.BNDL` for the player's car, the default cop 0x1df59
+and the cop table), `HSB_RNLAYOUT`, `LIST_INVITE` (waits for ever offline), then the free-drive mode's
+`REQTRAFRSTRT`, `GETSPEEDWALL`, `PREFETCHSCRE`, `ALLOWSIMPAUS`, `SETSIMPAUSES`, `BPAUSED`, `HSB_RUNNING`,
+`ENABLETRIGS`, `HSB_DISCONGP` and `RUNHUDSUBNET` (the same vtable slots as `RUNSUBNET`: one class under two names).
+**What `StartGameMode` does** (from `FUN_00701cb0` / `FUN_0070d580`, values read in both snapshots): the event is
+G+0x2f6f8, on the boot the free-drive event 390703 that `SetNewGame` picks; the GMM starts the event's `GameMode`
++0x1c instance (390147 "Freedrive Game Mode") once the event data and the mode's `WeaponList` are loaded. Ported
+engine-free as `natives::mode_machine` (`start_game_mode` applied by `LogicHost::request`, `update` called by the
+`Hsm` owner after `Hsm::update`, queries `NextEvent` / `GameModeStarted` / `GameModeEvent` / `GameModeMachine` /
+`FreedriveEvent` answered from `LogicState` by `LogicHost::query`); mw-assets reads `GameMode` +0x1c / +0x20 / +0x40
+and `GameLogicConfig` ids (`StartConfig::ids`). `mwtool hsm --run` plays the GMM and reaches "Freedrive Update" with
+the "Freedrive HUD" machine at frame 3 (route in decomp.md) with six binding answers on top of the boot's five
+(`Mode.HasTransitionedEvents`, `Mode.Data.FeedbackGroupID`, `Mode.WorldLoaded`, `Mode.NeedTheMapScreen`,
+`Mode.HudHsm`, `Transitions.Transitioning(NOT)`; values as snapshot 1 reads them): the `Mode` binding root is the
+GMM's binding table, not ported.
+Model decisions: the driver marks an event available when it is in GAMEPLAY's `EventList` (stands in for
+`FUN_006e58a0`'s world list lookup, which picks 390703 as the snapshots show) and loads event data and weapon lists at
+once; `HSB_RNLAYOUT`'s slot is named by the layout id in Requests (the original keeps a slot handle); the
+`.bss` qword 0x0117ac30 it zeroes is not ported; `HSB_DISCONGP`'s per-frame re-block is a Request every update (the
+logic host applies it to `InputBlocks`); online paths of `REQTRAFRSTRT` / the GMM are ported as read but untested.
+Open: the runtime host (`mostrusted/src/logic.rs`) should call `mode_machine::apply` in `request`, fall back to
+`LogicHost::query`, and call `mode_machine::update` after `Hsm::update`; `FUN_0070b1e0` (end of event),
+`FUN_007090f0`, `FUN_0070caa0`; `RUNSUBNET`'s cross-resource load. Next candidate types on the free-roam route (held
+as placeholders): `MUTEALLRUMBL`, `PAUSEMSGS`, `PLAYSONGLIST`, `WEAPONSOK`, `MINIMAPICONS`, `SYNCPROFILEW`,
+`HIDECHEV`, `PAUSEAI`, `DOBODYSHOP`, `HSMCARSWAPLO`, `DOBLACKLISTS`, `MODEENDCHECK`, `CHECKPTS`, `EVENTSTARTS`,
+`HSB_WAIT4IN`, `SET_LAY_SET`, `SETENDREASON`. Captures that would confirm: G+0x2f6f8 and GMM+0x2cfc right after
+the boot of a fresh profile; the `PRELOADCOPS` instance's lists (+0x98 / +0xcc) in free roam.
+
 ### 2026-11-17: third 20 HSM hooks verified and enabled (60 of 187; `natives/hooks_{flow,event}.rs`)
 
 Handlers read from `re/out/live/text.asm` (vtable-only), helpers with `fn`: RemoveAllCops 0x67a740 (`FUN_006795c0`, per
