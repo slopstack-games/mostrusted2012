@@ -409,3 +409,236 @@ fn load_feedback_group_loads_waits_and_unloads_on_request() {
     step(&mut hsm, &mut host, 2);
     assert!(host.reqs.is_empty(), "group 0 is never loaded or released");
 }
+
+#[test]
+fn preload_cops_lists_streams_and_lets_go() {
+    use super::behaviours::game::DEFAULT_COP_VEHICLE;
+    let (mut hsm, mut host, s) = machine("PRELOADCOPS", &[], "ENTER");
+    host.answers.insert("GameModeEvent", 5);
+    host.answers.insert("PlayerVehicle", 77);
+    host.answers.insert("CopsAllowed", 1);
+    host.answers.insert("CopVehicleCount", 2);
+    host.answers.insert("CopVehicle", 88);
+    host.answers.insert("FreedriveEvent", 0);
+    host.answers.insert("PlayerVehicleOf", 77);
+    step(&mut hsm, &mut host, 1);
+    // First the player's car in high detail, alone in its step.
+    assert_eq!(host.reqs, [Request::StreamVehicle { vehicle: 77, hi: true }]);
+    step(&mut hsm, &mut host, 4);
+    let lo: Vec<_> = host.reqs.iter().skip(1).cloned().collect();
+    assert_eq!(
+        lo,
+        [
+            Request::StreamVehicle { vehicle: DEFAULT_COP_VEHICLE, hi: false },
+            Request::StreamVehicle { vehicle: 88, hi: false },
+            Request::StreamVehicle { vehicle: 77, hi: false },
+        ],
+        "one per update: the default cop, the table's cop, the players' cars outside free drive"
+    );
+    // Busy: nothing happens.
+    host.reqs.clear();
+    host.answers.insert("VehicleStreamBusy", 1);
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 3);
+    assert!(host.reqs.is_empty() && hsm.is_running(s));
+    host.answers.insert("VehicleStreamBusy", 0);
+    step(&mut hsm, &mut host, 6);
+    assert_eq!(host.reqs[0], Request::ReleaseVehicle { vehicle: 77, hi: true });
+    assert_eq!(host.reqs.len(), 4, "the high car, then the three low ones one per update");
+    assert!(!hsm.is_running(s));
+}
+
+#[test]
+fn run_layout_runs_waits_and_deactivates_twice() {
+    let (mut hsm, mut host, s) = machine("HSB_RNLAYOUT", &[("LAYOUT", "100143"), ("RUN_HIGHEST", "True")], "ENTER");
+    host.answers.insert("LayoutReady", 0);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::RunLayout { layout: 100143, layer: 0x18 }]);
+    host.answers.insert("LayoutReady", 1);
+    step(&mut hsm, &mut host, 2);
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 2);
+    assert!(hsm.is_running(s), "the third exit update finishes");
+    step(&mut hsm, &mut host, 2);
+    assert!(!hsm.is_running(s));
+    assert_eq!(
+        host.reqs[1..],
+        [
+            Request::DeactivateLayout { layout: 100143 },
+            Request::DeactivateLayout { layout: 100143 },
+            Request::ReleaseLayout { layout: 100143 },
+        ]
+    );
+}
+
+#[test]
+fn listen_for_invite_waits_offline_and_takes_a_joinable_one() {
+    use super::behaviours::game::DONT_JOIN;
+    let (mut hsm, mut host, s) = machine("LIST_INVITE", &[], "ENTER");
+    step(&mut hsm, &mut host, 5);
+    assert!(hsm.is_running(s));
+    host.answers.insert("InvitePending", 1);
+    host.answers.insert("InviteJoinable", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(DONT_JOIN));
+    assert_eq!(host.reqs, [Request::TakeInvite]);
+    let (mut hsm, mut host, s) = machine("LIST_INVITE", &[], "ENTER");
+    host.answers.insert("InvitePending", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+}
+
+#[test]
+fn traffic_restart_asks_and_exits_offline() {
+    let (mut hsm, mut host, s) = machine("REQTRAFRSTRT", &[], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::RestartTraffic]);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    // Online and the time stamp not set: waits until the 6 s time-out.
+    let (mut hsm, mut host, s) = machine("REQTRAFRSTRT", &[], "ENTER");
+    host.answers.insert("OnlineEvent", 1);
+    step(&mut hsm, &mut host, 100);
+    assert!(hsm.is_running(s));
+    step(&mut hsm, &mut host, 300);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    // No traffic: no request, exit at once.
+    let (mut hsm, mut host, s) = machine("REQTRAFRSTRT", &[], "ENTER");
+    host.answers.insert("TrafficDensityZero", 1);
+    step(&mut hsm, &mut host, 2);
+    assert!(host.reqs.is_empty());
+    assert_eq!(hsm.result(s), Some(EXIT));
+}
+
+#[test]
+fn speedwall_times_are_asked_outside_free_drive_and_waited_for() {
+    let (mut hsm, mut host, s) = machine("GETSPEEDWALL", &[], "ENTER");
+    host.answers.insert("NextEvent", 12);
+    host.answers.insert("EventIsFreedrive", 0);
+    host.answers.insert("SpeedwallIdle", 0);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs, [Request::GetSpeedwallTimes { event: 12 }]);
+    assert!(hsm.is_running(s));
+    host.answers.insert("SpeedwallIdle", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    let (mut hsm, mut host, _) = machine("GETSPEEDWALL", &[], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert!(host.reqs.is_empty(), "free drive asks nothing");
+}
+
+#[test]
+fn prefetch_screen_counts_up_waits_and_down() {
+    let (mut hsm, mut host, s) = machine("PREFETCHSCRE", &[("SCREENASSET", "371621")], "ENTER");
+    host.answers.insert("ScreenPrefetched", 0);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(hsm.active(s)[0].2, Phase::Entering);
+    host.answers.insert("ScreenPrefetched", 1);
+    step(&mut hsm, &mut host, 2);
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(
+        host.reqs,
+        [Request::PrefetchScreen { asset: 371621 }, Request::ReleasePrefetchedScreen { asset: 371621 }]
+    );
+}
+
+#[test]
+fn sim_pauses_offline_only() {
+    let (mut hsm, mut host, s) = machine("SETSIMPAUSES", &[("PAUSED", "True")], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::SimPause { paused: true }]);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    let (mut hsm, mut host, _) = machine("SETSIMPAUSES", &[("PAUSED", "False")], "ENTER");
+    host.answers.insert("OnlineEvent", 1);
+    step(&mut hsm, &mut host, 2);
+    assert!(host.reqs.is_empty());
+    // ALLOWSIMPAUS resumes on exit; BPAUSED pauses for its lifetime.
+    for (code, expect) in [
+        ("ALLOWSIMPAUS", vec![Request::SimPause { paused: false }]),
+        ("BPAUSED", vec![Request::SimPause { paused: true }, Request::SimPause { paused: false }]),
+    ] {
+        let (mut hsm, mut host, s) = machine(code, &[], "ENTER");
+        step(&mut hsm, &mut host, 3);
+        assert!(hsm.is_running(s), "{code} runs its children");
+        hsm.request_exit(s);
+        step(&mut hsm, &mut host, 2);
+        assert_eq!(host.reqs, expect, "{code}");
+    }
+}
+
+#[test]
+fn show_world_shows_and_hides_with_the_last_one() {
+    let (mut hsm, mut host, s) = machine("HSB_RUNNING", &[], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::ShowWorld { show: true }, Request::AdjustShowWorldCount { delta: 1 }]);
+    host.answers.insert("ShowWorldCount", 1);
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs.len(), 3, "another one still runs: not hidden");
+    let (mut hsm, mut host, s) = machine("HSB_RUNNING", &[], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs.last(), Some(&Request::ShowWorld { show: false }));
+}
+
+#[test]
+fn enable_triggers_for_the_lifetime() {
+    let (mut hsm, mut host, s) = machine("ENABLETRIGS", &[], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::EnableTriggers(true), Request::EnableTriggers(false)]);
+}
+
+#[test]
+fn disable_control_group_blocks_every_frame_and_unblocks() {
+    let (mut hsm, mut host, s) = machine("HSB_DISCONGP", &[("GROUP", "CAR")], "ENTER");
+    host.answers.insert("ControlGroupCount", 1);
+    host.answers.insert("ControlGroup", 3);
+    step(&mut hsm, &mut host, 3);
+    let block = Request::SetInputBlock { group: 3, bit: 0, set: true };
+    assert!(host.reqs.len() >= 2 && host.reqs.iter().all(|r| *r == block));
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs.last(), Some(&Request::SetInputBlock { group: 3, bit: 0, set: false }));
+}
+
+#[test]
+fn run_hud_sub_network_is_run_sub_network() {
+    let r = Registry::structural();
+    let s = state(1, "RUNHUDSUBNET", Fallback::Exit);
+    assert!(r.contains(s.behaviour));
+}
+
+#[test]
+fn the_game_mode_manager_starts_the_mode_machine() {
+    use crate::natives::LogicHost;
+    use crate::natives::game_modes::EventInfo;
+    use crate::natives::mode_machine::{self, ModeInfo};
+    let mut hsm = Hsm::new(data(vec![state(1, "HSB_RUNCHILD", Fallback::RunChildren)], vec![]), Registry::structural());
+    let mut host = LogicHost::default();
+    {
+        let mut st = host.state.borrow_mut();
+        st.game.pending_event = 390703;
+        st.config.freedrive_mode = 390145;
+        st.game_modes.events = vec![EventInfo { id: 390703, mode: 390145, ..Default::default() }];
+        st.game_modes.modes = vec![ModeInfo { id: 390145, hsm: 1, weapon_list: 457359 }];
+    }
+    assert_eq!(host.query(&Query::NextEvent), Some(390703));
+    host.request(Request::StartGameMode { event: 390703 });
+    let state = host.state.clone();
+    mode_machine::update(&state, &mut hsm, &mut host);
+    assert_eq!(host.query(&Query::GameModeStarted), Some(0), "the event data is not loaded yet");
+    state.borrow_mut().game_modes.event_data_ready = true;
+    mode_machine::update(&state, &mut hsm, &mut host);
+    assert_eq!(state.borrow().game_modes.weapon_list, 457359);
+    assert!(hsm.machines().next().is_none(), "waits for the weapon list");
+    state.borrow_mut().game_modes.weapon_list_loaded = 457359;
+    mode_machine::update(&state, &mut hsm, &mut host);
+    let serial = state.borrow().game_modes.machine.expect("started");
+    assert!(hsm.is_running(serial));
+    assert_eq!(host.query(&Query::GameModeMachine), Some(u64::from(serial)));
+    assert_eq!(host.query(&Query::FreedriveEvent), Some(1));
+    assert_eq!(host.query(&Query::GameModeEvent), Some(390703));
+}

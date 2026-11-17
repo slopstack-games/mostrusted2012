@@ -40,6 +40,7 @@ pub mod lua_settings;
 #[cfg(test)]
 mod lua_tests;
 pub mod lua_widgets;
+pub mod mode_machine;
 pub mod players;
 pub mod progression;
 pub mod state;

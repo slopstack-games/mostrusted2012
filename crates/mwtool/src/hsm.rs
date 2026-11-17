@@ -11,6 +11,7 @@ use mw_formats::hsm::{Action, HsmData, ParamType, Parameter, State, behaviour_id
 use mw_formats::json::Json;
 use mw_logic::hsm::behaviours::{Query, Stub};
 use mw_logic::hsm::{Clock, Host, Hsm, Key, ORIGINAL_BEHAVIOURS, Registry, Trace, original_code};
+use mw_logic::natives::mode_machine::{self, ModeInfo};
 use mw_logic::natives::{LogicHost, Request};
 
 pub struct Options<'a> {
@@ -71,7 +72,7 @@ pub fn run(store: &AssetStore, o: Options) -> Result<()> {
     }
     let data = store.hsm_data(o.bundle)?;
     if let Some(instance) = o.run {
-        return drive(Arc::new(data), instance, o.steps, o.dt, o.answers);
+        return drive(store, Arc::new(data), instance, o.steps, o.dt, o.answers);
     }
     if o.data {
         for d in &data.data_definitions {
@@ -231,6 +232,8 @@ struct Driver {
     unknown_hooks: HashMap<String, usize>,
     /// A headless press: the primary user binds as soon as the binding press is listened for.
     user_bound: bool,
+    /// Per-frame re-assertions (`HSB_DISCONGP`'s update) are printed once.
+    printed_blocks: HashSet<String>,
 }
 
 impl Host for Driver {
@@ -274,7 +277,15 @@ impl Host for Driver {
             Request::ListenForPrimaryUser { listen: true, .. } => self.user_bound = true,
             _ => {}
         }
-        println!("{:5}      request {r:?}", self.frame);
+        let text = format!("{r:?}");
+        let repeat = matches!(r, Request::SetInputBlock { set: true, .. }) && !self.printed_blocks.insert(text.clone());
+        if let Request::SetInputBlock { set: false, .. } = r {
+            self.printed_blocks.clear();
+        }
+        if !repeat {
+            println!("{:5}      request {text}", self.frame);
+        }
+        mode_machine::apply(&mut self.logic.state.borrow_mut(), &r);
     }
     /// `--answer Query.<Name>=<value>` (true / false / a number / an exit point name), else the driver's own
     /// state (the primary user), else the query's default.
@@ -288,7 +299,7 @@ impl Host for Driver {
         }
         match q {
             Query::PrimaryUserBound => Some(self.user_bound as u64),
-            _ => None,
+            _ => self.logic.query(q),
         }
     }
     fn loading_screen_showing(&mut self) -> bool {
@@ -332,7 +343,14 @@ impl Host for Driver {
     }
 }
 
-fn drive(data: Arc<HsmData>, instance: u32, steps: usize, dt: f32, answers: &[String]) -> Result<()> {
+fn drive(
+    store: &AssetStore,
+    data: Arc<HsmData>,
+    instance: u32,
+    steps: usize,
+    dt: f32,
+    answers: &[String],
+) -> Result<()> {
     let mut registry = Registry::structural();
     let mut hooks = HashMap::new();
     let mut bindings = HashMap::new();
@@ -406,6 +424,33 @@ fn drive(data: Arc<HsmData>, instance: u32, steps: usize, dt: f32, answers: &[St
         st.progression.set_last_played(mw_logic::natives::progression::INTRO_PLAYED, 1);
         st.players.local = Some(0);
         st.players.slots[0] = Some(Default::default());
+        // The game-mode data and `GameLogicConfig` ids the GMM reads (what the runtime fills from the install).
+        // Stand-ins: an event is available when it is in an `EventList` (`FUN_006e58a0` looks it up in the
+        // selected world's list; GAMEPLAY has one list), every rollout check passes, the event data and the
+        // weapon lists load at once.
+        let events = store.events()?;
+        let ids = store.start_config()?.ids;
+        st.config.escape_mode = ids.escape_mode;
+        st.config.default_rollout = ids.default_rollout;
+        st.config.freedrive_mode = ids.freedrive_mode;
+        st.config.intro_event = ids.intro_event;
+        st.config.intro_race_event = ids.intro_race_event;
+        st.config.online_freedrive_mode = ids.online_freedrive_mode;
+        let listed: HashSet<u32> = events.event_lists.iter().flat_map(|(_, l)| l.iter().copied()).collect();
+        st.game_modes.events = events
+            .events
+            .iter()
+            .map(|e| mw_logic::natives::game_modes::EventInfo {
+                id: e.id,
+                mode: e.game_mode,
+                available: listed.contains(&e.id),
+                rollout_ok: true,
+                ..Default::default()
+            })
+            .collect();
+        st.game_modes.modes =
+            events.game_modes.iter().map(|m| ModeInfo { id: m.id, hsm: m.hsm, weapon_list: m.weapon_list }).collect();
+        st.game_modes.event_data_ready = true;
     }
     let mut host = Driver {
         data,
@@ -416,6 +461,7 @@ fn drive(data: Arc<HsmData>, instance: u32, steps: usize, dt: f32, answers: &[St
         unported_hooks: HashMap::new(),
         unknown_hooks: HashMap::new(),
         user_bound: false,
+        printed_blocks: HashSet::new(),
     };
     let Some(serial) = hsm.start(instance, &mut host) else { bail!("no top-level state with instance {instance}") };
     let clock = Clock::both(dt);
@@ -423,6 +469,17 @@ fn drive(data: Arc<HsmData>, instance: u32, steps: usize, dt: f32, answers: &[St
         host.frame = f;
         host.logic.frame(dt);
         hsm.update(&mut host, clock);
+        // The GMM's update after the HSM's (`FUN_006abc10`): starts the mode's machine.
+        let state = host.logic.state.clone();
+        {
+            let mut st = state.borrow_mut();
+            st.game_modes.weapon_list_loaded = st.game_modes.weapon_list;
+        }
+        mode_machine::update(&state, &mut hsm, &mut host);
+        let hook_requests = std::mem::take(&mut state.borrow_mut().requests);
+        for r in hook_requests {
+            println!("{f:5}      hook request {r:?}");
+        }
         if !hsm.is_running(serial) {
             break;
         }

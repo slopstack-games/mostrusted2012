@@ -326,4 +326,49 @@ pub enum Request {
     /// `ChangeVehicleOnCustomRollout` (0x00692760 → `FUN_00691110` on the rollout manager G+0x2f404): try the
     /// vehicle as the custom rollout (`FUN_00691050`), else rebuild the default one for it (`FUN_00690b10`).
     ChangeVehicleOnCustomRollout { vehicle: i32 },
+    /// `PRELOADCOPS` (`FUN_0074f640`): load the bundle `VEHICLES\VEH_<vehicle>_HI.BNDL` (`hi`, the local player's
+    /// car) or `..._LO.BNDL` (the cops and other players) with its `GRAPHICS`, `PHYSICS`, `SOUNDGLOBAL` and `SOUND`
+    /// parts; `Query::VehicleStreamBusy` answers while it runs.
+    StreamVehicle { vehicle: u32, hi: bool },
+    /// `PRELOADCOPS` (`FUN_00744cd0`): release that bundle again.
+    ReleaseVehicle { vehicle: u32, hi: bool },
+    /// `HSB_RNLAYOUT` enter (0x74fc80 → `FUN_007a2a00` → `FUN_007a0ba0` on the UI manager): run the UI layout
+    /// `layout` in a layout slot, `layer` 0x18 with `RUN_HIGHEST`, else 0; the slot is named by the layout id
+    /// afterwards (the original keeps the slot handle).
+    RunLayout { layout: i64, layer: u32 },
+    /// `HSB_RNLAYOUT` exit update (`FUN_00791d60`(slot, 0)): deactivate the layout (its slot's vtable +0x20 with
+    /// false, when active).
+    DeactivateLayout { layout: i64 },
+    /// `HSB_RNLAYOUT` exit (0x745360 → `FUN_00791a10`): free the layout's slot.
+    ReleaseLayout { layout: i64 },
+    /// `LIST_INVITE` (0x74dd80): take the pending invite (the listener's vtable +0xc) and set G+0x2f70c from the
+    /// GeneSys config (the object at config +0x34, its +0x94).
+    TakeInvite,
+    /// `REQTRAFRSTRT` enter (0x73ec50 → `FUN_00846210` on the queue G+0x2ef64): post message 7, the traffic restart
+    /// (not asked when the traffic density world+0xa2b74 is 0).
+    RestartTraffic,
+    /// `GETSPEEDWALL` enter (0x73c790 → `FUN_006f1dc0` on the speed-wall leaderboard GMM+0x20): when `event` is not
+    /// the one it holds (+0x1968), reset it and ask for that event's times (its vtable +0x14, +0x10).
+    GetSpeedwallTimes { event: u32 },
+    /// `PREFETCHSCRE` enter (`FUN_007f0e10` on the widget screen manager's prefetch list, G+0x2f458 +0x1940): count
+    /// the screen `asset` up, loading it (`FUN_00623cb0`) when it is new; `Query::ScreenPrefetched` answers.
+    PrefetchScreen { asset: i64 },
+    /// `PREFETCHSCRE` exit (`FUN_007f0e70`): count it down; at 0 it is freed (`FUN_00622170`) and dropped.
+    ReleasePrefetchedScreen { asset: i64 },
+    /// `SETSIMPAUSES` / `ALLOWSIMPAUS` (offline only): pause (`FUN_00845c60`, message (0, 0, 2) through
+    /// `FUN_0084db50`) or resume (`FUN_00845ce0`, (1, 0, 2) through `FUN_0084dbd0`) the simulation, on G+0x2f065
+    /// with the queue flag `*0x010edb0c` | 8 held meanwhile. Reading the 2 as the pause reason is inferred.
+    SimPause { paused: bool },
+    /// `HSB_RUNNING` (0x73f030 / 0x73f090): show the world (G+0x2ef70 +0x44 = 1, byte 0 posted with
+    /// `FUN_004b8b20` on `*0x010edb4c`) or hide it (+0x44 = 0, byte 1). Its meaning is read from the states that
+    /// use it ("Show World Freedrive", "Show World States").
+    ShowWorld { show: bool },
+    /// `HSB_RUNNING`: the global `DAT_01179de0` += `delta` (`Query::ShowWorldCount` reads it).
+    AdjustShowWorldCount { delta: i32 },
+    /// `ENABLETRIGS` (`FUN_00846590` on G+0x2f064: message (0, 0, flag) through `FUN_0084ea50`): enable or disable
+    /// the world's triggers.
+    EnableTriggers(bool),
+    /// `HSB_DISCONGP`: block (`FUN_0083c960`) or unblock (`FUN_0083c930`) `bit` of input-block `group` in the
+    /// car-control block set G+0x2f0a4 ([`InputBlocks`](super::game_logic::InputBlocks); the logic host applies it).
+    SetInputBlock { group: u32, bit: u32, set: bool },
 }

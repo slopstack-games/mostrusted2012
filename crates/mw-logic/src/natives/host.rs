@@ -117,6 +117,34 @@ impl hsm::Host for LogicHost {
     fn loading_screen_showing(&mut self) -> bool {
         self.state.borrow().engine.loading_screen_showing
     }
+    /// Applies the logic-state part of the request (`mode_machine::apply`), then queues it for the runtime with
+    /// the hooks' requests ([`LogicState::requests`]).
+    fn request(&mut self, r: super::Request) {
+        let mut st = self.state.borrow_mut();
+        super::mode_machine::apply(&mut st, &r);
+        st.requests.push(r);
+    }
+    /// The queries whose answer is logic state: the pending event (G+0x2f6f8), the GMM's event, mode start,
+    /// machine and flags, the local player.
+    fn query(&mut self, q: &hsm::behaviours::Query) -> Option<u64> {
+        use hsm::behaviours::Query as Q;
+        let st = self.state.borrow();
+        let gm = &st.game_modes;
+        Some(match q {
+            Q::NextEvent => u64::from(st.game.pending_event),
+            Q::GameModeStarted => super::mode_machine::mode_started(&st) as u64,
+            Q::GameModeEvent => u64::from(gm.current_event),
+            Q::GameModeMachine => gm.machine.map_or(u64::MAX, u64::from),
+            Q::OnlineEvent => gm.online_event as u64,
+            Q::FreedriveEvent => gm.freedrive_event as u64,
+            Q::LocalPlayerReady => st.players.local_player().is_some() as u64,
+            Q::EventIsFreedrive { event } => super::mode_machine::is_freedrive_event(&st, *event) as u64,
+            Q::ShowWorldCount => st.game.show_world_count as u64,
+            Q::RequestedEvent => u64::from(gm.requested_event),
+            Q::StoryMode => gm.story_mode as u64,
+            _ => return None,
+        })
+    }
     fn publish(&mut self, path: &str, data: &Json) {
         self.state.borrow_mut().view_models.publish(path, data.clone());
     }

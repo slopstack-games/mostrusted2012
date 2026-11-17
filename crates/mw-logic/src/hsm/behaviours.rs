@@ -8,6 +8,8 @@ use super::{Behaviour, Cx, EXIT, EXITINVALID, Key, Registry};
 
 #[path = "behaviours_game.rs"]
 pub mod game;
+#[path = "behaviours_mode.rs"]
+pub mod mode;
 #[path = "behaviours_ui.rs"]
 pub mod ui;
 
@@ -39,12 +41,14 @@ pub fn register(r: &mut Registry) {
     r.register_fn("BDELAY", |_| Delay::default());
     r.register_fn("WAIT4TIME", |_| WaitForTime::default());
     r.register_fn("RUNSUBNET", |_| RunSubNetwork::default());
+    r.register_fn("RUNHUDSUBNET", |_| RunSubNetwork::default());
     r.register_fn("LOCALECHECK", |_| LocaleCheck);
     r.register_fn("BWAIT4GFX", |_| WaitForGraphics);
     r.register_fn("HSB_WAIT4LS", |_| WaitForLoadingScreen { showing: true });
     r.register_fn("HSB_WAIT4NL", |_| WaitForLoadingScreen { showing: false });
     ui::register(r);
     game::register(r);
+    mode::register(r);
 }
 
 /// Engine state a behaviour reads, asked through [`Host::query`](super::Host::query). Answers are `u64`: bools are
@@ -142,6 +146,67 @@ pub enum Query {
     RebootRequested,
     /// `COLLECTABLES`: the world state is loaded (`FUN_00532dc0` on `*0x010edaf0`: +0xc10 == 3). Default true.
     CollectablesReady,
+    /// `PRELOADCOPS`: a vehicle bundle load or release it asked for is still in progress (its two resource
+    /// requests +0x48 (`FUN_00ad7610`, loads) / +0x70 (`FUN_00ad7a80`, releases) in state 2). Default false.
+    VehicleStreamBusy,
+    /// The running event is online ((GMM+4)+0xe8, `FUN_006dfed0`; [`GameModeManager::online_event`]
+    /// (crate::natives::game_modes::GameModeManager::online_event)). Default false.
+    OnlineEvent,
+    /// The local player's vehicle id (its vtable +0x18 → vehicle +0x30, `FUN_006ba320`). Default 0.
+    PlayerVehicle,
+    /// GMM+0x2e79: set by `FUN_00708120` when the event's data allows it (event +0xe8) and the player's state
+    /// (`FUN_006c2d80`) does not forbid it; the pursuit code reads it (0x513e5e, 0x521378): cops take part.
+    /// Default false.
+    CopsAllowed,
+    /// `PRELOADCOPS` with [`Self::CopsAllowed`]: the +0x70 field of what `FUN_006bdc00` returns for the local
+    /// player (`FUN_0066aa30` on the player's +0x3d8, the heat block; the record's meaning is open); a change
+    /// re-lists the cop vehicles. Default 0.
+    HeatRecordKey,
+    /// The number of players (PM+0xa694). Default 1 (offline: the local player).
+    PlayerCount,
+    /// The vehicle id of player `index` (PM+0xa664[index], its vtable +0x18 → vehicle +0x30). Default 0.
+    PlayerVehicleOf { index: u32 },
+    /// GMM+0x2e90 `IsFreedriveEvent` (`FUN_006e03d0`). Default true (the boot's mode is free drive).
+    FreedriveEvent,
+    /// `PRELOADCOPS`: the entries of the cop vehicle table (`*0x010edb50`+4 → +0xc → +0x714: u16 count +0x20,
+    /// 0x18-byte entries at +0x1c). Default 0.
+    CopVehicleCount,
+    /// ... entry `index`'s vehicle: entry +0xc looked up in the GeneSys list G+0x14c08 (`FUN_006ec9d0`), its +0xc
+    /// in the event data (`FUN_006e6140`), that +0x14 in the rollout table G+0x2f404 (`FUN_00683420`), the
+    /// rollout's vehicle (+0x30). Default 0.
+    CopVehicle { index: u32 },
+    /// `HSB_RNLAYOUT`: the UI manager's layout slot for `layout` is ready (`FUN_00791bd0` → slot vtable +0x14).
+    /// Default true.
+    LayoutReady { layout: i64 },
+    /// `LIST_INVITE`: the invite listener (PM+0xc9a0) has an invite (its vtable +0). Default false (offline).
+    InvitePending,
+    /// ... the invite can be taken: not `FUN_006402e0`, the listener's vtable +4, and its id (vtable +8) passes
+    /// `FUN_004c2640` and `FUN_004c2560` (online session checks). Default false.
+    InviteJoinable,
+    /// The traffic density world+0xa2b74 is 0 (`FUN_005ea590` on `*0x010edae8`; 1.0 in free roam). Default false.
+    TrafficDensityZero,
+    /// The traffic's 64-bit time stamp world+0xae560 is set (not i64::MIN; `FUN_005ea560`; `REQTRAFRSTRT` online
+    /// only). Default false.
+    TrafficTimeSet,
+    /// `FUN_006e5ea0`(event): the event's mode is a free-drive mode (`GameLogicConfig` +0xd8 or +0x130). Default true.
+    EventIsFreedrive { event: u32 },
+    /// The speed-wall leaderboard (GMM+0x20) has no request pending (`FUN_0086e260`: +0x4c < 0, or
+    /// `FUN_0081d1b0` of it). Default true.
+    SpeedwallIdle,
+    /// The prefetched screen `asset` is loaded (`FUN_007f0ef0`). Default true.
+    ScreenPrefetched { asset: i64 },
+    /// `DAT_01179de0`, the count of running `HSB_RUNNING` states. Default 0.
+    ShowWorldCount,
+    /// GMM+0x2ce4: the requested event ([`GameModeManager::requested_event`]
+    /// (crate::natives::game_modes::GameModeManager::requested_event)). Default 0.
+    RequestedEvent,
+    /// GMM+0x2e7a: story mode. Default false.
+    StoryMode,
+    /// `HSB_DISCONGP`: the input-block groups of the control group `name` (the user record's table, see
+    /// [`DisableControlGroup`](mode::DisableControlGroup)): their count (no record: 0). Default 0.
+    ControlGroupCount { name: String },
+    /// ... and group `index`. Default 0.
+    ControlGroup { name: String, index: u32 },
 }
 
 impl Query {
@@ -162,7 +227,13 @@ impl Query {
             | Query::FeedbackGroupLoaded { .. }
             | Query::VehicleListLoaded
             | Query::NewProfile
-            | Query::CollectablesReady => 1,
+            | Query::CollectablesReady
+            | Query::PlayerCount
+            | Query::FreedriveEvent
+            | Query::LayoutReady { .. }
+            | Query::EventIsFreedrive { .. }
+            | Query::SpeedwallIdle
+            | Query::ScreenPrefetched { .. } => 1,
             Query::TransitionState => 2,
             Query::GameModeEvent | Query::GameModeMachine => u64::MAX,
             _ => 0,
@@ -206,6 +277,29 @@ impl Query {
             Query::NewProfile => "NewProfile",
             Query::RebootRequested => "RebootRequested",
             Query::CollectablesReady => "CollectablesReady",
+            Query::VehicleStreamBusy => "VehicleStreamBusy",
+            Query::OnlineEvent => "OnlineEvent",
+            Query::PlayerVehicle => "PlayerVehicle",
+            Query::CopsAllowed => "CopsAllowed",
+            Query::HeatRecordKey => "HeatRecordKey",
+            Query::PlayerCount => "PlayerCount",
+            Query::PlayerVehicleOf { .. } => "PlayerVehicleOf",
+            Query::FreedriveEvent => "FreedriveEvent",
+            Query::CopVehicleCount => "CopVehicleCount",
+            Query::CopVehicle { .. } => "CopVehicle",
+            Query::LayoutReady { .. } => "LayoutReady",
+            Query::InvitePending => "InvitePending",
+            Query::InviteJoinable => "InviteJoinable",
+            Query::TrafficDensityZero => "TrafficDensityZero",
+            Query::TrafficTimeSet => "TrafficTimeSet",
+            Query::EventIsFreedrive { .. } => "EventIsFreedrive",
+            Query::SpeedwallIdle => "SpeedwallIdle",
+            Query::ScreenPrefetched { .. } => "ScreenPrefetched",
+            Query::ShowWorldCount => "ShowWorldCount",
+            Query::RequestedEvent => "RequestedEvent",
+            Query::StoryMode => "StoryMode",
+            Query::ControlGroupCount { .. } => "ControlGroupCount",
+            Query::ControlGroup { .. } => "ControlGroup",
         }
     }
 }

@@ -99,6 +99,18 @@ pub struct GameModeManager {
     pub jump_to_store: bool,
     /// +0x2f28: the intro's Easydrive has been active.
     pub intro_easydrive_active: bool,
+    /// The `GameMode` items (`mode_machine.rs`; filled by the runtime from the install).
+    pub modes: Vec<super::mode_machine::ModeInfo>,
+    /// +0x2cfc: the serial of the HSM machine the mode runs (−1 in the original = `None`).
+    pub machine: Option<u32>,
+    /// (GMM+4)+0xdc == 4: the event data manager holds the current event's data (`FUN_006dfe00`; what loads it
+    /// is not ported: the runtime sets it).
+    pub event_data_ready: bool,
+    /// The weapon list set on the local player for the mode (player +0x606c → +0xb4, `FUN_006bb720`).
+    pub weapon_list: u32,
+    /// ... and the one its loader holds (+0xb0 with the state +0xb8 == 2; set by the runtime). The mode's machine
+    /// starts once they agree (`FUN_006bb6f0`).
+    pub weapon_list_loaded: u32,
 }
 
 impl GameModeManager {
