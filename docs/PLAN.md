@@ -495,7 +495,7 @@ data is never hosted). research-log 2026-11-17 (steps 1-4), docs/commands.md "Br
 2. `[x]` Game files through `mw_gamedir::Source` (`WebSource`: blob / http URLs, sync range requests).
 3. `[x]` Threads as Web Workers on shared memory (`platform.rs`), a main thread that never blocks.
 4. `[x]` The runtime renders in a browser (free camera, `tools/web/build`, `tools/web/serve.py`).
-5. `[ ]` A worker `Instant` panic, driving, audio (user gesture), saves in browser storage, the 4 GB memory cap
+5. `[~]` Driving runs (2026-11-17). Open: audio (user gesture), saves in browser storage, the 4 GB memory cap
    for whole-world views, module size (wasm-opt).
 
 ### M7: Front-end and release `[~]`

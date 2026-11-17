@@ -82,9 +82,11 @@ native frame up to the canvas framing). What it took:
 - Settings, profile and saves: no config directory in a browser, so defaults and nothing saved (as before
   with no `$HOME`); browser storage is open.
 
-Open: a `std::time::Instant::now` panic on a worker thread after streaming starts (not from our crates: every
-`Instant` there is `platform::Instant`; a dependency; the worker's stack is cut at 10 frames, needs
-`Error.stackTraceLimit` in the wasm_thread worker script); audio needs a user gesture (headless runs are muted);
+Later the same day: the worker panic was the loader's `Receiver::recv_timeout` (std reads `Instant` inside):
+`platform::recv_timeout` polls in a browser (`try_recv`, 1 ms worker sleeps = atomic waits, no clock); our
+threads now set `Error.stackTraceLimit` (platform's `Builder` wraps wasm_thread's), which named it. Clean run
+after that; **driving works in the browser** (`--drive 911 --units 12 --auto-throttle 0.4`: car, HUD, Easydrive,
+minimap, streaming; slower per frame than native: 35 vs 47 km/h at frame 400). Open: audio needs a user gesture (headless runs are muted);
 `AssetStore::new` indexes 2020 TOCs on the page's main thread (text path, a few seconds); the window size on the
 page vs `--units` / memory (4 GB cap) for larger worlds; driving (step 5).
 

@@ -402,7 +402,7 @@ pub fn spawn(
                         break;
                     }
                 }
-                match w.requests.recv_timeout(std::time::Duration::from_millis(STREAM_POLL_MS)) {
+                match crate::platform::recv_timeout(&w.requests, std::time::Duration::from_millis(STREAM_POLL_MS)) {
                     Ok(req) => {
                         if w.car_request(req).is_err() {
                             break;

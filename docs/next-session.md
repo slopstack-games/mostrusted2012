@@ -77,8 +77,8 @@ Decisions with the user: portrait loading screens keep the original's bars.
 - **Browser build** (2026-11-17): steps 1-3 done (engine-free crates build and run as wasm32, `tools/wasm-check`;
   game files read through `mw_gamedir::Source` / `WebSource`; threads = Web Workers on shared memory via
   `platform.rs`, main thread polls with `poll_lock`, verified in headless Brave); step 4: the runtime renders in
-  a browser on WebGPU (`tools/web/build`, `tools/web/serve.py`, free camera). Next: the worker `Instant` panic,
-  then driving and audio (step 5). Plan and blockers: research-log 2026-11-17 (steps 1-4).
+  a browser on WebGPU (`tools/web/build`, `tools/web/serve.py`), free camera and driving. Next: audio (user
+  gesture), saves in browser storage, frame time, memory for whole-world views (PLAN.md M9). Plan and blockers: research-log 2026-11-17 (steps 1-4).
 
 New this session (docs/commands.md): `tools/hl`, `tools/silent-sink`, `mwtool tp / car / mods / conditions / inputs /
 probe`, `capture --probe --script`, `mwtool surfaces --flat / --tris / --classes`, `placement-check --floating`,
