@@ -90,7 +90,7 @@ fn handle(v: Option<&Value>) -> Option<ResourceId> {
     }
 }
 
-/// Every `.SPS` file of the install by its stem (`1772189` → `UI/SEQUENCES/STREAMS/1772189.SPS`).
+/// Every `.SPS` file of the install by its stem (`1772189` → `UI/SEQUENCES/STREAMS/1772189.SPS`, game-relative).
 fn sps_index(store: &AssetStore) -> &'static HashMap<String, PathBuf> {
     static INDEX: OnceLock<HashMap<String, PathBuf>> = OnceLock::new();
     INDEX.get_or_init(|| {
@@ -98,7 +98,7 @@ fn sps_index(store: &AssetStore) -> &'static HashMap<String, PathBuf> {
             .game()
             .files_with_extension("SPS")
             .into_iter()
-            .filter_map(|p| Some((p.file_stem()?.to_string_lossy().to_ascii_uppercase(), store.game().root().join(&p))))
+            .filter_map(|p| Some((p.file_stem()?.to_string_lossy().to_ascii_uppercase(), p)))
             .collect()
     })
 }
@@ -172,7 +172,7 @@ impl AssetStore {
             if !ends_with_end_block(&data) {
                 let stem = format!("{}", id.0 as u32);
                 if let Some(path) = sps_index(self).get(&stem)
-                    && let Ok(rest) = std::fs::read(path)
+                    && let Ok(rest) = self.game().read(path)
                 {
                     data.extend_from_slice(&rest);
                 }
@@ -188,10 +188,10 @@ impl AssetStore {
             let file = if path.is_empty() {
                 sps_index(self).get(&format!("{}", id.0 as u32)).cloned()
             } else {
-                self.game().path(&path)
+                Some(PathBuf::from(path))
             };
             let file = file.ok_or(Error::Missing(id))?;
-            data = std::fs::read(&file).map_err(|_| Error::Missing(id))?;
+            data = self.game().read(&file).map_err(|_| Error::Missing(id))?;
         }
         let looping = mw_audio::sps::header(&data).is_ok_and(|(h, _)| h.looping);
         let pcm = mw_audio::sps::decode(&data).map_err(|_| Error::Missing(id))?;

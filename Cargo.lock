@@ -3960,7 +3960,10 @@ dependencies = [
 name = "mw-gamedir"
 version = "0.1.0"
 dependencies = [
+ "js-sys",
  "thiserror 2.0.21",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]

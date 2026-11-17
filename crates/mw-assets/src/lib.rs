@@ -102,7 +102,7 @@ impl AssetStore {
         let bundles = game.files_with_extension("BNDL");
         let tocs: Vec<_> = bundles
             .par_iter()
-            .map(|rel| Bundle::read_toc(game.root().join(rel)).map(|(_, e)| e))
+            .map(|rel| Bundle::read_toc_with(|offset, len| game.read_at(rel, offset, len)).map(|(_, e)| e))
             .collect::<std::result::Result<_, _>>()?;
         let mut index: HashMap<ResourceId, Vec<Location>> = HashMap::new();
         for (b, entries) in tocs.into_iter().enumerate() {
@@ -147,7 +147,8 @@ impl AssetStore {
         if let Some(b) = self.open.lock().unwrap().get(&idx) {
             return Ok(b.clone());
         }
-        let b = Arc::new(Bundle::open(self.game.root().join(&self.bundles[idx as usize]))?);
+        let data = self.game.read(&self.bundles[idx as usize]).map_err(mw_bundle::Error::from)?;
+        let b = Arc::new(Bundle::from_bytes(data)?);
         self.open.lock().unwrap().insert(idx, b.clone());
         Ok(b)
     }

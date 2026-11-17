@@ -10,6 +10,31 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-11-17: browser port, step 2: game files read through `mw_gamedir::Source`
+Every game-data read in the engine-free crates now goes through `GameDir` (`read`, `read_at`, `len`, `resolve`)
+over a `Source` trait (`mw-gamedir/src/source.rs`): `DirSource` (disk, native), `WebSource` (wasm32: the folder
+the player picks with `<input webkitdirectory>`, `File` handles read on demand with `FileReaderSync`), `MemSource`
+(tests). Moved onto it: `AssetStore::new` (TOCs via the new `Bundle::read_toc_with`), the store's bundle opens,
+`instance_positions` (traffic_lamps.rs), SPS music streams (music.rs; the index now holds game-relative paths) and
+the police speech container (`SpeechData::container` = the `GameDir` and the SWC0's path, read with `read_at`).
+`GameDir::path` / `root` stay for native users that hand paths to other programs (mwtool, the ffmpeg movie
+decoder): on a browser source they return `None` / an empty path, so movies are off there. The install root
+inside a picked folder is the shallowest folder holding `SHADERS.BNDL` (picking the install or a parent works).
+
+Constraint: `FileReaderSync` exists only in Web Workers, so in the browser the loads must run in a worker
+(the main thread gets errors). `WebSource` is `Send + Sync` only without the `atomics` target feature (one
+thread); a threaded build (step 3) has to keep the handles in the loading worker. The other `std::fs` users in
+`mostrusted` are settings / profile / save files and debug traces: browser storage, step 4.
+
+Verified: native unchanged (clippy 0, 201 tests, `mwtool verify` 0 failures over 2020 bundles, 911 accel
+0-60 mph 3.58 s / quarter mile 11.60 s, `mwtool speech 1186352` decodes its 144 lines, `mwtool music --wave
+010000000005dc99` 44.38 s). In a browser: a scratch wasm-bindgen 0.2.129 module in a dedicated worker in headless
+Brave, fed `File`s of 7 install files under `Need for Speed(TM) Most Wanted/` plus one outside it: `GameDir`
+validates (version 1.4.0.0), any-case resolve and `read_at` work (EOF error past the end), `AssetStore::new`
+indexes 4406 resources (rayon falls back to the calling thread), and GLOBALEFFECTS / VEH_122769_HI /
+GLOBALTEXTUREDICTIONARY load and parse with the native counts (521/129/12, 831/28/21, 33/33/0), 0 errors.
+`FileReaderSync` is absent on the page's main thread, as expected.
+
 ### 2026-11-17: browser port, step 1: the engine-free crates build and run as wasm32
 Question from the user: can the game run in a browser? Plan agreed: (1) engine-free crates on
 `wasm32-unknown-unknown`, (2) file reads behind a trait (native `std::fs` / browser `File` handles from a

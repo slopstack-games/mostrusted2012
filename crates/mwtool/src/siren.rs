@@ -98,7 +98,7 @@ pub fn speech(store: &AssetStore, event: Option<u32>, out: Option<&Path>) -> Res
         "{} speech events, {} waves in the container ({})",
         d.events.len(),
         d.waves.len(),
-        d.container.as_ref().map_or("missing".into(), |p| p.display().to_string())
+        d.container.as_ref().map_or("missing".into(), |(_, p)| p.clone())
     );
     let mut ids: Vec<&u32> = d.events.keys().collect();
     ids.sort();

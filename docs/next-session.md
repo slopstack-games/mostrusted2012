@@ -74,8 +74,9 @@ Decisions with the user: portrait loading screens keep the original's bars.
   (a menu drawn inside the running game, e.g. from the probe DLL hooking the game's present / the D3D11 swap chain,
   driven by keys or the pad), not only from `mwtool` on the command line. Same policy as the probe: runtime only,
   offline, the exe on disk untouched (reverse-engineering.md "Code inside the running game").
-- **Browser build** (2026-11-17): step 1 done (engine-free crates build and run as wasm32, `tools/wasm-check`);
-  next is step 2, file reads behind a trait. Plan and runtime blockers: research-log 2026-11-17.
+- **Browser build** (2026-11-17): steps 1-2 done (engine-free crates build and run as wasm32, `tools/wasm-check`;
+  game files read through `mw_gamedir::Source`, `WebSource` verified in a browser worker). Next is step 3, the
+  threads (loads must run in a worker: `FileReaderSync`). Plan and blockers: research-log 2026-11-17.
 
 New this session (docs/commands.md): `tools/hl`, `tools/silent-sink`, `mwtool tp / car / mods / conditions / inputs /
 probe`, `capture --probe --script`, `mwtool surfaces --flat / --tris / --classes`, `placement-check --floating`,

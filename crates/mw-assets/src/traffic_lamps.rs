@@ -23,7 +23,11 @@ impl AssetStore {
                 continue;
             }
             // Opened outside the store's cache: every track unit, once.
-            let Ok(bundle) = mw_bundle::Bundle::open(self.game.root().join(&path)) else { continue };
+            let Ok(bundle) =
+                self.game.read(&path).map_err(mw_bundle::Error::from).and_then(mw_bundle::Bundle::from_bytes)
+            else {
+                continue;
+            };
             for ty in [ResourceType::CompoundInstanceList, ResourceType::DynamicInstanceList] {
                 for e in bundle.entries_of_type(ty) {
                     let Ok(res) = bundle.load(e) else { continue };

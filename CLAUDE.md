@@ -47,7 +47,7 @@ change. Reference captures live in the git-ignored `ref/`.
 ## Layout
 
 ```
-crates/mw-gamedir   install detection, case-insensitive paths      (no deps on other crates)
+crates/mw-gamedir   install detection; file sources (disk / browser folder)  (no deps on other crates)
 crates/mw-bundle    bnd2 v5 reader, ResourceId, ResourceType, Reader
 crates/mw-formats   per-type parsers; take &mw_bundle::Resource     (never depends on Bevy)
 crates/mw-audio     EA audio decoders (SPS/EALayer3, Ginsu/XAS) and the engine-sound synth
