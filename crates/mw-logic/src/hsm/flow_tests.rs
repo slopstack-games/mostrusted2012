@@ -2211,3 +2211,141 @@ fn sync_time_exits_outside_a_session_or_when_synced() {
     step(&mut hsm, &mut host, 2);
     assert_eq!(hsm.result(s), Some(EXIT));
 }
+
+#[test]
+fn spotting_and_challenge_bracket_their_lifetime() {
+    for (code, on, off) in [
+        ("ACTIVATESPOT", Request::ActivateSpotting { on: true }, Request::ActivateSpotting { on: false }),
+        ("RUNCHALL", Request::StartChallenge, Request::StopChallenge),
+    ] {
+        let (mut hsm, mut host, s) = machine(code, &[], "ENTER");
+        step(&mut hsm, &mut host, 3);
+        assert!(hsm.is_running(s), "{code}");
+        hsm.request_exit(s);
+        step(&mut hsm, &mut host, 2);
+        assert_eq!(host.reqs, [on, off], "{code}");
+    }
+}
+
+#[test]
+fn cache_score_requests_once_and_exits() {
+    let (mut hsm, mut host, s) = machine("CACHESCORE", &[], "ENTER");
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    assert_eq!(host.reqs, [Request::CachePlayerScore]);
+}
+
+#[test]
+fn exit_when_game_mode_time_passed_waits_for_the_elapsed_ticks() {
+    let (mut hsm, mut host, s) = machine("EXITWHENGAME", &[("TIME", "180")], "ENTER");
+    step(&mut hsm, &mut host, 3);
+    assert!(hsm.is_running(s), "clock not running");
+    host.answers.insert("GameModeClockRunning", 1);
+    host.answers.insert("GameModeElapsedTicks", 539_999_999);
+    step(&mut hsm, &mut host, 2);
+    assert!(hsm.is_running(s), "180 s = 540e6 ticks not reached");
+    host.answers.insert("GameModeElapsedTicks", 540_000_000);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+}
+
+#[test]
+fn accept_invite_takes_the_pending_invite_then_waits_for_it() {
+    let (mut hsm, mut host, s) = machine("ACCT_INVITE", &[], "ENTER");
+    host.answers.insert("InvitePending", 1);
+    step(&mut hsm, &mut host, 3);
+    // The behaviour's work is its exit update.
+    assert!(hsm.is_running(s));
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs, [Request::AcceptInvite]);
+    assert!(hsm.is_running(s), "the listener still has an invite");
+    host.answers.insert("InvitePending", 0);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::AcceptInvite]);
+    assert!(!hsm.is_running(s));
+}
+
+#[test]
+fn swap_game_mode_prefers_the_binding_then_the_parameter() {
+    let params = [("EventBinding", "Mode.Next"), ("Event", "7")];
+    let (mut hsm, mut host, s) = machine("SWAPGAMEMODE", &params, "ENTER");
+    host.ints.insert("Mode.Next".into(), 12);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    assert_eq!(host.reqs, [Request::SwapGameMode { mode: 12 }]);
+    let (mut hsm, mut host, _) = machine("SWAPGAMEMODE", &params, "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::SwapGameMode { mode: 7 }]);
+    let (mut hsm, mut host, _) = machine("SWAPGAMEMODE", &[("Event", "5")], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::SwapGameMode { mode: 5 }]);
+}
+
+#[test]
+fn write_session_variable_picks_its_kind_from_the_flags() {
+    let run = |params: &[(&str, &str)]| {
+        let (mut hsm, mut host, s) = machine("WRT_PR_SESSN", params, "ENTER");
+        step(&mut hsm, &mut host, 2);
+        assert_eq!(hsm.result(s), Some(EXIT));
+        host.reqs
+    };
+    let n = "ShowGameSummary".to_string();
+    let bool_true = [("NAME", "ShowGameSummary"), ("IS_BOOL", "True"), ("BOOL_VALUE", "True"), ("IS_REF", "False")];
+    assert_eq!(run(&bool_true), [Request::WriteAutologBool { name: n.clone(), value: true }]);
+    let by_ref = [("NAME", "ShowGameSummary"), ("IS_BOOL", "False"), ("IS_REF", "True"), ("REF_VALUE", "9")];
+    assert_eq!(run(&by_ref), [Request::WriteAutologInt { name: n.clone(), value: 9 }]);
+    let plain = [("NAME", "ShowGameSummary"), ("BOOL_VALUE", "no")];
+    assert_eq!(run(&plain), [Request::WriteAutologBool { name: n, value: false }]);
+    assert!(run(&[("BOOL_VALUE", "True")]).is_empty());
+}
+
+#[test]
+fn sync_results_start_waits_for_its_deadline() {
+    // No delay: deadline = now + 1.5e6 ticks.
+    let (mut hsm, mut host, s) = machine("SYNCRESSTART", &[], "ENTER");
+    host.answers.insert("ClockTicks", 1_000);
+    step(&mut hsm, &mut host, 2);
+    assert!(hsm.is_running(s));
+    host.answers.insert("ClockTicks", 1_501_000);
+    step(&mut hsm, &mut host, 2);
+    assert!(hsm.is_running(s), "deadline == now is not yet past");
+    host.answers.insert("ClockTicks", 1_501_001);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    // A near delay: deadline = 1.5e6 + delay.
+    let (mut hsm, mut host, s) = machine("SYNCRESSTART", &[], "ENTER");
+    host.answers.insert("ClockTicks", 3_000_000);
+    host.answers.insert("ResultsSyncDelay", 2_000_000);
+    step(&mut hsm, &mut host, 2);
+    assert!(hsm.is_running(s));
+    host.answers.insert("ClockTicks", 3_500_001);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    // A delay 1.5e7 ticks or more past now is ignored: deadline = now + 1.5e6.
+    let (mut hsm, mut host, s) = machine("SYNCRESSTART", &[], "ENTER");
+    host.answers.insert("ClockTicks", 0);
+    host.answers.insert("ResultsSyncDelay", 20_000_000);
+    step(&mut hsm, &mut host, 2);
+    host.answers.insert("ClockTicks", 1_500_001);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+}
+
+#[test]
+fn end_settings_screen_acts_on_exit_and_car_select_follows_story_mode() {
+    let (mut hsm, mut host, s) = machine("ENDSETTINGSS", &[("SCREEN", "TOS")], "ENTER");
+    step(&mut hsm, &mut host, 3);
+    assert!(hsm.is_running(s));
+    assert!(host.reqs.is_empty());
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::EndSettingsScreen]);
+    let (mut hsm, mut host, s) = machine("SHOULDSHOWCA", &[], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(key("TRUE")));
+    let (mut hsm, mut host, s) = machine("SHOULDSHOWCA", &[], "ENTER");
+    host.answers.insert("StoryMode", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(key("FALSE")));
+}

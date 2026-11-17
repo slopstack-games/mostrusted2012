@@ -114,6 +114,27 @@ peak 37.3°, held 4.75 s; handbrake slip 1.1°, yaw 59°/s.
 "Handbrake and burnout" and handling.md not yet rewritten; model decision: the clutch opens when the handbrake
 sends a launch back to standstill (the code leaves it); the engine-rpm launch condition (attribute +0x14 via
 gearbox +0x180) not identified, taken as met; the crashed lock lanes (+0x1774) not ported; captures to confirm.
+### 2026-11-18: HSM behaviours, batch of 10 (`hsm/behaviours_misc.rs`)
+
+Method as the earlier batches: name string address from strings.csv, the `push` / `mov edx` pair of the name stub gives
+the factory, its vtable (slot order enter, enter update, running, update, exit update, exit begin, exit; default stubs
+0x55cd90..0x55ce00), slots read from the dump or `text.asm`, `.bss` parameter keys decoded from snapshot 1.
+Ported (10): `ACTIVATESPOT` 0x77f080 / vtable 0xfdb064 (enter 0x73afa0, exit 0x73afd0 -> `FUN_0063e2d0`), `CACHESCORE`
+0x77e860 / 0xfdace0 (0x73b2b0, update EXIT 0x73b2e0), `EXITWHENGAME` 0x77ea30 / 0xfdad94 (enter 0x755ba0 `TIME` x 3e6,
+update 0x74b8e0 compares with GMM+0x2d28 under GMM+0x2e74; the compared constant is `fldz`), `ACCT_INVITE` 0x77d440 /
+0xfda3b4 (exit update 0x73af10, `FUN_006bad40`), `SWAPGAMEMODE` 0x77efe0 / 0xfdb01c (update 0x746100: `EventBinding`
+value, else `Event`; `FUN_006e74f0`(GMM, id, 1)), `WRT_PR_SESSN` 0x77eef0 / 0xfdafb0 (enter 0x7704b0 + kind 0x76fcd0:
+`IS_BOOL` / `IS_REF`; keys NAME, BOOL_VALUE, REF_VALUE decoded), `SYNCRESSTART` 0x77dec0 / 0xfda8a8 (enter 0x746210:
+1.5e6 / 1.5e7 tick constants 0xfb8660 / 0xfb2894; update 0x741050), `ENDSETTINGSS` 0x77cd70 / 0xfda020 (exit 0x73c5c0
+`FUN_0071c1c0`), `SHOULDSHOWCA` 0x77cc30 / 0xfd9f90 (update 0x7407c0: story mode -> FALSE else TRUE), `RUNCHALL`
+0x77e400 / 0xfdaae8 (enter 0x74fc30 `FUN_00789240`, exit 0x73ed30 `FUN_00785d90`).
+New Requests: ActivateSpotting, CachePlayerScore, AcceptInvite, SwapGameMode, WriteAutologBool, WriteAutologInt,
+EndSettingsScreen, StartChallenge, StopChallenge; Queries GameModeClockRunning, GameModeElapsedTicks, ClockTicks,
+ResultsSyncDelay. Not ported, open: the engine side of those Requests (the runtime ignores them); `TRYTOPLAYSPE`
+(x19, 0x77cac0 / 0xfd9f00: speech-event state machine over `FUN_00ad82c0` / `FUN_00adaef0` and the speech system, read
+only in part), `WAYPOINTS` (world drawing), `LAUNCH` / `RESETGAME` / `ENDGAME` (Blaze game helpers `FUN_004c27e0`,
+`FUN_004c4b30`, ... unnamed), `PICKNEXTFDE`, `CARJACKERACT`, `KILLCAMSEQ`, `WAIT4ALLSYN`. Trivial left: `ROLLOUTACHVM`
+(update EXIT 0x73ba10), `CARCOLCORRCT` (update EXIT 0x73c5e0).
 
 ### 2026-11-17: handbrake rear-wheel lock (user report), no capture yet, no model change
 
