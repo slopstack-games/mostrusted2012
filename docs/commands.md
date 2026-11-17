@@ -244,6 +244,12 @@ tools/t --front-end --hsm --front-end-shots scratch/fe --mute; grep 'hsm:' scrat
 # GameMode items and GameLogicConfig ids from the install; event data and weapon lists load at once), so "Run Game Mode"
 # starts event 390703 and the GMM machine 390147 "Freedrive Game Mode":
 ./target/release/mwtool hsm --run --steps 600 --answer SignInState.Params.IsChatRestricted=TRUE --answer 1222788=DONE   # → "Freedrive Update" + machine 371633 "Freedrive HUD" (hook requests print as "hook request"); the same two online stand-ins as above, everything else from the logic's roots
+# ... and on into a race: `--event <id>` plays the player's choice of that offline event from free roam (the Easy Drive
+# menu's list item stands in; circuit 462174, sprint 906146): the free-drive machine ends, the GMM loads the event and starts
+# "Race Game Mode" 730003 (decomp.md "Route free roam → race"); the headless stand-ins are listed in research-log 2026-11-17.
+# --pause-at <frame> holds the pause button from then on (add --answer 'GameLogicState.IsControlGroupEnabled["MENU"]=TRUE'),
+# --answer Query.CheckpointsFinished=true ends the race (outro, then free roam again; --answer 1560270=FALSE: not busted)
+./target/release/mwtool hsm --run --steps 1500 --event 462174 --answer SignInState.Params.IsChatRestricted=TRUE --answer 1222788=DONE --answer Query.CheckpointsFinished=true --answer 1560270=FALSE
 ./target/release/mwtool natives [--area offline|online|platform|debug|unknown] [--unported]   # the 187 hooks + 385 Lua natives, handler address, ported or not
 ./target/release/mwtool lua --list                       # the UI's 115 Lua chunks (mw-lua): id, name (checked against the id), size
 ./target/release/mwtool lua [--run <name>] [--call <Fn>|all] [--trace]   # main chunk + Construct with logging stub natives

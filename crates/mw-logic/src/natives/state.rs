@@ -621,4 +621,18 @@ pub enum Request {
     SetPendingDialog { value: i32 },
     /// `OVERRIDEPAGE` enter (0x76f750): `FUN_0083d6f0` on G+0x2ed74 with the context and page names.
     OverridePage { context: String, page: String },
+    /// `FUN_006f1720` state 1 (`FUN_006f06d0`(requested event)): the second event data manager starts loading the
+    /// requested event's data while the running mode ends; the runtime sets
+    /// [`GameModeManager::event_data_ready`](super::game_modes::GameModeManager::event_data_ready) when it is in.
+    LoadEventData { event: u32 },
+    /// `CLRSELEVENT` update (0x73baa0): the map's selected event on G+0x2f480 is cleared (see the behaviour).
+    ClearSelectedEvent,
+    /// `HSB_NOSCORES` enter (0x73be10) / exit (0x73be30): the scoring manager's (G+0x2f3cc) counter +0x124 `delta`
+    /// (`FUN_006a0c10` increments, `FUN_006a0c20` decrements); scores are not awarded while it is above 0.
+    AdjustScoringDisabled { delta: i32 },
+    /// `CRASHESCAPE` update (0x748150): player `player` (its +0x98 id) crashed near the local player who got away:
+    /// the scoring action (`FUN_006552a0` on the local player's id, `FUN_006a8050`) and the stats (`FUN_00656a90`).
+    CrashEscape { player: u32 },
+    /// `HSB_TOG_LS` update (0x746650): show the loading screen with `layout` (0 = the default) or hide it.
+    ToggleLoadingScreen { show: bool, layout: i64 },
 }
