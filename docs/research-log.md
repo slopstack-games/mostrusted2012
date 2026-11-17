@@ -13,6 +13,39 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ## Dated findings
 
+### 2026-11-17: eighth 20 HSM hooks verified and enabled (160 of 187; `natives/hooks_online.rs`)
+
+Handlers read from `re/out/live/text.asm`, callees from the dump; member hashes read from the snapshot `.bss`
+(`mem.bin` + `index.tsv`: 0x1177acc = `lpcValue`). All return EXIT unless noted. Mapping:
+PopThankYou 0x676840 (`FUN_0063cdb0` on the entitlement manager G+0x29280: `ThankYouCount` +0x9d4 - 1, queue shifts, first entry released);
+StopAutologAlert 0x676860 (`FUN_0071d190`: +0xd0 = 0, `FUN_00a43150` on the handle +0x2e8 if set);
+SetDlcMessageIndicator 0x677110 (int member 0x298c2ce3 -> `FUN_0063a500`: profile value 0x11 and the "last_played" row; connected to `Entitlements::dlc_message_indicator`);
+OpenStoreOverlay 0x677150 (`FUN_00655fa0` on G+0x2f438: platform overlay call, +0x10 = 1 on success);
+RemoveOnlineSeenUnlocksMenu 0x676d70 (one unused member lookup, then `FUN_006f44e0` = ClearOnlineEasyDrive's request);
+RefreshTopOfSpeedwallViewModel 0x6768f0 (`FUN_007357f0`(0) on +0x6c8c); ResetPlaylistScoreState 0x676ac0 (`FUN_006e32a0` playlist scores, `FUN_006bf460` clears byte +0x44b of 12 player records);
+InvalidateKinectSelectedClass 0x676d00 ((G+0x2f404)+0x8f9c = -1); IsOriginIgoAvailable 0x7eb760 (platform value for key 2, hash compared with the hash of "true";
+returns copies of TRUE 0x117f048 / FALSE 0x117ef88, checked equal to the table's in the snapshot; the EXIT copy of the 0x7eb... handlers is 0x117efa0, also equal);
+SignInStarted / SilentSignInStarted / SignInFinished 0x7eb520 / 0x7eb550 / 0x7eb580 (`FUN_00881f10`(1) / (0) and `FUN_00886f00`: the Lua natives' code, now `lua_menus::start_sign_in(flag)` / `finish_sign_in`);
+SetTargetRecommendedEvent 0x675bb0 (`FUN_00725130`(`strtol(lpcValue)`, 0, 0) on (G+0x2f454)+0x5a3c: needs the "Recommends" document and "HasRecommendations"; TRUE / FALSE);
+SetCurrentRecommendedEvent 0x675c20 (`FUN_00726c80`: +0x9c = +0xa0, `FUN_00725130`(+0xa0, +0xa4, 0));
+SetCarListForRecommendedEvent 0x675c50 (index > 0 and `FUN_00723300`: `Items[n].EventId` -> `FUN_00871330`; TRUE / FALSE);
+SelectRecommendationDomByIndexString 0x675d10 (`FUN_00724ef0`(index, 0): nothing without recommendations or for -1);
+SelectRecommendationDomByEventIdString 0x675d70 (`FUN_00723b10` finds the item by "EventId" -> `FUN_00724ef0`, else `FUN_0071d270` releases the three DOM objects);
+RefreshRecommendations 0x676810 (`FUN_007355b0`(0, 0)); and the two unported offline / online hooks taken from `mwtool natives --unported`:
+GenerateRecomendationPostEventString 0x676890 (`FUN_0071d040`: +0x2e4 = flag (G+0x2f3fc)+0x2ca5 and `+0x1974 < +0x1978`) and
+CacheMwlAndLock 0x676dc0 (`FUN_0071caa0`: publishes "CachedMWL" as "OldCachedMWL" via `FUN_00820840`, lock byte +0x36 = 1). Test `the_eighth_twenty`; `the_twenty_ported_hooks` counts 160.
+Model decisions: the DLC indicator member name is unknown (hash 0x298c2ce3; ~2000 name combinations tried), so the test cannot set it; offline there is no
+"Recommends" document, so the recommendation hooks do nothing and answer FALSE where they return it (`HookOnlineFields::has_recommendations`, `event_ids` are filled by the runtime);
+`FUN_006e0440` (special event 0x1d21f2 lock) is called without ecx set in the handler, so its object is unknown: a field, false; `FUN_006e5ea0` (event already running) is a set the runtime fills;
+PopThankYou does nothing at a count of 0 (the original would underflow). `mod.rs` / `host.rs` tests now use LoadLastOnlineRollout as the "unported" example.
+Open: `FUN_00723b10` hands `FUN_00724ef0` the item position counted from 1 (the counter is incremented before the store) while `Items[%d]` elsewhere looks 0-based: check against a live "Recommends" document;
+the runtime handles none of the new `Request`s (SetRecommendedEvent, SetCarListForEvent, SelectRecommendationDom, ReleaseRecommendationDom, RefreshRecommendations, RefreshTopOfSpeedwall, ResetPlaylistScoreState, PopThankYou, StopAutologAlert, OpenStoreOverlay, CacheMwl).
+Next 20 candidates (unported, online first by table order): LoadLastOnlineRollout (0x693c50), UploadLocalPlayerXP (0x676370), ProcessOnlinePostEventDrivingTests (0x680560),
+SetupPlaylistsVote (0x676430), PlayCriterionPlaylist (0x676450), PlayCustomPlaylist (0x676480), HostCancelPlaylist (0x6764c0), SoloPlayerCancelPlaylist (0x6764f0),
+EZPlayCustomPlaylist (0x676520), MatchmakePlaygroup (0x6765c0), QuickJoinGameDesired (0x6765e0), CreateGameDesired (0x676610), SetRolloutSweetRevengeFromEasyDrive (0x68d330),
+SetFriendInviteIdEasyDrive (0x67a800), SetJoinFriendIdByIndexBinding (0x676640), CanJoinAirportGameByFriendIndexBinding (0x676680), OnMidGameJoin (0x6766d0),
+ActivateFriendCarouselViewModel (0x676cc0, writes OM+0x14 = 1: trivial), DeactivateFriendCarouselViewModel (0x676ce0, = 0), UnlockMwlCache (0x676df0, +0x36 = 0: trivial).
+
 ### 2026-11-17: 9 dialog / pause / photo HSM behaviour types (`hsm/behaviours_dialog.rs`; 94 types)
 
 `SHOWDIALOG` (73 uses), `HSMPAUSEINTR`, `SUPPRESSPREF`, `RUNPRCONTEXT`, `TAKEPHOTO`, `PHOTO_LISTEN` / `PHOTO_COMPL` / `PHOTO_INPUT`, `LIMITEDEDSP`.

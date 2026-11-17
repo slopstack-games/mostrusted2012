@@ -238,12 +238,12 @@ fn ui_hooks() {
     );
 }
 
-/// The registry the boot path uses: the 140 hooks verified against their handlers (`the_second_twenty` ... `the_seventh_twenty`).
+/// The registry the boot path uses: the 160 hooks verified against their handlers (`the_second_twenty` ... `the_eighth_twenty`).
 #[test]
 fn the_twenty_ported_hooks() {
     let r = Registry::original();
     let ported: Vec<_> = r.hooks().iter().filter(|h| h.ported()).map(|h| h.name).collect();
-    assert_eq!(ported.len(), 140, "{ported:?}");
+    assert_eq!(ported.len(), 160, "{ported:?}");
     let mut s = LogicState::default();
     s.players.local = Some(0);
     s.players.slots[0] = Some(Player::default());
@@ -774,6 +774,112 @@ fn the_seventh_twenty() {
             Request::RefreshOnlineEasyDrive,
             Request::SetRaceCarFrozen { frozen: true },
             Request::SetRaceCarFrozen { frozen: false },
+        ]
+    );
+}
+
+/// The eighth twenty, each checked against its handler (research-log 2026-11-17), through the verified registry.
+#[test]
+fn the_eighth_twenty() {
+    let r = Registry::original();
+    let mut s = with_local_player();
+    let v = |n: i32| format!(r#"{{"lpcValue": "{n}"}}"#);
+
+    // The recommendations: nothing offline.
+    assert_eq!(call(&r, &mut s, "SetTargetRecommendedEvent", Some(&v(2))), FALSE);
+    assert_eq!(call(&r, &mut s, "SetCarListForRecommendedEvent", Some(&v(1))), FALSE);
+    assert_eq!(call(&r, &mut s, "SelectRecommendationDomByIndexString", Some(&v(1))), EXIT);
+    assert_eq!(call(&r, &mut s, "SetCurrentRecommendedEvent", None), EXIT);
+    assert!(s.requests.is_empty());
+    s.hook_online.has_recommendations = true;
+    s.hook_online.event_ids = vec![100, 200, 300];
+    assert_eq!(call(&r, &mut s, "SetTargetRecommendedEvent", Some(&v(2))), TRUE);
+    assert_eq!((s.hook_online.target_index, s.hook_online.target_param), (2, 0));
+    assert_eq!(call(&r, &mut s, "SetCurrentRecommendedEvent", None), EXIT);
+    assert_eq!(s.hook_online.current_index, 2);
+    assert_eq!(call(&r, &mut s, "SetCarListForRecommendedEvent", Some(&v(0))), FALSE);
+    assert_eq!(call(&r, &mut s, "SetCarListForRecommendedEvent", Some(&v(1))), TRUE);
+    assert_eq!(s.hook_online.car_list_event, 200);
+    assert_eq!(call(&r, &mut s, "SelectRecommendationDomByIndexString", Some(&v(-1))), EXIT);
+    assert_eq!(call(&r, &mut s, "SelectRecommendationDomByIndexString", Some(&v(1))), EXIT);
+    assert_eq!(call(&r, &mut s, "SelectRecommendationDomByEventIdString", Some(&v(300))), EXIT);
+    assert_eq!(call(&r, &mut s, "SelectRecommendationDomByEventIdString", Some(&v(999))), EXIT);
+    assert_eq!(call(&r, &mut s, "RefreshRecommendations", None), EXIT);
+    assert_eq!(
+        s.requests,
+        [
+            Request::SetRecommendedEvent { index: 2, param: 0 },
+            Request::SetRecommendedEvent { index: 2, param: 0 },
+            Request::SetCarListForEvent { event_id: 200 },
+            Request::SelectRecommendationDom { index: 1, param: 0 },
+            Request::SelectRecommendationDom { index: 3, param: 0 },
+            Request::ReleaseRecommendationDom,
+            Request::RefreshRecommendations,
+        ]
+    );
+    s.requests.clear();
+
+    // GenerateRecomendationPostEventString: the flag and done < total.
+    s.hook_online.post_event_wanted = true;
+    s.hook_online.events_done = 1;
+    s.hook_online.events_total = 3;
+    assert_eq!(call(&r, &mut s, "GenerateRecomendationPostEventString", None), EXIT);
+    assert!(s.hook_online.post_event_string);
+    s.hook_online.events_done = 3;
+    call(&r, &mut s, "GenerateRecomendationPostEventString", None);
+    assert!(!s.hook_online.post_event_string);
+
+    // The thank-you queue, the autolog alert, the DLC indicator (its member's name is not known: reads 0).
+    s.entitlements.thank_you_count = 2;
+    assert_eq!(call(&r, &mut s, "PopThankYou", None), EXIT);
+    assert_eq!(s.entitlements.thank_you_count, 1);
+    call(&r, &mut s, "PopThankYou", None);
+    call(&r, &mut s, "PopThankYou", None);
+    assert_eq!(s.entitlements.thank_you_count, 0);
+    s.hook_online.autolog_alert_active = true;
+    assert_eq!(call(&r, &mut s, "StopAutologAlert", None), EXIT);
+    assert!(!s.hook_online.autolog_alert_active);
+    s.hook_online.autolog_alert_handle = 5;
+    call(&r, &mut s, "StopAutologAlert", None);
+    s.entitlements.dlc_message_indicator = 4;
+    assert_eq!(call(&r, &mut s, "SetDlcMessageIndicator", None), EXIT);
+    assert_eq!(s.entitlements.dlc_message_indicator, 0);
+
+    // Sign-in: the Lua natives' code; the silent one leaves the flag clear.
+    assert_eq!(call(&r, &mut s, "SignInStarted", None), EXIT);
+    assert!(s.menus.sign_in.flag && s.menus.sign_in.active);
+    assert_eq!(call(&r, &mut s, "SignInFinished", None), EXIT);
+    assert!(!s.menus.sign_in.flag && !s.menus.sign_in.active);
+    assert_eq!(call(&r, &mut s, "SilentSignInStarted", None), EXIT);
+    assert!(!s.menus.sign_in.flag && s.menus.sign_in.active);
+    assert_eq!(s.menus.sign_in.state_1360, -1);
+
+    // The platform ones.
+    assert_eq!(call(&r, &mut s, "IsOriginIgoAvailable", None), FALSE);
+    s.hook_online.origin_igo_available = true;
+    assert_eq!(call(&r, &mut s, "IsOriginIgoAvailable", None), TRUE);
+    assert_eq!(call(&r, &mut s, "InvalidateKinectSelectedClass", None), EXIT);
+    assert_eq!(s.hook_online.kinect_selected_class, -1);
+    assert_eq!(call(&r, &mut s, "CacheMwlAndLock", None), EXIT);
+    assert!(s.hook_online.mwl_cache_locked);
+
+    // The engine-only ones are requests.
+    for name in
+        ["OpenStoreOverlay", "RemoveOnlineSeenUnlocksMenu", "RefreshTopOfSpeedwallViewModel", "ResetPlaylistScoreState"]
+    {
+        assert_eq!(call(&r, &mut s, name, None), EXIT);
+    }
+    assert_eq!(
+        s.requests,
+        [
+            Request::PopThankYou,
+            Request::PopThankYou,
+            Request::StopAutologAlert,
+            Request::CacheMwl,
+            Request::OpenStoreOverlay,
+            Request::ClearOnlineEasyDrive,
+            Request::RefreshTopOfSpeedwall,
+            Request::ResetPlaylistScoreState,
         ]
     );
 }

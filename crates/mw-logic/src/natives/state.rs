@@ -50,6 +50,8 @@ pub struct LogicState {
     pub entitlements: super::entitlements::Entitlements,
     /// The fields of the seventh twenty HSM hooks (`hooks_misc.rs`).
     pub hook_misc: super::hooks_misc::HookMiscFields,
+    /// The fields of the eighth twenty HSM hooks (`hooks_online.rs`).
+    pub hook_online: super::hooks_online::HookOnlineFields,
 }
 
 /// The binding host the logic reads through: the game-mode manager's `Mode` root ([`super::mode_view`]) first,
@@ -620,6 +622,40 @@ pub enum Request {
     /// not -1) gets the engine message 0x37 (`FUN_00844f70` on G+0x2ed70) with `frozen`, and the message 2 with
     /// `frozen` goes into the queue `*0x010edb18` +0x10.
     SetRaceCarFrozen { frozen: bool },
+    /// `SetTargetRecommendedEvent` (0x675bb0 -> `FUN_00725130`(index, 0, 0) on (G+0x2f454)+0x5a3c) and
+    /// `SetCurrentRecommendedEvent` (0x675c20: the same for the target kept in +0xa0 / +0xa4): the recommended
+    /// event `index` of the "Items" list becomes the target (title, gamertag, speedwall bounty, DOM selection).
+    SetRecommendedEvent { index: i32, param: i32 },
+    /// `SetCarListForRecommendedEvent` (0x675c50 -> `FUN_00723300` -> `FUN_00871330`): the pack page's car list for
+    /// the event id of the recommendation item.
+    SetCarListForEvent { event_id: i32 },
+    /// `SelectRecommendationDomByIndexString` (0x675d10, `FUN_00724ef0`) / `...ByEventIdString` (0x675d70,
+    /// `FUN_00723b10` then `FUN_00724ef0`): the recommendation's DOM object `index` of the "Items" list is selected
+    /// (`FUN_009eee60`), the result string state (+0xa0c) set from its award / "IsBiggerBetter".
+    SelectRecommendationDom { index: i32, param: i32 },
+    /// `...ByEventIdString` when the event is not among the items: `FUN_0071d270` releases the three selected DOM
+    /// objects.
+    ReleaseRecommendationDom,
+    /// `RefreshRecommendations` (0x676810 -> `FUN_007355b0`(0, 0) on (G+0x2f454)+0x5a3c): the recommendation list
+    /// is rebuilt from the "Recommends" document.
+    RefreshRecommendations,
+    /// `RefreshTopOfSpeedwallViewModel` (0x6768f0 -> `FUN_007357f0`(0) on (G+0x2f454)+0x6c8c).
+    RefreshTopOfSpeedwall,
+    /// `ResetPlaylistScoreState` (0x676ac0): `FUN_006e32a0` on (G+0x2f3fc)+0x10 clears the playlist scores (+0x1b8,
+    /// 12 records of 4 dwords from +0x1c0, +0x2d0, +0x328), `FUN_006bf460` on G+0x2f3dc clears byte +0x44b of
+    /// each of the 12 player records (stride 0x7f0) whose byte +0x24d is set.
+    ResetPlaylistScoreState,
+    /// `PopThankYou` (0x676840 -> `FUN_0063cdb0` on G+0x29280): the first queued thank-you message is released
+    /// (`FUN_00729e80`) and the rest shift down by one (15 dwords each).
+    PopThankYou,
+    /// `StopAutologAlert` (0x676860 -> `FUN_0071d190`): `FUN_00a43150` on the alert's handle (+0x2e8) when set.
+    StopAutologAlert,
+    /// `OpenStoreOverlay` (0x677150 -> `FUN_00655fa0` on G+0x2f438): the platform store overlay (Origin) is opened
+    /// on the page id table `0x010c52f4`[+0x14]; on success +0x10 = 1.
+    OpenStoreOverlay,
+    /// `CacheMwlAndLock` (0x676dc0 -> `FUN_0071caa0` on (G+0x2f454)+0x4af0): the data definition "CachedMWL" is
+    /// published again as "OldCachedMWL" (`FUN_00820840`), the lock byte +0x36 set.
+    CacheMwl,
     /// `COSTSTATESC` (0x74a580, every 5 s): drop the u16 ids of the list (+0x48.., count +0x108) that
     /// `FUN_0090cbd0` (G+0x53200) no longer knows.
     CostStatePrune,

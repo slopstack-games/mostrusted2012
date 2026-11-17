@@ -86,25 +86,35 @@ fn set_vehicle_modifier(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -
 
 /// `SignInStarted()` (0x007eac10 → `FUN_00881f10(1)` on OM+0x10d0).
 fn sign_in_started(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    start_sign_in(state, true);
+    Ok(vec![])
+}
+
+/// `FUN_00881f10(flag)` on OM+0x10d0: the Lua native passes 1, the hook `SilentSignInStarted` 0.
+pub fn start_sign_in(state: &mut LogicState, flag: bool) {
     let s = &mut state.menus.sign_in;
-    s.flag = true;
+    s.flag = flag;
     s.active = true;
     s.state_135c = 0;
     s.state_1360 = -1;
     s.flag_139c = false;
     s.flag_136d = false;
-    Ok(vec![])
 }
 
 /// `SignInFinished()` (0x007eac40 → `FUN_00886f00` on OM+0x10d0): both fetched lists released and emptied, the
 /// two flags cleared.
 fn sign_in_finished(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    finish_sign_in(state);
+    Ok(vec![])
+}
+
+/// `FUN_00886f00` on OM+0x10d0 (the hook `SignInFinished` calls it too).
+pub fn finish_sign_in(state: &mut LogicState) {
     let s = &mut state.menus.sign_in;
     s.list_1370 = 0;
     s.list_1380 = 0;
     s.flag = false;
     s.active = false;
-    Ok(vec![])
 }
 
 /// `SelectPack(index)` (0x007ea480 → `FUN_008739f0` on OM+0x4ce0): the pack's id (0 for index < 1) selected
