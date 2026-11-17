@@ -2656,6 +2656,80 @@ Runtime: `crates/mostrusted/src/props.rs`; data: `mw_assets::props` (`Additional
 - Downstream, `FUN_008fa750` passes stored control fields (vehicle-controller words 0x7ed–0x7f3) to
   `FUN_009aacc0`; the steering value is right − left (Update loop above).
 
+## Binding evaluator (2026-11-17, ported in `mw_logic::binding`)
+
+The binding path language of the UI, Lua, HSM and GeneSys data (`Mode.ShowLoadingScreen`,
+`Signals.GetSineWave[7500](MULT:8, MINUS:4)`) is one C++ system in 0x00a47000–0x00a59000. The dump has the
+parsers and the arithmetic; the visitors (one class per result type, 28 virtual slots each, one per property
+type) are vtable-only methods read from the snapshot's disassembly (`re/out/live/text.asm`). REA was not
+available (the installed Ghidra 12.2 is rejected by the `rea` server, which wants 12.1.x).
+
+- **Names are hashed** with `FUN_009ed180` → `FUN_00d6a410`: 0 for "", the GeneSys field CRC for 4+ bytes, and
+  for 1–3 bytes a variant that starts from the first byte, shifts every byte in (the first again) and reduces by
+  the register's low byte (`.bss` 0x0118a840 holds `X` = 5e9f1ee7, `XY` = 44f09125, unit-tested).
+- **Operators** (`FUN_00a4da00` fills the hash vector `.bss` 0x0118a7f0; op code = index): ADD MINUS MULT DIV POW
+  FLOOR_TO CEIL_TO ROUND_TO AXES MOD MIN MAX EQUALS GTEQ LTEQ BETWEEN HASHEQUALS NOT UPPERCASE POSTFIX IS_EMPTY
+  LERP. No other names exist: `MINVALUE` / `MAXRANGE` are not in the exe (LERP's arguments are positional), nor is
+  `CAPS` (6 GeneSys `UIMessages` bindings use it: a no-op).
+- **Compile form** `FUN_00a503e0` (binding object: 5 op records of 12 bytes at +0x00, count +0x3c, segment hashes
+  +0x40, indices +0x58, segment count +0x74 = 0xff when invalid): text cut to 127 bytes; root = text before the
+  first `.` hashed as is, looked up in the registered roots (`FUN_00a520d0`, records of 0x14 at +0x12968 of the
+  manager) or the dynamic providers (`FUN_00a58f70`), else invalid; no `.` → invalid. Members are walked
+  against the root's type (`FUN_00a52500` per member; index 0 or past the member's count stops the walk).
+  **Inner form** `FUN_00a50650` (358 call sites against 7 for the compile form): all segments alike, the root
+  too, at most 6, no root check; used by the HSM (`FUN_0076f330`, `FUN_007716c0`, `FUN_00771ea0`), Lua's
+  `ResolveBoolBinding` (`FUN_00680120` → `FUN_0067f4e0`), `ResolveIntBinding` (`FUN_00679900` → `FUN_006794e0`),
+  `ResolveDoubleBinding` (`FUN_00679950` → `FUN_00679550`), `ResolveStringBinding` (`LAB_007e97e0` →
+  `FUN_007e7cc0`, to-text visitor, "" on error) and splices. Compile-form callers include `FUN_00851c80`,
+  `FUN_008539b0` (not traced further) and `FUN_00a50f40`.
+- **Segments** (`FUN_00a48ec0`): split at the delimiter, but when a `(` comes before it the paren counter starts at
+  1 and counts that `(` again, so it never returns to 0: the rest of the text is one segment. Per segment:
+  ops (`FUN_00a50230`: between the first `(` and the first `)` after it; split at `,`, spaces before a token
+  skipped, at most 5; each token copied into a 24-byte buffer, `{binding}` spliced (`FUN_00a4fe80`, inner form,
+  the splice visitor vtable 0x0102c0f0: `%.2f`, `%d`, `%lld`, `true` / `false`, no operators), upper-cased
+  (`FUN_009ee1a0`, a–z only), then `FUN_00a4a2b0`: split at the first `:`; no `:` → the token is its own operand;
+  record = {op index or −1, hash(operand), (float)atof(operand)}); then the index (`FUN_00a4a440`: `[n]` → atol,
+  `["key"]` → hash(key), none / empty / over 32 bytes → 1); the segment name is the text before `(` / `[`.
+- **Dispatch** `FUN_00a4ef40`: resolves the path (`FUN_00a4eb00`, else the root's dynamic provider), then calls the
+  visitor slot of the property's type through the reader table `PTR_010d1218`; null object → slot 25, index 0 or
+  past the property's count (+0x18 of the member) → slot 26, no reader → slot 27. Slot order (from the visitors'
+  bodies): 10 a 64-bit fixed-point time (× 3.33e-7, `.rdata` 0x00f9f608), 11 object pointer, 13 / 14 strings,
+  15 bool, 16 u64, 17 u32, 18 u16, 19 u8, 20 double, 21 i64, 22 i32, 23 i16, 24 float.
+- **Arithmetic**: `FUN_00a4b940` (f64), `FUN_00a4bb10` (f32), `FUN_00a4bca0` (i64: ADD MINUS MULT DIV MOD MIN
+  MAX, operand through `__ftol2`), every record in order: `MIN:a` → a when a < v; `MAX:a` → a when v ≤ a;
+  FLOOR_TO = trunc(v/a)·a; CEIL_TO adds a step when the rest is > 0 (`.rdata` 0x0100e8d0 = 0); ROUND_TO when the
+  rest ≥ a·0.5 (0x00fb0eb0); MOD = v − trunc(v/a)·a; POW = pow(v, a) (`FUN_00edaa7f`, SSE2 libm).
+- **Comparisons** `FUN_00a4bea0` (f32): the first EQUALS / GTEQ / LTEQ / BETWEEN / HASHEQUALS decides. EQUALS:
+  |a − v| < 2⁻¹⁶ (`.rdata` 0x0102b880); GTEQ v ≥ a; LTEQ a ≥ v; BETWEEN a < v < b strictly, a and b from the next
+  two records (`BETWEEN,5,140`); HASHEQUALS |hash(operand) − v| < 2⁻¹⁶. EQUALS / GTEQ take the next record's
+  number instead when their operand *hashes to their op code* (12 / 13), which no text does: `(LTEQ,50)` and
+  `(EQUALS, 1)` compare with 0.
+- **LERP** `FUN_00a4b5d0` (f32; `FUN_00a4b530` double in, f32 maths): first LERP record k, records k+1..k+4 =
+  a, b, c, d; t = (v − a)/(b − a), < 0 → 0, ≥ 1 → 1 (`.rdata` 0x00f8a820); c + (d − c)·t.
+- **bool visitor** (vtable 0x00f98d10; HSM conditions, `ResolveBoolBinding`): double (`FUN_00a4d5d0`) →
+  comparison on (float)v if any, else |v| > 2⁻²³ (`.rdata` 0x0102c1a8 / b0; NaN true); float (`FUN_00a4c9c0`) →
+  f32 arithmetic, then the double path; i32 (`FUN_00a4d6c0`) / i64 (`FUN_00a4d640`) → arithmetic, comparison,
+  else the *original* value ≠ 0; u8 / u16 / u32 / u64 → the i64 path; string (`FUN_00a4d770`) → with EQUALS:
+  hash(upper(first 23 bytes)) == the operand's hash, else non-empty; object → non-null; then `FUN_00a4ca40`: NOT,
+  else IS_EMPTY, inverts once. Null / out of range / unsupported (`FUN_00a4d4e0`, `..530`, `..580`): false,
+  inverted only by IS_EMPTY.
+- **int** (vtable 0x00fb68a0, `FUN_00a4f220`): float / double truncated (`cvttsd2si`), i64 low word, bool 0 / 1,
+  string unchanged; null → 0 or 1 with IS_EMPTY (`FUN_00a4d970`); then, with any ops, the f64 arithmetic.
+  **float** (vtable 0x00fb0e00, `FUN_00a4f1d0`): numbers → f32 → LERP (`FUN_00a4cbe0`, `FUN_00a4cc00`), bool 1 / 0,
+  a string `{Path}` is resolved as that binding (`FUN_00a51020` → `FUN_00a50f40`), else 1 / 0 for non-empty; then
+  the f32 arithmetic. **double** (vtable 0x00fbcef0, `FUN_00a4f1a0`): the same with `FUN_00a4cbc0`, strings only
+  1 / 0. **string** (vtable 0x00fd8368, the HSM's parameter values `FUN_00771ea0`): `%.2f` (double through float),
+  `%d`, `%lld`, `%u`, `%llu`, `TRUE` / `FALSE`, strings with UPPERCASE and POSTFIX (which appends the literal
+  `:POSTFIX`, 0x0102bbb4); `<NULL>`, `<INVALID ARRAY INDEX>`, `<INVALID PROPERTY BINDING TYPE>`; no arithmetic.
+  **text** (vtable 0x00fb6830, Lua `ResolveStringBinding`, nested keys in `FUN_00a4f410`): arithmetic and
+  comparison (`true` / `false`), else `%.2f` / `%d`; bools `true` / `false` without NOT. The vector form (`FUN_00a4ceb0`) writes the scalar into the AXES lanes (`FUN_00a4c070`, mask table
+  `.bss` 0x0118a840: X Y Z W XY XZ XW YZ YW ZW XYZ XYW XZW YZW).
+- **Widget paths** (`FUN_007cb300`): with a base path, `{parent}` → `~base`, `~path` → absolute (the `~` dropped),
+  else `base.path`; `#` → the list item index; `%name%` → a widget variable (`FUN_007c83f0`, not ported).
+- **Data check** (`mwtool bindings`): 5,024 distinct binding texts (JSON 2,544, GeneSys 3,503, HSM 263, Lua 239)
+  all parse; the quirks the original also has are listed by its warnings (research log 2026-11-17 "Binding
+  evaluator").
+
 ## Front end, HUD and Easydrive
 
 _(session 5)_ Easydrive's tree, labels, item types and input actions are data (research log 2026-10-06

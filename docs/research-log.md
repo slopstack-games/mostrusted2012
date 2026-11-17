@@ -10,6 +10,44 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-11-17: Binding evaluator (M8 step 1, `mw_logic::binding`, `mwtool bindings`)
+The binding language's parser and evaluator read from the code (decomp.md "Binding evaluator": functions,
+visitor vtables, constants); ported as `mw_logic::binding` (engine-free, wasm-checked): `Binding::parse`
+(`FUN_00a50650`, HSM / Lua / most UI) and `parse_rooted` (`FUN_00a503e0`), `compile` with `{binding}` splices,
+`eval_bool` / `eval_int` / `eval_float` / `eval_double` / `eval_string` / `eval_text` over a `Host` (or `Roots`:
+root name → `Provider`). Sources: the dump (parsers, arithmetic, comparisons, LERP) and the snapshot's
+disassembly `re/out/live/text.asm` for the vtable-only visitor methods; REA could not run (installed Ghidra 12.2,
+the `rea` server accepts 12.1.x only).
+- **Found in the code, not in the data**: 22 operators (ADD MINUS MULT DIV POW FLOOR_TO CEIL_TO ROUND_TO AXES MOD
+  MIN MAX EQUALS GTEQ LTEQ BETWEEN HASHEQUALS NOT UPPERCASE POSTFIX IS_EMPTY LERP); LERP / BETWEEN take their
+  arguments from the following op records by position (`MINVALUE` etc. are not in the exe); indices are 1-based
+  (none = 1), `["key"]` hashes; the operators that apply depend on the *result type* (bool: comparisons, NOT /
+  IS_EMPTY once; float / double: LERP then arithmetic; int: arithmetic; string: UPPERCASE / POSTFIX only); a
+  missing value is false and only IS_EMPTY inverts it; the bool of an int is its *original* value ≠ 0 (the
+  arithmetic only feeds comparisons); EQUALS on a string compares hash(upper(first 23 bytes)); op tokens are
+  upper-cased and at most 23 bytes; from the first `(` on the text is one segment. `~` in a widget path means
+  *absolute* (`FUN_007cb300`), not "relative to the list item" as `mw_formats::binding` assumed.
+- **Verification**: `mwtool bindings` collects 5,024 distinct binding texts (JSON 2,544, GeneSys 3,503 string
+  fields, HSM parameters 263, Lua constants 239; 156 whole-value `{binding}`s, 37 Lua concatenation fragments
+  skipped): **all parse**. 10 unit tests on the operators against the semantics above (hashes checked against
+  the AXES table in `.bss`). The warnings are data quirks the original has too: `Signals.GetRandomNumber[100]
+  (LTEQ,50)` (GeneSys `EnabledBinding`: LTEQ without `:` compares with 0), `Players.LocalPlayer.GetTeam(EQUALS, 0)`
+  / `(EQUALS, 1)` (both compare with 0), `LocalPlayer.TimeTilEvaded(BETWEEN(10, 19))` and
+  `...IsRankingUp(IS_EMPTY(NOT))` (nested parens: no operator), `(CAPS)` ×6 (not an operator or formatter: a
+  no-op), `MAINRANGE` ×4 (typo, harmless: positional).
+- **Model decisions**: op records past the count read 0 (the original reads stale memory); i64 DIV / MOD by 0
+  leave the value (the original faults); nesting of `{binding}` string values capped at 8; the int result of a
+  string or object is 0 (the original leaves the caller's initial value); `Value::List(n)` answers `_length` in
+  `Roots` (the original registers `_length` members on its list types, static initialisers at 0x00f593xx–
+  0x00f797xx); the 64-bit fixed-point time type (slot 10) and vectors (only `axes()`) are not values.
+- **Open**: the text widget's formatters (`SPEED`, `TIME`, `DIST`, `WITHORDINAL`, ... `.rdata` 0x00f9e484, vtable
+  0x00fd82f8 first half, 0x0046xxxx) still live in `mw_formats::binding` (`hud.rs`); the root registry's
+  contents (which roots are static types vs dynamic providers, the `Signals` functions); `%name%` widget
+  variables (`FUN_007c83f0`); binding splices of JSON adapters (`FUN_00a4f410`, `BindingSplices`); which of the
+  7 rooted-form call sites serve which data; `EnabledBindingEvaluationMode` (`Constantly` / `On Entry`, 13 JSON
+  widgets) is widget-level. `mw_formats::binding` (used by `hud.rs`) differs from the original in `~`, NOT /
+  IS_EMPTY counting, named LERP arguments and string EQUALS; move `hud.rs` onto `mw_logic::binding`.
+
 ### 2026-11-17: game logic: scripting, flow, AI (survey of the install, the exe and prior work)
 Research agent; full tables, registries and URLs in the main checkout's git-ignored
 `scratch/engine-scripting-research.md` (raw outputs and scripts in `scratch/scripting/`). Whole install scanned
