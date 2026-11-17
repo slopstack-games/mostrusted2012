@@ -4,11 +4,12 @@
 //!   +0x360), called by `CALLHSMHOOK` / `CALLHSMHOOKS` / `HSMHOOKEXIT` with a member of the state's data
 //!   definition as arguments (`FUN_007761a0`), and by widgets' native actions (`FUN_007f2670`). A hook returns
 //!   the exit point to take; [`EXITINVALID`](crate::hsm::EXITINVALID) means "not (yet)".
-//! - **Lua natives**: the registry filled by `FUN_009f7e50` (386 names); the host binds each as a global closure
+//! - **Lua natives**: the registry filled by `FUN_009f7e50` (385 names); the host binds each as a global closure
 //!   with its name as upvalue (`FUN_009f86d0`), for the widget scripts' `LuaHooks` (decomp.md "Widget definitions
 //!   (JSON) and widget scripts").
 //!
-//! 35 names are in both registries; each has its own handler in the original, and its own entry here.
+//! 36 names are in both registries (35 plus `ExitWidgetGroup`); each has its own handler in the original, and its
+//! own entry here.
 //!
 //! Natives act on [`LogicState`]: the original's managers as engine-free structs (one sub-struct per manager,
 //! each in the file of the area that owns it). What only the engine can do (load a world, play a sequence,
@@ -128,5 +129,23 @@ impl Registry {
                 crate::hsm::EXITINVALID
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn table_has_both_registries() {
+        let r = Registry::original();
+        assert_eq!(r.hooks().len(), 187);
+        assert_eq!(r.lua_natives().len(), 385);
+        let both = r.hooks().iter().filter(|h| r.lua(h.name).is_some()).count();
+        assert_eq!(both, 36);
+        let mut state = LogicState::default();
+        assert_eq!(r.call_hook(&mut state, "NoSuchHook", None), None);
+        assert_eq!(r.call_hook(&mut state, "ResolveBoolBinding", None), Some(crate::hsm::EXITINVALID));
+        assert_eq!(state.unported, ["hook ResolveBoolBinding"]);
     }
 }

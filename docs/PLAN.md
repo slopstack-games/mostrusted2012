@@ -484,7 +484,7 @@ GeneSys. Engine-free crates (`mw-logic`, `mw-lua`; wasm-compatible), in dependen
    timers, sub-networks, loading-screen / graphics waits), `mwtool hsm --run` (boot → "Playing" with answers).
    Left: ~180 used behaviour types (UI, game modes, online), the binding evaluator hook-up.
 3. `[ ]` **Native registry** (`mw-logic::natives`): one name → function table for the 187 HSM hooks (121 used)
-   and 386 Lua natives (171 read by the chunks; `mwtool lua`), offline ones first, each ported from its handler.
+   and 385 Lua natives (171 read by the chunks; `mwtool lua`), offline ones first, each ported from its handler.
 4. `[~]` **JSON widgets** and the widget-script lifecycle (`Construct`, `SetConfigurationItem`, `OnActivated`,
    actions), PageRunner page flow; the 24 native screen scripts. Data side done (2026-11-17): the 859 JSON
    definitions typed (`mw_formats::widget`, the engine's JSON reader `mw_formats::json`), the screen → widget →
