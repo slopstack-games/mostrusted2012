@@ -940,3 +940,130 @@ fn car_swap_logic_steps_once_started_and_never_exits() {
     step(&mut hsm, &mut host, 3);
     assert_eq!(host.reqs.last(), Some(&Request::CarSwapExit));
 }
+
+#[test]
+fn horn_press_counts_its_timer_down_and_never_exits() {
+    let (mut hsm, mut host, s) = machine("HORN_PRESS", &[("HORN_SOUND", "116534")], "ENTER");
+    host.answers.insert("HornDown", 1);
+    step(&mut hsm, &mut host, 10);
+    assert!(hsm.is_running(s));
+    host.answers.insert("HornPaused", 1);
+    step(&mut hsm, &mut host, 3);
+    assert!(hsm.is_running(s));
+    assert!(host.reqs.is_empty());
+}
+
+#[test]
+fn wait_system_menu_exits_when_the_flag_matches_active() {
+    let (mut hsm, mut host, s) = machine("WAITSYSMENU", &[("ACTIVE", "True")], "ENTER");
+    step(&mut hsm, &mut host, 3);
+    assert!(hsm.is_running(s));
+    host.answers.insert("SystemMenuActive", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    // ACTIVE false: exits at once while the menu is closed.
+    let (mut hsm, mut host, s) = machine("WAITSYSMENU", &[("ACTIVE", "False")], "ENTER");
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(hsm.result(s), Some(EXIT));
+}
+
+#[test]
+fn cost_state_scoring_prunes_every_five_seconds_while_active() {
+    let (mut hsm, mut host, s) = machine("COSTSTATESC", &[], "ENTER");
+    step(&mut hsm, &mut host, 10);
+    assert!(host.reqs.is_empty());
+    host.answers.insert("CostStateActive", 1);
+    step(&mut hsm, &mut host, 1);
+    assert_eq!(host.reqs, [Request::CostStateScan]);
+    step(&mut hsm, &mut host, 160);
+    let prunes = host.reqs.iter().filter(|r| **r == Request::CostStatePrune).count();
+    assert!(prunes >= 1, "{prunes}");
+    assert!(hsm.is_running(s));
+}
+
+#[test]
+fn wait_for_chase_waits_for_the_pursuit_then_ends_busted_or_escaped() {
+    for (end, exit) in [(2, "BUSTED"), (0, "ESCAPED")] {
+        let (mut hsm, mut host, s) = machine("WAITFORCHASE", &[], "ENTER");
+        step(&mut hsm, &mut host, 3);
+        assert!(hsm.is_running(s)); // state 0 and not started: waits
+        host.answers.insert("LocalPursuitState", 1);
+        step(&mut hsm, &mut host, 3);
+        assert!(hsm.is_running(s));
+        host.answers.insert("LocalPursuitState", end);
+        step(&mut hsm, &mut host, 2);
+        assert_eq!(hsm.result(s), Some(key(exit)));
+    }
+}
+
+#[test]
+fn disable_stats_timer_counts_down_and_up() {
+    let (mut hsm, mut host, s) = machine("DISABLETIME", &[], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::DisableStatsTimer { on: true }]);
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs.last(), Some(&Request::DisableStatsTimer { on: false }));
+}
+
+#[test]
+fn disable_world_restores_the_rendering_byte_and_audio() {
+    let (mut hsm, mut host, s) = machine("DISABLEWORLD", &[("DISABLEAUDIO", "True")], "ENTER");
+    host.answers.insert("WorldRendering", 0);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::SetWorldRendering { enabled: false }, Request::DisableAudio { on: true }]);
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs[2..], [Request::SetWorldRendering { enabled: false }, Request::DisableAudio { on: false }]);
+    // ENABLEONEXIT forces the byte back on.
+    let (mut hsm, mut host, s) = machine("DISABLEWORLD", &[("ENABLEONEXIT", "True")], "ENTER");
+    host.answers.insert("WorldRendering", 0);
+    step(&mut hsm, &mut host, 2);
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs.last(), Some(&Request::SetWorldRendering { enabled: true }));
+}
+
+#[test]
+fn host_easy_guide_waits_for_it_to_show_and_to_close() {
+    let (mut hsm, mut host, s) = machine("HOSTEZGUIDE", &[], "ENTER");
+    host.answers.insert("EasyGuideShown", 0);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs, [Request::HostEasyGuide]);
+    host.answers.insert("EasyGuideShown", 1);
+    host.answers.insert("EasyGuideClosed", 0);
+    step(&mut hsm, &mut host, 2);
+    assert!(hsm.is_running(s));
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs.last(), Some(&Request::ReleaseEasyGuide));
+    assert!(hsm.is_running(s)); // waits for the guide to close
+    host.answers.insert("EasyGuideClosed", 1);
+    step(&mut hsm, &mut host, 3);
+    assert!(!hsm.is_running(s));
+}
+
+#[test]
+fn clear_ui_post_fx_clears_and_exits() {
+    let (mut hsm, mut host, s) = machine("CLEARUIPOSTF", &[], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::ClearUiPostFx]);
+    assert_eq!(hsm.result(s), Some(EXIT));
+}
+
+#[test]
+fn set_pending_dialog_stores_the_number_and_exits() {
+    let (mut hsm, mut host, s) = machine("SETPENDINGON", &[("Dialog", "7")], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::SetPendingDialog { value: 7 }]);
+    assert_eq!(hsm.result(s), Some(EXIT));
+}
+
+#[test]
+fn override_page_hands_context_and_page_over_and_exits() {
+    let (mut hsm, mut host, s) =
+        machine("OVERRIDEPAGE", &[("CONTEXT_NAME", "main_menu"), ("PAGE_NAME", "settings")], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::OverridePage { context: "main_menu".into(), page: "settings".into() }]);
+    assert_eq!(hsm.result(s), Some(EXIT));
+}

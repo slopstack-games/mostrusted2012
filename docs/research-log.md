@@ -13,6 +13,25 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ## Dated findings
 
+### 2026-11-17: 10 HUD / pursuit HSM behaviour types (`hsm/behaviours_hud.rs`; 85 types)
+
+Route check: `mwtool hsm --run --steps 900` (docs/commands.md, free roam) enters four still-placeholder types:
+`HORN_PRESS`, `WAITSYSMENU`, `COSTSTATESC`, `WAITFORCHASE` (all under "Controlling Vehicle Offline"; the rest of the route's 64 codes
+were ported). Static walk of the machines 390148 / 371633 / 371635 added the next candidates in tree order: `DISABLETIME`,
+`DISABLEWORLD`, `HOSTEZGUIDE`, `CLEARUIPOSTF`, then `SETPENDINGON`, `OVERRIDEPAGE` (all ported). Method as the earlier batches (factory = `mov edx`
+of the name stub, vtable from the factory, slots from `text.asm`, parameter / exit keys decoded from snapshot 1; addresses in decomp.md).
+Requests: CostStatePrune, CostStateScan, DisableStatsTimer, SetWorldRendering, DisableAudio, HostEasyGuide, ReleaseEasyGuide, ClearUiPostFx,
+SetPendingDialog, OverridePage. Queries (default): HornPaused (false), HornDown (false), SystemMenuActive (false), CostStateActive (false),
+LocalPursuitState (0), WorldRendering (true), EasyGuideShown (true), EasyGuideClosed (true). One test per type in `flow_tests.rs`.
+Result: the free-roam command still reaches "Freedrive Update" and "Freedrive HUD" with an identical state trace (the four route types held before
+and hold now, waiting for engine answers: system menu, pursuit state, horn input).
+Model decisions: `COSTSTATESC`'s scan (0x7548e0 from 0x754989, the cost-record walk) is one Request, not ported; `HORN_PRESS`'s timer has no reader in the machine and
+is kept in the instance, the input checks are two Queries; the clock for both timers is the game clock (`FUN_0046ee10`, step x rate; a stopped
+clock = 0). `HOSTEZGUIDE`'s object fields are Queries / Requests (+0x54 state, +0x58 flag). `SETPENDINGON` has no known meaning for G+0x2f70c (named after the parameter).
+Open, next unported on the machines: `SHOWDIALOG` (73 uses; enter 0x745e10 / update 0x740a20 / exit 0x740a80 read: DIALOG, POS_EXIT, NEG_EXIT via UI dialog
+object G480+0x47740), `HSMPAUSEINTR` (0x73d100 / 0x74d040 / 0x74cfe0, scans UI objects), `LIMITEDEDSP` (0x75aff0 / 0x762650: 7-state online request),
+`SUPPRESSPREF` (0x740f70 / 0x740f90 / 0x740fb0), `TAKEPHOTO` / `PHOTO_*`, `RUNPRCONTEXT`, `CLEARUIPOSTF` siblings; the sign-in family (`SIGNIN_CNTRL`, `SI_*`, `HSM_KEYB_ENT`, `HSM_SERV_OP`) is the bulk (offline-unreachable).
+
 ### 2026-11-17: fifth 20 HSM hooks verified and enabled (100 of 187; `natives/hooks_{flow,ui}.rs`)
 
 All 20 were already ported but parked; handlers re-read from `re/out/live/text.asm`, now enabled in `Registry::original`.
