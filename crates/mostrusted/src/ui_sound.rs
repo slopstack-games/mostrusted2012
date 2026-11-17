@@ -18,6 +18,9 @@ use mw_assets::sequence::ItemKind;
 use mw_audio::Pcm;
 
 /// Under `--mute` the sounds still load and start (the log shows them); the output is silent.
+/// A wave of a UI sequence: its start time (s) and samples.
+type TimedPcm = (f32, Arc<Pcm>);
+
 pub struct UiSoundPlugin;
 
 impl Plugin for UiSoundPlugin {
@@ -42,7 +45,7 @@ pub struct UiSounds {
     tx: Sender<Result<Loaded, String>>,
     rx: Mutex<Receiver<Result<Loaded, String>>>,
     /// Sequences playing: their waves not started yet and the clock.
-    playing: Vec<(Vec<(f32, Arc<Pcm>)>, f32)>,
+    playing: Vec<(Vec<TimedPcm>, f32)>,
 }
 
 impl UiSounds {
