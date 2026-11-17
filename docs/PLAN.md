@@ -473,9 +473,10 @@ What drives the original's flow and UI is data run by a few interpreters (resear
 scripting, flow, AI"): one HSM machine (2,706 nodes) for boot → front end → modes → results, 16 aero machines,
 859 JSON widgets, 115 Lua 5.1 UI chunks, ~2,700 binding paths, 8,485 sequences; AI and rules are C++ tuned by
 GeneSys. Engine-free crates (`mw-logic`, `mw-lua`; wasm-compatible), in dependency order:
-1. `[ ]` **Binding evaluator** (`mw-logic::binding`): the path language (`Mode.X`, `Widget.Y`, operators EQUALS,
-   GTEQ, LTEQ, MINUS, ADD, MIN, BETWEEN, NOT, …) parsed and evaluated like the original's evaluator, over view
-   models the runtime provides; every path in the data parses.
+1. `[x]` **Binding evaluator** (`mw-logic::binding`): the path language (`Mode.X`, `Widget.Y`, 22 operators)
+   parsed and evaluated like the original's evaluator (decomp.md "Binding evaluator"), over view models the
+   runtime provides; all 5,024 binding texts in the data parse (`mwtool bindings`). Open: the text formatters
+   (`SPEED`, `TIME`, ...), the root providers themselves, `hud.rs` still on `mw_formats::binding`.
 2. `[ ]` **HSM interpreter** (`mw-logic::hsm`): the parser corrected (typed parameters, data definitions,
    fallback behaviour), the node lifecycle and transitions; then the 203 used behaviour types one by one.
 3. `[ ]` **Native registry** (`mw-logic::natives`): one name → function table for the 187 HSM hooks (121 used)

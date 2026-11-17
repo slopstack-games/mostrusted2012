@@ -5,6 +5,7 @@ use std::sync::Mutex;
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 
+mod bindings;
 mod camera_take;
 mod car_lights;
 mod compare;
@@ -783,6 +784,22 @@ enum Cmd {
         /// List every swap spot (jack spot), not the first five.
         #[arg(long)]
         spots: bool,
+    },
+    /// Every binding path in the install (JSON widgets, Lua constants, HSM parameters, GeneSys strings) parsed
+    /// with `mw_logic::binding`: counts per source, parse errors, warnings, roots, op tokens.
+    Bindings {
+        /// Only texts containing this.
+        #[arg(long)]
+        find: Option<String>,
+        /// Print every binding with its segments and op records.
+        #[arg(long)]
+        parse: bool,
+        /// Skip the GeneSys objects (the slow part).
+        #[arg(long)]
+        no_genesys: bool,
+        /// Write `sources \t text \t result` per binding to this file.
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// The game logic's state machines (`HSMData`, `mw_formats::hsm`): `hsm` lists the root nodes, `hsm <id>`
     /// prints a node's tree (children, what each child's exit codes start, parameters), `hsm --find <text>`
@@ -1796,6 +1813,10 @@ fn main() -> Result<()> {
         Cmd::Events { id, png, all } => events::run(&AssetStore::new(game)?, id.as_deref(), png.as_deref(), all)?,
         Cmd::Frontend { sequence: Some(id), .. } => events::print_sequence(&AssetStore::new(game)?, id)?,
         Cmd::Frontend { sequence: None, spots } => events::frontend(&AssetStore::new(game)?, spots)?,
+        Cmd::Bindings { find, parse, no_genesys, out } => {
+            let opt = bindings::Options { find: find.as_deref(), parse, no_genesys, out: out.as_deref() };
+            bindings::run(&AssetStore::new(game)?, &opt)?
+        }
         Cmd::Hsm { node, bundle, find, depth, parents } => {
             events::hsm(&AssetStore::new(game)?, &bundle, node, find.as_deref(), depth, parents)?
         }
