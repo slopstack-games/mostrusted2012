@@ -10,6 +10,8 @@ use super::{Behaviour, Cx, EXIT, EXITINVALID, Key, Registry};
 pub mod event;
 #[path = "behaviours_game.rs"]
 pub mod game;
+#[path = "behaviours_hud.rs"]
+pub mod hud;
 #[path = "behaviours_mode.rs"]
 pub mod mode;
 #[path = "behaviours_mode2.rs"]
@@ -54,6 +56,7 @@ pub fn register(r: &mut Registry) {
     game::register(r);
     mode::register(r);
     mode2::register(r);
+    hud::register(r);
     event::register(r);
 }
 
@@ -282,6 +285,22 @@ pub enum Query {
     BlacklistCreditsPending,
     /// `DOBLACKLISTS` (`FUN_0066e0f0`): the general sequence runs. Default false.
     CreditsSequenceActive,
+    /// `HORN_PRESS` (`FUN_0083c700`): the horn input is paused (skips the step). Default false.
+    HornPaused,
+    /// `HORN_PRESS`: the local player's input record (`FUN_0047aa20`) is not in state 1, the camera's byte +0x36dd is clear and the record's +0x58 is 2 (the horn is down). Default false.
+    HornDown,
+    /// `WAITSYSMENU`: the system menu flag, byte 0x011a2471. Default false.
+    SystemMenuActive,
+    /// `COSTSTATESC` update guards: the local player has a vehicle and the game clock runs. Default false.
+    CostStateActive,
+    /// `WAITFORCHASE`: the local player's pursuit state (record G+0x2f410 + slot x 0x8b0, +0x89c): 0 none, 1 / 3 running, 2 busted. Default 0.
+    LocalPursuitState,
+    /// `DISABLEWORLD`: the world-rendering byte G+0x2efb4. Default true.
+    WorldRendering,
+    /// `HOSTEZGUIDE` enter update: the easy guide is requested and shown (+0x58 == 1, state +0x54 == 2). Default true.
+    EasyGuideShown,
+    /// `HOSTEZGUIDE` exit update: the easy guide is released and closed (+0x58 == 0, state +0x54 == 0). Default true.
+    EasyGuideClosed,
 }
 
 impl Query {
@@ -311,7 +330,10 @@ impl Query {
             | Query::ScreenPrefetched { .. }
             | Query::ModeAuthority
             | Query::CheckpointsLoaded
-            | Query::CheckpointsFinished => 1,
+            | Query::CheckpointsFinished
+            | Query::WorldRendering
+            | Query::EasyGuideShown
+            | Query::EasyGuideClosed => 1,
             Query::TransitionState => 2,
             Query::GameModeEvent | Query::GameModeMachine | Query::BlacklistRivalHandle => u64::MAX,
             Query::BlacklistRivalDistance => 0x7f7f_ffff,
@@ -411,6 +433,14 @@ impl Query {
             Query::BlacklistPhaseAfter => "BlacklistPhaseAfter",
             Query::BlacklistCreditsPending => "BlacklistCreditsPending",
             Query::CreditsSequenceActive => "CreditsSequenceActive",
+            Query::HornPaused => "HornPaused",
+            Query::HornDown => "HornDown",
+            Query::SystemMenuActive => "SystemMenuActive",
+            Query::CostStateActive => "CostStateActive",
+            Query::LocalPursuitState => "LocalPursuitState",
+            Query::WorldRendering => "WorldRendering",
+            Query::EasyGuideShown => "EasyGuideShown",
+            Query::EasyGuideClosed => "EasyGuideClosed",
         }
     }
 }

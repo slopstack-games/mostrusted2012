@@ -591,4 +591,25 @@ pub enum Request {
     SetWaypointToEvent { event: i32 },
     /// `UpdateProgressAwardsStrings` (0x6768c0): `FUN_0071fd20`(-1, +0x10e8) and (6, +0x12e8) on G+0x2f3f8.
     UpdateProgressAwardsStrings,
+    /// `COSTSTATESC` (0x74a580, every 5 s): drop the u16 ids of the list (+0x48.., count +0x108) that
+    /// `FUN_0090cbd0` (G+0x53200) no longer knows.
+    CostStatePrune,
+    /// `COSTSTATESC` update (0x7548e0 after the prune): the scan of the event's cost records (engine work).
+    CostStateScan,
+    /// `DISABLETIME` enter / exit (0x73c4f0 / 0x73c500): the counter G+0x25624 is decremented (`on`) / incremented.
+    DisableStatsTimer { on: bool },
+    /// `DISABLEWORLD`: the world-rendering byte G+0x2efb4 = `enabled`.
+    SetWorldRendering { enabled: bool },
+    /// `DISABLEWORLD`: `FUN_004b8b20`(`*0x010edb4c`, `on`), the audio is disabled / enabled.
+    DisableAudio { on: bool },
+    /// `HOSTEZGUIDE` enter (0x74bb20): easy guide object (G+0x2f480 +0x47640): +0xac = 0, +0x58 = 1, `FUN_007997f0`.
+    HostEasyGuide,
+    /// `HOSTEZGUIDE` exit begin (0x73c8c0): easy guide +0x58 = 0, +0xf0 = 0.
+    ReleaseEasyGuide,
+    /// `CLEARUIPOSTF` update (0x73bb30): `FUN_007746a0`'s object +0x2e6a0 = 0.
+    ClearUiPostFx,
+    /// `SETPENDINGON` update (0x743720): G+0x2f70c = `value`.
+    SetPendingDialog { value: i32 },
+    /// `OVERRIDEPAGE` enter (0x76f750): `FUN_0083d6f0` on G+0x2ed74 with the context and page names.
+    OverridePage { context: String, page: String },
 }
