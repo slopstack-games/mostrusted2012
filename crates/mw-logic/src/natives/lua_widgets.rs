@@ -12,7 +12,7 @@ use mw_formats::json::Json;
 use mw_lua::{Lua, Value};
 
 use super::lua_args::{
-    fit, ftol, int, push_int, push_str, string_or_invalid, toboolean, tolstring, tonumber, touserdata,
+    fit, ftol, int, push_int, push_str, round_int, string_or_invalid, toboolean, tolstring, tonumber, touserdata,
 };
 use super::{LogicState, Registry, Request, vm_path};
 use crate::hsm::Key;
@@ -467,14 +467,14 @@ fn chars(s: &str, n: usize) -> String {
 
 /// `StartTextEntry(title, description, text, max length, password [, flag bit])` (0x007f2380 →
 /// `FUN_0081caa0`): the texts to wide strings, the keyboard opened (`FUN_00845d60`) with the length and the
-/// flags byte `1 << bit` (0 without a 6th argument or bit 0).
+/// flags byte `1 << (bit & 31)` (the 6th argument rounded to nearest; 0 without a 6th argument or bit 0).
 fn start_text_entry(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
     let title = chars(&string_or_invalid(&args, 1), 0x80);
     let description = chars(&string_or_invalid(&args, 2), 0x100);
     let text = chars(&string_or_invalid(&args, 3), 0x200);
     let max_len = int(&args, 4);
     let password = toboolean(&args, 5);
-    let bit = if args.len() > 5 { int(&args, 6) } else { 0 };
+    let bit = if args.len() > 5 { round_int(&args, 6) } else { 0 };
     let flags: u8 = if bit != 0 { (1u32 << (bit & 31)) as u8 } else { 0 };
     let t = &mut state.text_entry;
     t.title = title.clone();

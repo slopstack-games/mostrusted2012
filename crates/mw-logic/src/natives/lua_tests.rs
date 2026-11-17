@@ -172,6 +172,11 @@ fn text_entry() {
             flags: 0
         }]
     );
+    // The 6th argument is rounded to nearest: 2.6 -> bit 3.
+    host.state.borrow_mut().requests.clear();
+    call(&mut lua, "StartTextEntry", vec![s("T"), s("D"), s("i"), n(8.0), Value::Bool(true), n(2.6)]);
+    assert!(matches!(host.state.borrow().requests[0], Request::StartTextEntry { flags: 8, max_len: 8, .. }));
+    assert!(host.state.borrow().text_entry.password);
     {
         let mut st = host.state.borrow_mut();
         st.text_entry.state = 2;
@@ -240,6 +245,9 @@ fn post_fx_settings() {
     assert_eq!(host.state.borrow().post_fx.settings[0].value, 8, "above max: unchanged");
     call(&mut lua, "ChangePostFXSetting", vec![n(7.0), n(-9.0)]);
     assert_eq!(host.state.borrow().post_fx.settings[0].value, 8, "below min: unchanged");
+    // The key is rounded to nearest (fistp), the delta truncated (_ftol2): 6.6 finds key 7, +3.9 adds 3.
+    call(&mut lua, "ChangePostFXSetting", vec![n(6.6), n(-3.9)]);
+    assert_eq!(host.state.borrow().post_fx.settings[0].value, 5);
     call(&mut lua, "ResetPostFXSettings", vec![]);
     assert!(host.state.borrow().post_fx.settings.is_empty());
 }
@@ -275,4 +283,61 @@ fn career_fields() {
     }
     assert!(call(&mut lua, "ChangePerkOnCustomRollout", vec![n(1.0), n(2.0)]).is_empty());
     assert!(host.state.borrow().unported.is_empty());
+}
+
+#[test]
+fn menu_natives() {
+    let (mut lua, host) = setup();
+    call(&mut lua, "SelectChallengeVehicleSet", vec![n(3.0)]);
+    call(&mut lua, "SelectVehicleCategory", vec![n(2.9)]);
+    call(&mut lua, "SetSelectedVehicleColour", vec![n(5.0)]);
+    call(&mut lua, "SetVehicleModifier", vec![n(1.0), n(-4.0)]);
+    call(&mut lua, "UpdateAwardProgressBindings", vec![]);
+    {
+        let st = host.state.borrow();
+        assert_eq!(st.challenges.challenge_vehicle_set, 3);
+        assert_eq!(st.menus.vehicle_category, 2, "truncated");
+        assert_eq!(
+            st.requests,
+            [
+                Request::RecountChallengeVehicles,
+                Request::RebuildVehicleList,
+                Request::SetSelectedVehicleColour { colour: 5 },
+                Request::SetVehicleModifier { kind: 1, item: -4 },
+                Request::UpdateAwardProgressBindings,
+            ]
+        );
+    }
+    // Packs: index < 1 is "none"; an id is selected and the page marked changed.
+    host.state.borrow_mut().menus.packs = vec![0, 0x11, 0x22];
+    call(&mut lua, "SelectPack", vec![n(2.0)]);
+    assert_eq!((host.state.borrow().menus.selected_pack, host.state.borrow().menus.pack_changed), (0x22, true));
+    call(&mut lua, "SelectPack", vec![n(0.0)]);
+    assert_eq!(host.state.borrow().menus.selected_pack, 0);
+    assert_eq!(host.state.borrow().requests.last(), Some(&Request::SelectPack { id: 0 }));
+    // Downloads: complete unless listed.
+    host.state.borrow_mut().menus.downloads = vec![7];
+    assert!(!flag(&call(&mut lua, "IsViewModelDownloadComplete", vec![n(7.0)])));
+    assert!(flag(&call(&mut lua, "IsViewModelDownloadComplete", vec![n(8.0)])));
+    // Sign-in.
+    host.state.borrow_mut().menus.sign_in.list_1370 = 3;
+    call(&mut lua, "SignInStarted", vec![]);
+    {
+        let st = host.state.borrow();
+        let s = &st.menus.sign_in;
+        assert!(s.active && s.flag && s.state_1360 == -1 && s.state_135c == 0);
+    }
+    call(&mut lua, "SignInFinished", vec![]);
+    {
+        let st = host.state.borrow();
+        let s = &st.menus.sign_in;
+        assert!(!s.active && !s.flag && s.list_1370 == 0);
+    }
+    // SetNewGame(true) is the hook's function: a NewGame request and the flag.
+    host.state.borrow_mut().requests.clear();
+    call(&mut lua, "SetNewGame", vec![Value::Bool(true)]);
+    let st = host.state.borrow();
+    assert!(st.game_modes.new_game);
+    assert!(matches!(st.requests[0], Request::NewGame { new_game: true, .. }));
+    assert!(st.unported.is_empty());
 }

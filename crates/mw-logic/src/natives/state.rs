@@ -36,6 +36,8 @@ pub struct LogicState {
     pub ui_manager: super::lua_career::UiManagerFields,
     /// G+0x2f418.
     pub challenges: super::lua_career::ChallengeFields,
+    /// The menus' managers (`lua_menus.rs`).
+    pub menus: super::lua_menus::MenuFields,
 }
 
 /// Engine facts the logic reads, set by the runtime (or a tool) before the logic runs.
@@ -169,4 +171,19 @@ pub enum Request {
     /// `StartTextEntry`: open the platform keyboard; the runtime updates `LogicState::text_entry` (`state`,
     /// `entered`).
     StartTextEntry { title: String, description: String, text: String, max_len: i32, flags: u8 },
+    /// `SelectChallengeVehicleSet`: `FUN_006f3f90` on G+0x2f41c recounts the challenge page's entries for the new
+    /// set (`ChallengeFields::challenge_vehicle_set`).
+    RecountChallengeVehicles,
+    /// `SelectVehicleCategory`: `FUN_0068b7c0` rebuilds the vehicle list for `MenuFields::vehicle_category`.
+    RebuildVehicleList,
+    /// `SetSelectedVehicleColour`: `FUN_00657b50` (the selected vehicle's record gets the colour, the preview
+    /// car is repainted by `FUN_00844660`).
+    SetSelectedVehicleColour { colour: i32 },
+    /// `SetVehicleModifier`: `FUN_00657d10`(kind, item): the customisation of the selected vehicle changes, its
+    /// preview refreshes (`FUN_0068e000`).
+    SetVehicleModifier { kind: i32, item: i32 },
+    /// `SelectPack`: `FUN_00642a90`(id): the pack with that id (0: the default) is the selected one.
+    SelectPack { id: u32 },
+    /// `UpdateAwardProgressBindings`: `FUN_0071fd20`(-1) and (6) refresh the award progress bindings.
+    UpdateAwardProgressBindings,
 }
