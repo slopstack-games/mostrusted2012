@@ -44,15 +44,20 @@ pub fn register(r: &mut Registry) {
     r.set_hook("HasLocalPlayerSetRollout", has_local_player_set_rollout);
     r.set_hook("ResetLocalPlayerDamage", reset_local_player_damage);
     r.set_hook("ClearNitrous", clear_nitrous);
-}
-
-/// Hooks ported from their handlers by an earlier, unfinished pass: not verified against the dump yet, so not
-/// part of [`Registry::original`]; tests install them with [`Registry::original_with_parked`].
-pub fn register_parked(r: &mut Registry) {
     r.set_hook("DeactivateDamage", deactivate_damage);
     r.set_hook("ReactivateDamage", reactivate_damage);
     r.set_hook("CleanAndRepairVehicle", clean_and_repair_vehicle);
+    r.set_hook("ClearPendingResets", clear_pending_resets);
+    r.set_hook("TransferCurrentHeatToVehicle", transfer_current_heat_to_vehicle);
+    r.set_hook("IsSpeedTrapEvent", is_speed_trap_event);
+    r.set_hook("SetValidProgressionData", set_valid_progression_data);
+    r.set_hook("SetCollectablesNotInWorld", set_collectables_not_in_world);
+    r.set_hook("SetRollout", set_rollout);
 }
+
+/// Hooks ported from their handlers by an earlier, unfinished pass: not verified against the dump yet, so not
+/// part of [`Registry::original`]; tests install them with [`Registry::original_with_parked`]. None left here.
+pub fn register_parked(_: &mut Registry) {}
 
 /// `StartGameModeTimer` (0x675ea0): `FUN_006f4650`(GMM, 1).
 fn start_game_mode_timer(s: &mut LogicState, _: Args) -> Key {
@@ -290,21 +295,77 @@ fn reset_local_player_damage(s: &mut LogicState, _: Args) -> Key {
     EXIT
 }
 
-/// `DeactivateDamage` (0x68af80) → `FUN_0068acb0`.
+/// The local player's damage message 0x1f (`FUN_0068acb0` / `FUN_0068ad50` via `FUN_0069a5e0`): needs the local slot
+/// occupied and the car loaded (`FUN_006ba2f0`); the vehicle is +0xa0 (−1 when none).
+fn damage_message(s: &mut LogicState, deactivated: bool) -> Key {
+    if let Some(p) = s.players.local_player()
+        && p.loaded
+    {
+        let vehicle = p.vehicle;
+        s.requests.push(Request::VehicleDamage { vehicle, deactivated });
+    }
+    EXIT
+}
+
+/// `DeactivateDamage` (0x68af80) → `FUN_0068acb0`: the message's flag byte is 1.
 fn deactivate_damage(s: &mut LogicState, _: Args) -> Key {
-    s.requests.push(Request::VehicleDamage { active: false });
-    EXIT
+    damage_message(s, true)
 }
 
-/// `ReactivateDamage` (0x68afa0) → `FUN_0068ad50`.
+/// `ReactivateDamage` (0x68afa0) → `FUN_0068ad50`: the same message with the flag byte 0.
 fn reactivate_damage(s: &mut LogicState, _: Args) -> Key {
-    s.requests.push(Request::VehicleDamage { active: true });
+    damage_message(s, false)
+}
+
+/// `CleanAndRepairVehicle` (0x6927b0) → `FUN_006926b0` on the local player's record (`FUN_006bf330`, which the
+/// original dereferences without a check: no local player does nothing here).
+fn clean_and_repair_vehicle(s: &mut LogicState, _: Args) -> Key {
+    if let Some(p) = s.players.local_player() {
+        let vehicle = p.vehicle;
+        s.requests.push(Request::CleanAndRepairVehicle { vehicle });
+    }
     EXIT
 }
 
-/// `CleanAndRepairVehicle` (0x6927b0) → `FUN_006926b0`.
-fn clean_and_repair_vehicle(s: &mut LogicState, _: Args) -> Key {
-    s.requests.push(Request::CleanAndRepairVehicle);
+/// `ClearPendingResets` (0x676080): `FUN_0063d410`(G+0x25690, i) for the 16 slots.
+fn clear_pending_resets(s: &mut LogicState, _: Args) -> Key {
+    s.requests.push(Request::ClearPendingResets);
+    EXIT
+}
+
+/// `TransferCurrentHeatToVehicle` (0x6761c0): see [`Request::TransferCurrentHeatToVehicle`]. The vehicle id is read
+/// by the runtime (the player record's vtable +0x18 object +0x30); needs a local player (the original
+/// dereferences it unchecked).
+fn transfer_current_heat_to_vehicle(s: &mut LogicState, _: Args) -> Key {
+    if s.players.local_player().is_some() {
+        s.requests.push(Request::TransferCurrentHeatToVehicle);
+    }
+    EXIT
+}
+
+/// `IsSpeedTrapEvent` (0x680530) → `FUN_0067fe30`: an online event (`FUN_006dfed0`) counts as one; else the current
+/// event handle ((GMM+4)+0xf4 / +0xf8) → `FUN_0053c020` → the type record's byte +0x10 is 0x34 or 0x47
+/// (`FUN_006e1720`).
+fn is_speed_trap_event(s: &mut LogicState, _: Args) -> Key {
+    let g = &s.game_modes;
+    exit_if(g.online_event || matches!(g.current_event_kind, 0x34 | 0x47))
+}
+
+/// `SetValidProgressionData` (0x687750): `lbValid` (bool, `DAT_01177a6c` = 0xce68ae4f) → [`Request::SetValidProgressionData`].
+fn set_valid_progression_data(s: &mut LogicState, args: Args) -> Key {
+    s.requests.push(Request::SetValidProgressionData { valid: arg::boolean(args, arg::VALID_PROGRESSION_DATA) });
+    EXIT
+}
+
+/// `SetCollectablesNotInWorld` (0x676330): `FUN_0070d260`, `FUN_007000d0` on G+0x14e40.
+fn set_collectables_not_in_world(s: &mut LogicState, _: Args) -> Key {
+    s.requests.push(Request::SetCollectablesNotInWorld);
+    EXIT
+}
+
+/// `SetRollout` (0x68d2f0): `liRolloutId` (int, `DAT_01177c78` = 0xd04318ef) → `FUN_0068bbf0`(G+0x2f404, id).
+fn set_rollout(s: &mut LogicState, args: Args) -> Key {
+    s.requests.push(Request::SetRollout { rollout: arg::int(args, arg::LI_ROLLOUT_ID) });
     EXIT
 }
 

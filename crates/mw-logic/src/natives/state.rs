@@ -130,10 +130,13 @@ pub enum Request {
     ResetChaseStats,
     /// `FUN_00844940`(vehicle): message 0x16, the vehicle's damage is reset.
     ResetVehicleDamage { vehicle: i32 },
-    /// `FUN_0068acb0` (inactive) / `FUN_0068ad50` (active): the local car's damage model.
-    VehicleDamage { active: bool },
-    /// `FUN_006926b0`: the local car's rollout re-applied clean (`FUN_0068e9d0`(…, 2)) and its damage reset.
-    CleanAndRepairVehicle,
+    /// `FUN_0068acb0` (`deactivated` = 1, `DeactivateDamage`) / `FUN_0068ad50` (0, `ReactivateDamage`): message 0x1f
+    /// `{vehicle, deactivated}` through `FUN_0069a5e0`, sent only when the local car is loaded.
+    VehicleDamage { vehicle: i32, deactivated: bool },
+    /// `FUN_006926b0`: the local car's rollout (vtable +0x18, 0x2b dwords, two fields zeroed) re-applied clean
+    /// (`FUN_0068e9d0`(player +0x98, copy, 2)), then, when it has a vehicle (+0xa0), `FUN_00844940`(vehicle):
+    /// message 0x16, its damage reset. `vehicle` −1: none.
+    CleanAndRepairVehicle { vehicle: i32 },
     /// `FUN_0065de30`(G+0x264e0, slot): the player's nitrous is emptied.
     ClearNitrous { slot: i32 },
     /// `FUN_0067f8c0`: the HUD's message queues are emptied (UIM+0x12458 records, +0x12468, +0x124f8, +0x12574).
@@ -173,6 +176,22 @@ pub enum Request {
     /// `StartTextEntry`: open the platform keyboard; the runtime updates `LogicState::text_entry` (`state`,
     /// `entered`).
     StartTextEntry { title: String, description: String, text: String, max_len: i32, flags: u8 },
+    /// `ClearPendingResets` (0x676080): `FUN_0063d410`(G+0x25690, i) for i in 0..16 (clears the pending reset of
+    /// vehicle slot i; when it is the local car's: UIM+0x2d204 bit 12 and +0x2d238 cleared).
+    ClearPendingResets,
+    /// `TransferCurrentHeatToVehicle` (0x6761c0): the local player's current vehicle id (`FUN_006ba320`: the
+    /// vtable +0x18 object's +0x30); when non-zero `FUN_0072a280`(the profile's "garage" table (G+0x2f454)+0x4964,
+    /// id, 0): the "heat" column of that vehicle's row is set to 0.
+    TransferCurrentHeatToVehicle,
+    /// `SetCollectablesNotInWorld` (0x676330): `FUN_0070d260` then `FUN_007000d0` on the collectables
+    /// manager G+0x14e40.
+    SetCollectablesNotInWorld,
+    /// `SetRollout` (0x68d2f0): `liRolloutId` → `FUN_0068bbf0`(the rollout manager G+0x2f404, id): the rollout
+    /// with that id is copied into the local player's slot record and applied.
+    SetRollout { rollout: i32 },
+    /// `SetValidProgressionData` (0x687750): `FUN_00686e70`(G+0x2f3e4) (11 entries zeroed), its +0xa4 = `valid`,
+    /// G+0x2f3e8's +0x70 = 0.
+    SetValidProgressionData { valid: bool },
     // --- From HSM behaviours (`hsm::behaviours`; each names the behaviour and the original's call).
     /// `RUN_PG_RNNR2` enter (0x76f7f0 → `FUN_0083dc70` on the PageRunner2 at G+0x2ee60): push the PageRunner2
     /// context `name` with its default page `page` (the `DEF_PAGE_REF` id printed "%d"); a context of that name
