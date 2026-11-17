@@ -70,7 +70,8 @@ Decisions with the user: portrait loading screens keep the original's bars.
   gain (`audio::PlayerEngineLevel` not re-published) or a second bank starts; the `RaceCarEntities.RaceCar[1]` skid
   sets binding to the player once racers exist; the competitor (AI) tyre bank (+4 dB bus) playing at full level near
   the player. Measure with `MW_AUDIO_TAP` across a race start (`--race 462174`), free roam vs race.
-- **Body shops / repair stations** (user, 2026-10-19): only cars with liveries behave right (nitrous refilled,
+- ~~**Body shops / repair stations**~~ **done 2026-11-17** (respray in place, `paint_wear::Respray`; research
+  log 2026-11-17) (user, 2026-10-19): only cars with liveries behave right (nitrous refilled,
   repaired, cleaned). Cars with plain paint colours get replaced by a whole new car spawned in a different colour.
   The game resprays the same vehicle (`FUN_00748ff0` → vehicle-manager message 0xc, research log "race flow" /
   Most Wanted races entry); ours reloads the car on a respray (`garage.rs` "loading ..."): change the paint in place

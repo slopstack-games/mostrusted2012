@@ -42,6 +42,9 @@ impl Plugin for GaragePlugin {
 pub enum GarageAction {
     /// Load a car and drive it: in place of the current car, or dropped below the free camera.
     Drive { name: String, bundle: String, paint_index: usize },
+    /// Paint the car being driven with another of its paints, in place (`paint_wear::Respray`): the same
+    /// vehicle, nothing reloaded (the body shops' message 0xc, `FUN_00748ff0`; the car menu's paint choice).
+    Respray { paint_index: usize },
     /// Leave the car and fly the free camera.
     FreeCamera,
 }
@@ -321,6 +324,15 @@ fn handle_actions(
                 garage.requested += 1;
                 garage.loading = Some(name.clone());
                 garage.set_status(format!("loading {name} (paint {})", paint_index + 1), now);
+            }
+            GarageAction::Respray { paint_index } => {
+                let Some(current) = garage.current.as_mut() else { continue };
+                let paint_index = (*paint_index).min(current.paint_count.saturating_sub(1));
+                current.paint_index = paint_index;
+                for e in &cars {
+                    commands.entity(e).insert(crate::paint_wear::Respray(paint_index));
+                }
+                garage.set_status(format!("resprayed (paint {})", paint_index + 1), now);
             }
             GarageAction::FreeCamera => {
                 for e in &cars {

@@ -99,6 +99,9 @@ pub struct CarSpec {
     pub bundle: String,
     pub paint_index: usize,
     pub paint_count: usize,
+    /// All of the car's paints (`VehiclePaint`, in the order `paint_index` counts), for a respray in place
+    /// (`paint_wear::Respray`).
+    pub paints: Arc<Vec<mw_assets::paint::VehiclePaint>>,
     pub body: Vec<ResourceId>,
     pub wheels: Vec<WheelSpec>,
     /// Handling parameters from the car's GeneSys data.
@@ -671,7 +674,7 @@ impl Worker {
         }
     }
 
-    fn select_paint(&mut self, b: &mw_bundle::Bundle) {
+    fn select_paint(&mut self, b: &mw_bundle::Bundle) -> Vec<mw_assets::paint::VehiclePaint> {
         let paints = self.store.vehicle_paints(b).unwrap_or_default();
         self.paint_count = paints.len();
         self.paint = paints.get(self.filter.paint_index.min(paints.len().saturating_sub(1))).copied();
@@ -682,6 +685,7 @@ impl Worker {
                 paints.len()
             )));
         }
+        paints
     }
 
     /// A `NitrousParameters` variant's rules (`mw_handling::nitrous`).
@@ -692,7 +696,7 @@ impl Worker {
 
     fn car(&mut self, bundle: &str) -> anyhow::Result<()> {
         let b = self.store.bundle(bundle).ok_or_else(|| anyhow::anyhow!("bundle not found: {bundle}"))?;
-        self.select_paint(&b);
+        let paints = Arc::new(self.select_paint(&b));
         let e = b
             .entries_of_type(ResourceType::VehicleGraphicsSpec)
             .next()
@@ -754,6 +758,7 @@ impl Worker {
             bundle: bundle.to_string(),
             paint_index: self.filter.paint_index.min(self.paint_count.saturating_sub(1)),
             paint_count: self.paint_count,
+            paints,
             body: Vec::new(),
             wheels: Vec::new(),
             handling,

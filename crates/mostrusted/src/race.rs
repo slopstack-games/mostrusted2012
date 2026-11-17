@@ -775,27 +775,11 @@ fn spawn_route_markers(
     );
 }
 
-/// Give the player's car (each new one after a swap too) its `Racer`.
-///
-/// A car rebuilt during the race (a body shop's respray reloads ours; the game changes the paint of the same
-/// vehicle, `FUN_00748ff0` → message 0xc) keeps the race progress of the car it replaces.
-#[allow(clippy::type_complexity)]
-fn attach_player(
-    mut commands: Commands,
-    cars: Query<(Entity, &Car), (Without<Racer>, With<crate::drive::Player>)>,
-    racing: Query<&RacerProgress, (With<Racer>, With<crate::drive::Player>)>,
-    race: Res<RaceState>,
-    mut last: Local<Option<RacerProgress>>,
-) {
-    if race.is_added() {
-        *last = None;
-    }
-    if let Some(p) = racing.iter().next() {
-        *last = Some(p.clone());
-    }
+/// Give the player's car (each new one after a swap too) its `Racer`. A body shop's respray keeps the car
+/// entity (`paint_wear::Respray`, as the game's message 0xc paints the same vehicle), so its progress stays.
+fn attach_player(mut commands: Commands, cars: Query<(Entity, &Car), (Without<Racer>, With<crate::drive::Player>)>) {
     for (e, car) in &cars {
-        let progress = last.clone().unwrap_or_default();
-        commands.entity(e).insert((Racer::player(car.params.body_half_extents), progress));
+        commands.entity(e).insert((Racer::player(car.params.body_half_extents), RacerProgress::default()));
     }
 }
 

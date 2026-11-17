@@ -637,7 +637,10 @@ pub fn build_car(commands: &mut Commands, b: &CarBuild) -> Entity {
             TransformHermiteEasing,
         ))
         .id();
-    commands.entity(car).insert(crate::paint_wear::ScratchScale(b.spec.scratch_scale));
+    commands.entity(car).insert((
+        crate::paint_wear::ScratchScale(b.spec.scratch_scale),
+        crate::paint_wear::CarPaints(b.spec.paints.clone()),
+    ));
     // Body collider: a box around the cabin, raised so the wheels do the work.
     let body_collider = commands
         .spawn((

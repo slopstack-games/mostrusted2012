@@ -35,7 +35,7 @@ pub struct PaintWearPlugin;
 impl Plugin for PaintWearPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(FixedPostUpdate, build_up)
-            .add_systems(Update, (attach_paint, clean_on_reset, write_materials).chain());
+            .add_systems(Update, (attach_paint, clean_on_reset, respray, write_materials).chain());
         if std::env::var_os("MW_DIRT_LOG").is_some() {
             app.add_systems(Update, log_levels);
         }
@@ -59,7 +59,22 @@ struct CarPaint {
     /// `VehicleInfo.76bfd668`: zone level → scratch weight scale.
     scratch_scale: f32,
     written: Option<([f32; 2], [f32; 15])>,
+    /// Body-paint materials of the car's other parts (wheels), copied for a respray: they take the paint
+    /// but not the body's damage grid.
+    others: Vec<Handle<GameMaterial>>,
 }
+
+/// The car's paints (`VehiclePaint`, in `CarSpec::paint_index` order), inserted with the car.
+#[derive(Component, Clone)]
+pub struct CarPaints(pub std::sync::Arc<Vec<mw_assets::paint::VehiclePaint>>);
+
+/// A respray in place: paint the car's body-paint materials with its paint of this index, then drop the
+/// component. The game changes the paint of the same vehicle (body shops: `FUN_00748ff0` → vehicle-manager
+/// message 0xc, `FUN_0058bc60` picks the colour, `FUN_0058edd0` loads its values into the paint block that
+/// `FUN_008e9c00` writes into the paint shaders' constants each frame): no reload, the entity, its damage,
+/// grime and nitrous stay as they are.
+#[derive(Component, Clone, Copy)]
+pub struct Respray(pub usize);
 
 /// The car's scratch scale (`VehicleInfo.76bfd668`), inserted with the car by the loader when known.
 #[derive(Component, Clone, Copy)]
@@ -197,6 +212,7 @@ fn attach_paint(
                 grid_param,
                 scratch_scale: scale.map_or(10.0, |s| s.0),
                 written: None,
+                others: Vec::new(),
             },
         ));
     }
@@ -208,6 +224,64 @@ fn clean_on_reset(keys: Res<ButtonInput<KeyCode>>, mut cars: Query<&mut CarGrime
         for mut g in &mut cars {
             *g = CarGrime::default();
         }
+    }
+}
+
+/// Respray a car in place ([`Respray`]): its own copies of the body-paint materials take the new paint's
+/// constants (`materials::repaint`). Body-paint parts that share a material with other cars (the wheels are
+/// not in [`CarPaint`]) get their own copy first.
+#[allow(clippy::type_complexity)]
+fn respray(
+    mut commands: Commands,
+    game: Option<Res<crate::Game>>,
+    mut cars: Query<(Entity, &Respray, &CarPaints, &mut CarPaint, Option<&mut crate::crash_vfx::CrashVfxCar>)>,
+    children: Query<&Children>,
+    parts: Query<&MeshMaterial3d<GameMaterial>>,
+    mut materials: ResMut<Assets<GameMaterial>>,
+) {
+    let colour = game.and_then(|g| g.paint);
+    for (car, respray, paints, mut paint, vfx) in &mut cars {
+        commands.entity(car).remove::<Respray>();
+        let Some(new) = paints.0.get(respray.0) else {
+            warn!("respray: the car has no paint {} (of {})", respray.0, paints.0.len());
+            continue;
+        };
+        let paint = &mut *paint;
+        let mut copies: Vec<(Handle<GameMaterial>, Handle<GameMaterial>)> = Vec::new();
+        for kid in children.iter_descendants(car) {
+            let Ok(mat) = parts.get(kid) else { continue };
+            if paint.materials.contains(&mat.0) || paint.others.contains(&mat.0) {
+                continue;
+            }
+            if let Some((_, c)) = copies.iter().find(|(src, _)| *src == mat.0) {
+                commands.entity(kid).insert(MeshMaterial3d(c.clone()));
+                continue;
+            }
+            let Some(m) = materials.get(&mat.0).cloned() else { continue };
+            if m.extension.params.mode != 6 || m.extension.params.p[19].w < 0.5 {
+                continue;
+            }
+            let c = materials.add(m);
+            commands.entity(kid).insert(MeshMaterial3d(c.clone()));
+            paint.others.push(c.clone());
+            copies.push((mat.0.clone(), c));
+        }
+        for h in paint.materials.iter().chain(&paint.others) {
+            if let Some(mut m) = materials.get_mut(h) {
+                crate::materials::repaint(&mut m, new, colour);
+            }
+        }
+        // p9.xy scale the levels by the new paint's DustColour.w / DirtColour.w.
+        paint.written = None;
+        if let Some(mut v) = vfx {
+            v.paint_index = respray.0;
+        }
+        info!(
+            "respray: paint {} of {} in place ({} materials)",
+            respray.0,
+            paints.0.len(),
+            paint.materials.len() + paint.others.len()
+        );
     }
 }
 
