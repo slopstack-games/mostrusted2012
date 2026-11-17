@@ -1,0 +1,59 @@
+#!/usr/bin/env python3
+"""Read one section of a large doc instead of guessing offsets.
+
+  tools/doc <doc>                 list the headings: line, size (lines), title
+  tools/doc <doc> <text>          print the first section whose heading contains <text> (case-insensitive),
+                                  up to the next heading of the same or a higher level
+  tools/doc <doc> <text> --all    every matching section
+  tools/doc <doc> <text> --head N only the first N lines of each
+
+<doc> is a path or a short name: decomp, research (research-log), archive (research-log-archive), formats, plan,
+handling, commands, probe."""
+import re, sys
+from pathlib import Path
+
+DOCS = Path(__file__).resolve().parents[1] / "docs"
+SHORT = {"decomp": "decomp.md", "research": "research-log.md", "archive": "research-log-archive.md",
+         "formats": "formats.md", "plan": "PLAN.md", "handling": "handling.md", "commands": "commands.md",
+         "probe": "probe.md"}
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        sys.exit(__doc__)
+    every = "--all" in args
+    head = None
+    if "--head" in args:
+        i = args.index("--head"); head = int(args[i + 1]); del args[i:i + 2]
+    args = [a for a in args if a != "--all"]
+    path = Path(args[0]) if Path(args[0]).exists() else DOCS / SHORT.get(args[0], args[0])
+    lines = path.read_text(encoding="utf-8").split("\n")
+    heads, fenced = [], False
+    for i, l in enumerate(lines):
+        if l.startswith("```"):
+            fenced = not fenced  # `#` lines in code blocks are comments, not headings
+        elif not fenced and (m := re.match(r"^(#{1,4}) (.*)", l)):
+            heads.append((i, len(m[1]), m[2]))
+    def end_of(k):
+        i, level, _ = heads[k]
+        for j, lv, _ in heads[k + 1:]:
+            if lv <= level:
+                return j
+        return len(lines)
+    if len(args) == 1:
+        for k, (i, level, title) in enumerate(heads):
+            print(f"{i + 1:6} {end_of(k) - i:5}  {'  ' * (level - 1)}{title}")
+        return
+    want = " ".join(args[1:]).lower()
+    found = [k for k, (_, _, t) in enumerate(heads) if want in t.lower()]
+    if not found:
+        sys.exit(f"no heading containing {want!r} in {path.name}")
+    for k in found if every else found[:1]:
+        i = heads[k][0]
+        body = lines[i:end_of(k)]
+        print(f"[{path.name}:{i + 1}]")
+        print("\n".join(body[:head] if head else body).rstrip())
+        if head and len(body) > head:
+            print(f"... ({len(body) - head} more lines)")
+
+main()

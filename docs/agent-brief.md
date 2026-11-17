@@ -14,6 +14,22 @@ from the integrator's conversation.
    warnings / errors). Another package set rebuilds Bevy. Don't run clippy, tests or `--workspace` builds: the
    integrator runs them once on the merged tree. Run `cargo fmt` before committing.
 
+## Engine-free tasks
+
+When the task is in the engine-free crates (mw-formats, mw-assets, mw-logic, mw-lua, mw-audio, mw-handling,
+mwtool): skip copy-deps and `tools/b` (no Bevy build); build and test only the crates you touch
+(`nice -n 19 cargo build --release -p <crate> -p mwtool`, `nice -n 19 cargo test -q --release -p <crate>`),
+keep them wasm32-compatible (`tools/wasm-check`), and clippy clean for them.
+
+## Token habits (context is the budget)
+
+- Big docs: `tools/doc <doc> [heading text] [--head N]` prints one section (no text = headings with sizes).
+  Start from the pointers in the task; don't survey docs you weren't pointed to.
+- Dump: `fn <addr> --head 60` first; the rest of a function only if needed. One function at a time.
+- Long tool output into a file, then grep it; tests through `grep -E "test result|FAILED|panicked"`.
+- Don't re-read files you just edited or wrote.
+- Your report: at most ~400 words. Lists, tables and logs go into the research log or a git-ignored file.
+
 ## Rules
 
 - **Fidelity** (CLAUDE.md): every behaviour or look change names its source: a data field, a function in the
@@ -35,8 +51,7 @@ from the integrator's conversation.
   decide something, A/B stacked with `python3 tools/stack.py out.png a.png b.png`.
 - **Merging**: other agents work in parallel (the prompt says on what). Keep edits to files outside your area
   small; prefer new modules plus small hooks.
-- **Context**: CLAUDE.md "Working economically". Search the large docs by heading or grep instead of reading
-  them whole; one dump function at a time.
+- **Context**: CLAUDE.md "Working economically" and "Token habits" above.
 
 ## When done
 

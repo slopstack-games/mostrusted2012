@@ -7,8 +7,9 @@ the first section of docs/next-session.md; the other docs are references to sear
 "Working economically"):
 
 - [docs/PLAN.md](docs/PLAN.md): milestones and what to do next. Update the checkboxes when things land.
-- [docs/research-log.md](docs/research-log.md): open format questions and dated findings. Add to it whenever
-  something new is learned, including dead ends.
+- [docs/research-log.md](docs/research-log.md): open format questions and this month's dated findings (older:
+  [research-log-archive.md](docs/research-log-archive.md)). Add to it whenever something new is learned,
+  including dead ends.
 - [docs/formats.md](docs/formats.md): settled format knowledge.
 - [docs/reverse-engineering.md](docs/reverse-engineering.md): why the exe can't be statically analysed, and the
   rules for the user's decompiled dump in `re/`.
@@ -108,59 +109,33 @@ optimised in dev too, but world loading is slow without `--release`.
 ## Working economically (context is the budget)
 
 Accuracy comes from reading the right source, not from reading everything. Habits that keep context small:
-- The docs are large (research-log ~580 KB, decomp ~470 KB, formats ~100 KB, PLAN ~60 KB): never read them
-  whole. List headings (`grep -n '^##' docs/decomp.md`, `grep -n '^### ' docs/research-log.md`: dated, newest
-  first) or grep for the function / type / flag, then read that section with an offset and limit.
+- **Big docs: one section at a time** with `tools/doc <doc> [heading text] [--head N]` (`decomp`, `research`,
+  `archive`, `formats`, `plan`, `handling`, `commands`, `probe`; no text = the heading list with sizes). Sizes:
+  decomp ~570 KB, formats ~115 KB, PLAN ~70 KB; research-log.md holds the current month (~50 KB), older entries are
+  in research-log-archive.md (~720 KB: grep or `tools/doc archive`). Never read a big doc whole.
 - **No windows and no sound on the user's desktop**: every `mostrusted` run (tests, screenshots) goes through `tools/t`
   or `tools/hl` (headless gamescope, audio to a silent null sink; `MW_SHOW=1` / `MW_SOUND=1` only when the user asks).
   `tools/orig` is silent the same way; never mute a game's stream by hand (WirePlumber remembers it per application).
 - Build with `tools/b` (only warnings / errors and the result) and run with `tools/t <mostrusted args>` (only the
   TEST / BENCH RESULT lines, errors, panics and the exit code; the full log is in scratch/run.log for when you
-  need it). `NO_COLOR=1` (set in `.claude/settings.json`) drops ANSI codes. Per-frame logging stays at `debug!`.
+  need it). Tests: `cargo test -q ... 2>&1 | grep -E "test result|FAILED|panicked"`. `NO_COLOR=1` is set.
+- Dump: `fn <addr> --head 60` first, the whole function only if needed; `callers <addr>`; never whole files.
+- Output you don't need to see goes to a file (`> scratch/x.txt`), then grep it.
 - Open items have one home: the newest section of docs/next-session.md. The README roadmap and PLAN.md
   checkboxes are updated once at the end of a session, not after every change.
 - Screenshots: look at the ones that decide something. For A/B, stack before / after into one downscaled image
   (`python3 tools/stack.py out.png a.png b.png`) instead of reading two full-size ones.
-- Dump: `fn <addr>` / `callers <addr>` for one function at a time; don't read whole decompiled files.
-- Agents: a subagent's report is all the integrator sees, so it should hold the result, the sources, the model
-  decisions and what's open; no step-by-step narration. Long tables / logs go into the research log or a
-  git-ignored file, and the report points to them.
-
-## Workflow for a new resource format
-
-1. `mwtool extract` a bundle with the type; hexdump `chunk0` (and `chunk1` if it has a body) plus
-   `imports.txt`. Import offsets show where the pointer-to-resource fields are.
-2. Survey **all** instances across the install with `mwtool survey <Type>` to separate constants, pointers,
-   import slots, counts, floats and enums.
-3. Check burnout.wiki and DGIorio's `nfsmw_exporter` (its `write_*` functions show layouts) for prior
-   knowledge.
-4. Write the parser in `mw-formats` with a layout table in the doc comment. Use `mw_bundle::Reader`
-   (bounds-checked) and `Resource::import_at(offset)` for resource pointers.
-5. Verify against every instance, plus one ground-truth check (visual or real-world value).
-6. Record findings and open questions in `docs/research-log.md`; move settled facts into `docs/formats.md`.
-
-## Shader work
-
-The game's shaders are DXBC: port the real maths instead of guessing. Run `mwtool shaders` to find a family's
-samplers, parameters and vertex layout, and `mwtool shader-asm <name>` for the pixel and vertex programs (the
-longest `ps_4_0` is usually the main G-buffer pass; render target 1 holds `sqrt(albedo)`). Ported families live
-in `crates/mostrusted/src/layered.wgsl`, selected by `materials::Look`.
-
-## Audio work
-
-I can't listen to audio, so verify decoders numerically (see the research log): spectral flatness against
-white noise, sample-to-sample smoothness (diff/RMS), discontinuities at codec frame or grain boundaries, and
-spectral centroid against RPM for engine sounds. Export with `mwtool audio` and analyse the `.wav` in Python.
-The engine's A/B switches (`MW_AUDIO_*`, `MW_SOUND_TRACE`) are in docs/commands.md "Audio".
+- Task-specific workflows (a new resource format, shaders, audio): [docs/workflows.md](docs/workflows.md).
 
 ## Parallel agents
 
-Worktree agents get [docs/agent-brief.md](docs/agent-brief.md) (setup, rules, report) plus a short task: the
-integration branch, the task, what the other agents work on, the co-author line. Builds must be throttled
-(handoffs-archive.md "Working with parallel agents"): at most ~4 agents building at once,
-`.claude/worktrees/.cargo/config.toml` caps their jobs, each worktree gets a real copy of the dependency build.
-The integrator merges, runs clippy / tests / `mwtool verify` once on the merged tree, moves stray command lines
-into docs/commands.md, and removes merged worktrees and branches (≈12 GB each).
+Worktree agents get [docs/agent-brief.md](docs/agent-brief.md) (setup, rules, token habits, report) plus a short
+task: the integration branch, the task with file pointers, what the other agents work on, the co-author line.
+**Model per task** (the Agent tool's `model`): `sonnet` for well-specified ports (a native, a behaviour type, a
+format parser from a known layout, wiring, docs); the default (the session's model) for reverse-engineering
+design, unknown code paths and integration; `haiku` / the Explore agent for pure searches. At most ~4 agents
+building at once; engine-free tasks don't build Bevy (brief "Engine-free tasks"). The integrator merges, runs
+clippy / tests / `mwtool verify` once on the merged tree, and removes merged worktrees and branches.
 
 ## Conventions
 
