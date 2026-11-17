@@ -281,7 +281,7 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
 - **Brakes** (`FUN_009b1180` → `FUN_009cdfd0` per wheel): rear wheels only, the torque budget is
   max(handbrake strength, service torque × pedal²); strength = lerp(`Brake_strength_at_low_speed`,
   `_at_high_speed`) by the signed mph from `Low_speed_mph` to `High_speed_mph`. The brakes see the handbrake
-  state of the previous tick (they run before `FUN_009d27b0`). **The handbrake does not lock the wheels**: the
+  state of the previous tick (they run before `FUN_009d27b0`). **Superseded 2026-11-18**: the rears lock through the tyre's lock flag set by `FUN_00905910` (research log 2026-11-18). Earlier reading: the brakes alone do not lock the wheels: the
   lock mask (a stopping torque that holds a wheel still) comes from other vehicle states (+0x1774 on all wheels,
   +0x1b90 on the front), not from the handbrake. Whether the rear wheels lock is up to the tyre and the torque.
 - **Brake path in detail** (re-read 2026-11-17 for the handbrake-lock report; research log that day). The four

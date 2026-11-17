@@ -71,6 +71,16 @@ const CLUTCH_IN_THROTTLE_SCALE: f32 = 0.7;
 const STALL_FRACTION: f32 = 0.9;
 /// The torque noise is sampled at the firing rate of one cylinder: rpm / 120 lattice points per second.
 const NOISE_RPM_DIV: f32 = 120.0;
+/// Standstill → launch (`FUN_009d6370`): the control block's throttle at least this (`.bss` 0x01187230 = 0.3) or
+/// its brake at least `LAUNCH_BRAKE` (0x01186ec0 = 0.2), with the handbrake mask clear; values read in the memory
+/// snapshot `re/out/live/snap1` (2026-11-17).
+pub const LAUNCH_THROTTLE: f32 = 0.3;
+pub const LAUNCH_BRAKE: f32 = 0.2;
+/// In standstill (no launch this tick) below this |speed| (mph; `.bss` 0x01186f60 = 0.5, snapshot) or with the
+/// handbrake pulled, `FUN_009d6370` sets the control block's handbrake mask (all lanes) and the front wheels' lock
+/// lanes (gearbox +0x120 = vehicle +0x1b90, cleared by `FUN_009da600` at the start of every gearbox tick): the
+/// parked car is held by its handbrake and locked front brakes.
+pub const PARK_MPH: f32 = 0.5;
 
 /// Engine and gearbox data for one car.
 #[derive(Debug, Clone)]
@@ -275,6 +285,11 @@ pub struct Drivetrain {
     /// Standing or pulling away: the clutch slips in with the throttle or the revs (the game's standstill and
     /// launch states).
     launching: bool,
+    /// Of those, standing (gearbox state 2, `FUN_009d6370`): clutch open until the launch condition holds.
+    standstill: bool,
+    /// This tick's standstill hold (`FUN_009d6370`, see [`PARK_MPH`]): the handbrake mask forced on and the front
+    /// wheels' brakes locked. Cleared on every tick the gearbox is not standing.
+    pub parked: bool,
     shift: Option<Shift>,
     /// The engine's effective throttle (after the gearbox's cuts, the peak hold and the lag), for the sound.
     pub throttle: f32,
@@ -323,6 +338,8 @@ impl Drivetrain {
             clutch: if launching { 0.0 } else { 1.0 },
             grounded_time: 1.0,
             launching,
+            standstill: launching,
+            parked: false,
             shift: None,
             throttle: 0.0,
             gearbox_throttle: 0.0,
@@ -355,8 +372,9 @@ impl Drivetrain {
 
     /// One tick. `wheel_omega` is the mean spin of the driven wheels (rad/s), `mph` the road speed along the
     /// car (signed); `inv_inertia` the driven wheels' mean inverse inertia; `coupled` false when no wheel is on
-    /// the driveline (handbrake on a rear-driven car): the engine runs free. Returns the torque (N m) to share
-    /// between the driven wheels.
+    /// the driveline (handbrake on a rear-driven car): the engine runs free. `handbrake` is the control block's
+    /// handbrake mask (the input) and `raw_pedals` its throttle and brake before the reverse swap, which the
+    /// standstill state reads. Returns the torque (N m) to share between the driven wheels.
     #[allow(clippy::too_many_arguments)]
     pub fn step(
         &mut self,
@@ -367,6 +385,8 @@ impl Drivetrain {
         mph: f32,
         inv_inertia: f32,
         coupled: bool,
+        handbrake: bool,
+        raw_pedals: (f32, f32),
         dt: f32,
     ) -> f32 {
         let race = p;
@@ -374,7 +394,9 @@ impl Drivetrain {
         // `FUN_009da340` counts the gear-change clock before running the state (a shift that starts now
         // resets it to 0).
         self.shift_elapsed += dt;
-        let thr = self.gearbox_state(p, throttle, brake, mph, dt);
+        // `FUN_009da600` clears the front lock lanes before the state runs; only the standstill state sets them.
+        self.parked = false;
+        let thr = self.gearbox_state(p, throttle, brake, mph, handbrake, raw_pedals, dt);
         self.gearbox_throttle = thr;
         self.gearbox_mode(race, throttle, brake, dt);
         let (up, down) = match self.shift {
@@ -462,7 +484,17 @@ impl Drivetrain {
 
     /// The gearbox state machine (`FUN_009da340`) for the gearbox in use: sets the clutch and the gear, returns
     /// the throttle after the gearbox's cuts.
-    fn gearbox_state(&mut self, p: &DrivetrainParams, throttle: f32, brake: f32, mph: f32, dt: f32) -> f32 {
+    #[allow(clippy::too_many_arguments)]
+    fn gearbox_state(
+        &mut self,
+        p: &DrivetrainParams,
+        throttle: f32,
+        brake: f32,
+        mph: f32,
+        handbrake: bool,
+        (raw_throttle, raw_brake): (f32, f32),
+        dt: f32,
+    ) -> f32 {
         // Stall check (`FUN_009d17d0` launch; `FUN_009d6880`, `FUN_009d95a0`, `FUN_009d6af0` upshift phases;
         // `FUN_009d69e0`, `FUN_009d6ca0` downshift neutral / clutch-in; `FUN_009da1d0` after a downshift; not the
         // downshift's declutch `FUN_009ce490`): revs below `Idle_RPM` × `.bss` 0x011874a0 drop the gearbox to
@@ -475,15 +507,31 @@ impl Drivetrain {
             }
             return self.shift_phase(p, &mut s, throttle, mph, dt);
         }
+        if self.launching && self.standstill {
+            // Standstill (FUN_009d6370): the launch (state 3, run in the same tick) needs the handbrake mask clear
+            // and the throttle or the brake pressed far enough (and the engine at least an engine attribute
+            // (+0x14 of the block at gearbox → +0x180) that was not identified: taken as met while it runs).
+            // Otherwise the clutch stays open, so the throttle only revs the engine, and below `PARK_MPH` or with
+            // the handbrake the car is held (`parked`).
+            if handbrake || !(raw_throttle >= LAUNCH_THROTTLE || raw_brake >= LAUNCH_BRAKE) {
+                self.clutch = 0.0;
+                self.parked = mph.abs() < PARK_MPH || handbrake;
+                return throttle;
+            }
+            self.standstill = false;
+        }
         if self.launching && stalling {
             self.drop_to_standstill(p);
             return throttle;
         }
         if self.launching {
-            // Launch (FUN_009d17d0): with no throttle the clutch stays open; otherwise it engages with the
-            // throttle or with the revs towards the gear's upshift rpm, and closes once that reaches 0.95.
-            if throttle <= 0.0 {
+            // Launch (FUN_009d17d0): the handbrake mask or no throttle sends it back to standstill (state 2) with
+            // the clutch open (the code leaves the clutch as it was when the handbrake does it; ours opens it, a
+            // model decision); otherwise it engages with the throttle or with the revs towards the gear's upshift
+            // rpm, and closes once that reaches 0.95.
+            if handbrake || throttle <= 0.0 {
                 self.clutch = 0.0;
+                self.standstill = true;
                 return throttle;
             }
             let by_rpm = (self.rpm / self.up_rpm.max(1.0)).clamp(0.0, 1.0);
@@ -491,6 +539,7 @@ impl Drivetrain {
             if c >= CLUTCH_CLOSED && self.rpm > p.idle_rpm {
                 self.clutch = 1.0;
                 self.launching = false;
+                self.standstill = false;
             } else {
                 self.clutch = c;
             }
@@ -503,6 +552,7 @@ impl Drivetrain {
         if self.rpm < p.idle_rpm || (throttle <= 0.0 && brake <= 0.0 && mph.abs() < COAST_DECLUTCH_MPH) {
             self.clutch = 0.0;
             self.launching = true;
+            self.standstill = true;
             self.gear = 1;
             self.set_up_rpm(p);
             return throttle;
@@ -539,6 +589,7 @@ impl Drivetrain {
         self.shift = None;
         self.clutch = 0.0;
         self.launching = true;
+        self.standstill = true;
         self.gear = 1;
         self.set_up_rpm(p);
     }
@@ -635,6 +686,7 @@ impl Drivetrain {
         self.gear = gear;
         self.shift = None;
         self.launching = true;
+        self.standstill = true;
         self.clutch = 0.0;
     }
 
@@ -643,6 +695,7 @@ impl Drivetrain {
         self.gear = gear;
         self.shift = None;
         self.launching = false;
+        self.standstill = false;
         self.clutch = 1.0;
     }
 
@@ -671,10 +724,12 @@ impl Drivetrain {
             self.rpm = rpm;
             self.clutch = 1.0;
             self.launching = false;
+            self.standstill = false;
         } else {
             self.rpm = p.idle_rpm;
             self.clutch = 0.0;
             self.launching = true;
+            self.standstill = true;
         }
     }
 }

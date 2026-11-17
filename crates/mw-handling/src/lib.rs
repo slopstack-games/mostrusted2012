@@ -5,6 +5,7 @@
 
 pub mod drift;
 pub mod drivetrain;
+pub mod handbrake;
 pub mod nitrous;
 pub mod surface;
 pub mod suspension;
