@@ -32,6 +32,9 @@ keep them wasm32-compatible (`tools/wasm-check`), and clippy clean for them.
 
 ## Rules
 
+- **Port, don't reconstruct** (user, 2026-11-17: "everything should be ported as possible, not just data driven"):
+  behaviour comes from the original's functions, followed through every reader / writer of their state (vtable-only
+  methods in `re/out/live/text.asm` included); data values alone never stand in for the code that uses them.
 - **Fidelity** (CLAUDE.md): every behaviour or look change names its source: a data field, a function in the
   dump (`re/` of the main checkout), an `.rdata` constant, a capture. No tuning by feel; a value without a
   source is a model decision and is marked as one in the docs. Dump helpers in the main checkout's git-ignored
