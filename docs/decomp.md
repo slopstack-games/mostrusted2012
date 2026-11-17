@@ -5899,3 +5899,23 @@ Next steps: read the `CameraEntityModuleState` getters' bodies (`LAB_005dae70`, 
 unpacked code with the probe, follow `FUN_005ce610` / `FUN_005d2cd0` / `FUN_004766a0` (they surround the
 target history and sit next to the camera module), and look for the process-node update
 functions by their field offsets (`EntityAvoider` floats at 0x18..0x2c, bool 0x30).
+
+## Native registries
+
+Two name-to-handler registries serve the logic data: HSM hooks (`FUN_007763b0`, 187 names, hashed by name in the
+HSM manager +0x360, called by `CALLHSMHOOK(S)` / `HSMHOOKEXIT` with a member of the state's data definition as
+arguments through `FUN_007761a0`, and by widget native actions `FUN_007f2670`) and Lua natives (`FUN_009f7e50`,
+385 names, bound as global closures with the name as upvalue by `FUN_009f86d0`). 36 names are in both, each with
+its own handler. The port: `crates/mw-logic/src/natives/` (`table.rs` has every name and handler address).
+
+Ported HSM hooks (20, 2026-11-17): CalculateShouldShowRecapSequence, ClearRecapFlag, ClearMatchmakingState, PopulateSettings,
+SaveSettings, SetNewGame, SetSinglePlayerRollout, SetRolloutFromProfile, IsNewGame, ClearNewGameFlag, ShouldPlayNewGameIntro,
+SetNewGameIntroCompleted, SetIntroEventNext, IsIntroRace, IsProgressionReady, SaveProfile, StartGameModeTimer,
+StopGameModeTimer, ResetGameMode, IsOnlineEvent (research-log 2026-11-17).
+Ported Lua natives (60 of 385, 2026-11-17; handlers in the doc comments of `lua_widgets.rs`, `lua_settings.rs`,
+`lua_career.rs`): the five `Resolve*Binding`, `ExitWidgetGroup`, `Set{Bool,Int,Double,String,UniqueId}Variable`,
+`DeleteVariable`, `DoRpc`, `SetModalMode`, `print`, `GetPlatformName`, `SmoothStep`, `SetLanguage`,
+`GetInitialLanguageSelectLanguage`, `{Create,Destroy}Conductor`, `{Start,Stop}Sequence`, `HasSequenceFinished`,
+`IsConductorIdle`, `RequestDialog`, `GetDialogResult`, `ClearDialog`, `StartTextEntry`, `GetTextEntryState`,
+`GetEnteredText`, the settings getters / setters / revert / save, `RegisterPostFXSetting`, `ChangePostFXSetting`,
+`ResetPostFXSettings`, and 12 career field natives (`SetOfflineEventToPlay`, `SetStoryMode`, ...).

@@ -18,6 +18,7 @@ mod hsm;
 mod lods;
 mod lua;
 mod memscan;
+mod natives;
 mod placement;
 mod preview;
 mod probe_ctl;
@@ -835,6 +836,17 @@ enum Cmd {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// The original's native registries (`mw_logic::natives`): every HSM hook and Lua native with its handler,
+    /// area and whether it is ported, then ported / total per area. `--area offline|online|platform|debug`,
+    /// `--unported`, `--find <text>` filter the list. Needs no install.
+    Natives {
+        #[arg(long)]
+        area: Option<String>,
+        #[arg(long)]
+        unported: bool,
+        #[arg(long)]
+        find: Option<String>,
+    },
     /// The game logic's state machines (`HSMData`, `mw_formats::hsm`): `hsm` lists the top-level states and other
     /// roots, `hsm <id>` prints a state's tree (behaviour, parameters, data definition, what each child's exit
     /// points do), `hsm --find <text>` searches state names, `hsm <id> --parents` lists who starts it, `hsm --data`
@@ -965,6 +977,7 @@ fn main() -> Result<()> {
         }
         Cmd::Inputs { out, segments } => return probe_ctl::inputs(out, segments),
         Cmd::Compare { original, ours, every } => return compare::compare(original, ours, *every),
+        Cmd::Natives { area, unported, find } => return natives::run(area.as_deref(), *unported, find.as_deref()),
         _ => {}
     }
     let game = GameDir::locate(cli.game_dir.as_deref())?;
@@ -974,6 +987,7 @@ fn main() -> Result<()> {
         | Cmd::Telemetry { .. }
         | Cmd::Capture { .. }
         | Cmd::Compare { .. }
+        | Cmd::Natives { .. }
         | Cmd::Probe { .. }
         | Cmd::Tp { .. }
         | Cmd::Conditions { .. }

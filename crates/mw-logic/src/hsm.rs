@@ -40,7 +40,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use mw_formats::hsm::{Action, Fallback, HsmData, Parameter, State, behaviour_id, key, key_name};
-use serde_json::Value;
+use mw_formats::json::Json;
 
 /// An entry / exit point or parameter id (a packed name, `mw_formats::hsm::key`).
 pub type Key = u64;
@@ -384,7 +384,7 @@ pub trait Host {
     /// Calls an HSM hook (the registry at manager+0x360, `FUN_007761a0`, keyed by the name's hash) with the
     /// state's data-definition member as arguments; returns the exit point, `None` = no such hook
     /// (→ [`EXITINVALID`]).
-    fn hook(&mut self, _name: &str, _args: Option<&Value>) -> Option<Key> {
+    fn hook(&mut self, _name: &str, _args: Option<&Json>) -> Option<Key> {
         None
     }
     /// Whether the graphics are prepared (`FUN_00897960` on `*0x010edafc`; `BWAIT4GFX` waits for it).
@@ -398,7 +398,7 @@ pub trait Host {
         false
     }
     /// A state with a data definition that has a path became active: publish the view model (`FUN_00a4ead0`).
-    fn publish(&mut self, _path: &str, _data: &Value) {}
+    fn publish(&mut self, _path: &str, _data: &Json) {}
     /// ... and its state finished (`FUN_00a4de20`).
     fn retract(&mut self, _path: &str) {}
     fn trace(&mut self, _event: &Trace) {}
@@ -510,7 +510,7 @@ struct Instance {
     /// +0x43: ticked at least once.
     ticked: bool,
     /// +0x38: the data definition's JSON (an own copy per instance, like the original's).
-    data: Option<Value>,
+    data: Option<Json>,
     behaviour: Option<Box<dyn Behaviour>>,
     code: String,
 }
@@ -524,7 +524,7 @@ struct Machine {
 /// The interpreter: a manager of up to [`MAX_MACHINES`] machines over one `HSMData`.
 pub struct Hsm {
     data: Arc<HsmData>,
-    json: Vec<Option<Value>>,
+    json: Vec<Option<Json>>,
     registry: Registry,
     arena: Vec<Option<Instance>>,
     free: Vec<InstId>,
@@ -538,7 +538,8 @@ pub struct Hsm {
 
 impl Hsm {
     pub fn new(data: Arc<HsmData>, registry: Registry) -> Self {
-        let json = data.data_definitions.iter().map(|d| serde_json::from_str(&d.json).ok()).collect();
+        // The engine's JSON reader (`FUN_009f8fc0`): key order kept, int / double tags.
+        let json = data.data_definitions.iter().map(|d| Json::parse(&d.json).ok()).collect();
         Hsm {
             data,
             json,
@@ -989,7 +990,7 @@ impl Cx<'_> {
     }
 
     /// A member of the state's data definition (`FUN_009f77a0` on the parsed JSON root).
-    pub fn data_member(&self, name: &str) -> Option<Value> {
+    pub fn data_member(&self, name: &str) -> Option<Json> {
         self.hsm.inst(self.id).data.as_ref()?.get(name).cloned()
     }
 

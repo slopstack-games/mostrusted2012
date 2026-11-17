@@ -81,8 +81,13 @@ Decisions with the user: portrait loading screens keep the original's bars.
   audio (mixer on an AudioWorklet thread, patched crates in `third_party/`). Next: saves in browser storage,
   frame time, memory for whole-world views (PLAN.md M9).
 - **Game logic engine** (PLAN.md M8, 2026-11-17): bindings, HSM interpreter (19 behaviours), Lua 5.1 VM and the
-  widget data merged. Next round: the native registry (HSM hooks + 171 Lua natives), connecting the binding
-  evaluator to the HSM, more behaviour types, the widget runtime. Plan and blockers: research-log 2026-11-17 (steps 1-4).
+  widget data merged; the native registry's API and the original's tables are in `mw_logic::natives`. The
+  registry round was **stopped to cut token use** (user); its partial work is committed as WIP (not built or
+  verified) on four branches, to continue from (cheaper: `sonnet` agents, CLAUDE.md "Parallel agents"):
+  `worktree-agent-a5886ab46492f9fa9` (N1: wiring, JSON data definitions, ViewModels, ~1,400 lines),
+  `worktree-agent-a13ae28384ceb5ac6` (N2: HSM hooks), `worktree-agent-ae9215e5c9a19864a` (N3: Lua natives),
+  `worktree-agent-ad67203ead166fb17` (N4: behaviour types). Prompts: the session's agent prompts minus the
+  build boilerplate (now in docs/agent-brief.md). Plan and blockers: research-log 2026-11-17 (steps 1-4).
 
 New this session (docs/commands.md): `tools/hl`, `tools/silent-sink`, `mwtool tp / car / mods / conditions / inputs /
 probe`, `capture --probe --script`, `mwtool surfaces --flat / --tris / --classes`, `placement-check --floating`,
