@@ -4704,6 +4704,21 @@ speed caps (0x78 / 0x7c, 90 mph) are read only by non-racer behaviours; nitrous 
 reader; the car comes from its rollout (0x14; used since 2026-10-19, "Starting grid" in "Races"). The
 personality is not used yet.
 
+### AI racers (ported) (2026-11-17, `crates/mw-ai`)
+
+The functions above and the corrections in the research log of 2026-11-17 live in `mw-ai` (engine-free). **Runtime
+wiring (follow-up task)**: replace `ai_driver.rs` and the `DriverState::tick` call in `ai.rs::ai_drive` by
+`mw_ai::Driver::tick` at the fixed 60 Hz tick (the pedal integrates 0.03 × u per tick). Per tick the runtime feeds
+`RacerInput`: the car as `CarState` (position, velocity, forward, ground heading, radius, half length, tank, flags:
+physical, nitrous allowed, contact, all wheels off), the other race cars, the local player, the schedule speed from
+`RubberBandManager::frame` (one slot per frame, all pushed each frame), settings speed −1, the four recovery probe
+hits, visibility, the obstacle sweep result over `Driver::sweep_lengths`. The path: `mw_ai::Path` from the race
+route resampled every 15 m (clearances from nav raycasts, else open), `Driver::new(path.nearest_segment(pos),
+car PID gains, seed)`. Output: `VehicleControls` with steering positive = right (our `CarControls.steer` is
+positive = left: negate), handbrake mask, nitrous; `reset` → place the car (placement not traced). The runtime also
+keeps the AI tank refill (`AIConfig` 0x10, `FUN_00667c10`), the freeze before go, the done-racing stop and the
+police overrides (`ControlOverride`).
+
 ### Model decisions (ours, `ai.rs` / `ai_driver.rs`)
 
 - The path: the road-graph centre line through AIData nodes (a Catmull-Rom spline), not the game's relaxed

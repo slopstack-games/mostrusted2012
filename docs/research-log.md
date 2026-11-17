@@ -11,6 +11,40 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+### 2026-11-17: AI racer driving ported into an engine-free crate (`crates/mw-ai`), runtime not switched yet
+
+Every function of the racer's tick re-read in the dump and ported with its name and sourced constants
+(`AIConfig` fields by offset / hash in `mw_ai::AiConfig`; `.rdata` / `.data` constants named in the doc comments).
+API: `Driver::tick(cfg, path, RacerInput) -> TickOutput` (command block → `InputRecord` (`AIPlayer::FillInput`
+0x006c0890, read from the disassembly) → `VehicleControls` = the +0x1bf0 / +0x1bf4 / +0x1c00 / +0x1c40 / +0x1c20
+record). Ported: `FUN_004e75f0` (clear, state, reset timer +0x5854), state 8 `FUN_0050da90` (lane blend
+`FUN_0050b000`, crash check `FUN_004fb9f0`, command builder `FUN_0050a740` / `FUN_00508d50`, look time
+`FUN_00503880`, steering `FUN_00506c00` / `FUN_00505e60` / PID `FUN_00436920`, Hermite path `FUN_004e8190`,
+`FUN_004e3ee0`, node step `FUN_00512b70`, nitrous `FUN_004ff620` / `FUN_004e4eb0` / `FUN_004fdb60`, racer
+interaction `FUN_005050d0` with `FUN_00501860` / `FUN_004fda60` / `FUN_004fd940` and the state's LCG ring
+(Enter 0x00506260), emergency brake `FUN_00508070`, pedals `FUN_004fa0e0`), state 11 `FUN_004eeba0` (Enter
+0x004e0460, `FUN_004f9e80`, `FUN_004e3540`), path tangents / turns `FUN_004e6160` / `FUN_004e6a10`, the rubber
+band `FUN_0063ef30` / `FUN_006432a0` / `FUN_006433f0` (time correction now ported) / `FUN_00642da0` / manager
+`FUN_00645c90`. 21 unit tests on synthetic tracks (straight, right-hand corner, schedule braking, emergency
+brake, recovery, reset, nitrous, shunt, rubber band); clippy and `tools/wasm-check` clean (crate added to it).
+
+Differences from `ai_driver.rs` / `ai.rs` (found in the code): the recovery **starts in reverse** (Enter sets +0x34);
+its probes are ±25° 2 m, forward 4 m, back 0.25 m (ours 6 m); only the back probe or a new stuck flips direction;
+its steering is −4 × (left · direction to the next node) (ours 4 × the angle); its pedal is never negative and its
+1..4 mph band ramps (ours 0); it exits above 5 mph on |v| with the heading within 45° and no car in the 8 m ahead.
+The crash check adds the free time into the stuck time (a slow contact after > 1 s free triggers at once) and has
+no route-end exclusion in state 8. The look-ahead distance runs from the current node, not the car; its cap is
+`AIConfig` 0x1f0. The PIDs start with previous error 0 (a first-tick derivative kick). Nitrous memory is the
+driver's own last-tick flag, not the car's burn state. `+0x68` is the player handle, not a race position: mode 2
+holds 2 m **ahead** of a close faster-than-80-mph car with a lower handle (not "ram a better-placed car"). The
+corner speed rule stays uncalled (no pointers to 0x004ff480 / 0x004ff550 / 0x004e5270 in the exe).
+
+Open: runtime switch (spec in decomp.md "AI racers (ported)"); not ported: lane planner `FUN_00502e20`, racing line
+`FUN_004e70e0`, obstacle sweep geometry `FUN_004ff270` (input), path check `FUN_00506d60`, `FUN_00661eb0` (route
+factor, closure), virtual progress; +0x50 / +0x58 / +0x74 / flag bits meaning not traced; the corner test's toy
+car cuts the 60 m arc by ~12 m (not checked against the real physics). Captures that would confirm: a live read of
+D+0x5808 / pedals in a race, and a stuck AI's first recovery direction.
+
 ### 2026-11-17: handbrake rear-wheel lock (user report), no capture yet, no model change
 
 User report: "the handbrake doesn't lock up the rear wheels like the original; with brake-to-drift you can test".
