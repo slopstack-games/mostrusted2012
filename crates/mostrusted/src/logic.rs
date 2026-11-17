@@ -16,11 +16,12 @@
 //!
 //! Stand-ins (model decisions, the same answers `mwtool hsm --run` documents in docs/commands.md): the engine
 //! bindings `UIConfig.Platform` = "PC", `Net.IsLoggedInToServer` = false (offline),
-//! `SignInState.Params.IsChatRestricted` = true; state 1222788 `ConnectToAutolog` (online Autolog sign-in) exits
+//! `SignInState.Params.IsChatRestricted` = true, and the free-drive mode's `Mode` bindings as snapshot 1 reads
+//! them (`Mode.HudHsm` = 371633, ...; `Mode.WorldLoaded` is ours: `FrontEnd::ready`); state 1222788 `ConnectToAutolog` (online Autolog sign-in) exits
 //! DONE at once; behaviour types that are not ported yet hold (run their children, never exit); hooks that are
 //! not ported answer EXIT (most `CALLHSMHOOK` nodes go on on EXIT).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
 
@@ -29,6 +30,8 @@ use mw_formats::hsm::{HsmData, State, key, key_name};
 use mw_formats::json::Json;
 use mw_logic::hsm::behaviours::{Query, Stub};
 use mw_logic::hsm::{Clock, Host, Hsm, Key, Registry, Trace, original_code};
+use mw_logic::natives::game_modes::EventInfo;
+use mw_logic::natives::mode_machine::{self, ModeInfo};
 use mw_logic::natives::{LogicHost, Request, progression};
 
 use crate::frontend::{FrontEnd, Phase};
@@ -62,7 +65,15 @@ impl Plugin for LogicPlugin {
 #[derive(Resource)]
 struct Setup {
     new_profile: bool,
-    pending: Option<Mutex<Receiver<Result<HsmData, String>>>>,
+    pending: Option<Mutex<Receiver<Result<Loaded, String>>>>,
+}
+
+/// What the loader thread reads: the machines, and the event / game-mode data and `GameLogicConfig` ids the
+/// game-mode manager reads.
+struct Loaded {
+    data: HsmData,
+    events: mw_assets::events::Events,
+    ids: mw_assets::frontend::LogicConfigIds,
 }
 
 /// The running machine and its host (not `Send`: the logic state is shared with Lua through `Rc`).
@@ -77,7 +88,10 @@ fn start_loading(game: Res<crate::Game>, mut setup: ResMut<Setup>) {
     let store = game.store.clone();
     let (tx, rx) = channel();
     let spawned = crate::platform::thread::Builder::new().name("mw-logic".into()).spawn(move || {
-        let _ = tx.send(store.hsm_data(BUNDLE).map_err(|e| e.to_string()));
+        let load = || -> anyhow::Result<Loaded> {
+            Ok(Loaded { data: store.hsm_data(BUNDLE)?, events: store.events()?, ids: store.start_config()?.ids })
+        };
+        let _ = tx.send(load().map_err(|e| e.to_string()));
     });
     match spawned {
         Ok(_) => setup.pending = Some(Mutex::new(rx)),
@@ -94,13 +108,14 @@ fn receive(world: &mut World) {
     };
     setup.pending = None;
     let new_profile = setup.new_profile;
-    let data = match got {
-        Ok(d) => Arc::new(d),
+    let Loaded { data, events, ids } = match got {
+        Ok(l) => l,
         Err(e) => {
             warn!("hsm: {BUNDLE}: {e}");
             return;
         }
     };
+    let data = Arc::new(data);
     let registry = registry(&data);
     let mut hsm = Hsm::new(data.clone(), registry);
     let logic = LogicHost::default();
@@ -116,12 +131,39 @@ fn receive(world: &mut World) {
         }
         st.players.local = Some(0);
         st.players.slots[0] = Some(Default::default());
+        // The game-mode manager's data (`natives::mode_machine`), filled as `mwtool hsm --run` does. Stand-ins
+        // (model decisions, as there): an event is available when it is in an `EventList` (`FUN_006e58a0` looks it
+        // up in the selected world's list), every rollout check passes, the event data and weapon lists are
+        // loaded at once.
+        st.config.escape_mode = ids.escape_mode;
+        st.config.default_rollout = ids.default_rollout;
+        st.config.freedrive_mode = ids.freedrive_mode;
+        st.config.intro_event = ids.intro_event;
+        st.config.intro_race_event = ids.intro_race_event;
+        st.config.online_freedrive_mode = ids.online_freedrive_mode;
+        let listed: HashSet<u32> = events.event_lists.iter().flat_map(|(_, l)| l.iter().copied()).collect();
+        st.game_modes.events = events
+            .events
+            .iter()
+            .map(|e| EventInfo {
+                id: e.id,
+                mode: e.game_mode,
+                available: listed.contains(&e.id),
+                rollout_ok: true,
+                ..Default::default()
+            })
+            .collect();
+        st.game_modes.modes =
+            events.game_modes.iter().map(|m| ModeInfo { id: m.id, hsm: m.hsm, weapon_list: m.weapon_list }).collect();
+        st.game_modes.event_data_ready = true;
     }
     let mut host = RuntimeHost {
         data,
         logic,
         boot_trigger: false,
         new_profile,
+        world_loaded: false,
+        transitioning: false,
         pressed: false,
         listening: false,
         frame: 0,
@@ -184,14 +226,25 @@ fn tick(logic: Option<NonSendMut<Logic>>, time: Res<Time>, front: Option<Res<Fro
     if let Some(front) = &front {
         host.boot_trigger = front.boot_trigger() || front.phase != Phase::Title;
         host.pressed = front.phase != Phase::Title;
+        host.world_loaded = front.ready;
+        host.transitioning = front.phase == Phase::Transition;
         host.logic.state.borrow_mut().engine.loading_screen_showing = front.phase == Phase::Loading;
     } else {
         host.boot_trigger = true;
         host.pressed = true;
+        host.world_loaded = true;
     }
     host.logic.frame(dt);
     let was_running = hsm.is_running(*serial);
     hsm.update(host, Clock::both(dt));
+    // The game-mode manager's update right after the HSM's (`FUN_006abc10`): starts the mode's machine. Stand-in:
+    // the weapon list loads at once.
+    let state = host.logic.state.clone();
+    {
+        let mut st = state.borrow_mut();
+        st.game_modes.weapon_list_loaded = st.game_modes.weapon_list;
+    }
+    mode_machine::update(&state, hsm, host);
     // Requests the ported hooks / Lua natives queued on the shared state.
     let queued = std::mem::take(&mut host.logic.state.borrow_mut().requests);
     for r in queued {
@@ -208,6 +261,10 @@ struct RuntimeHost {
     logic: LogicHost,
     boot_trigger: bool,
     new_profile: bool,
+    /// The game-mode manager's world-loaded flag (`Mode.WorldLoaded`): `FrontEnd::ready`.
+    world_loaded: bool,
+    /// The boot screen transition plays (`Transitions.Transitioning`).
+    transitioning: bool,
     /// "Press Start" was pressed (`frontend.rs` left the title on the key's release).
     pressed: bool,
     /// The primary-user listener is on (`ListenForPrimaryUser`, until `ReleasePrimaryUser`).
@@ -218,18 +275,23 @@ struct RuntimeHost {
 }
 
 impl RuntimeHost {
+    /// Engine bindings the logic host has no root for yet (the game-mode manager's `Mode` table, the
+    /// transitions): the runtime's own state where it has it, else the stand-ins of the module doc.
     fn engine_binding(&self, path: &str) -> Option<&'static str> {
+        let bool = |b: bool| if b { "true" } else { "false" };
         Some(match path {
-            BOOT_TRIGGER => {
-                if self.boot_trigger {
-                    "true"
-                } else {
-                    "false"
-                }
-            }
+            BOOT_TRIGGER => bool(self.boot_trigger),
+            "Mode.WorldLoaded" => bool(self.world_loaded),
+            "Transitions.Transitioning(NOT)" => bool(!self.transitioning),
             "UIConfig.Platform" => "PC",
             "Net.IsLoggedInToServer" => "false",
             "SignInState.Params.IsChatRestricted" => "true",
+            // Read in snapshot 1 (free roam): no transitioned events, feedback group 2, no map screen needed, the
+            // free-drive HUD machine.
+            "Mode.HasTransitionedEvents" => "false",
+            "Mode.Data.FeedbackGroupID" => "2",
+            "Mode.NeedTheMapScreen" => "false",
+            "Mode.HudHsm" => "371633",
             _ => return None,
         })
     }
@@ -250,7 +312,7 @@ impl Host for RuntimeHost {
     }
     fn binding_int(&mut self, path: &str) -> Option<i64> {
         match self.engine_binding(path) {
-            Some(v) => Some((v == "true") as i64),
+            Some(v) => Some(v.parse().unwrap_or((v == "true") as i64)),
             None => self.logic.binding_int(path),
         }
     }
@@ -282,6 +344,8 @@ impl Host for RuntimeHost {
             Request::ReleasePrimaryUser(_) => self.listening = false,
             _ => {}
         }
+        // The parts of the original's call that only touch logic state (the game-mode start, input blocks).
+        mode_machine::apply(&mut self.logic.state.borrow_mut(), &r);
         let kind = format!("{r:?}");
         let kind = kind.split([' ', '(', '{']).next().unwrap_or_default().to_owned();
         let n = self.requests.entry(kind).or_default();
@@ -296,7 +360,7 @@ impl Host for RuntimeHost {
             Query::PrimaryUserBound => Some((self.listening && self.pressed) as u64),
             // `ISNEWPROFILE`: no saved profile was loaded (frontend.rs reads ours at start-up).
             Query::NewProfile => Some(self.new_profile as u64),
-            _ => None,
+            _ => self.logic.query(q),
         }
     }
     fn publish(&mut self, path: &str, data: &Json) {
