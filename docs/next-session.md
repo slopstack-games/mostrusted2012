@@ -30,6 +30,30 @@ Decisions with the user: portrait loading screens keep the original's bars.
 
 ## Open items (user play tests; newest first)
 
+- **User requests of 2026-11-17 (end of session 11), in this order** (decided with the user):
+  1. **Skid / crash sound "extremely loud, distorted, a glitch"**, in both the desktop and browser versions,
+     on the player's drifts / handbrake and on crashes. Not reproduced headless (research log "skid / crash sound
+     glitch"):
+     - The live output (recorded from the null sink, `docs/commands.md`) matches the tap: handbrake turn, a
+       58 mph crash and wheelspin against the obstacle, peaks 0.25, no clipping, no clicks.
+     - Against the original's own audio (`ref/xkr_launch`, brake vs full throttle) our skid is not louder.
+     - Next: the user's exact situation (car, pad / keyboard, place, the moment it starts), or a recording of
+       it. Then a capture of the original's drift and crash with audio (`mwtool capture --probe`) for the
+       reference.
+  2. **Handbrake doesn't swing the car** (user): at 60 mph with full lock, Space locks the rears (braking skid
+     0.95) but the slip only reaches 0.16 in 1 s. Trace the handbrake's drift entry in the code (handling.md /
+     decomp.md "drift").
+  3. **Ownership and DLC** (user decision): an install whose retail data passes a checksum counts as the owned
+     base game (no other check); **all DLC cars and areas locked** until a real entitlement source exists. The
+     install is one Steam depot with every DLC inside, so files can't show DLC ownership. Find what the original
+     gates on: gamepacks, `IsAssetUnlocked`, `Mode.CurrentVehicleGamepack.Release`, the airport arena's
+     "Show Airport Required Dialog".
+  4. **Story progression** (user: "still a glorified sandbox"): the career, the Most Wanted list and the unlock
+     rules from the original's logic. Run as sonnet agent rounds (M8) with the runtime carrying out the
+     requests.
+  5. **Split the big docs** for cheaper sessions (decomp.md ~570 KB, the archive ~720 KB, formats.md, PLAN.md):
+     by system, keeping `tools/doc` working.
+
 - **Races and free roam** (2026-10-19), worked on at the end of session 11 (research log "race flow", "event
   starts, cop arrows, search circle", car-against-car response in decomp.md): fixed "checkpoint missed" (road-path
   distances, `FUN_00661b40`), racers removed after a race (`FUN_00521f00`), jack spots after a race (the event

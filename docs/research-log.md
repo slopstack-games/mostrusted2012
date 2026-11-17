@@ -13,6 +13,25 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ## Dated findings
 
+### 2026-11-17: skid / crash sound glitch: not reproduced headless (user: "extremely loud, distorted")
+
+- **Original vs ours** (`ref/xkr_launch`: the original's own audio, the inputs replayed with the tap, levels
+  relative to the full-throttle phase): hard braking is +1.8 dB in the original and +1.0 dB in ours (our skid
+  channel −7.8 dB). Our car decelerates more slowly under the same brake input (20–30 mph where the original has
+  stopped), a handling difference.
+- **Live output = tap**: real-time drives recorded from the null sink's monitor (`parecord`; `MW_INPUT_SCRIPT`
+  with `MW_INPUT_SCRIPT_START=playing`): a handbrake turn, a 58 mph crash, then wheelspin against the obstacle
+  (spin 1.0 at 0 mph and 7800 rpm in first gear while the throttle is held, the `Spin` set at −40 dB). Peaks 0.25
+  at the user's master 0.35, no clipping, no step over 0.2. The live mix matches the tap's two channels × 0.6 ×
+  0.35 within a dB.
+- **Race intro**: the intro's teleports give ~1 m/s landings, which start the `Spin` / landing sequences; the
+  vehicle channel there is ~8 dB over a free-roam drift.
+- Not the cause: the volume channels (equal bases 0.6), a doubled vehicle bank (built once), the engine
+  normalisation missing from the tap (it is in the bank's master gain), the device format (48 kHz stereo like
+  the null sink).
+- The browser runs at master 1.0 (no settings file): +9 dB against the desktop's saved 0.35.
+- Open: the user's exact situation; a capture of the original's drift and crash with audio.
+
 ### 2026-11-17: the `Mode` binding root (`natives/mode_view.rs`)
 
 **Registration.** `FUN_0070a120` (`ECX` = the game-mode manager) registers the root "Mode" (`.rdata` 0x00fc7ef0)
