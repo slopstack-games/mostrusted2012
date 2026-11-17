@@ -398,9 +398,20 @@ fn car_in_trigger(car: &Obb, t: &Trigger) -> bool {
     }
 }
 
+/// `--hsm`: the world's triggers enabled by the logic (`ENABLETRIGS` "EnableTriggers" in "Show World States":
+/// `FUN_00846590`(1) on enter, (0) on exit, logic.rs). Model decision: the message's receiver (queue
+/// `DAT_010edb48`) was not traced; it is read as switching these trigger hits. Absent (no `--hsm`): always on.
+#[derive(Resource, Default)]
+pub struct TriggersEnabled(pub bool);
+
 /// The per-frame hit list and the firing rule (`FUN_00536f70`, `FUN_00707650`).
-fn overlaps(mut state: ResMut<Collectables>, cars: Query<(&Car, &Transform), With<Player>>) {
-    let Ok((car, xf)) = cars.single() else {
+fn overlaps(
+    mut state: ResMut<Collectables>,
+    cars: Query<(&Car, &Transform), With<Player>>,
+    enabled: Option<Res<TriggersEnabled>>,
+) {
+    let on = enabled.is_none_or(|e| e.0);
+    let (true, Ok((car, xf))) = (on, cars.single()) else {
         state.inside.clear();
         return;
     };

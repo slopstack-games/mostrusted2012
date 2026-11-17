@@ -16,10 +16,25 @@
 //!   ([`Playback`]: its clock with its jumps, the conductor idle again at its end; nothing drawn yet);
 //!   `StopSequence` / `DestroyConductor` end it (the title's stops the title);
 //! - widget input: the menu actions (`input::MenuInput`, ids of `FUN_007e7910`'s table) reach the active widgets'
-//!   user actions every frame before the HSM update (`LogicHost::input`: Lua callbacks, `ExitGroupVia`, hooks).
+//!   user actions every frame before the HSM update (`LogicHost::input`: Lua callbacks, `ExitGroupVia`, hooks);
+//! - the song list (`PLAYSONGLIST` → `PlaySongList` / `StopSongList`): `music::SongListRequest` replaces the song
+//!   manager's hand-written choice (the free-drive list 1622455 through `Query::DefaultEventSongList`, the current
+//!   mode's `MusicPlaylist`); `free_drive` follows GMM+0x2e90;
+//! - `PlayUiSound`: the `MiscSound.UI` sequence at the field plays (`ui_sound.rs`);
+//! - `SimPause` (`SETSIMPAUSES`, `ALLOWSIMPAUS`, `BPAUSED`): the game clock (`Time<Virtual>`) pauses as the pause
+//!   menu pauses it and resumes when the logic resumes what it paused; the HSM itself runs on the frame clock
+//!   (its game clock stops meanwhile);
+//! - `ShowWorld` (`HSB_RUNNING`): `FrontEnd::world_shown`; in driven mode the boot transition's `Screen.IsActive`
+//!   also waits for it; `AdjustShowWorldCount` is the logic's count;
+//! - `MuteSound`: counted per reason; while any counts the world's sound is muted (`FrontEnd::logic_mute`, besides
+//!   the front end's own mute); `MuteRumble` and `SetFullRate` are kept (`Query::FullRate`), the runtime has no
+//!   rumble and renders at the display's rate;
+//! - `HideChevron`: the route markers (`chevron::ChevronsHidden`); `EnableTriggers`: the free-roam trigger hits
+//!   (`freeroam::TriggersEnabled`, off until the logic enables them).
 //!
 //! Everything else (world, profile and feedback-group loads, the game mode, the HUD screen's requests) is still
-//! logged only: `freeroam.rs`, `race.rs` and the rest of `frontend.rs` drive the game.
+//! logged only: `freeroam.rs`, `race.rs` and the rest of `frontend.rs` drive the game. Queries nobody answers log
+//! their default once (`hsm: ... query X: default answer N`).
 //!
 //! What the runtime answers from its own state: the title sequence's general trigger "BOOT"
 //! (`GeneralSequence.Triggers["BOOT"].IsTriggerSet[1]`, set by `frontend.rs` when the trigger item passes and
@@ -29,13 +44,17 @@
 //! brand new (`Query::NewProfile`: `--new-game` or no saved profile), and the progression / local player the boot
 //! reads (loaded at start-up; the intro counts as played for a saved profile). `Mode.*` bindings are the game-mode
 //! manager's own table (`mw_logic::natives::mode_view`); the runtime sets its world-loaded byte +0x2e77 from
-//! `FrontEnd::ready`.
+//! `FrontEnd::ready`. Also: `UIMessages.NISRunning` (a cutscene plays, `cutscene.rs`), `Query::CollectablesReady`
+//! (freeroam.rs read its triggers), `Query::FullRate`, `Query::DefaultEventSongList`.
 //!
 //! Stand-ins (model decisions, the same answers `mwtool hsm --run` documents in docs/commands.md): the engine
 //! bindings: none left but `Transitions.Transitioning` (`Net.*`, `UIConfig.*`, `SignInState.*`, `UISequences.*` and
 //! `GeneralSequence.*` are the logic's own offline roots); state 1222788 `ConnectToAutolog` (online Autolog sign-in) exits
-//! DONE at once; behaviour types that are not ported yet hold (run their children, never exit); hooks that are
-//! not ported answer EXIT (most `CALLHSMHOOK` nodes go on on EXIT).
+//! DONE at once; server operations (`HSM_SERV_OP`: the Blaze `PCLogin` the silent sign-in starts, since the
+//! code's `IsChatRestricted` is false) exit FAILURE, as with no server; `Query::ModeWon` (`FUN_006f46e0` offline, not
+//! ported) is true in free drive, which `MODEENDCHECK` would otherwise end at once; behaviour types that are not
+//! ported yet hold (run their children, never exit); hooks that are not ported answer EXIT (most `CALLHSMHOOK` nodes
+//! go on on EXIT).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -80,7 +99,12 @@ impl Plugin for LogicPlugin {
         if !self.enabled {
             return;
         }
+        // The systems the logic's requests drive (absent without `--hsm`: those systems keep their hand-written
+        // rules).
         app.insert_resource(Setup { new_profile: self.new_profile, pending: None })
+            .insert_resource(crate::music::SongListRequest::default())
+            .insert_resource(crate::chevron::ChevronsHidden(false))
+            .insert_resource(crate::freeroam::TriggersEnabled(false))
             .add_systems(Startup, start_loading)
             .add_systems(Update, (receive, tick).chain());
     }
@@ -100,6 +124,9 @@ struct Loaded {
     ids: mw_assets::frontend::LogicConfigIds,
 }
 
+/// `MUTEREASON`s (`MUTE_SOUND`'s table at 0x010c5c28 has 3, `MUTEALLRUMBL`'s at 0x010c5c10 has 6).
+const MUTE_REASONS: usize = 6;
+
 /// A screen load's result.
 type ScreenLoad = Result<ScreenData, String>;
 /// A conductor's sequence load: (conductor, sequence id, result).
@@ -116,6 +143,8 @@ struct Logic {
     /// Conductors' sequences (conductor, sequence id, the loaded sequence).
     sequences: (Sender<SequenceLoad>, Receiver<SequenceLoad>),
     store: Arc<mw_assets::AssetStore>,
+    /// The logic paused the game clock (`SimPause`) and has not resumed it yet.
+    sim_paused: bool,
 }
 
 fn start_loading(game: Res<crate::Game>, mut setup: ResMut<Setup>) {
@@ -204,8 +233,16 @@ fn receive(world: &mut World) {
             .collect();
         st.game_modes.event_data_ready = true;
     }
+    let playlists = events.game_modes.iter().map(|m| (m.id, m.music_playlist)).collect();
     let mut host = RuntimeHost {
         data,
+        playlists,
+        full_rate: false,
+        mute: [0; MUTE_REASONS],
+        rumble_mute: [false; MUTE_REASONS],
+        collectables_ready: false,
+        nis_running: false,
+        defaults: HashSet::new(),
         logic,
         boot_trigger: false,
         new_profile,
@@ -223,11 +260,23 @@ fn receive(world: &mut World) {
     };
     info!("hsm: machine {serial} started at {TOP_STATE} (shadow mode)");
     let store = world.resource::<crate::Game>().store.clone();
-    world.insert_non_send(Logic { hsm, host, serial, frame: 0, screens: channel(), sequences: channel(), store });
+    world.insert_non_send(Logic {
+        hsm,
+        host,
+        serial,
+        frame: 0,
+        screens: channel(),
+        sequences: channel(),
+        store,
+        sim_paused: false,
+    });
 }
 
-/// The structural and ported behaviour types; types the original has but we have not ported hold, and the online
-/// Autolog state exits DONE.
+/// The server operations (`HSM_SERV_OP`: Blaze / Origin logins, entitlements, uploads).
+const SERVER_OPERATION: &str = "HSM_SERV_OP";
+
+/// The structural and ported behaviour types; types the original has but we have not ported hold, the online
+/// Autolog state exits DONE and server operations exit FAILURE.
 fn registry(data: &HsmData) -> Registry {
     let mut registry = Registry::structural();
     let autolog = data.state(CONNECT_TO_AUTOLOG).map(|s| s.behaviour);
@@ -246,6 +295,7 @@ fn registry(data: &HsmData) -> Registry {
         }
         let orig = original.clone();
         let name = original_code(b).unwrap_or("?").to_owned();
+        let server = !ported && name == SERVER_OPERATION;
         registry.register_id(
             b,
             &name,
@@ -254,6 +304,8 @@ fn registry(data: &HsmData) -> Registry {
                     Box::new(Stub { exit: Some(key("DONE")) })
                 } else if ported {
                     orig.create_for(s).expect("registered")
+                } else if server {
+                    Box::new(Stub { exit: Some(key("FAILURE")) })
                 } else {
                     Box::new(Stub { exit: None })
                 }
@@ -263,18 +315,30 @@ fn registry(data: &HsmData) -> Registry {
     registry
 }
 
-fn tick(
-    logic: Option<NonSendMut<Logic>>,
-    time: Res<Time>,
-    mut front: Option<ResMut<FrontEnd>>,
-    menu: Res<crate::input::MenuInput>,
-) {
+/// The systems the requests drive.
+#[derive(bevy::ecs::system::SystemParam)]
+struct Targets<'w> {
+    front: Option<ResMut<'w, FrontEnd>>,
+    songs: Option<ResMut<'w, crate::music::SongListRequest>>,
+    ui_sounds: Option<ResMut<'w, crate::ui_sound::UiSounds>>,
+    chevrons: Option<ResMut<'w, crate::chevron::ChevronsHidden>>,
+    triggers: Option<ResMut<'w, crate::freeroam::TriggersEnabled>>,
+    collectables: Option<Res<'w, crate::freeroam::Collectables>>,
+    cutscene: Option<Res<'w, crate::cutscene::CutsceneState>>,
+    sim: ResMut<'w, Time<Virtual>>,
+}
+
+fn tick(logic: Option<NonSendMut<Logic>>, real: Res<Time<Real>>, mut t: Targets, menu: Res<crate::input::MenuInput>) {
     let Some(mut logic) = logic else { return };
-    let dt = time.delta_secs();
+    // The HSM runs on the frame clock while the simulation is paused (it is what resumes it); its game clock stops
+    // then (`Clock::game` None). The frame step is capped as the game clock is (main.rs: 2/60 s).
+    let dt = real.delta_secs().min(t.sim.max_delta().as_secs_f32());
     if dt <= 0.0 {
         return;
     }
-    let Logic { hsm, host, serial, frame, screens, sequences, store } = &mut *logic;
+    let game_dt = (!t.sim.is_paused()).then(|| t.sim.delta_secs());
+    let front = &mut t.front;
+    let Logic { hsm, host, serial, frame, screens, sequences, store, .. } = &mut *logic;
     while let Ok((conductor, sequence, got)) = sequences.1.try_recv() {
         let Some(p) = host.playbacks.iter_mut().find(|p| p.conductor == conductor && p.sequence == sequence) else {
             continue;
@@ -329,6 +393,8 @@ fn tick(
         let name = mw_logic::binding::hash(BOOT_TRIGGER_NAME);
         host.logic.state.borrow_mut().set_general_trigger(name, 1);
     }
+    host.collectables_ready = t.collectables.as_ref().is_some_and(|c| c.ready());
+    host.nis_running = t.cutscene.as_ref().is_some_and(|c| c.playing());
     host.logic.frame(dt);
     step_playbacks(host, dt);
     // The widgets' user actions (before the HSM's update, which reads the group exit they set).
@@ -337,7 +403,7 @@ fn tick(
         ActionInput { pressed, repeat, value }
     });
     let was_running = hsm.is_running(*serial);
-    hsm.update(host, Clock::both(dt));
+    hsm.update(host, Clock { frame: dt, game: game_dt });
     // The game-mode manager's update right after the HSM's (`FUN_006abc10`): starts the mode's machine. Stand-in:
     // the weapon list loads at once.
     let state = host.logic.state.clone();
@@ -371,14 +437,62 @@ fn tick(
             });
         }
     }
-    for r in std::mem::take(&mut host.carry) {
-        let Some(front) = front.as_deref_mut() else { continue };
+    let free_drive = host.logic.state.borrow().game_modes.freedrive_event;
+    let carry = std::mem::take(&mut host.carry);
+    let muted = host.mute.iter().any(|&n| n > 0);
+    for r in carry {
         match r {
-            Carry::Title => front.start_title(),
-            Carry::StopTitle => front.stop_title(),
+            Carry::Title => front.as_deref_mut().map_or((), |f| f.start_title()),
+            Carry::StopTitle => front.as_deref_mut().map_or((), |f| f.stop_title()),
+            Carry::BootTransition => front.as_deref_mut().map_or((), |f| f.start_transition()),
+            Carry::ShowWorld(show) => {
+                if let Some(f) = front.as_deref_mut() {
+                    f.world_shown = show;
+                }
+            }
+            Carry::SongList { list, allow_playout } => {
+                if let Some(songs) = t.songs.as_deref_mut() {
+                    songs.list = list;
+                    songs.allow_playout = allow_playout;
+                }
+            }
+            Carry::UiSound(field) => {
+                if let Some(ui) = t.ui_sounds.as_deref_mut() {
+                    ui.play(field);
+                }
+            }
+            Carry::SimPause(paused) => {
+                // As the pause menu does (pause.rs): the game clock stops; resumed only by whoever paused it.
+                if paused && !t.sim.is_paused() {
+                    t.sim.pause();
+                    logic.sim_paused = true;
+                } else if !paused && std::mem::take(&mut logic.sim_paused) {
+                    t.sim.unpause();
+                }
+            }
+            Carry::HideChevron(hide) => {
+                if let Some(c) = t.chevrons.as_deref_mut() {
+                    c.0 = hide;
+                }
+            }
+            Carry::EnableTriggers(on) => {
+                if let Some(e) = t.triggers.as_deref_mut() {
+                    e.0 = on;
+                }
+            }
             Carry::Play { .. } | Carry::Nothing => {}
-            Carry::BootTransition => front.start_transition(),
         }
+    }
+    if let Some(songs) = t.songs.as_deref_mut()
+        && songs.free_drive != free_drive
+    {
+        songs.free_drive = free_drive;
+    }
+    // `FUN_004b8b20`: the world's sound is muted while any `MUTE_SOUND` reason counts.
+    if let Some(f) = t.front.as_deref_mut()
+        && f.logic_mute != muted
+    {
+        f.logic_mute = muted;
     }
 }
 
@@ -392,6 +506,18 @@ enum Carry {
     StopTitle,
     /// `StartSequence` of any other sequence: its clock runs here ([`Playback`]).
     Play { conductor: String, sequence: u32 },
+    /// `PLAYSONGLIST` / its exit: the song manager's list (`music::SongListRequest`; 0 = stopped).
+    SongList { list: u32, allow_playout: bool },
+    /// `PlayUiSound`: `ui_sound.rs`.
+    UiSound(u32),
+    /// `SETSIMPAUSES` / `ALLOWSIMPAUS` / `BPAUSED`: the game clock (`Time<Virtual>`) paused / resumed.
+    SimPause(bool),
+    /// `HSB_RUNNING`: the world shown / hidden (`FrontEnd::world_shown`).
+    ShowWorld(bool),
+    /// `HIDECHEV`: the route markers (`chevron::ChevronsHidden`).
+    HideChevron(bool),
+    /// `ENABLETRIGS`: the free-roam trigger hits (`freeroam::TriggersEnabled`).
+    EnableTriggers(bool),
     /// Carried out with nothing to do (`CreateConductor`: the conductor is logic state).
     Nothing,
 }
@@ -440,6 +566,20 @@ fn step_playbacks(host: &mut RuntimeHost, dt: f32) {
 /// The logic host plus the runtime's answers (see the module doc).
 struct RuntimeHost {
     data: Arc<HsmData>,
+    /// Each game mode's `MusicPlaylist` (`Query::DefaultEventSongList`).
+    playlists: HashMap<u32, u32>,
+    /// `CHANGEVSYNCS`: G+0x2f723, the 60 Hz mode (`Query::FullRate`).
+    full_rate: bool,
+    /// `MUTE_SOUND`: the count per reason (UIM+0x2d2f0 +2999).
+    mute: [u32; MUTE_REASONS],
+    /// `MUTEALLRUMBL`: the flag per reason (G+0x2f480 +0x325f0 +0x260).
+    rumble_mute: [bool; MUTE_REASONS],
+    /// The free-roam collectables are read (`Query::CollectablesReady`).
+    collectables_ready: bool,
+    /// A cutscene (NIS) plays (`cutscene.rs`; `UIMessages.NISRunning`).
+    nis_running: bool,
+    /// Queries answered with their default (logged once each).
+    defaults: HashSet<String>,
     logic: LogicHost,
     boot_trigger: bool,
     new_profile: bool,
@@ -466,6 +606,9 @@ impl RuntimeHost {
         let bool = |b: bool| if b { "true" } else { "false" };
         Some(match path {
             "Transitions.Transitioning(NOT)" => bool(!self.transitioning),
+            // The UI message manager's NIS flag: a cutscene plays (`cutscene.rs`).
+            "UIMessages.NISRunning" => bool(self.nis_running),
+            "UIMessages.NISRunning(NOT)" => bool(!self.nis_running),
             _ => return None,
         })
     }
@@ -542,6 +685,32 @@ impl Host for RuntimeHost {
                 (conductor == TITLE_CONDUCTOR).then_some(Carry::StopTitle)
             }
             Request::CreateConductor { .. } => Some(Carry::Nothing),
+            Request::PlaySongList { list, allow_playout } => {
+                Some(Carry::SongList { list: u32::try_from(*list).unwrap_or(0), allow_playout: *allow_playout })
+            }
+            Request::StopSongList => Some(Carry::SongList { list: 0, allow_playout: false }),
+            Request::PlayUiSound { field } => Some(Carry::UiSound(*field)),
+            Request::SimPause { paused } => Some(Carry::SimPause(*paused)),
+            Request::ShowWorld { show } => Some(Carry::ShowWorld(*show)),
+            Request::HideChevron { hide } => Some(Carry::HideChevron(*hide)),
+            Request::EnableTriggers(on) => Some(Carry::EnableTriggers(*on)),
+            // The count is the logic's (`mode_machine::apply`); `Query::ShowWorldCount` reads it.
+            Request::AdjustShowWorldCount { .. } => Some(Carry::Nothing),
+            Request::SetFullRate(on) => {
+                // Kept for `Query::FullRate`; the runtime renders every frame at the display's rate already.
+                self.full_rate = *on;
+                Some(Carry::Nothing)
+            }
+            Request::MuteSound { reason, on } => {
+                let n = &mut self.mute[usize::from(*reason).min(MUTE_REASONS - 1)];
+                *n = if *on { *n + 1 } else { n.saturating_sub(1) };
+                Some(Carry::Nothing)
+            }
+            Request::MuteRumble { reason, on } => {
+                // Kept as the original keeps it; the runtime has no controller rumble to mute.
+                self.rumble_mute[usize::from(*reason).min(MUTE_REASONS - 1)] = *on;
+                Some(Carry::Nothing)
+            }
             Request::PlayWidgetGroupTransition { group, .. } if *group == PRESS_START_GROUP => {
                 self.transitioning = true;
                 Some(Carry::BootTransition)
@@ -580,7 +749,31 @@ impl Host for RuntimeHost {
             // The boot transition (the only group transition the runtime plays so far).
             Query::WidgetTransitionStarted { group } => Some((*group == PRESS_START_GROUP) as u64),
             Query::TransitionFinished => Some(!self.transitioning as u64),
-            _ => self.logic.query(q),
+            Query::FullRate => Some(self.full_rate as u64),
+            // `PLAYSONGLIST`'s last fallback: the current mode's `MusicPlaylist` (decomp.md "Music").
+            Query::DefaultEventSongList => {
+                let mode = self.logic.state.borrow().game_modes.current_mode;
+                Some(u64::from(self.playlists.get(&mode).copied().unwrap_or(0)))
+            }
+            // `COLLECTABLES`: the world state the collectables need (freeroam.rs has read the triggers).
+            Query::CollectablesReady => Some(self.collectables_ready as u64),
+            // `FUN_006f46e0` offline (not ported): `MODEENDCHECK` ends the mode at once when it is false
+            // (0x757b39), so free drive, which the original never ends by itself, reads true; online the logic
+            // answers GMM+0x2e78. Model decision until the event-data derivation is ported.
+            Query::ModeWon => {
+                Some(self.logic.query(q).unwrap_or_else(|| self.logic.state.borrow().game_modes.freedrive_event as u64))
+            }
+            _ => {
+                let a = self.logic.query(q);
+                if a.is_none() {
+                    let kind = format!("{q:?}");
+                    let kind = kind.split([' ', '(', '{']).next().unwrap_or_default().to_owned();
+                    if self.defaults.insert(kind) {
+                        info!("hsm: {:5} query {q:?}: default answer {}", self.frame, q.default_answer());
+                    }
+                }
+                a
+            }
         }
     }
     fn publish(&mut self, path: &str, data: &Json) {

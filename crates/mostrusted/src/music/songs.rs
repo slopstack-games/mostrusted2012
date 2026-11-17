@@ -196,6 +196,17 @@ impl SongManager {
     }
 }
 
+/// `--hsm`: the song list the original's logic asked for (logic.rs), used instead of [`wanted_list`]'s hand-written
+/// choice. `PLAYSONGLIST` enter (`FUN_0079f7b0`) sets `list` and `allow_playout` (`ALLOWPLAYOUT`); its exit with
+/// `STOPONLEAVE` (`FUN_007908e0`) and the lists 0 ("Pause Music", "Clear Credits Songlist") set 0, which holds the
+/// song playing and starts no new one, as list 0 does here. `free_drive` is GMM+0x2e90 (`IsFreedriveEvent`).
+#[derive(Resource, Default, Clone, Copy, Debug)]
+pub struct SongListRequest {
+    pub list: u32,
+    pub allow_playout: bool,
+    pub free_drive: bool,
+}
+
 /// The list the game logic asks for now (0 = none), whether a song of another list may play out first, and the
 /// free-drive flag (GMM+0x2e90).
 fn wanted_list(
@@ -240,11 +251,11 @@ pub(super) fn song_manager(
     mut clips: ResMut<Assets<MusicClip>>,
     time: Res<Time<Real>>,
     virtual_time: Res<Time<Virtual>>,
-    front: Option<Res<crate::frontend::FrontEnd>>,
-    race: Option<Res<crate::race::RaceState>>,
+    (front, race): (Option<Res<crate::frontend::FrontEnd>>, Option<Res<crate::race::RaceState>>),
     pause: Option<Res<crate::pause::PauseMenu>>,
     map: Option<Res<crate::map_screen::MapScreen>>,
     mut collected: Option<ResMut<crate::frontend::Collected>>,
+    request: Option<Res<SongListRequest>>,
     keys: Res<ButtonInput<KeyCode>>,
     pads: Query<&Gamepad>,
     mut voices: Query<&mut Voice>,
@@ -264,7 +275,10 @@ pub(super) fn song_manager(
             None => return,
         }
     }
-    let (want, playout, free_drive) = wanted_list(front.as_deref(), race.as_deref(), m.modes.as_ref().unwrap());
+    let (want, playout, free_drive) = match request.as_deref() {
+        Some(r) => (r.list, r.allow_playout, r.free_drive),
+        None => wanted_list(front.as_deref(), race.as_deref(), m.modes.as_ref().unwrap()),
+    };
     // The in-game menu's mixer sequence.
     let menu = pause.is_some_and(|p| p.open) || map.is_some_and(|s| s.open);
     let dt = time.delta_secs().min(0.1);

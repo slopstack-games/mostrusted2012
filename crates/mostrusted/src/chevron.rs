@@ -30,7 +30,23 @@ pub struct ChevronPlugin;
 impl Plugin for ChevronPlugin {
     fn build(&self, app: &mut App) {
         bevy::asset::embedded_asset!(app, "chevron.wgsl");
-        app.add_plugins(MaterialPlugin::<ChevronMaterial>::default());
+        app.add_plugins(MaterialPlugin::<ChevronMaterial>::default()).add_systems(Update, hide);
+    }
+}
+
+/// `--hsm`: the route markers hidden by the logic (`HIDECHEV` "Hide Chevrons" in the event intros: message
+/// {0x1b, 0, hide}, logic.rs). Model decision: the message's receiver was not traced; the chevrons it hides are read
+/// as these markers (the only chevrons the runtime draws). Absent (no `--hsm`): the markers always show.
+#[derive(Resource, Default)]
+pub struct ChevronsHidden(pub bool);
+
+fn hide(hidden: Option<Res<ChevronsHidden>>, mut markers: Query<&mut Visibility, With<RouteMarker>>) {
+    let Some(hidden) = hidden else { return };
+    let want = if hidden.0 { Visibility::Hidden } else { Visibility::Inherited };
+    for mut v in &mut markers {
+        if *v != want {
+            *v = want;
+        }
     }
 }
 
