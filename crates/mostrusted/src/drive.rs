@@ -272,10 +272,11 @@ pub struct Car {
     pub rear_slip: f32,
     /// Seconds since a wheel last left the ground (0 while all are down).
     pub(crate) air_time: f32,
-    /// The handbrake's countdown (reset to `Minimum_handbrake_time` on every tick it is pulled) and whether it is
-    /// on (`FUN_009d27b0`).
-    handbrake_timer: f32,
-    pub handbrake_on: bool,
+    /// The handbrake object (vehicle +0x2a20, `FUN_009d27b0`): its countdown, whether it is on, and the state
+    /// machine that limits the steering after a pull (`mw_handling::handbrake`).
+    pub handbrake: mw_handling::handbrake::Handbrake,
+    /// The gearbox's standstill hold of the last tick (vehicle +0x1b90, `FUN_009d6370`): the front brakes lock.
+    front_lock: bool,
     /// Seconds since the body last touched the world, and the low-speed turn-around assist's state
     /// (`FUN_008f8360`).
     wall_time: f32,
@@ -468,8 +469,8 @@ impl Car {
         // no downshift for the first second (`ref/kerb100a` holds third at 4 470 rpm, below its 4 600 down rpm).
         self.air_time = 0.0;
         self.drivetrain.grounded_time = 0.0;
-        self.handbrake_timer = -1.0;
-        self.handbrake_on = false;
+        self.handbrake.reset();
+        self.front_lock = false;
         self.drift = DriftState::default();
         // The driven wheels' mean spin as the driveline takes it (`FUN_009d5520`, no handbrake or burnout).
         let dp = &self.params.drivetrain;
@@ -824,8 +825,8 @@ pub fn build_car(commands: &mut Commands, b: &CarBuild) -> Entity {
             drift: DriftState::default(),
             rear_slip: 0.0,
             air_time: 0.0,
-            handbrake_timer: -1.0,
-            handbrake_on: false,
+            handbrake: Default::default(),
+            front_lock: false,
             wall_time: f32::MAX,
             turn_assist: TurnAssist::default(),
             impact_yaw: ImpactYawDamping::default(),
@@ -1132,20 +1133,25 @@ pub(crate) fn car_physics(
         if hold_in > 0.0 && speed != 0.0 {
             *forces.linear_velocity_mut() -= forward * (speed.signum() * p.hold_decel * hold_in.min(1.0) * dt);
         }
+        // `FUN_009d6170` also releases the gearbox's brake pedal (+0x34, which the brakes and their pressure ramp
+        // read) while the handbrake is pulled below 1 mph (`.rdata` 0x01026060): standing, the handbrake alone
+        // holds the car.
+        let brake_pedal = brake;
+        if ctl.handbrake && band_speed.abs() / MPH < 1.0 {
+            brake = 0.0;
+        }
         // Brake pressure builds at 10 × pedal per second; the torque goes with the pedal squared.
         car.brake_ramp = if brake > 0.1 { (car.brake_ramp + 10.0 * brake * dt).min(1.0) } else { 0.0 };
         // A burnout (both pedals at low speed, `FUN_009ab230`) releases one axle's brakes: the front on a
         // front-driven car (`Power_To_Front` = 1), else the rear (`FUN_009b1180`).
-        let burnout = drift::burnout(band_speed / MPH, throttle, brake);
+        let burnout = drift::burnout(band_speed / MPH, throttle, brake_pedal);
 
-        // --- Handbrake (`FUN_009d27b0`) ---------------------------------------------------------------------
-        // A countdown reset to `Minimum_handbrake_time` on every tick the handbrake is pulled; it is on while the
-        // countdown has not run out, so it stays on that long after it is let go. In the game's tick the brakes
-        // and the driveline run before this update and see the previous tick's state; the drift sees this tick's
-        // and the previous one.
-        let handbrake = car.handbrake_on;
-        car.handbrake_timer = if ctl.handbrake { p.handbrake.min_time } else { car.handbrake_timer - dt };
-        car.handbrake_on = car.handbrake_timer >= 0.0;
+        // --- Handbrake state of the last tick ------------------------------------------------------------------
+        // The brakes and the driveline run before the handbrake's update (`FUN_009d27b0`, below the gearbox) and
+        // see the previous tick's state (the vehicle's virtual +0x44 = +0x2a40); so do the front lock lanes the
+        // gearbox's standstill state wrote on the last tick (+0x1b90).
+        let handbrake = car.handbrake.on;
+        let front_lock = car.front_lock;
         let handbrake_strength = p.handbrake.at(band_speed);
 
         // --- Engine, clutch, gearbox (drivetrain.rs) -------------------------------
@@ -1170,7 +1176,31 @@ pub(crate) fn car_physics(
         let amount = nitrous_amount;
         car.drivetrain.nitrous = amount > 0.0;
         car.drivetrain.nitrous_scale = n_params.multiplier(amount);
-        let drive_torque = car.drivetrain.step(dp, throttle, brake, omega, mph, inv_inertia, coupled, dt);
+        let drive_torque = car.drivetrain.step(
+            dp,
+            throttle,
+            brake,
+            omega,
+            mph,
+            inv_inertia,
+            coupled,
+            ctl.handbrake,
+            (ctl.throttle, ctl.brake),
+            dt,
+        );
+        // --- Handbrake (`FUN_009d27b0`, mw_handling::handbrake) ------------------------------------------------
+        // The countdown takes the control block's mask: the input, or forced on by the standstill state this
+        // tick (`FUN_009d6370`: parked below 0.5 mph or with the handbrake). It stays on for
+        // `Minimum_handbrake_time` after the mask clears. The state machine reads the signed speed (+0x1620) and
+        // the chassis's yaw rate about world Y (+0xc0 lane 1).
+        car.front_lock = car.drivetrain.parked;
+        car.handbrake.update(
+            ctl.handbrake || car.drivetrain.parked,
+            p.handbrake.min_time,
+            band_speed / MPH,
+            forces.angular_velocity().y,
+            dt,
+        );
         car.gear = car.drivetrain.gear;
         car.rpm_prev = car.rpm;
         car.rpm = car.drivetrain.rpm.min(dp.max_rpm);
@@ -1197,6 +1227,10 @@ pub(crate) fn car_physics(
             }
             drift_rate = Some((d.counter_steer_rate, car.drift.counter_rate_blend(d)));
         }
+        // The handbrake's range (its +0x50, the vehicle's virtual +0x4c): `FUN_009d31f0` clamps the input to it
+        // (game sense, positive = right; ours is positive = left). [−1, 1] except for a second after a pull that
+        // ended stopped or rolling backwards.
+        steer_input = -car.handbrake.clamp_steer(-steer_input);
         let pedal = throttle - brake;
         car.steer = steer_towards(
             &p.steering,
@@ -1217,6 +1251,8 @@ pub(crate) fn car_physics(
             .with_mask(crate::props::GameLayer::World);
 
         // --- Wheel spin: drive torque, and the brake budget (applied before the tyre below) ---------------
+        // Each wheel's brake: the torque × dt it may take off the spin, or a lock (the lock lanes of `FUN_009cdfd0`:
+        // the budget is I |ω| / dt, which stops the wheel this tick and leaves nothing over for the tyre's hold).
         let mut brake_budget = Vec::with_capacity(car.wheels.len());
         for wheel in &mut car.wheels {
             let axle = usize::from(!wheel.front);
@@ -1225,12 +1261,13 @@ pub(crate) fn car_physics(
             if axle == if dp.front_share >= 1.0 { 0 } else { 1 } {
                 t_brake *= 1.0 - burnout;
             }
-            // The handbrake is a rear brake torque, combined with the service brake by max (`FUN_009cdfd0`). It
-            // does not lock the wheels outright: the game's lock mask is set by other states, not the handbrake.
+            // The handbrake is a rear brake torque, combined with the service brake by max (`FUN_009cdfd0`); what
+            // locks the rear wheels is the tyre's lock flag (below). The front wheels' lock lanes are the gearbox's
+            // standstill hold (+0x1b90; `FUN_009b1180` passes it to the front brakes only).
             if handbrake && !wheel.front {
                 t_brake = t_brake.max(handbrake_strength);
             }
-            brake_budget.push(t_brake * dt);
+            brake_budget.push((t_brake * dt, front_lock && wheel.front));
         }
         limited_slip(&mut car.wheels, &dp.diff);
 
@@ -1387,9 +1424,19 @@ pub(crate) fn car_physics(
         *forces.linear_velocity_mut() = ch.v;
         *forces.angular_velocity_mut() = ch.w;
 
-        for (wheel_index, ((wheel, mut brake_left), ground)) in
+        for (wheel_index, ((wheel, (mut brake_left, brake_lock)), ground)) in
             car.wheels.iter_mut().zip(brake_budget).zip(&grounds).enumerate()
         {
+            if brake_lock {
+                // `FUN_009cdfd0` with a lock lane: the whole spin comes off now, nothing is left over.
+                wheel.omega = 0.0;
+                brake_left = 0.0;
+            }
+            // The tyre's lock flag (`FUN_00905910` writes tyre object +0x38 = constraint +0x2a8 for wheels 2 and 3
+            // while the handbrake is on, this tick's state through the virtual +0x44): `FUN_009bc0c0` then takes
+            // the brake hold as unbounded (FLT_MAX), so the tyre holds the tread against the chassis alone and
+            // never turns the wheel; only the brake slows its spin. The rear wheels lock.
+            let tyre_lock = !wheel.front && car.handbrake.on;
             // The tyre acts where the wheel's contact carries a normal impulse (`FUN_009c75b0` skips it otherwise).
             let Some(g) = ground.as_ref().filter(|_| wheel.touching && wheel.normal_impulse > 0.0) else {
                 wheel.contact = None;
@@ -1497,7 +1544,7 @@ pub(crate) fn car_physics(
             let m_chassis = effective_mass(contact - com, fwd);
             let slip = wheel.omega * r - v_long;
             let cap = long_cap * dt;
-            let hold = (brake_left / r).min(slip.abs() * m_chassis).min(cap);
+            let hold = if tyre_lock { f32::MAX } else { brake_left / r }.min(slip.abs() * m_chassis).min(cap);
             let k_eff = r * r / wheel.inertia + 1.0 / m_chassis;
             let coupled = ((slip.abs() - hold / m_chassis) / k_eff).min(cap - hold).max(0.0);
             let impulse = slip.signum() * (hold + coupled);
@@ -1624,8 +1671,8 @@ pub(crate) fn car_physics(
                     steer: (ctl.steer * p.steering.max_angle / range.max(1.0)).clamp(-1.0, 1.0),
                     throttle,
                     brake: ctl.brake,
-                    handbrake: car.handbrake_on,
-                    handbrake_prev: handbrake,
+                    handbrake: car.handbrake.on,
+                    handbrake_prev: car.handbrake.was_on,
                     touching_world: wall.is_some(),
                     world_impact: contacts.world_impact,
                     object_impact: contacts.object_impact,

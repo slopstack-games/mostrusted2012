@@ -11,6 +11,36 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+### 2026-11-18: the handbrake ported from the code: the rear tyres' lock flag, the standstill hold, the steering range
+
+**What was missing** (the 2026-11-17 reading below): `FUN_00905910` (the tyre inputs, after the driving update) sets
+the tyre object's lock flag (+0x38 = constraint +0x2a8) on wheels 2 / 3 while the handbrake is on (virtual +0x44 =
+vehicle +0x2a40, this tick's state). `FUN_009bc0c0` then takes the brake hold as FLT_MAX: the tyre holds the tread
+against the chassis alone and never turns the wheel, so only the brake (max(handbrake strength, service)) slows
+the spin and the rears lock. Standing: `FUN_009d6370` (standstill) launches only with the handbrake mask clear and
+throttle ≥ 0.3 or brake ≥ 0.2 (`.bss` 0x01187230 / 0x01186ec0); otherwise the clutch stays open (the throttle
+only revs the engine) and below 0.5 mph (0x01186f60) or with the handbrake it forces the control block's
+handbrake mask on and sets the front lock lanes (gearbox +0x120 = +0x1b90, cleared each tick by `FUN_009da600`).
+`FUN_009d17d0` (launch) drops back to standstill on the handbrake mask. `FUN_009d6170` releases the gearbox brake
+pedal with the handbrake below 1 mph. `FUN_009d27b0`'s state machine writes a steering-input range (+0x50, virtual
++0x4c at 0x00920840) that `FUN_009d31f0` clamps the input to: [−1, 1], one side only for 1 s (0x011870f0) after a
+pull that began moving forwards ends stopped / rolling back; idle again when the released turn's yaw < 0.1 rad/s
+(0x01187070). `.bss` values read from the memory snapshot `re/out/live/snap1`.
+
+**Port**: `mw_handling::handbrake` (state machine, tests), drivetrain standstill / launch gate and `parked`,
+drive.rs (rear tyre lock flag, front lock lanes from last tick's `parked`, pedal release, steering clamp).
+
+**Replays** (synthetic inputs in the worktree's `scratch/hb/`, 911, flat track): standing + handbrake + throttle:
+before drove off on the fronts to 23 mph; now 0 mph, rpm 7800 (limiter), clutch 0, launches on release.
+85 mph + handbrake: before rear ω = v / r; now rear ω 0 within ~0.4 s, κ −1, 89.8 → 45.8 mph in 2 s.
+Tests before (unchanged code): accel 0–100 km/h 3.73 s, top 307.4; brake 38.1 m / 2.62 s; corner 2.57 g; drift
+peak 37.3°, held 4.75 s; handbrake slip 1.1°, yaw 59°/s.
+
+**Open (stopped here, budget)**: tests after the change and the turn / brake-to-drift replays not run; decomp.md
+"Handbrake and burnout" and handling.md not yet rewritten; model decision: the clutch opens when the handbrake
+sends a launch back to standstill (the code leaves it); the engine-rpm launch condition (attribute +0x14 via
+gearbox +0x180) not identified, taken as met; the crashed lock lanes (+0x1774) not ported; captures to confirm.
+
 ### 2026-11-17: handbrake rear-wheel lock (user report), no capture yet, no model change
 
 User report: "the handbrake doesn't lock up the rear wheels like the original; with brake-to-drift you can test".
