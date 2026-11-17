@@ -104,6 +104,16 @@ impl LogicHost {
         self.pages = p;
     }
 
+    /// The active widgets' user actions this frame ([`Pages`]; `read` gives an input action's state): Lua
+    /// callbacks run in the widgets' states, `ExitGroupVia` sets the group's exit, other native callbacks call the
+    /// HSM hook of that name (without arguments: model, the `CallbackArgs` are not turned into a hook argument).
+    pub fn input(&mut self, read: &dyn Fn(u8) -> pages::ActionInput) {
+        let registry = &self.registry;
+        self.pages.input(&self.state, read, &mut |st, name| {
+            registry.call_hook(st, name, None);
+        });
+    }
+
     /// Take the unported calls recorded since the last call (for logs).
     pub fn take_unported(&self) -> Vec<String> {
         std::mem::take(&mut self.state.borrow_mut().unported)

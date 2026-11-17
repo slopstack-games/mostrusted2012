@@ -233,6 +233,15 @@ impl FrontEnd {
         }
     }
 
+    /// The title's conductor stopped (`StopSequence` / `DestroyConductor`): the title is no longer drawn while
+    /// the title phase lasts.
+    pub fn stop_title(&mut self) {
+        if self.title_started {
+            self.title_started = false;
+            self.mark("title: sequence stopped by the logic");
+        }
+    }
+
     /// "Press Start" was pressed and released (the title is past its BOOT trigger).
     pub fn pressed(&self) -> bool {
         self.pressed

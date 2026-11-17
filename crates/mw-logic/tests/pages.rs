@@ -43,3 +43,33 @@ fn boot_page_press_start() {
     assert!(reqs.contains(&Request::StopSequence { conductor: "PressStart".into() }), "{reqs:?}");
     assert!(host.pages.active_groups().is_empty());
 }
+
+/// Widget input on the boot screen's calibration group 1532543: `accept` (52) fires the native
+/// `ExitGroupVia(NEXT)`, `cancel` (53) `ExitGroupVia(BACK)`; `menu_right` (43, repeat flag) reaches the Lua
+/// `VisualSetup.IncrementSetting`; nothing fires without input.
+#[test]
+fn calibration_actions() {
+    use mw_formats::hsm::key;
+    use mw_logic::natives::pages::ActionInput;
+    let Ok(game) = GameDir::locate(None) else {
+        eprintln!("skipped: no game install");
+        return;
+    };
+    let store = AssetStore::new(game).expect("index the install");
+    let mut host = LogicHost::default();
+    host.request(Request::PushPageContext { name: "boot".into(), page: "491012".into() });
+    host.pages.provide(pages::load_screen(&store, 491012).expect("boot screen"));
+    host.request(Request::ActivateWidgetGroup { group: 1_532_543 });
+    assert!(host.pages.errors.is_empty(), "{:?}", host.pages.errors);
+    let press =
+        |id: u8| move |a: u8| ActionInput { pressed: a == id, repeat: false, value: if a == id { 1.0 } else { 0.0 } };
+    host.input(&|_| ActionInput::default());
+    assert_eq!(host.state.borrow().screen.widget_group_exit, 0);
+    host.input(&press(43));
+    assert!(host.pages.errors.is_empty(), "{:?}", host.pages.errors);
+    host.input(&press(52));
+    assert_eq!(host.state.borrow().screen.widget_group_exit, key("NEXT"));
+    host.request(Request::ClearWidgetExit);
+    host.input(&press(53));
+    assert_eq!(host.state.borrow().screen.widget_group_exit, key("BACK"));
+}

@@ -67,6 +67,15 @@ pub enum ScriptTarget {
     Unresolved,
 }
 
+/// A `UserActionDefinition`: `InputMapping` (`menu_up`, `accept`, `easy_left`, ...), `Analogue` (+0x34) and the
+/// repeat flag (+0x35).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionDefinition {
+    pub input_mapping: String,
+    pub analogue: bool,
+    pub repeat: bool,
+}
+
 /// A `*_ScreenScript` GeneSys object: the script header plus its typed configuration fields.
 #[derive(Debug, Clone)]
 pub struct ScreenScriptObject {
@@ -115,6 +124,22 @@ impl AssetStore {
         let h = res.header();
         let n = h.get(..4).map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize);
         h.get(4..4 + n).filter(|c| c.starts_with(b"\x1bLua")).map(<[u8]>::to_vec).ok_or(Error::Missing(id))
+    }
+
+    /// A widget action's `UserActionDefinition` (GeneSys object `0x01000000_<id>` of the screen bundles): the input it
+    /// listens to and how it fires (decomp.md "Menu input and the map screen's controls").
+    pub fn ui_action_definition(&self, id: u32) -> Option<ActionDefinition> {
+        let o = self.genesys_object(ResourceId(0x0100_0000_0000_0000 | u64::from(id))).ok()?;
+        let flag = |name: u32| matches!(o.get(name), Some(Value::Bool(true)));
+        Some(ActionDefinition {
+            input_mapping: match o.get(field_hash("InputMapping")) {
+                Some(Value::Str(s)) => s.clone(),
+                _ => String::new(),
+            },
+            analogue: flag(field_hash("Analogue")),
+            // Field `2da735e3` (name not cracked): auto-repeat (`FUN_007f50e0` reads it at +0x35).
+            repeat: flag(0x2da7_35e3),
+        })
     }
 
     /// The bundle of screen `id` (`UI/SCREENS2/<id>.BNDL`).

@@ -94,9 +94,12 @@ Decisions with the user: portrait loading screens keep the original's bars.
     - Under `--hsm` the boot page's title and transition are started by the original's script / HSM.
   - **Next (integrator, default model)**: carry out the Requests one at a time and remove the hand-written flow each
     one replaces.
-    - The conductors (`CreateConductor` / `StartSequence` played by the front end's sequence player for any
-      sequence).
-    - Widget actions and input (`ExitGroupVia`).
+    - Done the same day (research-log "widget input and conductors"): widget actions fire from the menu input,
+      and conductors run headless (only the title is drawn).
+    - **`Mode` binding roots** (the game-mode manager's table) are now the blocker: the HUD's ShowMap and
+      EasyDrive actions and "Select HUD" wait on them.
+    - A generic sequence player that draws conductors' sequences (frontend.rs / event_card.rs each have their
+      own), then the pause menu (431082, Lua `PlaySequence`) from the HSM.
     - Drawing the HUD screen 371621 from its widgets instead of `hud.rs`.
     - Then `LoadWorld`, `LoadProfile` and the game mode. Fill the runtime-filled `LogicState` fields: ranks, awards, `garage`,
     `current_event_kind`. Add `Mode` / `Event` binding roots in place of the stand-ins.

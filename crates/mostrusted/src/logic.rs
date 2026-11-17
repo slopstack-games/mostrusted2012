@@ -12,6 +12,12 @@
 //!   the user (`frontend.rs` in driven mode); the boot transition starts on the group's
 //!   `PlayWidgetGroupTransition` and answers `WidgetTransitionStarted` / `TransitionFinished`.
 //!
+//! - conductors: `StartSequence` of the title goes to `frontend.rs`; any other sequence runs headless
+//!   ([`Playback`]: its clock with its jumps, the conductor idle again at its end; nothing drawn yet);
+//!   `StopSequence` / `DestroyConductor` end it (the title's stops the title);
+//! - widget input: the menu actions (`input::MenuInput`, ids of `FUN_007e7910`'s table) reach the active widgets'
+//!   user actions every frame before the HSM update (`LogicHost::input`: Lua callbacks, `ExitGroupVia`, hooks).
+//!
 //! Everything else (world, profile and feedback-group loads, the game mode, the HUD screen's requests) is still
 //! logged only: `freeroam.rs`, `race.rs` and the rest of `frontend.rs` drive the game.
 //!
@@ -36,13 +42,14 @@ use std::sync::{Arc, Mutex};
 
 use bevy::prelude::*;
 use mw_assets::frontend as fe;
+use mw_assets::sequence::Sequence;
 use mw_formats::hsm::{HsmData, State, key, key_name};
 use mw_formats::json::Json;
 use mw_logic::hsm::behaviours::{Query, Stub};
 use mw_logic::hsm::{Clock, Host, Hsm, Key, Registry, Trace, original_code};
 use mw_logic::natives::game_modes::EventInfo;
 use mw_logic::natives::mode_machine::{self, ModeInfo};
-use mw_logic::natives::pages::{self, ScreenData};
+use mw_logic::natives::pages::{self, ActionInput, ScreenData};
 use mw_logic::natives::{LogicHost, Request, progression};
 
 use crate::frontend::{FrontEnd, Phase};
@@ -92,6 +99,8 @@ struct Loaded {
 
 /// A screen load's result.
 type ScreenLoad = Result<ScreenData, String>;
+/// A conductor's sequence load: (conductor, sequence id, result).
+type SequenceLoad = (String, u32, Result<Arc<Sequence>, String>);
 
 /// The running machine and its host (not `Send`: the logic state is shared with Lua through `Rc`).
 struct Logic {
@@ -101,6 +110,8 @@ struct Logic {
     frame: u64,
     /// Screens the page contexts asked for, loaded on a thread ([`mw_logic::natives::pages::load_screen`]).
     screens: (Sender<ScreenLoad>, Receiver<ScreenLoad>),
+    /// Conductors' sequences (conductor, sequence id, the loaded sequence).
+    sequences: (Sender<SequenceLoad>, Receiver<SequenceLoad>),
     store: Arc<mw_assets::AssetStore>,
 }
 
@@ -185,6 +196,7 @@ fn receive(world: &mut World) {
         world_loaded: false,
         transitioning: false,
         carry: Vec::new(),
+        playbacks: Vec::new(),
         pressed: false,
         listening: false,
         frame: 0,
@@ -196,7 +208,7 @@ fn receive(world: &mut World) {
     };
     info!("hsm: machine {serial} started at {TOP_STATE} (shadow mode)");
     let store = world.resource::<crate::Game>().store.clone();
-    world.insert_non_send(Logic { hsm, host, serial, frame: 0, screens: channel(), store });
+    world.insert_non_send(Logic { hsm, host, serial, frame: 0, screens: channel(), sequences: channel(), store });
 }
 
 /// The structural and ported behaviour types; types the original has but we have not ported hold, and the online
@@ -236,13 +248,31 @@ fn registry(data: &HsmData) -> Registry {
     registry
 }
 
-fn tick(logic: Option<NonSendMut<Logic>>, time: Res<Time>, mut front: Option<ResMut<FrontEnd>>) {
+fn tick(
+    logic: Option<NonSendMut<Logic>>,
+    time: Res<Time>,
+    mut front: Option<ResMut<FrontEnd>>,
+    menu: Res<crate::input::MenuInput>,
+) {
     let Some(mut logic) = logic else { return };
     let dt = time.delta_secs();
     if dt <= 0.0 {
         return;
     }
-    let Logic { hsm, host, serial, frame, screens, store } = &mut *logic;
+    let Logic { hsm, host, serial, frame, screens, sequences, store } = &mut *logic;
+    while let Ok((conductor, sequence, got)) = sequences.1.try_recv() {
+        let Some(p) = host.playbacks.iter_mut().find(|p| p.conductor == conductor && p.sequence == sequence) else {
+            continue;
+        };
+        match got {
+            Ok(seq) => p.seq = Some(seq),
+            Err(e) => {
+                warn!("hsm: sequence {sequence}: {e}");
+                host.playbacks.retain(|p| p.conductor != conductor);
+                set_idle(&host.logic, &conductor);
+            }
+        }
+    }
     *frame += 1;
     host.frame = *frame;
     // Screens: start the loads the page contexts asked for, hand over the finished ones.
@@ -278,6 +308,12 @@ fn tick(logic: Option<NonSendMut<Logic>>, time: Res<Time>, mut front: Option<Res
         host.world_loaded = true;
     }
     host.logic.frame(dt);
+    step_playbacks(host, dt);
+    // The widgets' user actions (before the HSM's update, which reads the group exit they set).
+    host.logic.input(&|id| {
+        let (pressed, repeat, value) = menu.by_id(id).unwrap_or_default();
+        ActionInput { pressed, repeat, value }
+    });
     let was_running = hsm.is_running(*serial);
     hsm.update(host, Clock::both(dt));
     // The game-mode manager's update right after the HSM's (`FUN_006abc10`): starts the mode's machine. Stand-in:
@@ -299,11 +335,26 @@ fn tick(logic: Option<NonSendMut<Logic>>, time: Res<Time>, mut front: Option<Res
     for e in std::mem::take(&mut host.logic.pages.errors) {
         warn!("hsm: script {e}");
     }
-    // The requests the runtime carries out (module doc).
+    // The requests the runtime carries out (module doc). Conductors' sequences load on a thread.
+    for c in &host.carry {
+        if let Carry::Play { conductor, sequence } = c {
+            let (tx, store, conductor, sequence) = (sequences.0.clone(), store.clone(), conductor.clone(), *sequence);
+            host.playbacks.push(Playback { conductor: conductor.clone(), sequence, seq: None, clock: 0.0 });
+            let _ = crate::platform::thread::Builder::new().name("mw-sequence".into()).spawn(move || {
+                let _ = tx.send((
+                    conductor,
+                    sequence,
+                    store.ui_sequence(sequence).map(Arc::new).map_err(|e| e.to_string()),
+                ));
+            });
+        }
+    }
     for r in std::mem::take(&mut host.carry) {
         let Some(front) = front.as_deref_mut() else { continue };
         match r {
             Carry::Title => front.start_title(),
+            Carry::StopTitle => front.stop_title(),
+            Carry::Play { .. } | Carry::Nothing => {}
             Carry::BootTransition => front.start_transition(),
         }
     }
@@ -315,6 +366,54 @@ enum Carry {
     Title,
     /// `PlayWidgetGroupTransition` of the "Press Start" group: its `ScreenTransition` (the boot transition).
     BootTransition,
+    /// `StopSequence` / `DestroyConductor` of the title's conductor.
+    StopTitle,
+    /// `StartSequence` of any other sequence: its clock runs here ([`Playback`]).
+    Play { conductor: String, sequence: u32 },
+    /// Carried out with nothing to do (`CreateConductor`: the conductor is logic state).
+    Nothing,
+}
+
+/// The title's conductor (the "Press Start" `Background` widget's `ConductorName`).
+const TITLE_CONDUCTOR: &str = "PressStart";
+
+/// A conductor's sequence that the runtime does not draw yet: its clock runs with the sequence's jump controllers
+/// (`frontend::step`, bindings through the logic's view models) and, once it reaches the sequence's end, the
+/// conductor is idle again (`HasSequenceFinished` / `IsConductorIdle`), so scripts waiting on it keep the
+/// original's timing.
+struct Playback {
+    conductor: String,
+    sequence: u32,
+    seq: Option<Arc<Sequence>>,
+    clock: f32,
+}
+
+/// The conductor's `playing` cleared (the runtime finished or could not play its sequence).
+fn set_idle(logic: &LogicHost, conductor: &str) {
+    let h = mw_formats::genesys::field_hash(conductor);
+    if let Some(c) = logic.state.borrow_mut().screen.conductors.iter_mut().find(|c| c.name_hash == h) {
+        c.playing = None;
+    }
+}
+
+/// Steps the conductors' sequences (see [`Playback`]).
+fn step_playbacks(host: &mut RuntimeHost, dt: f32) {
+    let mut finished = Vec::new();
+    for p in &mut host.playbacks {
+        let Some(seq) = &p.seq else { continue };
+        let vm = &host.logic.state;
+        let (next, _) =
+            crate::frontend::step(seq, p.clock, dt, &mut |b| vm.borrow().view_models.resolve_bool(b) == Some(true));
+        p.clock = next;
+        if next >= seq.length {
+            finished.push((p.conductor.clone(), p.sequence));
+        }
+    }
+    for (conductor, sequence) in finished {
+        info!("hsm: {:5} sequence {sequence} on conductor {conductor:?} finished", host.frame);
+        host.playbacks.retain(|p| p.conductor != conductor);
+        set_idle(&host.logic, &conductor);
+    }
 }
 
 /// The logic host plus the runtime's answers (see the module doc).
@@ -330,6 +429,8 @@ struct RuntimeHost {
     transitioning: bool,
     /// Requests for `tick` to carry out.
     carry: Vec<Carry>,
+    /// The conductors' sequences the runtime runs without drawing.
+    playbacks: Vec<Playback>,
     /// "Press Start" was pressed (`frontend.rs` left the title on the key's release).
     pressed: bool,
     /// The primary-user listener is on (`ListenForPrimaryUser`, until `ReleasePrimaryUser`).
@@ -413,10 +514,26 @@ impl Host for RuntimeHost {
         // contexts and widget groups).
         self.logic.apply(&r);
         let carried = match &r {
-            Request::StartSequence { sequence, .. } => {
+            Request::StartSequence { conductor, sequence } => {
                 let id = self.logic.state.borrow().view_models.resolve_int(sequence);
-                (id == Some(i64::from(fe::TITLE_SEQUENCE))).then_some(Carry::Title)
+                // A new sequence replaces what the conductor played.
+                self.playbacks.retain(|p| &p.conductor != conductor);
+                match id {
+                    Some(id) if id == i64::from(fe::TITLE_SEQUENCE) => Some(Carry::Title),
+                    Some(id) if id > 0 => Some(Carry::Play { conductor: conductor.clone(), sequence: id as u32 }),
+                    _ => {
+                        warn!("hsm: {:5} StartSequence {sequence:?}: no sequence id", self.frame);
+                        // Nothing to play: the conductor is idle again (`HasSequenceFinished`).
+                        set_idle(&self.logic, conductor);
+                        None
+                    }
+                }
             }
+            Request::StopSequence { conductor } | Request::DestroyConductor { name: conductor } => {
+                self.playbacks.retain(|p| &p.conductor != conductor);
+                (conductor == TITLE_CONDUCTOR).then_some(Carry::StopTitle)
+            }
+            Request::CreateConductor { .. } => Some(Carry::Nothing),
             Request::PlayWidgetGroupTransition { group, .. } if *group == PRESS_START_GROUP => {
                 self.transitioning = true;
                 Some(Carry::BootTransition)
@@ -431,6 +548,9 @@ impl Host for RuntimeHost {
                     | Request::ActivateWidgetGroup { .. }
                     | Request::DeactivateWidgetGroup { .. }
                     | Request::ClearWidgetExit
+                    | Request::StartSequence { .. }
+                    | Request::StopSequence { .. }
+                    | Request::DestroyConductor { .. }
             );
         self.carry.extend(carried);
         let kind = format!("{r:?}");

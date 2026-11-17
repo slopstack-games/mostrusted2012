@@ -45,6 +45,86 @@ pub struct WidgetData {
     pub group: u32,
     pub def: WidgetDef,
     pub scripts: Vec<ScriptData>,
+    /// How each of `def.actions` fires (its `UserActionDefinition`), same order.
+    pub actions: Vec<ActionData>,
+}
+
+/// A widget action's `UserActionDefinition`: the input action it reads ([`input_action`] of its `InputMapping`) and
+/// how it fires.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ActionData {
+    pub input: Option<InputAction>,
+    /// `Analogue` (+0x34): the handler is called every frame with the value.
+    pub analogue: bool,
+    /// Field `2da735e3` (+0x35): fires on the press and on the auto-repeat ticks.
+    pub repeat: bool,
+}
+
+/// An input action id of the menus (`FUN_007e7910`'s table) and its directional flag (the table's third column:
+/// such actions fire only above [`DIRECTION_FIRE_MIN`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputAction {
+    pub id: u8,
+    pub directional: bool,
+}
+
+/// `FUN_007e7910`: the `InputMapping` name → action id table (`.rdata` 0x00fe7260, 33 entries of {name, id, flag});
+/// a name not in it gives 0x60 (no action here). Default bindings: keyboard `FUN_00483470`, pad `FUN_00482250`
+/// (docs/decomp.md "Menu input and the map screen's controls").
+pub const INPUT_MAPPINGS: [(&str, u8, bool); 33] = [
+    ("menu_left", 42, true),
+    ("menu_right", 43, true),
+    ("menu_up", 44, true),
+    ("menu_down", 45, true),
+    ("menu_left_alt", 46, true),
+    ("menu_right_alt", 47, true),
+    ("menu_up_alt", 48, true),
+    ("menu_down_alt", 49, true),
+    ("scroll_up", 50, true),
+    ("scroll_down", 51, true),
+    ("accept", 52, false),
+    ("cancel", 53, false),
+    ("settings", 54, false),
+    ("alt", 55, false),
+    ("tab_left", 56, false),
+    ("tab_right", 57, false),
+    ("trigger_left", 58, false),
+    ("trigger_right", 59, false),
+    ("view_profile", 60, false),
+    ("start", 61, false),
+    ("to_main_menu", 62, false),
+    ("play_it", 63, false),
+    ("friend_recommends", 65, false),
+    ("fullscreen_photo", 64, false),
+    ("hitbox", 66, false),
+    ("dbg_win_event", 67, false),
+    ("dbg_switch_progression", 68, false),
+    ("easy_left", 69, false),
+    ("easy_right", 70, false),
+    ("easy_up", 71, false),
+    ("easy_down", 72, false),
+    ("universal_accept", 73, false),
+    ("universal_alt", 74, false),
+];
+
+/// [`INPUT_MAPPINGS`] lookup (exact, case-sensitive: the original compares bytes).
+pub fn input_action(mapping: &str) -> Option<InputAction> {
+    INPUT_MAPPINGS.iter().find(|(n, ..)| *n == mapping).map(|&(_, id, directional)| InputAction { id, directional })
+}
+
+/// A directional action fires (pressed or repeated) only above this value (`FUN_007f50e0`, actions 0x2a–0x31).
+pub const DIRECTION_FIRE_MIN: f32 = 0.05;
+/// A Lua script's cooldown after it handled or refused an action (`.rdata` 0x00fe73ec, `FUN_007eed50`).
+pub const SCRIPT_COOLDOWN: f32 = 0.15;
+
+/// One input action's state this frame, as the runtime's input reads it (the binding value pair and auto-repeat
+/// of `FUN_00ac6850` / `FUN_0047c360`; for 42–45 already resolved against the `_alt` twin, `FUN_0047a3f0`).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ActionInput {
+    pub pressed: bool,
+    /// An auto-repeat tick this frame (held).
+    pub repeat: bool,
+    pub value: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -74,7 +154,12 @@ struct Context {
 struct ActiveWidget {
     name: String,
     lua: Lua,
+    /// The constructed Lua scripts with their cooldowns (+0x14).
     scripts: Vec<String>,
+    cooldowns: Vec<f32>,
+    /// The native screen scripts (not run; an action offered to them is logged).
+    natives: Vec<String>,
+    data: WidgetData,
 }
 
 struct ActiveGroup {
@@ -127,6 +212,10 @@ impl Pages {
     pub fn frame(&mut self, dt: f32) {
         for g in &mut self.groups {
             for w in &mut g.widgets {
+                // The cooldown counts down while the widget has input (every active widget here: module doc).
+                for c in &mut w.cooldowns {
+                    *c -= dt;
+                }
                 for s in &w.scripts {
                     if let Err(e) = w.lua.call_field(s, "PreInputUpdate", vec![Value::from(dt as f64)]) {
                         self.errors.push(format!("{}.{s}: {e}", w.name));
@@ -239,7 +328,9 @@ fn build(pages: &mut Pages, install: &dyn Fn(&mut Lua), w: &WidgetData) -> Activ
         }
         scripts.push(s.name.clone());
     }
-    ActiveWidget { name: w.def.name.clone(), lua, scripts }
+    let natives = w.scripts.iter().filter(|s| matches!(s.code, ScriptCode::Native)).map(|s| s.name.clone()).collect();
+    let cooldowns = vec![0.0; scripts.len()];
+    ActiveWidget { name: w.def.name.clone(), lua, scripts, cooldowns, natives, data: w.clone() }
 }
 
 fn deactivate(pages: &mut Pages, state: &std::cell::RefCell<LogicState>, group: u32) {
@@ -306,7 +397,145 @@ pub fn load_screen(store: &mw_assets::AssetStore, id: u32) -> mw_assets::Result<
                 },
             })
             .collect();
-        widgets.push(WidgetData { group: w.group, def, scripts });
+        let actions = def
+            .actions
+            .iter()
+            .map(|a| {
+                let d = store.ui_action_definition(a.definition);
+                ActionData {
+                    input: d.as_ref().and_then(|d| input_action(&d.input_mapping)),
+                    analogue: d.as_ref().is_some_and(|d| d.analogue),
+                    repeat: d.as_ref().is_some_and(|d| d.repeat),
+                }
+            })
+            .collect();
+        widgets.push(WidgetData { group: w.group, def, scripts, actions });
     }
     Ok(ScreenData { id, widgets })
+}
+
+/// One fired action, routed as `FUN_007f40d0` does.
+struct Fired {
+    group: usize,
+    widget: usize,
+    action: usize,
+    value: Option<f32>,
+}
+
+impl Pages {
+    /// The widgets' user actions this frame (`FUN_007f50e0` per action, then `FUN_007f40d0`): `read` gives an input
+    /// action's state, `hook` calls an HSM hook by name (a native callback that is not `ExitGroupVia`).
+    pub(super) fn input(
+        &mut self,
+        state: &std::cell::RefCell<LogicState>,
+        read: &dyn Fn(u8) -> ActionInput,
+        hook: &mut dyn FnMut(&mut LogicState, &str),
+    ) {
+        let mut fired = Vec::new();
+        for (gi, g) in self.groups.iter().enumerate() {
+            for (wi, w) in g.widgets.iter().enumerate() {
+                for (ai, a) in w.data.actions.iter().enumerate() {
+                    let Some(input) = a.input else { continue };
+                    let i = read(input.id);
+                    let value = if a.analogue {
+                        Some(i.value)
+                    } else if a.repeat {
+                        let on = i.pressed || i.repeat;
+                        (on && (!input.directional || i.value > DIRECTION_FIRE_MIN)).then_some(i.value)
+                    } else {
+                        i.pressed.then_some(i.value)
+                    };
+                    if let Some(v) = value {
+                        fired.push(Fired { group: gi, widget: wi, action: ai, value: a.analogue.then_some(v) });
+                    }
+                }
+            }
+        }
+        for f in fired {
+            self.route(state, f, hook);
+        }
+    }
+
+    fn route(&mut self, state: &std::cell::RefCell<LogicState>, f: Fired, hook: &mut dyn FnMut(&mut LogicState, &str)) {
+        let Some(w) = self.groups.get(f.group).and_then(|g| g.widgets.get(f.widget)) else { return };
+        let Some(a) = w.data.def.actions.get(f.action).cloned() else { return };
+        let active = |state: &std::cell::RefCell<LogicState>| {
+            a.active_binding.is_empty() || state.borrow().view_models.resolve_bool(&a.active_binding) == Some(true)
+        };
+        let mut args: Vec<Value> =
+            if a.args.is_empty() { Vec::new() } else { a.args.split(',').map(Value::from).collect() };
+        if let Some(v) = f.value {
+            // Model: an analogue value reaches a Lua callback as one more argument.
+            args.push(Value::from(v as f64));
+        }
+        if let Some((target, func)) = a.callback.split_once("::") {
+            // Cross-widget (`FUN_007eeb40`): offered to the target widget's scripts until one handles it.
+            if !active(state) {
+                return;
+            }
+            let Some((gi, wi)) = self
+                .groups
+                .iter()
+                .enumerate()
+                .find_map(|(gi, g)| g.widgets.iter().position(|w| w.name == target).map(|wi| (gi, wi)))
+            else {
+                return;
+            };
+            let tw = &mut self.groups[gi].widgets[wi];
+            for s in tw.scripts.clone() {
+                match tw.lua.call_field(&s, func, args.clone()) {
+                    Ok(Some(_)) => return,
+                    Ok(None) => {}
+                    Err(e) => {
+                        self.errors.push(format!("{target}.{s}: {e}"));
+                        return;
+                    }
+                }
+            }
+            if let Some(n) = tw.natives.first() {
+                self.errors.push(format!("{target}: native script {n} not run ({func})"));
+            }
+        } else if a.in_lua {
+            // Every script of the widget (slot 5, `FUN_007eed50`): only out of its cooldown; the binding refusing
+            // or the callback existing both start the cooldown.
+            let ok = active(state);
+            let w = &mut self.groups[f.group].widgets[f.widget];
+            let mut handled = false;
+            for (si, s) in w.scripts.clone().iter().enumerate() {
+                if w.cooldowns[si] > 0.0 {
+                    continue;
+                }
+                if !ok {
+                    w.cooldowns[si] = SCRIPT_COOLDOWN;
+                    continue;
+                }
+                match w.lua.call_field(s, &a.callback, args.clone()) {
+                    Ok(Some(_)) => {
+                        w.cooldowns[si] = SCRIPT_COOLDOWN;
+                        handled = true;
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        w.cooldowns[si] = SCRIPT_COOLDOWN;
+                        self.errors.push(format!("{}.{s}: {e}", w.name));
+                    }
+                }
+            }
+            if let Some(n) = w.natives.first().filter(|_| ok && !handled) {
+                self.errors.push(format!("{}: native script {n} not run ({})", w.name, a.callback));
+            }
+        } else {
+            // Native (`FUN_007f2670`): `ExitGroupVia` sets the group's exit, anything else is an HSM hook.
+            if !active(state) {
+                return;
+            }
+            let mut st = state.borrow_mut();
+            if a.callback == "ExitGroupVia" {
+                let first = a.args.split(',').next().unwrap_or("").trim();
+                super::lua_widgets::exit_group_via(&mut st, first);
+            } else {
+                hook(&mut st, &a.callback);
+            }
+        }
+    }
 }

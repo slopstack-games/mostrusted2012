@@ -2992,7 +2992,10 @@ UIM+0x30370 (UIM = G+0x2f480).
   `FUN_007e7910` (table at `.rdata` 0x00fe7260; the Autolog browser's copy is `FUN_007dbc30` / 0x00fe58c0):
   `menu_left` / `right` / `up` / `down` 42–45, their `_alt` twins 46–49, `scroll_up` / `down` 50–51, `accept` 52,
   `cancel` 53, `settings` 54, `alt` 55, `tab_left` / `right` 56–57, `trigger_left` / `right` 58–59,
-  `view_profile` 60, `start` 61. Default bindings (keyboard `FUN_00483470`, pad `FUN_00482250`): 42–45 arrows /
+  `view_profile` 60, `start` 61. The table goes on (33 entries of {name, id, directional flag}, flag 1 for 42–51; unknown →
+  0x60): `to_main_menu` 62, `play_it` 63, `fullscreen_photo` 64, `friend_recommends` 65, `hitbox` 66,
+  `dbg_win_event` 67, `dbg_switch_progression` 68, `easy_left` / `right` / `up` / `down` 69–72 (Numpad 4 / 6 / 8 / 2;
+  d-pad), `universal_accept` 73 (Enter; A), `universal_alt` 74 (Backspace; X); port `pages::INPUT_MAPPINGS`. Default bindings (keyboard `FUN_00483470`, pad `FUN_00482250`): 42–45 arrows /
   left stick X, Y (max ∓1 / ±1); 46–49 none / d-pad; 50–51 Num 8 / 2, right stick Y; 52 Enter / A; 53 Backspace /
   B; 54 Right Ctrl / Y; 55 E / X; 56–57 Page Up / Down, LB / RB; 58–59 Z / A, LT / RT; 60 Tab / Back; 61 Esc /
   Start.

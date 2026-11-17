@@ -13,6 +13,62 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ## Dated findings
 
+### 2026-11-17: widget input and conductors (`natives/pages.rs`, `logic.rs`, `input.rs`)
+
+**The input mapping table** (`FUN_007e7910`, `.rdata` 0x00fe7260, 33 entries of {name, id, directional flag}; an
+unknown name gives 0x60):
+- The documented 42–61, then `to_main_menu` 62, `play_it` 63, `fullscreen_photo` 64, `friend_recommends` 65,
+  `hitbox` 66, `dbg_win_event` 67, `dbg_switch_progression` 68, `easy_left` / `right` / `up` / `down` 69–72,
+  `universal_accept` 73, `universal_alt` 74. The flag is 1 for 42–51 only.
+- Default bindings: keyboard `FUN_00483470` (Windows virtual-key codes), pad `FUN_00482250` (pad codes
+  cross-checked against 46–49 and 52–55):
+
+  | Action | Keyboard | Pad |
+  |---|---|---|
+  | `easy_*` 69–72 | Numpad 4 / 6 / 8 / 2 | d-pad (codes 8 / 9 / 6 / 7, plus an argument `DAT_00fa1db8` not read) |
+  | `universal_accept` 73 | Enter | A |
+  | `universal_alt` 74 | Backspace | X |
+  | `to_main_menu` 62 | F1 | Start |
+  | `scroll_up` / `down` 50–51 | Numpad 8 / 2 | right stick Y |
+  | `play_it` 63, 65 | A | — |
+  | `fullscreen_photo` 64 | Right Ctrl | — |
+  | `dbg_*` 67 / 68 | F10 / F11 | — |
+
+**Action definitions:** `UserActionDefinition` = GeneSys object `0x01000000_<id>` in the screen bundles:
+`InputMapping`, `Analogue`, field `2da735e3` = repeat (`AssetStore::ui_action_definition`).
+
+**Widget input** (`LogicHost::input`, every frame before the HSM update):
+- Each active widget's actions fire per `FUN_007f50e0`: analogue every frame; repeat on the press or the
+  auto-repeat tick, directional ones only above 0.05; otherwise on the press.
+- Routing follows `FUN_007f40d0`:
+  - Cross-widget `Widget::Function`: offered to the target's scripts until one handles it.
+  - Lua: every script of the widget out of its 0.15 s cooldown; a refusal by `ActiveBinding` also starts it.
+  - Native: `ExitGroupVia` → the group exit; other names → the HSM hook.
+- `input.rs` `MenuAction` gained 50, 51, 60, 62, 69–74 and `MenuInput::by_id`.
+- Test `tests/pages.rs::calibration_actions` (boot screen group 1532543): accept → NEXT, cancel → BACK, the Lua
+  `IncrementSetting` runs.
+
+**Conductors:**
+- The title's conductor "PressStart" is the front end's title: `StopSequence` / `DestroyConductor` stop it.
+- Any other `StartSequence` runs headless (`logic.rs` `Playback`): the sequence loaded on a thread, its clock
+  stepped with its jump controllers (bindings through the logic's view models), and the conductor set idle at
+  the end, so `HasSequenceFinished` / `IsConductorIdle` keep the original's timing.
+- A binding that gives no sequence id makes the conductor idle at once.
+
+Model decisions:
+- Every active widget takes input (the focus / modal rules were not traced).
+- An analogue value reaches a Lua callback as an extra argument.
+- A native callback calls its hook without arguments.
+- No success / failure sounds yet (the definition's handles `7866a8e2` / `1cb2a09a` were not read).
+- `MW_INPUT_SCRIPT_START=playing` lets a script run in free roam.
+
+Open:
+- Drawing conductors' sequences: a generic sequence player (frontend.rs and event_card.rs each draw their own
+  today). `PlaySequence` (Lua) is on the boot, pause (431082) and two more screens; the native `PlaySequenceFast`
+  is on 44 screens and is not ported.
+- In free roam nothing fireable is active yet. The HUD's `ShowMap` (Tab) is gated by `Mode.IsInGameIntro(NOT)`, and
+  EasyDrive's group 1135023 opens only through "Open EasyDrive Request". Both need the `Mode` roots.
+
 ### 2026-11-17: front-end screens from the HSM: page contexts, widget groups, the boot page (`natives/pages.rs`, `logic.rs`)
 
 **Page contexts and widget groups** (`mw_logic::natives::pages`, inside `LogicHost`; `LogicHost::apply` carries out
