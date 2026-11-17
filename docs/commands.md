@@ -312,4 +312,10 @@ tools/wasm-check --threads   # the same for the threaded browser build (nightly 
 # In the browser: game files come from mw_gamedir::WebSource (the picked folder as blob URLs, sync range requests);
 # threads are Web Workers (mostrusted/src/platform.rs, wasm_thread); the page needs COOP same-origin + COEP
 # require-corp; the main thread never blocks on a lock (PollLock::poll_lock)
+tools/web/build                  # the browser build into target/web (WASM_BINDGEN=<path> if not on PATH)
+python3 tools/web/serve.py       # serve it + your install on 127.0.0.1:8080 (--install, --port, --out)
+#   http://127.0.0.1:8080/ (pick the install folder) or /?serve=1&args=--camera=-1131,27,1627,-1190,15,1720+--units+4
+#   headless: brave --headless=new --enable-unsafe-webgpu --use-angle=vulkan --enable-features=Vulkan
+#   --disable-vulkan-surface --window-size=1280,720 --enable-logging=stderr '<url>&args=...+--screenshot+x.png'
+#   (the page's console is in stderr; --screenshot lands in scratch/web/)
 ```

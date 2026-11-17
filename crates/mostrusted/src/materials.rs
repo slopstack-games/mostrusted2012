@@ -1150,7 +1150,7 @@ impl Look {
                 },
                 sky: env.reflection.clone(),
                 planar: env.planar.clone(),
-                tex0: tex(self.textures[0]),
+                tex0: tex(self.textures[0]).or(Some(GAME_SAMPLER)),
                 tex1: tex(self.textures[1]),
                 tex2: tex(self.textures[2]),
                 tex3: tex(self.textures[3]),
@@ -1194,47 +1194,58 @@ pub fn load_groundcover_shader(asset_server: Res<AssetServer>) {
 }
 
 /// Extension bindings start at 100 to stay clear of `StandardMaterial`'s.
+/// A white 1×1 image with `convert::game_sampler`: `Layered::tex0` when the material has no first texture, so the
+/// shared sampler binding always carries the game sampler ([`insert_game_sampler`]).
+pub const GAME_SAMPLER: Handle<Image> = bevy::asset::uuid_handle!("6b1f3c2e-8a4d-4f0e-9c57-2d1e0b9a7f31");
+
+pub fn insert_game_sampler(mut images: ResMut<Assets<Image>>) {
+    let mut image = Image::new_fill(
+        bevy::render::render_resource::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        bevy::render::render_resource::TextureDimension::D2,
+        &[255, 255, 255, 255],
+        bevy::render::render_resource::TextureFormat::Rgba8Unorm,
+        bevy::asset::RenderAssetUsages::RENDER_WORLD,
+    );
+    image.sampler = bevy::image::ImageSampler::Descriptor(crate::convert::game_sampler());
+    let _ = images.insert(GAME_SAMPLER.id(), image);
+}
+
 #[derive(Asset, AsBindGroup, Reflect, Debug, Clone, Default)]
 pub struct Layered {
+    // Fragment-only (the extension has no vertex shader), and two samplers instead of one per texture: WebGPU
+    // allows 16 samplers per stage, StandardMaterial's group already holds 6. Every game texture has the same
+    // sampler (`convert::game_sampler`), bound once here; the planar reflection's (linear, clamp) equals the
+    // sky cube's and reads with that one. `tex0`'s sampler is the shared one, so `tex0` is never empty: a missing
+    // texture is the white [`GAME_SAMPLER`] image (Bevy's fallback for an empty slot is white too).
     #[uniform(100)]
     pub params: LayeredParams,
-    #[texture(101)]
-    #[sampler(102)]
+    #[texture(101, visibility(fragment))]
+    #[sampler(102, visibility(fragment))]
     pub tex0: Option<Handle<Image>>,
-    #[texture(103)]
-    #[sampler(104)]
+    #[texture(103, visibility(fragment))]
     pub tex1: Option<Handle<Image>>,
-    #[texture(105)]
-    #[sampler(106)]
+    #[texture(105, visibility(fragment))]
     pub tex2: Option<Handle<Image>>,
-    #[texture(107)]
-    #[sampler(108)]
+    #[texture(107, visibility(fragment))]
     pub tex3: Option<Handle<Image>>,
-    #[texture(109)]
-    #[sampler(110)]
+    #[texture(109, visibility(fragment))]
     pub tex4: Option<Handle<Image>>,
-    #[texture(111)]
-    #[sampler(112)]
+    #[texture(111, visibility(fragment))]
     pub tex5: Option<Handle<Image>>,
-    #[texture(113)]
-    #[sampler(114)]
+    #[texture(113, visibility(fragment))]
     pub tex6: Option<Handle<Image>>,
-    #[texture(115)]
-    #[sampler(116)]
+    #[texture(115, visibility(fragment))]
     pub tex7: Option<Handle<Image>>,
-    #[texture(117)]
-    #[sampler(118)]
+    #[texture(117, visibility(fragment))]
     pub tex8: Option<Handle<Image>>,
-    #[texture(119)]
-    #[sampler(120)]
+    #[texture(119, visibility(fragment))]
     pub tex9: Option<Handle<Image>>,
     /// Prefiltered sky reflection cube (`sky::reflection_cube`).
-    #[texture(121, dimension = "cube")]
-    #[sampler(122)]
+    #[texture(121, dimension = "cube", visibility(fragment))]
+    #[sampler(122, visibility(fragment))]
     pub sky: Option<Handle<Image>>,
     /// The planar reflection (`reflection.rs`), read by the roads' wet path.
-    #[texture(123)]
-    #[sampler(124)]
+    #[texture(123, visibility(fragment))]
     pub planar: Option<Handle<Image>>,
 }
 

@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Most Rusted</title>
+<style>
+  :root { color-scheme: dark; --bg: #0b0d10; --fg: #e8e8e8; --dim: #9aa0a6; --accent: #f2b233; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 15px/1.4 system-ui, sans-serif; }
+  #frame { position: fixed; inset: 0; }
+  #mostrusted { display: block; width: 100%; height: 100%; outline: none; }
+  #panel { position: fixed; inset: 0; display: grid; place-content: center; gap: 12px; padding: 16px; text-align: center; }
+  #panel.hidden { display: none; }
+  h1 { margin: 0; font-size: 22px; letter-spacing: .04em; }
+  p { margin: 0; color: var(--dim); max-width: 34em; }
+  label.pick { justify-self: center; padding: 10px 18px; border-radius: 6px; background: var(--accent); color: #111; font-weight: 600; cursor: pointer; }
+  input[type=file] { display: none; }
+  input[type=text] { width: min(34em, 90vw); padding: 6px 8px; background: #16191d; color: var(--fg); border: 1px solid #2a2f35; border-radius: 4px; font: 13px ui-monospace, monospace; }
+  #status { min-height: 1.4em; font: 13px ui-monospace, monospace; color: var(--dim); white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div id="frame"><canvas id="mostrusted"></canvas></div>
+<div id="panel">
+  <h1>MOST RUSTED</h1>
+  <p>Runs on your own copy of Need for Speed: Most Wanted (2012). Pick its install folder: the files are read where they are and never uploaded.</p>
+  <input type="text" id="args" spellcheck="false" placeholder="flags, e.g. --camera=-1131,27,1627,-1190,15,1720 --units 4">
+  <label class="pick">Choose the install folder<input type="file" id="folder" webkitdirectory multiple></label>
+  <div id="status"></div>
+</div>
+<script>Error.stackTraceLimit = 200; // full Rust stacks in panic reports</script>
+<script type="module">
+import init, { start_with_files, start_with_listing } from './pkg/mostrusted.js';
+const q = new URLSearchParams(location.search);
+const status = document.getElementById('status');
+const argsField = document.getElementById('args');
+argsField.value = q.get('args') ?? '';
+const args = () => argsField.value.split(/\s+/).filter(Boolean);
+const fail = (e) => { status.textContent = String(e); console.error('start failed:', e); };
+function launch(f) {
+  document.getElementById('panel').classList.add('hidden');
+  try { f(); } catch (e) { document.getElementById('panel').classList.remove('hidden'); fail(e); }
+}
+if (!self.crossOriginIsolated) status.textContent = 'This page needs cross-origin isolation (COOP / COEP headers): serve it with tools/web/serve.py.';
+await init();
+document.getElementById('folder').addEventListener('change', (ev) => launch(() => start_with_files(ev.target.files, args())));
+if (q.has('serve')) {
+  status.textContent = 'Reading the served install…';
+  const r = await fetch('/game-listing');
+  if (r.ok) { const listing = await r.text(); launch(() => start_with_listing(new URL('/game/', location.href).href, listing, args())); }
+  else fail('no /game-listing on this server');
+}
+</script>
+</body>
+</html>

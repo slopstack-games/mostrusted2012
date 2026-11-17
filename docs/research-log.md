@@ -10,6 +10,36 @@ Install used for verification: Steam build, `VERSION.TXT` = 1.4.0.0, 2,020 bundl
 
 ## Dated findings
 
+### 2026-11-17: browser port, step 4: the runtime renders in a browser (WebGPU, free camera)
+`mostrusted` builds for wasm32 with threads (`tools/web/build`: nightly, std with atomics, wasm-bindgen 0.2.129;
+153 MB module without debug info, not yet optimised with wasm-opt) and runs in headless Brave on WebGPU:
+`--camera=-1131,27,1627,-1190,15,1720 --units 4 --hour 13` loads the same 4 track units, 2881 models, 690 textures,
+3788 instances as natively and renders the road at Hawaii's bridge (frame POSTed by `--screenshot`; matches the
+native frame up to the canvas framing). What it took:
+- `main()` split: native `main` locates the install and calls `run(cli, game)`; in a browser `web.rs` exports
+  `start_with_files(FileList, args)` (the folder picked on the page) and `start_with_listing(base, listing, args)`
+  (a served install: `tools/web/serve.py` serves the player's own install over loopback with HTTP ranges, the
+  build, and the COOP / COEP headers). Flags are the native ones, from the page's `?args=` (`+` = space).
+  `WebSource::from_urls` serves both; the base URL must be absolute (worker threads run from `blob:` scripts).
+- Compiled out of the browser build: hidapi / `steam_controller.rs` (the Gamepad API covers pads), the SDL
+  gamepad-mapping environment write (`set_var` panics there). Window = the page's `#mostrusted` canvas.
+  `--screenshot` POSTs a PNG to the server (`platform::save_screenshot`). Bevy's `webgpu` feature.
+- **`Layered` material within WebGPU's 16 samplers per stage**: its 12 texture / sampler pairs were visible to
+  vertex and fragment (the vertex stage counted 18 with StandardMaterial's 6), and the fragment stage had 18.
+  Now fragment-only, and two samplers: every game texture already had the same sampler
+  (`convert::game_sampler`), bound once on `tex0` (a missing first texture is a white 1×1 image carrying that
+  sampler, as Bevy's fallback is white); the planar reflection reads with the sky cube's sampler (both linear,
+  clamp). Native frames unchanged: before vs after differs no more than two runs of the same build (2.5-3.3 %
+  vs 3.0 % of pixels, traffic / particles).
+- Settings, profile and saves: no config directory in a browser, so defaults and nothing saved (as before
+  with no `$HOME`); browser storage is open.
+
+Open: a `std::time::Instant::now` panic on a worker thread after streaming starts (not from our crates: every
+`Instant` there is `platform::Instant`; a dependency; the worker's stack is cut at 10 frames, needs
+`Error.stackTraceLimit` in the wasm_thread worker script); audio needs a user gesture (headless runs are muted);
+`AssetStore::new` indexes 2020 TOCs on the page's main thread (text path, a few seconds); the window size on the
+page vs `--units` / memory (4 GB cap) for larger worlds; driving (step 5).
+
 ### 2026-11-17: browser port, step 3: threads as Web Workers, a main thread that never blocks
 Decision: the browser build uses **shared-memory threads** (wasm32 with `atomics`, nightly `-Z build-std`, COOP /
 COEP headers). Without threads every loader would have to run in a separate worker instance and send its results

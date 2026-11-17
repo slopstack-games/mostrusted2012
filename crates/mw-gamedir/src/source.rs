@@ -217,7 +217,7 @@ pub fn install_relative_paths(picked: &[String]) -> Vec<Option<String>> {
 #[derive(Debug)]
 pub struct WebSource {
     index: Index,
-    /// Canonical path → (blob URL, size in bytes).
+    /// Canonical path → (blob or http URL, size in bytes).
     files: HashMap<String, (String, u64)>,
     label: String,
 }
@@ -243,17 +243,29 @@ impl WebSource {
 
     /// From `(path as picked, File)` pairs; paths are made install-relative with [`install_relative_paths`].
     pub fn from_files(files: impl IntoIterator<Item = (String, web_sys::File)>) -> io::Result<Self> {
-        let (paths, handles): (Vec<String>, Vec<web_sys::File>) = files.into_iter().unzip();
+        let mut entries = Vec::new();
+        for (path, file) in files {
+            let url = web_sys::Url::create_object_url_with_blob(&file).map_err(js_err)?;
+            entries.push((path, url, file.size() as u64));
+        }
+        Ok(Self::from_urls(entries))
+    }
+
+    /// From `(path, URL, size)` triples: any URL a synchronous range request can read, e.g. a local server
+    /// serving the player's own install (`tools/web/serve.py`). Paths are made install-relative with
+    /// [`install_relative_paths`].
+    pub fn from_urls(entries: impl IntoIterator<Item = (String, String, u64)>) -> Self {
+        let entries: Vec<(String, String, u64)> = entries.into_iter().collect();
+        let paths: Vec<String> = entries.iter().map(|(p, _, _)| p.clone()).collect();
         let label = paths.first().and_then(|p| p.split(['/', '\\']).next()).unwrap_or("<picked folder>").to_string();
         let mut out = Self { index: Index::default(), files: HashMap::new(), label };
-        for (rel, file) in install_relative_paths(&paths).into_iter().zip(handles) {
+        for (rel, (_, url, size)) in install_relative_paths(&paths).into_iter().zip(entries) {
             if let Some(rel) = rel {
-                let url = web_sys::Url::create_object_url_with_blob(&file).map_err(js_err)?;
                 out.index.insert(rel.clone());
-                out.files.insert(rel, (url, file.size() as u64));
+                out.files.insert(rel, (url, size));
             }
         }
-        Ok(out)
+        out
     }
 
     fn get(&self, canonical: &str) -> io::Result<&(String, u64)> {

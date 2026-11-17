@@ -45,3 +45,19 @@ pub fn time_seed() -> u64 {
         (js_sys::Date::now() * 1e6) as u64
     }
 }
+
+/// Save the captured frame: to the file natively; in a browser it is POSTed to the page's server
+/// (`/__screenshot?name=<file name>`, `tools/web/serve.py`), the only place a headless browser can put it.
+pub fn save_screenshot(
+    path: impl AsRef<std::path::Path>,
+) -> impl FnMut(bevy::prelude::On<bevy::render::view::screenshot::ScreenshotCaptured>) {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        bevy::render::view::screenshot::save_to_disk(path)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let path = path.as_ref().to_owned();
+        move |shot| crate::web::post_screenshot(&path, &shot.image)
+    }
+}

@@ -80,6 +80,7 @@ mod settings;
 mod sfx;
 mod shadow_cull;
 mod sky;
+#[cfg(not(target_arch = "wasm32"))]
 mod steam_controller;
 mod streaming;
 mod tonemap;
@@ -89,6 +90,8 @@ mod traffic_reaction;
 mod tyre_marks;
 mod ui_quads;
 mod weather;
+#[cfg(target_arch = "wasm32")]
+mod web;
 mod window_test;
 mod world_coronas;
 mod world_lights;
@@ -105,7 +108,7 @@ use std::time::Duration;
 use bevy::camera_controller::free_camera::{FreeCamera, FreeCameraPlugin};
 use bevy::image::{CompressedImageFormatSupport, CompressedImageFormats};
 use bevy::prelude::*;
-use bevy::render::view::screenshot::{Screenshot, save_to_disk};
+use bevy::render::view::screenshot::Screenshot;
 use clap::Parser;
 use mw_assets::AssetStore;
 use mw_bundle::ResourceId;
@@ -480,9 +483,20 @@ pub(crate) struct Loaded {
 #[derive(Component)]
 pub struct StatusText;
 
+#[cfg(not(target_arch = "wasm32"))]
 fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+    let game = GameDir::locate(cli.game_dir.as_deref())?;
+    run(cli, game)
+}
+
+/// In a browser the page starts the game (`web.rs`) once it has the install's files.
+#[cfg(target_arch = "wasm32")]
+fn main() {}
+
+/// Everything after the install is found: the same on the desktop and in a browser.
+fn run(mut cli: Cli, game: GameDir) -> anyhow::Result<()> {
     drive::install_gamepad_mappings();
-    let mut cli = Cli::parse();
     cli.mute |= std::env::var_os("MW_MUTE").is_some_and(|v| v != "0");
     if cli.bench.is_some() && std::env::var_os("WAYLAND_DISPLAY").is_some() && std::env::var_os("DISPLAY").is_some() {
         // Wayland offers no Immediate present mode and paces Mailbox at the monitor's refresh: benchmark
@@ -490,7 +504,6 @@ fn main() -> anyhow::Result<()> {
         // SAFETY: no other thread has started yet.
         unsafe { std::env::remove_var("WAYLAND_DISPLAY") };
     }
-    let game = GameDir::locate(cli.game_dir.as_deref())?;
     println!("Most Wanted install: {} (version {})", game.root().display(), game.version().unwrap_or("?"));
     let t = Instant::now();
     let store = Arc::new(AssetStore::new(game)?);
@@ -810,6 +823,9 @@ fn main() -> anyhow::Result<()> {
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
             title: "Most Rusted".into(),
+            // In a browser: the page's canvas, sized by its parent.
+            canvas: cfg!(target_arch = "wasm32").then(|| "#mostrusted".into()),
+            fit_canvas_to_parent: cfg!(target_arch = "wasm32"),
             // Unthrottled frames for `--frame-stats`.
             present_mode: if cli.frame_stats || cli.bench.is_some() {
                 bevy::window::PresentMode::AutoNoVsync
@@ -834,7 +850,7 @@ fn main() -> anyhow::Result<()> {
     }
     bevy::asset::embedded_asset!(app, "layered.wgsl");
     bevy::asset::embedded_asset!(app, "groundcover.wgsl");
-    app.add_systems(Startup, materials::load_groundcover_shader);
+    app.add_systems(Startup, (materials::load_groundcover_shader, materials::insert_game_sampler));
     if let Some(r) = replay {
         app.insert_resource(r)
             .add_systems(FixedUpdate, replay::run_replay.before(drive::car_physics))
@@ -920,7 +936,10 @@ fn main() -> anyhow::Result<()> {
     if cli.gamepad_debug {
         app.add_systems(Update, drive::log_gamepad_events);
     }
-    app.add_plugins((steam_controller::SteamControllerPlugin, input::MenuInputPlugin, input_script::InputScriptPlugin));
+    // The Steam Controller is read from its HID interface: not in a browser (its Gamepad API covers pads).
+    #[cfg(not(target_arch = "wasm32"))]
+    app.add_plugins(steam_controller::SteamControllerPlugin);
+    app.add_plugins((input::MenuInputPlugin, input_script::InputScriptPlugin));
     // The environment timeline: `--timeline`, else the one painted where the view starts (the camera
     // pose or the drive spawn; the default timeline until the world view has a focus).
     let fixed_timeline =
@@ -1616,7 +1635,7 @@ fn auto_screenshot(
         match *frames_after_done {
             n if n == game.screenshot_delay.max(1) => {
                 info!("screenshot at {:.2} s game time", time.elapsed_secs());
-                commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path.clone()));
+                commands.spawn(Screenshot::primary_window()).observe(platform::save_screenshot(path.clone()));
             }
             n if n == game.screenshot_delay.max(1) + 30 => {
                 exit.write(AppExit::Success);
@@ -1634,7 +1653,7 @@ fn auto_screenshot(
     *frames_after_done += 1;
     match *frames_after_done {
         n if n == game.screenshot_delay => {
-            commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path.clone()));
+            commands.spawn(Screenshot::primary_window()).observe(platform::save_screenshot(path.clone()));
         }
         n if n == game.screenshot_delay + 30 => {
             exit.write(AppExit::Success);

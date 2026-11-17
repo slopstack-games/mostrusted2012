@@ -16,11 +16,18 @@ clap.workspace = true
 rayon.workspace = true
 bevy = { version = "0.19", features = ["free_camera", "dfg_lut", "bluenoise_texture"] }
 avian3d = "0.7"
-# The Steam Controller is read from its HID interface (steam_controller.rs); pure-Rust backends, no C build.
-hidapi = { version = "2.6", default-features = false, features = ["linux-native", "windows-native"] }
 mw-audio.workspace = true
 
 # The browser build (crate::platform): threads as Web Workers over shared memory, the clock for seeds.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm_thread = "0.3.3"
 js-sys = "0.3.106"
+wasm-bindgen = "0.2.129"
+web-sys = { version = "0.3.106", features = ["FileList", "RequestInit", "Window", "console"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+# WebGPU (the WebGL2 path has no storage buffers, which game_lighting.wgsl needs).
+bevy = { version = "0.19", features = ["webgpu"] }
+
+# The Steam Controller is read from its HID interface (steam_controller.rs); pure-Rust backends, no C build.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+hidapi = { version = "2.6", default-features = false, features = ["linux-native", "windows-native"] }

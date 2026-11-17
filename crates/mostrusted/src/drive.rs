@@ -964,8 +964,12 @@ impl CarInput {
 
 /// Install the bundled SDL GameControllerDB (newer than the copy inside
 /// gilrs) through `SDL_GAMECONTROLLERCONFIG`, keeping any user mappings.
-/// Must run before the app starts any threads.
+/// Must run before the app starts any threads. Not in a browser: there gilrs reads the Gamepad API's standard
+/// mapping, and the environment can't be written.
 pub fn install_gamepad_mappings() {
+    if cfg!(target_arch = "wasm32") {
+        return;
+    }
     const DB: &str = include_str!("../assets/gamecontrollerdb.txt");
     let user = std::env::var("SDL_GAMECONTROLLERCONFIG").unwrap_or_default();
     // User mappings first so they take precedence over the bundled ones.
