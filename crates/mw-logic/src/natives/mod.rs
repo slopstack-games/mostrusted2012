@@ -49,6 +49,7 @@ pub mod lua_garage;
 pub mod lua_menus;
 pub mod lua_misc;
 pub mod lua_settings;
+pub mod lua_sim;
 #[cfg(test)]
 mod lua_tests;
 pub mod lua_widgets;
@@ -173,6 +174,7 @@ impl Registry {
         lua_career::register(&mut r);
         lua_menus::register(&mut r);
         lua_misc::register(&mut r);
+        lua_sim::register(&mut r);
         lua_garage::register(&mut r);
         r
     }

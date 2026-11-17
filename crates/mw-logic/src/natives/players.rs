@@ -11,6 +11,8 @@ pub const FIRST_AI_SLOT: usize = 12;
 /// One player record (offsets in the record).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Player {
+    /// +0x268: the team (`GetCompetitorTeam`).
+    pub team: i32,
     /// +0x9c: the kind (2 = an AI-driven car; `FUN_006bf190` reads the cop flag only for those).
     pub kind: u32,
     /// (+0x578)+0xb5: the car is a cop (`FUN_006bf190`).
@@ -91,6 +93,8 @@ pub struct PlayerManager {
     pub opponents: i32,
     /// +0xcbe9 `HasAnyPlayerFinishedCurrentEvent` (the runtime sets it when a car crosses the finish).
     pub any_finished: bool,
+    /// +0xcba8: `SetCarFrozen`'s value (1.0 / 0.0).
+    pub car_frozen: f32,
 }
 
 impl Default for PlayerManager {
@@ -102,6 +106,7 @@ impl Default for PlayerManager {
             team_players: 0,
             opponents: 0,
             any_finished: false,
+            car_frozen: 0.0,
         }
     }
 }
