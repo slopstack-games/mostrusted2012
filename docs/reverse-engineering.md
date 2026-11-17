@@ -2,7 +2,10 @@
 
 ## The executable is encrypted on disk
 
-`NFS13.exe` (version 1.4.0.0, the Steam / EA app build) is a 32-bit PE whose `.text` section (11.5 MB) has a
+`NFS13.exe` (version 1.4.0.0, the Steam / EA app build: Steam build id 10351185, 13,684,056 bytes, file date
+2026-10-03; the dump in `re/` and the snapshots in `re/out/live` are of this build, checked again 2026-11-17 after a
+Steam update that only replaced the EA app installer. If the build id or size ever changes, every address in the
+docs, the native table and `re/probe.toml` needs re-checking against a new dump) is a 32-bit PE whose `.text` section (11.5 MB) has a
 Shannon entropy of 8.0 bits/byte, meaning it is encrypted. The entry point (RVA `0xDDD830`) lies in a small
 unnamed section appended after `.rsrc`, which is the EA DRM wrapper. It decrypts the code at runtime after
 checking the licence with the EA app.

@@ -124,6 +124,24 @@ pub enum Query {
     /// `BINGAME` still leaving the game: two or more players (players +0xa6a0), or one of the 16 slots of
     /// `FUN_00573390` busy (`FUN_0083bd40`). Default false.
     GameLeaving,
+    /// `DBAUTOSELWD`: a world can be selected without asking: the GeneSys config's debug world (`DAT_010edac0`
+    /// +0x1c → +0x10 ≠ 0) or the world list's only entry (G+0x2f468 +0x80 count 1, 0x7702e0). Default true.
+    AutoSelectableWorld,
+    /// `SELECT_PROF`: the platform user's persona id (`FUN_004129f0` is true once it is known, `FUN_00412a50`
+    /// reads it from `DAT_010eb010`); 0 = not yet. Default 1 (a model decision: offline there is no persona).
+    UserId,
+    /// The feedback group `group` is loaded (`FUN_00792590`: one of the 7 slots of the UI manager +0x32858 has
+    /// the id and state 3). Default true.
+    FeedbackGroupLoaded { group: i64 },
+    /// The vehicle list is loaded (`FUN_0083bd20`: the vehicle resource +0x2108 > 0). Default true.
+    VehicleListLoaded,
+    /// The profile is brand new (G+0x2f454 +0x4964 +5, `FUN_0069fce0`, 0x73d350). Default true (no save).
+    NewProfile,
+    /// `REBOOT_REQ`: a system reboot was requested (`FUN_0046ef70`: the byte at +0xc48 of the object behind
+    /// `*0x010edacc`+4, the same object as the HSM clocks). Default false.
+    RebootRequested,
+    /// `COLLECTABLES`: the world state is loaded (`FUN_00532dc0` on `*0x010edaf0`: +0xc10 == 3). Default true.
+    CollectablesReady,
 }
 
 impl Query {
@@ -138,7 +156,13 @@ impl Query {
             | Query::ProfileLoaded
             | Query::LocalPlayerReady
             | Query::GameModeStarted
-            | Query::TransitionFinished => 1,
+            | Query::TransitionFinished
+            | Query::AutoSelectableWorld
+            | Query::UserId
+            | Query::FeedbackGroupLoaded { .. }
+            | Query::VehicleListLoaded
+            | Query::NewProfile
+            | Query::CollectablesReady => 1,
             Query::TransitionState => 2,
             Query::GameModeEvent | Query::GameModeMachine => u64::MAX,
             _ => 0,
@@ -175,6 +199,13 @@ impl Query {
             Query::SequencePlaying { .. } => "SequencePlaying",
             Query::SequencePlayerBusy { .. } => "SequencePlayerBusy",
             Query::GameLeaving => "GameLeaving",
+            Query::AutoSelectableWorld => "AutoSelectableWorld",
+            Query::UserId => "UserId",
+            Query::FeedbackGroupLoaded { .. } => "FeedbackGroupLoaded",
+            Query::VehicleListLoaded => "VehicleListLoaded",
+            Query::NewProfile => "NewProfile",
+            Query::RebootRequested => "RebootRequested",
+            Query::CollectablesReady => "CollectablesReady",
         }
     }
 }

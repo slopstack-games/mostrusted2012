@@ -80,14 +80,13 @@ Decisions with the user: portrait loading screens keep the original's bars.
   a browser on WebGPU (`tools/web/build`, `tools/web/serve.py`, `tools/web/headless`), free camera, driving and
   audio (mixer on an AudioWorklet thread, patched crates in `third_party/`). Next: saves in browser storage,
   frame time, memory for whole-world views (PLAN.md M9).
-- **Game logic engine** (PLAN.md M8, 2026-11-17): bindings, HSM interpreter (19 behaviours), Lua 5.1 VM and the
-  widget data merged; the native registry's API and the original's tables are in `mw_logic::natives`. The
-  registry round was **stopped to cut token use** (user); its partial work is committed as WIP (not built or
-  verified) on four branches, to continue from (cheaper: `sonnet` agents, CLAUDE.md "Parallel agents"):
-  `worktree-agent-a5886ab46492f9fa9` (N1: wiring, JSON data definitions, ViewModels, ~1,400 lines),
-  `worktree-agent-a13ae28384ceb5ac6` (N2: HSM hooks), `worktree-agent-ae9215e5c9a19864a` (N3: Lua natives),
-  `worktree-agent-ad67203ead166fb17` (N4: behaviour types). Prompts: the session's agent prompts minus the
-  build boilerplate (now in docs/agent-brief.md). Plan and blockers: research-log 2026-11-17 (steps 1-4).
+- **Game logic engine** (PLAN.md M8, 2026-11-17): bindings, HSM interpreter, Lua 5.1 VM, widget data and the native
+  registry (`mw_logic::natives`, `mwtool natives`) are in. Ported and verified against the dump: **45 of ~200 used HSM
+  behaviour types** (the boot reaches "Playing" with 5 answers left, all engine bindings / online: docs/commands.md),
+  **60 / 187 HSM hooks**, **85 / 385 Lua natives**. Each agent report lists the next batch (research-log entries of
+  2026-11-17). Next, besides more batches: the runtime (`mostrusted`) carrying out the natives' `Request`s and
+  answering the HSM `Query`s, so the real front end runs from the HSM. Rounds run cheapest as `sonnet` agents with
+  a fixed batch (CLAUDE.md "Parallel agents"), in a fresh session per round.
 
 New this session (docs/commands.md): `tools/hl`, `tools/silent-sink`, `mwtool tp / car / mods / conditions / inputs /
 probe`, `capture --probe --script`, `mwtool surfaces --flat / --tris / --classes`, `placement-check --floating`,

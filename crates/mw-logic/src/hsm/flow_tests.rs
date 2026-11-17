@@ -281,3 +281,131 @@ fn playing_starts_and_stops_the_session() {
     assert_eq!(host.reqs, [Request::StartPlaying, Request::StopPlaying]);
     assert!(!hsm.is_running(s));
 }
+
+#[test]
+fn auto_select_world_selects_or_leaves_it_unselected() {
+    let (mut hsm, mut host, s) = machine("DBAUTOSELWD", &[], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::AutoSelectWorld]);
+    assert_eq!(hsm.result(s), Some(key("SELECTED")));
+    let (mut hsm, mut host, s) = machine("DBAUTOSELWD", &[], "ENTER");
+    host.answers.insert("AutoSelectableWorld", 0);
+    step(&mut hsm, &mut host, 2);
+    assert!(host.reqs.is_empty());
+    assert_eq!(hsm.result(s), Some(key("UNSELECTED")));
+}
+
+#[test]
+fn select_profile_waits_for_the_user_then_names_the_profile() {
+    let (mut hsm, mut host, s) = machine("SELECT_PROF", &[], "ENTER");
+    host.answers.insert("UserId", 0);
+    step(&mut hsm, &mut host, 4);
+    assert!(hsm.is_running(s) && host.reqs.is_empty(), "no persona yet: waits");
+    host.answers.insert("UserId", 1234);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs, [Request::SetProfileUser { user: 1234 }, Request::ProfileUserSelected]);
+    assert_eq!(hsm.result(s), Some(key("SUCCESS")));
+}
+
+#[test]
+fn wait_for_feedback_group_waits_until_loaded_and_skips_group_zero() {
+    let (mut hsm, mut host, s) = machine("WAIT4FEEDBK", &[("GROUP", "5")], "ENTER");
+    host.answers.insert("FeedbackGroupLoaded", 0);
+    step(&mut hsm, &mut host, 4);
+    assert!(hsm.is_running(s));
+    host.answers.insert("FeedbackGroupLoaded", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    let (mut hsm, mut host, s) = machine("WAIT4FEEDBK", &[("GROUP", "0")], "ENTER");
+    host.answers.insert("FeedbackGroupLoaded", 0);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    // the binding overrides GROUP
+    let (mut hsm, mut host, s) = machine("WAIT4FEEDBK", &[("GROUP", "5"), ("GROUPBINDING", "A.B")], "ENTER");
+    host.answers.insert("FeedbackGroupLoaded", 0);
+    host.ints.insert("A.B".into(), 0);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+}
+
+#[test]
+fn wait_for_vehicle_list_waits_until_loaded() {
+    let (mut hsm, mut host, s) = machine("WAITFORVEHIC", &[], "ENTER");
+    host.answers.insert("VehicleListLoaded", 0);
+    step(&mut hsm, &mut host, 4);
+    assert!(hsm.is_running(s));
+    host.answers.insert("VehicleListLoaded", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+}
+
+#[test]
+fn is_new_profile_and_is_auto_testing_exit_at_once() {
+    let (mut hsm, mut host, s) = machine("ISNEWPROFILE", &[], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(YES));
+    let (mut hsm, mut host, s) = machine("ISNEWPROFILE", &[], "ENTER");
+    host.answers.insert("NewProfile", 0);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(NO));
+    let (mut hsm, mut host, s) = machine("ISAUTOTESTIN", &[], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(NO));
+}
+
+#[test]
+fn startup_script_runs_its_children_like_the_base() {
+    let (mut hsm, mut host, s) = machine("HSB_STRSCRPT", &[], "ENTER");
+    step(&mut hsm, &mut host, 3);
+    assert!(hsm.is_running(s), "no exit of its own");
+}
+
+#[test]
+fn reboot_request_exits_once_requested() {
+    let (mut hsm, mut host, s) = machine("REBOOT_REQ", &[], "ENTER");
+    step(&mut hsm, &mut host, 4);
+    assert!(hsm.is_running(s));
+    host.answers.insert("RebootRequested", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+}
+
+#[test]
+fn enable_time_counts_up_and_down() {
+    let (mut hsm, mut host, s) = machine("ENABLETIME", &[], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::AdjustTimeEnabled { delta: 1 }, Request::AdjustTimeEnabled { delta: -1 }]);
+}
+
+#[test]
+fn collectables_wait_for_the_world_then_reset_and_stop() {
+    let (mut hsm, mut host, s) = machine("COLLECTABLES", &[], "ENTER");
+    host.answers.insert("CollectablesReady", 0);
+    step(&mut hsm, &mut host, 3);
+    assert!(host.reqs.is_empty());
+    host.answers.insert("CollectablesReady", 1);
+    step(&mut hsm, &mut host, 2);
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::StartCollectables, Request::StopCollectables]);
+}
+
+#[test]
+fn load_feedback_group_loads_waits_and_unloads_on_request() {
+    let (mut hsm, mut host, s) = machine("LOAD_FDBK_GR", &[("GROUP", "7"), ("UNLOADONEXIT", "true")], "ENTER");
+    host.answers.insert("FeedbackGroupLoaded", 0);
+    step(&mut hsm, &mut host, 3);
+    assert_eq!(host.reqs, [Request::LoadFeedbackGroup { group: 7 }]);
+    host.answers.insert("FeedbackGroupLoaded", 1);
+    step(&mut hsm, &mut host, 2);
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs[1], Request::UnloadFeedbackGroup { group: 7 });
+    let (mut hsm, mut host, s) = machine("LOAD_FDBK_GR", &[("GROUP", "0"), ("UNLOADONEXIT", "true")], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    hsm.request_exit(s);
+    step(&mut hsm, &mut host, 2);
+    assert!(host.reqs.is_empty(), "group 0 is never loaded or released");
+}

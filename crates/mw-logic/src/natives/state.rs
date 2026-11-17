@@ -256,6 +256,27 @@ pub enum Request {
     SessionLost,
     /// `LOAD_ALL` (0x740f00): open the gate `DAT_010f77ed` that world loading waits for.
     LoadAll,
+    /// `DBAUTOSELWD` (0x7702e0): select the world without asking (`FUN_00645780` on the world list G+0x2f468 with
+    /// the debug world of the GeneSys config, else the list's only world).
+    AutoSelectWorld,
+    /// `COLLECTABLES` enter update (0x73c2f0), once the world state is 3: `FUN_0070d260` on G+0x14e40 (resets the
+    /// collectables' state and recounts them per player slot).
+    StartCollectables,
+    /// `COLLECTABLES` exit (0x73c330): `FUN_006ecf80` on G+0x14e40 (+0x2fe6 = 0, `FUN_006e42a0`, +0x41c = 0).
+    StopCollectables,
+    /// `LOAD_FDBK_GR` enter (0x743ee0): `FUN_007982e0` on the UI manager +0x32858: load the feedback message
+    /// group (count it up when loaded, else start loading it with G+0x2ed60).
+    LoadFeedbackGroup { group: i64 },
+    /// `LOAD_FDBK_GR` exit (0x743ff0) with `UNLOADONEXIT` true: `FUN_00798370` counts the group down.
+    UnloadFeedbackGroup { group: i64 },
+    /// `ENABLETIME` enter / exit (0x73c4d0 / 0x73c4e0): G+0x25624 += `delta` (+1 / -1), a counter (meaning open;
+    /// "enable time" by the behaviour's name).
+    AdjustTimeEnabled { delta: i32 },
+    /// `SELECT_PROF` (0x73f270): name the profile after the platform user: `FUN_00428860` prints `%llu` of the
+    /// persona id into the buffer `DAT_010ecc10`.
+    SetProfileUser { user: u64 },
+    /// `SELECT_PROF` exit (0x75cd00): post message 0xc (`FUN_0076aad0` on the queue `DAT_010edb0c` +0x10, flag 1).
+    ProfileUserSelected,
     /// `BINGAME` enter update, once (0x73d130): post the in-game start messages: `FUN_008433f0(0, v)` on G+0x2f470
     /// (queue `DAT_010edb24`, v = profile option 11 (`FUN_0072f610(0xb)`) clamped to 0–3, kept at +4; then +8 set)
     /// and `FUN_00847d70` (queue `DAT_010edb38`).
