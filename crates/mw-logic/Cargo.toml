@@ -9,3 +9,4 @@ license.workspace = true
 mw-bundle.workspace = true
 mw-formats.workspace = true
 thiserror.workspace = true
+serde_json = "1"

@@ -2729,6 +2729,78 @@ available (the installed Ghidra 12.2 is rejected by the `rea` server, which want
 - **Data check** (`mwtool bindings`): 5,024 distinct binding texts (JSON 2,544, GeneSys 3,503, HSM 263, Lua 239)
   all parse; the quirks the original also has are listed by its warnings (research log 2026-11-17 "Binding
   evaluator").
+## The HSM interpreter (2026-11-17, ported in `mw_logic::hsm`)
+
+The game-logic state machines (`HSMData`, formats.md) run in a manager (`this` with 12 machine slots of 0x30 B at
++0x10, a ring of 16 finished results at +0x258 / index +0x358, a serial counter +0x250, the hook registry +0x360
+and the behaviour registry pointer +0x378: {count +0x964, (id, factory) pairs from +4}). Confirmed from the dump
+and the snapshot's disassembly unless stated.
+- **Start** `FUN_00775ed0`(resource, instance id, context): the top-level state whose instance id matches (12 B
+  records, id at +8), a free slot (serial −1), serial = counter++; the slot's spawn record = the state's first
+  entry point id + its definition id; behaviour from the registry, or `HSB_PLCHLDR` if the id is not registered;
+  init `FUN_00775cd0`; returns the serial (−1: no instance or no slot). The boot starts G+0x2f710 = **20527**
+  (read live; set in `FUN_006a5aa0` case 3 from a GeneSys object of `DAT_010edac0`) in case 7; game modes
+  (`FUN_0070d580`, from the mode's data) and `RUNSUBNET` (`FUN_007500a0`) start others.
+- **Per frame** `FUN_00776010`: per slot in order, the root's tick (vtable +0x20); a root in state 3 is freed by
+  `FUN_00775b30` (its serial and exit point into the ring, data definition freed). `FUN_00776050` ticks one slot;
+  `FUN_00775010` flags a machine's root for exit; `FUN_00774f70` running?, `FUN_00774fa0` exit flagged?,
+  `FUN_00774fe0` result from the ring.
+- **Instance** (`FUN_00775cd0`): +0x08 behaviour id, +0x10 exit point (u64, starts `EXITINVALID` =
+  `DAT_0117bd78`), +0x18 the machine slot, +0x1c parent, +0x20 the parent's child exit data for this state (or 0),
+  +0x24 first child, +0x28 / +0x2c next / previous sibling, +0x30 the state, +0x34 the spawn record (entry point
+  id, state id), +0x38 the data definition's instance (JSON parsed by `FUN_009f8fc0` in `FUN_007756c0`; a root
+  member hashing to 0xb21d9989 also builds binding adapters), +0x3c phase 0–3, +0x40 exit requested, +0x41
+  entered, +0x42 exit begun, +0x43 ticked once.
+- **Registry** `FUN_00775a60`(id, fallback): the factory registered for the id, else `HSB_PLCHLDR` for fallback 1
+  / 2 and `HSB_RUNCHILD` otherwise. `FUN_00775980` registers HSB_PLCHLDR, RUNSUBNET, HSB_RUNCHILD, BUNITTEST,
+  WAITCHILDREN, then the rest (268 names, factories 0x776000–0x780000).
+- **Vtable** (9 slots; base defaults 0x55cd90–0x55ce00): 0 on enter, 1 enter update (1 = entered), 2 on running,
+  3 update (nonzero = exit; base 0), 4 exit update (1 = done), 5 on exit begin, 6 on exit, 7 (returns 0, unused
+  here), 8 the shared tick `FUN_00776470`.
+- **Tick** `FUN_00776470`: phase 0: once, the entry point (`FUN_007760b0`: the state's entry point whose id is the
+  spawn record's; `FUN_00775e70` action 1 starts the spawns, 2 flags the subtree for exit), publish the data
+  definition when it has a path (`FUN_00a4ead0`; its vtable slot 0 returns the path), slot 0; then slot 1 every
+  tick until nonzero, slot 2, phase 1 in the same tick. Phase 1: unless flagged, `FUN_00776210`; nonzero →
+  `FUN_00778f10` (flag self and subtree); phase 2. Phase 2: once slot 5; `FUN_007757f0` ticks the children and
+  frees the finished ones (exit points are not looked at); when none is left slot 4 until nonzero, then slot 6,
+  retract the data definition (`FUN_00a4de20`), phase 3. +0x43 is set at the end of every tick.
+- **Children** `FUN_00776210`: slot 3 first (nonzero is returned at once: the children are not ticked). Then
+  passes: tick each child (later passes only those with +0x43 clear, i.e. started in this call); if any finished,
+  unlink and free each finished child and call `FUN_00776100`(child id, its exit point): the child exit data for
+  that id, the exit point whose child exit matches, `FUN_00775e70` on it, and for action 2 set the parent's exit
+  point to the record's parent exit point and return 1. Repeat while something finished and the result is not 1.
+  A missing record dereferences null (the data never lacks one on the paths it runs). Starting a child
+  `FUN_00775da0`: create, append at the end of the child list, inherit a pending exit flag.
+- **Parameters** `FUN_00774890`(u64 id): linear search of the state's parameters comparing all 64 bits (value =
+  the first string); `FUN_00774790`(exit): does the parent's child exit data for this state handle that exit
+  point with a non-NOTHING action (`FUN_00774dc0` sets it as the exit point when so).
+- **Hooks** (registry at manager+0x360, `FUN_007763b0` registers 187 by name hash `FUN_009ed180`;
+  `FUN_007761a0` looks up and calls, `EXITINVALID` when missing; `FUN_00776440` by name): `hook(arg)` returns the
+  exit point (u64), `arg` = the data definition's member (`FUN_009f77a0`). E.g. `IsNewGame` (0x675a50): G+0x2f3fc
+  +0x2e87 ? TRUE : FALSE; `ClearNewGameFlag`: clears it, EXIT.
+- **Behaviours ported** (factory → vtable; slots that differ from the base): `HSB_RUNCHILD` 0x77ab20 → 0xfd9194
+  (update 0); `HSB_PLCHLDR` 0x77aa80 → 0xfd914c (update: EXIT); `WAITCHILDREN` 0x77aad0 → 0xfd9170 (EXIT when no
+  child); `CALLHSMHOOK` 0x77a990 → 0xfd90e0 (enter: `FUNCTION` hashed; update: hook(`Params`) → exit point);
+  `CALLHSMHOOKS` 0x77a9e0 → 0xfd9104 (enter: `ONENTERHOOK`(`EnterParams`), on exit: `ONEXITHOOK`(`ExitParams`));
+  `HSMHOOKEXIT` 0x77aa30 → 0xfd9128 (update: hook(`Params`) until not `EXITINVALID`); `EXITBINDTRUE` 0x55f790 →
+  0xfab66c (binding parsed on enter `FUN_00a50650`; EXIT when it evaluates true `FUN_00a4f160`);
+  `HSB_SEL_EX_B` 0x77bc90 → 0xfd9860 (binding as text, 12 chars, `FUN_00a4f2e0` → packed exit point; failure →
+  `ONFAILEXIT`); `HSM_B_TRUE` 0x77bd30 → 0xfd98a8 (TRUE / FALSE); `HSB_B_NOT_0` 0x77bce0 → 0xfd9884 (TRUE unless
+  the text is "" or "0"); `HSB_EX_BI_CH` 0x77bd80 → 0xfd98cc (first resolved value kept, EXIT on a change);
+  `BINDINGTIMED` 0x779c60 → 0xfd8ee8 (`TIME` counted down on clock +0x38 while true, reset when false);
+  `BDELAY` 0x779280 → 0xfd8d80 (`ENTERTIME` / `UPDATETIME` / `LEAVETIME` on slots 1 / 3 / 4, clock +0x18);
+  `WAIT4TIME` 0x5a23f0 → 0xfae1a4 (`TIME` × 3e6 ticks (`.rdata` 0x00f9f604), minus dt × 3e6 per update, EXIT when
+  ticks / 3 ≤ 0; `REGBINDING` publishes `CurrentHSMTimer`); `RUNSUBNET` 0x77dd50 → 0xfda810 (instance = `BINDING`
+  value or `TOPSTATE`, own machine, its exit point if the parent handles it else EXIT; exits it on the way out);
+  `LOCALECHECK` 0x779ff0 → 0xfd8fc0 (EXIT at once on PC); `BWAIT4GFX` 0x7792e0 → 0xfd8da4 (EXIT at once, exit
+  update waits for `FUN_00897960`); `HSB_WAIT4LS` 0x77c1f0 / `HSB_WAIT4NL` 0x77c1a0 (UI manager +0x2d204 ≠ 0 and
+  +0x2d200 clear = showing).
+- **Clocks**: `*0x010edacc` + 4 → +0x18 (dt +0x10 × rate +0x14; `BDELAY`, `WAIT4TIME`) and +0x38 (with a running
+  flag +0x1c; `BINDINGTIMED`). Which engine clocks they are is open.
+- **Model decisions** (`mw_logic::hsm`): a missing child exit record / entry point is reported and ignored
+  (original: null dereference); a 10,000-pass guard per call; the binding "parsed" test is a non-empty path until
+  the binding parser is connected; unported behaviours registered in the original are the host's business
+  (the `mwtool hsm --run` driver holds them or answers them).
 
 ## Front end, HUD and Easydrive
 

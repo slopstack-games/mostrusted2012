@@ -189,10 +189,20 @@ pub fn run(store: &AssetStore, opt: &Options) -> Result<()> {
                 continue;
             };
             n_hsm += 1;
-            for node in &data.nodes {
-                for (k, v) in &node.parameters {
-                    add("hsm", &mw_formats::hsm::key_name(*k), v);
+            // Typed parameters: every value, nested structures included.
+            fn walk(params: &[mw_formats::hsm::Parameter], add: &mut dyn FnMut(&'static str, &str, &str)) {
+                for p in params {
+                    let key = mw_formats::hsm::key_name(p.id);
+                    for v in &p.values {
+                        add("hsm", &key, v);
+                    }
+                    for s in &p.structures {
+                        walk(s, add);
+                    }
                 }
+            }
+            for state in &data.states {
+                walk(&state.parameters, &mut add);
             }
         }
         if !opt.no_genesys {

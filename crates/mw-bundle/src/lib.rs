@@ -47,7 +47,7 @@ mod types;
 use std::io::{Read, Seek};
 use std::path::Path;
 
-pub use id::ResourceId;
+pub use id::{ResourceId, crc32};
 pub use types::ResourceType;
 
 pub const MAGIC: &[u8; 4] = b"bnd2";
