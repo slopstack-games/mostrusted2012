@@ -22,10 +22,12 @@
 
 pub mod state;
 pub mod table;
+pub mod view_models;
 
 use std::collections::HashMap;
 
 pub use state::{LogicState, Request};
+pub use view_models::ViewModels;
 
 use crate::hsm::Key;
 use mw_formats::json::Json;

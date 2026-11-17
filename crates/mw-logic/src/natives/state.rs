@@ -8,6 +8,8 @@ pub struct LogicState {
     pub requests: Vec<Request>,
     /// Calls of natives that are known but not ported yet (`"hook Name"` / `"lua Name"`), for logs and tools.
     pub unported: Vec<String>,
+    /// What bindings read ([`ViewModels`](super::ViewModels)).
+    pub view_models: super::ViewModels,
 }
 
 /// A request to the engine (the runtime in `mostrusted`, or a tool's stub).
