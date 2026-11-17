@@ -11,6 +11,9 @@
 //! 36 names are in both registries (35 plus `ExitWidgetGroup`); each has its own handler in the original, and its
 //! own entry here.
 //!
+//! [`LogicHost`] owns a registry and the state and serves both interpreters (the HSM's [`Host`](crate::hsm::Host),
+//! globals of a Lua state); the state is shared with the Lua closures as `Rc<RefCell<LogicState>>`.
+//!
 //! Natives act on [`LogicState`]: the original's managers as engine-free structs (one sub-struct per manager,
 //! each in the file of the area that owns it). What only the engine can do (load a world, play a sequence,
 //! mute the sound) is asked for through [`LogicState::requests`]; the runtime drains it every frame.
@@ -20,13 +23,15 @@
 //! [`Registry::original`] builds the table and runs every area's `register`. An entry without a function is a
 //! known native that is not ported yet: calling it is recorded in [`LogicState::unported`].
 
+pub mod host;
 pub mod state;
 pub mod table;
 pub mod view_models;
 
 use std::collections::HashMap;
 
-pub use state::{LogicState, Request};
+pub use host::LogicHost;
+pub use state::{Engine, LogicState, Request};
 pub use view_models::ViewModels;
 
 use crate::hsm::Key;
@@ -41,7 +46,7 @@ pub type LuaFn = fn(&mut LogicState, &mut mw_lua::Lua, Vec<mw_lua::Value>) -> mw
 
 /// What a native is for, from its handler and its callers (offline game first; online / platform ones are ported
 /// last or answered with the original's offline result).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Area {
     /// Single-player game, menus, profile, settings.
     Offline,
@@ -55,6 +60,25 @@ pub enum Area {
     Unknown,
 }
 
+impl Area {
+    pub const ALL: [Area; 5] = [Area::Offline, Area::Online, Area::Platform, Area::Debug, Area::Unknown];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Area::Offline => "offline",
+            Area::Online => "online",
+            Area::Platform => "platform",
+            Area::Debug => "debug",
+            Area::Unknown => "unknown",
+        }
+    }
+
+    /// By [`name`](Self::name), case-insensitive.
+    pub fn parse(s: &str) -> Option<Area> {
+        Self::ALL.into_iter().find(|a| a.name().eq_ignore_ascii_case(s))
+    }
+}
+
 /// One native of the original.
 #[derive(Debug, Clone)]
 pub struct Native<F> {
@@ -64,6 +88,12 @@ pub struct Native<F> {
     pub area: Area,
     /// `None`: known, not ported yet.
     pub f: Option<F>,
+}
+
+impl<F> Native<F> {
+    pub fn ported(&self) -> bool {
+        self.f.is_some()
+    }
 }
 
 /// Both registries of the original.
