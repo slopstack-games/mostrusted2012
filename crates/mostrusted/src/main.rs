@@ -389,6 +389,10 @@ struct Cli {
     /// does (`hsm:` lines); its engine requests are not carried out yet (logic.rs, shadow mode).
     #[arg(long)]
     hsm: bool,
+    /// Keep the sound in test runs (`--test`, crash / smash / race tests are silent otherwise): audio checks such
+    /// as the browser build's recording (`tools/web/headless ... <record_seconds>`).
+    #[arg(long)]
+    sound: bool,
     /// Start a new game: the default car at the free-roam start, ignoring the saved profile.
     #[arg(long)]
     new_game: bool,
@@ -1140,7 +1144,7 @@ fn run(mut cli: Cli, game: GameDir) -> anyhow::Result<()> {
             sync_environment,
             paint,
             filter,
-            mute: cli.mute || test.is_some() || crash || smash || race_test,
+            mute: cli.mute || ((test.is_some() || crash || smash || race_test) && !cli.sound),
             start_probe: if boot_start.is_some() && cli.spawn.is_empty() { 3.0 } else { 30.0 },
         })
         .insert_resource(ClearColor(Color::srgb(0.55, 0.68, 0.85)))

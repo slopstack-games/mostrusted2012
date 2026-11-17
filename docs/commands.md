@@ -256,6 +256,11 @@ MW_CARD_SHOTS=<dir> ./target/release/mostrusted --drive "v12 vantage" --units 20
 # Scripted keys / virtual pad for the menus (input_script.rs): `<s> key|keyup|pad|padup|lx|ly|rx|ry|shot|quit [arg]`
 # steps, clock from when the pause menu or map is on screen; MW_MAP_LOG=1 logs the map's selection and cursor
 # (MW_INPUT_SCRIPT_START=playing: from when the game is playing, e.g. the HUD's widget actions under --hsm)
+# Key names also cover the driving keys: Space (handbrake), Tab, F1, KeyR, KeyC, AltLeft, ShiftLeft.
+# --sound keeps the sound in --test runs (they are silent otherwise). Live output of a headless run, recorded from
+# the null sink (never MW_SOUND=1: that plays on the desktop):
+#   S=$(tools/silent-sink); parecord --device=$S.monitor --file-format=wav --format=float32le out.wav &
+#   tools/hl env MW_MUTE=0 ./target/release/mostrusted ...
 MW_MAP_LOG=1 MW_INPUT_SCRIPT="0.5 lx 1; 0.6 lx 0; 1.5 shot <scratch>/m.png; 2 quit" ./target/release/mostrusted --drive "v12 vantage" --units 12 --spawn=1600,40,2350 --show-map
 # Races (race.rs, ai.rs, cutscene.rs): the event's intro, AI opponents on the grid, gates, laps, results
 ./target/release/mwtool events [<id> [--png f]] [--all]  # offline events (each opponent's rollout car, colours, Most Wanted / cop flags); mwtool camera-take [take] (ICE cameras)

@@ -60,6 +60,14 @@ fn key_code(name: &str) -> Option<KeyCode> {
         "Numpad4" => K::Numpad4,
         "Numpad6" => K::Numpad6,
         "Numpad8" => K::Numpad8,
+        // The driving keys (input.rs `defaults`): handbrake, nitrous, camera, reset, Tab.
+        "Space" => K::Space,
+        "Tab" => K::Tab,
+        "F1" => K::F1,
+        "KeyR" => K::KeyR,
+        "KeyC" => K::KeyC,
+        "AltLeft" => K::AltLeft,
+        "ShiftLeft" => K::ShiftLeft,
         _ => return None,
     })
 }
