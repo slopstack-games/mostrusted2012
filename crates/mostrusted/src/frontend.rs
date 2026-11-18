@@ -989,7 +989,7 @@ pub fn default_profile_path() -> Option<PathBuf> {
 }
 
 pub fn load_profile(path: &std::path::Path) -> Option<Profile> {
-    let text = std::fs::read_to_string(path).ok()?;
+    let text = crate::platform::read_text(path)?;
     let mut p = Profile::default();
     for line in text.lines() {
         match line.split_once('=') {
@@ -1059,16 +1059,13 @@ fn save_profile(
             c.dirty = false;
         }
     }
-    if let Ok(old) = std::fs::read_to_string(&path) {
+    if let Some(old) = crate::platform::read_text(&path) {
         for line in old.lines().filter(|l| !owned.iter().any(|k| l.starts_with(k))) {
             text.push_str(line);
             text.push('\n');
         }
     }
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Err(e) = std::fs::write(&path, text) {
+    if let Err(e) = crate::platform::write_text(&path, &text) {
         warn!("could not save {}: {e}", path.display());
     }
 }

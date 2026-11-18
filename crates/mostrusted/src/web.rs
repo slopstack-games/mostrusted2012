@@ -34,12 +34,31 @@ pub fn report(status: &str, done: bool) {
     {
         page_hook("__mwError", &msg, true);
     }
+    // Settings and progress written since the last frame (by any thread) go to `localStorage` here.
+    crate::platform::flush_text_store();
 }
 
 /// Debug switch (`?fail=panic`): panics, to see the page show it.
 #[wasm_bindgen]
 pub fn debug_panic() {
     panic!("debug panic requested by ?fail=panic");
+}
+
+/// Debug hook for page tests: write `text` as the text file `name` (`platform::write_text`: the in-memory store,
+/// then `localStorage` entry `mostrusted/<name>`).
+#[wasm_bindgen]
+pub fn debug_store_write(name: String, text: String) -> bool {
+    crate::platform::write_text(std::path::Path::new(&name), &text).is_ok()
+}
+
+/// Debug hook for page tests: the text file `name` as the game would read it; `reload` first re-reads
+/// `localStorage` (what a new page load does).
+#[wasm_bindgen]
+pub fn debug_store_read(name: String, reload: bool) -> Option<String> {
+    if reload {
+        crate::platform::load_text_store();
+    }
+    crate::platform::read_text(std::path::Path::new(&name))
 }
 
 /// The panic hook that shows a panic on the page, wrapping whatever hook is installed (Bevy's, which logs to the
@@ -62,6 +81,7 @@ pub fn install_panic_hook() {
 fn start(source: WebSource, args: Vec<String>) -> Result<(), JsValue> {
     let cli = crate::Cli::try_parse_from(std::iter::once("mostrusted".to_string()).chain(args))
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
+    crate::platform::load_text_store();
     let game = GameDir::from_source(Arc::new(source)).map_err(|e| JsValue::from_str(&e.to_string()))?;
     crate::run(cli, game).map_err(|e| JsValue::from_str(&format!("{e:#}")))
 }

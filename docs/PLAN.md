@@ -526,8 +526,11 @@ data is never hosted). research-log 2026-11-17 (steps 1-4), docs/commands.md "Br
 3. `[x]` Threads as Web Workers on shared memory (`platform.rs`), a main thread that never blocks.
 4. `[x]` The runtime renders in a browser (free camera, `tools/web/build`, `tools/web/serve.py`).
 5. `[~]` Driving runs, audio plays without dropouts (2026-11-17; the mixer on cpal's AudioWorklet thread through
-   patched `bevy_audio` / `rodio` in `third_party/`; level matches native). Open: saves in browser storage, the 4 GB cap
-   for whole-world views, module size (wasm-opt).
+   patched `bevy_audio` / `rodio` in `third_party/`; level matches native). Settings and the profile are kept in
+   `localStorage` (`platform::read_text` / `write_text`, 2026-11-18); `tools/web/build` runs `wasm-opt` when it is
+   installed (156.6 → 119.4 MB at -O2 with names kept; 44 MB of that is the name section). Open: the 4 GB cap for
+   whole-world views; `wasm-opt` in the Pages workflow (after a run of the optimised module on an install); a
+   folder picker for browsers without `webkitdirectory` (phones).
 
 ### M7: Front-end and release `[~]`
 - `[~]` Native Bevy UI (fonts from `UI/FONTS` if feasible), menus, car select, settings, save data (our own format).
