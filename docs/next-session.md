@@ -9,13 +9,15 @@ waited on a ground ray the paused sim could not answer, research log "races with
 (the strut joint port: the wheels' mass rides with the car). Lua natives 385 / 385, HSM behaviour types 192 / 199
 (+ drift / Smash-and-Grab scoring), hooks 187 / 187. Police: roadblocks and the bust camera wired.
 
-**Unmerged** (uncommitted agent work in its worktree, based on de93cf8): `agent-ae1caf9e7b2a6f6d8` map POIs / waypoints
-(`poi.rs`, `natives/pois.rs`): commit, merge master in, build, check on the install. Merged 2026-11-19: PR #8 (bug
-hunt, checked on the install), sfx_player one-shot exit rule, the HUD feedback-message queue.
+**Merged 2026-11-19**: PR #8 (bug hunt, checked on the install), sfx_player one-shot exit rule, the HUD
+feedback-message queue, the map manager's POI list / intro waypoints (both finished from agents' uncommitted work).
+No agent worktree is left.
 
 **Open**:
 - **Feedback queue**: the song popup draws over the Easy Drive prompt (message HUD mode +0x8c not modelled); sounds /
   movies / speech of a message logged only (research-log 2026-11-19).
+- **POIs**: gates, event starts, collectables, racers and cops still bypass the list; map-edge clamping
+  (`FUN_0080cb60`) not ported (research-log 2026-11-18 "POI list").
 - **Bug hunt**: suspected items left unchanged are listed in research-log 2026-11-18.
 - **User report: UI wrong almost everywhere** (races starting when played: fixed by PR #8, user to confirm). Shots at 1920×1080 (`MW_HL_SIZE=1920x1080
   MW_HSM_SHOTS=<dir> tools/t --race 462174`): intro camera upside down (≈180° roll); race HUD hugs the edges, the

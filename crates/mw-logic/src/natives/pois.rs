@@ -230,7 +230,9 @@ pub fn apply(s: &mut LogicState, r: &Request) {
         Request::AddEventWaypointPois { poi } => {
             let event = s.game_modes.current_event;
             let mut points = s.game_modes.events.iter().find(|e| e.id == event).map(|e| e.waypoints.clone());
-            if std::env::var_os("TMP_POI_DEBUG").is_some() { points = Some(vec![[2060.0, 60.0, 3700.0], [2200.0, 60.0, 3800.0]]); }
+            if std::env::var_os("TMP_POI_DEBUG").is_some() {
+                points = Some(vec![[2060.0, 60.0, 3700.0], [2200.0, 60.0, 3800.0]]);
+            }
             for (i, p) in points.unwrap_or_default().into_iter().enumerate() {
                 if s.pois.waypoints.len() >= MAX_WAYPOINTS {
                     break;
