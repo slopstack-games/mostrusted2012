@@ -4648,8 +4648,18 @@ pedal controller (`FUN_005095b0`), and the post to D+0x57f0 (`FUN_004dff40`).
   around, the offset is 0 and the car follows its path exactly.
 
 **Target speed** (`FUN_00508d50`, confirmed): min(settings speed D+0x818 if ≥ 0, else D+0x5668), lowered to
-0 when the narrow obstacle sweep along the path hits (`FUN_00503bf0`; the wide sweep only forces brake = 1;
-sweep length min(AIC[0x44] 500, max(1.1 × speed, the stopping distance))), and by the ram mode. For an AI
+0 when the narrow sweep along the path hits (`FUN_00503bf0`; the wide sweep only forces brake = 1;
+sweep length min(AIC[0x44] 500, max(1.1 × speed, the stopping distance))), and by the ram mode. **The sweep is a
+turning-circle test, not an obstacle test** (2026-11-18, read in full): `FUN_00514ad0` gives the tightest turn at
+the car's speed, R = |v|² / (vehicle +0x550 × +0x5c4 × wheel 0's effective lateral surface grip (+0x17e0 +0x70) ×
+9.81 (`.bss` 0x01106a10, live)), +0x5c4 = the front axle's `Pure_Lateral_Grip` peak (snapshot 2's SL 65 AMG:
+the +0x5c0 block is its front curve 0.27 / 2.737 / 25°), +0x550 = 1 live; side = normalize(v × up) =
+(−v.z, v.x) (`FUN_00513200`). `FUN_004ff270` walks the path from the car's arc length (`FUN_004e47f0`) + long
+back to + short in 3 m steps (`.rdata` 0x00fa8e5c), each point moved sideways by the lane offset (driver +0x60),
+and hits when one lies within scale × R of either centre pos ± scale × R × side: scale AIC[0x204] 1.0 brakes,
+AIC[0x208] 0.6 stops. No other car is tested. The stopping distance is `FUN_00518520` with +0x688 = the rear
+axle's `traction_pure_long` peak (the SL 65's 2.05, block +0x680 = max slip, max slip ratio, peak, peak ratio).
+The longer time factor AIC[0x1e4] applies to a cop (`FUN_006bf190`: the player's +0x578 +0xb5). For an AI
 racer the settings speed is −1 (`FUN_006c0700` builds the settings from defaults) and D+0x5668 is the rubber
 band's schedule speed, FLT_MAX outside a race (the rubber-band search found the copy `FUN_00514590`; the
 path-follower search listed only the init and the traffic substates as writers of D+0x5668: to be settled by a
@@ -4738,6 +4748,11 @@ the event's `AllowedVehicleList` entry `a17a5e72` for the player's car (1.0 … 
   expected time from the route's segment speeds (`FUN_00642da0`, `FUN_00661eb0`) plus 3 s per player crash
   (RBD +0x10) and an offset (RBD +0x14). Pushed to D+0x5668 every frame (`FUN_0083c820` → `FUN_00514590`).
 - It is a **target-speed cap**, not a grip or torque multiplier. Ported without the time correction.
+- The route factor `FUN_00661eb0` (2026-11-18, read, not ported): walks the race tracker's sections (count
+  +0x2b78, tables +0x2778 / +0xe50) and in each its (speed cap +0xc50, length +0xc54) pairs (count +0xff0) from
+  d0 to d1, integrating a speed that rises from the entry speed at a = (vehicle-type value / tyre-record value) ×
+  3.716 (0x00fb8674) × 9 (0x00fb0e84) towards each cap (s = (v² − v0²) / 2a, 0.5 at 0x00f8a810); returns the
+  distance-weighted mean speed. The writer of the section tables (+0xc50 caps) is the open part.
 
 `AIPlayerType` (GAMELOGIC/GAMEPLAY.BNDL, 200 types; the racer personality copied by `FUN_006c0700`): its
 speed caps (0x78 / 0x7c, 90 mph) are read only by non-racer behaviours; nitrous usage (u16 0xaa) has no
@@ -4773,12 +4788,24 @@ police overrides (`ControlOverride`).
   spots' rule, `FUN_0058b9a0`; `FUN_006ca580`'s handling of colour 0 not traced). The rubber band's
   `OpponentData[k]` is the k-th racer left on the grid (inferred).
 - The emergency brake's circle radius = the larger horizontal half extent of the body.
-- The recovery's probe length 6 m; the banded pedal's shape between its read thresholds; the reset puts the car
-  on the path at its progress (the game's reset placement not traced); the off-screen 3 s reset is not used.
+- The recovery's probe length 6 m; the banded pedal's shape between its read thresholds; the off-screen 3 s
+  reset is not used.
+- The stuck reset (2026-11-18): the game's request (driver +0x584e, set by `FUN_004e75f0` past AIC[0x1a0] /
+  [0x1a4], cleared at the next tick) is consumed by `FUN_0083d4b0` → `FUN_0064a0e0` (the player reset service:
+  the car's own position, orientation and speed vehicle +0x1620, flags 6 / 0x46) → `FUN_00648060` (pose onto the
+  road network, not ported) → the placement `FUN_00647e00`. Nothing on that path touches the driver: ours keeps
+  it (state, timers, PID) and the car's speed; the placement is ours (the route's point at the car's progress,
+  facing along it).
+- A new driver starts on the route node at the car's progress (ours: the game builds its ring at the car; the
+  nearest segment is ambiguous on a circuit's unrolled laps).
+- The sweep: in the ground plane (the game's is 3D); vehicle +0x550 = 1, +0x7d8 = −1, +0x7d4 = 0.8 (live values,
+  writers not traced).
 - `MW_AI_CORNER_SPEED=1`: applies the game's uncalled braking look-ahead (0x004ff480) on the ported corner speeds,
   with the braking distance's aero term left out (a = 0). Off by default, as in the game.
-- Not ported: the racer interaction (side swipe / ram), the virtual progress, the time correction of the
-  rubber band, the slipstream.
+- The racer interaction runs once the race clock passes AIC[0x194] = 15 s (`FUN_0051b320`: the 3 MHz race
+  clock G+0x2f3fc +0x2d28 × 1/3e6, `.rdata` 0x00f9f608); `MW_AI_INTERACTION` removed.
+- Not ported: the virtual progress, the time correction of the rubber band (`FUN_00661eb0`, above), the racing
+  line (`FUN_004e70e0`), the lane planner (`FUN_00502e20`), the slipstream.
 
 ## Police and pursuits (2026-10-10)
 

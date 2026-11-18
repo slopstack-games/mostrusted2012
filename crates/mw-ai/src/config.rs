@@ -28,6 +28,7 @@ const FIELDS: &[(u16, u32, f32)] = &[
     (0x188, 0x2c60106a, 0.2),
     (0x18c, 0x19085221, 90.0),
     (0x190, 0x40e55982, 5.0),
+    (0x194, 0x50a74c48, 15.0),
     (0x198, 0xfe4515b1, 0.15),
     (0x19c, 0x619a7200, 10.0),
     (0x1a0, 0x51c3d831, 10.0),
@@ -94,6 +95,8 @@ pub struct AiConfig {
     pub shunt_max_mph: f32,
     /// 0x190: the shunt's lateral reach beyond both radii (m).
     pub shunt_lateral: f32,
+    /// 0x194: the racer interaction runs only once the race clock is past this (s, `FUN_0051b320`).
+    pub interaction_delay: f32,
     /// 0x198: the shunt's steering per metre of lateral gap.
     pub shunt_steer: f32,
     /// 0x19c: no crash detection this close to a target point (states that pass one; not the racer).
@@ -166,6 +169,7 @@ impl AiConfig {
             shunt_delay_min: v(0x188),
             shunt_min_mph: v(0x18c),
             shunt_lateral: v(0x190),
+            interaction_delay: v(0x194),
             shunt_steer: v(0x198),
             stuck_end_radius: v(0x19c),
             reset_time: v(0x1a0),
@@ -189,5 +193,14 @@ impl AiConfig {
     /// The (offset, hash) pairs read, for tools that list them.
     pub fn fields() -> impl Iterator<Item = (u16, u32)> {
         FIELDS.iter().map(|f| (f.0, f.1))
+    }
+}
+
+impl AiConfig {
+    /// `FUN_0051b320`: the racer interaction (`FUN_005050d0`) is allowed once the race clock (the 3 MHz tick count
+    /// at G+0x2f3fc +0x2d28, × 1/3e6 `.rdata` 0x00f9f608; the clock the rubber band's time correction reads) has
+    /// passed `interaction_delay`.
+    pub fn interaction_enabled(&self, race_time: f32) -> bool {
+        self.interaction_delay < race_time
     }
 }

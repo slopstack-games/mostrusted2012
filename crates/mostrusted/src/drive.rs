@@ -420,6 +420,12 @@ impl Car {
         self.wheels.iter().find(|w| !w.front).map_or(0.33, |w| w.radius)
     }
 
+    /// Wheel `i`'s effective lateral surface grip (the game's +0x70 of its 0x7c-byte record at vehicle +0x17e0,
+    /// `FUN_009cece0`); 1 without the wheel.
+    pub(crate) fn wheel_lateral_grip(&self, i: usize) -> f32 {
+        self.wheels.get(i).map_or(1.0, |w| w.surface.effective[0])
+    }
+
     /// Wheels touching the ground (the camera's landing trigger).
     pub(crate) fn wheels_down(&self) -> usize {
         self.wheels.iter().filter(|w| w.contact.is_some()).count()

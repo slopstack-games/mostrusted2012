@@ -22,7 +22,7 @@ mod racer;
 mod rubber_band;
 
 pub use config::AiConfig;
-pub use path::{Path, PathNode, braking_distance, corner_speeds};
+pub use path::{OPEN_CLEARANCE, Path, PathNode, braking_distance, corner_speeds};
 pub use pid::Pid;
 pub use racer::{
     AiRandom, CarState, Command, Driver, InputRecord, Interaction, RacerInput, Recovery, State, TickOutput,

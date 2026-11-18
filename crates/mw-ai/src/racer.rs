@@ -689,6 +689,52 @@ impl Driver {
         let short = (speed * cfg.sweep_speed_factor).max(me.half_length).min(cfg.sweep_max);
         Some((short, short.max(a).min(cfg.sweep_max)))
     }
+
+    /// The sweep itself (`FUN_00503bf0` → `FUN_00514ad0`, `FUN_004ff270` twice): not an obstacle test but a
+    /// **turning-circle** test of the path ahead. `FUN_00514ad0` gives the car's tightest turn at its speed,
+    /// R = |v|² / `lateral_accel` (`lateral_accel` = vehicle +0x550 × +0x5c4 × wheel 0's effective lateral surface
+    /// grip (+0x17e0 +0x70) × 9.81, `.bss` 0x01106a10 read live), and the side unit vector normalize(−v.z, v.x)
+    /// (`FUN_00513200` on v × up). `FUN_004ff270` walks the path from the car's arc length (`FUN_004e47f0`) +
+    /// `long` back to + `short` in 3 m steps (`.rdata` 0x00fa8e5c), each point moved sideways by the lane offset
+    /// (driver +0x60), and hits when one lies within scale × R of either circle centre pos ± scale × R × side:
+    /// a point the car cannot turn onto at this speed. Scales `sweep_wide` (0x204, hit → brake 1) and
+    /// `sweep_narrow` (0x208, hit → target speed 0). Returns (wide, narrow) for [`RacerInput::sweep`]. Ours: the
+    /// test is in the ground plane (the game's is 3D with the path's height); the lane offset is moved along the
+    /// segment's chord.
+    pub fn sweep(
+        &self,
+        cfg: &AiConfig,
+        path: &Path,
+        me: &CarState,
+        lateral_accel: f32,
+        lengths: (f32, f32),
+    ) -> (bool, bool) {
+        if path.count_from(self.node) < 2 || lateral_accel <= 0.0 {
+            return (false, false);
+        }
+        let (short, long) = lengths;
+        let v = me.velocity;
+        let radius = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) / lateral_accel;
+        let side = V2::new(-v[2], v[0]).normalize();
+        let pos = me.ground();
+        let s0 = path.project(self.node, pos);
+        let lane = self.lane_offset();
+        let test = |scale: f32| {
+            let r = scale * radius;
+            let (c1, c2) = (pos + side * r, pos - side * r);
+            let mut s = s0 + long;
+            while s >= s0 + short {
+                let p = path.point_at(self.node, s) + path.direction_at(self.node, s).right() * lane;
+                let d = (p - c1).dot(p - c1).min((p - c2).dot(p - c2));
+                if d < r * r {
+                    return true;
+                }
+                s -= 3.0; // `.rdata` 0x00fa8e5c
+            }
+            false
+        };
+        (test(cfg.sweep_wide), test(cfg.sweep_narrow))
+    }
 }
 
 /// `FUN_00508070` (without its first, optional sweep): above 70 mph (`.rdata` 0x00fa8eb8), the cars within
@@ -864,6 +910,21 @@ mod tests {
         }
         pts.extend((1..20).map(|k| V2::new(-60.0 - 15.0 * k as f32, 210.0)));
         Path::new(&pts, false)
+    }
+
+    #[test]
+    fn sweep_hits_a_corner_inside_the_turning_circle() {
+        let cfg = AiConfig::default();
+        let me = car(0, 0.0, 0.0, 0.0, 40.0);
+        let d = Driver::new(0, [0.3, 0.01, 0.1], 1);
+        let lengths = Driver::sweep_lengths(&cfg, &me, 100.0, false).unwrap();
+        // R = 1600 / (2.8 × 9.81) ≈ 58 m. A straight road stays outside both circles.
+        assert_eq!(d.sweep(&cfg, &straight(), &me, 2.8 * 9.81, lengths), (false, false));
+        // A right-angle turn 30 m ahead: its exit lies inside the circle on that side.
+        let mut pts: Vec<V2> = (0..3).map(|k| V2::new(0.0, 15.0 * k as f32)).collect();
+        pts.extend((1..20).map(|k| V2::new(-15.0 * k as f32, 30.0)));
+        let corner = Path::new(&pts, false);
+        assert_eq!(d.sweep(&cfg, &corner, &me, 2.8 * 9.81, lengths), (true, true));
     }
 
     #[test]

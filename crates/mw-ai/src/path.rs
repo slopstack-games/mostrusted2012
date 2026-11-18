@@ -164,6 +164,38 @@ impl Path {
         }
     }
 
+    /// `FUN_004e47f0`: the car's arc length along the ring from `cur`: walk the segments from the ring start until
+    /// the car's projection on one falls short of its length; the arc length is the segments passed plus that
+    /// projection (the decompiler lost the x87 return; the walk is read). A car behind the first node within 1 m
+    /// gets 0; past the last segment, the ring's length.
+    pub fn project(&self, cur: usize, pos: V2) -> f32 {
+        let segments = self.count_from(cur).saturating_sub(1);
+        let mut acc = 0.0;
+        for j in 0..segments {
+            let a = self.node(cur, j).position;
+            let ab = self.node(cur, j + 1).position - a;
+            let len = ab.length();
+            let d = if len > 0.0 { ab * (1.0 / len) } else { ab };
+            let t = (pos - a).dot(d);
+            if j == 0 && t < 0.0 && (pos - a).dot(pos - a) < 1.0 {
+                return 0.0;
+            }
+            if t < len {
+                return acc + t;
+            }
+            acc += len;
+        }
+        acc
+    }
+
+    /// The unit chord direction of the segment arc length `s` falls in (ours for `FUN_004e3c30`'s tangent output,
+    /// which only orients the lane offset).
+    pub fn direction_at(&self, cur: usize, s: f32) -> V2 {
+        let (k, _) = self.locate(cur, s);
+        let k = k.min(self.count_from(cur).saturating_sub(2));
+        (self.node(cur, k + 1).position - self.node(cur, k).position).normalize()
+    }
+
     /// Ours, for placing a driver: the segment start nearest to `pos` (the game's path builder starts the ring
     /// at the car).
     pub fn nearest_segment(&self, pos: V2) -> usize {
