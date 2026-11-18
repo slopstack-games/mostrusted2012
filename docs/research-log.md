@@ -2179,3 +2179,21 @@ Skipped: SpamFriend, ShowX360KinectTunerUi (same shape as the no-ops, not needed
 (`FUN_0086f7f0` unread), OnWallPostOrComment (`FUN_00639a90`), SendAddedRecoFriendTelemetry (`FUN_007e8d00`),
 HasFinishedStreamingCameraWorld (`FUN_005470e0` streaming state), the nitrous natives (`FUN_00658ad0` and a
 competitor-to-slot lookup unread).
+
+### 2026-11-18: Lua natives, eighth batch: network timer, online flags, race-car messages (175 of 385; `natives/lua_sim.rs`)
+Handlers read from `re/out/live/text.asm`. Ported: six argument-check-only handlers (FlagUseMaxTriCacheSize,
+ToggleUnlockAllVehicles, ViewInvites, SetUseDebugCamera, SetMatchMakingState, DebugPrint), IsRemoteCompetitor (slot
+kind +0x9c == 1, `FUN_006c3750`), SetRaceCarInvulnerable / SetRaceCarDamageAllowed (message 0x1f / 0x1e with
+competitor and flag to `*0x010edb2c`+0x10; `Request::RaceCarFlag`), EnableNitrousEarning (G+0x291f0),
+SetSpammable (sign-in VM bytes +0x2438 / +0x2439 / +0x243a = args 1 / 2 / 3), IsNetworkTimerSyncing / Synced
+(clock manager +4 -> +0x6c == 1 / 2), IsOnline (online manager +4 -> +0x6a20 != 0), IsInOnlineEvent (byte +0x6b of
+the current event record), GetPlayerVehicleIndex (arg when exactly one, else the local slot; player +0xa0),
+SetPreEventSpeedwallPos (G'+0x2f6fc), SetTrafficDensity (`Request::TrafficDensity`, float read only when on),
+RefreshGarageItemsCache, UnregisterSpeechCommand (requests). Model decisions: an empty slot reads false / -1;
+the online / timer / event fields are set by the runtime (`SimFields`), not fed yet.
+Skipped (callee unread or state not modelled): IsVehicleActive / IsVehiclePhysical / IsVehicleLoaded (world vehicle
+tables `FUN_00573390`, `FUN_0083bde0`), SetEngineState, SetSirenState, SetInfiniteNitrous (`FUN_00658c90`),
+IsCarWrecked (`FUN_006ba280`), SetCarStill (the false branch unread), GetNumOnlinePlayers (`FUN_00a83640`),
+SetEMail / SetOriginID (string copy), IsSomethingDownloading, ClearTargetRoute (`FUN_00792390` x3), DisconnectFromServer
+(`FUN_0083dc00`), SetFriendInviteId / SetJoinPlayerId (string -> i64 `FUN_00d753c0`), SetRecommendationTimeToBeat,
+SetRolloutSweetRevenge (`FUN_0068ba20`), SaveControllerConfiguration, HasEasyDriveOptionBeenSeen, SetExitPointID.

@@ -447,6 +447,15 @@ pub enum Request {
     /// `FUN_00846240` / `FUN_00846270`): the message 6 / 8 / 0xa (argument 0) sent to the object at `*0x010edb30`+0x10
     /// (`FUN_0084e350` / `FUN_0084e4d0` / `FUN_0084e550`); the traffic system's reaction is the runtime's.
     TrafficMessage { kind: u32 },
+    /// `SetRaceCarInvulnerable` / `SetRaceCarDamageAllowed` (0x0068b010 / 0x0068b070 -> `FUN_0069a5e0` /
+    /// `FUN_0069a6d0` on `*0x010edb2c`+0x10): a message (kind 0x1f / 0x1e) with the competitor and the flag.
+    RaceCarFlag { kind: u32, competitor: i32, on: bool },
+    /// `SetTrafficDensity(on, density)` (0x0067da40 -> `FUN_00845fb0` on G+0x2ef64): the density is 0 unless `on`.
+    TrafficDensity { on: bool, density: f32 },
+    /// `RefreshGarageItemsCache` (0x006759c0 -> `FUN_00701ca0` on G'+0x14c08).
+    RefreshGarageItemsCache,
+    /// `UnregisterSpeechCommand(id)` (0x007ea7f0 -> `FUN_00792c90` on UIM+0x32dd8).
+    UnregisterSpeechCommand { id: i32 },
     /// `StopMusic` (0x00678460 -> `FUN_007908e0` on UIM+0x30370).
     StopMusic,
     /// `StopUnwantedSound` (0x00678520): `FUN_008404c0`(G+0x2c3c0), the byte G+0x2ae19 = 0, then

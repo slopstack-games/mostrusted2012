@@ -58,6 +58,18 @@ pub struct SimFields {
     /// The sign-in view model's error record (`*(G+0x2f3e0)`+0x10d0 + 0x135c / 0x1360 / 0x139c / 0x136d: code,
     /// argument, two flag bytes); the reset values are 0 / 0 / 0 / 0.
     pub sign_in_error: SignInError,
+    /// G+0x291f0: `EnableNitrousEarning`.
+    pub nitrous_earning: bool,
+    /// The sign-in VM's bytes +0x2438 / +0x2439 / +0x243a (`SetSpammable`).
+    pub spammable: [bool; 3],
+    /// Clock manager +4 -> +0x6c: the network timer state (1 = syncing, 2 = synced).
+    pub net_timer_state: i32,
+    /// Online manager +4 -> +0x6a20 != 0 (`IsOnline`).
+    pub online: bool,
+    /// The current event record's byte +0x6b (`IsInOnlineEvent`).
+    pub in_online_event: bool,
+    /// G'+0x2f6fc: `SetPreEventSpeedwallPos`.
+    pub speedwall_pos: i32,
 }
 
 /// The error record of the sign-in view model (VM +0x135c, +0x1360, +0x139c, +0x136d).
@@ -388,7 +400,124 @@ fn clear_all_non_background_feedback_queues(state: &mut LogicState, _: &mut Lua,
     Ok(vec![])
 }
 
+/// Handlers that only check their arguments: `FlagUseMaxTriCacheSize` (0x006781e0), `ToggleUnlockAllVehicles`
+/// (0x006757a0), `ViewInvites` (0x006758d0), `SetUseDebugCamera` (0x00678180, checks one argument),
+/// `SetMatchMakingState` (0x007e9a30, reads and discards a number) and `DebugPrint` (0x007e9940, reads and discards
+/// its arguments).
+fn arg_check_only(_: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    Ok(vec![])
+}
+
+/// `IsRemoteCompetitor(index)` (0x0067b1d0 -> `FUN_006c3750`): the slot's kind (+0x9c) is 1 (network). Model
+/// decision: an empty slot reads false.
+fn is_remote_competitor(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    let i = int(&args, 1);
+    let p = usize::try_from(i).ok().and_then(|i| state.players.slots.get(i)).and_then(|s| s.as_ref());
+    Ok(vec![Value::Bool(p.is_some_and(|p| p.kind == 1))])
+}
+
+/// `SetRaceCarInvulnerable(index, on)` (0x0068b010): the message 0x1f with (competitor, flag).
+fn set_race_car_invulnerable(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    let (competitor, on) = (int(&args, 1), toboolean(&args, 2));
+    state.requests.push(Request::RaceCarFlag { kind: 0x1f, competitor, on });
+    Ok(vec![])
+}
+
+/// `SetRaceCarDamageAllowed(index, on)` (0x0068b070): the message 0x1e.
+fn set_race_car_damage_allowed(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    let (competitor, on) = (int(&args, 1), toboolean(&args, 2));
+    state.requests.push(Request::RaceCarFlag { kind: 0x1e, competitor, on });
+    Ok(vec![])
+}
+
+/// `EnableNitrousEarning(on)` (0x0067d9c0): G+0x291f0 = `lua_toboolean`(1).
+fn enable_nitrous_earning(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    state.sim.nitrous_earning = toboolean(&args, 1);
+    Ok(vec![])
+}
+
+/// `SetSpammable(a, b, c)` (0x007ea9c0): the sign-in VM's bytes +0x2438 = a, +0x2439 = b, +0x243a = c.
+fn set_spammable(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    state.sim.spammable = [toboolean(&args, 1), toboolean(&args, 2), toboolean(&args, 3)];
+    Ok(vec![])
+}
+
+/// `IsNetworkTimerSyncing()` (0x00677ec0 -> `FUN_0046eec0`): the clock manager's state (+0x6c) is 1.
+fn is_network_timer_syncing(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    Ok(vec![Value::Bool(state.sim.net_timer_state == 1)])
+}
+
+/// `IsNetworkTimerSynced()` (0x00677f00 -> `FUN_0046eed0`): the state is 2.
+fn is_network_timer_synced(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    Ok(vec![Value::Bool(state.sim.net_timer_state == 2)])
+}
+
+/// `IsOnline()` (0x00677da0 -> `FUN_004c1ec0`): the online manager's field +0x6a20 is nonzero.
+fn is_online(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    Ok(vec![Value::Bool(state.sim.online)])
+}
+
+/// `IsInOnlineEvent()` (0x00681030): the byte +0x6b of the current event's record.
+fn is_in_online_event(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    Ok(vec![Value::Bool(state.sim.in_online_event)])
+}
+
+/// `GetPlayerVehicleIndex([index])` (0x0067c9b0): the slot is the argument when exactly one is given, else the
+/// local slot (PM+0xa6b4); pushes the slot's vehicle (+0xa0) as a signed number. Model decision: an empty slot
+/// gives -1 (the original dereferences it).
+fn get_player_vehicle_index(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    let slot = if args.len() == 1 { usize::try_from(int(&args, 1)).ok() } else { state.players.local };
+    let p = slot.and_then(|i| state.players.slots.get(i)).and_then(|s| s.as_ref());
+    Ok(vec![push_int(p.map_or(-1, |p| p.vehicle))])
+}
+
+/// `SetPreEventSpeedwallPos(pos)` (0x00679eb0): G'+0x2f6fc = `_ftol2`(arg 1).
+fn set_pre_event_speedwall_pos(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    state.sim.speedwall_pos = int(&args, 1);
+    Ok(vec![])
+}
+
+/// `SetTrafficDensity(on, density)` (0x0067da40): the float is read only when `on`, else 0.
+fn set_traffic_density(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    let on = toboolean(&args, 1);
+    let density = if on { tonumber(&args, 2) as f32 } else { 0.0 };
+    state.requests.push(Request::TrafficDensity { on, density });
+    Ok(vec![])
+}
+
+/// `RefreshGarageItemsCache()` (0x006759c0).
+fn refresh_garage_items_cache(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    state.requests.push(Request::RefreshGarageItemsCache);
+    Ok(vec![])
+}
+
+/// `UnregisterSpeechCommand(id)` (0x007ea7f0): `_ftol2`(arg 1).
+fn unregister_speech_command(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    state.requests.push(Request::UnregisterSpeechCommand { id: int(&args, 1) });
+    Ok(vec![])
+}
+
 pub fn register(r: &mut Registry) {
+    r.set_lua("FlagUseMaxTriCacheSize", arg_check_only);
+    r.set_lua("ToggleUnlockAllVehicles", arg_check_only);
+    r.set_lua("ViewInvites", arg_check_only);
+    r.set_lua("SetUseDebugCamera", arg_check_only);
+    r.set_lua("SetMatchMakingState", arg_check_only);
+    r.set_lua("DebugPrint", arg_check_only);
+    r.set_lua("IsRemoteCompetitor", is_remote_competitor);
+    r.set_lua("SetRaceCarInvulnerable", set_race_car_invulnerable);
+    r.set_lua("SetRaceCarDamageAllowed", set_race_car_damage_allowed);
+    r.set_lua("EnableNitrousEarning", enable_nitrous_earning);
+    r.set_lua("SetSpammable", set_spammable);
+    r.set_lua("IsNetworkTimerSyncing", is_network_timer_syncing);
+    r.set_lua("IsNetworkTimerSynced", is_network_timer_synced);
+    r.set_lua("IsOnline", is_online);
+    r.set_lua("IsInOnlineEvent", is_in_online_event);
+    r.set_lua("GetPlayerVehicleIndex", get_player_vehicle_index);
+    r.set_lua("SetPreEventSpeedwallPos", set_pre_event_speedwall_pos);
+    r.set_lua("SetTrafficDensity", set_traffic_density);
+    r.set_lua("RefreshGarageItemsCache", refresh_garage_items_cache);
+    r.set_lua("UnregisterSpeechCommand", unregister_speech_command);
     r.set_lua("SetMinimumCollisionDamage", set_minimum_collision_damage);
     r.set_lua("GetCompetitorType", get_competitor_type);
     r.set_lua("SetUseOverheadCamera", set_use_overhead_camera);
@@ -661,5 +790,67 @@ mod tests {
             assert_eq!(num(&call(&mut lua, "GetSignInError", vec![])), code, "{n}");
             assert_eq!(st(&host).sim.sign_in_error.arg, -1);
         }
+    }
+
+    #[test]
+    fn batch_eight() {
+        let (mut lua, host) = setup();
+        for n in [
+            "FlagUseMaxTriCacheSize",
+            "ToggleUnlockAllVehicles",
+            "ViewInvites",
+            "SetUseDebugCamera",
+            "SetMatchMakingState",
+            "DebugPrint",
+        ] {
+            assert!(call(&mut lua, n, vec![Value::Number(1.0)]).is_empty(), "{n}");
+        }
+        {
+            let mut s = st(&host);
+            s.players.slots[0] = Some(Player { kind: 0, vehicle: 4, ..Default::default() });
+            s.players.slots[2] = Some(Player { kind: 1, vehicle: 9, ..Default::default() });
+            s.players.local = Some(0);
+        }
+        let n = |v: f64| vec![Value::Number(v)];
+        assert_eq!(flag(&call(&mut lua, "IsRemoteCompetitor", n(2.0))), true);
+        assert_eq!(flag(&call(&mut lua, "IsRemoteCompetitor", n(0.0))), false);
+        assert_eq!(flag(&call(&mut lua, "IsRemoteCompetitor", n(5.0))), false);
+        assert_eq!(num(&call(&mut lua, "GetPlayerVehicleIndex", vec![])), 4.0);
+        assert_eq!(num(&call(&mut lua, "GetPlayerVehicleIndex", n(2.0))), 9.0);
+        assert_eq!(num(&call(&mut lua, "GetPlayerVehicleIndex", n(7.0))), -1.0);
+        call(&mut lua, "SetRaceCarInvulnerable", vec![Value::Number(2.0), Value::Bool(true)]);
+        call(&mut lua, "SetRaceCarDamageAllowed", vec![Value::Number(1.0), Value::Bool(false)]);
+        call(&mut lua, "SetTrafficDensity", vec![Value::Bool(true), Value::Number(0.5)]);
+        call(&mut lua, "SetTrafficDensity", vec![Value::Bool(false), Value::Number(0.5)]);
+        call(&mut lua, "RefreshGarageItemsCache", vec![]);
+        call(&mut lua, "UnregisterSpeechCommand", n(6.9));
+        assert_eq!(
+            st(&host).requests,
+            [
+                Request::RaceCarFlag { kind: 0x1f, competitor: 2, on: true },
+                Request::RaceCarFlag { kind: 0x1e, competitor: 1, on: false },
+                Request::TrafficDensity { on: true, density: 0.5 },
+                Request::TrafficDensity { on: false, density: 0.0 },
+                Request::RefreshGarageItemsCache,
+                Request::UnregisterSpeechCommand { id: 6 },
+            ]
+        );
+        call(&mut lua, "EnableNitrousEarning", vec![Value::Bool(true)]);
+        assert!(st(&host).sim.nitrous_earning);
+        call(&mut lua, "SetSpammable", vec![Value::Bool(true), Value::Bool(false), Value::Bool(true)]);
+        assert_eq!(st(&host).sim.spammable, [true, false, true]);
+        call(&mut lua, "SetPreEventSpeedwallPos", n(12.7));
+        assert_eq!(st(&host).sim.speedwall_pos, 12);
+        st(&host).sim.net_timer_state = 1;
+        assert_eq!(flag(&call(&mut lua, "IsNetworkTimerSyncing", vec![])), true);
+        assert_eq!(flag(&call(&mut lua, "IsNetworkTimerSynced", vec![])), false);
+        st(&host).sim.net_timer_state = 2;
+        assert_eq!(flag(&call(&mut lua, "IsNetworkTimerSynced", vec![])), true);
+        assert_eq!(flag(&call(&mut lua, "IsOnline", vec![])), false);
+        st(&host).sim.online = true;
+        st(&host).sim.in_online_event = true;
+        assert_eq!(flag(&call(&mut lua, "IsOnline", vec![])), true);
+        assert_eq!(flag(&call(&mut lua, "IsInOnlineEvent", vec![])), true);
+        assert!(st(&host).unported.is_empty());
     }
 }
