@@ -359,12 +359,9 @@ fn switch_lights(
         }
         off.insert(e, taken);
     }
-    // Objects that are gone (streamed out) take their switched-off lights' state with them.
-    off.retain(|e, back| {
-        let alive = props.contains(*e);
-        if !alive {
-            lights.add(std::mem::take(back));
-        }
-        alive
-    });
+    // Objects that are gone take their switched-off lights with them. They are not put back: a streamed-out
+    // object's unit has already been dropped (`LightSources::remove_unit` runs when the unit leaves, its entities
+    // are despawned over the next frames), so lights added now would stay lit where nothing stands; the unit
+    // sends them again when it comes back.
+    off.retain(|e, _| props.contains(*e));
 }

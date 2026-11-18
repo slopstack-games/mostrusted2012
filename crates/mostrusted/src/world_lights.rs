@@ -67,6 +67,17 @@ impl LightSources {
     }
 
     /// The unit was unloaded (`streaming.rs`): its lights go, also those switched off and back on since.
+    /// Take out these lights, one each (matched by position and definition): those a departing object had added.
+    pub fn remove_lights(&mut self, gone: &[WorldLight]) {
+        for g in gone {
+            let key = light_key(g);
+            if let Some(i) = self.lights.iter().position(|l| light_key(l) == key) {
+                self.lights.remove(i);
+                self.dirty = true;
+            }
+        }
+    }
+
     pub fn remove_unit(&mut self, unit: u32) {
         let Some(keys) = self.by_unit.remove(&unit) else { return };
         let before = self.lights.len();
@@ -236,6 +247,22 @@ mod tests {
             object: None,
             stagger: None,
         }
+    }
+
+    /// A light an object switched on is not the unit's: `remove_unit` keeps it, `remove_lights` (the object's
+    /// departure, `world_coronas::release_added`) takes exactly it.
+    #[test]
+    fn switched_lights_leave_with_their_object() {
+        let mut sources = LightSources::default();
+        let unit = light(LightShape::Point);
+        let mut switched = light(LightShape::Point);
+        switched.position = [5.0, 2.0, 3.0];
+        sources.add_unit(Some(7), vec![unit]);
+        sources.add(vec![switched.clone()]);
+        sources.remove_unit(7);
+        assert_eq!(sources.lights.len(), 1);
+        sources.remove_lights(std::slice::from_ref(&switched));
+        assert!(sources.lights.is_empty());
     }
 
     #[test]
