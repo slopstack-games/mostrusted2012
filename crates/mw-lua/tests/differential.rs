@@ -268,6 +268,30 @@ local chain = setmetatable({}, {__index = setmetatable({mid = 1}, {__index = {de
 "#
 );
 
+case!(
+    regressions,
+    r#"
+local function tc(n) if n > 0 then return tc(n - 1) end return "done", n end
+print(tc(10000))
+local function even(n) if n == 0 then return true end return odd(n - 1) end
+function odd(n) if n == 0 then return false end return even(n - 1) end
+print(even(5001))
+print(pcall(error, 42), pcall(error, 42, 2), pcall(function() error(42) end), pcall(function() error(42, 0) end))
+print(type(select(2, pcall(function() error(42) end))), type(select(2, pcall(error, 42))))
+print(xpcall(function() error("x") end, function(m) error("y") end))
+print(xpcall(function() error("x") end, 5))
+print(xpcall(function() error("x") end, function(m) return "h:" .. m end))
+print(pcall(function() return ("%d"):format("x") end))
+print(pcall(function() return ("x"):rep() end))
+print(pcall(function() return string.rep() end))
+print(pcall(function() local f = string.rep return f("x") end))
+print(pcall(string.rep), pcall(pcall), pcall(setmetatable, 1))
+print(pcall(function() return string.rep(nil, 1) end))
+local t = {f = string.sub}
+print(pcall(function() return t.f() end))
+"#
+);
+
 /// Number formatting of the game's MSVC runtime (not comparable with a glibc host).
 #[test]
 fn msvc_number_formatting() {

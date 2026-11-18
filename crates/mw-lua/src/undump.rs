@@ -165,9 +165,33 @@ fn check(p: &Proto) -> Result<(), LuaError> {
     if n == 0 || op(p.code[n - 1]) != OP_RETURN {
         return Err(bad("bad code"));
     }
+    // precheck: the parameters (and `arg`) fit in the frame.
+    if p.num_params as usize + (p.is_vararg & VARARG_HASARG != 0) as usize > ms {
+        return Err(bad("bad code"));
+    }
     let reg = |r: usize| if r < ms { Ok(()) } else { Err(bad("bad code")) };
     let rk =
         |x: usize| if is_k(x) { if x - BITRK < p.k.len() { Ok(()) } else { Err(bad("bad code")) } } else { reg(x) };
+    // Words that are operands, not instructions (a SETLIST block number, a closure's upvalue pseudo
+    // instructions): nothing may jump to them, and the code may not end in one (5.1.4's verifier closes the
+    // first hole; the interpreter would otherwise run unchecked words or off the end of the code).
+    let mut data = vec![false; n];
+    let mut pc = 0;
+    while pc < n {
+        let i = p.code[pc];
+        let skip = match op(i) {
+            OP_SETLIST if arg_c(i) == 0 => 1,
+            OP_CLOSURE => p.p.get(arg_bx(i)).map_or(0, |np| np.nups as usize),
+            _ => 0,
+        };
+        for d in data.iter_mut().skip(pc + 1).take(skip) {
+            *d = true;
+        }
+        pc += 1 + skip;
+    }
+    if data[n - 1] {
+        return Err(bad("bad code"));
+    }
     let mut pc = 0;
     while pc < n {
         let i = p.code[pc];
@@ -178,7 +202,7 @@ fn check(p: &Proto) -> Result<(), LuaError> {
         let (a, b, c, bx) = (arg_a(i), arg_b(i), arg_c(i), arg_bx(i));
         let jump = |off: i64| {
             let d = pc as i64 + 1 + off;
-            if d >= 0 && (d as usize) < n { Ok(()) } else { Err(bad("bad jump")) }
+            if d >= 0 && (d as usize) < n && !data[d as usize] { Ok(()) } else { Err(bad("bad jump")) }
         };
         match o {
             OP_MOVE | OP_UNM | OP_NOT | OP_LEN => {
@@ -219,7 +243,11 @@ fn check(p: &Proto) -> Result<(), LuaError> {
                 rk(b)?;
                 rk(c)?;
                 if matches!(o, OP_EQ | OP_LT | OP_LE) {
-                    jump(1)?
+                    jump(1)?;
+                    // testTMode: the skipped instruction is the JMP whose offset the comparison takes.
+                    if op(p.code[pc + 1]) != OP_JMP {
+                        return Err(bad("bad code"));
+                    }
                 }
             }
             OP_NEWTABLE => reg(a)?,
@@ -252,6 +280,9 @@ fn check(p: &Proto) -> Result<(), LuaError> {
                 reg(a)?;
                 if b > 0 {
                     reg(a + b - 1)?
+                }
+                if o == OP_CALL && c == 0 {
+                    check_open_op(p, pc)?;
                 }
             }
             OP_RETURN => {
@@ -286,6 +317,12 @@ fn check(p: &Proto) -> Result<(), LuaError> {
                 pc += np.nups as usize;
             }
             OP_VARARG => {
+                if p.is_vararg & VARARG_ISVARARG == 0 || p.is_vararg & VARARG_NEEDSARG != 0 {
+                    return Err(bad("bad code"));
+                }
+                if b == 0 {
+                    check_open_op(p, pc)?;
+                }
                 reg(a)?;
                 if b > 1 {
                     reg(a + b - 2)?
@@ -296,6 +333,15 @@ fn check(p: &Proto) -> Result<(), LuaError> {
         pc += 1;
     }
     Ok(())
+}
+
+/// `checkopenop`: an open call (CALL C=0, VARARG B=0) is followed by the instruction that takes its values.
+fn check_open_op(p: &Proto, pc: usize) -> Result<(), LuaError> {
+    use crate::opcodes::*;
+    match p.code.get(pc + 1) {
+        Some(&i) if matches!(op(i), OP_CALL | OP_TAILCALL | OP_RETURN | OP_SETLIST) && arg_b(i) == 0 => Ok(()),
+        _ => Err(bad("bad code")),
+    }
 }
 
 /// Load a precompiled chunk; `name` is only used in load error messages (the original's `S.name`).

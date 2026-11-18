@@ -12,23 +12,37 @@ use crate::{Frame, Lua, LuaError, MAX_CALLS, Result};
 /// MAXTAGLOOP: longest `__index` / `__newindex` chain.
 const MAX_TAG_LOOP: usize = 100;
 
+/// `MAXASIZE` of ltable.c (2^MAXBITS).
+const MAXASIZE: usize = 1 << 26;
+
+/// How a Lua function's frame ended: returned `n` results (moved to `func`), or tail-called the Lua function
+/// now at `func` with `n` arguments (named as the call site named it, for tracebacks).
+enum Exec {
+    Return(usize),
+    TailCall(usize, String),
+}
+
 fn first(v: Vec<Value>) -> Value {
     v.into_iter().next().unwrap_or_default()
 }
 
 /// `luaO_chunkid` for the message prefix.
 pub(crate) fn chunk_id(source: &LuaStr) -> String {
-    let s = source.to_string_lossy();
-    if let Some(rest) = s.strip_prefix('=') {
-        rest.chars().take(59).collect()
-    } else if let Some(rest) = s.strip_prefix('@') {
-        if rest.len() > 59 { format!("...{}", &rest[rest.len() - 56..]) } else { rest.to_string() }
+    // On bytes like the C (LUA_IDSIZE 60), up to a NUL.
+    const IDSIZE: usize = 60;
+    let s = source.as_bytes();
+    let s = &s[..s.iter().position(|&c| c == 0).unwrap_or(s.len())];
+    let out = if let Some(rest) = s.strip_prefix(b"=") {
+        rest[..rest.len().min(IDSIZE - 1)].to_vec()
+    } else if let Some(rest) = s.strip_prefix(b"@") {
+        let max = IDSIZE - " '...' ".len() - 1;
+        if rest.len() > max { [b"...", &rest[rest.len() - max..]].concat() } else { rest.to_vec() }
     } else {
-        let line = s.lines().next().unwrap_or("");
-        let cut = line.len() < s.len() || line.len() > 45;
-        let l: String = line.chars().take(45).collect();
-        if cut { format!("[string \"{l}...\"]") } else { format!("[string \"{l}\"]") }
-    }
+        let max = IDSIZE - " [string \"...\"] ".len() - 1;
+        let len = s.iter().position(|&c| c == b'\n' || c == b'\r').unwrap_or(s.len()).min(max);
+        if len < s.len() { [b"[string \"", &s[..len], b"...\"]"].concat() } else { [b"[string \"", s, b"\"]"].concat() }
+    };
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// `symbexec` restricted to finding the instruction that last set register `reg` before `lastpc`.
@@ -220,6 +234,35 @@ impl Lua {
         }
     }
 
+    /// The value count up to `L->top` from `from` (an operand B or C of 0); "bad code" if `top` is not
+    /// above `from`, which only a malformed chunk (an open operand without an open call before it) gets.
+    fn open_count(&self, from: usize) -> Result<usize> {
+        if self.top < from || self.top > self.stack.len() {
+            return Err(self.rt_error("bad code"));
+        }
+        Ok(self.top - from)
+    }
+
+    /// `luaL_argerror` for the native on top of the call stack: named as its Lua caller's call instruction
+    /// names it (`getfuncname`), `?` when the caller is not Lua; `self` is not counted in a method call.
+    fn arg_error_message(&self, mut narg: usize, extra: &str) -> String {
+        let n = self.frames.len();
+        let caller = if n >= 2 { self.frames.get(n - 2) } else { None };
+        let name = caller.and_then(|f| {
+            let p = f.proto.as_ref()?;
+            let i = *p.code.get(f.pc)?;
+            if matches!(op(i), OP_CALL | OP_TAILCALL | OP_TFORLOOP) { obj_name(p, f.pc, arg_a(i)) } else { None }
+        });
+        if let Some(("method", name)) = &name {
+            narg -= 1;
+            if narg == 0 {
+                return format!("calling '{name}' on bad self ({extra})");
+            }
+        }
+        let name = name.map_or_else(|| "?".to_string(), |(_, n)| n);
+        format!("bad argument #{narg} to '{name}' ({extra})")
+    }
+
     fn order_error(&self, a: &Value, b: &Value) -> LuaError {
         let (t1, t2) = (a.type_name(), b.type_name());
         if t1 == t2 {
@@ -247,6 +290,9 @@ impl Lua {
                     && e.needs_where
                 {
                     e.needs_where = false;
+                    if let Some((narg, extra)) = e.arg.take() {
+                        e.value = Value::from(self.arg_error_message(narg, &extra));
+                    }
                     let w = self.where_(1);
                     if let (false, Value::Str(m)) = (w.is_empty(), &e.value) {
                         let mut b = w.into_bytes();
@@ -291,7 +337,31 @@ impl Lua {
     }
 
     /// `luaD_precall` for a Lua function (with `adjust_varargs`), run it, move the results to `func`.
-    fn call_lua(&mut self, cl: Rc<LuaClosure>, func: usize, nargs: usize) -> Result<usize> {
+    /// A tail call (`OP_TAILCALL` to a Lua function) reuses this frame like `luaD_precall` does in 5.1: the
+    /// callee and its arguments were moved down to `func` and the loop sets it up in place, so tail
+    /// recursion does not count against the call depth.
+    fn call_lua(&mut self, mut cl: Rc<LuaClosure>, func: usize, mut nargs: usize) -> Result<usize> {
+        let mut tail_name: Option<String> = None;
+        loop {
+            match self.call_lua_once(&cl, func, nargs) {
+                Ok(Exec::Return(n)) => return Ok(n),
+                Ok(Exec::TailCall(n, name)) => {
+                    let Value::Function(Function::Lua(next)) = self.stack[func].clone() else { unreachable!() };
+                    cl = next;
+                    nargs = n;
+                    tail_name = Some(name);
+                }
+                Err(mut e) => {
+                    if let Some(name) = tail_name {
+                        e.traceback.push(name);
+                    }
+                    return Err(e);
+                }
+            }
+        }
+    }
+
+    fn call_lua_once(&mut self, cl: &Rc<LuaClosure>, func: usize, nargs: usize) -> Result<Exec> {
         let p = cl.proto.clone();
         let np = p.num_params as usize;
         let ms = p.max_stack as usize;
@@ -336,14 +406,17 @@ impl Lua {
             }
         }
         self.frames.push(Frame { proto: Some(p), base, pc: 0 });
-        let r = self.execute(&cl, func, base);
+        let r = self.execute(cl, func, base);
         self.frames.pop();
-        let (first, n) = r?;
+        let (first, n) = match r? {
+            Ok(r) => r,
+            Err(tail) => return Ok(tail),
+        };
         for i in 0..n {
             let v = std::mem::take(&mut self.stack[first + i]);
             self.stack[func + i] = v;
         }
-        Ok(n)
+        Ok(Exec::Return(n))
     }
 
     // ---- upvalues ----
@@ -604,7 +677,13 @@ impl Lua {
     // ---- the interpreter loop ----
 
     /// Run a Lua function whose frame is set up; returns where its results are and how many.
-    fn execute(&mut self, cl: &Rc<LuaClosure>, func: usize, base: usize) -> Result<(usize, usize)> {
+    /// `Ok(Err(..))` is a tail call to a Lua function, already moved down to `func`.
+    fn execute(
+        &mut self,
+        cl: &Rc<LuaClosure>,
+        func: usize,
+        base: usize,
+    ) -> Result<std::result::Result<(usize, usize), Exec>> {
         let p = cl.proto.clone();
         let k = &p.k;
         let code = &p.code;
@@ -672,7 +751,16 @@ impl Lua {
                     self.settable(&t, rk!(arg_b(i)), rk!(arg_c(i)), Some(ra))?;
                 }
                 OP_NEWTABLE => {
-                    let t = self.new_table(fb2int(arg_b(i)), fb2int(arg_c(i)));
+                    let (na, nh) = (fb2int(arg_b(i)), fb2int(arg_c(i)));
+                    // setnodevector's "table overflow"; an array part that large cannot be allocated in the
+                    // original's 32-bit process (model decision: the same 2^26 bound, "not enough memory").
+                    if nh > MAXASIZE {
+                        return Err(self.rt_error("table overflow"));
+                    }
+                    if na > MAXASIZE {
+                        return Err(self.rt_error("not enough memory"));
+                    }
+                    let t = self.new_table(na, nh);
                     r!(a) = Value::Table(t);
                 }
                 OP_SELF => {
@@ -748,7 +836,7 @@ impl Lua {
                 }
                 OP_CALL => {
                     let (b, c) = (arg_b(i), arg_c(i));
-                    let nargs = if b != 0 { b - 1 } else { self.top - ra - 1 };
+                    let nargs = if b != 0 { b - 1 } else { self.open_count(ra + 1)? };
                     let is_fn = matches!(self.stack[ra], Value::Function(_));
                     let n = match self.call_at(ra, nargs, c as i32 - 1) {
                         Ok(n) => n,
@@ -766,11 +854,20 @@ impl Lua {
                 }
                 OP_TAILCALL => {
                     let b = arg_b(i);
-                    let nargs = if b != 0 { b - 1 } else { self.top - ra - 1 };
+                    let nargs = if b != 0 { b - 1 } else { self.open_count(ra + 1)? };
                     self.close_upvals(base);
+                    if matches!(self.stack[ra], Value::Function(Function::Lua(_))) {
+                        let name = Self::callee_name(&p, pc - 1, a);
+                        for j in 0..=nargs {
+                            let v = std::mem::take(&mut self.stack[ra + j]);
+                            self.stack[func + j] = v;
+                        }
+                        self.stack.truncate(func + 1 + nargs);
+                        return Ok(Err(Exec::TailCall(nargs, name)));
+                    }
                     let is_fn = matches!(self.stack[ra], Value::Function(_));
                     return match self.call_at(ra, nargs, -1) {
-                        Ok(n) => Ok((ra, n)),
+                        Ok(n) => Ok(Ok((ra, n))),
                         Err(mut e) => {
                             if is_fn {
                                 e.traceback.push(Self::callee_name(&p, pc - 1, a));
@@ -781,9 +878,9 @@ impl Lua {
                 }
                 OP_RETURN => {
                     let b = arg_b(i);
-                    let n = if b != 0 { b - 1 } else { self.top - ra };
+                    let n = if b != 0 { b - 1 } else { self.open_count(ra)? };
                     self.close_upvals(base);
-                    return Ok((ra, n));
+                    return Ok(Ok((ra, n)));
                 }
                 OP_FORLOOP => {
                     let num = |v: &Value| v.as_number().unwrap_or(f64::NAN);
@@ -834,7 +931,7 @@ impl Lua {
                 OP_SETLIST => {
                     let mut n = arg_b(i);
                     if n == 0 {
-                        n = self.top - ra - 1;
+                        n = self.open_count(ra + 1)?;
                     }
                     let mut c = arg_c(i);
                     if c == 0 {
@@ -844,7 +941,14 @@ impl Lua {
                     let Value::Table(t) = r!(a).clone() else {
                         return Err(self.rt_error("SETLIST on a non-table"));
                     };
-                    let mut last = (c - 1) * LFIELDS_PER_FLUSH + n;
+                    // A malformed block number (0, or an array past MAXASIZE) is an error, not a panic or a
+                    // huge allocation; luac never emits one.
+                    let mut last = c
+                        .checked_sub(1)
+                        .and_then(|c| c.checked_mul(LFIELDS_PER_FLUSH))
+                        .and_then(|x| x.checked_add(n))
+                        .filter(|&l| l <= MAXASIZE)
+                        .ok_or_else(|| self.rt_error("not enough memory"))?;
                     let mut tb = t.0.t.borrow_mut();
                     if last > tb.array_size() {
                         tb.resize_array(last);
@@ -888,5 +992,26 @@ impl Lua {
                 o => return Err(self.rt_error(format!("bad opcode {o}"))),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::chunk_id;
+    use crate::value::LuaStr;
+
+    #[test]
+    fn chunk_id_like_luao_chunkid() {
+        let id = |s: &str| chunk_id(&LuaStr::new(s.as_bytes()));
+        assert_eq!(id("=?"), "?");
+        assert_eq!(id("@short.lua"), "short.lua");
+        // "@" sources keep their last 52 bytes (LUA_IDSIZE 60 less " '...' "), counted in bytes.
+        let long = format!("@{}/x.lua", "d\u{e9}j\u{e0}".repeat(12));
+        let out = id(&long);
+        assert!(out.starts_with("...") && out.ends_with("/x.lua"), "{out}");
+        assert_eq!(id(&format!("@{}", "a".repeat(60))), format!("...{}", "a".repeat(52)));
+        assert_eq!(id("local x = 1"), "[string \"local x = 1\"]");
+        assert_eq!(id("a\rb"), "[string \"a...\"]");
+        assert_eq!(id(&"b".repeat(50)), format!("[string \"{}...\"]", "b".repeat(43)));
     }
 }

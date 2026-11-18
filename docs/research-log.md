@@ -65,6 +65,44 @@ one in the same pass; `round_int`'s doc says out-of-range gives 0x80000000 while
 
 ## 2026-11-18: the speech manager ported (`mw_audio::speech`), the logic's speech wired
 
+### 2026-11-18: `mw-lua` bug hunt against PUC 5.1 (host `lua5.1` / `luac5.1` differential, mutation fuzzing)
+
+Method: synthetic scripts compiled with the host `luac5.1` (5.1.5), run by `mw-lua` and by `lua5.1`, outputs
+diffed; ~100k mutated chunks loaded and run (panics / aborts collected). Fixed (regressions in
+`tests/differential.rs` `regressions`, `tests/robustness.rs` (hand-assembled chunks, no host Lua needed), `vm.rs`
+unit test):
+- **Tail calls nested**: `OP_TAILCALL` recursed through `call_at`, so >200 tail calls hit "stack overflow". Now
+  the frame is reused like `luaD_precall` (5.1 `lvm.c` OP_TAILCALL): `call_lua` loops on `Exec::TailCall`.
+- `error(42[, level])`: `lua_isstring` is true for numbers, so the position is prefixed and the value becomes a
+  string (`luaB_error`); we kept the number unprefixed.
+- `xpcall` with a handler that errors or is not a function: `"error in error handling"` (LUA_ERRERR,
+  `luaG_errormsg`), not the handler's error.
+- Argument errors named the registered native; `luaL_argerror` names it as the calling instruction does
+  (`getfuncname`: `?` from `pcall` / a stripped local, the field / method name, `calling 'x' on bad self`, `self`
+  not counted in method calls). `LuaError::arg` carries the parts; `call_at` rebuilds the text.
+- `chunk_id` sliced a lossy UTF-8 string by bytes (panic on non-ASCII sources) and used 56 / 45 instead of
+  `luaO_chunkid`'s 52 / 43 bytes; now on bytes.
+- Verifier (`undump::check`) gaps that let malformed chunks panic: VARARG outside a vararg function,
+  comparisons not followed by JMP (`testTMode`), `checkopenop` after CALL C=0 / VARARG B=0, jumps into SETLIST
+  count words or closure upvalue words (5.1.4's fix), code ending in such a word, parameters past `maxstacksize`.
+  Runtime: B=0 operands without an open call are "bad code" (was usize underflow); SETLIST block 0 / huge and
+  NEWTABLE sizes past 2^26 are errors ("table overflow" as `setnodevector`; "not enough memory" for the array
+  part: model decision, the 32-bit original could not allocate it) instead of multi-GB allocations;
+  `string.rep` past 2^31 bytes is "not enough memory" (model decision, same reason).
+
+Checked and matching (or deliberately different: MSVC number formatting `1e+015` / `1.#INF`, MSVC `strtod`
+without hex / inf / nan, 32-bit `strtoul` wrap in `tonumber(s, base)`, x87 rounding in `luaL_checkint`, 5.1.3's
+`table.remove` without the 5.1.4 bounds check and `table.concat`'s "table contains non-strings"): LOADNIL,
+SETLIST (B=0, C=0, >50 items), numeric `for` (float / negative / zero steps, string coercion, errors), generic
+`for`, closures in loops with break, upvalues closed by `pcall` errors, VARARG / `select` / `unpack`, OP_SELF,
+CONCAT number formatting, `__eq` / `__lt` / `__le` (incl. the `not (b < a)` fallback) and mixed-type order
+errors, `__index` / `__newindex` chains and the 100-level loop limit, `#` borders with holes, `-0` / `1.0` / NaN
+keys, string library (find / match / gsub / gmatch / format / sub / byte edge cases), `tonumber` edge cases.
+
+Open: `xpcall` runs the handler after unwinding (no difference without a debug library).
+
+ (`mw_audio::speech`), the logic's speech wired
+
 **What**: the speech manager G+0x2c3c0 is a port now (`crates/mw-audio/src/speech.rs`, engine-free, 2 tests), shared
 by `police_speech.rs` and `logic.rs` (`SpeechLink`). The logic's speech is answered: `Query::SpeechLoadState` (0
 loaded, 2 loading, 1 failed), `Query::TryPlaySpeech` (`FUN_00842f10` → `FUN_008408a0`'s code, 0x13 = played),

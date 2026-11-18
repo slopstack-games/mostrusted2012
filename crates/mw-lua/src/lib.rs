@@ -48,23 +48,26 @@ pub struct LuaError {
     pub traceback: Vec<String>,
     /// Raised like `luaL_error` by a native: the caller's `source:line: ` is still to be prefixed.
     pub(crate) needs_where: bool,
+    /// A `luaL_argerror` (argument number from 1, extra message): the text is rebuilt with the name the call
+    /// site gave the native once the error leaves it.
+    pub(crate) arg: Option<(usize, String)>,
 }
 
 impl LuaError {
     /// An error raised by a native the way `luaL_error` does: the position of the Lua code that called the
     /// native is prefixed (only with debug info; the game's chunks have none).
     pub fn new(msg: impl Into<String>) -> Self {
-        LuaError { value: Value::from(msg.into()), traceback: Vec::new(), needs_where: true }
+        LuaError { value: Value::from(msg.into()), traceback: Vec::new(), needs_where: true, arg: None }
     }
 
     /// An error message used as is (no position added).
     pub fn plain(msg: impl Into<String>) -> Self {
-        LuaError { value: Value::from(msg.into()), traceback: Vec::new(), needs_where: false }
+        LuaError { value: Value::from(msg.into()), traceback: Vec::new(), needs_where: false, arg: None }
     }
 
     /// An error carrying any value (`error(t)`).
     pub fn with_value(value: Value) -> Self {
-        LuaError { value, traceback: Vec::new(), needs_where: false }
+        LuaError { value, traceback: Vec::new(), needs_where: false, arg: None }
     }
 
     /// The error value as text (what `lua.c` would print).
