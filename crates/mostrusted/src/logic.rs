@@ -595,7 +595,13 @@ struct Race<'w, 's> {
     start: MessageWriter<'w, StartRace>,
 }
 
-fn tick(logic: Option<NonSendMut<Logic>>, real: Res<Time<Real>>, mut t: Targets, menu: Res<crate::input::MenuInput>) {
+fn tick(
+    logic: Option<NonSendMut<Logic>>,
+    real: Res<Time<Real>>,
+    mut t: Targets,
+    menu: Res<crate::input::MenuInput>,
+    mut widget_groups: ResMut<crate::ui_widgets::ActiveWidgetGroups>,
+) {
     let Some(mut logic) = logic else { return };
     // The HSM runs on the frame clock while the simulation is paused (it is what resumes it); its game clock stops
     // then (`Clock::game` None). The frame step is capped as the game clock is (main.rs: 2/60 s).
@@ -729,6 +735,8 @@ fn tick(logic: Option<NonSendMut<Logic>>, real: Res<Time<Real>>, mut t: Targets,
     for r in queued {
         host.request(r);
     }
+    // The active widget groups for the widget-tree renderer (`ui_widgets.rs`), after this frame's activations.
+    widget_groups.set(host.logic.pages.active_screen_groups());
     if was_running && !hsm.is_running(*serial) {
         info!("hsm: machine {serial} finished");
     }
