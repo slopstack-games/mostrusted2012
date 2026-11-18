@@ -1274,7 +1274,7 @@ impl Player {
             v.pos += v.step;
             if v.pos >= len as f64 {
                 if v.clip.looping {
-                    v.pos -= len as f64;
+                    v.pos %= len as f64;
                 } else {
                     v.done = true;
                     v.stopping = true;

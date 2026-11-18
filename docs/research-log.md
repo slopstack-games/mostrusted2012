@@ -11,6 +11,27 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+## 2026-11-18: bug hunt round 3: mw-audio players / speech, mw-gamedir, mwtool compare (code reading, no install)
+
+Fixed (each with a failing synthetic test first):
+- `mw_audio::speech::SpeechManager::run`: an event whose event item plays itself (directly or through a cycle) at
+  zero delay expanded inline forever within one frame (hang, unbounded memory). Guard (not from the game):
+  `MAX_INLINE_EVENTS` = 64 inline expansions per sequence update. Test `self_playing_event_does_not_hang`.
+- `sequence::Player` / `sfx_player::Player` looping voices: the wrap `pos -= len` left the position past the clip
+  when one output sample steps further than the clip is long (a few-sample loop, or a high pitch / clip rate), and
+  from then on the voice read past the end every sample (silence, the position growing). Now `pos %= len`. Test
+  `loop_shorter_than_one_step_keeps_sounding`.
+- `mwtool compare`: `--every 0` (or negative / NaN) looped forever; a recording whose first sample with body
+  axes comes after our replay ends panicked (`rfind(..).unwrap()`). Both are errors now (tests in `compare.rs`).
+
+Suspected, not changed: `dsp::distort` model ≠ 1–3 divides by `tanh(drive)` (NaN at drive 0; the data only uses
+model 2, and a Distortion plug-in without a `Model` field reads model 0 there); `Delay::process` with a NaN
+feedback latches NaN (`clamp` keeps NaN); `mw_gamedir::parse_library_paths` reads only the post-2021
+`"path"` form of libraryfolders.vdf (the old `"1" "D:\\Lib"` form is skipped); `source::walk` does not descend into
+symlinked directories; `resolve_case_insensitive` lets `..` leave the install root. Checked and fine: filter
+coefficient guards at/above Nyquist, Ginsu period clamps, spatial resampler, compare RMS (n ≥ 1), CSV column
+mismatch (missing columns read as absent), capture `hz` 0 / NaN.
+
 ## 2026-11-18: mw-assets bug hunt, round 2 (code-level defects, no install)
 
 Read mw-assets' own logic (index lookups, curves, grids, empty collections, chains) without the install.
