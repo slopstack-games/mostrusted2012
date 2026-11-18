@@ -120,7 +120,7 @@ MW_NO_VIGNETTE=1 ./target/release/mostrusted --camera=-1131,27,1627,-1190,15,172
 #   nitrous, landing, climb, jitter (MW_SUSP_TRACE=<file> logs the suspension every tick,
 #   MW_WHEEL_TRACE=<file> the point-mass wheels: compression, rate, velocity after the sub-steps and after the contact
 #   passes, contact impulse, flags; MW_WHEEL_RAY=1 the old ray wheel probe, MW_WHEEL_DECAL=1 wheels meet decal triangles;
-#   MW_STRUT_JOINT=0|pos|vel the strut joint left out / one of its passes only, MW_STRUT_STOP=1 the strut stop on every
+#   MW_STRUT_JOINT=pos|vel one of the strut joint's passes only (=0: the wheel free of its strut), MW_STRUT_STOP=1 the strut stop on every
 #   car (the game's only on a crashed one), MW_ROUGH=0 no surface bumps; A/B, research log 2026-10-19 "kerb captures")
 ./target/release/mostrusted --drive 911 --test smash --smash-speed 60 --screenshot <scratch>/smash.png   # props: cone, lamp, fence, wall
 #   --smash-set compounds: lamps etc. breaking into parts. Props collide in the world by default (--no-prop-physics)

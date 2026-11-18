@@ -170,6 +170,10 @@ pub struct WheelBody {
     pub mass: f32,
     /// The strut's top and bottom, car-space y (`wheel_layout`; `None` without the data).
     pub strut: Option<[f32; 2]>,
+    /// The strut joint's tilt, arm and arm flag (`wheel_layout`; `None` without the data).
+    pub strut_joint: Option<crate::wheel_layout::StrutJointData>,
+    /// The spring element's chassis anchor, car-space y (`wheel_layout`; `None` without the data).
+    pub spring_anchor: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -512,6 +516,8 @@ impl VehicleHandling {
                             if let Some(b) = w.body.checked_sub(1).and_then(|i| out.wheels.get_mut(i)) {
                                 b.position = w.position;
                                 b.strut = w.strut;
+                                b.strut_joint = w.strut_joint;
+                                b.spring_anchor = w.spring_anchor;
                             }
                         }
                     }
@@ -590,6 +596,8 @@ impl VehicleHandling {
                     half_width: ext[2],
                     mass: mass.unwrap_or(25.0),
                     strut: None,
+                    strut_joint: None,
+                    spring_anchor: None,
                 });
             }
         }

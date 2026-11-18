@@ -62,6 +62,49 @@ sequence manager). Requests: `PlaySound` releases the sound slots at once and is
 systems are keyed by `MiscSound` field / car / world code, no name-hash sound start exists); `ShowForcedFeedbackMessage`
 (no HUD feedback queue) and `SkipSequence` (no feedback sequence manager UIM+0x30840; the cutscene skip is its own
 `JumpOnButtonPress`) are logged once, "not carried out yet". Open: a `FUN_009ed180` name to sound lookup, a HUD message queue.
+### 2026-11-18: the strut joint ported in 3D (arm variant, builder, spring anchor); the wheels' mass rides along
+Read `FUN_009c4050` / `FUN_009c42d0` (position pass) and `FUN_009c3ae0` / `FUN_009c3d70` (velocity pass) in full,
+and found the joint's builder `FUN_009c3650` (`FUN_009b40c0` → `FUN_00933790`, type-3 element) and the spring
+anchor's source (decomp.md "Strut joint builder", "Spring anchor"). Ported as `mw_handling::suspension::StrutJoint`
+(build, parameter, axis, position / velocity error; unit tests against snap1), wired in drive.rs: the wheel record
+is now a free 3D point mass (centre, velocity) that only the joint ties to the chassis; the ground's contact and
+impulse passes act on the wheel alone as in the game (`FUN_009c52d0`, `FUN_009c2670`); spring and damper act along
+anchor → wheel centre with the data's anchor. New data in `wheel_layout`: `RestWheel::strut_joint` (`Angle`
+`efd741ee`, arm `c2a87807`, flag `b1c680d5`) and `spring_anchor` (`caac331c` + `02f99a20`).
+- **Checked against snap1** (script in the worktree's git-ignored `scratch/`): the 40 strut joints in memory
+  (0x07ba1f00 + 0x100 i) rebuilt from the data rule to 1e-4; the XKR's four wheel records lie on the arm's arc within
+  5e-5 m (straight strut: 1.2 mm off at the rear). Player cars use the arm (Angle 5, arm 1.25–2 m); traffic is
+  straight (Angle 0, arm 1, flag off).
+- **Consequence from the code**: the tyre's impulses go to the chassis only (decomp.md "Tyres"), so the wheel
+  records (25 kg each on the XKR, 1762 kg chassis) are dragged along by the joint: the car accelerates and brakes as
+  chassis + wheels. Before → after (911 unless noted): `--test accel` 0–60 mph 3.60 → 3.82 s, 0–100 km/h 3.77 →
+  3.98, quarter mile 11.65 → 11.93; `--test brake` 100–0 38.3 → 40.3 m; `--test corner` 2.57 → 2.28 g; `--test
+  drift` peak 37.3 → 34.1°, mean 32.3 → 30.2°. Compares (`mwtool compare`, whole run): `ref/xkr_launch` speed RMS
+  8.9 → 8.6 mph (the run ends in the original's crash at 6.5 s; over the launch 1.5–6.2 s: RMS 3.25 → 2.70, mean
+  ours − original +1.48 → −0.01 mph: the launch bias is gone); `kerb100a` 1.4 → 2.3 mph (0–2.8 s cruise 0.44 →
+  0.36; the braking from 2.8 s, where ours already stopped short, +0.98 → +2.98 mph mean); `kerbrest911a` 1.2 →
+  1.2; `kerb100raptor` 3.0 → 1.8 mph (its braking was too strong, now closer); yaw RMS on the kerbs 0.9 → 1.0 (911), 1.4 → 1.7 °/s (Raptor). The 911's braking deficit is older
+  than this change and lies elsewhere (brake or tyre); the extra mass is the game's.
+- **Placement at speed**: `Car::place_moving` now sends the wheel records back to rest moving with the chassis
+  (the game's vehicle-state setter `FUN_008f72f0` places them on the strut with the chassis's velocity); without it
+  the at-speed replay started with standing wheels (kerb100a lost 4 mph on the first tick). A wheel moving more than
+  30 m/s faster than the chassis is resynced like a teleported one (`WHEEL_RESYNC_SPEED`, ours: velocity set from
+  outside).
+- **+0x30's writer: not found** (dead ends: no store to [reg+0x30] in the joint's five functions; the builder zeroes
+  it; the clamped stores to +0x30 elsewhere (`FUN_00905910`, the tyre region 0x9c6131, `FUN_008f9340`,
+  `FUN_009575e0`..`FUN_0095a680`) are other objects; `FUN_008f7140` / `FUN_008f72f0` only read it / place by it).
+  Snap1's values lag the wheels' current projection by 0.035–0.06, so it is not the position pass's projection of
+  the predicted centre either. Ours: the projection at the start of the tick. A per-tick live read of +0x30 and the
+  wheel record (probe) would settle it.
+- **Angular damping** (`DrivingVehicle`, handling.md row): the game applies none to a driving car (`DrivingVehicle` is empty, read live 2026-10-09; nothing new
+  in the code). Re-tested whether the joint's wheel inertia removes the over-rotation the 0.4 /s covers: four
+  `ref/live1` brake-tap windows (MP4-12C, cut at the first wheel-contact loss, flat-track replay; script
+  `scratch/live1win.sh`), yaw RMS with 0.4 / without, before → after: 65.5 s 12.8 / 16.5 → 12.7 / 15.9, 69.0 s
+  3.9 / 6.7 → 4.1 / 6.6, 107.5 s 4.9 / 12.2 → 4.7 / 11.3 °/s (98.98 s cut at 1.1 s here, too short); speed RMS
+  with 0.4: 3.6 / 4.9 / 3.4 → 3.0 / 4.2 / 3.0 mph. So the wheels' inertia helps a little but the undamped car
+  still over-rotates: the 0.4 stays a model decision; the missing yaw resistance is still in the tyre or chassis.
+- Captures that would confirm: a straight full-brake run of the 911 from 100 km/h on flat ground (the braking
+  deficit), and per-tick live reads of a strut joint (+0x30, wheel record centre and velocity) through a kerb.
 
 ### 2026-11-18: Lua natives, thirteenth batch (`natives/lua_requests.rs`)
 12 offline natives ported from the survey below: 312 of 385 (238 / 255 offline, 50 / 100 online, 8 / 11 platform, 16 / 19 debug; 17
