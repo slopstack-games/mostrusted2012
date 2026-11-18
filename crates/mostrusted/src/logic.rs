@@ -162,6 +162,10 @@ impl Plugin for LogicPlugin {
         .insert_resource(RaceDriven::default())
         .init_resource::<crate::logic_effects::InfiniteNitrous>()
         .add_systems(Update, crate::logic_effects::hold_infinite)
+        .init_resource::<crate::logic_effects::PendingPlacement>()
+        .init_resource::<crate::logic_effects::RoadFeed>()
+        .add_systems(Update, crate::logic_effects::load_road_feed.before(LogicTick))
+        .add_systems(FixedUpdate, crate::logic_effects::place_vehicles.before(crate::drive::car_physics))
         .insert_resource(HsmEvent(self.event.clone()))
         .add_systems(Startup, |mut c: ResMut<CutsceneState>| c.logic_driven = true)
         .add_systems(Startup, start_loading)
@@ -1116,7 +1120,7 @@ impl RaceLink {
 impl RuntimeHost {
     /// The requests `logic_effects.rs` carries out on the runtime's systems (the local slot's car only).
     fn effect(&self, r: &Request) -> Option<crate::logic_effects::Effect> {
-        use crate::logic_effects::Effect;
+        use crate::logic_effects::{Effect, Placement};
         let local = self.logic.state.borrow().players.local.map_or(-1, |s| s as i32);
         let vehicle_is_local = |v: i32| v == self.logic.state.borrow().players.local_player().map_or(-1, |p| p.vehicle);
         Some(match r {
@@ -1131,6 +1135,42 @@ impl RuntimeHost {
             Request::NitrousReset { slot } | Request::ClearNitrous { slot } if *slot == local => Effect::NitrousReset,
             Request::SirenState { vehicle, on } if vehicle_is_local(*vehicle) => Effect::Siren(*on),
             Request::EngineState { vehicle, on } if vehicle_is_local(*vehicle) => Effect::Engine(*on),
+            // `FUN_00647e00` (`TeleportVehicle`, `ResetOnRoad`, `TeleportToNamedRoad`).
+            Request::PlaceVehicle { vehicle, position, direction, mph, reason, .. } if vehicle_is_local(*vehicle) => {
+                Effect::Place(Placement {
+                    position: Vec3::from(*position),
+                    direction: Vec3::from(*direction),
+                    mph: *mph,
+                    reason: *reason,
+                })
+            }
+            // `FUN_0064a0e0`: model decision: the road snap `FUN_00648060` (not read) is left out, the pose is placed
+            // as given (reason 8).
+            Request::ResetAlongRoad { vehicle, position, direction, mph, .. } if vehicle_is_local(*vehicle) => {
+                Effect::Place(Placement {
+                    position: Vec3::from(*position),
+                    direction: Vec3::from(*direction),
+                    mph: *mph,
+                    reason: 8,
+                })
+            }
+            Request::TeleportAlongRoute { slot, vehicle, distance } if *slot == local && vehicle_is_local(*vehicle) => {
+                Effect::PlaceAlongRoute { distance: *distance }
+            }
+            // `FUN_006cd550` → `FUN_006ca580`(car, colour, pose, zero velocity): the local slot's car again at the pose
+            // (`a` is the record's vehicle id, as `FUN_006d0180` passes `FUN_006788d0` = +0x30). Another car would be a
+            // car change (not carried out: no runtime path spawns a car from the logic).
+            Request::SpawnVehicle { slot, a, position, direction, .. }
+                if *slot == local
+                    && self.logic.state.borrow().players.local_player().is_some_and(|p| p.vehicle_id as i32 == *a) =>
+            {
+                Effect::Place(Placement {
+                    position: Vec3::from(*position),
+                    direction: Vec3::from(*direction),
+                    mph: 0.0,
+                    reason: 0,
+                })
+            }
             _ => return None,
         })
     }
@@ -1378,7 +1418,21 @@ impl Host for RuntimeHost {
             // No runtime system plays the HUD's feedback messages (hud.rs has no queue for `FUN_007b8100`), nor the
             // feedback sequence manager UIM+0x30840 that `FUN_007b1060` skips (the cutscene skip is the
             // `JumpOnButtonPress` of its own sequence): logged once, nothing built.
-            Request::ShowForcedFeedbackMessage { .. } | Request::SkipSequence { .. } => None,
+            // `ShowFeedbackMessage` likewise (its definition `FUN_007985b0` and the named queues of UIM+0x17e0 have
+            // no runtime counterpart). The ICE camera of `SwitchToIceCamera` (message 4 on the camera queue) plays
+            // only as a sequence's camera item (`ui_sequence.rs`), not as a take started on its own; speech commands
+            // (UIM+0x32dd8) and the Origin overlay have no runtime system. All logged once.
+            Request::ShowForcedFeedbackMessage { .. }
+            | Request::SkipSequence { .. }
+            | Request::ShowFeedbackMessage { .. }
+            | Request::IceCameraStart { .. }
+            | Request::RegisterSpeechCommand { .. }
+            | Request::ShowOriginIgo => None,
+            // Message 0x2c: the camera follows the target's car. The runtime's camera follows the local car; another
+            // slot (an AI racer) is not followed (logged once).
+            Request::CameraTargetChanged { slot } => {
+                (Some(*slot) == self.logic.state.borrow().players.local).then_some(Carry::Nothing)
+            }
             _ => self.effect(&r).map(Carry::Effect),
         };
         let done = carried.is_some()

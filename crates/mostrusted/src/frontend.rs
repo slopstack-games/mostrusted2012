@@ -141,7 +141,8 @@ impl Plugin for FrontEndPlugin {
 /// Which track units (= `ZoneList` zones) have been streamed in.
 #[derive(Resource, Default)]
 pub struct Residency {
-    zones: Option<mw_formats::ZoneList>,
+    /// Shared with the logic (`RoadFields::zones`, `logic_effects.rs`).
+    zones: Option<std::sync::Arc<mw_formats::ZoneList>>,
     loaded: HashSet<u32>,
     /// Every unit the loader was asked for has been sent (`--units` runs never get the full set).
     pub all_sent: bool,
@@ -155,7 +156,16 @@ impl Residency {
     }
 
     pub fn set_zones(&mut self, zones: mw_formats::ZoneList) {
-        self.zones = Some(zones);
+        self.zones = Some(std::sync::Arc::new(zones));
+    }
+
+    pub fn zones(&self) -> Option<&std::sync::Arc<mw_formats::ZoneList>> {
+        self.zones.as_ref()
+    }
+
+    /// The track units streamed in.
+    pub fn loaded_units(&self) -> &HashSet<u32> {
+        &self.loaded
     }
 
     pub fn unit_loaded(&mut self, unit: u32) {
