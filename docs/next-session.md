@@ -17,7 +17,8 @@ by default (`--no-hsm` to bisect); `--race <id>` starts through the logic's even
   from the code. Open: its DC (+0.045 / +0.083 vs the original's +0.0024; a DC block?), live before / after not run.
 - `worktree-agent-abe4eab9f744d9496` (78c1b56): `ui_widgets.rs` draws HUD 371621 / 604153 from the logic's widgets,
   hud.rs layout drawing removed; accel / race pass, A/B in its `scratch/shots/`. Open: speedwall panel unchecked.
-- `worktree-agent-a9b92c3379235e3c7`: runtime handlers for today's new Requests / Queries.
+- `worktree-agent-a9b92c3379235e3c7` (7a3b08d, builds, untested): `logic_effects.rs` carries out chevrons, routes,
+  nitrous, siren, engine, music, feedback groups. Unhandled: unlocks, feedback queues, speech, mix snapshots.
 Check each: `git log master..<branch>`, build, run the checks, merge with `scratch/merge.sh <id>` (git-ignored
 helper: union for doc conflicts) or redo.
 
