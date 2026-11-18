@@ -15,7 +15,6 @@ by default (`--no-hsm` to bisect); `--race <id>` starts through the logic's even
 - `worktree-agent-ae89085bfd4e6c6f6`: engine sub-harmoniser / vehicle-bank rail (the skid distortion's last suspect).
 - `worktree-agent-abe4eab9f744d9496`: UI widget-tree renderer, HUD 371621 from widgets (replaces hud.rs drawing).
 - `worktree-agent-a9b92c3379235e3c7`: runtime handlers for today's new Requests / Queries.
-- `worktree-agent-a06f8818a04de4a11`: Lua natives, hard leftovers (PlaySound family, maths).
 Check each: `git log master..<branch>`, build, run the checks, merge with `scratch/merge.sh <id>` (git-ignored
 helper: union for doc conflicts) or redo.
 
@@ -26,6 +25,7 @@ helper: union for doc conflicts) or redo.
 - **Handbrake**: user to confirm in play; turn / brake-to-drift replays need `mwtool capture` first.
 - **Police**: roadblocks, bust camera, spawn placement not wired (research log "mw-police in the runtime").
 - **Pages CI**: whole-target-dir cache and verbose log are new: check a run's time and the `cargo-timings` artifact.
+- Lua natives left: 29 offline (survey of their callees in the research log, 2026-11-18), 50 online, 6 platform / debug.
 - Remaining HSM behaviour types (~30) call unnamed engine code: default model, not sonnet.
 - Docs split (big docs) still queued.
 
