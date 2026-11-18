@@ -203,6 +203,8 @@ fn begin(
     }
     if card.card.is_some() || race.is_some() {
         warn!("event card: {} not started (a race is already running)", setup.name);
+        // Started from the map (pause menu → map during a race): no card takes the menu's pause reason over.
+        reasons.set(crate::pause::PauseReason::Menu, false, &mut time);
         return;
     }
     if card.root.is_none() {

@@ -1127,6 +1127,8 @@ fn run(mut cli: Cli, game: GameDir) -> anyhow::Result<()> {
             new_profile: cli.new_game || profile_file.as_deref().and_then(frontend::load_profile).is_none(),
             profile: profile_file.clone().filter(|_| !cli.new_game),
             volume: cli.volume.clone(),
+            // The start-up flow (`boot_start`) is a `Request::Drive` too, but boots through the front end.
+            direct: matches!(request, Request::Drive { .. }) && boot_start.is_none() && cli.hsm_event.is_none(),
         })
         .add_plugins(pause::PausePlugin {
             enabled: (menu_enabled || cli.show_pause) && matches!(request, Request::Drive { .. }),
