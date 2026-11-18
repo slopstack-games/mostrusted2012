@@ -61,9 +61,9 @@ impl Material {
             let (keys, states, textures) = (r.u32(0x24)?, r.u32(0x28)?, r.u32(0x2C)?);
             for i in 0..n_samplers as u32 {
                 samplers.push(MaterialSampler {
-                    key: r.u16((keys + i * 2) as usize)?,
-                    texture: res.import_at(textures + i * 4),
-                    sampler_state: res.import_at(states + i * 4),
+                    key: r.u16(keys as usize + i as usize * 2)?,
+                    texture: textures.checked_add(i * 4).and_then(|o| res.import_at(o)),
+                    sampler_state: states.checked_add(i * 4).and_then(|o| res.import_at(o)),
                 });
             }
         }
@@ -219,7 +219,7 @@ impl Model {
         let n_lods = r.u8(0x18)? as usize;
         Ok(Self {
             id: res.id,
-            renderables: (0..n_rend).map(|i| res.import_at(rend + i * 4)).collect(),
+            renderables: (0..n_rend).map(|i| rend.checked_add(i * 4).and_then(|o| res.import_at(o))).collect(),
             state_renderables: (0..n_states)
                 .map(|i| r.u8(states + i).map(|v| (v != 0xFF).then_some(v)))
                 .collect::<mw_bundle::Result<_>>()?,

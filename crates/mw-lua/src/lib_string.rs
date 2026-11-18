@@ -757,6 +757,11 @@ pub(crate) fn open(lua: &mut Lua) {
     lua.register_in(&t, "rep", |_, name, args| {
         let st = check_str(&args, 0, name)?;
         let n = check_int(&args, 1, name)?;
+        // The original's 32-bit process cannot hold 2 GB; a memory error there, not an abort of the host
+        // (model decision: the bound).
+        if st.len() as u64 * n.max(0) as u64 > i32::MAX as u64 {
+            return Err(LuaError::plain("not enough memory"));
+        }
         Ok(vec![s(&st.as_bytes().repeat(n.max(0) as usize))])
     });
     lua.register_in(&t, "reverse", |_, name, args| {

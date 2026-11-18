@@ -41,10 +41,6 @@ pub struct FeedbackFields {
     pub sequence_start: bool,
     /// UIM+0x32858 + 0xb0: the feedback group table (7 entries, state 0 = free).
     pub groups: [FeedbackGroup; 7],
-    /// The HUD message queue (UIM+0x7230): the vtable +0x10 call is nonzero.
-    pub hud_queue_vcall: bool,
-    /// UIM+0x7255: the byte `IsHudMessageQueueEmpty` tests.
-    pub hud_queue_flag: bool,
     /// The race manager (G+0x2f47c): its vtable +0xc call says a race runs, and the float at
     /// `+0x510 x 20 + 0xc` (`GetRaceDistance`).
     pub race_active: bool,
@@ -88,11 +84,11 @@ fn is_feedback_group_loaded(state: &mut LogicState, _: &mut Lua, args: Vec<Value
     Ok(vec![Value::Bool(loaded)])
 }
 
-/// `IsHudMessageQueueEmpty()` (0x00678370): the message queue's vtable +0x10 result is nonzero and the byte +0x7255
-/// is clear, negated. The vtable method is not read: its result is the runtime's field.
+/// `IsHudMessageQueueEmpty()` (0x00678370): the HUD queue (UIM+0x7230) holds a message (vtable +0x10, the count)
+/// and is not suspended (+0x7255 = the queue's +0x25), negated (`feedback_queue.rs`).
 fn is_hud_message_queue_empty(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
-    let f = &state.sim.feedback;
-    Ok(vec![Value::Bool(!(f.hud_queue_vcall && !f.hud_queue_flag))])
+    let q = &state.feedback_queues.queues[super::feedback_queue::HUD];
+    Ok(vec![Value::Bool(!(!q.messages.is_empty() && !q.suspended))])
 }
 
 /// `GetRaceDistance()` (0x00680c00): the race manager's float when its vtable +0xc call is true, else 0.
@@ -266,11 +262,13 @@ mod tests {
             let mut s = host.state.borrow_mut();
             s.sim.feedback.sequence_handle = 1;
             s.sim.feedback.sequence_state = 1;
-            s.sim.feedback.hud_queue_vcall = true;
+            let f = &mut s.feedback_queues;
+            f.set_group(1, Some(vec![super::super::feedback_queue::MessageDef { id: 3, ..Default::default() }]));
+            f.post(super::super::feedback_queue::HUD, None, 3, "", Vec::new());
         }
         assert!(b(&call(&mut lua, "IsFeedbackSequenceLoaded", vec![])));
         assert!(!b(&call(&mut lua, "IsHudMessageQueueEmpty", vec![])));
-        host.state.borrow_mut().sim.feedback.hud_queue_flag = true;
+        host.state.borrow_mut().feedback_queues.queues[super::super::feedback_queue::HUD].suspended = true;
         assert!(b(&call(&mut lua, "IsHudMessageQueueEmpty", vec![])));
         assert!(!b(&call(&mut lua, "TryPopPageFromHistory", vec![])));
     }

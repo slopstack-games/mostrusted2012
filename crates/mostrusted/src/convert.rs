@@ -243,12 +243,16 @@ pub fn image(tex: &Texture, srgb: bool, bc_supported: bool) -> Option<Image> {
         _ => None,
     };
     let is_2d = tex.dimension == mw_formats::Dimension::D2;
+    // The upload (wgpu `create_texture_with_data`) slices every mip out of the data and panics when it is
+    // short; a mip count of 0 or past the chain fails validation. Such textures go the decoded way (mip 0).
+    let whole_chain = (1..=32 - tex.width.max(tex.height).leading_zeros()).contains(&tex.mip_count)
+        && tex.data.len() >= tex.slice_size();
     let mut image = match bc {
-        Some(format) if bc_supported && block_aligned && is_2d => {
+        Some(format) if bc_supported && block_aligned && is_2d && whole_chain => {
             let mut img = Image::new(
                 Extent3d { width: tex.width, height: tex.height, depth_or_array_layers: 1 },
                 TextureDimension::D2,
-                tex.data[..tex.slice_size().min(tex.data.len())].to_vec(),
+                tex.data[..tex.slice_size()].to_vec(),
                 format,
                 RenderAssetUsages::RENDER_WORLD,
             );
@@ -283,5 +287,39 @@ pub fn game_sampler() -> ImageSamplerDescriptor {
         address_mode_w: ImageAddressMode::Repeat,
         anisotropy_clamp: 4,
         ..ImageSamplerDescriptor::linear()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn bc1(w: u32, h: u32, mips: u32, bytes: usize) -> Texture {
+        Texture {
+            format: DxgiFormat::Bc1Unorm,
+            dimension: mw_formats::Dimension::D2,
+            flags: 0,
+            width: w,
+            height: h,
+            depth: 1,
+            array_size: 1,
+            most_detailed_mip: 0,
+            mip_count: mips,
+            data: vec![0; bytes],
+        }
+    }
+
+    /// A BC texture is uploaded as-is only with its whole mip chain present: a short body or a mip count the
+    /// size cannot have would panic / fail in the upload, so those are decoded (mip 0) instead.
+    #[test]
+    fn bc_upload_needs_the_whole_chain() {
+        let compressed = |t: &Texture| image(t, false, true).map(|i| i.texture_descriptor.format.is_compressed());
+        // 8×8, 4 mips: 32 + 8 + 8 + 8 bytes.
+        assert_eq!(compressed(&bc1(8, 8, 4, 56)), Some(true));
+        // Body cut short: decoded from mip 0.
+        assert_eq!(compressed(&bc1(8, 8, 4, 40)), Some(false));
+        // No mips, or more than an 8×8 texture has.
+        assert_eq!(compressed(&bc1(8, 8, 0, 56)), Some(false));
+        assert_eq!(compressed(&bc1(8, 8, 5, 64)), Some(false));
     }
 }

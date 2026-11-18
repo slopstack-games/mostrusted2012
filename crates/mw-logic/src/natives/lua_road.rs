@@ -17,6 +17,7 @@ use mw_formats::ZoneList;
 use mw_formats::road_data::RoadData;
 use mw_lua::{Lua, Value};
 
+use super::feedback_queue::{Part, PartValue};
 use super::lua_args::{fit, ftol32, int, push_str, push_uint, string_or_invalid, toboolean, tonumber};
 use super::lua_vehicles::table_vec3;
 use super::lua_world::vec3;
@@ -59,8 +60,6 @@ const NAMED_ROAD_BACK: f32 = 5.0;
 const NAMED_ROAD_SIDE: f32 = 3.0;
 /// `.rdata` 0x00fa929c: the radius `HasFinishedStreamingWorld` asks to be resident.
 const STREAMED_RADIUS: f32 = 10.0;
-/// `FUN_007b6280`: the message serial `DAT_0117d170` restarts at 0 when it reaches this.
-const SERIAL_WRAP: u32 = 0x7fff_ffff;
 
 /// A resource the runtime shares with the logic (compared by identity).
 #[derive(Debug, Clone)]
@@ -111,13 +110,6 @@ pub struct RoadFields {
     /// manager's vtable +8 holds (`CalculateForwardDirection`; +0xc is [`FeedbackFields::race_active`]
     /// (super::lua_feedback::FeedbackFields::race_active)).
     pub route_forward: HashMap<i32, V3>,
-    /// `DAT_0117d170`: the serial `FUN_007b6280` gives every posted message (the runtime advances it for the
-    /// messages it posts itself).
-    pub message_serial: u32,
-    /// The named HUD message queues (UIM+0x17e0, names +0x1c, count +0x58): whether a queue is full (its vtable
-    /// +0x14 equals +0x10). A name not listed is the default queue UIM+0x7230, full when `hud_queue_full`.
-    pub message_queues: HashMap<String, bool>,
-    pub hud_queue_full: bool,
     /// The loading-screen manager (LSM = UIM+0x2d1b0) slot values +0x58 + reason × 4 for reasons 0 and 2 (UIM+0x2d208
     /// / +0x2d210); the mask is [`GameLogic::loading_screen_requests`](super::game_logic::GameLogic).
     pub loading_slot_0: u32,
@@ -286,10 +278,6 @@ fn calculate_rotated_location_xz(_: &mut LogicState, lua: &mut Lua, args: Vec<Va
     Ok([vec3(lua, p)?, vec3(lua, d)?].concat())
 }
 
-fn occupied(state: &LogicState, slot: i32) -> bool {
-    usize::try_from(slot).ok().and_then(|i| state.players.slots.get(i)).is_some_and(Option::is_some)
-}
-
 fn player(state: &LogicState, slot: i32) -> Option<&super::players::Player> {
     state.players.slots.get(usize::try_from(slot).ok()?)?.as_ref()
 }
@@ -368,12 +356,12 @@ fn key_name(k: &Value) -> String {
 /// `ShowFeedbackMessage(text, id, [queue], [parameters])` (0x00682210). The queue name (≤ 63 bytes) is
 /// argument 3 unless it is nil (an absent argument is `LUA_TNONE`, read as `"<invalid>"`); argument 4 (only
 /// with more than three arguments, a table) gives the message parts, in `lua_next` order: `GamerTagParameters`
-/// (name → player slot, `FUN_007c1aa0`(name, slot, 1); an empty slot cancels the message),
+/// (name → player slot, `FUN_007c1aa0`(name, slot, 1): the slot's name; an empty slot cancels the message),
 /// `NumberParameters` (name → float, `FUN_007c1bd0`) and `StringIDParameters` (name → id, `FUN_007c2000`). The
-/// queue (`FUN_007b6110`: by name in UIM+0x17e0, else the default UIM+0x7230) takes the message unless it is
-/// full (`FUN_007b96b0` → `FUN_007b8080` → `FUN_007b6280`, which gives it the next serial); pushes the serial,
-/// else nil. The original's part arrays hold 4 entries and the pointer list 4 in all, without a check (model
-/// decision: every part is kept).
+/// queue (`FUN_007b6110`: by name in UIM+0x17e0, else the Hud queue UIM+0x7230) takes the message unless it is
+/// full (`FUN_007b96b0` → `FUN_007b8080` → `FUN_007b6280`: appended with the next serial; `feedback_queue.rs`);
+/// pushes the serial, else nil. The original's part arrays hold 4 entries and the pointer list 4 in all, without a
+/// check (model decision: every part is kept).
 fn show_feedback_message(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
     let id = int(&args, 2);
     let text = string_or_invalid(&args, 1);
@@ -382,45 +370,31 @@ fn show_feedback_message(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) 
         _ => fit(&string_or_invalid(&args, 3), 0x40).to_string(),
     };
     let mut all_present = true;
-    let (mut gamer_tags, mut numbers, mut string_ids) = (Vec::new(), Vec::new(), Vec::new());
+    let mut parts = Vec::new();
     if args.len() > 3
         && let Value::Table(t) = &args[3]
     {
         for (k, v) in pairs(&t.get_str("GamerTagParameters")) {
             let slot = ftol32(Lua::tonumber(&v).unwrap_or(0.0));
-            if occupied(state, slot) {
-                gamer_tags.push((key_name(&k), slot));
-            } else {
-                all_present = false;
+            match player(state, slot) {
+                Some(p) => parts.push(Part { name: key_name(&k), value: PartValue::Text(p.name.clone()) }),
+                None => all_present = false,
             }
         }
         for (k, v) in pairs(&t.get_str("NumberParameters")) {
-            numbers.push((key_name(&k), Lua::tonumber(&v).unwrap_or(0.0) as f32));
+            parts.push(Part { name: key_name(&k), value: PartValue::Number(Lua::tonumber(&v).unwrap_or(0.0) as f32) });
         }
         for (k, v) in pairs(&t.get_str("StringIDParameters")) {
-            string_ids.push((key_name(&k), ftol32(Lua::tonumber(&v).unwrap_or(0.0))));
+            let value = PartValue::StringId(ftol32(Lua::tonumber(&v).unwrap_or(0.0)));
+            parts.push(Part { name: key_name(&k), value });
         }
     }
-    let f = &mut state.sim.road;
-    let named = f.message_queues.get(&queue).copied();
-    let full = named.unwrap_or(f.hud_queue_full);
-    if full || !all_present {
+    let f = &mut state.feedback_queues;
+    let q = f.queue_or_hud(&queue);
+    if f.queues[q].full() || !all_present {
         return Ok(vec![Value::Nil]);
     }
-    f.message_serial = f.message_serial.wrapping_add(1);
-    if f.message_serial >= SERIAL_WRAP {
-        f.message_serial = 0;
-    }
-    let serial = f.message_serial;
-    state.requests.push(Request::ShowFeedbackMessage {
-        queue: named.map(|_| queue),
-        id,
-        text,
-        gamer_tags,
-        numbers,
-        string_ids,
-        serial,
-    });
+    let serial = f.post(q, None, id as u32, &text, parts);
     Ok(vec![push_uint(serial)])
 }
 
@@ -934,9 +908,14 @@ mod tests {
 
     #[test]
     fn feedback_message() {
+        use super::super::feedback_queue::{HUD, MessageDef, SERIAL_WRAP, SONG};
         let (mut lua, host) = setup();
-        host.state.borrow_mut().players.slots[3] = Some(Player::default());
-        host.state.borrow_mut().sim.road.message_queues.insert("Big".into(), false);
+        {
+            let mut st = host.state.borrow_mut();
+            st.players.slots[3] = Some(Player { name: "Rival".into(), ..Default::default() });
+            let defs = [4, 5, 6, 7, 1].map(|id| MessageDef { id, time: 1.0, ..Default::default() });
+            st.feedback_queues.set_group(9, Some(defs.to_vec()));
+        }
         let params = lua.create_table();
         let tags = lua.create_table();
         tags.set_str("Rival", n(3.0));
@@ -947,9 +926,9 @@ mod tests {
         let ids = lua.create_table();
         ids.set_str("Car", n(77.0));
         params.set_str("StringIDParameters", Value::Table(ids));
-        let r = call(&mut lua, "ShowFeedbackMessage", vec![s("hello"), n(4.0), s("Big"), Value::Table(params)]);
+        let r = call(&mut lua, "ShowFeedbackMessage", vec![s("hello"), n(4.0), s("Song"), Value::Table(params)]);
         assert_eq!(r[0].as_number(), Some(1.0));
-        // Two arguments: the queue reads "<invalid>", the default queue.
+        // Two arguments: the queue reads "<invalid>", the Hud queue.
         let r = call(&mut lua, "ShowFeedbackMessage", vec![s("x"), n(5.0)]);
         assert_eq!(r[0].as_number(), Some(2.0));
         // A gamer tag of an empty slot cancels the message; a full queue too.
@@ -959,33 +938,30 @@ mod tests {
         params.set_str("GamerTagParameters", Value::Table(tags));
         let r = call(&mut lua, "ShowFeedbackMessage", vec![s("x"), n(6.0), Value::Nil, Value::Table(params)]);
         assert!(r[0].is_nil());
-        host.state.borrow_mut().sim.road.hud_queue_full = true;
+        {
+            let st = host.state.borrow();
+            let song = &st.feedback_queues.queues[SONG].messages[0];
+            assert_eq!((song.def.id, song.name.as_str(), song.serial), (4, "hello", 1));
+            assert_eq!(
+                song.parts,
+                [
+                    Part { name: "Rival".into(), value: PartValue::Text("Rival".into()) },
+                    Part { name: "Score".into(), value: PartValue::Number(2.5) },
+                    Part { name: "Car".into(), value: PartValue::StringId(77) },
+                ]
+            );
+            assert_eq!(st.feedback_queues.queues[HUD].messages[0].serial, 2);
+        }
+        for _ in 0..6 {
+            call(&mut lua, "ShowFeedbackMessage", vec![s("x"), n(7.0), Value::Nil]);
+        }
+        assert!(host.state.borrow().feedback_queues.queues[HUD].full());
         assert!(call(&mut lua, "ShowFeedbackMessage", vec![s("x"), n(7.0), Value::Nil])[0].is_nil());
-        assert_eq!(
-            host.state.borrow().requests,
-            vec![
-                Request::ShowFeedbackMessage {
-                    queue: Some("Big".into()),
-                    id: 4,
-                    text: "hello".into(),
-                    gamer_tags: vec![("Rival".into(), 3)],
-                    numbers: vec![("Score".into(), 2.5)],
-                    string_ids: vec![("Car".into(), 77)],
-                    serial: 1,
-                },
-                Request::ShowFeedbackMessage {
-                    queue: None,
-                    id: 5,
-                    text: "x".into(),
-                    gamer_tags: vec![],
-                    numbers: vec![],
-                    string_ids: vec![],
-                    serial: 2,
-                },
-            ]
-        );
-        host.state.borrow_mut().sim.road.message_serial = SERIAL_WRAP - 1;
-        host.state.borrow_mut().sim.road.hud_queue_full = false;
+        {
+            let mut st = host.state.borrow_mut();
+            st.feedback_queues.queues[HUD].clear();
+            st.feedback_queues.serial = SERIAL_WRAP - 1;
+        }
         assert_eq!(call(&mut lua, "ShowFeedbackMessage", vec![s("x"), n(1.0)])[0].as_number(), Some(0.0));
     }
 

@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use mw_formats::json::Json;
 use mw_lua::{Lua, Value};
 
+use super::feedback_queue::HUD;
 use super::lua_args::{int, push_int, push_str, string_or_invalid, toboolean, tonumber, touserdata};
 use super::lua_widgets::{var_path, with_view_model};
 use super::{LogicState, Registry, Request, vm_path};
@@ -156,13 +157,17 @@ fn is_asset_unlocked(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R
     Ok(vec![Value::Bool(unlocked)])
 }
 
-/// `ShowForcedFeedBackMessage(text, id)` (0x0067db90): a non-empty HUD queue (vtable +0x10 result > 0) is cleared
-/// (`FUN_007b3380`), then the message is queued (`FUN_007b8100(text, id)`).
+/// `ShowForcedFeedBackMessage(text, id)` (0x0067db90): a non-empty HUD queue (vtable +0x10 result > 0) loses its
+/// head (`FUN_007b3380`), then the message goes first (`FUN_007b8100`(text, id) → `FUN_007b8080` with position 0;
+/// `feedback_queue.rs`).
 fn show_forced_feedback_message(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
     let text = string_or_invalid(&args, 1);
     let id = int(&args, 2);
-    let clear_queue = state.sim.feedback.hud_queue_vcall;
-    state.requests.push(Request::ShowForcedFeedbackMessage { text, id, clear_queue });
+    let f = &mut state.feedback_queues;
+    if !f.queues[HUD].messages.is_empty() {
+        f.queues[HUD].drop_head();
+    }
+    f.post(HUD, Some(0), id as u32, &text, Vec::new());
     Ok(vec![])
 }
 
@@ -221,6 +226,7 @@ pub fn register(r: &mut Registry) {
 #[cfg(test)]
 mod tests {
     use super::super::LogicHost;
+    use super::super::feedback_queue::MessageDef;
     use super::super::lua_world::WorldVehicle;
     use super::super::players::Player;
     use super::*;
@@ -330,8 +336,13 @@ mod tests {
     #[test]
     fn messages_and_sounds() {
         let (mut lua, host) = setup();
+        {
+            let mut st = host.state.borrow_mut();
+            let def = |id| MessageDef { id, time: 1.0, ..Default::default() };
+            st.feedback_queues.set_group(1, Some(vec![def(4), def(5), def(6)]));
+            st.feedback_queues.post(HUD, None, 6, "queued", Vec::new());
+        }
         call(&mut lua, "ShowForcedFeedBackMessage", vec![s("hi"), n(4.0)]);
-        host.state.borrow_mut().sim.feedback.hud_queue_vcall = true;
         call(&mut lua, "ShowForcedFeedBackMessage", vec![s("again"), n(5.0)]);
         {
             let mut st = host.state.borrow_mut();
@@ -347,15 +358,14 @@ mod tests {
         assert!(matches!(call(&mut lua, "PlayGameplayStream", vec![s("e"), n(1.0)])[0], Value::Nil));
         let st = host.state.borrow();
         assert_eq!(st.sim.requests.sound_counter, 3);
-        assert_eq!(st.requests[0], Request::ShowForcedFeedbackMessage { text: "hi".into(), id: 4, clear_queue: false });
+        // Each forced message took the head's place: only the last is left, first; serials 1 (queued), 2, 3.
+        let hud = &st.feedback_queues.queues[HUD];
+        let left: Vec<_> = hud.messages.iter().map(|m| (m.def.id, m.name.as_str(), m.serial)).collect();
+        assert_eq!(left, [(5, "again", 3)]);
         assert_eq!(
             st.requests[1],
-            Request::ShowForcedFeedbackMessage { text: "again".into(), id: 5, clear_queue: true }
-        );
-        assert_eq!(
-            st.requests[3],
             Request::PlaySound { name: "b".into(), id: 2, kind: 1, flags: 8, position: [1.0, 2.0, 3.0], slot: 2 }
         );
-        assert!(matches!(&st.requests[4], Request::PlaySound { kind: 4, slot: 3, .. }));
+        assert!(matches!(&st.requests[2], Request::PlaySound { kind: 4, slot: 3, .. }));
     }
 }

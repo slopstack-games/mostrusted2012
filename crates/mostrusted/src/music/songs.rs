@@ -70,6 +70,27 @@ pub struct SongManager {
     advance_down: Option<f32>,
     menu_gain: f32,
     logged_menu_gain: f32,
+    /// The last song started ([`SongStart`]).
+    started: Option<SongStart>,
+}
+
+/// A song started (`FUN_007a1ce0`'s new-song flag +0x352): what the song popup reads.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SongStart {
+    /// Counts the starts.
+    pub serial: u32,
+    /// The list's `FeedbackMessage` (+0x14; 0 = no popup).
+    pub message: u32,
+    /// The song's `e4b95981` (title) and `Artist` language ids.
+    pub title: u32,
+    pub artist: u32,
+}
+
+impl SongManager {
+    /// The last song started.
+    pub fn last_start(&self) -> Option<SongStart> {
+        self.started
+    }
 }
 
 impl Default for SongManager {
@@ -98,6 +119,7 @@ impl SongManager {
             advance_down: None,
             menu_gain: 1.0,
             logged_menu_gain: 1.0,
+            started: None,
         };
         for _ in 0..8 {
             m.uniform();
@@ -385,6 +407,8 @@ pub(super) fn song_manager(
         VoiceKey::Song(song.wave),
     );
     m.song = Some((pick, e));
+    let serial = m.started.map_or(1, |s| s.serial.wrapping_add(1));
+    m.started = Some(SongStart { serial, message: list.feedback_message, title: song.title, artist: song.artist });
     // Only the playing song stays decoded (songs are 40–60 MB of PCM).
     decoded.retain(&[song.wave]);
 }

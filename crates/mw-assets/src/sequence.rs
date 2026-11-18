@@ -1180,6 +1180,43 @@ fn collect_nodes(o: &Object, nodes: &mut HashMap<u32, DynamicTarget>, bindings: 
     }
 }
 
+/// A `FeedbackMessage` (offsets in its data; `feedback_group_messages`). Field names in backticks are hashes not
+/// cracked.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FeedbackMessageInfo {
+    /// +0x88 UniqueId.
+    pub id: u32,
+    /// +0x90 `LayoutStyle`: the `UILayout` that shows it.
+    pub layout_style: u32,
+    /// +0x4c `bca59513`: the `UILayoutInstanceParams` placing it.
+    pub layout_instance: Option<ResourceId>,
+    /// `Title` (+0xb0), `0a899744` (+0xa8), `0a899747` (+0xac): language ids.
+    pub texts: [u32; 3],
+    /// +0xc4.
+    pub time: f32,
+    /// +0xd8 `a0ba493a`.
+    pub layer: u16,
+    /// +0xe6 `fffa9b53`, +0xe7 `13b2a760`, +0xe8 `0cefee9e`, +0xec `2d000db9`.
+    pub extend_by_sequence: bool,
+    pub flag_e7: bool,
+    pub exclusive: bool,
+    pub pause_with_game: bool,
+    /// +0xf1 `f472d91c` with `CutsceneData.Cutscene` set.
+    pub cutscene_clock: bool,
+    /// +0xb8.
+    pub transition_message: u32,
+    /// +0xb4 `5fc73ed7`, +0xbc `0b910820`, +0xa4 `StreamedSound`, +0x94 `Movie`, +0x98 `Movie_Sound`, +0x9c
+    /// `Speech` (first), +0x84 `CameraTake`, +0x8c `056664c3`.
+    pub start_sound: u32,
+    pub exit_sound: u32,
+    pub streamed_sound: u32,
+    pub movie: u32,
+    pub movie_sound: u32,
+    pub speech: u32,
+    pub camera_take: u32,
+    pub hud_mode: u32,
+}
+
 impl AssetStore {
     /// The `Sequence` with UniqueId `unique_id` in the feedback groups `groups` (searched in order; a group is
     /// `EN_US/FEEDBACKGROUPS/<group>.BNDL`).
@@ -1222,6 +1259,55 @@ impl AssetStore {
             }
         }
         Ok(Vec::new())
+    }
+
+    /// The `Messages` of a feedback group (`FeedbackMessageGroup` +0x10, count +0x1c), in order: the fields the UI
+    /// message queues read (`mw_logic::natives::feedback_queue`; offsets in the object's data).
+    pub fn feedback_group_messages(&self, group: u32) -> Result<Vec<FeedbackMessageInfo>> {
+        let b = self.bundle(format!("EN_US/FEEDBACKGROUPS/{group}.BNDL")).ok_or(Error::Missing(ResourceId::NULL))?;
+        let mut handles = Vec::new();
+        for e in b.entries_of_type(ResourceType::GenesysObject) {
+            let Ok(o) = self.decode_genesys(&b.load(e)?) else { continue };
+            if o.type_name == "Genesys.Gen.FeedbackMessageGroup" {
+                if let Some(Value::Array(a)) = o.get(field_hash("Messages")) {
+                    handles = a.iter().filter_map(|v| handle(Some(v))).collect();
+                }
+                break;
+            }
+        }
+        let mut out = Vec::new();
+        for h in handles {
+            let Ok(m) = self.genesys_object(h) else { continue };
+            let flag = |hash| boolean(&m, hash).unwrap_or(false);
+            let cutscene = sub(&m, 0xd6d3d9f6).and_then(|c| handle(c.get(field_hash("Cutscene")))).is_some();
+            let speech = match m.get(0x5965_4d81) {
+                Some(Value::Array(a)) => a.first().and_then(num).map_or(0, |f| f as u32),
+                _ => 0,
+            };
+            out.push(FeedbackMessageInfo {
+                id: uint(&m, h::ID),
+                layout_style: uint(&m, field_hash("LayoutStyle")),
+                layout_instance: handle(m.get(0xbca5_9513)),
+                texts: [uint(&m, field_hash("Title")), uint(&m, 0x0a89_9744), uint(&m, 0x0a89_9747)],
+                time: float(&m, field_hash("Time")).unwrap_or(0.0),
+                layer: uint(&m, 0xa0ba_493a) as u16,
+                extend_by_sequence: flag(0xfffa_9b53),
+                flag_e7: flag(0x13b2_a760),
+                exclusive: flag(0x0cef_ee9e),
+                pause_with_game: flag(0x2d00_0db9),
+                cutscene_clock: flag(0xf472_d91c) && cutscene,
+                transition_message: uint(&m, field_hash("Transition_Message")),
+                start_sound: uint(&m, 0x5fc7_3ed7),
+                exit_sound: uint(&m, 0x0b91_0820),
+                streamed_sound: uint(&m, field_hash("StreamedSound")),
+                movie: uint(&m, field_hash("Movie")),
+                movie_sound: uint(&m, field_hash("Movie_Sound")),
+                speech,
+                camera_take: uint(&m, field_hash("CameraTake")),
+                hud_mode: uint(&m, 0x0566_64c3),
+            });
+        }
+        Ok(out)
     }
 
     /// Load an event's intro and outro sequences (`EventIntro` from its `IntroMessageGroup`, `EventOutro` from

@@ -178,6 +178,7 @@ fn card_of(outer: &Sequence) -> Option<(f32, &Sequence)> {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn begin(
     mut commands: Commands,
     mut card: ResMut<EventCard>,
@@ -186,15 +187,24 @@ fn begin(
     race: Option<Res<RaceState>>,
     driven: Option<Res<crate::race::RaceDriven>>,
     mut time: ResMut<Time<Virtual>>,
+    mut reasons: ResMut<crate::pause::PauseReasons>,
+    world_logic: Option<NonSendMut<crate::world_logic::WorldLogic>>,
 ) {
     let Some(PlayEvent(setup)) = plays.read().last().cloned() else { return };
     // `FUN_006f3830` / `FUN_0074a600`: a DLC event whose pack is not owned is listed but not started (`dlc.rs`).
     if let Some(pack) = crate::dlc::event_locked(&setup.event) {
         warn!("event card: {} is part of the {pack}, not owned (DLC locked)", setup.name);
+        if let Some(mut w) = world_logic {
+            w.plain.event_refused();
+        }
+        // Started from the map: the menu's pause reason came with it.
+        reasons.set(crate::pause::PauseReason::Menu, false, &mut time);
         return;
     }
     if card.card.is_some() || race.is_some() {
         warn!("event card: {} not started (a race is already running)", setup.name);
+        // Started from the map (pause menu → map during a race): no card takes the menu's pause reason over.
+        reasons.set(crate::pause::PauseReason::Menu, false, &mut time);
         return;
     }
     if card.root.is_none() {
@@ -210,7 +220,7 @@ fn begin(
     card.transition = false;
     if driven.is_some() {
         // The pause menu's clock (driven: the logic pauses it while the event loads).
-        time.unpause();
+        reasons.set(crate::pause::PauseReason::Menu, false, &mut time);
     }
     let job = Arc::new(Mutex::new(None));
     let (out, store, s) = (job.clone(), game.store.clone(), setup.clone());
@@ -395,6 +405,7 @@ fn advance(
     mut card: ResMut<EventCard>,
     real: Res<Time<Real>>,
     mut time: ResMut<Time<Virtual>>,
+    mut reasons: ResMut<crate::pause::PauseReasons>,
     race: Option<ResMut<RaceState>>,
     loaded: Res<crate::Loaded>,
     residency: Res<crate::frontend::Residency>,
@@ -412,7 +423,7 @@ fn advance(
     // Driven: the logic starts the race (logic.rs, on its respawn at the event's start).
     if !c.race_started && c.clock >= START_AT && driven.is_none() {
         c.race_started = true;
-        time.unpause();
+        reasons.set(crate::pause::PauseReason::Menu, false, &mut time);
         start.write(StartRace(c.setup.clone()));
     }
     if let Some(mut r) = race

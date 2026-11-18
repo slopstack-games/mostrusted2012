@@ -117,7 +117,10 @@ impl VehicleGraphicsSpec {
                 rotation: r.f32_array(b + 0x10)?,
                 scale: [sx, sy, sz],
                 parts: (0..n)
-                    .map(|i| WheelPart { model: res.import_at(parts_ptr + i * 4), spins: spin_mask & (1 << i) != 0 })
+                    .map(|i| WheelPart {
+                        model: parts_ptr.checked_add(i * 4).and_then(|o| res.import_at(o)),
+                        spins: spin_mask.checked_shr(i).is_some_and(|m| m & 1 != 0),
+                    })
                     .collect(),
             });
         }
@@ -136,7 +139,7 @@ impl VehicleGraphicsSpec {
             locator_groups.push(LocatorGroup { id: r.u32(ids + g * 4)?, locators });
         }
         Ok(Self {
-            parts: (0..n_parts).map(|i| res.import_at(models + i * 4)).collect(),
+            parts: (0..n_parts).map(|i| models.checked_add(i * 4).and_then(|o| res.import_at(o))).collect(),
             skeleton: res.import_at(0x04),
             collision: res.import_at(0x08),
             wheels,

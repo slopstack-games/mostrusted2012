@@ -66,7 +66,8 @@ pub fn int(args: &[Value], i: usize) -> i32 {
 
 /// `lua_tonumber` then `fistp` with the default control word (round to nearest, ties to even; the decompiler
 /// shows `ROUND(x)`), to 32 bits: the arguments the handlers read with a plain `(int)(longlong)ROUND(...)`
-/// (`ChangePostFXSetting` key, `StartTextEntry` flag bit). NaN and out of range give 0x80000000.
+/// (`ChangePostFXSetting` key, `StartTextEntry` flag bit). NaN and out of range: the 64-bit `fistp` gives
+/// 0x8000000000000000, whose low 32 bits are 0.
 pub fn round_int(args: &[Value], i: usize) -> i32 {
     let r = tonumber(args, i).round_ties_even();
     if r.is_nan() || r.abs() >= 9.2e18 { 0 } else { r as i64 as i32 }

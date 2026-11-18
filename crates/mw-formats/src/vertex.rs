@@ -70,7 +70,7 @@ impl VertexDescriptor {
     pub fn parse(res: &Resource) -> Result<Self> {
         let r = Reader(res.header());
         let count = r.u32(0x0C)? as usize;
-        let mut attributes = Vec::with_capacity(count);
+        let mut attributes = Vec::with_capacity(count.min(64));
         let mut stride = 0;
         for i in 0..count {
             let o = 0x10 + i * 0x14;

@@ -30,6 +30,7 @@ pub mod entitlement_view;
 pub mod entitlements;
 pub mod event_starts;
 pub mod event_view;
+pub mod feedback_queue;
 pub mod game_logic;
 pub mod game_logic_view;
 pub mod game_modes;

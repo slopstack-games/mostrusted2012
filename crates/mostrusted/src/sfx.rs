@@ -321,8 +321,8 @@ fn update_params(
         p.set_level(level);
     }
     let car = cars.single().ok();
-    // A new vehicle (car change, respawn) starts its skid intensities at the construction's 1.0
-    // (`FUN_009d1120`), instead of carrying the old car's smoothed state.
+    // A new vehicle (car change, respawn) starts its skid intensities silent (`VehicleDriver::reset`), instead of
+    // carrying the old car's smoothed state.
     let id = car.map(|(e, _, _)| e);
     if id != state.last_car {
         if id.is_some() {

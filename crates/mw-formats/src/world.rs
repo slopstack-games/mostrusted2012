@@ -76,7 +76,7 @@ impl InstanceOverrides {
             out.constants.push((name(cn, i)?, r.f32_array(cv + i * 16)?));
         }
         for i in 0..n_samp {
-            if let Some(tex) = res.import_at((tx + i * 4) as u32) {
+            if let Some(tex) = u32::try_from(tx + i * 4).ok().and_then(|o| res.import_at(o)) {
                 out.textures.push((name(sn, i)?, tex));
             }
         }
@@ -118,7 +118,7 @@ impl InstanceList {
         let base = r.u32(0x00)?;
         let count = r.u32(0x04)?;
         let always = r.u32(0x08)?;
-        let mut instances = Vec::with_capacity(count as usize);
+        let mut instances = Vec::with_capacity((count as usize).min(4096));
         for i in 0..count {
             let o = base + i * 0x60;
             let mut transform = [[0.0; 4]; 4];
@@ -437,7 +437,8 @@ impl ObjectDef {
         if joints > 256 {
             return Err(crate::Error::Malformed(format!("compound joint count {joints}")));
         }
-        def.joints = (0..joints).map(|i| res.import_at((joints_ptr + 8 * i) as u32)).collect();
+        def.joints =
+            (0..joints).map(|i| u32::try_from(joints_ptr + 8 * i).ok().and_then(|o| res.import_at(o))).collect();
         Ok(def)
     }
     pub fn parse_world_object(res: &Resource) -> Result<Self> {

@@ -84,7 +84,7 @@ impl Font {
         let n = r.u32(0x1C)? as usize;
         let glyph_at = r.u32(0x20)? as usize;
         let codes_at = r.u32(0x24)? as usize;
-        let mut glyphs = HashMap::with_capacity(n);
+        let mut glyphs = HashMap::with_capacity(n.min(4096));
         let mut first = None;
         for i in 0..n {
             let code = r.u16(codes_at + i * 2)?;

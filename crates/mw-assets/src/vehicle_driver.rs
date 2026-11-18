@@ -175,7 +175,7 @@ impl VehicleDriver {
             params,
             slots,
             tyre: TyreSoundParams::default(),
-            skid: [1.0; 3],
+            skid: [0.0; 3],
             time: 0.0,
             jitter: 0.5,
             jitter_timer: 0.0,
@@ -200,12 +200,14 @@ impl VehicleDriver {
         self.last
     }
 
-    /// A new vehicle: `FUN_009d1120` (the per-vehicle sim's reset, via `FUN_009d83e0` from the vehicle's
-    /// construction `FUN_00904260`) sets the three intensities (+0xd0 / +0xd4 / +0xd8) to 1.0 (`.rdata`
-    /// 0x01026060..6c), so a fresh car's skids start full and fall at their fall rates.
+    /// A new vehicle: its skid state starts silent instead of carrying the old car's smoothed values.
+    /// MODEL: the per-vehicle object's constructor is not traced; zero (a fresh object) is assumed. Not the 1.0
+    /// of `FUN_009d1120`: that runs inside the car's tick (`FUN_00904da0` "Update Car" → `FUN_00904260` →
+    /// `FUN_009d91a0` → `FUN_009d83e0`, on one branch of a per-tick state machine that then sets state 6), not
+    /// at construction, and starting full played the loudest skid layers at every car change.
     pub fn reset(&mut self) {
-        self.skid = [1.0; 3];
-        self.last = [0.0, 1.0, 1.0, 1.0];
+        self.skid = [0.0; 3];
+        self.last = [0.0; 4];
     }
 
     /// Advance by `dt` seconds.

@@ -13,6 +13,8 @@ use mw_formats::genesys::{Object, Value, field_hash};
 
 use crate::AssetStore;
 
+/// `SequenceItem` play mode (+0xdc of the item data; `mw_audio::sfx_player::Item::mode`).
+const ITEM_MODE: u32 = 0x6001_d10d;
 const START_TIME: u32 = 0x6c82_122b;
 const END_TIME: u32 = 0xddb9_c614;
 const FADE_OUT: u32 = 0xa50f_68e1;
@@ -245,6 +247,7 @@ impl<'a> SoundLoader<'a> {
                 end: number(it.get(END_TIME)).unwrap_or(0.0),
                 fade_in: fade(sub(it, field_hash("Fade_In"))),
                 fade_out: fade(sub(it, FADE_OUT)),
+                mode: number(it.get(ITEM_MODE)).unwrap_or(0.0) as u8,
                 enabled: text(it, field_hash("EnabledBinding")),
                 channel: channel.map(|c| c.0),
                 kind,

@@ -201,8 +201,10 @@ MW_ENGINE_TRACE=<scratch>/rpm.trace ./target/release/mostrusted --drive 911 --te
 # MW_CAR_SFX_LOG=1 (other cars' horns / alarms), MW_NITROUS_AT=t0,t1 on mwtool engine-sound; I / L3 engine off / on
 # Police sirens / light bars / radio (police_fx.rs, police_audio.rs, police_lightbar.rs, police_speech.rs):
 ./target/release/mwtool siren <scratch>/siren.wav --car "Ford Police Interceptor"   # sets, channels, a render; cop lights
-./target/release/mwtool speech [<event id>] [--out <dir>]                           # radio events; decode an event's lines
-# MW_SIREN_LOG=1, MW_SPEECH_LOG=1 (MW_AUDIO_METER=1 lists the sirens); a cop car driven by the player: the horn
+./target/release/mwtool speech [<event id>] [--out <dir>]                           # speech events (window, cutscene, containers); decode an event's lines
+# MW_SPEECH_LOG=1: the speech manager's requests (answer codes, mw_audio::speech), triggers, lines and each voice's
+# length / rms / peak (the measure that speech plays); cargo test -p mw-audio speech
+# MW_SIREN_LOG=1 (MW_AUDIO_METER=1 lists the sirens); a cop car driven by the player: the horn
 # steps its siren (MW_SIREN_PRESS=t0,t1,... presses it headless); MW_LIGHTBAR_SHOTS=<dir> (16 shots 1/8 s apart),
 # MW_COP_LIGHTS=1 (every bar on), MW_NO_LIGHTBAR=1 (A/B), MW_LIGHTBAR_SHOTS_AFTER=<s> (delay the shots)
 # Coronas (coronas.rs: glows / beams / flares at every car's lamps): MW_NO_CORONAS=1 (A/B), MW_CORONA_LOG=1 (counts),
@@ -239,6 +241,8 @@ tools/t --front-end --hsm --front-end-shots scratch/fe --mute; grep 'hsm:' scrat
 # mode 730003 starts race.rs / the intro / the outro and ends the event (logic.rs doc). --hsm-event <id> (implies --hsm and
 # the start-up flow) chooses the event once free roam waits on the Easy Drive prompt; with --test race: the gates test
 tools/t --hsm-event 462174 --auto-start 1 --test race --mute; grep -E 'hsm:.*(machine|request (Respawn|PlaySequence|StartGameMode))' scratch/run.log
+# MW_FEEDBACK_SHOT=<png>: a screenshot once a feedback message's layout has shown for 1.5 s (the song popup needs
+# MW_MUSIC=1: headless runs are muted and start no songs).
 # MW_HSM_SHOTS=<dir>: screenshots card / intro / race / outro / free roam along it, then exit (add MW_RACE_TEST_AFTER=40
 # so the test waits in free roam). --test bodyshop: drive through the nearest body shop (same car entity, resprayed in place)
 ./target/release/mwtool bindings [--find x] [--parse] [--no-genesys] [--out f.tsv]  # every binding path, parsed (mw_logic::binding)
@@ -371,11 +375,16 @@ tools/wasm-check --threads   # the same for the threaded browser build (nightly 
 # In the browser: game files come from mw_gamedir::WebSource (the picked folder as blob URLs, sync range requests);
 # threads are Web Workers (mostrusted/src/platform.rs, wasm_thread); the page needs COOP same-origin + COEP
 # require-corp; the main thread never blocks on a lock (PollLock::poll_lock)
-tools/web/build                  # the browser build into target/web (WASM_BINDGEN=<path> if not on PATH)
+tools/web/build                  # the browser build into target/web (WASM_BINDGEN=<path> if not on PATH); then
+#   binaryen's wasm-opt on the module when it is on PATH (WASM_OPT=<path>, WASM_OPT=none to skip, WASM_OPT_LEVEL=-O2)
+# Saves in a browser: settings.cfg / profile.cfg are localStorage entries `mostrusted/<file name>`, same text as the
+#   native files (platform::read_text / write_text; written by the main thread once a frame). The page remembers
+#   the flags field in `mostrusted-page/args` (not with ?args= or ?serve=1).
 # GitHub Pages: Actions → "Browser build to GitHub Pages" → Run workflow (.github/workflows/pages.yml, manual only;
 # Settings → Pages → Source "GitHub Actions"). WEB_TOOLCHAIN=<nightly> picks the toolchain (the workflow's input).
 # Pages sends no COOP / COEP headers: tools/web/coi-sw.js (a service worker index.html registers) adds them.
-python3 tools/web/serve.py       # serve it + your install on 127.0.0.1:8080 (--install, --port, --out)
+python3 tools/web/serve.py       # serve it + your install on 127.0.0.1:8080 (--install, --port, --out, --web DIR
+#   instead of target/web); GET / HEAD with ranges; only for requests to 127.0.0.1 / localhost from its own pages
 #   http://127.0.0.1:8080/ (pick the install folder) or /?serve=1&args=--camera=-1131,27,1627,-1190,15,1720+--units+4
 tools/web/headless <name> '<flags>' [timeout] [record_s]   # Brave in tools/hl's gamescope, silent; waits for
 #   scratch/web/<name>.png (flags incl. --screenshot <name>.png) or, with record_s, <name>.webm: the page's lossless

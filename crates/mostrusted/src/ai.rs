@@ -876,6 +876,9 @@ pub(crate) fn ai_drive(
                 t.rotation = rotation;
                 v.0 = rotation * Vec3::Z * mph * 0.44704;
                 w.0 = Vec3::ZERO;
+                // The game's placement of a moving car (`FUN_008f8190`): wheels at road speed, gearbox placed,
+                // handbrake and drift cleared (the wheels kept their crash spin before).
+                car.place_moving(mph * 0.44704);
                 ai.mw = None;
                 ai.resets += 1;
                 info!(
@@ -1038,6 +1041,8 @@ pub(crate) fn ai_drive(
             t.rotation = Quat::from_rotation_y(tangent.x.atan2(tangent.z));
             v.0 = t.rotation * Vec3::Z * speed;
             w.0 = Vec3::ZERO;
+            // The placement `FUN_00647e00` → `FUN_008f8190`: the game's placement of a moving car.
+            car.place_moving(speed);
             ai.resets += 1;
             // The path upkeep is the runtime's (the game rebuilds its ring at the car, `FUN_0050a070`): the
             // driver's ring starts at the placed car's node again, so the recovery heads for the node ahead.

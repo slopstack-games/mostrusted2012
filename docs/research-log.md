@@ -44,6 +44,484 @@ cops are still drawn from their own systems; world layouts, map-edge clamping (`
 order are not ported; the second route cleared by `FUN_00792390` does not exist in the runtime. Captures that
 would confirm: the original's minimap and map right after WELCOME TO FAIRHAVEN's intro (waypoint icon, route).
 
+## 2026-11-19: the HUD feedback-message queue ported (`mw_logic::natives::feedback_queue`, `feedback.rs`)
+
+The UI manager's feedback queues (UIM+0x17e0) run as the original's: 19 queues built by `FUN_007ba460` (Online,
+Instructions, Hud (the default for an unknown name), Camera, Autolog, SecondaryQueue, DamageQueue, Notifications,
+Song, Transition, System, eight "Message Sequence" queues; capacities 7 / 3 / 2 from their vtables), posting
+(`FUN_007b6280` .. `FUN_007b8080`: serial `DAT_0117d170`, the message found by UniqueId in the loaded groups, timer =
+`Time` × 3e6 ticks) and the per-frame update `FUN_007bb160` (head started once, timed heads counted down, the
+`LayoutStyle` layout played on the UI sequence player with its in / out lengths, exclusive heads suspending the other
+interruptible queues). Function list, record offsets and the model decisions: the module doc of `feedback_queue.rs`.
+Posters wired: `PLAYFEEDBACK`, the Lua `ShowFeedbackMessage` family, the queue clears, the song popup (`FUN_007a1ce0`:
+the song list's `FeedbackMessage`, parts TrackName / AlbumName / Artist, the Song queue cleared first).
+
+Checked on the install: `MW_MUSIC=1 MW_FEEDBACK_SHOT=<png> tools/t --front-end --auto-start 1` posts message 30567 at
+the first free-drive song and draws its layout at the top left (note icon, artist, title). A circuit race (462174)
+posts nothing through these queues (no `PLAYFEEDBACK` runs; 27 / 27 gates as before).
+
+Open:
+- The popup is drawn over the Easy Drive prompt at the same place: the message's HUD mode write (+0x8c →
+  UIM+0x31c08), which is what would hide the prompt, is not modelled; nor are the display widgets stepped after the
+  queues (UIM+0x10990 .. +0x12808) and the camera / mix / world-entity effects of a message's start.
+- Artist and title share one line in our draw; not compared with a capture of the original yet.
+- Message sounds, movies, speech and camera takes of `FUN_007b9ee0` are logged only.
+
+## 2026-11-19: the bug-hunt branch checked on the install (PR #8 merged)
+
+`mwtool verify` 2,020 bundles, 0 failures (the new parser budgets reject nothing shipped); `mw-lua`'s `game_chunks`
+passes with the stricter verifier; workspace tests and clippy clean; 911 accel 0-60 3.82 s, brake 100-0 in 40.3 m;
+race 462174 27 / 27. The played boot run (`tools/t --front-end --auto-start 1 --map-start 1909234`) is driven now:
+`EZ_RIGHT` → `TO_EVENT` → respawn at the event → streaming stall → "race 1909234: KEYS TO THE CITY started from
+Easydrive", the car on the road. With `--units 12` the same run drops the car through the world after the respawn
+(the fixed unit set never loads the event's surroundings and no stall pauses the sim): a test-flag artefact, not the
+played game.
+
+## 2026-11-18: "UI wrong at 1920×1080, intro upside down" (user report): no resolution dependence found (code reading, no install)
+
+Traced from the data to the screen: layout / instance (`mw_formats::ui`) → `UiScene::draw_with` (`UiFrame::new` /
+`letterbox` from the window's size every frame, `Placement`, `element_rect`, `push_quad`) → `ui_quads::show_quads`
+(`Val::Px` nodes, `UiTransform` rotation). Every caller (`ui_widgets.rs`, `hud.rs`, `event_card.rs`) passes
+`Window::width()` / `height()` (logical px), and Bevy's UI lays `Val::Px` out in the same logical px (one window
+camera, no `Viewport`, no `UiScale`); the gate markers draw at a fixed 1280×720 into world space (size-free).
+No 1280 / 720 constant, physical size or scale factor sits in the screen path (the minimap image's physical size
+in `hud.rs` is correct). Rotation: degrees clockwise in both `push_quad` and `UiTransform` (y down). New test
+`mw_assets::ui::tests::hud_layout_is_resolution_independent`: a corner layout (T(1280, 720) +
+`Right(AXES:X)`, one plain, one rotated element) gives the 720p quads × 1.5 at 1080p and stays 10 reference px in
+from the right edge at 2560×1080 (`FUN_0078faa0`). So the 1080p shots should match 720p ones; the symptoms are
+in what is drawn, not in the scaling. Leading hypotheses (unconfirmed, need a 720p shot of the same run
+`MW_HSM_SHOTS=<dir> tools/t --race 462174` beside the 1080p one, then the original at the same place):
+- **Intro "upside down"**: the `intro` shot is 6 s into 462174's intro; the original's intro is upside down from
+  its second shot (3 s) to the teleport (captures 2026-10-09, research-log-archive "race cinematic cameras settled
+  by captures"; `cutscene.rs` module doc). Not a bug unless another event's intro rolls too.
+- **Large rotated "CHECK…" at top right**: "CHECK" is the target gate's world layout 1014477 (formats.md
+  "PointOfInterestVisuals"), drawn in 3D by `gate_marker.rs`; near a gate it is large (0.05 m per layout px
+  under 20 m). Its axes (layout x → the driver's right, y down) and the gate quaternion as `R(Rot)` are model
+  decisions there; a roll would point at them or at a gate whose stored rotation is not level.
+- **HUD at the edges / speedometer cut off / card tip at the left edge**: the HUD at the screen edges at 16:9
+  matches the original's captures (`Left` = 0.5); a cut-off speedometer points at content, not scale: the widget
+  renderer draws *every* layout of an active group (the native widgets' own show / hide not ported), instance
+  `MOVE` / `APPROACH` steps and the visibility timeline show settled / are skipped, and screen layouts ignore
+  instance rotate / scale transforms (kinds 2 / 3, `Placement::new` reads translates only).
+
+## 2026-11-18: "races won't start when played": the played run was not driven (code reading, no install)
+
+The played paths traced end to end (Easy Drive / map / pause-menu race list / burnout at a start → `PlayEvent` →
+logic.rs `tick` → `EventChoice` (908987 `EZ_RIGHT`, 1135029 `TO_EVENT`) or the logic's own event starts →
+`LoadEventData` → `Respawn` → `race::StartRace` → event card → intro) and compared with `--race`.
+- **Cause 1 (regression 073ee64, default since c000808)**: logic.rs `receive` set `WorldLogic::driven = !direct`
+  with `direct = Request::Drive && no --hsm-event`. The plain run (title → free roam, `boot_start`) is a
+  `Request::Drive` too, so the played game ran the world managers in plain play beside the machine's: the event
+  starts stepped by both `step_plain` and the HSM's "Do Event Starts" (a burnout: plain `apply_outcomes` cleared the
+  logic's event request with `request_event(0)` and sent `PlayEvent`, the free-drive machine ended on a cleared
+  request), `checkpoints_plain` stepped beside `CHECKPTS` while `checkpoints_inputs` / `_outcomes` (the HSM race's
+  inputs before `LogicTick`) were off. `--race` became `--hsm-event`, so it was driven: why the headless tests passed.
+  Fix: main.rs passes `LogicPlugin::direct` (`Request::Drive`, no `boot_start`, no `--hsm-event`).
+- **Cause 2 (073ee64)**: driven, a burnout at an event start never got its set-up: the logic's `EVENTSTARTS`
+  chooses (`request_event`), `LoadEventData` waits for the runtime's `RaceSetup` (logic.rs: "event_starts.rs sends
+  it"), but `apply_outcomes` returned early when driven (`awaiting_event` is plain-only). Before 073ee64 the module
+  sent `PlayEvent` in every mode. Fix: driven, `apply_outcomes` sends `PlayEvent` once per `chosen`
+  (`driven_choice`, re-armed when the manager's enter clears `chosen`); test `driven_choice_once_per_choice`.
+- **Fixed, latent**: `fill_inputs` pushed the event list once; when logic.rs hands `WorldLogic` the host's state after
+  that push, the logic's manager had no events (no starts, no prompt). Pushed again while the list is empty.
+- **Fixed**: the event card's "a race is already running" refusal (map START RACE from the pause menu during a
+  race) kept the map's `Menu` pause reason: the clock stayed stopped. Released there as in the DLC refusal.
+
+Open (need a run with the install):
+- A direct `--drive <car>` run still inserts `RaceDriven` (LogicPlugin enabled): the card waits for the logic's
+  `StartRace`, which only comes if the machine reaches 908987. 073ee64 says a direct run never reaches the free
+  drive; if so every race start there hangs on the card. Settle: `MW_CARD_SHOTS=<dir> tools/t --drive "v12 vantage" --units 20
+  --spawn=1600,40,2350 --map-start 1909234` (look for `hsm: ... chosen in the runtime` then `race ...: started`), and
+  the same with `--no-hsm`.
+- The played Easy Drive / map choice waits until 908987 is active (`--hsm-event` only chooses then). Settle: the boot run
+  `MW_CARD_SHOTS=<dir> tools/t --front-end --auto-start 1 --map-start 1909234` (now driven), grep `hsm:` for
+  `EZ_RIGHT` / `TO_EVENT` / `Respawn` and `race ...: started`.
+- A second race in one run is refused (`RaceOver`, race.rs `start_race`); driven, the logic then waits forever and
+  the card holds at its 7.5 s hold. Known limitation (ai.rs sets opponents up once), now user-visible.
+- Burnout start, driven: a boot run with `MW_EVENT_START_TEST=1` parked at a start should log `chosen by the
+  logic's event starts`, then the card and `race ...: started` (no flag puts a boot run at a start yet).
+
+## 2026-11-18: browser build: web-code review, saves in localStorage, wasm-opt (no install; page shell tested)
+
+No game behaviour changed (nothing here has a source in the original: it is our own platform layer).
+
+**Saves in browser storage** (PLAN M9 step 5). `platform::read_text` / `write_text` are the one way the runtime
+reads and writes its small text files (`settings.cfg`, `profile.cfg`: `settings.rs`, `freeroam.rs`, `frontend.rs`).
+Native: the same files, paths and text as before (`create_dir_all` + `fs::write`). Browser: `localStorage` entries
+`mostrusted/<file name>` (`platform::storage_key`; `settings::config_dir()` is the empty path there, so the
+profile path exists and the profile is loaded / autosaved as on the desktop). `localStorage` exists only on the
+page's main thread and systems run on workers, so the browser side keeps a copy in memory (`TextStore`):
+`load_text_store` fills it in `web::start` (main thread, before the app), reads / writes use the copy from any
+thread, and `flush_text_store` writes changed keys to `localStorage` (at once when the writer is the main thread,
+else from `web::report`, once a frame). The main thread never waits on the store: the flush uses `poll_lock`
+(busy = next frame); reads / writes spin on a busy lock, whose holders only touch the map. A refused write (quota,
+storage off) is requeued and warned about once. Tests: `platform::tests` (native round trip, keys, the queue).
+
+**Bugs fixed** (page shell checked in headless Chromium with Playwright against a stub module; serve.py with curl):
+- index.html: an error shown after the world had loaded (a worker thread's panic) vanished one frame later
+  (`__mwStage(_, done = true)` every frame hid the overlay again). `hide` keeps an error up.
+- index.html: a folder that is not an install was a dead end (the error overlay covered the picker; reload needed).
+  Now the picker comes back with the reason; the same folder can be picked again (the input is emptied before each
+  pick), a cancelled dialog does nothing, a second pick while starting is ignored.
+- index.html: `navigator.gpu` present but no adapter (hardware acceleration off, blocklisted GPU, headless Chromium)
+  was only found by wgpu after the whole download, as a panic. Checked first (`requestAdapter()`), own message.
+  Browsers without a folder picker (`webkitdirectory`: phones) get a message instead of a file dialog that cannot
+  work. `window.AudioContext` missing no longer throws in the audio wrapper.
+- index.html: download progress above 100 % when the transfer is compressed (GitHub Pages gzips: Content-Length is
+  the compressed size, the stream counts decoded bytes). With `Content-Encoding`, or once more bytes than announced
+  have arrived, the bar is indeterminate. "Compiling" is shown when the download ends, not before it starts.
+- index.html, isolation worker: with `sessionStorage` unavailable the "reloaded once" mark could not be kept, so a
+  page that the worker controls but that still is not isolated reloaded for ever; now it never reloads without the
+  mark. The mark is cleared once the page is isolated (a later visit may need the one reload again). A failed or
+  refused registration ends the 8 s wait at once (`__mw.coiSettled`) instead of sitting on "Setting up…".
+- `WebSource`: blob URLs were never revoked (one per file for every pick, also of folders that are no install):
+  revoked on drop, and at once for files outside the install root. `Source::read` cast the file size to `usize`
+  (a silently truncated read above 4 GB on wasm32): now an error. The answer check is `range_result` (tested):
+  200-with-whole-file is cut with checked slicing, 404 / 410 → `NotFound`, 416 and short bodies → `UnexpectedEof`.
+- serve.py: COOP / COEP were missing on the responses `http.server` writes itself (501 for other methods, 400);
+  now set in `end_headers`. No `HEAD` (501): added. A NUL byte in a path, `name=..` or a bad Content-Length on a
+  POST raised in the handler (dropped connection): 404 / 400 / 411. POST to any other path answered 200: 404.
+  `Range`: suffix ranges (`bytes=-N`) are served, `last < first` is ignored (was 416), whitespace tolerated.
+  Path traversal was already closed (`resolve()` + parent check; `..`, `%2e%2e`, absolute paths and links leading
+  out all 404: re-checked with curl). New: requests must carry `Host: 127.0.0.1|localhost:<port>` and no foreign
+  `Origin` (403), so a page of another site cannot read the install through DNS rebinding or post files.
+  `--web DIR` serves another directory than target/web (page tests).
+
+Reviewed, left as they are: `coi-sw.js` (no cache, same-origin only, opaque responses passed through); the panic
+hook (main thread → page at once, workers → `WORKER_PANIC`, shown by the next frame's `report`; a worker panic while
+the main thread no longer runs frames is only in the console); `web_sys::window()` uses (all main-thread, or
+guarded).
+
+**Page UX**: the flags field is remembered (`localStorage` `mostrusted-page/args`), unless `?args=` or `?serve=1`.
+
+**wasm-opt** (PLAN "module size"). `tools/web/build` runs binaryen's `wasm-opt` on the wasm-bindgen output when
+it is on PATH (`WASM_OPT=<path>`, `WASM_OPT=none`, `WASM_OPT_LEVEL`, default `-O2`); absent = one line, the module
+stays as it is; a failing run keeps the unoptimised module. Flags: `-g` (keeps the name section: the page's panic
+reports print Rust function names) and `--enable-threads --enable-bulk-memory --enable-mutable-globals
+--enable-nontrapping-float-to-int --enable-sign-ext --enable-reference-types --enable-multivalue` (the module does
+not validate without the features it uses; this set validates and needs no flag newer than old binaryen releases
+know). Measured on the real threaded build (nightly-2026-11-14, wasm-bindgen 0.2.129, binaryen 123 from npm, run
+by node: ~15 min on this machine; the native binary is multi-threaded): 156,569,625 → 119,361,806 bytes (−24 %);
+code section 68.4 → 59.0 MB, name section 70.2 → 44.3 MB, data 9.7 MB; 28 MB with `gzip -1`. The optimised module
+was instantiated in headless Chromium and its exports run (the page tests below); it was **not** run with an
+install (no threads started, nothing rendered), so `.github/workflows/pages.yml` is unchanged: after one
+`tools/web/headless` run of an optimised build, add `npm install -g binaryen@123` (or a native binaryen) before the
+build step. Not done: dropping the name section (−44 MB, but panic reports lose their function names).
+
+Verification: real build `WEB_TOOLCHAIN=nightly-2026-11-14 tools/web/build` (24 min, no warnings), with and without
+wasm-opt. Headless Chromium (Playwright; it has `navigator.gpu` but no adapter, so the game itself cannot start
+there, and no install on this machine): (a) the real module, a fake adapter injected to get past the check: loads
+to the picker; `debug_store_write` → `localStorage["mostrusted/settings.cfg"]` → page reload →
+`debug_store_read` returns the text (new exports in `web.rs`, for this check); a folder without the install is
+refused with `GameDir`'s message and the picker returns, its blob URLs revoked (created 3, revoked 3);
+`?serve=1&fail=folder` and `?serve=1` on an empty install show "Not a usable install folder"; without the fake
+adapter the page stops at "WebGPU has no usable graphics adapter" before downloading the module. (b) the page
+against a stub module (21 checks): missing `navigator.gpu`, no adapter, no folder picker, progress with a wrong
+Content-Length, module 404, retry after a wrong folder, remembered flags, an error surviving later `done`
+frames, the service worker on a server without COOP / COEP (isolated after exactly one reload; none when workers are
+blocked or `sessionStorage` throws). Not verified: anything past `App::run` in a browser (a write from a worker
+thread reaching `localStorage` through the per-frame flush, the profile autosave), Firefox / Safari.
+
+Open: a folder picker for browsers without `webkitdirectory` (would need `showDirectoryPicker` / drag-and-drop and
+a `start_with_…` taking paths + files); Firefox answers blob-URL range requests with the whole file (the 200 path:
+correct but slow, and files over 2 GB cannot be read that way); a worker panic while the main thread is stuck is
+not shown on the page; saves are per browser profile and origin (no export / import).
+
+## 2026-11-18: bug hunt round 3: mw-audio players / speech, mw-gamedir, mwtool compare (code reading, no install)
+
+Fixed (each with a failing synthetic test first):
+- `mw_audio::speech::SpeechManager::run`: an event whose event item plays itself (directly or through a cycle) at
+  zero delay expanded inline forever within one frame (hang, unbounded memory). Guard (not from the game):
+  `MAX_INLINE_EVENTS` = 64 inline expansions per sequence update. Test `self_playing_event_does_not_hang`.
+- `sequence::Player` / `sfx_player::Player` looping voices: the wrap `pos -= len` left the position past the clip
+  when one output sample steps further than the clip is long (a few-sample loop, or a high pitch / clip rate), and
+  from then on the voice read past the end every sample (silence, the position growing). Now `pos %= len`. Test
+  `loop_shorter_than_one_step_keeps_sounding`.
+- `mwtool compare`: `--every 0` (or negative / NaN) looped forever; a recording whose first sample with body
+  axes comes after our replay ends panicked (`rfind(..).unwrap()`). Both are errors now (tests in `compare.rs`).
+
+Suspected, not changed: `dsp::distort` model ≠ 1–3 divides by `tanh(drive)` (NaN at drive 0; the data only uses
+model 2, and a Distortion plug-in without a `Model` field reads model 0 there); `Delay::process` with a NaN
+feedback latches NaN (`clamp` keeps NaN); `mw_gamedir::parse_library_paths` reads only the post-2021
+`"path"` form of libraryfolders.vdf (the old `"1" "D:\\Lib"` form is skipped); `source::walk` does not descend into
+symlinked directories; `resolve_case_insensitive` lets `..` leave the install root. Checked and fine: filter
+coefficient guards at/above Nyquist, Ginsu period clamps, spatial resampler, compare RMS (n ≥ 1), CSV column
+mismatch (missing columns read as absent), capture `hz` 0 / NaN.
+
+## 2026-11-18: bug hunt round 3, rendering / world-loading side of `mostrusted` (code reading, no install)
+
+Read the loader, conversion, materials, deferred / tonemap / particle / tyre-mark / corona / light code and the
+WGSL uniform structs against their Rust twins (all vec4-only or explicitly padded: no layout mismatch found).
+Fixes (no behaviour of the original changed; none needs a capture):
+
+- **Ghost world lights after streaming** (`prop_vfx.rs` `switch_lights`): a prop's contact-switched-off lights
+  were put back when the prop was despawned. Units drop their lights (`LightSources::remove_unit`) when they leave
+  and their entities go over the following frames, so the lights came back after their unit's removal and, no
+  longer listed under it, stayed lit for good (twice over once the unit returned). They are now dropped.
+- **Behaviour-switched lights never removed** (`world_coronas.rs`): lights `ObjectBehaviours::switch` added
+  (traffic lamps, sequence switches) are not in the unit's list, so they outlived the object. The component now
+  keeps them and an `on_remove` hook takes them out (`LightSources::remove_lights`; test
+  `switched_lights_leave_with_their_object`).
+- **Stagger cache key** (`world_coronas.rs` `queue_coronas`): rebuilt only when the light count changed; a unit
+  swapped for one with as many lights kept the old map. Now also on `LightSources` change.
+- **Tyre-mark streaks** (`tyre_marks.rs`): a strip continued across a car swap (strips were per wheel index, not
+  per car) or a placement reset, drawing one quad across the map. Strips restart on a new car and when the
+  last point is farther than a segment plus twice this frame's travel + 1 m (a teleport guard, not a look value).
+- **BC texture upload panic on short data** (`convert::image`): the as-is upload got the truncated body with the
+  full mip count; wgpu's `create_texture_with_data` slices past the end (panic), and a mip count of 0 / past the
+  chain fails validation. Such textures take the decode path (test `bc_upload_needs_the_whole_chain`).
+
+Suspected, not changed: `LightSources::remove_unit` removes by (position, definition) key, so a light identical in
+two resident units goes with either; `exhaust.rs` spot-effect keys collide past 8 locators per effect;
+`jackspots.rs` leaves a `serials` entry per spot respawned while its paint loads (tiny leak); the planar
+reflection target is not resized with the window.
+
+## 2026-11-18: the four suspected game-flow bugs fixed (runtime glue, no install)
+
+The "Suspected, not changed" items of the game-flow / UI / audio bug hunt below, all in our own plumbing (none is
+a port of a documented function), now fixed; checked by compiling and one data-free unit test, not by a run.
+- **Pause ownership**: `pause::PauseReasons` (a resource, bits `Menu`, `StreamStall`, `SimPause`): every pauser
+  holds / releases only its own reason and `Time<Virtual>` is paused iff one is held. Routed through it: the pause
+  menu and the map (one `Menu` reason, handed from the menu to the map and, for a race started from the map, to the
+  event card, which releases it), the streaming stall, the logic's `SimPause`. The menu's / map's "was running when
+  opened" flags are gone. Test `clock_runs_only_with_no_reason_held`. Speed changes (`set_relative_speed`: tests,
+  crash and cutscene slow motion) are not pauses and stay as they were.
+- **Roadblock pieces in flight**: `place_roadblocks` despawns every `RoadblockPiece` whose tag is not the standing
+  roadblock's (also how a removal now clears its pieces). Cars were already safe (arrivals without a pending slot
+  are dropped).
+- **Bust outcome**: the runtime's pending cop orders (`entity: None`) are cancelled in the core and dropped with the
+  rest; arrivals for them find no order and are dropped. `RemoveAllCops` (`FUN_006795c0`) itself only removes
+  occupied slots; what the original does with cop loads in flight was not traced.
+- **Refused event start** (plain play): `PlainFlow::event_refused` clears `awaiting_event` / `event_seen` when
+  `race::start_race` refuses a second race, and also for the event card's DLC-locked refusal (same stuck state).
+The DLC-locked refusal also releases the `Menu` reason (a locked race started from the map left the clock stopped).
+Capture that would confirm the pause fix: open the pause menu during a streaming stall.
+
+## 2026-11-18: mw-assets bug hunt, round 2 (code-level defects, no install)
+
+Read mw-assets' own logic (index lookups, curves, grids, empty collections, chains) without the install.
+- **Fixed**: `ui::MapMosaic::build` indexed past its pixel buffer when the `UIMapGrid` lists more `Textures`
+  than `Width × Height` (or `Width` is 0); the area and pixel index were also computed in `u32`, which wraps
+  above 4 G pixels. Tiles outside the grid are now skipped, sizes in `usize`. Test
+  `mosaic_ignores_tiles_outside_the_grid`.
+- New test helper `mw-assets/src/test_store.rs` (cfg(test)): an `AssetStore` over a `MemSource` install of
+  hand-built bnd2 bundles (`bundle`, `texture`), so store-dependent code can be tested without game data.
+- Suspected, not changed: `widgets::ui_lua_chunk` `4 + n` overflows on 32-bit targets (wasm) in debug builds
+  for a length near `u32::MAX`; `BackdropSelector::new` sizes its grid from the zone bounds (a huge or
+  infinite bound allocates without limit); `BackdropSelector::covering` maps a NaN position to cell 0;
+  `MeshBuilder::midpoint` / `finish` assume every vertex attribute is as long as `positions`;
+  `music::sps_index` is a process-wide `OnceLock`, so a second store with another install reuses the first's
+  SPS index; `music::ends_with_end_block` counts a truncated final `E` block as an end.
+
+## 2026-11-18: bug hunt in the runtime's driving side (round 2, code reading, no install)
+
+- **Resets without the game's placement**: the player's crash reset (`crash.rs` `hold_and_reset`), the AI crash
+  reset and the AI stuck reset (`ai.rs` `ai_drive`) set the body rolling at the reset speed but left the wheels'
+  spin, gearbox, handbrake countdown, brake ramp and drift state from before the crash (the race-start bug of
+  `cutscene.rs`, fixed there earlier: tyres slide and skid until the wheels catch up). All three now call
+  `Car::place_moving` (`FUN_008f8190`); the stuck reset's own comment names the placement `FUN_00647e00`, and the
+  crash reset (`FUN_006c9fb0`) posts the respawn as the same placement message (decomp.md "Respawn"; inferred,
+  not traced to `FUN_008f8190` in the dump). Capture to confirm: `mwtool capture` across a crash reset, wheel spin
+  (ω r against v) on the first reset tick.
+- **`Car::roll` sign**: the field is documented positive = right side down, but `-asin(X · n)` gave the opposite
+  (car-space +X is the left). Telemetry only (the `--test corner` line); unit test `body_roll_and_pitch_signs`.
+- **R repaired every car**: `damage.rs` `repair_on_reset` cleared the damage of all cars with `CarDamage`
+  (opponents included); now the player's only.
+- Suspected, unconfirmed: traffic's brake law `(v_t² − v²) / (2 target_dist)` divides by zero when
+  `min_brake_distance` is 0 and the leader is at 0 m (NaN clamps stay NaN; the integration's `max(0)` then reads 0);
+  `crash.rs` / `ai.rs` resets keep `impact_yaw` / `turn_assist` timers (the vehicle reset `FUN_009a9b10` may clear
+  them: not traced).
+
+## 2026-11-18: bug hunt round 2, game-flow / UI / audio side of `mostrusted` (code reading, no install)
+
+Fixed (no behaviour of the original involved; robustness and a settings parse):
+- `logic_effects.rs` `Feed::fill`: the camera query was `With<Camera3d>`; with the planar reflection on there are
+  two 3D cameras (`reflection.rs`), `single()` failed and the logic's camera position / direction were never fed.
+  Now `crate::MainCamera`.
+- `settings.rs` `AudioSettings::apply`: `music=1%` meant 100 % (a `%` value of 1 or less was not divided by 100);
+  `nan` gave NaN gains. Unit test `small_percentages_and_nan`.
+- `race.rs` `apply_checkpoints`: an AI racer in grid slot ≥ 12 indexed `ai_cp[24+]` (panic); `fill_checkpoints`
+  already skips those slots. Now skipped here too.
+- `cutscene.rs`: `Players.Racer[0]` made `n as usize - 1` underflow (debug panic); now `checked_sub`.
+
+Suspected, not changed (need a run or a design decision):
+- Pause ownership: the streaming stall (`streaming.rs`) and the logic's `SimPause` (`logic.rs`) unpause
+  `Time<Virtual>` when their reason ends even if the pause menu / map opened meanwhile (those then saw the clock
+  already paused and will not restart it): the world runs under the open menu. Needs a shared pause-reason count.
+- `police.rs` bust outcome: pending cop orders (`entity: None`) are kept and not cancelled, so cops ordered just
+  before the bust arrive after `RemoveAllCops` (pursuit-kind spawns start in `CopMode::Chase`).
+- `roadblock.rs`: props of a roadblock removed while its loader requests are in flight arrive later with the old
+  tag and are never removed.
+- `world_logic.rs` plain play: a second event start after `RaceOver` leaves `awaiting_event` set forever (the race
+  is refused), so the event starts stay off for the rest of the run.
+
+## 2026-11-18: bug hunt in mw-handling, mw-ai, mw-police (code-level defects, no install)
+
+**Fixed** (each with a failing test first):
+- `mw_handling::tyre::slip_ratio` divided by |v| / |ωr| where decomp.md "Tyres" (`FUN_009ba3e0`) has the signed
+  (ωr − v) / v and (ωr − v) / ωr: rolling backwards a locked wheel read κ = +1 (traction curves, the spin smoke
+  ramp) and a wheel spinning backwards κ < 0 (braking curves, the lock ramp). Now signed (the 1 mm/s divide guard
+  keeps the sign), and the braking form also below |ωr| < 0.01 m/s (`.bss` 0x01186af0) as the doc says.
+- `mw_handling::nitrous` near misses: the per-window car lists (state +0x78 / +0x90) were not cleared when a window
+  closed, so a car of the last window counted again in the next (an oncoming car re-awarded the oncoming amount in
+  a window with only same-direction cars). decomp.md "Nitrous refill" says distinct ids per window; the lists are
+  now cleared on the tick after the window closes (the `MW_NITROUS_LOG` count still shows them on the award tick).
+- `mw_ai` recovery (state 11): the direction lock (+0x35, 1 s) cleared only when its timer went below 0; a step
+  that landed it on exactly 0 (any dt dividing 1 s exactly in binary, e.g. 0.25) kept the direction locked for good.
+  Now at ≤ 0 (no change at 1/60).
+
+**Suspected, not changed** (need the dump or a capture):
+- `mw_police::pursuit` cooldown: `time_til_evaded` (P +0x3e8) is only rewritten while no cop is within 20 m; a
+  cooldown whose first tick has a non-chasing cop (crashed) within 20 m reads the stale value (0 on a first
+  chase) and escapes at once. Whether `FUN_0065cbe0` sets +0x3e8 on entry is not in the docs.
+- `mw_police::pursuit::announce`: `max_level` is only raised by a heat-up from a level above 0, so a chase that
+  never leaves level 1 never posts level 1's own action (`FUN_0065c5e0` reading not documented).
+- `mw_police::driver` HeadOn brakes only above `c.velocity.length() > 100.0` (m/s, ≈ 224 mph): possibly mph.
+- `mw_handling::drivetrain` torque noise: the accumulator wraps when the time exceeds rpm / 120 (a rate compared
+  with seconds); the noise jumps at each wrap.
+- `mw_handling::drift::try_enter` returns before the entry threshold climbs back, so a brake tap's lowered
+  threshold persists while the entry gates fail (slow, airborne).
+- `mw_handling::surface::roughness`: a contact normal along world X gives a zero tangent and a zero normal.
+- `mw_ai::Path::look_time` / `node` panic (% 0) on an empty path; callers guard with `count_from < 2`.
+
+## 2026-11-18: mw-logic bug hunt (binding evaluator, HSM interpreter, natives)
+
+**Fixed** (each with a failing test first):
+- `LogicState`'s binding host (`natives/state.rs`) dropped a registered root's *out of range* answer and fell
+  through to the view models, which give null: `Players.IsPlayerActive[0]` read `<NULL>` in the string visitor
+  (should be `<INVALID ARRAY INDEX>`) and `(IS_EMPTY)` made the int visitor 1 (only the null slot knows
+  IS_EMPTY). Now out of range stays the answer unless a published definition resolves the path, as
+  `ViewModels::lookup` already did for its own roots.
+- Parameters the docs name as `atoi` were read with `atof` and truncated (`"1e3"` → 1000 instead of 1):
+  `behaviours::param_int` (20 callers), `EventStartParams::read` ids, `TRYTOPLAYSPE`'s `SPEECHEVENTS`. They use
+  `binding::atol` (C `atol`, wraps) now.
+
+**Checked, no defect found**: binding tokenizer / parser edge cases (empty and trailing segments, unclosed ops,
+spaces, `atof` forms such as `1.e5`, `.5`, `1e+`), operator semantics against the module docs, HSM tick phases,
+child removal and id reuse during `update_children`, machine start / exit from inside a tick, vm_path indices,
+checkpoint indices (the runtime bounds `reset_target` to the last entry).
+
+**Suspected, not changed** (need the dump): `RUNSUBNET` parses `TOPSTATE` with Rust `parse` after `trim` (an
+`atoi` would accept `"123abc"`); `EventStartParams` clamps a negative id to 0 (`atoi` into a u32 would wrap);
+`update_children` lets a later finished child's `EXIT` action overwrite the parent exit point set by an earlier
+one in the same pass; `round_int`'s doc says out-of-range gives 0x80000000 while the code (rightly for a 64-bit
+`fistp`) gives 0; `Binding::float_value` drops the last character of a `{...}` string without checking it is `}`.
+### 2026-11-18: one-shot exit rule and fades ported (`sfx_player`)
+Follow-up of the skid-voice entries. Sources: `FUN_00834f90` (exit), `FUN_00835010` (stop), `FUN_00836760` (start),
+`FUN_00836910` (update, read from `re/out/live/text.asm`, not in the dump), the item loop `FUN_00a42b90`; details in
+decomp.md "WaveSequenceItem voices".
+- **Exit rule**: the item's mode (+0xdc = base `SequenceItem` field `6001d10d`; 0 in 8861 items, 1 in 695, 3 in 64, 2 in 5
+  of the install's sequences; the 3s are all `WaveSequenceItem`s of the lateral-slip and spin skid sequences, the
+  wall-reflection ones, `NormalisedTurboRPM`, a traffic engine and the summary screen's XP) of 3..=5 keeps a queued /
+  playing wave alive after the axis leaves the range; any other item stops it at once. Ours stopped voices only for
+  `Sequence::retrigger` sequences (never set in the vehicle bank): replaced by `Item::mode` (read by `sfx_loader`) and
+  `Item::plays_out`. Our own synthetic items (`world_sfx.rs`, `car_sfx.rs`: one wave from 0 to its length) are
+  mode 3 (model: the original has no such item; mode 0 would cut a wave pitched down below 1).
+- **Fades**: the update multiplies the fade envelope into the volume every tick and applies volume and pitch to the
+  running voice, one-shots included; ours started one-shots at full gain and never changed them. Now a one-shot
+  starts at `gain x envelope` and follows `envelope x gain` and the pitch while the axis is inside the range, and
+  keeps them after leaving it when it plays out. Skid sounds are the audible case: they now fade in over the item's
+  `Fade_In` instead of starting loud (the loud-start complaints of 2026-11-17).
+- **Stop fade**: the stop path passes no fade time (command 4, the fade variant is 5); the consumer of the audio
+  queue (where a de-click could live) was not found, so the 20 ms release stays a MODEL value (sfx_player
+  `release`).
+- **Not done / open**: `sequence.rs` (engine path: Gurgle, pops, timelines) keeps its old one-shot handling (no
+  mode field there yet); a looping wave of a mode 3..=5 item would in the original play on after the exit (ours
+  still follows the envelope to 0 for looping voices; no data case was checked); modes 1 / 2 (periodic restarts;
+  `Sequence::retrigger` is the old guess for them) are unported; the pow with curve 0 gives 1 in the original
+  (ours treats 0 as linear). To confirm by ear / capture: a skid at the edge of its range in the original (the voice
+  should finish after the slip drops) against `MW_SOUND_TRACE`.
+
+## 2026-11-18: the speech manager ported (`mw_audio::speech`), the logic's speech wired
+
+### 2026-11-18: `mw-lua` bug hunt against PUC 5.1 (host `lua5.1` / `luac5.1` differential, mutation fuzzing)
+
+Method: synthetic scripts compiled with the host `luac5.1` (5.1.5), run by `mw-lua` and by `lua5.1`, outputs
+diffed; ~100k mutated chunks loaded and run (panics / aborts collected). Fixed (regressions in
+`tests/differential.rs` `regressions`, `tests/robustness.rs` (hand-assembled chunks, no host Lua needed), `vm.rs`
+unit test):
+- **Tail calls nested**: `OP_TAILCALL` recursed through `call_at`, so >200 tail calls hit "stack overflow". Now
+  the frame is reused like `luaD_precall` (5.1 `lvm.c` OP_TAILCALL): `call_lua` loops on `Exec::TailCall`.
+- `error(42[, level])`: `lua_isstring` is true for numbers, so the position is prefixed and the value becomes a
+  string (`luaB_error`); we kept the number unprefixed.
+- `xpcall` with a handler that errors or is not a function: `"error in error handling"` (LUA_ERRERR,
+  `luaG_errormsg`), not the handler's error.
+- Argument errors named the registered native; `luaL_argerror` names it as the calling instruction does
+  (`getfuncname`: `?` from `pcall` / a stripped local, the field / method name, `calling 'x' on bad self`, `self`
+  not counted in method calls). `LuaError::arg` carries the parts; `call_at` rebuilds the text.
+- `chunk_id` sliced a lossy UTF-8 string by bytes (panic on non-ASCII sources) and used 56 / 45 instead of
+  `luaO_chunkid`'s 52 / 43 bytes; now on bytes.
+- Verifier (`undump::check`) gaps that let malformed chunks panic: VARARG outside a vararg function,
+  comparisons not followed by JMP (`testTMode`), `checkopenop` after CALL C=0 / VARARG B=0, jumps into SETLIST
+  count words or closure upvalue words (5.1.4's fix), code ending in such a word, parameters past `maxstacksize`.
+  Runtime: B=0 operands without an open call are "bad code" (was usize underflow); SETLIST block 0 / huge and
+  NEWTABLE sizes past 2^26 are errors ("table overflow" as `setnodevector`; "not enough memory" for the array
+  part: model decision, the 32-bit original could not allocate it) instead of multi-GB allocations;
+  `string.rep` past 2^31 bytes is "not enough memory" (model decision, same reason).
+
+Checked and matching (or deliberately different: MSVC number formatting `1e+015` / `1.#INF`, MSVC `strtod`
+without hex / inf / nan, 32-bit `strtoul` wrap in `tonumber(s, base)`, x87 rounding in `luaL_checkint`, 5.1.3's
+`table.remove` without the 5.1.4 bounds check and `table.concat`'s "table contains non-strings"): LOADNIL,
+SETLIST (B=0, C=0, >50 items), numeric `for` (float / negative / zero steps, string coercion, errors), generic
+`for`, closures in loops with break, upvalues closed by `pcall` errors, VARARG / `select` / `unpack`, OP_SELF,
+CONCAT number formatting, `__eq` / `__lt` / `__le` (incl. the `not (b < a)` fallback) and mixed-type order
+errors, `__index` / `__newindex` chains and the 100-level loop limit, `#` borders with holes, `-0` / `1.0` / NaN
+keys, string library (find / match / gsub / gmatch / format / sub / byte edge cases), `tonumber` edge cases.
+
+Open: `xpcall` runs the handler after unwinding (no difference without a debug library).
+
+ (`mw_audio::speech`), the logic's speech wired
+
+**What**: the speech manager G+0x2c3c0 is a port now (`crates/mw-audio/src/speech.rs`, engine-free, 2 tests), shared
+by `police_speech.rs` and `logic.rs` (`SpeechLink`). The logic's speech is answered: `Query::SpeechLoadState` (0
+loaded, 2 loading, 1 failed), `Query::TryPlaySpeech` (`FUN_00842f10` → `FUN_008408a0`'s code, 0x13 = played),
+`Query::SpeechPlaying` (`FUN_0083c530`), `Request::LoadSpeechEvents` (accepted: the events load with the game),
+`Request::StopSpeech` (`FUN_008423a0`), `Request::PlaySpeech { a, b, c }` (Lua). The HSM "Speech Manager" 983342
+(chase / cooldown / race / post-race chatter, data) now plays: its bindings `Players.LocalPlayer.IsInChase` /
+`IsInCooldown` and `DrivingFacts.DistanceToClosestChasingCop(LTEQ:25)` are answered from the runtime's pursuit
+(`SpeechFacts`, `RuntimeHost::engine_binding`); the hand-written 5 s chatter of `police_speech.rs` is gone. The
+pursuit's gameplay triggers (C++ in the original) stay in `police_speech.rs`, queued for the manager, now as
+`FUN_006e0a90` does: the first event whose conditions hold is requested (was: the first eligible). Conditions
+are the facts first, then the logic's bindings (`Mode.IsRaceEvent`, `Signals.GetRandomNumber[n]` on the logic's
+own Signals LCG, `Rollouts.*`); the manager steps on the game clock in the logic's tick (`FUN_00842ba0`), or in
+`police_speech.rs` with `--no-hsm`.
+
+**From the code** (decomp.md "Radio", rewritten): manager states 7 / 8 / 9 and the answer codes 1 / 3 / 4 / 0xe /
+0x10 / 0x11 / 0x12 / 0x13 (`FUN_008406a0`); an interrupting event needs lines (`FUN_0083c6b0`) and skips its
+delay (+0x24); cutscene behaviour 1 restarts a speech stopped within its first second (`DAT_00f8a820` = 1.0), 2
+never plays in one, 0 plays through; `Period` counts from the last start (clock +0x1c reset by vtable +0x10, `Period`
+× 60 at load, `.rdata` 0xf8b534 = 60), not from the end as before; the mode-time window (GMM+0x2d28 × 1/3e6 × 1/60,
+`DAT_00f9f608` / `DAT_00f9c35c`); the condition fold starts from the all-flag (`FUN_0041fbf0`); `StopSpeech` never
+stops event 0x1c8a28 and reseeds the LCG (0x31613979fb637ec0, 8 steps); a line item with lines of its own picks one
+with the LCG's high word mod n (`FUN_008363c0`). Event getters from the vtable 0xf994d8 slots in text.asm
+(0x41fcb0.. read +0x34 / +0x38 / +0x14 / +0x48 / +0x3c / +0x47 / +0x44 / +0x46 / +0x49 of the resource).
+
+**Data**: the parser keeps containers apart from an item's own lines, the vocabulary kind, `EndTime`, the
+window, `Cutscene_Behaviour`, `Probability` by name, and each line's length from the `WaveDictionary` (equal to the
+decoded streams' lengths).
+
+**Model decisions** (module doc of `mw_audio::speech`): the sequence timing (items at `StartTime`; a line holds
+the clock at its item's `EndTime` until it ends, so the data's 1 s gaps stay gaps: the line item registers itself
+as the sequencer's +0x58 while its sound plays, `FUN_00830fe0`, but the sequencer's use of that was not followed;
+without the hold, event 1186352's second line started 2 s into the 4.4 s first); probability as a percentage
+draw; containers picked uniformly (`FUN_00833cb0` picks by `Speaker` / `Character`); vocabulary lines not said
+and vocabulary-only events not eligible; the plays counter counts starts (its increment was not found); one-offs
+remembered per session (the original's profile table `OneOffSpeech`); `PAUSESPEECH` (G+0x2ed68) not read;
+facts: `IsHiddenFromCops` = the cops do not see the player, `Health` 1; unresolved bindings read false.
+
+**Measured** (`MW_SPEECH_LOG=1`, which now also prints each voice's length / rms / peak): `--test pursuit`:
+chase started → 1656883 (four lines, rms 0.13–0.16, peak 0.55, after the radio channel's 0.562), cooldown →
+1186436, escaped → 1186439 (interrupts, no delay), busted → 1186445; the HSM's chase chatter: `TryPlaySpeech`
+1871411 → 4 (period), 1378788.. → 0xe (conditions), 1186587 → 0x13 and plays; its cooldown chatter 1871531 →
+0xe after the escape. `--test accel` 0–60 3.82 s (master's binary: 3.82 s too). Note that `--test pursuit` runs
+the game clock faster than real time, so lines overlap there (the sequence clock is game time, the voices real
+time), as they would in the original at that speed.
+
+**Open**: the sequencer's timing (`FUN_00a43c10`, the +0x58 hold); the container pick by speaker and the
+no-repeat line pick (`FUN_00833cb0`, `FUN_0083d3e0`); vocabulary lines (`Speech.VehicleVocab`, `FUN_00834130`);
+the radio clicks / bed of `Character.AudioSettings`; `PAUSESPEECH`; the speech volume; the one-off table in the
+profile. Captures that would confirm: a pursuit in the original with the speech stream recorded (gaps between
+lines of one event, overlap of the two 50 % items of 1186439).
 
 ## 2026-11-18: offline Requests / Queries of `behaviours_rest.rs` on the runtime
 
@@ -58,6 +536,45 @@ intro never routes), `ShowCarSelect` ... `StopCarSelect` (no car-select screen: 
 defaults), `LoadSpeechEvents` (no speech manager: load state 0, `TryPlaySpeech` 0 so `TRYTOPLAYSPE` exits
 `FAILURE` at once). Open: waypoint POIs would need the event's checkpoint triggers (GMM+4 +0xf4 record) in the host
 and a POI list in `map_screen.rs`.
+### 2026-11-18: loud skids after a car change / reset: a misread skid reset and stacked one-shot voices
+
+User report: skid and crash audio loud and distorted after a race start, teleport, pause or car change. Live
+headless runs recorded from a private null sink (`scratch/live.sh`, `ab.sh`, `sw.sh`, `sw2.sh`, `summ.sh`,
+`tapwin.py` in the worktree: `MW_AUDIO_METER`, `MW_AUDIO_TAP` + `.voices`, `MW_SFX_TRACE`).
+- **Car change → full skid burst (fixed)**. `VehicleDriver::reset` started a new car's three skid intensities at
+  1.0 (entry below), so every car change (and any new player car entity) played the drift / spin / brake skid
+  layers at full while the car cruised straight. Its source was misread: `FUN_00904260`, from which `FUN_009d1120`
+  is reached (→ `FUN_009d91a0` → `FUN_009d83e0`), is called only from `FUN_00904da0` "Update Car", the per-tick
+  body (decomp.md), and `FUN_009d1120` runs there on one branch of `FUN_009d83e0`'s state machine (then state 6),
+  not at construction. MODEL: a new vehicle's skids now start at 0 (the per-vehicle object's constructor is not
+  traced). Measured (`sw2.sh`: auto-throttle cruise at 54 mph, `--swap-to 911`, vehicle channel of the tap):
+  before −43.4 dBFS → −35.7 dBFS RMS (peak 0.027 → 0.075) for 0.5 s after the swap, −40.0 the 0.9 s after; skids
+  0.003 → 0.90 / 0.80 / 0.50 in the swap frame. After: −43.9 / −43.5 / −43.7 dBFS, skids stay 0.
+- **One voice per wave item (fixed)**. `sfx_player` and `sequence` started a new voice whenever a one-shot item
+  was entered, leaving the item's last voice playing: a skid intensity hovering at an item's start stacked copies
+  at full gain (the vehicle bank's spin skid item 0.053..0.867 holds a 67931-sample one-shot, the brake skid item
+  0.117..0.617 eight 14400-sample ones; the engine banks have one-shots on the RPM and gear-change axes). The
+  game's `WaveSequenceItem` start (`FUN_00836760`, vtable 0x00fef4d0 +8) stops the voice the item still holds
+  (states 5, 7–10) through its stop method (+0x24, `FUN_00835010`) before starting the next (decomp.md "Wave
+  items"). Ported in both players' `start_voice`; the stopped voice releases over 20 ms (MODEL, as the player's
+  other stops). Test `reentered_one_shot_keeps_one_voice`: 25 → 1 voices of one item. Live (`ab.sh`: slides, a
+  pause, three R resets and launches): most copies of one item at once 4 (spin item, summed gain 0.67) → 1;
+  vehicle bank pre-limiter peak 0.22 → 0.23, mix peak 0.315 → 0.274.
+- **Not reproduced**: a rail. The user's recording of 2026-11-17 18:59 (`out.wav` at the main checkout's root,
+  44.1 kHz) has 0.5–2 s bursts with up to 62 % of samples above 0.18: a bimodal ±0.2 signal, broadband (most energy
+  250–1000 Hz), no periodicity (autocorrelation ≤ 0.12 past 1 ms in the worst burst): skid noise driven far into a
+  soft limiter. It predates the pause fix (22:57) and the engine sub-harmoniser port. In today's runs (pause,
+  R resets, car changes, `--race 462174 --test race`, `--hsm-event 462174 --auto-start 1`) the vehicle bank's
+  pre-limiter peak stayed ≤ 0.23 and no window had samples pinned at a rail.
+- Seen on the way (not changed): the race intro holds the handbrake (`FREEZE_CAR`, race.rs / ai.rs) while the
+  cutscene's teleports set the car rolling at 50–110 mph, so the braking skid reads 0.8–1.0 during the intro
+  (`FUN_009d1bf0`'s virtual +0x44 taken as the handbrake: not identified); measured −40 to −58 dBFS, quieter than
+  a slide. At `--hsm-event` starts the player's car falls through the unloaded world (y to −138) before the
+  intro's first teleport. On a `--swap-to` the new car can spawn into a cop (`police.rs`, not touched).
+- Open: the original's one-shot exit (`FUN_00834f90`: keeps the voice for item mode +0xdc 3–5, else stops it)
+  is not ported (ours keeps every non-retrigger one-shot); one-shots ignore their item's fades (the update
+  `0x00836910` applies them every frame); what `FUN_009d1bf0`'s +0x1b80 vector and virtual +0x44 are. Captures
+  that would confirm: the original's audio across a car change at cruise, and a slide just after a race start.
 
 ### 2026-11-18: races with the logic hung at the start: placement waited on a ray the paused sim could not answer
 
@@ -1129,7 +1646,8 @@ Open:
 Task: how the original drives the vehicle bank's skid and impact voices, and what it resets.
 - **Skids** (`FUN_009d1bf0`, already ported in `vehicle_driver.rs`): the three intensities are the only inputs the
   skid sequences follow. Their reset is `FUN_009d1120` (from `FUN_009d83e0` <- `FUN_009d91a0` <- the vehicle's
-  construction `FUN_00904260`): +0xd0 / +0xd4 / +0xd8 = 1.0 (`.rdata` 0x01026060..6c, read), so a new vehicle's
+  construction `FUN_00904260` [corrected at the top of this month: per tick, not construction; reset now 0]):
+  +0xd0 / +0xd4 / +0xd8 = 1.0 (`.rdata` 0x01026060..6c, read), so a new vehicle's
   skids start full and fall at their fall rates (0.1 / 0.2 / 0.5 per tick). Ours started at 0 and kept the old
   car's smoothed state across a car change. Ported: `VehicleDriver::reset` (start state 1.0), called by
   `sfx.rs` when the player car entity changes. A teleport / placement is not a construction: no reset (the

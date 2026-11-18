@@ -112,6 +112,8 @@ struct Marks {
     segments: VecDeque<Segment>,
     /// Per wheel of the driven car: the strip's last point and material while it is being laid.
     strips: Vec<Option<(Point, usize)>>,
+    /// The car the strips belong to.
+    car: Option<Entity>,
     log: bool,
     last_log: f32,
     /// Bumped whenever a segment is added or dropped; the meshes are rebuilt then and every `REFADE` seconds.
@@ -246,13 +248,21 @@ fn receive(
 fn lay_marks(
     time: Res<Time>,
     draw: Res<MarkDraw>,
-    cars: Query<&Car, With<crate::drive::Player>>,
+    cars: Query<(Entity, &Car), With<crate::drive::Player>>,
     mut marks: ResMut<Marks>,
 ) {
     let now = time.elapsed_secs();
     let marks = &mut *marks;
     // The driven car (the first one).
-    if let Some(car) = cars.iter().next() {
+    if let Some((entity, car)) = cars.iter().next() {
+        // Another car (a swap, a restart): its wheels start new strips.
+        if marks.car != Some(entity) {
+            marks.car = Some(entity);
+            marks.strips.clear();
+        }
+        // How far a wheel's last point can be from its contact: a segment's length plus this frame's travel.
+        // Farther, the car was placed (a reset): a strip across the gap would be a streak through the world.
+        let reach = SEGMENT + 2.0 * car.speed.abs() * time.delta_secs() + 1.0;
         let contacts: Vec<_> = car.wheel_contacts().collect();
         marks.strips.resize(contacts.len(), None);
         for (i, contact) in contacts.into_iter().enumerate() {
@@ -272,7 +282,7 @@ fn lay_marks(
             let across = c.across.reject_from(c.normal).normalize_or_zero() * c.width;
             let mut p = Point { pos: c.point, normal: c.normal, across, u: 0.0, slip, spin };
             match marks.strips[i] {
-                Some((last, m)) if m == material => {
+                Some((last, m)) if m == material && p.pos.distance(last.pos) <= reach => {
                     let d = p.pos.distance(last.pos);
                     if d >= SEGMENT {
                         p.u = last.u + d / U_LENGTH;
@@ -297,7 +307,7 @@ fn lay_marks(
         let wheels: Vec<String> = cars
             .iter()
             .next()
-            .map(|car| {
+            .map(|(_, car)| {
                 car.wheel_contacts()
                     .map(|c| match c {
                         Some(c) => format!(

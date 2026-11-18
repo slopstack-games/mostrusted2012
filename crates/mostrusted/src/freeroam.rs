@@ -111,7 +111,7 @@ impl Progress {
     }
 
     pub fn load(path: &Path) -> Self {
-        std::fs::read_to_string(path).map(|t| Self::parse(&t)).unwrap_or_default()
+        crate::platform::read_text(path).map(|t| Self::parse(&t)).unwrap_or_default()
     }
 
     fn lines(&self) -> String {
@@ -128,7 +128,7 @@ impl Progress {
     /// Write our lines into the profile, keeping every other line (the car and its position, other modules').
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         let mut text = String::new();
-        if let Ok(old) = std::fs::read_to_string(path) {
+        if let Some(old) = crate::platform::read_text(path) {
             for line in old.lines() {
                 if !line.split_once('=').is_some_and(|(k, _)| KEYS.contains(&k)) {
                     text.push_str(line);
@@ -137,10 +137,7 @@ impl Progress {
             }
         }
         text.push_str(&self.lines());
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        std::fs::write(path, text)
+        crate::platform::write_text(path, &text)
     }
 }
 

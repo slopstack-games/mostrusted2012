@@ -78,23 +78,31 @@ pub struct LogicState {
     /// The UI map manager's point-of-interest list (UIM+0x14c50) and the `WAYPOINTS` / `SHOWMEETUPPO` handles
     /// (`pois.rs`).
     pub pois: super::pois::Pois,
+    /// The UI message manager's feedback queues (UIM+0x17e0, `feedback_queue.rs`).
+    pub feedback_queues: super::feedback_queue::FeedbackQueues,
 }
 
 /// The binding host the logic reads through: the game-mode manager's `Mode` root ([`super::mode_view`]) first,
 /// then the view models (registered roots, `Signals`, the published data definitions). A `Mode` member the table
-/// does not answer falls through to a data definition published as "Mode" (the original's dispatch `FUN_00a4ef40`).
+/// does not answer falls through to a data definition published as "Mode" (the original's dispatch
+/// `FUN_00a4ef40`); an index out of range stays the answer when nothing published resolves the path (as
+/// [`super::ViewModels`] does for its registered roots).
 impl crate::binding::Host for LogicState {
     fn lookup(&self, path: &[crate::binding::Segment]) -> crate::binding::Lookup {
         use crate::binding::Lookup;
+        let mut fixed = Lookup::Null;
         if let Some((root, members)) = path.split_first()
             && let Some((_, f)) = ROOTS.iter().find(|(h, _)| *h == root.hash)
         {
-            let r = f(self, members);
-            if matches!(r, Lookup::Found(_) | Lookup::Unsupported) {
-                return r;
+            fixed = f(self, members);
+            if matches!(fixed, Lookup::Found(_) | Lookup::Unsupported) {
+                return fixed;
             }
         }
-        self.view_models.lookup(path)
+        match self.view_models.lookup(path) {
+            Lookup::Null => fixed,
+            r => r,
+        }
     }
 }
 
@@ -121,6 +129,7 @@ static ROOTS: std::sync::LazyLock<Vec<(u32, RootFn)>> = std::sync::LazyLock::new
         (h("GameLogicState"), super::game_logic_view::lookup),
         (h("DriftScoring"), super::drifts::lookup),
         (h("SmashScoring"), super::smash_grab::lookup),
+        (h("UIMessages"), super::feedback_queue::lookup),
     ]
 });
 
@@ -177,9 +186,11 @@ pub enum Request {
     /// `RequestSkipSequence` (0x006827b0): `FUN_007b1060` on UIM+0x30840 (the feedback sequence manager) with the
     /// id of the current sequence member (0 without one): flags the matching members as skipped.
     SkipSequence { id: i32 },
-    /// `ShowForcedFeedBackMessage` (0x0067db90): when `clear_queue` the HUD queue is cleared first (`FUN_007b3380`),
-    /// then `FUN_007b8100`(text, id) queues the message.
-    ShowForcedFeedbackMessage { text: String, id: i32, clear_queue: bool },
+    /// A feedback message's start (`FUN_007b9ee0`) on `queue`: the sounds, movie, speech, camera take and HUD mode it
+    /// would start (`feedback_queue.rs`; the runtime has no name-keyed sound, movie or speech start for them).
+    FeedbackMessageEffects { queue: String, id: u32, effects: super::feedback_queue::MessageEffects },
+    /// A feedback message left without a sequence (`FUN_007b95c0` → `FUN_007b6040`): its exit sound.
+    FeedbackMessageSound { queue: String, sound: u32 },
     /// `PlaySound` / `PlaySoundAtPlayer` / `PlayGameplayStream` (0x0067df60 / 0x0067e040 / 0x0067e2d0): start the
     /// sound `name` (hashed with `FUN_009ed180`) with the argument `id` in the slot whose id the native already
     /// took (`slot`, the counter value; 0x7fffffff = no free slot, nothing to start). `kind` 0 / 1 / 4 and
@@ -1202,19 +1213,6 @@ pub enum Request {
     /// `SwitchToIceCamera` → `FUN_00843a60`: message {4, 0, take, 1, flag, 0} on the camera queue: the ICE camera
     /// take starts; its serial is `RoadFields::ice_camera_serial` (`IceCameraStop` stops it only with that id).
     IceCameraStart { take: i32, flag: bool },
-    /// `ShowFeedbackMessage` (0x00682210 → `FUN_007b96b0` → `FUN_007b8080`): the feedback message `id` (its
-    /// definition `FUN_007985b0`) with `text` and the parts (gamer tags: name, player slot (`FUN_007c1aa0`, flag
-    /// 1); numbers (`FUN_007c1bd0`); string ids (`FUN_007c2000`)) is queued on the named queue of UIM+0x17e0
-    /// (`None` = the default HUD queue UIM+0x7230) with the serial the native already took.
-    ShowFeedbackMessage {
-        queue: Option<String>,
-        id: i32,
-        text: String,
-        gamer_tags: Vec<(String, i32)>,
-        numbers: Vec<(String, f32)>,
-        string_ids: Vec<(String, i32)>,
-        serial: u32,
-    },
     /// `FUN_00647e00` on the reset service G+0x25690 (decomp.md "Waiting for streaming"): place `vehicle` at the
     /// pose with `mph` (record +0x70, capped as the reset does), `keep` (+0x78), `reason` (G+0x25690 +0x920 +
     /// vehicle × 4) and `flags` (+0x84; bit 2 → +0x75); +0x8c = 0. `TeleportVehicle` (reason 3), `ResetOnRoad`

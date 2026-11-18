@@ -362,8 +362,6 @@ pub struct MapScreen {
     tabs: Vec<(String, String)>,
     job: Option<Arc<Mutex<Option<Loaded>>>>,
     look: Option<Look>,
-    /// The virtual clock was running when the map opened.
-    unpause: bool,
     /// Re-read the player's position and car (just opened).
     refresh: bool,
     open_at_start: bool,
@@ -375,9 +373,9 @@ pub struct MapScreen {
 }
 
 impl MapScreen {
-    /// Open the map (from the pause menu): the player selected, the clock stopped; `unpause`: restart the clock
-    /// when the map closes back to the game.
-    pub fn open(&mut self, time: &mut Time<Virtual>, unpause: bool) {
+    /// Open the map (from the pause menu): the player selected, the clock stopped (the menu's pause reason, kept
+    /// from the pause menu or taken here; released when the map closes back to the game).
+    pub fn open(&mut self, reasons: &mut crate::pause::PauseReasons, time: &mut Time<Virtual>) {
         if self.look.is_none() {
             return;
         }
@@ -386,8 +384,7 @@ impl MapScreen {
         self.options = None;
         self.nav = Nav::default();
         self.refresh = true;
-        self.unpause = unpause;
-        time.pause();
+        reasons.set(crate::pause::PauseReason::Menu, true, time);
         if let Some(l) = self.look.as_mut() {
             l.anim.reset();
         }
@@ -398,11 +395,10 @@ impl MapScreen {
     }
 
     /// Close; returns whether the clock is to be restarted.
-    fn close(&mut self) -> bool {
+    fn close(&mut self) {
         self.open = false;
         self.options = None;
         self.just_closed = true;
-        std::mem::take(&mut self.unpause)
     }
 
     /// The selected event.
@@ -850,6 +846,7 @@ fn shown_items(items: &[MapItem], vehicle: Option<u32>) -> Vec<usize> {
 fn open_at_start(
     mut map: ResMut<MapScreen>,
     mut time: ResMut<Time<Virtual>>,
+    mut reasons: ResMut<crate::pause::PauseReasons>,
     car: Query<&GlobalTransform, (With<crate::drive::Car>, With<crate::drive::Player>)>,
     garage: Res<crate::garage::Garage>,
     collected: Option<Res<crate::frontend::Collected>>,
@@ -885,8 +882,7 @@ fn open_at_start(
     let p = xf.translation();
     map.player = Vec2::new(p.x, p.z);
     sync(&mut map);
-    let unpause = !time.is_paused();
-    map.open(&mut time, unpause);
+    map.open(&mut reasons, &mut time);
     map.refresh = false;
     map.cursor = map.player;
     if let Some(id) = map.select {
@@ -916,8 +912,9 @@ fn open_at_start(
             info!("map screen: SET DESTINATION {}", set.position);
             waypoint.write(set);
         }
-        if map.close_after_waypoint && map.close() {
-            time.unpause();
+        if map.close_after_waypoint {
+            map.close();
+            reasons.set(crate::pause::PauseReason::Menu, false, &mut time);
         }
     }
     if map.start_at_start
@@ -1054,6 +1051,7 @@ fn navigate(
     mut map: ResMut<MapScreen>,
     menu: Res<crate::input::MenuInput>,
     mut time: ResMut<Time<Virtual>>,
+    mut reasons: ResMut<crate::pause::PauseReasons>,
     real: Res<Time<Real>>,
     mut play: MessageWriter<crate::event_card::PlayEvent>,
     mut waypoint: MessageWriter<crate::gps::SetDestination>,
@@ -1068,9 +1066,8 @@ fn navigate(
     // in the options group cancel goes `BACK` to the map (899991's widget groups 1607001, 899993, 1222205).
     let drive = menu.pressed(A::Start) || (map.options.is_none() && menu.pressed(A::Cancel));
     if drive {
-        if map.close() {
-            time.unpause();
-        }
+        map.close();
+        reasons.set(crate::pause::PauseReason::Menu, false, &mut time);
         return;
     }
     if let Some(row) = map.options {
