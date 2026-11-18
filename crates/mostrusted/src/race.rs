@@ -715,6 +715,7 @@ fn start_race(
     mut starts: MessageReader<StartRace>,
     race: Option<Res<RaceState>>,
     over: Option<Res<RaceOver>>,
+    world_logic: Option<NonSendMut<crate::world_logic::WorldLogic>>,
     mut cars: Query<
         (&mut Transform, Option<&mut LinearVelocity>, Option<&mut AngularVelocity>),
         (With<Car>, With<crate::drive::Player>),
@@ -723,6 +724,11 @@ fn start_race(
     let Some(StartRace(setup)) = starts.read().last() else { return };
     if race.is_some() || over.is_some() {
         warn!("race {}: a race was already run; restart the game to run another", setup.event.id);
+        if race.is_none()
+            && let Some(mut w) = world_logic
+        {
+            w.plain.event_refused();
+        }
         return;
     }
     let mut state = RaceState::new(setup);

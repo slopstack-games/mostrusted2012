@@ -218,24 +218,26 @@ pub fn despawn_streamed(
 pub const STALL_RADIUS: f32 = 25.0;
 
 /// The streaming stall (`FUN_006a2200` from `FUN_004766a0`): the simulation pauses (pause reason 3) while the
-/// player's car's surroundings are not Resident(car, 25 m), e.g. when it outruns the loader. Virtual time is paused
-/// only when nothing else paused it, and resumed only by this system.
+/// player's car's surroundings are not Resident(car, 25 m), e.g. when it outruns the loader. Virtual time stops
+/// through the shared pause reasons (`pause::PauseReasons`), so the end of a stall never restarts it under the
+/// pause menu or the map.
 pub fn streaming_stall(
     reg: Res<StreamRegistry>,
     loaded: Res<crate::Loaded>,
     residency: Res<crate::frontend::Residency>,
     player: Query<&Transform, (With<crate::drive::Player>, With<crate::drive::Car>)>,
     mut time: ResMut<Time<Virtual>>,
+    mut reasons: ResMut<crate::pause::PauseReasons>,
     mut stalled: Local<bool>,
 ) {
     let car = player.iter().next().map(|t| t.translation);
     let stall = reg.streaming && loaded.done && car.is_some_and(|c| !residency.resident(c, STALL_RADIUS));
-    if stall && !*stalled && !time.is_paused() {
-        time.pause();
+    if stall && !*stalled {
+        reasons.set(crate::pause::PauseReason::StreamStall, true, &mut time);
         *stalled = true;
         info!("streaming stall: the car's surroundings are not resident, simulation paused");
     } else if !stall && *stalled {
-        time.unpause();
+        reasons.set(crate::pause::PauseReason::StreamStall, false, &mut time);
         *stalled = false;
         info!("streaming stall over");
     }

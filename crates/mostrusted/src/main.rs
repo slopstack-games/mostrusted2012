@@ -1223,6 +1223,7 @@ fn run(mut cli: Cli, game: GameDir) -> anyhow::Result<()> {
         .init_resource::<zone_view::ZoneView>()
         .init_resource::<streaming::StreamRegistry>()
         .init_resource::<streaming::PlacementFocus>()
+        .init_resource::<pause::PauseReasons>()
         .add_systems(Startup, (setup, cpu_light_clustering))
         .add_systems(Update, (start_loader, receive_assets, update_status, auto_screenshot))
         .add_systems(

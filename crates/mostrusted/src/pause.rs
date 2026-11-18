@@ -85,8 +85,6 @@ pub struct PauseMenu {
     selected: usize,
     job: Option<Arc<Mutex<Option<Loaded>>>>,
     look: Option<Look>,
-    /// The virtual clock was running when the menu opened.
-    unpause: bool,
     open_map: bool,
     /// `~Widget.Menu.Action.MenuAccept` (the keyboard's Return prompt, `U+E06B`) and the offline ticker.
     strings: Strings,
@@ -220,23 +218,63 @@ fn poll_load(
     }
 }
 
-fn open(menu: &mut PauseMenu, time: Option<&mut Time<Virtual>>) {
-    menu.open = true;
-    menu.page = Some(Page::Root);
-    menu.selected = 0;
-    if let Some(t) = time {
-        menu.unpause = !t.is_paused();
-        t.pause();
+/// Why the game clock (`Time<Virtual>`) is stopped. Our runtime's own bookkeeping (the original's pauses carry a
+/// reason too: the streaming stall is its reason 3, decomp.md "Streaming stall"): every pauser adds its reason and
+/// removes only its own, and the clock runs iff no reason is held, so one pauser ending (a stall, the
+/// logic's `SimPause`) never restarts the clock under another (the pause menu, the map).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PauseReason {
+    /// The pause menu, the map screen opened from it, and the event card that inherits it when a race is started
+    /// from the map.
+    Menu = 1,
+    /// The streaming stall (`streaming.rs`).
+    StreamStall = 2,
+    /// The logic's `SimPause` (`logic.rs`).
+    SimPause = 4,
+}
+
+#[derive(Resource, Default, Debug)]
+pub struct PauseReasons(u8);
+
+impl PauseReasons {
+    #[cfg(test)]
+    pub fn holds(&self, r: PauseReason) -> bool {
+        self.0 & r as u8 != 0
+    }
+
+    pub fn any(&self) -> bool {
+        self.0 != 0
+    }
+
+    /// Hold (`on`) or release `r`, then pause / unpause `time` to match.
+    pub fn set(&mut self, r: PauseReason, on: bool, time: &mut Time<Virtual>) {
+        if on {
+            self.0 |= r as u8;
+        } else {
+            self.0 &= !(r as u8);
+        }
+        if self.any() && !time.is_paused() {
+            time.pause();
+        } else if !self.any() && time.is_paused() {
+            time.unpause();
+        }
     }
 }
 
-fn close(menu: &mut PauseMenu, time: &mut Time<Virtual>) {
+fn open(menu: &mut PauseMenu, clock: Option<(&mut PauseReasons, &mut Time<Virtual>)>) {
+    menu.open = true;
+    menu.page = Some(Page::Root);
+    menu.selected = 0;
+    if let Some((reasons, t)) = clock {
+        reasons.set(PauseReason::Menu, true, t);
+    }
+}
+
+fn close(menu: &mut PauseMenu, reasons: &mut PauseReasons, time: &mut Time<Virtual>) {
     menu.open = false;
     menu.page = None;
     menu.just_closed = true;
-    if std::mem::take(&mut menu.unpause) {
-        time.unpause();
-    }
+    reasons.set(PauseReason::Menu, false, time);
 }
 
 /// The rows of the current page: (label, active).
@@ -253,6 +291,7 @@ pub(crate) fn navigate(
     keys: Res<ButtonInput<KeyCode>>,
     pads: Query<&Gamepad>,
     mut time: ResMut<Time<Virtual>>,
+    mut reasons: ResMut<PauseReasons>,
     mut settings: ResMut<crate::settings::SettingsMenu>,
     mut race_start: MessageWriter<crate::event_card::PlayEvent>,
     front: Option<Res<crate::frontend::FrontEnd>>,
@@ -279,7 +318,7 @@ pub(crate) fn navigate(
             || easydrive.is_some_and(|e| e.open || e.just_closed)
             || settings.open;
         if dev.just_pressed(act::PAUSE) && !busy {
-            open(&mut menu, Some(&mut time));
+            open(&mut menu, Some((&mut reasons, &mut time)));
         }
         return;
     }
@@ -289,7 +328,7 @@ pub(crate) fn navigate(
     let n = rows(&menu).len().max(1);
     let back = input.pressed(M::Cancel);
     if input.pressed(M::Start) || (back && matches!(menu.page, Some(Page::Root))) {
-        close(&mut menu, &mut time);
+        close(&mut menu, &mut reasons, &mut time);
         return;
     }
     if back {
@@ -307,20 +346,20 @@ pub(crate) fn navigate(
         match menu.page.clone() {
             Some(Page::Races) => {
                 if let Some(r) = menu.races.get(menu.selected).cloned() {
-                    close(&mut menu, &mut time);
+                    close(&mut menu, &mut reasons, &mut time);
                     race_start.write(crate::event_card::PlayEvent(r));
                 }
             }
             _ => match menu.items.get(menu.selected).filter(|i| i.active).map(|i| i.action.clone()).as_deref() {
-                Some("RESUME") => close(&mut menu, &mut time),
+                Some("RESUME") => close(&mut menu, &mut reasons, &mut time),
                 // `SHOW_MAP`: the map screen (899991); our race list while it is not loaded.
                 Some("MAP") => match map.as_mut().filter(|m| m.ready()) {
                     Some(m) => {
-                        let unpause = std::mem::take(&mut menu.unpause);
+                        // The map keeps the menu's pause reason.
                         menu.open = false;
                         menu.page = None;
                         menu.just_closed = true;
-                        m.open(&mut time, unpause);
+                        m.open(&mut reasons, &mut time);
                     }
                     None => {
                         menu.page = Some(Page::Races);
@@ -328,7 +367,7 @@ pub(crate) fn navigate(
                     }
                 },
                 Some("TO_SETTINGS") => {
-                    close(&mut menu, &mut time);
+                    close(&mut menu, &mut reasons, &mut time);
                     settings.open = true;
                 }
                 _ => {}
@@ -432,4 +471,31 @@ fn draw(
     };
     let Look { root, pool, textures, .. } = look;
     show_quads(&mut commands, *root, pool, &quads, textures, None, &mut nodes, &mut materials);
+}
+
+#[cfg(test)]
+mod reason_tests {
+    use super::*;
+
+    #[test]
+    fn clock_runs_only_with_no_reason_held() {
+        let mut time = Time::<Virtual>::default();
+        let mut r = PauseReasons::default();
+        r.set(PauseReason::StreamStall, true, &mut time);
+        assert!(time.is_paused());
+        // The pause menu opens during the stall; the stall ends: the clock stays stopped under the menu.
+        r.set(PauseReason::Menu, true, &mut time);
+        r.set(PauseReason::StreamStall, false, &mut time);
+        assert!(time.is_paused() && r.holds(PauseReason::Menu) && !r.holds(PauseReason::StreamStall));
+        // Releasing a reason that is not held changes nothing.
+        r.set(PauseReason::SimPause, false, &mut time);
+        assert!(time.is_paused());
+        r.set(PauseReason::Menu, false, &mut time);
+        assert!(!time.is_paused() && !r.any());
+        // Holding twice is one hold.
+        r.set(PauseReason::SimPause, true, &mut time);
+        r.set(PauseReason::SimPause, true, &mut time);
+        r.set(PauseReason::SimPause, false, &mut time);
+        assert!(!time.is_paused());
+    }
 }
