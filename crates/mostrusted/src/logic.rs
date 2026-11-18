@@ -583,9 +583,13 @@ struct Targets<'w, 's> {
     traffic: Option<ResMut<'w, crate::traffic::TrafficControl>>,
     snap: Option<ResMut<'w, crate::camera::SnapCamera>>,
     race: Race<'w, 's>,
-    /// `logic_effects.rs`: the requests on the runtime's systems and the fields it feeds back.
-    fx: crate::logic_effects::Effects<'w, 's>,
-    feed: crate::logic_effects::Feed<'w, 's>,
+    /// `logic_effects.rs`: the requests on the runtime's systems (p0) and the fields it feeds back (p1); a set
+    /// because both reach the player's `Car`.
+    fx: bevy::ecs::system::ParamSet<
+        'w,
+        's,
+        (crate::logic_effects::Effects<'w, 's>, crate::logic_effects::Feed<'w, 's>),
+    >,
     /// The general UI sequence player: the playbacks are drawn through it.
     player: Option<ResMut<'w, crate::ui_sequence::UiSequencePlayer>>,
 }
@@ -658,7 +662,7 @@ fn tick(
             Err(e) => warn!("hsm: {e}"),
         }
     }
-    t.feed.fill(&mut host.logic.state.borrow_mut());
+    t.fx.p1().fill(&mut host.logic.state.borrow_mut());
     if let Some(front) = &front {
         host.boot_trigger = front.boot_trigger() || front.phase != Phase::Title;
         host.pressed = front.pressed() || front.phase != Phase::Title;
@@ -856,7 +860,7 @@ fn tick(
                     }
                 }
             }
-            Carry::Effect(e) => t.fx.apply(&e),
+            Carry::Effect(e) => t.fx.p0().apply(&e),
             Carry::Play { .. } | Carry::Nothing => {}
         }
     }
