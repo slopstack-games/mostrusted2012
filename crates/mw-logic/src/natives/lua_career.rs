@@ -125,46 +125,6 @@ pub struct CareerFields {
     pub recommendation_time_to_beat: u64,
 }
 
-/// Slot of the local player (`PM+0xa6b4`); outside the 12 records the original reads address 0x30 (a crash):
-/// model decision, 0.
-fn local_slot(state: &LogicState) -> Option<usize> {
-    state.players.local.filter(|&l| l < 12)
-}
-
-/// `GetSelectedVehicleId()` (0x00688380): record +0x30 of the local slot.
-fn get_selected_vehicle_id(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
-    let v = local_slot(state).map_or(0, |i| state.career.selected_vehicle[i]);
-    Ok(vec![push_int(v)])
-}
-
-/// `GetSelectedColourId()` (0x006883e0): record +0x34 of the local slot.
-fn get_selected_colour_id(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
-    let v = local_slot(state).map_or(0, |i| state.career.selected_colour[i]);
-    Ok(vec![push_int(v)])
-}
-
-/// `SelectDefaultRollout(id)` (0x00679bb0): rollout manager +0x8f90 = id, +0x8f8c = 0.
-fn select_default_rollout(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
-    state.career.default_rollout = int(&args, 1);
-    state.career.default_rollout_flag = 0;
-    Ok(vec![])
-}
-
-/// `SetRolloutFromVehicleID(id)` (0x00679bf0): above 0, `FUN_006c7950`(local record, id, 0).
-fn set_rollout_from_vehicle_id(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
-    let vehicle = int(&args, 1);
-    if vehicle > 0 {
-        state.requests.push(Request::SetRolloutFromVehicle { vehicle });
-    }
-    Ok(vec![])
-}
-
-/// `SetSelectedWorld(id)` (0x006799a0): `FUN_00645780` on G+0x2f468.
-fn set_selected_world(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
-    state.requests.push(Request::SetSelectedWorld { world: int(&args, 1) });
-    Ok(vec![])
-}
-
 /// `SetEventFromAvailableVehicles()` (0x006756b0): `FUN_00673d70`.
 fn set_event_from_available_vehicles(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
     state.requests.push(Request::SetEventFromAvailableVehicles);
@@ -327,11 +287,6 @@ fn set_online_unlock_to_seen(state: &mut LogicState, _: &mut Lua, args: Vec<Valu
 }
 
 pub fn register_more(r: &mut Registry) {
-    r.set_lua("GetSelectedVehicleId", get_selected_vehicle_id);
-    r.set_lua("GetSelectedColourId", get_selected_colour_id);
-    r.set_lua("SelectDefaultRollout", select_default_rollout);
-    r.set_lua("SetRolloutFromVehicleID", set_rollout_from_vehicle_id);
-    r.set_lua("SetSelectedWorld", set_selected_world);
     r.set_lua("SetEventFromAvailableVehicles", set_event_from_available_vehicles);
     r.set_lua("SetTargetRecommendedEvent", set_target_recommended_event);
     r.set_lua("SetCurrentRecommendedEvent", set_current_recommended_event);
@@ -360,7 +315,6 @@ pub fn register_more(r: &mut Registry) {
 mod tests {
     use super::super::LogicHost;
     use super::super::lua_args::push_str;
-    use super::super::players::Player;
     use super::*;
 
     fn setup() -> (Lua, LogicHost) {
@@ -378,18 +332,6 @@ mod tests {
     fn career_natives() {
         let (mut lua, host) = setup();
         let n = Value::Number;
-        assert_eq!(call(&mut lua, "GetSelectedVehicleId", vec![])[0].as_number(), Some(0.0));
-        {
-            let mut s = host.state.borrow_mut();
-            s.players.slots[2] = Some(Player::default());
-            s.players.local = Some(2);
-            s.career.selected_vehicle[2] = 77;
-            s.career.selected_colour[2] = 5;
-        }
-        assert_eq!(call(&mut lua, "GetSelectedVehicleId", vec![])[0].as_number(), Some(77.0));
-        assert_eq!(call(&mut lua, "GetSelectedColourId", vec![])[0].as_number(), Some(5.0));
-        call(&mut lua, "SelectDefaultRollout", vec![n(9.0)]);
-        assert_eq!(host.state.borrow().career.default_rollout, 9);
         call(&mut lua, "SetRecommendationTimeToBeat", vec![n(-2.0)]);
         assert_eq!(host.state.borrow().career.recommendation_time_to_beat as i64, -6000);
         call(&mut lua, "SetFriendInviteId", vec![push_str("12345678901234")]);
@@ -406,12 +348,8 @@ mod tests {
         call(&mut lua, "SetEasyDriveOptionSeen", vec![n(4.0), Value::Bool(true)]);
         let r = call(&mut lua, "HasEasyDriveOptionBeenSeen", vec![n(4.0)]);
         assert!(matches!(r[0], Value::Bool(true)));
-        call(&mut lua, "SetRolloutFromVehicleID", vec![n(0.0)]);
-        call(&mut lua, "SetRolloutFromVehicleID", vec![n(31.0)]);
         call(&mut lua, "StoreTotalSP", vec![n(5.0)]);
         let s = host.state.borrow();
-        assert!(s.requests.contains(&Request::SetRolloutFromVehicle { vehicle: 31 }));
-        assert!(!s.requests.contains(&Request::SetRolloutFromVehicle { vehicle: 0 }));
         assert!(s.requests.contains(&Request::StoreTotalSp { sp: 5 }));
     }
 }
