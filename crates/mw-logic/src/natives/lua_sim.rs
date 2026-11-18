@@ -78,6 +78,8 @@ pub struct SimFields {
     pub queries: super::lua_queries::QueryFields,
     /// The vehicle / trigger / steering fields of [`lua_vehicles`](super::lua_vehicles).
     pub vehicles: super::lua_vehicles::VehicleFields,
+    /// The sound slot / input / contact / unlock fields of [`lua_requests`](super::lua_requests).
+    pub requests: super::lua_requests::RequestFields,
 }
 
 /// The error record of the sign-in view model (VM +0x135c, +0x1360, +0x139c, +0x136d).
