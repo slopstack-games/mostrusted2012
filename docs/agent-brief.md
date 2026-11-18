@@ -19,7 +19,7 @@ from the integrator's conversation.
 When the task is in the engine-free crates (mw-formats, mw-assets, mw-logic, mw-lua, mw-audio, mw-handling,
 mwtool): skip copy-deps and `tools/b` (no Bevy build); build and test only the crates you touch
 (`nice -n 19 cargo build --release -p <crate> -p mwtool`, `nice -n 19 cargo test -q --release -p <crate>`),
-keep them wasm32-compatible (`tools/wasm-check`), and clippy clean for them.
+keep them wasm32-compatible (`tools/wasm-check`), and clippy clean for them including tests (`cargo clippy -q --release -p <crate> --all-targets`).
 
 ## Token habits (context is the budget)
 
