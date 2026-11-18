@@ -11,6 +11,20 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+## 2026-11-19: landing sounds on every bump: the landing rule read the loaded contact, not the on-ground byte
+
+A played session's log (`MW_WORLD_SFX_LOG=1`, 2.5 min of free roam): 34 touchdowns and 72 "wheel landing" waves,
+nearly all "0.00 s in the air" at about −0.5 dB (full gain at speed). `FUN_00576b40` (decomp.md "Landings") restarts a
+wheel's landing wave when the wheel is grounded and its 0.05 s hold has run out; grounded is the wheel contact's byte
++0x24, which `FUN_009df790` sets geometrically: (B − A)·n > −0.2 and normal.y > 0.5. `world_sfx::landings` read
+`Car::wheel_contacts`, which is `Some` only while the contact was activated and carried a normal impulse in the tick
+(the tyre's condition, `FUN_009c75b0`), so a wheel that unloaded for 50 ms over a bump "landed" again. Fixed:
+`drive.rs` keeps the on-ground byte per wheel (`Car::wheels_on_ground`, same gap as the contact pass's depth) and the
+landing rule reads it. After: `--test ai --ai-seconds 90` (4 km at 178 km/h mean) logs one touchdown (the spawn);
+`--test landing` unchanged (4 touchdowns). Not done: a before / after of the same run, a recording of the played
+game (the first recording failed), and the other readers of `wheel_contacts` (tyre marks, particles, skid sounds),
+which may want the same byte: each needs its own reader traced.
+
 ## 2026-11-19: HSM behaviours `PICKNEXTFDE`, `HSMSHAKEDOWN`, `TELEPORTTOME` (`hsm/behaviours_last.rs`; 195 of 199 codes)
 
 Method as the earlier batches (name string in strings.csv -> `push` / `mov edx` stub -> factory -> vtable; slots from the

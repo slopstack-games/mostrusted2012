@@ -664,10 +664,11 @@ fn landings(
     let dt = time.delta_secs();
     let vol = volume(&settings);
     let crashing = crash.is_some_and(|c| c.active.is_some());
-    let contacts: Vec<Option<crate::drive::WheelContact>> = car.wheel_contacts().take(4).collect();
-    let set_of = |c: &crate::drive::WheelContact| {
-        c.surface.and_then(|s| data.surface_set.get(s).copied().flatten()).or(data.default_set)
-    };
+    // The wheels' on-ground bytes (+0x24, `FUN_009df790`), not the loaded contacts: a wheel that unloads for a
+    // moment over a bump has not left the ground.
+    let contacts: Vec<Option<(Vec3, Option<usize>)>> = car.wheels_on_ground().take(4).collect();
+    let set_of =
+        |c: &(Vec3, Option<usize>)| c.1.and_then(|s| data.surface_set.get(s).copied().flatten()).or(data.default_set);
     let mut held = false;
     let mut landed: Option<usize> = None;
     let mut any_ground = false;
@@ -691,7 +692,7 @@ fn landings(
         if !pool.is_empty() {
             let k = state.next(rr, pool.len());
             let shot = pool[k].clone();
-            play(&mut commands, &mut assets, &listener, vol, state, &shot, kind, c.point, &[(VOICE_GAIN, gain)]);
+            play(&mut commands, &mut assets, &listener, vol, state, &shot, kind, c.0, &[(VOICE_GAIN, gain)]);
         }
     }
     if log_on() && landed.is_some() {

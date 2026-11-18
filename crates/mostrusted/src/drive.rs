@@ -378,6 +378,9 @@ struct WheelState {
     local: Vec3,
     v: Vec3,
     touching: bool,
+    /// The wheel contact's on-ground byte (+0x24, `FUN_009df790`): the ground point and its surface index while
+    /// (B − A)·n > −0.2 and normal.y > 0.5.
+    on_ground: Option<(Vec3, Option<usize>)>,
     stop_share: Option<f32>,
     normal_impulse: f32,
     /// The wheel's velocity along the car's up axis after this tick's sub-steps, before the contact passes
@@ -398,6 +401,11 @@ struct WheelState {
     /// with each tyre mark point is wheel +0xbc, read here as the tyre width; not traced).
     width: f32,
 }
+
+/// The wheel contact's on-ground test (`FUN_009df790`): the gap along the normal above which the wheel is on the
+/// ground (`.bss` 0x01187ac0) and the least normal.y (`.rdata` 0x01026830).
+const ON_GROUND_GAP: f32 = -0.2;
+const ON_GROUND_NORMAL_Y: f32 = 0.5;
 
 /// A wheel's ground contact, for effects (tyre smoke, kick-up). World space.
 #[derive(Clone, Copy, Debug)]
@@ -515,6 +523,13 @@ impl Car {
     /// Each wheel's ground contact from the last physics step (`None` while the wheel is in the air).
     pub fn wheel_contacts(&self) -> impl Iterator<Item = Option<WheelContact>> + '_ {
         self.wheels.iter().map(|w| w.contact)
+    }
+
+    /// Each wheel's on-ground state as the original's wheel contact holds it (+0x24, `FUN_009df790`): the ground
+    /// point and its surface index, `None` off the ground. What the landing sounds read (`FUN_00576b40`); a wheel
+    /// that carries no load for a moment is still on the ground here, unlike [`Self::wheel_contacts`].
+    pub fn wheels_on_ground(&self) -> impl Iterator<Item = Option<(Vec3, Option<usize>)>> + '_ {
+        self.wheels.iter().map(|w| w.on_ground)
     }
 
     /// The wheel the game's skid sounds follow (`FUN_009d1bf0`): wheel 0 (the first front wheel) when the
@@ -832,6 +847,7 @@ pub fn build_car(commands: &mut Commands, b: &CarBuild) -> Entity {
             local: w.position,
             v: b.velocity,
             touching: false,
+            on_ground: None,
             stop_share: None,
             normal_impulse: 0.0,
             vel_substeps: 0.0,
@@ -1803,9 +1819,15 @@ pub(crate) fn car_physics(
         }
         let mut ch =
             Chassis { v: forces.linear_velocity(), w: forces.angular_velocity(), com, mass: p.mass, inv_inertia };
-        for wheel in car.wheels.iter_mut() {
+        for (wheel, ground) in car.wheels.iter_mut().zip(&grounds) {
             wheel.touching = false;
             wheel.vel_substeps = wheel.v.dot(up);
+            // The contact's on-ground byte (`FUN_009df790`): (B − A)·n > −0.2 (`.bss` 0x01187ac0) and normal.y > 0.5
+            // (`.rdata` 0x01026830), whether or not the contact carries an impulse this tick.
+            wheel.on_ground = ground.as_ref().and_then(|g| {
+                let gap = (g.point - (wheel.world_centre(pos, rot) + g.offset)).dot(g.normal);
+                (gap > ON_GROUND_GAP && g.normal.y > ON_GROUND_NORMAL_Y).then_some((g.point, g.surface.index))
+            });
         }
         for _ in 0..STOP_CONTACT_PASSES {
             for (wheel, ground) in car.wheels.iter_mut().zip(&grounds) {
