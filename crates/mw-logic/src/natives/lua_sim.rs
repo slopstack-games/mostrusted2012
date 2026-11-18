@@ -74,6 +74,8 @@ pub struct SimFields {
     pub feedback: super::lua_feedback::FeedbackFields,
     /// The vehicle / trigger / camera-world fields of [`lua_world`](super::lua_world).
     pub world: super::lua_world::WorldFields,
+    /// The camera / queue / distance fields of [`lua_queries`](super::lua_queries).
+    pub queries: super::lua_queries::QueryFields,
 }
 
 /// The error record of the sign-in view model (VM +0x135c, +0x1360, +0x139c, +0x136d).

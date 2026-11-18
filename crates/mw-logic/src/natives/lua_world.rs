@@ -95,7 +95,7 @@ fn number(n: f64) -> R {
 }
 
 /// The `{ x, y, z }` table `FUN_00699ea0` builds.
-fn vec3(lua: &mut Lua, v: [f32; 3]) -> R {
+pub(super) fn vec3(lua: &mut Lua, v: [f32; 3]) -> R {
     let t = lua.create_table();
     for (k, c) in ["x", "y", "z"].into_iter().zip(v) {
         t.set_str(k, Value::Number(f64::from(c)));

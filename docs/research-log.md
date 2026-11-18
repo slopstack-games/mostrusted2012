@@ -11,6 +11,26 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+### 2026-11-18: Lua natives, eleventh batch (25 more, 269 of 385; `natives/lua_queries.rs`)
+Handlers read from `re/out/live/text.asm`. Ported (state in `SimFields.queries`, set by the runtime): GetCameraPosition /
+GetCameraDirection (camera manager `*0x010edaf4`+4 +0x140 / +0x130), GetGameplayCameraPosition (+0x3690[+0x36d0] camera,
++0x40), GetVehicleSpeedMph (the `FUN_0083ea90` value), GetTrafficEntityPosition (`FUN_005ea2e0` / `FUN_005ea4c0`, +0x30),
+IsSoundInQueue (`FUN_00792af0`: 30 entries of 0x28 B, active byte +9, id +0), IsMessageInQueue (`FUN_007b29b0`, +0x330),
+IsFeedbackSequenceActive (+0x20c set and not `FUN_007b0c20`), GetTriggerDistanceFromPlayer (`FUN_0053c020`, an id -> 3 floats
+lookup on `*0x010edaf0`, not the zone list of GetTriggerPosition; no vehicle = `.rdata` 0x00fbcc00 FLT_MAX lanes = infinity),
+GetPlayerTopSpeedMPH (`FUN_0042e1b0` +0x3c, no vehicle = 999.9 `.rdata` 0x00fbd9d8), GetDistanceToFinish (G+0x2f47c +0xdf0[i],
+nil when == FLT_MAX `.data` 0x010c53c0), GetNumOnlinePlayers (`FUN_004c1fa0`), WasFriendListActionSuccessful /
+HasFriendListActionFinished (PM +0xc978[i] == 0 / byte +0xc98c[i]), SetRouteFromPlayerToSafehouse (reads a number, a no-op).
+New Requests: ClearTargetRoute, SetRouteFromPlayerToEvent (`FUN_0067fd00`), ClearResetOnRoad (`FUN_0063d410`),
+SaveControllerConfiguration (`FUN_008790d0`), MutePlayerByName (`FUN_007ecdc0` / `FUN_007ece70`), StoreLoaded {loaded}
+(`FUN_0086f7f0` / `FUN_0086d620`), ClearUpAdverts (`FUN_0065a480`), AdvertShown (`FUN_00655c60`).
+Model decisions: GetTriggerDistanceFromPlayer uses `WorldVehicle::position` for `FUN_00573420`'s vector (+0x110 of the
+table entry; same value assumed, not traced); ids / indexes without an entry read 0 / nil where the original indexes
+unchecked.
+Skipped: IsLoadingScreenShowing (`FUN_00792090` + vtable +0x14 unread), SetExitPointID (userdata object + string hash
+`FUN_009ed220`), StopFeedbackSequence (globals 0x01178070 / 74 unread), RequestSkipSequence (`FUN_007b1060`),
+GetCompetitorName (`FUN_006bf2d0` / `FUN_00a49460` string out-buffer), ShowFriendUi (`FUN_00ae10d0` / `FUN_00ae1ea0` 64-bit
+platform calls), CalculateForwardDirection, GetClosingSpeed, IsInTrigger (not read).
 ### 2026-11-18: Lua natives, career / profile batch (27; `natives/lua_career.rs`)
 
 Ported from the handlers (text.asm where the dump lacks them), reusing the hooks' state: `GetSelectedVehicleId` /

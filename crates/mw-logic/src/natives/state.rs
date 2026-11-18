@@ -469,6 +469,23 @@ pub enum Request {
     EngineState { vehicle: i32, on: bool },
     /// `RemoveMessage` (0x0067dce0 -> `FUN_007b6130` on UIM+0x17e0): drop the HUD message `id`.
     RemoveMessage { id: i32 },
+    /// `ClearTargetRoute` (0x006757b0): clear the route lists (`FUN_00792390` on G+0x2f480 +0x28190 / +0x1f8f0 /
+    /// +0x23d40) and reset the route fields (+0x2ce33, +0x2c5d0, +0x2c5e0 = -1, +0x23d30, +0x28180).
+    ClearTargetRoute,
+    /// `SetRouteFromPlayerToEvent` (0x006802d0 -> `FUN_0067fd00`(event)).
+    SetRouteFromPlayerToEvent { event: i32 },
+    /// `ClearResetOnRoad` (0x0067c370 -> `FUN_0063d410` on G+0x25690) for the slot's vehicle.
+    ClearResetOnRoad { vehicle: i32 },
+    /// `SaveControllerConfiguration` (0x007eb250 -> `FUN_008790d0`).
+    SaveControllerConfiguration { config: i32 },
+    /// `MutePlayer` / `UnmutePlayer` (0x007ee9d0 / 0x007eea00 -> `FUN_007ecdc0` / `FUN_007ece70`).
+    MutePlayerByName { name: String, mute: bool },
+    /// `StoreLoaded` / `StoreUnloaded` (0x007ea420 / 0x007ea450 -> `FUN_0086f7f0` / `FUN_0086d620`).
+    StoreLoaded { loaded: bool },
+    /// `ClearUpAdverts` (0x007ea6d0 -> `FUN_0065a480`).
+    ClearUpAdverts,
+    /// `AdvertShown` (0x007ea690 -> `FUN_00655c60`).
+    AdvertShown { name: String },
     /// `StopSound` (0x0067e160 -> `FUN_007a2100` on UIM+0x2d2f0): stop the sound `id`.
     StopSound { id: i32 },
     /// `ApplyMixSnapshotSet` / `ClearMixSnapshotSet` (0x0067e3e0 / 0x006785d0 -> `FUN_00798fb0`(UIM+0x2d2f0, id, on)).
