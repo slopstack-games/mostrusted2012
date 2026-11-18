@@ -1411,6 +1411,14 @@ impl Player {
                 return;
             }
         }
+        // One voice per item (`FUN_00836760` stops the item's playing voice before it starts the next; see
+        // `sfx_player::Player::start_voice`), released over 20 ms as there (MODEL: the stop's ramp is not traced).
+        if let Some(v) = st.voice.filter(|&v| v < self.voices.len() && self.voices[v].owner == (si, ii)) {
+            let dt = BLOCK as f32 / self.sr;
+            let old = &mut self.voices[v];
+            old.stopping = true;
+            old.release = old.gain.max(1e-3) * dt / 0.02;
+        }
         let gain = st.gain.as_ref().map_or(1.0, |m| m.m.eval(t, self.value(m.bind)));
         let pitch = match st.auto_pitch {
             Some(recorded) => (item.start + t * (item.end - item.start)) / recorded.max(1e-6),

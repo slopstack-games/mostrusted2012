@@ -11,6 +11,46 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+### 2026-11-18: loud skids after a car change / reset: a misread skid reset and stacked one-shot voices
+
+User report: skid and crash audio loud and distorted after a race start, teleport, pause or car change. Live
+headless runs recorded from a private null sink (`scratch/live.sh`, `ab.sh`, `sw.sh`, `sw2.sh`, `summ.sh`,
+`tapwin.py` in the worktree: `MW_AUDIO_METER`, `MW_AUDIO_TAP` + `.voices`, `MW_SFX_TRACE`).
+- **Car change → full skid burst (fixed)**. `VehicleDriver::reset` started a new car's three skid intensities at
+  1.0 (entry below), so every car change (and any new player car entity) played the drift / spin / brake skid
+  layers at full while the car cruised straight. Its source was misread: `FUN_00904260`, from which `FUN_009d1120`
+  is reached (→ `FUN_009d91a0` → `FUN_009d83e0`), is called only from `FUN_00904da0` "Update Car", the per-tick
+  body (decomp.md), and `FUN_009d1120` runs there on one branch of `FUN_009d83e0`'s state machine (then state 6),
+  not at construction. MODEL: a new vehicle's skids now start at 0 (the per-vehicle object's constructor is not
+  traced). Measured (`sw2.sh`: auto-throttle cruise at 54 mph, `--swap-to 911`, vehicle channel of the tap):
+  before −43.4 dBFS → −35.7 dBFS RMS (peak 0.027 → 0.075) for 0.5 s after the swap, −40.0 the 0.9 s after; skids
+  0.003 → 0.90 / 0.80 / 0.50 in the swap frame. After: −43.9 / −43.5 / −43.7 dBFS, skids stay 0.
+- **One voice per wave item (fixed)**. `sfx_player` and `sequence` started a new voice whenever a one-shot item
+  was entered, leaving the item's last voice playing: a skid intensity hovering at an item's start stacked copies
+  at full gain (the vehicle bank's spin skid item 0.053..0.867 holds a 67931-sample one-shot, the brake skid item
+  0.117..0.617 eight 14400-sample ones; the engine banks have one-shots on the RPM and gear-change axes). The
+  game's `WaveSequenceItem` start (`FUN_00836760`, vtable 0x00fef4d0 +8) stops the voice the item still holds
+  (states 5, 7–10) through its stop method (+0x24, `FUN_00835010`) before starting the next (decomp.md "Wave
+  items"). Ported in both players' `start_voice`; the stopped voice releases over 20 ms (MODEL, as the player's
+  other stops). Test `reentered_one_shot_keeps_one_voice`: 25 → 1 voices of one item. Live (`ab.sh`: slides, a
+  pause, three R resets and launches): most copies of one item at once 4 (spin item, summed gain 0.67) → 1;
+  vehicle bank pre-limiter peak 0.22 → 0.23, mix peak 0.315 → 0.274.
+- **Not reproduced**: a rail. The user's recording of 2026-11-17 18:59 (`out.wav` at the main checkout's root,
+  44.1 kHz) has 0.5–2 s bursts with up to 62 % of samples above 0.18: a bimodal ±0.2 signal, broadband (most energy
+  250–1000 Hz), no periodicity (autocorrelation ≤ 0.12 past 1 ms in the worst burst): skid noise driven far into a
+  soft limiter. It predates the pause fix (22:57) and the engine sub-harmoniser port. In today's runs (pause,
+  R resets, car changes, `--race 462174 --test race`, `--hsm-event 462174 --auto-start 1`) the vehicle bank's
+  pre-limiter peak stayed ≤ 0.23 and no window had samples pinned at a rail.
+- Seen on the way (not changed): the race intro holds the handbrake (`FREEZE_CAR`, race.rs / ai.rs) while the
+  cutscene's teleports set the car rolling at 50–110 mph, so the braking skid reads 0.8–1.0 during the intro
+  (`FUN_009d1bf0`'s virtual +0x44 taken as the handbrake: not identified); measured −40 to −58 dBFS, quieter than
+  a slide. At `--hsm-event` starts the player's car falls through the unloaded world (y to −138) before the
+  intro's first teleport. On a `--swap-to` the new car can spawn into a cop (`police.rs`, not touched).
+- Open: the original's one-shot exit (`FUN_00834f90`: keeps the voice for item mode +0xdc 3–5, else stops it)
+  is not ported (ours keeps every non-retrigger one-shot); one-shots ignore their item's fades (the update
+  `0x00836910` applies them every frame); what `FUN_009d1bf0`'s +0x1b80 vector and virtual +0x44 are. Captures
+  that would confirm: the original's audio across a car change at cruise, and a slide just after a race start.
+
 ### 2026-11-18: races with the logic hung at the start: placement waited on a ray the paused sim could not answer
 
 `--race 462174 --test race` with the HSM never finished (also on the pre-merge master a6358a4; `--no-hsm` passed).
@@ -1005,7 +1045,8 @@ Open:
 Task: how the original drives the vehicle bank's skid and impact voices, and what it resets.
 - **Skids** (`FUN_009d1bf0`, already ported in `vehicle_driver.rs`): the three intensities are the only inputs the
   skid sequences follow. Their reset is `FUN_009d1120` (from `FUN_009d83e0` <- `FUN_009d91a0` <- the vehicle's
-  construction `FUN_00904260`): +0xd0 / +0xd4 / +0xd8 = 1.0 (`.rdata` 0x01026060..6c, read), so a new vehicle's
+  construction `FUN_00904260` [corrected at the top of this month: per tick, not construction; reset now 0]):
+  +0xd0 / +0xd4 / +0xd8 = 1.0 (`.rdata` 0x01026060..6c, read), so a new vehicle's
   skids start full and fall at their fall rates (0.1 / 0.2 / 0.5 per tick). Ours started at 0 and kept the old
   car's smoothed state across a car change. Ported: `VehicleDriver::reset` (start state 1.0), called by
   `sfx.rs` when the player car entity changes. A teleport / placement is not a construction: no reset (the

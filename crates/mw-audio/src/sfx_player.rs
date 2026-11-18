@@ -1190,6 +1190,13 @@ impl Player {
                 return;
             }
         }
+        // One voice per item: the game's `WaveSequenceItem` start (`FUN_00836760`, vtable 0x00fef4d0 +8) stops
+        // the voice the item still holds (states 5, 7–10) through its stop method (+0x24, `FUN_00835010`) before
+        // it starts the new one. Without this a one-shot item re-entered while its wave plays (a skid intensity
+        // hovering at the item's start) stacked copies of the wave at full gain.
+        if let Some(v) = st.voice.filter(|&v| v < self.voices.len() && self.voices[v].owner == (si, ii)) {
+            self.voices[v].stopping = true;
+        }
         let gate = self.value(self.seqs[si].gate).map_or(1.0, |v| v.clamp(0.0, 1.0));
         let gain = st.gain.as_ref().map_or(1.0, |m| m.m.eval(t, self.value(m.bind))) * gate;
         let pitch = st.pitch.as_ref().map_or(1.0, |m| m.m.eval(t, self.value(m.bind)));
@@ -1428,5 +1435,59 @@ mod tests {
         let loud = rms(&mut p);
         // Sine of amplitude 16000/32768 (RMS 0.345) × channel 0.5 × MIX_SCALE: RMS ≈ 0.0207.
         assert!((loud - 0.345 * 0.5 * MIX_SCALE).abs() < 0.003, "{loud}");
+    }
+
+    /// A one-shot item re-entered while its wave still plays (a skid intensity hovering at the item's start)
+    /// replaces its voice instead of stacking copies (`FUN_00836760`).
+    #[test]
+    fn reentered_one_shot_keeps_one_voice() {
+        let wave = Item {
+            start: 0.05,
+            end: 0.9,
+            fade_in: Fade::default(),
+            fade_out: Fade::default(),
+            enabled: String::new(),
+            channel: None,
+            kind: ItemKind::Wave {
+                waves: vec![sine_clip(300.0, false)],
+                gain: ModValue::constant(1.0),
+                pitch: ModValue::constant(1.0),
+                probability: None,
+            },
+        };
+        let bank = Bank {
+            channels: vec![],
+            sequences: vec![Sequence {
+                id: 0,
+                binding: "Spin".into(),
+                min: 0.0,
+                max: 1.0,
+                items: vec![wave],
+                gate: String::new(),
+                retrigger: false,
+                jumps: vec![],
+            }],
+            cues: vec![],
+            master_gain: 1.0,
+        };
+        let params = Arc::new(Params::new(bank.param_names()));
+        let mut p = Player::new(bank, params.clone());
+        params.set_smoothing("Spin", 0.0);
+        for _ in 0..9600 {
+            p.next_sample();
+        }
+        // In and out of the item every 10 ms for half a second (the 1 s wave never ends meanwhile).
+        let mut peak = 0f32;
+        for k in 0..50 {
+            params.set("Spin", if k % 2 == 0 { 0.06 } else { 0.04 });
+            for _ in 0..480 {
+                peak = peak.max(p.next_sample_linear().abs());
+            }
+        }
+        let sounding = p.voices.iter().filter(|v| !v.stopping && !v.done).count();
+        assert!(sounding <= 1, "{sounding} voices of one item");
+        // A sine of amplitude 0.49 × MIX_SCALE, plus the replaced ones' 20 ms releases: stacked copies (25 here)
+        // would add up far beyond that.
+        assert!(peak <= 0.49 * MIX_SCALE * 3.0, "peak {peak}");
     }
 }
