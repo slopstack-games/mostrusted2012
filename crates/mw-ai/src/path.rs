@@ -99,7 +99,7 @@ impl Path {
         left.min(RING)
     }
 
-    /// The node `j` places after `cur`.
+    /// The node `j` places after `cur`. The path must not be empty (callers check `count_from(cur) >= 2`).
     pub fn node(&self, cur: usize, j: usize) -> &PathNode {
         &self.nodes[(cur + j) % self.nodes.len()]
     }
