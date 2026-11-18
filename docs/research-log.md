@@ -11,8 +11,8 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
-### 2026-11-18: runtime carries out logic requests (`logic_effects.rs`; UNBUILT, session ended)
-Written, not compiled or run (the build was still running when the session ended): ClearAllChevrons (route markers
+### 2026-11-18: runtime carries out logic requests (`logic_effects.rs`; builds, not run)
+Written and built (tools/b clean), not run (session ended); the camera is the first Camera3d: ClearAllChevrons (route markers
 despawned), ClearTargetRoute / SetRouteFromPlayerToEvent (`Gps`, event start positions from the events data),
 NitrousAward / Reset / ClearNitrous / Infinite (local tank; infinite held at 100), SirenState / EngineState (local car),
 PlayMusic (= `FUN_0079f7b0`, the song list), FeedbackGroup (-> the group loads), Query::ProgressionState (4 once loaded).
@@ -20,7 +20,7 @@ Fed each frame (`Feed`): local vehicle record, player loaded / alive / vehicle i
 camera, top speed. Model decisions: one car (local slot's vehicle id), award multiplier +0xc8 read as 1.
 Open (unhandled): ShowUnlock, PopPendingUnlock (no unlock queues), feedback queue requests / queries (hud.rs), PlaySpeech,
 StopSound(s) other than 0, MixSnapshot (audio agent), StoreTotalSp (no store UI), InvalidateRaceTarget, ClearResetOnRoad,
-Carjacker* (no jack mechanic). Next: `tools/b`, fix errors, run the verify tests, check ClearAllChevrons order in a race.
+Carjacker* (no jack mechanic). Next: run the verify tests, check ClearAllChevrons order in a race.
 ### 2026-11-18: Lua natives, eleventh batch (25 more, 269 of 385; `natives/lua_queries.rs`)
 Handlers read from `re/out/live/text.asm`. Ported (state in `SimFields.queries`, set by the runtime): GetCameraPosition /
 GetCameraDirection (camera manager `*0x010edaf4`+4 +0x140 / +0x130), GetGameplayCameraPosition (+0x3690[+0x36d0] camera,

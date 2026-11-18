@@ -146,7 +146,7 @@ pub struct Feed<'w, 's> {
         (&'static Transform, &'static LinearVelocity, &'static Car, Option<&'static crate::nitrous::NitrousFeed>),
         With<Player>,
     >,
-    camera: Query<'w, 's, &'static GlobalTransform, With<crate::camera::GameplayCamera>>,
+    camera: Query<'w, 's, &'static GlobalTransform, With<Camera3d>>,
     garage: Option<Res<'w, crate::garage::Garage>>,
 }
 
