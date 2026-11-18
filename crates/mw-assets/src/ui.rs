@@ -1800,6 +1800,91 @@ mod tests {
         assert!(MapMosaic::build(&s, grid(0, 2)).pixels.is_empty());
     }
 
+    /// A HUD corner layout as the race HUD's are placed (anchor 8, T(1280, 720) + `Right(AXES:X)`), with a solid
+    /// and a rotated element: at any 16:9 size the quads are the 1280×720 ones scaled (no pixel size is assumed
+    /// anywhere between the layout data and the quads), and on a wider screen the corner stays at the screen's
+    /// right edge (`FUN_0078faa0`). User report 2026-11-18 (HUD wrong at 1920×1080).
+    #[test]
+    fn hud_layout_is_resolution_independent() {
+        use super::{Lookup, PlacedLayout, UiScene};
+        use mw_formats::ui::{Bindings, Element, ElementKind, Layout, LayoutInstance, Transform};
+        let element = |id: u32, position: [f32; 2], rotation: f32| Element {
+            kind: ElementKind::Shape,
+            type_name: String::new(),
+            id,
+            position,
+            size: [200.0, 80.0],
+            rotation,
+            anchor: 8,
+            bindings: Bindings::default(),
+            texture: None,
+            renderables: Vec::new(),
+            material: None,
+            image_source: 0,
+            tint: [1.0; 4],
+            colour_palette: 0,
+            opacity: 1.0,
+            flip: [false; 2],
+            text: None,
+            background: Some([1.0; 4]),
+            border_width: 0,
+            pop_mask: false,
+            margins: [0.0; 4],
+            min_size: [0.0; 2],
+            sizes_cell: false,
+            sub_image: None,
+            stack: None,
+            idle: Vec::new(),
+            transition_in: Vec::new(),
+            transition_out: Vec::new(),
+            triggered: Vec::new(),
+        };
+        let translate = |value: [f32; 3], binding: &str| Transform { kind: 1, value, binding: binding.into() };
+        let scene = UiScene {
+            layouts: vec![PlacedLayout {
+                widget_index: 0,
+                widget: String::new(),
+                widget_type: String::new(),
+                layout: Layout {
+                    id: 1,
+                    elements: vec![element(1, [1270.0, 710.0], 0.0), element(2, [900.0, 600.0], 30.0)],
+                },
+                instance: Some(LayoutInstance {
+                    id: 2,
+                    anchor_type: 8,
+                    transforms: vec![
+                        translate([1280.0, 720.0, 0.0], ""),
+                        translate([0.0; 3], "UIConfig.HudAspectCorrection.Right(AXES:X)"),
+                    ],
+                    timeline: String::new(),
+                    visibility: String::new(),
+                    colours: Vec::new(),
+                    timelines: Vec::new(),
+                    replacement_index: 0,
+                }),
+            }],
+            ..Default::default()
+        };
+        let mut none = |_: &str, _: Option<&str>| None;
+        let lookup: &mut Lookup = &mut none;
+        let small = scene.draw([1280.0, 720.0], lookup);
+        let large = scene.draw([1920.0, 1080.0], lookup);
+        assert_eq!((small.len(), large.len()), (2, 2));
+        for (a, b) in small.iter().zip(&large) {
+            for k in 0..4 {
+                assert!((a.rect[k] * 1.5 - b.rect[k]).abs() < 1e-2, "{:?} vs {:?}", a.rect, b.rect);
+            }
+            assert_eq!(a.rotation, b.rotation);
+        }
+        // The corner element's right / bottom edges 10 reference px in from the screen's corner.
+        assert!((large[0].rect[0] + large[0].rect[2] - (1920.0 - 15.0 - 0.75)).abs() < 1e-2, "{:?}", large[0].rect);
+        assert!((large[0].rect[1] + large[0].rect[3] - (1080.0 - 15.0)).abs() < 1e-2);
+        // 21:9 at the same height: the frame keeps its height and the corner layout follows the right edge.
+        let wide = scene.draw([2560.0, 1080.0], lookup);
+        assert!((wide[0].rect[0] + wide[0].rect[2] - (2560.0 - 15.0 - 0.75)).abs() < 1e-2, "{:?}", wide[0].rect);
+        assert!((wide[0].rect[2] - 300.0).abs() < 1e-3);
+    }
+
     #[test]
     fn menu_frame_letterboxes() {
         let f = UiFrame::letterbox([1024.0, 768.0]);

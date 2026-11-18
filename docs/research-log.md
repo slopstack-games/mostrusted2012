@@ -11,6 +11,33 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+## 2026-11-18: "UI wrong at 1920×1080, intro upside down" (user report): no resolution dependence found (code reading, no install)
+
+Traced from the data to the screen: layout / instance (`mw_formats::ui`) → `UiScene::draw_with` (`UiFrame::new` /
+`letterbox` from the window's size every frame, `Placement`, `element_rect`, `push_quad`) → `ui_quads::show_quads`
+(`Val::Px` nodes, `UiTransform` rotation). Every caller (`ui_widgets.rs`, `hud.rs`, `event_card.rs`) passes
+`Window::width()` / `height()` (logical px), and Bevy's UI lays `Val::Px` out in the same logical px (one window
+camera, no `Viewport`, no `UiScale`); the gate markers draw at a fixed 1280×720 into world space (size-free).
+No 1280 / 720 constant, physical size or scale factor sits in the screen path (the minimap image's physical size
+in `hud.rs` is correct). Rotation: degrees clockwise in both `push_quad` and `UiTransform` (y down). New test
+`mw_assets::ui::tests::hud_layout_is_resolution_independent`: a corner layout (T(1280, 720) +
+`Right(AXES:X)`, one plain, one rotated element) gives the 720p quads × 1.5 at 1080p and stays 10 reference px in
+from the right edge at 2560×1080 (`FUN_0078faa0`). So the 1080p shots should match 720p ones; the symptoms are
+in what is drawn, not in the scaling. Leading hypotheses (unconfirmed, need a 720p shot of the same run
+`MW_HSM_SHOTS=<dir> tools/t --race 462174` beside the 1080p one, then the original at the same place):
+- **Intro "upside down"**: the `intro` shot is 6 s into 462174's intro; the original's intro is upside down from
+  its second shot (3 s) to the teleport (captures 2026-10-09, research-log-archive "race cinematic cameras settled
+  by captures"; `cutscene.rs` module doc). Not a bug unless another event's intro rolls too.
+- **Large rotated "CHECK…" at top right**: "CHECK" is the target gate's world layout 1014477 (formats.md
+  "PointOfInterestVisuals"), drawn in 3D by `gate_marker.rs`; near a gate it is large (0.05 m per layout px
+  under 20 m). Its axes (layout x → the driver's right, y down) and the gate quaternion as `R(Rot)` are model
+  decisions there; a roll would point at them or at a gate whose stored rotation is not level.
+- **HUD at the edges / speedometer cut off / card tip at the left edge**: the HUD at the screen edges at 16:9
+  matches the original's captures (`Left` = 0.5); a cut-off speedometer points at content, not scale: the widget
+  renderer draws *every* layout of an active group (the native widgets' own show / hide not ported), instance
+  `MOVE` / `APPROACH` steps and the visibility timeline show settled / are skipped, and screen layouts ignore
+  instance rotate / scale transforms (kinds 2 / 3, `Placement::new` reads translates only).
+
 ## 2026-11-18: bug hunt round 3: mw-audio players / speech, mw-gamedir, mwtool compare (code reading, no install)
 
 Fixed (each with a failing synthetic test first):
