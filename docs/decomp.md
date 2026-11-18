@@ -914,7 +914,9 @@ The three bindings the surface's skid sequences follow (`LatSlipIntensityForSkid
 `RaceCarEntity` by `FUN_0057e280`; their getters (`LAB_005a2220`, `LAB_005a2200`, `LAB_0059ef60`) are not
 decompiled. The values are computed in the handling code, once per 60 Hz tick, by `FUN_009d1bf0` (called from
 `FUN_00904da0` → `FUN_009d6e30`, after the dirt build-up `FUN_009d19c0`), which stores them at +0xd0 / +0xd4 /
-+0xd8 of its per-vehicle object (reset to 1.0 by `FUN_009d1120`). The link from those fields to the getters is
++0xd8 of its per-vehicle object (set to 1.0 by `FUN_009d1120`, which runs inside the tick: `FUN_00904da0` →
+`FUN_00904260` → `FUN_009d91a0` → `FUN_009d83e0`, on a branch of that function's state machine that then sets
+state 6; not at construction, whose start value is not traced). The link from those fields to the getters is
 inferred. Confirmed from the code:
 
 - **One reference wheel**, no max or average over wheels: wheel 0 (vehicle +0x870, the first front wheel) when
@@ -1042,6 +1044,13 @@ Details and numbers in the research log ("sounds from the play test").
   Pitch.Value`; fade-in `pow(position / Fade_In.Time, Curve)` (+0xa4 / +0xa0), fade-out the same from the end
   (+0xb8 / +0xb4). `MixerChannelSequenceItem` (factory 0x008370e0, vtable 0x00fef5f8, update `FUN_00836120` →
   `FUN_00833290` → `FUN_004b8cd0` / `FUN_004b8d90`): properties 0 and 6 are multipliers skipped at 1.
+- **`WaveSequenceItem` voices** (2026-11-18; vtable 0x00fef4d0: +0 init `FUN_00836660`, +8 start `FUN_00836760`,
+  +0xc play `FUN_00834930`, +0x24 stop `FUN_00835010`, +0x28 exit `FUN_00834f90`): a state byte at +0x7c and
+  the item's voice handles (+0x68, and up to two at +0x6c with their count at +0x74). The start picks a wave
+  (`rand % count`, +0xe2) and, **when the item still holds a voice (states 5, 7–10), stops it through +0x24
+  first**; in states 3 / 4 it does nothing. So an item never sounds twice at once (ported in `sfx_player` /
+  `sequence` `start_voice`). The exit (+0x28) keeps a voice playing when the item's mode (+0xdc) is 3–5, else
+  stops it (the mode field's data name not identified).
 - **Whines** (`FUN_0058c3f0`, engine sound start): for the player's car (+0x1c18) every sequence of `VehicleSound`
   +0x50 `TransmissionWhine` (`Sequences` +0x10, count +0x14) and +0x58 `TurboWhine` (+0x40, count +0x54).
   `GetTransmissionSpeedMph` `FUN_0059ed70` → `FUN_009170a0`; the turbo update `FUN_0058f8f0` / blow-off pick
