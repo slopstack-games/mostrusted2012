@@ -194,11 +194,6 @@ pub fn place_roadblocks(
         if rbs.remove_all || rb::passed(s.position, pt.translation, pt.rotation * Vec3::Z, far) {
             let tag = s.tag;
             info!("roadblock {tag} (definition {}) removed", s.definition);
-            for (e, p) in &pieces {
-                if p.0 == tag {
-                    commands.entity(e).despawn();
-                }
-            }
             for (e, c) in &cars {
                 if c.0 == tag {
                     commands.entity(e).despawn();
@@ -210,6 +205,14 @@ pub fn place_roadblocks(
         }
     }
     rbs.remove_all = false;
+    // Objects of any roadblock but the standing one: those of a removed roadblock, including the ones still
+    // loading when it was removed (they arrive later with its tag and nothing else would remove them).
+    let live = rbs.current.as_ref().map(|s| s.tag);
+    for (e, p) in &pieces {
+        if Some(p.0) != live {
+            commands.entity(e).despawn();
+        }
+    }
 
     // The cars that have come back from the loader: parked where the layout put them.
     for (slot, spec, parts) in std::mem::take(&mut rbs.arrived) {

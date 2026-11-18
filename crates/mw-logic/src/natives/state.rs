@@ -81,19 +81,25 @@ pub struct LogicState {
 
 /// The binding host the logic reads through: the game-mode manager's `Mode` root ([`super::mode_view`]) first,
 /// then the view models (registered roots, `Signals`, the published data definitions). A `Mode` member the table
-/// does not answer falls through to a data definition published as "Mode" (the original's dispatch `FUN_00a4ef40`).
+/// does not answer falls through to a data definition published as "Mode" (the original's dispatch
+/// `FUN_00a4ef40`); an index out of range stays the answer when nothing published resolves the path (as
+/// [`super::ViewModels`] does for its registered roots).
 impl crate::binding::Host for LogicState {
     fn lookup(&self, path: &[crate::binding::Segment]) -> crate::binding::Lookup {
         use crate::binding::Lookup;
+        let mut fixed = Lookup::Null;
         if let Some((root, members)) = path.split_first()
             && let Some((_, f)) = ROOTS.iter().find(|(h, _)| *h == root.hash)
         {
-            let r = f(self, members);
-            if matches!(r, Lookup::Found(_) | Lookup::Unsupported) {
-                return r;
+            fixed = f(self, members);
+            if matches!(fixed, Lookup::Found(_) | Lookup::Unsupported) {
+                return fixed;
             }
         }
-        self.view_models.lookup(path)
+        match self.view_models.lookup(path) {
+            Lookup::Null => fixed,
+            r => r,
+        }
     }
 }
 

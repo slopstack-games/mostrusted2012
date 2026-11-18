@@ -5,11 +5,11 @@ use crate::{DxgiFormat, Texture, f16_to_f32};
 impl Texture {
     /// Decode one mip of the first array slice to tightly packed RGBA8.
     pub fn decode_rgba8(&self, level: u32) -> Option<(u32, u32, Vec<u8>)> {
-        let w = (self.width >> level).max(1);
-        let h = (self.height >> level).max(1);
-        let start: usize = (0..level).map(|m| self.mip_size(m)).sum();
-        let src = self.data.get(start..start + self.mip_size(level))?;
-        let mut out = vec![0u8; (w * h * 4) as usize];
+        let w = self.width.checked_shr(level).unwrap_or(0).max(1);
+        let h = self.height.checked_shr(level).unwrap_or(0).max(1);
+        let start = (0..level).try_fold(0usize, |a, m| a.checked_add(self.mip_size(m)))?;
+        let src = self.data.get(start..start.checked_add(self.mip_size(level))?)?;
+        let mut out = vec![0u8; w as usize * h as usize * 4];
         match self.format {
             DxgiFormat::Bc1Unorm | DxgiFormat::Bc2Unorm | DxgiFormat::Bc3Unorm => {
                 let bb = self.format.block_bytes()?;

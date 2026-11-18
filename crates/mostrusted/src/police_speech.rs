@@ -1,38 +1,36 @@
-//! Police radio chatter in pursuits (docs/decomp.md "Police sirens, light bars and radio"; data
-//! `mw_assets::police_speech`): the game's speech manager for the pursuit events.
+//! The game's speech: police radio chatter, race and pursuit speech (docs/decomp.md "Radio"; data
+//! `mw_assets::police_speech`, the manager `mw_audio::speech`).
 //!
-//! - **One speech at a time, no queue** (`FUN_008408a0` → `FUN_008406a0`): a request names events in order; the
-//!   first whose conditions hold (all, or any by its flag) and that is eligible (fewer plays than its maximum,
-//!   `Period` minutes since it last ended, not a one-off heard before; `FUN_0083d270`) starts if nothing is
-//!   playing, or interrupts what plays when its `Priority` number is lower (0 highest); otherwise the request
-//!   is dropped.
-//! - **An event** waits its `Delay`, then plays its items at their `StartTime`: a line item says one line picked
-//!   uniformly over all its lines and containers (`FUN_0083c5a0`), with its probability; an event item plays one
-//!   of its sub-events from there. The voice's level is its `Character.AudioSettings` mixer channel's gain
-//!   (0.562 for the radio voices); the radio sound is in the recordings.
-//! - **Triggers** (the scoring actions' `GameplayTrigger`s, `FUN_006f9670`; research log 2026-10-16): chase
-//!   started, resumed, heat level up 1–6, cooldown started, escaped, a cop taken down, and (inferred) busted.
-//! - **Chatter** (HSM 983342 "Speech Manager"): in a chase, every 5 s one of commentary 1186587 / backup 1378016
-//!   / request update 1871411 / player direction 1378788 by `GetRandomNumber[4]` (within 25 m of a chasing cop:
-//!   commentary, direction, or the in-car loudhailer 1186559 twice as often); in the cooldown every 5 s the search
-//!   instructions 1871531.
+//! - **The manager** (`mw_audio::speech::SpeechManager`, G+0x2c3c0) is shared ([`SpeechLink`]) between this module
+//!   and the logic (`logic.rs`): the HSM's "Try to play speech" (`TRYTOPLAYSPE`) asks it through
+//!   `Query::SpeechLoadState` / `TryPlaySpeech` / `SpeechPlaying`, the Lua `PlaySpeech` and the hook / native
+//!   `StopSpeech` reach it as requests, and the HSM "Speech Manager" 983342 (chase / cooldown / race chatter every
+//!   5 s) runs as data in the logic. While the logic runs it also steps the manager on the game clock and
+//!   evaluates the events' conditions through its own bindings (`Mode.*`, `Signals.GetRandomNumber[n]`, ...) after
+//!   the runtime's facts ([`SpeechFacts`]); with `--no-hsm` this module does both, on its facts alone.
+//! - **Triggers** (the scoring actions' `GameplayTrigger`s, `FUN_006f9670` → `FUN_006e0a90`: the first event of
+//!   the list whose conditions hold is requested; research log 2026-10-16): chase started, resumed, heat level
+//!   up 1–6, cooldown started, escaped, a cop taken down, and (inferred) busted. They are C++ in the original, so
+//!   they are raised here from the pursuit's state and queued for the manager.
+//! - **Voices**: each line the manager says is decoded on a thread and played at its `Character.AudioSettings`
+//!   mixer channel's gain (0.562 for the radio voices; the radio sound is in the recordings); a stopped event's
+//!   voices end.
 //!
-//! Conditions read our game state by the binding's last name (`IsInChase`, `HeatLevelInt`, `CopsInChase`,
-//! `GetPlayerSpeed`, `GetRandomNumber[n]`, ...). MODEL: bindings we do not have read 0 (`Mode.IsRaceEvent`,
-//! `GameWorld.Compass`, `WasInChaseWithThisCar`, ...). Not ported: the narrator's one-off lines, the radio clicks
-//! and static bed of `AudioSettings`, vocabulary slots (car model / colour lines; an event made only of them is
-//! passed over), the loudhailer's 3D placement,
-//! cutscene behaviour, the speech volume setting (lines play on the effects volume). `MW_SPEECH_LOG=1` logs
-//! requests and lines.
+//! MODEL: the facts' getters are the runtime's pursuit state (`IsHiddenFromCops` = the cops do not see the player,
+//! `Health` 1, `DistanceToClosestChasingCop` from the cop cars in chase mode); bindings neither the facts nor the
+//! logic resolve read false; without the logic, `GetRandomNumber[n]` draws from a local LCG and the mode time is
+//! the time since start. Not ported: the radio clicks and static bed of `AudioSettings`, the loudhailer's 3D
+//! placement, the speech volume setting (lines play on the effects volume). `MW_SPEECH_LOG=1` logs requests and
+//! lines.
 
 use crate::platform::PollLock;
-use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use avian3d::prelude::LinearVelocity;
 use bevy::audio::Volume;
 use bevy::prelude::*;
-use mw_assets::police_speech::{SpeechData, SpeechEvent, SpeechItem};
+use mw_assets::police_speech::SpeechData;
+use mw_audio::speech::{SpeechManager, SpeechOut, SpeechWorld};
 
 use crate::audio::PcmAudio;
 use crate::car_impacts::AiCrash;
@@ -44,7 +42,9 @@ pub struct PoliceSpeechPlugin;
 
 impl Plugin for PoliceSpeechPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Speech>().add_systems(Update, (load, triggers, chatter, play).chain());
+        app.init_resource::<SpeechLink>()
+            .init_resource::<Speech>()
+            .add_systems(Update, (load, facts, triggers, step, play).chain());
     }
 }
 
@@ -67,168 +67,34 @@ const HEAT_UP: [&[u32]; 6] = [
 /// A cop taken down (the five TAKEDOWN actions' trigger 1378651): within 2 s of the chase's start, else later.
 const TAKEDOWN_EARLY: &[u32] = &[1186381, 1186388, 1186386, 1186390];
 const TAKEDOWN: &[u32] = &[1186421, 1186424, 1186787, 1186413, 1186416];
-/// HSM 983342: the chase chatter by `GetRandomNumber[4]`, far and within 25 m of a chasing cop.
-const CHATTER_FAR: [u32; 4] = [1186587, 1378016, 1871411, 1378788];
-const CHATTER_CLOSE: [u32; 4] = [1186587, 1378788, 1186559, 1186559];
-const CHATTER_CLOSE_RANGE: f32 = 25.0;
-const COOLDOWN_CHATTER: u32 = 1871531;
-/// HSM 983363 / 983365 "Wait For Time" (s).
-const CHATTER_WAIT: f32 = 5.0;
 
-type Job = Arc<Mutex<Option<anyhow::Result<SpeechData>>>>;
-type LineJob = Arc<Mutex<Option<Option<mw_audio::Pcm>>>>;
-
-struct Playing {
-    event: u32,
-    priority: u8,
-    t: f32,
-    /// Items still to start: (time on this event's clock, item).
-    items: Vec<(f32, SpeechItem)>,
-    /// Lines being decoded, voices playing, and when the last line ends.
-    jobs: Vec<LineJob>,
-    voices: Vec<Entity>,
-    end: f32,
+/// The game state the speech conditions and the speech HSM read (written each frame by [`facts`]).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SpeechFacts {
+    pub in_chase: bool,
+    pub in_cooldown: bool,
+    pub heat_level: u8,
+    pub heat_progress: f32,
+    pub cops_chasing: u32,
+    pub speed_mph: f32,
+    pub max_level: u8,
+    pub time_til_evaded: f32,
+    pub hidden: bool,
+    /// Metres to the nearest cop in chase mode (`f32::MAX` without one).
+    pub closest_chasing_cop: f32,
+    pub has_car: bool,
+    /// Set by the logic: a cutscene (NIS) plays; GMM+0x2d28 in minutes (else the time since start).
+    pub in_cutscene: bool,
+    pub mode_minutes: f32,
+    /// Seconds since start (the mode clock's stand-in without the logic).
+    pub now: f32,
 }
 
-#[derive(Resource, Default)]
-struct Speech {
-    data: Option<Arc<SpeechData>>,
-    job: Option<Job>,
-    playing: Option<Playing>,
-    plays: HashMap<u32, u32>,
-    /// Game time each event last ended.
-    ended: HashMap<u32, f32>,
-    heard: HashSet<u32>,
-    rng: u64,
-    chatter: f32,
-    previous: Option<(PursuitState, u8)>,
-}
-
-fn log() -> bool {
-    static LOG: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("MW_SPEECH_LOG").is_some());
-    *LOG
-}
-
-impl Speech {
-    fn random(&mut self, n: u32) -> u32 {
-        self.rng = self.rng.wrapping_mul(0x5851_f42d_4c95_7f2d).wrapping_add(1);
-        ((self.rng >> 33) as u32) % n.max(1)
-    }
-
-    /// A condition string against the game state (`Expr` form: base plus an optional test).
-    fn condition(&mut self, cond: &str, state: &State) -> bool {
-        let Some(e) = mw_audio::sfx_player::Expr::parse(cond) else { return true };
-        let name = e.base.rsplit('.').next().unwrap_or("");
-        let v = if let Some(n) = name.strip_prefix("GetRandomNumber[").and_then(|s| s.strip_suffix(']')) {
-            self.random(n.parse().unwrap_or(1)) as f32
-        } else {
-            state.value(name)
-        };
-        e.apply(v) > 0.5
-    }
-
-    fn eligible(&mut self, ev: &SpeechEvent, state: &State) -> bool {
-        // MODEL: an event made only of vocabulary slots (car model / colour lines, not ported) says nothing here,
-        // so the request goes on to the next event of its list.
-        let says_something = ev.items.iter().any(|i| match i {
-            SpeechItem::Lines { lines, .. } => !lines.is_empty(),
-            SpeechItem::Events { .. } => true,
-        });
-        if !says_something {
-            return false;
-        }
-        if ev.max_plays > 0 && self.plays.get(&ev.id).copied().unwrap_or(0) >= ev.max_plays as u32 {
-            return false;
-        }
-        if ev.one_off && self.heard.contains(&ev.id) {
-            return false;
-        }
-        if let Some(&t) = self.ended.get(&ev.id)
-            && state.now - t < ev.period * 60.0
-        {
-            return false;
-        }
-        if ev.conditions.is_empty() {
-            return true;
-        }
-        let results: Vec<bool> = ev.conditions.iter().map(|c| self.condition(c, state)).collect();
-        if ev.all_conditions { results.iter().all(|&b| b) } else { results.iter().any(|&b| b) }
-    }
-
-    /// `FUN_008408a0`: the first eligible event of `list` starts, unless a more important one plays.
-    fn request(&mut self, commands: &mut Commands, list: &[u32], state: &State, why: &str) -> bool {
-        let Some(data) = self.data.clone() else { return false };
-        for id in list {
-            let Some(ev) = data.events.get(id) else { continue };
-            if !self.eligible(ev, state) {
-                continue;
-            }
-            if let Some(p) = &self.playing {
-                if ev.priority >= p.priority {
-                    if log() {
-                        info!(
-                            "speech: {why}: {id} dropped ({} plays, priority {} ≥ {})",
-                            p.event, ev.priority, p.priority
-                        );
-                    }
-                    return false;
-                }
-                self.stop(commands, state.now);
-            }
-            if log() {
-                info!(
-                    "speech: {why}: event {id} (priority {}, delay {} s, {} items)",
-                    ev.priority,
-                    ev.delay,
-                    ev.items.len()
-                );
-            }
-            self.playing = Some(Playing {
-                event: *id,
-                priority: ev.priority,
-                t: 0.0,
-                items: ev.items.iter().map(|i| (ev.delay + i.start(), i.clone())).collect(),
-                jobs: Vec::new(),
-                voices: Vec::new(),
-                end: 0.0,
-            });
-            *self.plays.entry(*id).or_default() += 1;
-            self.heard.insert(*id);
-            return true;
-        }
-        if log() {
-            info!("speech: {why}: none of {list:?} eligible");
-        }
-        false
-    }
-
-    fn stop(&mut self, commands: &mut Commands, now: f32) {
-        if let Some(p) = self.playing.take() {
-            for v in p.voices {
-                commands.entity(v).try_despawn();
-            }
-            self.ended.insert(p.event, now);
-        }
-    }
-}
-
-/// What the conditions read.
-struct State {
-    now: f32,
-    in_chase: bool,
-    in_cooldown: bool,
-    heat_level: u8,
-    heat_progress: f32,
-    cops_chasing: u32,
-    speed_mph: f32,
-    max_level: u8,
-    time_til_evaded: f32,
-}
-
-impl State {
-    fn value(&self, name: &str) -> f32 {
+impl SpeechFacts {
+    /// A getter by its binding's last name.
+    fn value(&self, name: &str) -> Option<f32> {
         let b = |x: bool| f32::from(u8::from(x));
-        match name {
+        Some(match name {
             "IsInChase" => b(self.in_chase),
             "IsInCooldown" => b(self.in_cooldown),
             "IsInChaseOrCooldown" => b(self.in_chase || self.in_cooldown),
@@ -238,14 +104,141 @@ impl State {
             "GetPlayerSpeed" => self.speed_mph,
             "MaxHeatLevelReachedInChase" => self.max_level as f32,
             "TimeTilEvaded" => self.time_til_evaded,
+            "IsHiddenFromCops" => b(self.hidden),
+            "DistanceToClosestChasingCop" => self.closest_chasing_cop,
             "Health" => 1.0,
-            // MODEL: everything else (race events, the compass, the car history, ...) reads 0.
-            _ => 0.0,
+            _ => return None,
+        })
+    }
+
+    /// A `Players.LocalPlayer.*` / `LocalPlayer.*` / `DrivingFacts.*` binding with its test, when it is one of ours.
+    pub fn binding(&self, path: &str) -> Option<bool> {
+        let e = mw_audio::sfx_player::Expr::parse(path)?;
+        let (root, name) = e.base.rsplit_once('.')?;
+        if !matches!(root, "Players.LocalPlayer" | "LocalPlayer" | "DrivingFacts") {
+            return None;
         }
+        Some(e.apply(self.value(name)?) > 0.5)
     }
 }
 
-fn load(game: Option<Res<crate::Game>>, mut speech: ResMut<Speech>) {
+/// The manager and what it shares with the logic.
+#[derive(Default)]
+pub struct SpeechCore {
+    /// `None` while the events load.
+    pub manager: Option<SpeechManager>,
+    /// The bundle did not load (`Query::SpeechLoadState` answers 1).
+    pub failed: bool,
+    pub facts: SpeechFacts,
+    /// Gameplay triggers waiting for the manager: the event list and why.
+    triggers: Vec<(&'static [u32], &'static str)>,
+    /// What the manager said, for [`play`].
+    out: Vec<SpeechOut>,
+    /// The logic stepped the manager this frame.
+    pub logic_frame: bool,
+    rng: u64,
+}
+
+/// The conditions: the facts, then the logic's bindings.
+struct World<'a, 'l> {
+    facts: &'a SpeechFacts,
+    logic: LogicBindings<'a, 'l>,
+    rng: &'a mut u64,
+}
+
+/// The logic's bindings (`LogicHost::binding_bool`), when the logic runs.
+pub type LogicBindings<'a, 'l> = Option<&'a mut (dyn FnMut(&str) -> Option<bool> + 'l)>;
+
+impl SpeechWorld for World<'_, '_> {
+    fn condition(&mut self, binding: &str) -> bool {
+        if let Some(b) = self.facts.binding(binding) {
+            return b;
+        }
+        if let Some(l) = self.logic.as_mut() {
+            return l(binding).unwrap_or(false);
+        }
+        // Without the logic: `Signals.GetRandomNumber[n]` on a local LCG (`FUN_007a7240`'s form).
+        let Some(e) = mw_audio::sfx_player::Expr::parse(binding) else { return false };
+        let Some(n) = e.base.strip_prefix("Signals.GetRandomNumber[").and_then(|s| s.strip_suffix(']')) else {
+            return false;
+        };
+        let s = *self.rng;
+        *self.rng = s.wrapping_mul(0x5851_f42d_4c95_7f2d).wrapping_add(1);
+        e.apply(((s >> 32) as u32 % n.parse::<u32>().unwrap_or(1).max(1)) as f32) > 0.5
+    }
+    fn mode_minutes(&self) -> f32 {
+        if self.logic.is_some() { self.facts.mode_minutes } else { self.facts.now / 60.0 }
+    }
+    fn has_car(&self) -> bool {
+        self.facts.has_car
+    }
+    fn in_cutscene(&self) -> bool {
+        self.facts.in_cutscene
+    }
+}
+
+pub(crate) fn log() -> bool {
+    static LOG: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var_os("MW_SPEECH_LOG").is_some());
+    *LOG
+}
+
+impl SpeechCore {
+    fn world<'a, 'l>(facts: &'a SpeechFacts, rng: &'a mut u64, logic: LogicBindings<'a, 'l>) -> World<'a, 'l> {
+        World { facts, logic, rng }
+    }
+
+    /// `FUN_008408a0`(id, args): the manager's answer ([`mw_audio::speech::NOT_LOADED`] while loading).
+    pub fn request(&mut self, id: u32, args: [i32; 3], logic: LogicBindings<'_, '_>) -> u32 {
+        let Self { manager, facts, rng, .. } = self;
+        let Some(m) = manager.as_mut() else { return mw_audio::speech::NOT_LOADED };
+        let r = m.request(id, false, args, &mut Self::world(facts, rng, logic));
+        if log() {
+            info!("speech: request {id}: {r:#x}");
+        }
+        r
+    }
+
+    /// `StopSpeech`.
+    pub fn stop(&mut self) {
+        if let Some(m) = self.manager.as_mut() {
+            m.stop();
+        }
+    }
+
+    /// The queued triggers (each: the first event whose conditions hold, `FUN_006e0a90`), then one manager frame.
+    pub fn step(&mut self, dt: f32, mut logic: LogicBindings<'_, '_>) {
+        let Self { manager, facts, rng, triggers, out, .. } = self;
+        let Some(m) = manager.as_mut() else { return };
+        for (list, why) in std::mem::take(triggers) {
+            let mut w = Self::world(facts, rng, logic.as_mut().map(|l| &mut **l as _));
+            let pick = list.iter().copied().find(|&id| m.conditions_hold(id, &mut w));
+            let r = pick.map(|id| m.request(id, false, [-1, -1, 0], &mut w));
+            if log() {
+                info!("speech: {why}: {pick:?} of {list:?} → {r:?}");
+            }
+        }
+        out.extend(m.update(dt, &mut Self::world(facts, rng, logic)));
+    }
+}
+
+/// The manager shared with the logic.
+#[derive(Resource, Clone, Default)]
+pub struct SpeechLink(pub Arc<Mutex<SpeechCore>>);
+
+type Job = Arc<Mutex<Option<anyhow::Result<SpeechData>>>>;
+type LineJob = Arc<Mutex<Option<Option<mw_audio::Pcm>>>>;
+
+#[derive(Resource, Default)]
+struct Speech {
+    data: Option<Arc<SpeechData>>,
+    job: Option<Job>,
+    /// Lines decoding and voices playing, by event.
+    jobs: Vec<(u32, LineJob)>,
+    voices: Vec<(u32, Entity)>,
+    previous: Option<(PursuitState, u8)>,
+}
+
+fn load(game: Option<Res<crate::Game>>, mut speech: ResMut<Speech>, link: Res<SpeechLink>) {
     if speech.data.is_some() {
         return;
     }
@@ -260,159 +253,125 @@ fn load(game: Option<Res<crate::Game>>, mut speech: ResMut<Speech>) {
                 *out.lock().unwrap() = Some(d);
             });
             speech.job = Some(job);
-            speech.rng = 0x853c_49e6_748f_ea9b;
         }
         Some(job) => {
             let Some(done) = job.poll_lock().and_then(|mut s| s.take()) else { return };
+            let mut core = link.0.lock().unwrap();
             match done {
                 Ok(d) => {
                     info!("speech: {} events, {} waves", d.events.len(), d.waves.len());
+                    core.manager = Some(SpeechManager::new(d.events.values().cloned()));
                     speech.data = Some(Arc::new(d));
                 }
                 Err(e) => {
-                    warn!("speech: no police radio ({e})");
+                    warn!("speech: no speech events ({e})");
+                    core.failed = true;
                     speech.data = Some(Arc::new(SpeechData::default()));
                 }
             }
+            core.rng = 0x853c_49e6_748f_ea9b;
         }
     }
 }
 
-fn state(time: &Time, police: &Police, hud: &PursuitHud, speed_mph: f32) -> State {
-    let p = &police.pursuit;
-    State {
-        now: time.elapsed_secs(),
-        in_chase: p.state == PursuitState::Chase,
-        in_cooldown: p.state == PursuitState::Cooldown,
-        heat_level: hud.heat_level,
-        heat_progress: hud.heat_progress,
-        cops_chasing: p.cops_chasing,
-        speed_mph,
-        max_level: p.max_level,
-        time_til_evaded: p.time_til_evaded,
-    }
-}
-
-/// The pursuit's events → speech requests.
+/// The facts the conditions read.
 #[allow(clippy::type_complexity)]
-fn triggers(
-    mut commands: Commands,
+fn facts(
     time: Res<Time>,
     police: Option<Res<Police>>,
     hud: Option<Res<PursuitHud>>,
-    mut speech: ResMut<Speech>,
-    player: Query<&LinearVelocity, With<Player>>,
-    taken_down: Query<(), (Added<AiCrash>, With<Cop>)>,
-) {
-    let (Some(police), Some(hud)) = (police, hud) else { return };
-    if speech.data.is_none() {
-        return;
-    }
-    let speed = player.single().map_or(0.0, |v| v.0.length() / 0.447_04);
-    let s = state(&time, &police, &hud, speed);
-    let now = (police.pursuit.state, hud.heat_level);
-    let Some((was, level)) = speech.previous.replace(now) else { return };
-    let started = |a: PursuitState, b: PursuitState| was == a && now.0 == b;
-    if was != now.0 {
-        match now.0 {
-            PursuitState::Chase if was == PursuitState::Cooldown => {
-                speech.request(&mut commands, CHASE_RESUMED, &s, "chase resumed");
-            }
-            PursuitState::Chase => {
-                speech.request(&mut commands, CHASE_STARTED, &s, "chase started");
-            }
-            PursuitState::Cooldown => {
-                speech.request(&mut commands, COOLDOWN_STARTED, &s, "cooldown");
-            }
-            PursuitState::Escaped => {
-                speech.request(&mut commands, ESCAPED, &s, "escaped");
-            }
-            PursuitState::Busted => {
-                speech.request(&mut commands, BUSTED, &s, "busted");
-            }
-            PursuitState::None => {}
-        }
-        speech.chatter = 0.0;
-    } else if now.1 > level && (1..=6).contains(&now.1) && !started(PursuitState::None, PursuitState::Chase) {
-        speech.request(&mut commands, HEAT_UP[now.1 as usize - 1], &s, "heat level up");
-    }
-    if s.in_chase && !taken_down.is_empty() {
-        let list = if police.pursuit.chase_time <= 2.0 { TAKEDOWN_EARLY } else { TAKEDOWN };
-        speech.request(&mut commands, list, &s, "cop taken down");
-    }
-}
-
-/// HSM 983342: every 5 s in a chase or cooldown, one chatter event.
-#[allow(clippy::type_complexity)]
-fn chatter(
-    mut commands: Commands,
-    time: Res<Time>,
-    police: Option<Res<Police>>,
-    hud: Option<Res<PursuitHud>>,
-    mut speech: ResMut<Speech>,
+    link: Res<SpeechLink>,
     player: Query<(&Transform, &LinearVelocity), With<Player>>,
     cops: Query<(&Transform, &Cop), Without<Player>>,
 ) {
-    let (Some(police), Some(hud)) = (police, hud) else { return };
-    if speech.data.is_none() || speech.playing.is_some() {
+    let mut core = link.0.lock().unwrap();
+    let f = &mut core.facts;
+    f.now = time.elapsed_secs();
+    let car = player.single().ok();
+    f.has_car = car.is_some();
+    f.speed_mph = car.map_or(0.0, |(_, v)| v.0.length() / 0.447_04);
+    let (Some(police), Some(hud)) = (police, hud) else {
+        f.in_chase = false;
+        f.in_cooldown = false;
+        f.closest_chasing_cop = f32::MAX;
         return;
-    }
-    let Ok((pt, pv)) = player.single() else { return };
-    let s = state(&time, &police, &hud, pv.0.length() / 0.447_04);
-    if !s.in_chase && !s.in_cooldown {
-        speech.chatter = 0.0;
-        return;
-    }
-    speech.chatter += time.delta_secs();
-    if speech.chatter < CHATTER_WAIT {
-        return;
-    }
-    speech.chatter = 0.0;
-    if s.in_cooldown {
-        speech.request(&mut commands, &[COOLDOWN_CHATTER], &s, "cooldown chatter");
-        return;
-    }
-    let close = cops
-        .iter()
-        .filter(|(_, c)| c.mode() == CopMode::Chase)
-        .any(|(t, _)| t.translation.distance(pt.translation) <= CHATTER_CLOSE_RANGE);
-    let pick = speech.random(4) as usize;
-    let id = if close { CHATTER_CLOSE[pick] } else { CHATTER_FAR[pick] };
-    speech.request(&mut commands, &[id], &s, "chase chatter");
+    };
+    let p = &police.pursuit;
+    f.in_chase = p.state == PursuitState::Chase;
+    f.in_cooldown = p.state == PursuitState::Cooldown;
+    f.heat_level = hud.heat_level;
+    f.heat_progress = hud.heat_progress;
+    f.cops_chasing = p.cops_chasing;
+    f.max_level = p.max_level;
+    f.time_til_evaded = p.time_til_evaded;
+    f.hidden = !p.sighted;
+    f.closest_chasing_cop = car.map_or(f32::MAX, |(pt, _)| {
+        cops.iter()
+            .filter(|(_, c)| c.mode() == CopMode::Chase)
+            .map(|(t, _)| t.translation.distance(pt.translation))
+            .fold(f32::MAX, f32::min)
+    });
 }
 
-/// The playing event's clock: start its lines, end it when they are done.
+/// The pursuit's gameplay triggers → queued speech requests.
+fn triggers(
+    police: Option<Res<Police>>,
+    hud: Option<Res<PursuitHud>>,
+    mut speech: ResMut<Speech>,
+    link: Res<SpeechLink>,
+    taken_down: Query<(), (Added<AiCrash>, With<Cop>)>,
+) {
+    let (Some(police), Some(hud)) = (police, hud) else { return };
+    let now = (police.pursuit.state, hud.heat_level);
+    let Some((was, level)) = speech.previous.replace(now) else { return };
+    let mut core = link.0.lock().unwrap();
+    if core.manager.is_none() {
+        return;
+    }
+    let t = &mut core.triggers;
+    if was != now.0 {
+        match now.0 {
+            PursuitState::Chase if was == PursuitState::Cooldown => t.push((CHASE_RESUMED, "chase resumed")),
+            PursuitState::Chase => t.push((CHASE_STARTED, "chase started")),
+            PursuitState::Cooldown => t.push((COOLDOWN_STARTED, "cooldown")),
+            PursuitState::Escaped => t.push((ESCAPED, "escaped")),
+            PursuitState::Busted => t.push((BUSTED, "busted")),
+            PursuitState::None => {}
+        }
+    } else if now.1 > level && (1..=6).contains(&now.1) {
+        t.push((HEAT_UP[now.1 as usize - 1], "heat level up"));
+    }
+    if now.0 == PursuitState::Chase && !taken_down.is_empty() {
+        let list = if police.pursuit.chase_time <= 2.0 { TAKEDOWN_EARLY } else { TAKEDOWN };
+        t.push((list, "cop taken down"));
+    }
+}
+
+/// Without the logic, the manager's frame here (the logic steps it otherwise, `logic.rs`).
+fn step(time: Res<Time>, link: Res<SpeechLink>) {
+    let mut core = link.0.lock().unwrap();
+    if std::mem::take(&mut core.logic_frame) {
+        return;
+    }
+    core.step(time.delta_secs(), None);
+}
+
+/// The manager's lines → voices; a stopped event's voices end.
 fn play(
     mut commands: Commands,
-    time: Res<Time>,
     mut speech: ResMut<Speech>,
+    link: Res<SpeechLink>,
     mut assets: ResMut<Assets<PcmAudio>>,
     settings: Option<Res<crate::settings::AudioSettings>>,
 ) {
+    let out = std::mem::take(&mut link.0.lock().unwrap().out);
     let speech = &mut *speech;
     let Some(data) = speech.data.clone() else { return };
-    let now = time.elapsed_secs();
-    let Some(mut p) = speech.playing.take() else { return };
-    p.t += time.delta_secs();
-    // Items whose time has come.
-    let mut due = Vec::new();
-    p.items.retain(|(t, it)| {
-        if *t <= p.t {
-            due.push((*t, it.clone()));
-            false
-        } else {
-            true
-        }
-    });
-    for (t, item) in due {
-        match item {
-            SpeechItem::Lines { probability, lines, .. } => {
-                if lines.is_empty() || (speech.random(1000) as f32) / 1000.0 >= probability {
-                    continue;
-                }
-                let line = lines[speech.random(lines.len() as u32) as usize];
+    for o in out {
+        match o {
+            SpeechOut::Say { event, line } => {
                 let job: LineJob = Arc::new(Mutex::new(None));
-                let out = job.clone();
+                let done = job.clone();
                 let d = data.clone();
                 crate::platform::thread::spawn(move || {
                     let pcm = d.line_pcm(line.wave).map(|mut pcm| {
@@ -421,35 +380,37 @@ fn play(
                         }
                         pcm
                     });
-                    *out.lock().unwrap() = Some(pcm);
+                    *done.lock().unwrap() = Some(pcm);
                 });
                 if log() {
-                    info!("speech: event {} line {} at {t:.1} s", p.event, line.wave);
+                    info!("speech: event {event} line {} ({:.2} s)", line.wave, line.duration);
                 }
-                p.jobs.push(job);
-                // Until the line has decoded, the event lasts at least a moment past its start.
-                p.end = p.end.max(t + 0.5);
+                speech.jobs.push((event, job));
             }
-            SpeechItem::Events { events, .. } => {
-                if events.is_empty() {
-                    continue;
-                }
-                let id = events[speech.random(events.len() as u32) as usize];
-                if let Some(ev) = data.events.get(&id) {
-                    for i in &ev.items {
-                        p.items.push((p.t + ev.delay + i.start(), i.clone()));
+            SpeechOut::Stop { event } => {
+                speech.jobs.retain(|(e, _)| *e != event);
+                speech.voices.retain(|&(e, v)| {
+                    if e == event {
+                        commands.entity(v).try_despawn();
                     }
-                }
+                    e != event
+                });
             }
         }
     }
-    // Lines that have decoded start now.
     let vol = settings.as_ref().map_or(0.6, |s| s.gain(crate::settings::Channel::Sfx));
-    p.jobs.retain(|job| {
+    let mut started = Vec::new();
+    speech.jobs.retain(|(event, job)| {
         let Some(done) = job.poll_lock().and_then(|mut s| s.take()) else { return true };
         if let Some(pcm) = done {
-            let secs = pcm.samples.len() as f32 / pcm.sample_rate.max(1) as f32 / pcm.channels.max(1) as f32;
-            p.end = p.end.max(p.t + secs);
+            if log() {
+                // The voice's level as it is handed to the mixer (after the channel gain), before the volume.
+                let n = pcm.samples.len().max(1) as f32;
+                let rms = (pcm.samples.iter().map(|&x| (x as f32 / 32768.0).powi(2)).sum::<f32>() / n).sqrt();
+                let peak = pcm.samples.iter().map(|&x| (x as f32 / 32768.0).abs()).fold(0.0, f32::max);
+                let secs = n / pcm.sample_rate.max(1) as f32 / pcm.channels.max(1) as f32;
+                info!("speech: voice for event {event}: {secs:.2} s, rms {rms:.3}, peak {peak:.3}, volume {vol:.2}");
+            }
             let h = assets.add(PcmAudio { pcm: Arc::new(pcm) });
             let e = commands
                 .spawn((
@@ -458,16 +419,11 @@ fn play(
                     crate::settings::Channel::Sfx,
                 ))
                 .id();
-            p.voices.push(e);
+            started.push((*event, e));
         }
         false
     });
-    if p.items.is_empty() && p.jobs.is_empty() && p.t >= p.end {
-        if log() {
-            info!("speech: event {} ended after {:.1} s", p.event, p.t);
-        }
-        speech.ended.insert(p.event, now);
-        return;
-    }
-    speech.playing = Some(p);
+    speech.voices.extend(started);
+    // Voices despawn themselves when they end.
+    speech.voices.retain(|&(_, v)| commands.get_entity(v).is_ok());
 }

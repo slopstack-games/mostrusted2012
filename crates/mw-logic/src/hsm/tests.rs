@@ -334,3 +334,26 @@ fn sub_networks_run_as_their_own_machine() {
     assert_eq!(hsm.result(serial), Some(EXIT));
     assert!(host.log.contains(&"exit 2 DONE".to_owned()));
 }
+
+#[test]
+fn integer_parameters_read_like_atoi() {
+    // `param_int` is `atoi`: digits only, so "1e3" is 1 and "12.9" is 12 (not `atof`'s 1000).
+    struct ReadN;
+    impl Behaviour for ReadN {
+        fn on_enter(&mut self, cx: &mut Cx) {
+            for n in ["A", "B", "C", "D"] {
+                let v = behaviours::param_int(cx, n);
+                cx.host.publish(&format!("{n}={v}"), &Json::Null);
+            }
+        }
+    }
+    let mut root = state(1, "READN", Fallback::Exit);
+    root.parameters = vec![param("A", "1e3"), param("B", " -12.9x"), param("C", "730003"), param("D", "")];
+    let mut reg = Registry::structural();
+    reg.register_fn("READN", |_| ReadN);
+    let mut hsm = Hsm::new(data(vec![root], vec![]), reg);
+    let mut host = TestHost::default();
+    hsm.start(1, &mut host).unwrap();
+    hsm.update(&mut host, DT);
+    assert_eq!(host.published, ["+A=1", "+B=-12", "+C=730003", "+D=0"]);
+}

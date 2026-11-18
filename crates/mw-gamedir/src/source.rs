@@ -22,7 +22,10 @@ pub trait Source: Send + Sync + std::fmt::Debug {
     /// The whole file.
     fn read(&self, canonical: &str) -> io::Result<Vec<u8>> {
         let len = self.len(canonical)?;
-        self.read_at(canonical, 0, len as usize)
+        // A file larger than the address space (over 4 GB on wasm32) cannot be held whole: an error, not a
+        // silently truncated read.
+        let len = usize::try_from(len).map_err(|_| io::Error::new(io::ErrorKind::OutOfMemory, "file too large"))?;
+        self.read_at(canonical, 0, len)
     }
     /// The install directory when the files are on disk (native tools that hand paths to other programs).
     fn dir(&self) -> Option<&Path> {
@@ -243,10 +246,17 @@ impl WebSource {
 
     /// From `(path as picked, File)` pairs; paths are made install-relative with [`install_relative_paths`].
     pub fn from_files(files: impl IntoIterator<Item = (String, web_sys::File)>) -> io::Result<Self> {
-        let mut entries = Vec::new();
+        let mut entries: Vec<(String, String, u64)> = Vec::new();
         for (path, file) in files {
-            let url = web_sys::Url::create_object_url_with_blob(&file).map_err(js_err)?;
-            entries.push((path, url, file.size() as u64));
+            match web_sys::Url::create_object_url_with_blob(&file) {
+                Ok(url) => entries.push((path, url, file.size() as u64)),
+                Err(e) => {
+                    for (_, url, _) in &entries {
+                        let _ = web_sys::Url::revoke_object_url(url);
+                    }
+                    return Err(js_err(e));
+                }
+            }
         }
         Ok(Self::from_urls(entries))
     }
@@ -263,6 +273,9 @@ impl WebSource {
             if let Some(rel) = rel {
                 out.index.insert(rel.clone());
                 out.files.insert(rel, (url, size));
+            } else if url.starts_with("blob:") {
+                // Outside the install: never read, so its blob URL is released now.
+                let _ = web_sys::Url::revoke_object_url(&url);
             }
         }
         out
@@ -270,6 +283,17 @@ impl WebSource {
 
     fn get(&self, canonical: &str) -> io::Result<&(String, u64)> {
         self.files.get(canonical).ok_or_else(|| io::ErrorKind::NotFound.into())
+    }
+}
+
+/// The blob URLs keep their files reachable until revoked: release them with the source (a folder that turned
+/// out not to be an install, picked again, would otherwise leave one URL per file behind each time).
+#[cfg(target_arch = "wasm32")]
+impl Drop for WebSource {
+    fn drop(&mut self) {
+        for (url, _) in self.files.values().filter(|(url, _)| url.starts_with("blob:")) {
+            let _ = web_sys::Url::revoke_object_url(url);
+        }
     }
 }
 
@@ -311,11 +335,32 @@ fn blob_range(url: &str, offset: u64, len: usize, size: u64) -> io::Result<Vec<u
             web_sys::console::warn_1(&format!("main-thread game file read: {url} {offset}+{len} in {ms:.0} ms").into());
         }
     }
+    range_result(status, bytes, offset, len, size)
+}
+
+/// What a range request's answer means: `206` with exactly the bytes asked for, or `200` with the whole file
+/// (a browser or server that ignores `Range`), cut to the range. Anything else is an error: a missing file is
+/// `NotFound`, a short or long body `UnexpectedEof` / `InvalidData` (the file changed since it was listed).
+#[cfg(any(target_arch = "wasm32", test))]
+fn range_result(status: u16, bytes: Vec<u8>, offset: u64, len: usize, size: u64) -> io::Result<Vec<u8>> {
+    let err = |kind: io::ErrorKind| {
+        io::Error::new(kind, format!("file read {offset}+{len} of {size}: status {status}, {} bytes", bytes.len()))
+    };
     match status {
         206 if bytes.len() == len => Ok(bytes),
-        // A browser that ignores the range sends the whole file.
-        200 if bytes.len() as u64 == size => Ok(bytes[offset as usize..offset as usize + len].to_vec()),
-        _ => Err(io::Error::other(format!("blob read {offset}+{len}: status {status}, {} bytes", bytes.len()))),
+        206 if bytes.len() < len => Err(err(io::ErrorKind::UnexpectedEof)),
+        206 => Err(err(io::ErrorKind::InvalidData)),
+        200 if bytes.len() as u64 == size => {
+            if offset == 0 && len == bytes.len() {
+                return Ok(bytes);
+            }
+            let range = usize::try_from(offset).ok().and_then(|o| bytes.get(o..o.checked_add(len)?));
+            range.map(<[u8]>::to_vec).ok_or_else(|| err(io::ErrorKind::UnexpectedEof))
+        }
+        200 => Err(err(io::ErrorKind::InvalidData)),
+        404 | 410 => Err(err(io::ErrorKind::NotFound)),
+        416 => Err(err(io::ErrorKind::UnexpectedEof)),
+        _ => Err(err(io::ErrorKind::Other)),
     }
 }
 
@@ -368,6 +413,23 @@ mod tests {
                 None
             ]
         );
+    }
+
+    #[test]
+    fn range_answers_are_checked_against_the_request() {
+        let file: Vec<u8> = (0..10).collect();
+        assert_eq!(range_result(206, vec![3, 4, 5], 3, 3, 10).unwrap(), vec![3, 4, 5]);
+        // The range ignored: the whole file comes back and is cut; a whole-file read keeps it as it is.
+        assert_eq!(range_result(200, file.clone(), 3, 3, 10).unwrap(), vec![3, 4, 5]);
+        assert_eq!(range_result(200, file.clone(), 0, 10, 10).unwrap(), file);
+        assert_eq!(range_result(206, vec![3, 4], 3, 3, 10).unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(range_result(206, vec![0; 4], 3, 3, 10).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        assert_eq!(range_result(200, vec![0; 9], 3, 3, 10).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        assert_eq!(range_result(200, file.clone(), 8, 3, 10).unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(range_result(200, file, u64::MAX, 3, 10).unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(range_result(404, Vec::new(), 0, 3, 10).unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert_eq!(range_result(416, Vec::new(), 9, 3, 10).unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(range_result(500, Vec::new(), 0, 3, 10).unwrap_err().kind(), io::ErrorKind::Other);
     }
 
     #[test]

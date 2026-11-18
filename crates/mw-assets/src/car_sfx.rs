@@ -547,6 +547,8 @@ impl AssetStore {
             end,
             fade_in: Fade::default(),
             fade_out: Fade::default(),
+            // Our own timeline item: plays its whole wave whatever the pitch (model decision).
+            mode: 3,
             enabled: String::new(),
             channel: None,
             kind: ItemKind::Wave {
@@ -596,6 +598,8 @@ impl AssetStore {
             end,
             fade_in: Fade::default(),
             fade_out: Fade::default(),
+            // Our own timeline item: plays its whole wave whatever the pitch (model decision).
+            mode: 3,
             enabled: String::new(),
             channel: None,
             kind: ItemKind::Wave { waves, gain, pitch: ModValue::constant(1.0), probability: None },

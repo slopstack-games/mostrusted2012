@@ -1128,6 +1128,8 @@ fn run(mut cli: Cli, game: GameDir) -> anyhow::Result<()> {
             new_profile: cli.new_game || profile_file.as_deref().and_then(frontend::load_profile).is_none(),
             profile: profile_file.clone().filter(|_| !cli.new_game),
             volume: cli.volume.clone(),
+            // The start-up flow (`boot_start`) is a `Request::Drive` too, but boots through the front end.
+            direct: matches!(request, Request::Drive { .. }) && boot_start.is_none() && cli.hsm_event.is_none(),
         })
         .add_plugins(pause::PausePlugin {
             enabled: (menu_enabled || cli.show_pause) && matches!(request, Request::Drive { .. }),
@@ -1225,6 +1227,7 @@ fn run(mut cli: Cli, game: GameDir) -> anyhow::Result<()> {
         .init_resource::<zone_view::ZoneView>()
         .init_resource::<streaming::StreamRegistry>()
         .init_resource::<streaming::PlacementFocus>()
+        .init_resource::<pause::PauseReasons>()
         .add_systems(Startup, (setup, cpu_light_clustering))
         .add_systems(Update, (start_loader, receive_assets, update_status, auto_screenshot))
         .add_systems(

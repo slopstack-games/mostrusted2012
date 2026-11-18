@@ -9,14 +9,21 @@
 
 use mw_assets::handling::TyreAxle;
 
-/// Slip ratio κ = (ωr − v) / v while braking (the tread slower than the road), (ωr − v) / ωr while driving;
-/// clamped to ±10.
+/// Below this rim speed (m/s) κ takes the braking form whatever the road speed (`FUN_009ba3e0`, `.bss`
+/// 0x01186af0, read live).
+const BRAKE_FORM_RIM: f32 = 0.01;
+
+/// Slip ratio κ = (ωr − v) / v while braking (the tread slower than the road, or |ωr| < 0.01), (ωr − v) / ωr while
+/// driving; clamped to ±10 (`FUN_009ba3e0`). Both divisions are by the signed speed, so a locked wheel brakes
+/// (κ < 0) and a spinning one drives (κ > 0) backwards as well as forwards.
 pub fn slip_ratio(rim_speed: f32, road_speed: f32) -> f32 {
     let (w, v) = (rim_speed, road_speed);
     if w.abs() < 1e-3 && v.abs() < 1e-3 {
         return 0.0;
     }
-    let k = if w.abs() < v.abs() { (w - v) / v.abs().max(1e-3) } else { (w - v) / w.abs().max(1e-3) };
+    // Ours: a divisor under 1 mm/s is held at that, keeping its sign.
+    let guard = |x: f32| if x.abs() < 1e-3 { 1e-3f32.copysign(x) } else { x };
+    let k = if w.abs() < BRAKE_FORM_RIM || w.abs() < v.abs() { (w - v) / guard(v) } else { (w - v) / guard(w) };
     k.clamp(-10.0, 10.0)
 }
 
@@ -74,5 +81,21 @@ mod tests {
         assert!((slip_ratio(0.0, 20.0) + 1.0).abs() < 1e-6); // locked
         assert!((slip_ratio(20.0, 10.0) - 0.5).abs() < 1e-6); // spinning
         assert!(slip_ratio(30.0, 0.0) > 0.99); // burnout
+    }
+
+    #[test]
+    fn slip_ratio_signs_in_reverse() {
+        // Rolling backwards: a locked wheel brakes (κ = −1), a wheel spinning backwards faster than the road drives
+        // (κ > 0), as forwards: the game divides by the signed v or ωr (`FUN_009ba3e0`).
+        assert!((slip_ratio(0.0, -20.0) + 1.0).abs() < 1e-6);
+        assert!((slip_ratio(-10.0, -20.0) + 0.5).abs() < 1e-6);
+        assert!((slip_ratio(-20.0, -10.0) - 0.5).abs() < 1e-6);
+        assert!(slip_ratio(-30.0, 0.0) > 0.99); // reverse burnout
+    }
+
+    #[test]
+    fn slip_ratio_braking_form_below_a_hundredth() {
+        // |ωr| < 0.01 m/s takes the braking form (ωr − v) / v even when the rim is faster than the road.
+        assert!((slip_ratio(0.008, 0.004) - 1.0).abs() < 1e-4);
     }
 }

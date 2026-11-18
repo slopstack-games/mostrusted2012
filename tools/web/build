@@ -4,6 +4,8 @@
 # --version 0.2.129`, or WASM_BINDGEN=<path>). Serve and open it with tools/web/serve.py. Prints only warnings /
 # errors and the result (WEB_BUILD_VERBOSE=1: cargo's whole output and a --timings report, as CI does).
 # WEB_TOOLCHAIN=<toolchain> picks another nightly (CI pins one).
+# The module is then shrunk with binaryen's wasm-opt when it is on PATH (WASM_OPT=<path>; WASM_OPT=none skips it;
+# WASM_OPT_LEVEL, default -O2: the size levels -Os / -Oz trade speed). Without wasm-opt the module is only larger.
 set -e
 R="$(cd "$(dirname "$0")/../.." && pwd)"
 export RUSTFLAGS='-C target-feature=+atomics,+bulk-memory,+mutable-globals -C link-arg=--shared-memory -C link-arg=--max-memory=4294967296 -C link-arg=--import-memory -C link-arg=--export=__wasm_init_tls -C link-arg=--export=__tls_size -C link-arg=--export=__tls_align -C link-arg=--export=__tls_base'
@@ -24,6 +26,26 @@ fi
 WASM="$R/target/wasm-threads/wasm32-unknown-unknown/release/mostrusted.wasm"
 [ -f "$WASM" ] || exit 1
 "${WASM_BINDGEN:-wasm-bindgen}" --target web --no-typescript --out-dir "$R/target/web/pkg" "$WASM"
+# wasm-opt on the bindgen output. The feature flags are the ones the threaded module uses (RUSTFLAGS above plus
+# the target's defaults); -g keeps the function names, which the page's panic reports print (Rust stacks).
+BG="$R/target/web/pkg/mostrusted_bg.wasm"
+OPT="${WASM_OPT:-wasm-opt}"
+if [ "$OPT" = none ]; then
+  :
+elif command -v "$OPT" > /dev/null 2>&1; then
+  BEFORE=$(wc -c < "$BG")
+  if nice -n 19 "$OPT" "${WASM_OPT_LEVEL:--O2}" -g --enable-threads --enable-bulk-memory \
+    --enable-mutable-globals --enable-nontrapping-float-to-int --enable-sign-ext --enable-reference-types \
+    --enable-multivalue "$BG" -o "$BG.opt"; then
+    mv "$BG.opt" "$BG"
+    echo "wasm-opt: $BEFORE -> $(wc -c < "$BG") bytes"
+  else
+    rm -f "$BG.opt"
+    echo "wasm-opt failed: the module is left as wasm-bindgen wrote it"
+  fi
+else
+  echo "wasm-opt not found: the module is not shrunk (install binaryen, or WASM_OPT=<path>)"
+fi
 cp "$R/tools/web/index.html" "$R/target/web/index.html"
 cp "$R/tools/web/coi-sw.js" "$R/target/web/coi-sw.js"
 ls -la "$R/target/web/pkg" | awk '/_bg.wasm|\.js$/ {print $5, $9}'

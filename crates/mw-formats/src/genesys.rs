@@ -266,15 +266,21 @@ impl Type {
     /// For each array field (by index into `fields`), the index of the
     /// field holding its length.
     pub fn array_counts(&self, types: &dyn Fn(ResourceId) -> Option<Type>) -> Vec<(usize, Option<usize>)> {
+        self.array_counts_in(types, 0)
+    }
+
+    /// [`Type::array_counts`] `depth` bases down. The depth limit stops a base chain that loops (A extends B
+    /// extends A) from recursing until the stack overflows.
+    fn array_counts_in(&self, types: &dyn Fn(ResourceId) -> Option<Type>, depth: usize) -> Vec<(usize, Option<usize>)> {
         // A derived type starts with its base type's fields, whose counts sit in the base's block
         // (WaveSelectSequenceItem extends WaveSequenceItem).
-        let base = self.base.filter(|&b| b != self.id).and_then(types).filter(|b| {
+        let base = self.base.filter(|&b| b != self.id && depth < 16).and_then(types).filter(|b| {
             !b.fields.is_empty()
                 && b.fields.len() <= self.fields.len()
                 && b.fields.iter().zip(&self.fields).all(|(x, y)| x.name_hash == y.name_hash && x.offset == y.offset)
         });
         let first = base.as_ref().map_or(0, |b| b.fields.len());
-        let mut out = base.map(|b| b.array_counts(types)).unwrap_or_default();
+        let mut out = base.map(|b| b.array_counts_in(types, depth + 1)).unwrap_or_default();
         let mut arrays: Vec<usize> = (first..self.fields.len()).filter(|&i| self.fields[i].is_array()).collect();
         let Some(&last) = arrays.iter().max() else { return out };
         let last_ptr =
@@ -384,11 +390,17 @@ pub struct Decoder<'a> {
     res: &'a Resource,
     types: &'a dyn Fn(ResourceId) -> Option<Type>,
     depth: usize,
+    /// Objects still allowed: sub-objects that point back at their parent (or share children) would otherwise
+    /// decode `fan-out^32` objects, since failed arrays are kept as [`Value::Undecoded`] and decoding goes on.
+    budget: usize,
 }
+
+/// Most objects one resource may decode (see `Decoder::budget`).
+const OBJECT_BUDGET: usize = 1 << 18;
 
 impl<'a> Decoder<'a> {
     pub fn new(res: &'a Resource, types: &'a dyn Fn(ResourceId) -> Option<Type>) -> Self {
-        Self { res, types, depth: 0 }
+        Self { res, types, depth: 0, budget: OBJECT_BUDGET }
     }
 
     /// Decode the root object (type from the import at offset 0).
@@ -402,6 +414,7 @@ impl<'a> Decoder<'a> {
         if self.depth > 32 {
             return Err(Error::Malformed("GeneSys nesting too deep".into()));
         }
+        self.budget = self.budget.checked_sub(1).ok_or_else(|| Error::Malformed("GeneSys object budget".into()))?;
         self.depth += 1;
         let counts = t.array_counts(self.types);
         let mut fields = Vec::with_capacity(t.fields.len());
@@ -570,6 +583,52 @@ fn align(v: usize, a: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use mw_bundle::Import;
+
+    fn field(offset: u32, size: u32, ty: Option<u64>, flags: u16) -> Field {
+        Field { name_hash: offset, ty: ty.map(ResourceId), offset, size, count: 1, flags }
+    }
+
+    fn struct_type(id: u64, base: Option<u64>, fields: Vec<Field>) -> Type {
+        Type {
+            id: ResourceId(id),
+            name: format!("T{id}"),
+            kind: Kind::Struct,
+            size: 8,
+            base: base.map(ResourceId),
+            fields,
+        }
+    }
+
+    #[test]
+    fn base_type_loop_terminates() {
+        let fields = || vec![field(0, 4, None, 0x800), field(4, 1, None, 0)];
+        let types = |id: ResourceId| Some(struct_type(id.0, Some(id.0 ^ 3), fields()));
+        assert_eq!(types(ResourceId(1)).unwrap().array_counts(&types).len(), 1);
+    }
+
+    /// Objects whose pointer array (200 entries, counted by a u8) all point back at one object: bounded by the
+    /// object budget instead of decoding 200^32 objects.
+    #[test]
+    fn self_referential_pointer_array_terminates() {
+        let types = |id: ResourceId| match id.0 {
+            1 => Some(struct_type(1, None, vec![field(0, 4, None, 0x1800), field(4, 1, Some(2), 0)])),
+            2 => Some(Type { id, name: "u8".into(), kind: Kind::UInt, size: 1, base: None, fields: vec![] }),
+            _ => None,
+        };
+        let mut c0 = vec![0u8; 0x80 + 4 * 200];
+        for at in [0, 0x40] {
+            c0[at..at + 4].copy_from_slice(&0x80u32.to_le_bytes());
+            c0[at + 4] = 200;
+        }
+        for k in 0..200 {
+            c0[0x80 + 4 * k..0x84 + 4 * k].copy_from_slice(&0x40u32.to_le_bytes());
+        }
+        let imports =
+            [0, 0x40].map(|offset| Import { id: ResourceId(1), offset, kind: mw_bundle::ImportKind::Pointer }).to_vec();
+        let res = Resource { id: ResourceId(9), type_id: 0, chunks: [c0, vec![], vec![], vec![]], imports };
+        assert!(Decoder::new(&res, &types).root().is_ok());
+    }
 
     #[test]
     fn field_hashes() {

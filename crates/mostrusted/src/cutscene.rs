@@ -407,9 +407,10 @@ fn run_cutscene(
     let racer_entity = |r: RacerRef| -> Option<Entity> {
         match r {
             RacerRef::LocalPlayer => player.map(|(e, _)| e),
-            RacerRef::Racer(n) => {
-                racers.iter().find(|(_, rc, _)| !rc.player && rc.grid_slot == Some(n as usize - 1)).map(|(e, ..)| e)
-            }
+            RacerRef::Racer(n) => racers
+                .iter()
+                .find(|(_, rc, _)| !rc.player && (n as usize).checked_sub(1).is_some_and(|k| rc.grid_slot == Some(k)))
+                .map(|(e, ..)| e),
             RacerRef::Other => None,
         }
     };
@@ -694,9 +695,10 @@ fn racer_transform(
 ) -> Option<Transform> {
     match RacerRef::parse(binding) {
         RacerRef::LocalPlayer => player,
-        RacerRef::Racer(n) => {
-            racers.iter().find(|(_, rc, _)| !rc.player && rc.grid_slot == Some(n as usize - 1)).map(|(_, _, t)| *t)
-        }
+        RacerRef::Racer(n) => racers
+            .iter()
+            .find(|(_, rc, _)| !rc.player && (n as usize).checked_sub(1).is_some_and(|k| rc.grid_slot == Some(k)))
+            .map(|(_, _, t)| *t),
         RacerRef::Other => None,
     }
 }

@@ -577,17 +577,23 @@ See `crates/mw-audio` (decoders reimplemented from vgmstream's documentation of 
   `Speech.VehicleVocab`, 20 `Character.AudioSettings`, mixer channels, 17 radio click / bed `Wave`s, a
   `SpeechEventList`, a `WaveContainerTable` and a `WaveDictionary`). `SpeechEventSequence` (76 bytes): +0x20
   `SequenceItems`, +0x2c `a137b739` condition strings, +0x30 `Delay`, +0x34 / +0x38 mode-time window (minutes),
-  +0x3c `Period` (minutes), +0x40 `Cutscene_Behaviour`, +0x44 `47906457` all conditions, +0x46 `c78f4f4a`
-  one-off, +0x47 `a40bb99b` needs a car, +0x48 `Priority`, +0x49 `27e5d881` max plays. Items:
-  `ScriptLineSequenceItem` (+0x24 lines `cea5cd0e`, +0x28 containers `39050096` → `ScriptLineContainer` {+0x0c
-  character, lines}, +0x2c `Context`, +0x2e `Speaker`, +0x30 `9f199cf7` vocabulary kind, +0x32 `6366398d`
-  probability) and `SpeechEventSequenceItem` (+0x24 `8239ac66` event ids). `ScriptLine`: `Character` handle (an
+  +0x3c `Period` (minutes), +0x40 `Cutscene_Behaviour` (word: 0 / 1 / 2, 20 / 77 / 13 events), +0x44 `47906457`
+  all conditions (every event without conditions has it set), +0x45 `592f713e` (one event; handed to the line
+  player, flag 0x20 of its play call), +0x46 `c78f4f4a` one-off, +0x47 `a40bb99b` needs a car, +0x48 `Priority`,
+  +0x49 `27e5d881` max plays; +0x34 is the latest and +0x38 the earliest mode time (`FUN_0083d270`; 8 events
+  have an earliest time, none a latest). Items (`StartTime` / `EndTime` on the event's clock, 1 s long with 1 s
+  gaps in most events): `ScriptLineSequenceItem` (+0x24 lines `cea5cd0e` (count byte +0x34), +0x28 containers
+  `39050096` (count byte +0x33) → `ScriptLineContainer` {+0x0c `Character` id, +0x14 lines, count byte +0x18},
+  +0x2c `Context`, +0x2e `Speaker`, +0x30 `9f199cf7` vocabulary kind, +0x32 `Probability` (percent)) and
+  `SpeechEventSequenceItem` (+0x24 `8239ac66` event ids). The manager that plays them: decomp.md "Radio",
+  `mw_audio::speech`. `ScriptLine`: `Character` handle (an
   `AudioSettings`: `Mixer_Channel`, a bed wave, three clicks), `f8b496b9.LocalisedWave` = the low 32 bits of a
   container id. **`WaveContainerTable`** (type 0x82): `"wct "`, u32 2, u32 header size 0x18, u32 count, u32
   name offset (`"SpeechEventSequences.swc0"`), u32 0, then `{u64 id, u32 offset, u32 size}`; the SWC0
   (`EN_US/SWC/SPEECHEVENTSEQUENCES.SWC0`, 225 MB) holds plain SPS streams (EALayer3, mono, 48 kHz) at those
   offsets (32-byte aligned). **`WaveDictionary`** (0x84): u32 0, u32 2, u32 tail offset, u32 entries offset
-  (0x14), u32 count, then `{f32 duration ms, u32 id}`. `mwtool speech [<event>] [--out dir]`.
+  (0x14), u32 count, then `{f32 duration ms, u32 id}` (the ids are the `LocalisedWave`s; the lengths equal the
+  decoded streams', checked on event 1186352). `mwtool speech [<event>] [--out dir]`.
 
 ## Particle effects (`BearEffect` 0x301)
 

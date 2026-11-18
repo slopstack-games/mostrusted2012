@@ -3,35 +3,35 @@
 Keep this file short (≤ ~3 KB, user 2026-11-18): open items with a pointer each; details live in the research log.
 Earlier handoffs: [handoffs-archive.md](handoffs-archive.md).
 
-**State** (master): clippy 0, `mw-logic` 275 tests, `mwtool verify` 0 failures, wasm-check 0. The logic (HSM) runs
-by default (`--no-hsm` to bisect); `--race <id>` starts through the logic's event start. 911: 0–60 3.60 s, brake
-38.3 m, handbrake yaw 81°/s. Races 462174 27/27, 906146 10/10. Logic: 170 behaviour types, 160 / 187 hooks,
-300 / 385 Lua natives. Races, event starts, car swaps and police run on the ported code.
+**State** (master, 2026-11-18 late): clippy 0, workspace tests pass, `mwtool verify` 0 failures. The logic (HSM) runs
+by default; races 462174 27/27 (225.6 s) and 906146 10/10 (136.7 s) pass with it (the start hung before: placement
+waited on a ground ray the paused sim could not answer, research log "races with the logic hung"). 911: 0–60 3.82 s
+(the strut joint port: the wheels' mass rides with the car). Lua natives 385 / 385, HSM behaviour types 192 / 199
+(+ drift / Smash-and-Grab scoring), hooks 187 / 187. Police: roadblocks and the bust camera wired.
 
-**Unmerged agent branches** (stopped at session end; each has a research-log entry saying where it stopped):
-- `worktree-agent-a3ae5e793088ee893` + follow-up `worktree-agent-a1b7e69661d49d206` (0084d7a, builds): AI racers on
-  `mw-ai`; 462174 now 6 of 7 AI finish (219–225 s; the crashes were our driver starting on the wrong lap segment).
-  906146 panicked after a track unload (the intermittent panic below?); accel not run. Run the checks, then merge both.
-- `worktree-agent-ae89085bfd4e6c6f6` (48987e7, builds): engine sub-harmoniser ported (0x00aad950: |x|, never flips
-  sign; ours was a square wave that could flip at the rail, matching the user's recording), distortion and BandPass
-  from the code. Open: its DC (+0.045 / +0.083 vs the original's +0.0024; a DC block?), live before / after not run.
-- `worktree-agent-abe4eab9f744d9496` (78c1b56): `ui_widgets.rs` draws HUD 371621 / 604153 from the logic's widgets,
-  hud.rs layout drawing removed; accel / race pass, A/B in its `scratch/shots/`. Open: speedwall panel unchecked.
-- `worktree-agent-a9b92c3379235e3c7` (7a3b08d, builds, untested): `logic_effects.rs` carries out chevrons, routes,
-  nitrous, siren, engine, music, feedback groups. Unhandled: unlocks, feedback queues, speech, mix snapshots.
-Check each: `git log master..<branch>`, build, run the checks, merge with `scratch/merge.sh <id>` (git-ignored
-helper: union for doc conflicts) or redo.
+**Unmerged at handoff** (`scratch/merge.sh <id>`): `worktree-agent-a3a080796812a5de9` (b26f74c: one-shot exit rule
+`FUN_00834f90` and fades in sfx_player, tested); agents still running: HUD feedback-message queue, map POIs /
+waypoints. Merged today: skid voices (one per wave item), speech manager (`mw_audio::speech`).
 
 **Open**:
-- **Skid / crash audio** loud and distorted after a race start / teleport / pause / car change (user). Meter
-  switches `MW_AUDIO_METER`, `MW_AUDIO_STALL`. AI engine voices cost ~4 % of the audio thread each.
-- **Intermittent panic** (1 of 2 sprint runs): a command on a despawned entity right after a track unit unloaded.
+- **Bug hunt (2026-11-18, branch `claude/bug-hunting-kdkey0`)**: ~45 fixes, verified without the install. Run
+  `mwtool verify` + `game_chunks` (new parser budgets, stricter Lua verifier); suspected items in research-log 2026-11-18.
+- **User report (end of session): races won't start when played, UI wrong almost everywhere.** Headless `--race` tests
+  pass, so check the played flow (free roam → Easy Drive / map / marker). Shots at 1920×1080 (`MW_HL_SIZE=1920x1080
+  MW_HSM_SHOTS=<dir> tools/t --race 462174`): intro camera upside down (≈180° roll); race HUD hugs the edges, the
+  speedometer is cut off at the bottom right, a large rotated "CHECK…" message at the top right (new feedback queue?);
+  card tip line at the left edge. The HUD is drawn from the logic's widgets since `ui_widgets.rs` (merged 2026-11-18,
+  checked only at 1280×720). Compare 720p vs 1080p first, then bisect today's merges if needed.
+- **Pursuit test** times out (2 of 2) after the speech merge (c02f83d); passed before it with `--units 12 --no-traffic`.
+- **Runtime inputs not fed**: drift / Smash-and-Grab scoring inputs (no event uses them); online requests (store,
+  friends, telemetry, speedwall cache); car select, speech, waypoints logged-only until the agents above land.
+- **Pursuit test with traffic**: busted after 8 s at 0 mph (also on the police branch); passes with the documented
+  `--units 12 --no-traffic` (1 escape, 1 bust).
+- **Model decisions to measure**: strut joint position parameter (+0x30) writer; `kerb100a` braking RMS 1.4 → 2.3 mph
+  after the strut port; bust camera node semantics (code not in the dump).
+- **Sub-harmoniser** DC (+0.045 vs +0.0024) and a live before / after (merged 2026-11-18).
 - **Handbrake**: user to confirm in play; turn / brake-to-drift replays need `mwtool capture` first.
-- **Police**: roadblocks, bust camera, spawn placement not wired (research log "mw-police in the runtime").
-- **Pages CI**: whole-target-dir cache and verbose log are new: check a run's time and the `cargo-timings` artifact.
-- Lua natives left: 29 offline (survey of their callees in the research log, 2026-11-18), 50 online, 6 platform / debug.
-- Remaining HSM behaviour types (~30) call unnamed engine code: default model, not sonnet.
-- Docs split (big docs) still queued.
+- **Pages CI**: check a run's time and the `cargo-timings` artifact. Docs split (big docs) still queued.
 
-**Agents**: `sonnet` at medium effort for well-specified ports (~100–180k tokens a batch); default model for RE
-design and integration. Two agents porting overlapping topics duplicate work: give each a topic / file.
+**Agents**: `sonnet` at medium effort for well-specified ports / wiring; default model for RE and integration. At most
+~4 building at once.

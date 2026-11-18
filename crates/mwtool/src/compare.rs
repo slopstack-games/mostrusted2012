@@ -122,6 +122,9 @@ fn at(s: &[Sample], t: f32) -> Option<Sample> {
 }
 
 pub fn compare(original_csv: &Path, ours_csv: &Path, every: f32) -> Result<()> {
+    if every.is_nan() || every <= 0.0 {
+        bail!("--every must be a positive number of seconds");
+    }
     let a = read(original_csv)?;
     let b = read(ours_csv)?;
     let a = original(&a)?;
@@ -130,6 +133,9 @@ pub fn compare(original_csv: &Path, ours_csv: &Path, every: f32) -> Result<()> {
         bail!("one of the runs is empty");
     }
     let end = a.last().unwrap().t.min(b.last().unwrap().t);
+    let Some(xa) = a.iter().rfind(|s| s.t <= end) else {
+        bail!("the runs do not overlap in time (the original's first sample is after ours ends)");
+    };
     println!("original = {}, ours = {}", original_csv.display(), ours_csv.display());
     println!(
         "{:>6} | {:>13} | {:>13} | {:>11} | {:>13} | {:>11} | {:>5} | {:>5} | path x/z (m) orig / ours",
@@ -182,10 +188,44 @@ pub fn compare(original_csv: &Path, ours_csv: &Path, every: f32) -> Result<()> {
         rms(2),
         rms(3)
     );
-    let (xa, xb) = (a.iter().rfind(|s| s.t <= end).unwrap(), b.last().unwrap());
+    let xb = b.last().unwrap();
     println!(
         "end of path: original ({:.1}, {:.1}) m, ours ({:.1}, {:.1}) m (x left, z forward of the start)",
         xa.pos[0], xa.pos[1], xb.pos[0], xb.pos[1]
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write(name: &str, text: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!("mwtool-compare-{}-{name}.csv", std::process::id()));
+        std::fs::write(&p, text).unwrap();
+        p
+    }
+
+    const AXES: &str = "body_vx,body_vy,body_vz,body_wx,body_wy,body_wz,body_upx,body_upy,body_upz,\
+                        body_fwdx,body_fwdy,body_fwdz,body_rightx,body_righty,body_rightz";
+
+    fn row(t: f32) -> String {
+        format!("{t},0,0,10,0,0,0,0,1,0,0,0,1,1,0,0\n")
+    }
+
+    #[test]
+    fn original_starting_after_ours_ends_is_an_error_not_a_panic() {
+        // The recording's body axes only appear from t = 3 s; our replay ends at 1 s: no common time.
+        let orig = write("late-orig", &format!("t,{AXES}\n0\n{}{}", row(3.0), row(4.0)));
+        let ours = write("late-ours", "t,speed_mph,px,pz\n0,0,0,0\n1,10,0,5\n");
+        assert!(compare(&orig, &ours, 0.5).is_err());
+    }
+
+    #[test]
+    fn zero_step_is_rejected() {
+        let orig = write("step-orig", &format!("t,{AXES}\n{}{}", row(0.0), row(1.0)));
+        let ours = write("step-ours", "t,speed_mph,px,pz\n0,0,0,0\n1,10,0,5\n");
+        assert!(compare(&orig, &ours, 0.0).is_err());
+        assert!(compare(&orig, &ours, 0.5).is_ok());
+    }
 }
