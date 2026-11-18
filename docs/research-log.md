@@ -25,6 +25,41 @@ Fix (`ground_ray.rs`): the game places on `Resident(p, r)` alone (`FUN_0064b290`
 while the sim runs. While paused the player is placed on residency and the AI on its grid pose; `GroundRay::down`
 also casts against each world collider directly while paused (agrees with the spatial query to the mm in a
 `--no-hsm` run). Result: 462174 27/27, 225.62 s, won, 7 opponents on the grid, card TRANSITION at 7.76 s.
+### 2026-11-18: the road natives' runtime side (`logic_effects.rs`: `SimFields::road`, placements)
+
+The runtime half of "Lua natives, last batch" (`natives/lua_road.rs`), in `logic_effects.rs` (`Feed::fill_road`,
+`Effect::Place` / `PlaceAlongRoute`, `place_vehicles`, `RoadFeed`) and `logic.rs` (`RuntimeHost::effect` /
+`request`).
+- **Fed** (`RoadFields`): the road network (`nitrous::Roads`, the same `Arc`) and the text database's strings for
+  the roads' name ids (only those: `TeleportToNamedRoad` is their one reader); the zones and the loaded track
+  units from `frontend::Residency` (now holding the `ZoneList` in an `Arc`, shared; once every unit was sent all
+  zones count as loaded, as `Residency::resident` has it); the local slot's route length (`RaceState::
+  total_distance`) and the route direction at the car; the loading-screen ring (`UIConfig.eee932fa`, the general
+  list `FUN_00799a60` takes from). Also `sim.feedback.race_active` (any loaded race) and
+  `sim.world.camera_world_streamed` (`Loaded::done`), which `TeleportToDistanceFromFinish`,
+  `CalculateForwardDirection` and `HasFinishedStreamingWorld` gate on and nothing fed before.
+- **Carried out**: `PlaceVehicle` / `ResetAlongRoad` / `TeleportAlongRoute` / `SpawnVehicle` (local slot, same
+  car) become one pending placement done as `FUN_00647e00` → `FUN_0064b290` → `FUN_008f8190` (decomp.md "Waiting
+  for streaming", "Placement with a speed"): mph capped at 100 (`.rdata` 0x00fb69e0), held at the target with the
+  streaming focus there (`streaming::PlacementFocus`, message 4) until Resident(target, max(200 m, 3 s of travel))
+  and the ground under it is in, then on the ground (as `cutscene.rs` teleports) facing the direction, velocity
+  mph × 0.44704 × direction, `Car::place_moving`. `CameraTargetChanged` of the local slot: nothing to do (the
+  camera follows the local car).
+- **Logged only** (no runtime system; nothing built): `ShowFeedbackMessage` (no HUD message queue or feedback
+  message definitions, as `ShowForcedFeedbackMessage`), `IceCameraStart` (ICE takes play only as sequence camera
+  items in `ui_sequence.rs`), `RegisterSpeechCommand`, `ShowOriginIgo`, `CameraTargetChanged` of another slot (the
+  camera follows only the player's car), and placements of non-local vehicles. `SpawnVehicle`'s `a` is the
+  record's vehicle id (`FUN_006d0180` passes `FUN_006788d0` = +0x30, the current car); a different car is not
+  spawned.
+- **Model decisions**: `ResetAlongRoad` places the pose as given (the road snap `FUN_00648060` not read); the
+  route pose / direction (`FUN_00665ae0` / `FUN_00662670`, not read) are the runtime's route polyline point and
+  piece direction; the placement takes the direction's yaw only; `keep` (+0x78) and the flags (+0x84) are not
+  modelled; `race_active` = a race is loaded (every phase); the camera's world streamed = the first world load
+  done; LSM +0x48 (rotate the ring) is set with the ring (its writer was not found in the dump: only the
+  constructor `FUN_00790a90` clears it, and it also sets +0xa4 = 108177); the named HUD message queues are never
+  full and the runtime takes no message serials (it posts no feedback messages).
+- **Open**: the road snap and route pose functions above; AI racers' placements; a capture of a Lua teleport
+  (an event restart, `TeleportToDistanceFromFinish` in a debug flow) to compare where the car lands.
 
 ### 2026-11-18: HSM behaviour types, last batch (`hsm/behaviours_rest.rs`, 22 types; 190 of 199 codes)
 
