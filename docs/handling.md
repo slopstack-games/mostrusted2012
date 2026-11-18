@@ -149,16 +149,24 @@ long after it is let go. While it is on, the rear brake torque is max(handbrake 
 strength blending from `Brake_strength_at_low_speed` to `_at_high_speed` between `Low_speed_mph` and
 `High_speed_mph` (signed speed); the front axle takes all of the drive (rear share 0, also on rear-driven cars);
 no drift can start and a running drift ends.
-It does **not** lock the rear wheels outright (the game's lock mask comes from other states). The brakes and the
-driveline see the previous tick's state, the drift this tick's. `35e18207` / `6ce0fda7` are the drift scale a
-drift starts with on the tick after the handbrake is let go, not grip.
-The 911's data does carry the speed band (350 N m at ≤ 30 mph → 1200 N m at ≥ 135 mph, `Minimum_handbrake_time`
-0.1 s; `Handbrake.*` hashes `b0bb7eaa`, `4af55f8a`, `8c74b0f6`, `92a9eddb`, `df620dba`), and our `Handbrake`
-reads it. With ≈ 800 N m per rear wheel at 85 mph against ≈ 2680 N m of tyre at the braking peak, the rears do
-not lock in a straight line, in ours or (by the code) in the original; in a slide the longitudinal cap blends
-towards `Brake_Slip_Long` (911 rear: 1.0 at κ −0.25) with the slip angle, so they slip more but still roll.
-Whether the original's rears lock (user report 2026-11-17) is open until the capture in the research log
-2026-11-17 is taken; nothing was changed without it.
+The rears **do lock** (ported 2026-11-18, `mw_handling::handbrake`, drive.rs): `FUN_00905910` sets the rear tyres'
+lock flag while the handbrake is on (this tick's state), `FUN_009bc0c0` then takes the brake hold as FLT_MAX, so the
+tyre never spins the wheel up and the brake (max(handbrake strength, service)) only has to stop the spin: rear
+omega 0 within ~0.4 s at 85 mph, slip ratio -1. The brakes and the driveline see the previous tick's state, the
+drift this tick's. `35e18207` / `6ce0fda7` are the drift scale a drift starts with on the tick after the handbrake
+is let go, not grip.
+The 911's data carries the speed band (350 N m at <= 30 mph -> 1200 N m at >= 135 mph, `Minimum_handbrake_time`
+0.1 s; `Handbrake.*` hashes `b0bb7eaa`, `4af55f8a`, `8c74b0f6`, `92a9eddb`, `df620dba`).
+**Standstill**: the clutch only closes (launch) with the handbrake off and throttle >= 0.3 or brake >= 0.2
+(`FUN_009d6370`); otherwise the throttle only revs the engine (to the limiter), and below 0.5 mph or with the
+handbrake the front wheels are held (gearbox lock lanes) and the handbrake mask is forced on. A launch drops back
+to standstill on the handbrake (`FUN_009d17d0`); the gearbox's brake pedal is released with the handbrake below
+1 mph (`FUN_009d6170`). **Steering range**: the handbrake state machine (`FUN_009d27b0`) limits the steering input
+(`FUN_009d31f0` clamps it) to one side for 1 s after a pull that began moving forwards ends stopped / rolling
+back, until the released turn's yaw is below 0.1 rad/s. Details: decomp.md "Handbrake and burnout". Model
+decisions: the clutch opens when the handbrake sends a launch back to standstill (the code leaves it as is); the
+engine-rpm launch condition (attribute +0x14 via gearbox +0x180) is taken as met; the crashed lock lanes (+0x1774)
+are not ported.
 
 ### Steering
 
@@ -506,6 +514,8 @@ stands 10 m past the impact); a 2 m pillar shows the car.
 |----------|-------|-----|
 | ~~`LAT_GRIP` / `LONG_GRIP`~~ | removed 2026-10-06 | the code's caps are μ × N × data axle scale × surface grip × camber × gameplay grip multipliers (1 outside timed effects): `FUN_009c5da0`, `FUN_00905910`, `FUN_009d8bd0` (decomp.md "Tyres"); N and the downforce share confirmed on `ref/xkr_launch` |
 | ~~tyre effective mass~~ | ported | the chassis's effective mass at the contact (`FUN_009ca610`), the wheels solved one after the other, each seeing the velocity the previous left (`FUN_009289f0`): drive.rs does this (this row was stale until 2026-10-09) |
+| handbrake: clutch at standstill fallback | the clutch opens when the handbrake returns a launch to standstill | `FUN_009d17d0` drops to standstill and the code leaves the clutch as is; opening it is assumed (handbrake port 2026-11-18, no capture yet) |
+| handbrake: launch rpm condition | taken as met | the engine-rpm condition of `FUN_009d6370` (attribute +0x14 via gearbox +0x180) not identified |
 | nitrous multiplier target | engine full-throttle torque | `FUN_009d2aa0` writes a four-lane multiplier at its component's +0x10; the reader was not found (the call's `this` is not recoverable in the caller `FUN_00904260`); scaling the full-throttle torque is assumed |
 | nitrous default variant | `Vehicle_Gameplay.Nitrous_Online` without a nitrous mod | the game uses `Nitrous_Offline` offline (`FUN_0065de50`), which has every usage disabled (no nitrous until a nitrous mod is won); unlocks are not modelled, so the base mod's variant is fitted instead |
 | nitrous start input | a press (action state 2), kept while held (1 or 2) | `FUN_006cd3e0` starts on state 2 and keeps on 1 or 2; that 2 is "pressed this frame" is inferred from the split, the input states were not traced |
@@ -607,6 +617,13 @@ With the model from the game's code (2026-10-04):
 | Bugatti Veyron SS | 3.78 s | 420 km/h (data 431) | 42.2 m | 1.00 g | 11° held 3.5 s | 9.5° |
 | McLaren MP4-12C | 3.18 s | 346 km/h | 35.4 m | 0.91 g | 12° held 3.9 s | 14.3° |
 | Ford F-150 Raptor | 7.75 s | 273 km/h | 50.8 m | (drifts on the skidpad: 2 g with the side force) | no drift (peak 8°) | 17.8° |
+
+**After the handbrake port (2026-11-18, 911, flat track, `--test`; before in brackets, same day):** handbrake test
+slip 7.6° (1.1°), yaw 81°/s (59°/s); drift peak 37.3° held 4.75 s, mean 32.3°, exit 56 km/h (peak and held
+unchanged); accel 0-60 mph 3.60 s, 0-100 km/h 3.77 s (3.73), top 307.4 km/h; brake 100-0 km/h 38.3 m, 2.63 s
+(38.1 m); corner 2.57 g (unchanged). The turn and brake-to-drift replays against the original were **not run**:
+`ref/` holds no handbrake-turn or brake-tap-drift capture (only launch, kerb, nitrous, cam, minimap, frontend
+ones); they need `mwtool capture` of the original first.
 
 **Current master (2026-10-06, all three re-reads merged: drivetrain, tyres, steering / drift / handbrake).** The
 tables below were each measured on one branch alone; together they give:

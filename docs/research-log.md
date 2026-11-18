@@ -154,7 +154,7 @@ before drove off on the fronts to 23 mph; now 0 mph, rpm 7800 (limiter), clutch 
 Tests before (unchanged code): accel 0–100 km/h 3.73 s, top 307.4; brake 38.1 m / 2.62 s; corner 2.57 g; drift
 peak 37.3°, held 4.75 s; handbrake slip 1.1°, yaw 59°/s.
 
-**Open (stopped here, budget)**: tests after the change and the turn / brake-to-drift replays not run; decomp.md
+**Open**: tests run later the same day (handling.md; replays lack ref captures); decomp.md
 "Handbrake and burnout" and handling.md not yet rewritten; model decision: the clutch opens when the handbrake
 sends a launch back to standstill (the code leaves it); the engine-rpm launch condition (attribute +0x14 via
 gearbox +0x180) not identified, taken as met; the crashed lock lanes (+0x1774) not ported; captures to confirm.

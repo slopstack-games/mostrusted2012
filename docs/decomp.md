@@ -273,17 +273,24 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
 
 - **State** (`FUN_009d27b0`, handbrake object vehicle +0x2a20): a countdown reset to `Minimum_handbrake_time`
   on every tick the handbrake is pulled and reduced by dt otherwise; the handbrake is **on while the countdown is
-  ≥ 0**, so a pull lasts that long after it is let go. +0x2a40 is this tick's state, +0x2a41 the previous tick's.
-  The vehicle's virtual +0x44 returns it (below). The same function runs a small state machine
-  on the speed's sign and the yaw rate (pulled moving forwards / standing; held, released and still turning;
-  rolling backwards for a timer from `.bss` 0x011870f0, yaw threshold 0x01187070); nothing in the handling path
-  was found to read its outputs.
-- **Brakes** (`FUN_009b1180` → `FUN_009cdfd0` per wheel): rear wheels only, the torque budget is
-  max(handbrake strength, service torque × pedal²); strength = lerp(`Brake_strength_at_low_speed`,
-  `_at_high_speed`) by the signed mph from `Low_speed_mph` to `High_speed_mph`. The brakes see the handbrake
-  state of the previous tick (they run before `FUN_009d27b0`). **Superseded 2026-11-18**: the rears lock through the tyre's lock flag set by `FUN_00905910` (research log 2026-11-18). Earlier reading: the brakes alone do not lock the wheels: the
-  lock mask (a stopping torque that holds a wheel still) comes from other vehicle states (+0x1774 on all wheels,
-  +0x1b90 on the front), not from the handbrake. Whether the rear wheels lock is up to the tyre and the torque.
+  >= 0**, so a pull lasts that long after it is let go. +0x2a40 is this tick's state, +0x2a41 the previous tick's;
+  the vehicle's virtual +0x44 (stub 0x00920810) returns +0x2a40. The same function runs a small state machine on
+  the speed's sign and the yaw rate: pulled moving forwards or standing; held; released and still turning; rolling
+  backwards (timer `.bss` 0x011870f0 = 1 s, yaw threshold 0x01187070 = 0.1 rad/s, from the memory snapshot
+  `re/out/live/snap1`). Its output is a **steering-input range** (+0x50, read through virtual +0x4c at 0x00920840)
+  that `FUN_009d31f0` (the steering update) clamps the input to: [-1, 1], one side only for 1 s after a pull that
+  began moving forwards ends stopped or rolling back, idle again once the released turn's yaw is below 0.1 rad/s.
+  Ported as `mw_handling::handbrake`.
+- **Brakes** (`FUN_009b1180` -> `FUN_009cdfd0` per wheel): rear wheels only, the torque budget is
+  max(handbrake strength, service torque x pedal^2); strength = lerp(`Brake_strength_at_low_speed`,
+  `_at_high_speed`) by the signed mph from `Low_speed_mph` to `High_speed_mph`. The brakes see the previous tick's
+  handbrake state (they run before `FUN_009d27b0`).
+- **The rears lock through the tyre, not the brake** (`FUN_00905910`, the tyre inputs, after the driving update;
+  2026-11-18): on wheels 2 / 3 it sets the tyre object's lock flag (+0x38, = constraint +0x2a8) from the vehicle's
+  virtual +0x44 (this tick's state). `FUN_009bc0c0` then takes the brake hold as FLT_MAX: the tyre holds the tread
+  against the chassis alone and never spins the wheel up, so the brake budget only has to slow the existing spin
+  and the rears lock (rear omega 0 within ~0.4 s at 85 mph, kappa -1). This supersedes the 2026-11-17 reading
+  ("with the code as read the rears cannot lock"), which missed this flag.
 - **Brake path in detail** (re-read 2026-11-17 for the handbrake-lock report; research log that day). The four
   brake objects are vehicle +0xfb0 / +0xff0 (front) and +0x1030 / +0x1070 (rear), 0x40 bytes each (the `this` of
   `FUN_009cdfd0`): +0x00 service torque = `Brakes` front / rear × brake ramp +0x1610 × (1 − burnout on the
@@ -296,20 +303,28 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
   service brake and the handbrake (one `max`); the third argument is 1/dt (`FUN_00904da0` turns the rpm change
   into a rate with it). So the 911's handbrake is lerp(`Brake_strength_at_low_speed` 350, `_at_high_speed`
   1200 N m) over `Low_speed_mph` 30 → `High_speed_mph` 135, per rear wheel (≈ 800 N m at 85 mph), against a
-  rear tyre that carries 1.8 × 4340 N × 0.343 m ≈ 2680 N m at its braking peak and 1.4 × … ≈ 2080 N m fully
-  sliding: with the code as read the 911's rears cannot lock under the handbrake in a straight line on asphalt.
-- **The lock lanes**: +0x1774 is the crashed flag (all wheels); +0x1b90 is the gearbox's +0x120 (gearbox =
-  vehicle +0x1a70), set to all-ones by the engine-off start-up state `FUN_009ce3d0` (state 0) and cleared by the
-  reset `FUN_009cd620`: the front wheels are held while the engine is off. Neither reads the handbrake.
+  rear tyre that carries ≈ 2680 N m at its braking peak: the brake alone would not lock them (hence the tyre lock
+  flag above, which does).
+- **The lock lanes**: +0x1774 is the crashed flag (all wheels; **not ported**); +0x1b90 is the gearbox's +0x120
+  (gearbox = vehicle +0x1a70), set to all-ones by the engine-off start-up state `FUN_009ce3d0` (state 0), cleared
+  by the reset `FUN_009cd620` and each tick by `FUN_009da600`. **The standstill state sets it too**
+  (`FUN_009d6370`, below): the front wheels are held while parked.
 - **Driveline** (`FUN_009b32c0` stores the state at +0x17b0; `FUN_009d5520`, `FUN_009d0380`, clutch
   `FUN_009d7ac0`): while the handbrake is on the front axle's torque share is 1 and the rear's 0, on every car
   (rear-driven ones included); the burnout measure then blends both shares towards the burnout axle's (front if
   `Power_To_Front` = 1, else rear). So with the handbrake on the engine stays coupled through the front wheels;
   the drivetrain agent's reading of `ref/xkr_launch` (parked, rear wheels locked, ~109 rpm per tick with the
   clutch closed, ~150–190 N m of load) fits that.
-- **Which function**: the state is read through the vehicle's virtual +0x44 (vtable 0x01023758 written by
-  `FUN_00920720`; entry +0x44 = 0x00920810, a stub the dump did not decompile). That it is the handbrake is
-  inferred from its three uses: the rear brakes' handbrake mask, no drift entry, drift exit code 9.
+- **Standstill and launch** (`FUN_009d6370`, `FUN_009d17d0`, `FUN_009d6170`; 2026-11-18): standstill launches
+  only with the handbrake mask clear and throttle >= 0.3 or brake >= 0.2 (`.bss` 0x01187230 / 0x01186ec0);
+  otherwise the clutch stays open (the throttle only revs the engine, to the limiter) and below 0.5 mph (0x01186f60)
+  or with the handbrake it forces the control block's handbrake mask on and sets the front lock lanes
+  (gearbox +0x120). `FUN_009d17d0` (launch) drops back to standstill on the handbrake mask. `FUN_009d6170`
+  releases the gearbox's brake pedal when the handbrake is on below 1 mph. Ported in the drivetrain's standstill /
+  launch gate and `parked` (front lock lanes from the previous tick's `parked`).
+- **Which function**: virtual +0x44 (vtable 0x01023758 written by `FUN_00920720`; entry 0x00920810). That it is
+  the handbrake is inferred from its uses: the rear brakes' mask, the tyre lock flag, no drift entry, drift exit
+  code 9, the standstill gate.
 - **Drift**: no drift starts while the handbrake is on, a drift ends when it comes on (exit code 9), and a drift
   that starts on the tick after it is let go begins with the handbrake's drift scale (above).
 - **Burnout** (`FUN_009ab230`, copied to +0x17c0 by `FUN_009b32c0`): clamp((1 − |mph| / 20) × throttle ×
