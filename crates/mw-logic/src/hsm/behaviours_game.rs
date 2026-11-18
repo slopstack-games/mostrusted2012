@@ -170,7 +170,7 @@ impl Behaviour for GameMode {
 }
 
 /// Playback ids for [`Request::PlaySequence`] (the original's handle comes back from the player).
-static PLAYBACK: AtomicU32 = AtomicU32::new(1);
+pub(crate) static PLAYBACK: AtomicU32 = AtomicU32::new(1);
 
 /// "Run Game Logic" (`RUNGAMELOGIC`, factory 0x77dbc0, vtable 0xfda75c, 0x60 B): on enter (0x75c870) plays the
 /// sequence given by the `BindingPath` binding, or `Sequence` (0x744fe0), on the player chosen by `Style`

@@ -58,6 +58,18 @@ pub enum NetMessage {
     /// `UPLOADRESULT` enter (0x763230): the online event's result record (the race's player list and scores,
     /// built from the event, scoring and player objects), sent when the network is up and the event is online.
     UploadRaceResult,
+    /// 0x22, size 0xc (`FUN_00769230`, `LAUNCH` update): start the Blaze game.
+    LaunchGame,
+    /// 0x23, size 0xc (`FUN_00769000`, `ENDGAME` update): end the Blaze game.
+    EndGame,
+    /// 0x24, size 0xc (`FUN_00769410`, `RESETGAME` update): reset the Blaze game.
+    ResetGame,
+    /// Size 0x64c (`HSM.UPLOADON` enter 0x74beb0): the key "unlocks" with the list `FUN_00743770` builds (up to 10
+    /// "kind:id" pairs, comma-separated, of the unlocks of each kind `FUN_0067f4c0` / `FUN_0068a9d0` gives, only
+    /// while the progression state G+0x2f3e4 +0x44 is 4), through `FUN_0071db50` on G+0x2f454 and `FUN_006d9b50`.
+    /// The original sends only when the list is not empty (the engine decides; nothing sent leaves the request
+    /// object idle).
+    UploadUnlocks,
     /// 0x1d, size 0x434 (`FUN_00748450`, `HSB_NET_CRE` running): create a game; `visibility` 2 `INVITE_ONLY`, 3
     /// `FRIENDS_ONLY`, 4 `PUBLIC` (the parameter `VISIBILITY`, default 2), `flag` the function's argument.
     CreateGame { visibility: u8, flag: bool },

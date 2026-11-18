@@ -11,6 +11,56 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+### 2026-11-18: HSM behaviour types, last batch (`hsm/behaviours_rest.rs`, 22 types; 190 of 199 codes)
+
+Method as the earlier batches (name stub → `mov edx` factory → vtable; slot bodies from the dump or `text.asm`;
+`.bss` keys from snapshot 1; addresses per type in decomp.md "The HSM interpreter", "last batch"). Ported:
+`BINDCONTROLL`, `DBGAUTOBIND`, `DBGSTARTFRID`, `DEBUGUNLOCKS`, `HSM.ENABLEDE`, `HSM.CHECKFOR`, `HSM.SELECTEA`,
+`LAUNCH`, `ENDGAME`, `RESETGAME`, `HSM.UPLOADON`, `WAIT4ALLSYN`, `JOINEDLEFT`, `MMPICONSONL`, `ONLINECARSWA`,
+`SHOWMEETUPPO`, `KILLCAMSEQ`, `SHOWCARSELEC`, `STARTCARSELE`, `SHOW_DIALOG`, `TRYTOPLAYSPE`, `WAYPOINTS`. Tests:
+`hsm/rest_tests.rs` (one per group: controller / debug, Blaze game, online free drive, event / UI). `mwtool hsm
+--run --steps 600` still reaches "Freedrive Update".
+
+Findings: `KILLCAMSEQ` is registered by name only (string 0xfdbbf0, stub 0x77dc40, not found by the dump's
+`FUN_00a1d5c0` grep); `INSAFEHOUSE` and `MANAGEREPAIR` have no name string in the exe at all, so the original runs
+them as `FUN_00775a60`'s fallback (as we do; `--codes` still lists them as unported). `HSM.ENABLEDE`,
+`HSM.CHECKFOR` and `DEBUGUNLOCKS` are debug shells in retail (no `DEMOMODE` read, no false-start rule, the award
+compiled out). `SHOW_DIALOG` is `HSB_RNLAYOUT` with a published root `UserFeedbackDialog`; `SHOWMEETUPPO`
+publishes `MeetupPOI`. `FUN_004c1f00` is `Net.IsGameStarted` (state +0xbe7c = 0x83, by Blaze's game states
+`IN_GAME`; `FUN_004c1f30`'s 4 is `POST_GAME`), `FUN_004c22b0` `IsGameAdmin`, `FUN_004c2500` `AreAllPlayersConnected`,
+`FUN_004c22f0` host migration. The players manager's inline records are at +0x10 + i × 0x7f0 (`FUN_006bf310`), so
+`WAIT4ALLSYN`'s +0x484 is the record's `IsMidGameJoining` (+0x474). G+0x2a9dc counts online games and seeds
+`FUN_00789240`'s pick.
+
+New Requests (`natives/state.rs`; the runtime must handle them; `SetPendingEvent` and `SetKinectSelectedClass` are
+applied to the logic state in `mode_machine::apply`): DebugAutobindPad, SetPendingEvent, SetKinectSelectedClass,
+SetSignInStatusString, CountOnlineGame, NetSyncReport, NetSyncComplete, CachePlayerName, PlayerJoinedLeftFeedback,
+UpdateOnlineMinimapIcons, CommitPendingRollout, PlaySequenceWithFlag, OnlineCarSwapApply, OnlineCarSwapFinish,
+ShowCarSelect, FocusCarSelect, HideCarSelect, StartCarSelect, StopCarSelect, SetWorldShownFlag, LoadSpeechEvents,
+AddEventWaypointPois, RouteToFirstWaypointPoi, RemoveEventWaypointPois, ShowMeetupPois, RemoveMeetupPois;
+`NetMessage` LaunchGame (0x22), EndGame (0x23), ResetGame (0x24), UploadUnlocks. New Queries (defaults in
+`Query::default_answer`; `LogicHost` answers the player-slot ones from `PlayerManager`): PadInputPending,
+DebugEventDataSet, DebugWorldReady, DebugFreeRideEvent, EasyDriveShortcut, NetGameStarted, NetGameAdmin,
+NetAllPlayersConnected, NetHostMigrating, NetRequestResult, TakeNetMessage, LocalPlayerSlot, PlayerSlotUsed,
+PlayerMidGameJoining, LocalVehicle, LocalVehicleAlive, LocalVehicleReady, SequenceFlagSet, CarSelectReady,
+CarSelectClosed, CarSelectState, WorldShownFlag, SpeechLoadState, TryPlaySpeech, SpeechPlaying, WaypointPoiCount,
+MapRouteBlocked, OnlinePendingEvent, MeetupTrigger, MeetupInCheckpoint, MeetupDistance.
+
+Model decisions: `STARTCARSELE`'s online path never writes the byte +0x48 its exit restores into G+0x2ef70 +0x44;
+taken as 0 (not read live). The listen / release requests of `BINDCONTROLL` / `DBGAUTOBIND` are sent when they
+change (the original writes the same globals every frame), as `HSB_P1BIND`'s port does. The meaning of
+(G+0x2f3e0)+0x102c (117673, `LAUNCH`) is not traced (a string id by its range). The speech load's "loaded" value
+is 0 by the enter update's arithmetic (`neg; sbb; add 3`).
+
+Skipped, and why: `HSMDODRIFTS` (drift scoring, 0x1340 B of state), `DOSMSHNGRB` (smash-and-grab scoring, 0x1258
+B), `HSMSHAKEDOWN` (enter 884 B / update 475 B), `CHKPNTSONLIN` (online checkpoints, update 1759 B),
+`DOONEVTSTRT` (online event starts, update 2904 B), `TELEPORTTOME` (teleport to the meet-up, update 1722 B): each
+is a scoring / world subsystem over vehicles and triggers, to be ported as a module with runtime inputs like
+`CHECKPTS` (`natives::checkpoints`), not as a few requests. `PICKNEXTFDE` drives the online playlist runner
+(GMM+0x14: `FUN_00705880`, `FUN_006e98a0`, `FUN_006e3190`, several `this` pointers the dump loses), which is not
+ported; it should come with that runner. Captures that would confirm: none offline (all ported types but
+`KILLCAMSEQ`, `TRYTOPLAYSPE`, `SHOW_DIALOG`, `WAYPOINTS`, the car-select pair and the debug ones are online-only).
+
 ### 2026-11-18: Lua natives, last batch (`natives/lua_road.rs`, 385 of 385)
 The last 23 Lua natives, read from `re/out/live/text.asm` (handlers) and the dump (callees); every Lua native is
 now ported (registry test asserts it). Maths in decomp.md "Native registries" (vector maths).

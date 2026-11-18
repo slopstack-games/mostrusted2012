@@ -201,6 +201,13 @@ pub fn apply(s: &mut LogicState, r: &Request) {
         Request::SetGameModeWon { won } => s.game_modes.won = *won,
         Request::SetEndReason { reason } => s.game_modes.end_reason = i32::from(*reason),
         Request::SetCreditsTransition { on } => s.game_modes.credits_transition = *on,
+        // `FUN_0063e380` on G+0x2f4c8 (`DBGSTARTFRID`).
+        Request::SetPendingEvent { event, online } => {
+            s.game.pending_event = *event;
+            s.game.pending_event_aux = -1;
+            s.game.pending_event_flag = *online;
+        }
+        Request::SetKinectSelectedClass { class } => s.hook_online.kinect_selected_class = *class,
         _ => {}
     }
 }

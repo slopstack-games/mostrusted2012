@@ -232,6 +232,15 @@ impl hsm::Host for LogicHost {
             Q::EventStartTriggered => st.event_starts.state.triggered as u64,
             // `HSMCARSWAPLO` (`natives::car_swap`): +0x74c8.
             Q::CarSwapActive => st.car_swap.inputs.started as u64,
+            // The player manager (+0xa5d0 slots, +0xa6b4 local, record +0x474 / +0xa0).
+            Q::LocalPlayerSlot => st.players.local.map_or(u64::MAX, |s| s as u64),
+            Q::PlayerSlotUsed { index } => st.players.slots.get(*index as usize).is_some_and(Option::is_some) as u64,
+            Q::PlayerMidGameJoining { index } => {
+                st.players.slots.get(*index as usize).and_then(Option::as_ref).is_some_and(|p| p.mid_game_joining)
+                    as u64
+            }
+            Q::LocalVehicle => st.players.local_player().map_or(u64::MAX, |p| p.vehicle as i64 as u64),
+            Q::LocalVehicleAlive => st.players.local_player().is_some_and(|p| p.vehicle_alive) as u64,
             _ => return None,
         })
     }

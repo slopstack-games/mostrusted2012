@@ -1221,4 +1221,92 @@ pub enum Request {
     RegisterSpeechCommand { id: i32, name: String, text: String },
     /// `ShowOriginIgo` (0x007eb380 → `FUN_0086d5f0` on (G+0x2f3e0)+0x4ce0): the Origin in-game overlay.
     ShowOriginIgo,
+    // The last batch of HSM behaviour types (`hsm/behaviours_rest.rs`).
+    /// `DBGAUTOBIND` update (0x770610), every frame while the primary user is unbound: the message {5, 0} queued
+    /// on the controller queue `*0x010edb18` +0x10 (`FUN_00770af0`, the queue `ResetNeutalVaues` posts 8 on):
+    /// pad 0 is bound without a press (the debug auto-bind).
+    DebugAutobindPad,
+    /// `DBGSTARTFRID` update (0x7703d0 → `FUN_0063e380` on G+0x2f4c8): the pending event (+0x230 = `event`,
+    /// +0x234 = −1, +0x238 = `online`, the flag `FUN_004c1ec0` gives); applied to
+    /// [`GameLogic::pending_event`](super::game_logic::GameLogic) like `SetOfflineEventToPlay`.
+    SetPendingEvent { event: u32, online: bool },
+    /// `HSM.SELECTEA` update (0x73ca40): (G+0x2f404)+0x8f9c = `class` (the Kinect voice selection's vehicle class,
+    /// the field `InvalidateKinectSelectedClass` sets to −1); applied to the logic state.
+    SetKinectSelectedClass { class: i32 },
+    /// `LAUNCH` enter (0x73d750): the sign-in state object (G+0x2f3e0) +0x102c = `string` (117673; the field
+    /// `FUN_0073df40` fills from a behaviour's vtable +0x24, next to flags +0x103c..+0x1041; also written by
+    /// 0x7418c0. A string id by its range (the data's dialog strings are 1174xx); its reader is not traced).
+    SetSignInStatusString { string: u32 },
+    /// `ENDGAME` exit (0x73c590), when the game admin (`FUN_004c22b0`): G+0x2a9dc += 1, the online games counter
+    /// that seeds the random pick of `FUN_00789240` (×`FUN_004c1fc0`, an LCG of 0x5851f42d4c957f2d).
+    CountOnlineGame,
+    /// `WAIT4ALLSYN` (`FUN_0075d1f0`, not the host): the "synced" message (vtable 0xfbd93c, its slot bit from
+    /// `FUN_004c2330`) sent through the network queue `*0x010edb5c` (flag 8 held, `FUN_0076add0`).
+    NetSyncReport,
+    /// `WAIT4ALLSYN` (0x75f090, the host, everyone synced): the "all synced" message (vtable 0xfbd954, flag bit 2)
+    /// broadcast through `*0x010edb5c` (`FUN_0076ad50`); the clients take it as message kind 0x47.
+    NetSyncComplete,
+    /// `JOINEDLEFT` (`FUN_00745ff0`): keep player `slot`'s name (record +0x50, up to 0x11 wide chars) and its
+    /// `FUN_007948a0`(`FUN_006c2600`) value for the feedback; the "left" message uses the copy.
+    CachePlayerName { slot: u32 },
+    /// `JOINEDLEFT` (`FUN_0075ce90`): the feedback message of the config (the GeneSys object at `DAT_010edac0`
+    /// +0x24 → +0x2c: +0x54 joined, +0x58 left, +0x50 the second argument) with the parameter "scorer" = the
+    /// player's kept name (`FUN_007c1ad0`), posted on the UI manager's queue +0x1245c (vtable +0x14).
+    PlayerJoinedLeftFeedback { slot: u32, joined: bool },
+    /// `MMPICONSONL` update (0x757a80), every frame: the other players' minimap icons. `FUN_0074e3c0`: per present
+    /// player with a vehicle, its position / direction (`FUN_006b9ea0` / `FUN_006ba380`) and alpha (`FUN_0074e260`:
+    /// 1 − min(d², 1250²) / 1250² × 0.5 against the local player, `.data` 0x010c5ce8, `.rdata` 0x00f8a810; 1.0 for
+    /// the local player); `FUN_0074e560`: the minimap slots (G+0x2f3d8 +0x90 + slot×0x50) numbered by distance
+    /// (`qsort`, `FUN_006f16f0` team test); `FUN_0074e450`: per slot +0x92 cleared, then for each such player
+    /// state 2 (`FUN_0063d250`), flag 4 when `FUN_006bf2f0` (`FUN_0063d240`), +0x32 = 1, pose and alpha copied.
+    UpdateOnlineMinimapIcons,
+    /// `FUN_0068e770` on the rollout manager G+0x2f404: the pending rollout (+0x8f8c: 0 garage, 1, 3 online swap,
+    /// else event) is copied into the local slot's record (+0x827c + slot × 0xd8), `FUN_0068ba20`(1) applies it,
+    /// +0x8f8c = −1. `ONLINECARSWA` (state 0) and `STARTCARSELE` (exit, online).
+    CommitPendingRollout,
+    /// Play `sequence` (`FUN_007983b0`) with an `EditableBoolSequenceItemParam` (`FUN_008616a0`) the sequence can
+    /// set ([`Query::SequenceFlagSet`](crate::hsm::behaviours::Query::SequenceFlagSet)): `KILLCAMSEQ` enter
+    /// (0x75cae0: `FUN_00a44f30` on the style-2 player UIM+0x12568, `player` 2), `ONLINECARSWA` state 0
+    /// (`FUN_00a44150`(…, 0), `player` none). `playback` names it for `Query::SequencePlaying`.
+    PlaySequenceWithFlag { playback: u32, sequence: u32, player: Option<u8> },
+    /// `ONLINECARSWA` state 2 (0x75bcd0): the local slot's rollout (`FUN_0067ecf0`(slot)), message 3 to the local
+    /// vehicle with the rollout's car and colour (`FUN_008445d0`(vehicle, `FUN_006788d0`, `FUN_00678910`, 1)) and
+    /// the slot's timer of `FUN_00658a40` cleared when it ran out.
+    OnlineCarSwapApply,
+    /// `ONLINECARSWA` state 3: `FUN_006beb70` on the local player (record +0x7c..+0x8c zeroed); the behaviour then
+    /// sends [`ResetVehicleDamage`](Self::ResetVehicleDamage).
+    OnlineCarSwapFinish,
+    /// `SHOWCARSELEC` enter (0x7408e0 → `FUN_00655d80` on the car-select manager G+0x2f40c): +0x5258 = 2 and, with
+    /// `show_loading`, the loading screen (`FUN_00799a60`).
+    ShowCarSelect { show_loading: bool },
+    /// `SHOWCARSELEC` enter update (0x740950): `FUN_0086bbd0`(1) on the options manager (G+0x2f3e0)+0x4c90.
+    FocusCarSelect,
+    /// `SHOWCARSELEC` exit begin (0x7409a0), when +0x5258 is 2: `FUN_00655dc0`(`show_loading`).
+    HideCarSelect { show_loading: bool },
+    /// `STARTCARSELE` enter (0x751fd0): the car select (G+0x2f40c) starts on the current event's list (G+0x2f468
+    /// +0x88 → +0xc → +0x14): `online`: `FUN_00664650`(car of the rollout manager's `FUN_006833f0` after
+    /// `FUN_00692800`, list); offline: `FUN_006645c0`(the local player's car or 0, list).
+    StartCarSelect { online: bool },
+    /// `STARTCARSELE` exit (0x740ea0): `FUN_00657900` (car select) and `FUN_0071c240`.
+    StopCarSelect,
+    /// `STARTCARSELE`: G+0x2ef70 +0x44 (the byte `HSB_RUNNING` sets) = `on`, without the queue message.
+    SetWorldShownFlag { on: bool },
+    /// `TRYTOPLAYSPE` enter (0x753260): the speech events' resources (`atoi` of each `SPEECHEVENTS` value, type
+    /// 0x1000000, 0xc) are loaded through the request object +0x48 (`FUN_00ad82c0`, `FUN_00adaef0` each,
+    /// `FUN_00ad83c0`); `load` names it for [`Query::SpeechLoadState`](crate::hsm::behaviours::Query::SpeechLoadState).
+    LoadSpeechEvents { load: u32, events: Vec<u32> },
+    /// `WAYPOINTS` enter (0x74b530): for each waypoint of the current event (GMM+4 → +0xf4 / +0xf8 record: count
+    /// +0xdc, triggers +100; position `FUN_0053c020` / `FUN_00534330`) a map POI of type `poi` (`FUN_00793350`(poi,
+    /// position, 0, 2, index)); at most 16 (+0x48..+0x88).
+    AddEventWaypointPois { poi: i64 },
+    /// `WAYPOINTS` update (0x74b6c0), every frame: the first POI's position (UIM +0x14c80 + handle × 0x60) becomes
+    /// the GPS target (`FUN_00792390`, `FUN_007970e0`), UIM+0x2c5e0 = −1.
+    RouteToFirstWaypointPoi,
+    /// `WAYPOINTS` exit (0x74b660): each POI removed (`FUN_00790da0` on UIM+0x14c50).
+    RemoveEventWaypointPois,
+    /// `SHOWMEETUPPO` enter update (0x751b10): the two map icons of the meet-up `trigger` (`FUN_00790c70` type
+    /// 0x13 with the `MapPoiConfig` (GameLogicConfig +0x2ac) +0x44 and +0x40, on the trigger's box `FUN_006e8ea0`).
+    ShowMeetupPois { trigger: u32 },
+    /// `SHOWMEETUPPO` exit (0x745eb0): both icons removed (`FUN_00790da0`).
+    RemoveMeetupPois,
 }

@@ -28,6 +28,8 @@ pub mod progress;
 pub mod race;
 #[path = "behaviours_racehud.rs"]
 pub mod racehud;
+#[path = "behaviours_rest.rs"]
+pub mod rest;
 #[path = "behaviours_signin.rs"]
 pub mod signin;
 #[path = "behaviours_ui.rs"]
@@ -79,6 +81,7 @@ pub fn register(r: &mut Registry) {
     signin::register(r);
     online::register(r);
     progress::register(r);
+    rest::register(r);
 }
 
 /// Engine state a behaviour reads, asked through [`Host::query`](super::Host::query). Answers are `u64`: bools are
@@ -542,6 +545,91 @@ pub enum Query {
     /// `FUN_0042e1b0` +0x2c) has a short +0x28 > 0 in its attribute record (`FUN_00643c10`) and its bit is clear in
     /// the local slot's set (`FUN_006404d0`). Default false.
     CarjackerCarNotCollected,
+    // The last batch (`behaviours_rest.rs`).
+    /// `BINDCONTROLL` update (0x741fd0): `FUN_0047aab0`(0, buffer, 1, 0, 0x27) on the user manager
+    /// `*0x010edad8`: user 0's input device (+0xb0e8, vtable +0x10) and `FUN_00ac7c80` count more than 0 events
+    /// of kind 0x27 still pending (the press that bound the pad). Default false.
+    PadInputPending,
+    /// `DBGSTARTFRID` (0x7703d0): the current event data handle G+0x2f468 +0x88 / +0x8c is set (not the null
+    /// handle `.bss` 0x117b330). Default false.
+    DebugEventDataSet,
+    /// `DBGSTARTFRID`: `FUN_0083bd20` on G+0x2ed70 (`FUN_00571130` +0x2108 > 0). Default false.
+    DebugWorldReady,
+    /// `DBGSTARTFRID`: the free-ride event, the boot GeneSys object's (`DAT_010edac0` +0x1c ref) field +0xc, or
+    /// when 0 the current event data's +0x14. Default 0.
+    DebugFreeRideEvent,
+    /// `HSM.SELECTEA` (0x73ca40): the Easy Drive shortcut the UI picked, UI manager (`FUN_007746a0`) +0x33608.
+    /// Default 0 (none).
+    EasyDriveShortcut,
+    /// `FUN_004c1f00` (`Net.IsGameStarted`): in an online game (network +0x6a20) whose state +0xbe7c is 0x83 (by
+    /// the Blaze game states, `IN_GAME`). Default false.
+    NetGameStarted,
+    /// `FUN_004c22b0` → `FUN_00a82c40` (`Net.IsGameAdmin`). Default false.
+    NetGameAdmin,
+    /// `FUN_004c2500` → `FUN_00a83320` (`Net.AreAllPlayersConnected`: the 12 session slots, an empty one counts
+    /// as connected). Default true.
+    NetAllPlayersConnected,
+    /// `FUN_004c22f0`: host migration under way (network +0xbe77) and not syncing (+0xbe78). Default false.
+    NetHostMigrating,
+    /// Request object `slot`'s word +0x1c (the second dword of its reply at +0x18; `LAUNCH` resends after an
+    /// error only when it is 2). Default 0.
+    NetRequestResult { slot: u8 },
+    /// Takes the next unread network message of `kind` from the inbox G+0x2f424 (`FUN_00682950`, marked read with
+    /// `FUN_006829f0`): its word +4 (0x46: the sender's slot), `u64::MAX` = none. Default none.
+    TakeNetMessage { kind: u32 },
+    /// The local player's slot (players +0xa6b4; `FUN_006bf310` +0x98 is the same record's index). Default
+    /// `u64::MAX` (none).
+    LocalPlayerSlot,
+    /// Player slot `index` is occupied (players +0xa5d0[index] ≠ 0). Default false.
+    PlayerSlotUsed { index: u32 },
+    /// Player `index`'s record +0x474 (`IsMidGameJoining`; `FUN_00746940` reads players +0x484 + index × 0x7f0).
+    /// Default false.
+    PlayerMidGameJoining { index: u32 },
+    /// The local player's vehicle (record +0xa0; −1 = none, answered as `u64::MAX`). Default none.
+    LocalVehicle,
+    /// `FUN_006ba2a0` on the local player: its vehicle exists in the world. Default false.
+    LocalVehicleAlive,
+    /// `FUN_006b9430` on the local player: its vehicle (+0xa0) exists (`FUN_00573390`) and its world object is
+    /// ready (`FUN_005734a0` → `FUN_00572c20`). Default true.
+    LocalVehicleReady,
+    /// The flag of a [`PlaySequenceWithFlag`](crate::natives::Request::PlaySequenceWithFlag) playback was set by
+    /// its sequence (the `EditableBoolSequenceItemParam`). Default false.
+    SequenceFlagSet { playback: u32 },
+    /// `SHOWCARSELEC` enter update (0x740950): the car select's handle (G+0x2f40c +0x5240 / +0x5244) is set.
+    /// Default true.
+    CarSelectReady,
+    /// `SHOWCARSELEC` exit update (0x745dd0): car select +0x5264 is 0 and (+0x525c set or +0x5260 is 0). Default
+    /// true.
+    CarSelectClosed,
+    /// `SHOWCARSELEC` exit begin: car select +0x5258 (2 after `FUN_00655d80`). Default 2.
+    CarSelectState,
+    /// G+0x2ef70 +0x44, the world-shown byte (`STARTCARSELE` keeps it). Default false.
+    WorldShownFlag,
+    /// `TRYTOPLAYSPE` (0x7412d0): the state of speech load `load` (request object +0x4c): 2 / 3 loading, 0 loaded,
+    /// other values failed. Default 0.
+    SpeechLoadState { load: u32 },
+    /// `TRYTOPLAYSPE` update (0x753310): `FUN_00842f10`(the event's resource, −1, −1, 0) on the speech manager
+    /// G+0x2c3c0 tries to play `event` now; 0x13 = it plays. Default 0 (not played).
+    TryPlaySpeech { event: u32 },
+    /// `FUN_0083c530` on G+0x2c3c0: the speech manager's current speech (+0x2810) is `event`. Default false.
+    SpeechPlaying { event: u32 },
+    /// `WAYPOINTS`: the POIs [`AddEventWaypointPois`](crate::natives::Request::AddEventWaypointPois) added
+    /// (+0x88). Default 0.
+    WaypointPoiCount,
+    /// `WAYPOINTS` update (0x74b6c0): UIM+0x23d34 == 1, UIM+0x28184 == 1 or UIM+0x2c5d4 ≠ 0 (another screen owns
+    /// the route). Default false.
+    MapRouteBlocked,
+    /// G+0x2a9d8 (`FUN_006e0c30`): the online event the playlist picked. Default 0.
+    OnlinePendingEvent,
+    /// `SHOWMEETUPPO` (0x751b10): the meet-up trigger of `event` (`FUN_006e5dc0`: its data +0x5c), 0 = none.
+    /// Default 0.
+    MeetupTrigger { event: u32 },
+    /// `SHOWMEETUPPO` update (0x740b10): `FUN_006e90a0`(trigger, local slot) and `FUN_006e9150`(local slot).
+    /// Default false.
+    MeetupInCheckpoint { trigger: u32 },
+    /// `SHOWMEETUPPO` update: the distance of the local player (`FUN_006b9ea0`) from the trigger's centre (the
+    /// box `FUN_006e8ea0` +0x30), f32 bits. Default 50000.0 (`.rdata` 0x00fd6b5c, the enter's value).
+    MeetupDistance { trigger: u32 },
 }
 
 impl Query {
@@ -583,8 +671,15 @@ impl Query {
             | Query::SignInControlActive { .. }
             | Query::SignInControlVisible { .. }
             | Query::SignInEditEmpty { .. }
-            | Query::FirstPartySignedIn => 1,
+            | Query::FirstPartySignedIn
+            | Query::NetAllPlayersConnected
+            | Query::LocalVehicleReady
+            | Query::CarSelectReady
+            | Query::CarSelectClosed => 1,
             Query::AutologManifestIdle => 1,
+            Query::CarSelectState => 2,
+            Query::TakeNetMessage { .. } | Query::LocalPlayerSlot | Query::LocalVehicle => u64::MAX,
+            Query::MeetupDistance { .. } => u64::from(rest::MEETUP_DISTANCE.to_bits()),
             Query::ServerOpState => 2,
             Query::ServerOpError => 1,
             Query::ServerOpNextState { .. } => 26,
@@ -790,6 +885,37 @@ impl Query {
             Query::CarjackerActive => "CarjackerActive",
             Query::CarjackerButton => "CarjackerButton",
             Query::CarjackerCarNotCollected => "CarjackerCarNotCollected",
+            Query::PadInputPending => "PadInputPending",
+            Query::DebugEventDataSet => "DebugEventDataSet",
+            Query::DebugWorldReady => "DebugWorldReady",
+            Query::DebugFreeRideEvent => "DebugFreeRideEvent",
+            Query::EasyDriveShortcut => "EasyDriveShortcut",
+            Query::NetGameStarted => "NetGameStarted",
+            Query::NetGameAdmin => "NetGameAdmin",
+            Query::NetAllPlayersConnected => "NetAllPlayersConnected",
+            Query::NetHostMigrating => "NetHostMigrating",
+            Query::NetRequestResult { .. } => "NetRequestResult",
+            Query::TakeNetMessage { .. } => "TakeNetMessage",
+            Query::LocalPlayerSlot => "LocalPlayerSlot",
+            Query::PlayerSlotUsed { .. } => "PlayerSlotUsed",
+            Query::PlayerMidGameJoining { .. } => "PlayerMidGameJoining",
+            Query::LocalVehicle => "LocalVehicle",
+            Query::LocalVehicleAlive => "LocalVehicleAlive",
+            Query::LocalVehicleReady => "LocalVehicleReady",
+            Query::SequenceFlagSet { .. } => "SequenceFlagSet",
+            Query::CarSelectReady => "CarSelectReady",
+            Query::CarSelectClosed => "CarSelectClosed",
+            Query::CarSelectState => "CarSelectState",
+            Query::WorldShownFlag => "WorldShownFlag",
+            Query::SpeechLoadState { .. } => "SpeechLoadState",
+            Query::TryPlaySpeech { .. } => "TryPlaySpeech",
+            Query::SpeechPlaying { .. } => "SpeechPlaying",
+            Query::WaypointPoiCount => "WaypointPoiCount",
+            Query::MapRouteBlocked => "MapRouteBlocked",
+            Query::OnlinePendingEvent => "OnlinePendingEvent",
+            Query::MeetupTrigger { .. } => "MeetupTrigger",
+            Query::MeetupInCheckpoint { .. } => "MeetupInCheckpoint",
+            Query::MeetupDistance { .. } => "MeetupDistance",
         }
     }
 }
