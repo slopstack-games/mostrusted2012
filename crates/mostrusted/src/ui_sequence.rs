@@ -158,7 +158,7 @@ fn load(store: &mw_assets::AssetStore, seq: &Sequence) -> Option<Loaded> {
 /// A UI binding read through the logic's view models: the path (with its `[...]` argument) looked up in
 /// `LogicState`'s roots, the value handed to the layout's binding evaluator. `UISequences.Params` reads "" (module
 /// doc).
-fn logic_lookup(view: Option<&LogicView>, path: &str, arg: Option<&str>) -> Option<BindValue> {
+pub(crate) fn logic_lookup(view: Option<&LogicView>, path: &str, arg: Option<&str>) -> Option<BindValue> {
     use mw_logic::binding::{Binding, Host, Lookup, Value};
     if path == "UISequences.Params" {
         return Some(BindValue::Text(String::new()));

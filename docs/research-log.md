@@ -11,6 +11,60 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+### 2026-11-18: the HUD screens drawn by a widget-tree renderer from the logic's widget groups (`ui_widgets.rs`)
+
+Follows the survey below ("UI port (widget-tree renderer): survey only"). The free-roam HUD 371621 and the race
+HUD 604153 are no longer drawn by `hud.rs`'s fixed layout lists: `ui_widgets.rs` draws every layout of every
+widget of each widget group the logic has active, and the HSM decides which groups those are.
+- **Hooks.** `mw_logic::natives::pages::Pages::active_screen_groups()`: (screen, group) in activation order (the
+  screen = the newest context page holding the group, as activation finds it). `logic.rs` `tick` publishes it as
+  `ui_widgets::ActiveWidgetGroups` after the HSM update and the queued requests.
+- **Renderer.** Per screen in `DRAWN_SCREENS` (371621, 604153) with an active group: all layouts of the screen's
+  widgets (`AssetStore::ui_screen_layouts`, unported shaders left out) loaded on a thread into one `UiScene`,
+  sorted by widget `LayoutLayer`, then widget / layout order; each frame the layouts of active groups draw through
+  `UiScene::draw_with` with one `UiAnim` per screen. Bindings: `hud::HudFeed` (the runtime's feed: car, `HudState`,
+  pursuit, Easydrive, district / road, the race and its leaderboard) first, then `ui_sequence::logic_lookup`.
+  Groups another module still draws are skipped (`DRAWN_ELSEWHERE`: Easydrive's 1135023, `easydrive.rs`).
+- **Feeds the logic lacked** (set on the local player before each logic update, `ui_widgets::feed_logic`):
+  `nitrous` (`CurrentNitrousType`, record (class, kind) from the fitted mod: `hud::nitrous_record`, the old
+  `NitrousType::of` slot rule), `vehicle_alive` and `engine_on` (`IsEngineOn` from `ignition::EngineStart`:
+  "Some HUD Elements Visible" 1014536 sits in "Wait For Engine On" 979873 until it is true), and
+  `Camera.IsCockpitCam` = false (a published `Camera` view model): "Select HUD"'s "Is using cockpit cam" 371574
+  (`HSB_SEL_EX_B`, no ONFAILEXIT) otherwise exits through "" and no HUD group starts. `Widget.<name>.IsActive` =
+  true for every active widget (`pages.rs` `publish_widgets`): "Wait for HUDs ready" 371740 waits on
+  `Widget.HudSelect.IsActive`. With these the HSM activates 371622, 264948 (HUD), 1695018 (AdditionalHUD +
+  MapOverlay), the nitrous group (1524950 for NONE), 1805613 (EngineOffHud), 1135011 (Prompt) in free roam, and in
+  a race 604152, 604154, 1524971, 1524950, 1014531, 979075 on page 604153.
+- **Minimap stand-in.** The `Map` element's quad (layout 1206246) carries `hud.rs`'s mosaic (`hud::Minimap`): the
+  renderer reports the quad, `hud.rs` renders tiles and icons for it the next frame, the renderer splices the
+  icons in after the map quad (draw order kept: backing, map, icons, pursuit flash). `hud::minimap_quad` keeps the
+  additive tile blend.
+- **Removed from `hud.rs`**: `FREE_ROAM_LAYOUTS`, `EASYDRIVE_OFF_LAYOUTS`, the `Nitrous` / odometer / prompt /
+  pursuit / busting groups and their hand-written show rules, `NITROUS_GROUPS`, `NitrousType`, `RACE_LAYOUTS` and
+  the race layouts' drawing, `screen_layouts`. Kept: `HudState` (the feed), the countdown / results / feedback
+  sequences (root now `GlobalZIndex(4)`, over the renderer's 3), the minimap mosaic and icons.
+- **Model decisions** (marked in `ui_widgets.rs`): draw order across groups / screens (layer, then screen order);
+  letterbox = a screen none of whose layout instances binds `UIConfig.HudAspectCorrection` (the original's
+  letterbox is a UI camera override, UI manager +0x2ecf0 / +0x2ecf4, writer not found); HUD screens hide with
+  `HudSettings` (pause menu, hiding sequence, no car); an instance's triggered timelines apply their `FADE` step
+  only, as whole-layout opacity (`MOVE` / `APPROACH` settled, the visibility timeline's show transition not
+  played); an unanswered timeline trigger reads 0 before its modifiers (so `(NOT)` of it holds); `IsCockpitCam` false; `IsActive` true for active widgets (the
+  native widgets' view-model getters, e.g. `Widget_HudSelection`'s, are not in the dump: member names are not
+  strings there and their hashes, e.g. `IsActive` d862070e, `ExternalDefault` 9daa5c6d, are not immediates in
+  `text.asm`; `FUN_007f0cc0`'s `IsActive` is the screen manager's +0x229); `IsInStaticBust` = the pursuit's
+  `ShowStaticBustBar`; the stand-in minimap is one frame behind its element's rectangle.
+- **Verified**: `tools/t --drive 911 --test accel --mute` (0-60 3.60 s), `tools/t --race 906146 --test race --mute`
+  (finished, position 1, wrong way seen). A/B: `scratch/shots/ab_free.png` (old `hud.rs` above, renderer below,
+  frame 2800 after the recap): the same plates, minimap, EASYDRIVE / NEW prompt, speedometer and odometer;
+  `scratch/shots/ab_race.png` (race: position, distance, time, minimap, speedometer as before; the old run also drew the free-roam EASYDRIVE prompt over POSITION, now gone; the speedwall panel 1470201 showed faintly under TIME, fixed by the zero-trigger rule after the shot: not re-verified, session ended). No capture of the original at a matching place in `ref/`.
+- **Open**: the pause menu 431082 and Easydrive's menu still hand-drawn (`Widget_MenuData` / Easydrive natives);
+  `Widget.EngineOffHud.*` (`ChyronVisible`, `EZMenuIn`, `EZPromptIn`, `HideForMusic`) and `Widget.EasyDrive.*`
+  native members do not resolve (the timelines show settled-visible); `Map.RouteDistance`, `Recommends.*`,
+  `Mode.HasSpeedwallTargetTime`, `Rollouts.*`, `UIMessages.NitrousList` unanswered (their elements hidden, or the
+  timeline's off state); `--no-hsm` runs have no HUD now (no logic groups); the countdown / results sequences are
+  still `hud.rs`'s (the logic's `PlaySequence` of them is not routed). Captures that would confirm: the original's
+  free-roam HUD with nitrous fitted (gauge group) and in a race at a known place.
+
 ### 2026-11-18: event starts and jack spots run on the ported managers (`event_starts.rs`, `jackspots.rs`)
 
 The two modules no longer hold their own rules. **event_starts.rs**: `fill_inputs` fills `EventStartInputs` (every

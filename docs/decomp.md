@@ -3283,6 +3283,26 @@ multiplier). Initial values: 0, multiplier 1.0 (`0x00f8a820`), width 1280.0 (`0x
 - Text layout (`FUN_009e9780`): a character the font lacks is looked up as U+007F, then `-` (`FUN_009ebab0`), then
   glyph record 0.
 
+### UI renderer: the widget tree drawn from the logic's groups (2026-11-18, `ui_widgets.rs`)
+
+- What draws is the widget groups the HSM activates (`ACTI_WDGT_GR`, `RUN_PG_RNNR2`; `pages::Pages`): every layout
+  of every widget of an active group; the data then decides per layout and element (instance visibility binding,
+  instance triggered timelines, element visibility bindings and behaviours). The runtime's `ui_widgets.rs` does
+  this for the HUD screens 371621 and 604153 (research log 2026-11-18).
+- The free-roam HUD's start chain (HSM, `mwtool hsm 1014542`): "Some HUD Elements Visible" 1014536 → "Exit When
+  Engine Is Off" 1059063 / "Wait For Engine On" 979873 (`Players.LocalPlayer.IsEngineOn`, `FUN_006d8ab0` →
+  `FUN_00572c20`), then "Select HUD" 1014542: "Wait for HUDs ready" 371740 (`Widget.HudSelect.IsActive`, the
+  `Widget_HudSelection` widget's native view model), "Is using cockpit cam" 371574 (`Camera.IsCockpitCam`,
+  `HSB_SEL_EX_B` with no ONFAILEXIT: an unresolved binding exits through nothing) → "Run 3rd person HUDs" 371583
+  (groups from `Widget.HudSelect.ExternalDefault` / `ExternalEasyDriveOff`, the nitrous group by
+  `CurrentNitrousType`) or "Run Internal HUDs" 371576 (`Widget.HudSelect.InternalDefault` / `InternalThermal` /
+  `InternalNight`, switched by `UISequences.UseThermalHud` / `UseNightHud` / `UseDefaultHud`).
+- Not found: the native widgets' view-model getters (`Widget_HudSelection` and the others). Their member names
+  are not strings in the exe and their name hashes (`IsActive` d862070e, `ExternalDefault` 9daa5c6d,
+  `ExternalEasyDriveOff` 2c4a8019, `InternalDefault` 845a063a) do not occur as immediates in `text.asm`;
+  `FUN_007f0cc0` (`CurrentScreen`, `IsInModalMode`, `IsActive` +0x229 set by `FUN_007f9350`, `TransitionsLoaded`)
+  is the screen manager's binding getter, not a widget's.
+
 ### Race HUD, countdown and results (2026-10-09, `hud.rs`, `ui_quads.rs`)
 
 What is data (research log 2026-10-09): the screens and layouts, the countdown / results `Sequence`s and their

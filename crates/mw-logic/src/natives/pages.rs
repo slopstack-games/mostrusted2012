@@ -18,7 +18,7 @@
 //!
 //! Model decisions (not traced in the code): the `Widget` root is one published JSON object of the active
 //! widgets' typed JSON fields (the original resolves it through the script's view model, slot 8 `FUN_007e7a80`;
-//! adapters are not published yet); every native of the registry is bound, not only the script's `LuaHooks`;
+//! adapters are not published yet), with `IsActive` true for every active widget; every native of the registry is bound, not only the script's `LuaHooks`;
 //! the page's exit point ([`Query::WidgetExit`], page +0x208) is the widget manager's group exit (WM+0x488) that
 //! `ExitWidgetGroup` / `ExitGroupVia` set; native screen scripts are not run (each is its own C++ port).
 
@@ -197,6 +197,24 @@ impl Pages {
         self.groups.iter().map(|g| g.group).collect()
     }
 
+    /// The active widget groups with the screen (page) each was built from, in activation order (oldest first):
+    /// what a widget-tree renderer draws. A group's screen is the newest context's page that holds it, as
+    /// activation looks it up.
+    pub fn active_screen_groups(&self) -> Vec<(u32, u32)> {
+        self.groups
+            .iter()
+            .filter_map(|g| {
+                let screen = self
+                    .contexts
+                    .iter()
+                    .rev()
+                    .filter_map(|c| self.screens.get(&c.page))
+                    .find(|s| s.widgets.iter().any(|w| w.group == g.group))?;
+                Some((screen.id, g.group))
+            })
+            .collect()
+    }
+
     /// The page queries this manager answers (`None`: not a page query).
     pub fn query(&self, state: &LogicState, q: &Query) -> Option<u64> {
         Some(match q {
@@ -363,7 +381,14 @@ fn publish_widgets(pages: &Pages, state: &std::cell::RefCell<LogicState>) {
         };
         for w in screen.widgets.iter().filter(|w| w.group == g.group) {
             members.retain(|(n, _)| n != &w.def.name);
-            members.push((w.def.name.clone(), Json::Object(w.def.fields.clone())));
+            // `IsActive`: the widget is active (its group is). Model decision: the native widgets' view-model
+            // getters (e.g. `Widget_HudSelection`'s, which "Wait for HUDs ready" 371740 waits on) are not in the
+            // dump; an active widget answers true.
+            let mut fields = w.def.fields.clone();
+            if !fields.iter().any(|(k, _)| k == "IsActive") {
+                fields.push(("IsActive".to_string(), Json::Bool(true)));
+            }
+            members.push((w.def.name.clone(), Json::Object(fields)));
         }
     }
     let mut st = state.borrow_mut();

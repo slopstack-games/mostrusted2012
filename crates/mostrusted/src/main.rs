@@ -94,6 +94,7 @@ mod tyre_marks;
 mod ui_quads;
 mod ui_sequence;
 mod ui_sound;
+mod ui_widgets;
 mod weather;
 #[cfg(target_arch = "wasm32")]
 mod web;
@@ -1143,6 +1144,7 @@ fn run(mut cli: Cli, game: GameDir) -> anyhow::Result<()> {
         })
         .add_plugins(event_card::EventCardPlugin)
         .add_plugins(ui_sequence::UiSequencePlugin)
+        .add_plugins(ui_widgets::UiWidgetsPlugin)
         .add_plugins(gps::GpsPlugin)
         .add_plugins(game_text::GameTextPlugin)
         .add_plugins(ui_quads::UiQuadsPlugin)
