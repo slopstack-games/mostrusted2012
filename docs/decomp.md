@@ -5081,6 +5081,40 @@ the sequence object `0x10e48a`; items listed by `mwtool frontend --sequence 1107
   is false, at 1.233 s jump to 6.5 s once `…TimedOut`: the plate waits for the speed wall. Items are gated by
   `ShowMiniWall(NOT)`. Not run in the port (the clock runs straight, as the HUD's).
 
+## Police and pursuit (ported) (2026-11-18)
+
+The police logic is `crates/mw-police` (engine-free; readings in the sections above and the research log
+2026-11-17); `crates/mostrusted/src/police.rs` runs it. `pursuit.rs`, `cop_sight.rs`, `cop_driver.rs` are
+re-exports of the crate; `cop_patrol.rs` adapts `TrafficSystem` (`Lanes`) to the crate's `PatrolTraffic`.
+
+- **State**: the resource `Police` holds `mw_police::Police` (`core`, reached by `Deref`: `police.pursuit`,
+  `police.wanted`) and the runtime's side (config, road graph, orders with their entities, outcome timer, test
+  counters). The entity component `Cop` keeps only what carries decisions out (slot = the crate's cop id, mirrored
+  mode, patrol ghost state, route timer, planned point, stop flags); a cop's brain (role, driver, perception, search
+  leg) is `core.cop(slot)`.
+- **`police_tick`** (FixedUpdate, before `ai_drive`): fills `PoliceInput` each tick: `PlayerState` (pose, signed mph,
+  crashed, traffic hits, `took_down_cop`), one `CopState` per cop car (pose, crashed, on screen = 4 m sphere in the
+  frustum, touching = MODEL box test, new contact + closing speed, `line_clear` = physics ray, `arrived` = MODEL:
+  within 20 m of the GoTo point), `RoadState::default()` (no roadblocks in the runtime), `PursuitMode::default()`
+  (free roam), `scoring_heat` (traffic hits, takedowns, SLAM, from the config's per-action heat while pursued),
+  `force_wanted` (tests). It calls `Police::tick` and carries out the output: `removals` despawn, `spawns` become
+  loader `CarRequest`s (opponent slot `SLOT_BASE + id`, the car from `SpawnRequest::vehicle`), `roles` reset the
+  cop's route and release / re-find its patrol ghost, `legs` snap the new search point to the road graph, `events`
+  are logged (`police: Started ...`), the busted / escaped outcome plays 13 s (busted: car controls off), then
+  `Pursuit::reset` and, after a bust, every cop removed. The HUD resource `PursuitHud` is filled from the crate's
+  pursuit state.
+- **`spawn_cops`** (Update): places the arrived car at the order's kind, ring distance and speed (the game's spawn
+  point queries `FUN_005229e0` / `FUN_0051c610` / `FUN_0051fd10` / `FUN_0051b4e0`, still the runtime's own, MODEL).
+- **`cop_drive`** (FixedUpdate, after the tick): per cop car carries out the brain: the chase core (`CopDriver::tick`
+  with physics-ray probes, route planning, speed, nitrous), GoTo / Search routes to the role's point / the leg's
+  target at the level's search speed, the patrol ghost ride, waiting; writes `CopStatus`.
+- **Removed from the runtime** (now the crate's): the coordinator pass (count, spawn kinds, removal, 90 s block),
+  the role switches (chase / GoTo / search / waiting / patrol), the low-speed chase switch and box-in, the
+  sequencer, wanted, perception, the pursuit rules. Kept: rendering, light bars, sirens, speech.
+- **Not wired** (inputs left at default): roadblocks (`RoadState::roadblocks` / `roadblock_triggers`, the `roadblock`
+  output is dropped), `wrecked_by_ai`, `touches_roadblock`, `fast_cooldown`, the route for the roadblock task, the
+  bust camera event (`PursuitEvent::BustCaught` sets busted at once, `manual_bust` off).
+
 ## Police sirens, light bars and radio (2026-10-16)
 
 Read for "cops have no sounds, lights etc."; ported in `police_fx.rs`, `police_audio.rs`, `police_lightbar.rs`,

@@ -20,9 +20,11 @@ use bevy::prelude::*;
 
 use super::{Cop, CopMode, MPH, Police};
 use crate::ai::{AiDriver, AiRoute};
+use crate::cop_patrol::Lanes;
 use crate::cop_sight::{Perception, Wanted};
 use crate::drive::{Car, ExternalControls, Player};
 use crate::pursuit::PursuitState;
+use mw_police::coordinator::Role;
 
 /// The straight stretch the cases run on (m), the cop's place along it and its offset to the side.
 const STRAIGHT: f32 = 220.0;
@@ -194,20 +196,21 @@ pub(super) fn run_start_test(
                 tr.clear_near(route.at(s0 + COP_ALONG * 0.5).0, STRAIGHT, &mut commands);
             }
             // The pursuit and what the cops know start afresh.
-            police.pursuit.reset(true);
+            police.core.pursuit.reset();
             police.wanted = Wanted::default();
             police.was_pursuit = false;
-            police.taken_down = false;
-            police.owed_heat = 0.0;
             for (e, mut t, mut v, mut w, mut cop, mut driver) in &mut cops {
                 *t = Transform::from_translation(cop_pos).with_rotation(Quat::from_rotation_y((-dir.x).atan2(-dir.z)));
                 commands.entity(e).insert((Position(t.translation), Rotation(t.rotation)));
                 v.0 = Vec3::ZERO;
                 w.0 = Vec3::ZERO;
                 cop.mode = CopMode::Patrol;
-                cop.sight = Perception::default();
                 cop.touching = false;
-                cop.driver.reassign();
+                if let Some(b) = police.core.cop_mut(cop.slot as u32) {
+                    b.role = Role::Patrol;
+                    b.sight = Perception::default();
+                    b.driver.reassign();
+                }
                 // A fresh driver on a short line where it stands (the old route's recovery would put it back).
                 let mut fresh = AiDriver::new(Arc::new(AiRoute::new(vec![cop_pos, cop_pos - dir * 50.0], false)));
                 fresh.ignore = driver.ignore;
@@ -246,7 +249,7 @@ pub(super) fn run_start_test(
             let (route, s0) = test.road.clone().expect("found in phase 0");
             let mph = pv.0.length() / MPH;
             for (_, t, _, _, cop, _) in &cops {
-                test.saw |= cop.sight.sees;
+                test.saw |= police.core.cop(cop.slot as u32).is_some_and(|b| b.sight.sees);
                 let d = t.translation.distance(pt.translation);
                 test.closest = test.closest.min(d);
             }
@@ -311,7 +314,7 @@ pub(super) fn run_start_test(
                 return;
             };
             police.test_hold = false;
-            police.pursuit.reset(true);
+            police.core.pursuit.reset();
             police.wanted = Wanted::default();
             police.was_pursuit = false;
             let dir = lane.direction;
@@ -322,8 +325,11 @@ pub(super) fn run_start_test(
                 v.0 = Vec3::ZERO;
                 w.0 = Vec3::ZERO;
                 cop.mode = CopMode::Patrol;
-                cop.patrol.leave(tr);
-                cop.sight = Perception::default();
+                cop.patrol.leave(&mut Lanes { traffic: &mut **tr, cop: e });
+                if let Some(b) = police.core.cop_mut(cop.slot as u32) {
+                    b.role = Role::Patrol;
+                    b.sight = Perception::default();
+                }
                 let mut fresh = AiDriver::new(Arc::new(AiRoute::new(vec![cop_pos, cop_pos + dir * 50.0], false)));
                 fresh.ignore = driver.ignore;
                 fresh.keep_wrecked = true;
