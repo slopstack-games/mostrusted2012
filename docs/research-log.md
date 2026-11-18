@@ -11,6 +11,35 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+## 2026-11-18: bug hunt in mw-handling, mw-ai, mw-police (code-level defects, no install)
+
+**Fixed** (each with a failing test first):
+- `mw_handling::tyre::slip_ratio` divided by |v| / |ωr| where decomp.md "Tyres" (`FUN_009ba3e0`) has the signed
+  (ωr − v) / v and (ωr − v) / ωr: rolling backwards a locked wheel read κ = +1 (traction curves, the spin smoke
+  ramp) and a wheel spinning backwards κ < 0 (braking curves, the lock ramp). Now signed (the 1 mm/s divide guard
+  keeps the sign), and the braking form also below |ωr| < 0.01 m/s (`.bss` 0x01186af0) as the doc says.
+- `mw_handling::nitrous` near misses: the per-window car lists (state +0x78 / +0x90) were not cleared when a window
+  closed, so a car of the last window counted again in the next (an oncoming car re-awarded the oncoming amount in
+  a window with only same-direction cars). decomp.md "Nitrous refill" says distinct ids per window; the lists are
+  now cleared on the tick after the window closes (the `MW_NITROUS_LOG` count still shows them on the award tick).
+- `mw_ai` recovery (state 11): the direction lock (+0x35, 1 s) cleared only when its timer went below 0; a step
+  that landed it on exactly 0 (any dt dividing 1 s exactly in binary, e.g. 0.25) kept the direction locked for good.
+  Now at ≤ 0 (no change at 1/60).
+
+**Suspected, not changed** (need the dump or a capture):
+- `mw_police::pursuit` cooldown: `time_til_evaded` (P +0x3e8) is only rewritten while no cop is within 20 m; a
+  cooldown whose first tick has a non-chasing cop (crashed) within 20 m reads the stale value (0 on a first
+  chase) and escapes at once. Whether `FUN_0065cbe0` sets +0x3e8 on entry is not in the docs.
+- `mw_police::pursuit::announce`: `max_level` is only raised by a heat-up from a level above 0, so a chase that
+  never leaves level 1 never posts level 1's own action (`FUN_0065c5e0` reading not documented).
+- `mw_police::driver` HeadOn brakes only above `c.velocity.length() > 100.0` (m/s, ≈ 224 mph): possibly mph.
+- `mw_handling::drivetrain` torque noise: the accumulator wraps when the time exceeds rpm / 120 (a rate compared
+  with seconds); the noise jumps at each wrap.
+- `mw_handling::drift::try_enter` returns before the entry threshold climbs back, so a brake tap's lowered
+  threshold persists while the entry gates fail (slow, airborne).
+- `mw_handling::surface::roughness`: a contact normal along world X gives a zero tangent and a zero normal.
+- `mw_ai::Path::look_time` / `node` panic (% 0) on an empty path; callers guard with `count_from < 2`.
+
 ## 2026-11-18: the speech manager ported (`mw_audio::speech`), the logic's speech wired
 
 **What**: the speech manager G+0x2c3c0 is a port now (`crates/mw-audio/src/speech.rs`, engine-free, 2 tests), shared
