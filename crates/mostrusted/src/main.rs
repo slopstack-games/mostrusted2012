@@ -52,6 +52,7 @@ mod jackspots;
 mod loader;
 mod lod;
 mod logic;
+mod logic_effects;
 mod logic_loads;
 mod map_screen;
 mod materials;

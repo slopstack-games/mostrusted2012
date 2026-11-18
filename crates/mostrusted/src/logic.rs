@@ -160,6 +160,8 @@ impl Plugin for LogicPlugin {
         .insert_resource(crate::chevron::ChevronsHidden(false))
         .insert_resource(crate::freeroam::TriggersEnabled(false))
         .insert_resource(RaceDriven::default())
+        .init_resource::<crate::logic_effects::InfiniteNitrous>()
+        .add_systems(Update, crate::logic_effects::hold_infinite)
         .insert_resource(HsmEvent(self.event.clone()))
         .add_systems(Startup, |mut c: ResMut<CutsceneState>| c.logic_driven = true)
         .add_systems(Startup, start_loading)
@@ -307,6 +309,7 @@ fn receive(world: &mut World) {
             .collect();
         st.game_modes.event_data_ready = true;
     }
+    let event_starts = events.events.iter().filter_map(|e| Some((e.id, Vec3::from(e.spawn?.position)))).collect();
     let playlists = events.game_modes.iter().map(|m| (m.id, m.music_playlist)).collect();
     let store = world.resource::<crate::Game>().store.clone();
     // The world managers (checkpoints, event starts, car swap) run on the logic's state from now on; their outcomes
@@ -327,6 +330,7 @@ fn receive(world: &mut World) {
         loads: crate::logic_loads::Loads::new(store.clone(), profile_path, volume),
         data,
         playlists,
+        event_starts,
         full_rate: false,
         mute: [0; MUTE_REASONS],
         rumble_mute: [false; MUTE_REASONS],
@@ -579,6 +583,9 @@ struct Targets<'w, 's> {
     traffic: Option<ResMut<'w, crate::traffic::TrafficControl>>,
     snap: Option<ResMut<'w, crate::camera::SnapCamera>>,
     race: Race<'w, 's>,
+    /// `logic_effects.rs`: the requests on the runtime's systems and the fields it feeds back.
+    fx: crate::logic_effects::Effects<'w, 's>,
+    feed: crate::logic_effects::Feed<'w, 's>,
     /// The general UI sequence player: the playbacks are drawn through it.
     player: Option<ResMut<'w, crate::ui_sequence::UiSequencePlayer>>,
 }
@@ -651,6 +658,7 @@ fn tick(
             Err(e) => warn!("hsm: {e}"),
         }
     }
+    t.feed.fill(&mut host.logic.state.borrow_mut());
     if let Some(front) = &front {
         host.boot_trigger = front.boot_trigger() || front.phase != Phase::Title;
         host.pressed = front.pressed() || front.phase != Phase::Title;
@@ -848,6 +856,7 @@ fn tick(
                     }
                 }
             }
+            Carry::Effect(e) => t.fx.apply(&e),
             Carry::Play { .. } | Carry::Nothing => {}
         }
     }
@@ -903,6 +912,8 @@ enum Carry {
     StopUiSounds,
     /// `SnapCameraToBehindCar` (camera message 1): `camera::SnapCamera`.
     SnapCamera,
+    /// A request on the runtime's own systems (`logic_effects.rs`).
+    Effect(crate::logic_effects::Effect),
     /// Carried out with nothing to do (`CreateConductor`: the conductor is logic state).
     Nothing,
 }
@@ -978,6 +989,8 @@ struct RuntimeHost {
     data: Arc<HsmData>,
     /// Each game mode's `MusicPlaylist` (`Query::DefaultEventSongList`).
     playlists: HashMap<u32, u32>,
+    /// Each event's start position (`SetRouteFromPlayerToEvent`).
+    event_starts: HashMap<u32, Vec3>,
     /// `CHANGEVSYNCS`: G+0x2f723, the 60 Hz mode (`Query::FullRate`).
     full_rate: bool,
     /// `MUTE_SOUND`: the count per reason (UIM+0x2d2f0 +2999).
@@ -1097,6 +1110,27 @@ impl RaceLink {
 }
 
 impl RuntimeHost {
+    /// The requests `logic_effects.rs` carries out on the runtime's systems (the local slot's car only).
+    fn effect(&self, r: &Request) -> Option<crate::logic_effects::Effect> {
+        use crate::logic_effects::Effect;
+        let local = self.logic.state.borrow().players.local.map_or(-1, |s| s as i32);
+        let vehicle_is_local = |v: i32| v == self.logic.state.borrow().players.local_player().map_or(-1, |p| p.vehicle);
+        Some(match r {
+            Request::ClearAllChevrons => Effect::ClearChevrons,
+            Request::ClearTargetRoute => Effect::ClearRoute,
+            Request::SetRouteFromPlayerToEvent { event } => {
+                let event = u32::try_from(*event).ok()?;
+                Effect::RouteToEvent { event, position: *self.event_starts.get(&event)? }
+            }
+            Request::NitrousAward { slot, amount } if *slot == local => Effect::NitrousAward { amount: *amount },
+            Request::NitrousInfinite { slot, on } if *slot == local => Effect::NitrousInfinite(*on),
+            Request::NitrousReset { slot } | Request::ClearNitrous { slot } if *slot == local => Effect::NitrousReset,
+            Request::SirenState { vehicle, on } if vehicle_is_local(*vehicle) => Effect::Siren(*on),
+            Request::EngineState { vehicle, on } if vehicle_is_local(*vehicle) => Effect::Engine(*on),
+            _ => return None,
+        })
+    }
+
     /// Engine bindings the logic host has no root for yet (the game-mode manager's `Mode` table, the
     /// transitions): the runtime's own state where it has it, else the stand-ins of the module doc.
     fn engine_binding(&self, path: &str) -> Option<String> {
@@ -1202,6 +1236,15 @@ impl Host for RuntimeHost {
             Request::StopMusic => Some(Carry::SongList { list: 0, allow_playout: false }),
             Request::StopSounds { kind: 0 } => Some(Carry::StopUiSounds),
             Request::CameraSnapBehind => Some(Carry::SnapCamera),
+            Request::PlayMusic { id } => {
+                Some(Carry::SongList { list: u32::try_from(*id).unwrap_or(0), allow_playout: false })
+            }
+            Request::FeedbackGroup { load, id } => {
+                let group = i64::from(*id);
+                let r =
+                    if *load { Request::LoadFeedbackGroup { group } } else { Request::UnloadFeedbackGroup { group } };
+                self.loads.request(&r, self.frame).then_some(Carry::Nothing)
+            }
             // The count is the logic's (`mode_machine::apply`); `Query::ShowWorldCount` reads it.
             Request::AdjustShowWorldCount { .. } => Some(Carry::Nothing),
             Request::SetFullRate(on) => {
@@ -1319,7 +1362,7 @@ impl Host for RuntimeHost {
                 self.race = RaceLink { choice: self.race.choice.clone(), ..Default::default() };
                 Some(Carry::EndRace)
             }
-            _ => None,
+            _ => self.effect(&r).map(Carry::Effect),
         };
         let done = carried.is_some()
             || matches!(
@@ -1378,6 +1421,9 @@ impl Host for RuntimeHost {
                 let mode = self.logic.state.borrow().game_modes.current_mode;
                 Some(u64::from(self.playlists.get(&mode).copied().unwrap_or(0)))
             }
+            // `CONSMUNLOCKS`: the progression object's state +0x44 (4 = active) once the profile's progression is
+            // loaded (model decision: the runtime keeps no pending-unlock queues, `PopPendingUnlock` stays "none").
+            Query::ProgressionState => Some(if self.logic.state.borrow().progression.loaded { 4 } else { 0 }),
             // `COLLECTABLES`: the world state the collectables need (freeroam.rs has read the triggers).
             Query::CollectablesReady => Some(self.collectables_ready as u64),
             // The event's intro / outro (`cutscene.rs`; the outro also holds through the results after it).

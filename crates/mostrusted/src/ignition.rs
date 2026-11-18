@@ -86,6 +86,13 @@ impl EngineStart {
         }
     }
 
+    /// `SetEngineState` (`FUN_008444a0`): the engine is started or stopped as the ignition button would.
+    pub fn set_running(&mut self, on: bool) {
+        if on == (self.state == EngineState::Off) {
+            self.toggle = true;
+        }
+    }
+
     pub fn running(&self) -> bool {
         self.state == EngineState::Running
     }
