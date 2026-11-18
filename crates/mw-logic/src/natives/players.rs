@@ -21,6 +21,11 @@ pub struct Player {
     pub loaded: bool,
     /// +0xa0: the vehicle's slot in the world (−1 = none).
     pub vehicle: i32,
+    /// +0xac: the race target vehicle (`InvalidateRaceTarget` passes it to `FUN_00843170` unless it is −1).
+    pub race_target: i32,
+    /// +0x28c / +0x290: the car-still words `SetCarStill` writes (+0x28e = 1 sets the car still, false clears both).
+    pub car_still: u32,
+    pub car_still_290: bool,
     /// `FUN_006ba2a0` → `FUN_00573390`(vehicle): the vehicle exists in the world (engine state).
     pub vehicle_alive: bool,
     /// +0x3d8, +0x3dc, +0x3e8: the heat values the hooks zero (+0x3dc is the vehicle's heat: `TransferVehicleHeatToPlayer`).

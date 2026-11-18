@@ -72,6 +72,8 @@ pub struct SimFields {
     pub speedwall_pos: i32,
     /// The feedback / selection fields of [`lua_feedback`](super::lua_feedback).
     pub feedback: super::lua_feedback::FeedbackFields,
+    /// The vehicle / trigger / camera-world fields of [`lua_world`](super::lua_world).
+    pub world: super::lua_world::WorldFields,
 }
 
 /// The error record of the sign-in view model (VM +0x135c, +0x1360, +0x139c, +0x136d).

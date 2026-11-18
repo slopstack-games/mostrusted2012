@@ -54,6 +54,29 @@ Open: the runtime carries out none of the new Requests / answers none of the Que
 not host, no feedback queue); the unlock id → notification texts (unlock vtable +0x14 / +0x2c / +0x34, attribute
 tables at 0x10edac0) are not ported; `*0x10c5c34` / 0x10c5c70 (the post's arguments) unread; what the input word
 +0xf4 is bound to. Captures that would confirm: a challenge completion (unlock popup), a takedown with the jack.
+### 2026-11-18: Lua natives, tenth batch: vehicles, zones, nitrous (27 more, 222 of 385; `natives/lua_world.rs`)
+Handlers read from `re/out/live/text.asm`. Ported (state set by the runtime in `SimFields.world`): IsVehicleActive /
+IsVehicleLoaded (vehicle manager `*0x010edae4`, records of 0x1c40 B: bytes +0x3069 / +0x3068), IsVehiclePhysical
+(`*0x010edb04`+4 +0x55c48[id] > -1), IsVehicleCop (-1 = false, else `FUN_0057a050`), IsInCar (exists and the int
++0x160 of `FUN_00571160`'s record; vehicle = arg 2 when more than one argument), GetVehiclePosition / Direction
+(transform +0x30 / +0x20 as `{x,y,z}`, `FUN_00699ea0`), GetVehicleDistanceToVehicle, GetSignedVehicleSpeed (velocity
++0x120 . forward +0x100 of `FUN_005734a0`), IsCarWrecked (`FUN_006ba2a0` and byte +0x23e), GetPlayerSpeedMPH /
+IsPlayerCarMoving (`FUN_006ba3e0` -> `FUN_0083ea90`; moving = alive, loaded, |speed| > 0.5), GetTriggerRadius (zone
+`FUN_005378d0` +0x11 kind: box = length of half the size +0x24.., sphere = +0x14), GetTriggerPosition, HasFinished-
+StreamingCameraWorld (`FUN_005470e0`), GetIceTakeDuration (`FUN_0083b730` -> `FUN_005ce7b0`), ClearLoadingScreenLayout
+(UIM+0x2d204 &= ~2, +0x2d20c = 0), SetCarStill (byte +0x28e = 1, or dword +0x28c = 0 and byte +0x290 = 0). Requests:
+ClearAllChevrons, NitrousAward / NitrousInfinite / NitrousReset (`FUN_00658ad0` / `FUN_00658c90` on G+0x264e0),
+InvalidateRaceTarget (+0xac vehicle, `FUN_00843170`), IceCameraStop / IceCameraPaused (`FUN_00843b40` / `FUN_00843ad0`;
+SetIceCameraPaused passes id too), SirenState (`FUN_00844300`, vehicle -1 skipped) / EngineState (`FUN_008444a0`).
+Model decisions: an id without a record reads false / 0 (the original indexes memory unchecked); the speed, transform
+and flag values are runtime fields, not derived. Correction for future dumps: a `grep -v "push edi"` filter hides
+call arguments; read calls raw.
+Skipped: GetTriggerDirection / Rotation (matrix `FUN_0042ee30`), GetPoint*DistanceToVehicle (`FUN_00697120` reads a
+vector argument), GetSteering (`FUN_0083b530` / `FUN_0083b540`, non-local branch), IsTrafficRunningForCompetitor
+(`FUN_0083d410` half read), SwitchToIceCamera (`FUN_00843a60`), IsLoadingScreenShowing (`FUN_00799d90`),
+TransitionCameraToGameplay / SetCameraTransitionLocation (`FUN_00843ba0` / `FUN_00843c40`, vector arguments),
+CycleCameraTarget, HasInputBeenDetected (`FUN_00670fc0`), StopFeedbackSequence / RequestSkipSequence (globals
+0x01178070 / 74, `FUN_007b1060`).
 
 ### 2026-11-18: event starts and jack spots run on the ported managers (`event_starts.rs`, `jackspots.rs`)
 
