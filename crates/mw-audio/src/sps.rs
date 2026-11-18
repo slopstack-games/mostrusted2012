@@ -68,7 +68,9 @@ fn payload(data: &[u8], mut off: usize) -> Vec<u8> {
             break;
         }
         if id == 0x44 {
-            out.extend_from_slice(&data[(off + 8).min(data.len())..(off + size).min(data.len())]);
+            // A block shorter than its 8-byte header (size 4..8) carries no payload.
+            let end = (off + size).min(data.len());
+            out.extend_from_slice(&data[(off + 8).min(end)..end]);
         }
         off += size;
     }
@@ -308,4 +310,18 @@ pub fn decode(data: &[u8]) -> Result<Pcm> {
         }
     };
     Ok(Pcm { channels: out_ch, sample_rate: h.sample_rate, samples: mixed })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `D` block whose size (4..8) is shorter than its own header used to panic slicing `off + 8 .. off + size`.
+    #[test]
+    fn block_shorter_than_its_header() {
+        let mut d = vec![0x48, 0, 0, 12, 0x50, 0, 0xBB, 0x80, 0, 0, 0, 0];
+        d.extend_from_slice(&[0x44, 0, 0, 5, 0, 0, 0, 0, 0x45, 0, 0, 4]);
+        assert!(payload(&d, 12).is_empty());
+        assert!(decode(&d).is_err());
+    }
 }

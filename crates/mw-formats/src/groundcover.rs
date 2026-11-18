@@ -215,7 +215,7 @@ impl GroundcoverCollection {
             Vec::new()
         } else {
             let ptr = r.u32(0x3C)?;
-            (0..nblobs as u32).filter_map(|i| res.import_at(ptr + 4 * i)).collect()
+            (0..nblobs as u32).filter_map(|i| res.import_at(ptr.checked_add(4 * i)?)).collect()
         };
         Ok(Self { id: res.id, materials, layers, blobs })
     }

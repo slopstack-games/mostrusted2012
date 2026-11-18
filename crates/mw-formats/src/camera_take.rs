@@ -998,7 +998,7 @@ mod tests {
         t[0x34..0x38].copy_from_slice(&[2, 0, 3, 0]); // MAIN: 2 intervals, 3 keys
         d.extend_from_slice(&t);
         d.extend_from_slice(&32768u16.to_le_bytes()); // boundary at ~0.5; no key indices
-        while d.len() % 4 != 0 {
+        while !d.len().is_multiple_of(4) {
             d.push(0);
         }
         for (e, desc) in ELEMENTS.iter().enumerate() {
