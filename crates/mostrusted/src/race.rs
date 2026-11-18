@@ -1270,7 +1270,11 @@ fn apply_checkpoints(
         let cp = match ai_slot(racer) {
             None if racer.player => pr.cp,
             None => continue,
-            Some(slot) => pr.ai_cp[slot],
+            // Beyond the logic's player slots (more than 12 opponents): not tracked (`fill_checkpoints` skips it).
+            Some(slot) => match pr.ai_cp.get(slot) {
+                Some(&cp) => cp,
+                None => continue,
+            },
         };
         // The gates the manager counted since the last frame.
         while p.passed < cp.min(last) {

@@ -298,7 +298,7 @@ pub struct Feed<'w, 's> {
         (&'static Transform, &'static LinearVelocity, &'static Car, Option<&'static crate::nitrous::NitrousFeed>),
         With<Player>,
     >,
-    camera: Query<'w, 's, &'static GlobalTransform, With<Camera3d>>,
+    camera: Query<'w, 's, &'static GlobalTransform, crate::MainCamera>,
     garage: Option<Res<'w, crate::garage::Garage>>,
     /// `HasInputBeenDetected`'s sources: the keyboard, the pads and the player's control block.
     keys: Res<'w, ButtonInput<KeyCode>>,
