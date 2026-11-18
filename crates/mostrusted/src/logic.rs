@@ -336,6 +336,7 @@ fn receive(world: &mut World) {
         playlists,
         event_starts,
         full_rate: false,
+        world_shown_flag: false,
         mute: [0; MUTE_REASONS],
         rumble_mute: [false; MUTE_REASONS],
         collectables_ready: false,
@@ -1001,6 +1002,8 @@ struct RuntimeHost {
     event_starts: HashMap<u32, Vec3>,
     /// `CHANGEVSYNCS`: G+0x2f723, the 60 Hz mode (`Query::FullRate`).
     full_rate: bool,
+    /// `STARTCARSELE`: G+0x2ef70 +0x44, the world-shown byte (`Query::WorldShownFlag`).
+    world_shown_flag: bool,
     /// `MUTE_SOUND`: the count per reason (UIM+0x2d2f0 +2999).
     mute: [u32; MUTE_REASONS],
     /// `MUTEALLRUMBL`: the flag per reason (G+0x2f480 +0x325f0 +0x260).
@@ -1353,6 +1356,19 @@ impl Host for RuntimeHost {
                 self.playbacks.retain(|p| p.owner != Owner::Playback(*playback));
                 Some(Carry::Nothing)
             }
+            // `STARTCARSELE`: the byte is only kept (no queue message), read back by `Query::WorldShownFlag`.
+            Request::SetWorldShownFlag { on } => {
+                self.world_shown_flag = *on;
+                Some(Carry::Nothing)
+            }
+            // `ONLINECARSWA` / `KILLCAMSEQ`: a headless playback as `PlaySequence`'s. The sequence's flag item
+            // (`EditableBoolSequenceItemParam`) is not run by the headless clock: `Query::SequenceFlagSet` stays false
+            // (the code's default), so the behaviours wait for the playback's end.
+            Request::PlaySequenceWithFlag { playback, sequence, player } => {
+                let owner = Owner::Playback(*playback);
+                self.playbacks.retain(|p| p.owner != owner);
+                Some(Carry::Play { owner, sequence: *sequence, player: *player })
+            }
             // The loads the logic asks for (`logic_loads.rs`).
             Request::LoadFeedbackGroup { .. }
             | Request::UnloadFeedbackGroup { .. }
@@ -1487,6 +1503,7 @@ impl Host for RuntimeHost {
             Query::WidgetTransitionStarted { group } => Some((*group == PRESS_START_GROUP) as u64),
             Query::TransitionFinished => Some(!self.transitioning as u64),
             Query::FullRate => Some(self.full_rate as u64),
+            Query::WorldShownFlag => Some(self.world_shown_flag as u64),
             // `PLAYSONGLIST`'s last fallback: the current mode's `MusicPlaylist` (decomp.md "Music").
             Query::DefaultEventSongList => {
                 let mode = self.logic.state.borrow().game_modes.current_mode;
