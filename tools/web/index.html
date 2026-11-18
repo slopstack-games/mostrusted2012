@@ -17,10 +17,30 @@
   input[type=file] { display: none; }
   input[type=text] { width: min(34em, 90vw); padding: 6px 8px; background: #16191d; color: var(--fg); border: 1px solid #2a2f35; border-radius: 4px; font: 13px ui-monospace, monospace; }
   #status { min-height: 1.4em; font: 13px ui-monospace, monospace; color: var(--dim); white-space: pre-wrap; }
+  #overlay { position: fixed; inset: 0; z-index: 10; display: none; place-content: center; gap: 12px; padding: 16px; text-align: center; background: var(--bg); }
+  #overlay.show { display: grid; }
+  #stage { font: 14px ui-monospace, monospace; color: var(--fg); min-height: 1.4em; }
+  #bar { justify-self: center; width: min(28em, 80vw); height: 6px; border-radius: 3px; background: #1d2126; overflow: hidden; }
+  #bar i { display: block; height: 100%; width: 0; background: var(--accent); }
+  #bar.indet i { width: 30%; animation: slide 1.1s ease-in-out infinite alternate; }
+  @keyframes slide { from { margin-left: 0; } to { margin-left: 70%; } }
+  #log { font: 12px ui-monospace, monospace; color: var(--dim); white-space: pre-wrap; max-height: 8em; overflow: hidden; }
+  #error { display: none; justify-self: center; max-width: min(46em, 92vw); padding: 12px 16px; border: 1px solid #7a2e2e; border-radius: 6px; background: #1c1214; text-align: left; }
+  #error.show { display: block; }
+  #error b { color: #ff7b72; }
+  #error pre { margin: 8px 0; max-height: 40vh; overflow: auto; font: 12px ui-monospace, monospace; color: var(--fg); white-space: pre-wrap; word-break: break-word; }
+  #error .hint { color: var(--accent); }
 </style>
 </head>
 <body>
 <div id="frame"><canvas id="mostrusted"></canvas></div>
+<div id="overlay">
+  <h1>MOST RUSTED</h1>
+  <div id="stage"></div>
+  <div id="bar"><i></i></div>
+  <div id="log"></div>
+  <div id="error"><b id="etitle"></b><pre id="emsg"></pre><div class="hint" id="ehint"></div></div>
+</div>
 <div id="panel">
   <h1>MOST RUSTED</h1>
   <p>Runs on your own copy of Need for Speed: Most Wanted (2012). Pick its install folder: the files are read where they are and never uploaded.</p>
@@ -29,11 +49,58 @@
   <div id="status"></div>
 </div>
 <script>
+// Loading overlay and error display. The runtime (web.rs) reports through window.__mwStage / window.__mwError.
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const lines = [];
+  let ready = false, failed = false;
+  const stage = (text, pct) => {
+    if (failed || ready) return;
+    const ov = $('overlay'); ov.classList.add('show');
+    if ($('stage').textContent !== text) {
+      if ($('stage').textContent) { lines.push($('stage').textContent); $('log').textContent = lines.slice(-6).join('\n'); }
+      $('stage').textContent = text;
+    }
+    const bar = $('bar');
+    bar.classList.toggle('indet', pct == null);
+    bar.firstElementChild.style.width = pct == null ? '' : Math.round(pct * 100) + '%';
+  };
+  const hide = () => { ready = true; $('overlay').classList.remove('show'); };
+  const HINTS = {
+    gpu: 'Use a recent Chrome, Edge or Brave (desktop) with hardware acceleration on; Firefox / Safari need WebGPU enabled.',
+    isolation: 'Reload the page once (a service worker adds the headers), serve it over https or localhost, or use tools/web/serve.py.',
+    fetch: 'Check your connection and reload; if you host the page yourself, make sure pkg/ was uploaded next to index.html.',
+    wasm: 'The browser could not start the game module: use a current desktop browser and reload. Details are in the console.',
+    folder: 'Pick the folder that contains NFS13.exe (the install of Need for Speed: Most Wanted, 2012, retail build).',
+    panic: 'The game crashed. Reload the page to try again; the console has the full stack.',
+    js: 'Reload the page. If it keeps happening, the console has the details.',
+  };
+  const error = (kind, title, msg) => {
+    if (failed) return; // the first error is the cause, later ones are fallout
+    failed = true;
+    $('overlay').classList.add('show');
+    $('stage').textContent = ''; $('log').textContent = ''; $('bar').style.display = 'none';
+    $('etitle').textContent = title; $('emsg').textContent = String(msg);
+    $('ehint').textContent = HINTS[kind] || HINTS.js;
+    $('error').classList.add('show');
+    $('panel').classList.add('hidden');
+    console.error(title + ':', msg);
+  };
+  window.__mw = { stage, hide, error };
+  // Called from Rust: loader stage text, and whether the world is loaded (then the overlay goes away).
+  window.__mwStage = (text, done) => { if (done) hide(); else if (text) stage(text); };
+  window.__mwError = (msg) => error('panic', 'The game stopped', msg);
+  addEventListener('error', (e) => { if (e.message) error('js', 'Script error', `${e.message}\n${e.filename || ''}:${e.lineno || ''}`); });
+  addEventListener('unhandledrejection', (e) => { const r = e.reason; error('js', 'Unhandled error', r && r.stack ? r.stack : r); });
+})();
+</script>
+<script>
 // Hosts without COOP / COEP headers (GitHub Pages): coi-sw.js adds them; the page reloads once it is in control.
 // tools/web/serve.py sends the headers itself, so nothing is registered there.
 (() => {
   if (self.crossOriginIsolated || !('serviceWorker' in navigator) || !window.isSecureContext) return;
   let reloaded = false;
+  window.__mw.stage('Setting up cross-origin isolation (service worker)', null);
   try { reloaded = sessionStorage.getItem('coi-reloaded') === '1'; } catch (_) {}
   navigator.serviceWorker.register('./coi-sw.js').then((reg) => {
     const reload = () => {
@@ -88,25 +155,76 @@ Error.stackTraceLimit = 200; // full Rust stacks in panic reports
 })();
 </script>
 <script type="module">
-import init, { start_with_files, start_with_listing } from './pkg/mostrusted.js';
+const mw = window.__mw;
 const q = new URLSearchParams(location.search);
 const status = document.getElementById('status');
 const argsField = document.getElementById('args');
 argsField.value = q.get('args') ?? '';
 const args = () => argsField.value.split(/\s+/).filter(Boolean);
-const fail = (e) => { status.textContent = String(e); console.error('start failed:', e); };
-function launch(f) {
-  document.getElementById('panel').classList.add('hidden');
-  try { f(); } catch (e) { document.getElementById('panel').classList.remove('hidden'); fail(e); }
+const paint = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+const showError = (kind, title, e) => mw.error(kind, title, e && e.message ? e.message : e);
+// Requirements first: each missing one gets its own message. While the isolation worker is still being installed
+// the page reloads by itself: wait for that (up to 8 s) before calling it an error.
+let swPending = false;
+try { swPending = !self.crossOriginIsolated && 'serviceWorker' in navigator && window.isSecureContext && sessionStorage.getItem('coi-reloaded') !== '1'; } catch (_) {}
+if (swPending) await new Promise((r) => setTimeout(r, 8000));
+if (!navigator.gpu) showError('gpu', 'WebGPU is not available', 'This browser does not offer navigator.gpu.');
+else if (!self.crossOriginIsolated || typeof SharedArrayBuffer === 'undefined') {
+  const why = window.isSecureContext ? 'The page is not cross-origin isolated (no COOP / COEP headers); the service worker may not be active yet.' : 'The page is not a secure context (needs https or localhost), so SharedArrayBuffer and the isolation worker are unavailable.';
+  showError('isolation', 'Cross-origin isolation is missing', why);
 }
-if (!self.crossOriginIsolated) status.textContent = 'This page needs cross-origin isolation (COOP / COEP headers): reload it once (a service worker adds them), or serve it with tools/web/serve.py.';
-await init();
-document.getElementById('folder').addEventListener('change', (ev) => launch(() => start_with_files(ev.target.files, args())));
-if (q.has('serve')) {
-  status.textContent = 'Reading the served install…';
-  const r = await fetch('/game-listing');
-  if (r.ok) { const listing = await r.text(); launch(() => start_with_listing(new URL('/game/', location.href).href, listing, args())); }
-  else fail('no /game-listing on this server');
+const ok = () => !document.getElementById('error').classList.contains('show');
+let wasm;
+if (ok()) {
+  try {
+    const mod = await import('./pkg/mostrusted.js');
+    mw.stage('Downloading the game (0 MB)', 0);
+    let res;
+    try { res = await fetch('./pkg/mostrusted_bg.wasm'); } catch (e) { throw Object.assign(new Error(`Could not download the game module: ${e}`), { kind: 'fetch' }); }
+    if (!res.ok) throw Object.assign(new Error(`Downloading pkg/mostrusted_bg.wasm failed: HTTP ${res.status} ${res.statusText}`), { kind: 'fetch' });
+    const total = Number(res.headers.get('content-length')) || 0;
+    let got = 0;
+    const counted = new Response(new ReadableStream({
+      async start(ctl) {
+        const rd = res.body.getReader();
+        for (;;) {
+          const { done, value } = await rd.read();
+          if (done) break;
+          got += value.length; ctl.enqueue(value);
+          const mb = (got / 1048576).toFixed(1);
+          mw.stage(total ? `Downloading the game (${mb} / ${(total / 1048576).toFixed(1)} MB)` : `Downloading the game (${mb} MB)`, total ? got / total : null);
+        }
+        ctl.close();
+      },
+    }), { headers: { 'content-type': 'application/wasm' } });
+    mw.stage('Compiling the game module', null);
+    await paint();
+    try { await mod.default({ module_or_path: counted }); } catch (e) { throw Object.assign(e instanceof Error ? e : new Error(String(e)), { kind: 'wasm' }); }
+    wasm = mod;
+  } catch (e) { showError(e.kind || 'fetch', 'The game could not be loaded', e.stack && !e.kind ? e.stack : e); }
+}
+if (wasm) {
+  const { start_with_files, start_with_listing, debug_panic } = wasm;
+  const launch = async (f) => {
+    document.getElementById('panel').classList.add('hidden');
+    mw.stage('Reading the install folder', null);
+    await paint();
+    try { f(); mw.stage('Starting the game', null);
+      if (q.get('fail') === 'panic') setTimeout(debug_panic, 1500);
+    } catch (e) { document.getElementById('panel').classList.remove('hidden'); showError('folder', 'Not a usable install folder', e); }
+  };
+  document.getElementById('overlay').classList.remove('show');
+  status.textContent = 'Ready: waiting for the install folder.';
+  document.getElementById('folder').addEventListener('change', (ev) => launch(() => start_with_files(ev.target.files, args())));
+  if (q.has('serve')) {
+    mw.stage('Reading the served install', null);
+    try {
+      const r = await fetch('/game-listing');
+      if (!r.ok) throw new Error(`no /game-listing on this server (HTTP ${r.status})`);
+      const listing = q.get('fail') === 'folder' ? '' : await r.text();
+      await launch(() => start_with_listing(new URL('/game/', location.href).href, listing, args()));
+    } catch (e) { showError('fetch', 'Could not read the install from the server', e); }
+  }
 }
 </script>
 </body>
