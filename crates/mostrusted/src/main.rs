@@ -43,6 +43,7 @@ mod game_text;
 mod garage;
 mod gate_marker;
 mod gps;
+mod ground_ray;
 mod groundcover;
 mod hud;
 mod ignition;

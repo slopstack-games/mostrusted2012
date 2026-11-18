@@ -751,7 +751,7 @@ fn place_at_start(
     race: Option<ResMut<RaceState>>,
     residency: Res<crate::frontend::Residency>,
     mut focus: ResMut<crate::streaming::PlacementFocus>,
-    spatial: SpatialQuery,
+    ground: crate::ground_ray::GroundRay,
     mut cars: Query<
         (&mut Transform, Option<&mut LinearVelocity>, Option<&mut AngularVelocity>),
         (With<Car>, With<crate::drive::Player>),
@@ -762,9 +762,9 @@ fn place_at_start(
         return;
     }
     let target = race.player_start.translation;
-    let ground = SpatialQueryFilter::default().with_mask(crate::props::GameLayer::World);
+    // The game places on residency alone (`FUN_0064b290`); ours also waits for the ground's collision (`ground_ray`).
     let resident = residency.resident(target, crate::frontend::PLACE_RADIUS)
-        && spatial.cast_ray(target + Vec3::Y * 5.0, Dir3::NEG_Y, 40.0, true, &ground).is_some();
+        && (ground.paused() || ground.down(target + Vec3::Y * 5.0, 40.0).is_some());
     if resident {
         race.placing = false;
         focus.0 = None;

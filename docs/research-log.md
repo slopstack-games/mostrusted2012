@@ -11,6 +11,21 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+### 2026-11-18: races with the logic hung at the start: placement waited on a ray the paused sim could not answer
+
+`--race 462174 --test race` with the HSM never finished (also on the pre-merge master a6358a4; `--no-hsm` passed).
+The logic's "Load And Show Intro Screen" holds `PAUSESIM` (`Time<Virtual>` paused) and waits on
+`Players.LocalPlayer.ResetInProgress(NOT)`, which the race answers with `RaceState::placing`. `place_at_start` and the
+AI grid spawn (`ai::spawn_opponents`) also waited for a ground ray, which never came: (1) avian sizes a new
+collider's tree entry in its physics step, which does not run while paused, and (2) the start's collision streams
+around the car, which is still in free roam until placed (with the pause, only 12 world trimeshes, none under the
+start). Dead ends: a gdb stack (main thread waiting on the render thread: the normal vsync wait, the GPU at 40 %);
+the event card (on real time, held only by `race_ready`).
+Fix (`ground_ray.rs`): the game places on `Resident(p, r)` alone (`FUN_0064b290`); ours keeps its ground test only
+while the sim runs. While paused the player is placed on residency and the AI on its grid pose; `GroundRay::down`
+also casts against each world collider directly while paused (agrees with the spatial query to the mm in a
+`--no-hsm` run). Result: 462174 27/27, 225.62 s, won, 7 opponents on the grid, card TRANSITION at 7.76 s.
+
 ### 2026-11-18: HSM behaviour types, last batch (`hsm/behaviours_rest.rs`, 22 types; 190 of 199 codes)
 
 Method as the earlier batches (name stub → `mov edx` factory → vtable; slot bodies from the dump or `text.asm`;

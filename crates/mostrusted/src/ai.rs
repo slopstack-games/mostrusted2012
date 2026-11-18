@@ -715,7 +715,7 @@ fn spawn_opponents(
     race: Option<Res<RaceSetup>>,
     mut event: Option<ResMut<crate::race::RaceState>>,
     time: Res<Time>,
-    spatial: SpatialQuery,
+    ground: crate::ground_ray::GroundRay,
     mut hold_since: Local<Option<f32>>,
 ) {
     let Some(race) = race else { return };
@@ -738,12 +738,16 @@ fn spawn_opponents(
             grid_along(&race.route, s - 10.0 * (slot + 1 - race.grid.len()) as f32, 1, 0.0, 0.0)[0]
         });
         let origin = grid.translation + Vec3::Y * 5.0;
-        let ground_only = SpatialQueryFilter::default().with_mask(crate::props::GameLayer::World);
-        let Some(hit) = spatial.cast_ray(origin, Dir3::NEG_Y, 40.0, true, &ground_only) else {
-            waiting.push((slot, spec, parts));
-            continue;
+        // The ground under the slot (`ground_ray`: also while the logic holds the sim paused for the start).
+        // While paused with no ground in yet: the grid pose itself, as the game places on residency alone.
+        let start = match ground.down(origin, 40.0) {
+            Some(distance) => origin - Vec3::Y * distance + Vec3::Y * 0.15,
+            None if ground.paused() => grid.translation + Vec3::Y * 0.15,
+            None => {
+                waiting.push((slot, spec, parts));
+                continue;
+            }
         };
-        let start = origin - Vec3::Y * hit.distance + Vec3::Y * 0.15;
         let fwd = grid.rotation * Vec3::Z;
         let car = crate::drive::build_car(
             &mut commands,
