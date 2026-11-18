@@ -46,6 +46,29 @@ pub fn path_of(route: &AiRoute) -> mw_ai::Path {
     path
 }
 
+/// The lateral acceleration of the obstacle sweep's turning circle (`FUN_00514ad0`): vehicle +0x550 × +0x5c4 ×
+/// wheel 0's effective lateral surface grip × 9.81 (`.bss` 0x01106a10, live 9.81). +0x5c4 is the front axle's
+/// `Pure_Lateral_Grip` peak coefficient (the +0x5c0 block is (gradient, peak, peak angle, ·): snapshot 2's
+/// SL 65 AMG holds 0.27 / 2.737 / 25, its data's front curve). +0x550 = 1 in both snapshots (writer not traced:
+/// model value).
+pub fn turn_accel(car: &Car) -> f32 {
+    const VEHICLE_550: f32 = 1.0;
+    VEHICLE_550 * car.params.tyres[0].pure_lateral.peak * car.wheel_lateral_grip(0) * 9.81
+}
+
+/// The stopping distance from `speed` (`FUN_00518520`(speed, 0)): a = (μ × −(+0x7d8) + +0x7d4) / mass, b = μ ×
+/// 9.81 with μ = vehicle +0x688 = the rear axle's `traction_pure_long` peak (snapshot 2's SL 65 AMG: 2.05, its
+/// data's rear curve, the block at +0x680 being (max slip, max slip ratio, peak, peak ratio)). +0x7d8 = −1
+/// (three cars in the snapshots) and +0x7d4 = 0.8 (the SL 65; 1.1 on the snapshot-1 car): writers not traced,
+/// model values.
+pub fn stop_distance(car: &Car, speed: f32) -> f32 {
+    const VEHICLE_7D8: f32 = -1.0;
+    const VEHICLE_7D4: f32 = 0.8;
+    let mu = car.params.tyres[1].traction_pure_long.peak;
+    let a = (mu * -VEHICLE_7D8 + VEHICLE_7D4) / car.params.mass.max(1.0);
+    mw_ai::braking_distance(speed, 0.0, a, mu * 9.81)
+}
+
 /// A car as the AI code reads it (the 0x94-byte AI vehicle state): `id` is the player handle stand-in (the
 /// entity's index), the radius the body's larger half extent (model decision: the writer of +0x50 is not traced).
 pub fn car_state(id: i32, t: &Transform, velocity: Vec3, car: &Car) -> mw_ai::CarState {

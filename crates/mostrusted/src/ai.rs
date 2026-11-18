@@ -803,6 +803,7 @@ pub(crate) fn ai_drive(
         &mut CarControls,
         Has<Player>,
         Option<&mut crate::car_impacts::AiCrash>,
+        Has<crate::police::Cop>,
     )>,
 ) {
     let dt = time.delta_secs();
@@ -849,7 +850,7 @@ pub(crate) fn ai_drive(
             Some(rb.schedule(&slot))
         });
     }
-    for (entity, mut car, mut t, mut v, mut w, ai, mut ctl, is_player, crashed) in &mut cars {
+    for (entity, mut car, mut t, mut v, mut w, ai, mut ctl, is_player, crashed, is_cop) in &mut cars {
         let Some(mut ai) = ai else { continue };
         let ai = &mut *ai;
         // A crashed AI car (`car_impacts.rs`) has no control (as the player's, `Player.CanDriveAway`) until its
@@ -922,9 +923,13 @@ pub(crate) fn ai_drive(
         let me = crate::ai_driver::car_state(entity.to_bits() as u32 as i32, &t, v.0, &car);
         let path = ai.path.get_or_insert_with(|| Arc::new(crate::ai_driver::path_of(&ai.route))).clone();
         let ground = me.ground();
-        let driver = ai.mw.get_or_insert_with(|| {
-            mw_ai::Driver::new(path.nearest_segment(ground), car.params.ai_steer_pid, entity.to_bits())
-        });
+        // The game builds the driver's path ring at the car. Ours starts the driver on the route node at its
+        // progress: the nearest segment alone is ambiguous on a circuit's unrolled laps (a car on the start line
+        // also sits on the last lap's final segment, where `count_from` < 2 leaves the command empty: full
+        // throttle, no steering).
+        let start_node = ai.route.nodes.iter().rposition(|n| n.s <= s).unwrap_or(0).min(path.len().saturating_sub(2));
+        let driver =
+            ai.mw.get_or_insert_with(|| mw_ai::Driver::new(start_node, car.params.ai_steer_pid, entity.to_bits()));
         // A new path (a route change): the driver goes to the nearest segment.
         if ai.path_fresh {
             driver.node = path.nearest_segment(ground);
@@ -956,6 +961,14 @@ pub(crate) fn ai_drive(
         if ai.rubber_band.is_some() && player.is_some_and(|(e, _)| e != entity) {
             ai.schedule_speed = manager.speeds[ai.slot.min(11)];
         }
+        // The sweep of the path ahead against the car's turning circles (`FUN_00503bf0`): above 20 mph, its
+        // lengths from the speed and the stopping distance (`FUN_00518520`), the longer time factor for a cop
+        // (`FUN_006bf190`: the player's +0x578 +0xb5).
+        let sweep =
+            mw_ai::Driver::sweep_lengths(&settings.0, &me, crate::ai_driver::stop_distance(&car, me.speed()), is_cop)
+                .map_or((false, false), |lengths| {
+                    driver.sweep(&settings.0, &path, &me, crate::ai_driver::turn_accel(&car), lengths)
+                });
         let input = mw_ai::RacerInput {
             dt,
             me: &me,
@@ -965,9 +978,11 @@ pub(crate) fn ai_drive(
             settings_speed: -1.0,
             lane_target: None,
             look_cap: None,
-            sweep: (false, false),
+            sweep,
             nitrous_mode_2: false,
-            interaction: *INTERACTION,
+            // `FUN_0051b320`: allowed once the race clock passes `AIConfig` 0x194 (ours: the race's clock, else
+            // the driver's own time since it started).
+            interaction: settings.0.interaction_enabled(event.as_ref().map_or(ai.time, |e| e.clock)),
             contact_partner: None,
             probes,
             visible: true,
@@ -1007,16 +1022,25 @@ pub(crate) fn ai_drive(
             *ctl = CarControls { brake: 1.0, ..default() };
         }
         if out.reset {
-            // The game's reset request (`FUN_0083d4b0`): back on the path where the car got stuck. Model decision:
-            // the placement (the route's point at the car's progress, facing along it, at rest).
+            // The game's reset request (driver +0x584e, consumed by `FUN_0083d4b0`): the player reset service
+            // `FUN_0064a0e0` with the car's own position, orientation and speed (vehicle +0x1620, at least 0,
+            // `FUN_006ba3e0`), flags 6 (0x46 for a non-cop): `FUN_00648060` moves that pose onto the road
+            // network (not ported: ours, the route's point at the car's progress, facing along it), then the
+            // placement `FUN_00647e00`. The driver is not rebuilt: nothing on that path touches it, so its state
+            // (the recovery, timers, lane, PID) carries on; only its request flag clears on the next tick.
+            let speed = v.0.length();
             let (p, tangent) = ai.route.at(s);
             t.translation = p + Vec3::Y * 0.5;
             t.rotation = Quat::from_rotation_y(tangent.x.atan2(tangent.z));
-            v.0 = Vec3::ZERO;
+            v.0 = t.rotation * Vec3::Z * speed;
             w.0 = Vec3::ZERO;
             ai.resets += 1;
-            // The reset puts the driver back in the racer state (model decision: a fresh driver on the new segment).
-            ai.mw = None;
+            // The path upkeep is the runtime's (the game rebuilds its ring at the car, `FUN_0050a070`): the
+            // driver's ring starts at the placed car's node again, so the recovery heads for the node ahead.
+            if let Some(d) = ai.mw.as_mut() {
+                d.node = ai.route.nodes.iter().rposition(|n| n.s <= s).unwrap_or(0).min(path.len().saturating_sub(2));
+            }
+            info!("AI car {entity}: stuck reset at {s:.0} m (reset {}), rolling at {:.0} km/h", ai.resets, speed * 3.6);
         }
     }
 }
@@ -1072,9 +1096,3 @@ fn log_ai(
         exit.write(AppExit::Success);
     }
 }
-
-/// The racer interaction (`FUN_005050d0`: shunting, holding ahead of a faster car behind) is run when
-/// `FUN_0051b320` allows it; what enables it is not traced, so it is off unless `MW_AI_INTERACTION=1` (model
-/// decision).
-static INTERACTION: std::sync::LazyLock<bool> =
-    std::sync::LazyLock::new(|| std::env::var("MW_AI_INTERACTION").is_ok_and(|v| v == "1"));

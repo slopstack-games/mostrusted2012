@@ -11,6 +11,27 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+### 2026-11-18: AI racers: the sweep is a turning-circle test; interaction delay; stuck reset; start node
+
+- **Sweep** (`FUN_00503bf0` → `FUN_00514ad0`, `FUN_004ff270`, read in full; decomp.md "Target speed"): no
+  obstacle cars are tested. The path ahead (arc + short … + long, 3 m steps, lane offset applied) is tested against
+  the two turning circles of radius R = |v|² / (vehicle +0x550 × +0x5c4 × wheel 0 lateral surface grip × 9.81);
+  +0x5c4 = front `Pure_Lateral_Grip` peak and +0x688 (stopping distance) = rear `traction_pure_long` peak, both
+  identified on snapshot 2's SL 65 AMG; +0x550 = 1, +0x7d4 = 0.8, +0x7d8 = −1 live (model values). Ported:
+  `mw_ai::Driver::sweep`, `Path::project`; runtime `ai_driver::{turn_accel, stop_distance}`.
+- **Interaction** (`FUN_0051b320`): on once the race clock passes `AIConfig` 0x194 = 15 s; `MW_AI_INTERACTION` gone.
+- **Stuck reset** (`FUN_0083d4b0` → `FUN_0064a0e0` → `FUN_00648060` / `FUN_00647e00`): the driver survives, the
+  car keeps its speed; placement still ours (route point), ring re-synced to the car's node.
+- **Ours, the main crash cause**: a new driver started on `nearest_segment`, which on a circuit's unrolled laps can
+  pick the last lap's final segment (`count_from` < 2: empty command = full throttle, no steering). Now the node
+  at the car's route progress.
+- Result `--race 462174`: before 1 AI finished (221.9 s); after 6 of 7 (219.2–225.0 s), 0 stuck resets.
+  `--race 906146`: panics in both runs after a track unload (`Entity despawned`, streaming; base binary not
+  checked, run stopped); AI there fell through the world at ~2.4 km (y −60…−85): collision streaming, ours.
+- Open (where I stopped): 906146 base comparison, `--drive 911 --test accel` not run; the racing line
+  `FUN_004e70e0` (needs `.bss` 0x01105a90…0x01105f10, `FUN_004e2c40`) and lane planner `FUN_00502e20` not ported;
+  the route factor `FUN_00661eb0` read (decomp.md "Rubber band"), its section table writer (+0xc50) open.
+
 ### 2026-11-18: the runtime's AI racers drive through `mw-ai`
 
 `ai.rs::ai_drive` now builds a `mw_ai::CarState` per car (`ai_driver::car_state`), the race route as a
