@@ -307,10 +307,14 @@ fn receive(world: &mut World) {
     let store = world.resource::<crate::Game>().store.clone();
     // The world managers (checkpoints, event starts, car swap) run on the logic's state from now on; their outcomes
     // go to `world_logic.rs` (`WorldLogic::outbox`).
+    // A direct `--drive` without an event never reaches the machine's free-drive managers (no front end to boot
+    // through): its managers run on the same state in plain play (`world_logic::step_plain`).
+    let direct = matches!(world.resource::<crate::Game>().request, crate::loader::Request::Drive { .. })
+        && world.resource::<HsmEvent>().0.is_none();
     let world_out = match world.get_non_send_mut::<crate::world_logic::WorldLogic>() {
         Some(mut w) => {
             w.state = logic.state.clone();
-            w.driven = true;
+            w.driven = !direct;
             w.outbox.clone()
         }
         None => Default::default(),

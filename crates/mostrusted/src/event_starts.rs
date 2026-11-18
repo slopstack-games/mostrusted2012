@@ -27,6 +27,11 @@
 //!   colour transform and timeline), scaled 0.09 m per pixel × 0.4…1 between 20 and 150 m. The look's flag
 //!   `d788383f` turns it to the camera (the panel faces the camera from every side in the captures).
 //!
+//! **Runtime on the ported manager** (research log 2026-11-18): `fill_inputs` supplies `EventStartInputs`
+//! (`mw_logic::natives::event_starts`, run by `world_logic.rs`: the list, the 2000 m radius, the pursuit, the prompt
+//! and the burnout hold are the manager's); `apply_outcomes` draws its `shown` list, shows the prompt it set
+//! (GMM+0x2c70) and, in plain play, starts `EventStartState::chosen` as a [`crate::event_card::PlayEvent`].
+//!
 //! Model decisions (not traced; research log): the reference point (UI manager +0x2cd50) is the player's car;
 //! no event counts as won or recommended (no results are kept), every event as unlocked for the profile
 //! (`FUN_00688f60`, `FUN_0068f190`, `FUN_006f0b60`, `FUN_006e58a0` not ported); the panel turns about the
@@ -47,8 +52,11 @@ use mw_formats::ui::LayoutInstance;
 
 use crate::drive::{Car, CarInput, Player};
 use crate::gate_marker::{WorldLayoutOut, draw_world_layout};
-use crate::race::{RacePhase, RaceSetup, RaceState};
+use crate::race::RaceSetup;
+use crate::world_logic::{WorldLogic, WorldLogicSet};
 use crate::world_ui::WorldUiQuads;
+use mw_logic::natives::Request;
+use mw_logic::natives::event_starts::StartEvent;
 
 /// `POIID`: an event's start.
 pub const POI_EVENT: u32 = 1_013_512;
@@ -56,16 +64,9 @@ pub const POI_EVENT: u32 = 1_013_512;
 pub const POI_MOST_WANTED: u32 = 955_952;
 /// `MWPOIIDUC`: a Most Wanted race already won.
 pub const POI_MOST_WANTED_WON: u32 = 955_955;
-/// `ACTIVERADIUS` (m).
-const ACTIVE_RADIUS: f32 = 2000.0;
-/// At most this many starts (`FUN_0074a600`: 0x14).
-const MAX_STARTS: usize = 20;
-/// The reference point is taken again after it moved this far (`.rdata` 0x00fd6790 = 100, squared).
-const REFRESH_DISTANCE: f32 = 10.0;
-/// Height differences count this much in the start radius (`.rdata` 0x00fd67b4).
-const HEIGHT_WEIGHT: f32 = 5.0;
-/// Throttle and brake count as held above this (`.rdata` 0x00f8a810).
-const INPUT_HELD: f32 = 0.5;
+/// The speed run and ambush game modes (`GameLogicConfig` +0x1ec / +0x60; the hint only).
+const SPEED_RUN_MODE: u32 = 955_569;
+const AMBUSH_MODE: u32 = 390_185;
 /// Seconds of holding that start the event (`.rdata` 0x00f8a820).
 const HOLD_SECONDS: f32 = 1.0;
 /// `GameLogicConfig` (GLOBALCONFIG.BNDL) and its fields the code reads.
@@ -84,7 +85,10 @@ impl Plugin for EventStartsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<EventStarts>()
             .add_systems(Startup, start_loading)
-            .add_systems(Update, (receive, update_starts, draw_starts).chain().after(crate::gate_marker::draw_markers));
+            .add_systems(Update, receive)
+            .add_systems(Update, fill_inputs.in_set(WorldLogicSet::Inputs))
+            .add_systems(Update, apply_outcomes.in_set(WorldLogicSet::Outcomes))
+            .add_systems(Update, draw_starts.after(apply_outcomes).after(crate::gate_marker::draw_markers));
     }
 }
 
@@ -92,6 +96,8 @@ impl Plugin for EventStartsPlugin {
 struct Candidate {
     setup: Arc<RaceSetup>,
     position: Vec3,
+    /// The start trigger's id (`SpawnPosition`).
+    trigger: u32,
     most_wanted: bool,
     /// Our race code runs it (a race mode event with gates).
     playable: bool,
@@ -117,6 +123,8 @@ struct Loaded {
     radius: f32,
     max_mph: f32,
     prompt: String,
+    prompt_id: u32,
+    excluded: u32,
 }
 
 #[derive(Resource)]
@@ -144,13 +152,13 @@ pub struct EventStarts {
     radius: f32,
     max_mph: f32,
     prompt_text: String,
-    /// What the list was built for: the reference point, the driven car, a pursuit.
-    reference: Option<Vec3>,
-    vehicle: Option<u32>,
-    in_pursuit: bool,
-    /// The burnout timer (+0x1a8) and whether an event was started (+0x1b1).
-    hold: f32,
-    started: bool,
+    /// The free-drive game mode, never listed (`GameLogicConfig` +0xd8), and the prompt's string id (+0x160).
+    excluded: u32,
+    prompt_id: u32,
+    /// The events were handed to the manager (`EventStartInputs::events`).
+    pushed: bool,
+    /// The chosen event was handed to the event card (plain play).
+    dispatched: bool,
 }
 
 impl EventStarts {
@@ -182,9 +190,6 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>) {
         let mut candidates = Vec::new();
         for e in &events.events {
             let Some(spawn) = e.spawn else { continue };
-            if e.game_mode == excluded {
-                continue;
-            }
             let name = lang.get(e.name).map_or_else(|| format!("EVENT {}", e.id), str::to_uppercase);
             let type_name = lang.get(e.type_name).map(str::to_uppercase).unwrap_or_else(|| e.kind.label());
             let blacklist_car = e
@@ -196,6 +201,7 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>) {
             let game_mode = events.game_mode(e.game_mode).copied();
             candidates.push(Candidate {
                 position: Vec3::from_array(spawn.position),
+                trigger: spawn.id,
                 most_wanted: e.first_place_only,
                 playable: e.game_mode == crate::map_screen::RACE_MODE && !e.checkpoints.is_empty(),
                 type_name,
@@ -267,6 +273,8 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>) {
             radius: num(FIELD_START_RADIUS).unwrap_or(22.0),
             max_mph: num(FIELD_START_MAX_MPH).unwrap_or(70.0),
             prompt,
+            prompt_id: num(FIELD_PROMPT_EVENT).map_or(0, |v| v as u32),
+            excluded,
         });
     });
     commands.insert_resource(Loading(Mutex::new(rx)));
@@ -286,7 +294,9 @@ fn receive(
     starts.radius = loaded.radius;
     starts.max_mph = loaded.max_mph;
     starts.prompt_text = loaded.prompt;
-    starts.reference = None;
+    starts.prompt_id = loaded.prompt_id;
+    starts.excluded = loaded.excluded;
+    starts.pushed = false;
     starts.world = Some(World {
         scene: loaded.scene,
         looks: loaded.looks,
@@ -296,116 +306,147 @@ fn receive(
     });
 }
 
-/// `FUN_0074a600`: the starts for the driven car around `reference`.
-fn build_list(starts: &mut EventStarts, reference: Vec3, vehicle: Option<u32>) {
-    starts.shown.clear();
-    for (i, c) in starts.candidates.iter().enumerate() {
-        if starts.shown.len() >= MAX_STARTS {
-            break;
-        }
-        // `FUN_006eca10(list, car, 1)`: a car in the list, or no list.
-        if !c.vehicles.is_empty() && !vehicle.is_some_and(|v| c.vehicles.iter().any(|&(id, _)| id == v)) {
-            continue;
-        }
-        // A Most Wanted race not yet won shows at any distance (and none counts as won here).
-        let not_won_most_wanted = c.most_wanted;
-        if !not_won_most_wanted && c.position.distance_squared(reference) > ACTIVE_RADIUS * ACTIVE_RADIUS {
-            continue;
-        }
-        let key = if c.most_wanted { POI_MOST_WANTED } else { POI_EVENT };
-        starts.shown.push((i, key));
-    }
+/// The event list the manager builds its starts from (`StartEvent`, `FUN_0074a600`'s questions).
+fn start_events(candidates: &[Candidate], excluded: u32) -> Vec<StartEvent> {
+    candidates
+        .iter()
+        .map(|c| StartEvent {
+            event: c.setup.event.id,
+            mode: c.setup.event.game_mode,
+            offline: true,
+            most_wanted: c.most_wanted,
+            // No results are kept: no Most Wanted race counts as won (model decision, module doc).
+            most_wanted_won: false,
+            race: matches!(
+                c.setup.event.kind,
+                mw_assets::events::EventKind::Circuit
+                    | mw_assets::events::EventKind::Sprint
+                    | mw_assets::events::EventKind::MostWanted
+            ),
+            laps: c.setup.event.laps,
+            start: Some((c.trigger, c.position.to_array())),
+            allowed_vehicles: c.vehicles.iter().map(|&(id, _)| id).collect(),
+            // The profile checks are not ported (module doc): every event unlocked and available.
+            unlocked: c.setup.event.game_mode != excluded,
+            available: true,
+            recommendation: None,
+        })
+        .collect()
 }
 
-/// `FUN_00755220` / `FUN_0074ad50` per frame: keep the list, the prompt, the burnout start.
+/// Fills `EventStartInputs` each frame (`FUN_00755220`'s reads: the car, its speed and pedals, the reference point,
+/// the pursuit, the game clock) before the manager steps.
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn update_starts(
+fn fill_inputs(
     mut starts: ResMut<EventStarts>,
+    logic: NonSend<WorldLogic>,
     car: Query<(&Transform, &LinearVelocity), (With<Car>, With<Player>)>,
     garage: Res<crate::garage::Garage>,
     pursuit: Option<Res<crate::police::PursuitHud>>,
-    race: Option<Res<RaceState>>,
-    mut input: ResMut<CarInput>,
+    input: Res<CarInput>,
     time: Res<Time>,
+) {
+    if starts.world.is_none() {
+        return;
+    }
+    let Ok((xf, velocity)) = car.single() else { return };
+    let mut st = logic.state.borrow_mut();
+    let i = &mut st.event_starts.inputs;
+    if !starts.pushed {
+        i.events = start_events(&starts.candidates, starts.excluded);
+        starts.pushed = true;
+    }
+    let (throttle, brake) = input.scripted.map_or((input.throttle, input.brake), |s| (s[0], s[1]));
+    let p = xf.translation.to_array();
+    i.vehicle = garage.current.as_ref().and_then(|c| crate::frontend::vehicle_id(&c.bundle)).unwrap_or(0);
+    i.position = p;
+    // The reference point (UI manager +0x2cd50) is the player's car (model decision, module doc).
+    i.reference = p;
+    i.speed_mph = velocity.0.length() / MPH;
+    i.throttle = throttle;
+    i.brake = brake;
+    i.in_pursuit = pursuit.as_ref().is_some_and(|p| p.in_chase || p.in_cooldown);
+    i.dt = time.delta_secs();
+    i.paused = false;
+    i.gmm_2e83 = false;
+    // Model decisions: the list may always be built, no intro, a player present, the prefetch idle, the UI idle.
+    i.list_allowed = true;
+    i.intro = false;
+    i.any_player = true;
+    i.prefetch_idle = true;
+    i.ui_idle = true;
+    i.freedrive_mode = starts.excluded;
+    i.start_radius = starts.radius;
+    i.max_mph = starts.max_mph;
+    i.prompt = starts.prompt_id;
+    i.speed_run_mode = logic.values.as_ref().map_or(SPEED_RUN_MODE, |v| v.speed_run_mode);
+    i.ambush_mode = AMBUSH_MODE;
+}
+
+/// Carries out the manager's outcomes: the shown starts (its list, from `EventStartState::shown`), the prompt
+/// (GMM+0x2c70), and in plain play the chosen event (`FUN_006e74f0` → `PlayEvent`).
+#[allow(clippy::type_complexity)]
+fn apply_outcomes(
+    mut starts: ResMut<EventStarts>,
+    mut logic: NonSendMut<WorldLogic>,
+    mut input: ResMut<CarInput>,
     mut hud: ResMut<crate::hud::HudState>,
     mut play: MessageWriter<crate::event_card::PlayEvent>,
 ) {
+    // The markers' requests: this module draws the manager's list instead; the hints, the prefetch and the
+    // recommendations have no runtime counterpart.
+    logic.take(|r| matches!(r, Request::EventStart(_)));
     hud.event_prompt = None;
     if starts.world.is_none() {
         return;
     }
-    let free_roam = race.as_ref().is_none_or(|r| r.phase == RacePhase::Finished);
-    let Ok((xf, velocity)) = car.single() else { return };
-    if !free_roam {
-        starts.shown.clear();
-        starts.reference = None;
-        return;
-    }
-    let in_pursuit = pursuit.as_ref().is_some_and(|p| p.in_chase || p.in_cooldown);
-    let vehicle = garage.current.as_ref().and_then(|c| crate::frontend::vehicle_id(&c.bundle));
-    if in_pursuit {
-        // `FUN_0074aaf0`: the points go while a pursuit runs.
-        starts.shown.clear();
-        starts.in_pursuit = true;
-        starts.hold = 0.0;
-        return;
-    }
-    let p = xf.translation;
-    let moved = starts.reference.is_none_or(|r| r.distance_squared(p) >= REFRESH_DISTANCE * REFRESH_DISTANCE);
-    if moved || starts.in_pursuit || starts.vehicle != vehicle {
-        starts.reference = Some(p);
-        starts.vehicle = vehicle;
-        starts.in_pursuit = false;
-        build_list(&mut starts, p, vehicle);
-    }
-    // `FUN_0074ad50`, called below the start speed.
-    let mph = velocity.0.length() / MPH;
-    if mph >= starts.max_mph || starts.started {
-        starts.hold = 0.0;
-        return;
-    }
     let test = std::env::var_os("MW_EVENT_START_TEST").is_some();
-    let (throttle, brake) = input.scripted.map_or((input.throttle, input.brake), |s| (s[0], s[1]));
-    let held = throttle > INPUT_HELD && brake > INPUT_HELD;
-    let dt = time.delta_secs();
-    let mut holding = false;
-    let mut start = None;
-    let r = starts.radius;
-    for &(i, _) in &starts.shown {
-        let c = &starts.candidates[i];
-        let d = c.position - p;
-        if d.x * d.x + (HEIGHT_WEIGHT * d.y).powi(2) + d.z * d.z >= r * r {
-            continue;
-        }
+    let (shown, prompting, chosen) = {
+        let st = logic.state.borrow();
+        let shown: Vec<(usize, u32)> = st
+            .event_starts
+            .state
+            .shown
+            .iter()
+            .filter_map(|e| Some((starts.candidates.iter().position(|c| c.setup.event.id == e.event)?, e.key)))
+            .collect();
+        (shown, st.game_modes.prompt == Some(starts.prompt_id), st.event_starts.state.chosen)
+    };
+    starts.shown = shown;
+    if prompting {
         hud.event_prompt = Some(starts.prompt_text.clone());
         if test && input.scripted.is_none() {
-            info!("event start test: burnout at {} ({})", c.setup.name, c.setup.event.id);
+            info!("event start test: burnout at a start");
             input.scripted = Some([1.0, 1.0, 0.0, 0.0]);
         }
-        if held {
-            holding = true;
-            start = Some(i);
-        }
     }
-    if holding {
-        starts.hold += dt;
-    } else {
-        starts.hold = 0.0;
+    if !logic.plain.awaiting_event {
+        starts.dispatched = false;
+        return;
     }
-    if let Some(i) = start
-        && starts.hold > HOLD_SECONDS
-    {
-        starts.started = true;
-        starts.hold = 0.0;
-        let c = &starts.candidates[i];
-        if test {
-            input.scripted = None;
-        }
-        if c.playable {
+    if logic.driven || starts.dispatched {
+        return;
+    }
+    // Plain play: the state exited with `chosen` (`CHECKENTRY`).
+    starts.dispatched = true;
+    if test {
+        input.scripted = None;
+    }
+    logic.state.borrow_mut().game_modes.request_event(0, false);
+    let c = starts.candidates.iter().find(|c| c.setup.event.id == chosen);
+    match c {
+        Some(c) if c.playable => {
             info!("event start: {} ({}) after a {HOLD_SECONDS} s burnout", c.setup.name, c.setup.event.id);
             play.write(crate::event_card::PlayEvent(c.setup.clone()));
-        } else {
-            warn!("event start: {} ({}) is not a race our race code runs", c.setup.name, c.setup.event.id);
+        }
+        other => {
+            if let Some(c) = other {
+                warn!("event start: {} ({}) is not a race our race code runs", c.setup.name, c.setup.event.id);
+            }
+            // The manager enters again at once for an event the runtime cannot run.
+            logic.plain.awaiting_event = false;
+            logic.plain.event_seen = false;
+            starts.dispatched = false;
         }
     }
 }
