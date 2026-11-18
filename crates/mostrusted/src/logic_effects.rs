@@ -18,10 +18,11 @@
 //! Model decisions: the runtime has one car, the logic's local slot's vehicle id ([`LOCAL_VEHICLE`]) names it; a
 //! request for another slot or vehicle does nothing; the award's slot multiplier (+0xc8) is read as 1 (offline).
 
-use avian3d::prelude::LinearVelocity;
+use avian3d::prelude::{ColliderOf, Collisions, LinearVelocity};
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 use mw_logic::natives::LogicState;
+use mw_logic::natives::lua_requests::ContactBody;
 use mw_logic::natives::lua_world::WorldVehicle;
 
 use crate::drive::{Car, Player};
@@ -148,6 +149,20 @@ pub struct Feed<'w, 's> {
     >,
     camera: Query<'w, 's, &'static GlobalTransform, With<Camera3d>>,
     garage: Option<Res<'w, crate::garage::Garage>>,
+    /// `HasInputBeenDetected`'s sources: the keyboard, the pads and the player's control block.
+    keys: Res<'w, ButtonInput<KeyCode>>,
+    pads: Query<'w, 's, &'static Gamepad>,
+    input: Option<Res<'w, crate::drive::CarInput>>,
+    /// `IsHittingRaceCar`: the player's body collider against the AI racers' bodies.
+    collisions: Collisions<'w>,
+    collider_of: Query<'w, 's, &'static ColliderOf>,
+    racers: Query<'w, 's, &'static crate::race::Racer>,
+}
+
+/// The logic's vehicle id of the AI racer in grid slot `slot` (model decision: the runtime has one logic vehicle,
+/// [`LOCAL_VEHICLE`]; the racers follow it).
+pub fn racer_vehicle(slot: usize) -> i32 {
+    LOCAL_VEHICLE + 1 + slot as i32
 }
 
 impl Feed<'_, '_> {
@@ -162,6 +177,7 @@ impl Feed<'_, '_> {
         let bundle = self.garage.as_ref().and_then(|g| g.current.as_ref());
         let vehicle_id = bundle.and_then(|c| crate::frontend::vehicle_id(&c.bundle)).unwrap_or(0);
         let colour = bundle.map_or(0, |c| c.paint_index as i32);
+        self.fill_requests(st);
         let Some(slot) = st.players.local else { return };
         let Ok((xf, vel, car, feed)) = self.cars.single() else {
             st.sim.world.vehicles.remove(&LOCAL_VEHICLE);
@@ -201,6 +217,41 @@ impl Feed<'_, '_> {
         }
         if let Some(c) = st.career.selected_colour.get_mut(slot) {
             *c = colour;
+        }
+    }
+
+    /// `RequestFields` (`natives/lua_requests.rs`): the controller's detected byte (any key or pad button held), the
+    /// local vehicle's input differing from a neutral one (`FUN_00670fc0`: throttle, brake, steering, handbrake or
+    /// nitrous), and the player's contacts with AI racers' bodies (avian's contact graph; both sides of kind 7, a
+    /// vehicle body). Body ids are the vehicle ids (model decision: the bodies' table is not modelled).
+    fn fill_requests(&self, st: &mut LogicState) {
+        let f = &mut st.sim.requests;
+        f.controller_input =
+            self.keys.get_pressed().next().is_some() || self.pads.iter().any(|p| p.get_pressed().next().is_some());
+        f.vehicle_input = self
+            .input
+            .as_ref()
+            .is_some_and(|i| i.throttle != 0.0 || i.brake != 0.0 || i.steer != 0.0 || i.handbrake || i.nitrous);
+        f.vehicle_contacts.clear();
+        f.vehicle_body_id.clear();
+        let Ok((_, _, car, _)) = self.cars.single() else { return };
+        f.vehicle_body_id.insert(LOCAL_VEHICLE, LOCAL_VEHICLE as i16);
+        let body = |id: i32| ContactBody { id: id as i16, kind: 7 };
+        let mut list = Vec::new();
+        for pair in self.collisions.collisions_with(car.body_collider) {
+            if !pair.is_touching() {
+                continue;
+            }
+            let other = if pair.collider1 == car.body_collider { pair.collider2 } else { pair.collider1 };
+            let Ok(c) = self.collider_of.get(other) else { continue };
+            let Some(slot) = self.racers.get(c.body).ok().and_then(|r| r.grid_slot) else { continue };
+            list.push([body(LOCAL_VEHICLE), body(racer_vehicle(slot))]);
+        }
+        f.vehicle_contacts.insert(LOCAL_VEHICLE, list);
+        for racer in &self.racers {
+            if let Some(slot) = racer.grid_slot {
+                f.vehicle_body_id.insert(racer_vehicle(slot), racer_vehicle(slot) as i16);
+            }
         }
     }
 }

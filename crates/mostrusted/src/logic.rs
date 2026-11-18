@@ -1366,6 +1366,19 @@ impl Host for RuntimeHost {
                 self.race = RaceLink { choice: self.race.choice.clone(), ..Default::default() };
                 Some(Carry::EndRace)
             }
+            // The sound starters (`FUN_0079fb40` took the slot): the runtime's sound systems are keyed by the
+            // `MiscSound` field / the car and world sound code, not by a sound name hashed with `FUN_009ed180`, so
+            // the sound is not started (logged once per kind). Its slot is released at once, as if it had ended.
+            Request::PlaySound { slot, .. } => {
+                if *slot != mw_logic::natives::lua_requests::SOUND_SLOTS_FULL {
+                    self.logic.state.borrow_mut().sim.requests.sound_slot_busy = Default::default();
+                }
+                None
+            }
+            // No runtime system plays the HUD's feedback messages (hud.rs has no queue for `FUN_007b8100`), nor the
+            // feedback sequence manager UIM+0x30840 that `FUN_007b1060` skips (the cutscene skip is the
+            // `JumpOnButtonPress` of its own sequence): logged once, nothing built.
+            Request::ShowForcedFeedbackMessage { .. } | Request::SkipSequence { .. } => None,
             _ => self.effect(&r).map(Carry::Effect),
         };
         let done = carried.is_some()

@@ -50,6 +50,18 @@ now ported (registry test asserts it). Maths in decomp.md "Native registries" (v
   (`game.loading_screen_requests`, `sim.world.loading_flags` used by `ClearLoadingScreenLayout`): to be merged.
   Captures that would confirm: a Lua-driven teleport (e.g. an event restart) placing the car where the original
   does.
+## 2026-11-18: runtime side of the Lua requests (`logic_effects.rs`, `logic.rs`)
+
+Fed each frame into `LogicState.sim.requests` (`Feed::fill_requests`): `controller_input` = any key / pad button held
+(the original's detected byte is probably latched; per-frame is a model decision), `vehicle_input` = the player's
+`CarInput` throttle / brake / steer / handbrake / nitrous non-neutral, `vehicle_body_id` / `vehicle_contacts` from
+avian's contact graph of the player's body collider against `race::Racer` AI bodies (both sides kind 7; vehicle ids:
+player 0, AI racer = grid slot + 1, body id = vehicle id: model decisions, the body table is not modelled).
+Not fed: `Player::name` of AI racers (the runtime's racers are not logic player slots), `skip_sequence_id` (no feedback
+sequence manager). Requests: `PlaySound` releases the sound slots at once and is logged once (the runtime's sound
+systems are keyed by `MiscSound` field / car / world code, no name-hash sound start exists); `ShowForcedFeedbackMessage`
+(no HUD feedback queue) and `SkipSequence` (no feedback sequence manager UIM+0x30840; the cutscene skip is its own
+`JumpOnButtonPress`) are logged once, "not carried out yet". Open: a `FUN_009ed180` name to sound lookup, a HUD message queue.
 
 ### 2026-11-18: Lua natives, thirteenth batch (`natives/lua_requests.rs`)
 12 offline natives ported from the survey below: 312 of 385 (238 / 255 offline, 50 / 100 online, 8 / 11 platform, 16 / 19 debug; 17
