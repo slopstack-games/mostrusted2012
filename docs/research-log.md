@@ -11,6 +11,20 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+## 2026-11-18: offline Requests / Queries of `behaviours_rest.rs` on the runtime
+
+Wired in `RuntimeHost` (logic.rs): `SetWorldShownFlag` / `Query::WorldShownFlag` (the byte G+0x2ef70 +0x44 is kept
+in the host, so `STARTCARSELE` restores it on exit); `PlaySequenceWithFlag` runs as a headless `Playback` like
+`PlaySequence` (`Query::SequencePlaying` ends it). `Query::SequenceFlagSet` stays at the code's default (false):
+the headless clock does not run the sequence's `EditableBoolSequenceItemParam`, so `ONLINECARSWA` / `KILLCAMSEQ`
+wait for the playback's end (the original's fall-back path). Logged once, not carried out (no runtime system, no
+new subsystem): `AddEventWaypointPois` / `RouteToFirstWaypointPoi` / `RemoveEventWaypointPois` (no map POI
+manager; the event's trigger records are not in the host; `WaypointPoiCount` 0, `MapRouteBlocked` false, so the
+intro never routes), `ShowCarSelect` ... `StopCarSelect` (no car-select screen: ready / closed 1, state 2 = the
+defaults), `LoadSpeechEvents` (no speech manager: load state 0, `TryPlaySpeech` 0 so `TRYTOPLAYSPE` exits
+`FAILURE` at once). Open: waypoint POIs would need the event's checkpoint triggers (GMM+4 +0xf4 record) in the host
+and a POI list in `map_screen.rs`.
+
 ### 2026-11-18: races with the logic hung at the start: placement waited on a ray the paused sim could not answer
 
 `--race 462174 --test race` with the HSM never finished (also on the pre-merge master a6358a4; `--no-hsm` passed).
