@@ -443,6 +443,10 @@ pub enum Request {
     /// `StopAllSounds` / `StopSpeech` / `StopGameplayStream` (0x00678420 / 0x006784e0 / 0x006784a0 ->
     /// `FUN_007a2140`(UIM+0x2d2f0, kind)): stop the sounds of one kind (0 = all, 2 = speech, 4 = gameplay stream).
     StopSounds { kind: u32 },
+    /// `StopTraffic` / `ResetTraffic` / `StartTraffic` (0x00678240 / 0x00678270 / 0x006782a0 -> `FUN_008461b0` /
+    /// `FUN_00846240` / `FUN_00846270`): the message 6 / 8 / 0xa (argument 0) sent to the object at `*0x010edb30`+0x10
+    /// (`FUN_0084e350` / `FUN_0084e4d0` / `FUN_0084e550`); the traffic system's reaction is the runtime's.
+    TrafficMessage { kind: u32 },
     /// `StopMusic` (0x00678460 -> `FUN_007908e0` on UIM+0x30370).
     StopMusic,
     /// `StopUnwantedSound` (0x00678520): `FUN_008404c0`(G+0x2c3c0), the byte G+0x2ae19 = 0, then

@@ -2162,3 +2162,20 @@ IsHudMessageQueueEmpty (vtable +0x10), ClearLoadingScreenLayout (needs the UIM+0
 StopUsingIceCamera / SetIceCameraPaused (guarded messages via `FUN_0084c110`), GetIceTakeDuration (`FUN_0083b730`),
 IsVehicleCop (`FUN_0083be20`), InvalidateRaceTarget (`FUN_00843170`), ClearAllChevrons (`FUN_006465a0` + three
 messages), SetCarStill.
+
+### 2026-11-18: Lua natives, seventh batch: no-ops, traffic messages, flags, sign-in errors (155 of 385; `natives/lua_sim.rs`)
+Handlers read from `re/out/live/text.asm`. Ported: eight argument-check-only handlers (SetHeadlightsState,
+ShowX360FriendsPopup, ShowPartyInvitePopup, OnPhotoSharedToWall, UpdateSpammableFriends, ShowX360GamerCard,
+ShowX360GamerCardEasyDrive, ShowX360GamerCardByPlayerIndex), IsFriendsUiOnScreen (pushes false), StopTraffic /
+ResetTraffic / StartTraffic (`FUN_008461b0` / `FUN_00846240` / `FUN_00846270`: message 6 / 8 / 0xa to the object at
+`*0x010edb30`+0x10; `Request::TrafficMessage`), IsStoryMode (GMM+0x2e7a), IsChallengeActive (GMM+0x2ce0 != 0),
+SetRearViewMirrorRender (G+0x2efb5), SetTOSAsLastError / SetCancelAsLastError / SetPWMisMatchAsLastError /
+SetEmailMisMatchAsLastError (`FUN_00883690` / `8836c0` / `8836f0` / `883720` on the sign-in VM+0x10d0: code
++0x135c = 2 / 3 / 0x1a / 0x1e, +0x1360 = -1, bytes +0x139c and +0x136d cleared; `SimFields::sign_in_error`),
+GetSignInError (the code, VM +0x242c). The traffic system and the sign-in flow are not ported, so the records only
+hold what the natives write.
+Skipped: SpamFriend, ShowX360KinectTunerUi (same shape as the no-ops, not needed yet), ClearEntitlementJumpID
+(`FUN_0086d610`: field +0xdbc of the object at *(G+0x2f3e0)+0x4ce0, not modelled), StoreLoaded / StoreUnloaded
+(`FUN_0086f7f0` unread), OnWallPostOrComment (`FUN_00639a90`), SendAddedRecoFriendTelemetry (`FUN_007e8d00`),
+HasFinishedStreamingCameraWorld (`FUN_005470e0` streaming state), the nitrous natives (`FUN_00658ad0` and a
+competitor-to-slot lookup unread).

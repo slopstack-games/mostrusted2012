@@ -53,6 +53,98 @@ pub struct SimFields {
     /// the words that changed): word 1 = `SetCarLocked`, word 2 = `DisableMenuControls` (bit 1 of each).
     pub input_masks: [u32; 8],
     pub input_mask_counts: [u8; 8],
+    /// G+0x2efb5: `SetRearViewMirrorRender`.
+    pub rear_view_mirror: bool,
+    /// The sign-in view model's error record (`*(G+0x2f3e0)`+0x10d0 + 0x135c / 0x1360 / 0x139c / 0x136d: code,
+    /// argument, two flag bytes); the reset values are 0 / 0 / 0 / 0.
+    pub sign_in_error: SignInError,
+}
+
+/// The error record of the sign-in view model (VM +0x135c, +0x1360, +0x139c, +0x136d).
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct SignInError {
+    pub code: u32,
+    pub arg: i32,
+    pub flag_139c: bool,
+    pub flag_136d: bool,
+}
+
+/// The handlers that only check their arguments and return nothing (no state touched): `SetHeadlightsState`
+/// (0x006781f0), `ShowX360FriendsPopup` (0x007eb290), `ShowPartyInvitePopup` (0x007eb2e0), `OnPhotoSharedToWall`
+/// (0x007eb3b0), `UpdateSpammableFriends` (0x007e9c20) and the ones with one optional argument and nothing else:
+/// `ShowX360GamerCard` (0x007eb2a0), `ShowX360GamerCardEasyDrive` (0x007eb2c0), `ShowX360GamerCardByPlayerIndex`
+/// (0x007eb2f0).
+fn no_effect(_: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    Ok(vec![])
+}
+
+/// `IsFriendsUiOnScreen()` (0x007e9f20): pushes false (no overlay on PC).
+fn is_friends_ui_on_screen(_: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    Ok(vec![Value::Bool(false)])
+}
+
+/// `StopTraffic()` (0x00678240): message 6 to the traffic system.
+fn stop_traffic(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    state.requests.push(Request::TrafficMessage { kind: 6 });
+    Ok(vec![])
+}
+
+/// `ResetTraffic()` (0x00678270): message 8.
+fn reset_traffic(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    state.requests.push(Request::TrafficMessage { kind: 8 });
+    Ok(vec![])
+}
+
+/// `StartTraffic()` (0x006782a0): message 0xa.
+fn start_traffic(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    state.requests.push(Request::TrafficMessage { kind: 0xa });
+    Ok(vec![])
+}
+
+/// `IsStoryMode()` (0x006756d0): GMM+0x2e7a != 0.
+fn is_story_mode(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    Ok(vec![Value::Bool(state.game_modes.story_mode)])
+}
+
+/// `IsChallengeActive()` (0x00675640): GMM+0x2ce0 != 0.
+fn is_challenge_active(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    Ok(vec![Value::Bool(state.game_modes.current_event != 0)])
+}
+
+/// `SetRearViewMirrorRender(on)` (0x00679c60): G+0x2efb5 = `lua_toboolean`(1).
+fn set_rear_view_mirror_render(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    state.sim.rear_view_mirror = toboolean(&args, 1);
+    Ok(vec![])
+}
+
+/// `SetTOSAsLastError` / `SetCancelAsLastError` / `SetPWMisMatchAsLastError` / `SetEmailMisMatchAsLastError`
+/// (0x007eaa80 / 0x007eaab0 / 0x007eaae0 / 0x007eab10 -> `FUN_00883690` / `FUN_008836c0` / `FUN_008836f0` /
+/// `FUN_00883720` on VM+0x10d0): the error code (+0x135c) = 2 / 3 / 0x1a / 0x1e, +0x1360 = -1, bytes +0x139c and
+/// +0x136d = 0.
+fn set_sign_in_error(state: &mut LogicState, code: u32) -> R {
+    state.sim.sign_in_error = SignInError { code, arg: -1, flag_139c: false, flag_136d: false };
+    Ok(vec![])
+}
+
+fn set_tos_as_last_error(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    set_sign_in_error(state, 2)
+}
+
+fn set_cancel_as_last_error(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    set_sign_in_error(state, 3)
+}
+
+fn set_pw_mismatch_as_last_error(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    set_sign_in_error(state, 0x1a)
+}
+
+fn set_email_mismatch_as_last_error(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    set_sign_in_error(state, 0x1e)
+}
+
+/// `GetSignInError()` (0x007eaa30): the error code (VM +0x242c = +0x10d0 + 0x135c) as an unsigned number.
+fn get_sign_in_error(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    Ok(vec![Value::Number(f64::from(state.sim.sign_in_error.code))])
 }
 
 /// `GetFrameCount()` (0x00677c30): the sim clock's first int as a number.
@@ -332,6 +424,30 @@ pub fn register(r: &mut Registry) {
     r.set_lua("AreUnitsMetric", are_units_metric);
     r.set_lua("ShouldLoadingScreenBeShowing", should_loading_screen_be_showing);
     r.set_lua("SetCarFrozen", set_car_frozen);
+    for n in [
+        "SetHeadlightsState",
+        "ShowX360FriendsPopup",
+        "ShowPartyInvitePopup",
+        "OnPhotoSharedToWall",
+        "UpdateSpammableFriends",
+        "ShowX360GamerCard",
+        "ShowX360GamerCardEasyDrive",
+        "ShowX360GamerCardByPlayerIndex",
+    ] {
+        r.set_lua(n, no_effect);
+    }
+    r.set_lua("IsFriendsUiOnScreen", is_friends_ui_on_screen);
+    r.set_lua("StopTraffic", stop_traffic);
+    r.set_lua("ResetTraffic", reset_traffic);
+    r.set_lua("StartTraffic", start_traffic);
+    r.set_lua("IsStoryMode", is_story_mode);
+    r.set_lua("IsChallengeActive", is_challenge_active);
+    r.set_lua("SetRearViewMirrorRender", set_rear_view_mirror_render);
+    r.set_lua("SetTOSAsLastError", set_tos_as_last_error);
+    r.set_lua("SetCancelAsLastError", set_cancel_as_last_error);
+    r.set_lua("SetPWMisMatchAsLastError", set_pw_mismatch_as_last_error);
+    r.set_lua("SetEmailMisMatchAsLastError", set_email_mismatch_as_last_error);
+    r.set_lua("GetSignInError", get_sign_in_error);
 }
 
 #[cfg(test)]
@@ -493,5 +609,57 @@ mod tests {
         assert_eq!(st(&host).sim.input_masks, [0; 8]);
         assert_eq!(st(&host).sim.input_mask_counts, [0; 8]);
         assert!(st(&host).unported.is_empty());
+    }
+
+    #[test]
+    fn seventh_batch() {
+        let (mut lua, host) = setup();
+        for n in [
+            "SetHeadlightsState",
+            "ShowX360FriendsPopup",
+            "ShowPartyInvitePopup",
+            "OnPhotoSharedToWall",
+            "UpdateSpammableFriends",
+            "ShowX360GamerCard",
+            "ShowX360GamerCardEasyDrive",
+            "ShowX360GamerCardByPlayerIndex",
+        ] {
+            assert!(call(&mut lua, n, vec![Value::Number(1.0)]).is_empty(), "{n}");
+        }
+        assert!(st(&host).requests.is_empty());
+        assert_eq!(flag(&call(&mut lua, "IsFriendsUiOnScreen", vec![])), false);
+        call(&mut lua, "StopTraffic", vec![]);
+        call(&mut lua, "ResetTraffic", vec![]);
+        call(&mut lua, "StartTraffic", vec![]);
+        assert_eq!(
+            st(&host).requests,
+            [
+                Request::TrafficMessage { kind: 6 },
+                Request::TrafficMessage { kind: 8 },
+                Request::TrafficMessage { kind: 0xa }
+            ]
+        );
+        st(&host).game_modes.story_mode = false;
+        assert_eq!(flag(&call(&mut lua, "IsStoryMode", vec![])), false);
+        st(&host).game_modes.story_mode = true;
+        assert_eq!(flag(&call(&mut lua, "IsStoryMode", vec![])), true);
+        assert_eq!(flag(&call(&mut lua, "IsChallengeActive", vec![])), false);
+        st(&host).game_modes.current_event = 7;
+        assert_eq!(flag(&call(&mut lua, "IsChallengeActive", vec![])), true);
+        call(&mut lua, "SetRearViewMirrorRender", vec![Value::Bool(true)]);
+        assert!(st(&host).sim.rear_view_mirror);
+        call(&mut lua, "SetRearViewMirrorRender", vec![Value::Bool(false)]);
+        assert!(!st(&host).sim.rear_view_mirror);
+        assert_eq!(num(&call(&mut lua, "GetSignInError", vec![])), 0.0);
+        for (n, code) in [
+            ("SetTOSAsLastError", 2.0),
+            ("SetCancelAsLastError", 3.0),
+            ("SetPWMisMatchAsLastError", 26.0),
+            ("SetEmailMisMatchAsLastError", 30.0),
+        ] {
+            call(&mut lua, n, vec![]);
+            assert_eq!(num(&call(&mut lua, "GetSignInError", vec![])), code, "{n}");
+            assert_eq!(st(&host).sim.sign_in_error.arg, -1);
+        }
     }
 }
