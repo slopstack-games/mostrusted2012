@@ -26,6 +26,36 @@ must feed `RequestFields` (input, contacts, unlocks, skip id, busy flags cleared
 Skipped (road / streaming data or unread): HasFinishedStreamingWorld, ShowLoadingScreen, ShowFeedbackMessage, CalculateForwardDirection,
 CalculateRotatedLocationXZ, CycleCameraTarget, SwitchToIceCamera and the unread ones listed below.
 
+### 2026-11-18: Lua natives, second online batch (25 more, 350 of 385; `natives/lua_online.rs`)
+Handlers from `re/out/live/text.asm`, callees from the dump; offline answers, nothing skipped. Online area now 75 of 100. New fields in
+`OnlineLuaFields`: `store` (`StoreObject`), `credentials` (`SignInCredentials`, Debug prints lengths only), `image_state`. New Requests:
+`ShowFriendUi`, `SelectAdvert`, `DeleteViewModelItem`, `AddedRecoFriendTelemetry`, `TunedFriendTelemetry`, `ReportedProfilePic`; slot 2 of
+`NetSend` is the request object at G+0x2f068.
+- **Store requests** (`RequestPurchaseOLP`, `RequestPurchase`, `RequestRedeemCode`, `RequestDownload`, `RequestDownloadOnlinePass`): all act on
+  the store object `*(G'+0x2f3e0)+0x4ce0` and only when its state (+8) is 0xd and the service flag `*(+0xd70)+0x2a10c` is clear. Purchase:
+  item (+0xdb8) and flag +0xdc8; redeem: flag +0xdc9 (the argument is ignored); download: item and flag +0xdca. The OLP item is `DAT_01182794`,
+  set by a static initialiser with the immediate 0x17231 (94769; found in the exe snapshot's bytes, no direct write in the disassembly).
+  The online-pass download uses the selected pack's id (the pack object at +0xd78 is found by id in `FUN_00642a90`). Model decisions: the state
+  and the service flag are runtime fields (0 and clear: so the requests are ignored until the runtime marks the store ready); with no pack selected
+  the original uses a default pack object (`DAT_01177108/c`, not resolved), here the item is 0.
+- **Friends**: `StartFriendRequest(name)` / `StartFriendRequestByOriginId(id)` write friend-list slot 1 (player manager +0xc97c result = -1, +0xc98d
+  finished = 0, the cells `GetFriendListActionResult` / `HasFriendListActionFinished` read); an empty name finishes it at once with result 1; else
+  `FUN_00ae1ea0`(`FUN_00ae10d0`()) opens the Origin friends UI (command 5 on the singleton `0x011a2778`; with none it logs and returns): the name and
+  the id are never used. Both push 1. `ShowFriendUi` is the same call and pushes true. `SpamFriend` reads its string and does nothing.
+- **Session natives**: `AreLobbyParamsValid` pushes whether the pending event (G+0x2f6f8) is not 0. `SyncTime` posts message 5 (`FUN_0069a650`).
+  `DisconnectFromServer` resets the request object G+0x2f068, takes the next request id and queues message 0x37 (the same message as `DISCONNECTFR`).
+  `SetRolloutSweetRevenge` is the hook `SetRolloutSweetRevengeFromEasyDrive` with a number argument. `IsSomethingDownloading`: image manager
+  (G+0x2f430) +0x1cfc is 1 or 2, or the download list is not empty.
+- **Credentials**: `SetEMail` / `SetNewEMail` / `SetPassword` / `SetNewPassword` clear the manager's wide string (+0x414 / +0x6ac / +0x620 / +0x8b8,
+  capacities 0x101 / 0x101 / 0x41 / 0x41 from the manager constructor) and append the bytes widened with their sign; `SetOriginID` (+0x944, 0x11) decodes
+  UTF-8 (`FUN_009e2810`). Kept in memory only, as the original does.
+- **Others**: `SelectAdvert(kind, url, a, b)`: only kind "Advert" does anything (copies a and b into 32-byte buffers when they fit, then the "AdvertURL" download).
+  `TryDeleteItemFromAutologViewModel(vm, item)`: only when a view model of that name is loaded, then `FUN_009f8800` deletes the item path.
+  `OnWallPostOrComment` (the Lua one) calls an empty function. `SendAddedRecoFriendTelemetry`: telemetry event GAME ALOG FRAD with `cdur` = session time / 3 / 1000000;
+  `SendTunedFriendTelemetry(v)`: GAME ALOG TUNR with `tune` = (int)v (appended only when the network layer is up). `ReportedProfilePicForUser(name)`: the image slot of
+  that name, kind 5, state 2, becomes 3 (released).
+- Open: nothing of this batch is checked against the running original; a capture of the store flow with the service flag set would confirm the guard.
+
 ### 2026-11-18: Lua natives, thirteenth batch: survey (stopped before code; session ended)
 ### 2026-11-18: Lua natives, online batch (25 more, 325 of 385; `natives/lua_online.rs`)
 Handlers from `re/out/live/text.asm`, callees from the dump; answered as the offline original (no service). New

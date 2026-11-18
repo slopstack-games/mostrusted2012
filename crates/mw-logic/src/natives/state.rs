@@ -1051,7 +1051,7 @@ pub enum Request {
     MutePlayer { index: u32 },
     /// `UnmutePlayer` (0x7eea70, `FUN_007ece70`): bit `index` of the network layer's unmute mask (+0x80f0).
     UnmutePlayer { index: u32 },
-    /// A message of the network layer queued on request object `slot` (0: the owner's +0x48, 1: +0x84; for
+    /// A message of the network layer queued on request object `slot` (0: the owner's +0x48, 1: +0x84, 2: G+0x2f068 for `DisconnectFromServer`; for
     /// `UPLOADRESULT` / `UPLDCONCOURS` the object at +0x1f0 / +0x88): `FUN_004c59d0`. See
     /// [`NetMessage`](crate::hsm::behaviours::online::NetMessage); the ids it needs from game state (join
     /// targets, invite) are the engine's to fill in.
@@ -1132,6 +1132,25 @@ pub enum Request {
     /// `REBOOT` / `SYNCTIME` updates: the message `id` is posted with `function` (0x76aa50 / 0x69a650) on the
     /// game message queue `*0x010edb0c` +0x10 (flag 8 of the owner set while posting).
     PostQueueMessage { function: u32, id: u32 },
+    /// The platform service's friends UI (`FUN_00ae1ea0`(`FUN_00ae10d0`()): command 5 on the Origin singleton
+    /// `0x011a2778`; nothing when it does not exist): `StartFriendRequest`, `StartFriendRequestByOriginId`,
+    /// `ShowFriendUi`.
+    ShowFriendUi,
+    /// `SelectAdvert` (0x7ea4c0 -> `FUN_0065a4d0` on G'+0x2a068), kind "Advert": the strings `a` / `b` (when they
+    /// fit 32 bytes) are copied to the advert object (+0x54 / +0x7c), then, when the service accepts, the
+    /// "AdvertURL" download of `url` starts (+0xa4 = 1).
+    SelectAdvert { url: String, a: Option<String>, b: Option<String> },
+    /// `TryDeleteItemFromAutologViewModel` (0x7eabb0 -> `FUN_0081f270` -> `FUN_009f8800`): the item path `item` is
+    /// deleted from the loaded view model `view_model`.
+    DeleteViewModelItem { view_model: String, item: String },
+    /// `SendAddedRecoFriendTelemetry` (0x7eb3f0 -> `FUN_007e8d00`): the telemetry event `GAME` `ALOG` `FRAD` with
+    /// `cdur` = (session time `FUN_006e3ab0`) / 3 / 1000000, appended when the network layer is up.
+    AddedRecoFriendTelemetry,
+    /// `SendTunedFriendTelemetry` (0x7eb410): the event `GAME` `ALOG` `TUNR` with `tune` = `value`.
+    TunedFriendTelemetry { value: i32 },
+    /// `ReportedProfilePicForUser` (0x7eb470 -> `FUN_007e0750` on G+0x2f430): the image slot `name` of kind 5 in
+    /// state 2 becomes 3 (released).
+    ReportedProfilePic { name: String },
     /// `StoreTotalSP` (0x7ea700 -> `FUN_0072a840`): the store's speed point total.
     StoreTotalSp { sp: i32 },
     /// `MarkStoreItemAsSeen` (0x7ea740 -> `FUN_00873a30`).
