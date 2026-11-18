@@ -407,6 +407,7 @@ fn track_cars(
                 colour: answer.map(|(paint, _)| paint),
             }),
             opponent: None,
+            prop: None,
         });
     }
     for (serial, model) in models.arrived.drain(..) {

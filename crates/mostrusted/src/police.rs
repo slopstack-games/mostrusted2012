@@ -78,15 +78,25 @@ pub struct PolicePlugin {
 
 impl Plugin for PolicePlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<Police>().init_resource::<PursuitHud>();
+        app.init_resource::<Police>()
+            .init_resource::<PursuitHud>()
+            .init_resource::<crate::roadblock::Roadblocks>()
+            .init_resource::<crate::bust_camera::BustCam>();
         if !self.enabled {
             return;
         }
         // The police run in the fixed step on the ported crate (`mw_police::Police::tick`: sight, pursuit manager,
         // coordinator, roles); `cop_drive` carries the cop cars out.
-        app.add_systems(Startup, load_police)
-            .add_systems(Update, (spawn_cops, log_police).chain())
-            .add_systems(FixedUpdate, (police_tick, cop_drive).chain().before(crate::ai::ai_drive));
+        app.add_systems(
+            Startup,
+            (load_police, crate::roadblock::load_roadblocks, crate::bust_camera::load_bust_camera),
+        )
+        .add_systems(
+            Update,
+            crate::bust_camera::run_bust_camera.after(crate::camera::GameplayCamera).after(crate::crash::run_sequence),
+        )
+        .add_systems(Update, (spawn_cops, crate::roadblock::place_roadblocks, log_police).chain())
+        .add_systems(FixedUpdate, (police_tick, cop_drive).chain().before(crate::ai::ai_drive));
         if self.test {
             app.insert_resource(PursuitTest::default()).add_systems(Update, run_pursuit_test.before(spawn_cops));
         }
@@ -257,6 +267,11 @@ impl std::ops::DerefMut for Police {
 }
 
 impl Police {
+    /// The AI road graph the police run on.
+    pub fn graph(&self) -> Option<&mw_formats::AiData> {
+        self.graph.as_deref()
+    }
+
     /// The player's current heat level row (`FUN_006bdc00`), for other systems (`race.rs`).
     pub fn heat_level(&self) -> Option<&HeatLevel> {
         self.core.pursuit.level(self.cfg.as_ref()?)
@@ -334,6 +349,7 @@ fn load_police(game: Res<crate::Game>, mut police: ResMut<Police>) {
         Ok(g) => police.graph = Some(Arc::new(g)),
         Err(e) => warn!("police: no road graph ({e}); no police"),
     }
+    police.core = mw_police::Police::new(0x2545_f491_4f6c_dd1d);
     police.core.cop_cfg = load_cop_config(&game.store);
     // `MW_PURSUIT_DEMO=1`: the player counts as wanted and cops are placed close by (for screenshots of the HUD).
     if std::env::var("MW_PURSUIT_DEMO").is_ok() {
@@ -344,7 +360,6 @@ fn load_police(game: Res<crate::Game>, mut police: ResMut<Police>) {
     if let Some(d) = std::env::var("MW_COP_DISTANCE").ok().and_then(|v| v.parse::<f32>().ok()) {
         police.core.spawn_distance_override = Some(d);
     }
-    police.core = mw_police::Police::new(0x2545_f491_4f6c_dd1d);
 }
 
 /// A cop is on screen when a 4 m sphere around it meets the camera's frustum (`FUN_006bf380`).
@@ -355,7 +370,12 @@ fn on_screen(frustum: Option<&Frustum>, p: Vec3) -> bool {
 /// Walk the road graph from the node nearest `from` along `dir` (the way the game's route walkers pick the best
 /// aligned link, `FUN_00436f50`), calling `visit(node, along, previous)` until it returns false; a node with fewer
 /// than 2 links ends the walk.
-fn walk(graph: &mw_formats::AiData, from: Vec3, dir: Vec2, mut visit: impl FnMut(usize, f32, usize) -> bool) {
+pub(crate) fn walk(
+    graph: &mw_formats::AiData,
+    from: Vec3,
+    dir: Vec2,
+    mut visit: impl FnMut(usize, f32, usize) -> bool,
+) {
     let Some(mut cur) = graph.nearest_node(from.to_array(), false) else { return };
     let mut prev: Option<usize> = None;
     let mut d = dir;
@@ -533,6 +553,7 @@ fn spawn_cops(
     mut commands: Commands,
     mut police: ResMut<Police>,
     mut opponents: ResMut<crate::ai::Opponents>,
+    mut roadblocks: ResMut<crate::roadblock::Roadblocks>,
     player: Query<(Entity, &Transform, &LinearVelocity), (With<Player>, With<Car>)>,
     cops: Query<&Transform, With<Cop>>,
     spatial: SpatialQuery,
@@ -541,7 +562,10 @@ fn spawn_cops(
     let police = &mut *police;
     // Cop cars come back from the loader through the opponents' hand-over (`ai::Opponents::arrived`).
     if !opponents.cops.is_empty() {
-        police.arrived.append(&mut opponents.cops);
+        // Roadblock cars (`roadblock.rs`) have slots of their own.
+        let (blocks, cops): (Vec<_>, Vec<_>) = opponents.cops.drain(..).partition(|c| c.0 >= crate::roadblock::SLOT);
+        roadblocks.arrived.extend(blocks);
+        police.arrived.extend(cops);
     }
     if police.arrived.is_empty() {
         return;
@@ -711,6 +735,9 @@ fn police_tick(
     >,
     mut traffic: Option<ResMut<crate::traffic::TrafficSystem>>,
     frustum: Query<&Frustum, crate::MainCamera>,
+    mut roadblocks: ResMut<crate::roadblock::Roadblocks>,
+    mut bust_camera: ResMut<crate::bust_camera::BustCam>,
+    roadblock_cars: Query<(&Transform, &Car), (With<crate::roadblock::RoadblockCar>, Without<Player>, Without<Cop>)>,
 ) {
     let dt = time.delta_secs();
     let police = &mut *police;
@@ -774,6 +801,11 @@ fn police_tick(
     }
     let was_wanted = police.core.wanted.reason;
     let speed_mph = pv.0.dot(fwd) / MPH;
+    // The roadblock task's inputs (`roadblock.rs`): the predicted route, the standing roadblock and its cars.
+    roadblocks.sync_standing();
+    crate::roadblock::predicted_route(&graph, pt, &mut roadblocks.route);
+    let rb_cars: Vec<(&Transform, &Car)> = roadblock_cars.iter().collect();
+    let touches_roadblock = crate::roadblock::touches(pt, pcar, &rb_cars);
     let pi = PoliceInput {
         dt,
         player: PlayerState {
@@ -786,13 +818,16 @@ fn police_tick(
             wrecked_by_ai: false,
             traffic_hits: player_hits,
             took_down_cop: took_down,
-            // Not wired: the runtime has no roadblocks yet (`RoadState::roadblocks` is empty).
-            touches_roadblock: false,
+            touches_roadblock,
             idle_input: police.idle_input,
             fast_cooldown: false,
         },
         cops: &states,
-        road: RoadState::default(),
+        road: RoadState {
+            roadblocks: &roadblocks.standing,
+            route: &roadblocks.route,
+            roadblock_triggers: &roadblocks.triggers,
+        },
         mode: PursuitMode::default(),
         scoring_heat: if pursued { owed } else { 0.0 },
         force_wanted: police.force_wanted,
@@ -808,6 +843,8 @@ fn police_tick(
     let p = &police.core.pursuit;
     for e in &out.events {
         match e {
+            // The bust: the busted sequence's cameras (`bust_camera.rs`; the bar at −1 posts camera event 0x1a).
+            PursuitEvent::BustCaught { .. } => bust_camera.start(),
             PursuitEvent::Started => police.chases += 1,
             PursuitEvent::Busted => police.busts += 1,
             PursuitEvent::Escaped => police.escapes += 1,
@@ -847,6 +884,7 @@ fn police_tick(
             paint_index: 0,
             traffic: None,
             opponent: Some(SLOT_BASE + req.id as usize),
+            prop: None,
         };
         if requests.0.send(car).is_err() {
             warn!("police: the loader thread has stopped");
@@ -887,8 +925,12 @@ fn police_tick(
             cop.planned = None;
         }
     }
-    // The bust cop's camera event and the roadblock the coordinator asked for need the camera / roadblock
-    // systems (not in the runtime): `out.roadblock` is dropped.
+    // The roadblock the coordinator's task asked for (`roadblock.rs` places it).
+    // `--test pursuit` / `MW_PURSUIT_DEMO` (the player forced wanted) leave them out: the test checks the pursuit rules on
+    // an open road, and a roadblock ahead would stop the escape run (it "sees" the player within 100 m).
+    if let Some(pick) = out.roadblock.filter(|_| !police.force_wanted) {
+        roadblocks.order(pick);
+    }
 
     // The outcome's sequence plays (13 s; the busted one with the car's controls off), then free roam goes on
     // (HSM 457517 "Do Pursuits": after a bust the heat is reset and every cop removed, `RemoveAllCops`).
@@ -911,6 +953,8 @@ fn police_tick(
                     police.removed += 1;
                 }
                 police.orders.retain(|o| o.entity.is_none());
+                // `RemoveRoadblocks`.
+                roadblocks.remove_all = true;
             }
         }
     }
@@ -1240,7 +1284,7 @@ fn cop_drive(
 
 /// MODEL: the cars touch when the cop's centre lies within the player's box grown by the cop's half width and
 /// a hand's breadth (the game reads the physics contact list, `FUN_0065cda0`).
-fn touching(pt: &Transform, pcar: &Car, ct: &Transform, ccar: &Car) -> bool {
+pub(crate) fn touching(pt: &Transform, pcar: &Car, ct: &Transform, ccar: &Car) -> bool {
     let local = pt.rotation.inverse() * (ct.translation - pt.translation);
     let (pe, ce) = (pcar.params.body_half_extents, ccar.params.body_half_extents);
     let r = ce.x.max(ce.z) + 0.3;

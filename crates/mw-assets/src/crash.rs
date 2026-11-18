@@ -465,6 +465,118 @@ impl CrashCamera {
     }
 }
 
+/// The busted sequence (1014946, `Sequence` `01000000000f7ca2`; HSM 457517 "Do Pursuits" plays it on BUSTED): its
+/// camera part, read like the crash camera (docs/decomp.md "Bust camera").
+pub const BUSTED_SEQUENCE: ResourceId = ResourceId(0x0100_0000_000f_7ca2);
+
+/// A `SceneAnalysis` analyser a bust shot binds (`SAS.Analyser["…"]`).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Analyser {
+    /// The type's name without `Genesys.Gen.` (`SceneAnalysers.RoadRunnerSceneAnalyser`, `LineTestSceneAnalyser`,
+    /// `NearestRaceCarSceneAnalyser`).
+    pub kind: String,
+    pub id: u32,
+    pub name_hash: u32,
+    /// `Offset` (`SceneAnalyser.Transform`): metres and degrees.
+    pub translation: [f32; 3],
+    pub rotation: [f32; 3],
+    /// `40f49e1d`: a range (50 m for the road runners, 500 / 10 for the line tests).
+    pub range: f32,
+    /// A line test's `TransformBinding` (the analyser it starts from) and its second transform's rotation
+    /// (`7c2809fc`).
+    pub binding: String,
+    pub line_rotation: [f32; 3],
+    /// A line test's length (`bffd3e8f`, m) and whether it tests the world (`TestWorld`).
+    pub length: f32,
+    pub test_world: bool,
+}
+
+/// One `DynamicCameraSequenceItem` of the busted sequence: its `Camera.DynamicCamera`'s process nodes as data.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct BustShot {
+    pub start: f32,
+    pub end: f32,
+    pub camera: Option<ResourceId>,
+    /// `ProcessNodeTransformBinding.Binding` (the eye) and the analyser it names (directly, or an
+    /// `AnalyserAlias`'s first).
+    pub eye_binding: String,
+    pub eye: Option<Analyser>,
+    /// `ProcessNodeTransformSLerpFromBinding.TransformBinding`: the eye moves from this one.
+    pub slerp_binding: String,
+    pub slerp_from: Option<Analyser>,
+    /// `CameraTransformLookAt.PositionBinding`.
+    pub look_at: String,
+    /// `CameraTransformLerpLookAt`: `TrackingSpeed`, `TrackingAcceleration`, `320f03cd`.
+    pub tracking: Option<[f32; 3]>,
+    /// `CameraFOVZoom`: `0808ad41`, `66eabc1e`, `10f8f267` (0.206 / 90 / 1 and 5 / 90 / 1).
+    pub fov_zoom: Option<[f32; 3]>,
+}
+
+/// The busted sequence's camera part.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BustCamera {
+    pub shots: Vec<BustShot>,
+    /// The `SceneAnalysis` the sequence switches on (`SceneAnalysisSequenceItem`, 0–7 s): its analysers and
+    /// aliases (name hash → analyser ids, tried in order).
+    pub analysers: Vec<Analyser>,
+    pub aliases: Vec<(u32, Vec<u32>)>,
+    pub hide_hud: Option<(f32, f32)>,
+    pub letterbox: Option<Letterbox>,
+    pub length: f32,
+}
+
+impl BustCamera {
+    /// The analysers a `SAS.Analyser["name"]` binding names: the analyser of that name, else the alias's list.
+    pub fn candidates(&self, binding: &str) -> Vec<&Analyser> {
+        let Some(want) = analyser_name(binding).map(field_hash) else { return Vec::new() };
+        if let Some(a) = self.analysers.iter().find(|a| a.name_hash == want) {
+            return vec![a];
+        }
+        self.aliases
+            .iter()
+            .find(|(n, _)| *n == want)
+            .map(|(_, ids)| ids.iter().filter_map(|id| self.analysers.iter().find(|a| a.id == *id)).collect())
+            .unwrap_or_default()
+    }
+
+    pub fn shot_at(&self, t: f32) -> Option<(usize, &BustShot)> {
+        self.shots.iter().enumerate().find(|(_, s)| t >= s.start && t < s.end)
+    }
+}
+
+fn str_of(o: &Object, hash: u32) -> String {
+    match o.get(hash) {
+        Some(Value::Str(s)) => s.clone(),
+        _ => String::new(),
+    }
+}
+
+fn uint_of(o: &Object, hash: u32) -> Option<u32> {
+    match o.get(hash)? {
+        Value::UInt(u) => Some(*u as u32),
+        Value::Int(i) => Some(*i as u32),
+        _ => None,
+    }
+}
+
+/// Every struct in `o`, depth first (a `DynamicCamera`'s process-node lists).
+fn walk_structs<'a>(o: &'a Object, out: &mut Vec<&'a Object>) {
+    out.push(o);
+    for (_, v) in &o.fields {
+        match v {
+            Value::Struct(s) => walk_structs(s, out),
+            Value::Array(a) => {
+                for v in a {
+                    if let Value::Struct(s) = v {
+                        walk_structs(s, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// `GameLogicConfig`'s rolling reset after a crash (`FUN_006d0180`): speed
 /// `min(max(min_mph, scale × pre-crash mph), crash_max_mph)`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -692,6 +804,117 @@ impl AssetStore {
         }
         cam.shots.sort_by(|a, b| a.start.total_cmp(&b.start));
         cam.slow_mo.sort_by(|a, b| a.start.total_cmp(&b.start));
+        Ok(cam)
+    }
+
+    /// The busted sequence's cameras ([`BUSTED_SEQUENCE`]).
+    pub fn bust_camera(&self) -> Result<BustCamera> {
+        let seq = self.genesys_object(BUSTED_SEQUENCE)?;
+        let mut cam = BustCamera::default();
+        let items = structs(&seq, h::SEQUENCE_ITEMS);
+        let analysis = items
+            .iter()
+            .find(|i| is(i, "SceneAnalysisSequenceItem"))
+            .and_then(|i| handle(i.get(h::SCENE_ANALYSIS)))
+            .and_then(|a| self.genesys_object(a).ok());
+        let read = |a: &Object| Analyser {
+            kind: a.type_name.strip_prefix("Genesys.Gen.").unwrap_or(&a.type_name).to_string(),
+            id: uint_of(a, 0x655d_3f5f).unwrap_or(0),
+            name_hash: name_of(a).unwrap_or(0),
+            translation: sub(a, h::OFFSET_STRUCT).and_then(|o| vec3(o.get(h::TRANSLATION))).unwrap_or_default(),
+            rotation: sub(a, h::OFFSET_STRUCT).and_then(|o| vec3(o.get(h::ROTATION))).unwrap_or_default(),
+            range: float(a, 0x40f4_9e1d).unwrap_or(0.0),
+            binding: str_of(a, field_hash("TransformBinding")),
+            line_rotation: sub(a, 0x7c28_09fc).and_then(|o| vec3(o.get(h::ROTATION))).unwrap_or_default(),
+            length: float(a, 0xbffd_3e8f).unwrap_or(0.0),
+            test_world: boolean(a, field_hash("TestWorld")).unwrap_or(false),
+        };
+        let analysers: Vec<Analyser> =
+            analysis.as_ref().map(|a| structs(a, h::ANALYSERS).into_iter().map(read).collect()).unwrap_or_default();
+        // A name: an analyser's, else an alias's first analyser (`SceneAnalysis.AnalyserAlias`).
+        let resolve = |binding: &str| -> Option<Analyser> {
+            let want = field_hash(analyser_name(binding)?);
+            if let Some(a) = analysers.iter().find(|a| a.name_hash == want) {
+                return Some(a.clone());
+            }
+            let aliases = structs(analysis.as_ref()?, field_hash("Aliases"));
+            let alias = aliases.into_iter().find(|a| name_of(a) == Some(want))?;
+            let first = match alias.get(h::ANALYSERS)? {
+                Value::Array(v) => v.iter().find_map(|x| match x {
+                    Value::UInt(u) => Some(*u as u32),
+                    Value::Int(i) => Some(*i as u32),
+                    _ => None,
+                })?,
+                _ => return None,
+            };
+            analysers.iter().find(|a| a.id == first).cloned()
+        };
+        for item in &items {
+            let (start, end) = times(item);
+            cam.length = cam.length.max(end);
+            if is(item, "DynamicCameraSequenceItem") {
+                let id = handle(item.get(field_hash("DynamicCamera")));
+                let mut shot = BustShot { start, end, camera: id, ..Default::default() };
+                if let Some(dc) = id.and_then(|d| self.genesys_object(d).ok()) {
+                    let mut nodes = Vec::new();
+                    walk_structs(&dc, &mut nodes);
+                    for n in nodes {
+                        match n.type_name.rsplit('.').next().unwrap_or("") {
+                            "ProcessNodeTransformBinding" => {
+                                shot.eye_binding = str_of(n, field_hash("Binding"));
+                                shot.eye = resolve(&shot.eye_binding);
+                            }
+                            "ProcessNodeTransformSLerpFromBinding" => {
+                                shot.slerp_binding = str_of(n, field_hash("TransformBinding"));
+                                shot.slerp_from = resolve(&shot.slerp_binding);
+                            }
+                            "CameraTransformLookAt" => shot.look_at = str_of(n, field_hash("PositionBinding")),
+                            "CameraTransformLerpLookAt" => {
+                                shot.tracking = Some([
+                                    float(n, field_hash("TrackingSpeed")).unwrap_or(1.0),
+                                    float(n, field_hash("TrackingAcceleration")).unwrap_or(1.0),
+                                    float(n, 0x320f_03cd).unwrap_or(0.0),
+                                ]);
+                            }
+                            "CameraFOVZoom" => {
+                                shot.fov_zoom = Some([
+                                    float(n, 0x0808_ad41).unwrap_or(0.0),
+                                    float(n, 0x66ea_bc1e).unwrap_or(0.0),
+                                    float(n, 0x10f8_f267).unwrap_or(0.0),
+                                ]);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                cam.shots.push(shot);
+            } else if is(item, "HideHudSequenceItem") {
+                cam.hide_hud = Some((start, end));
+            } else if is(item, "LayoutSequenceItem")
+                && cam.letterbox.is_none()
+                && let Some(layout) = handle(item.get(h::LAYOUT)).and_then(|l| self.genesys_object(l).ok())
+            {
+                cam.letterbox = Letterbox::read(start, end, &layout);
+            }
+        }
+        cam.shots.sort_by(|a, b| a.start.total_cmp(&b.start));
+        if let Some(analysis) = &analysis {
+            for alias in structs(analysis, field_hash("Aliases")) {
+                let ids = match alias.get(h::ANALYSERS) {
+                    Some(Value::Array(v)) => v
+                        .iter()
+                        .filter_map(|x| match x {
+                            Value::UInt(u) => Some(*u as u32),
+                            Value::Int(i) => Some(*i as u32),
+                            _ => None,
+                        })
+                        .collect(),
+                    _ => Vec::new(),
+                };
+                cam.aliases.push((name_of(alias).unwrap_or(0), ids));
+            }
+        }
+        cam.analysers = analysers;
         Ok(cam)
     }
 

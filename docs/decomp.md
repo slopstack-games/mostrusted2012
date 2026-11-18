@@ -5105,7 +5105,7 @@ Model decisions (not from the game):
   screen is removed.
 - The cooldown's × 4 factor does not apply to the player (+0x1a84 = 2, live read 2026-10-14); `Widget.HUD.Heat` = the level's band progress; which HUD layouts
   show when (the widget's code was not read).
-- Not there at all: roadblocks, spike strips, wrecked-by-cop busts (our crashes have no wrecker), cooldown
+- Not there at all (2026-11-18: roadblocks now are, section "Roadblocks"): spike strips, wrecked-by-cop busts (our crashes have no wrecker), cooldown
   spots / engine off, Speed Points, the busted / escaped sequences (sirens, light bars and the radio: next
   section), pursuits inside events, the PostFX heat / cooldown colour cubes.
 
@@ -5240,9 +5240,41 @@ re-exports of the crate; `cop_patrol.rs` adapts `TrafficSystem` (`Lanes`) to the
 - **Removed from the runtime** (now the crate's): the coordinator pass (count, spawn kinds, removal, 90 s block),
   the role switches (chase / GoTo / search / waiting / patrol), the low-speed chase switch and box-in, the
   sequencer, wanted, perception, the pursuit rules. Kept: rendering, light bars, sirens, speech.
-- **Not wired** (inputs left at default): roadblocks (`RoadState::roadblocks` / `roadblock_triggers`, the `roadblock`
-  output is dropped), `wrecked_by_ai`, `touches_roadblock`, `fast_cooldown`, the route for the roadblock task, the
-  bust camera event (`PursuitEvent::BustCaught` sets busted at once, `manual_bust` off).
+- **Roadblocks** (2026-11-18, `roadblock.rs`): `RoadState` carries the standing roadblock, the predicted route
+  (MODEL: road-graph walk along the heading) and the 150 trigger boxes; `touches_roadblock` is the cops' box test
+  against the roadblock's cars; `out.roadblock` is laid out and placed (next section).
+- **Bust camera** (2026-11-18, `bust_camera.rs`): `PursuitEvent::BustCaught` starts the busted sequence's cameras
+  (handling.md "Bust camera"); the state still turns busted at once (`manual_bust` off: the link camera event 0x1a →
+  HSM action 0xf is inferred).
+- **Not wired**: `wrecked_by_ai`, `fast_cooldown`.
+
+## Roadblocks (2026-11-18; ported in `mw_police::roadblock`, placed by `crates/mostrusted/src/roadblock.rs`)
+
+- **Data**: `RoadBlockDefinition` (48 B; list 604097 of `GAMEPLAY.BNDL`): +0x0c `2ac6cc0c` front layers (count
+  +0x28, always empty), +0x10 `c0308014` back layers (count +0x2a), +0x14 id, +0x18 `ba625679` characters (+0x2c),
+  +0x1c `0b27d7f6` centre layer, +0x20 `Sequence`, +0x24 `LayerDistance`. `RoadBlockLayer` (60 B; list 604098):
+  +0x0c centre `Item`, +0x24 id, +0x28 `Distance`, +0x2c `FirstDistance`, +0x30 `5b0d9447` left items (+0x38),
+  +0x34 `aa63128e` right items (+0x3a). `Item` (24 B): +0x10 `23406ec7` object (0 = gap), +0x14 `Angle` (°). The
+  object is a weapon-list entry (`FUN_006c4610`: `SpikeStripWeapon` 0x6cbed → kind 2, 0x7bc7f → 3, 0x75705 → 4,
+  else 0; a `PhysicalDefinition` placed as a dynamic object by `FUN_006cb430`) or else an `AIPlayerType`
+  (`FUN_006e6140` → `FUN_00845270` → `FUN_0066f8c0`, at most 8 per roadblock). Free-roam levels 2–5 use 18430,
+  18431, 1871670, 1871263: Interceptors 6 m apart across the road, cones and barriers in three rows 3 m apart
+  towards the player.
+- **Placement**: the task (`FUN_005246f0`) calls `FUN_005226b0`(player, trigger, definition): world message 7
+  with the box's ground point (centre y − size.y / 2), its z axis (`FUN_0042f250`: row 2 of the box matrix) and
+  width (size.x). `FUN_006ab390` case 7 → `FUN_0083f030` (record: +0x00 point, +0x10 dir, +0x20 definition, +0x30
+  width, +0x2c `GameLogicConfig` +0x27c = 5 (use not read), +0x4c RNG seed 0) → `FUN_00841040` (manager world
+  +0x2f484, records 0xff0 B from +0x70, count +0x2050: a record is taken only while none stands). Update
+  `FUN_00847af0` per record +0x40: 0 turn dir away from the player, 1 → 2 `FUN_00844ff0` layout (one layer side
+  per frame), 4 `FUN_008412c0`, 6 `FUN_00846c60` spawn, 8 `FUN_008470d0`, 9 `FUN_008414f0` removal check,
+  10 removal. `FUN_0083fad0` walks the road graph from the segment nearest the point (oriented along the walk) by a
+  distance and returns the point and the segment direction.
+- **Removal** (`FUN_008414f0`, disassembly 0x8415ce–0x8416ff): when the roadblock lies behind the player (the car
+  matrix's forward row against player→roadblock ≤ 0) and beyond `GameLogicConfig` +0x280 (`c1f9bb3f`, 500 m; × 0.8
+  unless `FUN_006c2410`: chase, cooldown or the level's +0x112); ahead within 150 m it queues a sight ray instead
+  (result in +0xfe5). After a bust the HSM's `RemoveRoadblocks` clears them.
+- Not read: what the roadblock's AI players do after spawning (`FUN_0066f8c0` flags 0x1e), `FUN_008412c0`,
+  `FUN_008470d0`, the spike strip's behaviour, the definition's `Sequence` 1402290 and characters.
 
 ## Police sirens, light bars and radio (2026-10-16)
 

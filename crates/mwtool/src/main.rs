@@ -3189,6 +3189,70 @@ fn capture_cmd(
 /// `mwtool police`: the pursuit rules' data.
 fn police(store: &AssetStore) -> Result<()> {
     let cfg = store.police_config()?;
+    if let Ok(bust) = store.bust_camera() {
+        println!(
+            "bust camera (sequence 1014946): hide HUD {:?}, letterbox {:?}",
+            bust.hide_hud,
+            bust.letterbox.map(|l| (l.start, l.end))
+        );
+        for s in &bust.shots {
+            let a = |a: &Option<mw_assets::crash::Analyser>| {
+                a.as_ref().map(|a| {
+                    format!(
+                        "{} {} {:?} rot {:?} {} line {:?} range {}",
+                        a.kind, a.id, a.translation, a.rotation, a.binding, a.line_rotation, a.range
+                    )
+                })
+            };
+            println!(
+                "  {:.2}-{:.2} s: eye {:?} = {:?}, from {:?}, look at {:?}, tracking {:?}, FOV zoom {:?}",
+                s.start,
+                s.end,
+                s.eye_binding,
+                a(&s.eye),
+                a(&s.slerp_from),
+                s.look_at,
+                s.tracking,
+                s.fov_zoom
+            );
+        }
+    }
+    if let Ok(rb) = store.roadblock_data() {
+        println!(
+            "roadblocks: {} definitions, {} layers, {} item kinds, removed beyond {} m",
+            rb.definitions.len(),
+            rb.layers.len(),
+            rb.items.len(),
+            rb.removal_distance
+        );
+        let mut defs: Vec<_> = rb.definitions.values().collect();
+        defs.sort_by_key(|d| d.id);
+        for d in defs {
+            let row = |id: u32| {
+                let Some(l) = rb.layers.get(&id) else { return format!("{id}?") };
+                let item = |i: &mw_assets::police::RoadblockItem| match rb.items.get(&i.object) {
+                    _ if i.object == 0 => "_".to_string(),
+                    Some(mw_assets::police::RoadblockItemKind::Car { vehicle }) => format!("car{vehicle}@{}", i.angle),
+                    Some(mw_assets::police::RoadblockItemKind::Object { world_object }) => {
+                        format!("obj{:x}@{}", world_object.0, i.angle)
+                    }
+                    Some(mw_assets::police::RoadblockItemKind::SpikeStrip) => "spikes".into(),
+                    None => format!("{}?", i.object),
+                };
+                let side = |v: &[mw_assets::police::RoadblockItem]| v.iter().map(item).collect::<Vec<_>>().join(",");
+                format!(
+                    "{id}[{} | {} | {}; {}/{} m]",
+                    side(&l.left),
+                    item(&l.centre),
+                    side(&l.right),
+                    l.first_distance,
+                    l.distance
+                )
+            };
+            let back: Vec<String> = d.back.iter().map(|&b| row(b)).collect();
+            println!("  {}: centre {} back every {} m: {}", d.id, row(d.centre), d.layer_distance, back.join(" "));
+        }
+    }
     println!(
         "bust: within {} m, below {} mph, {} s; cop radar {} m",
         cfg.bust_distance, cfg.bust_speed_mph, cfg.bust_time, cfg.radar_range

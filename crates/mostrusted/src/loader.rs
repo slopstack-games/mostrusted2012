@@ -52,6 +52,9 @@ pub struct CarRequest {
     pub traffic: Option<TrafficModelRequest>,
     /// An opponent's slot (`ai.rs`): the car comes back with [`CarSpec::opponent`] set instead of going to the garage.
     pub opponent: Option<usize>,
+    /// Not a car: a world object placed at runtime (a roadblock's cones and barriers, `roadblock.rs`), answered with
+    /// `Msg::Prop` carrying the request's tag; `bundle` is unused.
+    pub prop: Option<(TestProp, u32)>,
 }
 
 /// A traffic car model in one paint (traffic cars keep their paints outside their bundle).
@@ -207,6 +210,8 @@ pub enum Msg {
         standing: bool,
         /// Billboard compounds: the model they stand as once found (+0x28) and its LODs.
         found: Option<(ResourceId, Option<crate::lod::LodPlacement>)>,
+        /// A runtime placement's tag ([`CarRequest::prop`]): not part of any track unit.
+        tag: Option<u32>,
     },
     /// Static world collision (one per `PolygonSoupList`) and the collision tag of each of its triangles.
     Collider(avian3d::prelude::Collider, Arc<Vec<u32>>),
@@ -362,6 +367,7 @@ pub fn spawn(
                 skin_bones: None,
                 unskinned: false,
                 opponent: None,
+                prop_tag: None,
                 backdrop: None,
                 backdrop_sent: HashSet::new(),
                 prop_physics: HashMap::new(),
@@ -501,6 +507,8 @@ struct Worker {
     unskinned: bool,
     /// The opponent slot of the car being loaded (`CarRequest::opponent`).
     opponent: Option<usize>,
+    /// The tag of the runtime placement being sent ([`CarRequest::prop`]).
+    prop_tag: Option<u32>,
     /// Backdrop composition for [`BackdropMode::Composed`].
     backdrop: Option<BackdropSelector>,
     /// Backdrop instances already sent (the same backdrop model is listed by many units).
@@ -621,6 +629,15 @@ impl Worker {
     }
 
     fn car_request_global(&mut self, req: CarRequest) -> anyhow::Result<()> {
+        if let Some((prop, tag)) = &req.prop {
+            self.prop_tag = Some(*tag);
+            let placed = self.test_prop(prop);
+            self.prop_tag = None;
+            if let Err(e) = placed {
+                self.send(Msg::Progress(format!("runtime object {}: {e:#}", prop.object)))?;
+            }
+            return Ok(());
+        }
         if let Some(t) = &req.traffic {
             // A jack spot's parked car is its own owner, released when the car goes (`jackspots.rs`).
             let parked =
@@ -984,7 +1001,7 @@ impl Worker {
             }
             None => None,
         };
-        self.send(Msg::Prop { model, transform, physics, pieces, lod, standing, found })
+        self.send(Msg::Prop { model, transform, physics, pieces, lod, standing, found, tag: self.prop_tag })
     }
 
     /// A model's LOD table (`lod.rs`): its LOD distances, shadow distance and LOD0 bounding sphere.

@@ -443,3 +443,205 @@ impl AssetStore {
         Ok(cfg)
     }
 }
+
+/// Roadblock data (docs/decomp.md "Roadblocks"): the `RoadBlockDefinition`s a `PursuitBehaviour.Roadblock` names,
+/// their `RoadBlockLayer`s (lists 604097 and 604098 in `GAMELOGIC/GAMEPLAY.BNDL`) and what each layer item is.
+#[derive(Debug, Clone, Default)]
+pub struct RoadblockData {
+    pub definitions: HashMap<u32, RoadblockDefinition>,
+    pub layers: HashMap<u32, RoadblockLayer>,
+    /// What a layer item's id names (`FUN_00846c60`: a weapon-list entry → a world object, else an AI player).
+    pub items: HashMap<u32, RoadblockItemKind>,
+    /// `GameLogicConfig` +0x280 (`c1f9bb3f`, 500 m): a roadblock goes once the player is farther (`FUN_008414f0`;
+    /// × 0.8 outside a pursuit).
+    pub removal_distance: f32,
+}
+
+/// `Genesys.Gen.RoadBlockDefinition` (48 bytes; read by `FUN_00844ff0`).
+#[derive(Debug, Clone, Default)]
+pub struct RoadblockDefinition {
+    pub id: u32,
+    /// +0x1c (`0b27d7f6`): the layer at the roadblock's point.
+    pub centre: u32,
+    /// +0x10 (`c0308014`, count +0x2a): layers behind it (towards the player), one per `layer_distance`.
+    pub back: Vec<u32>,
+    /// +0x0c (`2ac6cc0c`, count +0x28): layers beyond it (empty in every definition).
+    pub front: Vec<u32>,
+    /// +0x24 `LayerDistance` (m).
+    pub layer_distance: f32,
+    /// +0x18 (`ba625679`, count +0x2c): character ids (not read by the layout).
+    pub characters: Vec<u32>,
+    /// +0x20 `Sequence`.
+    pub sequence: u32,
+}
+
+/// `Genesys.Gen.RoadBlockLayer` (60 bytes; laid out by `FUN_00841710`): a row of items across the road.
+#[derive(Debug, Clone, Default)]
+pub struct RoadblockLayer {
+    pub id: u32,
+    /// +0x0c (`e74d0880`): the item at the row's centre.
+    pub centre: RoadblockItem,
+    /// +0x30 (`5b0d9447`, count +0x38): items towards −side, placed last to first.
+    pub left: Vec<RoadblockItem>,
+    /// +0x34 (`aa63128e`, count +0x3a): items towards +side, in order.
+    pub right: Vec<RoadblockItem>,
+    /// +0x28 `Distance` / +0x2c `FirstDistance` (m): the spacing, and the first item's offset from the centre.
+    pub distance: f32,
+    pub first_distance: f32,
+}
+
+/// `RoadBlockLayer.Item` (24 bytes): +0x10 (`23406ec7`) what to place (0 = a gap), +0x14 `Angle` (degrees).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct RoadblockItem {
+    pub object: u32,
+    pub angle: f32,
+}
+
+/// What a roadblock item places.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoadblockItemKind {
+    /// An `AIPlayerType` (a cop car, `FUN_00845270`): its `Rollout`'s vehicle id.
+    Car { vehicle: u32 },
+    /// A `PhysicalDefinition` placed as a dynamic world object (`FUN_00841390` → `FUN_006cb430`): the
+    /// `WorldObject` of `HAWAII/GLOBALRESOURCES.BNDL` with that physics.
+    Object { world_object: ResourceId },
+    /// A `SpikeStripWeapon` (`FUN_006cb430` kind 2): not placed by the runtime.
+    SpikeStrip,
+}
+
+mod rb {
+    use super::field_hash;
+    pub const CENTRE: u32 = 0x0b27_d7f6;
+    pub const BACK: u32 = 0xc030_8014;
+    pub const FRONT: u32 = 0x2ac6_cc0c;
+    pub const CHARACTERS: u32 = 0xba62_5679;
+    pub const LAYER_DISTANCE: u32 = field_hash("LayerDistance");
+    pub const SEQUENCE: u32 = field_hash("Sequence");
+    pub const LAYER_CENTRE: u32 = 0xe74d_0880;
+    pub const LAYER_LEFT: u32 = 0x5b0d_9447;
+    pub const LAYER_RIGHT: u32 = 0xaa63_128e;
+    pub const DISTANCE: u32 = field_hash("Distance");
+    pub const FIRST_DISTANCE: u32 = field_hash("FirstDistance");
+    pub const ITEM_OBJECT: u32 = 0x2340_6ec7;
+    pub const ANGLE: u32 = field_hash("Angle");
+    /// `GameLogicConfig` +0x280.
+    pub const REMOVAL: u32 = 0xc1f9_bb3f;
+}
+
+fn ids(o: &Object, hash: u32) -> Vec<u32> {
+    match o.get(hash) {
+        Some(Value::Array(a)) => a
+            .iter()
+            .filter_map(|v| match v {
+                Value::UInt(u) => Some(*u as u32),
+                Value::Int(i) => Some(*i as u32),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn roadblock_item(o: &Object) -> RoadblockItem {
+    RoadblockItem { object: uint(o, rb::ITEM_OBJECT), angle: float(o, rb::ANGLE) }
+}
+
+impl AssetStore {
+    /// The roadblock definitions, layers and item kinds.
+    pub fn roadblock_data(&self) -> Result<RoadblockData> {
+        let removal = self.genesys_object(GAME_LOGIC_CONFIG).map(|o| float(&o, rb::REMOVAL)).unwrap_or(500.0);
+        let mut data = RoadblockData { removal_distance: removal, ..Default::default() };
+        let (mut player_types, mut rollouts) = (HashMap::new(), HashMap::new());
+        for o in items(self, GAMEPLAY)? {
+            match o.type_name.as_str() {
+                "Genesys.Gen.RoadBlockDefinition" => {
+                    let id = uint(&o, h::ID);
+                    let def = RoadblockDefinition {
+                        id,
+                        centre: uint(&o, rb::CENTRE),
+                        back: ids(&o, rb::BACK),
+                        front: ids(&o, rb::FRONT),
+                        layer_distance: float(&o, rb::LAYER_DISTANCE),
+                        characters: ids(&o, rb::CHARACTERS),
+                        sequence: uint(&o, rb::SEQUENCE),
+                    };
+                    data.definitions.insert(id, def);
+                }
+                "Genesys.Gen.RoadBlockLayer" => {
+                    let id = uint(&o, h::ID);
+                    let list = |hash| structs(o.get(hash)).into_iter().map(roadblock_item).collect();
+                    let centre = structs(o.get(rb::LAYER_CENTRE)).first().map(|i| roadblock_item(i));
+                    let layer = RoadblockLayer {
+                        id,
+                        centre: centre.unwrap_or_default(),
+                        left: list(rb::LAYER_LEFT),
+                        right: list(rb::LAYER_RIGHT),
+                        distance: float(&o, rb::DISTANCE),
+                        first_distance: float(&o, rb::FIRST_DISTANCE),
+                    };
+                    data.layers.insert(id, layer);
+                }
+                "Genesys.Gen.AIPlayerType" => {
+                    player_types.insert(uint(&o, h::ID), uint(&o, h::ROLLOUT));
+                }
+                "Genesys.Gen.Rollout" => {
+                    rollouts.insert(uint(&o, h::ID), uint(&o, h::VEHICLE));
+                }
+                _ => {}
+            }
+        }
+        let mut wanted: Vec<u32> = data
+            .layers
+            .values()
+            .flat_map(|l| std::iter::once(l.centre).chain(l.left.iter().copied()).chain(l.right.iter().copied()))
+            .map(|i| i.object)
+            .filter(|&o| o != 0)
+            .collect();
+        wanted.sort_unstable();
+        wanted.dedup();
+        let mut physics_ids = Vec::new();
+        for id in wanted {
+            if let Some(rollout) = player_types.get(&id) {
+                if let Some(&vehicle) = rollouts.get(rollout) {
+                    data.items.insert(id, RoadblockItemKind::Car { vehicle });
+                }
+                continue;
+            }
+            // A top-level object: its resource id is the UniqueId tagged 0x01000000 (an `AIPlayerType`, a
+            // weapon) or 0x01000001 (a `PhysicalDefinition`).
+            let Ok(o) = self.genesys_object(ResourceId(0x0100_0000_0000_0000 | id as u64)) else {
+                physics_ids.push(id);
+                continue;
+            };
+            match o.type_name.as_str() {
+                "Genesys.Gen.AIPlayerType" => {
+                    let rollout = uint(&o, h::ROLLOUT);
+                    let vehicle = rollouts.get(&rollout).copied().or_else(|| {
+                        let r = self.genesys_object(ResourceId(0x0100_0000_0000_0000 | rollout as u64)).ok()?;
+                        Some(uint(&r, h::VEHICLE))
+                    });
+                    if let Some(vehicle) = vehicle.filter(|&v| v != 0) {
+                        data.items.insert(id, RoadblockItemKind::Car { vehicle });
+                    }
+                }
+                "Genesys.Gen.SpikeStripWeapon" => {
+                    data.items.insert(id, RoadblockItemKind::SpikeStrip);
+                }
+                _ => {}
+            }
+        }
+        if !physics_ids.is_empty()
+            && let Some(b) = self.bundle("HAWAII/GLOBALRESOURCES.BNDL")
+        {
+            for e in b.entries_of_type(mw_bundle::ResourceType::WorldObject) {
+                let Ok(def) = self.object_def(e.id, crate::props::ObjectKind::Dynamic) else { continue };
+                let Some(physics) = def.physics else { continue };
+                let unique = (physics.0 & 0xffff_ffff) as u32;
+                if physics.0 >> 32 == 0x0100_0001 && physics_ids.contains(&unique) {
+                    data.items.insert(unique, RoadblockItemKind::Object { world_object: e.id });
+                }
+            }
+        }
+        Ok(data)
+    }
+}

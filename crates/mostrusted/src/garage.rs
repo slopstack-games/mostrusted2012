@@ -315,8 +315,13 @@ fn handle_actions(
                     garage.set_status("the loader has not started yet".into(), now);
                     continue;
                 };
-                let req =
-                    CarRequest { bundle: bundle.clone(), paint_index: *paint_index, traffic: None, opponent: None };
+                let req = CarRequest {
+                    bundle: bundle.clone(),
+                    paint_index: *paint_index,
+                    traffic: None,
+                    opponent: None,
+                    prop: None,
+                };
                 if requests.0.send(req).is_err() {
                     garage.set_status("the loader thread has stopped".into(), now);
                     continue;

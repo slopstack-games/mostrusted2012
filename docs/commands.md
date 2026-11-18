@@ -302,6 +302,8 @@ MW_POLICE_LOG=1 ./target/release/mostrusted --drive 911 --test pursuit --units 1
 # When a pursuit starts (cop_sight.rs) and the patrol on a traffic ghost (cop_patrol.rs): slow pass, speeding, ram, patrol
 MW_COPS_SHOTS=<dir> ./target/release/mostrusted --drive 911 --test cops --units 30 --mute   # TEST RESULT cops ...
 MW_POLICE_LOG=1 MW_COP_DISTANCE=80 ./target/release/mostrusted --drive 911 --units 20   # free-roam cops spawn 80 m away
+MW_ROADBLOCK=18430 ./target/release/mostrusted --drive 911 --units 20 --spawn=-1120,24,1617,90 --camera=-1092,29,1628,-1066,23,1612 --screenshot <scratch>/rb.png --screenshot-delay 500   # a roadblock definition at the nearest trigger box ahead (roadblock.rs; mwtool police lists them)
+MW_BUST_CAMERA=31,1.5 ./target/release/mostrusted --drive 911 --units 20 --spawn=-1120,24,1617,90 --screenshot <scratch>/bust.png --screenshot-delay 1600   # bust camera (bust_camera.rs) started 31 s after launch, clock held at 1.5 s
 ./target/release/mostrusted --drive 911 --test crash-traffic       # head-on with traffic: crash camera (car_impacts.rs)
 ./target/release/mostrusted --drive 911 --test crash-parked --units 20 --spawn=925,24,-101 --screenshot <scratch>/p.png  # into a parked car
 ./target/release/mostrusted --drive 911 --test crash-ai --ai 911 --no-traffic --spawn=925,23,-101,10   # (the default spawn has a barrier ahead)
