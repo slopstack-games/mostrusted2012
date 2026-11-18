@@ -45,6 +45,8 @@ pub mod field {
     pub const ORDER: u32 = 0xcf5a_e8f3;
     pub const BANDWIDTH: u32 = 0x3fd6_b877;
     pub const DISTORTION: u32 = 0xce99_ab25;
+    /// `DistortionDspPlugIn.Model`.
+    pub const MODEL: u32 = 0xdbd8_d383;
     pub const INTERVAL: u32 = 0x76c1_a226;
     pub const TIME: u32 = 0x5469_6d65;
     pub const FEEDBACK: u32 = 0x499b_1089;
@@ -713,8 +715,8 @@ impl PluginState {
             }
             PluginKind::BandPass => {
                 self.biquads.resize(1, Biquad::IDENTITY);
-                let bw = self.value(field::BANDWIDTH, freq).max(1.0);
-                self.biquads[0].band_pass(sr, freq, freq / bw);
+                let bw = self.value(field::BANDWIDTH, freq);
+                self.biquads[0].band_pass_game(sr, freq, bw);
             }
             _ => {}
         }
@@ -735,10 +737,16 @@ impl PluginState {
                 }
             }
             PluginKind::Distortion if bypass.distortion => x,
-            PluginKind::Distortion if bypass.raw_distortion => dsp::distort_raw(x, self.value(field::DISTORTION, 1.0)),
-            PluginKind::Distortion => dsp::distort(x, self.value(field::DISTORTION, 1.0)),
+            PluginKind::Distortion if bypass.standin_distortion => {
+                dsp::distort_standin(x, self.value(field::DISTORTION, 1.0))
+            }
+            PluginKind::Distortion => dsp::distort(
+                x,
+                self.value(field::DISTORTION, 1.0),
+                dsp::distortion_model(self.value(field::MODEL, 0.0)),
+            ),
             PluginKind::SubHarmoniser if bypass.sub_harmoniser => x,
-            PluginKind::SubHarmoniser => self.sub.process(x, self.value(field::INTERVAL, 1.0) as u32, sr),
+            PluginKind::SubHarmoniser => self.sub.process(x, dsp::sub_interval(self.value(field::INTERVAL, 2.0))),
             PluginKind::Delay => {
                 let (t, fb) = (self.value(field::TIME, 0.0), self.value(field::FEEDBACK, 0.0));
                 self.delay.process(x, t, fb, sr)
@@ -761,14 +769,14 @@ struct ChannelState {
 }
 
 /// Which plug-in families to bypass, for A/B listening (`MW_AUDIO_DRY=1` bypasses them all; `MW_AUDIO_NO_DIST`,
-/// `MW_AUDIO_NO_SUB`, `MW_AUDIO_NO_EQ` one family each; `MW_AUDIO_DIST=raw` uses the uncompensated
-/// `tanh(d · x)` waveshaper).
+/// `MW_AUDIO_NO_SUB`, `MW_AUDIO_NO_EQ` one family each; `MW_AUDIO_DIST=standin` uses the pre-port
+/// `tanh(d · x) / d` stand-in).
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Bypass {
     pub distortion: bool,
     pub sub_harmoniser: bool,
     pub eq: bool,
-    pub raw_distortion: bool,
+    pub standin_distortion: bool,
 }
 
 impl Bypass {
@@ -778,7 +786,7 @@ impl Bypass {
             distortion: set("MW_AUDIO_NO_DIST"),
             sub_harmoniser: set("MW_AUDIO_NO_SUB"),
             eq: set("MW_AUDIO_NO_EQ"),
-            raw_distortion: std::env::var("MW_AUDIO_DIST").is_ok_and(|v| v == "raw"),
+            standin_distortion: std::env::var("MW_AUDIO_DIST").is_ok_and(|v| v == "standin"),
         }
     }
 }

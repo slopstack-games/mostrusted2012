@@ -990,7 +990,21 @@ posts their effects back for the next tick.
   traces without the gear-change clock use 0.15 s per shift.
 
 The harmonic multipliers come from `EngineSound2` (research log "engine sound from the game code"). The Distortion
-and SubHarmoniser plug-ins fall in undecompiled gaps of the dump.
+and SubHarmoniser plug-ins fall in undecompiled gaps of the dump; read from `re/out/live/text.asm` (2026-11-18,
+`mw_audio::dsp`):
+- **Plug-in classes**: descriptor +0x0 name, +0x4 state size, +0x8 init, +0xc process table (third entry), +0x10
+  parameter table (0x28 bytes per parameter: +1 type byte, +8 default as a double; min / max follow).
+  `FUN_00ce30f0` (via `FUN_00ce3220`, from the registration `FUN_004b2cc0`) converts each default once: type 1 float,
+  2 double, 5 int (`ROUND`), 0 / 6 int (truncated), 7 bool. A plug-in's init copies the defaults into its 8-byte
+  parameter slots (`FUN_00ce2e50`) from +0x30.
+- **SubHarmoniser** ('SUBH', `0x010d2410`; init `0x00ab2000`, process `0x00aad950`, 256 samples a call): Interval
+  (type 5, default 2, 0..25) at +0x30, last sample +0x38, half-cycle counter +0x3c (init: both 0). Per sample: a
+  sign change against the last sample steps the counter modulo Interval (0 reads as 1); output `|x|` while the
+  counter is 0, else 0. The data's Interval 1 makes it a full-wave rectifier.
+- **Distortion** ('Dst0', `0x010d1930`; init `0x00ab0e30`, process `0x00ab0e60`, per channel): Distortion (type 1,
+  default 1, 1e-5..1000) at +0x30, Model (type 0, default 0) at +0x38. Model 2 `FUN_00aae7a0`: clamp(`x · (d +
+  0.99999)`, −1, 1); 1 and 3: the buffer is left as it is; others `FUN_00aac300`: `f(d·x) · (1 / f(d))`, `f` the
+  CRT routine `0x00edc7b2` (not identified). No state.
 
 ## Wave items, whines and the bus mix (2026-10-19)
 
