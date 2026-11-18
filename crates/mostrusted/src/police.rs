@@ -548,7 +548,7 @@ fn spawn_point(
 
 /// Place the cop cars that have arrived from the loader, where the crate's order says (kind, ring distance,
 /// speed, lateral slot); the placement itself (the game's spawn point queries) is the runtime's.
-#[allow(clippy::type_complexity)]
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn spawn_cops(
     mut commands: Commands,
     mut police: ResMut<Police>,
@@ -1115,6 +1115,7 @@ fn cop_drive(
                 // `FUN_004fa750`: nitrous.
                 let lead = (t.translation - player_pos).dot(target.forward);
                 let gap2 = Vec2::new(t.translation.x - player_pos.x, t.translation.z - player_pos.z).length();
+                #[allow(clippy::manual_range_contains)] // NaN `lead` stays inside, as before
                 let outside = lead < NITROUS_LEAD[0] || lead > NITROUS_LEAD[1] || gap2 > NITROUS_RANGE;
                 if driver.overrides.nitrous.is_none() {
                     driver.overrides.nitrous = Some(outside && speed + NITROUS_GAP < v_target);
