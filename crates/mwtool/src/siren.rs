@@ -111,16 +111,19 @@ pub fn speech(store: &AssetStore, event: Option<u32>, out: Option<&Path>) -> Res
             .items
             .iter()
             .map(|i| match i {
-                mw_assets::police_speech::SpeechItem::Lines { lines, .. } => lines.len(),
+                mw_assets::police_speech::SpeechItem::Lines { .. } => i.all_lines().count(),
                 _ => 0,
             })
             .sum();
         println!(
-            "{id}: priority {} delay {} period {} min, max {}, {} items, {} lines{}{}",
+            "{id}: priority {} delay {} period {} min, max {}, window {}..{} min, cutscene {}, {} items, {} lines{}{}",
             e.priority,
             e.delay,
             e.period,
             e.max_plays,
+            e.earliest,
+            e.latest,
+            e.cutscene_behaviour,
             e.items.len(),
             lines,
             if e.conditions.is_empty() {
@@ -135,11 +138,23 @@ pub fn speech(store: &AssetStore, event: Option<u32>, out: Option<&Path>) -> Res
         }
         for it in &e.items {
             match it {
-                mw_assets::police_speech::SpeechItem::Lines { start, probability, lines } => {
-                    println!("  @{start} p {probability}: {} lines", lines.len());
+                mw_assets::police_speech::SpeechItem::Lines {
+                    start,
+                    probability,
+                    lines,
+                    containers,
+                    vocabulary,
+                    ..
+                } => {
+                    println!(
+                        "  @{start} p {probability}: {} lines, {} containers ({} lines), vocabulary {vocabulary}",
+                        lines.len(),
+                        containers.len(),
+                        containers.iter().map(Vec::len).sum::<usize>()
+                    );
                     if let Some(dir) = out {
                         std::fs::create_dir_all(dir)?;
-                        for l in lines {
+                        for l in it.all_lines() {
                             let Some(pcm) = d.line_pcm(l.wave) else {
                                 println!("    {}: not decoded", l.wave);
                                 continue;
@@ -147,16 +162,17 @@ pub fn speech(store: &AssetStore, event: Option<u32>, out: Option<&Path>) -> Res
                             let path = dir.join(format!("{}.wav", l.wave));
                             std::fs::write(&path, pcm.to_wav())?;
                             println!(
-                                "    {} ({:.2} s, gain {:.3}) -> {}",
+                                "    {} ({:.2} s, dictionary {:.2} s, gain {:.3}) -> {}",
                                 l.wave,
                                 pcm.samples.len() as f32 / pcm.sample_rate as f32 / pcm.channels.max(1) as f32,
+                                l.duration,
                                 l.gain,
                                 path.display()
                             );
                         }
                     }
                 }
-                mw_assets::police_speech::SpeechItem::Events { start, events } => {
+                mw_assets::police_speech::SpeechItem::Events { start, events, .. } => {
                     println!("  @{start} event of {events:?}")
                 }
             }
