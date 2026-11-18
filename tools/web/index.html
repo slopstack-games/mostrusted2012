@@ -16,7 +16,8 @@
   label.pick { justify-self: center; padding: 10px 18px; border-radius: 6px; background: var(--accent); color: #111; font-weight: 600; cursor: pointer; }
   input[type=file] { display: none; }
   input[type=text] { width: min(34em, 90vw); padding: 6px 8px; background: #16191d; color: var(--fg); border: 1px solid #2a2f35; border-radius: 4px; font: 13px ui-monospace, monospace; }
-  #status { min-height: 1.4em; font: 13px ui-monospace, monospace; color: var(--dim); white-space: pre-wrap; }
+  #status { min-height: 1.4em; max-width: min(46em, 92vw); font: 13px ui-monospace, monospace; color: var(--dim); white-space: pre-wrap; word-break: break-word; }
+  #status.err { color: #ff7b72; }
   #overlay { position: fixed; inset: 0; z-index: 10; display: none; place-content: center; gap: 12px; padding: 16px; text-align: center; background: var(--bg); }
   #overlay.show { display: grid; }
   #stage { font: 14px ui-monospace, monospace; color: var(--fg); min-height: 1.4em; }
@@ -65,9 +66,15 @@
     bar.classList.toggle('indet', pct == null);
     bar.firstElementChild.style.width = pct == null ? '' : Math.round(pct * 100) + '%';
   };
-  const hide = () => { ready = true; $('overlay').classList.remove('show'); };
+  // The world is loaded: the overlay goes away for good. An error stays (the runtime keeps reporting each frame
+  // after a worker thread's panic).
+  const hide = () => { if (failed) return; ready = true; $('overlay').classList.remove('show'); };
+  // Nothing is in progress (waiting for the player): no overlay, later stages show it again.
+  const idle = () => { if (!failed) $('overlay').classList.remove('show'); };
   const HINTS = {
     gpu: 'Use a recent Chrome, Edge or Brave (desktop) with hardware acceleration on; Firefox / Safari need WebGPU enabled.',
+    adapter: 'Turn on hardware acceleration in the browser settings and update the graphics driver (chrome://gpu shows why WebGPU is off). Chrome on Linux needs --enable-unsafe-webgpu --enable-features=Vulkan.',
+    picker: 'Use a desktop browser (Chrome, Edge, Brave, Firefox or Safari): phones and tablets cannot hand a folder to a page.',
     isolation: 'Reload the page once (a service worker adds the headers), serve it over https or localhost, or use tools/web/serve.py.',
     fetch: 'Check your connection and reload; if you host the page yourself, make sure pkg/ was uploaded next to index.html.',
     wasm: 'The browser could not start the game module: use a current desktop browser and reload. Details are in the console.',
@@ -86,7 +93,7 @@
     $('panel').classList.add('hidden');
     console.error(title + ':', msg);
   };
-  window.__mw = { stage, hide, error };
+  window.__mw = { stage, hide, idle, error, failed: () => failed };
   // Called from Rust: loader stage text, and whether the world is loaded (then the overlay goes away).
   window.__mwStage = (text, done) => { if (done) hide(); else if (text) stage(text); };
   window.__mwError = (msg) => error('panic', 'The game stopped', msg);
@@ -97,21 +104,32 @@
 <script>
 // Hosts without COOP / COEP headers (GitHub Pages): coi-sw.js adds them; the page reloads once it is in control.
 // tools/web/serve.py sends the headers itself, so nothing is registered there.
+// The reload happens once per tab session (the `coi-reloaded` mark): if the page is still not isolated after it,
+// the loader below says so instead of reloading for ever.
 (() => {
-  if (self.crossOriginIsolated || !('serviceWorker' in navigator) || !window.isSecureContext) return;
-  let reloaded = false;
-  window.__mw.stage('Setting up cross-origin isolation (service worker)', null);
+  // Resolved when no reload is coming (the loader then stops waiting for one).
+  let settle; window.__mw.coiSettled = new Promise((r) => { settle = r; });
+  if (self.crossOriginIsolated) {
+    // Isolated: forget the mark, so a later visit that needs the worker again may reload once more.
+    try { sessionStorage.removeItem('coi-reloaded'); } catch (_) {}
+    return settle();
+  }
+  if (!('serviceWorker' in navigator) || !window.isSecureContext) return settle();
+  let reloaded = true; // without sessionStorage the reload cannot be counted: then never reload
   try { reloaded = sessionStorage.getItem('coi-reloaded') === '1'; } catch (_) {}
+  if (reloaded) settle(); else window.__mw.stage('Setting up cross-origin isolation (service worker)', null);
   navigator.serviceWorker.register('./coi-sw.js').then((reg) => {
+    if (!reg) return settle(); // registration refused without an error (service workers blocked)
     const reload = () => {
       if (reloaded) return;
-      try { sessionStorage.setItem('coi-reloaded', '1'); } catch (_) {}
+      reloaded = true;
+      try { sessionStorage.setItem('coi-reloaded', '1'); } catch (_) { return settle(); }
       location.reload();
     };
     if (navigator.serviceWorker.controller) reload();
     else navigator.serviceWorker.addEventListener('controllerchange', reload);
-    reg.update();
-  }, (e) => console.warn('cross-origin isolation worker:', e));
+    reg.update().catch(() => {});
+  }, (e) => { console.warn('cross-origin isolation worker:', e); settle(); });
 })();
 Error.stackTraceLimit = 200; // full Rust stacks in panic reports
 // Audio: browsers start an AudioContext suspended until the page gets a click or key press, and the game creates
@@ -119,6 +137,7 @@ Error.stackTraceLimit = 200; // full Rust stacks in panic reports
 (() => {
   const contexts = [];
   const Native = window.AudioContext;
+  if (!Native) return;
   window.AudioContext = function (...args) { const c = new Native(...args); contexts.push(c); return c; };
   window.AudioContext.prototype = Native.prototype;
   const resume = () => contexts.forEach((c) => c.state === 'suspended' && c.resume());
@@ -159,21 +178,32 @@ const mw = window.__mw;
 const q = new URLSearchParams(location.search);
 const status = document.getElementById('status');
 const argsField = document.getElementById('args');
-argsField.value = q.get('args') ?? '';
+// The flags typed last time come back (this browser only), unless the address gives its own (`?args=`).
+const ARGS_KEY = 'mostrusted-page/args';
+let savedArgs = '';
+try { savedArgs = localStorage.getItem(ARGS_KEY) ?? ''; } catch (_) {}
+argsField.value = q.get('args') ?? (q.has('serve') ? '' : savedArgs);
 const args = () => argsField.value.split(/\s+/).filter(Boolean);
 const paint = () => new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
 const showError = (kind, title, e) => mw.error(kind, title, e && e.message ? e.message : e);
 // Requirements first: each missing one gets its own message. While the isolation worker is still being installed
 // the page reloads by itself: wait for that (up to 8 s) before calling it an error.
-let swPending = false;
-try { swPending = !self.crossOriginIsolated && 'serviceWorker' in navigator && window.isSecureContext && sessionStorage.getItem('coi-reloaded') !== '1'; } catch (_) {}
-if (swPending) await new Promise((r) => setTimeout(r, 8000));
+await Promise.race([mw.coiSettled, new Promise((r) => setTimeout(r, 8000))]);
+const folderInput = document.getElementById('folder');
 if (!navigator.gpu) showError('gpu', 'WebGPU is not available', 'This browser does not offer navigator.gpu.');
+else if (!q.has('serve') && !('webkitdirectory' in folderInput)) showError('picker', 'This browser cannot pick a folder', 'The game reads your own install folder, and this browser has no folder picker (<input type="file" webkitdirectory>).');
 else if (!self.crossOriginIsolated || typeof SharedArrayBuffer === 'undefined') {
   const why = window.isSecureContext ? 'The page is not cross-origin isolated (no COOP / COEP headers); the service worker may not be active yet.' : 'The page is not a secure context (needs https or localhost), so SharedArrayBuffer and the isolation worker are unavailable.';
   showError('isolation', 'Cross-origin isolation is missing', why);
 }
-const ok = () => !document.getElementById('error').classList.contains('show');
+const ok = () => !mw.failed();
+// navigator.gpu alone is not enough: with the GPU blocklisted or hardware acceleration off there is no adapter,
+// and the game would only find out (and panic) after the whole download.
+if (ok()) {
+  let adapter = null, why = 'navigator.gpu.requestAdapter() returned no adapter.';
+  try { adapter = await navigator.gpu.requestAdapter(); } catch (e) { why = `navigator.gpu.requestAdapter() failed: ${e && e.message ? e.message : e}`; }
+  if (!adapter) showError('adapter', 'WebGPU has no usable graphics adapter', why);
+}
 let wasm;
 if (ok()) {
   try {
@@ -182,22 +212,25 @@ if (ok()) {
     let res;
     try { res = await fetch('./pkg/mostrusted_bg.wasm'); } catch (e) { throw Object.assign(new Error(`Could not download the game module: ${e}`), { kind: 'fetch' }); }
     if (!res.ok) throw Object.assign(new Error(`Downloading pkg/mostrusted_bg.wasm failed: HTTP ${res.status} ${res.statusText}`), { kind: 'fetch' });
-    const total = Number(res.headers.get('content-length')) || 0;
+    // The size is only known when Content-Length counts the bytes read here: not for a compressed transfer
+    // (GitHub Pages gzips; the length is then the compressed one) and not when the header is missing.
+    let total = res.headers.get('content-encoding') ? 0 : Number(res.headers.get('content-length')) || 0;
     let got = 0;
-    const counted = new Response(new ReadableStream({
+    const counted = !res.body ? res : new Response(new ReadableStream({
       async start(ctl) {
         const rd = res.body.getReader();
         for (;;) {
           const { done, value } = await rd.read();
           if (done) break;
           got += value.length; ctl.enqueue(value);
+          if (got > total) total = 0;
           const mb = (got / 1048576).toFixed(1);
           mw.stage(total ? `Downloading the game (${mb} / ${(total / 1048576).toFixed(1)} MB)` : `Downloading the game (${mb} MB)`, total ? got / total : null);
         }
         ctl.close();
+        mw.stage('Compiling the game module', null);
       },
     }), { headers: { 'content-type': 'application/wasm' } });
-    mw.stage('Compiling the game module', null);
     await paint();
     try { await mod.default({ module_or_path: counted }); } catch (e) { throw Object.assign(e instanceof Error ? e : new Error(String(e)), { kind: 'wasm' }); }
     wasm = mod;
@@ -205,24 +238,45 @@ if (ok()) {
 }
 if (wasm) {
   const { start_with_files, start_with_listing, debug_panic } = wasm;
-  const launch = async (f) => {
-    document.getElementById('panel').classList.add('hidden');
+  const panel = document.getElementById('panel');
+  let launching = false;
+  // `retry`: a folder that is not an install brings the picker back with the reason (the player picks again);
+  // without it (a served install) the error is final.
+  const launch = async (f, retry) => {
+    if (launching) return;
+    launching = true;
+    panel.classList.add('hidden');
+    status.classList.remove('err');
     mw.stage('Reading the install folder', null);
     await paint();
     try { f(); mw.stage('Starting the game', null);
       if (q.get('fail') === 'panic') setTimeout(debug_panic, 1500);
-    } catch (e) { document.getElementById('panel').classList.remove('hidden'); showError('folder', 'Not a usable install folder', e); }
+    } catch (e) {
+      // A panic has already put its own message up (the first error is the cause).
+      if (!retry || mw.failed()) return showError('folder', 'Not a usable install folder', e);
+      launching = false;
+      mw.idle();
+      panel.classList.remove('hidden');
+      status.classList.add('err');
+      status.textContent = `Not a usable install folder: ${e && e.message ? e.message : e}\nPick the folder that contains NFS13.exe (Need for Speed: Most Wanted, 2012).`;
+    }
   };
-  document.getElementById('overlay').classList.remove('show');
+  mw.idle();
   status.textContent = 'Ready: waiting for the install folder.';
-  document.getElementById('folder').addEventListener('change', (ev) => launch(() => start_with_files(ev.target.files, args())));
+  // Emptied before each pick, so choosing the same folder again (after fixing it) is a change too.
+  folderInput.addEventListener('click', () => { folderInput.value = ''; });
+  folderInput.addEventListener('change', () => {
+    if (!folderInput.files.length) return; // the dialog was cancelled, or the folder is empty
+    if (!q.has('args')) try { localStorage.setItem(ARGS_KEY, argsField.value.trim()); } catch (_) {}
+    launch(() => start_with_files(folderInput.files, args()), true);
+  });
   if (q.has('serve')) {
     mw.stage('Reading the served install', null);
     try {
       const r = await fetch('/game-listing');
       if (!r.ok) throw new Error(`no /game-listing on this server (HTTP ${r.status})`);
       const listing = q.get('fail') === 'folder' ? '' : await r.text();
-      await launch(() => start_with_listing(new URL('/game/', location.href).href, listing, args()));
+      await launch(() => start_with_listing(new URL('/game/', location.href).href, listing, args()), false);
     } catch (e) { showError('fetch', 'Could not read the install from the server', e); }
   }
 }

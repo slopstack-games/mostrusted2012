@@ -1505,7 +1505,7 @@ impl Player {
             v.pos += v.step * pitch as f64;
             if v.pos >= len as f64 {
                 if v.clip.looping {
-                    v.pos -= len as f64;
+                    v.pos %= len as f64;
                 } else {
                     v.done = true;
                     v.stopping = true;
@@ -1695,6 +1695,34 @@ mod tests {
         let n = (seconds * OUTPUT_RATE as f32) as usize;
         let v: Vec<f32> = (0..n).map(|_| p.next_sample()).collect();
         (v.iter().map(|x| x * x).sum::<f32>() / n.max(1) as f32).sqrt()
+    }
+
+    #[test]
+    fn loop_shorter_than_one_step_keeps_sounding() {
+        // A 3-sample looping clip at 4× the output rate steps 4 samples per output sample: past the loop end the
+        // position must wrap into the clip, not drift past it (silence from then on).
+        let clip = Arc::new(Clip { samples: vec![16000; 3], rate: OUTPUT_RATE * 4, looping: true });
+        let bank = Bank {
+            channels: vec![],
+            sequences: vec![Sequence {
+                id: 0,
+                binding: "Speed".into(),
+                min: 0.0,
+                max: 200.0,
+                items: vec![wave(0.0, 200.0, clip, None)],
+                gate: String::new(),
+                retrigger: false,
+                exclusive_cue: false,
+                controllers: vec![],
+            }],
+            cues: vec![],
+            master_gain: 1.0,
+        };
+        let params = Arc::new(Params::new(bank.param_names()));
+        let mut p = Player::new(bank, params.clone());
+        params.set("Speed", 50.0);
+        rms(&mut p, 0.5);
+        assert!(rms(&mut p, 0.1) > 0.01);
     }
 
     /// The nitrous timeline's pattern (`HeatLevelSoundSet.NitrousLocal`): a long one-shot looped by jumps while

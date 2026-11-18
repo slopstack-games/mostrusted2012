@@ -574,7 +574,7 @@ pub fn atol(s: &str) -> i32 {
 
 /// x86 `cvttsd2si`: truncation, `i32::MIN` for NaN or out of range.
 fn cvtt(v: f64) -> i32 {
-    if v.is_nan() || v >= 2_147_483_648.0 || v < -2_147_483_648.0 { i32::MIN } else { v as i32 }
+    if v.is_nan() || !(-2_147_483_648.0..2_147_483_648.0).contains(&v) { i32::MIN } else { v as i32 }
 }
 
 /// `__ftol2` to 64 bits: truncation, `i64::MIN` for NaN or out of range.

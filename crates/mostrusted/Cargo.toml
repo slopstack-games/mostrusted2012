@@ -26,7 +26,7 @@ mw-audio.workspace = true
 wasm_thread = "0.3.3"
 js-sys = "0.3.106"
 wasm-bindgen = "0.2.129"
-web-sys = { version = "0.3.106", features = ["FileList", "RequestInit", "Window", "console"] }
+web-sys = { version = "0.3.106", features = ["FileList", "RequestInit", "Storage", "Window", "console"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
 # WebGPU (the WebGL2 path has no storage buffers, which game_lighting.wgsl needs).
 bevy = { version = "0.19", features = ["webgpu"] }

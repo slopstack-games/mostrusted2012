@@ -141,6 +141,10 @@ pub struct LogicPlugin {
     pub profile: Option<std::path::PathBuf>,
     /// `--volume`: applied on top of the saved settings when the logic applies the profile's settings.
     pub volume: Option<String>,
+    /// A direct `--drive` (no start-up flow, no `--hsm-event`): the machine has no front end to boot through to the
+    /// free drive, so the world managers run in plain play (`world_logic::step_plain`). A plain run (title → free
+    /// roam) and `--race` / `--hsm-event` are not direct: the free drive's machine runs the managers.
+    pub direct: bool,
 }
 
 impl Plugin for LogicPlugin {
@@ -154,6 +158,7 @@ impl Plugin for LogicPlugin {
             new_profile: self.new_profile,
             profile: self.profile.clone(),
             volume: self.volume.clone(),
+            direct: self.direct,
             pending: None,
         })
         .insert_resource(crate::music::SongListRequest::default())
@@ -186,6 +191,7 @@ struct Setup {
     new_profile: bool,
     profile: Option<std::path::PathBuf>,
     volume: Option<String>,
+    direct: bool,
     pending: Option<Mutex<Receiver<Result<Loaded, String>>>>,
 }
 
@@ -216,8 +222,6 @@ struct Logic {
     /// Conductors' and playbacks' sequences (owner, sequence id, the loaded sequence).
     sequences: (Sender<SequenceLoad>, Receiver<SequenceLoad>),
     store: Arc<mw_assets::AssetStore>,
-    /// The logic paused the game clock (`SimPause`) and has not resumed it yet.
-    sim_paused: bool,
 }
 
 fn start_loading(game: Res<crate::Game>, mut setup: ResMut<Setup>) {
@@ -243,7 +247,7 @@ fn receive(world: &mut World) {
         _ => return,
     };
     setup.pending = None;
-    let new_profile = setup.new_profile;
+    let (new_profile, direct) = (setup.new_profile, setup.direct);
     let (profile_path, volume) = (setup.profile.clone(), setup.volume.clone());
     let Loaded { data, events, ids } = match got {
         Ok(l) => l,
@@ -319,9 +323,10 @@ fn receive(world: &mut World) {
     // The world managers (checkpoints, event starts, car swap) run on the logic's state from now on; their outcomes
     // go to `world_logic.rs` (`WorldLogic::outbox`).
     // A direct `--drive` without an event never reaches the machine's free-drive managers (no front end to boot
-    // through): its managers run on the same state in plain play (`world_logic::step_plain`).
-    let direct = matches!(world.resource::<crate::Game>().request, crate::loader::Request::Drive { .. })
-        && world.resource::<HsmEvent>().0.is_none();
+    // through): its managers run on the same state in plain play (`world_logic::step_plain`). The plain run boots
+    // (title → free roam) on a `Request::Drive` too, so the flag comes from main.rs ([`LogicPlugin::direct`]): with
+    // `Request::Drive` alone the played game ran the plain managers beside the machine's (both stepping the event
+    // starts, `checkpoints_plain` beside `CHECKPTS`), unlike `--race`, whose `--hsm-event` made it driven.
     let world_out = match world.get_non_send_mut::<crate::world_logic::WorldLogic>() {
         Some(mut w) => {
             w.state = logic.state.clone();
@@ -363,16 +368,7 @@ fn receive(world: &mut World) {
     info!("hsm: machine {serial} started at {TOP_STATE} (shadow mode)");
     // The general UI sequence player resolves its bindings through the logic's view models (`ui_sequence.rs`).
     world.insert_non_send(crate::ui_sequence::LogicView(host.logic.state.clone()));
-    world.insert_non_send(Logic {
-        hsm,
-        host,
-        serial,
-        frame: 0,
-        screens: channel(),
-        sequences: channel(),
-        store,
-        sim_paused: false,
-    });
+    world.insert_non_send(Logic { hsm, host, serial, frame: 0, screens: channel(), sequences: channel(), store });
 }
 
 /// The structural and ported behaviour types; types the original has but we have not ported hold, the online
@@ -586,6 +582,7 @@ struct Targets<'w, 's> {
     cutscene: Option<ResMut<'w, CutsceneState>>,
     audio: Option<ResMut<'w, crate::settings::AudioSettings>>,
     sim: ResMut<'w, Time<Virtual>>,
+    pause: ResMut<'w, crate::pause::PauseReasons>,
     traffic: Option<ResMut<'w, crate::traffic::TrafficControl>>,
     snap: Option<ResMut<'w, crate::camera::SnapCamera>>,
     race: Race<'w, 's>,
@@ -815,13 +812,8 @@ fn tick(
                 }
             }
             Carry::SimPause(paused) => {
-                // As the pause menu does (pause.rs): the game clock stops; resumed only by whoever paused it.
-                if paused && !t.sim.is_paused() {
-                    t.sim.pause();
-                    logic.sim_paused = true;
-                } else if !paused && std::mem::take(&mut logic.sim_paused) {
-                    t.sim.unpause();
-                }
+                // The game clock stops under this pause reason; it runs again once no other reason holds it.
+                t.pause.set(crate::pause::PauseReason::SimPause, paused, &mut t.sim);
             }
             Carry::HideChevron(hide) => {
                 if let Some(c) = t.chevrons.as_deref_mut() {

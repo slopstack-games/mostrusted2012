@@ -86,9 +86,15 @@ impl AudioSettings {
     pub fn apply(&mut self, text: &str) {
         for pair in text.split([',', '\n']) {
             let Some((k, v)) = pair.split_once('=') else { continue };
-            let Ok(mut v) = v.trim().trim_end_matches('%').parse::<f32>() else { continue };
-            if v > 1.0 {
+            let v = v.trim();
+            let percent = v.ends_with('%');
+            let Ok(mut v) = v.trim_end_matches('%').parse::<f32>() else { continue };
+            // A `%` value is always a percentage ("1%" is 0.01, not 1.0); a bare one above 1 is too.
+            if percent || v > 1.0 {
                 v /= 100.0;
+            }
+            if v.is_nan() {
+                continue;
             }
             let v = v.clamp(0.0, 1.0);
             match k.trim().to_ascii_lowercase().as_str() {
@@ -108,6 +114,10 @@ impl AudioSettings {
 
 /// Where the user's configuration lives: `$XDG_CONFIG_HOME`, else `%APPDATA%` on Windows, else `~/.config`.
 pub fn config_dir() -> Option<PathBuf> {
+    // A browser has no directories: the files are `localStorage` entries named after them (`platform::read_text`).
+    if cfg!(target_arch = "wasm32") {
+        return Some(PathBuf::new());
+    }
     std::env::var_os("XDG_CONFIG_HOME")
         .or_else(|| if cfg!(windows) { std::env::var_os("APPDATA") } else { None })
         .filter(|v| !v.is_empty())
@@ -123,7 +133,7 @@ fn config_path() -> Option<PathBuf> {
 /// The saved settings, then `overrides` (the `--volume` flag) on top.
 pub fn load(overrides: Option<&str>) -> AudioSettings {
     let mut s = AudioSettings::default();
-    if let Some(text) = config_path().and_then(|p| std::fs::read_to_string(p).ok()) {
+    if let Some(text) = config_path().and_then(|p| crate::platform::read_text(&p)) {
         s.apply(&text);
     }
     if let Some(o) = overrides {
@@ -134,10 +144,7 @@ pub fn load(overrides: Option<&str>) -> AudioSettings {
 
 fn save(s: &AudioSettings) {
     let Some(path) = config_path() else { return };
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Err(e) = std::fs::write(&path, s.to_text()) {
+    if let Err(e) = crate::platform::write_text(&path, &s.to_text()) {
         warn!("could not save {}: {e}", path.display());
     }
 }
@@ -328,5 +335,14 @@ mod tests {
         let mut t = AudioSettings::default();
         t.apply(&s.to_text());
         assert_eq!(s, t);
+    }
+
+    #[test]
+    fn small_percentages_and_nan() {
+        let mut s = AudioSettings::default();
+        s.apply("master=1%,music=0.5%,sfx=nan");
+        assert!((s.master - 0.01).abs() < 1e-6);
+        assert!((s.music - 0.005).abs() < 1e-6);
+        assert_eq!(s.sfx, 1.0);
     }
 }

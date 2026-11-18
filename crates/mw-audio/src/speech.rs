@@ -153,6 +153,10 @@ const SEED: u64 = 0x3161_3979_fb63_7ec0;
 /// `DAT_00f8a820`: a speech stopped by a cutscene within this many seconds is requested again.
 const RESTART_WINDOW: f32 = 1.0;
 
+/// Guard (not from the game): event items expanded inline per update of one sequence, so a cycle of events at
+/// zero delay (an event that plays itself) cannot hang the frame.
+const MAX_INLINE_EVENTS: usize = 64;
+
 /// An event's runtime record (0x40 bytes at manager +0x400).
 #[derive(Debug, Default)]
 struct EventState {
@@ -461,6 +465,9 @@ impl SpeechManager {
         run.lines.retain(|l| l.1 > 0.0);
         let hold = run.lines.iter().map(|l| l.0).fold(f32::INFINITY, f32::min);
         run.t = (run.t + dt).min(hold.max(run.t));
+        // Inline events played in this call: an event that (through its items) plays itself at no delay would
+        // otherwise expand forever within one frame.
+        let mut inlined = 0;
         while let Some(k) = run.items.iter().position(|(t, _, _)| *t <= run.t) {
             let (t, end, item) = run.items.remove(k);
             match item {
@@ -482,9 +489,10 @@ impl SpeechManager {
                     out.push(SpeechOut::Say { event: id, line });
                 }
                 SpeechItem::Events { events, .. } => {
-                    if events.is_empty() {
+                    if events.is_empty() || inlined >= MAX_INLINE_EVENTS {
                         continue;
                     }
+                    inlined += 1;
                     let sub = events[self.random(events.len())];
                     if let Some(e) = self.events.get(&sub) {
                         let at = t + e.delay;
@@ -569,6 +577,20 @@ mod tests {
         }
         assert_eq!(m.current(), None);
         assert_eq!(m.plays(3), 1);
+    }
+
+    #[test]
+    fn self_playing_event_does_not_hang() {
+        // An event whose event item plays itself with no delay: one frame must still return.
+        let mut e = ev(1, 1);
+        e.delay = 0.0;
+        e.items.push(SpeechItem::Events { start: 0.0, end: 0.0, events: vec![1] });
+        let mut m = SpeechManager::new([e]);
+        let w = &mut W { cut: false, ok: true };
+        assert_eq!(m.request(1, false, [-1, -1, 0], w), PLAYED);
+        let out = m.update(0.1, w);
+        assert!(out.iter().any(|o| matches!(o, SpeechOut::Say { event: 1, .. })));
+        m.update(0.1, w);
     }
 
     #[test]

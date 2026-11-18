@@ -957,7 +957,7 @@ fn speech_busy(cx: &mut Cx, load: u32) -> bool {
 impl Behaviour for TryToPlaySpeech {
     fn on_enter(&mut self, cx: &mut Cx) {
         let values = cx.param("SPEECHEVENTS").map(|p| p.values.clone()).unwrap_or_default();
-        self.events = values.iter().map(|v| crate::hsm::atof(v) as i64 as u32).collect();
+        self.events = values.iter().map(|v| crate::binding::atol(v) as u32).collect();
         self.load = SPEECH_LOAD.fetch_add(1, Ordering::Relaxed);
         cx.host.request(Request::LoadSpeechEvents { load: self.load, events: self.events.clone() });
         self.playing = 0;

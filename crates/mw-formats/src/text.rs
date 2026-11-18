@@ -26,7 +26,7 @@ impl Language {
         let r = Reader(data);
         let n = r.u32(0x04)? as usize;
         let (ids, pairs) = (r.u32(0x08)? as usize, r.u32(0x0C)? as usize);
-        let mut strings = HashMap::with_capacity(n);
+        let mut strings = HashMap::with_capacity(n.min(1 << 16));
         for i in 0..n {
             let off = r.u32(pairs + i * 8)? as usize;
             let len = r.u32(pairs + i * 8 + 4)? as usize;

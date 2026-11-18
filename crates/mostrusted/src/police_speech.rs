@@ -142,7 +142,7 @@ pub struct SpeechCore {
 /// The conditions: the facts, then the logic's bindings.
 struct World<'a, 'l> {
     facts: &'a SpeechFacts,
-    logic: Option<&'a mut (dyn FnMut(&str) -> Option<bool> + 'l)>,
+    logic: LogicBindings<'a, 'l>,
     rng: &'a mut u64,
 }
 

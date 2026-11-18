@@ -342,6 +342,8 @@ pub struct Nitrous {
     near_timer: f32,
     pub near_same: Vec<u32>,
     pub near_oncoming: Vec<u32>,
+    /// The window closed on the last tick: its lists are cleared before this tick's cars.
+    near_spent: bool,
 }
 
 impl Nitrous {
@@ -558,6 +560,10 @@ impl Nitrous {
             self.near_oncoming.clear();
             false
         } else {
+            if std::mem::take(&mut self.near_spent) {
+                self.near_same.clear();
+                self.near_oncoming.clear();
+            }
             for &(id, same) in w.near_cars {
                 let list = if same { &mut self.near_same } else { &mut self.near_oncoming };
                 if !list.contains(&id) && list.len() < NEAR_MISS_LIST {
@@ -592,6 +598,9 @@ impl Nitrous {
                 self.award(k, ev.amount);
             }
         }
+        // The window has closed: its cars are spent (distinct ids per window; a car still near opens the next).
+        // Cleared on the next tick, so the lists still show the closed window's cars until then.
+        self.near_spent = fire;
     }
 }
 
@@ -696,6 +705,29 @@ mod tests {
         m.update(&r, &slow, false, DT);
         run(&mut m, &r, &World { near_cars: &[], ..slow.clone() }, false, 1.0);
         assert_eq!(m.tank, 0.0);
+    }
+
+    #[test]
+    fn near_miss_lists_are_per_window() {
+        // An oncoming car in one window does not count again in the next one ("distinct ids per window").
+        let r = online();
+        let mut n = Nitrous::default();
+        let w =
+            World { events: true, mph: 90.0, near_cars: &[(9, false)], near_miss_window: 0.5, ..Default::default() };
+        n.update(&r, &w, false, DT);
+        let same = World { near_cars: &[(7, true)], ..w.clone() };
+        let mut ticks = 0;
+        while n.tank == 0.0 {
+            n.update(&r, &same, false, DT);
+            ticks += 1;
+            assert!(ticks < 120);
+        }
+        // Both kinds in the first window.
+        assert!((n.tank - 9.0).abs() < 1e-4, "{}", n.tank);
+        // The same-direction car opens a second window at once: only its kind awards when it closes.
+        n.update(&r, &same, false, DT);
+        run(&mut n, &r, &World { near_cars: &[], ..w.clone() }, false, 1.0);
+        assert!((n.tank - 12.0).abs() < 1e-4, "{}", n.tank);
     }
 
     #[test]

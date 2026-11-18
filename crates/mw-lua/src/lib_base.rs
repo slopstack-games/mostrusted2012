@@ -8,7 +8,9 @@ use crate::{Lua, LuaError, Result};
 // ---- lauxlib argument checks (messages as luaL_argerror / luaL_typerror) ----
 
 pub(crate) fn arg_error(fname: &str, n: usize, extra: &str) -> LuaError {
-    LuaError::new(format!("bad argument #{} to '{}' ({})", n + 1, fname, extra))
+    let mut e = LuaError::new(format!("bad argument #{} to '{}' ({})", n + 1, fname, extra));
+    e.arg = Some((n + 1, extra.to_string()));
+    e
 }
 
 pub(crate) fn type_name_of(args: &[Value], n: usize) -> &'static str {
@@ -110,7 +112,8 @@ pub(crate) fn open(lua: &mut Lua) {
     lua.register("error", |lua, _, args| {
         let level = opt_int(&args, 1, "error", 1)?;
         let v = args.into_iter().next().unwrap_or_default();
-        if let Value::Str(s) = &v
+        // `lua_isstring` is also true for a number, which the concatenation turns into a string.
+        if let Some(s) = Lua::tolstring(&v)
             && level > 0
         {
             // Level 1 is the function that called error (frame below this native).
@@ -177,8 +180,14 @@ pub(crate) fn open(lua: &mut Lua) {
                 Ok(r)
             }
             Err(e) => {
-                let h = lua.call(&handler, vec![e.value]).map(|r| r.into_iter().next().unwrap_or_default());
-                Ok(vec![Value::Bool(false), h.unwrap_or_else(|e| e.value)])
+                // luaG_errormsg: a handler that is not a function, or that errors itself (it is called again
+                // on its own error until the C stack overflows), ends in LUA_ERRERR.
+                let h = match handler {
+                    Value::Function(_) => lua.call(&handler, vec![e.value]).ok(),
+                    _ => None,
+                };
+                let h = h.map(|r| r.into_iter().next().unwrap_or_default());
+                Ok(vec![Value::Bool(false), h.unwrap_or_else(|| Value::from("error in error handling"))])
             }
         }
     });

@@ -196,7 +196,7 @@ fn diag_gc_ground() {
             (n, *p, *sz, *q)
         })
         .collect();
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored.sort_by_key(|b| std::cmp::Reverse(b.0));
     for s in scored.iter().step_by(40).take(8) {
         eprintln!("cluster {} at {:.1?} width, height {:?} shift {}", s.0, s.1, s.2, s.3);
     }

@@ -33,7 +33,7 @@ use std::collections::HashMap;
 
 use mw_bundle::{Reader, Resource};
 
-use crate::Result;
+use crate::{Error, Result};
 
 /// A packed name (see the module doc) as text.
 pub fn key_name(mut v: u64) -> String {
@@ -285,9 +285,14 @@ fn spawns(r: &Reader, ptr: usize, n: usize) -> Result<Vec<Spawn>> {
     (0..n).map(|k| Ok(Spawn { entry_point: r.u64(ptr + 16 * k)?, state: r.u32(ptr + 16 * k + 8)? })).collect()
 }
 
-fn parameters(r: &Reader, ptr: usize, n: usize, depth: usize) -> Result<Vec<Parameter>> {
-    let mut out = Vec::with_capacity(n);
+/// Most parameter records one resource may decode. Structure instances can point back at their own (or a shared)
+/// parameter list, which without a budget decodes `count^8` records.
+const PARAMETER_BUDGET: usize = 1 << 20;
+
+fn parameters(r: &Reader, ptr: usize, n: usize, depth: usize, budget: &mut usize) -> Result<Vec<Parameter>> {
+    let mut out = Vec::with_capacity(n.min(256));
     for k in 0..n {
+        *budget = budget.checked_sub(1).ok_or_else(|| Error::Malformed("HSM parameters nest without end".into()))?;
         let p = ptr + 16 * k;
         let (id, values_ptr, kind, count) = (r.u64(p)?, r.u32(p + 8)? as usize, r.i16(p + 12)?, r.i16(p + 14)?);
         let kind = ParamType::from_i16(kind);
@@ -299,7 +304,7 @@ fn parameters(r: &Reader, ptr: usize, n: usize, depth: usize) -> Result<Vec<Para
                     for j in 0..count {
                         let s = values_ptr + 8 * j;
                         let (sp, sn) = (r.u32(s)? as usize, r.i16(s + 4)?.max(0) as usize);
-                        param.structures.push(parameters(r, sp, sn, depth + 1)?);
+                        param.structures.push(parameters(r, sp, sn, depth + 1, budget)?);
                     }
                 }
             } else {
@@ -321,6 +326,7 @@ impl HsmData {
     pub fn parse_bytes(bytes: &[u8]) -> Result<Self> {
         let r = Reader(bytes);
         let mut out = HsmData { version: r.u32(0)?, ..Default::default() };
+        let mut budget = PARAMETER_BUDGET;
         let (tops, n_tops) = (r.u32(0x04)? as usize, r.u32(0x08)? as usize);
         for i in 0..n_tops.min(4096) {
             let [definition, behaviour, instance] = r.u32_array::<3>(tops + 12 * i)?;
@@ -353,7 +359,7 @@ impl HsmData {
                 fallback: Fallback::from_u8(fallback),
                 entry_points: Vec::new(),
                 children: Vec::new(),
-                parameters: parameters(&r, params as usize, n_params as usize, 0)?,
+                parameters: parameters(&r, params as usize, n_params as usize, 0, &mut budget)?,
                 data_definition: if data_def == 0 { None } else { def_index.get(&data_def).copied() },
             };
             for k in 0..n_entries as usize {
@@ -396,7 +402,7 @@ impl HsmData {
                     .map(|k| r.u64(entry_ptr + 8 * k))
                     .collect::<std::result::Result<_, _>>()?,
                 exit_points: (0..n_exits).map(|k| r.u64(exit_ptr + 8 * k)).collect::<std::result::Result<_, _>>()?,
-                parameters: parameters(&r, param_ptr, n_params.min(256), 0)?,
+                parameters: parameters(&r, param_ptr, n_params.min(256), 0, &mut budget)?,
             });
         }
         Ok(out)
@@ -465,5 +471,26 @@ mod tests {
         assert_eq!(behaviour_id("HSB_RUNCHILD"), 0x24c4_22b2);
         assert_eq!(behaviour_id("LOADWORLD"), 0xac59_d95a);
         assert_eq!(behaviour_id("HSB_TOG_LS"), 0xe6d3_7d97);
+    }
+
+    /// One behaviour type whose STRUCTURE parameter's 1000 instances all point back at that parameter: an
+    /// error, not 1000^8 records.
+    #[test]
+    fn self_referential_structure_parameters() {
+        let (t, p, s) = (0x40usize, 0x60usize, 0x80usize);
+        let mut d = vec![0u8; s + 8 * 1000];
+        let put = |d: &mut Vec<u8>, o: usize, v: &[u8]| d[o..o + v.len()].copy_from_slice(v);
+        put(&mut d, 0x1c, &(t as u32).to_le_bytes());
+        put(&mut d, 0x20, &1u32.to_le_bytes());
+        put(&mut d, t + 0x14, &(p as u32).to_le_bytes());
+        put(&mut d, t + 0x18, &1u32.to_le_bytes());
+        put(&mut d, p + 8, &(s as u32).to_le_bytes());
+        put(&mut d, p + 12, &6i16.to_le_bytes());
+        put(&mut d, p + 14, &1000i16.to_le_bytes());
+        for j in 0..1000 {
+            put(&mut d, s + 8 * j, &(p as u32).to_le_bytes());
+            put(&mut d, s + 8 * j + 4, &1i16.to_le_bytes());
+        }
+        assert!(matches!(HsmData::parse_bytes(&d), Err(Error::Malformed(_))));
     }
 }

@@ -655,7 +655,8 @@ impl Driver {
         let mut steering = (left.dot(dir) * -4.0).clamp(-1.0, 1.0);
         if r.lock_timer > 0.0 {
             r.lock_timer -= i.dt;
-            if r.lock_timer < 0.0 {
+            // At or below 0: a step that lands on exactly 0 would otherwise keep the direction locked for good.
+            if r.lock_timer <= 0.0 {
                 r.locked = false;
             }
         }
@@ -788,7 +789,7 @@ fn hold_speed(cfg: &AiConfig, me: &CarState, o: &CarState) -> f32 {
     let rel = [0, 1, 2].map(|k| o.velocity[k] - me.velocity[k]);
     let rv = (rel[0] * rel[0] + rel[1] * rel[1] + rel[2] * rel[2]).sqrt();
     let ahead = (me.ground() - o.ground()).dot(o.heading);
-    if (rv > 1.192_092_9e-7 || rv < -1.192_092_9e-7) && cfg.hold_time_gap < (ahead / rv).abs() {
+    if !(-1.192_092_9e-7..=1.192_092_9e-7).contains(&rv) && cfg.hold_time_gap < (ahead / rv).abs() {
         return NO_SPEED;
     }
     let vo = o.speed();
@@ -1041,6 +1042,32 @@ mod tests {
         let moving = car(1, 0.0, 10.0, 0.0, 4.0);
         d.tick(&cfg, &path, &input(&moving, &[]));
         assert_eq!(d.state, State::Racer);
+    }
+
+    #[test]
+    fn recovery_direction_flips_once_a_second_at_any_step() {
+        // The backward probe hits throughout: the direction flips, then is locked for 1 s, then may flip again.
+        // A step that runs the lock timer down to exactly 0 must unlock it too.
+        let cfg = AiConfig::default();
+        let path = straight();
+        let me = car(1, 0.0, 10.0, std::f32::consts::PI, 0.0);
+        for dt in [0.25, 1.0 / 60.0] {
+            let mut d = Driver::new(0, [0.3, 0.01, 0.1], 1);
+            d.state = State::Recovery(Recovery::enter());
+            let mut i = RacerInput { dt, ..input(&me, &[]) };
+            i.probes[3] = true;
+            let mut flips = 0;
+            let mut last = true;
+            for _ in 0..(5.0 / dt).round() as usize {
+                d.tick(&cfg, &path, &i);
+                let State::Recovery(r) = d.state else { panic!("left the recovery") };
+                if r.reverse != last {
+                    flips += 1;
+                    last = r.reverse;
+                }
+            }
+            assert!((4..=5).contains(&flips), "dt {dt}: {flips} flips in 5 s");
+        }
     }
 
     #[test]

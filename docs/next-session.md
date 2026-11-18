@@ -14,6 +14,8 @@ waited on a ground ray the paused sim could not answer, research log "races with
 waypoints. Merged today: skid voices (one per wave item), speech manager (`mw_audio::speech`).
 
 **Open**:
+- **Bug hunt (2026-11-18, branch `claude/bug-hunting-kdkey0`)**: ~45 fixes, verified without the install. Run
+  `mwtool verify` + `game_chunks` (new parser budgets, stricter Lua verifier); suspected items in research-log 2026-11-18.
 - **User report (end of session): races won't start when played, UI wrong almost everywhere.** Headless `--race` tests
   pass, so check the played flow (free roam → Easy Drive / map / marker). Shots at 1920×1080 (`MW_HL_SIZE=1920x1080
   MW_HSM_SHOTS=<dir> tools/t --race 462174`): intro camera upside down (≈180° roll); race HUD hugs the edges, the
