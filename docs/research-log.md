@@ -11,6 +11,34 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+### 2026-11-18: Lua natives, thirteenth batch: survey only (stopped before code; session ended)
+No native ported (300 of 385 stays; 226 / 255 offline, 50 / 100 online, 8 / 11 platform, 16 / 19 debug; 85 unported: 29 offline,
+50 online, 3 platform, 3 debug). Handlers read from `re/out/live/text.asm`, callees from the dump. Findings for the next port:
+- StopFeedbackSequence (0x682710): clears the stack, writes the null handle pair (`.bss` 0x01178070 / 74, 0 / 0 in snapshots 1 and 2)
+  to UIM+0x30a5c / 60 (`FeedbackFields::sequence_handle = 0`). RequestSkipSequence (0x6827b0): id = *(handle +0x28 + (+0x30a68) +0x14)
+  of the handle at UIM+0x30a64 (0 when null), then `FUN_007b1060`(UIM+0x30840, id) (unread: sets flags on matching members).
+- SetVector3Variable (0x7f4010): like the other `Set*Variable`, x / y / z as float (`fstp dword`) -> `FUN_007f2bd0`: JSON array of 3
+  doubles (tag 4), path = `var_path(args, 2, 6)`. SetExitPointID (0x67a860): userdata +0x10 / +0x14 = `FUN_009ed220`(string) (64-bit key).
+- GetCompetitorName (0x67b380): player record (PM+0xa5d0+slot*4) +0x50 holds a wide string pointer; `FUN_00a49460` narrows it
+  (>= 0x80 -> '?', <= 255 chars) and pushes it. `Player` has no name field yet.
+- HasInputBeenDetected (0x67ace0): controller (`FUN_006c3850`) byte +0x499, or the local vehicle's input struct (+0x1928 of
+  `FUN_00571160`) differs from a neutral one (`FUN_00670fc0`), or UIM+0x30a5c != 0. IsHittingRaceCar (0x67d6b0): contact list of
+  vehicle a (`FUN_00904850` / `FUN_00904880`, entries' body ids at +0x60 / +0x62 into table 0x010edb68, both kind byte +6 == 7) matches
+  vehicle b's body id (`FUN_005734a0` +4). IsAssetUnlocked (0x7eab40): `FUN_0068cc30`(id, 0) on one of two unlock tables, unknown id = true.
+- HasFinishedStreamingWorld (0x67c840): `FUN_005470e0` (streaming state 0xc) and `FUN_0054b540` -> `FUN_0054b340` (section grid): needs the
+  streaming sections, skipped. ShowLoadingScreen (0x67e430): `FUN_0078f860` / `FUN_00799a60` on UIM+0x2d1b0 (slot value +0x58+i*4, mask
+  +0x54, ring buffer), then clears bit 0 of +0x2d204 / +0x2d208. ShowForcedFeedBackMessage (0x67db90): clears the HUD queue
+  (`FUN_007b3380`) if non-empty, then `FUN_007b8100`(text, id). ShowFeedbackMessage (0x682210): builds message parts from tables (large).
+- PlaySound / PlaySoundAtPlayer / PlayGameplayStream (0x67df60 / 0x67e040 / 0x67e2d0): `FUN_0079fb40` on UIM+0x2d2f0 takes the first free
+  of 30 slots (0x28 bytes, flag +0x719), increments the counter at +0, returns it (0x7fffffff when full); args: name hash
+  (`FUN_009ed180`), arg 2, 0x1000000, kind 0 / 1+8 / 0+4, null handle pair, position (zero; AtPlayer: vehicle position of arg 3 via
+  `FUN_006b9ea0`), floats `.rdata` 0x00f8a820 x2, -1, 1. Port as a Request plus a slot counter.
+- CalculateForwardDirection (0x681cb0): road query (`FUN_00667b10` -> `FUN_00662670` over the road manager's tables): needs the road data.
+  CalculateRotatedLocationXZ (0x681a60 -> `FUN_005de2d0`, 840 bytes: rsqrtps with two Newton steps, `FUN_005e39d0` matrix builder,
+  constants `.rdata` 0x00fb13a0 / b0 / 0x00fb1380) unported. CycleCameraTarget (0x681b10: `FUN_006bf100`, `FUN_006cab10`, `FUN_007b1150`),
+  SwitchToIceCamera (handle returned by `FUN_00843a60`) unported.
+- Unread: CalculateInterpolatedLocation, IsCompetitorWithinVisibilityCone, ResetOnRoad, ResetAlongRoad, TeleportVehicle, SpawnVehicle,
+  TeleportToNamedRoad, TeleportToDistanceFromFinish, GetRoadStartDirection, GetValue (text database `FUN_00a50650`).
 ### 2026-11-18: Lua natives, twelfth batch (31 more, 300 of 385; `natives/lua_vehicles.rs`)
 Handlers from `re/out/live/text.asm`; state in `SimFields.vehicles` (`VehicleFields`), set by the runtime. Ported:
 GetPointDistanceToVehicle / GetPointDistanceSquaredToVehicle (point = table x / y / z via `FUN_00697120`, vehicle = arg 2
