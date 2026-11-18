@@ -27,6 +27,25 @@ Read mw-assets' own logic (index lookups, curves, grids, empty collections, chai
   `music::sps_index` is a process-wide `OnceLock`, so a second store with another install reuses the first's
   SPS index; `music::ends_with_end_block` counts a truncated final `E` block as an end.
 
+## 2026-11-18: bug hunt in the runtime's driving side (round 2, code reading, no install)
+
+- **Resets without the game's placement**: the player's crash reset (`crash.rs` `hold_and_reset`), the AI crash
+  reset and the AI stuck reset (`ai.rs` `ai_drive`) set the body rolling at the reset speed but left the wheels'
+  spin, gearbox, handbrake countdown, brake ramp and drift state from before the crash (the race-start bug of
+  `cutscene.rs`, fixed there earlier: tyres slide and skid until the wheels catch up). All three now call
+  `Car::place_moving` (`FUN_008f8190`); the stuck reset's own comment names the placement `FUN_00647e00`, and the
+  crash reset (`FUN_006c9fb0`) posts the respawn as the same placement message (decomp.md "Respawn"; inferred,
+  not traced to `FUN_008f8190` in the dump). Capture to confirm: `mwtool capture` across a crash reset, wheel spin
+  (ω r against v) on the first reset tick.
+- **`Car::roll` sign**: the field is documented positive = right side down, but `-asin(X · n)` gave the opposite
+  (car-space +X is the left). Telemetry only (the `--test corner` line); unit test `body_roll_and_pitch_signs`.
+- **R repaired every car**: `damage.rs` `repair_on_reset` cleared the damage of all cars with `CarDamage`
+  (opponents included); now the player's only.
+- Suspected, unconfirmed: traffic's brake law `(v_t² − v²) / (2 target_dist)` divides by zero when
+  `min_brake_distance` is 0 and the leader is at 0 m (NaN clamps stay NaN; the integration's `max(0)` then reads 0);
+  `crash.rs` / `ai.rs` resets keep `impact_yaw` / `turn_assist` timers (the vehicle reset `FUN_009a9b10` may clear
+  them: not traced).
+
 ## 2026-11-18: bug hunt in mw-handling, mw-ai, mw-police (code-level defects, no install)
 
 **Fixed** (each with a failing test first):

@@ -320,6 +320,12 @@ pub struct Car {
     pub(crate) stop_impulse: f32,
 }
 
+/// Body roll and pitch (rad) against the ground normal `n`: roll positive = right side down, pitch positive = nose
+/// up. Car space +X is the car's left, so a right-side-down roll lifts +X towards `n`.
+fn body_roll_pitch(rot: Quat, n: Vec3) -> (f32, f32) {
+    ((rot * Vec3::X).dot(n).clamp(-1.0, 1.0).asin(), (rot * Vec3::Z).dot(n).clamp(-1.0, 1.0).asin())
+}
+
 struct WheelState {
     /// Wheel centre at rest, car space.
     centre: Vec3,
@@ -1765,8 +1771,7 @@ pub(crate) fn car_physics(
             car.steer = 0.0;
         }
         if let Some(n) = ground_normal.try_normalize() {
-            car.roll = -(rot * Vec3::X).dot(n).clamp(-1.0, 1.0).asin();
-            car.pitch = forward.dot(n).clamp(-1.0, 1.0).asin();
+            (car.roll, car.pitch) = body_roll_pitch(rot, n);
         }
         // The game's per-axis drag (with its over-speed ramp) and lift (downforce). Rolling resistance is per
         // wheel, from the surface (above).
@@ -3435,6 +3440,16 @@ fn report_jitter(label: &str, samples: &[[f32; 6]], rate: f32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn body_roll_and_pitch_signs() {
+        // Rolled about the forward axis so the left (+X) rises: right side down, positive roll.
+        let (roll, pitch) = body_roll_pitch(Quat::from_rotation_z(0.1), Vec3::Y);
+        assert!((roll - 0.1).abs() < 1e-5 && pitch.abs() < 1e-5, "{roll} {pitch}");
+        // Nose up: rotation about +X (left) by a negative angle lifts +Z.
+        let (roll, pitch) = body_roll_pitch(Quat::from_rotation_x(-0.1), Vec3::Y);
+        assert!(roll.abs() < 1e-5 && (pitch - 0.1).abs() < 1e-5, "{roll} {pitch}");
+    }
 
     #[test]
     fn impact_yaw_damping_follows_the_timers() {
