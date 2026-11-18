@@ -10,6 +10,7 @@
 //!   removal, roles, search legs.
 //! - [`driver`]: the cop driver states (Chasing, LowSpeedChasing, Bruiser, Rhino, HeadOn).
 //! - [`patrol`]: the Patrolling state on a traffic ghost (`FUN_005101e0`).
+//! - [`roadblock`]: where a roadblock's items stand (the roadblock manager, `FUN_00844ff0` / `FUN_00841710`).
 //! - [`Police`]: one tick of all of it for the local player.
 
 pub mod coordinator;
@@ -17,6 +18,7 @@ pub mod driver;
 pub mod heat;
 pub mod patrol;
 pub mod pursuit;
+pub mod roadblock;
 pub mod score;
 pub mod sight;
 

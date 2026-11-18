@@ -2212,6 +2212,7 @@ fn spawn_entities(
                     paint_index: 0,
                     traffic: Some(TrafficModelRequest { vehicle, paint, colour: v.paints.get(paint).map(|(_, p)| *p) }),
                     opponent: None,
+                    prop: None,
                 });
             }
             continue;

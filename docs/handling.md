@@ -509,6 +509,19 @@ a crash), shot 0's eye at (−5.07, 3.0, 87.92) beyond the wall, the reset to (0
 (pre-crash 71.5 × 0.7 capped). With the default 30 m wall the `Freeway` shot looks at the wall's back (the shot
 stands 10 m past the impact); a 2 m pillar shows the car.
 
+## Bust camera (`mw_assets::crash::bust_camera`, `crates/mostrusted/src/bust_camera.rs`, 2026-11-18)
+
+Data: busted sequence 1014946's three `DynamicCameraSequenceItem`s and its `SceneAnalysis` (research log
+2026-11-18). The process nodes (`ProcessNodeTransformBinding`, `CameraTransformLookAt`, `CameraTransformLerpLookAt`,
+`CameraFOVZoom`, `CameraTransformCollider`, `ProcessNodeTransformSLerpFromBinding`) and the scene analysers
+(`LineTestSceneAnalyser`, `NearestRaceCarSceneAnalyser`, `RoadRunnerSceneAnalyser`) have no code in the dump, so
+these are model decisions until the code is found (REA on the snapshot exe, their vtables): a line test's point is
+its bound analyser's point plus `bffd3e8f` m along `7c2809fc`'s yaw then pitch in that analyser's frame, failing
+(the alias tries its next analyser) when `TestWorld` and the world lies in between; nearest race car = the
+player's car plus its offset; road runner = the road graph walked `Offset.z` m from the player; aim tracking =
+the crash camera's model (`TrackingSpeed` share per 60 Hz tick); the moving shot's eye lerps linearly from its
+`SLerpFromBinding`; the FOV stays the gameplay camera's; the collider node is not run.
+
 ## Model decisions (not from data)
 
 | Constant | Value | Why |

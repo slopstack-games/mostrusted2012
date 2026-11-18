@@ -700,7 +700,7 @@ fn request_opponents(mut opponents: ResMut<Opponents>, requests: Option<Res<Load
     for (slot, bundle) in opponents.bundles.clone().into_iter().enumerate() {
         // The slot's colour, else a paint per slot, so two of the same car differ.
         let paint_index = opponents.paints.get(slot).copied().unwrap_or(slot + 1);
-        let req = CarRequest { bundle, paint_index, traffic: None, opponent: Some(slot) };
+        let req = CarRequest { bundle, paint_index, traffic: None, opponent: Some(slot), prop: None };
         if requests.0.send(req).is_err() {
             warn!("AI: the loader thread has stopped");
         }

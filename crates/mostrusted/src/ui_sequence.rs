@@ -327,7 +327,7 @@ fn receive(
 
 /// The sequences' camera items (ICE takes) on the gameplay camera, and their HideHud items.
 #[allow(clippy::type_complexity)]
-fn camera(
+pub(crate) fn camera(
     mut player: ResMut<UiSequencePlayer>,
     view: Option<NonSend<LogicView>>,
     car: Query<&Transform, (With<crate::drive::Car>, With<crate::drive::Player>, Without<Camera3d>)>,

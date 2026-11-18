@@ -147,6 +147,45 @@ is a scoring / world subsystem over vehicles and triggers, to be ported as a mod
 (GMM+0x14: `FUN_00705880`, `FUN_006e98a0`, `FUN_006e3190`, several `this` pointers the dump loses), which is not
 ported; it should come with that runner. Captures that would confirm: none offline (all ported types but
 `KILLCAMSEQ`, `TRYTOPLAYSPE`, `SHOW_DIALOG`, `WAYPOINTS`, the car-select pair and the debug ones are online-only).
+### 2026-11-18: roadblocks and the bust camera wired (`roadblock.rs`, `bust_camera.rs`, `mw_police::roadblock`)
+
+**Roadblocks** (decomp.md "Roadblocks"): data `mw_assets::police::roadblock_data` (18 `RoadBlockDefinition`s in
+list 604097, 40 `RoadBlockLayer`s in 604098; items: `AIPlayerType` → cop car, `PhysicalDefinition` → the
+`WorldObject` of `HAWAII/GLOBALRESOURCES.BNDL` with that physics (cone `664ec5c`, barrier `7d15696d`),
+`SpikeStripWeapon`; `mwtool police` prints them). Read and ported (`mw_police::roadblock`, 3 tests): message 7
+from `FUN_005226b0` (trigger box ground point = centre − size.y / 2, z axis `FUN_0042f250`, width = size.x),
+`FUN_0083f030` record, `FUN_00841040` (one record at a time), `FUN_00847af0` states (dir turned away from the
+player, layout, spawn, removal), `FUN_00844ff0` (centre layer; back layers every `LayerDistance` along −dir by
+`FUN_0083fad0`'s road walk), `FUN_00841710` (side = dir × Y; centre item, left items last-to-first, right in order,
+`FirstDistance` then (k + 1) × `Distance`, a side ends at the first item whose outer half-step passes half the
+width; ground probe 4 m up / 10 m down, `.rdata` 0x00ff0390 / 0x00ff03a0), `FUN_0083f120` (item frame: left =
+−dir, forward = left × up, turned by `Angle`: cos at a, sin via cos(a − π/2), `.rdata` 0x010754b0),
+`FUN_00845270` (≤ 8 cars), `FUN_008414f0` from the disassembly (0x8415ce–0x8416ff: removed only once **behind**
+the player, car forward row against player→roadblock ≤ 0, and beyond `GameLogicConfig` +0x280 = 500 m, × 0.8
+(0x00feff94) unless `FUN_006c2410`: chase, cooldown or the level's +0x112). The crate now gets
+`RoadState { roadblocks, route, roadblock_triggers }` (150 kind-0x12 boxes) and `touches_roadblock`; the task's
+pick is placed; a bust removes it (`RemoveRoadblocks`). Screenshot: `MW_ROADBLOCK=18430 --drive 911 --units 20
+--spawn=-1120,24,1617,90 --camera=-1092,29,1628,-1066,23,1612`: three Interceptors across the road, cones and
+barriers in front. Fix on the way: `load_police` built `Police::new` after setting `cop_cfg` /
+`spawn_distance_override`, so both were lost; now first.
+MODEL: predicted route = road-graph walk along the heading (coordinator +0x31c's predictor not read); item up =
+the probe's hit normal; roadblock cars parked (handbrake, no driver, no light bars / sirens: the AI player's
+behaviour and the `Sirens_Roadblock` wiring not read); spike strips not placed; the +0xfe5 sight ray not run.
+
+**Bust camera** (the data's source, as crash.rs found the crash camera's): HSM "Do Pursuits" plays busted
+sequence 1014946 (`01000000000f7ca2`); its cameras are three `DynamicCameraSequenceItem`s (0–2 s "Heli Cam", 2–4 s
+"LineScene", 4–7 s "Heli Cam" lerped from "Heli Cam Move") over `SceneAnalysis` `01000000000f7b75` (12 analysers,
+4 aliases; "Heli Cam" = alias → line test 1014901: 20 m from "PlayerLookAt" at pitch −60°, yaw 90°, tested
+against the world, then 1016787 / 1016788 / nearest-race-car 1014870), HUD hidden 0–13 s, letterbox 0–12 s.
+`mw_assets::crash::bust_camera` reads it (`mwtool police` prints the shots), `bust_camera.rs` plays it on
+`PursuitEvent::BustCaught`. The process-node and analyser code is not in the dump (no type-id or name hits):
+MODEL (handling.md "Bust camera"): line test = bound point + length along yaw-then-pitch, world hit → next alias
+entry; nearest race car = the player's car; road runner = road-graph walk; tracking = the crash camera's per-tick
+share; FOV kept; collider node, `SpawnAICopCar` items, movie / take after 6.5 s not played. Screenshot:
+`MW_BUST_CAMERA=31,1.5` (start 31 s after launch, hold the clock; after the profile's recap) shows the car from
+~18 m above. Captures that would confirm: a bust in the original (F12 at 1 s and 3 s), a roadblock seen from a
+known spot (which side the cars face, the layer spacing). `--test pursuit` leaves roadblocks out (forced-wanted runs:
+a roadblock ahead stops its escape run); it passes (escaped, then busted in 4.0 s).
 
 ### 2026-11-18: Lua natives, last batch (`natives/lua_road.rs`, 385 of 385)
 The last 23 Lua natives, read from `re/out/live/text.asm` (handlers) and the dump (callees); every Lua native is

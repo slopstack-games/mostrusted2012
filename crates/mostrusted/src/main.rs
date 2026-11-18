@@ -9,6 +9,7 @@ mod audio;
 mod audio_tap;
 mod bench;
 mod bodyshop;
+mod bust_camera;
 mod camera;
 mod car_anim;
 mod car_audio;
@@ -80,6 +81,7 @@ mod pursuit;
 mod race;
 mod reflection;
 mod replay;
+mod roadblock;
 mod sequence_fx;
 mod settings;
 mod sfx;
@@ -1514,7 +1516,7 @@ fn receive_assets(
                 });
                 loaded.instances += 1;
             }
-            Msg::Prop { model, transform, physics, pieces, lod, standing, found } => {
+            Msg::Prop { model, transform, physics, pieces, lod, standing, found, tag } => {
                 let Some(parts) = loaded.models.get(&model) else { continue };
                 let range = loaded.shadow_ranges.get(&model).copied().map(shadow_cull::ShadowRange);
                 let get = |k: &Option<mw_bundle::ResourceId>| k.and_then(|k| loaded.models.get(&k).cloned());
@@ -1552,7 +1554,13 @@ fn receive_assets(
                 if let Some(&m) = loaded.pass_masks.get(&model) {
                     commands.entity(root).insert(pass_mask::PassMask(m));
                 }
-                registry.register(root);
+                // A runtime placement (a roadblock's) belongs to no track unit: its owner removes it.
+                match tag {
+                    Some(tag) => {
+                        commands.entity(root).insert(roadblock::RoadblockPiece(tag));
+                    }
+                    None => registry.register(root),
+                }
                 loaded.instances += 1;
                 loaded.props += 1;
             }
