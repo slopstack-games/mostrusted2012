@@ -71,6 +71,10 @@ pub struct LogicState {
     pub event_starts: super::event_starts::EventStarts,
     /// `HSMCARSWAPLO`'s jack spots and swap (`car_swap.rs`).
     pub car_swap: super::car_swap::CarSwap,
+    /// `HSMDODRIFTS`'s drift scoring (`drifts.rs`; binding root `DriftScoring`).
+    pub drift: super::drifts::DriftScoring,
+    /// `DOSMSHNGRB`'s smash-and-grab scoring (`smash_grab.rs`; binding root `SmashScoring`).
+    pub smash_grab: super::smash_grab::SmashGrab,
 }
 
 /// The binding host the logic reads through: the game-mode manager's `Mode` root ([`super::mode_view`]) first,
@@ -112,6 +116,8 @@ static ROOTS: std::sync::LazyLock<Vec<(u32, RootFn)>> = std::sync::LazyLock::new
         (h("Event"), super::event_view::lookup),
         (h("Transitions"), super::transitions_view::lookup),
         (h("GameLogicState"), super::game_logic_view::lookup),
+        (h("DriftScoring"), super::drifts::lookup),
+        (h("SmashScoring"), super::smash_grab::lookup),
     ]
 });
 
@@ -1038,6 +1044,19 @@ pub enum Request {
     EventStart(super::event_starts::EventStartOut),
     /// `HSMCARSWAPLO`'s outcomes for the engine (`natives::car_swap`).
     CarSwap(super::car_swap::CarSwapOut),
+    /// `HSMDODRIFTS`'s slots (enter 0x75b2f0, enter update `FUN_0074c370`, update 0x75e7e0, exit `FUN_0075b460`),
+    /// carried out by the logic (`natives::drifts`).
+    DriftScoring(super::drifts::Slot),
+    /// `HSMDODRIFTS`'s outcomes for the engine (`natives::drifts`).
+    Drift(super::drifts::DriftOut),
+    /// `DOSMSHNGRB`'s slots (enter `FUN_0075b820`, enter update `FUN_007612e0`, update `FUN_00761450`, exit update
+    /// `FUN_0075ed20`, exit 0x73cf00), carried out by the logic (`natives::smash_grab`).
+    SmashGrabScoring(super::drifts::Slot),
+    /// `DOSMSHNGRB`'s outcomes for the engine (`natives::smash_grab`).
+    SmashGrab(super::smash_grab::SmashGrabOut),
+    /// `FUN_00734f60`(sp, bucket, car) on G+0x2f3f8: add `sp` to the Speed Points total (decomp.md "Speed Points":
+    /// `FUN_00734400` stores total + sp; the bucket only feeds statistics).
+    SpeedPoints { sp: i32, bucket: u32, car: u32 },
     /// `GetMostWantedListFromServer` (0x7eb4b0, `FUN_0071dfe0` on G+0x2f454 +0x4af0): request "GetMostWantedList"
     /// from the notification centre when no request is pending (+0x30 < 0) and the retry timer (+0x3c) ran out.
     GetMostWantedList,

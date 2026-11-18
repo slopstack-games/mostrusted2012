@@ -40,6 +40,9 @@ pub struct Player {
     pub respawn_to_swap_spot: bool,
     /// +0x418: the event score (`IsTargetScoreHit`).
     pub score: i32,
+    /// +0x348: a word copy of the score for a human player (+0x9c == 0), written by `HSMDODRIFTS` (0x75e98f,
+    /// `FUN_0075b460`) and `DOSMSHNGRB` (0x73cf4c); its reader was not traced.
+    pub score_348: i16,
     /// +0x5b8, +0x5c8, +0x5cc, +0x5d0: the final event data (`SetFinalEventData`, `FUN_006b9d00`).
     pub final_5b8: i32,
     pub final_5c8: u32,

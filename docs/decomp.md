@@ -2952,8 +2952,8 @@ and the snapshot's disassembly unless stated.
   (0 0x74b530 POIs `FUN_00793350`(`POIID`, waypoint, 0, 2, i) for the event record's triggers (+0xdc / +100), 3
   0x74b6c0 GPS to the first unless UIM+0x23d34 / +0x28184 / +0x2c5d4, 6 0x74b660). `INSAFEHOUSE` and `MANAGEREPAIR`
   are not registered by the original (no name string in the exe): they run as `FUN_00775a60`'s fallback. Not
-  ported (each a subsystem of its own, like `CHECKPTS`): `HSMDODRIFTS` 0x77fc80 → 0xfdc148 (0x1340 B),
-  `DOSMSHNGRB` 0x77e150 → 0xfda9c8 (0x1258 B), `HSMSHAKEDOWN` 0x77e100 → 0xfda9a4, `CHKPNTSONLIN` 0x77b470 →
+  ported (each a subsystem of its own, like `CHECKPTS`; `HSMDODRIFTS` 0x77fc80 → 0xfdc148 and `DOSMSHNGRB`
+  0x77e150 → 0xfda9c8 were ported 2026-11-18, see "Drift scoring" / "Smash-and-Grab scoring"): `HSMSHAKEDOWN` 0x77e100 → 0xfda9a4, `CHKPNTSONLIN` 0x77b470 →
   0xfd94c4 (update 0x75f4e0, 1759 B), `DOONEVTSTRT` 0x77f730 → 0xfdb478 (update 0x75fbd0, 2904 B), `TELEPORTTOME`
   0x77f1c0 → 0xfdb0f4 (update 0x752ba0, 1722 B), `PICKNEXTFDE` 0x77d1e0 → 0xfda268 (the playlist runner GMM+0x14:
   `FUN_00705880`, `FUN_006e98a0`, `FUN_006e3190`).
@@ -4255,6 +4255,100 @@ per lap == 0) and activation of the next. Finished when the counter reaches coun
   reroute condition, the clock) and outcomes (`CheckpointProgress`, `Request::Checkpoint`). The wrong-way machine
   stays with the distance manager (runtime). The free-drive machine runs a `CHECKPTS` too; with no route it exits
   at once.
+
+### Drift scoring (2026-11-18, `HSMDODRIFTS`, `natives/drifts.rs`)
+
+"HSMDoDriftScoring" (factory 0x77fc80, vtable 0xfdc148, 0x1340 B) under "Drift Game Mode" 2173011 ("Drift Game
+Flow" 2173049). The `GameMode` record 2173009 is named only by `GameLogicConfig` field `05e2f917`; no event in the
+data uses it. Read from `text.asm` and the dump; `GLC` = `GameLogicConfig`, values from `GLOBALCONFIG.BNDL`.
+
+- **Enter** (0x75b2f0): drift +0x1304 = 0, combo timer +0x1308 = −1, best distance to the finish +0x130c =
+  FLT_MAX, shown / banked / last combo / gates / gate score 0, flags +0x1330..+0x1333 = 0,0,0,1, +0x1334 word 0,
+  phase +0x1300 = 0, gate count +0x12b0 = 0; medals +0x131c / +0x1320 / +0x1324 = `FUN_006f1900`(GMM, event, 0 /
+  1 / 2); `FUN_00658ad0`(nitrous, slot, 100) fills the tank; `FUN_00756d60` registers the root `DriftScoring`.
+- **Enter update** (`FUN_0074c370`): phase 0 loads GeneSys 2173069 (type 0x11, 163 `Gameplay.DriftMarker`: id
+  +0xc, apex points +0x10 / +0x14, trigger +0x18); 1 waits while the loader state +0x12c4 is 2 / 3, then loads
+  `DriftApexMarker_Scenery?ID=2211029` (+0x12f0) and `…_Damaged_Scenery?ID=2211033` (+0x12f8); 3 waits again; 4
+  takes every marker (list order) whose id is in the event's list (+0x54, count +0xd2) as a gate (0x70 B at +0x50:
+  two prop slots, the record +0x60, icon +0x64 = `FUN_00793350`(`MapPoiConfig` +0x24 = 2211026, apex 0, 0, 0,
+  index), used +0x68, countdown +0x6c = −1) and stands a normal prop on each apex point (`FUN_00743940`: upright,
+  facing the point's local Z). `ScoringActive` = phase 4.
+- **Update** (0x75e7e0, always returns 0): with the game clock running, GMM+0x2e74 and the trigger manager's
+  +0x84e0: frame flags cleared (+0x1331, +0x1334/5); with the local car alive, not wrecked, in the simulation:
+  +0x130c = min(+0x130c, DTF+0xdf0[slot]), then `FUN_0074c960` (a gate's countdown ≥ 0 runs down; below 0 on an
+  open gate = clean pass), `FUN_00756990` (each contact of the car, world +0x5df4c / +0x5df5c entry +100, that is
+  one of a gate's props: `ScoringConfig` +0xb4 (2317085) if the gate is open, the gate fails, +0x1335),
+  `FUN_0075b6a0` (combo), `FUN_0074cbf0` (gate lines and score). Always: +0x1310 = +0x1304 in steps of `GLC`
+  +0x2d4 (10, truncated), +0x1332 = it went up, player +0x418 = +0x1314 (and the word +0x348 for a human, +0x9c 0).
+- **A gate's outcome** (`FUN_0074c6c0`(gate, success), once per gate): +0x1334 = 1, +0x1333 = success, used; a
+  pass adds 1 to +0x1328 and (int) `GLC` +0x230 (50) to +0x132c and sends `DriftGatePassed` (+0xb8, 2317084);
+  both props are replaced by the damaged model at their transform (`FUN_00843e60`, `FUN_00843d30`).
+- **Gate lines** (`FUN_0074cbf0`): per open gate, a line between the apex points raised by 0.7 m (`.bss`
+  0x0117a760, snapshot 1) cast against a box of the car body's +0x40 extents (`FUN_00a102b0`, `FUN_004b1cb0`):
+  crossing while the nitrous record's event-5 ("Drifting") byte is set sets the countdown to 0.5 s
+  (`DAT_00f8a810`), crossing without it fails the gate; not crossing but standing in the gate's trigger
+  (`FUN_00537190`) before any crossing fails it. So a gate passes 0.5 s after the last drifting contact with
+  its line.
+- **Score** (same function, when `FUN_00743bb0` holds: drifting or combo timer > 0, DTF+0xdf0 ≤ +0x130c + 2 m
+  (`DAT_00fd3434`), not wrong way (`FUN_0065dcf0`) and the car within 30 m of the route (`DAT_00fd3438`,
+  `FUN_0065dd60`)): drift += (clamp(body slip, `GLC` +0x238 = 7.5, +0x22c = 45) / 45)^(+0x228 = 1.75) × +0x23c
+  (0.725) × speed × dt × speed^(+0x240 = 0.5); body slip = the vehicle's virtual +0x48 → vehicle +0x2b90 = drift
+  +0xe0 (degrees), speed = |velocity| (`FUN_0083bef0`), `FUN_00ed9e1b` = powf.
+- **Combo** (`FUN_0075b6a0`): when the drifting byte drops, the drift's exit code (vehicle +0x2ac0 = drift
+  +0x10) decides: 1, 2, 3, 11 (collisions) lose it (`FUN_00756b10`: drift and gate score dropped, +0x1331,
+  `ScoringConfig` +0xc0 = 2211045), 5 / 6 start the grace `GLC` +0x234 (0.5 s), any other code banks it at once
+  (`FUN_00756c20`(1): banked += gate score + drift in steps, last combo = that, `ScoringConfig` +0xbc =
+  2211195). While the grace is ≥ 0: a contact byte (vehicle +0x30ed / +0x30ef / +0x30f0) or the player's crashed
+  flag (+0x23f) loses it; the timer runs down and below 0 banks it. Lose and bank only act when the drift in
+  steps or the gate score is above 0.
+- **Exit** (`FUN_0075b460`): bank without the event, every instance of sequence 2211197 stopped, player score,
+  medal (GMM+0x2e74: banked ≥ gold 0, silver 1, bronze 2, else / timer off 3; 3 clears GMM+0x2e78),
+  `FUN_006b9d00`(medal + 1, race clock), banked > 0 and end reason 0 / 1: `FUN_00734f60`(banked, 0, car), root
+  unregistered, props released and icons removed.
+- **Root `DriftScoring`**: `BankedScore` +0x1314, `Drift` +0x1310, `CurrentGateScore` +0x132c, `LastCombo`
+  +0x1318, `DriftJustTickedUp` +0x1332, `JustLostCombo` +0x1331, `WasLastGateASuccess` +0x1333,
+  `GatesSuccessfullyPassed` +0x1328, `HasJustHitGate` +0x1334, `HasJustCrashedIntoGate` +0x1335; getters `Bonus`
+  (0x76b450, (int) `GLC` +0x230), `TargetScore` (0x768890: gold once silver is reached, else silver once bronze
+  is, else bronze), `MedalIndex` (0x768910), `TargetMedalIndex` (0x76a170 → `FUN_00743cb0`: max(medal − 1, 0)),
+  `ScoringActive` (0x765bb0), `DriftMarkerUsed[i]` (0x76b480, i 0-based). The HUD texts also read
+  `DriftScoring.Multiplier`, which is not registered.
+
+### Smash-and-Grab scoring (2026-11-18, `DOSMSHNGRB`, `natives/smash_grab.rs`)
+
+"HSM.DoSmashAndGrabScoring" (factory 0x77e150, vtable 0xfda9c8, 0x1258 B) under "Smash And Grab Mode" 2210003;
+its `GameMode` 2210000 is named only by `SmashAndGrabConfig.GameMode` (no event uses it). Config: `GLC` +0x2b0
+`SmashAndGrabConfig`, four `GrabItem`s {+0xc icon key `b6c42d2d`, +0x10 `ScoringAction`, +0x14 `Score`}:
+plain items (50, 2210071, 2210197), billboards (250, 2210109, 2210198), high-value items (150, 2210110,
+2210197); the fourth is not read.
+
+- **Enter** (`FUN_0075b820`): score +0x1224 and the three maps' counts 0; event (+0x48); time limit +0x11f0 =
+  (i64)(event +0xac[0] × 3e6) and +0x1200 a tenth of it (`TimeToNextClock`, never advanced); medals +0x1210..
+  +0x1218 (`FUN_006f1900`); +0x1254 = 0; `DAT_010c5c08` = −1; worths +0x1248 / +0x124c / +0x1250 = the items'
+  scores; root `SmashScoring` registered (`FUN_007570f0`).
+- **Enter update** (`FUN_007612e0`): phase 0 loads `SmashAndGrabTrigger_1?ID=2210010` (+0x11e8); 1 waits on the
+  loader (+0x11c4 2 / 3), then `FUN_00760b40` sorts the event's triggers (+0x54) by kind (record +0x10) into
+  sorted maps: 0x1f plain items (+0x50, values +0x260), 0x21 high-value items (+0xf88, +0xfe0), billboards '2'
+  'A' 'D' and, with `FUN_00647680`(3), 'J' 'M' (+0xe90, icons +0xee4); each item gets its icon, its trigger on
+  and a prop on the ground under it (`FUN_0075e9a0` / `FUN_0075bae0`: a ±5 m ray, up = the hit normal, forward
+  = the trigger's local Z), each billboard its icon; `FUN_006e41e0` hides every other billboard-kind trigger;
+  message {0x15, 0} (`FUN_0076a950`); 2 waits until every item record's state +0 is 3.
+- **Update** (`FUN_00761450`): +0x1255 = 0; with the clock and GMM+0x2e74: (car alive, not wrecked, in the
+  simulation) `FUN_00760dd0` takes the first contact that is a plain item's prop, then a high-value one's (icon
+  off, trigger off through `DAT_010edb48`, prop released, `FUN_0074cf40`(worth, action), +0x1254 = 0, removed;
+  one per frame), and `FUN_0075ba30` takes `DAT_010c5c08` when it is one of the event's billboards (the
+  collectables' `FUN_006ed330` → `FUN_0073cef0` set it while GMM+0x2e8f) (icon off, +0x1254 = +0x1255 = 1,
+  billboard worth, removed). `FUN_0074cf40` sends the action, gives `DAT_00fa929c` = 10 nitrous and adds the
+  worth. Then, when the race clock reaches the limit or all three maps are empty: place 1 / 2 / 3 by gold /
+  silver / bronze (unsigned compares), else 4 with GMM+0x2e78 cleared; `FUN_006b9d00`(place, clock); exit `WIN`
+  (`DAT_0117ab20`) or `LOSE` (`DAT_0117a6b8`).
+- **Exit update** (`FUN_0075ed20`): phase 0 removes every remaining item (prop, icon, trigger off) and the
+  billboard icons; 1 `FUN_006e4120` (the hidden billboards back) and message 0x15; 2 done. **Exit** (0x73cf00):
+  root unregistered, player +0x418 (+0x348 for a human) = score, score > 0 and end reason 0 / 1:
+  `FUN_00734f60`(score, 0, car); score 0, `DAT_010c5c08` = −1.
+- **Root `SmashScoring`**: `Score`, `LastItemBillboard` +0x1254, `JustHitBillboard` +0x1255, `ItemWorth`,
+  `BillboardWorth`, `HighValueWorth`; getters `TimeToNextClock` / `TimeRemaining` (0x76a1c0 / 0x76a190: +0x1200
+  / +0x11f0 − the race clock, ticks), `CurrentMedalIndex` (0x768980: 1–3, 0 none), `TargetMedalIndex`
+  (0x7689d0), `NextTargetScore` (0x768a10).
 
 ## Cutscenes and sequences (2026-10-09)
 
