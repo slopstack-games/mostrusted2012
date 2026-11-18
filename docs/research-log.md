@@ -11,6 +11,22 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+## 2026-11-18: mw-assets bug hunt, round 2 (code-level defects, no install)
+
+Read mw-assets' own logic (index lookups, curves, grids, empty collections, chains) without the install.
+- **Fixed**: `ui::MapMosaic::build` indexed past its pixel buffer when the `UIMapGrid` lists more `Textures`
+  than `Width × Height` (or `Width` is 0); the area and pixel index were also computed in `u32`, which wraps
+  above 4 G pixels. Tiles outside the grid are now skipped, sizes in `usize`. Test
+  `mosaic_ignores_tiles_outside_the_grid`.
+- New test helper `mw-assets/src/test_store.rs` (cfg(test)): an `AssetStore` over a `MemSource` install of
+  hand-built bnd2 bundles (`bundle`, `texture`), so store-dependent code can be tested without game data.
+- Suspected, not changed: `widgets::ui_lua_chunk` `4 + n` overflows on 32-bit targets (wasm) in debug builds
+  for a length near `u32::MAX`; `BackdropSelector::new` sizes its grid from the zone bounds (a huge or
+  infinite bound allocates without limit); `BackdropSelector::covering` maps a NaN position to cell 0;
+  `MeshBuilder::midpoint` / `finish` assume every vertex attribute is as long as `positions`;
+  `music::sps_index` is a process-wide `OnceLock`, so a second store with another install reuses the first's
+  SPS index; `music::ends_with_end_block` counts a truncated final `E` block as an end.
+
 ## 2026-11-18: bug hunt in mw-handling, mw-ai, mw-police (code-level defects, no install)
 
 **Fixed** (each with a failing test first):

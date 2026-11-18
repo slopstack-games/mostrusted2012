@@ -1696,16 +1696,20 @@ impl MapMosaic {
     pub fn build(store: &AssetStore, grid: MapGrid) -> Self {
         let tile_px = 256u32;
         let (width, height) = (grid.columns * tile_px, grid.rows * tile_px);
-        let mut pixels = vec![0u8; (width * height) as usize];
+        let mut pixels = vec![0u8; width as usize * height as usize];
         for (i, &id) in grid.tiles.iter().enumerate() {
             let (col, row) = (i as u32 % grid.columns.max(1), i as u32 / grid.columns.max(1));
+            // Tiles past `columns × rows` have no place in the mosaic.
+            if col >= grid.columns || row >= grid.rows {
+                continue;
+            }
             let Ok(t) = store.texture(id) else { continue };
             let Some((w, h, rgba)) = t.decode_rgba8(0) else { continue };
             for y in 0..tile_px {
                 for x in 0..tile_px {
                     let (sx, sy) = (x * w / tile_px, y * h / tile_px);
                     let v = rgba[((sy * w + sx) * 4) as usize];
-                    pixels[((row * tile_px + y) * width + col * tile_px + x) as usize] = v;
+                    pixels[(row * tile_px + y) as usize * width as usize + (col * tile_px + x) as usize] = v;
                 }
             }
         }
@@ -1779,6 +1783,21 @@ mod tests {
         // Portrait: width-fitted, `Top` moves top layouts up.
         let f = UiFrame::new([720.0, 1280.0]);
         assert!((f.scale - 0.5625).abs() < 1e-6 && f.top < -700.0 && f.left == 0.0);
+    }
+
+    /// More tiles than `columns × rows` (or a grid without columns) must not index past the mosaic.
+    #[test]
+    fn mosaic_ignores_tiles_outside_the_grid() {
+        use super::{MapGrid, MapMosaic};
+        use crate::test_store::{store, texture};
+        use mw_bundle::ResourceId;
+        let id = ResourceId(0x42);
+        let s = store(&[("MAP.BNDL", vec![texture(id, 1, 1, vec![200, 0, 0, 255])])]);
+        let grid = |columns, rows| MapGrid { origin: [0.0; 2], tile_size: 100.0, columns, rows, tiles: vec![id; 3] };
+        let m = MapMosaic::build(&s, grid(1, 1));
+        assert_eq!((m.width, m.height, m.pixels.len()), (256, 256, 256 * 256));
+        assert_eq!(m.pixels[0], 200);
+        assert!(MapMosaic::build(&s, grid(0, 2)).pixels.is_empty());
     }
 
     #[test]
