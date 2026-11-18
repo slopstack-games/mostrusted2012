@@ -13,6 +13,8 @@ waited on a ground ray the paused sim could not answer, research log "races with
 audio after resets, speech manager (police radio), HUD feedback-message queue, map POIs / event waypoints.
 
 **Open**:
+- **Bug hunt (2026-11-18, branch `claude/bug-hunting-kdkey0`)**: ~45 fixes, verified without the install. Run
+  `mwtool verify` + `game_chunks` (new parser budgets, stricter Lua verifier); suspected items in research-log 2026-11-18.
 - **Runtime inputs not fed**: drift / Smash-and-Grab scoring inputs (no event uses them); online requests (store,
   friends, telemetry, speedwall cache); car select, speech, waypoints logged-only until the agents above land.
 - **Pursuit test with traffic**: busted after 8 s at 0 mph (also on the police branch); passes with the documented
