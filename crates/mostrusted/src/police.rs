@@ -1,24 +1,18 @@
-//! Police: the cops around the player, what they see, how they drive, and the pursuit they start (docs/decomp.md
-//! "Police and pursuits", "How cops drive (2026-10-14)"). The pursuit rules themselves (heat, chase / cooldown /
-//! busted / escaped, the bust meter) are `pursuit.rs`; how a cop drives in a pursuit is `cop_driver.rs`; this
-//! module is the game's cop coordinator (`FUN_00526c30`) and the cops' side of it:
+//! Police: the runtime's side of the original's police and pursuit logic, which is ported engine-free in
+//! `crates/mw-police` (docs/decomp.md "Police and pursuits", "Police and pursuit (ported)"). Every fixed tick
+//! [`police_tick`] fills `mw_police::Police::tick`'s inputs (the player's and the cop cars' states, the road data)
+//! and carries out its decisions:
 //!
-//! - **How many cops, which cars** (`FUN_00526e30`, once a second): one per `CopBehaviours` entry of the heat
-//!   level's main `PursuitBehaviour`, at most 3 new per pass; crashed cops do not count (they are replaced), cops
-//!   beyond the wanted count (farthest first) become surplus.
-//! - **Where** (`FUN_005261d0`): outside a chase anywhere on the ring of the level's spawn distance r (random
-//!   direction, the nearest road within 60 m, at least r away; `FUN_0051b4e0`), patrolling at 20 mph. In a chase
-//!   by the free-roam game mode's weights and the cop type's flags: behind the player or ahead of it (on the road
-//!   between r and √2·r, facing the player, at the type's spawn speed: `FUN_0051ca20`, `FUN_005220b0`), or waiting
-//!   in a side road 100–250 m ahead (`FUN_0051fd10`); a region without cops doubles its weight (`FUN_0051ce70`).
-//! - **Removal** (`FUN_00522c40`, `FUN_00522dc0`, `FUN_00522f40`): only off screen (a 4 m sphere outside the
-//!   view, `FUN_006bf380`), beyond the level's removal distance (surplus cops beyond 100 m, crashed ones beyond
-//!   125 m); when a pursuit ends every cop off screen goes at once and no cops come for 90 s (`FUN_005286d0`).
-//! - **What a cop sees** (`FUN_006c5810`, `FUN_006c6280`) and **wanted** (`FUN_005192b0`): as before.
-//! - **States** (`FUN_005240a0`, `FUN_005255f0`, `FUN_0051a4e0`): while chased every cop drives its behaviour
-//!   (`cop_driver`), near a slow player the low-speed chase and its box-in (`FUN_00520f10`); in the cooldown one
-//!   cop goes to the last-seen point and the others search in legs around the player (`vt_0050dd40`); otherwise
-//!   they patrol.
+//! - **the pursuit manager** (`FUN_0066ae60`: heat, chase / cooldown / busted / escaped, the bust meter) and its
+//!   events, logged; the HUD resource [`PursuitHud`] is filled from its state;
+//! - **the coordinator** (`FUN_00526c30`): cop count and types, spawn kinds, removal (off screen), the 90 s pause,
+//!   roles (chase, GoTo, search, waiting, patrol), search legs: orders become loader requests, [`spawn_cops`]
+//!   places the arrived cars (the spawn point queries are the runtime's own, MODEL), removals despawn;
+//! - **sight** (`FUN_006c5810`) and **wanted** (`FUN_005192b0`), the cop drivers' states and the box-in.
+//!
+//! [`cop_drive`] then carries each cop car's brain out through the AI racers' driver: the chase core's aim, route
+//! and speed, GoTo / search routes, the patrol on a traffic ghost (`cop_patrol.rs`), waiting. Sirens, light bars and
+//! speech are `police_fx`, `police_lightbar`, `police_speech`.
 //!
 //! Model decisions are marked MODEL and listed in decomp.md.
 
@@ -27,32 +21,22 @@ use std::sync::Arc;
 use avian3d::prelude::*;
 use bevy::camera::primitives::{Frustum, Sphere};
 use bevy::prelude::*;
-use mw_assets::police::{CopSlot, HeatLevel, PoliceConfig};
+use mw_assets::police::{HeatLevel, PoliceConfig};
+use mw_police::coordinator::{Role, SEARCH_ARRIVED, SpawnKind};
+use mw_police::pursuit::{PursuitEvent, PursuitMode, PursuitState};
+use mw_police::{CopState, PATROL_SPAWN_MPH, PlayerState, PoliceInput, RoadState, SpawnRequest};
 
 use crate::ai::{AiDriver, AiRoute};
-use crate::cop_driver::{Assigned, CarState, CopConfig, CopDriver, CopInput, DriveState, Probes};
-use crate::cop_patrol::{PatrolDrive, PatrolInput, PatrolMode};
-use crate::cop_sight::{CopNotice, Perception, SightInput, Wanted};
+use crate::cop_driver::{CopConfig, CopInput, Probes, car_state};
+use crate::cop_patrol::{Lanes, PatrolDrive, PatrolInput, PatrolMode};
 use crate::drive::{Car, CarBuild, CarInput, CarParts, ExternalControls, Player};
 use crate::loader::{CarRequest, CarSpec, LoaderRequests};
-use crate::pursuit::{CopView, Pursuit, PursuitInput, PursuitState};
 
 /// Cop cars are requested from the loader as opponents with slots from here up (`main.rs` hands them back).
 pub const SLOT_BASE: usize = 1000;
 
 const MPH: f32 = 0.44704;
 
-/// `.rdata` 0x00fa9f50 / 0x00fa9f54: the lateral slot of a chasing cop (m): the first cop of a positioning −1, 0
-/// or 1 to one side, the others to the other side; other positionings none (`FUN_00518cf0`).
-const SLOT_LATERAL: f32 = 3.5;
-/// `.rdata` 0x00fa2cc0: seconds without new cops after a pursuit has ended (`FUN_005286d0`).
-const SPAWN_BLOCK: f32 = 90.0;
-/// The coordinator checks the cop count once a second and spawns at most 3 cops per pass (`FUN_00528b40`,
-/// `FUN_00526e30`).
-const COORDINATOR_PERIOD: f32 = 1.0;
-const SPAWNS_PER_PASS: usize = 3;
-/// `.data` 0x01106228 (20 mph): a free-roam (patrol) cop's spawn speed (`FUN_00522590`).
-const PATROL_SPAWN_MPH: f32 = 20.0;
 /// The generic spawn: up to 10 tries, the nearest road within 60 m of the ring point, no other car closer than
 /// 200 m (`FUN_0051b4e0`; 0x010c44cc = 40000).
 const GENERIC_TRIES: usize = 10;
@@ -65,22 +49,6 @@ const SIDE_ROAD_MAX: f32 = 250.0;
 const SIDE_ROAD_DEPTH: f32 = 20.0;
 /// The view test of removal: a sphere of 4 m (0x40800000) against the camera frustum (`FUN_006bf380`).
 const VIEW_SPHERE: f32 = 4.0;
-/// `FUN_0051ce70`: regions of the spawn rebalancing: ahead / side / behind by the cosine 0.707 to the player's
-/// forward, cops within 20 m not counted.
-const REGION_COS: f32 = 0.707;
-const REGION_NEAR: f32 = 20.0;
-/// A cop in the cooldown's search: legs in five 72° sectors (0x010c44c4), each 20 m (0x00fa9a0c) wider than the
-/// last, around the player's position; a leg ends at its point (within 20 m), or after 3 s without moving
-/// (`FUN_004f7af0`, `FUN_0051a000`, `vt_0050dd40`).
-const SEARCH_SECTORS: usize = 5;
-const SEARCH_STEP: f32 = 20.0;
-const SEARCH_ARRIVED: f32 = 20.0;
-const SEARCH_STUCK: f32 = 3.0;
-/// `FUN_005255f0`: patrolling cops join the search during the first 7 s of a cooldown (`FUN_00658160`).
-const COOLDOWN_JOIN: f32 = 7.0;
-/// WaitingInterceptor (state 0x11, `FUN_004fbff0`): a waiting cop leaves when the player closes within 50 m
-/// (`DAT_010c4330` = 2500) or moves away from it.
-const WAIT_RELEASE: f32 = 50.0;
 /// `FUN_005005a0`: 10 mph while a cop turns round (its path ahead lies behind it) below 40 mph.
 const TURN_ROUND_MPH: f32 = 10.0;
 const TURN_ROUND_BELOW_MPH: f32 = 40.0;
@@ -88,8 +56,6 @@ const TURN_ROUND_BELOW_MPH: f32 = 40.0;
 const NITROUS_LEAD: [f32; 2] = [-5.0, 15.0];
 const NITROUS_RANGE: f32 = 20.0;
 const NITROUS_GAP: f32 = 2.7;
-/// The box-in (`FUN_00520f10`): one second after a cop blocks, the low-speed cops creep in.
-const BOX_IN_TIME: f32 = 1.0;
 /// The road path is planned again when the target's point 0.5 s ahead is more than 10 m (0x00fa929c) off it
 /// (`FUN_00508fd0`).
 const REPLAN_DISTANCE: f32 = 10.0;
@@ -99,8 +65,6 @@ const LINE_HEIGHT: f32 = 0.8;
 /// The busted sequence 1014946 and the escaped sequence 1394359 last 13 s (HSM 457517 "Do Pursuits"; the busted
 /// one disables the car's controls).
 const OUTCOME_SECONDS: f32 = 13.0;
-/// `FUN_005240a0`: the low-speed chase only within 3.5 m of height.
-const LOW_SPEED_HEIGHT: f32 = 3.5;
 
 mod start_test;
 
@@ -118,15 +82,17 @@ impl Plugin for PolicePlugin {
         if !self.enabled {
             return;
         }
+        // The police run in the fixed step on the ported crate (`mw_police::Police::tick`: sight, pursuit manager,
+        // coordinator, roles); `cop_drive` carries the cop cars out.
         app.add_systems(Startup, load_police)
-            .add_systems(Update, (coordinate, spawn_cops, log_police).chain())
-            .add_systems(FixedUpdate, (cop_brains, pursuit_tick).chain().before(crate::ai::ai_drive));
+            .add_systems(Update, (spawn_cops, log_police).chain())
+            .add_systems(FixedUpdate, (police_tick, cop_drive).chain().before(crate::ai::ai_drive));
         if self.test {
-            app.insert_resource(PursuitTest::default()).add_systems(Update, run_pursuit_test.before(coordinate));
+            app.insert_resource(PursuitTest::default()).add_systems(Update, run_pursuit_test.before(spawn_cops));
         }
         if self.start_test {
             app.insert_resource(start_test::StartTest::default())
-                .add_systems(Update, start_test::run_start_test.before(coordinate));
+                .add_systems(Update, start_test::run_start_test.before(spawn_cops));
         }
     }
 }
@@ -166,39 +132,24 @@ pub enum CopMode {
     Waiting,
 }
 
-/// A search leg (`vt_0050dd40`).
-#[derive(Debug, Clone, Copy, Default)]
-struct Leg {
-    target: Vec3,
-    sector: usize,
-    still: f32,
-}
-
-/// A cop car.
+/// A cop car's entity side: what the runtime keeps to carry the brain's decisions out (the brain itself, the
+/// driver state, perception, role and search leg, is `mw_police::Cop`, found by `slot` in the resource).
 #[derive(Component, Debug)]
 pub struct Cop {
     slot: usize,
     cop_type: u32,
+    /// The brain's role as a mode (mirrored after every police tick).
     mode: CopMode,
-    /// What the cop notices of the player (`cop_sight`).
-    sight: Perception,
+    /// The role changed in the last police tick (the drive restarts its route).
+    changed: bool,
     /// The Patrolling state's mode and ghost (`cop_patrol`).
     patrol: PatrolMode,
-    /// The `CopBehaviours` entry's speed limit (mph, driver +0x5860) and the lateral slot (record +0x14).
-    speed_mph: f32,
-    lateral: f32,
-    driver: CopDriver,
-    /// The behaviour still wants this cop (record +0x24); surplus cops are removed at 100 m.
-    wanted: bool,
     route_timer: f32,
-    mode_time: f32,
     /// The current road path aims at this point (`FUN_00508fd0`: re-planned when the target leaves it).
     planned: Option<Vec3>,
     direct: bool,
     /// The chase core's stop flags of the last tick (`cop_driver::CopOutput::blocked`).
     blocked: u8,
-    search_radius: f32,
-    leg: Leg,
     crashed: bool,
     /// The cop and the player's car touched last tick (for SLAM and rams).
     touching: bool,
@@ -259,92 +210,67 @@ impl Cop {
 
 /// A cop car on order or on the road.
 struct Order {
-    slot: usize,
-    entry: CopSlot,
-    lateral: f32,
+    req: SpawnRequest,
     entity: Option<Entity>,
-    /// Seconds since the order (a car that never arrives is given up).
-    age: f32,
 }
 
-/// Where a new cop comes from (`FUN_005261d0`).
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum SpawnKind {
-    /// Outside a chase: on the ring, patrolling (`FUN_005227a0`).
-    Generic,
-    /// Ahead of the player, oncoming (mode 1).
-    Ahead,
-    /// Ahead on the player's route, facing the same way (mode 0x10).
-    AheadAlong,
-    /// Behind the player (mode 2).
-    Behind,
-    /// Waiting in a side road (mode 8, WaitingInterceptor).
-    Side,
-}
-
+/// The runtime's side of the police: the ported crate's state (`core`, reached by `Deref`: `police.pursuit`,
+/// `police.wanted`, ...), the data it runs on and what is needed to carry its decisions out.
 #[derive(Resource, Default)]
 pub struct Police {
+    core: mw_police::Police,
     cfg: Option<PoliceConfig>,
-    cop_cfg: CopConfig,
     graph: Option<Arc<mw_formats::AiData>>,
-    pub pursuit: Pursuit,
+    /// The cop cars ordered from the loader (the crate's `SpawnRequest::id` is the slot).
     orders: Vec<Order>,
     arrived: Vec<(usize, Box<CarSpec>, CarParts)>,
-    next_slot: usize,
-    coordinator_timer: f32,
-    /// No new cops for this long (after a pursuit).
-    spawn_block: f32,
-    /// The last pass saw a chase or cooldown (`FUN_005286d0` +0x1f0).
-    was_pursuit: bool,
     /// Seconds the outcome has stood.
     outcome: f32,
-    /// A cop was taken down since the last pursuit tick; heat owed (takedowns, SLAM, traffic hits).
-    taken_down: bool,
-    /// The coordinator's wanted test (`FUN_005192b0`).
-    pub wanted: Wanted,
-    owed_heat: f32,
-    /// The box-in timer (coordinator +0x720).
-    box_in: f32,
     /// Seconds without throttle or brake from the player (cop state +0x90).
     idle_input: f32,
     /// `--test pursuit`: the player counts as wanted; cops are placed this close; no new cops.
     force_wanted: bool,
-    spawn_distance_override: Option<f32>,
-    hold_spawns: bool,
     /// `--test cops`: patrolling cops stand still where the test puts them.
     test_hold: bool,
-    rng: u64,
     /// Totals for the test.
     spawned: u32,
     removed: u32,
     slams: u32,
+    chases: u32,
+    busts: u32,
+    escapes: u32,
     /// Spawn distances and kinds, for the test.
     spawn_log: Vec<(SpawnKind, f32)>,
 }
 
+impl std::ops::Deref for Police {
+    type Target = mw_police::Police;
+    fn deref(&self) -> &Self::Target {
+        &self.core
+    }
+}
+
+impl std::ops::DerefMut for Police {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.core
+    }
+}
+
 impl Police {
-    /// A uniform float in [0, 1) (the game's LCG, `FUN_005dfe90`).
-    fn random(&mut self) -> f32 {
-        self.rng = self.rng.wrapping_mul(0x5851_f42d_4c95_7f2d).wrapping_add(1);
-        ((self.rng >> 40) as f32) / (1u64 << 24) as f32
-    }
-
-    fn level(&self) -> Option<&HeatLevel> {
-        self.pursuit.level(self.cfg.as_ref()?)
-    }
-
     /// The player's current heat level row (`FUN_006bdc00`), for other systems (`race.rs`).
     pub fn heat_level(&self) -> Option<&HeatLevel> {
-        self.level()
+        self.core.pursuit.level(self.cfg.as_ref()?)
     }
+}
 
-    /// Index into the heat level's distance triples: no pursuit, chase, cooldown (`FUN_00513e80`).
-    fn phase(&self) -> usize {
-        match self.pursuit.state {
-            PursuitState::Chase => 1,
-            PursuitState::Cooldown => 2,
-            _ => 0,
-        }
+/// The cop's mode for a role.
+fn mode_of(role: &Role) -> CopMode {
+    match role {
+        Role::Patrol => CopMode::Patrol,
+        Role::Chase => CopMode::Chase,
+        Role::GoTo { .. } => CopMode::GoTo,
+        Role::Search => CopMode::Search,
+        Role::Waiting => CopMode::Waiting,
     }
 }
 
@@ -408,152 +334,22 @@ fn load_police(game: Res<crate::Game>, mut police: ResMut<Police>) {
         Ok(g) => police.graph = Some(Arc::new(g)),
         Err(e) => warn!("police: no road graph ({e}); no police"),
     }
-    police.cop_cfg = load_cop_config(&game.store);
+    police.core.cop_cfg = load_cop_config(&game.store);
     // `MW_PURSUIT_DEMO=1`: the player counts as wanted and cops are placed close by (for screenshots of the HUD).
     if std::env::var("MW_PURSUIT_DEMO").is_ok() {
         police.force_wanted = true;
-        police.spawn_distance_override = Some(TEST_SPAWN_DISTANCE);
+        police.core.spawn_distance_override = Some(TEST_SPAWN_DISTANCE);
     }
     // `MW_COP_DISTANCE=<m>`: free-roam cops are placed this far away (to watch them patrol).
     if let Some(d) = std::env::var("MW_COP_DISTANCE").ok().and_then(|v| v.parse::<f32>().ok()) {
-        police.spawn_distance_override = Some(d);
+        police.core.spawn_distance_override = Some(d);
     }
-    police.pursuit.radar = 1.0;
-    police.rng = 0x2545_f491_4f6c_dd1d;
+    police.core = mw_police::Police::new(0x2545_f491_4f6c_dd1d);
 }
 
 /// A cop is on screen when a 4 m sphere around it meets the camera's frustum (`FUN_006bf380`).
 fn on_screen(frustum: Option<&Frustum>, p: Vec3) -> bool {
     frustum.is_some_and(|f| f.intersects_sphere(&Sphere { center: p.into(), radius: VIEW_SPHERE }, true))
-}
-
-/// The coordinator's once-a-second pass (`FUN_00528b40` → `FUN_00526e30`): drop the cops it no longer keeps,
-/// order the ones the heat level's behaviour lacks.
-#[allow(clippy::type_complexity)]
-fn coordinate(
-    mut commands: Commands,
-    time: Res<Time>,
-    mut police: ResMut<Police>,
-    requests: Option<Res<LoaderRequests>>,
-    player: Query<&Transform, (With<Player>, With<Car>)>,
-    mut cops: Query<(Entity, &Transform, &mut Cop, Has<crate::car_impacts::AiCrash>), Without<Player>>,
-    frustum: Query<&Frustum, crate::MainCamera>,
-) {
-    let police = &mut *police;
-    let dt = time.delta_secs();
-    if police.spawn_block > 0.0 {
-        police.spawn_block -= dt;
-    }
-    police.coordinator_timer -= dt;
-    for o in &mut police.orders {
-        o.age += dt;
-    }
-    if police.coordinator_timer > 0.0 {
-        return;
-    }
-    police.coordinator_timer = COORDINATOR_PERIOD;
-    let (Some(cfg), Some(requests)) = (police.cfg.as_ref(), requests) else { return };
-    let Ok(player) = player.single() else { return };
-    let Some(level) = police.pursuit.level(cfg).cloned() else { return };
-    let phase = police.phase();
-    let frustum = frustum.iter().next();
-    let pursuit = police.pursuit.in_chase_or_cooldown();
-    let flat = |p: Vec3| Vec2::new(p.x - player.translation.x, p.z - player.translation.z).length();
-
-    // The behaviour's wanted cops per type, nearest first; the rest are surplus (`FUN_00526e30`).
-    let behaviour = &level.main;
-    let mut by_distance: Vec<(f32, Entity, u32)> = cops
-        .iter()
-        .filter(|c| !c.3)
-        .map(|(e, t, cop, _)| (t.translation.distance(player.translation), e, cop.cop_type))
-        .collect();
-    by_distance.sort_by(|a, b| a.0.total_cmp(&b.0));
-    let mut kept: std::collections::HashMap<u32, usize> = Default::default();
-    for (_, e, ty) in &by_distance {
-        let want = behaviour.cops.iter().filter(|c| c.cop_type == *ty).count();
-        let n = kept.entry(*ty).or_default();
-        if let Ok((_, _, mut cop, _)) = cops.get_mut(*e) {
-            cop.wanted = *n < want;
-        }
-        *n += 1;
-    }
-
-    // Removal, only while off screen: a crashed cop beyond 125 m (`FUN_00522f40`); in a chase beyond the chase
-    // removal distance, a surplus cop beyond 100 m (`FUN_00522c40`); otherwise beyond the free / cooldown removal
-    // distance (`FUN_00522dc0`). The first pass after a pursuit removes every cop off screen (`FUN_005286d0`).
-    let ended = police.was_pursuit && !pursuit;
-    police.was_pursuit = pursuit;
-    if ended {
-        police.spawn_block = SPAWN_BLOCK;
-    }
-    for (e, t, cop, crashed) in &cops {
-        if on_screen(frustum, t.translation) {
-            continue;
-        }
-        let d = flat(t.translation);
-        let limit = if crashed {
-            level.crashed_remove_distance
-        } else if phase == 1 && !cop.wanted {
-            level.surplus_remove_distance
-        } else {
-            level.remove_distance[phase]
-        };
-        let far = if crashed { t.translation.distance(player.translation) >= limit } else { d > limit };
-        if far || ended {
-            info!("police: cop {} removed {d:.0} m away off screen (limit {limit:.0} m, crashed {crashed})", cop.slot);
-            commands.entity(e).despawn();
-            police.orders.retain(|o| o.slot != cop.slot);
-            police.removed += 1;
-        }
-    }
-    // A car that never came (60 s) is forgotten.
-    police.orders.retain(|o| o.entity.is_some() || o.age < 60.0);
-
-    if !behaviour.spawn_allowed || police.spawn_block > 0.0 || police.hold_spawns {
-        return;
-    }
-    // Crashed cops do not count: they are replaced (`FUN_00526e30` counts living, uncrashed cops and spawns).
-    let crashed_slots: Vec<usize> = cops.iter().filter(|c| c.3).map(|c| c.2.slot).collect();
-    let mut new = 0;
-    for (i, entry) in behaviour.cops.iter().enumerate() {
-        let wanted = behaviour.cops.iter().filter(|c| c.cop_type == entry.cop_type).count();
-        let have = police
-            .orders
-            .iter()
-            .filter(|o| o.entry.cop_type == entry.cop_type && !crashed_slots.contains(&o.slot))
-            .count();
-        if have >= wanted || new >= SPAWNS_PER_PASS {
-            continue;
-        }
-        let Some(&vehicle) = cfg.cop_vehicles.get(&entry.cop_type) else {
-            warn!("police: cop type {} has no car", entry.cop_type);
-            continue;
-        };
-        // The first cop of a positioning −1 … 1 to one side, the others to the other (`FUN_00518cf0`).
-        let lateral = if (-1..=1).contains(&entry.positioning) {
-            let first = !behaviour.cops[..i].iter().any(|c| c.positioning == entry.positioning);
-            if first { SLOT_LATERAL } else { -SLOT_LATERAL }
-        } else {
-            0.0
-        };
-        let slot = police.next_slot;
-        police.next_slot += 1;
-        let req = CarRequest {
-            bundle: format!("VEHICLES/VEH_{vehicle}_HI.BNDL"),
-            paint_index: 0,
-            traffic: None,
-            opponent: Some(SLOT_BASE + slot),
-        };
-        if requests.0.send(req).is_err() {
-            warn!("police: the loader thread has stopped");
-            return;
-        }
-        info!("police: cop {slot} ordered (type {}, VEH_{vehicle})", entry.cop_type);
-        police.orders.push(Order { slot, entry: *entry, lateral, entity: None, age: 0.0 });
-        new += 1;
-    }
-    // Crashed cops' orders no longer hold a place (their cars stay until removed).
-    police.orders.retain(|o| !crashed_slots.contains(&o.slot));
 }
 
 /// Walk the road graph from the node nearest `from` along `dir` (the way the game's route walkers pick the best
@@ -581,7 +377,7 @@ fn walk(graph: &mw_formats::AiData, from: Vec3, dir: Vec2, mut visit: impl FnMut
 /// `FUN_0051c610`, `FUN_0051fd10`, `FUN_0051b4e0`).
 #[allow(clippy::too_many_arguments)]
 fn spawn_point(
-    police: &mut Police,
+    police: &mut mw_police::Police,
     graph: &mw_formats::AiData,
     kind: SpawnKind,
     player: &Transform,
@@ -676,7 +472,7 @@ fn spawn_point(
             }
             Some((drop(p)?, heading, spawn_speed))
         }
-        SpawnKind::Side => {
+        SpawnKind::Side | SpawnKind::Wait => {
             // `FUN_0051fd10`: a junction 100–250 m along the route; 20 m down a branch off it, facing along the
             // walk no more than 120° from the player's forward, at least 100 m away and out of the player's sight.
             let mut route = Vec::new();
@@ -730,58 +526,8 @@ fn spawn_point(
     }
 }
 
-/// Choose the spawn kind (`FUN_005261d0`): outside a chase the generic one; in a chase by the game mode's weights
-/// gated by the cop type's flags, a region without cops counting double (`FUN_0051ce70`).
-fn spawn_kind(police: &mut Police, cop_type: u32, player: &Transform, cops: &[Vec3]) -> SpawnKind {
-    let Some(cfg) = police.cfg.as_ref() else { return SpawnKind::Generic };
-    if police.pursuit.state != PursuitState::Chase {
-        return SpawnKind::Generic;
-    }
-    let flags = cfg.cop_flags.get(&cop_type).copied().unwrap_or_default();
-    let [w_side, w_ahead, w_behind, w_wait] = cfg.spawn_weights;
-    let fwd = player.rotation * Vec3::Z;
-    let (mut ahead, mut side, mut behind) = (0, 0, 0);
-    for c in cops {
-        let to = *c - player.translation;
-        let d = to.length();
-        if d <= REGION_NEAR {
-            continue;
-        }
-        let cos = (to / d).dot(fwd);
-        if cos > REGION_COS {
-            ahead += 1;
-        } else if cos >= -REGION_COS {
-            side += 1;
-        } else {
-            behind += 1;
-        }
-    }
-    let x2 = |n: i32| if n == 0 { 2.0 } else { 1.0 };
-    let side_w = if flags.side { w_side * x2(side) } else { 0.0 };
-    let wait_w = if flags.wait { w_wait * x2(side) } else { 0.0 };
-    let ahead_w = if flags.ahead || flags.ahead_along { w_ahead * x2(ahead) } else { 0.0 };
-    let behind_w = if flags.behind { w_behind * x2(behind) } else { 0.0 };
-    let total = side_w + wait_w + ahead_w + behind_w;
-    if total <= 0.0 {
-        return SpawnKind::Generic;
-    }
-    let mut r = police.random() * total;
-    for (w, kind) in [
-        (side_w, SpawnKind::Side),
-        // MODEL: the waiting spawn (`FUN_00522830`, weight 0 in free roam) is not ported; it falls to a side road.
-        (wait_w, SpawnKind::Side),
-        (ahead_w, if flags.ahead_along { SpawnKind::AheadAlong } else { SpawnKind::Ahead }),
-        (behind_w, SpawnKind::Behind),
-    ] {
-        if r < w {
-            return kind;
-        }
-        r -= w;
-    }
-    SpawnKind::Behind
-}
-
-/// Place the cop cars that have arrived from the loader.
+/// Place the cop cars that have arrived from the loader, where the crate's order says (kind, ring distance,
+/// speed, lateral slot); the placement itself (the game's spawn point queries) is the runtime's.
 #[allow(clippy::type_complexity)]
 fn spawn_cops(
     mut commands: Commands,
@@ -800,29 +546,30 @@ fn spawn_cops(
     if police.arrived.is_empty() {
         return;
     }
-    let (Some(cfg), Some(graph)) = (police.cfg.clone(), police.graph.clone()) else { return };
+    let Some(graph) = police.graph.clone() else { return };
     let Ok((player_entity, player, player_velocity)) = player.single() else { return };
-    let Some(level) = police.pursuit.level(&cfg).cloned() else { return };
-    let distance = police.spawn_distance_override.unwrap_or(level.spawn_distance[police.phase()]);
+    let test_distance = police.core.spawn_distance_override.is_some();
     let mut taken: Vec<Vec3> = cops.iter().map(|t| t.translation).collect();
     let mut waiting = Vec::new();
     for (slot, spec, parts) in std::mem::take(&mut police.arrived) {
-        let Some(order) = police.orders.iter().position(|o| o.slot == slot) else { continue };
-        let entry = police.orders[order].entry;
-        // `AIPlayerType.SpawnSpeed` (mph; `FUN_005220b0`).
-        let spawn_speed = cfg.cop_spawn_speed.get(&entry.cop_type).copied().unwrap_or(0.0).max(0.0) * MPH;
-        let mut kind = spawn_kind(police, entry.cop_type, player, &taken);
+        let Some(order) = police.orders.iter().position(|o| o.req.id as usize == slot) else { continue };
+        let req = police.orders[order].req;
+        let entry = req.slot;
+        let distance = req.distance;
+        let spawn_speed = req.speed_mph.max(0.0) * MPH;
+        let mut kind = req.kind;
         // `--test pursuit` places its cops close: behind the car, not on the road ahead of it (a cop ahead rams
         // it head-on, the car drops below the bust speed and the escape run ends busted).
-        if police.force_wanted && police.spawn_distance_override.is_some() && kind == SpawnKind::Generic {
+        if police.force_wanted && test_distance && kind == SpawnKind::Generic {
             kind = SpawnKind::Behind;
         }
         let lanes = traffic.as_deref();
-        let mut found = spawn_point(police, &graph, kind, player, distance, spawn_speed, &taken, &spatial, lanes);
-        if found.is_none() && police.spawn_distance_override.is_some() {
+        let mut found =
+            spawn_point(&mut police.core, &graph, kind, player, distance, spawn_speed, &taken, &spatial, lanes);
+        if found.is_none() && test_distance {
             // The test places cops close by, anywhere on the ring.
             kind = SpawnKind::Generic;
-            found = spawn_point(police, &graph, kind, player, distance, spawn_speed, &taken, &spatial, lanes);
+            found = spawn_point(&mut police.core, &graph, kind, player, distance, spawn_speed, &taken, &spatial, lanes);
         }
         let Some((start, heading, mut speed)) = found else {
             debug!("police: no {kind:?} spawn point yet for cop {slot}");
@@ -830,7 +577,7 @@ fn spawn_cops(
             continue;
         };
         taken.push(start);
-        if police.spawn_distance_override.is_some() {
+        if test_distance {
             // The test places cops close by: no faster than the player.
             speed = speed.min(player_velocity.0.length());
         }
@@ -855,6 +602,7 @@ fn spawn_cops(
         let Some(route) = crate::ai::route_from_ai_graph(&graph, start, heading, 2000.0) else {
             warn!("police: no road at {start:.0?} for cop {slot}");
             commands.entity(car).despawn();
+            police.core.cancel_order(req.id);
             police.orders.remove(order);
             continue;
         };
@@ -863,9 +611,9 @@ fn spawn_cops(
         driver.keep_wrecked = true;
         // Free-roam spawns patrol (command 12 = the cop type's default, `FUN_006b8a40`); pursuit spawns are
         // handed their behaviour by the coordinator; side-road ones wait (command 16).
-        let mode = match kind {
+        let mode = match req.kind {
             SpawnKind::Generic => CopMode::Patrol,
-            SpawnKind::Side => CopMode::Waiting,
+            SpawnKind::Side | SpawnKind::Wait => CopMode::Waiting,
             _ => CopMode::Chase,
         };
         commands.entity(car).insert((
@@ -883,19 +631,12 @@ fn spawn_cops(
                 slot,
                 cop_type: entry.cop_type,
                 mode,
-                sight: Perception::default(),
+                changed: true,
                 patrol: PatrolMode::default(),
-                speed_mph: entry.speed_mph,
-                lateral: police.orders[order].lateral,
-                driver: CopDriver::new(Assigned::from_behaviour(entry.behaviour)),
-                wanted: true,
                 route_timer: 0.0,
-                mode_time: 0.0,
                 planned: None,
                 direct: false,
                 blocked: 0,
-                search_radius: 0.0,
-                leg: Leg::default(),
                 crashed: false,
                 touching: false,
             },
@@ -951,16 +692,252 @@ fn set_route(driver: &mut AiDriver, route: AiRoute) {
     driver.corner_speeds = None;
 }
 
-/// Every fixed tick, before the AI drivers: what each cop sees, what it does about it, where it drives and how
-/// fast.
+/// Every fixed tick, before the AI drivers: the ported police (`mw_police::Police::tick`: perception, wanted, the
+/// pursuit manager `FUN_0066ae60`, the coordinator, roles) get the player's and the cops' states and the road
+/// data, and their decisions are carried out: cops ordered from the loader or removed, roles handed to the cop
+/// cars, search legs snapped to the road graph, the pursuit's events logged, the outcome played.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
-fn cop_brains(
+fn police_tick(
     mut commands: Commands,
     time: Res<Time>,
     mut police: ResMut<Police>,
-    input: Res<CarInput>,
+    mut hud: ResMut<PursuitHud>,
+    mut input: ResMut<CarInput>,
+    requests: Option<Res<LoaderRequests>>,
     spatial: SpatialQuery,
     player: Query<(Entity, &Transform, &LinearVelocity, &Car), With<Player>>,
+    mut cops: Query<
+        (Entity, &Transform, &LinearVelocity, &Car, &mut Cop, Has<crate::car_impacts::AiCrash>),
+        Without<Player>,
+    >,
+    mut traffic: Option<ResMut<crate::traffic::TrafficSystem>>,
+    frustum: Query<&Frustum, crate::MainCamera>,
+) {
+    let dt = time.delta_secs();
+    let police = &mut *police;
+    let (Some(cfg), Some(graph)) = (police.cfg.as_ref(), police.graph.clone()) else { return };
+    let Ok((player_entity, pt, pv, pcar)) = player.single() else { return };
+    let player_pos = pt.translation;
+    let fwd = pt.rotation * Vec3::Z;
+    let pursued = police.core.pursuit.in_chase_or_cooldown();
+    let world = SpatialQueryFilter::default().with_mask(crate::props::GameLayer::World);
+    police.idle_input = if input.throttle > 0.0 || input.brake > 0.0 { 0.0 } else { police.idle_input + dt };
+    let frustum = frustum.iter().next();
+
+    // The other scoring actions' heat (traffic hits, takedowns, SLAM) is posted by the runtime's rules; the
+    // crate adds it (`scoring_heat`).
+    let player_hits = traffic.as_mut().map_or(0, |t| t.take_hits(player_entity));
+    let mut owed = if pursued { cfg.traffic_hit_heat * player_hits as f32 } else { 0.0 };
+    let mut took_down = false;
+    let mut states = Vec::with_capacity(cops.iter().len());
+    for (_, t, v, car, mut cop, crashed) in &mut cops {
+        let d = t.translation.distance(player_pos);
+        // A cop that crashes next to the player was taken down (`FUN_006ccd20` → `FUN_006b8d00`; the cop
+        // type's takedown scoring action adds heat). MODEL: "by the player" = within 30 m of the player's car.
+        if crashed && !cop.crashed && d < 30.0 {
+            took_down = true;
+            owed += cfg.takedown_heat.get(&cop.cop_type).copied().unwrap_or(0.0);
+            info!("police: cop {} taken down", cop.slot);
+        }
+        cop.crashed = crashed;
+        // MODEL: contact = the cop's centre within the player's box grown by the cop's half width. A new contact
+        // adds its closing speed to the cop's ram sum; in a chase every new contact is a "SLAM" (scoring action
+        // 955544, 0.2 heat: the original's heat rose by 0.2 at each cop contact in the capture, the poster was not
+        // traced).
+        let touch = touching(pt, pcar, t, car);
+        let new_touch = touch && !cop.touching;
+        if new_touch && pursued {
+            owed += cfg.slam_heat;
+            police.slams += 1;
+        }
+        cop.touching = touch;
+        let eye = t.translation + Vec3::Y;
+        let line_clear = Dir3::new(player_pos + Vec3::Y - eye)
+            .map_or(true, |dir| spatial.cast_ray(eye, dir, d, true, &world).is_none());
+        // MODEL: GoTo's "arrived" (`FUN_004fbfa0`, not read): within the search leg's arrival distance.
+        let arrived = match police.core.cop(cop.slot as u32).map(|b| b.role) {
+            Some(Role::GoTo { target }) => t.translation.distance(target) < SEARCH_ARRIVED,
+            _ => false,
+        };
+        states.push(CopState {
+            id: cop.slot as u32,
+            cop_type: cop.cop_type,
+            position: t.translation,
+            forward: t.rotation * Vec3::Z,
+            velocity: v.0,
+            crashed,
+            on_screen: on_screen(frustum, t.translation),
+            touching: touch,
+            contact: new_touch.then(|| (pv.0 - v.0).length()),
+            line_clear,
+            arrived,
+        });
+    }
+    let was_wanted = police.core.wanted.reason;
+    let speed_mph = pv.0.dot(fwd) / MPH;
+    let pi = PoliceInput {
+        dt,
+        player: PlayerState {
+            position: player_pos,
+            forward: fwd,
+            velocity: pv.0,
+            speed_mph,
+            crashed: input.crashed,
+            // Not wired: our crash rules have no AI wrecker (`crash.rs`).
+            wrecked_by_ai: false,
+            traffic_hits: player_hits,
+            took_down_cop: took_down,
+            // Not wired: the runtime has no roadblocks yet (`RoadState::roadblocks` is empty).
+            touches_roadblock: false,
+            idle_input: police.idle_input,
+            fast_cooldown: false,
+        },
+        cops: &states,
+        road: RoadState::default(),
+        mode: PursuitMode::default(),
+        scoring_heat: if pursued { owed } else { 0.0 },
+        force_wanted: police.force_wanted,
+    };
+    let out = police.core.tick(cfg, &pi);
+    if police.core.wanted.reason != was_wanted && police.core.wanted.reason.is_some() {
+        info!(
+            "police: the player is wanted: {:?} ({:.0} mph, {player_hits} traffic hits)",
+            police.core.wanted.reason,
+            speed_mph.abs()
+        );
+    }
+    let p = &police.core.pursuit;
+    for e in &out.events {
+        match e {
+            PursuitEvent::Started => police.chases += 1,
+            PursuitEvent::Busted => police.busts += 1,
+            PursuitEvent::Escaped => police.escapes += 1,
+            _ => {}
+        }
+        info!(
+            "police: {e:?} (heat {:.2}, level {}, {} cops chasing, {:.0} s chased)",
+            p.heat,
+            p.level_number(cfg),
+            p.cops_chasing,
+            p.chase_time
+        );
+    }
+
+    // Removals (`FUN_00522c40` …): the cars go.
+    for id in &out.removals {
+        if let Some((e, _, _, _, cop, crashed)) = cops.iter().find(|c| c.4.slot == *id as usize) {
+            info!("police: cop {} removed (crashed {crashed})", cop.slot);
+            commands.entity(e).despawn();
+            police.removed += 1;
+        }
+        police.orders.retain(|o| o.req.id != *id);
+    }
+    // Orders (`FUN_00526e30`): the loader brings the cars (`spawn_cops` places them).
+    for req in out.spawns {
+        let Some(vehicle) = req.vehicle else {
+            warn!("police: cop type {} has no car", req.slot.cop_type);
+            police.core.cancel_order(req.id);
+            continue;
+        };
+        let Some(requests) = &requests else {
+            police.core.cancel_order(req.id);
+            continue;
+        };
+        let car = CarRequest {
+            bundle: format!("VEHICLES/VEH_{vehicle}_HI.BNDL"),
+            paint_index: 0,
+            traffic: None,
+            opponent: Some(SLOT_BASE + req.id as usize),
+        };
+        if requests.0.send(car).is_err() {
+            warn!("police: the loader thread has stopped");
+            police.core.cancel_order(req.id);
+            continue;
+        }
+        info!("police: cop {} ordered (type {}, VEH_{vehicle}, {:?})", req.id, req.slot.cop_type, req.kind);
+        police.orders.push(Order { req, entity: None });
+    }
+    // Roles: a cop that changes role starts its route again; leaving Patrolling releases the ghost
+    // (`FUN_00506120`); a cop that searched starts its patrol at a random point 150 m away (+0x97, set by
+    // Searching when it hands over, 0x50de32).
+    for (entity, _, _, _, mut cop, _) in &mut cops {
+        let id = cop.slot as u32;
+        cop.changed = false;
+        if let Some(&(_, before, after)) = out.roles.iter().find(|r| r.0 == id) {
+            debug!("police: cop {id} {before:?} -> {after:?}");
+            cop.changed = true;
+            cop.mode = mode_of(&after);
+            cop.route_timer = 0.0;
+            cop.planned = None;
+            if before == Role::Patrol
+                && let Some(tr) = traffic.as_mut()
+            {
+                cop.patrol.leave(&mut Lanes { traffic: &mut **tr, cop: entity });
+            }
+            if after == Role::Patrol {
+                cop.patrol = PatrolMode::Find { fails: 0, wander: matches!(before, Role::Search | Role::GoTo { .. }) };
+            }
+        }
+        // A new search leg: the point snapped to the road graph (the game's leg targets are road points).
+        if out.legs.contains(&id)
+            && let Some(brain) = police.core.cop_mut(id)
+        {
+            let at = brain.leg.target;
+            brain.leg.target =
+                graph.nearest_node(at.to_array(), false).map_or(at, |n| Vec3::from(graph.nodes[n].position));
+            cop.planned = None;
+        }
+    }
+    // The bust cop's camera event and the roadblock the coordinator asked for need the camera / roadblock
+    // systems (not in the runtime): `out.roadblock` is dropped.
+
+    // The outcome's sequence plays (13 s; the busted one with the car's controls off), then free roam goes on
+    // (HSM 457517 "Do Pursuits": after a bust the heat is reset and every cop removed, `RemoveAllCops`).
+    let state = police.core.pursuit.state;
+    if matches!(state, PursuitState::Busted | PursuitState::Escaped) {
+        let busted = state == PursuitState::Busted;
+        if busted {
+            // "Disable Car Controls and Easydrive".
+            input.scripted = Some([0.0, 1.0, 0.0, 1.0]);
+        }
+        police.outcome += dt;
+        if police.outcome >= OUTCOME_SECONDS {
+            police.outcome = 0.0;
+            police.core.pursuit.reset();
+            if busted {
+                input.scripted = None;
+                for (e, _, _, _, cop, _) in &cops {
+                    commands.entity(e).despawn();
+                    police.core.cancel_order(cop.slot as u32);
+                    police.removed += 1;
+                }
+                police.orders.retain(|o| o.entity.is_none());
+            }
+        }
+    }
+    let p = &police.core.pursuit;
+    *hud = PursuitHud {
+        in_chase: p.state == PursuitState::Chase,
+        in_cooldown: p.state == PursuitState::Cooldown,
+        heat_level: p.level_number(cfg),
+        heat_progress: p.heat_progress(cfg),
+        bust_progress: p.bust_meter,
+        show_bust_bar: p.show_bust_bar,
+        cops: cops.iter().map(|(_, t, ..)| (t.translation, t.rotation * Vec3::Z)).collect(),
+        cops_in_chase: cops.iter().map(|c| c.4.mode == CopMode::Chase).collect(),
+    };
+}
+
+/// Every fixed tick after the police tick: each cop car carries out its brain's state (`mw_police::Cop`: the
+/// chase driver, the search leg, the patrol) through the AI racers' driver: routes, speed, overrides, the ghost
+/// ride.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
+fn cop_drive(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut police: ResMut<Police>,
+    spatial: SpatialQuery,
+    player: Query<(&Transform, &LinearVelocity), With<Player>>,
     mut cops: Query<
         (
             Entity,
@@ -982,232 +959,41 @@ fn cop_brains(
     let dt = time.delta_secs();
     let police = &mut *police;
     let (Some(cfg), Some(graph)) = (police.cfg.as_ref(), police.graph.clone()) else { return };
-    let Ok((player_entity, pt, pv, pcar)) = player.single() else { return };
-    let Some(level) = police.pursuit.level(cfg).cloned() else { return };
-    let cop_cfg = police.cop_cfg;
+    let Ok((pt, pv)) = player.single() else { return };
+    let Some(level) = police.core.pursuit.level(cfg).cloned() else { return };
+    let cop_cfg = police.core.cop_cfg;
     let player_pos = pt.translation;
-    let player_mph = pv.0.length() / MPH;
-    let pursued = police.pursuit.in_chase_or_cooldown();
-    let chase = police.pursuit.state == PursuitState::Chase;
+    let pursued = police.core.pursuit.in_chase_or_cooldown();
+    let bust_meter = police.core.pursuit.bust_meter;
+    let idle_input = police.idle_input;
+    let test_hold = police.test_hold;
     let world = SpatialQueryFilter::default().with_mask(crate::props::GameLayer::World);
-    let target = CarState::from_transform(pt, pv.0);
-    police.idle_input = if input.throttle > 0.0 || input.brake > 0.0 { 0.0 } else { police.idle_input + dt };
-
-    // Sight (`FUN_006c5810`, `FUN_006c6280`) and contact, per cop.
-    let player_hits = traffic.as_mut().map_or(0, |t| t.take_hits(player_entity));
-    if pursued {
-        police.owed_heat += cfg.traffic_hit_heat * player_hits as f32;
-    }
-    let mut notices = Vec::new();
-    for (_, t, v, car, mut cop, _, crashed, _, _, _) in &mut cops {
-        let d = t.translation.distance(player_pos);
-        // A cop that crashes next to the player was taken down (`FUN_006ccd20` → `FUN_006b8d00`; the cop
-        // type's takedown scoring action adds heat). MODEL: "by the player" = within 30 m of the player's car.
-        if crashed && !cop.crashed && d < 30.0 {
-            police.taken_down = true;
-            police.owed_heat += cfg.takedown_heat.get(&cop.cop_type).copied().unwrap_or(0.0);
-            info!("police: cop {} taken down", cop.slot);
-        }
-        cop.crashed = crashed;
-        // MODEL: contact = the cop's centre within the player's box grown by the cop's half width. A new contact
-        // adds its closing speed to the cop's ram sum; in a chase every new contact is a "SLAM" (scoring action
-        // 955544, 0.2 heat: the original's heat rose by 0.2 at each cop contact in the capture, the poster was not
-        // traced).
-        let touch = touching(pt, pcar, t, car);
-        let new_touch = touch && !cop.touching;
-        if new_touch && pursued {
-            police.owed_heat += cfg.slam_heat;
-            police.slams += 1;
-        }
-        cop.touching = touch;
-        let input = SightInput {
-            dt,
-            cop_position: t.translation,
-            cop_forward: t.rotation * Vec3::Z,
-            chasing: cop.mode == CopMode::Chase,
-            // MODEL: the coordinator's "alerted" record flags (`FUN_00516400`) are taken as the cop's part in a
-            // pursuit (going to the last-seen point, searching or waiting).
-            alert: pursued && matches!(cop.mode, CopMode::GoTo | CopMode::Search | CopMode::Waiting),
-            target: player_pos,
-            target_mph: player_mph,
-            crashed,
-            contact: new_touch.then(|| (pv.0 - v.0).length()),
-            ram_threshold: cop_cfg.ram_threshold,
-        };
-        let was_rammed = cop.sight.rammed;
-        cop.sight.tick(&level, &input, || {
-            let eye = t.translation + Vec3::Y;
-            Dir3::new(player_pos + Vec3::Y - eye)
-                .map_or(true, |dir| spatial.cast_ray(eye, dir, d, true, &world).is_none())
-        });
-        if cop.sight.rammed && !was_rammed {
-            info!("police: cop {} rammed by the player", cop.slot);
-        }
-        notices.push(CopNotice { in_cone: cop.sight.in_cone, rammed: cop.sight.rammed });
-    }
-    // `FUN_005192b0`: wanted. The coordinator knows where the player is while any cop does.
-    let was_wanted = police.wanted.reason;
-    let mut wanted = police.wanted.tick(dt, &level, &notices, player_mph, player_hits, pursued);
-    if police.force_wanted && !wanted {
-        wanted = true;
-        police.wanted.reason = Some(crate::cop_sight::WantedReason::Forced);
-    }
-    if police.wanted.reason != was_wanted && police.wanted.reason.is_some() {
-        info!(
-            "police: the player is wanted: {:?} ({player_mph:.0} mph, {player_hits} traffic hits)",
-            police.wanted.reason
-        );
-    }
-    let known = police.force_wanted || cops.iter().any(|c| c.4.sight.knows());
-    let last_seen = cops
-        .iter()
-        .filter_map(|c| Some((c.4.sight.seen_age, c.4.sight.last_seen?)))
-        .min_by(|a, b| a.0.total_cmp(&b.0))
-        .map(|c| c.1);
-    let cooldown_time = police.pursuit.cooldown_time;
-    let player_crashed = input.crashed;
-
-    // The cooldown's GoTo cop (`FUN_0051a4e0`): MODEL: the nearest cop to the last-seen point (the chooser
-    // `FUN_0051a3f0` was not read).
-    let goto_cop = if police.pursuit.state == PursuitState::Cooldown && !cops.iter().any(|c| c.4.mode == CopMode::GoTo)
-    {
-        last_seen.and_then(|ls| {
-            cops.iter()
-                .filter(|c| !c.6 && matches!(c.4.mode, CopMode::Search | CopMode::Patrol | CopMode::Chase))
-                .min_by(|a, b| a.1.translation.distance(ls).total_cmp(&b.1.translation.distance(ls)))
-                .map(|c| c.0)
-        })
-    } else {
-        None
-    };
-    // Searching cops per sector (`FUN_0051a000`).
-    let mut sectors = [0u32; SEARCH_SECTORS];
-    for c in &cops {
-        if c.4.mode == CopMode::Search {
-            sectors[c.4.leg.sector] += 1;
-        }
-    }
-    // The box-in (`FUN_00520f10`): a cop blocking in the low-speed chase pulls every other into it.
-    let blocking =
-        cops.iter().filter(|c| !c.6 && c.4.mode == CopMode::Chase && c.4.driver.in_low_speed_block()).count();
-    if blocking > 0 {
-        let low = cops.iter().filter(|c| matches!(c.4.driver.state, DriveState::LowSpeed { .. })).count();
-        police.box_in += dt * low as f32;
-    } else {
-        police.box_in = 0.0;
-    }
-    let boxed = police.box_in > BOX_IN_TIME;
-
+    let target = car_state(pt, pv.0);
     let on_screen_at = {
         let f = frustum.iter().next().cloned();
         move |p: Vec3| on_screen(f.as_ref(), p)
     };
-    for (entity, t, mut v, car, mut cop, mut driver, crashed, controls, mut w, mut status) in &mut cops {
+    for (entity, t, mut v, car, mut cop, mut driver, crashed, controls, mut w, _) in &mut cops {
         driver.overrides = Default::default();
         if crashed {
             if let Some(tr) = traffic.as_mut() {
-                cop.patrol.leave(tr);
+                cop.patrol.leave(&mut Lanes { traffic: &mut **tr, cop: entity });
             }
-            status.wrecked = true;
-            status.chasing = false;
             continue;
         }
+        let id = cop.slot as u32;
+        let patrol_random = police.core.random();
+        let Some(brain) = police.core.cop_mut(id) else { continue };
         let cop = &mut *cop;
-        let before = cop.mode;
-        // The coordinator's states (`FUN_005240a0`, `FUN_005255f0`, `FUN_0051a4e0`).
-        cop.mode = match cop.mode {
-            // While chased and known, every cop drives its behaviour.
-            _ if chase && known && wanted && cop.mode != CopMode::Waiting => CopMode::Chase,
-            // Before any pursuit a cop that sees a wanted player chases.
-            CopMode::Patrol | CopMode::Search if cop.sight.knows() && wanted => CopMode::Chase,
-            CopMode::Waiting => {
-                // WaitingInterceptor: until the player comes within 50 m or moves away.
-                let to = (player_pos - t.translation).normalize_or_zero();
-                let leaving = to.dot(v.0 - pv.0) < 0.0;
-                if !pursued || leaving || t.translation.distance(player_pos) < WAIT_RELEASE {
-                    if chase { CopMode::Chase } else { CopMode::Patrol }
-                } else {
-                    CopMode::Waiting
-                }
-            }
-            _ if Some(entity) == goto_cop => CopMode::GoTo,
-            // `FUN_005156c0`: the target is no longer known.
-            CopMode::Chase if !known => {
-                if pursued {
-                    CopMode::Search
-                } else {
-                    CopMode::Patrol
-                }
-            }
-            CopMode::GoTo if !pursued => CopMode::Patrol,
-            CopMode::GoTo if known || cop.mode_time > level.goto_timeout => CopMode::Search,
-            CopMode::Patrol if police.pursuit.state == PursuitState::Cooldown && cooldown_time < COOLDOWN_JOIN => {
-                CopMode::Search
-            }
-            CopMode::Search if !pursued => CopMode::Patrol,
-            m => m,
-        };
-        cop.mode_time += dt;
         cop.route_timer -= dt;
-        if cop.mode != before {
-            debug!("police: cop {} {:?} -> {:?}", cop.slot, before, cop.mode);
-            cop.mode_time = 0.0;
-            cop.route_timer = 0.0;
-            cop.planned = None;
-            if cop.mode == CopMode::Chase {
-                cop.driver.reassign();
-            }
-            if cop.mode == CopMode::Search {
-                cop.search_radius = 0.0;
-                cop.leg = Leg { target: t.translation, sector: 0, still: SEARCH_STUCK + 1.0 };
-            }
-            // Leaving Patrolling releases the ghost (`FUN_00506120`); a cop that searched starts its patrol at a
-            // random point 150 m away (+0x97, set by Searching when it hands over, 0x50de32).
-            if before == CopMode::Patrol
-                && let Some(tr) = traffic.as_mut()
-            {
-                cop.patrol.leave(tr);
-            }
-            if cop.mode == CopMode::Patrol {
-                cop.patrol = PatrolMode::Find { fails: 0, wander: matches!(before, CopMode::Search | CopMode::GoTo) };
-            }
-        }
+        let mode = mode_of(&brain.role);
+        cop.mode = mode;
         let fwd = t.rotation * Vec3::Z;
-        let me = CarState::from_transform(t, v.0);
+        let me = car_state(t, v.0);
         let speed = v.0.length();
         driver.state.lane_offset = 0.0;
-        match cop.mode {
+        match mode {
             CopMode::Chase => {
-                // `FUN_005240a0`: the low-speed chase near a slow (or crashed) player, and back.
-                let gap = t.translation.distance(player_pos);
-                let near_slow = (player_mph < level.low_speed_mph
-                    && gap < cop_cfg.low_speed_range
-                    && (t.translation.y - player_pos.y).abs() < LOW_SPEED_HEIGHT)
-                    || player_crashed;
-                let low = DriveState::LowSpeed { sub: 0, timer: 0.0, behind: false, boxed: false };
-                let interceptor = cop.driver.assigned == Assigned::Interceptor;
-                match cop.driver.state {
-                    DriveState::Chasing { .. } | DriveState::Bruiser { .. } if near_slow => cop.driver.state = low,
-                    // The box-in pulls the other chasing cops in (not an Interceptor, `FUN_00511870`).
-                    DriveState::Chasing { .. } | DriveState::Bruiser { .. } | DriveState::Rhino
-                        if blocking > 0 && !interceptor =>
-                    {
-                        cop.driver.state = low
-                    }
-                    DriveState::LowSpeed { .. }
-                        if player_mph > level.low_speed_mph || (gap > cop_cfg.low_speed_range && !player_crashed) =>
-                    {
-                        cop.driver.reassign();
-                    }
-                    _ => {}
-                }
-                if let DriveState::LowSpeed { boxed: b, .. } = &mut cop.driver.state {
-                    *b = boxed;
-                }
-                // `FUN_00518cf0`: a Rhino behind its target becomes a Bruiser.
-                if cop.driver.state == DriveState::Rhino && (t.translation - player_pos).dot(target.forward) < 0.0 {
-                    cop.driver.state = DriveState::Bruiser { sub: 1 };
-                }
                 // The world queries of the chase core (MODEL: physics rays for the game's nav-mesh queries).
                 let mut probes = Probes { forward_hit: f32::MAX, ..Default::default() };
                 let ray = |from: Vec3, dir: Vec3, len: f32| {
@@ -1221,16 +1007,16 @@ fn cop_brains(
                     .iter()
                     .any(|&r| ray(eye, Quat::from_rotation_y(r) * flat_fwd, cop_cfg.probe_side).is_some());
                 // The aim point first (the line test needs it); the line test, then the tick again with it.
-                let mut probe_driver = cop.driver.clone();
+                let mut probe_driver = brain.driver.clone();
                 let mut inp = CopInput {
                     dt,
                     cfg: &cop_cfg,
                     cop: me,
                     target,
                     human: true,
-                    bust_meter: police.pursuit.bust_meter,
-                    idle_input: police.idle_input,
-                    lateral: cop.lateral,
+                    bust_meter: bust_meter,
+                    idle_input: idle_input,
+                    lateral: brain.lateral,
                     probes,
                 };
                 let first = probe_driver.tick(&inp);
@@ -1238,8 +1024,8 @@ fn cop_brains(
                     let to = first.aim + Vec3::Y * LINE_HEIGHT - eye;
                     inp.probes.line_clear = ray(eye, to, to.length()).is_none();
                 }
-                let out = cop.driver.tick(&inp);
-                driver.overrides = out.overrides;
+                let out = brain.driver.tick(&inp);
+                driver.overrides = crate::cop_driver::overrides(out.overrides);
                 cop.blocked = out.blocked;
                 cop.direct = out.direct && inp.probes.line_clear;
                 if cop.direct {
@@ -1272,8 +1058,8 @@ fn cop_brains(
                 // The speed (`FUN_005043d0`): the state's target, the cop's cap (driver +0x5860, `FUN_004f76c0`),
                 // 10 mph while turning round (`FUN_005005a0`).
                 let mut v_target = out.target_speed;
-                if cop.speed_mph > 0.0 {
-                    v_target = v_target.min(cop.speed_mph * MPH);
+                if brain.slot.speed_mph > 0.0 {
+                    v_target = v_target.min(brain.slot.speed_mph * MPH);
                 }
                 let (s_now, _) = driver.route.project(t.translation, None, 0.0);
                 let (ahead_point, _) = driver.route.at(s_now + 10.0);
@@ -1293,24 +1079,12 @@ fn cop_brains(
                 }
             }
             CopMode::GoTo | CopMode::Search => {
-                // GoTo: the last-seen point; Search: legs around the player (`vt_0050dd40`, `FUN_0051a000`).
-                if cop.mode == CopMode::Search {
-                    cop.leg.still = if speed < 1.0 { cop.leg.still + dt } else { 0.0 };
-                    let arrived = cop.leg.target.distance(t.translation) < SEARCH_ARRIVED;
-                    if arrived || cop.leg.still > SEARCH_STUCK {
-                        let sector = (0..SEARCH_SECTORS).min_by_key(|&k| sectors[k]).unwrap_or(0);
-                        sectors[sector] += 1;
-                        let width = std::f32::consts::TAU / SEARCH_SECTORS as f32;
-                        let theta = (sector as f32 + police.random()) * width;
-                        cop.search_radius += SEARCH_STEP;
-                        let p = player_pos + Vec3::new(theta.sin(), 0.0, theta.cos()) * cop.search_radius;
-                        let p =
-                            graph.nearest_node(p.to_array(), false).map_or(p, |n| Vec3::from(graph.nodes[n].position));
-                        cop.leg = Leg { target: p, sector, still: 0.0 };
-                        cop.planned = None;
-                    }
-                }
-                let goal = if cop.mode == CopMode::GoTo { last_seen.unwrap_or(player_pos) } else { cop.leg.target };
+                // GoTo: the point the coordinator sent the cop to; Search: its leg around the player (the legs
+                // are the crate's `Leg`, `vt_0050dd40`, `FUN_0051a000`).
+                let goal = match brain.role {
+                    Role::GoTo { target } => target,
+                    _ => brain.leg.target,
+                };
                 if cop.planned.is_none_or(|p| p.distance(goal) > 1.0) || cop.route_timer <= 0.0 {
                     cop.route_timer = 2.0;
                     if let Some(route) = route_via(&graph, t.translation, goal, fwd).filter(|r| r.length() > 30.0) {
@@ -1321,7 +1095,7 @@ fn cop_brains(
                 // `FUN_004f76c0`: the level's go-to / search speed limit.
                 driver.schedule_speed = level.search_speed_mph * MPH;
             }
-            CopMode::Patrol if police.test_hold => {
+            CopMode::Patrol if test_hold => {
                 driver.schedule_speed = 0.0;
                 driver.overrides.handbrake = Some(true);
                 driver.overrides.throttle = Some(0.0);
@@ -1333,7 +1107,7 @@ fn cop_brains(
                     // MODEL: without traffic (`--no-traffic`) there are no lanes: the patrol drives the road graph at
                     // the level's go-to / search speed.
                     let near_end = driver.route.length() - driver.progress < 150.0;
-                    if (near_end || before != CopMode::Patrol)
+                    if (near_end || cop.changed)
                         && let Some(route) =
                             crate::ai::route_from_ai_graph(&graph, t.translation, fwd.x.atan2(fwd.z), 2000.0)
                     {
@@ -1344,16 +1118,16 @@ fn cop_brains(
                 };
                 let input = PatrolInput {
                     dt,
-                    cop: entity,
+                    cop: id,
                     position: t.translation,
                     forward: fwd,
                     velocity: v.0,
                     player: player_pos,
                     on_screen: on_screen_at(t.translation),
                     half_length: car.params.body_half_extents.z,
-                    random: police.random(),
+                    random: patrol_random,
                 };
-                match cop.patrol.tick(&input, tr) {
+                match cop.patrol.tick(&input, &mut Lanes { traffic: &mut **tr, cop: entity }) {
                     PatrolDrive::Stop => {
                         driver.schedule_speed = 0.0;
                         driver.overrides.throttle = Some(0.0);
@@ -1440,12 +1214,10 @@ fn cop_brains(
     }
     // The public state.
     for (_, _, _, _, cop, _, crashed, _, _, mut status) in &mut cops {
-        let driver_state = match cop.mode {
-            CopMode::Patrol => 0xd,
-            CopMode::Chase => cop.driver.state_id(),
-            CopMode::GoTo => 4,
-            CopMode::Search => 0xc,
-            CopMode::Waiting => 0x11,
+        let Some(brain) = police.core.cop(cop.slot as u32) else { continue };
+        let driver_state = match brain.role {
+            Role::Chase => brain.driver.state_id(),
+            ref r => r.state_id(),
         };
         let next = CopStatus {
             activity: match cop.mode {
@@ -1459,7 +1231,7 @@ fn cop_brains(
             patrol_mode: (cop.mode == CopMode::Patrol).then(|| cop.patrol.number()),
             chasing: !crashed && matches!(driver_state, 0 | 0x10 | 0x12 | 0x16 | 0x17 | 0x18 | 0x1a),
             in_pursuit: pursued && cop.mode != CopMode::Patrol,
-            sees_player: cop.sight.sees,
+            sees_player: brain.sight.sees,
             wrecked: crashed,
         };
         if *status != next {
@@ -1475,101 +1247,6 @@ fn touching(pt: &Transform, pcar: &Car, ct: &Transform, ccar: &Car) -> bool {
     let (pe, ce) = (pcar.params.body_half_extents, ccar.params.body_half_extents);
     let r = ce.x.max(ce.z) + 0.3;
     local.x.abs() < pe.x + r && local.z.abs() < pe.z + r && local.y.abs() < 2.0
-}
-
-/// Every fixed tick: the pursuit manager's update (`FUN_0066ae60`) and what follows from it.
-#[allow(clippy::type_complexity)]
-fn pursuit_tick(
-    mut commands: Commands,
-    time: Res<Time>,
-    mut police: ResMut<Police>,
-    mut hud: ResMut<PursuitHud>,
-    mut input: ResMut<CarInput>,
-    player: Query<(&Transform, &LinearVelocity, &Car), With<Player>>,
-    cops: Query<(Entity, &Transform, &Car, &Cop, Has<crate::car_impacts::AiCrash>), Without<Player>>,
-) {
-    let dt = time.delta_secs();
-    let police = &mut *police;
-    let Some(cfg) = police.cfg.as_ref() else { return };
-    let Ok((pt, pv, pcar)) = player.single() else { return };
-    let views: Vec<CopView> = cops
-        .iter()
-        .map(|(_, t, car, cop, crashed)| CopView {
-            position: t.translation,
-            chasing: cop.mode == CopMode::Chase,
-            crashed,
-            touching: touching(pt, pcar, t, car),
-        })
-        .collect();
-    // The freshest point a cop saw the player at, while a cop knows where the player is (`FUN_005192b0`).
-    let last_seen = cops
-        .iter()
-        .filter(|c| c.3.sight.knows())
-        .filter_map(|c| Some((c.3.sight.seen_age, c.3.sight.last_seen?)))
-        .min_by(|a, b| a.0.total_cmp(&b.0))
-        .map(|c| c.1);
-    let events = police.pursuit.tick(
-        cfg,
-        &PursuitInput {
-            dt,
-            position: pt.translation,
-            speed_mph: pv.0.length() / MPH,
-            cops: &views,
-            last_seen,
-            cop_taken_down: std::mem::take(&mut police.taken_down),
-            // Not wired: our crash rules have no wrecker (`crash.rs`), and there are no roadblocks.
-            wrecked_by_cop: false,
-            roadblock_near: false,
-        },
-    );
-    let mut events = events;
-    let owed = std::mem::take(&mut police.owed_heat);
-    if police.pursuit.in_chase_or_cooldown() {
-        police.pursuit.add_heat(cfg, owed, &mut events);
-    }
-    for e in &events {
-        let p = &police.pursuit;
-        info!(
-            "police: {e:?} (heat {:.2}, level {}, {} cops chasing, {:.0} s chased)",
-            p.heat,
-            p.level_number(cfg),
-            p.cops_chasing,
-            p.chase_time
-        );
-    }
-    // The outcome's sequence plays (13 s; the busted one with the car's controls off), then free roam goes on
-    // (HSM 457517 "Do Pursuits": after a bust the heat is reset and every cop removed, `RemoveAllCops`).
-    if matches!(police.pursuit.state, PursuitState::Busted | PursuitState::Escaped) {
-        let busted = police.pursuit.state == PursuitState::Busted;
-        if busted {
-            // "Disable Car Controls and Easydrive".
-            input.scripted = Some([0.0, 1.0, 0.0, 1.0]);
-        }
-        police.outcome += dt;
-        if police.outcome >= OUTCOME_SECONDS {
-            police.outcome = 0.0;
-            police.pursuit.reset(busted);
-            if busted {
-                input.scripted = None;
-                for (e, _, _, cop, _) in &cops {
-                    commands.entity(e).despawn();
-                    police.orders.retain(|o| o.slot != cop.slot);
-                    police.removed += 1;
-                }
-            }
-        }
-    }
-    let p = &police.pursuit;
-    *hud = PursuitHud {
-        in_chase: p.state == PursuitState::Chase,
-        in_cooldown: p.state == PursuitState::Cooldown,
-        heat_level: p.level_number(cfg),
-        heat_progress: p.heat_progress(cfg),
-        bust_progress: p.bust_meter,
-        show_bust_bar: p.show_bust_bar,
-        cops: cops.iter().map(|(_, t, ..)| (t.translation, t.rotation * Vec3::Z)).collect(),
-        cops_in_chase: cops.iter().map(|(_, _, _, cop, _)| cop.mode == CopMode::Chase).collect(),
-    };
 }
 
 /// Once a second while something is going on (or with `MW_POLICE_LOG=1`): the pursuit and every cop.
@@ -1608,24 +1285,25 @@ fn log_police(
         p.chase_time
     );
     for (t, v, cop, driver) in &cops {
+        let Some(brain) = police.core.cop(cop.slot as u32) else { continue };
         info!(
             "  cop {} (type {}) {:?}/{:#x} {:?}: {:.0} m away, {:.0} mph (target {:.0}), sees {} memory {:.1}, direct {} blocked {:#b}, route {:.0}/{:.0} m, recovering {}, lateral {:+.1}, patrol mode {}{}",
             cop.slot,
             cop.cop_type,
             cop.mode,
-            cop.driver.state_id(),
-            cop.driver.state,
+            brain.driver.state_id(),
+            brain.driver.state,
             t.translation.distance(pt.translation),
             v.0.length() / MPH,
             driver.schedule_speed.min(999.0) / MPH,
-            cop.sight.sees,
-            cop.sight.memory,
+            brain.sight.sees,
+            brain.sight.memory,
             cop.direct,
             cop.blocked,
             driver.progress,
             driver.route.length(),
             driver.state.recovering.is_some(),
-            cop.lateral,
+            brain.lateral,
             cop.patrol.number(),
             match (cop.patrol.ghost(), traffic.as_ref()) {
                 (Some(g), Some(tr)) => tr.ghost_peek(g).map_or(" (ghost gone)".to_string(), |p| format!(
@@ -1796,9 +1474,10 @@ fn run_pursuit_test(
                 police.force_wanted = false;
                 for (e, _, _, cop) in &cops {
                     commands.entity(e).despawn();
-                    police.orders.retain(|o| o.slot != cop.slot);
+                    police.core.cancel_order(cop.slot as u32);
                 }
                 police.orders.clear();
+                police.core.clear_orders();
                 test.phase = 3;
                 test.timer = 0.0;
             }
@@ -1809,7 +1488,7 @@ fn run_pursuit_test(
                 "TEST RESULT pursuit cooldown: began {:.1} s after the cops were gone, {:.0} m from the last seen point (lose radius {:.0} m), heat {:.2}",
                 test.timer,
                 p.last_seen.distance(pt.translation),
-                police.level().map_or(0.0, |l| l.lose_radius),
+                police.heat_level().map_or(0.0, |l| l.lose_radius),
                 p.heat
             );
             test.phase = 4;
@@ -1818,7 +1497,7 @@ fn run_pursuit_test(
         4 if p.state == PursuitState::Escaped => {
             info!(
                 "TEST RESULT pursuit outcome: ESCAPED after {:.1} s of cooldown (max heat {:.2}, max level {}), {} escapes",
-                test.timer, test.max_heat, p.max_level, p.escapes
+                test.timer, test.max_heat, p.max_level, police.escapes
             );
             test.cooldown_seconds = test.timer;
             test.phase = 5;
@@ -1872,7 +1551,7 @@ fn run_pursuit_test(
                     cfg.bust_distance,
                     nearest.unwrap_or(-1.0),
                     p.heat,
-                    p.busts
+                    police.busts
                 );
                 if let (Some(a), Some(b)) = test.heat_rate {
                     info!(
@@ -1887,9 +1566,9 @@ fn run_pursuit_test(
         8 if p.state == PursuitState::None => {
             info!(
                 "TEST RESULT pursuit: {} chases, {} escapes, {} busts, {} cops spawned, {} removed, {} left, heat {:.2}, spawns {:?}",
-                p.chases,
-                p.escapes,
-                p.busts,
+                police.chases,
+                police.escapes,
+                police.busts,
                 police.spawned,
                 police.removed,
                 cops.iter().count(),

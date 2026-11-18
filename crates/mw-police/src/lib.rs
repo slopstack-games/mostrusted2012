@@ -191,7 +191,10 @@ pub struct Police {
     timer: f32,
     /// No new cops for this long (after a pursuit; `FUN_005286d0`).
     pub spawn_block: f32,
-    was_pursuit: bool,
+    pub was_pursuit: bool,
+    /// Tests: no new cops are ordered; the ring distance of the orders.
+    pub hold_spawns: bool,
+    pub spawn_distance_override: Option<f32>,
     /// Coordinator +0x666 (the chase last frame), +0x667 (a GoTo cop is owed), +0x724 (the GoTo time).
     was_chase: bool,
     goto_armed: bool,
@@ -224,6 +227,8 @@ impl Police {
             timer: 0.0,
             spawn_block: 0.0,
             was_pursuit: false,
+            hold_spawns: false,
+            spawn_distance_override: None,
             was_chase: false,
             goto_armed: false,
             goto_time: 0.0,
@@ -242,6 +247,16 @@ impl Police {
     /// The player's heat level row (`FUN_006bdc00`).
     pub fn level<'a>(&self, cfg: &'a PoliceConfig) -> Option<&'a HeatLevel> {
         self.pursuit.level(cfg)
+    }
+
+    /// The runtime could not place the car of order `id` (no road): the order is dropped.
+    pub fn cancel_order(&mut self, id: u32) {
+        self.orders.retain(|o| o.id != id);
+    }
+
+    /// Drop every pending order (tests).
+    pub fn clear_orders(&mut self) {
+        self.orders.clear();
     }
 
     pub fn cop(&self, id: u32) -> Option<&Cop> {
@@ -602,7 +617,7 @@ impl Police {
         }
         self.cops.retain(|c| !out.removals.contains(&c.id));
 
-        if self.spawn_block > 0.0 {
+        if self.spawn_block > 0.0 || self.hold_spawns {
             return;
         }
         // The count: pending orders and living, uncrashed cops of the type.
@@ -637,7 +652,7 @@ impl Police {
                 slot,
                 vehicle: cfg.cop_vehicles.get(&slot.cop_type).copied(),
                 kind,
-                distance: level.spawn_distance[phase],
+                distance: self.spawn_distance_override.unwrap_or(level.spawn_distance[phase]),
                 speed_mph,
                 lateral,
             });

@@ -11,6 +11,20 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+### 2026-11-18: the runtime's police run on `mw-police` (`police.rs`)
+
+`police.rs` now drives `mw_police::Police::tick` from `police_tick` (FixedUpdate) and carries the decisions out in
+`cop_drive`; `pursuit.rs`, `cop_sight.rs`, `cop_driver.rs`, `cop_patrol.rs` became re-exports / the traffic adapter
+(wiring spec: decomp.md "Police and pursuit (ported)"). Removed from the runtime: the coordinator pass (count, kinds,
+removal), role switches, low-speed / box-in, wanted and perception calls, the hand-written pursuit manager.
+Crate additions: `hold_spawns`, `spawn_distance_override` (tests), `cancel_order`, `clear_orders`, `was_pursuit` pub.
+Behaviour changes versus the old runtime (all from the crate): GoTo goes to the player's position (nearest cop to the
+player), bust meter holds when the nearest chasing cop crashed, wrecked-by-AI only in a chase, chase start variants.
+MODEL decisions kept: GoTo "arrived" = within 20 m of the point; contact box test; takedown = crash within 30 m;
+spawn placement. Open: roadblocks (no roadblock props in the runtime, task output dropped), `wrecked_by_ai`, bust
+camera event (bust sets state at once). Captures that would confirm: a free-roam pursuit with a GoTo cop in the
+cooldown (which cop goes where), the heat step at a chase start.
+
 ### 2026-11-17: police and pursuit ported into `crates/mw-police` (engine-free; WIP, runtime not switched)
 
 New crate `mw-police` (glam 0.32, wasm-clean, in `tools/wasm-check`): `pursuit` (pursuit manager `FUN_0066ae60`),

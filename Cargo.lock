@@ -3995,6 +3995,7 @@ dependencies = [
  "mw-gamedir",
  "mw-handling",
  "mw-logic",
+ "mw-police",
  "rayon",
  "wasm-bindgen",
  "wasm_thread",
