@@ -9,9 +9,9 @@ by default (`--no-hsm` to bisect); `--race <id>` starts through the logic's even
 300 / 385 Lua natives. Races, event starts, car swaps and police run on the ported code.
 
 **Unmerged agent branches** (stopped at session end; each has a research-log entry saying where it stopped):
-- `worktree-agent-a3ae5e793088ee893`: AI racers drive through `mw-ai`, but only 1 of 5 finishes 462174 (was 5).
-  Follow-up on top of it: `worktree-agent-a1b7e69661d49d206` (obstacle sweep, racing line / lane planner). Merge
-  both only when the AI finish again.
+- `worktree-agent-a3ae5e793088ee893` + follow-up `worktree-agent-a1b7e69661d49d206` (0084d7a, builds): AI racers on
+  `mw-ai`; 462174 now 6 of 7 AI finish (219–225 s; the crashes were our driver starting on the wrong lap segment).
+  906146 panicked after a track unload (the intermittent panic below?); accel not run. Run the checks, then merge both.
 - `worktree-agent-ae89085bfd4e6c6f6`: engine sub-harmoniser / vehicle-bank rail (the skid distortion's last suspect).
 - `worktree-agent-abe4eab9f744d9496`: UI widget-tree renderer, HUD 371621 from widgets (replaces hud.rs drawing).
 - `worktree-agent-a9b92c3379235e3c7`: runtime handlers for today's new Requests / Queries.
