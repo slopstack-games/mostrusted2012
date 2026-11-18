@@ -955,7 +955,7 @@ pub fn param_true(cx: &Cx, name: &str) -> bool {
 
 /// A parameter read with `atoi` (`FUN_00edb8aa`; 0 when missing or not a number).
 pub fn param_int(cx: &Cx, name: &str) -> i64 {
-    super::atof(&cx.param_text(name)) as i64
+    i64::from(crate::binding::atol(&cx.param_text(name)))
 }
 
 /// An integer binding (`FUN_00a50650` parse, `FUN_00a4f220` read) when `path` is not empty, else the parameter

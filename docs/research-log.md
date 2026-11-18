@@ -11,6 +11,29 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+## 2026-11-18: mw-logic bug hunt (binding evaluator, HSM interpreter, natives)
+
+**Fixed** (each with a failing test first):
+- `LogicState`'s binding host (`natives/state.rs`) dropped a registered root's *out of range* answer and fell
+  through to the view models, which give null: `Players.IsPlayerActive[0]` read `<NULL>` in the string visitor
+  (should be `<INVALID ARRAY INDEX>`) and `(IS_EMPTY)` made the int visitor 1 (only the null slot knows
+  IS_EMPTY). Now out of range stays the answer unless a published definition resolves the path, as
+  `ViewModels::lookup` already did for its own roots.
+- Parameters the docs name as `atoi` were read with `atof` and truncated (`"1e3"` → 1000 instead of 1):
+  `behaviours::param_int` (20 callers), `EventStartParams::read` ids, `TRYTOPLAYSPE`'s `SPEECHEVENTS`. They use
+  `binding::atol` (C `atol`, wraps) now.
+
+**Checked, no defect found**: binding tokenizer / parser edge cases (empty and trailing segments, unclosed ops,
+spaces, `atof` forms such as `1.e5`, `.5`, `1e+`), operator semantics against the module docs, HSM tick phases,
+child removal and id reuse during `update_children`, machine start / exit from inside a tick, vm_path indices,
+checkpoint indices (the runtime bounds `reset_target` to the last entry).
+
+**Suspected, not changed** (need the dump): `RUNSUBNET` parses `TOPSTATE` with Rust `parse` after `trim` (an
+`atoi` would accept `"123abc"`); `EventStartParams` clamps a negative id to 0 (`atoi` into a u32 would wrap);
+`update_children` lets a later finished child's `EXIT` action overwrite the parent exit point set by an earlier
+one in the same pass; `round_int`'s doc says out-of-range gives 0x80000000 while the code (rightly for a 64-bit
+`fistp`) gives 0; `Binding::float_value` drops the last character of a `{...}` string without checking it is `}`.
+
 ## 2026-11-18: the speech manager ported (`mw_audio::speech`), the logic's speech wired
 
 **What**: the speech manager G+0x2c3c0 is a port now (`crates/mw-audio/src/speech.rs`, engine-free, 2 tests), shared

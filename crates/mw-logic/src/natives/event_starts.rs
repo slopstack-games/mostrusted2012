@@ -56,7 +56,7 @@ impl EventStartParams {
     /// `atof` for the radius; `param` gives a parameter's text ("" when missing).
     pub fn read(param: impl Fn(&str) -> String) -> Self {
         let flag = |name: &str| param(name).eq_ignore_ascii_case("true");
-        let int = |name: &str| (crate::hsm::atof(&param(name)) as i64).max(0) as u32;
+        let int = |name: &str| crate::binding::atol(&param(name)).max(0) as u32;
         EventStartParams {
             check_entry: flag("CHECKENTRY"),
             poi: int("POIID"),
@@ -473,6 +473,17 @@ fn enter_start(s: &mut LogicState) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ids_read_with_atoi() {
+        let p = EventStartParams::read(|n| match n {
+            "POIID" => "1e3".into(),
+            "RECPOIID" => "42.7".into(),
+            "ACTIVERADIUS" => "2.5e1".into(),
+            _ => String::new(),
+        });
+        assert_eq!((p.poi, p.rec_poi, p.active_radius), (1, 42, 25.0));
+    }
 
     fn world() -> LogicState {
         let mut s = LogicState::default();

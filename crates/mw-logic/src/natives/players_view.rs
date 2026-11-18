@@ -303,4 +303,15 @@ mod tests {
         s.view_models.publish("Players", mw_formats::json::Json::parse(r#"{"X": 4}"#).unwrap());
         assert_eq!(s.resolve_int("Players.X"), Some(4));
     }
+
+    #[test]
+    fn out_of_range_index_is_not_null() {
+        // A registered member with a bad index answers "out of range" (visitor slot 26), not the null of an
+        // unknown member: IS_EMPTY does not apply and the string visitor names the index.
+        let s = state();
+        assert_eq!(s.resolve_hsm_string("Players.IsPlayerActive[0]"), None);
+        let b = crate::binding::Binding::parse("Players.IsPlayerActive[0]").unwrap();
+        assert_eq!(b.eval_string(&s).value, "<INVALID ARRAY INDEX>");
+        assert_eq!(s.resolve_int("Players.IsPlayerActive[0](IS_EMPTY)"), Some(0));
+    }
 }
