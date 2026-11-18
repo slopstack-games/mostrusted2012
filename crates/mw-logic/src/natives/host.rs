@@ -275,8 +275,8 @@ mod tests {
         h.install_lua(&mut lua);
         assert!(!lua.global("ResolveBoolBinding").is_nil());
         assert!(lua.global("NotANative").is_nil());
-        let r = lua.call_global("ShowX360KinectTunerUi", vec![]).unwrap();
+        let r = lua.call_global("RegisterSpeechCommand", vec![]).unwrap();
         assert!(r.is_empty());
-        assert_eq!(h.take_unported(), ["lua ShowX360KinectTunerUi"]);
+        assert_eq!(h.take_unported(), ["lua RegisterSpeechCommand"]);
     }
 }

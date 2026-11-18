@@ -11,6 +11,35 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+### 2026-11-18: Lua natives, twelfth batch (31 more, 300 of 385; `natives/lua_vehicles.rs`)
+Handlers from `re/out/live/text.asm`; state in `SimFields.vehicles` (`VehicleFields`), set by the runtime. Ported:
+GetPointDistanceToVehicle / GetPointDistanceSquaredToVehicle (point = table x / y / z via `FUN_00697120`, vehicle = arg 2
+only with exactly 2 args), GetClosingSpeed (two slots' velocity difference, +0x120 via `FUN_0083bef0`, times `.bss`
+0x0118a090: a field the runtime fills, 0 until then), GetSteering (`0x0067db30`: local slot = controller +0x24 - +0x18
+(`FUN_006c3850`), other slots G+0x2ef4c lookup `FUN_0083b530` / `FUN_0083b540` +0xc), IsInTrigger / IsInTriggerList
+(`FUN_00537190`: the vehicle's list at +0xc20 + v * 0x24, id +0xc, state byte +0x10, -1 = any; list returns the 0-based
+argument index or -1), GetTriggerDirection / GetTriggerRotation (`FUN_0042f250` / `FUN_0042efe0` over `FUN_0042ee30` =
+quaternion (+0x14 x y z w, scaled by sqrt 2 `.rdata` 0x00f9acf8) to matrix, direction = its z row; rotation = -atan2(x, z)
+(`FUN_00edd184`); kind 2 reads +0x14 directly, sphere (1, 0, 0), id <= -1 (0, 0, 1) `.rdata` 0x00fbcc30), IsLoadingScreenShowing
+(`FUN_00799d90`; the element lookup `FUN_00792090` is a 240-entry bitmap pool, its virtual +0x14 is a runtime bool),
+IsFeedbackSequenceTriggerActive (hash of the name in G+0x30850 +0xdcc), GetRaceCarDistanceFromPlayer, GetCompetitorDistance
+(`FUN_0063c3b0` pair distance, -1 `.rdata` 0x00fb6240 default; one arg = G+0x25470 + 16 i), IsTrafficRunningForCompetitor
+(`FUN_0083d410`; `FUN_005f2800` is a runtime bool), GetRoadStartPosition (G+0x153a8 / 0x153ac road array of 0x34, +0x28
++0x14), ChangeRaceCar (`FUN_006c7950`), EnableKillTrafficAtLocation (`FUN_00845ec0`, position args 2..4), the camera
+transitions (`FUN_00843ba0` / `FUN_00843c40` on `*(G+0x2f470)`; `FUN_00678140` = interpolation index into Cut / Linear /
+LinearSine / Cubic / CubicSine, unknown = Linear) and 12 handlers that only clear the stack (OverwriteDebugCameraState,
+ClearOverwriteDebugCameraState, ShowX360KinectTunerUi, the 9 `IsDebugSequence*` / `*DebugSequence*` stubs `xor eax, eax`).
+New Requests: ChangeRaceCar, EnableKillTrafficAtLocation, TransitionCameraToLocation, TransitionCameraToGameplay,
+SetCameraTransitionLocation. New field `Trigger::rotation` (+0x14, quaternion).
+Model decisions: ids / slots without an entry read zeros / -1 / false where the original dereferences unchecked; the camera
+transition's two structs (vec pair + valid byte) read as (camera now, target).
+Skipped (unread callees): CalculateForwardDirection (`FUN_00667b10` virtuals +8 / +0xc, `FUN_00662670`), CalculateInterpolatedLocation
+(slerp polynomial), CalculateRotatedLocationXZ (`FUN_005de2d0`), IsCompetitorWithinVisibilityCone (cos polynomial), ResetOnRoad
+(rsqrt normalise + callee), SwitchToIceCamera (`FUN_00843a60` returns a handle), CycleCameraTarget, ShowLoadingScreen (`FUN_0078f860`
+/ `FUN_00799a60`), PlaySound / PlaySoundAtPlayer / PlayGameplayStream (`FUN_0079fb40` returns a queue id), GetValue (string table
+`FUN_00a50650`), HasFinishedStreamingWorld (`FUN_0054b540`), GetRoadStartDirection (tail unread), TeleportToDistanceFromFinish,
+IsHittingRaceCar, ShowOriginIgo / IsOriginIgoAvailable (`FUN_00ae3740`), StopFeedbackSequence, RequestSkipSequence, GetCompetitorName,
+SetVector3Variable, SetExitPointID.
 ### 2026-11-18: Lua natives, eleventh batch (25 more, 269 of 385; `natives/lua_queries.rs`)
 Handlers read from `re/out/live/text.asm`. Ported (state in `SimFields.queries`, set by the runtime): GetCameraPosition /
 GetCameraDirection (camera manager `*0x010edaf4`+4 +0x140 / +0x130), GetGameplayCameraPosition (+0x3690[+0x36d0] camera,
