@@ -281,6 +281,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::approx_constant)] // 3.14 is the reference's test point, not π
     fn perlin_matches_reference_points() {
         // Zero on the lattice, bounded, smooth.
         assert_eq!(perlin(1.0, 2.0, 3.0), 0.0);
@@ -290,7 +291,7 @@ mod tests {
             max = max.max(perlin(x, x * 0.7 + 0.3, x * 0.31 + 0.5).abs());
         }
         assert!(max > 0.3 && max <= 1.1, "{max}");
-        // Ken Perlin's reference implementation gives 0.13691995878400012 at (3.14, 42, 7).
+        // Ken Perlin's reference implementation gives 0.13691995878400012 at (3.14, 42, 7) (a test point, not π).
         assert!((perlin(3.14, 42.0, 7.0) - 0.136_92).abs() < 1e-4, "{}", perlin(3.14, 42.0, 7.0));
     }
 

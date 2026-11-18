@@ -10,7 +10,7 @@
 //! until it is placed, so while paused the callers place on residency alone as the game does (nothing falls before
 //! the sim resumes, and `streaming::streaming_stall` pauses it again while the car's surroundings are not in).
 
-use avian3d::parry::query::{Ray, RayCast};
+use avian3d::parry::query::Ray;
 use avian3d::prelude::*;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;

@@ -100,22 +100,20 @@ pub struct PendingPlacement {
 #[derive(Resource, Default)]
 pub struct InfiniteNitrous(pub bool);
 
+/// The player's car as the effects change it: its record, engine start and siren / flash state.
+type PlayerCarMut = (
+    &'static mut Car,
+    Option<&'static mut crate::ignition::EngineStart>,
+    Option<&'static mut crate::police_fx::FlashCar>,
+);
+
 #[derive(SystemParam)]
 pub struct Effects<'w, 's> {
     commands: Commands<'w, 's>,
     markers: Query<'w, 's, Entity, With<crate::chevron::RouteMarker>>,
     gps: Option<ResMut<'w, crate::gps::Gps>>,
     destination: MessageWriter<'w, crate::gps::SetDestination>,
-    cars: Query<
-        'w,
-        's,
-        (
-            &'static mut Car,
-            Option<&'static mut crate::ignition::EngineStart>,
-            Option<&'static mut crate::police_fx::FlashCar>,
-        ),
-        With<Player>,
-    >,
+    cars: Query<'w, 's, PlayerCarMut, With<Player>>,
     infinite: Option<ResMut<'w, InfiniteNitrous>>,
     placement: Option<ResMut<'w, PendingPlacement>>,
     race: Option<Res<'w, crate::race::RaceState>>,
