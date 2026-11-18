@@ -944,11 +944,10 @@ fn direct_route(from: Vec3, to: Vec3) -> AiRoute {
 }
 
 fn set_route(driver: &mut AiDriver, route: AiRoute) {
-    driver.route = Arc::new(route);
+    driver.set_route(Arc::new(route));
     driver.finished = None;
     driver.time = 0.0;
     driver.progress = 0.0;
-    driver.corner_speeds = None;
 }
 
 /// Every fixed tick, before the AI drivers: what each cop sees, what it does about it, where it drives and how
@@ -1175,7 +1174,6 @@ fn cop_brains(
         let fwd = t.rotation * Vec3::Z;
         let me = CarState::from_transform(t, v.0);
         let speed = v.0.length();
-        driver.state.lane_offset = 0.0;
         match cop.mode {
             CopMode::Chase => {
                 // `FUN_005240a0`: the low-speed chase near a slow (or crashed) player, and back.
@@ -1624,7 +1622,7 @@ fn log_police(
             cop.blocked,
             driver.progress,
             driver.route.length(),
-            driver.state.recovering.is_some(),
+            driver.recovering(),
             cop.lateral,
             cop.patrol.number(),
             match (cop.patrol.ghost(), traffic.as_ref()) {

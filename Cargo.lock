@@ -3988,6 +3988,7 @@ dependencies = [
  "hidapi",
  "image",
  "js-sys",
+ "mw-ai",
  "mw-assets",
  "mw-audio",
  "mw-bundle",
