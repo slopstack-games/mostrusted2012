@@ -5,7 +5,7 @@ Earlier handoffs: [handoffs-archive.md](handoffs-archive.md).
 
 **State** (master): clippy 0, `mw-logic` 252 tests, `mwtool verify` 0 failures, wasm-check 0. 911: 0–60 3.60 s,
 brake 38.3 m, corner 2.57 g, drift 37.3°, handbrake yaw 81°/s. `--race 462174` 27/27 gates (position 7, as before
-the switch), sprint 906146 10/10. Logic: 170 behaviour types, 160 / 187 hooks, 269 / 385 Lua natives.
+the switch), sprint 906146 10/10. Logic: 170 behaviour types, 160 / 187 hooks, 300 / 385 Lua natives.
 
 **Open** (research-log entries of 2026-11-17 / 18 hold the details):
 - **Skid / crash audio** loud and distorted after a race start, teleport, pause or car change (user, both builds).
