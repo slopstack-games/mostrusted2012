@@ -1,29 +1,33 @@
-# Handoff: 2026-11-18: start here
+# Handoff: 2026-11-18 (end of session): start here
 
 Keep this file short (≤ ~3 KB, user 2026-11-18): open items with a pointer each; details live in the research log.
 Earlier handoffs: [handoffs-archive.md](handoffs-archive.md).
 
-**State** (master): clippy 0, `mw-logic` 252 tests, `mwtool verify` 0 failures, wasm-check 0. 911: 0–60 3.60 s,
-brake 38.3 m, corner 2.57 g, drift 37.3°, handbrake yaw 81°/s. `--race 462174` 27/27 gates (position 7, as before
-the switch), sprint 906146 10/10. Logic: 170 behaviour types, 160 / 187 hooks, 300 / 385 Lua natives.
+**State** (master): clippy 0, `mw-logic` 275 tests, `mwtool verify` 0 failures, wasm-check 0. The logic (HSM) runs
+by default (`--no-hsm` to bisect); `--race <id>` starts through the logic's event start. 911: 0–60 3.60 s, brake
+38.3 m, handbrake yaw 81°/s. Races 462174 27/27, 906146 10/10. Logic: 170 behaviour types, 160 / 187 hooks,
+300 / 385 Lua natives. Races, event starts, car swaps and police run on the ported code.
 
-**Open** (research-log entries of 2026-11-17 / 18 hold the details):
-- **Skid / crash audio** loud and distorted after a race start, teleport, pause or car change (user, both builds).
-  The skid and impact sound logic is being ported from the code (2026-11-18 agent; read its entry). Meter switches:
-  `MW_AUDIO_METER`, `MW_AUDIO_STALL`. AI engine voices cost ~4 % of the audio thread each: races underrun.
-- **Handbrake** ported (`mw_handling::handbrake`): user to confirm in play. Open: decomp.md / handling.md text,
-  the turn and brake-to-drift replays, crashed lock lanes (+0x1774).
-- **Runtime on the logic's managers** (`world_logic.rs`): races done; event starts (`event_starts.rs`) and the car
-  swap (`jackspots.rs`) still to move; then `--hsm-event`, jack spot and world-marker checks.
-- **mw-ai / mw-police** crates ported, not wired in: specs in decomp.md "AI racers (ported)" (police spec still
-  to write). Unported AI parts: lane planner, racing line, re-plan.
-- **UI port**: survey only (research log "UI port (widget-tree renderer)"). Decision for the user: make `--hsm` the
-  default (the HUD drawn from the logic's widgets needs the logic in every run). Pause menu needs the menu widget's
-  native code first.
-- New Requests without a runtime handler: ActivateSpotting, CachePlayerScore, SwapGameMode, StartChallenge, ... (research log).
-- **Intermittent panic** (1 of 2 sprint runs, 2026-11-18): a command on a despawned entity right after a track unit
-  unloaded (`scratch/run.log` lost; no police / traffic reset / swap ran). Find the system (bevy `debug` feature names it).
+**Unmerged agent branches** (stopped at session end; each has a research-log entry saying where it stopped):
+- `worktree-agent-a3ae5e793088ee893`: AI racers drive through `mw-ai`, but only 1 of 5 finishes 462174 (was 5).
+  Follow-up on top of it: `worktree-agent-a1b7e69661d49d206` (obstacle sweep, racing line / lane planner). Merge
+  both only when the AI finish again.
+- `worktree-agent-ae89085bfd4e6c6f6`: engine sub-harmoniser / vehicle-bank rail (the skid distortion's last suspect).
+- `worktree-agent-abe4eab9f744d9496`: UI widget-tree renderer, HUD 371621 from widgets (replaces hud.rs drawing).
+- `worktree-agent-a9b92c3379235e3c7`: runtime handlers for today's new Requests / Queries.
+- `worktree-agent-a06f8818a04de4a11`: Lua natives, hard leftovers (PlaySound family, maths).
+Check each: `git log master..<branch>`, build, run the checks, merge with `scratch/merge.sh <id>` (git-ignored
+helper: union for doc conflicts) or redo.
+
+**Open**:
+- **Skid / crash audio** loud and distorted after a race start / teleport / pause / car change (user). Meter
+  switches `MW_AUDIO_METER`, `MW_AUDIO_STALL`. AI engine voices cost ~4 % of the audio thread each.
+- **Intermittent panic** (1 of 2 sprint runs): a command on a despawned entity right after a track unit unloaded.
+- **Handbrake**: user to confirm in play; turn / brake-to-drift replays need `mwtool capture` first.
+- **Police**: roadblocks, bust camera, spawn placement not wired (research log "mw-police in the runtime").
+- **Pages CI**: whole-target-dir cache and verbose log are new: check a run's time and the `cargo-timings` artifact.
+- Remaining HSM behaviour types (~30) call unnamed engine code: default model, not sonnet.
 - Docs split (big docs) still queued.
 
-**Agents**: `sonnet` at medium effort for well-specified ports (a 15-native batch costs ~100k tokens vs ~300k for
-default-model tasks); default model for RE design and integration.
+**Agents**: `sonnet` at medium effort for well-specified ports (~100–180k tokens a batch); default model for RE
+design and integration. Two agents porting overlapping topics duplicate work: give each a topic / file.
