@@ -2241,3 +2241,23 @@ IsCarWrecked (`FUN_006ba280`), SetCarStill (the false branch unread), GetNumOnli
 SetEMail / SetOriginID (string copy), IsSomethingDownloading, ClearTargetRoute (`FUN_00792390` x3), DisconnectFromServer
 (`FUN_0083dc00`), SetFriendInviteId / SetJoinPlayerId (string -> i64 `FUN_00d753c0`), SetRecommendationTimeToBeat,
 SetRolloutSweetRevenge (`FUN_0068ba20`), SaveControllerConfiguration, HasEasyDriveOptionBeenSeen, SetExitPointID.
+
+### 2026-11-18: Lua natives, ninth batch: feedback, sound, selection (195 of 385; `natives/lua_feedback.rs`)
+Handlers read from `re/out/live/text.asm`. Ported: GetSelectedVehicleId / GetSelectedColourId (selection record
+`*(G+0x2f404)` + 0x827c + local slot x 0xd8, ints +0x30 / +0x34), GetRoadCount (road table int +0xc),
+IsFeedbackSequenceLoaded (UIM+0x30a5c != 0 && +0x30868 == 1), IsFeedbackGroupLoaded (`FUN_00792590`: 7 entries x 0xc4
+from UIM+0x32858+0xb0, id +0, state +4, loaded = 3), IsHudMessageQueueEmpty (vtable +0x10 result and byte +0x7255, negated),
+GetRaceDistance (vtable +0xc gate, float), StartFeedbackSequence (byte UIM+0x316e1), SelectDefaultRollout (+0x8f90 = id,
++0x8f8c = 0), TryPopPageFromHistory (pushes false), and requests: LoadFeedbackGroup / UnloadFeedbackGroup
+(`FUN_007982e0` / `FUN_00798370`), RemoveMessage (`FUN_007b6130`), StopSound (`FUN_007a2100`), ApplyMixSnapshotSet /
+ClearMixSnapshotSet (`FUN_00798fb0`(id, on), push nil), PlayMusic (`FUN_0079f7b0`), PlaySpeech (`FUN_008408a0` when a != 0
+and b, c != -1), SetSelectedWorld, SetRolloutFromVehicleID. Model decisions: `FUN_00ebff20` in RemoveMessage taken to be
+`lua_isnumber`; vtable results are runtime fields; an empty slot reads 0.
+Skipped: StopFeedbackSequence / PlaySound / PlaySoundAtPlayer / PlayGameplayStream (use the globals 0x01178070 / 74,
+never written by plain code: unread), IsFeedbackSequenceActive (`FUN_007b0c20` partly read), IsMessageInQueue
+(`FUN_007b29b0`, vtables), IsSoundInQueue (`FUN_00792af0`), GetCameraPosition / Direction / GetGameplayCameraPosition
+(`FUN_00699ea0` pushes {x,y,z}; the return count is unclear), GetPlayerTopSpeedMPH and the vehicle / trigger getters
+(world vehicle tables), Has/SetEasyDriveOptionSeen (`FUN_006ecae0`, `FUN_007291b0`), IsAssetUnlocked (`FUN_0068cc30`),
+SaveControllerConfiguration (`FUN_008790d0`), HasFinishedStreamingCameraWorld (`FUN_005470e0` + `FUN_00531bc0`),
+ClearLoadingScreenLayout (UIM+0x2d204 mask), RequestSkipSequence, GetValue (string formatting).
+

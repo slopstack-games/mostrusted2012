@@ -70,6 +70,8 @@ pub struct SimFields {
     pub in_online_event: bool,
     /// G'+0x2f6fc: `SetPreEventSpeedwallPos`.
     pub speedwall_pos: i32,
+    /// The feedback / selection fields of [`lua_feedback`](super::lua_feedback).
+    pub feedback: super::lua_feedback::FeedbackFields,
 }
 
 /// The error record of the sign-in view model (VM +0x135c, +0x1360, +0x139c, +0x136d).

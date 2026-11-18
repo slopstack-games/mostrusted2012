@@ -45,6 +45,7 @@ pub mod hooks_ui;
 pub mod host;
 pub mod lua_args;
 pub mod lua_career;
+pub mod lua_feedback;
 pub mod lua_garage;
 pub mod lua_menus;
 pub mod lua_misc;
@@ -175,6 +176,7 @@ impl Registry {
         lua_menus::register(&mut r);
         lua_misc::register(&mut r);
         lua_sim::register(&mut r);
+        lua_feedback::register(&mut r);
         lua_garage::register(&mut r);
         r
     }

@@ -443,6 +443,19 @@ pub enum Request {
     /// `StopAllSounds` / `StopSpeech` / `StopGameplayStream` (0x00678420 / 0x006784e0 / 0x006784a0 ->
     /// `FUN_007a2140`(UIM+0x2d2f0, kind)): stop the sounds of one kind (0 = all, 2 = speech, 4 = gameplay stream).
     StopSounds { kind: u32 },
+    /// `LoadFeedbackGroup` / `UnloadFeedbackGroup` (0x0067de60 / 0x0067deb0 -> `FUN_007982e0` / `FUN_00798370` on
+    /// UIM+0x32858): load or release the feedback group `id`.
+    FeedbackGroup { load: bool, id: i32 },
+    /// `RemoveMessage` (0x0067dce0 -> `FUN_007b6130` on UIM+0x17e0): drop the HUD message `id`.
+    RemoveMessage { id: i32 },
+    /// `StopSound` (0x0067e160 -> `FUN_007a2100` on UIM+0x2d2f0): stop the sound `id`.
+    StopSound { id: i32 },
+    /// `ApplyMixSnapshotSet` / `ClearMixSnapshotSet` (0x0067e3e0 / 0x006785d0 -> `FUN_00798fb0`(UIM+0x2d2f0, id, on)).
+    MixSnapshot { id: i32, on: bool },
+    /// `PlayMusic` (0x0067e210 -> `FUN_0079f7b0` on UIM+0x30370).
+    PlayMusic { id: i32 },
+    /// `PlaySpeech` (0x0067e260 -> `FUN_008408a0`(G+0x2c3c0, a, b, c, 0)).
+    PlaySpeech { a: i32, b: i32, c: i32 },
     /// `StopTraffic` / `ResetTraffic` / `StartTraffic` (0x00678240 / 0x00678270 / 0x006782a0 -> `FUN_008461b0` /
     /// `FUN_00846240` / `FUN_00846270`): the message 6 / 8 / 0xa (argument 0) sent to the object at `*0x010edb30`+0x10
     /// (`FUN_0084e350` / `FUN_0084e4d0` / `FUN_0084e550`); the traffic system's reaction is the runtime's.
