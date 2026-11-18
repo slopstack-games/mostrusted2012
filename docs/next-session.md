@@ -12,7 +12,9 @@ by default (`--no-hsm` to bisect); `--race <id>` starts through the logic's even
 - `worktree-agent-a3ae5e793088ee893` + follow-up `worktree-agent-a1b7e69661d49d206` (0084d7a, builds): AI racers on
   `mw-ai`; 462174 now 6 of 7 AI finish (219–225 s; the crashes were our driver starting on the wrong lap segment).
   906146 panicked after a track unload (the intermittent panic below?); accel not run. Run the checks, then merge both.
-- `worktree-agent-ae89085bfd4e6c6f6`: engine sub-harmoniser / vehicle-bank rail (the skid distortion's last suspect).
+- `worktree-agent-ae89085bfd4e6c6f6` (48987e7, builds): engine sub-harmoniser ported (0x00aad950: |x|, never flips
+  sign; ours was a square wave that could flip at the rail, matching the user's recording), distortion and BandPass
+  from the code. Open: its DC (+0.045 / +0.083 vs the original's +0.0024; a DC block?), live before / after not run.
 - `worktree-agent-abe4eab9f744d9496`: UI widget-tree renderer, HUD 371621 from widgets (replaces hud.rs drawing).
 - `worktree-agent-a9b92c3379235e3c7`: runtime handlers for today's new Requests / Queries.
 Check each: `git log master..<branch>`, build, run the checks, merge with `scratch/merge.sh <id>` (git-ignored
