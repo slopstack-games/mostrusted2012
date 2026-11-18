@@ -11,6 +11,29 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+## 2026-11-18: bug hunt round 2, game-flow / UI / audio side of `mostrusted` (code reading, no install)
+
+Fixed (no behaviour of the original involved; robustness and a settings parse):
+- `logic_effects.rs` `Feed::fill`: the camera query was `With<Camera3d>`; with the planar reflection on there are
+  two 3D cameras (`reflection.rs`), `single()` failed and the logic's camera position / direction were never fed.
+  Now `crate::MainCamera`.
+- `settings.rs` `AudioSettings::apply`: `music=1%` meant 100 % (a `%` value of 1 or less was not divided by 100);
+  `nan` gave NaN gains. Unit test `small_percentages_and_nan`.
+- `race.rs` `apply_checkpoints`: an AI racer in grid slot ≥ 12 indexed `ai_cp[24+]` (panic); `fill_checkpoints`
+  already skips those slots. Now skipped here too.
+- `cutscene.rs`: `Players.Racer[0]` made `n as usize - 1` underflow (debug panic); now `checked_sub`.
+
+Suspected, not changed (need a run or a design decision):
+- Pause ownership: the streaming stall (`streaming.rs`) and the logic's `SimPause` (`logic.rs`) unpause
+  `Time<Virtual>` when their reason ends even if the pause menu / map opened meanwhile (those then saw the clock
+  already paused and will not restart it): the world runs under the open menu. Needs a shared pause-reason count.
+- `police.rs` bust outcome: pending cop orders (`entity: None`) are kept and not cancelled, so cops ordered just
+  before the bust arrive after `RemoveAllCops` (pursuit-kind spawns start in `CopMode::Chase`).
+- `roadblock.rs`: props of a roadblock removed while its loader requests are in flight arrive later with the old
+  tag and are never removed.
+- `world_logic.rs` plain play: a second event start after `RaceOver` leaves `awaiting_event` set forever (the race
+  is refused), so the event starts stay off for the rest of the run.
+
 ## 2026-11-18: bug hunt in mw-handling, mw-ai, mw-police (code-level defects, no install)
 
 **Fixed** (each with a failing test first):

@@ -86,9 +86,15 @@ impl AudioSettings {
     pub fn apply(&mut self, text: &str) {
         for pair in text.split([',', '\n']) {
             let Some((k, v)) = pair.split_once('=') else { continue };
-            let Ok(mut v) = v.trim().trim_end_matches('%').parse::<f32>() else { continue };
-            if v > 1.0 {
+            let v = v.trim();
+            let percent = v.ends_with('%');
+            let Ok(mut v) = v.trim_end_matches('%').parse::<f32>() else { continue };
+            // A `%` value is always a percentage ("1%" is 0.01, not 1.0); a bare one above 1 is too.
+            if percent || v > 1.0 {
                 v /= 100.0;
+            }
+            if v.is_nan() {
+                continue;
             }
             let v = v.clamp(0.0, 1.0);
             match k.trim().to_ascii_lowercase().as_str() {
@@ -328,5 +334,14 @@ mod tests {
         let mut t = AudioSettings::default();
         t.apply(&s.to_text());
         assert_eq!(s, t);
+    }
+
+    #[test]
+    fn small_percentages_and_nan() {
+        let mut s = AudioSettings::default();
+        s.apply("master=1%,music=0.5%,sfx=nan");
+        assert!((s.master - 0.01).abs() < 1e-6);
+        assert!((s.music - 0.005).abs() < 1e-6);
+        assert_eq!(s.sfx, 1.0);
     }
 }
