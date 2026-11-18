@@ -560,8 +560,36 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
   the wheel's velocity relative to the chassis at its centre loses everything across the strut, and along it
   (positive towards the top) only min(s, 0) is kept while +0x30 ≥ 1, only max(s, 0) while +0x30 ≤ 0; the impulse
   goes the same way. `FUN_009c6230` then writes the wheel record's +0x3c / +0x4c lanes from the joint (+0x70 lerp
-  by +0x30) and calls `FUN_0096d650`. Ported in drive.rs (`suspension::strut_position_error` /
-  `strut_velocity_error`; along the strut only, ours moves the wheel along the car's up axis).
+  by +0x30) and calls `FUN_0096d650` (the wheel record's orientation from its spin angle +0x1c). The arm
+  variant's velocity pass (`FUN_009c3d70`) takes the wheel centre into the chassis frame (`FUN_006b7460`), d =
+  centre − pivot, A = top − bottom, and uses the arc's tangent (d × A) × d (A without its part along d,
+  normalised, rotated into the world) instead of A / |A|; the rest is `FUN_009c3ae0`'s. Ported in full 3D
+  2026-11-18 (`mw_handling::suspension::StrutJoint`, drive.rs): the wheel record is a free point mass that only
+  this joint ties to the chassis.
+- **Strut joint builder** (`FUN_009c3650`, 2026-11-18; `FUN_009b40c0` → `FUN_00933790`, which takes an element
+  from the world's type-3 pool, +0x388, and `FUN_009ba490` clears it): arguments chassis, wheel record, their ids,
+  the strut's top and bottom in the world (the wheel's x and z, y = `caac331c` + `b867a203` / + `7fc0dc41`), the
+  arm flag (`WheelSuspensionConstraint` +0x28, `b1c680d5`), then that constraint's +0x20 arm length
+  (`c2a87807`), +0x10 `Angle` (`efd741ee`, × 0.0174533 `.rdata` 0x01025930), +0x1c / +0x18 (`668c92ac` /
+  `447b4e1c`, the camber at the top / bottom: joint +0x70 / +0x74 = −value × 0.0174533 × s). With s the sign of
+  the top's x (1, −1, 0) and a the angle (sin / cos by polynomials, `.rdata` 0x01075470..0x01075554): top.x +=
+  ½ Δy sin a × s, bottom.x −= the same; pivot = the tilted strut's middle + (−s cos a × arm, sin a × arm, 0); +0x30
+  zeroed; all three points taken into the chassis frame (`FUN_006b7460`). Checked against the 40 joints of snap1
+  (XKR: Angle 5, arm 2, flag 1 → top 0.8018, bottom 0.7882, pivot (−1.1974, 0.0198); traffic: Angle 0, arm 1,
+  flag 0 → the pivot 1 m inside the middle). The XKR's four wheel records in snap1 lie on the arm's arc within
+  5e-5 m (1.2 mm off the straight strut at the rear). The flag is set on 134 of the 158 constraint objects (all
+  but traffic's 22 and two others).
+- **+0x30's writer** is still unknown (2026-11-18): the builder zeroes it; no store to [reg+0x30] in the joint's
+  passes (`FUN_009c4050`, `FUN_009c42d0`, `FUN_009c3ae0`, `FUN_009c3d70`, `FUN_009c6230`); the stores near a
+  min/max clamp elsewhere are the tyre's (`FUN_00905910`, `FUN_009c75b0` region) and other systems'. The
+  vehicle-state getter `FUN_008f7140` reads it (with the wheel's speed along the strut) and the setter
+  `FUN_008f72f0` (from `FUN_008fc4d0`, the network / replay state apply) puts the wheel record at bottom +
+  t (top − bottom) moving with the chassis plus that speed along the strut, and writes joint +0x20. In snap1 the
+  stored t lags the wheel records' current projection by 0.035–0.06.
+- **Spring anchor** (2026-11-18, `FUN_009b40c0` → `FUN_009b29b0` → `FUN_00933930` → `FUN_00925620`): the
+  element's anchor (+0x20, taken into the chassis frame) is the wheel's x and z at y = `caac331c` +
+  `WheelSuspensionSpringConstraint.02f99a20` (+0x1c of the wheel's spring constraint), the rest length (+0x10)
+  |anchor − wheel| + W / k. XKR: 0.143 + 0.527 = 0.670 model = 0.22 body frame (frame offset 0.45), as read live.
 - **`FUN_009c62e0` / `FUN_009c5840` (contact pass) and `FUN_009c4e10` / `FUN_009c1fb0` (sub-steps) are body
   contacts**, not joints: a body's list of world contact records (+0x80, count +0x59; normal, world point, local
   point, mass +0x34): the position pass pushes the body out by mass × penetration / dt per record (`FUN_009c5840`
@@ -685,8 +713,8 @@ the steering **into** the drift (steering is positive to the right), i.e. S = �
   physics). `FUN_0095b4d0` adds a constraint record per entry and points +0x4a0 at entry 0's. Live (research log
   2026-10-19): on a kerb's edge A is on the cylinder's rim ahead of the axle and B on the edge straight above it,
   the normal the top face's. Ported in `mw_handling::wheel_probe`. Still unknown: the narrow phase (which entry is
-  first when several triangles touch). The wheel record is held on its strut by the strut joint (above; ours moves
-  the wheel along the body's up axis only).
+  first when several triangles touch). The wheel record is held on its strut by the strut joint (above; ported in
+  3D 2026-11-18).
 
 ## Wheel placement (2026-10-10, ported in `mw_assets::wheel_layout`)
 

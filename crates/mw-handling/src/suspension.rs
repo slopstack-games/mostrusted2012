@@ -94,44 +94,139 @@ pub fn stop_excess(d: f32, slack: f32) -> Option<(f32, f32)> {
     Some((excess, (excess / d.max(f32::EPSILON)).clamp(0.0, 1.0)))
 }
 
-/// The strut joint's position pass (`FUN_00928cd0` → `FUN_009c6230` → `FUN_009c4050`, or `FUN_009c42d0` when the
-/// joint's +0x80 is set: the same with the wheel on an arc about the arm pivot +0x60), once per contact pass after
-/// the wheel constraints. The joint is the strut object (vehicle +0x10f0 + 8i): +0x40 top, +0x50 bottom in the
-/// chassis frame. The wheel record's centre predicted for the end of the tick (centre + v dt) is projected onto the
-/// strut predicted the same way (`FUN_009eab00`: chassis point + its velocity × dt), the projection clamped to the
-/// segment; what lies beyond (and anything across the strut) is removed in one go: the impulse err / dt through
-/// the effective mass (the chassis's at the wheel centre along err, `FUN_009e8230`, plus the wheel's 1/m) goes to
-/// the chassis at the wheel centre and against the wheel. `y_pred` is the predicted position along the strut
-/// relative to the rest position, `bottom` / `top` the strut's ends (negative / positive); returns the part of it
-/// beyond them (positive above the top), 0 within. The game skips errors at or below FLT_EPSILON (`.rdata`
-/// 0x010258a0).
-pub fn strut_position_error(y_pred: f32, bottom: f32, top: f32) -> f32 {
-    let err = if y_pred > top {
-        y_pred - top
-    } else if y_pred < bottom {
-        y_pred - bottom
-    } else {
-        0.0
-    };
-    if err.abs() > f32::EPSILON { err } else { 0.0 }
+/// A point or direction (x, y, z).
+pub type V3 = [f32; 3];
+
+/// `.rdata` 0x01025930 (0.0174533 in all lanes, read from NFS13.exe on disk): degrees to radians in the strut
+/// joint's builder `FUN_009c3650`.
+pub const DEG_TO_RAD: f32 = 0.017_453_3;
+
+/// The strut joint (decomp.md "Strut joint"): the strut object at vehicle +0x10f0 + 8i, a world joint (element
+/// type 3) between the chassis and the wheel record that holds the wheel on its strut. Points are in the chassis
+/// frame: +0x40 top, +0x50 bottom, +0x60 the arm's pivot; +0x80 the arm flag (the wheel moves on an arc about the
+/// pivot instead of along the strut).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StrutJoint {
+    pub top: V3,
+    pub bottom: V3,
+    pub pivot: V3,
+    pub arm: bool,
 }
 
-/// The strut joint's velocity pass (`FUN_00928fb0` → `FUN_009c62c0` → `FUN_009c3ae0`, or `FUN_009c3d70` for the
-/// arm), in each sub-step before the wheel contacts' impulse pass: the wheel's velocity relative to the chassis
-/// at its centre loses everything across the strut, and along it (`s`, positive towards the top) what would
-/// carry it past an end it is at: with the joint's position parameter `t` (+0x30: 0 at the bottom, 1 at the top)
-/// at 1 or more only `min(s, 0)` is kept, at 0 or less only `max(s, 0)`. Returns the part of `s` to remove (the
-/// impulse goes as in [`strut_position_error`], without the 1 / dt).
-pub fn strut_velocity_error(s: f32, t: f32) -> f32 {
-    let allowed = if t >= 1.0 {
-        s.min(0.0)
-    } else if t <= 0.0 {
-        s.max(0.0)
-    } else {
-        s
-    };
-    let err = s - allowed;
-    if err.abs() > f32::EPSILON { err } else { 0.0 }
+impl StrutJoint {
+    /// The builder `FUN_009c3650` (from `FUN_009b40c0` through `FUN_00933790`), from the strut's untilted ends
+    /// (the wheel's x and z, y = `caac331c` + `b867a203` / + `7fc0dc41`) and the suspension constraint's `Angle`
+    /// (degrees, × `DEG_TO_RAD`), arm length `c2a87807` and arm flag `b1c680d5`. With s the side (the sign of the
+    /// top's x: 1, −1, or 0 on the centre line) and a the angle, the top moves out by ½ Δy sin a × s and the bottom
+    /// in by as much (the top sits outboard of the bottom), and the pivot sits the arm's length from the strut's
+    /// middle, perpendicular to it, towards the car's centre: middle + (−s cos a × arm, sin a × arm, 0). Checked
+    /// against the 40 strut joints of snap1 (XKR front: top 0.8018 / bottom 0.7882, pivot (−1.1974, 0.0198) from
+    /// x 0.795, y −0.077 / −0.232, Angle 5, arm 2; traffic with Angle 0, arm 1: the pivot 1 m inside the middle).
+    pub fn build(top: V3, bottom: V3, angle: f32, arm_length: f32, arm: bool) -> Self {
+        let a = angle * DEG_TO_RAD;
+        let s = sign(top[0]);
+        let lean = 0.5 * (top[1] - bottom[1]) * a.sin() * s;
+        let top = [top[0] + lean, top[1], top[2]];
+        let bottom = [bottom[0] - lean, bottom[1], bottom[2]];
+        let mid: V3 = std::array::from_fn(|i| (top[i] - bottom[i]) * 0.5 + bottom[i]);
+        let pivot = [mid[0] - a.cos() * arm_length * s, mid[1] + a.sin() * arm_length, mid[2]];
+        Self { top, bottom, pivot, arm }
+    }
+
+    /// Where a wheel at `wheel` (chassis frame) stands along the strut: its projection, 0 at the bottom and 1 at
+    /// the top (unclamped). The joint's +0x30 holds such a parameter for the velocity pass; its writer was not found
+    /// (handling.md "Model decisions").
+    pub fn parameter(&self, wheel: V3) -> f32 {
+        let a = sub(self.top, self.bottom);
+        let len2 = dot(a, a);
+        if len2 > 0.0 { dot(a, sub(wheel, self.bottom)) / len2 } else { 0.0 }
+    }
+
+    /// The direction the wheel may move in at `wheel` (chassis frame, unit): along the strut (`FUN_009c3ae0`:
+    /// (top − bottom) / |…|), or for the arm the arc's tangent (`FUN_009c3d70`: with d = wheel − pivot and
+    /// A = top − bottom, (d × A) × d normalised, A without its part along d).
+    pub fn axis(&self, wheel: V3) -> V3 {
+        let a = sub(self.top, self.bottom);
+        if !self.arm {
+            return normalize(a);
+        }
+        let d = sub(wheel, self.pivot);
+        normalize(cross(cross(d, a), d))
+    }
+
+    /// The position pass (`FUN_00928cd0` → `FUN_009c6230` → `FUN_009c4050`, or `FUN_009c42d0` for the arm), once
+    /// per contact pass after the wheel constraints. Everything predicted for the end of the tick: `wheel` the
+    /// wheel record's centre + v dt, `top`, `bottom`, `pivot` the joint's points in the world + the chassis's velocity
+    /// there × dt (`FUN_009eab00`). The wheel's projection onto the strut, t = (top − bottom) · (wheel − bottom) /
+    /// |top − bottom|², is clamped to 0..1 (q = bottom + t (top − bottom)); the target is q, or for the arm the point
+    /// on the line pivot → q at the radius lerped by t between the bottom's and the top's distance from the pivot
+    /// (taken in the chassis frame from the joint itself). Returns the error wheel − target, zero when no component
+    /// exceeds FLT_EPSILON (`.rdata` 0x010258a0, `movmskps` over x, y, z). The caller removes it in one go: the
+    /// impulse err / dt through the effective mass along err (the chassis's at the wheel centre, `FUN_009e8230`,
+    /// plus the wheel's 1/m +0x58) goes to the chassis at the wheel centre (`FUN_009ca290` + `FUN_00907840`) and
+    /// against the wheel.
+    pub fn position_error(&self, wheel: V3, top: V3, bottom: V3, pivot: V3) -> V3 {
+        let a = sub(top, bottom);
+        let len2 = dot(a, a);
+        let t = if len2 > 0.0 { (dot(a, sub(wheel, bottom)) / len2).clamp(0.0, 1.0) } else { 0.0 };
+        let q = add(bottom, scale(a, t));
+        let target = if self.arm {
+            let r_bottom = length(sub(self.bottom, self.pivot));
+            let r_top = length(sub(self.top, self.pivot));
+            add(pivot, scale(normalize(sub(q, pivot)), (r_top - r_bottom) * t + r_bottom))
+        } else {
+            q
+        };
+        gate(sub(wheel, target))
+    }
+
+    /// The velocity pass (`FUN_00928fb0` → `FUN_009c62c0` → `FUN_009c3ae0`, or `FUN_009c3d70` for the arm), in
+    /// each sub-step before the wheel contacts' impulse pass. `rel` is the wheel record's velocity minus the
+    /// chassis's at the wheel centre (`FUN_0059eb20`), `axis` [`StrutJoint::axis`] in the world, `t` the joint's
+    /// position parameter (+0x30). Everything across the axis goes, and along it (s = rel · axis, positive towards
+    /// the top) what would carry the wheel past an end it is at: with t ≥ 1 (`.rdata` 0x01025830) only min(s, 0) is
+    /// kept, with t ≤ 0 only max(s, 0). Returns the velocity error rel − kept × axis (zero under FLT_EPSILON as in
+    /// [`StrutJoint::position_error`]); the impulse goes the same way, without the 1 / dt.
+    pub fn velocity_error(rel: V3, axis: V3, t: f32) -> V3 {
+        let s = dot(rel, axis);
+        let kept = if t >= 1.0 { s.min(0.0) } else { s };
+        let kept = if t <= 0.0 { kept.max(0.0) } else { kept };
+        gate(sub(rel, scale(axis, kept)))
+    }
+}
+
+fn gate(v: V3) -> V3 {
+    if v.iter().all(|c| c.abs() <= f32::EPSILON) { [0.0; 3] } else { v }
+}
+
+fn add(a: V3, b: V3) -> V3 {
+    std::array::from_fn(|i| a[i] + b[i])
+}
+
+fn sub(a: V3, b: V3) -> V3 {
+    std::array::from_fn(|i| a[i] - b[i])
+}
+
+fn scale(a: V3, k: f32) -> V3 {
+    a.map(|c| c * k)
+}
+
+fn dot(a: V3, b: V3) -> f32 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn cross(a: V3, b: V3) -> V3 {
+    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+}
+
+fn length(a: V3) -> f32 {
+    dot(a, a).sqrt()
+}
+
+/// Unit vector, zero for a zero one (ours: the game's rsqrt has no guard there).
+fn normalize(a: V3) -> V3 {
+    let l = length(a);
+    if l > 0.0 { scale(a, 1.0 / l) } else { [0.0; 3] }
 }
 
 /// Gravity on a wheel record in one sub-step (`FUN_009282d0`, the wheels' loop): its velocity gains
@@ -160,16 +255,51 @@ fn sign(x: f32) -> f32 {
 mod tests {
     use super::*;
 
+    fn close(a: V3, b: V3, eps: f32) -> bool {
+        a.iter().zip(b).all(|(x, y)| (x - y).abs() < eps)
+    }
+
     #[test]
-    fn strut_joint_limits_only_past_the_ends() {
-        assert_eq!(strut_position_error(0.02, -0.09, 0.05), 0.0);
-        assert!((strut_position_error(0.08, -0.09, 0.05) - 0.03).abs() < 1e-6);
-        assert!((strut_position_error(-0.12, -0.09, 0.05) + 0.03).abs() < 1e-6);
-        // At the top only the motion further up goes; at the bottom only further down; between, nothing.
-        assert_eq!(strut_velocity_error(1.5, 1.0), 1.5);
-        assert_eq!(strut_velocity_error(-1.5, 1.0), 0.0);
-        assert_eq!(strut_velocity_error(-1.5, 0.0), -1.5);
-        assert_eq!(strut_velocity_error(1.5, 0.5), 0.0);
+    fn strut_joint_built_as_in_snap1() {
+        // XKR front right (snap1, joint 0x07ba1f00): x 0.795 (model 0.7949), top −0.077, bottom −0.232 (body
+        // frame), Angle 5, arm 2, flag set.
+        let j = StrutJoint::build([0.795, -0.077, 1.291], [0.795, -0.232, 1.291], 5.0, 2.0, true);
+        assert!(close(j.top, [0.8018, -0.077, 1.291], 2e-4));
+        assert!(close(j.bottom, [0.7882, -0.232, 1.291], 2e-4));
+        assert!(close(j.pivot, [-1.1974, 0.0198, 1.291], 2e-4));
+        // The left side mirrors.
+        let l = StrutJoint::build([-0.795, -0.077, 1.291], [-0.795, -0.232, 1.291], 5.0, 2.0, true);
+        assert!(close(l.top, [-0.8018, -0.077, 1.291], 2e-4) && close(l.pivot, [1.1974, 0.0198, 1.291], 2e-4));
+        // A traffic strut (Angle 0, arm 1): straight, the pivot 1 m inside its middle.
+        let t = StrutJoint::build([0.785, -0.1953, 1.365], [0.785, -0.3703, 1.365], 0.0, 1.0, false);
+        assert!(close(t.pivot, [-0.215, -0.2828, 1.365], 1e-4));
+    }
+
+    #[test]
+    fn strut_joint_holds_the_wheel_on_its_arc() {
+        let j = StrutJoint::build([0.8, 0.1, 0.0], [0.8, -0.1, 0.0], 5.0, 2.0, true);
+        // A wheel on the arc at mid travel: no error; moved 1 cm sideways: the error is that 1 cm.
+        let on = j.position_error(j.bottom, j.top, j.bottom, j.pivot);
+        assert_eq!(on, [0.0; 3]);
+        let off = j.position_error(add(j.bottom, [0.01, 0.0, 0.0]), j.top, j.bottom, j.pivot);
+        assert!(close(off, [0.01, 0.0, 0.0], 1e-3));
+        // Above the top: pulled back to it.
+        let above = j.position_error(add(j.top, [0.0, 0.05, 0.0]), j.top, j.bottom, j.pivot);
+        assert!(above[1] > 0.04);
+        // The arc's tangent is (nearly) the strut's direction, square to the pivot.
+        let axis = j.axis(j.bottom);
+        assert!(dot(axis, sub(j.bottom, j.pivot)).abs() < 1e-5 && axis[1] > 0.99);
+    }
+
+    #[test]
+    fn strut_joint_velocity_limits_only_past_the_ends() {
+        let up = [0.0, 1.0, 0.0];
+        // Across always goes; along, between the ends nothing.
+        assert_eq!(StrutJoint::velocity_error([0.3, 1.5, 0.0], up, 0.5), [0.3, 0.0, 0.0]);
+        // At the top only the motion further up goes; at the bottom only further down.
+        assert_eq!(StrutJoint::velocity_error([0.0, 1.5, 0.0], up, 1.0), [0.0, 1.5, 0.0]);
+        assert_eq!(StrutJoint::velocity_error([0.0, -1.5, 0.0], up, 1.0), [0.0; 3]);
+        assert_eq!(StrutJoint::velocity_error([0.0, -1.5, 0.0], up, 0.0), [0.0, -1.5, 0.0]);
     }
 
     #[test]

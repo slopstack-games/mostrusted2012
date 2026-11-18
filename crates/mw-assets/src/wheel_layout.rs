@@ -23,6 +23,13 @@
 //! −0.512 / −0.557, so 0.174 / 0.224 m of bump travel above the wheel's rest; on the XKR (snapshot snap1) 0.056 /
 //! 0.067 m, both by this rule (2026-10-19).
 //!
+//! The strut joint's builder (`FUN_009c3650`, from `FUN_009b40c0` through `FUN_00933790`) takes the same
+//! constraint's `Angle` (`efd741ee`, +0x10, degrees), arm length `c2a87807` (+0x20) and arm flag `b1c680d5` (+0x28):
+//! [`RestWheel::strut_joint`]. The spring element's chassis anchor (element +0x20) sits at the wheel's x and z,
+//! y = `caac331c` + `WheelSuspensionSpringConstraint.02f99a20` (+0x1c of the wheel's spring constraint, read in
+//! `FUN_009b40c0`; snap1: the XKR's anchor at 0.22 in the body frame = 0.143 + 0.527 − 0.45 ✓):
+//! [`RestWheel::spring_anchor`] (2026-11-18).
+//!
 //! Traffic (kinematic, `FUN_005ee7f0`) uses the same axles with the front-left radius for every wheel and no
 //! spring: (x, R_FL, z) − T, T = the translation of `VehicleInfo.509931cd`. The tyre's bottom then sits at
 //! y = −T.y in model space, as the player's does at rest (`caac331c` − `2f5fb582` ≈ −T.y on every car).
@@ -42,6 +49,13 @@ const HALF_EXTENTS: u32 = 0x98e9_02ed;
 /// `WheelSuspensionConstraint` +0x24 / +0x14: the strut's top and bottom above `caac331c`.
 const STRUT_TOP: u32 = 0xb867_a203;
 const STRUT_BOTTOM: u32 = 0x7fc0_dc41;
+/// `WheelSuspensionConstraint` +0x10 / +0x20 / +0x28: the strut's tilt (degrees), arm length and arm flag.
+const STRUT_ANGLE: u32 = 0xefd7_41ee;
+const STRUT_ARM: u32 = 0xc2a8_7807;
+const STRUT_ARM_ON: u32 = 0xb1c6_80d5;
+/// `WheelSuspensionSpringConstraint` +0x1c: the spring's chassis anchor above `caac331c`.
+const SPRING_ANCHOR: u32 = 0x02f9_9a20;
+const SPRING_TYPE: &str = "Genesys.Gen.WheelSuspensionSpringConstraint";
 
 /// One wheel where the game places it.
 #[derive(Debug, Clone)]
@@ -56,6 +70,21 @@ pub struct RestWheel {
     pub radius: f32,
     /// The strut's top and bottom, model-space y (`None` without the constraint's data).
     pub strut: Option<[f32; 2]>,
+    /// The strut joint's shape from the same constraint (`None` without it).
+    pub strut_joint: Option<StrutJointData>,
+    /// The spring element's chassis anchor, model-space y (`None` without the spring constraint's data).
+    pub spring_anchor: Option<f32>,
+}
+
+/// The `WheelSuspensionConstraint` fields the strut joint's builder `FUN_009c3650` takes besides the strut's ends.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StrutJointData {
+    /// `Angle` (`efd741ee`): the strut's tilt, degrees.
+    pub angle: f32,
+    /// `c2a87807`: the arm's length (m), from the strut's middle to its pivot.
+    pub arm: f32,
+    /// `b1c680d5`: the wheel moves on the arm's arc (joint +0x80), not along the strut.
+    pub arm_on: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -155,15 +184,31 @@ impl AssetStore {
                 let Some(body) = names.iter().position(|n| n == child) else { continue };
                 let Some(Value::Struct(b)) = bodies.get(body) else { continue };
                 let Some(radius) = body_radius(b) else { continue };
-                let strut = handle(wheel.get(field_hash("Suspension_Constraint")))
-                    .and_then(|id| self.genesys_object(id).ok())
-                    .and_then(|c| Some([reference + float(&c, STRUT_TOP)?, reference + float(&c, STRUT_BOTTOM)?]));
+                let constraint =
+                    handle(wheel.get(field_hash("Suspension_Constraint"))).and_then(|id| self.genesys_object(id).ok());
+                let strut = constraint
+                    .as_ref()
+                    .and_then(|c| Some([reference + float(c, STRUT_TOP)?, reference + float(c, STRUT_BOTTOM)?]));
+                let strut_joint = constraint.as_ref().and_then(|c| {
+                    Some(StrutJointData {
+                        angle: float(c, STRUT_ANGLE)?,
+                        arm: float(c, STRUT_ARM)?,
+                        arm_on: matches!(c.get(STRUT_ARM_ON), Some(Value::Bool(true))),
+                    })
+                });
+                // The wheel's spring constraint: whichever of its handles names one.
+                let spring_anchor = wheel.fields.iter().find_map(|(_, v)| {
+                    let c = self.genesys_object(handle(Some(v))?).ok()?;
+                    if c.type_name == SPRING_TYPE { float(&c, SPRING_ANCHOR).map(|a| reference + a) } else { None }
+                });
                 wheels.push(RestWheel {
                     body,
                     name: child.clone(),
                     position: [x, reference + radius - ground, z],
                     radius,
                     strut,
+                    strut_joint,
+                    spring_anchor,
                 });
             }
         }
