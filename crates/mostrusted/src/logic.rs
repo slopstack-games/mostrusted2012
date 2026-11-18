@@ -141,6 +141,10 @@ pub struct LogicPlugin {
     pub profile: Option<std::path::PathBuf>,
     /// `--volume`: applied on top of the saved settings when the logic applies the profile's settings.
     pub volume: Option<String>,
+    /// A direct `--drive` (no start-up flow, no `--hsm-event`): the machine has no front end to boot through to the
+    /// free drive, so the world managers run in plain play (`world_logic::step_plain`). A plain run (title → free
+    /// roam) and `--race` / `--hsm-event` are not direct: the free drive's machine runs the managers.
+    pub direct: bool,
 }
 
 impl Plugin for LogicPlugin {
@@ -154,6 +158,7 @@ impl Plugin for LogicPlugin {
             new_profile: self.new_profile,
             profile: self.profile.clone(),
             volume: self.volume.clone(),
+            direct: self.direct,
             pending: None,
         })
         .insert_resource(crate::music::SongListRequest::default())
@@ -186,6 +191,7 @@ struct Setup {
     new_profile: bool,
     profile: Option<std::path::PathBuf>,
     volume: Option<String>,
+    direct: bool,
     pending: Option<Mutex<Receiver<Result<Loaded, String>>>>,
 }
 
@@ -241,7 +247,7 @@ fn receive(world: &mut World) {
         _ => return,
     };
     setup.pending = None;
-    let new_profile = setup.new_profile;
+    let (new_profile, direct) = (setup.new_profile, setup.direct);
     let (profile_path, volume) = (setup.profile.clone(), setup.volume.clone());
     let Loaded { data, events, ids } = match got {
         Ok(l) => l,
@@ -317,9 +323,10 @@ fn receive(world: &mut World) {
     // The world managers (checkpoints, event starts, car swap) run on the logic's state from now on; their outcomes
     // go to `world_logic.rs` (`WorldLogic::outbox`).
     // A direct `--drive` without an event never reaches the machine's free-drive managers (no front end to boot
-    // through): its managers run on the same state in plain play (`world_logic::step_plain`).
-    let direct = matches!(world.resource::<crate::Game>().request, crate::loader::Request::Drive { .. })
-        && world.resource::<HsmEvent>().0.is_none();
+    // through): its managers run on the same state in plain play (`world_logic::step_plain`). The plain run boots
+    // (title → free roam) on a `Request::Drive` too, so the flag comes from main.rs ([`LogicPlugin::direct`]): with
+    // `Request::Drive` alone the played game ran the plain managers beside the machine's (both stepping the event
+    // starts, `checkpoints_plain` beside `CHECKPTS`), unlike `--race`, whose `--hsm-event` made it driven.
     let world_out = match world.get_non_send_mut::<crate::world_logic::WorldLogic>() {
         Some(mut w) => {
             w.state = logic.state.clone();

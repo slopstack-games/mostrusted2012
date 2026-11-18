@@ -11,6 +11,43 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+## 2026-11-18: "races won't start when played": the played run was not driven (code reading, no install)
+
+The played paths traced end to end (Easy Drive / map / pause-menu race list / burnout at a start → `PlayEvent` →
+logic.rs `tick` → `EventChoice` (908987 `EZ_RIGHT`, 1135029 `TO_EVENT`) or the logic's own event starts →
+`LoadEventData` → `Respawn` → `race::StartRace` → event card → intro) and compared with `--race`.
+- **Cause 1 (regression 073ee64, default since c000808)**: logic.rs `receive` set `WorldLogic::driven = !direct`
+  with `direct = Request::Drive && no --hsm-event`. The plain run (title → free roam, `boot_start`) is a
+  `Request::Drive` too, so the played game ran the world managers in plain play beside the machine's: the event
+  starts stepped by both `step_plain` and the HSM's "Do Event Starts" (a burnout: plain `apply_outcomes` cleared the
+  logic's event request with `request_event(0)` and sent `PlayEvent`, the free-drive machine ended on a cleared
+  request), `checkpoints_plain` stepped beside `CHECKPTS` while `checkpoints_inputs` / `_outcomes` (the HSM race's
+  inputs before `LogicTick`) were off. `--race` became `--hsm-event`, so it was driven: why the headless tests passed.
+  Fix: main.rs passes `LogicPlugin::direct` (`Request::Drive`, no `boot_start`, no `--hsm-event`).
+- **Cause 2 (073ee64)**: driven, a burnout at an event start never got its set-up: the logic's `EVENTSTARTS`
+  chooses (`request_event`), `LoadEventData` waits for the runtime's `RaceSetup` (logic.rs: "event_starts.rs sends
+  it"), but `apply_outcomes` returned early when driven (`awaiting_event` is plain-only). Before 073ee64 the module
+  sent `PlayEvent` in every mode. Fix: driven, `apply_outcomes` sends `PlayEvent` once per `chosen`
+  (`driven_choice`, re-armed when the manager's enter clears `chosen`); test `driven_choice_once_per_choice`.
+- **Fixed, latent**: `fill_inputs` pushed the event list once; when logic.rs hands `WorldLogic` the host's state after
+  that push, the logic's manager had no events (no starts, no prompt). Pushed again while the list is empty.
+- **Fixed**: the event card's "a race is already running" refusal (map START RACE from the pause menu during a
+  race) kept the map's `Menu` pause reason: the clock stayed stopped. Released there as in the DLC refusal.
+
+Open (need a run with the install):
+- A direct `--drive <car>` run still inserts `RaceDriven` (LogicPlugin enabled): the card waits for the logic's
+  `StartRace`, which only comes if the machine reaches 908987. 073ee64 says a direct run never reaches the free
+  drive; if so every race start there hangs on the card. Settle: `MW_CARD_SHOTS=<dir> tools/t --drive "v12 vantage" --units 20
+  --spawn=1600,40,2350 --map-start 1909234` (look for `hsm: ... chosen in the runtime` then `race ...: started`), and
+  the same with `--no-hsm`.
+- The played Easy Drive / map choice waits until 908987 is active (`--hsm-event` only chooses then). Settle: the boot run
+  `MW_CARD_SHOTS=<dir> tools/t --front-end --auto-start 1 --map-start 1909234` (now driven), grep `hsm:` for
+  `EZ_RIGHT` / `TO_EVENT` / `Respawn` and `race ...: started`.
+- A second race in one run is refused (`RaceOver`, race.rs `start_race`); driven, the logic then waits forever and
+  the card holds at its 7.5 s hold. Known limitation (ai.rs sets opponents up once), now user-visible.
+- Burnout start, driven: a boot run with `MW_EVENT_START_TEST=1` parked at a start should log `chosen by the
+  logic's event starts`, then the card and `race ...: started` (no flag puts a boot run at a start yet).
+
 ## 2026-11-18: bug hunt round 3: mw-audio players / speech, mw-gamedir, mwtool compare (code reading, no install)
 
 Fixed (each with a failing synthetic test first):

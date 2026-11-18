@@ -30,7 +30,8 @@
 //! **Runtime on the ported manager** (research log 2026-11-18): `fill_inputs` supplies `EventStartInputs`
 //! (`mw_logic::natives::event_starts`, run by `world_logic.rs`: the list, the 2000 m radius, the pursuit, the prompt
 //! and the burnout hold are the manager's); `apply_outcomes` draws its `shown` list, shows the prompt it set
-//! (GMM+0x2c70) and, in plain play, starts `EventStartState::chosen` as a [`crate::event_card::PlayEvent`].
+//! (GMM+0x2c70) and starts `EventStartState::chosen` as a [`crate::event_card::PlayEvent`] (driven: the set-up
+//! the logic's `LoadEventData` waits for).
 //!
 //! Model decisions (not traced; research log): the reference point (UI manager +0x2cd50) is the player's car;
 //! no event counts as won or recommended (no results are kept), every event as unlocked for the profile
@@ -157,7 +158,7 @@ pub struct EventStarts {
     prompt_id: u32,
     /// The events were handed to the manager (`EventStartInputs::events`).
     pushed: bool,
-    /// The chosen event was handed to the event card (plain play).
+    /// The chosen event was handed to the event card (plain play; driven: until the manager is entered again).
     dispatched: bool,
 }
 
@@ -352,7 +353,9 @@ fn fill_inputs(
     let Ok((xf, velocity)) = car.single() else { return };
     let mut st = logic.state.borrow_mut();
     let i = &mut st.event_starts.inputs;
-    if !starts.pushed {
+    // Again when the list is empty: logic.rs hands `WorldLogic` the logic host's state when the machine loads, which
+    // may be after the first push (into the replaced state).
+    if !starts.pushed || (i.events.is_empty() && !starts.candidates.is_empty()) {
         i.events = start_events(&starts.candidates, starts.excluded);
         starts.pushed = true;
     }
@@ -420,11 +423,30 @@ fn apply_outcomes(
             input.scripted = Some([1.0, 1.0, 0.0, 0.0]);
         }
     }
+    if logic.driven {
+        // Driven: the machine's "Do Event Starts" chose (`FUN_006e74f0`: the logic's own event request); its
+        // `LoadEventData` waits for the event's set-up (logic.rs `Request::LoadEventData`), which the runtime gives
+        // with `PlayEvent` (logic.rs takes it as the logic's choice). The event card shows as for the map's start.
+        if let Some(event) = driven_choice(chosen, &mut starts.dispatched) {
+            match starts.candidates.iter().find(|c| c.setup.event.id == event) {
+                Some(c) if c.playable => {
+                    info!("event start: {} ({event}) chosen by the logic's event starts", c.setup.name);
+                    play.write(crate::event_card::PlayEvent(c.setup.clone()));
+                }
+                Some(c) => warn!("event start: {} ({event}) is not a race our race code runs", c.setup.name),
+                None => warn!("event start: {event} chosen, not among the starts"),
+            }
+            if test {
+                input.scripted = None;
+            }
+        }
+        return;
+    }
     if !logic.plain.awaiting_event {
         starts.dispatched = false;
         return;
     }
-    if logic.driven || starts.dispatched {
+    if starts.dispatched {
         return;
     }
     // Plain play: the state exited with `chosen` (`CHECKENTRY`).
@@ -449,6 +471,16 @@ fn apply_outcomes(
             starts.dispatched = false;
         }
     }
+}
+
+/// Driven: the event the logic's event starts chose (`EventStartState::chosen`), once per choice. The manager's
+/// enter clears `chosen` (a new `EventStartState`), which arms the next choice.
+fn driven_choice(chosen: u32, dispatched: &mut bool) -> Option<u32> {
+    if chosen == 0 {
+        *dispatched = false;
+        return None;
+    }
+    if std::mem::replace(dispatched, true) { None } else { Some(chosen) }
 }
 
 /// The shown starts' world panels, after the gate markers in the frame's world UI.
@@ -534,4 +566,20 @@ fn draw_starts(
         info!("event starts: {} shown, {tris} panel triangles", shown.len());
     }
     out.0.extend(batches);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::driven_choice;
+
+    #[test]
+    fn driven_choice_once_per_choice() {
+        let mut sent = false;
+        assert_eq!(driven_choice(0, &mut sent), None);
+        assert_eq!(driven_choice(7, &mut sent), Some(7));
+        // Kept until the manager enters again (the race runs meanwhile).
+        assert_eq!(driven_choice(7, &mut sent), None);
+        assert_eq!(driven_choice(0, &mut sent), None);
+        assert_eq!(driven_choice(7, &mut sent), Some(7));
+    }
 }
