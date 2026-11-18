@@ -332,6 +332,7 @@ fn receive(world: &mut World) {
     };
     let mut host = RuntimeHost {
         loads: crate::logic_loads::Loads::new(store.clone(), profile_path, volume),
+        speech: None,
         data,
         playlists,
         event_starts,
@@ -597,6 +598,8 @@ struct Targets<'w, 's> {
     >,
     /// The general UI sequence player: the playbacks are drawn through it.
     player: Option<ResMut<'w, crate::ui_sequence::UiSequencePlayer>>,
+    /// The speech manager (`police_speech.rs`).
+    speech: Option<Res<'w, crate::police_speech::SpeechLink>>,
 }
 
 /// The race the logic drives (`race.rs`, `event_card.rs`, `cutscene.rs` in driven mode).
@@ -738,7 +741,24 @@ fn tick(
     // The screen transitions' state (the logic's `Transitions` root, state +0x3ac == 3 while one plays).
     let playing = host.transitioning;
     host.logic.state.borrow_mut().transitions.set_playing(playing);
+    if host.speech.is_none() {
+        host.speech = t.speech.as_deref().cloned();
+    }
     hsm.update(host, Clock { frame: dt, game: game_dt });
+    // The speech manager's frame (`FUN_00842ba0`, game clock) with the logic's bindings for its conditions.
+    if let Some(link) = host.speech.clone() {
+        let mut core = link.0.lock().unwrap();
+        core.facts.in_cutscene = host.nis_running;
+        let ticks = {
+            let gm = &host.logic.state.borrow().game_modes;
+            (u64::from(gm.word_2d2c) << 32 | u64::from(gm.word_2d28)) as i64
+        };
+        // GMM+0x2d28 × 1/3e6 (`DAT_00f9f608`) × 1/60 (`DAT_00f9c35c`): minutes.
+        core.facts.mode_minutes = ticks as f32 * 3.333_333_3e-7 / 60.0;
+        let logic = &mut host.logic;
+        core.step(game_dt.unwrap_or(0.0), Some(&mut |p: &str| logic.binding_bool(p)));
+        core.logic_frame = true;
+    }
     // The game-mode manager's update right after the HSM's (`FUN_006abc10`): starts the mode's machine. Stand-in:
     // the weapon list loads at once.
     let state = host.logic.state.clone();
@@ -1034,6 +1054,8 @@ struct RuntimeHost {
     race: RaceLink,
     /// The loads the logic asked for (`logic_loads.rs`).
     loads: crate::logic_loads::Loads,
+    /// The speech manager G+0x2c3c0 (`police_speech.rs`), once its plugin is there.
+    speech: Option<crate::police_speech::SpeechLink>,
     /// The world managers' outcomes for `world_logic.rs` (`WorldLogic::outbox`).
     world_out: std::rc::Rc<std::cell::RefCell<Vec<Request>>>,
 }
@@ -1187,6 +1209,11 @@ impl RuntimeHost {
                 // The UI message manager's NIS flag: a cutscene plays (`cutscene.rs`).
                 "UIMessages.NISRunning" => bool(self.nis_running),
                 "UIMessages.NISRunning(NOT)" => bool(!self.nis_running),
+                // The pursuit facts the speech HSM reads (`IsInChase`, `IsInCooldown`,
+                // `DrivingFacts.DistanceToClosestChasingCop(LTEQ:25)`; `police_speech.rs`).
+                _ if let Some(b) = self.speech.as_ref().and_then(|l| l.0.lock().unwrap().facts.binding(path)) => {
+                    bool(b)
+                }
                 _ => {
                     let current = self.logic.state.borrow().game_modes.current_event;
                     return self.race.binding(path, current);
@@ -1438,6 +1465,24 @@ impl Host for RuntimeHost {
             // no runtime counterpart). The ICE camera of `SwitchToIceCamera` (message 4 on the camera queue) plays
             // only as a sequence's camera item (`ui_sequence.rs`), not as a take started on its own; speech commands
             // (UIM+0x32dd8) and the Origin overlay have no runtime system. All logged once.
+            // The speech manager (`police_speech.rs`): the events are loaded with the game (`SPEECHEVENTS`' load is
+            // answered by `Query::SpeechLoadState`), `StopSpeech` (`FUN_008423a0`), the Lua `PlaySpeech(a, b, c)`
+            // (`FUN_008408a0`(a, b, c, 0)).
+            Request::LoadSpeechEvents { .. } if self.speech.is_some() => Some(Carry::Nothing),
+            Request::StopSpeech if self.speech.is_some() => {
+                if let Some(l) = &self.speech {
+                    l.0.lock().unwrap().stop();
+                }
+                Some(Carry::Nothing)
+            }
+            Request::PlaySpeech { a, b, c } if self.speech.is_some() => {
+                let link = self.speech.clone();
+                let logic = &mut self.logic;
+                if let Some(l) = link {
+                    l.0.lock().unwrap().request(*a as u32, [*b, *c, 0], Some(&mut |p: &str| logic.binding_bool(p)));
+                }
+                Some(Carry::Nothing)
+            }
             Request::ShowForcedFeedbackMessage { .. }
             | Request::SkipSequence { .. }
             | Request::ShowFeedbackMessage { .. }
@@ -1524,6 +1569,28 @@ impl Host for RuntimeHost {
             // Any other playback: plays while its headless clock runs (or its sequence loads); gone = ended.
             Query::SequencePlaying { playback } => {
                 Some(self.playbacks.iter().any(|p| p.owner == Owner::Playback(*playback)) as u64)
+            }
+            // `TRYTOPLAYSPE` on the speech manager (`police_speech.rs`): the events' load (0 loaded, 2 loading, 1
+            // failed), `FUN_00842f10` → `FUN_008408a0`(event, −1, −1, 0), `FUN_0083c530`.
+            Query::SpeechLoadState { .. } if self.speech.is_some() => {
+                let core = self.speech.as_ref()?.0.lock().unwrap();
+                Some(if core.manager.is_some() {
+                    0
+                } else if core.failed {
+                    1
+                } else {
+                    2
+                })
+            }
+            Query::TryPlaySpeech { event } if self.speech.is_some() => {
+                let link = self.speech.clone()?;
+                let logic = &mut self.logic;
+                let r = link.0.lock().unwrap().request(*event, [-1, -1, 0], Some(&mut |p: &str| logic.binding_bool(p)));
+                Some(u64::from(r))
+            }
+            Query::SpeechPlaying { event } if self.speech.is_some() => {
+                let core = self.speech.as_ref()?.0.lock().unwrap();
+                Some(core.manager.as_ref().is_some_and(|m| m.current() == Some(*event)) as u64)
             }
             Query::SequencePlayerBusy { player } => {
                 Some(self.playbacks.iter().any(|p| p.player == Some(*player)) as u64)

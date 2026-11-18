@@ -5493,19 +5493,51 @@ siren: the yelp 0–0.5 s, then one of four 2 s wind-downs, gains 3 / 3.5, chann
 - Head and tail lights are on for every car (+0x1a8c = 1, `FUN_00591350`), off when +0x1a84 == 0 and +0x1a40
   bit 2 is clear.
 
-**Radio** (speech manager: init `FUN_00840390`, update `FUN_00842ba0`, load `FUN_008404c0` / `FUN_008423a0`):
-- Request `FUN_008408a0(UniqueId)`: the event (`FUN_0083d1e0`), its conditions (all or any by +0x44), then
-  `FUN_0083d270` rejects it when played ≥ its maximum, outside its mode-time window, less than `Period` minutes
-  since it last ended, needing a car without one, `Cutscene_Behaviour` 2 in a cutscene, or a one-off heard;
-  `FUN_008406a0`: one speech at a time, no queue; a new one interrupts only with a lower `Priority` number.
-- Per event (vtable 0xf994d8, `vt_00845b10`): `Delay`, then the items at their `StartTime`; a line item picks
-  one line uniformly over all its lines and containers (`FUN_0083c5a0`).
-- Triggers: `GameplayTrigger`s of the scoring actions (`FUN_006f9670` → `FUN_006e0a90`: the first event of the
+**Radio** (speech manager G+0x2c3c0: init `FUN_00840390`, update `FUN_00842ba0`, load / stop `FUN_008423a0`;
+ported 2026-11-18 as `mw_audio::speech`, run by `police_speech.rs` and the logic):
+- **Manager states** (+0x2808): 1–6 loading (`FUN_008423a0`: the bundle `SPEECH\SPEECHEVENTSEQUENCES.BNDL`, the
+  SWC0, the `SpeechEventWaveDictionary`, then `FUN_0083d170` per event), 7 idle, 8 pending, 9 playing; +0x2810 the
+  current event, +0x299c its play time, +0x29a8 a cutscene runs, +0x2890 the LCG (seed 0x31613979fb637ec0, 8 steps,
+  then mixed with `FUN_00415fc0`).
+- **Request** `FUN_008408a0`(id, a, b, c): `FUN_0083d1e0` finds the event (none or not loaded → 3), its conditions
+  (vtable +0x34 = `FUN_0041fbf0`: the binding strings through `FUN_00a4f160` on G+0xe8, folded with AND when
+  +0x44 is set, else OR, starting from that flag) fail → 0xe, then `FUN_008406a0`(event, force, a, b, c): loading
+  → 1, `FUN_0083d270` rejects → 4; idle: current = it, args at +0x10 / +0x14 / +0x18, a one-off is written to the
+  profile's `OneOffSpeech` table (`FUN_0083c4c0` → `FUN_007293f0`), state 8 → 0x13; pending: replaced when the new
+  `Priority` (+0x3c getter, data +0x48) is lower or `force` → 0x13; playing: likewise, but only when the new event
+  has lines (vtable +0x1c, `FUN_0083c6b0`; else 0x10): the old one stopped (+0x14), the new one's +0x24 set (no
+  delay), state 8 → 0x13; otherwise 0x12 at equal priority, 0x11 below. `FUN_00842f10` (`TRYTOPLAYSPE`) is the
+  same with (event, −1, −1, 0); the Lua `PlaySpeech(a, b, c)` passes (a, b, c).
+- **Eligibility** `FUN_0083d270`: max plays (+0x49) ≠ 0 and plays (+0x25) ≥ it; GMM+0x2d28 × 1/3e6 × 1/60 (minutes)
+  below +0x38 or above a positive +0x34; vtable +0x20 (`FUN_0083c6f0`: the event clock +0x1c while idle, else 0)
+  / 60 below `Period`; +0x47 without the player's car (`FUN_006c36c0`, `FUN_006c2410`); `Cutscene_Behaviour` 2 in a
+  cutscene; a one-off in `OneOffSpeech` (`FUN_0072f0e0`).
+- **Update** `FUN_00842ba0`: dt = the game clock's step × scale (0 when stopped). 8: outside a cutscene or with
+  behaviour 0 the event starts (vtable +0x10 = 0x83c640: from 5 sets +0x24, clock +0x1c → +0x20 and reset, state
+  3), +0x299c = 0, state 9. 9: while the event is active (+0x30 > 2): outside cutscenes / behaviour 0 +0x299c +=
+  dt; in one with behaviour 1 and +0x299c < 1.0 (`DAT_00f8a820`) it is stopped and requested again with its
+  args; otherwise stopped; when inactive the current is cleared, state 7. Then every event's update (vtable
+  0xf994d8 +8 = 0x845b10): clock += dt; 3: waits `Delay` (+0x30) unless +0x24, then its `Sequence` starts on the
+  sequencer (`FUN_00a43c10`, a 0x14-byte context 0xff05d8 carrying the line slots and +0x45), state 4; 4: back to
+  2 when the sequencer's playback id moved on; 5: the playback stopped (`FUN_00a42b60`), 2. Load (0x840a40): clock
+  = `Period` × 60 (`.rdata` 0xf8b534 = 60), plays 0, state 2.
+- **Stop** (`StopSpeech` → `FUN_008423a0` in states 8 / 9): the current event stopped unless it is 0x1c8a28
+  (1870376), state 7, the LCG reseeded.
+- **Lines** (`FUN_008363c0`, the line item's start): with lines of its own (+0x34 count) one by the LCG (high word
+  of the old state mod n); else with containers `FUN_00833cb0` picks one by `Speaker` (+0x2e; case 0 avoids the
+  last character, `Character` +0x0c) and `FUN_00833980` the line (`FUN_0083d3e0`); else with a vocabulary kind
+  (+0x30) `FUN_00834130` / `FUN_00833ba0`. The line plays through `FUN_008317e0` → `FUN_0079f9f0` (flags 9 / 0x2d,
+  | 0x20 with +0x45); the line item (vtable 0xfef4a0) reports the sound's position and registers itself as the
+  sequencer's +0x58 while it plays (`FUN_00830fe0`). Not followed: how the sequencer's clock uses that (the port
+  holds the clock at the item's `EndTime` until the line ends: a model), the container / vocabulary picks, where
+  the plays counter is incremented.
+- **Triggers**: `GameplayTrigger`s of the scoring actions (`FUN_006f9670` → `FUN_006e0a90`: the first event of the
   output whose conditions hold): chase started (`ScoringConfig` +0x48 / +0x4c / +0x50 / +0x54), resumed (+0x58),
-  heat up (+0xe8 / +0xec), takedown (trigger 1378651), cooldown (+0xc4), escaped, roadblocks, hits, respray;
-  HSM 983342 "Speech Manager": in a chase every 5 s by `GetRandomNumber[4]` (1186587 / 1378016 / 1871411 /
-  1378788; within 25 m of a chasing cop 1186587 / 1378788 / 1186559 ×2), in the cooldown 1871531 (1871318 in a
-  building). Event ids per trigger: `police_speech.rs` and the research log.
+  heat up (+0xe8 / +0xec), takedown (trigger 1378651), cooldown (+0xc4), escaped, roadblocks, hits, respray. The
+  chatter is HSM 983342 "Speech Manager" (data, run by the logic): chase / cooldown / race / post-race / wait-zone
+  speech every 5 s through `TRYTOPLAYSPE`, reading `Players.LocalPlayer.IsInChase` / `IsInCooldown`,
+  `DrivingFacts.DistanceToClosestChasingCop(LTEQ:25)`, `Mode.IsRaceEvent`, `Players.RacerCount`; its "Is Not In
+  Cooldown?" binding is misspelt in the data (`Player.LocalPlay.IsInCooldown(NOT)`), so that exit never fires.
 
 ## Vehicle paint, liveries and dirt
 

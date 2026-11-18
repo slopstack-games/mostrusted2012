@@ -11,6 +11,59 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+## 2026-11-18: the speech manager ported (`mw_audio::speech`), the logic's speech wired
+
+**What**: the speech manager G+0x2c3c0 is a port now (`crates/mw-audio/src/speech.rs`, engine-free, 2 tests), shared
+by `police_speech.rs` and `logic.rs` (`SpeechLink`). The logic's speech is answered: `Query::SpeechLoadState` (0
+loaded, 2 loading, 1 failed), `Query::TryPlaySpeech` (`FUN_00842f10` → `FUN_008408a0`'s code, 0x13 = played),
+`Query::SpeechPlaying` (`FUN_0083c530`), `Request::LoadSpeechEvents` (accepted: the events load with the game),
+`Request::StopSpeech` (`FUN_008423a0`), `Request::PlaySpeech { a, b, c }` (Lua). The HSM "Speech Manager" 983342
+(chase / cooldown / race / post-race chatter, data) now plays: its bindings `Players.LocalPlayer.IsInChase` /
+`IsInCooldown` and `DrivingFacts.DistanceToClosestChasingCop(LTEQ:25)` are answered from the runtime's pursuit
+(`SpeechFacts`, `RuntimeHost::engine_binding`); the hand-written 5 s chatter of `police_speech.rs` is gone. The
+pursuit's gameplay triggers (C++ in the original) stay in `police_speech.rs`, queued for the manager, now as
+`FUN_006e0a90` does: the first event whose conditions hold is requested (was: the first eligible). Conditions
+are the facts first, then the logic's bindings (`Mode.IsRaceEvent`, `Signals.GetRandomNumber[n]` on the logic's
+own Signals LCG, `Rollouts.*`); the manager steps on the game clock in the logic's tick (`FUN_00842ba0`), or in
+`police_speech.rs` with `--no-hsm`.
+
+**From the code** (decomp.md "Radio", rewritten): manager states 7 / 8 / 9 and the answer codes 1 / 3 / 4 / 0xe /
+0x10 / 0x11 / 0x12 / 0x13 (`FUN_008406a0`); an interrupting event needs lines (`FUN_0083c6b0`) and skips its
+delay (+0x24); cutscene behaviour 1 restarts a speech stopped within its first second (`DAT_00f8a820` = 1.0), 2
+never plays in one, 0 plays through; `Period` counts from the last start (clock +0x1c reset by vtable +0x10, `Period`
+× 60 at load, `.rdata` 0xf8b534 = 60), not from the end as before; the mode-time window (GMM+0x2d28 × 1/3e6 × 1/60,
+`DAT_00f9f608` / `DAT_00f9c35c`); the condition fold starts from the all-flag (`FUN_0041fbf0`); `StopSpeech` never
+stops event 0x1c8a28 and reseeds the LCG (0x31613979fb637ec0, 8 steps); a line item with lines of its own picks one
+with the LCG's high word mod n (`FUN_008363c0`). Event getters from the vtable 0xf994d8 slots in text.asm
+(0x41fcb0.. read +0x34 / +0x38 / +0x14 / +0x48 / +0x3c / +0x47 / +0x44 / +0x46 / +0x49 of the resource).
+
+**Data**: the parser keeps containers apart from an item's own lines, the vocabulary kind, `EndTime`, the
+window, `Cutscene_Behaviour`, `Probability` by name, and each line's length from the `WaveDictionary` (equal to the
+decoded streams' lengths).
+
+**Model decisions** (module doc of `mw_audio::speech`): the sequence timing (items at `StartTime`; a line holds
+the clock at its item's `EndTime` until it ends, so the data's 1 s gaps stay gaps: the line item registers itself
+as the sequencer's +0x58 while its sound plays, `FUN_00830fe0`, but the sequencer's use of that was not followed;
+without the hold, event 1186352's second line started 2 s into the 4.4 s first); probability as a percentage
+draw; containers picked uniformly (`FUN_00833cb0` picks by `Speaker` / `Character`); vocabulary lines not said
+and vocabulary-only events not eligible; the plays counter counts starts (its increment was not found); one-offs
+remembered per session (the original's profile table `OneOffSpeech`); `PAUSESPEECH` (G+0x2ed68) not read;
+facts: `IsHiddenFromCops` = the cops do not see the player, `Health` 1; unresolved bindings read false.
+
+**Measured** (`MW_SPEECH_LOG=1`, which now also prints each voice's length / rms / peak): `--test pursuit`:
+chase started → 1656883 (four lines, rms 0.13–0.16, peak 0.55, after the radio channel's 0.562), cooldown →
+1186436, escaped → 1186439 (interrupts, no delay), busted → 1186445; the HSM's chase chatter: `TryPlaySpeech`
+1871411 → 4 (period), 1378788.. → 0xe (conditions), 1186587 → 0x13 and plays; its cooldown chatter 1871531 →
+0xe after the escape. `--test accel` 0–60 3.82 s (master's binary: 3.82 s too). Note that `--test pursuit` runs
+the game clock faster than real time, so lines overlap there (the sequence clock is game time, the voices real
+time), as they would in the original at that speed.
+
+**Open**: the sequencer's timing (`FUN_00a43c10`, the +0x58 hold); the container pick by speaker and the
+no-repeat line pick (`FUN_00833cb0`, `FUN_0083d3e0`); vocabulary lines (`Speech.VehicleVocab`, `FUN_00834130`);
+the radio clicks / bed of `Character.AudioSettings`; `PAUSESPEECH`; the speech volume; the one-off table in the
+profile. Captures that would confirm: a pursuit in the original with the speech stream recorded (gaps between
+lines of one event, overlap of the two 50 % items of 1186439).
+
 ## 2026-11-18: offline Requests / Queries of `behaviours_rest.rs` on the runtime
 
 Wired in `RuntimeHost` (logic.rs): `SetWorldShownFlag` / `Query::WorldShownFlag` (the byte G+0x2ef70 +0x44 is kept
