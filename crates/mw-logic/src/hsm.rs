@@ -1004,6 +1004,38 @@ impl Cx<'_> {
         self.hsm.inst(self.id).data.as_ref()?.get(name).cloned()
     }
 
+    /// `WRITETODATAS`'s write (0x747310): the data state named `name` is the first instance from this one up the
+    /// parents (`FUN_00774930`: +0x38 set and its path, the data instance's vtable 0xfdb248 slot 0 = definition
+    /// +4, equal without case); in its JSON root (only an object root is kept, `FUN_007756c0`) the member `field`
+    /// is replaced or appended (`FUN_009f8a00` → `FUN_009f6670`: `FUN_009f1650` compares names exactly, a new one
+    /// goes last, `FUN_009f6610`). The view model is the same object in the original, so the data is published
+    /// again. Fields with `(){}`, `.` or `[` (the dotted / indexed forms) are not ported: none in the data.
+    /// Returns whether it wrote.
+    pub fn write_data_state(&mut self, name: &str, field: &str, value: Json) -> bool {
+        if field.contains(['(', ')', '{', '}', '.', '[']) {
+            return false;
+        }
+        let mut at = Some(self.id);
+        while let Some(id) = at {
+            let def = self.data.data_definition(&self.data.states[self.hsm.inst(id).state]).cloned();
+            if let Some(def) = def.filter(|d| d.path.eq_ignore_ascii_case(name)) {
+                let Some(Json::Object(entries)) = self.hsm.inst_mut(id).data.as_mut() else { return false };
+                match entries.iter_mut().find(|(k, _)| k == field) {
+                    Some((_, v)) => *v = value,
+                    None => entries.push((field.to_owned(), value)),
+                }
+                if !def.path.is_empty()
+                    && let Some(v) = &self.hsm.inst(id).data
+                {
+                    self.host.publish(&def.path, v);
+                }
+                return true;
+            }
+            at = self.hsm.inst(id).parent;
+        }
+        false
+    }
+
     /// Calls a hook with a data-definition member as its arguments (`FUN_00776440` / `FUN_007761a0`).
     pub fn call_hook(&mut self, name: &str, args_member: &str) -> Key {
         let args = self.data_member(args_member);

@@ -16,6 +16,7 @@ struct Rec {
     reqs: Vec<Request>,
     answers: HashMap<&'static str, u64>,
     ints: HashMap<String, i64>,
+    published: Vec<(String, Json)>,
 }
 
 impl Host for Rec {
@@ -27,6 +28,9 @@ impl Host for Rec {
     }
     fn binding_int(&mut self, path: &str) -> Option<i64> {
         self.ints.get(path).copied()
+    }
+    fn publish(&mut self, path: &str, data: &Json) {
+        self.published.push((path.to_owned(), data.clone()));
     }
 }
 
@@ -2376,4 +2380,101 @@ fn input_device_detect_waits_for_the_device_flag() {
     host.answers.insert("InputDeviceDetected", 1);
     step(&mut hsm, &mut host, 2);
     assert_eq!(hsm.result(s), Some(EXIT));
+}
+
+#[test]
+fn consume_unlocks_shows_each_popped_unlock_while_progression_is_active() {
+    let (mut hsm, mut host, s) = machine("CONSMUNLOCKS", &[], "ENTER");
+    host.answers.insert("PopPendingUnlock", 7);
+    step(&mut hsm, &mut host, 2);
+    assert!(host.reqs.is_empty(), "state 0: nothing consumed");
+    host.answers.insert("ProgressionState", 4);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::ShowUnlock { unlock: 7 }, Request::ShowUnlock { unlock: 7 }]);
+    host.answers.insert("PopPendingUnlock", u64::MAX);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs.len(), 2);
+    assert!(hsm.is_running(s));
+}
+
+#[test]
+fn record_online_event_winner_only_on_the_host() {
+    let path = "ActiveGameMode.Leaderboard[1].PlayerIndex";
+    let (mut hsm, mut host, s) = machine("RCDONEVNTWNR", &[("WINNER", path)], "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    assert!(host.reqs.is_empty());
+    let (mut hsm, mut host, _) = machine("RCDONEVNTWNR", &[("WINNER", path)], "ENTER");
+    host.answers.insert("OnlineHost", 1);
+    host.ints.insert(path.into(), 3);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::RecordOnlineEventWinner { winner: 3 }]);
+    let (mut hsm, mut host, _) = machine("RCDONEVNTWNR", &[("WINNER", path)], "ENTER");
+    host.answers.insert("OnlineHost", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(host.reqs, [Request::RecordOnlineEventWinner { winner: -1 }]);
+}
+
+#[test]
+fn play_feedback_waits_for_its_message_and_clears_the_queue_on_exit() {
+    let params = [("QUEUE", "System"), ("MESSAGE", "97092"), ("CLEARQONEXIT", "True")];
+    let (mut hsm, mut host, s) = machine("PLAYFEEDBACK", &params, "ENTER");
+    host.answers.insert("FeedbackQueueExists", 1);
+    host.answers.insert("PostFeedbackMessage", 5);
+    host.answers.insert("FeedbackMessageQueued", 1);
+    step(&mut hsm, &mut host, 3);
+    assert!(hsm.is_running(s));
+    host.answers.insert("FeedbackMessageQueued", 0);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    assert_eq!(host.reqs, [Request::ClearFeedbackQueue { queue: "System".into() }]);
+    // No queue: nothing posted, exits at once, nothing cleared.
+    let (mut hsm, mut host, s) = machine("PLAYFEEDBACK", &params, "ENTER");
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    assert!(host.reqs.is_empty());
+}
+
+#[test]
+fn carjacker_listener_waits_for_the_record_and_the_button() {
+    let (mut hsm, mut host, s) = machine("CARJACKERACT", &[], "ENTER");
+    host.answers.insert("CarjackerActive", 1);
+    step(&mut hsm, &mut host, 3);
+    assert!(hsm.is_running(s));
+    host.answers.insert("CarjackerButton", 1);
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    assert_eq!(host.reqs, [Request::CarjackerActivated]);
+    // A car not collected yet: exits without the record.
+    let (mut hsm, mut host, s) = machine("CARJACKERACT", &[], "ENTER");
+    for q in ["CarjackerActive", "CarjackerButton", "CarjackerCarNotCollected"] {
+        host.answers.insert(q, 1);
+    }
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    assert!(host.reqs.is_empty());
+}
+
+#[test]
+fn write_to_data_state_sets_the_member_and_republishes() {
+    let mut st = state(1, "WRITETODATAS", Fallback::RunChildren);
+    st.parameters = [("DATASTATE", "activegamemode"), ("FIELD", "ShowInGameMenu"), ("VALUE", "false")]
+        .map(|(n, v)| param(n, v))
+        .into();
+    st.entry_points.push(EntryPoint { id: key("ENTER"), action: Action::Child, spawns: vec![] });
+    st.data_definition = Some(0);
+    let def = mw_formats::hsm::DataDefinition {
+        id: 9,
+        path: "ActiveGameMode".into(),
+        name: String::new(),
+        json: r#"{"ShowInGameMenu": true, "X": 1}"#.into(),
+    };
+    let mut hsm = Hsm::new(data(vec![st], vec![def]), Registry::structural());
+    let mut host = Rec::default();
+    let s = hsm.start(1, &mut host).unwrap();
+    step(&mut hsm, &mut host, 2);
+    assert_eq!(hsm.result(s), Some(EXIT));
+    let last = &host.published.last().unwrap().1;
+    assert_eq!(last.get("ShowInGameMenu"), Some(&Json::Bool(false)));
+    assert_eq!(last.get("X"), Some(&Json::Int(1)));
 }

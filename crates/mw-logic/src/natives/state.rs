@@ -626,6 +626,23 @@ pub enum Request {
     StopChallenge,
     /// `HSM.STARTPHO` enter (0x740f20, `FUN_0083e710` on the photo-mode object G+0x2f474).
     StartPhotoMode,
+    /// `CONSMUNLOCKS` update (0x75bf00): the notification of the unlock `unlock` just popped
+    /// ([`Query::PopPendingUnlock`](crate::hsm::behaviours::Query::PopPendingUnlock)): the unlock object (the
+    /// progression's vtable +8), its texts by kind (vtable +0x2c: 6 / 3), a 0x31c-byte UI message (vtable
+    /// 0xfbf9ac, `FUN_00824f90`) queued on G+0x2f480 +0x1245c (vtable +0x14) and `FUN_007983b0` on +0x32858.
+    ShowUnlock { unlock: u64 },
+    /// `RCDONEVNTWNR` enter (0x74fa90), host only: the winner's name (player record +0x50, a 17-character slot,
+    /// `FUN_006eb640` with the clock stamp `FUN_006b8fb0`) or an empty one when `winner`'s slot is free
+    /// (`FUN_006eb710`) at index (GMM+0x14)+4 − 1 of the event list, then the list is sent to the session
+    /// (`FUN_006f66b0`).
+    RecordOnlineEventWinner { winner: i64 },
+    /// `PLAYFEEDBACK` exit (0x73e7d0, `FUN_007b3410`): every message of the feedback queue `queue` is dropped.
+    ClearFeedbackQueue { queue: String },
+    /// `CARJACKERACT` update (0x74dc30): the local player's byte +0x2c3 = 1 (`FUN_006b9d50`), the progression event
+    /// 0x19 for the target player (`FUN_00705190` → `FUN_007038b0`(0x19, 0, 0, 1, 0, player) on G+0x2f418) and,
+    /// online (`FUN_004c2040`), the telemetry record with the codes `GAME` `REVG` `CRJA` (`FUN_004c3890` /
+    /// `4c2900` / `4c2930` / `4c39f0`).
+    CarjackerActivated,
     /// `FUN_00673ff0` (`MODEENDCHECK`, `SETENDREASON`): GMM+0x2e78 ([`GameModeManager::won`]) = `won`; applied by the host.
     SetGameModeWon { won: bool },
     /// `FUN_006dff20` (`SETENDREASON`): GMM+0x2d08 (u16, [`GameModeManager::end_reason`]) = `reason`; applied by the host.
