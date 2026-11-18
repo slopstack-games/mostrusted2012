@@ -9,12 +9,20 @@ waited on a ground ray the paused sim could not answer, research log "races with
 (the strut joint port: the wheels' mass rides with the car). Lua natives 385 / 385, HSM behaviour types 192 / 199
 (+ drift / Smash-and-Grab scoring), hooks 187 / 187. Police: roadblocks and the bust camera wired.
 
-**Agents running at handoff** (each writes a research-log entry; merge with `scratch/merge.sh <id>`): skid / crash
-audio after resets, speech manager (police radio), HUD feedback-message queue, map POIs / event waypoints.
+**Unmerged at handoff** (`scratch/merge.sh <id>`): `worktree-agent-a3a080796812a5de9` (b26f74c: one-shot exit rule
+`FUN_00834f90` and fades in sfx_player, tested); agents still running: HUD feedback-message queue, map POIs /
+waypoints. Merged today: skid voices (one per wave item), speech manager (`mw_audio::speech`).
 
 **Open**:
 - **Bug hunt (2026-11-18, branch `claude/bug-hunting-kdkey0`)**: ~45 fixes, verified without the install. Run
   `mwtool verify` + `game_chunks` (new parser budgets, stricter Lua verifier); suspected items in research-log 2026-11-18.
+- **User report (end of session): races won't start when played, UI wrong almost everywhere.** Headless `--race` tests
+  pass, so check the played flow (free roam → Easy Drive / map / marker). Shots at 1920×1080 (`MW_HL_SIZE=1920x1080
+  MW_HSM_SHOTS=<dir> tools/t --race 462174`): intro camera upside down (≈180° roll); race HUD hugs the edges, the
+  speedometer is cut off at the bottom right, a large rotated "CHECK…" message at the top right (new feedback queue?);
+  card tip line at the left edge. The HUD is drawn from the logic's widgets since `ui_widgets.rs` (merged 2026-11-18,
+  checked only at 1280×720). Compare 720p vs 1080p first, then bisect today's merges if needed.
+- **Pursuit test** times out (2 of 2) after the speech merge (c02f83d); passed before it with `--units 12 --no-traffic`.
 - **Runtime inputs not fed**: drift / Smash-and-Grab scoring inputs (no event uses them); online requests (store,
   friends, telemetry, speedwall cache); car select, speech, waypoints logged-only until the agents above land.
 - **Pursuit test with traffic**: busted after 8 s at 0 mph (also on the police branch); passes with the documented
