@@ -282,8 +282,8 @@ fn apply_initial_damage(
     }
 }
 
-/// The reset key (R, which also puts the car back on its spawn point) repairs the car.
-fn repair_on_reset(keys: Res<ButtonInput<KeyCode>>, mut cars: Query<&mut CarDamage>) {
+/// The reset key (R, which also puts the player's car back on its wheels) repairs that car (not the opponents').
+fn repair_on_reset(keys: Res<ButtonInput<KeyCode>>, mut cars: Query<&mut CarDamage, With<crate::drive::Player>>) {
     if !keys.just_pressed(KeyCode::KeyR) {
         return;
     }

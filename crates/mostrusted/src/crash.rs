@@ -328,7 +328,7 @@ fn hold_and_reset(
     config: Option<Res<CrashConfig>>,
     mut state: ResMut<CrashState>,
     mut input: ResMut<CarInput>,
-    mut cars: Query<(&mut Transform, &mut LinearVelocity, &mut AngularVelocity), (With<Car>, With<Player>)>,
+    mut cars: Query<(&mut Car, &mut Transform, &mut LinearVelocity, &mut AngularVelocity), With<Player>>,
     facing: Res<crate::race::RespawnFacing>,
 ) {
     let Some(config) = config else { return };
@@ -341,7 +341,7 @@ fn hold_and_reset(
     active.reset_pending = false;
     active.reset_done = true;
     input.crashed = false;
-    let Ok((mut transform, mut lin, mut ang)) = cars.single_mut() else { return };
+    let Ok((mut car, mut transform, mut lin, mut ang)) = cars.single_mut() else { return };
     let pose = active.reset_pose.unwrap_or(SafePose {
         time: 0.0,
         translation: transform.translation,
@@ -360,6 +360,11 @@ fn hold_and_reset(
     transform.rotation = rotation;
     lin.0 = rotation * Vec3::Z * mph * MPH;
     ang.0 = Vec3::ZERO;
+    // The respawn is the game's placement of a moving car (`FUN_006c9fb0` posts the same placement as the
+    // logic's teleports, done by `FUN_008f8190`): wheels at road speed, gearbox placed, handbrake, brake ramp
+    // and drift cleared. Without it the wheels kept their pre-crash spin (often near zero after the wall) and the
+    // tyres slid until they caught up with the rolling reset.
+    car.place_moving(mph * MPH);
     let (t, p) = (active.t, pose.translation);
     info!(
         "crash reset: back to ({:.1}, {:.1}, {:.1}) heading {:.0}°, rolling at {mph:.0} mph",
