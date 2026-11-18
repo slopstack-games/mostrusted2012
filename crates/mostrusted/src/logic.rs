@@ -55,6 +55,10 @@
 //!   (`Query::LocalPlayerReady`). `LoadWorld`, `LoadAll`, `AutoSelectWorld` are what the runtime's loader does
 //!   from start-up (one world, streamed without a gate; `Mode.WorldLoaded` is `FrontEnd::ready`).
 //!
+//! - traffic and camera requests: `TrafficMessage` (stop / reset / start, `traffic::TrafficControl`),
+//!   `TrafficDensity`, `StopMusic` (the song list stops), `StopSounds` kind 0 (the UI sounds end),
+//!   `CameraSnapBehind` (`camera::SnapCamera`).
+//!
 //! Everything else (the HUD screen's requests, the profile's game state) is still logged only:
 //! `freeroam.rs`, the rest of `race.rs` (stepping, AI, results) and of `frontend.rs` drive the game. Queries nobody
 //! answers log their default once (`hsm: ... query X: default answer N`).
@@ -568,6 +572,8 @@ struct Targets<'w, 's> {
     cutscene: Option<ResMut<'w, CutsceneState>>,
     audio: Option<ResMut<'w, crate::settings::AudioSettings>>,
     sim: ResMut<'w, Time<Virtual>>,
+    traffic: Option<ResMut<'w, crate::traffic::TrafficControl>>,
+    snap: Option<ResMut<'w, crate::camera::SnapCamera>>,
     race: Race<'w, 's>,
     /// The general UI sequence player: the playbacks are drawn through it.
     player: Option<ResMut<'w, crate::ui_sequence::UiSequencePlayer>>,
@@ -778,6 +784,31 @@ fn tick(logic: Option<NonSendMut<Logic>>, real: Res<Time<Real>>, mut t: Targets,
                     e.0 = on;
                 }
             }
+            Carry::Traffic(kind) => {
+                if let Some(c) = t.traffic.as_deref_mut() {
+                    match kind {
+                        6 => c.stopped = true,
+                        8 => c.reset = true,
+                        _ => c.stopped = false,
+                    }
+                }
+            }
+            Carry::TrafficDensity(d) => {
+                if let Some(c) = t.traffic.as_deref_mut() {
+                    // `SetTrafficDensity`: the density is 0 unless `on`.
+                    c.density = Some(d.unwrap_or(0.0));
+                }
+            }
+            Carry::StopUiSounds => {
+                if let Some(ui) = t.ui_sounds.as_deref_mut() {
+                    ui.stop_all();
+                }
+            }
+            Carry::SnapCamera => {
+                if let Some(s) = t.snap.as_deref_mut() {
+                    s.0 = true;
+                }
+            }
             Carry::StartRace(setup) => {
                 if let Some(c) = t.cutscene.as_deref_mut() {
                     c.reset();
@@ -852,6 +883,14 @@ enum Carry {
     EndRace,
     /// `ApplyProfileSettings`: the volumes read with the profile (`logic_loads.rs`) to `settings::AudioSettings`.
     ApplySettings(crate::settings::AudioSettings),
+    /// `StopTraffic` / `ResetTraffic` / `StartTraffic` (message kind 6 / 8 / 0xa): `traffic::TrafficControl`.
+    Traffic(u32),
+    /// `SetTrafficDensity`: the density when on, else 0 (`FUN_00845fb0`).
+    TrafficDensity(Option<f32>),
+    /// `StopAllSounds`: the UI sounds end (`ui_sound.rs`).
+    StopUiSounds,
+    /// `SnapCameraToBehindCar` (camera message 1): `camera::SnapCamera`.
+    SnapCamera,
     /// Carried out with nothing to do (`CreateConductor`: the conductor is logic state).
     Nothing,
 }
@@ -1146,6 +1185,11 @@ impl Host for RuntimeHost {
             Request::ShowWorld { show } => Some(Carry::ShowWorld(*show)),
             Request::HideChevron { hide } => Some(Carry::HideChevron(*hide)),
             Request::EnableTriggers(on) => Some(Carry::EnableTriggers(*on)),
+            Request::TrafficMessage { kind } => Some(Carry::Traffic(*kind)),
+            Request::TrafficDensity { on, density } => Some(Carry::TrafficDensity(on.then_some(*density))),
+            Request::StopMusic => Some(Carry::SongList { list: 0, allow_playout: false }),
+            Request::StopSounds { kind: 0 } => Some(Carry::StopUiSounds),
+            Request::CameraSnapBehind => Some(Carry::SnapCamera),
             // The count is the logic's (`mode_machine::apply`); `Query::ShowWorldCount` reads it.
             Request::AdjustShowWorldCount { .. } => Some(Carry::Nothing),
             Request::SetFullRate(on) => {

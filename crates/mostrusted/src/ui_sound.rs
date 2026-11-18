@@ -50,6 +50,12 @@ pub struct UiSounds {
 
 impl UiSounds {
     /// `PlayUiSound { field }`: play the UI sound at `field` of `MiscSound` (module doc).
+    /// `StopAllSounds` (`FUN_007a2140`, kind 0): the queued and playing UI sequences end.
+    pub fn stop_all(&mut self) {
+        self.queue.clear();
+        self.playing.clear();
+    }
+
     pub fn play(&mut self, field: u32) {
         self.queue.push(field);
     }

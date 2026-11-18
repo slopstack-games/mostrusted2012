@@ -85,6 +85,20 @@ Open: runtime switch (spec in decomp.md "AI racers (ported)"); not ported: lane 
 factor, closure), virtual progress; +0x50 / +0x58 / +0x74 / flag bits meaning not traced; the corner test's toy
 car cuts the 60 m arc by ~12 m (not checked against the real physics). Captures that would confirm: a live read of
 D+0x5808 / pedals in a race, and a stuck AI's first recovery direction.
+### 2026-11-18: logic Requests carried out by the runtime (traffic, music, UI sounds, camera snap; `logic.rs`)
+Now carried out: `TrafficMessage` (kind 6 / 8 / 0xa -> `traffic::TrafficControl`: stop freezes the traffic tick and
+spawns, reset removes every car once, start resumes), `TrafficDensity` (density when on, else 0, replaces the
+`--traffic-density` scale in the density multiplier; `FUN_00845fb0`), `StopMusic` (song list stops, as
+`StopSongList`), `StopSounds` kind 0 (`ui_sound::UiSounds::stop_all`), `CameraSnapBehind` (`camera::SnapCamera`,
+the camera's own re-seat behind the car). MODEL decisions: the traffic messages' handlers (`FUN_0084e350` /
+`FUN_0084e4d0` / `FUN_0084e550`) are unread, so stop = freeze is a stand-in; StopMusic is mapped onto the song
+list rather than the music manager (`FUN_007908e0`).
+Left unlogged-as-unhandled (no runtime system to carry them): CameraOverhead / CameraFinishLine / CameraFov (camera.rs
+has no such modes), StopSounds kinds 2 / 4 (speech / gameplay stream have no separate voice groups), StopUnwantedSound,
+ClearFeedbackQueues, RaceCarFlag (no invulnerable / damage-allowed switch per competitor in damage.rs),
+RumbleEnable (no rumble), StartPhotoMode, ActivateSpotting, SwapGameMode, SetCarLocked (input lock lives in the
+logic's mask only), WeaponsAllowed, PauseAi (ai.rs is another agent's).
+
 ### 2026-11-18: the handbrake ported from the code: the rear tyres' lock flag, the standstill hold, the steering range
 
 **What was missing** (the 2026-11-17 reading below): `FUN_00905910` (the tyre inputs, after the driving update) sets

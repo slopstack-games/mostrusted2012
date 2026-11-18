@@ -116,10 +116,22 @@ impl Plugin for TrafficPlugin {
             return;
         }
         app.insert_resource(TrafficSettings { density: self.density })
+            .init_resource::<TrafficControl>()
             .init_resource::<TrafficModels>()
             .add_systems(Update, (start_loading, receive_data, spawn_entities, reaction_lamps, count_log))
             .add_systems(FixedUpdate, (crash_hit_cars, traffic_tick, drive_bodies).chain());
     }
+}
+
+/// The logic's traffic requests (`logic.rs`): `StopTraffic` / `ResetTraffic` / `StartTraffic` (messages 6 / 8 / 0xa
+/// to the traffic system, `FUN_008461b0` / `FUN_00846240` / `FUN_00846270`) and `SetTrafficDensity`
+/// (`FUN_00845fb0`). MODEL: the messages' handlers are unread; stop freezes the system (no tick, no spawns), reset
+/// removes every car once, start resumes; the density replaces the `--traffic-density` scale.
+#[derive(Resource, Default)]
+pub struct TrafficControl {
+    pub stopped: bool,
+    pub reset: bool,
+    pub density: Option<f32>,
 }
 
 #[derive(Resource)]
@@ -458,6 +470,8 @@ pub struct TrafficSystem {
     /// Cars per (hull, section), sorted by distance along the section; rebuilt every tick.
     by_section: HashMap<(u16, u8), Vec<usize>>,
     density_scale: f32,
+    /// `SetTrafficDensity` (`TrafficControl`): replaces `density_scale` while set.
+    density_override: Option<f32>,
     /// The hitters of the traffic cars (lane followers, parked cars) a contact turned physical since the police
     /// last asked (the game's per-frame list at world +0x33144, `FUN_0060c3a0`; `police.rs` reads it).
     hits: Vec<Entity>,
@@ -530,6 +544,7 @@ impl TrafficSystem {
             lamps: HashMap::new(),
             lamp_events: Vec::new(),
             density_scale,
+            density_override: None,
             hits: Vec::new(),
             cop_obstacles: Vec::new(),
             spawned: 0,
@@ -1402,9 +1417,26 @@ fn traffic_tick(
     crashed_q: Query<(&Transform, &LinearVelocity), With<TrafficCar>>,
     race: Option<Res<crate::race::RaceState>>,
     env: Option<Res<crate::weather::EnvironmentState>>,
+    mut control: ResMut<TrafficControl>,
 ) {
     let Some(mut sys) = system else { return };
     let sys = &mut *sys;
+    if std::mem::take(&mut control.reset) {
+        for i in 0..MAX_CARS {
+            remove_car(sys, i, &mut commands);
+        }
+        for i in 0..PARKED_SLOTS {
+            remove_parked(sys, i, &mut commands);
+        }
+        for c in std::mem::take(&mut sys.crashed) {
+            commands.entity(c.entity).despawn();
+            sys.removed += 1;
+        }
+    }
+    if control.stopped {
+        return;
+    }
+    sys.density_override = control.density;
     let dt = time.delta_secs();
     if dt <= 0.0 {
         return;
@@ -1462,7 +1494,9 @@ fn tick(
     let s = sys.data.system.clone();
     let speed_mph = player_vel.length() / MPH;
     let t = ((speed_mph - s.fast_mph) / (s.slow_mph - s.fast_mph)).clamp(0.0, 1.0);
-    sys.multiplier = sys.base * (s.fast_factor + (s.slow_factor - s.fast_factor) * t) * sys.density_scale;
+    sys.multiplier = sys.base
+        * (s.fast_factor + (s.slow_factor - s.fast_factor) * t)
+        * sys.density_override.unwrap_or(sys.density_scale);
 
     // The active area.
     update_area(sys, commands, focus);
