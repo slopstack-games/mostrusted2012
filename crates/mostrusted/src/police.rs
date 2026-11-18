@@ -952,7 +952,13 @@ fn police_tick(
                     police.core.cancel_order(cop.slot as u32);
                     police.removed += 1;
                 }
-                police.orders.retain(|o| o.entity.is_none());
+                // Our loader's orders still in flight go too (runtime glue: `FUN_006795c0` removes the occupied
+                // slots; a car arriving later would start in chase mode after the bust).
+                for o in police.orders.drain(..) {
+                    if o.entity.is_none() {
+                        police.core.cancel_order(o.req.id);
+                    }
+                }
                 // `RemoveRoadblocks`.
                 roadblocks.remove_all = true;
             }

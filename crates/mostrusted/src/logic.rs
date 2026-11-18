@@ -216,8 +216,6 @@ struct Logic {
     /// Conductors' and playbacks' sequences (owner, sequence id, the loaded sequence).
     sequences: (Sender<SequenceLoad>, Receiver<SequenceLoad>),
     store: Arc<mw_assets::AssetStore>,
-    /// The logic paused the game clock (`SimPause`) and has not resumed it yet.
-    sim_paused: bool,
 }
 
 fn start_loading(game: Res<crate::Game>, mut setup: ResMut<Setup>) {
@@ -363,16 +361,7 @@ fn receive(world: &mut World) {
     info!("hsm: machine {serial} started at {TOP_STATE} (shadow mode)");
     // The general UI sequence player resolves its bindings through the logic's view models (`ui_sequence.rs`).
     world.insert_non_send(crate::ui_sequence::LogicView(host.logic.state.clone()));
-    world.insert_non_send(Logic {
-        hsm,
-        host,
-        serial,
-        frame: 0,
-        screens: channel(),
-        sequences: channel(),
-        store,
-        sim_paused: false,
-    });
+    world.insert_non_send(Logic { hsm, host, serial, frame: 0, screens: channel(), sequences: channel(), store });
 }
 
 /// The structural and ported behaviour types; types the original has but we have not ported hold, the online
@@ -586,6 +575,7 @@ struct Targets<'w, 's> {
     cutscene: Option<ResMut<'w, CutsceneState>>,
     audio: Option<ResMut<'w, crate::settings::AudioSettings>>,
     sim: ResMut<'w, Time<Virtual>>,
+    pause: ResMut<'w, crate::pause::PauseReasons>,
     traffic: Option<ResMut<'w, crate::traffic::TrafficControl>>,
     snap: Option<ResMut<'w, crate::camera::SnapCamera>>,
     race: Race<'w, 's>,
@@ -815,13 +805,8 @@ fn tick(
                 }
             }
             Carry::SimPause(paused) => {
-                // As the pause menu does (pause.rs): the game clock stops; resumed only by whoever paused it.
-                if paused && !t.sim.is_paused() {
-                    t.sim.pause();
-                    logic.sim_paused = true;
-                } else if !paused && std::mem::take(&mut logic.sim_paused) {
-                    t.sim.unpause();
-                }
+                // The game clock stops under this pause reason; it runs again once no other reason holds it.
+                t.pause.set(crate::pause::PauseReason::SimPause, paused, &mut t.sim);
             }
             Carry::HideChevron(hide) => {
                 if let Some(c) = t.chevrons.as_deref_mut() {

@@ -11,6 +11,27 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+## 2026-11-18: the four suspected game-flow bugs fixed (runtime glue, no install)
+
+The "Suspected, not changed" items of the game-flow / UI / audio bug hunt below, all in our own plumbing (none is
+a port of a documented function), now fixed; checked by compiling and one data-free unit test, not by a run.
+- **Pause ownership**: `pause::PauseReasons` (a resource, bits `Menu`, `StreamStall`, `SimPause`): every pauser
+  holds / releases only its own reason and `Time<Virtual>` is paused iff one is held. Routed through it: the pause
+  menu and the map (one `Menu` reason, handed from the menu to the map and, for a race started from the map, to the
+  event card, which releases it), the streaming stall, the logic's `SimPause`. The menu's / map's "was running when
+  opened" flags are gone. Test `clock_runs_only_with_no_reason_held`. Speed changes (`set_relative_speed`: tests,
+  crash and cutscene slow motion) are not pauses and stay as they were.
+- **Roadblock pieces in flight**: `place_roadblocks` despawns every `RoadblockPiece` whose tag is not the standing
+  roadblock's (also how a removal now clears its pieces). Cars were already safe (arrivals without a pending slot
+  are dropped).
+- **Bust outcome**: the runtime's pending cop orders (`entity: None`) are cancelled in the core and dropped with the
+  rest; arrivals for them find no order and are dropped. `RemoveAllCops` (`FUN_006795c0`) itself only removes
+  occupied slots; what the original does with cop loads in flight was not traced.
+- **Refused event start** (plain play): `PlainFlow::event_refused` clears `awaiting_event` / `event_seen` when
+  `race::start_race` refuses a second race, and also for the event card's DLC-locked refusal (same stuck state).
+The DLC-locked refusal also releases the `Menu` reason (a locked race started from the map left the clock stopped).
+Capture that would confirm the pause fix: open the pause menu during a streaming stall.
+
 ## 2026-11-18: mw-assets bug hunt, round 2 (code-level defects, no install)
 
 Read mw-assets' own logic (index lookups, curves, grids, empty collections, chains) without the install.

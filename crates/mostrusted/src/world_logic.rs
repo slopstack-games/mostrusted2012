@@ -75,6 +75,15 @@ pub struct PlainFlow {
     pub event_seen: bool,
 }
 
+impl PlainFlow {
+    /// The chosen event was refused before it started (a second race, a locked DLC event): no `RaceState` will
+    /// come, so the manager enters again (as `event_starts.rs` does for an event the runtime cannot run).
+    pub fn event_refused(&mut self) {
+        self.awaiting_event = false;
+        self.event_seen = false;
+    }
+}
+
 /// The managers' logic state and their outcomes (main thread: the state is shared with the HSM's Lua).
 pub struct WorldLogic {
     pub state: Rc<RefCell<LogicState>>,
