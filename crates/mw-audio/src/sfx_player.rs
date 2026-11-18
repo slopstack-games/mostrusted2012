@@ -1,6 +1,7 @@
 //! Player for the vehicle sound effects (`mw_assets::sfx`): a copy of [`crate::sequence`] without Ginsu items,
 //! kept separate while the engine path is reworked (fold back together once it settles). Differences: stopping
-//! voices release over ~20 ms, and retriggered one-shots stop when their binding leaves the item's range.
+//! voices release over ~20 ms (model: the game's stop command carries no time), and one-shot items follow the game's
+//! item update (fade envelope, gain and pitch while inside the range) and exit rule (`Item::plays_out`).
 //!
 //! The game's sound sequences and mixer graph, as data plus a player.
 //!
@@ -163,6 +164,9 @@ pub struct Item {
     pub end: f32,
     pub fade_in: Fade,
     pub fade_out: Fade,
+    /// The item's play mode (`SequenceItem` field `6001d10d`, a short at +0xdc of the item data: 0 plain, 1 / 2
+    /// the periodic restarts of the item update, 3..=5 [`Item::plays_out`]).
+    pub mode: u8,
     /// Item plays only while this binding is true (empty = always).
     pub enabled: String,
     /// Mixer channel id (`MixerChannel` resource); `None` plays straight to the master.
@@ -171,6 +175,14 @@ pub struct Item {
 }
 
 impl Item {
+    /// The one-shot exit rule (`FUN_00834f90`, `WaveSequenceItem` vtable 0x00fef4d0 +0x28, called by the sequence's
+    /// item loop `FUN_00a42b90` when the axis leaves the item's range): an item of mode 3..=5 whose voice still
+    /// plays (voice states 2, 3, 7..=10) is not stopped and plays to the end of its wave (the loop calls the rule
+    /// again every tick, the item stays in its "exiting" state); any other item stops its voice (`FUN_00835010`).
+    pub fn plays_out(&self) -> bool {
+        (3..=5).contains(&self.mode)
+    }
+
     /// Envelope at axis position `x`: 0 outside the range, fades inside it.
     pub fn envelope(&self, x: f32) -> f32 {
         if !(x >= self.start && x <= self.end) {
@@ -1080,13 +1092,20 @@ impl Player {
                                     starts.push((si, ii, t_item));
                                 }
                             }
-                            // Retriggered one-shots stop when the binding leaves the item's range.
-                            if seq.retrigger
-                                && !inside
-                                && let Some(v) =
-                                    st.voice.filter(|&v| v < self.voices.len() && self.voices[v].owner == (si, ii))
+                            // The item's voice follows its update (`FUN_00836910` -> `FUN_00834c30` -> `FUN_0079fdd0`):
+                            // every tick inside the range volume = fade envelope x gain and the pitch are applied
+                            // to the playing wave. Outside the range the exit rule (`FUN_00834f90`) stops it unless
+                            // the item plays out ([`Item::plays_out`]: it then keeps its last values).
+                            if let Some(v) =
+                                st.voice.filter(|&v| v < self.voices.len() && self.voices[v].owner == (si, ii))
                             {
-                                self.voices[v].stopping = true;
+                                let voice = &mut self.voices[v];
+                                if inside {
+                                    voice.target = env * gain;
+                                    voice.step = pitch.max(0.05) as f64 * voice.clip.rate as f64 / self.sr as f64;
+                                } else if !item.plays_out() {
+                                    voice.stopping = true;
+                                }
                             }
                         }
                     }
@@ -1200,6 +1219,9 @@ impl Player {
         let gate = self.value(self.seqs[si].gate).map_or(1.0, |v| v.clamp(0.0, 1.0));
         let gain = st.gain.as_ref().map_or(1.0, |m| m.m.eval(t, self.value(m.bind))) * gate;
         let pitch = st.pitch.as_ref().map_or(1.0, |m| m.m.eval(t, self.value(m.bind)));
+        // The first update of the wave voice (`FUN_00836910`, voice state 5) already carries the fade envelope
+        // at the item's position.
+        let env = item.envelope(item.start + t * (item.end - item.start));
         let channel = st.channel;
         let pick = self.rng.next() as usize % waves.len();
         let clip = waves[pick].clone();
@@ -1208,14 +1230,14 @@ impl Player {
         // Looping voices fade in from silence at a random point of the loop (layers sharing a wave don't
         // phase); one-shots start at full gain.
         let pos = if looping { (self.rng.next() as usize % clip.samples.len().max(1)) as f64 } else { 0.0 };
-        let gain0 = if looping { 0.0 } else { gain };
+        let gain0 = if looping { 0.0 } else { gain * env };
         self.voices.push(WaveVoice {
             clip,
             pos,
             step,
             gain: gain0,
             dgain: 0.0,
-            target: gain,
+            target: if looping { gain } else { gain * env },
             channel,
             owner: (si, ii),
             stopping: false,
@@ -1365,6 +1387,7 @@ mod tests {
             end: 90.0,
             fade_in: Fade { time: 20.0, curve: 1.0 },
             fade_out: Fade { time: 20.0, curve: 1.0 },
+            mode: 0,
             enabled: String::new(),
             channel: None,
             kind: ItemKind::Mixer { params: vec![] },
@@ -1388,6 +1411,7 @@ mod tests {
             end: 100.0,
             fade_in: Fade { time: 10.0, curve: 1.0 },
             fade_out: Fade::default(),
+            mode: 0,
             enabled: String::new(),
             channel: Some(1),
             kind: ItemKind::Wave {
@@ -1446,6 +1470,7 @@ mod tests {
             end: 0.9,
             fade_in: Fade::default(),
             fade_out: Fade::default(),
+            mode: 0,
             enabled: String::new(),
             channel: None,
             kind: ItemKind::Wave {
@@ -1489,5 +1514,105 @@ mod tests {
         // A sine of amplitude 0.49 × MIX_SCALE, plus the replaced ones' 20 ms releases: stacked copies (25 here)
         // would add up far beyond that.
         assert!(peak <= 0.49 * MIX_SCALE * 3.0, "peak {peak}");
+    }
+
+    /// A bound one-shot item (range 0.2..0.8 on a 0..1 axis, fades over 0.2 / 0.1) of the given play mode.
+    fn one_shot(mode: u8) -> (Player, Arc<Params>) {
+        let wave = Item {
+            start: 0.2,
+            end: 0.8,
+            fade_in: Fade { time: 0.2, curve: 1.0 },
+            fade_out: Fade { time: 0.1, curve: 1.0 },
+            mode,
+            enabled: String::new(),
+            channel: None,
+            kind: ItemKind::Wave {
+                waves: vec![sine_clip(300.0, false)],
+                gain: ModValue::constant(1.0),
+                pitch: ModValue::constant(1.0),
+                probability: None,
+            },
+        };
+        let bank = Bank {
+            channels: vec![],
+            sequences: vec![Sequence {
+                id: 0,
+                binding: "Spin".into(),
+                min: 0.0,
+                max: 1.0,
+                items: vec![wave],
+                gate: String::new(),
+                retrigger: false,
+                jumps: vec![],
+            }],
+            cues: vec![],
+            master_gain: 1.0,
+        };
+        let params = Arc::new(Params::new(bank.param_names()));
+        let mut p = Player::new(bank, params.clone());
+        params.set_smoothing("Spin", 0.0);
+        for _ in 0..9600 {
+            p.next_sample();
+        }
+        (p, params)
+    }
+
+    fn run(p: &mut Player, samples: usize) {
+        for _ in 0..samples {
+            p.next_sample_linear();
+        }
+    }
+
+    /// The exit rule `FUN_00834f90`: an item of mode 0 stops its wave when the axis leaves the range; an item of
+    /// mode 3..=5 (the skid sequences) lets it play to the end.
+    #[test]
+    fn exit_rule_stops_plain_items_and_spares_play_out_items() {
+        for (mode, plays_on) in [(0u8, false), (1, false), (2, false), (3, true), (4, true), (5, true), (6, false)] {
+            let (mut p, params) = one_shot(mode);
+            params.set("Spin", 0.5);
+            run(&mut p, 960);
+            assert_eq!(p.voices.len(), 1, "mode {mode}: started");
+            params.set("Spin", 0.95);
+            run(&mut p, 4800);
+            assert_eq!(!p.voices.is_empty(), plays_on, "mode {mode}: voices after leaving the range");
+            if plays_on {
+                assert!(!p.voices[0].stopping, "mode {mode}");
+            }
+        }
+    }
+
+    /// A play-out item keeps the volume it had at the exit (its update no longer runs), a re-entry starts a new
+    /// voice in place of the old one (`FUN_00836760`).
+    #[test]
+    fn play_out_item_keeps_its_last_volume() {
+        let (mut p, params) = one_shot(3);
+        params.set("Spin", 0.5);
+        run(&mut p, 960);
+        let inside = p.voices[0].target;
+        params.set("Spin", 0.0);
+        run(&mut p, 4800);
+        assert_eq!(p.voices.len(), 1);
+        assert_eq!(p.voices[0].target, inside);
+        params.set("Spin", 0.5);
+        run(&mut p, 960);
+        assert_eq!(p.voices.iter().filter(|v| !v.stopping).count(), 1);
+    }
+
+    /// The item update applies the fade envelope to the one-shot's volume (`FUN_00836910`: fade-in over
+    /// `Fade_In.Time` from the start, fade-out over the last `Fade_Out.Time`), at its start and on every tick.
+    #[test]
+    fn one_shots_follow_the_item_fades() {
+        let (mut p, params) = one_shot(0);
+        params.set("Spin", 0.3);
+        run(&mut p, 96);
+        // Half way through the fade-in: 0.1 of 0.2.
+        assert!((p.voices[0].target - 0.5).abs() < 0.05, "{}", p.voices[0].target);
+        assert!(p.voices[0].gain < 0.6, "starts at the envelope, not at full gain: {}", p.voices[0].gain);
+        params.set("Spin", 0.5);
+        run(&mut p, 96);
+        assert!((p.voices[0].target - 1.0).abs() < 1e-3);
+        params.set("Spin", 0.75);
+        run(&mut p, 96);
+        assert!((p.voices[0].target - 0.5).abs() < 0.05, "fade-out: {}", p.voices[0].target);
     }
 }

@@ -1049,8 +1049,27 @@ Details and numbers in the research log ("sounds from the play test").
   the item's voice handles (+0x68, and up to two at +0x6c with their count at +0x74). The start picks a wave
   (`rand % count`, +0xe2) and, **when the item still holds a voice (states 5, 7–10), stops it through +0x24
   first**; in states 3 / 4 it does nothing. So an item never sounds twice at once (ported in `sfx_player` /
-  `sequence` `start_voice`). The exit (+0x28) keeps a voice playing when the item's mode (+0xdc) is 3–5, else
-  stops it (the mode field's data name not identified).
+  `sequence` `start_voice`).
+  - **Exit rule** `FUN_00834f90` (ported in `sfx_player`, `Item::plays_out`; the sequence's item loop `FUN_00a42b90`
+    calls it every tick while the axis is outside the item's range and the item's state is not 0; a result of 0 leaves
+    the item in its "exiting" state 4, 1 returns it to 0): if the item's mode (+0xdc, a short; the base `SequenceItem`
+    field `6001d10d`, unnamed; values in the data 0, 1, 2, 3 -- 3 only on `WaveSequenceItem`s of the skid, wall
+    reflection, turbo and traffic-engine sequences) is 3..=5, it refreshes the voice state (`FUN_00834c30` with
+    the apply flag clear: a finished wave moves the state to 0xb) and, if the state is 2, 3, 7, 8, 9 or 10 (a wave
+    queued or playing), returns 0 **without stopping it**: the one-shot plays to its end. Every other item (modes 0,
+    1, 2) and every finished voice goes through the stop method.
+  - **Stop** `FUN_00835010` (+0x24): states 2, 3, 5, 7..10 stop the voices (`FUN_007a2100` = `FUN_0079fce0`(handle, 0,
+    0): the voice slot (30 of them, 0x28 bytes, flag +0x719) gets command 4 in the audio queue; the fade variant is
+    command 5 with a time, which the stop does not pass), then state 0xc. The queue's consumer (the place a stop
+    could fade) was not found, so our ~20 ms release stays a model value.
+  - **Update** `FUN_00836910` (+0x14): the fade envelope is applied to every playing wave, one-shots included: position
+    `p` = axis - `StartTime`; fade-in `pow(p / Fade_In.Time, Curve)` while `p <= Fade_In.Time` (and the time > a
+    small epsilon `.rdata` 0x00f8f344), fade-out `pow((len - p) / Fade_Out.Time, Curve)` from `len - Fade_Out.Time`
+    on; the product times the `Gain` value is the volume. In state 5 / 6 the voice is created with that volume and
+    the pitch; in state 7 each tick `FUN_00834c30` applies (volume, pitch) to the running voice (`FUN_0079fdd0`).
+    Outside the range the update does not run, so a mode 3..=5 voice keeps its last volume and pitch. Modes 1 / 2
+    restart the wave from the update (mode 1 from a random-number table of the voice's owner, mode 2 from a timer
+    at +0x64 compared with the wave's length); not ported.
 - **Whines** (`FUN_0058c3f0`, engine sound start): for the player's car (+0x1c18) every sequence of `VehicleSound`
   +0x50 `TransmissionWhine` (`Sequences` +0x10, count +0x14) and +0x58 `TurboWhine` (+0x40, count +0x54).
   `GetTransmissionSpeedMph` `FUN_0059ed70` → `FUN_009170a0`; the turbo update `FUN_0058f8f0` / blow-off pick
