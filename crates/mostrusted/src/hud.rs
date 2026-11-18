@@ -283,6 +283,8 @@ struct HudAssets {
     mosaic: Option<MapMosaic>,
     points: Vec<MapPoint>,
     districts: Option<mw_assets::ui::Districts>,
+    /// The looks loaded for the map icons by key (the POI list's records, `poi.rs`).
+    poi_looks: Vec<(u32, MapIcon)>,
 }
 
 /// A free-roam collectable with a minimap icon (`FUN_006ffba0`): body shops (kind 6) and jack spot locations
@@ -320,6 +322,9 @@ struct Hud {
     districts: Option<mw_assets::ui::Districts>,
     /// Indices into `points` with a point of interest now (within range, `FUN_006ffd90`).
     active: std::collections::BTreeSet<usize>,
+    /// The map icons by look key: the POI list's records are drawn with these (`poi.rs`); other keys are not
+    /// among this widget's looks (`FUN_00814470` finds none) and are skipped.
+    poi_looks: Vec<(u32, MapIcon)>,
 }
 
 struct MapView {
@@ -347,6 +352,7 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>, settings: Res<H
         };
         let mut layouts = Vec::new();
         let mut groups = Vec::new();
+        let mut poi_looks = Vec::new();
         // Minimap icons: the map layout of each point-of-interest look the race code names. Their instance only
         // translates to the `Pos` binding (the point on the map), which `draw_hud` does.
         let free_roam_pois = store.ui_poi_visuals(FREE_ROAM_HUD).unwrap_or_default();
@@ -371,6 +377,7 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>, settings: Res<H
                             l.instance = None;
                             layouts.push(l);
                             groups.push(Group::MapIcon(icon));
+                            poi_looks.push((key, icon));
                         }
                         None => warn!("HUD: no map icon for {icon:?} (point of interest {key})"),
                     }
@@ -460,6 +467,7 @@ fn start_loading(mut commands: Commands, game: Res<crate::Game>, settings: Res<H
             mosaic,
             points,
             districts,
+            poi_looks,
         });
     });
     commands.insert_resource(HudLoading(Mutex::new(rx)));
@@ -526,6 +534,7 @@ fn receive_hud(
         points: assets.points,
         districts: assets.districts,
         active: Default::default(),
+        poi_looks: assets.poi_looks,
     });
 }
 
@@ -906,7 +915,11 @@ fn draw_hud(
         Res<crate::gps::Gps>,
         Option<Res<crate::event_starts::EventStarts>>,
     ),
-    (easydrive, roads): (Option<Res<crate::easydrive::EasyDrive>>, Option<Res<crate::nitrous::Roads>>),
+    (easydrive, roads, pois): (
+        Option<Res<crate::easydrive::EasyDrive>>,
+        Option<Res<crate::nitrous::Roads>>,
+        Res<crate::poi::Pois>,
+    ),
 ) {
     let car = car.single().ok();
     // The pause menu covers the game (its own screen); the HUD goes while it is open.
@@ -926,7 +939,20 @@ fn draw_hud(
     }
 
     let Hud {
-        scene, groups, countdown, results, feedback, lang, car_names, anim, map, points, active, districts, ..
+        scene,
+        groups,
+        countdown,
+        results,
+        feedback,
+        lang,
+        car_names,
+        anim,
+        map,
+        points,
+        active,
+        districts,
+        poi_looks,
+        ..
     } = &mut *hud;
     scene.metric = Some(metric);
     let district = car
@@ -1118,6 +1144,13 @@ fn draw_hud(
                 let icon =
                     if key == crate::event_starts::POI_EVENT { MapIcon::EventStart } else { MapIcon::MostWantedStart };
                 icons.push((icon, pos, Vec3::Z, false));
+            }
+        }
+        // The map manager's POI list (`poi.rs`: the intro's waypoints, ...) in its map order, each record whose key
+        // is one of this widget's looks (`FUN_008162a0`).
+        for poi in &pois.icons {
+            if let Some(&(_, icon)) = poi_looks.iter().find(|(k, _)| *k == poi.key) {
+                icons.push((icon, poi.position, poi.direction, false));
             }
         }
         icons.push((MapIcon::Player, p, f, false));

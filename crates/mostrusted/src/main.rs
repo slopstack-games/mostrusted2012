@@ -69,6 +69,7 @@ mod pass_mask;
 mod pause;
 mod platform;
 mod player_sfx;
+mod poi;
 mod police;
 mod police_audio;
 mod police_fx;
@@ -1149,7 +1150,7 @@ fn run(mut cli: Cli, game: GameDir) -> anyhow::Result<()> {
         .add_plugins(event_card::EventCardPlugin)
         .add_plugins(ui_sequence::UiSequencePlugin)
         .add_plugins(ui_widgets::UiWidgetsPlugin)
-        .add_plugins(gps::GpsPlugin)
+        .add_plugins((gps::GpsPlugin, poi::PoiPlugin))
         .add_plugins(game_text::GameTextPlugin)
         .add_plugins(ui_quads::UiQuadsPlugin)
         .add_plugins(window_test::WindowTestPlugin)

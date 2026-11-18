@@ -157,6 +157,9 @@ pub struct PoiKeys {
     /// `CollectablesConfig` +0x34 (`a1b2d86a`, 955694): the jack spot look when `FUN_006fcf90` holds (the
     /// spot's car in a list of the profile; its icon has no visibility binding).
     pub jack_spot_owned: u32,
+    /// `MapPoiConfig` +0x44 (`5626fb85`) and +0x40 (`5e37f18a`): the online meet-up's two looks (`SHOWMEETUPPO`,
+    /// 0x751b10).
+    pub meetup: [u32; 2],
 }
 
 /// The world map's item kinds (`UI.MapItemType.ItemType`), as the map code adds them (`FUN_008181b0`,
@@ -349,6 +352,7 @@ impl AssetStore {
                 body_shop: ck(0xd71d_ba55),
                 jack_spot: ck(0x507e_9d87),
                 jack_spot_owned: ck(0xa1b2_d86a),
+                meetup: [key(map, 0x5626_fb85), key(map, 0x5e37_f18a)],
             });
         }
         Err(Error::Missing(ResourceId::NULL))

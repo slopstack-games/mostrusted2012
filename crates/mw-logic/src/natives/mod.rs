@@ -69,6 +69,7 @@ pub mod online_state_view;
 pub mod pages;
 pub mod players;
 pub mod players_view;
+pub mod pois;
 pub mod progression;
 pub mod sequence_view;
 pub mod sign_in_view;

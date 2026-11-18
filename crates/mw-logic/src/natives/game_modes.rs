@@ -29,6 +29,9 @@ pub struct EventInfo {
     /// The event object's scalar GeneSys fields by field hash, what `Event.Data.<field>` reads while it is the
     /// current event ([`super::mode_view::data_fields`]; filled by the runtime from the install).
     pub data: Vec<(u32, crate::binding::Value)>,
+    /// The event record's `Checkpoints` (+0x64, count +0xdc) as `WAYPOINTS` places them: each trigger's ground
+    /// point (`FUN_0053c020` → `FUN_00534330`, [`super::pois::ground_point`]; filled by the runtime).
+    pub waypoints: Vec<super::trigger_boxes::V3>,
 }
 
 /// Fields of the GMM the hooks touch.

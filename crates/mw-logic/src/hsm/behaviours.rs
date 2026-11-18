@@ -627,8 +627,10 @@ pub enum Query {
     /// `WAYPOINTS`: the POIs [`AddEventWaypointPois`](crate::natives::Request::AddEventWaypointPois) added
     /// (+0x88). Default 0.
     WaypointPoiCount,
-    /// `WAYPOINTS` update (0x74b6c0): UIM+0x23d34 == 1, UIM+0x28184 == 1 or UIM+0x2c5d4 ≠ 0 (another screen owns
-    /// the route). Default false.
+    /// `WAYPOINTS` update (0x74b6c0, read from the disassembly): a GPS route is pending or shown: the waypoint
+    /// route's state RC+0x4444 (UIM+0x23d34) is 1 (requested), the second route's RC+0x8894 (UIM+0x28184) is 1, or
+    /// the shown route's RC+0xcce4 (UIM+0x2c5d4) is not 0 (RC = UIM+0x1f8f0, decomp.md "Navigation"). Default
+    /// false.
     MapRouteBlocked,
     /// G+0x2a9d8 (`FUN_006e0c30`): the online event the playlist picked. Default 0.
     OnlinePendingEvent,

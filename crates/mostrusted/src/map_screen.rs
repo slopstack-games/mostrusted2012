@@ -342,6 +342,8 @@ pub struct MapScreen {
     icons: HashMap<u16, u32>,
     cards: HashMap<u16, u32>,
     cop_icon: Option<u32>,
+    /// Every map look of the screen's POI widget by key: the map manager's POI list is drawn with them (`poi.rs`).
+    poi_looks: HashMap<u32, u32>,
     /// `CollectablesName`: the collectables' names by item type.
     point_names: HashMap<u16, String>,
     selected: Option<Sel>,
@@ -540,6 +542,7 @@ struct Loaded {
     icons: HashMap<u16, u32>,
     cards: HashMap<u16, u32>,
     cop_icon: Option<u32>,
+    poi_looks: HashMap<u32, u32>,
     point_names: HashMap<u16, String>,
     menus: HashMap<u16, Vec<OptionItem>>,
     strings: HashMap<&'static str, String>,
@@ -628,6 +631,8 @@ fn start_load(mut map: ResMut<MapScreen>, game: Res<crate::Game>) {
                 }
                 cop_icon = look(m.ai_cop_poi);
             }
+            let poi_looks: HashMap<u32, u32> =
+                pois.iter().filter_map(|p| Some((p.key, p.map.as_ref()?.layout.id))).collect();
             // Events keep the card measured on the capture (look 1135809; research log 2026-10-10).
             cards.insert(map_item::EVENT, EVENT_CARD);
             cards.insert(map_item::MOST_WANTED_EVENT, EVENT_CARD);
@@ -661,7 +666,7 @@ fn start_load(mut map: ResMut<MapScreen>, game: Res<crate::Game>) {
                     ids.push(id);
                 }
             };
-            for &l in icons.values().chain(cop_icon.iter()) {
+            for &l in icons.values().chain(cop_icon.iter()).chain(poi_looks.values()) {
                 add(&mut ids, l);
             }
             add(&mut ids, PLAYER_ICON);
@@ -724,6 +729,7 @@ fn start_load(mut map: ResMut<MapScreen>, game: Res<crate::Game>) {
                 icons,
                 cards,
                 cop_icon,
+                poi_looks,
                 point_names,
                 menus,
                 strings,
@@ -808,6 +814,7 @@ fn poll_load(
     map.icons = loaded.icons;
     map.cards = loaded.cards;
     map.cop_icon = loaded.cop_icon;
+    map.poi_looks = loaded.poi_looks;
     map.point_names = loaded.point_names;
     map.config = loaded.config;
     if std::env::var_os("MW_MAP_LOG").is_some() {
@@ -1268,6 +1275,7 @@ fn draw(
     mut nodes: Query<PoolNode, With<QuadNode>>,
     mut materials: ResMut<Assets<AdditiveQuadMaterial>>,
     gps: Res<crate::gps::Gps>,
+    pois: Res<crate::poi::Pois>,
 ) {
     let Ok(window) = windows.single() else { return };
     let screen = [window.width(), window.height()];
@@ -1369,6 +1377,21 @@ fn draw(
                 };
                 draw_at(&mut look, &mut quads, icon, Some(at), None, false, &cop);
             }
+        }
+        // The map manager's POI list (`poi.rs`) in its map order: each record whose key is one of this screen's
+        // looks (`FUN_008162a0` / `FUN_00814470`; the intro's waypoints are not, the online meet-up's are), turned by
+        // its matrix's row 2.
+        for poi in &pois.icons {
+            let Some(&icon) = m.poi_looks.get(&poi.key) else { continue };
+            let pos = Vec2::new(poi.position.x, poi.position.z);
+            let at = to_screen(pos, m.cursor);
+            if !visible(at) {
+                continue;
+            }
+            let d = to_screen(pos + Vec2::new(poi.direction.x, poi.direction.z), m.cursor) - at;
+            let rot = d.x.atan2(-d.y).to_degrees();
+            let turn = move |p: &str| (p == "Rot").then_some(BindValue::Num(rot as f64));
+            draw_at(&mut look, &mut quads, icon, Some(at), None, false, &turn);
         }
         // The player's arrow, turned with the car (`Rot`, degrees clockwise on the map).
         let rot = player_facing.map_or(0.0, |f| {

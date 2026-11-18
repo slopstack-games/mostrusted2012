@@ -11,6 +11,40 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+## 2026-11-18: the map manager's POI list and the intro's waypoint POIs (`natives/pois.rs`, `poi.rs`)
+
+Ported from the code (decomp.md "Points of interest: the map manager's list"): UIM+0x14c50, 260 records of 0x60
+B; add `FUN_00790c70` (first slot not live), `FUN_00793350` (yaw rows cos / sin, π/2 at `.rdata` 0x010754b0),
+remove `FUN_00790da0`, map order `FUN_00799de0` + `FUN_00793aa0` (layer, then height). `WAYPOINTS` (only in the
+Intro game mode 1560352, event 1560354 WELCOME TO FAIRHAVEN, one checkpoint): a POI 1013519 per checkpoint at the
+trigger's ground point (`FUN_00534330`: y − size.y × 0.5), layer 2; every frame unless a route is pending or shown
+the GPS to the first one (`FUN_007970e0`). **Correction**: `MapRouteBlocked`'s three fields (UIM+0x23d34 /
++0x28184 / +0x2c5d4) are the three routes' states (RC = UIM+0x1f8f0: +0x4444, +0x8894, +0xcce4, read from the
+disassembly at 0x74b6da), not "another screen owns the route". **Correction (gps.rs)**: SET DESTINATION
+(`FUN_00796ff0` / `FUN_007970e0`) passes a zero velocity to `FUN_00796df0`; the runtime passed the car's (the
+start then moved two road nodes ahead); only the off-route re-route uses the velocity. `SHOWMEETUPPO`: two POIs
+of layer 0x13 (`MapPoiConfig` +0x44 = 1013503, +0x40 = 1013504) on the trigger box matrix `FUN_006e8ea0` (rows ×
+size.x / 22, size.y / 18, size.z / 2). Each screen's POI widget draws only the keys its own looks list
+(`FUN_008162a0` → `FUN_00814470`): 1013519 is a HUD look (minimap) and not a map-screen one; the meet-up's are
+map-screen looks.
+
+Port: the list and both behaviours' requests in `mw_logic::natives::pois` (`LogicState::pois`,
+`EventInfo::waypoints` filled by the runtime and `mwtool hsm`; `Query::WaypointPoiCount`); the runtime answers
+`MapRouteBlocked` from `gps::Gps::busy`, routes with `Effect::RouteTo`, reads the meet-up's trigger box on demand,
+and `poi.rs` copies the list each frame for the minimap (`hud.rs`, the HUD looks it loads) and the world map
+(`map_screen.rs`, every map look of the screen). Verified: `tools/t --race 1560354 --no-cutscenes` enters
+"Do Intro Waypoints" at the mode's start, adds the POI at (1721.6, 31.6, 2315.9) and routes 2.9 km to it
+(`MW_GPS_LOG=1`); after the intro sequence (122 s) the Intro HUD screen 1560359 (now in
+`ui_widgets::DRAWN_SCREENS`) shows the minimap with the route; the waypoint itself is 2.9 km off the minimap, so
+its icon was checked with a temporary POI placed 120 m from the car (not committed). The icon clamping to the
+map's edge (`FUN_0080cb60`, look flag `8ac61148`, widget `MarginProportion`) is read (decomp.md) but not ported:
+in the original the waypoint icon may sit on the minimap's edge. Model decisions: handles capped
+at 16; the exit (0x74b660, not in the dump) removes valid handles; gates, event starts, collectables, racers and
+cops are still drawn from their own systems; world layouts, map-edge clamping (`FUN_0080cb60`) and the camera
+order are not ported; the second route cleared by `FUN_00792390` does not exist in the runtime. Captures that
+would confirm: the original's minimap and map right after WELCOME TO FAIRHAVEN's intro (waypoint icon, route).
+
+
 ## 2026-11-18: offline Requests / Queries of `behaviours_rest.rs` on the runtime
 
 Wired in `RuntimeHost` (logic.rs): `SetWorldShownFlag` / `Query::WorldShownFlag` (the byte G+0x2ef70 +0x44 is kept

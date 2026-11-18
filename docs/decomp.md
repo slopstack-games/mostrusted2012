@@ -2950,7 +2950,7 @@ and the snapshot's disassembly unless stated.
   `SPEECHEVENTS` through `FUN_00ad82c0`/`FUN_00adaef0`/`FUN_00ad83c0`, 1 0x7412d0, 3 0x753310 `FUN_00842f10` = 0x13
   plays, `FUN_0083c530` still playing, exits `SUCCESS` / `FAILURE`, 4 0x741300); `WAYPOINTS` 0x77b680 → 0xfd959c
   (0 0x74b530 POIs `FUN_00793350`(`POIID`, waypoint, 0, 2, i) for the event record's triggers (+0xdc / +100), 3
-  0x74b6c0 GPS to the first unless UIM+0x23d34 / +0x28184 / +0x2c5d4, 6 0x74b660). `INSAFEHOUSE` and `MANAGEREPAIR`
+  0x74b6c0 GPS to the first unless a route is requested or shown (UIM+0x23d34 / +0x28184 / +0x2c5d4: see "Points of interest: the map manager's list"), 6 0x74b660). `INSAFEHOUSE` and `MANAGEREPAIR`
   are not registered by the original (no name string in the exe): they run as `FUN_00775a60`'s fallback. Not
   ported (each a subsystem of its own, like `CHECKPTS`; `HSMDODRIFTS` 0x77fc80 → 0xfdc148 and `DOSMSHNGRB`
   0x77e150 → 0xfda9c8 were ported 2026-11-18, see "Drift scoring" / "Smash-and-Grab scoring"): `HSMSHAKEDOWN` 0x77e100 → 0xfda9a4, `CHKPNTSONLIN` 0x77b470 →
@@ -3360,6 +3360,72 @@ gates, `FUN_007a0e40`), RC+0x88a0 (the **shown** route, the one followed and dra
 pixels. Model decisions: the line's look (light blue, the road's drivable width, at least 2 px on the minimap and
 3 px on the map, only from the car's progress on); a failed search clears the destination; an event start
 clears the route when a race starts (`RaceState` appears); the 5 m arrival test runs whenever a destination is set.
+
+### Points of interest: the map manager's list (2026-11-18, `mw_logic::natives::pois`, `poi.rs`)
+
+UIM+0x14c50 is the one list of map / world points of interest: 260 records (0x104) of 0x60 bytes: +0x00 a matrix
+(D3D rows, row 3 = position), +0x40 the look key (`PointOfInterestVisuals.9a5a94d3`), +0x44 the handle (= slot;
+0x7fffffff free), +0x48 the map layer, +0x4c an index, +0x50 a u16 generation; bit sets of live slots +0x69a8
+and changed slots +0x69cc, +0x69f0 "sorted". Its users: the race gates (`FUN_00759860` → `FUN_00790c70` with
+`FUN_00749930`'s matrix), the world map's dynamic items (`FUN_00808290`: racers `AIPlayerPOI`, cops `AICopPOI`,
+`CheckpointPOI` / `FinishLinePOI`, meet-ups `MeetupPOI` / `MeetupAreaPOI`, all `FUN_00790c70` on UIM+0x14c50,
+confirmed from the disassembly at 0x8082a6), `WAYPOINTS`, `SHOWMEETUPPO`, the map's selection helpers
+(`FUN_007ed630` / `FUN_007ed680` / `FUN_007ed660` / `FUN_007ed6c0` / `FUN_007ed6e0`, a small object holding two
+handles).
+
+- **Add** `FUN_00790c70(this, out handle, key, matrix, layer, index)`: the first slot whose key is 0 or whose
+  handle is invalid (0x7fffffff or negative); none of 260: handle 0x7fffffff. Sets both bit sets, clears +0x69f0.
+  `FUN_00793350(out, key, position, yaw, layer, index)` builds the matrix rows (cos, 0, −sin), (0, 1, 0),
+  (sin, 0, cos) (a polynomial sin / cos, π/2 at `.rdata` 0x010754b0), row 3 = position.
+- **Remove** `FUN_00790da0(this, handle)`: identity matrix, key 0, handle 0x7fffffff, +0x50 = ++`DAT_0117cb40`;
+  live bit cleared, changed bit set. No validity check inside (callers check).
+- **Live** `FUN_00790c50(record)`: key ≠ 0 and the handle valid.
+- **Draw lists** `FUN_00799de0` (from `FUN_007a1590`, the map manager's update, with `FUN_007a0770`): the live
+  slots into +0x6180 (count +0x6590) sorted by `FUN_00790e50` (distance to the camera plane taken from the
+  camera object `(DAT_010edaf4+4)+0x36cc` +0x30 / +0x40, far first: the world layouts) and +0x6594 (count +0x69a4)
+  sorted by `FUN_00793aa0` (layer +0x48 ascending, then row 3 y ascending: the map icons); +0x69f0 = 1.
+- **The POI widget** (`POIDisplayScript`, object built by `FUN_00810990`: +0x7b24 = UIM+0x14c50, +0x7b28 = RC):
+  `FUN_00817840` walks the +0x6180 list: `FUN_00815c70`, the map icon `FUN_008162a0` and the world layouts
+  `FUN_00816520`, each gated by a flag (+0x7b13 / +0x7b14 / +0x7b15). `FUN_008162a0` looks the record's key up in
+  the widget's **own** sorted key table (`FUN_00814470`: keys at +0xc4, count +0xc0, looks at +0x164); not found →
+  nothing drawn. So a screen draws only the records whose looks it lists: the free-roam / race HUDs list 1013519
+  (the gate / waypoint look), the map screen 899991 does not (it lists the map item looks, 1135615–1135619 and the
+  meet-up's 1013503 / 1013504). `FUN_0080cb60` places the icon: the position through the map camera's
+  view-projection (widget +0x80..+0xbc) to (ndc + 1) / 2 (behind the camera: x, y negated); inside the rectangle
+  [m0, 1 − m2] × [m1, 1 − m3] (m = the widget's `MarginProportion` `062ec799` at +0x7ab0; the HUD minimap
+  widget's is [0.1, 0.25, 0.021, 0.3]) it stays, else it is moved along the ray from the centre (`.rdata`
+  0x00feb460) to that rectangle's edge (four edge planes at `.bss` 0x0117f530) and flagged clamped. When the look's
+  bool `8ac61148` (`PointOfInterestVisuals` +0x5f) is set the clamped point is used and `IsClamped` (+0x65) set;
+  otherwise the unclamped point, hidden while clamped (`FUN_00791d60`). Not ported yet (the runtime's minimap is a
+  2-D stand-in drawn into the `Map` element's rectangle).
+- **`WAYPOINTS`** ("Do Intro Waypoints", only state 1560636 of the Intro game mode 1560352, event 1560354 WELCOME
+  TO FAIRHAVEN; `POIID` 1013519 = `CheckPointsConfig.NormalPoi`): enter 0x74b530 reads the current event's GeneSys
+  record ((G+0x2f3fc)+4 → +0xf4 / +0xf8): per entry of `Checkpoints` (+0x64, count u16 +0xdc) the trigger
+  (`FUN_0053c020`) and `FUN_00534330` = its position with y − size.y × 0.5 (record +0x28 × `.rdata` 0x00f8a810),
+  then `FUN_00793350`(`POIID`, that point, yaw 0, layer 2, index i), the handle into +0x48 + 4 × count (no bound:
+  past 16 it would overwrite the count +0x88). Update 0x74b6c0 (disassembly; the decompiler lost `this`): unless
+  RC+0x4444 == 1 (the waypoint route requested), RC+0x8894 == 1 (the second route requested) or RC+0xcce4 ≠ 0
+  (the shown route requested or built), and count ≠ 0: `FUN_00792390` on RC+0x4450 (the second route cleared),
+  `FUN_007970e0(RC, G, record[+0x48 handle] row 3)` and RC+0xccf0 (UIM+0x2c5e0) = −1. `FUN_007970e0` (like
+  `FUN_00796ff0` for an event) routes from the player's position (`FUN_006e02f0`) with a **zero velocity** into
+  `FUN_00796df0`. Exit 0x74b660 is outside the dump.
+- **`SHOWMEETUPPO`** 0x751b10: the meet-up trigger (event data +0x5c; the box is +0x58's when set) →
+  `FUN_006e8ea0` (the box matrix: rotation rows × size.x / 22, size.y / 18, size.z × 0.5 (`.rdata` 0x00fcd010,
+  0x00fcd00c, 0x00f8a810), at the centre lowered by half the height; the same as the gates' `FUN_00749930`), then
+  two `FUN_00790c70` with `MapPoiConfig` (GameLogicConfig +0x2ac) +0x44 (`5626fb85` = 1013503) and +0x40
+  (`5e37f18a` = 1013504), layer 0x13, the key as the index. Exit 0x745eb0 removes both valid handles.
+
+**Port**: the list, add / remove / map order and the two behaviours' requests are `mw_logic::natives::pois`
+(`LogicState::pois`; the events' checkpoint ground points are `EventInfo::waypoints`, filled by the runtime and
+`mwtool hsm`); `Query::WaypointPoiCount` is the logic's, `Query::MapRouteBlocked` the runtime's (`gps::Gps::busy`:
+a destination set, requested or built). `poi.rs` copies the list each frame in map order; the minimap draws the
+records whose key is one of its loaded HUD looks, the world map those of the map screen's looks. The intro's HUD
+screen 1560359 ("Intro HUD" 1560357; its 1013519 look 955990 has the same map icon 371998 and no world layouts)
+is drawn by the widget renderer (`ui_widgets::DRAWN_SCREENS`).
+`RouteToFirstWaypointPoi` routes the GPS (`Effect::RouteTo`). The map's SET DESTINATION now also starts with a
+zero velocity. Model decisions: the race gates, event starts, collectables, racers and cops are still drawn from
+their own systems, not through the list; the world layouts, clamping and the camera-plane order are not ported;
+the waypoint handles are capped at 16; the exit removes valid handles only.
 
 ### UI frame and `HudAspectCorrection` (2026-10-19, `mw_assets::ui::UiFrame`)
 

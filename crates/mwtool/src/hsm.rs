@@ -527,6 +527,11 @@ fn drive(store: &AssetStore, data: Arc<HsmData>, instance: u32, o: &Options) -> 
                     .iter()
                     .find(|(id, _)| *id == e.id)
                     .map_or_else(Vec::new, |(_, f)| mode_view::data_fields(f)),
+                waypoints: e
+                    .checkpoints
+                    .iter()
+                    .map(|g| mw_logic::natives::pois::ground_point(g.position, g.size))
+                    .collect(),
                 ..Default::default()
             })
             .collect();

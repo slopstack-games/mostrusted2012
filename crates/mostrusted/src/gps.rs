@@ -4,7 +4,10 @@
 //!
 //! - **Setting** (`Map:OnSetWaypoint` → `FUN_0080eb60`): an event (item types 1, 9, 10) routes to its start
 //!   (`FUN_00796ff0`: the event's start trigger position), anything else to the item's position (`FUN_008091d0`:
-//!   the trigger's position). The route goes from the local player's position (`FUN_006e02f0`) with its velocity.
+//!   the trigger's position). The route goes from the local player's position (`FUN_006e02f0`) with a zero
+//!   velocity (both `FUN_00796ff0` and `FUN_007970e0` pass 0, so the start is not moved ahead along the road).
+//!   The intro's `WAYPOINTS` routes to its first waypoint POI the same way (`FUN_007970e0`, `poi.rs`) whenever no
+//!   route is pending or shown ([`Gps::busy`]).
 //! - **Request** (`FUN_00796df0`): when the velocity is not zero, the start is moved onto the road graph two nodes
 //!   ahead along it (`FUN_004375b0` nearest node, then `FUN_00436c00` twice); then an A* path request, type 9, to
 //!   the destination (`FUN_00843240`; the search is the AI's, `FUN_00527300`, over the `AIData` graph).
@@ -111,6 +114,12 @@ impl Gps {
         self.event = None;
         self.route = None;
         self.job = None;
+    }
+
+    /// `WAYPOINTS`' test (0x74b6c0): a route is requested (state 1) or shown (state ≠ 0). The runtime keeps one
+    /// route (the shown one); its destination is set from the request until arrival or a failed search.
+    pub fn busy(&self) -> bool {
+        self.destination.is_some()
     }
 
     /// The route as drawn: the points from the car's progress on (the line point just before it included).
@@ -264,12 +273,11 @@ impl GpsRoute {
     }
 }
 
-#[allow(clippy::type_complexity)]
 fn request(
     mut sets: MessageReader<SetDestination>,
     mut gps: ResMut<Gps>,
     game: Res<crate::Game>,
-    car: Query<(&GlobalTransform, Option<&LinearVelocity>), (With<crate::drive::Car>, With<crate::drive::Player>)>,
+    car: Query<&GlobalTransform, (With<crate::drive::Car>, With<crate::drive::Player>)>,
 ) {
     let Some(set) = sets.read().last().copied() else { return };
     gps.clear();
@@ -279,8 +287,9 @@ fn request(
     if std::env::var_os("MW_GPS_LOG").is_some() {
         info!("GPS: destination {} (event {:?})", set.position, set.event);
     }
-    if let Ok((xf, v)) = car.single() {
-        gps.start(game.store.clone(), xf.translation(), v.map_or(Vec3::ZERO, |v| v.0));
+    // `FUN_00796ff0` / `FUN_007970e0`: from the player's position with a zero velocity.
+    if let Ok(xf) = car.single() {
+        gps.start(game.store.clone(), xf.translation(), Vec3::ZERO);
     }
 }
 

@@ -4,7 +4,8 @@
 //! Carried out ([`Effect`]):
 //! - `ClearAllChevrons` (`FUN_006465a0`): the route markers of the race are dropped (`chevron::RouteMarker`);
 //! - `ClearTargetRoute` / `SetRouteFromPlayerToEvent` (`FUN_0067fd00`): `gps::Gps` cleared / routed to the event's
-//!   start (`gps::SetDestination`, as the map's SET DESTINATION);
+//!   start (`gps::SetDestination`, as the map's SET DESTINATION); `RouteToFirstWaypointPoi` routes to the first
+//!   waypoint POI (`FUN_007970e0`, `poi.rs`);
 //! - `NitrousAward` / `NitrousReset` / `NitrousInfinite` (`FUN_00658ad0` / `FUN_00658c90` / the byte +0xc0): the local
 //!   car's tank (`mw_handling::nitrous::Nitrous`); infinite holds the tank at 100 (decomp.md, nitrous state +0xc0);
 //! - `SirenState` / `EngineState` (`FUN_00844300` / `FUN_008444a0`): the local car's siren (`police_fx::FlashCar`) and
@@ -57,6 +58,10 @@ pub enum Effect {
     /// The event's start position.
     RouteToEvent {
         event: u32,
+        position: Vec3,
+    },
+    /// `RouteToFirstWaypointPoi` (`FUN_007970e0`): the GPS to a point (the first waypoint POI, `poi.rs`).
+    RouteTo {
         position: Vec3,
     },
     NitrousAward {
@@ -120,6 +125,11 @@ pub struct Effects<'w, 's> {
 }
 
 impl Effects<'_, '_> {
+    /// `Query::MapRouteBlocked`: a GPS route is requested or shown ([`crate::gps::Gps::busy`]).
+    pub fn route_busy(&self) -> bool {
+        self.gps.as_deref().is_some_and(crate::gps::Gps::busy)
+    }
+
     pub fn apply(&mut self, e: &Effect) {
         match e {
             Effect::ClearChevrons => {
@@ -134,6 +144,9 @@ impl Effects<'_, '_> {
             }
             Effect::RouteToEvent { event, position } => {
                 self.destination.write(crate::gps::SetDestination { position: *position, event: Some(*event) });
+            }
+            Effect::RouteTo { position } => {
+                self.destination.write(crate::gps::SetDestination { position: *position, event: None });
             }
             Effect::NitrousInfinite(on) => {
                 if let Some(i) = self.infinite.as_deref_mut() {

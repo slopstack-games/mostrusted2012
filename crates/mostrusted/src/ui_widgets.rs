@@ -47,8 +47,9 @@ use crate::ui_quads::{AdditiveQuadMaterial, PoolNode, QuadNode, QuadPool, show_q
 use crate::ui_sequence::LogicView;
 
 /// Screens this renderer draws (their hand-written drawing removed): the free-roam HUD "FreedriveHud" 371621 and
-/// the offline race HUD 604153 (the race game mode's "Race HUD" page).
-pub const DRAWN_SCREENS: [u32; 2] = [371_621, 604_153];
+/// the offline race HUD 604153 (the race game mode's "Race HUD" page) and the intro's HUD 1560359 ("Intro HUD"
+/// 1560357, the Intro game mode's page: its minimap shows the waypoint POIs, `poi.rs`).
+pub const DRAWN_SCREENS: [u32; 3] = [371_621, 604_153, 1_560_359];
 
 /// Widget groups of drawn screens whose look another module still draws: the `EasyDrive` widget's group 1135023
 /// (the open menu and its prompt, `easydrive.rs`).

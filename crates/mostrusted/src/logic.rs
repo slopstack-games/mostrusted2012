@@ -59,6 +59,11 @@
 //!   `TrafficDensity`, `StopMusic` (the song list stops), `StopSounds` kind 0 (the UI sounds end),
 //!   `CameraSnapBehind` (`camera::SnapCamera`).
 //!
+//! - the map manager's POI list (`mw_logic::natives::pois`, `poi.rs`): `AddEventWaypointPois` /
+//!   `RemoveEventWaypointPois` / `ShowMeetupPois` / `RemoveMeetupPois` act on the logic's list (the meet-up's
+//!   trigger box read here first); `RouteToFirstWaypointPoi` routes the GPS to the first waypoint
+//!   (`Effect::RouteTo`); `Query::MapRouteBlocked` is `gps::Gps::busy`.
+//!
 //! Everything else (the HUD screen's requests, the profile's game state) is still logged only:
 //! `freeroam.rs`, the rest of `race.rs` (stepping, AI, results) and of `frontend.rs` drive the game. Queries nobody
 //! answers log their default once (`hsm: ... query X: default answer N`).
@@ -293,6 +298,12 @@ fn receive(world: &mut World) {
                     .iter()
                     .find(|(id, _)| *id == e.id)
                     .map_or_else(Vec::new, |(_, f)| mode_view::data_fields(f)),
+                // `WAYPOINTS`: the checkpoints' ground points (`natives::pois`).
+                waypoints: e
+                    .checkpoints
+                    .iter()
+                    .map(|g| mw_logic::natives::pois::ground_point(g.position, g.size))
+                    .collect(),
                 ..Default::default()
             })
             .collect();
@@ -316,6 +327,10 @@ fn receive(world: &mut World) {
     let event_starts = events.events.iter().filter_map(|e| Some((e.id, Vec3::from(e.spawn?.position)))).collect();
     let playlists = events.game_modes.iter().map(|m| (m.id, m.music_playlist)).collect();
     let store = world.resource::<crate::Game>().store.clone();
+    // The meet-up's looks (`MapPoiConfig` +0x44 / +0x40, `SHOWMEETUPPO`).
+    if let Ok(keys) = store.poi_keys() {
+        logic.state.borrow_mut().pois.meetup_keys = keys.meetup;
+    }
     // The world managers (checkpoints, event starts, car swap) run on the logic's state from now on; their outcomes
     // go to `world_logic.rs` (`WorldLogic::outbox`).
     // A direct `--drive` without an event never reaches the machine's free-drive managers (no front end to boot
@@ -343,6 +358,8 @@ fn receive(world: &mut World) {
         nis_running: false,
         defaults: HashSet::new(),
         logic,
+        route_busy: false,
+        store: store.clone(),
         boot_trigger: false,
         new_profile,
         transitioning: false,
@@ -597,6 +614,8 @@ struct Targets<'w, 's> {
     >,
     /// The general UI sequence player: the playbacks are drawn through it.
     player: Option<ResMut<'w, crate::ui_sequence::UiSequencePlayer>>,
+    /// The POI list's copy (`poi.rs`).
+    pois: Option<ResMut<'w, crate::poi::Pois>>,
 }
 
 /// The race the logic drives (`race.rs`, `event_card.rs`, `cutscene.rs` in driven mode).
@@ -692,6 +711,7 @@ fn tick(
         host.logic.state.borrow_mut().set_general_trigger(name, 1);
     }
     host.collectables_ready = t.collectables.as_ref().is_some_and(|c| c.ready());
+    host.route_busy = t.fx.p0().route_busy();
     host.nis_running = t.cutscene.as_ref().is_some_and(|c| c.playing());
     // The runtime's event choice (map START RACE, Easy Drive, pause menu, world markers) becomes the logic's.
     if let Some(crate::event_card::PlayEvent(setup)) = t.race.plays.read().last().cloned() {
@@ -751,6 +771,10 @@ fn tick(
     let queued = std::mem::take(&mut host.logic.state.borrow_mut().requests);
     for r in queued {
         host.request(r);
+    }
+    // The POI list as the HUD and the world map draw it (`poi.rs`).
+    if let Some(p) = t.pois.as_deref_mut() {
+        p.sync(&host.logic.state.borrow().pois.list);
     }
     // The active widget groups for the widget-tree renderer (`ui_widgets.rs`), after this frame's activations.
     widget_groups.set(host.logic.pages.active_screen_groups());
@@ -1015,6 +1039,10 @@ struct RuntimeHost {
     /// Queries answered with their default (logged once each).
     defaults: HashSet<String>,
     logic: LogicHost,
+    /// A GPS route is requested or shown (`Query::MapRouteBlocked`, `gps::Gps::busy`), refreshed every frame.
+    route_busy: bool,
+    /// The meet-up trigger's box is read from the world's triggers on demand (`poi::provide_trigger`).
+    store: Arc<mw_assets::AssetStore>,
     boot_trigger: bool,
     new_profile: bool,
     /// The boot screen transition plays (`Transitions.Transitioning`; also true from its request until the front
@@ -1244,6 +1272,10 @@ impl Host for RuntimeHost {
             Request::ReleasePrimaryUser(_) => self.listening = false,
             _ => {}
         }
+        // `SHOWMEETUPPO`'s trigger box, for `natives::pois` to place the icons on.
+        if let Request::ShowMeetupPois { trigger } = &r {
+            crate::poi::provide_trigger(&mut self.logic.state.borrow_mut(), &self.store, *trigger);
+        }
         // The parts of the original's call the logic does itself (the game-mode start, input blocks, page
         // contexts and widget groups).
         self.logic.apply(&r);
@@ -1444,6 +1476,19 @@ impl Host for RuntimeHost {
             | Request::IceCameraStart { .. }
             | Request::RegisterSpeechCommand { .. }
             | Request::ShowOriginIgo => None,
+            // The map manager's POI list is the logic's (`natives::pois`: `WAYPOINTS`, `SHOWMEETUPPO`); the HUD and
+            // the world map draw its copy (`poi.rs`).
+            Request::AddEventWaypointPois { .. }
+            | Request::RemoveEventWaypointPois
+            | Request::ShowMeetupPois { .. }
+            | Request::RemoveMeetupPois => Some(Carry::Nothing),
+            // `FUN_007970e0`: the GPS to the first waypoint POI (UIM+0x14c80 + handle × 0x60). `FUN_00792390` before
+            // it clears the second route (RC+0x4450, the race's GPS line), which the runtime does not keep.
+            Request::RouteToFirstWaypointPoi => {
+                let st = self.logic.state.borrow();
+                mw_logic::natives::pois::waypoint_target(&st)
+                    .map(|p| Carry::Effect(crate::logic_effects::Effect::RouteTo { position: Vec3::from(p) }))
+            }
             // Message 0x2c: the camera follows the target's car. The runtime's camera follows the local car; another
             // slot (an AI racer) is not followed (logged once).
             Request::CameraTargetChanged { slot } => {
@@ -1504,6 +1549,8 @@ impl Host for RuntimeHost {
             Query::TransitionFinished => Some(!self.transitioning as u64),
             Query::FullRate => Some(self.full_rate as u64),
             Query::WorldShownFlag => Some(self.world_shown_flag as u64),
+            // `WAYPOINTS` update (0x74b6c0): a GPS route is pending or shown.
+            Query::MapRouteBlocked => Some(self.route_busy as u64),
             // `PLAYSONGLIST`'s last fallback: the current mode's `MusicPlaylist` (decomp.md "Music").
             Query::DefaultEventSongList => {
                 let mode = self.logic.state.borrow().game_modes.current_mode;

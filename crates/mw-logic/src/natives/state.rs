@@ -75,6 +75,9 @@ pub struct LogicState {
     pub drift: super::drifts::DriftScoring,
     /// `DOSMSHNGRB`'s smash-and-grab scoring (`smash_grab.rs`; binding root `SmashScoring`).
     pub smash_grab: super::smash_grab::SmashGrab,
+    /// The UI map manager's point-of-interest list (UIM+0x14c50) and the `WAYPOINTS` / `SHOWMEETUPPO` handles
+    /// (`pois.rs`).
+    pub pois: super::pois::Pois,
 }
 
 /// The binding host the logic reads through: the game-mode manager's `Mode` root ([`super::mode_view`]) first,
