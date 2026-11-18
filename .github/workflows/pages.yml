@@ -33,11 +33,22 @@ jobs:
           toolchain: ${{ inputs.toolchain }}
           components: rust-src
 
-      - name: Cache the cargo registry and the wasm build
-        uses: Swatinem/rust-cache@v2
+      # The whole wasm target dir is cached, not only the dependencies (Swatinem/rust-cache keeps only crates named
+      # in Cargo.lock: it dropped the std that `-Z build-std` rebuilds, so every dependency was rebuilt each run).
+      # Keyed by toolchain + Cargo.lock, newest commit first; a partial match restores the closest older one.
+      - name: Restore the cargo registry and the wasm build
+        id: cache
+        uses: actions/cache/restore@v4
         with:
-          workspaces: ". -> target/wasm-threads"
-          cache-on-failure: true
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target/wasm-threads
+          key: web-${{ inputs.toolchain }}-${{ hashFiles('Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            web-${{ inputs.toolchain }}-${{ hashFiles('Cargo.lock') }}-
+            web-${{ inputs.toolchain }}-
 
       # The CLI must match the `wasm-bindgen` crate in Cargo.lock.
       - name: wasm-bindgen CLI
@@ -54,6 +65,23 @@ jobs:
           tools/web/build
           test -f target/web/pkg/mostrusted_bg.wasm
           test -f target/web/coi-sw.js
+
+      # Saved even when the build failed (the dependencies built so far are kept); our own crates' artifacts are
+      # dropped first: checkout gives their sources new mtimes, so cargo rebuilds them anyway.
+      - name: Save the cargo registry and the wasm build
+        if: always() && steps.cache.outputs.cache-hit != 'true'
+        run: |
+          d=target/wasm-threads/wasm32-unknown-unknown/release
+          rm -rf $d/deps/*mostrusted* $d/deps/*mw_* $d/.fingerprint/mostrusted-* $d/.fingerprint/mw-* $d/build/mostrusted-* $d/build/mw-* $d/incremental
+      - if: always() && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target/wasm-threads
+          key: ${{ steps.cache.outputs.cache-primary-key }}
 
       - uses: actions/upload-pages-artifact@v3
         with:
