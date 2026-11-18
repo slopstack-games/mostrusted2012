@@ -11,6 +11,39 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+## 2026-11-19: the HUD feedback-message queue ported (`mw_logic::natives::feedback_queue`, `feedback.rs`)
+
+The UI manager's feedback queues (UIM+0x17e0) run as the original's: 19 queues built by `FUN_007ba460` (Online,
+Instructions, Hud (the default for an unknown name), Camera, Autolog, SecondaryQueue, DamageQueue, Notifications,
+Song, Transition, System, eight "Message Sequence" queues; capacities 7 / 3 / 2 from their vtables), posting
+(`FUN_007b6280` .. `FUN_007b8080`: serial `DAT_0117d170`, the message found by UniqueId in the loaded groups, timer =
+`Time` × 3e6 ticks) and the per-frame update `FUN_007bb160` (head started once, timed heads counted down, the
+`LayoutStyle` layout played on the UI sequence player with its in / out lengths, exclusive heads suspending the other
+interruptible queues). Function list, record offsets and the model decisions: the module doc of `feedback_queue.rs`.
+Posters wired: `PLAYFEEDBACK`, the Lua `ShowFeedbackMessage` family, the queue clears, the song popup (`FUN_007a1ce0`:
+the song list's `FeedbackMessage`, parts TrackName / AlbumName / Artist, the Song queue cleared first).
+
+Checked on the install: `MW_MUSIC=1 MW_FEEDBACK_SHOT=<png> tools/t --front-end --auto-start 1` posts message 30567 at
+the first free-drive song and draws its layout at the top left (note icon, artist, title). A circuit race (462174)
+posts nothing through these queues (no `PLAYFEEDBACK` runs; 27 / 27 gates as before).
+
+Open:
+- The popup is drawn over the Easy Drive prompt at the same place: the message's HUD mode write (+0x8c →
+  UIM+0x31c08), which is what would hide the prompt, is not modelled; nor are the display widgets stepped after the
+  queues (UIM+0x10990 .. +0x12808) and the camera / mix / world-entity effects of a message's start.
+- Artist and title share one line in our draw; not compared with a capture of the original yet.
+- Message sounds, movies, speech and camera takes of `FUN_007b9ee0` are logged only.
+
+## 2026-11-19: the bug-hunt branch checked on the install (PR #8 merged)
+
+`mwtool verify` 2,020 bundles, 0 failures (the new parser budgets reject nothing shipped); `mw-lua`'s `game_chunks`
+passes with the stricter verifier; workspace tests and clippy clean; 911 accel 0-60 3.82 s, brake 100-0 in 40.3 m;
+race 462174 27 / 27. The played boot run (`tools/t --front-end --auto-start 1 --map-start 1909234`) is driven now:
+`EZ_RIGHT` → `TO_EVENT` → respawn at the event → streaming stall → "race 1909234: KEYS TO THE CITY started from
+Easydrive", the car on the road. With `--units 12` the same run drops the car through the world after the respawn
+(the fixed unit set never loads the event's surroundings and no stall pauses the sim): a test-flag artefact, not the
+played game.
+
 ## 2026-11-18: "UI wrong at 1920×1080, intro upside down" (user report): no resolution dependence found (code reading, no install)
 
 Traced from the data to the screen: layout / instance (`mw_formats::ui`) → `UiScene::draw_with` (`UiFrame::new` /

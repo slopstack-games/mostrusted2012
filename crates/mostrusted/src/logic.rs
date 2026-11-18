@@ -729,7 +729,14 @@ fn tick(
                 .iter()
                 .filter_map(|p| {
                     let seq = p.seq.clone()?;
-                    Some(crate::ui_sequence::Shown { key: format!("{:?}", p.owner), seq, clock: p.clock, texts: None, opacity: 1.0, bindings: Vec::new() })
+                    Some(crate::ui_sequence::Shown {
+                        key: format!("{:?}", p.owner),
+                        seq,
+                        clock: p.clock,
+                        texts: None,
+                        opacity: 1.0,
+                        bindings: Vec::new(),
+                    })
                 })
                 .collect(),
         );
@@ -1456,7 +1463,9 @@ impl Host for RuntimeHost {
                 None
             }
             // The message queues' clears (`feedback_queue.rs`, `FeedbackQueues::apply`).
-            Request::ClearHudMessageQueues | Request::ClearFeedbackQueues { .. } | Request::ClearFeedbackQueue { .. } => {
+            Request::ClearHudMessageQueues
+            | Request::ClearFeedbackQueues { .. }
+            | Request::ClearFeedbackQueue { .. } => {
                 self.logic.state.borrow_mut().feedback_queues.apply(&r).then_some(Carry::Nothing)
             }
             // A feedback message's sounds, movie, speech and camera take (`FUN_007b9ee0`, `FUN_007b6040`): the

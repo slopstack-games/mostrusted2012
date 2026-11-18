@@ -122,9 +122,10 @@ impl Loads {
                     e.since = frame;
                     self.spawn("mw-feedback", move |store| {
                         let id = u32::try_from(group).unwrap_or(0);
-                        let got = store.feedback_group_sequences(id).map(|s| s.len()).and_then(|n| {
-                            Ok((n, store.feedback_group_messages(id)?))
-                        });
+                        let got = store
+                            .feedback_group_sequences(id)
+                            .map(|s| s.len())
+                            .and_then(|n| Ok((n, store.feedback_group_messages(id)?)));
                         Done::Feedback(group, got.map_err(|e| e.to_string()))
                     });
                 }

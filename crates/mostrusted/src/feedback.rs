@@ -26,9 +26,7 @@ use bevy::prelude::*;
 use mw_assets::sequence::{FeedbackMessageInfo, Item, ItemKind, Sequence};
 use mw_bundle::ResourceId;
 use mw_formats::binding::{BindValue, Binding};
-use mw_logic::natives::feedback_queue::{
-    Message, MessageDef, MessageEffects, Part, PartValue, SONG, SequenceLengths,
-};
+use mw_logic::natives::feedback_queue::{Message, MessageDef, MessageEffects, Part, PartValue, SONG, SequenceLengths};
 
 use crate::ui_sequence::{LogicView, Shown, UiSequencePlayer};
 
@@ -124,6 +122,7 @@ fn texts(m: &Message, lang: Option<&mw_formats::Language>) -> [String; 3] {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn step(
     view: Option<NonSend<LogicView>>,
     game: Res<crate::Game>,
