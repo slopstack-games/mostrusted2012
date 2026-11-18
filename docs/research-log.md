@@ -340,6 +340,31 @@ checkpoint indices (the runtime bounds `reset_target` to the last entry).
 `update_children` lets a later finished child's `EXIT` action overwrite the parent exit point set by an earlier
 one in the same pass; `round_int`'s doc says out-of-range gives 0x80000000 while the code (rightly for a 64-bit
 `fistp`) gives 0; `Binding::float_value` drops the last character of a `{...}` string without checking it is `}`.
+### 2026-11-18: one-shot exit rule and fades ported (`sfx_player`)
+Follow-up of the skid-voice entries. Sources: `FUN_00834f90` (exit), `FUN_00835010` (stop), `FUN_00836760` (start),
+`FUN_00836910` (update, read from `re/out/live/text.asm`, not in the dump), the item loop `FUN_00a42b90`; details in
+decomp.md "WaveSequenceItem voices".
+- **Exit rule**: the item's mode (+0xdc = base `SequenceItem` field `6001d10d`; 0 in 8861 items, 1 in 695, 3 in 64, 2 in 5
+  of the install's sequences; the 3s are all `WaveSequenceItem`s of the lateral-slip and spin skid sequences, the
+  wall-reflection ones, `NormalisedTurboRPM`, a traffic engine and the summary screen's XP) of 3..=5 keeps a queued /
+  playing wave alive after the axis leaves the range; any other item stops it at once. Ours stopped voices only for
+  `Sequence::retrigger` sequences (never set in the vehicle bank): replaced by `Item::mode` (read by `sfx_loader`) and
+  `Item::plays_out`. Our own synthetic items (`world_sfx.rs`, `car_sfx.rs`: one wave from 0 to its length) are
+  mode 3 (model: the original has no such item; mode 0 would cut a wave pitched down below 1).
+- **Fades**: the update multiplies the fade envelope into the volume every tick and applies volume and pitch to the
+  running voice, one-shots included; ours started one-shots at full gain and never changed them. Now a one-shot
+  starts at `gain x envelope` and follows `envelope x gain` and the pitch while the axis is inside the range, and
+  keeps them after leaving it when it plays out. Skid sounds are the audible case: they now fade in over the item's
+  `Fade_In` instead of starting loud (the loud-start complaints of 2026-11-17).
+- **Stop fade**: the stop path passes no fade time (command 4, the fade variant is 5); the consumer of the audio
+  queue (where a de-click could live) was not found, so the 20 ms release stays a MODEL value (sfx_player
+  `release`).
+- **Not done / open**: `sequence.rs` (engine path: Gurgle, pops, timelines) keeps its old one-shot handling (no
+  mode field there yet); a looping wave of a mode 3..=5 item would in the original play on after the exit (ours
+  still follows the envelope to 0 for looping voices; no data case was checked); modes 1 / 2 (periodic restarts;
+  `Sequence::retrigger` is the old guess for them) are unported; the pow with curve 0 gives 1 in the original
+  (ours treats 0 as linear). To confirm by ear / capture: a skid at the edge of its range in the original (the voice
+  should finish after the slip drops) against `MW_SOUND_TRACE`.
 
 ## 2026-11-18: the speech manager ported (`mw_audio::speech`), the logic's speech wired
 
