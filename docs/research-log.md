@@ -11,6 +11,92 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+## 2026-11-18: browser build: web-code review, saves in localStorage, wasm-opt (no install; page shell tested)
+
+No game behaviour changed (nothing here has a source in the original: it is our own platform layer).
+
+**Saves in browser storage** (PLAN M9 step 5). `platform::read_text` / `write_text` are the one way the runtime
+reads and writes its small text files (`settings.cfg`, `profile.cfg`: `settings.rs`, `freeroam.rs`, `frontend.rs`).
+Native: the same files, paths and text as before (`create_dir_all` + `fs::write`). Browser: `localStorage` entries
+`mostrusted/<file name>` (`platform::storage_key`; `settings::config_dir()` is the empty path there, so the
+profile path exists and the profile is loaded / autosaved as on the desktop). `localStorage` exists only on the
+page's main thread and systems run on workers, so the browser side keeps a copy in memory (`TextStore`):
+`load_text_store` fills it in `web::start` (main thread, before the app), reads / writes use the copy from any
+thread, and `flush_text_store` writes changed keys to `localStorage` (at once when the writer is the main thread,
+else from `web::report`, once a frame). The main thread never waits on the store: the flush uses `poll_lock`
+(busy = next frame); reads / writes spin on a busy lock, whose holders only touch the map. A refused write (quota,
+storage off) is requeued and warned about once. Tests: `platform::tests` (native round trip, keys, the queue).
+
+**Bugs fixed** (page shell checked in headless Chromium with Playwright against a stub module; serve.py with curl):
+- index.html: an error shown after the world had loaded (a worker thread's panic) vanished one frame later
+  (`__mwStage(_, done = true)` every frame hid the overlay again). `hide` keeps an error up.
+- index.html: a folder that is not an install was a dead end (the error overlay covered the picker; reload needed).
+  Now the picker comes back with the reason; the same folder can be picked again (the input is emptied before each
+  pick), a cancelled dialog does nothing, a second pick while starting is ignored.
+- index.html: `navigator.gpu` present but no adapter (hardware acceleration off, blocklisted GPU, headless Chromium)
+  was only found by wgpu after the whole download, as a panic. Checked first (`requestAdapter()`), own message.
+  Browsers without a folder picker (`webkitdirectory`: phones) get a message instead of a file dialog that cannot
+  work. `window.AudioContext` missing no longer throws in the audio wrapper.
+- index.html: download progress above 100 % when the transfer is compressed (GitHub Pages gzips: Content-Length is
+  the compressed size, the stream counts decoded bytes). With `Content-Encoding`, or once more bytes than announced
+  have arrived, the bar is indeterminate. "Compiling" is shown when the download ends, not before it starts.
+- index.html, isolation worker: with `sessionStorage` unavailable the "reloaded once" mark could not be kept, so a
+  page that the worker controls but that still is not isolated reloaded for ever; now it never reloads without the
+  mark. The mark is cleared once the page is isolated (a later visit may need the one reload again). A failed or
+  refused registration ends the 8 s wait at once (`__mw.coiSettled`) instead of sitting on "Setting up…".
+- `WebSource`: blob URLs were never revoked (one per file for every pick, also of folders that are no install):
+  revoked on drop, and at once for files outside the install root. `Source::read` cast the file size to `usize`
+  (a silently truncated read above 4 GB on wasm32): now an error. The answer check is `range_result` (tested):
+  200-with-whole-file is cut with checked slicing, 404 / 410 → `NotFound`, 416 and short bodies → `UnexpectedEof`.
+- serve.py: COOP / COEP were missing on the responses `http.server` writes itself (501 for other methods, 400);
+  now set in `end_headers`. No `HEAD` (501): added. A NUL byte in a path, `name=..` or a bad Content-Length on a
+  POST raised in the handler (dropped connection): 404 / 400 / 411. POST to any other path answered 200: 404.
+  `Range`: suffix ranges (`bytes=-N`) are served, `last < first` is ignored (was 416), whitespace tolerated.
+  Path traversal was already closed (`resolve()` + parent check; `..`, `%2e%2e`, absolute paths and links leading
+  out all 404: re-checked with curl). New: requests must carry `Host: 127.0.0.1|localhost:<port>` and no foreign
+  `Origin` (403), so a page of another site cannot read the install through DNS rebinding or post files.
+  `--web DIR` serves another directory than target/web (page tests).
+
+Reviewed, left as they are: `coi-sw.js` (no cache, same-origin only, opaque responses passed through); the panic
+hook (main thread → page at once, workers → `WORKER_PANIC`, shown by the next frame's `report`; a worker panic while
+the main thread no longer runs frames is only in the console); `web_sys::window()` uses (all main-thread, or
+guarded).
+
+**Page UX**: the flags field is remembered (`localStorage` `mostrusted-page/args`), unless `?args=` or `?serve=1`.
+
+**wasm-opt** (PLAN "module size"). `tools/web/build` runs binaryen's `wasm-opt` on the wasm-bindgen output when
+it is on PATH (`WASM_OPT=<path>`, `WASM_OPT=none`, `WASM_OPT_LEVEL`, default `-O2`); absent = one line, the module
+stays as it is; a failing run keeps the unoptimised module. Flags: `-g` (keeps the name section: the page's panic
+reports print Rust function names) and `--enable-threads --enable-bulk-memory --enable-mutable-globals
+--enable-nontrapping-float-to-int --enable-sign-ext --enable-reference-types --enable-multivalue` (the module does
+not validate without the features it uses; this set validates and needs no flag newer than old binaryen releases
+know). Measured on the real threaded build (nightly-2026-11-14, wasm-bindgen 0.2.129, binaryen 123 from npm, run
+by node: ~15 min on this machine; the native binary is multi-threaded): 156,569,625 → 119,361,806 bytes (−24 %);
+code section 68.4 → 59.0 MB, name section 70.2 → 44.3 MB, data 9.7 MB; 28 MB with `gzip -1`. The optimised module
+was instantiated in headless Chromium and its exports run (the page tests below); it was **not** run with an
+install (no threads started, nothing rendered), so `.github/workflows/pages.yml` is unchanged: after one
+`tools/web/headless` run of an optimised build, add `npm install -g binaryen@123` (or a native binaryen) before the
+build step. Not done: dropping the name section (−44 MB, but panic reports lose their function names).
+
+Verification: real build `WEB_TOOLCHAIN=nightly-2026-11-14 tools/web/build` (24 min, no warnings), with and without
+wasm-opt. Headless Chromium (Playwright; it has `navigator.gpu` but no adapter, so the game itself cannot start
+there, and no install on this machine): (a) the real module, a fake adapter injected to get past the check: loads
+to the picker; `debug_store_write` → `localStorage["mostrusted/settings.cfg"]` → page reload →
+`debug_store_read` returns the text (new exports in `web.rs`, for this check); a folder without the install is
+refused with `GameDir`'s message and the picker returns, its blob URLs revoked (created 3, revoked 3);
+`?serve=1&fail=folder` and `?serve=1` on an empty install show "Not a usable install folder"; without the fake
+adapter the page stops at "WebGPU has no usable graphics adapter" before downloading the module. (b) the page
+against a stub module (21 checks): missing `navigator.gpu`, no adapter, no folder picker, progress with a wrong
+Content-Length, module 404, retry after a wrong folder, remembered flags, an error surviving later `done`
+frames, the service worker on a server without COOP / COEP (isolated after exactly one reload; none when workers are
+blocked or `sessionStorage` throws). Not verified: anything past `App::run` in a browser (a write from a worker
+thread reaching `localStorage` through the per-frame flush, the profile autosave), Firefox / Safari.
+
+Open: a folder picker for browsers without `webkitdirectory` (would need `showDirectoryPicker` / drag-and-drop and
+a `start_with_…` taking paths + files); Firefox answers blob-URL range requests with the whole file (the 200 path:
+correct but slow, and files over 2 GB cannot be read that way); a worker panic while the main thread is stuck is
+not shown on the page; saves are per browser profile and origin (no export / import).
+
 ## 2026-11-18: bug hunt round 3: mw-audio players / speech, mw-gamedir, mwtool compare (code reading, no install)
 
 Fixed (each with a failing synthetic test first):

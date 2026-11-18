@@ -114,6 +114,10 @@ impl AudioSettings {
 
 /// Where the user's configuration lives: `$XDG_CONFIG_HOME`, else `%APPDATA%` on Windows, else `~/.config`.
 pub fn config_dir() -> Option<PathBuf> {
+    // A browser has no directories: the files are `localStorage` entries named after them (`platform::read_text`).
+    if cfg!(target_arch = "wasm32") {
+        return Some(PathBuf::new());
+    }
     std::env::var_os("XDG_CONFIG_HOME")
         .or_else(|| if cfg!(windows) { std::env::var_os("APPDATA") } else { None })
         .filter(|v| !v.is_empty())
@@ -129,7 +133,7 @@ fn config_path() -> Option<PathBuf> {
 /// The saved settings, then `overrides` (the `--volume` flag) on top.
 pub fn load(overrides: Option<&str>) -> AudioSettings {
     let mut s = AudioSettings::default();
-    if let Some(text) = config_path().and_then(|p| std::fs::read_to_string(p).ok()) {
+    if let Some(text) = config_path().and_then(|p| crate::platform::read_text(&p)) {
         s.apply(&text);
     }
     if let Some(o) = overrides {
@@ -140,10 +144,7 @@ pub fn load(overrides: Option<&str>) -> AudioSettings {
 
 fn save(s: &AudioSettings) {
     let Some(path) = config_path() else { return };
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if let Err(e) = std::fs::write(&path, s.to_text()) {
+    if let Err(e) = crate::platform::write_text(&path, &s.to_text()) {
         warn!("could not save {}: {e}", path.display());
     }
 }
