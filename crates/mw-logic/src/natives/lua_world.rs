@@ -46,6 +46,8 @@ pub struct Trigger {
     pub position: [f32; 3],
     pub radius: f32,
     pub size: [f32; 3],
+    /// +0x14..+0x20: a box's rotation quaternion (x, y, z, w; `FUN_0042ee30`), kind 2's direction (x, y, z).
+    pub rotation: [f32; 4],
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -459,9 +461,11 @@ mod tests {
         let (mut lua, host) = setup();
         {
             let mut s = host.state.borrow_mut();
-            let boxed = Trigger { kind: 0, position: [1.0, 2.0, 3.0], size: [6.0, 8.0, 0.0], radius: 9.0 };
+            let boxed =
+                Trigger { kind: 0, position: [1.0, 2.0, 3.0], size: [6.0, 8.0, 0.0], radius: 9.0, rotation: [0.0; 4] };
             s.sim.world.triggers.insert(0, boxed);
-            let sphere = Trigger { kind: 1, position: [4.0, 5.0, 6.0], size: [0.0; 3], radius: 9.0 };
+            let sphere =
+                Trigger { kind: 1, position: [4.0, 5.0, 6.0], size: [0.0; 3], radius: 9.0, rotation: [0.0; 4] };
             s.sim.world.triggers.insert(1, sphere);
             s.sim.world.triggers.insert(2, Trigger { kind: 2, ..Default::default() });
             s.sim.world.camera_world_streamed = true;

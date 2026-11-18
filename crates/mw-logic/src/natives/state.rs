@@ -482,6 +482,25 @@ pub enum Request {
     MutePlayerByName { name: String, mute: bool },
     /// `StoreLoaded` / `StoreUnloaded` (0x007ea420 / 0x007ea450 -> `FUN_0086f7f0` / `FUN_0086d620`).
     StoreLoaded { loaded: bool },
+    /// `ChangeRaceCar` (0x0067bf50 -> `FUN_006c7950` on the slot's player record).
+    ChangeRaceCar { slot: i32 },
+    /// `EnableKillTrafficAtLocation` (0x0067d7c0 -> `FUN_00845ec0` on G+0x2ef64).
+    EnableKillTrafficAtLocation { enable: bool, position: [f32; 3] },
+    /// `TransitionCameraToLocation` (0x0067b9b0 -> `FUN_00843ba0` on the camera director `*(G+0x2f470)`): from the
+    /// camera as it is (position, direction) to the two vectors, `interpolation` = `FUN_00678140`'s index into
+    /// Cut / Linear / LinearSine / Cubic / CubicSine.
+    TransitionCameraToLocation {
+        from_position: [f32; 3],
+        from_direction: [f32; 3],
+        to_position: [f32; 3],
+        to_direction: [f32; 3],
+        time: f32,
+        interpolation: i32,
+    },
+    /// `TransitionCameraToGameplay` (0x0067bb00 -> `FUN_00843ba0` with empty camera structs).
+    TransitionCameraToGameplay { time: f32, interpolation: i32 },
+    /// `SetCameraTransitionLocation` (0x0067bb90 -> `FUN_00843c40`): `direction` is the argument negated.
+    SetCameraTransitionLocation { position: [f32; 3], direction: [f32; 3] },
     /// `ClearUpAdverts` (0x007ea6d0 -> `FUN_0065a480`).
     ClearUpAdverts,
     /// `AdvertShown` (0x007ea690 -> `FUN_00655c60`).
