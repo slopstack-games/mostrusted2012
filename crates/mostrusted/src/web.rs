@@ -10,10 +10,56 @@ use clap::Parser;
 use mw_gamedir::{GameDir, WebSource};
 use wasm_bindgen::prelude::*;
 
-fn start(source: WebSource, args: Vec<String>) -> Result<(), JsValue> {
-    std::panic::set_hook(Box::new(|info| {
-        web_sys::console::error_1(&format!("panic: {info}").into());
+/// A panic message from a thread that cannot reach the page's hooks (a worker): [`report`] hands it over from the
+/// main thread, which polls each frame.
+static WORKER_PANIC: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Call the page's hook `name(text, flag)` (`index.html`: `__mwStage`, `__mwError`). Silent where the page has none
+/// (workers have no such global).
+fn page_hook(name: &str, text: &str, flag: bool) {
+    let global = js_sys::global();
+    if let Ok(f) = js_sys::Reflect::get(&global, &name.into())
+        && let Ok(f) = f.dyn_into::<js_sys::Function>()
+    {
+        let _ = f.call2(&global, &text.into(), &flag.into());
+    }
+}
+
+/// What the runtime tells the loading overlay of the page, once a frame (main thread): the loader's current stage,
+/// whether the world is loaded (the page then hides the overlay), and a panic a worker thread left behind.
+pub fn report(status: &str, done: bool) {
+    page_hook("__mwStage", status, done);
+    if let Ok(mut p) = WORKER_PANIC.try_lock()
+        && let Some(msg) = p.take()
+    {
+        page_hook("__mwError", &msg, true);
+    }
+}
+
+/// Debug switch (`?fail=panic`): panics, to see the page show it.
+#[wasm_bindgen]
+pub fn debug_panic() {
+    panic!("debug panic requested by ?fail=panic");
+}
+
+/// The panic hook that shows a panic on the page, wrapping whatever hook is installed (Bevy's, which logs to the
+/// console). Called right before `App::run`, after the plugins have set theirs.
+pub fn install_panic_hook() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        previous(info);
+        let msg = format!("panic: {info}");
+        // On the main thread the page hook shows it at once; a worker leaves it for the next frame's `report`.
+        let g = js_sys::global();
+        if js_sys::Reflect::get(&g, &"__mwError".into()).is_ok_and(|f| f.is_function()) {
+            page_hook("__mwError", &msg, true);
+        } else if let Ok(mut p) = WORKER_PANIC.lock() {
+            p.get_or_insert(msg);
+        }
     }));
+}
+
+fn start(source: WebSource, args: Vec<String>) -> Result<(), JsValue> {
     let cli = crate::Cli::try_parse_from(std::iter::once("mostrusted".to_string()).chain(args))
         .map_err(|e| JsValue::from_str(&e.to_string()))?;
     let game = GameDir::from_source(Arc::new(source)).map_err(|e| JsValue::from_str(&e.to_string()))?;

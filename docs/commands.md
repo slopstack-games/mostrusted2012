@@ -378,4 +378,5 @@ python3 tools/web/serve.py       # serve it + your install on 127.0.0.1:8080 (--
 tools/web/headless <name> '<flags>' [timeout] [record_s]   # Brave in tools/hl's gamescope, silent; waits for
 #   scratch/web/<name>.png (flags incl. --screenshot <name>.png) or, with record_s, <name>.webm: the page's lossless
 #   recording of the game's audio (?record_audio=<s>); console in scratch/web/<name>.browser.log
+#   page debug switches: ?fail=panic (Rust panic 1.5 s after start), ?fail=folder (empty install listing): the overlay shows the error
 ```

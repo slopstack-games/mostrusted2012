@@ -97,6 +97,17 @@ vector argument), GetSteering (`FUN_0083b530` / `FUN_0083b540`, non-local branch
 TransitionCameraToGameplay / SetCameraTransitionLocation (`FUN_00843ba0` / `FUN_00843c40`, vector arguments),
 CycleCameraTarget, HasInputBeenDetected (`FUN_00670fc0`), StopFeedbackSequence / RequestSkipSequence (globals
 0x01178070 / 74, `FUN_007b1060`).
+## 2026-11-18: browser build shows loading stages and errors
+
+`tools/web/index.html` has an overlay (stage line, progress bar, last stages): isolation worker setup, wasm download
+(bytes / total by streaming the fetch into `init`), compiling, reading the install, then the loader's own stage
+strings (`Loaded.status`, reported once a frame from `update_status` through `web::report` -> `window.__mwStage`);
+it hides when the loader reports done. Errors (`window.__mwError`, `__mw.error`): Rust panics (hook in `web.rs`; a
+worker's panic is parked in `WORKER_PANIC` and shown by the next frame's `report`), missing WebGPU / isolation /
+SharedArrayBuffer, failed fetch, wasm instantiate failure, invalid install (the ownership check's message), uncaught
+errors and rejections; each with a hint line. Switches `?fail=panic`, `?fail=folder`. Model decision: overlay hides at
+loader Done, not at the first rendered frame (the game's own status text covers loading).
+
 
 ### 2026-11-18: event starts and jack spots run on the ported managers (`event_starts.rs`, `jackspots.rs`)
 

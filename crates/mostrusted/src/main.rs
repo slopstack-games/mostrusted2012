@@ -1257,6 +1257,8 @@ fn run(mut cli: Cli, game: GameDir) -> anyhow::Result<()> {
             });
         }
     }
+    #[cfg(target_arch = "wasm32")]
+    web::install_panic_hook();
     app.run();
     Ok(())
 }
@@ -1620,6 +1622,8 @@ fn update_status(
     cam: Query<&Transform, MainCamera>,
     car: Query<&drive::Car, With<drive::Player>>,
 ) {
+    #[cfg(target_arch = "wasm32")]
+    web::report(&loaded.status, loaded.done);
     let Ok(mut text) = text.single_mut() else { return };
     let pos = cam.single().map(|t| t.translation).unwrap_or_default();
     let controls = match car.single() {
