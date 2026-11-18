@@ -232,7 +232,7 @@ fn set_car_list_for_recommended_event(s: &mut LogicState, args: Args) -> Key {
 
 /// `FUN_00724ef0`(index, param): nothing without recommendations or for -1; else the DOM object of the item is
 /// selected and +0xa0 / +0xa4 are kept.
-fn select_dom(s: &mut LogicState, index: i32, param: i32) {
+pub(super) fn select_dom(s: &mut LogicState, index: i32, param: i32) {
     let f = &mut s.hook_online;
     if !f.has_recommendations || index == -1 {
         return;

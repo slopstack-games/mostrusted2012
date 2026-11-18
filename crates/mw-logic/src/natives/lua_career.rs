@@ -4,7 +4,11 @@
 
 use mw_lua::{Lua, Value};
 
-use super::lua_args::{int, push_int, toboolean, tonumber};
+use super::hook_args::strtol10;
+use super::hooks_online::select_dom;
+use super::hooks_playlist::strtoll10;
+use super::lua_args::{int, push_int, string_or_invalid, toboolean, tonumber};
+use super::state::Request;
 use super::{LogicState, Registry};
 
 type R = mw_lua::Result<Vec<Value>>;
@@ -105,4 +109,309 @@ pub fn register(r: &mut Registry) {
     r.set_lua("SetSafeHouse", read_one_number);
     r.set_lua("SetTargetRouteFromSafehouse", read_one_number);
     r.set_lua("ChangePerkOnCustomRollout", change_perk_on_custom_rollout);
+    register_more(r);
+}
+/// The rollout manager's records (G+0x2f404 + slot x 0xd8 + 0x827c) and the online object's fields.
+#[derive(Debug, Default)]
+pub struct CareerFields {
+    /// Record +0x30 / +0x34 of each of the 12 slots: the selected vehicle id and colour id (the runtime fills them
+    /// when the rollout manager applies a rollout).
+    pub selected_vehicle: [i32; 12],
+    pub selected_colour: [i32; 12],
+    /// Rollout manager +0x8f90 (`SelectDefaultRollout`; +0x8f8c is cleared).
+    pub default_rollout: i32,
+    pub default_rollout_flag: i32,
+    /// Online object (+0x2020 of `*0x0117e9f4`) +0x2f6d0 (64 bit): the recommendation's time to beat.
+    pub recommendation_time_to_beat: u64,
+}
+
+/// Slot of the local player (`PM+0xa6b4`); outside the 12 records the original reads address 0x30 (a crash):
+/// model decision, 0.
+fn local_slot(state: &LogicState) -> Option<usize> {
+    state.players.local.filter(|&l| l < 12)
+}
+
+/// `GetSelectedVehicleId()` (0x00688380): record +0x30 of the local slot.
+fn get_selected_vehicle_id(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    let v = local_slot(state).map_or(0, |i| state.career.selected_vehicle[i]);
+    Ok(vec![push_int(v)])
+}
+
+/// `GetSelectedColourId()` (0x006883e0): record +0x34 of the local slot.
+fn get_selected_colour_id(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    let v = local_slot(state).map_or(0, |i| state.career.selected_colour[i]);
+    Ok(vec![push_int(v)])
+}
+
+/// `SelectDefaultRollout(id)` (0x00679bb0): rollout manager +0x8f90 = id, +0x8f8c = 0.
+fn select_default_rollout(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    state.career.default_rollout = int(&args, 1);
+    state.career.default_rollout_flag = 0;
+    Ok(vec![])
+}
+
+/// `SetRolloutFromVehicleID(id)` (0x00679bf0): above 0, `FUN_006c7950`(local record, id, 0).
+fn set_rollout_from_vehicle_id(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    let vehicle = int(&args, 1);
+    if vehicle > 0 {
+        state.requests.push(Request::SetRolloutFromVehicle { vehicle });
+    }
+    Ok(vec![])
+}
+
+/// `SetSelectedWorld(id)` (0x006799a0): `FUN_00645780` on G+0x2f468.
+fn set_selected_world(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    state.requests.push(Request::SetSelectedWorld { world: int(&args, 1) });
+    Ok(vec![])
+}
+
+/// `SetEventFromAvailableVehicles()` (0x006756b0): `FUN_00673d70`.
+fn set_event_from_available_vehicles(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    state.requests.push(Request::SetEventFromAvailableVehicles);
+    Ok(vec![])
+}
+
+/// `SetTargetRecommendedEvent(str)` (0x00679a50): `FUN_00725130`(strtol(str), 0, 0); returns whether the
+/// recommendations exist (as the hook of the same name).
+fn set_target_recommended_event(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    let index = strtol10(&string_or_invalid(&args, 1));
+    let f = &mut state.hook_online;
+    if !f.has_recommendations {
+        return Ok(vec![Value::Bool(false)]);
+    }
+    f.target_index = index;
+    f.target_param = 0;
+    state.requests.push(Request::SetRecommendedEvent { index, param: 0 });
+    Ok(vec![Value::Bool(true)])
+}
+
+/// `SetCurrentRecommendedEvent()` (0x00675680): `FUN_00726c80` (as the hook), no result.
+fn set_current_recommended_event(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    let f = &mut state.hook_online;
+    f.current_index = f.target_index;
+    if f.has_recommendations {
+        let (index, param) = (f.target_index, f.target_param);
+        state.requests.push(Request::SetRecommendedEvent { index, param });
+    }
+    Ok(vec![])
+}
+
+/// `SetCarListForRecommendedEvent(str)` (0x00679ac0): strtol above 0 and `FUN_00723300` (as the hook); boolean.
+fn set_car_list_for_recommended_event(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    let n = strtol10(&string_or_invalid(&args, 1));
+    let f = &mut state.hook_online;
+    if n <= 0 || !f.has_recommendations {
+        return Ok(vec![Value::Bool(false)]);
+    }
+    let event_id = f.event_ids.get(n as usize).copied().unwrap_or(0);
+    f.car_list_event = event_id;
+    state.requests.push(Request::SetCarListForEvent { event_id });
+    Ok(vec![Value::Bool(true)])
+}
+
+/// `SelectRecommendationDom(index)` (0x00679b70): `FUN_00724ef0`(index, 2) on (G+0x2f454)+0x5a3c.
+fn select_recommendation_dom(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    select_dom(state, int(&args, 1), 2);
+    Ok(vec![])
+}
+
+/// `SetFriendInviteId(str)` (0x0067a250): `strtoull(str or "<invalid>", 0, 10)` into G+0x2f498 (64 bit).
+fn set_friend_invite_id(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    state.hook_playlist.friend_invite_id = strtoll10(&string_or_invalid(&args, 1));
+    Ok(vec![])
+}
+
+/// `SetJoinPlayerId(str)` (0x007e99d0): the id into +0x2f4b0 and +0x2f4b8, +0x2f4ac = 1.
+fn set_join_player_id(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    let id = strtoll10(&string_or_invalid(&args, 1));
+    let f = &mut state.hook_playlist;
+    f.join_friend_id = id;
+    f.join_friend_id_copy = id;
+    f.join_friend_set = true;
+    Ok(vec![])
+}
+
+/// `SetFriendCarouselViewModelActive(bool)` (0x007e9880): (G+0x2f3e0) bytes +0x14 and +0x15 = the flag (only
+/// +0x14 is modelled, as the hooks do).
+fn set_friend_carousel_view_model_active(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    state.hook_playlist.friend_carousel_active = toboolean(&args, 1);
+    Ok(vec![])
+}
+
+/// `SetRecommendationTimeToBeat(n)` (0x007ee900): `n` (sign-extended) x 3000 (`__allmul`) into +0x2f6d0 (64 bit).
+fn set_recommendation_time_to_beat(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    state.career.recommendation_time_to_beat = (i64::from(int(&args, 1)) * 3000) as u64;
+    Ok(vec![])
+}
+
+/// `ClearEntitlementJumpID()` (0x006759f0): `FUN_0086d610`(0) on (G+0x2f3e0)+0x4ce0.
+fn clear_entitlement_jump_id(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    state.hook_misc.entitlement_jump_id = 0;
+    Ok(vec![])
+}
+
+/// `HasEasyDriveOptionBeenSeen(id)` (0x0067a380): `FUN_0072eb90`; mirror of the rows as the hook.
+fn has_easy_drive_option_been_seen(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    let seen = state.select.easydrive_options_seen.get(&int(&args, 1)).copied().unwrap_or(false);
+    Ok(vec![Value::Bool(seen)])
+}
+
+/// `SetEasyDriveOptionSeen(id, seen)` (0x0067a3d0): `FUN_00674d20`(id, seen) (as the hook).
+fn set_easy_drive_option_seen(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    let option = int(&args, 1);
+    let seen = toboolean(&args, 2);
+    state.select.easydrive_options_seen.insert(option, seen);
+    state.requests.push(Request::SetEasyDriveOptionSeen { option, seen });
+    Ok(vec![])
+}
+
+/// `StoreTotalSP(n)` (0x007ea700).
+fn store_total_sp(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    state.requests.push(Request::StoreTotalSp { sp: int(&args, 1) });
+    Ok(vec![])
+}
+
+/// `MarkStoreItemAsSeen(n)` (0x007ea740).
+fn mark_store_item_as_seen(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    state.requests.push(Request::MarkStoreItemAsSeen { item: int(&args, 1) });
+    Ok(vec![])
+}
+
+/// `UpdateCachedMostWantedList(str)` (0x007e9a50): the string is read, `FUN_0071dfe0()` takes no argument.
+fn update_cached_most_wanted_list(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    state.requests.push(Request::UpdateCachedMostWantedList);
+    Ok(vec![])
+}
+
+/// `GrantCloudCompeteAward(name, amount)` (0x007ea1c0).
+fn grant_cloud_compete_award(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    let name = string_or_invalid(&args, 1);
+    state.requests.push(Request::GrantCloudCompeteAward { name, amount: int(&args, 2) });
+    Ok(vec![])
+}
+
+/// `GrantAwardForSpeedwallMovement(a, b)` (0x006801e0): both arguments are checked as numbers and dropped.
+fn grant_award_for_speedwall_movement(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    state.requests.push(Request::GrantAwardForSpeedwallMovement);
+    Ok(vec![])
+}
+
+/// `TryToGiveAwardForBeingFirstInSpeedwall(a)` (0x00680250).
+fn try_to_give_award_first_in_speedwall(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    state.requests.push(Request::TryToGiveAwardFirstInSpeedwall);
+    Ok(vec![])
+}
+
+/// `LoadOnlineSeenUnlocks(n)` (0x0067a5b0).
+fn load_online_seen_unlocks(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    state.requests.push(Request::LoadOnlineSeenUnlocks { arg: int(&args, 1) });
+    Ok(vec![])
+}
+
+/// `SaveOnlineSeenUnlocks(n)` (0x0067a5f0).
+fn save_online_seen_unlocks(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    state.requests.push(Request::SaveOnlineSeenUnlocks { arg: int(&args, 1) });
+    Ok(vec![])
+}
+
+/// `RemoveOnlineSeenUnlocksMenu(x)` (0x0067a630): the argument is checked and dropped.
+fn remove_online_seen_unlocks_menu(state: &mut LogicState, _: &mut Lua, _: Vec<Value>) -> R {
+    state.requests.push(Request::RemoveOnlineSeenUnlocksMenu);
+    Ok(vec![])
+}
+
+/// `SetOnlineUnlockToSeen(unlock, value)` (0x0067a660).
+fn set_online_unlock_to_seen(state: &mut LogicState, _: &mut Lua, args: Vec<Value>) -> R {
+    state.requests.push(Request::SetOnlineUnlockToSeen { unlock: int(&args, 1), value: int(&args, 2) });
+    Ok(vec![])
+}
+
+pub fn register_more(r: &mut Registry) {
+    r.set_lua("GetSelectedVehicleId", get_selected_vehicle_id);
+    r.set_lua("GetSelectedColourId", get_selected_colour_id);
+    r.set_lua("SelectDefaultRollout", select_default_rollout);
+    r.set_lua("SetRolloutFromVehicleID", set_rollout_from_vehicle_id);
+    r.set_lua("SetSelectedWorld", set_selected_world);
+    r.set_lua("SetEventFromAvailableVehicles", set_event_from_available_vehicles);
+    r.set_lua("SetTargetRecommendedEvent", set_target_recommended_event);
+    r.set_lua("SetCurrentRecommendedEvent", set_current_recommended_event);
+    r.set_lua("SetCarListForRecommendedEvent", set_car_list_for_recommended_event);
+    r.set_lua("SelectRecommendationDom", select_recommendation_dom);
+    r.set_lua("SetFriendInviteId", set_friend_invite_id);
+    r.set_lua("SetJoinPlayerId", set_join_player_id);
+    r.set_lua("SetFriendCarouselViewModelActive", set_friend_carousel_view_model_active);
+    r.set_lua("SetRecommendationTimeToBeat", set_recommendation_time_to_beat);
+    r.set_lua("ClearEntitlementJumpID", clear_entitlement_jump_id);
+    r.set_lua("HasEasyDriveOptionBeenSeen", has_easy_drive_option_been_seen);
+    r.set_lua("SetEasyDriveOptionSeen", set_easy_drive_option_seen);
+    r.set_lua("StoreTotalSP", store_total_sp);
+    r.set_lua("MarkStoreItemAsSeen", mark_store_item_as_seen);
+    r.set_lua("UpdateCachedMostWantedList", update_cached_most_wanted_list);
+    r.set_lua("GrantCloudCompeteAward", grant_cloud_compete_award);
+    r.set_lua("GrantAwardForSpeedwallMovement", grant_award_for_speedwall_movement);
+    r.set_lua("TryToGiveAwardForBeingFirstInSpeedwall", try_to_give_award_first_in_speedwall);
+    r.set_lua("LoadOnlineSeenUnlocks", load_online_seen_unlocks);
+    r.set_lua("SaveOnlineSeenUnlocks", save_online_seen_unlocks);
+    r.set_lua("RemoveOnlineSeenUnlocksMenu", remove_online_seen_unlocks_menu);
+    r.set_lua("SetOnlineUnlockToSeen", set_online_unlock_to_seen);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::LogicHost;
+    use super::super::lua_args::push_str;
+    use super::super::players::Player;
+    use super::*;
+
+    fn setup() -> (Lua, LogicHost) {
+        let mut lua = Lua::new();
+        let host = LogicHost::default();
+        host.install_lua(&mut lua);
+        (lua, host)
+    }
+
+    fn call(lua: &mut Lua, name: &str, args: Vec<Value>) -> Vec<Value> {
+        lua.call_global(name, args).unwrap_or_else(|e| panic!("{name}: {e}"))
+    }
+
+    #[test]
+    fn career_natives() {
+        let (mut lua, host) = setup();
+        let n = Value::Number;
+        assert_eq!(call(&mut lua, "GetSelectedVehicleId", vec![])[0].as_number(), Some(0.0));
+        {
+            let mut s = host.state.borrow_mut();
+            s.players.slots[2] = Some(Player::default());
+            s.players.local = Some(2);
+            s.career.selected_vehicle[2] = 77;
+            s.career.selected_colour[2] = 5;
+        }
+        assert_eq!(call(&mut lua, "GetSelectedVehicleId", vec![])[0].as_number(), Some(77.0));
+        assert_eq!(call(&mut lua, "GetSelectedColourId", vec![])[0].as_number(), Some(5.0));
+        call(&mut lua, "SelectDefaultRollout", vec![n(9.0)]);
+        assert_eq!(host.state.borrow().career.default_rollout, 9);
+        call(&mut lua, "SetRecommendationTimeToBeat", vec![n(-2.0)]);
+        assert_eq!(host.state.borrow().career.recommendation_time_to_beat as i64, -6000);
+        call(&mut lua, "SetFriendInviteId", vec![push_str("12345678901234")]);
+        assert_eq!(host.state.borrow().hook_playlist.friend_invite_id, 12_345_678_901_234);
+        call(&mut lua, "SetJoinPlayerId", vec![push_str("42")]);
+        assert!(host.state.borrow().hook_playlist.join_friend_set);
+        assert_eq!(host.state.borrow().hook_playlist.join_friend_id_copy, 42);
+        let r = call(&mut lua, "SetTargetRecommendedEvent", vec![push_str("3")]);
+        assert!(matches!(r[0], Value::Bool(false)), "no recommendations: refused");
+        host.state.borrow_mut().hook_online.has_recommendations = true;
+        let r = call(&mut lua, "SetTargetRecommendedEvent", vec![push_str("3")]);
+        assert!(matches!(r[0], Value::Bool(true)));
+        assert_eq!(host.state.borrow().hook_online.target_index, 3);
+        call(&mut lua, "SetEasyDriveOptionSeen", vec![n(4.0), Value::Bool(true)]);
+        let r = call(&mut lua, "HasEasyDriveOptionBeenSeen", vec![n(4.0)]);
+        assert!(matches!(r[0], Value::Bool(true)));
+        call(&mut lua, "SetRolloutFromVehicleID", vec![n(0.0)]);
+        call(&mut lua, "SetRolloutFromVehicleID", vec![n(31.0)]);
+        call(&mut lua, "StoreTotalSP", vec![n(5.0)]);
+        let s = host.state.borrow();
+        assert!(s.requests.contains(&Request::SetRolloutFromVehicle { vehicle: 31 }));
+        assert!(!s.requests.contains(&Request::SetRolloutFromVehicle { vehicle: 0 }));
+        assert!(s.requests.contains(&Request::StoreTotalSp { sp: 5 }));
+    }
 }

@@ -215,7 +215,7 @@ fn set_friend_invite_id_easy_drive(s: &mut LogicState, args: Args) -> Key {
 }
 
 /// `strtoll(s, NULL, 10)` as a u64 (a negative value wraps as in the original's 64-bit store); 0 without digits.
-fn strtoll10(s: &str) -> u64 {
+pub(super) fn strtoll10(s: &str) -> u64 {
     let t = s.trim_start_matches([' ', '\t', '\n', '\r', '\x0b', '\x0c']);
     let (neg, t) = match t.as_bytes().first() {
         Some(b'-') => (true, &t[1..]),
