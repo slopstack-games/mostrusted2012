@@ -11,6 +11,34 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+## 2026-11-18: bug hunt round 3, rendering / world-loading side of `mostrusted` (code reading, no install)
+
+Read the loader, conversion, materials, deferred / tonemap / particle / tyre-mark / corona / light code and the
+WGSL uniform structs against their Rust twins (all vec4-only or explicitly padded: no layout mismatch found).
+Fixes (no behaviour of the original changed; none needs a capture):
+
+- **Ghost world lights after streaming** (`prop_vfx.rs` `switch_lights`): a prop's contact-switched-off lights
+  were put back when the prop was despawned. Units drop their lights (`LightSources::remove_unit`) when they leave
+  and their entities go over the following frames, so the lights came back after their unit's removal and, no
+  longer listed under it, stayed lit for good (twice over once the unit returned). They are now dropped.
+- **Behaviour-switched lights never removed** (`world_coronas.rs`): lights `ObjectBehaviours::switch` added
+  (traffic lamps, sequence switches) are not in the unit's list, so they outlived the object. The component now
+  keeps them and an `on_remove` hook takes them out (`LightSources::remove_lights`; test
+  `switched_lights_leave_with_their_object`).
+- **Stagger cache key** (`world_coronas.rs` `queue_coronas`): rebuilt only when the light count changed; a unit
+  swapped for one with as many lights kept the old map. Now also on `LightSources` change.
+- **Tyre-mark streaks** (`tyre_marks.rs`): a strip continued across a car swap (strips were per wheel index, not
+  per car) or a placement reset, drawing one quad across the map. Strips restart on a new car and when the
+  last point is farther than a segment plus twice this frame's travel + 1 m (a teleport guard, not a look value).
+- **BC texture upload panic on short data** (`convert::image`): the as-is upload got the truncated body with the
+  full mip count; wgpu's `create_texture_with_data` slices past the end (panic), and a mip count of 0 / past the
+  chain fails validation. Such textures take the decode path (test `bc_upload_needs_the_whole_chain`).
+
+Suspected, not changed: `LightSources::remove_unit` removes by (position, definition) key, so a light identical in
+two resident units goes with either; `exhaust.rs` spot-effect keys collide past 8 locators per effect;
+`jackspots.rs` leaves a `serials` entry per spot respawned while its paint loads (tiny leak); the planar
+reflection target is not resized with the window.
+
 ## 2026-11-18: mw-assets bug hunt, round 2 (code-level defects, no install)
 
 Read mw-assets' own logic (index lookups, curves, grids, empty collections, chains) without the install.

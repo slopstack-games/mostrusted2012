@@ -71,6 +71,7 @@ struct ObjectFxCache {
 
 /// An object with switchable behaviours, and their state.
 #[derive(Component)]
+#[component(on_remove = release_added)]
 pub struct ObjectBehaviours {
     pub object: ResourceId,
     pub fx: Arc<ObjectFx>,
@@ -79,6 +80,21 @@ pub struct ObjectBehaviours {
     /// The lamp's stagger id (its light's, `WorldLight::stagger`), once found.
     stagger: Option<u16>,
     stagger_tries: u16,
+    /// The lights [`Self::switch`] has put into the world's: not the track unit's own (those go with the unit,
+    /// `LightSources::remove_unit`), so they go when the object does ([`release_added`]).
+    added: Vec<WorldLight>,
+}
+
+/// An object leaves (its track unit is unloaded, a prop removed instead of reset): the lights its switched-on
+/// behaviours added go with it, or they would stay lit where nothing stands (and twice over once the unit is back
+/// and the behaviour switched on again).
+fn release_added(mut world: bevy::ecs::world::DeferredWorld, ctx: bevy::ecs::lifecycle::HookContext) {
+    let Some(added) = world.get::<ObjectBehaviours>(ctx.entity).map(|b| b.added.clone()) else { return };
+    if !added.is_empty()
+        && let Some(mut lights) = world.get_resource_mut::<LightSources>()
+    {
+        lights.remove_lights(&added);
+    }
 }
 
 impl ObjectBehaviours {
@@ -105,12 +121,14 @@ impl ObjectBehaviours {
             return;
         }
         if on {
+            self.added.extend(mine.iter().cloned());
             lights.add(mine);
         } else {
             // Take the object's lights out and put back those of its other behaviours.
             let ids: Vec<_> = self.fx.lights.iter().filter(|l| l.behaviour == behaviour).map(|l| l.def.id).collect();
             let taken = lights.take_object_lights(self.object, t.translation(), radius);
             lights.add(taken.into_iter().filter(|l| !ids.contains(&l.def.id)).collect());
+            self.added.retain(|l| !ids.contains(&l.def.id));
         }
     }
 }
@@ -161,6 +179,7 @@ fn attach(
                     on,
                     stagger: None,
                     stagger_tries: 0,
+                    added: Vec::new(),
                 });
             }
             Some(None) => {
@@ -235,8 +254,9 @@ fn queue_coronas(
     }
     let (Some(state), Some(cam)) = (state, camera.iter().next()) else { return };
     let started = crate::platform::Instant::now();
-    // The object lights' stagger ids by object, rebuilt when the light list changes.
-    if staggers.0 != sources.lights.len() {
+    // The object lights' stagger ids by object, rebuilt when the light list changes (a unit streamed out and
+    // another in can leave the count as it was).
+    if sources.is_changed() || staggers.0 != sources.lights.len() {
         staggers.0 = sources.lights.len();
         staggers.1.clear();
         for l in &sources.lights {
