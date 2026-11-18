@@ -11,6 +11,46 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+### 2026-11-18: Lua natives, last batch (`natives/lua_road.rs`, 385 of 385)
+The last 23 Lua natives, read from `re/out/live/text.asm` (handlers) and the dump (callees); every Lua native is
+now ported (registry test asserts it). Maths in decomp.md "Native registries" (vector maths).
+- **Pure ports**: `CalculateInterpolatedLocation`, `CalculateRotatedLocationXZ` (`FUN_005de2d0`, `FUN_005e39d0`),
+  `IsCompetitorWithinVisibilityCone`, `GetValue` (inner-form parse, the Lua visitor vtable 0x00fbd4b8: slots
+  +0x30..+0x60 push numbers / strings / bool, +0x2c a wide string narrowed, u64 (+0x40) / u16 / u8 push nothing,
+  25–27 nil; no operators), `CycleCameraTarget` (`FUN_006bf100`, 10 successors mod 24, `FUN_006cab10`; the
+  feedback reset `FUN_007b1150` with mask 0xfffffffd = slot 0's handle UIM+0x30a5c), `ShowLoadingScreen`
+  (`FUN_0078f860` / `FUN_00799a60` on LSM reason 2, ring at LSM+0 / +0x10 / +0x14 / +0x48; reason 0 cleared),
+  `ShowFeedbackMessage` (queue arg 3 via `FUN_007b6110`; `GamerTagParameters` / `NumberParameters` /
+  `StringIDParameters`; serial `DAT_0117d170` from `FUN_007b6280`, wraps to 0 at 0x7fffffff),
+  `SwitchToIceCamera` (camera system +0x1c serial, +0x18 = −1), `IsOriginIgoAvailable` (as the hook),
+  `DEMOMODEWriteDemoConfig` / `DEMOMODEDeleteDemoConfig` (retail stubs).
+- **Road network**: `GetRoadStartDirection` and `TeleportToNamedRoad` read `RoadData` (mw-formats `road_data`)
+  through `RoadFields::roads`; road names through the text database (UIM+0x2ce40 vtable +4, narrowed by
+  `FUN_00a4ae10`). `HasFinishedStreamingWorld` ports Resident(p, 10 m) over `ZoneList` + loaded units.
+- **New Requests** (runtime must carry out): `CameraTargetChanged` (message 0x2c), `IceCameraStart`,
+  `ShowFeedbackMessage`, `PlaceVehicle` (`FUN_00647e00`: TeleportVehicle reason 3, ResetOnRoad 4 / flags 6 or 2,
+  TeleportToNamedRoad 2), `TeleportAlongRoute` (`FUN_00665ae0` then placement), `ResetAlongRoad`
+  (`FUN_0064a0e0` → `FUN_00648060` road snap, not read), `SpawnVehicle` (`FUN_006cd550` → `FUN_006ca580`),
+  `RegisterSpeechCommand`, `ShowOriginIgo`; `HACKPlayFirstCustomPlaylist` reuses `PlayCustomPlaylist { 0 }`.
+- **Host-fed fields the runtime must fill** (`SimFields::road`): `roads` (RoadData), `texts` (Language id →
+  text), `zones` + `loaded_units`, `route_length` (race manager +0xdf0[slot]), `route_forward` (`FUN_00662670`
+  per slot while vtable +8 holds), `message_queues` / `hud_queue_full`, `message_serial` (advance it for
+  messages it posts itself), the loading-screen ring (`loading_rotation`, `loading_layouts`), and it must read
+  `game.loading_screen_requests` / `loading_slot_*`, `ice_camera_serial` (compare in `IceCameraStop`).
+- **Model decisions**: `rsqrtps` estimate = exact 1/sqrt (two Newton steps kept; ≤ 1 ulp off); `acosf` = Rust
+  `acos`; empty slots (the original dereferences null records) do nothing / give false / nil; a negative road
+  index reads road 0 like one past the count; no road network gives (0, 0, 0); an empty loading ring gives 0
+  (the original divides by 0); `GetValue` of u64 / object / list / unparsable text gives nil;
+  `ShowFeedbackMessage` keeps every part (the original's arrays hold 4 in all, unchecked);
+  `HasFinishedStreamingWorld` takes the car position from the world transform (the code reads vehicle record
+  +0x110); the record +0x98 used by `CalculateForwardDirection` is taken to be the slot (it is what
+  `FUN_0065de30` gets as the nitrous slot).
+- **Open**: `FUN_00648060` (road snap of the reset), `FUN_00665ae0` / `FUN_00662670` (route pose / direction),
+  the world-state-3 branch of `FUN_0054b340`, the race manager's vtable +8. Two copies of the LSM mask exist
+  (`game.loading_screen_requests`, `sim.world.loading_flags` used by `ClearLoadingScreenLayout`): to be merged.
+  Captures that would confirm: a Lua-driven teleport (e.g. an event restart) placing the car where the original
+  does.
+
 ### 2026-11-18: Lua natives, thirteenth batch (`natives/lua_requests.rs`)
 12 offline natives ported from the survey below: 312 of 385 (238 / 255 offline, 50 / 100 online, 8 / 11 platform, 16 / 19 debug; 17
 offline unported). Behaviour: StopFeedbackSequence zeroes the sequence handle; RequestSkipSequence records `Request::SkipSequence` with

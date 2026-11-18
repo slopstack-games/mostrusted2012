@@ -275,8 +275,9 @@ mod tests {
         h.install_lua(&mut lua);
         assert!(!lua.global("ResolveBoolBinding").is_nil());
         assert!(lua.global("NotANative").is_nil());
+        // Every Lua native is ported: none is recorded as unported.
         let r = lua.call_global("RegisterSpeechCommand", vec![]).unwrap();
         assert!(r.is_empty());
-        assert_eq!(h.take_unported(), ["lua RegisterSpeechCommand"]);
+        assert!(h.take_unported().is_empty());
     }
 }

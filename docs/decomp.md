@@ -6215,6 +6215,29 @@ Ported Lua natives (70 of 385, 2026-11-17; the first 60 were checked against the
 `IsConductorIdle`, `RequestDialog`, `GetDialogResult`, `ClearDialog`, `StartTextEntry`, `GetTextEntryState`,
 `GetEnteredText`, the settings getters / setters / revert / save, `RegisterPostFXSetting`, `ChangePostFXSetting`,
 `ResetPostFXSettings`, and 12 career field natives (`SetOfflineEventToPlay`, `SetStoryMode`, ...).
+All 385 Lua natives are ported since 2026-11-18 (the last 23 in `lua_road.rs`, research log "Lua natives, last batch").
+
+**Vector maths the Lua handlers inline** (2026-11-18, from the handlers' SSE code):
+- *Normalisation* everywhere: `rsqrtps` of the squared length (summed `(z² + y²) + x²`), then two Newton steps
+  `r = (1 − r·r·x) · (0.5·r) + r` (`.rdata` 0x00fbcb60 = 1, 0x00fbcbd0 = 0.5), times the vector. A zero vector
+  gives NaN.
+- *Cosine* (inlined, no call): `a = max(−x, x) · (−1/2π)` (0x01075470), `r = ((a − M) + M) − a − 0.5` with M =
+  1.5·2²³ (0x01075480: rounds to an integer), `y = max(−r, r) − 0.25`, then sin(2πy) as the odd series y..y¹⁹
+  (coefficients 0x010754c0..0x01075550: 2π, −41.3417, 81.6052, −76.7059, 42.0587, −15.0946, 3.81995, −0.718122,
+  0.104229, −0.0120316; summed y³ + y first, then y⁵ .. y¹⁹). Sine = the cosine of x − π/2 (0x010754b0).
+- `CalculateInterpolatedLocation` (0x681160): position `(p1 − p0)·t + p0`; direction: when `d0·d1` > cos 5°
+  (0x00fbcbf0 = 0.0872665 rad) the normalised `t·(d1 − d0) + d0`, else slerp with θ = `acosf(d0·d1)` (CRT
+  0x00eddb3b per lane): `sin(tθ)/sin θ · d1 + sin((1−t)θ)/sin θ · d0`.
+- `FUN_005de2d0` (`CalculateRotatedLocationXZ`): the position turned about the centre in the ground plane to lie
+  towards the target at its horizontal distance (height kept); the direction mapped by the change of frame
+  between `look(centre − old)` and `look(centre − new)`, where look(f) = rows (up × f, f × (up × f), f), up =
+  0x00fb1380 (0, 1, 0), orthonormalised by `FUN_005e39d0` (each row normalised; with all three non-zero, the
+  pair with the largest |dot| decides which two rows are rebuilt by cross products; a zero row is rebuilt from
+  the other two). Direction out = Σ (d · M1 row i) · M2 row i.
+- `IsCompetitorWithinVisibilityCone` (0x67b560): a's forward (transform +0x20) · (b − a) (not normalised) ≥
+  cos(degrees × 0.0174533 (0x00fb869c)).
+- `TeleportToNamedRoad` (0x680ca0): the car goes 5 m back along the normalised road tangent and 3 m along
+  `direction × up` (0x00fbcc10 = 5, 0x00fbcc20 = 3) of the first / middle / last point ("End" faces back).
 
 ## DLC and entitlements
 

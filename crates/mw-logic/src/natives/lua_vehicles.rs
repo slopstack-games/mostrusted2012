@@ -67,7 +67,7 @@ fn position(state: &LogicState, vehicle: i32) -> [f32; 3] {
 }
 
 /// `FUN_00697120`: `{ x, y, z }` of the table argument `i` (`lua_getfield` + `lua_tonumber`; a missing field is 0).
-fn table_vec3(args: &[Value], i: usize) -> [f32; 3] {
+pub(super) fn table_vec3(args: &[Value], i: usize) -> [f32; 3] {
     let Some(Value::Table(t)) = args.get(i - 1) else { return [0.0; 3] };
     ["x", "y", "z"].map(|k| Lua::tonumber(&t.get_str(k)).unwrap_or(0.0) as f32)
 }

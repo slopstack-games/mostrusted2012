@@ -52,6 +52,7 @@ pub mod lua_misc;
 pub mod lua_online;
 pub mod lua_queries;
 pub mod lua_requests;
+pub mod lua_road;
 pub mod lua_settings;
 pub mod lua_sim;
 #[cfg(test)]
@@ -185,6 +186,7 @@ impl Registry {
         lua_world::register(&mut r);
         lua_queries::register(&mut r);
         lua_requests::register(&mut r);
+        lua_road::register(&mut r);
         lua_vehicles::register(&mut r);
         lua_garage::register(&mut r);
         lua_online::register(&mut r);
@@ -259,6 +261,8 @@ mod tests {
         assert_eq!(r.call_hook(&mut state, "NoSuchHook", None), None);
         // Every hook is ported: an unknown name is not "unported", it is unknown.
         assert!(r.hooks().iter().all(|h| h.ported()));
+        // Every Lua native too (the last 23 in `lua_road.rs`).
+        assert!(r.lua_natives().iter().all(|n| n.ported()), "{:?}", r.lua_natives().iter().find(|n| !n.ported()));
         assert!(state.unported.is_empty());
     }
 }

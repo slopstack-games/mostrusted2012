@@ -1172,4 +1172,53 @@ pub enum Request {
     RemoveOnlineSeenUnlocksMenu,
     /// `SetOnlineUnlockToSeen` (0x67a660 -> `FUN_00703ca0`(unlock, value) on G+0x14c08).
     SetOnlineUnlockToSeen { unlock: i32, value: i32 },
+    // --- The last Lua natives (`lua_road.rs`).
+    /// `CycleCameraTarget` → `FUN_006cab10`: the camera target changed to the occupied `slot` (PM+0xa6bc already
+    /// holds it): unless the slot's record +0x98 is −1, message {0x2c, 0, record +0x98} is posted
+    /// (`FUN_006dc730`).
+    CameraTargetChanged { slot: usize },
+    /// `SwitchToIceCamera` → `FUN_00843a60`: message {4, 0, take, 1, flag, 0} on the camera queue: the ICE camera
+    /// take starts; its serial is `RoadFields::ice_camera_serial` (`IceCameraStop` stops it only with that id).
+    IceCameraStart { take: i32, flag: bool },
+    /// `ShowFeedbackMessage` (0x00682210 → `FUN_007b96b0` → `FUN_007b8080`): the feedback message `id` (its
+    /// definition `FUN_007985b0`) with `text` and the parts (gamer tags: name, player slot (`FUN_007c1aa0`, flag
+    /// 1); numbers (`FUN_007c1bd0`); string ids (`FUN_007c2000`)) is queued on the named queue of UIM+0x17e0
+    /// (`None` = the default HUD queue UIM+0x7230) with the serial the native already took.
+    ShowFeedbackMessage {
+        queue: Option<String>,
+        id: i32,
+        text: String,
+        gamer_tags: Vec<(String, i32)>,
+        numbers: Vec<(String, f32)>,
+        string_ids: Vec<(String, i32)>,
+        serial: u32,
+    },
+    /// `FUN_00647e00` on the reset service G+0x25690 (decomp.md "Waiting for streaming"): place `vehicle` at the
+    /// pose with `mph` (record +0x70, capped as the reset does), `keep` (+0x78), `reason` (G+0x25690 +0x920 +
+    /// vehicle × 4) and `flags` (+0x84; bit 2 → +0x75); +0x8c = 0. `TeleportVehicle` (reason 3), `ResetOnRoad`
+    /// (4, flags 6 / 2), `TeleportToNamedRoad` (2).
+    PlaceVehicle {
+        vehicle: i32,
+        position: [f32; 3],
+        direction: [f32; 3],
+        mph: f32,
+        keep: bool,
+        reason: i32,
+        flags: u32,
+    },
+    /// `TeleportToDistanceFromFinish`: `FUN_00665ae0`(slot, `distance`) on the race manager G+0x2f47c gives the
+    /// pose `distance` along the slot's route, then [`PlaceVehicle`](Self::PlaceVehicle) of `vehicle` there
+    /// (mph 0, reason 2, flags 0).
+    TeleportAlongRoute { slot: i32, vehicle: i32, distance: f32 },
+    /// `ResetAlongRoad` → `FUN_0064a0e0`: `FUN_00648060`(vehicle, 6, pose, `search`, is the local car) puts the
+    /// pose onto the road network, then [`PlaceVehicle`](Self::PlaceVehicle) (`mph`, `keep`, reason 8, flags 6).
+    ResetAlongRoad { vehicle: i32, position: [f32; 3], direction: [f32; 3], mph: f32, search: f32, keep: bool },
+    /// `SpawnVehicle` → `FUN_006cd550` on the slot's record (PM+0x10 + slot × 0x7f0): `FUN_006ca580`(a, b,
+    /// position, direction, zero velocity, 3 (2 for a human player in an offline event whose record +0xef is 0),
+    /// 0); record +0x281 = that choice, +0x282 / +0x286 / +0x288 / +0x294 reset; `FUN_0065de30`(record +0x98).
+    SpawnVehicle { slot: i32, a: i32, b: i32, position: [f32; 3], direction: [f32; 3] },
+    /// `RegisterSpeechCommand` (0x007ea780 → `FUN_0079d390` on UIM+0x32dd8).
+    RegisterSpeechCommand { id: i32, name: String, text: String },
+    /// `ShowOriginIgo` (0x007eb380 → `FUN_0086d5f0` on (G+0x2f3e0)+0x4ce0): the Origin in-game overlay.
+    ShowOriginIgo,
 }

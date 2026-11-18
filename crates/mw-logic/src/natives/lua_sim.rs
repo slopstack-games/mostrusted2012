@@ -80,6 +80,9 @@ pub struct SimFields {
     pub vehicles: super::lua_vehicles::VehicleFields,
     /// The sound slot / input / contact / unlock fields of [`lua_requests`](super::lua_requests).
     pub requests: super::lua_requests::RequestFields,
+    /// The road network, route, streaming, message-queue, loading-screen and ICE camera fields of
+    /// [`lua_road`](super::lua_road).
+    pub road: super::lua_road::RoadFields,
 }
 
 /// The error record of the sign-in view model (VM +0x135c, +0x1360, +0x139c, +0x136d).
