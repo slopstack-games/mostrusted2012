@@ -135,7 +135,7 @@ impl Plugin for DlcPlugin {
         if !self.free_roam {
             return;
         }
-        app.add_systems(Startup, spawn_barriers).add_systems(Update, airport.after(crate::jackspots::swap));
+        app.add_systems(Startup, spawn_barriers).add_systems(Update, airport.after(crate::jackspots::carry_out));
     }
 }
 

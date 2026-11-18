@@ -11,6 +11,23 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+### 2026-11-18: event starts and jack spots run on the ported managers (`event_starts.rs`, `jackspots.rs`)
+
+The two modules no longer hold their own rules. **event_starts.rs**: `fill_inputs` fills `EventStartInputs` (every
+`OfflineEvent` as a `StartEvent` with start trigger = `SpawnPosition`, allowed cars, mode; the car id, speed,
+throttle / brake, the player as reference point, pursuit = chase or cooldown, `GameLogicValues`); `apply_outcomes`
+draws `EventStartState::shown`, shows the prompt when GMM+0x2c70 is `PromptEvent`, and in plain play turns
+`state.chosen` (set by the manager's burnout hold, `triggered` exits the state in `world_logic::step_plain`) into
+`PlayEvent`; an event the race code cannot run clears `awaiting_event`. Removed: the list build, the 10 m refresh, the
+radius / speed / hold rules. **jackspots.rs**: `fill_inputs` fills `CarSwapInputs` (spots with `TriggerBox`es, owned /
+store by bundle and DLC lock, parked reports from the `Parked` states, the player's car box (origin), the press, the
+engine waits true: covered, exchange ready, sequence done; placing until the loader's car is there); `carry_out`
+does `Spawn` / `Remove` (parked-car pipeline), `Exchange` (garage drive), `Place` (`garage.place_at`, left car's
+pose), `Found`, `Finish` (the left car loaded again). Removed: the 300 m / 20 m standing rule, distances, prompt,
+latch, immediate swap, reset of the last spot, car-change reset. Model decisions: the profile car given to the logic
+is frozen during a swap (else its car-change reset rebuilds the slots on arrival); the player's colour is passed as a
+flagged paint index; heat 0; no swap movie. See the commit for the test lines.
+
 ### 2026-11-17: police and pursuit ported into `crates/mw-police` (engine-free; WIP, runtime not switched)
 
 New crate `mw-police` (glam 0.32, wasm-clean, in `tools/wasm-check`): `pursuit` (pursuit manager `FUN_0066ae60`),

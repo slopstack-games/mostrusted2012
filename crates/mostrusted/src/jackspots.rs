@@ -25,6 +25,17 @@
 //! - **Found** (`FUN_007059b0`, `FUN_006e44f0`): a location counts as found when the player's car enters its
 //!   box while the slot's car stands (`JackSpots.IsSwapSpotVehicleSpawned`), in free roam.
 //!
+//! **Runtime on the ported manager** (research log 2026-11-18): the rules above run in
+//! `mw_logic::natives::car_swap` (`world_logic.rs`). `fill_inputs` supplies `CarSwapInputs` (spots with their
+//! `TriggerBox`, profile answers: owned = a car bundle that is not a locked DLC car, store = a locked one; what the
+//! parked cars report; the player's car; the SWAP_CARS press; the phases' engine waits); `carry_out` carries out
+//! `Spawn` / `Remove` (the parked cars' loading and rendering in `track_cars`), `Exchange` (the garage drive),
+//! `Place` (the player's car onto the parked car's pose, the left car's pose), `Found`, `Finish` and the prompt.
+//! Kept here: the parked-car rendering, the prompts' text, the "found on entry" bookkeeping (`found`).
+//! The logic's profile car is frozen from `Exchange` to `Finish` (the profile's car changes at the exchange, the
+//! player's vehicle on arrival; otherwise the manager's car-change reset would rebuild the slots). The player's
+//! colour travels as a paint index flagged `PAINT_INDEX` (model decision).
+//!
 //! Model decisions (not from the game):
 //! - "In the location trigger" is the car's origin inside the box (the game overlaps the car's box, its
 //!   narrow phase was not read; the same decision as `freeroam.rs`).
@@ -58,16 +69,12 @@ use crate::garage::{Garage, GarageAction};
 use crate::loader::{CarRequest, LoaderRequests, TrafficCarSpec, TrafficModelRequest, WheelSpec};
 use crate::materials::GameMaterial;
 use crate::props::GameLayer;
+use crate::world_logic::{WorldLogic, WorldLogicSet};
 use crate::{Game, ModelParts};
+use mw_logic::natives::Request;
+use mw_logic::natives::car_swap::{CarSwapOut, ParkedReport, SpotData, SpotProfile, SwapPlayer};
+use mw_logic::natives::trigger_boxes::{CarBox, TriggerBox};
 
-/// Squared distances of the parked cars' rule (`FUN_0075d290`): request from 20 m (`.data` 0x010c5cac = 400)
-/// to 300 m (`.data` 0x010c5ca4 = 90000); the same 90000 resets the last swapped slot (`.rdata` 0x00fd67e0).
-const SPAWN_MIN_D2: f32 = 400.0;
-const SPAWN_MAX_D2: f32 = 90_000.0;
-/// Radius of the location-trigger query around the player's car (`.rdata` 0x00fd6800, `FUN_007610c0`) and how
-/// many of the nearest keep their distance (`FUN_007615f0`).
-const QUERY_RADIUS: f32 = 300.0;
-const NEAREST: usize = 5;
 /// `GameLogicConfig.ff4aef6f` (+0x284) when the data cannot be read.
 const DEFAULT_MAX_MPH: f32 = 70.0;
 /// `GameLogicConfig.a1e83efa` (+0x16c): the prompt's language string ("PRESS {…SWAP_CARS…} TO DRIVE CAR").
@@ -90,7 +97,9 @@ impl Plugin for JackSpotsPlugin {
             .init_resource::<ParkedModels>()
             .init_resource::<Collected>()
             .add_systems(Startup, start_loading)
-            .add_systems(Update, (receive, track_cars, fit_boxes, swap).chain().after(crate::drive::read_input));
+            .add_systems(Update, receive.after(crate::drive::read_input).before(WorldLogicSet::Inputs))
+            .add_systems(Update, fill_inputs.in_set(WorldLogicSet::Inputs))
+            .add_systems(Update, (carry_out, track_cars, found, fit_boxes).chain().in_set(WorldLogicSet::Outcomes));
         // `MW_RACE_TEST_JACK=1` with `--test race`: the same swap once the race is over (`race.rs`).
         let test = self.test.clone().or_else(|| std::env::var_os("MW_RACE_TEST_JACK").map(|_| None));
         if let Some(out) = test {
@@ -128,18 +137,14 @@ enum Parked {
 struct Spot {
     data: SwapSpot,
     location: Trigger,
-    /// The slot's content: the data's car, or the car the player left here.
+    /// The slot's car as the logic asked for it (`CarSwapOut::Spawn`): its bundle, colour and where it stands.
     bundle: Option<String>,
     colour: Colour,
     /// Index of `colour` in the car's paints, known once its model was requested.
     paint_index: usize,
-    /// Where the slot's car stands (trigger centre or a point on the road) and faces.
     position: Vec3,
     direction: Vec3,
-    /// Slot +0x97: the next car left here goes on the car trigger instead of the second place.
-    second_used: bool,
-    /// The car the player left: stands at once (the game turns the parked vehicle into it).
-    force: bool,
+    /// The squared distance the logic keeps for the slot (mirrored for the test).
     d2: f32,
     parked: Parked,
 }
@@ -150,24 +155,7 @@ impl Spot {
             (Vec3::from(p.position), Vec3::from(p.direction).normalize_or(Vec3::Z))
         });
         let colour = Colour::Id(data.colour);
-        Self {
-            data,
-            location,
-            bundle,
-            colour,
-            paint_index: 0,
-            position,
-            direction,
-            second_used: false,
-            force: false,
-            d2: f32::MAX,
-            parked: Parked::None,
-        }
-    }
-
-    /// `FUN_007596b0`: back to the data's car on its own trigger (the caller removes the parked car).
-    fn reset(&mut self, bundle: Option<String>) {
-        *self = Self::new(self.data.clone(), self.location, bundle);
+        Self { data, location, bundle, colour, paint_index: 0, position, direction, d2: f32::MAX, parked: Parked::None }
     }
 }
 
@@ -178,8 +166,15 @@ struct Swap {
     old_entity: Entity,
     old_bundle: String,
     old_paint: usize,
-    old_pose: (Vec3, Vec3),
-    visuals: Entity,
+    /// The parked car's picture, its ground point and heading (the player's car lands there).
+    visuals: Option<Entity>,
+    at: Vec3,
+    heading: f32,
+    /// The car the player came in goes here (`CarSwapOut::Place`).
+    parked_pose: Option<(Vec3, Vec3)>,
+    /// The loader's car has replaced the player's.
+    arrived: bool,
+    failed: bool,
     started: f32,
 }
 
@@ -189,19 +184,18 @@ type PaintAnswer = (usize, Option<(VehiclePaint, usize)>);
 pub struct JackSpots {
     init: Option<Mutex<Receiver<Option<Init>>>>,
     spots: Vec<Spot>,
-    /// Home bundle of each spot (the data's car), for resets.
-    homes: Vec<Option<String>>,
-    max_mph: f32,
+    pub max_mph: f32,
     prompt_text: String,
     found_text: String,
     /// The prompt shows this frame (`DAT_01179ddd`).
     pub prompt: bool,
-    /// +0x74c9: a swap happened and the player has not left the prompts since.
+    /// +0x74c9: a swap happened and the player has not left the prompts since (mirrored from the logic).
     latch: bool,
-    /// +0x74b8: the slot last swapped at.
-    last_swapped: Option<usize>,
-    /// +0x74ac: the car the slots were built for.
-    known_car: Option<String>,
+    /// The car id the logic's reset check compares: the driven car's, frozen from a swap's start to its end
+    /// (the profile's car, `FUN_006b9d80`, changes at the exchange, the player's vehicle on arrival).
+    profile_car: u32,
+    /// Vehicle id -> (bundle exists, DLC locked), for the slots' profile answers.
+    vehicles: HashMap<u32, (bool, bool)>,
     swap: Option<Swap>,
     /// Paint lookups (helper threads) and model requests in flight: serial → spot.
     paints: Option<(Sender<PaintAnswer>, Mutex<Receiver<PaintAnswer>>)>,
@@ -339,7 +333,6 @@ fn receive(mut jack: ResMut<JackSpots>) {
             }
         }
     }
-    jack.homes = init.spots.iter().map(|s| s.2.clone()).collect();
     jack.inside = vec![false; init.spots.len()];
     jack.spots = init.spots.into_iter().map(|(s, t, b)| Spot::new(s, t, b)).collect();
     jack.max_mph = init.max_mph;
@@ -360,99 +353,38 @@ fn remove(commands: &mut Commands, parked: &mut Parked) {
     *parked = Parked::None;
 }
 
-/// Which parked cars stand: distances, requests, removal, and building the cars whose model has arrived.
+/// A parked car's model is wanted (`CarSwapOut::Spawn`, or the car the player left): its paint is read on a helper
+/// thread, then the loader builds it (`track_cars`).
+fn begin_load(jack: &mut JackSpots, game: &Game, i: usize) {
+    let s = &mut jack.spots[i];
+    let (Some(bundle), Some((tx, _))) = (s.bundle.clone(), jack.paints.as_ref()) else { return };
+    let serial = jack.next_serial;
+    jack.next_serial += 1;
+    jack.serials.insert(serial, i);
+    s.parked = Parked::Loading { serial };
+    let (store, tx, colour) = (game.store.clone(), tx.clone(), s.colour);
+    crate::platform::thread::Builder::new()
+        .name("mw-jackspot-paint".into())
+        .spawn(move || {
+            let _ = tx.send((serial, read_paint(&store, &bundle, colour)));
+        })
+        .expect("spawn jack spot paint thread");
+}
+
+/// The parked cars' pipeline: the logic decides which stand (`carry_out`); here the paints are read, the models
+/// built, and the cars whose model has arrived put on the ground.
 #[allow(clippy::too_many_arguments)]
 fn track_cars(
     mut commands: Commands,
     mut jack: ResMut<JackSpots>,
     mut models: ResMut<ParkedModels>,
-    game: Res<Game>,
-    garage: Res<Garage>,
     requests: Option<Res<LoaderRequests>>,
-    player: Query<&Transform, (With<Car>, With<Player>)>,
     focus: Option<Res<crate::loader::StreamFocus>>,
     spatial: SpatialQuery,
 ) {
     let jack = &mut *jack;
     if jack.spots.is_empty() {
         return;
-    }
-    // The driven car changed outside a swap (menu, Easydrive): every slot back to its data (`FUN_00761d70`).
-    // A respray keeps the car (`bodyshop.rs`).
-    let current = garage.current.as_ref().map(|c| c.bundle.clone());
-    if jack.swap.is_none() && current != jack.known_car {
-        if jack.known_car.is_some() && current.is_some() {
-            for (spot, home) in jack.spots.iter_mut().zip(&jack.homes) {
-                remove(&mut commands, &mut spot.parked);
-                spot.reset(home.clone());
-            }
-            jack.serials.clear();
-            jack.last_swapped = None;
-        }
-        jack.known_car = current;
-    }
-    let Some(p) = player.iter().next().map(|t| t.translation) else { return };
-
-    // `FUN_007610c0`: the location triggers within 300 m, nearest first; the first five keep their distance.
-    let mut near: Vec<(usize, f32)> = jack
-        .spots
-        .iter()
-        .enumerate()
-        .map(|(i, s)| (i, Vec3::from(s.location.position).distance_squared(p)))
-        .filter(|&(_, d2)| d2 <= QUERY_RADIUS * QUERY_RADIUS)
-        .collect();
-    near.sort_by(|a, b| a.1.total_cmp(&b.1));
-    near.truncate(NEAREST);
-    for s in &mut jack.spots {
-        s.d2 = f32::MAX;
-    }
-    for &(i, d2) in &near {
-        jack.spots[i].d2 = d2;
-    }
-
-    // `FUN_0075d800`: the slot last swapped at goes back to its data 300 m away.
-    if let Some(i) = jack.last_swapped
-        && jack.swap.is_none()
-    {
-        let home = jack.spots[i].data.car.map_or(jack.spots[i].position, |c| Vec3::from(c.position));
-        if home.distance_squared(p) > SPAWN_MAX_D2 {
-            let s = &mut jack.spots[i];
-            remove(&mut commands, &mut s.parked);
-            s.reset(jack.homes[i].clone());
-            jack.last_swapped = None;
-        }
-    }
-
-    // `FUN_0075d290` per slot.
-    let swapping = jack.swap.as_ref().map(|s| s.spot);
-    for i in 0..jack.spots.len() {
-        let s = &mut jack.spots[i];
-        let standing = matches!(s.parked, Parked::Spawned { .. });
-        // A car still loading when the player comes within 20 m is dropped again, as in the game (only a
-        // standing car, state 3, is kept inside the ring).
-        let wanted = s.bundle.is_some()
-            && (s.force || (s.d2 <= SPAWN_MAX_D2 && s.d2 >= SPAWN_MIN_D2) || (standing && s.d2 <= SPAWN_MAX_D2));
-        if !wanted {
-            if !matches!(s.parked, Parked::None) && swapping != Some(i) {
-                remove(&mut commands, &mut s.parked);
-                jack.serials.retain(|_, spot| *spot != i);
-            }
-            continue;
-        }
-        if matches!(s.parked, Parked::None) && swapping != Some(i) {
-            let (Some(bundle), Some((tx, _))) = (s.bundle.clone(), jack.paints.as_ref()) else { continue };
-            let serial = jack.next_serial;
-            jack.next_serial += 1;
-            jack.serials.insert(serial, i);
-            s.parked = Parked::Loading { serial };
-            let (store, tx, colour) = (game.store.clone(), tx.clone(), s.colour);
-            crate::platform::thread::Builder::new()
-                .name("mw-jackspot-paint".into())
-                .spawn(move || {
-                    let _ = tx.send((serial, read_paint(&store, &bundle, colour)));
-                })
-                .expect("spawn jack spot paint thread");
-        }
     }
 
     // Paints read: ask the loader for the model in that paint.
@@ -612,174 +544,381 @@ fn read_paint(store: &AssetStore, bundle: &str, colour: Colour) -> Option<(Vehic
     Some((paints[index], index))
 }
 
-/// The prompt, the swap key and the swap itself; "found" bookkeeping.
+/// The paint index flag in the logic's colour ids: the player's colour is its index in the car's paints (the
+/// palette id is not kept for the car the player drives; model decision), a spot's is the `ColourId`.
+const PAINT_INDEX: u32 = 0x8000_0000;
+
+fn colour_of(code: u32) -> Colour {
+    if code & PAINT_INDEX != 0 { Colour::Index((code & !PAINT_INDEX) as usize) } else { Colour::Id(code) }
+}
+
+/// The location box as the overlap job reads it (`TriggerBox`; a trigger that is no box: none).
+fn location_box(t: &Trigger) -> Option<TriggerBox> {
+    match t.shape {
+        mw_formats::TriggerShape::Box { rotation, size } => {
+            Some(TriggerBox::from_quat(t.id, t.position, rotation, size, t.flags & 1 != 0))
+        }
+        _ => None,
+    }
+}
+
+/// Fills `CarSwapInputs` each frame (`FUN_007615f0` / `FUN_00761d70`'s reads): the spots, the profile answers
+/// (owned = a car bundle that is not a locked DLC car, store = a locked one), what the parked cars report, the
+/// player's car, the SWAP_CARS press and the swap phases' engine waits.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn swap(
+fn fill_inputs(
+    mut jack: ResMut<JackSpots>,
+    logic: NonSend<WorldLogic>,
+    game: Res<Game>,
+    garage: Res<Garage>,
+    input: Res<CarInput>,
+    keys: Res<ButtonInput<KeyCode>>,
+    pads: Query<&Gamepad>,
+    pursuit: Option<Res<crate::police::PursuitHud>>,
+    pending: Option<Res<PendingCar>>,
+    player: Query<(&Car, &Transform), With<Player>>,
+) {
+    let jack = &mut *jack;
+    if jack.spots.is_empty() {
+        return;
+    }
+    let vehicle = garage.current.as_ref().and_then(|c| crate::frontend::vehicle_id(&c.bundle)).unwrap_or(0);
+    if jack.swap.is_none() {
+        jack.profile_car = vehicle;
+    }
+    let pressed = std::mem::take(&mut jack.press) || {
+        let pads: Vec<&Gamepad> = pads.iter().collect();
+        crate::input::Devices { keys: &keys, pads: &pads }.just_pressed(crate::input::defaults::SWAP_CARS)
+    };
+    let mut st = logic.state.borrow_mut();
+    let slots = st.car_swap.state.slots.clone();
+    let i = &mut st.car_swap.inputs;
+    if i.spots.len() != jack.spots.len() {
+        i.spots = jack
+            .spots
+            .iter()
+            .map(|s| SpotData {
+                location: s.data.location,
+                location_box: location_box(&s.location),
+                vehicle: s.data.vehicle,
+                car_trigger: s.data.car.map_or(0, |c| c.trigger),
+                car_position: s.position.to_array(),
+                car_direction: s.direction.to_array(),
+                second: s.data.second.map(|p| (p.trigger, p.position, p.direction)),
+                colour: s.data.colour,
+            })
+            .collect();
+        // The slots are built from them when the state is entered; under `--hsm` it may have been before.
+        i.rebuild = true;
+    } else {
+        i.rebuild = false;
+    }
+    // `FUN_00742400`'s answers per slot, for the car the slot holds now.
+    i.profile = (0..jack.spots.len())
+        .map(|k| {
+            let vehicle = slots.get(k).map_or(jack.spots[k].data.vehicle, |sl| sl.data.vehicle);
+            let (exists, locked) = *jack.vehicles.entry(vehicle).or_insert_with(|| {
+                let bundle = vehicle_bundle(vehicle);
+                (game.store.bundle(&bundle).is_some(), crate::dlc::car_locked(&bundle).is_some())
+            });
+            SpotProfile { owned: exists && !locked, store: exists && locked }
+        })
+        .collect();
+    i.parked = jack
+        .spots
+        .iter()
+        .enumerate()
+        .map(|(k, s)| {
+            let standing = matches!(s.parked, Parked::Spawned { .. });
+            // A car whose model does not exist fails its spawn (the slot returns to none).
+            let failed = s.bundle.is_none() && slots.get(k).is_some_and(|sl| sl.state == 1);
+            ParkedReport {
+                spawn_status: if failed {
+                    4
+                } else if matches!(s.parked, Parked::None) {
+                    0
+                } else {
+                    3
+                },
+                handle: k as u32 + 1,
+                ready: standing,
+                alive: standing,
+                position: match s.parked {
+                    Parked::Spawned { at, .. } => at.to_array(),
+                    _ => s.position.to_array(),
+                },
+            }
+        })
+        .collect();
+    if let Ok((car, t)) = player.single() {
+        // The car's origin as its box (the game overlaps the car's box; model decision: the origin in the trigger).
+        let axes = [t.rotation * Vec3::X, t.rotation * Vec3::Y, t.rotation * Vec3::Z];
+        i.player = SwapPlayer {
+            has_vehicle: true,
+            loaded: true,
+            car: CarBox {
+                centre: t.translation.to_array(),
+                axes: axes.map(|a| a.to_array()),
+                half: [0.0; 3],
+                forward: axes[2].to_array(),
+            },
+            speed_mph: car.speed.abs() / 0.447_04,
+            // The pursuit gate (record heat) is not modelled: no swap is blocked by it (module doc).
+            heat: 0.0,
+            crashed: input.crashed,
+            in_pursuit: pursuit.as_ref().is_some_and(|p| p.in_chase || p.in_cooldown),
+            vehicle,
+            profile_car: jack.profile_car,
+            colour: PAINT_INDEX | garage.current.as_ref().map_or(0, |c| c.paint_index as u32),
+            resetting: false,
+        };
+    } else {
+        i.player = Default::default();
+    }
+    i.started = true;
+    i.swap_pressed = pressed && garage.loading.is_none() && pending.is_none();
+    i.intro = false;
+    i.intro_screen = false;
+    i.jack_it = 0;
+    i.jack_it_excluded = 0;
+    // The swap's engine waits: the movie / transition is not played (model decision, module doc), so the screen
+    // is covered, the exchange ready and the sequence done at once; placing lasts until the loader's car is there.
+    i.covered = true;
+    i.exchange_ready = true;
+    i.sequence_done = true;
+    i.vehicles_ready = true;
+    i.placing = jack.swap.as_ref().is_some_and(|s| !s.arrived && !s.failed);
+    i.car_trigger_found = false;
+    if let Some(v) = &logic.values {
+        i.max_mph = v.max_mph;
+        i.prompt_drive = v.prompt_drive;
+        i.prompt_store = v.prompt_store;
+        i.swap_sequence = v.swap_sequence;
+    } else {
+        i.max_mph = jack.max_mph;
+        i.prompt_drive = PROMPT_TEXT;
+        i.prompt_store = 0;
+    }
+}
+
+/// Carries out the logic's outcomes: parked cars spawned / removed, the swap's phases (the garage action, the
+/// poses, the found triggers, the end), and the prompt.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn carry_out(
     mut commands: Commands,
     mut jack: ResMut<JackSpots>,
+    logic: NonSend<WorldLogic>,
+    game: Res<Game>,
     mut garage: ResMut<Garage>,
     mut collected: ResMut<Collected>,
     mut actions: MessageWriter<GarageAction>,
     mut scoring: MessageWriter<crate::freeroam::ScoreAction>,
     mut hud: Option<ResMut<crate::hud::HudState>>,
-    input: Res<CarInput>,
-    keys: Res<ButtonInput<KeyCode>>,
-    pads: Query<&Gamepad>,
     time: Res<Time<Real>>,
-    race: Option<Res<crate::race::RaceState>>,
     pending: Option<Res<PendingCar>>,
-    player: Query<(Entity, &Car, &Transform), With<Player>>,
+    player: Query<(Entity, &Transform), With<Player>>,
 ) {
     let jack = &mut *jack;
-    jack.prompt = false;
-    let pressed = std::mem::take(&mut jack.press) || {
-        let pads: Vec<&Gamepad> = pads.iter().collect();
-        crate::input::Devices { keys: &keys, pads: &pads }.just_pressed(crate::input::defaults::SWAP_CARS)
-    };
     let now = time.elapsed_secs();
-    let mut show = None;
-    if let Some(swap) = jack.swap.as_ref() {
-        // The loader's car has replaced the one the player came in (`garage::place_arrived_car`).
-        let arrived = player.iter().next().filter(|(e, ..)| *e != swap.old_entity);
-        let failed = garage.loading.is_none()
-            && pending.is_none()
-            && arrived.is_none()
-            && garage.place_at.is_some()
-            && now - swap.started > 1.0;
-        if let Some((_, _, t)) = arrived {
-            let swap = jack.swap.take().expect("checked");
-            commands.entity(swap.visuals).despawn();
-            let s = &mut jack.spots[swap.spot];
-            // `FUN_00761d70` state 3: where the car the player came in goes.
-            let (position, direction) = match (s.data.second, s.data.car) {
-                (Some(second), _) if !s.second_used => {
-                    s.second_used = true;
-                    (Vec3::from(second.position), Vec3::from(second.direction))
-                }
-                (Some(_), Some(car)) => {
-                    s.second_used = false;
-                    (Vec3::from(car.position), Vec3::from(car.direction))
-                }
-                _ => swap.old_pose,
-            };
-            // `FUN_00758f00`: the slot now holds that car in its colour.
-            s.bundle = Some(swap.old_bundle.clone());
-            s.colour = Colour::Index(swap.old_paint);
-            s.position = position;
-            s.direction = direction.normalize_or(Vec3::Z);
-            s.force = true;
-            s.parked = Parked::None;
-            // State 6: both triggers found, the slot is the last swap spot.
-            collected.jack_spots.insert(s.data.location);
-            // The car's first find scores `CarSwapDiscovered` (350 SP in the data; decomp.md "Speed Points").
-            if let Some(car) = s.data.car
-                && collected.jack_cars.insert(car.trigger)
-            {
-                scoring.write(crate::freeroam::ScoreAction(mw_assets::scoring::action::CAR_SWAP_DISCOVERED));
+    let outs = logic.take(|r| matches!(r, Request::CarSwap(_)));
+    for r in outs {
+        let Request::CarSwap(o) = r else { continue };
+        match o {
+            CarSwapOut::Spawn { slot, vehicle, colour, position, direction } => {
+                let Some(s) = jack.spots.get_mut(slot) else { continue };
+                remove(&mut commands, &mut s.parked);
+                let bundle = vehicle_bundle(vehicle);
+                s.bundle = game.store.bundle(&bundle).is_some().then_some(bundle);
+                s.colour = colour_of(colour);
+                s.position = Vec3::from(position);
+                s.direction = Vec3::from(direction).normalize_or(Vec3::Z);
+                begin_load(jack, &game, slot);
             }
-            collected.swap_spot = Some(s.data.location);
-            collected.dirty = true;
-            jack.last_swapped = Some(swap.spot);
-            jack.known_car = Some(swap.target.clone());
-            jack.latch = true;
-            jack.swaps += 1;
-            info!(
-                "jack spot {}: now driving {} at {:.1}; {} left at {position:.1}",
-                s.data.id, swap.target, t.translation, swap.old_bundle
-            );
-        } else if failed || now - swap.started > SWAP_TIMEOUT {
-            let swap = jack.swap.take().expect("checked");
-            warn!("jack spot {}: the swap to {} did not happen", jack.spots[swap.spot].data.id, swap.target);
-            commands.entity(swap.visuals).despawn();
-            garage.place_at = None;
-            jack.spots[swap.spot].parked = Parked::None;
-        }
-    } else if let Some((entity, car, t)) = player.iter().next()
-        && !jack.spots.is_empty()
-    {
-        let p = t.translation.to_array();
-        let mph = car.speed.abs() / 0.447_04;
-        // `FUN_007615f0`'s gates (the pursuit one is not modelled); jack spot triggers fire in free roam only
-        // (`FUN_00707650`: game-state byte +0x2e90).
-        let free_roam = race.is_none();
-        let can = free_roam && !input.crashed && mph <= jack.max_mph;
-        let mut near_any = false;
-        for i in 0..jack.spots.len() {
-            let s = &jack.spots[i];
-            let inside = s.d2 < f32::MAX && s.location.contains(p);
-            let entered = !std::mem::replace(&mut jack.inside[i], inside) && inside;
-            // The car the player left stands for the game from the moment of the swap (ours is still loading):
-            // the swap latch holds meanwhile.
-            near_any |= inside && can && s.force;
-            let Parked::Spawned { root, collider, at, heading } = s.parked else { continue };
-            if !inside {
-                continue;
+            CarSwapOut::Remove { slot, .. } => {
+                let swapping = jack.swap.as_ref().map(|s| s.spot);
+                if swapping != Some(slot)
+                    && let Some(s) = jack.spots.get_mut(slot)
+                {
+                    remove(&mut commands, &mut s.parked);
+                    jack.serials.retain(|_, spot| *spot != slot);
+                }
             }
-            // `FUN_007059b0`: the location counts once its car stands.
-            if (entered || !collected.jack_spots.contains(&s.data.location))
-                && free_roam
-                && collected.jack_spots.insert(s.data.location)
-            {
+            CarSwapOut::Begin { slot, first_use } => {
+                if let Some(s) = jack.spots.get(slot) {
+                    info!("jack spot {}: the swap begins (first use {first_use})", s.data.id);
+                }
+            }
+            CarSwapOut::OpenStore { slot } => {
+                if let Some(s) = jack.spots.get(slot) {
+                    info!("jack spot {}: DLC locked: the store is not available", s.data.id);
+                }
+            }
+            CarSwapOut::Exchange { slot, vehicle, colour, .. } => {
+                // The player's vehicle becomes the slot's car (`FUN_00758f00`): the garage drives it; the parked
+                // car's box goes now so the new car lands on the road, its picture when the new car is there.
+                let (Some((entity, _)), Some(current), Some(s)) =
+                    (player.iter().next(), garage.current.clone(), jack.spots.get(slot))
+                else {
+                    continue;
+                };
+                let target = s.bundle.clone().unwrap_or_else(|| vehicle_bundle(vehicle));
+                let paint_index = match colour_of(colour) {
+                    Colour::Index(i) => i,
+                    Colour::Id(_) => s.paint_index,
+                };
+                let (visuals, at, heading) = match s.parked {
+                    Parked::Spawned { root, collider, at, heading } => {
+                        commands.entity(collider).despawn();
+                        (Some(root), at, heading)
+                    }
+                    _ => (None, s.position, s.direction.x.atan2(s.direction.z)),
+                };
+                let name = garage
+                    .catalogue
+                    .iter()
+                    .find(|c| c.bundle.eq_ignore_ascii_case(&target))
+                    .map_or_else(|| target.clone(), |c| c.name.clone());
+                info!("jack spot {}: swapping {} for {name}", s.data.id, current.bundle);
+                actions.write(GarageAction::Drive { name, bundle: target.clone(), paint_index });
+                jack.swap = Some(Swap {
+                    spot: slot,
+                    target,
+                    old_entity: entity,
+                    old_bundle: current.bundle,
+                    old_paint: current.paint_index,
+                    visuals,
+                    at,
+                    heading,
+                    parked_pose: None,
+                    arrived: false,
+                    failed: false,
+                    started: now,
+                });
+            }
+            CarSwapOut::Place { parked_pose, .. } => {
+                // The player's car takes the parked car's pose at rest (`FUN_00742530` / `FUN_00742580`).
+                if let Some(swap) = jack.swap.as_mut() {
+                    garage.place_at = Some((swap.at, swap.heading));
+                    swap.parked_pose = Some((Vec3::from(parked_pose.0), Vec3::from(parked_pose.1)));
+                }
+            }
+            CarSwapOut::Found { trigger } => {
+                // `FUN_007059b0`: both triggers of the slot count as found.
+                for s in &jack.spots {
+                    if s.data.location == trigger {
+                        collected.jack_spots.insert(trigger);
+                    }
+                    // The car's first find scores `CarSwapDiscovered` (350 SP in the data; decomp.md "Speed Points").
+                    if let Some(car) = s.data.car
+                        && car.trigger == trigger
+                        && collected.jack_cars.insert(trigger)
+                    {
+                        scoring.write(crate::freeroam::ScoreAction(mw_assets::scoring::action::CAR_SWAP_DISCOVERED));
+                    }
+                }
                 collected.dirty = true;
-                info!("{}: jack spot {} ({} found)", jack.found_text, s.data.id, collected.jack_spots.len());
             }
-            if !can {
-                continue;
-            }
-            near_any = true;
-            if jack.latch {
-                continue;
-            }
-            // A car whose DLC pack is not owned: the store prompt, and the button opens the store instead of the swap
-            // (`FUN_007615f0` / `FUN_00748090`; there is no store offline: nothing happens).
-            if let Some(pack) = s.bundle.as_deref().and_then(crate::dlc::car_locked) {
-                show = crate::dlc::store_prompt().map(str::to_string);
-                jack.prompt = true;
-                if pressed && !jack.latch {
-                    info!("jack spot {}: {pack} not owned (DLC locked): the store is not available", s.data.id);
-                    jack.latch = true;
+            CarSwapOut::Finish { parked, .. } => {
+                let Some(swap) = jack.swap.take() else { continue };
+                if let Some(visuals) = swap.visuals {
+                    commands.entity(visuals).despawn();
                 }
-                continue;
+                let i = swap.spot;
+                if swap.failed {
+                    warn!("jack spot {}: the swap to {} did not happen", jack.spots[i].data.id, swap.target);
+                    garage.place_at = None;
+                    jack.spots[i].parked = Parked::None;
+                    continue;
+                }
+                // The slot now holds the car the player came in, in its colour, where `Place` put it
+                // (`FUN_00758f00`); the game turns the parked vehicle into it, here it is loaded again.
+                if parked.is_some()
+                    && let Some((position, direction)) = swap.parked_pose
+                {
+                    let s = &mut jack.spots[i];
+                    s.bundle = Some(swap.old_bundle.clone());
+                    s.colour = Colour::Index(swap.old_paint);
+                    s.position = position;
+                    s.direction = direction.normalize_or(Vec3::Z);
+                    s.parked = Parked::None;
+                    begin_load(jack, &game, i);
+                }
+                collected.swap_spot = Some(jack.spots[i].data.location);
+                collected.dirty = true;
+                jack.swaps += 1;
+                info!(
+                    "jack spot {}: now driving {}; {} left behind",
+                    jack.spots[i].data.id, swap.target, swap.old_bundle
+                );
             }
-            show = Some(jack.prompt_text.clone());
-            jack.prompt = true;
-            let (Some(target), Some(current)) = (s.bundle.clone(), garage.current.clone()) else { continue };
-            if !pressed || garage.loading.is_some() || pending.is_some() {
-                continue;
-            }
-            let name = garage
-                .catalogue
-                .iter()
-                .find(|c| c.bundle.eq_ignore_ascii_case(&target))
-                .map_or_else(|| target.clone(), |c| c.name.clone());
-            info!("jack spot {}: swapping {} for {name} at {mph:.0} mph", s.data.id, current.bundle);
-            // The player's car takes the parked car's pose (`FUN_00742530` / `FUN_00742580`), at rest; the parked
-            // car's box goes now so the new car lands on the road, its picture when the new car is there.
-            commands.entity(collider).despawn();
-            garage.place_at = Some((at, heading));
-            actions.write(GarageAction::Drive { name, bundle: target.clone(), paint_index: s.paint_index });
-            jack.swap = Some(Swap {
-                spot: i,
-                target,
-                old_entity: entity,
-                old_bundle: current.bundle,
-                old_paint: current.paint_index,
-                old_pose: (t.translation, t.rotation * Vec3::Z),
-                visuals: root,
-                started: now,
-            });
-            jack.prompt = false;
-            show = None;
-            break;
-        }
-        if jack.latch && !near_any {
-            jack.latch = false;
+            // No runtime counterpart: no movie, no pursuit swap score, no preload.
+            CarSwapOut::Covered
+            | CarSwapOut::Sequence { .. }
+            | CarSwapOut::PursuitSwap { .. }
+            | CarSwapOut::PursuitStarted
+            | CarSwapOut::Preload { .. }
+            | CarSwapOut::Nearest { .. } => {}
         }
     }
+    // The loader's car has replaced the one the player came in (`garage::place_arrived_car`), or the swap failed.
+    if let Some(swap) = jack.swap.as_mut() {
+        swap.arrived = player.iter().next().is_some_and(|(e, _)| e != swap.old_entity);
+        let lost = garage.loading.is_none()
+            && pending.is_none()
+            && !swap.arrived
+            && garage.place_at.is_some()
+            && now - swap.started > 1.0;
+        swap.failed = !swap.arrived && (lost || now - swap.started > SWAP_TIMEOUT);
+    }
+    // Mirror the logic's distances (`--test jackspot`), the prompt and the latch.
+    let st = logic.state.borrow();
+    for (k, s) in jack.spots.iter_mut().enumerate() {
+        s.d2 = st.car_swap.state.slots.get(k).map_or(f32::MAX, |sl| sl.d2);
+    }
+    let inputs = &st.car_swap.inputs;
+    let show = match st.game_modes.prompt {
+        Some(p) if p == inputs.prompt_drive && p != 0 => Some(jack.prompt_text.clone()),
+        Some(p) if p == inputs.prompt_store && p != 0 => crate::dlc::store_prompt().map(str::to_string),
+        _ => None,
+    };
+    jack.prompt = show.is_some();
+    jack.latch = st.car_swap.state.latch;
     if let Some(hud) = hud.as_mut()
         && hud.prompt != show
     {
         hud.prompt = show;
+    }
+}
+
+/// `FUN_007059b0`: a location counts as found when the player's car enters its box while the slot's car stands,
+/// in free roam.
+fn found(
+    mut jack: ResMut<JackSpots>,
+    mut collected: ResMut<Collected>,
+    race: Option<Res<crate::race::RaceState>>,
+    player: Query<&Transform, With<Player>>,
+) {
+    let jack = &mut *jack;
+    let Ok(t) = player.single() else { return };
+    let p = t.translation.to_array();
+    let free_roam = race.is_none();
+    if jack.inside.len() != jack.spots.len() {
+        jack.inside = vec![false; jack.spots.len()];
+    }
+    for i in 0..jack.spots.len() {
+        let s = &jack.spots[i];
+        let inside = s.d2 < f32::MAX && s.location.contains(p);
+        let entered = !std::mem::replace(&mut jack.inside[i], inside) && inside;
+        if !inside || !matches!(s.parked, Parked::Spawned { .. }) {
+            continue;
+        }
+        if (entered || !collected.jack_spots.contains(&s.data.location))
+            && free_roam
+            && collected.jack_spots.insert(s.data.location)
+        {
+            collected.dirty = true;
+            info!("{}: jack spot {} ({} found)", jack.found_text, s.data.id, collected.jack_spots.len());
+        }
     }
 }
 
