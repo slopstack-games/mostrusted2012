@@ -11,7 +11,22 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
-### 2026-11-18: Lua natives, thirteenth batch: survey only (stopped before code; session ended)
+### 2026-11-18: Lua natives, thirteenth batch (`natives/lua_requests.rs`)
+12 offline natives ported from the survey below: 312 of 385 (238 / 255 offline, 50 / 100 online, 8 / 11 platform, 16 / 19 debug; 17
+offline unported). Behaviour: StopFeedbackSequence zeroes the sequence handle; RequestSkipSequence records `Request::SkipSequence` with
+the current member's id (0 without a handle; host-fed `skip_sequence_id`); SetVector3Variable stores a JSON array of three doubles
+(floats widened) at the usual `<prefix>.<name>` path; SetExitPointID stores the packed name (`hsm::key`) in the script object
+(`exit_point`); GetCompetitorName narrows `Player::name` (new field; >= 0x80 -> `?`, 255 chars; empty slot "" is a model
+decision); HasInputBeenDetected = controller byte, or local vehicle alive and input non-neutral, or a sequence handle set;
+IsHittingRaceCar scans vehicle a's contact list for a vehicle-vehicle contact (both kind 7) with vehicle b's body id; IsAssetUnlocked picks
+one of two unlock tables by the boolean, unknown id = unlocked; ShowForcedFeedBackMessage records a request (clears the HUD queue
+first when `hud_queue_vcall`); PlaySound / PlaySoundAtPlayer / PlayGameplayStream take the first free of 30 slots (`RequestFields`
+counter + busy flags, 0x7fffffff when full, the stream pushes nil then) and record `Request::PlaySound` (kind 0 / 1+8 / 4). Runtime
+must feed `RequestFields` (input, contacts, unlocks, skip id, busy flags cleared when sounds end) and carry out the three Requests.
+Skipped (road / streaming data or unread): HasFinishedStreamingWorld, ShowLoadingScreen, ShowFeedbackMessage, CalculateForwardDirection,
+CalculateRotatedLocationXZ, CycleCameraTarget, SwitchToIceCamera and the unread ones listed below.
+
+### 2026-11-18: Lua natives, thirteenth batch: survey (stopped before code; session ended)
 No native ported (300 of 385 stays; 226 / 255 offline, 50 / 100 online, 8 / 11 platform, 16 / 19 debug; 85 unported: 29 offline,
 50 online, 3 platform, 3 debug). Handlers read from `re/out/live/text.asm`, callees from the dump. Findings for the next port:
 - StopFeedbackSequence (0x682710): clears the stack, writes the null handle pair (`.bss` 0x01178070 / 74, 0 / 0 in snapshots 1 and 2)

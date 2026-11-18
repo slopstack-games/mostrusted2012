@@ -162,6 +162,18 @@ impl Default for Engine {
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum Request {
+    /// `RequestSkipSequence` (0x006827b0): `FUN_007b1060` on UIM+0x30840 (the feedback sequence manager) with the
+    /// id of the current sequence member (0 without one): flags the matching members as skipped.
+    SkipSequence { id: i32 },
+    /// `ShowForcedFeedBackMessage` (0x0067db90): when `clear_queue` the HUD queue is cleared first (`FUN_007b3380`),
+    /// then `FUN_007b8100`(text, id) queues the message.
+    ShowForcedFeedbackMessage { text: String, id: i32, clear_queue: bool },
+    /// `PlaySound` / `PlaySoundAtPlayer` / `PlayGameplayStream` (0x0067df60 / 0x0067e040 / 0x0067e2d0): start the
+    /// sound `name` (hashed with `FUN_009ed180`) with the argument `id` in the slot whose id the native already
+    /// took (`slot`, the counter value; 0x7fffffff = no free slot, nothing to start). `kind` 0 / 1 / 4 and
+    /// `flags` 0 / 8 / 0 are the arguments `FUN_009ed180` gets; the runtime clears the slot in
+    /// `RequestFields::sound_slot_busy` when the sound ends.
+    PlaySound { name: String, id: i32, kind: u32, flags: u32, position: [f32; 3], slot: i32 },
     /// `FUN_0068fd50` (`SetNewGame`, `SetIntroEventNext`), the parts outside [`LogicState`]. New game:
     /// `FUN_0072bf20` (reset the progression tables), `FUN_0068e5c0` (the single-player rollout), the profile's
     /// car from `default_rollout` (`FUN_00683480` / `FUN_00729f20`), `FUN_00707380`, `FUN_00655e90`,

@@ -78,6 +78,8 @@ pub struct ScriptObject {
     /// +0xb4: the script's own view model; bindings `Widget.<widget>.<…>` resolve into it (slot 8,
     /// `FUN_007e7a80`).
     pub view_model: Json,
+    /// +0x10 / +0x14: the exit point (packed name, `SetExitPointID`); 0 = none.
+    pub exit_point: Key,
 }
 
 /// Every live Lua script object.
@@ -100,6 +102,7 @@ impl WidgetScripts {
             widget: widget.to_string(),
             name: fit(name, 17).to_string(),
             view_model: Json::Object(Vec::new()),
+            exit_point: 0,
         });
         handle
     }
@@ -126,7 +129,7 @@ impl WidgetScripts {
 }
 
 /// Apply `f` to the view model of the script `handle` and republish the `Widget` root; no script (the original: a null object, it would crash) does nothing.
-fn with_view_model(state: &mut LogicState, handle: Option<usize>, f: impl FnOnce(&mut Json) -> bool) {
+pub(super) fn with_view_model(state: &mut LogicState, handle: Option<usize>, f: impl FnOnce(&mut Json) -> bool) {
     let Some(script) = handle.and_then(|h| state.widget_scripts.scripts.iter_mut().find(|s| s.handle == h)) else {
         return;
     };
@@ -146,7 +149,7 @@ fn with_view_model(state: &mut LogicState, handle: Option<usize>, f: impl FnOnce
 
 /// The path the `Set*Variable` natives build (`FUN_007ebeb0` & co.): `<prefix>.<name>` when the optional 4th
 /// argument is not empty, in a 64-byte buffer.
-fn var_path(args: &[Value], name_arg: usize, prefix_arg: usize) -> String {
+pub(super) fn var_path(args: &[Value], name_arg: usize, prefix_arg: usize) -> String {
     let name = string_or_invalid(args, name_arg);
     let prefix = if args.len() >= prefix_arg { string_or_invalid(args, prefix_arg) } else { String::new() };
     let mut path = String::new();

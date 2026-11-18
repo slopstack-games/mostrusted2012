@@ -50,6 +50,7 @@ pub mod lua_garage;
 pub mod lua_menus;
 pub mod lua_misc;
 pub mod lua_queries;
+pub mod lua_requests;
 pub mod lua_settings;
 pub mod lua_sim;
 #[cfg(test)]
@@ -182,6 +183,7 @@ impl Registry {
         lua_feedback::register(&mut r);
         lua_world::register(&mut r);
         lua_queries::register(&mut r);
+        lua_requests::register(&mut r);
         lua_vehicles::register(&mut r);
         lua_garage::register(&mut r);
         r

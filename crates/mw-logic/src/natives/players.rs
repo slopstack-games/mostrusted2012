@@ -11,6 +11,8 @@ pub const FIRST_AI_SLOT: usize = 12;
 /// One player record (offsets in the record).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Player {
+    /// +0x50: the competitor name (a wide string pointer; `GetCompetitorName`).
+    pub name: String,
     /// +0x268: the team (`GetCompetitorTeam`).
     pub team: i32,
     /// +0x9c: the kind (2 = an AI-driven car; `FUN_006bf190` reads the cop flag only for those).
