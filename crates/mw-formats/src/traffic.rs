@@ -162,7 +162,7 @@ impl TrafficLaneData {
             if n > 4096 {
                 return Err(bad(format!("import list of {n}")));
             }
-            Ok((0..n).map(|k| res.import_at((ptr + 8 * k) as u32)).collect())
+            Ok((0..n).map(|k| u32::try_from(ptr + 8 * k).ok().and_then(|o| res.import_at(o))).collect())
         };
         let flows = imports(r.u32(0x10)? as usize, r.u32(0x14)? as usize)?;
         let flow_types = imports(r.u32(0x18)? as usize, r.u32(0x1C)? as usize)?;

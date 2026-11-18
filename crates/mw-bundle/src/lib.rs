@@ -233,6 +233,10 @@ impl Bundle {
             stream_names,
         };
         r.bytes(0, HEADER_SIZE)?;
+        // The whole table must be in `data` before reserving room for it: a corrupt count would otherwise abort
+        // on allocation instead of returning an error.
+        let table_len = (header.resource_count as usize).saturating_mul(ENTRY_SIZE);
+        r.bytes(header.resource_entries_offset as usize, table_len)?;
 
         let mut entries = Vec::with_capacity(header.resource_count as usize);
         for i in 0..header.resource_count as usize {
@@ -255,7 +259,12 @@ impl Bundle {
     /// Read only the header and resource table, without loading resource data.
     pub fn read_toc(path: impl AsRef<Path>) -> Result<(Header, Vec<ResourceEntry>)> {
         let mut f = std::fs::File::open(path)?;
+        let file_len = f.metadata()?.len();
         Self::read_toc_with(|offset, len| {
+            // Past the end of the file (a corrupt table size): fail before allocating `len` bytes.
+            if offset.saturating_add(len as u64) > file_len {
+                return Err(std::io::ErrorKind::UnexpectedEof.into());
+            }
             f.seek(std::io::SeekFrom::Start(offset))?;
             let mut buf = vec![0; len];
             f.read_exact(&mut buf)?;
@@ -269,7 +278,12 @@ impl Bundle {
     ) -> Result<(Header, Vec<ResourceEntry>)> {
         let mut head = read(0, HEADER_SIZE)?;
         let r = Reader(&head);
-        let end = r.u32(0x10)? as usize + r.u32(0x0C)? as usize * ENTRY_SIZE;
+        let (entries_at, count) = (r.u32(0x10)? as usize, r.u32(0x0C)? as usize);
+        let end = count.checked_mul(ENTRY_SIZE).and_then(|n| n.checked_add(entries_at)).ok_or(Error::Truncated {
+            offset: HEADER_SIZE,
+            needed: usize::MAX,
+            len: head.len(),
+        })?;
         if end > HEADER_SIZE {
             head.extend(read(HEADER_SIZE as u64, end - HEADER_SIZE)?);
         }
@@ -334,11 +348,11 @@ impl Bundle {
             return Ok(raw.to_vec());
         }
         let mut out = Vec::with_capacity(expected);
-        flate2::read::ZlibDecoder::new(raw).read_to_end(&mut out).map_err(|source| Error::Decompress {
-            id: entry.id,
-            chunk,
-            source,
-        })?;
+        // One byte past `expected` is enough to report a size mismatch; a corrupt stream can't inflate without bound.
+        flate2::read::ZlibDecoder::new(raw)
+            .take(expected as u64 + 1)
+            .read_to_end(&mut out)
+            .map_err(|source| Error::Decompress { id: entry.id, chunk, source })?;
         if out.len() != expected {
             return Err(Error::SizeMismatch { id: entry.id, chunk, got: out.len(), expected });
         }
@@ -432,5 +446,71 @@ impl<'a> Reader<'a> {
     }
     pub fn f32_array<const N: usize>(&self, o: usize) -> Result<[f32; N]> {
         Ok(self.u32_array::<N>(o)?.map(f32::from_bits))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A one-resource uncompressed PC bundle: header, entry table at 0x70, chunk 0 at 0xC0.
+    fn bundle(chunk0: &[u8], import_count: u16) -> Vec<u8> {
+        let mut d = vec![0u8; 0xC0];
+        d[0..4].copy_from_slice(MAGIC);
+        d[4..6].copy_from_slice(&5u16.to_le_bytes());
+        d[6..8].copy_from_slice(&1u16.to_le_bytes());
+        d[0x0C..0x10].copy_from_slice(&1u32.to_le_bytes());
+        d[0x10..0x14].copy_from_slice(&(HEADER_SIZE as u32).to_le_bytes());
+        d[0x14..0x18].copy_from_slice(&0xC0u32.to_le_bytes());
+        let e = HEADER_SIZE;
+        d[e..e + 8].copy_from_slice(&7u64.to_le_bytes());
+        d[e + 8..e + 0xC].copy_from_slice(&(chunk0.len() as u32).to_le_bytes());
+        d[e + 0x40..e + 0x42].copy_from_slice(&import_count.to_le_bytes());
+        d.extend_from_slice(chunk0);
+        d
+    }
+
+    #[test]
+    fn synthetic_bundle_loads() {
+        let b = Bundle::from_bytes(bundle(&[1, 2, 3, 4], 0)).unwrap();
+        assert_eq!(b.load(&b.entries[0]).unwrap().chunks[0], [1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn huge_resource_count_is_an_error_not_an_abort() {
+        let mut d = bundle(&[], 0);
+        d[0x0C..0x10].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(matches!(Bundle::parse_toc(&d), Err(Error::Truncated { .. })));
+        let res = Bundle::read_toc_with(|o, len| {
+            let o = o as usize;
+            d.get(o..o.saturating_add(len)).map(<[u8]>::to_vec).ok_or(std::io::ErrorKind::UnexpectedEof.into())
+        });
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn read_toc_rejects_table_past_file_end() {
+        let mut d = bundle(&[], 0);
+        d[0x0C..0x10].copy_from_slice(&u32::MAX.to_le_bytes());
+        let path = std::env::temp_dir().join(format!("mw-bundle-toc-{}.bndl", std::process::id()));
+        std::fs::write(&path, &d).unwrap();
+        let res = Bundle::read_toc(&path);
+        std::fs::remove_file(&path).ok();
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn zlib_chunk_larger_than_declared_is_a_size_mismatch() {
+        use std::io::Write;
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+        z.write_all(&[0u8; 1 << 16]).unwrap();
+        let packed = z.finish().unwrap();
+        let mut d = bundle(&packed, 0);
+        d[0x24..0x28].copy_from_slice(&1u32.to_le_bytes()); // ZLIB_COMPRESSION
+        let e = HEADER_SIZE;
+        d[e + 8..e + 0xC].copy_from_slice(&16u32.to_le_bytes()); // declared: 16 bytes
+        d[e + 0x18..e + 0x1C].copy_from_slice(&(packed.len() as u32).to_le_bytes());
+        let b = Bundle::from_bytes(d).unwrap();
+        assert!(matches!(b.chunk(&b.entries[0], 0), Err(Error::SizeMismatch { got: 17, expected: 16, .. })));
     }
 }

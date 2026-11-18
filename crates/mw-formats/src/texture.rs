@@ -71,9 +71,9 @@ impl Texture {
 
     /// Byte size of one mip level of one slice.
     pub fn mip_size(&self, level: u32) -> usize {
-        let w = (self.width >> level).max(1) as usize;
-        let h = (self.height >> level).max(1) as usize;
-        let d = (self.depth >> level).max(1) as usize;
+        let w = self.width.checked_shr(level).unwrap_or(0).max(1) as usize;
+        let h = self.height.checked_shr(level).unwrap_or(0).max(1) as usize;
+        let d = self.depth.checked_shr(level).unwrap_or(0).max(1) as usize;
         match self.format.block_bytes() {
             Some(bb) => w.div_ceil(4) * h.div_ceil(4) * bb * d,
             None => w * h * d * self.format.element_size().unwrap_or(4),
@@ -87,7 +87,7 @@ impl Texture {
 
     /// Payload without the 0x80 alignment padding at the end.
     pub fn pixel_data(&self) -> &[u8] {
-        let n = (self.slice_size() * self.array_size as usize).min(self.data.len());
+        let n = self.slice_size().saturating_mul(self.array_size as usize).min(self.data.len());
         &self.data[..n]
     }
 

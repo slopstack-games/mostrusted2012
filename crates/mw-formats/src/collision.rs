@@ -110,7 +110,7 @@ impl PolygonSoupList {
         let [x1, y1, z1, _] = r.f32_array::<4>(0x10)?;
         let table = r.u32(0x20)? as usize;
         let count = r.u32(0x28)? as usize;
-        let mut soups = Vec::with_capacity(count);
+        let mut soups = Vec::with_capacity(count.min(4096));
         for i in 0..count {
             let s = r.u32(table + i * 4)? as usize;
             let (polys, verts) = (r.u32(s)? as usize, r.u32(s + 4)? as usize);

@@ -121,9 +121,11 @@ impl Ginsu {
 
     /// Sample range of grain `i`.
     pub fn grain(&self, i: usize) -> (usize, usize) {
-        let a = self.grains.get(i).copied().unwrap_or(0) as usize;
-        let b = self.grains.get(i + 1).copied().map_or(self.pcm.samples.len(), |b| b as usize);
-        (a.min(self.pcm.samples.len()), b.clamp(a, self.pcm.samples.len()))
+        let len = self.pcm.samples.len();
+        // Boundaries past the decoded audio (a truncated recording) clamp to its end.
+        let a = (self.grains.get(i).copied().unwrap_or(0) as usize).min(len);
+        let b = self.grains.get(i + 1).copied().map_or(len, |b| b as usize);
+        (a, b.clamp(a, len))
     }
 }
 
@@ -418,6 +420,16 @@ mod tests {
             grains: (0..=grains as u32).map(|g| g * 100).collect(),
             pcm: Pcm { channels: 1, sample_rate: 48000, samples: vec![0; grains * 100] },
         }
+    }
+
+    /// Grain boundaries past the decoded audio (a truncated recording) clamp to its end instead of panicking.
+    #[test]
+    fn grains_past_the_audio_clamp() {
+        let mut g = ginsu(1000.0, 3000.0, vec![0, 100, 400], 3);
+        g.pcm.samples.truncate(150);
+        assert_eq!(g.grain(1), (100, 150));
+        assert_eq!(g.grain(2), (150, 150));
+        assert_eq!(g.grain(5), (0, 150));
     }
 
     #[test]
