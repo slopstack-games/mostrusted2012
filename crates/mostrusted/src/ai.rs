@@ -5,15 +5,19 @@
 //! builds a test route along the AI road graph (`AIData`) from the player's spawn point (`route_from_ai_graph`) and places the
 //! opponents on it ahead of and beside the player. Opponent cars are loaded by the loader thread like the
 //! player's (`CarRequest::opponent`) and built by [`crate::drive::build_car`].
+//!
+//! The driving itself is the original's, ported in `mw-ai` (`mw_ai::Driver::tick`: racer state, crash recovery,
+//! `FillInput`) and fed by `ai_drive` through `ai_driver.rs`; the runtime keeps the route / path, the rubber band
+//! manager's inputs, the probes, the crash and reset handling, the freeze before go and the stop after the finish.
 
 use std::sync::Arc;
 
 use avian3d::prelude::*;
 use bevy::prelude::*;
 
-use crate::ai_driver::RubberBand;
 use crate::drive::{Car, CarBuild, CarControls, CarParts, Player};
 use crate::loader::{CarRequest, CarSpec, LoaderRequests};
+use mw_ai::RubberBand;
 
 pub struct AiPlugin {
     /// Opponent car bundles (`--ai`).
@@ -35,7 +39,9 @@ impl Plugin for AiPlugin {
             cops: Vec::new(),
         })
         .init_resource::<AiSettings>()
-        .add_systems(Startup, |game: Res<crate::Game>, mut s: ResMut<AiSettings>| s.0 = load_ai_config(&game.store))
+        .add_systems(Startup, |game: Res<crate::Game>, mut s: ResMut<AiSettings>| {
+            s.0 = crate::ai_driver::config_from_data(&game.store)
+        })
         .add_systems(Update, (race_from_event, setup_race, request_opponents, spawn_opponents, log_ai).chain())
         .add_systems(FixedUpdate, ai_drive.before(crate::drive::car_physics));
         if let Some(seconds) = self.test {
@@ -83,8 +89,14 @@ pub fn rubber_band_from_data(
     };
     let Some(Value::Array(opps)) = rbd.get(0x811f88a3) else { anyhow::bail!("{data}: no OpponentData") };
     let Some(Value::Struct(e)) = opps.get(k).or(opps.last()) else { anyhow::bail!("{data}: no opponent {k}") };
+    // `RaceBalancingProfile` +0x14, `RaceBalancingData` +0x10 / +0x14 (crash and time terms of the expected time):
+    // hashes not looked up; the expected time is not evaluated yet (no route speed factor), so they are unused.
     Ok(RubberBand {
-        max_speed: f(&prof, 0x02318b5f, 100.0) * pace * 0.44704,
+        max_speed_mph: f(&prof, 0x02318b5f, 100.0),
+        profile_14: 0.0,
+        pace,
+        crash_time: 0.0,
+        time_offset: 0.0,
         ahead: f(e, 0x01b78556, 100.0),
         behind: f(e, 0x849481e9, 100.0),
         late_x: f(e, 0xb11db112, 1.0),
@@ -135,14 +147,12 @@ pub struct AiRoute {
 /// Path node spacing (m): the game resamples a race path every 15 m (`FUN_004e95e0`).
 const NODE_SPACING: f32 = 15.0;
 
-/// A path node: distance along the route, ground-plane position, and the signed heading change there (rad,
-/// positive = left; the game's node +0x28 = wrap(heading of the next segment − heading of the previous one),
-/// `FUN_004e6a10`, whose sign is the other way round).
+/// A path node: distance along the route and ground-plane position (the game's path nodes' line point; the turns
+/// and tangents are computed by `mw_ai::Path::new`).
 #[derive(Debug, Clone, Copy)]
 pub struct RouteNode {
     pub s: f32,
     pub position: Vec2,
-    pub turn: f32,
 }
 
 impl AiRoute {
@@ -162,20 +172,7 @@ impl AiRoute {
         let flat = |v: Vec3| Vec2::new(v.x, v.z);
         let pts: Vec<(f32, Vec2)> =
             (0..count).map(|k| k as f32 * NODE_SPACING).map(|s| (s, flat(route.at(s).0))).collect();
-        route.nodes = (0..pts.len())
-            .map(|k| {
-                let (s, position) = pts[k];
-                let turn = match (k.checked_sub(1).map(|j| pts[j].1), pts.get(k + 1).map(|p| p.1)) {
-                    (Some(prev), Some(next)) => {
-                        let (a, b) = (position - prev, next - position);
-                        // With +X to the left of +Z, a turn to the left has a negative perp-dot.
-                        -(a.x * b.y - a.y * b.x).atan2(a.dot(b))
-                    }
-                    _ => 0.0,
-                };
-                RouteNode { s, position, turn }
-            })
-            .collect();
+        route.nodes = pts.into_iter().map(|(s, position)| RouteNode { s, position }).collect();
         route
     }
 
@@ -362,17 +359,24 @@ pub fn grid_along(route: &AiRoute, s0: f32, count: usize, gap: f32, half_width: 
         .collect()
 }
 
-/// The AI driver of one car (`ai_drive`).
+/// The AI driver of one car (`ai_drive`): the runtime's bookkeeping around a `mw_ai::Driver` (the original's racer
+/// state and recovery, run each fixed tick by `ai_drive`).
 #[derive(Component, Debug)]
 pub struct AiDriver {
     pub route: Arc<AiRoute>,
-    pub state: crate::ai_driver::DriverState,
+    /// The route as the game's path nodes (`ai_driver::path_of`), built on first use; `None` after a route change
+    /// ([`AiDriver::set_route`]) so the next tick rebuilds it and puts the driver on its nearest segment.
+    pub path: Option<Arc<mw_ai::Path>>,
+    /// The original's driver; created on the first tick (it needs the car's steering gains).
+    pub mw: Option<mw_ai::Driver>,
+    /// The opponent's rubber-band slot (`k` = player slot - 12).
+    pub slot: usize,
     /// The rubber band's schedule speed (m/s; `f32::MAX` without a race, as the game's schedule returns then).
     pub schedule_speed: f32,
-    /// The race's rubber band, which sets `schedule_speed` every tick.
+    /// This opponent's rubber band (the manager evaluates it for `slot`).
     pub rubber_band: Option<RubberBand>,
-    /// The path's corner speeds for this car (`ai_driver::corner_speeds`), built on first use.
-    pub corner_speeds: Option<Vec<f32>>,
+    /// The target speed the driver posted last tick (m/s, `f32::MAX` = none).
+    pub target_speed: f32,
     /// Distance along the route at the last tick, and the lateral offset from it (m, positive = left).
     pub progress: f32,
     pub lateral: f32,
@@ -395,6 +399,8 @@ pub struct AiDriver {
     /// A crashed car stays where it stopped (a cop: the game removes it later, `FUN_00522f40`) instead of the
     /// racers' crash reset.
     pub keep_wrecked: bool,
+    /// The path was just rebuilt: the driver moves to its nearest segment.
+    path_fresh: bool,
     touching: bool,
 }
 
@@ -410,13 +416,27 @@ pub struct ControlOverride {
 }
 
 impl AiDriver {
+    /// The driver is in the crash recovery (state 11).
+    pub fn recovering(&self) -> bool {
+        self.mw.as_ref().is_some_and(|d| matches!(d.state, mw_ai::State::Recovery(_)))
+    }
+
+    /// Drive a new route: the path is rebuilt on the next tick.
+    pub fn set_route(&mut self, route: Arc<AiRoute>) {
+        self.route = route;
+        self.path = None;
+        self.path_fresh = true;
+    }
+
     pub fn new(route: Arc<AiRoute>) -> Self {
         Self {
             route,
-            state: Default::default(),
+            path: None,
+            mw: None,
+            slot: 0,
             schedule_speed: f32::MAX,
             rubber_band: None,
-            corner_speeds: None,
+            target_speed: f32::MAX,
             progress: 0.0,
             lateral: 0.0,
             time: 0.0,
@@ -429,51 +449,15 @@ impl AiDriver {
             ignore: None,
             overrides: ControlOverride::default(),
             keep_wrecked: false,
+            path_fresh: false,
             touching: false,
         }
     }
 }
 
-/// The racer's `AIConfig` values (`ai_driver::AiConfig`), read from `GLOBALCONFIG.BNDL` when the race is set up.
+/// The racer's `AIConfig` values (`mw_ai::AiConfig`), read from `GLOBALCONFIG.BNDL` when the race is set up.
 #[derive(Resource, Default)]
-pub struct AiSettings(pub crate::ai_driver::AiConfig);
-
-/// Read `AIConfig` (010000000007fb0e) by field hash; a field the data lacks keeps the default (the data's value).
-fn load_ai_config(store: &mw_assets::AssetStore) -> crate::ai_driver::AiConfig {
-    use mw_formats::genesys::Value;
-    let mut c = crate::ai_driver::AiConfig::default();
-    let obj = match store.genesys_object(mw_bundle::ResourceId(0x010000000007fb0e)) {
-        Ok(o) => o,
-        Err(e) => {
-            warn!("AI: no AIConfig ({e}); using the defaults (the data's values)");
-            return c;
-        }
-    };
-    let f = |hash: u32, slot: &mut f32| {
-        if let Some(Value::Float(v)) = obj.get(hash) {
-            *slot = *v;
-        }
-    };
-    // Field hashes by instance offset (`mwtool genesys-types`).
-    f(0x54d23bfb, &mut c.nitrous_refill); // 0x10
-    f(0xbd6f7f45, &mut c.lane_rate); // 0x18
-    f(0x6f76d23f, &mut c.contact_time); // 0x28
-    f(0x492f7ddb, &mut c.corner_speed_scale); // 0xc8
-    f(0x27d18b55, &mut c.nitrous_keep_turn); // 0x124
-    f(0x63c7374a, &mut c.nitrous_start_turn); // 0x128
-    f(0xc064967b, &mut c.nitrous_min_tank); // 0x140
-    f(0xe9d45ba2, &mut c.min_look); // 0x144
-    f(0xd695c3bb, &mut c.nitrous_margin_mph); // 0x14c
-    f(0x619a7200, &mut c.stuck_end_radius); // 0x19c
-    f(0x51c3d831, &mut c.reset_time); // 0x1a0
-    f(0xae76a715, &mut c.reset_time_hidden); // 0x1a4
-    f(0x072ea6da, &mut c.corner_clearance); // 0x1ec
-    f(0x8744d6b3, &mut c.look_scan_time); // 0x1f0
-    f(0xc932b6d4, &mut c.sharp_turn); // 0x1f4
-    f(0xedfecd74, &mut c.min_look_time); // 0x1fc
-    info!("AI: AIConfig {c:?}");
-    c
-}
+pub struct AiSettings(pub mw_ai::AiConfig);
 
 /// `--test ai` state.
 #[derive(Resource, Default)]
@@ -780,6 +764,7 @@ fn spawn_opponents(
         }
         let mut driver = AiDriver::new(race.route.clone());
         driver.rubber_band = race.balancing.get(slot).copied().flatten();
+        driver.slot = slot.min(11);
         commands.entity(car).insert(driver);
         if event.is_some() {
             let name = spec.bundle.rsplit('/').next().unwrap_or(&spec.bundle).trim_end_matches(".BNDL").to_string();
@@ -807,6 +792,7 @@ pub(crate) fn ai_drive(
     spatial: SpatialQuery,
     event: Option<Res<crate::race::RaceState>>,
     progress: Query<&crate::race::RacerProgress>,
+    mut manager: Local<mw_ai::RubberBandManager>,
     mut cars: Query<(
         Entity,
         &mut Car,
@@ -823,24 +809,46 @@ pub(crate) fn ai_drive(
     if dt <= 0.0 {
         return;
     }
-    // Every car for the emergency brake (circle radius from the body's half extents), and the player's position.
-    let all: Vec<(Entity, crate::ai_driver::OtherCar)> = cars
+    // Every car as the AI code reads it (`mw_ai::CarState`: the emergency brake, the interaction, the recovery).
+    let all: Vec<(Entity, mw_ai::CarState)> = cars
         .iter()
-        .map(|(e, car, t, v, ..)| {
-            let fwd = t.rotation * Vec3::Z;
-            let h = Vec2::new(fwd.x, fwd.z).normalize_or(Vec2::Y);
-            let ext = car.params.body_half_extents;
-            let other = crate::ai_driver::OtherCar {
-                position: Vec2::new(t.translation.x, t.translation.z),
-                velocity: h * v.0.length(),
-                radius: ext.x.max(ext.z),
-            };
-            (e, other)
-        })
+        .map(|(e, car, t, v, ..)| (e, crate::ai_driver::car_state(e.to_bits() as u32 as i32, t, v.0, car)))
         .collect();
     let player = cars.iter().find(|c| c.7).map(|c| (c.0, c.2.translation));
     // The player's progress along each route (the race tracker's remaining distance, `world+0x2f47c` +0xdf0).
     let player_progress = |route: &AiRoute| player.map(|(_, p)| route.project(p, None, 0.0).0);
+    // The rubber band's manager frame (`FUN_00645c90`): one opponent slot is re-evaluated per tick, round robin
+    // (`mw_ai::RubberBandManager`); every driver then reads its slot's last speed. No expected-time correction
+    // (the route speed factor `FUN_00661eb0` is not ported).
+    if let Some((pe, ppos)) = player {
+        manager.frame(false, |k| {
+            let (me_e, ai, t) = cars.iter().find_map(|c| {
+                let ai = c.5?;
+                (ai.slot == k && ai.rubber_band.is_some() && c.0 != pe).then_some((c.0, ai, c.2))
+            })?;
+            let rb = ai.rubber_band?;
+            let (x, lead) = event
+                .as_ref()
+                .and_then(|ev| {
+                    let (me, them) = (progress.get(me_e).ok()?, progress.get(pe).ok()?);
+                    let total = ev.total_distance().max(1.0);
+                    Some(((1.0 - me.to_finish / total).clamp(0.0, 1.0), them.to_finish - me.to_finish))
+                })
+                .unwrap_or_else(|| {
+                    let ps = player_progress(&ai.route).unwrap_or(0.0);
+                    ((ai.progress / ai.route.length().max(1.0)).clamp(0.0, 1.0), ai.progress - ps)
+                });
+            let slot = mw_ai::RubberBandSlot {
+                lead,
+                gap: ppos.distance(t.translation),
+                progress: x,
+                race_time: ai.time,
+                expected_time: None,
+                has_car: true,
+            };
+            Some(rb.schedule(&slot))
+        });
+    }
     for (entity, mut car, mut t, mut v, mut w, ai, mut ctl, is_player, crashed) in &mut cars {
         let Some(mut ai) = ai else { continue };
         let ai = &mut *ai;
@@ -863,7 +871,7 @@ pub(crate) fn ai_drive(
                 t.rotation = rotation;
                 v.0 = rotation * Vec3::Z * mph * 0.44704;
                 w.0 = Vec3::ZERO;
-                ai.state = Default::default();
+                ai.mw = None;
                 ai.resets += 1;
                 info!(
                     "AI car {entity}: crash reset after {:.1} s ({}, by {:?}), rolling at {mph:.0} mph",
@@ -911,60 +919,72 @@ pub(crate) fn ai_drive(
         car.nitrous.add(settings.0.nitrous_refill * dt);
 
         let fwd = t.rotation * Vec3::Z;
-        // Probe rays at ±25° (`.data` 0x010c4234 = 0.436 rad) in the direction of travel, for the recovery.
-        let reverse = ai.state.recovering.is_some_and(|r| r.reverse);
-        let filter = SpatialQueryFilter::from_excluded_entities([entity, car.body_collider]);
-        let probes = [0.436f32, -0.436].map(|a| {
-            let dir = Quat::from_rotation_y(a) * if reverse { -fwd } else { fwd };
-            Dir3::new(dir)
-                .ok()
-                .and_then(|d| spatial.cast_ray(t.translation + Vec3::Y * 0.5, d, PROBE_LENGTH, true, &filter))
-                .is_some()
+        let me = crate::ai_driver::car_state(entity.to_bits() as u32 as i32, &t, v.0, &car);
+        let path = ai.path.get_or_insert_with(|| Arc::new(crate::ai_driver::path_of(&ai.route))).clone();
+        let ground = me.ground();
+        let driver = ai.mw.get_or_insert_with(|| {
+            mw_ai::Driver::new(path.nearest_segment(ground), car.params.ai_steer_pid, entity.to_bits())
         });
-        let others: Vec<_> = all.iter().filter(|o| o.0 != entity && Some(o.0) != ai.ignore).map(|o| o.1).collect();
-        let player_ahead = player.is_some_and(|(e, p)| e != entity && (p - t.translation).dot(fwd) > 0.0);
-        let ext = car.params.body_half_extents;
-        let corner = corner_speed(ai, s, v.0.length(), &car, &settings.0);
-        let input = crate::ai_driver::DriverInput {
+        // A new path (a route change): the driver goes to the nearest segment.
+        if ai.path_fresh {
+            driver.node = path.nearest_segment(ground);
+            ai.path_fresh = false;
+        }
+        // The recovery's probes (`FUN_00514ca0`): +25° / -25° off the body's forward axis (2 m), forward (4 m),
+        // backward (0.25 m); only the recovery reads them.
+        let mut probes = [false; 4];
+        if matches!(driver.state, mw_ai::State::Recovery(_)) {
+            let filter = SpatialQueryFilter::from_excluded_entities([entity, car.body_collider]);
+            let rays = [
+                (Quat::from_rotation_y(0.436) * fwd, 2.0),
+                (Quat::from_rotation_y(-0.436) * fwd, 2.0),
+                (fwd, 4.0),
+                (-fwd, 0.25),
+            ];
+            for (hit, (dir, len)) in probes.iter_mut().zip(rays) {
+                *hit = Dir3::new(dir)
+                    .ok()
+                    .and_then(|d| spatial.cast_ray(t.translation + Vec3::Y * 0.5, d, len, true, &filter))
+                    .is_some();
+            }
+        }
+        let others: Vec<mw_ai::CarState> =
+            all.iter().filter(|o| o.0 != entity && Some(o.0) != ai.ignore).map(|o| o.1).collect();
+        let local_player = player.filter(|(e, _)| *e != entity).and_then(|(pe, _)| all.iter().find(|o| o.0 == pe));
+        // The rubber band's schedule for a racer with one (the manager's pushed value), else the driver's own
+        // (a cop's, a scripted car's).
+        if ai.rubber_band.is_some() && player.is_some_and(|(e, _)| e != entity) {
+            ai.schedule_speed = manager.speeds[ai.slot.min(11)];
+        }
+        let input = mw_ai::RacerInput {
             dt,
-            route: &ai.route,
-            progress: s,
-            position: t.translation,
-            forward: fwd,
-            velocity: v.0,
-            radius: ext.x.max(ext.z),
-            steer_gains: car.params.ai_steer_pid,
-            schedule_speed: match ai.rubber_band {
-                Some(rb) if player.is_some_and(|(e, _)| e != entity) => {
-                    let gap = player.map_or(0.0, |(_, p)| p.distance(t.translation));
-                    // In a race: the race tracker's distances to the finish (`FUN_0063ef30`, `FUN_00654110`);
-                    // otherwise both cars' progress along the AI route.
-                    let race = event.as_ref().zip(player).and_then(|(ev, (pe, _))| {
-                        let (me, them) = (progress.get(entity).ok()?, progress.get(pe).ok()?);
-                        let total = ev.total_distance().max(1.0);
-                        Some(((1.0 - me.to_finish / total).clamp(0.0, 1.0), them.to_finish - me.to_finish))
-                    });
-                    let (x, lead) = race.unwrap_or_else(|| {
-                        let ps = player_progress(&ai.route).unwrap_or(0.0);
-                        ((s / ai.route.length().max(1.0)).clamp(0.0, 1.0), s - ps)
-                    });
-                    ai.schedule_speed = rb.speed(x, lead, gap);
-                    ai.schedule_speed
-                }
-                _ => ai.schedule_speed,
-            },
-            corner_speed: corner,
-            all_wheels_off: car.wheels_down() == 0,
-            contact: car.body_contact,
-            nitrous_fill: car.nitrous.fill(),
-            nitrous_burning: car.nitrous.burning,
-            player_ahead,
-            probes,
+            me: &me,
             others: &others,
+            local_player: local_player.map(|o| &o.1),
+            schedule_speed: ai.schedule_speed,
+            settings_speed: -1.0,
+            lane_target: None,
+            look_cap: None,
+            sweep: (false, false),
+            nitrous_mode_2: false,
+            interaction: *INTERACTION,
+            contact_partner: None,
+            probes,
+            visible: true,
         };
-        let out = ai.state.tick(&settings.0, &input);
-        *ctl = out.controls;
-        if ai.state.recovering.is_none() {
+        let out = driver.tick(&settings.0, &path, &input);
+        ai.target_speed = out.command.target_speed;
+        let c = out.controls;
+        // Steering: the game's is positive to the right, ours to the left.
+        *ctl = CarControls {
+            throttle: c.throttle,
+            brake: c.brake,
+            steer: -c.steering,
+            handbrake: c.handbrake,
+            nitrous: c.nitrous,
+            ..default()
+        };
+        if !ai.recovering() {
             let o = ai.overrides;
             if let Some(s) = o.steer {
                 ctl.steer = s.clamp(-1.0, 1.0);
@@ -995,47 +1015,11 @@ pub(crate) fn ai_drive(
             v.0 = Vec3::ZERO;
             w.0 = Vec3::ZERO;
             ai.resets += 1;
+            // The reset puts the driver back in the racer state (model decision: a fresh driver on the new segment).
+            ai.mw = None;
         }
     }
 }
-
-/// Length of the recovery's probe rays (m). Model decision: not read.
-const PROBE_LENGTH: f32 = 6.0;
-
-/// The corner speed limit at distance `s`. The game's physical racer has none (its target speed is the rubber
-/// band, lowered only by obstacles; the node speeds of `ai_driver::corner_speeds` feed only the virtual
-/// progress of a racer without a car), so this is `f32::MAX` unless `MW_AI_CORNER_SPEED=1` asks for the model
-/// decision: the game's uncalled braking look-ahead (0x004ff480 → `FUN_004e5270`): of the nodes within the
-/// stopping distance whose corner speed is below the current speed, the lowest one whose distance is within the
-/// braking distance to its speed (`FUN_00518520`, here without its aero term: a = 0, b = μ g).
-fn corner_speed(ai: &mut AiDriver, s: f32, speed: f32, car: &Car, cfg: &crate::ai_driver::AiConfig) -> f32 {
-    if !*CORNER_SPEED_RULE {
-        return f32::MAX;
-    }
-    let mu = car.params.tyres[1].pure_lateral.peak;
-    let speeds = ai.corner_speeds.get_or_insert_with(|| {
-        let pts: Vec<Vec2> = ai.route.nodes.iter().map(|n| n.position).collect();
-        let turn: Vec<f32> = ai.route.nodes.iter().map(|n| n.turn).collect();
-        // A race path's nodes have 5 m half-widths (`.rdata` 0x00fa8538): a full width of 10 m.
-        crate::ai_driver::corner_speeds(&pts, &turn, 10.0, car.params.top_speed, mu, cfg.corner_speed_scale)
-    });
-    let b = mu * 9.81;
-    let stop = crate::ai_driver::braking_distance(speed, 0.0, 0.0, b);
-    let mut limit = f32::MAX;
-    for (n, &v) in ai.route.nodes.iter().zip(speeds.iter()) {
-        let d = n.s - s;
-        if d <= 0.0 || d > stop {
-            continue;
-        }
-        if v < speed && d <= crate::ai_driver::braking_distance(speed, v, 0.0, b) {
-            limit = limit.min(v);
-        }
-    }
-    limit
-}
-
-static CORNER_SPEED_RULE: std::sync::LazyLock<bool> =
-    std::sync::LazyLock::new(|| std::env::var("MW_AI_CORNER_SPEED").is_ok_and(|v| v == "1"));
 
 /// Once a second: every AI car's position, speed, progress and lateral error; in `--test ai`, the result.
 fn log_ai(
@@ -1059,7 +1043,7 @@ fn log_ai(
             t.translation.y,
             t.translation.z,
             v.length() * 3.6,
-            ai.state.target_speed.min(999.0) * 3.6,
+            ai.target_speed.min(999.0) * 3.6,
             ai.progress,
             ai.lateral
         );
@@ -1088,3 +1072,9 @@ fn log_ai(
         exit.write(AppExit::Success);
     }
 }
+
+/// The racer interaction (`FUN_005050d0`: shunting, holding ahead of a faster car behind) is run when
+/// `FUN_0051b320` allows it; what enables it is not traced, so it is off unless `MW_AI_INTERACTION=1` (model
+/// decision).
+static INTERACTION: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| std::env::var("MW_AI_INTERACTION").is_ok_and(|v| v == "1"));

@@ -685,11 +685,10 @@ fn direct_route(from: Vec3, to: Vec3) -> AiRoute {
 }
 
 fn set_route(driver: &mut AiDriver, route: AiRoute) {
-    driver.route = Arc::new(route);
+    driver.set_route(Arc::new(route));
     driver.finished = None;
     driver.time = 0.0;
     driver.progress = 0.0;
-    driver.corner_speeds = None;
 }
 
 /// Every fixed tick, before the AI drivers: the ported police (`mw_police::Police::tick`: perception, wanted, the
@@ -991,7 +990,6 @@ fn cop_drive(
         let fwd = t.rotation * Vec3::Z;
         let me = car_state(t, v.0);
         let speed = v.0.length();
-        driver.state.lane_offset = 0.0;
         match mode {
             CopMode::Chase => {
                 // The world queries of the chase core (MODEL: physics rays for the game's nav-mesh queries).
@@ -1302,7 +1300,7 @@ fn log_police(
             cop.blocked,
             driver.progress,
             driver.route.length(),
-            driver.state.recovering.is_some(),
+            driver.recovering(),
             brain.lateral,
             cop.patrol.number(),
             match (cop.patrol.ghost(), traffic.as_ref()) {

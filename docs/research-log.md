@@ -11,6 +11,24 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+### 2026-11-18: the runtime's AI racers drive through `mw-ai`
+
+`ai.rs::ai_drive` now builds a `mw_ai::CarState` per car (`ai_driver::car_state`), the race route as a
+`mw_ai::Path` (`path_of`: the route's 15 m nodes, open clearances), and ticks one `mw_ai::Driver` per racer at the
+fixed step; the control record (steering negated: ours is positive left) goes to `CarControls`. `AIConfig` is read
+through `mw_ai::AiConfig::from_fields`. The rubber band runs through `RubberBandManager::frame` (one slot per tick,
+the other slots keep their last speed; `AiDriver::slot` = player slot - 12); no expected-time correction yet (the
+route speed factor `FUN_00661eb0` is not ported). Removed: the hand-written steering / look-ahead, target speed,
+nitrous, emergency brake, pedal controller, crash recovery, `Pid`, `OtherCar`, the runtime `RubberBand` and the
+`MW_AI_CORNER_SPEED` model rule (the game never calls it). Still the runtime's (named in `ai_driver.rs`): the
+route as the path (no racing line `FUN_004e70e0`, no lane planner `FUN_00502e20`: lane offset 0), the obstacle
+sweep's world geometry `FUN_004ff270` (`sweep` stays clear), the recovery's probes (rays from the body's centre:
++-25 deg 2 m, forward 4 m, backward 0.25 m, only while recovering), the reset placement, the done-racing stop, the
+end-of-route stop. Model decisions: the racer interaction (`FUN_005050d0`) is off unless `MW_AI_INTERACTION=1`
+(what enables it, `FUN_0051b320`, is not traced); `CarState.radius` = the body's larger half extent, `half_length` =
+its Z half extent, `visible` = true (the 3 s hidden reset never applies), the entity bits stand in for the player
+handle. Cops keep using `AiDriver` (their overrides apply after the tick, outside the recovery).
+
 ### 2026-11-18: event starts and jack spots run on the ported managers (`event_starts.rs`, `jackspots.rs`)
 
 The two modules no longer hold their own rules. **event_starts.rs**: `fill_inputs` fills `EventStartInputs` (every

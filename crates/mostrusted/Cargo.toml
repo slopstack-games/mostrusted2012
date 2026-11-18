@@ -12,6 +12,7 @@ mw-formats.workspace = true
 mw-assets.workspace = true
 mw-police.workspace = true
 mw-handling.workspace = true
+mw-ai.workspace = true
 mw-logic = { workspace = true, features = ["assets"] }
 anyhow.workspace = true
 clap.workspace = true
