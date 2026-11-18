@@ -446,6 +446,25 @@ pub enum Request {
     /// `LoadFeedbackGroup` / `UnloadFeedbackGroup` (0x0067de60 / 0x0067deb0 -> `FUN_007982e0` / `FUN_00798370` on
     /// UIM+0x32858): load or release the feedback group `id`.
     FeedbackGroup { load: bool, id: i32 },
+    /// `ClearAllChevrons` (0x00677e50 -> `FUN_006465a0` on G+0x26000): drop every race chevron.
+    ClearAllChevrons,
+    /// `AwardNitrous` (0x0067d910 -> `FUN_00658ad0` on G+0x264e0): add `amount` to the slot's nitrous
+    /// (`amount x .rdata 0xf9d474 x 0xfb77e4 x the slot's +0xc8`, both amounts clamped to 0..`0xfb77e4`).
+    NitrousAward { slot: i32, amount: f32 },
+    /// `SetInfiniteNitrous` (0x0067d960): reset the slot's nitrous record (`FUN_00658c90`), then byte +0xc0 = `on`.
+    NitrousInfinite { slot: i32, on: bool },
+    /// `ResetNitrousAmount` (0x0067d9f0 -> `FUN_0065de30`): reset the slot's nitrous record (`FUN_00658c90`).
+    NitrousReset { slot: i32 },
+    /// `InvalidateRaceTarget` (0x0067ae10 -> `FUN_00843170` on G+0x2ef4c): message 7 with the slot's +0xac vehicle.
+    InvalidateRaceTarget { vehicle: i32 },
+    /// `StopUsingIceCamera` (0x0067b890 -> `FUN_00843b40`(camera system, 0, id)): stop when `id` is the current ICE camera.
+    IceCameraStop { id: i32 },
+    /// `SetIceCameraPaused` (0x0067b8f0 -> `FUN_00843ad0`(camera system, 0, id, paused)).
+    IceCameraPaused { id: i32, paused: bool },
+    /// `SetSirenState` (0x0067c3d0 -> `FUN_00844300`(vehicles, vehicle, on, on)); only for a vehicle id != -1.
+    SirenState { vehicle: i32, on: bool },
+    /// `SetEngineState` (0x0067c430 -> `FUN_008444a0`(vehicles, vehicle, on)).
+    EngineState { vehicle: i32, on: bool },
     /// `RemoveMessage` (0x0067dce0 -> `FUN_007b6130` on UIM+0x17e0): drop the HUD message `id`.
     RemoveMessage { id: i32 },
     /// `StopSound` (0x0067e160 -> `FUN_007a2100` on UIM+0x2d2f0): stop the sound `id`.

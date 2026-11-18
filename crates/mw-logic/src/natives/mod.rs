@@ -54,6 +54,7 @@ pub mod lua_sim;
 #[cfg(test)]
 mod lua_tests;
 pub mod lua_widgets;
+pub mod lua_world;
 pub mod mode_machine;
 pub mod mode_view;
 pub mod modevm_view;
@@ -177,6 +178,7 @@ impl Registry {
         lua_misc::register(&mut r);
         lua_sim::register(&mut r);
         lua_feedback::register(&mut r);
+        lua_world::register(&mut r);
         lua_garage::register(&mut r);
         r
     }
