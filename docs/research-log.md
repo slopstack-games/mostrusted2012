@@ -11,6 +11,23 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+### 2026-11-18: Lua natives, career / profile batch (27; `natives/lua_career.rs`)
+
+Ported from the handlers (text.asm where the dump lacks them), reusing the hooks' state: `GetSelectedVehicleId` /
+`GetSelectedColourId` (rollout record +0x30 / +0x34 of the local slot; `CareerFields`, filled by the runtime; slot
+outside 0..12 gives 0, the original reads address 0x30), `SelectDefaultRollout` (+0x8f90, +0x8f8c = 0),
+`SetRolloutFromVehicleID`, `SetSelectedWorld`, `SetEventFromAvailableVehicles`, `SetTargetRecommendedEvent`,
+`SetCurrentRecommendedEvent`, `SetCarListForRecommendedEvent`, `SelectRecommendationDom` (index, 2),
+`SetFriendInviteId`, `SetJoinPlayerId`, `SetFriendCarouselViewModelActive`, `SetRecommendationTimeToBeat` (x 3000,
+64 bit), `ClearEntitlementJumpID`, `HasEasyDriveOptionBeenSeen`, `SetEasyDriveOptionSeen`.
+New Requests: `StoreTotalSp`, `MarkStoreItemAsSeen`, `UpdateCachedMostWantedList`, `GrantCloudCompeteAward`,
+`GrantAwardForSpeedwallMovement`, `TryToGiveAwardFirstInSpeedwall`, `Load/SaveOnlineSeenUnlocks`,
+`RemoveOnlineSeenUnlocksMenu`, `SetOnlineUnlockToSeen` (callees on G+0x14c08 not read: runtime side).
+Skipped (callees unread): `SetRecommendationId` / `TitleString` / `Name` (strncat into fixed buffers on the online
+object, capacity unknown), `GetPositionInCachedSpeedwall` (`FUN_006e0880`), `UpdateCachedSpeedwall`, `IsAssetUnlocked`
+(`FUN_0068cc30`), `TryDeleteItemFromAutologViewModel`. `SetFriendCarouselViewModelActive` also sets byte +0x15
+(not modelled, as the hooks).
+
 ### 2026-11-18: event starts and jack spots run on the ported managers (`event_starts.rs`, `jackspots.rs`)
 
 The two modules no longer hold their own rules. **event_starts.rs**: `fill_inputs` fills `EventStartInputs` (every

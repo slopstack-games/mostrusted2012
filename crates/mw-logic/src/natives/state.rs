@@ -36,6 +36,8 @@ pub struct LogicState {
     pub ui_manager: super::lua_career::UiManagerFields,
     /// G+0x2f418.
     pub challenges: super::lua_career::ChallengeFields,
+    /// Rollout record and online-object fields of the career Lua natives.
+    pub career: super::lua_career::CareerFields,
     /// The menus' managers (`lua_menus.rs`).
     pub menus: super::lua_menus::MenuFields,
     /// The remaining offline natives' fields (`lua_misc.rs`).
@@ -1027,4 +1029,25 @@ pub enum Request {
     /// `REBOOT` / `SYNCTIME` updates: the message `id` is posted with `function` (0x76aa50 / 0x69a650) on the
     /// game message queue `*0x010edb0c` +0x10 (flag 8 of the owner set while posting).
     PostQueueMessage { function: u32, id: u32 },
+    /// `StoreTotalSP` (0x7ea700 -> `FUN_0072a840`): the store's speed point total.
+    StoreTotalSp { sp: i32 },
+    /// `MarkStoreItemAsSeen` (0x7ea740 -> `FUN_00873a30`).
+    MarkStoreItemAsSeen { item: i32 },
+    /// `UpdateCachedMostWantedList` (0x7e9a50 -> `FUN_0071dfe0`; its string argument is read and dropped).
+    UpdateCachedMostWantedList,
+    /// `GrantCloudCompeteAward` (0x7ea1c0): `FUN_00736ad0`(`FUN_009ed180`(name), amount).
+    GrantCloudCompeteAward { name: String, amount: i32 },
+    /// `GrantAwardForSpeedwallMovement` (0x6801e0): `FUN_00736a70` on the object reached through the online
+    /// manager's (`*0x010edac8`+4) +0x6e6ec chain (when non-null).
+    GrantAwardForSpeedwallMovement,
+    /// `TryToGiveAwardForBeingFirstInSpeedwall` (0x680250): the same object, `FUN_00736a70` on G+0x2f3f8.
+    TryToGiveAwardFirstInSpeedwall,
+    /// `LoadOnlineSeenUnlocks` (0x67a5b0 -> `FUN_00703bf0` on G+0x14c08).
+    LoadOnlineSeenUnlocks { arg: i32 },
+    /// `SaveOnlineSeenUnlocks` (0x67a5f0 -> `FUN_006e2400` on G+0x14c08).
+    SaveOnlineSeenUnlocks { arg: i32 },
+    /// `RemoveOnlineSeenUnlocksMenu` (0x67a630 -> `FUN_006f44e0` on G+0x14c08).
+    RemoveOnlineSeenUnlocksMenu,
+    /// `SetOnlineUnlockToSeen` (0x67a660 -> `FUN_00703ca0`(unlock, value) on G+0x14c08).
+    SetOnlineUnlockToSeen { unlock: i32, value: i32 },
 }
