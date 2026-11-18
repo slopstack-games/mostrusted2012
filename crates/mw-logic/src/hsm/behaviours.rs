@@ -22,6 +22,8 @@ pub mod mode;
 pub mod mode2;
 #[path = "behaviours_online.rs"]
 pub mod online;
+#[path = "behaviours_progress.rs"]
+pub mod progress;
 #[path = "behaviours_race.rs"]
 pub mod race;
 #[path = "behaviours_racehud.rs"]
@@ -76,6 +78,7 @@ pub fn register(r: &mut Registry) {
     racehud::register(r);
     signin::register(r);
     online::register(r);
+    progress::register(r);
 }
 
 /// Engine state a behaviour reads, asked through [`Host::query`](super::Host::query). Answers are `u64`: bools are
@@ -509,6 +512,36 @@ pub enum Query {
     /// The local player's input-device record (`FUN_0047aa20`, id player+0x254) has byte +0x499 set
     /// (`HSM.INPUTDET`). Default false.
     InputDeviceDetected,
+    /// `CONSMUNLOCKS` (0x75bf00): the progression object's (G+0x2f3e4) state +0x44. Default 0.
+    ProgressionState,
+    /// `CONSMUNLOCKS`: pops the next pending unlock (`FUN_0067f430` on G+0x2f3e4: the first of its 11 unlock
+    /// queues at +0x1208 with an entry gives its oldest i16 id) and answers that id; `u64::MAX` = none pending.
+    /// Default none.
+    PopPendingUnlock,
+    /// `RCDONEVNTWNR` enter (0x74fa90): `FUN_004c22c0` (→ `FUN_00a82ca0`): in a session and its host. Default
+    /// false (offline).
+    OnlineHost,
+    /// `PLAYFEEDBACK` enter (0x74f000): the UI manager's feedback queue list (G+0x2f480 +0x17e0, `FUN_007b2940`)
+    /// has a queue named `queue` (exact compare). Default false.
+    FeedbackQueueExists { queue: String },
+    /// `PLAYFEEDBACK` enter: posts message `message` to the queue (`FUN_007b96b0`(queue, id, *0x10c5c34, 0, 0,
+    /// 0x10c5c70)) and answers the message's handle. Default 0x7fffffff (none).
+    PostFeedbackMessage { queue: String, message: i64 },
+    /// `PLAYFEEDBACK` update (0x73e7a0, `FUN_007aeb10`): a message of the queue has `handle` at +0x330. Default
+    /// false.
+    FeedbackMessageQueued { queue: String, handle: u64 },
+    /// `CARJACKERACT` (0x74dc30, `FUN_00769e40` on G+0x2f404 +0x10 with the local slot +0xa6b4): the rollout
+    /// manager's record of the local slot is present (`FUN_0068b490`: slot < 12, record +0x82ac + slot·0xd8, its
+    /// flag byte +4+slot) and its attribute record has the short +0x30 ≠ 0 and a zero short at its pointer +0x2c
+    /// (`FUN_0068b190`). Default false.
+    CarjackerActive,
+    /// `CARJACKERACT`: the local player's input record (`FUN_0047aa20` of player +0x254) has its word +0xf4 at 2.
+    /// Default false.
+    CarjackerButton,
+    /// `CARJACKERACT` (`FUN_00678960` on the vehicle of player record +0x2d8[+0x2ec]): the vehicle's car (+0x30 →
+    /// `FUN_0042e1b0` +0x2c) has a short +0x28 > 0 in its attribute record (`FUN_00643c10`) and its bit is clear in
+    /// the local slot's set (`FUN_006404d0`). Default false.
+    CarjackerCarNotCollected,
 }
 
 impl Query {
@@ -564,6 +597,8 @@ impl Query {
             Query::GameModeEvent | Query::GameModeMachine | Query::BlacklistRivalHandle => u64::MAX,
             Query::BlacklistRivalDistance => 0x7f7f_ffff,
             Query::ResultsSyncDelay => i64::MIN as u64,
+            Query::PopPendingUnlock => u64::MAX,
+            Query::PostFeedbackMessage { .. } => progress::NO_FEEDBACK_MESSAGE,
             _ => 0,
         }
     }
@@ -746,6 +781,15 @@ impl Query {
             Query::ClockTicks => "ClockTicks",
             Query::ResultsSyncDelay => "ResultsSyncDelay",
             Query::InputDeviceDetected => "InputDeviceDetected",
+            Query::ProgressionState => "ProgressionState",
+            Query::PopPendingUnlock => "PopPendingUnlock",
+            Query::OnlineHost => "OnlineHost",
+            Query::FeedbackQueueExists { .. } => "FeedbackQueueExists",
+            Query::PostFeedbackMessage { .. } => "PostFeedbackMessage",
+            Query::FeedbackMessageQueued { .. } => "FeedbackMessageQueued",
+            Query::CarjackerActive => "CarjackerActive",
+            Query::CarjackerButton => "CarjackerButton",
+            Query::CarjackerCarNotCollected => "CarjackerCarNotCollected",
         }
     }
 }

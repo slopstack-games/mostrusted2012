@@ -11,6 +11,34 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+### 2026-11-18: progression HSM behaviour types (`hsm/behaviours_progress.rs`; 170 types, 168 of 199 used codes)
+
+Method as the misc batches (string → registration `mov edx` = factory → vtable; `.bss` keys decoded from snapshot 1
+in base 40; callees from the dump or `text.asm`). Ported (5), sources in decomp.md "Behaviours ported, progression
+batch": `CONSMUNLOCKS` (x3, "Consume and Show Unlocks"), `RCDONEVNTWNR` (x3, online winner record; offline only
+EXIT), `PLAYFEEDBACK` (x2), `CARJACKERACT` (x1, in "Run Takedown Sequence"), `WRITETODATAS` (x3,
+`ActiveGameMode.ShowInGameMenu`; done in the logic by `Cx::write_data_state`, which republishes the view model).
+Callees named while tracing: `FUN_0067f430` pop next pending unlock (progression G+0x2f3e4, 11 rings at +0x1208);
+`FUN_007b2940` find feedback queue by name (UI manager +0x17e0); `FUN_007b96b0` post feedback message;
+`FUN_007aeb10` feedback message with handle still queued; `FUN_007b3410` clear feedback queue; `FUN_00744dd0` read the
+`WINNER` binding as int; `FUN_006eb640` / `FUN_006eb710` write the online event list's winner name / empty name;
+`FUN_006f66b0` send that list to the session; `FUN_00a82ca0` session host test; `FUN_00769e40` carjacker rollout
+record of a slot; `FUN_00678960` car not collected yet; `FUN_006b9d50` player +0x2c3 = 1; `FUN_00705190` progression
+event 0x19 (`FUN_007038b0` on G+0x2f418); `FUN_00774930` find data state by path; `FUN_009f8a00` set JSON member by
+path; `FUN_009f6670` / `FUN_009f1650` / `FUN_009f6610` replace / find / append a member.
+New Requests: ShowUnlock, RecordOnlineEventWinner, ClearFeedbackQueue, CarjackerActivated. New Queries:
+ProgressionState, PopPendingUnlock (pops: side effect), OnlineHost, FeedbackQueueExists, PostFeedbackMessage (posts,
+answers the handle), FeedbackMessageQueued, CarjackerActive, CarjackerButton, CarjackerCarNotCollected.
+Divergences: a missing feedback queue or data state is a null call in the original; the port exits / skips.
+Skipped: `DOONEVTSTRT` ("Do Online Event Starts", Freedrive Flow Online; 0xd0 B, update 0x75fbd0 2904 B over Blaze
+helpers) and `TELEPORTTOME` ("Teleport To Meetup", online meetup; update 0x752ba0 1722 B): online; `HSMDODRIFTS`
+("HSMDoDriftScoring" in "Drift Game Mode"; 0x1340-byte state, enter 0x75b2f0 and update 0x75e7e0 only in
+`text.asm`, speech callees `FUN_00ad82c0` / `FUN_00adaef0`): too large to trace this session.
+Open: the runtime carries out none of the new Requests / answers none of the Queries (defaults: no unlock popped,
+not host, no feedback queue); the unlock id → notification texts (unlock vtable +0x14 / +0x2c / +0x34, attribute
+tables at 0x10edac0) are not ported; `*0x10c5c34` / 0x10c5c70 (the post's arguments) unread; what the input word
++0xf4 is bound to. Captures that would confirm: a challenge completion (unlock popup), a takedown with the jack.
+
 ### 2026-11-18: event starts and jack spots run on the ported managers (`event_starts.rs`, `jackspots.rs`)
 
 The two modules no longer hold their own rules. **event_starts.rs**: `fill_inputs` fills `EventStartInputs` (every
