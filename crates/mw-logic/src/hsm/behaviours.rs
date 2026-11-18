@@ -30,6 +30,8 @@ pub mod race;
 pub mod racehud;
 #[path = "behaviours_rest.rs"]
 pub mod rest;
+#[path = "behaviours_scoring.rs"]
+pub mod scoring;
 #[path = "behaviours_signin.rs"]
 pub mod signin;
 #[path = "behaviours_ui.rs"]
@@ -82,6 +84,7 @@ pub fn register(r: &mut Registry) {
     online::register(r);
     progress::register(r);
     rest::register(r);
+    scoring::register(r);
 }
 
 /// Engine state a behaviour reads, asked through [`Host::query`](super::Host::query). Answers are `u64`: bools are
@@ -289,6 +292,14 @@ pub enum Query {
     CheckpointsLoaded,
     /// `CHECKPTS` update (0x75da20): the last checkpoint index was reached and the widget manager's state G+0x2f458 +0x85c is not 3. Default true.
     CheckpointsFinished,
+    /// `HSMDODRIFTS` enter update (`FUN_0074c370`): the drift gates are built (phase +0x1300 = 4). Default true.
+    DriftScoringReady,
+    /// `DOSMSHNGRB` enter update (`FUN_007612e0`): the items are placed (phase +0x1208 = 3). Default true.
+    SmashGrabReady,
+    /// `DOSMSHNGRB` update (`FUN_00761450`): 0 running, 1 finished through `WIN`, 2 through `LOSE`. Default 0.
+    SmashGrabEnd,
+    /// `DOSMSHNGRB` exit update (`FUN_0075ed20`): its phase +0x120c reached 2. Default true.
+    SmashGrabCleared,
     /// `EVENTSTARTS` update (0x755220): not in a vehicle (`FUN_006c2410`), slower than the event start's limit (`FUN_006ba3e0`) and `FUN_0074ad50` == 1: the player stands in an event start. Default false.
     EventStartTriggered,
     /// `DOBLACKLISTS` (+0x4c): 2 or 3 holds the machine in phase 0 and in its exit. Default 0.
@@ -660,6 +671,9 @@ impl Query {
             | Query::ModeAuthority
             | Query::CheckpointsLoaded
             | Query::CheckpointsFinished
+            | Query::DriftScoringReady
+            | Query::SmashGrabReady
+            | Query::SmashGrabCleared
             | Query::WorldRendering
             | Query::EasyGuideShown
             | Query::EasyGuideClosed
@@ -780,6 +794,10 @@ impl Query {
             Query::CheckpointCount => "CheckpointCount",
             Query::CheckpointsLoaded => "CheckpointsLoaded",
             Query::CheckpointsFinished => "CheckpointsFinished",
+            Query::DriftScoringReady => "DriftScoringReady",
+            Query::SmashGrabReady => "SmashGrabReady",
+            Query::SmashGrabEnd => "SmashGrabEnd",
+            Query::SmashGrabCleared => "SmashGrabCleared",
             Query::EventStartTriggered => "EventStartTriggered",
             Query::BlacklistMode => "BlacklistMode",
             Query::BlacklistSlot => "BlacklistSlot",

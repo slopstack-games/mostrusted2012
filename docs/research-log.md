@@ -11,6 +11,44 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+### 2026-11-18: drift and smash-and-grab scoring (`HSMDODRIFTS`, `DOSMSHNGRB`; `natives/drifts.rs`, `natives/smash_grab.rs`)
+
+Both skipped types of the last batch, ported as logic modules in the `CHECKPTS` pattern (behaviours in
+`hsm/behaviours_scoring.rs`: each slot is a `Request::DriftScoring` / `SmashGrabScoring(Slot)` the logic host runs
+at once; queries `DriftScoringReady`, `SmashGrabReady`, `SmashGrabEnd`, `SmashGrabCleared`; binding roots
+`DriftScoring` / `SmashScoring`). Code: drift enter 0x75b2f0 / update 0x75e7e0 from `text.asm`, the rest from the
+dump; S&G exit 0x73cf00 from `text.asm`; getters 0x76xxxx from `text.asm`. Details and every address: decomp.md
+"Drift scoring", "Smash-and-Grab scoring". 192 of 199 codes now.
+
+Findings: the score per tick is (clamp(body slip, 7.5°, 45°) / 45)^1.75 × 0.725 × speed × dt × √speed while the
+nitrous record's "Drifting" byte is set or the 0.5 s grace runs (`GameLogicConfig` +0x228..+0x240, unnamed
+fields); a gate passes 0.5 s after the last drifting contact of the car with the line between its apex points
+(raised 0.7 m, `.bss` 0x0117a760 read from snapshot 1), fails when crossed without drifting, when its trigger is
+entered first, or when a marker prop is hit; the drift's exit code (vehicle +0x2ac0 = drift +0x10) decides
+lose (1/2/3/11) / grace (5/6) / bank (other). The vehicle object's virtual +0x48 (vtable 0x01023758 read from
+snapshot 1, slot 0x920820) returns vehicle +0x2b90 = drift +0xe0, the body slip. Smash and Grab: plain items
+(trigger kind 0x1f, 50), high-value items (0x21, 150), billboards ('2' 'A' 'D', 'J' 'M' with pack 3; 250, taken
+through the collectables' `DAT_010c5c08`); each item gives 10 nitrous; the end is time up or every item taken,
+exits `WIN` / `LOSE` (snapshot keys). Neither mode's `GameMode` (2173009 / 2210000) is used by an event in the
+data (named only by `GameLogicConfig` fields), so no offline event reaches them.
+
+The runtime must feed: drift — `DriftInputs` (marker list 2173069 with apex positions and trigger boxes, event
+marker ids, medals, loader state, dt and clock flag, trigger manager +0x84e0, in-simulation, car box, speed,
+body slip, drift exit code, contact bytes, the nitrous "Drifting" byte, prop contacts by gate, wrong-way and route
+offset; the distance to the finish is read from `CheckpointInputs::cars`); S&G — `SmashGrabInputs` (event triggers
+with kinds, pack 3, time limit, medals, loader / prop states, clock flag, in-simulation, item contacts by trigger
+id, `last_billboard`). It must carry out `Request::Drift(DriftOut)` (loads, icons, apex props normal → damaged,
+score events by `ScoringConfig` offset, stop sequence 2211197), `Request::SmashGrab(SmashGrabOut)` (load, item
+placement / removal with trigger on / off, billboard icons, hide / restore other billboards, message 0x15, score
+actions), `NitrousAward` and the new `Request::SpeedPoints`. Player +0x348 (`score_348`) added.
+
+Model decisions: the gate line's narrow phase (`FUN_004b1cb0` against the body box) is a slab test against the
+runtime's car box; the gate list is capped at 42 (the instance's room; the code has no check); the loader's busy
+state is one input for both waits; message 0x15's queue (`FUN_0076a950`) and the trigger manager's +0x84e0 are
+not traced. Open: `DriftScoring.Multiplier` (a HUD text) is not registered by the behaviour; the reader of
+player +0x348; who enables either mode (`GameLogicConfig` +`05e2f917`). Captures that would confirm: none
+reachable offline (no event uses the modes).
+
 ### 2026-11-18: HSM behaviour types, last batch (`hsm/behaviours_rest.rs`, 22 types; 190 of 199 codes)
 
 Method as the earlier batches (name stub → `mov edx` factory → vtable; slot bodies from the dump or `text.asm`;

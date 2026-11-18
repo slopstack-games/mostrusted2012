@@ -1120,4 +1120,6 @@ mod flow_tests;
 #[cfg(test)]
 mod rest_tests;
 #[cfg(test)]
+mod scoring_tests;
+#[cfg(test)]
 mod tests;

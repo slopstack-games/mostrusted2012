@@ -25,6 +25,7 @@
 
 pub mod car_swap;
 pub mod checkpoints;
+pub mod drifts;
 pub mod entitlement_view;
 pub mod entitlements;
 pub mod event_starts;
@@ -71,6 +72,7 @@ pub mod players_view;
 pub mod progression;
 pub mod sequence_view;
 pub mod sign_in_view;
+pub mod smash_grab;
 pub mod state;
 pub mod table;
 pub mod transitions_view;

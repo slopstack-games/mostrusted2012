@@ -118,6 +118,8 @@ impl LogicHost {
             super::checkpoints::apply(&mut st, r);
             super::event_starts::apply(&mut st, r);
             super::car_swap::apply(&mut st, r);
+            super::drifts::apply(&mut st, r);
+            super::smash_grab::apply(&mut st, r);
         }
         let mut p = std::mem::take(&mut self.pages);
         pages::apply(&mut p, &self.state, &|lua| self.install_lua(lua), r);
@@ -228,6 +230,11 @@ impl hsm::Host for LogicHost {
             Q::CheckpointCount => super::checkpoints::count_query(&st),
             Q::CheckpointsLoaded => st.checkpoints.inputs.loaded as u64,
             Q::CheckpointsFinished => st.checkpoints.progress.finished as u64,
+            // `HSMDODRIFTS` / `DOSMSHNGRB` (`natives::drifts`, `natives::smash_grab`).
+            Q::DriftScoringReady => (st.drift.state.phase == 4) as u64,
+            Q::SmashGrabReady => super::smash_grab::entered(&st) as u64,
+            Q::SmashGrabEnd => super::smash_grab::end_code(&st),
+            Q::SmashGrabCleared => super::smash_grab::cleared(&st) as u64,
             // `EVENTSTARTS` (`natives::event_starts`): the update returned 1 this frame.
             Q::EventStartTriggered => st.event_starts.state.triggered as u64,
             // `HSMCARSWAPLO` (`natives::car_swap`): +0x74c8.
