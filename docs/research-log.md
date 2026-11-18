@@ -11,6 +11,40 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+### 2026-11-18: Lua natives, online batch (25 more, 325 of 385; `natives/lua_online.rs`)
+Handlers from `re/out/live/text.asm`, callees from the dump; answered as the offline original (no service). New
+`LogicState::online` (`OnlineLuaFields`), one new `Request::UpdateCachedSpeedwall`.
+- **Playlists** (PM = `*(G+0x2f3fc)`): `PlayCriterionPlaylist` / `PlayCustomPlaylist` / `EZPlayCustomPlaylist` are the same
+  calls as the hooks of those names (`FUN_006f6040` / `FUN_006f2730` on PM+0x14; the Lua ones read `lua_tonumber` via `_ftol2`, EZ does
+  `atoi - 1`) and reuse their Requests. The editing natives act on the custom-playlist store PM+0xc: playlists of 0x188 bytes from +0x350
+  (room for 10 before +0x13b0), items of 0x20 bytes (+0 id, +0x1c restriction; the +4..+0x18 resource lookups are functions of the id,
+  left to the runtime), count +0x140 (5), name +0x14c (0x19 characters), dirty byte +0x13f4, state +0x13b8. `SetCustomPlaylistItem` /
+  `Restriction` store id / value, `ClearCustomPlaylists` zeroes the ids of the first five items, `DeleteCustomPlaylists` resets the playlist
+  (name, +0x180, five empty items), `RenameCustomPlaylist` stores the name when it is valid UTF-8 and at most 0x19 characters; all set
+  the dirty byte. `SaveCustomPlaylists` (`FUN_006e0d80`): dirty and state >= 5 -> state 6 (save pending; the store's update is the runtime's).
+  Model decision: out-of-range playlist / item indices (memory writes in the original) do nothing.
+- **Online session** (`*0x0117e9f4 + 0x470`): a tree of objects; `Write{Int,Bool,Double,String}ToOnlineSession(name, value [, namespace])`
+  build a tag 3 (64-bit `_ftol2`) / 5 / 4 / 2 variable and put it, by `FUN_009f6670` (replace in place or append, lookup by field hash),
+  into the namespace (dotted path, objects created on the way, `FUN_007e1890`) or the root; `DeleteOnlineSessionVariable(name [, ns])`
+  removes the member (exact name, `FUN_009f16e0`; namespace not created); `DeleteSessionNamespace(path)` walks existing objects and removes the
+  last segment (`FUN_007dd660`). Missing string arguments read `"<invalid>"`. Model decision: a namespace segment that exists but is not an object fails.
+- **Recommendations** (G' = `*(*0x0117e9f4+0x2020)`): `SetRecommendationId` / `TitleString` `strncat` into the fixed strings at G'+0x2f620 /
+  +0x2f648 (appending, never clearing). Their data sizes (32 / 128) are inferred from the field layout (+0x2f6d0 is the next field), not
+  read: model decision. `SetRecommendationName`: converted to wide characters in a 0x11-character temporary, assigned to G'+0x2f4d0
+  (kept as the text cut to 16 characters; the target's capacity is unread). `RequestRecommendationData` = `FUN_007355b0`(0, 0) on
+  (G'.[0x2f454])+0x5a3c: with a cached index (+0x21 != -1) it answers it without work, otherwise it requests the "Recommends" document
+  (existing `Request::RefreshRecommendations`) and answers -1 until the runtime stores the index in `request_index`.
+  `IsRecommendationDownloadComplete(id)` pushes (+0x1c == -1) (`FUN_0071d250`; the argument is ignored).
+- **Telemetry** (G'+0x2a068): `SetTelemetryHooks` stores each non-empty string of six as a four-character code (`FUN_004c2a70`: exactly four
+  characters, big-endian, else 0) at +0x318..+0x32c (a missing argument is `"<invalid>"` = code 0); `SetTelemetryData(code, text)` appends the
+  pair while fewer than ten are held (+0x50); `ReportTelemetryLiteGameModeStart` only checks its arguments.
+- **Cached speedwall**: `GetPositionInCachedSpeedwall` runs `FUN_0081da70` (mode 0) on the cached document (PM+0x20+0x1918+8) with the race clock
+  GMM+0x2d28 (ticks) converted to ms (`FUN_0046d130`: / 3 / 1000): `LocalPosition` start, `speedwall.Items`, first item whose `TimeMs` is
+  above the clock, below 1 -> item count + 1; no document (offline) -> 0. Ported with the document as `Option<Json>` filled by the runtime.
+  `UpdateCachedSpeedwall` (`FUN_0067fbf0`) feeds the player's result into the document through the event record's type byte (0 time
+  event `FUN_006e08b0`, 1 score `FUN_006e0900`, both with the player's vehicle): a Request, no state here.
+- Skipped: none. Captures that would confirm: the original with a custom playlist edited (state 5 -> 6) and `RecommendationId` set twice.
+
 ### 2026-11-18: Lua natives, thirteenth batch: survey only (stopped before code; session ended)
 No native ported (300 of 385 stays; 226 / 255 offline, 50 / 100 online, 8 / 11 platform, 16 / 19 debug; 85 unported: 29 offline,
 50 online, 3 platform, 3 debug). Handlers read from `re/out/live/text.asm`, callees from the dump. Findings for the next port:

@@ -58,6 +58,9 @@ pub struct LogicState {
     pub hook_online: super::hooks_online::HookOnlineFields,
     /// The fields of the ninth twenty HSM hooks (`hooks_playlist.rs`).
     pub hook_playlist: super::hooks_playlist::HookPlaylistFields,
+    /// The online-area Lua natives' fields (`lua_online.rs`): custom playlists, session variables, recommendation
+    /// strings, telemetry, the cached speedwall.
+    pub online: super::lua_online::OnlineLuaFields,
     /// The screen-transition manager (`Transitions` root, `transitions_view.rs`).
     pub transitions: super::transitions_view::Transitions,
     /// The profile access bytes of G+0x2f454 (`GameLogicState.IsAccessingProfile`, `game_logic_view.rs`).
@@ -809,6 +812,9 @@ pub enum Request {
     RefreshRecommendations,
     /// `RefreshTopOfSpeedwallViewModel` (0x6768f0 -> `FUN_007357f0`(0) on (G+0x2f454)+0x6c8c).
     RefreshTopOfSpeedwall,
+    /// `UpdateCachedSpeedwall` (0x6802b0 -> `FUN_0067fbf0`): the cached speedwall document takes the local
+    /// player's result (`FUN_006e08b0` time event / `FUN_006e0900` score event, by the event record's type).
+    UpdateCachedSpeedwall,
     /// `ResetPlaylistScoreState` (0x676ac0): `FUN_006e32a0` on (G+0x2f3fc)+0x10 clears the playlist scores (+0x1b8,
     /// 12 records of 4 dwords from +0x1c0, +0x2d0, +0x328), `FUN_006bf460` on G+0x2f3dc clears byte +0x44b of
     /// each of the 12 player records (stride 0x7f0) whose byte +0x24d is set.
