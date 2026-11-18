@@ -1329,4 +1329,28 @@ pub enum Request {
     ShowMeetupPois { trigger: u32 },
     /// `SHOWMEETUPPO` exit (0x745eb0): both icons removed (`FUN_00790da0`).
     RemoveMeetupPois,
+    /// `PICKNEXTFDE` enter and update (`FUN_00705880` on the playlist runner GMM+0x14): step the playlist: the next
+    /// entry's event becomes G+0x2a9d8 ([`Query::OnlinePendingEvent`](crate::hsm::behaviours::Query)) and the
+    /// runner's index (+4) advances (reshuffling at the start, a new playlist when it is used up).
+    AdvancePlaylist,
+    /// `PICKNEXTFDE` update (`FUN_006e0b90` / `FUN_006e0b80` on GMM+0x1c): its word +4 = `event` (0 clears it).
+    SetPickedEvent { event: u32 },
+    /// `HSMSHAKEDOWN` update (0x74d280): the flag G+0x2f410 +0xa00 (the target time has passed), every frame.
+    SetShakedownOver { over: bool },
+    /// `HSMSHAKEDOWN` update: the local player's result (`FUN_006b9d00`: record +0x5b8 = `medal` (1..=3 the medal
+    /// + 1, 4 = no score), +0x5c8 the elapsed `ticks` (u64), byte +0x5d0 = 0).
+    SetShakedownResult { medal: u32, ticks: u64 },
+    /// `HSMSHAKEDOWN` update: GMM+0x2d28 (the game mode's elapsed ticks) = `ticks`.
+    SetGameModeElapsedTicks { ticks: u64 },
+    /// `TELEPORTTOME` update (0x752ba0), when the destination is refused: the online manager's byte +0x2e9a = 1
+    /// and G+0x2f70c = the game config's (`DAT_010edac0` +0x34 entry) +0xe4.
+    MeetupTeleportRefused,
+    /// `TELEPORTTOME` (update 0x752ba0, exit update 0x7464f0, exit 0x75d050): the local player's byte +0x2c8 (the
+    /// meet-up teleport is under way: the vehicle is held until the area has loaded).
+    SetMeetupTeleporting { on: bool },
+    /// `TELEPORTTOME` exit (0x75d050): the end message (a message object of vtable 0xfbd70c with flag bits 2 | 4
+    /// set, posted on `*0x010edb5c`+4 with its lock bit 8 held by `FUN_0076acd0`; its payload is not decoded);
+    /// the online telemetry record written before it (tags `MEMG`..., the playgroup size, the ignore count, the
+    /// two times) is not ported.
+    PostMeetupEndMessage,
 }

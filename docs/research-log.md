@@ -11,6 +11,42 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+## 2026-11-19: HSM behaviours `PICKNEXTFDE`, `HSMSHAKEDOWN`, `TELEPORTTOME` (`hsm/behaviours_last.rs`; 195 of 199 codes)
+
+Method as the earlier batches (name string in strings.csv -> `push` / `mov edx` stub -> factory -> vtable; slots from the
+dump where it has them, else `text.asm`; exit keys read from snapshot 1 and decoded with the base-40 key). The seven
+unported codes of `mwtool hsm --codes` were `CHKPNTSONLIN`, `DOONEVTSTRT`, `HSMSHAKEDOWN`, `INSAFEHOUSE` (2 states),
+`MANAGEREPAIR`, `PICKNEXTFDE`, `TELEPORTTOME` (2 states).
+- `PICKNEXTFDE` (0x77d1e0 / 0xfda268): ported whole (enter 0x757d70, update 0x7446e0, exit update 0x73e610; 3.0 s hold
+  `.rdata` 0xf92eb0). The playlist runner (GMM+0x14: `FUN_00705880` advance, `FUN_006e9a30` valid, `FUN_006e98a0`
+  current entry, `FUN_006e3190` list) stays on the host side as Requests / Queries. Model decision: the step is the
+  game clock's even when its running flag is clear (`Clock::game` None counts 0).
+- `HSMSHAKEDOWN` (0x77e100 / 0xfda9a4): ported whole (enter 0x7572f0, update 0x74d280, medal 0x743de0). Exits `BUSTED`
+  (.bss 0x117a588), `EVADED` (0x117a6d8), `NOSCORE` (0x117a708); tick constants 3e6 / 3.33333e-7 (0xf9f604 / 0xf9f608).
+  The event record's type-10 parameter (a mode word at +0xe4 and three or four values) is read through two queries and
+  converted in the port (mode 3: 64-bit / 3 / 1e6). Open: which event types carry it (none offline), and the debug
+  variable `HSMBehaviourHSMShakedownUpdate` (not ported).
+- `TELEPORTTOME` (0x77f1c0 / 0xfdb0f4): the state machine ported (enter 0x752b30, update 0x752ba0, exit update 0x7464f0,
+  exit 0x75d050; the 7.5 s countdown is `.bss` 0x117a028 = 22 500 000 ticks, live). Not ported, left to the host as one
+  query `MeetupTeleport` (random spawn of the trigger's list or random zone point, ground ray `FUN_004b3b20`,
+  orientation, `FUN_00844770`, the blocked-region test `FUN_007465d0`) and the online telemetry record of the exit
+  (tags written with `FUN_004c2900` / `4c2930`) plus the payload of the end message (object vtable 0xfbd70c on
+  `*0x010edb5c`).
+- Not ported, traced as far as stated: `CHKPNTSONLIN` (0x77b470 / 0xfd94c4; enter 0x75df10, update 0x75f4e0 1759 B, exit
+  update 0x75e000, slot 9 0x73c2e0): the online checkpoint race: per frame `FUN_0075e100`(slot) for 12 slots, a
+  countdown at +0xa4 against `.rdata` 0xfd3438, a message (vtable 0xfbdab8) with the tick count when it passes, the
+  players' finish records at player +0x5d8 + n × 0x7f0, GPS / minimap upkeep; only the update is in the dump, the helper
+  `FUN_0075e100` and the other slots are not. `DOONEVTSTRT` (0x77f730 / 0xfdb478; enter 0x755480, enter update 0x755720,
+  update 0x75fbd0 2904 B, exit update 0x760740, exit 0x74b140): the online event start, none of the slots is in the dump.
+  Both are online-only (nothing offline reaches them) and each needs its slots read from the disassembly in full:
+  the next batch. `INSAFEHOUSE` / `MANAGEREPAIR`: no name string in the exe (grep of strings.csv for the names and
+  for SAFEHOUSE / MANAGEREP), so the original runs the fallback, as before.
+- New Requests (runtime does not carry them out yet; logged): `AdvancePlaylist`, `SetPickedEvent`, `SetShakedownOver`,
+  `SetShakedownResult`, `SetGameModeElapsedTicks`, `MeetupTeleportRefused`, `SetMeetupTeleporting`,
+  `PostMeetupEndMessage`; Queries: `PlaylistValid`, `PlaylistWaitingForHost`, `PlaylistCurrentEvent`, `PlaylistFinished`,
+  `ShakedownParamKind`, `ShakedownParam`, `LocalPlayerInPursuit`, `LocalPlayerWrecked`, `MeetupLocalAtCheckpoint`,
+  `MeetupTeleport`, `MeetupAreaReady`. Tests: `hsm/last_tests.rs`.
+
 ## 2026-11-18: the map manager's POI list and the intro's waypoint POIs (`natives/pois.rs`, `poi.rs`)
 
 Ported from the code (decomp.md "Points of interest: the map manager's list"): UIM+0x14c50, 260 records of 0x60

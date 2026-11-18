@@ -1118,6 +1118,8 @@ pub mod behaviours;
 #[cfg(test)]
 mod flow_tests;
 #[cfg(test)]
+mod last_tests;
+#[cfg(test)]
 mod rest_tests;
 #[cfg(test)]
 mod scoring_tests;

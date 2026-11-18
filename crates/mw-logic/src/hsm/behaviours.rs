@@ -14,6 +14,8 @@ pub mod event;
 pub mod game;
 #[path = "behaviours_hud.rs"]
 pub mod hud;
+#[path = "behaviours_last.rs"]
+pub mod last;
 #[path = "behaviours_misc.rs"]
 pub mod misc;
 #[path = "behaviours_mode.rs"]
@@ -85,6 +87,7 @@ pub fn register(r: &mut Registry) {
     progress::register(r);
     rest::register(r);
     scoring::register(r);
+    last::register(r);
 }
 
 /// Engine state a behaviour reads, asked through [`Host::query`](super::Host::query). Answers are `u64`: bools are
@@ -643,6 +646,42 @@ pub enum Query {
     /// `SHOWMEETUPPO` update: the distance of the local player (`FUN_006b9ea0`) from the trigger's centre (the
     /// box `FUN_006e8ea0` +0x30), f32 bits. Default 50000.0 (`.rdata` 0x00fd6b5c, the enter's value).
     MeetupDistance { trigger: u32 },
+    /// `PICKNEXTFDE` (`FUN_006e9a30`): the selected playlist of the playlist runner (GMM+0x14; its list at GMM+0xc
+    /// +0x3c × 0x188 + 0x40) exists and has entries. Default false.
+    PlaylistValid,
+    /// `PICKNEXTFDE` update (0x7446e0): the runner's byte +0x7c (the other end picks; the host-side branch is the
+    /// one with it clear). Default false.
+    PlaylistWaitingForHost,
+    /// `PICKNEXTFDE` (`FUN_006e98a0`): the event of the playlist entry before the runner's index (+4), entry +0x1c
+    /// of 0x20 bytes; 0 = none. Default 0.
+    PlaylistCurrentEvent,
+    /// `PICKNEXTFDE` (0x7447e1..): the runner's index (+4) has reached the playlist's entry count (`FUN_006e3190`
+    /// +0x140). Default false.
+    PlaylistFinished,
+    /// `HSMSHAKEDOWN` enter (0x7572f0): the event record's parameter of type 10: its mode word `FUN_006e7610`
+    /// (record +0xe4); `u64::MAX` = the record has none. Default none.
+    ShakedownParamKind,
+    /// `HSMSHAKEDOWN` enter: word `index` (0..=3) of that parameter: with kind 3 the 64-bit value
+    /// `FUN_006e7630`(index) for 0..=2, else the 32-bit word at index × 4 of the parameter's data (+0x18).
+    /// Default 0.
+    ShakedownParam { index: u32 },
+    /// `HSMSHAKEDOWN` update (`FUN_006c2410` on the local player): its pursuit state is 1, or `FUN_006c2360` (state
+    /// 3, or the pursuit record's byte +0x112). Default false.
+    LocalPlayerInPursuit,
+    /// `TELEPORTTOME` update (`FUN_006ba290`, local player byte +0x23f: crashed / wrecked). Default false.
+    LocalPlayerWrecked,
+    /// `TELEPORTTOME` update (`FUN_006e9200`): `FUN_006e9150` of the local slot (the local player's vehicle is in
+    /// the meet-up's trigger). Default false.
+    MeetupLocalAtCheckpoint,
+    /// `TELEPORTTOME` update (0x752ba0, the destination and the teleport): the host picks the destination in the
+    /// meet-up trigger (a random spawn of the trigger's list, else a random point of the event's meet-up zone
+    /// snapped to the ground by a ray), refuses it when the position is inside the blocked region
+    /// (`FUN_007465d0`) unless `FUN_006402e0`, and otherwise teleports the local vehicle there (`FUN_00844770`);
+    /// the answer is 1 when it teleported, 0 when refused. Default 0.
+    MeetupTeleport { trigger: u32 },
+    /// `TELEPORTTOME` exit update (0x7464f0): `FUN_005470e0` and `FUN_0054b540`(destination, radius `.rdata`
+    /// 0xfa929c, 0) on `*0x010edadc`: the area around the destination is loaded. Default true.
+    MeetupAreaReady,
 }
 
 impl Query {
@@ -691,10 +730,13 @@ impl Query {
             | Query::NetAllPlayersConnected
             | Query::LocalVehicleReady
             | Query::CarSelectReady
-            | Query::CarSelectClosed => 1,
+            | Query::CarSelectClosed
+            | Query::MeetupAreaReady => 1,
             Query::AutologManifestIdle => 1,
             Query::CarSelectState => 2,
-            Query::TakeNetMessage { .. } | Query::LocalPlayerSlot | Query::LocalVehicle => u64::MAX,
+            Query::TakeNetMessage { .. } | Query::LocalPlayerSlot | Query::LocalVehicle | Query::ShakedownParamKind => {
+                u64::MAX
+            }
             Query::MeetupDistance { .. } => u64::from(rest::MEETUP_DISTANCE.to_bits()),
             Query::ServerOpState => 2,
             Query::ServerOpError => 1,
@@ -936,6 +978,17 @@ impl Query {
             Query::MeetupTrigger { .. } => "MeetupTrigger",
             Query::MeetupInCheckpoint { .. } => "MeetupInCheckpoint",
             Query::MeetupDistance { .. } => "MeetupDistance",
+            Query::PlaylistValid => "PlaylistValid",
+            Query::PlaylistWaitingForHost => "PlaylistWaitingForHost",
+            Query::PlaylistCurrentEvent => "PlaylistCurrentEvent",
+            Query::PlaylistFinished => "PlaylistFinished",
+            Query::ShakedownParamKind => "ShakedownParamKind",
+            Query::ShakedownParam { .. } => "ShakedownParam",
+            Query::LocalPlayerInPursuit => "LocalPlayerInPursuit",
+            Query::LocalPlayerWrecked => "LocalPlayerWrecked",
+            Query::MeetupLocalAtCheckpoint => "MeetupLocalAtCheckpoint",
+            Query::MeetupTeleport { .. } => "MeetupTeleport",
+            Query::MeetupAreaReady => "MeetupAreaReady",
         }
     }
 }
