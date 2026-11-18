@@ -21,6 +21,8 @@ the switch), sprint 906146 10/10. Logic: 120 behaviour types, 160 / 187 hooks, 1
   default (the HUD drawn from the logic's widgets needs the logic in every run). Pause menu needs the menu widget's
   native code first.
 - New Requests without a runtime handler: ActivateSpotting, CachePlayerScore, SwapGameMode, StartChallenge, ... (research log).
+- **Intermittent panic** (1 of 2 sprint runs, 2026-11-18): a command on a despawned entity right after a track unit
+  unloaded (`scratch/run.log` lost; no police / traffic reset / swap ran). Find the system (bevy `debug` feature names it).
 - Docs split (big docs) still queued.
 
 **Agents**: `sonnet` at medium effort for well-specified ports (a 15-native batch costs ~100k tokens vs ~300k for
