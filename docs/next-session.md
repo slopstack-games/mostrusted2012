@@ -11,7 +11,7 @@ waited on a ground ray the paused sim could not answer, research log "races with
 
 **Merged 2026-11-19**: PR #8 (bug hunt, checked on the install), sfx_player one-shot exit rule, the HUD
 feedback-message queue, the map manager's POI list / intro waypoints (both finished from agents' uncommitted work).
-No agent worktree is left.
+One worktree is left to remove: `agent-ae1caf9e7b2a6f6d8` (merged; the session ran inside it).
 
 **Open**:
 - **Feedback queue**: the song popup draws over the Easy Drive prompt (message HUD mode +0x8c not modelled); sounds /
