@@ -11,6 +11,31 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+### 2026-11-18: engine SubHarmoniser, Distortion and BandPass ported from the disassembly (rail: not yet measured)
+
+Task: the remaining suspect for the "skids / crashes loud and distorted for good" rail, the engine bank's
+sub-harmoniser stand-in (a square toggled at zero crossings, a telegraph by construction). Source:
+`re/out/live/text.asm` (the plug-ins lie in gaps of the dump), details in decomp.md "Engine sound".
+- **SubHarmoniser** (`0x00aad950`, init `0x00ab2000`): `|x|` on the half cycles where a counter mod Interval is 0;
+  state = last sample + counter, zeroed only at the plug-in's creation (nothing on teleport / pause / car change).
+  The data's Interval 1 (all cars checked: 911, XKR, Veyron, V12 Vantage) makes it a full-wave rectifier. Its
+  output never changes sign, so it cannot produce the user's sign-flipping rail; ours could.
+- **Distortion** (`0x00ab0e60`): model 2 (all data) = hard clip of `x · (d + 0.99999)` to ±1; 1 / 3 pass; model 0's
+  shaper is a CRT routine not identified (tanh stand-in, MODEL). Stateless. `MW_AUDIO_DIST=standin` = old stand-in.
+- **BandPass** (`FUN_00ce65b0` / `FUN_00cdfef0`): RBJ with Q = w / bandwidth capped at 20 and no floor (ours had
+  0.05), centre clamped to 0.001π..0.999π, skipped (passthrough, state zeroed) when the band does not fit.
+- Parameter types (`FUN_00ce30f0`): 1 float, 2 double, 5 int rounded, 0 / 6 int truncated, 7 bool.
+- **Measured**: offline `mwtool engine-sound` RMS unchanged (911 −13.7, XKR −14.5 dBFS) but the rectifier adds
+  DC (911 +0.045, XKR +0.083; was ~0). The original's own capture (`ref/xkr_launch/audio.wav`) has DC +0.0024 at
+  −18.6 dBFS RMS: something downstream in the original (the Bus_Routing buses we do not model, or the output)
+  must remove it. Open: find that stage before trusting the engine level / limiter headroom.
+- Baseline taps (muted, old code): `--hsm-event 462174 --auto-start 1 --test race` and `--test drift`: no rail
+  (vehicle bank peak ≤ 0.62 after its limiter); the tap is silent while the AI drives the player car in the race
+  (64–287 s), so it cannot meter a race. `--race 462174 --test race` stalled at a `SimPause { paused: true }` on
+  this master (left alone).
+- Stopped here (session ended): the live A/B from the null sink (`scratch/live.sh`, `scratch/livestat.py` in
+  the worktree) was not run to the end, so whether the rail is gone is unconfirmed.
+
 ### 2026-11-18: event starts and jack spots run on the ported managers (`event_starts.rs`, `jackspots.rs`)
 
 The two modules no longer hold their own rules. **event_starts.rs**: `fill_inputs` fills `EventStartInputs` (every

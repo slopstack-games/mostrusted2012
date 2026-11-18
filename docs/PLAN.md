@@ -392,8 +392,8 @@ Unlocks names, tuning and rules. Can run in parallel with M1.
    tick), gear-change sequences on the game's shift clock with their RPM kick / shunt / power-cut effects, the
    rev limiter only in the top two gears, harmonics from the firing frequency
    × cylinders, Ginsu RPM glide 33 ms, Peaking EQ confirmed RBJ (linear gain), per-car DspParam Frequency / send
-   overrides, A/B env switches (`MW_AUDIO_DRY`, `_NO_DIST`, `_NO_SUB`, `_NO_EQ`, `_DIST=raw`, `_RPM_LINEAR`).
-   Still open: the Distortion and SubHarmoniser laws (their code is not in the decompilation: stand-ins), the
+   overrides, A/B env switches (`MW_AUDIO_DRY`, `_NO_DIST`, `_NO_SUB`, `_NO_EQ`, `_DIST=standin`, `_RPM_LINEAR`).
+   Still open: Distortion model 0's shaper (unused by the data; models 1–3 and the SubHarmoniser are ported), the
    remaining DspParam indices, the state lists (Burnout / Drift / In_air / Reversing), bus items, the LFO items'
    writer, whether a sequence clamps its binding at `Binding_Max` (the XKR's first Ginsu set tops out at 5424),
    `EngineGainDueToPower`, reverb; a listening check of the new RPM curve.

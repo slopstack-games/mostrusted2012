@@ -1,18 +1,18 @@
 //! Signal processing for the game's mixer plug-ins (`Genesys.Gen.*DspPlugIn`).
 //!
-//! The data only names the plug-ins and their parameters; the maths here is standard (RBJ "Audio EQ
-//! Cookbook" biquads, Butterworth cascades, a tanh waveshaper, a flip-flop octave divider). Which formula
-//! the game uses for each is not known, so they are stand-ins chosen to match the parameter names and
-//! ranges seen in the data (research log 2026-10-04, "sound sequences"):
+//! The filters follow the game's designs (RBJ "Audio EQ
+//! Cookbook" biquads, Butterworth cascades); the Distortion and SubHarmoniser are ported from the disassembly
+//! (research log 2026-11-18). Parameter names and ranges from the data
+//! (research log 2026-10-04, "sound sequences"):
 //!
 //! | plug-in | parameters (data) | here |
 //! |---------|-------------------|------|
 //! | Peaking | Frequency (Hz), Gain (linear, 1 = flat: the neutral `20000 Hz, 1` instances), Q | RBJ peaking EQ |
 //! | HighShelf | Frequency, Gain (linear) | RBJ high shelf, S = 1 |
 //! | Low/HighPassButterworth | Frequency, Order (2 or 4) | cascaded biquads; 0 Hz / ≥ Nyquist = bypass |
-//! | BandPass | Bandwidth (Hz), Frequency | RBJ band-pass (0 dB peak), Q = f / bandwidth |
-//! | Distortion | Distortion (0.4 – 4), Model (2) | `tanh(d · x)` |
-//! | SubHarmoniser | Interval (1) | octave divider: a square wave toggled every 2^Interval zero crossings, scaled by the input envelope |
+//! | BandPass | Bandwidth (Hz), Frequency | as `FUN_00ce65b0`: RBJ band-pass (0 dB peak), Q = f / bandwidth ≤ 20, skipped when the band does not fit |
+//! | Distortion | Distortion (0.4 – 4), Model (2) | ported (`0x00ab0e60`): model 2 hard-clips `x · (d + 0.99999)` to ±1 |
+//! | SubHarmoniser | Interval (1) | ported (`0x00aad950`): `abs(x)` on the half cycles where a counter mod Interval is 0 |
 //! | Delay | Time (s), Feedback | feedback delay line; Time 0 = bypass |
 
 use std::f32::consts::{PI, TAU};
@@ -91,6 +91,15 @@ impl Biquad {
         self.set((1.0 + c) / 2.0, -(1.0 + c), (1.0 + c) / 2.0, 1.0 + alpha, -2.0 * c, 1.0 - alpha);
     }
 
+    /// `BandPassIir2` as the game runs it (`FUN_00ce65b0`, design `FUN_00cdfef0`): see
+    /// [`crate::dsp::band_pass_game`]. A filter the game skips passes its input and restarts from zero state.
+    pub fn band_pass_game(&mut self, sr: f32, freq: f32, bandwidth: f32) {
+        match crate::dsp::band_pass_game(sr, freq, bandwidth) {
+            Some([b0, b1, b2, a0, a1, a2]) => self.set(b0, b1, b2, a0, a1, a2),
+            None => *self = Self::IDENTITY,
+        }
+    }
+
     pub fn band_pass(&mut self, sr: f32, freq: f32, q: f32) {
         let Some((_, c, alpha)) = Self::omega(sr, freq, q) else { return self.bypass() };
         self.set(alpha, 0.0, -alpha, 1.0 + alpha, -2.0 * c, 1.0 - alpha);
@@ -109,59 +118,71 @@ impl Biquad {
     }
 }
 
+/// Coefficients `[b0, b1, b2, a0, a1, a2]` of `BandPassIir2` as the game sets them up (`FUN_00ce65b0`, design
+/// `FUN_00cdfef0`), or `None` when the game skips the filter (its buffer passes unchanged and its state is zeroed).
+/// Frequency and Bandwidth (Hz) become angles `2π f / sr` (`.rdata` 0x0106f5a8); the centre is clamped to
+/// 0.001π..0.999π, the bandwidth to at least 0.001π (0x0106f9c8 / 0x0106fa38). The filter runs while the band fits:
+/// bandwidth ≤ 2 (π − w) for w ≤ π/2, ≤ 2 w above (0x00f9c360 = 2). Design: RBJ constant-0-dB band-pass with
+/// Q = w / bandwidth capped at 20 (0x00fa3ba0) and no lower bound.
+pub fn band_pass_game(sr: f32, freq: f32, bandwidth: f32) -> Option<[f32; 6]> {
+    let k = TAU / sr;
+    let (lo, hi) = (0.001 * PI, 0.999 * PI);
+    let mut w = freq * k;
+    if w < lo {
+        w = lo;
+    }
+    if w > hi {
+        w = hi;
+    }
+    let mut b = bandwidth * k;
+    if b < lo {
+        b = lo;
+    }
+    let runs = (w > PI / 2.0 || b <= (PI - w) * 2.0) && (w <= PI / 2.0 || b <= w * 2.0);
+    if !runs {
+        return None;
+    }
+    let q = (w / b).min(20.0);
+    let alpha = w.sin() / (q + q);
+    Some([alpha, 0.0, -alpha, 1.0 + alpha, -2.0 * w.cos(), 1.0 - alpha])
+}
+
 /// Q values of the biquad sections of an even-order Butterworth filter.
 pub fn butterworth_q(order: u32) -> Vec<f32> {
     let n = order.clamp(2, 8) & !1;
     (0..n / 2).map(|k| 1.0 / (2.0 * (PI * (2 * k + 1) as f32 / (2 * n) as f32).cos())).collect()
 }
 
-/// Octave divider for `SubHarmoniserDspPlugIn`: follows the input's zero crossings (with hysteresis
-/// relative to its envelope) and toggles a square wave every 2^interval crossings, so its fundamental is
-/// `interval` octaves below the input's. The square is scaled by the input envelope.
+/// `SubHarmoniserDspPlugIn` ('SUBH', class descriptor `0x010d2410`; process `0x00aad950`, init `0x00ab2000`, both
+/// in a gap of the decompiled dump, read from the disassembly). Its state is the last input sample (+0x38) and a
+/// half-cycle counter (+0x3c), both zeroed only by the init (the plug-in's creation); nothing else writes them. On
+/// every sign change between the previous and the current sample (`x < 0` against `prev < 0`) the counter steps
+/// modulo `Interval` (an integer parameter, type 5: the data value rounded; 0 reads as 1), and the output is `|x|`
+/// while the counter is 0, else 0. With the data's `Interval` 1 that is a full-wave rectifier (|x| always); 2 passes
+/// every other half cycle. Bounded by the input: it cannot latch.
 #[derive(Debug, Clone, Default)]
 pub struct SubHarmoniser {
-    env: f32,
-    positive: bool,
-    crossings: u32,
-    state: f32,
-    smooth: f32,
-    /// Samples since the last zero crossing, and the length of the last half cycle.
-    since_flip: f32,
-    half_cycle: f32,
+    prev: f32,
+    count: u32,
 }
 
-/// Inputs whose fundamental is above this (half cycles shorter than `sr / 2f`) are not tracked: an engine
-/// sub-harmoniser follows firing orders, not hiss. The 911's per-car data high-passes one of its
-/// sub-harmoniser buses at 6.8 kHz, which reads as switching that bus off.
-const SUB_TRACK_MAX_HZ: f32 = 1500.0;
-
 impl SubHarmoniser {
-    pub fn process(&mut self, x: f32, interval: u32, sr: f32) -> f32 {
-        // ~10 ms envelope follower.
-        let k = 1.0 / (0.01 * sr);
-        self.env += (x.abs() - self.env) * k;
-        let thr = self.env * 0.25;
-        let flip = if self.positive { x < -thr } else { x > thr };
-        self.since_flip += 1.0;
-        if flip {
-            self.half_cycle = self.since_flip;
-            self.since_flip = 0.0;
-            self.positive = !self.positive;
-            self.crossings += 1;
-            if self.crossings >= 1 << interval.clamp(1, 3) {
-                self.crossings = 0;
-                self.state = if self.state > 0.0 { -1.0 } else { 1.0 };
-            }
+    #[inline]
+    pub fn process(&mut self, x: f32, interval: u32) -> f32 {
+        let n = interval.max(1);
+        if (self.prev < 0.0) != (x < 0.0) {
+            self.count = (self.count + 1) % n;
         }
-        // Round the square's edges (~2 ms) so the toggles don't click and the upper harmonics stay below
-        // the input's. Level: the input's RMS (mean |x| × π/2 is a sine's peak; × 1/√2 its RMS). The
-        // game's sub-harmoniser code is not in the decompiled exe, so this stays a stand-in.
-        self.smooth += (self.state - self.smooth) * (1.0 / (0.002 * sr)).min(1.0);
-        if self.half_cycle < sr / (2.0 * SUB_TRACK_MAX_HZ) {
-            return 0.0;
-        }
-        self.smooth * self.env * (std::f32::consts::FRAC_PI_2 * std::f32::consts::FRAC_1_SQRT_2)
+        self.prev = x;
+        if self.count == 0 { x.abs() } else { 0.0 }
     }
+}
+
+/// `Interval` as the plug-in stores it: parameter type 5, `ROUND` of the value (`FUN_00ce30f0`), as an unsigned
+/// divisor.
+#[inline]
+pub fn sub_interval(v: f32) -> u32 {
+    v.round_ties_even() as u32
 }
 
 /// Feedback delay line (`DelayDspPlugIn`).
@@ -188,21 +209,42 @@ impl Delay {
     }
 }
 
-/// `DistortionDspPlugIn`. The game's waveshaper is not in the decompiled code (research log 2026-10-04,
-/// "engine sound from the game code"); its parameter is a drive of 1e-5..1000 (default 1). This stand-in is
-/// a drive-compensated soft clip, `tanh(d · x) / d`: unity gain for small signals, so the strain buses
-/// (drive 4, fed at about -16 dB) add rasp without becoming as loud as the clean path, and transparent at
-/// the data's gentle drive of 0.4. [`distort_raw`] is the uncompensated `tanh(d · x)` (`MW_AUDIO_DIST=raw`).
+/// `DistortionDspPlugIn` ('Dst0', class descriptor `0x010d1930`; process `0x00ab0e60`, in a gap of the decompiled
+/// dump, read from the disassembly). Stateless. `Model` (+0x38, an integer parameter, type 0: truncated) picks the
+/// shaper: 2 = `FUN_00aae7a0`, a hard clip of `x · (Distortion + 0.99999)` to ±1 (`.rdata` 0x0100e950, 0x00f8f340,
+/// 0x00f8a820; a NaN product gives +1 as the `comiss` chain does); 1 and 3 leave the buffer untouched; any other
+/// model is `FUN_00aac300`, `f(d · x) / f(d)` with `f` the CRT routine `0x00edc7b2` (not identified; the data only
+/// uses model 2, so `tanh` stands in for it). `Distortion` is a float parameter, default 1, 1e-5..1000.
 #[inline]
-pub fn distort(x: f32, amount: f32) -> f32 {
-    let d = amount.max(1e-3);
-    (x * d).tanh() / d
+pub fn distort(x: f32, drive: f32, model: i32) -> f32 {
+    match model {
+        1 | 3 => x,
+        2 => {
+            let v = x * (drive + 0.99999);
+            if -1.0 > v {
+                -1.0
+            } else if 1.0 > v {
+                v
+            } else {
+                1.0
+            }
+        }
+        // MODEL: `f` of `FUN_00aac300` not identified; tanh.
+        _ => (x * drive).tanh() / drive.tanh(),
+    }
 }
 
-/// `tanh(d · x)`: the previous stand-in, kept for A/B listening.
+/// `Model` as the plug-in stores it: parameter type 0, truncated to an integer (`FUN_00ce30f0`).
 #[inline]
-pub fn distort_raw(x: f32, amount: f32) -> f32 {
-    (x * amount.max(0.0)).tanh()
+pub fn distortion_model(v: f32) -> i32 {
+    v as i32
+}
+
+/// The stand-in used before the port, `tanh(d · x) / d`, kept for A/B listening (`MW_AUDIO_DIST=standin`).
+#[inline]
+pub fn distort_standin(x: f32, amount: f32) -> f32 {
+    let d = amount.max(1e-3);
+    (x * d).tanh() / d
 }
 
 #[cfg(test)]
@@ -243,26 +285,55 @@ mod tests {
     }
 
     #[test]
-    fn sub_harmoniser_halves_the_frequency() {
+    fn sub_harmoniser_follows_the_code() {
         let sr = 48_000.0;
+        let sine = |i: usize| (TAU * 200.0 * i as f32 / sr).sin();
+        // Interval 1 (the data's): |x| on every sample.
         let mut s = SubHarmoniser::default();
-        let f = 200.0;
-        let out: Vec<f32> = (0..48_000).map(|i| s.process((TAU * f * i as f32 / sr).sin(), 1, sr)).collect();
-        // Count sign changes of the output over the last half second: 100 Hz square = 100 per second.
-        let changes = out[24_000..].windows(2).filter(|w| (w[0] > 0.0) != (w[1] > 0.0)).count();
-        assert!((95..=105).contains(&changes), "{changes}");
-        // Nothing to divide above the tracking limit (a 6.8 kHz high-passed input is hiss, not firing).
+        assert!((0..4800).all(|i| s.process(sine(i), 1) == sine(i).abs()));
+        // Interval 2: every other half cycle passes (rectified), the rest is 0; never negative.
         let mut s = SubHarmoniser::default();
-        let out: Vec<f32> = (0..48_000).map(|i| s.process((TAU * 3000.0 * i as f32 / sr).sin(), 1, sr)).collect();
-        assert!(out[24_000..].iter().all(|v| *v == 0.0));
+        let out: Vec<f32> = (0..4800).map(|i| s.process(sine(i), 2)).collect();
+        assert!(out.iter().all(|v| *v >= 0.0));
+        let zeros = out.iter().filter(|v| **v == 0.0).count();
+        assert!((2300..=2500).contains(&zeros), "{zeros}");
+        // Interval 0 reads as 1; a NaN input does not stick.
+        let mut s = SubHarmoniser::default();
+        assert_eq!(s.process(-0.5, 0), 0.5);
+        assert!(s.process(f32::NAN, sub_interval(1.0)).is_nan());
+        assert_eq!(s.process(0.25, 1), 0.25);
+        assert_eq!(sub_interval(1.4), 1);
+        assert_eq!(sub_interval(-3.0), 0);
     }
 
     #[test]
-    fn distortion_keeps_small_signals_at_unity() {
-        assert!((distort(0.01, 4.0) / 0.01 - 1.0).abs() < 0.01);
-        assert!((distort(0.01, 0.4) / 0.01 - 1.0).abs() < 0.001);
-        // Large signals compress: the drive only decides where.
-        assert!(distort(1.0, 4.0) < 0.26 && distort(1.0, 4.0) > 0.24);
-        assert!((distort_raw(1.0, 4.0) - 4f32.tanh()).abs() < 1e-6);
+    fn band_pass_follows_the_code() {
+        let sr = 48_000.0;
+        // The sub-harmoniser channel's band: 24 kHz wide around a 150 Hz firing tone runs, with Q ~0.006 (no floor).
+        let c = band_pass_game(sr, 150.0, 24_000.0).unwrap();
+        let w = TAU * 150.0 / sr;
+        let alpha = w.sin() / (2.0 * w / PI);
+        assert!((c[0] - alpha).abs() < 1e-5 && (c[3] - (1.0 + alpha)).abs() < 1e-5);
+        // A band wider than 2 (π − w) is skipped: identity, state reset.
+        assert!(band_pass_game(sr, 150.0, 1e9).is_none());
+        let mut bq = Biquad::IDENTITY;
+        bq.band_pass_game(sr, 150.0, 1e9);
+        assert_eq!(bq.process(0.3), 0.3);
+        // Above π/2 the limit is 2 w.
+        assert!(band_pass_game(sr, 20_000.0, 30_000.0).unwrap()[0] > 0.0);
+    }
+
+    #[test]
+    fn distortion_follows_the_code() {
+        // Model 2: hard clip of x · (d + 0.99999).
+        assert!((distort(0.1, 4.0, 2) - 0.499_999).abs() < 1e-6);
+        assert_eq!(distort(0.5, 4.0, 2), 1.0);
+        assert_eq!(distort(-0.5, 0.4, 2), -0.699_995);
+        assert_eq!(distort(f32::NAN, 1.0, 2), 1.0);
+        // Models 1 and 3 pass the input through.
+        assert_eq!(distort(3.0, 4.0, 1), 3.0);
+        assert_eq!(distort(3.0, 4.0, 3), 3.0);
+        assert_eq!(distortion_model(2.0), 2);
+        assert!((distort_standin(0.01, 4.0) / 0.01 - 1.0).abs() < 0.01);
     }
 }

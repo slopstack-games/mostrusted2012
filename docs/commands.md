@@ -331,7 +331,7 @@ tools/ram-sweep <out>         # crash-ai at several speeds / angles, both solves
 ## Audio
 
 Engine A/B switches (runtime and `mwtool engine-sound`): `MW_AUDIO_DRY=1` (plug-ins off), `MW_AUDIO_NO_DIST`,
-`MW_AUDIO_NO_SUB`, `MW_AUDIO_NO_EQ`, `MW_AUDIO_DIST=raw`, `MW_AUDIO_RPM_LINEAR=1` (audible RPM = physics RPM);
+`MW_AUDIO_NO_SUB`, `MW_AUDIO_NO_EQ`, `MW_AUDIO_DIST=standin` (the pre-port `tanh(d·x)/d` distortion), `MW_AUDIO_RPM_LINEAR=1` (audible RPM = physics RPM);
 `MW_AUDIO_METER=1` prints channel levels and plug-in chains (and other cars' voices), `MW_AUDIO_NO_FX=1` turns the
 sequences' effect items off, `MW_SOUND_TRACE=<file>` logs what the engine sound plays from.
 `MW_AUDIO_NO_BUS=1` leaves the game's bus gains out (`mw_assets::buses`; the tyre bank's old model gains come
