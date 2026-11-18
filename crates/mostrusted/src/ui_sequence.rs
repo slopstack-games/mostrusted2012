@@ -54,7 +54,8 @@ impl Plugin for UiSequencePlugin {
             Update,
             (receive, advance, camera.after(crate::camera::GameplayCamera), waves, draw, shots)
                 .chain()
-                .after(crate::logic::LogicTick),
+                .after(crate::logic::LogicTick)
+                .after(crate::feedback::FeedbackStep),
         );
     }
 }
@@ -67,12 +68,21 @@ pub struct Shown {
     pub key: String,
     pub seq: Arc<Sequence>,
     pub clock: f32,
+    /// A feedback message's texts (`feedback.rs`): its layouts' `UISequences.Params[#].Text1..3` (the message
+    /// record's three text buffers are the head of the 0x320-byte `StringSequenceItemParam` the sequence reads).
+    pub texts: Option<[String; 3]>,
+    /// Multiplies the opacity of its quads (a feedback play's fade in; 1 otherwise).
+    pub opacity: f32,
+    /// Bindings answered for this play before the logic's (`feedback.rs`'s model of unported widget getters).
+    pub bindings: Vec<(&'static str, BindValue)>,
 }
 
 #[derive(Resource, Default)]
 pub struct UiSequencePlayer {
     /// What the owner wants shown now ([`UiSequencePlayer::show`]).
     wanted: Vec<Shown>,
+    /// The feedback queues' plays ([`UiSequencePlayer::show_feedback`], `feedback.rs`).
+    feedback: Vec<Shown>,
     playing: Vec<Playing>,
     root: Option<Entity>,
     pool: QuadPool,
@@ -84,6 +94,11 @@ impl UiSequencePlayer {
     /// The sequences that play now (replaces the last frame's list; one left out stops).
     pub fn show(&mut self, wanted: Vec<Shown>) {
         self.wanted = wanted;
+    }
+
+    /// The feedback queues' sequences that play now (`feedback.rs`; drawn after the logic's).
+    pub fn show_feedback(&mut self, wanted: Vec<Shown>) {
+        self.feedback = wanted;
     }
 }
 
@@ -101,6 +116,10 @@ struct Playing {
     take_started: HashSet<usize>,
     /// Screenshots taken (`MW_UI_SEQUENCE_SHOTS`).
     shots_taken: u32,
+    /// [`Shown::texts`], [`Shown::opacity`].
+    texts: Option<[String; 3]>,
+    opacity: f32,
+    bindings: Vec<(&'static str, BindValue)>,
 }
 
 struct Loaded {
@@ -204,15 +223,15 @@ fn advance(
 ) {
     let view = view.as_deref();
     let dt = real.delta_secs().min(0.1);
-    let UiSequencePlayer { wanted, playing, .. } = &mut *player;
+    let UiSequencePlayer { wanted, feedback, playing, .. } = &mut *player;
     playing.retain(|p| {
-        let keep = wanted.iter().any(|w| w.key == p.key && w.seq.unique_id == p.seq.unique_id);
+        let keep = wanted.iter().chain(feedback.iter()).any(|w| w.key == p.key && w.seq.unique_id == p.seq.unique_id);
         if !keep {
             info!("ui sequence: {} of {} stops at {:.2} s", p.seq.unique_id, p.key, p.clock);
         }
         keep
     });
-    for w in wanted.iter() {
+    for w in wanted.iter().chain(feedback.iter()) {
         let p = match playing.iter_mut().find(|p| p.key == w.key && p.seq.unique_id == w.seq.unique_id) {
             Some(p) => p,
             None => {
@@ -244,11 +263,17 @@ fn advance(
                     failed_movie: None,
                     take_started: HashSet::new(),
                     shots_taken: 0,
+                    texts: None,
+                    opacity: 1.0,
+                    bindings: Vec::new(),
                 });
                 playing.last_mut().unwrap()
             }
         };
         p.clock = w.clock;
+        p.texts.clone_from(&w.texts);
+        p.opacity = w.opacity;
+        p.bindings.clone_from(&w.bindings);
         let clock = p.clock;
         // Conducted children: their own clock (with their jumps) from the item's start while the item runs.
         for (k, i) in p.seq.items.iter().enumerate() {
@@ -485,8 +510,25 @@ fn draw(
         if !active.is_empty() {
             let set: HashSet<usize> = active.into_iter().collect();
             let mut options = DrawOptions::new(Some(Box::new(move |i| set.contains(&i))), Some(&mut look.anim), now);
-            let mut lk = |path: &str, a: Option<&str>| logic_lookup(view, path, a);
+            let (texts, bindings) = (p.texts.as_ref(), &p.bindings);
+            let mut lk = |path: &str, a: Option<&str>| {
+                if let Some((_, v)) = bindings.iter().find(|(b, _)| *b == path) {
+                    return Some(v.clone());
+                }
+                if let Some(texts) = texts
+                    && path == "UISequences.Params"
+                {
+                    // The argument is `#].TextN` (the parser splits the path at the `[`).
+                    let n = a?.rsplit("Text").next()?.trim().parse::<usize>().ok()?;
+                    return Some(texts.get(n.checked_sub(1)?)?.clone().into());
+                }
+                logic_lookup(view, path, a)
+            };
+            let from = quads.len();
             quads.extend(look.scene.draw_with(screen, &mut lk, &mut options));
+            if p.opacity < 1.0 {
+                quads[from..].iter_mut().for_each(|q| q.colour[3] *= p.opacity);
+            }
         }
         textures.extend(look.textures.iter().map(|(k, v)| (*k, v.clone())));
     }

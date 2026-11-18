@@ -58,7 +58,7 @@ enum ProfileLoad {
 
 /// A finished load.
 enum Done {
-    Feedback(i64, Result<usize, String>),
+    Feedback(i64, Result<(usize, Vec<mw_assets::sequence::FeedbackMessageInfo>), String>),
     Screen(i64, bool),
     Layout(i64, Result<usize, String>),
     Profile(Option<crate::frontend::Profile>, AudioSettings),
@@ -78,6 +78,9 @@ pub struct Loads {
     profile: ProfileLoad,
     /// The settings read with the profile (applied on `ApplyProfileSettings`).
     settings: Option<AudioSettings>,
+    /// Feedback groups loaded (their `Messages`) or released (`None`) since the last
+    /// [`Loads::take_feedback_groups`]: the message queues' group slots (`feedback.rs`).
+    feedback_groups: Vec<(i64, Option<Vec<mw_assets::sequence::FeedbackMessageInfo>>)>,
 }
 
 impl Loads {
@@ -94,6 +97,7 @@ impl Loads {
             layouts: HashMap::new(),
             profile: ProfileLoad::Idle,
             settings: None,
+            feedback_groups: Vec::new(),
         }
     }
 
@@ -118,10 +122,10 @@ impl Loads {
                     e.since = frame;
                     self.spawn("mw-feedback", move |store| {
                         let id = u32::try_from(group).unwrap_or(0);
-                        Done::Feedback(
-                            group,
-                            store.feedback_group_sequences(id).map(|s| s.len()).map_err(|e| e.to_string()),
-                        )
+                        let got = store.feedback_group_sequences(id).map(|s| s.len()).and_then(|n| {
+                            Ok((n, store.feedback_group_messages(id)?))
+                        });
+                        Done::Feedback(group, got.map_err(|e| e.to_string()))
                     });
                 }
             }
@@ -130,6 +134,7 @@ impl Loads {
                     e.count = e.count.saturating_sub(1);
                     if e.count == 0 {
                         e.loaded = false;
+                        self.feedback_groups.push((*group, None));
                         info!("hsm: {frame:5} feedback group {group} released");
                     }
                 }
@@ -180,20 +185,35 @@ impl Loads {
         true
     }
 
+    /// The feedback groups loaded or released since the last call (see `feedback_groups`).
+    pub fn take_feedback_groups(&mut self) -> Vec<(i64, Option<Vec<mw_assets::sequence::FeedbackMessageInfo>>)> {
+        std::mem::take(&mut self.feedback_groups)
+    }
+
     /// Hand over the finished loads (logged with the frames they took).
     pub fn poll(&mut self, frame: u64) {
         while let Ok(done) = self.rx.try_recv() {
             match done {
                 Done::Feedback(group, got) => {
                     let Some(e) = self.feedback.get_mut(&group) else { continue };
-                    match got {
-                        Ok(n) => info!(
-                            "hsm: {frame:5} feedback group {group} loaded ({n} sequences, {} frames)",
-                            frame - e.since
-                        ),
-                        Err(err) => warn!("hsm: {frame:5} feedback group {group}: {err} (counts as loaded)"),
-                    }
+                    let messages = match got {
+                        Ok((n, messages)) => {
+                            info!(
+                                "hsm: {frame:5} feedback group {group} loaded ({n} sequences, {} messages, {} frames)",
+                                messages.len(),
+                                frame - e.since
+                            );
+                            messages
+                        }
+                        Err(err) => {
+                            warn!("hsm: {frame:5} feedback group {group}: {err} (counts as loaded)");
+                            Vec::new()
+                        }
+                    };
                     e.loaded = e.count > 0;
+                    if e.loaded {
+                        self.feedback_groups.push((group, Some(messages)));
+                    }
                 }
                 Done::Screen(asset, found) => {
                     let Some(e) = self.screens.get_mut(&asset) else { continue };

@@ -648,6 +648,11 @@ fn tick(
     host.frame = *frame;
     // The loads the logic asked for (feedback groups, screens, layouts, the profile) that ended.
     host.loads.poll(*frame);
+    // The feedback groups' messages are the message queues' group slots (`feedback.rs`).
+    for (group, messages) in host.loads.take_feedback_groups() {
+        let defs = messages.map(|m| m.iter().map(crate::feedback::message_def).collect());
+        host.logic.state.borrow_mut().feedback_queues.set_group(group, defs);
+    }
     // Screens: start the loads the page contexts asked for, hand over the finished ones.
     for id in std::mem::take(&mut host.logic.pages.wanted) {
         let (tx, store) = (screens.0.clone(), store.clone());
@@ -724,7 +729,7 @@ fn tick(
                 .iter()
                 .filter_map(|p| {
                     let seq = p.seq.clone()?;
-                    Some(crate::ui_sequence::Shown { key: format!("{:?}", p.owner), seq, clock: p.clock })
+                    Some(crate::ui_sequence::Shown { key: format!("{:?}", p.owner), seq, clock: p.clock, texts: None, opacity: 1.0, bindings: Vec::new() })
                 })
                 .collect(),
         );
@@ -1431,16 +1436,21 @@ impl Host for RuntimeHost {
                 }
                 None
             }
-            // No runtime system plays the HUD's feedback messages (hud.rs has no queue for `FUN_007b8100`), nor the
-            // feedback sequence manager UIM+0x30840 that `FUN_007b1060` skips (the cutscene skip is the
-            // `JumpOnButtonPress` of its own sequence): logged once, nothing built.
-            // `ShowFeedbackMessage` likewise (its definition `FUN_007985b0` and the named queues of UIM+0x17e0 have
-            // no runtime counterpart). The ICE camera of `SwitchToIceCamera` (message 4 on the camera queue) plays
-            // only as a sequence's camera item (`ui_sequence.rs`), not as a take started on its own; speech commands
+            // The message queues' clears (`feedback_queue.rs`, `FeedbackQueues::apply`).
+            Request::ClearHudMessageQueues | Request::ClearFeedbackQueues { .. } | Request::ClearFeedbackQueue { .. } => {
+                self.logic.state.borrow_mut().feedback_queues.apply(&r).then_some(Carry::Nothing)
+            }
+            // A feedback message's sounds, movie, speech and camera take (`FUN_007b9ee0`, `FUN_007b6040`): the
+            // runtime's sound systems are keyed by `MiscSound` fields and car / world codes, not these ids; no
+            // feedback movie, speech or camera take starts on its own (logged once). The feedback sequence manager
+            // UIM+0x30840 that `FUN_007b1060` skips (the crash and takedown cameras' sequences, started by
+            // `FUN_00661280` / `FUN_007dd5d0`) is not modelled (the cutscene skip is the `JumpOnButtonPress` of its
+            // own sequence). The ICE camera of `SwitchToIceCamera` (message 4 on the camera queue) plays only as a
+            // sequence's camera item (`ui_sequence.rs`), not as a take started on its own; speech commands
             // (UIM+0x32dd8) and the Origin overlay have no runtime system. All logged once.
-            Request::ShowForcedFeedbackMessage { .. }
+            Request::FeedbackMessageEffects { .. }
+            | Request::FeedbackMessageSound { .. }
             | Request::SkipSequence { .. }
-            | Request::ShowFeedbackMessage { .. }
             | Request::IceCameraStart { .. }
             | Request::RegisterSpeechCommand { .. }
             | Request::ShowOriginIgo => None,
@@ -1503,6 +1513,18 @@ impl Host for RuntimeHost {
             Query::WidgetTransitionStarted { group } => Some((*group == PRESS_START_GROUP) as u64),
             Query::TransitionFinished => Some(!self.transitioning as u64),
             Query::FullRate => Some(self.full_rate as u64),
+            // `PLAYFEEDBACK`'s queue, post and wait (`FUN_007b2940`, `FUN_007b96b0`, `FUN_007aeb10`; `feedback_queue.rs`).
+            Query::FeedbackQueueExists { queue } => {
+                Some(self.logic.state.borrow().feedback_queues.find_queue(queue).is_some() as u64)
+            }
+            Query::PostFeedbackMessage { queue, message } => {
+                Some(self.logic.state.borrow_mut().feedback_queues.post_named(queue, *message))
+            }
+            Query::FeedbackMessageQueued { queue, handle } => {
+                let st = self.logic.state.borrow();
+                let f = &st.feedback_queues;
+                Some(f.find_queue(queue).is_some_and(|q| f.queues[q].queued(*handle as u32)) as u64)
+            }
             Query::WorldShownFlag => Some(self.world_shown_flag as u64),
             // `PLAYSONGLIST`'s last fallback: the current mode's `MusicPlaylist` (decomp.md "Music").
             Query::DefaultEventSongList => {

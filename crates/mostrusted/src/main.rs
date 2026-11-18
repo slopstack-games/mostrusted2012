@@ -36,6 +36,7 @@ mod easydrive;
 mod event_card;
 mod event_starts;
 mod exhaust;
+mod feedback;
 mod flash_probe;
 mod frame_log;
 mod freeroam;
@@ -1148,6 +1149,7 @@ fn run(mut cli: Cli, game: GameDir) -> anyhow::Result<()> {
         })
         .add_plugins(event_card::EventCardPlugin)
         .add_plugins(ui_sequence::UiSequencePlugin)
+        .add_plugins(feedback::FeedbackPlugin)
         .add_plugins(ui_widgets::UiWidgetsPlugin)
         .add_plugins(gps::GpsPlugin)
         .add_plugins(game_text::GameTextPlugin)
