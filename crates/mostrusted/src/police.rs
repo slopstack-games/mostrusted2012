@@ -872,7 +872,7 @@ fn police_tick(
             if before == Role::Patrol
                 && let Some(tr) = traffic.as_mut()
             {
-                cop.patrol.leave(&mut Lanes { traffic: &mut **tr, cop: entity });
+                cop.patrol.leave(&mut Lanes { traffic: tr, cop: entity });
             }
             if after == Role::Patrol {
                 cop.patrol = PatrolMode::Find { fails: 0, wander: matches!(before, Role::Search | Role::GoTo { .. }) };
@@ -977,7 +977,7 @@ fn cop_drive(
         driver.overrides = Default::default();
         if crashed {
             if let Some(tr) = traffic.as_mut() {
-                cop.patrol.leave(&mut Lanes { traffic: &mut **tr, cop: entity });
+                cop.patrol.leave(&mut Lanes { traffic: tr, cop: entity });
             }
             continue;
         }
@@ -1014,8 +1014,8 @@ fn cop_drive(
                     cop: me,
                     target,
                     human: true,
-                    bust_meter: bust_meter,
-                    idle_input: idle_input,
+                    bust_meter,
+                    idle_input,
                     lateral: brain.lateral,
                     probes,
                 };
@@ -1127,7 +1127,7 @@ fn cop_drive(
                     half_length: car.params.body_half_extents.z,
                     random: patrol_random,
                 };
-                match cop.patrol.tick(&input, &mut Lanes { traffic: &mut **tr, cop: entity }) {
+                match cop.patrol.tick(&input, &mut Lanes { traffic: tr, cop: entity }) {
                     PatrolDrive::Stop => {
                         driver.schedule_speed = 0.0;
                         driver.overrides.throttle = Some(0.0);

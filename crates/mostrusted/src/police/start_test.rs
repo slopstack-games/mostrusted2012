@@ -325,7 +325,7 @@ pub(super) fn run_start_test(
                 v.0 = Vec3::ZERO;
                 w.0 = Vec3::ZERO;
                 cop.mode = CopMode::Patrol;
-                cop.patrol.leave(&mut Lanes { traffic: &mut **tr, cop: e });
+                cop.patrol.leave(&mut Lanes { traffic: tr, cop: e });
                 if let Some(b) = police.core.cop_mut(cop.slot as u32) {
                     b.role = Role::Patrol;
                     b.sight = Perception::default();
