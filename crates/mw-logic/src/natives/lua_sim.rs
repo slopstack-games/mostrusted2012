@@ -633,9 +633,9 @@ mod tests {
             s.players.local = Some(0);
         }
         assert_eq!(num(&call(&mut lua, "GetLocalPlayerCompetitorIndex", vec![])), 0.0);
-        assert_eq!(flag(&call(&mut lua, "IsCompetitorActive", vec![Value::Number(3.9)])), true, "truncated");
-        assert_eq!(flag(&call(&mut lua, "IsCompetitorActive", vec![Value::Number(1.0)])), false);
-        assert_eq!(flag(&call(&mut lua, "IsCompetitorActive", vec![Value::Number(99.0)])), false);
+        assert!(flag(&call(&mut lua, "IsCompetitorActive", vec![Value::Number(3.9)])), "truncated");
+        assert!(!flag(&call(&mut lua, "IsCompetitorActive", vec![Value::Number(1.0)])));
+        assert!(!flag(&call(&mut lua, "IsCompetitorActive", vec![Value::Number(99.0)])));
         assert_eq!(num(&call(&mut lua, "GetCompetitorTeam", vec![Value::Number(3.0)])), 5.0);
         assert_eq!(num(&call(&mut lua, "GetCameraTarget", vec![])), 0.0, "no target: the local slot");
         st(&host).players.camera_target = Some(3);
@@ -658,14 +658,14 @@ mod tests {
             st(&host).requests,
             [Request::CameraFov { set: true, fov: 0.5 }, Request::CameraFov { set: false, fov: 0.0 }]
         );
-        assert_eq!(flag(&call(&mut lua, "GetUseOverheadCamera", vec![])), false);
+        assert!(!flag(&call(&mut lua, "GetUseOverheadCamera", vec![])));
         st(&host).sim.overhead_camera = true;
-        assert_eq!(flag(&call(&mut lua, "GetUseOverheadCamera", vec![])), true);
+        assert!(flag(&call(&mut lua, "GetUseOverheadCamera", vec![])));
         st(&host).sim.units_metric = true;
-        assert_eq!(flag(&call(&mut lua, "AreUnitsMetric", vec![])), true);
-        assert_eq!(flag(&call(&mut lua, "ShouldLoadingScreenBeShowing", vec![])), false);
+        assert!(flag(&call(&mut lua, "AreUnitsMetric", vec![])));
+        assert!(!flag(&call(&mut lua, "ShouldLoadingScreenBeShowing", vec![])));
         st(&host).engine.loading_screen_showing = true;
-        assert_eq!(flag(&call(&mut lua, "ShouldLoadingScreenBeShowing", vec![])), true);
+        assert!(flag(&call(&mut lua, "ShouldLoadingScreenBeShowing", vec![])));
         call(&mut lua, "SetCarFrozen", vec![Value::Bool(true)]);
         assert_eq!(st(&host).players.car_frozen, 1.0);
         call(&mut lua, "SetCarFrozen", vec![Value::Bool(false)]);
@@ -758,7 +758,7 @@ mod tests {
             assert!(call(&mut lua, n, vec![Value::Number(1.0)]).is_empty(), "{n}");
         }
         assert!(st(&host).requests.is_empty());
-        assert_eq!(flag(&call(&mut lua, "IsFriendsUiOnScreen", vec![])), false);
+        assert!(!flag(&call(&mut lua, "IsFriendsUiOnScreen", vec![])));
         call(&mut lua, "StopTraffic", vec![]);
         call(&mut lua, "ResetTraffic", vec![]);
         call(&mut lua, "StartTraffic", vec![]);
@@ -771,12 +771,12 @@ mod tests {
             ]
         );
         st(&host).game_modes.story_mode = false;
-        assert_eq!(flag(&call(&mut lua, "IsStoryMode", vec![])), false);
+        assert!(!flag(&call(&mut lua, "IsStoryMode", vec![])));
         st(&host).game_modes.story_mode = true;
-        assert_eq!(flag(&call(&mut lua, "IsStoryMode", vec![])), true);
-        assert_eq!(flag(&call(&mut lua, "IsChallengeActive", vec![])), false);
+        assert!(flag(&call(&mut lua, "IsStoryMode", vec![])));
+        assert!(!flag(&call(&mut lua, "IsChallengeActive", vec![])));
         st(&host).game_modes.current_event = 7;
-        assert_eq!(flag(&call(&mut lua, "IsChallengeActive", vec![])), true);
+        assert!(flag(&call(&mut lua, "IsChallengeActive", vec![])));
         call(&mut lua, "SetRearViewMirrorRender", vec![Value::Bool(true)]);
         assert!(st(&host).sim.rear_view_mirror);
         call(&mut lua, "SetRearViewMirrorRender", vec![Value::Bool(false)]);
@@ -814,9 +814,9 @@ mod tests {
             s.players.local = Some(0);
         }
         let n = |v: f64| vec![Value::Number(v)];
-        assert_eq!(flag(&call(&mut lua, "IsRemoteCompetitor", n(2.0))), true);
-        assert_eq!(flag(&call(&mut lua, "IsRemoteCompetitor", n(0.0))), false);
-        assert_eq!(flag(&call(&mut lua, "IsRemoteCompetitor", n(5.0))), false);
+        assert!(flag(&call(&mut lua, "IsRemoteCompetitor", n(2.0))));
+        assert!(!flag(&call(&mut lua, "IsRemoteCompetitor", n(0.0))));
+        assert!(!flag(&call(&mut lua, "IsRemoteCompetitor", n(5.0))));
         assert_eq!(num(&call(&mut lua, "GetPlayerVehicleIndex", vec![])), 4.0);
         assert_eq!(num(&call(&mut lua, "GetPlayerVehicleIndex", n(2.0))), 9.0);
         assert_eq!(num(&call(&mut lua, "GetPlayerVehicleIndex", n(7.0))), -1.0);
@@ -844,15 +844,15 @@ mod tests {
         call(&mut lua, "SetPreEventSpeedwallPos", n(12.7));
         assert_eq!(st(&host).sim.speedwall_pos, 12);
         st(&host).sim.net_timer_state = 1;
-        assert_eq!(flag(&call(&mut lua, "IsNetworkTimerSyncing", vec![])), true);
-        assert_eq!(flag(&call(&mut lua, "IsNetworkTimerSynced", vec![])), false);
+        assert!(flag(&call(&mut lua, "IsNetworkTimerSyncing", vec![])));
+        assert!(!flag(&call(&mut lua, "IsNetworkTimerSynced", vec![])));
         st(&host).sim.net_timer_state = 2;
-        assert_eq!(flag(&call(&mut lua, "IsNetworkTimerSynced", vec![])), true);
-        assert_eq!(flag(&call(&mut lua, "IsOnline", vec![])), false);
+        assert!(flag(&call(&mut lua, "IsNetworkTimerSynced", vec![])));
+        assert!(!flag(&call(&mut lua, "IsOnline", vec![])));
         st(&host).sim.online = true;
         st(&host).sim.in_online_event = true;
-        assert_eq!(flag(&call(&mut lua, "IsOnline", vec![])), true);
-        assert_eq!(flag(&call(&mut lua, "IsInOnlineEvent", vec![])), true);
+        assert!(flag(&call(&mut lua, "IsOnline", vec![])));
+        assert!(flag(&call(&mut lua, "IsInOnlineEvent", vec![])));
         assert!(st(&host).unported.is_empty());
     }
 }

@@ -257,22 +257,22 @@ mod tests {
         assert_eq!(call(&mut lua, "GetSelectedColourId", vec![])[0].as_number(), Some(5.0));
         assert_eq!(call(&mut lua, "GetRoadCount", vec![])[0].as_number(), Some(9.0));
         assert_eq!(call(&mut lua, "GetRaceDistance", vec![])[0].as_number(), Some(1.5));
-        assert_eq!(b(&call(&mut lua, "IsFeedbackGroupLoaded", vec![n(4.0)])), true);
-        assert_eq!(b(&call(&mut lua, "IsFeedbackGroupLoaded", vec![n(6.0)])), false);
-        assert_eq!(b(&call(&mut lua, "IsFeedbackGroupLoaded", vec![n(8.0)])), false, "free entry");
-        assert_eq!(b(&call(&mut lua, "IsFeedbackSequenceLoaded", vec![])), false);
-        assert_eq!(b(&call(&mut lua, "IsHudMessageQueueEmpty", vec![])), true);
+        assert!(b(&call(&mut lua, "IsFeedbackGroupLoaded", vec![n(4.0)])));
+        assert!(!b(&call(&mut lua, "IsFeedbackGroupLoaded", vec![n(6.0)])));
+        assert!(!b(&call(&mut lua, "IsFeedbackGroupLoaded", vec![n(8.0)])), "free entry");
+        assert!(!b(&call(&mut lua, "IsFeedbackSequenceLoaded", vec![])));
+        assert!(b(&call(&mut lua, "IsHudMessageQueueEmpty", vec![])));
         {
             let mut s = host.state.borrow_mut();
             s.sim.feedback.sequence_handle = 1;
             s.sim.feedback.sequence_state = 1;
             s.sim.feedback.hud_queue_vcall = true;
         }
-        assert_eq!(b(&call(&mut lua, "IsFeedbackSequenceLoaded", vec![])), true);
-        assert_eq!(b(&call(&mut lua, "IsHudMessageQueueEmpty", vec![])), false);
+        assert!(b(&call(&mut lua, "IsFeedbackSequenceLoaded", vec![])));
+        assert!(!b(&call(&mut lua, "IsHudMessageQueueEmpty", vec![])));
         host.state.borrow_mut().sim.feedback.hud_queue_flag = true;
-        assert_eq!(b(&call(&mut lua, "IsHudMessageQueueEmpty", vec![])), true);
-        assert_eq!(b(&call(&mut lua, "TryPopPageFromHistory", vec![])), false);
+        assert!(b(&call(&mut lua, "IsHudMessageQueueEmpty", vec![])));
+        assert!(!b(&call(&mut lua, "TryPopPageFromHistory", vec![])));
     }
 
     #[test]
