@@ -28,6 +28,7 @@ mod coronas;
 mod crash;
 mod crash_vfx;
 mod cutscene;
+mod cutscene_spawns;
 mod damage;
 mod damage_vfx;
 mod deferred;

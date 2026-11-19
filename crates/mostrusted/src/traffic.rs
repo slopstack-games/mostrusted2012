@@ -472,6 +472,9 @@ pub struct TrafficSystem {
     density_scale: f32,
     /// `SetTrafficDensity` (`TrafficControl`): replaces `density_scale` while set.
     density_override: Option<f32>,
+    /// `OverrideAvailableTrafficSequenceItem` (traffic message 0x17, `FUN_00606b30`): the vehicle types traffic
+    /// picks from while set (`world+0xa0ec0`, count `+0xa2bdb`, flag `+0xa2bdd`; message 0x18 clears it).
+    vehicle_override: Option<Vec<usize>>,
     /// The hitters of the traffic cars (lane followers, parked cars) a contact turned physical since the police
     /// last asked (the game's per-frame list at world +0x33144, `FUN_0060c3a0`; `police.rs` reads it).
     hits: Vec<Entity>,
@@ -545,6 +548,7 @@ impl TrafficSystem {
             lamp_events: Vec::new(),
             density_scale,
             density_override: None,
+            vehicle_override: None,
             hits: Vec::new(),
             cop_obstacles: Vec::new(),
             spawned: 0,
@@ -830,6 +834,18 @@ impl TrafficSystem {
         lane.chain(crashed).collect()
     }
 
+    /// The index into `TrafficData::vehicles` of a traffic `VehicleComponent` id.
+    pub fn vehicle_index(&self, component: u32) -> Option<usize> {
+        self.data.vehicles.iter().position(|v| v.component == component)
+    }
+
+    /// `OverrideAvailableTrafficSequenceItem` (`cutscene_spawns.rs`): traffic message 0x17 (`FUN_00606b30`) sets
+    /// the override list of vehicle types, 0x18 (`None`) clears it. The availability pass (`FUN_005f0670`) then
+    /// marks only the listed types available (`world+0xa31e0`) instead of the region's.
+    pub fn set_vehicle_override(&mut self, vehicles: Option<Vec<usize>>) {
+        self.vehicle_override = vehicles;
+    }
+
     /// Remove every traffic car (lane followers and crashed ones) within `radius` of `point`
     /// (`ClearTrafficSequenceItem`, `cutscene.rs`).
     pub fn clear_near(&mut self, point: Vec3, radius: f32, commands: &mut Commands) -> usize {
@@ -983,6 +999,30 @@ impl TrafficSystem {
     /// over the type's palette (`FUN_00608720`, `world+0xa0390`), or the entry's `Colour` when set.
     fn pick_vehicle(&mut self, flow_type: u8) -> Option<(usize, usize)> {
         let entries = self.data.flow_types.get(flow_type as usize)?;
+        // The sequence's override (`FUN_005f0670`): only the listed types are available. MODEL: the flow type's
+        // entries of those types keep their proportions; with none of them in the flow type, the listed types
+        // are picked evenly (how the picker treats unavailable types was not read).
+        let overridden: Vec<_>;
+        let entries = match &self.vehicle_override {
+            Some(list) if !list.is_empty() => {
+                overridden = match entries.iter().filter(|e| list.contains(&e.vehicle)).copied().collect::<Vec<_>>() {
+                    kept if !kept.is_empty() => kept,
+                    _ => {
+                        let mut e = *entries.first()?;
+                        list.iter()
+                            .map(|&vehicle| {
+                                e.vehicle = vehicle;
+                                e.proportion = 1.0;
+                                e.colour = 0;
+                                e
+                            })
+                            .collect()
+                    }
+                };
+                &overridden[..]
+            }
+            _ => &entries[..],
+        };
         let total: f32 = entries.iter().map(|e| e.proportion).sum();
         if entries.is_empty() || total <= 0.0 {
             return None;
@@ -2219,84 +2259,137 @@ fn spawn_entities(
         };
         let v = &sys.data.vehicles[vehicle];
         let transform = Transform::from_translation(position).with_rotation(rotation);
-        let body = commands
-            .spawn((
-                Name::new(if slot >= MAX_CARS { "parked car" } else { "traffic car" }),
-                TrafficCar { vehicle, paint },
-                transform,
-                Visibility::default(),
-                RigidBody::Kinematic,
-                TransformInterpolation,
-            ))
-            .id();
-        // MODEL: the physical box (`RaceCarPhysicalDefinition`) extended down to the ground plane of the car
-        // (its wheels): a crashed car has no suspension here (the game's `FUN_005f7cf0` wheel poses are not
-        // ported), so the box stands in for the wheels.
-        let top = v.box_centre[1] + v.half_extents[1];
-        let size = Vec3::new(v.half_extents[0] * 2.0, top, v.half_extents[2] * 2.0);
-        commands.spawn((
+        let name = if slot >= MAX_CARS { "parked car" } else { "traffic car" };
+        let body = spawn_model(&mut commands, &model, v, transform, vehicle, paint, Some((slot, serial)), name);
+        sys.set_entity(slot, Some(body));
+    }
+}
+
+/// A traffic car placed by a sequence (`SpawnAnimatedTrafficSequenceItem`, `FUN_00845ff0`; `cutscene_spawns.rs`)
+/// at `transform`, in the type's next paint: `None` until the model has loaded (it is requested here).
+pub fn spawn_scripted(
+    commands: &mut Commands,
+    sys: &mut TrafficSystem,
+    models: &mut TrafficModels,
+    requests: Option<&LoaderRequests>,
+    vehicle: usize,
+    transform: Transform,
+) -> Option<Entity> {
+    let v = sys.data.vehicles.get(vehicle)?;
+    let paint = if v.paints.is_empty() { 0 } else { sys.paint_cursor[vehicle] % v.paints.len() };
+    let key = (vehicle, paint);
+    let Some(model) = models.models.get(&key).cloned() else {
+        if models.requested.insert(key)
+            && let Some(req) = requests
+        {
+            let _ = req.0.send(CarRequest {
+                bundle: v.bundle.clone(),
+                paint_index: 0,
+                traffic: Some(TrafficModelRequest { vehicle, paint, colour: v.paints.get(paint).map(|(_, p)| *p) }),
+                opponent: None,
+                prop: None,
+            });
+        }
+        return None;
+    };
+    let v = &sys.data.vehicles[vehicle];
+    Some(spawn_model(commands, &model, v, transform, vehicle, paint, None, "sequence traffic car"))
+}
+
+/// A traffic car's entities: the kinematic root with [`TrafficCar`], its box collider (with [`TrafficBody`] and
+/// the contact hook when it is a lane / parked car, `tag` = (slot, serial)), body and wheel meshes, coronas.
+#[allow(clippy::too_many_arguments)]
+fn spawn_model(
+    commands: &mut Commands,
+    model: &TrafficModel,
+    v: &mw_assets::traffic::TrafficVehicleType,
+    transform: Transform,
+    vehicle: usize,
+    paint: usize,
+    tag: Option<(usize, u32)>,
+    name: &'static str,
+) -> Entity {
+    let body = commands
+        .spawn((
+            Name::new(name),
+            TrafficCar { vehicle, paint },
+            transform,
+            Visibility::default(),
+            RigidBody::Kinematic,
+            TransformInterpolation,
+        ))
+        .id();
+    // MODEL: the physical box (`RaceCarPhysicalDefinition`) extended down to the ground plane of the car
+    // (its wheels): a crashed car has no suspension here (the game's `FUN_005f7cf0` wheel poses are not
+    // ported), so the box stands in for the wheels.
+    let top = v.box_centre[1] + v.half_extents[1];
+    let size = Vec3::new(v.half_extents[0] * 2.0, top, v.half_extents[2] * 2.0);
+    let collider = commands
+        .spawn((
             Collider::cuboid(size.x, size.y, size.z),
             Transform::from_xyz(v.box_centre[0], top * 0.5, v.box_centre[2]),
             traffic_layers(false),
             // The collider carries the car's mass, so a crashed car gets its box's inertia.
             ColliderDensity(v.mass / (size.x * size.y * size.z).max(0.1)),
-            TrafficBody { slot, serial },
-            ActiveCollisionHooks::MODIFY_CONTACTS,
             Friction::new(CRASH_FRICTION),
             Restitution::new(0.0),
             ChildOf(body),
+        ))
+        .id();
+    if let Some((slot, serial)) = tag {
+        commands.entity(collider).insert((TrafficBody { slot, serial }, ActiveCollisionHooks::MODIFY_CONTACTS));
+    }
+    // The model sits `ride_height` above the lane (the road is at y = -T.y in model space, `wheel_layout`).
+    let lift = Vec3::Y * model.ride_height;
+    // Head / tail lamp coronas (`coronas.rs`), placed in model space.
+    if let Some((slot, serial)) = tag
+        && !model.coronas.is_empty()
+    {
+        commands.entity(body).insert(crate::coronas::CarCoronas::traffic(
+            model.coronas.clone(),
+            lift,
+            slot >= MAX_CARS,
+            serial,
         ));
-        // The model sits `ride_height` above the lane (the road is at y = -T.y in model space, `wheel_layout`).
-        let lift = Vec3::Y * model.ride_height;
-        // Head / tail lamp coronas (`coronas.rs`), placed in model space.
-        if !model.coronas.is_empty() {
-            commands.entity(body).insert(crate::coronas::CarCoronas::traffic(
-                model.coronas.clone(),
-                lift,
-                slot >= MAX_CARS,
-                serial,
-            ));
-        }
-        for (mesh, mat) in &model.body {
-            commands.spawn((
-                Mesh3d(mesh.clone()),
-                MeshMaterial3d::<GameMaterial>(mat.clone()),
-                Transform::from_translation(lift),
-                crate::shadow_cull::ShadowClass::Car,
-                ChildOf(body),
-            ));
-        }
-        for (w, parts) in &model.wheels {
-            let pivot = commands
-                .spawn((Transform::from_translation(w.position + lift), Visibility::default(), ChildOf(body)))
-                .id();
-            let mirror = if w.mirror { Vec3::new(-1.0, 1.0, 1.0) } else { Vec3::ONE };
-            // Wheels spin at speed / radius; the kinematic pose puts every wheel's centre at the front-left
-            // radius above the road (`FUN_005ee7f0`), so that height is the radius.
-            let spinner = commands
-                .spawn((
-                    Transform::from_rotation(w.rotation).with_scale(mirror),
-                    Visibility::default(),
-                    TrafficWheel { radius: (w.position.y + model.ride_height).max(0.2), left: w.mirror },
-                    ChildOf(pivot),
-                ))
-                .id();
-            let fixed = commands
-                .spawn((Transform::from_rotation(w.rotation).with_scale(mirror), Visibility::default(), ChildOf(pivot)))
-                .id();
-            for (parts, spins) in parts {
-                for (mesh, mat) in parts {
-                    commands.spawn((
-                        Mesh3d(mesh.clone()),
-                        MeshMaterial3d::<GameMaterial>(mat.clone()),
-                        crate::shadow_cull::ShadowClass::Car,
-                        ChildOf(if *spins { spinner } else { fixed }),
-                    ));
-                }
+    }
+    for (mesh, mat) in &model.body {
+        commands.spawn((
+            Mesh3d(mesh.clone()),
+            MeshMaterial3d::<GameMaterial>(mat.clone()),
+            Transform::from_translation(lift),
+            crate::shadow_cull::ShadowClass::Car,
+            ChildOf(body),
+        ));
+    }
+    for (w, parts) in &model.wheels {
+        let pivot =
+            commands.spawn((Transform::from_translation(w.position + lift), Visibility::default(), ChildOf(body))).id();
+        let mirror = if w.mirror { Vec3::new(-1.0, 1.0, 1.0) } else { Vec3::ONE };
+        // Wheels spin at speed / radius; the kinematic pose puts every wheel's centre at the front-left
+        // radius above the road (`FUN_005ee7f0`), so that height is the radius.
+        let spinner = commands
+            .spawn((
+                Transform::from_rotation(w.rotation).with_scale(mirror),
+                Visibility::default(),
+                TrafficWheel { radius: (w.position.y + model.ride_height).max(0.2), left: w.mirror },
+                ChildOf(pivot),
+            ))
+            .id();
+        let fixed = commands
+            .spawn((Transform::from_rotation(w.rotation).with_scale(mirror), Visibility::default(), ChildOf(pivot)))
+            .id();
+        for (parts, spins) in parts {
+            for (mesh, mat) in parts {
+                commands.spawn((
+                    Mesh3d(mesh.clone()),
+                    MeshMaterial3d::<GameMaterial>(mat.clone()),
+                    crate::shadow_cull::ShadowClass::Car,
+                    ChildOf(if *spins { spinner } else { fixed }),
+                ));
             }
         }
-        sys.set_entity(slot, Some(body));
     }
+    body
 }
 
 /// A crashed car's own copies of its lamp materials (mesh entity, shared handle, own handle), made once its

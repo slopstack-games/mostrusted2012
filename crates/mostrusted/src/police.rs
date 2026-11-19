@@ -216,6 +216,33 @@ impl Cop {
     pub fn patrol_mode(&self) -> Option<u8> {
         (self.mode == CopMode::Patrol).then(|| self.patrol.number())
     }
+    /// A cop car a sequence placed (`SpawnAICopCar`, `cutscene_spawns.rs`), with the components [`spawn_cops`]
+    /// gives an ordered one; `slot` is its brain's id (the police adopt it on their next tick).
+    pub fn scripted(slot: usize, cop_type: u32, mode: CopMode) -> (Self, CopStatus) {
+        let status = CopStatus {
+            activity: CopActivity::Patrol,
+            driver_state: 0xd,
+            patrol_mode: Some(0),
+            chasing: false,
+            in_pursuit: false,
+            sees_player: false,
+            wrecked: false,
+        };
+        let cop = Cop {
+            slot,
+            cop_type,
+            mode,
+            changed: true,
+            patrol: PatrolMode::default(),
+            route_timer: 0.0,
+            planned: None,
+            direct: false,
+            blocked: 0,
+            crashed: false,
+            touching: false,
+        };
+        (cop, status)
+    }
 }
 
 /// A cop car on order or on the road.

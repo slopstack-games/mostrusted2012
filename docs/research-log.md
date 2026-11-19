@@ -109,6 +109,39 @@ dump. Details: decomp.md "Timeline controllers".
   `GeneralTriggerSequenceItem`s (only root items set triggers in logic.rs). Captures that would confirm: a race
   outro with an award in the original (does it hold until the award widget closes).
 
+## 2026-11-19: event intro / outro spawn items (AddRaceCar, SpawnAICopCar, traffic, damage; PLAN M8.6)
+
+Handlers read from the dump and `re/out/live/text.asm` (vtables in `scratch/seq_vtables.txt`, checked against the
+factories 0x008560cd–0x008561cb); the findings are in decomp.md "Sequence spawn items". Data in
+`mw_assets::sequence::spawns` (`mwtool events <id>` prints them), runtime in `cutscene_spawns.rs`.
+- **Vtable slots** (`FUN_00a42b90` and the default methods 0x00a41df0..0x00a432d0): +4 lead time, +8 prepare,
+  +0xc enter, +0x10 update (the loop's call), +0x14 the per-item update the spawn items use, +0x24 stop, +0x28 exit.
+- **Use in the event sequences** (top-level items of the 108 intros / outros): AddRaceCar in 29 sequences, SpawnAICopCar
+  in 24, OverrideAvailableTraffic in ~40 (most intros: [] or the two or five types their animated traffic uses),
+  SpawnAnimatedTraffic in 7, SetPlayerDamage in 3 (1433874, 1472293, 1551007: six items at once with no
+  `EnabledBinding`, so the last one wins), SpawnDynamicEntity in 3 (857703, 857717, 1439943), Gameplay in 1
+  (1433056). SpawnTraffic only in free-roam sequences. Example: HARBOR RUN (906146, intro 929112): two animated
+  traffic cars (122822, 122828) 0–12 s, AddRaceCar cop car 122713 at 3.3–10 s and 11.3–15.3 s on clips, two
+  Chasing cops (AI type 1156780 → vehicle 122713) on triggers 1433637 / 1433638 at 70 mph at 17 s.
+- **SpawnAICopCar's AI type** is an `AIPlayerType` (the list `FUN_006e6140` searches), resolved to its rollout's
+  vehicle in the reader; the cop's `Gameplay.CopType` is not known, so its brain is adopted with type 0 (the
+  police's default slot, behaviour 6).
+- **Open**: sequence message 4 (AddRaceCar with `8f98df6b`) and 0x36 (`824d41fe`), 5; the consumer of message 0x23
+  (the zone order of SetPlayerDamage, MODEL: clip order); `FUN_005f9480`(0) at the override (a traffic flush?);
+  how the picker treats unavailable types (MODEL: listed entries keep their proportions); `FUN_006b8840` (when a
+  cop may be released); `SetPlayerDamage` +0x20 (a target from `beae015c`?); the Gameplay switches' targets (heat
+  level set, AI release by type) and SpawnDynamicEntity's handlers are not carried out; SpawnTraffic's handler not
+  read. Bone 2 of animated traffic (`FUN_008460c0`'s second matrix) is not used.
+- **Verified** (`--race 906146`, `MW_CUTSCENE_SHOT=intro:6`, scratch/shots/i6.png in the worktree): the animated
+  cop car (AddRaceCar 122713 on its clip) and the two animated traffic cars (pickup 122822, taxi 122828) stand in
+  the shot; the two Chasing cops are placed at 17 s on their triggers at 70 mph, then the police coordinator
+  removes both 0.75 s later (`police: cop 2000000 removed`). Probably because the event's race heat levels
+  (`OfflineEvent` heat levels [1519266, 1700216], and GameplaySequenceItem type 1) are not applied by the runtime, so
+  no race pursuit holds them: open. `--test race` on 906146 passes (won, 10 gates).
+- **Captures that would confirm**: the original's HARBOR RUN intro at 3–10 s (where the animated cop car drives),
+  at 12 s (the two traffic cars) and at 17.5 s (the two cops behind the grid), and a free-roam traffic survey during
+  an intro with an override (only the listed types on the road).
+
 ## 2026-11-19: skids and crashes "very loud, distorted, layered, more and more": the skid channels' gain multiplied per surface set
 
 User report with a recording and `MW_AUDIO_METER=1` / `MW_SFX_TRACE` of the played run: the vehicle bank read up to

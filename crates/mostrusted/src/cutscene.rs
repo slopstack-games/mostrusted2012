@@ -75,6 +75,7 @@ pub struct CutscenePlugin {
 
 impl Plugin for CutscenePlugin {
     fn build(&self, app: &mut App) {
+        app.add_plugins(crate::cutscene_spawns::SpawnsPlugin);
         app.init_resource::<CutsceneState>()
             .init_resource::<LetterboxBars>()
             .add_systems(Startup, spawn_letterbox)
@@ -164,6 +165,11 @@ impl CutsceneState {
     /// A sequence is playing (the menu leaves Esc / Back to SKIP_CUTSCENE meanwhile).
     pub fn playing(&self) -> bool {
         self.playing.is_some()
+    }
+
+    /// The playing sequence and its clock (s), for the spawn items (`cutscene_spawns.rs`).
+    pub fn clock(&self) -> Option<(Which, &Arc<Sequence>, f32)> {
+        self.playing.as_ref().map(|p| (p.which, &p.seq, p.t))
     }
 
     /// The intro / outro has been started (or there was none to start) and is no longer playing.
