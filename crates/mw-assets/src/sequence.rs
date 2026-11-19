@@ -12,8 +12,8 @@
 //! | type (size) | field | meaning |
 //! |------|-------|---------|
 //! | `SequenceItem` base (36) | `4531983b` StringBase (+0x0c) | `EnabledBinding` |
-//! | | `ddb9c614` / `6c82122b` f32 (+0x18 / +0x1c) | `StartTime` / `EndTime` (s) |
-//! | `Sequence` (44) | `SequenceItems` (+0x20), `TimelineControllers` (+0x24) | items, clock controllers |
+//! | | `ddb9c614` / `6c82122b` f32 (+0x18 / +0x1c) | `EndTime` / `StartTime` (s; +0x1c is the start the code reads) |
+//! | `Sequence` (44) | `SequenceItems` (+0x20), `TimelineControllers` (+0x24), `59e12b27` (+0x28, the clock kind) | items, clock controllers |
 //! | `AnimatedCameraSequenceItem` (240) | `FocalDistance` (`b649881c`), `FocalLength` (`4b852710`), `FStop` (`cc8312fe`) | modulated values (mm / m) |
 //! | | `6f3ea350` StringBase | the transform the clip is relative to (`Players.LocalPlayer.GetTransform`; empty = world) |
 //! | | `ShakeBinding`, `CameraAnimation` (`c8496172`), `CameraSkeleton` (`a3fc3e26`), `b4bc74c3` bool | clip on a two-bone camera skeleton |
@@ -136,6 +136,12 @@ mod h {
     pub const TRIGGER_TIME: u32 = field_hash("TriggerTime");
     pub const DESTINATION_TIME: u32 = field_hash("DestinationTime");
     pub const ACTION: u32 = field_hash("Action");
+    /// `2d0e4348` (unnamed): `JumpTimelineController`'s jump anywhere in its window.
+    pub const MONITOR: u32 = 0x2d0e_4348;
+    /// `1aeaf3ad` (unnamed): `JumpOnButtonPress` only on a fresh press.
+    pub const PRESSED_ONLY: u32 = 0x1aea_f3ad;
+    /// `f2139690` (unnamed): `JumpNTimesTimelineController`'s count.
+    pub const JUMP_COUNT: u32 = 0xf213_9690;
     // BystanderCameraParams
     pub const CAMERA_BINDING: u32 = field_hash("Camera_Transform_Binding");
     pub const TARGET_BINDING: u32 = field_hash("Target_Transform_Binding");
@@ -671,18 +677,90 @@ pub struct Item {
     pub depth: u32,
     /// `EnabledBinding` (empty = always on).
     pub enabled: String,
+    /// The [`ClockNode`] it plays on (0 = the sequence's own clock; flattened items of conducted sequences name
+    /// their conductor's node).
+    pub clock: usize,
 }
 
-/// A timeline controller.
+/// A timeline controller (`Genesys.Gen.SequenceTimelineController` and its subtypes; layout: `EnabledBinding`
+/// +0x0c, `TriggerType` +0x18 (u16), `2d0e4348` +0x1a, `b6a51260` +0x1c, `TriggerTime` +0x20, then the subtype's
+/// own fields). What each does: [`crate::timeline`].
 #[derive(Debug, Clone, PartialEq)]
-pub enum Controller {
-    /// `JumpOnButtonPress`: once the clock passes `trigger_time`, the skip button jumps it to `destination`.
-    JumpOnButtonPress { trigger_type: u32, trigger_time: f32, destination: f32, action: u32 },
-    /// `JumpTimelineController` / `JumpMonitorTimelineController` / ...: jumps driven by game-logic triggers
-    /// (waits for input in the outros); not run by the cutscenes. `enabled` is its `EnabledBinding` (the title's
-    /// `Language.IsJapanese(NOT)` skip to 28.1 s); the destination is the unnamed `b6a51260` where
-    /// `DestinationTime` is absent.
-    Jump { kind: String, trigger_type: u32, trigger_time: f32, destination: f32, enabled: String },
+pub struct Controller {
+    pub kind: ControllerKind,
+    /// 1 = while `enabled` holds, 0 = on a change of its value (`FUN_00a434b0`).
+    pub trigger_type: u32,
+    /// `2d0e4348`: a `JumpTimelineController` also jumps anywhere between its trigger and its destination.
+    pub monitor: bool,
+    pub trigger_time: f32,
+    /// `b6a51260` (the jump's destination; a quit's other bound; a monitor's window end).
+    pub destination: f32,
+    /// `EnabledBinding` (empty = always).
+    pub enabled: String,
+}
+
+/// The controller types ([`crate::timeline`] ports each).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ControllerKind {
+    /// `JumpTimelineController` (type 0x3f7a4).
+    Jump,
+    /// `JumpNTimesTimelineController` (0x3f7a6): at most `f2139690` jumps.
+    JumpNTimes(i32),
+    /// `JumpOnButtonPress` (0x5f6d2): `Action` (+0x24) picks the input action, `1aeaf3ad` (+0x26) = a fresh
+    /// press only. Action 1 (SKIP_CUTSCENE) is the intros' skip.
+    JumpOnButtonPress { action: u32, pressed_only: bool },
+    /// `JumpWaitForButtonPress` (0x3f7b6): loops until AUTOLOG_ACCEPT is pressed.
+    JumpWaitForButtonPress,
+    /// `JumpMonitorTimelineController` (0xef1e7): follows its conductor's sequence.
+    JumpMonitor,
+    /// `QuitSequenceTimelineController` (0x162eb0).
+    Quit,
+    /// Other types (the speech and race-car clocks of `59e12b27` 2 sequences): not run.
+    Other(String),
+}
+
+impl ControllerKind {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Jump => "JumpTimelineController",
+            Self::JumpNTimes(_) => "JumpNTimesTimelineController",
+            Self::JumpOnButtonPress { .. } => "JumpOnButtonPress",
+            Self::JumpWaitForButtonPress => "JumpWaitForButtonPress",
+            Self::JumpMonitor => "JumpMonitorTimelineController",
+            Self::Quit => "QuitSequenceTimelineController",
+            Self::Other(_) => "other",
+        }
+    }
+}
+
+/// A clock of a sequence: the sequence's own (node 0) or a conducted sequence's (`ConductorSequenceItem`, run on
+/// its own clock from 0 while the conductor's range holds on its parent's clock). Nodes are in pre-order (a
+/// parent before its children); [`Item::clock`] names the node an item plays on. Run by
+/// [`crate::timeline::SequenceClock`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ClockNode {
+    pub parent: Option<usize>,
+    /// The conductor item's range on the parent's clock (node 0: 0 and its length).
+    pub start: f32,
+    pub end: f32,
+    /// Where the node's time 0 lies in the flattened sequence's frame (the conductors' starts summed): its
+    /// flattened items' times are `offset` + its own time.
+    pub offset: f32,
+    /// The conductor item's `CgsCore.UniqueId` (0 for node 0).
+    pub item_id: u32,
+    pub controllers: Vec<Controller>,
+    /// Per controller: the node a `JumpMonitorTimelineController` follows (`FUN_00826f50`: the last conductor
+    /// item with start <= trigger and end >= destination).
+    pub monitored: Vec<Option<usize>>,
+    /// The conducted sequence's length (its last item end).
+    pub length: f32,
+}
+
+impl ClockNode {
+    pub fn root(controllers: Vec<Controller>, length: f32) -> Self {
+        let monitored = vec![None; controllers.len()];
+        Self { parent: None, start: 0.0, end: length, offset: 0.0, item_id: 0, controllers, monitored, length }
+    }
 }
 
 /// A decoded `Sequence`.
@@ -694,13 +772,36 @@ pub struct Sequence {
     pub controllers: Vec<Controller>,
     /// The last item end (s).
     pub length: f32,
+    /// The sequence's clock and its conducted sequences' ([`ClockNode`]; node 0 holds `controllers`).
+    pub clocks: Vec<ClockNode>,
 }
 
 impl Sequence {
+    /// Appends a conducted sequence's clocks (its node 0 becomes a child of this sequence's node 0, conducted over
+    /// `start..end`); returns the child's node index.
+    fn adopt_clocks(&mut self, child: &Sequence, start: f32, end: f32, item_id: u32) -> usize {
+        let base = self.clocks.len();
+        for (j, n) in child.clocks.iter().enumerate() {
+            let mut n = n.clone();
+            n.parent = Some(n.parent.map_or(0, |p| p + base));
+            n.offset += start;
+            n.monitored = n.monitored.iter().map(|m| m.map(|m| m + base)).collect();
+            if j == 0 {
+                n.start = start;
+                n.end = end;
+                n.item_id = item_id;
+            }
+            self.clocks.push(n);
+        }
+        base
+    }
+
     /// The skip: `(trigger time, destination)` of the first `JumpOnButtonPress`.
     pub fn skip(&self) -> Option<(f32, f32)> {
         self.controllers.iter().find_map(|c| match c {
-            Controller::JumpOnButtonPress { trigger_time, destination, .. } => Some((*trigger_time, *destination)),
+            Controller {
+                kind: ControllerKind::JumpOnButtonPress { action: 1, .. }, trigger_time, destination, ..
+            } => Some((*trigger_time, *destination)),
             _ => None,
         })
     }
@@ -750,8 +851,17 @@ impl Sequence {
 
     /// The simulation's time scale at `t` (1 outside the slow-motion items; the deepest active item wins).
     pub fn time_scale(&self, t: f32) -> f32 {
-        self.active(t)
-            .filter_map(|(_, i)| match &i.kind {
+        self.time_scale_at(&|_| Some(t))
+    }
+
+    /// [`Self::time_scale`] with each item's own clock (`time_of`: the item's time in the flattened frame, `None`
+    /// while its conductor does not run; [`crate::timeline::SequenceClock::frame_time`]).
+    pub fn time_scale_at(&self, time_of: &dyn Fn(&Item) -> Option<f32>) -> f32 {
+        self.items
+            .iter()
+            .filter_map(|i| Some((i, time_of(i)?)))
+            .filter(|(i, t)| *t >= i.start && *t < i.end)
+            .filter_map(|(i, t)| match &i.kind {
                 ItemKind::SlowMo(m) => Some((i.depth, m.at((t - i.start) / (i.end - i.start).max(1e-6)))),
                 _ => None,
             })
@@ -884,30 +994,39 @@ impl<'a> SequenceContext<'a> {
                 actual: ResourceType::GenesysObject,
             });
         }
-        let mut seq =
-            Sequence { id, unique_id: uint(&o, h::ID), items: Vec::new(), controllers: Vec::new(), length: 0.0 };
+        let mut seq = Sequence {
+            id,
+            unique_id: uint(&o, h::ID),
+            items: Vec::new(),
+            controllers: Vec::new(),
+            length: 0.0,
+            clocks: Vec::new(),
+        };
         for c in structs(&o, h::TIMELINE_CONTROLLERS) {
-            let (trigger_type, trigger_time, destination) = (
-                uint(c, h::TRIGGER_TYPE),
-                float(c, h::TRIGGER_TIME).unwrap_or(0.0),
-                float(c, h::DESTINATION_TIME).unwrap_or(0.0),
-            );
-            seq.controllers.push(match short(c) {
-                "JumpOnButtonPress" => Controller::JumpOnButtonPress {
-                    trigger_type,
-                    trigger_time,
-                    destination,
+            let kind = match short(c) {
+                "JumpTimelineController" => ControllerKind::Jump,
+                "JumpNTimesTimelineController" => ControllerKind::JumpNTimes(uint(c, h::JUMP_COUNT) as i32),
+                "JumpOnButtonPress" => ControllerKind::JumpOnButtonPress {
                     action: uint(c, h::ACTION),
+                    pressed_only: boolean(c, h::PRESSED_ONLY).unwrap_or(false),
                 },
-                kind => Controller::Jump {
-                    kind: kind.to_string(),
-                    trigger_type,
-                    trigger_time,
-                    destination: float(c, h::DESTINATION_TIME).or(float(c, h::JUMP_DESTINATION)).unwrap_or(0.0),
-                    enabled: string(c, h::ENABLED_BINDING),
-                },
+                "JumpWaitForButtonPress" => ControllerKind::JumpWaitForButtonPress,
+                "JumpMonitorTimelineController" => ControllerKind::JumpMonitor,
+                "QuitSequenceTimelineController" => ControllerKind::Quit,
+                other => ControllerKind::Other(other.to_string()),
+            };
+            seq.controllers.push(Controller {
+                kind,
+                trigger_type: uint(c, h::TRIGGER_TYPE),
+                monitor: boolean(c, h::MONITOR).unwrap_or(false),
+                trigger_time: float(c, h::TRIGGER_TIME).unwrap_or(0.0),
+                destination: float(c, h::JUMP_DESTINATION).or(float(c, h::DESTINATION_TIME)).unwrap_or(0.0),
+                enabled: string(c, h::ENABLED_BINDING),
             });
         }
+        seq.clocks.push(ClockNode::root(seq.controllers.clone(), 0.0));
+        // Conductor items in list order: (start, end, node) for the monitors (`FUN_00826f50`).
+        let mut conducted: Vec<(f32, f32, usize)> = Vec::new();
         for item in structs(&o, h::SEQUENCE_ITEMS) {
             let (start, end) = (float(item, h::START_TIME).unwrap_or(0.0), float(item, h::END_TIME).unwrap_or(0.0));
             seq.length = seq.length.max(end);
@@ -919,6 +1038,8 @@ impl<'a> SequenceContext<'a> {
                     let child = self.read(child_id);
                     self.depth -= 1;
                     if let Ok(child) = child {
+                        let node = seq.adopt_clocks(&child, start, end, uint(item, h::ID));
+                        conducted.push((start, end, node));
                         seq.items.push(Item {
                             unique_id: uint(item, h::ID),
                             start,
@@ -926,6 +1047,7 @@ impl<'a> SequenceContext<'a> {
                             kind: ItemKind::Conductor(Box::new(child)),
                             depth: 0,
                             enabled: string(item, h::ENABLED_BINDING),
+                            clock: 0,
                         });
                     }
                 }
@@ -939,10 +1061,13 @@ impl<'a> SequenceContext<'a> {
                     let child = self.read(child_id);
                     self.depth -= 1;
                     if let Ok(child) = child {
+                        let node = seq.adopt_clocks(&child, start, end, uint(item, h::ID));
+                        conducted.push((start, end, node));
                         for mut c in child.items {
                             c.start += start;
                             c.end = (c.end + start).min(end);
                             c.depth += 1;
+                            c.clock += node;
                             if c.end > c.start {
                                 seq.items.push(c);
                             }
@@ -953,9 +1078,27 @@ impl<'a> SequenceContext<'a> {
             }
             let kind = self.item_kind(item, start, end);
             let enabled = string(item, h::ENABLED_BINDING);
-            seq.items.push(Item { unique_id: uint(item, h::ID), start, end, kind, depth: 0, enabled });
+            seq.items.push(Item { unique_id: uint(item, h::ID), start, end, kind, depth: 0, enabled, clock: 0 });
         }
         seq.items.sort_by(|a, b| a.start.total_cmp(&b.start));
+        let monitored = seq
+            .controllers
+            .iter()
+            .map(|c| {
+                (c.kind == ControllerKind::JumpMonitor)
+                    .then(|| {
+                        conducted
+                            .iter()
+                            .rev()
+                            .find(|(s, e, _)| *s <= c.trigger_time && *e >= c.destination)
+                            .map(|(_, _, n)| *n)
+                    })
+                    .flatten()
+            })
+            .collect();
+        seq.clocks[0].monitored = monitored;
+        seq.clocks[0].end = seq.length;
+        seq.clocks[0].length = seq.length;
         Ok(seq)
     }
 

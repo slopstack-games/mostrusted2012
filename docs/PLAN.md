@@ -509,7 +509,9 @@ GeneSys. Engine-free crates (`mw-logic`, `mw-lua`; wasm-compatible), in dependen
    motion blur and depth of field logged), image palettes, world rendering (state only), time of day, timeline. The cars' damage
    sequences (`RaceCarEntityTimelineController` on the zone levels) and their
    `VfxLocatorGroupVehicleSpotEffectSequenceItem`s play (`damage_vfx.rs`); `VfxSpotEffectSequenceItem` parsed, not
-   played.
+   played. Timeline controllers ported (2026-11-19,
+   `mw_assets::timeline`: all six types, conducted sequences on their own clocks; cutscenes and the logic's
+   playbacks). Open: the HUD sequences' controllers, binding / controller clocks.
 7. `[~]` The runtime moves onto them: front end, game modes, HUD and results from the HSM instead of the
    hand-written flows. Started (2026-11-17): `mostrusted --hsm` (logic.rs) runs "Top State" and the game-mode
    manager in shadow mode. It follows the real title, press and world load into "Freedrive Update" and the HUD

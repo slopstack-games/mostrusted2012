@@ -278,7 +278,7 @@ fn draw(store: &AssetStore, e: &Event, png: &Path) -> Result<()> {
 
 /// The event's intro and outro sequences, item by item (`mw_assets::sequence`).
 fn sequences(store: &AssetStore, events: &Events, e: &Event) {
-    use mw_assets::sequence::{Controller, ItemKind};
+    use mw_assets::sequence::ItemKind;
     let mode = events.game_mode(e.game_mode);
     println!(
         "  sequences: intro {} (group {}), outro {}, AR outro {}, feedback group {}; game mode: AR outro {}, \
@@ -305,16 +305,7 @@ fn sequences(store: &AssetStore, events: &Events, e: &Event) {
             continue;
         };
         println!("  {label} {} ({:016x}): {:.2} s, {} items", seq.unique_id, seq.id.0, seq.length, seq.items.len());
-        for c in &seq.controllers {
-            match c {
-                Controller::JumpOnButtonPress { trigger_time, destination, .. } => {
-                    println!("    skip: from {trigger_time:.2} s a press jumps to {destination:.2} s")
-                }
-                Controller::Jump { kind, trigger_time, destination, .. } => {
-                    println!("    {kind}: at {trigger_time:.2} s -> {destination:.2} s (not run)")
-                }
-            }
-        }
+        print_clocks(&seq, "    ");
         for i in &seq.items {
             let what = match &i.kind {
                 ItemKind::AnimatedCamera(c) => {
@@ -487,14 +478,10 @@ fn layout_shaders(store: &AssetStore, seq: &mw_assets::sequence::Sequence) {
 }
 
 fn print_ui_sequence(seq: &mw_assets::sequence::Sequence, depth: usize) {
-    use mw_assets::sequence::{Controller, ItemKind};
+    use mw_assets::sequence::ItemKind;
     let pad = "  ".repeat(depth);
     println!("{pad}sequence {} ({:.2} s, {} items)", seq.unique_id, seq.length, seq.items.len());
-    for c in &seq.controllers {
-        if let Controller::Jump { kind, trigger_time, destination, enabled, .. } = c {
-            println!("{pad}  {kind}: at {trigger_time:.3} s -> {destination:.3} s if {enabled:?}");
-        }
-    }
+    print_controllers(&seq.controllers, &format!("{pad}  "));
     for i in &seq.items {
         let what = match &i.kind {
             ItemKind::Layout { layout, layer, texts, .. } => {
@@ -558,5 +545,42 @@ fn picture(p: &mw_assets::sequence_picture::PictureItem) -> String {
         ),
         P::EnvironmentTimeline { timeline } => format!("environment timeline {}", id(timeline)),
         other => other.name().to_string(),
+    }
+}
+
+/// A sequence's clocks (its own, then its conducted sequences') with their timeline controllers
+/// (`mw_assets::timeline`).
+fn print_clocks(seq: &mw_assets::sequence::Sequence, pad: &str) {
+    for (i, n) in seq.clocks.iter().enumerate() {
+        if n.controllers.is_empty() {
+            continue;
+        }
+        if i == 0 {
+            println!("{pad}clock 0 (the sequence's own):");
+        } else {
+            println!(
+                "{pad}clock {i} (conductor {} on clock {:?}, {:.2}-{:.2} s, flattened offset {:.2} s):",
+                n.item_id,
+                n.parent.unwrap_or(0),
+                n.start,
+                n.end,
+                n.offset
+            );
+        }
+        print_controllers(&n.controllers, &format!("{pad}  "));
+    }
+}
+
+fn print_controllers(controllers: &[mw_assets::sequence::Controller], pad: &str) {
+    for c in controllers {
+        let when = if c.enabled.is_empty() {
+            String::new()
+        } else if c.trigger_type == 0 {
+            format!(" when {:?} changes", c.enabled)
+        } else {
+            format!(" while {:?}", c.enabled)
+        };
+        let monitor = if c.monitor { " (monitor)" } else { "" };
+        println!("{pad}{:?}: at {:.3} s -> {:.3} s{when}{monitor}", c.kind, c.trigger_time, c.destination);
     }
 }

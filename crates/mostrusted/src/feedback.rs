@@ -242,7 +242,7 @@ fn step(
         let texts = q.messages.first().map(|m| m.texts.clone());
         let key = format!("feedback {} {}", q.name, p.handle);
         let bindings = vec![(SHOW_MUSIC_CHYRON, BindValue::Num(1.0))];
-        shown.push(Shown { key, seq: play.seq.clone(), clock: c.since_active, texts, opacity, bindings });
+        shown.push(Shown { key, seq: play.seq.clone(), clock: c.since_active, clocks: None, texts, opacity, bindings });
     }
     clocks.retain(|k, _| live.contains(k));
     // `MW_FEEDBACK_SHOT=<png>`: a screenshot once a play has shown for 1.5 s (headless checks).
@@ -288,8 +288,10 @@ fn load(store: &mw_assets::AssetStore, id: u32, instance: u64, layer: u32) -> Op
         kind: ItemKind::Layout { layout: Some(rid), layer, texts: [0; 3], instance },
         depth: 0,
         enabled: String::new(),
+        clock: 0,
     };
-    let seq = Sequence { id: rid, unique_id: id, items: vec![item], controllers: Vec::new(), length: f32::MAX };
+    let clocks = vec![mw_assets::sequence::ClockNode::root(Vec::new(), f32::MAX)];
+    let seq = Sequence { id: rid, unique_id: id, items: vec![item], controllers: Vec::new(), length: f32::MAX, clocks };
     Some(LayoutPlay { seq: Arc::new(seq), fade_in: fade_in(&timeline) })
 }
 

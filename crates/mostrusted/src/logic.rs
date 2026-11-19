@@ -636,8 +636,14 @@ fn tick(
     mut t: Targets,
     menu: Res<crate::input::MenuInput>,
     mut widget_groups: ResMut<crate::ui_widgets::ActiveWidgetGroups>,
+    (keys, pads): (Res<ButtonInput<KeyCode>>, bevy::prelude::Query<&Gamepad>),
 ) {
     let Some(mut logic) = logic else { return };
+    // SKIP_CUTSCENE for the playbacks' `JumpOnButtonPress` skips (the recap's).
+    let skip = {
+        let pad_list: Vec<&Gamepad> = pads.iter().collect();
+        crate::seq_clock::skip_state(&crate::input::Devices { keys: &keys, pads: &pad_list })
+    };
     // The HSM runs on the frame clock while the simulation is paused (it is what resumes it); its game clock stops
     // then (`Clock::game` None). The frame step is capped as the game clock is (main.rs: 2/60 s).
     let dt = real.delta_secs().min(t.sim.max_delta().as_secs_f32());
@@ -741,7 +747,7 @@ fn tick(
     }
     host.race.observe(&t.race, t.cutscene.as_deref(), &host.logic);
     host.logic.frame(dt);
-    step_playbacks(host, dt);
+    step_playbacks(host, dt, &menu, skip);
     // What the playbacks show (`ui_sequence.rs` draws their layouts, plays their movies, waves and camera takes).
     if let Some(player) = t.player.as_deref_mut() {
         player.show(
@@ -753,6 +759,7 @@ fn tick(
                         key: format!("{:?}", p.owner),
                         seq,
                         clock: p.clock,
+                        clocks: p.clocks.clone(),
                         texts: None,
                         opacity: 1.0,
                         bindings: Vec::new(),
@@ -978,8 +985,9 @@ enum Carry {
 /// The title's conductor (the "Press Start" `Background` widget's `ConductorName`).
 const TITLE_CONDUCTOR: &str = "PressStart";
 
-/// A sequence the logic plays (drawn by `ui_sequence.rs`): its clock runs with the sequence's jump controllers
-/// (`frontend::step`, bindings through the logic's view models) and, once it reaches the sequence's end, a
+/// A sequence the logic plays (drawn by `ui_sequence.rs`): its clock runs with the timeline controllers of the
+/// sequence and of its conducted sequences (`mw_assets::timeline`, bindings through the logic's view models, the
+/// buttons from the menu actions) and, once it reaches the sequence's end, a
 /// conductor is idle again (`HasSequenceFinished` / `IsConductorIdle`) and a `RUNGAMELOGIC` playback no longer
 /// plays (`Query::SequencePlaying`), so the scripts and states waiting on it keep the original's timing.
 struct Playback {
@@ -989,6 +997,8 @@ struct Playback {
     player: Option<u8>,
     seq: Option<Arc<Sequence>>,
     clock: f32,
+    /// The sequence's clocks (its own and its conducted sequences'), once it is loaded.
+    clocks: Option<mw_assets::timeline::SequenceClock>,
 }
 
 /// Who plays a [`Playback`].
@@ -1009,12 +1019,17 @@ fn set_idle(logic: &LogicHost, conductor: &str) {
 }
 
 /// Steps the conductors' sequences (see [`Playback`]).
-fn step_playbacks(host: &mut RuntimeHost, dt: f32) {
+fn step_playbacks(host: &mut RuntimeHost, dt: f32, menu: &crate::input::MenuInput, skip: u8) {
     let mut finished = Vec::new();
     for p in &mut host.playbacks {
         let Some(seq) = &p.seq else { continue };
         let vm = &host.logic.state;
-        let (next, _) = crate::frontend::step(seq, p.clock, dt, &mut |b| vm.borrow().resolve_bool(b) == Some(true));
+        let clocks = p.clocks.get_or_insert_with(|| mw_assets::timeline::SequenceClock::new(&seq.clocks, p.clock));
+        let mut holds = |b: &str| vm.borrow().resolve_bool(b) == Some(true);
+        let mut env = crate::seq_clock::GameEnv { holds: &mut holds, menu: Some(menu), skip };
+        let jumps = clocks.tick(&seq.clocks, dt, &mut env);
+        crate::seq_clock::log_jumps("hsm", seq, &jumps);
+        let (next, quit) = (clocks.time(), clocks.quit());
         // `GeneralTriggerSequenceItem`s set their trigger when the clock passes their start and clear it when it
         // passes their end (`UiSequences::set_trigger` / `clear_trigger`).
         for i in &seq.items {
@@ -1028,7 +1043,7 @@ fn step_playbacks(host: &mut RuntimeHost, dt: f32) {
             }
         }
         p.clock = next;
-        if next >= seq.length {
+        if next >= seq.length || quit {
             finished.push((p.owner.clone(), p.sequence));
         }
     }
@@ -1571,7 +1586,7 @@ impl Host for RuntimeHost {
         // A playback plays from its request on (its sequence still loading), as the original's starts at once.
         if let Some(Carry::Play { owner, sequence, player }) = &carried {
             let (owner, sequence, player) = (owner.clone(), *sequence, *player);
-            self.playbacks.push(Playback { owner, sequence, player, seq: None, clock: 0.0 });
+            self.playbacks.push(Playback { owner, sequence, player, seq: None, clock: 0.0, clocks: None });
         }
         self.carry.extend(carried);
         let kind = format!("{r:?}");

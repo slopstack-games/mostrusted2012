@@ -7,9 +7,12 @@
 //!   "Play countdown" state sits under the online flow only; the intro ends with the cars teleported onto the
 //!   grid already rolling (`TeleportPlayerSequenceItem.Speed_MPH`: 70 for the player, 55 for the opponents).
 //! - **Clock**: real seconds (as the crash camera; the slow-motion items scale the simulation, not the
-//!   sequence). A `JumpOnButtonPress` controller is the skip: SKIP_CUTSCENE (Esc / pad Back) once the clock
-//!   has passed its `TriggerTime` jumps to its `DestinationTime` (the intro of 462174: 1 s → 19.5 s, just after
-//!   the teleports).
+//!   sequence), run with the timeline controllers of the sequence and of its conducted sequences, each on its
+//!   own clock (`mw_assets::timeline`, ported from the code; `seq_clock.rs` feeds them the logic's bindings and
+//!   the input). A `JumpOnButtonPress` controller is the skip: SKIP_CUTSCENE (Esc / pad Back) while the clock is
+//!   between its `TriggerTime` and its destination jumps there (the intro of 462174: 1 s → 19.5 s, just after
+//!   the teleports). The race outros wait in their conducted sequence (a `JumpMonitorTimelineController` makes
+//!   the outro follow it), which loops while the award widget is up and skips what the event did not earn.
 //! - **Items played**: animated cameras (a clip of a two-bone camera skeleton, world space or relative to the
 //!   player's car; horizontal field of view `2 atan(18 / FocalLength)`, a 36 mm frame, `FUN_005c6c10`), ICE
 //!   camera takes (`mw_formats::camera_take`), the dynamic camera's blend to the
@@ -32,9 +35,9 @@
 //! Model decisions (no source yet): the race starts on the intro's event trigger (the item that signals the game
 //! logic; what the HSM does with it was not traced); `GetTransform` bindings of animated cameras follow the car
 //! live; the animated car is placed on the clip's car bone every tick with the clip's velocity (the original
-//! drives it with its `controls_*` bones, not read); nested timeline controllers (the outro's waits for input)
-//! are not run, so the outro plays straight through; audio, post-processing and UI layouts other than the
-//! letterbox are not played.
+//! drives it with its `controls_*` bones, not read); audio, post-processing and UI layouts other than the
+//! letterbox are not played; the controllers' bindings resolve only through the logic (`--hsm`), else they do
+//! not hold (the outro then plays through its earned-award branch to the end).
 //!
 //! `--no-cutscenes` turns them off (the race then keeps the game mode's 10 s frozen intro); `--cutscene outro`
 //! plays the outro at once (for screenshots). `MW_CUTSCENE_TRACE=<file>` logs the camera every frame.
@@ -111,8 +114,10 @@ pub enum Which {
 struct Playing {
     which: Which,
     seq: Arc<Sequence>,
-    /// Sequence time (real seconds × the run's speed-up, `base_speed`).
+    /// Sequence time (real seconds × the run's speed-up, `base_speed`): the sequence's own clock.
     t: f32,
+    /// The sequence's clocks with their timeline controllers (`seq.clocks`).
+    clock: mw_assets::timeline::SequenceClock,
     /// Per item: has it started (one-shot actions fired).
     started: Vec<bool>,
     /// `Time<Virtual>` speed before the sequence (tests run faster than real time).
@@ -287,6 +292,7 @@ fn start_cutscenes(
         which,
         seq: seq.clone(),
         t: env_seconds("MW_CUTSCENE_START").unwrap_or(0.0),
+        clock: mw_assets::timeline::SequenceClock::new(&seq.clocks, env_seconds("MW_CUTSCENE_START").unwrap_or(0.0)),
         started: vec![false; seq.items.len()],
         base_speed,
         last_view: None,
@@ -355,7 +361,12 @@ fn run_cutscene(
         ResMut<crate::camera::SnapCamera>,
         ResMut<crate::sequence_picture::SequencePicture>,
     ),
-    (keys, pads): (Res<ButtonInput<KeyCode>>, Query<&Gamepad>),
+    (keys, pads, menu, view): (
+        Res<ButtonInput<KeyCode>>,
+        Query<&Gamepad>,
+        Option<Res<crate::input::MenuInput>>,
+        Option<NonSend<crate::ui_sequence::LogicView>>,
+    ),
     (ai_race, mut traffic): (Option<Res<crate::ai::RaceSetup>>, Option<ResMut<crate::traffic::TrafficSystem>>),
     racers: Query<(Entity, &Racer, &Transform), Without<Camera3d>>,
     player: Query<(Entity, &Transform), (With<Car>, With<Player>, Without<Camera3d>)>,
@@ -382,28 +393,32 @@ fn run_cutscene(
             .observe(bevy::render::view::screenshot::save_to_disk(path.clone()));
         state.shot_frames = Some(0);
     }
-    // The skip (`JumpOnButtonPress`): SKIP_CUTSCENE after the trigger time.
-    if let Some((trigger, destination)) = p.seq.skip() {
+    // The clocks: real time, sped up with the run (tests run the simulation faster than real time: the sequence
+    // keeps pace with it, so the intro hands over where it does at 1x), moved by the timeline controllers. The
+    // skip is the intro's `JumpOnButtonPress` (SKIP_CUTSCENE).
+    let seq = p.seq.clone();
+    {
         let pad_list: Vec<&Gamepad> = pads.iter().collect();
         let dev = crate::input::Devices { keys: &keys, pads: &pad_list };
-        let pressed =
-            dev.just_pressed(crate::input::defaults::SKIP_CUTSCENE) || (setup.0.auto_skip && p.which == Which::Intro);
-        if pressed && p.t >= trigger && p.t < destination {
-            info!("cutscene: skipped from {:.2} s to {destination:.2} s", p.t);
-            p.t = destination;
+        let skip = if setup.0.auto_skip && p.which == Which::Intro { 2 } else { crate::seq_clock::skip_state(&dev) };
+        let view = view.as_deref();
+        let mut holds = |b: &str| {
+            crate::frontend::binding_true(b, &mut |path, arg| crate::ui_sequence::logic_lookup(view, path, arg))
+        };
+        let mut env = crate::seq_clock::GameEnv { holds: &mut holds, menu: menu.as_deref(), skip };
+        let jumps = p.clock.tick(&seq.clocks, real.delta_secs() * p.base_speed, &mut env);
+        crate::seq_clock::log_jumps("cutscene", &seq, &jumps);
+        if jumps.iter().any(|j| j.node == 0 && j.kind == "JumpOnButtonPress") {
             snap.0 = true;
         }
     }
-    // Real time, sped up with the run (tests run the simulation faster than real time: the sequence keeps pace
-    // with it, so the intro hands over where it does at 1x).
-    p.t += real.delta_secs() * p.base_speed;
+    p.t = p.clock.time();
     let t = p.t;
-    let seq = p.seq.clone();
     // Picture and environment items (PostFX states, time of day, ...): `sequence_picture.rs`.
     picture.play(if p.which == Which::Intro { "cutscene intro" } else { "cutscene outro" }, &seq, t);
 
     // Slow motion: the simulation's clock (the sequence runs on real time).
-    let scale = seq.time_scale(t).max(0.0);
+    let scale = seq.time_scale_at(&|i| p.clock.frame_time(&seq.clocks, i.clock)).max(0.0);
     virtual_time.set_relative_speed(p.base_speed * scale);
 
     // Racer lookup: the player, or an opponent by `Players.Racer[n]` (grid slot n − 1).
@@ -427,9 +442,12 @@ fn run_cutscene(
     let mut ice_blend = 0.0f32;
     state.car_pose = None;
     for (index, item) in seq.items.iter().enumerate() {
-        if !(t >= item.start && t < item.end) {
+        // The item's own clock (its conducted sequence's); out of range or not conducted: it stops, and starts
+        // again when a jump brings it back (`FUN_00a42b90`).
+        let Some(t) = p.clock.frame_time(&seq.clocks, item.clock).filter(|t| *t >= item.start && *t < item.end) else {
+            p.started[index] = false;
             continue;
-        }
+        };
         let first = !p.started[index];
         p.started[index] = true;
         let local = t - item.start;
@@ -627,7 +645,7 @@ fn run_cutscene(
         ));
     }
 
-    if t >= seq.length {
+    if t >= seq.length || p.clock.quit() {
         // The end: time, HUD and the car back to normal.
         virtual_time.set_relative_speed(p.base_speed);
         hud.hidden_by_sequence = false;

@@ -937,7 +937,7 @@ states). A sequence is referenced by its own `655d3f5f` UniqueId, never by resou
 
 - `Sequence` (44 B): `Binding` (empty = a time axis in seconds), `655d3f5f`, `Binding_Min` / `_Max`,
   `SequenceItems` (polymorphic, +0x20), `TimelineControllers` (+0x24), counts. Every item starts with the
-  `SequenceItem` base (36 B): `EnabledBinding`, `655d3f5f`, `StartTime` (+0x18), `EndTime` (+0x1c), a u16.
+  `SequenceItem` base (36 B): `EnabledBinding`, `655d3f5f`, `EndTime` (+0x18), `StartTime` (+0x1c) (the order the code reads them, decomp.md "Timeline controllers"), a u16.
 - Item types seen in the 108 race intros (by how many intros use them): `LayoutSequenceItem` 108,
   `BusMixerChannelSequenceItem` / `WaveSequenceItem` 106, `EventTriggerSequenceItem` 104 (no fields),
   `TeleportPlayerSequenceItem` 100, `DriveLocalPlayerWithAISequenceItem` 93, `AnimatedCameraSequenceItem` 92,
