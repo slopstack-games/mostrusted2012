@@ -11,6 +11,45 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+## 2026-11-19: the pursuit test's time-out and its "busted after 8 s" with traffic: both the test's own set-up
+
+Neither comes from the speech manager (c02f83d) or from a pursuit rule; no model code changed. Measured on master
+a66d316 with `MW_POLICE_LOG=1 tools/t --drive 911 --test pursuit --units 12 [--no-traffic]`:
+
+- **Time-out (1 of 3 runs; the two passes were luck).** The police tick is in the fixed step
+  (`police_tick`, since the mw-police wiring d349f52), which runs before `Update` in a frame; the test set its spawn
+  hold and 30 m spawn distance in `Update` (`run_pursuit_test` phase 0). In the frame the car arrived the tick
+  ordered cop 1 at the level's own distance ("placed Behind ... 364 m from the player"); it followed at the patrol
+  speed, never within the 50 m sight range, and held the one free-roam cop slot until the coordinator removed it:
+  "chase after 23.3–23.6 s" in every run. `--units 12` loads 12 units once (no streaming, `loader.rs` `world`), and
+  the route leaves them ~1200 m along (x −2010, z 1783): 23 s of waiting + 25 s of chase at 60 mph is ~1300 m, so
+  the car fell out of the world (y 72 → −140, `drive.rs` "Fell out of the world" puts it back at the spawn). Fall
+  after the cops were taken away: the fall itself left the lose radius ("153 m from the last seen point", "977 m")
+  and the run passed. Fall before: the car was back at the start with its route driver 1200 m along (9 mph, a
+  "stuck reset" every 5 s), never left the 150 m lose radius: TIMEOUT in phase 3 (state Chase, 0 cops, heat 3.70).
+  Fix: the hold is set in `load_police` when the test is on (chase after 1.0–1.1 s); the car stops when the
+  cooldown begins (farthest point 901 m along, lowest y 17.6).
+- **The bust run drove backwards.** The test held the brake to keep the car at rest; a held brake reverses a
+  standing car (−111 km/h, 500 m, until a wall). Seen once the cooldown stop made it long enough to matter
+  ("start 2: chase after 161.4 s"). Fix: brake while rolling forwards, then the handbrake.
+- **"Busted after 8 s at 0 mph" with traffic** (reproduced with master's binary: "BUSTED after 8 s (player 1 mph,
+  3 slams)"). Not traffic and not the bust rule: at the chase's start two cops are ordered at once, both "behind"
+  at 30 m; the second finds that node taken (15 m rule in `spawn_point`) and the test's fallback put it anywhere on
+  the 30 m ring: "placed Generic at (−1601, 52, 1628), 32 m from the player, 20 mph", in the lane ahead of the
+  car at 60 mph. The car hit it 1.5 s later (97 → 3 km/h), stood among three cops, and the bust rule fired as
+  written (below 25 mph within 20 m for 4 s). Traffic only changes which ring point is drawn (lane snap instead of
+  a graph link); the no-traffic runs had the same placement at times ("(Generic, 31.0)", bust meter 0.55, got
+  away). Fix: the test's fallback takes ring points behind the car only, else the order waits a frame.
+
+After: no traffic and with traffic, twice each: chase after 1.0–1.1 s, 25 s of chase, cooldown at 150–151 m,
+escaped, bust run busted with the meter filled in 4.0 s; without cop contact in the first 10 s the heat rate reads
+0.0067/s (the original's time rate at level 1).
+
+**Open** (not changed, no source read for them): the racer driver does not avoid or brake for a slow car 30 m
+ahead in its lane (the ram above); a car put back by the fall rescue keeps its driver's old route progress; the
+15 m "taken" rule of `spawn_point` is ours. No engine-free regression test: `mw_police`'s `hold_spawns` works, the
+runtime set it a frame late (system order).
+
 ## 2026-11-18: the map manager's POI list and the intro's waypoint POIs (`natives/pois.rs`, `poi.rs`)
 
 Ported from the code (decomp.md "Points of interest: the map manager's list"): UIM+0x14c50, 260 records of 0x60

@@ -24,11 +24,10 @@ One worktree is left to remove: `agent-ae1caf9e7b2a6f6d8` (merged; the session r
   speedometer is cut off at the bottom right, a large rotated "CHECK…" message at the top right (new feedback queue?);
   card tip line at the left edge. The HUD is drawn from the logic's widgets since `ui_widgets.rs` (merged 2026-11-18,
   checked only at 1280×720). Compare 720p vs 1080p first, then bisect today's merges if needed.
-- **Pursuit test** times out (2 of 2) after the speech merge (c02f83d); passed before it with `--units 12 --no-traffic`.
+- **Pursuit test** passes again, with and without traffic (the time-out and the 8 s bust were the test's set-up, not
+  speech or a rule: research-log 2026-11-19). Open: the racer AI rams a slow car 30 m ahead in its lane.
 - **Runtime inputs not fed**: drift / Smash-and-Grab scoring inputs (no event uses them); online requests (store,
   friends, telemetry, speedwall cache); car select, speech, waypoints logged-only until the agents above land.
-- **Pursuit test with traffic**: busted after 8 s at 0 mph (also on the police branch); passes with the documented
-  `--units 12 --no-traffic` (1 escape, 1 bust).
 - **Model decisions to measure**: strut joint position parameter (+0x30) writer; `kerb100a` braking RMS 1.4 → 2.3 mph
   after the strut port; bust camera node semantics (code not in the dump).
 - **Sub-harmoniser** DC (+0.045 vs +0.0024) and a live before / after (merged 2026-11-18).

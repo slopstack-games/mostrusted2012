@@ -328,7 +328,7 @@ fn load_cop_config(store: &mw_assets::AssetStore) -> CopConfig {
     c
 }
 
-fn load_police(game: Res<crate::Game>, mut police: ResMut<Police>) {
+fn load_police(game: Res<crate::Game>, mut police: ResMut<Police>, test: Option<Res<PursuitTest>>) {
     match game.store.police_config() {
         Ok(cfg) if !cfg.levels.is_empty() => {
             info!(
@@ -351,6 +351,13 @@ fn load_police(game: Res<crate::Game>, mut police: ResMut<Police>) {
     }
     police.core = mw_police::Police::new(0x2545_f491_4f6c_dd1d);
     police.core.cop_cfg = load_cop_config(&game.store);
+    // `--test pursuit`: no cops until the test releases them. The hold has to stand before the first police tick:
+    // the tick is in the fixed step, which runs before the test's set-up (`Update`) in the frame the car arrives,
+    // and the cop it ordered there (at the level's own spawn distance, far behind) kept the one free-roam cop
+    // slot until the coordinator removed it ~23 s later (research log 2026-11-19).
+    if test.is_some() {
+        police.core.hold_spawns = true;
+    }
     // `MW_PURSUIT_DEMO=1`: the player counts as wanted and cops are placed close by (for screenshots of the HUD).
     if std::env::var("MW_PURSUIT_DEMO").is_ok() {
         police.force_wanted = true;
@@ -591,9 +598,14 @@ fn spawn_cops(
         let mut found =
             spawn_point(&mut police.core, &graph, kind, player, distance, spawn_speed, &taken, &spatial, lanes);
         if found.is_none() && test_distance {
-            // The test places cops close by, anywhere on the ring.
+            // The test places cops close by, anywhere on the ring's half behind the player: the point behind is
+            // taken when two cops are ordered at once, and a ring point ahead is a cop at 20 mph in the lane of a
+            // car at 60 mph, 30 m away (it rammed that cop, stood, and the escape run ended busted after 8 s;
+            // research log 2026-11-19). No point this frame: the order waits.
             kind = SpawnKind::Generic;
-            found = spawn_point(&mut police.core, &graph, kind, player, distance, spawn_speed, &taken, &spatial, lanes);
+            let forward = player.rotation * Vec3::Z;
+            found = spawn_point(&mut police.core, &graph, kind, player, distance, spawn_speed, &taken, &spatial, lanes)
+                .filter(|(at, ..)| !police.force_wanted || (*at - player.translation).dot(forward) <= 0.0);
         }
         let Some((start, heading, mut speed)) = found else {
             debug!("police: no {kind:?} spawn point yet for cop {slot}");
@@ -1429,6 +1441,12 @@ fn run_pursuit_test(
     test.timer += dt;
     let nearest = cops.iter().map(|c| c.1.translation.distance(pt.translation)).reduce(f32::min);
     let p = police.pursuit.clone();
+    // The car at rest (cooldown, bust run): brake while it rolls forwards, then the handbrake. A held brake alone
+    // reverses a standing car (it drove backwards at 110 km/h through the bust run until a wall stopped it).
+    if (4..=7).contains(&test.phase) {
+        let rolling = (pt.rotation * Vec3::Z).dot(pv.0) > 2.0;
+        input.scripted = Some(if rolling { [0.0, 1.0, 0.0, 0.0] } else { [0.0, 0.0, 0.0, 1.0] });
+    }
     match test.phase {
         // Set up the escape run.
         0 => {
@@ -1540,6 +1558,9 @@ fn run_pursuit_test(
                 police.heat_level().map_or(0.0, |l| l.lose_radius),
                 p.heat
             );
+            // The car stops for the cooldown (the heat falls at rest too): with `--units 12` the loaded world ends
+            // ~1200 m along the route, and a car that drives on falls out of it.
+            commands.entity(me).remove::<(AiDriver, ExternalControls)>();
             test.phase = 4;
             test.timer = 0.0;
         }
@@ -1562,7 +1583,6 @@ fn run_pursuit_test(
                 commands.entity(me).insert((Position(s.translation), Rotation(s.rotation)));
                 pv_mut.0 = Vec3::ZERO;
             }
-            input.scripted = Some([0.0, 1.0, 0.0, 0.0]);
             if pv.0.length() < 0.5 {
                 police.hold_spawns = false;
                 police.spawn_block = 0.0;
