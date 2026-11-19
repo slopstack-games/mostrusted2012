@@ -383,6 +383,9 @@ fn sequences(store: &AssetStore, events: &Events, e: &Event) {
                 ),
                 ItemKind::SetSongList { list, flags } => format!("set song list {list} {flags:?}"),
                 ItemKind::MusicState(s) => format!("music state {s:?}"),
+                ItemKind::VfxSpot(v) => {
+                    format!("vfx spot {:?} at {:?} / {:?}", v.effect, v.locator_group, v.transform_binding)
+                }
                 ItemKind::Other(n) => n.clone(),
             };
             println!("    {:6.2}-{:6.2} {}{what}", i.start, i.end, "  ".repeat(i.depth as usize));
@@ -504,6 +507,7 @@ fn print_ui_sequence(seq: &mw_assets::sequence::Sequence, depth: usize) {
             ItemKind::Wave(w) => format!("wave {:?} gain {} type {}", w.waves, w.gain.value, w.kind),
             ItemKind::SetSongList { list, flags } => format!("set song list {list} {flags:?}"),
             ItemKind::MusicState(s) => format!("music state {s:?}"),
+            ItemKind::VfxSpot(v) => format!("vfx spot {:?}", v.effect),
             ItemKind::Other(n) => n.clone(),
             ItemKind::Camera(shots) => {
                 let s: Vec<String> = shots

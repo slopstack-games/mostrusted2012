@@ -84,6 +84,11 @@ impl CarDamage {
         &self.parts
     }
 
+    /// The damage sequences' effect items (`damage_vfx.rs`).
+    pub fn vfx(&self) -> &[mw_assets::damage_vfx::DamageSequence] {
+        &self.model.vfx
+    }
+
     /// The game's repair (`FUN_0058f060`, vehicle-manager message 0x16): every damage level back to 0.
     pub fn repair(&mut self) {
         self.levels.iter_mut().for_each(|l| *l = 0.0);

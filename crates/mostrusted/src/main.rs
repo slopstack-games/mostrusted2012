@@ -29,6 +29,7 @@ mod crash;
 mod crash_vfx;
 mod cutscene;
 mod damage;
+mod damage_vfx;
 mod deferred;
 mod dlc;
 mod drive;
@@ -1072,6 +1073,7 @@ fn run(mut cli: Cli, game: GameDir) -> anyhow::Result<()> {
         .add_plugins(car_contacts::CarContactsPlugin)
         .add_plugins(nitrous::NitrousPlugin)
         .add_plugins(exhaust::ExhaustPlugin)
+        .add_plugins(damage_vfx::DamageVfxPlugin)
         .add_plugins(ignition::IgnitionPlugin { crank_at_spawn: cli.test.is_none() && cli.replay.is_none() })
         .add_plugins(tyre_marks::TyreMarksPlugin)
         .add_plugins(paint_wear::PaintWearPlugin)

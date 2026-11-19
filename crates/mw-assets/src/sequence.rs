@@ -635,6 +635,9 @@ pub enum ItemKind {
     },
     /// `MusicStateSequenceItem`: sets the dynamic music manager's state name ("Mapscreen", "Multiplayer").
     MusicState(String),
+    /// `VfxLocatorGroupVehicleSpotEffectSequenceItem` / `VfxSpotEffectSequenceItem`: an effect at a car's locator
+    /// group or at a bound transform (`crate::damage_vfx`).
+    VfxSpot(Box<crate::damage_vfx::SpotItem>),
     /// Audio, post-processing, speech, music and the other item types not ported (type name).
     Other(String),
 }
@@ -730,6 +733,7 @@ impl Sequence {
                 ItemKind::Wave(_) => "Wave".into(),
                 ItemKind::SetSongList { .. } => "SetSongList".into(),
                 ItemKind::MusicState(_) => "MusicState".into(),
+                ItemKind::VfxSpot(_) => "VfxSpot".into(),
                 ItemKind::Other(n) => n.clone(),
             };
             match counts.iter_mut().find(|(n, _)| *n == name) {
@@ -1140,6 +1144,10 @@ impl<'a> SequenceContext<'a> {
                 flags: [0x3c4e_5e2b, 0xf282_51e6, 0xcb97_beb9].map(|k| boolean(item, k).unwrap_or(false)),
             },
             "MusicStateSequenceItem" => ItemKind::MusicState(string(item, h::STATE)),
+            "VfxLocatorGroupVehicleSpotEffectSequenceItem" | "VfxSpotEffectSequenceItem" => {
+                crate::damage_vfx::SpotItem::read(item)
+                    .map_or_else(|| ItemKind::Other(short(item).to_string()), |i| ItemKind::VfxSpot(Box::new(i)))
+            }
             other => ItemKind::Other(other.to_string()),
         }
     }

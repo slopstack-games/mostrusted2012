@@ -18,6 +18,7 @@ mod catalog;
 pub mod coronas;
 pub mod crash;
 pub mod damage;
+pub mod damage_vfx;
 pub mod easydrive;
 pub mod engine_driver;
 pub mod engine_sound;

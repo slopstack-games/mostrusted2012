@@ -11,6 +11,39 @@ Older entries (before 2026-11, and the early topical findings) are in
 
 ---
 
+## 2026-11-19: the cars' damage sequences and their locator spot effects (`damage_vfx.rs`)
+
+The 1,672 `VfxLocatorGroupVehicleSpotEffectSequenceItem`s (836 per LOD set, 93 cars) all sit in the cars'
+`VehicleDamageBehaviour.DamageSequences`: eight sequences per car (front, rear, left, right, the corners), started for
+every race car by `FUN_005b6ce0` and moved by a `RaceCarEntityTimelineController` (type id 0x1565d8, factory
+0x0058f230) whose `Property` 1..8 picks the zone level of the race-car entity (the same eight the damage clips are
+posed from), capped at 0.99 unless wrecked, × 100. The items play a `GLOBALEFFECTS.BNDL` effect at each locator of
+their `VehicleGraphicsSpec` group while the zone's damage is inside their range (40 / 60 / 70 / 80..100 %, or
+100..100 = wrecked only); handler traced from the vtable (start / play / update / stop, `FUN_00865f20`,
+`FUN_00864ec0`): decomp.md "Damage sequences and their effects". Ported: `mw_assets::damage_vfx` (data, item state
+machine, axis), `mostrusted` `damage_vfx.rs` (effects on the existing particle system, slot 0x3000 + …);
+`ItemKind::VfxSpot` in `mw_assets::sequence` for both spot item types. These sequences also hold the damage sounds
+(`WaveSequenceItem`s on the same axis): not played yet.
+
+**Model decisions**: the car is never "wrecked" (the damage bar's segments are not kept), so the 169 full-damage
+items never play; vehicle +0x1c2a (the play gate's flag, set at creation by `FUN_00586810`, its clearing writer not
+found) is taken as set; the +0x1964 gate is 0.1 s from our car's first frame with damage (the game: from
+`FUN_00591350` at spawn); `LocalRotation` is not applied (Euler order in `FUN_008644e0` not read; zero in all data);
+`Intensity` curves (none in the data) would go through `Modulated::at`, not `FUN_00862590`'s three combine modes; an
+effect still alive when its item is entered again is restarted (the game keeps it); the velocity is the body's
+linear velocity (vehicle +0x120 read as that, not checked); the ground plane through the car's origin is the
+`FUN_00572810` = false branch (the function not identified). `--damage` at spawn falls inside the 0.1 s gate, as in
+the game, so it shows no damage effects.
+
+Verified: `--drive 911 --test crash` (front 30 %: no item, the 911's front holds only the wreck item);
+`--drive LFA --damage front=0.9` starts nothing (spawn gate), with `MW_DAMAGE_VFX_NO_GATE=1` `…117da7` starts at
+both front locators: a large white steam / smoke burst over the bonnet that dies out in a few seconds (one-shot
+layers); the 911's `--damage rear=0.5` starts `…9cbe7` at its one rear locator (burst over ~4 s).
+
+Open: `VfxSpotEffectSequenceItem` (6 uses: weapons and feedback groups) parsed but not played; the damage
+sequences' own sounds; captures that would confirm the look: the original's 911 with rear damage past 40 % (from the
+rear: smoke at the engine locators), an LFA with front damage past 80 %.
+
 ## 2026-11-19: skids and crashes "very loud, distorted, layered, more and more": the skid channels' gain multiplied per surface set
 
 User report with a recording and `MW_AUDIO_METER=1` / `MW_SFX_TRACE` of the played run: the vehicle bank read up to
